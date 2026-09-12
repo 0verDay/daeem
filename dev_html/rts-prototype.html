@@ -1,0 +1,3026 @@
+<!DOCTYPE html>
+<!-- 该文件由 tools/build_single_file.py 自动生成，请勿直接编辑；请改 js/ 与 css/ 后重新构建 -->
+
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>RTS 原型 v0.3 —— 大地图 / 直线移动 / 战斗警戒 / 区块占领 / 建造</title>
+<style>
+/* style.css —— 深色军事风 RTS 原型界面 */
+
+:root {
+  --bg: #0f1210;
+  --panel: #1a1f1b;
+  --panel2: #212723;
+  --line: #2f3830;
+  --text: #d8e0d6;
+  --muted: #8c9a8b;
+  --accent: #ffd166;
+  --accent2: #5ac8ff;
+  --danger: #e05a5a;
+  --ok: #6fd36f;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  overflow: hidden;
+}
+
+#app { display: flex; flex-direction: column; height: 100vh; }
+
+/* ---------------- 顶栏 ---------------- */
+#topbar {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 8px 14px;
+  background: linear-gradient(180deg, #1d2320, #171c19);
+  border-bottom: 1px solid var(--line);
+  flex: 0 0 auto;
+}
+
+.brand { display: flex; align-items: center; gap: 8px; }
+.brand .dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 10px var(--accent);
+}
+.brand strong { font-size: 14px; letter-spacing: .5px; }
+.brand .sub { color: var(--muted); font-size: 11px; }
+
+.stats { display: flex; gap: 10px; flex: 1 1 auto; flex-wrap: wrap; }
+.stat {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 5px 12px 5px 9px;
+  min-width: 108px;
+}
+.stat.wide { min-width: 220px; }
+.stat .ico { font-size: 16px; }
+.stat .k { color: var(--muted); font-size: 10px; letter-spacing: .5px; }
+.stat .v { font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.15; }
+.stat .v small { font-size: 10px; color: var(--muted); font-weight: 400; }
+.stat .v.small { font-size: 12px; font-weight: 600; color: var(--accent2); }
+
+.tools { display: flex; gap: 6px; }
+
+/* ---------------- 按钮 ---------------- */
+.btn {
+  background: var(--panel2);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 7px 11px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  transition: .12s;
+  white-space: nowrap;
+}
+.btn:hover { background: #2b332d; border-color: #46523f; }
+.btn:active { transform: translateY(1px); }
+.btn.active { background: #4a3f1f; border-color: var(--accent); color: var(--accent); }
+.btn.small { padding: 6px 9px; font-size: 11px; }
+.btn.wide { width: 100%; }
+
+/* ---------------- 主体 ---------------- */
+#body { display: flex; flex: 1 1 auto; min-height: 0; }
+
+#stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  background: #0b0e0c;
+}
+#game { display: block; position: absolute; inset: 0; cursor: crosshair; }
+
+#toasts {
+  position: absolute;
+  left: 50%; bottom: 18px;
+  transform: translateX(-50%);
+  display: flex; flex-direction: column; gap: 6px;
+  align-items: center;
+  pointer-events: none;
+}
+.toast {
+  background: rgba(20, 26, 22, .92);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  padding: 7px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  box-shadow: 0 6px 18px rgba(0,0,0,.45);
+}
+
+/* ---------------- 坐标调试读数（按 G 开关） ---------------- */
+.debugaim {
+  position: absolute;
+  left: 10px; top: 10px;
+  margin: 0;
+  padding: 6px 9px;
+  background: rgba(10, 14, 11, .88);
+  border: 1px solid #3a4a3c;
+  border-left: 3px solid var(--danger);
+  border-radius: 6px;
+  color: #cfe8cf;
+  font: 11px/1.5 "Cascadia Mono", Consolas, monospace;
+  white-space: pre;
+  pointer-events: none;
+}
+.debugaim.hidden { display: none; }
+
+/* ---------------- 帮助 ---------------- */
+.helpbox {
+  position: absolute;
+  right: 14px; top: 14px;
+  width: 420px;
+  max-height: calc(100% - 28px);
+  overflow: auto;
+  background: rgba(20, 26, 22, .96);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px 16px;
+  box-shadow: 0 12px 32px rgba(0,0,0,.5);
+}
+.helpbox.hidden { display: none; }
+.helpbox h4 { margin: 0 0 6px; color: var(--accent); font-size: 12px; }
+.helpbox ul { margin: 0 0 12px; padding-left: 18px; line-height: 1.7; color: #c3cdc1; }
+.helpbox b { color: #fff; }
+
+/* ---------------- 侧栏 ---------------- */
+#sidebar {
+  width: 268px;
+  flex: 0 0 268px;
+  background: #141815;
+  border-left: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  overflow: auto;
+}
+
+.panel {
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  padding: 10px 12px 12px;
+}
+.panel.grow { flex: 1 1 auto; min-height: 120px; display: flex; flex-direction: column; }
+.panel h3 {
+  margin: 0 0 9px;
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: var(--muted);
+  text-transform: uppercase;
+  font-weight: 700;
+}
+.panel h3 small { text-transform: none; letter-spacing: 0; color: #6d7a6c; font-weight: 400; }
+
+.buildrow { display: flex; gap: 8px; }
+.buildbtn {
+  flex: 1 1 0;
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 9px;
+  cursor: pointer;
+  color: var(--text);
+  font-family: inherit;
+  text-align: left;
+  transition: .12s;
+}
+.buildbtn:hover { border-color: #4d5a48; background: #262e28; }
+.buildbtn.active { border-color: var(--accent); background: #3b3220; }
+.buildbtn .bk {
+  font-size: 10px; font-weight: 700; color: #1a1f1b;
+  background: var(--accent);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.buildbtn .bn { font-size: 13px; font-weight: 700; }
+.buildbtn .bd { font-size: 10px; color: var(--muted); line-height: 1.35; }
+
+.hint { margin: 8px 0; font-size: 11px; color: var(--muted); line-height: 1.5; }
+
+.btnrow { display: flex; gap: 6px; margin-bottom: 6px; }
+.btnrow .btn { flex: 1 1 0; }
+
+.note { font-size: 10.5px; color: #75816f; line-height: 1.55; margin-top: 6px; }
+
+.selname { font-size: 14px; font-weight: 700; margin-bottom: 5px; }
+.hpbar { height: 6px; background: #0e120f; border-radius: 3px; overflow: hidden; margin-bottom: 6px; border: 1px solid #232a24; }
+.hpbar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #4fbf4f, #8ce08c); transition: width .15s; }
+.seldetail { font-size: 11px; color: var(--muted); line-height: 1.55; white-space: pre-line; }
+
+.kv { display: flex; justify-content: space-between; font-size: 11.5px; padding: 3px 0; color: var(--muted); }
+.kv b { color: var(--text); font-variant-numeric: tabular-nums; }
+
+.logbox {
+  flex: 1 1 auto;
+  min-height: 80px;
+  overflow: auto;
+  background: #0f1311;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: #9fae9d;
+  font-family: "Cascadia Mono", Consolas, monospace;
+}
+.logbox div { border-bottom: 1px dashed #1e241f; padding: 2px 0; }
+
+/* 滚动条 */
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-thumb { background: #2c352e; border-radius: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- ============ 顶栏：资源与领地 ============ -->
+  <header id="topbar">
+    <div class="brand">
+      <span class="dot"></span>
+      <strong>RTS 原型 v0.3</strong>
+      <span class="sub">24×16 大地图 · 直线移动 · 战斗警戒 · 建造</span>
+    </div>
+
+    <div class="stats">
+      <div class="stat">
+        <span class="ico">🌾</span>
+        <div>
+          <div class="k">粮食</div>
+          <div class="v" id="food">0.0</div>
+        </div>
+      </div>
+      <div class="stat">
+        <span class="ico">🪙</span>
+        <div>
+          <div class="k">黄金</div>
+          <div class="v" id="gold">0.0</div>
+        </div>
+      </div>
+      <div class="stat">
+        <span class="ico">🗺️</span>
+        <div>
+          <div class="k">己方地块</div>
+          <div class="v"><span id="tiles">0</span> <small id="rate">+0.0 / +0.0 每秒</small></div>
+        </div>
+      </div>
+      <div class="stat wide">
+        <span class="ico">🏳️</span>
+        <div>
+          <div class="k">己方区块</div>
+          <div class="v small" id="zoneList">（无）</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tools">
+      <button id="btnPause" class="btn">⏸ 暂停</button>
+      <button id="btnEdge" class="btn active" title="鼠标推到视野边缘即移动视角；按住空格可临时冻结">🖱 边缘滚屏</button>
+      <button id="btnFit" class="btn" title="快捷键 F">⤢ 全图</button>
+      <button id="btnZones" class="btn" title="快捷键 N">区块名</button>
+      <button id="btnHelp" class="btn" title="快捷键 H">? 帮助</button>
+    </div>
+  </header>
+
+  <!-- ============ 主体 ============ -->
+  <main id="body">
+
+    <!-- 侧栏 -->
+    <aside id="sidebar">
+      <section class="panel">
+        <h3>建造 <small>本版免费</small></h3>
+        <div class="buildrow">
+          <button id="btnWall" class="buildbtn" title="快捷键 B">
+            <span class="bk">B</span>
+            <span class="bn">城墙</span>
+            <span class="bd">填满整格<br>己方穿过 / 敌方阻挡</span>
+          </button>
+          <button id="btnTower" class="buildbtn" title="快捷键 T">
+            <span class="bk">T</span>
+            <span class="bn">箭塔</span>
+            <span class="bd">单体伤害<br>射程 3 格</span>
+          </button>
+        </div>
+        <div class="hint" id="buildHint">建造模式关闭（按 B 建城墙 / T 建箭塔）</div>
+        <button id="btnCancel" class="btn wide">✕ 退出建造模式 (Esc)</button>
+      </section>
+
+      <section class="panel">
+        <h3>选中</h3>
+        <div class="selname" id="selName">未选中</div>
+        <div class="hpbar"><i id="selHp"></i></div>
+        <div class="seldetail" id="selDetail">按 1 / 2 / 3 或左键点击选择将领</div>
+      </section>
+
+      <section class="panel">
+        <h3>状态</h3>
+        <div class="kv"><span>将领</span><b id="statUnits">0</b></div>
+        <div class="kv"><span>测试敌人</span><b id="statEnemies">0</b></div>
+        <div class="kv"><span>建筑总数</span><b id="statBuildings">0</b></div>
+        <div class="kv"><span>地块变更计数</span><b id="statRevision">0</b></div>
+      </section>
+
+      <section class="panel">
+        <h3>调试 <small>正式敌人版本之前的验证工具</small></h3>
+        <div class="btnrow">
+          <button id="btnSpawn" class="btn small" title="快捷键 E">＋ 刷测试敌人</button>
+          <button id="btnClearEnemies" class="btn small">清除敌人</button>
+        </div>
+        <button id="btnAutoSpawn" class="btn wide small">⏱ 自动刷敌人</button>
+        <button id="btnAim" class="btn wide small">🎯 坐标调试准星 (G)</button>
+        <div class="note">刷出的敌人会从右侧朝大本营推进；被城墙挡住时会贴到墙边一下一下拆（城墙有血量，掉血时能看到血条、挨打会闪红）。我方将领静止时会自动警戒、迎战附近的敌人。</div>
+      </section>
+
+      <section class="panel grow">
+        <h3>事件日志</h3>
+        <div class="logbox" id="log"></div>
+      </section>
+    </aside>
+
+    <!-- 画布 -->
+    <div id="stage">
+      <canvas id="game"></canvas>
+      <pre id="debugAim" class="debugaim hidden"></pre>
+      <div id="toasts"></div>
+      <div id="helpBox" class="helpbox hidden">
+        <h4>操作说明</h4>
+        <ul>
+          <li><b>1 / 2 / 3</b>：快速选中三个将领</li>
+          <li><b>左键</b>：选中将领 / 选中建筑；Shift + 左键多选</li>
+          <li><b>右键</b>：命令选中将领移动到<b>鼠标所指的位置</b>（点到哪走到哪；点到山/城墙/建筑时自动走到最近的可达处）</li>
+          <li><b>自动战斗</b>：单位静止且没有目标时，会自动警戒周围 <b>4 格</b>内的敌方单位 —— <b>先移动靠近，进入攻击距离后再开火</b>（红色虚线环=交战目标，头顶小三角=交战中）</li>
+          <li><b>B / T</b>：进入城墙 / 箭塔建造模式，<b>左键</b>放置，右键或 Esc 退出</li>
+          <li><b>X / Delete</b>：拆除选中的建筑（大本营不可拆）；选中城墙可以看到它的生命值</li>
+          <li><b>鼠标推到视野边缘</b>：平移视角（按住 <b>空格</b> 可临时冻结）；<b>W A S D / 方向键</b>也可平移</li>
+          <li><b>滚轮</b>：以光标为锚点缩放；<b>F</b>：缩到看完整张地图；<b>Home</b>：回到大本营</li>
+          <li><b>N</b>：显示 / 隐藏区块名；<b>P</b>：暂停；<b>E</b>：刷一个测试敌人；<b>H</b>：本帮助</li>
+          <li><b>G</b>：坐标调试准星（红叉=鼠标所指的点，绿圈=判定出的地块中心，两者必须重合）</li>
+        </ul>
+        <h4>本版规则</h4>
+        <ul>
+          <li>地图为 24×16 四连通地块，每格 120px（世界尺寸 2880×1920），<b>单位远小于一个地块</b>。</li>
+          <li>山不可通行、森林减速；单位沿 A* 路线<b>连续平滑移动</b>，终点就是点击位置，不吸附格心。</li>
+          <li><b>能走直线就走直线</b>：寻路结果会被拉直（每段直线都做过通行判定），只有绕山 / 绕城墙时才出现拐点。</li>
+          <li>每个地块最多一个建筑：大本营（开局自带、不可摧毁）／城墙／箭塔。</li>
+          <li><b>城墙有血量</b>（默认 300，见 <code>CONFIG.building.wall.hpMax</code>）：<b>敌人被墙挡住时会贴上来一下一下拆</b>（每次 40 点、间隔 1.2s），墙塌了就让出缺口；掉血的墙会显示血条、挨打时整格闪红。</li>
+          <li><b>战斗</b>：将领与敌人都有攻击伤害、攻击距离、攻击间隔（数值集中在 <code>CONFIG.combat</code>）；开火时画一条攻击线。</li>
+          <li><b>警戒</b>：没有目标且<b>静止</b>的单位会锁定警戒半径内最近的敌方单位，先靠近再攻击；目标跑出追击上限就放弃；<b>右键移动命令会中断交战</b>。</li>
+          <li>资源 = 己方占领地块数 × 每秒 1 粮食 1 黄金，实时增长。</li>
+          <li>区块占领（占位规则）：己方将领站在无主区块内 4 秒即可占领整个区块；正在占领时区块会从下往上填充黄色。</li>
+          <li>本版没有正式敌人，建造不消耗资源，战斗逻辑用调试刷出的测试敌人验证。</li>
+        </ul>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+"use strict";
+/* ==================== js/config.js ==================== */
+/**
+ * config.js —— 全局可调参数（数值平衡都集中在这里）
+ */
+
+const CONFIG = {
+  // ---- 网格 ----
+  // 地块**数量不变**（仍是 24 × 16），但每格像素尺寸调大 → 地图整体变大、单位相对地块很小。
+  // 地图世界尺寸 = mapCols × cell = 24 × 120 = 2880 px 宽、1920 px 高。
+  cell: 120,           // 单个地块边长（像素）
+  mapCols: 24,         // 地图列数（x 方向）
+  mapRows: 16,         // 地图行数（y 方向）
+  edgePad: 48,         // 视野边缘留白
+
+  // ---- 视野 / 相机 ----
+  camera: {
+    minScale: 0.18,      // 缩到最小可以看完整张地图
+    maxScale: 1.6,
+    startScale: 1,       // 开局缩放（1 = 一个地块 120px）
+    keyPanSpeed: 900,    // 键盘平移速度（屏幕像素 / 秒）
+    edgeScroll: true,    // 鼠标推到视野边缘即平移视角
+    edgeSize: 44,        // 触发边缘滚动的边距（屏幕像素）
+    edgeMaxSpeed: 1500,  // 贴住边缘时的最大滚动速度（屏幕像素 / 秒）
+  },
+
+  // ---- 资源 ----
+  resource: {
+    foodPerTilePerSec: 1,    // 每块己方地块每秒产出粮食
+    goldPerTilePerSec: 1,    // 每块己方地块每秒产出黄金
+    startFood: 0,
+    startGold: 0,
+    decimals: 1,             // HUD 上显示到小数点后几位
+  },
+
+  // ---- 单位 ----
+  unit: {
+    speed: 2.4,          // 基础移动速度（地块 / 秒）
+    forestMult: 0.5,     // 站在森林里时速度倍率
+    hpMax: 200,
+    // 单位绘制半径相对地块很小：cell=120 时约占地块宽度的 1/5
+    radiusFactor: 0.1,   // 半径 = 地块边长 × 该系数
+    radius: 12,          // 兜底值（仅在 radiusFactor 缺失时使用）
+    hitPad: 6,           // 鼠标点选单位的额外容差（像素）
+  },
+
+  // ---- 战斗 / 警戒 ----
+  // 单位会攻击敌对阵营的单位；**能走直线就走直线**的移动逻辑见 path.js 的 smoothPath。
+  combat: {
+    enabled: true,        // false = 关闭全部单位的攻击与警戒（只剩移动，便于单独调试）
+    aggroRange: 4,        // 警戒半径（格）：静止且没有目标的单位在此范围内发现敌人
+    leashFactor: 1.8,     // 脱离系数：目标离“警戒起点”超过 aggroRange × 该系数就放弃追击
+    repathSec: 0.3,       // 追击时两次重新寻路之间的最短间隔（秒），避免每帧重算
+    flashSec: 0.22,       // 攻击特效 / 攻击线持续时间（秒，只影响渲染）
+    buildingDamage: 40,   // 单位每次攻击建筑的伤害（攻击间隔沿用该单位的 cooldownSec）
+    general: { damage: 26, range: 1, cooldownSec: 0.9 },   // 将领：近战
+    enemy: { damage: 10, range: 1, cooldownSec: 1.2 },     // 测试敌人：近战（拆墙 40/1.2s ≈ 33 dps）
+  },
+
+  // ---- 区块占领（占位规则，后续按地图编辑器细化） ----
+  zone: {
+    zoneCols: 6,         // 把整张地图横向均分成几个区块
+    zoneRows: 4,         // 纵向均分成几个区块
+    captureTimeSec: 4,   // 己方单位站在无主区块内持续多久完成占领
+    decayPerSec: 0.6,    // 无己方单位在区块内时，占领进度每秒回退多少（进度归一化 0~1）
+    // 建筑也会给所在区块贡献归属：该标志为 true 表示区块内存在己方建筑即视为己方领地
+    zoneOwnedByBuilding: true,
+  },
+
+  // ---- 建筑 ----
+  building: {
+    // 建造暂时免费（cost 全 0）；后续要做消耗直接改这里 + 打开 CONFIG.economy.enabled
+    wall: {
+      id: 'wall', name: '城墙', hotkey: 'B', cost: { food: 0, gold: 0 },
+      hpMax: 300,
+      color: '#7d7466', desc: '填满整个地块；己方单位可穿过，敌方单位不可进入',
+    },
+    tower: {
+      id: 'tower', name: '箭塔', hotkey: 'T', cost: { food: 0, gold: 0 },
+      damage: 12, range: 3, cooldown: 0.8,
+      color: '#8d6e63', desc: '对范围内最近的敌人造成单体伤害',
+    },
+    base: {
+      id: 'base', name: '大本营', hotkey: null, cost: null,
+      hpMax: 1000, color: '#4a90d9', desc: '开局自带，不可建造、不可拆除',
+    },
+  },
+  economy: { enabled: false },   // false = 建造不校验/不扣资源
+
+  // ---- 调试 ----
+  debug: {
+    enabled: true,               // 显示调试面板（本版没有正式敌人，用它刷测试敌人验证箭塔/城墙）
+    enemySpeed: 1.8,
+    enemyHp: 60,
+    spawnIntervalSec: 3,
+  },
+
+  colors: {
+    grass: '#33422f',
+    grassAlt: '#2f3d2c',
+    forest: '#24402a',
+    mountain: '#4c4a45',
+    mountainEdge: '#5f5c55',
+    grid: 'rgba(255,255,255,0.055)',
+    gridStrong: 'rgba(255,255,255,0.12)',
+    zoneLine: 'rgba(255,255,255,0.10)',
+    zoneNeutral: 'rgba(230,190,80,0.05)',
+    zonePlayer: 'rgba(90,200,255,0.13)',
+    zoneProgress: 'rgba(230,190,80,0.30)',
+    hq: '#3f7fd0',
+    hqLight: '#6ea8e8',
+    wall: '#8b8172',
+    wallDark: '#5f594e',
+    tower: '#a1887f',
+    general: '#ffd166',
+    generalSel: '#fff2b0',
+    enemy: '#e05a5a',
+    range: 'rgba(255,209,102,0.10)',
+    rangeEdge: 'rgba(255,209,102,0.45)',
+  },
+};
+
+const RESOURCES = ['food', 'gold'];
+const RESOURCE_LABEL = { food: '粮食', gold: '黄金' };
+
+/* ==================== js/util.js ==================== */
+/**
+ * util.js —— 通用小工具 + 四连通网格容器
+ */
+
+const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+const lerp = (a, b, t) => a + (b - a) * t;
+const dist = (ax, ay, bx, by) => Math.hypot(ax - bx, ay - by);
+const manhattan = (ax, ay, bx, by) => Math.abs(ax - bx) + Math.abs(ay - by);
+
+/** 四连通方向（上、右、下、左）—— 本游戏地图为四连通 */
+const DIRS4 = [
+  { dx: 0, dy: -1 },
+  { dx: 1, dy: 0 },
+  { dx: 0, dy: 1 },
+  { dx: -1, dy: 0 },
+];
+
+const inBounds = (grid, x, y) => x >= 0 && y >= 0 && x < grid.cols && y < grid.rows;
+const idx = (grid, x, y) => y * grid.cols + x;
+
+/** 二维网格：底层一维数组，避免越界崩溃 */
+class Grid {
+  constructor(cols, rows, fill = null) {
+    this.cols = cols;
+    this.rows = rows;
+    this.data = new Array(cols * rows).fill(fill);
+  }
+  get(x, y) {
+    if (!inBounds(this, x, y)) return null;
+    return this.data[y * this.cols + x];
+  }
+  set(x, y, v) {
+    if (!inBounds(this, x, y)) return false;
+    this.data[y * this.cols + x] = v;
+    return true;
+  }
+  has(x, y) {
+    return inBounds(this, x, y);
+  }
+  /** 遍历所有格子：fn(x, y, value) */
+  forEach(fn) {
+    for (let y = 0; y < this.rows; y++) {
+      for (let x = 0; x < this.cols; x++) fn(x, y, this.data[y * this.cols + x]);
+    }
+  }
+  countWhere(fn) {
+    let n = 0;
+    this.forEach((x, y, v) => { if (fn(v, x, y)) n++; });
+    return n;
+  }
+  clone() {
+    const g = new Grid(this.cols, this.rows);
+    g.data = this.data.slice();
+    return g;
+  }
+}
+
+/** 像素坐标 -> 地块坐标 */
+function toTile(px, py, cell) {
+  return { x: Math.floor(px / cell), y: Math.floor(py / cell) };
+}
+/** 地块坐标 -> 该地块中心点的像素坐标 */
+function tileCenter(tx, ty, cell) {
+  return { x: (tx + 0.5) * cell, y: (ty + 0.5) * cell };
+}
+
+/** 极简二叉堆优先队列（A* 用） */
+class MinHeap {
+  constructor(scoreFn) {
+    this.items = [];
+    this.score = scoreFn;
+  }
+  get size() { return this.items.length; }
+  push(item) {
+    const a = this.items;
+    a.push(item);
+    let i = a.length - 1;
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (this.score(a[p]) <= this.score(a[i])) break;
+      [a[p], a[i]] = [a[i], a[p]];
+      i = p;
+    }
+  }
+  pop() {
+    const a = this.items;
+    if (a.length === 0) return null;
+    const top = a[0];
+    const last = a.pop();
+    if (a.length > 0) {
+      a[0] = last;
+      let i = 0;
+      for (;;) {
+        const l = i * 2 + 1, r = l + 1;
+        let m = i;
+        if (l < a.length && this.score(a[l]) < this.score(a[m])) m = l;
+        if (r < a.length && this.score(a[r]) < this.score(a[m])) m = r;
+        if (m === i) break;
+        [a[m], a[i]] = [a[i], a[m]];
+        i = m;
+      }
+    }
+    return top;
+  }
+}
+
+/** 判断某点是否落在矩形内 */
+function pointInRect(px, py, x0, y0, x1, y1) {
+  return px >= x0 && px <= x1 && py >= y0 && py <= y1;
+}
+
+/* ==================== js/path.js ==================== */
+/**
+ * path.js —— 四连通网格通行判定 + A* 寻路 + 直线拉平
+ *
+ * 通行规则集中在这里：
+ *   - 地形：山完全阻挡，草地/森林可通行（森林减速）
+ *   - 建筑：城墙对“己方单位”放行、对“敌方单位”阻挡（城墙填充整个地块）
+ *           大本营/箭塔等占位建筑：单位不能站上去（点击它们时自动停在最近的可站格）
+ *
+ * 寻路分两步（这样单位在开阔地带走直线，而不是沿格心走阶梯）：
+ *   1. findPath()  —— 四连通 A*，只负责回答“绕开山/城墙该走哪几个格子”；
+ *   2. smoothPath()—— 把 A* 的折线拉直：每次贪心跳到“直线可达”的最远点，
+ *                     直线是否可达由 segmentClear() 逐格判定。
+ */
+
+
+/** 地形：能否通行 */
+function terrainWalkable(terrain, x, y) {
+  const t = terrain.get(x, y);
+  return t !== 'mountain';
+}
+
+/** 地形：移动消耗倍率 */
+function terrainCost(terrain, x, y) {
+  const t = terrain.get(x, y);
+  if (t === 'forest') return 1 / CONFIG.unit.forestMult; // 森林更“贵”
+  return 1;
+}
+
+/**
+ * 某地块对指定阵营是否可通行
+ * @param {object} state 游戏状态（需要 state.terrain / state.buildings）
+ * @param {number} x
+ * @param {number} y
+ * @param {string} faction 'player' | 'enemy'
+ */
+function passable(state, x, y, faction) {
+  if (!inBounds(state.terrain, x, y)) return false;
+  if (!terrainWalkable(state.terrain, x, y)) return false;
+  const b = state.buildings.get(x, y);
+  if (b) return b.blocks(faction) === false; // 城墙对己方放行、对敌方阻挡
+  return true;
+}
+
+/** 是否被建筑占据（用于建造校验） */
+function occupied(state, x, y) {
+  return !!state.buildings.get(x, y);
+}
+
+/**
+ * A* 寻路（四连通）
+ * @returns {Array<{x:number,y:number}>|null} 不含起点、含终点的地块列表
+ */
+function findPath(state, from, to, faction) {
+  const { cols, rows } = state.terrain;
+  if (!inBounds(state.terrain, from.x, from.y) || !inBounds(state.terrain, to.x, to.y)) return null;
+  if (from.x === to.x && from.y === to.y) return [];
+  if (!passable(state, to.x, to.y, faction)) return null;
+
+  const startIdx = idx(state.terrain, from.x, from.y);
+  const goalIdx = idx(state.terrain, to.x, to.y);
+  const gScore = new Map([[startIdx, 0]]);
+  const cameFrom = new Map();
+  const closed = new Set();
+  const open = new MinHeap((n) => n.f);
+  const h = (x, y) => Math.abs(x - to.x) + Math.abs(y - to.y);
+
+  open.push({ i: startIdx, x: from.x, y: from.y, g: 0, f: h(from.x, from.y) });
+
+  while (open.size > 0) {
+    const cur = open.pop();
+    if (cur.i === goalIdx) {
+      // 回溯
+      const out = [];
+      let k = goalIdx;
+      while (k !== startIdx) {
+        out.push({ x: k % cols, y: Math.floor(k / cols) });
+        k = cameFrom.get(k);
+        if (k === undefined) return null;
+      }
+      out.reverse();
+      return out;
+    }
+    if (closed.has(cur.i)) continue;
+    closed.add(cur.i);
+
+    for (const d of DIRS4) {
+      const nx = cur.x + d.dx;
+      const ny = cur.y + d.dy;
+      if (!inBounds(state.terrain, nx, ny)) continue;
+      // 终点允许是“不可站立但可通行”的格子吗？这里要求完全可通行
+      if (!passable(state, nx, ny, faction)) continue;
+      const ni = idx(state.terrain, nx, ny);
+      if (closed.has(ni)) continue;
+      const step = terrainCost(state.terrain, nx, ny);
+      const ng = cur.g + step;
+      const old = gScore.get(ni);
+      if (old === undefined || ng < old - 1e-9) {
+        gScore.set(ni, ng);
+        cameFrom.set(ni, cur.i);
+        open.push({ i: ni, x: nx, y: ny, g: ng, f: ng + h(nx, ny) });
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * 从起点做一次“按阵营通行规则”的 BFS，返回所有**走得到**的地块索引集合。
+ * 与 floodFill 的区别：这里会用 passable()，也就是把城墙 / 建筑一起算进去。
+ *
+ * 用途：判断“某格是不是我真能走到”（例如挑拆墙目标、挑点击不可通行处时的落脚点）。
+ */
+function reachableTiles(state, from, faction) {
+  const seen = new Set();
+  if (!inBounds(state.terrain, from.x, from.y)) return seen;
+  // 起点自己也算在内：单位可能站在后来被建筑占住的格子上，得允许它走出来
+  seen.add(idx(state.terrain, from.x, from.y));
+  const queue = [from];
+  while (queue.length) {
+    const c = queue.shift();
+    for (const d of DIRS4) {
+      const nx = c.x + d.dx, ny = c.y + d.dy;
+      if (!inBounds(state.terrain, nx, ny)) continue;
+      const ni = idx(state.terrain, nx, ny);
+      if (seen.has(ni)) continue;
+      if (!passable(state, nx, ny, faction)) continue;
+      seen.add(ni);
+      queue.push({ x: nx, y: ny });
+    }
+  }
+  return seen;
+}
+
+/**
+ * 找到一个“离目标最近、**而且从 from 真的走得到**”的格子（BFS 扩散）
+ * 用途：右键点到城墙/大本营/山上时，走到它旁边。
+ *
+ * ⚠️ 必须检查可达性：BFS 是从目标往外扩的，第一圈“可通行”的格子很可能是
+ *    墙 / 山**另一侧**的格子。旧实现直接返回它，于是 findPath() 必然失败、
+ *    调用方以为“哪都去不了”—— 这正是“敌人被城墙拦断后站在出生点发呆”的根因之一。
+ */
+function nearestReachable(state, from, target, faction, maxRadius = 12) {
+  if (passable(state, target.x, target.y, faction)) return { x: target.x, y: target.y };
+  const region = reachableTiles(state, from, faction);
+  const seen = new Set([idx(state.terrain, target.x, target.y)]);
+  let frontier = [{ x: target.x, y: target.y }];
+  for (let r = 0; r < maxRadius; r++) {
+    const next = [];
+    for (const c of frontier) {
+      for (const d of DIRS4) {
+        const nx = c.x + d.dx, ny = c.y + d.dy;
+        if (!inBounds(state.terrain, nx, ny)) continue;
+        const ni = idx(state.terrain, nx, ny);
+        if (seen.has(ni)) continue;
+        seen.add(ni);
+        if (passable(state, nx, ny, faction)) {
+          if (region.has(ni)) return { x: nx, y: ny };   // ★ 只认自己走得到的
+          continue;                                      // 墙那一边的格子：当不了终点
+        }
+        next.push({ x: nx, y: ny });                     // 继续穿过障碍往外找
+      }
+    }
+    frontier = next;
+    if (frontier.length === 0) break;
+  }
+  return null;
+}
+
+/**
+ * 线段是否“全程可通行”（直线移动的核心判定，单位是**像素**）。
+ *
+ * 用超覆盖 DDA（Amanatides & Woo 体素遍历的加强版）枚举线段“擦到”的每一个地块，
+ * 包括只与线段相交于一个角的格子，所以直线不会从两座山 / 两段城墙的夹缝里穿过去。
+ *
+ * 注意：只检查线段**进入**的格子，起点所在格不检查 —— 单位可能正站在之后被
+ *       建筑占住的格子上（例如脚下被盖了箭塔），此时仍必须允许它走出来。
+ *
+ * @returns {boolean} true = 这条直线可以走
+ */
+function segmentClear(state, ax, ay, bx, by, faction) {
+  const cell = CONFIG.cell;
+  const x0 = ax / cell, y0 = ay / cell;
+  const dx = bx / cell - x0, dy = by / cell - y0;
+  let tx = Math.floor(x0), ty = Math.floor(y0);
+
+  const stepX = dx > 0 ? 1 : -1;
+  const stepY = dy > 0 ? 1 : -1;
+  const tDeltaX = dx !== 0 ? Math.abs(1 / dx) : Infinity;
+  const tDeltaY = dy !== 0 ? Math.abs(1 / dy) : Infinity;
+  let tMaxX = dx !== 0 ? (dx > 0 ? tx + 1 - x0 : x0 - tx) * tDeltaX : Infinity;
+  let tMaxY = dy !== 0 ? (dy > 0 ? ty + 1 - y0 : y0 - ty) * tDeltaY : Infinity;
+
+  let guard = 0;
+  while (guard++ < 8192) {
+    if (tMaxX > 1 && tMaxY > 1) return true;        // 线段已经走完
+    if (tMaxX < tMaxY) {
+      tx += stepX; tMaxX += tDeltaX;
+      if (!passable(state, tx, ty, faction)) return false;
+    } else if (tMaxY < tMaxX) {
+      ty += stepY; tMaxY += tDeltaY;
+      if (!passable(state, tx, ty, faction)) return false;
+    } else {
+      // 正好穿过格点：对角两侧都得让得开，才允许走这条直线
+      if (!passable(state, tx + stepX, ty, faction)) return false;
+      if (!passable(state, tx, ty + stepY, faction)) return false;
+      tx += stepX; ty += stepY; tMaxX += tDeltaX; tMaxY += tDeltaY;
+      if (!passable(state, tx, ty, faction)) return false;
+    }
+  }
+  return false;
+}
+
+/**
+ * 把像素折线“拉直”（string pulling / 漏斗算法的贪心版）。
+ *
+ * 从第一个点出发，每次找“直线可达的最远点”作为下一个拐点；
+ * 于是开阔地带会退化成一条直线，遇到山/城墙才保留必要的拐点。
+ * 因为每一段都用 segmentClear() 验证过，所以拉直不会让单位穿墙或翻山。
+ *
+ * 输入与输出都是**像素坐标**；输出长度 ≤ 输入长度，且首尾点不变。
+ */
+function smoothPath(state, points, faction) {
+  if (!points || points.length <= 2) return (points || []).slice();
+  const out = [points[0]];
+  let i = 0;
+  while (i < points.length - 1) {
+    let j = points.length - 1;
+    while (j > i + 1 && !segmentClear(state, points[i].x, points[i].y, points[j].x, points[j].y, faction)) j--;
+    out.push(points[j]);
+    i = j;
+  }
+  return out;
+}
+
+/**
+ * 找出“挡住 from → to 这条路”的建筑（默认城墙）里，离 to 最近的那一个。
+ *
+ * 两个条件缺一不可：
+ *   1. 建筑必须挨着“from 这边真的走得到”的区域（否则拆了也过不去）；
+ *   2. 在候选里挑离 to 最近的 —— 这样拆穿一段后可达区域扩大，下一次自然接着往目标方向拆。
+ *
+ * 用途：敌人被城墙拦断时决定先拆哪一段（见 main.js 的 updateEnemies）。
+ * 注意旧实现是“在单位身边 2 格内找墙”，玩家用一整条墙拦断路线时根本找不到，敌人会发呆。
+ */
+function findBlockingWallToward(state, from, to, faction, type = 'wall') {
+  const region = reachableTiles(state, from, faction);
+  let best = null;
+  let bestD = Infinity;
+  for (const b of state.buildingList) {
+    if (!b.alive || b.type !== type || b.owner === faction) continue;
+    let touches = false;
+    for (const d of DIRS4) {
+      const nx = b.tx + d.dx, ny = b.ty + d.dy;
+      if (!inBounds(state.terrain, nx, ny)) continue;
+      if (region.has(idx(state.terrain, nx, ny))) { touches = true; break; }
+    }
+    if (!touches) continue;
+    const d = Math.abs(b.tx - to.x) + Math.abs(b.ty - to.y);
+    if (d < bestD) { bestD = d; best = b; }
+  }
+  return best;
+}
+
+/** 从起点做 BFS，返回所有连通格（用于地图连通性修正） */
+function floodFill(state, start) {
+  const seen = new Set();
+  const queue = [start];
+  seen.add(idx(state.terrain, start.x, start.y));
+  while (queue.length) {
+    const c = queue.shift();
+    for (const d of DIRS4) {
+      const nx = c.x + d.dx, ny = c.y + d.dy;
+      if (!inBounds(state.terrain, nx, ny)) continue;
+      const ni = idx(state.terrain, nx, ny);
+      if (seen.has(ni)) continue;
+      if (!terrainWalkable(state.terrain, nx, ny)) continue;
+      seen.add(ni);
+      queue.push({ x: nx, y: ny });
+    }
+  }
+  return seen;
+}
+
+/* ==================== js/map.js ==================== */
+/**
+ * map.js —— 固定手写地图（24 × 16）
+ *
+ * 图例：
+ *   '.' 草地（可通行，正常速度）
+ *   '^' 森林（可通行，速度 × forestMult，用于验证地形对移动的影响）
+ *   '#' 山地（不可通行）
+ *   'B' 大本营（玩家开局自带，占 1 格；不可建造）
+ *
+ * 说明：地图是给“建筑”设计的，单位与地块不一一对应（多个单位可叠在同一格）。
+ *       这里只是原型用的固定地图，后续地图编辑器会替换掉它。
+ */
+
+
+const MAP_LAYOUT = [
+  '........................',
+  '........................',
+  '........................',
+  '....^^.......###########',   // 最后留一格作为北侧隘口
+  '....^..........#........',
+  '...............#........',
+  '...............#........',
+  '...............#........',
+  '........................',
+  '........................',
+  '........................',
+  '........................',
+  '.............^^.........',
+  '........................',
+  '........................',
+  '........................',
+];
+
+/** 将领（占位单位）开局站位 */
+const GENERAL_SPAWNS = [
+  { x: 8, y: 10 },
+  { x: 10, y: 11 },
+  { x: 11, y: 9 },
+];
+
+function createMap() {
+  const cols = CONFIG.mapCols;
+  const rows = CONFIG.mapRows;
+  const terrain = new Grid(cols, rows, 'grass');
+  let base = null;
+
+  for (let y = 0; y < rows; y++) {
+    const row = MAP_LAYOUT[y] || '';
+    for (let x = 0; x < cols; x++) {
+      const ch = row[x] || '.';
+      if (ch === '#') terrain.set(x, y, 'mountain');
+      else if (ch === '^') terrain.set(x, y, 'forest');
+      else if (ch === 'B') {
+        terrain.set(x, y, 'grass');
+        base = { x, y };
+      } else terrain.set(x, y, 'grass');
+    }
+  }
+
+  if (!base) base = { x: Math.floor(cols / 2), y: Math.floor(rows / 2) };
+
+  // 连通性修正：把从大本营四连通到达不了的“可通行但被隔离”的格子变成山，
+  // 保证寻路永远不会出现“看着能走其实走不到”的情况。
+  const reachable = floodFill({ terrain }, base);
+  let sealed = 0;
+  terrain.forEach((x, y, t) => {
+    if (t === 'mountain') return;
+    if (!reachable.has(idx(terrain, x, y))) {
+      terrain.set(x, y, 'mountain');
+      sealed++;
+    }
+  });
+
+  return { terrain, base, cols, rows, sealedIslands: sealed };
+}
+
+/* ==================== js/zone.js ==================== */
+/**
+ * zone.js —— 区块（领地）系统【占位逻辑】
+ *
+ * 需求原话：“一大片的地块会归属在一个『区块』下，己方单位站在区块内持续一段时间后，
+ *            这个区块会转为己方。具体的区块划分后续在地图编辑时给出，现在自由写占位逻辑。”
+ *
+ * 因此当前实现：
+ *   1. 把整张地图横竖均分成 CONFIG.zone.zoneCols × CONFIG.zone.zoneRows 个矩形区块；
+ *      后续地图编辑器只需要提供一张 zoneId 网格（每个地块属于哪个区块），
+ *      把 buildZones() 换成读网格即可，其余逻辑不用改。
+ *   2. 区块状态：owner = null(无主) | 'player' | 'enemy'
+ *   3. 占领进度 progress 0~1：
+ *      - 区块内有己方单位 → 每秒 +1/captureTimeSec
+ *      - 否则 → 每秒 -decayPerSec
+ *      - progress 到 1 → owner = 'player'
+ *      - CONFIG.zone.zoneOwnedByBuilding = true 时：区块内只要有己方建筑，也直接算己方领地
+ *   4. 资源：每秒 = 己方区块的“地块数量” × 每秒产出
+ */
+
+
+const ROW_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+
+function buildZones() {
+  const { zoneCols, zoneRows } = CONFIG.zone;
+  const cols = CONFIG.mapCols;
+  const rows = CONFIG.mapRows;
+  const zones = [];
+
+  for (let zy = 0; zy < zoneRows; zy++) {
+    for (let zx = 0; zx < zoneCols; zx++) {
+      const x0 = Math.floor((zx * cols) / zoneCols);
+      const x1 = Math.floor(((zx + 1) * cols) / zoneCols) - 1;
+      const y0 = Math.floor((zy * rows) / zoneRows);
+      const y1 = Math.floor(((zy + 1) * rows) / zoneRows) - 1;
+      zones.push({
+        id: zy * zoneCols + zx,
+        name: `${ROW_LETTERS[zy]}${zx + 1}`,
+        x0, y0, x1, y1,
+        owner: null,
+        progress: 0,
+        tileCount: (x1 - x0 + 1) * (y1 - y0 + 1),
+      });
+    }
+  }
+  return zones;
+}
+
+/**
+ * 建立区块系统
+ * @returns {{zones: Array, lookup: number[]}} lookup: 地块索引 -> 区块 id
+ */
+function createZoneSystem() {
+  const zones = buildZones();
+  const lookup = new Array(CONFIG.mapCols * CONFIG.mapRows).fill(-1);
+  for (const z of zones) {
+    for (let y = z.y0; y <= z.y1; y++) {
+      for (let x = z.x0; x <= z.x1; x++) lookup[y * CONFIG.mapCols + x] = z.id;
+    }
+  }
+  return { zones, lookup };
+}
+
+/** 取得某个地块所属区块（越界返回 null） */
+function zoneAt(state, x, y) {
+  if (x < 0 || y < 0 || x >= CONFIG.mapCols || y >= CONFIG.mapRows) return null;
+  const id = state.zoneLookup[y * CONFIG.mapCols + x];
+  return id < 0 ? null : state.zones[id];
+}
+
+/** 统计某方拥有的地块数（资源产出依据） */
+function ownedTileCount(state, owner = 'player') {
+  let n = 0;
+  for (const z of state.zones) if (z.owner === owner) n += z.tileCount;
+  return n;
+}
+
+/** 区块内是否存在某方建筑 */
+function zoneHasBuilding(state, zoneId, owner) {
+  return state.buildingList.some((b) => b.zoneId === zoneId && b.owner === owner && b.alive);
+}
+
+/** 重算建筑带给区块的归属（建筑建成/被毁时调用） */
+function refreshBuildingOwnership(state) {
+  if (!CONFIG.zone.zoneOwnedByBuilding) return;
+  for (const z of state.zones) {
+    if (z.owner === 'player') continue;
+    if (zoneHasBuilding(state, z.id, 'player')) {
+      z.owner = 'player';
+      z.progress = 1;
+      z.claimedBy = 'building';
+    }
+  }
+}
+
+/**
+ * 每帧推进区块占领（占位规则）
+ * 注意：多个单位站在同一区块不会叠加加速（原话是“持续一段时间”），
+ *       如需叠加，改 hasFriendly 为计数即可。
+ */
+function updateZones(state, dt) {
+  const { captureTimeSec, decayPerSec } = CONFIG.zone;
+
+  const friendlyUnits = (state.units || []).filter((u) => u.alive && u.faction === 'player');
+  const touched = new Set();
+  for (const u of friendlyUnits) {
+    const z = zoneAt(state, u.tx, u.ty);
+    if (z && z.owner !== 'player') touched.add(z.id);
+  }
+
+  for (const z of state.zones) {
+    if (z.owner === 'player') continue;
+    if (touched.has(z.id)) {
+      z.progress = clamp(z.progress + dt / captureTimeSec, 0, 1);
+      if (z.progress >= 1) {
+        z.owner = 'player';
+        z.claimedBy = 'unit';
+        z.progress = 1;
+      }
+    } else if (z.progress > 0) {
+      z.progress = clamp(z.progress - decayPerSec * dt, 0, 1);
+    }
+  }
+}
+
+/* ==================== js/building.js ==================== */
+/**
+ * building.js —— 建筑：大本营 / 城墙 / 箭塔
+ *
+ * 核心规则：
+ *   - 每个地块最多一个建筑
+ *   - 城墙“填充整个地块”：己方单位可穿过，敌方单位不可进入（blocks(faction) 为 true 即阻挡）
+ *   - **城墙有血量**（CONFIG.building.wall.hpMax）：被敌人打光就塌，让出一条路；
+ *     敌人“先靠近、再拆”的行为见 unit.js 的 updateBuildingCombat / main.js 的 updateEnemies
+ *   - 箭塔：每 cooldown 秒对射程内最近的敌人造成单体伤害
+ *   - 血量等数值统一来自 CONFIG.building.*，这里不再写死数字
+ */
+
+
+const BUILDINGS = {
+  base: { id: 'base', name: '大本营', blocksEnemy: true, blocksPlayer: true, buildable: false,
+          hpMax: CONFIG.building.base.hpMax },
+  wall: { id: 'wall', name: '城墙', blocksEnemy: true, blocksPlayer: false, buildable: true,
+          hpMax: CONFIG.building.wall.hpMax },
+  tower: { id: 'tower', name: '箭塔', blocksEnemy: true, blocksPlayer: true, buildable: true,
+           damage: CONFIG.building.tower.damage, range: CONFIG.building.tower.range, cooldown: CONFIG.building.tower.cooldown },
+};
+
+class Building {
+  constructor(type, tx, ty, owner = 'player', zoneId = -1) {
+    const def = BUILDINGS[type];
+    this.type = type;
+    this.def = def;
+    this.tx = tx;
+    this.ty = ty;
+    this.owner = owner;
+    this.zoneId = zoneId;
+    this.hp = def.hpMax ?? 300;
+    this.hpMax = this.hp;
+    this.alive = true;
+    if (type === 'tower') this.cooldownLeft = 0;
+    this.lastTarget = null;   // 仅用于渲染攻击线
+    this.flash = 0;
+  }
+
+  /** 该建筑是否阻挡某个阵营的单位（城墙：挡敌人、不挡己方） */
+  blocks(faction) {
+    if (faction === 'player') return !!this.def.blocksPlayer;
+    return !!this.def.blocksEnemy;
+  }
+
+  get center() {
+    return tileCenter(this.tx, this.ty, CONFIG.cell);
+  }
+
+  /** 血量比例（渲染 / HUD 用） */
+  get hpRatio() {
+    return this.hpMax > 0 ? Math.max(0, Math.min(1, this.hp / this.hpMax)) : 0;
+  }
+
+  /**
+   * 受到伤害（单位拆建筑都走这里）：扣血 + 记一次受击闪光。
+   * @returns {boolean} 是否还活着（false = 该建筑已被打光，调用方负责 removeBuilding）
+   */
+  takeDamage(amount, source = null) {
+    if (!this.alive) return false;
+    this.lastHitBy = source;
+    this.flash = 1;
+    // 大本营本版不可摧毁：血量最低留 1，避免出现“活着但血量 0”的状态
+    const floor = this.type === 'base' ? 1 : 0;
+    this.hp = Math.max(floor, this.hp - amount);
+    return this.hp > 0;
+  }
+}
+
+/** 建筑受击闪光的衰减（只有渲染用；每帧调用一次，覆盖所有建筑） */
+function updateBuildingEffects(state, dt) {
+  for (const b of state.buildingList) {
+    if (b.flash > 0) b.flash = Math.max(0, b.flash - dt * 4);
+  }
+}
+
+/** 箭塔开火：对射程内最近的敌人造成单体伤害 */
+function updateTowers(state, dt) {
+  for (const b of state.buildingList) {
+    if (!b.alive || b.type !== 'tower') continue;
+    if (b.cooldownLeft > 0) b.cooldownLeft = Math.max(0, b.cooldownLeft - dt);
+
+    const rangePx = b.def.range * CONFIG.cell;
+    const pad = unitRadius('enemy');   // 允许打到"半个身子进射程"的敌人
+    let target = null;
+    let bestD = Infinity;
+    for (const u of state.units) {
+      if (!u.alive || u.faction === b.owner) continue;
+      const d = dist(b.center.x, b.center.y, u.px, u.py);
+      if (d <= rangePx + pad && d < bestD) { bestD = d; target = u; }
+    }
+    b.lastTarget = target;
+
+    if (target && b.cooldownLeft <= 0) {
+      target.takeDamage(b.def.damage, b);
+      b.cooldownLeft = b.def.cooldown;
+      b.flash = 1;
+    }
+  }
+}
+
+/** 拆除建筑（大本营不可拆） */
+function removeBuilding(state, b) {
+  if (!b || !b.alive) return false;
+  if (b.type === 'base') return false;
+  b.alive = false;
+  state.buildings.set(b.tx, b.ty, null);
+  const i = state.buildingList.indexOf(b);
+  if (i >= 0) state.buildingList.splice(i, 1);
+  return true;
+}
+
+/* ==================== js/unit.js ==================== */
+/**
+ * unit.js —— 单位（3 个将领占位单位 + 调试用测试敌人）
+ *
+ * 移动：**点到哪走到哪，能走直线就走直线**。
+ *   - A* 只负责给出“绕开山 / 城墙该走哪几个格子”的地块路线；
+ *   - 随后用 path.js 的 smoothPath() 把这条路线“拉直”：只要两个点之间的直线
+ *     全程可通行，就直接走直线，不再沿格心走阶梯（这就是以前“能走直线却走曲线”
+ *     的原因：中间路径点全都在格心上）；
+ *   - 终点仍然是玩家点击的那个像素位置，不吸附地块中心；
+ *   - 点到的格子不可通行（山 / 城墙 / 建筑）时，自动改走到最近的可达格；
+ *   - 站在森林里会减速（CONFIG.unit.forestMult）。
+ *   单位不要求与地块一一对应 —— 多个单位可以叠在同一格。
+ *
+ * 战斗 / 警戒（数值见 CONFIG.combat）：
+ *   - 每个单位都有攻击伤害、攻击距离、攻击间隔；
+ *   - **警戒**：没有攻击目标、且处于静止的单位，会自动搜索警戒半径内的敌方单位，
+ *     锁定最近的一个，然后**先移动靠近，进入攻击距离后再开火**；
+ *   - 追击有上限（leash）：目标离“发现它的位置”超过 aggroRange × leashFactor 就放弃，
+ *     不会一路追到地图另一头；
+ *   - **拆建筑**：单位也可以把建筑当目标（setBuildingTarget），同样“先靠近、再攻击”；
+ *     城墙会被打光（见 building.js 的 takeDamage），塌了就让出一条路；
+ *   - 玩家右键下达的移动命令优先：会中断当前交战（orderMove）；
+ *   - CONFIG.combat.enabled = false 可整体关掉，只保留移动。
+ */
+
+
+/** 战斗事件回调（main.js 把 state.onCombatEvent 挂上，用来写事件日志 / 弹提示） */
+function emitCombat(state, evt) {
+  if (state && typeof state.onCombatEvent === 'function') state.onCombatEvent(evt);
+}
+
+class Unit {
+  constructor({ id, name, tx, ty, faction = 'player', kind = 'general', hotkey = null }) {
+    this.id = id;
+    this.name = name;
+    this.kind = kind;             // 'general' | 'enemy'
+    this.faction = faction;       // 'player' | 'enemy'
+    this.hotkey = hotkey;
+    this.tx = tx;
+    this.ty = ty;
+    const c = tileCenter(tx, ty, CONFIG.cell);
+    this.px = c.x;
+    this.py = c.y;
+    this.hpMax = kind === 'general' ? CONFIG.unit.hpMax : CONFIG.debug.enemyHp;
+    this.hp = this.hpMax;
+    this.alive = true;
+    this.path = null;             // 剩余路径（**像素**坐标点的数组，见 moveTo）
+    this.goal = null;             // 最终目标地块（仅用于 UI 显示）
+    this.goalPt = null;           // 最终目标像素位置（点到哪就到哪）
+    this.moving = false;
+    this.selected = false;
+    this.facing = 1;
+    this.state = null;
+
+    // ---- 战斗 / 警戒 ----
+    this.target = null;           // 当前交战的敌方单位
+    this.targetBuilding = null;    // 当前正在拆的建筑（敌人拆城墙走这条路）
+    this.anchor = null;           // 发现目标时所站的位置，用于“追出去多远”的判定
+    this.attackCd = 0;            // 攻击冷却剩余秒数
+    this.attackFlash = 0;         // 攻击特效计时（1 → 0，仅渲染使用）
+    this.lastTarget = null;       // 最近一次开火的目标单位（渲染攻击线用）
+    this.lastBuilding = null;     // 最近一次攻击的建筑（渲染攻击线用）
+    this.repathTimer = 0;         // 追击时下一次重新寻路的倒计时
+  }
+
+  /** 基础移动速度（格 / 秒）；森林里减半 */
+  get speed() {
+    const base = this.kind === 'general' ? CONFIG.unit.speed : CONFIG.debug.enemySpeed;
+    const onForest = this.state && this.state.terrain.get(this.tx, this.ty) === 'forest';
+    return base * (onForest ? CONFIG.unit.forestMult : 1);
+  }
+
+  /** 该单位的战斗数值（将领 / 敌人分开配置） */
+  get combat() {
+    return this.kind === 'enemy' ? CONFIG.combat.enemy : CONFIG.combat.general;
+  }
+
+  /** 攻击距离（像素，不含目标体积） */
+  get attackRangePx() {
+    return this.combat.range * CONFIG.cell;
+  }
+
+  /** 警戒半径（像素） */
+  get aggroRangePx() {
+    return CONFIG.combat.aggroRange * CONFIG.cell;
+  }
+
+  /** 追击上限（像素）：目标离“警戒起点”超过这个距离就放弃 */
+  get leashPx() {
+    return this.aggroRangePx * CONFIG.combat.leashFactor;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* 移动                                                                */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * 底层移动：把单位送到某个**像素位置**（点到哪走到哪 + 能走直线就走直线）。
+   * 不会动交战目标 —— 追击用它；玩家的明确命令走 orderMove()。
+   * @param {{x:number,y:number}} worldPt 目标像素坐标（世界坐标）
+   * @returns {boolean} 是否成功下达（目标不可达时返回 false）
+   */
+  moveTo(state, worldPt) {
+    this.state = state;
+    const cell = CONFIG.cell;
+    const from = { x: this.tx, y: this.ty };
+
+    let destPt = worldPt;
+    let destTile = {
+      x: clamp(Math.floor(worldPt.x / cell), 0, state.terrain.cols - 1),
+      y: clamp(Math.floor(worldPt.y / cell), 0, state.terrain.rows - 1),
+    };
+
+    // 点到不可通行的格子（山 / 城墙 / 建筑）→ 自动改走到最近的可达格中心
+    if (!passable(state, destTile.x, destTile.y, this.faction)) {
+      const alt = nearestReachable(state, from, destTile, this.faction, 20)
+        || nearestReachable(state, from, destTile, this.faction, 60);
+      if (!alt) return false;
+      destTile = alt;
+      destPt = tileCenter(alt.x, alt.y, cell);
+    }
+
+    const tilePath = findPath(state, from, destTile, this.faction);
+    if (tilePath === null) return false;
+
+    // 地块路线 → 像素折线：中间点走格心，**最后一点就是点击的精确位置**
+    const raw = [{ x: this.px, y: this.py }];
+    for (const n of tilePath) {
+      const c = tileCenter(n.x, n.y, cell);
+      raw.push({ x: c.x, y: c.y });
+    }
+    if (tilePath.length > 0) raw[raw.length - 1] = { x: destPt.x, y: destPt.y };
+    else if (dist(this.px, this.py, destPt.x, destPt.y) > 0.5) raw.push({ x: destPt.x, y: destPt.y });
+
+    // ★ 关键一步：把折线拉直。开阔地带只剩一条直线，遇到山 / 城墙才保留拐点。
+    const pts = smoothPath(state, raw, this.faction).slice(1);
+
+    this.path = pts;
+    this.goal = { x: destTile.x, y: destTile.y };
+    this.goalPt = pts.length ? { x: destPt.x, y: destPt.y } : null;
+    this.moving = this.path.length > 0;
+    return true;
+  }
+
+  /**
+   * 玩家 / AI 下达移动命令（点到哪走到哪）。
+   * 会清除当前交战目标：明确的移动命令优先于警戒。
+   */
+  orderMove(state, worldPt) {
+    const ok = this.moveTo(state, worldPt);
+    if (ok) this.clearTarget();
+    return ok;
+  }
+
+  /** 就地停下（保留交战目标）：进入攻击距离后站住开火 */
+  halt() {
+    this.path = null;
+    this.goal = null;
+    this.goalPt = null;
+    this.moving = false;
+  }
+
+  /** 完全停止：停下并脱离交战 */
+  stop() {
+    this.halt();
+    this.clearTarget();
+  }
+
+  /** 脱离当前交战目标（单位与建筑都清掉） */
+  clearTarget() {
+    this.target = null;
+    this.targetBuilding = null;
+    this.anchor = null;
+    this.repathTimer = 0;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* 战斗 / 警戒                                                         */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * 警戒：**静止且没有目标**的单位搜索警戒半径内的敌方单位，锁定最近的一个。
+   * 锁定后由 updateCombat() 负责“先靠近、再攻击”。
+   * @returns {boolean} 是否发现了目标
+   */
+  acquireTarget(state) {
+    if (!CONFIG.combat.enabled) return false;
+    if (this.aggroRangePx <= 0) return false;
+
+    let best = null;
+    let bestD = Infinity;
+    for (const u of state.units) {
+      if (u === this || !u.alive || u.faction === this.faction) continue;
+      const d = dist(this.px, this.py, u.px, u.py) - unitRadius(u.kind);
+      if (d <= this.aggroRangePx && d < bestD) { bestD = d; best = u; }
+    }
+    if (!best) return false;
+
+    this.target = best;
+    this.anchor = { x: this.px, y: this.py };   // 从这里开始算“追出去多远”
+    this.repathTimer = 0;
+    emitCombat(state, { type: 'alert', unit: this, target: best });
+    return true;
+  }
+
+  /**
+   * 有目标时每帧的决策：
+   *   够得着 → 站住开火；够不着 → 先移动靠近（追击）;
+   *   追得太远 → 放弃。
+   */
+  updateCombat(state) {
+    const t = this.target;
+    if (!t || !t.alive || t === this) { this.clearTarget(); return; }
+
+    const reach = this.attackRangePx + unitRadius(t.kind);
+    const d = dist(this.px, this.py, t.px, t.py);
+
+    if (d <= reach) {                       // 进入攻击距离：站住打
+      this.halt();
+      if (Math.abs(t.px - this.px) > 0.5) this.facing = t.px > this.px ? 1 : -1;
+      if (this.attackCd <= 0) this.attack(t);
+      return;
+    }
+
+    // 脱离：目标已经跑到“警戒起点”的追击上限之外
+    if (this.anchor && dist(this.anchor.x, this.anchor.y, t.px, t.py) > this.leashPx) {
+      this.clearTarget();
+      return;
+    }
+
+    // 先移动靠近。目标一直在动，所以隔 repathSec 重新寻路一次，而不是每帧重算
+    if (!this.path || this.path.length === 0 || this.repathTimer <= 0) {
+      this.repathTimer = CONFIG.combat.repathSec;
+      this.moveTo(state, { x: t.px, y: t.py });
+    }
+  }
+
+  /** 开火：单体伤害 + 冷却（伤害值见 CONFIG.combat.general / enemy） */
+  attack(t) {
+    const cfg = this.combat;
+    this.attackCd = Math.max(0.05, cfg.cooldownSec);
+    this.attackFlash = 1;
+    this.lastTarget = t;
+    this.lastBuilding = null;
+    t.takeDamage(cfg.damage, this);
+  }
+
+  /**
+   * 锁定一个建筑开始拆它（main.js 的敌人 AI 用它拆挡路的城墙）。
+   * 这里只负责“记下来”，靠近与开火交给 updateBuildingCombat()。
+   */
+  setBuildingTarget(b) {
+    if (!b || !b.alive) return false;
+    this.targetBuilding = b;
+    this.target = null;
+    this.anchor = null;
+    this.repathTimer = 0;
+    return true;
+  }
+
+  /**
+   * 拆建筑：**先移动靠近，进入攻击距离后再打**（和打单位一样的手感）。
+   * 建筑占满整格，所以攻击距离要算上“半个格子”，贴着墙就能打到。
+   */
+  updateBuildingCombat(state) {
+    const b = this.targetBuilding;
+    if (!b || !b.alive) { this.targetBuilding = null; return; }
+
+    const c = b.center;
+    const reach = this.combat.range * CONFIG.cell + CONFIG.cell * 0.5;
+    const d = dist(this.px, this.py, c.x, c.y);
+
+    if (d <= reach) {                       // 够得着：站住拆
+      this.halt();
+      if (Math.abs(c.x - this.px) > 0.5) this.facing = c.x > this.px ? 1 : -1;
+      if (this.attackCd <= 0) this.attackBuilding(state, b);
+      return;
+    }
+
+    // 够不着：朝建筑走（moveTo 会发现该格不可通行 → 自动改走到贴墙的可达格）
+    if (!this.path || this.path.length === 0 || this.repathTimer <= 0) {
+      this.repathTimer = CONFIG.combat.repathSec;
+      this.moveTo(state, { x: c.x, y: c.y });
+    }
+  }
+
+  /** 拆建筑的一击：墙体不反击，所以只需要冷却 + 伤害；打光后广播事件让 main.js 收尸 */
+  attackBuilding(state, b) {
+    this.attackCd = Math.max(0.05, this.combat.cooldownSec);
+    this.attackFlash = 1;
+    this.lastBuilding = b;
+    this.lastTarget = null;
+    if (!b.takeDamage(CONFIG.combat.buildingDamage, this)) {
+      emitCombat(state, { type: 'buildingDown', building: b, source: this });
+    }
+  }
+
+  takeDamage(amount, source = null) {
+    this.hp = Math.max(0, this.hp - amount);
+    if (this.hp <= 0) {
+      this.alive = false;
+      this.stop();
+      emitCombat(this.state, { type: 'kill', unit: this, source });
+    }
+    return this.alive;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* 每帧更新                                                            */
+  /* ------------------------------------------------------------------ */
+
+  update(state, dt) {
+    this.state = state;
+    if (!this.alive) return;
+
+    if (this.attackCd > 0) this.attackCd = Math.max(0, this.attackCd - dt);
+    if (this.attackFlash > 0) this.attackFlash = Math.max(0, this.attackFlash - dt / Math.max(0.01, CONFIG.combat.flashSec));
+    if (this.repathTimer > 0) this.repathTimer = Math.max(0, this.repathTimer - dt);
+
+    // 己方单位站在己方领地内缓慢回血（便于观察领地归属是否生效）
+    if (this.faction === 'player') {
+      const z = zoneAt(state, this.tx, this.ty);
+      if (z && z.owner === 'player' && this.hp < this.hpMax) this.hp = Math.min(this.hpMax, this.hp + 4 * dt);
+    }
+
+    if (!CONFIG.combat.enabled) {
+      if (this.target || this.targetBuilding) this.clearTarget();   // 关掉战斗时不保留旧目标
+    } else if (this.target) {
+      this.updateCombat(state);
+    } else {
+      // 警戒：只有静止的单位才会索敌；附近有敌方单位就先打单位，没有才继续拆建筑
+      if (!this.moving) this.acquireTarget(state);
+      if (this.target) this.updateCombat(state);
+      else if (this.targetBuilding) this.updateBuildingCombat(state);
+    }
+
+    if (this.path && this.path.length > 0) this.stepAlongPath(state, dt);
+  }
+
+  /**
+   * 平滑移动：路径点是像素坐标（最后一个点就是玩家点击的位置）。
+   * 每帧按剩余距离沿折线推进；跨过拐点时把多余距离带到下一段，
+   * 这样即使一帧跨过好几个地块，速度也是均匀的、不会抖动或卡顿。
+   */
+  stepAlongPath(state, dt) {
+    let remaining = this.speed * CONFIG.cell * dt;   // 本帧可移动的像素距离
+    let guard = 0;
+
+    while (remaining > 1e-9 && this.path && this.path.length > 0 && guard++ < 512) {
+      const node = this.path[0];
+      const dx = node.x - this.px;
+      const dy = node.y - this.py;
+      const d = Math.hypot(dx, dy);
+
+      if (d <= 1e-6) {                 // 已经在这一段终点上
+        this.path.shift();
+        this.syncTile(state);
+        continue;
+      }
+      if (Math.abs(dx) > 0.5) this.facing = dx > 0 ? 1 : -1;
+
+      if (remaining >= d) {
+        // 走完这一段还有余量 → 落到拐点，继续走下一段
+        this.px = node.x;
+        this.py = node.y;
+        remaining -= d;
+        this.path.shift();
+        this.syncTile(state);
+      } else {
+        // 本帧走不完这一段 → 沿方向推进，单位停在地块之间的连续位置上
+        this.px += (dx / d) * remaining;
+        this.py += (dy / d) * remaining;
+        remaining = 0;
+        this.syncTile(state);
+      }
+    }
+
+    if (!this.path || this.path.length === 0) {
+      // 到达玩家点击的位置就停下（不吸附到格心，所以可能停在地块内的任意处）
+      this.px = this.goalPt ? this.goalPt.x : this.px;
+      this.py = this.goalPt ? this.goalPt.y : this.py;
+      this.syncTile(state);
+      this.path = null;
+      this.moving = false;
+      this.goal = null;
+      this.goalPt = null;
+    }
+  }
+
+  /** 把像素位置换算成所在地块（tx/ty 只用于占区块/资源/箭塔/警戒判定） */
+  syncTile(state) {
+    this.tx = clamp(Math.floor(this.px / CONFIG.cell), 0, state.terrain.cols - 1);
+    this.ty = clamp(Math.floor(this.py / CONFIG.cell), 0, state.terrain.rows - 1);
+  }
+}
+
+function createGenerals(state) {
+  const names = ['将领 1', '将领 2', '将领 3'];
+  return names.map((name, i) => {
+    const sp = state.generalSpawns[i] || { x: state.base.x, y: state.base.y };
+    const u = new Unit({ id: `general-${i + 1}`, name, tx: sp.x, ty: sp.y, faction: 'player', kind: 'general', hotkey: String(i + 1) });
+    u.state = state;
+    return u;
+  });
+}
+
+/** 找到一个可站立的空格（靠近大本营），用于调试刷兵 */
+function findOpenTileNear(state, from, faction) {
+  for (let r = 0; r < 20; r++) {
+    for (let dy = -r; dy <= r; dy++) {
+      for (let dx = -r; dx <= r; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+        const x = from.x + dx, y = from.y + dy;
+        if (passable(state, x, y, faction)) return { x, y };
+      }
+    }
+  }
+  return null;
+}
+
+/* ==================== js/render.js ==================== */
+/**
+ * render.js —— Canvas 2D 渲染
+ * 只负责“把状态画出来”，不做任何游戏逻辑。
+ *
+ * 坐标系约定（改这里请务必保持三条一致，否则会出现“鼠标位置和地块对不上”）：
+ *   1. 相机与所有输入换算一律使用 **CSS 像素**（state.view.w / state.view.h）；
+ *   2. canvas 后备缓冲按 devicePixelRatio 放大，绘制前用 ctx.scale(dpr) 对齐；
+ *   3. 世界坐标 = 地块坐标 × CONFIG.cell（单位可以处于地块之间的连续位置上）。
+ */
+
+
+/** 当前视口逻辑尺寸（CSS 像素）——相机数学只认这个 */
+function viewSize(state) {
+  return { w: state.view.w, h: state.view.h };
+}
+
+function createCamera(state) {
+  const cam = {
+    x: -CONFIG.edgePad,
+    y: -CONFIG.edgePad,
+    scale: 1,
+    minScale: CONFIG.camera.minScale,
+    maxScale: CONFIG.camera.maxScale,
+    worldW: state.terrain.cols * CONFIG.cell,
+    worldH: state.terrain.rows * CONFIG.cell,
+  };
+  fit(cam, state);
+  // 地图比视口大得多，fit 结果会很小；开局用 startScale 让玩家看清局部
+  cam.scale = clamp(CONFIG.camera.startScale, cam.minScale, cam.maxScale);
+  centerOn(cam, state, cam.worldW / 2, cam.worldH / 2);
+  return cam;
+}
+
+function fit(cam, state) {
+  const v = viewSize(state);
+  const sx = v.w / (cam.worldW + CONFIG.edgePad * 2);
+  const sy = v.h / (cam.worldH + CONFIG.edgePad * 2);
+  cam.scale = clamp(Math.min(sx, sy), cam.minScale, cam.maxScale);
+  centerOn(cam, state, cam.worldW / 2, cam.worldH / 2);
+}
+
+function centerOn(cam, state, wx, wy) {
+  const v = viewSize(state);
+  cam.x = wx - v.w / (2 * cam.scale);
+  cam.y = wy - v.h / (2 * cam.scale);
+  clampCam(cam, state);
+}
+
+function clampCam(cam, state) {
+  const v = viewSize(state);
+  const viewW = v.w / cam.scale;
+  const viewH = v.h / cam.scale;
+  const pad = CONFIG.edgePad;
+  if (viewW >= cam.worldW + pad * 2) cam.x = (cam.worldW - viewW) / 2;
+  else cam.x = clamp(cam.x, -pad, cam.worldW + pad - viewW);
+  if (viewH >= cam.worldH + pad * 2) cam.y = (cam.worldH - viewH) / 2;
+  else cam.y = clamp(cam.y, -pad, cam.worldH + pad - viewH);
+}
+
+function screenToWorld(cam, sx, sy) {
+  return { x: cam.x + sx / cam.scale, y: cam.y + sy / cam.scale };
+}
+
+function worldToTile(wx, wy) {
+  return { x: Math.floor(wx / CONFIG.cell), y: Math.floor(wy / CONFIG.cell) };
+}
+
+/* ------------------------------------------------------------------ */
+/* 主绘制                                                              */
+/* ------------------------------------------------------------------ */
+
+function draw(state, canvas, cam, ui) {
+  const ctx = canvas.getContext('2d');
+  const dpr = state.view.dpr || 1;
+  const v = viewSize(state);
+
+  // 后备缓冲是 CSS 像素 × dpr，所以先按 dpr 对齐，之后全部按 CSS 像素绘制
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, v.w, v.h);
+  ctx.fillStyle = '#131714';
+  ctx.fillRect(0, 0, v.w, v.h);
+
+  // 当前可见的世界矩形：地图变大后靠它裁剪绘制，避免每帧画整张图
+  const view = {
+    x0: cam.x, y0: cam.y,
+    x1: cam.x + v.w / cam.scale,
+    y1: cam.y + v.h / cam.scale,
+  };
+
+  ctx.save();
+  ctx.translate(-cam.x * cam.scale, -cam.y * cam.scale);
+  ctx.scale(cam.scale, cam.scale);
+
+  drawTerrain(ctx, state, view);
+  drawZones(ctx, state, view);
+  drawGrid(ctx, state, view);
+  drawBuildings(ctx, state, ui, view);
+  if (ui.buildMode) drawBuildPreview(ctx, state, ui);
+  if (ui.selectedUnits && ui.selectedUnits.length) drawSelectionInfo(ctx, state, ui);
+  drawUnits(ctx, state, view);
+  ctx.restore();
+
+  drawScreenOverlay(ctx, state, cam);
+}
+
+/** 裁剪辅助：把一个世界矩形换算成地块范围（含 1 格余量） */
+function visibleTileRange(view) {
+  const cell = CONFIG.cell;
+  return {
+    x0: Math.max(0, Math.floor(view.x0 / cell) - 1),
+    y0: Math.max(0, Math.floor(view.y0 / cell) - 1),
+    x1: Math.floor(view.x1 / cell) + 1,
+    y1: Math.floor(view.y1 / cell) + 1,
+  };
+}
+
+const inView = (view, px, py, pad = CONFIG.cell) =>
+  px + pad >= view.x0 && px - pad <= view.x1 && py + pad >= view.y0 && py - pad <= view.y1;
+
+function drawTerrain(ctx, state, view) {
+  const cell = CONFIG.cell;
+  const C = CONFIG.colors;
+  const r = visibleTileRange(view);
+  const x1 = Math.min(state.terrain.cols - 1, r.x1);
+  const y1 = Math.min(state.terrain.rows - 1, r.y1);
+  for (let y = r.y0; y <= y1; y++) {
+    for (let x = r.x0; x <= x1; x++) {
+      const t = state.terrain.get(x, y);
+      const px = x * cell, py = y * cell;
+      if (t === 'mountain') {
+        ctx.fillStyle = C.mountain;
+        ctx.fillRect(px, py, cell, cell);
+        ctx.fillStyle = C.mountainEdge;
+        ctx.beginPath();
+        ctx.moveTo(px + cell * 0.18, py + cell * 0.82);
+        ctx.lineTo(px + cell * 0.46, py + cell * 0.2);
+        ctx.lineTo(px + cell * 0.72, py + cell * 0.82);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = 'rgba(255,255,255,0.10)';
+        ctx.beginPath();
+        ctx.moveTo(px + cell * 0.46, py + cell * 0.2);
+        ctx.lineTo(px + cell * 0.6, py + cell * 0.5);
+        ctx.lineTo(px + cell * 0.34, py + cell * 0.5);
+        ctx.closePath();
+        ctx.fill();
+      } else if (t === 'forest') {
+        ctx.fillStyle = C.forest;
+        ctx.fillRect(px, py, cell, cell);
+        ctx.strokeStyle = 'rgba(120,190,130,0.45)';
+        ctx.lineWidth = 1.4;
+        for (const [ox, oy, s] of [[0.3, 0.62, 0.18], [0.62, 0.72, 0.15], [0.5, 0.4, 0.2]]) {
+          const cx = px + cell * ox, cy = py + cell * oy, r = cell * s;
+          ctx.beginPath();
+          ctx.moveTo(cx, cy - r);
+          ctx.lineTo(cx + r * 0.85, cy + r * 0.75);
+          ctx.lineTo(cx - r * 0.85, cy + r * 0.75);
+          ctx.closePath();
+          ctx.stroke();
+        }
+      } else {
+        ctx.fillStyle = (x + y) % 2 === 0 ? C.grass : C.grassAlt;
+        ctx.fillRect(px, py, cell, cell);
+      }
+    }
+  }
+}
+
+function drawZones(ctx, state, view) {
+  const cell = CONFIG.cell;
+  const C = CONFIG.colors;
+
+  for (const z of state.zones) {
+    const x = z.x0 * cell, y = z.y0 * cell;
+    const w = (z.x1 - z.x0 + 1) * cell;
+    const h = (z.y1 - z.y0 + 1) * cell;
+    if (!inView(view, x + w / 2, y + h / 2, Math.max(w, h) / 2)) continue;   // 视野外跳过
+
+    if (z.owner === 'player') {
+      ctx.fillStyle = C.zonePlayer;
+      ctx.fillRect(x, y, w, h);
+    } else if (z.progress > 0) {
+      // 占领进度：从下往上填色（黄色）
+      const ph = h * z.progress;
+      ctx.fillStyle = C.zoneProgress;
+      ctx.fillRect(x, y + h - ph, w, ph);
+    } else {
+      ctx.fillStyle = C.zoneNeutral;
+      ctx.fillRect(x, y, w, h);
+    }
+
+    ctx.strokeStyle = z.owner === 'player' ? 'rgba(120,210,255,0.55)' : C.zoneLine;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x + 1, y + 1, w - 2, h - 2);
+
+    if (state.ui.showZoneNames) {
+      ctx.fillStyle = z.owner === 'player' ? 'rgba(200,240,255,0.85)' : 'rgba(255,255,255,0.35)';
+      ctx.font = '600 15px "Segoe UI", system-ui, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      const label = z.owner === 'player'
+        ? `${z.name} · 己方`
+        : z.progress > 0 ? `${z.name} · 占领 ${Math.round(z.progress * 100)}%` : `${z.name} · 无主`;
+      ctx.fillText(label, x + 8, y + 7);
+    }
+  }
+}
+
+function drawGrid(ctx, state, view) {
+  const cell = CONFIG.cell;
+  const r = visibleTileRange(view);
+  const x0 = r.x0 * cell, y0 = r.y0 * cell;
+  const x1 = Math.min(state.terrain.cols, r.x1 + 1) * cell;
+  const y1 = Math.min(state.terrain.rows, r.y1 + 1) * cell;
+  ctx.strokeStyle = CONFIG.colors.grid;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let x = r.x0; x <= r.x1 + 1; x++) {
+    ctx.moveTo(x * cell, y0);
+    ctx.lineTo(x * cell, y1);
+  }
+  for (let y = r.y0; y <= r.y1 + 1; y++) {
+    ctx.moveTo(x0, y * cell);
+    ctx.lineTo(x1, y * cell);
+  }
+  ctx.stroke();
+}
+
+function drawBuildings(ctx, state, ui, view) {
+  for (const b of state.buildingList) {
+    if (!b.alive) continue;
+    if (!inView(view, (b.tx + 0.5) * CONFIG.cell, (b.ty + 0.5) * CONFIG.cell, CONFIG.cell)) continue;
+    if (b.type === 'wall') drawWall(ctx, state, b);
+    else if (b.type === 'tower') drawTower(ctx, state, b, ui);
+    else if (b.type === 'base') drawBase(ctx, b);
+  }
+}
+
+function drawWall(ctx, state, b) {
+  const cell = CONFIG.cell;
+  const px = b.tx * cell, py = b.ty * cell;
+  const C = CONFIG.colors;
+  const pad = 1;
+  ctx.fillStyle = C.wall;
+  ctx.fillRect(px + pad, py + pad, cell - pad * 2, cell - pad * 2);
+
+  // 砖缝
+  ctx.strokeStyle = 'rgba(0,0,0,0.28)';
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  for (let i = 1; i < 3; i++) {
+    ctx.moveTo(px + pad, py + (cell / 3) * i);
+    ctx.lineTo(px + cell - pad, py + (cell / 3) * i);
+  }
+  for (let i = 1; i < 3; i++) {
+    const off = i % 2 === 0 ? cell * 0.35 : cell * 0.65;
+    ctx.moveTo(px + off, py + pad);
+    ctx.lineTo(px + off, py + cell - pad);
+  }
+  ctx.stroke();
+
+  // 与相邻城墙连接处不画边框，看起来连成一段墙
+  ctx.fillStyle = C.wallDark;
+  const neighbors = [[0, -1, 0, 0, cell, 3], [0, 1, 0, cell - 3, cell, 3], [-1, 0, 0, 0, 3, cell], [1, 0, cell - 3, 0, 3, cell]];
+  for (const [dx, dy, ox, oy, w, h] of neighbors) {
+    const nb = state.buildings.get(b.tx + dx, b.ty + dy);
+    if (!nb || nb.type !== 'wall') ctx.fillRect(px + ox, py + oy, w, h);
+  }
+
+  drawBuildingDamage(ctx, b, px, py, cell);
+}
+
+/** 受击闪光：被打的瞬间整格闪一下红 */
+function drawHitFlash(ctx, b, px, py, cell) {
+  if (b.flash > 0) {
+    ctx.fillStyle = `rgba(255,90,80,${(0.5 * clamp(b.flash, 0, 1)).toFixed(3)})`;
+    ctx.fillRect(px, py, cell, cell);
+  }
+}
+
+/** 受击闪光 + 掉血后的血条（城墙 / 箭塔共用；满血时不画血条，避免刷屏） */
+function drawBuildingDamage(ctx, b, px, py, cell) {
+  drawHitFlash(ctx, b, px, py, cell);
+  if (b.hp < b.hpMax) {
+    drawHpBar(ctx, px + 6, py + cell - 12, cell - 12, 6, b.hpRatio);
+  }
+}
+
+function drawTower(ctx, state, b, ui) {
+  const cell = CONFIG.cell;
+  const c = tileCenter(b.tx, b.ty, cell);
+  const t = ui.time;
+
+  // 射程指示（选中 / 悬停 / 预览时）
+  const showRange = ui.hoverBuilding === b || (ui.selectedBuilding === b);
+  if (showRange) drawRangeCircle(ctx, c.x, c.y, b.def.range * cell, b.def.color);
+
+  const r = cell * 0.3;
+  ctx.fillStyle = b.def.color;
+  ctx.beginPath();
+  ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,0.45)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // 城垛
+  ctx.fillStyle = '#6d5348';
+  for (let i = 0; i < 4; i++) {
+    const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
+    ctx.fillRect(c.x + Math.cos(a) * r * 0.85 - 2.5, c.y + Math.sin(a) * r * 0.85 - 2.5, 5, 5);
+  }
+
+  // 塔顶旋转的箭
+  if (b.lastTarget && b.lastTarget.alive) {
+    ctx.strokeStyle = `rgba(255,220,120,${0.35 + 0.4 * (b.flash || 0)})`;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(c.x, c.y);
+    ctx.lineTo(b.lastTarget.px, b.lastTarget.py);
+    ctx.stroke();
+  }
+  ctx.save();
+  ctx.translate(c.x, c.y);
+  ctx.rotate((t * 1.2) % (Math.PI * 2));
+  ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.lineTo(0, -r * 1.15);
+  ctx.stroke();
+  ctx.restore();
+
+  drawBuildingDamage(ctx, b, b.tx * cell, b.ty * cell, cell);
+}
+
+function drawBase(ctx, b) {
+  const cell = CONFIG.cell;
+  const px = b.tx * cell, py = b.ty * cell;
+  const C = CONFIG.colors;
+  ctx.fillStyle = C.hq;
+  ctx.fillRect(px + 2, py + 2, cell - 4, cell - 4);
+  ctx.fillStyle = C.hqLight;
+  ctx.fillRect(px + 6, py + 6, cell - 12, cell * 0.32);
+  ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(px + 2, py + 2, cell - 4, cell - 4);
+
+  // 旗杆
+  const cx = px + cell * 0.5, cy = py + cell * 0.18;
+  ctx.strokeStyle = '#e8e8e8';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(cx, cy);
+  ctx.lineTo(cx, cy - cell * 0.22);
+  ctx.stroke();
+  ctx.fillStyle = '#ffd166';
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - cell * 0.22);
+  ctx.lineTo(cx + cell * 0.26, cy - cell * 0.15);
+  ctx.lineTo(cx, cy - cell * 0.08);
+  ctx.closePath();
+  ctx.fill();
+
+  // HP 条
+  drawHitFlash(ctx, b, px, py, cell);
+  drawHpBar(ctx, px + 4, py + cell - 8, cell - 8, 4, b.hp / b.hpMax);
+}
+
+function drawHpBar(ctx, x, y, w, h, ratio) {
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = ratio > 0.5 ? '#5fd35f' : ratio > 0.25 ? '#e8c04a' : '#e05a5a';
+  ctx.fillRect(x, y, w * clamp(ratio, 0, 1), h);
+}
+
+function drawRangeCircle(ctx, cx, cy, r, color, alpha = 1) {
+  ctx.save();
+  ctx.globalAlpha = clamp(alpha, 0, 1);
+  ctx.fillStyle = CONFIG.colors.range;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = color || CONFIG.colors.rangeEdge;
+  ctx.lineWidth = 2;
+  ctx.setLineDash([6, 6]);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
+function drawBuildPreview(ctx, state, ui) {
+  const t = state.ui.hoverTile;
+  if (!t || !state.ui.buildType) return;
+  const cell = CONFIG.cell;
+  const valid = state.ui.hoverValid;
+  const def = state.ui.buildType === 'wall' ? CONFIG.building.wall : CONFIG.building.tower;
+
+  if (state.ui.buildType === 'tower') {
+    drawRangeCircle(ctx, (t.x + 0.5) * cell, (t.y + 0.5) * cell, def.range * cell, def.color);
+  }
+  ctx.fillStyle = valid ? 'rgba(120,255,150,0.30)' : 'rgba(255,90,90,0.35)';
+  ctx.fillRect(t.x * cell, t.y * cell, cell, cell);
+  ctx.strokeStyle = valid ? 'rgba(160,255,180,0.9)' : 'rgba(255,120,120,0.9)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(t.x * cell + 1, t.y * cell + 1, cell - 2, cell - 2);
+}
+
+function drawSelectionInfo(ctx, state, ui) {
+  const u = ui.selectedUnits[0];
+  if (!u || !u.alive) return;
+  const cell = CONFIG.cell;
+
+  // 攻击距离 / 警戒半径：一眼看出这个单位能打多远、多远内的敌人会被它盯上
+  if (CONFIG.combat.enabled) {
+    drawRangeCircle(ctx, u.px, u.py, u.aggroRangePx, 'rgba(255,255,255,0.30)', 0.22);
+    drawRangeCircle(ctx, u.px, u.py, u.attackRangePx, 'rgba(255,170,120,0.85)', 0.5);
+  }
+
+  // 交战目标：套一圈虚线
+  const tg = u.target;
+  if (tg && tg.alive) {
+    ctx.strokeStyle = 'rgba(255,120,120,0.9)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.arc(tg.px, tg.py, unitRadius(tg.kind) + 7, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  if (!u.goal) return;
+  const g = tileCenter(u.goal.x, u.goal.y, cell);
+  ctx.strokeStyle = 'rgba(255,209,102,0.75)';
+  ctx.lineWidth = 2;
+  ctx.setLineDash([5, 5]);
+  ctx.beginPath();
+  ctx.arc(g.x, g.y, cell * 0.34, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // 剩余路径：路径点已经是**像素**坐标（见 unit.js 的 moveTo），这里直接连；
+  // 早先这里又做了一次 tileCenter 换算，于是预览线会飞出地图。
+  if (u.path && u.path.length) {
+    ctx.strokeStyle = 'rgba(255,209,102,0.35)';
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(u.px, u.py);
+    for (const n of u.path) ctx.lineTo(n.x, n.y);
+    ctx.stroke();
+  }
+}
+
+/**
+ * 单位的绘制半径（世界像素）。
+ * 统一从这里取，保证“画出来的大小”和“鼠标点选的判定范围”一致。
+ */
+function unitRadius(kind = 'general') {
+  const r = CONFIG.cell * (CONFIG.unit.radiusFactor || 0.1);
+  return kind === 'general' ? r : r * 0.75;
+}
+
+function drawUnits(ctx, state, view) {
+  const cell = CONFIG.cell;
+  const C = CONFIG.colors;
+  for (const u of state.units) {
+    if (!u.alive) continue;
+    const r = unitRadius(u.kind);
+    if (!inView(view, u.px, u.py, cell)) continue;   // 视野外单位不画
+    const barW = Math.max(14, cell * 0.26);
+    const barH = Math.max(3, cell * 0.035);
+
+    // 攻击线：开火瞬间到特效结束（attackFlash 由 unit.js 驱动）；打建筑时连到建筑中心
+    if (u.attackFlash > 0) {
+      let tgt = null;
+      if (u.lastTarget && u.lastTarget.alive) tgt = { x: u.lastTarget.px, y: u.lastTarget.py };
+      else if (u.lastBuilding && u.lastBuilding.alive) tgt = u.lastBuilding.center;
+      if (tgt) {
+        const a = (0.2 + 0.7 * clamp(u.attackFlash, 0, 1)).toFixed(3);
+        ctx.strokeStyle = u.faction === 'player' ? `rgba(255,225,150,${a})` : `rgba(255,120,120,${a})`;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(u.px, u.py);
+        ctx.lineTo(tgt.x, tgt.y);
+        ctx.stroke();
+      }
+    }
+
+    if (u.faction === 'player') {
+      // 选中光环
+      if (u.selected) {
+        ctx.strokeStyle = C.generalSel;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(u.px, u.py, r + 6, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(255,209,102,0.16)';
+        ctx.beginPath();
+        ctx.arc(u.px, u.py, r + 6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.fillStyle = C.general;
+      ctx.beginPath();
+      ctx.arc(u.px, u.py, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // 数字快捷键角标
+      if (u.hotkey) {
+        const badge = Math.max(6, r * 0.62);
+        ctx.fillStyle = '#20261f';
+        ctx.beginPath();
+        ctx.arc(u.px + r * 0.8, u.py - r * 0.8, badge, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#ffe9a8';
+        ctx.font = `700 ${Math.round(badge * 1.5)}px "Segoe UI", system-ui, sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(u.hotkey, u.px + r * 0.8, u.py - r * 0.8 + 0.5);
+      }
+    } else {
+      ctx.fillStyle = C.enemy;
+      ctx.beginPath();
+      ctx.arc(u.px, u.py, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+
+    // 交战中：头顶一个小三角（黄=己方，红=敌方），方便一眼看出谁在打谁 / 谁在拆墙
+    const engaged = (u.target && u.target.alive) || (u.targetBuilding && u.targetBuilding.alive);
+    if (engaged) {
+      const s = Math.max(4, r * 0.5);
+      const ty0 = u.py - r - 5;
+      ctx.fillStyle = u.faction === 'player' ? '#ffd166' : '#ff8a8a';
+      ctx.beginPath();
+      ctx.moveTo(u.px, ty0);
+      ctx.lineTo(u.px - s, ty0 - s * 1.3);
+      ctx.lineTo(u.px + s, ty0 - s * 1.3);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // 血条（跟随单位尺寸缩放）
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    ctx.fillRect(u.px - barW / 2, u.py + r + 3, barW, barH);
+    ctx.fillStyle = u.faction === 'player' ? '#7ce07c' : '#e05a5a';
+    ctx.fillRect(u.px - barW / 2, u.py + r + 3, barW * clamp(u.hp / u.hpMax, 0, 1), barH);
+  }
+}
+
+/** 悬停地块高亮 + 调试准星（画在屏幕空间，避免缩放导致线宽变化） */
+function drawScreenOverlay(ctx, state, cam) {
+  const ui = state.ui;
+  const cell = CONFIG.cell;
+
+  ctx.save();
+  ctx.setTransform(ctx.getTransform());       // 保持当前 dpr 变换
+  ctx.translate(-cam.x * cam.scale, -cam.y * cam.scale);
+  ctx.scale(cam.scale, cam.scale);
+
+  if (ui.hoverTile) {
+    ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+    ctx.lineWidth = 1.5 / cam.scale;
+    ctx.strokeRect(ui.hoverTile.x * cell, ui.hoverTile.y * cell, cell, cell);
+  }
+
+  // 调试准星：把“鼠标世界坐标”和“判定出的地块中心”都画出来，
+  // 两者不重合就说明坐标换算有问题（按 G 开关）。
+  if (ui.debugAim && ui.mouseWorld) {
+    const mw = ui.mouseWorld;
+    ctx.strokeStyle = 'rgba(255,90,90,0.95)';
+    ctx.lineWidth = 1.4 / cam.scale;
+    const s = 7 / cam.scale;
+    ctx.beginPath();
+    ctx.moveTo(mw.x - s, mw.y); ctx.lineTo(mw.x + s, mw.y);
+    ctx.moveTo(mw.x, mw.y - s); ctx.lineTo(mw.x, mw.y + s);
+    ctx.stroke();
+
+    if (ui.hoverTile) {
+      const c = tileCenter(ui.hoverTile.x, ui.hoverTile.y, cell);
+      ctx.strokeStyle = 'rgba(90,255,120,0.95)';
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, 4 / cam.scale, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+/* ==================== js/main.js ==================== */
+/**
+ * main.js —— 游戏入口：状态初始化 + 主循环 + 输入 + HUD
+ */
+
+
+/* ------------------------------------------------------------------ */
+/* 状态                                                                */
+/* ------------------------------------------------------------------ */
+
+const state = {
+  time: 0,
+  terrain: null,
+  base: null,
+  generalSpawns: GENERAL_SPAWNS,
+  buildings: null,        // Grid<Building|null> —— 每个地块最多一个建筑
+  buildingList: [],
+  buildingRevision: 0,    // 建造/拆除时 +1，用于按需重算区块归属
+  lastRevision: -1,
+  zones: [],
+  zoneLookup: [],
+  units: [],
+  camera: null,
+  /**
+   * 视口信息（**全部使用 CSS 像素**，与相机 / 输入换算保持一致）。
+   * 画布后备缓冲按 dpr 放大，绘制前统一 ctx.scale(dpr)，
+   * 这样高 DPI 屏上既清晰，鼠标位置又和地块严格对齐。
+   */
+  view: { w: 1, h: 1, dpr: 1 },
+  resources: { food: CONFIG.resource.startFood, gold: CONFIG.resource.startGold },
+  ownedTiles: 0,
+  enemySpawnTimer: 0,
+  debugAutoSpawn: false,
+  log: [],
+  ui: {
+    buildType: null,       // 'wall' | 'tower' | null
+    hoverTile: null,
+    hoverValid: false,
+    hoverBuilding: null,
+    selectedUnits: [],
+    selectedBuilding: null,
+    showZoneNames: true,
+    toasts: [],
+    mouseWorld: null,      // 鼠标所在世界坐标
+    mouseScreen: null,     // 鼠标在画布内的 CSS 像素坐标（边缘滚屏用）
+    edgeScrollPaused: false, // 按住空格可临时冻结边缘滚屏
+    debugAim: false,       // 按 G 开关准星，用来核对坐标换算
+  },
+};
+
+let canvas = null;
+let paused = false;
+const keys = new Set();
+const el = {};
+
+/* ------------------------------------------------------------------ */
+/* 初始化                                                              */
+/* ------------------------------------------------------------------ */
+
+function init() {
+  const map = createMap();
+  state.terrain = map.terrain;
+  state.base = map.base;
+  state.buildings = new Grid(map.cols, map.rows, null);
+
+  const zs = createZoneSystem();
+  state.zones = zs.zones;
+  state.zoneLookup = zs.lookup;
+
+  // 大本营：开局自带，不可建造、不可拆除
+  addBuilding('base', state.base.x, state.base.y, 'player', { silent: true });
+
+  // 三个将领占位单位
+  state.units = createGenerals(state);
+  // 战斗事件（警戒 / 阵亡）→ 事件日志
+  state.onCombatEvent = onCombatEvent;
+  selectUnits([state.units[0]]);
+
+  state.camera = createCamera(state);
+  bindUI();
+  bindInput();
+  selectBuildType(null);
+
+  const baseZone = zoneAt(state, state.base.x, state.base.y);
+  pushLog(`大本营位于 (${state.base.x}, ${state.base.y})，所在区块 ${baseZone ? baseZone.name : '无'}`);
+  if (map.sealedIslands > 0) toast(`地图连通性修正：封住了 ${map.sealedIslands} 个孤立的可通行格`);
+  pushLog('按 1 / 2 / 3 选择将领，右键点击地图移动。');
+  requestAnimationFrame(loop);
+}
+
+/* ------------------------------------------------------------------ */
+/* 建筑                                                                */
+/* ------------------------------------------------------------------ */
+
+function addBuilding(type, tx, ty, owner = 'player', opts = {}) {
+  if (!state.terrain.has(tx, ty)) return null;
+  if (state.buildings.get(tx, ty)) return null;   // 每个地块仅能建造一个建筑
+  const z = zoneAt(state, tx, ty);
+  const b = new Building(type, tx, ty, owner, z ? z.id : -1);
+  state.buildings.set(tx, ty, b);
+  state.buildingList.push(b);
+  state.buildingRevision++;
+  if (!opts.silent) {
+    refreshBuildingOwnership(state);
+    pushLog(`${BUILDINGS[type].name} 建造于 (${tx}, ${ty})${z ? ' · 区块 ' + z.name : ''}`);
+  }
+  return b;
+}
+
+function canBuildAt(type, tx, ty) {
+  if (!state.terrain.has(tx, ty)) return false;
+  if (state.terrain.get(tx, ty) === 'mountain') return false;
+  if (occupied(state, tx, ty)) return false;
+  return true;
+}
+
+function tryBuildAt(tx, ty) {
+  const type = state.ui.buildType;
+  if (!type) return false;
+  if (!canBuildAt(type, tx, ty)) {
+    toast('该地块无法建造（已有建筑或地形阻挡）');
+    return false;
+  }
+  const def = CONFIG.building[type];
+  if (CONFIG.economy.enabled && def.cost) {
+    for (const k of Object.keys(def.cost)) {
+      if (state.resources[k] < def.cost[k]) { toast(`${RESOURCE_LABEL[k]}不足`); return false; }
+    }
+    for (const k of Object.keys(def.cost)) state.resources[k] -= def.cost[k];
+  }
+  addBuilding(type, tx, ty, 'player');
+  return true;
+}
+
+/* ------------------------------------------------------------------ */
+/* 选择                                                                */
+/* ------------------------------------------------------------------ */
+
+function selectUnits(units) {
+  for (const u of state.units) u.selected = false;
+  state.ui.selectedUnits = units.filter(Boolean);
+  for (const u of state.ui.selectedUnits) u.selected = true;
+  state.ui.selectedBuilding = null;
+  updateSelectionPanel();
+}
+
+function selectBuilding(b) {
+  for (const u of state.units) u.selected = false;
+  state.ui.selectedUnits = [];
+  state.ui.selectedBuilding = b;
+  updateSelectionPanel();
+}
+
+function selectGeneralByHotkey(key) {
+  const u = state.units.find((x) => x.alive && x.faction === 'player' && x.hotkey === key);
+  if (u) {
+    selectUnits([u]);
+    centerOn(state.camera, state, u.px, u.py);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* 主循环                                                              */
+/* ------------------------------------------------------------------ */
+
+let last = 0;
+let frameCount = 0;
+function loop(now) {
+  frameCount++;
+  const dt = Math.min(0.05, (now - last) / 1000 || 0);
+  last = now;
+  if (!paused) update(dt);
+  draw(state, canvas, state.camera, buildUiSnapshot());
+  updateHud();
+  requestAnimationFrame(loop);
+}
+
+function buildUiSnapshot() {
+  return {
+    time: state.time,
+    buildMode: !!state.ui.buildType,
+    buildType: state.ui.buildType,
+    hoverTile: state.ui.hoverTile,
+    hoverValid: state.ui.hoverValid,
+    hoverBuilding: state.ui.hoverBuilding,
+    selectedUnits: state.ui.selectedUnits,
+    selectedBuilding: state.ui.selectedBuilding,
+    showZoneNames: state.ui.showZoneNames,
+  };
+}
+
+function update(dt) {
+  state.time += dt;
+
+  // 1) 区块占领（占位规则）
+  updateZones(state, dt);
+
+  // 2) 建筑归属变化时才重算
+  if (state.buildingRevision !== state.lastRevision) {
+    refreshBuildingOwnership(state);
+    state.lastRevision = state.buildingRevision;
+  }
+
+  // 3) 资源：按己方占领地块数实时增长
+  const tiles = ownedTileCount(state, 'player');
+  if (tiles !== state.ownedTiles) {
+    const names = ownedZoneNames();
+    state.ownedTiles = tiles;
+    pushLog(`领地变化：己方地块 ${tiles} 块（区块：${names || '无'}）`);
+  }
+  state.resources.food += tiles * CONFIG.resource.foodPerTilePerSec * dt;
+  state.resources.gold += tiles * CONFIG.resource.goldPerTilePerSec * dt;
+
+  // 4) 单位：移动 + 战斗 / 警戒（参数见 CONFIG.combat）
+  for (const u of state.units) u.update(state, dt);
+  if (state.units.some((u) => !u.alive)) {
+    state.units = state.units.filter((u) => u.alive);
+    // 选中列表 / 选中建筑可能刚刚阵亡或被拆掉，及时清干净
+    if (state.ui.selectedUnits.some((u) => !u.alive)) {
+      selectUnits(state.ui.selectedUnits.filter((u) => u.alive));
+    }
+    if (state.ui.selectedBuilding && !state.ui.selectedBuilding.alive) {
+      state.ui.selectedBuilding = null;
+      updateSelectionPanel();
+    }
+  }
+
+  // 5) 箭塔开火 + 建筑受击闪光的衰减
+  updateTowers(state, dt);
+  updateBuildingEffects(state, dt);
+
+  // 6) 调试：自动刷敌人
+  if (state.debugAutoSpawn) {
+    state.enemySpawnTimer -= dt;
+    if (state.enemySpawnTimer <= 0) {
+      spawnEnemy();
+      state.enemySpawnTimer = CONFIG.debug.spawnIntervalSec;
+    }
+  }
+
+  // 7) 相机：键盘平移 + 鼠标边缘滚屏
+  updateCameraKeyboard(dt);
+  updateCameraEdgeScroll(dt);
+
+  // 8) 敌人 AI（朝大本营推进；被城墙挡住时锁定城墙来拆）
+  updateEnemies();
+
+  // 9) 提示气泡过期清理
+  const now = performance.now();
+  state.ui.toasts = state.ui.toasts.filter((t) => now - t.at < 2600);
+}
+
+/* ------------------------------------------------------------------ */
+/* 敌人（本版没有正式敌人，仅调试用）                                    */
+/* ------------------------------------------------------------------ */
+
+function spawnEnemy(tx, ty) {
+  // 默认从地图右侧（北侧隘口附近）出现
+  const spawn = tx == null ? { x: state.terrain.cols - 1, y: 3 } : { x: tx, y: ty };
+  const open = passable(state, spawn.x, spawn.y, 'enemy') ? spawn : findOpenTileNear(state, spawn, 'enemy');
+  if (!open) { toast('找不到可用的敌方出生点'); return null; }
+  const e = new Unit({
+    id: `enemy-${Math.random().toString(36).slice(2, 8)}`,
+    name: '测试敌人', tx: open.x, ty: open.y, faction: 'enemy', kind: 'enemy',
+  });
+  e.state = state;
+  state.units.push(e);
+  pushLog(`调试：测试敌人在 (${open.x}, ${open.y}) 出现`);
+  return e;
+}
+
+function updateEnemies() {
+  for (const u of state.units) {
+    if (!u.alive || u.faction !== 'enemy') continue;
+
+    // 正在交战（警戒发现了我方单位）：交给 unit.js 的攻击 / 追击逻辑
+    if (u.target) continue;
+    // 正在拆建筑（通常是挡路的城墙）：交给 unit.js 的 updateBuildingCombat
+    if (u.targetBuilding) continue;
+
+    // 已经贴到大本营就停下（本版不做近战拆家）
+    if (Math.abs(u.tx - state.base.x) + Math.abs(u.ty - state.base.y) <= 1) { u.stop(); continue; }
+    if (u.path && u.path.length) continue;
+
+    // 按“敌方通行规则”寻路：城墙会阻挡，所以只能绕路或拆墙
+    const goal = nearestReachable(state, { x: u.tx, y: u.ty }, state.base, 'enemy');
+    if (goal && (u.tx !== goal.x || u.ty !== goal.y)) {
+      // ⚠️ moveTo 收的是**像素**坐标，而 A* 给的是**地块**坐标：这里必须换算成格心像素，
+      //    否则单位会把地块坐标当成像素坐标，朝地图左上角走（旧版本的 bug）。
+      const goalPt = tileCenter(goal.x, goal.y, CONFIG.cell);
+      if (u.moveTo(state, goalPt) && u.moving) continue;      // 还在赶路
+    }
+
+    // 已经站在“能走到的最近处”（典型情况：大本营被城墙围住，或路线被一整条墙拦断）
+    // → 锁定挡路的城墙，由 unit.js 负责“先靠近、再一下一下拆”。
+    // 注意这里**不能**只看 moveTo 的返回值：原地不动时 moveTo 也返回 true，
+    // 会让敌人站在墙边发呆（这曾经是“敌人不拆墙”的原因）。
+    const blocker = findBlockingWall(state, u);
+    if (blocker) u.setBuildingTarget(blocker);
+  }
+}
+
+/**
+ * 找出“该拆的那一段城墙”：挨着敌人自己可达的区域、且离大本营最近的那一段。
+ * 判定逻辑在 path.js 的 findBlockingWallToward()（测试直接用同一个函数，避免两份实现走偏）。
+ */
+function findBlockingWall(state, u) {
+  return findBlockingWallToward(state, { x: u.tx, y: u.ty }, state.base, u.faction, 'wall');
+}
+
+/* ------------------------------------------------------------------ */
+/* 相机：键盘平移 + 鼠标边缘滚屏                                        */
+/* ------------------------------------------------------------------ */
+
+function updateCameraKeyboard(dt) {
+  const base = CONFIG.camera.keyPanSpeed / state.camera.scale;
+  let dx = 0, dy = 0;
+  if (keys.has('a') || keys.has('arrowleft')) dx -= 1;
+  if (keys.has('d') || keys.has('arrowright')) dx += 1;
+  if (keys.has('w') || keys.has('arrowup')) dy -= 1;
+  if (keys.has('s') || keys.has('arrowdown')) dy += 1;
+  if (dx || dy) {
+    state.camera.x += dx * base * dt;
+    state.camera.y += dy * base * dt;
+    clampCam(state.camera, state);
+  }
+}
+
+/**
+ * 鼠标推到视野边缘 → 视角持续平移。
+ * 越靠近边缘滚得越快（靠边距归一化后取平方，手感更细腻）。
+ */
+function updateCameraEdgeScroll(dt) {
+  const ui = state.ui;
+  if (!CONFIG.camera.edgeScroll || !ui.mouseScreen || ui.edgeScrollPaused) return;
+  const v = state.view;
+  const m = ui.mouseScreen;
+  const edge = CONFIG.camera.edgeSize;
+  const maxSpeed = CONFIG.camera.edgeMaxSpeed;
+
+  const ramp = (dist) => {
+    const t = clamp((edge - dist) / edge, 0, 1);
+    return t * t * maxSpeed;
+  };
+
+  let vx = 0, vy = 0;
+  if (m.x <= edge) vx = -ramp(m.x);
+  else if (m.x >= v.w - edge) vx = ramp(v.w - m.x);
+  if (m.y <= edge) vy = -ramp(m.y);
+  else if (m.y >= v.h - edge) vy = ramp(v.h - m.y);
+
+  if (vx === 0 && vy === 0) return;
+  // 屏幕像素/秒 → 世界像素/秒
+  state.camera.x += (vx / state.camera.scale) * dt;
+  state.camera.y += (vy / state.camera.scale) * dt;
+  clampCam(state.camera, state);
+}
+
+/* ------------------------------------------------------------------ */
+/* HUD                                                                 */
+/* ------------------------------------------------------------------ */
+
+const $ = (id) => document.getElementById(id);
+
+const UI_IDS = [
+  'food', 'gold', 'tiles', 'rate', 'zoneList', 'selName', 'selDetail', 'selHp', 'log', 'toasts',
+  'btnWall', 'btnTower', 'btnCancel', 'btnPause', 'btnFit', 'btnZones', 'btnSpawn', 'btnAutoSpawn',
+  'btnClearEnemies', 'btnHelp', 'helpBox', 'buildHint', 'statUnits', 'statEnemies',
+  'statBuildings', 'statRevision', 'debugAim', 'btnAim', 'btnEdge',
+];
+
+function initDom() {
+  canvas = $('game');
+  for (const id of UI_IDS) el[id] = $(id);
+  resizeCanvas();
+}
+
+function resizeCanvas() {
+  const wrap = $('stage');
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.max(1, wrap.clientWidth);
+  const h = Math.max(1, wrap.clientHeight);
+
+  // 后备缓冲 = CSS 像素 × dpr；绘制时按 dpr 对齐（见 render.js 的 draw）
+  canvas.width = Math.round(w * dpr);
+  canvas.height = Math.round(h * dpr);
+  // 用与 wrap.clientWidth 完全相同的整数值，避免元素被拉伸造成亚像素错位
+  canvas.style.width = w + 'px';
+  canvas.style.height = h + 'px';
+
+  state.view.w = w;
+  state.view.h = h;
+  state.view.dpr = dpr;
+}
+
+/** 事件坐标 → 画布内的 CSS 像素坐标（与相机/绘制坐标同一套，保证指哪打哪） */
+function eventToCanvas(e) {
+  const rect = canvas.getBoundingClientRect();
+  return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+}
+
+/** 取鼠标位置并从当前相机换算出世界坐标与地块 */
+function pointerInfo(e) {
+  const p = eventToCanvas(e);
+  const world = screenToWorld(state.camera, p.x, p.y);
+  return { p, world, tile: worldToTile(world.x, world.y) };
+}
+
+function updateHud() {
+  el.food.textContent = state.resources.food.toFixed(CONFIG.resource.decimals);
+  el.gold.textContent = state.resources.gold.toFixed(CONFIG.resource.decimals);
+  el.tiles.textContent = String(state.ownedTiles);
+  el.rate.textContent = `+${(state.ownedTiles * CONFIG.resource.foodPerTilePerSec).toFixed(1)} / +${(state.ownedTiles * CONFIG.resource.goldPerTilePerSec).toFixed(1)} 每秒`;
+  el.zoneList.textContent = ownedZoneNames() || '（无）';
+  el.statUnits.textContent = String(state.units.filter((u) => u.alive && u.faction === 'player').length);
+  el.statEnemies.textContent = String(state.units.filter((u) => u.alive && u.faction === 'enemy').length);
+  el.statBuildings.textContent = String(state.buildingList.length);
+  el.statRevision.textContent = String(state.buildingRevision);
+  updateSelectionPanel();
+
+  if (el.log.dataset.n !== String(state.log.length)) {
+    el.log.dataset.n = String(state.log.length);
+    el.log.innerHTML = state.log.map((l) => `<div>${l}</div>`).join('');
+    el.log.scrollTop = el.log.scrollHeight;
+  }
+
+  const now = performance.now();
+  const active = state.ui.toasts.filter((t) => now - t.at < 2600);
+  const key = active.map((t) => t.msg).join('|');
+  if (el.toasts.dataset.k !== key) {
+    el.toasts.dataset.k = key;
+    el.toasts.innerHTML = active.map((t) => `<div class="toast">${t.msg}</div>`).join('');
+  }
+
+  // 坐标调试读数（按 G 开关）
+  if (el.debugAim) {
+    const ui = state.ui;
+    if (!ui.debugAim) {
+      el.debugAim.classList.add('hidden');
+    } else {
+      el.debugAim.classList.remove('hidden');
+      const mw = ui.mouseWorld;
+      const cam = state.camera;
+      el.debugAim.textContent = mw
+        ? `dpr ${state.view.dpr} · 视口 ${state.view.w}×${state.view.h} · 缩放 ${cam.scale.toFixed(2)}x\n`
+          + `鼠标世界坐标 (${mw.x.toFixed(1)}, ${mw.y.toFixed(1)}) → 地块 (${Math.floor(mw.x / CONFIG.cell)}, ${Math.floor(mw.y / CONFIG.cell)})`
+        : `dpr ${state.view.dpr} · 视口 ${state.view.w}×${state.view.h} · 缩放 ${cam.scale.toFixed(2)}x（把鼠标移到地图上）`;
+    }
+  }
+}
+
+function updateSelectionPanel() {
+  const u = state.ui.selectedUnits[0];
+  const b = state.ui.selectedBuilding;
+  if (b) {
+    const hpTxt = `生命 ${Math.ceil(b.hp)} / ${b.hpMax}`;
+    el.selName.textContent = `${BUILDINGS[b.type].name}（${b.owner === 'player' ? '己方' : '敌方'}）`;
+    el.selDetail.textContent = b.type === 'tower'
+      ? `( ${b.tx}, ${b.ty} ) ${hpTxt} · 攻击 ${b.def.damage} / 射程 ${b.def.range} 格 / 间隔 ${b.def.cooldown}s`
+      : `( ${b.tx}, ${b.ty} ) 占据 1 个地块 · ${hpTxt}`;
+    el.selHp.style.width = (100 * clamp(b.hp / b.hpMax, 0, 1)) + '%';
+    return;
+  }
+  if (u) {
+    const z = zoneAt(state, u.tx, u.ty);
+    const goal = u.goal ? ` → (${u.goal.x}, ${u.goal.y})` : '';
+    const zoneTxt = z
+      ? `${z.name}${z.owner === 'player' ? '·己方' : z.progress > 0 ? `·占领 ${Math.round(z.progress * 100)}%` : '·无主'}`
+      : '无';
+    const atk = `攻击 ${u.combat.damage} / 距离 ${u.combat.range} 格 / 间隔 ${u.combat.cooldownSec}s · 警戒 ${CONFIG.combat.aggroRange} 格`;
+    const tgt = u.target && u.target.alive
+      ? `\n交战中：${u.target.name}（${(dist(u.px, u.py, u.target.px, u.target.py) / CONFIG.cell).toFixed(1)} 格）`
+      : '';
+    el.selName.textContent = `${u.name}（快捷键 ${u.hotkey}）`;
+    el.selDetail.textContent = `位置 (${u.tx}, ${u.ty})${goal} · 所在区块 ${zoneTxt}\n${atk}${tgt}`;
+    el.selHp.style.width = (100 * clamp(u.hp / u.hpMax, 0, 1)) + '%';
+    return;
+  }
+  el.selName.textContent = '未选中';
+  el.selDetail.textContent = '按 1 / 2 / 3 或左键点击选择将领';
+  el.selHp.style.width = '0%';
+}
+
+function ownedZoneNames() {
+  return state.zones.filter((z) => z.owner === 'player').map((z) => z.name).join(', ');
+}
+
+function pushLog(msg) {
+  state.log.push(msg);
+  if (state.log.length > 120) state.log.splice(0, state.log.length - 120);
+}
+
+/** 战斗事件（unit.js 通过 state.onCombatEvent 回调进来）→ 事件日志 / 提示 / 建筑收尸 */
+function onCombatEvent(evt) {
+  if (!evt) return;
+  if (evt.type === 'alert') {
+    if (evt.unit.faction === 'player') pushLog(`${evt.unit.name} 发现 ${evt.target.name}，进入警戒`);
+  } else if (evt.type === 'kill') {
+    const by = evt.source ? `（${actorName(evt.source)} 击杀）` : '';
+    pushLog(`${evt.unit.name} 阵亡${by}`);
+    if (evt.unit.faction === 'player') toast(`${evt.unit.name} 阵亡${by}`);
+  } else if (evt.type === 'buildingDown') {
+    const b = evt.building;
+    const by = evt.source ? `被 ${actorName(evt.source)} 拆毁` : '被拆毁';
+    pushLog(`${actorName(b)} (${b.tx}, ${b.ty}) ${by}`);
+    if (b.owner === 'player') toast(`${actorName(b)} 被拆毁！`);
+    removeBuilding(state, b);
+    state.buildingRevision++;
+  }
+}
+
+/** 日志里显示攻击者名字：单位有 name，建筑有 def.name */
+function actorName(x) {
+  return x.name || (x.def && x.def.name) || '未知';
+}
+
+function toast(msg) {
+  state.ui.toasts.push({ msg, at: performance.now() });
+}
+
+/* ------------------------------------------------------------------ */
+/* UI 绑定                                                             */
+/* ------------------------------------------------------------------ */
+
+function selectBuildType(type) {
+  state.ui.buildType = type;
+  if (el.btnWall) el.btnWall.classList.toggle('active', type === 'wall');
+  if (el.btnTower) el.btnTower.classList.toggle('active', type === 'tower');
+  if (el.buildHint) {
+    el.buildHint.textContent = type
+      ? `建造模式：${type === 'wall' ? '城墙' : '箭塔'} —— 左键放置，右键 / Esc 退出。本版建造免费。`
+      : '建造模式关闭（按 B 建城墙 / T 建箭塔）';
+  }
+}
+
+function bindUI() {
+  el.btnWall.addEventListener('click', () => selectBuildType(state.ui.buildType === 'wall' ? null : 'wall'));
+  el.btnTower.addEventListener('click', () => selectBuildType(state.ui.buildType === 'tower' ? null : 'tower'));
+  el.btnCancel.addEventListener('click', () => selectBuildType(null));
+  el.btnPause.addEventListener('click', () => {
+    paused = !paused;
+    el.btnPause.textContent = paused ? '▶ 继续' : '⏸ 暂停';
+    el.btnPause.classList.toggle('active', paused);
+  });
+  el.btnFit.addEventListener('click', () => fit(state.camera, state));
+  el.btnZones.addEventListener('click', () => {
+    state.ui.showZoneNames = !state.ui.showZoneNames;
+    el.btnZones.classList.toggle('active', state.ui.showZoneNames);
+  });
+  el.btnZones.classList.toggle('active', state.ui.showZoneNames);
+  el.btnSpawn.addEventListener('click', () => spawnEnemy());
+  el.btnAutoSpawn.addEventListener('click', () => {
+    state.debugAutoSpawn = !state.debugAutoSpawn;
+    state.enemySpawnTimer = 0;
+    el.btnAutoSpawn.classList.toggle('active', state.debugAutoSpawn);
+  });
+  el.btnClearEnemies.addEventListener('click', () => {
+    state.units = state.units.filter((u) => u.faction !== 'enemy');
+    pushLog('调试：清除全部测试敌人');
+  });
+  el.btnAim.addEventListener('click', toggleAimDebug);
+  el.btnEdge.addEventListener('click', () => {
+    CONFIG.camera.edgeScroll = !CONFIG.camera.edgeScroll;
+    el.btnEdge.classList.toggle('active', CONFIG.camera.edgeScroll);
+    toast(CONFIG.camera.edgeScroll ? '边缘滚屏：开（鼠标推到视野边缘即移动视角）' : '边缘滚屏：关');
+  });
+  el.btnEdge.classList.toggle('active', CONFIG.camera.edgeScroll);
+  el.btnHelp.addEventListener('click', () => el.helpBox.classList.toggle('hidden'));
+}
+
+/** 坐标调试准星开关（按钮与 G 键共用） */
+function toggleAimDebug() {
+  state.ui.debugAim = !state.ui.debugAim;
+  if (el.btnAim) el.btnAim.classList.toggle('active', state.ui.debugAim);
+  toast(state.ui.debugAim
+    ? '坐标调试准星：开（红叉=鼠标点，绿圈=判定地块中心，两者应重合）'
+    : '坐标调试准星：关');
+}
+
+/* ------------------------------------------------------------------ */
+/* 输入                                                               */
+/* ------------------------------------------------------------------ */
+
+function bindInput() {
+  const onResize = () => {
+    resizeCanvas();
+    clampCam(state.camera, state);
+  };
+  window.addEventListener('resize', onResize);
+  // 侧栏/帮助面板折叠等造成画布尺寸变化时也要重算
+  if (window.ResizeObserver) new ResizeObserver(onResize).observe($('stage'));
+
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  canvas.addEventListener('mousemove', (e) => {
+    const { p, world, tile: t } = pointerInfo(e);
+    state.ui.mouseWorld = world;
+    state.ui.mouseScreen = p;
+    const inside = state.terrain.has(t.x, t.y);
+    state.ui.hoverTile = inside ? t : null;
+    state.ui.hoverValid = inside && state.ui.buildType ? canBuildAt(state.ui.buildType, t.x, t.y) : false;
+    state.ui.hoverBuilding = inside ? state.buildings.get(t.x, t.y) : null;
+  });
+
+  canvas.addEventListener('mouseleave', () => {
+    state.ui.hoverTile = null;
+    state.ui.hoverBuilding = null;
+    state.ui.mouseWorld = null;
+    state.ui.mouseScreen = null;   // 鼠标离开画布 → 停止边缘滚屏
+  });
+
+  canvas.addEventListener('mousedown', (e) => {
+    const { world, tile: t } = pointerInfo(e);
+
+    if (e.button === 2) {
+      if (state.ui.buildType) { selectBuildType(null); return; }
+      orderMove(world, t);
+      return;
+    }
+    if (e.button === 0) {
+      if (state.ui.buildType) { tryBuildAt(t.x, t.y); return; }
+      pickAt(world, t, e.shiftKey);
+    }
+  });
+
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const p = eventToCanvas(e);
+    // 以光标为锚点缩放：缩放前后光标下的世界坐标保持不变
+    const before = screenToWorld(state.camera, p.x, p.y);
+    const factor = Math.exp(-e.deltaY * 0.0012);
+    state.camera.scale = clamp(state.camera.scale * factor, state.camera.minScale, state.camera.maxScale);
+    const after = screenToWorld(state.camera, p.x, p.y);
+    state.camera.x += before.x - after.x;
+    state.camera.y += before.y - after.y;
+    clampCam(state.camera, state);
+  }, { passive: false });
+
+  window.addEventListener('keydown', (e) => {
+    const k = e.key.toLowerCase();
+    keys.add(k);
+    if (k === ' ') { state.ui.edgeScrollPaused = true; }   // 空格：临时冻结边缘滚屏
+    if (k === '1' || k === '2' || k === '3') { selectGeneralByHotkey(k); return; }
+    if (k === 'b') { selectBuildType(state.ui.buildType === 'wall' ? null : 'wall'); return; }
+    if (k === 't') { selectBuildType(state.ui.buildType === 'tower' ? null : 'tower'); return; }
+    if (k === 'escape') { selectBuildType(null); selectUnits([]); return; }
+    if (k === 'f') { fit(state.camera, state); return; }
+    if (k === 'home') {
+      centerOn(state.camera, state, (state.base.x + 0.5) * CONFIG.cell, (state.base.y + 0.5) * CONFIG.cell);
+      return;
+    }
+    if (k === 'g') { toggleAimDebug(); return; }
+    if (k === 'n') {
+      state.ui.showZoneNames = !state.ui.showZoneNames;
+      el.btnZones.classList.toggle('active', state.ui.showZoneNames);
+      return;
+    }
+    if (k === 'p') {
+      paused = !paused;
+      el.btnPause.textContent = paused ? '▶ 继续' : '⏸ 暂停';
+      el.btnPause.classList.toggle('active', paused);
+      return;
+    }
+    if (k === 'e') { spawnEnemy(); return; }
+    if (k === 'delete' || k === 'x') {
+      const b = state.ui.selectedBuilding;
+      if (b) {
+        if (removeBuilding(state, b)) {
+          state.buildingRevision++;
+          state.ui.selectedBuilding = null;
+          pushLog(`拆除 ${BUILDINGS[b.type].name} (${b.tx}, ${b.ty})`);
+        } else toast('大本营不可拆除');
+      }
+      return;
+    }
+    if (k === 'h') { el.helpBox.classList.toggle('hidden'); return; }
+  });
+
+  window.addEventListener('keyup', (e) => {
+    const k = e.key.toLowerCase();
+    keys.delete(k);
+    if (k === ' ') state.ui.edgeScrollPaused = false;
+  });
+  window.addEventListener('blur', () => {
+    keys.clear();
+    state.ui.edgeScrollPaused = false;
+  });
+}
+
+function orderMove(world, tile) {
+  const units = state.ui.selectedUnits.filter((u) => u.alive && u.faction === 'player');
+  if (!units.length) return;
+  let ok = 0;
+  units.forEach((u, i) => {
+    // 单位直接走向**鼠标点击的那个像素位置**（点到哪走到哪）
+    const target = i === 0 ? world : spreadTarget(world, i);
+    if (u.orderMove(state, target)) ok++;
+  });
+  if (ok === 0) toast('无法到达该位置（被地形或建筑挡住）');
+}
+
+/** 多选时给每个单位错开一个小偏移（像素），避免完全重叠 */
+function spreadTarget(worldPt, i) {
+  const offs = [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1]];
+  const o = offs[i % offs.length];
+  const d = CONFIG.cell * 0.28;
+  return { x: worldPt.x + o[0] * d, y: worldPt.y + o[1] * d };
+}
+
+function pickAt(world, tile, additive) {
+  // 1) 先看点到的建筑
+  const b = state.buildings.get(tile.x, tile.y);
+  if (b) { selectBuilding(b); return; }
+
+  // 2) 再找附近的己方单位（点击容差 = 单位半径 + 配置容差）
+  const tol = unitRadius('general') + CONFIG.unit.hitPad;
+  let best = null, bestD = Infinity;
+  for (const u of state.units) {
+    if (!u.alive || u.faction !== 'player') continue;
+    const d = Math.hypot(u.px - world.x, u.py - world.y);
+    if (d <= tol && d < bestD) { bestD = d; best = u; }
+  }
+  if (best) {
+    if (additive) {
+      const list = state.ui.selectedUnits.slice();
+      const i = list.indexOf(best);
+      if (i >= 0) list.splice(i, 1); else list.push(best);
+      selectUnits(list);
+    } else selectUnits([best]);
+    return;
+  }
+  if (!additive) selectUnits([]);
+}
+
+/* ------------------------------------------------------------------ */
+/* 启动                                                                */
+/* ------------------------------------------------------------------ */
+
+initDom();
+init();
+
+/* ------------------------------------------------------------------ */
+/* 调试句柄：浏览器控制台里可直接查看 / 操作内部状态                      */
+/* 例：RTS.state.units.length、RTS.state.ownedTiles、RTS.spawnEnemy()    */
+/* ------------------------------------------------------------------ */
+
+window.RTS = {
+  state,
+  CONFIG,
+  get frames() { return frameCount; },
+  spawnEnemy,
+  addBuilding,
+  tryBuildAt,
+  selectBuildType,
+  selectUnits,
+  selectBuilding,
+  selectGeneralByHotkey,
+  ownedZoneNames,
+  pickAt,
+  orderMove,
+  // 下面是给自动化测试 / 控制台调试用的
+  tick: update,
+  drawOnce: () => draw(state, canvas, state.camera, buildUiSnapshot()),
+  findPathFor: (st, from, to, faction) => findPath(st, from, to, faction),
+  // 直线移动：某条直线是否可走 / 折线拉直的结果
+  segmentClearFor: (st, a, b, faction) => segmentClear(st, a.x, a.y, b.x, b.y, faction),
+  smoothPathFor: (st, pts, faction) => smoothPath(st, pts, faction),
+  findBlockingWall,
+  removeBuildingFor: (st, b) => removeBuilding(st, b),
+  pointerInfo,
+  eventToCanvas,
+  resize: resizeCanvas,
+  // 坐标换算（测试里用来核对“鼠标点 ↔ 地块”是否一致）
+  screenToWorld: (sx, sy) => screenToWorld(state.camera, sx, sy),
+  worldToTile,
+  tileCenter: (tx, ty) => tileCenter(tx, ty, CONFIG.cell),
+  fitView: () => fit(state.camera, state),
+};
+
+</script>
+</body>
+</html>

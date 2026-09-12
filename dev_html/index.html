@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>RTS 原型 v0.3 —— 大地图 / 直线移动 / 战斗警戒 / 区块占领 / 建造</title>
+<link rel="stylesheet" href="./css/style.css" />
+</head>
+<body>
+<div id="app">
+
+  <!-- ============ 顶栏：资源与领地 ============ -->
+  <header id="topbar">
+    <div class="brand">
+      <span class="dot"></span>
+      <strong>RTS 原型 v0.3</strong>
+      <span class="sub">24×16 大地图 · 直线移动 · 战斗警戒 · 建造</span>
+    </div>
+
+    <div class="stats">
+      <div class="stat">
+        <span class="ico">🌾</span>
+        <div>
+          <div class="k">粮食</div>
+          <div class="v" id="food">0.0</div>
+        </div>
+      </div>
+      <div class="stat">
+        <span class="ico">🪙</span>
+        <div>
+          <div class="k">黄金</div>
+          <div class="v" id="gold">0.0</div>
+        </div>
+      </div>
+      <div class="stat">
+        <span class="ico">🗺️</span>
+        <div>
+          <div class="k">己方地块</div>
+          <div class="v"><span id="tiles">0</span> <small id="rate">+0.0 / +0.0 每秒</small></div>
+        </div>
+      </div>
+      <div class="stat wide">
+        <span class="ico">🏳️</span>
+        <div>
+          <div class="k">己方区块</div>
+          <div class="v small" id="zoneList">（无）</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tools">
+      <button id="btnPause" class="btn">⏸ 暂停</button>
+      <button id="btnEdge" class="btn active" title="鼠标推到视野边缘即移动视角；按住空格可临时冻结">🖱 边缘滚屏</button>
+      <button id="btnFit" class="btn" title="快捷键 F">⤢ 全图</button>
+      <button id="btnZones" class="btn" title="快捷键 N">区块名</button>
+      <button id="btnHelp" class="btn" title="快捷键 H">? 帮助</button>
+    </div>
+  </header>
+
+  <!-- ============ 主体 ============ -->
+  <main id="body">
+
+    <!-- 侧栏 -->
+    <aside id="sidebar">
+      <section class="panel">
+        <h3>建造 <small>本版免费</small></h3>
+        <div class="buildrow">
+          <button id="btnWall" class="buildbtn" title="快捷键 B">
+            <span class="bk">B</span>
+            <span class="bn">城墙</span>
+            <span class="bd">填满整格<br>己方穿过 / 敌方阻挡</span>
+          </button>
+          <button id="btnTower" class="buildbtn" title="快捷键 T">
+            <span class="bk">T</span>
+            <span class="bn">箭塔</span>
+            <span class="bd">单体伤害<br>射程 3 格</span>
+          </button>
+        </div>
+        <div class="hint" id="buildHint">建造模式关闭（按 B 建城墙 / T 建箭塔）</div>
+        <button id="btnCancel" class="btn wide">✕ 退出建造模式 (Esc)</button>
+      </section>
+
+      <section class="panel">
+        <h3>选中</h3>
+        <div class="selname" id="selName">未选中</div>
+        <div class="hpbar"><i id="selHp"></i></div>
+        <div class="seldetail" id="selDetail">按 1 / 2 / 3 或左键点击选择将领</div>
+      </section>
+
+      <section class="panel">
+        <h3>状态</h3>
+        <div class="kv"><span>将领</span><b id="statUnits">0</b></div>
+        <div class="kv"><span>测试敌人</span><b id="statEnemies">0</b></div>
+        <div class="kv"><span>建筑总数</span><b id="statBuildings">0</b></div>
+        <div class="kv"><span>地块变更计数</span><b id="statRevision">0</b></div>
+      </section>
+
+      <section class="panel">
+        <h3>调试 <small>正式敌人版本之前的验证工具</small></h3>
+        <div class="btnrow">
+          <button id="btnSpawn" class="btn small" title="快捷键 E">＋ 刷测试敌人</button>
+          <button id="btnClearEnemies" class="btn small">清除敌人</button>
+        </div>
+        <button id="btnAutoSpawn" class="btn wide small">⏱ 自动刷敌人</button>
+        <button id="btnAim" class="btn wide small">🎯 坐标调试准星 (G)</button>
+        <div class="note">刷出的敌人会从右侧朝大本营推进；被城墙挡住时会贴到墙边一下一下拆（城墙有血量，掉血时能看到血条、挨打会闪红）。我方将领静止时会自动警戒、迎战附近的敌人。</div>
+      </section>
+
+      <section class="panel grow">
+        <h3>事件日志</h3>
+        <div class="logbox" id="log"></div>
+      </section>
+    </aside>
+
+    <!-- 画布 -->
+    <div id="stage">
+      <canvas id="game"></canvas>
+      <pre id="debugAim" class="debugaim hidden"></pre>
+      <div id="toasts"></div>
+      <div id="helpBox" class="helpbox hidden">
+        <h4>操作说明</h4>
+        <ul>
+          <li><b>1 / 2 / 3</b>：快速选中三个将领</li>
+          <li><b>左键</b>：选中将领 / 选中建筑；Shift + 左键多选</li>
+          <li><b>右键</b>：命令选中将领移动到<b>鼠标所指的位置</b>（点到哪走到哪；点到山/城墙/建筑时自动走到最近的可达处）</li>
+          <li><b>自动战斗</b>：单位静止且没有目标时，会自动警戒周围 <b>4 格</b>内的敌方单位 —— <b>先移动靠近，进入攻击距离后再开火</b>（红色虚线环=交战目标，头顶小三角=交战中）</li>
+          <li><b>B / T</b>：进入城墙 / 箭塔建造模式，<b>左键</b>放置，右键或 Esc 退出</li>
+          <li><b>X / Delete</b>：拆除选中的建筑（大本营不可拆）；选中城墙可以看到它的生命值</li>
+          <li><b>鼠标推到视野边缘</b>：平移视角（按住 <b>空格</b> 可临时冻结）；<b>W A S D / 方向键</b>也可平移</li>
+          <li><b>滚轮</b>：以光标为锚点缩放；<b>F</b>：缩到看完整张地图；<b>Home</b>：回到大本营</li>
+          <li><b>N</b>：显示 / 隐藏区块名；<b>P</b>：暂停；<b>E</b>：刷一个测试敌人；<b>H</b>：本帮助</li>
+          <li><b>G</b>：坐标调试准星（红叉=鼠标所指的点，绿圈=判定出的地块中心，两者必须重合）</li>
+        </ul>
+        <h4>本版规则</h4>
+        <ul>
+          <li>地图为 24×16 四连通地块，每格 120px（世界尺寸 2880×1920），<b>单位远小于一个地块</b>。</li>
+          <li>山不可通行、森林减速；单位沿 A* 路线<b>连续平滑移动</b>，终点就是点击位置，不吸附格心。</li>
+          <li><b>能走直线就走直线</b>：寻路结果会被拉直（每段直线都做过通行判定），只有绕山 / 绕城墙时才出现拐点。</li>
+          <li>每个地块最多一个建筑：大本营（开局自带、不可摧毁）／城墙／箭塔。</li>
+          <li><b>城墙有血量</b>（默认 300，见 <code>CONFIG.building.wall.hpMax</code>）：<b>敌人被墙挡住时会贴上来一下一下拆</b>（每次 40 点、间隔 1.2s），墙塌了就让出缺口；掉血的墙会显示血条、挨打时整格闪红。</li>
+          <li><b>战斗</b>：将领与敌人都有攻击伤害、攻击距离、攻击间隔（数值集中在 <code>CONFIG.combat</code>）；开火时画一条攻击线。</li>
+          <li><b>警戒</b>：没有目标且<b>静止</b>的单位会锁定警戒半径内最近的敌方单位，先靠近再攻击；目标跑出追击上限就放弃；<b>右键移动命令会中断交战</b>。</li>
+          <li>资源 = 己方占领地块数 × 每秒 1 粮食 1 黄金，实时增长。</li>
+          <li>区块占领（占位规则）：己方将领站在无主区块内 4 秒即可占领整个区块；正在占领时区块会从下往上填充黄色。</li>
+          <li>本版没有正式敌人，建造不消耗资源，战斗逻辑用调试刷出的测试敌人验证。</li>
+        </ul>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script type="module" src="./js/main.js"></script>
+</body>
+</html>
