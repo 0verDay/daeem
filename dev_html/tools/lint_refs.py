@@ -21,7 +21,7 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JS_DIR = os.path.join(ROOT, 'js')
-MODULES = ['config.js', 'util.js', 'path.js', 'map.js', 'zone.js', 'building.js', 'unit.js', 'render.js', 'main.js']
+MODULES = ['config.js', 'faction.js', 'util.js', 'path.js', 'map.js', 'zone.js', 'building.js', 'unit.js', 'net.js', 'render.js', 'main.js']
 
 RE_IMPORT = re.compile(r"import\s*\{([^}]*)\}\s*from\s*'\./([\w.]+)'", re.S)
 RE_EXPORT_FN = re.compile(r"export\s+(?:async\s+)?function\s+(\w+)\s*\(([^)]*)\)", re.S)

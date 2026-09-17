@@ -16,7 +16,7 @@ import os
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FILES = ['config.js', 'util.js', 'path.js', 'map.js', 'zone.js', 'building.js', 'unit.js', 'render.js', 'main.js']
+FILES = ['config.js', 'faction.js', 'util.js', 'path.js', 'map.js', 'zone.js', 'building.js', 'unit.js', 'net.js', 'render.js', 'main.js']
 
 PAIRS = {')': '(', ']': '[', '}': '{'}
 OPEN = set('([{')

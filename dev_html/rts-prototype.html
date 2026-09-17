@@ -5,7 +5,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>RTS 原型 v0.3 —— 大地图 / 直线移动 / 战斗警戒 / 区块占领 / 建造</title>
+<title>RTS 原型 v0.6 —— 大地图 / 直线移动 / 战斗警戒 / 区块占领 / 建造 / 联机对战</title>
 <style>
 /* style.css —— 深色军事风 RTS 原型界面 */
 
@@ -92,6 +92,7 @@ html, body {
 .btn.active { background: #4a3f1f; border-color: var(--accent); color: var(--accent); }
 .btn.small { padding: 6px 9px; font-size: 11px; }
 .btn.wide { width: 100%; }
+.btn.hidden { display: none; }
 
 /* ---------------- 主体 ---------------- */
 #body { display: flex; flex: 1 1 auto; min-height: 0; }
@@ -254,8 +255,8 @@ html, body {
   <header id="topbar">
     <div class="brand">
       <span class="dot"></span>
-      <strong>RTS 原型 v0.3</strong>
-      <span class="sub">24×16 大地图 · 直线移动 · 战斗警戒 · 建造</span>
+      <strong>RTS 原型 v0.6</strong>
+      <span class="sub">24×16 大地图 · 直线移动 · 战斗警戒 · 建造 · 联机对战</span>
     </div>
 
     <div class="stats">
@@ -322,6 +323,14 @@ html, body {
       </section>
 
       <section class="panel">
+        <h3>联机 <small>准备后才开战</small></h3>
+        <button id="btnReady" class="btn wide hidden">✅ 准备 (R)</button>
+        <div class="hint" id="lobbyHint"></div>
+        <div class="note">地址带 <code>#net=1</code> 才联机。第 1 个进房间的是房主（p1），
+          之后的是 p2、p3…。<b>双方都点「准备」才会开战</b>（房主会在倒计时后宣布开始）。</div>
+      </section>
+
+      <section class="panel">
         <h3>选中</h3>
         <div class="selname" id="selName">未选中</div>
         <div class="hpbar"><i id="selHp"></i></div>
@@ -359,6 +368,22 @@ html, body {
       <pre id="debugAim" class="debugaim hidden"></pre>
       <div id="toasts"></div>
       <div id="helpBox" class="helpbox hidden">
+        <h4>联机对战规则（v0.6）</h4>
+        <ul>
+          <li><b>先准备，再开战</b>：进房间后停在准备界面，<b>双方都按 R（或点「✅ 准备」）</b>
+              之后，房主宣布开战并倒数 3 秒。只有一个人在场时永远不会开打。</li>
+          <li><b>双方各有自己的大本营</b>：房主（p1）在地图中央，客机（p2）在地图右下角，
+              相距 10 格。双方开局各有一小段城墙 + 一座箭塔。</li>
+          <li><b>阵亡后 8 秒在自家大本营复活</b>，满血。屏幕上会画一个复活倒计时环
+              （在你家大本营位置）。所以死一次不用干等，但也<b>杀不光对方</b>。</li>
+          <li><b>胜负：打掉对方大本营 = 对方落败。</b>大本营可以被<b>打掉</b>，
+              但不能用 X / Delete <b>拆除</b>。打掉后屏幕中央显示结算。</li>
+          <li>结算后<b>按 R 或点「↻ 再来一局」</b>回到准备界面，双方再准备就能再打一局
+              （不用刷新页面）。</li>
+          <li>超过 10 分钟按大本营剩余血量比例判胜负，防止无限拖时间。</li>
+          <li>城墙只挡对手：穿不过对方的墙，但能穿过自己的。要拆墙就派兵去打。</li>
+          <li>客机看到的结算结果由房主判定后同步过来，所以两边显示一定一致。</li>
+        </ul>
         <h4>操作说明</h4>
         <ul>
           <li><b>1 / 2 / 3</b>：快速选中三个将领</li>
@@ -371,6 +396,19 @@ html, body {
           <li><b>滚轮</b>：以光标为锚点缩放；<b>F</b>：缩到看完整张地图；<b>Home</b>：回到大本营</li>
           <li><b>N</b>：显示 / 隐藏区块名；<b>P</b>：暂停；<b>E</b>：刷一个测试敌人；<b>H</b>：本帮助</li>
           <li><b>G</b>：坐标调试准星（红叉=鼠标所指的点，绿圈=判定出的地块中心，两者必须重合）</li>
+        </ul>
+        <h4>联机（v0.4）</h4>
+        <ul>
+          <li>地址里带 <code>#net=1</code> 才联机：<code>…/rts-prototype.html#net=1</code>。
+              <b>不带就是纯单机</b>，和以前完全一样。</li>
+          <li><b>第 1 个进房间的人是房主</b>（阵营 p1），他跑权威逻辑；其他人是客机（p2、p3…）。</li>
+          <li>换一局用 <code>#net=1&amp;room=别的名字</code>；开打前确认双方 <code>room</code> 一致。</li>
+          <li>客机点下右键后单位会<b>稍后才动</b>（约 150ms：50ms 快照 + 100ms 插值缓冲），
+              这是设计使然，不是卡顿。</li>
+          <li>连不上服务器时<b>会自动退回单机模式</b>并写进事件日志，不会白屏。</li>
+          <li>房主关掉页面后，服务器会把下一位提升为新房主 —— 这局不会停摆，
+              但世界状态会重新同步。</li>
+          <li>部署与排错见 <code>net/README.md</code>；控制台里用 <code>RTS.netStatus()</code> 看联机状态。</li>
         </ul>
         <h4>本版规则</h4>
         <ul>
@@ -460,6 +498,53 @@ const CONFIG = {
     zoneOwnedByBuilding: true,
   },
 
+  /**
+   * ---- 对战（pvp）规则 ----
+   *
+   * 单机模式**不使用**这里的任何一项（保持 v0.3 行为：大本营不可摧毁、单位死了就没了）。
+   * 联机模式下这些开关让「两个玩家分阵营打一场」成立。
+   * 全部可在控制台运行时改：RTS.CONFIG.pvp.respawnSec = 0
+   */
+  pvp: {
+    /**
+     * 是否需要「双方准备」才开战。
+     *   true（默认）→ 进房间后先停在准备界面：显示双方阵营、谁准备好了，
+     *                  **双方都点准备**才真正开始，并有一个 3 秒倒计时。
+     *   false        → 进房间就直接开打（旧的即开即打行为）
+     *
+     * 准备界面不只是个门面 —— 它顺带解决了「房主先进房间、客机还没到」这段窗口：
+     * 只有一个人在场时永远不会开战，也就不会出现「一打开就判 P1 赢」。
+     */
+    requireReady: true,
+
+    /** 准备就绪后的倒数秒数（0 = 不倒数，立即开打） */
+    countdownSec: 3,
+
+    /** 对战总时长上限（秒）。到点按「大本营剩余血量比例」判胜负，防止无限拖时间。0 = 不限时 */
+    timeLimitSec: 600,
+
+    /**
+     * 大本营是否可被摧毁。
+     *   false（默认）→ 血量保底 1，永远打不掉 —— 单机行为，旧测试依赖它
+     *   true         → 可以打掉，且**打掉某一方大本营 = 该方落败**（这就是胜负条件）
+     */
+    destructibleBase: false,
+
+    /**
+     * 单位阵亡后多少秒在自家大本营复活。
+     *   0 → 不复活（单机行为，死了就没了）
+     *   8 → 对战推荐值：阵亡 8 秒后满血复活，节奏不至于一边倒
+     *
+     * ⚠️ 注意这是**无限复活**：所以胜负**只能靠拆家**，不能靠杀光对方单位。
+     * ⚠️ 只在联机模式生效 —— 由 main.js 在进入联机时把 state.pvpEnabled 置为 true。
+     *    单机保持 v0.3 行为（死了就是没了），否则旧测试与单机手感都会被改写。
+     */
+    respawnSec: 8,
+
+    /** 复活位置从大本营往外扩几格（多单位错开，不叠在同一格） */
+    respawnSpreadTiles: 1,
+  },
+
   // ---- 建筑 ----
   building: {
     // 建造暂时免费（cost 全 0）；后续要做消耗直接改这里 + 打开 CONFIG.economy.enabled
@@ -508,6 +593,21 @@ const CONFIG = {
     general: '#ffd166',
     generalSel: '#fff2b0',
     enemy: '#e05a5a',
+
+    /**
+     * ★ 阵营配色表（多人联机用）。
+     * 注意 'player' 必须与 general 同为黄色 —— 单机模式下阵营就是 'player'，
+     * 这样联机改造不会让单机观感发生任何变化。
+     * 四个玩家席位颜色刻意拉开色相（黄 / 蓝 / 绿 / 紫），地图缩小时也能一眼分清。
+     */
+    faction: {
+      player: { main: '#ffd166', sel: '#fff2b0', bar: '#7ce07c', line: 'rgba(255,225,150,' },
+      p1: { main: '#ffd166', sel: '#fff2b0', bar: '#7ce07c', line: 'rgba(255,225,150,' },
+      p2: { main: '#5ac8ff', sel: '#c9ecff', bar: '#5ac8ff', line: 'rgba(120,200,255,' },
+      p3: { main: '#8ce08c', sel: '#d6ffd6', bar: '#8ce08c', line: 'rgba(140,224,140,' },
+      p4: { main: '#c9a0ff', sel: '#e8d9ff', bar: '#c9a0ff', line: 'rgba(201,160,255,' },
+      enemy: { main: '#e05a5a', sel: '#ffb0b0', bar: '#e05a5a', line: 'rgba(255,120,120,' },
+    },
     range: 'rgba(255,209,102,0.10)',
     rangeEdge: 'rgba(255,209,102,0.45)',
   },
@@ -515,6 +615,90 @@ const CONFIG = {
 
 const RESOURCES = ['food', 'gold'];
 const RESOURCE_LABEL = { food: '粮食', gold: '黄金' };
+
+/* ==================== js/faction.js ==================== */
+/**
+ * faction.js —— 阵营模型（多人联机的地基）
+ *
+ * 为什么需要单独一个模块：原来阵营是散落各处的字符串字面量 'player' / 'enemy'，
+ * 两个玩家都会是 'player'，于是永远不会互相索敌（见 unit.js 的索敌判定），
+ * 「互相看到 + 能打」这个目标根本无法达成。这里把阵营语义收敛到一处。
+ *
+ * 阵营取值：
+ *   'p1'      玩家一（房主）
+ *   'p2'      玩家二（客机）
+ *   'p3'…'p8' 预留，最多 8 个玩家席位
+ *   'enemy'   NPC / 调试用的测试敌人
+ *   'player'  ★ 单机模式的默认阵营，等价于 P1，保留是为了让现有测试与传统单机行为成立
+ *
+ * 两条对称规则（注意它们方向相反，别搞混）：
+ *   isPlayerFaction(f)  —— 这个阵营是不是「玩家控制的一方」？决定它是否索敌 / 占区块 / 回血
+ *   sameSide(a, b)      —— 这两者是不是「同一方」？决定是否互相攻击、城墙是否放行
+ *
+ * 本模块只依赖 config.js，不依赖任何其他模块 —— 保持它在依赖图的最底层。
+ */
+
+
+/** 单机默认阵营：等价于 P1，只是为了向后兼容而保留这个名字 */
+const DEFAULT_FACTION = 'player';
+
+/** 联机时的玩家席位顺序：第一个连上的是房主 */
+const FACTION_ROSTER = ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8'];
+
+/** NPC 阵营（测试敌人） */
+const NPC_FACTION = 'enemy';
+
+/** 单机模式（没有联机）下使用的阵营表 */
+const SINGLE_PLAYER_ROSTER = [DEFAULT_FACTION];
+
+/** 这个阵营是不是玩家控制的一方？ */
+function isPlayerFaction(f) {
+  return f === DEFAULT_FACTION || /^p[1-8]$/.test(f);
+}
+
+/** 两者是否同一方（用于索敌与城墙通行） */
+function sameSide(a, b) {
+  return a === b;
+}
+
+/** 阵营显示名（HUD / 事件日志用） */
+function factionLabel(f) {
+  if (f === DEFAULT_FACTION) return '己方';
+  if (f === NPC_FACTION) return '敌方';
+  if (isPlayerFaction(f)) return `玩家${f.slice(1)}`;
+  return String(f);
+}
+
+/** 阵营配色（render.js 用它上色；单机下与旧配色逐字一致，保证观感不变） */
+function factionColor(f) {
+  return CONFIG.colors.faction[f] || CONFIG.colors.faction[DEFAULT_FACTION];
+}
+
+/**
+ * 根据「玩家席位表」生成一个状态里的阵营表。
+ * 单机模式传 SINGLE_PLAYER_ROSTER（或什么都不传），得到一个等价于旧 'player' 的阵营。
+ *
+ * @param {string[]} roster 形如 ['p1','p2']
+ * @returns {{myFaction:string, factions:string[], enemyFaction:string}}
+ */
+function makeFactions(roster) {
+  const list = (roster && roster.length) ? roster.slice() : SINGLE_PLAYER_ROSTER.slice();
+  return {
+    myFaction: list[0],
+    factions: list,
+    enemyFaction: NPC_FACTION,
+  };
+}
+
+/**
+ * 把一个「本地玩家阵营」映射到最接近的旧语义阵营。
+ * 单机下是 no-op（'player' → 'player'）。
+ *
+ * 用途：让 zone.js / 资源产出 / HUD 在联机下知道「我」是哪一方。
+ */
+function localOf(state) {
+  return (state && state.factions && state.factions.myFaction) || DEFAULT_FACTION;
+}
 
 /* ==================== js/util.js ==================== */
 /**
@@ -946,12 +1130,100 @@ const MAP_LAYOUT = [
   '........................',
 ];
 
-/** 将领（占位单位）开局站位 */
+/** 将领（占位单位）开局站位 —— 单机模式使用，也是 P1 的出生点 */
 const GENERAL_SPAWNS = [
   { x: 8, y: 10 },
   { x: 10, y: 11 },
   { x: 11, y: 9 },
 ];
+
+/**
+ * 多人对战的起点坐标。地图是 24×16，所以这条对角线上两个点关于地图中心对称：
+ *   P1 = (4, 4)  —— 左上；P2 = (19, 11) —— 右下
+ * 直线距离约 √(15² + 7²) ≈ 16.6 格，双方要走一会儿才会接触。
+ */
+const PVP_POINTS = [
+  { x: 4, y: 4 },
+  { x: 19, y: 11 },
+  { x: 4, y: 11 },
+  { x: 19, y: 4 },
+  { x: 2, y: 8 },
+  { x: 21, y: 7 },
+  { x: 12, y: 1 },
+  { x: 12, y: 14 },
+];
+
+/**
+ * 取某个地图点位附近**最近的可行走格**。
+ *
+ * 为什么要做：上面这些点位是写死的，而地图会因地形（山/森林）变化。
+ * 直接把大本营放到山上会导致寻路/建造直接坏掉，所以必须找个能站的地方。
+ * 从内向外按"切比雪夫环"扩散，第一个可通行格即返回值。
+ */
+function nearestWalkable(terrain, x, y, maxRadius = 8) {
+  const ok = (px, py) => terrain.has(px, py) && terrain.get(px, py) !== 'mountain';
+  if (ok(x, y)) return { x, y };
+  for (let r = 1; r <= maxRadius; r++) {
+    for (let dy = -r; dy <= r; dy++) {
+      for (let dx = -r; dx <= r; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+        const px = x + dx, py = y + dy;
+        if (ok(px, py)) return { x: px, y: py };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * 某一方的出生点：大本营位置 + 3 个将领站位 + 防御阵地（城墙 + 箭塔）。
+ *
+ * ★ 这是「分阵营对战」的地基。旧实现里双方共用地图中央那一个大本营 ——
+ *   客机入场时只是把大本营的 owner 改成了自己，于是两个人挤在同一个基地上，
+ *   开局就贴脸。现在每一方有**自己的**基地，关于地图中心对称。
+ *
+ * @param {object} map      createMap() 的返回值
+ * @param {string} faction  阵营（'player' 单机 / 'p1' / 'p2' …）
+ * @param {string} primary  主阵营（roster[0]）—— 单机与 P1 都用原版点位，保证兼容
+ */
+function spawnLayoutFor(map, faction, primary) {
+  const terrain = map.terrain;
+  const isPrimary = !faction || faction === primary || faction === 'player';
+
+  if (isPrimary) {
+    // 单机 / P1：沿用原版地图中央的大本营与将领站位（v0.3 行为逐位不变）
+    const base = nearestWalkable(terrain, map.base.x, map.base.y) || map.base;
+    const spawns = GENERAL_SPAWNS.map((s) => nearestWalkable(terrain, s.x, s.y) || base);
+    return { base, spawns, defenses: [] };
+  }
+
+  // 其他玩家：从 PVP_POINTS 里按「阵营序号」稳定取一个点（不依赖 map.base，避免双方重合）
+  const n = parseInt(String(faction).replace(/^p/, ''), 10) || 2;
+  const p = PVP_POINTS[(n - 1) % PVP_POINTS.length];
+  const base = nearestWalkable(terrain, p.x, p.y) || map.base;
+
+  // 将领围着大本营站（不挤在同一格）
+  const ring = [[0, 1], [1, 0], [-1, 0], [0, -1], [1, 1], [-1, -1]];
+  const spawns = [];
+  for (let i = 0; i < 3; i++) {
+    const o = ring[i % ring.length];
+    spawns.push(nearestWalkable(terrain, base.x + o[0], base.y + o[1]) || base);
+  }
+
+  // 防御阵地：大本营正上方一段城墙 + 旁边一座箭塔（让开局有点"阵地感"，也顺带
+  // 验证「城墙/箭塔按阵营归属」在多玩家下成立）。地形不允许时就少建几个。
+  const defenses = [];
+  const wallAt = { x: base.x, y: base.y - 1 };
+  if (terrain.has(wallAt.x, wallAt.y) && terrain.get(wallAt.x, wallAt.y) !== 'mountain') {
+    defenses.push({ type: 'wall', x: wallAt.x, y: wallAt.y });
+  }
+  const towerAt = { x: base.x + 2, y: base.y };
+  if (terrain.has(towerAt.x, towerAt.y) && terrain.get(towerAt.x, towerAt.y) !== 'mountain') {
+    defenses.push({ type: 'tower', x: towerAt.x, y: towerAt.y });
+  }
+
+  return { base, spawns, defenses };
+}
 
 function createMap() {
   const cols = CONFIG.mapCols;
@@ -1000,22 +1272,36 @@ function createMap() {
  *   1. 把整张地图横竖均分成 CONFIG.zone.zoneCols × CONFIG.zone.zoneRows 个矩形区块；
  *      后续地图编辑器只需要提供一张 zoneId 网格（每个地块属于哪个区块），
  *      把 buildZones() 换成读网格即可，其余逻辑不用改。
- *   2. 区块状态：owner = null(无主) | 'player' | 'enemy'
+ *   2. 区块状态：owner = null(无主) | 阵营字符串（'player' / 'p1' / 'p2' …）
  *   3. 占领进度 progress 0~1：
- *      - 区块内有己方单位 → 每秒 +1/captureTimeSec
- *      - 否则 → 每秒 -decayPerSec
- *      - progress 到 1 → owner = 'player'
- *      - CONFIG.zone.zoneOwnedByBuilding = true 时：区块内只要有己方建筑，也直接算己方领地
+ *      - 区块内有某阵营的单位 → 该阵营进度每秒 +1/captureTimeSec
+ *      - 没有 → 该阵营进度每秒 -decayPerSec
+ *      - 某阵营进度到 1 → owner = 该阵营
+ *      - CONFIG.zone.zoneOwnedByBuilding = true 时：区块内只要有某阵营的建筑，也直接算该阵营领地
  *   4. 资源：每秒 = 己方区块的“地块数量” × 每秒产出
+ *
+ * ★ 多人改造要点（v0.4）：进度改成**每阵营独立**存在 z.progressBy 里。
+ *   旧实现只有一个全局 z.progress，联机下 p1 和 p2 同时站在同一区块会互相抵消
+ *   （一个加、一个减，谁也占不下来）。现在各记各的，谁先到 1 谁拿走。
  */
 
 
 const ROW_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
-function buildZones() {
+/** 该状态里所有会参与占领的阵营（玩家方 + NPC） */
+function captureFactions(state) {
+  const list = (state && state.factions && state.factions.factions) || [DEFAULT_FACTION];
+  const enemy = (state && state.factions && state.factions.enemyFaction) || 'enemy';
+  const out = list.slice();
+  if (out.indexOf(enemy) < 0) out.push(enemy);
+  return out;
+}
+
+function buildZones(state) {
   const { zoneCols, zoneRows } = CONFIG.zone;
   const cols = CONFIG.mapCols;
   const rows = CONFIG.mapRows;
+  const factions = captureFactions(state);
   const zones = [];
 
   for (let zy = 0; zy < zoneRows; zy++) {
@@ -1024,12 +1310,15 @@ function buildZones() {
       const x1 = Math.floor(((zx + 1) * cols) / zoneCols) - 1;
       const y0 = Math.floor((zy * rows) / zoneRows);
       const y1 = Math.floor(((zy + 1) * rows) / zoneRows) - 1;
+      const progressBy = {};
+      for (const f of factions) progressBy[f] = 0;
       zones.push({
         id: zy * zoneCols + zx,
         name: `${ROW_LETTERS[zy]}${zx + 1}`,
         x0, y0, x1, y1,
         owner: null,
-        progress: 0,
+        progress: 0,        // 当前 owner（或领先者）的进度，渲染进度条用
+        progressBy,         // ★ 每阵营各自的占领进度
         tileCount: (x1 - x0 + 1) * (y1 - y0 + 1),
       });
     }
@@ -1039,10 +1328,11 @@ function buildZones() {
 
 /**
  * 建立区块系统
+ * @param {object} [state] 用于取出阵营表；不传则按单机处理（等价于旧行为）
  * @returns {{zones: Array, lookup: number[]}} lookup: 地块索引 -> 区块 id
  */
-function createZoneSystem() {
-  const zones = buildZones();
+function createZoneSystem(state) {
+  const zones = buildZones(state);
   const lookup = new Array(CONFIG.mapCols * CONFIG.mapRows).fill(-1);
   for (const z of zones) {
     for (let y = z.y0; y <= z.y1; y++) {
@@ -1060,7 +1350,7 @@ function zoneAt(state, x, y) {
 }
 
 /** 统计某方拥有的地块数（资源产出依据） */
-function ownedTileCount(state, owner = 'player') {
+function ownedTileCount(state, owner = DEFAULT_FACTION) {
   let n = 0;
   for (const z of state.zones) if (z.owner === owner) n += z.tileCount;
   return n;
@@ -1071,45 +1361,78 @@ function zoneHasBuilding(state, zoneId, owner) {
   return state.buildingList.some((b) => b.zoneId === zoneId && b.owner === owner && b.alive);
 }
 
-/** 重算建筑带给区块的归属（建筑建成/被毁时调用） */
+/**
+ * 重算建筑带给区块的归属（建筑建成/被毁时调用）。
+ * 任意玩家阵营的建筑都能把区块直接收归自己 —— 旧实现只认 'player'。
+ */
 function refreshBuildingOwnership(state) {
   if (!CONFIG.zone.zoneOwnedByBuilding) return;
   for (const z of state.zones) {
-    if (z.owner === 'player') continue;
-    if (zoneHasBuilding(state, z.id, 'player')) {
-      z.owner = 'player';
-      z.progress = 1;
-      z.claimedBy = 'building';
+    for (const f of captureFactions(state)) {
+      if (!isPlayerFaction(f)) continue;
+      if (z.owner === f) continue;
+      if (zoneHasBuilding(state, z.id, f)) {
+        z.owner = f;
+        if (!z.progressBy) z.progressBy = {};
+        z.progressBy[f] = 1;
+        z.progress = 1;
+        z.claimedBy = 'building';
+      }
     }
   }
 }
 
 /**
- * 每帧推进区块占领（占位规则）
- * 注意：多个单位站在同一区块不会叠加加速（原话是“持续一段时间”），
- *       如需叠加，改 hasFriendly 为计数即可。
+ * 每帧推进区块占领。
+ * 注意：同一阵营的多个单位站在同一区块不会叠加加速（原话是“持续一段时间”），
+ *       如需叠加，把 touched 改成计数即可。
  */
 function updateZones(state, dt) {
   const { captureTimeSec, decayPerSec } = CONFIG.zone;
+  const factions = captureFactions(state);
 
-  const friendlyUnits = (state.units || []).filter((u) => u.alive && u.faction === 'player');
-  const touched = new Set();
-  for (const u of friendlyUnits) {
+  // 每个阵营分别统计「本帧有哪些区块被我的单位碰到」
+  const touchedBy = {};
+  for (const f of factions) touchedBy[f] = new Set();
+  for (const u of state.units || []) {
+    if (!u.alive) continue;
+    const set = touchedBy[u.faction];
+    if (!set) continue;
     const z = zoneAt(state, u.tx, u.ty);
-    if (z && z.owner !== 'player') touched.add(z.id);
+    if (z && z.owner !== u.faction) set.add(z.id);
   }
 
   for (const z of state.zones) {
-    if (z.owner === 'player') continue;
-    if (touched.has(z.id)) {
-      z.progress = clamp(z.progress + dt / captureTimeSec, 0, 1);
-      if (z.progress >= 1) {
-        z.owner = 'player';
-        z.claimedBy = 'unit';
-        z.progress = 1;
+    if (!z.progressBy) {
+      z.progressBy = {};
+      for (const f of factions) z.progressBy[f] = 0;
+    }
+    for (const f of factions) {
+      if (z.progressBy[f] === undefined) z.progressBy[f] = 0;
+      if (z.owner === f) continue;                       // 已经是我的了，不用再推
+      if (touchedBy[f] && touchedBy[f].has(z.id)) {
+        z.progressBy[f] = clamp(z.progressBy[f] + dt / captureTimeSec, 0, 1);
+      } else if (z.progressBy[f] > 0) {
+        z.progressBy[f] = clamp(z.progressBy[f] - decayPerSec * dt, 0, 1);
       }
-    } else if (z.progress > 0) {
-      z.progress = clamp(z.progress - decayPerSec * dt, 0, 1);
+      if (z.progressBy[f] >= 1) {
+        z.owner = f;
+        z.claimedBy = 'unit';
+        z.progressBy[f] = 1;
+      }
+    }
+
+    // 渲染用的 progress = 当前领先者的进度（无主时显示最高的那一方）
+    let lead = null, best = 0;
+    for (const f of factions) {
+      const v = z.progressBy[f] || 0;
+      if (v > best) { best = v; lead = f; }
+    }
+    if (z.owner) {
+      z.progress = z.progressBy[z.owner] !== undefined ? z.progressBy[z.owner] : 1;
+    } else {
+      z.progress = best;
+      z.progressLead = lead;
     }
   }
 }
@@ -1154,10 +1477,16 @@ class Building {
     this.flash = 0;
   }
 
-  /** 该建筑是否阻挡某个阵营的单位（城墙：挡敌人、不挡己方） */
+  /**
+   * 该建筑是否阻挡某个阵营的单位（城墙：挡对手、不挡自己人）。
+   *
+   * ★ 多人改造要点：判定基准从「faction === 'player'」改成「sameSide(faction, 建筑所有者)」。
+   *   原来只有两个阵营时这两种写法等价（城墙的 blocksPlayer=false / blocksEnemy=true
+   *   恰好就是「自己人不挡、外人挡」），所以单机行为逐位不变；
+   *   但联机下 p2 的城墙对 p1 必须阻挡，旧写法会错误地放行。
+   */
   blocks(faction) {
-    if (faction === 'player') return !!this.def.blocksPlayer;
-    return !!this.def.blocksEnemy;
+    return sameSide(faction, this.owner) ? !!this.def.blocksPlayer : !!this.def.blocksEnemy;
   }
 
   get center() {
@@ -1177,8 +1506,11 @@ class Building {
     if (!this.alive) return false;
     this.lastHitBy = source;
     this.flash = 1;
-    // 大本营本版不可摧毁：血量最低留 1，避免出现“活着但血量 0”的状态
-    const floor = this.type === 'base' ? 1 : 0;
+    // 大本营**默认不可摧毁**：血量最低留 1，避免出现"活着但血量 0"的状态（单机行为）。
+    // 对战模式把 CONFIG.pvp.destructibleBase 打开，它就能被真正打掉 ——
+    // 打掉某一方的大本营 = 那一方落败，这就是胜负条件（见 main.js 的 buildingDown 处理）。
+    const destructible = !!(CONFIG.pvp && CONFIG.pvp.destructibleBase);
+    const floor = (this.type === 'base' && !destructible) ? 1 : 0;
     this.hp = Math.max(floor, this.hp - amount);
     return this.hp > 0;
   }
@@ -1216,10 +1548,21 @@ function updateTowers(state, dt) {
   }
 }
 
-/** 拆除建筑（大本营不可拆） */
-function removeBuilding(state, b) {
+/**
+ * 把建筑从地图上摘掉（战斗摧毁、玩家拆除都走这里）。
+ *
+ * @param {object} state
+ * @param {object} b
+ * @param {boolean} [force=false] 是否允许移除**大本营**。
+ *   false（默认）→ 大本营不可拆，这是"玩家不能拆自家大本营"的规则，也是对战里
+ *                  「大本营只能被打掉、不能被拆除」的保证。
+ *   true          → 内部重建专用：联机接管时要把 init() 阶段按单机建出来的那座
+ *                  孤儿大本营清掉，否则它会占住格子、让新大本营建不上
+ *                  （owner 还会停在 'player'，把胜负判定与城墙通行规则一起搞乱）。
+ */
+function removeBuilding(state, b, force = false) {
   if (!b || !b.alive) return false;
-  if (b.type === 'base') return false;
+  if (b.type === 'base' && !force) return false;
   b.alive = false;
   state.buildings.set(b.tx, b.ty, null);
   const i = state.buildingList.indexOf(b);
@@ -1260,11 +1603,11 @@ function emitCombat(state, evt) {
 }
 
 class Unit {
-  constructor({ id, name, tx, ty, faction = 'player', kind = 'general', hotkey = null }) {
+  constructor({ id, name, tx, ty, faction = DEFAULT_FACTION, kind = 'general', hotkey = null }) {
     this.id = id;
     this.name = name;
     this.kind = kind;             // 'general' | 'enemy'
-    this.faction = faction;       // 'player' | 'enemy'
+    this.faction = faction;       // 'p1' | 'p2' | ... | 'enemy' | 'player'（单机默认）
     this.hotkey = hotkey;
     this.tx = tx;
     this.ty = ty;
@@ -1291,6 +1634,15 @@ class Unit {
     this.lastTarget = null;       // 最近一次开火的目标单位（渲染攻击线用）
     this.lastBuilding = null;     // 最近一次攻击的建筑（渲染攻击线用）
     this.repathTimer = 0;         // 追击时下一次重新寻路的倒计时
+
+    // ---- 对战：阵亡与复活（见 CONFIG.pvp.respawnSec） ----
+    this.respawnTimer = 0;        // > 0 表示已阵亡且正在等待复活；数到 0 就地满血复活
+    this.deaths = 0;              // 累计阵亡次数（HUD / 结算用）
+  }
+
+  /** 是否正在等待复活 */
+  get awaitingRespawn() {
+    return !this.alive && this.respawnTimer > 0;
   }
 
   /** 基础移动速度（格 / 秒）；森林里减半 */
@@ -1420,7 +1772,7 @@ class Unit {
     let best = null;
     let bestD = Infinity;
     for (const u of state.units) {
-      if (u === this || !u.alive || u.faction === this.faction) continue;
+      if (u === this || !u.alive || sameSide(u.faction, this.faction)) continue;
       const d = dist(this.px, this.py, u.px, u.py) - unitRadius(u.kind);
       if (d <= this.aggroRangePx && d < bestD) { bestD = d; best = u; }
     }
@@ -1530,9 +1882,73 @@ class Unit {
     if (this.hp <= 0) {
       this.alive = false;
       this.stop();
+      this.deaths++;
+      /**
+       * 对战模式：阵亡后开始倒计时，到点在自家大本营满血复活。
+       * 注意**单位不从 state.units 里移除** —— 移除之后就没法复活了。
+       * 客机侧看不到这个单位：快照只发 alive 的单位（见 net.js 的 makeSnapshot），
+       * 于是它在客机屏幕上消失，复活后又出现。
+       *
+       * ⚠️ 只有 state.pvpEnabled 时才开复活。单机必须是 v0.3 行为（死了就没了），
+       *    否则"杀死测试敌人"这件事在单机下就不再成立。
+       */
+      const pvpOn = !!(this.state && this.state.pvpEnabled);
+      const sec = (pvpOn && CONFIG.pvp) ? (CONFIG.pvp.respawnSec || 0) : 0;
+      this.respawnTimer = sec > 0 ? sec : 0;
       emitCombat(this.state, { type: 'kill', unit: this, source });
     }
     return this.alive;
+  }
+
+  /**
+   * 复活倒计时。到点后满血、回到自家大本营旁边、清空所有交战状态。
+   *
+   * 位置用「单位序号」决定（general-p2-2 → 第 2 个位置），而不是按死亡次数漂移 ——
+   * 这样同一批将领每次复活的站位是固定、可预测的，不会几轮之后跑到奇奇怪怪的地方。
+   * 大本营所在的格子被建筑占住（passable 为 false），所以先试一圈相邻格，都不行就退回原地。
+   *
+   * @returns {boolean} 本帧是否发生了复活
+   */
+  tickRespawn(state, dt) {
+    if (this.alive || this.respawnTimer <= 0) return false;
+    this.respawnTimer = Math.max(0, this.respawnTimer - dt);
+    if (this.respawnTimer > 0) return false;
+
+    const home = state.homeBaseOf ? state.homeBaseOf(this.faction) : null;
+    const cell = CONFIG.cell;
+
+    let tx = this.tx, ty = this.ty;
+    if (home) {
+      const n = parseInt(String(this.id).split('-').pop(), 10);
+      const slot = Number.isFinite(n) ? Math.max(1, n) : 1;
+      const RING = [[0, 1], [1, 0], [-1, 0], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1]];
+      let pick = null;
+      for (let k = 0; k < RING.length; k++) {
+        const o = RING[(slot - 1 + k) % RING.length];
+        if (passable(state, home.x + o[0], home.y + o[1], this.faction)) {
+          pick = { x: home.x + o[0], y: home.y + o[1] };
+          break;
+        }
+      }
+      if (pick) { tx = pick.x; ty = pick.y; }
+    }
+
+    this.alive = true;
+    this.hp = this.hpMax;
+    this.tx = tx;
+    this.ty = ty;
+    this.px = (tx + 0.5) * cell;
+    this.py = (ty + 0.5) * cell;
+    this.path = null;
+    this.goal = null;
+    this.goalPt = null;
+    this.moving = false;
+    this.clearTarget();                            // 复活后不再记得上一场交战
+    this.attackCd = 0;
+    this.state = state;
+    this.syncTile(state);
+    emitCombat(state, { type: 'respawn', unit: this });
+    return true;
   }
 
   /* ------------------------------------------------------------------ */
@@ -1541,16 +1957,18 @@ class Unit {
 
   update(state, dt) {
     this.state = state;
-    if (!this.alive) return;
+    // 阵亡中的单位只跑复活倒计时（对战模式）；复活后本帧就正常参与逻辑
+    if (!this.alive) { this.tickRespawn(state, dt); return; }
 
     if (this.attackCd > 0) this.attackCd = Math.max(0, this.attackCd - dt);
     if (this.attackFlash > 0) this.attackFlash = Math.max(0, this.attackFlash - dt / Math.max(0.01, CONFIG.combat.flashSec));
     if (this.repathTimer > 0) this.repathTimer = Math.max(0, this.repathTimer - dt);
 
     // 己方单位站在己方领地内缓慢回血（便于观察领地归属是否生效）
-    if (this.faction === 'player') {
+    // ★ 联机下「己方领地」= 自己这一方的区块，所以这里用 this.faction 比对，而不是写死 'player'
+    if (isPlayerFaction(this.faction)) {
       const z = zoneAt(state, this.tx, this.ty);
-      if (z && z.owner === 'player' && this.hp < this.hpMax) this.hp = Math.min(this.hpMax, this.hp + 4 * dt);
+      if (z && z.owner === this.faction && this.hp < this.hpMax) this.hp = Math.min(this.hpMax, this.hp + 4 * dt);
     }
 
     if (!CONFIG.combat.enabled) {
@@ -1624,11 +2042,38 @@ class Unit {
   }
 }
 
-function createGenerals(state) {
+/**
+ * 建立某一阵营的将领。
+ *
+ * ★ 签名同时接受字符串与对象两种形式：
+ *     createGenerals(state)                    → state.factions.myFaction（单机 = 'player'）
+ *     createGenerals(state, 'p2')              → 指定阵营
+ * 保留字符串形式是为了让现有测试（tools/smoke-test.mjs 等）原样通过。
+ *
+ * 站位：所有阵营共用 GENERAL_SPAWNS（开局站在一起）。多人测试阶段这是有意的 ——
+ * 双方开局就贴脸，方便立刻验证「互相索敌 → 开打」这条链路。
+ * 后续要做正式出生点分离时，把 spawns 参数化即可。
+ */
+function createGenerals(state, factionArg) {
+  const faction = typeof factionArg === 'string'
+    ? factionArg
+    : (factionArg && factionArg.myFaction)
+      || (state && state.factions && state.factions.myFaction)
+      || DEFAULT_FACTION;
+  const prefix = faction === DEFAULT_FACTION ? 'general' : `general-${faction}`;
   const names = ['将领 1', '将领 2', '将领 3'];
   return names.map((name, i) => {
-    const sp = state.generalSpawns[i] || { x: state.base.x, y: state.base.y };
-    const u = new Unit({ id: `general-${i + 1}`, name, tx: sp.x, ty: sp.y, faction: 'player', kind: 'general', hotkey: String(i + 1) });
+    /**
+     * 出生点优先取「本阵营自己的」站位（联机下双方各在一角），
+     * 没有时退回 state.generalSpawns（单机 = 原版中点附近），再退回大本营。
+     * 见 map.js 的 spawnLayoutFor()。
+     */
+    const own = state.factionSpawns && state.factionSpawns[faction];
+    const sp = (own && own[i]) || state.generalSpawns[i] || { x: state.base.x, y: state.base.y };
+    const u = new Unit({
+      id: `${prefix}-${i + 1}`, name, tx: sp.x, ty: sp.y,
+      faction, kind: 'general', hotkey: String(i + 1),
+    });
     u.state = state;
     return u;
   });
@@ -1648,6 +2093,461 @@ function findOpenTileNear(state, from, faction) {
   return null;
 }
 
+/* ==================== js/net.js ==================== */
+/**
+ * net.js —— 多人联机的客户端（房主 / 客机共用这一份代码）
+ *
+ * 架构：**房主权威 + 服务器中继**（详见 net/README.md）
+ *
+ *   房主（第一个进房间的人）
+ *     · 照常跑完整的游戏逻辑（main.js 的 update 一行不改）
+ *     · 每 SNAPSHOT_HZ 把权威状态打包成 snap 发出去
+ *     · 收到客机的 cmd 就代为执行（它手里有唯一的权威 state）
+ *
+ *   客机（之后进房间的人）
+ *     · update() 被冻结 —— 不跑游戏逻辑，避免两份状态漂移
+ *     · 只发 cmd（移动 / 建造的意图），只收 snap（世界真值）
+ *     · 本地仍然跑相机、选中、HUD、绘制，所以操作手感是即时的
+ *
+ * 为什么不让每个客户端各跑一局再互相同步：
+ *   那就是「两个人各玩各的」，状态永远不会收敛。权威必须只有一份。
+ *
+ * 为什么服务器不跑逻辑：
+ *   服务器不 import 任何游戏模块，只转发字节。这样就不需要把 main.js 拆成
+ *   DOM 层与逻辑层（Node 里没有 document），也就不需要重写那 800 行规则。
+ *   服务器是「哑的」→ 不可能出现服务端与客户端规则不一致这类最难查的 bug。
+ *
+ * 消息类型（全部是 JSON，第一阶段不做二进制优化）
+ *   → hello     客户端 → 服务器：进房间
+ *   → cmd       客户端 → 服务器：意图（由服务器转给房主）
+ *   → snap      房主   → 服务器：权威快照（由服务器广播给其他人）
+ *   ← welcome   服务器 → 客户端：分配 id / faction / 是不是房主
+ *   ← peer      服务器 → 客户端：有人进/出房间
+ *   ← cmd / snap 服务器 → 客户端：转发
+ */
+
+
+/** 快照广播频率（Hz）。20Hz ≈ 单人下行 35KB/s，小水管服务器带 6 人无压力。 */
+const SNAPSHOT_HZ = 20;
+
+/** 客机渲染插值的缓冲时长（秒）。比 1/20Hz 略大，避免抖动。 */
+const INTERP_DELAY = 0.1;
+
+const POS_DECIMALS = 2;   // 坐标小数位：2 位 ≈ 0.01px，肉眼无差别但体积减半
+
+const num = (v, d = POS_DECIMALS) => Number(Number(v).toFixed(d));
+
+/** 整数夹取（避免为此引入 util.js 的依赖） */
+const clampInt = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
+
+/**
+ * 联机状态。main.js 会读它来决定「跑不跑逻辑 / 命令发不发给网络」。
+ */
+const net = {
+  active: false,        // 是否处于联机模式（#net=1 或 /?net=1）
+  isHost: false,        // 我是不是房主（权威方）
+  connected: false,     // WS 是否已连上
+  myFaction: DEFAULT_FACTION,
+  myId: null,
+  room: 'default',
+  peers: 0,
+  lastError: null,
+  snapCount: 0,
+  lastSnapAt: 0,        // performance.now() 时刻，用于插值
+  usingFallback: false, // 连不上服务器时是否已退回单机
+
+  /* ---- 由 main.js 挂上的回调（net.js 不 import main.js，避免循环依赖） ---- */
+  onCommand: null,      // (cmd) => void       房主收到客机意图
+  onSnapshot: null,     // (snap) => void      客机收到权威快照
+  onStatus: null,       // (text) => void      写进事件日志
+  onFallback: null,     // () => void          退回单机时让 main.js 把世界切回默认阵营
+  onMatchOver: null,    // (winner) => void    客机收到「这局结束了」
+  onReady: null,        // (msg) => void       收到某人的准备状态（准备界面）
+  onStart: null,        // (msg) => void       收到房主的「开战」通知
+
+  /** 当前「我」控制的阵营 */
+  get faction() {
+    return this.active ? this.myFaction : DEFAULT_FACTION;
+  },
+};
+
+function logStatus(text) {
+  if (typeof net.onStatus === 'function') net.onStatus(text);
+  else console.log('[net]', text);
+}
+
+/**
+ * 判定本页是否要以联机模式启动（URL 里带 #net=1 / ?net=1 / #room=xxx）
+ *
+ * ⚠️ 必须容忍「没有 location」的环境：tools/integration-test.mjs 在 Node 里用 DOM 桩
+ *    加载真实的 main.js，而 Node 里没有 location / window.location。旧写法会在模块
+ *    初始化阶段直接抛 ReferenceError，连单机模式都跑不起来。
+ */
+function readNetIntent() {
+  const loc = (typeof location !== 'undefined' && location) ? location : null;
+  if (!loc) return { on: false, room: 'default' };
+  const hash = (loc.hash || '').replace(/^#/, '');
+  const q = loc.search || '';
+  const hp = new URLSearchParams(hash);
+  const qp = new URLSearchParams(q);
+  const on = hp.get('net') === '1' || qp.get('net') === '1'
+    || /(^|&)net=1(&|$)/.test(hash) || /(^|&)net=1(&|$)/.test(q);
+  const room = hp.get('room') || qp.get('room') || 'default';
+  return { on, room };
+}
+
+/**
+ * 建面板快照（房主调用）。
+ * ★ 刻意**不**同步 state.terrain / camera / view / log —— 那些是本地的东西。
+ */
+function makeSnapshot(state) {
+  const units = [];
+  for (const u of state.units) {
+    if (!u.alive) continue;         // 阵亡的单位不发 —— 客机上看它就"消失了"，复活后再出现
+    units.push({
+      i: u.id, f: u.faction, k: u.kind,
+      x: num(u.px), y: num(u.py),
+      h: Math.round(u.hp),
+      m: u.moving ? 1 : 0,
+      fa: u.facing > 0 ? 1 : -1,
+      hk: u.hotkey || null,
+    });
+  }
+  const buildings = [];
+  for (const b of state.buildingList) {
+    if (!b.alive) continue;
+    buildings.push({ t: b.type, x: b.tx, y: b.ty, o: b.owner, h: Math.round(b.hp) });
+  }
+  const zones = [];
+  for (const z of state.zones) {
+    zones.push({ o: z.owner, p: num(z.progress, 2) });
+  }
+  return {
+    units,
+    buildings,
+    zones,
+    res: [num(state.resources.food, 1), num(state.resources.gold, 1)],
+    owned: state.ownedTiles,
+    time: num(state.time, 2),
+    /**
+     * ★ 对战结算状态。由房主判定，客机只负责显示 ——
+     *   所以胜者是谁不存在"两边算出不同结果"的问题。
+     *   用可选链容错：调用方（测试桩 / 旧版本）可能没有 state.match。
+     */
+    match: {
+      over: !!(state.match && state.match.over),
+      winner: (state.match && state.match.winner) || null,
+      elapsed: num((state.match && state.match.elapsed) || 0, 1),
+    },
+  };
+}
+
+/**
+ * 应用权威快照（客机调用）。
+ * 按 id 对齐单位：有的就地更新，没有的新建（别人刚刷出来的），快照里没有的删掉。
+ */
+function applySnapshot(state, snap, nowMs) {
+  if (!snap) return;
+  const seen = new Set();
+
+  for (const su of snap.units || []) {
+    seen.add(su.i);
+    let u = state.units.find((x) => x.id === su.i);
+    if (!u) {
+      // 客机本地新建：kind 决定体积与战斗数值，faction 决定颜色
+      u = makeRemoteUnit(state, su);
+      if (!u) continue;
+      state.units.push(u);
+    }
+    u.alive = true;
+    u.faction = su.f;
+    u.hp = su.h;
+    u.moving = !!su.m;
+    u.facing = su.fa || 1;
+    if (su.hk) u.hotkey = su.hk;
+    /**
+     * ★ 权威位置：必须同时写回 px/py 与 tx/ty。
+     *   只写 netPx/netPy 是不够的 —— 渲染靠插值看起来正常，但 state 里
+     *   px/py/tx/ty 会一直是旧值，于是点选判定、射程判定、HUD 全都是错的。
+     */
+    u.px = su.x;
+    u.py = su.y;
+    u.tx = clampInt(Math.floor(su.x / CONFIG.cell), 0, state.terrain.cols - 1);
+    u.ty = clampInt(Math.floor(su.y / CONFIG.cell), 0, state.terrain.rows - 1);
+
+    // 记下「网络目标位置」与时刻，渲染时做插值（见 render.js 的 unitDrawPos）：
+    // 上一帧的目标位置挪到 netPx0/netPy0，这样渲染可以在这两点之间平滑过渡
+    if (u.netPx === undefined) {
+      u.netPx0 = su.x; u.netPy0 = su.y; u.netAt0 = nowMs;
+    } else {
+      u.netPx0 = u.netPx; u.netPy0 = u.netPy; u.netAt0 = u.netAt;
+    }
+    u.netPx = su.x;
+    u.netPy = su.y;
+    u.netAt = nowMs;
+  }
+
+  // 快照里没有的单位 = 已经阵亡（客机上的世界完全以快照为准）
+  state.units = state.units.filter((u) => seen.has(u.id));
+
+  // 建筑：整表替换（数量少、结构简单，比按 id 对齐更不容易出错）
+  syncBuildings(state, snap.buildings || []);
+
+  // 区块归属
+  for (let i = 0; i < state.zones.length && i < (snap.zones || []).length; i++) {
+    const z = state.zones[i];
+    const sz = snap.zones[i];
+    z.owner = sz.o;
+    z.progress = sz.p;
+  }
+  if (snap.res) {
+    state.resources.food = snap.res[0];
+    state.resources.gold = snap.res[1];
+  }
+  if (typeof snap.owned === 'number') state.ownedTiles = snap.owned;
+  if (typeof snap.time === 'number') state.time = snap.time;
+
+  /**
+   * 对战结算状态：房主说了算，客机只显示。
+   * ★ 快照里**没有** match 字段时，保持本地原样 —— 不能当成"未结束"把它重置掉。
+   *   否则一条不含该字段的包（旧版本房主、或将来某个精简包）会把已经结算的画面又打回进行中。
+   */
+  if (snap.match && state.match) {
+    const wasOver = state.match.over;
+    state.match.over = !!snap.match.over;
+    state.match.winner = snap.match.winner || null;
+    state.match.elapsed = snap.match.elapsed || 0;
+    if (!wasOver && state.match.over && typeof net.onMatchOver === 'function') {
+      net.onMatchOver(state.match.winner);
+    }
+  }
+
+  net.snapCount++;
+  net.lastSnapAt = nowMs;
+  net.lastSnapTime = snap.time || 0;
+}
+
+/** 客机本地新建一个远端单位（从快照字段还原） */
+function makeRemoteUnit(state, su) {
+  const cell = CONFIG.cell;
+  const slot = (su.f || '').replace(/^p/, '') || '?';
+  const u = {
+    id: su.i,
+    name: su.f === 'enemy' ? '测试敌人' : `P${slot}·将领${su.hk || ''}`,
+    kind: su.k, faction: su.f, hotkey: su.hk || null,
+    tx: Math.floor(su.x / cell), ty: Math.floor(su.y / cell),
+    px: su.x, py: su.y, hpMax: su.k === 'enemy' ? CONFIG.debug.enemyHp : CONFIG.unit.hpMax,
+    hp: su.h, alive: true,
+    path: null, goal: null, goalPt: null, moving: !!su.m, selected: false,
+    facing: su.fa || 1, state,
+    target: null, targetBuilding: null, anchor: null,
+    attackCd: 0, attackFlash: 0, lastTarget: null, lastBuilding: null, repathTimer: 0,
+    netPx: su.x, netPy: su.y, netAt: performance.now(),
+    // 客机上的单位没有真实逻辑，但渲染与 HUD 会读 combat / speed，所以给个安全值
+    get combat() { return this.kind === 'enemy' ? CONFIG.combat.enemy : CONFIG.combat.general; },
+    get speed() { return CONFIG.unit.speed; },
+    get attackRangePx() { return this.combat.range * cell; },
+    get aggroRangePx() { return CONFIG.combat.aggroRange * cell; },
+    get leashPx() { return this.aggroRangePx * CONFIG.combat.leashFactor; },
+    update() {}, halt() {}, stop() {}, clearTarget() {}, acquireTarget() { return false; },
+    takeDamage() { return true; },
+  };
+  return u;
+}
+
+/** 客机：让本地建筑表与快照一致（按 (type,tx,ty,owner) 对齐，保留现有对象以减少闪烁） */
+function syncBuildings(state, list) {
+  const key = (b) => `${b.type}:${b.tx}:${b.ty}:${b.owner}`;
+  const existing = new Map();
+  for (const b of state.buildingList) existing.set(key(b), b);
+
+  const out = [];
+  for (const sb of list) {
+    const k = `${sb.t}:${sb.x}:${sb.y}:${sb.o}`;
+    let b = existing.get(k);
+    if (b) {
+      existing.delete(k);
+      b.hp = sb.h;
+      b.alive = true;
+      out.push(b);
+    } else {
+      const z = state.zones[state.zoneLookup[sb.y * CONFIG.mapCols + sb.x]];
+      b = makeRemoteBuilding(state, sb, z ? z.id : -1);
+      out.push(b);
+    }
+  }
+
+  state.buildingList = out;
+  state.buildings = state.buildings;   // 保持 grid 引用
+  rebuildBuildingGrid(state);
+}
+
+function makeRemoteBuilding(state, sb, zoneId) {
+  // 延迟 import 会带来循环依赖，这里直接用 building.js 的类（见 main.js 的注册）
+  const Ctor = net._BuildingCtor;
+  if (Ctor) {
+    const b = new Ctor(sb.t, sb.x, sb.y, sb.o, zoneId);
+    b.hp = sb.h;
+    return b;
+  }
+  // 兜底：没有注册构造器时用一个最小对象（不会发生在正常流程里）
+  return {
+    type: sb.t, tx: sb.x, ty: sb.y, owner: sb.o, zoneId, hp: sb.h, hpMax: sb.h, alive: true,
+    def: CONFIG.building[sb.t] || {}, flash: 0, lastTarget: null,
+    get center() { return { x: (sb.x + 0.5) * CONFIG.cell, y: (sb.y + 0.5) * CONFIG.cell }; },
+    get hpRatio() { return this.hpMax > 0 ? this.hp / this.hpMax : 0; },
+    blocks() { return true; }, takeDamage() { return true; },
+  };
+}
+
+function rebuildBuildingGrid(state) {
+  state.buildings.data.fill(null);
+  for (const b of state.buildingList) {
+    if (b.alive) state.buildings.set(b.tx, b.ty, b);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* WebSocket                                                          */
+/* ------------------------------------------------------------------ */
+
+let ws = null;
+let reconnectTimer = null;
+
+function wsUrl() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${proto}//${location.host}/ws`;
+}
+
+/**
+ * 连接服务器并进入房间。
+ * @param {object} [opts]
+ * @param {string} [opts.room]
+ * @param {(evt:object)=>void} [opts.onWelcome]
+ */
+function connect(opts = {}) {
+  const intent = readNetIntent();
+  const room = opts.room || intent.room || 'default';
+  net.active = true;
+  net.room = room;
+
+  let url;
+  try {
+    url = wsUrl();
+  } catch (e) {
+    net.lastError = String(e);
+    return;
+  }
+
+  try {
+    ws = new WebSocket(url);
+  } catch (e) {
+    net.lastError = String(e);
+    logStatus(`联机失败：${e}（已退回单机）`);
+    fallbackToSinglePlayer();
+    return;
+  }
+
+  ws.onopen = () => {
+    net.connected = true;
+    send({ t: 'hello', room });
+    logStatus(`已连接服务器，正在加入房间 ${room} …`);
+  };
+
+  ws.onmessage = (ev) => {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch { return; }
+    handleMessage(msg, opts);
+  };
+
+  ws.onclose = () => {
+    net.connected = false;
+    if (!net.active) return;
+    logStatus('与服务器的连接断开（已退回单机模式）');
+    fallbackToSinglePlayer();
+  };
+
+  ws.onerror = () => {
+    net.lastError = 'websocket error';
+  };
+}
+
+function handleMessage(msg, opts) {
+  switch (msg.t) {
+    case 'welcome': {
+      net.myId = msg.id;
+      net.isHost = !!msg.isHost;
+      net.peers = msg.peers || 1;
+      net.myFaction = msg.faction || (net.isHost ? FACTION_ROSTER[0] : FACTION_ROSTER[1]);
+      logStatus(net.isHost
+        ? `你是房主（阵营 ${net.myFaction}）—— 本局由你的浏览器跑权威逻辑`
+        : `已加入房间（阵营 ${net.myFaction}，房主是别人）—— 等待世界同步…`);
+      if (typeof opts.onWelcome === 'function') opts.onWelcome(msg);
+      break;
+    }
+    case 'peer':
+      net.peers = msg.peers || net.peers;
+      logStatus(msg.event === 'join' ? '有玩家加入房间' : '有玩家离开房间');
+      break;
+    case 'cmd':
+      // 房主收到客机意图
+      if (typeof net.onCommand === 'function') net.onCommand(msg);
+      break;
+    case 'ready':
+      // 准备界面：谁的准备状态变了
+      if (typeof net.onReady === 'function') net.onReady(msg);
+      break;
+    case 'start':
+      // 房主宣布开战
+      if (typeof net.onStart === 'function') net.onStart(msg);
+      break;
+    case 'snap':
+      net.peers = msg.peers || net.peers;
+      if (typeof net.onSnapshot === 'function') net.onSnapshot(msg);
+      break;
+    case 'error':
+      net.lastError = msg.msg || 'server error';
+      logStatus(`服务器：${msg.msg}`);
+      break;
+    default:
+      break;
+  }
+}
+
+/** 发一条消息（未连接时静默丢弃，单机模式下不会走到这里） */
+function send(msg) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+  try {
+    ws.send(JSON.stringify(msg));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 连不上服务器 / 连接断开时退回单机，保证页面仍然可玩（不会白屏） */
+function fallbackToSinglePlayer() {
+  if (net.usingFallback) return;
+  net.usingFallback = true;
+  net.active = false;
+  net.isHost = true;
+  net.myFaction = DEFAULT_FACTION;
+  if (typeof net.onFallback === 'function') net.onFallback();
+  if (typeof net.onStatus === 'function') net.onStatus('已切换为单机模式（原来的世界继续跑）');
+}
+
+/**
+ * 复位「已退回单机」这个单向闩锁 —— **仅供测试**。
+ *
+ * usingFallback 的设计意图是「只退一次，别反复弹提示」，所以生产环境不该复位。
+ * 但自动化测试需要在一进程里反复演练「联机 → 断线 → 退回单机」，
+ * 没有这个钩子就只能靠重新加载 main.js，而 main.js 自带副作用、无法重复 import。
+ */
+function resetFallbackLatch() {
+  net.usingFallback = false;
+  net.lastError = null;
+}
+
 /* ==================== js/render.js ==================== */
 /**
  * render.js —— Canvas 2D 渲染
@@ -1659,6 +2559,11 @@ function findOpenTileNear(state, from, faction) {
  *   3. 世界坐标 = 地块坐标 × CONFIG.cell（单位可以处于地块之间的连续位置上）。
  */
 
+
+/** 取某阵营的配色（找不到就退回单机默认色，避免出现 undefined 颜色导致整块画不出来） */
+function fc(faction) {
+  return factionColor(faction) || CONFIG.colors.faction[DEFAULT_FACTION];
+}
 
 /** 当前视口逻辑尺寸（CSS 像素）——相机数学只认这个 */
 function viewSize(state) {
@@ -1752,6 +2657,8 @@ function draw(state, canvas, cam, ui) {
   ctx.restore();
 
   drawScreenOverlay(ctx, state, cam);
+  drawLobbyOverlay(ctx, state, ui);
+  drawMatchOverlay(ctx, state, ui, cam);
 }
 
 /** 裁剪辅助：把一个世界矩形换算成地块范围（含 1 格余量） */
@@ -1820,6 +2727,7 @@ function drawTerrain(ctx, state, view) {
 function drawZones(ctx, state, view) {
   const cell = CONFIG.cell;
   const C = CONFIG.colors;
+  const mine = state.ui.myFaction || DEFAULT_FACTION;
 
   for (const z of state.zones) {
     const x = z.x0 * cell, y = z.y0 * cell;
@@ -1827,8 +2735,13 @@ function drawZones(ctx, state, view) {
     const h = (z.y1 - z.y0 + 1) * cell;
     if (!inView(view, x + w / 2, y + h / 2, Math.max(w, h) / 2)) continue;   // 视野外跳过
 
-    if (z.owner === 'player') {
+    const isMine = z.owner && z.owner === mine;
+    if (isMine) {
       ctx.fillStyle = C.zonePlayer;
+      ctx.fillRect(x, y, w, h);
+    } else if (z.owner) {
+      // ★ 别人（其他玩家）的领土：用该阵营的主色淡淡铺一层，一眼看出是谁的
+      ctx.fillStyle = hexToRgba(fc(z.owner).main, 0.16);
       ctx.fillRect(x, y, w, h);
     } else if (z.progress > 0) {
       // 占领进度：从下往上填色（黄色）
@@ -1840,21 +2753,41 @@ function drawZones(ctx, state, view) {
       ctx.fillRect(x, y, w, h);
     }
 
-    ctx.strokeStyle = z.owner === 'player' ? 'rgba(120,210,255,0.55)' : C.zoneLine;
+    ctx.strokeStyle = isMine ? 'rgba(120,210,255,0.55)'
+      : z.owner ? hexToRgba(fc(z.owner).main, 0.5)
+        : C.zoneLine;
     ctx.lineWidth = 2;
     ctx.strokeRect(x + 1, y + 1, w - 2, h - 2);
 
     if (state.ui.showZoneNames) {
-      ctx.fillStyle = z.owner === 'player' ? 'rgba(200,240,255,0.85)' : 'rgba(255,255,255,0.35)';
+      ctx.fillStyle = isMine ? 'rgba(200,240,255,0.85)'
+        : z.owner ? hexToRgba(fc(z.owner).main, 0.85)
+          : 'rgba(255,255,255,0.35)';
       ctx.font = '600 15px "Segoe UI", system-ui, sans-serif';
       ctx.textAlign = 'left';
       ctx.textBaseline = 'top';
-      const label = z.owner === 'player'
+      const label = isMine
         ? `${z.name} · 己方`
-        : z.progress > 0 ? `${z.name} · 占领 ${Math.round(z.progress * 100)}%` : `${z.name} · 无主`;
+        : z.owner ? `${z.name} · ${factionShort(z.owner)}`
+          : z.progress > 0 ? `${z.name} · 占领 ${Math.round(z.progress * 100)}%` : `${z.name} · 无主`;
       ctx.fillText(label, x + 8, y + 7);
     }
   }
+}
+
+/** '#ffd166' + alpha → 'rgba(255,209,102,0.16)' */
+function hexToRgba(hex, alpha) {
+  const s = String(hex || '').replace('#', '');
+  if (s.length !== 6) return `rgba(255,255,255,${alpha})`;
+  const n = parseInt(s, 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${alpha})`;
+}
+
+/** 区块标签上的短阵营名 */
+function factionShort(f) {
+  if (f === 'enemy') return '敌方';
+  if (/^p[1-8]$/.test(f)) return `P${f.slice(1)}`;
+  return '己方';
 }
 
 function drawGrid(ctx, state, view) {
@@ -2114,93 +3047,323 @@ function unitRadius(kind = 'general') {
 function drawUnits(ctx, state, view) {
   const cell = CONFIG.cell;
   const C = CONFIG.colors;
+  const myFaction = state.ui.myFaction || DEFAULT_FACTION;
+  const now = state.ui.now || 0;
+
+  /**
+   * 对战模式：阵亡的单位不在 state.units 的"存活"集合里，但它仍留在列表中等待复活。
+   * 这里在自家大本营位置画一个倒计时，让玩家知道"我还有多久回来"，
+   * 而不是屏幕上什么都没有、只能干等。
+   */
+  drawRespawnTimers(ctx, state, view, myFaction);
+
   for (const u of state.units) {
     if (!u.alive) continue;
     const r = unitRadius(u.kind);
-    if (!inView(view, u.px, u.py, cell)) continue;   // 视野外单位不画
+    /** ★ 绘制位置：客机上做插值（快照 20Hz，屏幕 60Hz），房主/单机就是 u.px/u.py */
+    const pos = unitDrawPos(u, now);
+    const ux = pos.x, uy = pos.y;
+    const col = fc(u.faction);
+    const isMine = u.faction === myFaction;
+    if (!inView(view, ux, uy, cell)) continue;   // 视野外单位不画
     const barW = Math.max(14, cell * 0.26);
     const barH = Math.max(3, cell * 0.035);
 
     // 攻击线：开火瞬间到特效结束（attackFlash 由 unit.js 驱动）；打建筑时连到建筑中心
     if (u.attackFlash > 0) {
       let tgt = null;
-      if (u.lastTarget && u.lastTarget.alive) tgt = { x: u.lastTarget.px, y: u.lastTarget.py };
+      if (u.lastTarget && u.lastTarget.alive) tgt = unitDrawPos(u.lastTarget, now);
       else if (u.lastBuilding && u.lastBuilding.alive) tgt = u.lastBuilding.center;
       if (tgt) {
         const a = (0.2 + 0.7 * clamp(u.attackFlash, 0, 1)).toFixed(3);
-        ctx.strokeStyle = u.faction === 'player' ? `rgba(255,225,150,${a})` : `rgba(255,120,120,${a})`;
+        ctx.strokeStyle = `${col.line}${a})`;
         ctx.lineWidth = 2;
         ctx.beginPath();
-        ctx.moveTo(u.px, u.py);
+        ctx.moveTo(ux, uy);
         ctx.lineTo(tgt.x, tgt.y);
         ctx.stroke();
       }
     }
 
-    if (u.faction === 'player') {
-      // 选中光环
+    if (isPlayerFaction(u.faction)) {
+      // 选中光环（只有自己的单位会被选中，但颜色仍按阵营取，避免联机下混淆）
       if (u.selected) {
-        ctx.strokeStyle = C.generalSel;
+        ctx.strokeStyle = col.sel;
         ctx.lineWidth = 3;
         ctx.beginPath();
-        ctx.arc(u.px, u.py, r + 6, 0, Math.PI * 2);
+        ctx.arc(ux, uy, r + 6, 0, Math.PI * 2);
         ctx.stroke();
-        ctx.fillStyle = 'rgba(255,209,102,0.16)';
+        ctx.fillStyle = hexToRgba(col.main, 0.16);
         ctx.beginPath();
-        ctx.arc(u.px, u.py, r + 6, 0, Math.PI * 2);
+        ctx.arc(ux, uy, r + 6, 0, Math.PI * 2);
         ctx.fill();
       }
-      ctx.fillStyle = C.general;
+      ctx.fillStyle = col.main;
       ctx.beginPath();
-      ctx.arc(u.px, u.py, r, 0, Math.PI * 2);
+      ctx.arc(ux, uy, r, 0, Math.PI * 2);
       ctx.fill();
       ctx.strokeStyle = 'rgba(0,0,0,0.55)';
       ctx.lineWidth = 2;
       ctx.stroke();
 
-      // 数字快捷键角标
-      if (u.hotkey) {
+      // 数字快捷键角标（只给自己的单位画，免得别人头上也挂个 1/2/3）
+      if (u.hotkey && isMine) {
         const badge = Math.max(6, r * 0.62);
         ctx.fillStyle = '#20261f';
         ctx.beginPath();
-        ctx.arc(u.px + r * 0.8, u.py - r * 0.8, badge, 0, Math.PI * 2);
+        ctx.arc(ux + r * 0.8, uy - r * 0.8, badge, 0, Math.PI * 2);
         ctx.fill();
         ctx.fillStyle = '#ffe9a8';
         ctx.font = `700 ${Math.round(badge * 1.5)}px "Segoe UI", system-ui, sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(u.hotkey, u.px + r * 0.8, u.py - r * 0.8 + 0.5);
+        ctx.fillText(u.hotkey, ux + r * 0.8, uy - r * 0.8 + 0.5);
       }
     } else {
-      ctx.fillStyle = C.enemy;
+      ctx.fillStyle = col.main;
       ctx.beginPath();
-      ctx.arc(u.px, u.py, r, 0, Math.PI * 2);
+      ctx.arc(ux, uy, r, 0, Math.PI * 2);
       ctx.fill();
       ctx.strokeStyle = 'rgba(0,0,0,0.55)';
       ctx.lineWidth = 2;
       ctx.stroke();
     }
 
-    // 交战中：头顶一个小三角（黄=己方，红=敌方），方便一眼看出谁在打谁 / 谁在拆墙
+    // 交战中：头顶一个小三角（按阵营上色），方便一眼看出谁在打谁 / 谁在拆墙
     const engaged = (u.target && u.target.alive) || (u.targetBuilding && u.targetBuilding.alive);
     if (engaged) {
       const s = Math.max(4, r * 0.5);
-      const ty0 = u.py - r - 5;
-      ctx.fillStyle = u.faction === 'player' ? '#ffd166' : '#ff8a8a';
+      const ty0 = uy - r - 5;
+      ctx.fillStyle = col.main;
       ctx.beginPath();
-      ctx.moveTo(u.px, ty0);
-      ctx.lineTo(u.px - s, ty0 - s * 1.3);
-      ctx.lineTo(u.px + s, ty0 - s * 1.3);
+      ctx.moveTo(ux, ty0);
+      ctx.lineTo(ux - s, ty0 - s * 1.3);
+      ctx.lineTo(ux + s, ty0 - s * 1.3);
       ctx.closePath();
       ctx.fill();
     }
 
     // 血条（跟随单位尺寸缩放）
     ctx.fillStyle = 'rgba(0,0,0,0.45)';
-    ctx.fillRect(u.px - barW / 2, u.py + r + 3, barW, barH);
-    ctx.fillStyle = u.faction === 'player' ? '#7ce07c' : '#e05a5a';
-    ctx.fillRect(u.px - barW / 2, u.py + r + 3, barW * clamp(u.hp / u.hpMax, 0, 1), barH);
+    ctx.fillRect(ux - barW / 2, uy + r + 3, barW, barH);
+    ctx.fillStyle = col.bar;
+    ctx.fillRect(ux - barW / 2, uy + r + 3, barW * clamp(u.hp / u.hpMax, 0, 1), barH);
   }
+}
+
+/**
+ * 单位的绘制位置（世界像素）。
+ *
+ * 单机 / 房主：单位本身就是权威，直接返回 u.px/u.py。
+ * 客机：快照只有 20Hz，直接画会在屏幕上"跳格"。这里在两次快照的目标位置之间做线性插值，
+ *       并用 INTERP_DELAY 的缓冲把播放时刻推后一点，于是画面是连续的而不是一跳一跳的。
+ *       注意这**只影响绘制**，不写回 u.px/u.py —— 客机的状态始终以快照为准。
+ */
+function unitDrawPos(u, now) {
+  if (u.netPx === undefined || !u.netAt) return { x: u.px, y: u.py };
+  const span = Math.max(1, u.netAt - (u.netAt0 || u.netAt));
+  const age = now - u.netAt + INTERP_DELAY;
+  const t = clamp(age / span, 0, 1);
+  return {
+    x: (u.netPx0 === undefined ? u.netPx : u.netPx0) + (u.netPx - (u.netPx0 === undefined ? u.netPx : u.netPx0)) * t,
+    y: (u.netPy0 === undefined ? u.netPy : u.netPy0) + (u.netPy - (u.netPy0 === undefined ? u.netPy : u.netPy0)) * t,
+  };
+}
+
+/**
+ * 阵亡单位的复活倒计时：在自家大本营上方画一圈进度环 + 剩余秒数。
+ * 只画「我这一方的」—— 对面的复活节奏属于战争迷雾范畴，现在不做。
+ */
+function drawRespawnTimers(ctx, state, view, myFaction) {
+  const cell = CONFIG.cell;
+  // 单机没有复活（state.pvpEnabled = false），别画这个环
+  if (!state.pvpEnabled) return;
+  const total = (CONFIG.pvp && CONFIG.pvp.respawnSec) || 0;
+  if (total <= 0) return;
+
+  const home = state.ui.myBase || null;
+  if (!home) return;
+  const cx = (home.x + 0.5) * cell;
+  const cy = (home.y + 0.5) * cell;
+  if (!inView(view, cx, cy, cell * 2)) return;
+
+  const waiting = state.units.filter(
+    (u) => !u.alive && u.faction === myFaction && u.respawnTimer > 0 && (u.kind === 'general'),
+  );
+  if (!waiting.length) return;
+
+  const soonest = Math.min(...waiting.map((u) => u.respawnTimer));
+  const ratio = clamp(1 - soonest / total, 0, 1);
+  const r = cell * 0.62;
+
+  ctx.save();
+  // 底环
+  ctx.strokeStyle = 'rgba(0,0,0,0.45)';
+  ctx.lineWidth = 5;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.stroke();
+  // 进度环：从 12 点方向顺时针填充
+  ctx.strokeStyle = fc(myFaction).main;
+  ctx.lineWidth = 5;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * ratio);
+  ctx.stroke();
+  // 剩余秒数
+  ctx.fillStyle = 'rgba(255,255,255,0.92)';
+  ctx.font = `700 ${Math.round(cell * 0.24)}px "Segoe UI", system-ui, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(`${soonest.toFixed(1)}s`, cx, cy);
+  ctx.font = `500 ${Math.round(cell * 0.13)}px "Segoe UI", system-ui, sans-serif`;
+  ctx.fillStyle = 'rgba(255,255,255,0.55)';
+  ctx.fillText(`${waiting.length} 个待复活`, cx, cy + cell * 0.26);
+  ctx.restore();
+}
+
+/**
+ * 准备界面（联机）。
+ *
+ * 作用不只是"好看"：它是「双方都到场并确认」的守门人。
+ * 只有一个人在场时永远不会开战，因此不会出现「房主先进房间、还没等到客机
+ * 就自己判出胜负」那类问题。
+ *
+ * 画在屏幕空间（不受相机缩放影响），压在结算横幅之下。
+ */
+function drawLobbyOverlay(ctx, state, ui) {
+  const lobby = ui.lobby;
+  if (!lobby || !lobby.active) return;
+
+  const v = viewSize(state);
+  const mine = ui.myFaction || DEFAULT_FACTION;
+  const waiting = lobby.countdown > 0;
+
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,0.62)';
+  ctx.fillRect(0, 0, v.w, v.h);
+
+  const w = Math.min(560, v.w - 40);
+  const roster = lobby.roster || [];
+  const rowH = 30;
+  const h = 118 + roster.length * rowH;
+  const x = (v.w - w) / 2;
+  const y = Math.max(16, (v.h - h) / 2);
+
+  ctx.fillStyle = 'rgba(20,26,22,0.97)';
+  ctx.strokeStyle = 'rgba(120,210,255,0.55)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(x, y, w, h, 12); else ctx.rect(x, y, w, h);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  // 标题
+  ctx.fillStyle = '#5ac8ff';
+  ctx.font = '800 22px "Segoe UI", "Microsoft YaHei", system-ui, sans-serif';
+  ctx.fillText(waiting ? '开战倒计时' : '准备阶段', v.w / 2, y + 34);
+
+  // 大号倒计时 / 提示
+  if (waiting) {
+    ctx.fillStyle = '#ffd166';
+    ctx.font = '800 54px "Segoe UI", "Microsoft YaHei", system-ui, sans-serif';
+    ctx.fillText(String(Math.ceil(lobby.countdown)), v.w / 2, y + 78);
+  } else {
+    ctx.fillStyle = 'rgba(216,224,214,0.9)';
+    ctx.font = '500 13px "Segoe UI", "Microsoft YaHei", system-ui, sans-serif';
+    const need = lobby.canStart ? '' : '（需要双方都准备）';
+    ctx.fillText(`双方都点「准备」后开战 ${need}`, v.w / 2, y + 76);
+  }
+
+  // 玩家列表
+  let ry = y + 108;
+  ctx.font = '600 14px "Segoe UI", "Microsoft YaHei", system-ui, sans-serif';
+  for (const f of roster) {
+    const isMe = f === mine;
+    const isReady = !!lobby.ready[f];
+    const col = fc(f);
+
+    ctx.textAlign = 'left';
+    ctx.fillStyle = col.main;
+    ctx.beginPath();
+    ctx.arc(x + 26, ry, 7, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = isMe ? '#ffffff' : 'rgba(216,224,214,0.8)';
+    ctx.fillText(`${factionShort(f)}${isMe ? '（你）' : ''}`, x + 42, ry + 1);
+
+    ctx.textAlign = 'right';
+    ctx.fillStyle = isReady ? '#6fd36f' : 'rgba(140,154,139,0.9)';
+    ctx.fillText(isReady ? '已准备' : '等待中…', x + w - 24, ry + 1);
+    ry += rowH;
+  }
+
+  // 操作提示
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(140,154,139,0.85)';
+  ctx.font = '400 12px "Segoe UI", "Microsoft YaHei", system-ui, sans-serif';
+  const meReady = !!lobby.ready[mine];
+  ctx.fillText(
+    waiting ? '准备好，马上开打'
+      : (meReady ? '已准备 —— 等对手点准备（或按 R 取消）' : '按 R 或点「准备」按钮'),
+    v.w / 2, y + h - 20,
+  );
+  ctx.restore();
+}
+
+/**
+ * 对战结算横幅：这局结束后盖在屏幕中央。
+ * 胜者由房主判定并随快照同步（state.ui.match），所以两边显示的结果一定一致。
+ */
+function drawMatchOverlay(ctx, state, ui, cam) {
+  const m = ui.match;
+  if (!m || !m.over) return;
+
+  const v = viewSize(state);
+  const mine = ui.myFaction || DEFAULT_FACTION;
+  const won = m.winner && m.winner === mine;
+  const draw = !m.winner;
+
+  const title = draw ? '平局' : (won ? '★ 你赢了' : '你输了');
+  const sub = m.winner
+    ? `${factionShort(m.winner)} 获胜 · 用时 ${Math.round(m.elapsed || 0)} 秒`
+    : `双方都没能拿下对方 · 用时 ${Math.round(m.elapsed || 0)} 秒`;
+
+  ctx.save();
+  // 压暗背景
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(0, 0, v.w, v.h);
+
+  const w = Math.min(520, v.w - 40);
+  const h = 132;
+  const x = (v.w - w) / 2;
+  const y = (v.h - h) / 2;
+
+  ctx.fillStyle = 'rgba(20,26,22,0.97)';
+  ctx.strokeStyle = draw ? 'rgba(255,255,255,0.35)'
+    : (won ? fc(mine).main : 'rgba(224,90,90,0.9)');
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.roundRect ? ctx.roundRect(x, y, w, h, 12) : ctx.rect(x, y, w, h);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = draw ? '#e8e8e8' : (won ? fc(mine).main : '#e05a5a');
+  ctx.font = '800 34px "Segoe UI", "Microsoft YaHei", system-ui, sans-serif';
+  ctx.fillText(title, v.w / 2, y + 52);
+
+  ctx.fillStyle = 'rgba(216,224,214,0.85)';
+  ctx.font = '500 15px "Segoe UI", "Microsoft YaHei", system-ui, sans-serif';
+  ctx.fillText(sub, v.w / 2, y + 92);
+
+  ctx.fillStyle = 'rgba(140,154,139,0.9)';
+  ctx.font = '400 12px "Segoe UI", "Microsoft YaHei", system-ui, sans-serif';
+  ctx.fillText('刷新页面即可开下一局', v.w / 2, y + 114);
+  ctx.restore();
 }
 
 /** 悬停地块高亮 + 调试准星（画在屏幕空间，避免缩放导致线宽变化） */
@@ -2257,6 +3420,14 @@ const state = {
   terrain: null,
   base: null,
   generalSpawns: GENERAL_SPAWNS,
+  /**
+   * ★ 每个阵营各自的将领出生点（key = 阵营）。
+   * 单机时只有 'player' 一项，内容就是原版 GENERAL_SPAWNS。
+   * 联机时 p1/p2 各在一角 —— 见 map.js 的 spawnLayoutFor()。
+   */
+  factionSpawns: {},
+  /** ★ 每个阵营大本营的坐标（key = 阵营）。复活点、敌人 AI 目标都从这里取。 */
+  factionBases: {},
   buildings: null,        // Grid<Building|null> —— 每个地块最多一个建筑
   buildingList: [],
   buildingRevision: 0,    // 建造/拆除时 +1，用于按需重算区块归属
@@ -2264,6 +3435,12 @@ const state = {
   zones: [],
   zoneLookup: [],
   units: [],
+  /**
+   * ★ 阵营表（多人联机的地基，见 faction.js）
+   * myFaction 决定「我」是谁：谁能被选中、谁的单位回血、HUD 显示谁的地块。
+   * 单机模式下它就是 'player'，与旧版本行为逐位一致。
+   */
+  factions: { myFaction: DEFAULT_FACTION, factions: SINGLE_PLAYER_ROSTER.slice(), enemyFaction: 'enemy' },
   camera: null,
   /**
    * 视口信息（**全部使用 CSS 像素**，与相机 / 输入换算保持一致）。
@@ -2273,6 +3450,19 @@ const state = {
   view: { w: 1, h: 1, dpr: 1 },
   resources: { food: CONFIG.resource.startFood, gold: CONFIG.resource.startGold },
   ownedTiles: 0,
+  /** ★ 对战结算状态。联机时由房主判定并随快照同步；单机永远是 over = false */
+  match: { over: false, winner: null, elapsed: 0, logged: false, limitSec: 0 },
+  /**
+   * ★ 准备界面状态（联机）。
+   * 进房间后先停在这里，双方都点「准备」再开战 —— 见 startMatch()。
+   * 单机永远 active = false。
+   */
+  lobby: { active: false, roster: [], ready: {}, countdown: 0, canStart: false, started: false },
+  /**
+   * ★ 对战规则总开关 —— **只有联机模式才置为 true**。
+   * 单机必须保持 v0.3 行为：大本营不可摧毁、单位死了就没了（否则旧手感与旧测试都会被改写）。
+   */
+  pvpEnabled: false,
   enemySpawnTimer: 0,
   debugAutoSpawn: false,
   log: [],
@@ -2303,22 +3493,27 @@ const el = {};
 
 function init() {
   const map = createMap();
+  state.map = map;
   state.terrain = map.terrain;
   state.base = map.base;
   state.buildings = new Grid(map.cols, map.rows, null);
 
-  const zs = createZoneSystem();
+  const zs = createZoneSystem(state);
   state.zones = zs.zones;
   state.zoneLookup = zs.lookup;
 
-  // 大本营：开局自带，不可建造、不可拆除
-  addBuilding('base', state.base.x, state.base.y, 'player', { silent: true });
+  /**
+   * 关键顺序：先把**我这一方**的出生点算出来，再建大本营与将领。
+   *
+   * 单机（myFaction = 'player'）时 spawnLayoutFor 返回的就是原版点位，
+   * 所以这一个函数同时覆盖了单机与联机，不需要分支。
+   */
+  applyFactionLayout(state.factions.myFaction, { log: false });
 
-  // 三个将领占位单位
-  state.units = createGenerals(state);
-  // 战斗事件（警戒 / 阵亡）→ 事件日志
+  // 战斗事件（警戒 / 阵亡 / 复活 / 建筑被拆）→ 事件日志 + 收尸
   state.onCombatEvent = onCombatEvent;
-  selectUnits([state.units[0]]);
+  // 复活点：unit.js 的 tickRespawn 通过它找自家大本营（unit.js 不 import main.js，避免循环依赖）
+  state.homeBaseOf = homeBaseOf;
 
   state.camera = createCamera(state);
   bindUI();
@@ -2330,17 +3525,435 @@ function init() {
   if (map.sealedIslands > 0) toast(`地图连通性修正：封住了 ${map.sealedIslands} 个孤立的可通行格`);
   pushLog('按 1 / 2 / 3 选择将领，右键点击地图移动。');
   requestAnimationFrame(loop);
+  initNet();
+}
+
+/* ------------------------------------------------------------------ */
+/* 联机（房主权威 + 服务器中继，协议见 js/net.js）                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 是否以联机模式启动：URL 带 #net=1（或 ?net=1）才启用。
+ * 不加参数就是纯单机，现有行为与测试完全不受影响。
+ *   http://<ip>:8080/rts-prototype.html#net=1            房主
+ *   http://<ip>:8080/rts-prototype.html#net=1&room=abc   指定房间
+ */
+function initNet() {
+  if (!readNetIntent().on) {
+    pushLog('单机模式。想联机测试请用 …/rts-prototype.html#net=1 打开');
+    return;
+  }
+
+  const intent = readNetIntent();
+
+  /**
+   * ★ 立刻把「我这一方」和联机身份对齐，不能等 welcome。
+   *
+   * 时序陷阱：init() 先建好了 'player' 的世界，本函数再跑。
+   * 如果这里不先切到 p1，那么在 welcome 到达之前的那个窗口里
+   *   net.isHost === true（房主）而 state.factions.myFaction === 'player'
+   * → 玩家点右键时 orderMove 里的 units 过滤（按 myFaction）会找不到任何单位，
+   *   命令静默失效。窗口不长，但联网慢的时候足够让人以为"游戏坏了"。
+   */
+  net.myFaction = FACTION_ROSTER[0];
+  net.isHost = true;
+  state.factions.myFaction = FACTION_ROSTER[0];
+  state.factions.factions = FACTION_ROSTER.slice();
+
+  /**
+   * ★ 打开对战规则（**只影响联机**，单机行为一个字节都不变）。
+   *   destructibleBase：大本营可被打掉 → 打掉即分胜负（单机保持"永远打不掉"）
+   *   respawnSec：阵亡 8 秒后在自家大本营复活，否则玩家死一次就只能干看着
+   *   pvpEnabled：总开关，unit.js 靠它决定要不要开复活
+   */
+  state.pvpEnabled = true;
+  CONFIG.pvp.destructibleBase = true;
+  state.match.limitSec = CONFIG.pvp.timeLimitSec || 0;
+
+  rebuildLocalWorldForFaction(FACTION_ROSTER[0]);
+
+  // net.js 不 import building.js（避免循环依赖），客机新建远端建筑时通过这里拿到构造器
+  net._BuildingCtor = Building;
+
+  net.onStatus = (text) => pushLog(`[联机] ${text}`);
+  net.onCommand = handleNetCommand;
+  net.onSnapshot = (msg) => applySnapshot(state, msg.s, performance.now());
+  // 准备界面：收到别人的准备状态 / 房主的开战通知
+  net.onReady = (msg) => setPeerReady(msg.f, msg.ready);
+  net.onStart = onNetStart;
+  // 客机：房主判定这局结束后，本地也弹一次（胜者由房主算，客机只显示）
+  net.onMatchOver = (winner) => {
+    if (!state.match.logged) finishMatch(winner);
+  };
+  net.onFallback = () => {
+    /**
+     * ★ 退回单机时，必须把「我这一方」同步切回默认阵营。
+     *
+     * 否则会留下一个坏状态：net.active=false（单机）但 state.factions.myFaction 还是 'p2'。
+     * 单机世界里的将领是 'player' 阵营 —— 于是玩家选不中任何单位、也建不了东西
+     * （orderMove / pickAt / tryBuildAt 都按 myFaction 过滤）。
+     * 断线本身已经够糟了，不能再让页面变成"看上去能玩其实动不了"。
+     */
+    state.factions.myFaction = DEFAULT_FACTION;
+    state.factions.factions = SINGLE_PLAYER_ROSTER.slice();
+    state.lobby.active = false;
+    state.lobby.started = false;
+    state.lobby.countdown = 0;
+    state.lobby.roster = [];
+    state.lobby.ready = {};
+    rebuildLocalWorldForFaction(DEFAULT_FACTION);
+    pushLog('本地世界已切回单机阵营（player）');
+  };
+
+  pushLog('联机模式：正在连接服务器…');
+  connect({ onWelcome: handleNetWelcome });
+}
+
+/**
+ * 服务器分配了身份（房主 / 客机 + 阵营）之后要做的事。
+ *
+ * 独立成函数而不是写在闭包里，有两个实际理由：
+ *   1. 可测性 —— tools/net-integration-test.mjs 用 DOM 桩跑真实的 main.js，
+ *      需要模拟服务器发来 welcome（否则「客机入场」这条最重要的路径在无浏览器环境下无法验证）；
+ *   2. 重连 / 换房时可能再次收到 welcome，逻辑不该绑死在第一次 connect 的闭包里。
+ */
+function handleNetWelcome(msg) {
+  if (!msg) return;
+  if (msg.faction) state.factions.myFaction = msg.faction;
+  if (msg.roster && msg.roster.length) state.factions.factions = msg.roster.slice();
+  if (typeof msg.isHost === 'boolean') net.isHost = msg.isHost;
+  if (msg.faction) net.myFaction = msg.faction;
+
+  /**
+   * ★ 进房间 → **停在准备界面**，不立刻开战。
+   *
+   * 这一步顺带解决了线上那个事故：房主先进房间、客机还没到的那段窗口里，
+   * 名单有 8 个席位但只有 p1 有基地，胜负判定曾经据此判出「p1 获胜」。
+   * 现在只有一个人在场时 lobby 根本不会放行，世界也不会被建出来。
+   */
+  enterLobby();
+  updateHud();
+}
+
+/* ------------------------------------------------------------------ */
+/* 准备界面（双方都点「准备」才开战）                                    */
+/* ------------------------------------------------------------------ */
+
+/** 进房间 → 停在准备界面（不建世界、不开始） */
+function enterLobby() {
+  const roster = (state.factions.factions || []).slice();
+  state.lobby.active = true;
+  state.lobby.started = false;
+  state.lobby.roster = roster;
+  state.lobby.ready = {};
+  for (const f of roster) state.lobby.ready[f] = false;
+  state.lobby.countdown = 0;
+  state.lobby.canStart = false;
+
+  // 准备阶段不跑对战逻辑：清掉结算状态，并把世界收成"只有我自己"的样子
+  state.match.over = false; state.match.winner = null;
+  state.match.elapsed = 0; state.match.logged = false;
+  state.pvpEnabled = false;          // 准备阶段 checkVictory 直接返回
+  state.units = [];
+  state.factionSpawns = {};
+  state.factionBases = {};
+  for (const b of state.buildingList.slice()) removeBuilding(state, b, true);
+  setLocalFaction(state.factions.myFaction);
+
+  const me = state.factions.myFaction;
+  pushLog(`已进入房间 ${net.room}（${factionLabel(me)}）—— 等待双方准备…`);
+  if (net.isHost) pushLog('你是房主：双方都点「准备」后由你宣布开战');
+
+  refreshLobbyState();
+}
+
+/** 重算「能不能开战」：名单里每一方都必须已准备 */
+function refreshLobbyState() {
+  const roster = state.lobby.roster || [];
+  const ready = state.lobby.ready || {};
+  // 准备界面至少要两个人 —— 一个人在场时永远不开战
+  state.lobby.canStart = roster.length >= 2 && roster.every((f) => !!ready[f]);
+}
+
+/** 我点「准备」/「取消准备」 */
+function toggleReady() {
+  if (!state.lobby.active || state.lobby.countdown > 0) return false;
+  const me = state.factions.myFaction;
+  const next = !state.lobby.ready[me];
+  state.lobby.ready[me] = next;
+  refreshLobbyState();
+  send({ t: 'ready', ready: next });
+  pushLog(next ? '你已准备' : '你取消了准备');
+  return next;
+}
+
+/** 收到别人的准备状态 */
+function setPeerReady(faction, ready) {
+  if (!faction) return;
+  if (!state.lobby.roster.includes(faction)) state.lobby.roster.push(faction);
+  if (state.lobby.ready[faction] === undefined) state.lobby.ready[faction] = false;
+  state.lobby.ready[faction] = !!ready;
+  refreshLobbyState();
+  pushLog(`${factionLabel(faction)} ${ready ? '已准备' : '取消准备'}`);
+}
+
+/** 房主：双方都准备好了 → 广播开战并进入倒计时 */
+function tryStartMatch() {
+  if (!state.lobby.active || state.lobby.started) return false;
+  if (!net.isHost) return false;
+  if (!state.lobby.canStart) return false;
+  const sec = (CONFIG.pvp && CONFIG.pvp.countdownSec) || 0;
+  state.lobby.countdown = sec;
+  state.lobby.started = true;
+  send({ t: 'start', countdown: sec });
+  pushLog(sec > 0 ? `双方已准备，${sec} 秒后开战` : '双方已准备，开战！');
+  if (sec <= 0) startMatch();
+  return true;
+}
+
+/** 收到房主的开战通知（客机） */
+function onNetStart(msg) {
+  if (!net.isHost) {
+    const sec = (msg && typeof msg.countdown === 'number') ? msg.countdown : 0;
+    state.lobby.started = true;
+    state.lobby.countdown = sec;
+    pushLog(sec > 0 ? `${sec} 秒后开战` : '开战！');
+    if (sec <= 0) startMatch();
+  }
+}
+
+/**
+ * ★ 正式开战：为**名单里每一方**建出基地与部队，然后放开对战规则。
+ *
+ * 这是「客机也能正确建出全世界」的关键：双方都按同一份名单、同一套确定性规则
+ * （spawnLayoutFor）建世界，所以谁在哪个角、基地在哪一格，两边算出来必然一致 ——
+ * 不再依赖"谁先谁后"这种巧合。
+ */
+function startMatch() {
+  // 幂等：倒计时结束与 start 广播可能都触发一次
+  if (state.lobby.active && !state.lobby.canStart && state.units.length > 0) return;
+
+  state.lobby.active = false;
+  state.lobby.countdown = 0;
+
+  const roster = (state.lobby.roster && state.lobby.roster.length)
+    ? state.lobby.roster.slice() : state.factions.factions.slice();
+  state.factions.factions = roster.slice();
+  if (!roster.includes(state.factions.myFaction)) {
+    state.factions.myFaction = roster[0];   // 兜底：名单变了也不再指向不存在的阵营
+    net.myFaction = state.factions.myFaction;
+  }
+
+  // 推倒重来：清掉准备阶段留下的东西，按名单完整重建
+  state.units = [];
+  state.factionSpawns = {};
+  state.factionBases = {};
+  for (const b of state.buildingList.slice()) removeBuilding(state, b, true);
+  for (const f of roster) applyFactionLayout(f);
+
+  state.pvpEnabled = true;
+  CONFIG.pvp.destructibleBase = true;
+  state.match.over = false; state.match.winner = null;
+  state.match.elapsed = 0; state.match.logged = false;
+  state.match.limitSec = CONFIG.pvp.timeLimitSec || 0;
+
+  selectUnits(state.units.filter((u) => u.faction === state.factions.myFaction).slice(0, 1));
+  const home = homeBaseOf(state.factions.myFaction);
+  if (state.camera && home) centerOn(state.camera, state, (home.x + 0.5) * CONFIG.cell, (home.y + 0.5) * CONFIG.cell);
+  updateHud();
+  pushLog(`★ 对战开始：${roster.map((f) => factionLabel(f)).join(' vs ')}（按 R 可再准备下一局）`);
+  toast('★ 对战开始！');
+}
+
+/** 倒计时推进（由主循环调用；客机也走这里，因为它不跑 update 的模拟部分） */
+function tickLobby(dt) {
+  if (!state.lobby.active) return;
+  if (state.lobby.countdown > 0) {
+    state.lobby.countdown = Math.max(0, state.lobby.countdown - dt);
+    if (state.lobby.countdown === 0) startMatch();
+    return;
+  }
+  // 房主：条件满足就自动开战（不必再点一次按钮）
+  if (net.isHost && !state.lobby.started) tryStartMatch();
+}
+
+/**
+ * 确保本地世界属于指定阵营。
+ *
+ * ★ 这里刻意**不是**「只在阵营变化时重建」。只看变化会漏掉一类坏状态：
+ *   服务器分配的阵营恰好与当前一致（例如重连、或本机此前已按该阵营跑过），
+ *   于是跳过重建 —— 可本地世界可能还停在最初的单机 'player' 状态
+ *   （init() 天生建的是 'player'，如果 initNet 的重建因为任何原因没生效，
+ *     玩家就会「被告知自己是 p1，手里却是单机的部队」，选不中、也建不了东西）。
+ *   现在的判据是「世界是不是真的属于这个阵营」，而不是「阵营有没有变」。
+ */
+function ensureLocalWorld(faction) {
+  if (!faction) return;
+  const hasOwnUnits = state.units.some((u) => u.alive && u.faction === faction);
+  const isPlayerSide = faction === DEFAULT_FACTION || /^p[1-8]$/.test(faction);
+  const isSinglePlayerRoster = state.factions.factions.length <= 1;
+  /**
+   * 世界与阵营不一致的三种情形：
+   *   · 手里没有这一方的单位
+   *   · 单机世界（只有 'player' 部队）却要当某个联机阵营
+   *   · 反过来：联机阵营的部队，却被要求回到单机 'player'
+   */
+  const mismatched = !hasOwnUnits
+    || (faction !== DEFAULT_FACTION && isPlayerSide && state.units.some((u) => u.alive && u.faction === DEFAULT_FACTION))
+    || (faction === DEFAULT_FACTION && !isSinglePlayerRoster);
+  if (!mismatched) return;
+  rebuildLocalWorldForFaction(faction);
+}
+
+/**
+ * 建立/重建「某一方」的基地与部队。
+ *
+ * 做四件事（顺序有讲究）：
+ *   1. 算这一方的出生点（大本营 + 将领站位 + 防御阵地）—— 见 map.js 的 spawnLayoutFor
+ *   2. 拆掉**这一方旧的**大本营（重建时会调这个函数，不能留下孤儿建筑）
+ *   3. 建新的大本营（+ 防御阵地），并把大本营坐标记进 state.factionBases
+ *   4. 建这一方的将领
+ *
+ * 单机（faction = 'player'）时出生点就是原版点位，所以这里没有单机/联机分支。
+ *
+ * ⚠️ 会被调用两次：init() 里一次、initNet() 里一次（那时相机/UI 已就绪）。
+ *    所以每一步都要容忍「东西可能不在」。
+ */
+function applyFactionLayout(faction, opts = {}) {
+  const map = state.map;
+  if (!map) return;
+
+  /**
+   * ★「主阵营」= 名单里的第一个（房主），**不是"我这一方"**。
+   *
+   * 这点很关键：客机用 state.factions.factions = ['p1','p2']，但它的 myFaction 是 'p2'。
+   * 如果拿 myFaction 当主阵营，客机就会把 p2 摆到地图中央的原版大本营上，
+   * 而房主那边 p1 也在中央 —— 两边算出**不同的世界**，快照一同步就全乱。
+   * 所以主阵营必须只由「名单顺序」决定，而名单来自服务器，两边一致。
+   *
+   * 兜底链：roster[0] → 我这一方 → 单机默认值。
+   * （单机时 roster = ['player']，于是 player 是主阵营，行为与 v0.3 完全一致。）
+   */
+  const roster = (state.factions.factions && state.factions.factions.length)
+    ? state.factions.factions : SINGLE_PLAYER_ROSTER;
+  const primary = roster[0] || state.factions.myFaction || DEFAULT_FACTION;
+  const layout = spawnLayoutFor(map, faction, primary);
+  state.factionSpawns[faction] = layout.spawns;
+  state.factionBases[faction] = layout.base;
+  if (!state.base || state.factions.myFaction === faction) state.base = layout.base;
+  // 单机兼容：state.generalSpawns 始终是这一方的站位（旧代码/测试读它）
+  if (state.factions.myFaction === faction) state.generalSpawns = layout.spawns;
+
+  // 2) 清掉需要重建的旧大本营
+  //    · owner === 本阵营：这是同阵营重建（切回 p1 / 回退单机）
+  //    · 'player' 且本阵营已不是单机默认值：这是 init() 阶段先按单机建出来的那一座，
+  //      联机接管后它就成了孤儿（owner='player'，不匹配任何玩家阵营）。
+  //      ★ 不清理它会导致「init 建的大本营」与「联机重建的大本营」叠在同一格上，
+  //        而且 owner 停在 'player' —— 胜负判定与城墙通行规则都会因此错乱。
+  const stale = state.buildingList.filter((b) => b.type === 'base' && (
+    b.owner === faction || (b.owner === DEFAULT_FACTION && faction !== DEFAULT_FACTION)
+  ));
+  for (const b of stale) removeBuilding(state, b, true);   // force：大本营也要能清掉（内部重建）
+
+  // 3) 大本营 + 防御阵地
+  addBuilding('base', layout.base.x, layout.base.y, faction, { silent: true });
+  for (const d of layout.defenses || []) {
+    addBuilding(d.type, d.x, d.y, faction, { silent: true });
+  }
+  state.buildingRevision++;
+
+  // 4) 将领
+  //    ★ 多阵营共存：如果世界已经属于别人（roster 里有多个阵营），就**追加**本阵营的将领，
+  //      而不是把 state.units 整个换掉。
+  //      踩过的坑：这里原来无条件 `state.units = createGenerals(...)`，
+  //      于是房主为 p2 建基地时会把 p1 的部队全部顶掉 ——
+  //      结果是「双方基地都在、但地图上只有一方的兵」，根本打不起来。
+  //      只有「我换阵营」才该整体重建，那条路径走 setLocalFaction()。
+  const multiFaction = (state.factions.factions || []).length > 1;
+  const fresh = createGenerals(state, faction);
+  if (multiFaction) {
+    // 先移除本阵营的旧部队（重建场景），保留其他阵营的
+    state.units = state.units.filter((u) => u.faction !== faction);
+    state.units.push(...fresh);
+  } else {
+    state.units = fresh;
+  }
+  if (state.ui) {
+    state.ui.selectedUnits = state.ui.selectedUnits.filter((u) => state.units.indexOf(u) >= 0);
+    if (state.ui.selectedBuilding && !state.ui.selectedBuilding.alive) state.ui.selectedBuilding = null;
+  }
+  if (state.factions.myFaction === faction) {
+    const own = state.units.filter((u) => u.faction === faction && u.alive);
+    selectUnits(own.length ? [own[0]] : []);
+    if (state.camera && own.length) centerOn(state.camera, state, own[0].px, own[0].py);
+  }
+  updateSelectionPanel();
+
+  if (opts.log) {
+    pushLog(`本地世界已切换到 ${factionLabel(faction)}：大本营 (${layout.base.x}, ${layout.base.y})，`
+      + `${layout.spawns.length} 个将领，${(layout.defenses || []).length} 个防御建筑`);
+  }
+}
+
+/**
+ * 换阵营 = 重建**本地**世界（id 前缀、大本营归属、出生点都要跟着换）。
+ *
+ * 与 applyFactionLayout 的区别：
+ *   · setLocalFaction  —— 「我换到别的阵营了」：清空全部单位，重建新阵营的部队
+ *   · applyFactionLayout —— 「为某个阵营准备它的基地/部队」：多阵营时**追加**，不动别人
+ * 联机开局（initNet）与客机入场（handleNetWelcome）走前者；
+ * 房主为客机准备基地走后者。
+ */
+function setLocalFaction(faction) {
+  state.units = [];                    // 换阵营：旧阵营的部队不再属于我，整个清掉
+  state.factionSpawns = {};
+  applyFactionLayout(faction, { log: true });
+}
+
+/** @deprecated 旧名，保留给调试句柄使用 */
+function rebuildLocalWorldForFaction(faction) {
+  setLocalFaction(faction);
+}
+
+/** 某阵营的大本营坐标（复活点 / 敌人 AI 目标都从这里取） */
+function homeBaseOf(faction) {
+  return state.factionBases[faction] || state.base;
+}
+/**
+ * 房主：执行客机的意图。
+ * ★ 这里必须按「发送者自己的阵营」过滤单位 —— 否则客机可以操控房主的单位。
+ */
+function handleNetCommand(cmd) {
+  if (!cmd || !net.isHost) return;
+  const owner = cmd.f;
+  const mine = (u) => u && u.alive && u.faction === owner;
+
+  if (cmd.kind === 'move') {
+    const ids = cmd.ids || [];
+    let ok = 0;
+    for (const id of ids) {
+      const u = state.units.find((x) => x.id === id);
+      if (!mine(u)) continue;
+      if (u.orderMove(state, { x: cmd.x, y: cmd.y })) ok++;
+    }
+    void ok;
+  } else if (cmd.kind === 'build') {
+    tryBuildAt(cmd.tx, cmd.ty, owner);
+  } else if (cmd.kind === 'spawnEnemy') {
+    spawnEnemy(cmd.tx, cmd.ty);
+  }
 }
 
 /* ------------------------------------------------------------------ */
 /* 建筑                                                                */
 /* ------------------------------------------------------------------ */
 
-function addBuilding(type, tx, ty, owner = 'player', opts = {}) {
+function addBuilding(type, tx, ty, owner = null, opts = {}) {
   if (!state.terrain.has(tx, ty)) return null;
   if (state.buildings.get(tx, ty)) return null;   // 每个地块仅能建造一个建筑
+  const who = owner || state.factions.myFaction;
   const z = zoneAt(state, tx, ty);
-  const b = new Building(type, tx, ty, owner, z ? z.id : -1);
+  const b = new Building(type, tx, ty, who, z ? z.id : -1);
   state.buildings.set(tx, ty, b);
   state.buildingList.push(b);
   state.buildingRevision++;
@@ -2358,7 +3971,11 @@ function canBuildAt(type, tx, ty) {
   return true;
 }
 
-function tryBuildAt(tx, ty) {
+/**
+ * 建造。owner 默认为「我这一方」。
+ * ★ 联机下客机不能直接建造（它不跑逻辑），要把意图发给房主；见 tryBuildCmd。
+ */
+function tryBuildAt(tx, ty, owner = null) {
   const type = state.ui.buildType;
   if (!type) return false;
   if (!canBuildAt(type, tx, ty)) {
@@ -2372,13 +3989,23 @@ function tryBuildAt(tx, ty) {
     }
     for (const k of Object.keys(def.cost)) state.resources[k] -= def.cost[k];
   }
-  addBuilding(type, tx, ty, 'player');
+  addBuilding(type, tx, ty, owner || state.factions.myFaction);
   return true;
+}
+
+/** 联机：把建造意图发给房主（客机走这里） */
+function tryBuildViaNet(tx, ty) {
+  return send({ t: 'cmd', kind: 'build', f: net.faction, tx, ty });
 }
 
 /* ------------------------------------------------------------------ */
 /* 选择                                                                */
 /* ------------------------------------------------------------------ */
+
+/** 「我」控制的阵营。单机 = 'player'；联机 = 服务器分配的 p1 / p2 */
+function myFaction() {
+  return state.factions.myFaction;
+}
 
 function selectUnits(units) {
   for (const u of state.units) u.selected = false;
@@ -2396,7 +4023,7 @@ function selectBuilding(b) {
 }
 
 function selectGeneralByHotkey(key) {
-  const u = state.units.find((x) => x.alive && x.faction === 'player' && x.hotkey === key);
+  const u = state.units.find((x) => x.alive && x.faction === myFaction() && x.hotkey === key);
   if (u) {
     selectUnits([u]);
     centerOn(state.camera, state, u.px, u.py);
@@ -2414,14 +4041,42 @@ function loop(now) {
   const dt = Math.min(0.05, (now - last) / 1000 || 0);
   last = now;
   if (!paused) update(dt);
-  draw(state, canvas, state.camera, buildUiSnapshot());
+  updateNet(now, dt);
+  // 准备界面的倒计时 / 自动开战：客机的 update() 是冻结的，所以这一步必须放在
+  // update 之外，否则客机永远不会从准备界面走进对战。
+  if (!paused) tickLobby(dt);
+  draw(state, canvas, state.camera, buildUiSnapshot(now));
   updateHud();
   requestAnimationFrame(loop);
 }
 
-function buildUiSnapshot() {
+/**
+ * 联机每帧：房主广播快照，客机只做插值（世界数据已在 applySnapshot 里更新）。
+ *
+ * ★ 客机的 update() 是冻结的（见 update 开头），但相机、选中、HUD、绘制照常跑，
+ *   所以客机的操作手感是即时的 —— 只有世界状态是等房主的。
+ */
+function updateNet(now, dt) {
+  if (!net.active) return;
+
+  if (net.isHost) {
+    net._snapAcc = (net._snapAcc || 0) + dt;
+    const period = 1 / SNAPSHOT_HZ;
+    if (net._snapAcc >= period) {
+      net._snapAcc = 0;
+      send({ t: 'snap', s: makeSnapshot(state) });
+    }
+  } else {
+    // 客机的世界由房主的快照驱动（applySnapshot 已更新 state）。
+    // 这里不需要再做什么 —— 时间基准由快照自带（net.lastSnapTime），见 render.js 的 unitDrawPos。
+  }
+}
+
+function buildUiSnapshot(now) {
   return {
     time: state.time,
+    /** 本帧时刻（毫秒）。客机靠它做单位位置的插值，见 render.js 的 unitDrawPos */
+    now: typeof now === 'number' ? now : performance.now(),
     buildMode: !!state.ui.buildType,
     buildType: state.ui.buildType,
     hoverTile: state.ui.hoverTile,
@@ -2430,10 +4085,26 @@ function buildUiSnapshot() {
     selectedUnits: state.ui.selectedUnits,
     selectedBuilding: state.ui.selectedBuilding,
     showZoneNames: state.ui.showZoneNames,
+    // ★ 渲染层需要知道「我是哪一方」才能上色（render.js 不 import 游戏状态）
+    myFaction: myFaction(),
+    /** 我的大本营坐标（阵亡时在它上面画复活倒计时） */
+    myBase: homeBaseOf(myFaction()),
+    /** 对战结算状态（画结束横幅用） */
+    match: state.match,
+    /** 准备界面状态（画准备面板用） */
+    lobby: state.lobby,
   };
 }
 
 function update(dt) {
+  /**
+   * ★ 联机下只有房主跑权威逻辑。
+   * 客机的世界完全由房主的快照驱动（applySnapshot）；如果客机也跑一遍 update，
+   * 两份状态会各自漂移，几秒后就会出现「我看到的位置和实际位置不一样」。
+   * 注意客机的相机 / 选中 / HUD / 绘制仍然照常跑（它们在 loop 里，不在 update 里）。
+   */
+  if (net.active && !net.isHost) return;
+
   state.time += dt;
 
   // 1) 区块占领（占位规则）
@@ -2445,8 +4116,8 @@ function update(dt) {
     state.lastRevision = state.buildingRevision;
   }
 
-  // 3) 资源：按己方占领地块数实时增长
-  const tiles = ownedTileCount(state, 'player');
+  // 3) 资源：按己方占领地块数实时增长（「己方」= state.factions.myFaction）
+  const tiles = ownedTileCount(state, state.factions.myFaction);
   if (tiles !== state.ownedTiles) {
     const names = ownedZoneNames();
     state.ownedTiles = tiles;
@@ -2457,12 +4128,17 @@ function update(dt) {
 
   // 4) 单位：移动 + 战斗 / 警戒（参数见 CONFIG.combat）
   for (const u of state.units) u.update(state, dt);
+  /**
+   * ⚠️ 这里**不能**再按 alive 过滤 state.units（v0.3 是那么写的）。
+   *    对战模式下阵亡的单位要留在列表里等复活（unit.js 的 tickRespawn）——
+   *    一旦被过滤掉就永远活不过来了。
+   *    真正需要清理的只有两种：复活倒计时没开（respawnSec = 0）的死单位、以及被移出战场很久的。
+   */
   if (state.units.some((u) => !u.alive)) {
-    state.units = state.units.filter((u) => u.alive);
+    const keep = (u) => u.alive || u.awaitingRespawn || u.keepDead;
+    state.units = state.units.filter(keep);
     // 选中列表 / 选中建筑可能刚刚阵亡或被拆掉，及时清干净
-    if (state.ui.selectedUnits.some((u) => !u.alive)) {
-      selectUnits(state.ui.selectedUnits.filter((u) => u.alive));
-    }
+    selectedUnitsClearIfDead();
     if (state.ui.selectedBuilding && !state.ui.selectedBuilding.alive) {
       state.ui.selectedBuilding = null;
       updateSelectionPanel();
@@ -2486,12 +4162,164 @@ function update(dt) {
   updateCameraKeyboard(dt);
   updateCameraEdgeScroll(dt);
 
-  // 8) 敌人 AI（朝大本营推进；被城墙挡住时锁定城墙来拆）
+  // 8) 敌人 AI（朝玩家据点推进；被城墙挡住时锁定城墙来拆）
   updateEnemies();
 
-  // 9) 提示气泡过期清理
+  // 9) 胜负判定（大本营被打掉 / 超时比血量）
+  checkVictory(dt);
+
+  // 10) 提示气泡过期清理
   const now = performance.now();
   state.ui.toasts = state.ui.toasts.filter((t) => now - t.at < 2600);
+}
+
+/* ------------------------------------------------------------------ */
+/* 胜负判定（对战）                                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 判定这一局是否结束。
+ *
+ * 规则：**某一方的大本营被打掉 → 该方落败**。
+ * 前提是 CONFIG.pvp.destructibleBase = true（联机时打开；单机保持不可摧毁）。
+ * 另外 CONFIG.pvp.timeLimitSec 到点后按「大本营剩余血量比例」判胜负，防止无限拖时间。
+ * 时间上限设为 0 则不限时。
+ *
+ * ★ 分母必须是「**在场**的阵营」，不能是「名单里的席位」。
+ *
+ * 线上事故：名单 FACTION_ROSTER 有 8 个席位（p1..p8），但开局只有房主 p1 进了房间、
+ * 也就只有 p1 有基地。用名单当分母就会得出「8 个玩家只剩 1 个活着」，
+ * 于是**第 0 帧直接判 p1 获胜** —— 两个玩家一打开页面就看见"P1 赢了"，根本没法玩。
+ * 现在只统计已经建出基地的阵营（见 spawnedFactions），一个人玩就永远不会"分出胜负"。
+ */
+function checkVictory(dt) {
+  if (state.match.over) return;
+  // 单机不谈胜负（大本营本来就打不掉）
+  if (!state.pvpEnabled) return;
+
+  const players = spawnedFactions();
+  const alive = players.filter((f) => !!findBaseOf(f));
+
+  // 只有**确实有两个以上玩家在场**时才谈"输赢"；只剩一个说明对手已被淘汰
+  if (players.length >= 2 && alive.length <= 1) {
+    state.match.over = true;
+    state.match.winner = alive[0] || null;
+    finishMatch(state.match.winner);
+    return;
+  }
+
+  const limit = (CONFIG.pvp && CONFIG.pvp.timeLimitSec) || 0;
+  if (limit <= 0 || players.length < 2) return;
+  state.match.elapsed += dt;
+  if (state.match.elapsed < limit) return;
+
+  // 超时：按大本营剩余血量比例高者胜
+  const score = (f) => {
+    const b = findBaseOf(f);
+    return b && b.hpMax ? b.hp / b.hpMax : 0;
+  };
+  const ranked = players.slice().sort((a, b) => score(b) - score(a));
+  state.match.over = true;
+  state.match.winner = score(ranked[0]) > score(ranked[1]) ? ranked[0] : null;
+  finishMatch(state.match.winner, '时间到');
+}
+
+/** 某阵营当前的大本营建筑（没有则 null） */
+function findBaseOf(faction) {
+  return state.buildingList.find((x) => x.alive && x.type === 'base' && x.owner === faction) || null;
+}
+
+/**
+ * **在场**的玩家阵营 = 已经为它建出基地的那些。
+ *
+ * 这是胜负判定与"重开一局"的分母。不能直接用 state.factions.factions ——
+ * 那是服务器分配的**席位名单**（含还没进房间的 p3..p8）。
+ */
+function spawnedFactions() {
+  const list = playerFactionList();
+  return list.filter((f) => !!state.factionBases[f]);
+}
+
+function finishMatch(winner, reason) {
+  const mine = myFaction();
+  if (!state.match.logged) {
+    if (!winner) {
+      pushLog(`对战结束：平局${reason ? `（${reason}）` : ''}`);
+      toast('对战结束：平局');
+    } else if (winner === mine) {
+      pushLog(`★ 对战结束：${factionLabel(winner)} 获胜！`);
+      toast('★ 你赢了！');
+    } else {
+      pushLog(`对战结束：${factionLabel(winner)} 获胜`);
+      toast('你输了');
+    }
+    state.match.logged = true;
+  }
+  void reason;
+}
+
+/**
+ * 重开一局：清空结算状态、让所有单位回到自家基地并满血。
+ *
+ * 房主调用后，客机会通过后续快照自然跟上（快照里带 match，且单位位置由房主说了算）。
+ * 单机也能用（等价于"重置"）。
+ */
+function resetMatch() {
+  state.match.over = false;
+  state.match.winner = null;
+  state.match.elapsed = 0;
+  state.match.logged = false;
+
+  for (const u of state.units) {
+    // ★ 只清理 NPC 敌人，玩家单位要复活并送回基地
+    //   （写成 `=== 'enemy'` 会让所有玩家单位被跳过、停在 alive=false，
+    //     紧接着的过滤器就把它们全删了 —— 重开一局后一个单位都不剩）
+    if (u.faction === 'enemy') { u.alive = false; u.keepDead = false; continue; }
+    const home = homeBaseOf(u.faction);
+    const n = parseInt(String(u.id).split('-').pop(), 10);
+    const slot = Number.isFinite(n) ? Math.max(1, n) : 1;
+    const RING = [[0, 1], [1, 0], [-1, 0], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1]];
+    let spot = home;
+    for (let k = 0; k < RING.length; k++) {
+      const o = RING[(slot - 1 + k) % RING.length];
+      if (passable(state, home.x + o[0], home.y + o[1], u.faction)) {
+        spot = { x: home.x + o[0], y: home.y + o[1] };
+        break;
+      }
+    }
+    u.alive = true;
+    u.hp = u.hpMax;
+    u.tx = spot.x; u.ty = spot.y;
+    u.px = (spot.x + 0.5) * CONFIG.cell;
+    u.py = (spot.y + 0.5) * CONFIG.cell;
+    u.path = null; u.goal = null; u.goalPt = null; u.moving = false;
+    u.respawnTimer = 0;
+    u.attackCd = 0;
+    u.clearTarget();
+  }
+  // 敌人死透后清出战场（★ 只清敌人，别把玩家单位一起清掉）
+  state.units = state.units.filter((u) => u.faction !== 'enemy' || u.alive);
+  /**
+   * ★ 关键：把**在场**的玩家大本营恢复到满血。
+   *   否则上一局被打掉的那个基地不复原，checkVictory 会立刻又判一次胜负，
+   *   这一局刚开就结束。
+   *   用 spawnedFactions 而不是 playerFactionList —— 别给还没进房间的席位凭空造基地。
+   */
+  for (const f of spawnedFactions()) {
+    const g = homeBaseOf(f);
+    const b = state.buildings.get(g.x, g.y);
+    if (b && b.type === 'base') { b.hp = b.hpMax; b.alive = true; }
+    else addBuilding('base', g.x, g.y, f, { silent: true });
+  }
+  state.buildingRevision++;
+  selectedUnitsClearIfDead();
+  pushLog('新的一局开始');
+}
+
+/** 选中列表里剔除已阵亡的单位（空列表时面板也会跟着重置） */
+function selectedUnitsClearIfDead() {
+  const alive = state.ui.selectedUnits.filter((u) => u.alive);
+  if (alive.length !== state.ui.selectedUnits.length) selectUnits(alive);
 }
 
 /* ------------------------------------------------------------------ */
@@ -2504,6 +4332,8 @@ function spawnEnemy(tx, ty) {
   const open = passable(state, spawn.x, spawn.y, 'enemy') ? spawn : findOpenTileNear(state, spawn, 'enemy');
   if (!open) { toast('找不到可用的敌方出生点'); return null; }
   const e = new Unit({
+    // ★ id 必须由房主生成：客机用 Math.random() 会算出不同的 id，导致快照对齐时单位错位/闪烁。
+    //   客机刷敌人走 trySpawnEnemyViaNet()，请求房主代为生成。
     id: `enemy-${Math.random().toString(36).slice(2, 8)}`,
     name: '测试敌人', tx: open.x, ty: open.y, faction: 'enemy', kind: 'enemy',
   });
@@ -2513,6 +4343,31 @@ function spawnEnemy(tx, ty) {
   return e;
 }
 
+/** 联机：请房主代刷一个测试敌人（客机的 Math.random 与房主不一致，不能自己生成 id） */
+function trySpawnEnemyViaNet(tx, ty) {
+  return send({ t: 'cmd', kind: 'spawnEnemy', f: net.faction, tx, ty });
+}
+
+/**
+ * 找出敌人该往哪个「玩家据点」推进。
+ * 单机下永远只有一个 state.base（阵营 'player'），行为与旧版一致；
+ * 联机下按最近的玩家单位/建筑决定，免得两个玩家时敌人只认死一个目标。
+ */
+function playerFactionList() {
+  const list = (state.factions && state.factions.factions) || [DEFAULT_FACTION];
+  return list.length ? list : [DEFAULT_FACTION];
+}
+
+function nearestPlayerBase(from) {
+  let best = state.base, bestD = Infinity;
+  for (const b of state.buildingList) {
+    if (!b.alive || b.type !== 'base') continue;
+    if (playerFactionList().indexOf(b.owner) < 0) continue;
+    const d = Math.abs(b.tx - from.x) + Math.abs(b.ty - from.y);
+    if (d < bestD) { bestD = d; best = { x: b.tx, y: b.ty }; }
+  }
+  return best;
+}
 function updateEnemies() {
   for (const u of state.units) {
     if (!u.alive || u.faction !== 'enemy') continue;
@@ -2522,12 +4377,14 @@ function updateEnemies() {
     // 正在拆建筑（通常是挡路的城墙）：交给 unit.js 的 updateBuildingCombat
     if (u.targetBuilding) continue;
 
-    // 已经贴到大本营就停下（本版不做近战拆家）
-    if (Math.abs(u.tx - state.base.x) + Math.abs(u.ty - state.base.y) <= 1) { u.stop(); continue; }
+    const goalBase = nearestPlayerBase({ x: u.tx, y: u.ty });
+
+    // 已经贴到据点了就停下（本版不做近战拆家）
+    if (Math.abs(u.tx - goalBase.x) + Math.abs(u.ty - goalBase.y) <= 1) { u.stop(); continue; }
     if (u.path && u.path.length) continue;
 
     // 按“敌方通行规则”寻路：城墙会阻挡，所以只能绕路或拆墙
-    const goal = nearestReachable(state, { x: u.tx, y: u.ty }, state.base, 'enemy');
+    const goal = nearestReachable(state, { x: u.tx, y: u.ty }, goalBase, 'enemy');
     if (goal && (u.tx !== goal.x || u.ty !== goal.y)) {
       // ⚠️ moveTo 收的是**像素**坐标，而 A* 给的是**地块**坐标：这里必须换算成格心像素，
       //    否则单位会把地块坐标当成像素坐标，朝地图左上角走（旧版本的 bug）。
@@ -2539,17 +4396,21 @@ function updateEnemies() {
     // → 锁定挡路的城墙，由 unit.js 负责“先靠近、再一下一下拆”。
     // 注意这里**不能**只看 moveTo 的返回值：原地不动时 moveTo 也返回 true，
     // 会让敌人站在墙边发呆（这曾经是“敌人不拆墙”的原因）。
-    const blocker = findBlockingWall(state, u);
+    const blocker = findBlockingWallToward(state, { x: u.tx, y: u.ty }, goalBase, u.faction, 'wall');
     if (blocker) u.setBuildingTarget(blocker);
   }
 }
 
 /**
- * 找出“该拆的那一段城墙”：挨着敌人自己可达的区域、且离大本营最近的那一段。
+ * 找出「该拆的那一段城墙」：挨着敌人自己可达的区域、且离目标据点最近的那一段。
  * 判定逻辑在 path.js 的 findBlockingWallToward()（测试直接用同一个函数，避免两份实现走偏）。
+ *
+ * 保留这个「面向单位」的包装（而不是只内联调用），是因为它是 window.RTS 的公开调试 API：
+ * tools/browser-test.py 与控制台都通过 R.findBlockingWall(state, unit) 使用它。
  */
 function findBlockingWall(state, u) {
-  return findBlockingWallToward(state, { x: u.tx, y: u.ty }, state.base, u.faction, 'wall');
+  const to = nearestPlayerBase({ x: u.tx, y: u.ty }) || state.base;
+  return findBlockingWallToward(state, { x: u.tx, y: u.ty }, to, u.faction, 'wall');
 }
 
 /* ------------------------------------------------------------------ */
@@ -2611,6 +4472,7 @@ const UI_IDS = [
   'btnWall', 'btnTower', 'btnCancel', 'btnPause', 'btnFit', 'btnZones', 'btnSpawn', 'btnAutoSpawn',
   'btnClearEnemies', 'btnHelp', 'helpBox', 'buildHint', 'statUnits', 'statEnemies',
   'statBuildings', 'statRevision', 'debugAim', 'btnAim', 'btnEdge',
+  'btnReady', 'lobbyHint',
 ];
 
 function initDom() {
@@ -2651,16 +4513,18 @@ function pointerInfo(e) {
 }
 
 function updateHud() {
+  const mine = myFaction();
   el.food.textContent = state.resources.food.toFixed(CONFIG.resource.decimals);
   el.gold.textContent = state.resources.gold.toFixed(CONFIG.resource.decimals);
   el.tiles.textContent = String(state.ownedTiles);
   el.rate.textContent = `+${(state.ownedTiles * CONFIG.resource.foodPerTilePerSec).toFixed(1)} / +${(state.ownedTiles * CONFIG.resource.goldPerTilePerSec).toFixed(1)} 每秒`;
   el.zoneList.textContent = ownedZoneNames() || '（无）';
-  el.statUnits.textContent = String(state.units.filter((u) => u.alive && u.faction === 'player').length);
+  el.statUnits.textContent = String(state.units.filter((u) => u.alive && u.faction === mine).length);
   el.statEnemies.textContent = String(state.units.filter((u) => u.alive && u.faction === 'enemy').length);
   el.statBuildings.textContent = String(state.buildingList.length);
   el.statRevision.textContent = String(state.buildingRevision);
   updateSelectionPanel();
+  updateReadyHint();
 
   if (el.log.dataset.n !== String(state.log.length)) {
     el.log.dataset.n = String(state.log.length);
@@ -2696,9 +4560,10 @@ function updateHud() {
 function updateSelectionPanel() {
   const u = state.ui.selectedUnits[0];
   const b = state.ui.selectedBuilding;
+  const mine = myFaction();
   if (b) {
     const hpTxt = `生命 ${Math.ceil(b.hp)} / ${b.hpMax}`;
-    el.selName.textContent = `${BUILDINGS[b.type].name}（${b.owner === 'player' ? '己方' : '敌方'}）`;
+    el.selName.textContent = `${BUILDINGS[b.type].name}（${b.owner === mine ? '己方' : factionLabel(b.owner)}）`;
     el.selDetail.textContent = b.type === 'tower'
       ? `( ${b.tx}, ${b.ty} ) ${hpTxt} · 攻击 ${b.def.damage} / 射程 ${b.def.range} 格 / 间隔 ${b.def.cooldown}s`
       : `( ${b.tx}, ${b.ty} ) 占据 1 个地块 · ${hpTxt}`;
@@ -2709,7 +4574,7 @@ function updateSelectionPanel() {
     const z = zoneAt(state, u.tx, u.ty);
     const goal = u.goal ? ` → (${u.goal.x}, ${u.goal.y})` : '';
     const zoneTxt = z
-      ? `${z.name}${z.owner === 'player' ? '·己方' : z.progress > 0 ? `·占领 ${Math.round(z.progress * 100)}%` : '·无主'}`
+      ? `${z.name}${z.owner === mine ? '·己方' : z.progress > 0 ? `·占领 ${Math.round(z.progress * 100)}%` : '·无主'}`
       : '无';
     const atk = `攻击 ${u.combat.damage} / 距离 ${u.combat.range} 格 / 间隔 ${u.combat.cooldownSec}s · 警戒 ${CONFIG.combat.aggroRange} 格`;
     const tgt = u.target && u.target.alive
@@ -2726,7 +4591,7 @@ function updateSelectionPanel() {
 }
 
 function ownedZoneNames() {
-  return state.zones.filter((z) => z.owner === 'player').map((z) => z.name).join(', ');
+  return state.zones.filter((z) => z.owner === myFaction()).map((z) => z.name).join(', ');
 }
 
 function pushLog(msg) {
@@ -2737,20 +4602,52 @@ function pushLog(msg) {
 /** 战斗事件（unit.js 通过 state.onCombatEvent 回调进来）→ 事件日志 / 提示 / 建筑收尸 */
 function onCombatEvent(evt) {
   if (!evt) return;
+  const mine = myFaction();
   if (evt.type === 'alert') {
-    if (evt.unit.faction === 'player') pushLog(`${evt.unit.name} 发现 ${evt.target.name}，进入警戒`);
+    if (evt.unit.faction === mine) pushLog(`${evt.unit.name} 发现 ${evt.target.name}，进入警戒`);
   } else if (evt.type === 'kill') {
     const by = evt.source ? `（${actorName(evt.source)} 击杀）` : '';
-    pushLog(`${evt.unit.name} 阵亡${by}`);
-    if (evt.unit.faction === 'player') toast(`${evt.unit.name} 阵亡${by}`);
+    const wait = CONFIG.pvp && CONFIG.pvp.respawnSec > 0
+      ? `，${CONFIG.pvp.respawnSec} 秒后复活` : '';
+    pushLog(`${evt.unit.name} 阵亡${by}${wait}`);
+    if (evt.unit.faction === mine) toast(`${evt.unit.name} 阵亡${by}${wait}`);
+  } else if (evt.type === 'respawn') {
+    // 只给自家单位写日志，免得对面每复活一个就刷一条
+    if (evt.unit.faction === mine) {
+      pushLog(`${evt.unit.name} 已在自家大本营复活（第 ${evt.unit.deaths} 次阵亡）`);
+    }
   } else if (evt.type === 'buildingDown') {
     const b = evt.building;
     const by = evt.source ? `被 ${actorName(evt.source)} 拆毁` : '被拆毁';
     pushLog(`${actorName(b)} (${b.tx}, ${b.ty}) ${by}`);
-    if (b.owner === 'player') toast(`${actorName(b)} 被拆毁！`);
-    removeBuilding(state, b);
+    if (b.owner === mine) toast(`${actorName(b)} 被拆毁！`);
+    const wasBase = b.type === 'base';
+    const loser = b.owner;
+    /**
+     * ★ 必须 force = true。
+     *
+     * removeBuilding 的默认规则是「大本营不可拆」——那是给**玩家主动拆除**（X / Delete）
+     * 用的，防止玩家把自家大本营拆了。但这里走的是**战斗摧毁**：血量已经被打到 0，
+     * 建筑必须真的从地图上消失。
+     *
+     * 踩过的坑：这里没传 force，于是拆到 0 血的大本营原地不动、还是 alive，
+     * 而胜负却已经判了 —— 出现「基地明明被打爆了却还立在那里」的坏状态。
+     * 传 force 之后，玩家手动拆大本营依然是禁止的（那条路径不经过这里）。
+     */
+    removeBuilding(state, b, true);
     state.buildingRevision++;
-  }
+
+    /**
+     * ★ 胜负条件：大本营被打掉 → 该方落败。
+     * 只用**在场**的阵营判断（见 spawnedFactions）—— 名单里那些还没进房间的席位不算数，
+     * 否则会出现「打掉一个基地就宣布只剩一个玩家」的误判。
+     */
+    if (wasBase && !state.match.over && spawnedFactions().length >= 2) {
+      state.match.over = true;
+      const survivors = spawnedFactions().filter((f) => f !== loser);
+      state.match.winner = survivors.length === 1 ? survivors[0] : null;
+      finishMatch(state.match.winner, `${factionLabel(loser)} 大本营被拆`);
+    }  }
 }
 
 /** 日志里显示攻击者名字：单位有 name，建筑有 def.name */
@@ -2775,6 +4672,27 @@ function selectBuildType(type) {
       ? `建造模式：${type === 'wall' ? '城墙' : '箭塔'} —— 左键放置，右键 / Esc 退出。本版建造免费。`
       : '建造模式关闭（按 B 建城墙 / T 建箭塔）';
   }
+  updateReadyHint();
+}
+
+/** 把「准备」按钮的文字与状态刷新出来（准备界面 / 对战中都可能变） */
+function updateReadyHint() {
+  if (!el.btnReady) return;
+  const inLobby = state.lobby.active;
+  const meReady = !!state.lobby.ready[state.factions.myFaction];
+  el.btnReady.textContent = inLobby
+    ? (meReady ? '✓ 已准备（点此取消）' : '✅ 准备 (R)')
+    : '↻ 再来一局 / 重新准备 (R)';
+  el.btnReady.classList.toggle('active', inLobby && meReady);
+  el.btnReady.classList.toggle('hidden', !net.active);
+  if (el.lobbyHint) {
+    const others = (state.lobby.roster || []).filter((f) => f !== state.factions.myFaction);
+    const readyN = (state.lobby.roster || []).filter((f) => state.lobby.ready[f]).length;
+    el.lobbyHint.textContent = inLobby
+      ? `准备阶段：${readyN} / ${state.lobby.roster.length} 人已准备`
+        + (others.length ? '' : '（目前只有你一个人，等对手进同一个房间）')
+      : (state.match.over ? '这一局结束了 —— 按 R 或点按钮再开一局' : '');
+  }
 }
 
 function bindUI() {
@@ -2792,13 +4710,19 @@ function bindUI() {
     el.btnZones.classList.toggle('active', state.ui.showZoneNames);
   });
   el.btnZones.classList.toggle('active', state.ui.showZoneNames);
-  el.btnSpawn.addEventListener('click', () => spawnEnemy());
+  el.btnSpawn.addEventListener('click', () => {
+    // ★ 客机不能自己刷：敌人 id 由 Math.random() 生成，两边算出来不一样会导致快照对不上
+    if (net.active && !net.isHost) { trySpawnEnemyViaNet(); return; }
+    spawnEnemy();
+  });
   el.btnAutoSpawn.addEventListener('click', () => {
+    if (net.active && !net.isHost) { toast('自动刷敌由房主控制'); return; }
     state.debugAutoSpawn = !state.debugAutoSpawn;
     state.enemySpawnTimer = 0;
     el.btnAutoSpawn.classList.toggle('active', state.debugAutoSpawn);
   });
   el.btnClearEnemies.addEventListener('click', () => {
+    if (net.active && !net.isHost) { toast('清除敌人由房主控制'); return; }
     state.units = state.units.filter((u) => u.faction !== 'enemy');
     pushLog('调试：清除全部测试敌人');
   });
@@ -2810,6 +4734,13 @@ function bindUI() {
   });
   el.btnEdge.classList.toggle('active', CONFIG.camera.edgeScroll);
   el.btnHelp.addEventListener('click', () => el.helpBox.classList.toggle('hidden'));
+  // 准备 / 再来一局
+  if (el.btnReady) el.btnReady.addEventListener('click', () => {
+    if (state.lobby.active) { toggleReady(); return; }
+    // 对战已结束：重新回到准备界面，等双方再点准备
+    if (state.match.over) { enterLobby(); toast('已回到准备界面，双方点「准备」再开一局'); return; }
+    toggleReady();
+  });
 }
 
 /** 坐标调试准星开关（按钮与 G 键共用） */
@@ -2862,7 +4793,12 @@ function bindInput() {
       return;
     }
     if (e.button === 0) {
-      if (state.ui.buildType) { tryBuildAt(t.x, t.y); return; }
+      // ★ 客机：建造意图发给房主（本地不跑逻辑），房主收到后再真正落成
+      if (state.ui.buildType) {
+        if (net.active && !net.isHost) { tryBuildViaNet(t.x, t.y); return; }
+        tryBuildAt(t.x, t.y);
+        return;
+      }
       pickAt(world, t, e.shiftKey);
     }
   });
@@ -2906,6 +4842,7 @@ function bindInput() {
       return;
     }
     if (k === 'e') { spawnEnemy(); return; }
+    if (k === 'r') { toggleReady(); return; }
     if (k === 'delete' || k === 'x') {
       const b = state.ui.selectedBuilding;
       if (b) {
@@ -2931,9 +4868,33 @@ function bindInput() {
   });
 }
 
+/**
+ * 右键下达移动命令。
+ *
+ * ★ 联机分支：客机不跑逻辑，所以它把「哪些单位、走到哪个像素点」发给房主，
+ *   由房主在自己的权威世界上下达。只发**坐标和单位 id**，不发路径 ——
+ *   路径由房主算（它才知道最新的城墙/单位位置），这样也天然避免了路径欺骗。
+ */
 function orderMove(world, tile) {
-  const units = state.ui.selectedUnits.filter((u) => u.alive && u.faction === 'player');
+  const mine = myFaction();
+  const units = state.ui.selectedUnits.filter((u) => u.alive && u.faction === mine);
   if (!units.length) return;
+
+  if (net.active && !net.isHost) {
+    send({
+      t: 'cmd', kind: 'move', f: mine,
+      ids: units.map((u) => u.id),
+      x: world.x, y: world.y,
+    });
+    // 客机本地立刻给一点反馈：把目标点画出来（真正的移动等房主快照）
+    units.forEach((u, i) => {
+      const target = i === 0 ? world : spreadTarget(world, i);
+      u.goalPt = target;
+      u.goal = { x: Math.floor(target.x / CONFIG.cell), y: Math.floor(target.y / CONFIG.cell) };
+    });
+    return;
+  }
+
   let ok = 0;
   units.forEach((u, i) => {
     // 单位直接走向**鼠标点击的那个像素位置**（点到哪走到哪）
@@ -2958,9 +4919,10 @@ function pickAt(world, tile, additive) {
 
   // 2) 再找附近的己方单位（点击容差 = 单位半径 + 配置容差）
   const tol = unitRadius('general') + CONFIG.unit.hitPad;
+  const mine = myFaction();
   let best = null, bestD = Infinity;
   for (const u of state.units) {
-    if (!u.alive || u.faction !== 'player') continue;
+    if (!u.alive || u.faction !== mine) continue;
     const d = Math.hypot(u.px - world.x, u.py - world.y);
     if (d <= tol && d < bestD) { bestD = d; best = u; }
   }
@@ -3004,13 +4966,24 @@ window.RTS = {
   orderMove,
   // 下面是给自动化测试 / 控制台调试用的
   tick: update,
-  drawOnce: () => draw(state, canvas, state.camera, buildUiSnapshot()),
+  /**
+   * 推进**一整个主循环帧**（update + updateNet），这是 loop() 里真正做的事。
+   *
+   * 为什么需要它：快照广播在 updateNet() 里，而 tick() 只跑 update()。
+   * 想验证「房主是不是按 20Hz 广播」就必须走完整的 loop 路径，
+   * 否则联机广播这一段永远测不到（tools/net-integration-test.mjs 用它）。
+   */
+  frame: (dt = 1 / 60, now = performance.now()) => {
+    if (!paused) update(dt);
+    updateNet(now, dt);
+  },
+  drawOnce: (now = performance.now()) => draw(state, canvas, state.camera, buildUiSnapshot(now)),
   findPathFor: (st, from, to, faction) => findPath(st, from, to, faction),
   // 直线移动：某条直线是否可走 / 折线拉直的结果
   segmentClearFor: (st, a, b, faction) => segmentClear(st, a.x, a.y, b.x, b.y, faction),
   smoothPathFor: (st, pts, faction) => smoothPath(st, pts, faction),
   findBlockingWall,
-  removeBuildingFor: (st, b) => removeBuilding(st, b),
+  removeBuildingFor: (st, b, force = false) => removeBuilding(st, b, force),
   pointerInfo,
   eventToCanvas,
   resize: resizeCanvas,
@@ -3019,6 +4992,39 @@ window.RTS = {
   worldToTile,
   tileCenter: (tx, ty) => tileCenter(tx, ty, CONFIG.cell),
   fitView: () => fit(state.camera, state),
+
+  /* ---- 联机调试句柄（控制台里用来观察联机状态） ---- */
+  net,                                          // net.isHost / net.myFaction / net.peers / net.snapCount
+  myFaction,
+  netStatus: () => ({
+    active: net.active, isHost: net.isHost, connected: net.connected,
+    faction: net.myFaction, peers: net.peers, snaps: net.snapCount,
+    error: net.lastError, fallback: net.usingFallback,
+  }),
+  netSend: (msg) => send(msg),
+  netGoOffline: () => fallbackToSinglePlayer(),
+  handleNetWelcome,                             // 模拟服务器分配身份（调试 / 自动化测试）
+  rebuildLocalWorldForFaction,                  // 手动切换阵营
+  applyFactionLayout,                           // 重建某一方的基地与部队
+  homeBaseOf,                                   // 某阵营的大本营坐标
+  myBase: () => homeBaseOf(myFaction()),
+  matchState: () => ({ ...state.match }),
+  resetMatch,                                   // 重开一局（清结算、单位回基地满血）
+  ensureLocalWorld,                             // 确保本地世界属于指定阵营
+  onCombatEvent,                                // 事件处理器（测试"拆掉建筑"这条路径用）
+  /* ---- 准备界面 ---- */
+  enterLobby,                                   // 回到准备界面
+  startMatch,                                   // 立即开战（跳过倒计时；测试与调试用）
+  toggleReady,                                  // 我点准备 / 取消
+  setPeerReady,                                 // 模拟收到别人的准备状态
+  tryStartMatch,                                // 房主：条件满足就开战
+  tickLobby,                                    // 推进准备倒计时
+  onNetStart,                                   // 模拟收到房主的「开战」通知
+  lobbyState: () => ({
+    active: state.lobby.active, started: state.lobby.started,
+    roster: state.lobby.roster.slice(), ready: { ...state.lobby.ready },
+    countdown: state.lobby.countdown, canStart: state.lobby.canStart,
+  }),
 };
 
 </script>

@@ -28,6 +28,7 @@ import { tileCenter, clamp, dist } from './util.js';
 import { findPath, passable, nearestReachable, smoothPath } from './path.js';
 import { zoneAt } from './zone.js';
 import { unitRadius } from './render.js';
+import { sameSide, isPlayerFaction, DEFAULT_FACTION } from './faction.js';
 
 /** 战斗事件回调（main.js 把 state.onCombatEvent 挂上，用来写事件日志 / 弹提示） */
 function emitCombat(state, evt) {
@@ -35,11 +36,11 @@ function emitCombat(state, evt) {
 }
 
 export class Unit {
-  constructor({ id, name, tx, ty, faction = 'player', kind = 'general', hotkey = null }) {
+  constructor({ id, name, tx, ty, faction = DEFAULT_FACTION, kind = 'general', hotkey = null }) {
     this.id = id;
     this.name = name;
     this.kind = kind;             // 'general' | 'enemy'
-    this.faction = faction;       // 'player' | 'enemy'
+    this.faction = faction;       // 'p1' | 'p2' | ... | 'enemy' | 'player'（单机默认）
     this.hotkey = hotkey;
     this.tx = tx;
     this.ty = ty;
@@ -66,6 +67,15 @@ export class Unit {
     this.lastTarget = null;       // 最近一次开火的目标单位（渲染攻击线用）
     this.lastBuilding = null;     // 最近一次攻击的建筑（渲染攻击线用）
     this.repathTimer = 0;         // 追击时下一次重新寻路的倒计时
+
+    // ---- 对战：阵亡与复活（见 CONFIG.pvp.respawnSec） ----
+    this.respawnTimer = 0;        // > 0 表示已阵亡且正在等待复活；数到 0 就地满血复活
+    this.deaths = 0;              // 累计阵亡次数（HUD / 结算用）
+  }
+
+  /** 是否正在等待复活 */
+  get awaitingRespawn() {
+    return !this.alive && this.respawnTimer > 0;
   }
 
   /** 基础移动速度（格 / 秒）；森林里减半 */
@@ -195,7 +205,7 @@ export class Unit {
     let best = null;
     let bestD = Infinity;
     for (const u of state.units) {
-      if (u === this || !u.alive || u.faction === this.faction) continue;
+      if (u === this || !u.alive || sameSide(u.faction, this.faction)) continue;
       const d = dist(this.px, this.py, u.px, u.py) - unitRadius(u.kind);
       if (d <= this.aggroRangePx && d < bestD) { bestD = d; best = u; }
     }
@@ -305,9 +315,73 @@ export class Unit {
     if (this.hp <= 0) {
       this.alive = false;
       this.stop();
+      this.deaths++;
+      /**
+       * 对战模式：阵亡后开始倒计时，到点在自家大本营满血复活。
+       * 注意**单位不从 state.units 里移除** —— 移除之后就没法复活了。
+       * 客机侧看不到这个单位：快照只发 alive 的单位（见 net.js 的 makeSnapshot），
+       * 于是它在客机屏幕上消失，复活后又出现。
+       *
+       * ⚠️ 只有 state.pvpEnabled 时才开复活。单机必须是 v0.3 行为（死了就没了），
+       *    否则"杀死测试敌人"这件事在单机下就不再成立。
+       */
+      const pvpOn = !!(this.state && this.state.pvpEnabled);
+      const sec = (pvpOn && CONFIG.pvp) ? (CONFIG.pvp.respawnSec || 0) : 0;
+      this.respawnTimer = sec > 0 ? sec : 0;
       emitCombat(this.state, { type: 'kill', unit: this, source });
     }
     return this.alive;
+  }
+
+  /**
+   * 复活倒计时。到点后满血、回到自家大本营旁边、清空所有交战状态。
+   *
+   * 位置用「单位序号」决定（general-p2-2 → 第 2 个位置），而不是按死亡次数漂移 ——
+   * 这样同一批将领每次复活的站位是固定、可预测的，不会几轮之后跑到奇奇怪怪的地方。
+   * 大本营所在的格子被建筑占住（passable 为 false），所以先试一圈相邻格，都不行就退回原地。
+   *
+   * @returns {boolean} 本帧是否发生了复活
+   */
+  tickRespawn(state, dt) {
+    if (this.alive || this.respawnTimer <= 0) return false;
+    this.respawnTimer = Math.max(0, this.respawnTimer - dt);
+    if (this.respawnTimer > 0) return false;
+
+    const home = state.homeBaseOf ? state.homeBaseOf(this.faction) : null;
+    const cell = CONFIG.cell;
+
+    let tx = this.tx, ty = this.ty;
+    if (home) {
+      const n = parseInt(String(this.id).split('-').pop(), 10);
+      const slot = Number.isFinite(n) ? Math.max(1, n) : 1;
+      const RING = [[0, 1], [1, 0], [-1, 0], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1]];
+      let pick = null;
+      for (let k = 0; k < RING.length; k++) {
+        const o = RING[(slot - 1 + k) % RING.length];
+        if (passable(state, home.x + o[0], home.y + o[1], this.faction)) {
+          pick = { x: home.x + o[0], y: home.y + o[1] };
+          break;
+        }
+      }
+      if (pick) { tx = pick.x; ty = pick.y; }
+    }
+
+    this.alive = true;
+    this.hp = this.hpMax;
+    this.tx = tx;
+    this.ty = ty;
+    this.px = (tx + 0.5) * cell;
+    this.py = (ty + 0.5) * cell;
+    this.path = null;
+    this.goal = null;
+    this.goalPt = null;
+    this.moving = false;
+    this.clearTarget();                            // 复活后不再记得上一场交战
+    this.attackCd = 0;
+    this.state = state;
+    this.syncTile(state);
+    emitCombat(state, { type: 'respawn', unit: this });
+    return true;
   }
 
   /* ------------------------------------------------------------------ */
@@ -316,16 +390,18 @@ export class Unit {
 
   update(state, dt) {
     this.state = state;
-    if (!this.alive) return;
+    // 阵亡中的单位只跑复活倒计时（对战模式）；复活后本帧就正常参与逻辑
+    if (!this.alive) { this.tickRespawn(state, dt); return; }
 
     if (this.attackCd > 0) this.attackCd = Math.max(0, this.attackCd - dt);
     if (this.attackFlash > 0) this.attackFlash = Math.max(0, this.attackFlash - dt / Math.max(0.01, CONFIG.combat.flashSec));
     if (this.repathTimer > 0) this.repathTimer = Math.max(0, this.repathTimer - dt);
 
     // 己方单位站在己方领地内缓慢回血（便于观察领地归属是否生效）
-    if (this.faction === 'player') {
+    // ★ 联机下「己方领地」= 自己这一方的区块，所以这里用 this.faction 比对，而不是写死 'player'
+    if (isPlayerFaction(this.faction)) {
       const z = zoneAt(state, this.tx, this.ty);
-      if (z && z.owner === 'player' && this.hp < this.hpMax) this.hp = Math.min(this.hpMax, this.hp + 4 * dt);
+      if (z && z.owner === this.faction && this.hp < this.hpMax) this.hp = Math.min(this.hpMax, this.hp + 4 * dt);
     }
 
     if (!CONFIG.combat.enabled) {
@@ -399,11 +475,38 @@ export class Unit {
   }
 }
 
-export function createGenerals(state) {
+/**
+ * 建立某一阵营的将领。
+ *
+ * ★ 签名同时接受字符串与对象两种形式：
+ *     createGenerals(state)                    → state.factions.myFaction（单机 = 'player'）
+ *     createGenerals(state, 'p2')              → 指定阵营
+ * 保留字符串形式是为了让现有测试（tools/smoke-test.mjs 等）原样通过。
+ *
+ * 站位：所有阵营共用 GENERAL_SPAWNS（开局站在一起）。多人测试阶段这是有意的 ——
+ * 双方开局就贴脸，方便立刻验证「互相索敌 → 开打」这条链路。
+ * 后续要做正式出生点分离时，把 spawns 参数化即可。
+ */
+export function createGenerals(state, factionArg) {
+  const faction = typeof factionArg === 'string'
+    ? factionArg
+    : (factionArg && factionArg.myFaction)
+      || (state && state.factions && state.factions.myFaction)
+      || DEFAULT_FACTION;
+  const prefix = faction === DEFAULT_FACTION ? 'general' : `general-${faction}`;
   const names = ['将领 1', '将领 2', '将领 3'];
   return names.map((name, i) => {
-    const sp = state.generalSpawns[i] || { x: state.base.x, y: state.base.y };
-    const u = new Unit({ id: `general-${i + 1}`, name, tx: sp.x, ty: sp.y, faction: 'player', kind: 'general', hotkey: String(i + 1) });
+    /**
+     * 出生点优先取「本阵营自己的」站位（联机下双方各在一角），
+     * 没有时退回 state.generalSpawns（单机 = 原版中点附近），再退回大本营。
+     * 见 map.js 的 spawnLayoutFor()。
+     */
+    const own = state.factionSpawns && state.factionSpawns[faction];
+    const sp = (own && own[i]) || state.generalSpawns[i] || { x: state.base.x, y: state.base.y };
+    const u = new Unit({
+      id: `${prefix}-${i + 1}`, name, tx: sp.x, ty: sp.y,
+      faction, kind: 'general', hotkey: String(i + 1),
+    });
     u.state = state;
     return u;
   });

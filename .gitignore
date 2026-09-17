@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# 浏览器测试的中间产物（tools/browser-test.py 每次运行都会重新生成）
+dev_html/tools/_browser_test.html
+dev_html/tools/_browser_shot.html
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

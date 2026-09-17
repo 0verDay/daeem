@@ -25,14 +25,14 @@ _spec.loader.exec_module(_builder)
 strip_module_syntax = _builder.strip_module_syntax
 
 MODULES = [
-    'js/config.js', 'js/util.js', 'js/path.js', 'js/map.js', 'js/zone.js',
-    'js/building.js', 'js/unit.js', 'js/render.js', 'js/main.js',
+    'js/config.js', 'js/faction.js', 'js/util.js', 'js/path.js', 'js/map.js', 'js/zone.js',
+    'js/building.js', 'js/unit.js', 'js/net.js', 'js/render.js', 'js/main.js',
 ]
 
 KEY_SYMBOLS = [
     'createMap', 'findPath', 'nearestReachable', 'updateZones', 'refreshBuildingOwnership',
     'updateTowers', 'createGenerals', 'Building', 'Unit', 'draw', 'spawnEnemy',
-    'drawOnce', 'window.RTS',
+    'drawOnce', 'window.RTS', 'sameSide', 'FACTION_ROSTER', 'net',
 ]
 
 

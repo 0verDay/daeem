@@ -13,6 +13,7 @@
 import { CONFIG } from './config.js';
 import { dist, tileCenter } from './util.js';
 import { unitRadius } from './render.js';
+import { sameSide } from './faction.js';
 
 export const BUILDINGS = {
   base: { id: 'base', name: '大本营', blocksEnemy: true, blocksPlayer: true, buildable: false,
@@ -40,10 +41,16 @@ export class Building {
     this.flash = 0;
   }
 
-  /** 该建筑是否阻挡某个阵营的单位（城墙：挡敌人、不挡己方） */
+  /**
+   * 该建筑是否阻挡某个阵营的单位（城墙：挡对手、不挡自己人）。
+   *
+   * ★ 多人改造要点：判定基准从「faction === 'player'」改成「sameSide(faction, 建筑所有者)」。
+   *   原来只有两个阵营时这两种写法等价（城墙的 blocksPlayer=false / blocksEnemy=true
+   *   恰好就是「自己人不挡、外人挡」），所以单机行为逐位不变；
+   *   但联机下 p2 的城墙对 p1 必须阻挡，旧写法会错误地放行。
+   */
   blocks(faction) {
-    if (faction === 'player') return !!this.def.blocksPlayer;
-    return !!this.def.blocksEnemy;
+    return sameSide(faction, this.owner) ? !!this.def.blocksPlayer : !!this.def.blocksEnemy;
   }
 
   get center() {
@@ -63,8 +70,11 @@ export class Building {
     if (!this.alive) return false;
     this.lastHitBy = source;
     this.flash = 1;
-    // 大本营本版不可摧毁：血量最低留 1，避免出现“活着但血量 0”的状态
-    const floor = this.type === 'base' ? 1 : 0;
+    // 大本营**默认不可摧毁**：血量最低留 1，避免出现"活着但血量 0"的状态（单机行为）。
+    // 对战模式把 CONFIG.pvp.destructibleBase 打开，它就能被真正打掉 ——
+    // 打掉某一方的大本营 = 那一方落败，这就是胜负条件（见 main.js 的 buildingDown 处理）。
+    const destructible = !!(CONFIG.pvp && CONFIG.pvp.destructibleBase);
+    const floor = (this.type === 'base' && !destructible) ? 1 : 0;
     this.hp = Math.max(floor, this.hp - amount);
     return this.hp > 0;
   }
@@ -102,10 +112,21 @@ export function updateTowers(state, dt) {
   }
 }
 
-/** 拆除建筑（大本营不可拆） */
-export function removeBuilding(state, b) {
+/**
+ * 把建筑从地图上摘掉（战斗摧毁、玩家拆除都走这里）。
+ *
+ * @param {object} state
+ * @param {object} b
+ * @param {boolean} [force=false] 是否允许移除**大本营**。
+ *   false（默认）→ 大本营不可拆，这是"玩家不能拆自家大本营"的规则，也是对战里
+ *                  「大本营只能被打掉、不能被拆除」的保证。
+ *   true          → 内部重建专用：联机接管时要把 init() 阶段按单机建出来的那座
+ *                  孤儿大本营清掉，否则它会占住格子、让新大本营建不上
+ *                  （owner 还会停在 'player'，把胜负判定与城墙通行规则一起搞乱）。
+ */
+export function removeBuilding(state, b, force = false) {
   if (!b || !b.alive) return false;
-  if (b.type === 'base') return false;
+  if (b.type === 'base' && !force) return false;
   b.alive = false;
   state.buildings.set(b.tx, b.ty, null);
   const i = state.buildingList.indexOf(b);

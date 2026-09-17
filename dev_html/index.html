@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>RTS 原型 v0.3 —— 大地图 / 直线移动 / 战斗警戒 / 区块占领 / 建造</title>
+<title>RTS 原型 v0.6 —— 大地图 / 直线移动 / 战斗警戒 / 区块占领 / 建造 / 联机对战</title>
 <link rel="stylesheet" href="./css/style.css" />
 </head>
 <body>
@@ -13,8 +13,8 @@
   <header id="topbar">
     <div class="brand">
       <span class="dot"></span>
-      <strong>RTS 原型 v0.3</strong>
-      <span class="sub">24×16 大地图 · 直线移动 · 战斗警戒 · 建造</span>
+      <strong>RTS 原型 v0.6</strong>
+      <span class="sub">24×16 大地图 · 直线移动 · 战斗警戒 · 建造 · 联机对战</span>
     </div>
 
     <div class="stats">
@@ -81,6 +81,14 @@
       </section>
 
       <section class="panel">
+        <h3>联机 <small>准备后才开战</small></h3>
+        <button id="btnReady" class="btn wide hidden">✅ 准备 (R)</button>
+        <div class="hint" id="lobbyHint"></div>
+        <div class="note">地址带 <code>#net=1</code> 才联机。第 1 个进房间的是房主（p1），
+          之后的是 p2、p3…。<b>双方都点「准备」才会开战</b>（房主会在倒计时后宣布开始）。</div>
+      </section>
+
+      <section class="panel">
         <h3>选中</h3>
         <div class="selname" id="selName">未选中</div>
         <div class="hpbar"><i id="selHp"></i></div>
@@ -118,6 +126,22 @@
       <pre id="debugAim" class="debugaim hidden"></pre>
       <div id="toasts"></div>
       <div id="helpBox" class="helpbox hidden">
+        <h4>联机对战规则（v0.6）</h4>
+        <ul>
+          <li><b>先准备，再开战</b>：进房间后停在准备界面，<b>双方都按 R（或点「✅ 准备」）</b>
+              之后，房主宣布开战并倒数 3 秒。只有一个人在场时永远不会开打。</li>
+          <li><b>双方各有自己的大本营</b>：房主（p1）在地图中央，客机（p2）在地图右下角，
+              相距 10 格。双方开局各有一小段城墙 + 一座箭塔。</li>
+          <li><b>阵亡后 8 秒在自家大本营复活</b>，满血。屏幕上会画一个复活倒计时环
+              （在你家大本营位置）。所以死一次不用干等，但也<b>杀不光对方</b>。</li>
+          <li><b>胜负：打掉对方大本营 = 对方落败。</b>大本营可以被<b>打掉</b>，
+              但不能用 X / Delete <b>拆除</b>。打掉后屏幕中央显示结算。</li>
+          <li>结算后<b>按 R 或点「↻ 再来一局」</b>回到准备界面，双方再准备就能再打一局
+              （不用刷新页面）。</li>
+          <li>超过 10 分钟按大本营剩余血量比例判胜负，防止无限拖时间。</li>
+          <li>城墙只挡对手：穿不过对方的墙，但能穿过自己的。要拆墙就派兵去打。</li>
+          <li>客机看到的结算结果由房主判定后同步过来，所以两边显示一定一致。</li>
+        </ul>
         <h4>操作说明</h4>
         <ul>
           <li><b>1 / 2 / 3</b>：快速选中三个将领</li>
@@ -130,6 +154,19 @@
           <li><b>滚轮</b>：以光标为锚点缩放；<b>F</b>：缩到看完整张地图；<b>Home</b>：回到大本营</li>
           <li><b>N</b>：显示 / 隐藏区块名；<b>P</b>：暂停；<b>E</b>：刷一个测试敌人；<b>H</b>：本帮助</li>
           <li><b>G</b>：坐标调试准星（红叉=鼠标所指的点，绿圈=判定出的地块中心，两者必须重合）</li>
+        </ul>
+        <h4>联机（v0.4）</h4>
+        <ul>
+          <li>地址里带 <code>#net=1</code> 才联机：<code>…/rts-prototype.html#net=1</code>。
+              <b>不带就是纯单机</b>，和以前完全一样。</li>
+          <li><b>第 1 个进房间的人是房主</b>（阵营 p1），他跑权威逻辑；其他人是客机（p2、p3…）。</li>
+          <li>换一局用 <code>#net=1&amp;room=别的名字</code>；开打前确认双方 <code>room</code> 一致。</li>
+          <li>客机点下右键后单位会<b>稍后才动</b>（约 150ms：50ms 快照 + 100ms 插值缓冲），
+              这是设计使然，不是卡顿。</li>
+          <li>连不上服务器时<b>会自动退回单机模式</b>并写进事件日志，不会白屏。</li>
+          <li>房主关掉页面后，服务器会把下一位提升为新房主 —— 这局不会停摆，
+              但世界状态会重新同步。</li>
+          <li>部署与排错见 <code>net/README.md</code>；控制台里用 <code>RTS.netStatus()</code> 看联机状态。</li>
         </ul>
         <h4>本版规则</h4>
         <ul>

@@ -83,6 +83,7 @@ html, body {
 .btn.active { background: #4a3f1f; border-color: var(--accent); color: var(--accent); }
 .btn.small { padding: 6px 9px; font-size: 11px; }
 .btn.wide { width: 100%; }
+.btn.hidden { display: none; }
 
 /* ---------------- 主体 ---------------- */
 #body { display: flex; flex: 1 1 auto; min-height: 0; }

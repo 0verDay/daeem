@@ -24,14 +24,17 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, 'rts-prototype.html')
 
 # 依赖顺序（被依赖的模块排在前面）
+# ★ faction.js 必须在 path/zone/building/unit/render 之前 —— 它们都 import 它
 MODULES = [
     'js/config.js',
+    'js/faction.js',
     'js/util.js',
     'js/path.js',
     'js/map.js',
     'js/zone.js',
     'js/building.js',
     'js/unit.js',
+    'js/net.js',
     'js/render.js',
     'js/main.js',
 ]
