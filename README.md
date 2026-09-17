@@ -14,12 +14,7 @@ Dynasty And Empire : Eastern March
 
 （命名dev为develop版本）本版本为原型阶段html的开发，仅展示玩法
 
-### 2026.9.17更新：联机对战（v0.4 → v0.6）
-
-在原型上加上了**多人同屏对战**，用于快速验证玩法。架构是**房主权威 + 服务器中继**，
-服务器用 Python 标准库手写 WebSocket，零第三方依赖。
-
-**怎么玩：**
+### 2026.9.17简要联机更新
 
 ```powershell
 py net\serve.py --port 8080          # 服务器上（局域网的话一台电脑就能当服务器）
@@ -31,17 +26,10 @@ py net\serve.py --port 8080          # 服务器上（局域网的话一台电�
 | 客机（其他人 → p2、p3…） | `http://<IP>:8080/rts-prototype.html#net=1&room=default` |
 | 只看服务器活没活 | `http://<IP>:8080/health` |
 
-流程：**双方都按 R 准备 → 房主宣布开战 → 倒数 3 秒 → 打掉对方大本营者胜**。
-阵亡 8 秒后在自家大本营复活；一局结束后按 R 可以再来一局。
+此为运行备注，非更新日志
 
-**文档：**
-
-| 文档 | 内容 |
-|---|---|
-| [`dev_html/README.md`](dev_html/README.md) | 玩法、操作、目录结构、测试清单 |
-| [`dev_html/net/README.md`](dev_html/net/README.md) | 部署与排错（安全组 / 防火墙 / 免备案端口 / 五项排查判据） |
-| [`dev_html/docs/multiplayer.md`](dev_html/docs/multiplayer.md) | **联机设计文档**：架构决策、协议、踩坑记录、测试体系、未验证项 |
-| [`dev_html/docs/CHANGELOG.md`](dev_html/docs/CHANGELOG.md) | 版本变更记录（v0.3 → v0.6） |
+1. 初步加入了联机模块
+2. 目前支持双方通过浏览器进行互联网联机对战
 
 ### 2026.9.12更新
 1. 初始化了占位地图，加入了地块和区块的概念，加入了占点的基本玩法
