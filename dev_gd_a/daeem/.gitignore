@@ -1,0 +1,8 @@
+# Godot 4+ specific ignores
+.godot/
+/android/
+
+# 中文字体：体积大（约 10MB）且有授权问题，不进仓库。
+# 每台机器跑一次 `powershell -File tools/setup-font.ps1` 即可生成。
+# 说明见 tools/README-tools.md。
+/assets/fonts/

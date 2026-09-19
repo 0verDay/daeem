@@ -1,0 +1,293 @@
+{
+  "_comment": [
+    "DAEEM · 全部可调数值。对应 HTML 版 js/config.js —— 数值一个不改地搬过来（见 docs/porting.md 第四节）。",
+    "铁律：代码里不写游戏数值字面量，只读这一份 JSON。",
+    "单位一律用「格」（逻辑坐标）；px 只出现在 render.cell_px 这一个换算系数上。"
+  ],
+
+  "grid": {
+    "cols": 24,
+    "rows": 16
+  },
+
+  "render": {
+    "cell_px": 64
+  },
+
+  "camera": {
+    "min_scale": 0.18,
+    "max_scale": 1.6,
+    "start_scale": 1.0,
+    "key_pan_speed": 900,
+    "edge_scroll": true,
+    "edge_size": 44,
+    "edge_max_speed": 1500,
+    "zoom_step": 1.12
+  },
+
+  "resource": {
+    "food_per_tile_per_sec": 1,
+    "gold_per_tile_per_sec": 1,
+    "start_food": 0,
+    "start_gold": 0,
+    "decimals": 1
+  },
+
+  "unit": {
+    "speed": 2.4,
+    "forest_mult": 0.5,
+    "hp_max": 200,
+    "radius_factor": 0.1,
+    "hit_pad": 6,
+
+    "_subordinate_comment": [
+      "★ 亲兵（将领 1 辖下的附属单位）。",
+      "出生在将领旁边一圈，**按 1 或点队伍里任何一个**都会把整队一起选上，",
+      "右键移动会把命令同时下达给整队（队长 + 亲兵）。",
+      "定位在将领与测试敌人之间：比将领弱，比测试敌人强。",
+      "radius_factor 比将领小一点（0.065 vs 0.1），所以一眼能看出主次；",
+      "碰撞半径另有全局参数 unit.collision_radius，两者互不影响。",
+      "subordinate.count = 每个将领带几个（0 = 不带，等于关掉这个功能）。"
+    ],
+    "subordinate": {
+      "id": "subordinate",
+      "name": "亲兵",
+      "count": 3,
+      "hp_max": 80,
+      "speed": 2.4,
+      "damage": 14,
+      "range": 1,
+      "cooldown_sec": 1.1,
+      "radius_factor": 0.065,
+      "hotkey": null
+    },
+
+    "_collision_comment": [
+      "★ 单位之间的碰撞与局部避让（第 0 轮之后的第 2 批手感修正）。",
+      "为什么单位半径只有 0.1 格：地形是 1 格一块的格子，单位直径只占格宽 20%，",
+      "  所以下面这些半径都远小于一格 —— 这是**刻意的**，碰撞只解决“几个单位叠在一起”，",
+      "  不是为了把单位撑满地块。",
+      "collision_radius：碰撞圆半径（格）。0.18 ≈ 直径 0.36 格，视觉上刚好挨着不重叠。",
+      "overlap_allowance：允许的重叠比例（软分离）。1.0 = 硬碰撞（完全不重叠），",
+      "  0.7 = 最多允许重叠 30%（默认，手感更软、不容易卡死）。",
+      "  单位实际的圆心最小距离 = (r1 + r2) × overlap_allowance。",
+      "iterations：一帧里解几次位置约束。3 次足够消掉三四个单位的连锁重叠。",
+      "slack：重叠小于这个值就完全不动，避免单位贴着站时永远在微抖。",
+      "push_moving_weight / push_idle_weight：★★ 谁给谁让路 —— **有移动命令的单位推得动待命单位**。",
+      "  两组权重不能都是 0，否则谁也推不动谁（那条路会直接静默失效）。",
+      "  1.0 : 0.2 的含义 = 单位重叠量按 1:0.2 分摊，也就是待命的那个承担约 83% 的推开量。"
+    ],
+    "collision_enabled": true,
+    "collision_radius": 0.18,
+    "overlap_allowance": 0.7,
+    "collision_iterations": 3,
+    "collision_slack": 0.01,
+    "push_moving_weight": 1.0,
+    "push_idle_weight": 0.2,
+
+    "_jam_comment": [
+      "★ jam_giveup_sec：想走到终点、但每帧都被别人挤回来的宽限时间（秒）。",
+      "为什么需要它：推挤一帧能把单位推走约 0.25 格，而它自己一帧只走 0.04 格 ——",
+      "  数量级差了好几倍，所以拥挤时单位**永远走不到终点**，于是一直保持 moving=true",
+      "  被推来推去（实测：12 个单位点到同一点，三个将领 2000 帧停不下来、",
+      "  总行程 83 格（本该 8 格）、方向反转 5708 次 —— 肉眼看就是「挤着转」）。",
+      "  超时后就认账：在附近找个空位落位、结束移动。",
+      "调大 = 更执着（更容易挤进人群里），调小 = 更快放弃（更容易停在人群外圈）。"
+    ],
+    "jam_giveup_sec": 0.6,
+
+    "_settle_comment": [
+      "★ 站定之后的落点与回位。",
+      "为什么需要它：到达之后 `path` 是空的，world.tick() 里那句",
+      "  `if not u.path.is_empty(): u.step_along_path(...)` 就不执行了，",
+      "  于是被推走的单位**没有任何机制走回去**，只能一直被推着漂",
+      "  （实测将领就这样漂了 2000 帧、总行程 83 格，本该 8 格）。",
+      "settle_return_dist：被推离落点超过这个距离（格）就自己走回去。",
+      "settle_max_attempts：最多回位几次。**必须有上限** —— 人群里回位可能永远失败",
+      "  （一帧被推走 0.25 格、自己只能走 0.04 格），无上限就会退化成「永远挤着转」，",
+      "  那正是这条逻辑要修的病。挤不进去就算了，就地待着。"
+    ],
+    "settle_return_dist": 0.22,
+    "settle_max_attempts": 3
+  },
+
+  "combat": {
+    "enabled": true,
+    "aggro_range": 4,
+    "leash_factor": 1.8,
+    "repath_sec": 0.3,
+    "flash_sec": 0.22,
+    "building_damage": 40,
+    "general": { "damage": 26, "range": 1, "cooldown_sec": 0.9 },
+    "enemy": { "damage": 10, "range": 1, "cooldown_sec": 1.2 }
+  },
+
+  "path": {
+    "_comment": [
+      "寻路的「手感」参数（拉直之后的加工）。算法本身在 logic/pathfinder.gd。",
+      "★ diagonal：八方向移动。HTML 版是四连通，Godot 版改成八方向 ——",
+      "  因为四连通在斜向绕障时必然走成阶梯，拉直只能部分补救。",
+      "  改成 false 就退回四连通行为（A* 邻居、连通性修正、可达性 BFS 一起退），",
+      "  代价与启发式（octile）会自动跟着切换，不用改代码。",
+      "★ diagonal_corner_cut：是否允许「从两个障碍的尖角之间斜穿过去」。",
+      "  false（默认）→ 斜走时要求两个正交邻格都可通行，城墙的阻挡语义与四连通时一致；",
+      "  true          → 放行，单位能钻对角缝，但斜着错开的墙就挡不住人了。",
+      "★ corner_round_* 是拐角圆化：拉直只会减少路径点，但单位是「走到路点才允许转向」，",
+      "  所以拐弯发生在**一帧之内**（实测单帧最大转角 58°），看着就是生硬。",
+      "  圆化会在每个拐点前后各切一小段、用二次曲线连过去，转向摊到十几帧里。",
+      "★ building_penalty：建筑格在 A* 里的额外代价（口径 = 「多绕几格才划算」）。",
+      "  大本营 / 箭塔的格子现在是可通行的（本体只挡一部分），不给惩罚的话",
+      "  敌人会一条直线从箭塔正中穿过去 —— 看着就是一路顶着本体蹭。"
+    ],
+    "diagonal": true,
+    "diagonal_corner_cut": false,
+    "corner_round_enabled": true,
+    "corner_round_min_angle_deg": 20.0,
+    "corner_round_cutting": 0.35,
+    "building_penalty": 12.0
+  },
+
+  "zone": {
+    "zone_cols": 6,
+    "zone_rows": 4,
+    "capture_time_sec": 4,
+    "decay_per_sec": 0.125,
+    "_zone_owned_by_building_comment": [
+      "区块内只要存在己方建筑就直接归己方。",
+      "★ 副作用（照搬 HTML 版，可玩性以后再说）：大本营会让**整个区块瞬间**归己方，",
+      "  于是出生区的「站 4 秒占领」玩法在那个区块里失效。第 0 轮先保持，",
+      "  想关掉就把这里改成 false。"
+    ],
+    "zone_owned_by_building": true
+  },
+
+  "pvp": {
+    "_comment": "单机模式**不使用**这里的任何一项。本轮不写联机，但开关与判定照搬，保证第 1 轮接得上。",
+    "require_ready": true,
+    "countdown_sec": 3,
+    "time_limit_sec": 600,
+    "destructible_base": false,
+    "respawn_sec": 8,
+    "respawn_spread_tiles": 1
+  },
+
+  "building": {
+    "_body_comment": [
+      "★ 本体（body）：建筑真正**占地方**的那块方块，永远**居中**放在自己那一格里，",
+      "  边长 = body_scale × 格宽。渲染与碰撞读的是同一个数（view 那边不许再写内缩量）。",
+      "  规则（手玩定的）：本体挡**敌方**单位、不挡己方；本体之外的缝可以走。",
+      "  wall = 1.0：城墙就是填满整格（与从前完全一致，敌人仍然一格都进不来）。",
+      "  base / tower = 0.6：格子四周各留 0.2 格，相邻两格的建筑之间留 0.4 格通道 ——",
+      "  测试敌人的碰撞半径是 unit.collision_radius（0.18，直径 0.36），所以刚好挤得过去；",
+      "  想让它过不去就把 body_scale 调大（≥ 0.65 就堵死了），想更宽松就调小。"
+    ],
+    "wall": {
+      "id": "wall", "name": "城墙", "hotkey": "B",
+      "body_scale": 1.0,
+      "cost": { "food": 0, "gold": 0 },
+      "hp_max": 300,
+      "color": "#7d7466",
+      "desc": "填满整个地块；己方单位可穿过，敌方单位不可进入"
+    },
+    "tower": {
+      "id": "tower", "name": "箭塔", "hotkey": "T",
+      "body_scale": 0.6,
+      "cost": { "food": 0, "gold": 0 },
+      "damage": 12, "range": 3, "cooldown": 0.8,
+      "color": "#8d6e63",
+      "desc": "对范围内最近的敌人造成单体伤害"
+    },
+    "base": {
+      "id": "base", "name": "大本营",
+      "body_scale": 0.6,
+      "hp_max": 1000,
+      "color": "#4a90d9",
+      "desc": "开局自带，不可建造、不可拆除"
+    }
+  },
+
+  "economy": { "enabled": false },
+
+  "recruit": {
+    "_comment": [
+      "★ 可招募单位表 —— UI 改版之后「单位」页的命令卡就照这张表生成（第 0 项 = Q 键）。",
+      "现在只有一项占位：招出来的其实是 config.unit.subordinate 那套数值的亲兵",
+      "（需求原话：「暂时用占位单位代替，即单位页目前只有一个单位」）。",
+      "以后加正式兵种：往 list 里加条目、并在 config.unit.<kind> 里给它数值即可，",
+      "world.recruit_unit() / command_processor.apply_recruit() 都不用改。",
+      "cost 与建筑同一条路：economy.enabled = false 时形同免费。",
+      "部署规则：只能招到「当前选中的将领」名下（没有选中将领只给提示，不发命令）。"
+    ],
+    "list": [
+      {
+        "kind": "subordinate",
+        "label": "占位单位",
+        "desc": "在选中将领身旁生成 1 名亲兵（占位）",
+        "cost": { "food": 0, "gold": 0 }
+      }
+    ]
+  },
+
+  "debug": {
+    "enabled": true,
+    "enemy_speed": 1.8,
+    "enemy_hp": 60,
+    "spawn_interval_sec": 3
+  },
+
+  "colors": {
+    "grass": "#33422f",
+    "grass_alt": "#2f3d2c",
+    "forest": "#24402a",
+    "mountain": "#4c4a45",
+    "mountain_edge": "#5f5c55",
+    "grid": "rgba(255,255,255,0.055)",
+    "grid_strong": "rgba(255,255,255,0.12)",
+    "zone_line": "rgba(255,255,255,0.10)",
+    "zone_neutral": "rgba(230,190,80,0.05)",
+    "zone_player": "rgba(90,200,255,0.13)",
+    "zone_progress": "rgba(230,190,80,0.45)",
+    "hq": "#3f7fd0",
+    "hq_light": "#6ea8e8",
+    "wall": "#8b8172",
+    "wall_dark": "#5f594e",
+    "tower": "#a1887f",
+    "general": "#ffd166",
+    "general_sel": "#fff2b0",
+    "enemy": "#e05a5a",
+
+    "_faction_comment": [
+      "★ 阵营配色表。单机 / 房主是 'p1'（必须与 general 同为黄色 ——",
+      "这样联机改造不会让单机观感发生任何变化）。",
+      "★ 不再有 'player' 这一项：那只是 p1 的别名，两套名字会让「地图里写的大本营属于谁」对不上。",
+      "line 存的是通道值而不是拼好的字符串：HTML 版用 `${prefix}${alpha})` 拼 rgba，",
+      "要求每项都以逗号结尾，很脆；这里由 Palette.faction_line() 生成 Color，不拼字符串。"
+    ],
+    "faction": {
+      "p1": { "main": "#ffd166", "sel": "#fff2b0", "bar": "#7ce07c", "line": [255, 225, 150] },
+      "p2": { "main": "#5ac8ff", "sel": "#c9ecff", "bar": "#5ac8ff", "line": [120, 200, 255] },
+      "p3": { "main": "#8ce08c", "sel": "#d6ffd6", "bar": "#8ce08c", "line": [140, 224, 140] },
+      "p4": { "main": "#c9a0ff", "sel": "#e8d9ff", "bar": "#c9a0ff", "line": [201, 160, 255] },
+      "p5": { "main": "#ffb0b0", "sel": "#ffe0e0", "bar": "#ffb0b0", "line": [255, 176, 176] },
+      "p6": { "main": "#ffd9a0", "sel": "#fff0d0", "bar": "#ffd9a0", "line": [255, 217, 160] },
+      "p7": { "main": "#a0e8e0", "sel": "#d6fff8", "bar": "#a0e8e0", "line": [160, 232, 224] },
+      "p8": { "main": "#d0a0ff", "sel": "#f0dfff", "bar": "#d0a0ff", "line": [208, 160, 255] },
+      "enemy": { "main": "#e05a5a", "sel": "#ffb0b0", "bar": "#e05a5a", "line": [255, 120, 120] }
+    }
+  },
+
+  "font": {
+    "_comment": [
+      "中文字体：Godot 默认字体没有中文字形，不设这个就会满屏方框。",
+      "路径由 tools/setup-font.ps1 从系统字体拷进 assets/fonts/（见 docs/pitfalls.md 第五节）。",
+      "找不到时会依次尝试 asset_path 里的候选，最后退回引擎默认字体（中文变方框，但不会崩）。"
+    ],
+    "asset_dir": "res://assets/fonts",
+    "asset_path": [
+      "res://assets/fonts/msyh.ttc",
+      "res://assets/fonts/simhei.ttf",
+      "res://assets/fonts/Deng.ttf",
+      "res://assets/fonts/simsun.ttc"
+    ]
+  }
+}
