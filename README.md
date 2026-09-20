@@ -21,6 +21,7 @@ Dynasty And Empire : Eastern March
 3. 完善了测试地图
 4. 为游戏加入了占位用的进入游戏界面和主界面
 5. 加入人口属性，但现在还没有和单位招募联动
+6. 删除了dev_html
 
 ### 2026.9.18/19引擎迁入和地图编辑器更新
 
@@ -32,21 +33,9 @@ Dynasty And Empire : Eastern March
 
 ## dev_html
 
-（命名dev为develop版本）本版本为原型阶段html的开发，仅展示玩法
+（命名dev为develop版本）本版本为原型阶段html的开发，仅展示玩法，目前已经删除
 
 ### 2026.9.17简要联机更新
-
-```powershell
-py net\serve.py --port 8080          # 服务器上（局域网的话一台电脑就能当服务器）
-```
-
-| 谁 | 地址 |
-|---|---|
-| 房主（第 1 个打开的 → p1） | `http://<IP>:8080/rts-prototype.html#net=1` |
-| 客机（其他人 → p2、p3…） | `http://<IP>:8080/rts-prototype.html#net=1&room=default` |
-| 只看服务器活没活 | `http://<IP>:8080/health` |
-
-此为运行备注，非更新日志
 
 1. 初步加入了联机模块
 2. 目前支持双方通过浏览器进行互联网联机对战
