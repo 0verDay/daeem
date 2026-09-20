@@ -34,6 +34,9 @@ var camera_rig = null
 ## 选中列表（纯本地，**不进命令流**）
 var selected_units: Array = []
 var selected_building = null
+## ★ 选中的**区划**（左键点区划中心 = 看这个区划的详情）。
+## 与上面两者互斥：面板「详细信息」只有一个左栏，同一时刻只有一种选中对象。
+var selected_zone = null
 ## 建造模式：'' | 'wall' | 'tower'
 var build_type: String = ""
 
@@ -178,6 +181,15 @@ func _on_left_click(additive: bool) -> void:
 		})
 		return
 
+	# ★ 区划中心：**先于单位与建筑**判定。
+	#   它是中立障碍（任何单位都进不去那一格），所以点它的时候不会有单位挡在上面；
+	#   而且它的语义是「看这个区划的详情」，不是「选中一栋建筑」——
+	#   先判它，能让「点中心」这条路不受单位命中半径的影响。
+	var center_zone = world.zone_center_zone_at(hover_tile.x, hover_tile.y)
+	if center_zone != null:
+		select_zone(center_zone)
+		return
+
 	var hit_unit = _pick_unit_at(mouse_world)
 	if hit_unit != null:
 		var next: Array = selected_units.duplicate() if additive else []
@@ -238,8 +250,11 @@ func _on_right_click(double_click: bool = false) -> void:
 		return
 
 	# 单击：鼠标底下是敌对建筑 → 点名拆它（命令里只带地块，不带对象引用）
+	# ⚠️ 无敌建筑（区划中心）不算「敌对建筑」：它是中立障碍，右点点它应该走「普通移动」
+	#    （单位走到旁边站住），而不是发一条会被逻辑层拒掉的攻击命令。
 	var foe_b = world.building_at(hover_tile.x, hover_tile.y)
-	if foe_b != null and foe_b.alive and not FactionRes.same_side(foe_b.owner, world.my_faction):
+	if foe_b != null and foe_b.alive and not foe_b.is_invulnerable() \
+			and not FactionRes.same_side(foe_b.owner, world.my_faction):
 		command_issued.emit({
 			"kind": "attack", "ids": ids, "tx": hover_tile.x, "ty": hover_tile.y,
 			"faction": world.my_faction,
@@ -282,6 +297,7 @@ func clear_marks() -> void:
 func select_units(units: Array) -> void:
 	selected_units = world.expand_to_groups(units)
 	selected_building = null
+	selected_zone = null
 	# selected 是逻辑单位上的**渲染标志**（不是权威状态）：由 view 写、view 读
 	for u in world.units:
 		u.selected = false
@@ -290,9 +306,22 @@ func select_units(units: Array) -> void:
 	local_ui_changed.emit()
 
 
+## ★ 选中一个**区划**（左键点它的中心建筑）：左栏显示这个区划的详情。
+##
+## 与选中单位 / 建筑互斥：三种选中状态同一时刻只有一种（面板只有一个左栏）。
+func select_zone(zone) -> void:
+	selected_zone = zone
+	selected_units = []
+	selected_building = null
+	for u in world.units:
+		u.selected = false
+	local_ui_changed.emit()
+
+
 func select_building(b) -> void:
 	selected_building = b
 	selected_units = []
+	selected_zone = null
 	for u in world.units:
 		u.selected = false
 	local_ui_changed.emit()
@@ -422,3 +451,17 @@ func drop_dead_selection() -> void:
 		select_units(alive)
 	if selected_building != null and not selected_building.alive:
 		select_building(null)
+	# ★ 选中的区划要确认它还在（地图换过 / 世界重建过之后，那个字典可能已经是老的了）
+	if selected_zone != null and not _zone_still_exists():
+		selected_zone = null
+		local_ui_changed.emit()
+
+
+func _zone_still_exists() -> bool:
+	if world == null or world.zones == null:
+		return false
+	var zid := int(selected_zone.get("id", -1))
+	for z in world.zones.zones:
+		if z == selected_zone or int(z["id"]) == zid:
+			return true
+	return false

@@ -1,26 +1,34 @@
 """mapfile.py —— 地图 JSON 的读写（Godot 格式）。
 
-导出的文件就是 ``dev_gd_a/daeem/data/map_01.json`` 那一套加上两张网格：
+导出的文件就是 ``dev_gd_a/daeem/data/test_map.json`` 那一套加上两张网格：
 
     {
-      "cols": 24, "rows": 16,
+      "cols": 17, "rows": 22,
 
       "exists": [[1,1,...], ...],        // ★ 1 = 这个格子存在；0 = 地图外（Godot 里不可通行）
       "layout": ["...", "...", ...],     // 地形：'.' 草地  '^' 森林  '#' 山地
 
       "zones": [[-1,0,0,...], ...],      // ★ 地块 → 区块 id，-1 = 不属于任何区块
-      "zone_list": [                     // ★ 区块表（名字；坐标是给人和脚本看的冗余信息）
-        { "id": 0, "name": "A1", "x0": 0, "y0": 0, "x1": 3, "y1": 3, "tiles": [[0,0], ...] }
+      "zone_list": [                     // ★ 区块表（名字 / 区划中心 / 产能）
+        { "id": 0, "name": "A1", "center": [2, 1],
+          "production": {"food": 1.0, "gold": 1.0, "population": 0.5},
+          "x0": 0, "y0": 0, "x1": 3, "y1": 3, "tiles": [[0,0], ...] }
       ],
+      "zone_centers": [[-1,-1,0,-1], ...],  // ★ 地块 → 它是不是某个区划的中心（是就写那个区划 id）
 
-      "base": [12, 8],
+      "faction_bases": {"p1": [2, 2], "p2": [14, 19]},
       ...（导入时文件里有、而编辑器不管的字段原样带过去：general_spawns / buildings /
             units / pvp_points / _comment …）
     }
 
-★ 读旧地图（没有 exists / zones 的 map_01.json）完全兼容：所有格子都算存在，
+★ 读旧地图（没有 exists / zones）完全兼容：所有格子都算存在，
   区块按 config.json 的 zone_cols × zone_rows **均分**（与 zone.gd 的老行为一字不差），
-  名字是 A1 / A2 …（行在前、列在后）。也就是说「打开旧图 → 直接导出」不会改变任何东西。
+  名字是 A1 / A2 …（行在前、列在后），并**自动给每个区块挑一个中心**
+  （该区块按行优先的第一个地块）—— 用户要求「每个区划都必须有中心」，
+  自动挑一个是为了让「打开旧图 → 导出」这条路不会卡在「还差 24 个中心没设」上，
+  设计者再按需要挪。旧格式里的单数 `base` 会被**迁移**成 p1 的大本营（见 `_migrate_legacy_base`）。
+  （仓库里已经没有老图样本了：随游戏发布的只剩 `test_map.json`，
+   `test_model.py` 里的老格式用例现在自己拼一张。）
 """
 
 from __future__ import annotations
@@ -31,6 +39,7 @@ from typing import Dict, List, Optional, Tuple
 
 from .model import (
     CHAR_TERRAINS,
+    PRODUCTION_KEYS,
     ROW_LETTERS,
     TERRAIN_CHARS,
     TERRAIN_ORDER,
@@ -38,6 +47,12 @@ from .model import (
     MapModel,
     Zone,
 )
+
+#: 旧格式的单数 `base` 迁移给哪个阵营（见 `_migrate_legacy_base`）。
+#:
+#: ★ 用 'p1' 而不是编辑器里那些自编 id：`logic/faction.gd` 的 DEFAULT_FACTION 就是 'p1'，
+#:   单机 / 房主都是它 —— 那个老点位本来就是「主阵营的出生点」。
+MIGRATED_BASE_FACTION = "p1"
 
 #: 编辑器不负责编辑、但要原样带过去的字段（Godot 用它们生成据点 / 守军 / 多人起点）
 PRESERVED_KEYS: Tuple[str, ...] = (
@@ -54,7 +69,11 @@ EDITOR_COMMENT: Tuple[str, ...] = (
     "exists：1 = 这个格子存在，0 = 地图外（Godot 里一律不可通行）。",
     "layout：'.' 草地　'^' 森林　'#' 山地；不存在的地块写 '.' 占位，一切以 exists 为准。",
     "zones：地块 → 区块 id（-1 = 不属于任何区块）；zone_list 里是区块的名字。",
-    "base：大本营点位。其余出生点 / 预置建筑 / 预置单位由 Godot 脚本生成。",
+    "zone_list[].center：该区块的「区划中心」地块坐标；每个区块必须有且只有一个。",
+    "zone_list[].production：该区块的产能（每地块每秒）：food / gold / population。",
+    "zone_centers：地块 → 中心所属的区块 id（-1 = 不是任何区块的中心），由 center 推出来。",
+    "factions / faction_bases：阵营表与每个阵营的大本营（每个阵营必须有且只有一个）。",
+    "其余出生点 / 预置建筑 / 预置单位由 Godot 脚本生成。",
 )
 
 
@@ -145,6 +164,14 @@ def dict_to_model(data: dict, cfg: Optional[dict] = None,
             model.existing = flags
     model.recount()          # ⚠️ 直接赋过 existing，必须重算缓存（见 MapModel.recount）
 
+    # ★ 顺序有讲究：**大本营先读、区划中心后补**。
+    #   补中心时要跳过「已经是某个阵营大本营」的格子（两者都会落成占格建筑，
+    #   叠在一格会互相挡掉），所以必须先知道大本营在哪。
+    # ---- 阵营与大本营（地图编辑器加的：老地图没有这两个字段）
+    _read_factions(model, data.get("factions"))
+    _read_faction_bases(model, data.get("faction_bases"))
+    _migrate_legacy_base(model, data.get("base"))
+
     # ---- 区块
     zones_raw = data.get("zones")
     if zones_raw is None:
@@ -152,24 +179,43 @@ def dict_to_model(data: dict, cfg: Optional[dict] = None,
         _fill_legacy_zones(model, cfg or {})
     else:
         _fill_zones_from_grid(model, zones_raw, data.get("zone_list"), source)
-
-    # ---- 大本营
-    base = data.get("base")
-    if isinstance(base, (list, tuple)) and len(base) >= 2:
-        bx, by = _as_int(base[0], -1), _as_int(base[1], -1)
-        model.base = (bx, by) if model.in_bounds(bx, by) else None
-
-    # ---- 阵营与大本营（地图编辑器加的：老地图没有这两个字段）
-    _read_factions(model, data.get("factions"))
-    _read_faction_bases(model, data.get("faction_bases"))
+    # 区块的中心与产能（编辑器加的字段；老地图没有 → 保持 None / 0）
+    _read_zone_centers(model, data.get("zone_centers"))
+    _read_zone_production(model, data.get("zone_list"))
+    # ★ 每个区块都必须有中心：从文件里读不到（老地图 / 手写图）的，
+    #   在这里**自动挑一个**（该区块按行优先的第一个非大本营地块），最后由 `blockers()`
+    #   在导出前确保「一个都不少」。自动挑而不是留空，是为了让「打开旧图」这条路
+    #   不会一上来就报 24 个「还没设区划中心」。
+    fill_missing_centers(model)
 
     # ---- 编辑器不管、但要原样带回去的字段
     for key, value in data.items():
         if key in ("cols", "rows", "exists", "layout", "terrain", "zones", "zone_list",
-                   "base", "factions", "faction_bases"):
+                   "zone_centers", "base", "factions", "faction_bases"):
             continue
         model.extra[key] = value
     return model
+
+
+## 旧格式的单数 `base`（地图中心 / 默认点位）→ 迁移成主阵营的大本营。
+##
+## ★ 为什么要迁移而不是丢掉：老格式的地图**只有**这个单数点位，
+##   而「每个阵营都必须有大本营」现在是硬规则 —— 直接把 base 删掉会让老地图
+##   一打开就导出不了，而那个点位其实是设计师认真选过的（p1 的出生点）。
+## ★ 只在这一方**还没有**自己大本营、而且地图上登记了阵营时才迁移：
+##   手写图里 base 与 faction_bases 同时存在时，faction_bases 说了算。
+def _migrate_legacy_base(model: MapModel, raw) -> None:
+    if model.faction_bases:
+        return
+    if not isinstance(raw, (list, tuple)) or len(raw) < 2:
+        return
+    x, y = _as_int(raw[0], -1), _as_int(raw[1], -1)
+    if not model.in_bounds(x, y):
+        return
+    fid = MIGRATED_BASE_FACTION
+    if model.faction(fid) is None:
+        model.add_faction(fid)
+    model.faction_bases[fid] = (x, y)
 
 
 ## 读阵营表：`factions: [{"id": "p1", "name": "玩家", "color": "#ffd166"}]`。
@@ -214,6 +260,74 @@ def _read_faction_bases(model: MapModel, raw) -> None:
         if x is None or y is None or not model.in_bounds(x, y):
             continue
         model.faction_bases[key] = (x, y)
+
+
+## 读区划中心网格：`zone_centers: [[-1,-1,0,-1], ...]` —— 值是「这一格是谁的中心」。
+##
+## ⚠️ 这是 `zone_list[].center` 的**冗余**表达（两个字段说的是同一件事）。
+##    两边都在时的优先级：**zone_list[].center 说了算**，这个网格只当补充
+##    （手写地图时可能只写其中一个）。
+def _read_zone_centers(model: MapModel, raw) -> None:
+    if not isinstance(raw, list):
+        return
+    ox, oy = model.origin_x, model.origin_y
+    for y, row in enumerate(raw[:model.rows]):
+        if isinstance(row, str):
+            cells = [_as_int(part, -1) for part in row.replace(",", " ").split()]
+        elif isinstance(row, (list, tuple)):
+            cells = [_as_int(v, -1) for v in row]
+        else:
+            continue
+        for x, zid in enumerate(cells[:model.cols]):
+            if zid < 0:
+                continue
+            zone = model.zone(zid)
+            if zone is None or zone.center is not None:
+                continue                      # 没有这个区块 / 已经有中心了 → 不覆盖
+            model.set_zone_center(zid, x - ox, y - oy)
+
+
+## 读每个区块的产能：`zone_list[].production = {"food": 1, "gold": 1, "population": 0.5}`。
+##
+## 宽容点（与别处一致）：
+##   · 缺 production / 缺某一档 → 那一档算 0（不是报错）；
+##   · 不是数字的值（"abc"）→ 那一档算 0；
+##   · 写成 `"production": 1.0`（单个数）也认 —— 当作**粮食**（手写地图时有人会省）。
+def _read_zone_production(model: MapModel, zone_list) -> None:
+    if not isinstance(zone_list, list):
+        return
+    for item in zone_list:
+        if not isinstance(item, dict):
+            continue
+        zid = _as_int(item.get("id"), -1)
+        if zid < 0 or model.zone(zid) is None:
+            continue
+        raw = item.get("production")
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            model.set_zone_production(zid, "food", raw)
+            continue
+        if not isinstance(raw, dict):
+            continue
+        for key in PRODUCTION_KEYS:
+            if key in raw:
+                model.set_zone_production(zid, key, raw[key])
+
+
+## 给「还没有中心的区块」自动挑一个：该区块按行优先的第一个地块。
+##
+## ★ 只补空的，不动已经设过的 —— 设计者挪过的中心不能被导入流程改掉。
+## ★ 跳过「已经是某个阵营大本营」的格子：游戏里大本营与区划中心都会落成占格建筑，
+##   叠在同一格会互相挡掉（`set_zone_center()` 本来就拒绝，这里顺着它往下试下一格）。
+## ★ 一个地块都还没有的空区块补不了（没有地方放），留给 `blockers()` 在导出前拦住。
+def fill_missing_centers(model: MapModel) -> None:
+    for zone in model.zones:
+        if zone.center is not None:
+            continue
+        for (tx, ty) in sorted(zone.tiles, key=lambda t: (t[1], t[0])):
+            if model.faction_base_owner(tx, ty) is not None:
+                continue
+            if model.set_zone_center(zone.zone_id, tx, ty):
+                break
 
 
 def _read_flag_grid(raw, cols: int, rows: int, source: str) -> Optional[List[bool]]:
@@ -394,14 +508,36 @@ def model_to_dict(model: MapModel) -> dict:
             tiles.append([tx - x0, ty - y0])      # 搬到左上角
         if tile_count == 0:
             min_x = min_y = max_x = max_y = 0
-        zone_list.append({
+        entry: Dict[str, object] = {
             "id": zone.zone_id,
             "name": zone.name,
-            "x0": min_x - x0, "y0": min_y - y0,
-            "x1": max_x - x0, "y1": max_y - y0,
-            "tile_count": tile_count,
-            "tiles": tiles,
-        })
+        }
+        # 中心：每个区块都该有（`blockers()` 保证导出前一定有）；坐标同样搬到左上角
+        if zone.center is not None:
+            entry["center"] = [int(zone.center[0]) - x0, int(zone.center[1]) - y0]
+        # 产能：只在真的有非零产能时才写 —— 没配产能的区块导出后与从前逐字节一致
+        if model.zone_has_production(zone.zone_id):
+            entry["production"] = {
+                key: _clean_number(zone.production.get(key, 0.0)) for key in PRODUCTION_KEYS
+            }
+        entry["x0"] = min_x - x0
+        entry["y0"] = min_y - y0
+        entry["x1"] = max_x - x0
+        entry["y1"] = max_y - y0
+        entry["tile_count"] = tile_count
+        entry["tiles"] = tiles
+        zone_list.append(entry)
+
+    # 地块 → 中心所属的区块 id（-1 = 不是任何区块的中心）。
+    # ★ 与 zone_list[].center 是同一件事的两种写法：Godot 侧按格查中心更方便，
+    #   人读 zone_list 更方便，两份都写出来（导出前 `blockers()` 已经保证它们一致）。
+    center_rows: List[List[int]] = []
+    for y in range(y0, y1 + 1):
+        center_row: List[int] = []
+        for x in range(x0, x1 + 1):
+            owner = model.zone_center_owner(x, y) if model.exists(x, y) else None
+            center_row.append(-1 if owner is None else owner)
+        center_rows.append(center_row)
 
     out: Dict[str, object] = {}
     for key in PRESERVED_KEYS:
@@ -416,10 +552,22 @@ def model_to_dict(model: MapModel) -> dict:
     out["layout"] = layout_rows
     out["zones"] = zone_rows
     out["zone_list"] = zone_list
-    out["base"] = _base_point(model, (x0, y0))
+    out["zone_centers"] = center_rows
     _write_factions(out, model)
     _write_faction_bases(out, model, (x0, y0))
     return out
+
+
+## 写进 JSON 的数字：整数就写整数（`1.0` → `1`），小数保留原值。
+## 纯粹为了让导出的文件好读 —— `1` 比 `1.0` 更接近设计者填进去的东西。
+def _clean_number(value) -> object:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0
+    if abs(number - round(number)) < 1e-9:
+        return int(round(number))
+    return round(number, 4)
 
 
 ## 写阵营表与各方大本营。
@@ -466,28 +614,11 @@ def _empty_dict(model: MapModel) -> dict:
     out["layout"] = []
     out["zones"] = []
     out["zone_list"] = []
-    out["base"] = [0, 0]
+    out["zone_centers"] = []
     # 空地图也可能已经有阵营（先建阵营、还没画地）—— 阵营表照写，
     # 但大本营一律不写（一个地块都没有，坐标无从谈起）。
     _write_factions(out, model)
     return out
-
-
-## 导出时写哪个 base：
-##   · 用户设过 → 就用他设的那个（搬到导出的新坐标里）；
-##   · 没设 → 退到**已画地块的包围盒中心**，而不是整张网格的中心。
-##     ⚠️ 别改成 cols//2：编辑器的画布会随画的地方生长（可能长到几百格），
-##     而地块往往只占一角 —— 那样写出来的 base 会落在空地中央，
-##     游戏里大本营就被放到离玩家画的地方很远的位置。
-def _base_point(model: MapModel, origin: Tuple[int, int]) -> List[int]:
-    ox, oy = origin
-    if model.base is not None:
-        return [int(model.base[0]) - ox, int(model.base[1]) - oy]
-    box = model.bounds()
-    if box is None:
-        return [0, 0]
-    x0, y0, x1, y1 = box
-    return [(x0 + x1) // 2 - ox, (y0 + y1) // 2 - oy]
 
 
 def dumps(model: MapModel, indent: int = 2) -> str:

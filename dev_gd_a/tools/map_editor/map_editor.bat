@@ -15,7 +15,7 @@ rem   2. 路径里不能留 `..`：用 for %%~fI 规范化。带 `..` 的路径�
 rem      pathlib 当成「真的叫 .. 的目录」，地图文件打不开、窗口一闪就没。
 rem   3. 目录层级别数错：本文件在 dev_gd_a/tools/map_editor/，
 rem      工程在 dev_gd_a/daeem/ —— 所以要 `..\..\daeem`（少一层会去开
-rem      dev_gd_a/data/map_01.json 那个不存在的文件，同样是一闪就没）。
+rem      dev_gd_a/data/test_map.json 那个不存在的文件，同样是一闪就没）。
 rem   4. 变量不要写在 `if (...)` / `for (...)` 的括号块里再用：%VAR% 在**整块解析时**
 rem      就展开了，块内 set 的值取不到。所以下面一律用 goto 分支，不写括号块。
 rem   5. 行尾必须是 CRLF：cmd 解析 LF 换行的 .bat 会错乱。
@@ -27,10 +27,10 @@ rem 包目录拼成「目录\.」—— 免得结尾反斜杠把引号吃掉
 set "PKG=%HERE%."
 rem 工程目录 dev_gd_a/daeem；for %%~fI 把 `..` 消掉（见文件头第 2 条）
 for %%I in ("%HERE%..\..\daeem") do set "PROJDIR=%%~fI"
-rem 要打开的地图：拖动文件进来 / 传参；不给就用工程里的 map_01.json
+rem 要打开的地图：拖动文件进来 / 传参；不给就用工程里唯一的那张图 test_map.json
 set "MAP=%~1"
 if defined MAP goto :has_map
-set "MAP=%PROJDIR%\data\map_01.json"
+set "MAP=%PROJDIR%\data\test_map.json"
 goto :have_map
 
 :has_map

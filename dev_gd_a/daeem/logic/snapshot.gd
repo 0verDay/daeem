@@ -59,11 +59,13 @@ static func to_snapshot(world) -> Dictionary:
 	for z in world.zones.zones:
 		# ★ 除了归属与进度，还要带上「这条进度条属于谁、处于什么状态」——
 		#   客机只靠 o/p 画不出进度条（owner 与「谁在读条」是两回事，见 zone.update）。
+		# ★ 区划人口也一起发：它在房主侧累积，客机点开中心看详情时得显示同一个数。
 		zones_out.append({
 			"o": String(z["owner"]),
 			"p": round2(float(z["progress"])),
 			"cf": String(z.get("capture_faction", "")),
 			"cs": String(z.get("capture_state", "")),
+			"pop": round2(float(z.get("population", 0.0))),
 		})
 
 	return {
@@ -149,6 +151,9 @@ static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void:
 			z["capture_faction"] = String(sz["cf"])
 		if sz.has("cs"):
 			z["capture_state"] = String(sz["cs"])
+		# 区划人口：老快照没有 pop → 保持本地现状（同上，别用 0 覆盖）
+		if sz.has("pop"):
+			z["population"] = float(sz["pop"])
 
 	if snap.has("res"):
 		var res: Array = snap["res"]

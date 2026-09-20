@@ -263,17 +263,50 @@ func refresh() -> void:
 	detail_panel.set_status(_status_text())
 
 
-## 右栏资源行：**只留阵营 + 粮食 + 黄金**。
+## 右栏资源行：**只留阵营 + 粮食 + 黄金**（产出速率是本地算出来的展示值）。
 ## 己方地块 / 区块 / 建造模式 / 暂停都不再显示（按需求砍掉）。
 func _status_text() -> String:
 	var me := FactionRes.faction_name(world.my_faction)
-	return "%s\n粮食 %.1f　黄金 %.1f" % [
-		me, float(world.resources["food"]), float(world.resources["gold"]),
+	return "%s\n粮食 %.1f（+%.1f/秒）　黄金 %.1f（+%.1f/秒）" % [
+		me, float(world.resources["food"]), world.production_food,
+		float(world.resources["gold"]), world.production_gold,
 	]
 
 
-## 左栏：**只显示选中对象本身的信息**（部队 / 建筑），不再挂操作提示。
+## 区划详情（左键点区划中心时显示）：
+## 区划名 / 大小 / 产能 / 人口 —— 用户点名要的四样。
+##
+## ★ 产能是「每地块每秒」，所以这里同时给出**每地块**与**整个区划**两个数：
+##   前者是地图编辑器里填的那个值，后者才是它实际贡献的产出（产能 × 地块数）。
+func _zone_text(z: Dictionary) -> String:
+	var lines: Array[String] = []
+	var owner := String(z["owner"])
+	lines.append("区划「%s」" % String(z["name"]))
+	lines.append("归属：%s" % (FactionRes.faction_name(owner) if owner != "" else "无主"))
+	lines.append("区划大小：%d 个地块" % int(z["tile_count"]))
+	var prod: Dictionary = z["production"]
+	var n := float(z["tile_count"])
+	lines.append("粮食产能：%s／地块／秒（合计 %.1f/秒）"
+		% [_fmt_num(float(prod["food"])), float(prod["food"]) * n])
+	lines.append("黄金产能：%s／地块／秒（合计 %.1f/秒）"
+		% [_fmt_num(float(prod["gold"])), float(prod["gold"]) * n])
+	lines.append("人口产能：%s／地块／秒" % _fmt_num(float(prod["population"])))
+	lines.append("人口：%.1f（每个区划各算各的，只涨不减）" % float(z.get("population", 0.0)))
+	return "\n".join(lines)
+
+
+## 数字显示：整数就不带小数点（与地图编辑器 / 导出的 JSON 同一种写法）
+func _fmt_num(v: float) -> String:
+	return ("%d" % int(round(v))) if absf(v - round(v)) < 1e-9 else ("%g" % v)
+
+
+## 左栏：**只显示选中对象本身的信息**（区划 / 建筑 / 部队），不再挂操作提示。
 func _selection_text() -> String:
+	# ★ 区划（左键点它的中心建筑）：显示区划名 / 大小 / 产能 / 人口
+	var z = input_ctrl.selected_zone
+	if z != null:
+		return _zone_text(z)
+
 	var b = input_ctrl.selected_building
 	if b != null:
 		var lines: Array[String] = []

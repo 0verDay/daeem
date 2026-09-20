@@ -17,7 +17,12 @@ powershell -ExecutionPolicy Bypass -File tools/run-tests.ps1 -List              
 跑一遍，**靠退出码判定成败**，最后打一张汇总表。任一文件失败或崩溃 → 整体退出码 1。
 
 引擎路径优先取环境变量 `$env:GODOT_EXE`，其次才是本机的
-`C:\D\GodotEngine\Godot_v4.7.2-stable_win64_console.exe`。
+`C:\D\GodotEngine\gd4.7.2mono\Godot_v4.7.2-stable_mono_win64_console.exe`。
+
+> ⚠️ **为什么是 mono 版**：工程里有一份 C# 群体内核（`logic/crowd/*.cs`，
+> 1000 单位群编的性能前提）。**普通版 Godot 不会加载 C# 程序集** ——
+> 用普通版跑，碰撞会自动退回 GDScript 实现（不会崩，但慢 200 倍），
+> 而 `test_csharp_bridge.gd` 会直接红。跑测试请统一用 mono 版。
 
 ### 三条不能改的约定
 
@@ -33,7 +38,7 @@ powershell -ExecutionPolicy Bypass -File tools/run-tests.ps1 -List              
 ### 单跑某一个
 
 ```powershell
-& 'C:\D\GodotEngine\Godot_v4.7.2-stable_win64_console.exe' `
+& 'C:\D\GodotEngine\gd4.7.2mono\Godot_v4.7.2-stable_mono_win64_console.exe' `
   --headless --path 'C:\Users\yy197\Documents\GitHub\daeem\dev_gd_a\daeem' `
   --script res://tests/test_smoke.gd
 ```
@@ -41,7 +46,7 @@ powershell -ExecutionPolicy Bypass -File tools/run-tests.ps1 -List              
 只想知道某个脚本**结构上**能不能过（不执行）：
 
 ```powershell
-& 'C:\D\GodotEngine\Godot_v4.7.2-stable_win64_console.exe' `
+& 'C:\D\GodotEngine\gd4.7.2mono\Godot_v4.7.2-stable_mono_win64_console.exe' `
   --headless --path '<工程根>' --check-only --script res://logic/grid.gd
 ```
 

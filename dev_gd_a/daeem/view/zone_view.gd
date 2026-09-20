@@ -21,6 +21,25 @@ var _c_progress: Color
 var _font: Font
 var _font_size: int = 12
 
+## ★★ 静态形状（底色 + 地块边界轮廓）画在**子节点**上。
+##
+## 为什么必须拆开：区块形状原来和进度条一起、每帧重画一遍，而它是**按地块**画的 ——
+## 100×100 图上就是每帧 1 万次 draw_rect + 4 万次 zone_at（实测 23 ms/帧，
+## 占当时整帧 26 ms 的绝大部分，而逻辑只有 0.16 ms）。
+## 形状只在**归属变化**时才变（占下来 / 被抢走 / 换地图），进度条才需要每帧动。
+## 拆开之后每帧只剩 24 个进度条 + 24 行名字。
+var _shape: Node2D = null
+var _shape_sig: String = ""
+
+
+class ZoneShape:
+	extends Node2D
+	var owner_view = null          # 指向 zone_view，真正的画法在那边
+
+	func _draw() -> void:
+		if owner_view != null:
+			owner_view.draw_shapes(self)
+
 
 func setup(p_cfg: ConfigRes, p_world, p_font: Font = null, p_font_size: int = 12) -> void:
 	cfg = p_cfg
@@ -30,10 +49,39 @@ func setup(p_cfg: ConfigRes, p_world, p_font: Font = null, p_font_size: int = 12
 	_c_line = cfg.color("zone_line")
 	_c_neutral = cfg.color("zone_neutral")
 	_c_progress = cfg.color("zone_progress")
+	if _shape == null:
+		_shape = ZoneShape.new()
+		_shape.name = "ZoneShape"
+		_shape.owner_view = self
+		_shape.z_index = -1        # 形状压在进度条下面
+		add_child(_shape)
+	_shape_sig = ""
+	sync()
+
+
+## 每帧调用：形状只在归属变了时重画，进度条每次都重画。
+func sync() -> void:
+	var sig := _owner_signature()
+	if sig != _shape_sig:
+		_shape_sig = sig
+		if _shape != null:
+			_shape.queue_redraw()
 	queue_redraw()
 
 
-func _draw() -> void:
+## 归属签名：只要「每个区块属于谁」这一串没变，形状就不用重画。
+## （地块明细与包围盒都来自地图，换地图时会被 _owner_signature 之外的重建接住 —— 见 setup。）
+func _owner_signature() -> String:
+	if world == null or world.zones == null:
+		return ""
+	var parts: Array = []
+	for z in world.zones.zones:
+		parts.append(String(z["owner"]))
+	return "|".join(parts)
+
+
+## 静态形状：区块底色（按地块）+ 沿地块边界的轮廓。由子节点在自己的 _draw 里调。
+func draw_shapes(ci: Node2D) -> void:
 	if cfg == null or world == null:
 		return
 	var cell: float = cfg.cell_px
@@ -52,12 +100,26 @@ func _draw() -> void:
 			var owner_color := cfg.faction_color(String(z["owner"]), "main")
 			fill = Color(owner_color.r, owner_color.g, owner_color.b, 0.13)
 		if cells.is_empty():
-			draw_rect(r, fill, true)
+			ci.draw_rect(r, fill, true)
 		else:
 			for t in cells:
 				var tile: Vector2i = t
-				draw_rect(Rect2(Vector2(tile.x * cell, tile.y * cell),
+				ci.draw_rect(Rect2(Vector2(tile.x * cell, tile.y * cell),
 					Vector2(cell, cell)), fill, true)
+
+		# 轮廓：沿着**地块的边界**画（非矩形区块的轮廓才是它的真实形状）
+		if cells.is_empty():
+			ci.draw_rect(r, _c_line, false, 1.0)
+		else:
+			_draw_zone_outline(ci, cells, cell)
+
+
+func _draw() -> void:
+	if cfg == null or world == null:
+		return
+	var cell: float = cfg.cell_px
+	for z in world.zones.zones:
+		var r := _zone_rect(z)
 
 		# 占领进度：**只有一条**（严格阻塞下同一时刻最多一方在读，见 zone.update 的规则 4）。
 		#
@@ -77,12 +139,6 @@ func _draw() -> void:
 			if String(bar["state"]) == "frozen":
 				# 争抢中：整条套一圈白描边 —— 一眼看出「停住了」（手玩要求）
 				draw_rect(rc.grow(1.0), Color(1.0, 1.0, 1.0, 0.85), false, 2.0)
-
-		# 轮廓：沿着**地块的边界**画（非矩形区块的轮廓才是它的真实形状）
-		if cells.is_empty():
-			draw_rect(r, _c_line, false, 1.0)
-		else:
-			_draw_zone_outline(cells, cell)
 
 		if show_names and _font != null:
 			var label := String(z["name"])
@@ -105,7 +161,7 @@ func _zone_rect(z: Dictionary) -> Rect2:
 
 ## 沿地块边界画区块轮廓：只在「邻格不属于同一区块（或不存在）」的那条边上画线。
 ## 与地图编辑器里看到的那圈边界是同一套规则。
-func _draw_zone_outline(cells: Array, cell: float) -> void:
+func _draw_zone_outline(ci: Node2D, cells: Array, cell: float) -> void:
 	var dirs := [Vector2i(0, -1), Vector2i(0, 1), Vector2i(-1, 0), Vector2i(1, 0)]
 	for t in cells:
 		var tile: Vector2i = t
@@ -122,13 +178,13 @@ func _draw_zone_outline(cells: Array, cell: float) -> void:
 			if nb != null and int(nb["id"]) == zid:
 				continue
 			if d.y == -1:
-				draw_line(Vector2(x0, y0), Vector2(x1, y0), _c_line, 1.0)
+				ci.draw_line(Vector2(x0, y0), Vector2(x1, y0), _c_line, 1.0)
 			elif d.y == 1:
-				draw_line(Vector2(x0, y1), Vector2(x1, y1), _c_line, 1.0)
+				ci.draw_line(Vector2(x0, y1), Vector2(x1, y1), _c_line, 1.0)
 			elif d.x == -1:
-				draw_line(Vector2(x0, y0), Vector2(x0, y1), _c_line, 1.0)
+				ci.draw_line(Vector2(x0, y0), Vector2(x0, y1), _c_line, 1.0)
 			else:
-				draw_line(Vector2(x1, y0), Vector2(x1, y1), _c_line, 1.0)
+				ci.draw_line(Vector2(x1, y0), Vector2(x1, y1), _c_line, 1.0)
 
 
 ## 进度条在区块里的矩形：从**底边**往上 h 像素（我方）

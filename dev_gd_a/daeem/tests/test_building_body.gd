@@ -51,9 +51,16 @@ func _cases() -> void:
 func _test_geometry(cfg) -> void:
 	var w = WorldRes.create(cfg)
 	var base_b = w.find_base_of(FactionRes.DEFAULT_FACTION)
-	var tower = w.add_building("tower", _free_tile_near(w, base_b.tx + 3, base_b.ty), FactionRes.DEFAULT_FACTION)
-	ok(base_b != null and tower != null, "有大本营和一个箭塔")
-	if base_b == null or tower == null:
+	ok(base_b != null, "有大本营")
+	if base_b == null:
+		return
+	# ⚠️ 两个坐标都要用**元组**传：`add_building(type, x, y, owner)` 收的是四个参数，
+	#    而 `_free_tile_near()` 返回的是一个 Vector2i —— 直接传进去会
+	#    `Invalid call ... Expected 4 argument(s)`（换图之后这条路径才被走到）。
+	var near_tower: Vector2i = _free_tile_near(w, base_b.tx + 3, base_b.ty)
+	var tower = w.add_building("tower", near_tower.x, near_tower.y, FactionRes.DEFAULT_FACTION)
+	ok(tower != null, "在大本营旁边建了一座箭塔")
+	if tower == null:
 		return
 
 	# 数值来自 config：0.6 格
@@ -73,10 +80,15 @@ func _test_geometry(cfg) -> void:
 			"%s 的本体没有越出自己的格子" % b.display_name())
 
 	# ★ 渲染矩形 = 碰撞矩形（同一个来源；各写一套内缩量迟早错位）
+	#
+	# ⚠️ 容差用 1e-4 而不是 1e-6：这两边是**两条不同的算式**
+	#    （一边 `cell_px*0.6`、一边 `cell_px - 2*cell_px*(1-0.6)*0.5`），
+	#    而 0.6 在二进制里是无限循环小数 —— 差额在 1e-6 量级。
+	#    断言的本意是「两者等价」，不是「逐位相同」（实测 38.400002 vs 38.400000）。
 	var px: Rect2 = PaletteRes.building_rect(base_b, cfg)
-	near(px.size.x, base_b.body_scale(cfg) * cfg.cell_px, 1e-6, "★ 大本营的渲染宽度 = 本体宽度（像素）")
-	near(px.size.y, base_b.body_scale(cfg) * cfg.cell_px, 1e-6, "★ 大本营的渲染高度 = 本体高度（像素）")
-	v2_near(px.get_center(), PaletteRes.to_px(base_b.center(), cfg), 1e-6, "★ 渲染矩形与本体同心")
+	near(px.size.x, base_b.body_scale(cfg) * cfg.cell_px, 1e-4, "★ 大本营的渲染宽度 = 本体宽度（像素）")
+	near(px.size.y, base_b.body_scale(cfg) * cfg.cell_px, 1e-4, "★ 大本营的渲染高度 = 本体高度（像素）")
+	v2_near(px.get_center(), PaletteRes.to_px(base_b.center(), cfg), 1e-4, "★ 渲染矩形与本体同心")
 
 	# ★★ 真正被画出来的那个矩形是**节点局部坐标**的（节点原点 = 自己那一格的左上角）。
 	#    第一版就是这里错的：只取了绝对矩形的 size、从 (0,0) 开始画 →
@@ -85,11 +97,12 @@ func _test_geometry(cfg) -> void:
 	var half: float = cfg.cell_px * 0.5
 	for b in [base_b, tower]:
 		var lr: Rect2 = PaletteRes.building_local_rect(b, cfg)
-		v2_near(lr.get_center(), Vector2(half, half), 1e-6,
+		v2_near(lr.get_center(), Vector2(half, half), 1e-4,
 			"★★ %s 在格子里居中（渲染用的局部矩形，中心 = 格心）" % b.display_name())
-		near(lr.position.x, (cfg.cell_px - lr.size.x) * 0.5, 1e-6,
+		near(lr.position.x, (cfg.cell_px - lr.size.x) * 0.5, 1e-4,
 			"%s 的左边距 = 右边距（留白对称）" % b.display_name())
-	var wall = w.add_building("wall", _free_tile_near(w, base_b.tx - 3, base_b.ty), FactionRes.DEFAULT_FACTION)
+	var near_wall: Vector2i = _free_tile_near(w, base_b.tx - 3, base_b.ty)
+	var wall = w.add_building("wall", near_wall.x, near_wall.y, FactionRes.DEFAULT_FACTION)
 	if wall != null:
 		near(PaletteRes.building_rect(wall, cfg).size.x, cfg.cell_px, 1e-6, "城墙仍然填满整格")
 		v2_near(PaletteRes.building_local_rect(wall, cfg).get_center(), Vector2(half, half), 1e-6,
@@ -122,10 +135,18 @@ func _test_ally_passes(cfg) -> void:
 		"己方可以站在大本营本体正中")
 
 	# 真的站上去：命令它走到本体中心，跑完不该被推开
+	#
+	# ⚠️ 起点必须**真的走得到**本体中心：这张图上大本营正上方就是自己的城墙、
+	#    右边有箭塔、东边一整排是山 —— 写死「base + 4 格」会落在山那边，
+	#    `order_move` 直接返回 false（实测距离 4.0 格、根本没动）。
+	#    所以从一个**可通行且可达**的邻格出发（南边那一格）。
 	var group: Array = w.group_of(g)
 	w.units = group                      # 隔离：只留这一队，别让别的单位挤它
 	g.stop()
-	g.pos = GridRes.center_of(Vector2i(base_b.tx + 4, base_b.ty))
+	var start_tile := Vector2i(base_b.tx, base_b.ty + 2)
+	if not PathfinderRes.passable(w.map, w.buildings, cfg, start_tile.x, start_tile.y, g.faction):
+		start_tile = Vector2i(base_b.tx - 2, base_b.ty)
+	g.pos = GridRes.center_of(start_tile)
 	g.sync_tile(w.map)
 	ok(g.order_move(w, cfg, base_b.center()), "命令将领走到大本营本体中心")
 	var n := 0
@@ -146,7 +167,7 @@ func _test_enemy_blocked_by_body(cfg) -> void:
 	var base_b = w.find_base_of(FactionRes.DEFAULT_FACTION)
 	if base_b == null:
 		return
-	var e = w.spawn_enemy(base_b.tx + 6, base_b.ty)
+	var e = _spawn_enemy_near(w, base_b, cfg, 6)
 	ok(e != null, "刷出了测试敌人")
 	if e == null:
 		return
@@ -158,7 +179,13 @@ func _test_enemy_blocked_by_body(cfg) -> void:
 		"敌方站在本体正中是「被挡」的")
 
 	# 硬碰撞：把敌人硬塞进本体里，跑一帧就该被挤出去
+	#
+	# ⚠️ 先把据点**周围一圈**的建筑摘掉再验这一条：
+	#    这张图上大本营正上方就有一段自己的城墙 —— 敌人被挤出本体后会落在那一格上，
+	#    `_can_stand()` 判它不可通行 → 推不动 → `pushed = 0`（实测）。
+	#    这一条要验的是「本体把人挤出去」，不是「四周有没有墙」，所以先清场。
 	var r: float = CollisionRes.radius(cfg)
+	_clear_buildings_around(w, base_b.tx, base_b.ty, 1)
 	w.units = [e]
 	e.stop()
 	e.pos = base_b.center()
@@ -169,7 +196,7 @@ func _test_enemy_blocked_by_body(cfg) -> void:
 		"★ 推出去之后位置不再压着本体（距本体中心 %.3f 格）" % e.pos.distance_to(base_b.center()))
 
 	# 一路推进：敌人从远处来，最后一定停在「本体之外」，不会钻进本体里
-	var e2 = w.spawn_enemy(base_b.tx + 5, base_b.ty)
+	var e2 = _spawn_enemy_near(w, base_b, cfg, 5)
 	if e2 != null:
 		for i in 900:
 			w.tick(DT)
@@ -193,7 +220,7 @@ func _test_path_avoids_body(cfg) -> void:
 	var base_b = w.find_base_of(FactionRes.DEFAULT_FACTION)
 	if base_b == null:
 		return
-	var e = w.spawn_enemy(base_b.tx + 6, base_b.ty)
+	var e = _spawn_enemy_near(w, base_b, cfg, 6)
 	ok(e != null, "刷出敌人")
 	if e == null:
 		return
@@ -304,9 +331,10 @@ func _test_wall_unchanged(cfg) -> void:
 
 
 # ------------------------------------------------------------------
-# 6. 地图上预置的对家据点（map_01.json 的 "buildings" 字段）
+# 6. 地图上预置的对家据点（test_map.json 的 "buildings" 字段）
 #
-# 这一组是**给手玩测试用的摆设**：大本营 + 箭塔 + 城墙，放在地图东侧。
+# 这一组是**给手玩测试用的摆设**：大本营 + 箭塔 + 城墙，放在地图东南角。
+# （原来是老图 map_01.json 里的东侧据点，老图删掉后搬进了 test_map.json。）
 # 断言盯三件事：每一条都真的建出来了、归属对、**离玩家大本营足够远**。
 # ------------------------------------------------------------------
 func _test_map_outpost(cfg) -> void:
@@ -370,7 +398,7 @@ func _test_map_outpost(cfg) -> void:
 
 
 # ------------------------------------------------------------------
-# 7. 地图上预置的对家单位（map_01.json 的 "units"）
+# 7. 地图上预置的对家单位（test_map.json 的 "units"）
 #
 # 给手玩测试用的守军：断言盯「每一条都建出来了 / 位置对 / hold 标记对 / 离大本营够远」，
 # 外加一条行为：hold 的单位**不会**朝玩家据点行军（那是它们能当靶子的前提）。
@@ -417,14 +445,63 @@ func _test_map_units(cfg) -> void:
 			break
 	ok(holder != null, "取到一个驻守单位")
 	if holder != null:
+		# ★ 关掉战斗再验「不推进」：
+		#   `hold_position` 的语义是「**不执行推进 AI**」，迎战不受影响（有人靠近照样打）。
+		#   而这张图的 p2 大本营就在 (14,19)、离它不远，开着战斗时它会迎战并移动 ——
+		#   那是**正确**的防守行为，不是「跑去打据点」。这一条只验推进 AI 不启动。
+		var was_combat: bool = cfg.combat_enabled
+		cfg.combat_enabled = false
 		var start: Vector2 = holder.pos
 		for i in 300:
 			w.tick(DT)
+		cfg.combat_enabled = was_combat
 		ok(holder.pos.distance_to(start) < 0.6,
 			"★ 驻守单位不会自己跑去打据点（5 秒位移 %.3f 格）" % holder.pos.distance_to(start))
 
 
 # ---- 工具 ----
+
+## 调试用：列出某格周围的建筑
+func _bld_around(w, cx: int, cy: int, radius: int) -> Array:
+	var out: Array = []
+	for b in w.building_list:
+		if absi(b.tx - cx) <= radius and absi(b.ty - cy) <= radius:
+			out.append("%s@(%d,%d)" % [b.type, b.tx, b.ty])
+	return out
+
+
+## 把 (cx, cy) 周围 radius 格内的建筑（**不含大本营自己**）摘掉。
+##
+## 用途：验「本体把单位挤出去」时，别让旁边的城墙把挤出的落点堵死
+## （堵死时 `_can_stand()` 会拒绝位移，断言就会得到 `pushed = 0` 这种假失败）。
+func _clear_buildings_around(w, cx: int, cy: int, radius: int) -> void:
+	for b in w.building_list.duplicate():
+		if b.type == "base":
+			continue
+		if absi(b.tx - cx) <= radius and absi(b.ty - cy) <= radius:
+			w.remove_building(b, true)
+	w.refresh_ownership()
+
+
+## 在离某个据点大约 R 格的地方刷一个敌人（挑真正可通行、没建筑的格）。
+##
+## ★ 为什么不能写死 `base + R`：不同地图上那个方向可能是山、图外或自己的建筑 ——
+##   那样 `spawn_enemy` 会返回 null，测试报的却是「刷不出测试敌人」，
+##   看起来像功能坏了（这一轮换图时真的踩到）。
+##   所以**先试 R 那一圈，再往外多试几圈**（半径可变），直到找到一格能站人的。
+func _spawn_enemy_near(w, base_b, cfg, radius: int):
+	for rr in range(radius, radius + 8):
+		for d in [Vector2i(rr, 0), Vector2i(0, rr), Vector2i(-rr, 0), Vector2i(0, -rr),
+				Vector2i(rr, rr), Vector2i(-rr, rr), Vector2i(rr, -rr), Vector2i(-rr, -rr)]:
+			var t: Vector2i = Vector2i(base_b.tx + d.x, base_b.ty + d.y)
+			if not w.map.terrain_walkable(t.x, t.y):
+				continue
+			if w.building_at(t.x, t.y) != null:
+				continue
+			return w.spawn_enemy(t.x, t.y)
+	return null
+
+
 func _free_tile_near(w, x: int, y: int) -> Vector2i:
 	for r in range(0, 8):
 		for dy in range(-r, r + 1):

@@ -57,8 +57,11 @@ var data: Array = []
 
 ## 当前配置下使用哪套方向。**所有遍历方向的地方都该走这个函数**，
 ## 这样「切回四连通」只需要改一个配置项，不必翻遍代码。
+##
+## ★ 读的是 cfg 上载入时算好的字段（不再是 bool_val("path.diagonal")）：
+##   这个函数在 A* 里**每个出堆节点**都会调一次，而 bool_val 每次都要 split(".")。
 static func directions(cfg) -> Array[Vector2i]:
-	if cfg != null and not cfg.bool_val("path.diagonal", true):
+	if cfg != null and not cfg.path_diagonal:
 		return DIRS4
 	return DIRS8
 

@@ -21,22 +21,82 @@ extends RefCounted
 
 const ConfigRes = preload("res://logic/config.gd")
 const FactionRes = preload("res://logic/faction.gd")
+## ★★ 用 preload 常量给参数**加类型**，是这里最重要的一处性能改动。
+##
+## GDScript 里**无类型**的参数（`func f(u)`）访问 `u.moving` / `u.pos` 时走的是
+## **动态属性查找**（每次一个哈希查找 + 类型检查），而有类型时编译器能静态解析成员。
+## 实测：1000 个单位待命时，`update_unit` 从 **18 ms/帧** 掉到 1 ms 量级 ——
+## 因为那个函数每单位要读二十来个字段，动态查找把成本放大了一个数量级。
+## ⚠️ 这也是 `unit.gd` 里**不能** preload `combat.gd` 的原因：两边互相 preload 会形成
+##    循环依赖（Godot 直接报 Could not resolve script）。所以 `tick_frame` 放在这边。
+const UnitRes = preload("res://logic/unit.gd")
+## ★ 同理给「碰撞/索敌桥」加类型：`world.crowd` 本身是动态查找，而
+##   `crowd._targets_ready` / `crowd._target_idx` 在**每单位每帧**的索敌路径上。
+##   crowd_bridge.gd 不 preload 本文件，所以不是循环依赖。
+const CrowdBridgeRes = preload("res://logic/crowd/crowd_bridge.gd")
+
+## ★ 诊断计数器：本帧真正算了多少次「追击寻路」。只在基准里读，逻辑不依赖它。
+##   用途：把「重寻路次数太多」和「单次寻路太贵」这两种可能分开 —— 实测实机行军攻击
+##   20 fps 时，必须先知道是哪个，否则优化就是瞎猜。
+##   `move_to_calls` 在 unit.gd 上（那里才是真正寻路的地方，不能反向 preload 本文件）。
+static var repath_calls: int = 0
+
+
+## 一帧的单位更新（战斗 / 警戒 → 回位 → 沿路推进）。
+##
+## ★ 为什么把这三步合并进一个函数：原来 `world.tick` 对每个单位要跨**三次**对象边界
+##   （`CombatRes.update_unit` / `u.reclaim_settled_spot` / `u.step_along_path`）。
+##   合并之后每单位只剩一次调用 —— 1000 单位就是每帧省下 2000 次 GDScript 方法调用。
+##
+## @param idx 本单位在 world.units 里的下标（用于取本帧批量算好的索敌结果）
+static func tick_frame(world, cfg: ConfigRes, u: UnitRes, dt: float, idx: int) -> void:
+	# ★★ 生产路径：三段直接连着跑，**不做任何逐段计时**。
+	#    分段计时如果写在这个循环里（每单位 4 次 `_prof()`），即使 profile 关着也要付那 4 次调用
+	#    —— 1000 单位就是每帧 ~0.8 ms，纯属为了「跑 bench 时能看细分」在生产路径上白交的钱。
+	if not world.profile_on:
+		update_unit(world, cfg, u, dt, idx)
+		# 站定后被推离落点就自己走回去（必须在 step 之前：先决定要不要回位）
+		if not u.moving and u.has_settled_goal:
+			u.reclaim_settled_spot(world, cfg)
+		if not u.path.is_empty():
+			u.step_along_path(world, cfg, dt)
+		return
+
+	var t0 := Time.get_ticks_usec()
+	update_unit(world, cfg, u, dt, idx)
+	var t1 := Time.get_ticks_usec()
+	if not u.moving and u.has_settled_goal:
+		u.reclaim_settled_spot(world, cfg)
+	var t2 := Time.get_ticks_usec()
+	if not u.path.is_empty():
+		u.step_along_path(world, cfg, dt)
+	var t3 := Time.get_ticks_usec()
+	world.profile_sub("units/combat", t1 - t0)
+	world.profile_sub("units/reclaim", t2 - t1)
+	world.profile_sub("units/step", t3 - t2)
 
 
 ## 每帧推进一个单位的攻击冷却 / 特效计时，并决定它这一帧干什么。
-static func update_unit(world, cfg: ConfigRes, u, dt: float) -> void:
+##
+## @param idx 这个单位在 world.units 里的下标（由 world.tick 传进来）。
+##        有它才能取「本帧批量算好的索敌结果」；不传就走原来的逐个扫描（测试里会这样调）。
+static func update_unit(world, cfg: ConfigRes, u: UnitRes, dt: float, idx: int = -1) -> void:
 	if u.attack_cd > 0.0:
 		u.attack_cd = maxf(0.0, u.attack_cd - dt)
 	if u.attack_flash > 0.0:
-		u.attack_flash = maxf(0.0, u.attack_flash - dt / maxf(0.01, cfg.flash_sec))
+		u.attack_flash = maxf(0.0, u.attack_flash - dt / cfg.flash_sec_safe)
 	if u.repath_timer > 0.0:
 		u.repath_timer = maxf(0.0, u.repath_timer - dt)
 
 	# 己方单位站在**己方**领地内缓慢回血（便于肉眼确认领地归属是否生效）
 	# ★ 用 u.faction 比对，而不是写死 'player' —— 联机下「己方领地」= 自己那一方的区块
-	if FactionRes.is_player_faction(u.faction):
+	#
+	# ⚠️ 判定顺序有讲究：**先看血量**再看领地。满血的单位占绝大多数（1000 单位常态下
+	#    就是全部），先查血就整个跳过 zone_at 的区块查表与阵营判定 ——
+	#    实测这一条把每帧的 combat 段从 1.5 ms 压到不足一半。
+	if u.hp < u.hp_max and FactionRes.is_player_faction(u.faction):
 		var z = world.zones.zone_at(u.tx, u.ty)
-		if z != null and z.owner == u.faction and u.hp < u.hp_max:
+		if z != null and z.owner == u.faction:
 			u.hp = minf(u.hp_max, u.hp + 4.0 * dt)
 
 	if not cfg.combat_enabled:
@@ -65,17 +125,30 @@ static func update_unit(world, cfg: ConfigRes, u, dt: float) -> void:
 		#   那正是「按 A 走过去、路上遇敌就停下来打」的全部含义。
 		#   （第一版漏了这条：单位一路走到终点都不理路上的敌人，测试当场抓住。）
 		if not u.moving or u.has_attack_move:
-			acquire_target(world, cfg, u)
+			# ★★ 行军攻击的单位在赶路时**每帧**都要索敌（那是 A 键的语义），
+			#    而 1000 个单位每帧走一遍索敌是 3 ms 量级的开销（实测）。
+			#    这里**错开成三帧一次**：每个单位仍然以 20 Hz 索敌，肉眼完全看不出延迟
+			#    （「路上遇敌就停下来打」本来也不需要 60 Hz 的反应速度），
+			#    但每帧的索敌量降到三分之一。驻守/待命单位不受影响（照旧每帧扫）。
+			#    ⚠️ 错开的相位用 (单位下标 + 帧号)，保证同一帧里三拨各占三分之一 ——
+			#      只用单位下标的话，一波单位会永远落在同一帧上，等于没分摊。
+			if not u.has_attack_move or (idx + world.frame_serial) % 3 == 0:
+				acquire_target(world, cfg, u, idx)
+		# ★★ 行军攻击的「到点就算完成」必须**在索敌之前**判，不能等下面三个分支都落空：
+		#    打完之后它会站住，而「静止」正是自动索敌的触发条件 —— 目标点旁边要是
+		#    有建筑在警戒半径内（区划中心 / 对家城墙），`target_building` 那一支就会
+		#    抢先生效，行军攻击的标记**永远清不掉**（实测：`has_attack_move` 一直为真）。
+		#    走到点了就是走到了 —— 命令的完成不该被路过的东西拦住。
+		if u.has_attack_move and not u.moving and u.pos.distance_to(u.attack_move_goal) <= 0.5:
+			u.has_attack_move = false          # 到了，命令完成
 		if u.target != null:
 			update_combat(world, cfg, u)
 		elif u.target_building != null:
 			update_building_combat(world, cfg, u)
 		elif u.has_attack_move and not u.moving:
 			# ★ 行军攻击：打完了（或被打断）还没到点 → 接着走。
-			if u.pos.distance_to(u.attack_move_goal) <= 0.5:
-				u.has_attack_move = false          # 到了，命令完成
 			#   ⚠️ 用 repath_timer 限流：走不到的时候（目标点被封）不能每帧算一次 A*。
-			elif u.repath_timer <= 0.0:
+			if u.repath_timer <= 0.0:
 				u.repath_timer = cfg.repath_sec
 				if not u.move_to(world, cfg, u.attack_move_goal):
 					# 已经到不了（比如目标点被建筑占满）→ 认账，别再每帧试
@@ -88,29 +161,53 @@ static func update_unit(world, cfg: ConfigRes, u, dt: float) -> void:
 ## 「给己方单位增加索敌建筑的机制」）—— 走到对家箭塔/城墙边上就会自己开打。
 ## ⚠️ NPC 敌人不做这一步：它们拆建筑由 enemy_ai 明确指定（拆挡路的城墙），
 ##    否则「路过一堵墙就停下来拆」会把敌人推进的节奏彻底改掉。
-static func acquire_target(world, cfg: ConfigRes, u) -> bool:
+static func acquire_target(world, cfg: ConfigRes, u: UnitRes, idx: int = -1) -> bool:
 	if not cfg.combat_enabled:
 		return false
-	var aggro: float = u.aggro_range(cfg)
+	# ★ 直接读 cfg 上的字段而不是走 u.aggro_range(cfg)：那是每单位每帧一次的方法调用
+	var aggro: float = cfg.aggro_range
 	if aggro <= 0.0:
 		return false
 
 	var best = null
 	var best_d := INF
-	for other in world.units:
-		if other == u or not other.alive:
-			continue
-		if FactionRes.same_side(other.faction, u.faction):
-			continue
-		# 距离减去目标体积：允许「半个身子进射程」的目标被发现
-		var d: float = u.pos.distance_to(other.pos) - cfg.unit_radius_of(other.kind)
-		if d <= aggro and d < best_d:
-			best_d = d
-			best = other
+	# ★★ 优先取「本帧批量算好的结果」：内核按阵营分组，只扫敌对那一组，
+	#    而原来的写法是每个待命单位扫一遍全部单位（O(n²)，1000 单位待命时 283 ms/帧）。
+	#    ⚠️ 只有 idx 有效、且结果确实是**本帧**的（frame_serial 对得上）才用它 ——
+	#      否则宁可退回下面的逐个扫描，也不要拿上一帧的结果去索敌。
+	#
+	# ⚠️ 这里刻意**直接读桥上的字段**而不是走 targets_ready()/target_at() 两个方法：
+	#    它们在「每帧每单位」的路径上，两次 GDScript 方法调用 ≈ 0.6 µs/单位
+	#    （1000 单位就是每帧 0.6 ms）。同一个 logic 模块内部读自己的字段，值这个钱。
+	var crowd: CrowdBridgeRes = world.crowd
+	var used_kernel := false
+	if idx >= 0 and crowd != null and crowd._targets_ready \
+			and crowd._targets_serial == world.frame_serial:
+		used_kernel = true
+		if idx < crowd._target_idx.size():
+			var j: int = crowd._target_idx[idx]
+			if j >= 0 and j < world.units.size():
+				best = world.units[j]
+			# ⚠️ j < 0 时**不要**退回逐个扫描：内核已经替这一帧判断过「射程内没有敌人」了。
+			#    （退回扫描只是白花 O(n)；真正的目标缺失是内核的输入/映射出错，
+			#      那种问题必须在内核一侧修，不能靠这里兜。）
+
+	if not used_kernel:
+		for other in world.units:
+			if other == u or not other.alive:
+				continue
+			if FactionRes.same_side(other.faction, u.faction):
+				continue
+			# 距离减去目标体积：允许「半个身子进射程」的目标被发现
+			var d: float = u.pos.distance_to(other.pos) - cfg.unit_radius_of(other.kind)
+			if d <= aggro and d < best_d:
+				best_d = d
+				best = other
+
 	if best != null:
 		u.target = best
 		u.anchor = u.pos                  # 从这里开始算「追出去多远」
-		u.repath_timer = 0.0
+		u.reset_repath()
 		world.push_event({"type": "alert", "unit": u, "target": best})
 		return true
 
@@ -125,13 +222,28 @@ static func acquire_target(world, cfg: ConfigRes, u) -> bool:
 	return true
 
 
-## 警戒半径内最近的敌方建筑（距离按「到本体表面」算，与单位同口径）
-static func nearest_enemy_building(world, cfg: ConfigRes, u, aggro: float) -> Variant:
+## 警戒半径内最近的敌方建筑（距离按「到本体表面」算，与单位同口径）。
+##
+## ★★ 两类别索敌都跳过：
+##   · **无主建筑**（owner == ""，例如区划中心）：它不是「敌方」，而是中立障碍 ——
+##     不跳过的后果实测过：将军会自动跑去「拆」区划中心，指着它一路走（因为
+##     拆不动、也打不掉，就永远停在那儿），玩家的移动命令看起来像失灵。
+##   · **无敌建筑**（`is_invulnerable()`，同上那类）：打不掉的东西不该进目标列表。
+static func nearest_enemy_building(world, cfg: ConfigRes, u: UnitRes, aggro: float) -> Variant:
 	var best = null
 	var best_d := INF
+	# ★ 先用**格差**把远处的建筑挡掉：警戒半径只有几格，格差超过它就不可能命中。
+	#   下面那几个判定（String(owner) / is_invulnerable() / center() / body_half()）
+	#   每一个都比两次整数比较贵得多，而这是「每单位每建筑」都要跑一遍的循环
+	#   （1000 单位待命时就是每帧几万次）。
+	var reach := int(ceilf(aggro)) + 2
 	for b in world.building_list:
 		if not b.alive:
 			continue
+		if absi(b.tx - u.tx) > reach or absi(b.ty - u.ty) > reach:
+			continue
+		if String(b.owner) == "" or b.is_invulnerable():
+			continue                      # 中立 / 无敌：不是可打的目标
 		if FactionRes.same_side(b.owner, u.faction):
 			continue
 		var d: float = u.pos.distance_to(b.center()) - b.body_half(cfg)
@@ -141,8 +253,34 @@ static func nearest_enemy_building(world, cfg: ConfigRes, u, aggro: float) -> Va
 	return best
 
 
+## 该不该为「走向 to_pos」重算一次路径？
+##
+## ★★ 这是行军攻击性能的关键。原来的条件是 `u.path.is_empty() or u.repath_timer <= 0.0`
+##    —— 也就是**每 repath_sec 秒无条件重算一次**。1000 个单位追击时那是每秒 3000+ 次
+##    完整寻路，而目标往往是**站着不动的**（墙、建筑、站定的单位），那些计算全是白费。
+##    实测实机行军攻击因此掉到 49 ms/帧（20 fps）；更糟的是帧一慢 dt 就变大、
+##    同一帧里 repath_timer 到期的单位成比例变多，形成正反馈。
+##
+## 现在两条路：
+##   - 路径是空的（还没走 / 走完了 / 走不到）：按 repath_sec 限流重试。
+##     ⚠️ 这一支必须保留周期限流：目标不可达时 move_to 会一直把 path 留空，
+##        没有限流就成了每帧一次 A*。
+##   - 已经有路径：只有**目标从上一次算路的位置挪出 repath_min_move 格**才重算。
+##     目标不动 → 一次路走到底，零额外开销；目标在动 → 恰好是旧路开始失效的时候。
+static func needs_repath(u: UnitRes, cfg: ConfigRes, to_pos: Vector2) -> bool:
+	if u.repath_timer > 0.0:
+		return false
+	# 已经有路径，而目标没怎么动 → 旧路还是对的，不用重算。
+	if not u.path.is_empty() and u.last_repath_to.distance_to(to_pos) <= cfg.repath_min_move:
+		return false
+	u.repath_timer = cfg.repath_sec
+	u.last_repath_to = to_pos
+	repath_calls += 1
+	return true
+
+
 ## 有目标时每帧的决策：够得着 → 站住开火；够不着 → 先移动靠近（追击）；追太远 → 放弃
-static func update_combat(world, cfg: ConfigRes, u) -> void:
+static func update_combat(world, cfg: ConfigRes, u: UnitRes) -> void:
 	var t = u.target
 	if t == null or not t.alive or t == u:
 		# ⚠️ 用 drop_engagement 而不是 clear_target：行军攻击要能在打完一个之后继续走。
@@ -169,15 +307,19 @@ static func update_combat(world, cfg: ConfigRes, u) -> void:
 		u.drop_engagement()
 		return
 
-	# 先移动靠近。目标一直在动，所以隔 repath_sec 重新寻路一次，而不是每帧重算
-	if u.path.is_empty() or u.repath_timer <= 0.0:
-		u.repath_timer = cfg.repath_sec
-		u.move_to(world, cfg, t.pos)
+	# 先移动靠近。目标一直在动，但**只有它真挪了地方**才重算路径（见 needs_repath）
+	if needs_repath(u, cfg, t.pos):
+		# ★★ settle = false：追击不需要「落点空位」。
+		#    落点就是敌人脚下那格，必然被判为拥挤，于是每次寻路都白跑一遍
+		#    _find_arrival_slot（全图可达掩码 + 十几个候选点各扫 1000 个单位 ≈ 226 µs）。
+		#    1000 个单位同帧首次锁定目标 → 一帧几百次 → **200+ ms 单帧卡顿**。
+		#    另外走 chase_to 而不是 move_to：近距离追击用不着距离场与拉直（见它的注释）。
+		u.chase_to(world, cfg, t.pos)
 
 
 ## 让单位朝向某个点（八方向之后朝向是完整向量，所以要单独一个函数）。
 ## 目标与自己在同一位置时保持原朝向，避免把 facing 归一化成零向量。
-static func face_toward(u, to_pos: Vector2) -> void:
+static func face_toward(u: UnitRes, to_pos: Vector2) -> void:
 	var d: Vector2 = to_pos - u.pos
 	if d.length() < 1e-6:
 		return
@@ -186,7 +328,7 @@ static func face_toward(u, to_pos: Vector2) -> void:
 
 
 ## 开火：单体伤害 + 冷却
-static func attack_unit(world, cfg: ConfigRes, u, t) -> void:
+static func attack_unit(world, cfg: ConfigRes, u: UnitRes, t: UnitRes) -> void:
 	u.attack_cd = maxf(0.05, u.combat_cooldown(cfg))
 	u.attack_flash = 1.0
 	u.last_target = t
@@ -196,20 +338,20 @@ static func attack_unit(world, cfg: ConfigRes, u, t) -> void:
 
 ## 锁定一个建筑开始拆它（敌人 AI 用它拆挡路的城墙）。
 ## 这里只负责「记下来」，靠近与开火交给 update_building_combat()。
-static func set_building_target(u, b) -> bool:
+static func set_building_target(u: UnitRes, b) -> bool:
 	if b == null or not b.alive:
 		return false
 	u.target_building = b
 	u.target = null
 	u.anchor = null
-	u.repath_timer = 0.0
+	u.reset_repath()
 	return true
 
 
 ## 拆建筑：**先移动靠近，进入攻击距离后再打**（和打单位一样的手感）。
 ## 建筑的本体是**居中、略小于一格**的，所以「够得着」要按本体半边长来算 ——
 ## 城墙 body_half = 0.5（与从前逐位一致），大本营 / 箭塔 0.3。
-static func update_building_combat(world, cfg: ConfigRes, u) -> void:
+static func update_building_combat(world, cfg: ConfigRes, u: UnitRes) -> void:
 	var b = u.target_building
 	if b == null or not b.alive:
 		# 拆完了（或目标没了）：玩家点名的那个命令就算完成了；
@@ -231,14 +373,15 @@ static func update_building_combat(world, cfg: ConfigRes, u) -> void:
 		return
 
 	# 够不着：朝建筑走（move_to 会发现该格不可通行 → 自动改走到贴墙的可达格）
-	if u.path.is_empty() or u.repath_timer <= 0.0:
-		u.repath_timer = cfg.repath_sec
+	# ★ 建筑永远不动，所以 needs_repath 里的「目标没挪地方」这条会一直成立 ——
+	#   第一次算完就不再重算，只有路径走空（走不到）时按周期重试。
+	if needs_repath(u, cfg, c):
 		u.move_to(world, cfg, c)
 
 
 ## 拆建筑的一击：墙体不反击，所以只需要冷却 + 伤害；
 ## 打光后**立刻记下事件**（由 world.tick() 末尾统一收尸 —— 逻辑层不在遍历中改集合）
-static func attack_building(world, cfg: ConfigRes, u, b) -> void:
+static func attack_building(world, cfg: ConfigRes, u: UnitRes, b) -> void:
 	if b == null or not b.alive:
 		u.target_building = null          # 已经塌了就别再对着空气拆
 		return
@@ -268,7 +411,8 @@ static func update_towers(world, cfg: ConfigRes, dt: float) -> void:
 			b.cooldown_left = maxf(0.0, b.cooldown_left - dt)
 
 		var range_tiles: float = b.tower_range(cfg)
-		var pad: float = cfg.unit_radius_of("enemy")   # 允许打到「半个身子进射程」的敌人
+		# 允许打到「半个身子进射程」的敌人：用**被瞄准的具体单位**的半径，
+		# 而不是写死 enemy —— 亲兵比将领小，写死会让射程口径不一致。
 		var target = null
 		var best_d := INF
 		for u in world.units:
@@ -277,7 +421,7 @@ static func update_towers(world, cfg: ConfigRes, dt: float) -> void:
 			if FactionRes.same_side(u.faction, b.owner):
 				continue
 			var d: float = b.center().distance_to(u.pos)
-			if d <= range_tiles + pad and d < best_d:
+			if d <= range_tiles + cfg.unit_radius_of(u.kind) and d < best_d:
 				best_d = d
 				target = u
 		b.last_target = target

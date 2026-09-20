@@ -20,7 +20,7 @@ extends RefCounted
 const GridRes = preload("res://logic/grid.gd")
 
 const DEFAULT_CONFIG_PATH := "res://data/config.json"
-const DEFAULT_MAP_PATH := "res://data/map_01.json"
+const DEFAULT_MAP_PATH := "res://data/test_map.json"
 
 ## 缓存 JSON 的字典形式（阵营 id → 字典 / 颜色名 → 字典 这类查找用得着）
 var data: Dictionary = {}
@@ -38,11 +38,65 @@ var unit_forest_mult: float = 0.5
 var unit_hp_max: float = 200.0
 var unit_radius_factor: float = 0.1
 
+## ---- 碰撞（★ 每帧每单位都会读；原先走 num() 每次都要 split(".") + 逐层下潜）----
+var unit_collision_enabled: bool = true
+var unit_collision_backend: String = "csharp"
+var unit_collision_radius: float = 0.18
+var unit_overlap_allowance: float = 0.7
+var unit_collision_iterations: int = 3
+var unit_collision_slack: float = 0.01
+var unit_push_moving_weight: float = 1.0
+var unit_push_idle_weight: float = 0.2
+
+## ---- 到达 / 认账（同样在每单位每帧的路径上）----
+var unit_jam_giveup_sec: float = 0.6
+var unit_settle_return_dist: float = 0.22
+var unit_settle_max_attempts: int = 3
+
+## ---- 队形落点（见 config.json 的 _formation_comment）----
+var formation_min_units: int = 4
+var formation_spacing_scale: float = 1.15
+var formation_aspect: float = 1.6
+var formation_max_slots: int = 400
+
+## ---- 寻路（A* 每个节点 / 每条线段都在读）----
+var path_diagonal: bool = true
+var path_diagonal_corner_cut: bool = false
+var path_building_penalty: float = 12.0
+var path_corner_round_enabled: bool = true
+var path_corner_round_cutting: float = 0.35
+var path_corner_round_min_angle_deg: float = 20.0
+
+## ---- 亲兵数值（unit_*_of(kind) 每帧每单位都会查一次）----
+var sub_hp_max: float = 80.0
+var sub_speed: float = 2.4
+var sub_damage: float = 14.0
+var sub_range: float = 1.0
+var sub_cooldown_sec: float = 1.1
+var sub_radius_factor: float = 0.065
+
+## 战斗数值表：**载入时建好、之后只读**（原先每次 unit_combat_of() 都新建一个字典）
+var _combat_general: Dictionary = {}
+var _combat_enemy: Dictionary = {}
+var _combat_subordinate: Dictionary = {}
+
 var combat_enabled: bool = true
 var aggro_range: float = 4.0
 var leash_factor: float = 1.8
 var repath_sec: float = 0.3
+## 追击时，目标从上一次算路的位置挪出这么多格，才值得重算一次路径。
+## ★ 见 unit.gd `last_repath_to` 的说明：只按周期无条件重算会让 1000 单位追击
+##   掉到 20 fps。0 = 退回旧的「按周期无条件重算」。
+var repath_min_move: float = 0.5
+## 追击目标在这个距离内（格）且直线可切时，直接走直线（见 unit.chase_to）。
+## ★ 为什么要有这个开关：每个不同的敌人所在格都要一张新距离场（全图 Dijkstra），
+##   几百个单位同帧锁定目标时就是几十次 Dijkstra —— 实测单帧 21.5 ms。
+var chase_direct_range: float = 8.0
 var flash_sec: float = 0.22
+## 受击闪光的除数（= max(0.01, flash_sec)）。
+## ★ 预计算：闪光衰减那句在**每单位每帧**的路径上，而 `maxf(0.01, cfg.flash_sec)`
+##   每次都要算一遍常数。
+var flash_sec_safe: float = 0.22
 var building_damage: float = 40.0
 var general_damage: float = 26.0
 var general_range: float = 1.0
@@ -64,6 +118,9 @@ var start_gold: float = 0.0
 
 var respawn_sec: float = 0.0
 var destructible_base: bool = false
+
+## 一帧最多按多少秒推进逻辑（防止「帧慢→dt 大→活更多→更慢」的死亡螺旋）
+var sim_max_dt: float = 0.05
 
 var enemy_speed: float = 1.8
 var enemy_hp: float = 60.0
@@ -111,11 +168,46 @@ func _cache_scalars() -> void:
 	unit_hp_max = num("unit.hp_max", 200.0)
 	unit_radius_factor = num("unit.radius_factor", 0.1)
 
+	unit_collision_enabled = bool_val("unit.collision_enabled", true)
+	unit_collision_backend = str_val("unit.collision_backend", "csharp")
+	unit_collision_radius = num("unit.collision_radius", 0.18)
+	unit_overlap_allowance = num("unit.overlap_allowance", 0.7)
+	unit_collision_iterations = int_val("unit.collision_iterations", 3)
+	unit_collision_slack = num("unit.collision_slack", 0.01)
+	unit_push_moving_weight = num("unit.push_moving_weight", 1.0)
+	unit_push_idle_weight = num("unit.push_idle_weight", 0.2)
+
+	unit_jam_giveup_sec = num("unit.jam_giveup_sec", 0.6)
+	unit_settle_return_dist = num("unit.settle_return_dist", 0.22)
+	unit_settle_max_attempts = int_val("unit.settle_max_attempts", 3)
+
+	formation_min_units = int_val("unit.formation.min_units", 4)
+	formation_spacing_scale = num("unit.formation.spacing_scale", 1.15)
+	formation_aspect = maxf(1.0, num("unit.formation.aspect", 1.6))
+	formation_max_slots = int_val("unit.formation.max_slots", 400)
+
+	path_diagonal = bool_val("path.diagonal", true)
+	path_diagonal_corner_cut = bool_val("path.diagonal_corner_cut", false)
+	path_building_penalty = num("path.building_penalty", 12.0)
+	path_corner_round_enabled = bool_val("path.corner_round_enabled", true)
+	path_corner_round_cutting = num("path.corner_round_cutting", 0.35)
+	path_corner_round_min_angle_deg = num("path.corner_round_min_angle_deg", 20.0)
+
+	sub_hp_max = num("unit.subordinate.hp_max", 80.0)
+	sub_speed = num("unit.subordinate.speed", unit_speed)
+	sub_damage = num("unit.subordinate.damage", 14.0)
+	sub_range = num("unit.subordinate.range", 1.0)
+	sub_cooldown_sec = num("unit.subordinate.cooldown_sec", 1.1)
+	sub_radius_factor = num("unit.subordinate.radius_factor", unit_radius_factor)
+
 	combat_enabled = bool_val("combat.enabled", true)
 	aggro_range = num("combat.aggro_range", 4.0)
 	leash_factor = num("combat.leash_factor", 1.8)
 	repath_sec = num("combat.repath_sec", 0.3)
+	repath_min_move = num("combat.repath_min_move", 0.5)
+	chase_direct_range = num("combat.chase_direct_range", 8.0)
 	flash_sec = num("combat.flash_sec", 0.22)
+	flash_sec_safe = maxf(0.01, flash_sec)
 	building_damage = num("combat.building_damage", 40.0)
 	general_damage = num("combat.general.damage", 26.0)
 	general_range = num("combat.general.range", 1.0)
@@ -137,9 +229,16 @@ func _cache_scalars() -> void:
 
 	respawn_sec = num("pvp.respawn_sec", 8.0)
 	destructible_base = bool_val("pvp.destructible_base", false)
+	sim_max_dt = num("sim.max_dt", 0.05)
 
 	enemy_speed = num("debug.enemy_speed", 1.8)
 	enemy_hp = num("debug.enemy_hp", 60.0)
+
+	# 战斗数值表：建一次、之后只读。
+	# ⚠️ 调用方**不要改**返回的字典（它是共享的）—— 要改数值就改 JSON 后重新 load。
+	_combat_general = {"damage": general_damage, "range": general_range, "cooldown_sec": general_cooldown}
+	_combat_enemy = {"damage": enemy_damage, "range": enemy_range, "cooldown_sec": enemy_cooldown}
+	_combat_subordinate = {"damage": sub_damage, "range": sub_range, "cooldown_sec": sub_cooldown_sec}
 
 
 # ------------------------------------------------------------------
@@ -264,6 +363,24 @@ func faction_line_color(faction: String, alpha: float) -> Color:
 ##   否则射程会莫名多出半格。渲染时才乘 cell_px 画圆。
 ##   ⚠️ 不要写成 unit_radius_factor * cell_px —— 那是像素，混进逻辑判定就会错位
 ##   （HTML 版的同类事故见 docs/pitfalls.md 3.1）。
+## 建筑本体边长比例（config 的 `building.<type>.body_scale`）+ 按类型的缓存。
+##
+## ★ 为什么要有这个缓存：索敌（nearest_enemy_building）会**每单位每建筑**调一次
+##   `body_half()` → `body_scale()`，而原来的写法是
+##   `cfg.num("building.%s.body_scale" % type, 1.0)` ——
+##   每次一次字符串格式化 + split(".") + 逐层下潜。1000 个单位待命时这一项就是每帧几万次。
+var _body_scale_cache: Dictionary = {}
+
+
+func building_body_scale(type: String) -> float:
+	var cached: Variant = _body_scale_cache.get(type, null)
+	if cached != null:
+		return cached
+	var v: float = clampf(num("building.%s.body_scale" % type, 1.0), 0.05, 1.0)
+	_body_scale_cache[type] = v
+	return v
+
+
 func unit_radius() -> float:
 	return unit_radius_factor
 
@@ -276,8 +393,8 @@ func unit_radius() -> float:
 ##   体积要的是「占多大地方」，混在一起会让小单位挤不过窄口。
 func unit_radius_of(kind: String) -> float:
 	if kind == KIND_SUBORDINATE:
-		return num("unit.subordinate.radius_factor", unit_radius_factor)
-	return unit_radius()
+		return sub_radius_factor
+	return unit_radius_factor
 
 
 ## 单位种类 id（与 logic/unit.gd 的 const 保持一致）。
@@ -292,7 +409,7 @@ func unit_hp_of(kind: String) -> float:
 		"enemy":
 			return enemy_hp
 		KIND_SUBORDINATE:
-			return num("unit.subordinate.hp_max", 80.0)
+			return sub_hp_max
 	return unit_hp_max
 
 
@@ -302,22 +419,20 @@ func unit_speed_of(kind: String) -> float:
 		"enemy":
 			return enemy_speed
 		KIND_SUBORDINATE:
-			return num("unit.subordinate.speed", unit_speed)
+			return sub_speed
 	return unit_speed
 
 
-## 某个单位种类的攻击数值 {damage, range, cooldown_sec}
+## 某个单位种类的攻击数值 {damage, range, cooldown_sec}。
+## ★ 返回的是**共享的只读字典**（载入时建好），调用方不许改它 ——
+##   原先这里每次都新建一个字典，而它每帧每单位都要被读一次。
 func unit_combat_of(kind: String) -> Dictionary:
 	match kind:
 		"enemy":
-			return {"damage": enemy_damage, "range": enemy_range, "cooldown_sec": enemy_cooldown}
+			return _combat_enemy
 		KIND_SUBORDINATE:
-			return {
-				"damage": num("unit.subordinate.damage", 14.0),
-				"range": num("unit.subordinate.range", 1.0),
-				"cooldown_sec": num("unit.subordinate.cooldown_sec", 1.1),
-			}
-	return {"damage": general_damage, "range": general_range, "cooldown_sec": general_cooldown}
+			return _combat_subordinate
+	return _combat_general
 
 
 ## 某个单位种类的显示名

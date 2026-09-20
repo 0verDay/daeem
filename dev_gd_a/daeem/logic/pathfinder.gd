@@ -64,7 +64,7 @@ static func _building_penalty(buildings, cfg: ConfigRes, x: int, y: int, faction
 		return 0.0
 	if not b.body_blocks(faction):
 		return 0.0
-	return maxf(0.0, cfg.num("path.building_penalty", 12.0))
+	return maxf(0.0, cfg.path_building_penalty)
 
 
 ## 斜向一步是否**允许**（反对角穿角）。
@@ -85,7 +85,7 @@ static func _building_penalty(buildings, cfg: ConfigRes, x: int, y: int, faction
 static func diagonal_step_allowed(map, buildings, cfg: ConfigRes, x: int, y: int, d: Vector2i, faction: String) -> bool:
 	if not GridRes.is_diagonal(d):
 		return true
-	if cfg.bool_val("path.diagonal_corner_cut", false):
+	if cfg.path_diagonal_corner_cut:
 		return true
 	if not passable(map, buildings, cfg, x + d.x, y, faction):
 		return _squeeze_through_gap(map, buildings, cfg, x, y, d, faction)
@@ -117,7 +117,7 @@ static func _squeeze_through_gap(map, buildings, cfg: ConfigRes, x: int, y: int,
 	var pa: Vector2 = ba.closest_point_on_body(cfg, corner)
 	var pb: Vector2 = bb.closest_point_on_body(cfg, corner)
 	var width: float = pa.distance_to(pb)
-	var need: float = maxf(0.0, cfg.num("unit.collision_radius", 0.18)) * 2.0
+	var need: float = maxf(0.0, cfg.unit_collision_radius) * 2.0
 	return width >= need
 
 
@@ -163,11 +163,15 @@ static func find_path(map, buildings, cfg: ConfigRes, from: Vector2i, to: Vector
 	var closed: Dictionary = {}
 	var open: Array = []
 
-	# octile 启发式：与「直走 1 / 斜走 √2」同一套口径，所以是可采纳的
-	var h := func(x: int, y: int) -> float:
-		return GridRes.octile_distance(x - to.x, y - to.y)
-
-	open.append({"i": start_idx, "x": from.x, "y": from.y, "g": 0.0, "f": h.call(from.x, from.y)})
+	# octile 启发式：与「直走 1 / 斜走 √2」同一套口径，所以是可采纳的。
+	#
+	# ★ 直接调静态函数，不走闭包：`Callable.call()` 是间接调用，而它**每个邻居都要算一次**。
+	#   实测 A* 单次 19 ms 里有一部分就是这个（顺带一提：群编现在走的是 C# 距离场，
+	#   这条 A* 只服务单单位 / 内核不可用时的回退，见 unit.gd 的 _tile_path）。
+	open.append({
+		"i": start_idx, "x": from.x, "y": from.y, "g": 0.0,
+		"f": GridRes.octile_distance(from.x - to.x, from.y - to.y),
+	})
 
 	while open.size() > 0:
 		# 线性取最小。地图只有 24×16=384 格，线性扫描完全够用，
@@ -210,11 +214,14 @@ static func find_path(map, buildings, cfg: ConfigRes, from: Vector2i, to: Vector
 			# 代价 = 地形代价 × 这一步的距离权重（直走 1 / 斜走 √2）
 			# ★ 再给「本体挡自己」的建筑格加一笔惩罚：建筑格是允许走的（本体只挡一部分），
 			#   但不该被当成捷径 —— 加了它，敌人会优先绕开玩家的箭塔，绕不开才贴本体滑过去。
-			var ng: float = float(cur["g"]) + (_terrain_cost(map, nx, ny) + _building_penalty(buildings, cfg, nx, ny, faction)) * GridRes.step_length(d)
+			var ng: float = float(cur["g"]) + (map.terrain_cost(nx, ny) + _building_penalty(buildings, cfg, nx, ny, faction)) * GridRes.step_length(d)
 			if (not g_score.has(ni)) or ng < float(g_score[ni]) - 1e-9:
 				g_score[ni] = ng
 				came_from[ni] = int(cur["i"])
-				open.append({"i": ni, "x": nx, "y": ny, "g": ng, "f": ng + h.call(nx, ny)})
+				open.append({
+					"i": ni, "x": nx, "y": ny, "g": ng,
+					"f": ng + GridRes.octile_distance(nx - to.x, ny - to.y),
+				})
 
 	return null
 
@@ -226,7 +233,21 @@ static func find_path(map, buildings, cfg: ConfigRes, from: Vector2i, to: Vector
 ## ⚠️ 这里的邻居生成与 A* **必须用同一套方向 + 同一条对角守卫**，
 ##    否则会出现「BFS 说走得到、A* 却找不到路」的不一致
 ##    （表现就是单位站在原地不动 —— docs/pitfalls.md 3.3 那个症状的另一条来路）。
-static func reachable_tiles(map, buildings, cfg: ConfigRes, from: Vector2i, faction: String) -> Dictionary:
+## @return Dictionary 或 PackedByteArray（**取决于走哪条后端**，用下方的 in_region() 判定）
+##
+## ★★ 现在优先走 C# 内核的 BFS（`crowd` 参数）。为什么必须下沉：
+##    GDScript 版全图 BFS 在 100×100 图上实测 **112 ms/次** —— 而它在这些地方被反复调用：
+##      · enemy_ai：每个「走不到目标」的敌人**每帧**一次
+##      · unit.move_to：点到山/建筑时每个单位一次
+##      · find_blocking_wall_toward / _find_arrival_slot
+##    「一群敌人被城墙拦住」就会变成每帧几百毫秒到几十秒的冻结（不是慢，是卡死）。
+##    内核版是同一套通行规则的 C# 实现，**有专门的回归测试逐格比对两者**
+##    （tests/test_crowd_path.gd 的 _test_reachable_matches）。
+static func reachable_tiles(map, buildings, cfg: ConfigRes, from: Vector2i, faction: String, crowd = null) -> Variant:
+	if crowd != null and crowd.kernel != null:
+		var mask: PackedByteArray = crowd.reachable_mask_here(cfg, from, faction)
+		if not mask.is_empty():
+			return mask
 	var seen: Dictionary = {}
 	if not map.terrain.has(from.x, from.y):
 		return seen
@@ -254,6 +275,14 @@ static func reachable_tiles(map, buildings, cfg: ConfigRes, from: Vector2i, fact
 	return seen
 
 
+## 可达性区域的成员判定 —— 屏蔽「Dictionary（GDScript BFS）/ PackedByteArray（内核 BFS）」的差异。
+static func in_region(region, idx: int) -> bool:
+	if typeof(region) == TYPE_DICTIONARY:
+		return (region as Dictionary).has(idx)
+	var m: PackedByteArray = region
+	return idx >= 0 and idx < m.size() and m[idx] != 0
+
+
 ## 找到一个「离目标最近、**而且从 from 真的走得到**」的格子（BFS 扩散）。
 ## 用途：右键点到城墙/大本营/山上时，走到它旁边。
 ##
@@ -263,10 +292,10 @@ static func reachable_tiles(map, buildings, cfg: ConfigRes, from: Vector2i, fact
 ##    （见 docs/pitfalls.md 3.3）。
 ##
 ## @return Vector2i 或 null
-static func nearest_reachable(map, buildings, cfg: ConfigRes, from: Vector2i, target: Vector2i, faction: String, max_radius: int = 12) -> Variant:
+static func nearest_reachable(map, buildings, cfg: ConfigRes, from: Vector2i, target: Vector2i, faction: String, max_radius: int = 12, crowd = null) -> Variant:
 	if passable(map, buildings, cfg, target.x, target.y, faction):
 		return target
-	var region := reachable_tiles(map, buildings, cfg, from, faction)
+	var region = reachable_tiles(map, buildings, cfg, from, faction, crowd)
 	var seen: Dictionary = {map.terrain.idx(target.x, target.y): true}
 	var frontier: Array[Vector2i] = [target]
 	for _r in max_radius:
@@ -283,7 +312,7 @@ static func nearest_reachable(map, buildings, cfg: ConfigRes, from: Vector2i, ta
 					continue
 				seen[ni] = true
 				if passable(map, buildings, cfg, nx, ny, faction):
-					if region.has(ni):
+					if in_region(region, ni):
 						return Vector2i(nx, ny)   # ★ 只认自己走得到的
 					continue                       # 墙那一边的格子：当不了终点
 				next.append(Vector2i(nx, ny))      # 继续穿过障碍往外找
@@ -301,15 +330,24 @@ static func nearest_reachable(map, buildings, cfg: ConfigRes, from: Vector2i, ta
 ##
 ## 注意：只检查线段**进入**的格子，**起点所在格不检查** —— 单位可能正站在之后被
 ##       建筑占住的格子上（例如脚下被盖了箭塔），此时仍必须允许它走出来。
-static func segment_clear(map, buildings, cfg: ConfigRes, a: Vector2, b: Vector2, faction: String) -> bool:
+static func segment_clear(map, buildings, cfg: ConfigRes, a: Vector2, b: Vector2, faction: String, crowd = null) -> bool:
+	# ★★ 优先走 C# 内核：`smooth_path` 给**每个单位**都要跑一次 DDA，而 GDScript 版
+	#    每格要三层函数调用（约 3.7 µs/格）——一条 57 格的直线 0.21 ms，
+	#    1000 个单位群编就是 210 ms（命令帧的最大单项）。
+	#    内核版是同一套规则的 C# 实现，有回归测试盯着（tests/test_pathfinder_cs）。
+	if crowd != null and crowd.kernel != null:
+		var r = crowd.segment_clear_here(cfg, a, b, faction)
+		if r != null:
+			return r
 	# 「这一格能不能切」= 格级可通行 **且** 这条线没有切进挡自己的建筑本体。
 	# 后半条是 UI 改版补的：大本营 / 箭塔现在整格放行，只靠 passable() 会让
 	# 拉直后的直线从本体正中穿过去（单位再撞在本体上，看着像卡住）。
-	var pad: float = maxf(0.0, cfg.num("unit.collision_radius", 0.18))
-	var blocked := func(cx: int, cy: int) -> bool:
-		if not passable(map, buildings, cfg, cx, cy, faction):
-			return true
-		return _tile_body_blocks_segment(buildings, cfg, cx, cy, a, b, faction, pad)
+	#
+	# ★★ 为什么不用闭包（原来是 `var blocked := func(cx, cy): ...`）：
+	#    DDA 每经过一格就要问一次，而 `Callable.call()` 是**间接调用**，比静态函数调用贵得多。
+	#    实测 `smooth_path` 0.23 ms/次 —— 一条 60 格的直线就是 60 次闭包调用。
+	#    1000 个单位群编时这一项就是 200+ ms。改成静态函数之后见 bench 记录。
+	var pad: float = maxf(0.0, cfg.unit_collision_radius)
 
 	var x0: float = a.x
 	var y0: float = a.y
@@ -337,26 +375,36 @@ static func segment_clear(map, buildings, cfg: ConfigRes, a: Vector2, b: Vector2
 		if t_max_x < t_max_y:
 			tx += step_x
 			t_max_x += t_delta_x
-			if blocked.call(tx, ty):
+			if _seg_blocked(map, buildings, cfg, tx, ty, a, b, faction, pad):
 				return false
 		elif t_max_y < t_max_x:
 			ty += step_y
 			t_max_y += t_delta_y
-			if blocked.call(tx, ty):
+			if _seg_blocked(map, buildings, cfg, tx, ty, a, b, faction, pad):
 				return false
 		else:
 			# 正好穿过格点：对角两侧都得让得开，才允许走这条直线
-			if blocked.call(tx + step_x, ty):
+			if _seg_blocked(map, buildings, cfg, tx + step_x, ty, a, b, faction, pad):
 				return false
-			if blocked.call(tx, ty + step_y):
+			if _seg_blocked(map, buildings, cfg, tx, ty + step_y, a, b, faction, pad):
 				return false
 			tx += step_x
 			ty += step_y
 			t_max_x += t_delta_x
 			t_max_y += t_delta_y
-			if blocked.call(tx, ty):
+			if _seg_blocked(map, buildings, cfg, tx, ty, a, b, faction, pad):
 				return false
 	return false
+
+
+## 「这一格切不切得动」——`segment_clear` 的 DDA 每经过一格就问它一次。
+## ⚠️ 必须是**静态函数**而不是闭包：`Callable.call()` 的间接调用开销是这里的全部成本
+##    （见 segment_clear 里的说明）。
+static func _seg_blocked(map, buildings, cfg: ConfigRes, x: int, y: int,
+		a: Vector2, b: Vector2, faction: String, pad: float) -> bool:
+	if not passable(map, buildings, cfg, x, y, faction):
+		return true
+	return _tile_body_blocks_segment(buildings, cfg, x, y, a, b, faction, pad)
 
 
 ## 线段是否切进这一格里「挡这个阵营」的建筑本体
@@ -376,14 +424,14 @@ static func _tile_body_blocks_segment(buildings, cfg: ConfigRes, x: int, y: int,
 ## 因为每一段都用 segment_clear() 验证过，所以拉直不会让单位穿墙或翻山。
 ##
 ## 输入与输出都是**格**坐标（不是像素）；输出长度 ≤ 输入长度，首尾点不变。
-static func smooth_path(map, buildings, cfg: ConfigRes, points: Array[Vector2], faction: String) -> Array[Vector2]:
+static func smooth_path(map, buildings, cfg: ConfigRes, points: Array[Vector2], faction: String, crowd = null) -> Array[Vector2]:
 	if points.size() <= 2:
 		return points.duplicate()
 	var out: Array[Vector2] = [points[0]]
 	var i := 0
 	while i < points.size() - 1:
 		var j := points.size() - 1
-		while j > i + 1 and not segment_clear(map, buildings, cfg, points[i], points[j], faction):
+		while j > i + 1 and not segment_clear(map, buildings, cfg, points[i], points[j], faction, crowd):
 			j -= 1
 		out.append(points[j])
 		i = j
@@ -408,14 +456,14 @@ static func smooth_path(map, buildings, cfg: ConfigRes, points: Array[Vector2], 
 ##   不通过就**放弃这个拐角**（宁可生硬，不可穿墙）。
 ##
 ## 输入输出都是**格**坐标。首点不变；末点一定是原来那个末点（玩家点击的位置）。
-static func round_corners(map, buildings, cfg: ConfigRes, points: Array[Vector2], faction: String) -> Array[Vector2]:
-	if not cfg.bool_val("path.corner_round_enabled", true):
+static func round_corners(map, buildings, cfg: ConfigRes, points: Array[Vector2], faction: String, crowd = null) -> Array[Vector2]:
+	if not cfg.path_corner_round_enabled:
 		return points
 	if points.size() <= 2:
 		return points
 
-	var cutting: float = cfg.num("path.corner_round_cutting", 0.35)
-	var min_angle: float = deg_to_rad(cfg.num("path.corner_round_min_angle_deg", 20.0))
+	var cutting: float = cfg.path_corner_round_cutting
+	var min_angle: float = deg_to_rad(cfg.path_corner_round_min_angle_deg)
 	if cutting <= 0.0:
 		return points
 
@@ -447,7 +495,7 @@ static func round_corners(map, buildings, cfg: ConfigRes, points: Array[Vector2]
 
 		var p: Vector2 = v - dir_in * cut
 		var q: Vector2 = v + dir_out * cut
-		if not segment_clear(map, buildings, cfg, p, q, faction):
+		if not segment_clear(map, buildings, cfg, p, q, faction, crowd):
 			out.append(v)          # 兜底：宁可保留硬拐角
 			continue
 		# 二次贝塞尔：B(t) = (1-t)²P + 2(1-t)t·V + t²Q
@@ -495,7 +543,7 @@ static func closest_point_on_segment(p: Vector2, a: Vector2, b: Vector2) -> Vect
 ##   ⚠️ 一定要连**落点所在的格**一起返回：A* 的终点必须是可通行格，
 ##      而贴边落点往往就在（不可通行的）目标格边缘上，所以寻路终点得改成相邻那一格。
 ##      第一版只返回了一个点，于是调用方拿目标格去寻路 → 直接失败（连山都点不动了）。
-static func nearest_reachable_point(map, buildings, cfg: ConfigRes, from: Vector2i, tile: Vector2i, click: Vector2, faction: String, samples: int = 32) -> Variant:
+static func nearest_reachable_point(map, buildings, cfg: ConfigRes, from: Vector2i, tile: Vector2i, click: Vector2, faction: String, samples: int = 32, crowd = null) -> Variant:
 	if passable(map, buildings, cfg, tile.x, tile.y, faction):
 		# 这一格本来就能站，直接走点击的精确位置
 		return {"pt": click, "tile": tile}
@@ -509,8 +557,8 @@ static func nearest_reachable_point(map, buildings, cfg: ConfigRes, from: Vector
 	# 主力方案：走到「本格内离点击最近的那个点」。
 	# 为什么这样合法 —— 单位在格内自由走动，最后一步只是从相邻的可通行格跨进本格边缘，
 	# **不会站在障碍里**；而 find_path 只被要求到相邻那格，所以路线照样成立。
-	var region := reachable_tiles(map, buildings, cfg, from, faction)
-	if region.has(map.terrain.idx(tile.x, tile.y)):
+	var region = reachable_tiles(map, buildings, cfg, from, faction, crowd)
+	if in_region(region, map.terrain.idx(tile.x, tile.y)):
 		# 本格自己就是可通行格（只是不在可达区域内）：按格内可通行部分投影
 		var best: Variant = null
 		var best_tile := tile
@@ -536,7 +584,7 @@ static func nearest_reachable_point(map, buildings, cfg: ConfigRes, from: Vector
 		var c := Vector2i(tile.x + d.x, tile.y + d.y)
 		if not map.terrain.has(c.x, c.y):
 			continue
-		if not region.has(map.terrain.idx(c.x, c.y)):
+		if not in_region(region, map.terrain.idx(c.x, c.y)):
 			continue
 		if not passable(map, buildings, cfg, c.x, c.y, faction):
 			continue
@@ -579,8 +627,8 @@ static func nearest_reachable_point(map, buildings, cfg: ConfigRes, from: Vector
 ##    （见 docs/pitfalls.md 3.3）。
 ##
 ## @return Building 或 null
-static func find_blocking_wall_toward(map, buildings, cfg: ConfigRes, building_list: Array, from: Vector2i, to: Vector2i, faction: String, type: String = "wall") -> Variant:
-	var region := reachable_tiles(map, buildings, cfg, from, faction)
+static func find_blocking_wall_toward(map, buildings, cfg: ConfigRes, building_list: Array, from: Vector2i, to: Vector2i, faction: String, type: String = "wall", crowd = null) -> Variant:
+	var region = reachable_tiles(map, buildings, cfg, from, faction, crowd)
 	var best = null
 	var best_d := 0x7FFFFFFF
 	for b in building_list:
@@ -595,7 +643,7 @@ static func find_blocking_wall_toward(map, buildings, cfg: ConfigRes, building_l
 			var ny: int = b.ty + d.y
 			if not map.terrain.has(nx, ny):
 				continue
-			if region.has(map.terrain.idx(nx, ny)):
+			if in_region(region, map.terrain.idx(nx, ny)):
 				touches = true
 				break
 		if not touches:

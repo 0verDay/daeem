@@ -16,6 +16,7 @@ const PageTabsRes = preload("res://view/page_tabs.gd")
 const UnitRes = preload("res://logic/unit.gd")
 const FactionRes = preload("res://logic/faction.gd")
 const CommandRes = preload("res://logic/command_processor.gd")
+const GridRes = preload("res://logic/grid.gd")
 
 
 func _initialize() -> void:
@@ -412,6 +413,14 @@ func _test_right_click_orders(main) -> void:
 	ok(foe != null, "刷出一个敌人当靶子")
 	if foe == null:
 		return
+	# ★ 把「正好站在靶子这一格上」的自己人挪开：
+	#   `_pick_unit_at` 的语义是「鼠标底下最近的一个**自己人**」，靶子身上要是
+	#   正好叠着一个亲兵（出生站位撞上，实测 general-2-2 就在这一格），
+	#   它当然会被拾取到 —— 那条断言验的是「不会选中**敌人**」，不该被叠格搅乱。
+	for u in world.units:
+		if u != foe and u.tx == foe.tx and u.ty == foe.ty:
+			u.pos = GridRes.center_of(Vector2i(foe.tx, foe.ty + 3))
+			u.sync_tile(world.map)
 	var got: Array = []
 	var sink = func(cmd): got.append(cmd)
 	main.input_ctrl.command_issued.connect(sink)
@@ -464,6 +473,29 @@ func _test_right_click_orders(main) -> void:
 	ok(main.input_ctrl.handle_mouse_button(ev), "右键双击事件被处理")
 	eq(String(got[0].get("kind", "")), "attack_move",
 		"★ 走真实事件路径时，双击也翻译成行军攻击（不是靠手写计时器）")
+
+	# 5) ★ 右键点**区划中心** = 普通移动，不是攻击命令。
+	#    中心是无主的中立障碍：它的 owner 是空字符串，`same_side` 那条判据拦不住它，
+	#    少了 `is_invulnerable()` 这一道，右键点它会发出一条「攻击」命令 ——
+	#    单位走过去对着打不掉的柱子敲到天荒地老（敌人贴脸了都不还手）。
+	var center_tile := Vector2i(-1, -1)
+	for ty in world.map.rows:
+		for tx in world.map.cols:
+			if world.zone_center_zone_at(tx, ty) != null:
+				center_tile = Vector2i(tx, ty)
+				break
+		if center_tile.x >= 0:
+			break
+	ok(center_tile.x >= 0, "地图上找得到一个区划中心")
+	if center_tile.x >= 0:
+		got.clear()
+		main.input_ctrl.hover_tile = center_tile
+		main.input_ctrl.mouse_world = Vector2(center_tile.x + 0.5, center_tile.y + 0.5)
+		main.input_ctrl._on_right_click(false)
+		eq(got.size(), 1, "右键点中心也发出了命令")
+		eq(String(got[0].get("kind", "")), "move",
+			"★ 右键点区划中心 = 普通移动（它不可攻击，不是「敌方建筑」）")
+		ok(main.input_ctrl.move_marks.size() == 1, "走的是移动标记那条路")
 
 	main.input_ctrl.command_issued.disconnect(sink)
 

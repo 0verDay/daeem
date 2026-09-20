@@ -117,7 +117,7 @@ func require_config() -> RefCounted:
 	return cfg
 
 
-func require_map(cfg, path: String = "res://data/map_01.json") -> RefCounted:
+func require_map(cfg, path: String = "res://data/test_map.json") -> RefCounted:
 	var cls := script_at(PATH_MAP_DATA)
 	if cls == null:
 		return null

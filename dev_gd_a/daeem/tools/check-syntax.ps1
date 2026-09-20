@@ -34,7 +34,7 @@ $projectDir = Split-Path -Parent $PSScriptRoot
 
 if (-not $Godot) {
     if ($env:GODOT_EXE) { $Godot = $env:GODOT_EXE }
-    else { $Godot = 'C:\D\GodotEngine\Godot_v4.7.2-stable_win64_console.exe' }
+    else { $Godot = 'C:\D\GodotEngine\gd4.7.2mono\Godot_v4.7.2-stable_mono_win64_console.exe' }
 }
 if (-not (Test-Path $Godot)) {
     Write-Host "Godot executable not found: $Godot" -ForegroundColor Red

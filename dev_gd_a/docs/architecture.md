@@ -33,6 +33,22 @@
 2. `logic/` 里**不许读输入**（`Input`、`InputEvent`、鼠标位置）—— 输入只产出命令
 3. `view/` 里**不许改逻辑状态**（不写 `unit.hp = ...`）—— 只能读 + 发命令
 4. 所有可调数值来自 `config.json`，代码里不写字面量
+5. **C# 内核（`logic/crowd/*.cs`）与 `logic/` 同规矩**：不碰场景树、不读输入、不存游戏数值。
+   它是「同一层逻辑换了个语言」，不是表现层。另外两条引擎硬要求：
+   · **文件名必须等于类名**（PascalCase），所以那一层的文件名与 GDScript 的 snake_case 不同；
+   · 跨语言调用**必须按批**：实测 1000 次小调用 = 518 µs/帧，1 次批量 = 4.8 µs/帧（差 108 倍），
+     所以 `logic/crowd/` 的接口一律收发整条 Packed 数组，不做「每个单位调一次」。
+6. **`view/` 每帧只允许发命令，不允许逐单位写逻辑状态**；单位数量到 1000 之后，
+   「每个逻辑对象配一个 Node2D」这条老做法不再成立（见 3.2）
+7. **`config.json` 的可调数值读 `Config` 上「载入时算好」的字段，不要用 `cfg.num("a.b.c")`**。
+   `num()` / `bool_val()` 每次都要 `split(".")` + 逐层下潜，而这些值出现在**每帧每单位**的
+   内层循环里（碰撞半径、推力权重、认账时间、地形代价…）。1000 单位下实测这一项就是
+   每帧几万次字符串切分。
+   · 加新数值：在 `config.json` 里加，同时在 `config.gd` 的 `_cache_scalars()` 里加一行；
+   · **载入之后 `cfg.data` 不再是权威** —— 测试要改开关请直接改字段
+     （例如 `cfg.path_diagonal = false`），改 `cfg.data[...]` 不会有任何效果；
+   · `map_data.is_forest()` / `terrain_cost()` 读的是**地形掩码**，
+     手改 `map.terrain` 之后必须调 `map.rebuild_terrain_masks()`
 
 ---
 
@@ -44,7 +60,9 @@ dev_gd_a/daeem/
 ├── icon.svg
 ├── data/                         # ★ 纯数据，不含代码
 │   ├── config.json               #   全部可调数值（对应 HTML 版 js/config.js）
-│   └── map_01.json               #   地形 / 大本营 / 出生点 / （将来）区块划分├── logic/                        # ★ 纯逻辑：extends RefCounted，禁止碰场景树
+│   └── test_map.json             #   地形 / 区划网格 zones / 区划中心 zone_centers /
+│                                 #   区划产能 zone_list[].production / 各阵营大本营 faction_bases
+├── logic/                        # ★ 纯逻辑：extends RefCounted，禁止碰场景树
 │   ├── grid.gd                   #   网格工具 + 索引换算 + 方向集（DIRS4/DIRS8/octile）
 │   ├── pathfinder.gd             #   A*（四连通或八方向）+ segment_clear（超覆盖 DDA）
 │   │                             #   + smooth_path（拉直）+ round_corners（拐角圆化）
@@ -52,13 +70,19 @@ dev_gd_a/daeem/
 │   ├── map_data.gd               #   载入地图（地形 + exists 存在格 + zones 区块网格）、连通性修正
 │   ├── unit.gd                   #   单位：移动 + 战斗 + 警戒 + 复活（本轮不做复活）
 │   ├── building.gd               #   建筑定义与实例：blocks(faction) / 血量
-│   ├── zone.gd                   #   区块占领（每阵营独立进度）；区块划分读地图的 zones 网格，
-│   │                             #   老地图（没有该字段）退回 6×4 均分占位
+│   ├── zone.gd                   #   区块占领（每阵营独立进度）+ 区划中心 / 人口 / 产能；
+│   │                             #   区块划分读地图的 zones 网格，老地图退回 6×4 均分占位
 │   ├── economy.gd                #   资源产出
 │   ├── combat.gd                 #   战斗结算与事件（索敌 / 开火 / 拆建筑）
 │   ├── command_processor.gd      #   ★ 命令的唯一入口（move / build / demolish）
 │   ├── snapshot.gd               #   ★ to_snapshot / apply_snapshot（本轮用于调试，将来是网络包体）
+│   ├── crowd/                    #   ★ 群体碰撞的 C# 内核（1000 单位群编的性能前提）
+│   │   ├── CrowdKernel.cs        #     空间哈希 + 软分离 + 本体推出（语义与 collision.gd 一致）
+│   │   ├── CrowdProbe.cs         #     跨语言通路探针（桥测试用）
+│   │   └── crowd_bridge.gd       #     ★ logic ↔ 内核的**唯一**接口：建表 + 批量编解码 + 回退
 │   └── world.gd                  #   世界容器：持有 units / buildings / zones，推进 tick()
+├── daeem.csproj                  # C# 工程（Godot.NET.Sdk）。★ 引擎必须用 mono(.NET) 版
+├── NuGet.config                  # 本地包源（引擎自带 nupkgs；本机没有外网到 nuget.org）
 ├── view/                         # 渲染：Node2D / Control，禁止改逻辑状态
 │   ├── main.tscn / main.gd       #   入口场景：装配 world + view + hud
 │   ├── terrain_view.gd           #   地形（TileMapLayer）
@@ -206,13 +230,14 @@ Godot 里 DPR 由引擎处理，**但下面三条要原样继承**：
 
 | 状态 | 归属 | 备注 |
 |---|---|---|
-| 地形、大本营坐标、出生点 | `logic/map_data.gd` | 只读，载入时建好 |
+| 地形、阵营大本营坐标、出生点 | `logic/map_data.gd` | 只读，载入时建好；老式「单数 base」只作兼容兜底（见 route.md 14.3） |
 | 单位（位置/血量/路径/目标/冷却） | `logic/unit.gd` | 唯一权威 |
 | 招募序号（新兵 id） | `logic/world.gd` | `_recruit_serial`，只增不减（否则 id 会撞名） |
 | 建筑（类型/格位/所属/血量） | `logic/building.gd` | 用数组存，另建 `Vector2i → Building` 查询字典 |
 | 建筑本体的尺寸（占一格的比例） | `data/config.json` → `building.<type>.body_scale` | 渲染与碰撞**共用**这一个数（`building.body_rect()` / `palette.building_rect()`） |
-| 地图上预置的建筑 | `data/map_01.json` 的 `buildings` → `logic/map_data.gd` 的 `prefab_buildings` → `world.reset()` 放置 | 坐标与归属全在 JSON 里，代码不写死；不影响区块归属（zone 只认玩家阵营） |
+| 地图上预置的建筑 | `data/test_map.json` 的 `buildings` → `logic/map_data.gd` 的 `prefab_buildings` → `world.reset()` 放置 | 坐标与归属全在 JSON 里，代码不写死；不影响区块归属（zone 只认玩家阵营） |
 | 区块（`owner` / `progress_by`） | `logic/zone.gd` | **每阵营独立进度**，不要退回单一 `progress` |
+| 区划**中心** / 产能 / 人口 | `logic/zone.gd`（区块字典的 `center` / `production` / `population`）；中心那一格上另有一栋 `TYPE_ZONE_CENTER` 建筑 | 中心与产能来自地图 JSON；人口是**运行时累积**的，每区划各算各的（见 route.md 14.5） |
 | 资源、己方地块数 | `logic/economy.gd` | |
 | 相机 / 缩放 | `view/camera_rig.gd` | 纯表现，不进快照 |
 | 选中列表 | `view/input_controller.gd` | 纯本地，**不进命令流**（第 1 轮也一样） |

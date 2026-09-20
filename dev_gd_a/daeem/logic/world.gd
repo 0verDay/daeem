@@ -23,6 +23,7 @@ const EconomyRes = preload("res://logic/economy.gd")
 const CombatRes = preload("res://logic/combat.gd")
 const EnemyAiRes = preload("res://logic/enemy_ai.gd")
 const CollisionRes = preload("res://logic/collision.gd")
+const CrowdBridgeRes = preload("res://logic/crowd/crowd_bridge.gd")
 
 var cfg: ConfigRes = null
 var map: MapDataRes = null
@@ -38,6 +39,11 @@ var last_ownership_revision: int = -1
 var zones: ZoneRes = null
 var units: Array = []
 
+## ★ 碰撞后端：C# 群体内核（空间哈希 + 批量接口）的 GDScript 桥。
+## 内核加载不到（普通版 Godot / 还没构建）时它会自动退回 logic/collision.gd。
+## 见 logic/crowd/crowd_bridge.gd 与 data/config.json 的 unit.collision_backend。
+var crowd = null
+
 ## 阵营
 var my_faction: String = FactionRes.DEFAULT_FACTION
 var factions: Array[String] = []
@@ -46,12 +52,19 @@ var enemy_faction: String = FactionRes.NPC_FACTION
 ## 经济
 var resources: Dictionary = {"food": 0.0, "gold": 0.0}
 var owned_tiles: int = 0
+## ★ 当前每秒产出（按占领的区划产能聚合出来；HUD 用来显示「+n/秒」）。
+## 每帧在 tick() 里刷新 —— 纯展示用，不参与任何判定。
+var production_food: float = 0.0
+var production_gold: float = 0.0
 
 ## 每个阵营的大本营坐标与将领出生点（复活点、敌人 AI 目标都从这里取）
 var faction_bases: Dictionary = {}
 var faction_spawns: Dictionary = {}
 
 var time: float = 0.0
+## 帧序号：每 tick +1。给「每帧预算一次、当帧有效」的缓存做对齐用
+## （例如 crowd_bridge 的警戒索敌结果 —— 在 tick 之外读到上一帧的结果就是 bug）。
+var frame_serial: int = 0
 ## 对战规则总开关 —— **本轮永远是 false**。第 1 轮联机时才置 true。
 ##
 ## ★ 存在的理由（见 docs/pitfalls.md 3.8）：HTML 版的复活一开始泄漏进了单机，
@@ -67,7 +80,7 @@ var enemy_spawn_timer: float = 0.0
 var debug_auto_spawn: bool = false
 
 
-static func create(p_cfg: ConfigRes, map_path: String = "res://data/map_01.json") -> RefCounted:
+static func create(p_cfg: ConfigRes, map_path: String = "res://data/test_map.json") -> RefCounted:
 	var w = new()
 	w.cfg = p_cfg
 	w.map = MapDataRes.load_from(map_path, p_cfg)
@@ -91,8 +104,17 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	debug_auto_spawn = false
 	time = 0.0
 	owned_tiles = 0
+	production_food = 0.0
+	production_gold = 0.0
 
 	buildings = GridRes.new(map.cols, map.rows, null)
+
+	# 碰撞后端（C# 群体内核）。表是懒建的：第一次 tick 时按当前建筑状态编一次。
+	crowd = CrowdBridgeRes.new()
+	if crowd != null:
+		# ⚠️ 弱引用：强引用会形成 world ↔ crowd 的引用循环，两边都永远不释放
+		crowd.set_world(self)
+		crowd.reset_cache()
 
 	my_faction = p_my_faction if p_my_faction != "" else FactionRes.DEFAULT_FACTION
 	factions = []
@@ -114,12 +136,26 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	for f in factions:
 		if f != my_faction:
 			apply_faction_layout(f, primary)
-	# 地图上**预置**的建筑（对家据点这类固定摆设，坐标写在 map_01.json 的 "buildings" 里）。
+	# 地图上**预置**的建筑（对家据点这类固定摆设，坐标写在 test_map.json 的 "buildings" 里）。
 	# 放在各阵营出生点之后：它们的坐标是手写的，不与出生点抢格；被占住的格子 add_building 会自己拒。
 	for p in map.prefab_buildings:
 		add_building(String(p["type"]), int(p["x"]), int(p["y"]), String(p["owner"]), true)
-	# 地图上**预置**的单位（测试用的守军，写在 map_01.json 的 "units" 里）。
+	# ★★ 区划中心（地图编辑器给每个区块指定的那一格）：**中立障碍建筑**。
+	#    ⚠️⚠️ 必须在**任何单位出生之前**建好（顺序踩过一次，实测）：
+	#       单位出生找站位时会避开建筑（`_ring_tile` 里那条 `building_at() != null`），
+	#       而中心是在 reset 末尾才建的 —— 于是「先出生的亲兵」正好站在中心那一格上，
+	#       开局就有一个兵被卡在不可进入的建筑里（`test_retinue` 抓住的）。
+	#    `add_building` 对已占格会拒绝，所以「中心最优先」是这样落地的：
+	#      · 中心的格子是**编辑器的硬规则**（导出前 blockers 拦住与大本营叠格的那些）；
+	#      · 真出现叠格（手改地图），这里会静默建不出来 —— 但绝不会把已有建筑顶掉。
+	_spawn_zone_centers()
+	# 地图上**预置**的单位（测试用的守军，写在 test_map.json 的 "units" 里）。
 	# id 走 _enemy_serial —— 与调试刷兵同一套序号，永远不会撞名。
+	# ⚠️ 顺序：**先建各方的将领与亲兵，再放预置单位**。
+	#    `world.units` 的前几个永远是这一方的将领（快捷键 1/2/3 与按序号取将领
+	#    的代码都靠这条契约），预置单位插在前面会把它顶掉。
+	for f in factions:
+		spawn_faction_units(f)
 	for p in map.prefab_units:
 		_enemy_serial += 1
 		var pu = UnitRes.create(
@@ -131,6 +167,26 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	# 出生点的大本营也会把所在区块直接收归己方（zone_owned_by_building）；
 	# 这一条在「开局第一帧之前」就该成立，否则 HUD 上的领地会在第一次 tick 前闪一下空
 	refresh_ownership()
+
+
+## 把地图里每个区块的「区划中心」落成一栋中立障碍建筑（无血量 / 无敌 / 无攻击）。
+##
+## ★ owner 是**空字符串**：`same_side(任何人, "")` 恒为 false，于是它
+##   对谁都阻挡、也不会被索敌 / 被箭塔锁定 / 被拆 —— 见 building.gd 的 TYPE_ZONE_CENTER。
+## ★ 建不出来的那一种情况会**报警**：那一格已经被别的建筑占了（大本营 / 预置建筑）。
+##   编辑器的导出校验会拦住「中心与大本营叠格」，所以正常流程里见不到这条
+##   —— 见到它就意味着地图是手改过的，或是编辑器校验有漏（留一条痕迹，别静默）。
+func _spawn_zone_centers() -> void:
+	if zones == null:
+		return
+	for z in zones.zones:
+		var c: Variant = z["center"]
+		if c == null:
+			continue
+		var t: Vector2i = c
+		if add_building(BuildingRes.TYPE_ZONE_CENTER, t.x, t.y, "", true) == null:
+			push_warning("区划「%s」的中心 (%d, %d) 建不出来：那一格已经被别的建筑占了"
+				% [String(z["name"]), t.x, t.y])
 
 
 ## 建立 / 重建「某一方」的基地与部队。
@@ -176,14 +232,25 @@ func apply_faction_layout(faction: String, primary: String = "") -> void:
 	building_revision += 1
 
 	# 4) 将领（多阵营时追加本阵营的，保留其他阵营的）
-	var fresh: Array = create_generals(faction)
+	#
+	# ⚠️ 这里**只清理**旧单位，单位的**出生**由 `spawn_faction_units()` 在
+	#    「所有建筑（含区划中心）都建好之后」统一做 —— 站位要避开建筑，
+	#    而这个函数在 reset() 里跑得比预置建筑 / 区划中心早。
 	if factions.size() > 1:
 		var kept: Array = []
 		for u in units:
 			if u.faction != faction:
 				kept.append(u)
 		units = kept
-	for u in fresh:
+
+
+## 给某一方建出将领 + 亲兵（站位避开建筑与已有单位）。
+##
+## ★ 必须**在所有建筑都就位之后**调用（见 reset() 的顺序说明）：
+##   亲兵的站位规则会跳过「那一格上立着建筑」—— 区划中心要是还没建，
+##   亲兵就会挑到中心那一格上，开局直接卡在不可进入的建筑里。
+func spawn_faction_units(faction: String) -> void:
+	for u in create_generals(faction):
 		units.append(u)
 
 
@@ -208,9 +275,11 @@ func create_generals(faction: String) -> Array:
 		var g = UnitRes.create(cfg, "%s-%d" % [prefix, i + 1], names[i], tile, faction, UnitRes.KIND_GENERAL, str(i + 1))
 		out.append(g)
 		leaders.append(g)
-	# 将领全部就位之后，再给每个将领配亲兵
+	# 将领全部就位之后，再给每个将领配亲兵。
+	# ⚠️ `out` 是**本批**的单位（还没进 world.units）—— 传给 create_retinue 用来避让，
+	#    否则同一批里的亲兵会互相看不见、两个人都挑到同一格。
 	for g in leaders:
-		for s in create_retinue(faction, g):
+		for s in create_retinue(faction, g, out):
 			out.append(s)
 	return out
 
@@ -218,7 +287,8 @@ func create_generals(faction: String) -> Array:
 ## 建立某个将领辖下的亲兵。站位围着将领一圈（就近找可通行的空地）。
 ##
 ## ⚠️ 必须**在将领落位之后**调用：亲兵要贴着将领站，将领不在场就没有参照物。
-func create_retinue(faction: String, leader) -> Array:
+## @param pending 本批已创建、还没入列的单位（用来避开站位撞车）
+func create_retinue(faction: String, leader, pending: Array = []) -> Array:
 	var out: Array = []
 	var count: int = int(cfg.num("unit.subordinate.count", 0.0))
 	if count <= 0:
@@ -227,7 +297,7 @@ func create_retinue(faction: String, leader) -> Array:
 	for i in count:
 		out.append(UnitRes.create(
 			cfg, "%s-%d" % [leader.id, i + 1], "%s %d" % [name, i + 1],
-			_ring_tile(leader, faction, i), faction,
+			_ring_tile(leader, faction, i, pending + out), faction,
 			UnitRes.KIND_SUBORDINATE, "", leader.id
 		))
 	return out
@@ -237,20 +307,59 @@ func create_retinue(faction: String, leader) -> Array:
 ##
 ## ★ 出生与招募**共用这一份**：站位规则只有一处，免得两边慢慢漂开。
 ##   先用正交方向是有意的 —— 正交邻格比斜角更不容易被墙 / 山挤掉。
-func _ring_tile(leader, faction: String, index: int) -> Vector2i:
+##
+## ★★ 除了「地形 / 建筑放行」，还必须**避开已经站着人的格子**（同阵营也算）。
+##    这一条是加区划中心之后暴露出来的（实测）：
+##    3 个将领各带 3 个亲兵、全挤在大本营周围那一圈时，`index` 撞车的两个亲兵
+##    （general-2-3 与 general-3-1）都会落到「大本营那一格」上 ——
+##    因为原来的判定只看地形与建筑，而大本营格对己方是放行的。
+##    症状是「开局有两个兵叠在同一个格子上」（测试里那条「所有单位都不能站在大本营格上」
+##    就是为此写的）。
+##    ⚠️ 还要看 `pending`：同一批正在创建、**还没进 world.units** 的单位
+##       （create_generals 是先在局部数组里攒好、最后才一次性入列的）。
+##
+## @param pending 本批已占位的单位（可以不传）
+func _ring_tile(leader, faction: String, index: int, pending: Array = []) -> Vector2i:
 	var ring: Array[Vector2i] = [
 		Vector2i(1, 0), Vector2i(0, 1), Vector2i(-1, 0), Vector2i(0, -1),
 		Vector2i(1, 1), Vector2i(-1, 1), Vector2i(1, -1), Vector2i(-1, -1),
 		Vector2i(2, 0), Vector2i(0, 2), Vector2i(-2, 0), Vector2i(0, -2),
 	]
-	var off: Vector2i = ring[index % ring.size()]
-	var want := Vector2i(leader.tx + off.x, leader.ty + off.y)
-	if PathfinderRes.passable(map, buildings, cfg, want.x, want.y, faction):
+	# 从「第 index 个方向」开始绕一圈：优先那个方向（站位可预测），
+	# 被占了 / 走不通就顺延 —— 比「直接落到队长身上叠着」好得多。
+	for k in ring.size():
+		var off: Vector2i = ring[(index + k) % ring.size()]
+		var want := Vector2i(leader.tx + off.x, leader.ty + off.y)
+		if not PathfinderRes.passable(map, buildings, cfg, want.x, want.y, faction):
+			continue
+		if _tile_taken(want, leader, pending):
+			continue
+		if building_at(want.x, want.y) != null:
+			continue        # 那一格上立着建筑（大本营 / 箭塔 / 城墙 / 区划中心）→ 换一格
 		return want
-	var found = PathfinderRes.nearest_reachable(map, buildings, cfg, Vector2i(leader.tx, leader.ty), want, faction, 8)
+	var off0: Vector2i = ring[index % ring.size()]
+	var found = PathfinderRes.nearest_reachable(
+		map, buildings, cfg, Vector2i(leader.tx, leader.ty),
+		Vector2i(leader.tx + off0.x, leader.ty + off0.y), faction, 8, crowd)
 	if found != null:
 		return found
 	return Vector2i(leader.tx, leader.ty)      # 实在没地方就叠在队长身上，靠碰撞分开
+
+
+## 这一格是不是已经被某个**活着的单位**占着（`except_unit` 不算 —— 兜底就是要叠在它身上）。
+## `pending` 是同一批正在创建、还没进 `units` 的那些。
+func _tile_taken(tile: Vector2i, except_unit, pending: Array = []) -> bool:
+	for u in units:
+		if u == except_unit or not u.alive:
+			continue
+		if u.tx == tile.x and u.ty == tile.y:
+			return true
+	for u in pending:
+		if u == except_unit or not u.alive:
+			continue
+		if u.tx == tile.x and u.ty == tile.y:
+			return true
+	return false
 
 
 # ------------------------------------------------------------------
@@ -342,7 +451,7 @@ func spawn_enemy(tx: int = -1, ty: int = -1) -> Variant:
 		spawn = Vector2i(tx, ty)
 	var open = spawn
 	if not PathfinderRes.passable(map, buildings, cfg, spawn.x, spawn.y, FactionRes.NPC_FACTION):
-		var found = PathfinderRes.nearest_reachable(map, buildings, cfg, spawn, spawn, FactionRes.NPC_FACTION, 20)
+		var found = PathfinderRes.nearest_reachable(map, buildings, cfg, spawn, spawn, FactionRes.NPC_FACTION, 20, crowd)
 		if found == null:
 			push_event({"type": "spawn_failed", "tile": spawn})
 			return null
@@ -381,6 +490,17 @@ func add_building(type: String, tx: int, ty: int, owner: String, silent: bool = 
 ## 某格上的建筑（没有则 null）
 func building_at(tx: int, ty: int) -> Variant:
 	return _building_at.get(Vector2i(tx, ty), null)
+
+
+## ★ 这一格的**区划中心**所属的区块（不是中心 → null）。
+##
+## 点选那条路的入口：`input_controller` 用它把「点到中心」翻译成「显示这个区划的详情」。
+## 中心格上同时有一栋 `TYPE_ZONE_CENTER` 建筑（中立障碍），所以也可以从
+## `building_at()` 拿到它，再从它的格子反查区块 —— 这里包一层省得两处各写一遍。
+func zone_center_zone_at(tx: int, ty: int) -> Variant:
+	if zones == null:
+		return null
+	return zones.center_zone_at(tx, ty)
 
 
 ## 重新建立格子 → 建筑的查询表（拆除 / 整表替换后调用）
@@ -444,6 +564,41 @@ func refresh_ownership() -> void:
 # 每帧推进
 # ------------------------------------------------------------------
 
+# ------------------------------------------------------------------
+# 每帧耗时剖析
+#
+# ★ 为什么这件事放在 world 里而不是测试里：tick() 的分段只有它自己知道，
+#   在测试里复刻一遍 tick 就等于维护第二份实现（早晚会漂）。
+#
+# ★ 默认关闭：关闭时每段只多一次 `if profile_on` 判断，可以忽略。
+#   打开后把各阶段的微秒数累加到 profile_us，供 tests/bench_crowd.gd 打印。
+#
+# ⚠️ 它只读时钟、不参与任何判定，所以不影响确定性（联机时保持关闭即可）。
+# ------------------------------------------------------------------
+
+## 打开后才计时（游戏里永远是 false）
+var profile_on: bool = false
+## 阶段名 → 累计微秒
+var profile_us: Dictionary = {}
+
+
+func profile_reset() -> void:
+	profile_us = {}
+
+
+## 取一个起始时间戳：关闭时返回 0（_prof_done 见到 0 直接返回）
+func _prof() -> int:
+	if profile_on:
+		return Time.get_ticks_usec()
+	return 0
+
+
+func _prof_done(key: String, t0: int) -> void:
+	if t0 == 0:
+		return
+	profile_us[key] = int(profile_us.get(key, 0)) + (Time.get_ticks_usec() - t0)
+
+
 ## 推进一帧**权威逻辑**。
 ##
 ## ⚠️ 第 1 轮联机时，只有房主该调它：客机的 update 必须被冻结，
@@ -457,31 +612,60 @@ func tick(dt: float) -> Array:
 	if dt <= 0.0:
 		return _events
 	time += dt
+	frame_serial += 1
+
+	# 警戒索敌：每帧**一次**批量算好（内核里按阵营分组，只扫敌对那一组）。
+	# ★ 原来是「每个待命单位扫一遍全部单位」的 O(n²)：1000 单位待命时实测 283 ms/帧。
+	#   结果按 frame_serial 对齐，只有本帧有效。
+	if crowd != null and cfg.combat_enabled:
+		crowd.refresh_targets(self, cfg)
 
 	# 1) 区块占领（占位规则）
+	var _t_zones := _prof()
 	zones.update(cfg, dt, units, factions)
+
+	# 1.5) ★ 区划人口：每个区块各算各的，只按时间涨、不消耗（用户需求）。
+	#      与占领**无关**，也不进 HUD 的资源 —— 点开某个区划的中心能看它自己的人口。
+	zones.update_population(dt)
 
 	# 2) 建筑归属变化时才重算
 	refresh_ownership()
+	_prof_done("zones", _t_zones)
 
-	# 3) 资源：按己方占领地块数实时增长（「己方」= my_faction，不是写死的 'player'）
+	# 3) 资源：★ 按**占领方拥有的各区划**聚合（产能 × 该区划地块数）。
+	#    旧实现是「全局按占领地块数 × 1/秒」—— 现在产能由地图数据（地图编辑器）说了算，
+	#    所以「抢区块 = 抢产能」。
+	var _t_econ := _prof()
 	var tiles = zones.owned_tile_count(my_faction)
 	if tiles != owned_tiles:
 		owned_tiles = tiles
 		push_event({"type": "territory_changed", "tiles": tiles, "zones": zones.owned_zone_names(my_faction)})
-	EconomyRes.tick(cfg, dt, tiles, resources)
+	var rates: Dictionary = zones.production_of(my_faction)
+	production_food = float(rates["food"])
+	production_gold = float(rates["gold"])
+	EconomyRes.tick(cfg, dt, rates, resources)
+	_prof_done("economy", _t_econ)
 
 	# 4) 单位：移动 + 战斗 / 警戒
-	for u in units:
+	var _t_units := _prof()
+	# 单位循环再拆三段的计时（只在 profile_on 时累加）
+	var t_combat := 0
+	var t_reclaim := 0
+	var t_step := 0
+	for ui in units.size():
+		var u = units[ui]
 		if not u.alive:
 			# 阵亡中的单位只跑复活倒计时；复活后本帧就正常参与逻辑
 			u.tick_respawn(cfg, self, dt)
 			continue
-		CombatRes.update_unit(self, cfg, u, dt)
-		# 站定后被推离落点就自己走回去（必须在 step 之前：先决定要不要回位）
-		u.reclaim_settled_spot(self, cfg)
-		if not u.path.is_empty():
-			u.step_along_path(self, cfg, dt)
+		var c0 := _prof()
+		CombatRes.tick_frame(self, cfg, u, dt, ui)
+		var _c1 := _prof()
+	_prof_done("units", _t_units)
+	if profile_on:
+		profile_us["units/combat"] = int(profile_us.get("units/combat", 0)) + t_combat
+		profile_us["units/reclaim"] = int(profile_us.get("units/reclaim", 0)) + t_reclaim
+		profile_us["units/step"] = int(profile_us.get("units/step", 0)) + t_step
 
 	# 4.5) 清理离场单位。
 	#      ⚠️ 这里**不能**简单地按 alive 过滤：对战模式下阵亡的单位要留在列表里等复活，
@@ -493,8 +677,10 @@ func tick(dt: float) -> Array:
 	units = keep
 
 	# 5) 箭塔开火 + 建筑受击闪光衰减
+	var _t_towers := _prof()
 	CombatRes.update_towers(self, cfg, dt)
 	CombatRes.update_building_effects(self, dt)
+	_prof_done("towers", _t_towers)
 
 	# 6) 调试：自动刷敌人
 	if debug_auto_spawn:
@@ -504,11 +690,15 @@ func tick(dt: float) -> Array:
 			enemy_spawn_timer = cfg.num("debug.spawn_interval_sec", 3.0)
 
 	# 7) 敌人 AI（朝玩家据点推进；被城墙挡住时锁定城墙来拆）
+	var _t_ai := _prof()
 	EnemyAiRes.update(self, cfg)
+	_prof_done("enemy_ai", _t_ai)
 
 	# 8) 收尸：被打光的建筑从地图上摘掉。
 	#    放在末尾做，是为了让「本帧已经发生的战斗」都读到同一个世界快照。
+	var _t_collect := _prof()
 	_collect_destroyed_buildings()
+	_prof_done("collect", _t_collect)
 
 	# 8.5) ★ 单位碰撞与局部避让（软分离 + 谁给谁让路）
 	#
@@ -517,10 +707,16 @@ func tick(dt: float) -> Array:
 	# 推挤只改「位置」，不改「意图」。
 	#
 	# ⚠️ 联机（第 1 轮）：位置是权威状态，所以这一步只能跑在房主侧。
-	CollisionRes.resolve(self, cfg)
-	# 8.6) ★ 建筑本体的硬碰撞：大本营 / 箭塔不再整格挡人之后，
-	#      「本体挡敌方」这条规则就落在这里（己方单位不受影响）。
-	CollisionRes.resolve_buildings(self, cfg)
+	var _t_col := _prof()
+	if crowd != null:
+		# 一次打包、一次调用、一次写回：软分离 + 建筑本体推出（见 crowd_bridge.resolve_all）
+		crowd.resolve_all(self, cfg)
+	else:
+		CollisionRes.resolve(self, cfg)
+		# 8.6) ★ 建筑本体的硬碰撞：大本营 / 箭塔不再整格挡人之后，
+		#      「本体挡敌方」这条规则就落在这里（己方单位不受影响）。
+		CollisionRes.resolve_buildings(self, cfg)
+	_prof_done("collision", _t_col)
 
 	# 9) 胜负判定（大本营被打掉 / 超时比血量）
 	check_victory(dt)
@@ -533,6 +729,11 @@ func tick(dt: float) -> Array:
 	var out := _events
 	_events = []
 	return out
+
+
+## 给子阶段累加微秒（只有 profile_on 时会被调用，见 unit.tick_frame）
+func profile_sub(key: String, us: int) -> void:
+	profile_us[key] = int(profile_us.get(key, 0)) + us
 
 
 ## 把本帧被打光的建筑摘掉（战斗摧毁必须 force = true，见 remove_building 的注释）

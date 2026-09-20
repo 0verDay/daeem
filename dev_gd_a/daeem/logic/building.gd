@@ -27,6 +27,15 @@ const FactionRes = preload("res://logic/faction.gd")
 const TYPE_BASE := "base"
 const TYPE_WALL := "wall"
 const TYPE_TOWER := "tower"
+## 区划中心：地图编辑器在「区块」页签里给每个区划指定的那一格。
+##
+## ★ 它是**中立障碍**（用户原话：「任何单位均不可进入」「本身无血量且无敌，
+##   没有攻击手段」）：
+##     · owner = ""（不属于任何阵营）→ `same_side(任何人, "")` 恒为 false，
+##       于是格级与本体级**对谁都阻挡**，而且不会被索敌 / 被箭塔锁定 / 被拆；
+##     · 没有血量（`take_damage` 对它无效）、没有攻击手段（不进 update_towers）。
+## ★ 点它 = 看它所属区划的详情（`world.zone_center_at()` → HUD / 详情面板）。
+const TYPE_ZONE_CENTER := "zone_center"
 
 ## 建筑定义表。blocks_* 是**格级**、body_blocks_* 是**本体级** —— 别按阵营写死，
 ## 两侧都走 same_side()，见下面 blocks() / body_blocks() 的注释。
@@ -48,6 +57,14 @@ const DEFS := {
 		"id": "tower", "name": "箭塔", "buildable": true,
 		"blocks_player": false, "blocks_enemy": false,
 		"body_blocks_player": false, "body_blocks_enemy": true,
+	},
+	"zone_center": {
+		"id": "zone_center", "name": "区划中心", "buildable": false,
+		# ★ 两侧都 true：对**任何**阵营都封死整格（"任何单位均不可进入"）
+		"blocks_player": true, "blocks_enemy": true,
+		"body_blocks_player": true, "body_blocks_enemy": true,
+		# 无血量 / 无敌（见 take_damage）；也没有攻击手段
+		"invulnerable": true,
 	},
 }
 
@@ -89,7 +106,16 @@ func max_hp_from_config(cfg: ConfigRes) -> float:
 			return cfg.num("building.wall.hp_max", 300.0)
 		TYPE_TOWER:
 			return cfg.num("building.tower.hp_max", 300.0)
+		TYPE_ZONE_CENTER:
+			return 0.0          # ★ 无血量（无敌，见 take_damage）
 	return 300.0
+
+
+## 这个建筑是不是「无敌」的（区划中心）。
+## 无敌的建筑不吃伤害、不可拆除，也不该被索敌——`take_damage` 与
+## `command_processor.apply_demolish` 都读它，别在两处各写一个类型判断。
+func is_invulnerable() -> bool:
+	return bool(def().get("invulnerable", false))
 
 
 func def() -> Dictionary:
@@ -138,8 +164,9 @@ func body_blocks(faction: String) -> bool:
 
 
 ## 本体边长占一格的比例（config.json；缺省按整格算，宁可挡死也不要漏）
+## ★ 走 config 上按类型的缓存 —— 这个函数在索敌里会被「每单位每建筑」调用。
 func body_scale(cfg: ConfigRes) -> float:
-	return clampf(cfg.num("building.%s.body_scale" % type, 1.0), 0.05, 1.0)
+	return cfg.building_body_scale(type)
 
 
 ## 本体半边长（格）
@@ -218,7 +245,9 @@ func hp_ratio() -> float:
 ##   对战模式把 config.pvp.destructible_base 打开，它就能被真正打掉 ——
 ##   打掉某一方的大本营 = 那一方落败，这就是胜负条件。
 ##
-## @return bool **本击是否造成了摧毁**（false = 没打死 / 早就死了）。
+## ★ 区划中心**无敌**（`invulnerable`）：直接返回 false，一点血都不掉、也不闪红。
+##
+## @return bool **本击是否造成了摧毁**（false = 没打死 / 早就死了 / 无敌）。
 ##
 ## ⚠️ 返回值语义是「刚才这一下打死了它」，**不是**「它现在还活着」。
 ##    HTML 版用的是后者，于是同一帧里第二个攻击者打一栋已经 0 血的墙，
@@ -227,6 +256,8 @@ func hp_ratio() -> float:
 func take_damage(cfg: ConfigRes, amount: float, _source = null) -> bool:
 	if not alive:
 		return false                       # 早就死了，不重复报销
+	if is_invulnerable():
+		return false                       # ★ 区划中心：无血量、无敌，连闪光都不给
 	flash = 1.0
 	var destructible: bool = cfg.destructible_base
 	var floor_hp: float = 1.0 if (type == TYPE_BASE and not destructible) else 0.0

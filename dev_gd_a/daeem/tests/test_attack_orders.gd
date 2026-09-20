@@ -20,6 +20,8 @@ const WorldRes = preload("res://logic/world.gd")
 const CommandRes = preload("res://logic/command_processor.gd")
 const CollisionRes = preload("res://logic/collision.gd")
 const FactionRes = preload("res://logic/faction.gd")
+const PathfinderRes = preload("res://logic/pathfinder.gd")
+const CombatRes = preload("res://logic/combat.gd")
 
 const DT := 1.0 / 60.0
 
@@ -42,6 +44,137 @@ func _cases() -> void:
 	_test_players_acquire_buildings(cfg)
 	_test_npc_does_not_acquire_buildings(cfg)
 	_test_command_guards(cfg)
+	_test_chase_needs_no_arrival_slot(cfg)
+	_test_chase_direct_line(cfg)
+	_test_chase_repath_gate(cfg)
+
+
+# ------------------------------------------------------------------
+# 8. ★★ 追击不为「落点空位」买单（行军攻击 20 fps 的头号原因）
+#
+# 追击的落点永远是**敌人脚下那一格**，而敌人就站在那儿 —— 于是每次追击寻路都会
+# 命中 `_arrival_congested`，白跑一遍 `_find_arrival_slot`：
+#   全图可达掩码（C# 内核约 0.5 ms）+ 十几个候选点各扫一遍 1000 个单位（约 226 µs）。
+# 索敌是批量算的，几百个单位**同一帧**首次锁定目标 → 单帧 200+ ms。
+#
+# 这套断言盯住「分流没有被改回去」：
+#   `move_to(settle = true)`  = 站到某个点上 → 被占时要换空位（功能仍在）
+#   `move_to(settle = false)` = 向某个点靠近（追击）→ 落点原样保留
+# ------------------------------------------------------------------
+func _test_chase_needs_no_arrival_slot(cfg) -> void:
+	var w = WorldRes.create(cfg)
+	var a = w.units[0]
+	var b = w.units[1]
+	ok(a != null and b != null, "有两个己方单位")
+	if a == null or b == null:
+		return
+	# 只留这两个，避免亲兵把它们挤走
+	w.units = [a, b]
+	var spot := _free_tile(w, a.tx + 6, a.ty)
+	var want: Vector2 = GridRes.center_of(spot)
+	a.stop()
+	# ⚠️ 堵的人要**偏开落点心**一点：正压在落点心上时，`_find_arrival_slot`
+	#    的候选圈（半径 step*1.5）整个落在「离它 < need」的范围里，
+	#    于是一个空位都挑不出来、原样返回原点 —— 那是另一回事，测不出分流。
+	var need: float = a.min_unit_distance(cfg)
+	a.pos = want + Vector2(need * 0.6, 0.0)
+	a.sync_tile(w.map)
+	b.stop()
+	b.pos = GridRes.center_of(Vector2i(spot.x - 3, spot.y))
+	b.sync_tile(w.map)
+
+	# a 站定在 want 旁边 → want 对 b 来说是「被别人占着的落点」
+	ok(not a.moving, "a 已经站定（只有站定的单位才算占位）")
+
+	ok(b.move_to(w, cfg, want, true), "settle=true 的 move_to 被接受")
+	ok(b.goal != want, "★ settle=true：落点被占 → 自动换成旁边某个空位（功能没丢）")
+	ok(b.goal.distance_to(want) < 3.0, "换出来的空位就在附近")
+
+	ok(b.move_to(w, cfg, want, false), "settle=false 的 move_to 被接受")
+	ok(b.goal.distance_to(want) < 1e-9,
+		"★★ settle=false（追击）：落点**原样**就是目标点，不去找空位 —— 这是 20 fps 那一刀的修复")
+
+
+# ------------------------------------------------------------------
+# 9. ★★ 近距离追击走直线：既不建距离场，也不拉直
+#
+# 每个**不同的敌人所在格**都要一张新距离场（一次全图 Dijkstra），而 LRU 只有 4 张；
+# 几百个单位同帧锁定目标 = 同帧几十次 Dijkstra（实测单帧 21.5 ms）。
+# ------------------------------------------------------------------
+func _test_chase_direct_line(cfg) -> void:
+	var w = WorldRes.create(cfg)
+	var u = w.units[0]
+	ok(u != null, "有一个单位")
+	if u == null:
+		return
+	w.units = [u]
+	var spot := _free_tile(w, u.tx, u.ty)
+	u.stop()
+	u.pos = GridRes.center_of(spot)
+	u.sync_tile(w.map)
+
+	# 近处、直线可切 → 路径就是那一个点
+	var near_pt: Vector2 = u.pos + Vector2(2.0, 0.5)
+	ok(u.chase_to(w, cfg, near_pt), "chase_to 近处目标成功")
+	ok(u.path.size() == 1, "★ 近处追击只给一个路点（不建场、不拉直）")
+	ok(u.path[0].distance_to(near_pt) < 1e-9, "那个路点就是目标点本身")
+	ok(u.moving and u.has_goal, "追击后进入移动状态")
+
+	# 隔一堵墙 → 必须退回真正的寻路（不能穿墙）
+	# ⚠️ 墙必须是**敌方**的：己方的墙同阵营可通行，挡不住自己（判定基准是 same_side）。
+	var wall_tile := Vector2i(spot.x + 1, spot.y)
+	var wall = w.add_building("wall", wall_tile.x, wall_tile.y, "enemy")
+	ok(wall != null, "在中间放一堵敌方的城墙")
+	ok(not PathfinderRes.passable(w.map, w.buildings, cfg, wall_tile.x, wall_tile.y, u.faction),
+		"那堵墙对本方不可通行")
+	var through: Vector2 = GridRes.center_of(Vector2i(spot.x + 2, spot.y))
+	ok(u.chase_to(w, cfg, through), "chase_to 隔墙目标仍然给出命令")
+	var straight: bool = u.path.size() == 1 and u.path[0].distance_to(through) < 1e-9
+	ok(not straight, "★ 直线被墙挡住时不走直线（退回距离场 / A*）")
+	var bad := 0
+	var prev: Vector2 = u.pos
+	for p in u.path:
+		if not PathfinderRes.segment_clear(w.map, w.buildings, cfg, prev, p, u.faction):
+			bad += 1
+		prev = p
+	ok(bad == 0, "★ 绕墙路径的每一段都不穿墙（没有为了省事放弃安全）")
+
+
+# ------------------------------------------------------------------
+# 10. ★★ 目标没挪地方就不重算路径
+#
+# 原来是无条件「每 repath_sec 秒重算一次」：1000 个单位在打**站着不动**的目标
+# （墙 / 建筑 / 站定的单位）时，每秒 3000+ 次完整寻路全是白费。
+# ------------------------------------------------------------------
+func _test_chase_repath_gate(cfg) -> void:
+	var w = WorldRes.create(cfg)
+	var u = w.units[0]
+	var e = w.spawn_enemy(u.tx + 3, u.ty)
+	ok(u != null and e != null, "有一个单位和它旁边的敌人")
+	if u == null or e == null:
+		return
+	w.units = [u, e]
+	e.hold_position = true                 # 站定不动
+	u.stop()
+	CombatRes.repath_calls = 0
+	u.target = e
+	u.reset_repath()
+
+	# 目标不动：第一次要算，之后 repath_sec 之内不该再算
+	w.tick(DT)
+	var after_first: int = CombatRes.repath_calls
+	w.tick(DT)
+	w.tick(DT)
+	ok(after_first >= 1, "锁定目标后第一次追击会算路径")
+	ok(CombatRes.repath_calls == after_first,
+		"★ 目标没动 → 不重算路径（原来每 repath_sec 就白算一次）")
+
+	# 目标真的挪了地方 → 必须重算
+	e.pos += Vector2(cfg.repath_min_move * 3.0, 0.0)
+	u.repath_timer = 0.0
+	w.tick(DT)
+	ok(CombatRes.repath_calls > after_first,
+		"★ 目标挪出 repath_min_move 之后会重算（不是干脆不追了）")
 
 
 # ------------------------------------------------------------------
@@ -78,6 +211,14 @@ func _test_attack_unit(cfg) -> void:
 func _test_attack_building(cfg) -> void:
 	var w = WorldRes.create(cfg)
 	var g = w.unit_by_id("general-1")
+	# ★ 先把这张图自带的建筑（对家据点的城墙 / 箭塔）清掉：
+	#   「拆完之后 `target_building` 要清空」这条断言会被**别的**敌方建筑搅乱 ——
+	#   将领拆穿目标墙之后站在 (15,8)，而对家据点就在 (19,7) 一带，
+	#   自动索敌会立刻锁上那一段墙（实测就是这样假失败的）。
+	for b in w.building_list.duplicate():
+		if b.owner == "enemy":
+			w.remove_building(b, true)
+	w.refresh_ownership()
 	var t := _free_tile(w, g.tx + 4, g.ty)
 	var wall = w.add_building("wall", t.x, t.y, "p2")     # 对家城墙：不还手，断言干净
 	ok(g != null and wall != null, "有将领 1 和对家城墙")

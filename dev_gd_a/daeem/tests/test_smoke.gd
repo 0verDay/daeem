@@ -3,7 +3,7 @@
 ## M0 只测三件事（见 docs/route.md 第五节 M0）：
 ##   1. 脚手架本身能跑、退出码正确
 ##   2. GridRes 的索引换算与边界
-##   3. config.json / map_01.json 能解析，且关键数值与 HTML 版一致
+##   3. config.json / test_map.json 能解析，且关键数值与 HTML 版一致
 ##
 ## ⚠️ 为什么先测 config：所有平衡数值都在 JSON 里，一旦它悄悄坏了，
 ##    表现是「手感不对」而不是「报错」，是最难查的一类问题。
@@ -16,8 +16,12 @@ extends "res://tests/test_case.gd"
 const GridRes = preload("res://logic/grid.gd")
 const ConfigRes = preload("res://logic/config.gd")
 
-const EXPECTED_MAP_COLS := 24
-const EXPECTED_MAP_ROWS := 16
+## `config.json` 的 grid 是「编辑器新画一张图的默认画布尺寸」，**不是**某张图的实际尺寸。
+const EXPECTED_GRID_COLS := 24
+const EXPECTED_GRID_ROWS := 16
+## 随游戏发布的那张图（`data/test_map.json`，地图编辑器导出）的实际尺寸。
+const EXPECTED_MAP_COLS := 27
+const EXPECTED_MAP_ROWS := 22
 
 
 func _initialize() -> void:
@@ -71,8 +75,8 @@ func _cases() -> void:
 	if cfg == null:
 		return
 
-	eq(cfg.cols, EXPECTED_MAP_COLS, "config grid.cols")
-	eq(cfg.rows, EXPECTED_MAP_ROWS, "config grid.rows")
+	eq(cfg.cols, EXPECTED_GRID_COLS, "config grid.cols")
+	eq(cfg.rows, EXPECTED_GRID_ROWS, "config grid.rows")
 	near(cfg.cell_px, 64.0, 1e-6, "渲染格宽 render.cell_px")
 
 	# 手感数值：必须与 HTML 版逐个一致（docs/porting.md 第四节）
@@ -138,17 +142,23 @@ func _cases() -> void:
 	near(cfg.num("combat.general.damage", 0.0), 26.0, 1e-6, "get_path_value 支持嵌套路径")
 
 	# ---- 4. 地图 ----
+	# ★★ 现在只有**一张**图（`data/test_map.json`，地图编辑器导出件，27×22）。
+	#    `EXPECTED_MAP_*` 是**这一张图自己的尺寸**（改了地图就跟着改这两个常量），
+	#    它不是「游戏要求地图多大」—— 游戏侧一切尺寸都从地图读（见下面那些断言）。
+	#    ⚠️ 别再往测试里塞「(2,2) 是玩家大本营」这种坐标：地图是设计师手里的东西，
+	#       搬一次家就会让一批断言集体假失败（这一轮已经领教过）。
 	var m = require_map(cfg)
 	if m == null:
 		return
 
-	eq(m.cols, EXPECTED_MAP_COLS, "地图 24 列")
-	eq(m.rows, EXPECTED_MAP_ROWS, "地图 16 行")
+	eq(m.cols, EXPECTED_MAP_COLS, "地图列数与预期一致（%d）" % EXPECTED_MAP_COLS)
+	eq(m.rows, EXPECTED_MAP_ROWS, "地图行数与预期一致（%d）" % EXPECTED_MAP_ROWS)
 	eq(m.terrain.cols, EXPECTED_MAP_COLS, "地形网格列数")
 	eq(m.terrain.rows, EXPECTED_MAP_ROWS, "地形网格行数")
 
-	# 大本营 (12,8)：HTML 版真正生效的点位（map.js 兜底 cols/2, rows/2）
-	v2i_eq(m.base, Vector2i(12, 8), "大本营坐标 (12, 8)")
+	# 大本营 = 地图里 p1 那一格（faction_bases.p1）——**以地图为准**，不写死坐标
+	var declared_p1 := Vector2i(int(m.faction_bases["p1"][0]), int(m.faction_bases["p1"][1]))
+	v2i_eq(m.base, declared_p1, "主阵营参考点 = faction_bases.p1")
 	ok(m.terrain_walkable(m.base.x, m.base.y), "大本营所在地块可通行（不是山）")
 	eq(m.general_spawns.size(), 3, "3 个将领出生点")
 
@@ -160,7 +170,7 @@ func _cases() -> void:
 				walkable += 1
 			else:
 				mountains += 1
-	eq(mountains + walkable, EXPECTED_MAP_COLS * EXPECTED_MAP_ROWS, "地形格数 = 24 × 16")
+	eq(mountains + walkable, m.cols * m.rows, "地形格数 = 列 × 行")
 
 	# 连通性修正之后：所有可通行格都必须从大本营走得到（这是修正存在的唯一理由）
 	var reach = m.flood_fill_terrain(m.base)
@@ -174,26 +184,39 @@ func _cases() -> void:
 	eq(unreachable, 0, "连通性修正后不存在走不到的可通行格")
 	ok(reach.size() > 100, "可通行区域是一大片（不是几个格子）")
 
-	# 森林减速（A* 代价用）
-	ok(m.terrain_cost(4, 3) > 1.0, "森林的移动代价高于草地")
-	near(m.terrain_cost(0, 0), 1.0, 1e-6, "草地的移动代价是 1")
+	# 森林更贵、草地是 1（找一格森林来测，别写死坐标）
+	var forest_tile := Vector2i(-1, -1)
+	for y in m.rows:
+		for x in m.cols:
+			if m.is_forest(x, y):
+				forest_tile = Vector2i(x, y)
+				break
+		if forest_tile.x >= 0:
+			break
+	ok(forest_tile.x >= 0, "地图里有森林格")
+	if forest_tile.x >= 0:
+		ok(m.terrain_cost(forest_tile.x, forest_tile.y) > 1.0, "森林的移动代价高于草地")
+	near(m.terrain_cost(m.base.x, m.base.y), 1.0, 1e-6, "草地（大本营格）的移动代价是 1")
 
-	# 出生点布局：单机（player）用地图中心点位；这一条保证单机行为与 HTML 版逐位一致
+	# 出生点布局：p1 用地图里指定的那一格（test_map.json 的 faction_bases.p1）
 	var layout = m.spawn_layout_for("p1", "p1")
-	v2i_eq(layout["base"], Vector2i(12, 8), "单机大本营仍在 (12, 8)")
-	eq(layout["spawns"].size(), 3, "单机 3 个将领站位")
-	eq((layout["defenses"] as Array).size(), 0, "单机没有额外防御阵地")
+	v2i_eq(layout["base"], declared_p1, "p1 大本营就在地图指定的那一格")
+	eq(layout["spawns"].size(), 3, "p1 有 3 个将领站位")
+	# ★ 走的是 `_ring_layout`（出生点自带一小段城墙 + 一座箭塔）
+	ok((layout["defenses"] as Array).size() > 0,
+		"★ 带 faction_bases 的地图：出生点自带防御阵地（%d 个）"
+		% (layout["defenses"] as Array).size())
 
-	# ★ map_01.json 里**没有** faction_bases → 上面那些兜底规则一条都不能变。
-	#   这一条是「加了阵营大本营功能之后，老地图行为一字不改」的守门员。
-	eq(m.faction_bases.size(), 0, "★ map_01.json 没有 faction_bases（老地图）")
+	# ★ 老式大本营（JSON 里那个单数 base）已经彻底删掉
+	#   ⚠️ 方法名是 `has_declared_base()`；以前这里写成 `file_has_declared_base()`，
+	#      无头跑出来是一句 SCRIPT ERROR（那一条断言根本没执行）。
+	ok(not m.has_declared_base(), "★ 发布图里没有老式 base 字段")
+	eq(m.faction_bases.size(), 2, "★ 发布图带 faction_bases（p1 / p2 两个）")
 
 	# ★「主阵营」只由名单顺序决定，不由「我是谁」决定。
-	#   单机名单是 ['player']，所以主阵营就是 player；
-	#   联机名单是 ['p1','p2']，主阵营是 p1 —— 两种名单各自内部一致，
-	#   但**不能**假设 p1 一定在地图中心（那正是 HTML 版注释里踩过的坑）。
+	#   单机名单是 ['p1']，所以主阵营就是 p1。
 	var p1_solo = m.spawn_layout_for("p1", "p1")
-	v2i_eq(p1_solo["base"], Vector2i(12, 8), "名单只有 p1 时，主阵营 p1 在大本营点位")
+	v2i_eq(p1_solo["base"], declared_p1, "名单只有 p1 时，主阵营 p1 在它自己那一格")
 
 	# 多玩家出生点互不重合、各自带防御阵地（第 1 轮联机的地基）
 	var p1_layout = m.spawn_layout_for("p1", "p1")

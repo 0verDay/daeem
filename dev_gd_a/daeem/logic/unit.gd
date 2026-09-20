@@ -94,6 +94,11 @@ var moving: bool = false
 ## 被人群无限推着走，人群永远静不下来。
 var settling: bool = false
 
+## 队形：本次命令要「借哪张距离场」拼路线（全队共用的那张）。
+## (-1,-1) = 不用场，走普通的「一次寻路到自己的落点」。
+## ★ 它只在一次 order_move_via_field 内部有效 —— 是**调用期的临时提示**，不是持久状态。
+var _field_tile: Vector2i = Vector2i(-1, -1)
+
 ## jam_timer：想走到终点、但每帧都被挤回来（进度被抵消）的累计时间。
 ##
 ## ★ 它解决的是「推挤能把单位推走的距离（一帧最多 ~0.25 格）远大于它自己的
@@ -130,6 +135,14 @@ var attack_flash: float = 0.0
 var last_target = null        # 最近一次开火的目标单位（渲染攻击线用）
 var last_building = null      # 最近一次攻击的建筑（渲染攻击线用）
 var repath_timer: float = 0.0
+## 上一次「为追击而重算路径」时，目标所在的位置。
+##
+## ★★ 用途：追击时不再无条件按周期重算路径，而是**只在目标真的挪过地方**时才重算。
+##    为什么必须这样（实测）：1000 个单位追击 = 每秒 3000+ 次完整寻路，
+##    而目标是墙 / 建筑 / 站定的单位时那些计算全是白费 —— 实机行军攻击因此掉到
+##    **49 ms/帧（20 fps）**，而且帧一慢 dt 变大、同一帧里到期的重寻路更多，是正反馈。
+##    哨兵值取一个离任何目标都很远的点，保证「刚发现目标」时一定会算一次。
+var last_repath_to: Vector2 = Vector2(-99999.0, -99999.0)
 
 ## ---- 玩家下达的攻击命令（右键点敌人 / 右键点建筑 / 双击行军攻击）----
 ##
@@ -227,7 +240,24 @@ func leash_range(cfg: ConfigRes) -> float:
 ##   ⚠️ 原地不动时它也返回 true（HTML 版就是因为只看返回值判断「到位了没」，
 ##      导致敌人站在墙边发呆，永远不拆墙 —— 见 docs/pitfalls.md 3.2）。
 ##      判断「到位了没」请读 moving / path。
-func move_to(world, cfg: ConfigRes, world_pt: Vector2) -> bool:
+##
+## @param settle `true` = 目的是「**站到某个点上**」，落点被占时要在附近挑一个空位。
+##        `false` = 目的是「**向某个点靠近**」（追击移动中的敌人）—— **跳过挑空位**。
+##
+## ★★ 为什么 `settle` 这个参数是本项目最值钱的一个开关（实测）：
+##    追击时落点永远是**敌人脚下那一格**，而敌人正站在那儿 —— 于是 `_arrival_congested`
+##    必然为真，每一次追击寻路都白跑一遍 `_find_arrival_slot`：
+##      · 先 `reachable_tiles()` 建一遍全图可达掩码（C# 内核单次 ~0.5 ms）；
+##      · 再对十几个候选点各扫一遍 `world.units`（1000 个单位）—— 单次 ~226 µs。
+##    1000 个单位行军攻击时，**同一帧**有几百个单位首次锁定目标（索敌是批量算的，
+##    所以它们天然同步），于是一帧里几百次 226 µs = **200+ ms 的单帧卡顿**，
+##    实机表现就是行军攻击掉到 20 fps。而追击**根本不需要空位**：
+##    进入攻击距离就会 `update_combat` → `halt()` 站住开火，那一步轮不到落点判定。
+##
+##    挑空位本身是对的 —— 它是为「玩家点一个点、一群人都要走过去站好」服务的
+##    （见 `_arrival_congested` 的注释）。所以这里是**分流**，不是删功能。
+func move_to(world, cfg: ConfigRes, world_pt: Vector2, settle: bool = true) -> bool:
+	move_to_calls += 1
 	var map = world.map
 	var from := Vector2i(tx, ty)
 
@@ -244,8 +274,9 @@ func move_to(world, cfg: ConfigRes, world_pt: Vector2) -> bool:
 	#      多半就是点击位置本身投影到边界上（点建筑靠哪侧就贴到哪侧）；
 	#   2. 那一格整格都进不去（山 / 越界 / 落在墙另一侧）时，才退回
 	#      「从目标往外扩圈找最近的、且我真的走得到的格子」。
-	if not PathfinderRes.passable(map, world.buildings, cfg, dest_tile.x, dest_tile.y, faction):
-		var near = PathfinderRes.nearest_reachable_point(map, world.buildings, cfg, from, dest_tile, world_pt, faction)
+	var _dest_ok := PathfinderRes.passable(map, world.buildings, cfg, dest_tile.x, dest_tile.y, faction)
+	if not _dest_ok:
+		var near = PathfinderRes.nearest_reachable_point(map, world.buildings, cfg, from, dest_tile, world_pt, faction, 32, world.crowd)
 		if near != null:
 			# ⚠️ 连落点所在的格一起换掉：贴边落点常常就在（不可通行的）目标格边缘上，
 			#    而 A* 的终点必须是可通行格 —— 只换点不换格，find_path 会直接返回 null
@@ -253,15 +284,15 @@ func move_to(world, cfg: ConfigRes, world_pt: Vector2) -> bool:
 			dest_pt = near["pt"]
 			dest_tile = near["tile"]
 		else:
-			var alt = PathfinderRes.nearest_reachable(map, world.buildings, cfg, from, dest_tile, faction, 20)
+			var alt = PathfinderRes.nearest_reachable(map, world.buildings, cfg, from, dest_tile, faction, 20, world.crowd)
 			if alt == null:
-				alt = PathfinderRes.nearest_reachable(map, world.buildings, cfg, from, dest_tile, faction, 60)
+				alt = PathfinderRes.nearest_reachable(map, world.buildings, cfg, from, dest_tile, faction, 60, world.crowd)
 			if alt == null:
 				return false
 			dest_tile = alt
 			dest_pt = GridRes.center_of(alt)
 
-	var tile_path = PathfinderRes.find_path(map, world.buildings, cfg, from, dest_tile, faction)
+	var tile_path = _tile_path(world, cfg, from, dest_tile)
 	if tile_path == null:
 		return false
 
@@ -283,12 +314,12 @@ func move_to(world, cfg: ConfigRes, world_pt: Vector2) -> bool:
 		raw.append(dest_pt)
 
 	# ★ 第一步：把折线拉直。开阔地带只剩一条直线，遇到山 / 城墙才保留拐点。
-	var pts := PathfinderRes.smooth_path(map, world.buildings, cfg, raw, faction)
+	var pts := PathfinderRes.smooth_path(map, world.buildings, cfg, raw, faction, world.crowd)
 	# ★ 第二步：把拉直后剩下的硬拐角圆化。
 	#   拉直只减少路径点，单位却是「走到路点才允许转向」，所以拐弯原本发生在**一帧之内**
 	#   （实测直角弯单帧转角 63°）。圆化把转向摊到十几帧里。
 	#   安全性：圆角曲线落在折线的凸包内，且结果里每一段都过 segment_clear 兜底。
-	pts = PathfinderRes.round_corners(map, world.buildings, cfg, pts, faction)
+	pts = PathfinderRes.round_corners(map, world.buildings, cfg, pts, faction, world.crowd)
 	# 丢掉第一个点（那是当前位置，不需要走）
 	var trimmed: Array[Vector2] = []
 	for i in range(1, pts.size()):
@@ -303,8 +334,9 @@ func move_to(world, cfg: ConfigRes, world_pt: Vector2) -> bool:
 		return true
 
 	# 期望落点：目标被占时会换成一个空位（见 step_along_path 的到达处理）
+	# ★ settle = false（追击）时整段跳过 —— 理由见 move_to 的 @param。
 	var settled_here := false
-	if _arrival_congested(world, cfg, dest_pt):
+	if settle and _arrival_congested(world, cfg, dest_pt):
 		var alt_slot = _find_arrival_slot(world, cfg, dest_pt, faction, from)
 		if alt_slot != null:
 			dest_pt = alt_slot
@@ -325,6 +357,69 @@ func move_to(world, cfg: ConfigRes, world_pt: Vector2) -> bool:
 	#    于是「最多回位 3 次」永远不生效 —— 实测直接就退化成 12 个单位永远 moving=true。
 	#    真正的「新命令」由 order_move() 负责清零。
 	return true
+
+
+## 追击移动：目标**近且直线无阻挡**时直接走直线，不走距离场 / A* / 拉直 / 圆角 / 落点挑选。
+##
+## ★★ 为什么单开一条入口（实测，行军攻击 20 fps 的第二大头）：
+##    · `move_to` 走的是「以**目标格**为终点的距离场」，于是每个**不同的敌人所在格**
+##      都要建一张新场 —— 而建场是**一次全图 Dijkstra**（C# 内核约 0.5 ms），LRU 只有 4 张。
+##      索敌是批量算的，几百个单位天然**同一帧**首次锁定目标 → 同一帧几十个新目标格
+##      → 几十次 Dijkstra → 实测单帧 `mv/tile` 峰值 **21.5 ms**。
+##    · 拉直（smooth_path）/ 圆角（round_corners）是为「长距离行军」服务的：
+##      几格之内的追击用不上它们。
+
+## 安全性：不满足「够近 + 直线可切」就**原样退回 move_to(settle=false)**，
+## 所以绕山 / 贴墙 / 隔墙追击的行为与从前完全一致（test_path_feel / test_diagonal 盯着）。
+func chase_to(world, cfg: ConfigRes, target_pos: Vector2) -> bool:
+	if pos.distance_to(target_pos) <= cfg.chase_direct_range \
+			and PathfinderRes.segment_clear(world.map, world.buildings, cfg, pos,
+				target_pos, faction, world.crowd):
+		_set_direct_path(target_pos)
+		return true
+	return move_to(world, cfg, target_pos, false)
+
+
+## 直接给一条两点直线路径（追击专用，见 chase_to）。
+## ⚠️ 字段复位必须和 move_to 保持一致：少复位一个 best_dist / stuck_timer，
+##    「卡住认账」那套逻辑就会带着上一条路的进度继续算（docs/pitfalls.md 3.2 同款）。
+func _set_direct_path(p: Vector2) -> void:
+	var pts: Array[Vector2] = [p]
+	path = pts
+	goal = p
+	has_goal = true
+	moving = true
+	settling = false
+	jam_timer = 0.0
+	best_dist = INF
+	stuck_timer = 0.0
+
+
+## 地块路线：优先走 world 的 C# **距离场**（一次建场、全队共用那条路线），
+## 内核不可用时回退 pathfinder.find_path 的 A*（普通版引擎 / 还没构建 C#）。
+##
+## ★ 为什么不是每个单位各跑一次 A*：实测 100×100 图上单次 A* = 19 ms，
+##   1000 个单位群编就是 **17 秒的命令帧冻结**。距离场把「N 次 A*」压成「1 次 Dijkstra」。
+##   两条路的代价口径逐条对齐（通行 / 对角守卫 / 地形代价 / 建筑惩罚），
+##   所以「场找得到、A* 找不到」这类不一致不会出现。
+func _tile_path(world, cfg: ConfigRes, from: Vector2i, to: Vector2i) -> Variant:
+	if world.crowd != null:
+		if _field_tile.x >= 0:
+			# 队形：全队共用一张「到 _field_tile」的距离场，各自的落点从它拼出来
+			return world.crowd.tile_path_via(world, cfg, from, to, _field_tile, faction)
+		return world.crowd.tile_path(world, cfg, from, to, faction)
+	return PathfinderRes.find_path(world.map, world.buildings, cfg, from, to, faction)
+
+
+## 队形专用：走到 dest_pt，路线借「到 field_tile 的距离场」拼出来。
+##
+## 为什么要有单独的入口而不是改 move_to 的签名：那个「借哪张场」只是**这一次调用**的
+## 临时提示，不该变成单位上的持久状态（下一轮命令就作废了）。放在这里一进一出，最不容易忘。
+func order_move_via_field(world, cfg: ConfigRes, dest_pt: Vector2, field_tile: Vector2i) -> bool:
+	_field_tile = field_tile
+	var ok := order_move(world, cfg, dest_pt)
+	_field_tile = Vector2i(-1, -1)
+	return ok
 
 
 ## 玩家 / AI 下达移动命令（点到哪走到哪）。
@@ -365,6 +460,11 @@ func order_attack_building(world, cfg: ConfigRes, b) -> bool:
 		return false
 	if FactionRes.same_side(b.owner, faction):
 		return false
+	# ★ 无敌建筑（区划中心）不接受攻击命令：它 owner 是空字符串，`same_side` 拦不住，
+	#   放进来会变成「走过去对着打不掉的柱子敲一辈子」，而且 ordered_building 黏住之后
+	#   敌人贴脸了它也不还手。见 combat.nearest_enemy_building() 的同一条守卫。
+	if b.has_method("is_invulnerable") and b.is_invulnerable():
+		return false
 	drop_engagement()
 	target_building = b
 	ordered_building = b
@@ -389,29 +489,51 @@ func order_attack_move(world, cfg: ConfigRes, world_pt: Vector2) -> bool:
 	return true
 
 
+## 队形版的行军攻击：走到 dest_pt（自己的槽位），但终点判定仍然以**全队目标点**为准。
+## ⚠️ attack_move_goal 必须是全队目标点而不是槽位 —— 「到点了就算完成」那条判定
+##    用的是它（见 combat.update_unit），写槽位的话每个单位都要走到自己那格里才算完，
+##    队尾的人会因为差半格而一直保持行军攻击状态。
+func order_attack_move_at(world, cfg: ConfigRes, dest_pt: Vector2, field_tile: Vector2i) -> bool:
+	_field_tile = field_tile
+	var ok := order_attack_move(world, cfg, dest_pt)
+	_field_tile = Vector2i(-1, -1)
+	if ok:
+		attack_move_goal = GridRes.center_of(field_tile)
+	return ok
+
+
 # ------------------------------------------------------------------
 # 到达落点（拥挤时就近找空位）
 # ------------------------------------------------------------------
 
 ## 单位之间的最小圆心距离（与 collision.gd 用同一套口径）
 func min_unit_distance(cfg: ConfigRes) -> float:
-	return maxf(0.0, cfg.num("unit.collision_radius", 0.18)) * 2.0 \
-		* clampf(cfg.num("unit.overlap_allowance", 0.7), 0.0, 1.0)
+	return maxf(0.0, cfg.unit_collision_radius) * 2.0 \
+		* clampf(cfg.unit_overlap_allowance, 0.0, 1.0)
 
 
 ## 这个落点是否会被别人占着（窄口径：只看那些**已经到达落点附近并停下来**的单位）。
 ##
 ## 为什么不看「正在移动的单位」：那群人正在一起赶路，彼此离得远，看他们没意义。
 ## 真正要避开的只有「已经站定在那儿的人」。
+##
+## ★★ 先用**格差**筛一遍再算距离：这是群编命令帧里唯一的 O(n²)——
+##    1000 个单位下一个命令就是 100 万次「属性访问 + 开方」。
+##    最小圆心距只有 0.252 格，所以「格差 > 1」的人根本不可能落在半径内，
+##    一次整数比较就能挡掉。实测这一条把命令帧砍掉一大截。
 func _arrival_congested(world, cfg: ConfigRes, p: Vector2) -> bool:
 	var need: float = min_unit_distance(cfg)
 	if need <= 0.0:
 		return false
+	var t := Vector2i(floori(p.x), floori(p.y))
+	var near_tiles := 1 if need < 1.0 else int(ceilf(need)) + 1
 	for other in world.units:
 		if other == self or not other.alive:
 			continue
 		if other.moving:
 			continue                     # 还在赶路的：不算占位
+		if absi(other.tx - t.x) > near_tiles or absi(other.ty - t.y) > near_tiles:
+			continue
 		if other.pos.distance_to(p) < need:
 			return true
 	return false
@@ -431,7 +553,7 @@ func _find_arrival_slot(world, cfg: ConfigRes, want: Vector2, faction: String, f
 	var step: float = maxf(0.05, need * 0.6)
 	# 可达区域只算一次：空位必须「真的从起点走得到」，
 	# 否则会给出墙另一侧的落点（docs/pitfalls.md 3.3 那个坑的同一类）
-	var region := PathfinderRes.reachable_tiles(world.map, world.buildings, cfg, from, faction)
+	var region = PathfinderRes.reachable_tiles(world.map, world.buildings, cfg, from, faction, world.crowd)
 
 	# 收集候选，然后挑「离目标最近」的那个。加 horizon 是为了不把远处的空位也算进来。
 	var cands: Array[Vector2] = []
@@ -462,7 +584,7 @@ func _find_arrival_slot(world, cfg: ConfigRes, want: Vector2, faction: String, f
 	return best
 
 
-func _slot_ok(world, cfg: ConfigRes, p: Vector2, faction: String, region: Dictionary, need: float) -> bool:
+func _slot_ok(world, cfg: ConfigRes, p: Vector2, faction: String, region, need: float) -> bool:
 	var t := Vector2i(floori(p.x), floori(p.y))
 	if not world.map.terrain.has(t.x, t.y):
 		return false
@@ -471,10 +593,14 @@ func _slot_ok(world, cfg: ConfigRes, p: Vector2, faction: String, region: Dictio
 	# ★ 本体级：格级放行了不代表站得住（大本营 / 箭塔的本体挡敌方）
 	if CollisionRes.body_blocked_at(world, cfg, faction, p, CollisionRes.radius(cfg)):
 		return false
-	if not region.has(world.map.terrain.idx(t.x, t.y)):
+	if not PathfinderRes.in_region(region, world.map.terrain.idx(t.x, t.y)):
 		return false
+	# ★ 同 _arrival_congested：先用格差筛，再算距离（最小间距远小于一格）
+	var near_tiles := 1 if need < 1.0 else int(ceilf(need)) + 1
 	for other in world.units:
 		if other == self or not other.alive:
+			continue
+		if absi(other.tx - t.x) > near_tiles or absi(other.ty - t.y) > near_tiles:
 			continue
 		if other.pos.distance_to(p) < need:
 			return false
@@ -507,13 +633,21 @@ func clear_target() -> void:
 	has_attack_move = false
 
 
+## ★ 换目标时调用：清掉重寻路的限流，并把「上次算路时目标在哪」推回哨兵值，
+##   保证刚锁定目标那一下**一定**会算一次路径（否则若旧目标恰好离新目标很近，
+##   距离判据会以为旧路还行，单位会沿着上一条命令的旧路走）。
+func reset_repath() -> void:
+	repath_timer = 0.0
+	last_repath_to = Vector2(-99999.0, -99999.0)
+
+
 ## 只脱离「当前在打谁」，**不动**玩家的命令
 ## （行军攻击要能在打完一个之后继续走，所以 combat.gd 的「目标没了」都走这里）
 func drop_engagement() -> void:
 	target = null
 	target_building = null
 	anchor = null
-	repath_timer = 0.0
+	reset_repath()
 
 
 ## 把连续位置换算成所在地块（tx/ty 只用于占区块 / 资源 / 箭塔 / 警戒判定）
@@ -522,16 +656,44 @@ func sync_tile(map) -> void:
 	ty = clampi(floori(pos.y), 0, map.terrain.rows - 1)
 
 
+## 只在**真的跨了格**的时候才改 tx/ty。
+##
+## ★ 为什么不是直接调 sync_tile：单位一帧只走 speed*dt ≈ 0.04 格，而一格是 1 格 ——
+##   也就是平均每 25 帧才换一格，原来却每帧都 floori 两次 + clampi 两次 + 写两个属性。
+##   （sync_tile 本身保留：碰撞把单位推开之后要走那条路，那里确实可能跨格。）
+func _sync_tile_if_changed(map) -> void:
+	var nx := clampi(floori(pos.x), 0, map.terrain.cols - 1)
+	var ny := clampi(floori(pos.y), 0, map.terrain.rows - 1)
+	if nx != tx:
+		tx = nx
+	if ny != ty:
+		ty = ny
+
+
 ## 一帧最多推进几段路径（见 STEP_GUARD_MIN 的注释）。
 ## 按地图对角线算：一条直线路径的拐点数不会超过它经过的格数，
 ## 所以这个护栏对正常行军永远是「走得到」，只拦住真正的病态路径。
 ## ⚠️ 地图尺寸现在是地图编辑器说了算（可以远大于 24×16），所以这里**不能写死**。
 ## ⚠️ 它也不该大到失去意义：*4 之后 1000×1000 的地图是 5600 段/帧，
 ##    而一帧真要跑 5600 段本身就是病态路径，护栏照旧能拦住。
+##
+## ★★ 结果按地图尺寸缓存（静态）：它只跟 cols/rows 有关，而原来
+##    **每个单位每帧**都要算一次 `sqrt(cols² + rows²)` —— 1000 个单位就是每帧 1000 次开方。
+static var _guard_key: int = -1
+static var _guard_val: int = 0
+## ★ 诊断计数器：真正进过 move_to（= 寻路）多少次。只有基准读它，逻辑不依赖。
+##   和 CombatRes.repath_calls 一起看，就能分清「次数太多」还是「单次太贵」。
+static var move_to_calls: int = 0
+
+
 func step_guard(map) -> int:
-	var diagonal := sqrt(float(map.terrain.cols * map.terrain.cols
-			+ map.terrain.rows * map.terrain.rows))
-	return maxi(STEP_GUARD_MIN, int(diagonal * STEP_GUARD_FACTOR))
+	var key: int = map.terrain.cols * 4096 + map.terrain.rows
+	if key != _guard_key:
+		_guard_key = key
+		var diagonal := sqrt(float(map.terrain.cols * map.terrain.cols
+				+ map.terrain.rows * map.terrain.rows))
+		_guard_val = maxi(STEP_GUARD_MIN, int(diagonal * STEP_GUARD_FACTOR))
+	return _guard_val
 
 
 ## 平滑移动：路径点是格坐标（最后一个点就是玩家点击的位置）。
@@ -542,14 +704,21 @@ func step_along_path(world, cfg: ConfigRes, dt: float) -> void:
 	# 本帧还剩多少距离预算。循环里会被消耗掉，所以先留一份给「到达处理」用：
 	# 判断「谁更接近目标」时要把这一帧的剩余预算也算进去，否则人人都在
 	# 自己上一帧的位置上比远近，先到的可能反而落不到那个点。
-	var remaining: float = speed(cfg, map) * dt
+	#
+	# ★ 这里刻意**内联 speed()**：那是每单位每帧一次的方法调用，
+	#   而它内部又只是「查一次基础速度 + 查一次森林」。语义与 speed() 完全一致。
+	var base_speed: float = cfg.unit_speed_of(kind)
+	var on_forest: bool = map != null and map.is_forest(tx, ty)
+	var remaining: float = base_speed * (cfg.unit_forest_mult if on_forest else 1.0) * dt
 
 	# recenter 与 remaining 同步消耗：到达判定要用的是**循环之后还剩多少预算**，
 	# 而不是本帧开头的预算（否则到达时又走一段，总位移会超过速度预算）。
 	var recenter: float = remaining
 	var guard := 0
+	# ★ 护栏上限提到循环外：原来它写在 while 条件里，**每走一段都要重算一次**（含开方）
+	var guard_limit := step_guard(map)
 
-	while remaining > 1e-9 and not path.is_empty() and guard < step_guard(map):
+	while remaining > 1e-9 and not path.is_empty() and guard < guard_limit:
 		guard += 1
 		# 变量名刻意不叫 node：logic/ 里出现 Node 相关字样一律视作架构违规信号
 		# （见 docs/architecture.md 第一条铁律），叫 waypoint 也不容易被误读成场景节点
@@ -559,12 +728,17 @@ func step_along_path(world, cfg: ConfigRes, dt: float) -> void:
 
 		if d <= 1e-6:                     # 已经在这一段终点上
 			path.remove_at(0)
-			sync_tile(map)
+			_sync_tile_if_changed(map)
 			continue
 
-		# 朝向跟着**这一步的实际方向**走（八方向下不再只有左右）
-		last_dir = delta / d
-		facing = last_dir
+		# ★ 方向向量只算一次。原来 `delta / d` 在下面两个分支里各写了一遍
+		#   （每次都是一次 Vector2 除法）。
+		var dir := delta / d
+		# ★ 朝向只在**真的变了**的时候才写：facing / last_dir 是脚本属性，
+		#   两次属性写比一次比较贵，而直线行军时方向根本不变（1000 单位每帧省 2000 次写入）。
+		if absf(dir.x - last_dir.x) > 1e-4 or absf(dir.y - last_dir.y) > 1e-4:
+			last_dir = dir
+			facing = dir
 
 		if remaining >= d:
 			# 走完这一段还有余量 → 落到拐点，继续走下一段
@@ -572,13 +746,13 @@ func step_along_path(world, cfg: ConfigRes, dt: float) -> void:
 			remaining -= d
 			recenter = remaining
 			path.remove_at(0)
-			sync_tile(map)
+			_sync_tile_if_changed(map)
 		else:
 			# 本帧走不完这一段 → 沿方向推进，单位停在地块之间的连续位置上
-			pos += delta / d * remaining
+			pos += dir * remaining
 			remaining = 0.0
 			recenter = 0.0
-			sync_tile(map)
+			_sync_tile_if_changed(map)
 
 	# ★★ 到达判定：用**距离**，并且用**进度停滞**兜底。
 	#
@@ -593,14 +767,21 @@ func step_along_path(world, cfg: ConfigRes, dt: float) -> void:
 	#   2. **连续 jam_giveup_sec 秒没有更接近终点**（挤不过去，认账）。
 	if not has_goal:
 		return                          # 目标已被清掉（交战中 halt 等），什么都不用做
+	# ⚠️ 进度用的是「到**终点**的直线距离」，不是「沿路径还剩多少」。
+	#    这里踩过一次（加区划中心之后调走过一版）：改成「路径剩余长度」之后，
+	#    拥挤的人群永远停不下来 —— 因为每帧的推进都会让 `path` 变短一点，
+	#    `stuck_timer` 就被一直清零，`jam_giveup_sec` 那套认账逻辑彻底失效
+	#    （实测：12 个单位 1200 帧仍在 moving）。**别再改回去**。
+	#    「绕路时直线距离先变大」那件事由 `update_combat` 每 repath_sec 重新寻路时的
+	#    `move_to()` 一起解决（它会把 best_dist 复位），不需要动这里的口径。
 	var dist_now: float = pos.distance_to(goal)
 	if dist_now < best_dist - 1e-4:
 		best_dist = dist_now
 		stuck_timer = 0.0
 	else:
 		stuck_timer += dt
-	var arrived: bool = dist_now <= recenter + ARRIVE_EPS
-	var gave_up: bool = stuck_timer >= cfg.num("unit.jam_giveup_sec", 0.6)
+	var arrived: bool = dist_now <= remaining + ARRIVE_EPS
+	var gave_up: bool = stuck_timer >= cfg.unit_jam_giveup_sec
 	if not arrived and not gave_up:
 		return                          # 既没到、也没卡住：继续走
 
@@ -651,10 +832,10 @@ func step_along_path(world, cfg: ConfigRes, dt: float) -> void:
 func reclaim_settled_spot(world, cfg: ConfigRes) -> void:
 	if moving or not has_settled_goal or not alive:
 		return
-	var back_dist: float = maxf(0.02, cfg.num("unit.settle_return_dist", 0.22))
+	var back_dist: float = maxf(0.02, cfg.unit_settle_return_dist)
 	if pos.distance_to(settled_goal) <= back_dist:
 		return
-	if settle_attempts >= int(cfg.num("unit.settle_max_attempts", 3.0)):
+	if settle_attempts >= cfg.unit_settle_max_attempts:
 		return                                  # 挤不进去就算了，就地待着
 	settle_attempts += 1
 	move_to(world, cfg, settled_goal)

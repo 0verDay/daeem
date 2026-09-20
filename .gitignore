@@ -12,3 +12,10 @@ dev_html/tools/_browser_shot.html
 .idea/
 Thumbs.db
 desktop.ini
+
+# C# 的 NuGet 包缓存（见 dev_gd_a/daeem/NuGet.config）
+# 故意放在 Godot 工程**外面**：放进工程里会被 Godot 的文件扫描当成项目资源导入。
+dev_gd_a/.nuget-packages/
+
+# Godot 导出的可执行文件（export_presets.cfg 里 export_path="exports/DAEEM.exe"）
+dev_gd_a/daeem/exports/

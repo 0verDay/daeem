@@ -89,7 +89,10 @@ func _test_real_test_map(cfg) -> void:
 		% [str(want_player), str(got_player)])
 	ok(w.find_base_of("p1") != null, "player 的基地真的立起来了（TYPE_BASE 建筑在）")
 	ok(w.unit_by_id("general-1") != null, "将领正常生成了")
-	eq(w.zones.zones.size(), 10, "这张图的 10 个区块都进了世界")
+	# 区块数**以地图自己说的为准**（别写死：设计师往图里加一个区就会让这条假失败）
+	eq(w.zones.zones.size(), m.zones_names.size(),
+		"地图里声明的 %d 个区块都进了世界" % m.zones_names.size())
+	ok(w.zones.zones.size() >= 10, "这张图至少有 10 个区块（实际 %d）" % w.zones.zones.size())
 	var names: Array = []
 	for z in w.zones.zones:
 		names.append(String(z["name"]))
@@ -117,14 +120,22 @@ func _test_real_test_map(cfg) -> void:
 ## 这一条要钉住的就一件事：**老地图（没有 faction_bases）的行为一字不变**，
 ## 而带 faction_bases 的地图按它建房 —— 两边都不能错。
 func _test_faction_bases(cfg) -> void:
-	# ---- 1. 老地图：空字典 → 走原来的兜底规则
-	var legacy = require_map(cfg)
+	# ---- 1. 老地图（**自己拼一张**：只有 layout + 旧格式的 base）：
+	#         空 faction_bases → 走原来的兜底规则
+	# ★ 不读 map_01.json：它已经搬到新格式了（有 faction_bases），当不了「老地图」样本。
+	var legacy = MapDataRes.load_from(_write_map("legacy_for_factions.json", {
+		"cols": 24, "rows": 16,
+		"layout": _flat_layout(24, 16),
+		"base": [12, 8],
+		"pvp_points": [[12, 14]],
+	}), cfg)
+	ok(legacy != null, "老地图能载入")
 	if legacy == null:
 		return
 	eq(legacy.faction_bases.size(), 0, "★ 老地图没有 faction_bases（空字典）")
 	eq(legacy.factions_meta.size(), 0, "老地图也没有 factions 元数据")
 	v2i_eq(legacy.spawn_layout_for("p1", "p1")["base"], Vector2i(12, 8),
-		"★ 没有 faction_bases 时，player 仍然用地图中心的 base（老行为）")
+		"★ 没有 faction_bases 时，player 仍然用地图里写的那个 base（老行为）")
 	var legacy_p2: Dictionary = legacy.spawn_layout_for("p2", "p1")
 	ok(legacy_p2["base"] != Vector2i(12, 8),
 		"★ 没有 faction_bases 时，p2 仍然从 pvp_points 取点（老行为，不会跟玩家重合）")
@@ -215,7 +226,18 @@ func _test_faction_bases(cfg) -> void:
 # 1. 老地图：没有 exists / zones 时行为一字不变
 # ------------------------------------------------------------------
 func _test_legacy_unchanged(cfg) -> void:
-	var m = require_map(cfg)
+	# ★★ 这里**故意自己拼一张「老地图」**（而不是读 map_01.json）：
+	#    随游戏发布的那张图已经被搬到新格式了（有 zones / zone_centers / faction_bases），
+	#    而这一节要钉的恰恰是「**没有**那些字段时行为一字不变」。
+	#    老地图长什么样：只有 cols/rows/layout（+ 那个已废弃的 base），没有 exists /
+	#    zones / zone_list / zone_centers / factions / faction_bases。
+	var path := _write_map("legacy_plain.json", {
+		"cols": 24, "rows": 16,
+		"layout": _flat_layout(24, 16),
+		"base": [12, 8],
+	})
+	var m = MapDataRes.load_from(path, cfg)
+	ok(m != null, "老地图（只有 layout）能载入")
 	if m == null:
 		return
 	eq(m.cols, 24, "老地图 cols")
@@ -229,12 +251,22 @@ func _test_legacy_unchanged(cfg) -> void:
 	ok(all_true, "老地图：所有地块都存在（没有 exists 字段 = 处处存在）")
 	ok(m.zones_grid.is_empty(), "老地图没有 zones 网格")
 	eq(m.zones_names.size(), 0, "老地图没有区块名字表")
+	ok(m.zones_centers.is_empty(), "★ 老地图没有区划中心（不会凭空立起障碍）")
+	ok(m.factions_meta.is_empty(), "★ 老地图没有 factions 元数据")
 
 	var zs = ZoneRes.build_from_map(m, cfg, ["p1"])
 	eq(zs.zones.size(), 24, "★ 老地图的区块仍然是 6×4 均分 = 24 块")
 	eq(String(zs.zones[0]["name"]), "A1", "老地图第一块仍然叫 A1")
 	eq(int(zs.zones[0]["tile_count"]), 16, "老地图每块仍然 16 格")
 	eq(zs.lookup[m.terrain.idx(5, 4)], 7, "老地图的 lookup 与老实现一致（(5,4) → 行块 1、列块 1 → id 7）")
+
+
+## 生成一整片草地的 layout（24×16 的老地图形状）
+func _flat_layout(cols: int, rows: int) -> Array:
+	var out: Array = []
+	for i in rows:
+		out.append(".".repeat(cols))
+	return out
 
 
 # ------------------------------------------------------------------

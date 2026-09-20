@@ -3,7 +3,7 @@
 命令行：
 
     python dev_gd_a/tools/map_editor                 # 打开一张空白画布
-    python dev_gd_a/tools/map_editor data/map_01.json  # 直接打开一张地图
+    python dev_gd_a/tools/map_editor data/test_map.json # 直接打开一张地图
                                                      #（路径相对 dev_gd_a/daeem/ 或当前目录都行）
     python dev_gd_a/tools/map_editor --selftest      # 不开窗口，跑一遍数据层自检
 """
@@ -55,14 +55,17 @@ def selftest(project_dir: Path) -> int:
         ", ".join(sorted(k for k in (cfg.get("colors") or {}) if isinstance(
             (cfg.get("colors") or {}).get(k), str)))))
 
-    sample = project_dir / "data" / "map_01.json"
+    sample = project_dir / "data" / "test_map.json"
     if not sample.is_file():
         print("[map] 找不到样例地图：%s" % sample)
         return 1
     model = mapfile.load_map(sample, cfg)
-    print("[load] %s -> %dx%d, tiles=%d, zones=%d, base=%s" % (
+    print("[load] %s -> %dx%d, tiles=%d, zones=%d, centers=%d, factions=%d" % (
         sample.name, model.cols, model.rows, model.existing_count(),
-        len(model.zones), model.base))
+        len(model.zones), len(model.center_of), len(model.factions)))
+    print("[centers] %s" % ", ".join(
+        "%s=(%d,%d)" % (z.name, z.center[0], z.center[1])
+        for z in model.zones[:4] if z.center is not None))
     for problem in model.problems():
         print("[warn] %s" % problem)
 
@@ -71,9 +74,11 @@ def selftest(project_dir: Path) -> int:
     again = mapfile.dict_to_model(json.loads(text), cfg)
     same = (again.existing == model.existing and again.terrain == model.terrain
             and again.cols == model.cols and again.rows == model.rows
-            and again.base == model.base
-            and sorted((z.zone_id, z.name, sorted(z.tiles)) for z in again.zones)
-            == sorted((z.zone_id, z.name, sorted(z.tiles)) for z in model.zones))
+            and again.faction_bases == model.faction_bases
+            and sorted((z.zone_id, z.name, sorted(z.tiles), z.center,
+                        tuple(sorted(z.production.items()))) for z in again.zones)
+            == sorted((z.zone_id, z.name, sorted(z.tiles), z.center,
+                       tuple(sorted(z.production.items()))) for z in model.zones))
     print("[roundtrip] %s" % ("OK" if same else "FAILED"))
     return 0 if same else 1
 

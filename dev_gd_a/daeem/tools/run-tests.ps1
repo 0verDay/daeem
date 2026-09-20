@@ -40,7 +40,9 @@ if (-not $Godot) {
         # Environment variable wins so that another machine needs no edit.
         $Godot = $env:GODOT_EXE
     } else {
-        $Godot = 'C:\D\GodotEngine\Godot_v4.7.2-stable_win64_console.exe'
+        # MUST be the .NET (mono) build: the project has a C# assembly (daeem.csproj)
+        # that the plain build cannot load, so tests would fail for the wrong reason.
+        $Godot = 'C:\D\GodotEngine\gd4.7.2mono\Godot_v4.7.2-stable_mono_win64_console.exe'
     }
 }
 

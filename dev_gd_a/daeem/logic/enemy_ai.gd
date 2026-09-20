@@ -52,12 +52,16 @@ static func update(world, cfg: ConfigRes) -> void:
 		#    combat.update_building_combat 那一帧又 halt 一次 —— 两头一夹，
 		#    敌人贴着墙站住、一下也不拆（症状和 HTML 版那个「站在墙边发呆」一模一样）。
 		#
-		# 这里用曼哈顿距离判「相邻」是**刻意的**：`<= 1` 恰好覆盖「四邻 + 对角」，
-		# 也就是八方向下的「紧挨着」；换成 octile 反而不好读（那会变成 <= 1.42）。
-		if absi(u.tx - goal_base.x) + absi(u.ty - goal_base.y) <= 1:
+		# 这里用**切比雪夫**距离判「相邻」：`<= 1` 覆盖「四邻 + 对角」，
+		# 也就是八方向下的「紧挨着」。
+		# ⚠️ 原来写的是曼哈顿 `|dx|+|dy| <= 1`，而曼哈顿下对角是 2 ——
+		#    于是「斜着贴住据点」的敌人进不了这个分支，会去 move_to 据点格心、往本体里挤；
+		#    同一个据点，从正面来和从斜角来行为不一样（当时的注释还写着「覆盖对角」，是错的）。
+		#    回归测试在 test_logic.gd 的「敌人停在大本营旁」那一条（判据也一并改成切比雪夫）。
+		if maxi(absi(u.tx - goal_base.x), absi(u.ty - goal_base.y)) <= 1:
 			var wall_here = PathfinderRes.find_blocking_wall_toward(
 				world.map, world.buildings, cfg, world.building_list,
-				Vector2i(u.tx, u.ty), goal_base, u.faction, "wall"
+				Vector2i(u.tx, u.ty), goal_base, u.faction, "wall", world.crowd
 			)
 			if wall_here != null:
 				CombatRes.set_building_target(u, wall_here)
@@ -69,7 +73,7 @@ static func update(world, cfg: ConfigRes) -> void:
 
 		# 按「敌方通行规则」寻路：城墙会阻挡，所以只能绕路或拆墙
 		var goal = PathfinderRes.nearest_reachable(
-			world.map, world.buildings, cfg, Vector2i(u.tx, u.ty), goal_base, u.faction
+			world.map, world.buildings, cfg, Vector2i(u.tx, u.ty), goal_base, u.faction, 12, world.crowd
 		)
 		if goal != null and (u.tx != goal.x or u.ty != goal.y):
 			# ⚠️ move_to 收的是格坐标点，A* 给的是地块坐标：这里必须换算成格心
@@ -84,7 +88,7 @@ static func update(world, cfg: ConfigRes) -> void:
 		#    （这曾经就是「敌人不拆墙、站在墙边发呆」的原因）
 		var blocker = PathfinderRes.find_blocking_wall_toward(
 			world.map, world.buildings, cfg, world.building_list,
-			Vector2i(u.tx, u.ty), goal_base, u.faction, "wall"
+			Vector2i(u.tx, u.ty), goal_base, u.faction, "wall", world.crowd
 		)
 		if blocker != null:
 			CombatRes.set_building_target(u, blocker)

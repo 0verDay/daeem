@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 import time
@@ -37,7 +38,7 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 
 import tkinter as tk                        # noqa: E402
-from tkinter import filedialog, ttk        # noqa: E402
+from tkinter import filedialog, messagebox, ttk        # noqa: E402
 
 from map_editor import app as app_module    # noqa: E402
 from map_editor import mapfile              # noqa: E402
@@ -276,12 +277,16 @@ def t_step2_right_click_deletes() -> None:
         editor.undo()
         ok(editor.model.exists(3, 2), "★ Ctrl+Z 能把右键删掉的地块撤销回来")
 
-        # 大本营按钮还在（属性面板里）
-        click_at(editor, 5, 4)
-        editor.toggle_base(5, 4)
-        eq(editor.model.base, (5, 4), "★ 侧边栏按钮把大本营设在这一格")
-        editor.toggle_base(5, 4)
-        eq(editor.model.base, None, "再点一次 = 取消大本营")
+        # ★ 「大本营」按钮**已经不在地块页签里了**（老式大本营彻底删掉）——
+        #   现在只有「每个阵营的大本营」，它在阵营页签里设（见 [17]）。
+        ok(not hasattr(editor, "base_btn"),
+           "★ 地块面板里没有大本营按钮了（老式大本营已删除）")
+        # 面板上的控件确实换成了「地块」那一节 + 删除按钮
+        click_at(editor, 4, 4)          # 让面板切到一格上（没格子时它不建这些控件）
+        ok("delete" in editor._tile_widgets and "base" not in editor._tile_widgets,
+           "★ 地块面板里只有「删除这个地块」，没有大本营按钮（%s）"
+           % sorted(editor._tile_widgets.keys()))
+        editor.set_page("tile")
 
         # 「删除这个地块」按钮和右键删格是同一个动作
         click_at(editor, 5, 4)
@@ -410,12 +415,18 @@ def t_step4_export_import() -> None:
         editor.set_tile_terrain("mountain")
         click_at(editor, 1, 1)
         editor.set_tile_terrain("forest")
-        editor.toggle_base(0, 0)
+        # ★ 导出有硬规则了：每个阵营必须有大本营、每个区划必须有中心。
+        #   所以先摆一个阵营 + 它的基地，再把地块划给区块并给它设中心。
+        #   （阵营 id 直接用游戏那套 'p1'，与 [17] 阵营页签测试里那套等价。）
+        editor.model.add_faction("p1", "p1")
+        editor.model.set_faction_base("p1", 0, 0)
         editor.set_page("zone")
         editor.add_zone()
         zone = editor.model.zones[0]
         for tile in ((0, 0), (1, 0)):
             click_at(editor, *tile)
+        editor.model.set_zone_center(zone.zone_id, 1, 0)
+        editor.refresh_zone_panel()
 
         target = tmp / "exported.json"
         filedialog.asksaveasfilename = lambda **kwargs: str(target)
@@ -431,10 +442,11 @@ def t_step4_export_import() -> None:
         eq(editor.model.existing_count(), 4, "★ 重新打开：地块数一致")
         eq(editor.model.terrain_at(2, 2), "mountain", "地形一致（山地）")
         eq(editor.model.terrain_at(1, 1), "forest", "地形一致（森林）")
-        eq(editor.model.base, (0, 0), "大本营一致")
+        eq(editor.model.faction_base_of("p1"), (0, 0), "大本营一致")
         eq(len(editor.model.zones), 1, "区块数量一致")
         eq(editor.model.zone(editor.model.zones[0].zone_id).name, zone.name, "区块名一致")
         eq(editor.model.zone(editor.model.zones[0].zone_id).tile_count, 2, "区块的地块一致")
+        eq(editor.model.zone_center_of(zone.zone_id), (1, 0), "★ 区划中心一致")
     finally:
         filedialog.asksaveasfilename = original_save
         filedialog.askopenfilename = original_open
@@ -540,7 +552,7 @@ def t_draw_up_left_no_invisible_wall() -> None:
                                        sy + editor.tile_px() * 0.5)
             eq(back, tile, "★ 屏幕 ↔ 世界坐标往返：%s（origin 平移过也不能错位）" % (tile,))
 
-        # 平移过原点之后：地形 / 区块 / 大本营都得跟着搬
+        # 平移过原点之后：地形 / 区块 / 区划中心都得跟着搬
         editor.inspect = (-1, -1)
         editor.set_tile_terrain("mountain")
         eq(editor.model.terrain_at(-1, -1), "mountain", "★ 负坐标那一格的地形改得动")
@@ -549,8 +561,10 @@ def t_draw_up_left_no_invisible_wall() -> None:
         editor.model.assign_tile(-1, -1, editor.selected_zone)
         eq(editor.model.zone_at(-1, -1).zone_id, editor.selected_zone,
            "★ 负坐标的格子也能划给区块")
-        editor.toggle_base(-1, -1)
-        eq(editor.model.base, (-1, -1), "★ 大本营也能设在负坐标上")
+        editor.inspect = (-1, -1)
+        editor.toggle_zone_center()
+        eq(editor.model.zone_center_of(editor.selected_zone), (-1, -1),
+           "★ 区划中心也能设在负坐标上")
 
         # 再往左上画一格：已有内容必须原地不动（世界坐标含义不变）
         # ⚠️ 别忘了切回「地块」页签：区块页签上左键是「划区块」，不建格。
@@ -558,7 +572,8 @@ def t_draw_up_left_no_invisible_wall() -> None:
         click_world(editor, -2, -2)
         eq(editor.model.bounds(), (-2, -2, 0, 0), "★ 再往左上画：包围盒变成 (-2,-2)…(0,0)")
         eq(editor.model.terrain_at(-1, -1), "mountain", "★ 平移之后老地块的地形没丢")
-        eq(editor.model.base, (-1, -1), "★ 平移之后大本营没跑")
+        eq(editor.model.zone_center_of(editor.selected_zone), (-1, -1),
+           "★ 平移之后区划中心没跑")
         eq(editor.model.zone_at(-1, -1).zone_id, editor.selected_zone,
            "★ 平移之后区块归属没跑")
 
@@ -567,7 +582,8 @@ def t_draw_up_left_no_invisible_wall() -> None:
         data = mapfile.model_to_dict(editor.model)
         eq((data["cols"], data["rows"]), (3, 3), "★ 导出尺寸 = 包围盒 3×3（自动算出来的）")
         eq(sum(sum(row) for row in data["exists"]), 5, "导出里有 5 个地块")
-        eq(data["base"], [1, 1], "大本营被搬到导出坐标系里（(-1,-1) → (1,1)）")
+        entry = next(z for z in data["zone_list"] if z["id"] == editor.selected_zone)
+        eq(entry["center"], [1, 1], "★ 区划中心被搬到导出坐标系里（(-1,-1) → (1,1)）")
 
         # 撤销：网格平移这件事也要能退回去（否则同一格的世界坐标会整体偏）
         origin_before = (editor.model.origin_x, editor.model.origin_y)
@@ -836,29 +852,31 @@ def t_zone_tab_with_real_map() -> None:
     print("\n[13] 地块 ↔ 区块 来回切（曾经死循环）")
     cfg = mapfile.load_config(PROJECT_DIR) if hasattr(mapfile, "load_config") else None
     from map_editor.model import load_config as _load_cfg
-    model = mapfile.load_map(PROJECT_DIR / "data" / "map_01.json", _load_cfg(PROJECT_DIR))
+    # ★ 用随游戏发布的那张图（老图 map_01.json 已删，只剩 test_map.json）
+    map_path = PROJECT_DIR / "data" / "test_map.json"
+    model = mapfile.load_map(map_path, _load_cfg(PROJECT_DIR))
+    zone_count = len(model.zones)
     root = tk.Tk()
     root.geometry("1280x800")
     root.deiconify()
     root.update()
-    editor = app_module.EditorApp(root, PROJECT_DIR, model,
-                                  PROJECT_DIR / "data" / "map_01.json")
+    editor = app_module.EditorApp(root, PROJECT_DIR, model, map_path)
     root.update()
     editor.apply_initial_view()
     try:
-        eq(len(editor.model.zones), 24, "这张图有 24 个区块")
+        ok(zone_count >= 10, "这张图至少有 10 个区块（实际 %d）" % zone_count)
         started = time.perf_counter()
         for i in range(3):
             editor.tab_buttons["zone"].invoke()
             root.update()
             eq(editor.page, "zone", "第 %d 次点「区块」→ 切过去了" % (i + 1))
-            eq(len(editor.zone_tree.get_children()), 24, "区块列表里有 24 行")
+            eq(len(editor.zone_tree.get_children()), zone_count, "区块列表里有 %d 行" % zone_count)
             editor.tab_buttons["tile"].invoke()
             root.update()
             eq(editor.page, "tile", "第 %d 次点「地块」→ 切回去了" % (i + 1))
         elapsed = time.perf_counter() - started
         # ⚠️ 这条断言**只是死循环的守门员**（不卡就是「秒级回来」），不是性能指标：
-        #    阈值给得宽是因为一页侧边栏里要 new 一个 24 行的 Treeview（tk 建行很贵），
+        #    阈值给得宽是因为一页侧边栏里要 new 一个几十行的 Treeview（tk 建行很贵），
         #    而切页签本来就该重建一次。真正的性能断言在 t_smooth_no_wasted_work 里。
         ok(elapsed < 8.0, "★ 来回切 3 轮只花了 %.2f 秒（死循环的话这里会永远回不来）" % elapsed)
 
@@ -872,12 +890,13 @@ def t_zone_tab_with_real_map() -> None:
         eq(editor.selected_zone, second, "★ 选第二个区块 → 选中状态跟着变")
         editor.on_zone_select(None)          # 再触发一次（同一个选区，不该有任何副作用）
         eq(editor.selected_zone, second, "★ 重复触发同一个选区事件仍然没反应也不卡")
-        eq(len(editor.zone_tree.get_children()), 24, "列表还是完整的 24 行")
+        eq(len(editor.zone_tree.get_children()), zone_count,
+           "列表还是完整的 %d 行" % zone_count)
 
         # 侧边栏重建的防重入闸门不该卡在「正在进行」上
         eq(editor._rebuilding, False, "★ 防重入闸门已经放开（能继续重建侧边栏）")
         editor.refresh_sidebar()
-        eq(len(editor.zone_tree.get_children()), 24, "手动重建侧边栏后列表仍然正确")
+        eq(len(editor.zone_tree.get_children()), zone_count, "手动重建侧边栏后列表仍然正确")
         eq(editor._rebuilding, False, "重建完闸门是开的")
     finally:
         root.destroy()
@@ -1199,11 +1218,18 @@ def t_file_buttons_wired() -> None:
         ok(target.is_file(), "★ 点「导出 JSON」真的写出了文件")
 
         # 点「导入地图…」：同样替换对话框，确认它读进一张真图
-        filedialog.askopenfilename = lambda **kwargs: str(PROJECT_DIR / "data" / "map_01.json")
+        # ★ 用随游戏发布的那张图（老图 map_01.json 已删，只剩 test_map.json）。
+        # ⚠️ 断言用**真实图上的数**，别写死 374/10：设计师往图里加地块 / 加区块是常事
+        #    （这一轮就加了 4 个区块），写死的后果是一批「导入没生效」的假失败。
+        pub_map = PROJECT_DIR / "data" / "test_map.json"
+        from map_editor.model import load_config as _load_cfg_pub
+        pub_model = mapfile.load_map(pub_map, _load_cfg_pub(PROJECT_DIR))
+        filedialog.askopenfilename = lambda **kwargs: str(pub_map)
         editor.file_buttons["import"].invoke()
         filedialog.askopenfilename = original_open
-        eq(editor.model.existing_count(), 384, "★ 点「导入地图…」真的把 map_01.json 读进来了")
-        eq(len(editor.model.zones), 24, "导入之后区块也一起进来了")
+        eq(editor.model.existing_count(), pub_model.existing_count(),
+           "★ 点「导入地图…」真的把 test_map.json 读进来了")
+        eq(len(editor.model.zones), len(pub_model.zones), "导入之后区块也一起进来了")
 
         # 「新建」不再弹任何对话框：直接给一张全新的无限虚线画布
         ok(bool(editor.file_buttons["new"].cget("command")), "「新建地图」按钮也接上了动作")
@@ -1215,6 +1241,178 @@ def t_file_buttons_wired() -> None:
         filedialog.asksaveasfilename = original_save
         filedialog.askopenfilename = original_open
         shutil.rmtree(tmpdir, ignore_errors=True)
+        root.destroy()
+
+
+def t_zone_center_and_production_ui() -> None:
+    """区块页签的「区划中心」按钮与「产能」三档（需求：中心在区划页签里设、产能也在那里配）。
+
+    交互与阵营页的「把大本营设在这里」同源：
+      列表里选中区划 → 左键点它自己的一个地块（区块页签左键 = 划给它 + 把面板切到这一格）
+      → 按「把中心设在这一格」；再按一次 = 取消。
+
+    ⚠️ 这条测试要钉住的是**按钮的可用性**：不是它自己的地块时按钮必须是禁用的
+      （否则用户点下去只会得到一句状态栏提示，很容易以为功能坏了）。
+    """
+    print("\n[19] 区划中心 + 产能（区块页签）")
+    root, editor = build_editor()
+    try:
+        for tile in ((0, 0), (1, 0), (2, 0), (0, 1)):
+            click_at(editor, *tile)
+
+        def select_zone(zone) -> None:
+            """像用户那样在列表里选一个区划（走 Treeview 的选中事件）。
+
+            ⚠️ 不能直接改 `editor.selected_zone`：`refresh_zone_panel()` 会用
+               Treeview 的选中项把它同步回去（列表是选中状态的真相）。
+            """
+            editor.set_page("zone")
+            editor.zone_tree.selection_set(str(zone.zone_id))
+            editor.on_zone_select(None)
+            editor.refresh_zone_panel()
+
+        editor.set_page("zone")
+        editor.add_zone()
+        a = editor.model.zones[0]
+        editor.add_zone()
+        b = editor.model.zones[1]
+
+        # ---- 还没有选中区划的格子时：按钮是禁用的
+        eq(editor.zone_center_btn.cget("state"), "disabled",
+           "★ 还没设中心也没选格子 → 按钮禁用（点了不该有反应）")
+
+        # ---- 把 (0,0)(1,0) 划给 a，再把中心设在 (1,0)
+        select_zone(a)
+        click_at(editor, 0, 0)
+        click_at(editor, 1, 0)
+        eq(a.tile_count, 2, "两格划给了第一个区划")
+        eq(editor.inspect, (1, 0), "★ 区块页左键点格子 = 面板正在看这一格")
+        eq(editor.zone_center_btn.cget("state"), "normal", "这一格是它的 → 按钮可用")
+        editor.zone_center_btn.invoke()
+        eq(editor.model.zone_center_of(a.zone_id), (1, 0), "★ 按钮把中心设在这一格")
+        ok("(1, 0)" in editor.zone_center_label.cget("text"),
+           "面板上显示中心位置（%s）" % editor.zone_center_label.cget("text"))
+        eq(editor.zone_center_btn.cget("text"), "取消这个中心", "再按一次就是取消")
+
+        # ---- 再按一次 = 取消
+        editor.zone_center_btn.invoke()
+        eq(editor.model.zone_center_of(a.zone_id), None, "★ 再按一次取消了中心")
+
+        # ---- 中心必须是**它自己的**地块：切到 b，面板还看着 (1,0)（属于 a）→ 按钮禁用
+        select_zone(b)
+        eq(editor.zone_center_btn.cget("state"), "disabled",
+           "★ 面板看着的地块不属于当前区划 → 按钮禁用")
+        editor.toggle_zone_center()          # 就算硬调也不能改数据
+        eq(editor.model.zone_center_of(b.zone_id), None, "★ 硬调也设不上（不是它的地块）")
+
+        # ---- b 自己划一格就能设
+        click_at(editor, 2, 0)
+        eq(editor.zone_center_btn.cget("state"), "normal", "划给它之后按钮可用")
+        editor.zone_center_btn.invoke()
+        eq(editor.model.zone_center_of(b.zone_id), (2, 0), "★ 第二个区划也设上了中心")
+
+        # ---- 撤销：设中心要能退（一次点击 = 一步撤销）
+        editor.model.clear_zone_center(b.zone_id)      # 先回到「没中心」
+        editor.inspect = (2, 0)
+        editor.toggle_zone_center()
+        eq(editor.model.zone_center_of(b.zone_id), (2, 0), "重新设上中心")
+        editor.undo()
+        eq(editor.model.zone_center_of(b.zone_id), None, "★ Ctrl+Z 能撤销「设中心」")
+        eq(editor.model.center_of, {}, "反查表也跟着退回去了")
+        editor.redo()
+        eq(editor.model.zone_center_of(b.zone_id), (2, 0), "★ 重做又回来")
+
+        # ---- 产能：三档输入框都在，填完写进模型
+        keys = [k for k in editor._zone_prod_vars.keys()]
+        eq(keys, ["food", "gold", "population"], "三档产能输入框都在（粮食/黄金/人口）")
+        select_zone(b)
+        editor._zone_prod_vars["food"].set("2")
+        editor.apply_zone_production("food")
+        eq(editor.model.zone_production(b.zone_id, "food"), 2.0, "★ 粮食产能写进模型")
+        editor._zone_prod_vars["population"].set("0.5")
+        editor.apply_zone_production("population")
+        eq(editor.model.zone_production(b.zone_id, "population"), 0.5, "★ 人口产能写进模型")
+        ok(editor.dirty, "改产能会把地图标记成「有未导出的改动」")
+
+        # ---- 乱打字：不改原值，并把输入框刷回模型里的值
+        editor._zone_prod_vars["food"].set("abc")
+        editor.apply_zone_production("food")
+        eq(editor.model.zone_production(b.zone_id, "food"), 2.0, "★ 乱打字不会把产能弄坏")
+        eq(editor._zone_prod_vars["food"].get(), "2", "★ 输入框被刷回模型里的值")
+
+        # ---- 换区划：输入框跟着换成那一个区划的产能
+        select_zone(a)
+        eq(editor._zone_prod_vars["food"].get(), "0", "★ 换区划后显示的是它自己的产能")
+
+        # ---- 删掉地块 → 中心一起没（数据层已经测过，这里确认界面跟着刷新）
+        select_zone(b)
+        click_at(editor, 2, 0, button="right")     # 右键删掉中心那一格
+        eq(editor.model.zone_center_of(b.zone_id), None, "★ 删掉中心那一格 → 中心没了")
+        ok("还没设" in editor.zone_center_label.cget("text"),
+           "★ 面板上立刻变成「还没设」（%s）" % editor.zone_center_label.cget("text"))
+    finally:
+        root.destroy()
+
+
+def t_export_blocked_without_center_or_base() -> None:
+    """★ 硬规则：缺大本营 / 缺区划中心时**导出被拦住**（用户要的「保证」）。
+
+    `problems()` 是「提醒，可继续」，`blockers()` 是「拦住，不给继续」——
+    这条测试钉住的是后者，以及「拦住时一个文件都不写」。
+    """
+    print("\n[20] 导出硬拦截：缺大本营 / 缺区划中心")
+    root, editor = build_editor()
+    original_save = filedialog.asksaveasfilename
+    original_show = messagebox.showerror
+    original_yesno = messagebox.askyesno
+    errors: list = []
+    yesno_calls: list = []
+    # ★ 弹窗一律拦掉：`showerror` 是模态的，真弹出来会把无头测试卡死（踩过一次）
+    messagebox.showerror = lambda title, text, **kw: errors.append((title, text))
+    messagebox.askyesno = lambda title, text, **kw: (yesno_calls.append((title, text)) or True)
+    tmp = PROJECT_DIR / ".tmp_map_editor_block_test"
+    if tmp.exists():
+        shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True, exist_ok=True)
+    target = tmp / "blocked.json"
+    filedialog.asksaveasfilename = lambda **kwargs: str(target)
+    try:
+        for tile in ((0, 0), (1, 0), (1, 1)):
+            click_at(editor, *tile)
+        editor.set_page("zone")
+        editor.add_zone()
+        zone = editor.model.zones[0]
+        for tile in ((0, 0), (1, 0)):
+            click_at(editor, *tile)
+
+        # ① 建了阵营却没设大本营、区划也没中心 → 两条都点名，且不写文件
+        editor.model.add_faction("p2", "p2")
+        editor.do_export()
+        ok(not target.exists(), "★ 缺大本营 / 缺中心时没有写出任何文件")
+        ok(errors and "大本营" in errors[-1][1], "★ 弹窗点名了「大本营」（%s）"
+           % (errors[-1][1] if errors else None))
+        ok(errors and "中心" in errors[-1][1], "★ 也点名了「区划中心」")
+
+        # ② 只补大本营、还不设中心 → 仍然拦住
+        editor.model.set_faction_base("p2", 1, 1)
+        editor.do_export()
+        ok(not target.exists(), "★ 只补了大本营：还是不写文件")
+        ok(errors and "中心" in errors[-1][1] and "大本营" not in errors[-1][1],
+           "★ 这次只差中心（%s）" % errors[-1][1])
+
+        # ③ 补上中心 → 放行（提醒层也可能是空的 → 直接写）
+        editor.model.set_zone_center(zone.zone_id, 1, 0)
+        editor.do_export()
+        ok(target.exists(), "★ 补齐之后导出成功")
+        data = json.loads(target.read_text(encoding="utf-8"))
+        ok("base" not in data, "★ 导出的 JSON 里没有老式 base 字段")
+        entry = next(z for z in data["zone_list"] if z["id"] == zone.zone_id)
+        eq(entry["center"], [1, 0], "★ 中心写进了 zone_list")
+    finally:
+        messagebox.showerror = original_show
+        messagebox.askyesno = original_yesno
+        filedialog.asksaveasfilename = original_save
+        shutil.rmtree(tmp, ignore_errors=True)
         root.destroy()
 
 
@@ -1503,6 +1701,168 @@ def t_shift_drag_survives_missing_state_bit() -> None:
         root.destroy()
 
 
+def t_shift_drag_after_sidebar_click() -> None:
+    """★ 用户报的：「编辑器里 Shift + 左键拖动选中多个格子失效了」——真根因在这里。
+
+    键盘事件在 tk 里**只送给当前有焦点的控件**。
+    老代码把 Shift 的按下 / 松开只绑在**画布**上，于是：
+
+        先在侧边栏点一下（按钮 / 下拉框 / 区块树都会把焦点留在那边）
+        → 再按住 Shift 拖画布
+        → Shift 的 KeyPress 送给了侧边栏那个控件，**根本到不了画布**
+        → 又赶上鼠标事件不带 Shift 位（tk 实测会这样）
+        ⇒ `shift_is_held()` 两条来源一起失效，框选**静默不生效**。
+
+    修法：Shift 的按下 / 松开改绑在 **root + canvas 两处**（见 `_bind_shift_keys()`），
+    焦点在哪儿都收得到。
+
+    这条用例钉住的就是「焦点在侧边栏上时，Shift 仍然算按住」——
+    **必须走真实 Tk 事件**（`event_generate`），直接调 `on_shift_down()` 是测不出来的
+    （那正是老用例的盲区：它绕过了「事件到不到得了」这一层）。
+    """
+    print("\n[25] Shift 框选：焦点在侧边栏上时也要生效（用户报的 bug）")
+    root, editor = build_editor()
+    try:
+        for y in range(3):
+            for x in range(4):
+                click_at(editor, x, y)
+        editor.clear_selection()
+
+        # 侧边栏里的一颗按钮：点过之后它就是「有焦点的控件」
+        sidebar_buttons = []
+
+        def collect(w) -> None:
+            for child in w.winfo_children():
+                if isinstance(child, tk.Button):
+                    sidebar_buttons.append(child)
+                collect(child)
+
+        collect(editor.sidebar)
+        if not sidebar_buttons:
+            ok(False, "侧边栏里应当有按钮（用例前提）")
+            return
+        btn = sidebar_buttons[0]
+        # ⚠️ 藏起来的窗口（withdraw）拿不到真正的键盘焦点：`focus_set()` 在里面是空操作。
+        #    要复现这条 bug 就得先把窗口映射回来（复现完再藏回去）。
+        root.deiconify()
+        root.update()
+        try:
+            btn.focus_set()
+            root.update()
+        except tk.TclError:
+            ok(False, "这台机器上设不了焦点（用例前提）")
+            return
+        ok(root.focus_get() is btn, "焦点真的落在侧边栏按钮上了（用例前提）")
+        ok(root.focus_get() is not editor.canvas, "★ 而且**不在画布上**（这就是老代码失效的环境）")
+
+        # ★ 回归点：Shift 的按下**必须能到达 root 的绑定**
+        editor.shift_held = False
+        editor.canvas.event_generate("<KeyPress-Shift_L>")
+        root.update()
+        ok(editor.shift_held,
+           "★ 焦点在侧边栏按钮上时按 Shift，编辑器仍然知道按住了（以前这里是 False）")
+
+        # 完整走一遍：按下 → 拖动 → 抬起（**不带** state 位，模拟 tk 那种情况）
+        editor.on_left_down(fake_mouse(editor, 0, 0, shift=False))
+        editor.on_left_drag(fake_mouse(editor, 2, 1, shift=False))
+        editor.on_left_up(fake_mouse(editor, 2, 1, shift=False))
+        eq(editor.selection, (0, 0, 2, 1),
+           "★ 这样也能框出 6 格（用户看到的「失效」就是这里什么都没有）")
+        eq(len(editor.batch_tiles()), 6, "批量面板拿到 6 个已有地块")
+
+        # 松开 Shift 也要收得到（否则状态会粘住，之后随便一拖就框选）
+        editor.canvas.event_generate("<KeyRelease-Shift_L>")
+        root.update()
+        ok(not editor.shift_held, "★ 焦点在侧边栏上时松开 Shift 也要复位（不能粘住）")
+    finally:
+        root.destroy()
+
+
+def t_zone_name_labels() -> None:
+    """★ 区块名写在四个角上（半透明的字）。
+
+    用户的要求：「在每个区块的最左上角，左下角，右上角，右下角的四个格子处写上该区块的名称，
+    用半透明的字」。这条用例钉住四件事：
+
+      1. 每个区块**四个角各一份**（不是一份、也不是两份）；
+      2. 名字是**这个区块自己的**（别把 A 区的名字画到 B 区角上），位置在那一格的中心；
+      3. **包围盒的角不属于本区块时不写**（区块是逐格分配的，非矩形区块的角上可能是别人
+         的地、也可能是虚线格 —— 写在别人的地上就是错的）；
+      4. 缩得太小（< ZONE_NAME_MIN_PX）就不写 —— 那个尺寸下字只会糊成一团。
+    """
+    print("\n[27] 区块名写在四个角上（半透明的字）")
+    root, editor = build_editor(6, 4)
+    try:
+        for y in range(4):
+            for x in range(6):
+                click_at(editor, x, y)
+        # 甲区 = 左边 3×4 的整块（矩形，四个角都有地）
+        jia = editor.model.add_zone("甲区")
+        for y in range(4):
+            for x in range(3):
+                editor.model.assign_tile(x, y, jia.zone_id)
+        # 乙区 = 右边做成**缺两个角**的形状：(3,0)/(4,0) 与 (5,3) 都不给它
+        #       → 它的包围盒是 x 3..5 / y 0..3，但左上角 (3,0) 与右下角 (5,3) 不在它里面
+        yi = editor.model.add_zone("乙区")
+        for y in range(4):
+            for x in range(3, 6):
+                if (x, y) in ((3, 0), (4, 0), (5, 3)):
+                    continue
+                editor.model.assign_tile(x, y, yi.zone_id)
+        ok(editor.model.zone_at(3, 0) is None, "前提：(3,0) 不属于乙区（虚线格外的空位）")
+        editor.redraw()
+
+        by_text = {}
+        positions = {}
+        for item in editor.canvas.find_all():
+            if editor.canvas.type(item) != "text":
+                continue
+            text = editor.canvas.itemcget(item, "text")
+            if text not in ("甲区", "乙区"):
+                continue
+            by_text.setdefault(text, []).append(item)
+            positions.setdefault(text, []).append(
+                (round(editor.canvas.coords(item)[0], 3), round(editor.canvas.coords(item)[1], 3)))
+
+        eq(sorted(by_text), ["乙区", "甲区"], "画面上出现了两个区块的名字")
+
+        # ---- 甲区：矩形，四个角都该有一份
+        jia_items = by_text.get("甲区", [])
+        eq(len(jia_items), 4, "★ 甲区四个角各写了一份名字")
+        size = editor.tile_px()
+        try:
+            wanted = {(round(editor.tile_to_screen(x, y)[0] + size / 2, 3),
+                       round(editor.tile_to_screen(x, y)[1] + size / 2, 3))
+                      for (x, y) in ((0, 0), (0, 3), (2, 0), (2, 3))}
+            eq(set(positions["甲区"]), wanted,
+               "★ 四份名字分别落在左上 / 左下 / 右上 / 右下四格的中心")
+        except tk.TclError:
+            pass
+
+        # ---- 乙区：包围盒的两个角不在它里面 → 只写两份
+        yi_items = by_text.get("乙区", [])
+        eq(len(yi_items), 2, "★ 乙区只有两个角落在自己身上 → 只写两份（左上/右下不写）")
+
+        # ---- 半透明：颜色是「画布底色 + 区块色」混出来的，不是区块的实色
+        solid = editor.zone_color(jia.zone_id)
+        label_fill = editor.canvas.itemcget(jia_items[0], "fill")
+        ok(label_fill != solid, "★ 名字不是区块的实色（是「半透明」那个中间色）")
+        eq(label_fill, editor._blend_over_canvas(solid, app_module.ZONE_NAME_ALPHA),
+           "★ 名字的颜色就是「底色 + 区块色 × ZONE_NAME_ALPHA」（tk 文字没有 alpha）")
+
+        # ---- 缩得太小就不写（不然字糊成一团、图元还翻倍）
+        #      格子像素 = 基准格宽 × zoom，所以反推出「刚好低于阈值」的那个 zoom。
+        editor.zoom = (app_module.ZONE_NAME_MIN_PX * 0.9) / app_module.CELL_PX
+        ok(editor.tile_px() < app_module.ZONE_NAME_MIN_PX, "前提：现在格子已经小于阈值了")
+        editor.redraw()
+        left = [i for i in editor.canvas.find_all()
+                if editor.canvas.type(i) == "text"
+                and editor.canvas.itemcget(i, "text") in ("甲区", "乙区")]
+        eq(left, [], "★ 缩到 ZONE_NAME_MIN_PX 以下就不再写字了（省图元、也不糊）")
+    finally:
+        root.destroy()
+
+
 def main() -> int:
     global _SKIPPED
     print("DAEEM 地图编辑器 · 界面动作测试（无头，不截图）")
@@ -1534,8 +1894,12 @@ def main() -> int:
     t_no_map_size_ui()
     t_draw_up_left_no_invisible_wall()
     t_faction_page()
+    t_zone_center_and_production_ui()
+    t_export_blocked_without_center_or_base()
     t_box_selection_batch_edit()
     t_shift_drag_survives_missing_state_bit()
+    t_shift_drag_after_sidebar_click()
+    t_zone_name_labels()
     t_file_buttons_wired()
     print("\n[CASE] test_app -> passed %d / failed %d" % (_PASSED, _FAILED))
     return 1 if _FAILED else 0

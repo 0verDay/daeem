@@ -17,8 +17,8 @@
 | UI | `index.html` + `css/style.css` | `view/hud.gd` + `view/ui_layout.gd` 等（代码搭 `Control` 树；布局照参考图，见 route.md 第九节） |
 | 坐标 | CSS 像素 + DPR 换算 | 逻辑用「格」，渲染乘 `CELL_SIZE` |
 | 数值 | `js/config.js`（JS 对象字面量） | `data/config.json` |
-| 地图 | `js/map.js` 手写字符数组 | `data/map_01.json` |
-| 测试 | Node + Python 双套（657 项） | `tests/*.gd`（纯逻辑 + 渲染/UI 接线断言，现在 **12 个套件 / 997 项**） |
+| 地图 | `js/map.js` 手写字符数组 | `data/test_map.json`（地形 / 区划网格 / 区划中心 / 区划产能 / 阵营大本营；由地图编辑器导出） |
+| 测试 | Node + Python 双套（657 项） | `tests/*.gd`（纯逻辑 + 渲染/UI 接线断言，现在 **13 个套件 / 1189 项**） |
 | 联机 | `js/net.js` + `net/serve.py` | **本轮不做**（第 1 轮） |
 
 **工作量感性估计**（行数为实测）：
@@ -44,7 +44,7 @@
 | `js/config.js` | 185 | `data/config.json` | **翻译**：JS 对象 → JSON。数值一个不改 |
 | `js/util.js` | 111 | `logic/grid.gd` | **重写**：`Grid` 类、`DIRS4` / `DIRS8`、octile 距离（A* 用线性扫描取最小，没用 `MinHeap`） |
 | `js/path.js` | 285 | `logic/pathfinder.gd` | **照搬算法**：A* / `segment_clear` / `smooth_path` / `reachable_tiles`；**另加**八方向 + `round_corners`（见 route.md 第七节的有意偏离） |
-| `js/map.js` | 168 | `logic/map_data.gd` + `data/map_01.json` | **拆分**：数据进 JSON，逻辑留下 |
+| `js/map.js` | 168 | `logic/map_data.gd` + `data/test_map.json` | **拆分**：数据进 JSON，逻辑留下 |
 | `js/zone.js` | 178 | `logic/zone.gd` | **照搬规则**（含 `progress_by`） |
 | `js/building.js` | 136 | `logic/building.gd` | **照搬**：`blocks(faction)` / 血量 / 箭塔 |
 | `js/unit.js` | 528 | `logic/unit.gd` + `logic/combat.gd` | **拆分**：移动一段、战斗一段 |

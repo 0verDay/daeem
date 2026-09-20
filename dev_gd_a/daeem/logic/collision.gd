@@ -27,8 +27,11 @@ const PathfinderRes = preload("res://logic/pathfinder.gd")
 
 
 ## 碰撞半径（格）。单位很小（直径只占格宽 20% 的量级）是刻意的，见 config 里的说明。
+##
+## ★ 读的是 cfg 上载入时算好的字段：这个函数在 `_can_stand()` 里**每次尝试推挤**都会调一次，
+##   而 num("unit.collision_radius") 每次都要 split(".") + 逐层下潜。
 static func radius(cfg: ConfigRes) -> float:
-	return maxf(0.0, cfg.num("unit.collision_radius", 0.18))
+	return maxf(0.0, cfg.unit_collision_radius)
 
 
 ## 一帧里推进一次碰撞消解。
@@ -37,16 +40,16 @@ static func radius(cfg: ConfigRes) -> float:
 ##   （只用于测试与调试，逻辑上不需要返回值）
 static func resolve(world, cfg: ConfigRes) -> Dictionary:
 	var stats := {"pairs": 0, "pushed": 0}
-	if not cfg.bool_val("unit.collision_enabled", true):
+	if not cfg.unit_collision_enabled:
 		return stats
 
 	var r := radius(cfg)
 	if r <= 0.0:
 		return stats
 
-	var allowance: float = clampf(cfg.num("unit.overlap_allowance", 0.7), 0.0, 1.0)
-	var iterations: int = maxi(1, int(cfg.num("unit.collision_iterations", 3)))
-	var slack: float = maxf(0.0, cfg.num("unit.collision_slack", 0.01))
+	var allowance: float = clampf(cfg.unit_overlap_allowance, 0.0, 1.0)
+	var iterations: int = maxi(1, cfg.unit_collision_iterations)
+	var slack: float = maxf(0.0, cfg.unit_collision_slack)
 	var moved: Dictionary = {}
 
 	for _it in iterations:
@@ -115,11 +118,11 @@ static func _separate(world, cfg: ConfigRes, a, b, r: float, allowance: float, s
 ##   实测那正是「到达后一直挤着转」停不下来的原因之一。
 static func _weight(cfg: ConfigRes, u) -> float:
 	if u.settling:
-		return maxf(0.0, cfg.num("unit.push_moving_weight", 1.0))
+		return maxf(0.0, cfg.unit_push_moving_weight)
 	# 「有命令」= 还在赶路。仅 has_goal 不算：已经到位但没清 goal 的单位应当算待命。
 	if u.moving and not u.path.is_empty():
-		return maxf(0.0, cfg.num("unit.push_moving_weight", 1.0))
-	return maxf(0.0, cfg.num("unit.push_idle_weight", 0.2))
+		return maxf(0.0, cfg.unit_push_moving_weight)
+	return maxf(0.0, cfg.unit_push_idle_weight)
 
 
 ## 尝试把单位推走 move 这个位移。
@@ -192,10 +195,10 @@ static func body_blocked_at(world, cfg: ConfigRes, faction: String, p: Vector2, 
 ## @return Dictionary {"pushed": 被推出的单位数}
 static func resolve_buildings(world, cfg: ConfigRes) -> Dictionary:
 	var stats := {"pushed": 0}
-	if not cfg.bool_val("unit.collision_enabled", true):
+	if not cfg.unit_collision_enabled:
 		return stats
 	var r := radius(cfg)
-	var iterations: int = maxi(1, int(cfg.num("unit.collision_iterations", 3)))
+	var iterations: int = maxi(1, cfg.unit_collision_iterations)
 
 	for _it in iterations:
 		var any := false
@@ -239,6 +242,16 @@ static func _nearest_body_push_out(world, cfg: ConfigRes, u, r: float) -> Vector
 ## 圆心已经在本体之外（含 r 的间隙）时返回零向量。
 ##
 ## 做法：把本体按 r 外扩，圆心在外扩矩形外就没事；在里面就沿**穿透最浅的那个轴**推出去。
+##
+## ★★ 推出去时要**多推一个 EPS**：只推到边界上的话，圆心正好落在
+##    `zone.position.x`（或 `.end.x`）上 —— 而 `Rect2.has_point()` 是**含边界**的，
+##    于是「推完了却仍然被判成挡着」，`_can_stand()` 一看目标点不合法就拒绝这次位移。
+##    实测症状：敌人被塞进大本营本体里之后**一步也推不出去**（pushed = 0）——
+##    换地图后暴露出来的（老地图上恰好没被这条路径撞到）。
+##    EPS 取 1e-6 格（= 0.000064 px），远小于任何视觉/手感阈值。
+const PUSH_EPS := 1e-6
+
+
 static func _body_push_out(body: Rect2, p: Vector2, r: float) -> Vector2:
 	var zone := body.grow(r)
 	if not zone.has_point(p):
@@ -248,10 +261,11 @@ static func _body_push_out(body: Rect2, p: Vector2, r: float) -> Vector2:
 	var top: float = p.y - zone.position.y
 	var bottom: float = zone.end.y - p.y
 	var m: float = minf(minf(left, right), minf(top, bottom))
+	# ⚠️ 四个分支都要带 PUSH_EPS（见上面那段：不加会把圆心留在边界上）
 	if m == left:
-		return Vector2(-left, 0.0)
+		return Vector2(-(left + PUSH_EPS), 0.0)
 	if m == right:
-		return Vector2(right, 0.0)
+		return Vector2(right + PUSH_EPS, 0.0)
 	if m == top:
-		return Vector2(0.0, -top)
-	return Vector2(0.0, bottom)
+		return Vector2(0.0, -(top + PUSH_EPS))
+	return Vector2(0.0, bottom + PUSH_EPS)

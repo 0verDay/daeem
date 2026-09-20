@@ -125,7 +125,7 @@ func _test_group_model(cfg) -> void:
 	eq(two[1 + per].id, g2.id, "第二队的队长紧随其后")
 
 	# 不属于任何队伍的单位（测试敌人）→ 只选中自己
-	var e = w.spawn_enemy(20, 12)
+	var e = w.spawn_enemy(10, 12)
 	if e != null:
 		eq(w.group_of(e).size(), 1, "测试敌人不属于任何队伍，只选中自己")
 		eq(w.retinue_of(e.id).size(), 0, "测试敌人没有亲兵")
@@ -198,8 +198,19 @@ func _test_move_command_hits_whole_group(cfg) -> void:
 
 
 ## 端到端：整队真的都走过去（不是「下了令但原地不动」）
+##
+## ★★ 必须先把「会打架的东西」清干净（关战斗 + 清掉地图预置的敌人）：
+##    这一节验的是**移动命令的同步**，而战斗会合法地把单位从这条命令上拉走 ——
+##    `combat.update_combat()` 在够不着敌人时会 `move_to(敌人的位置)` 去追。
+##    当前地图上那两个巡逻兵会朝玩家据点推进，**正好穿过这队人要走的那条路**，
+##    于是有一个亲兵在 n≈235 被拽去追击、追丢之后就地停住，
+##    以「整队都到达了目标附近（3/4）」的形式报失败 —— 那看起来像移动坏了，
+##    其实是战斗在正常工作（同一个坑 test_arrival 的拥挤用例里也踩过）。
 func _test_group_move_actually_works(cfg) -> void:
+	var was_combat: bool = cfg.combat_enabled
+	cfg.combat_enabled = false
 	var w = WorldRes.create(cfg)
+	w.units = _keep_player_units(w)
 	var g1 = w.unit_by_id("general-1")
 	var group = w.group_of(g1)
 	var start_tiles: Array = []
@@ -236,10 +247,25 @@ func _test_group_move_actually_works(cfg) -> void:
 			arrived += 1
 	eq(moved, group.size(), "★ 整队都离开出发点了（没有谁原地不动）")
 	eq(arrived, group.size(), "★ 整队都到达了目标附近（%d/%d）" % [arrived, group.size()])
+	cfg.combat_enabled = was_combat
+
+
+## 只留玩家这一方的单位（战斗用例之外的「纯移动」断言都要先过这一道）
+func _keep_player_units(w) -> Array:
+	var kept: Array = []
+	for u in w.units:
+		if FactionRes.same_side(u.faction, w.my_faction):
+			kept.append(u)
+	return kept
 
 
 ## ★ 需求明确要求「不自动跟随」：没下令时亲兵不该自己跑
+##
+## ★ 关掉战斗：地图上有两个**会自己推进的巡逻兵**，走完这段路要好几秒 ——
+##   它们会进警戒半径、把「将领/亲兵自己动起来」和「跑位跟上去」混在一起。
+##   这一条验的是「不自动跟随」这条契约，不是战斗。
 func _test_does_not_follow_on_its_own(cfg) -> void:
+	cfg.combat_enabled = false
 	var w = WorldRes.create(cfg)
 	var g1 = w.unit_by_id("general-1")
 	var ret = w.retinue_of(g1.id)
@@ -274,7 +300,7 @@ func _test_stats_are_per_kind(cfg) -> void:
 	var w = WorldRes.create(cfg)
 	var g = w.unit_by_id("general-1")
 	var s = w.retinue_of(g.id)[0]
-	var e = w.spawn_enemy(20, 12)
+	var e = w.spawn_enemy(10, 12)
 	ok(e != null, "有测试敌人可比")
 
 	eq(s.hp_max, cfg.num("unit.subordinate.hp_max", 0.0), "亲兵血量走 config.unit.subordinate.hp_max")
@@ -370,7 +396,7 @@ func _test_recruit(cfg) -> void:
 	var sub = w.retinue_of(g1.id)[0]
 	ok(not w.can_recruit(UnitRes.KIND_SUBORDINATE, sub.id, "p1").is_empty(),
 		"★ 亲兵不是队长，不能往它名下招兵")
-	var e2 = w.spawn_enemy(20, 12)
+	var e2 = w.spawn_enemy(10, 12)
 	if e2 != null:
 		ok(not w.can_recruit(UnitRes.KIND_SUBORDINATE, e2.id, "p1").is_empty(),
 			"不能把兵招到敌方单位名下")

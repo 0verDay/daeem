@@ -48,6 +48,21 @@ class BuildingBox:
 				var inset: float = local.size.x * 0.22
 				draw_rect(Rect2(Vector2(inset, inset), local.size - Vector2(inset * 2.0, inset * 2.0)),
 					base_color.lerp(Color.BLACK, 0.25), true)
+			"zone_center":
+				# ★ 区划中心：中立障碍。画成「品红菱形 + 中心点」，与城墙 / 箭塔 / 大本营
+				#   都不一样（地图编辑器里也是同一个菱形，两边一眼对得上）。
+				var zc: Color = cfg.color("zone_center")
+				var mid: Vector2 = local.position + local.size * 0.5
+				var zr: float = local.size.x * 0.5
+				var diamond := PackedVector2Array([
+					mid + Vector2(0.0, -zr), mid + Vector2(zr, 0.0),
+					mid + Vector2(0.0, zr), mid + Vector2(-zr, 0.0),
+				])
+				draw_colored_polygon(diamond, Color(zc.r, zc.g, zc.b, 0.35))
+				var outline := diamond.duplicate()
+				outline.append(diamond[0])
+				draw_polyline(outline, zc, 3.0)
+				draw_circle(mid, maxf(2.0, zr * 0.22), zc)
 			_:
 				# 大本营
 				draw_rect(local, cfg.color("hq"), true)
@@ -57,7 +72,9 @@ class BuildingBox:
 					cfg.color("hq_light"), false, 2.0)
 
 		# 归属描边（谁的建筑一眼看出来；大本营用自己的配色，就不再套一层）
-		if building.type != "base":
+		# ⚠️ 区划中心是**无主**的（owner = ""），套阵营色只会画出一圈无意义的颜色，
+		#    所以它也不套这层描边 —— 它的菱形本身就是标识。
+		if building.type != "base" and building.type != "zone_center":
 			draw_rect(local, Color(base_color.r, base_color.g, base_color.b, 0.9), false, 2.0)
 
 		# 受击闪光：整格叠一层红

@@ -75,9 +75,15 @@
       "slack：重叠小于这个值就完全不动，避免单位贴着站时永远在微抖。",
       "push_moving_weight / push_idle_weight：★★ 谁给谁让路 —— **有移动命令的单位推得动待命单位**。",
       "  两组权重不能都是 0，否则谁也推不动谁（那条路会直接静默失效）。",
-      "  1.0 : 0.2 的含义 = 单位重叠量按 1:0.2 分摊，也就是待命的那个承担约 83% 的推开量。"
+      "  1.0 : 0.2 的含义 = 单位重叠量按 1:0.2 分摊，也就是待命的那个承担约 83% 的推开量。",
+      "★ collision_backend：碰撞跑在哪一边。",
+      "  \"csharp\"（默认）= C# 群体内核（logic/crowd/CrowdKernel.cs）：空间哈希 + 批量接口。",
+      "     1000 单位实测：GDScript 版 605 ms/帧 → 内核版见 tests/bench_crowd.gd 的输出。",
+      "  \"gdscript\" = 退回 logic/collision.gd 的暴力两两循环（慢，但行为是同一套）。",
+      "  ⚠️ 需要 .NET(mono) 版 Godot 才会加载 C#；普通版引擎会自动退回 GDScript（不会崩）。"
     ],
     "collision_enabled": true,
+    "collision_backend": "csharp",
     "collision_radius": 0.18,
     "overlap_allowance": 0.7,
     "collision_iterations": 3,
@@ -108,14 +114,64 @@
       "  那正是这条逻辑要修的病。挤不进去就算了，就地待着。"
     ],
     "settle_return_dist": 0.22,
-    "settle_max_attempts": 3
+    "settle_max_attempts": 3,
+
+    "_formation_comment": [
+      "★ 队形落点：一群单位被点到同一点时，不再让所有人挤向同一个坐标，",
+      "  而是各自领一个**槽位**（点击点周围的一片方格），走向自己的落点。",
+      "为什么需要它：所有人抢同一个点时，谁先到谁占住，后面的人被挤开、",
+      "  再由「拥挤认账」逻辑在附近乱找空位 —— 结果是到达后互相挤着转，",
+      "  而且每一步都要对全部单位做一次拥挤判定（群编时是 O(n²)）。",
+      "min_units：少于这么多单位就**不排阵**（1~3 个单位点击时保持原来的精确落点，",
+      "  那是玩家最在意的精确操作，不该被阵型改坏）。",
+      "spacing_scale：槽位间距 = 最小圆心距 × 这个系数。1.0 = 刚好不重叠（会挤），",
+      "  1.15 = 邻居之间留一点缝（默认），调大 = 更松的散兵线。",
+      "aspect：阵型的宽/高比。1.6 ≈ 横向更宽的方阵（看起来更像一支部队而不是一列）。",
+      "max_slots：阵型最多排多少个槽位（0 = 不限制）。超出的人退回「点击点旁边最近的可站格」。"
+    ],
+    "formation": {
+      "min_units": 4,
+      "spacing_scale": 1.15,
+      "aspect": 1.6,
+      "max_slots": 400
+    },
   },
 
-  "combat": {
-    "enabled": true,
+  "sim": {
+    "_comment": [
+      "★ max_dt：一帧最多按多少秒推进**逻辑**（渲染与相机不受影响）。",
+      "为什么需要它：帧一慢 dt 就变大，而 dt 越大这一帧要做的活越多（位移按 dt 算、",
+      "  路径拐点跨得更多、认账计时走得更远）→ 帧更慢 —— 经典的「死亡螺旋」。",
+      "  实测：1000 单位在某次实机运行里单帧从 86 ms 一路滚到 666 ms，夹住之后稳定在十几毫秒。",
+      "夹住的代价是「卡顿时游戏时间变慢」，而不是「卡顿被放大」—— 对即时战略来说后者不可接受。",
+      "0.05 s = 一秒 20 次逻辑步；调小更稳但会让严重掉帧时的时间流逝更慢。"
+    ],
+    "max_dt": 0.05
+  },
+
+  "combat": {    "enabled": true,
     "aggro_range": 4,
     "leash_factor": 1.8,
     "repath_sec": 0.3,
+    "_repath_comment": [
+      "★ 追击时多久重算一次路径（秒）。",
+      "⚠️ 但它**不再是唯一条件**：还要「目标真的挪过地方」才重算（repath_min_move）。",
+      "  为什么：1000 个单位追击 = 每秒 3000+ 次完整寻路，而目标是墙/建筑/站定的单位时",
+      "  那些计算全是白费 —— 实测实机行军攻击因此掉到 49 ms/帧（20 fps），",
+      "  而且帧一慢 dt 变大、同一帧里到期的重寻路更多，是正反馈。",
+      "repath_min_move：目标从上一次算路的位置挪出这么多格，才值得重算。",
+      "  调小 = 跟得更紧但更贵；0 = 退回旧的「按周期无条件重算」。"
+    ],
+    "repath_min_move": 0.5,
+    "_chase_direct_comment": [
+      "★ 追击目标在这个距离内（格）且直线可切时，直接走直线，不建距离场、不拉直。",
+      "  为什么：每个不同的敌人所在格都要一张新的距离场（一次全图 Dijkstra，约 0.5 ms），",
+      "  而 LRU 只有 4 张；索敌是批量算的，几百个单位天然同帧锁定目标，",
+      "  于是同一帧几十次 Dijkstra —— 实测单帧 21.5 ms（行军攻击 20 fps 的第二大头）。",
+      "  8 格已经覆盖 aggro_range(4) × leash_factor(1.8) = 7.2 的全部追击距离。",
+      "  调小 = 更多走距离场（更慢但路线更'正规'）；调大 = 更多走直线。"
+    ],
+    "chase_direct_range": 8.0,
     "flash_sec": 0.22,
     "building_damage": 40,
     "general": { "damage": 26, "range": 1, "cooldown_sec": 0.9 },
@@ -228,6 +284,39 @@
     ]
   },
 
+  "menu": {
+    "_comment": [
+      "★ 开场两页（白底入场页 + 主界面）的全部可调数值：文案、配色、字号、位置。",
+      "白底是**刻意的**：这两页不属于游戏内 HUD（hud.gd 那套深色半透明），",
+      "  它们是给「游戏还没开始」的独立画面，所以不走 ui_style.gd。",
+      "title_top 是设计空间（1920×1080）里的像素值，锚点在上方 ——",
+      "  窗口比例变了之后标题仍然贴着上边、水平居中，不会被拉歪。",
+      "click_bottom 同理，但锚点在**下方**（需求要提示在屏幕下方）：它是提示文字底边到",
+      "  屏幕底边的距离。",
+      "click_alpha_min / click_alpha_max 是提示呼吸的暗端与亮端透明度（0~1）：",
+      "  暗端不要设 0，否则文字会整个消失、看起来像在闪；节奏（每段 1.2 秒）在",
+      "  view/start_screen.gd 的 BLINK_PHASE_SEC 里。",
+      "click_text 里那串破折号是需求指定的原文（前后各四个全角「—」），改文案只动这里。"
+    ],
+    "bg": "#ffffff",
+    "title": "DAEEM",
+    "title_color": "#1a1a1a",
+    "title_size": 128,
+    "title_top": 200,
+    "click_text": "————点击任意处进入游戏————",
+    "click_color": "#444444",
+    "click_size": 32,
+    "click_bottom": 110,
+    "click_alpha_min": 0.15,
+    "click_alpha_max": 1.0,
+
+    "test_button_text": "test",
+    "test_button_color": "#333333",
+    "test_button_size": 28,
+    "test_button_width": 240,
+    "test_button_height": 80
+  },
+
   "debug": {
     "enabled": true,
     "enemy_speed": 1.8,
@@ -252,6 +341,7 @@
     "wall": "#8b8172",
     "wall_dark": "#5f594e",
     "tower": "#a1887f",
+    "zone_center": "#ff8adf",
     "general": "#ffd166",
     "general_sel": "#fff2b0",
     "enemy": "#e05a5a",

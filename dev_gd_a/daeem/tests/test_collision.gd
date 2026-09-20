@@ -268,12 +268,15 @@ func _test_pathfinding_ignores_units(cfg) -> void:
 	var b = w.units[1]
 
 	# 把 b 摆在 a 到目标的必经之路上（正中间那格）
-	var from := Vector2i(2, 13)
-	var to := Vector2i(8, 13)
+	# ⚠️ 用 y=14 这一行：y=13 那一行每隔 4 格有一根区划中心（中立障碍柱），
+	#    而 (5,13) 正好是其中一根 —— 那个断言验的是「站着**单位**的格子仍然可通行」，
+	#    被障碍柱占着就变成在验另一件事了。
+	var from := Vector2i(2, 14)
+	var to := Vector2i(8, 14)
 	a.stop()
 	b.stop()
 	a.pos = GridRes.center_of(from)
-	b.pos = GridRes.center_of(Vector2i(5, 13))
+	b.pos = GridRes.center_of(Vector2i(5, 14))
 	a.sync_tile(w.map)
 	b.sync_tile(w.map)
 

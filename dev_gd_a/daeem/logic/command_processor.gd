@@ -22,6 +22,7 @@
 extends RefCounted
 
 const ConfigRes = preload("res://logic/config.gd")
+const GridRes = preload("res://logic/grid.gd")
 const PathfinderRes = preload("res://logic/pathfinder.gd")
 const BuildingRes = preload("res://logic/building.gd")
 const EconomyRes = preload("res://logic/economy.gd")
@@ -62,16 +63,153 @@ static func apply_move(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 	var owner_faction := String(cmd.get("faction", world.my_faction))
 	var ids: Array = cmd.get("ids", [])
 	var pt := Vector2(float(cmd.get("x", 0.0)), float(cmd.get("y", 0.0)))
+	# 队形：整队走到点击点周围各自的槽位上（少于 formation.min_units 个就不排阵）
+	var group := _collect_units(world, ids, owner_faction)
+	if group.size() >= cfg.formation_min_units:
+		return order_group_formation(world, cfg, group, pt)
 	var any := false
+	for u in group:
+		if u.order_move(world, cfg, pt):
+			any = true
+	return any
+
+
+## 把 ids 翻成「真的能下命令的」单位（去重、在场上、属于自己这一方）。
+## 顺序保持 ids 的顺序 —— 队形的槽位分配要靠它保持可预测。
+static func _collect_units(world, ids: Array, owner_faction: String) -> Array:
+	var out: Array = []
 	for id in ids:
 		var u = world.unit_by_id(String(id))
 		if u == null or not u.alive:
 			continue
 		if not FactionRes.same_side(u.faction, owner_faction):
 			continue                      # ★ 防冒充：只能命令自己这一方的单位
-		if u.order_move(world, cfg, pt):
+		out.append(u)
+	return out
+
+
+## ★★ 队形落点：整队各自领一个槽位，而不是全挤向同一个坐标。
+##
+## 为什么要有它（两个理由，第二个是性能）：
+##   1. 手感：所有人抢同一个点时，谁先到谁占住，后面的人被挤开、再由「拥挤认账」
+##      在附近乱找空位 —— 就是玩家看到的「到达后互相挤着转」。
+##   2. 性能：拥挤判定是 O(n²) 的（每个单位都要看一遍全部单位谁占着落点）。
+##      各走各的槽位之后，这条几乎不会被触发。
+##
+## 寻路仍然只算**一次**：整队共用一张「到点击格」的距离场，
+## 每个单位的路线 = 顺场下降到点击格 + 从点击格走出去到自己的槽位（见 crowd_bridge.tile_path_via）。
+##
+## @return 是否至少有一个单位接受了命令
+static func order_group_formation(world, cfg: ConfigRes, group: Array, click: Vector2) -> bool:
+	var slots := formation_slots(world, cfg, group, click)
+	if slots.is_empty():
+		# 排不出阵（比如点击点在地图外）→ 退回「所有人都走到点击点」
+		var any_fallback := false
+		for u in group:
+			if u.order_move(world, cfg, click):
+				any_fallback = true
+		return any_fallback
+
+	var anchor := Vector2i(floori(click.x), floori(click.y))
+
+	# 点击格不可通行时（点到山/建筑）**不排阵**：每个单位的落点会被
+	# move_to 各自改成「贴边最近的可达点」，那张共用的场就覆盖不到它们了。
+	# 退回逐个 order_move —— 与队形之前的行为一致。
+	if not PathfinderRes.passable(world.map, world.buildings, cfg, anchor.x, anchor.y, group[0].faction):
+		var any2 := false
+		for u in group:
+			if u.order_move(world, cfg, click):
+				any2 = true
+		return any2
+
+	var any := false
+	for i in group.size():
+		var u = group[i]
+		if u.order_move_via_field(world, cfg, slots[i], anchor):
 			any = true
 	return any
+
+
+## 给一群单位排槽位：返回与 group **一一对应**的落点数组（格坐标点）。
+##
+## 做法：以点击点为中心、按「前进方向」为轴铺一层方格，然后
+## **按同一个键把单位和槽位各自排序**再配对 —— 这样编队左边的单位拿左边的槽位，
+## 整队不会互相穿过（否则队形会自己打结，看着比不排阵还乱）。
+##
+## ⚠️ 槽位必须落在可通行格上：落在山/墙里的会被往旁边挪一格（找不到就退回点击点）。
+static func formation_slots(world, cfg: ConfigRes, group: Array, click: Vector2) -> Array[Vector2]:
+	var n := group.size()
+	var out: Array[Vector2] = []
+	if n <= 0:
+		return out
+
+	# 阵型朝向：从队伍重心指向点击点（队伍朝目标方向列阵）
+	var centroid := Vector2.ZERO
+	for u in group:
+		centroid += u.pos
+	centroid /= float(n)
+	var fwd := click - centroid
+	if fwd.length() < 1e-3:
+		fwd = Vector2.RIGHT
+	fwd = fwd.normalized()
+	var side := Vector2(-fwd.y, fwd.x)
+
+	var spacing: float = maxf(0.02, cfg.unit_collision_radius * 2.0
+		* clampf(cfg.unit_overlap_allowance, 0.0, 1.0) * cfg.formation_spacing_scale)
+	var slot_count: int = n
+	if cfg.formation_max_slots > 0:
+		slot_count = mini(n, cfg.formation_max_slots)
+
+	var cols: int = maxi(1, int(ceil(sqrt(float(slot_count) * cfg.formation_aspect))))
+	var rows: int = int(ceil(float(slot_count) / float(cols)))
+	var half_c := (float(cols) - 1.0) * 0.5
+	var half_r := (float(rows) - 1.0) * 0.5
+
+	# 槽位偏移（相对点击点），行优先
+	var offs: Array[Vector2] = []
+	for r in rows:
+		for c in cols:
+			if offs.size() >= slot_count:
+				break
+			offs.append(side * ((float(c) - half_c) * spacing) + fwd * ((float(r) - half_r) * spacing))
+
+	# 排序键：先横向、再纵深（单位与槽位用同一个键，保证配对不交叉）
+	var slots_sorted := offs.duplicate()
+	slots_sorted.sort_custom(func(a: Vector2, b: Vector2) -> bool:
+		var ka: float = a.dot(side) * 1000.0 + a.dot(fwd)
+		var kb: float = b.dot(side) * 1000.0 + b.dot(fwd)
+		return ka < kb)
+
+	var order: Array = []
+	for i in n:
+		order.append(i)
+	var unit_keys := PackedFloat64Array()
+	for u in group:
+		var rel: Vector2 = (u.pos as Vector2) - click
+		unit_keys.append(rel.dot(side) * 1000.0 + rel.dot(fwd))
+	var keys := unit_keys
+	order.sort_custom(func(a: int, b: int) -> bool: return keys[a] < keys[b])
+
+	# 配对：第 k 个「队伍里的位置顺序」拿第 k 个槽位
+	var result: Array[Vector2] = []
+	result.resize(n)
+	for k in n:
+		var slot: Vector2 = click + slots_sorted[k] if k < slots_sorted.size() else click
+		result[order[k]] = _snap_slot(world, cfg, slot, group[0].faction, click)
+	return result
+
+
+## 槽位落点微调：那一格不可通行时，往周围挪到最近的可通行格；实在没有就退回点击点。
+static func _snap_slot(world, cfg: ConfigRes, slot: Vector2, faction: String, click: Vector2) -> Vector2:
+	var t := Vector2i(floori(slot.x), floori(slot.y))
+	if PathfinderRes.passable(world.map, world.buildings, cfg, t.x, t.y, faction):
+		return slot
+	for ring in range(1, 4):
+		for d in GridRes.DIRS8:
+			var c := Vector2i(t.x + d.x * ring, t.y + d.y * ring)
+			if PathfinderRes.passable(world.map, world.buildings, cfg, c.x, c.y, faction):
+				return GridRes.center_of(c)
+	return click
 
 
 ## 攻击命令（右键单击敌人 / 建筑）：把 ids 里的单位派去**优先攻击**那个目标。
@@ -97,6 +235,11 @@ static func apply_attack(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 			return false
 		if FactionRes.same_side(target_building.owner, owner_faction):
 			return false
+		# ★ 无敌建筑（区划中心）连命令都不该被接受 —— 它不是「敌方建筑」，是中立障碍。
+		#   这里挡一道，`unit.order_attack_building()` 里再挡一道：命令层与逻辑层各管各的，
+		#   缺任何一道都会退化成「对着打不掉的柱子一直敲」。
+		if target_building.is_invulnerable():
+			return false
 
 	var any := false
 	for id in (cmd.get("ids", []) as Array):
@@ -121,13 +264,23 @@ static func apply_attack(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 static func apply_attack_move(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 	var owner_faction := String(cmd.get("faction", world.my_faction))
 	var pt := Vector2(float(cmd.get("x", 0.0)), float(cmd.get("y", 0.0)))
+	var group := _collect_units(world, cmd.get("ids", []), owner_faction)
+	# 行军攻击同样排阵：整队各自走到自己的槽位，路上遇敌照样停下来打。
+	# ⚠️ 与 move 的区别只有「路上打不打」，「走到哪」这件事两边一致 —— 否则
+	#    A 过去和右键过去会落在两片不同的地方，玩家会以为其中一个坏了。
+	if group.size() >= cfg.formation_min_units:
+		var anchor_ok: bool = PathfinderRes.passable(world.map, world.buildings, cfg,
+			floori(pt.x), floori(pt.y), group[0].faction)
+		var slots := formation_slots(world, cfg, group, pt) if anchor_ok else [] as Array[Vector2]
+		if not slots.is_empty():
+			var anchor := Vector2i(floori(pt.x), floori(pt.y))
+			var any2 := false
+			for i in group.size():
+				if group[i].order_attack_move_at(world, cfg, slots[i], anchor):
+					any2 = true
+			return any2
 	var any := false
-	for id in (cmd.get("ids", []) as Array):
-		var u = world.unit_by_id(String(id))
-		if u == null or not u.alive:
-			continue
-		if not FactionRes.same_side(u.faction, owner_faction):
-			continue                      # ★ 防冒充
+	for u in group:
 		if u.order_attack_move(world, cfg, pt):
 			any = true
 	return any
@@ -162,6 +315,11 @@ static func apply_demolish(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 		return false                      # 只能拆自己这一方的
 	if b.type == BuildingRes.TYPE_BASE:
 		return false                      # 大本营不可拆除（只能被打掉）
+	# ★ 区划中心是不可拆的**中立障碍**（无敌、无血量）：owner 是空字符串，
+	#   上面那条 same_side 已经会拦住「玩家拆自家/别家」；这里显式写一条，
+	#   免得以后有人把中心改成「归属某方」时它突然变成可拆的。
+	if b.is_invulnerable():
+		return false
 	world.remove_building(b, false)
 	world.push_event({"type": "building_demolished", "building": b})
 	return true

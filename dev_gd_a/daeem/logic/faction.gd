@@ -39,6 +39,17 @@ const FACTION_ROSTER: Array[String] = ["p1", "p2", "p3", "p4", "p5", "p6", "p7",
 const SINGLE_PLAYER_ROSTER: Array[String] = [DEFAULT_FACTION]
 
 
+## 玩家席位集合（给 is_player_faction 做 O(1) 查表用）。
+## ★ 为什么要字典而不是 `f in FACTION_ROSTER`：后者是**数组线性查找 + 字符串比较**，
+##   而 is_player_faction 在「每帧每单位」的路径上（回血判定、索敌分支）。
+##   1000 单位下就是每秒 6 万次最多 8 个字符串的比较。
+## ⚠️ 必须是 `static var`：下面的 is_player_faction 是静态函数，读不了实例变量。
+static var _PLAYER_SET: Dictionary = {
+	"p1": true, "p2": true, "p3": true, "p4": true,
+	"p5": true, "p6": true, "p7": true, "p8": true,
+}
+
+
 ## 这个阵营是不是玩家控制的一方？
 ##
 ## 两种「玩家方」的区分（别搞混）：
@@ -46,7 +57,7 @@ const SINGLE_PLAYER_ROSTER: Array[String] = [DEFAULT_FACTION]
 ##   NPC_FACTION（'enemy'）→ 不是
 ## 只有玩家方才会自动索敌、占区块、在自家领地回血。
 static func is_player_faction(f: String) -> bool:
-	return f in FACTION_ROSTER
+	return _PLAYER_SET.has(f)
 
 
 ## 两者是否同一方（用于索敌与城墙通行）

@@ -8,7 +8,7 @@
 ##      每格一个区块 id（-1 = 不属于任何区块），区块名在 `zone_list` 里。
 ##      地块可以任意形状（不必是矩形），所以这里的 x0/y0/x1/y1 是**由地块算出来的最小包围盒**
 ##      —— 只给渲染画底色用（view/zone_view.gd 照旧按矩形画）。
-##   2. 地图没有 zones 网格（老的 map_01.json）→ 照旧横竖均分成
+##   2. 地图没有 zones 网格（手写的老地图）→ 照旧横竖均分成
 ##      config.zone_cols × config.zone_rows 个矩形区块，名字 A1 / A2 …
 ##      ★ 这条路必须**一字不改**地留着：老地图的行为、以及钉在老行为上的测试都靠它。
 ##
@@ -32,6 +32,13 @@ const ROW_LETTERS := "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 var zones: Array = []
 ## 地块索引 → 区块 id（-1 = 不属于任何区块）
 var lookup: Array = []
+## ★ 地块索引 → 「这一格是哪个区块的中心」（-1 = 不是任何区块的中心）。
+##
+## 与 `lookup`（归属）是两张不同的表：中心格仍然**归属**它所在的区块，
+## 只是多了一个「这里是这个区块的中心」的标记（游戏里落成一栋中立障碍建筑）。
+## 为什么要单独一张表：点一格要 O(1) 问出「这是哪个区块的中心」，
+## 而遍历 24 个区块的 tiles 在每次点选 / 每帧渲染里都嫌浪费。
+var center_lookup: Array = []
 var cols: int = 0
 var rows: int = 0
 
@@ -49,6 +56,9 @@ static func build_from_map(map, cfg: ConfigRes, factions: Array) -> RefCounted:
 		zs._build_from_grid(map, grid, names if typeof(names) == TYPE_DICTIONARY else {}, flist)
 	else:
 		zs._build_even(cfg, flist)
+	# ★ 中心与产能（地图给的，老地图没有 → 保持 0 / 无中心）
+	zs._apply_map_centers(map)
+	zs._apply_map_production(map)
 	return zs
 
 
@@ -68,7 +78,114 @@ func _new_zone(zid: int, name: String, flist: Array) -> Dictionary:
 		"capture_state": "",    # ★ "" | reading | frozen | decaying
 		"tile_count": 0,        # ★ 真实地块数（资源产出按它算）
 		"tiles": [],            # ★ 地块明细（渲染画底色用；均分那条路在建的时候一起填）
+		# ★★ 区划中心与产能（地图编辑器给的；老地图没有 → null / 0）
+		#   · center 是**地块坐标**（Vector2i），也是「这一格上要落一栋中立障碍建筑」的位置；
+		#   · production 是**每地块每秒**的产能（food / gold / population）。
+		"center": null,
+		"production": {"food": 0.0, "gold": 0.0, "population": 0.0},
+		# ★ 区划人口：**每个区划各算各的累积值**，只按时间涨、不消耗（用户需求）。
+		#   它**不进 HUD 的资源**（那是各阵营的粮食 / 黄金），也不快照给客机（见 snapshot.gd）。
+		"population": 0.0,
 	}
+
+
+## ★ 把地图里各区块的「区划中心」登记进来（同时建好反查表 `center_lookup`）。
+##
+## 中心是**地块坐标**；它必须落在自己的区块里（编辑器导出前已经保证，这里再防一手：
+## 落点不属于这个区块 / 在界外 / 落在山上 → 当作没设，免得游戏里在一个怪地方立一栋障碍）。
+func _apply_map_centers(map) -> void:
+	center_lookup = []
+	center_lookup.resize(cols * rows)
+	center_lookup.fill(-1)
+	var raw: Variant = map.get("zones_centers")
+	if typeof(raw) != TYPE_DICTIONARY:
+		return
+	var d: Dictionary = raw
+	for z in zones:
+		var zid := int(z["id"])
+		if not d.has(zid):
+			continue
+		var p: Vector2i = d[zid]
+		if not map.terrain.has(p.x, p.y):
+			continue
+		if not map.terrain_walkable(p.x, p.y):
+			continue                    # 山上 / 地图外：中心立不起来
+		if lookup[map.terrain.idx(p.x, p.y)] != zid:
+			continue                    # 那一格不归这个区块（地图被手改过）
+		z["center"] = p
+		center_lookup[map.terrain.idx(p.x, p.y)] = zid
+
+
+## ★ 把地图里各区块的「产能」读进来（每地块每秒）。
+## 缺字段的档算 0 —— 与编辑器侧的容错一致（缺的档不写进 JSON）。
+func _apply_map_production(map) -> void:
+	var raw: Variant = map.get("zones_production")
+	if typeof(raw) != TYPE_DICTIONARY:
+		return
+	var d: Dictionary = raw
+	for z in zones:
+		var zid := int(z["id"])
+		if not d.has(zid):
+			continue
+		var p: Dictionary = d[zid]
+		(z["production"] as Dictionary)["food"] = float(p.get("food", 0.0))
+		(z["production"] as Dictionary)["gold"] = float(p.get("gold", 0.0))
+		(z["production"] as Dictionary)["population"] = float(p.get("population", 0.0))
+
+
+## 这一格的**区划中心**属于哪个区块（返回区块字典；不是任何中心 → null）。
+##
+## ★ 与 `zone_at()` 的分工：`zone_at` 回答「这一格归谁」（用于占领 / 资源），
+##   本函数回答「这一格上是不是立着某个区块的中心」（用于点选看详情）。
+func center_zone_at(x: int, y: int) -> Variant:
+	var z = center_zone_at_id(x, y)
+	if z < 0:
+		return null
+	for zone in zones:
+		if int(zone["id"]) == z:
+			return zone
+	return null
+
+
+## 同上的 id 版（-1 = 不是任何区块的中心）
+func center_zone_at_id(x: int, y: int) -> int:
+	if x < 0 or y < 0 or x >= cols or y >= rows:
+		return -1
+	if center_lookup.size() != cols * rows:
+		return -1
+	return int(center_lookup[y * cols + x])
+
+
+## 每帧推进各区块的人口（只增不减，初始 0）。
+##
+## ★ 与占领**无关**：每个区块都按自己的人口产能涨（用户明确「不计入占领方的经济」）。
+##   速率 = population 产能 × 该区块的地块数（「n 资源/地块/秒」的口径）。
+func update_population(dt: float) -> void:
+	for z in zones:
+		var rate := float((z["production"] as Dictionary).get("population", 0.0))
+		if rate <= 0.0:
+			continue
+		z["population"] = float(z["population"]) + rate * float(z["tile_count"]) * dt
+
+
+## 某方每秒的粮食 / 黄金产出 = 它拥有的各区划的（产能 × 该区划地块数）之和。
+##
+## ★ 这是经济从「全局按占领地块数 × 固定值」改成「按区划聚合」的落点：
+##   抢区块 = 抢产能（见 docs/route.md 第十五节）。
+## @return {"food": float, "gold": float}
+func production_of(owner: String) -> Dictionary:
+	var food := 0.0
+	var gold := 0.0
+	if owner == "":
+		return {"food": 0.0, "gold": 0.0}
+	for z in zones:
+		if String(z["owner"]) != owner:
+			continue
+		var p: Dictionary = z["production"]
+		var n := float(z["tile_count"])
+		food += float(p.get("food", 0.0)) * n
+		gold += float(p.get("gold", 0.0)) * n
+	return {"food": food, "gold": gold}
 
 
 ## ---- 路线 1：读地图里的区块网格（地图编辑器导出的地图）----
@@ -82,6 +199,9 @@ func _build_from_grid(map, grid: Array, names: Dictionary, flist: Array) -> void
 	lookup = []
 	lookup.resize(cols * rows)
 	lookup.fill(-1)
+	center_lookup = []
+	center_lookup.resize(cols * rows)
+	center_lookup.fill(-1)
 
 	var by_id: Dictionary = {}
 	for y in mini(rows, grid.size()):
@@ -128,6 +248,9 @@ func _build_even(cfg: ConfigRes, flist: Array) -> void:
 	lookup = []
 	lookup.resize(cols * rows)
 	lookup.fill(-1)
+	center_lookup = []
+	center_lookup.resize(cols * rows)
+	center_lookup.fill(-1)
 
 	var zone_cols: int = cfg.zone_cols
 	var zone_rows: int = cfg.zone_rows

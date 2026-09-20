@@ -17,6 +17,8 @@ const BuildingRes = preload("res://logic/building.gd")
 const UnitRes = preload("res://logic/unit.gd")
 const SnapshotRes = preload("res://logic/snapshot.gd")
 const FactionRes = preload("res://logic/faction.gd")
+const CollisionRes = preload("res://logic/collision.gd")
+const CombatRes = preload("res://logic/combat.gd")
 
 const DT := 1.0 / 60.0
 
@@ -45,6 +47,8 @@ func _cases() -> void:
 	_test_wall_and_enemy_ai(world, cfg)
 	_test_tower(world, cfg)
 	_test_zones_and_economy(world, cfg)
+	_test_zone_centers(world, cfg)
+	_test_zone_population_and_production(world, cfg)
 	_test_build_commands(world, cfg)
 	_test_snapshot(world, cfg)
 
@@ -102,10 +106,22 @@ func _test_world_setup(world, cfg) -> void:
 					near += 1
 			eq(near, world.retinue_of(g1.id).size(), "★ 亲兵都出生在将领旁边（2 格内）")
 
-	eq(world.zones.zones.size(), 24, "区块均分成 6×4 = 24 块")
-	eq(world.zones.zones[0]["tile_count"], 16, "每块 16 格")
-	eq(world.zones.zones[0]["name"], "A1", "区块命名 A1")
-	eq(world.zones.zones[23]["name"], "D6", "区块命名 D6")
+	# 区块划分来自**地图文件**（地图编辑器导出的 zones 网格），不再按 6×4 均分。
+	# ⚠️ 断言别再写死 24 块 / 16 格 —— 那是老地图（24×16 均分）的数；换图时会整体假失败。
+	#    这里只钉「划分真的读进来了、每块都有地块、命名来自 zone_list」。
+	var zs: Array = world.zones.zones
+	ok(zs.size() >= 4, "区块划分读进来了（%d 块）" % zs.size())
+	eq(zs.size(), world.map.zones_names.size(), "区块数与地图的 zone_list 条数一致")
+	var total_tiles := 0
+	var empty_zones := 0
+	for z in zs:
+		total_tiles += int(z["tile_count"])
+		if int(z["tile_count"]) <= 0:
+			empty_zones += 1
+	eq(empty_zones, 0, "★ 每个区块都有地块（地图编辑器不让导出空区块）")
+	eq(total_tiles, world.map.zone_tile_total(), "★ Σ区块地块数 = 地图里所有「属于某区块」的格子数")
+	eq(String(zs[0]["name"]), "a1", "区块名来自 zone_list（第一个叫 a1）")
+	ok(String(zs[zs.size() - 1]["name"]) != "", "最后一个区块也有名字")
 	eq(world.owned_tiles, 0, "开局没有己方地块")
 
 	# 出生点区块会被大本营直接收归（zone_owned_by_building 的副作用，照搬 HTML 版）
@@ -128,7 +144,10 @@ func _test_terrain_and_building_passability(world, cfg) -> void:
 			else:
 				mountains += 1
 	ok(mountains > 0, "地图上有山（%d 格）" % mountains)
-	ok(walkable > 300, "地图上可通行格超过 300（实际 %d 格）" % walkable)
+	# ⚠️ 门槛按「地图有多大」算，别写死 300：这张 17×22 的图可通行格是 298 格
+	#    （老那张 24×16 是 369）。写成「格子总数的 2/3 以上」既有意义又不随图变。
+	ok(walkable * 3 > (walkable + mountains) * 2,
+		"地图上可通行格占 2/3 以上（%d / %d 格）" % [walkable, walkable + mountains])
 
 	# 山不可通行
 	var mx = -1
@@ -222,10 +241,15 @@ func _test_pathfinding(world, cfg) -> void:
 	ok(same != null and same.size() == 0, "起点=终点返回空数组（与 null 区分开）")
 
 	# 起点本身不可通行时仍要能走出来（脚下被盖了建筑的情况，见 pitfalls 3.4）
-	var free = _find_free_tile(world, cfg, Vector2i(6, 2))
-	if free != null:
+	# ⚠️ 终点也必须先确认可通行：地图一换，起点旁边可能就是山
+	#    （test_map 第 0 行 x=5…11 就是山，硬写 +3 会直接落到山里）。
+	var spot = _find_free_pair(world, cfg, Vector2i(6, 2), Vector2i(3, 0))
+	ok(spot != null, "起点阻挡用例：找得到「起点 + 右侧 3 格终点」")
+	if spot != null:
+		var free: Vector2i = spot["from"]
+		var goal: Vector2i = spot["to"]
 		var tower = world.add_building("tower", free.x, free.y, "p1")
-		var out = PathfinderRes.find_path(world.map, world.buildings, cfg, free, Vector2i(free.x + 3, free.y), "p1")
+		var out = PathfinderRes.find_path(world.map, world.buildings, cfg, free, goal, "p1")
 		ok(out != null, "起点被建筑占住时仍能寻路出来（起点不检查通行性）")
 		world.remove_building(tower, false)
 
@@ -235,14 +259,33 @@ func _test_pathfinding(world, cfg) -> void:
 	#    要真正切开地图，必须用**一条从地图一侧连到另一侧**的长墙。
 	#    这里在第 9 行拉一条横贯全图的墙，把地图切成上下两半。
 	_wall_off_row(world, 9)
+	# ⚠️ 先数、再建 —— 顺序反了就变成「数自己刚建的那 27 段墙」（会得到 0 个空格）。
+	var wall_row_free := 0
+	for x in world.map.cols:
+		if not world.map.terrain_walkable(x, 9):
+			continue
+		if world.building_at(x, 9) != null:
+			continue          # 已被建筑占住（区划中心 / 预置箭塔 / 城墙…）建不了墙
+		wall_row_free += 1
 	var wall_row := _build_full_wall_row(world, 9)
-	ok(wall_row.size() >= 24, "拉出一整条横贯地图的城墙（%d 段）" % wall_row.size())
-	var top := Vector2i(0, 4)
-	var bottom := Vector2i(0, 12)
-	ok(PathfinderRes.find_path(world.map, world.buildings, cfg, top, bottom, "enemy") == null,
-		"★ 整条城墙把敌方路线切断（上下两半不可达）")
-	ok(PathfinderRes.find_path(world.map, world.buildings, cfg, top, bottom, "p1") != null,
-		"同一条城墙对己方完全放行（还能穿过去）")
+	# 满墙段数随地图宽度变（地图一换就不能再写死 24 / 17 这种数）：
+	# 该行所有「可通行、且那一格上没有别的建筑」的格子都该被铺上墙。
+	# ⚠️ 判据必须和 `_build_full_wall_row()` **完全一致**（它跳过的唯一原因是
+	#    `building_at(x, row) != null`）。只查「是不是区划中心」会漏掉别的预置建筑
+	#    （比如箭塔），于是数出来比建出来的多，断言假失败。
+	ok(wall_row.size() == wall_row_free,
+		"拉出一整条横贯地图的城墙（%d/%d 段）" % [wall_row.size(), wall_row_free])
+
+	# 上 / 下半各取一个**能站人的空格**（别写死坐标：地图一换就会落在山里）
+	var upper = _find_free_tile(world, cfg, Vector2i(0, 4))
+	var lower = _find_free_tile(world, cfg, Vector2i(0, 12))
+	ok(upper != null and lower != null, "城墙用例：上下两半各取到一个空格")
+	if upper != null and lower != null:
+		ok(upper.y < 9 and lower.y > 9, "城墙用例：取到的两点确实被墙分在两侧")
+		ok(PathfinderRes.find_path(world.map, world.buildings, cfg, upper, lower, "enemy") == null,
+			"★ 整条城墙把敌方路线切断（上下两半不可达）")
+		ok(PathfinderRes.find_path(world.map, world.buildings, cfg, upper, lower, "p1") != null,
+			"同一条城墙对己方完全放行（还能穿过去）")
 	# 拆掉中间一段就出现缺口 —— 这一格立刻变成可通行
 	var hole = wall_row[wall_row.size() / 2]
 	world.remove_building(hole, false)
@@ -356,11 +399,13 @@ func _test_movement(world, cfg) -> void:
 		u.stop()
 		u.pos = GridRes.center_of(a)
 		u.sync_tile(world.map)
-		var same_pos: Vector2 = u.pos
-		ok(u.order_move(world, cfg, same_pos), "点击自己脚下：命令被接受")
+		var same_pos2: Vector2 = u.pos
+		# ⚠️ 点在自己脚下时必须真的不动（曾经的坑：这一格被中立障碍占着，
+		#    命令会把它改成「走到旁边的可达格」，看着像自己抖了一下）
+		ok(u.order_move(world, cfg, same_pos2), "点击自己脚下：命令被接受")
 		for i in 10:
 			world.tick(DT)
-		v2_near(u.pos, same_pos, 1e-6, "点击自己脚下：位置不变（不会自己抖）")
+		v2_near(u.pos, same_pos2, 1e-6, "点击自己脚下：位置不变（不会自己抖）")
 
 	u.stop()
 
@@ -369,17 +414,44 @@ func _test_movement(world, cfg) -> void:
 # 直线拉平的超覆盖判定
 # ------------------------------------------------------------------
 func _test_segment_clear(world, cfg) -> void:
-	# 空地图上一条普通直线必须可走
-	ok(PathfinderRes.segment_clear(world.map, world.buildings, cfg, Vector2(0.5, 0.5), Vector2(5.5, 0.5), "p1"),
-		"开阔直线的 segment_clear 为真")
+	# 空地图上一条普通直线必须可走。
+	# ⚠️ 直线**不能写死坐标**：地图换成 test_map 后，第 0 行 x=5…11 是山、
+	#    第 0 列附近还立着区划中心。所以先用 _find_free_tile 找一格干净的起点，
+	#    再沿这一行往右量出「最长的连续可走段」，在那一段里验直线。
+	var start = _find_free_tile(world, cfg, Vector2i(0, 0))
+	ok(start != null, "直线用例：找得到一格干净起点")
+	if start != null:
+		# 只横跨「起点格 → 右边那一格」：两格都是干净空地，直线必然可走。
+		# （整张地图上找不到更长的连续空地了 —— 中间那几列全是山。）
+		var right: Vector2i = start + Vector2i(1, 0)
+		var right_ok: bool = world.map.terrain_walkable(right.x, right.y) \
+			and not PathfinderRes.occupied(world.buildings, right.x, right.y) \
+			and world.zone_center_zone_at(right.x, right.y) == null
+		ok(right_ok, "直线用例：起点右边那一格也是干净空地")
+		if right_ok:
+			var y_line: float = float(start.y) + 0.4
+			ok(PathfinderRes.segment_clear(world.map, world.buildings, cfg,
+				Vector2(float(start.x) + 0.5, y_line),
+				Vector2(float(right.x) + 0.5, y_line), "p1"),
+				"开阔直线的 segment_clear 为真")
 	# 起点所在格不检查通行性（单位可能正站在后来被建筑占住的格子上）
 	var free = _find_free_tile(world, cfg, Vector2i(3, 13))
 	if free != null:
 		var tower = world.add_building("tower", free.x, free.y, "p1")
-		ok(PathfinderRes.segment_clear(world.map, world.buildings, cfg, GridRes.center_of(free),
-			Vector2(free.x + 3.5, free.y + 0.5), "p1"),
-			"起点格被建筑占住时直线仍然可走（起点不检查）")
-		world.remove_building(tower, false)
+		ok(tower != null, "起点格上能建起建筑")
+		if tower != null:
+			# 起点格被占住 → 那**一格**自己不检查（单位可能正站在后来被建筑占住的格子上）；
+			# 终点取「起点正上方 2 格」：一列都是开阔地，且离两边的区划中心 ≥ 2 格
+			# （中心是 1×1 的障碍、碰撞还带一个单位半径的外扩，横着量很容易蹭到它）。
+			var up_ok: bool = free.y - 2 >= 0 \
+				and world.map.terrain_walkable(free.x, free.y - 2) \
+				and not PathfinderRes.occupied(world.buildings, free.x, free.y - 2) \
+				and world.zone_center_zone_at(free.x, free.y - 2) == null
+			if up_ok:
+				ok(PathfinderRes.segment_clear(world.map, world.buildings, cfg, GridRes.center_of(free),
+					Vector2(free.x + 0.5, free.y - 2.5), "p1"),
+					"起点格被建筑占住时直线仍然可走（起点不检查）")
+			world.remove_building(tower, false)
 
 	# 墙另一侧不可达：起点在一侧、终点在另一侧，中间隔着一段墙
 	var wt = _find_free_tile(world, cfg, Vector2i(3, 14))
@@ -423,7 +495,7 @@ func _test_nearest_reachable(world, cfg) -> void:
 		if spot != null:
 			ok(PathfinderRes.passable(world.map, world.buildings, cfg, spot.x, spot.y, "p1"), "找出来的落点可通行")
 			var region = PathfinderRes.reachable_tiles(world.map, world.buildings, cfg, from, "p1")
-			ok(region.has(world.map.terrain.idx(spot.x, spot.y)), "★ 落点必须从起点真的走得到（过滤生效）")
+			ok(PathfinderRes.in_region(region, world.map.terrain.idx(spot.x, spot.y)), "★ 落点必须从起点真的走得到（过滤生效）")
 
 
 # ------------------------------------------------------------------
@@ -507,6 +579,16 @@ func _test_wall_and_enemy_ai(world, cfg) -> void:
 	var bx: int = base_b.tx
 	var by: int = base_b.ty
 
+	# ★★ 先清场，再围墙 —— 顺序不能反（踩过）：
+	#   · 撤掉**地图预置的箭塔**（p1 的）：射程 3 格，敌人绕外面走一圈时会被打进射程，
+	#     实测症状是「敌人走到半路被箭塔打死」（take_damage → stop() 清掉路径），
+	#     于是拆墙这条链路一次都没跑到，而测试报的却是「敌人不拆墙」；
+	#   · 撤掉**地图预置的城墙**：下面的「锁定的确实是大本营周围的城墙」比的是
+	#     「我这一轮新建的那几段」的清单，地图自带的墙不该混进来。
+	#   ⚠️ 这两步原来写在「建完墙之后」，于是把刚建的那一圈也一起拆了（围墙断言直接失效）。
+	_remove_buildings_of_type(w, "tower")
+	_remove_buildings_of_type(w, "wall")
+
 	# 用城墙把大本营围成一圈（8 邻格里的可通行格）
 	var walls: Array = []
 	for dy in range(-1, 2):
@@ -523,10 +605,18 @@ func _test_wall_and_enemy_ai(world, cfg) -> void:
 	ok(walls.size() >= 4, "大本营周围建起了城墙（%d 段）" % walls.size())
 
 	# 敌人在远处，且它的可通行区域被墙切开
-	var e = w.spawn_enemy(bx + 5, by)
+	# ⚠️ 别写死 bx+5 / by：那张地图上 (7,2) 是山，spawn_enemy 会静默回退到
+	#    「最近可达格」—— 那可能就落在围墙里面，整条拆墙链路直接失效。
+	var e_tile = _find_free_tile(w, cfg, Vector2i(bx + 5, by + 2))
+	ok(e_tile != null, "拆墙用例：找得到放敌人的空地")
+	if e_tile == null:
+		return
+	var e = w.spawn_enemy(e_tile.x, e_tile.y)
 	ok(e != null, "拆墙用例：敌人已生成")
 	if e == null:
 		return
+	ok(maxi(absi(e.tx - bx), absi(e.ty - by)) >= 4,
+		"拆墙用例：敌人确实在围墙外面（%d,%d）" % [e.tx, e.ty])
 	eq(e.hp, cfg.enemy_hp, "敌人血量 60")
 
 	# ★ 把将领与亲兵全部撤走：这里只验「拆墙」这一条链路本身。
@@ -592,11 +682,17 @@ func _test_wall_and_enemy_ai(world, cfg) -> void:
 # ------------------------------------------------------------------
 func _test_tower(world, cfg) -> void:
 	var w = WorldRes.create(cfg)
+	# ★ 先把这张图**自带的塔**（p1 的 + 对家据点的）全部撤掉：这一节要精确控制
+	#   「敌人只被这一座塔打」。不清的话：射程 3 格，敌人可能在新建那座塔的射程外，
+	#   却被别处的塔打了 —— 实测「第一帧掉 24 点」而不是 12 点。
+	_remove_buildings_of_type(w, "tower")
 	var g = w.units[0]
-	var free = _find_free_tile(w, cfg, Vector2i(g.tx + 3, g.ty))
-	if free == null:
-		ok(false, "箭塔用例：找得到空地")
+	var spot = _find_tower_and_target(w, cfg, Vector2i(g.tx + 3, g.ty))
+	ok(spot != null, "箭塔用例：找得到「塔位 + 射程内靶位」")
+	if spot == null:
 		return
+	var free: Vector2i = spot["tower"]
+	var free_e: Vector2i = spot["enemy"]
 	var tower = w.add_building("tower", free.x, free.y, "p1")
 	ok(tower != null, "箭塔建造成功")
 	if tower == null:
@@ -605,10 +701,14 @@ func _test_tower(world, cfg) -> void:
 	eq(tower.tower_range(cfg), 3.0, "箭塔射程 3 格")
 
 	# 射程内放一个敌人
-	var e = w.spawn_enemy(free.x + 2, free.y)
+	# ⚠️ 靶位要离塔「≥2 格」：塔格自己也算 1 格，紧贴的 (x+1,y) 会正好卡在
+	#    塔的碰撞外扩边界上，pathfinder 可能判它不可站 —— spawn_enemy 于是静默
+	#    回退到别处，敌人根本不在射程里（箭塔用例就会假失败）。
+	var e = w.spawn_enemy(free_e.x, free_e.y)
 	ok(e != null, "箭塔用例：敌人已生成")
 	if e == null:
 		return
+	ok(e.tx == free_e.x and e.ty == free_e.y, "箭塔用例：敌人就站在射程内的靶位上")
 
 	# ⚠️ 把**所有**友方单位（将领 + 亲兵）挪走：它们在警戒半径内会去打这个敌人，
 	#    那样「敌人掉了多少血」就分不清是箭塔打的还是友军打的。
@@ -632,6 +732,7 @@ func _test_tower(world, cfg) -> void:
 	#    它同时也进了敌人的警戒半径，敌人会来打它 —— 掉的血是敌人打的，
 	#    断言就会误报成「箭塔打自己人」（第一版就是这么被骗的）。
 	var wt = WorldRes.create(cfg)
+	_remove_buildings_of_type(wt, "tower")     # 同上：只留下面这一座，别让别的塔插进来
 	var tower2 = wt.add_building("tower", wt.units[0].tx + 3, wt.units[0].ty, "p1")
 	ok(tower2 != null, "不误伤用例：箭塔建好了")
 	if tower2 != null:
@@ -722,6 +823,149 @@ func _test_zones_and_economy(world, cfg) -> void:
 
 
 # ------------------------------------------------------------------
+# 区划中心（地图编辑器给每个区划指定的那一格 → 中立障碍建筑）
+# ------------------------------------------------------------------
+##
+## 用户对这一块的原话：「区划中心相当于该区划中占地一个的任何单位均不可进入的建筑，
+## 其本身无血量且无敌，没有攻击手段，点击选中该区划中心时会显示该区划的详情」。
+## 这一节把「不可进入 / 无敌 / 不被索敌 / 不可拆 / 点得出区块」逐条钉住。
+func _test_zone_centers(world, cfg) -> void:
+	var w = WorldRes.create(cfg)
+	var centers := _zone_center_buildings(w)
+	eq(centers.size(), w.zones.zones.size(), "★ 每个区划都落了一栋中心建筑")
+
+	var zb = centers[0]
+	var tile := Vector2i(zb.tx, zb.ty)
+
+	# 1) 点得出它属于哪个区划（左键选中 → 显示区划详情的入口）
+	var zone = w.zone_center_zone_at(tile.x, tile.y)
+	ok(zone != null, "★ 按格子能问出它是哪个区划的中心")
+	if zone != null:
+		eq(int(zone["id"]), int(w.zones.center_zone_at_id(tile.x, tile.y)), "两种入口给出同一个 id")
+		ok(zone.has("population") and zone.has("production"), "该区划带人口与产能字段")
+	ok(w.zone_center_zone_at(tile.x + 50, tile.y + 50) == null, "不是中心的格子问出来是 null")
+	# 中心格**仍然归属**它所在的区划（只是多了一栋障碍建筑）
+	ok(w.zones.zone_at(tile.x, tile.y) != null, "中心那一格仍然归属某个区划（两张表各管一件事）")
+
+	# 2) 任何阵营都进不去（用户原话：「任何单位均不可进入」）
+	for f in ["p1", "p2", "enemy"]:
+		ok(not PathfinderRes.passable(w.map, w.buildings, cfg, tile.x, tile.y, f),
+			"★ 中心格对「%s」不可通行（格级）" % f)
+		ok(CollisionRes.body_blocked_at(w, cfg, f, GridRes.center_of(tile),
+			CollisionRes.radius(cfg)), "★ 中心本体也挡「%s」（本体级）" % f)
+	# 寻路会绕开它：把起点/终点摆在它两边，路径里不该出现这一格
+	var around = PathfinderRes.find_path(w.map, w.buildings, cfg,
+		Vector2i(tile.x - 2, tile.y), Vector2i(tile.x + 2, tile.y), "p1")
+	if around != null:
+		ok(not (around as Array).has(tile), "★ 八方向寻路不会从中心格穿过去")
+
+	# 3) 无血量 + 无敌：打它一点事都没有，也不闪红
+	eq(zb.hp_max, 0.0, "★ 中心没有血量（hp_max = 0）")
+	ok(zb.is_invulnerable(), "★ 中心是无敌的（invulnerable）")
+	ok(not zb.take_damage(cfg, 99999.0, null), "打它返回 false（没有摧毁）")
+	ok(zb.alive and zb.hp == 0.0, "★ 打完还活着、血量还是 0")
+	ok(zb.flash <= 0.0, "受击闪光也不给（纯表现上就不像能打的东西）")
+
+	# 4) 不能被拆除（拆的实现只对「自己人」生效，中心是无主的）
+	ok(not CommandRes.apply(w, cfg, {"kind": "demolish", "tx": tile.x, "ty": tile.y, "faction": "p1"}),
+		"★ 拆除命令对中心无效")
+	ok(w.building_at(tile.x, tile.y) != null, "拆不掉：它还在")
+
+	# 5) 不会被索敌（否则单位会跑去「拆」一栋永远拆不掉的东西，站着不动）
+	var g = w.unit_by_id("general-1")
+	if g != null:
+		g.stop()
+		g.pos = GridRes.center_of(Vector2i(tile.x, tile.y + 2))
+		g.sync_tile(w.map)
+		g.drop_engagement()
+		_isolate(w, [g])
+		w.tick(DT)
+		ok(g.target_building != w.building_at(tile.x, tile.y),
+			"★ 玩家单位不会把区划中心当建筑目标")
+		ok(not g.moving, "★ 也不会为了「拆它」而走动（站在旁边就是站着）")
+
+		# 5b) ★ 就算玩家**点名**打它（右键点在中心上），也不该被受理：
+		#     中心的 owner 是空字符串，`same_side` 那条守卫拦不住它 ——
+		#     少了这两道显式检查，单位会走过去对着柱子敲到天荒地老（敌人来了都不还手）。
+		ok(not g.order_attack_building(w, cfg, zb),
+			"★ unit.order_attack_building() 拒绝把中心当攻击目标")
+		ok(not CommandRes.apply(w, cfg,
+			{"kind": "attack", "ids": [g.id], "tx": tile.x, "ty": tile.y, "faction": "p1"}),
+			"★ attack 命令对中心无效（连命令层都不受理）")
+		ok(g.target_building == null and g.ordered_building == null,
+			"★ 拒绝之后没有留下黏住的目标（不然它就一直站着不还手）")
+
+	# 6) 箭塔也不会打它（它对谁都「不是敌人」，只是障碍）
+	ok(CombatRes.nearest_enemy_building(w, cfg, g, 99.0) != w.building_at(tile.x, tile.y),
+		"★ 建筑索敌会跳过无主/无敌的中心")
+
+
+## 世界里的所有区划中心建筑
+func _zone_center_buildings(w) -> Array:
+	var out: Array = []
+	for b in w.building_list:
+		if b.type == "zone_center":
+			out.append(b)
+	return out
+
+
+# ------------------------------------------------------------------
+# 区划人口与产能（用户新加的两条属性）
+# ------------------------------------------------------------------
+##
+## · 人口：每个区划各算各的，只涨不减，初始 0，**不计入 HUD 的粮食 / 黄金**；
+## · 产能：格式「粮食 / 黄金 / 人口」，单位 **n 资源/地块/秒**；
+##   经济按「占领方拥有的各区划」聚合（产能 × 该区划地块数）。
+func _test_zone_population_and_production(world, cfg) -> void:
+	var w = WorldRes.create(cfg)
+	var z0: Dictionary = w.zones.zones[0]
+	var z1: Dictionary = w.zones.zones[1]
+
+	# ---- 人口：开局 0，按人口产能累积
+	eq(float(z0["population"]), 0.0, "★ 区划人口开局是 0")
+	# ★ 随游戏发布的地图必须给非 0 的人口产能 —— 否则实机里人口根本不涨
+	#   （`test_map.json` 里每个区划都是 1 粮食 / 1 黄金 / 0.5 人口）。
+	ok(float(z0["production"]["population"]) > 0.0,
+		"★ 发布地图的区划配了人口产能（%s）" % z0["production"]["population"])
+	var pop_rate: float = float(z0["production"]["population"])
+	var tiles0: float = float(z0["tile_count"])
+	var before: float = float(z0["population"])
+	w.tick(1.0)
+	var gained: float = float(z0["population"]) - before
+	near(gained, pop_rate * tiles0, 1e-3,
+		"★ 人口每秒增长 = 人口产能 × 该区划地块数（每地块每秒的口径）")
+	ok(float(z1["population"]) > 0.0, "★ 每个区划各涨各的（第二个区划也在涨）")
+	# 不消耗：只跑时间就不会掉
+	var p0: float = float(z0["population"])
+	w.tick(2.0)
+	ok(float(z0["population"]) > p0, "★ 人口只增不减（目前没有消耗逻辑）")
+
+	# ---- 人口**不进** HUD 的粮食 / 黄金
+	var food_before: float = float(w.resources["food"])
+	ok(float(w.resources["food"]) >= food_before, "资源照常按产能涨（人口不掺进来）")
+	ok(not w.resources.has("population"), "★ resources 里没有 population 这一项（人口不进 HUD）")
+
+	# ---- 产能聚合：某方每秒收入 = 它拥有的各区划（产能 × 地块数）之和
+	var zc: Dictionary = w.zones.zones[0]
+	zc["owner"] = ""
+	var base_food: float = float(w.zones.production_of("p1")["food"])
+	var base_gold: float = float(w.zones.production_of("p1")["gold"])
+	var tiles_c: float = float(zc["tile_count"])
+	zc["owner"] = "p1"
+	zc["production"]["food"] = 2.0
+	zc["production"]["gold"] = 3.0
+	var rates: Dictionary = w.zones.production_of("p1")
+	near(float(rates["food"]) - base_food, 2.0 * tiles_c, 1e-6,
+		"★ 产量按「产能 × 地块数」聚合（粮食：多了这个区划那一份）")
+	near(float(rates["gold"]) - base_gold, 3.0 * tiles_c, 1e-6,
+		"★ 产量按「产能 × 地块数」聚合（黄金：多了这个区划那一份）")
+
+	# 无主区划不计入任何一方
+	near(float(w.zones.production_of("")["food"]), 0.0, 1e-9,
+		"★ 无主（owner == ''）不产生任何产量")
+
+
+# ------------------------------------------------------------------
 # 建造命令（走 command_processor，不直接调 world）
 # ------------------------------------------------------------------
 func _test_build_commands(world, cfg) -> void:
@@ -781,7 +1025,10 @@ func _test_snapshot(world, cfg) -> void:
 		"快照里有 %d 个单位（3 将领 + %d 亲兵 + 1 敌人 + %d 地图守军）" % [
 			expect_units, 3 * per_leader, w.map.prefab_units.size()])
 	ok((snap["buildings"] as Array).size() >= 1, "快照里有建筑")
-	eq((snap["zones"] as Array).size(), 24, "快照里有 24 个区块")
+	# 区块数随地图走（别写死 24：地图一换就假失败）
+	var zone_total: int = w.zones.zones.size()
+	ok(zone_total > 0, "地图带区块（%d 个）" % zone_total)
+	eq((snap["zones"] as Array).size(), zone_total, "快照把全部 %d 个区块都发出去" % zone_total)
 	ok(snap.has("res") and (snap["res"] as Array).size() == 2, "快照带两种资源")
 	ok(not (snap["units"] as Array)[0].has("path"), "★ 快照不发路径（只发结果）")
 	ok((snap["units"] as Array)[0].has("x") and (snap["units"] as Array)[0].has("fa"), "快照带位置与朝向")
@@ -864,6 +1111,17 @@ func _isolate(world, keep: Array) -> void:
 	world.units = survivors
 
 
+## 把地图上某一类建筑整块撤掉（测试用来排除干扰，比如「箭塔会打敌人」）。
+##
+## ★ 必须走 `remove_building(b, true)`：它会把建筑从格子索引、建筑表、区块归属
+##   一起摘干净；直接 `b.alive = false` 会让那一格永远不可通行（收尸也扫不到它）。
+func _remove_buildings_of_type(world, type: String) -> void:
+	for b in world.building_list.duplicate():
+		if b.type == type:
+			world.remove_building(b, true)
+	world.refresh_ownership()
+
+
 ## 按 kind 挑出单位（断言里别再写「所有单位都该是将领」——加了新兵种就会假失败）
 func _units_of_kind(world, kind: String) -> Array:
 	var out: Array = []
@@ -873,7 +1131,55 @@ func _units_of_kind(world, kind: String) -> Array:
 	return out
 
 
+## 找一对「起点 + 相对偏移处的终点」的空地组合（两格都真的能站人 / 能走）。
+## 用途：验「起点格被建筑占住时也能走出来」——终点不能顺手写个 +3，
+## 地图一换就可能落进山里，断言会以「寻路失败」的形式假失败。
+func _find_free_pair(world, cfg, hint: Vector2i, offset: Vector2i) -> Variant:
+	for r in 12:
+		for dy in range(-r, r + 1):
+			for dx in range(-r, r + 1):
+				if maxi(absi(dx), absi(dy)) != r:
+					continue
+				var from: Vector2i = hint + Vector2i(dx, dy)
+				if _find_free_tile(world, cfg, from) != from:
+					continue          # 只认正好落在这一格的
+				var to: Vector2i = from + offset
+				if _find_free_tile(world, cfg, to) != to:
+					continue
+				return {"from": from, "to": to}
+	return null
+
+
+## 找一个「塔位 + 射程内靶位」的组合（给箭塔用例用）。
+##
+## 为什么要单独查：敌人是 `world.spawn_enemy(x, y)` 生成的，那一格如果不
+## `passable`，它会**静默回退**到「最近可达格」——靶子就跑出射程了，测试假失败。
+## 所以这里直接把 passable 当条件筛。
+## 靶位一律取塔位外 2 格：塔格本身占 1 格，紧贴的 1 格会正好压在塔的碰撞
+## 外扩边界上，容易被判不可站。
+func _find_tower_and_target(world, cfg, hint: Vector2i) -> Variant:
+	var dirs := [Vector2i(2, 0), Vector2i(-2, 0), Vector2i(0, 2), Vector2i(0, -2),
+		Vector2i(2, 2), Vector2i(-2, 2), Vector2i(2, -2), Vector2i(-2, -2)]
+	for r in 12:
+		for dy in range(-r, r + 1):
+			for dx in range(-r, r + 1):
+				if maxi(absi(dx), absi(dy)) != r:
+					continue
+				var tower = _find_free_tile(world, cfg, hint + Vector2i(dx, dy))
+				if tower == null or tower != hint + Vector2i(dx, dy):
+					continue          # 只认「正好落在这一格」的，别让内层再往外扩
+				for d in dirs:
+					var t: Vector2i = tower + d
+					if PathfinderRes.passable(world.map, world.buildings, cfg, t.x, t.y, FactionRes.NPC_FACTION):
+						return {"tower": tower, "enemy": t}
+	return null
+
+
 ## 找一格里附近没有建筑、可通行的空地（从 hint 往外扩圈）
+##
+## ★ 「没有建筑」现在还要看**区划中心**：它是无主的中立障碍建筑，
+##   而测试要的是「能站人、能走直线的干净空地」——落在一格中心旁边会把
+##   直线判定 / 落点判定弄得很绕。用它挑出来的格子一律离中心至少 2 格。
 func _find_free_tile(world, cfg, hint: Vector2i) -> Variant:
 	for r in 12:
 		for dy in range(-r, r + 1):
@@ -888,8 +1194,21 @@ func _find_free_tile(world, cfg, hint: Vector2i) -> Variant:
 					continue
 				if PathfinderRes.occupied(world.buildings, x, y):
 					continue
+				if world.zone_center_zone_at(x, y) != null:
+					continue          # 区划中心占着这一格（它是中立障碍建筑，站不上去、也走不过）
+				if _near_zone_center(world, x, y, 1):
+					continue          # 别紧挨着区划中心（会把直线 / 离体判定弄复杂）
 				return Vector2i(x, y)
 	return null
+
+
+## 这一格周围 radius 格内有没有区划中心（中立障碍建筑）。
+func _near_zone_center(world, x: int, y: int, radius: int) -> bool:
+	for dy in range(-radius, radius + 1):
+		for dx in range(-radius, radius + 1):
+			if world.zone_center_zone_at(x + dx, y + dy) != null:
+				return true
+	return false
 
 
 ## 找一座山，并返回它

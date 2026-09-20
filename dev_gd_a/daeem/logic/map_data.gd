@@ -1,6 +1,6 @@
 extends RefCounted
 ##
-## 载入 map_01.json + 连通性修正（对应 HTML 版 js/map.js）。
+## 载入地图 JSON（`data/test_map.json`）+ 连通性修正（对应 HTML 版 js/map.js）。
 ##
 ## 地形用字符串网格存（'grass' / 'forest' / 'mountain'），**不是** TileMapLayer 的属性。
 ## 理由见 docs/pitfalls.md 2.2：换一张图集/改一个图块属性不该悄悄改变玩法。
@@ -28,8 +28,9 @@ const TERRAIN_MOUNTAIN := "mountain"
 ##    表不可用，写 `GridRes` / `Config` 作类型会直接 Parse Error（见 docs/pitfalls.md 第五节）。
 const GridRes = preload("res://logic/grid.gd")
 const ConfigRes = preload("res://logic/config.gd")
+const FactionRes = preload("res://logic/faction.gd")
 
-## 图例：'.' 草地　'^' 森林　'#' 山地（'B' 兼容旧文件，本轮 map_01.json 不用它）
+## 图例：'.' 草地　'^' 森林　'#' 山地（'B' 兼容旧文件，本轮的图不用它）
 const LAYOUT_LEGEND := {
 	".": TERRAIN_GRASS,
 	"^": TERRAIN_FOREST,
@@ -43,15 +44,16 @@ var terrain: GridRes = null
 var exists: GridRes = null
 var cols: int = 0
 var rows: int = 0
-## 大本营坐标（单机 = 地图中心；P1 的出生点）
+## 主阵营的参考点：**从 `faction_bases` 推导出来**，不再单独写在 JSON 里（见 `_resolve_primary_base`）。
+## 用途只有两个：连通性修正的 BFS 起点、以及「地图没给某一方指定大本营」时的兜底。
 var base: Vector2i = Vector2i.ZERO
-## ★ 各阵营自己的大本营（地图编辑器「阵营」页签划出来的）：{"player": Vector2i, "p1": …}。
+## ★ 各阵营自己的大本营（地图编辑器「阵营」页签划出来的）：{"p1": Vector2i, "p2": …}。
 ##
-## 与上面那个单数 `base` 的关系（别搞混）：
-##   · `faction_bases` 有这一方 → 就用它（编辑器里明确指定的，优先）；
-##   · 没有 → `spawn_layout_for` 退回老行为：主阵营用 `base`（地图中心），
-##     其他阵营按序号轮流用 `pvp_points`。
-## 老地图没有这个字段 → 空字典 → **行为与加这个功能之前一字不差**。
+## ★★ 这是**唯一**的出生点来源：老的「单数 base」（地图中心那种默认点位）已经彻底删掉。
+##    规则：
+##      · `faction_bases` 有这一方 → 就用它（编辑器保证每一方都有）；
+##      · 没有 → `spawn_layout_for` 退回 `base`（= 上面推导出来的那个参考点）。
+##    编辑器导出的地图**一定**每一方都有；退回分支只服务手写图与老图。
 var faction_bases: Dictionary = {}
 ## 阵营表（地图编辑器给：id / 名字 / 颜色）。游戏逻辑**不读**它，留着给 UI 与工具用。
 var factions_meta: Array = []
@@ -83,6 +85,18 @@ var sealed_islands: int = 0
 ## 名字表：id → 名字（编辑器导出的 zone_list 里那一列）。
 var zones_grid: Array = []
 var zones_names: Dictionary = {}
+## ★ 每个区块的「区划中心」与产能：id → Vector2i / {"food":…, "gold":…, "population":…}。
+##
+## 来源是 zone_list（`center` / `production` 两个字段）。老地图没有 → 两条都空 →
+## `zone.build_from_map` 不为任何区块落中心建筑（行为与加这个功能之前一致）。
+var zones_centers: Dictionary = {}
+var zones_production: Dictionary = {}
+## 旧格式里那个单数 `base` 读进来的值（**只读不写**的兼容入口）。
+##
+## ★ 编辑器**不再导出**这个字段了（用户要求把老式大本营彻底删掉），但**手写老地图
+##   仍然可能有它** —— 那种图只有一个「大本营点位」，没有 faction_bases。
+##   留着它，是为了让「读一张老图」的行为与加这个功能之前一字不变（见 `_resolve_primary_base`）。
+var _declared_base: Variant = null
 
 
 static func load_from(path: String, cfg: ConfigRes):
@@ -124,7 +138,10 @@ func _load(path: String, cfg: ConfigRes) -> bool:
 				ch = row.substr(x, 1)
 			terrain.set_cell(x, y, LAYOUT_LEGEND.get(ch, TERRAIN_GRASS))
 
-	base = _read_point(d.get("base", null), Vector2i(cols / 2, rows / 2))
+	# ★ 旧格式的单数 `base`：**只读不写**的兼容入口（编辑器不再导出它）。
+	#   老手写图只有这一个点位，所以先把它记下来当地形/出生点的兜底。
+	var legacy_base := _read_point(d.get("base", null), Vector2i(-1, -1))
+	_declared_base = null if (legacy_base.x < 0 or legacy_base.y < 0) else legacy_base
 	general_spawns.clear()
 	for p in _read_points(d.get("general_spawns", [])):
 		general_spawns.append(p)
@@ -138,12 +155,70 @@ func _load(path: String, cfg: ConfigRes) -> bool:
 	_read_zones(d.get("zones", null), d.get("zone_list", null))
 
 	forest_mult = cfg.unit_forest_mult
-	diagonal = cfg.bool_val("path.diagonal", true)
+	# ★ 读 cfg 上载入时算好的字段（与 grid.directions / pathfinder 同一个来源）：
+	#   否则「测试改一个开关、地图却按旧值做连通性修正」这种不一致会很难查。
+	diagonal = cfg.path_diagonal
 	dirs = GridRes.DIRS8 if diagonal else GridRes.DIRS4
+
+	# ★ 老的「单数 base」彻底删掉了：`base` 现在只是**推导出来的**主阵营参考点。
+	#   规则（与 spawn_layout_for / 连通性修正一一对应）：
+	#     · `faction_bases` 里有主阵营 → 用它；
+	#     · 一个 faction_bases 都没有（理论上只在「手写图没写阵营」时）→ 退回 `base`
+	#       （还是没有就用地块中心），保证连通性修正永远有一个合法起点。
+	base = _resolve_primary_base()
 
 	# 连通性修正（顺序见文件头注释）
 	sealed_islands = _seal_unreachable()
+	# ★ 地形掩码必须在**连通性修正之后**建（修正会把孤岛格改成山）
+	rebuild_terrain_masks()
 	return true
+
+
+## 这张图里「属于某个区块」的地块总数（= 所有区块的 tile_count 之和）。
+##
+## 用途：测试断言「区块划分真的把每一个有归属的格子都算进去了」——
+## 这样换地图时不用改断言（写死 24×16 那种数在换图时必然整体假失败）。
+func zone_tile_total() -> int:
+	var n := 0
+	for row_v in zones_grid:
+		if typeof(row_v) == TYPE_ARRAY:
+			for v in (row_v as Array):
+				if int(v) >= 0:
+					n += 1
+		elif typeof(row_v) == TYPE_STRING:
+			for part in String(row_v).replace(",", " ").split(" ", false):
+				if int(part) >= 0:
+					n += 1
+	return n
+
+
+## 这张图里有没有「旧格式的单数 base」字段（**只读不写**的兼容入口）。
+##
+## 用途：测试与排查工具要能一眼看出「这张图还是老格式」——
+## 编辑器导出的地图**不会**有这个字段了（老式大本营已彻底删除）。
+func has_declared_base() -> bool:
+	return _declared_base != null
+
+
+## 主阵营的参考点（连通性修正的 BFS 起点、`spawn_layout_for` 的兜底）。
+##
+## ★ 优先级（**老地图的行为必须一字不变**）：
+##   1. `faction_bases` 里有主阵营 → 用它（编辑器导出的地图走这条）；
+##   2. 没有 → **旧格式里那个单数 `base`**（`_declared_base`，手写老图就靠它；
+##      那个字段现在是「只读不写」的兼容入口：编辑器不再导出了）；
+##   3. 还是没有 → 地块中心。
+##
+## ★ 为什么 2 不能删：`base` 在老地图里是设计师手选的点位，而 3 是算出来的 ——
+##   直接跳过去会让「连通性修正从哪儿开始 BFS」和「p2 兜底往哪儿摆」都变味
+##   （回归测试 test_map_editor 的 `_test_exists_defaults` 就是钉这个的）。
+func _resolve_primary_base() -> Vector2i:
+	if faction_bases.has(FactionRes.DEFAULT_FACTION):
+		return faction_bases[FactionRes.DEFAULT_FACTION]
+	for fid in faction_bases.keys():
+		return faction_bases[fid]
+	if _declared_base != null:
+		return _declared_base
+	return Vector2i(cols / 2, rows / 2)
 
 
 ## 读各阵营的大本营：`faction_bases: {"player": [12, 8], "p1": {"x": 4, "y": 4}}`。
@@ -175,6 +250,8 @@ func _read_faction_bases(v: Variant) -> void:
 func _read_zones(grid_v: Variant, list_v: Variant) -> void:
 	zones_grid = []
 	zones_names = {}
+	zones_centers = {}
+	zones_production = {}
 	if typeof(grid_v) != TYPE_ARRAY:
 		return
 	zones_grid = grid_v
@@ -190,6 +267,20 @@ func _read_zones(grid_v: Variant, list_v: Variant) -> void:
 		var name := String(z.get("name", "")).strip_edges()
 		if name != "":
 			zones_names[zid] = name
+		# ★ 区划中心（编辑器保证每个区块都有；老地图没有 → 跳过）
+		var c: Variant = z.get("center", null)
+		if typeof(c) == TYPE_ARRAY and (c as Array).size() >= 2:
+			var ca := c as Array
+			zones_centers[zid] = Vector2i(int(ca[0]), int(ca[1]))
+		# ★ 产能（每地块每秒）：缺字段 → 这一档算 0（与编辑器侧的容错一致）
+		var p: Variant = z.get("production", null)
+		if typeof(p) == TYPE_DICTIONARY:
+			var pd: Dictionary = p
+			zones_production[zid] = {
+				"food": float(pd.get("food", 0.0)),
+				"gold": float(pd.get("gold", 0.0)),
+				"population": float(pd.get("population", 0.0)),
+			}
 
 
 ## 读 exists 网格：地图编辑器导出的是 `[[1,1,0,...], ...]`（1 = 存在，0 = 地图外）。
@@ -398,7 +489,9 @@ func terrain_walkable(x: int, y: int) -> bool:
 
 ## 移动消耗倍率：森林更「贵」（A* 的代价用）
 func terrain_cost(x: int, y: int) -> float:
-	if String(terrain.get_cell(x, y)) == TERRAIN_FOREST:
+	if x < 0 or y < 0 or x >= cols or y >= rows:
+		return 1.0
+	if _forest_mask[y * cols + x] != 0:
 		return 1.0 / maxf(0.001, forest_mult)
 	return 1.0
 
@@ -413,8 +506,28 @@ var diagonal: bool = true
 var dirs: Array[Vector2i] = GridRes.DIRS8
 
 
+## 森林掩码：1 = 森林。
+##
+## ★ 为什么要单独一份：`is_forest()` 在**每帧每单位**的移动里都会被调（算森林减速），
+##   而它原来每次都 `String(terrain.get_cell(...))` —— Variant 装箱 + 字符串比较。
+##   1000 单位 × 60 帧 = 每秒 6 万次，纯属白花。
+## ⚠️ 载入末尾建一次。**之后手改 `terrain`（测试里造障碍那种）必须调
+##    `rebuild_terrain_masks()`**，否则掩码与地形不一致。
+var _forest_mask := PackedByteArray()
+
+
+func rebuild_terrain_masks() -> void:
+	_forest_mask = PackedByteArray()
+	_forest_mask.resize(cols * rows)
+	var cells: Array = terrain.data
+	for i in cells.size():
+		_forest_mask[i] = 1 if String(cells[i]) == TERRAIN_FOREST else 0
+
+
 func is_forest(x: int, y: int) -> bool:
-	return String(terrain.get_cell(x, y)) == TERRAIN_FOREST
+	if x < 0 or y < 0 or x >= cols or y >= rows:
+		return false
+	return _forest_mask[y * cols + x] != 0
 
 
 # ------------------------------------------------------------------
@@ -444,9 +557,11 @@ func _walkable_or_negative(x: int, y: int) -> bool:
 
 ## 某一方的出生点：大本营 + 3 个将领站位 + 防御阵地（城墙 + 箭塔）。
 ##
-## ★ 判定顺序（**这张地图说了算**，不再看 'player' 这种标签）：
-##   1. 地图在 `faction_bases` 里给这一方指定过大本营 → 就用它（最高优先级）；
-##   2. 没指定 → 主阵营用地图中心的 `base`、其他阵营按序号轮流用 `pvp_points`。
+## ★ 判定顺序（**这张地图说了算**）：
+##   1. 地图在 `faction_bases` 里给这一方指定过大本营 → 就用它（编辑器保证每一方都有）；
+##   2. 没指定（手写图 / 老图）→ 主阵营用推导出来的 `base`、其他阵营按序号轮流用 `pvp_points`。
+##      ⚠️ 老的「单数 base（地图中心那种默认点位）」字段已经从 JSON 里删掉了 ——
+##         这里的 `base` 是**从 faction_bases 推导出来的参考点**，不是另一份数据。
 ##
 ## ★ 阵营 id 只有一套（'p1'…'p8' / 'enemy'，见 logic/faction.gd）：
 ##   单机 / 房主就是 'p1'。**不再有 'player' 这个别名** ——

@@ -99,6 +99,23 @@ func _test_font(cfg) -> void:
 # ------------------------------------------------------------------
 # 节点树：主场景真的能挂上树
 # ------------------------------------------------------------------
+## 建主场景 → 点 test 进游戏 → 返回**游戏内场景**（GameScene）。
+##
+## ⚠️⚠️ 必须在 game 上断言，**不能**在 main 根上断言。`main.tscn` 的根挂的是 `main.gd`，
+##   它只有 `cfg` / `start_screen` / `game` 三个字段 —— 在上面访问
+##   `world` / `cam` / `input_ctrl` / `hud` 会**报错并返回 null**，
+##   于是后面那些断言全部静默不执行（`ok(null != null)` 该红也没红，因为整段根本没跑到）。
+##   这个文件就这样假绿了很久：44 处断言里只有 19 处真的执行 —— 实测发现的。
+func _enter_game(packed):
+	var main = (packed as PackedScene).instantiate()
+	root.add_child(main)
+	await process_frame
+	# 走真实入口：按下「test」才建游戏内场景（与玩家点一下按钮完全同一条路）
+	main._on_test_pressed()
+	await process_frame
+	return main
+
+
 func _test_scene_tree(cfg) -> void:
 	var packed = load("res://view/main.tscn")
 	ok(packed != null, "能载入主场景 main.tscn")
@@ -106,27 +123,35 @@ func _test_scene_tree(cfg) -> void:
 		return
 	ok(packed is PackedScene, "main.tscn 是 PackedScene（裸脚本不行，实测会启动失败）")
 
-	var main = (packed as PackedScene).instantiate()
+	var main = await _enter_game(packed)
 	ok(main != null, "主场景能实例化")
 	if main == null:
 		return
-	root.add_child(main)
-	await process_frame
-
 	ok(main.is_inside_tree(), "主场景真的挂上树了（await process_frame 之后）")
-	ok(main.world != null, "主场景建出了逻辑世界")
-	ok(main.cfg != null, "主场景载入了配置")
-	ok(main.cam != null, "主场景建了相机")
 
-	# 渲染节点齐了
-	for node_name in ["TerrainView", "ZoneView", "BuildingView", "UnitView", "Overlay", "CameraRig", "InputController", "Hud"]:
-		ok(main.get_node_or_null(node_name) != null, "节点树里有 %s" % node_name)
+	var game = main.game
+	ok(game != null, "★ 按下 test 之后建出了游戏内场景（在 main 根上找 world 是找不到的）")
+	if game == null:
+		main.queue_free()
+		return
+
+	ok(game.world != null, "游戏内场景建出了逻辑世界")
+	ok(game.cfg != null, "游戏内场景载入了配置")
+	ok(game.cam != null, "游戏内场景建了相机")
+
+	# 渲染节点齐了（都住在 GameScene 下面）
+	for node_name in ["Camera2D", "TerrainView", "ZoneView", "BuildingView", "UnitView",
+			"Overlay", "CameraRig", "InputController", "Hud"]:
+		ok(game.get_node_or_null(node_name) != null, "节点树里有 %s" % node_name)
 
 	# 相机是纯表现：不该进快照
-	ok(main.cam.zoom.x > 0.0, "相机缩放合法（fit 之后）")
+	ok(game.cam.zoom.x > 0.0, "相机缩放合法（fit 之后）")
 
 	# 逻辑与渲染是两棵树：world 不是 Node
-	ok(not (main.world is Node), "★ world 不是 Node（逻辑层与场景树分离）")
+	ok(not (game.world is Node), "★ world 不是 Node（逻辑层与场景树分离）")
+
+	# ★ unit_view 现在是「一个 CanvasItem 画全部」：1000 单位也不该有子节点
+	ok(game.unit_view.get_child_count() == 0, "★ unit_view 不持有每单位一个节点（画在一起）")
 
 	main.queue_free()
 	await process_frame
@@ -137,11 +162,14 @@ func _test_scene_tree(cfg) -> void:
 # ------------------------------------------------------------------
 func _test_frames_and_input(cfg) -> void:
 	var packed = load("res://view/main.tscn")
-	var main = (packed as PackedScene).instantiate()
-	root.add_child(main)
-	await process_frame
+	var main = await _enter_game(packed)
+	var game = main.game
+	if game == null:
+		ok(false, "进游戏失败：拿不到 GameScene（后面这些断言全都不会执行）")
+		main.queue_free()
+		return
 
-	var world = main.world
+	var world = game.world
 	var t0: float = world.time
 	for i in 30:
 		await process_frame
@@ -155,12 +183,12 @@ func _test_frames_and_input(cfg) -> void:
 	#   所以选中数不是 1 而是「1 + 亲兵数」。这正是需求要的行为，断言照实写。
 	var u = world.units[0]
 	var group_size: int = world.group_of(u).size()
-	main.input_ctrl.select_units([u])
-	eq(main.input_ctrl.selected_units.size(), group_size,
+	game.input_ctrl.select_units([u])
+	eq(game.input_ctrl.selected_units.size(), group_size,
 		"★ 选中将领 1 会同步选中整队（1 + %d 个亲兵）" % (group_size - 1))
 	ok(u.selected, "选中后逻辑单位的 selected 标志被置上（view 写的是存在的字段）")
 	var sub_selected := 0
-	for su in main.input_ctrl.selected_units:
+	for su in game.input_ctrl.selected_units:
 		if su.leader_id == u.id:
 			sub_selected += 1
 	eq(sub_selected, group_size - 1, "整队里的亲兵也都被选中了")
@@ -169,9 +197,9 @@ func _test_frames_and_input(cfg) -> void:
 	# ★ 命令要下给**整队**：这正是「右键移动同步给亲兵下达指令」那条需求，
 	#   所以这里把选中列表里所有 id 都带上（input_controller 就是这么做的）
 	var all_ids: Array = []
-	for su in main.input_ctrl.selected_units:
+	for su in game.input_ctrl.selected_units:
 		all_ids.append(su.id)
-	main._on_command({
+	game._on_command({
 		"kind": "move", "ids": all_ids,
 		"x": before.x + 3.0, "y": before.y,
 		"faction": world.my_faction,
@@ -210,9 +238,9 @@ func _test_frames_and_input(cfg) -> void:
 	ok(world.alive_units_of("enemy").size() >= 1, "调试刷敌人成功")
 	for i in 60:
 		await process_frame
-	ok(main.hud != null, "HUD 还在（翻译事件不会炸）")
+	ok(game.hud != null, "HUD 还在（翻译事件不会炸）")
 
-	_test_zoom_direction(cfg, main)
+	_test_zoom_direction(cfg, game)
 
 	main.queue_free()
 	await process_frame
@@ -221,9 +249,9 @@ func _test_frames_and_input(cfg) -> void:
 # ------------------------------------------------------------------
 # 滚轮缩放方向（第一版写反过，所以钉一条回归）
 # ------------------------------------------------------------------
-func _test_zoom_direction(cfg, main) -> void:
-	var cam: Camera2D = main.cam
-	var input_ctrl = main.input_ctrl
+func _test_zoom_direction(cfg, game) -> void:
+	var cam: Camera2D = game.cam
+	var input_ctrl = game.input_ctrl
 	var center := Vector2(400.0, 300.0)
 
 	# 先回到中间倍率，保证两个方向都有余地
