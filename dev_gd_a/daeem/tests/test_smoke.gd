@@ -77,10 +77,11 @@ func _cases() -> void:
 
 	eq(cfg.cols, EXPECTED_GRID_COLS, "config grid.cols")
 	eq(cfg.rows, EXPECTED_GRID_ROWS, "config grid.rows")
-	near(cfg.cell_px, 64.0, 1e-6, "渲染格宽 render.cell_px")
+	near(cfg.cell_px, 128.0, 1e-6, "渲染格宽 render.cell_px（已从 64 放大一倍）")
 
-	# 手感数值：必须与 HTML 版逐个一致（docs/porting.md 第四节）
-	near(cfg.unit_speed, 2.4, 1e-6, "单位速度 2.4 格/秒")
+	# 手感数值：除下面标了 ★ 的三项（格宽与速度的本轮调整）之外，必须与 HTML 版逐个一致
+	# （docs/porting.md 第四节）
+	near(cfg.unit_speed, 0.6, 1e-6, "★ 单位速度 0.6 格/秒（降到 1/4）")
 	near(cfg.unit_forest_mult, 0.5, 1e-6, "森林减速 ×0.5")
 	near(cfg.unit_hp_max, 200.0, 1e-6, "将领生命 200")
 	near(cfg.unit_radius_factor, 0.1, 1e-6, "单位半径系数 0.1")
@@ -92,12 +93,20 @@ func _cases() -> void:
 	near(cfg.general_cooldown, 0.9, 1e-6, "将领攻击间隔 0.9s")
 	near(cfg.enemy_damage, 10.0, 1e-6, "测试敌人伤害 10")
 	near(cfg.enemy_cooldown, 1.2, 1e-6, "测试敌人攻击间隔 1.2s")
-	near(cfg.enemy_speed, 1.8, 1e-6, "测试敌人速度 1.8 格/秒")
+	near(cfg.enemy_speed, 0.45, 1e-6, "★ 测试敌人速度 0.45 格/秒（降到 1/4）")
 	near(cfg.enemy_hp, 60.0, 1e-6, "测试敌人生命 60")
 	eq(cfg.zone_cols, 6, "区块横向 6 列")
 	eq(cfg.zone_rows, 4, "区块纵向 4 行")
-	near(cfg.capture_time_sec, 4.0, 1e-6, "占领耗时 4 秒")
-	near(cfg.decay_per_sec, 0.125, 1e-6, "进度回退 0.125/秒（缓慢：满条 8 秒退完）")
+	# ★ 这两个数是**需求定的**，但断言写成「等于 config 里的值」没意义 ——
+	#   这里钉的是「载入路径通」+「量级对」。真正的历史沿革写在注释里：
+	#     占领耗时 4 → 32 秒（需求「速度缩小为原来的 1/8」）
+	#     回退 0.125 → 0.03125 每秒（需求「降低速度缩小为原来的 1/4」）
+	near(cfg.capture_time_sec, 32.0, 1e-6, "占领耗时 32 秒（基准：1 个单位独自占下）")
+	near(cfg.decay_per_sec, 0.03125, 1e-6, "进度回退 0.03125/秒（满条 32 秒退完）")
+	# ★ 人数加成曲线的参数（本轮新机制）：上限 x2、k=2.5、指数 1.7
+	near(cfg.zone_speed_max_mult, 2.0, 1e-6, "人数加成上限 x2")
+	near(cfg.zone_speed_curve_k, 2.5, 1e-6, "人数加成归一化常数 k=2.5")
+	near(cfg.zone_speed_curve_power, 1.7, 1e-6, "人数加成指数 p=1.7（>1 才是先慢后快）")
 	near(cfg.unit_radius(), 0.1, 1e-6, "unit_radius() 单位是「格」而不是像素")
 
 	# 城墙生命 / 箭塔数值在 building 段里

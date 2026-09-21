@@ -1344,6 +1344,36 @@ def t_zone_center_and_production_ui() -> None:
         select_zone(a)
         eq(editor._zone_prod_vars["food"].get(), "0", "★ 换区划后显示的是它自己的产能")
 
+        # ---- 人口上限：一个输入框，作用于列表里选中的那个区块
+        eq(editor.zone_cap_var.get(), "1",
+           "★ 没填过的区块，输入框里显示生效值 1（与游戏里用的是同一个数）")
+        editor.zone_cap_var.set("10")
+        editor.apply_zone_population_cap()
+        eq(editor.model.zone_population_cap(a.zone_id), 10.0, "★ 人口上限写进模型")
+        ok(editor.dirty, "改人口上限会把地图标记成「有未导出的改动」")
+        # 换区划：输入框跟着换
+        select_zone(b)
+        eq(editor.zone_cap_var.get(), "1", "★ 换区划后显示的是它自己的人口上限")
+        # 非法输入：不改原值，并把输入框刷回模型里的值
+        editor.zone_cap_var.set("abc")
+        editor.apply_zone_population_cap()
+        eq(editor.model.zone_population_cap(b.zone_id), 1.0, "★ 乱打字不会把上限弄坏")
+        eq(editor.zone_cap_var.get(), "1", "★ 输入框被刷回模型里的值")
+        # 允许 0（那个区块永远没有人口）
+        editor.zone_cap_var.set("0")
+        editor.apply_zone_population_cap()
+        eq(editor.model.zone_population_cap(b.zone_id), 0.0, "★ 允许填 0")
+        # 撤销：改上限也要能退回去
+        editor.undo()
+        eq(editor.model.zone_population_cap(b.zone_id), 1.0, "★ Ctrl+Z 能撤销「改人口上限」")
+        editor.redo()
+        eq(editor.model.zone_population_cap(b.zone_id), 0.0, "★ 重做又回来")
+        # 没选中区块时输入框禁用
+        editor.selected_zone = None
+        editor.refresh_zone_panel()
+        eq(str(editor.zone_cap_entry.cget("state")), "disabled", "没选中区块 → 输入框禁用")
+        select_zone(b)
+
         # ---- 删掉地块 → 中心一起没（数据层已经测过，这里确认界面跟着刷新）
         select_zone(b)
         click_at(editor, 2, 0, button="right")     # 右键删掉中心那一格

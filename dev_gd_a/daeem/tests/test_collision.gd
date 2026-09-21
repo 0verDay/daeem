@@ -221,7 +221,7 @@ func _test_push_keeps_intent(cfg) -> void:
 
 	# 跑到底：它必须仍然能走到目标附近（推挤不会让它永远到不了）
 	var n := 0
-	while b.moving and n < 3000:
+	while b.moving and n < frames_at_baseline(cfg, 3000):
 		w.tick(DT)
 		n += 1
 	# 用「同一格」而不是「同一点」判定：路口被队友挤开是正常的
@@ -296,7 +296,7 @@ func _test_pathfinding_ignores_units(cfg) -> void:
 	# 端到端：a 真的能穿过 b 所在的位置走到目标
 	ok(a.order_move(w, cfg, GridRes.center_of(to)), "a 收到移动命令")
 	var n := 0
-	while a.moving and n < 3000:
+	while a.moving and n < frames_at_baseline(cfg, 3000):
 		w.tick(DT)
 		n += 1
 	var at := Vector2i(floori(a.pos.x), floori(a.pos.y))

@@ -52,6 +52,23 @@ func run_all(cases: Callable) -> void:
 		quit(0)
 
 
+## ---- 帧预算换算 ----
+## ★ config.json 顶部那次调整把格宽放大到 128px、单位速度降到**基线的 1/4**
+##   （unit.speed 2.4 → 0.6，debug.enemy_speed 1.8 → 0.45）。
+##   测试里那些「跑 N 帧等它走到」的上限，是按**基线速度**留的余量：
+##   速度一变，同样的路程就要 4 倍的帧数 —— 不换算的话，挂掉的会是这些用例，
+##   而它们真正想验的东西（到达 / 不抖 / 不吸附格心）根本没被验到。
+##   所以统一走这个换算：以后谁再调速度，帧预算自动跟着走。
+##   ⚠️ 只用它放大「等移动收敛」的循环；纯观察窗口（跑固定 N 帧看闪不闪、抖不抖）不要用，
+##      那些量的本来就是秒数而不是路程。
+const SPEED_BASELINE := 2.4
+
+
+func frames_at_baseline(cfg, base_frames: int) -> int:
+	var spd: float = maxf(0.01, float(cfg.unit_speed))
+	return int(ceil(float(base_frames) * maxf(1.0, SPEED_BASELINE / spd)))
+
+
 func ok(cond: bool, what: String) -> void:
 	if cond:
 		_pass += 1

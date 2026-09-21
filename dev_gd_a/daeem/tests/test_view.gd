@@ -241,9 +241,37 @@ func _test_frames_and_input(cfg) -> void:
 	ok(game.hud != null, "HUD 还在（翻译事件不会炸）")
 
 	_test_zoom_direction(cfg, game)
+	_test_fixed_view_range(cfg, game)
+	_test_fullscreen_hotkey(main)
 
 	main.queue_free()
 	await process_frame
+
+
+# ------------------------------------------------------------------
+# Ctrl+Q：开发者全屏快捷键（全屏 ↔ 窗口）
+# ------------------------------------------------------------------
+## ⚠️ 无头（--headless）下 DisplayServer 是空实现，改不了真实窗口模式 ——
+##    所以这里验的是**按键归谁消费**（路由），不是窗口真的变了。
+##    真机上「按一下切全屏」= 这条路由 + main._handle_window_hotkey 里那几行。
+func _test_fullscreen_hotkey(main) -> void:
+	ok(main._handle_window_hotkey(_key_event(KEY_Q, true)),
+		"★ Ctrl+Q 被 main 的全屏快捷键消费")
+	ok(not main._handle_window_hotkey(_key_event(KEY_Q, false)),
+		"单独按 Q **不**触发全屏（它仍然是命令卡的键）")
+	ok(not main._handle_window_hotkey(_key_event(KEY_F, true)),
+		"别的键 + Ctrl 也不触发全屏")
+	# 再按一次 Ctrl+Q 必须能切回来（不是单向的）
+	ok(main._handle_window_hotkey(_key_event(KEY_Q, true)),
+		"★ Ctrl+Q 是**切换**（再按一次仍然被消费，不是单向）")
+
+
+func _key_event(code: int, ctrl: bool) -> InputEventKey:
+	var ev := InputEventKey.new()
+	ev.keycode = code
+	ev.pressed = true
+	ev.ctrl_pressed = ctrl
+	return ev
 
 
 # ------------------------------------------------------------------
@@ -280,4 +308,52 @@ func _test_zoom_direction(cfg, game) -> void:
 	ok(cam.zoom.x <= cfg.num("camera.max_scale", 1.6) + 1e-6, "缩放不超过 max_scale")
 	for i in 80:
 		input_ctrl.handle_mouse_button(down)
-	ok(cam.zoom.x >= cfg.num("camera.min_scale", 0.18) - 1e-6, "缩放不低于 min_scale")
+	ok(cam.zoom.x >= cfg.num("camera.min_scale", 0.8) - 1e-6, "缩放不低于 min_scale")
+
+
+# ------------------------------------------------------------------
+# 视野固定（需求：给玩家一个缩放上限 + 一个下限，上限 ≈ 下限视野的两倍）
+# ------------------------------------------------------------------
+func _test_fixed_view_range(cfg, game) -> void:
+	var cam: Camera2D = game.cam
+	var rig = game.camera_rig
+	var input_ctrl = game.input_ctrl
+	var limits: Vector2 = rig.zoom_limits()
+	var vp: Vector2 = rig.get_viewport_rect().size
+	var center := vp * 0.5
+
+	var up := InputEventMouseButton.new()
+	up.button_index = MOUSE_BUTTON_WHEEL_UP
+	up.pressed = true
+	up.position = center
+	var down := InputEventMouseButton.new()
+	down.button_index = MOUSE_BUTTON_WHEEL_DOWN
+	down.pressed = true
+	down.position = center
+
+	# 1) 区间两端必须真的够得到、也真的停得住
+	for i in 60:
+		input_ctrl.handle_mouse_button(up)
+	near(cam.zoom.x, limits.y, 1e-4, "★ 一直往上滚 = 停在缩放上限（最紧视野）")
+	var width_tight: float = vp.x / cam.zoom.x
+	for i in 120:
+		input_ctrl.handle_mouse_button(down)
+	near(cam.zoom.x, limits.x, 1e-4, "★ 一直往下滚 = 停在缩放下限（最远视野）")
+	var width_wide: float = vp.x / cam.zoom.x
+
+	# 2) 需求那条：最远视野的**边长**是最紧时的两倍左右。
+	#    用 zoom 的比值判定，就与视口大小 / 格宽无关（换窗口、改 cell_px 都不用重算）：
+	#    可见宽度 = 视口 / zoom，所以两个宽度的比 = max_scale / min_scale。
+	near(limits.y / limits.x, 2.0, 0.25,
+		"★ 最远视野的边长 ≈ 最紧视野的两倍（zoom %.2f : %.2f）" % [limits.y, limits.x])
+	print("   [view] 最紧 %.1f 格宽 / 最远 %.1f 格宽（视口 %.0f×%.0f，格宽 %.0f px）"
+		% [width_tight / cfg.cell_px, width_wide / cfg.cell_px, vp.x, vp.y, cfg.cell_px])
+
+	# 3) ★ 任何一条改 zoom 的路都要夹在同一个区间里 —— F 键（fit_to_map）也是。
+	#    「整图」需要的倍率比下限还远，所以它现在只会落到最远那一档。
+	rig.fit_to_map()
+	ok(cam.zoom.x >= limits.x - 1e-6 and cam.zoom.x <= limits.y + 1e-6,
+		"★ F 键（fit_to_map）也受视野区间约束（zoom = %.3f）" % cam.zoom.x)
+	ok(vp.x / cam.zoom.x < rig.map_size().x + 1e-6,
+		"★ 视野固定之后「缩到看全图」不再可能（可见 %.0f px < 地图 %.0f px）"
+		% [vp.x / cam.zoom.x, rig.map_size().x])

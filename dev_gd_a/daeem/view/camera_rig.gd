@@ -56,29 +56,56 @@ func map_size() -> Vector2:
 	return Vector2(map.cols, map.rows) * cfg.cell_px
 
 
-## 把镜头限制在地图范围内（地图比视口小时直接居中）
+## ★★ 视野区间（zoom 的下限、上限）—— **唯一**允许读 camera.min_scale / max_scale 的地方。
+##
+## 为什么必须集中在一个函数里：需求是「把玩家的视野大小固定」，
+##   而改 zoom 的途径有三条（滚轮 zoom_at、F 键 fit_to_map、开局 setup→fit_to_map）。
+##   三处各写一遍夹取，早晚会出现「F 键能看全图、滚轮看不到」这种自相矛盾的状态。
+##
+## ⚠️ 语义提醒：Godot 的 zoom 是**放大倍数**（值越大画面越大、看到越少），
+##   所以返回的 x = min_scale 是**最远**视野，y = max_scale 是**最紧**视野。
+func zoom_limits() -> Vector2:
+	return Vector2(
+		cfg.num("camera.min_scale", 0.8),
+		cfg.num("camera.max_scale", 1.6)
+	)
+
+
+## 把镜头限制在地图范围内。
+##
+## ★★ 平移阈值（需求原话）：「玩家视野可以移动到的极点为**地图边界点到屏幕中心**时的点，
+##    因此玩家看到的地图界外的东西全部为默认背景」。
+##    也就是 `cam.position`（= 屏幕中心所在的世界点）只能落在 [0, 地图宽] × [0, 地图高]。
+##
+##    三个可验证的后果：
+##      · 贴到某条**边**的极点时，地图占屏幕的 1/2（另一半是界外的默认背景）；
+##      · 贴到某个**角**的极点时，地图占屏幕的 1/4；
+##      · 这条规则与 zoom 无关 —— 视野远近都不改变「中心能到哪」，只改变看得见多少。
+##
+## ⚠️ 与旧行为的区别（旧的是「地图铺满屏幕、界外一点都看不到」）：
+##    旧分支是 `clampf(pos, half, size - half)`，现在两极都放开到 0 / size。
+##    **不需要**再写「地图比视口小就居中」那条分支了：`size.x - half.x` 在这种情形下
+##    本来就小于 `half.x`，区间左右颠倒；而现在的区间是 [0, size]，永远合法，
+##    且它的语义（中心可以推到边界上）对大地图 / 小地图是同一条。
 func clamp_position() -> void:
-	var vp: Vector2 = get_viewport_rect().size / cam.zoom
 	var size := map_size()
-	var half := vp * 0.5
-	if size.x <= vp.x:
-		cam.position.x = size.x * 0.5
-	else:
-		cam.position.x = clampf(cam.position.x, half.x, size.x - half.x)
-	if size.y <= vp.y:
-		cam.position.y = size.y * 0.5
-	else:
-		cam.position.y = clampf(cam.position.y, half.y, size.y - half.y)
+	cam.position.x = clampf(cam.position.x, 0.0, size.x)
+	cam.position.y = clampf(cam.position.y, 0.0, size.y)
 
 
-## F：缩到能看完整张地图（并居中）
+## F：把镜头拉到「能看完整张地图」需要的倍率（并居中）。
+##
+## ⚠️ 视野固定之后这里**夹得住**：算出来的 0.52 比 min_scale（0.8）还远，
+##    所以实际落在「最远」那一档 —— F 键现在等价于「拉到最远」，看不到全图了。
+##    要恢复看全图就调低 min_scale（见 config.json 的 camera._comment）。
 func fit_to_map() -> void:
 	if cam == null:
 		return
 	var vp: Vector2 = get_viewport_rect().size
 	var size := map_size()
 	var s: float = minf(vp.x / size.x, vp.y / size.y) * 0.98
-	cam.zoom = Vector2.ONE * clampf(s, cfg.num("camera.min_scale", 0.18), cfg.num("camera.max_scale", 1.6))
+	var limits := zoom_limits()
+	cam.zoom = Vector2.ONE * clampf(s, limits.x, limits.y)
 	cam.position = size * 0.5
 	clamp_position()
 
@@ -97,13 +124,13 @@ func center_on_home(world) -> void:
 	center_on_px(Vector2(float(t.x) + 0.5, float(t.y) + 0.5) * cfg.cell_px)
 
 
-## 以光标为锚点缩放：光标底下的地面保持不动
+## 以光标为锚点缩放：光标底下的地面保持不动。
+## ⚠️ 夹取走 zoom_limits()：视野固定之后滚轮拉不出区间（见那里的注释）。
 func zoom_at(screen_pos: Vector2, factor: float) -> void:
 	var before := cam.get_screen_center_position() + (screen_pos - get_viewport_rect().size * 0.5) / cam.zoom
-	var lo: float = cfg.num("camera.min_scale", 0.18)
-	var hi: float = cfg.num("camera.max_scale", 1.6)
+	var limits := zoom_limits()
 	var current: float = cam.zoom.x
-	var next: float = clampf(current * factor, lo, hi)
+	var next: float = clampf(current * factor, limits.x, limits.y)
 	if absf(next - current) < 1e-6:
 		return
 	cam.zoom = Vector2.ONE * next

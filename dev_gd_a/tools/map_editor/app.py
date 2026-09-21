@@ -1117,6 +1117,25 @@ class EditorApp:
             self._zone_prod_vars[key] = var
             self._zone_prod_entries[key] = entry
 
+        # ---- 人口上限（用户需求：每个区块都要有，没填 = 1；涨到上限就不再涨）
+        ksec = self._section(self.sidebar, "人口上限")
+        krow = tk.Frame(ksec, bg=UI["panel"])
+        krow.pack(fill="x", pady=1)
+        tk.Label(krow, text="人口上限", bg=UI["panel"], fg=UI["text"],
+                 width=8, anchor="w").pack(side="left")
+        self.zone_cap_var = tk.StringVar(value="1")
+        self.zone_cap_entry = ttk.Entry(krow, textvariable=self.zone_cap_var, width=8)
+        self.zone_cap_entry.pack(side="left", padx=(4, 4))
+        self.zone_cap_entry.bind("<Return>", lambda e: self.apply_zone_population_cap())
+        self.zone_cap_entry.bind("<FocusOut>", lambda e: self.apply_zone_population_cap())
+        tk.Label(krow, text="人", bg=UI["panel"], fg=UI["text_dim"],
+                 anchor="w").pack(side="left")
+        tk.Label(ksec, text="该区块的人口涨到这个数就不再涨；不填 = 1。\n"
+                            "填 0 = 这个区块永远没有人口（也就不能在那里招募）。\n"
+                            "游戏里招募一个单位会从将领所在区块扣 1 人口。",
+                 bg=UI["panel"], fg=UI["text_dim"], anchor="w", justify="left",
+                 wraplength=290).pack(fill="x", pady=(4, 0))
+
         self._button(zsec, "清空这个区块的地块", self.clear_selected_zone_tiles,
                      padx=8, pady=4, bg=UI["panel_alt"], fg=UI["text"],
                      activebackground="#3a3d42").pack(fill="x", pady=(8, 2))
@@ -1198,6 +1217,9 @@ class EditorApp:
         # ---- 产能
         self._refresh_zone_production_row(zone)
 
+        # ---- 人口上限
+        self._refresh_zone_population_cap_row(zone)
+
         # 图例
         for child in self.zone_legend.winfo_children():
             child.destroy()
@@ -1259,6 +1281,25 @@ class EditorApp:
             # 整数不显示小数点（1 而不是 1.0）—— 与导出的 JSON 保持同一种写法
             var.set(("%d" % value) if abs(value - round(value)) < 1e-9 else ("%g" % value))
             entry.configure(state="normal")
+
+    def _refresh_zone_population_cap_row(self, zone) -> None:
+        """把选中区块的**人口上限**填进输入框（没选中 → 禁用）。
+
+        ★ 显示的是**生效值**（没填过就是默认的 1）—— 设计师看到的数字与游戏里
+          实际用的那个必须是同一个，否则「我没填啊怎么不涨」会变成一个查不出的问题。
+        """
+        var = getattr(self, "zone_cap_var", None)
+        entry = getattr(self, "zone_cap_entry", None)
+        if var is None or entry is None:
+            return
+        if zone is None:
+            var.set("—")
+            entry.configure(state="disabled")
+            return
+        value = self.model.zone_population_cap(zone.zone_id)
+        # 整数不显示小数点（1 而不是 1.0）—— 与产能 / 导出的 JSON 同一种写法
+        var.set(("%d" % value) if abs(value - round(value)) < 1e-9 else ("%g" % value))
+        entry.configure(state="normal")
 
     def _focus_inside(self, widget) -> bool:
         """键盘焦点现在是不是落在 `widget` 这棵子树里（用来判断「用户正在这里打字」）。
@@ -2497,6 +2538,40 @@ class EditorApp:
         # 无论成败都把输入框刷成「模型里现在是什么」（夹过范围 / 非法输入都能看出来）
         self._refresh_zone_production_row(zone)
 
+    def apply_zone_population_cap(self) -> None:
+        """把输入框里的人口上限写回模型（Enter 或失焦触发）。
+
+        与 `apply_zone_production` 完全同一套规矩：
+          · 非法输入（空 / 乱打字）**不改动原值**，只提示一句并把输入框恢复成存储值；
+          · 负数 / 超过上限的数由模型夹住（0~999）；
+          · 撤销快照取在**改动之前**，改了才压栈（失败的点击不留空操作）。
+        """
+        zone = self.model.zone(self.selected_zone) if self.selected_zone is not None else None
+        if zone is None:
+            return
+        var = getattr(self, "zone_cap_var", None)
+        if var is None:
+            return
+        text = str(var.get()).strip()
+        try:
+            invalid = float(text) != float(text)          # NaN
+        except (TypeError, ValueError):
+            invalid = True
+        if invalid:
+            self.status("人口上限填的不是数字，保持原值 %g"
+                        % self.model.zone_population_cap(zone.zone_id))
+            self._refresh_zone_population_cap_row(zone)
+            return
+        self.prepare_undo()
+        if self.model.set_zone_population_cap(zone.zone_id, text):
+            self.commit_undo()
+            self.mark_dirty()
+            self.status("「%s」的人口上限 = %g（涨到这个数就不再涨）"
+                        % (zone.name, self.model.zone_population_cap(zone.zone_id)))
+        else:
+            self.drop_undo()
+        self._refresh_zone_population_cap_row(zone)
+
     def clear_selected_zone_tiles(self) -> None:
         zone = self.model.zone(self.selected_zone) if self.selected_zone is not None else None
         if zone is None or not zone.tiles:
@@ -2658,9 +2733,11 @@ class EditorApp:
             "rows": m.rows,
             "existing": list(m.existing),
             "terrain": list(m.terrain),
-            # 区块也要把「区划中心 + 产能」一起存：否则「设了中心 / 改了产能 → Ctrl+Z」
-            # 只会退掉地块，中心与产能留在原地（与「设了大本营按 Ctrl+Z」同一类漏洞）。
-            "zones": [(z.zone_id, z.name, set(z.tiles), z.center, dict(z.production))
+            # 区块也要把「区划中心 + 产能 + 人口上限」一起存：否则「设了中心 / 改了产能 /
+            # 改了人口上限 → Ctrl+Z」只会退掉地块，那几项留在原地
+            # （与「设了大本营按 Ctrl+Z」同一类漏洞）。
+            "zones": [(z.zone_id, z.name, set(z.tiles), z.center, dict(z.production),
+                       z.population_cap)
                       for z in m.zones],
             "zone_of": dict(m.zone_of),
             # 阵营表与大本营也要进撤销栈（否则「设了大本营 → Ctrl+Z」会把它们漏掉）
@@ -2682,11 +2759,15 @@ class EditorApp:
         m.extra = copy.deepcopy(snap["extra"])
         m.zones = []
         from .model import Faction, Zone
-        for zid, name, tiles, center, production in snap["zones"]:
+        for entry in snap["zones"]:
+            # ⚠️ 老快照（本次改动之前压进栈的）只有 5 项：缺 population_cap 时按 None 处理，
+            #    免得「撤销一份旧快照」直接抛异常。它只在同一个会话里存在，正常不会遇到。
+            zid, name, tiles, center, production = entry[:5]
             zone = Zone(zid, name)
             zone.tiles = set(tiles)
             zone.center = center
             zone.production = dict(production)
+            zone.population_cap = entry[5] if len(entry) > 5 else None
             m.zones.append(zone)
         for fid, name, color in snap.get("factions", []):
             m.factions.append(Faction(fid, name, color))

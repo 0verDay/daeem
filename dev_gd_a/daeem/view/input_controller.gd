@@ -34,6 +34,17 @@ var camera_rig = null
 ## 选中列表（纯本地，**不进命令流**）
 var selected_units: Array = []
 var selected_building = null
+## ★ 玩家**在地图上左键点到的那个单位**（纯本地，只给详细信息右栏用）。
+##
+## 「选中的部队」是一份集合（点一个兵会把整队带出来、框选会把几支队一起带出来），
+## 而参考图要右栏报「**玩家点击的那个单位**」—— 集合本身说不出这句话：
+## 一次点选与一次框选出来的 selected_units 长得一模一样。
+## 所以这里单独记一笔，并且**只有 `_on_left_click` 写它**；
+## 框选 / 点左侧部队列表 / 按 1-2-3 / 选中建筑或区划时一律清掉（那些不是「点某个单位」）。
+##
+## ★★ 这份状态唯一的坑就是「谁清它」：以后新增「批量选中」的入口时，
+##    必须顺手调 `select_units()`（它自己会清），否则右栏会一直停在上一次点到的那个兵身上。
+var clicked_unit = null
 ## ★ 选中的**区划**（左键点区划中心 = 看这个区划的详情）。
 ## 与上面两者互斥：面板「详细信息」只有一个左栏，同一时刻只有一种选中对象。
 var selected_zone = null
@@ -49,6 +60,25 @@ var move_marks: Array[Vector2] = []
 var attack_marks: Array[Vector2] = []
 var debug_aim: bool = false
 
+## ★★ 框选（左键拖出一个矩形）：起点与当前点都是**世界坐标（格）**。
+##
+## 需求原话：「为玩家增加一个框选操作，当玩家框到某些己方单位时，视为选中这些单位
+##            所属的部队，如果有多个部队，也一同选中」。
+##
+## · `drag_active` 只表示「**已经越过拖拽阈值**、正在拖框」——
+##   没越过的左键仍然是普通单击（按下的那一刻就处理掉了，见 `_on_left_click`）；
+## · 展开成「所属部队」这件事**不在这一层做**：`select_units()` 会走
+##   `world.expand_to_groups()`，那是选中集合的唯一入口（见那里的说明）。
+var drag_active: bool = false
+var drag_start_world: Vector2 = Vector2.ZERO
+var drag_current_world: Vector2 = Vector2.ZERO
+## 左键按下之后、还没判定成「点击还是拖框」的那一段
+var _drag_pending: bool = false
+## 这次拖框是不是追加（Shift + 左键拖）
+var _drag_additive: bool = false
+## 按下的屏幕坐标（只用来算「移动了多少像素」——阈值是像素口径，与相机缩放无关）
+var _drag_press_screen: Vector2 = Vector2.ZERO
+
 ## 暂停 / 区块名显示（纯本地开关）
 var paused: bool = false
 var show_zone_names: bool = true
@@ -62,6 +92,11 @@ func setup(p_cfg: ConfigRes, p_world, p_camera_rig) -> void:
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	selected_units = []
 	selected_building = null
+	selected_zone = null
+	clicked_unit = null
+	# 框选那条状态机也归零（重开一局时别留着上一局的半个框）
+	_drag_pending = false
+	drag_active = false
 
 
 ## 每帧更新一次「鼠标在哪、指向哪个地块」——渲染要用，且**只有这里**读鼠标位置
@@ -107,6 +142,8 @@ func handle_key(event: InputEventKey) -> bool:
 		KEY_ESCAPE:
 			if build_type != "":
 				set_build_type("")
+			elif _drag_pending or drag_active:
+				_cancel_drag()          # 拖到一半按 Esc = 放弃这次框选（不动已有选中）
 			else:
 				select_units([])
 			return true
@@ -139,6 +176,18 @@ func handle_key(event: InputEventKey) -> bool:
 # 鼠标
 # ------------------------------------------------------------------
 func handle_mouse_button(event: InputEventMouseButton) -> bool:
+	# ★★ 左键的**按下与抬起都要接**（框选是「拖出矩形、松手生效」）。
+	#   原来这里开头就 `if not event.pressed: return false` —— 那会把左键抬起直接漏掉，
+	#   框永远结束不了（表现是「框选根本没反应」）。
+	if event.button_index == MOUSE_BUTTON_LEFT:
+		if event.pressed:
+			_begin_drag(event)
+			# 单击行为照旧**在按下那一刻**发生（不改老手感、老测试）：
+			# 越过阈值之后，松手那一下会用框选结果覆盖掉它。
+			_on_left_click(event.shift_pressed)
+		else:
+			_finish_drag()
+		return true
 	if not event.pressed:
 		return false
 	# 缩放方向（已按实测钉住，别凭直觉改）：
@@ -158,14 +207,141 @@ func handle_mouse_button(event: InputEventMouseButton) -> bool:
 		MOUSE_BUTTON_WHEEL_DOWN:
 			camera_rig.zoom_at(event.position, 1.0 / step)
 			return true
-		MOUSE_BUTTON_LEFT:
-			_on_left_click(event.shift_pressed)
-			return true
 		MOUSE_BUTTON_RIGHT:
 			# ★ 双击 = 行军攻击（Godot 自己带双击判定，不用手写计时器）
 			_on_right_click(event.double_click)
 			return true
 	return false
+
+
+## 鼠标移动：只用来推进框选那条状态机（悬停由 `poll_mouse()` 每帧刷）。
+##
+## ★ 位置换算走 `_screen_to_logic(event.position)`（引擎的画布变换，与
+##   `get_global_mouse_position()` 内部同一条路）——见那个函数的注释。
+## ★ 阈值判据用的是**屏幕像素**（`event.position`），所以「拖多远才算框选」与缩放无关。
+func handle_mouse_motion(event: InputEventMouseMotion) -> bool:
+	if not _drag_pending:
+		return false
+	var moved: float = _drag_press_screen.distance_to(event.position)
+	if not drag_active:
+		if moved < _drag_threshold_px():
+			return false
+		drag_active = true
+	drag_current_world = _screen_to_logic(event.position)
+	local_ui_changed.emit()
+	return true
+
+
+## 视口（屏幕）坐标 → 世界坐标（格）。
+##
+## ★ 走的是**引擎给的画布变换**，与 `get_global_mouse_position()` 内部是同一条路
+##   （`viewport.get_canvas_transform().affine_inverse() * 屏幕坐标`），
+##   只是把「视口记录的鼠标位置」换成**这个事件自己带的坐标**。为什么要这样：
+##     · 拖拽时事件坐标才是「这一下鼠标真的在哪」，比全局鼠标状态更准；
+##     · 框选因此不依赖全局鼠标状态 —— 无头测试能真的把一条拖拽走完并断言结果
+##       （造不出真实鼠标移动的场合，`get_global_mouse_position()` 永远是 (0,0)）。
+##   ⚠️ 这**不是**自己手算相机数学（那是 pitfalls 3.1 的错位根因），用的是同一个变换。
+func _screen_to_logic(screen_pos: Vector2) -> Vector2:
+	return PaletteRes.to_logic(get_viewport().get_canvas_transform().affine_inverse() * screen_pos, cfg)
+
+
+## 「拖多远才算框选」的像素阈值（config 的 `ui.drag_select_min_px`）。
+## ★ 读的是 `config.gd` 载入时算好的字段（见 architecture.md 第 7 条）——
+##   它在鼠标移动的路径上，而 `num("…")` 每次都要切字符串。
+func _drag_threshold_px() -> float:
+	return maxf(0.0, cfg.drag_select_min_px)
+
+
+## 左键按下：对齐「鼠标在哪」，再记下框选的起点。建造模式下不起框（那一下是「放置建筑」）。
+##
+## ★ 为什么这里要顺手把 `mouse_world` / `hover_tile` 对齐到**这一个事件**上：
+##   按下那一刻的点击判定（`_on_left_click`：选中单位 / 建筑 / 区划、放置建筑）读的是
+##   这两个字段，而它们平时由 `poll_mouse()` **每帧**刷 —— 两次刷之间按下鼠标时，
+##   判定用的就是上一帧的位置（最多差一帧的移动距离）。用事件自己的坐标更准，
+##   而且这样「框选的起点」与「这一次点击的落点」永远是同一个点。
+func _begin_drag(event: InputEventMouseButton) -> void:
+	drag_start_world = _screen_to_logic(event.position)
+	mouse_world = drag_start_world
+	_sync_hover_from_mouse()
+	if build_type != "":
+		_drag_pending = false
+		drag_active = false
+		return
+	_drag_pending = true
+	_drag_additive = event.shift_pressed
+	_drag_press_screen = event.position
+	drag_current_world = drag_start_world
+	drag_active = false
+
+
+## 按当前 `mouse_world` 重算 `hover_tile`（口径与 `poll_mouse()` 里那两行**完全一致**：
+## 地图外一律是 (-1,-1)，于是「点到地图外」不会被当成点到左上角那一格）。
+func _sync_hover_from_mouse() -> void:
+	if world == null:
+		hover_tile = Vector2i(-1, -1)
+		return
+	var t := Vector2i(floori(mouse_world.x), floori(mouse_world.y))
+	hover_tile = t if world.map.terrain.has(t.x, t.y) else Vector2i(-1, -1)
+
+
+## 左键松开：真的拖出过框 → 按框选处理；否则什么都不做（单击在按下时已经处理过了）。
+func _finish_drag() -> void:
+	if not _drag_pending:
+		return
+	var active := drag_active
+	var start := drag_start_world
+	var end := drag_current_world
+	var additive := _drag_additive
+	_drag_pending = false
+	drag_active = false
+	if not active:
+		return
+	box_select(start, end, additive)
+	local_ui_changed.emit()
+
+
+## ★★ 框选本体：把矩形（世界坐标，两个角随便哪个在前）里的**己方存活单位**收集起来，
+## 再交给 `select_units()` **展开成它们所属的部队**。
+##
+## 为什么要走 select_units 而不是自己拼 selected_units：
+##   · 那里是选中集合的唯一入口，展开规则（`world.expand_to_groups`：队长 + 全部亲兵）
+##     只写在一处 —— 框到一个亲兵也等于选中整支部队（用户需求），多支部队一起选中；
+##   · 右侧/左侧的 UI（部队列表高亮、详情面板）读的都是同一份 `selected_units`，
+##     所以「左侧部队 ui 也会显示这些部队被选中」是这条路的自然结果。
+##
+## ★ 只认**自己这一方**的活单位（与左键点选一致：敌人的框选不在需求里）。
+## @return 框到的单位数（不含被展开出来的队友；给测试用）
+func box_select(start: Vector2, end_pos: Vector2, additive: bool = false) -> int:
+	if world == null:
+		return 0
+	var rect := Rect2(start, end_pos - start).abs()
+	var picked: Array = []
+	for u in world.units:
+		if not u.alive:
+			continue
+		if not FactionRes.same_side(u.faction, world.my_faction):
+			continue
+		if rect.has_point(u.pos):
+			picked.append(u)
+	var next: Array = selected_units.duplicate() if additive else []
+	for u in picked:
+		if not next.has(u):
+			next.append(u)
+	select_units(next)
+	return picked.size()
+
+
+## 正在拖的那个框（世界坐标；`drag_active` 为 false 时不要画它）。
+func drag_box() -> Rect2:
+	return Rect2(drag_start_world, drag_current_world - drag_start_world).abs()
+
+
+## 放弃这次框选（Esc）——**不动已有的选中**：拖到一半反悔不该把队伍丢了。
+func _cancel_drag() -> void:
+	_drag_pending = false
+	drag_active = false
+	local_ui_changed.emit()
+
 
 
 ## 左键：建造模式下放置；否则选中单位 / 建筑
@@ -197,7 +373,10 @@ func _on_left_click(additive: bool) -> void:
 			next.erase(hit_unit)
 		elif not next.has(hit_unit):
 			next.append(hit_unit)
+		# ★ 玩家在地图上点到的那个单位（右栏要按它显示）——
+		#   必须在 select_units 之后写：那个函数会把 clicked_unit 清掉（见它的注释）。
 		select_units(next)
+		clicked_unit = hit_unit if not additive else null
 		return
 
 	var hit_building = world.building_at(hover_tile.x, hover_tile.y)
@@ -307,7 +486,7 @@ func clear_marks() -> void:
 # 本地状态
 # ------------------------------------------------------------------
 
-## 选中一批单位。
+## ★ 选中一批单位（**批量入口**：点左侧部队列表 / 框选 / 1-2-3 / 新兵自动入列都走这里）。
 ##
 ## ★★ 「选中将领时同步选中亲兵」就落在这里 —— **队伍展开放在选中这一步，而不是右键那一步**。
 ##    为什么这样分：
@@ -317,10 +496,15 @@ func clear_marks() -> void:
 ##      · 第 1 轮联机时，命令里永远只带真实的单位 id，服务器盖章那条路不用改。
 ##    反过来（在右键时展开）会出现：界面上只高亮队长，但命令发给了一堆没显示的兵 ——
 ##    玩家看不出自己在下令给谁。
+##
+## ★★ 顺手清掉 `clicked_unit`：能走到这里的一律是「批量选中」（或者清空选中），
+##    不是「在地图上点了某一个单位」。不清的话右栏会一直停在上次点到的那个兵身上。
+##    ⚠️ 唯一的例外是 `_on_left_click`：它先调这里、再自己把 `clicked_unit` 写回去。
 func select_units(units: Array) -> void:
 	selected_units = world.expand_to_groups(units)
 	selected_building = null
 	selected_zone = null
+	clicked_unit = null
 	# selected 是逻辑单位上的**渲染标志**（不是权威状态）：由 view 写、view 读
 	for u in world.units:
 		u.selected = false
@@ -336,6 +520,7 @@ func select_zone(zone) -> void:
 	selected_zone = zone
 	selected_units = []
 	selected_building = null
+	clicked_unit = null
 	for u in world.units:
 		u.selected = false
 	local_ui_changed.emit()
@@ -345,6 +530,7 @@ func select_building(b) -> void:
 	selected_building = b
 	selected_units = []
 	selected_zone = null
+	clicked_unit = null
 	for u in world.units:
 		u.selected = false
 	local_ui_changed.emit()

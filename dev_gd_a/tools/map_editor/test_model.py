@@ -31,7 +31,10 @@ for _stream in (sys.stdout, sys.stderr):
 from map_editor import mapfile                      # noqa: E402
 from map_editor import model as model_module        # noqa: E402
 from map_editor.model import (                      # noqa: E402
+    DEFAULT_POPULATION_CAP,
     MAX_COORD,
+    POPULATION_CAP_KEY,
+    POPULATION_CAP_MAX,
     TERRAIN_ORDER,
     MapModel,
     PRODUCTION_MAX,
@@ -530,6 +533,93 @@ def t_zone_center_and_production() -> None:
     eq(d["zone_centers"][1][1], c.zone_id, "★ zone_centers 网格里 (1,1) 是襄阳")
 
 
+def t_zone_population_cap() -> None:
+    """区块人口上限（用户需求：每个区块都要有；没填 = 1；涨到上限就不再涨）。
+
+    这一节钉住的是**数据层**的那几条约定：
+      · 没填 = 默认 1（`zone_population_cap()` 返回生效值，界面显示的就是它）；
+      · 允许 0（那个区块永远没人口）；负数夹到 0、超大值夹到上限、乱打字不改原值；
+      · **导出只在「不等于默认 1」时才写 population_cap** —— 没配过的老图导出后仍然干净；
+      · 读回来一致（往返），缺字段的地图读进来仍是「没填」（= 默认 1）。
+    """
+    print("\n[19] 区块人口上限（数据层）")
+    m = MapModel(0, 0)
+    for y in range(2):
+        for x in range(2):
+            m.ensure_tile(x, y)
+            m.create_tile(x, y)
+    a = m.add_zone("东关")
+    m.assign_tile(0, 0, a.zone_id)
+    m.assign_tile(1, 0, a.zone_id)
+    m.set_zone_center(a.zone_id, 0, 0)
+
+    eq(a.population_cap, None, "新区的 population_cap 是 None（= 设计师还没填）")
+    eq(m.zone_population_cap(a.zone_id), DEFAULT_POPULATION_CAP,
+       "★ 没填 → 生效值就是默认的 1")
+    ok(m.zone_population_cap_is_default(a.zone_id), "没填 → 算默认（导出时不写这个字段）")
+
+    # ---- 填值：字符串也认（与产能同一套）
+    ok(m.set_zone_population_cap(a.zone_id, "10"), "填 10（字符串也认）")
+    eq(m.zone_population_cap(a.zone_id), 10.0, "生效值是 10")
+    ok(not m.zone_population_cap_is_default(a.zone_id), "★ 10 ≠ 默认 1 → 导出时要写")
+    ok(not m.set_zone_population_cap(a.zone_id, 10), "填同一个值 → 没变化（返回 False）")
+
+    # ---- 允许 0（那个区块永远没有人口、也不能在那里招募）
+    ok(m.set_zone_population_cap(a.zone_id, 0), "★ 允许填 0（用户确认过）")
+    eq(m.zone_population_cap(a.zone_id), 0.0, "0 生效")
+    ok(not m.zone_population_cap_is_default(a.zone_id), "★ 0 也是「配过」，要写进 JSON")
+
+    # ---- 夹范围 / 非法输入
+    ok(m.set_zone_population_cap(a.zone_id, 5), "先填 5（下一步用它验负数）")
+    eq(m.set_zone_population_cap(a.zone_id, -3), True, "负数照样受理（夹住）")
+    eq(m.zone_population_cap(a.zone_id), 0.0, "★ 负数被夹成 0")
+    eq(m.set_zone_population_cap(a.zone_id, 5000), True, "超大值照样受理")
+    eq(m.zone_population_cap(a.zone_id), float(POPULATION_CAP_MAX), "★ 超上限被夹住")
+    eq(m.set_zone_population_cap(a.zone_id, "abc"), False, "乱打字被拒（返回 False）")
+    eq(m.zone_population_cap(a.zone_id), float(POPULATION_CAP_MAX), "★ 乱打字时原值不变")
+    eq(m.set_zone_population_cap(a.zone_id, ""), False, "空串被拒")
+    eq(m.set_zone_population_cap(999, 5), False, "没有这个区块 → 拒")
+
+    # ---- 导出：只有「不等于默认 1」的区块才写 population_cap
+    b = m.add_zone("江陵")
+    m.assign_tile(1, 1, b.zone_id)
+    m.set_zone_center(b.zone_id, 1, 1)
+    ok(m.set_zone_population_cap(a.zone_id, 12), "东关的上限设成 12")
+    ok(m.set_zone_population_cap(b.zone_id, 1), "★ 江陵显式填 1（与默认等价，但确实填过）")
+    d = mapfile.model_to_dict(m)
+    entries = {z["id"]: z for z in d["zone_list"]}
+    eq(entries[a.zone_id][POPULATION_CAP_KEY], 12, "★ 东关的上限写进 zone_list")
+    ok(POPULATION_CAP_KEY not in entries[b.zone_id],
+       "★ 填 1 的区块不写 population_cap（与默认值等价，文件里不留默认值）")
+    # 整数写成整数（1 而不是 1.0）—— 与产能同一条 `_clean_number` 口径
+    ok(isinstance(entries[a.zone_id][POPULATION_CAP_KEY], int),
+       "★ 整数上限写成整数（不是 12.0）")
+
+    # ---- 往返：读回来一致
+    again = mapfile.dict_to_model(json.loads(mapfile.dumps(m)), load_config(PROJECT_DIR))
+    eq(again.zone_population_cap(a.zone_id), 12.0, "★ 往返：东关的上限还是 12")
+    eq(again.zone_population_cap(b.zone_id), 1.0, "往返：江陵仍是默认的 1")
+    eq(again.zone(a.zone_id).population_cap, 12.0, "读回来的是「填过的值」本身")
+
+    # ---- 老地图（没有这个字段）：读进来 = 没填 = 默认 1
+    legacy = {
+        "cols": 2, "rows": 2,
+        "layout": ["..", ".."],
+        "zones": [[0, 0], [1, 1]],
+        "zone_list": [{"id": 0, "name": "甲"}, {"id": 1, "name": "乙"}],
+    }
+    old = mapfile.dict_to_model(legacy, load_config(PROJECT_DIR))
+    eq(old.zone_population_cap(0), 1.0, "★ 老地图没有 population_cap → 游戏侧默认 1")
+    ok(old.zone_population_cap_is_default(0), "老地图的区块算「没填」")
+    # 手改地图里写了非数字 → 当作没填，不许把导入弄崩
+    weird = dict(legacy)
+    weird["zone_list"] = [{"id": 0, "name": "甲", POPULATION_CAP_KEY: "abc"},
+                          {"id": 1, "name": "乙", POPULATION_CAP_KEY: 6}]
+    w2 = mapfile.dict_to_model(weird, load_config(PROJECT_DIR))
+    eq(w2.zone_population_cap(0), 1.0, "★ 手写地图里 population_cap 不是数字 → 当没填")
+    eq(w2.zone_population_cap(1), 6.0, "同一个文件里合法的那个照读")
+
+
 def t_base_warning_with_factions() -> None:
     """阵营大本营：**提醒**（problems）与**硬拦截**（blockers）各管一段。
 
@@ -839,6 +929,7 @@ def main() -> int:
     t_validation()
     t_base_warning_with_factions()
     t_zone_center_and_production()
+    t_zone_population_cap()
     t_terrain_order()
     t_bom_file()
     t_negative_coords_and_growth()

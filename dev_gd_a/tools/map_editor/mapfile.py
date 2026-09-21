@@ -9,9 +9,10 @@
       "layout": ["...", "...", ...],     // 地形：'.' 草地  '^' 森林  '#' 山地
 
       "zones": [[-1,0,0,...], ...],      // ★ 地块 → 区块 id，-1 = 不属于任何区块
-      "zone_list": [                     // ★ 区块表（名字 / 区划中心 / 产能）
+      "zone_list": [                     // ★ 区块表（名字 / 区划中心 / 产能 / 人口上限）
         { "id": 0, "name": "A1", "center": [2, 1],
           "production": {"food": 1.0, "gold": 1.0, "population": 0.5},
+          "population_cap": 10,          // 没填就不写 → 游戏侧默认 1
           "x0": 0, "y0": 0, "x1": 3, "y1": 3, "tiles": [[0,0], ...] }
       ],
       "zone_centers": [[-1,-1,0,-1], ...],  // ★ 地块 → 它是不是某个区划的中心（是就写那个区划 id）
@@ -39,6 +40,7 @@ from typing import Dict, List, Optional, Tuple
 
 from .model import (
     CHAR_TERRAINS,
+    POPULATION_CAP_KEY,
     PRODUCTION_KEYS,
     ROW_LETTERS,
     TERRAIN_CHARS,
@@ -71,6 +73,7 @@ EDITOR_COMMENT: Tuple[str, ...] = (
     "zones：地块 → 区块 id（-1 = 不属于任何区块）；zone_list 里是区块的名字。",
     "zone_list[].center：该区块的「区划中心」地块坐标；每个区块必须有且只有一个。",
     "zone_list[].production：该区块的产能（每地块每秒）：food / gold / population。",
+    "zone_list[].population_cap：该区块的人口上限；不写 = 默认 1（涨到上限就不再涨）。",
     "zone_centers：地块 → 中心所属的区块 id（-1 = 不是任何区块的中心），由 center 推出来。",
     "factions / faction_bases：阵营表与每个阵营的大本营（每个阵营必须有且只有一个）。",
     "其余出生点 / 预置建筑 / 预置单位由 Godot 脚本生成。",
@@ -182,6 +185,8 @@ def dict_to_model(data: dict, cfg: Optional[dict] = None,
     # 区块的中心与产能（编辑器加的字段；老地图没有 → 保持 None / 0）
     _read_zone_centers(model, data.get("zone_centers"))
     _read_zone_production(model, data.get("zone_list"))
+    # ★ 人口上限（编辑器加的字段；老地图 / 没填过 → 保持 None = 游戏侧默认 1）
+    _read_zone_population_caps(model, data.get("zone_list"))
     # ★ 每个区块都必须有中心：从文件里读不到（老地图 / 手写图）的，
     #   在这里**自动挑一个**（该区块按行优先的第一个非大本营地块），最后由 `blockers()`
     #   在导出前确保「一个都不少」。自动挑而不是留空，是为了让「打开旧图」这条路
@@ -311,6 +316,25 @@ def _read_zone_production(model: MapModel, zone_list) -> None:
         for key in PRODUCTION_KEYS:
             if key in raw:
                 model.set_zone_production(zid, key, raw[key])
+
+
+## 读每个区块的人口上限：`zone_list[].population_cap = 10`。
+##
+## 宽容点（与别处一致）：
+##   · 缺字段 → **什么都不设**（模型的 None = 游戏侧默认 1）；
+##   · 不是数字的值（"abc" / 空串）→ 同样当没填，**不写坏原值**
+##     （`set_zone_population_cap` 自己会拒绝，这里不用再判一遍）；
+##   · 负数 / 超大值由模型夹住（0~999），与界面上的输入走同一条路。
+def _read_zone_population_caps(model: MapModel, zone_list) -> None:
+    if not isinstance(zone_list, list):
+        return
+    for item in zone_list:
+        if not isinstance(item, dict) or POPULATION_CAP_KEY not in item:
+            continue
+        zid = _as_int(item.get("id"), -1)
+        if zid < 0 or model.zone(zid) is None:
+            continue
+        model.set_zone_population_cap(zid, item[POPULATION_CAP_KEY])
 
 
 ## 给「还没有中心的区块」自动挑一个：该区块按行优先的第一个地块。
@@ -520,6 +544,11 @@ def model_to_dict(model: MapModel) -> dict:
             entry["production"] = {
                 key: _clean_number(zone.production.get(key, 0.0)) for key in PRODUCTION_KEYS
             }
+        # ★ 人口上限：**只在不是默认值 1 时才写**（与产能同一条约定）——
+        #   没填过 / 填 1 的区块，游戏侧自己按 1 处理，文件里不必留一坨默认值。
+        if not model.zone_population_cap_is_default(zone.zone_id):
+            entry[POPULATION_CAP_KEY] = _clean_number(
+                model.zone_population_cap(zone.zone_id))
         entry["x0"] = min_x - x0
         entry["y0"] = min_y - y0
         entry["x1"] = max_x - x0

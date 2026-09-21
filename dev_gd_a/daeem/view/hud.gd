@@ -4,7 +4,7 @@
 ##
 ##   右上 设置（80×160，点不动）
 ##   左侧 部队 1~10（10 槽 × 60 高，内容动态生成）
-##   左下 地图占位（400×400，本轮只画个灰块 —— 真小地图以后单独做）
+##   左下 小地图（400×400：整张地图 + 视野框，左键点击移动镜头，见 view/minimap.gd）
 ##   底栏 y 840..1080：
 ##     详细信息 1030×240（左 = 选中对象的信息，右 = 阵营 + 资源）
 ##     阵营 / 盾徽 / 旗帜（150 宽，**本轮不做**，只留位置）
@@ -28,17 +28,22 @@ const SquadPanelRes = preload("res://view/squad_panel.gd")
 const DetailPanelRes = preload("res://view/detail_panel.gd")
 const CommandCardRes = preload("res://view/command_card.gd")
 const PageTabsRes = preload("res://view/page_tabs.gd")
+const MinimapRes = preload("res://view/minimap.gd")
 
 var cfg: ConfigRes = null
 var world = null
 var input_ctrl = null
+var camera_rig = null
 
 var squad_panel: Control = null
 var detail_panel: PanelContainer = null
 var command_card: Control = null
 var page_tabs: Control = null
 var settings_button: Button = null
-var map_placeholder: PanelContainer = null
+## 左下角的小地图（400×400）。★ 变量名仍然是占位时代的 `map_placeholder`：
+## 测试（tests/test_ui.gd）按这个名字断言它的位置与尺寸，换名字只会白改一把。
+var map_placeholder: Control = null
+var minimap: Control = null
 var faction_placeholder: PanelContainer = null
 
 var _root: Control = null
@@ -47,11 +52,24 @@ var _root: Control = null
 ## ★ 它不是被删掉的日志栏：只显示**最近一次**被拒的一句话，不保留历史。
 var _notice_timer: float = 0.0
 
+## 中文字体（HUD 的 theme 里那一份）——转给需要自己 draw_string 的子控件
+## （详细信息左栏的「部队方块 / 将领头像网格」）。主题里没字体时是 null，那边会退回引擎默认字体。
+var _font: Font = null
 
-func setup(p_cfg: ConfigRes, p_world, p_input, theme: Theme) -> void:
+## 详细信息左栏「当前展开的那支部队」的**部队编号**（1 起；0 = 还没定）。
+##
+## ★ 为什么要记住它：玩家点了下半某一格将领头像之后，左栏上半要一直停在那支部队上，
+##   不能每一帧都被「默认第一支」抢回去。部队在 world 里是**算出来的**（没有 Squad 对象），
+##   所以这里记的是**编号**（与左侧部队列表同一套口径），每帧按编号重新查那支队伍。
+var _detail_troop_number: int = 0
+
+
+func setup(p_cfg: ConfigRes, p_world, p_input, theme: Theme, p_camera_rig = null) -> void:
 	cfg = p_cfg
 	world = p_world
 	input_ctrl = p_input
+	camera_rig = p_camera_rig
+	_font = theme.default_font if theme != null else null
 
 	_root = Control.new()
 	_root.name = "HudRoot"
@@ -61,7 +79,7 @@ func setup(p_cfg: ConfigRes, p_world, p_input, theme: Theme) -> void:
 		_root.theme = theme
 	add_child(_root)
 
-	_build_map_placeholder()
+	_build_minimap()
 	_build_faction_placeholder()
 	_build_detail_panel()
 	_build_command_card()
@@ -82,23 +100,30 @@ func _process(dt: float) -> void:
 # 搭界面
 # ------------------------------------------------------------------
 
-## 左下 400×400 的「地图」：本轮**只占位**（真小地图要画地形/建筑/单位 + 视野框 + 点击跳转）
-func _build_map_placeholder() -> void:
+## 左下 400×400 的「地图」= 真的小地图（view/minimap.gd）：
+## 整张地图 + 玩家当前的视野框 + 左键点击移动镜头。
+##
+## ★ 结构是「有底的容器 + 自绘控件」两层：
+##   外层的 PanelContainer 只提供与其它面板一致的底板 / 描边，内层的 minimap 控件
+##   负责全部绘制与点击。
+##   ⚠️ **外层必须是 IGNORE**：Godot 的鼠标事件从父到子传递，父控件只要是 STOP，
+##      子控件的 `_gui_input` 永远收不到事件 —— 表现就是「小地图画得好好的，但点它没反应」。
+##      容器不需要吃事件（它什么都不做），所以这里直接放行。
+##   ⚠️ 内层用 PRESET_FULL_RECT：容器的 content margin 会让它比外层小 8px（主题给的），
+##      所以不写任何坐标，让它自己跟着缩。
+func _build_minimap() -> void:
 	map_placeholder = PanelContainer.new()
 	map_placeholder.name = "MapPlaceholder"
-	map_placeholder.mouse_filter = Control.MOUSE_FILTER_STOP
+	map_placeholder.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	map_placeholder.add_theme_stylebox_override("panel", UiStyleRes.panel_style(UiStyleRes.BG_SOFT))
 	UiLayoutRes.apply_rect(map_placeholder, UiLayoutRes.MAP_RECT, false, true)
 	_root.add_child(map_placeholder)
 
-	var label := Label.new()
-	label.text = "地图"
-	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	label.add_theme_font_size_override("font_size", UiStyleRes.FS_BIG)
-	label.add_theme_color_override("font_color", UiStyleRes.TEXT_FAINT)
-	map_placeholder.add_child(label)
+	minimap = MinimapRes.new()
+	minimap.name = "Minimap"
+	minimap.set_anchors_preset(Control.PRESET_FULL_RECT)
+	map_placeholder.add_child(minimap)
+	minimap.setup(cfg, world, camera_rig)
 
 
 ## 阵营 / 盾徽 / 旗帜：**本轮不做**，只按参考图把位置与占位文字放上
@@ -125,8 +150,12 @@ func _build_faction_placeholder() -> void:
 func _build_detail_panel() -> void:
 	detail_panel = DetailPanelRes.new()
 	_root.add_child(detail_panel)
-	detail_panel.setup(world)
+	# ★ 字体要传进去：详细信息左栏的「部队方块 / 将领头像网格」自己 draw_string，
+	#   而 Godot 默认字体没有中文字形（不传就是满屏方框）。
+	detail_panel.setup(world, _font)
 	detail_panel.queue_cell_activated.connect(_on_queue_cell_activated)
+	detail_panel.troop_activated.connect(_on_troop_activated)
+	detail_panel.block_activated.connect(_on_roster_block_activated)
 
 
 func _build_command_card() -> void:
@@ -242,6 +271,42 @@ func _on_queue_cell_activated(slot: int) -> void:
 		return
 	if not input_ctrl.request_recruit_cancel(slot):
 		show_notice("现在没有可以取消的招募")
+
+
+## 点了详细信息左栏下方的某一格**将领头像** = 把那一支部队换成「当前展开」的那一支。
+##
+## ★ 需求原话：「当选中多个部队时，点击左侧的部队头像是将展开的部队切换到该部队，
+##   而不是只选中该部队」。
+##   ⇒ 这里**只改「展开哪一支」**（记住编号 + 刷一帧），**不碰选中集合**：
+##     选中是玩家在地图上 / 左侧列表里做的决定，点一下头像不该把它改掉。
+## ★ 编号 → 部队：按**与左侧部队列表完全相同的口径**数一遍己方队长
+##   （view/squad_panel.gd 的 _collect_teams / unit_roster 的 _troop_number 是同一套判据）。
+func _on_troop_activated(number: int) -> void:
+	if world == null or number <= 0:
+		return
+	_detail_troop_number = number      # 下一帧就展开它（别被「默认第一支」抢回去）
+	refresh()
+
+
+## 点了左栏**上半**方块行里的第 k 个方块（0 = 队长，1 起 = 各亲兵）。
+##
+## ★ 手玩原话：「玩家点击了左栏中展开部队的单位，则切换详情至这个单位」
+##   ⇒ 把它记成「玩家点到的那个单位」（右栏按它显示），**不动选中集合** ——
+##     点一下左栏的方块不该改变「命令发给谁」。
+## ⚠️ 这里写的是与地图点选**同一个** `clicked_unit`：两者语义是一样的
+##   （「玩家点到的那个单位」），只是入口不同。再点网格里别的部队时
+##   `_right_unit()` 会因为它不属于展开那支而自动退回将领，不用额外清理。
+func _on_roster_block_activated(k: int) -> void:
+	if input_ctrl == null:
+		return
+	var roster = detail_panel.roster_control()
+	if roster == null:
+		return
+	var u = roster.unit_at(k)
+	if u == null:
+		return
+	input_ctrl.clicked_unit = u
+	refresh()
 
 
 # ------------------------------------------------------------------
@@ -361,21 +426,246 @@ func view_size() -> Vector2:
 func refresh() -> void:
 	if world == null or input_ctrl == null or detail_panel == null:
 		return
-	detail_panel.set_detail(_selection_text())
-	detail_panel.set_status(_status_text())
+	# ★ 详细信息是**左右两栏**（第三轮改版，见 view/detail_panel.gd 的文件头）：
+	#   左栏 = 当前展开的那支部队（上半）+ 选中部队的将领头像网格（下半）
+	#   右栏 = 选中单位的头像 / 名称 / buff / 数值
+	# 选中对象的三种互斥情况：区划 → 建筑 → 单位（见 refresh 里的分支）
+	if input_ctrl.selected_zone != null:
+		detail_panel.set_troops(null, [])
+		detail_panel.set_unit_avatar_text("区")
+		detail_panel.set_unit_name(_zone_title(input_ctrl.selected_zone))
+		detail_panel.set_detail(_zone_text(input_ctrl.selected_zone))
+		detail_panel.set_queue(null)
+		return
+	if input_ctrl.selected_building != null:
+		var b = input_ctrl.selected_building
+		detail_panel.set_troops(null, [])
+		detail_panel.set_unit_avatar_text(_building_short(b))
+		detail_panel.set_unit_name(b.display_name())
+		detail_panel.set_detail(_building_text(b))
+		detail_panel.set_queue(null)
+		return
+
+	# 选中的部队（按「队长」分组，顺序 = 左侧部队列表）：
+	# 上半画**当前展开**的那一支，下半网格画**其余**的（展开的那支不重复出现）。
+	var troops := _selected_troops(input_ctrl.selected_units)
+	var current := _pick_troop(troops)
+	var troop = null if current < 0 else troops[current]
+	detail_panel.set_troops(troop, _troops_without(troops, current))
+
+	# 右栏：**地图上点到的那个单位优先**，否则是当前展开那支部队的将领
+	# （需求原话：「默认为左侧栏中选中的部队将领头像，玩家点地图上某个单位时，
+	#            该选中的单位为玩家点击的那个单位」）。
+	var shown = _right_unit(troop)
+	detail_panel.set_unit_avatar_text("" if shown == null else _unit_short(shown))
+	detail_panel.set_unit_name("" if shown == null else String(shown.name))
+	detail_panel.set_detail(_unit_text(shown, troops))
 	# ★ 招募队列：显示**当前选中的第一个将领**的（选中整队时队长排在最前，
 	#   见 input_controller.first_selected_leader）。没选中将领 → 整块收起来。
-	detail_panel.set_queue(input_ctrl.first_selected_leader())
+	detail_panel.set_queue(_queue_leader(troop))
 
 
-## 右栏资源行：**只留阵营 + 粮食 + 黄金**（产出速率是本地算出来的展示值）。
-## 己方地块 / 区块 / 建造模式 / 暂停都不再显示（按需求砍掉）。
-func _status_text() -> String:
-	var me := FactionRes.faction_name(world.my_faction)
-	return "%s\n粮食 %.1f（+%.1f/秒）　黄金 %.1f（+%.1f/秒）" % [
-		me, float(world.resources["food"]), world.production_food,
-		float(world.resources["gold"]), world.production_gold,
-	]
+## 选中部队分组：[{"leader": 队长, "number": 部队编号, "units": [该队单位…]}]。
+##
+## ★ 口径必须与左侧部队列表（view/squad_panel.gd）**完全一致**：
+##   己方在场、`is_team_leader`、按 `world.units` 的顺序、最多 SQUAD_SLOTS 支。
+##   不一致的话网格上写着「部队2」、左边高亮的却是第 3 行 —— 玩家没法把两边对上。
+func _selected_troops(units: Array) -> Array:
+	var out: Array = []
+	if world == null:
+		return out
+	var index_of: Dictionary = {}
+	var n := 0
+	for u in world.units:
+		if not u.alive:
+			continue
+		if not FactionRes.same_side(u.faction, world.my_faction):
+			continue
+		if not world.is_team_leader(u):
+			continue
+		n += 1
+		if n > UiLayoutRes.SQUAD_SLOTS:
+			break
+		if not units.has(u):
+			continue
+		index_of[u.id] = out.size()
+		out.append({"leader": u, "number": n, "units": [u]})
+	# 第二遍：把选中列表里的亲兵塞进它们队长那一组（选中列表已经是整队展开过的，
+	# 所以这一步只是把「成员」补齐；找不到队长分组的（队长不在列表里）就忽略）。
+	for u2 in units:
+		if u2 == null or not u2.alive:
+			continue
+		if world.is_team_leader(u2):
+			continue
+		var leader = world.team_leader(u2)
+		if leader == null or not index_of.has(leader.id):
+			continue
+		(out[int(index_of[leader.id])]["units"] as Array).append(u2)
+	return out
+
+
+## 「当前展开」的是第几支：优先 `_detail_troop_number`（玩家点的那一支），
+## 它不在选中里了就退回第一支；一支都没有 → -1。
+func _pick_troop(troops: Array) -> int:
+	if troops.is_empty():
+		_detail_troop_number = 0
+		return -1
+	for i in troops.size():
+		if int(troops[i]["number"]) == _detail_troop_number:
+			return i
+	# ★ 记住的那一支已经不在选中里了（玩家改选了别人）→ 忘掉它，
+	#   否则「选中 A → 又从左侧列表改选 B」时左栏会一直停在 A 上。
+	_detail_troop_number = int(troops[0]["number"])
+	return 0
+
+
+## 下半网格要画的部队 = 选中的部队**去掉正在展开的那一支**。
+##
+## ★ 手玩原话：「被展开的部队不需要在下方的九宫格中显示」——它已经在上半那一行里了，
+##   再列一次只会让人以为那是两支部队。
+func _troops_without(troops: Array, skip: int) -> Array:
+	var out: Array = []
+	for i in troops.size():
+		if i == skip:
+			continue
+		out.append(troops[i])
+	return out
+
+
+## 右栏要显示的单位。手玩把规则说死了：
+##
+##   · **默认** = 左栏展开那支部队的**将领**；
+##   · 玩家**在地图上点击某个单位**选出一支部队时 → 显示**玩家点到的那个单位**；
+##   · 玩家点左栏里**展开的那支部队的某个单位** → 右栏切到那个单位；
+##   · 点**其余部队**的格子（= 换展开）→ 右栏跟着变成那支部队的将领。
+##
+## 落点：
+##   · 「在地图上点到谁」由 `input_ctrl.clicked_unit` 记（一次点选才有，框选 / 点左侧列表
+##     / 按 1-2-3 都是整队批量选中，那里是 null，见 input_controller 里那段注释）；
+##   · `troop` 是**左栏当前展开**的那一支，所以「点到的是不是展开那支的成员」用
+##     `_in_troop()` 一问就知道 —— 是就显示它，不是就退回展开那支的将领。
+##
+## ⚠️ 为什么不用「选中列表的最后一个」当判据（第一版就是那么写的）：一次点选与一次框选
+##   出来的 selected_units 长得一模一样，框选之后右栏会莫名其妙报某个亲兵（实机截图见过）。
+func _right_unit(troop):
+	var leader = null if troop == null else troop.get("leader", null)
+	var clicked = null
+	if input_ctrl != null:
+		clicked = input_ctrl.clicked_unit
+	if clicked != null and clicked.alive and _in_troop(clicked, troop):
+		return clicked
+	return leader
+
+
+## 这个单位是不是**某一支部队的成员**（含它自己就是队长的情况）
+func _in_troop(u, troop) -> bool:
+	if u == null or troop == null:
+		return false
+	var units: Array = troop.get("units", [])
+	return units.has(u)
+
+
+## 招募队列跟着哪一位将领：当前展开那支部队的队长（没展开就退回选中列表里第一个队长）
+func _queue_leader(troop):
+	if troop != null:
+		var l = troop.get("leader", null)
+		if l != null:
+			return l
+	return input_ctrl.first_selected_leader() if input_ctrl != null else null
+
+
+# ------------------------------------------------------------------
+# 右栏的文案（区划 / 建筑 / 选中单位的数值）
+# ------------------------------------------------------------------
+
+## 区划的标题（右栏「单位名称」那一行显示的）
+func _zone_title(z: Dictionary) -> String:
+	return "区划「%s」" % String(z["name"])
+
+
+## 建筑的短字（头像方块里的占位）
+func _building_short(b) -> String:
+	var n: String = b.display_name()
+	return n.substr(0, 1) if n.length() > 0 else "建"
+
+
+## 选中单位的短字（头像方块里的占位）：将领 = 名字首字，兵种 = 招募表里的 short
+func _unit_short(u) -> String:
+	if u == null:
+		return ""
+	if world != null and world.is_recruitable(String(u.kind)):
+		return world.recruit_short_of(String(u.kind))
+	var n: String = String(u.name)
+	return n.substr(0, 1) if n.length() > 0 else "?"
+
+
+## 建筑的数值（生命 / 箭塔伤害 / 位置…）
+func _building_text(b) -> String:
+	var lines: Array[String] = []
+	lines.append("归属：%s" % FactionRes.faction_name(b.owner))
+	lines.append("生命 %d / %d" % [int(round(b.hp)), int(round(b.hp_max))])
+	if b.type == BuildingRes.TYPE_TOWER:
+		lines.append("伤害 %d　射程 %d 格　间隔 %.1fs" % [
+			int(b.tower_damage(cfg)), int(b.tower_range(cfg)), b.tower_cooldown(cfg),
+		])
+		if b.last_target != null and b.last_target.alive:
+			lines.append("正在打：%s" % b.last_target.name)
+	if b.type == BuildingRes.TYPE_BASE:
+		lines.append("开局自带，不可建造、不可拆除")
+		lines.append("（本版不会被打掉：血量保底 1）")
+	lines.append("位置 (%d, %d)" % [b.tx, b.ty])
+	return "\n".join(lines)
+
+
+## 右栏数值区的正文。
+##
+## ★ 本轮改版把「队伍人数 / 合计生命 / 指定攻击 / 状态」那些汇总行**删掉了**
+##   （手玩要求），改成只报**当前这个单位**的数值；多选时补一行「已选中 N 个单位」，
+##   否则玩家在框选之后右栏看起来像只选中了一个。
+func _unit_text(shown, troops: Array) -> String:
+	if shown == null:
+		return "未选中"
+	var lines: Array[String] = []
+	if troops.size() > 1 or (troops.size() == 1 and (troops[0]["units"] as Array).size() > 1):
+		lines.append("已选中 %d 支部队" % troops.size())
+	lines.append("血量 %d / %d" % [int(round(shown.hp)), int(round(shown.hp_max))])
+	lines.append("攻击力 %d　攻击距离 %d 格　间隔 %.1fs" % [
+		int(shown.combat_damage(cfg)), int(shown.combat_range(cfg)), shown.combat_cooldown(cfg),
+	])
+	lines.append("编制 %d/%d　警戒 %d 格　速度 %.1f 格/秒" % [
+		_retinue_size(shown), UiLayoutRes.UNIT_CAP,
+		int(shown.aggro_range(cfg)), cfg.unit_speed_of(shown.kind),
+	])
+	lines.append("所在区块 %s" % _zone_name_at(shown.tx, shown.ty))
+	lines.append("buff：%s（占位，暂无效果）" % "、".join(_buff_names()))
+	if shown.ordered_target != null and shown.ordered_target.alive:
+		lines.append("★ 指定攻击：%s（%d 血）" % [
+			shown.ordered_target.name, int(round(shown.ordered_target.hp))])
+	elif shown.ordered_building != null and shown.ordered_building.alive:
+		lines.append("★ 指定拆除：%s（%d 血）" % [
+			shown.ordered_building.display_name(), int(round(shown.ordered_building.hp))])
+	elif shown.has_attack_move:
+		lines.append("★ 行军攻击中（遇敌即战，打完继续）")
+	if shown.target != null and shown.target.alive:
+		lines.append("交战中：%s（%d 血）" % [shown.target.name, int(round(shown.target.hp))])
+	elif shown.target_building != null and shown.target_building.alive:
+		lines.append("正在拆：%s（%d 血）" % [
+			shown.target_building.display_name(), int(round(shown.target_building.hp))])
+	else:
+		lines.append("状态：%s" % ("移动中" if shown.moving else "待命"))
+	return "\n".join(lines)
+
+
+## 一个将领辖下的亲兵数（不是将领自己 → 0）
+func _retinue_size(u) -> int:
+	if world == null or u == null or not world.is_team_leader(u):
+		return 0
+	return world.retinue_of(u.id).size()
+
+
+## buff 占位名（与 view/detail_panel.gd 的 BUFF_PLACEHOLDERS 同一份口径）
+func _buff_names() -> Array:
+	return DetailPanelRes.BUFF_PLACEHOLDERS.duplicate()
 
 
 ## 区划详情（左键点区划中心时显示）：
@@ -396,7 +686,12 @@ func _zone_text(z: Dictionary) -> String:
 	lines.append("黄金产能：%s／地块／秒（合计 %.1f/秒）"
 		% [_fmt_num(float(prod["gold"])), float(prod["gold"]) * n])
 	lines.append("人口产能：%s／地块／秒" % _fmt_num(float(prod["population"])))
-	lines.append("人口：%.1f（每个区划各算各的，只涨不减）" % float(z.get("population", 0.0)))
+	# ★ 人口显示**永远是整数**（向下取整，用户需求）—— 权威值是浮点（按秒累积），
+	#   直接印出小数点会让玩家看到「1.9999998」这种数。
+	# ★ 上限一并显示：不然「人口怎么不涨了」在界面上没有任何解释。
+	lines.append("人口：%d（上限 %s）" % [
+		world.zones.population_floor(z), _fmt_num(world.zones.population_cap_of(z)),
+	])
 	return "\n".join(lines)
 
 
@@ -405,117 +700,7 @@ func _fmt_num(v: float) -> String:
 	return ("%d" % int(round(v))) if absf(v - round(v)) < 1e-9 else ("%g" % v)
 
 
-## 左栏：**只显示选中对象本身的信息**（区划 / 建筑 / 部队），不再挂操作提示。
-func _selection_text() -> String:
-	# ★ 区划（左键点它的中心建筑）：显示区划名 / 大小 / 产能 / 人口
-	var z = input_ctrl.selected_zone
-	if z != null:
-		return _zone_text(z)
-
-	var b = input_ctrl.selected_building
-	if b != null:
-		var lines: Array[String] = []
-		lines.append("%s（%s）" % [b.display_name(), FactionRes.faction_name(b.owner)])
-		lines.append("生命 %d / %d" % [int(round(b.hp)), int(round(b.hp_max))])
-		if b.type == BuildingRes.TYPE_TOWER:
-			lines.append("伤害 %d　射程 %d 格　间隔 %.1fs" % [
-				int(b.tower_damage(cfg)), int(b.tower_range(cfg)), b.tower_cooldown(cfg),
-			])
-			if b.last_target != null and b.last_target.alive:
-				lines.append("正在打：%s" % b.last_target.name)
-		if b.type == BuildingRes.TYPE_BASE:
-			lines.append("开局自带，不可建造、不可拆除")
-			lines.append("（本版不会被打掉：血量保底 1）")
-		lines.append("位置 (%d, %d)" % [b.tx, b.ty])
-		return "\n".join(lines)
-
-	var units: Array = input_ctrl.selected_units
-	if units.is_empty():
-		return "未选中"
-
-	var lines2: Array[String] = []
-
-	# ★ 队伍：选中队长时会把亲兵一起选中，所以这里要「按队伍汇总」显示，
-	#   否则左栏会变成一长串单位名，玩家看不出这是一支队。
-	if units.size() == 1:
-		var u = units[0]
-		lines2.append("%s（%s）" % [u.name, FactionRes.faction_name(u.faction)])
-		lines2.append("生命 %d / %d" % [int(round(u.hp)), int(round(u.hp_max))])
-		lines2.append("伤害 %d　攻击距离 %d 格　间隔 %.1fs" % [
-			int(u.combat_damage(cfg)), int(u.combat_range(cfg)), u.combat_cooldown(cfg),
-		])
-		lines2.append("警戒半径 %d 格　速度 %.1f 格/秒" % [int(u.aggro_range(cfg)), cfg.unit_speed_of(u.kind)])
-		lines2.append("所在区块 %s" % _zone_name_at(u.tx, u.ty))
-		# ★ 玩家下达的攻击命令要能看见（右键点敌人 / 点建筑 / 双击行军攻击）
-		if u.ordered_target != null and u.ordered_target.alive:
-			lines2.append("★ 指定攻击：%s（%d 血）" % [u.ordered_target.name, int(round(u.ordered_target.hp))])
-		elif u.ordered_building != null and u.ordered_building.alive:
-			lines2.append("★ 指定拆除：%s（%d 血）" % [
-				u.ordered_building.display_name(), int(round(u.ordered_building.hp)),
-			])
-		elif u.has_attack_move:
-			lines2.append("★ 行军攻击中（遇敌即战，打完继续）")
-		if u.target != null and u.target.alive:
-			lines2.append("交战中：%s（%d 血）" % [u.target.name, int(round(u.target.hp))])
-		elif u.target_building != null and u.target_building.alive:
-			lines2.append("正在拆：%s（%d 血）" % [u.target_building.display_name(), int(round(u.target_building.hp))])
-		else:
-			lines2.append("状态：%s" % ("移动中" if u.moving else "待命"))
-	else:
-		# 找出这一坨里有没有队长 / 是不是同一支队
-		var leader = null
-		var retinue := 0
-		for u2 in units:
-			if world.is_team_leader(u2):
-				leader = u2
-			elif u2.leader_id != "":
-				retinue += 1
-		if leader != null:
-			lines2.append("队伍：%s + %d 名亲兵" % [leader.name, retinue])
-			lines2.append("合计生命 %d　（队长 %d / %d）" % [
-				_total_hp(units), int(round(leader.hp)), int(round(leader.hp_max)),
-			])
-		else:
-			lines2.append("已选中 %d 个单位" % units.size())
-			lines2.append("合计生命 %d" % _total_hp(units))
-		var moving_count := 0
-		for u3 in units:
-			if u3.moving:
-				moving_count += 1
-		lines2.append("移动中 %d / %d" % [moving_count, units.size()])
-		# ★ 玩家下达的攻击命令也要能看见。
-		#   注意：**整队选中**（选中将领时会带上亲兵）走的就是这一支，
-		#   所以这一段不是可选的美化 —— 少了它，右键点敌人之后左栏什么都不显示。
-		var shown := false
-		for u4 in units:
-			if u4.ordered_target != null and u4.ordered_target.alive:
-				lines2.append("★ 指定攻击：%s（%d 血）" % [
-					u4.ordered_target.name, int(round(u4.ordered_target.hp)),
-				])
-				shown = true
-				break
-			if u4.ordered_building != null and u4.ordered_building.alive:
-				lines2.append("★ 指定拆除：%s（%d 血）" % [
-					u4.ordered_building.display_name(), int(round(u4.ordered_building.hp)),
-				])
-				shown = true
-				break
-		if not shown:
-			for u5 in units:
-				if u5.has_attack_move:
-					lines2.append("★ 行军攻击中（遇敌即战，打完继续）")
-					break
-	return "\n".join(lines2)
-
-
-## 选中单位的生命合计（队伍汇总用）
-func _total_hp(units: Array) -> int:
-	var total := 0.0
-	for u in units:
-		total += u.hp
-	return int(round(total))
-
-
+## 某个地块属于哪个区块（单位数值里那一行「所在区块」用）
 func _zone_name_at(tx: int, ty: int) -> String:
 	var z = world.zones.zone_at(tx, ty)
 	if z == null:

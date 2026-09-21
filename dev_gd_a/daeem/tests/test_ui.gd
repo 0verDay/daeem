@@ -14,6 +14,8 @@ extends "res://tests/test_case.gd"
 const UiLayoutRes = preload("res://view/ui_layout.gd")
 const PageTabsRes = preload("res://view/page_tabs.gd")
 const RecruitQueueRes = preload("res://view/recruit_queue.gd")
+const TroopGridRes = preload("res://view/troop_grid.gd")
+const PaletteRes = preload("res://view/palette.gd")
 const UnitRes = preload("res://logic/unit.gd")
 const FactionRes = preload("res://logic/faction.gd")
 const CommandRes = preload("res://logic/command_processor.gd")
@@ -126,14 +128,22 @@ func _test_hit_test() -> void:
 	ok(not UiLayoutRes.point_hits_any(UiLayoutRes.interactive_rects(vp), map_middle),
 		"地图空白处不拦鼠标（点击要能落到地图上）")
 
-	# ★ 这一条是重点：详细信息面板只有文字，**不能**拦边缘滚屏 ——
+	# ★ 这一条是重点：详细信息面板里**只有文字的**地方**不能**拦边缘滚屏 ——
 	#   否则底栏盖住屏幕下沿，鼠标永远滚不到地图下方（实测撞出来的）。
-	ok(not UiLayoutRes.point_hits_any(UiLayoutRes.interactive_rects(vp),
-		UiLayoutRes.DETAIL_RECT.get_center()),
-		"★ 详细信息面板不拦边缘滚屏（否则底边永远滚不动）")
+	#   ⚠️ 第三轮改版之后面板中间那片是**将领头像网格**（能点），所以要拿
+	#     面板**左上**（左栏上半只有文字与方块）来验这条，见下一条。
+	var detail_text_spot := UiLayoutRes.panel_content_pos() + Vector2(8.0, 8.0)
+	ok(not UiLayoutRes.point_hits_any(UiLayoutRes.interactive_rects(vp), detail_text_spot),
+		"★ 详细信息面板里只有文字的地方不拦边缘滚屏（否则底边永远滚不动）")
 	ok(not UiLayoutRes.point_hits_any(UiLayoutRes.interactive_rects(vp),
 		UiLayoutRes.FACTION_RECT.get_center()),
 		"阵营占位面板同样不拦")
+
+	# ★★ 网格是**能点**的（点一格 = 换左栏展开哪支部队）→ 它要拦边缘滚屏。
+	#    它与小地图同一条理由：鼠标停在能点的格子上时不该同时被边缘推着滚屏。
+	ok(UiLayoutRes.point_hits_any(UiLayoutRes.interactive_rects(vp),
+		UiLayoutRes.troop_cell_global_rect(0).get_center()),
+		"★ 详细信息左栏的将领头像网格拦边缘滚屏（它是可点的）")
 
 	# 能点的：部队行 / 命令卡 / 页签 / 设置
 	ok(UiLayoutRes.point_hits_any(UiLayoutRes.interactive_rects(vp),
@@ -252,36 +262,39 @@ func _test_panels(cfg) -> void:
 	_test_auto_select_on_recruit(main)
 	_test_order_locked_notice(main)
 	_test_right_click_orders(main)
+	await _test_box_select(main)
+	_test_clicked_unit_detail(main)
 	_test_settings_inert(main)
 	await _test_command_events_reach_consumer(main)
 
-	# ---- 详细信息面板的内容（右栏只剩阵营 + 资源；日志整块删掉）----
-	var status: String = main.hud.detail_panel.status_text()
-	ok(status.contains("粮食"), "右栏资源行里有粮食")
-	ok(status.contains("黄金"), "右栏资源行里有黄金")
-	ok(not status.contains("地块"), "★ 右栏不再显示己方地块")
-	ok(not status.contains("区块"), "★ 右栏不再显示区块")
-	ok(not status.contains("建造"), "★ 右栏不再显示建造模式")
-	ok(not status.contains("暂停"), "★ 右栏不再显示暂停状态")
+	# ---- 详细信息面板的内容（第三轮改版：左右两栏 + 提示行；日志整块删掉）----
+	main.input_ctrl.select_units([main.world.unit_by_id("general-1")])
+	main.hud.refresh()
 	ok(not main.hud.detail_panel.has_log(), "★ 事件日志整块删掉了（detail_panel 里没有日志栏）")
-	ok(main.hud.detail_panel.detail_text().contains("将领"), "左栏显示选中单位的信息")
+	ok(main.hud.detail_panel.detail_text().contains("血量"), "右栏数值区显示选中单位的数值")
+	eq(main.hud.detail_panel.buff_count(), UiLayoutRes.BUFF_SLOTS, "★ 右栏有 3 个 buff 占位格")
+	ok(main.hud.detail_panel.unit_name_text() != "", "右栏写着单位名称")
 
-	# 左栏也不再挂操作提示：没选中时只有「未选中」四个字
+	# 没选中任何东西：右栏数值区只有「未选中」，左栏上半也收起来
 	main.input_ctrl.select_units([])
 	main.hud.refresh()
-	eq(main.hud.detail_panel.detail_text(), "未选中", "★ 左栏没选中时只显示「未选中」（不再有操作提示）")
+	eq(main.hud.detail_panel.detail_text(), "未选中", "★ 没选中时只显示「未选中」（不再有操作提示）")
+	eq(main.hud.detail_panel.unit_name_text(), "", "没选中单位时右栏没有名称")
+	ok(not main.hud.detail_panel.roster_control().visible, "没选中部队时左栏上半收起来")
 	main.input_ctrl.select_units([main.world.unit_by_id("general-1")])
 	main.hud.refresh()
 	ok(not main.hud.detail_panel.detail_text().contains("Shift"),
-		"★ 左栏不再显示快捷键提示")
+		"★ 不再显示快捷键提示")
 
 	# ---- 边缘滚屏：HUD 上的判定（真实实例，不只看常量）----
 	var card0 := UiLayoutRes.card_cell_rect(0)
 	card0.position.x += maxf(0.0, vp.x - UiLayoutRes.DESIGN_W)
 	card0.position.y += maxf(0.0, vp.y - UiLayoutRes.DESIGN_H)
 	ok(main.hud.blocks_edge_scroll(card0.get_center()), "鼠标在命令卡上 → 不滚屏")
-	ok(not main.hud.blocks_edge_scroll(UiLayoutRes.DETAIL_RECT.get_center()),
-		"鼠标在详细信息面板上 → 照样滚屏（不然底边滚不动）")
+	ok(not main.hud.blocks_edge_scroll(UiLayoutRes.panel_content_pos() + Vector2(8.0, 8.0)),
+		"★ 鼠标在详细信息面板**只有文字**的地方 → 照样滚屏（不然底边滚不动）")
+	ok(main.hud.blocks_edge_scroll(UiLayoutRes.troop_cell_global_rect(0).get_center()),
+		"★ 鼠标在将领头像网格上 → 不滚屏（那是可点的格子）")
 	ok(not main.hud.blocks_edge_scroll(Vector2(vp.x * 0.5, vp.y * 0.5)), "鼠标在地图中间 → 滚屏")
 
 	# ★ 手玩报的 bug：左侧「部队 1~10」（将领按钮那一列）压着屏幕左边缘，
@@ -429,6 +442,18 @@ func _test_card_keys(main) -> void:
 	main.input_ctrl.set_build_type("")
 	tabs.select_page(PageTabsRes.PAGE_UNIT)
 
+	# ★ 带修饰键的组合键不许被命令卡吃掉。
+	#   为什么单列一条：命令卡在输入链里排在 main / input_controller 的**前面**
+	#   （game_scene._unhandled_input 先问 hud），所以 Ctrl+Q（开发者快捷键：全屏）
+	#   如果被它吃掉，「切全屏」就会顺手触发 Q 格 —— 单位页按下去 = 招募一个兵。
+	#   见 command_card.handle_key 里那段 ctrl/alt/meta 放行。
+	ok(not card.handle_key(_key(KEY_Q, true)),
+		"★ Ctrl+Q 不被命令卡消费（要让给 main 的全屏快捷键）")
+	ok(not card.handle_key(_key(KEY_W, true)),
+		"★ Ctrl+W 也不被命令卡消费（同一类组合键一起让出来）")
+	# ⚠️ 「Ctrl+Q 归 main 的全屏快捷键消费」那条在 tests/test_view.gd ——
+	#    本文件里的 `main` 其实是 root_node.game（游戏内场景），拿不到 main.gd 的根节点。
+
 
 # ---- 招募：走「命令」这条路（入队即扣费、读条 10 秒）+ 信息栏里的五个格子 ----
 #
@@ -450,16 +475,16 @@ func _test_recruit_via_card(main) -> void:
 	main.input_ctrl.select_units([g1])
 	main.hud.refresh()
 	var queue = main.hud.detail_panel.queue_control()
-	ok(queue != null, "详细信息左栏里有招募队列控件")
+	ok(queue != null, "详细信息右栏里有招募队列控件")
 	ok(not queue.showing(), "★ 没在招募时五个格子收起来（需求：将领开始招募时才出现）")
 
-	# ---- 资源不足：命令被拒 + 左栏出现红字原因 ----
+	# ---- 资源不足：命令被拒 + 红字原因 ----
 	world.resources["food"] = 10.0
 	world.resources["gold"] = 10.0
 	card.activate_index(0)
 	var evts: Array = world.tick(1.0 / 60.0)
 	main._consume_events(evts)                 # 走真实那条「事件 → 文案」的路
-	ok(main.hud.notice_active(), "★ 招募被拒 → 左栏出现红字提示（不然玩家以为点坏了）")
+	ok(main.hud.notice_active(), "★ 招募被拒 → 出现红字提示（不然玩家以为点坏了）")
 	ok(main.hud.notice_text().contains("不足"),
 		"提示文案说明是资源不足（实际：%s）" % main.hud.notice_text())
 	eq(world.retinue_of(g1.id).size(), before, "被拒的招募没有生成单位")
@@ -502,7 +527,7 @@ func _test_recruit_via_card(main) -> void:
 	main.hud.page_tabs.select_page(PageTabsRes.PAGE_UNIT)
 	eq(g1.train_queue_size(), 2, "切页不会改变队列")
 
-	# 选中别的单位 → 队列那五格收起来（它只显示「当前选中的将领」的队列）
+	# 选中别的单位 → 队列那五格收起来（它只显示「当前展开那支部队」的队列）
 	main.input_ctrl.select_units([])
 	main.hud.refresh()
 	ok(not queue.showing(), "★ 没选中招募中的将领时五格收起来")
@@ -823,6 +848,448 @@ func _test_right_click_orders(main) -> void:
 	main.input_ctrl.command_issued.disconnect(sink)
 
 
+# ---- 框选：左键拖出矩形 = 选中框内己方单位**所属的部队** ----
+#
+# 需求原话：「为玩家增加一个框选操作，当玩家框到某些己方单位时，视为选中这些单位
+#            所属的部队，如果有多个部队，也一同选中，同时左侧部队 ui 也会显示这些部队
+#            被选中，下方详细信息需要分部队显示单位」。
+#
+# ★ 这一节刻意**把队伍摆到受控的位置上**再用框去框 —— 出生站位是挤在大本营周围的，
+#   用真实站位断言「框里有几支队伍」会变成一件碰运气的事。
+func _test_box_select(main) -> void:
+	var world = main.world
+	var cfg = main.cfg
+	var g1 = world.unit_by_id("general-1")
+	var g2 = world.unit_by_id("general-2")
+	var g3 = world.unit_by_id("general-3")
+	ok(g1 != null and g2 != null, "框选用例：将领 1 / 2 都在")
+	if g1 == null or g2 == null:
+		return
+
+	# 框的范围（世界坐标，格）与「摆到框外」的地方
+	var lo := Vector2(2.0, 2.0)
+	var hi := Vector2(6.0, 6.0)
+	var far_lo := Vector2(20.0, 20.0)
+	var far_hi := Vector2(24.0, 24.0)
+
+	var t1: Array = world.group_of(g1)
+	var t2: Array = world.group_of(g2)
+	# 1 队：**队长在框外**，亲兵在框内 —— 框到亲兵也必须把队长带出来
+	_place_unit(world, g1, far_lo)
+	_place_units_in_rect(world, t1.slice(1), lo, hi)
+	# 2 队：只有第一个亲兵在框内，其余在框外（同样要整队被选中）
+	_place_unit(world, g2, far_lo + Vector2(0.0, 2.0))
+	_place_units_in_rect(world, t2.slice(1, 2), lo, hi)
+	_place_units_in_rect(world, t2.slice(2), far_lo, far_hi)
+	# 3 队：整支都在框外（不该被选中）
+	if g3 != null:
+		_place_unit(world, g3, far_lo + Vector2(0.0, 4.0))
+		_place_units_in_rect(world, world.group_of(g3).slice(1), far_lo, far_hi)
+	# 一个敌人故意放进框里（框选只认自己人）
+	var foe = world.spawn_enemy(int(lo.x) + 1, int(lo.y) + 3)
+	ok(foe != null, "刷一个敌人放进框里")
+	if foe != null:
+		_place_unit(world, foe, Vector2(lo.x + 1.5, lo.y + 0.5))
+
+	# ---- 期望值：按需求自己算一遍（框内己方单位 → 各自所属部队的并集）
+	var rect := Rect2(lo, hi - lo)
+	var in_rect: Array = []
+	for u in world.units:
+		if not u.alive:
+			continue
+		if not FactionRes.same_side(u.faction, world.my_faction):
+			continue
+		if rect.has_point(u.pos):
+			in_rect.append(u)
+	var expect: Dictionary = {}
+	for u in in_rect:
+		for m in world.group_of(u):
+			expect[String(m.id)] = true
+	ok(in_rect.size() > 0, "框里确实有己方单位（%d 个）" % in_rect.size())
+
+	# ---- 框选本体（语义入口：起点与终点是世界坐标）
+	main.input_ctrl.select_units([])
+	var picked: int = main.input_ctrl.box_select(lo, hi)
+	eq(picked, in_rect.size(), "★ 框到的是框内的己方单位（敌人不算进去）")
+	eq(_sorted_ids(main.input_ctrl.selected_units), _sorted_keys(expect),
+		"★ 选中的 = 框内单位**所属部队**的并集（不是「框里的那几个」）")
+	ok(main.input_ctrl.selected_units.has(g1),
+		"★ 队长在框外，也被一起选中（框到一个亲兵 = 选中整支部队）")
+	ok(main.input_ctrl.selected_units.has(g2), "★ 第二支部队也一同选中")
+	eq(main.input_ctrl.selected_units.size(), t1.size() + t2.size(),
+		"★ 两支**完整**部队（队长 + 全部亲兵），哪怕一半人在框外")
+	if g3 != null:
+		ok(not main.input_ctrl.selected_units.has(g3), "框外的第三支部队没被选中")
+	if foe != null:
+		ok(rect.has_point(foe.pos), "（前提）敌人确实站在框里")
+		ok(not main.input_ctrl.selected_units.has(foe), "★ 框里的敌人不会被选中")
+	ok(main.input_ctrl.selected_building == null and main.input_ctrl.selected_zone == null,
+		"框选是「选中单位」这一种，建筑 / 区划的选中被清掉")
+
+	# ---- 左侧部队 UI：被选中的那两支要高亮（同一份 selected_units 的自然结果）
+	main.hud.refresh()
+	eq(main.hud.squad_panel.slot_active(0), true, "★ 左侧「部队 1」显示为选中")
+	eq(main.hud.squad_panel.slot_active(1), true, "★ 左侧「部队 2」也显示为选中")
+	if g3 != null:
+		eq(main.hud.squad_panel.slot_active(2), false, "没框到的第三支部队不高亮")
+
+	# ---- 下方详细信息（第三轮改版）：
+	#      左栏上半 = **当前展开的那一支部队**；左栏下半 = 选中部队的将领头像网格（点它换）
+	var roster = main.hud.detail_panel.roster_control()
+	var grid = main.hud.detail_panel.grid_control()
+	ok(roster != null, "详细信息左栏上半有「当前展开的部队」那一段")
+	ok(grid != null, "详细信息左栏下半有「选中部队的将领头像网格」")
+	if roster != null and grid != null:
+		ok(roster.visible, "选中单位之后左栏上半出现")
+		eq(roster.unit_count(), t1.size(), "★ 上半画的是**当前展开那一支**的完整部队")
+		eq(roster.leader().id, g1.id, "★ 上半是第 1 支部队（内部状态对得上）")
+		eq(roster.leader_name(), "将领名称",
+			"★ 第一格那行小字写的是固定文案「将领名称」（手玩原话 / 参考图就是这么写的）")
+		eq(roster.count_text(), "%d/%d" % [t1.size(), UiLayoutRes.UNIT_CAP],
+			"★ 写着「现有单位数/编制上限」（y = 编制上限 11）")
+		eq(roster.leader_short(), "将",
+			"★ 本段第一格的短字是「将」——**不再额外画一个「将」大方块**（手玩原话）")
+		eq(roster.block_text(0), "将", "★ 队长的方块里写「将」（没有头像，用字代替）")
+		eq(roster.block_text(1), "兵", "★ 亲兵的方块里写 config 的 short（兵）")
+
+		# ★ 右栏报的是**将领**，不是整队选中时排在最后的那个亲兵
+		#   （框选 / 点左侧列表拿到的都是整队；选中列表最后一个往往是亲兵，
+		#    不加这条判据的话右栏会写成「亲兵 3」——手玩一眼就能看出来）
+		eq(main.hud.detail_panel.unit_name_text(), String(g1.name),
+			"★ 整队选中时右栏报的是**将领**（不是排在最后的亲兵）")
+		ok(main.hud.detail_panel.detail_text().contains("血量 200"),
+			"★ 右栏那些数值也是将领的（满血 200，亲兵是 80）")
+
+		# 方块是横向排开的，且**队长是大方块 40×40、亲兵是小方块 20×20**（手玩点名）
+		var b0 := UiLayoutRes.roster_block_rect(0)
+		var b1 := UiLayoutRes.roster_block_rect(1)
+		# ★ 方块都是 20×20 的小方块（参考图实测：中心距 39px、排在名字那一行下面）
+		v2_near(b0.size, Vector2(UiLayoutRes.ROSTER_BLOCK_SMALL, UiLayoutRes.ROSTER_BLOCK_SMALL),
+			0.01, "附属单位方块是 20×20（小方块，手玩点名）")
+		v2_near(b1.size, Vector2(UiLayoutRes.ROSTER_BLOCK_SMALL, UiLayoutRes.ROSTER_BLOCK_SMALL),
+			0.01, "第二个方块也是 20×20")
+		ok(b1.position.x > b0.position.x, "同一行里第二个方块排在第一个右边")
+		ok(b0.position.y >= UiLayoutRes.ROSTER_CELL_AVATAR * 0.0 + 40.0,
+			"★ 方块行排在**名字那一行下面**（不是并排）——参考图就是这么画的")
+		# 方块行不能画出左栏：先露出几个，剩下的靠滚轮（见 ROSTER_BLOCKS_MAX_W 的注释）
+		ok(UiLayoutRes.roster_block_right(2) - UiLayoutRes.ROSTER_BLOCKS_LEFT
+				<= UiLayoutRes.ROSTER_BLOCKS_MAX_W,
+			"★ 一行先露出 3 个方块（%s ≤ %s）" % [
+				str(UiLayoutRes.roster_block_right(2) - UiLayoutRes.ROSTER_BLOCKS_LEFT),
+				str(UiLayoutRes.ROSTER_BLOCKS_MAX_W)])
+		ok(UiLayoutRes.roster_block_right(9) - UiLayoutRes.ROSTER_BLOCKS_LEFT
+				> UiLayoutRes.ROSTER_BLOCKS_MAX_W,
+			"★ 10 个方块一行放不下 → 要靠**滚轮**（需求原话）")
+		# ★ 方块行整行都必须落在左栏内容区里（方块行 + 滚轮偏移也不会越界）
+		ok(UiLayoutRes.ROSTER_BLOCKS_LEFT + UiLayoutRes.ROSTER_BLOCKS_MAX_W
+				<= UiLayoutRes.DETAIL_LEFT_W + 1e-6,
+			"★ 方块行（含滚轮可见宽度）不越出左栏（%s ≤ %s）" % [
+				str(UiLayoutRes.ROSTER_BLOCKS_LEFT + UiLayoutRes.ROSTER_BLOCKS_MAX_W),
+				str(UiLayoutRes.DETAIL_LEFT_W)])
+		# ★ 「将领名称」+「1/11」那一行也要装得进左栏、且不压到块行
+		ok(UiLayoutRes.ROSTER_COUNT_X + 40.0 <= UiLayoutRes.DETAIL_LEFT_W,
+			"★ 「将领名称 1/11」那一行装得进左栏")
+		ok(UiLayoutRes.ROSTER_COUNT_X + 40.0 <= UiLayoutRes.ROSTER_BLOCKS_LEFT,
+			"★ 名字 / x÷y 那一行不压到方块行（%s ≤ %s）" % [
+				str(UiLayoutRes.ROSTER_COUNT_X + 40.0), str(UiLayoutRes.ROSTER_BLOCKS_LEFT)])
+
+		# 下半的网格：**只列选中的部队，且去掉正在展开的那一支**（手玩原话：
+		# 「被展开的部队不需要在下方的九宫格中显示」）
+		ok(grid.visible, "选中部队之后网格出现")
+		eq(grid.troop_count(), 1, "★ 网格只列**没被展开的**那 1 支（展开的那支已在上半）")
+		eq(grid.cell_count(), 1, "画了 1 格")
+		eq(grid.leader_name(0), String(g2.name), "★ 那一格是第 2 支部队（第 1 支正在上面展开）")
+		eq(grid.count_text(0), "%d/%d" % [t2.size(), UiLayoutRes.UNIT_CAP], "格子里写着 x/y")
+		eq(UiLayoutRes.TROOP_GRID_SLOTS, 9,
+			"★ 网格正好 9 格（手玩原话：参考图下方是 1333 排列的 9 个格子）")
+		# ★ 两栏比例按参考图逐像素量出来的（左 37.5 : 右 62.5），别凭感觉改
+		eq(UiLayoutRes.DETAIL_LEFT_W + UiLayoutRes.DETAIL_GAP + UiLayoutRes.DETAIL_RIGHT_W,
+			UiLayoutRes.DETAIL_RECT.size.x - 2.0 * UiLayoutRes.DETAIL_PAD,
+			"★ 左栏 + 缝 + 右栏 = 面板内容宽（不然右栏会被裁掉）")
+		ok(UiLayoutRes.DETAIL_LEFT_W < UiLayoutRes.DETAIL_RIGHT_W,
+			"★ 右栏比左栏宽（参考图里左栏只放一支部队，右栏要放头像+名称+buff+数值）")
+		ok(UiLayoutRes.DETAIL_LEFT_W / (UiLayoutRes.DETAIL_LEFT_W + UiLayoutRes.DETAIL_RIGHT_W)
+				< 0.40,
+			"★ 左栏占不到 40%（参考图实测 37.5%）—— 之前写成 42%~78% 被判「左侧明显大了」")
+		# 右栏那几块也必须装得进右栏
+		ok(UiLayoutRes.DETAIL_BODY_X + UiLayoutRes.DETAIL_BODY_W
+				<= UiLayoutRes.DETAIL_RIGHT_W + 1e-6,
+			"★ 「详细信息」方框不越出右栏")
+		ok(UiLayoutRes.DETAIL_BODY_Y + UiLayoutRes.DETAIL_BODY_H <= 220.0,
+			"★ 「详细信息」方框装得进右栏内容高（220）")
+		ok(UiLayoutRes.BUFF_X + float(UiLayoutRes.BUFF_SLOTS)
+				* (UiLayoutRes.BUFF_SIZE + UiLayoutRes.BUFF_GAP)
+				<= UiLayoutRes.DETAIL_RIGHT_W + 1e-6,
+			"★ 三个 buff 不越出右栏")
+
+		# ★ 真的让它画一帧：`_draw` 里出错在无头下不会让测试失败（退出码照样是 0），
+		#   所以这里盯一下计数器 —— 「控件在、但绘制那段从来没跑过」是最容易漏掉的假绿灯。
+		var before_draw: int = roster.draw_count
+		var before_grid: int = grid.draw_count
+		roster.queue_redraw()
+		grid.queue_redraw()
+		await process_frame
+		ok(roster.draw_count > before_draw, "★ 左栏上半真的画了一帧（_draw 跑过）")
+		ok(grid.draw_count > before_grid, "★ 网格真的画了一帧（_draw 跑过）")
+
+		# ---- 点网格那一格 → **只换展开哪一支**，不动选中（需求原话：
+		#      「当选中多个部队时，点击左侧的部队头像是将展开的部队切换到该部队，
+		#       而不是只选中该部队」）----
+		main.hud._on_troop_activated(99)                 # 先喂一个不存在的编号 → 什么都不该变
+		eq(roster.leader().id, g1.id, "喂一个不存在的部队编号 → 展开的还是原来那支")
+		main.hud._on_troop_activated(2)                  # 第 2 支部队的编号（走 hud 的真实处理）
+		eq(roster.leader().id, g2.id, "★ 展开切到了第 2 支部队")
+		eq(main.input_ctrl.selected_units.size(), t1.size() + t2.size(),
+			"★ 点格子**不改选中**（两支部队仍然都选着，需求原话）")
+		ok(main.hud.detail_panel.detail_text().contains("血量"),
+			"★ 右栏跟着换成那一支部队的单位数值")
+		eq(grid.cell_count(), 1, "★ 展开的那支从网格里消失、换成了另一支")
+		eq(grid.leader_name(0), String(g1.name), "★ 网格里现在是第 1 支部队")
+
+		# ---- 点真实的那一格（走控件的命中判定，不是直接调处理函数）----
+		var both: Array = []
+		both.append_array(world.group_of(g1))
+		both.append_array(world.group_of(g2))
+		main.input_ctrl.select_units(both)
+		main.hud.refresh()
+		eq(grid.cell_count(), 1, "（前提）两支部队都选中时，网格里只剩没展开的那 1 支")
+		eq(roster.leader().id, g2.id,
+			"（前提）展开的仍是上一段记住的那一支（第 2 支）")
+		eq(grid.leader_name(0), String(g1.name), "（前提）网格里是没展开的第 1 支")
+		var cell0 := UiLayoutRes.troop_cell_rect(0)
+		_click_control(grid, cell0.get_center())
+		eq(main.input_ctrl.selected_units.size(), t1.size() + t2.size(),
+			"★ 点那一格（真实命中判定）**不改选中**：两支部队仍然都选着")
+		eq(roster.leader().id, g1.id, "★ 但展开切到了第 1 支部队")
+		eq(grid.leader_name(0), String(g2.name), "★ 网格里换成了第 2 支部队")
+
+		# ---- 滚轮：单位多到一行放不下时横向滚（需求原话：「可以鼠标滚轮滚动以显示更多单位」）----
+		#   一行只先露出 5 个方块（见 ROSTER_BLOCKS_MAX_W），所以这里塞到 **12 个**才滚得动
+		for _k in 11:                                    # 往第 1 支部队里塞满人
+			var extra = UnitRes.create(main.cfg, "scroll-%d" % _k, "亲兵 s%d" % _k,
+				Vector2i(g1.tx, g1.ty), g1.faction, UnitRes.KIND_SUBORDINATE, "", g1.id)
+			world.units.append(extra)
+		main.input_ctrl.select_units([g1])
+		main.hud.refresh()
+		ok(roster.unit_count() >= 12,
+			"（前提）这一支部队的方块一行放不下（%d 个）" % roster.unit_count())
+		var wheel := InputEventMouseButton.new()
+		wheel.button_index = MOUSE_BUTTON_WHEEL_DOWN
+		wheel.pressed = true
+		wheel.position = Vector2(300.0, 20.0)
+		roster._gui_input(wheel)
+		ok(roster.scroll_offset() > 0.0, "★ 滚轮往下 = 往右露出后面的单位（偏移 %f）" % roster.scroll_offset())
+		# 一直往下滚 → 停在最右边（不会越过内容宽度）
+		for _s in 20:
+			roster._gui_input(wheel)
+		ok(roster.scroll_offset() > 0.0 and roster.scroll_offset() <= roster._max_scroll() + 1e-6,
+			"★ 滚到底就停住（偏移 %f ≤ 上限 %f）" % [
+				roster.scroll_offset(), roster._max_scroll()])
+		var wheel_up := InputEventMouseButton.new()
+		wheel_up.button_index = MOUSE_BUTTON_WHEEL_UP
+		wheel_up.pressed = true
+		wheel_up.position = Vector2(300.0, 20.0)
+		for _s2 in 30:
+			roster._gui_input(wheel_up)
+		ok(roster.scroll_offset() <= 0.0, "★ 滚轮往上 = 回到最左边（偏移 %f）" % roster.scroll_offset())
+		# 收尾：把这几个测试单位清掉，别影响后面的用例
+		for u6 in world.units.duplicate():
+			if String(u6.id).begins_with("scroll-"):
+				world.units.erase(u6)
+
+	# ---- 框里没有己方单位（非追加）→ 清空选中（与点空地一致）
+	main.input_ctrl.box_select(Vector2(0.0, 0.0), Vector2(0.5, 0.5))
+	eq(main.input_ctrl.selected_units.size(), 0, "★ 空框 = 清空选中")
+	# 空了之后左栏那两段都要收起来
+	main.hud.refresh()
+	if roster != null and grid != null:
+		eq(roster.visible, false, "没选中单位时左栏上半收起来")
+		eq(grid.visible, false, "没选中单位时将领头像网格收起来")
+
+	# ---- Shift + 框 = 追加（原来选中的不丢）
+	main.input_ctrl.select_units([g1])
+	var before_add: int = main.input_ctrl.selected_units.size()
+	main.input_ctrl.box_select(lo, hi, true)
+	ok(main.input_ctrl.selected_units.has(g1) and main.input_ctrl.selected_units.has(g2),
+		"★ Shift + 框 = 追加（两支都在）")
+	ok(main.input_ctrl.selected_units.size() >= before_add, "追加不会把原来选中的挤掉")
+
+	# ---- 走**真实事件路径**：按下 → 移动（越过阈值）→ 松手
+	#    ★ 位置换算是「视口坐标 ↔ 世界坐标」，用画布变换反算，与游戏里同一条路。
+	main.input_ctrl.hover_tile = Vector2i(-1, -1)      # 别让「按下那一下」顺手选中别的东西
+	main.input_ctrl.select_units([])
+	# 先验「单击那一下用的是事件自己的位置」：把鼠标停在别处，再点在 1 队亲兵身上
+	main.input_ctrl.mouse_world = Vector2(0.5, 0.5)
+	var some_sub = world.group_of(g1)[1]
+	var click := InputEventMouseButton.new()
+	click.button_index = MOUSE_BUTTON_LEFT
+	click.pressed = true
+	click.position = _world_to_screen(main, some_sub.pos)
+	main.input_ctrl.handle_mouse_button(click)
+	ok(main.input_ctrl.selected_units.has(g1),
+		"★ 左键点击用的是**这次事件**的位置（不是上一帧的鼠标状态）")
+	var click_up := InputEventMouseButton.new()
+	click_up.button_index = MOUSE_BUTTON_LEFT
+	click_up.pressed = false
+	click_up.position = click.position
+	main.input_ctrl.handle_mouse_button(click_up)
+
+	main.input_ctrl.hover_tile = Vector2i(-1, -1)
+	main.input_ctrl.select_units([])
+	var a_world := lo
+	var b_world := hi
+	near(main.input_ctrl._screen_to_logic(_world_to_screen(main, a_world)).x, a_world.x, 0.02,
+		"（前提）世界坐标 → 视口坐标 → 世界坐标 能来回换算")
+	var down := InputEventMouseButton.new()
+	down.button_index = MOUSE_BUTTON_LEFT
+	down.pressed = true
+	down.position = _world_to_screen(main, a_world)
+	ok(main.input_ctrl.handle_mouse_button(down), "左键按下被处理")
+	ok(main.input_ctrl._drag_pending, "按下之后进入「可能是拖框」的待定状态")
+	var tiny := InputEventMouseMotion.new()
+	tiny.position = down.position + Vector2(2.0, 0.0)
+	main.input_ctrl.handle_mouse_motion(tiny)
+	ok(not main.input_ctrl.drag_active,
+		"★ 只挪了 2px（< ui.drag_select_min_px）→ 还是普通单击，没起框")
+	var move := InputEventMouseMotion.new()
+	move.position = _world_to_screen(main, b_world)
+	main.input_ctrl.handle_mouse_motion(move)
+	ok(main.input_ctrl.drag_active, "★ 拖过阈值 → 框选开始（画面上会画那个框）")
+	var box: Rect2 = main.input_ctrl.drag_box()
+	near(box.position.x, a_world.x, 0.05, "框的起点是按下那一刻的世界坐标")
+	ok(box.size.x > 0.0 and box.size.y > 0.0, "框的尺寸跟着鼠标走")
+	var up := InputEventMouseButton.new()
+	up.button_index = MOUSE_BUTTON_LEFT
+	up.pressed = false
+	up.position = move.position
+	ok(main.input_ctrl.handle_mouse_button(up), "左键抬起被处理（★ 早退会让框永远结束不了）")
+	ok(not main.input_ctrl.drag_active, "松手之后框结束")
+	eq(_sorted_ids(main.input_ctrl.selected_units), _sorted_keys(expect),
+		"★ 走真实事件路径拖出来的框，选中的还是那两支完整部队")
+
+	# Esc：拖到一半放弃，不动已有选中
+	main.input_ctrl.handle_mouse_button(down)
+	main.input_ctrl.handle_mouse_motion(move)
+	ok(main.input_ctrl.drag_active, "（前提）又起了一个框")
+	var kept := _sorted_ids(main.input_ctrl.selected_units)
+	main.input_ctrl.handle_key(_key(KEY_ESCAPE))
+	ok(not main.input_ctrl.drag_active, "★ Esc 放弃这次框选")
+	eq(_sorted_ids(main.input_ctrl.selected_units), kept, "★ 放弃框选不会动已有的选中")
+	# 收尾：把选中恢复成「1 号将领」并把面板刷一次，别把状态留给后面的用例
+	main.input_ctrl.select_units([g1])
+	main.hud.refresh()
+
+
+## 把一组单位摆进某个矩形里（测试用；每个隔开 0.7 格并留出 0.5 格边距，互不重叠）
+func _place_units_in_rect(world, units: Array, lo: Vector2, hi: Vector2) -> void:
+	var i := 0
+	for u in units:
+		var col := i % 5
+		var row := int(i / 5)
+		_place_unit(world, u, lo + Vector2(0.5 + float(col) * 0.7, 0.5 + float(row) * 0.7))
+		i += 1
+
+
+## 把一个单位放到某个世界坐标（格）上，并同步它缓存的地块
+func _place_unit(world, u, at: Vector2) -> void:
+	u.pos = at
+	u.sync_tile(world.map)
+
+
+## 世界坐标（格）→ 视口坐标（给假鼠标事件用）
+func _world_to_screen(main, w: Vector2) -> Vector2:
+	return main.input_ctrl.get_viewport().get_canvas_transform() * PaletteRes.to_px(w, main.cfg)
+
+
+func _sorted_ids(units: Array) -> Array:
+	var out: Array = []
+	for u in units:
+		out.append(String(u.id))
+	out.sort()
+	return out
+
+
+func _sorted_keys(d: Dictionary) -> Array:
+	var out: Array = d.keys()
+	out.sort()
+	return out
+
+
+# ---- 右栏报的是「玩家点到的那个单位」（手玩第二轮把规则说死了）----
+#
+# 原话：「默认为左栏展开的那支部队的将领，在地图上通过点击单位选中部队时展示那个单位，
+#        如果玩家点击了左栏中展开部队的单位，则切换详情至这个单位，点击其余部队的逻辑亦然」。
+#
+# ★ 判据是 `input_ctrl.clicked_unit`（**只有地图上一次点选会写它**），
+#   不是「选中列表的最后一个」—— 那种判据分不开「点了一个兵」与「框选了一堆」。
+func _test_clicked_unit_detail(main) -> void:
+	var world = main.world
+	var g1 = world.unit_by_id("general-1")
+	ok(g1 != null, "点选用例：将领 1 在")
+	if g1 == null:
+		return
+	var mates: Array = world.group_of(g1)
+	if mates.size() < 2:
+		return
+	var mate = mates[1]                       # 将领 1 名下的第一个亲兵
+
+	# 1) 地图上点那个**亲兵** → 整队被选中，但右栏报的是这个亲兵
+	main.input_ctrl.select_units([])
+	main.input_ctrl.mouse_world = mate.pos
+	main.input_ctrl.hover_tile = Vector2i(mate.tx, mate.ty)
+	main.input_ctrl._on_left_click(false)
+	eq(main.input_ctrl.clicked_unit, mate, "★ 地图上点到的那个单位被记下来了")
+	ok(main.input_ctrl.selected_units.has(g1), "★ 整队仍然被选中（点一个兵 = 选整队，老行为不变）")
+	main.hud.refresh()
+	eq(main.hud.detail_panel.unit_name_text(), String(mate.name),
+		"★ 右栏报的是**玩家点到的那个亲兵**（不是将领）")
+	eq(main.hud.detail_panel.roster_control().leader().id, g1.id,
+		"★ 左栏上半仍然是那支部队（部队级），不受影响")
+
+	# 2) 框选（批量选中）→ 右栏退回将领
+	var before: int = main.input_ctrl.selected_units.size()
+	main.input_ctrl.box_select(Vector2(0.0, 0.0), Vector2(0.5, 0.5))    # 空框 = 清空
+	eq(main.input_ctrl.clicked_unit, null, "★ 框选/清空会把「点到的单位」清掉")
+	main.input_ctrl.select_units([g1])
+	main.hud.refresh()
+	eq(main.hud.detail_panel.unit_name_text(), String(g1.name),
+		"★ 批量选中（框选 / 点左侧列表）时右栏退回**将领**（不是某个亲兵）")
+	ok(before >= 0, "（前一步的选中规模：%d）" % before)
+
+	# 3) 点左栏上半方块行里的亲兵 → 右栏切到那个亲兵（且不改选中）
+	var roster = main.hud.detail_panel.roster_control()
+	var sel_before: Array = main.input_ctrl.selected_units.duplicate()
+	main.hud._on_roster_block_activated(1)
+	main.hud.refresh()
+	eq(main.hud.detail_panel.unit_name_text(), String(mates[1].name),
+		"★ 点左栏方块行里的第 2 个方块 → 右栏切到那个单位")
+	eq(main.input_ctrl.selected_units.size(), sel_before.size(),
+		"★ 点方块**不改选中**（命令发给谁不受影响）")
+	ok(roster.visible, "（前提）左栏上半还画着")
+	# 点回队长那一格 → 右栏回到将领
+	main.hud._on_roster_block_activated(0)
+	main.hud.refresh()
+	eq(main.hud.detail_panel.unit_name_text(), String(g1.name),
+		"★ 点第一个方块（队长）→ 右栏回到将领")
+
+	# 4) 切到别的部队（网格）→ 右栏跟着变成那支部队的将领
+	var g2 = world.unit_by_id("general-2")
+	if g2 != null:
+		var both: Array = []
+		both.append_array(world.group_of(g1))
+		both.append_array(world.group_of(g2))
+		main.input_ctrl.select_units(both)
+		main.hud.refresh()
+		main.hud._on_troop_activated(2)          # 点网格里那一格（第 2 支部队）
+		main.hud.refresh()
+		eq(main.hud.detail_panel.unit_name_text(), String(g2.name),
+			"★ 点其余部队的格子 → 右栏变成那支部队的将领")
+
+	# 收尾：回到干净状态（后面的用例接着用）
+	main.input_ctrl.select_units([g1])
+	main.hud.refresh()
+
+
 # ---- 设置点不动 ----
 func _test_settings_inert(main) -> void:
 	var page_before := String(main.hud.page_tabs.page())
@@ -868,8 +1335,9 @@ func _test_command_events_reach_consumer(main) -> void:
 	_test_recruit_queued_event(main.cfg)
 
 
-func _key(code: int) -> InputEventKey:
+func _key(code: int, ctrl: bool = false) -> InputEventKey:
 	var ev := InputEventKey.new()
 	ev.keycode = code
 	ev.pressed = true
+	ev.ctrl_pressed = ctrl
 	return ev

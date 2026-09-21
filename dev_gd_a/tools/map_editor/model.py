@@ -112,6 +112,19 @@ PRODUCTION_LABELS: Dict[str, str] = {
 PRODUCTION_MIN = 0.0
 PRODUCTION_MAX = 999.0
 
+#: ★ 区块人口的**上限**（用户需求：「设计师可以在区块页签中选中任意区块为其设置人口上限，
+#: 此人口上限也会被应用到游戏中；每个区块都需要有人口上限，如果没有填则默认为 1；
+#: 当人口自然增长至上限时停止增长」）。
+#:
+#: · 单位是「人」，就是一个数（不是产能那种「每地块每秒」）；
+#: · 没填 = 默认 1（`DEFAULT_POPULATION_CAP`），所以**导出时只有不等于 1 的才写**
+#:   —— 与「只有非零产能才写 production」同一条约定，没配过的老图导出后仍然干净；
+#: · 允许填 0（该区块永远没有人口、也不能在那里招募）—— 上下限只挡误输入。
+POPULATION_CAP_KEY = "population_cap"
+DEFAULT_POPULATION_CAP = 1.0
+POPULATION_CAP_MIN = 0.0
+POPULATION_CAP_MAX = 999.0
+
 #: 兜底上限：格子坐标落在 `-MAX_COORD … MAX_COORD-1` 之内都接受（四个方向都是）。
 #:
 #: ★ 为什么是 4096 而不是原来的 512，也不是更大的数：
@@ -298,19 +311,21 @@ class Faction:
 
 
 class Zone:
-    """一个区块（= 区划）：一个名字 + 一组地块 + 一个区划中心 + 三档产能。
+    """一个区块（= 区划）：一个名字 + 一组地块 + 一个区划中心 + 三档产能 + 人口上限。
 
     · ``center``     ：**区划中心**所在的那一格（世界坐标）。编辑器保证每个区块恰好
                        有一个；游戏里它落成一个「中立障碍」建筑，点它能看这个区划的详情。
     · ``production`` ：每地块每秒的产能，键是 PRODUCTION_KEYS（food / gold / population）。
                        缺键按 0 算 —— 所以 `model_to_dict` 只在真的有非零产能时才写出去，
                        没有产能的老地图导出后与从前逐字节一致。
+    · ``population_cap``：★★ **人口上限**（用户需求）。``None`` = 没填 → 游戏里默认 1；
+                       导出时只写「不等于默认值」的那些（见 `POPULATION_CAP_KEY`）。
 
     地图上的区块是**逐格分配**的，所以不再有 x0/y0/x1/y1 那种矩形包围盒；
     但 Godot 侧的 zone_view 还按包围盒画底色，所以导出时会带一个最小包围盒。
     """
 
-    __slots__ = ("zone_id", "name", "tiles", "center", "production")
+    __slots__ = ("zone_id", "name", "tiles", "center", "production", "population_cap")
 
     def __init__(self, zone_id: int, name: str = "") -> None:
         self.zone_id = int(zone_id)
@@ -318,6 +333,8 @@ class Zone:
         self.tiles: set[Tile] = set()
         self.center: Optional[Tile] = None
         self.production: Dict[str, float] = {k: 0.0 for k in PRODUCTION_KEYS}
+        #: None = 设计师没填（游戏里按 DEFAULT_POPULATION_CAP 处理）
+        self.population_cap: Optional[float] = None
 
     def __repr__(self) -> str:  # pragma: no cover - 调试用
         return "Zone(%d, %r, %d tiles)" % (self.zone_id, self.name, len(self.tiles))
@@ -888,6 +905,57 @@ class MapModel:
         if zone is None:
             return False
         return any(abs(float(zone.production.get(k, 0.0))) > 1e-9 for k in PRODUCTION_KEYS)
+
+    # ---------------- 区划人口上限 ----------------
+    #
+    # ★★ 用户需求原话：「设计师可以在区块页签中选中任意区块为其设置人口上限，
+    #   此人口上限也会被应用到游戏中；每个区块都需要有人口上限，如果没有填人口上限
+    #   则默认为 1；当人口自然增长至上限时停止增长」。
+    #
+    # ★ 数据层只存「设计师填过的值」（None = 没填）。**默认值是 1**，
+    #   由这里的 `zone_population_cap()` 补出来 —— 于是：
+    #     · 界面永远显示**生效值**（没填就是 1，设计师一眼看到的就是游戏里的数）；
+    #     · 导出只写「不等于 1」的那些，没配过的地图导出后与从前逐字节一致。
+
+    def zone_population_cap(self, zone_id: int) -> float:
+        """某个区划**生效的**人口上限（没填 → `DEFAULT_POPULATION_CAP`）。"""
+        zone = self.zone(zone_id)
+        if zone is None or zone.population_cap is None:
+            return DEFAULT_POPULATION_CAP
+        return float(zone.population_cap)
+
+    def zone_population_cap_is_default(self, zone_id: int) -> bool:
+        """这个区划的上限是不是「默认值」（没填、或填的正好等于默认 1）。"""
+        zone = self.zone(zone_id)
+        if zone is None or zone.population_cap is None:
+            return True
+        return abs(float(zone.population_cap) - DEFAULT_POPULATION_CAP) < 1e-9
+
+    def set_zone_population_cap(self, zone_id: int, value) -> bool:
+        """设某个区划的人口上限。返回是否真的变了。
+
+        ★ 允许 0（用户确认：那个区块永远没有人口、也不能在那里招募）；
+          负数一律夹到 0、超过 `POPULATION_CAP_MAX` 也夹住 —— 与产能同一套夹法，
+          只挡误输入，不是平衡数值。
+        ★ 非法输入（空串 / 乱打字）→ 返回 False 且**不改动原值**
+          （免得「手滑打错一个字就把上限清零」）。
+        ★ 填成默认值 1 时**存 1**（而不是抹回 None）：行为完全一样，
+          但「我确实填过 1」这件事在界面上看得出来（输入框里就是 1）。
+        """
+        zone = self.zone(zone_id)
+        if zone is None:
+            return False
+        try:
+            number = float(str(value).strip())
+        except (TypeError, ValueError):
+            return False
+        if number != number:                       # NaN
+            return False
+        number = max(POPULATION_CAP_MIN, min(POPULATION_CAP_MAX, number))
+        if zone.population_cap is not None and abs(number - float(zone.population_cap)) < 1e-9:
+            return False
+        zone.population_cap = number
+        return True
 
     #: toggle_tile_zone 的返回值
     TOGGLE_ASSIGNED = "assigned"

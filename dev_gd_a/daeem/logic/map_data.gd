@@ -91,6 +91,11 @@ var zones_names: Dictionary = {}
 ## `zone.build_from_map` 不为任何区块落中心建筑（行为与加这个功能之前一致）。
 var zones_centers: Dictionary = {}
 var zones_production: Dictionary = {}
+## ★ 每个区块的**人口上限**：id → float（人）。缺字段的区块**不在这张表里** →
+## `zone.gd` 按默认 1 处理（用户需求：「每个区块都需要有人口上限，如果没有填则默认为 1」）。
+##
+## 与产能一样是「地图说了算」的静态数据：进游戏之后不会变，所以不进快照。
+var zones_population_caps: Dictionary = {}
 ## 旧格式里那个单数 `base` 读进来的值（**只读不写**的兼容入口）。
 ##
 ## ★ 编辑器**不再导出**这个字段了（用户要求把老式大本营彻底删掉），但**手写老地图
@@ -252,6 +257,7 @@ func _read_zones(grid_v: Variant, list_v: Variant) -> void:
 	zones_names = {}
 	zones_centers = {}
 	zones_production = {}
+	zones_population_caps = {}
 	if typeof(grid_v) != TYPE_ARRAY:
 		return
 	zones_grid = grid_v
@@ -281,6 +287,11 @@ func _read_zones(grid_v: Variant, list_v: Variant) -> void:
 				"gold": float(pd.get("gold", 0.0)),
 				"population": float(pd.get("population", 0.0)),
 			}
+		# ★★ 人口上限：缺字段 / 不是数字 → **不登记**（zone.gd 按默认 1 处理）。
+		#    编辑器只在「不等于 1」时才写这个字段，所以正常的图里它本来就该缺。
+		var cap: Variant = z.get("population_cap", null)
+		if typeof(cap) == TYPE_FLOAT or typeof(cap) == TYPE_INT:
+			zones_population_caps[zid] = float(cap)
 
 
 ## 读 exists 网格：地图编辑器导出的是 `[[1,1,0,...], ...]`（1 = 存在，0 = 地图外）。

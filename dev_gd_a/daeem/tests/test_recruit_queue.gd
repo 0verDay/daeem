@@ -49,6 +49,7 @@ func _cases() -> void:
 	_test_cancel_queue(cfg)
 	_test_cancel_then_death(cfg)
 	_test_death_refund(cfg)
+	_test_population_cap_and_recruit(cfg)
 	_test_snapshot_round_trip(cfg)
 
 
@@ -596,6 +597,46 @@ func _test_snapshot_round_trip(cfg) -> void:
 		"buildings": []}
 	SnapshotRes.apply_snapshot(w3, cfg, old_snap)
 	eq(g3.train_kind, KIND, "★ 老快照没有 tk → 保持本地队列不变（别当成空队列）")
+
+
+# ------------------------------------------------------------------
+# 十三、人口上限与招募的配合
+# ------------------------------------------------------------------
+##
+## 用户需求（两条一起看）：
+##   「每个区块都需要有人口上限，如果没有填人口上限则默认为 1；当人口自然增长至上限时停止增长」
+##   「将领位于己方地块上招募占位单位时会消耗该区块 1 人口」。
+##
+## 这一节钉住两者**放在一起**时的行为：人口涨到上限就停、招募扣掉 1 人口之后
+## 又能涨回来（但不会越过上限）；上限 0 的区块永远招不了（拒因 population）。
+func _test_population_cap_and_recruit(cfg) -> void:
+	var w = _quiet_world(cfg)
+	_give(w, 1000.0, 1000.0)
+	var g1 = w.unit_by_id("general-1")
+	var z = w.zones.zone_at(g1.tx, g1.ty)
+	ok(z != null, "将领站的那个区划找得到")
+	if z == null:
+		return
+	z["owner"] = "p1"
+	z["population_cap"] = 3.0
+	z["population"] = 0.0
+	z["production"] = {"food": 0.0, "gold": 0.0, "population": 50.0}
+
+	w.tick(1.0)
+	near(w.zones.population_of(z), 3.0, 1e-6, "★ 人口涨到上限 3 就停住")
+	w.tick(2.0)
+	near(w.zones.population_of(z), 3.0, 1e-6, "继续跑时间也不会超过上限")
+
+	ok(w.start_recruit(KIND, g1.id, "p1"), "人口满的时候可以招募")
+	near(w.zones.population_of(z), 2.0, 1e-4, "★ 招募扣掉将领所在区块 1 人口")
+	w.tick(1.0)
+	near(w.zones.population_of(z), 3.0, 1e-6, "★ 扣掉的那 1 人口会涨回来，但仍停在上限")
+
+	# 上限 0 的区块：永远没有人口 → 在那里招募直接被拒（拒因 population）
+	z["population_cap"] = 0.0
+	z["population"] = 0.0
+	eq(w.can_afford_recruit(KIND, g1.id), "population",
+		"★ 上限 0 的区块招不了（人口不足）")
 
 
 # ------------------------------------------------------------------

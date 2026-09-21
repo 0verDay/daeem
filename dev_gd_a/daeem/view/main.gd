@@ -33,6 +33,9 @@ var cfg: ConfigRes = null
 var start_screen: CanvasLayer = null
 var game: Node2D = null
 
+## 进全屏之前是哪种窗口模式（退出全屏时还原，见 _handle_window_hotkey）
+var _windowed_mode: int = DisplayServer.WINDOW_MODE_WINDOWED
+
 
 func _ready() -> void:
 	cfg = ConfigRes.load_default()
@@ -92,8 +95,47 @@ func _on_test_pressed() -> void:
 # ------------------------------------------------------------------
 
 func _unhandled_input(event: InputEvent) -> void:
+	# ★ 开发者快捷键（Ctrl+Q 全屏）放在这里，而不是 input_controller ——
+	#   它要在**任何一页**都能按：开场页 / 主界面根本没有 world 与 input_controller
+	#   （那两个是按下 test 进游戏时才建的）。
+	#   窗口模式本来也就是本文件的事 —— 它已经接管了 NOTIFICATION_WM_CLOSE_REQUEST。
+	if _handle_window_hotkey(event):
+		get_viewport().set_input_as_handled()
+		return
 	if game != null:
 		game._unhandled_input(event)
+
+
+## Ctrl+Q：全屏 ↔ 窗口（开发者快捷键）。
+##
+## ★ 为什么要记住「进全屏之前是哪种窗口模式」：Godot 有五种窗口模式
+##   （windowed / minimized / maximized / fullscreen / exclusive fullscreen）。
+##   这里的语义只是「在全屏和窗口之间切」，退出时直接写 WINDOW_MODE_WINDOWED
+##   会把「最大化」这类状态吃掉 —— 而开发时常常就是最大化窗口在调的。
+## ★ 用 WINDOW_MODE_FULLSCREEN（无边框全屏）而不是 EXCLUSIVE_FULLSCREEN：
+##   前者切换更快、对多显示器更友好，这个游戏没有需要独占全屏的理由。
+## ⚠️ 必须判 ctrl：Q 本身是命令卡第 0 格的键（招募），不判的话按一下 Q 就跳全屏。
+##   （反过来的那一半在 command_card.handle_key：它必须放行带修饰键的组合。）
+## ⚠️ 无头（--headless）下 DisplayServer 是空实现，不会真的改窗口模式 ——
+##   所以测试只验「这个按键归谁消费」，不去断言真实窗口状态（见 tests/test_view.gd）。
+##
+## @return true = 本事件已被消费
+func _handle_window_hotkey(event: InputEvent) -> bool:
+	if not (event is InputEventKey):
+		return false
+	var k: InputEventKey = event as InputEventKey
+	if not k.pressed or k.echo:
+		return false
+	if k.keycode != KEY_Q or not k.ctrl_pressed:
+		return false
+	var mode: int = DisplayServer.window_get_mode()
+	if mode == DisplayServer.WINDOW_MODE_FULLSCREEN \
+			or mode == DisplayServer.WINDOW_MODE_EXCLUSIVE_FULLSCREEN:
+		DisplayServer.window_set_mode(_windowed_mode)
+	else:
+		_windowed_mode = mode
+		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
+	return true
 
 
 func _notification(what: int) -> void:

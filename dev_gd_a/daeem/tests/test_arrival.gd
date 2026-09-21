@@ -17,7 +17,7 @@
 ##   2. 多单位共用一个精确目标点 → 每帧「吸附到该点」与「被碰撞推开」互相打架；
 ##   3. 到达之后 `path` 是空的 → `step_along_path` **整个函数都不执行**，
 ##      被推走的单位没有任何机制走回去；
-##   4. 推挤一帧能推走 ~0.25 格，而单位自己一帧只走 0.04 格 →
+##   4. 推挤一帧能推走 ~0.25 格，而单位自己一帧只走 0.04 格（1/4 速度下 0.01 格）→
 ##      人群里「最后一段」**永远走不完**，必须靠「进度停滞」认账。
 extends "res://tests/test_case.gd"
 
@@ -66,7 +66,8 @@ func _test_solo_still_exact(cfg) -> void:
 	u.sync_tile(w.map)
 	u.order_move(w, cfg, target)
 	var n := 0
-	while u.moving and n < 2000:
+	var cap: int = frames_at_baseline(cfg, 2000)
+	while u.moving and n < cap:
 		w.tick(DT)
 		n += 1
 	v2_near(u.pos, target, 1e-3, "★ 单人点到空地时仍然精确停在点击位置（没有被拥挤逻辑改坏）")
@@ -98,7 +99,10 @@ func _test_crowd_settles(cfg) -> void:
 	var settled := -1
 	var moving_unit_frames := 0
 	var n := 0
-	while n < 1200:
+	# ★ 帧预算按速度换算（见 test_case.frames_at_baseline）：速度降到基线 1/4 之后，
+	#   同样这段路要 4 倍帧数才走得完。
+	var cap: int = frames_at_baseline(cfg, 1200)
+	while n < cap:
 		w.tick(DT)
 		n += 1
 		for u in group:
@@ -123,18 +127,28 @@ func _test_crowd_settles(cfg) -> void:
 	#    而这一队从出生点绕到 (6,12) 的实际路程比 8 格长得多（要绕过中央那片山）。
 	#    所以阈值按「这个式子的 3.5 倍」给，并且把实测值打进日志：
 	#    哪天这条路又变长了，先看这行数字，别急着调阈值。
-	ok(settled > 0 and settled < 1500,
-		"★ 停下来的时间在合理范围内（%d 帧 < 1500；实测基准 694）" % settled)
+	ok(settled > 0 and settled < frames_at_baseline(cfg, 1500),
+		"★ 停下来的时间在合理范围内（%d 帧 < %d；基线速度下的实测基准是 694）"
+		% [settled, frames_at_baseline(cfg, 1500)])
 	ok(float(moving_unit_frames) < ideal * 3.5,
 		"★ 总移动量没有爆炸（%.0f 单位·帧，8 格理想值 ≈ %.0f，上限 %.0f）"
 		% [moving_unit_frames, ideal, ideal * 3.5])
 
 	# 每个单位都要落在目标附近（允许被队友挤开一点，但不能跑到天边）
+	#
+	# ★ 半径本轮 1.5 → 2.5 格，理由是**测出来的一个两难**（详见 config.json 的 _jam_comment）：
+	#   单位速度降到 1/4 之后，「挤不过去就认账」的宽限 jam_giveup_sec 两头不能兼顾 ——
+	#   调小（1.6）队伍聚得紧（最远 0.68 格），但**单人绕路会停在离点击处 2 格的地方**
+	#   （那是硬 bug，test_logic 的「终点就是点击的精确位置」盯着）；
+	#   调大（2.4）绕路正常，极端拥挤下队伍就散到 2.05 格。这里选了保「点哪走哪」。
+	#   注意这 12 个单位是**被点到同一个精确坐标**的（合成场景）：实战里 ≥4 个单位
+	#   走的是队形落点（unit.formation），各自有槽位，不会全挤一个点。
+	var spread := 2.5
 	var far := 0
 	for u in group:
-		if u.pos.distance_to(target) > 1.5:
+		if u.pos.distance_to(target) > spread:
 			far += 1
-	eq(far, 0, "★ 所有单位都落在目标 1.5 格以内（没有谁被挤到别处）")
+	eq(far, 0, "★ 所有单位都落在目标 %.1f 格以内（没有谁被挤到别处）" % spread)
 
 
 ## 停下之后必须**真的静止**：位置与朝向都不再变
@@ -149,7 +163,8 @@ func _test_crowd_stays_still(cfg) -> void:
 		group.append(u)
 		u.order_move(w, cfg, target)
 	var n := 0
-	while n < 1200:
+	var cap: int = frames_at_baseline(cfg, 1200)
+	while n < cap:
 		w.tick(DT)
 		n += 1
 		var any := false
@@ -226,7 +241,8 @@ func _test_jam_giveup_bounds_effort(cfg) -> void:
 	# 跑到全部停下，然后统计「每个单位从下令到停下」的帧数上限
 	var all_settled := -1
 	var n := 0
-	while n < 1200:
+	var cap: int = frames_at_baseline(cfg, 1200)
+	while n < cap:
 		w.tick(DT)
 		n += 1
 		var any := false
@@ -239,9 +255,9 @@ func _test_jam_giveup_bounds_effort(cfg) -> void:
 	ok(all_settled > 0, "全部停下（第 %d 帧）" % all_settled)
 
 	# 超时上限：理论最坏 = 路程/速度 + jam_giveup_sec 若干轮。
-	# 这里只验「没有无限拖下去」——1200 帧（20 秒）是个很宽松的上限。
-	ok(all_settled > 0 and all_settled < 1200,
-		"★ 挤不过去时会认账，不会无限努力（%d 帧 < 1200）" % all_settled)
+	# 这里只验「没有无限拖下去」——换算成基线速度仍是 1200 帧（20 秒）这个很宽松的上限。
+	ok(all_settled > 0 and all_settled < frames_at_baseline(cfg, 1200),
+		"★ 挤不过去时会认账，不会无限努力（%d 帧 < %d）" % [all_settled, frames_at_baseline(cfg, 1200)])
 
 	# 认账之后不能留下「还在 moving」的状态
 	for u in group:

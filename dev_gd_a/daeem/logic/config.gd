@@ -29,7 +29,7 @@ var data: Dictionary = {}
 ## ⚠️ cell_px 是**全项目唯一允许存在的像素常量**，而且它只该被 view/ 读
 ##    （palette.to_px / tile_rect / unit_radius_px）。logic/ 里出现它 = 坐标单位混用的信号。
 ##    它放在这里而不是 view/，只是为了让所有可调数值集中在同一个 JSON 里。
-var cell_px: float = 64.0
+var cell_px: float = 128.0
 var cols: int = 24
 var rows: int = 16
 
@@ -39,7 +39,10 @@ var rows: int = 16
 ##   两处各写一个 44 就会出现「看着能滚、其实被控件拦住」这种错位。
 var camera_edge_size: float = 44.0
 
-var unit_speed: float = 2.4
+## ---- 框选：左键移动超过多少像素才算「拖框」（见 config.json 的 ui._comment）----
+var drag_select_min_px: float = 6.0
+
+var unit_speed: float = 0.6
 var unit_forest_mult: float = 0.5
 var unit_hp_max: float = 200.0
 var unit_radius_factor: float = 0.1
@@ -55,7 +58,7 @@ var unit_push_moving_weight: float = 1.0
 var unit_push_idle_weight: float = 0.2
 
 ## ---- 到达 / 认账（同样在每单位每帧的路径上）----
-var unit_jam_giveup_sec: float = 0.6
+var unit_jam_giveup_sec: float = 2.4
 var unit_settle_return_dist: float = 0.22
 var unit_settle_max_attempts: int = 3
 
@@ -75,7 +78,7 @@ var path_corner_round_min_angle_deg: float = 20.0
 
 ## ---- 亲兵数值（unit_*_of(kind) 每帧每单位都会查一次）----
 var sub_hp_max: float = 80.0
-var sub_speed: float = 2.4
+var sub_speed: float = 0.6
 var sub_damage: float = 14.0
 var sub_range: float = 1.0
 var sub_cooldown_sec: float = 1.1
@@ -113,8 +116,21 @@ var enemy_cooldown: float = 1.2
 
 var zone_cols: int = 6
 var zone_rows: int = 4
-var capture_time_sec: float = 4.0
-var decay_per_sec: float = 0.125
+## 1 个单位独自占下一个区块要多少秒（= 占领速率 1/capture_time_sec 的倒数）。
+## 历史：4 → 32（需求「占领速度缩小为原来的 1/8」）。
+var capture_time_sec: float = 32.0
+## 读条方**不在场**时，进度每秒回落多少（进度比例/秒）。
+## 历史：0.125 → 0.03125（需求「自然占领进度降低速度缩小为原来的 1/4」）。
+## ⚠️ 与 capture_time_sec 的缩放倍数不同（1/4 vs 1/8），别顺手改成一样。
+var decay_per_sec: float = 0.03125
+## ★★ 人数加成曲线的三个参数（见 zone.speed_multiplier / data/config.json 的 _capture_comment）：
+##   · zone_speed_max_mult  —— 满编时趋近的倍率上限（x2）。
+##   · zone_speed_curve_k   —— 归一化分母的常数：**越大越平缓**（要更多人才能接近上限）。
+##   · zone_speed_curve_power —— 曲线的指数：`倍率 = 1 + (max-1) × t^p`，t = (n-1)/(n-1+k)。
+##     ★ 必须 > 1 才叫「先慢后快」（t^p 在 n=1..10 上是凸的）；= 1 会退化成「先快后慢」。
+var zone_speed_max_mult: float = 2.0
+var zone_speed_curve_k: float = 2.5
+var zone_speed_curve_power: float = 1.7
 var zone_owned_by_building: bool = true
 
 var food_per_tile_per_sec: float = 1.0
@@ -128,7 +144,7 @@ var destructible_base: bool = false
 ## 一帧最多按多少秒推进逻辑（防止「帧慢→dt 大→活更多→更慢」的死亡螺旋）
 var sim_max_dt: float = 0.05
 
-var enemy_speed: float = 1.8
+var enemy_speed: float = 0.45
 var enemy_hp: float = 60.0
 
 
@@ -167,11 +183,12 @@ func _load(path: String) -> bool:
 func _cache_scalars() -> void:
 	cols = int_val("grid.cols", 24)
 	rows = int_val("grid.rows", 16)
-	cell_px = num("render.cell_px", 64.0)
+	cell_px = num("render.cell_px", 128.0)
 
 	camera_edge_size = num("camera.edge_size", 44.0)
+	drag_select_min_px = num("ui.drag_select_min_px", 6.0)
 
-	unit_speed = num("unit.speed", 2.4)
+	unit_speed = num("unit.speed", 0.6)
 	unit_forest_mult = num("unit.forest_mult", 0.5)
 	unit_hp_max = num("unit.hp_max", 200.0)
 	unit_radius_factor = num("unit.radius_factor", 0.1)
@@ -185,7 +202,7 @@ func _cache_scalars() -> void:
 	unit_push_moving_weight = num("unit.push_moving_weight", 1.0)
 	unit_push_idle_weight = num("unit.push_idle_weight", 0.2)
 
-	unit_jam_giveup_sec = num("unit.jam_giveup_sec", 0.6)
+	unit_jam_giveup_sec = num("unit.jam_giveup_sec", 2.4)
 	unit_settle_return_dist = num("unit.settle_return_dist", 0.22)
 	unit_settle_max_attempts = int_val("unit.settle_max_attempts", 3)
 
@@ -226,8 +243,11 @@ func _cache_scalars() -> void:
 
 	zone_cols = int_val("zone.zone_cols", 6)
 	zone_rows = int_val("zone.zone_rows", 4)
-	capture_time_sec = num("zone.capture_time_sec", 4.0)
-	decay_per_sec = num("zone.decay_per_sec", 0.125)
+	capture_time_sec = num("zone.capture_time_sec", 32.0)
+	decay_per_sec = num("zone.decay_per_sec", 0.03125)
+	zone_speed_max_mult = num("zone.speed_max_mult", 2.0)
+	zone_speed_curve_k = num("zone.speed_curve_k", 2.5)
+	zone_speed_curve_power = num("zone.speed_curve_power", 1.7)
 	zone_owned_by_building = bool_val("zone.zone_owned_by_building", true)
 
 	food_per_tile_per_sec = num("resource.food_per_tile_per_sec", 1.0)
@@ -239,7 +259,7 @@ func _cache_scalars() -> void:
 	destructible_base = bool_val("pvp.destructible_base", false)
 	sim_max_dt = num("sim.max_dt", 0.05)
 
-	enemy_speed = num("debug.enemy_speed", 1.8)
+	enemy_speed = num("debug.enemy_speed", 0.45)
 	enemy_hp = num("debug.enemy_hp", 60.0)
 
 	# 战斗数值表：建一次、之后只读。

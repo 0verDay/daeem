@@ -148,7 +148,7 @@ func _build_hud() -> void:
 	hud = HudRes.new()
 	hud.name = "Hud"
 	add_child(hud)
-	hud.setup(cfg, world, input_ctrl, theme)
+	hud.setup(cfg, world, input_ctrl, theme, camera_rig)
 
 
 func _build_debug_handles() -> void:
@@ -222,6 +222,9 @@ func _process(dt: float) -> void:
 	overlay.attack_marks = input_ctrl.attack_marks
 	overlay.debug_aim = input_ctrl.debug_aim
 	overlay.mouse_world = input_ctrl.mouse_world
+	# ★ 框选矩形（纯本地状态，只画不改逻辑）
+	overlay.drag_active = input_ctrl.drag_active
+	overlay.drag_rect = input_ctrl.drag_box()
 	zone_view.show_names = input_ctrl.show_zone_names
 	overlay.queue_redraw()
 	zone_view.sync()
@@ -259,6 +262,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 	elif event is InputEventMouseMotion:
 		input_ctrl.poll_mouse()
+		# ★ 框选那条状态机也要吃移动事件（越过阈值才算「在拖框」）
+		input_ctrl.handle_mouse_motion(event)
 
 
 ## ★ 唯一改逻辑状态的地方：把命令交给 command_processor

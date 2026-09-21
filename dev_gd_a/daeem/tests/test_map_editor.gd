@@ -483,7 +483,9 @@ func _test_world_with_editor_map(cfg) -> void:
 			[-1, -1, -1, 0, 0, 0, 0, 1, 1, -1, -1, -1],
 		],
 		"zone_list": [
-			{"id": 0, "name": "西境"},
+			# ★ 人口上限（编辑器导出 zone_list[].population_cap）：西境填了 7，
+			#   东境**没填** → 游戏侧按默认 1 处理（用户需求：没填就是 1）
+			{"id": 0, "name": "西境", "population_cap": 7},
 			{"id": 1, "name": "东境"},
 		],
 		"base": [2, 3],
@@ -511,6 +513,17 @@ func _test_world_with_editor_map(cfg) -> void:
 	# 地图外的格子不该被当成区块：它既不属于西境也不属于东境
 	ok(w.zones.zone_at(0, 0) == null, "地图外的角落不属于任何区块")
 	eq(w.zones.lookup[m.terrain.idx(0, 0)], -1, "lookup 对地图外是 -1")
+
+	# ---- ★ 人口上限（用户需求：每个区块都要有，没填 = 1）
+	var zw: Dictionary = w.zones.zones[0]
+	var ze: Dictionary = w.zones.zones[1]
+	eq(String(zw["name"]), "西境", "第 0 个区块是西境")
+	near(w.zones.population_cap_of(zw), 7.0, 1e-9, "★ 地图里填的上限被读进世界（7）")
+	near(w.zones.population_cap_of(ze), 1.0, 1e-9, "★ 没填的那一块按默认 1")
+	# 世界真的按上限停涨：西境速率设成很大，跑一秒也只能到 7
+	zw["production"] = {"food": 0.0, "gold": 0.0, "population": 100.0}
+	w.tick(1.0)
+	near(w.zones.population_of(zw), 7.0, 1e-6, "★ 人口涨到地图给的上限就停住")
 
 
 # ------------------------------------------------------------------

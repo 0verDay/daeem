@@ -27,12 +27,22 @@ const TEXT_ON_ACCENT := Color(0.97, 0.99, 1.0)
 ## 提示 / 拒绝的红字（招募被拒时在详细信息左栏顶上那行）
 const WARN := Color(1.0, 0.45, 0.42)
 
+## 单位方块里那根血量条的三档颜色（见 view/unit_roster.gd）：
+## 一眼看出哪个兵快死了 —— 只写「兵」字的话，满血与残血长得一模一样。
+const HP_HIGH := Color(0.45, 0.82, 0.45)
+const HP_MID := Color(0.90, 0.78, 0.35)
+const HP_LOW := Color(0.88, 0.35, 0.32)
+
 ## 字号（参考图是 1920×1080 的稿子，这里的字号按那个尺度定）
 const FS_TINY := 11
 const FS_SMALL := 13
 const FS_BODY := 15
 const FS_TITLE := 17
 const FS_BIG := 44
+## ★ 「单位名称」那一行：参考图里它是右栏**最大的字**（实测约 36px 高），与 64×64 的头像
+##   并排。这里取 24 —— 再大就会长到 buff 那一列上面去（实机截图见过），
+##   再用 FS_TITLE(17) 又会小得跟正文一样、看不出那是标题。
+const FS_UNIT_NAME := 24
 
 
 ## 通用底板

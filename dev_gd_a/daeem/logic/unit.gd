@@ -102,7 +102,7 @@ var _field_tile: Vector2i = Vector2i(-1, -1)
 ## jam_timer：想走到终点、但每帧都被挤回来（进度被抵消）的累计时间。
 ##
 ## ★ 它解决的是「推挤能把单位推走的距离（一帧最多 ~0.25 格）远大于它自己的
-##   移动速度（0.04 格/帧）」这个数量级失衡：人群里的单位可能**永远走不到终点**，
+##   移动速度（基线 0.04 格/帧，1/4 速度下只有 0.01 格/帧）」这个数量级失衡：人群里的单位可能**永远走不到终点**，
 ##   于是一直保持 moving=true 被推来推去 —— 实测三个将领 2000 帧停不下来、
 ##   总行程 83 格（本该 8 格）、方向反转 5708 次，肉眼看就是「挤着转」。
 ##   超时之后就认账：在附近找个空位落位、结束移动。
@@ -705,7 +705,7 @@ func sync_tile(map) -> void:
 
 ## 只在**真的跨了格**的时候才改 tx/ty。
 ##
-## ★ 为什么不是直接调 sync_tile：单位一帧只走 speed*dt ≈ 0.04 格，而一格是 1 格 ——
+## ★ 为什么不是直接调 sync_tile：单位一帧只走 speed*dt（1/4 速度下 ≈ 0.01 格），而一格是 1 格 ——
 ##   也就是平均每 25 帧才换一格，原来却每帧都 floori 两次 + clampi 两次 + 写两个属性。
 ##   （sync_tile 本身保留：碰撞把单位推开之后要走那条路，那里确实可能跨格。）
 func _sync_tile_if_changed(map) -> void:
@@ -805,7 +805,7 @@ func step_along_path(world, cfg: ConfigRes, dt: float) -> void:
 	#
 	# 为什么不能只看「路径空了」：路径的最后一个路点就是终点本身，
 	#   而人群里这「最后一段」可能**永远走不完** ——
-	#   推挤一帧能把单位推走约 0.25 格，它自己一帧只走 0.04 格，
+	#   推挤一帧能把单位推走约 0.25 格，它自己一帧只走 0.04 格（1/4 速度下 0.01 格），
 	#   于是它一直 moving=true、path 非空，却一步也没靠近终点。
 	#   实测：12 个单位点到同一点，2000 帧停不下来、总行程 87 格（本该 8 格）、
 	#   方向反转 8000+ 次 —— 肉眼看就是「到达后互相挤着转」。
@@ -819,15 +819,34 @@ func step_along_path(world, cfg: ConfigRes, dt: float) -> void:
 	#    拥挤的人群永远停不下来 —— 因为每帧的推进都会让 `path` 变短一点，
 	#    `stuck_timer` 就被一直清零，`jam_giveup_sec` 那套认账逻辑彻底失效
 	#    （实测：12 个单位 1200 帧仍在 moving）。**别再改回去**。
-	#    「绕路时直线距离先变大」那件事由 `update_combat` 每 repath_sec 重新寻路时的
-	#    `move_to()` 一起解决（它会把 best_dist 复位），不需要动这里的口径。
+	#
+	# ★ 试过并**否决**的第三种口径（单位速度降到 1/4 之后，为了修「绕路被误判成挤住」）：
+	#   用「上一帧净位移在路径方向上的投影」当进展判据。它不成立的原因是**数量级**：
+	#   1/4 速度下单位一帧只走 0.005 格，而碰撞一帧能推 0.25 格 —— 位移信号完全被
+	#   推挤噪声淹没，任何阈值都分不开「在赶路」和「被推着抖」。实测后果是
+	#   12 个单位 12000 帧都停不下来（stuck_timer 被噪声一直清零）。
+	#   上面这个「到终点距离的**历史最好值**」能用，正因为它是**取记录**而不是逐帧看
+	#   变化：噪声在最小值附近来回，很少能刷新记录。
+	#   → 速度变慢之后，能调的只有 `unit.jam_giveup_sec` 这一个旋钮（见 config.json）。
 	var dist_now: float = pos.distance_to(goal)
 	if dist_now < best_dist - 1e-4:
 		best_dist = dist_now
 		stuck_timer = 0.0
 	else:
 		stuck_timer += dt
-	var arrived: bool = dist_now <= remaining + ARRIVE_EPS
+	# ★★ 路径走完 = 到达，哪怕离 goal 还差一点。
+	#
+	# 为什么必须兜这一条：`world.tick()` 只在 `path` 非空时才调 step_along_path，
+	#   所以「path 空了、moving 还是 true」是个**死状态** —— 单位永远不动、
+	#   也永远不结束移动（HUD 一直显示在走，settling 的推力权重也一直算在它头上）。
+	#
+	# 路径末点**不一定**等于 goal：move_to() 是**先建路径、后挑备用落点**的
+	#   （`_arrival_congested` 命中时 goal 被换成 0.1~0.2 格外的空位），
+	#   于是走完路径那一刻 `dist_now` 可能远大于本帧预算，`arrived` 判不到。
+	#   实测（单位速度降到 1/4、12 个单位点到同一点）：走到第 2720 帧必现，
+	#   该单位从此冻住不再动；基线速度下同一段代码只是没被走到。
+	#   兜底之后它会像 settling 一样就地落位 —— 那本来就是「备用落点」的语义。
+	var arrived: bool = path.is_empty() or dist_now <= remaining + ARRIVE_EPS
 	var gave_up: bool = stuck_timer >= cfg.unit_jam_giveup_sec
 	if not arrived and not gave_up:
 		return                          # 既没到、也没卡住：继续走
@@ -873,7 +892,8 @@ func step_along_path(world, cfg: ConfigRes, dt: float) -> void:
 ##
 ## 由 world.tick() 每帧调用（放在碰撞消解**之前**：先决定要不要回位，再让碰撞摆位置）。
 ##
-## ⚠️ 必须防死循环：人群里回位可能永远失败（一帧被推走 0.25 格、自己只能走 0.04 格）。
+## ⚠️ 必须防死循环：人群里回位可能永远失败（一帧被推走 0.25 格、自己只能走 0.04 格，
+##    1/4 速度下是 0.01 格）。
 ##    所以回位次数用尽之后就放弃，就地待着 —— 否则会退化成「永远挤着转」，
 ##    那正是这条逻辑要修的病。
 func reclaim_settled_spot(world, cfg: ConfigRes) -> void:

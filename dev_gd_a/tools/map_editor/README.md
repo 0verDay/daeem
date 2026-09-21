@@ -230,6 +230,15 @@ Linux 上要装 `python3-tk`）。
 - 负数会被夹成 0，超大值会被夹到上限（只挡误输入，不是平衡数值）
 - 导出时**只有配过非零产能的区块**才写 `production`（老图导出后仍然干净）
 
+**人口上限**在它下面那一节「人口上限」里填（一个输入框 + 单位「人」）：
+
+- 作用对象就是**列表里选中的那个区块**（先在列表里点一下它，再改这个框）
+- **没填 = 1**：输入框里显示的就是**游戏里真正生效的那个数**（没填过也显示 1），
+  所以「我没填啊怎么不涨」这种事不会发生
+- 填 **0** = 这个区块永远没有人口 —— 游戏里也就**不能在那里招募**（招募要扣 1 人口）
+- 涨到上限就**不再涨**（游戏里 `zone.update_population()`），下限 0 / 上限 999 只是挡误输入
+- 导出时**只有「不等于默认 1」的区块**才写 `population_cap`（与产能同一条约定）
+
 **区划中心是什么**：游戏里它落成一栋**中立障碍建筑** ——
 占满一整格、**任何阵营的单位都进不去**、无血量、无敌、没有攻击手段、也不能拆；
 **左键点它**会显示这个区划的详情（区划名 / 归属 / 区划大小 / 三档产能 / 人口）。
@@ -339,6 +348,7 @@ Linux 上要装 `python3-tk`）。
     { "id": 0, "name": "东关",
       "center": [2, 1],                          // ★ 区划中心（每个区块必须有且只有一个）
       "production": { "food": 1, "gold": 1, "population": 0.5 },   // ★ 产能：每地块每秒
+      "population_cap": 10,                      // ★ 人口上限；没填就不写 → 游戏侧默认 1
       "x0": 0, "y0": 0, "x1": 3, "y1": 3,        // 最小包围盒（给渲染画底色用）
       "tile_count": 12,
       "tiles": [[0, 0], [1, 0], ...] }           // 逐个地块（冗余信息，方便人看与脚本读）
@@ -377,6 +387,10 @@ Linux 上要装 `python3-tk`）。
 - **`zone_list[].production` 是产能**（粮食 / 黄金 / 人口，单位 **n 资源/地块/秒**）：
   经济按「占领方拥有的各区划（产能 × 该区划地块数）」聚合。
   **只有配过非零产能的区块才写这个字段**（老图导出后仍然干净）。
+- ★ **`zone_list[].population_cap` 是人口上限**（单位「人」）：
+  游戏里每个区块的人口涨到它就不再涨，招募单位会从将领所在区块扣 1 人口。
+  **没填 / 填 1 都不写这个字段**（缺字段 = 1，与「只有非零产能才写 production」同一条约定）；
+  填 **0** 会写出去（那个区块永远没有人口、也就不能在那里招募）。
 - ★ **没有 `base` 字段了**（老式大本营已彻底删除）：出生点只看 `faction_bases`，
   而**每个阵营都必须有一个大本营**。手写的老图如果只有 `base`，
   编辑器**读进来时会把它迁移成 `p1` 的大本营**（那个点位本来就是主阵营的出生点），
@@ -453,8 +467,8 @@ Linux 上要装 `python3-tk`）。
 
 | 文件 | 改动 |
 |---|---|
-| `logic/map_data.gd` | 新增 `exists` 网格（`tile_exists()`，`terrain_walkable()` 里把「地图外」当墙）；`zones_grid` / `zones_names` / **`zones_centers` / `zones_production`** 四个字段；连通性修正不碰地图外的格子。**阵营大本营**：`faction_bases` / `factions_meta` 与 `_read_faction_bases()`；`spawn_layout_for()` 改成「地图指定过就用它，否则退回老规则」，并把「大本营 + 将领站位 + 防御阵地」抽成 `_ring_layout()`。**老式 `base` 只读不写**：`_resolve_primary_base()` 的优先级是 `faction_bases` → 旧 `base` → 地块中心 |
-| `logic/zone.gd` | `build_from_map()` 分两条路：有 `zones` 网格 → 读网格（区块可非矩形、空区块保留、`tile_count` 按真实地块数）；没有 → 6×4 均分（老行为，一字不改）。**新增**：`_apply_map_centers()` / `_apply_map_production()`（读中心的产能）、`center_zone_at()` / `center_zone_at_id()`（按格查中心）、`update_population()`（人口累积）、`production_of(owner)`（按占领方聚合产量） |
+| `logic/map_data.gd` | 新增 `exists` 网格（`tile_exists()`，`terrain_walkable()` 里把「地图外」当墙）；`zones_grid` / `zones_names` / **`zones_centers` / `zones_production` / `zones_population_caps`** 五个字段；连通性修正不碰地图外的格子。**阵营大本营**：`faction_bases` / `factions_meta` 与 `_read_faction_bases()`；`spawn_layout_for()` 改成「地图指定过就用它，否则退回老规则」，并把「大本营 + 将领站位 + 防御阵地」抽成 `_ring_layout()`。**老式 `base` 只读不写**：`_resolve_primary_base()` 的优先级是 `faction_bases` → 旧 `base` → 地块中心 |
+| `logic/zone.gd` | `build_from_map()` 分两条路：有 `zones` 网格 → 读网格（区块可非矩形、空区块保留、`tile_count` 按真实地块数）；没有 → 6×4 均分（老行为，一字不改）。**新增**：`_apply_map_centers()` / `_apply_map_production()`（读中心的产能）、**`_apply_map_population_caps()`（读人口上限，缺字段 = 默认 1）**、`center_zone_at()` / `center_zone_at_id()`（按格查中心）、`update_population()`（人口累积，**涨到上限就停**）、`population_cap_of()` / `population_of()` / `population_floor()`（**显示用的人口向下取整**）、`production_of(owner)`（按占领方聚合产量） |
 | `logic/building.gd` | 新增建筑类型 **`zone_center`**：`owner` 为空、格级与本体级都挡所有阵营、`invulnerable`（`take_damage()` 直接返回 false、无血量、不闪光） |
 | `logic/world.gd` | `reset()` 里**在单位出生之前**落各区划中心（顺序踩过：反了会有亲兵被卡在中心格里）；新增 `zone_center_zone_at()`；单位出生的站位改成「避开建筑与已占格」；经济改成读 `zones.production_of(my_faction)` |
 | `logic/combat.gd` | `nearest_enemy_building()` 跳过 **无主 / 无敌** 的建筑 —— 否则将军会跑去「拆」永远拆不掉的区划中心 |
@@ -463,7 +477,7 @@ Linux 上要装 `python3-tk`）。
 | `logic/unit.gd` | **回到**「到终点的直线距离」判进度（试过改成路径长度，会让拥挤的人群永远停不下来，见注释） |
 | `view/building_view.gd` | 画区划中心（品红菱形 + 中心点，与编辑器里同一个形状）；无主建筑不套阵营色描边 |
 | `view/input_controller.gd` | 左键**先判区划中心**（点它 = 选中该区划）；新增 `select_zone()`；选中状态三种互斥 |
-| `view/hud.gd` | 左栏新增 `_zone_text()`：区划名 / 归属 / 大小 / 三档产能（每地块 + 合计）/ 人口；右栏资源行加上 `+n/秒` |
+| `view/hud.gd` | 左栏新增 `_zone_text()`：区划名 / 归属 / 大小 / 三档产能（每地块 + 合计）/ **人口（整数，向下取整）+ 上限**；右栏资源行加上 `+n/秒` |
 | `logic/snapshot.gd` | 区块快照带上 `pop`（人口），缺字段时保持本地现状 |
 | `view/zone_view.gd` | 区块**按地块画**（底色逐格、轮廓沿地块边界）—— 不然非矩形区块会被画成它的包围盒；老地图的均分区块画出来与从前逐像素一致 |
 | `logic/unit.gd` | `STEP_GUARD := 512`（一帧最多推进几段路径）改成按地图对角线算的 `step_guard()` —— 地图尺寸不再写死，大图上一帧能走完该走的路 |
@@ -471,12 +485,18 @@ Linux 上要装 `python3-tk`）。
 | `tests/test_logic.gd` | 新增两节：`_test_zone_centers`（不可进入 / 无敌 / 不可拆 / 不被索敌 / 点得出区块）与 `_test_zone_population_and_production`（人口累积、产能聚合、无主不产出） |
 | `tests/test_smoke.gd` | `test_map.json`（随游戏发布的唯一一张图）已带 `faction_bases` 且**没有**老 `base` 字段；出生点走 `_ring_layout`（自带防御阵地） |
 
+> ★ 本轮（区块**人口上限** + 框选）还动了这些地方，细节见 [`../../docs/route.md`](../../docs/route.md) 第十六节：
+> `mapfile.py`（读写 `population_cap`）、`app.py`（区块页的「人口上限」输入框 + 撤销栈）、
+> `logic/map_data.gd` + `logic/zone.gd`（读上限、涨到上限就停、`population_floor()`）、
+> `view/hud.gd`（人口显示整数 + 上限）、`view/input_controller.gd` + `view/game_scene.gd` +
+> `view/overlay.gd`（左键框选）、`view/unit_roster.gd`（详细信息里「一行一支 + 方块头像」）。
+
 跑测试：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File dev_gd_a/daeem/tools/run-tests.ps1   # Godot：18 套 / 1606 项
-python dev_gd_a/tools/map_editor/test_model.py                                # 编辑器数据层：252 项
-python dev_gd_a/tools/map_editor/test_app.py                                  # 编辑器界面动作：341 项
+powershell -ExecutionPolicy Bypass -File dev_gd_a/daeem/tools/run-tests.ps1   # Godot：18 套 / 1679 项
+python dev_gd_a/tools/map_editor/test_model.py                                # 编辑器数据层：283 项
+python dev_gd_a/tools/map_editor/test_app.py                                  # 编辑器界面动作：351 项
 python dev_gd_a/tools/map_editor/bench_app.py                                 # 跟手度基准（只测不判）
 ```
 

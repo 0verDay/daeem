@@ -29,6 +29,13 @@ const FactionRes = preload("res://logic/faction.gd")
 
 const ROW_LETTERS := "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
+## ★★ 区块人口的默认上限（地图编辑器里没填时的值）。
+##
+## 用户需求原话：「每个区块都需要有人口上限，如果没有填人口上限则默认为 1」。
+## 编辑器那边只在「不等于 1」时才把 `population_cap` 写进地图 JSON，
+## 所以**缺字段 = 1** 这条判据在两侧是同一套（map_data 不登记 → 这里补默认值）。
+const DEFAULT_POPULATION_CAP := 1.0
+
 var zones: Array = []
 ## 地块索引 → 区块 id（-1 = 不属于任何区块）
 var lookup: Array = []
@@ -59,6 +66,8 @@ static func build_from_map(map, cfg: ConfigRes, factions: Array) -> RefCounted:
 	# ★ 中心与产能（地图给的，老地图没有 → 保持 0 / 无中心）
 	zs._apply_map_centers(map)
 	zs._apply_map_production(map)
+	# ★ 人口上限（地图给的；缺字段的区块保持默认 1）
+	zs._apply_map_population_caps(map)
 	return zs
 
 
@@ -83,9 +92,13 @@ func _new_zone(zid: int, name: String, flist: Array) -> Dictionary:
 		#   · production 是**每地块每秒**的产能（food / gold / population）。
 		"center": null,
 		"production": {"food": 0.0, "gold": 0.0, "population": 0.0},
-		# ★ 区划人口：**每个区划各算各的累积值**，只按时间涨、不消耗（用户需求）。
+		# ★ 区划人口：**每个区划各算各的**累积值，按时间涨、会被招募消耗（用户需求）。
 		#   它**不进 HUD 的资源**（那是各阵营的粮食 / 黄金），也不快照给客机（见 snapshot.gd）。
 		"population": 0.0,
+		# ★★ 人口**上限**（用户需求：「每个区块都需要有人口上限，如果没有填人口上限则默认为 1；
+		#    当人口自然增长至上限时停止增长」）。地图编辑器里没填 → 这里的默认 1。
+		#    它和产能一样是**地图给的静态数据**，进游戏之后不会变，所以不进快照。
+		"population_cap": DEFAULT_POPULATION_CAP,
 	}
 
 
@@ -133,6 +146,25 @@ func _apply_map_production(map) -> void:
 		(z["production"] as Dictionary)["population"] = float(p.get("population", 0.0))
 
 
+## ★ 把地图里各区块的「人口上限」读进来（缺字段 → 保持默认 1，不是 0）。
+##
+## 与产能那条的区别：产能缺档算 0（「没配就是没有产出」），而上限**缺字段算 1**
+## —— 因为用户要的是「每个区块都必须有上限」。编辑器只在「不等于 1」时才写这个字段，
+## 所以「没写」与「写了 1」在这里必须落到同一个值上。
+func _apply_map_population_caps(map) -> void:
+	var raw: Variant = map.get("zones_population_caps")
+	if typeof(raw) != TYPE_DICTIONARY:
+		return
+	var d: Dictionary = raw
+	for z in zones:
+		var zid := int(z["id"])
+		if not d.has(zid):
+			continue
+		# 负数当 0（那个区块永远没有人口），上限本身不设别的夹法 ——
+		# 编辑器里的 0~999 只是挡误输入，游戏侧照单全收。
+		z["population_cap"] = maxf(0.0, float(d[zid]))
+
+
 ## 这一格的**区划中心**属于哪个区块（返回区块字典；不是任何中心 → null）。
 ##
 ## ★ 与 `zone_at()` 的分工：`zone_at` 回答「这一格归谁」（用于占领 / 资源），
@@ -156,16 +188,45 @@ func center_zone_at_id(x: int, y: int) -> int:
 	return int(center_lookup[y * cols + x])
 
 
-## 每帧推进各区块的人口（只增不减，初始 0）。
+## 每帧推进各区块的人口（自然增长，涨到**上限**就停）。
 ##
 ## ★ 与占领**无关**：每个区块都按自己的人口产能涨（用户明确「不计入占领方的经济」）。
 ##   速率 = population 产能 × 该区块的地块数（「n 资源/地块/秒」的口径）。
+## ★★ 上限（用户需求：「当人口自然增长至上限时停止增长」）：
+##   涨到 `population_cap` 就**不再涨**；上限由地图编辑器给，没填则默认 1。
+## ★ 上限**不会把已经超过它的现值拉回来**：这里只夹「这一帧的增长」。
+##   为什么不做 `population = min(cap, population + gain)`：
+##     · 招募退款（将领阵亡时按记账把人口退回原区划）有可能把现值顶到上限之上；
+##     · 测试也会直接给区划塞一个大的人口值。
+##   两者都不该在下一帧被悄悄削掉 —— 上限的语义是「自然增长到此为止」，
+##   不是「现值永远不许超过它」。
 func update_population(dt: float) -> void:
 	for z in zones:
 		var rate := float((z["production"] as Dictionary).get("population", 0.0))
 		if rate <= 0.0:
 			continue
-		z["population"] = float(z["population"]) + rate * float(z["tile_count"]) * dt
+		var cap := population_cap_of(z)
+		var pop := float(z["population"])
+		if pop >= cap:
+			continue
+		z["population"] = minf(cap, pop + rate * float(z["tile_count"]) * dt)
+
+
+## 这个区划的人口上限（缺字段 / 老地图 → 默认 1；负数当 0，不让它变成「负增长」）。
+func population_cap_of(z: Dictionary) -> float:
+	return maxf(0.0, float(z.get("population_cap", DEFAULT_POPULATION_CAP)))
+
+
+## 这个区划现在的人口（浮点，权威值）。
+## ⚠️ 要显示给人看的一律走 `population_floor()` —— 用户要求「ui 里显示的人口数量
+##    需要始终为整数（显示上向下取整）」。
+func population_of(z: Dictionary) -> float:
+	return float(z.get("population", 0.0))
+
+
+## 显示用的人口：**向下取整**（显示永远是整数，见用户需求）。
+func population_floor(z: Dictionary) -> int:
+	return floori(population_of(z))
 
 
 ## 某方每秒的粮食 / 黄金产出 = 它拥有的各区划的（产能 × 该区划地块数）之和。
@@ -370,7 +431,8 @@ func refresh_building_ownership(cfg: ConfigRes, building_list: Array, factions: 
 ## ★★ 规则（手玩定的完整版 —— 与「逐阵营各涨各的」完全不同，改之前先读完）：
 ##
 ##   1. 区块里**只有一个阵营**的活单位、且它不是这块地的主人 → **只有它**读条
-##      （每秒 +1/capture_time_sec），读满 → 归属翻给它、其余阵营进度清零。
+##      （每秒 +1/capture_time_sec × `speed_multiplier(在场人数)`），读满 → 归属翻给它、
+##      其余阵营进度清零。
 ##   2. 区块里有**两个及以上**阵营的活单位 → **谁都不涨**：
 ##      正在读的那条**冻住**（不涨、不降、不清零）—— UI 会给它加一圈白描边。
 ##   3. 有进度、但那一方**不在场**（全移出区块 / 被打光）→ 按 decay_per_sec **缓慢回落**。
@@ -380,15 +442,25 @@ func refresh_building_ownership(cfg: ConfigRes, building_list: Array, factions: 
 ##      也是 UI 只画一条的前提（手玩明确要求）。
 ##   5. 主人在自己的地里什么都不读（它只负责「挡住别人」）。
 ##
-## ⚠️ 与旧实现的区别：旧版是双方**各涨各的**、谁先满谁拿走。现在双方同场时谁都涨不了，
-##    所以「带一队兵站在别人家里」不再能靠人多抢先，必须先把对方清出场。
-## 注意：**同一阵营的多个单位不会叠加加速**（原话是「持续一段时间」）。
+## ★★ 人数加成（本轮需求，改掉了原来「同阵营多单位不叠加」那条）：
+##   同一个区块里**同一方**的单位越多，读条越快；曲线与上限见 `speed_multiplier()`。
+##   只有 1 个单位时倍率正好是 1.0 —— 所以「占领速度缩小为 1/8」那条需求
+##   说的是**单兵基准速度**，两条需求互不冲突。
+##
+## ⚠️ 与更早的旧实现的区别：旧版是双方**各涨各的**、谁先满谁拿走。
+##    现在双方同场时谁都涨不了，所以「带一队兵站在别人家里」不再能靠人多抢先，
+##    必须先把对方清出场 —— 人多只让**读条更快**，不能让对方读不动。
 func update(cfg: ConfigRes, dt: float, units: Array, factions: Array) -> void:
 	var capture_time: float = maxf(0.001, cfg.capture_time_sec)
 	var decay: float = maxf(0.0, cfg.decay_per_sec)
+	var max_mult: float = maxf(1.0, cfg.zone_speed_max_mult)
+	var curve_k: float = maxf(0.0, cfg.zone_speed_curve_k)
+	var curve_p: float = maxf(0.01, cfg.zone_speed_curve_power)
 	var flist := _capture_factions(factions)
 
-	# 1) 每个区块里现在站着哪些阵营的活单位（阵亡的不算）
+	# 1) 逐区块清点「站着哪些阵营、各几个活单位」
+	#    ⚠️ 这里必须存**数目**（不是布尔）：人数加成要它。原来的 bool 集合会让
+	#       「10 个兵」和「1 个兵」看起来一模一样。
 	var present_by: Dictionary = {}
 	for z in zones:
 		present_by[int(z["id"])] = {}
@@ -398,15 +470,58 @@ func update(cfg: ConfigRes, dt: float, units: Array, factions: Array) -> void:
 		var z = zone_at(u.tx, u.ty)
 		if z == null:
 			continue
-		(present_by[int(z["id"])] as Dictionary)[u.faction] = true
+		var counts: Dictionary = present_by[int(z["id"])]
+		counts[u.faction] = int(counts.get(u.faction, 0)) + 1
 
 	# 2) 逐区块推进
 	for z in zones:
-		_advance_zone(z, present_by[int(z["id"])], flist, capture_time, decay, dt)
+		_advance_zone(z, present_by[int(z["id"])], flist,
+			capture_time, decay, max_mult, curve_k, curve_p, dt)
+
+
+## ★ 人数加成曲线：n 个同阵营单位在场时的读条倍率。
+##
+## 需求原话：「当 1 个单位占领某个区域时，速率为 x1，随着进入的友方单位增加，
+##            速率会逐渐增加，到 10 人时速率趋近于最大值 x2」。
+## 已确认的实现口径：
+##   · 1 人 = **基准速度**（也就是 capture_time_sec 定义的那个速率）= x1；
+##     10 人趋近 x2 = 2 倍 —— 所以「占领速度缩小为 1/8」与这条互不冲突。
+##   · 曲线形状：**先慢后快** —— 前几个人收益小，人越多每多一个的收益越大。
+##   · 只作用于**读条增长**；进度回落（decay_per_sec）与人数无关。
+##   · k = 2.5，指数 p 见 cfg.zone_speed_curve_power。
+##
+## 公式：先归一化 `t = (n-1) / (n-1 + k)`，再取幂：
+##   `倍率 = 1 + (max_mult - 1) × t^p`
+##
+## ★★ 为什么是 `t^p`（p > 1）而不是 smoothstep —— 本轮返工**两次**才定下来，
+##    两版错法的共同点是「先快后慢」，与需求正好相反（数字都是引擎实算的）：
+##      第 1 版 `1 + (max-1)·t`（等价于 p=1）：第 2 个人就 +0.286，之后一路变小；
+##      第 2 版 smoothstep `t²(3-2t)`：t 的凹性太强，smoothstep 只把拐点压到 t≈0.42，
+##              在 n=1..10 这段（t 只走到 0.78）里它**仍然是凹的** ⇒ 最大增量仍在最前面。
+##    在 n=1..10 上要「先慢后快」，f(t) 必须在这段区间上**凸**（f''>0），
+##    也就是 p > 1：`t^p` 的导数 p·t^(p-1) 随 t 单调递增 ⇒ 前几个人最慢。
+##
+## 性质（都有断言钉住）：
+##   · n = 1 → t = 0 → 正好 1.0（无论 k / p 取多少）；
+##   · 单调不减，且 t^p ≤ t < 1 ⇒ 倍率**永远不超过 max_mult**（10 人只是趋近）；
+##   · k 在分母上 ⇒ **k 越大曲线越平缓**（要更多人才能接近上限）；
+##     p 越大 ⇒ 前期越慢、越「憋着」（p=1 就是「先快后慢」的错形状）。
+## 默认参数（k=2.5、p=1.7）引擎实算：2人 1.119　3人 1.252　4人 1.357　7人 1.553　10人 1.659；
+##   每多一人的增量：+0.119　+0.133　+0.105　+0.081　+0.064…（峰值在第 2~3 人之间）。
+static func speed_multiplier(n: int, max_mult: float, curve_k: float, curve_power: float = 1.7) -> float:
+	if n <= 1:
+		return 1.0
+	var cap: float = maxf(1.0, max_mult)
+	var k: float = maxf(0.0, curve_k)
+	var p: float = maxf(0.01, curve_power)
+	var t: float = float(n - 1) / (float(n - 1) + k)
+	return 1.0 + (cap - 1.0) * pow(t, p)
 
 
 ## 推进一个区块一帧（抽出来只是为了让上面那段读起来像规则本身）
-func _advance_zone(z: Dictionary, present: Dictionary, flist: Array, capture_time: float, decay: float, dt: float) -> void:
+func _advance_zone(z: Dictionary, present: Dictionary, flist: Array,
+		capture_time: float, decay: float, max_mult: float, curve_k: float,
+		curve_p: float, dt: float) -> void:
 	if not z.has("progress_by"):
 		z["progress_by"] = {}
 	var by: Dictionary = z["progress_by"]
@@ -441,7 +556,10 @@ func _advance_zone(z: Dictionary, present: Dictionary, flist: Array, capture_tim
 	var bar_value := 0.0
 
 	if reader != "":
-		by[reader] = clampf(float(by[reader]) + dt / capture_time, 0.0, 1.0)
+		# ★ 人数加成：读条方在这个区块里有几个活单位（present 存的就是数目）
+		var n: int = int(present.get(reader, 0))
+		var mult: float = speed_multiplier(n, max_mult, curve_k, curve_p)
+		by[reader] = clampf(float(by[reader]) + dt / capture_time * mult, 0.0, 1.0)
 		if float(by[reader]) >= 1.0:
 			# 读满：易主 + 其余清零（主人那份留 1.0 作为「这是我的地」的标记）
 			z["owner"] = reader
@@ -463,13 +581,17 @@ func _advance_zone(z: Dictionary, present: Dictionary, flist: Array, capture_tim
 				continue
 			if present.has(f):
 				# 人在场却读不了（区块里还有别人）→ **冻住**：值一动不动
+				#
+				# ⚠️ 冻住的是「读条增长」，不是「人数加成」：人数只影响读条快慢，
+				#    而这里根本没在读（区块里有多方），所以没有倍率可乘。
 				if state == "":
 					state = "frozen"
 					bar_faction = f
 					bar_value = float(by[f])
 			else:
 				# 人不在场（移出 / 被打光）→ 缓慢回落
-				# ⚠️ 只有**回落之后还有值**才标成 decaying：退到 0 的那一帧就没什么可画了
+				# ⚠️ 回落**不乘人数倍率**（需求确认：加成只管读条增长）。
+				#    只有**回落之后还有值**才标成 decaying：退到 0 的那一帧就没什么可画了
 				#    （标成 decaying + value 0 会让 UI 以为「还有条」，也会拖住后来者多一帧）
 				var next_v := clampf(float(by[f]) - decay * dt, 0.0, 1.0)
 				by[f] = next_v

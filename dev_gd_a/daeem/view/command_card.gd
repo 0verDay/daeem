@@ -125,8 +125,17 @@ func activate_index(i: int) -> bool:
 
 
 ## 键盘：只有**有内容的格**才吃掉按键（空格子让给别人，见 hud.handle_key）
+##
+## ★ 带修饰键的组合（Ctrl / Alt / Cmd）一律放行，不吃。
+##   为什么必须有这条：`game_scene._unhandled_input` 里命令卡**排在 input_controller 之前**
+##   （先问 hud 再问输入控制器），不放行的话 Ctrl+Q（开发者快捷键：全屏）会先被 Q 格吃掉
+##   → 按一下全屏会顺手招募一个兵。
+##   顺带把 Ctrl+W / Ctrl+E / … 这一整类组合键都让出来了。
+##   ⚠️ 只挡 ctrl / alt / meta：Shift 不算 —— Shift+Q 在玩家看来仍然是 Q 格。
 func handle_key(event: InputEventKey) -> bool:
 	if not event.pressed or event.echo:
+		return false
+	if event.ctrl_pressed or event.alt_pressed or event.meta_pressed:
 		return false
 	var slot: int = int(KEY_TO_SLOT.get(event.keycode, -1))
 	if slot < 0 or slot >= _entries.size():

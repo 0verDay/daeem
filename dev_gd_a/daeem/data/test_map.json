@@ -1413,7 +1413,7 @@
       "production": {
         "food": 1,
         "gold": 1,
-        "population": 0.5
+        "population": 0.01
       },
       "x0": 5,
       "y0": 0,

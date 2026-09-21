@@ -49,6 +49,7 @@ func _cases() -> void:
 	_test_zones_and_economy(world, cfg)
 	_test_zone_centers(world, cfg)
 	_test_zone_population_and_production(world, cfg)
+	_test_zone_population_cap(world, cfg)
 	_test_build_commands(world, cfg)
 	_test_snapshot(world, cfg)
 
@@ -323,7 +324,7 @@ func _test_movement(world, cfg) -> void:
 	var budget: float = cfg.unit_speed * DT
 	var max_step = 0.0
 	var prev = u.pos
-	for i in 300:
+	for i in frames_at_baseline(cfg, 300):
 		world.tick(DT)
 		var d: float = u.pos.distance_to(prev)
 		max_step = maxf(max_step, d)
@@ -343,7 +344,7 @@ func _test_movement(world, cfg) -> void:
 			_find_free_tile(world, cfg, Vector2i(mountain.x + 2, mountain.y)) != null else Vector2i(0, 0))
 		u.sync_tile(world.map)
 		ok(u.order_move(world, cfg, m_pos), "点到山上下达成功（改走最近可达格）")
-		for i in 600:
+		for i in frames_at_baseline(cfg, 600):
 			world.tick(DT)
 			if not u.moving:
 				break
@@ -528,7 +529,7 @@ func _test_combat(world, cfg) -> void:
 	w2.tick(DT)
 	ok(g.target == e, "警戒半径内的敌人被锁定")
 	var hp_before: float = e.hp
-	for i in 240:
+	for i in frames_at_baseline(cfg, 240):
 		w2.tick(DT)
 		if e.hp < hp_before:
 			break
@@ -783,13 +784,19 @@ func _test_zones_and_economy(world, cfg) -> void:
 	u.stop()
 	var zid: int = int(z["id"])
 
-	# 进度每秒 +1/4（capture_time_sec = 4），多个同阵营单位不叠加
+	# ---- 占领速率：1 个单位 = 基准 1/capture_time_sec ----
+	# ⚠️ 本轮需求把基准降到原来的 1/8（capture_time_sec 4 → 32），
+	#    所以这里不再写死 0.25 / 0.5，一律用 cfg 现算
+	#    （写死的话每次调速度都要回来改一遍，而这条断言想验的是「站 1 单位时间涨多少」）。
+	var rate: float = 1.0 / float(cfg.capture_time_sec)
 	w.tick(1.0)
-	near(float(w.zones.zones[zid]["progress_by"]["p1"]), 0.25, 1e-3, "站 1 秒进度 0.25")
+	near(float(w.zones.zones[zid]["progress_by"]["p1"]), rate, 1e-4,
+		"站 1 秒进度 %.5f（= 1/capture_time_sec）" % rate)
 	w.tick(1.0)
-	near(float(w.zones.zones[zid]["progress_by"]["p1"]), 0.5, 1e-3, "站 2 秒进度 0.5")
+	near(float(w.zones.zones[zid]["progress_by"]["p1"]), rate * 2.0, 1e-4,
+		"站 2 秒进度 %.5f" % (rate * 2.0))
 
-	# 离开后进度按 0.6/秒 回退
+	# 离开后进度按 config 的 decay_per_sec 回退
 	#
 	# ⚠️ 落点要挑**离对家据点足够远**的地方：玩家单位现在会自动索敌建筑
 	#    （需求：「给己方单位增加索敌建筑的机制」），停在据点旁边会被一栋对家箭塔拽走，
@@ -797,16 +804,19 @@ func _test_zones_and_economy(world, cfg) -> void:
 	u.pos = GridRes.center_of(Vector2i(2, w.map.rows - 2))
 	u.sync_tile(w.map)
 	u.drop_engagement()
+	var decay: float = float(cfg.decay_per_sec)
 	w.tick(1.0)
-	near(float(w.zones.zones[zid]["progress_by"]["p1"]), 0.375, 1e-3,
-		"离开 1 秒后进度回退 0.125（0.5 - 0.125，速率见 config.zone.decay_per_sec）")
+	near(float(w.zones.zones[zid]["progress_by"]["p1"]), rate * 2.0 - decay, 1e-4,
+		"离开 1 秒后进度回退 %.5f（速率见 config.zone.decay_per_sec）" % decay)
 
-	# 站满 4 秒完成占领，并开始产出资源
+	# 站满 capture_time_sec 完成占领，并开始产出资源
 	u.pos = GridRes.center_of(spot)
 	u.sync_tile(w.map)
-	for i in 5:
+	var ticks := int(ceil(float(cfg.capture_time_sec))) + 2
+	for i in ticks:
 		w.tick(1.0)
-	eq(String(w.zones.zones[zid]["owner"]), "p1", "站满 4 秒完成占领")
+	eq(String(w.zones.zones[zid]["owner"]), "p1",
+		"站满 %.0f 秒完成占领" % float(cfg.capture_time_sec))
 
 	var tiles: int = w.zones.owned_tile_count("p1")
 	ok(tiles >= int(z["tile_count"]), "己方地块数包含新占的区块")
@@ -927,18 +937,23 @@ func _test_zone_population_and_production(world, cfg) -> void:
 	#   （`test_map.json` 里每个区划都是 1 粮食 / 1 黄金 / 0.5 人口）。
 	ok(float(z0["production"]["population"]) > 0.0,
 		"★ 发布地图的区划配了人口产能（%s）" % z0["production"]["population"])
+	# ★★ 发布地图**没填人口上限** → 默认 1（用户需求：没填就是 1）。
+	#    上限的完整语义在 `_test_zone_population_cap` 那一节，这里只钉「缺字段 = 1」。
+	near(w.zones.population_cap_of(z0), 1.0, 1e-9, "★ 发布地图没填上限 → 默认 1")
 	var pop_rate: float = float(z0["production"]["population"])
 	var tiles0: float = float(z0["tile_count"])
+	# 量「每秒涨多少」之前先把上限抬到很大 —— 否则这一帧就涨到上限（1）、量不到速率
+	z0["population_cap"] = 1.0e9
 	var before: float = float(z0["population"])
 	w.tick(1.0)
 	var gained: float = float(z0["population"]) - before
 	near(gained, pop_rate * tiles0, 1e-3,
 		"★ 人口每秒增长 = 人口产能 × 该区划地块数（每地块每秒的口径）")
 	ok(float(z1["population"]) > 0.0, "★ 每个区划各涨各的（第二个区划也在涨）")
-	# 不消耗：只跑时间就不会掉
+	# 不消耗：只跑时间就不会掉（唯一的消耗是招募，见 test_recruit_queue）
 	var p0: float = float(z0["population"])
 	w.tick(2.0)
-	ok(float(z0["population"]) > p0, "★ 人口只增不减（目前没有消耗逻辑）")
+	ok(float(z0["population"]) > p0, "★ 人口只增不减（时间只会让它涨）")
 
 	# ---- 人口**不进** HUD 的粮食 / 黄金
 	var food_before: float = float(w.resources["food"])
@@ -963,6 +978,68 @@ func _test_zone_population_and_production(world, cfg) -> void:
 	# 无主区划不计入任何一方
 	near(float(w.zones.production_of("")["food"]), 0.0, 1e-9,
 		"★ 无主（owner == ''）不产生任何产量")
+
+
+# ------------------------------------------------------------------
+# 区块人口上限（用户需求）
+# ------------------------------------------------------------------
+##
+## 需求原话：「设计师可以在区块页签中选中任意区块为其设置人口上限，此人口上限也会被
+## 应用到游戏中；每个区块都需要有人口上限，如果没有填人口上限则默认为 1；
+## 当人口自然增长至上限时停止增长；ui 中显示的人口数量需要始终为整数（显示上向下取整）」。
+##
+## 这一节验的是**游戏侧**的语义：
+##   · 缺字段 → 默认 1（发布地图就没填）；负数当 0；
+##   · 自然增长到上限就停，继续跑时间也不会超；
+##   · 上限 0 的区块永远没有人口（也就招募不了，见 test_recruit_queue 的人口不足那条）；
+##   · 上限**不会**把已经超过它的现值拉回来（退款 / 直接塞值那两条路）；
+##   · 显示用的人口向下取整。
+func _test_zone_population_cap(world, cfg) -> void:
+	var w = WorldRes.create(cfg)
+	var z: Dictionary = w.zones.zones[0]
+	# 人口产能调大、上限压低，几条边界才在一两帧里就能撞到
+	z["production"] = {"food": 0.0, "gold": 0.0, "population": 10.0}
+	z["population"] = 0.0
+
+	near(w.zones.population_cap_of(z), 1.0, 1e-9, "★ 地图没填上限 → 默认 1")
+	w.tick(1.0)
+	near(w.zones.population_of(z), 1.0, 1e-6, "★ 人口涨到上限（1）就停住")
+	w.tick(5.0)
+	near(w.zones.population_of(z), 1.0, 1e-6, "★ 继续跑时间也不会超过上限")
+
+	# 上限 0 → 永远没有人口（那个区块也就不能招募）
+	z["population_cap"] = 0.0
+	z["population"] = 0.0
+	w.tick(3.0)
+	near(w.zones.population_of(z), 0.0, 1e-9, "★ 上限 0 的区块永远没有人口")
+
+	# 上限抬高 → 接着涨，但停在新上限（速率 10 × 地块数，一帧就够撞到 4）
+	z["population_cap"] = 4.0
+	w.tick(1.0)
+	near(w.zones.population_of(z), 4.0, 1e-6, "★ 上限抬高之后接着涨，并停在新上限")
+
+	# ★ 现值已经超过上限时：增长停下，但**不削现值**
+	#   （退款可能把人口顶到上限之上；测试也会直接塞值 —— 都不该被悄悄削掉）
+	z["population"] = 7.5
+	w.tick(1.0)
+	near(w.zones.population_of(z), 7.5, 1e-9, "★ 超额的现值不会被上限削回去（只是不再涨）")
+
+	# ---- 显示：向下取整（用户需求：ui 里的人口始终是整数）
+	z["population"] = 3.9
+	eq(w.zones.population_floor(z), 3, "★ 显示用的人口向下取整（3.9 → 3）")
+	z["population"] = 0.0
+	eq(w.zones.population_floor(z), 0, "0 → 0")
+	z["population"] = 12.0
+	eq(w.zones.population_floor(z), 12, "整数照原样")
+
+	# ---- 上限来自地图（编辑器只在「不等于 1」时才写这个字段）
+	#      发布地图上一个填过的都没有 → 全部走默认 1
+	var m = require_map(cfg)
+	if m != null:
+		ok(m.zones_population_caps.is_empty(),
+			"★ 发布地图里没有任何区块填过上限（缺字段 → 全部默认 1）")
+	# 「地图里写了 population_cap」这条路在 test_map_editor.gd 里验
+	# （那边有写临时地图的脚手架，这里不重复造一份）。
 
 
 # ------------------------------------------------------------------

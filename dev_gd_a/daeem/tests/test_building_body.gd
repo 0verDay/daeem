@@ -150,7 +150,7 @@ func _test_ally_passes(cfg) -> void:
 	g.sync_tile(w.map)
 	ok(g.order_move(w, cfg, base_b.center()), "命令将领走到大本营本体中心")
 	var n := 0
-	while g.moving and n < 3000:
+	while g.moving and n < frames_at_baseline(cfg, 3000):
 		w.tick(DT)
 		n += 1
 	ok(g.pos.distance_to(base_b.center()) < 0.35,
@@ -252,6 +252,13 @@ func _test_gap_between_towers(cfg) -> void:
 	if e == null:
 		return
 	w.units = [e]
+	# ★ 只验「缝能不能走」：把探针敌人做成打不死的。
+	#   单位速度降到 1/4 之后，这段 4 格的路要走近 10 秒，而两座箭塔
+	#   （12 伤 / 0.8 秒）足够把 60 血的测试敌人在半路打死 ——
+	#   那样量到的是「它死了」，不是「缝走不通」（实测 hp 12/60 → 0，第 97 帧停住）。
+	#   战斗本身在 test_attack_orders / test_logic 里单独验，这里不掺。
+	e.hp = 100000.0
+	e.hp_max = 100000.0
 
 	# 找一对对角相邻的空格，摆两座**对家**箭塔（对敌人来说是障碍）
 	var corner := Vector2i(-1, -1)
@@ -288,7 +295,7 @@ func _test_gap_between_towers(cfg) -> void:
 	var target := GridRes.center_of(Vector2i(corner.x, corner.y - 1))
 	ok(e.order_move(w, cfg, target), "敌人收到绕过两座箭塔的命令")
 	var n := 0
-	while e.moving and n < 3000:
+	while e.moving and n < frames_at_baseline(cfg, 3000):
 		w.tick(DT)
 		n += 1
 	ok(e.pos.distance_to(target) < 1.6,

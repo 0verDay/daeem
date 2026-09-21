@@ -234,7 +234,7 @@ func _test_attack_building(cfg) -> void:
 	ok(g.target_building == wall, "当前建筑目标也切成了它")
 
 	var n := 0
-	while n < 1500 and wall.alive:
+	while n < frames_at_baseline(cfg, 1500) and wall.alive:
 		w.tick(DT)
 		n += 1
 	ok(not wall.alive, "★ 点名的建筑被拆掉了（用了 %d 帧）" % n)
@@ -272,7 +272,7 @@ func _test_ordered_building_not_distracted(cfg) -> void:
 
 	var hit_decoy := 0
 	var frames := 0
-	while frames < 1200 and tower.alive:
+	while frames < frames_at_baseline(cfg, 1200) and tower.alive:
 		w.tick(DT)
 		frames += 1
 		if g.last_target == decoy:
@@ -307,7 +307,7 @@ func _test_ordered_target_ignores_leash(cfg) -> void:
 	var start: Vector2 = g.pos
 	var max_dist := 0.0
 	var n := 0
-	while n < 600 and e.alive:
+	while n < frames_at_baseline(cfg, 600) and e.alive:
 		w.tick(DT)
 		n += 1
 		max_dist = maxf(max_dist, g.pos.distance_to(start))

@@ -23,6 +23,10 @@ var move_marks: Array[Vector2] = []  # 最近一次右键的目标点（格坐�
 var attack_marks: Array[Vector2] = [] # 最近一次「行军攻击」的目标点（格坐标，红）
 var debug_aim: bool = false
 var mouse_world: Vector2 = Vector2.ZERO
+## ★ 框选矩形：**世界坐标（格）**，由 input_controller.drag_box() 每帧给。
+## `drag_active` 为 false 时不画（没拖出阈值 = 普通单击）。
+var drag_active: bool = false
+var drag_rect: Rect2 = Rect2()
 
 
 func setup(p_cfg: ConfigRes, p_world) -> void:
@@ -37,6 +41,7 @@ func _draw() -> void:
 	_draw_attack_lines()
 	_draw_move_marks()
 	_draw_build_preview()
+	_draw_drag_box()
 	_draw_aim_debug()
 
 
@@ -91,6 +96,24 @@ func _draw_build_preview() -> void:
 	var c := Color(0.45, 1.0, 0.5, 0.55) if ok else Color(1.0, 0.4, 0.4, 0.55)
 	draw_rect(r, Color(c.r, c.g, c.b, 0.18), true)
 	draw_rect(r, c, false, 2.5)
+
+
+## 框选矩形：淡填充 + 实线边（世界坐标 → 像素由 palette 换算，与别处同一条路）。
+##
+## ★ 为什么一定要画：框选是「用鼠标画出选中范围」的操作，没有这个矩形的话，
+##   玩家松手之前完全不知道自己框到了什么（需求要的是「框到某些己方单位」，
+##   那就得让人看得见框在哪）。
+func _draw_drag_box() -> void:
+	if not drag_active:
+		return
+	if drag_rect.size.x <= 0.0 and drag_rect.size.y <= 0.0:
+		return
+	var a := PaletteRes.to_px(drag_rect.position, cfg)
+	var b := PaletteRes.to_px(drag_rect.position + drag_rect.size, cfg)
+	var r := Rect2(a, b - a)
+	var c := Color(0.75, 0.95, 1.0, 0.9)
+	draw_rect(r, Color(c.r, c.g, c.b, 0.12), true)
+	draw_rect(r, c, false, 2.0)
 
 
 ## 坐标调试准星（G 键）：红叉 = 鼠标世界坐标，绿圈 = 判定出的地块中心。

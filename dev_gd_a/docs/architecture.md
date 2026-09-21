@@ -61,7 +61,9 @@ dev_gd_a/daeem/
 ├── data/                         # ★ 纯数据，不含代码
 │   ├── config.json               #   全部可调数值（对应 HTML 版 js/config.js）
 │   └── test_map.json             #   地形 / 区划网格 zones / 区划中心 zone_centers /
-│                                 #   区划产能 zone_list[].production / 各阵营大本营 faction_bases
+│                                 #   区划产能 zone_list[].production /
+│                                 #   区划人口上限 zone_list[].population_cap（没填 = 1）/
+│                                 #   各阵营大本营 faction_bases
 ├── logic/                        # ★ 纯逻辑：extends RefCounted，禁止碰场景树
 │   ├── grid.gd                   #   网格工具 + 索引换算 + 方向集（DIRS4/DIRS8/octile）
 │   ├── pathfinder.gd             #   A*（四连通或八方向）+ segment_clear（超覆盖 DDA）
@@ -93,13 +95,21 @@ dev_gd_a/daeem/
 │   ├── overlay.gd                #   攻击线 / 建造预览 / 移动标记（**不画**选中范围圈）
 │   ├── camera_rig.gd             #   相机：方向键平移 / 边缘滚屏 / 光标锚点缩放
 │   ├── input_controller.gd       #   ★ 输入 → 命令（唯一允许读鼠标的地方）
+│   │                             #     + 左侧键**框选**那条状态机（按下 → 移动 → 松开，见 route.md 16.3）
 │   ├── ui_layout.gd              #   ★ UI 的全部几何常量（照参考图的像素稿）+ 贴边规则
 │   ├── ui_style.gd               #   UI 配色与 StyleBox 工厂
 │   ├── hud.gd                    #   UI 装配：左部队列表 / 左下地图占位 / 底栏 / 右上设置
 │   ├── squad_panel.gd            #   左侧「部队 1~10」（动态生成，点了只选中）
-│   ├── detail_panel.gd           #   底栏「详细信息」：左选中详情 + 招募五格 + 提示行 / 右资源
+│   ├── detail_panel.gd           #   ★ 底栏「详细信息」：**左右两栏**（第三轮改版）
+│   │                             #     左 = view/unit_roster.gd（上）+ view/troop_grid.gd（下）
+│   │                             #     右 = 选中单位头像 / 名称 / buff 占位 / 数值 + 招募五格
+│   ├── unit_roster.gd            #   ★ 左栏上半：**当前展开的那支部队**
+│   │                             #     （将领头像 40×40 + 名字 + x/y + 附属单位方块：
+│   │                             #      队长 40×40 / 亲兵 20×20，一行 10 个，滚轮横向滚）
+│   ├── troop_grid.gd             #   ★ 左栏下半：**选中部队的将领头像网格**（3×4 = 12 格）
+│   │                             #     可点：点一格 = 换「左栏上半展开哪支部队」+ 选中它
 │   ├── recruit_queue.gd          #   ★ 招募队列的五格显示（1 大 + 4 小 + 大格子里的读条）
-│   │                             #     可点：点某一格 = 取消那一格（发 recruit_cancel 命令）
+│   │                             #     住在**右栏右上角**；可点：点某一格 = 取消那一格（发 recruit_cancel 命令）
 │   ├── command_card.gd           #   右下 3×3 命令卡（内容随页签切换）
 │   └── page_tabs.gd              #   单位 / 建筑 / 科技（科技点不动）
 └── tests/                        # 无头断言测试（不进游戏包）
@@ -245,10 +255,10 @@ Godot 里 DPR 由引擎处理，**但下面三条要原样继承**：
 | 建筑本体的尺寸（占一格的比例） | `data/config.json` → `building.<type>.body_scale` | 渲染与碰撞**共用**这一个数（`building.body_rect()` / `palette.building_rect()`） |
 | 地图上预置的建筑 | `data/test_map.json` 的 `buildings` → `logic/map_data.gd` 的 `prefab_buildings` → `world.reset()` 放置 | 坐标与归属全在 JSON 里，代码不写死；不影响区块归属（zone 只认玩家阵营） |
 | 区块（`owner` / `progress_by`） | `logic/zone.gd` | **每阵营独立进度**，不要退回单一 `progress` |
-| 区划**中心** / 产能 / 人口 | `logic/zone.gd`（区块字典的 `center` / `production` / `population`）；中心那一格上另有一栋 `TYPE_ZONE_CENTER` 建筑 | 中心与产能来自地图 JSON；人口是**运行时累积**的，每区划各算各的（见 route.md 14.5）；目前**唯一的消耗**是招募（每个单位扣将领所在区划 1 人口） |
+| 区划**中心** / 产能 / 人口 / **人口上限** | `logic/zone.gd`（区块字典的 `center` / `production` / `population` / `population_cap`）；中心那一格上另有一栋 `TYPE_ZONE_CENTER` 建筑 | 中心、产能与**人口上限**都来自地图 JSON（上限缺字段 = 1，见 route.md 16.1）；人口是**运行时累积**的，每区划各算各的，**涨到上限就停**（见 route.md 14.5 / 16.1）；目前**唯一的消耗**是招募（每个单位扣将领所在区划 1 人口） |
 | 资源、己方地块数 | `logic/economy.gd` | 招募的扣费**不受** `economy.enabled` 影响（那个开关只管建造免费） |
 | 相机 / 缩放 | `view/camera_rig.gd` | 纯表现，不进快照。★ 它的 `camera.edge_size` 与 HUD 的「屏幕最外圈不拦滚屏」是**同一个数**（`cfg.camera_edge_size`） |
-| 选中列表 | `view/input_controller.gd` | 纯本地，**不进命令流**（第 1 轮也一样） |
+| 选中列表 | `view/input_controller.gd` | 纯本地，**不进命令流**（第 1 轮也一样）。★ 左键**点选**与左键**框选**（拖出矩形，见 route.md 16.3）走的是同一个入口 `select_units()` —— 它会用 `world.expand_to_groups()` 把「一个单位」展开成「它所属的整支部队」 |
 | 玩家下达的攻击命令 | `logic/unit.gd` 的 `ordered_target` / `ordered_building` / `has_attack_move` | 与「这一帧在打谁」（`target` / `target_building`）**分开存**，见 route.md 12.3 |
 | UI 几何（面板位置与尺寸） | `view/ui_layout.gd` | 纯常量，照参考图的像素稿；其它 view 文件不写坐标字面量 |
 | 当前页签（单位 / 建筑） | `view/page_tabs.gd` | 纯本地显示状态，只决定命令卡里有什么 |
