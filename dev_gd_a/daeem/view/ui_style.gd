@@ -24,6 +24,9 @@ const TEXT_DIM := Color(0.66, 0.70, 0.76)
 const TEXT_FAINT := Color(0.42, 0.45, 0.50)
 const TEXT_ON_ACCENT := Color(0.97, 0.99, 1.0)
 
+## 提示 / 拒绝的红字（招募被拒时在详细信息左栏顶上那行）
+const WARN := Color(1.0, 0.45, 0.42)
+
 ## 字号（参考图是 1920×1080 的稿子，这里的字号按那个尺度定）
 const FS_TINY := 11
 const FS_SMALL := 13

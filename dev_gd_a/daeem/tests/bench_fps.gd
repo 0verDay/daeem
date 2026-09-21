@@ -172,7 +172,7 @@ func _run() -> void:
 		total += s
 	var avg := total / float(samples.size())
 	var logic_avg := 0.0
-	for key in ["zones", "economy", "units", "towers", "enemy_ai", "collect", "collision"]:
+	for key in ["zones", "economy", "recruit", "units", "towers", "enemy_ai", "collect", "collision"]:
 		logic_avg += float(int(w.profile_us.get(key, 0))) / 1000.0 / float(n_frames)
 	var p50: float = samples[int(float(samples.size()) * 0.50)]
 	var p95: float = samples[int(float(samples.size()) * 0.95)]

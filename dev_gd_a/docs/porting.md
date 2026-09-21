@@ -18,7 +18,7 @@
 | 坐标 | CSS 像素 + DPR 换算 | 逻辑用「格」，渲染乘 `CELL_SIZE` |
 | 数值 | `js/config.js`（JS 对象字面量） | `data/config.json` |
 | 地图 | `js/map.js` 手写字符数组 | `data/test_map.json`（地形 / 区划网格 / 区划中心 / 区划产能 / 阵营大本营；由地图编辑器导出） |
-| 测试 | Node + Python 双套（657 项） | `tests/*.gd`（纯逻辑 + 渲染/UI 接线断言，现在 **13 个套件 / 1189 项**） |
+| 测试 | Node + Python 双套（657 项） | `tests/*.gd`（纯逻辑 + 渲染/UI 接线断言，现在 **18 个套件 / 1606 项**） |
 | 联机 | `js/net.js` + `net/serve.py` | **本轮不做**（第 1 轮） |
 
 **工作量感性估计**（行数为实测）：

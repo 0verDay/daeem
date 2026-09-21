@@ -31,11 +31,28 @@ static func tick(cfg: ConfigRes, dt: float, rates: Dictionary, resources: Dictio
 static func try_spend(cfg: ConfigRes, resources: Dictionary, cost: Dictionary) -> bool:
 	if not cfg.bool_val("economy.enabled", false):
 		return true
+	return spend(resources, cost)
+
+
+## 买得起吗（**无条件**判断，不看 economy 总开关）。
+static func can_afford(resources: Dictionary, cost: Dictionary) -> bool:
 	if cost.is_empty():
 		return true
 	for k in cost.keys():
 		if float(resources.get(k, 0.0)) < float(cost[k]):
 			return false
+	return true
+
+
+## 无条件扣费。@return true = 扣成功；false = 买不起（**一分钱都不扣**）。
+##
+## ★ 为什么招募走这里而不是 try_spend：`economy.enabled` 这个总开关的语义是
+##   「建造免费」（本版建筑 cost 全是 0），而招募的 50 粮食 / 50 黄金是**玩法需求**，
+##   不该被那个开关静默变成免费。所以 招募 → can_afford + spend（强制），
+##   建造 → try_spend（受开关控制）。
+static func spend(resources: Dictionary, cost: Dictionary) -> bool:
+	if not can_afford(resources, cost):
+		return false
 	for k in cost.keys():
 		resources[k] = float(resources.get(k, 0.0)) - float(cost[k])
 	return true

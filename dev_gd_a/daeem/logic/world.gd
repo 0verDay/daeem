@@ -363,7 +363,17 @@ func _tile_taken(tile: Vector2i, except_unit, pending: Array = []) -> bool:
 
 
 # ------------------------------------------------------------------
-# 招募（UI 改版新增：单位页的命令卡 → recruit 命令 → 这里）
+# 招募（将领自己就是兵营：入队 → 读条 → 在将领所在格**中心**生成）
+#
+# 需求原话：「每个单位消耗 50 粮食 50 黄金，同时消耗招募将领的单位所在地的 1 人口，
+#            招募时间为 10 秒；表现类似星际争霸：信息栏里五个格子（一个大的 +
+#            四个小的，代表最多五个单位进入招募队列，正在招募的在大格子里），
+#            读条完毕后在将领所在格内生成该单位（强制生成在中心，若中心有单位
+#            则将中心内的单位排开）；将领只能在己方区划内招募单位；
+#            开始招募后将领固定在原地无法行动且无法攻击。」
+#
+# ★ 这一整套都在**权威侧**算：命令里只有兵种与队长 id（可序列化），
+#   站位 / 扣费 / 退款全在这里 —— 第 1 轮联机时客机不挑格子、也不算钱。
 # ------------------------------------------------------------------
 
 ## 可招募兵种表（config.json 的 recruit.list）。
@@ -375,35 +385,87 @@ func recruit_list() -> Array:
 	return v
 
 
-## 某个兵种能不能招募
-func is_recruitable(kind: String) -> bool:
+## 某个兵种在招募表里的条目（找不到返回空字典）
+func recruit_entry(kind: String) -> Dictionary:
 	for item in recruit_list():
 		if typeof(item) == TYPE_DICTIONARY and String((item as Dictionary).get("kind", "")) == kind:
-			return true
-	return false
-
-
-## 某个兵种的招募消耗（走 economy，enabled = false 时形同免费，与建筑一样）
-func recruit_cost(kind: String) -> Dictionary:
-	for item in recruit_list():
-		if typeof(item) != TYPE_DICTIONARY:
-			continue
-		var d: Dictionary = item
-		if String(d.get("kind", "")) != kind:
-			continue
-		var c: Variant = d.get("cost", {})
-		if typeof(c) == TYPE_DICTIONARY:
-			return c
+			return item
 	return {}
 
 
-## 招募校验。@return "" = 可以招；否则返回拒因（"kind" / "leader" / "faction"）。
-##
-## ★ 先校验、再扣钱、最后才生成 —— 顺序反了会出现「钱扣了、兵没出来」。
+## 某个兵种能不能招募
+func is_recruitable(kind: String) -> bool:
+	return not recruit_entry(kind).is_empty()
+
+
+## 某个兵种的招募消耗。
+## ⚠️ 招募是**无条件**扣费（不看 economy.enabled 那个总开关，它只管建造免费）——
+##    需求要的是「每个单位消耗 50 粮食 50 黄金」，被总开关静默变成免费就没意义了。
+func recruit_cost(kind: String) -> Dictionary:
+	var c: Variant = recruit_entry(kind).get("cost", {})
+	if typeof(c) == TYPE_DICTIONARY:
+		return c
+	return {}
+
+
+## 每个单位的读条时间（秒）
+func recruit_train_sec(kind: String) -> float:
+	return maxf(0.0, float(recruit_entry(kind).get("train_sec", 0.0)))
+
+
+## 每个单位要占的人口（从**将领所在区划**扣）
+func recruit_population_cost(kind: String) -> float:
+	return maxf(0.0, float(recruit_entry(kind).get("population_cost", 0.0)))
+
+
+## 队列上限（**含**正在读条的那个）：config.recruit.queue_max，默认 5
+func recruit_queue_max() -> int:
+	return maxi(1, int(cfg.num("recruit.queue_max", 5.0)))
+
+
+## 信息栏格子里显示的短名（config 的 short；没配就退回 label 的第一个字）
+func recruit_short_of(kind: String) -> String:
+	var e := recruit_entry(kind)
+	var s := String(e.get("short", ""))
+	if s != "":
+		return s
+	var label := String(e.get("label", kind))
+	return label.substr(0, 1) if label.length() > 0 else "?"
+
+
+## 某个兵种的显示名（提示文案用）
+func recruit_label_of(kind: String) -> String:
+	var e := recruit_entry(kind)
+	var label := String(e.get("label", ""))
+	return label if label != "" else kind
+
+
+## 招募校验（**规则**层面）。@return "" = 可以招；否则返回拒因：
+##   "kind"       不在可招募表里
+##   "leader"     队长不存在 / 已阵亡 / 根本不是队长
+##   "faction"    防冒充：不能拿别人家的将领当招募对象
+##   "zone"       ★ 将领不在**己方区划**里（本轮新增的限制条件）
+##   "queue_full" ★ 队列满了（最多 recruit.queue_max 个，含正在读条的那个）
 func can_recruit(kind: String, leader_id: String, faction: String) -> String:
 	if not is_recruitable(kind):
 		return "kind"
 	var leader = unit_by_id(leader_id)
+	var reason := leader_reject_reason(leader, faction)
+	if reason != "":
+		return reason
+	if not leader_zone_owned(leader):
+		return "zone"
+	if leader.train_queue_size() >= recruit_queue_max():
+		return "queue_full"
+	return ""
+
+
+## 「这个单位能不能当招募对象」的公共校验（招募 / 取消招募共用）。
+## @return "" / "leader" / "faction"
+##
+## ★ 取消招募**不走** `can_recruit`：那边还管区划与队列上限，而取消是「把已经
+##   排上的撤掉」——区划被敌人打回去了也得让人取消，不该被 zone 拦住。
+func leader_reject_reason(leader, faction: String) -> String:
 	if leader == null or not leader.alive:
 		return "leader"
 	if not is_team_leader(leader):
@@ -413,31 +475,319 @@ func can_recruit(kind: String, leader_id: String, faction: String) -> String:
 	return ""
 
 
-## 把新兵招到某个**在场将领**名下。
+## 将领是不是站在**己方区划**里（区划归属 == 它那一方）。
+## ★ 无主区划、以及不属于任何区划的格子（地图外沿的 -1）都不算 —— 见 route.md 第十四节。
+func leader_zone_owned(leader) -> bool:
+	var z = zones.zone_at(leader.tx, leader.ty)
+	return z != null and FactionRes.same_side(String(z["owner"]), leader.faction)
+
+
+## 这个单位现在**不接受玩家指令**吗？
 ##
-## 为什么放在 world 而不是 view：
-##   · 站位要在权威侧算（第 1 轮联机时客机不能自己挑格子），
-##   · 「挨着队长、不能卡在墙里」这套规则与出生时完全一样 —— 直接复用 _ring_tile()。
+## 需求原话：「玩家无法为正在招募单位的将领及其附属队列发布任何指令（移动/攻击），
+##            其附属单位只会执行警戒逻辑」。
+## 所以被锁住的是**一整队**：将领自己在招募 → 它被锁；它辖下的部队 → 也一起被锁
+## （「附属队列」= 它名下那些亲兵）。
 ##
-## @param kind 兵种（必须出现在 recruit.list 里）
-## @param leader_id 队长的 id（命令里只带 id，**不传对象引用** —— 命令必须可序列化）
-## @return 新单位；校验不过返回 null（并留下一条 recruit_rejected 事件说明原因）
-func recruit_unit(kind: String, leader_id: String, faction: String) -> Variant:
+## ★ 判据只写这一处：命令层（`command_processor`）用它过滤，
+##   输入层要用也只问它 —— 两处各写一套「谁被锁住了」迟早会漂开。
+## ★ 队长已经不在场（阵亡）的亲兵**不算被锁**：它们已经各自为战了，
+##   再拦着玩家就没有道理（`team_leader()` 对这种情况返回 null）。
+func is_order_locked(u) -> bool:
+	if u == null or not u.alive:
+		return false
+	if u.is_training():
+		return true
+	var leader = team_leader(u)
+	return leader != null and leader.is_training()
+
+
+## 钱与人口够不够。@return "" / "cost" / "population"
+##
+## ★ 与 can_recruit 分开：那边是「规则允不允许」，这边是「付不付得起」——
+##   两种拒因给玩家的提示文案不一样（见 view/hud.gd 的 recruit_reject_text）。
+func can_afford_recruit(kind: String, leader_id: String) -> String:
+	if not EconomyRes.can_afford(resources, recruit_cost(kind)):
+		return "cost"
+	var pop := recruit_population_cost(kind)
+	if pop <= 0.0:
+		return ""
+	var leader = unit_by_id(leader_id)
+	if leader == null:
+		return "leader"
+	var z = zones.zone_at(leader.tx, leader.ty)
+	if z == null or float(z.get("population", 0.0)) < pop:
+		return "population"
+	return ""
+
+
+## 招募入队（`recruit` 命令的唯一落点）。
+##
+## ★★ 三步顺序不能反：**先校验 → 再扣费 → 最后入队**。
+##    反了会出现「钱扣了、兵没排上队」这种查不出来的坏状态。
+## ★ 扣费时机是**入队即扣**（与星际争霸一致）：否则「排队不要钱」会让玩家
+##    先排满再等资源，队列上限就失去意义了。将领阵亡时按记账值退还（见 _release_recruit）。
+##
+## @return true = 已经入队（**不代表已经生成** —— 要读条 train_sec 秒）
+func start_recruit(kind: String, leader_id: String, faction: String) -> bool:
 	var reason := can_recruit(kind, leader_id, faction)
+	if reason == "":
+		reason = can_afford_recruit(kind, leader_id)
 	if reason != "":
 		push_event({"type": "recruit_rejected", "reason": reason, "kind": kind})
-		return null
+		return false
+
 	var leader = unit_by_id(leader_id)
+	var zone = zones.zone_at(leader.tx, leader.ty)
+	var pop := recruit_population_cost(kind)
+	var cost := recruit_cost(kind)
+
+	# 1) 扣钱（无条件）。校验刚刚过过，这里再判一次返回值只是**保险** ——
+	#    扣费失败就一定不能往下走（否则会出现「兵排上了、钱却没扣」）。
+	if not EconomyRes.spend(resources, cost):
+		push_event({"type": "recruit_rejected", "reason": "cost", "kind": kind})
+		return false
+	# 2) 扣人口（**同一个区划**：将领站在哪就从哪扣）
+	if zone != null and pop > 0.0:
+		zone["population"] = maxf(0.0, float(zone["population"]) - pop)
+	# 3) 记账：将领阵亡时按这三个数退款（不看「当前队列还在不在」）
+	leader.train_cost_food += float(cost.get("food", 0.0))
+	leader.train_cost_gold += float(cost.get("gold", 0.0))
+	leader.train_cost_pop += pop
+	leader.train_zone_id = int(zone["id"]) if zone != null else -1
+	# 4) 入队：大格子空着就直接开始读条，否则排到小格子里
+	if leader.train_kind == "":
+		_start_training(leader, kind)
+	else:
+		leader.train_queue.append(kind)
+	# 5) ★ 读条期间**钉在原地**：先停手（清掉路径 + 玩家命令 + 交战），再记住这个位置。
+	#    ⚠️ 顺序不能反：stop() 会清 settled_spot，之后 train_anchor 取的才是最终位置。
+	leader.stop()
+	leader.train_anchor = leader.pos
+	# 6) ★ 它辖下的部队也一起**收队**：招募期间它们「只执行警戒逻辑」（用户需求），
+	#    所以已经在跑的那条移动 / 攻击命令要就地取消 —— 不然会出现
+	#    「将领立正读条、护卫却按旧命令一路走光」这种自相矛盾的画面。
+	#    只有「这一单让队列从空变成非空」时才需要（后面几单只是排队）。
+	if leader.train_queue_size() == 1:
+		_stop_retinue(leader)
+	push_event({"type": "recruit_queued", "leader": leader, "kind": kind})
+	return true
+
+
+## 让某个将领辖下的部队**收队**（清掉路径 / 玩家命令 / 交战）。
+## 它们接下来只会跑警戒逻辑（自发索敌 → 靠近 → 开火 → 追太远就放弃）。
+func _stop_retinue(leader) -> void:
+	for r in retinue_of(leader.id):
+		r.stop()
+
+
+## 让某个兵种进「大格子」开始读条。
+##
+## ⚠️ 与 `_start_next_in_queue()` 分开写：那个是「从队列里提拔下一个」，
+##    它的前提是队列非空；而**第一单**还没进过队列（kind 是刚排进来的）。
+##    第一版把两者合并，于是第一单被 pop 出空队列直接吃掉 —— 入队返回 true、
+##    队列却永远是空的（测试里 20 多条断言一起红）。
+func _start_training(leader, kind: String) -> void:
+	leader.train_kind = kind
+	leader.train_total = recruit_train_sec(kind)
+	leader.train_remaining = leader.train_total
+
+
+## 把队列里的下一个提到「大格子」里开始读条（队列空 → 变回空闲）。
+func _start_next_in_queue(leader) -> void:
+	if leader.train_queue.is_empty():
+		leader.train_kind = ""
+		leader.train_remaining = 0.0
+		leader.train_total = 0.0
+		return
+	_start_training(leader, leader.train_queue.pop_front())
+
+
+## 每帧推进所有将领的招募读条（world.tick 第 3.5 步）。
+##
+## ⚠️ 必须在**清理离场单位之前**跑：单机不复活，阵亡的单位会在同一帧被摘出
+##    world.units —— 那时再来退款就找不到它了（见 step 4.5 与 pitfalls 5.37）。
+## ⚠️ 用**下标**遍历并先把长度取下来：读条完成会往 `units` 里 append 新兵，
+##    边遍历边增长数组是自找麻烦（新兵没有队列，但没必要去赌迭代器的行为）。
+func _tick_recruitment(dt: float) -> void:
+	var n := units.size()
+	for i in n:
+		var u = units[i]
+		if u.train_kind == "" and u.train_queue.is_empty():
+			continue
+		if not u.alive:
+			_release_recruit(u, true, "leader_died")
+			continue
+		if u.train_kind == "":
+			_start_next_in_queue(u)
+			continue
+		var budget := dt
+		var guard := 0
+		# ★ 一帧里可能读满好几个（dt 大 / train_sec 小）：把剩下的时间**接着往下算**，
+		#   而不是整帧重来或丢掉 —— 否则时间轴会随帧率漂（`tests` 里用 dt = 1 秒跑）。
+		while u.train_kind != "" and budget > 0.0 and guard < 64:
+			guard += 1
+			if u.train_remaining > budget:
+				u.train_remaining -= budget
+				budget = 0.0
+				break
+			budget -= u.train_remaining
+			u.train_remaining = 0.0
+			_spawn_from_recruit(u, u.train_kind)
+			_start_next_in_queue(u)
+
+
+## 读条完成：在**将领所在格的中心**生成这个兵种。
+##
+## ★ 「强制生成在中心」分两半：先把格心上的**别人**排开（collision.clear_point），
+##   再把新兵放在格心上。将领自己不动 —— 它在招募期间是钉住的，所以新兵与它
+##   叠在一起时由这一帧末尾的软分离把**新兵**挤开（见 _pin_training_leaders）。
+func _spawn_from_recruit(leader, kind: String) -> Variant:
+	var tile := Vector2i(leader.tx, leader.ty)
+	var center := GridRes.center_of(tile)
+	# 排开的距离：两个碰撞圆刚不重叠（与 collision 的最小圆心距同一套口径）
+	var need: float = maxf(0.0, cfg.unit_collision_radius) * 2.0
+	CollisionRes.clear_point(self, cfg, center, need, leader)
+
 	_recruit_serial += 1
-	var index: int = retinue_of(leader.id, false).size()
 	var u = UnitRes.create(
 		cfg, "%s-r%d" % [leader.id, _recruit_serial],
-		"%s %d" % [cfg.unit_name_of(kind), index + 1],
-		_ring_tile(leader, leader.faction, index), leader.faction, kind, "", leader.id
+		"%s %d" % [cfg.unit_name_of(kind), retinue_of(leader.id, false).size() + 1],
+		tile, leader.faction, kind, "", leader.id
 	)
+	# ★ 位置**显式**写一次格心：需求要的是「强制生成在中心」，
+	#   不能依赖 UnitRes.create 的实现（哪天它改成别处落点就会静默跑偏）。
+	u.pos = center
+	u.sync_tile(map)
 	units.append(u)
 	push_event({"type": "unit_recruited", "unit": u, "leader": leader})
 	return u
+
+
+## 结束某个将领的招募（将领阵亡 / 被清场时调）。
+##
+## @param refund true = 把已经扣掉的粮食 / 黄金 / 人口**退回去**
+##        （用户需求：将领阵亡时队列作废，但已扣的费用要退）。
+##        退款按记账的累加值走，不看「当前队列里还剩几个」—— 两者在
+##        「读条刚完成、下一单还没开始」的那一帧会不一致。
+func _release_recruit(leader, refund: bool, reason: String = "") -> void:
+	if not leader.is_training() and leader.train_cost_food <= 0.0 \
+			and leader.train_cost_gold <= 0.0 and leader.train_cost_pop <= 0.0:
+		return
+	var food: float = leader.train_cost_food
+	var gold: float = leader.train_cost_gold
+	var pop: float = leader.train_cost_pop
+	var zid: int = leader.train_zone_id
+	leader.train_kind = ""
+	leader.train_remaining = 0.0
+	leader.train_total = 0.0
+	leader.train_queue.clear()
+	leader.train_cost_food = 0.0
+	leader.train_cost_gold = 0.0
+	leader.train_cost_pop = 0.0
+	leader.train_zone_id = -1
+	if refund:
+		_refund(leader, food, gold, pop, zid)
+	push_event({"type": "recruit_cancelled", "leader": leader, "reason": reason, "slot": -1,
+		"refund_food": food, "refund_gold": gold, "refund_pop": pop})
+
+
+## 退款：把粮食 / 黄金还给阵营、人口还给**当初扣它的那个区划**，
+## 并把这一队的记账值减掉（这样将领阵亡时的整队退款不会把已经退过的再退一遍）。
+##
+## ⚠️ `zid` 必须由调用方传进来：`_release_recruit` 会先把 `train_zone_id` 清掉，
+##    若在这里现读 leader.train_zone_id，人口就退不回去了（实测踩过）。
+func _refund(leader, food: float, gold: float, pop: float, zid: int) -> void:
+	resources["food"] = float(resources.get("food", 0.0)) + food
+	resources["gold"] = float(resources.get("gold", 0.0)) + gold
+	if pop > 0.0:
+		var z = _zone_by_id(zid)
+		if z != null:
+			z["population"] = float(z.get("population", 0.0)) + pop
+	leader.train_cost_food = maxf(0.0, leader.train_cost_food - food)
+	leader.train_cost_gold = maxf(0.0, leader.train_cost_gold - gold)
+	leader.train_cost_pop = maxf(0.0, leader.train_cost_pop - pop)
+
+
+# ------------------------------------------------------------------
+# 取消招募（点信息栏里那五个格子 → recruit_cancel 命令 → 这里）
+# ------------------------------------------------------------------
+
+## 某一格上排的是哪个兵种（"" = 空格子）。0 = 正在读条的大格子，1..4 = 排队的小格子。
+func recruit_kind_at(leader, slot: int) -> String:
+	if leader == null or slot < 0:
+		return ""
+	if slot == 0:
+		return String(leader.train_kind)
+	var k := slot - 1
+	if k >= leader.train_queue.size():
+		return ""
+	return String(leader.train_queue[k])
+
+
+## 取消某一格上的招募（需求：「点击对应的格子取消对应格子上的造兵队列，
+## 其后方的造兵队列前移」）。
+##
+## @param slot 0 = 正在读条的那个（大格子）；1..4 = 排队的（小格子，从前往后）
+## @return true = 取消成功（已按那一格**全额**退款）
+##
+## ★ 退款是**全额**：取消就是把这一单彻底撤销（与星际争霸一致）。
+## ★ 大格子被取消时，队列里的下一个**前移**进大格子，并且**从头读条**（10 秒重新算）——
+##   「前移」不等于「继承进度」：继承的话，玩家可以用「招一个 → 取消 → 再招」
+##   把已经读掉的时间白嫖过来，队列上限也就没意义了。
+## ★ 取消是**纯权威侧**操作：命令里只有队长 id 与格号，扣费 / 退款都在这里算
+##   （第 1 轮联机时客机不能自己决定退多少钱）。
+func cancel_recruit(leader_id: String, slot: int, faction: String) -> bool:
+	var leader = unit_by_id(leader_id)
+	var reason := leader_reject_reason(leader, faction)
+	if reason != "":
+		push_event({"type": "recruit_cancel_rejected", "reason": reason, "slot": slot})
+		return false
+	var kind := recruit_kind_at(leader, slot)
+	if kind == "":
+		# 空格子（或格号越界）：什么都不做 —— 界面本来就不该发这种命令
+		push_event({"type": "recruit_cancel_rejected", "reason": "empty", "slot": slot})
+		return false
+
+	# 1) 先把它从队列里摘掉（后方的自动前移）
+	if slot == 0:
+		_start_next_in_queue(leader)      # 队列空 → 变回空闲；否则下一个前移并从零读条
+	else:
+		leader.train_queue.remove_at(slot - 1)
+
+	# 2) 再退款 —— 顺序与招募相反（那边是「先扣再入队」）：这里先摘掉再退，
+	#    中途出错也不会出现「退了钱、队列里还留着」。
+	var cost := recruit_cost(kind)
+	var food := float(cost.get("food", 0.0))
+	var gold := float(cost.get("gold", 0.0))
+	var pop := recruit_population_cost(kind)
+	_refund(leader, food, gold, pop, leader.train_zone_id)
+	push_event({"type": "recruit_cancelled", "leader": leader, "reason": "cancelled",
+		"slot": slot, "kind": kind,
+		"refund_food": food, "refund_gold": gold, "refund_pop": pop})
+	return true
+
+
+## 按 id 找区划（退款要还回**当初扣人口的那个**区划）
+func _zone_by_id(zid: int) -> Variant:
+	for z in zones.zones:
+		if int(z["id"]) == zid:
+			return z
+	return null
+
+
+## 招募期间把将领**钉回**开招那一刻的位置（碰撞推挤不许把它挪走）。
+##
+## ★ 放在 tick 的碰撞消解**之后**：那时推挤已经把位置写回了，这里再把它们摁回去。
+## ★ 只钉「正在招募」的将领 —— 普通单位被推走是软分离的正常行为（collision.gd）。
+func _pin_training_leaders() -> void:
+	for u in units:
+		if not u.alive or not u.is_training():
+			continue
+		if u.pos.distance_squared_to(u.train_anchor) <= 1e-12:
+			continue
+		u.pos = u.train_anchor
+		u.sync_tile(map)
 
 
 ## 刷一个测试敌人（调试用）。
@@ -646,6 +996,13 @@ func tick(dt: float) -> Array:
 	EconomyRes.tick(cfg, dt, rates, resources)
 	_prof_done("economy", _t_econ)
 
+	# 3.5) ★ 招募读条（将领自己就是兵营）。
+	#      ⚠️ 必须跑在下面的「清理离场单位」之前：单机不复活，阵亡的将领会在
+	#         同一帧被摘出 world.units，那时退款就找不到它了（见 _release_recruit）。
+	var _t_recruit := _prof()
+	_tick_recruitment(dt)
+	_prof_done("recruit", _t_recruit)
+
 	# 4) 单位：移动 + 战斗 / 警戒
 	var _t_units := _prof()
 	# 单位循环再拆三段的计时（只在 profile_on 时累加）
@@ -657,6 +1014,11 @@ func tick(dt: float) -> Array:
 		if not u.alive:
 			# 阵亡中的单位只跑复活倒计时；复活后本帧就正常参与逻辑
 			u.tick_respawn(cfg, self, dt)
+			continue
+		# ★★ 招募期间将领**钉在原地**（用户需求：固定在原地、无法行动、无法攻击）：
+		#    整段单位逻辑（移动 / 索敌 / 开火 / 回位）都跳过。位置由末尾的
+		#    _pin_training_leaders() 保证不被碰撞推走。
+		if u.is_training():
 			continue
 		var c0 := _prof()
 		CombatRes.tick_frame(self, cfg, u, dt, ui)
@@ -670,10 +1032,14 @@ func tick(dt: float) -> Array:
 	# 4.5) 清理离场单位。
 	#      ⚠️ 这里**不能**简单地按 alive 过滤：对战模式下阵亡的单位要留在列表里等复活，
 	#         一旦被过滤掉就永远活不过来了（见 docs/pitfalls.md 3.8 的姊妹问题）。
+	#      ★ 被摘掉的这一批要**在这里**结算招募队列（退款 + 事件）——
+	#        下一帧 _tick_recruitment 已经看不到它们了。
 	var keep: Array = []
 	for u in units:
 		if u.alive or u.awaiting_respawn():
 			keep.append(u)
+		else:
+			_release_recruit(u, true, "leader_died")
 	units = keep
 
 	# 5) 箭塔开火 + 建筑受击闪光衰减
@@ -716,6 +1082,9 @@ func tick(dt: float) -> Array:
 		# 8.6) ★ 建筑本体的硬碰撞：大本营 / 箭塔不再整格挡人之后，
 		#      「本体挡敌方」这条规则就落在这里（己方单位不受影响）。
 		CollisionRes.resolve_buildings(self, cfg)
+	# 8.7) ★ 招募中的将领**钉回**原位：推挤不许把「固定在原地」的将领挪走。
+	#      （放在碰撞之后：这一步是覆盖，不是参与推挤）
+	_pin_training_leaders()
 	_prof_done("collision", _t_col)
 
 	# 9) 胜负判定（大本营被打掉 / 超时比血量）

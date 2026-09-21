@@ -15,6 +15,7 @@ const PROBE_PATH := "res://logic/crowd/CrowdProbe.cs"
 const WorldRes = preload("res://logic/world.gd")
 const UnitRes = preload("res://logic/unit.gd")
 const CombatRes = preload("res://logic/combat.gd")
+const FactionRes = preload("res://logic/faction.gd")
 
 const N := 1000
 const DT := 1.0 / 60.0
@@ -61,6 +62,73 @@ func _cases() -> void:
 	_test_collision_matches_gdscript(cfg)
 	_test_targeting_matches_gdscript(cfg)
 	_test_targeting_with_filtered_units(cfg)
+	_test_no_friendly_fire(cfg)
+
+
+## ★★ 索敌结果**绝不能指向同一方的单位**（手玩报的 bug：新生成的友军单位有的会打友军）。
+##
+## 根因在下标映射那条「图快」的捷径上：
+##   第一遍打包会**跳过**「在赶路」的单位（它们这一帧不索敌），第二遍再把它们
+##   **追加到末尾**；而写回结果时写的是 `if m == n: _target_idx = res` ——
+##   以为「打包个数 == 单位个数」就等于「打包下标 == 单位下标」。
+##   **不等价**：只要被跳过的单位不全在数组末尾，打包顺序就是被打乱的，而 m 照样能凑到 n。
+##
+## 串位之后的症状正是友军误伤：某个自己人读到了**敌方那一格**的结果，
+## 而那一格的目标恰好是一个自己人 → 它把友军当成敌人（`acquire_target` 信任内核结果，
+## 拿到就直接锁定，不会再判一次阵营）。
+##
+## ⚠️ 为什么以前抓不到：老用例里「移动中的单位」都排在数组**最前面或最后面**，
+##    顺序刚好没被打乱（见 _test_targeting_with_filtered_units 的注释）——
+##    必须让「移动中的自己人」夹在站定的自己人中间才会露出来。
+func _test_no_friendly_fire(cfg) -> void:
+	var w = WorldRes.create(cfg)
+	if w.crowd == null or not w.crowd.available():
+		ok(false, "C# 索敌内核可用（友军误伤是内核结果的下标映射问题）")
+		return
+
+	# 自己人 4 个（第 2 个在赶路，**夹在中间**），敌人 4 个站定（让两边都在索敌）
+	var batch: Array = []
+	for i in 4:
+		var u = UnitRes.create(cfg, "ff-a-%d" % i, "a", Vector2i(0, 0), "p1", UnitRes.KIND_SUBORDINATE)
+		u.pos = Vector2(10.5, 8.5 + float(i) * 0.5)
+		u.sync_tile(w.map)
+		batch.append(u)
+	for i in 4:
+		var e = UnitRes.create(cfg, "ff-b-%d" % i, "b", Vector2i(0, 0), "enemy", UnitRes.KIND_ENEMY)
+		e.pos = Vector2(12.5, 8.5 + float(i) * 0.5)
+		e.sync_tile(w.map)
+		batch.append(e)
+	# ★ 第 2 个自己人「在赶路」：第一遍会被跳过、第二遍被追加到末尾 → 顺序被打乱
+	batch[1].moving = true
+	batch[1].has_goal = true
+	w.units = batch
+
+	w.tick(DT)
+
+	# 1) 桥上的原始映射（绕过一切下游守卫，直接验「打包下标 → 单位下标」）
+	var raw_bad := 0
+	var raw_first := ""
+	for i in w.units.size():
+		var raw = w.crowd.target_at(w, i)
+		if raw == null:
+			continue
+		if FactionRes.same_side(String(raw.faction), String((w.units[i] as Variant).faction)):
+			raw_bad += 1
+			if raw_first == "":
+				raw_first = "%s 指向了友军 %s" % [(w.units[i] as Variant).id, raw.id]
+	eq(raw_bad, 0, "★ 内核返回的目标永远不是同一方（串位 %d 个；%s）" % [raw_bad, raw_first])
+
+	# 2) 真正落到单位上的目标（下游还会再判一道阵营，这里验的是「整条链」）
+	var bad := 0
+	var first := ""
+	for u in w.units:
+		if u.target == null:
+			continue
+		if FactionRes.same_side(String(u.target.faction), String(u.faction)):
+			bad += 1
+			if first == "":
+				first = "%s 把 %s 当成了敌人" % [u.id, u.target.id]
+	eq(bad, 0, "★ 没有任何单位把友军当成目标（%d 个；%s）" % [bad, first])
 
 
 ## ★★ 「有单位被过滤掉」时的索敌必须仍然正确。

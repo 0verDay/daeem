@@ -8,7 +8,10 @@
 ##   attack_move    ids, x, y            行军攻击：走到该点，路上遇敌就停下来打（SC2 的 A 键）
 ##   build          kind(build_type), tx, ty, faction   在格子上建造
 ##   demolish       tx, ty               拆除建筑
-##   recruit        unit_kind, leader_id, faction       把单位招到某个将领名下（UI 改版新增）
+##   recruit        unit_kind, leader_id, faction       把单位排进某个将领的招募队列
+##                                                      （入队即扣 50 粮 / 50 金 / 1 人口，读条 10 秒）
+##   recruit_cancel leader_id, slot, faction            取消招募队列里的某一格并退款
+##                                                      （slot 0 = 正在读条的大格子，1..4 = 排队的小格子）
 ##   spawn_enemy    tx, ty               调试刷兵
 ##
 ## ★ 关键约束：**命令里只放意图，不放结果**。
@@ -47,6 +50,8 @@ static func apply(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 			return apply_demolish(world, cfg, cmd)
 		"recruit":
 			return apply_recruit(world, cfg, cmd)
+		"recruit_cancel":
+			return apply_recruit_cancel(world, cfg, cmd)
 		"spawn_enemy":
 			return apply_spawn_enemy(world, cmd)
 		"select":
@@ -65,22 +70,51 @@ static func apply_move(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 	var pt := Vector2(float(cmd.get("x", 0.0)), float(cmd.get("y", 0.0)))
 	# 队形：整队走到点击点周围各自的槽位上（少于 formation.min_units 个就不排阵）
 	var group := _collect_units(world, ids, owner_faction)
+	var accepted := false
 	if group.size() >= cfg.formation_min_units:
-		return order_group_formation(world, cfg, group, pt)
-	var any := false
-	for u in group:
-		if u.order_move(world, cfg, pt):
-			any = true
-	return any
+		accepted = order_group_formation(world, cfg, group, pt)
+	else:
+		for u in group:
+			if u.order_move(world, cfg, pt):
+				accepted = true
+	if not accepted:
+		note_order_rejected(world, ids, owner_faction)
+	return accepted
+
+
+## 一条指令**一个单位都没接受**时，回头看看是不是「被招募锁住了」，
+## 是的话留一条事件给界面。
+##
+## ★ 为什么要有它：招募期间将领与它辖下的部队都不接受指令（用户需求），
+##   而玩家右键点下去**什么都没发生**看起来就是功能坏了 ——
+##   与「招募被拒」同一个通道（world.push_event → game_scene → 左栏红字）。
+## ★ 只在**一个都没接受**时报：整队里有一半能动的时候，界面上的表现已经够清楚了。
+static func note_order_rejected(world, ids: Array, owner_faction: String) -> void:
+	for id in ids:
+		var u = world.unit_by_id(String(id))
+		if u == null or not u.alive:
+			continue
+		if not FactionRes.same_side(u.faction, owner_faction):
+			continue
+		if world.is_order_locked(u):
+			world.push_event({"type": "order_rejected", "reason": "recruiting", "unit_id": u.id})
+			return
 
 
 ## 把 ids 翻成「真的能下命令的」单位（去重、在场上、属于自己这一方）。
 ## 顺序保持 ids 的顺序 —— 队形的槽位分配要靠它保持可预测。
+##
+## ★ 正在招募的将领**连同它辖下的部队**一起被排除（`world.is_order_locked`）：
+##   需求原话「玩家无法为正在招募单位的将领及其附属队列发布任何指令（移动/攻击），
+##   其附属单位只会执行警戒逻辑」。⚠️ 是**整队**，不是只有将领本人 ——
+##   否则玩家可以用「选中整队右键」把护卫派走，将领身边就空了。
 static func _collect_units(world, ids: Array, owner_faction: String) -> Array:
 	var out: Array = []
 	for id in ids:
 		var u = world.unit_by_id(String(id))
 		if u == null or not u.alive:
+			continue
+		if world.is_order_locked(u):
 			continue
 		if not FactionRes.same_side(u.faction, owner_faction):
 			continue                      # ★ 防冒充：只能命令自己这一方的单位
@@ -246,6 +280,8 @@ static func apply_attack(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 		var u = world.unit_by_id(String(id))
 		if u == null or not u.alive:
 			continue
+		if world.is_order_locked(u):
+			continue                      # ★ 招募中：将领与它辖下的部队都不接指令
 		if not FactionRes.same_side(u.faction, owner_faction):
 			continue                      # ★ 防冒充
 		var accepted: bool
@@ -255,6 +291,8 @@ static func apply_attack(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 			accepted = u.order_attack_building(world, cfg, target_building)
 		if accepted:
 			any = true
+	if not any:
+		note_order_rejected(world, cmd.get("ids", []), owner_faction)
 	return any
 
 
@@ -263,8 +301,10 @@ static func apply_attack(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 ## 与 move 的区别只有这一条：move 是明确命令，遇敌不停。
 static func apply_attack_move(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 	var owner_faction := String(cmd.get("faction", world.my_faction))
+	var ids: Array = cmd.get("ids", [])
 	var pt := Vector2(float(cmd.get("x", 0.0)), float(cmd.get("y", 0.0)))
-	var group := _collect_units(world, cmd.get("ids", []), owner_faction)
+	var group := _collect_units(world, ids, owner_faction)
+	var accepted := false
 	# 行军攻击同样排阵：整队各自走到自己的槽位，路上遇敌照样停下来打。
 	# ⚠️ 与 move 的区别只有「路上打不打」，「走到哪」这件事两边一致 —— 否则
 	#    A 过去和右键过去会落在两片不同的地方，玩家会以为其中一个坏了。
@@ -274,16 +314,16 @@ static func apply_attack_move(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 		var slots := formation_slots(world, cfg, group, pt) if anchor_ok else [] as Array[Vector2]
 		if not slots.is_empty():
 			var anchor := Vector2i(floori(pt.x), floori(pt.y))
-			var any2 := false
 			for i in group.size():
 				if group[i].order_attack_move_at(world, cfg, slots[i], anchor):
-					any2 = true
-			return any2
-	var any := false
+					accepted = true
+			return accepted
 	for u in group:
 		if u.order_attack_move(world, cfg, pt):
-			any = true
-	return any
+			accepted = true
+	if not accepted:
+		note_order_rejected(world, ids, owner_faction)
+	return accepted
 
 
 ## 建造命令：owner 缺省时用本地阵营
@@ -325,23 +365,33 @@ static func apply_demolish(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 	return true
 
 
-## 招募命令：把 unit_kind 兵种招到 leader_id 那个将领名下（UI 改版：单位页的命令卡走这条路）。
+## 招募命令：把 unit_kind 兵种排到 leader_id 那个将领的招募队列里
+## （单位页的命令卡走这条路）。
 ##
-## ★ 命令里只有**兵种与队长 id，没有坐标**：站位由权威侧算
+## ★ 命令里只有**兵种与队长 id，没有坐标**：站位（将领所在格的**中心**）由权威侧算
 ##   （第 1 轮联机时，客机自己挑格子就是作弊，而且它也不知道最新的城墙在哪）。
-## ★ 顺序：先校验 → 再扣钱 → 最后生成。反了会出现「钱扣了、兵没出来」。
-static func apply_recruit(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
+## ★ 校验 → 扣费（粮食 / 黄金 / 区划人口）→ 入队 → 读条，全在
+##   `world.start_recruit()` 里，**命令层不再自己判一遍** —— 两处各判一套迟早会漂开
+##   （旧版这里先 can_recruit 再 try_spend，第三次加规则时就要改两个地方）。
+## ★ 命令被拒时 world 会写一条 `recruit_rejected` 事件（带拒因），
+##   界面靠它显示红字原因（见 view/game_scene.gd → hud.show_notice）。
+static func apply_recruit(world, _cfg: ConfigRes, cmd: Dictionary) -> bool:
 	var owner := String(cmd.get("faction", world.my_faction))
 	var kind := String(cmd.get("unit_kind", ""))
 	var leader_id := String(cmd.get("leader_id", ""))
-	var reason: String = world.can_recruit(kind, leader_id, owner)
-	if reason != "":
-		world.push_event({"type": "recruit_rejected", "reason": reason, "kind": kind})
-		return false
-	if not EconomyRes.try_spend(cfg, world.resources, world.recruit_cost(kind)):
-		world.push_event({"type": "recruit_rejected", "reason": "cost", "kind": kind})
-		return false
-	return world.recruit_unit(kind, leader_id, owner) != null
+	return world.start_recruit(kind, leader_id, owner)
+
+
+## 取消某一格上的招募（点信息栏里那五个格子）。
+##
+## ★ 命令里只有 **队长 id + 格号**：格号是界面的序号（0 = 正在读条的大格子，
+##   1..4 = 排队的四个小格子），由权威侧按同一个序号解释 —— 退多少钱、
+##   后方的队列怎么前移，全在 `world.cancel_recruit()` 里算。
+static func apply_recruit_cancel(world, _cfg: ConfigRes, cmd: Dictionary) -> bool:
+	return world.cancel_recruit(
+		String(cmd.get("leader_id", "")),
+		int(cmd.get("slot", -1)),
+		String(cmd.get("faction", world.my_faction)))
 
 
 ## 调试刷兵命令

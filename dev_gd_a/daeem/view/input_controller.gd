@@ -234,7 +234,8 @@ func _on_right_click(double_click: bool = false) -> void:
 			"faction": world.my_faction,
 		})
 		clear_marks()
-		attack_marks = [mouse_world]
+		if not selection_locked():
+			attack_marks = [mouse_world]
 		local_ui_changed.emit()
 		return
 
@@ -270,8 +271,30 @@ func _on_right_click(double_click: bool = false) -> void:
 		"faction": world.my_faction,
 	})
 	clear_marks()
-	move_marks = [mouse_world]
+	if not selection_locked():
+		move_marks = [mouse_world]
 	local_ui_changed.emit()
+
+
+## 选中的单位是不是**全都被招募锁住了**（将领正在招募 → 它和它辖下的部队都不接指令）。
+##
+## ★ 判据来自逻辑层（`world.is_order_locked`）—— 这里只是**先问一句**，
+##   用来决定「要不要画那个**没人会走的**移动 / 攻击标记」。
+##   命令照旧发出去：权威侧才是最终判据（它还会补一条 `order_rejected` 事件，
+##   由 game_scene 翻成左栏那行红字）。
+## ★ 为什么要多这一问：标记是「我已经收到命令了」的承诺。被锁住的队伍一个都不会动，
+##   却给它画一个绿圈，玩家只会以为移动坏了（与「招募被拒却毫无反馈」同一类问题）。
+func selection_locked() -> bool:
+	if world == null:
+		return false
+	var alive := 0
+	for u in selected_units:
+		if not u.alive:
+			continue
+		alive += 1
+		if not world.is_order_locked(u):
+			return false
+	return alive > 0
 
 
 ## 清掉两种标记（移动 / 行军攻击）—— 每次右键只留最新的那一个
@@ -365,24 +388,59 @@ func first_selected_leader() -> Variant:
 	return null
 
 
-## 招募一个单位到当前选中的将领名下。
+## 把单位**排进**当前选中将领的招募队列（读条 10 秒后才真的生成）。
 ##
 ## ★ 这里只发**命令**（逻辑层是唯一改世界的地方）；命令里只有兵种与队长 id，
-##   没有坐标 —— 站位由 world.recruit_unit() 在权威侧算。
+##   没有坐标 —— 站位（将领所在格的**中心**）与扣费都由权威侧算。
 ## ★ 没有选中将领时**不发命令**：命令里必须带 leader_id，硬发只会被逻辑层拒掉，
-##   而玩家看不到任何反馈。所以直接给一句提示。
+##   而玩家看不到任何反馈。所以直接返回 false，由调用方（view/hud.gd）给一句提示。
 ##
-## @return true = 命令已发出（不代表已经招出来，落成与否看逻辑层）
+## @return true = 命令已发出（不代表已经入队/招出来，落成与否看逻辑层）
 func request_recruit(kind: String) -> bool:
 	var leader = first_selected_leader()
 	if leader == null:
-		toast.emit("先选中一个将领，才能把新兵招到它名下")
+		toast.emit("先选中一个将领，才能把新兵排到它名下")
 		return false
 	command_issued.emit({
 		"kind": "recruit", "unit_kind": kind, "leader_id": leader.id,
 		"faction": world.my_faction,
 	})
 	return true
+
+
+## 取消招募队列里的某一格（点信息栏里的那五个格子）。
+##
+## @param slot 0 = 正在读条的大格子；1..4 = 排队的四个小格子（从前往后）
+## ★ 与招募一样只发命令：退多少钱、后方的队列怎么前移，都由权威侧算。
+func request_recruit_cancel(slot: int) -> bool:
+	var leader = first_selected_leader()
+	if leader == null:
+		toast.emit("先选中一个将领，才能取消它的招募队列")
+		return false
+	if not leader.is_training():
+		return false
+	command_issued.emit({
+		"kind": "recruit_cancel", "leader_id": leader.id, "slot": slot,
+		"faction": world.my_faction,
+	})
+	return true
+
+
+## 招募完成时调（由 view/game_scene.gd 收到 `unit_recruited` 事件后调用）：
+## **如果玩家此刻仍然选中着这个将领**，新兵也跟着被选中。
+##
+## ★ 需求原话：「如果造一个兵结束时玩家仍选中其将领，则这个新兵也会被选中」。
+## ★ 为什么放在这里而不是逻辑层：选中是**纯本地**状态（不进命令流、不上网），
+##   而「玩家当时选的是谁」只有本地知道。
+## ★ 用 select_units(...) 而不是直接往 selected_units 里 append：它会走
+##   `world.expand_to_groups()`，于是「将领 + 它辖下的全部亲兵」这条现成的规则
+##   自然把新兵带上（新兵的 leader_id 就是它）—— 少一处会漂的重复规则。
+func notify_unit_recruited(leader, unit) -> void:
+	if leader == null or unit == null:
+		return
+	if not selected_units.has(leader):
+		return              # 玩家已经改选别的了 → 不打扰他（需求的前提就是「仍选中」）
+	select_units(selected_units.duplicate() + [unit])
 
 
 func _build_name(t: String) -> String:

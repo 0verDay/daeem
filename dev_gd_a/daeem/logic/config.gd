@@ -33,6 +33,12 @@ var cell_px: float = 64.0
 var cols: int = 24
 var rows: int = 16
 
+## ---- 相机：边缘滚屏的「贴边多宽算边缘」----
+## ★ 这个值有**两个**读法，必须同源：camera_rig 用它决定「鼠标贴边多深开始滚」，
+##   hud 用它决定「屏幕最外圈永远允许滚屏、控件不许拦」（见 ui_layout.in_edge_band）。
+##   两处各写一个 44 就会出现「看着能滚、其实被控件拦住」这种错位。
+var camera_edge_size: float = 44.0
+
 var unit_speed: float = 2.4
 var unit_forest_mult: float = 0.5
 var unit_hp_max: float = 200.0
@@ -162,6 +168,8 @@ func _cache_scalars() -> void:
 	cols = int_val("grid.cols", 24)
 	rows = int_val("grid.rows", 16)
 	cell_px = num("render.cell_px", 64.0)
+
+	camera_edge_size = num("camera.edge_size", 44.0)
 
 	unit_speed = num("unit.speed", 2.4)
 	unit_forest_mult = num("unit.forest_mult", 0.5)

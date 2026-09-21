@@ -576,9 +576,9 @@ func _bench_frames(w, n_frames: int) -> void:
 
 	# 阶段名 → 每帧平均毫秒。顺序按 tick() 里执行的先后排
 	# （"units/*" 是 units 的细分，算 total 差额时不能重复计入）
-	var order := ["zones", "economy", "units", "units/combat", "units/reclaim", "units/step",
+	var order := ["zones", "economy", "recruit", "units", "units/combat", "units/reclaim", "units/step",
 		"towers", "enemy_ai", "collect", "collision"]
-	var top_level := ["zones", "economy", "units", "towers", "enemy_ai", "collect", "collision"]
+	var top_level := ["zones", "economy", "recruit", "units", "towers", "enemy_ai", "collect", "collision"]
 	var accounted := 0.0
 	for key in order:
 		var ms := float(int(w.profile_us.get(key, 0))) / 1000.0 / float(n_frames)

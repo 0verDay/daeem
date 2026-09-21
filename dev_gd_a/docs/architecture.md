@@ -69,10 +69,11 @@ dev_gd_a/daeem/
 │   ├── faction.gd                #   阵营模型：is_player_faction / same_side
 │   ├── map_data.gd               #   载入地图（地形 + exists 存在格 + zones 区块网格）、连通性修正
 │   ├── unit.gd                   #   单位：移动 + 战斗 + 警戒 + 复活（本轮不做复活）
+│   │                             #   + ★ 招募队列（将领自己就是兵营：train_* 字段）
 │   ├── building.gd               #   建筑定义与实例：blocks(faction) / 血量
 │   ├── zone.gd                   #   区块占领（每阵营独立进度）+ 区划中心 / 人口 / 产能；
 │   │                             #   区块划分读地图的 zones 网格，老地图退回 6×4 均分占位
-│   ├── economy.gd                #   资源产出
+│   ├── economy.gd                #   资源产出 + 扣费（can_afford / spend / try_spend）
 │   ├── combat.gd                 #   战斗结算与事件（索敌 / 开火 / 拆建筑）
 │   ├── command_processor.gd      #   ★ 命令的唯一入口（move / build / demolish）
 │   ├── snapshot.gd               #   ★ to_snapshot / apply_snapshot（本轮用于调试，将来是网络包体）
@@ -96,7 +97,9 @@ dev_gd_a/daeem/
 │   ├── ui_style.gd               #   UI 配色与 StyleBox 工厂
 │   ├── hud.gd                    #   UI 装配：左部队列表 / 左下地图占位 / 底栏 / 右上设置
 │   ├── squad_panel.gd            #   左侧「部队 1~10」（动态生成，点了只选中）
-│   ├── detail_panel.gd           #   底栏「详细信息」：左选中详情 / 右资源 + 日志
+│   ├── detail_panel.gd           #   底栏「详细信息」：左选中详情 + 招募五格 + 提示行 / 右资源
+│   ├── recruit_queue.gd          #   ★ 招募队列的五格显示（1 大 + 4 小 + 大格子里的读条）
+│   │                             #     可点：点某一格 = 取消那一格（发 recruit_cancel 命令）
 │   ├── command_card.gd           #   右下 3×3 命令卡（内容随页签切换）
 │   └── page_tabs.gd              #   单位 / 建筑 / 科技（科技点不动）
 └── tests/                        # 无头断言测试（不进游戏包）
@@ -104,8 +107,12 @@ dev_gd_a/daeem/
     ├── test_logic.gd             #   玩法规则（移动 / 战斗 / 建造 / 占领 / 快照…）
     ├── test_view.gd              #   渲染层接线（能挂上树、跑帧不炸、中文字体）
     ├── test_ui.gd                #   ★ 新 UI：几何对着参考图、部队列表 / 命令卡 / 招募 / 右键手势
+    │                             #     ⚠️ 它必须在 **GameScene**（按下 test 之后那个）上断言 ——
+    │                             #     在 main.tscn 的根上取 hud 会报错并静默跳过整节（pitfalls 5.35）
     ├── test_attack_orders.gd     #   ★ 攻击命令：点名打单位 / 建筑、行军攻击、索敌建筑
     ├── test_zone_capture.gd      #   ★ 占领进度显示：无主 / 我的地 / 别人的地 三种情况
+    ├── test_recruit_queue.gd     #   ★ 招募队列：消耗 / 人口 / 队列上限 5 / 读条 10 秒 /
+    │                             #     格心生成 + 排开 / 区划限制 / 读条期间钉住 / 阵亡退款 / 快照
     ├── test_map_editor.gd        #   ★ 地图编辑器导出的地图：exists 存在格（地图外不可通行）
     │                             #   + zones 区块网格（非矩形区块、空区块保留）
     └── test_building_body.gd     #   ★ 建筑本体：尺寸居中、挡敌不挡己、缝隙能穿、城墙回归
@@ -232,19 +239,21 @@ Godot 里 DPR 由引擎处理，**但下面三条要原样继承**：
 |---|---|---|
 | 地形、阵营大本营坐标、出生点 | `logic/map_data.gd` | 只读，载入时建好；老式「单数 base」只作兼容兜底（见 route.md 14.3） |
 | 单位（位置/血量/路径/目标/冷却） | `logic/unit.gd` | 唯一权威 |
+| 招募队列（`train_kind` / `train_remaining` / `train_queue` / `train_anchor`…） | `logic/unit.gd` | ★ **将领自己就是兵营**，队列挂在它身上（它死了队列就没）；读条期间它被钉在 `train_anchor` 上，位置由 `world._pin_training_leaders()` 每帧摁回去；★ 它**和它辖下的部队**都不接玩家指令（`world.is_order_locked()` 是唯一判据） |
 | 招募序号（新兵 id） | `logic/world.gd` | `_recruit_serial`，只增不减（否则 id 会撞名） |
 | 建筑（类型/格位/所属/血量） | `logic/building.gd` | 用数组存，另建 `Vector2i → Building` 查询字典 |
 | 建筑本体的尺寸（占一格的比例） | `data/config.json` → `building.<type>.body_scale` | 渲染与碰撞**共用**这一个数（`building.body_rect()` / `palette.building_rect()`） |
 | 地图上预置的建筑 | `data/test_map.json` 的 `buildings` → `logic/map_data.gd` 的 `prefab_buildings` → `world.reset()` 放置 | 坐标与归属全在 JSON 里，代码不写死；不影响区块归属（zone 只认玩家阵营） |
 | 区块（`owner` / `progress_by`） | `logic/zone.gd` | **每阵营独立进度**，不要退回单一 `progress` |
-| 区划**中心** / 产能 / 人口 | `logic/zone.gd`（区块字典的 `center` / `production` / `population`）；中心那一格上另有一栋 `TYPE_ZONE_CENTER` 建筑 | 中心与产能来自地图 JSON；人口是**运行时累积**的，每区划各算各的（见 route.md 14.5） |
-| 资源、己方地块数 | `logic/economy.gd` | |
-| 相机 / 缩放 | `view/camera_rig.gd` | 纯表现，不进快照 |
+| 区划**中心** / 产能 / 人口 | `logic/zone.gd`（区块字典的 `center` / `production` / `population`）；中心那一格上另有一栋 `TYPE_ZONE_CENTER` 建筑 | 中心与产能来自地图 JSON；人口是**运行时累积**的，每区划各算各的（见 route.md 14.5）；目前**唯一的消耗**是招募（每个单位扣将领所在区划 1 人口） |
+| 资源、己方地块数 | `logic/economy.gd` | 招募的扣费**不受** `economy.enabled` 影响（那个开关只管建造免费） |
+| 相机 / 缩放 | `view/camera_rig.gd` | 纯表现，不进快照。★ 它的 `camera.edge_size` 与 HUD 的「屏幕最外圈不拦滚屏」是**同一个数**（`cfg.camera_edge_size`） |
 | 选中列表 | `view/input_controller.gd` | 纯本地，**不进命令流**（第 1 轮也一样） |
 | 玩家下达的攻击命令 | `logic/unit.gd` 的 `ordered_target` / `ordered_building` / `has_attack_move` | 与「这一帧在打谁」（`target` / `target_building`）**分开存**，见 route.md 12.3 |
 | UI 几何（面板位置与尺寸） | `view/ui_layout.gd` | 纯常量，照参考图的像素稿；其它 view 文件不写坐标字面量 |
 | 当前页签（单位 / 建筑） | `view/page_tabs.gd` | 纯本地显示状态，只决定命令卡里有什么 |
-| 事件（击杀 / 建筑被拆 / 招募…） | `logic/world.gd` 收集 → `world.tick()` 返回 | **逻辑层不写 UI 文案**；当前没有界面显示它们（日志按需求删了，见 route.md 第十节） |
+| 招募队列的实现细节（进度、五个格子的几何） | `logic/unit.gd` 的 `train_*` 字段 + `view/recruit_queue.gd` | 进度由 `unit.train_progress()` 算好，视图只取色与填格子（不让视图自己发明判定，见 pitfalls 5.20） |
+| 事件（击杀 / 建筑被拆 / 招募…） | `logic/world.gd` 收集 → `world.tick()` 返回 | **逻辑层不写 UI 文案**；目前只翻译三条：`recruit_rejected` / `order_rejected` → 左栏那行红字、`unit_recruited` → 把新兵选上（`view/game_scene.gd` → `hud` / `input_controller`） |
 | 谁是房主 / 我的阵营 | 第 1 轮再加 | 本轮固定为单机阵营 |
 
 > **建筑为什么不用 `TileMapLayer` 当权威**：一个地块只能有一个建筑，

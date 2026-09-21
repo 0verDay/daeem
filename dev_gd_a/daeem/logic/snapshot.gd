@@ -45,6 +45,13 @@ static func to_snapshot(world) -> Dictionary:
 			# 否则客机侧点将领时只有自己会被选中（单机与联机行为会不一致）。
 			"ld": u.leader_id if u.leader_id != "" else null,
 			"hk": u.hotkey if u.hotkey != "" else null,
+			# ★ 招募队列（将领 = 兵营）：信息栏里那五个格子是**权威状态**画出来的，
+			#   客机不发就只能是空的。三个短字段：正在读条的兵种 / 剩余秒 / 总秒数，
+			#   外加排队的兵种数组（tq = train queue）。
+			"tk": u.train_kind if u.train_kind != "" else null,
+			"tr": round2(u.train_remaining),
+			"tt": round2(u.train_total),
+			"tq": (u.train_queue.duplicate() if not u.train_queue.is_empty() else null),
 		})
 
 	var buildings_out: Array = []
@@ -128,6 +135,20 @@ static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void:
 		#   pos / tx / ty 会一直是旧值，于是点选判定、射程判定、HUD 全都是错的。
 		u.pos = Vector2(float(su.get("x", u.pos.x)), float(su.get("y", u.pos.y)))
 		u.sync_tile(world.map)
+		# ★ 招募队列：一整组字段，按 **tk 在不在** 判断新旧格式（与 ld / fa 同一条约定：
+		#   老快照没有 tk → 整组保持本地现状，不要把队列清空）。
+		#   train_anchor 取权威位置 —— 客机侧「招募期间钉在原地」靠它。
+		if su.has("tk"):
+			var tk: Variant = su["tk"]
+			u.train_kind = String(tk) if tk != null else ""
+			u.train_total = float(su.get("tt", u.train_total))
+			u.train_remaining = float(su.get("tr", u.train_remaining))
+			u.train_queue.clear()
+			var tq: Variant = su.get("tq", null)
+			if typeof(tq) == TYPE_ARRAY:
+				for k in (tq as Array):
+					u.train_queue.append(String(k))
+			u.train_anchor = u.pos
 
 	# 快照里没有的单位 = 已经阵亡（客机上的世界完全以快照为准）
 	var keep: Array = []

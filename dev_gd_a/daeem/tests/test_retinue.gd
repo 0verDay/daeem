@@ -333,18 +333,21 @@ func _kind(world, kind: String) -> Array:
 
 
 # ------------------------------------------------------------------
-# ★ 招募（UI 改版新增：单位页的命令卡 → recruit 命令 → world.recruit_unit）
+# ★ 招募（单位页的命令卡 → recruit 命令 → world.start_recruit）
 #
 # 需求原话：「单位页显示可招募的单位，单位招募时在选择的对应将领处生成，
 #            暂时用占位单位代替（即单位页目前只有一个单位）」
-# 所以这套断言盯四件事：
-#   1. 谁能招：只有**在场上、自己这一方、且是队长**的单位名下能招
-#   2. 招在哪：挨着队长（复用出生时那套站位），且不能卡进墙 / 山里
-#   3. 招出来是什么：config.recruit.list 里的兵种（数值仍走 unit.<kind>）
-#   4. 命令这条路：被拒的命令**不能偷偷生成单位**，成功的一定有事件（UI 日志靠它）
+# 这一节只验**队伍模型那一半**：谁能当招募对象（队长 / 亲兵 / 阵亡），
+# 以及新兵最终挂在**正确那个将领**名下。
+# ★ 招募本身（50 粮 / 50 金 / 1 人口、10 秒读条、队列 5 格、格心生成、
+#   区划限制、阵亡退款）在 tests/test_recruit_queue.gd —— 别在这里重复。
 # ------------------------------------------------------------------
 func _test_recruit(cfg) -> void:
+	# 这一节要 tick 满 10 秒（读条），所以关掉战斗与场上的敌人：
+	# 地图预置的巡逻兵会推进过来、把亲兵打死，人数断言就不可靠了（见 pitfalls 5.34）
+	cfg.combat_enabled = false
 	var w = WorldRes.create(cfg)
+	w.units = _keep_player_units(w)
 	var per: int = int(cfg.num("unit.subordinate.count", 0.0))
 	var g1 = w.unit_by_id("general-1")
 	var g2 = w.unit_by_id("general-2")
@@ -352,6 +355,12 @@ func _test_recruit(cfg) -> void:
 
 	ok(w.is_recruitable(UnitRes.KIND_SUBORDINATE), "config.recruit.list 里亲兵可招募")
 	ok(not w.is_recruitable("nope"), "表里没有的兵种不能招募")
+
+	# 钱 / 人口给足：这一节验的不是钱（那是 test_recruit_queue 的事）
+	w.resources["food"] = 1000.0
+	w.resources["gold"] = 1000.0
+	w.zones.zone_at(g1.tx, g1.ty)["population"] = 10.0
+	w.zones.zone_at(g2.tx, g2.ty)["population"] = 10.0
 
 	# ---- 被拒的命令不能生成单位 ----
 	var before: int = _kind(w, UnitRes.KIND_SUBORDINATE).size()
@@ -366,32 +375,6 @@ func _test_recruit(cfg) -> void:
 		"队长不存在时被拒")
 	eq(_kind(w, UnitRes.KIND_SUBORDINATE).size(), before, "★ 被拒的命令一个单位都没生成")
 
-	# ---- 正常招募：招到将领 2 名下 ----
-	ok(CommandRes.apply(w, cfg, {
-		"kind": "recruit", "unit_kind": UnitRes.KIND_SUBORDINATE, "leader_id": g2.id, "faction": "p1"}),
-		"选中将领 2 之后，招募命令被接受")
-	eq(w.retinue_of(g2.id).size(), per + 1, "★ 将领 2 名下多了一个兵")
-	eq(w.retinue_of(g1.id).size(), per, "★ 将领 1 名下一个不多（没招错人）")
-
-	var fresh = w.retinue_of(g2.id)[per]        # 新兵排在最后
-	eq(fresh.kind, UnitRes.KIND_SUBORDINATE, "招出来的就是「占位单位」（亲兵那一套数值）")
-	eq(fresh.leader_id, g2.id, "新兵挂在将领 2 名下")
-	ok(w.unit_by_id(fresh.id) == fresh, "新兵 id 唯一、能按 id 查回来（%s）" % fresh.id)
-	ok(fresh.id.begins_with(g2.id), "新兵 id 以队长 id 开头（%s）" % fresh.id)
-	eq(fresh.faction, FactionRes.DEFAULT_FACTION, "新兵与队长同阵营")
-	ok(maxi(absi(fresh.tx - g2.tx), absi(fresh.ty - g2.ty)) <= 2, "★ 新兵挨着队长生成（2 格以内）")
-	ok(w.map.terrain_walkable(fresh.tx, fresh.ty), "新兵站在可通行格上")
-	var b0 = w.building_at(fresh.tx, fresh.ty)
-	ok(b0 == null or not b0.blocks(fresh.faction), "新兵没卡在不能站的建筑里")
-
-	# ---- 事件：UI 的日志靠它 ----
-	var evts: Array = w.tick(DT)
-	var recruited := 0
-	for e in evts:
-		if String(e.get("type", "")) == "unit_recruited":
-			recruited += 1
-	eq(recruited, 1, "★ 招募会发一条 unit_recruited 事件")
-
 	# ---- 谁不能当招募对象 ----
 	var sub = w.retinue_of(g1.id)[0]
 	ok(not w.can_recruit(UnitRes.KIND_SUBORDINATE, sub.id, "p1").is_empty(),
@@ -403,11 +386,38 @@ func _test_recruit(cfg) -> void:
 		# 敌方阵营也不能借招募命令去使唤我方的将领
 		ok(not w.can_recruit(UnitRes.KIND_SUBORDINATE, g1.id, FactionRes.NPC_FACTION).is_empty(),
 			"★ 防冒充：别的阵营不能拿我方将领的 id 招兵")
+		w.units.erase(e2)          # 读条期间别让它来搅局
 
-	# ---- 连招：id 不重复、人数线性增长 ----
+	# ---- 正常招募：排到将领 2 名下（不是将领 1）----
+	ok(CommandRes.apply(w, cfg, {
+		"kind": "recruit", "unit_kind": UnitRes.KIND_SUBORDINATE, "leader_id": g2.id, "faction": "p1"}),
+		"选中将领 2 之后，招募命令被接受（入队）")
+	eq(g2.train_kind, UnitRes.KIND_SUBORDINATE, "★ 队列排在将领 2 名下")
+	ok(not g1.is_training(), "★ 将领 1 名下没有队列（没招错人）")
+	eq(w.retinue_of(g2.id).size(), per, "★ 入队不会立刻生成单位（要读条 10 秒）")
+
+	# ---- 读条走完才生成，且生成在**同一个将领**名下 ----
+	for _i in 601:
+		w.tick(DT)
+	eq(w.retinue_of(g2.id).size(), per + 1, "★ 10 秒后将领 2 名下多了一个兵")
+	eq(w.retinue_of(g1.id).size(), per, "★ 将领 1 名下一个不多")
+
+	var fresh = w.retinue_of(g2.id)[per]        # 新兵排在最后
+	eq(fresh.kind, UnitRes.KIND_SUBORDINATE, "招出来的就是「占位单位」（亲兵那一套数值）")
+	eq(fresh.leader_id, g2.id, "新兵挂在将领 2 名下")
+	ok(w.unit_by_id(fresh.id) == fresh, "新兵 id 唯一、能按 id 查回来（%s）" % fresh.id)
+	ok(fresh.id.begins_with(g2.id), "新兵 id 以队长 id 开头（%s）" % fresh.id)
+	eq(fresh.faction, FactionRes.DEFAULT_FACTION, "新兵与队长同阵营")
+	ok(w.map.terrain_walkable(fresh.tx, fresh.ty), "新兵站在可通行格上")
+	var b0 = w.building_at(fresh.tx, fresh.ty)
+	ok(b0 == null or not b0.blocks(fresh.faction), "新兵没卡在不能站的建筑里")
+
+	# ---- 连续招募：id 不重复、人数线性增长 ----
 	for i in 2:
 		CommandRes.apply(w, cfg, {
 			"kind": "recruit", "unit_kind": UnitRes.KIND_SUBORDINATE, "leader_id": g2.id, "faction": "p1"})
+	for _i in 1201:
+		w.tick(DT)
 	eq(w.retinue_of(g2.id).size(), per + 3, "连招 3 次 → 名下多了 3 个")
 	var ids := {}
 	for s in w.retinue_of(g2.id):
@@ -419,3 +429,4 @@ func _test_recruit(cfg) -> void:
 	ok(not g2.alive, "将领 2 已阵亡")
 	ok(not w.can_recruit(UnitRes.KIND_SUBORDINATE, g2.id, "p1").is_empty(),
 		"★ 队长阵亡后不能再往它名下招兵")
+	cfg.combat_enabled = true

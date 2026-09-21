@@ -63,6 +63,17 @@ const TABS_COUNT := 3
 ## 设置按钮
 const SETTINGS_RECT := Rect2(1840.0, 0.0, 80.0, 160.0)
 
+## 招募队列的五个格子（星际争霸那套：1 个大格 + 4 个小格）
+##
+## ★ 画在「详细信息」面板**左栏的右侧**，只有选中的将领正在招募时才出现。
+##   下面是**队列控件自身**的局部坐标 —— 控件本身由 detail_panel 摆进左栏。
+const QUEUE_BIG := 64.0              # 正在读条的那个（大格子）
+const QUEUE_SMALL := 30.0            # 排队的四个（小格子）
+const QUEUE_GAP := 4.0
+const QUEUE_SLOTS := 5               # 1 大 + 4 小 = 最多 5 个（与 recruit.queue_max 对应）
+const QUEUE_W := QUEUE_BIG + QUEUE_GAP + QUEUE_SMALL * 2.0 + QUEUE_GAP
+const QUEUE_H := QUEUE_BIG
+
 
 # ------------------------------------------------------------------
 # 局部矩形（面板内的相对坐标，给子控件用）
@@ -106,6 +117,20 @@ static func tab_button_rect(i: int) -> Rect2:
 	var r := tab_button_local(i)
 	r.position += TABS_RECT.position
 	return r
+
+
+## 招募队列第 i 个格子（0 = 正在读条的大格，1..4 = 排队的四个小格）。
+## 坐标相对**队列控件自身**（2×2 的小格排在右边，上下刚好与大格对齐）。
+static func queue_cell_rect(i: int) -> Rect2:
+	if i <= 0:
+		return Rect2(0.0, 0.0, QUEUE_BIG, QUEUE_BIG)
+	var k := i - 1
+	var col := k % 2
+	var row := int(k / 2)
+	return Rect2(
+		QUEUE_BIG + QUEUE_GAP + float(col) * (QUEUE_SMALL + QUEUE_GAP),
+		float(row) * (QUEUE_SMALL + QUEUE_GAP),
+		QUEUE_SMALL, QUEUE_SMALL)
 
 
 # ------------------------------------------------------------------
@@ -173,4 +198,23 @@ static func point_hits_any(rects: Array[Rect2], p: Vector2) -> bool:
 	for r in rects:
 		if r.has_point(p):
 			return true
+	return false
+
+
+## 这个点是不是落在**屏幕最外圈**（edge_size 像素之内）。
+##
+## ★ 为什么需要这条规则（手玩报的 bug）：左侧「部队 1~10」（将领按钮那一列）是
+##   x 0..119 的控件，它整条压着屏幕左边缘 —— 于是鼠标推到左边缘那一段永远被
+##   判成「在控件上，别滚屏」，左边缘那一片地图永远滚不到。
+##   凡「贴到屏幕边缘的控件」都有这个毛病（命令卡压下边缘、设置压上边缘）。
+## ★ 判据与 camera_rig._edge_scroll 的 margin **同源**（config.camera.edge_size）：
+##   滚屏的触发区与「不许拦」的区域必须是同一个，否则就会出现
+##   「鼠标明明在边缘却滚不动」（小于）或者「控件明明在那儿却滚走了」（大于）。
+static func in_edge_band(view_size: Vector2, p: Vector2, margin: float) -> bool:
+	if margin <= 0.0:
+		return false
+	if p.x < margin or p.y < margin:
+		return true
+	if p.x > view_size.x - margin or p.y > view_size.y - margin:
+		return true
 	return false

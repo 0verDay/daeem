@@ -33,6 +33,15 @@
     "decimals": 1
   },
 
+  "ui": {
+    "_comment": [
+      "★ UI 的时间类数值（几何常量在 view/ui_layout.gd，配色在 view/ui_style.gd）。",
+      "notice_sec：详细信息左栏那行红字提示（「招募被拒」的原因）显示多久。",
+      "  它只显示最近一句、不保留历史（与删掉的事件日志不是一回事）。"
+    ],
+    "notice_sec": 2.0
+  },
+
   "unit": {
     "speed": 2.4,
     "forest_mult": 0.5,
@@ -270,16 +279,27 @@
       "现在只有一项占位：招出来的其实是 config.unit.subordinate 那套数值的亲兵",
       "（需求原话：「暂时用占位单位代替，即单位页目前只有一个单位」）。",
       "以后加正式兵种：往 list 里加条目、并在 config.unit.<kind> 里给它数值即可，",
-      "world.recruit_unit() / command_processor.apply_recruit() 都不用改。",
-      "cost 与建筑同一条路：economy.enabled = false 时形同免费。",
-      "部署规则：只能招到「当前选中的将领」名下（没有选中将领只给提示，不发命令）。"
+      "world.start_recruit() / command_processor.apply_recruit() 都不用改。",
+      "部署规则：只能招到「当前选中的将领」名下（没有选中将领只给提示，不发命令），",
+      "  而且那个将领必须站在**己方区划**里（区划归属 = 它那一方）。",
+      "★ 招募是**队列**（星际争霸那套）：将领自己就是兵营 ——",
+      "  一个正在读条（信息栏里的大格子）+ 最多 queue_max-1 个排队（小格子）。",
+      "  train_sec 是**每个单位**的读条时间，读满在将领所在格的**中心**生成。",
+      "  ★ 读条期间将领被钉在原地：不能移动、不能攻击（user 需求原文）。",
+      "★ cost / population_cost 是**入队即扣**；将领阵亡时整个队列作废并**退还**已扣的费用。",
+      "★ population_cost 扣的是「将领所在区划」的人口（zone.population，见 route.md 14.5）。",
+      "★ 注意：招募的消耗**不受 economy.enabled 总开关影响**（那个开关现在只管建造免费）。"
     ],
+    "queue_max": 5,
     "list": [
       {
         "kind": "subordinate",
         "label": "占位单位",
-        "desc": "在选中将领身旁生成 1 名亲兵（占位）",
-        "cost": { "food": 0, "gold": 0 }
+        "short": "兵",
+        "desc": "在选中将领所在格的中心生成 1 名亲兵（占位）",
+        "train_sec": 10,
+        "population_cost": 1,
+        "cost": { "food": 50, "gold": 50 }
       }
     ]
   },

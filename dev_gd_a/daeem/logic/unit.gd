@@ -160,6 +160,27 @@ var ordered_building = null
 var has_attack_move: bool = false
 var attack_move_goal: Vector2 = Vector2.ZERO
 
+## ---- 招募队列：**将领自己就是兵营**（星际争霸那套「一个在读条 + 最多四个排队」）----
+##
+## ★ 为什么状态挂在单位上而不是 world 里另开一张表：
+##   队列天然属于某个将领（它死了队列就该没），而 world.units 已经是权威列表；
+##   另开一张「将领 id → 队列」的表就多出一份要对齐、要快照、要清理的状态。
+## ★ 读条期间将领被**钉在原地**（不能移动、不能攻击，见 world.tick 的 _tick_recruitment
+##   与 _pin_training_leaders）—— 所以 train_anchor 必须记住开招那一刻的位置。
+var train_kind: String = ""            ## 正在读条的那个兵种（空 = 没在读条）
+var train_remaining: float = 0.0       ## 这一单还剩几秒
+var train_total: float = 0.0           ## 这一单总共几秒（渲染画进度条要分母）
+var train_queue: Array[String] = []    ## 排队的兵种（最多 queue_max - 1 个）
+## 这一队已经花掉的粮食 / 黄金 / 人口 —— **将领阵亡要按它退款**。
+## 用累加值而不是「查当前队列」：成本表哪天改了，退款也不会退错数目。
+var train_cost_food: float = 0.0
+var train_cost_gold: float = 0.0
+var train_cost_pop: float = 0.0
+## 人口是从哪个区划扣的（退款要还回**同一个**区划）
+var train_zone_id: int = -1
+## 招募期间钉住的位置（开招那一刻的 pos）
+var train_anchor: Vector2 = Vector2.ZERO
+
 ## ---- 阵亡与复活（config.pvp；单机开关永远关着）----
 var death_timer: float = 0.0  # > 0 表示已阵亡且正在等复活
 var deaths: int = 0
@@ -197,6 +218,32 @@ static func create(cfg: ConfigRes, p_id: String, p_name: String, tile: Vector2i,
 ## 是否正在等待复活（单机永远 false —— 死亡即离场）
 func awaiting_respawn() -> bool:
 	return (not alive) and death_timer > 0.0
+
+
+# ------------------------------------------------------------------
+# 招募队列（将领 = 兵营）
+# ------------------------------------------------------------------
+
+## 这个单位现在是不是「正在招募」（在读条，或还有排队的）。
+## ★ 这就是「钉在原地」的判据：true 时 world.tick 跳过它的移动与战斗，
+##   命令层也会把它从 move / attack 的目标里剔掉。
+func is_training() -> bool:
+	return train_kind != "" or not train_queue.is_empty()
+
+
+## 队列里一共有几个（含正在读条的那个）
+func train_queue_size() -> int:
+	var n: int = train_queue.size()
+	if train_kind != "":
+		n += 1
+	return n
+
+
+## 正在读条那个的进度（0~1；没在读条时 0）
+func train_progress() -> float:
+	if train_kind == "" or train_total <= 0.0:
+		return 0.0
+	return clampf(1.0 - train_remaining / train_total, 0.0, 1.0)
 
 
 ## 基础移动速度（格 / 秒）；森林里减半

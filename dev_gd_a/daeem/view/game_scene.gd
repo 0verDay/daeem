@@ -200,10 +200,12 @@ func _process(dt: float) -> void:
 		#    夹住 dt 的代价是「卡顿时时间变慢」而不是「卡顿被放大」——
 		#    对即时战略来说后者才是不可接受的。
 		var logic_dt: float = minf(dt, cfg.sim_max_dt)
-		# ★ tick 的返回值是逻辑事件（击杀 / 建筑被拆 / 招募完成…）。当前**没有界面显示它们**
-		#   （事件日志按需求删了），但这条边界必须留着：读走它 = world 里的 _events 被清空，
-		#   而且测试（tests/test_ui.gd、test_logic.gd）就是靠它验证「命令事件不会丢」。
-		var _events: Array = world.tick(logic_dt)
+		# ★ tick 的返回值是逻辑事件（击杀 / 建筑被拆 / 招募…）。
+		#   现在只处理两件事：招募被拒 → 左栏红字；招募完成 → 把新兵选上
+		#   （见 _consume_events）。其余事件照旧只被读走（读走 = 清空缓冲），
+		#   测试与将来的日志都靠这条边界。
+		var events: Array = world.tick(logic_dt)
+		_consume_events(events)
 		input_ctrl.drop_dead_selection()
 
 	# 逻辑 → 渲染：每帧读状态同步节点（view 从不改逻辑）
@@ -270,3 +272,26 @@ func _on_local_ui_changed() -> void:
 	# 本地 UI 变了只需要重画，不碰逻辑
 	unit_view.set_selection(_selected_ids())
 	building_view.set_selected(input_ctrl.selected_building)
+
+
+## 逻辑事件 → 界面文案 / 本地状态。★ **只有这里**把事件翻成中文（逻辑层不写 UI 文案）。
+##
+## 现在处理三件事：
+##   · `recruit_rejected` → 左栏那行红字（招募被拒的原因要给玩家看见）；
+##   · `unit_recruited`   → **如果玩家此刻仍选中着那个将领，新兵也一起被选上**
+##     （需求原话；选中是纯本地状态，所以落在 input_controller.notify_unit_recruited）；
+##   · `order_rejected`   → 「将领正在招募，它和它的部队不接受指令」（同上那行红字）。
+## 其它事件（击杀 / 建筑被拆…）暂时没有界面画它们，
+## 要恢复日志的话在这里加翻译、再给 detail_panel 加一块列表即可。
+func _consume_events(events: Array) -> void:
+	if hud == null:
+		return
+	for evt in events:
+		match String(evt.get("type", "")):
+			"recruit_rejected":
+				hud.show_notice(hud.recruit_reject_text(
+					String(evt.get("reason", "")), String(evt.get("kind", ""))))
+			"order_rejected":
+				hud.show_notice(hud.order_reject_text(String(evt.get("reason", ""))))
+			"unit_recruited":
+				input_ctrl.notify_unit_recruited(evt.get("leader", null), evt.get("unit", null))

@@ -43,6 +43,10 @@ var faction_placeholder: PanelContainer = null
 
 var _root: Control = null
 
+## 提示行（红字，约 ui.notice_sec 秒）——「招募被拒」这类操作的可见反馈。
+## ★ 它不是被删掉的日志栏：只显示**最近一次**被拒的一句话，不保留历史。
+var _notice_timer: float = 0.0
+
 
 func setup(p_cfg: ConfigRes, p_world, p_input, theme: Theme) -> void:
 	cfg = p_cfg
@@ -69,8 +73,9 @@ func setup(p_cfg: ConfigRes, p_world, p_input, theme: Theme) -> void:
 	refresh()
 
 
-func _process(_dt: float) -> void:
+func _process(dt: float) -> void:
 	refresh()
+	_tick_notice(dt)
 
 
 # ------------------------------------------------------------------
@@ -120,7 +125,8 @@ func _build_faction_placeholder() -> void:
 func _build_detail_panel() -> void:
 	detail_panel = DetailPanelRes.new()
 	_root.add_child(detail_panel)
-	detail_panel.setup()
+	detail_panel.setup(world)
+	detail_panel.queue_cell_activated.connect(_on_queue_cell_activated)
 
 
 func _build_command_card() -> void:
@@ -220,7 +226,93 @@ func _on_card_entry(entry: Dictionary) -> void:
 			else:
 				input_ctrl.set_build_type(t)
 		"recruit":
-			input_ctrl.request_recruit(String(entry.get("unit_kind", "")))
+			# ★ 没选中将领时**不发命令**（命令里必须带 leader_id），所以这里要自己给一句
+			#   可见反馈 —— 否则玩家点了 Q 什么都没发生，看起来像功能坏了。
+			#   逻辑层拒掉的其它原因走事件那条路（见 game_scene._consume_events）。
+			if not input_ctrl.request_recruit(String(entry.get("unit_kind", ""))):
+				show_notice("先选中一个将领，才能把新兵排到它名下")
+
+
+## 点了信息栏里招募队列的某一格 = **取消那一格**（后方的队列自动前移）。
+##
+## ★ 这里只发命令（`recruit_cancel`）：退多少钱、队列怎么前移全在权威侧算，
+##   界面下一帧按权威状态重画 —— 所以本地不需要自己「删格子」。
+func _on_queue_cell_activated(slot: int) -> void:
+	if input_ctrl == null:
+		return
+	if not input_ctrl.request_recruit_cancel(slot):
+		show_notice("现在没有可以取消的招募")
+
+
+# ------------------------------------------------------------------
+# 提示行（红字）：操作被拒时的可见反馈
+# ------------------------------------------------------------------
+
+## 显示一句话，约 ui.notice_sec 秒后自动消失（空串 = 立刻收起）
+func show_notice(text: String) -> void:
+	if detail_panel == null:
+		return
+	if text == "":
+		_notice_timer = 0.0
+		detail_panel.set_notice("")
+		return
+	detail_panel.set_notice(text)
+	_notice_timer = cfg.num("ui.notice_sec", 2.0)
+
+
+func _tick_notice(dt: float) -> void:
+	if _notice_timer <= 0.0:
+		return
+	_notice_timer -= dt
+	if _notice_timer <= 0.0:
+		_notice_timer = 0.0
+		if detail_panel != null:
+			detail_panel.set_notice("")
+
+
+## 提示还在不在（测试读它；游戏里没人读）
+func notice_active() -> bool:
+	return _notice_timer > 0.0
+
+
+func notice_text() -> String:
+	return detail_panel.notice_text() if detail_panel != null else ""
+
+
+## 招募被拒的**拒因码 → 中文**。★ 这一层翻译只在这里做（逻辑层只给码，不写 UI 文案）。
+##
+## 拒因码是 logic/world.gd 的 can_recruit / can_afford_recruit 产出的：
+##   kind / leader / faction / zone / queue_full / cost / population
+func recruit_reject_text(reason: String, kind: String) -> String:
+	match reason:
+		"kind":
+			return "这个兵种不在可招募表里"
+		"leader":
+			return "先选中一个将领，才能把新兵排到它名下"
+		"faction":
+			return "不能给别的阵营的将领招募"
+		"zone":
+			return "只能在己方区划内招募（将领现在站的地方不属于你）"
+		"queue_full":
+			return "招募队列已满（最多 %d 个）" % world.recruit_queue_max()
+		"cost":
+			var c: Dictionary = world.recruit_cost(kind)
+			return "粮食或黄金不足（需要 粮食 %d / 黄金 %d）" % [
+				int(round(float(c.get("food", 0.0)))), int(round(float(c.get("gold", 0.0))))]
+		"population":
+			return "该区划人口不足（需要 %d 人口）" % int(round(world.recruit_population_cost(kind)))
+	return "无法招募"
+
+
+## 指令被拒的**拒因码 → 中文**（与上面那条同一条约定：逻辑层只给码）。
+##
+## 目前唯一的拒因是 `recruiting`：将领正在招募时，**它和它辖下的部队**都不接受
+## 移动 / 攻击命令（用户需求），而玩家右键点下去什么都没发生看起来就是坏了。
+func order_reject_text(reason: String) -> String:
+	match reason:
+		"recruiting":
+			return "将领正在招募单位：它和它的部队这会儿只警戒，不接受指令"
+	return "这条指令现在下不了"
 
 
 # ------------------------------------------------------------------
@@ -237,11 +329,21 @@ func handle_key(event: InputEventKey) -> bool:
 
 ## 鼠标是不是停在**可点的控件**上（部队行 / 命令卡 / 页签 / 设置）。
 ##
-## ★ 边缘滚屏必须给这些地方让路，否则鼠标一移到底栏上镜头就自己跑。
+## ★ 边缘滚屏要给这些地方让路，否则鼠标一移到底栏上镜头就自己跑。
 ##   但**只有能点的控件**才让路：详细信息面板全是文字，让它也让路的话，
 ##   底栏盖住屏幕下沿 → 鼠标永远滚不到地图下方（这条是实测撞出来的）。
+##
+## ★★ 屏幕**最外圈**（config.camera.edge_size 之内）永远不许拦 —— 这一条是补的
+##    （手玩报的 bug：「鼠标移到将领按钮那边的屏幕边缘，屏幕不会滚动」）：
+##   左侧部队列表是 x 0..119 的控件，整条压着左边缘，于是左边缘那一段永远滚不动。
+##   凡贴边的控件都有这个毛病（命令卡压下边缘、设置压上边缘），所以判据写成
+##   「先看在不在最外圈」，与 camera_rig 的滚屏触发区同源。
 func blocks_edge_scroll(global_pos: Vector2) -> bool:
-	return UiLayoutRes.point_hits_any(UiLayoutRes.interactive_rects(view_size()), global_pos)
+	var vp := view_size()
+	var margin: float = cfg.camera_edge_size if cfg != null else 0.0
+	if UiLayoutRes.in_edge_band(vp, global_pos, margin):
+		return false
+	return UiLayoutRes.point_hits_any(UiLayoutRes.interactive_rects(vp), global_pos)
 
 
 ## 当前设计空间大小（canvas_items + expand 拉伸后可能比 1920×1080 大）
@@ -261,6 +363,9 @@ func refresh() -> void:
 		return
 	detail_panel.set_detail(_selection_text())
 	detail_panel.set_status(_status_text())
+	# ★ 招募队列：显示**当前选中的第一个将领**的（选中整队时队长排在最前，
+	#   见 input_controller.first_selected_leader）。没选中将领 → 整块收起来。
+	detail_panel.set_queue(input_ctrl.first_selected_leader())
 
 
 ## 右栏资源行：**只留阵营 + 粮食 + 黄金**（产出速率是本地算出来的展示值）。

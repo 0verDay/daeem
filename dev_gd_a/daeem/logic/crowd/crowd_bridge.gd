@@ -265,6 +265,11 @@ func refresh_targets(world, cfg: ConfigRes) -> void:
 
 	# 第二遍：把「可能被锁定的敌人」也补进去。
 	# 全部活单位都已经在第一遍里了（所有人都在索敌）→ 这一次循环都省掉。
+	#
+	# ★★ 注意：这一遍是**追加**到打包数组末尾的，所以**打包顺序 ≠ 单位顺序**
+	#    （第一遍跳过了在赶路的单位，它们的下标可能夹在中间）。
+	#    下面写回结果时必须把这一点考虑进去 —— 见 packed_in_order。
+	var packed_in_order: bool = (m == n)
 	if m < alive_n and scan_count > 0:
 		for i in n:
 			var u2: UnitRes = world.units[i]
@@ -299,16 +304,21 @@ func refresh_targets(world, cfg: ConfigRes) -> void:
 
 	var res: PackedInt32Array = kernel.AcquireTargets(
 		_tgt_xy, _tgt_alive, _tgt_side, _tgt_aggro, _tgt_radius, m)
-	if m == n:
-		# 全部打包：打包下标恰好等于单位下标，不用翻译
+	if packed_in_order:
+		# 第一遍就按单位顺序打包了全部单位 → 打包下标 == 单位下标，可以直接用
 		_target_idx = res
 	else:
 		# ★★ 必须把**打包下标**翻译回**真实单位下标**。
 		#    内核返回的是「第 k 个被打包的单位」的下标，而 _tgt_unit[k] 才是它在
-		#    world.units 里的位置。第一版漏了这一步 —— 只有在 m == n 时两者才恰好相等，
-		#    所以单元测试（单位少、几乎总是全打包）和单阵营基准（结果全是 -1）
-		#    都看不出来；真实对局里「大批自己人在行军被过滤掉 + 有敌人」时才会错位，
-		#    症状就是**索敌索到无关的单位、或者拿不到位子退回去扫建筑（去打远处的墙）**。
+		#    world.units 里的位置。
+		#    ⚠️⚠️ 判据只能是「**第一遍就打包了全部单位**」，不能图快写 `if m == n`：
+		#        m 是**两遍之后**的总数，第二遍会把第一遍跳过的单位追加到末尾 ——
+		#        于是 `m == n` 完全可能在「顺序已经被打乱」时成立。
+		#        实测症状（手玩报的「新生成的友军单位有的会攻击其他友军」）：
+		#        某个自己人读到了**敌方那一格**的结果，而那一格的目标正是一个自己人；
+		#        `combat.acquire_target` 信任内核结果，拿到就直接锁定 → 自己人打自己人。
+		#        （复现与回归见 tests/test_csharp_bridge.gd 的 _test_no_friendly_fire：
+		#          只要有一个「在赶路的自己人」夹在站定的自己人中间就会中招。）
 		#    ⚠️ 改这里之前先想清楚：_tgt_unit 是「打包下标 → 单位下标」的唯一映射。
 		_target_idx.fill(-1)
 		for k in m:

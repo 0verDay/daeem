@@ -184,6 +184,63 @@ static func body_blocked_at(world, cfg: ConfigRes, faction: String, p: Vector2, 
 
 
 # ------------------------------------------------------------------
+# 「强制生成在某一点」：先把那一点上的单位排开
+#
+# ★ 谁在用：招募读条完成时，新兵**强制生成在将领所在格的格心**（用户需求）。
+#   格心上可能正站着别人（将领／亲兵／敌人），所以要先请他们让开 ——
+#   不然新兵一出生就和人叠在一起，只能等这一帧末尾的软分离慢慢挤开。
+# ★ 与软分离的区别：软分离是「两边各让一点」，这里是**单方面让开**（新兵不让）。
+# ------------------------------------------------------------------
+
+## 把一个点周围 `need` 距离内的单位推开（`except` 不动，通常是刚出生的那个）。
+## @return 真的挪动过的单位数（只用于调试 / 断言）
+static func clear_point(world, cfg: ConfigRes, p: Vector2, need: float, except = null) -> int:
+	if need <= 0.0:
+		return 0
+	var moved := 0
+	for k in world.units.size():
+		var u = world.units[k]
+		if u == except or not u.alive:
+			continue
+		var delta: Vector2 = u.pos - p
+		var d := delta.length()
+		if d >= need:
+			continue
+		# 完全重合时没有方向可用：按序号从八方向里挑一个（确定性，不抖动）
+		var dir := Vector2.RIGHT
+		if d > 1e-6:
+			dir = delta / d
+		else:
+			dir = Vector2(GridRes.DIRS8[k % GridRes.DIRS8.size()])
+		# 推的距离要**刚好推到不重叠**再多一点（PUSH_EPS 见下：边界是含端点的）
+		if _try_move(world, cfg, u, dir * (need - d + PUSH_EPS)):
+			moved += 1
+			continue
+		# 推不动（贴着山 / 墙）→ 在格心周围找一格站得住的落脚点
+		if _snap_near(world, cfg, u, p, need):
+			moved += 1
+	return moved
+
+
+## 推不动时的兜底：在 p 所在的格周围（含斜角）找一格「站得住」的位置搬过去。
+## 只改 pos 与 tx/ty —— 与推挤一样，**不碰** path / moving / goal（见文件头第 3 条）。
+static func _snap_near(world, cfg: ConfigRes, u, p: Vector2, need: float) -> bool:
+	var t := Vector2i(floori(p.x), floori(p.y))
+	for ring in range(1, 4):
+		for d in GridRes.DIRS8:
+			var c := Vector2i(t.x + d.x * ring, t.y + d.y * ring)
+			var cand := GridRes.center_of(c)
+			if cand.distance_to(p) < need:
+				continue
+			if not _can_stand(world, cfg, u, cand):
+				continue
+			u.pos = cand
+			u.sync_tile(world.map)
+			return true
+	return false
+
+
+# ------------------------------------------------------------------
 # 建筑本体：把单位从本体里推出来（大本营 / 箭塔不再整格挡人之后的「本体阻挡」）
 #
 # ★ 为什么单独一步而不是并进单位的推挤里：

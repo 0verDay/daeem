@@ -191,6 +191,17 @@ static func acquire_target(world, cfg: ConfigRes, u: UnitRes, idx: int = -1) -> 
 			# ⚠️ j < 0 时**不要**退回逐个扫描：内核已经替这一帧判断过「射程内没有敌人」了。
 			#    （退回扫描只是白花 O(n)；真正的目标缺失是内核的输入/映射出错，
 			#      那种问题必须在内核一侧修，不能靠这里兜。）
+		# ★★ 最后一道闸门：内核给的目标**必须真是敌对的**。
+		#    为什么值得多花一次字符串比较（每帧每索敌单位一次，量级 1 µs）：
+		#    下标映射一旦串位，内核会返回**别人那一格**的结果 —— 那一格的目标很可能
+		#    就是一个自己人。而这里是**唯一**没有 `same_side` 判定的取目标路径
+		#    （上面那段逐个扫描判了），少了这道闸门的表现就是「友军打友军」。
+		#    实测出过一次：crowd_bridge 写回结果时用了 `if m == n` 图快，见
+		#    docs/pitfalls.md 5.38 与 tests/test_csharp_bridge.gd 的 _test_no_friendly_fire。
+		#    ⚠️ 这道闸门只是**保险**，不是修法：串位本身必须在内核映射那一侧修掉
+		#      （否则单位会「看到了敌人却当没看到」，表现成有时不还手）。
+		if best != null and FactionRes.same_side(String(best.faction), String(u.faction)):
+			best = null
 
 	if not used_kernel:
 		for other in world.units:

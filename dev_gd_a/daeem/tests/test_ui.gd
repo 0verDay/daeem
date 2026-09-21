@@ -13,10 +13,12 @@ extends "res://tests/test_case.gd"
 
 const UiLayoutRes = preload("res://view/ui_layout.gd")
 const PageTabsRes = preload("res://view/page_tabs.gd")
+const RecruitQueueRes = preload("res://view/recruit_queue.gd")
 const UnitRes = preload("res://logic/unit.gd")
 const FactionRes = preload("res://logic/faction.gd")
 const CommandRes = preload("res://logic/command_processor.gd")
 const GridRes = preload("res://logic/grid.gd")
+const WorldRes = preload("res://logic/world.gd")
 
 
 func _initialize() -> void:
@@ -87,6 +89,18 @@ func _test_layout_against_reference() -> void:
 	eq(UiLayoutRes.tab_button_local(2).position.y, 160.0, "第三颗按钮从 160 开始（3×80）")
 	eq(UiLayoutRes.SETTINGS_RECT, Rect2(1840, 0, 80, 160), "设置按钮 80×160 在右上角（参考图）")
 
+	# ★ 招募队列：五个格子 = 1 个大格（正在读条）+ 4 个小格（排队）
+	eq(UiLayoutRes.QUEUE_SLOTS, 5, "★ 招募队列 5 个格子（1 大 + 4 小，需求原话）")
+	eq(UiLayoutRes.queue_cell_rect(0), Rect2(0, 0, 64, 64), "大格子在左上（64×64）")
+	eq(UiLayoutRes.queue_cell_rect(1), Rect2(68, 0, 30, 30), "第 1 个小格排在大格右边")
+	eq(UiLayoutRes.queue_cell_rect(2), Rect2(102, 0, 30, 30), "第 2 个小格在它右边")
+	eq(UiLayoutRes.queue_cell_rect(3), Rect2(68, 34, 30, 30), "第 3 个小格换行")
+	eq(UiLayoutRes.queue_cell_rect(4), Rect2(102, 34, 30, 30), "第 4 个小格在右下角")
+	var small_last := UiLayoutRes.queue_cell_rect(4)
+	ok(small_last.position.x + small_last.size.x <= UiLayoutRes.QUEUE_W + 1e-6
+		and small_last.position.y + small_last.size.y <= UiLayoutRes.QUEUE_H + 1e-6,
+		"★ 四个小格都落在队列控件的矩形里（否则会被裁掉）")
+
 	# ★ 底栏四块必须严丝合缝：参考图是靠 1px 分隔线排的，留缝或多一块都不对
 	eq(UiLayoutRes.DETAIL_RECT.position.x + UiLayoutRes.DETAIL_RECT.size.x,
 		UiLayoutRes.FACTION_RECT.position.x, "详细信息右边缘接上阵营面板")
@@ -141,18 +155,48 @@ func _test_hit_test() -> void:
 		UiLayoutRes.card_cell_rect(0).get_center()),
 		"窗口变宽后原位置不再算作命令卡")
 
+	# ★ 屏幕最外圈永远让路给边缘滚屏（手玩报的 bug：
+	#   「鼠标移到将领按钮那边的屏幕边缘，屏幕不会滚动」——
+	#   部队列表 x 0..119 整条压着左边缘，于是左边缘那一段永远滚不动）
+	var m: float = 44.0
+	ok(UiLayoutRes.in_edge_band(vp, Vector2(6.0, 300.0), m),
+		"★ 左边缘最外圈算「边缘带」（将领按钮那一列就压在这里）")
+	ok(UiLayoutRes.in_edge_band(vp, Vector2(960.0, 1070.0), m), "下边缘也算边缘带")
+	ok(UiLayoutRes.in_edge_band(vp, Vector2(960.0, 8.0), m), "上边缘也算")
+	ok(UiLayoutRes.in_edge_band(vp, Vector2(1914.0, 500.0), m), "右边缘也算")
+	ok(not UiLayoutRes.in_edge_band(vp, Vector2(960.0, 500.0), m), "屏幕中间不是边缘带")
+	ok(not UiLayoutRes.in_edge_band(vp, Vector2(6.0, 300.0), 0.0),
+		"margin = 0 时整条规则关掉（可配置）")
+
 
 # ------------------------------------------------------------------
 # 三、面板与交互
 # ------------------------------------------------------------------
+## ★★ 必须走「按下 test 进游戏」这条**真实入口**，然后在 **GameScene** 上断言。
+##
+## main.tscn 的根挂的是 `main.gd`（只有 `cfg` / `start_screen` / `game` 三个字段），
+## 在它上面访问 `hud` / `world` / `cam` 会**报错并直接中止整个函数** ——
+## 结果是「面板与交互」这一整节 40 多条断言从来没有真的执行过，而测试照样全绿。
+## ⚠️ 这个坑 test_view.gd 早就踩过并写了注释（那里 44 条断言只跑了 19 条），
+##    本文件当时没跟着改 —— 同一个坑踩第二次，见 pitfalls 5.35。
 func _test_panels(cfg) -> void:
 	var packed = load("res://view/main.tscn")
-	var main = (packed as PackedScene).instantiate()
-	root.add_child(main)
+	var root_node = (packed as PackedScene).instantiate()
+	root.add_child(root_node)
 	await process_frame
+	root_node._on_test_pressed()          # 与玩家点一下 test 按钮完全同一条路
+	await process_frame
+	await process_frame
+
+	var main = root_node.game
+	ok(main != null, "★ 按下 test 之后建出了游戏内场景（HUD / world / 相机都在它身上）")
+	if main == null:
+		root_node.queue_free()
+		return
 
 	ok(main.hud != null, "HUD 还在")
 	if main.hud == null:
+		root_node.queue_free()
 		return
 
 	# ---- 节点树 ----
@@ -168,6 +212,18 @@ func _test_panels(cfg) -> void:
 		"详细信息面板落在 (400, 840)")
 	v2_near(main.hud.detail_panel.size, UiLayoutRes.DETAIL_RECT.size, 1.0,
 		"★ 详细信息面板实际尺寸 = 1030×240（参考图标注）")
+
+	# ★ 招募队列控件（五个格子）必须整个装在详细信息面板里 —— 否则会被面板裁掉 / 压到右栏
+	var qc = main.hud.detail_panel.queue_control()
+	ok(qc != null, "详细信息左栏里有招募队列控件")
+	if qc != null:
+		v2_near(qc.size, Vector2(UiLayoutRes.QUEUE_W, UiLayoutRes.QUEUE_H), 1.0,
+			"队列控件尺寸 = QUEUE_W×QUEUE_H（五个格子刚好装得下）")
+		var qc_rect := Rect2(qc.global_position, qc.size)
+		ok(UiLayoutRes.DETAIL_RECT.grow(-1.0).encloses(qc_rect),
+			"★ 队列控件整个落在详细信息面板里（实际 %s）" % str(qc_rect))
+		ok(qc.size_flags_horizontal != Control.SIZE_EXPAND_FILL,
+			"队列控件不抢横向空间（正文才该被拉伸）")
 	v2_near(main.hud.map_placeholder.position, UiLayoutRes.MAP_RECT.position, 1.0,
 		"地图占位落在 (0, 680)")
 	v2_near(main.hud.map_placeholder.size, UiLayoutRes.MAP_RECT.size, 1.0,
@@ -191,6 +247,10 @@ func _test_panels(cfg) -> void:
 	_test_page_tabs_and_card(main, cfg)
 	_test_card_keys(main)
 	_test_recruit_via_card(main)
+	_test_queue_control(cfg)
+	_test_queue_cancel_via_click(main)
+	_test_auto_select_on_recruit(main)
+	_test_order_locked_notice(main)
 	_test_right_click_orders(main)
 	_test_settings_inert(main)
 	await _test_command_events_reach_consumer(main)
@@ -224,6 +284,14 @@ func _test_panels(cfg) -> void:
 		"鼠标在详细信息面板上 → 照样滚屏（不然底边滚不动）")
 	ok(not main.hud.blocks_edge_scroll(Vector2(vp.x * 0.5, vp.y * 0.5)), "鼠标在地图中间 → 滚屏")
 
+	# ★ 手玩报的 bug：左侧「部队 1~10」（将领按钮那一列）压着屏幕左边缘，
+	#   于是鼠标推到左边缘那一段**永远滚不动**。现在最外圈一律让路。
+	var row_center := UiLayoutRes.squad_slot_rect(2).get_center()
+	ok(not main.hud.blocks_edge_scroll(Vector2(6.0, row_center.y)),
+		"★ 鼠标在左边缘最外圈（将领按钮那一列）→ 仍然滚屏")
+	ok(main.hud.blocks_edge_scroll(row_center),
+		"部队行**靠里**的部分照旧拦住边缘滚屏（原来那条行为不变）")
+
 	# ---- 选中单位不再画攻击 / 警戒范围圈 ----
 	ok(not main.overlay.has_method("_draw_selected_units"),
 		"★ overlay 里已经没有「选中范围圈」那段代码（画范围圈的函数被删掉了）")
@@ -233,7 +301,7 @@ func _test_panels(cfg) -> void:
 
 	await _test_anchors(main)
 
-	main.queue_free()
+	root_node.queue_free()
 	await process_frame
 
 
@@ -362,7 +430,10 @@ func _test_card_keys(main) -> void:
 	tabs.select_page(PageTabsRes.PAGE_UNIT)
 
 
-# ---- 招募：走「命令」这条路 ----
+# ---- 招募：走「命令」这条路（入队即扣费、读条 10 秒）+ 信息栏里的五个格子 ----
+#
+# ★ 招募的**规则**（消耗 / 人口 / 队列上限 / 10 秒 / 格心生成 / 区划限制 / 阵亡退款）
+#   在 tests/test_recruit_queue.gd；这里只验「UI → 命令 → 队列显示」这条接线。
 func _test_recruit_via_card(main) -> void:
 	var world = main.world
 	var card = main.hud.command_card
@@ -376,27 +447,279 @@ func _test_recruit_via_card(main) -> void:
 		"★ 没选中将领时招募命令**不发出去**（只给提示）")
 	eq(world.retinue_of(g1.id).size(), before, "没选中将领时没有凭空多出单位")
 
-	# 选中将领 1 再点单位页的 Q 格
 	main.input_ctrl.select_units([g1])
+	main.hud.refresh()
+	var queue = main.hud.detail_panel.queue_control()
+	ok(queue != null, "详细信息左栏里有招募队列控件")
+	ok(not queue.showing(), "★ 没在招募时五个格子收起来（需求：将领开始招募时才出现）")
+
+	# ---- 资源不足：命令被拒 + 左栏出现红字原因 ----
+	world.resources["food"] = 10.0
+	world.resources["gold"] = 10.0
 	card.activate_index(0)
-	eq(world.retinue_of(g1.id).size(), before + 1, "★ 选中将领后招募 → 将领 1 名下多了一个兵")
-	var fresh = world.retinue_of(g1.id)[before]
-	eq(fresh.leader_id, g1.id, "新兵挂在被选中的将领名下")
-	ok(world.unit_by_id(fresh.id) == fresh, "新兵真的进了 world.units")
+	var evts: Array = world.tick(1.0 / 60.0)
+	main._consume_events(evts)                 # 走真实那条「事件 → 文案」的路
+	ok(main.hud.notice_active(), "★ 招募被拒 → 左栏出现红字提示（不然玩家以为点坏了）")
+	ok(main.hud.notice_text().contains("不足"),
+		"提示文案说明是资源不足（实际：%s）" % main.hud.notice_text())
+	eq(world.retinue_of(g1.id).size(), before, "被拒的招募没有生成单位")
+	ok(not g1.is_training(), "被拒的招募没有进队列")
 
-	# 键盘 Q 也走同一条路
+	# 提示是**限时**的：过了 ui.notice_sec 秒自己消失
+	main.hud._tick_notice(main.cfg.num("ui.notice_sec", 2.0) + 0.1)
+	ok(not main.hud.notice_active(), "★ 提示到时自动消失")
+	eq(main.hud.notice_text(), "", "消失之后文本也清掉")
+
+	# ---- 资源与人口给足：点 Q 格 → 入队 ----
+	world.resources["food"] = 200.0
+	world.resources["gold"] = 200.0
+	world.zones.zone_at(g1.tx, g1.ty)["population"] = 5.0
+	card.activate_index(0)
+	ok(g1.is_training(), "★ 点单位页的 Q 格 → 排进招募队列")
+	eq(g1.train_kind, UnitRes.KIND_SUBORDINATE, "大格子里是刚排进去的那个")
+	near(float(world.resources["food"]), 150.0, 1e-4, "★ 入队即扣 50 粮食")
+	eq(world.retinue_of(g1.id).size(), before, "★ 入队不会立刻生成单位（要读条 10 秒）")
+	eq(g1.leader_id, "", "将领自己还是队长")
+
+	main.hud.refresh()
+	ok(queue.showing(), "★ 信息栏里出现五个格子")
+	eq(queue.slot_count(), 5, "★ 一共五个格子")
+	ok(queue.cell_filled(0), "大格子填上了（正在读条的那个）")
+	ok(not queue.cell_filled(1), "小格子还是空的")
+	ok(queue.cell_label(0).contains("兵"),
+		"大格子里写着兵种短名（实际：%s）" % queue.cell_label(0))
+	near(queue.progress(), 0.0, 1e-6, "刚入队时读条是 0")
+
+	# ---- 键盘 Q 也走同一条路：第二个排进小格子 ----
 	ok(card.handle_key(_key(KEY_Q)), "单位页的 Q 被命令卡吃掉")
-	eq(world.retinue_of(g1.id).size(), before + 2, "键盘 Q 同样能招募")
+	main.hud.refresh()
+	eq(g1.train_queue.size(), 1, "★ 第二次招募排进小格子（不抢读条）")
+	ok(queue.cell_filled(1), "第 2 个格子（小格）填上了")
+	near(queue.progress(), 0.0, 0.05, "★ 排队的不影响正在读条那个的进度")
 
-	# 命令卡切页之后，招募不会串到建筑页上
+	# ---- 命令卡切页之后，招募不会串到建筑页上 ----
 	main.hud.page_tabs.select_page(PageTabsRes.PAGE_BUILD)
-	eq(world.retinue_of(g1.id).size(), before + 2, "切到建筑页不会再多出单位")
 	main.hud.page_tabs.select_page(PageTabsRes.PAGE_UNIT)
+	eq(g1.train_queue_size(), 2, "切页不会改变队列")
 
-	# 列表要跟着动（人数 + 人数文案）
-	main.hud.squad_panel.refresh()
-	ok(main.hud.squad_panel.slot_text(0).contains("%d 人" % (before + 3)),
-		"部队列表的人数跟着招募走（实际：%s）" % main.hud.squad_panel.slot_text(0))
+	# 选中别的单位 → 队列那五格收起来（它只显示「当前选中的将领」的队列）
+	main.input_ctrl.select_units([])
+	main.hud.refresh()
+	ok(not queue.showing(), "★ 没选中招募中的将领时五格收起来")
+
+	# 收尾：把这个将领的队列清干净（下一个用例要从「没在招募」开始）
+	while g1.train_queue_size() > 0:
+		world.cancel_recruit(g1.id, 0, "p1")
+	ok(not g1.is_training(), "收尾：队列已清空")
+
+
+# ---- 点队列格子 = 取消那一格（后方的队列前移）----
+#
+# 需求原话：「点击对应的格子取消对应格子上的造兵队列，其后方的造兵队列前移」。
+# ★ 规则本身（退款 / 前移 / 从头读条）在 tests/test_recruit_queue.gd；
+#   这里验的是「点格子 → 取消命令 → 那一格空了」这条接线。
+func _test_queue_cancel_via_click(main) -> void:
+	var world = main.world
+	var card = main.hud.command_card
+	var g1 = world.unit_by_id("general-1")
+	world.resources["food"] = 1000.0
+	world.resources["gold"] = 1000.0
+	world.zones.zone_at(g1.tx, g1.ty)["population"] = 10.0
+	main.input_ctrl.select_units([g1])
+	main.hud.refresh()
+	var q = main.hud.detail_panel.queue_control()
+
+	# 排两单：大格子（正在读条）+ 第 1 个小格子
+	card.activate_index(0)
+	card.activate_index(0)
+	main.hud.refresh()
+	eq(g1.train_queue_size(), 2, "排了两单（1 大 + 1 小）")
+	ok(q.showing(), "五格显示出来了")
+
+	# ---- 点第 1 个小格子 → 取消那一格 + 退款 ----
+	var food_before: float = float(world.resources["food"])
+	_click_control(q, UiLayoutRes.queue_cell_rect(1).get_center())
+	eq(g1.train_queue_size(), 1, "★ 点小格子 = 取消那一格")
+	near(float(world.resources["food"]), food_before + 50.0, 1e-4, "★ 取消会退款")
+	main.hud.refresh()
+	ok(not q.cell_filled(1), "★ 那一格空了（界面下一帧按权威状态重画）")
+
+	# ---- 点空格子 → 什么都不发生 ----
+	food_before = float(world.resources["food"])
+	_click_control(q, UiLayoutRes.queue_cell_rect(3).get_center())
+	eq(g1.train_queue_size(), 1, "★ 点空格子什么都不发生")
+	near(float(world.resources["food"]), food_before, 1e-6, "空格子也不会退钱")
+
+	# ---- 点大格子 → 取消正在读条的那个（读条期间将领一直被钉住）----
+	ok(g1.is_training(), "取消排队的那单之后还在读条")
+	_click_control(q, UiLayoutRes.queue_cell_rect(0).get_center())
+	ok(not g1.is_training(), "★ 取消掉最后一单 → 不再是「招募中」")
+	main.hud.refresh()
+	ok(not q.showing(), "★ 队列空了 → 五个格子收起来")
+
+
+# ---- 招募完成时：玩家仍选中着那个将领 → 新兵也一起被选上 ----
+#
+# 需求原话：「为生成的单位添加一个规则，如果造一个兵结束时玩家仍选中其将领，
+#            则这个新兵也会被选中」。
+# ★ 「生成」那一步由 tests/test_recruit_queue.gd 验；这里验的是「事件到了之后，
+#   UI 会不会把它选上」（game_scene._consume_events → input_ctrl.notify_unit_recruited）。
+func _test_auto_select_on_recruit(main) -> void:
+	var world = main.world
+	var g1 = world.unit_by_id("general-1")
+	main.input_ctrl.select_units([g1])
+	var team_before: int = main.input_ctrl.selected_units.size()
+
+	# 造一个「刚招募出来的新兵」（就是他名下多了一个兵）
+	var fresh = UnitRes.create(main.cfg, "auto-r1", "亲兵 9",
+		Vector2i(g1.tx, g1.ty), g1.faction, UnitRes.KIND_SUBORDINATE, "", g1.id)
+	world.units.append(fresh)
+
+	main._consume_events([{"type": "unit_recruited", "unit": fresh, "leader": g1}])
+	eq(main.input_ctrl.selected_units.size(), team_before + 1, "★ 新兵也被选上了")
+	ok(main.input_ctrl.selected_units.has(fresh), "★ 新兵在选中列表里")
+	ok(fresh.selected, "★ 新兵身上的高亮标志也点亮了")
+
+	# 反例：玩家已经改选别人 → **不打扰他**（需求的前提是「仍选中其将领」）
+	main.input_ctrl.select_units([])
+	main._consume_events([{"type": "unit_recruited", "unit": fresh, "leader": g1}])
+	ok(main.input_ctrl.selected_units.is_empty(), "★ 没选中那个将领时不会把新兵硬塞进选中列表")
+	ok(not fresh.selected, "新兵也不该被点亮")
+
+	# 收尾
+	world.units.erase(fresh)
+	main.input_ctrl.select_units([g1])
+
+
+## 造一次真实的鼠标左键点击，走控件自己的命中判定（_gui_input）
+func _click_control(c: Control, pos: Vector2) -> void:
+	var ev := InputEventMouseButton.new()
+	ev.button_index = MOUSE_BUTTON_LEFT
+	ev.pressed = true
+	ev.position = pos
+	c._gui_input(ev)
+
+
+# ---- 招募期间整队不接受指令 → 左栏红字（不然右键点了没反应看起来就是坏了）----
+#
+# 需求原话：「玩家无法为正在招募单位的将领及其附属队列发布任何指令（移动/攻击）」。
+# ★ 规则本身在 tests/test_recruit_queue.gd 的 _test_retinue_locked_while_training；
+#   这里验的是「命令被拒之后玩家看得见一句话」这条反馈链。
+func _test_order_locked_notice(main) -> void:
+	var world = main.world
+	var card = main.hud.command_card
+	var g1 = world.unit_by_id("general-1")
+	world.resources["food"] = 1000.0
+	world.resources["gold"] = 1000.0
+	world.zones.zone_at(g1.tx, g1.ty)["population"] = 10.0
+	main.input_ctrl.select_units([g1])
+	card.activate_index(0)                       # 排一单 → 整队被锁住
+	ok(g1.is_training(), "将领开始招募（整队进入「不接指令」状态）")
+	main.hud.show_notice("")                     # 先把提示清掉，免得误判
+
+	# 找一块空地右键过去：命令会发出去，但会被逻辑层拒掉
+	var empty := Vector2i(-1, -1)
+	for ty in world.map.rows:
+		for tx in world.map.cols:
+			if world.can_build_at(tx, ty):
+				empty = Vector2i(tx, ty)
+				break
+		if empty.x >= 0:
+			break
+	ok(empty.x >= 0, "找得到一格空地")
+	main.input_ctrl.hover_tile = empty
+	main.input_ctrl.mouse_world = Vector2(empty.x + 0.5, empty.y + 0.5)
+	main.input_ctrl._on_right_click(false)
+	var evts: Array = world.tick(1.0 / 60.0)
+	main._consume_events(evts)
+	ok(main.hud.notice_active(), "★ 指令被拒 → 左栏出现红字提示")
+	ok(main.hud.notice_text().contains("招募"),
+		"★ 提示说明是「将领正在招募」（实际：%s）" % main.hud.notice_text())
+	ok(main.input_ctrl.move_marks.is_empty(),
+		"★ 被锁住的队伍不会画「没人会走的移动标记」（不骗玩家）")
+	ok(main.input_ctrl.selection_locked(), "选中的整队确实处于「被招募锁住」状态")
+
+	# 亲兵也在锁的范围内：单独拿一个亲兵下令同样被拒
+	var mate = world.retinue_of(g1.id)[0]
+	ok(not CommandRes.apply(world, main.cfg, {"kind": "move", "ids": [mate.id],
+		"x": float(empty.x), "y": float(empty.y), "faction": "p1"}),
+		"★ 将领辖下的亲兵也不接受指令")
+	# 别的将领照旧能下令
+	var g2 = world.unit_by_id("general-2")
+	ok(CommandRes.apply(world, main.cfg, {"kind": "move", "ids": [g2.id],
+		"x": float(empty.x), "y": float(empty.y), "faction": "p1"}),
+		"★ 没在招募的将领照旧能下令")
+
+	# 收尾：清掉队列（后面的用例要在「没在招募」的世界里跑）
+	while g1.train_queue_size() > 0:
+		world.cancel_recruit(g1.id, 0, "p1")
+	main.hud.show_notice("")
+	ok(not g1.is_training(), "收尾：队列已清空")
+
+
+# ---- 招募队列控件（RecruitQueue）：五格的显示与读条 ----
+#
+# ★ 这里单独构造一个控件、直接喂一个「正在招募」的将领 ——
+#   不去动主场景那个世界（它还要给后面的用例用，tick 满 10 秒会把巡逻兵引过来）。
+func _test_queue_control(cfg) -> void:
+	var w = WorldRes.create(cfg)
+	w.resources["food"] = 1000.0
+	w.resources["gold"] = 1000.0
+	var g1 = w.unit_by_id("general-1")
+	w.zones.zone_at(g1.tx, g1.ty)["population"] = 10.0
+
+	var q = RecruitQueueRes.new()
+	root.add_child(q)
+	q.setup(w)
+
+	# 默认（没有选中将领）：整块不显示
+	ok(not q.showing(), "没喂将领时不显示")
+	q.set_leader(g1)
+	ok(not q.showing(), "选中的将领没在招募 → 还是不显示（需求：开始招募时才出现）")
+
+	w.start_recruit(UnitRes.KIND_SUBORDINATE, g1.id, "p1")
+	w.start_recruit(UnitRes.KIND_SUBORDINATE, g1.id, "p1")
+	q.set_leader(g1)
+	ok(q.showing(), "★ 开始招募 → 五格出现")
+	eq(q.slot_count(), 5, "五个格子")
+	eq(q.cell_kind(0), UnitRes.KIND_SUBORDINATE, "大格子是正在读条的那个")
+	eq(q.cell_kind(1), UnitRes.KIND_SUBORDINATE, "第 1 个小格子是排队的那个")
+	eq(q.cell_kind(2), "", "后面三个小格子是空的")
+	ok(q.cell_filled(0) and q.cell_filled(1) and not q.cell_filled(2), "填充状态跟着队列走")
+
+	# 读条推进 → 进度跟着涨（大格子里的那条）
+	for _i in 300:
+		w.tick(1.0 / 60.0)
+	q.set_leader(g1)
+	near(q.progress(), 5.0 / 10.0, 0.05, "★ 读条到一半 → 进度条 50%")
+	ok(q.cell_label(0).contains("s"), "大格子上写着剩余秒数（实际：%s）" % q.cell_label(0))
+
+	q.queue_free()
+
+
+# ---- 招募入队会发事件（走的是与建造同一条事件通道）----
+#
+# 症状有多难查见 pitfalls 5.14：命令是输入事件触发的、跑在两次 tick 之间，
+# 而 tick 曾经在**开头**清空 _events —— 命令事件在送到界面前就被丢掉了。
+func _test_recruit_queued_event(cfg) -> void:
+	var w = WorldRes.create(cfg)
+	w.resources["food"] = 1000.0
+	w.resources["gold"] = 1000.0
+	var g1 = w.unit_by_id("general-1")
+	w.zones.zone_at(g1.tx, g1.ty)["population"] = 10.0
+
+	w.tick(1.0 / 60.0)                  # 把上一帧的残留事件清干净
+	ok(CommandRes.apply(w, cfg, {
+		"kind": "recruit", "unit_kind": UnitRes.KIND_SUBORDINATE,
+		"leader_id": g1.id, "faction": "p1"}), "招募命令被接受（入队）")
+	var events: Array = w.tick(1.0 / 60.0)
+	var queued := 0
+	for evt in events:
+		if String(evt.get("type", "")) == "recruit_queued":
+			queued += 1
+	eq(queued, 1, "★ 招募入队的事件被下一次 tick 交了出来（命令事件不能在 tick 开头被丢掉）")
+
+
 
 
 # ---- 右键：点敌人 = 攻击、双击 = 行军攻击、点空地 = 移动 ----
@@ -541,16 +864,8 @@ func _test_command_events_reach_consumer(main) -> void:
 			built += 1
 	eq(built, 1, "★ 建造事件被下一次 tick 交了出来（命令事件不能在 tick 开头被丢掉）")
 
-	# 招募同样要有事件（走的是同一条路）
-	var g1 = main.world.unit_by_id("general-1")
-	main.input_ctrl.select_units([g1])
-	main.input_ctrl.request_recruit(UnitRes.KIND_SUBORDINATE)
-	var events2: Array = main.world.tick(1.0 / 60.0)
-	var recruited := 0
-	for evt in events2:
-		if String(evt.get("type", "")) == "unit_recruited":
-			recruited += 1
-	eq(recruited, 1, "★ 招募事件也被下一次 tick 交了出来")
+	# 招募走的是同一条路（入队也是一条命令事件）—— 用一个干净的世界验，别动主场景那个
+	_test_recruit_queued_event(main.cfg)
 
 
 func _key(code: int) -> InputEventKey:

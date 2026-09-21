@@ -474,7 +474,7 @@ Linux 上要装 `python3-tk`）。
 跑测试：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File dev_gd_a/daeem/tools/run-tests.ps1   # Godot：13 套 / 1189 项
+powershell -ExecutionPolicy Bypass -File dev_gd_a/daeem/tools/run-tests.ps1   # Godot：18 套 / 1606 项
 python dev_gd_a/tools/map_editor/test_model.py                                # 编辑器数据层：252 项
 python dev_gd_a/tools/map_editor/test_app.py                                  # 编辑器界面动作：341 项
 python dev_gd_a/tools/map_editor/bench_app.py                                 # 跟手度基准（只测不判）

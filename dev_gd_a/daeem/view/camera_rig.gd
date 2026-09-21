@@ -120,7 +120,10 @@ func add_pan(dir: Vector2) -> void:
 func _edge_scroll(dt: float) -> void:
 	if not _edge_scroll_on or not _mouse_inside or _space_held:
 		return
-	var margin: float = cfg.num("camera.edge_size", 44.0)
+	# ★ 用 cfg.camera_edge_size（载入时算好），不用 cfg.num("camera.edge_size")：
+	#   这个数每帧读一次，而且 hud.blocks_edge_scroll 读的是**同一个字段**
+	#   —— 两处各写一个 44 就会出现「看着在边缘却滚不动」。
+	var margin: float = cfg.camera_edge_size
 	var max_speed: float = cfg.num("camera.edge_max_speed", 1500.0)
 	var vp: Vector2 = get_viewport_rect().size
 	var dir := Vector2.ZERO
