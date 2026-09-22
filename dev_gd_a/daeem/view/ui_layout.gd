@@ -190,31 +190,98 @@ const TROOP_GRID_H := 3.0 * TROOP_CELL_H
 ##   `UNIT_AVATAR_Y + UNIT_AVATAR < DETAIL_BODY_Y`（头像整块在数值框上面，不重叠）、
 ##   `BUFF_X + 3×(BUFF_SIZE+BUFF_GAP) ≤ DETAIL_RIGHT_W`（buff 不越出右栏）、
 ##   `UNIT_NAME_X + UNIT_NAME_W ≤ QUEUE_X`（名称不顶到招募队列）。
+##
+## ★★ **第七轮右栏再排一次：顶带单独成带、整块四周留出不贴边。**
+##   起因是手玩看着不对：「招募那块面板的 ui 还是不好看 —— **它的上方被裁剪了**，
+##   而且 ui 内容也太小了，显得将领头像和名字旁边很空」。
+##   截图量过，两条都是真的：
+##     ① 队列块的顶边**正好压在右栏的裁剪线（y=0）上**，而 `draw_rect(..., false, 1)`
+##        画的是**以边界为中心**的 1px 描边 ⇒ 贴边那一半被 `right.clip_contents` 切掉：
+##        画面上队列的**上边框整条不见了**（大格子也一样）。右边缘同理。
+##     ② 队列块 261×64 里塞着 64 的大格 + 30 的小格，字只有 13/11 号 ——
+##        旁边是 72 的头像与 29 号的名称，它显得又小又空。
+##
+##   现在的排法（右栏 645×220）：
+##
+##     y   4 ..  96   顶带（92 高，四周留 4）：头像 / 名称+buff / 招募队列
+##                    三块**同一条中轴线**（头像与队列都在带里垂直居中）
+##     y 100 .. 196   数值框（645×96 —— 从 116 收回 20，让给顶带；仍装得下 5 行 13 号字）
+##     y 200 .. 220   提示带（红字一行）
+##
+##   ⇒ ① 队列块从 261×64 放大到 **313×92**（大格 84、小格 40、字号 15/13）；
+##      ② 队列块离右栏上/右边缘各留 4px（`QUEUE_MARGIN`）—— 描边不再被裁，
+##         同时和头像一起落在顶带的中轴线上；
+##      ③ 数值框右缘仍然与队列块右缘**对齐**（都是 `DETAIL_RIGHT_W - QUEUE_MARGIN`）。
+##   ⚠️ 这几条被 tests/test_ui.gd 钉住（改了要一起改）：
+##     `UNIT_AVATAR_Y + UNIT_AVATAR < DETAIL_BODY_Y`（头像整块在数值框上面）、
+##     `BUFF_X + 3×(BUFF_SIZE+BUFF_GAP) ≤ DETAIL_RIGHT_W`（buff 不越出右栏）、
+##     `UNIT_NAME_X + UNIT_NAME_W ≤ QUEUE_X`（名称不顶到招募队列）、
+##     `QUEUE_Y ≥ 1` 且 `QUEUE_X + QUEUE_W ≤ DETAIL_RIGHT_W - 1`（**不许贴裁剪线**）。
 ## ------------------------------------------------------------------
-const UNIT_AVATAR := 72.0            # 选中单位的头像方框（正方形；本轮 100 → 72）
+const UNIT_AVATAR := 72.0            # 选中单位的头像方框（正方形；第五轮 100 → 72）
 const UNIT_AVATAR_X := 0.0           # 贴右栏左边
-const UNIT_AVATAR_Y := 8.0           # 上面留一点
+## 顶带（头像 / 名称+buff / 队列 都住在这里）：y 4..96。
+## ★ 顶边**不取 0**：贴 0 会让描边落在右栏裁剪线上被切掉（见上面第 ① 条）。
+const UNIT_BAND_Y := 4.0
+const UNIT_BAND_H := 92.0
+## ★ 本轮 0 → 14：在顶带里**垂直居中**（4 + (92−72)/2），与右侧队列同一条中轴线。
+const UNIT_AVATAR_Y := 14.0
 const UNIT_NAME_X := 84.0            # 名字的左边（= 头像 72 + 缝 12）
-const UNIT_NAME_Y := 10.0            # 与头像**上缘**同一水平线
-## 名称最多写到哪：★ 右边缘必须让开招募队列（QUEUE_X），否则名字会压到队列上
-const UNIT_NAME_W := 300.0
-const BUFF_SIZE := 30.0              # buff 图标一格（参考图 30×30）
-const BUFF_GAP := 18.0               # 格距 48 = 30 + 18
-const BUFF_X := 96.0                 # 三个 buff 从这一列开始排（名称下面那一行）
-const BUFF_Y := 42.0                 # 与名称同一横带，落在头像的竖直范围内
+## ★ 本轮 0 → 16：贴着头像上缘那一带（29 号字的字面从 16 起，与抬头对齐）。
+const UNIT_NAME_Y := 16.0
+## 名称最多写到哪：★ 右边缘必须让开招募队列（QUEUE_X=328），否则名字会压到队列上。
+## ★ 本轮 300 → 236（84..320）：队列放大之后左缘从 384 挪到 328，名称相应地收窄 ——
+##   实测最长的名字「亲兵 11」才 102px，236 绰绰有余，超出会自动省略号。
+const UNIT_NAME_W := 236.0
+## buff 占位格：★ 本轮 30 → **40**（与左栏那些 40×40 的方块同一号尺寸），
+## 字号 11 → 13（"buff1" 实测 33px ≤ 40）—— 原来 30×30 + 11 号字看着像两个小疙瘩。
+const BUFF_SIZE := 40.0
+const BUFF_GAP := 14.0               # 格距 54 = 40 + 14（三格共 148px）
+## ★ buff 行与名称**共用同一个左边缘**（84）；三格的**下缘**正好压着头像下缘（46+40 = 86）。
+const BUFF_X := 84.0
+const BUFF_Y := 46.0
 ## buff 先做几个**无效占位**（手玩原话：「可以先做几个无效果的 buff 凑数」）
 const BUFF_SLOTS := 3
 ## 「详细信息」方框：**横跨整个右栏**，左边缘与头像对齐。
-## ★★ 本轮从 90 加高到 116（正文改成两栏之后仍留足余量：2 行 ×19px + 标题 20 + 内边距）。
+## ★★ 第五轮从 90 加高到 116；**第七轮 116 → 96**（y 100..196）—— 20px 让给顶带，
+##    好让招募队列从 64 长到 92。可视高 96−24 = 72，13 号字（行高 14）仍装得下 5 行，
+##    而实际正文最多 4 行 ⇒ 一行都不会被裁。
+## ★★ 宽度 = `DETAIL_RIGHT_W − QUEUE_MARGIN`（641）：与招募队列**共用同一条右缘**。
 ##   ⚠️ DETAIL_BODY_Y + DETAIL_BODY_H 必须 ≤ 220（本栏内容高）。
 const DETAIL_BODY_X := 0.0
-const DETAIL_BODY_W := 606.0
-const DETAIL_BODY_Y := 84.0
-const DETAIL_BODY_H := 116.0
-## 招募队列（1 大 + 4 小）在右栏里的位置：贴右栏**右上角**。
-## ★ 513 + QUEUE_W(132) = 645 = 右栏宽 —— 正好贴住右边缘，不越出面板（本轮修的越界）。
-const QUEUE_X := 513.0
-const QUEUE_Y := 0.0
+const DETAIL_BODY_W := DETAIL_RIGHT_W - QUEUE_MARGIN
+const DETAIL_BODY_Y := 100.0
+const DETAIL_BODY_H := 96.0
+## 提示带的局部矩形（相对右栏）：**数值框下面那一条 20px**（100+96=196 .. 220）。
+## ★★ 它曾经是面板 VBox 里的第二行 —— 一出现就把两栏各压掉 20px，
+##    而左栏那 3×3 网格是**正好铺满 220** 的（40 + 15 + 3×55），于是最下面一截被裁。
+##    现在它是右栏里的一个**绝对定位浮层**：出现与消失都不改任何一块的几何。
+## ★ 20 高 / 正文 15 号字（行高 16）刚好一行 —— 长文案实测最长 405px ≤ 645，一行放得下。
+const NOTICE_Y := 200.0
+const NOTICE_H := 20.0
+## ------------------------------------------------------------------
+## 「详细信息」方框里的**正文**：真·两栏（两个 Label），不是制表符
+##
+## ★★ 第七轮修的：原来正文是一整段带 `\t` 的字符串。**Godot 的 Label 不把 `\t`
+##    当制表位**（它只推进一个很小的固定宽度），于是画面上两栏是**粘在一起**的：
+##      血量 200 / 200状态：待命
+##    截图里一眼就能看出来（手玩说的「ui 还是不好看」里也有它）。
+##    现在左栏一个 Label、右栏一个 Label，x 由这里定死，**永远对齐**。
+## ------------------------------------------------------------------
+const DETAIL_BODY_PAD := 8.0         # 正文离方框左边 / 上边的内边距
+const DETAIL_BODY_COL_W := 190.0     # 左栏可写宽（最长一行「攻击距离 3 格 / 间隔 1.2s」实测 163）
+const DETAIL_BODY_COL_GAP := 18.0    # 两栏之间的缝
+const DETAIL_BODY_COL2_X := DETAIL_BODY_PAD + DETAIL_BODY_COL_W + DETAIL_BODY_COL_GAP   # 216
+const DETAIL_BODY_COL2_W := DETAIL_BODY_W - DETAIL_BODY_COL2_X - DETAIL_BODY_PAD        # 417
+## ★★ 右栏所有方块的**公共右缘**，也是它们离右栏右边缘的留白。
+##
+## ★ 为什么必须有这个留白（手玩报的「上方被裁剪了」的真根因）：
+##   `draw_rect(..., false, 1.0)` 画的 1px 描边是**以矩形边界为中心**的 ——
+##   矩形一旦贴着右栏的上/右边缘，就有一半描边落在 `right.clip_contents` 之外被切掉，
+##   画面上表现成「上边框整条不见了」。留 4px 之后四边都完整。
+## ★ 数值框、招募队列、提示行都用它 ⇒ 右栏右侧是一条对齐的直线。
+const QUEUE_MARGIN := 4.0
+const UNIT_CONTENT_RIGHT := DETAIL_RIGHT_W - QUEUE_MARGIN
 
 
 # ------------------------------------------------------------------
@@ -288,20 +355,42 @@ static func troop_cell_global_rect(i: int) -> Rect2:
 
 
 # ------------------------------------------------------------------
-# 旧的几何常量（招募队列 / 命令卡 / 页签仍在用）
+# 招募队列（1 大 + 4 小 + 左边一段汇总文字）
 # ------------------------------------------------------------------
 
 ## 招募队列的五个格子（星际争霸那套：1 个大格 + 4 个小格）
 ##
-## ★ 本轮改版后它画在**详细信息右栏的右上角**（盖在单位名称那一行右边），
-##   只有选中的将领正在招募时才出现。
+## ★ 它画在**详细信息右栏的顶带里**（单位名称右边），只有选中的将领正在招募时才出现。
 ##   下面是**队列控件自身**的局部坐标 —— 控件本身由 detail_panel 摆进右栏。
-const QUEUE_BIG := 64.0              # 正在读条的那个（大格子）
-const QUEUE_SMALL := 30.0            # 排队的四个（小格子）
+##
+## ★★ 第七轮：控件先加了左边一条 129px 汇总带，随后又按手玩反馈**整块放大**：
+##   大格 64 → **84**、小格 30 → **40**、字号 13/11 → **15/13**、控件 261×64 → **313×92**，
+##   并且**离右栏的上/右边缘各留 4px**（`QUEUE_MARGIN`）—— 贴边时 1px 描边会被
+##   右栏的 `clip_contents` 切掉一半（画面上就是「上边框不见了」），留 4px 之后四边全在。
+##
+##     328 ───────── 469 ─────────── 641     ← 641 = DETAIL_RIGHT_W − QUEUE_MARGIN
+##     │  汇总带 141 │  五个格子 172  │
+##     └─ QUEUE_X = DETAIL_RIGHT_W − QUEUE_MARGIN − QUEUE_W = 645 − 4 − 313 = 328
+##
+##   ⚠️ 竖直方向：控件 92 高，格子 84 高，上下各留 4（`QUEUE_CELL_PAD`）。
+##   ⚠️ `QUEUE_X / QUEUE_W` 是**控件**的；`queue_cell_rect()` 给的是**格子**在控件内的位置
+##      （因此带 QUEUE_INFO_W 的偏移）。tests/test_ui.gd 有断言钉着（改了要一起改）。
+const QUEUE_BIG := 84.0              # 正在读条的那个（大格子）
+const QUEUE_SMALL := 40.0            # 排队的四个（小格子）
 const QUEUE_GAP := 4.0
 const QUEUE_SLOTS := 5               # 1 大 + 4 小 = 最多 5 个（与 recruit.queue_max 对应）
-const QUEUE_W := QUEUE_BIG + QUEUE_GAP + QUEUE_SMALL * 2.0 + QUEUE_GAP
-const QUEUE_H := QUEUE_BIG
+const QUEUE_CELLS_W := QUEUE_BIG + QUEUE_GAP + QUEUE_SMALL * 2.0 + QUEUE_GAP   # 172：五个格子那一段
+const QUEUE_INFO_W := 141.0          # 左边汇总文字那一段（两行小字）
+const QUEUE_INFO_PAD := 8.0          # 汇总文字离控件左边 / 上边的内边距
+const QUEUE_W := QUEUE_INFO_W + QUEUE_CELLS_W                                  # 313：控件总宽
+const QUEUE_H := 92.0                                                          # 控件总高
+## 格子在这个 92 高的控件里的上下留白：92 − 84 = 8 ⇒ 上下各 4。
+const QUEUE_CELL_PAD := (QUEUE_H - QUEUE_BIG) * 0.5
+## 控件左上角：右缘钉在 `UNIT_CONTENT_RIGHT`（= 641）上，上缘留 `QUEUE_MARGIN`（= 4）。
+## ★ 这里**故意写成推算式**（其它地方那几个数是写死的）：这两条对齐是「留出不贴边」，
+##   写成推算式之后改右栏宽 / 留白都不会再把它贴回裁剪线上。
+const QUEUE_X := UNIT_CONTENT_RIGHT - QUEUE_W
+const QUEUE_Y := QUEUE_MARGIN
 
 
 
@@ -351,16 +440,44 @@ static func tab_button_rect(i: int) -> Rect2:
 
 ## 招募队列第 i 个格子（0 = 正在读条的大格，1..4 = 排队的四个小格）。
 ## 坐标相对**队列控件自身**（2×2 的小格排在右边，上下刚好与大格对齐）。
+## ★ 左边先让开 `QUEUE_INFO_W` 那段汇总文字；上下各让开 `QUEUE_CELL_PAD`（= 4）。
 static func queue_cell_rect(i: int) -> Rect2:
+	var y := QUEUE_CELL_PAD
 	if i <= 0:
-		return Rect2(0.0, 0.0, QUEUE_BIG, QUEUE_BIG)
+		return Rect2(QUEUE_INFO_W, y, QUEUE_BIG, QUEUE_BIG)
 	var k := i - 1
 	var col := k % 2
 	var row := int(k / 2)
 	return Rect2(
-		QUEUE_BIG + QUEUE_GAP + float(col) * (QUEUE_SMALL + QUEUE_GAP),
-		float(row) * (QUEUE_SMALL + QUEUE_GAP),
+		QUEUE_INFO_W + QUEUE_BIG + QUEUE_GAP + float(col) * (QUEUE_SMALL + QUEUE_GAP),
+		y + float(row) * (QUEUE_SMALL + QUEUE_GAP),
 		QUEUE_SMALL, QUEUE_SMALL)
+
+
+## 汇总文字那一段的矩形（相对队列控件自身）：控件左边那条 `QUEUE_INFO_W` 宽的带子。
+static func queue_info_rect() -> Rect2:
+	return Rect2(0.0, 0.0, QUEUE_INFO_W, QUEUE_H)
+
+
+## 汇总带里第 i 行文字的矩形（0 = 「招募队列 3/5」，1 = 「共 22s」）。
+##
+## ★ 两行作为一个文字块在 92 高的带子里**垂直居中**：
+##   块高 = 18(第一行) + 4(缝) + 16(第二行) = 38 ⇒ 上下各留 27。
+static func queue_info_line_rect(i: int) -> Rect2:
+	var w := QUEUE_INFO_W - 2.0 * QUEUE_INFO_PAD
+	if i <= 0:
+		return Rect2(QUEUE_INFO_PAD, 27.0, w, 18.0)
+	return Rect2(QUEUE_INFO_PAD, 49.0, w, 16.0)
+
+
+## 鼠标停在某一格上时，那一格右上角那个「×」的边长与内边距（第七轮加的）。
+##
+## ★ 它是**两条短线画出来的记号**（不是字）：不依赖字体，所以中文字体没装好时
+##   也不会变成方框（`view/recruit_queue.gd` 的 `_draw` 用它）。
+## ★ 放在这里而不是 view/ 里：全工程的「像素坐标」只认这一个文件
+##   （与其它 view 文件同规矩，见本文件开头）。
+const QUEUE_HOVER_X_SIZE := 8.0
+const QUEUE_HOVER_X_PAD := 4.0
 
 
 # ------------------------------------------------------------------
@@ -437,6 +554,31 @@ static func interactive_rects(view_size: Vector2) -> Array[Rect2]:
 	var s := SETTINGS_RECT
 	s.position.x += shift.x                                     # 贴右上
 	out.append(s)
+	return out
+
+
+## 底栏那几块面板的矩形（设计空间，贴边修正与 interactive_rects 同一套口径）：
+## 详细信息 / 阵营 / 命令卡 / 页签。
+##
+## ★★ 这是**另一份名单**，别和 interactive_rects 合并 —— 两者判的是两件事：
+##   · `interactive_rects` = 「**能点的**控件」→ 用来拦**边缘滚屏**。只能收能点的东西：
+##     详细信息面板全是文字，让它也让路的话底栏会盖住屏幕下沿，鼠标永远滚不到地图下方。
+##   · 本名单 = 「**底栏本身**」→ 用来拦**滚轮缩放**（用户需求：「当鼠标位于下方除地图外的
+##     ui 栏时，应当禁用鼠标滚轮缩放地图，当鼠标移出下边栏，需要恢复」）。
+##     玩家正在看底栏的时候，那一下滚动不该把地图拉走 —— 与那一块能不能点无关。
+##
+## ★ 左下小地图**不在**名单里：它是地图本身（不是 ui 栏），鼠标停在上面时滚轮照旧缩放地图。
+## ★ 超宽窗口：详细信息贴左边不动，其余三块跟着贴右下（口径与 interactive_rects 一致）。
+static func bottom_bar_rects(view_size: Vector2) -> Array[Rect2]:
+	var shift := Vector2(maxf(0.0, view_size.x - DESIGN_W), maxf(0.0, view_size.y - DESIGN_H))
+	var out: Array[Rect2] = []
+	var d := DETAIL_RECT                    # 贴左边：只跟着下边修正
+	d.position.y += shift.y
+	out.append(d)
+	for r in [FACTION_RECT, CARD_RECT, TABS_RECT]:   # 贴右下：右下都修正
+		var rr: Rect2 = r
+		rr.position += shift
+		out.append(rr)
 	return out
 
 

@@ -423,6 +423,31 @@ func recruit_queue_max() -> int:
 	return maxi(1, int(cfg.num("recruit.queue_max", 5.0)))
 
 
+## 第 slot 格**还要等多久**才轮到自己出人（秒）。0 = 正在读条的大格子；1..n = 排队的小格子（从前往后）。
+##
+## ★★ 为什么这条查询必须在**逻辑层**（而不是让 view 自己乘 train_sec）：
+##    「排队的每一单各自读条多久、什么时候轮到我」是**玩法规则** ——
+##    见 `_start_next_in_queue()` / `_start_training()`：一单读满就把它顶上大格子，
+##    而大格子的读条时间取**它自己兵种**的 `train_sec`。视图只负责画，
+##    不许自己推这条时间轴（与 pitfalls 5.20「把规则收回逻辑层」同一条规矩）。
+##
+## ★ 空槽位（还没排到这一格 / 下标越界）返回 0；将领不在招募同样返回 0。
+## ★ 与 `train_remaining` 的关系：大格子 = 它自己的剩余秒；第 k 个小格子 =
+##   大格子读完 + 它前面每一单各自的 train_sec（前移后**从头读条**也自然落在这条公式里）。
+func recruit_eta(leader, slot: int) -> float:
+	if leader == null or slot < 0:
+		return 0.0
+	var eta := maxf(0.0, float(leader.train_remaining))
+	if slot == 0:
+		return eta
+	var q: Array = leader.train_queue
+	if slot - 1 >= q.size():
+		return 0.0
+	for i in slot:
+		eta += recruit_train_sec(String(q[i]))
+	return eta
+
+
 ## 信息栏格子里显示的短名（config 的 short；没配就退回 label 的第一个字）
 func recruit_short_of(kind: String) -> String:
 	var e := recruit_entry(kind)

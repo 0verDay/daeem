@@ -37,7 +37,7 @@ func _run() -> void:
 		quit(1)
 		return
 
-	_test_layout_against_reference()
+	_test_layout_against_reference(cfg)
 	_test_hit_test()
 
 	await process_frame
@@ -60,7 +60,7 @@ func _run() -> void:
 # ------------------------------------------------------------------
 # 一、几何：逐条对着参考图
 # ------------------------------------------------------------------
-func _test_layout_against_reference() -> void:
+func _test_layout_against_reference(cfg) -> void:
 	# 参考图上直接标了「详细信息 1030×240」
 	eq(UiLayoutRes.DETAIL_RECT.size.x, 1030.0, "详细信息面板宽 1030（参考图标注）")
 	eq(UiLayoutRes.DETAIL_RECT.size.y, 240.0, "详细信息面板高 240（参考图标注）")
@@ -95,16 +95,99 @@ func _test_layout_against_reference() -> void:
 	eq(UiLayoutRes.SETTINGS_RECT, Rect2(1840, 0, 80, 160), "设置按钮 80×160 在右上角（参考图）")
 
 	# ★ 招募队列：五个格子 = 1 个大格（正在读条）+ 4 个小格（排队）
+	#   ★★ 第七轮：左边一条汇总带（「招募队列 3/5」+「共 22s」）+ **整块放大**
+	#      （大格 64→84、小格 30→40、字号 13/11→15/13），并且**离右栏上/右边缘留 4px**
+	#      —— 贴边时 1px 描边会被右栏的 clip_contents 切掉（手玩报的「上方被裁剪」）。
 	eq(UiLayoutRes.QUEUE_SLOTS, 5, "★ 招募队列 5 个格子（1 大 + 4 小，需求原话）")
-	eq(UiLayoutRes.queue_cell_rect(0), Rect2(0, 0, 64, 64), "大格子在左上（64×64）")
-	eq(UiLayoutRes.queue_cell_rect(1), Rect2(68, 0, 30, 30), "第 1 个小格排在大格右边")
-	eq(UiLayoutRes.queue_cell_rect(2), Rect2(102, 0, 30, 30), "第 2 个小格在它右边")
-	eq(UiLayoutRes.queue_cell_rect(3), Rect2(68, 34, 30, 30), "第 3 个小格换行")
-	eq(UiLayoutRes.queue_cell_rect(4), Rect2(102, 34, 30, 30), "第 4 个小格在右下角")
+	eq(UiLayoutRes.QUEUE_INFO_W, 141.0, "汇总带宽 141（表格子段左边那一条）")
+	eq(UiLayoutRes.QUEUE_W, UiLayoutRes.QUEUE_INFO_W + UiLayoutRes.QUEUE_CELLS_W,
+		"★ 控件总宽 = 汇总带 141 + 五个格子 172 = 313（常量之间是推算式，不会对不上）")
+	eq(UiLayoutRes.QUEUE_H, 92.0, "★ 控件总高 92（整块放大：64 → 92，格子 84 + 上下各 4）")
+	eq(UiLayoutRes.QUEUE_BIG, 84.0, "★ 大格子 84×84（64 → 84）")
+	eq(UiLayoutRes.QUEUE_SMALL, 40.0, "★ 小格子 40×40（30 → 40）")
+	# ★★ 贴不贴裁剪线：这是「上方被裁剪」那条反馈的回归判据
+	ok(UiLayoutRes.QUEUE_MARGIN >= 1.0,
+		"★ 队列块离右栏上/右边缘留了 %.0fpx（= 0 时 1px 描边会被裁剪线切掉半条）"
+			% UiLayoutRes.QUEUE_MARGIN)
+	ok(UiLayoutRes.QUEUE_Y >= 1.0, "★ 队列块的上缘不贴右栏顶边（否则上边框整条不见）")
+	eq(UiLayoutRes.QUEUE_X + UiLayoutRes.QUEUE_W, UiLayoutRes.UNIT_CONTENT_RIGHT,
+		"★ 队列块右缘 = 右栏内容的公共右缘（641 = 645 − 4，同样不贴裁剪线）")
+	ok(UiLayoutRes.QUEUE_X + UiLayoutRes.QUEUE_W < UiLayoutRes.DETAIL_RIGHT_W,
+		"★ 队列块右缘**不**顶到 645（顶到就会被切）")
+	eq(UiLayoutRes.queue_info_rect(), Rect2(0, 0, 141, 92), "汇总带占控件左边那条 141×92")
+	eq(UiLayoutRes.queue_info_line_rect(0), Rect2(8, 27, 125, 18), "汇总第一行（招募队列 3/5）")
+	eq(UiLayoutRes.queue_info_line_rect(1), Rect2(8, 49, 125, 16), "汇总第二行（共 22s）")
+	ok(UiLayoutRes.queue_info_line_rect(1).position.y + UiLayoutRes.queue_info_line_rect(1).size.y
+			<= UiLayoutRes.QUEUE_H,
+		"★ 汇总两行都落在控件里（否则会被右栏裁掉）")
+	eq(UiLayoutRes.queue_cell_rect(0), Rect2(141, 4, 84, 84), "大格子紧跟在汇总带右边（84×84）")
+	eq(UiLayoutRes.queue_cell_rect(1), Rect2(229, 4, 40, 40), "第 1 个小格排在大格右边")
+	eq(UiLayoutRes.queue_cell_rect(2), Rect2(273, 4, 40, 40), "第 2 个小格在它右边")
+	eq(UiLayoutRes.queue_cell_rect(3), Rect2(229, 48, 40, 40), "第 3 个小格换行")
+	eq(UiLayoutRes.queue_cell_rect(4), Rect2(273, 48, 40, 40), "第 4 个小格在右下角")
 	var small_last := UiLayoutRes.queue_cell_rect(4)
 	ok(small_last.position.x + small_last.size.x <= UiLayoutRes.QUEUE_W + 1e-6
 		and small_last.position.y + small_last.size.y <= UiLayoutRes.QUEUE_H + 1e-6,
 		"★ 四个小格都落在队列控件的矩形里（否则会被裁掉）")
+	# 格子上下各留 QUEUE_CELL_PAD（描边同样不贴控件边界）
+	ok(UiLayoutRes.queue_cell_rect(0).position.y >= 1.0
+		and UiLayoutRes.queue_cell_rect(4).position.y + UiLayoutRes.queue_cell_rect(4).size.y
+			<= UiLayoutRes.QUEUE_H - 1.0,
+		"★ 格子上下都留了缝（贴边的话大格子的描边也会被切）")
+	# 最左边那个格子必须让开汇总带（不然文字会压在格子上）
+	ok(UiLayoutRes.queue_cell_rect(0).position.x >= UiLayoutRes.QUEUE_INFO_W,
+		"★ 大格子不压到左边的汇总文字")
+	# 汇总文字按真实字体量一遍宽度（第七轮新增的两行）
+	_test_queue_info_text_fit(cfg)
+
+
+# ---- 招募队列里那些字必须**装得下**（按真实字体量；`clip_text` 裁字不报错）----
+#
+# 第七轮的队列字号档位（整块放大之后）：
+#   汇总第一行 / 大格子 = **15 号**（FS_BODY），汇总第二行 / 小格子 = **13 号**（FS_SMALL）。
+# 这些错只会表现为「字缺一截」，所以按 pitfalls 5.42 的规矩量一遍宽度与行高容量。
+func _test_queue_info_text_fit(cfg) -> void:
+	var font: Font = FontLoaderRes.load_font(cfg)
+	if font == null:
+		ok(true, "（没装中文字体，跳过队列文字的量算）")
+		return
+	var fs_body: int = UiStyleRes.FS_BODY
+	var fs_small: int = UiStyleRes.FS_SMALL
+
+	# ① 汇总第一行：「招募队列 5/5」是它能长到的最长样子（上限 5）
+	var title_r := UiLayoutRes.queue_info_line_rect(0)
+	var title_w: float = font.get_string_size("招募队列 5/5", HORIZONTAL_ALIGNMENT_LEFT, -1, fs_body).x
+	ok(title_w <= title_r.size.x + 0.01,
+		"★ 汇总第一行「招募队列 5/5」宽 %.0f ≤ 可写 %.0f（装得下才不会被裁）"
+			% [title_w, title_r.size.x])
+	ok(font.get_height(fs_body) <= title_r.size.y + 0.01,
+		"★ 汇总第一行的高度装得进那一行（行高 %.0f ≤ %.0f）"
+			% [font.get_height(fs_body), title_r.size.y])
+
+	# ② 汇总第二行：「共 100s」是留足余量的最长样子（现在一个单位 10 秒，5 个才 50s）
+	var total_r := UiLayoutRes.queue_info_line_rect(1)
+	var total_w: float = font.get_string_size("共 100s", HORIZONTAL_ALIGNMENT_LEFT, -1, fs_small).x
+	ok(total_w <= total_r.size.x + 0.01,
+		"★ 汇总第二行「共 100s」宽 %.0f ≤ 可写 %.0f" % [total_w, total_r.size.x])
+
+	# ③ 大格子（84×84，15 号字，两行）：「兵 / 剩 10.0s」
+	var big_r := UiLayoutRes.queue_cell_rect(0)
+	for text in ["兵", "剩 100.0s"]:
+		var w: float = font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, fs_body).x
+		ok(w <= big_r.size.x - 2.0,
+			"★ 大格子里的「%s」宽 %.0f ≤ %.0f（装得下）" % [text, w, big_r.size.x - 2.0])
+	ok(font.get_height(fs_body) * 2.0 <= big_r.size.y + 0.01,
+		"★ 大格子两行 15 号字（%.0f×2）装得进 84 高" % font.get_height(fs_body))
+
+	# ④ 小格子（40×40，13 号字，两行）：「兵 / 20s」
+	var small_r := UiLayoutRes.queue_cell_rect(1)
+	for text in ["兵", "400s"]:
+		var w: float = font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, fs_small).x
+		ok(w <= small_r.size.x - 2.0,
+			"★ 小格子里的「%s」宽 %.0f ≤ %.0f（装得下）" % [text, w, small_r.size.x - 2.0])
+	ok(font.get_height(fs_small) * 2.0 <= small_r.size.y + 0.01,
+		"★ 小格子两行 13 号字（%.0f×2）装得进 40 高（放大前是 30 高装两行 11 号）"
+			% font.get_height(fs_small))
 
 	# ★ 底栏四块必须严丝合缝：参考图是靠 1px 分隔线排的，留缝或多一块都不对
 	eq(UiLayoutRes.DETAIL_RECT.position.x + UiLayoutRes.DETAIL_RECT.size.x,
@@ -293,6 +376,37 @@ func _test_hit_test() -> void:
 	ok(not UiLayoutRes.in_edge_band(vp, Vector2(6.0, 300.0), 0.0),
 		"margin = 0 时整条规则关掉（可配置）")
 
+	# ★★ 滚轮缩放：底栏（除左下小地图）那一整条都要拦（用户需求原话：
+	#    「当鼠标位于下方除地图外的 ui 栏时，应当禁用鼠标滚轮缩放地图，
+	#      当鼠标移出下边栏，需要恢复」）。
+	#    ⚠️ 这是 `bottom_bar_rects` —— 与上面那份「能点的控件」名单**不是同一个**：
+	#      详细信息面板里只有文字的地方不拦边缘滚屏（否则底边永远滚不动），
+	#      但它**要拦滚轮**（玩家正在看底栏，这一下滚动不该把地图拉走）。
+	var bar := UiLayoutRes.bottom_bar_rects(vp)
+	ok(UiLayoutRes.point_hits_any(bar, UiLayoutRes.panel_content_pos() + Vector2(8.0, 8.0)),
+		"★ 滚轮：详细信息面板里只有文字的地方也拦（与边缘滚屏那条规则相反）")
+	ok(UiLayoutRes.point_hits_any(bar, UiLayoutRes.FACTION_RECT.get_center()),
+		"滚轮：阵营占位面板也拦")
+	ok(UiLayoutRes.point_hits_any(bar, UiLayoutRes.card_cell_rect(0).get_center()),
+		"滚轮：命令卡那一格也拦")
+	ok(UiLayoutRes.point_hits_any(bar, UiLayoutRes.tab_button_rect(1).get_center()),
+		"滚轮：页签列也拦")
+	ok(not UiLayoutRes.point_hits_any(bar, UiLayoutRes.MAP_RECT.get_center()),
+		"★ 滚轮：左下小地图是**地图**不是 ui 栏 —— 鼠标停在它上面时照旧缩放（「除地图外」）")
+	ok(not UiLayoutRes.point_hits_any(bar, map_middle), "滚轮：地图中间照旧缩放")
+	ok(not UiLayoutRes.point_hits_any(bar, UiLayoutRes.squad_slot_rect(2).get_center()),
+		"滚轮：左侧部队列表不在「下方 ui 栏」里 → 不拦")
+	ok(not UiLayoutRes.point_hits_any(bar, UiLayoutRes.SETTINGS_RECT.get_center()),
+		"滚轮：右上角设置按钮也不拦（需求只说下方那一条）")
+	# 超宽窗口：右下的三块跟着走，判定也要跟着走（否则命令卡上滚不动地图）
+	var bar_wide := UiLayoutRes.bottom_bar_rects(wide)
+	var card_wide := UiLayoutRes.card_cell_rect(0)
+	card_wide.position.x += wide.x - UiLayoutRes.DESIGN_W
+	ok(UiLayoutRes.point_hits_any(bar_wide, card_wide.get_center()),
+		"★ 超宽窗口：命令卡的新位置仍然拦滚轮（判定跟着贴边走）")
+	ok(not UiLayoutRes.point_hits_any(bar_wide, UiLayoutRes.card_cell_rect(0).get_center()),
+		"超宽窗口：命令卡原来的位置不再算底栏")
+
 
 # ------------------------------------------------------------------
 # 三、面板与交互
@@ -373,13 +487,14 @@ func _test_panels(cfg) -> void:
 	_test_card_keys(main)
 	_test_avatar_text_fit(cfg)
 	_test_recruit_via_card(main)
-	_test_queue_control(cfg)
+	await _test_queue_control(cfg)
 	_test_queue_cancel_via_click(main)
 	_test_auto_select_on_recruit(main)
 	_test_order_locked_notice(main)
 	_test_right_click_orders(main)
 	await _test_box_select(main)
 	_test_detail_basic_stats(main)
+	_test_detail_two_columns(main)
 	_test_clicked_unit_detail(main)
 	_test_settings_inert(main)
 	await _test_command_events_reach_consumer(main)
@@ -422,6 +537,11 @@ func _test_panels(cfg) -> void:
 	ok(main.hud.blocks_edge_scroll(row_center),
 		"部队行**靠里**的部分照旧拦住边缘滚屏（原来那条行为不变）")
 
+	# ---- 滚轮缩放：底栏上不吃滚轮、移出底栏恢复（用户需求，走真实输入路由）----
+	_test_wheel_zoom_block(main)
+	# ---- 提示行住在右栏底下那条 20px 里：出现时不再压扁两栏 ----
+	await _test_notice_band(main)
+
 	# ---- 选中单位不再画攻击 / 警戒范围圈 ----
 	ok(not main.overlay.has_method("_draw_selected_units"),
 		"★ overlay 里已经没有「选中范围圈」那段代码（画范围圈的函数被删掉了）")
@@ -433,6 +553,112 @@ func _test_panels(cfg) -> void:
 
 	root_node.queue_free()
 	await process_frame
+
+
+# ---- 滚轮缩放：鼠标在底栏（除左下小地图）上时不许缩放地图 ----
+#
+# 需求原话：「当鼠标位于下方除地图外的 ui 栏时，应当禁用鼠标滚轮缩放地图，
+#            当鼠标移出下边栏，需要恢复」。
+# ★ 这里走的是**真实那条输入路由**（`game_scene._unhandled_input` → 要么被底栏吃掉、
+#   要么落到 input_controller 去缩放相机），不是只问一句几何查询 ——
+#   真正容易写错的正是「谁先问谁」（见 `_unhandled_input` 里那段注释）。
+func _test_wheel_zoom_block(main) -> void:
+	var vp: Vector2 = main.hud.view_size()
+	var cam: Camera2D = main.cam
+	var on_bar: Vector2 = UiLayoutRes.panel_content_pos() + Vector2(8.0, 8.0)
+	var on_map := Vector2(vp.x * 0.5, vp.y * 0.4)
+
+	# ① 真实实例上的几何查询（常量那份断言在 _test_hit_test 里）
+	ok(main.hud.blocks_wheel_zoom(on_bar), "★ 鼠标在详细信息面板上 → 滚轮不缩放地图")
+	ok(not main.hud.blocks_wheel_zoom(on_map), "鼠标在地图上 → 照旧缩放")
+	ok(not main.hud.blocks_wheel_zoom(UiLayoutRes.MAP_RECT.get_center()),
+		"★ 小地图上照旧缩放（需求：除地图外）")
+
+	# ② 走一遍输入：底栏上滚 → zoom 不变；移出底栏再滚 → 恢复；再移回 → 又不缩放
+	cam.zoom = Vector2.ONE * 1.0
+	var z0: float = cam.zoom.x
+	_send_wheel(main, MOUSE_BUTTON_WHEEL_UP, on_bar)
+	near(cam.zoom.x, z0, 1e-6, "★ 鼠标在底栏上滚轮 → 被吃掉，地图不缩放")
+	_send_wheel(main, MOUSE_BUTTON_WHEEL_UP, on_map)
+	ok(cam.zoom.x > z0, "★ 鼠标移出底栏（回到地图上）→ 滚轮恢复缩放（不是一次性开关）")
+	z0 = cam.zoom.x
+	_send_wheel(main, MOUSE_BUTTON_WHEEL_UP, UiLayoutRes.card_cell_rect(0).get_center())
+	near(cam.zoom.x, z0, 1e-6, "★ 再移回底栏（命令卡）→ 又不缩放")
+	# 向下滚同样被吃（两个方向都拦）
+	z0 = cam.zoom.x
+	_send_wheel(main, MOUSE_BUTTON_WHEEL_DOWN, on_bar)
+	near(cam.zoom.x, z0, 1e-6, "★ 向下滚在底栏上也不缩放")
+	# 左键照旧是「选中 / 放置」，没有被这条规则连带吃掉
+	var left := InputEventMouseButton.new()
+	left.button_index = MOUSE_BUTTON_LEFT
+	ok(not main._is_wheel(left), "★ 这条规则只认滚轮：左键不会被它吞掉")
+	ok(main._is_wheel(_wheel_event(MOUSE_BUTTON_WHEEL_DOWN)),
+		"滚轮向下也被认出来（两个方向都拦）")
+	cam.zoom = Vector2.ONE * 1.0
+
+
+func _wheel_event(button: int, pos: Vector2 = Vector2.ZERO) -> InputEventMouseButton:
+	var ev := InputEventMouseButton.new()
+	ev.button_index = button
+	ev.pressed = true
+	ev.position = pos
+	return ev
+
+
+func _send_wheel(main, button: int, pos: Vector2) -> void:
+	main._unhandled_input(_wheel_event(button, pos))
+
+
+# ---- 提示行（红字）：住在右栏数值框下面那条 20px 里，出现时不改任何一块的几何 ----
+#
+# 第六轮改的：它原来是面板 VBox 的第二行，一出现就把两栏各压掉 20px，
+# 而左栏那 3×3 网格是**正好铺满 220** 的（40 + 15 + 3×55）⇒ 最下面一截被裁。
+func _test_notice_band(main) -> void:
+	var panel = main.hud.detail_panel
+	var grid = panel.grid_control()
+	var body = panel._body
+	var notice = panel._notice
+	ok(notice != null, "提示行的 Label 还在（只是从 VBox 搬进了右栏）")
+	if notice == null:
+		return
+
+	main.hud.show_notice("")
+	await process_frame
+	var grid_rect := Rect2(grid.position, grid.size)
+	var body_rect := Rect2(body.position, body.size)
+
+	main.hud.show_notice("将领正在招募单位：它和它的部队这会儿只警戒，不接受指令")
+	await process_frame
+	eq(Rect2(grid.position, grid.size), grid_rect,
+		"★ 提示出现时左栏网格的几何**一动不动**（以前会被压掉 20px、最下一截被裁）")
+	eq(Rect2(body.position, body.size), body_rect, "★ 右栏数值框的几何也不动")
+	ok(notice.visible, "提示行显示出来了")
+
+	# 提示带的位置：在数值框下面、右栏下沿之内、右栏宽度之内
+	var nr := Rect2(notice.position, notice.size)
+	ok(nr.position.y >= UiLayoutRes.DETAIL_BODY_Y + UiLayoutRes.DETAIL_BODY_H,
+		"★ 提示带在数值框**下面**（%.0f ≥ %.0f）" % [
+			nr.position.y, UiLayoutRes.DETAIL_BODY_Y + UiLayoutRes.DETAIL_BODY_H])
+	ok(nr.position.y + nr.size.y <= 220.0 + 0.01, "★ 提示带收在右栏内容高 220 之内")
+	ok(nr.size.x <= UiLayoutRes.DETAIL_RIGHT_W + 0.01, "提示行不越出右栏")
+	if grid.visible:
+		var gr := Rect2(grid.global_position, grid.size)
+		var ngr := Rect2(notice.global_position, notice.size)
+		ok(not gr.intersects(ngr), "★ 提示行与左栏网格不重叠（它整条都在右栏里）")
+
+	# 真实字体量一遍：最长的那两句提示必须一行放得下
+	var font: Font = main.hud._font
+	if font != null:
+		for s in ["将领正在招募单位：它和它的部队这会儿只警戒，不接受指令",
+				"只能在己方区划内招募（将领现在站的地方不属于你）"]:
+			var w: float = font.get_string_size(s, HORIZONTAL_ALIGNMENT_LEFT, -1,
+				UiStyleRes.FS_BODY).x
+			ok(w <= nr.size.x + 0.01,
+				"★ 提示「%s…」宽 %.0f ≤ 可用 %.0f（一行放得下）" % [s.substr(0, 6), w, nr.size.x])
+	else:
+		ok(true, "（没装中文字体，跳过提示文案的宽度量算）")
+
+	main.hud.show_notice("")
 
 
 # ---- 贴边：窗口比例变了以后，底栏与右侧那一列必须还贴着右下角 ----
@@ -501,6 +727,18 @@ func _test_avatar_text_fit(cfg) -> void:
 	panel._unit_avatar.queue_redraw()
 	await process_frame
 	ok(panel.avatar_draw_count() > before, "★ 头像那一块真的画了一帧（_draw 跑过）")
+
+	# ★★ buff 占位格里的字也必须装得进 30×30 方框（第六轮改的：13 号字下
+	#    「buff1」实测 33px > 30px，`clip_text` 把它裁成了「buff」）。
+	#    ⚠️ 用**真实的 HUD 字体**（SimHei）量 —— 这个 standalone 面板没有挂主题，
+	#       `get_theme_default_font()` 拿到的不是游戏里那份字体。
+	eq(panel._buffs.size(), UiLayoutRes.BUFF_SLOTS, "（前提）3 个 buff 占位格都在")
+	for b in panel._buffs:
+		var bfs: int = b.get_theme_font_size("font_size")
+		var bw: float = font.get_string_size(String(b.text), HORIZONTAL_ALIGNMENT_LEFT, -1, bfs).x
+		ok(bw <= b.size.x + 0.01,
+			"★ buff 占位字「%s」用 %d 号字宽 %.0f ≤ 方框 %.0f（装得下才不会被裁）"
+				% [b.text, bfs, bw, b.size.x])
 	panel.queue_free()
 	await process_frame
 
@@ -520,6 +758,30 @@ func _test_squad_rows(main) -> void:
 	ok(panel.slot_text(0).begins_with("部队1"), "第 1 槽写着「部队1」（实际：%s）" % panel.slot_text(0))
 	ok(panel.slot_text(0).contains("将领 1"), "第 1 槽带队伍名")
 	ok(panel.slot_text(0).contains("人"), "第 1 槽带人数")
+
+	# ★★ 行文案必须**真的装得下**（第六轮改的：一行 15 号字实测 158px，
+	#    而一行能写的地方只有 120 − 8 − 4 = 108px，`clip_text` 会把「· 4 人」裁掉）。
+	#    现在两行 13 号字，逐行按**真实字体**量一遍 —— 这种错画出来只是「字缺了一截」，
+	#    不会报错，只有量过才抓得住（同 `_test_avatar_text_fit` 那条的理由）。
+	var line_font: Font = main.hud._font
+	if line_font != null:
+		var row_fs: int = panel.slot_button(0).get_theme_font_size("font_size")
+		eq(row_fs, UiStyleRes.FS_SMALL, "★ 部队行用 13 号字（15 号下最长 105px，只剩 3px 余量）")
+		var sb: StyleBox = panel.slot_button(0).get_theme_stylebox("normal")
+		var writable: float = UiLayoutRes.SQUAD_RECT.size.x \
+			- sb.content_margin_left - sb.content_margin_right
+		for i in 3:
+			var lines: PackedStringArray = String(panel.slot_text(i)).split("\n")
+			eq(lines.size(), 2, "★ 第 %d 行是两行文案（一行装不下，会被裁）" % (i + 1))
+			for ln in lines:
+				var w: float = line_font.get_string_size(String(ln),
+					HORIZONTAL_ALIGNMENT_LEFT, -1, row_fs).x
+				ok(w <= writable + 0.01,
+					"★ 部队行第 %d 行的「%s」宽 %.0f ≤ 可写宽 %.0f（装得下才不会被裁）"
+						% [i + 1, ln, w, writable])
+	else:
+		ok(true, "（没装中文字体，跳过部队行的宽度量算）")
+
 	ok(panel.slot_filled(2), "第 3 槽有队伍")
 	ok(not panel.slot_filled(3), "第 4 槽是空的")
 	for i in range(3, UiLayoutRes.SQUAD_SLOTS):
@@ -846,7 +1108,7 @@ func _test_order_locked_notice(main) -> void:
 	ok(not g1.is_training(), "收尾：队列已清空")
 
 
-# ---- 招募队列控件（RecruitQueue）：五格的显示与读条 ----
+# ---- 招募队列控件（RecruitQueue）：汇总带 + 五格的显示与读条（第七轮的显示优化）----
 #
 # ★ 这里单独构造一个控件、直接喂一个「正在招募」的将领 ——
 #   不去动主场景那个世界（它还要给后面的用例用，tick 满 10 秒会把巡逻兵引过来）。
@@ -865,6 +1127,7 @@ func _test_queue_control(cfg) -> void:
 	ok(not q.showing(), "没喂将领时不显示")
 	q.set_leader(g1)
 	ok(not q.showing(), "选中的将领没在招募 → 还是不显示（需求：开始招募时才出现）")
+	eq(q.title_text(), "", "没在招募时汇总带是空的")
 
 	w.start_recruit(UnitRes.KIND_SUBORDINATE, g1.id, "p1")
 	w.start_recruit(UnitRes.KIND_SUBORDINATE, g1.id, "p1")
@@ -876,14 +1139,59 @@ func _test_queue_control(cfg) -> void:
 	eq(q.cell_kind(2), "", "后面三个小格子是空的")
 	ok(q.cell_filled(0) and q.cell_filled(1) and not q.cell_filled(2), "填充状态跟着队列走")
 
-	# 读条推进 → 进度跟着涨（大格子里的那条）
+	# ---- ① 汇总带：排了几个 / 上限 + 整条队列读完还要多久 ----
+	eq(q.queue_count(), 2, "汇总用的是「含正在读条那个」的数量（与队列上限同口径）")
+	eq(q.title_text(), "招募队列 2/%d" % w.recruit_queue_max(),
+		"★ 汇总第一行写着「招募队列 2/5」（实际：%s）" % q.title_text())
+	near(q.total_eta(), 20.0, 0.05, "★ 整条队列读完还要 20 秒（两个单位各 10 秒）")
+	ok(q.total_text().begins_with("共") and q.total_text().ends_with("s"),
+		"★ 汇总第二行写着「共 20s」（实际：%s）" % q.total_text())
+
+	# ---- ② 每个格子都带时间：大格子是「剩 x.xs」，小格子是「轮到我还差 xs」----
+	near(q.eta_of(0), 10.0, 0.05, "大格子的 ETA = 它自己的剩余秒")
+	near(q.eta_of(1), 20.0, 0.05, "★ 第 1 个小格子的 ETA = 大格子读完 + 它自己读 10 秒")
+	near(q.eta_of(2), 0.0, 1e-6, "空槽位的 ETA 是 0（没排到就不报时间）")
+	ok(q.cell_label(0).contains("剩"), "大格子写着「剩 x.xs」（实际：%s）"
+		% q.cell_label(0).replace("\n", "|"))
+	ok(q.cell_label(1).contains("20s"), "★ 小格子写着「轮到我还差几秒」（实际：%s）"
+		% q.cell_label(1).replace("\n", "|"))
+
+	# ---- ③ 读条推进 → 进度跟着涨，且**每个格子的秒数一起往前跑** ----
 	for _i in 300:
 		w.tick(1.0 / 60.0)
 	q.set_leader(g1)
 	near(q.progress(), 5.0 / 10.0, 0.05, "★ 读条到一半 → 进度条 50%")
 	ok(q.cell_label(0).contains("s"), "大格子上写着剩余秒数（实际：%s）" % q.cell_label(0))
+	near(q.eta_of(0), 5.0, 0.05, "过半之后大格子只剩 5 秒")
+	near(q.eta_of(1), 15.0, 0.05, "★ 小格子的 ETA 跟着缩到 15 秒（视图每帧问逻辑层）")
+	ok(q.total_text().contains("15"), "汇总第二行也跟着变成「共 15s」（实际：%s）" % q.total_text())
+
+	# ---- ④ 悬停：只有**有内容的格子**才认（汇总带 / 空格子不算）----
+	_hover_queue_cell(q, 1)
+	eq(q.hover_slot(), 1, "★ 鼠标停在第 1 个小格子上 → 认到那一格（红框 + 右上角画「×」）")
+	eq(q.mouse_default_cursor_shape, Control.CURSOR_POINTING_HAND, "停在有内容的格子上是手型")
+	eq(q.cell_at_position(UiLayoutRes.queue_cell_rect(3).get_center()), -1,
+		"★ 停在**空格子**上不算命中（点了什么都不会发生）")
+	eq(q.cell_at_position(UiLayoutRes.queue_info_rect().get_center()), -1,
+		"★ 停在左边汇总带上不算命中（那 129px 不是格子）")
+	_hover_queue_cell(q, 3)
+	eq(q.hover_slot(), -1, "移到空格子上 → 悬停态清掉")
+	eq(q.mouse_default_cursor_shape, Control.CURSOR_ARROW, "光标回到普通箭头")
+
+	# 真的画一帧（`_draw` 里出错在无头下**不会**让测试失败，所以盯一下计数器）
+	var before_draw: int = q.draw_count
+	q.queue_redraw()
+	await process_frame
+	ok(q.draw_count > before_draw, "★ 队列那一块真的画了一帧（底板 / 读条 / 汇总都在 _draw 里）")
 
 	q.queue_free()
+
+
+## 造一次鼠标移动（走控件自己的命中判定），把鼠标放到某一格上
+func _hover_queue_cell(q: Control, slot: int) -> void:
+	var ev := InputEventMouseMotion.new()
+	ev.position = UiLayoutRes.queue_cell_rect(slot).get_center()
+	q._gui_input(ev)
 
 
 # ---- 招募入队会发事件（走的是与建造同一条事件通道）----
@@ -1180,9 +1488,10 @@ func _test_box_select(main) -> void:
 		# ★★ 右栏那几块（本轮重排过，见 ui_layout.gd 里那段注释）：
 		#    头像 100 → 72、名称与 buff 挪到同一横带、数值框 90 → 116。
 		eq(UiLayoutRes.UNIT_AVATAR, 72.0,
-			"★ 右栏头像方框 72×72（本轮重排：原来照参考图的 100×100 又大又空）")
-		eq(UiLayoutRes.BUFF_SIZE, 30.0, "★ buff 三格各 30×30（参考图）")
-		# 名称与 buff 现在是**同一横带**（都在头像右边），不是「buff 吊在头像下半段」
+			"★ 右栏头像方框 72×72（第五轮重排：原来照参考图的 100×100 又大又空）")
+		eq(UiLayoutRes.BUFF_SIZE, 40.0,
+			"★ buff 三格各 40×40（第七轮 30 → 40：与左栏那些 40×40 方块同号，字也能用到 13 号）")
+		# 名称与 buff 都在头像右边
 		ok(UiLayoutRes.BUFF_X >= UiLayoutRes.UNIT_AVATAR_X + UiLayoutRes.UNIT_AVATAR,
 			"★ 三个 buff 排在头像**右边**（%s ≥ 头像右缘 %s）" % [
 				str(UiLayoutRes.BUFF_X),
@@ -1206,8 +1515,45 @@ func _test_box_select(main) -> void:
 			"★ 头像在「详细信息」方框上面，不重叠（%s < %s）" % [
 				str(UiLayoutRes.UNIT_AVATAR_Y + UiLayoutRes.UNIT_AVATAR),
 				str(UiLayoutRes.DETAIL_BODY_Y)])
-		# ★★ 数值框加高之后要真的「装得下」：正文（关掉 autowrap 的两栏文本）按 13 号字
-		#    实测自然高度必须 ≤ 可视高度 —— 这是本轮「太拥挤」的核心判据。
+		# ★★ 第七轮：顶带（头像 / 名称+buff / 队列）自成一带，且头像与队列同一条中轴线
+		eq(UiLayoutRes.UNIT_AVATAR_Y,
+			UiLayoutRes.UNIT_BAND_Y + (UiLayoutRes.UNIT_BAND_H - UiLayoutRes.UNIT_AVATAR) * 0.5,
+			"★ 头像在顶带里**垂直居中**（%.0f = %.0f + (%.0f−72)/2）" % [
+				UiLayoutRes.UNIT_AVATAR_Y, UiLayoutRes.UNIT_BAND_Y, UiLayoutRes.UNIT_BAND_H])
+		eq(UiLayoutRes.QUEUE_Y + UiLayoutRes.QUEUE_H * 0.5,
+			UiLayoutRes.UNIT_BAND_Y + UiLayoutRes.UNIT_BAND_H * 0.5,
+			"★ 招募队列与头像**同一条中轴线**（队列中心 = 顶带中心）")
+		ok(UiLayoutRes.DETAIL_BODY_Y >= UiLayoutRes.UNIT_BAND_Y + UiLayoutRes.UNIT_BAND_H,
+			"★ 数值框不压到顶带（%s ≥ %s）" % [
+				str(UiLayoutRes.DETAIL_BODY_Y),
+				str(UiLayoutRes.UNIT_BAND_Y + UiLayoutRes.UNIT_BAND_H)])
+		# ★★ 第七轮：右栏所有方块的右缘都停在 UNIT_CONTENT_RIGHT（不贴 645 的裁剪线）
+		eq(UiLayoutRes.DETAIL_BODY_X + UiLayoutRes.DETAIL_BODY_W,
+			UiLayoutRes.UNIT_CONTENT_RIGHT,
+			"★ 数值框右缘 = 右栏内容的公共右缘 641（= 645 − 4，不贴裁剪线）")
+		eq(UiLayoutRes.DETAIL_BODY_X + UiLayoutRes.DETAIL_BODY_W,
+			UiLayoutRes.QUEUE_X + UiLayoutRes.QUEUE_W,
+			"★ 数值框右缘 = 招募队列右缘（右栏右侧没有任何一块短一截 / 长一截）")
+		eq(UiLayoutRes.NOTICE_Y + UiLayoutRes.NOTICE_H, 220.0,
+			"★ 提示带正好收在右栏下沿（200..220 = 数值框下面那条本来空着的带）")
+		ok(UiLayoutRes.NOTICE_Y >= UiLayoutRes.DETAIL_BODY_Y + UiLayoutRes.DETAIL_BODY_H,
+			"★ 提示带与数值框不重叠（%s ≥ %s）" % [
+				str(UiLayoutRes.NOTICE_Y),
+				str(UiLayoutRes.DETAIL_BODY_Y + UiLayoutRes.DETAIL_BODY_H)])
+		ok(UiLayoutRes.NOTICE_H >= 16.0,
+			"★ 提示带装得下一行 15 号字（行高 16，实测）")
+		# ★★ 第七轮：正文是真·两栏（两个 Label），两栏的 x / 宽由 ui_layout 定死
+		eq(UiLayoutRes.DETAIL_BODY_COL2_X + UiLayoutRes.DETAIL_BODY_COL2_W
+				+ UiLayoutRes.DETAIL_BODY_PAD,
+			UiLayoutRes.DETAIL_BODY_W,
+			"★ 正文两栏 + 边距正好铺满数值框（左栏 190 + 缝 18 + 右栏 417 + 边距 16 = 641）")
+		ok(UiLayoutRes.DETAIL_BODY_COL2_X
+				>= UiLayoutRes.DETAIL_BODY_PAD + UiLayoutRes.DETAIL_BODY_COL_W,
+			"★ 右栏不压到左栏（%s ≥ %s）" % [
+				str(UiLayoutRes.DETAIL_BODY_COL2_X),
+				str(UiLayoutRes.DETAIL_BODY_PAD + UiLayoutRes.DETAIL_BODY_COL_W)])
+		# ★★ 数值框加高之后要真的「装得下」：正文（关掉 autowrap 的多行文本）按 13 号字
+		#    实测自然高度必须 ≤ 可视高度 —— 这是「太拥挤」那轮的核心判据。
 		#    旧版是 90-24 = 66 的可视高配 7 行 11 号字，**根本装不下**（最后 1~2 行被裁）。
 		var font: Font = main.hud._font
 		if font != null:
@@ -1220,10 +1566,11 @@ func _test_box_select(main) -> void:
 					visible, body_fs, capacity])
 			var probe := "攻击距离 3 格 / 间隔 1.2s"
 			ok(font.get_string_size(probe, HORIZONTAL_ALIGNMENT_LEFT, -1, body_fs).x
-					<= 200.0,
-				"★ 最长的一行（「%s」）在 %d 号字下只有 %.0f px —— 两栏版式放得下" % [
+					<= UiLayoutRes.DETAIL_BODY_COL_W,
+				"★ 最长的一行（「%s」）在 %d 号字下 %.0f px ≤ 左栏可写宽 %.0f" % [
 					probe, body_fs,
-					font.get_string_size(probe, HORIZONTAL_ALIGNMENT_LEFT, -1, body_fs).x])
+					font.get_string_size(probe, HORIZONTAL_ALIGNMENT_LEFT, -1, body_fs).x,
+					UiLayoutRes.DETAIL_BODY_COL_W])
 		else:
 			ok(true, "（没装中文字体，跳过字号容量的量算）")
 
@@ -1469,7 +1816,75 @@ func _test_box_select(main) -> void:
 
 
 # ------------------------------------------------------------------
-# 右栏数值区：只留基础数值 / 两栏制表位 / 编制只有将领有（本轮改版）
+# 右栏数值区的正文：**真·两栏**（两个 Label），不是制表符
+# ------------------------------------------------------------------
+#
+# 手玩反馈「招募那块面板的 ui 还是不好看」时截图看到的：正文两栏**粘在一起** ——
+# 「血量 200 / 200状态：待命」。根因：原来正文是一整段带 `\t` 的字符串，
+# 而 **Godot 的 Label 不把 `\t` 当制表位**（只推进一个很小的固定宽度）。
+# 现在 `detail_panel.set_detail()` 按 `\t` 拆成左右两个 Label，x 由 ui_layout 定死。
+func _test_detail_two_columns(main) -> void:
+	var panel = main.hud.detail_panel
+	var world = main.world
+	var g1 = world.unit_by_id("general-1")
+	main.input_ctrl.select_units([g1])
+	main.hud.refresh()
+
+	# ---- 1) 将领：两栏都被填上，而且两栏各自都**不含** `\t` ----
+	var ltext: String = panel.detail_left_text()
+	var rtext: String = panel.detail_right_text()
+	ok(not ltext.contains("\t"), "★ 左栏 Label 里没有制表符（它只画左栏）")
+	ok(not rtext.contains("\t"), "★ 右栏 Label 里没有制表符")
+	ok(ltext.contains("血量") and ltext.contains("攻击力"),
+		"左栏是基础数值（血量 / 攻击力）")
+	ok(rtext.contains("编制") or rtext.contains("状态"),
+		"★ 右栏接着写上编制 / 状态（实际：%s）" % rtext.replace("\n", "|"))
+	ok(panel.detail_text().contains("\t"),
+		"★ 合成读口照旧把两栏拼回「左\\t右」（文案断言都走它）")
+	ok(panel.detail_text().contains("血量 200"),
+		"合成文本里仍然能读到「血量 200」（旧断言不受影响）")
+
+	# ---- 2) 两个 Label 的几何：右栏在左栏右边、且互不重叠 ----
+	var left_label: Label = panel._body
+	var right_label: Label = panel._body_right
+	ok(right_label.visible, "★ 右栏 Label 显示出来了")
+	ok(right_label.position.x > left_label.position.x,
+		"★ 右栏的 x（%.0f）在左栏（%.0f）右边" % [right_label.position.x, left_label.position.x])
+	ok(left_label.position.x + left_label.size.x <= right_label.position.x + 0.01,
+		"★ 两栏的矩形不重叠（左栏右缘 %.0f ≤ 右栏左边 %.0f）" % [
+			left_label.position.x + left_label.size.x, right_label.position.x])
+	ok(right_label.position.x + right_label.size.x <= UiLayoutRes.DETAIL_BODY_W,
+		"★ 右栏不越出数值框")
+
+	# ---- 3) 两栏里每一行都装得进各自的可写宽（按真实字体量，见 pitfalls 5.42）----
+	var font: Font = main.hud._font
+	if font != null:
+		for pair in [[ltext, left_label.size.x, "左栏"], [rtext, right_label.size.x, "右栏"]]:
+			var body: String = String(pair[0])
+			var avail: float = float(pair[1])
+			var name_cn: String = String(pair[2])
+			for row in body.split("\n"):
+				if String(row) == "":
+					continue
+				var w: float = font.get_string_size(String(row), HORIZONTAL_ALIGNMENT_LEFT, -1,
+					UiStyleRes.FS_SMALL).x
+				ok(w <= avail + 0.01,
+					"★ %s的「%s」宽 %.0f ≤ 可写 %.0f（装得下才不会被裁）"
+						% [name_cn, row, w, avail])
+	else:
+		ok(true, "（没装中文字体，跳过两栏宽度的量算）")
+
+	# ---- 4) 单栏文本（区划 / 建筑）→ 右栏收起来，文本原样进左栏 ----
+	panel.set_detail("第一行\n第二行")
+	eq(panel.detail_right_text(), "", "★ 没有制表符的文本（区划 / 建筑）→ 右栏收起来")
+	eq(panel.detail_text(), "第一行\n第二行", "单栏文本原样读出来（不多不少）")
+	ok(not panel._body_right.visible, "右栏 Label 隐藏了")
+	# 收尾：把面板恢复成「选中 1 号将领」
+	main.hud.refresh()
+
+
+# ------------------------------------------------------------------
+# 右栏数值区：只留基础数值 / 两栏版式 / 编制只有将领有
 # ------------------------------------------------------------------
 ##
 ## 需求原话：「底部的详细信息 ui 还是有些排版问题，具体表现在太拥挤了」+

@@ -12,11 +12,19 @@
 ##               · **只选中一支**   → 画这支部队的**单位**（第一个就是将领本人）；
 ##                 点一格 = 右栏切到那个单位；超过 9 个时滚轮**翻页**（一次一页）。
 ##
-##   右栏（645 宽）
-##     ├─ 选中单位的**头像**（40×40）+「单位名称」+ 一行 **buff 图标**（占位，无效果）
-##     ├─ 「详细信息」数值区（血量 / 攻击力 / 射程 / 状态…）
-##     ├─ 招募队列的五个格子（view/recruit_queue.gd，贴右上角；只有正在招募时才出现）
-##     └─ 最下面一行**红字提示**（操作被拒的原因，约 ui.notice_sec 秒，见 hud.show_notice）
+##   右栏（645 宽，第六轮排成「三条带 + 一条提示带」，几何见 ui_layout 那段注释）
+##     y   0.. 72  选中单位的**头像**（72×72）+「单位名称」+ 一行 **buff 图标**（占位，无效果）
+##                 右上角还有招募队列（view/recruit_queue.gd，只有正在招募时才出现）：
+##                 左边 129px 汇总带（「招募队列 3/5」+「共 22s」）+ 1 大 4 小五个格子
+##     y  80..196  「详细信息」数值区（血量 / 攻击力 / 射程 / 状态…）—— **横跨整个右栏**
+##     y 200..220  **红字提示**（操作被拒的原因，约 ui.notice_sec 秒，见 hud.show_notice）
+##
+## ★★ 第六轮那三处对齐（起因：右栏几块的对齐边各走各的，看着像四块补丁）：
+##   · 头像 / 名称上移到 y=0，与左栏第一块方块齐平；
+##   · 数值框宽度 606 → 645（右缘与招募队列的右缘对齐，不再是锯齿）；
+##   · 提示行从面板 VBox 搬进右栏底下那条 20px，**出现时不再压扁两栏**。
+##   ⚠️ 前两条改了 ui_layout 里的 UNIT_AVATAR_Y / UNIT_NAME_Y / BUFF_X / DETAIL_BODY_*，
+##      被 tests/test_ui.gd 的几何断言盯着（改了要一起改）。
 ##
 ## ★ 右栏显示谁（由 hud 决定，规则原话在手玩那边）：
 ##   · 玩家**拖拽框选**选中的部队 → 默认显示展开那支部队的**将领**；
@@ -71,7 +79,9 @@ var _unit_name: Label
 var _buffs: Array[Label] = []
 var _detail_box: Panel
 var _detail_title: Label
+## 正文**左栏**（单栏文本也用它）与**右栏**（只有两栏文本才显示）
 var _body: Label
+var _body_right: Label
 
 # 左栏上半「未选中」时的兜底文字
 var _empty_label: Label
@@ -102,15 +112,8 @@ func setup(world = null, font: Font = null) -> void:
 
 	_build_left(cols, world, font)
 	_build_right(cols, world)
-
-	# 提示行：只有被拒时才出现（红字，约 2 秒）
-	_notice = Label.new()
-	_notice.name = "NoticeLine"
-	_notice.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_notice.add_theme_font_size_override("font_size", UiStyleRes.FS_BODY)
-	_notice.add_theme_color_override("font_color", UiStyleRes.WARN)
-	_notice.visible = false
-	root_box.add_child(_notice)
+	# ★ 提示行不再挂在 root_box（VBox）上 —— 它现在是**右栏里的绝对定位浮层**，
+	#   见 `_build_notice()` 与 ui_layout 的 NOTICE_Y 注释（原来一出现就把两栏压扁 20px）。
 
 
 # ------------------------------------------------------------------
@@ -204,6 +207,10 @@ func _build_right(cols: HBoxContainer, world) -> void:
 		b.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		b.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 		b.clip_text = true
+		# ★ 方框 30 → **40**（与左栏那些 40×40 的方块同一号尺寸），字号 11 → 13：
+		#   占位文案「buff1」在 13 号下实测 33px ≤ 40，装得下；而 30×30 + 11 号字
+		#   在放大的右栏里看着像两个小疙瘩（手玩：「ui 内容也太小了」）。
+		#   `tests/test_ui.gd` 里有一条断言按真实字体量这件事（别改回去）。
 		b.add_theme_font_size_override("font_size", UiStyleRes.FS_SMALL)
 		b.add_theme_color_override("font_color", UiStyleRes.TEXT_FAINT)
 		b.position = Vector2(
@@ -238,20 +245,19 @@ func _build_right(cols: HBoxContainer, world) -> void:
 	_detail_title.size = Vector2(UiLayoutRes.DETAIL_BODY_W - 16.0, 18.0)
 	_detail_box.add_child(_detail_title)
 
-	# 正文：★ 两栏（制表位对齐），不是两行 —— 每一行都是「左栏一格 + 右栏一格」。
-	#   ⚠️ 所以这里**必须关掉 autowrap**：制表符是格式，换行由 hud 那边按「行」给，
-	#      留着 autowrap 会在宽度不够时把一行的两栏拆成两行（版式就散了）。
-	#      宽度不够宁可裁（clip_text = true），那说明 hud 的文案该改短。
-	_body = Label.new()
-	_body.name = "DetailBody"
-	_body.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_body.autowrap_mode = TextServer.AUTOWRAP_OFF
-	_body.clip_text = true
-	_body.add_theme_font_size_override("font_size", UiStyleRes.FS_SMALL)
-	_body.add_theme_color_override("font_color", UiStyleRes.TEXT)
-	_body.position = Vector2(8.0, 20.0)
-	_body.size = Vector2(UiLayoutRes.DETAIL_BODY_W - 16.0, UiLayoutRes.DETAIL_BODY_H - 24.0)
-	_detail_box.add_child(_body)
+	# 正文：**真·两栏** = 两个 Label（左栏 / 右栏），x 由 ui_layout 定死。
+	#   ★★ 第七轮修的：以前是一整段带 `\t` 的字符串，而 **Godot 的 Label 不把 `\t` 当制表位**
+	#      （只推进一个很小的固定宽度）⇒ 画面上两栏**粘在一起**（「血量 200 / 200状态：待命」），
+	#      截图里一眼可见。现在左右各一个 Label，永远对得齐。
+	#   ⚠️ 这里**必须关掉 autowrap**：换行由 hud 那边按「行」给；留着 autowrap 会在宽度不够时
+	#      把一行拆成两行（版式就散了）。宽度不够宁可裁（clip_text = true），那说明文案该改短。
+	#   ⚠️ hud.set_detail() 收到带 `\t` 的文本时才会分两栏；区划 / 建筑那种单栏多行文本
+	#      只填左栏，右栏空着（`_body_right.visible = false`）。
+	_body = _new_body_label("DetailBody", Vector2(UiLayoutRes.DETAIL_BODY_PAD, 20.0),
+		Vector2(UiLayoutRes.DETAIL_BODY_COL_W, UiLayoutRes.DETAIL_BODY_H - 24.0))
+	_body_right = _new_body_label("DetailBodyRight", Vector2(UiLayoutRes.DETAIL_BODY_COL2_X, 20.0),
+		Vector2(UiLayoutRes.DETAIL_BODY_COL2_W, UiLayoutRes.DETAIL_BODY_H - 24.0))
+	_body_right.visible = false
 
 	# 招募队列：贴右栏**右上角**（只有正在招募时才出现；不可见时收不到鼠标事件）
 	_queue = RecruitQueueRes.new()
@@ -259,6 +265,50 @@ func _build_right(cols: HBoxContainer, world) -> void:
 	_queue.setup(world)
 	_queue.position = Vector2(UiLayoutRes.QUEUE_X, UiLayoutRes.QUEUE_Y)
 	_queue.cell_activated.connect(_on_queue_cell_activated)
+
+	_build_notice(right)
+
+
+## 造一个正文 Label（左栏 / 右栏共用同一套版式），并按矩形摆好。
+func _new_body_label(node_name: String, pos: Vector2, size_v: Vector2) -> Label:
+	var l := Label.new()
+	l.name = node_name
+	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	l.autowrap_mode = TextServer.AUTOWRAP_OFF
+	l.clip_text = true
+	l.add_theme_font_size_override("font_size", UiStyleRes.FS_SMALL)
+	l.add_theme_color_override("font_color", UiStyleRes.TEXT)
+	l.position = pos
+	l.size = size_v
+	_detail_box.add_child(l)
+	return l
+
+
+## 提示行（红字）：**右栏数值框下面那一条 20px**，绝对定位的浮层。
+##
+## ★★ 它以前是面板 VBox 的第二行 —— 一出现就让上面那两栏各少 20px，
+##    而左栏那 3×3 网格是**正好铺满 220** 的（40 + 15 + 3×55），于是最下面一截
+##    被裁掉（`right` 有 clip_contents，右栏的数值框也会被切掉底边）。
+##    现在它住进数值框下面**本来就空着**的那条带（NOTICE_Y..NOTICE_Y+NOTICE_H），
+##    出现 / 消失都不动任何一块的几何。
+## ★ `clip_text = true`：文案再长也只在这条带里被裁，不会横着顶出面板
+##   （最长的两句实测 405px / 360px ≤ 右栏 645，正常情况根本碰不到裁剪）。
+func _build_notice(right: Control) -> void:
+	_notice = Label.new()
+	_notice.name = "NoticeLine"
+	_notice.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_notice.clip_text = true
+	_notice.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_notice.add_theme_font_size_override("font_size", UiStyleRes.FS_BODY)
+	_notice.add_theme_color_override("font_color", UiStyleRes.WARN)
+	_notice.position = Vector2(0.0, UiLayoutRes.NOTICE_Y)
+	_notice.visible = false
+	right.add_child(_notice)
+	# ⚠️ size 必须在 **add_child 之后**再设：控件还没在树上时主题（= 中文字体）还没继承到，
+	#    Label 的最小高度按**引擎兜底字体**算出来是 23px > 20px，于是 `set_size` 当场被夹成 23，
+	#    整个提示带就顶出右栏下沿（实测：200 + 23 = 223 > 220）。进树之后再设就不会被夹。
+	# ★ 宽度取 `UNIT_CONTENT_RIGHT`（= 641）：与数值框 / 招募队列共用同一条右缘。
+	_notice.size = Vector2(UiLayoutRes.UNIT_CONTENT_RIGHT, UiLayoutRes.NOTICE_H)
 
 
 # ------------------------------------------------------------------
@@ -299,10 +349,37 @@ func set_unit_name(text: String) -> void:
 		_unit_name.text = text
 
 
-## 右栏：数值区的正文（区划 / 建筑 / 单位数值 / buff 占位说明都由 hud 决定）
+## 右栏：数值区的正文（区划 / 建筑 / 单位数值都由 hud 决定）。
+##
+## ★★ 文本里有 `\t` 时按**两栏**渲染：`\t` 左边进左栏 Label、右边进右栏 Label
+##    （两个 Label 的 x 由 ui_layout 定死，永远对齐）。没有 `\t` 就是普通单栏多行文本。
+##
+## ★ 为什么按 `\t` 分而不是让 hud 直接喂两份：
+##   hud 那边（`_two_columns`）本来就把正文写成「左栏 + `\t` + 右栏」的字符串，
+##   而**渲染**不该由 hud 管；这一层按同一个分隔符拆开只是把它画成两栏，
+##   文案的组装规则仍然只有一处（hud）。`detail_text()` 会把两栏**合回原样**，
+##   所以「文案对不对」的断言照旧在同一个出口上验。
 func set_detail(text: String) -> void:
-	if _body != null:
+	if _body == null:
+		return
+	var rows: PackedStringArray = text.split("\n")
+	var has_columns := text.contains("\t")
+	if not has_columns:
 		_body.text = text
+		if _body_right != null:
+			_body_right.text = ""
+			_body_right.visible = false
+		return
+	var left: PackedStringArray = []
+	var right: PackedStringArray = []
+	for row in rows:
+		var parts: PackedStringArray = String(row).split("\t")
+		left.append(parts[0])
+		right.append(parts[1] if parts.size() > 1 else "")
+	_body.text = "\n".join(left)
+	if _body_right != null:
+		_body_right.text = "\n".join(right)
+		_body_right.visible = true
 
 
 ## 右栏：数值区的标题（默认「详细信息」）
@@ -417,9 +494,33 @@ func _draw_buff_box(b: Label) -> void:
 # 给测试用的小接口
 # ------------------------------------------------------------------
 
-## 右栏数值区的正文
+## 右栏数值区的正文：两栏时**合回**「左栏 + \t + 右栏」的样子
+## （文案对不对的断言都在这个出口上；两栏各自的内容用下面两个读口）
 func detail_text() -> String:
+	if _body == null:
+		return ""
+	if _body_right == null or not _body_right.visible:
+		return _body.text
+	var left: PackedStringArray = _body.text.split("\n")
+	var right: PackedStringArray = _body_right.text.split("\n")
+	var out: Array[String] = []
+	for i in maxi(left.size(), right.size()):
+		var l: String = String(left[i]) if i < left.size() else ""
+		var r: String = String(right[i]) if i < right.size() else ""
+		out.append("%s\t%s" % [l, r] if r != "" else l)
+	return "\n".join(out)
+
+
+## 正文**左栏**的实际文本（测试用它按真实字体量宽度）
+func detail_left_text() -> String:
 	return _body.text if _body != null else ""
+
+
+## 正文**右栏**的实际文本（没有两栏文本时是空串）
+func detail_right_text() -> String:
+	if _body_right == null or not _body_right.visible:
+		return ""
+	return _body_right.text
 
 
 ## 右栏单位名称

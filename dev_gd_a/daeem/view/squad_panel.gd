@@ -6,7 +6,9 @@
 ##
 ## 规则（需求确认）：
 ##   · 不足 10 支队伍的空槽显示「…」并置灰、**点了不做任何事**（参考图就是这么画的）
-##   · 每行显示「编号 + 队伍名 + 人数」，当前选中的那队高亮
+##   · 每行显示「编号 + 队伍名」+ 第二行「人数」，当前选中的那队高亮
+##     （★ 第六轮从「一行 15 号字」改成「两行 13 号字」：一行文案 158px 装不进 108px
+##      的可写宽，会被 `clip_text` 裁掉一半，见 refresh() 上面那段说明）
 ##   · 点一行 = 选中整队，**镜头不动**
 ##
 ## ★ 纯表现：只读 world 与输入层的选中状态，改选中也只走 input_controller 的接口。
@@ -49,7 +51,7 @@ func setup(p_cfg, p_world, p_input) -> void:
 		b.focus_mode = Control.FOCUS_NONE             # 别让空格 / 回车又触发一次
 		b.clip_text = true
 		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
-		b.add_theme_font_size_override("font_size", UiStyleRes.FS_BODY)
+		b.add_theme_font_size_override("font_size", UiStyleRes.FS_SMALL)
 		_row_style(b, UiStyleRes.row_empty())
 		UiLayoutRes.apply_rect(b, UiLayoutRes.squad_slot_local(i))
 		b.pressed.connect(_on_slot_pressed.bind(i))
@@ -68,6 +70,18 @@ func _process(_dt: float) -> void:
 # 刷新（每帧）
 # ------------------------------------------------------------------
 
+## ★★ 行文案本轮改成**两行**（第六轮）：120 宽的行里根本塞不下一行文案 ——
+##   「部队1　将领 1 · 4 人」在 15 号字下实测 **158px**，而一行能写的地方只有
+##   120 − 8(左内边距) − 4(右内边距) = **108px**；`clip_text` 会把「· 4 人」整段裁掉，
+##   玩家看到的是一行断在「将领 1」上的残句（10 支队伍全是这样）。
+##
+##   现在：第 1 行「部队1  将领 1」（13 号字，最长的「部队10  将领 3」实测 91px）、
+##         第 2 行「4 人」（实测 26px）—— 两行都在 108px 内，60px 高的行正好容得下
+##         （两行文字块实测 54px 高，垂直居中），而且与详细信息左栏那 3×3 的格子
+##         （同样是「名字 + 第二行数字」）是同一套版式。
+##   ⚠️ 字号从 FS_BODY(15) 降到 FS_SMALL(13) 也是同一次改动的一部分：13 号下最长
+##      91px（余量 17px），15 号下是 105px（只剩 3px 余量，队名一长就又被裁）。
+##      tests/test_ui.gd 里有一条按**真实字体**量的断言盯着这件事（别改回一行 / 大字）。
 func refresh() -> void:
 	if world == null or input_ctrl == null:
 		return
@@ -78,7 +92,7 @@ func refresh() -> void:
 			var team: Array = teams[i]
 			var leader = team[0]
 			_teams[i] = team
-			b.text = "部队%d　%s · %d 人" % [i + 1, String(leader.name), team.size()]
+			b.text = "部队%d  %s\n%d 人" % [i + 1, String(leader.name), team.size()]
 			b.add_theme_color_override("font_color", UiStyleRes.TEXT)
 			var active: bool = input_ctrl.selected_units.has(leader)
 			if active:

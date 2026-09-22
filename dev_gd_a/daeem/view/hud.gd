@@ -435,6 +435,21 @@ func blocks_edge_scroll(global_pos: Vector2) -> bool:
 	return UiLayoutRes.point_hits_any(UiLayoutRes.interactive_rects(vp), global_pos)
 
 
+## 鼠标是不是停在**底栏**上（详细信息 / 阵营 / 命令卡 / 页签 —— **不含**左下小地图）。
+##
+## 需求原话：「当鼠标位于下方除地图外的 ui 栏时，应当禁用鼠标滚轮缩放地图，
+##            当鼠标移出下边栏，需要恢复」。
+##
+## ★ 与 `blocks_edge_scroll` 是**两条不同的规则**（别合并，理由见 ui_layout 里
+##   `bottom_bar_rects` 的注释）：那条只拦「能点的控件」，这条拦**整条底栏** ——
+##   详细信息面板里只有文字的地方不能拦边缘滚屏，但滚轮缩放在那儿照样该停。
+## ★ 小地图不算「ui 栏」：鼠标停在它上面时滚轮照旧缩放地图（需求里的「除地图外」）。
+## ★ 判据由调用方**每次事件**传进来（game_scene 用的是那一下滚轮自己的坐标）：
+##   鼠标一移出底栏，下一下滚动就恢复缩放 —— 没有「记得复位」的状态。
+func blocks_wheel_zoom(global_pos: Vector2) -> bool:
+	return UiLayoutRes.point_hits_any(UiLayoutRes.bottom_bar_rects(view_size()), global_pos)
+
+
 ## 当前设计空间大小（canvas_items + expand 拉伸后可能比 1920×1080 大）
 func view_size() -> Vector2:
 	var vp := get_viewport()

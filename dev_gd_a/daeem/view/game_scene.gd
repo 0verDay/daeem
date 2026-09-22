@@ -265,12 +265,31 @@ func _unhandled_input(event: InputEvent) -> void:
 		if used or input_ctrl.handle_key(event):
 			get_viewport().set_input_as_handled()
 	elif event is InputEventMouseButton:
+		# ★★ 底栏（详细信息 / 阵营 / 命令卡 / 页签，**不含**左下小地图）上
+		#    **不许用滚轮缩放地图**（用户需求）。
+		#    判据是**这一下滚轮自己的坐标**（不是每帧缓存的鼠标位置）：
+		#    鼠标移出底栏之后，下一下滚动就照常缩放 —— 没有需要复位的状态。
+		#    ⚠️ 走 hud 的几何查询（hud 认识 ui_layout），input_controller 不认识 HUD，
+		#       所以这一问放在这一层，命令流那条路（handle_mouse_button）一行不改。
+		if _is_wheel(event as InputEventMouseButton) and hud != null \
+				and hud.blocks_wheel_zoom((event as InputEventMouseButton).position):
+			get_viewport().set_input_as_handled()
+			return
 		if input_ctrl.handle_mouse_button(event):
 			get_viewport().set_input_as_handled()
 	elif event is InputEventMouseMotion:
 		input_ctrl.poll_mouse()
 		# ★ 框选那条状态机也要吃移动事件（越过阈值才算「在拖框」）
 		input_ctrl.handle_mouse_motion(event)
+
+
+## 这个鼠标按键是不是**滚轮**（只有滚轮会缩放地图；其它按键照旧交给 input_controller）
+func _is_wheel(event: InputEventMouseButton) -> bool:
+	match event.button_index:
+		MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN, \
+		MOUSE_BUTTON_WHEEL_LEFT, MOUSE_BUTTON_WHEEL_RIGHT:
+			return true
+	return false
 
 
 ## ★ 唯一改逻辑状态的地方：把命令交给 command_processor

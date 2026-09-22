@@ -47,6 +47,7 @@ func _cases() -> void:
 	_test_rooted_while_training(cfg)
 	_test_retinue_locked_while_training(cfg)
 	_test_cancel_queue(cfg)
+	_test_recruit_eta(cfg)
 	_test_cancel_then_death(cfg)
 	_test_death_refund(cfg)
 	_test_population_cap_and_recruit(cfg)
@@ -481,6 +482,71 @@ func _test_cancel_queue(cfg) -> void:
 		"★ 被拒的取消各发一条带拒因的事件（空格子 / 越界 ×2 / 队长不存在 / 防冒充）")
 	eq(_count_reason(evts, "recruit_cancelled", "cancelled"), 1,
 		"（这一帧只交出了之前那次**成功**取消的事件）")
+
+
+# ------------------------------------------------------------------
+# 十点五、ETA 查询：信息栏每个格子上的「还要等多久」由**逻辑层**给
+#
+# ★ 第七轮加的 `world.recruit_eta(leader, slot)`：视图不许自己乘 train_sec
+#   （规则该在逻辑层，见 pitfalls 5.20）。这里钉死它的语义：
+#     大格子   = 这一单自己的剩余秒
+#     第 k 小格 = 大格子读完 + 它**前面每一单**各自的 train_sec 之和
+#   ——「各自」是关键：不同兵种的读条时长不一样，不能拿第一个兵种的长度乘个数。
+# ------------------------------------------------------------------
+func _test_recruit_eta(cfg) -> void:
+	var c = require_config()
+	if c == null:
+		return
+	c.combat_enabled = false
+	# 塞一个**读条时长不同**的兵种（25 秒）：这样才能验出「各自按自己的 train_sec 累加」
+	var slow_kind := "subordinate_long"
+	(c.get_path_value("recruit.list") as Array).append({
+		"kind": slow_kind, "label": "慢兵", "short": "慢",
+		"train_sec": 25, "population_cost": 1, "cost": {"food": 10, "gold": 10},
+	})
+	var w = WorldRes.create(c)
+	_no_income(w)
+	_give(w, 1000.0, 1000.0)
+	var g1 = w.unit_by_id("general-1")
+	w.zones.zone_at(g1.tx, g1.ty)["population"] = 10.0
+
+	# 没有队列 / null / 负数：一律 0（视图据此把格子留空，不必自己判空）
+	near(w.recruit_eta(g1, 0), 0.0, 1e-6, "没在招募时 ETA 是 0")
+	near(w.recruit_eta(null, 0), 0.0, 1e-6, "null 将领也返回 0（视图不必先判空）")
+	near(w.recruit_eta(g1, -1), 0.0, 1e-6, "负数格号返回 0")
+
+	# 排两单：大格子 = 亲兵（10 秒），第 1 小格 = 慢兵（25 秒）
+	ok(w.start_recruit(KIND, g1.id, "p1"), "排第 1 单（亲兵，10 秒）")
+	ok(w.start_recruit(slow_kind, g1.id, "p1"), "排第 2 单（慢兵，25 秒）")
+	near(w.recruit_eta(g1, 0), 10.0, 1e-6, "★ 大格子 = 这一单自己的剩余秒（10）")
+	near(w.recruit_eta(g1, 1), 35.0, 1e-6,
+		"★ 第 1 小格 = 大格子读完 10 + **慢兵自己那 25**（不是拿 10 乘 2）")
+	near(w.recruit_eta(g1, 2), 0.0, 1e-6, "空槽位是 0")
+	near(w.recruit_eta(g1, 4), 0.0, 1e-6, "最后一格空着也是 0")
+
+	# 再排一单亲兵（10 秒）→ 第 2 小格 = 35 + 10
+	ok(w.start_recruit(KIND, g1.id, "p1"), "排第 3 单（亲兵，10 秒）")
+	near(w.recruit_eta(g1, 1), 35.0, 1e-6, "前面那格的 ETA 不变（10 + 25）")
+	near(w.recruit_eta(g1, 2), 45.0, 1e-6, "★ 第 2 小格 = 第 1 小格 + 第 1 小格那一单的 10")
+
+	# 时间往前走 → 每一格一起缩（视图每帧重问，自己不存时间轴）
+	_tick_secs(w, 4.0)
+	near(w.recruit_eta(g1, 0), 6.0, 0.05, "读了 4 秒 → 大格子还剩 6 秒")
+	near(w.recruit_eta(g1, 1), 31.0, 0.05, "★ 第 1 小格跟着缩到 31（6 + 25）")
+	near(w.recruit_eta(g1, 2), 41.0, 0.05, "★ 第 2 小格跟着缩到 41（31 + 10）")
+
+	# 取消正在读条的那一格 → 后面那一单前移并**从头读条**，ETA 全部重算
+	ok(w.cancel_recruit(g1.id, 0, "p1"), "取消大格子")
+	eq(g1.train_kind, slow_kind, "（前提）慢兵前移进了大格子")
+	near(w.recruit_eta(g1, 0), 25.0, 0.05, "★ 前移的那一单从头读条 → 它的 ETA = 自己的 25 秒")
+	eq(w.recruit_kind_at(g1, 1), KIND, "（前提）原来第 2 小格的亲兵前移到第 1 小格")
+	near(w.recruit_eta(g1, 1), 35.0, 0.05, "★ 前移之后重算：25 + 10 = 35")
+	near(w.recruit_eta(g1, 2), 0.0, 1e-6, "后面那格空出来了")
+
+	# 收尾：把队列清干净（后面的用例要从「没在招募」开始）
+	while g1.train_queue_size() > 0:
+		w.cancel_recruit(g1.id, 0, "p1")
+	near(w.recruit_eta(g1, 0), 0.0, 1e-6, "收尾：队列空了 → ETA 全 0")
 
 
 # ------------------------------------------------------------------
