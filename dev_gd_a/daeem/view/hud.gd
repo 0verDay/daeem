@@ -6,7 +6,7 @@
 ##   左侧 部队 1~10（10 槽 × 60 高，内容动态生成）
 ##   左下 小地图（400×400：整张地图 + 视野框，左键点击移动镜头，见 view/minimap.gd）
 ##   底栏 y 840..1080：
-##     详细信息 1030×240（左 = 选中对象的信息，右 = 阵营 + 资源）
+##     详细信息 1030×240（左栏 = 1 + 3×3 共 10 格；右栏 = 选中单位的头像 / 名称 / 数值）
 ##     阵营 / 盾徽 / 旗帜（150 宽，**本轮不做**，只留位置）
 ##     命令卡 3×3（每格 80，内容随页签实时切换）
 ##     单位 / 建筑 / 科技（单位、建筑切页；**科技点不动**）
@@ -26,6 +26,7 @@ const UiLayoutRes = preload("res://view/ui_layout.gd")
 const UiStyleRes = preload("res://view/ui_style.gd")
 const SquadPanelRes = preload("res://view/squad_panel.gd")
 const DetailPanelRes = preload("res://view/detail_panel.gd")
+const TroopGridRes = preload("res://view/troop_grid.gd")
 const CommandCardRes = preload("res://view/command_card.gd")
 const PageTabsRes = preload("res://view/page_tabs.gd")
 const MinimapRes = preload("res://view/minimap.gd")
@@ -155,7 +156,7 @@ func _build_detail_panel() -> void:
 	detail_panel.setup(world, _font)
 	detail_panel.queue_cell_activated.connect(_on_queue_cell_activated)
 	detail_panel.troop_activated.connect(_on_troop_activated)
-	detail_panel.block_activated.connect(_on_roster_block_activated)
+	detail_panel.unit_activated.connect(_on_grid_unit_activated)
 
 
 func _build_command_card() -> void:
@@ -273,40 +274,63 @@ func _on_queue_cell_activated(slot: int) -> void:
 		show_notice("现在没有可以取消的招募")
 
 
-## 点了详细信息左栏下方的某一格**将领头像** = 把那一支部队换成「当前展开」的那一支。
+## 点了左栏下半网格里的一格**将领** = 把那一支部队换成「当前展开」的那一支，
+## 同时右栏切到那支部队的将领。
 ##
-## ★ 需求原话：「当选中多个部队时，点击左侧的部队头像是将展开的部队切换到该部队，
-##   而不是只选中该部队」。
+## ★ 需求原话：「若玩家点选下方 1333 排列的将领，则会将展开的部队转换成选中的部队，
+##   相应地，展开将领变为选中的部队将领」。
 ##   ⇒ 这里**只改「展开哪一支」**（记住编号 + 刷一帧），**不碰选中集合**：
-##     选中是玩家在地图上 / 左侧列表里做的决定，点一下头像不该把它改掉。
+##     选中是玩家在地图上 / 左侧列表里做的决定，点一下格子不该把它改掉。
 ## ★ 编号 → 部队：按**与左侧部队列表完全相同的口径**数一遍己方队长
-##   （view/squad_panel.gd 的 _collect_teams / unit_roster 的 _troop_number 是同一套判据）。
+##   （view/squad_panel.gd 的 _collect_teams 是同一套判据）。
+## ⚠️ 编号得**真的在当前选中的部队里**才认（喂 99 这种不存在的编号 → 什么都不变）：
+##   以前不查也能跑，是因为 `_pick_troop` 下一帧会退回第一支 —— 但那样
+##   「先把展开改成 99、再由 _pick_troop 退回默认」不是本意，干脆在这里就拒掉。
 func _on_troop_activated(number: int) -> void:
 	if world == null or number <= 0:
+		return
+	if not _troop_number_selected(number):
 		return
 	_detail_troop_number = number      # 下一帧就展开它（别被「默认第一支」抢回去）
 	refresh()
 
 
-## 点了左栏**上半**方块行里的第 k 个方块（0 = 队长，1 起 = 各亲兵）。
+## 这个部队编号（1 起）现在是不是**选中的**部队之一
+func _troop_number_selected(number: int) -> bool:
+	for t in _selected_troops(input_ctrl.selected_units):
+		if int(t["number"]) == number:
+			return true
+	return false
+
+
+## 点了左栏下半网格里的一格**单位**（只有「只选中一支部队」时才是单位格）。
 ##
-## ★ 手玩原话：「玩家点击了左栏中展开部队的单位，则切换详情至这个单位」
-##   ⇒ 把它记成「玩家点到的那个单位」（右栏按它显示），**不动选中集合** ——
-##     点一下左栏的方块不该改变「命令发给谁」。
-## ⚠️ 这里写的是与地图点选**同一个** `clicked_unit`：两者语义是一样的
-##   （「玩家点到的那个单位」），只是入口不同。再点网格里别的部队时
-##   `_right_unit()` 会因为它不属于展开那支而自动退回将领，不用额外清理。
-func _on_roster_block_activated(k: int) -> void:
-	if input_ctrl == null:
+## ★ 需求原话：「当玩家只选中了单个部队时……下方 333 排列显示选中的部队的单位」+
+##   「点单位格则右栏切到那个单位」。
+##   ⇒ 只把右栏切过去（写 `input_ctrl.clicked_unit`），**不动选中集合** ——
+##     点一下左栏不该改变「命令发给谁」。顺序的选择手柄留给玩家单击地图那一下。
+## ⚠️ 这里写的是与地图点选**同一个** `clicked_unit`，并且顺手把
+##   `selection_origin` 记成 "click"：右栏的显示规则是「单击选中 → 显示点到的那个单位，
+##   拖拽框选 → 显示展开那支部队的将领」（手玩原话），点左栏的格子属于前者。
+func _on_grid_unit_activated(index: int) -> void:
+	if input_ctrl == null or world == null:
 		return
-	var roster = detail_panel.roster_control()
-	if roster == null:
-		return
-	var u = roster.unit_at(k)
+	var u = _grid_unit_at(index)
 	if u == null:
 		return
 	input_ctrl.clicked_unit = u
+	input_ctrl.selection_origin = "click"
 	refresh()
+
+
+## 左栏下半网格里第 index 个格子现在画的是哪个单位（没有 → null）
+func _grid_unit_at(index: int):
+	if detail_panel == null:
+		return null
+	var grid = detail_panel.grid_control()
+	if grid == null or grid.mode != TroopGridRes.MODE_UNITS:
+		return null
+	return grid.unit_at(index)
 
 
 # ------------------------------------------------------------------
@@ -447,11 +471,18 @@ func refresh() -> void:
 		return
 
 	# 选中的部队（按「队长」分组，顺序 = 左侧部队列表）：
-	# 上半画**当前展开**的那一支，下半网格画**其余**的（展开的那支不重复出现）。
+	# 上半画**当前展开**的那一支的将领格，下半网格两种语义共用（见 detail_panel 文件头）：
+	#   · 选中多支 → 画**其余**部队的将领（展开的那支不重复出现）
+	#   · 只选中一支 → 画这支部队的**单位**（超 9 个滚轮翻页）
 	var troops := _selected_troops(input_ctrl.selected_units)
 	var current := _pick_troop(troops)
 	var troop = null if current < 0 else troops[current]
-	detail_panel.set_troops(troop, _troops_without(troops, current))
+	var troop_units: Array = []
+	var unit_shorts: Array = []
+	if troop != null and troops.size() == 1:
+		troop_units = troop.get("units", [])
+		unit_shorts = _unit_shorts(troop_units)
+	detail_panel.set_troops(troop, _troops_without(troops, current), troop_units, unit_shorts)
 
 	# 右栏：**地图上点到的那个单位优先**，否则是当前展开那支部队的将领
 	# （需求原话：「默认为左侧栏中选中的部队将领头像，玩家点地图上某个单位时，
@@ -532,16 +563,16 @@ func _troops_without(troops: Array, skip: int) -> Array:
 	return out
 
 
-## 右栏要显示的单位。手玩把规则说死了：
+## 右栏要显示的单位。手玩把规则说死了（第四轮改版后按「怎么选中的」分）：
 ##
-##   · **默认** = 左栏展开那支部队的**将领**；
-##   · 玩家**在地图上点击某个单位**选出一支部队时 → 显示**玩家点到的那个单位**；
-##   · 玩家点左栏里**展开的那支部队的某个单位** → 右栏切到那个单位；
-##   · 点**其余部队**的格子（= 换展开）→ 右栏跟着变成那支部队的将领。
+##   · 玩家**拖拽框选** / 点左侧部队列表 / 按 1-2-3 → 显示**展开那支部队的将领**；
+##   · 玩家**鼠标单击地图上的某个单位** → 显示**玩家点到的那个单位**；
+##   · 玩家点左栏下半**单位格** → 右栏切到那个单位（hud 那边会顺手记成 "click"）；
+##   · 点**其余部队**的将领格（= 换展开）→ 右栏跟着变成那支部队的将领。
 ##
 ## 落点：
-##   · 「在地图上点到谁」由 `input_ctrl.clicked_unit` 记（一次点选才有，框选 / 点左侧列表
-##     / 按 1-2-3 都是整队批量选中，那里是 null，见 input_controller 里那段注释）；
+##   · 「这一次选中是怎么来的」由 `input_ctrl.selection_origin` 记（"click" / "drag"）；
+##   · 「点到了谁」由 `input_ctrl.clicked_unit` 记（点地图 / 点左栏单位格都会写它）；
 ##   · `troop` 是**左栏当前展开**的那一支，所以「点到的是不是展开那支的成员」用
 ##     `_in_troop()` 一问就知道 —— 是就显示它，不是就退回展开那支的将领。
 ##
@@ -550,7 +581,7 @@ func _troops_without(troops: Array, skip: int) -> Array:
 func _right_unit(troop):
 	var leader = null if troop == null else troop.get("leader", null)
 	var clicked = null
-	if input_ctrl != null:
+	if input_ctrl != null and String(input_ctrl.selection_origin) == "click":
 		clicked = input_ctrl.clicked_unit
 	if clicked != null and clicked.alive and _in_troop(clicked, troop):
 		return clicked
@@ -563,6 +594,16 @@ func _in_troop(u, troop) -> bool:
 		return false
 	var units: Array = troop.get("units", [])
 	return units.has(u)
+
+
+## 一串单位在左栏格子方框里的**短字**（与 unit_roster.short_name 同一套口径，
+## 由 detail_panel 转交给网格 —— 网格不认识 world，所以短字在这里算好）。
+func _unit_shorts(units: Array) -> Array:
+	var out: Array = []
+	var roster = detail_panel.roster_control() if detail_panel != null else null
+	for u in units:
+		out.append("" if roster == null else roster.short_name(u))
+	return out
 
 
 ## 招募队列跟着哪一位将领：当前展开那支部队的队长（没展开就退回选中列表里第一个队长）

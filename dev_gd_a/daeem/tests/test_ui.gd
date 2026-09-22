@@ -12,9 +12,12 @@
 extends "res://tests/test_case.gd"
 
 const UiLayoutRes = preload("res://view/ui_layout.gd")
+const UiStyleRes = preload("res://view/ui_style.gd")
+const DetailPanelRes = preload("res://view/detail_panel.gd")
 const PageTabsRes = preload("res://view/page_tabs.gd")
 const RecruitQueueRes = preload("res://view/recruit_queue.gd")
 const TroopGridRes = preload("res://view/troop_grid.gd")
+const FontLoaderRes = preload("res://view/font_loader.gd")
 const PaletteRes = preload("res://view/palette.gd")
 const UnitRes = preload("res://logic/unit.gd")
 const FactionRes = preload("res://logic/faction.gd")
@@ -118,6 +121,107 @@ func _test_layout_against_reference() -> void:
 		eq(r.position.y, UiLayoutRes.BAR_TOP, "底栏各块顶边都在 y=840")
 		eq(r.position.y + r.size.y, UiLayoutRes.DESIGN_H, "底栏各块都贴住屏幕下沿")
 
+	_test_left_column_geometry()
+
+
+# ---- 左栏几何：1 + 3×3 = 10 个格子（参考图逐像素量出来的，别凭感觉改）----
+#
+#  参考图 1920×1080 实测：左上第 1 格 40×40 在 (415, 858)，下面 3×3 的格子
+#  列 x 415/536/662、行 y 915/970/1025 —— 是本轮改版照着抄的那套结构。
+func _test_left_column_geometry() -> void:
+	# 上半：就一个格子（将领格）
+	eq(UiLayoutRes.ROSTER_DETAIL_H, 40.0, "★ 左栏上半就是一个 40 高的将领格")
+	v2_near(UiLayoutRes.roster_cell_avatar_rect().size, Vector2(40.0, 40.0), 0.01,
+		"★ 将领格是 40×40（参考图 x 415..454）")
+	eq(UiLayoutRes.TROOP_GRID_COLS, 3, "下半是 3 列")
+	eq(UiLayoutRes.TROOP_GRID_ROWS, 3, "下半是 3 行")
+	eq(UiLayoutRes.TROOP_GRID_SLOTS, 9, "★ 下半 3×3 = 9 格（手玩原话：1333 排列）")
+	eq(UiLayoutRes.GRID_PAGE, 9, "单选时滚轮**一次翻一页 = 9 格**（手玩原话）")
+	# 每格 40×40，行距 44：3 行共 132，加上上半 40 + 缝 15 = 187 ≤ 内容高 220
+	v2_near(UiLayoutRes.troop_avatar_rect(0).size, Vector2(40.0, 40.0), 0.01, "格里的方框 40×40")
+	eq(UiLayoutRes.troop_cell_rect(0), Rect2(0, 0, 112, 44), "第 0 格在左上（宽 116 - 内侧 4）")
+	eq(UiLayoutRes.troop_cell_rect(1).position.x, UiLayoutRes.TROOP_CELL_W,
+		"第 1 格在它右边（列优先 → 行优先）")
+	eq(UiLayoutRes.troop_cell_rect(3).position.y, UiLayoutRes.TROOP_CELL_H, "第 3 格换到第二行")
+	eq(UiLayoutRes.troop_cell_rect(8).position.y, 2.0 * UiLayoutRes.TROOP_CELL_H, "第 8 格在第三行")
+	# 9 格 + 上半那一格都必须落在左栏内容区里（不然会被面板裁掉）
+	var bottom := UiLayoutRes.troop_cell_rect(8)
+	ok(bottom.position.y + UiLayoutRes.TROOP_AVATAR <= 220.0,
+		"★ 第 3 行的方框装得进左栏内容高（%s ≤ 220）" % str(bottom.position.y + UiLayoutRes.TROOP_AVATAR))
+	var rightmost := UiLayoutRes.troop_cell_rect(2)
+	ok(rightmost.position.x + UiLayoutRes.TROOP_CELL_W - 4.0 <= UiLayoutRes.DETAIL_LEFT_W + 1e-6,
+		"★ 第 3 列的格子不越出左栏（%s ≤ %s）" % [
+			str(rightmost.position.x + UiLayoutRes.TROOP_CELL_W - 4.0),
+			str(UiLayoutRes.DETAIL_LEFT_W)])
+	ok(UiLayoutRes.roster_detail_rect().position.y + UiLayoutRes.ROSTER_DETAIL_H
+			<= UiLayoutRes.troop_grid_rect().position.y,
+		"★ 上半那格与下半网格不重叠（%s ≤ %s）" % [
+			str(UiLayoutRes.roster_detail_rect().position.y + UiLayoutRes.ROSTER_DETAIL_H),
+			str(UiLayoutRes.troop_grid_rect().position.y)])
+	ok(UiLayoutRes.TROOP_NAME_X + UiLayoutRes.TROOP_NAME_W + 8.0 <= UiLayoutRes.TROOP_CELL_W,
+		"★ 格子里那一行名字 + 8px 缝仍在本格内，不会压到右边那一格的方框（%s ≤ %s）" % [
+			str(UiLayoutRes.TROOP_NAME_X + UiLayoutRes.TROOP_NAME_W + 8.0),
+			str(UiLayoutRes.TROOP_CELL_W)])
+	# ★★ 这一条是补的回归（手玩报的「第二、三列的文字被挤到第一列去」）：
+	#    文字**可写宽度必须真的装得下**「将领名称」四个字（13 号字 = 52px），否则会被截成
+	#    两个字，看起来就像「字太小 / 那两列没字」。
+	eq(UiLayoutRes.TROOP_NAME_W, 56.0, "★ 名字可写宽度 56（52px 的「将领名称」装得下）")
+	ok(UiLayoutRes.TROOP_NAME_W > 52.0, "★ 比参考图量出来的「将领名称」宽度（52）宽一点")
+	eq(UiLayoutRes.ROSTER_ID_W, UiLayoutRes.TROOP_NAME_W,
+		"★ 左栏上半那一格与下面 9 格用**同一套**文字宽度（看着才是一套东西）")
+	eq(UiLayoutRes.ROSTER_CELL_TEXT_X, UiLayoutRes.TROOP_NAME_X, "★ 两段文字左边对齐")
+	# ★ 两行文字要**与方框垂直居中**（手玩原话：「对齐其对应左侧头像居中」）：
+	#   两行作为一块，上下边距相等；且第二行要落在方框里面。
+	var block_top: float = UiLayoutRes.TROOP_NAME_Y - UiStyleRes.FS_SMALL
+	var block_bottom: float = UiLayoutRes.TROOP_NAME2_Y
+	ok(UiLayoutRes.TROOP_NAME2_Y > UiLayoutRes.TROOP_NAME_Y, "★ 第二行在第一行下面")
+	ok(block_top >= 0.0 and block_bottom <= UiLayoutRes.TROOP_AVATAR,
+		"★ 两行都落在方框的竖直范围里（%s .. %s ≤ %s）" % [
+			str(block_top), str(block_bottom), str(UiLayoutRes.TROOP_AVATAR)])
+	near(block_top, UiLayoutRes.TROOP_AVATAR - block_bottom, 2.0,
+		"★ 两行作为一块与方框**垂直居中**（上留 %.1f、下留 %.1f）" % [
+			block_top, UiLayoutRes.TROOP_AVATAR - block_bottom])
+	eq(UiLayoutRes.ROSTER_ID_Y, UiLayoutRes.TROOP_NAME_Y,
+		"★ 左栏上半那一格的两行与下面 9 格同一套基线")
+	eq(UiLayoutRes.ROSTER_COUNT_X, UiLayoutRes.ROSTER_CELL_TEXT_X,
+		"★ 「1/11」与名字同一个左边（参考图里两行左边缘对齐）")
+	ok(UiLayoutRes.ROSTER_COUNT_X + UiLayoutRes.ROSTER_COUNT_W <= UiLayoutRes.DETAIL_LEFT_W,
+		"★ 「1/11」也不会越出左栏（%s ≤ %s）" % [
+			str(UiLayoutRes.ROSTER_COUNT_X + UiLayoutRes.ROSTER_COUNT_W),
+			str(UiLayoutRes.DETAIL_LEFT_W)])
+
+	# ★★ 回归（手玩报的：「选中多个单位或将领时，第二、三列的文字会挤到第一列」）：
+	#    每一格右边那两行字的左边 = **这一格自己的左边** + 格内的 TROOP_NAME_X。
+	#    ⚠️ 上面那几条「常量够不够宽」的断言抓不住这个 bug —— 常量**全是对的**，
+	#       错的是画的时候 x 没加「第几列」的偏移（y 加了、x 没加），
+	#       所以只有 1 格时看着正常、多选（≥2 格）时三列的字叠在第 1 列上。
+	#       ⇒ 必须**逐格比 x**，不能只比常量。
+	for gi in UiLayoutRes.TROOP_GRID_SLOTS:
+		var gcell := UiLayoutRes.troop_cell_rect(gi)
+		var gname := UiLayoutRes.troop_name_rect(gi)
+		eq(gname.position.x, gcell.position.x + UiLayoutRes.TROOP_NAME_X,
+			"★ 第 %d 格的文字左边 = 本格左边 + %s（不挤到第 1 列）" % [
+				gi, str(UiLayoutRes.TROOP_NAME_X)])
+		eq(gname.position.y, gcell.position.y, "★ 第 %d 格的文字顶边 = 本格顶边" % gi)
+		ok(gname.position.x >= gcell.position.x + UiLayoutRes.TROOP_AVATAR,
+			"★ 第 %d 格的文字在本格方框右边（%s ≥ %s）" % [
+				gi, str(gname.position.x), str(gcell.position.x + UiLayoutRes.TROOP_AVATAR)])
+		ok(gname.position.x + gname.size.x <= gcell.position.x + gcell.size.x + 0.01,
+			"★ 第 %d 格的文字不越出本格（%s ≤ %s）" % [
+				gi, str(gname.position.x + gname.size.x),
+				str(gcell.position.x + gcell.size.x)])
+	# 三列的文字左边必须**依次右移**（「都挤到第一列」的反面）
+	ok(UiLayoutRes.troop_name_rect(0).position.x < UiLayoutRes.troop_name_rect(1).position.x
+			and UiLayoutRes.troop_name_rect(1).position.x < UiLayoutRes.troop_name_rect(2).position.x,
+		"★ 三列的文字左边依次右移（列差 = 格宽 %s）" % str(UiLayoutRes.TROOP_CELL_W))
+	near(UiLayoutRes.troop_name_rect(1).position.x - UiLayoutRes.troop_name_rect(0).position.x,
+		UiLayoutRes.TROOP_CELL_W, 0.01, "★ 相邻两列的文字左边正好差一格宽")
+	# 三行同理（第 4 格换行 → 回到第 1 列的 x，但 y 下移一行）
+	eq(UiLayoutRes.troop_name_rect(3).position.x, UiLayoutRes.troop_name_rect(0).position.x,
+		"★ 第 2 行第 1 列的文字左边与第 1 行第 1 列对齐")
+	eq(UiLayoutRes.troop_name_rect(3).position.y - UiLayoutRes.troop_name_rect(0).position.y,
+		UiLayoutRes.TROOP_CELL_H, "★ 换行时文字跟着下移一格高")
+
 
 # ------------------------------------------------------------------
 # 二、鼠标：只有「能点的控件」才拦边缘滚屏
@@ -139,11 +243,11 @@ func _test_hit_test() -> void:
 		UiLayoutRes.FACTION_RECT.get_center()),
 		"阵营占位面板同样不拦")
 
-	# ★★ 网格是**能点**的（点一格 = 换左栏展开哪支部队）→ 它要拦边缘滚屏。
+	# ★★ 网格是**能点**的（点一格 = 换展开哪支部队 / 切右栏到某个单位）→ 它要拦边缘滚屏。
 	#    它与小地图同一条理由：鼠标停在能点的格子上时不该同时被边缘推着滚屏。
 	ok(UiLayoutRes.point_hits_any(UiLayoutRes.interactive_rects(vp),
 		UiLayoutRes.troop_cell_global_rect(0).get_center()),
-		"★ 详细信息左栏的将领头像网格拦边缘滚屏（它是可点的）")
+		"★ 详细信息左栏下半那 9 个格子拦边缘滚屏（它是可点的）")
 
 	# 能点的：部队行 / 命令卡 / 页签 / 设置
 	ok(UiLayoutRes.point_hits_any(UiLayoutRes.interactive_rects(vp),
@@ -256,6 +360,7 @@ func _test_panels(cfg) -> void:
 	_test_squad_rows(main)
 	_test_page_tabs_and_card(main, cfg)
 	_test_card_keys(main)
+	_test_avatar_text_fit(cfg)
 	_test_recruit_via_card(main)
 	_test_queue_control(cfg)
 	_test_queue_cancel_via_click(main)
@@ -338,6 +443,53 @@ func _test_anchors(main) -> void:
 
 	root.size = Vector2i(int(UiLayoutRes.DESIGN_W), int(UiLayoutRes.DESIGN_H))
 	await process_frame
+	await process_frame
+
+
+# ---- ★ 右栏头像里那个字必须**装得进方框**（手玩报的「字右下对齐」就是这个）----
+#
+# 症状：方框 40×40，字号却写的是 44 —— 汉字的字面高≈字号，44 的字塞不进去，
+#       而 `draw_string` 会被裁到控件矩形里，看起来就是「字被推到右下角、还缺一角」。
+# 判据：按方框现算出来的字号，**渲染尺寸**必须 ≤ 方框（留 2px 余量）。
+func _test_avatar_text_fit(cfg) -> void:
+	var panel = DetailPanelRes.new()
+	root.add_child(panel)
+	await process_frame
+	var font: Font = FontLoaderRes.load_font(cfg)
+	ok(font != null, "（前提）拿得到中文字体（拿不到的话整屏是方框，另有用例在管）")
+	if font == null:
+		panel.queue_free()
+		return
+	panel.setup(null, font)
+
+	ok(panel._unit_avatar != null, "右栏有头像方框那个控件")
+	var f2: Font = panel._unit_avatar.get_theme_default_font()
+	ok(f2 != null, "（前提）头像控件能拿到字体")
+	if f2 == null:
+		panel.queue_free()
+		return
+
+	var side: float = UiLayoutRes.UNIT_AVATAR
+	eq(side, 100.0, "★ 右栏头像方框 = 100×100（参考图实测 x 806..905、y 860..959）")
+	# 「将 / 兵 / 区 / 建」这些实际会出现的字都得装得下，而且要把方框填满（别缩成一小坨）
+	for ch in ["将", "兵", "区", "建"]:
+		panel.set_unit_avatar_text(ch)
+		var size: int = panel._avatar_font_size(f2)
+		var sz := f2.get_string_size(ch, HORIZONTAL_ALIGNMENT_LEFT, -1, size)
+		ok(sz.x <= side - 4.0 + 0.01 and sz.y <= side - 4.0 + 0.01,
+			"★ 头像里的「%s」用 %d 号字，渲染 %.0f×%.0f ≤ 方框 %.0f（装得下才不会被裁到右下角）"
+				% [ch, size, sz.x, sz.y, side])
+		ok(size > side * 0.6,
+			"★ 现算的字号（%d）要把方框**填满**（> %.0f）—— 太小就成了一小坨字" % [
+				size, side * 0.6])
+
+	# 真的画了一帧（`_draw` 里出错在无头下不会让测试失败，所以盯一下计数器）
+	panel.set_unit_avatar_text("将")
+	var before: int = panel.avatar_draw_count()
+	panel._unit_avatar.queue_redraw()
+	await process_frame
+	ok(panel.avatar_draw_count() > before, "★ 头像那一块真的画了一帧（_draw 跑过）")
+	panel.queue_free()
 	await process_frame
 
 
@@ -933,24 +1085,25 @@ func _test_box_select(main) -> void:
 	if g3 != null:
 		eq(main.hud.squad_panel.slot_active(2), false, "没框到的第三支部队不高亮")
 
-	# ---- 下方详细信息（第三轮改版）：
-	#      左栏上半 = **当前展开的那一支部队**；左栏下半 = 选中部队的将领头像网格（点它换）
+	# ---- 下方详细信息（第四轮改版）：
+	#      左栏上半 = **当前展开的那一支部队的将领格**；
+	#      左栏下半 = 3×3 网格：多选时画**其余**部队的将领，单选时画这支部队的**单位**
 	var roster = main.hud.detail_panel.roster_control()
 	var grid = main.hud.detail_panel.grid_control()
-	ok(roster != null, "详细信息左栏上半有「当前展开的部队」那一段")
-	ok(grid != null, "详细信息左栏下半有「选中部队的将领头像网格」")
+	ok(roster != null, "详细信息左栏上半有「当前展开的部队」那一格")
+	ok(grid != null, "详细信息左栏下半有 3×3 的网格")
 	if roster != null and grid != null:
 		ok(roster.visible, "选中单位之后左栏上半出现")
 		eq(roster.unit_count(), t1.size(), "★ 上半画的是**当前展开那一支**的完整部队")
 		eq(roster.leader().id, g1.id, "★ 上半是第 1 支部队（内部状态对得上）")
-		eq(roster.leader_name(), "将领名称",
-			"★ 第一格那行小字写的是固定文案「将领名称」（手玩原话 / 参考图就是这么写的）")
+		eq(roster.leader_name(), String(g1.name),
+			"★ 那一格第一行写的是**将领真名**（参考图上写的就是这一行名字）")
 		eq(roster.count_text(), "%d/%d" % [t1.size(), UiLayoutRes.UNIT_CAP],
 			"★ 写着「现有单位数/编制上限」（y = 编制上限 11）")
 		eq(roster.leader_short(), "将",
-			"★ 本段第一格的短字是「将」——**不再额外画一个「将」大方块**（手玩原话）")
-		eq(roster.block_text(0), "将", "★ 队长的方块里写「将」（没有头像，用字代替）")
-		eq(roster.block_text(1), "兵", "★ 亲兵的方块里写 config 的 short（兵）")
+			"★ 那一格的短字是「将」——**不再额外画一个「将」大方块**（手玩原话）")
+		eq(roster.short_name(t1[0]), "将", "★ 队长的短字是「将」（没有头像，用字代替）")
+		eq(roster.short_name(t1[1]), "兵", "★ 亲兵的短字是 config 的 short（兵）")
 
 		# ★ 右栏报的是**将领**，不是整队选中时排在最后的那个亲兵
 		#   （框选 / 点左侧列表拿到的都是整队；选中列表最后一个往往是亲兵，
@@ -960,48 +1113,35 @@ func _test_box_select(main) -> void:
 		ok(main.hud.detail_panel.detail_text().contains("血量 200"),
 			"★ 右栏那些数值也是将领的（满血 200，亲兵是 80）")
 
-		# 方块是横向排开的，且**队长是大方块 40×40、亲兵是小方块 20×20**（手玩点名）
-		var b0 := UiLayoutRes.roster_block_rect(0)
-		var b1 := UiLayoutRes.roster_block_rect(1)
-		# ★ 方块都是 20×20 的小方块（参考图实测：中心距 39px、排在名字那一行下面）
-		v2_near(b0.size, Vector2(UiLayoutRes.ROSTER_BLOCK_SMALL, UiLayoutRes.ROSTER_BLOCK_SMALL),
-			0.01, "附属单位方块是 20×20（小方块，手玩点名）")
-		v2_near(b1.size, Vector2(UiLayoutRes.ROSTER_BLOCK_SMALL, UiLayoutRes.ROSTER_BLOCK_SMALL),
-			0.01, "第二个方块也是 20×20")
-		ok(b1.position.x > b0.position.x, "同一行里第二个方块排在第一个右边")
-		ok(b0.position.y >= UiLayoutRes.ROSTER_CELL_AVATAR * 0.0 + 40.0,
-			"★ 方块行排在**名字那一行下面**（不是并排）——参考图就是这么画的")
-		# 方块行不能画出左栏：先露出几个，剩下的靠滚轮（见 ROSTER_BLOCKS_MAX_W 的注释）
-		ok(UiLayoutRes.roster_block_right(2) - UiLayoutRes.ROSTER_BLOCKS_LEFT
-				<= UiLayoutRes.ROSTER_BLOCKS_MAX_W,
-			"★ 一行先露出 3 个方块（%s ≤ %s）" % [
-				str(UiLayoutRes.roster_block_right(2) - UiLayoutRes.ROSTER_BLOCKS_LEFT),
-				str(UiLayoutRes.ROSTER_BLOCKS_MAX_W)])
-		ok(UiLayoutRes.roster_block_right(9) - UiLayoutRes.ROSTER_BLOCKS_LEFT
-				> UiLayoutRes.ROSTER_BLOCKS_MAX_W,
-			"★ 10 个方块一行放不下 → 要靠**滚轮**（需求原话）")
-		# ★ 方块行整行都必须落在左栏内容区里（方块行 + 滚轮偏移也不会越界）
-		ok(UiLayoutRes.ROSTER_BLOCKS_LEFT + UiLayoutRes.ROSTER_BLOCKS_MAX_W
-				<= UiLayoutRes.DETAIL_LEFT_W + 1e-6,
-			"★ 方块行（含滚轮可见宽度）不越出左栏（%s ≤ %s）" % [
-				str(UiLayoutRes.ROSTER_BLOCKS_LEFT + UiLayoutRes.ROSTER_BLOCKS_MAX_W),
-				str(UiLayoutRes.DETAIL_LEFT_W)])
-		# ★ 「将领名称」+「1/11」那一行也要装得进左栏、且不压到块行
+		# ★ 「将领名称 1/11」那一行要装得进左栏（参考图里它写在方框右边）
 		ok(UiLayoutRes.ROSTER_COUNT_X + 40.0 <= UiLayoutRes.DETAIL_LEFT_W,
 			"★ 「将领名称 1/11」那一行装得进左栏")
-		ok(UiLayoutRes.ROSTER_COUNT_X + 40.0 <= UiLayoutRes.ROSTER_BLOCKS_LEFT,
-			"★ 名字 / x÷y 那一行不压到方块行（%s ≤ %s）" % [
-				str(UiLayoutRes.ROSTER_COUNT_X + 40.0), str(UiLayoutRes.ROSTER_BLOCKS_LEFT)])
 
-		# 下半的网格：**只列选中的部队，且去掉正在展开的那一支**（手玩原话：
-		# 「被展开的部队不需要在下方的九宫格中显示」）
+		# ---- 多选：下半网格 = **只列没被展开的那些**部队的将领（手玩原话：
+		#      「被展开的部队不需要在下方的九宫格中显示」「点将领格 = 换展开哪支部队」）----
 		ok(grid.visible, "选中部队之后网格出现")
+		eq(main.hud.detail_panel.grid_mode(), "leaders", "★ 选中多支部队时网格是**将领模式**")
 		eq(grid.troop_count(), 1, "★ 网格只列**没被展开的**那 1 支（展开的那支已在上半）")
 		eq(grid.cell_count(), 1, "画了 1 格")
 		eq(grid.leader_name(0), String(g2.name), "★ 那一格是第 2 支部队（第 1 支正在上面展开）")
-		eq(grid.count_text(0), "%d/%d" % [t2.size(), UiLayoutRes.UNIT_CAP], "格子里写着 x/y")
+		ok(grid.cell_is_leader(0), "那一格是将领格")
+		eq(grid.cell_short(0), String(g2.name).substr(0, 1), "将领格方框里写名字首字")
+		# ★ 拖拽（框选）多支部队 → 右栏显示**展开的那一支（序号靠前那支）的将领**
+		#   （手玩原话：「若拖拽选中多个部队，则显示展开的部队（序号靠前的部队）的将领」）----
+		eq(main.input_ctrl.selection_origin, "drag", "（前提）这一步是通过框选选中的")
+		eq(roster.leader().id, g1.id, "（前提）展开的是序号靠前的第 1 支部队")
+		eq(main.hud.detail_panel.unit_name_text(), String(g1.name),
+			"★ 拖拽选中多个部队 → 右栏显示**展开那支部队的将领**")
+		ok(main.hud.detail_panel.detail_text().contains("已选中 2 支部队"),
+			"★ 多选时右栏补一行「已选中 N 支部队」")
+		# ★ 多选时下半网格只画**其余部队的将领**，不画单位（单位只在单选时出现）
+		eq(grid.cell_count(), 1, "★ 多选时下半网格里只有那 1 支没展开的部队")
+		ok(grid.unit_at(0) == g2, "★ 那一格画的是将领本人（不是单位）")
+		eq(grid.unit_total(), 0, "★ 多选时没有「单位翻页」这回事（页数 = 0）")
 		eq(UiLayoutRes.TROOP_GRID_SLOTS, 9,
 			"★ 网格正好 9 格（手玩原话：参考图下方是 1333 排列的 9 个格子）")
+		ok(UiLayoutRes.TROOP_GRID_SLOTS + 1 == 10,
+			"★ 9 格 + 左上展开的那一格 = 10 格，正好对上「玩家部队上限 10 支」（手玩原话）")
 		# ★ 两栏比例按参考图逐像素量出来的（左 37.5 : 右 62.5），别凭感觉改
 		eq(UiLayoutRes.DETAIL_LEFT_W + UiLayoutRes.DETAIL_GAP + UiLayoutRes.DETAIL_RIGHT_W,
 			UiLayoutRes.DETAIL_RECT.size.x - 2.0 * UiLayoutRes.DETAIL_PAD,
@@ -1021,6 +1161,25 @@ func _test_box_select(main) -> void:
 				* (UiLayoutRes.BUFF_SIZE + UiLayoutRes.BUFF_GAP)
 				<= UiLayoutRes.DETAIL_RIGHT_W + 1e-6,
 			"★ 三个 buff 不越出右栏")
+		# ★★ 右栏那几块照参考图逐像素量的尺寸（手玩报过两次「头像不对」）
+		eq(UiLayoutRes.UNIT_AVATAR, 100.0,
+			"★ 右栏头像方框 100×100（参考图实测 x 806..905、y 860..959）")
+		eq(UiLayoutRes.BUFF_SIZE, 30.0, "★ buff 三格各 30×30（参考图）")
+		ok(UiLayoutRes.BUFF_Y >= UiLayoutRes.UNIT_AVATAR_Y
+				and UiLayoutRes.BUFF_Y + UiLayoutRes.BUFF_SIZE
+					<= UiLayoutRes.UNIT_AVATAR_Y + UiLayoutRes.UNIT_AVATAR + 1e-6,
+			"★ 三个 buff 落在头像的竖直范围内（%s..%s）" % [
+				str(UiLayoutRes.BUFF_Y),
+				str(UiLayoutRes.BUFF_Y + UiLayoutRes.BUFF_SIZE)])
+		ok(UiLayoutRes.UNIT_NAME_X + UiLayoutRes.UNIT_NAME_W <= UiLayoutRes.DETAIL_RIGHT_W,
+			"★ 单位名称那一行装得进右栏（%s ≤ %s）" % [
+				str(UiLayoutRes.UNIT_NAME_X + UiLayoutRes.UNIT_NAME_W),
+				str(UiLayoutRes.DETAIL_RIGHT_W)])
+		ok(UiLayoutRes.UNIT_AVATAR_Y + UiLayoutRes.UNIT_AVATAR
+				< UiLayoutRes.DETAIL_BODY_Y,
+			"★ 头像在「详细信息」方框上面，不重叠（%s < %s）" % [
+				str(UiLayoutRes.UNIT_AVATAR_Y + UiLayoutRes.UNIT_AVATAR),
+				str(UiLayoutRes.DETAIL_BODY_Y)])
 
 		# ★ 真的让它画一帧：`_draw` 里出错在无头下不会让测试失败（退出码照样是 0），
 		#   所以这里盯一下计数器 —— 「控件在、但绘制那段从来没跑过」是最容易漏掉的假绿灯。
@@ -1063,39 +1222,122 @@ func _test_box_select(main) -> void:
 		eq(roster.leader().id, g1.id, "★ 但展开切到了第 1 支部队")
 		eq(grid.leader_name(0), String(g2.name), "★ 网格里换成了第 2 支部队")
 
-		# ---- 滚轮：单位多到一行放不下时横向滚（需求原话：「可以鼠标滚轮滚动以显示更多单位」）----
-		#   一行只先露出 5 个方块（见 ROSTER_BLOCKS_MAX_W），所以这里塞到 **12 个**才滚得动
-		for _k in 11:                                    # 往第 1 支部队里塞满人
+		# ---- ★★ 单选一支部队：下半网格换成**这支部队的单位**，滚轮翻页看更多
+		#      （需求原话：「玩家只选中了单个部队时，上方显示选中的部队的将领，
+		#       下方 333 排列显示选中的部队的单位，此时可左右滑动以显示更多的单位」）----
+		main.input_ctrl.select_units([g1])
+		main.hud.refresh()
+		eq(main.hud.detail_panel.grid_mode(), "units",
+			"★ 只选中一支部队时，下半网格是**单位模式**（画这支部队的单位）")
+		eq(grid.cell_count(), t1.size(), "★ 格数 = 这支部队的单位数（含将领）")
+		eq(grid.unit_at(0).id, g1.id, "★ 第 1 格是**将领本人**（参考图里它就是第一个方框）")
+		ok(grid.cell_is_leader(0) == false, "单位格不是将领格（点击语义按单位走）")
+		eq(grid.cell_short(0), "将", "★ 将领那一格的方框里写「将」")
+		eq(grid.cell_name(0), String(g1.name), "格子右边写着单位名")
+		eq(grid.unit_at(1).id, t1[1].id, "第 2 格是第 1 个亲兵")
+
+		# 点一格单位（走真实命中判定）→ 右栏切到那个单位，且**不改选中**
+		var sel_before2: int = main.input_ctrl.selected_units.size()
+		_click_control(grid, UiLayoutRes.troop_cell_rect(1).get_center())
+		main.hud.refresh()
+		eq(main.hud.detail_panel.unit_name_text(), String(t1[1].name),
+			"★ 点左栏下半的单位格 → 右栏切到那个单位")
+		eq(main.input_ctrl.selected_units.size(), sel_before2,
+			"★ 点单位格**不改选中**（命令发给谁不受影响）")
+		# 再点回将领那一格 → 右栏回到将领
+		_click_control(grid, UiLayoutRes.troop_cell_rect(0).get_center())
+		main.hud.refresh()
+		eq(main.hud.detail_panel.unit_name_text(), String(g1.name),
+			"★ 点第 1 格（将领）→ 右栏回到将领")
+
+		# 单位塞到 12 个（编制上限 11，这里只为了凑出第二页）→ 滚轮往下翻一页
+		for _k in 11:
 			var extra = UnitRes.create(main.cfg, "scroll-%d" % _k, "亲兵 s%d" % _k,
 				Vector2i(g1.tx, g1.ty), g1.faction, UnitRes.KIND_SUBORDINATE, "", g1.id)
 			world.units.append(extra)
 		main.input_ctrl.select_units([g1])
 		main.hud.refresh()
-		ok(roster.unit_count() >= 12,
-			"（前提）这一支部队的方块一行放不下（%d 个）" % roster.unit_count())
+		eq(grid.unit_total(), t1.size() + 11, "（前提）这支部队的单位多到一页画不下")
+		ok(grid.page_count() >= 2, "★ 单位超过 9 个 → 不止一页（一页 9 格）")
+		eq(grid.page(), 0, "★ 默认停在第 1 页")
+		eq(grid.cell_count(), 9, "★ 第 1 页画满 9 格")
+		eq(grid.unit_at(0).id, g1.id, "（前提）第 1 格还是将领")
+		var sec_page: int = grid.unit_total() - UiLayoutRes.GRID_PAGE
 		var wheel := InputEventMouseButton.new()
 		wheel.button_index = MOUSE_BUTTON_WHEEL_DOWN
 		wheel.pressed = true
-		wheel.position = Vector2(300.0, 20.0)
-		roster._gui_input(wheel)
-		ok(roster.scroll_offset() > 0.0, "★ 滚轮往下 = 往右露出后面的单位（偏移 %f）" % roster.scroll_offset())
-		# 一直往下滚 → 停在最右边（不会越过内容宽度）
-		for _s in 20:
-			roster._gui_input(wheel)
-		ok(roster.scroll_offset() > 0.0 and roster.scroll_offset() <= roster._max_scroll() + 1e-6,
-			"★ 滚到底就停住（偏移 %f ≤ 上限 %f）" % [
-				roster.scroll_offset(), roster._max_scroll()])
+		wheel.position = Vector2(60.0, 20.0)
+		grid._gui_input(wheel)
+		eq(grid.page(), 1, "★ 滚轮往下 = 翻到下一页（一次一页 9 格）")
+		eq(grid.cell_count(), sec_page, "第 2 页只剩 %d 个格子的内容" % sec_page)
+		ok(grid.unit_at(0).id != g1.id, "第 2 页不再从将领开头")
+		grid._gui_input(wheel)
+		eq(grid.page(), 1, "★ 已经在最后一页 → 再往下滚也不动")
 		var wheel_up := InputEventMouseButton.new()
 		wheel_up.button_index = MOUSE_BUTTON_WHEEL_UP
 		wheel_up.pressed = true
-		wheel_up.position = Vector2(300.0, 20.0)
-		for _s2 in 30:
-			roster._gui_input(wheel_up)
-		ok(roster.scroll_offset() <= 0.0, "★ 滚轮往上 = 回到最左边（偏移 %f）" % roster.scroll_offset())
+		wheel_up.position = Vector2(60.0, 20.0)
+		grid._gui_input(wheel_up)
+		eq(grid.page(), 0, "★ 滚轮往上 = 翻回上一页")
+		eq(grid.unit_at(0).id, g1.id, "翻回第 1 页又是从将领开头")
+		grid._gui_input(wheel_up)
+		eq(grid.page(), 0, "★ 已经在第一页 → 再往上滚也不动")
+
+		# 换成选中别的部队 → 网格回到第 1 页（新的一批单位）
+		main.input_ctrl.select_units([g2])
+		main.hud.refresh()
+		eq(grid.page(), 0, "★ 换成别的部队 → 翻页回到第 1 页")
+		eq(grid.unit_at(0).id, g2.id, "网格里是第 2 支部队的将领")
+
 		# 收尾：把这几个测试单位清掉，别影响后面的用例
 		for u6 in world.units.duplicate():
 			if String(u6.id).begins_with("scroll-"):
 				world.units.erase(u6)
+
+		# ---- ★ 文字截断：格子里那一行名字必须**自己量、自己砍** ----
+		#   为什么值得测：`draw_string` 的宽度参数**不保证裁剪**，两格之间又只有 24px 净空
+		#   ⇒ 不截断的话第一格的字会盖到第二格的方框上（手玩报的「第二、三列没字」）。
+		main.hud.refresh()
+		ok(grid.cell_count() > 0, "（前提）网格里有格子可以量")
+		var gi := 0
+		var cell_name_text: String = grid.cell_name(gi)
+		var shown: String = grid._clip_text(main.hud._font, cell_name_text,
+			UiLayoutRes.TROOP_NAME_W, UiStyleRes.FS_SMALL)
+		ok(shown == cell_name_text
+				or main.hud._font.get_string_size(shown, HORIZONTAL_ALIGNMENT_LEFT, -1,
+					UiStyleRes.FS_SMALL).x <= UiLayoutRes.TROOP_NAME_W + 0.01,
+			"★ 短名字照原样画（%s）" % shown)
+		var long_name := "单位名称单位名称"
+		var clipped: String = grid._clip_text(main.hud._font, long_name,
+			UiLayoutRes.TROOP_NAME_W, UiStyleRes.FS_SMALL)
+		ok(main.hud._font.get_string_size(clipped, HORIZONTAL_ALIGNMENT_LEFT, -1,
+				UiStyleRes.FS_SMALL).x <= UiLayoutRes.TROOP_NAME_W + 0.01,
+			"★ 名字太长 → 截到可用宽度以内（%s）" % clipped)
+		ok(clipped.length() < long_name.length() and clipped.ends_with("…"),
+			"★ 截断会加省略号（%s）" % clipped)
+		# 左栏上半那一格同理（「将领名称 1/11」两段都不能越过左栏）
+		var roster2 = main.hud.detail_panel.roster_control()
+		var label_clip: String = roster2._clip_text(main.hud._font, "将领名称将领名称",
+			UiLayoutRes.ROSTER_ID_W, UiStyleRes.FS_SMALL)
+		ok(main.hud._font.get_string_size(label_clip, HORIZONTAL_ALIGNMENT_LEFT, -1,
+				UiStyleRes.FS_SMALL).x <= UiLayoutRes.ROSTER_ID_W + 0.01,
+			"★ 左栏那一格的名字也按 ROSTER_ID_W 截断（%s）" % label_clip)
+
+		# ---- ★★ 文字位置：每一格的字必须画在**它自己那一格**里 ----
+		#   手玩报的：「选中多个单位或将领时，第二、三列的文字会挤到第一列」。
+		#   根因是文字 x 少了「第几列」的偏移（y 加了、x 没加）。
+		#   ⚠️ 那种错**画一帧不会报错**（`_draw` 里画错地方是静默的），
+		#      所以这里读控件真正用的那个坐标（`cell_text_origin()`）来钉死它。
+		ok(grid.cell_count() >= 2, "（前提）网格里至少 2 格 —— 只有 ≥2 格才看得出串列")
+		eq(grid.cell_text_origin(1).x - grid.cell_text_origin(0).x, UiLayoutRes.TROOP_CELL_W,
+			"★ 第 2 列的文字左边 = 第 1 列 + 一格宽（不会叠到第 1 列）")
+		ok(grid.cell_text_origin(0).x >= UiLayoutRes.TROOP_AVATAR,
+			"★ 第 1 列的文字在本格方框右边")
+		if grid.cell_count() >= 3:
+			eq(grid.cell_text_origin(2).x - grid.cell_text_origin(1).x, UiLayoutRes.TROOP_CELL_W,
+				"★ 第 3 列同理：左边 = 第 2 列 + 一格宽")
+		eq(grid.cell_text_origin(3).x, grid.cell_text_origin(0).x,
+			"★ 换行后回到第 1 列的 x（第 4 格在第 2 行第 1 列）")
 
 	# ---- 框里没有己方单位（非追加）→ 清空选中（与点空地一致）
 	main.input_ctrl.box_select(Vector2(0.0, 0.0), Vector2(0.5, 0.5))
@@ -1246,31 +1488,37 @@ func _test_clicked_unit_detail(main) -> void:
 	eq(main.hud.detail_panel.roster_control().leader().id, g1.id,
 		"★ 左栏上半仍然是那支部队（部队级），不受影响")
 
-	# 2) 框选（批量选中）→ 右栏退回将领
+	# 2) 框选（拖拽批量选中）→ 右栏退回将领（手玩原话：「当玩家通过拖拽选中部队时，
+	#    默认显示该部队的将领」）
 	var before: int = main.input_ctrl.selected_units.size()
 	main.input_ctrl.box_select(Vector2(0.0, 0.0), Vector2(0.5, 0.5))    # 空框 = 清空
 	eq(main.input_ctrl.clicked_unit, null, "★ 框选/清空会把「点到的单位」清掉")
+	eq(main.input_ctrl.selection_origin, "drag", "★ 拖拽框选把「怎么选中的」记成 drag")
 	main.input_ctrl.select_units([g1])
 	main.hud.refresh()
 	eq(main.hud.detail_panel.unit_name_text(), String(g1.name),
 		"★ 批量选中（框选 / 点左侧列表）时右栏退回**将领**（不是某个亲兵）")
 	ok(before >= 0, "（前一步的选中规模：%d）" % before)
 
-	# 3) 点左栏上半方块行里的亲兵 → 右栏切到那个亲兵（且不改选中）
+	# 3) 点左栏下半的单位格 → 右栏切到那个单位（且不改选中）
+	#    ★ 单选一支时下半网格就是「这支部队的单位」，第 1 格是将领本人
 	var roster = main.hud.detail_panel.roster_control()
+	var grid = main.hud.detail_panel.grid_control()
 	var sel_before: Array = main.input_ctrl.selected_units.duplicate()
-	main.hud._on_roster_block_activated(1)
+	eq(grid.unit_at(1).id, mates[1].id, "（前提）网格第 2 格就是那个亲兵")
+	_click_control(grid, UiLayoutRes.troop_cell_rect(1).get_center())
 	main.hud.refresh()
 	eq(main.hud.detail_panel.unit_name_text(), String(mates[1].name),
-		"★ 点左栏方块行里的第 2 个方块 → 右栏切到那个单位")
+		"★ 点左栏下半的单位格 → 右栏切到那个单位")
+	eq(main.input_ctrl.selection_origin, "click", "★ 点单位格按「单击」那一套走")
 	eq(main.input_ctrl.selected_units.size(), sel_before.size(),
-		"★ 点方块**不改选中**（命令发给谁不受影响）")
+		"★ 点单位格**不改选中**（命令发给谁不受影响）")
 	ok(roster.visible, "（前提）左栏上半还画着")
-	# 点回队长那一格 → 右栏回到将领
-	main.hud._on_roster_block_activated(0)
+	# 点回将领那一格 → 右栏回到将领
+	_click_control(grid, UiLayoutRes.troop_cell_rect(0).get_center())
 	main.hud.refresh()
 	eq(main.hud.detail_panel.unit_name_text(), String(g1.name),
-		"★ 点第一个方块（队长）→ 右栏回到将领")
+		"★ 点第 1 格（将领）→ 右栏回到将领")
 
 	# 4) 切到别的部队（网格）→ 右栏跟着变成那支部队的将领
 	var g2 = world.unit_by_id("general-2")
@@ -1283,7 +1531,7 @@ func _test_clicked_unit_detail(main) -> void:
 		main.hud._on_troop_activated(2)          # 点网格里那一格（第 2 支部队）
 		main.hud.refresh()
 		eq(main.hud.detail_panel.unit_name_text(), String(g2.name),
-			"★ 点其余部队的格子 → 右栏变成那支部队的将领")
+			"★ 点其余部队的将领格 → 右栏变成那支部队的将领")
 
 	# 收尾：回到干净状态（后面的用例接着用）
 	main.input_ctrl.select_units([g1])

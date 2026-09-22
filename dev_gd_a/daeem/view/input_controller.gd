@@ -34,17 +34,33 @@ var camera_rig = null
 ## 选中列表（纯本地，**不进命令流**）
 var selected_units: Array = []
 var selected_building = null
-## ★ 玩家**在地图上左键点到的那个单位**（纯本地，只给详细信息右栏用）。
+## ★ 玩家**点到的那个单位**（纯本地，只给详细信息右栏用）。
 ##
 ## 「选中的部队」是一份集合（点一个兵会把整队带出来、框选会把几支队一起带出来），
 ## 而参考图要右栏报「**玩家点击的那个单位**」—— 集合本身说不出这句话：
 ## 一次点选与一次框选出来的 selected_units 长得一模一样。
-## 所以这里单独记一笔，并且**只有 `_on_left_click` 写它**；
+## 所以这里单独记一笔，并且只有两处写它：
+##   · `_on_left_click`（在地图上点了某个单位 —— 此时 origin 记成 "click"）；
+##   · `view/hud.gd` 的 `_on_grid_unit_activated`（点了左栏下半的单位格，同样记 "click"）。
 ## 框选 / 点左侧部队列表 / 按 1-2-3 / 选中建筑或区划时一律清掉（那些不是「点某个单位」）。
 ##
 ## ★★ 这份状态唯一的坑就是「谁清它」：以后新增「批量选中」的入口时，
 ##    必须顺手调 `select_units()`（它自己会清），否则右栏会一直停在上一次点到的那个兵身上。
 var clicked_unit = null
+## ★★ 这一次「选中单位」是**怎么来的**（纯本地，只给详细信息右栏用）：
+##   · `"click"` = 玩家在地图上**单击**了某个单位（`_on_left_click`），
+##                 或者点了左栏下半的单位格（view/hud.gd 的 _on_grid_unit_activated）；
+##   · `"drag"`  = 其它一切批量选中（框选 / 点左侧部队列表 / 1-2-3 / 清空）。
+##
+## ★ 为什么需要它（手玩原话）：「右栏的逻辑为，当玩家通过**拖拽**选中部队时，默认显示
+##   该部队的将领，若拖拽选中多个部队，则显示展开的部队（序号靠前的部队）的将领，
+##   若玩家通过**鼠标单击**选中任意单位以选中部队时，默认显示玩家单击选中的单位」。
+##   ⇒ 光看 `clicked_unit` 分不开这两种：拖完一次框，`selected_units` 与点选长得一样，
+##     而 `clicked_unit` 已经被 `select_units()` 清掉了（见那里的注释）。
+##
+## ⚠️ 它只在**选中集合变化**的那几处写：`select_units()` 一律先按批量（"drag"）处理，
+##    `_on_left_click` 在它之后把 origin 与 `clicked_unit` 一起写回去。
+var selection_origin: String = "drag"
 ## ★ 选中的**区划**（左键点区划中心 = 看这个区划的详情）。
 ## 与上面两者互斥：面板「详细信息」只有一个左栏，同一时刻只有一种选中对象。
 var selected_zone = null
@@ -94,6 +110,7 @@ func setup(p_cfg: ConfigRes, p_world, p_camera_rig) -> void:
 	selected_building = null
 	selected_zone = null
 	clicked_unit = null
+	selection_origin = "drag"
 	# 框选那条状态机也归零（重开一局时别留着上一局的半个框）
 	_drag_pending = false
 	drag_active = false
@@ -375,8 +392,11 @@ func _on_left_click(additive: bool) -> void:
 			next.append(hit_unit)
 		# ★ 玩家在地图上点到的那个单位（右栏要按它显示）——
 		#   必须在 select_units 之后写：那个函数会把 clicked_unit 清掉（见它的注释）。
+		#   顺手把 origin 记成 "click"：右栏的显示规则按「拖拽还是单击」分，
+		#   见 `selection_origin` 的注释与 view/hud.gd 的 _right_unit。
 		select_units(next)
 		clicked_unit = hit_unit if not additive else null
+		selection_origin = "click"
 		return
 
 	var hit_building = world.building_at(hover_tile.x, hover_tile.y)
@@ -505,6 +525,9 @@ func select_units(units: Array) -> void:
 	selected_building = null
 	selected_zone = null
 	clicked_unit = null
+	# ★ 批量入口一律记成 "drag"（框选 / 点左侧列表 / 1-2-3 / 清空都是这一类）；
+	#   地图上单击那一路会在调完本函数之后自己把它改回 "click"（见 `_on_left_click`）。
+	selection_origin = "drag"
 	# selected 是逻辑单位上的**渲染标志**（不是权威状态）：由 view 写、view 读
 	for u in world.units:
 		u.selected = false
