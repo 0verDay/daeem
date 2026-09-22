@@ -42,6 +42,14 @@ var camera_edge_size: float = 44.0
 ## ---- 框选：左键移动超过多少像素才算「拖框」（见 config.json 的 ui._comment）----
 var drag_select_min_px: float = 6.0
 
+## ---- 小地图拖动视角（见 config.json 的 minimap._comment）----
+## ★ 与 drag_select_min_px 同一种单位（**屏幕像素**）：判据不该跟着相机缩放漂移。
+##   两个数长得像但用途不同：上面那个决定「拖框选单位」，这两个决定「拖小地图移视角」。
+var minimap_drag_min_px: float = 4.0
+## ★ 按住多少秒算「长按」（0 = 只按像素阈值判定）。
+##   ⚠️ 它只影响「多快进入拖动态」，不影响按下那一刻的跳转 —— 见 view/minimap.gd 的状态机。
+var minimap_drag_hold_sec: float = 0.18
+
 var unit_speed: float = 0.6
 var unit_forest_mult: float = 0.5
 var unit_hp_max: float = 200.0
@@ -187,6 +195,8 @@ func _cache_scalars() -> void:
 
 	camera_edge_size = num("camera.edge_size", 44.0)
 	drag_select_min_px = num("ui.drag_select_min_px", 6.0)
+	minimap_drag_min_px = num("minimap.drag_min_px", 4.0)
+	minimap_drag_hold_sec = num("minimap.drag_hold_sec", 0.18)
 
 	unit_speed = num("unit.speed", 0.6)
 	unit_forest_mult = num("unit.forest_mult", 0.5)

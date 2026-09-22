@@ -27,6 +27,14 @@ var _mouse_inside: bool = false
 var _mouse_pos: Vector2 = Vector2.ZERO
 var _space_held: bool = false
 var _edge_scroll_on: bool = true
+## ★ 小地图正在被拖着走（由 game_scene 每帧写）。
+##
+## 为什么必须让它把边缘滚屏压住（实测会撞上）：小地图贴在屏幕左下角，而
+## `hud.blocks_edge_scroll()` 里有一条铁律 —— **最外圈 camera.edge_size 之内永远允许滚屏**
+## （否则贴边控件会把那一条边缘的地图永久锁死）。于是玩家按住小地图下沿拖动时，
+## 边缘滚屏也在推同一台相机：一帧里「跟手 → 被推向最左下 → 又跟手」，
+## 画面贴着下沿会明显发抖。拖动期间只留拖动这一条路改相机，松手后边缘滚屏照旧。
+var _ui_dragging_camera: bool = false
 ## 准星（G）：把鼠标世界坐标交给 overlay 画出来核对
 var debug_aim: bool = false
 
@@ -145,7 +153,7 @@ func add_pan(dir: Vector2) -> void:
 
 
 func _edge_scroll(dt: float) -> void:
-	if not _edge_scroll_on or not _mouse_inside or _space_held:
+	if not _edge_scroll_on or not _mouse_inside or _space_held or _ui_dragging_camera:
 		return
 	# ★ 用 cfg.camera_edge_size（载入时算好），不用 cfg.num("camera.edge_size")：
 	#   这个数每帧读一次，而且 hud.blocks_edge_scroll 读的是**同一个字段**
@@ -183,6 +191,12 @@ func set_space_held(v: bool) -> void:
 	_space_held = v
 
 
+## 小地图是不是正在被拖着走（见 `_ui_dragging_camera` 的注释）。
+## ★ 只由 game_scene 每帧喂进来；camera_rig 自己不认识小地图（相机不该知道鼠标在哪按的）。
+func set_ui_dragging(v: bool) -> void:
+	_ui_dragging_camera = v
+
+
 func toggle_edge_scroll() -> bool:
 	_edge_scroll_on = not _edge_scroll_on
 	return _edge_scroll_on
@@ -190,3 +204,8 @@ func toggle_edge_scroll() -> bool:
 
 func edge_scroll_enabled() -> bool:
 	return _edge_scroll_on
+
+
+## 小地图拖动是不是正压着边缘滚屏（测试读它；游戏里没人读）
+func ui_dragging() -> bool:
+	return _ui_dragging_camera

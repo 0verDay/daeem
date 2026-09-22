@@ -191,6 +191,13 @@ func _process(dt: float) -> void:
 	var in_window := Rect2(Vector2.ZERO, get_viewport_rect().size).has_point(mouse_screen)
 	camera_rig.set_mouse(in_window and not hud.blocks_edge_scroll(mouse_screen), mouse_screen)
 
+	# ★ 小地图正在被拖着走 → 这一帧只让「拖动」改相机。
+	#   小地图贴着屏幕左下角，而最外圈永远允许边缘滚屏（那是所有贴边控件的共同规则），
+	#   两条路同时改相机会让画面贴着下沿发抖 —— 见 camera_rig._ui_dragging_camera。
+	#   ⚠️ 判据是**拖动**（越过阈值之后），不是「按着」：按下但没动的那一下是单击，
+	#      单击时边缘滚屏照旧（否则按住小地图不动、鼠标又贴着边时画面会突然停一拍）。
+	camera_rig.set_ui_dragging(hud.minimap != null and hud.minimap.is_dragging())
+
 	# 逻辑推进（暂停时冻结；渲染与相机不受影响）
 	if _running:
 		# ★★ 必须夹住 dt：帧一慢，dt 就变大，而 dt 越大这一帧要做的活越多
