@@ -658,43 +658,62 @@ func _building_text(b) -> String:
 	return "\n".join(lines)
 
 
-## 右栏数值区的正文。
+## ★★ 数值区改成**两栏制表位**（本轮，手玩原话：「只需要给基础数值即可」）。
+##   制表符 `\t` 从 fs 列跳到下一栏（`\t` 的宽度由字体自己定，实测 fs=13 时落在 ~212px），
+##   右栏正文因此长这样（不是「左右两栏控件」，就是一个 Label 里的两栏文本）：
 ##
-## ★ 本轮改版把「队伍人数 / 合计生命 / 指定攻击 / 状态」那些汇总行**删掉了**
-##   （手玩要求），改成只报**当前这个单位**的数值；多选时补一行「已选中 N 个单位」，
-##   否则玩家在框选之后右栏看起来像只选中了一个。
+##     血量 200 / 200        编制 3 / 11          ← 将领才有右栏（★ 手玩原话）
+##     攻击力 10             状态：待命
+##     攻击距离 3 格 / 间隔 1.2s
+##
+##   ★ 手玩拍板的取舍：
+##     · **只留基础数值**：血量 / 攻击力 / 攻击距离 / 间隔 / 编制；
+##       移动速度、所在区块、buff 占位行、行军攻击这些**一律不显示**（要恢复就在这里加回一行）。
+##     · **编制只给将领看**（「假如是将领才要显示编制，兵不用显示编制」）——
+##       判据是 `world.is_team_leader()`，亲兵那一行右栏留空。
+##   ⚠️ 每行**最多一行文字**：正文关掉了 autowrap，多出来的换行只能是制表位带来的两栏，
+##      否则版式会散（见 detail_panel 里 _body 的注释）。
+##   ⚠️ 「指定攻击」那一行要留着（tests/test_ui.gd 断言它在）：它是命令的**可见反馈**，
+##      玩家下了指定攻击必须能在界面上看见目标。
 func _unit_text(shown, troops: Array) -> String:
 	if shown == null:
 		return "未选中"
-	var lines: Array[String] = []
+	var left: Array[String] = []
+	var right: Array[String] = []
 	if troops.size() > 1 or (troops.size() == 1 and (troops[0]["units"] as Array).size() > 1):
-		lines.append("已选中 %d 支部队" % troops.size())
-	lines.append("血量 %d / %d" % [int(round(shown.hp)), int(round(shown.hp_max))])
-	lines.append("攻击力 %d　攻击距离 %d 格　间隔 %.1fs" % [
-		int(shown.combat_damage(cfg)), int(shown.combat_range(cfg)), shown.combat_cooldown(cfg),
-	])
-	lines.append("编制 %d/%d　警戒 %d 格　速度 %.1f 格/秒" % [
-		_retinue_size(shown), UiLayoutRes.UNIT_CAP,
-		int(shown.aggro_range(cfg)), cfg.unit_speed_of(shown.kind),
-	])
-	lines.append("所在区块 %s" % _zone_name_at(shown.tx, shown.ty))
-	lines.append("buff：%s（占位，暂无效果）" % "、".join(_buff_names()))
+		left.append("已选中 %d 支部队" % troops.size())
+	left.append("血量 %d / %d" % [int(round(shown.hp)), int(round(shown.hp_max))])
+	left.append("攻击力 %d" % int(shown.combat_damage(cfg)))
+	left.append("攻击距离 %d 格 / 间隔 %.1fs" % [
+		int(shown.combat_range(cfg)), shown.combat_cooldown(cfg)])
+	# 编制：★ 只有将领才有「编制」（它辖下的亲兵上限），亲兵自己不显示
+	if world.is_team_leader(shown):
+		right.append("编制 %d / %d" % [_retinue_size(shown), UiLayoutRes.UNIT_CAP])
+	# 状态（含两条命令反馈）——`指定攻击` 那一条必须留着，见上面的注释
 	if shown.ordered_target != null and shown.ordered_target.alive:
-		lines.append("★ 指定攻击：%s（%d 血）" % [
-			shown.ordered_target.name, int(round(shown.ordered_target.hp))])
+		right.append("★ 指定攻击：%s" % shown.ordered_target.name)
 	elif shown.ordered_building != null and shown.ordered_building.alive:
-		lines.append("★ 指定拆除：%s（%d 血）" % [
-			shown.ordered_building.display_name(), int(round(shown.ordered_building.hp))])
+		right.append("★ 指定拆除：%s" % shown.ordered_building.display_name())
 	elif shown.has_attack_move:
-		lines.append("★ 行军攻击中（遇敌即战，打完继续）")
-	if shown.target != null and shown.target.alive:
-		lines.append("交战中：%s（%d 血）" % [shown.target.name, int(round(shown.target.hp))])
+		right.append("★ 行军攻击中")
+	elif shown.target != null and shown.target.alive:
+		right.append("交战中：%s" % shown.target.name)
 	elif shown.target_building != null and shown.target_building.alive:
-		lines.append("正在拆：%s（%d 血）" % [
-			shown.target_building.display_name(), int(round(shown.target_building.hp))])
+		right.append("正在拆：%s" % shown.target_building.display_name())
 	else:
-		lines.append("状态：%s" % ("移动中" if shown.moving else "待命"))
-	return "\n".join(lines)
+		right.append("状态：%s" % ("移动中" if shown.moving else "待命"))
+	return _two_columns(left, right)
+
+
+## 把两栏文本拼成「左栏 + \t + 右栏」的若干行；某一栏不够长就留空（制表位照样对齐）。
+func _two_columns(left: Array, right: Array) -> String:
+	var n: int = maxi(left.size(), right.size())
+	var out: PackedStringArray = []
+	for i in n:
+		var l: String = String(left[i]) if i < left.size() else ""
+		var r: String = String(right[i]) if i < right.size() else ""
+		out.append("%s\t%s" % [l, r] if r != "" else l)
+	return "\n".join(out)
 
 
 ## 一个将领辖下的亲兵数（不是将领自己 → 0）
@@ -702,11 +721,6 @@ func _retinue_size(u) -> int:
 	if world == null or u == null or not world.is_team_leader(u):
 		return 0
 	return world.retinue_of(u.id).size()
-
-
-## buff 占位名（与 view/detail_panel.gd 的 BUFF_PLACEHOLDERS 同一份口径）
-func _buff_names() -> Array:
-	return DetailPanelRes.BUFF_PLACEHOLDERS.duplicate()
 
 
 ## 区划详情（左键点区划中心时显示）：
@@ -739,17 +753,6 @@ func _zone_text(z: Dictionary) -> String:
 ## 数字显示：整数就不带小数点（与地图编辑器 / 导出的 JSON 同一种写法）
 func _fmt_num(v: float) -> String:
 	return ("%d" % int(round(v))) if absf(v - round(v)) < 1e-9 else ("%g" % v)
-
-
-## 某个地块属于哪个区块（单位数值里那一行「所在区块」用）
-func _zone_name_at(tx: int, ty: int) -> String:
-	var z = world.zones.zone_at(tx, ty)
-	if z == null:
-		return "无"
-	var owner := String(z["owner"])
-	if owner == "":
-		return "%s（无主）" % String(z["name"])
-	return "%s（%s）" % [String(z["name"]), FactionRes.faction_name(owner)]
 
 
 # ------------------------------------------------------------------

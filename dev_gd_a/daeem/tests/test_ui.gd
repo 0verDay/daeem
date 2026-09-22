@@ -137,9 +137,10 @@ func _test_left_column_geometry() -> void:
 	eq(UiLayoutRes.TROOP_GRID_ROWS, 3, "下半是 3 行")
 	eq(UiLayoutRes.TROOP_GRID_SLOTS, 9, "★ 下半 3×3 = 9 格（手玩原话：1333 排列）")
 	eq(UiLayoutRes.GRID_PAGE, 9, "单选时滚轮**一次翻一页 = 9 格**（手玩原话）")
-	# 每格 40×40，行距 44：3 行共 132，加上上半 40 + 缝 15 = 187 ≤ 内容高 220
+	# 每格 40×40，行距 **55**（本轮从 44 加大 —— 手玩报的「左栏 3×3 网格也太挤」）：
+	# 3 行共 165，加上上半 40 + 缝 15 = **220 = 内容高**，正好铺满、不溢出
 	v2_near(UiLayoutRes.troop_avatar_rect(0).size, Vector2(40.0, 40.0), 0.01, "格里的方框 40×40")
-	eq(UiLayoutRes.troop_cell_rect(0), Rect2(0, 0, 112, 44), "第 0 格在左上（宽 116 - 内侧 4）")
+	eq(UiLayoutRes.troop_cell_rect(0), Rect2(0, 0, 112, 55), "第 0 格在左上（宽 116 - 内侧 4）")
 	eq(UiLayoutRes.troop_cell_rect(1).position.x, UiLayoutRes.TROOP_CELL_W,
 		"第 1 格在它右边（列优先 → 行优先）")
 	eq(UiLayoutRes.troop_cell_rect(3).position.y, UiLayoutRes.TROOP_CELL_H, "第 3 格换到第二行")
@@ -148,6 +149,16 @@ func _test_left_column_geometry() -> void:
 	var bottom := UiLayoutRes.troop_cell_rect(8)
 	ok(bottom.position.y + UiLayoutRes.TROOP_AVATAR <= 220.0,
 		"★ 第 3 行的方框装得进左栏内容高（%s ≤ 220）" % str(bottom.position.y + UiLayoutRes.TROOP_AVATAR))
+	# ★★ 本轮加大行距之后，左栏**正好铺满 220** —— 上下都不该再剩空（这就是「不挤」的定义：
+	#    多出来的 33px 全分给了三行之间的空白，而不是留在底部发霉）。
+	ok(UiLayoutRes.troop_grid_rect().position.y + UiLayoutRes.TROOP_GRID_H <= 220.0 + 1e-6,
+		"★ 网格铺得进内容高（%s ≤ 220）" % str(
+			UiLayoutRes.troop_grid_rect().position.y + UiLayoutRes.TROOP_GRID_H))
+	ok(UiLayoutRes.troop_grid_rect().position.y + UiLayoutRes.TROOP_GRID_H >= 220.0 - 1e-6,
+		"★ 左栏竖直方向**正好铺满** 220（行距加大之后不该还留着底部空白）")
+	ok(UiLayoutRes.TROOP_CELL_H >= UiLayoutRes.TROOP_AVATAR + 8.0,
+		"★ 每行留得出行间空白（格高 %.0f ≥ 方框 %.0f + 8）—— 这就是「不挤」的那 8px" % [
+			UiLayoutRes.TROOP_CELL_H, UiLayoutRes.TROOP_AVATAR])
 	var rightmost := UiLayoutRes.troop_cell_rect(2)
 	ok(rightmost.position.x + UiLayoutRes.TROOP_CELL_W - 4.0 <= UiLayoutRes.DETAIL_LEFT_W + 1e-6,
 		"★ 第 3 列的格子不越出左栏（%s ≤ %s）" % [
@@ -368,6 +379,7 @@ func _test_panels(cfg) -> void:
 	_test_order_locked_notice(main)
 	_test_right_click_orders(main)
 	await _test_box_select(main)
+	_test_detail_basic_stats(main)
 	_test_clicked_unit_detail(main)
 	_test_settings_inert(main)
 	await _test_command_events_reach_consumer(main)
@@ -470,7 +482,7 @@ func _test_avatar_text_fit(cfg) -> void:
 		return
 
 	var side: float = UiLayoutRes.UNIT_AVATAR
-	eq(side, 100.0, "★ 右栏头像方框 = 100×100（参考图实测 x 806..905、y 860..959）")
+	eq(side, 72.0, "★ 右栏头像方框 = 72×72（本轮从参考图的 100 收到 72：那块「大而空」，见 ui_layout 的注释）")
 	# 「将 / 兵 / 区 / 建」这些实际会出现的字都得装得下，而且要把方框填满（别缩成一小坨）
 	for ch in ["将", "兵", "区", "建"]:
 		panel.set_unit_avatar_text(ch)
@@ -1112,6 +1124,10 @@ func _test_box_select(main) -> void:
 			"★ 整队选中时右栏报的是**将领**（不是排在最后的亲兵）")
 		ok(main.hud.detail_panel.detail_text().contains("血量 200"),
 			"★ 右栏那些数值也是将领的（满血 200，亲兵是 80）")
+		# ★★ 本轮改版（数值区只留基础数值、两栏版式、编制只有将领有）单独放在
+		#    `_test_detail_basic_stats` 里 —— 它会临时改选中与展开的部队，
+		#    插在这里会把下面那批「多选 / 换展开」的断言搅乱（实测踩过）。
+
 
 		# ★ 「将领名称 1/11」那一行要装得进左栏（参考图里它写在方框右边）
 		ok(UiLayoutRes.ROSTER_COUNT_X + 40.0 <= UiLayoutRes.DETAIL_LEFT_W,
@@ -1161,25 +1177,55 @@ func _test_box_select(main) -> void:
 				* (UiLayoutRes.BUFF_SIZE + UiLayoutRes.BUFF_GAP)
 				<= UiLayoutRes.DETAIL_RIGHT_W + 1e-6,
 			"★ 三个 buff 不越出右栏")
-		# ★★ 右栏那几块照参考图逐像素量的尺寸（手玩报过两次「头像不对」）
-		eq(UiLayoutRes.UNIT_AVATAR, 100.0,
-			"★ 右栏头像方框 100×100（参考图实测 x 806..905、y 860..959）")
+		# ★★ 右栏那几块（本轮重排过，见 ui_layout.gd 里那段注释）：
+		#    头像 100 → 72、名称与 buff 挪到同一横带、数值框 90 → 116。
+		eq(UiLayoutRes.UNIT_AVATAR, 72.0,
+			"★ 右栏头像方框 72×72（本轮重排：原来照参考图的 100×100 又大又空）")
 		eq(UiLayoutRes.BUFF_SIZE, 30.0, "★ buff 三格各 30×30（参考图）")
-		ok(UiLayoutRes.BUFF_Y >= UiLayoutRes.UNIT_AVATAR_Y
-				and UiLayoutRes.BUFF_Y + UiLayoutRes.BUFF_SIZE
-					<= UiLayoutRes.UNIT_AVATAR_Y + UiLayoutRes.UNIT_AVATAR + 1e-6,
-			"★ 三个 buff 落在头像的竖直范围内（%s..%s）" % [
+		# 名称与 buff 现在是**同一横带**（都在头像右边），不是「buff 吊在头像下半段」
+		ok(UiLayoutRes.BUFF_X >= UiLayoutRes.UNIT_AVATAR_X + UiLayoutRes.UNIT_AVATAR,
+			"★ 三个 buff 排在头像**右边**（%s ≥ 头像右缘 %s）" % [
+				str(UiLayoutRes.BUFF_X),
+				str(UiLayoutRes.UNIT_AVATAR_X + UiLayoutRes.UNIT_AVATAR)])
+		ok(UiLayoutRes.BUFF_Y >= UiLayoutRes.UNIT_NAME_Y,
+			"★ 名称与 buff 同一条横带（buff 顶边 %s ≥ 名称顶边 %s）" % [
+				str(UiLayoutRes.BUFF_Y), str(UiLayoutRes.UNIT_NAME_Y)])
+		ok(UiLayoutRes.BUFF_Y + UiLayoutRes.BUFF_SIZE
+				<= UiLayoutRes.UNIT_AVATAR_Y + UiLayoutRes.UNIT_AVATAR + 1e-6,
+			"★ 三个 buff 落在头像的竖直范围内（%s..%s ≤ 头像下缘 %s）" % [
 				str(UiLayoutRes.BUFF_Y),
-				str(UiLayoutRes.BUFF_Y + UiLayoutRes.BUFF_SIZE)])
-		ok(UiLayoutRes.UNIT_NAME_X + UiLayoutRes.UNIT_NAME_W <= UiLayoutRes.DETAIL_RIGHT_W,
-			"★ 单位名称那一行装得进右栏（%s ≤ %s）" % [
+				str(UiLayoutRes.BUFF_Y + UiLayoutRes.BUFF_SIZE),
+				str(UiLayoutRes.UNIT_AVATAR_Y + UiLayoutRes.UNIT_AVATAR)])
+		# ★ 名称右边缘必须让开右上角的招募队列（否则名字会被队列压住）
+		ok(UiLayoutRes.UNIT_NAME_X + UiLayoutRes.UNIT_NAME_W <= UiLayoutRes.QUEUE_X + 1e-6,
+			"★ 单位名称那一行不顶到招募队列（%s ≤ %s）" % [
 				str(UiLayoutRes.UNIT_NAME_X + UiLayoutRes.UNIT_NAME_W),
-				str(UiLayoutRes.DETAIL_RIGHT_W)])
+				str(UiLayoutRes.QUEUE_X)])
 		ok(UiLayoutRes.UNIT_AVATAR_Y + UiLayoutRes.UNIT_AVATAR
 				< UiLayoutRes.DETAIL_BODY_Y,
 			"★ 头像在「详细信息」方框上面，不重叠（%s < %s）" % [
 				str(UiLayoutRes.UNIT_AVATAR_Y + UiLayoutRes.UNIT_AVATAR),
 				str(UiLayoutRes.DETAIL_BODY_Y)])
+		# ★★ 数值框加高之后要真的「装得下」：正文（关掉 autowrap 的两栏文本）按 13 号字
+		#    实测自然高度必须 ≤ 可视高度 —— 这是本轮「太拥挤」的核心判据。
+		#    旧版是 90-24 = 66 的可视高配 7 行 11 号字，**根本装不下**（最后 1~2 行被裁）。
+		var font: Font = main.hud._font
+		if font != null:
+			var body_fs: int = UiStyleRes.FS_SMALL
+			var lh: float = font.get_height(body_fs)
+			var visible: float = UiLayoutRes.DETAIL_BODY_H - 24.0
+			var capacity: int = int(floor(visible / lh))
+			ok(capacity >= 5,
+				"★ 数值框（可视高 %.0f）按 %d 号字装得下 %d 行（≥5 行才够放基础数值）" % [
+					visible, body_fs, capacity])
+			var probe := "攻击距离 3 格 / 间隔 1.2s"
+			ok(font.get_string_size(probe, HORIZONTAL_ALIGNMENT_LEFT, -1, body_fs).x
+					<= 200.0,
+				"★ 最长的一行（「%s」）在 %d 号字下只有 %.0f px —— 两栏版式放得下" % [
+					probe, body_fs,
+					font.get_string_size(probe, HORIZONTAL_ALIGNMENT_LEFT, -1, body_fs).x])
+		else:
+			ok(true, "（没装中文字体，跳过字号容量的量算）")
 
 		# ★ 真的让它画一帧：`_draw` 里出错在无头下不会让测试失败（退出码照样是 0），
 		#   所以这里盯一下计数器 —— 「控件在、但绘制那段从来没跑过」是最容易漏掉的假绿灯。
@@ -1418,6 +1464,93 @@ func _test_box_select(main) -> void:
 	ok(not main.input_ctrl.drag_active, "★ Esc 放弃这次框选")
 	eq(_sorted_ids(main.input_ctrl.selected_units), kept, "★ 放弃框选不会动已有的选中")
 	# 收尾：把选中恢复成「1 号将领」并把面板刷一次，别把状态留给后面的用例
+	main.input_ctrl.select_units([g1])
+	main.hud.refresh()
+
+
+# ------------------------------------------------------------------
+# 右栏数值区：只留基础数值 / 两栏制表位 / 编制只有将领有（本轮改版）
+# ------------------------------------------------------------------
+##
+## 需求原话：「底部的详细信息 ui 还是有些排版问题，具体表现在太拥挤了」+
+##          「只需要给基础数值即可」+「假如是将领才要显示编制，兵不用显示编制」。
+##
+## ★★ 为什么单独一个函数、而且放在 `_test_box_select` **之后**：
+##    它会临时改「选中谁 / 展开哪一支」，插在那个用例中间会把下面那批
+##    「多选 → 网格只列其余部队 / 点格子换展开」的断言全搅乱（实测踩过一次）。
+##    ⚠️ 末尾必须把选中恢复成 1 号将领 —— 后面的用例（右键命令…）接着用。
+func _test_detail_basic_stats(main) -> void:
+	var world = main.world
+	var g1 = world.unit_by_id("general-1")
+	ok(g1 != null, "（前提）找得到 general-1")
+	if g1 == null:
+		return
+
+	# ---- 1) 将领：两栏版式 + 基础数值 + 编制 ----
+	main.input_ctrl.select_units([g1])
+	main.hud.refresh()
+	var gtext: String = main.hud.detail_panel.detail_text()
+	ok(gtext.contains("\t"), "★ 数值区是两栏制表位版式（正文里有 \\t）")
+	ok(gtext.contains("血量") and gtext.contains("攻击力") and gtext.contains("攻击距离"),
+		"★ 基础数值：血量 / 攻击力 / 攻击距离都在")
+	ok(gtext.contains("编制"), "★ 将领显示「编制」")
+	ok(not gtext.contains("速度") and not gtext.contains("区块") and not gtext.contains("buff"),
+		"★ 速度 / 所在区块 / buff 占位这些不再出现（手玩：只需要基础数值）")
+	var g_lines: int = gtext.split("\n").size()
+	ok(g_lines <= 5, "★ 将领最多 5 行（实际 %d 行）—— 13 号字装得进加高后的数值框" % g_lines)
+	# ★★ 本轮「太拥挤」的**核心判据**：真正喂进去的这段文案，按 13 号字量出来的自然高度
+	#    必须 ≤ 数值框的可视高度。旧版是 7 行 11 号字挤进 66px 的可视高 ⇒ **必然被裁**
+	#    （`clip_text` 把最后 1~2 行切掉），肉眼看就是「下面那行没了 / 挤在一起」。
+	if main.hud._font != null:
+		var lh: float = main.hud._font.get_height(UiStyleRes.FS_SMALL)
+		var natural: float = lh * float(g_lines)
+		var visible: float = UiLayoutRes.DETAIL_BODY_H - 24.0
+		ok(natural <= visible,
+			"★ 将领这段文案（%d 行 × 行高 %.1f = %.0f px）装得进可视高 %.0f —— 一行都不会被裁"
+			% [g_lines, lh, natural, visible])
+	# 每一行都只有一处制表位（= 两栏），不许出现「一行里塞三栏」这种又挤起来的版式
+	var bad_rows := 0
+	for row in gtext.split("\n"):
+		if String(row).count("\t") > 1:
+			bad_rows += 1
+	eq(bad_rows, 0, "★ 每行最多一个制表位（就是两栏，没有三栏挤在一起的行）")
+
+	# ---- 2) 兵（非将领）：同样两栏版式，但**没有**编制那一行 ----
+	#
+	# ★★ 为什么要直接调 `hud._unit_text()` 而不是「选一个兵再看面板」：
+	#   右栏显示谁由 `hud._right_unit()` 决定，而它有一条**有意**的规则 ——
+	#   玩家点到的东西必须是**当前展开那支部队的成员**，否则退回那支部队的将领。
+	#   所以「选一个亲兵」在界面上永远看到将领（实测：选敌人更是直接退回将领）。
+	#   那条规则是别的需求，不该为了测「兵的编制」去绕它 —— 直接喂一个兵进文案函数，
+	#   验的正好是本轮这条规则本身（将领才写编制）。
+	var retinue: Array = world.retinue_of(g1.id)
+	ok(retinue.size() > 0, "（前提）1 号将领带着亲兵（%d 个）" % retinue.size())
+	if retinue.size() > 0:
+		var soldier = retinue[0]
+		ok(not world.is_team_leader(soldier), "（前提）喂进去的这个确实是兵，不是将领")
+		var stext: String = main.hud._unit_text(soldier, [])
+		ok(stext.contains("血量") and stext.contains("攻击力"),
+			"★ 兵的基础数值照常显示（血量 / 攻击力）")
+		ok(stext.contains("\t"), "★ 兵的数值也是两栏版式")
+		ok(not stext.contains("编制"),
+			"★ 兵不显示「编制」（手玩原话：假如是将领才要显示编制，兵不用显示编制）")
+		ok(stext.split("\n").size() <= 5,
+			"★ 兵最多 5 行（实际 %d 行）" % stext.split("\n").size())
+		# 同一份文案函数喂将领时必须**有**编制 —— 否则上面那条可能是因为整块都没写
+		var ltext2: String = main.hud._unit_text(g1, [])
+		ok(ltext2.contains("编制") and not stext.contains("编制"),
+			"★ 同一套文案：将领有编制、兵没有（对照，排除「编制整块丢了」）")
+
+	# ---- 3) 敌人不进右栏（既有规则，顺手钉一下别被本轮改动带坏）----
+	var foe = world.spawn_enemy(g1.tx + 5, g1.ty)
+	if foe != null:
+		main.input_ctrl.clicked_unit = foe
+		main.input_ctrl.selection_origin = "click"
+		main.hud.refresh()
+		ok(not main.hud.detail_panel.detail_text().contains("测试敌人"),
+			"★ 点到敌人不会让右栏去报敌人（右栏只报己方单位 / 退回将领）")
+
+	# 收尾：恢复成「1 号将领」，别把状态留给后面的用例
 	main.input_ctrl.select_units([g1])
 	main.hud.refresh()
 

@@ -214,10 +214,11 @@ func _build_right(cols: HBoxContainer, world) -> void:
 		right.add_child(b)
 		_buffs.append(b)
 
-	# 数值区：标题 + 正文（区划 / 建筑 / 多选汇总也画在这里）——
-	# 参考图里它是**横跨整个右栏**的一个独立方框（606×90），左边缘与头像对齐。
-	# ⚠️ 方框只有 90 高，而单位那几行文字有 6~7 行 ⇒ 正文用 FS_TINY(11)、行距压到 14，
-	#    这样 7 行 ≈ 98 也只超出一点点（正文是 `clip_text` 的，最多裁掉最后半行）。
+	# 数值区：标题 + 正文（单位 / 建筑 / 区划的数值）——
+	# 横跨整个右栏的一个独立方框，左边缘与头像对齐。
+	# ★★ 本轮重排（手玩报的「太拥挤」）：方框 90 → 116 高，正文 FS_TINY(11) → FS_SMALL(13)
+	#    且行距回正（原来是 -1，硬压出来的）。正文改成**两栏制表位**，
+	#    见下面 _body 的注释与 hud._unit_text()。
 	_detail_box = Panel.new()
 	_detail_box.name = "DetailBox"
 	_detail_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -237,13 +238,16 @@ func _build_right(cols: HBoxContainer, world) -> void:
 	_detail_title.size = Vector2(UiLayoutRes.DETAIL_BODY_W - 16.0, 18.0)
 	_detail_box.add_child(_detail_title)
 
+	# 正文：★ 两栏（制表位对齐），不是两行 —— 每一行都是「左栏一格 + 右栏一格」。
+	#   ⚠️ 所以这里**必须关掉 autowrap**：制表符是格式，换行由 hud 那边按「行」给，
+	#      留着 autowrap 会在宽度不够时把一行的两栏拆成两行（版式就散了）。
+	#      宽度不够宁可裁（clip_text = true），那说明 hud 的文案该改短。
 	_body = Label.new()
 	_body.name = "DetailBody"
 	_body.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_body.autowrap_mode = TextServer.AUTOWRAP_OFF
 	_body.clip_text = true
-	_body.add_theme_font_size_override("font_size", UiStyleRes.FS_TINY)
-	_body.add_theme_constant_override("line_spacing", -1)
+	_body.add_theme_font_size_override("font_size", UiStyleRes.FS_SMALL)
 	_body.add_theme_color_override("font_color", UiStyleRes.TEXT)
 	_body.position = Vector2(8.0, 20.0)
 	_body.size = Vector2(UiLayoutRes.DETAIL_BODY_W - 16.0, UiLayoutRes.DETAIL_BODY_H - 24.0)
