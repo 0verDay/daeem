@@ -92,6 +92,10 @@ func _test_layout_against_reference(cfg) -> void:
 	# 页签列与设置
 	eq(UiLayoutRes.TABS_RECT.size.x, 100.0, "页签列宽 100")
 	eq(UiLayoutRes.tab_button_local(2).position.y, 160.0, "第三颗按钮从 160 开始（3×80）")
+	eq(UiLayoutRes.tab_button_local(0, 2).size.y, 120.0,
+		"★ 页签是**动态**的：两颗时每颗 120 高（240 ÷ 2）")
+	eq(UiLayoutRes.tab_button_local(1, 1).size.y, 240.0,
+		"★ 只有一颗时它铺满整列（240）")
 	eq(UiLayoutRes.SETTINGS_RECT, Rect2(1840, 0, 80, 160), "设置按钮 80×160 在右上角（参考图）")
 
 	# ★ 招募队列：五个格子 = 1 个大格（正在读条）+ 4 个小格（排队）
@@ -259,7 +263,9 @@ func _test_left_column_geometry() -> void:
 	# ★★ 这一条是补的回归（手玩报的「第二、三列的文字被挤到第一列去」）：
 	#    文字**可写宽度必须真的装得下**「将领名称」四个字（13 号字 = 52px），否则会被截成
 	#    两个字，看起来就像「字太小 / 那两列没字」。
-	eq(UiLayoutRes.TROOP_NAME_W, 56.0, "★ 名字可写宽度 56（52px 的「将领名称」装得下）")
+	#    ⚠️ 56 → **60**（选中建筑那一轮）：建筑格的第二行是「1000/1000」（大本营），
+	#       实测 59px —— 56 会把它截断。60 仍然留在本格内（48 + 60 + 8 = 116 = 格宽）。
+	eq(UiLayoutRes.TROOP_NAME_W, 60.0, "★ 名字可写宽度 60（52px 的「将领名称」装得下）")
 	ok(UiLayoutRes.TROOP_NAME_W > 52.0, "★ 比参考图量出来的「将领名称」宽度（52）宽一点")
 	eq(UiLayoutRes.ROSTER_ID_W, UiLayoutRes.TROOP_NAME_W,
 		"★ 左栏上半那一格与下面 9 格用**同一套**文字宽度（看着才是一套东西）")
@@ -487,6 +493,7 @@ func _test_panels(cfg) -> void:
 	_test_card_keys(main)
 	_test_avatar_text_fit(cfg)
 	_test_recruit_via_card(main)
+	_test_zone_recruit_via_card(main)
 	await _test_queue_control(cfg)
 	_test_queue_cancel_via_click(main)
 	_test_auto_select_on_recruit(main)
@@ -497,6 +504,7 @@ func _test_panels(cfg) -> void:
 	_test_detail_two_columns(main)
 	_test_clicked_unit_detail(main)
 	_test_settings_inert(main)
+	_test_box_select_buildings(main)
 	await _test_command_events_reach_consumer(main)
 
 	# ---- 详细信息面板的内容（第三轮改版：左右两栏 + 提示行；日志整块删掉）----
@@ -807,53 +815,143 @@ func _test_squad_rows(main) -> void:
 	main.input_ctrl.select_units([world.unit_by_id("general-1")])
 
 
-# ---- 页签切页 + 命令卡内容 ----
+# ---- 页签（按选中对象动态显示）+ 命令卡内容 ----
+#
+# ★★ 需求原话：「当玩家选中部队 / 单位时，右下角的页签只显示两个：操作，单位；
+#    当玩家选中建筑时，右下角没有页签；当玩家选中区划中心时，右下角显示招募页签
+#    （显示三个占位将领）；当玩家选中大本营时，右下角显示科技页签」。
+#    另外手玩定了「什么都没选中时显示建筑页签」（城墙 / 箭塔的建造入口住在那儿）。
 func _test_page_tabs_and_card(main, cfg) -> void:
 	var tabs = main.hud.page_tabs
 	var card = main.hud.command_card
-	eq(tabs.button_count(), 3, "页签有 3 颗按钮（单位 / 建筑 / 科技）")
+	var world = main.world
 
-	# 默认停在「单位」页：此时命令卡只有一项（占位单位）
-	eq(tabs.page(), PageTabsRes.PAGE_UNIT, "默认页是「单位」")
+	# ---- 1) 选中部队 → 两颗页签：操作（默认）/ 单位 ----
+	main.input_ctrl.select_units([world.unit_by_id("general-1")])
+	main.hud.refresh()
+	eq(tabs.page_count(), 2, "★ 选中部队时只有两颗页签（操作 / 单位）")
+	eq(tabs.page_id_at(0), PageTabsRes.PAGE_ORDER, "第一颗是「操作」")
+	eq(tabs.page_id_at(1), PageTabsRes.PAGE_UNIT, "第二颗是「单位」")
+	eq(tabs.page(), PageTabsRes.PAGE_ORDER, "★ 默认停在「操作」页")
+	eq(card.entries().size(), 4, "★ 操作页有四格（移动 / 攻击 / 行军 / 停止）")
+	eq(String(card.entry_at(0).get("type", "")), "order", "操作页那一项是「部队指令」")
+	eq(card.cell_label(0), "移动", "操作页 Q 格 = 移动")
+	eq(card.cell_label(1), "攻击", "操作页 W 格 = 攻击")
+	eq(card.cell_label(2), "行军", "操作页 E 格 = 行军")
+	eq(card.cell_label(3), "停止", "操作页 A 格 = 停止")
+	ok(tabs.is_active(0), "当前页在页签上高亮")
+
+	# 切到「单位」页：还是原来那一项（招募单位的页）
+	tabs.button_at(1).emit_signal("pressed")
+	eq(tabs.page(), PageTabsRes.PAGE_UNIT, "点第二颗切到「单位」页")
 	eq(card.entries().size(), 1, "★ 单位页只有 1 项（需求：目前只有一个单位）")
 	eq(String(card.entry_at(0).get("type", "")), "recruit", "单位页那一项是「招募」")
 	eq(card.cell_label(0), "占位单位", "单位页的 Q 格写着占位单位")
 	eq(card.cell_label(1), "", "单位页第 2 格是空的")
 
-	# 切到「建筑」页：城墙 / 箭塔各占一格
-	tabs.button_at(1).emit_signal("pressed")
-	eq(tabs.page(), PageTabsRes.PAGE_BUILD, "点「建筑」切到建筑页")
+	# ---- 2) 什么都没选中 → 只有「建筑」页（城墙 / 箭塔）----
+	main.input_ctrl.select_units([])
+	main.hud.refresh()
+	eq(tabs.page_count(), 1, "★ 什么都没选中时只有一颗页签")
+	eq(tabs.page(), PageTabsRes.PAGE_BUILD, "停在「建筑」页")
 	eq(card.entries().size(), 2, "★ 建筑页有 2 项（需求原话：只有两个建筑）")
 	eq(String(card.entry_at(0).get("build_type", "")), "wall", "建筑页第 1 项是城墙")
 	eq(String(card.entry_at(1).get("build_type", "")), "tower", "建筑页第 2 项是箭塔")
 	eq(card.cell_label(0), "城墙", "城墙在 Q 格（需求原话）")
 	eq(card.cell_label(1), "箭塔", "箭塔在 W 格（需求原话）")
-	ok(tabs.is_active(1), "当前页在页签上高亮")
 
-	# ★ 科技点不动：点它既不改页，也不改命令卡
-	var page_before := String(tabs.page())
-	var entries_before: int = card.entries().size()
-	tabs.button_at(2).emit_signal("pressed")
-	eq(tabs.page(), page_before, "★「科技」点不动（点了不改页）")
-	eq(card.entries().size(), entries_before, "★「科技」点不动（命令卡也不变）")
+	# ---- 3) 选中普通建筑（城墙 / 箭塔）→ **一颗空页签**（不是空一块）、命令卡全空 ----
+	var plain_b = _plain_building(world)
+	ok(plain_b != null, "地图上找得到一栋普通建筑（城墙 / 箭塔）用来试「空页签」")
+	if plain_b != null:
+		main.input_ctrl.select_building(plain_b)
+		main.hud.refresh()
+		eq(tabs.page_count(), 1, "★ 选中普通建筑 → 保留**一颗**页签")
+		eq(tabs.page(), PageTabsRes.PAGE_NONE, "★ 它是那颗**空页签**（PAGE_NONE）")
+		ok(tabs.button_at(0) != null and tabs.button_at(0).visible,
+			"★ 页签按钮是**可见**的（手玩：保留一个空页签，而不是空一块）")
+		eq(tabs.button_at(0).text, "", "空页签上没有字")
+		v2_near(tabs.button_at(0).size, Vector2(100.0, 240.0), 1.0,
+			"★ 只有一颗时它铺满整列（100×240）")
+		ok(not tabs.is_active(0), "★ 空页签不画成「当前页」的高亮（它只是占位）")
+		# ★★ 回归：页签必须**看得见** —— 非当前页的普通态底色不能是全透明。
+		#   原来普通态 `bg.a = 0`，而页签列是直接立在地图上的（自己没有底板），
+		#   于是「地图从那块透出来」，手玩报「选中建筑看不到页签 / 空一块」。
+		ok(UiStyleRes.tab_normal().bg_color.a > 0.2,
+			"★ 非当前页的页签有底色（全透明时立在地图上看不见）")
+		ok(UiStyleRes.tab_active().bg_color.a > 0.9, "当前页仍是实心强调色（变的是普通态）")
+		eq(card.entries().size(), 0, "★ 命令卡 9 格全空")
+		eq(card.cell_label(0), "", "命令卡第 1 格也是空的")
 
-	# 切回单位页
-	tabs.button_at(0).emit_signal("pressed")
-	eq(tabs.page(), PageTabsRes.PAGE_UNIT, "点「单位」切回单位页")
-	eq(card.entries().size(), 1, "切回去之后命令卡跟着换回来了")
+	# ---- 4) 选中大本营 → 科技页签（本版页里还没有东西）----
+	var base = world.find_base_of("p1")
+	ok(base != null, "有己方大本营")
+	if base != null:
+		main.input_ctrl.select_building(base)
+		main.hud.refresh()
+		eq(tabs.page_count(), 1, "★ 大本营只有一颗页签")
+		eq(tabs.page(), PageTabsRes.PAGE_TECH, "★ 大本营 = 科技页签")
+		eq(card.entries().size(), 0, "科技页里还没有东西（9 格全空）")
+		eq(card.cell_label(0), "", "科技页第 1 格是空的")
+
+	# ---- 5) 选中区划中心 → 招募页签（三个占位将领）----
+	var zone = _zone_with_center(world)
+	ok(zone != null, "地图上找得到一个带中心的区划")
+	if zone != null:
+		main.input_ctrl.select_zone(zone)
+		main.hud.refresh()
+		eq(tabs.page_count(), 1, "★ 选中区划中心只有一颗页签")
+		eq(tabs.page(), PageTabsRes.PAGE_RECRUIT, "★ 区划中心 = 招募页签")
+		eq(card.entries().size(), 3, "★ 招募页里是三个占位将领（需求原话）")
+		eq(card.cell_label(0), "将领 1", "Q 格 = 将领 1")
+		eq(card.cell_label(1), "将领 2", "W 格 = 将领 2")
+		eq(card.cell_label(2), "将领 3", "E 格 = 将领 3")
+		eq(String(card.entry_at(0).get("type", "")), "zone_recruit",
+			"招募页那一项是「区划招募」（排进区划的队列）")
+		eq(String(card.entry_at(0).get("unit_kind", "")), "general_1",
+			"第 1 格要招的兵种是 general_1")
+
+	# 收尾：回到「选中将领 1」并把页签停在「操作」页（后面的用例按这个前提起步）
+	main.input_ctrl.select_units([world.unit_by_id("general-1")])
+	main.hud.refresh()
+	main.hud.page_tabs.select_page(PageTabsRes.PAGE_ORDER)
+	eq(main.hud.page_tabs.page(), PageTabsRes.PAGE_ORDER, "收尾：回到操作页")
+
+
+## 一栋**普通**建筑（城墙 / 箭塔 / 预置建筑），用来验「选中建筑没有页签」
+func _plain_building(world):
+	for b in world.building_list:
+		if b == null or not b.alive:
+			continue
+		if b.type == "wall" or b.type == "tower":
+			return b
+	return null
+
+
+## 一个**带中心**的区划（点它的中心 = 看这个区划的详情 / 招募）
+func _zone_with_center(world):
+	for z in world.zones.zones:
+		if z["center"] != null:
+			return z
+	return null
 
 
 # ---- 命令卡的九个字母键 ----
 func _test_card_keys(main) -> void:
 	var tabs = main.hud.page_tabs
 	var card = main.hud.command_card
+	var g1 = main.world.unit_by_id("general-1")
 
-	# 空格子的字母不该被命令卡吃掉（要交回原来那套快捷键 / 什么都不做）
+	# ★ 建筑页只在「什么都没选中」时出现（见 hud._tab_plan）——先清空选中。
+	main.input_ctrl.select_units([])
+	main.hud.refresh()
+	eq(tabs.page(), PageTabsRes.PAGE_BUILD, "（前提）没选中东西 → 停在建筑页")
+
+	# 空格子的字母不该被命令卡吃掉（建筑页只有 Q/W 两格，A 是空的）
 	var a_ev := _key(KEY_A)
 	ok(not card.handle_key(a_ev), "空格子（A）不消费按键")
 
 	# 建筑页：Q = 城墙，W = 箭塔（需求原话）
-	tabs.select_page(PageTabsRes.PAGE_BUILD)
 	ok(card.handle_key(_key(KEY_Q)), "建筑页的 Q 被命令卡吃掉")
 	eq(main.input_ctrl.build_type, "wall", "★ 建筑页按 Q = 城墙")
 	ok(card.handle_key(_key(KEY_W)), "建筑页的 W 被命令卡吃掉")
@@ -866,12 +964,44 @@ func _test_card_keys(main) -> void:
 	card.cell_at(0).emit_signal("pressed")
 	eq(main.input_ctrl.build_type, "wall", "点 Q 格 = 进城墙建造模式")
 	main.input_ctrl.set_build_type("")
-	tabs.select_page(PageTabsRes.PAGE_UNIT)
+
+	# ---- 操作页：Q/W/E 是**真指令**（进命令模式 → 左键点地图下达）----
+	main.input_ctrl.select_units([g1])
+	main.hud.refresh()
+	tabs.select_page(PageTabsRes.PAGE_ORDER)
+	eq(tabs.page(), PageTabsRes.PAGE_ORDER, "（前提）停在操作页")
+	ok(card.handle_key(_key(KEY_Q)), "操作页的 Q 被命令卡吃掉")
+	eq(main.input_ctrl.order_mode, "move", "★ 操作页按 Q = 进入移动模式")
+	ok(card.handle_key(_key(KEY_Q)), "再按一次 Q")
+	eq(main.input_ctrl.order_mode, "", "★ 再按一次同一格 = 退出命令模式")
+	card.cell_at(2).emit_signal("pressed")
+	eq(main.input_ctrl.order_mode, "attack_move", "点 E 格 = 进入行军模式")
+	main.input_ctrl.set_order_mode("")
+	eq(main.input_ctrl.order_mode, "", "（收尾）退出命令模式")
+
+	# ---- 「停止」是**即时**的：点一下当场下达，不进命令模式（它不需要点地图选目标）----
+	var free := Vector2i(-1, -1)
+	for ty in main.world.map.rows:
+		for tx in main.world.map.cols:
+			if main.world.can_build_at(tx, ty):
+				free = Vector2i(tx, ty)
+				break
+		if free.x >= 0:
+			break
+	ok(free.x >= 0, "找得到一格空地")
+	if free.x >= 0:
+		ok(CommandRes.apply(main.world, main.cfg, {"kind": "move", "ids": [g1.id],
+			"x": float(free.x) + 0.5, "y": float(free.y) + 0.5, "faction": "p1"}),
+			"（前提）先让将领 1 走起来")
+		ok(g1.moving, "（前提）它正在移动")
+		card.cell_at(3).emit_signal("pressed")          # A 格 = 停止
+		ok(not g1.moving, "★ 点「停止」格 → 当场停下")
+		eq(main.input_ctrl.order_mode, "", "★ 停止不进命令模式（点一下就够了）")
 
 	# ★ 带修饰键的组合键不许被命令卡吃掉。
 	#   为什么单列一条：命令卡在输入链里排在 main / input_controller 的**前面**
 	#   （game_scene._unhandled_input 先问 hud），所以 Ctrl+Q（开发者快捷键：全屏）
-	#   如果被它吃掉，「切全屏」就会顺手触发 Q 格 —— 单位页按下去 = 招募一个兵。
+	#   如果被它吃掉，「切全屏」就会顺手触发 Q 格 —— 操作页按下去 = 进入移动模式。
 	#   见 command_card.handle_key 里那段 ctrl/alt/meta 放行。
 	ok(not card.handle_key(_key(KEY_Q, true)),
 		"★ Ctrl+Q 不被命令卡消费（要让给 main 的全屏快捷键）")
@@ -900,6 +1030,9 @@ func _test_recruit_via_card(main) -> void:
 
 	main.input_ctrl.select_units([g1])
 	main.hud.refresh()
+	# ★ 选中部队时默认停在「操作」页 —— 这一节验的是单位页那条路，先切过去
+	main.hud.page_tabs.select_page(PageTabsRes.PAGE_UNIT)
+	eq(main.hud.page_tabs.page(), PageTabsRes.PAGE_UNIT, "（前提）切到单位页")
 	var queue = main.hud.detail_panel.queue_control()
 	ok(queue != null, "详细信息右栏里有招募队列控件")
 	ok(not queue.showing(), "★ 没在招募时五个格子收起来（需求：将领开始招募时才出现）")
@@ -948,9 +1081,11 @@ func _test_recruit_via_card(main) -> void:
 	ok(queue.cell_filled(1), "第 2 个格子（小格）填上了")
 	near(queue.progress(), 0.0, 0.05, "★ 排队的不影响正在读条那个的进度")
 
-	# ---- 命令卡切页之后，招募不会串到建筑页上 ----
+	# ---- 选中部队时这一屏只有「操作 / 单位」两页：切页不会串到队列上 ----
+	eq(main.hud.page_tabs.page_count(), 2, "（前提）选中部队时只有两颗页签")
 	main.hud.page_tabs.select_page(PageTabsRes.PAGE_BUILD)
-	main.hud.page_tabs.select_page(PageTabsRes.PAGE_UNIT)
+	eq(main.hud.page_tabs.page(), PageTabsRes.PAGE_UNIT,
+		"★ 不在这一屏里的页（建筑）切不过去")
 	eq(g1.train_queue_size(), 2, "切页不会改变队列")
 
 	# 选中别的单位 → 队列那五格收起来（它只显示「当前展开那支部队」的队列）
@@ -962,6 +1097,82 @@ func _test_recruit_via_card(main) -> void:
 	while g1.train_queue_size() > 0:
 		world.cancel_recruit(g1.id, 0, "p1")
 	ok(not g1.is_training(), "收尾：队列已清空")
+
+
+# ---- 区划招募：点区划中心 → 招募页 → 点某一格 → 排进**区划**的队列（UI → 命令 → 队列显示）----
+#
+# ★ 规则本身（消耗 / 人口 / 读条 / 中心旁生成 / 取消退款）在 tests/test_zone_recruit.gd；
+#   这里验的是「选中的是谁 → 页签是哪一颗 → 队列控件显示谁的队列」这条接线。
+func _test_zone_recruit_via_card(main) -> void:
+	var world = main.world
+	var card = main.hud.command_card
+	var base = world.find_base_of("p1")
+	ok(base != null, "有己方大本营（用来找一块己方区划）")
+	if base == null:
+		return
+	# 大本营所在的那块区划：开局就被大本营收归己方（zone_owned_by_building）
+	var zone = world.zones.zone_at(base.tx, base.ty)
+	ok(zone != null, "大本营所在的区划")
+	if zone == null:
+		return
+
+	world.resources["food"] = 1000.0
+	world.resources["gold"] = 1000.0
+	zone["population"] = 10.0
+
+	# 点区划中心（= 选中这个区划）→ 页签只剩「招募」一颗
+	main.input_ctrl.select_zone(zone)
+	main.hud.refresh()
+	eq(main.hud.page_tabs.page_count(), 1, "★ 选中区划中心 → 只有一颗页签")
+	eq(main.hud.page_tabs.page(), PageTabsRes.PAGE_RECRUIT, "★ 它是「招募」页签")
+	eq(card.entries().size(), 3, "★ 招募页里是三个占位将领")
+
+	var q = main.hud.detail_panel.queue_control()
+	ok(not q.showing(), "没在招募时五格收起来")
+	ok(q.is_zone_queue() and q.holder() == zone,
+		"（前提）队列控件已经指向这个区划（只是还没东西可显示）")
+
+	# ---- 点第 1 格 → 排进这个区划的队列 ----
+	var food_before: float = float(world.resources["food"])
+	var pop_before: float = float(zone["population"])
+	card.activate_index(0)
+	ok(world.zone_is_training(zone), "★ 点招募页的 Q 格 → 排进了**这个区划**的队列")
+	eq(world.zone_recruit_kind_at(zone, 0), "general_1", "大格子里是刚排进去的那个将领")
+	near(float(world.resources["food"]), food_before - 50.0, 1e-4, "★ 入队即扣 50 粮食")
+	near(float(zone["population"]), pop_before - 1.0, 1e-4, "★ 入队即扣这个区划 1 人口")
+
+	main.hud.refresh()
+	ok(q.showing(), "★ 信息栏里出现五个格子")
+	ok(q.is_zone_queue(), "★ 这个五格显示的是**区划**的队列（不是某个将领的）")
+	eq(q.slot_count(), 5, "五个格子")
+	ok(q.cell_label(0).contains("将"), "大格子里写着短名「将」（实际：%s）" % q.cell_label(0))
+
+	# 再排一单 → 进小格子
+	card.activate_index(1)
+	main.hud.refresh()
+	eq(world.zone_recruit_queue_size(zone), 2, "第二个排进小格子")
+	ok(q.cell_filled(1), "第 1 个小格子填上了")
+
+	# ---- 点小格子 = 取消那一格 + 退款 ----
+	food_before = float(world.resources["food"])
+	_click_control(q, UiLayoutRes.queue_cell_rect(1).get_center())
+	eq(world.zone_recruit_queue_size(zone), 1, "★ 点小格子 = 取消那一格")
+	near(float(world.resources["food"]), food_before + 50.0, 1e-4, "★ 取消会退款")
+	main.hud.refresh()
+	ok(not q.cell_filled(1), "那一格空了")
+
+	# 收尾：清干净队列（后面的用例要在「没在招募」的世界里跑）
+	while world.zone_is_training(zone):
+		world.cancel_zone_recruit(int(zone["id"]), 0, "p1")
+	main.hud.refresh()
+	ok(not q.showing(), "收尾：队列清空 → 五格收起来")
+
+	# 选中部队 → 队列控件回到「将领的队列」那一套（主人的切换是干净的）
+	main.input_ctrl.select_units([world.unit_by_id("general-1")])
+	main.hud.refresh()
+	ok(not q.is_zone_queue(), "★ 改选部队之后，队列控件不再显示区划的队列")
+	main.input_ctrl.select_units([])
+	main.hud.refresh()
 
 
 # ---- 点队列格子 = 取消那一格（后方的队列前移）----
@@ -977,6 +1188,8 @@ func _test_queue_cancel_via_click(main) -> void:
 	world.resources["gold"] = 1000.0
 	world.zones.zone_at(g1.tx, g1.ty)["population"] = 10.0
 	main.input_ctrl.select_units([g1])
+	main.hud.refresh()
+	main.hud.page_tabs.select_page(PageTabsRes.PAGE_UNIT)   # 单位页（招募那一页）
 	main.hud.refresh()
 	var q = main.hud.detail_panel.queue_control()
 
@@ -1064,6 +1277,9 @@ func _test_order_locked_notice(main) -> void:
 	world.resources["gold"] = 1000.0
 	world.zones.zone_at(g1.tx, g1.ty)["population"] = 10.0
 	main.input_ctrl.select_units([g1])
+	main.hud.refresh()
+	main.hud.page_tabs.select_page(PageTabsRes.PAGE_UNIT)   # 单位页（招募那一页）
+	main.hud.refresh()
 	card.activate_index(0)                       # 排一单 → 整队被锁住
 	ok(g1.is_training(), "将领开始招募（整队进入「不接指令」状态）")
 	main.hud.show_notice("")                     # 先把提示清掉，免得误判
@@ -1811,6 +2027,171 @@ func _test_box_select(main) -> void:
 	ok(not main.input_ctrl.drag_active, "★ Esc 放弃这次框选")
 	eq(_sorted_ids(main.input_ctrl.selected_units), kept, "★ 放弃框选不会动已有的选中")
 	# 收尾：把选中恢复成「1 号将领」并把面板刷一次，别把状态留给后面的用例
+	main.input_ctrl.select_units([g1])
+	main.hud.refresh()
+
+
+# ------------------------------------------------------------------
+# 框选**建筑**：框里没有己方单位、只有己方建筑时 → 多选建筑，左侧按 1333 显示
+# ------------------------------------------------------------------
+#
+# 需求原话：「玩家可以框选建筑（当玩家划出的框中没有单位只有己方建筑时，则多选建筑），
+#            在左侧按 1333 显示选中的建筑」+「和多选单位时的逻辑一样，玩家可以用鼠标滚轮
+#            切换显示页」。
+#
+# ★ 三条要钉住的规则：
+#   ① **单位优先**：框里只要有己方单位，走的就还是「选中单位」那条老路；
+#   ② 左侧版式与部队完全一致（左上第 1 格 = 主选中，下面 3×3 = 其余，滚轮翻页）；
+#   ③ 点建筑格 = 换「正在看哪一个」，**不改选中了哪些**（与点将领格同一条约定）。
+func _test_box_select_buildings(main) -> void:
+	var world = main.world
+	# ---- 1) 把己方单位全部挪到地图右下角（框里只留建筑，才走「多选建筑」那条路）----
+	var moved := 0
+	for u in world.units:
+		if not u.alive:
+			continue
+		if not FactionRes.same_side(u.faction, world.my_faction):
+			continue
+		_place_unit(world, u, Vector2(24.0, 18.0) + Vector2(float(moved % 5) * 0.6,
+			float(moved / 5) * 0.6))
+		moved += 1
+	ok(moved > 0, "（前提）把 %d 个己方单位挪出框外" % moved)
+
+	# ---- 2) 在左上角那片空地上建自己的城墙（要够多，才验得到滚轮翻页）----
+	var rect := Rect2(Vector2(1.0, 1.0), Vector2(9.0, 9.0))       # (1,1)..(10,10)
+	var built: Array = []
+	for ty in range(1, 10):
+		for tx in range(1, 10):
+			if world.can_build_at(tx, ty):
+				var nb = world.add_building("wall", tx, ty, world.my_faction, true)
+				if nb != null:
+					built.append(nb)
+	ok(built.size() >= 2, "（前提）在框内建了 %d 段己方城墙" % built.size())
+
+	# 期望值：框内**己方、活着、不无敌**的建筑（口径与 input_controller 里那条一致）
+	var expect: Array = []
+	for b in world.building_list:
+		if b == null or not b.alive:
+			continue
+		if b.is_invulnerable():
+			continue
+		if not FactionRes.same_side(b.owner, world.my_faction):
+			continue
+		if rect.has_point(b.center()):
+			expect.append(b)
+	if built.size() < 2 or expect.is_empty():
+		ok(false, "★ 框选建筑的用例需要框内有己方建筑（实际 %d 个）" % expect.size())
+		return
+
+	# ---- 3) 框选：框里没有单位 → 选中的是建筑 ----
+	main.input_ctrl.select_units([])
+	var picked: int = main.input_ctrl.box_select(rect.position, rect.end)
+	eq(picked, expect.size(), "★ 框里没有单位时，框到的是框内的己方建筑")
+	eq(main.input_ctrl.selected_units.size(), 0, "★ 建筑那一批不算「选中单位」")
+	eq(main.input_ctrl.selected_buildings.size(), expect.size(),
+		"★ 选中的建筑 = 框内全部己方建筑")
+	eq(main.input_ctrl.selected_building, expect[0], "★ 主选中 = 第一个（右栏显示它）")
+
+	# ---- 4) 左侧那 1 + 3×3：主选中在左上格，其余在网格里（与部队同一套版式）----
+	main.hud.refresh()
+	var panel = main.hud.detail_panel
+	var roster = panel.roster_control()
+	var grid = panel.grid_control()
+	eq(panel.grid_mode(), "buildings", "★ 选中建筑时左栏下半是**建筑模式**")
+	ok(roster.visible, "★ 左栏左上那一格出现（主选中那个建筑）")
+	eq(roster.leader_name(), expect[0].display_name(), "★ 左上那一格写主选中建筑的名字")
+	eq(roster.leader_short(), expect[0].display_name().substr(0, 1), "方框里写名字首字")
+	eq(roster.count_text(), "%d/%d" % [int(round(expect[0].hp)), int(round(expect[0].hp_max))],
+		"★ 左上那一格第二行写血量 x/y")
+	# ★ 那一行必须真的装得下（大本营是 1000/1000，实测 13 号字下 59px）——
+	#   否则玩家看到的是被截断的「1000/10…」，那比不显示还糟。
+	if main.hud._font != null:
+		var probe := "1000/1000"
+		ok(main.hud._font.get_string_size(probe, HORIZONTAL_ALIGNMENT_LEFT, -1,
+				UiStyleRes.FS_SMALL).x <= UiLayoutRes.TROOP_NAME_W,
+			"★ 「%s」装得进格子的可写宽 %.0f（不然血量那行会被截断）" % [
+				probe, UiLayoutRes.TROOP_NAME_W])
+		ok(UiLayoutRes.TROOP_NAME_X + UiLayoutRes.TROOP_NAME_W <= UiLayoutRes.TROOP_CELL_W - 4.0,
+			"★ 网格里那一行文字留在本格内（不盖到右边那格的方框）")
+		ok(UiLayoutRes.ROSTER_COUNT_X + UiLayoutRes.ROSTER_COUNT_W <= UiLayoutRes.DETAIL_LEFT_W,
+			"★ 左上那一格的文字留在左栏里")
+	else:
+		ok(true, "（没装中文字体，跳过这一行宽度的量算）")
+	eq(grid.cell_count(), mini(expect.size() - 1, UiLayoutRes.GRID_PAGE),
+		"★ 下面 3×3 画其余选中的建筑（一页最多 9 格）")
+	eq(grid.building_at(0), expect[1], "★ 网格第 1 格是第 2 个建筑（主选中在左上）")
+	eq(grid.cell_name(0), expect[1].display_name(), "格子里写着建筑名")
+	ok(grid.cell_is_building(0), "那一格是建筑格（不是单位格）")
+	eq(grid.cell_sub_text(0), "%d/%d" % [int(round(expect[1].hp)), int(round(expect[1].hp_max))],
+		"★ 建筑格第二行是血量 x/y")
+
+	# ---- 5) 右栏：主选中建筑的详情（本版精简掉「归属」「位置」与大本营锁血注释）----
+	eq(panel.unit_name_text(), expect[0].display_name(), "★ 右栏报的是主选中的建筑")
+	var btext: String = panel.detail_text()
+	ok(btext.contains("生命"), "建筑详情里有生命值（实际：%s）" % btext.replace("\n", "|"))
+	ok(not btext.contains("归属") and not btext.contains("位置"),
+		"★ 建筑详情里没有「归属」「位置」（本版精简掉了）")
+
+	# ---- 6) 点建筑格 = 换「正在看哪一个」，不改选中了哪些 ----
+	var sel_before: int = main.input_ctrl.selected_buildings.size()
+	_click_control(grid, UiLayoutRes.troop_cell_rect(0).get_center())
+	main.hud.refresh()
+	eq(main.input_ctrl.selected_building, expect[1], "★ 点建筑格 → 主选中换成它")
+	eq(main.input_ctrl.selected_buildings.size(), sel_before, "★ 点格子**不改选中**")
+	eq(panel.unit_name_text(), expect[1].display_name(), "★ 右栏跟着换成那个建筑")
+	eq(roster.leader_name(), expect[1].display_name(), "左上那一格也换成了它")
+	ok(panel.detail_text().contains("生命"), "右栏仍然画的是建筑详情")
+
+	# ---- 7) 滚轮翻页（与「单选一支部队的单位」同一条规则）----
+	if expect.size() > UiLayoutRes.GRID_PAGE:
+		ok(grid.page_count() >= 2, "★ 选中的建筑多到一页画不下 → 不止一页")
+		var wheel := InputEventMouseButton.new()
+		wheel.button_index = MOUSE_BUTTON_WHEEL_DOWN
+		wheel.pressed = true
+		wheel.position = Vector2(60.0, 20.0)
+		grid._gui_input(wheel)
+		eq(grid.page(), 1, "★ 滚轮往下 = 翻到下一页（一次一页 9 格）")
+		ok(grid.building_count() > 0, "第 2 页照样有建筑格")
+		wheel.button_index = MOUSE_BUTTON_WHEEL_UP
+		grid._gui_input(wheel)
+		eq(grid.page(), 0, "★ 滚轮往上 = 翻回上一页")
+
+	# ---- 8) 单位优先：框里同时有己方单位与建筑 → 走的还是「选中单位」那条路 ----
+	var g1 = world.unit_by_id("general-1")
+	if g1 != null:
+		_place_unit(world, g1, rect.position + Vector2(3.5, 3.5))
+		main.input_ctrl.select_units([])
+		main.input_ctrl.box_select(rect.position, rect.end)
+		ok(main.input_ctrl.selected_units.has(g1),
+			"★ 框里有己方单位 → 仍然是「选中单位」（整队被框出来）")
+		eq(main.input_ctrl.selected_buildings.size(), 0,
+			"★ 单位优先：同一次框选不会顺带选中建筑")
+
+	# ---- 9) 数字格式化（实机刷屏的那条报错）与区划文案 ----
+	eq(main.hud._fmt_num(2.0), "2", "整数不带小数点")
+	eq(main.hud._fmt_num(0.05), "0.05",
+		"★ 小数照写（这里原来用的是 Godot **不支持**的 %g，每帧刷一条 formatting error）")
+	eq(main.hud._fmt_num(1.23456), "1.235", "小数最多 3 位")
+	var zones: Array = world.zones.zones
+	if zones.size() > 0:
+		var ztext: String = main.hud._zone_text(zones[0])
+		ok(ztext.contains("区划「") and ztext.contains("粮食产能"), "区划详情有名字与产能")
+		ok(not ztext.contains("归属") and not ztext.contains("地块／"),
+			"★ 区划详情里没有「归属」，产能也不写「／地块／秒」（本版精简）")
+		main.input_ctrl.select_zone(zones[0])
+		main.hud.refresh()
+		eq(main.hud.detail_panel.unit_name_text(), "区划「%s」" % String(zones[0]["name"]),
+			"★ 选中区划时右栏标题是区划名")
+
+	# ---- 10) 拆除入口整块删掉（需求：去掉这个拆除逻辑，暂时不绑定按键）----
+	ok(not main.input_ctrl.has_method("demolish_selected"), "★ 拆除入口已删除")
+	ok(not main.input_ctrl.handle_key(_key(KEY_X)), "★ 按 X 不再发拆除命令")
+	ok(not main.input_ctrl.handle_key(_key(KEY_DELETE)), "★ Delete 同理")
+
+	# ---- 收尾：拆掉这次建的墙、把选中恢复成 1 号将领（别把状态留给后面的用例）----
+	for b2 in built:
+		world.remove_building(b2, true)
+	world.rebuild_building_index()
 	main.input_ctrl.select_units([g1])
 	main.hud.refresh()
 

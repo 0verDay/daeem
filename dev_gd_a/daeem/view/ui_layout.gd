@@ -74,7 +74,10 @@ const CARD_SLOTS := CARD_COLS * CARD_ROWS
 ## 九个格子的键位：按参考图排（上排 QWE / 中排 ASD / 下排 ZXC）
 const CARD_KEYS := ["Q", "W", "E", "A", "S", "D", "Z", "X", "C"]
 
-## 页签列（单位 / 建筑 / 科技）
+## 页签列（宽 100、高 240）。★ 现在是**动态页签**：选中部队时 2 颗（操作 / 单位）、
+## 选中区划中心时 1 颗（招募）、选中大本营时 1 颗（科技）、选中普通建筑时**一颗都没有**、
+## 什么都没选中时 1 颗（建筑）—— 见 view/page_tabs.gd 的文件头。
+## TABS_COUNT 只是「最多可能建几颗」（那一列最多放得下 3 颗 80 高的按钮）。
 const TABS_RECT := Rect2(1820.0, 840.0, 100.0, 240.0)
 const TABS_COUNT := 3
 
@@ -108,7 +111,9 @@ const UNIT_CAP := 11
 ##   「将领名称」在 y 885..899、「1/11」在 y 902..911（量出来的像素段）。
 const ROSTER_CELL_AVATAR := 40.0
 const ROSTER_CELL_TEXT_X := 48.0     # 文字那两行的左边（= 方框 40 + 缝 8）
-const ROSTER_ID_W := 56.0            # 第一行（名字）能写到哪
+## ★ 56 → 60：与网格里那一格**同一个宽度**（那一套断言盯着这两条相等）——
+##   建筑那一行的「1000/1000」实测 13 号字下 59px，56 装不下。
+const ROSTER_ID_W := 60.0            # 第一行（名字）能写到哪
 ## 文字那两行的基线（相对**方框顶边**）——
 ##   ★ 手玩原话：「对齐其对应左侧头像居中」⇒ 两行合起来作为一块，与 40 高的方框**垂直居中**。
 ##   算法：块高 = 2×FS_SMALL(13) + 行间隙(5) = 31 ⇒ 块顶 = (40-31)/2 ≈ 4.5
@@ -118,7 +123,9 @@ const ROSTER_ID_Y := 18.0
 const ROSTER_COUNT_Y := 36.0
 ## 「1/11」与名字**同一个左边**（参考图上这两行的左边缘是对齐的）
 const ROSTER_COUNT_X := 48.0
-const ROSTER_COUNT_W := 56.0
+## ★ 56 → 60：与网格里那一格同一个理由（建筑那一行是「1000/1000」，实测 59px；
+##   左上这一行右边整段都是空的，加宽 4px 不碰任何东西）。
+const ROSTER_COUNT_W := 60.0
 ## 左栏上半那一段的总高度
 const ROSTER_DETAIL_H := 40.0
 
@@ -131,13 +138,17 @@ const ROSTER_DETAIL_H := 40.0
 ##     第二行「1/11」   x 467..481、y 942..948
 ##   ⇒ 文字左边 = 方框右边缘 + 13px；两行都与方框**垂直居中**（不是只在左上角）。
 ##   ⇒ 格子列距 = 121px，其中 40 是方框、剩下 81 给文字 —— 本工程左栏只有 350，
-##     按同样的比例压成：格 116（40 方框 + 8 缝 + 56 文字 + 12 到下一格）。
-## ⚠️ 文字可写宽度**必须**是 56：写 24 会把「将领名称」截成两个字（手玩报过
+##     按同样的比例压成：格 116（40 方框 + 8 缝 + 60 文字 + 8 到下一格）。
+## ⚠️ 文字可写宽度**必须**在 56~60 这一段：写 24 会把「将领名称」截成两个字（手玩报过
 ##   「左栏的字太小」），写 64 又会盖到右边那格的方框上（手玩报过「后两列没字」）。
+## ★★ 56 → **60**（选中建筑那一轮）：建筑格的第二行是「血量 x/y」，而大本营是
+##   **1000/1000** —— 实测 13 号字下宽 **59px**，56 会把它截成「1000/10…」。
+##   60 之后文字右缘 = 48 + 60 = 108 ≤ 每格可用宽 112（`TROOP_CELL_W − 4`），
+##   离下一格的方框（x = 116）还有 8px —— 实测过，不会串列。
 const TROOP_GRID_COLS := 3
 const TROOP_GRID_ROWS := 3
 const TROOP_GRID_SLOTS := TROOP_GRID_COLS * TROOP_GRID_ROWS
-## 一页 = 9 格（单选时滚轮翻页的单位数）
+## 一页 = 9 格（单选时滚轮翻页的单位数 / 多选建筑时翻页的建筑数）
 const GRID_PAGE := TROOP_GRID_SLOTS
 const TROOP_CELL_W := 116.0          # (350 - 2) / 3
 ## ★★ 每行 55 高（手玩报的「左栏 3×3 网格也太挤」之后改的：原来是 44）。
@@ -151,7 +162,8 @@ const TROOP_CELL_GAP := 0.0
 const TROOP_AVATAR := 40.0
 ## 格子里的文字：左边（= 方框 40 + 缝 8）、可写宽、两行的基线
 const TROOP_NAME_X := 48.0
-const TROOP_NAME_W := 56.0
+## ★ 56 → 60：见上面 TROOP_CELL_W 那一段（建筑格的「1000/1000」实测 59px 装不下 56）
+const TROOP_NAME_W := 60.0
 ## 两行文字的基线（相对**方框顶边**）：两行作为一块与 40 高的方框垂直居中
 ## （算法同 ROSTER_ID_Y 那一段：块高 31、块顶 4.5）
 const TROOP_NAME_Y := 18.0           # 第一行（单位 / 将领名）
@@ -425,15 +437,20 @@ static func card_cell_rect(i: int) -> Rect2:
 	return r
 
 
-## 页签第 i 个按钮（相对面板）
-static func tab_button_local(i: int) -> Rect2:
-	var h := TABS_RECT.size.y / float(TABS_COUNT)
+## 页签第 i 个按钮（相对面板）。
+##
+## ★ 页签**个数是变的**（选中部队 2 颗 / 选中区划中心 1 颗 / 选中建筑 0 颗 ——
+##   见 view/page_tabs.gd 的文件头），所以高度 = 240 ÷ 当前页数；
+##   `count` 缺省取满列 3 颗（那是「最多可能有几颗」，interactive_rects 与老测试用它）。
+static func tab_button_local(i: int, count: int = TABS_COUNT) -> Rect2:
+	var n: int = maxi(1, mini(count, TABS_COUNT))
+	var h := TABS_RECT.size.y / float(n)
 	return Rect2(0.0, float(i) * h, TABS_RECT.size.x, h)
 
 
 ## 页签第 i 个按钮（设计空间）
-static func tab_button_rect(i: int) -> Rect2:
-	var r := tab_button_local(i)
+static func tab_button_rect(i: int, count: int = TABS_COUNT) -> Rect2:
+	var r := tab_button_local(i, count)
 	r.position += TABS_RECT.position
 	return r
 

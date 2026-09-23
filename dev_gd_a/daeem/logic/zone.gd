@@ -99,6 +99,28 @@ func _new_zone(zid: int, name: String, flist: Array) -> Dictionary:
 		#    当人口自然增长至上限时停止增长」）。地图编辑器里没填 → 这里的默认 1。
 		#    它和产能一样是**地图给的静态数据**，进游戏之后不会变，所以不进快照。
 		"population_cap": DEFAULT_POPULATION_CAP,
+		# ★★ 区划的**招募队列**（点区划中心 → 右下「招募」页签 → 招将领）。
+		#
+		# ★ 为什么挂在区划字典上（而不是像将领那样挂在单位上）：
+		#   「这块地现在在造什么」天然属于这块地 —— 它不是某个单位的能力。
+		#   权威列表 world.zones.zones 已经存在，另开一张「区划 id → 队列」的表
+		#   就多出一份要对齐、要快照、要清理的状态（与 unit.gd 那条理由同源）。
+		# · train_kind / train_remaining / train_total = 正在读条的那一单（空串 = 没在读条）
+		# · train_queue      = 排队的那几单（最多 config.recruit.zone.queue_max - 1）
+		# · train_faction    = **这一单开始时**的招募方：读条读完按它出兵，
+		#                      免得中途区划易主就把将领出给了别人
+		# · train_cost_*     = 已扣掉的钱 / 人口（取消时按记账值**全额**退款）
+		"train_kind": "",
+		"train_remaining": 0.0,
+		"train_total": 0.0,
+		"train_queue": [],
+		"train_faction": "",
+		"train_cost_food": 0.0,
+		"train_cost_gold": 0.0,
+		"train_cost_pop": 0.0,
+		# ⚠️ 这一组**目前不进快照**（`snapshot.gd` 只发 owner / 进度 / 人口）：
+		#    单机里本地就是权威，界面直接读它。第 1 轮联机时要像 `unit.train_*`
+		#    那样补进快照，否则客机点开区划中心看不到「这个区划在造什么」。
 	}
 
 

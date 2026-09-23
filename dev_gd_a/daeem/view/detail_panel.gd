@@ -6,11 +6,14 @@
 ##   左栏（350 宽）
 ##     ├─ 上半：**当前展开 / 唯一选中的那支部队的将领格**（view/unit_roster.gd）
 ##     │        左上角 1 个 40×40 方框 + 右边一行「将领名称 x/y」
-##     └─ 下半：**3×3 = 9 格的网格**（view/troop_grid.gd），两种语义共用：
+##     └─ 下半：**3×3 = 9 格的网格**（view/troop_grid.gd），三种语义共用：
 ##               · **选中多支部队** → 画**其余**选中部队的将领（展开的那支不重复出现）；
 ##                 点一格 = 把展开的部队换成它（同时右栏切到它的将领）。
 ##               · **只选中一支**   → 画这支部队的**单位**（第一个就是将领本人）；
 ##                 点一格 = 右栏切到那个单位；超过 9 个时滚轮**翻页**（一次一页）。
+##               · **选中建筑**     → 左上那一格 = **主选中**的建筑，下面 9 格 = 其余选中的
+##                 建筑（框选可以选中一整批，见 input_controller.box_select）；
+##                 点一格 = 把右栏详情切到那个建筑；超过 9 个同样是滚轮翻页。
 ##
 ##   右栏（645 宽，第六轮排成「三条带 + 一条提示带」，几何见 ui_layout 那段注释）
 ##     y   0.. 72  选中单位的**头像**（72×72）+「单位名称」+ 一行 **buff 图标**（占位，无效果）
@@ -34,6 +37,8 @@
 ##   · **「阵营 + 粮食 + 黄金」那一行资源 —— 本轮按参考图删掉了**
 ##   · **选中单位的那些汇总文字**（队伍人数 / 合计生命 / 指定攻击 / 状态）—— 一并删掉；
 ##     现在右栏只画「详细信息」这一块数值
+##   · **建筑 / 区划详情里的「归属」与「位置」两行**（选中建筑那一轮按需求精简掉），
+##     以及区划产能后面的「／地块／秒」和大本营那句锁血注释
 ##   · 己方地块 / 区块 / 建造模式 / 暂停 —— 都不显示
 ##   · **整块事件日志** —— 日志栏已经删掉（事件仍然由 logic 收集，只是没有界面画它，
 ##     见 view/hud.gd 末尾那段说明）。⚠️ 那行红字提示**不是**日志栏：
@@ -59,6 +64,9 @@ signal troop_activated(number: int)
 ## 点了左栏下半网格里的一格**单位**（带格下标；只选中一支部队时才是单位格）。
 ## 原样转发给 hud.gd —— 「右栏切到那个单位」由它做。
 signal unit_activated(index: int)
+## 点了左栏下半网格里的一格**建筑**（带格下标；选中建筑时才有建筑格）。
+## 原样转发给 hud.gd —— 「右栏详情切到那个建筑」由它做。
+signal building_activated(index: int)
 
 ## buff 占位（手玩原话：「可以先做几个无效果的 buff 凑数」）。
 ## ★ 它是**纯显示**：逻辑层没有 buff 系统，这里只是把这几个字画进格子里。
@@ -155,6 +163,7 @@ func _build_left(cols: HBoxContainer, world, font: Font) -> void:
 	_grid.size = gd.size
 	_grid.troop_activated.connect(_on_troop_activated)
 	_grid.unit_activated.connect(_on_unit_activated)
+	_grid.building_activated.connect(_on_building_activated)
 
 
 # ------------------------------------------------------------------
@@ -336,11 +345,41 @@ func set_troops(troop, troops: Array, units: Array = [], unit_shorts: Array = []
 		_empty_label.visible = troop == null
 
 
-## 下半网格现在是什么模式（给 hud / 测试读）："leaders" | "units" | "empty"
+## 左栏：喂「选中的建筑」——同一个 1 + 3×3 版式（见文件头与 view/troop_grid.gd）。
+##   @param entries 选中的建筑，每项：{"ref": 建筑, "name": 显示名, "short": 方框短字,
+##                  "sub": 第二行（血量 x/y）} —— 顺序 = 选中顺序（由 hud 组装好）
+##   @param primary 主选中（**右栏正在显示**）的那一个：画在左上第 1 格；
+##                  其余的画在下面 3×3 网格里（点一格 = 换成把右栏切过去）。
+func set_buildings(entries: Array, primary) -> void:
+	var rest: Array = []
+	var main_entry: Dictionary = {}
+	for e in entries:
+		if e is Dictionary and (e as Dictionary).get("ref", null) == primary and main_entry.is_empty():
+			main_entry = e
+		else:
+			rest.append(e)
+	if _roster != null:
+		_roster.set_entry(null if main_entry.is_empty() else main_entry)
+	if _grid != null:
+		if main_entry.is_empty():
+			_grid.clear()
+		else:
+			_grid.set_buildings(rest)
+	if _empty_label != null:
+		_empty_label.visible = main_entry.is_empty()
+
+
+## 下半网格现在是什么模式（给 hud / 测试读）：
+## "leaders" | "units" | "buildings" | "empty"
 func grid_mode() -> String:
 	if _grid == null or not _grid.visible:
 		return "empty"
-	return "leaders" if _grid.mode == TroopGridRes.MODE_LEADERS else "units"
+	match _grid.mode:
+		TroopGridRes.MODE_LEADERS:
+			return "leaders"
+		TroopGridRes.MODE_BUILDINGS:
+			return "buildings"
+	return "units"
 
 
 ## 右栏：选中单位的**名称**（空串 = 没有选中单位 → 只留「详细信息」标题）
@@ -388,10 +427,11 @@ func set_detail_title(text: String) -> void:
 		_detail_title.text = text
 
 
-## 右栏右上角的招募队列：显示哪个将领的（null = 没有选中将领 → 整块收起来）
-func set_queue(leader) -> void:
+## 右栏右上角的招募队列：显示哪个将领 / 哪个区划的（null = 没有 → 整块收起来）
+## @param is_zone true = holder 是一个**区划字典**（选中区划中心时的区划招募队列）
+func set_queue(holder, is_zone: bool = false) -> void:
 	if _queue != null:
-		_queue.set_leader(leader)
+		_queue.set_queue(holder, is_zone)
 
 
 ## 提示行（红字）。空串 = 收起来。
@@ -416,6 +456,10 @@ func _on_troop_activated(number: int) -> void:
 
 func _on_unit_activated(index: int) -> void:
 	unit_activated.emit(index)
+
+
+func _on_building_activated(index: int) -> void:
+	building_activated.emit(index)
 
 
 # ------------------------------------------------------------------

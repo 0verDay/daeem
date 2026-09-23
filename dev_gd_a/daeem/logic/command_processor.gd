@@ -6,12 +6,16 @@
 ##   move           ids, x, y            移动到世界坐标（点到哪走到哪）
 ##   attack         ids, target_id / tx,ty  优先攻击某个敌对单位或建筑（右键点敌人/建筑）
 ##   attack_move    ids, x, y            行军攻击：走到该点，路上遇敌就停下来打（SC2 的 A 键）
+##   stop           ids                  就地停止（清掉移动 / 攻击 / 行军攻击；操作页的「停止」格）
 ##   build          kind(build_type), tx, ty, faction   在格子上建造
 ##   demolish       tx, ty               拆除建筑
 ##   recruit        unit_kind, leader_id, faction       把单位排进某个将领的招募队列
 ##                                                      （入队即扣 50 粮 / 50 金 / 1 人口，读条 10 秒）
 ##   recruit_cancel leader_id, slot, faction            取消招募队列里的某一格并退款
 ##                                                      （slot 0 = 正在读条的大格子，1..4 = 排队的小格子）
+##   zone_recruit   unit_kind, zone_id, faction         ★ 把将领排进某个**区划**的招募队列
+##                                                      （点区划中心 → 右下「招募」页签）
+##   zone_recruit_cancel zone_id, slot, faction         取消区划招募队列里的某一格并退款
 ##   spawn_enemy    tx, ty               调试刷兵
 ##
 ## ★ 关键约束：**命令里只放意图，不放结果**。
@@ -44,6 +48,8 @@ static func apply(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 			return apply_attack(world, cfg, cmd)
 		"attack_move":
 			return apply_attack_move(world, cfg, cmd)
+		"stop":
+			return apply_stop(world, cfg, cmd)
 		"build":
 			return apply_build(world, cfg, cmd)
 		"demolish":
@@ -52,6 +58,10 @@ static func apply(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 			return apply_recruit(world, cfg, cmd)
 		"recruit_cancel":
 			return apply_recruit_cancel(world, cfg, cmd)
+		"zone_recruit":
+			return apply_zone_recruit(world, cfg, cmd)
+		"zone_recruit_cancel":
+			return apply_zone_recruit_cancel(world, cfg, cmd)
 		"spawn_enemy":
 			return apply_spawn_enemy(world, cmd)
 		"select":
@@ -390,6 +400,51 @@ static func apply_recruit(world, _cfg: ConfigRes, cmd: Dictionary) -> bool:
 static func apply_recruit_cancel(world, _cfg: ConfigRes, cmd: Dictionary) -> bool:
 	return world.cancel_recruit(
 		String(cmd.get("leader_id", "")),
+		int(cmd.get("slot", -1)),
+		String(cmd.get("faction", world.my_faction)))
+
+
+## ★ 停止命令（右下「操作」页的「停止」格）：就地停下并清掉移动 / 攻击 / 行军攻击。
+##
+## 与 move / attack 走完全同一条路（`_collect_units` 那套判据复用）：
+## 正在招募的将领与它辖下的部队照样**不接受**这条命令（`world.is_order_locked`），
+## 一条都没接受时同样留一条 `order_rejected` 给界面。
+static func apply_stop(world, _cfg: ConfigRes, cmd: Dictionary) -> bool:
+	var owner_faction := String(cmd.get("faction", world.my_faction))
+	var ids: Array = cmd.get("ids", [])
+	var any := false
+	for id in ids:
+		var u = world.unit_by_id(String(id))
+		if u == null or not u.alive:
+			continue
+		if world.is_order_locked(u):
+			continue
+		if not FactionRes.same_side(u.faction, owner_faction):
+			continue                      # ★ 防冒充：只能命令自己这一方的单位
+		u.stop()
+		any = true
+	if not any:
+		note_order_rejected(world, ids, owner_faction)
+	return any
+
+
+## ★ 区划招募命令：把 unit_kind 这名将领排到 zone_id 那个区划的招募队列里
+## （点区划中心 → 右下「招募」页签 → 点某一格）。
+##
+## ★ 与 `recruit` 一模一样的形状：命令里只有**兵种 + 区划 id**，没有坐标 ——
+##   出兵位置（区划中心旁的空地）、扣费、退款全在 `world.start_zone_recruit()` 里算。
+static func apply_zone_recruit(world, _cfg: ConfigRes, cmd: Dictionary) -> bool:
+	return world.start_zone_recruit(
+		String(cmd.get("unit_kind", "")),
+		int(cmd.get("zone_id", -1)),
+		String(cmd.get("faction", world.my_faction)))
+
+
+## 取消区划招募队列里的某一格（点信息栏那五个格子）。
+## ★ 格号语义与 `recruit_cancel` 完全一致（0 = 大格子，1..4 = 小格子）。
+static func apply_zone_recruit_cancel(world, _cfg: ConfigRes, cmd: Dictionary) -> bool:
+	return world.cancel_zone_recruit(
+		int(cmd.get("zone_id", -1)),
 		int(cmd.get("slot", -1)),
 		String(cmd.get("faction", world.my_faction)))
 

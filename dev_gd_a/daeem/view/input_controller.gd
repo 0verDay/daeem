@@ -33,6 +33,12 @@ var camera_rig = null
 
 ## 选中列表（纯本地，**不进命令流**）
 var selected_units: Array = []
+## ★★ 选中的**建筑**（纯本地，**不进命令流**）。
+##   · `selected_buildings` = 全批（框选建筑时可能有好几个）——左侧 1 + 3×3 按它画，
+##     超过 9 个靠滚轮翻页；
+##   · `selected_building`  = 其中的**主选中**那一个（右栏正在显示的那个、地图上高亮的那个）。
+##     单选时它就是唯一那个 —— 于是老代码读 `selected_building` 仍然拿到「该显示哪个建筑」。
+var selected_buildings: Array = []
 var selected_building = null
 ## ★ 玩家**点到的那个单位**（纯本地，只给详细信息右栏用）。
 ##
@@ -66,6 +72,17 @@ var selection_origin: String = "drag"
 var selected_zone = null
 ## 建造模式：'' | 'wall' | 'tower'
 var build_type: String = ""
+## ★★ 操作页的**命令模式**（右下「操作」页的命令格 → 点一下进这个模式 → 左键点地图下达）。
+##
+##   '' | 'move' | 'attack' | 'attack_move' | 'stop'
+##
+## ★ 为什么要有它：需求要「操作为对部队下达的指令（如移动，攻击，行军等）」，
+##   而移动 / 攻击 / 行军原本只有右键一条路 —— 让命令卡上的格子**真的能下令**，
+##   就需要一个「先选命令、再选目标」的中间状态（与建造模式同一套手感）。
+## ★ 与 build_type **互斥**：进命令模式会退出建造模式，反之亦然
+##   （同一个左键不可能既是「放建筑」又是「下指令」）。
+## ★ 停止是**即刻**的：进模式那一下就把命令发出去（不需要再点地图）。
+var order_mode: String = ""
 
 ## 供渲染读取的悬停状态
 var hover_tile: Vector2i = Vector2i(-1, -1)
@@ -108,9 +125,11 @@ func setup(p_cfg: ConfigRes, p_world, p_camera_rig) -> void:
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	selected_units = []
 	selected_building = null
+	selected_buildings = []
 	selected_zone = null
 	clicked_unit = null
 	selection_origin = "drag"
+	order_mode = ""
 	# 框选那条状态机也归零（重开一局时别留着上一局的半个框）
 	_drag_pending = false
 	drag_active = false
@@ -153,12 +172,11 @@ func handle_key(event: InputEventKey) -> bool:
 		KEY_T:
 			set_build_type("tower" if build_type != "tower" else "")
 			return true
-		KEY_X, KEY_DELETE:
-			demolish_selected()
-			return true
 		KEY_ESCAPE:
 			if build_type != "":
 				set_build_type("")
+			elif order_mode != "":
+				set_order_mode("")          # 命令模式：Esc = 放弃这次指令
 			elif _drag_pending or drag_active:
 				_cancel_drag()          # 拖到一半按 Esc = 放弃这次框选（不动已有选中）
 			else:
@@ -280,7 +298,10 @@ func _begin_drag(event: InputEventMouseButton) -> void:
 	drag_start_world = _screen_to_logic(event.position)
 	mouse_world = drag_start_world
 	_sync_hover_from_mouse()
-	if build_type != "":
+	# 建造模式：这一下是「放置建筑」，不起框。
+	# ★ 命令模式（操作页的移动 / 攻击 / 行军）同理：这一下是「下达指令」，
+	#   更不能在松手时被一次拖拽框选**改掉选中**（那样命令就发给了另一批单位）。
+	if build_type != "" or order_mode != "":
 		_drag_pending = false
 		drag_active = false
 		return
@@ -327,7 +348,12 @@ func _finish_drag() -> void:
 ##     所以「左侧部队 ui 也会显示这些部队被选中」是这条路的自然结果。
 ##
 ## ★ 只认**自己这一方**的活单位（与左键点选一致：敌人的框选不在需求里）。
-## @return 框到的单位数（不含被展开出来的队友；给测试用）
+##
+## ★★ 建筑：**框里一个己方单位都没有**时才轮到建筑（用户需求原话：「当玩家划出的框中
+##    没有单位只有己方建筑时，则多选建筑」）—— 单位优先，两者不会被同一次框选一起选中。
+##    选中结果交给 `select_buildings()`：第一个是主选中，其余在左侧 1 + 3×3 里翻页显示。
+##
+## @return 这次框到的东西个数（单位优先；没有单位时是建筑数。给测试用）
 func box_select(start: Vector2, end_pos: Vector2, additive: bool = false) -> int:
 	if world == null:
 		return 0
@@ -340,12 +366,43 @@ func box_select(start: Vector2, end_pos: Vector2, additive: bool = false) -> int
 			continue
 		if rect.has_point(u.pos):
 			picked.append(u)
+	if picked.is_empty():
+		var buildings := _buildings_in_rect(rect)
+		if not buildings.is_empty():
+			var next_b: Array = selected_buildings.duplicate() if additive else []
+			for b in buildings:
+				if not next_b.has(b):
+					next_b.append(b)
+			select_buildings(next_b)
+			return buildings.size()
 	var next: Array = selected_units.duplicate() if additive else []
 	for u in picked:
 		if not next.has(u):
 			next.append(u)
 	select_units(next)
 	return picked.size()
+
+
+## 矩形（世界坐标，格）里的**己方建筑**（大本营 / 城墙 / 箭塔…）。
+##
+## ★ 只认自己这一方（与框选单位同一条口径）。
+## ★ 无敌的**中立**建筑（区划中心，owner = ""）天然被 `same_side` 挡掉；这里再显式写一条，
+##   免得以后有人把中心改成「归属某方」时它突然能被框选（与 command_processor 同一条理由）。
+## ★ 命中判据 = **建筑所在格的中心**落在框里（与单位那条 `rect.has_point(u.pos)` 同一个口径）。
+func _buildings_in_rect(rect: Rect2) -> Array:
+	var out: Array = []
+	if world == null:
+		return out
+	for b in world.building_list:
+		if b == null or not b.alive:
+			continue
+		if b.is_invulnerable():
+			continue
+		if not FactionRes.same_side(b.owner, world.my_faction):
+			continue
+		if rect.has_point(b.center()):
+			out.append(b)
+	return out
 
 
 ## 正在拖的那个框（世界坐标；`drag_active` 为 false 时不要画它）。
@@ -372,6 +429,12 @@ func _on_left_click(additive: bool) -> void:
 			"tx": hover_tile.x, "ty": hover_tile.y,
 			"faction": world.my_faction,
 		})
+		return
+
+	# ★★ 操作页的命令模式：这一下左键**不再改选中**，而是把那道指令下给当前选中的部队
+	#    （见 `order_mode` 的说明；右键 / Esc 退出）。
+	if order_mode != "":
+		_issue_order_click()
 		return
 
 	# ★ 区划中心：**先于单位与建筑**判定。
@@ -415,6 +478,11 @@ func _on_left_click(additive: bool) -> void:
 func _on_right_click(double_click: bool = false) -> void:
 	if build_type != "":
 		set_build_type("")
+		return
+	# ★ 命令模式下右键 = 退出这个模式（与建造模式一致）——不顺手再下一条移动命令，
+	#   否则「反悔」会变成「又下了一条命令」。
+	if order_mode != "":
+		set_order_mode("")
 		return
 	if selected_units.is_empty() or hover_tile.x < 0:
 		return
@@ -523,6 +591,7 @@ func clear_marks() -> void:
 func select_units(units: Array) -> void:
 	selected_units = world.expand_to_groups(units)
 	selected_building = null
+	selected_buildings = []
 	selected_zone = null
 	clicked_unit = null
 	# ★ 批量入口一律记成 "drag"（框选 / 点左侧列表 / 1-2-3 / 清空都是这一类）；
@@ -543,14 +612,33 @@ func select_zone(zone) -> void:
 	selected_zone = zone
 	selected_units = []
 	selected_building = null
+	selected_buildings = []
 	clicked_unit = null
 	for u in world.units:
 		u.selected = false
 	local_ui_changed.emit()
 
 
+## ★ 选中**一个**建筑（左键点它）：等价于「只选中它一个」的那批。
 func select_building(b) -> void:
-	selected_building = b
+	select_buildings([] if b == null else [b])
+
+
+## ★★ 选中一批**建筑**（框选建筑那条路的落点；左键点单个也走这里）。
+##
+##   · `selected_buildings` = 全批，顺序 = 传进来的顺序（框选时就是 `world.building_list`
+##     的顺序，也就是「地图上的先后」）；
+##   · `selected_building`  = 第一个 —— **主选中**：右栏显示它、地图上高亮它。
+##     玩家点左侧某一格只改这一个（换成那一格的建筑），不动整批（见 view/hud.gd）。
+##
+## ★ 与选中单位 / 区划互斥：三种选中状态同一时刻只有一种（详细信息面板只有一个左栏）。
+## ★ 这里**不设上限**：选中的建筑可能多于一屏，左侧 1 + 3×3 靠滚轮翻页显示（用户需求）。
+func select_buildings(list: Array) -> void:
+	selected_buildings = []
+	for b in list:
+		if b != null and not selected_buildings.has(b):
+			selected_buildings.append(b)
+	selected_building = selected_buildings[0] if not selected_buildings.is_empty() else null
 	selected_units = []
 	selected_zone = null
 	clicked_unit = null
@@ -571,7 +659,105 @@ func select_general_by_hotkey(key: String) -> void:
 func set_build_type(t: String) -> void:
 	build_type = t
 	if t != "":
+		order_mode = ""                 # 两种「模式」互斥（同一个左键不能既放建筑又下指令）
 		toast.emit("建造模式：%s（左键放置，右键 / Esc 退出）" % _build_name(t))
+	local_ui_changed.emit()
+
+
+# ------------------------------------------------------------------
+# 操作页的命令模式（点「移动 / 攻击 / 行军 / 停止」那一格进来）
+# ------------------------------------------------------------------
+
+## 进 / 退出某个命令模式。**点同一格再点一次 = 退出**（与建造模式同一个手感）。
+##
+## @param m "" | "move" | "attack" | "attack_move"
+##        （★ 「停止」没有目标，不走这里 —— 见 `request_stop()`）
+## @return 进入之后当前是不是这个模式（false = 这次是「退出」）
+func set_order_mode(m: String) -> bool:
+	order_mode = "" if m == order_mode else m
+	if order_mode != "":
+		build_type = ""                # 互斥：进命令模式会退出建造模式
+	local_ui_changed.emit()
+	return order_mode != ""
+
+
+## 「停止」：**立刻**对当前选中的部队下达 `stop`（它不需要点地图选目标）。
+## @return true = 命令已发出（选中里有活着的单位）
+func request_stop() -> bool:
+	var ids: Array = []
+	for u in selected_units:
+		if u.alive:
+			ids.append(u.id)
+	if ids.is_empty():
+		toast.emit("先选中一支部队，才能下达指令")
+		return false
+	command_issued.emit({"kind": "stop", "ids": ids, "faction": world.my_faction})
+	clear_marks()
+	order_mode = ""
+	local_ui_changed.emit()
+	return true
+
+
+## 命令模式下的左键：把那道指令下给**当前选中的部队**。
+##
+## ★ 只发命令（可序列化字典），站位 / 结果全在权威侧算 —— 与右键那条路完全同源。
+## ★ 「攻击」找不到目标时**留在模式里**并给一句提示：玩家点歪了还能再点一下，
+##   不必重新回命令卡点一次（Esc / 右键随时退出）。
+func _issue_order_click() -> void:
+	var ids: Array = []
+	for u in selected_units:
+		if u.alive:
+			ids.append(u.id)
+	if ids.is_empty():
+		toast.emit("先选中一支部队，才能下达指令")
+		set_order_mode("")
+		return
+
+	match order_mode:
+		"move":
+			command_issued.emit({
+				"kind": "move", "ids": ids,
+				"x": mouse_world.x, "y": mouse_world.y,
+				"faction": world.my_faction,
+			})
+			clear_marks()
+			if not selection_locked():
+				move_marks = [mouse_world]
+			set_order_mode("")
+		"attack_move":
+			command_issued.emit({
+				"kind": "attack_move", "ids": ids,
+				"x": mouse_world.x, "y": mouse_world.y,
+				"faction": world.my_faction,
+			})
+			clear_marks()
+			if not selection_locked():
+				attack_marks = [mouse_world]
+			set_order_mode("")
+		"attack":
+			var foe = _pick_foe_unit_at(mouse_world)
+			if foe != null:
+				command_issued.emit({
+					"kind": "attack", "ids": ids, "target_id": foe.id,
+					"faction": world.my_faction,
+				})
+				clear_marks()
+				set_order_mode("")
+				return
+			var foe_b = world.building_at(hover_tile.x, hover_tile.y)
+			if foe_b != null and foe_b.alive and not foe_b.is_invulnerable() \
+					and not FactionRes.same_side(foe_b.owner, world.my_faction):
+				command_issued.emit({
+					"kind": "attack", "ids": ids,
+					"tx": hover_tile.x, "ty": hover_tile.y,
+					"faction": world.my_faction,
+				})
+				clear_marks()
+				set_order_mode("")
+				return
+			toast.emit("这里没有敌人：左键点敌方单位或建筑（右键 / Esc 取消）")
+		_:
+			set_order_mode("")
 	local_ui_changed.emit()
 
 
@@ -635,6 +821,40 @@ func request_recruit_cancel(slot: int) -> bool:
 	return true
 
 
+## ★★ 区划招募（点区划中心 → 右下「招募」页签 → 点某一格）：把将领排进**那个区划**的队列。
+##
+## ★ 与 `request_recruit` 的唯一区别是「兵营是谁」：那边把命令发给选中将领，
+##   这边发给 `selected_zone`（区划排的是将领，见 world 的区划招募那一段）。
+## ★ 没有选中区划时不发命令（命令里必须带 zone_id），返回 false 由调用方给提示。
+func request_zone_recruit(kind: String) -> bool:
+	var z = selected_zone
+	if z == null:
+		toast.emit("先点一个区划中心，才能在这个区划里招募")
+		return false
+	command_issued.emit({
+		"kind": "zone_recruit", "unit_kind": kind, "zone_id": int(z["id"]),
+		"faction": world.my_faction,
+	})
+	return true
+
+
+## 取消区划招募队列里的某一格（点信息栏里的那五个格子）。
+##
+## @param slot 0 = 正在读条的大格子；1..4 = 排队的四个小格子（从前往后）
+func request_zone_recruit_cancel(slot: int) -> bool:
+	var z = selected_zone
+	if z == null or world == null:
+		toast.emit("先点一个区划中心，才能取消它的招募队列")
+		return false
+	if not world.zone_is_training(z):
+		return false
+	command_issued.emit({
+		"kind": "zone_recruit_cancel", "zone_id": int(z["id"]), "slot": slot,
+		"faction": world.my_faction,
+	})
+	return true
+
+
 ## 招募完成时调（由 view/game_scene.gd 收到 `unit_recruited` 事件后调用）：
 ## **如果玩家此刻仍然选中着这个将领**，新兵也跟着被选中。
 ##
@@ -652,22 +872,18 @@ func notify_unit_recruited(leader, unit) -> void:
 	select_units(selected_units.duplicate() + [unit])
 
 
+## 拆除在哪：**这一版没有界面入口**。
+##
+## ★ 按需求「去掉这个拆除逻辑，暂时不绑定按键」：原来 X / Delete 会把选中的建筑拆掉，
+##   现在这两个键**不再绑任何东西**（键位可能留给别的功能）。
+## ★ 逻辑层那条命令照旧在（`command_processor.apply_demolish`，测试也在直接调它）——
+##   要恢复入口只需要在 `handle_key()` 里加回一个 case、再往
+##   `command_issued` 里发一条 `{"kind": "demolish", "tx":…, "ty":…}`。
+
+
 func _build_name(t: String) -> String:
 	var v = cfg.get_path_value("building.%s.name" % t)
 	return String(v) if typeof(v) == TYPE_STRING else t
-
-
-## 拆除选中的建筑（X / Delete）—— 命令里只放地块，不放对象引用（要可序列化）
-func demolish_selected() -> void:
-	if selected_building == null:
-		toast.emit("先选中一个建筑")
-		return
-	command_issued.emit({
-		"kind": "demolish", "tx": selected_building.tx, "ty": selected_building.ty,
-		"faction": world.my_faction,
-	})
-	selected_building = null
-	local_ui_changed.emit()
 
 
 ## 命中判定：世界坐标 → 最近的、半径内的、**自己这一方**的单位
@@ -716,8 +932,18 @@ func drop_dead_selection() -> void:
 			alive.append(u)
 	if alive.size() != selected_units.size():
 		select_units(alive)
-	if selected_building != null and not selected_building.alive:
-		select_building(null)
+	# ★ 建筑：先把倒掉的摘出去，再把**主选中**重新指到一个还在的成员上 ——
+	#   主选中那一个被打掉时，整批选中不该跟着一起丢（框选了一排墙，中间塌了一段，
+	#   剩下的那些仍然是选中的）。
+	if not selected_buildings.is_empty():
+		var alive_b: Array = []
+		for b in selected_buildings:
+			if b != null and b.alive:
+				alive_b.append(b)
+		if alive_b.size() != selected_buildings.size() or not alive_b.has(selected_building):
+			selected_buildings = alive_b
+			selected_building = alive_b[0] if not alive_b.is_empty() else null
+			local_ui_changed.emit()
 	# ★ 选中的区划要确认它还在（地图换过 / 世界重建过之后，那个字典可能已经是老的了）
 	if selected_zone != null and not _zone_still_exists():
 		selected_zone = null

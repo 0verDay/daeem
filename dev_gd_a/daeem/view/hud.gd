@@ -9,7 +9,8 @@
 ##     详细信息 1030×240（左栏 = 1 + 3×3 共 10 格；右栏 = 选中单位的头像 / 名称 / 数值）
 ##     阵营 / 盾徽 / 旗帜（150 宽，**本轮不做**，只留位置）
 ##     命令卡 3×3（每格 80，内容随页签实时切换）
-##     单位 / 建筑 / 科技（单位、建筑切页；**科技点不动**）
+##     页签（**按选中对象动态显示**：选中部队 = 操作 / 单位两页；选中区划中心 = 招募；
+##           选中大本营 = 科技；选中普通建筑 = **一颗空页签**；什么都没选中 = 建筑）
 ##
 ## ★ 仍然是纯表现：只读 world 与输入层的本地状态，从不改逻辑状态；
 ##   要改世界只有一条路 —— 让 input_controller 发命令（见 _on_card_entry）。
@@ -63,6 +64,32 @@ var _font: Font = null
 ##   不能每一帧都被「默认第一支」抢回去。部队在 world 里是**算出来的**（没有 Squad 对象），
 ##   所以这里记的是**编号**（与左侧部队列表同一套口径），每帧按编号重新查那支队伍。
 var _detail_troop_number: int = 0
+
+
+# ------------------------------------------------------------------
+# 右下「页签 + 命令卡」：显示哪几页**由当前选中的东西决定**
+#
+# ★★ 需求原话（这一版的核心）：
+#   · 选中部队 / 单位 → 只显示两颗页签：**操作**（对部队下达的指令）+ **单位**（招募单位的页）
+#   · 选中建筑       → **一颗空页签**（`PAGE_NONE`，没有标签、命令卡也空）
+#   · 选中区划中心   → 显示**招募**页签（三个占位将领，点了排进这个区划的招募队列）
+#   · 选中大本营     → 显示**科技**页签（本版科技页里还没有东西）
+#   · 什么都没选中   → 显示**建筑**页签（城墙 / 箭塔的建造入口）
+#
+# ★ 这一层的分工：`_tab_plan()` 说「现在该有哪几页、默认停哪页」，
+#   `_rebuild_card()` 说「这一页里有哪些格子」，page_tabs / command_card 什么都不判断。
+# ------------------------------------------------------------------
+
+## 当前这一屏页签属于哪一类选中（"unit" / "zone" / "base" / "building" / "none"）。
+## ★ 它是「记住玩家上次停在哪一页」的键（见 `_page_memory`）。
+var _tab_kind: String = ""
+## 上一次推给 page_tabs 的配置（kind + 页列表）。每帧比一次，不变就不重推 ——
+## 否则每帧都会重建命令卡。
+var _tab_key: String = ""
+## 每一类选中**上次停在那一页**（kind → page）。
+## ★ 为什么要记：玩家切到「单位」页排兵，点一下空地（没选中 → 建筑页），
+##   再点回部队时不该被抢回「操作」页 —— 那会让「我刚看的那一页」凭空跳走。
+var _page_memory: Dictionary = {}
 
 
 func setup(p_cfg: ConfigRes, p_world, p_input, theme: Theme, p_camera_rig = null) -> void:
@@ -157,6 +184,7 @@ func _build_detail_panel() -> void:
 	detail_panel.queue_cell_activated.connect(_on_queue_cell_activated)
 	detail_panel.troop_activated.connect(_on_troop_activated)
 	detail_panel.unit_activated.connect(_on_grid_unit_activated)
+	detail_panel.building_activated.connect(_on_grid_building_activated)
 
 
 func _build_command_card() -> void:
@@ -203,45 +231,162 @@ func _build_squad_panel() -> void:
 # ------------------------------------------------------------------
 
 func _on_page_changed(_page: String) -> void:
+	_page_memory[_tab_kind] = String(page_tabs.page())
 	_rebuild_card()
+
+
+## 按当前选中对象算出「该显示哪几页」。
+## ★ 需求原话见本文件上面那一段与 view/page_tabs.gd 的文件头。
+func _tab_plan() -> Dictionary:
+	if input_ctrl == null:
+		return {"kind": "none", "pages": [], "default": ""}
+	# 区划中心（左键点中心 = 看这个区划的详情）→ 只有「招募」一页
+	if input_ctrl.selected_zone != null:
+		return {"kind": "zone", "pages": [PageTabsRes.PAGE_RECRUIT],
+			"default": PageTabsRes.PAGE_RECRUIT}
+	# 建筑：大本营 = 科技；区划中心 = 招募；普通建筑（城墙 / 箭塔）= **一颗空页签**
+	# ★ 需求原话（手玩补的）：「选中建筑时应当保留一个空页签，而不是空一块」——
+	#   所以这里给的是一颗 `PAGE_NONE`（没有标签、命令卡也空），不是空数组。
+	if not input_ctrl.selected_buildings.is_empty():
+		var b = _primary_building()
+		if b != null and b.type == BuildingRes.TYPE_BASE:
+			return {"kind": "base", "pages": [PageTabsRes.PAGE_TECH],
+				"default": PageTabsRes.PAGE_TECH}
+		if b != null and b.type == BuildingRes.TYPE_ZONE_CENTER:
+			return {"kind": "zone", "pages": [PageTabsRes.PAGE_RECRUIT],
+				"default": PageTabsRes.PAGE_RECRUIT}
+		return {"kind": "building", "pages": [PageTabsRes.PAGE_NONE],
+			"default": PageTabsRes.PAGE_NONE}
+	# 选中部队 / 单位 → 「操作」+「单位」两页（默认操作）
+	if not _selected_troops(input_ctrl.selected_units).is_empty():
+		return {"kind": "unit", "pages": [PageTabsRes.PAGE_ORDER, PageTabsRes.PAGE_UNIT],
+			"default": PageTabsRes.PAGE_ORDER}
+	# 什么都没选中 → 「建筑」页（城墙 / 箭塔的建造入口就住在这里）
+	return {"kind": "none", "pages": [PageTabsRes.PAGE_BUILD], "default": PageTabsRes.PAGE_BUILD}
+
+
+## 每帧把「该显示哪几页」推给 page_tabs。
+##
+## ★ 页列表没变（比如点完将领 1 又点将领 2）时**什么都不做** ——
+##   玩家自己切到「单位」页之后，不该被下一帧抢回「操作」页。
+## ★ 换了一类选中时，优先回到这一类**上次停的那一页**（`_page_memory`），
+##   没有记录才用它自己的默认页。
+func _sync_tabs() -> void:
+	if page_tabs == null:
+		return
+	var plan := _tab_plan()
+	var pages: Array = plan["pages"]
+	var key := String(plan["kind"])
+	for p in pages:
+		key += "|" + String(p)
+	if key == _tab_key:
+		return
+	_tab_kind = String(plan["kind"])
+	_tab_key = key
+	var preferred := String(_page_memory.get(_tab_kind, plan["default"]))
+	page_tabs.set_pages(pages, preferred)
+	_rebuild_card()
+
+
+## 现在该显示 / 操作哪个区划的招募队列与招募页：
+##   · 点区划中心 → 它是 `selected_zone`；
+##   · 万一那栋中心建筑是**从别的路**被选进 `selected_buildings` 的（框选选不到它，
+##     见 input_controller.box_select 的过滤），这里也能从它的格子反查出所属区划。
+func _recruit_zone():
+	if input_ctrl == null or world == null:
+		return null
+	if input_ctrl.selected_zone != null:
+		return input_ctrl.selected_zone
+	var b = _primary_building()
+	if b != null and b.type == BuildingRes.TYPE_ZONE_CENTER:
+		return world.zone_center_zone_at(b.tx, b.ty)
+	return null
 
 
 ## 按当前页重组命令卡。
 ##
-## 两张表都是**数据驱动**的，这里不写死名字：
+## 五张表都是**数据驱动 / 固定文案**的，这里不写死兵种名：
 ##   建筑页 ← logic/building.gd 的 DEFS 里 buildable = true 的那几项（城墙 / 箭塔）
 ##   单位页 ← config.json 的 recruit.list（现在只有一项：占位单位 = 招募亲兵）
+##   招募页 ← config.json 的 recruit.zone.list（三个占位将领，排进**区划**的队列）
+##   操作页 ← `_order_entries()`（对当前选中的部队下达的指令）
+##   科技页 ← 本版还没有东西（空格子）
 ## 键位按参考图顺序 Q/W/E/A/S/D/Z/X/C 依次分配（第 0 项 = Q）。
 func _rebuild_card() -> void:
 	if command_card == null:
 		return
 	var entries: Array = []
-	var page := String(page_tabs.page()) if page_tabs != null else PageTabsRes.PAGE_UNIT
-	if page == PageTabsRes.PAGE_BUILD:
-		for key in BuildingRes.DEFS.keys():
-			var d: Dictionary = BuildingRes.DEFS[key]
-			if not bool(d.get("buildable", false)):
-				continue
-			entries.append({
-				"type": "build",
-				"build_type": String(d.get("id", key)),
-				"name": String(d.get("name", key)),
-				"desc": "%s（快捷键 %s，也可点这一格）" % [String(d.get("desc", "")), String(d.get("hotkey", ""))],
-			})
-	elif page == PageTabsRes.PAGE_UNIT:
-		var list: Variant = cfg.get_path_value("recruit.list") if cfg != null else null
-		if typeof(list) == TYPE_ARRAY:
-			for item in (list as Array):
-				if typeof(item) != TYPE_DICTIONARY:
+	var page := String(page_tabs.page()) if page_tabs != null else ""
+	match page:
+		PageTabsRes.PAGE_BUILD:
+			for key in BuildingRes.DEFS.keys():
+				var d: Dictionary = BuildingRes.DEFS[key]
+				if not bool(d.get("buildable", false)):
 					continue
-				var e: Dictionary = item
 				entries.append({
-					"type": "recruit",
-					"unit_kind": String(e.get("kind", "")),
-					"name": String(e.get("label", e.get("kind", ""))),
-					"desc": String(e.get("desc", "")),
+					"type": "build",
+					"build_type": String(d.get("id", key)),
+					"name": String(d.get("name", key)),
+					"desc": "%s（快捷键 %s，也可点这一格）" % [String(d.get("desc", "")), String(d.get("hotkey", ""))],
 				})
+		PageTabsRes.PAGE_UNIT:
+			entries = _recruit_entries("recruit", "recruit.list")
+		PageTabsRes.PAGE_RECRUIT:
+			entries = _recruit_entries("zone_recruit", "recruit.zone.list")
+		PageTabsRes.PAGE_ORDER:
+			entries = _order_entries()
 	command_card.set_entries(entries)
+
+
+## 把一张招募表（recruit.list / recruit.zone.list）翻成命令卡的条目。
+## @param entry_type 抛给 hud._on_card_entry 的动作类型（"recruit" = 排进将领 / "zone_recruit" = 排进区划）
+func _recruit_entries(entry_type: String, cfg_path: String) -> Array:
+	var out: Array = []
+	var list: Variant = cfg.get_path_value(cfg_path) if cfg != null else null
+	if typeof(list) != TYPE_ARRAY:
+		return out
+	for item in (list as Array):
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		var e: Dictionary = item
+		out.append({
+			"type": entry_type,
+			"unit_kind": String(e.get("kind", "")),
+			"name": String(e.get("label", e.get("kind", ""))),
+			"desc": String(e.get("desc", "")),
+		})
+	return out
+
+
+## 「操作」页的四格：对**当前选中的部队**下达的指令（需求原话：「如移动，攻击，行军等」）。
+## ★ 前三格是「进命令模式 → 左键点地图 / 点目标」那种两步式（见 input_controller.order_mode）；
+##   「停止」不需要目标，点一下当场生效。
+## ★ 键位按命令卡的顺序 Q/W/E/A…（第 4 格是 A），与其它页同一套规则。
+func _order_entries() -> Array:
+	return [
+		{"type": "order", "mode": "move", "name": "移动",
+			"desc": "点这一格后，左键点地图下达移动命令（遇敌不停）"},
+		{"type": "order", "mode": "attack", "name": "攻击",
+			"desc": "点这一格后，左键点敌方单位 / 建筑下达攻击命令"},
+		{"type": "order", "mode": "attack_move", "name": "行军",
+			"desc": "点这一格后，左键点地图下达行军攻击（路上遇敌就停下来打）"},
+		{"type": "order", "mode": "stop", "name": "停止",
+			"desc": "就地停止，并清掉移动 / 攻击 / 行军攻击（点一下立刻生效）"},
+	]
+
+
+## 进了某个命令模式之后那句提示（玩家必须知道「接下来点哪儿」）
+func _order_hint(mode: String) -> String:
+	match mode:
+		"move":
+			return "左键点地图下达移动命令（右键 / Esc 取消）"
+		"attack":
+			return "左键点敌方单位 / 建筑（右键 / Esc 取消）"
+		"attack_move":
+			return "左键点地图下达行军攻击（右键 / Esc 取消）"
+		"stop":
+			return "就地停止（清掉移动 / 攻击 / 行军攻击）"
+	return "左键点地图下达（右键 / Esc 取消）"
 
 
 ## 命令卡 → 动作。★ 这里只调输入层的接口，自己绝不碰逻辑状态。
@@ -261,14 +406,39 @@ func _on_card_entry(entry: Dictionary) -> void:
 			#   逻辑层拒掉的其它原因走事件那条路（见 game_scene._consume_events）。
 			if not input_ctrl.request_recruit(String(entry.get("unit_kind", ""))):
 				show_notice("先选中一个将领，才能把新兵排到它名下")
+		"zone_recruit":
+			# 区划招募（点区划中心 → 招募页）：命令里必须带 zone_id，没选中区划就不发。
+			if not input_ctrl.request_zone_recruit(String(entry.get("unit_kind", ""))):
+				show_notice("先点一个区划中心，才能在这个区划里招募")
+		"order":
+			# ★ 操作页：前三格进 / 退出命令模式（点同一格再点一次 = 退出），
+			#   下一手由 input_controller 接管（左键点地图 / 点目标下达）。
+			#   「停止」没有目标：点一下**当场**下达，不进模式（见 request_stop）。
+			var mode := String(entry.get("mode", ""))
+			var name := String(entry.get("name", ""))
+			if mode == "stop":
+				if input_ctrl.request_stop():
+					show_notice("%s：%s" % [name, _order_hint(mode)])
+				else:
+					show_notice("先选中一支部队，才能下达指令")
+			elif input_ctrl.set_order_mode(mode):
+				show_notice("%s：%s" % [name, _order_hint(mode)])
+			else:
+				show_notice("")
 
 
 ## 点了信息栏里招募队列的某一格 = **取消那一格**（后方的队列自动前移）。
 ##
-## ★ 这里只发命令（`recruit_cancel`）：退多少钱、队列怎么前移全在权威侧算，
-##   界面下一帧按权威状态重画 —— 所以本地不需要自己「删格子」。
+## ★ 队列主人有两种（选中将领 / 选中区划），两条取消命令的形状不同
+##   （leader_id vs zone_id），所以这里按当前选中分派 —— 视图不猜，只看选中状态。
+## ★ 这里只发命令（`recruit_cancel` / `zone_recruit_cancel`）：退多少钱、队列怎么前移
+##   全在权威侧算，界面下一帧按权威状态重画 —— 所以本地不需要自己「删格子」。
 func _on_queue_cell_activated(slot: int) -> void:
 	if input_ctrl == null:
+		return
+	if input_ctrl.selected_zone != null:
+		if not input_ctrl.request_zone_recruit_cancel(slot):
+			show_notice("现在没有可以取消的招募")
 		return
 	if not input_ctrl.request_recruit_cancel(slot):
 		show_notice("现在没有可以取消的招募")
@@ -333,6 +503,60 @@ func _grid_unit_at(index: int):
 	return grid.unit_at(index)
 
 
+## 点了左栏下半网格里的一格**建筑** = 把「主选中」换成它：
+## 右栏详情、左上那一格、地图上的高亮全部跟着走。
+##
+## ★ 与单位格同一条约定：**点一下左栏不改「选中了哪些」**（这一批仍然是这一批），
+##   只改「现在正在看哪一个」—— 所以这里只写 `input_ctrl.selected_building`
+##   （它是 `selected_buildings` 里的成员，见 input_controller 里那两个字段的说明）。
+func _on_grid_building_activated(index: int) -> void:
+	if input_ctrl == null or world == null:
+		return
+	var b = _grid_building_at(index)
+	if b == null:
+		return
+	input_ctrl.selected_building = b
+	refresh()
+
+
+## 左栏下半网格里第 index 个格子现在画的是哪个建筑（没有 → null）
+func _grid_building_at(index: int):
+	if detail_panel == null:
+		return null
+	var grid = detail_panel.grid_control()
+	if grid == null or grid.mode != TroopGridRes.MODE_BUILDINGS:
+		return null
+	return grid.building_at(index)
+
+
+## 选中的建筑里**主选中**的那一个（右栏显示它）。
+## 正常情况就是 `input_ctrl.selected_building`；万一它不在这一批里（不该发生）
+## 就退回第一个 —— 总之这一支保证「有选中建筑时一定返回一个非 null 的建筑」。
+func _primary_building():
+	if input_ctrl == null:
+		return null
+	var list: Array = input_ctrl.selected_buildings
+	var b = input_ctrl.selected_building
+	if b != null and list.has(b):
+		return b
+	return list[0] if not list.is_empty() else null
+
+
+## 一批建筑 → 左栏那 10 个格子要的数据（短字 / 名字 / 第二行血量）。
+## ★ 走这一层组装而不是让 detail_panel 自己去问建筑：网格与那一格都只认这几个字段
+##   （建筑没有 `name` 属性，名字得走 `display_name()`）。
+func _building_entries(buildings: Array) -> Array:
+	var out: Array = []
+	for b in buildings:
+		out.append({
+			"ref": b,
+			"name": b.display_name(),
+			"short": _building_short(b),
+			"sub": "%d/%d" % [int(round(b.hp)), int(round(b.hp_max))],
+		})
+	return out
+
+
 # ------------------------------------------------------------------
 # 提示行（红字）：操作被拒时的可见反馈
 # ------------------------------------------------------------------
@@ -370,9 +594,15 @@ func notice_text() -> String:
 
 ## 招募被拒的**拒因码 → 中文**。★ 这一层翻译只在这里做（逻辑层只给码，不写 UI 文案）。
 ##
-## 拒因码是 logic/world.gd 的 can_recruit / can_afford_recruit 产出的：
-##   kind / leader / faction / zone / queue_full / cost / population
-func recruit_reject_text(reason: String, kind: String) -> String:
+## 拒因码是 logic/world.gd 的 can_recruit / can_afford_recruit / can_recruit_zone 产出的：
+##   kind / leader / faction / zone / zone_owner / zone_not_found / queue_full / cost / population
+## ★ 注意两个「区划」拒因是**不同的话**：
+##   · "zone"          将领招募时它是「将领不站在己方区划里」；
+##   · "zone_owner"    区划招募时它是「这个区划不属于你」。
+##   （"zone_not_found" 才是「没有这个区划」—— 前两者都别拿来当它用。）
+## ★ `max_count` 来自事件里的 max（区划招募的队列上限可能与单位那条不同）——
+##   没带就用单位那条表的上限。
+func recruit_reject_text(reason: String, kind: String, max_count: int = 0) -> String:
 	match reason:
 		"kind":
 			return "这个兵种不在可招募表里"
@@ -382,8 +612,13 @@ func recruit_reject_text(reason: String, kind: String) -> String:
 			return "不能给别的阵营的将领招募"
 		"zone":
 			return "只能在己方区划内招募（将领现在站的地方不属于你）"
+		"zone_owner":
+			return "只能在自己区划里招募（这个区划不属于你）"
+		"zone_not_found":
+			return "找不到这个区划"
 		"queue_full":
-			return "招募队列已满（最多 %d 个）" % world.recruit_queue_max()
+			var cap: int = max_count if max_count > 0 else world.recruit_queue_max()
+			return "招募队列已满（最多 %d 个）" % cap
 		"cost":
 			var c: Dictionary = world.recruit_cost(kind)
 			return "粮食或黄金不足（需要 粮食 %d / 黄金 %d）" % [
@@ -465,6 +700,10 @@ func view_size() -> Vector2:
 func refresh() -> void:
 	if world == null or input_ctrl == null or detail_panel == null:
 		return
+	# ★★ 页签先按「现在选中了什么」推上去（选中部队 = 操作/单位；选中区划中心 = 招募；
+	#    选中大本营 = 科技；选中普通建筑 = 一颗都没有；什么都没选中 = 建筑）。
+	#    命令卡的内容跟着页签走（page_tabs 发 page_changed → _rebuild_card）。
+	_sync_tabs()
 	# ★ 详细信息是**左右两栏**（第三轮改版，见 view/detail_panel.gd 的文件头）：
 	#   左栏 = 当前展开的那支部队（上半）+ 选中部队的将领头像网格（下半）
 	#   右栏 = 选中单位的头像 / 名称 / buff / 数值
@@ -474,15 +713,22 @@ func refresh() -> void:
 		detail_panel.set_unit_avatar_text("区")
 		detail_panel.set_unit_name(_zone_title(input_ctrl.selected_zone))
 		detail_panel.set_detail(_zone_text(input_ctrl.selected_zone))
-		detail_panel.set_queue(null)
+		# ★ 区划的招募队列（点中心 → 招募页）：与将领队列同一个控件，只是主人换了
+		detail_panel.set_queue(input_ctrl.selected_zone, true)
 		return
-	if input_ctrl.selected_building != null:
-		var b = input_ctrl.selected_building
-		detail_panel.set_troops(null, [])
+	if not input_ctrl.selected_buildings.is_empty():
+		# ★★ 选中建筑（可能是一整批：框选建筑时，见 input_controller.box_select）：
+		#   左栏 = 和部队**同一套 1 + 3×3 版式** —— 左上第 1 格是**主选中**那个建筑
+		#   （右栏正在显示它），下面 9 格是其余选中的建筑（超过 9 个滚轮翻页）；
+		#   点下面某一格 = 把主选中换成它（右栏与地图高亮跟着变，见 _on_grid_building_activated）。
+		var b = _primary_building()
+		detail_panel.set_buildings(_building_entries(input_ctrl.selected_buildings), b)
 		detail_panel.set_unit_avatar_text(_building_short(b))
 		detail_panel.set_unit_name(b.display_name())
 		detail_panel.set_detail(_building_text(b))
-		detail_panel.set_queue(null)
+		# 只有**区划中心**那栋建筑有招募队列；城墙 / 箭塔 / 大本营都没有 → 收起来
+		var rz = _recruit_zone()
+		detail_panel.set_queue(rz, rz != null)
 		return
 
 	# 选中的部队（按「队长」分组，顺序 = 左侧部队列表）：
@@ -508,7 +754,7 @@ func refresh() -> void:
 	detail_panel.set_detail(_unit_text(shown, troops))
 	# ★ 招募队列：显示**当前选中的第一个将领**的（选中整队时队长排在最前，
 	#   见 input_controller.first_selected_leader）。没选中将领 → 整块收起来。
-	detail_panel.set_queue(_queue_leader(troop))
+	detail_panel.set_queue(_queue_leader(troop), false)
 
 
 ## 选中部队分组：[{"leader": 队长, "number": 部队编号, "units": [该队单位…]}]。
@@ -655,10 +901,14 @@ func _unit_short(u) -> String:
 	return n.substr(0, 1) if n.length() > 0 else "?"
 
 
-## 建筑的数值（生命 / 箭塔伤害 / 位置…）
+## 建筑的数值（生命 / 箭塔伤害 / 大本营说明）。
+##
+## ★ 本版按需求**精简**：
+##   · **去掉「归属」与「位置」两行**（谁的在建筑描边上一眼就看得出；坐标对玩家没用）；
+##   · **大本营那句「（本版不会被打掉：血量保底 1）」也去掉** —— 那是说明锁血机制的
+##     注释，不该出现在玩家界面上（用户原话：「大本营中的注释也去掉」）。
 func _building_text(b) -> String:
 	var lines: Array[String] = []
-	lines.append("归属：%s" % FactionRes.faction_name(b.owner))
 	lines.append("生命 %d / %d" % [int(round(b.hp)), int(round(b.hp_max))])
 	if b.type == BuildingRes.TYPE_TOWER:
 		lines.append("伤害 %d　射程 %d 格　间隔 %.1fs" % [
@@ -668,8 +918,6 @@ func _building_text(b) -> String:
 			lines.append("正在打：%s" % b.last_target.name)
 	if b.type == BuildingRes.TYPE_BASE:
 		lines.append("开局自带，不可建造、不可拆除")
-		lines.append("（本版不会被打掉：血量保底 1）")
-	lines.append("位置 (%d, %d)" % [b.tx, b.ty])
 	return "\n".join(lines)
 
 
@@ -738,24 +986,25 @@ func _retinue_size(u) -> int:
 	return world.retinue_of(u.id).size()
 
 
-## 区划详情（左键点区划中心时显示）：
-## 区划名 / 大小 / 产能 / 人口 —— 用户点名要的四样。
+## 区划详情（左键点区划中心时显示）：区划名 / 大小 / 产能 / 人口。
 ##
-## ★ 产能是「每地块每秒」，所以这里同时给出**每地块**与**整个区划**两个数：
-##   前者是地图编辑器里填的那个值，后者才是它实际贡献的产出（产能 × 地块数）。
+## ★ 本版按需求**精简**：
+##   · **去掉「归属」那一行**（点开区划详情的玩家早就知道这块地是谁的；
+##     归属在整个底栏里也不再出现）；
+##   · 产能**不写单位**（原来写的是「／地块／秒」）——左边那个数是地图编辑器里填的
+##     **每地块**产能，括号里的「合计」才是这个区划实际的产出（每地块 × 地块数）。
+##     两个数都不带单位（用户原话：「区划产能不需要写单位」）。
 func _zone_text(z: Dictionary) -> String:
 	var lines: Array[String] = []
-	var owner := String(z["owner"])
 	lines.append("区划「%s」" % String(z["name"]))
-	lines.append("归属：%s" % (FactionRes.faction_name(owner) if owner != "" else "无主"))
 	lines.append("区划大小：%d 个地块" % int(z["tile_count"]))
 	var prod: Dictionary = z["production"]
 	var n := float(z["tile_count"])
-	lines.append("粮食产能：%s／地块／秒（合计 %.1f/秒）"
-		% [_fmt_num(float(prod["food"])), float(prod["food"]) * n])
-	lines.append("黄金产能：%s／地块／秒（合计 %.1f/秒）"
-		% [_fmt_num(float(prod["gold"])), float(prod["gold"]) * n])
-	lines.append("人口产能：%s／地块／秒" % _fmt_num(float(prod["population"])))
+	var food := float(prod["food"])
+	var gold := float(prod["gold"])
+	lines.append("粮食产能：%s（合计 %s）" % [_fmt_num(food), _fmt_num(food * n)])
+	lines.append("黄金产能：%s（合计 %s）" % [_fmt_num(gold), _fmt_num(gold * n)])
+	lines.append("人口产能：%s" % _fmt_num(float(prod["population"])))
 	# ★ 人口显示**永远是整数**（向下取整，用户需求）—— 权威值是浮点（按秒累积），
 	#   直接印出小数点会让玩家看到「1.9999998」这种数。
 	# ★ 上限一并显示：不然「人口怎么不涨了」在界面上没有任何解释。
@@ -765,9 +1014,27 @@ func _zone_text(z: Dictionary) -> String:
 	return "\n".join(lines)
 
 
-## 数字显示：整数就不带小数点（与地图编辑器 / 导出的 JSON 同一种写法）
+## 数字显示：整数就不带小数点；小数最多 3 位、末尾的 0 去掉
+## （与地图编辑器 / 导出的 JSON 同一种写法）。
+##
+## ⚠️ 这里踩过一次（实机刷屏报错）：
+##     `E 0:00:28:967 hud.gd:770 @ _fmt_num(): String formatting error:
+##      unsupported format character` —— 小数那一路原来写的是 `"%g" % v`，
+##     而 **Godot 的 `%` 格式化没有 `%g`**（支持的是 %s %c %d %o %x %X %f %v %%），
+##     于是「区划的人口产能不是整数」时每帧都报一次，还连着后面所有取值一起失败。
+##   现在用 `%f`（Godot 一定支持）+ 手工去掉尾部的 0 与小数点 —— 结果与原意一致，
+##   也不依赖引擎版本对格式符的支持范围。
 func _fmt_num(v: float) -> String:
-	return ("%d" % int(round(v))) if absf(v - round(v)) < 1e-9 else ("%g" % v)
+	if is_nan(v) or is_inf(v):
+		return "0"
+	if absf(v - round(v)) < 1e-9:
+		return "%d" % int(round(v))
+	var s := "%.3f" % v
+	while s.ends_with("0"):
+		s = s.substr(0, s.length() - 1)
+	if s.ends_with("."):
+		s = s.substr(0, s.length() - 1)
+	return s
 
 
 # ------------------------------------------------------------------
@@ -780,4 +1047,3 @@ func _fmt_num(v: float) -> String:
 # ★ 想恢复日志：把 detail_panel 里的日志栏加回来、在这里把事件翻成文案即可，
 #   事件本身一条都没少（types 见 logic/world.gd 与 logic/combat.gd 的 push_event）。
 # ------------------------------------------------------------------
-

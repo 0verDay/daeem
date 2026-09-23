@@ -12,6 +12,11 @@
 ##     点一格 = 右栏切到那个单位（`unit_activated(格下标)`）。
 ##     单位超过 9 个（编制上限 11）→ 鼠标**滚轮翻页**，一次一页 9 格。
 ##
+##   mode = BUILDINGS（**选中了建筑**）
+##     画「除展开（主选中）那一个之外的选中建筑」——主选中那个画在左栏上半那一格。
+##     点一格 = 把右栏详情切到那个建筑（`building_activated(格下标)`）。
+##     选中的建筑超过 9 个 → 同样是鼠标**滚轮翻页**（与单位模式同一条规则）。
+##
 ## ★ 每格的样子照参考图：**左边一个 40×40 方框（里面写短字）+ 右边两行字**
 ##   （第一行名字、第二行「x/y」或血量；两行作为一块与方框垂直居中，13 号字），
 ##   行优先排 3 列 × 3 行（参考图实测列 x 415/536/662、行 y 915/970/1025）。
@@ -27,24 +32,27 @@ const UiStyleRes = preload("res://view/ui_style.gd")
 signal troop_activated(number: int)
 ## 点了某一格里的**单位**（带格下标 0..8，= 当前页里的第几格）
 signal unit_activated(index: int)
+## 点了某一格里的**建筑**（带格下标 0..8，= 当前页里的第几格）
+signal building_activated(index: int)
 
-## 两种语义（见文件头）
-enum { MODE_LEADERS, MODE_UNITS }
+## 三种语义（见文件头）
+enum { MODE_LEADERS, MODE_UNITS, MODE_BUILDINGS }
 
 ## 中文字体（Godot 默认字体没有 CJK 字形 —— 不传就会画成方框）
 var font: Font = null
 
 var mode: int = MODE_LEADERS
 
-## 本页要画的格子：[{"kind": "leader"/"unit", "ref": 单位, "name": 显示名,
-##                    "short": 方框里的短字, "number": 部队编号(将领格才有)}]
+## 本页要画的格子：[{"kind": "leader"/"unit"/"building", "ref": 单位或建筑, "name": 显示名,
+##                    "short": 方框里的短字, "sub": 第二行（建筑才有）, "number": 部队编号(将领格才有)}]
 var _cells: Array = []
-## 单选翻页：从第几个单位开始画（多选时恒为 0）
+## 翻页：从第几个开始画（多选部队时恒为 0）
 var _page_start: int = 0
-## 单位总数（单选翻页用；<= 9 时不翻页）
+## 这一批一共几个（单位 / 建筑；<= 9 时不翻页）
 var _unit_total: int = 0
-## 单选时那批单位与它们的短字（翻页重排要用，见 _rebuild）
-var _units: Array = []
+## 单选单位 / 多选建筑的那一批（翻页重排要用，见 `_rebuild`）
+var _items: Array = []
+## 与 `_items` 一一对应的方框短字（**只有单位模式用** —— 建筑自带 short）
 var _shorts: Array = []
 ## 鼠标停在第几格（-1 = 没停在任何格子上）
 var _hover: int = -1
@@ -97,30 +105,53 @@ func set_units(units: Array, short_names: Array = []) -> void:
 	_unit_total = units.size()
 	# 换了一批单位 → 页号夹回有效范围（原来在第 2 页、新部队只有一页时别停在空白页）
 	_page_start = clampi(_page_start, 0, maxi(0, _page_count() - 1) * UiLayoutRes.GRID_PAGE)
-	_units = units
+	_items = units
 	_shorts = short_names
 	_rebuild()
 
 
-## 清空（没选中任何部队 / 选中的是区划或建筑）
+## @param entries 要画的建筑（= 选中的建筑**去掉正在展开（主选中）的那一个**），每项：
+##        {"ref": 建筑, "name": 显示名, "short": 方框里的短字, "sub": 第二行（血量 x/y）}
+##        超过 9 个 → 滚轮翻页（一次一页）——与「单选部队的单位」同一条规则。
+func set_buildings(entries: Array) -> void:
+	mode = MODE_BUILDINGS
+	_unit_total = entries.size()
+	_page_start = clampi(_page_start, 0, maxi(0, _page_count() - 1) * UiLayoutRes.GRID_PAGE)
+	_items = entries
+	_shorts = []
+	_rebuild()
+
+
+## 清空（没选中任何部队 / 选中的是区划）
 func clear() -> void:
 	_unit_total = 0
 	_page_start = 0
-	_units = []
+	_items = []
 	_shorts = []
 	_apply([])
 
 
-## 按当前页重排这一页的格子（单位模式：从 `_page_start` 起最多 9 个）。
+## 按当前页重排这一页的格子（单位 / 建筑模式：从 `_page_start` 起最多 9 个）。
 ## ⚠️ **翻页之后必须重排** —— `set_page()` 只改页号的话，屏幕上还是上一页的那 9 格
 ##    （这条是实测撞出来的：页号对了、格子没变）。
 func _rebuild() -> void:
 	var next: Array = []
 	for k in UiLayoutRes.TROOP_GRID_SLOTS:
 		var idx := _page_start + k
-		if idx >= _units.size():
+		if idx >= _items.size():
 			break
-		var u = _units[idx]
+		if mode == MODE_BUILDINGS:
+			var e: Dictionary = _items[idx]
+			next.append({
+				"kind": "building",
+				"ref": e.get("ref", null),
+				"name": String(e.get("name", "")),
+				"short": String(e.get("short", "")),
+				"sub": String(e.get("sub", "")),
+				"number": 0,
+			})
+			continue
+		var u = _items[idx]
 		var s := ""
 		if idx < _shorts.size():
 			s = String(_shorts[idx])
@@ -131,6 +162,7 @@ func _rebuild() -> void:
 			"ref": u,
 			"name": "" if u == null else String(u.name),
 			"short": s,
+			"sub": "",
 			"number": 0,
 		})
 	_apply(next)
@@ -180,6 +212,18 @@ func cell_is_leader(i: int) -> bool:
 	return cell_filled(i) and String(_cells[i].get("kind", "")) == "leader"
 
 
+## 第 i 格是不是建筑格
+func cell_is_building(i: int) -> bool:
+	return cell_filled(i) and String(_cells[i].get("kind", "")) == "building"
+
+
+## 第 i 格里的建筑（单位格 / 将领格 / 空格子 → null）
+func building_at(i: int):
+	if not cell_is_building(i):
+		return null
+	return _cells[i].get("ref", null)
+
+
 ## 第 i 格的「x/y」文字（x = 该部队现有单位数含将领；y = 编制上限）。
 ## ⚠️ 第四轮改版后格子里**不再画**这一行（参考图上只有「将领名称」一行），
 ##    这里保留成接口只是怕别处还在读它 —— 它现在恒为空串。
@@ -204,7 +248,18 @@ func troop_count() -> int:
 	return _cells.size() if mode == MODE_LEADERS else 0
 
 
-## 单选时这支部队一共有几个单位
+## 这一页里有几个建筑格（建筑模式）
+func building_count() -> int:
+	if mode != MODE_BUILDINGS:
+		return 0
+	var n := 0
+	for i in cell_count():
+		if cell_is_building(i):
+			n += 1
+	return n
+
+
+## 单选时这支部队一共有几个单位 / 建筑模式下选中的建筑总数（翻页用）
 func unit_total() -> int:
 	return _unit_total
 
@@ -258,9 +313,10 @@ func _gui_input(event: InputEvent) -> void:
 	if not (event is InputEventMouseButton) or not event.pressed:
 		return
 	var mb := event as InputEventMouseButton
-	# 滚轮：只在一支部队、单位超过 9 个时翻页（一次一页）
+	# 滚轮：单位 / 建筑超过 9 个时翻页（一次一页）——
+	# ★ 建筑多选与「单选一支部队的单位」是**同一条规则**（手玩原话：和多选单位时一样，滚轮切页）。
 	if mb.button_index == MOUSE_BUTTON_WHEEL_DOWN or mb.button_index == MOUSE_BUTTON_WHEEL_UP:
-		if mode != MODE_UNITS or _page_count() <= 1:
+		if _page_count() <= 1:
 			return
 		var step := 1 if mb.button_index == MOUSE_BUTTON_WHEEL_DOWN else -1
 		var before: int = page()
@@ -274,8 +330,11 @@ func _gui_input(event: InputEvent) -> void:
 	if hit < 0:
 		return
 	# ★ 只抛「点了第几格」；换展开 / 切右栏由 hud.gd 决定（视图不碰选中状态）
-	if cell_is_leader(hit):
+	var kind := String(_cells[hit].get("kind", ""))
+	if kind == "leader":
 		troop_activated.emit(int(_cells[hit].get("number", 0)))
+	elif kind == "building":
+		building_activated.emit(_page_start + hit)
 	else:
 		unit_activated.emit(_page_start + hit)
 	accept_event()
@@ -286,7 +345,7 @@ func set_page(p: int) -> void:
 	var last := maxi(0, _page_count() - 1)
 	_page_start = clampi(p, 0, last) * UiLayoutRes.GRID_PAGE
 	_hover = -1
-	if mode == MODE_UNITS:
+	if mode != MODE_LEADERS:
 		_rebuild()          # ★ 翻页要重排格子，不然屏幕上还是上一页那 9 格
 	else:
 		queue_redraw()
@@ -344,10 +403,12 @@ func _draw_cell(i: int, f: Font) -> void:
 
 
 ## 第二行小字：将领格写「x/y」（现有单位数/编制上限，手玩定的 y=11）；
-## 单位格写「血量/上限」——参考图上那一行写的是该单位的数值。
+## 单位格写「血量/上限」；建筑格由 hud 算好递进来（同样是「血量/上限」）。
 func cell_sub_text(i: int) -> String:
 	if not cell_filled(i):
 		return ""
+	if cell_is_building(i):
+		return String(_cells[i].get("sub", ""))
 	if cell_is_leader(i):
 		var units: Array = _cells[i].get("units", [])
 		return "%d/%d" % [units.size(), UiLayoutRes.UNIT_CAP]
@@ -378,7 +439,7 @@ func _clip_text(f: Font, text: String, max_w: float, size: int) -> String:
 
 ## 翻页提示：左下角一支「还有上一页 / 下一页」的淡色箭头（只有真能翻时才画）
 func _draw_page_hint(f: Font) -> void:
-	if mode != MODE_UNITS or _page_count() <= 1:
+	if _page_count() <= 1:
 		return
 	var text := "%d/%d" % [page() + 1, _page_count()]
 	draw_string(f, Vector2(0.0, UiLayoutRes.TROOP_GRID_H - 4.0), text,
@@ -414,13 +475,17 @@ func _first_char(u) -> String:
 	return n.substr(0, 1) if n.length() > 0 else "?"
 
 
-## 一个单位现在在不在交战（打人 / 拆建筑都算）—— 只读，不改
+## 一个单位现在在不在交战（打人 / 拆建筑都算）—— 只读，不改。
+## ⚠️ 用 `get()` 读属性：这一格现在也可能是**建筑**（建筑没有 `target` / `target_building`
+##    这两个字段，直接点出来会报「Invalid get index」），`get()` 读不到就给 null。
 func _in_combat(u) -> bool:
 	if u == null:
 		return false
-	if u.target != null and u.target.alive:
+	var t = u.get("target")
+	if t != null and t.alive:
 		return true
-	if u.target_building != null and u.target_building.alive:
+	var tb = u.get("target_building")
+	if tb != null and tb.alive:
 		return true
 	return false
 

@@ -128,9 +128,17 @@ static func card_pressed() -> StyleBoxFlat:
 
 
 ## 页签按钮（普通 / 当前页 / 悬停）
+##
+## ★★ 普通态的底色是 **BG_EMPTY**（与「空命令格 / 空槽」同一套），**不是全透明**。
+##
+## 为什么（手玩报的 bug + 截图实测）：「选中建筑时看不到页签」——
+##   原来普通态是 `bg = 全透明 + 1px 白线（alpha 0.16）`，而页签列是**直接立在地图上**的
+##   （它自己没有底板），于是非当前页的页签看起来就是「地图透出来的一块」：
+##   截图里那块 100×240 的像素与旁边的地图**一模一样**，只有一条几乎看不见的线。
+##   换成 BG_EMPTY 之后，页签在任何底图上都看得见，且与右边的空命令格是同一套观感。
 static func tab_normal() -> StyleBoxFlat:
 	var s := StyleBoxFlat.new()
-	s.bg_color = Color(0.0, 0.0, 0.0, 0.0)
+	s.bg_color = BG_EMPTY
 	s.border_color = LINE
 	s.set_border_width_all(1)
 	return s

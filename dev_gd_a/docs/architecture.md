@@ -112,7 +112,9 @@ dev_gd_a/daeem/
 │   ├── recruit_queue.gd          #   ★ 招募队列的五格显示（1 大 + 4 小 + 大格子里的读条）
 │   │                             #     住在**右栏右上角**；可点：点某一格 = 取消那一格（发 recruit_cancel 命令）
 │   ├── command_card.gd           #   右下 3×3 命令卡（内容随页签切换）
-│   └── page_tabs.gd              #   单位 / 建筑 / 科技（科技点不动）
+│   └── page_tabs.gd              #   右下那一列**动态页签**（按选中对象决定显示哪几颗：
+│                                 #     部队 = 操作/单位，区划中心 = 招募，大本营 = 科技，
+│                                 #     普通建筑 = 一颗空页签 PAGE_NONE，什么都没选中 = 建筑）
 └── tests/                        # 无头断言测试（不进游戏包）
     ├── test_smoke.gd             #   脚手架自检 + 网格工具
     ├── test_logic.gd             #   玩法规则（移动 / 战斗 / 建造 / 占领 / 快照…）
@@ -262,8 +264,9 @@ Godot 里 DPR 由引擎处理，**但下面三条要原样继承**：
 | 选中列表 | `view/input_controller.gd` | 纯本地，**不进命令流**（第 1 轮也一样）。★ 左键**点选**与左键**框选**（拖出矩形，见 route.md 16.3）走的是同一个入口 `select_units()` —— 它会用 `world.expand_to_groups()` 把「一个单位」展开成「它所属的整支部队」 |
 | 玩家下达的攻击命令 | `logic/unit.gd` 的 `ordered_target` / `ordered_building` / `has_attack_move` | 与「这一帧在打谁」（`target` / `target_building`）**分开存**，见 route.md 12.3 |
 | UI 几何（面板位置与尺寸） | `view/ui_layout.gd` | 纯常量，照参考图的像素稿；其它 view 文件不写坐标字面量 |
-| 当前页签（单位 / 建筑） | `view/page_tabs.gd` | 纯本地显示状态，只决定命令卡里有什么 |
-| 招募队列的实现细节（进度、五个格子的几何） | `logic/unit.gd` 的 `train_*` 字段 + `view/recruit_queue.gd` | 进度由 `unit.train_progress()` 算好，视图只取色与填格子（不让视图自己发明判定，见 pitfalls 5.20） |
+| 当前页签（操作 / 单位 / 招募 / 科技 / 建筑） | `view/page_tabs.gd` + `hud._tab_plan()` | 纯本地显示状态，只决定命令卡里有什么；**显示哪几颗由当前选中对象决定**（route.md 二十二节），每一类选中各记「上次停在哪一页」（`hud._page_memory`） |
+| 操作页的「命令模式」（点了移动 / 攻击 / 行军之后等左键点地图） | `view/input_controller.gd` 的 `order_mode` | 纯本地输入状态，与 `build_type` 同源、互斥；命令照旧只走 `command_issued` |
+| 招募队列的实现细节（进度、五个格子的几何） | `logic/unit.gd` 的 `train_*` 字段 / `logic/zone.gd` 的 `train_*` 字段（**区划招募**）+ `view/recruit_queue.gd` | 进度由 `unit.train_progress()` / `world.zone_train_progress()` 算好，视图只取色与填格子（不让视图自己发明判定，见 pitfalls 5.20）；同一个控件显示「将领的队列」或「区划的队列」（`set_queue(holder, is_zone)`） |
 | 事件（击杀 / 建筑被拆 / 招募…） | `logic/world.gd` 收集 → `world.tick()` 返回 | **逻辑层不写 UI 文案**；目前只翻译三条：`recruit_rejected` / `order_rejected` → 左栏那行红字、`unit_recruited` → 把新兵选上（`view/game_scene.gd` → `hud` / `input_controller`） |
 | 谁是房主 / 我的阵营 | 第 1 轮再加 | 本轮固定为单机阵营 |
 

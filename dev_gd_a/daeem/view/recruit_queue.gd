@@ -47,8 +47,10 @@ signal cell_activated(slot: int)
 
 var world = null
 
-## 当前显示的将领（由 detail_panel / hud 每帧给；null = 没选中将领）
-var _leader = null
+## 当前显示的「队列主人」——**将领单位**或**区划字典**（由 detail_panel / hud 每帧给；null = 没有）
+var _holder = null
+## 这个主人是不是一个**区划**（true 时走 world 的 zone_* 那一套查询）
+var _is_zone: bool = false
 ## 五个格子的文字标签（第 0 个是大格子）
 var _labels: Array[Label] = []
 ## 汇总带的两行字（「招募队列 3/5」/「共 22s」）
@@ -109,15 +111,62 @@ func _place(l: Label, r: Rect2) -> void:
 	l.size = r.size
 
 
-## 这一帧要显示的将领（传 null = 没选中将领 / 选中的是建筑或区划）
-func set_leader(leader) -> void:
-	_leader = leader
+## 这一帧要显示的队列主人（传 null = 没选中将领 / 选中的是建筑或区划）。
+## @param is_zone true 时 holder 是一个**区划字典**（区划招募：点区划中心时显示它的队列）
+func set_queue(holder, is_zone: bool = false) -> void:
+	_holder = holder
+	_is_zone = is_zone
 	refresh()
 
 
-## 现在该不该显示：**正在招募时才出现**（需求：将领开始招募时信息栏里出现五个格子）
+## 旧接口（将领队列）：保留它，测试与调用方按「将领」读更清楚
+## （区划队列直接走 `set_queue(zone, true)`，由 detail_panel 转发）
+func set_leader(leader) -> void:
+	set_queue(leader, false)
+
+
+## 现在显示的是不是区划的队列
+func is_zone_queue() -> bool:
+	return _is_zone
+
+
+func holder():
+	return _holder
+
+
+## 这个主人现在是不是「正在招募」。
+## ★ 将领：`unit.is_training()`；区划：队列字段挂在区划字典上，判据由**逻辑层**给
+##   （`world.zone_is_training`）—— 视图不自己发明判定（pitfalls 5.20）。
 func showing() -> bool:
-	return _leader != null and _leader.is_training()
+	if _holder == null:
+		return false
+	if not _is_zone:
+		return bool(_holder.is_training())
+	if world != null and world.has_method("zone_is_training"):
+		return bool(world.zone_is_training(_holder))
+	return _zone_kind() != "" or not _zone_queue().is_empty()
+
+
+func _zone_dict() -> Dictionary:
+	return _holder if typeof(_holder) == TYPE_DICTIONARY else {}
+
+
+func _zone_kind() -> String:
+	return String(_zone_dict().get("train_kind", ""))
+
+
+func _zone_queue() -> Array:
+	var v: Variant = _zone_dict().get("train_queue", [])
+	return v if typeof(v) == TYPE_ARRAY else []
+
+
+## 大格子里这一单还剩几秒（两种主人各读各的字段）
+func _remaining() -> float:
+	if _holder == null:
+		return 0.0
+	if _is_zone:
+		return maxf(0.0, float(_zone_dict().get("train_remaining", 0.0)))
+	return maxf(0.0, float(_holder.train_remaining))
 
 
 func refresh() -> void:
@@ -142,7 +191,7 @@ func refresh() -> void:
 			_labels[i].text = ""
 		elif i == 0:
 			# 大格子：短名 + **这一单**的剩余秒数（读条的「同时开始读条」那半句）
-			_labels[i].text = "%s\n剩 %.1fs" % [cell_text(i), maxf(0.0, float(_leader.train_remaining))]
+			_labels[i].text = "%s\n剩 %.1fs" % [cell_text(i), _remaining()]
 		else:
 			# 小格子：短名 + **轮到它还差几秒**（累计剩余，由逻辑层给）
 			_labels[i].text = "%s\n%ds" % [cell_text(i), eta_seconds(i)]
@@ -158,13 +207,22 @@ func refresh() -> void:
 # ------------------------------------------------------------------
 
 ## 第 i 格里的兵种（空串 = 空格子）。0 = 正在读条的大格子，1..4 = 排队的小格子。
+## ★ 两种主人（将领 / 区划）读的字段名一样，只是挂在不同的对象上。
 func cell_kind(i: int) -> String:
-	if _leader == null:
+	if _holder == null:
 		return ""
+	if _is_zone:
+		if i <= 0:
+			return _zone_kind()
+		var zq := _zone_queue()
+		var zk := i - 1
+		if zk < 0 or zk >= zq.size():
+			return ""
+		return String(zq[zk])
 	if i == 0:
-		return String(_leader.train_kind)
+		return String(_holder.train_kind)
 	var k := i - 1
-	var q: Array = _leader.train_queue
+	var q: Array = _holder.train_queue
 	if k < 0 or k >= q.size():
 		return ""
 	return String(q[k])
@@ -186,19 +244,25 @@ func cell_text(i: int) -> String:
 
 ## 大格子的读条进度（0~1）
 func progress() -> float:
-	if _leader == null:
+	if _holder == null:
 		return 0.0
-	return float(_leader.train_progress())
+	if _is_zone:
+		if world != null and world.has_method("zone_train_progress"):
+			return float(world.zone_train_progress(_holder))
+		return 0.0
+	return float(_holder.train_progress())
 
 
 ## 第 i 格还要等多久（秒）。★ 走逻辑层的查询（见文件头第 ② 条），视图不自己推。
 func eta_of(i: int) -> float:
-	if _leader == null:
+	if _holder == null:
 		return 0.0
 	if world == null:
 		# 没有 world（极端情况）时只报得出大格子自己的剩余秒；排队项无从算起。
-		return maxf(0.0, float(_leader.train_remaining)) if i <= 0 else 0.0
-	return float(world.recruit_eta(_leader, i))
+		return _remaining() if i <= 0 else 0.0
+	if _is_zone:
+		return float(world.zone_recruit_eta(_holder, i))
+	return float(world.recruit_eta(_holder, i))
 
 
 ## 格子文案里那个秒数：向上取整到整秒，且**最小 1 秒**
@@ -220,15 +284,22 @@ func total_eta() -> float:
 
 ## 队列里现在有几个（含正在读条的那个）
 func queue_count() -> int:
-	if _leader == null:
+	if _holder == null:
 		return 0
-	return int(_leader.train_queue_size())
+	if _is_zone:
+		if world != null and world.has_method("zone_recruit_queue_size"):
+			return int(world.zone_recruit_queue_size(_holder))
+		var n := _zone_queue().size()
+		return n + (1 if _zone_kind() != "" else 0)
+	return int(_holder.train_queue_size())
 
 
-## 队列上限（config.recruit.queue_max）
+## 队列上限（将领 = config.recruit.queue_max；区划 = config.recruit.zone.queue_max）
 func queue_max() -> int:
 	if world == null:
 		return UiLayoutRes.QUEUE_SLOTS
+	if _is_zone:
+		return int(world.zone_recruit_queue_max())
 	return int(world.recruit_queue_max())
 
 
@@ -252,8 +323,10 @@ func total_text() -> String:
 	return "" if _total == null else _total.text
 
 
+## 当前显示的队列主人（将领或区划字典）。★ 旧名保留：老调用方/测试按「将领」读它 ——
+## 它现在可能返回一个**区划字典**（用 is_zone_queue() 区分）。
 func leader():
-	return _leader
+	return _holder
 
 
 ## 鼠标现在停在第几格（-1 = 没停在有内容的格子上）。测试读它；游戏里没人读。

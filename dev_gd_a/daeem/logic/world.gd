@@ -320,11 +320,7 @@ func create_retinue(faction: String, leader, pending: Array = []) -> Array:
 ##
 ## @param pending 本批已占位的单位（可以不传）
 func _ring_tile(leader, faction: String, index: int, pending: Array = []) -> Vector2i:
-	var ring: Array[Vector2i] = [
-		Vector2i(1, 0), Vector2i(0, 1), Vector2i(-1, 0), Vector2i(0, -1),
-		Vector2i(1, 1), Vector2i(-1, 1), Vector2i(1, -1), Vector2i(-1, -1),
-		Vector2i(2, 0), Vector2i(0, 2), Vector2i(-2, 0), Vector2i(0, -2),
-	]
+	var ring := ring_offsets()
 	# 从「第 index 个方向」开始绕一圈：优先那个方向（站位可预测），
 	# 被占了 / 走不通就顺延 —— 比「直接落到队长身上叠着」好得多。
 	for k in ring.size():
@@ -344,6 +340,19 @@ func _ring_tile(leader, faction: String, index: int, pending: Array = []) -> Vec
 	if found != null:
 		return found
 	return Vector2i(leader.tx, leader.ty)      # 实在没地方就叠在队长身上，靠碰撞分开
+
+
+## 围着某一格找站位的**方向表**：右、下、左、上、四个斜角，再往外一圈。
+##
+## ★ 出生站位（`_ring_tile`，将领配亲兵）与区划招募的出兵格（`_zone_spawn_tile`）
+##   **共用这一张表** —— 两处各写一份「先正交、后斜角」迟早会漂开，
+##   而它本来就是同一条规则（「围着某个格子就近找一格能站人的地方」）。
+static func ring_offsets() -> Array[Vector2i]:
+	return [
+		Vector2i(1, 0), Vector2i(0, 1), Vector2i(-1, 0), Vector2i(0, -1),
+		Vector2i(1, 1), Vector2i(-1, 1), Vector2i(1, -1), Vector2i(-1, -1),
+		Vector2i(2, 0), Vector2i(0, 2), Vector2i(-2, 0), Vector2i(0, -2),
+	]
 
 
 ## 这一格是不是已经被某个**活着的单位**占着（`except_unit` 不算 —— 兜底就是要叠在它身上）。
@@ -376,7 +385,7 @@ func _tile_taken(tile: Vector2i, except_unit, pending: Array = []) -> bool:
 #   站位 / 扣费 / 退款全在这里 —— 第 1 轮联机时客机不挑格子、也不算钱。
 # ------------------------------------------------------------------
 
-## 可招募兵种表（config.json 的 recruit.list）。
+## 可招募兵种表（config.json 的 recruit.list）—— 右下「单位」页那一张。
 ## ★ 表在数据里、代码里不写死兵种名 —— 以后加兵种只加 JSON，不改这里。
 func recruit_list() -> Array:
 	var v: Variant = cfg.get_path_value("recruit.list")
@@ -385,15 +394,51 @@ func recruit_list() -> Array:
 	return v
 
 
-## 某个兵种在招募表里的条目（找不到返回空字典）
+## ★★ 区划招募表（config.json 的 recruit.zone.list）—— 点区划中心时「招募」页那一张。
+##
+## 与上面那张是**两张独立的表**，别合并：
+##   · `recruit.list`      → 将领当兵营：兵排进**被选中那个将领**的队列；
+##   · `recruit.zone.list` → 区划当兵营：将领排进**那个区划**的队列（见 zone.gd 的字段说明）。
+func zone_recruit_list() -> Array:
+	var v: Variant = cfg.get_path_value("recruit.zone.list")
+	if typeof(v) != TYPE_ARRAY:
+		return []
+	return v
+
+
+## 某个兵种在**两张表里任意一张**的条目（找不到返回空字典）。
+##
+## ★ 查「短名 / 消耗 / 读条」这类**显示与计费**信息时走它（两张表字段完全一样）；
+##   判「能不能招」时**不要**用它 —— 那要先分清是「将领招兵」还是「区划招将」，
+##   分别走 is_unit_recruitable / is_zone_recruitable（否则单位页能招出将领来）。
 func recruit_entry(kind: String) -> Dictionary:
 	for item in recruit_list():
+		if typeof(item) == TYPE_DICTIONARY and String((item as Dictionary).get("kind", "")) == kind:
+			return item
+	for item in zone_recruit_list():
 		if typeof(item) == TYPE_DICTIONARY and String((item as Dictionary).get("kind", "")) == kind:
 			return item
 	return {}
 
 
-## 某个兵种能不能招募
+## 某个兵种能不能被**将领**招募（单位页那张表）
+func is_unit_recruitable(kind: String) -> bool:
+	for item in recruit_list():
+		if typeof(item) == TYPE_DICTIONARY and String((item as Dictionary).get("kind", "")) == kind:
+			return true
+	return false
+
+
+## 某个兵种能不能被**区划**招募（区划中心「招募」页那张表）
+func is_zone_recruitable(kind: String) -> bool:
+	for item in zone_recruit_list():
+		if typeof(item) == TYPE_DICTIONARY and String((item as Dictionary).get("kind", "")) == kind:
+			return true
+	return false
+
+
+## 这个兵种是不是「可招募的」（两张表任意一张里有它）。
+## ★ 视图用它决定短字怎么取：招出来的将领也走招募表的 `short`（将）。
 func is_recruitable(kind: String) -> bool:
 	return not recruit_entry(kind).is_empty()
 
@@ -421,6 +466,14 @@ func recruit_population_cost(kind: String) -> float:
 ## 队列上限（**含**正在读条的那个）：config.recruit.queue_max，默认 5
 func recruit_queue_max() -> int:
 	return maxi(1, int(cfg.num("recruit.queue_max", 5.0)))
+
+
+## 区划招募队列的上限（config.recruit.zone.queue_max；没配就退回单位那张表的上限）
+func zone_recruit_queue_max() -> int:
+	var v: Variant = cfg.get_path_value("recruit.zone.queue_max")
+	if typeof(v) == TYPE_FLOAT or typeof(v) == TYPE_INT:
+		return maxi(1, int(v))
+	return recruit_queue_max()
 
 
 ## 第 slot 格**还要等多久**才轮到自己出人（秒）。0 = 正在读条的大格子；1..n = 排队的小格子（从前往后）。
@@ -472,7 +525,7 @@ func recruit_label_of(kind: String) -> String:
 ##   "zone"       ★ 将领不在**己方区划**里（本轮新增的限制条件）
 ##   "queue_full" ★ 队列满了（最多 recruit.queue_max 个，含正在读条的那个）
 func can_recruit(kind: String, leader_id: String, faction: String) -> String:
-	if not is_recruitable(kind):
+	if not is_unit_recruitable(kind):
 		return "kind"
 	var leader = unit_by_id(leader_id)
 	var reason := leader_reject_reason(leader, faction)
@@ -732,6 +785,303 @@ func _refund(leader, food: float, gold: float, pop: float, zid: int) -> void:
 	leader.train_cost_food = maxf(0.0, leader.train_cost_food - food)
 	leader.train_cost_gold = maxf(0.0, leader.train_cost_gold - gold)
 	leader.train_cost_pop = maxf(0.0, leader.train_cost_pop - pop)
+
+
+# ------------------------------------------------------------------
+# 区划招募（点区划中心 → 右下「招募」页签 → 把将领排进**区划**的队列）
+#
+# 需求原话：「当玩家选中区划中心时，右下角显示招募页签（显示三个占位将领，玩家可以
+#            点击以将招募将领加入区划的招募队列中，招募逻辑同招募单位）」。
+#
+# ★ 与「将领自己就是兵营」那套的**唯一区别**是**队列挂在哪**：
+#     · 将领招募：队列挂在 unit（train_* 字段），出兵在将领所在格的格心；
+#     · 区划招募：队列挂在**区划字典**（zone.gd 的 train_* 字段），出兵在区划中心旁边的空地。
+#   计费 / 读条 / 上限 / 退款 / 取消这一整套规则**完全一致**，
+#   所以这里的每个函数都能与上面那条逐个对照着读（别各自发明一套）。
+#
+# ★ 校验 → 扣费 → 入队 这三步的顺序与将领招募一致（反了会出现「钱扣了、兵没排上」）。
+# ------------------------------------------------------------------
+
+## 按 id 找区划（公开版；退款 / 招募都要它）
+func zone_by_id(zid: int) -> Variant:
+	return _zone_by_id(zid)
+
+
+## 这个区划现在是不是「正在招募」（在读条，或还有排队的）
+func zone_is_training(zone) -> bool:
+	if typeof(zone) != TYPE_DICTIONARY:
+		return false
+	if String((zone as Dictionary).get("train_kind", "")) != "":
+		return true
+	return not ((zone as Dictionary).get("train_queue", []) as Array).is_empty()
+
+
+## 队列里一共有几个（含正在读条的那个）
+func zone_recruit_queue_size(zone) -> int:
+	if typeof(zone) != TYPE_DICTIONARY:
+		return 0
+	var d: Dictionary = zone
+	var n: int = (d.get("train_queue", []) as Array).size()
+	if String(d.get("train_kind", "")) != "":
+		n += 1
+	return n
+
+
+## 正在读条那个的进度（0~1；没在读条时 0）—— 与 unit.train_progress() 同一套口径，
+## 视图只读它、不自己算（pitfalls 5.20）。
+func zone_train_progress(zone) -> float:
+	if typeof(zone) != TYPE_DICTIONARY:
+		return 0.0
+	var d: Dictionary = zone
+	var total := float(d.get("train_total", 0.0))
+	if String(d.get("train_kind", "")) == "" or total <= 0.0:
+		return 0.0
+	return clampf(1.0 - float(d.get("train_remaining", 0.0)) / total, 0.0, 1.0)
+
+
+## 某一格上排的是哪个兵种（"" = 空格子）。0 = 正在读条的大格子，1..4 = 排队的小格子。
+func zone_recruit_kind_at(zone, slot: int) -> String:
+	if typeof(zone) != TYPE_DICTIONARY or slot < 0:
+		return ""
+	var d: Dictionary = zone
+	if slot == 0:
+		return String(d.get("train_kind", ""))
+	var q: Array = d.get("train_queue", [])
+	var k := slot - 1
+	if k >= q.size():
+		return ""
+	return String(q[k])
+
+
+## 第 slot 格**还要等多久**才轮到自己出人（秒）—— 与 recruit_eta 逐条同义。
+func zone_recruit_eta(zone, slot: int) -> float:
+	if typeof(zone) != TYPE_DICTIONARY or slot < 0:
+		return 0.0
+	var d: Dictionary = zone
+	var eta := maxf(0.0, float(d.get("train_remaining", 0.0)))
+	if slot == 0:
+		return eta
+	var q: Array = d.get("train_queue", [])
+	if slot - 1 >= q.size():
+		return 0.0
+	for i in slot:
+		eta += recruit_train_sec(String(q[i]))
+	return eta
+
+
+## 区划招募的**规则**校验。@return "" = 可以招；否则是拒因码：
+##   "kind"        不在区划招募表里
+##   "zone_not_found"  没有这个区划
+##   "zone_owner"  ★ 这个区划**不属于你**（只能在自己区划里招）
+##   "queue_full"  队列满了
+##
+## ⚠️ 「没有这个区划」用 `zone_not_found` 而**不是** `zone`：后者是**将领招募**那条路
+##    的拒因（「将领不站在己方区划里」），两者的中文提示完全不同 ——
+##    挤在同一个码上会让玩家看到一句驴唇不对马嘴的红字。
+func can_recruit_zone(kind: String, zone_id: int, faction: String) -> String:
+	if not is_zone_recruitable(kind):
+		return "kind"
+	var z = _zone_by_id(zone_id)
+	if z == null:
+		return "zone_not_found"
+	if not FactionRes.same_side(String(z["owner"]), faction):
+		return "zone_owner"
+	if zone_recruit_queue_size(z) >= zone_recruit_queue_max():
+		return "queue_full"
+	return ""
+
+
+## 区划招募付不付得起（人口从**这个区划**扣）。@return "" / "cost" / "zone_not_found" / "population"
+func can_afford_zone_recruit(kind: String, zone_id: int) -> String:
+	if not EconomyRes.can_afford(resources, recruit_cost(kind)):
+		return "cost"
+	var pop := recruit_population_cost(kind)
+	if pop <= 0.0:
+		return ""
+	var z = _zone_by_id(zone_id)
+	if z == null:
+		return "zone_not_found"
+	if float(z.get("population", 0.0)) < pop:
+		return "population"
+	return ""
+
+
+## 区划招募入队（`zone_recruit` 命令的唯一落点）。@return true = 已入队（还没生成）
+func start_zone_recruit(kind: String, zone_id: int, faction: String) -> bool:
+	var reason := can_recruit_zone(kind, zone_id, faction)
+	if reason == "":
+		reason = can_afford_zone_recruit(kind, zone_id)
+	if reason != "":
+		# ★ 走**同一个事件类型**（recruit_rejected）：界面那条「拒因码 → 中文」的通道
+		#   只写一处，这里多带一个 max（队列上限的文案要用它）。
+		push_event({"type": "recruit_rejected", "reason": reason, "kind": kind,
+			"zone_id": zone_id, "max": zone_recruit_queue_max()})
+		return false
+
+	var z = _zone_by_id(zone_id)
+	var pop := recruit_population_cost(kind)
+	var cost := recruit_cost(kind)
+
+	if not EconomyRes.spend(resources, cost):
+		push_event({"type": "recruit_rejected", "reason": "cost", "kind": kind, "zone_id": zone_id})
+		return false
+	if pop > 0.0:
+		z["population"] = maxf(0.0, float(z["population"]) - pop)
+	z["train_cost_food"] = float(z.get("train_cost_food", 0.0)) + float(cost.get("food", 0.0))
+	z["train_cost_gold"] = float(z.get("train_cost_gold", 0.0)) + float(cost.get("gold", 0.0))
+	z["train_cost_pop"] = float(z.get("train_cost_pop", 0.0)) + pop
+	if String(z.get("train_kind", "")) == "":
+		# 队列原本是空的 → 这一单立刻开读条，并**记下招募方**（读完按它出兵）
+		z["train_faction"] = faction
+		_start_zone_training(z, kind)
+	else:
+		(z["train_queue"] as Array).append(kind)
+	push_event({"type": "zone_recruit_queued", "zone_id": zone_id, "kind": kind})
+	return true
+
+
+## 让某个兵种进区划的「大格子」开始读条。
+func _start_zone_training(zone, kind: String) -> void:
+	zone["train_kind"] = kind
+	zone["train_total"] = recruit_train_sec(kind)
+	zone["train_remaining"] = zone["train_total"]
+
+
+## 把区划队列里的下一个提到大格子（队列空 → 变回空闲）
+func _start_next_zone_queue(zone) -> void:
+	var q: Array = zone.get("train_queue", [])
+	if q.is_empty():
+		zone["train_kind"] = ""
+		zone["train_remaining"] = 0.0
+		zone["train_total"] = 0.0
+		return
+	var next := String(q.pop_front())
+	zone["train_queue"] = q
+	_start_zone_training(zone, next)
+
+
+## 每帧推进各区划的招募读条（world.tick 里跟在将领招募后面）。
+## ★ 与 _tick_recruitment 用同一套「一帧可能读满好几单」的预算算法：
+##   把剩下的时间接着往下算，而不是整帧丢给下一帧（否则时间轴会随帧率漂）。
+func _tick_zone_recruitment(dt: float) -> void:
+	if zones == null:
+		return
+	for z in zones.zones:
+		if not zone_is_training(z):
+			continue
+		if String(z.get("train_kind", "")) == "":
+			_start_next_zone_queue(z)
+			continue
+		var budget := dt
+		var guard := 0
+		while String(z.get("train_kind", "")) != "" and budget > 0.0 and guard < 64:
+			guard += 1
+			var left := maxf(0.0, float(z.get("train_remaining", 0.0)))
+			if left > budget:
+				z["train_remaining"] = left - budget
+				budget = 0.0
+				break
+			budget -= left
+			z["train_remaining"] = 0.0
+			_spawn_zone_recruit(z, String(z["train_kind"]))
+			_start_next_zone_queue(z)
+
+
+## 读条完成：在**区划中心格旁边的最近空地**生成这名将领。
+##
+## ★ 生成的是**一条新单位**，而且它 `leader_id` 为空 ⇒ 它自己就是队长：
+##   会作为新的一支部队出现在左侧部队列表里，之后也能拿它当招募对象
+##   （需求要的是「招募将领」，不是一个挂在别人名下的兵）。
+func _spawn_zone_recruit(zone, kind: String) -> Variant:
+	var faction := String(zone.get("train_faction", ""))
+	if faction == "":
+		faction = String(zone["owner"])
+	if faction == "":
+		faction = my_faction
+	var tile := _zone_spawn_tile(zone, faction)
+	_recruit_serial += 1
+	var u = UnitRes.create(
+		cfg, "zone-%d-r%d" % [int(zone["id"]), _recruit_serial],
+		recruit_label_of(kind), tile, faction, kind, "", ""
+	)
+	units.append(u)
+	push_event({"type": "zone_unit_recruited", "zone_id": int(zone["id"]), "unit": u})
+	return u
+
+
+## 区划招募的出兵格：**区划中心那一格的旁边**最近的一格空地。
+##
+## ★ 为什么不是格心（与将领招募不同）：中心那一格上立着**中立障碍建筑**
+##   （任何单位都进不去），生成在格心会当场把人卡在建筑里。
+##   所以围着中心按同一张方向表就近找第一个能站人的格子，找不到才退回「最近可达格」。
+func _zone_spawn_tile(zone, faction: String) -> Vector2i:
+	var base := Vector2i(map.cols / 2, map.rows / 2)
+	var c: Variant = zone.get("center", null)
+	if c != null:
+		base = c
+	else:
+		var tiles: Array = zone.get("tiles", [])
+		if not tiles.is_empty():
+			base = tiles[0]
+	for off in ring_offsets():
+		var want := Vector2i(base.x + off.x, base.y + off.y)
+		if not PathfinderRes.passable(map, buildings, cfg, want.x, want.y, faction):
+			continue
+		if building_at(want.x, want.y) != null:
+			continue
+		if _tile_taken(want, null, []):
+			continue
+		return want
+	var found = PathfinderRes.nearest_reachable(map, buildings, cfg, base, base, faction, 8, crowd)
+	if found != null:
+		return found
+	return base
+
+
+## 取消区划招募里的某一格（点信息栏那五格 → zone_recruit_cancel 命令 → 这里）。
+## ★ 与 cancel_recruit 逐条同义：全额退款、后方前移、前移那一单从头读条；
+##   区别只有「格子属于区划」以及**不看区划归属之外的东西**（区划易主也允许取消自己排的单）。
+func cancel_zone_recruit(zone_id: int, slot: int, faction: String) -> bool:
+	var z = _zone_by_id(zone_id)
+	if z == null:
+		push_event({"type": "recruit_cancel_rejected", "reason": "zone", "slot": slot})
+		return false
+	if not FactionRes.same_side(String(z["owner"]), faction):
+		push_event({"type": "recruit_cancel_rejected", "reason": "zone_owner", "slot": slot})
+		return false
+	var kind := zone_recruit_kind_at(z, slot)
+	if kind == "":
+		push_event({"type": "recruit_cancel_rejected", "reason": "empty", "slot": slot})
+		return false
+
+	# 1) 先从队列里摘掉（后方的自动前移）
+	if slot == 0:
+		_start_next_zone_queue(z)
+	else:
+		(z["train_queue"] as Array).remove_at(slot - 1)
+
+	# 2) 再退款（顺序与招募相反：先摘掉再退，中途出错也不会「退了钱、队列里还留着」）
+	var cost := recruit_cost(kind)
+	var food := float(cost.get("food", 0.0))
+	var gold := float(cost.get("gold", 0.0))
+	var pop := recruit_population_cost(kind)
+	_refund_zone(z, food, gold, pop)
+	push_event({"type": "recruit_cancelled", "zone_id": zone_id, "reason": "cancelled",
+		"slot": slot, "kind": kind,
+		"refund_food": food, "refund_gold": gold, "refund_pop": pop})
+	return true
+
+
+## 退款（区划版）：粮食 / 黄金还给阵营、人口还给**同一个区划**，并把记账值减掉
+## （这样将来「区划被摧毁时整队退款」不会把已经退过的再退一遍）。
+func _refund_zone(zone, food: float, gold: float, pop: float) -> void:
+	resources["food"] = float(resources.get("food", 0.0)) + food
+	resources["gold"] = float(resources.get("gold", 0.0)) + gold
+	if pop > 0.0:
+		zone["population"] = float(zone.get("population", 0.0)) + pop
+	zone["train_cost_food"] = maxf(0.0, float(zone.get("train_cost_food", 0.0)) - food)
+	zone["train_cost_gold"] = maxf(0.0, float(zone.get("train_cost_gold", 0.0)) - gold)
+	zone["train_cost_pop"] = maxf(0.0, float(zone.get("train_cost_pop", 0.0)) - pop)
 
 
 # ------------------------------------------------------------------
@@ -1026,6 +1376,9 @@ func tick(dt: float) -> Array:
 	#         同一帧被摘出 world.units，那时退款就找不到它了（见 _release_recruit）。
 	var _t_recruit := _prof()
 	_tick_recruitment(dt)
+	# ★ 区划招募（区划 = 兵营，招将领）走同一段预算：与上面那条一样，
+	#   必须在「清理离场单位」之前跑完（它要在本帧内把读完的那一单落成单位）。
+	_tick_zone_recruitment(dt)
 	_prof_done("recruit", _t_recruit)
 
 	# 4) 单位：移动 + 战斗 / 警戒

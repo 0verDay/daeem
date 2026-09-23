@@ -219,7 +219,8 @@ func _process(dt: float) -> void:
 	unit_view.sync(dt)
 	building_view.sync()
 	unit_view.set_selection(_selected_ids())
-	building_view.set_selected(input_ctrl.selected_building)
+	# ★ 选中的建筑可能是一整批（框选建筑）—— 它们**都**要点亮金色外框
+	building_view.set_selected_buildings(input_ctrl.selected_buildings)
 
 	# 把纯本地的 UI 状态交给覆盖层画
 	overlay.hover_tile = input_ctrl.hover_tile
@@ -302,7 +303,7 @@ func _on_command(cmd: Dictionary) -> void:
 func _on_local_ui_changed() -> void:
 	# 本地 UI 变了只需要重画，不碰逻辑
 	unit_view.set_selection(_selected_ids())
-	building_view.set_selected(input_ctrl.selected_building)
+	building_view.set_selected_buildings(input_ctrl.selected_buildings)
 
 
 ## 逻辑事件 → 界面文案 / 本地状态。★ **只有这里**把事件翻成中文（逻辑层不写 UI 文案）。
@@ -320,8 +321,11 @@ func _consume_events(events: Array) -> void:
 	for evt in events:
 		match String(evt.get("type", "")):
 			"recruit_rejected":
+				# ★ max 来自事件（区划招募的队列上限可能与「将领招募」那条不同）；
+				#   没带（0）时 hud 用单位那条表的上限。
 				hud.show_notice(hud.recruit_reject_text(
-					String(evt.get("reason", "")), String(evt.get("kind", ""))))
+					String(evt.get("reason", "")), String(evt.get("kind", "")),
+					int(evt.get("max", 0))))
 			"order_rejected":
 				hud.show_notice(hud.order_reject_text(String(evt.get("reason", ""))))
 			"unit_recruited":

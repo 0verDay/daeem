@@ -99,7 +99,9 @@ var cfg: ConfigRes = null
 var world = null
 
 var _boxes: Dictionary = {}       # building -> Node2D
-var _selected = null
+## 选中的那批建筑（building -> true）。★ 用集合而不是单个引用：框选建筑时可能选中一整批，
+## 它们**都**该点亮金色外框（谁被选中一眼看出来）。
+var _selected_set: Dictionary = {}
 
 
 func setup(p_cfg: ConfigRes, p_world) -> void:
@@ -124,7 +126,7 @@ func sync() -> void:
 			# 建筑节点放在「它自己那一格的像素原点」（尺寸由 _draw 内部算）
 			box.position = PaletteRes.tile_rect(b.tx, b.ty, cfg).position
 			_boxes[b] = box
-		box.selected = (b == _selected)
+		box.selected = _selected_set.has(b)
 		box.queue_redraw()
 
 	for b in _boxes.keys():
@@ -134,5 +136,10 @@ func sync() -> void:
 			_boxes.erase(b)
 
 
-func set_selected(b) -> void:
-	_selected = b
+## 当前选中的建筑（框选可以一次选中一批；空数组 = 没选中任何建筑）。
+## ★ 只读这份本地状态：选中是纯本地的，不进逻辑、不进命令流。
+func set_selected_buildings(list: Array) -> void:
+	_selected_set = {}
+	for b in list:
+		if b != null:
+			_selected_set[b] = true
