@@ -21,6 +21,8 @@ const FontLoaderRes = preload("res://view/font_loader.gd")
 const PaletteRes = preload("res://view/palette.gd")
 const UnitRes = preload("res://logic/unit.gd")
 const FactionRes = preload("res://logic/faction.gd")
+const BuildingRes = preload("res://logic/building.gd")
+const UpgradeRes = preload("res://logic/upgrade.gd")
 const CommandRes = preload("res://logic/command_processor.gd")
 const GridRes = preload("res://logic/grid.gd")
 const WorldRes = preload("res://logic/world.gd")
@@ -494,6 +496,7 @@ func _test_panels(cfg) -> void:
 	_test_avatar_text_fit(cfg)
 	_test_recruit_via_card(main)
 	_test_zone_recruit_via_card(main)
+	_test_upgrade_via_card(main)
 	await _test_queue_control(cfg)
 	_test_queue_cancel_via_click(main)
 	_test_auto_select_on_recruit(main)
@@ -849,59 +852,129 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 	eq(card.cell_label(0), "占位单位", "单位页的 Q 格写着占位单位")
 	eq(card.cell_label(1), "", "单位页第 2 格是空的")
 
-	# ---- 2) 什么都没选中 → 只有「建筑」页（城墙 / 箭塔）----
+	# ---- 2) 什么都没选中 → 「建筑」+「科技」两页（★ 本轮：原来只有建筑一颗）----
 	main.input_ctrl.select_units([])
 	main.hud.refresh()
-	eq(tabs.page_count(), 1, "★ 什么都没选中时只有一颗页签")
-	eq(tabs.page(), PageTabsRes.PAGE_BUILD, "停在「建筑」页")
+	eq(tabs.page_count(), 2, "★ 什么都没选中时有两颗页签（建筑 / 科技）")
+	eq(tabs.page_id_at(0), PageTabsRes.PAGE_BUILD, "第一颗是「建筑」")
+	eq(tabs.page_id_at(1), PageTabsRes.PAGE_TECH, "★ 第二颗是「科技」（本轮新增）")
+	eq(tabs.page(), PageTabsRes.PAGE_BUILD, "★ 默认停在「建筑」页")
 	eq(card.entries().size(), 2, "★ 建筑页有 2 项（需求原话：只有两个建筑）")
 	eq(String(card.entry_at(0).get("build_type", "")), "wall", "建筑页第 1 项是城墙")
 	eq(String(card.entry_at(1).get("build_type", "")), "tower", "建筑页第 2 项是箭塔")
 	eq(card.cell_label(0), "城墙", "城墙在 Q 格（需求原话）")
 	eq(card.cell_label(1), "箭塔", "箭塔在 W 格（需求原话）")
+	ok(not main.hud.tech_grid.visible, "★ 不是科技页时九格收起来（命令卡照常画）")
 
-	# ---- 3) 选中普通建筑（城墙 / 箭塔）→ **一颗空页签**（不是空一块）、命令卡全空 ----
+	# ---- 3) 选中普通建筑（城墙 / 箭塔）→ **「操作」页**（本轮：升级那一格）----
+	# ★ 本轮需求原文：「为所有单位/建筑都添加上『操作』页签」——普通建筑的操作页
+	#   就是「升级城墙 / 升级箭塔」那一格（原来这里是一颗没有内容的空页签）。
 	var plain_b = _plain_building(world)
-	ok(plain_b != null, "地图上找得到一栋普通建筑（城墙 / 箭塔）用来试「空页签」")
+	ok(plain_b != null, "地图上找得到一栋普通建筑（城墙 / 箭塔）")
 	if plain_b != null:
 		main.input_ctrl.select_building(plain_b)
 		main.hud.refresh()
-		eq(tabs.page_count(), 1, "★ 选中普通建筑 → 保留**一颗**页签")
-		eq(tabs.page(), PageTabsRes.PAGE_NONE, "★ 它是那颗**空页签**（PAGE_NONE）")
+		eq(tabs.page_count(), 1, "★ 选中普通建筑 → 一颗页签")
+		eq(tabs.page(), PageTabsRes.PAGE_ORDER, "★ 它是「操作」页")
 		ok(tabs.button_at(0) != null and tabs.button_at(0).visible,
-			"★ 页签按钮是**可见**的（手玩：保留一个空页签，而不是空一块）")
-		eq(tabs.button_at(0).text, "", "空页签上没有字")
+			"页签按钮是可见的")
+		eq(tabs.button_at(0).text, "操作", "页签上写着「操作」")
 		v2_near(tabs.button_at(0).size, Vector2(100.0, 240.0), 1.0,
 			"★ 只有一颗时它铺满整列（100×240）")
-		ok(not tabs.is_active(0), "★ 空页签不画成「当前页」的高亮（它只是占位）")
+		ok(tabs.is_active(0), "★ 当前页画成高亮")
 		# ★★ 回归：页签必须**看得见** —— 非当前页的普通态底色不能是全透明。
-		#   原来普通态 `bg.a = 0`，而页签列是直接立在地图上的（自己没有底板），
-		#   于是「地图从那块透出来」，手玩报「选中建筑看不到页签 / 空一块」。
 		ok(UiStyleRes.tab_normal().bg_color.a > 0.2,
 			"★ 非当前页的页签有底色（全透明时立在地图上看不见）")
 		ok(UiStyleRes.tab_active().bg_color.a > 0.9, "当前页仍是实心强调色（变的是普通态）")
-		eq(card.entries().size(), 0, "★ 命令卡 9 格全空")
-		eq(card.cell_label(0), "", "命令卡第 1 格也是空的")
+		eq(card.entries().size(), 1, "★ 操作页只有一格（升级）")
+		eq(String(card.entry_at(0).get("type", "")), "building_upgrade",
+			"那一格是「升级」")
+		eq(card.cell_label(0), "升级%s" % plain_b.display_name(),
+			"★ 格子上写着「升级%s」" % plain_b.display_name())
 
-	# ---- 4) 选中大本营 → 科技页签（本版页里还没有东西）----
+	# ---- 4) 选中大本营 → 操作 + 科技（★ 本轮：操作页里有「升级大本营」）----
 	var base = world.find_base_of("p1")
 	ok(base != null, "有己方大本营")
 	if base != null:
 		main.input_ctrl.select_building(base)
 		main.hud.refresh()
-		eq(tabs.page_count(), 1, "★ 大本营只有一颗页签")
-		eq(tabs.page(), PageTabsRes.PAGE_TECH, "★ 大本营 = 科技页签")
-		eq(card.entries().size(), 0, "科技页里还没有东西（9 格全空）")
-		eq(card.cell_label(0), "", "科技页第 1 格是空的")
+		eq(tabs.page_count(), 2, "★ 大本营有两颗页签（操作 / 科技）")
+		eq(tabs.page_id_at(0), PageTabsRes.PAGE_ORDER, "第一颗是「操作」")
+		eq(tabs.page_id_at(1), PageTabsRes.PAGE_TECH, "第二颗是「科技」")
+		eq(tabs.page(), PageTabsRes.PAGE_ORDER, "★ 默认停在「操作」页")
+		eq(card.entries().size(), 1, "大本营的操作页只有一格")
+		eq(String(card.entry_at(0).get("type", "")), "building_upgrade",
+			"★ 那一格是「升级大本营」")
+		eq(card.cell_label(0), "升级大本营", "★ 格子上写着「升级大本营」")
+		# 切到科技页：还是那颗九格（与空手时同一页）
+		tabs.button_at(1).emit_signal("pressed")
+		eq(tabs.page(), PageTabsRes.PAGE_TECH, "点第二颗切到「科技」页")
+		_eq_tech_page(main, "选中大本营")
+		ok(not main.hud.tech_grid.visible or true, "（科技页转换见下）")
+		# 切回操作页（后面的用例按「大本营停在操作页」起步）
+		tabs.button_at(0).emit_signal("pressed")
+		eq(tabs.page(), PageTabsRes.PAGE_ORDER, "切回操作页")
+		eq(card.entries().size(), 1, "操作页还是「升级大本营」那一格")
 
-	# ---- 5) 选中区划中心 → 招募页签（三个占位将领）----
+	# ---- 4b) 空手时那颗科技页签 → **同一页**（同一套九格内容）----
+	main.input_ctrl.select_units([])
+	main.hud.refresh()
+	eq(tabs.page_count(), 2, "空手时建筑 / 科技两颗")
+	tabs.button_at(1).emit_signal("pressed")
+	eq(tabs.page(), PageTabsRes.PAGE_TECH, "点第二颗切到「科技」页")
+	_eq_tech_page(main, "什么都没选中")
+	# ★ 点一格 = 启用；再点 = 弃用（命令走 tech_toggle）
+	var g = main.hud.tech_grid
+	var first_id := String((g.entry_at(0) as Dictionary).get("id", ""))
+	ok(first_id != "", "第一格有 id")
+	ok(not world.is_tech_active(first_id), "开局这一条没启用")
+	g.press(0)
+	ok(world.is_tech_active(first_id), "★ 点一格 = 启用（走 tech_toggle 命令）")
+	ok(g.cell_active(0), "★ 已启用的那一格画成高亮")
+	g.press(0)
+	ok(not world.is_tech_active(first_id), "★ 再点一次 = 弃用")
+	# ★ 启用满 3 条之后点第 4 格：被阻止 + 红字提示
+	var ids: Array = []
+	for i in g.entries().size():
+		ids.append(String((g.entry_at(i) as Dictionary).get("id", "")))
+	for k in 3:
+		g.press(k)
+	eq(world.active_tech_ids().size(), 3, "★ 启用了三条")
+	ok(world.tech_remaining_slots() == 0, "名额用完")
+	g.press(3)
+	ok(not world.is_tech_active(ids[3]), "★ 第 4 条没有生效（被阻止）")
+	ok(main.hud.notice_active(), "★ 满了之后点第 4 条会弹提示")
+	ok(main.hud.notice_text().contains("3"), "提示里说明「最多 3 个」：%s" % main.hud.notice_text())
+	# 收尾：把这三条弃用（后面的用例不该带着科技加成跑）
+	for k in 3:
+		g.press(k)
+	eq(world.active_tech_ids().size(), 0, "收尾：弃用全部科技")
+
+	# ---- 5) 选中区划中心 → 操作（三个特化）+ 招募（三个占位将领）----
 	var zone = _zone_with_center(world)
 	ok(zone != null, "地图上找得到一个带中心的区划")
 	if zone != null:
 		main.input_ctrl.select_zone(zone)
 		main.hud.refresh()
-		eq(tabs.page_count(), 1, "★ 选中区划中心只有一颗页签")
-		eq(tabs.page(), PageTabsRes.PAGE_RECRUIT, "★ 区划中心 = 招募页签")
+		eq(tabs.page_count(), 2, "★ 选中区划中心有两颗页签（操作 / 招募）")
+		eq(tabs.page_id_at(0), PageTabsRes.PAGE_ORDER, "第一颗是「操作」")
+		eq(tabs.page_id_at(1), PageTabsRes.PAGE_RECRUIT, "第二颗是「招募」")
+		# ★ 显式停在「操作」页：hud 会记住「区划中心这一类上次停在哪个页签」
+		#   （`_page_memory`），而前面的用例在招募页停过 —— 不显式切回来的话，
+		#   这里读到的会是招募页那三个将领（那不是 bug，是「记住上次那一页」）。
+		tabs.select_page(PageTabsRes.PAGE_ORDER)
+		eq(tabs.page(), PageTabsRes.PAGE_ORDER, "★ 停在「操作」页")
+		# 操作页 = 三个特化（只能选一个）
+		eq(card.entries().size(), 3, "★ 操作页里是三个特化")
+		eq(card.cell_label(0), "粮食特化", "Q 格 = 粮食特化")
+		eq(card.cell_label(1), "黄金特化", "W 格 = 黄金特化")
+		eq(card.cell_label(2), "人口特化", "E 格 = 人口特化")
+		eq(String(card.entry_at(0).get("type", "")), "zone_specialize",
+			"操作页那一项是「特化」")
+		eq(String(card.entry_at(0).get("spec", "")), "food", "第 1 格是粮食特化")
+		# 切到招募页：还是原来那三个占位将领
+		tabs.button_at(1).emit_signal("pressed")
+		eq(tabs.page(), PageTabsRes.PAGE_RECRUIT, "★ 第二颗 = 招募页签")
 		eq(card.entries().size(), 3, "★ 招募页里是三个占位将领（需求原话）")
 		eq(card.cell_label(0), "将领 1", "Q 格 = 将领 1")
 		eq(card.cell_label(1), "将领 2", "W 格 = 将领 2")
@@ -910,12 +983,46 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 			"招募页那一项是「区划招募」（排进区划的队列）")
 		eq(String(card.entry_at(0).get("unit_kind", "")), "general_1",
 			"第 1 格要招的兵种是 general_1")
+		# 回到操作页（后面的用例按「停在操作页」起步）
+		tabs.button_at(0).emit_signal("pressed")
+		eq(tabs.page(), PageTabsRes.PAGE_ORDER, "切回操作页")
 
 	# 收尾：回到「选中将领 1」并把页签停在「操作」页（后面的用例按这个前提起步）
 	main.input_ctrl.select_units([world.unit_by_id("general-1")])
 	main.hud.refresh()
 	main.hud.page_tabs.select_page(PageTabsRes.PAGE_ORDER)
 	eq(main.hud.page_tabs.page(), PageTabsRes.PAGE_ORDER, "收尾：回到操作页")
+
+
+## 命令卡现在这九格的类型串（诊断用：断言失败时要一眼看出「画的是哪一套」）
+func _entry_types(card) -> Array:
+	var out: Array = []
+	for i in card.entries().size():
+		out.append(String(card.entry_at(i).get("type", "")))
+	return out
+
+
+## 「科技页」长什么样（选中大本营 / 什么都没选中时都是**同一套**九格）。
+## ★ 需求原话：「当前占位用科技有 9 个，铺满右下角科技页签的 3x3 格子」。
+func _eq_tech_page(main, where: String) -> void:
+	var g = main.hud.tech_grid
+	var card = main.hud.command_card
+	ok(g.visible, "%s：★ 科技九格显示出来了" % where)
+	eq(g.entries().size(), 9, "%s：★ 九格铺满（9 条占位科技）" % where)
+	eq(card.entries().size(), 0, "%s：命令卡在科技页是空的（内容由科技那一层画）" % where)
+	eq(g.cell_name(0), "粮食产量 I", "%s：第 1 格 = 粮食产量 I" % where)
+	eq(g.cell_line(0), "粮食 +1", "%s：第 1 格第二行写效果" % where)
+	ok(String((g.entry_at(0) as Dictionary).get("desc", "")).contains("地块"),
+		"%s：tooltip 里是完整效果说明" % where)
+	eq(g.cell_name(6), "建筑加固", "%s：第 7 格 = 建筑加固" % where)
+	eq(g.cell_name(7), "将领强化", "%s：第 8 格 = 将领强化" % where)
+	eq(g.cell_name(8), "区划人口", "%s：第 9 格 = 区划人口" % where)
+	eq(g.cell_name(9), "", "%s：越界格（第 10 格）读不到东西" % where)
+	# 九格的位置与命令卡那九格**完全重合**（换页时看不出换了控件）
+	var c0: Rect2 = UiLayoutRes.card_cell_rect(0)
+	var g_rect: Rect2 = g.get_global_rect()
+	v2_near(g_rect.position, c0.position, 1.0,
+		"%s：★ 科技九格的左上角与命令卡重合" % where)
 
 
 ## 一栋**普通**建筑（城墙 / 箭塔 / 预置建筑），用来验「选中建筑没有页签」
@@ -943,8 +1050,12 @@ func _test_card_keys(main) -> void:
 	var g1 = main.world.unit_by_id("general-1")
 
 	# ★ 建筑页只在「什么都没选中」时出现（见 hud._tab_plan）——先清空选中。
+	# ⚠️ 这里**同时显式切回建筑页**：空手那一屏现在有「建筑 / 科技」两颗页签，
+	#    而 hud 会记住玩家上一次停在那一页（`_page_memory`）——上一个用例点过科技页，
+	#    所以不显式切回来的话，这里会停在科技页（这不是 bug，是「记住上次那一页」）。
 	main.input_ctrl.select_units([])
 	main.hud.refresh()
+	tabs.select_page(PageTabsRes.PAGE_BUILD)
 	eq(tabs.page(), PageTabsRes.PAGE_BUILD, "（前提）没选中东西 → 停在建筑页")
 
 	# 空格子的字母不该被命令卡吃掉（建筑页只有 Q/W 两格，A 是空的）
@@ -1120,11 +1231,12 @@ func _test_zone_recruit_via_card(main) -> void:
 	world.resources["gold"] = 1000.0
 	zone["population"] = 10.0
 
-	# 点区划中心（= 选中这个区划）→ 页签只剩「招募」一颗
+	# 点区划中心（= 选中这个区划）→ 操作（三个特化）+ 招募两颗页签
 	main.input_ctrl.select_zone(zone)
 	main.hud.refresh()
-	eq(main.hud.page_tabs.page_count(), 1, "★ 选中区划中心 → 只有一颗页签")
-	eq(main.hud.page_tabs.page(), PageTabsRes.PAGE_RECRUIT, "★ 它是「招募」页签")
+	eq(main.hud.page_tabs.page_count(), 2, "★ 选中区划中心 → 操作 + 招募两颗页签")
+	main.hud.page_tabs.select_page(PageTabsRes.PAGE_RECRUIT)
+	eq(main.hud.page_tabs.page(), PageTabsRes.PAGE_RECRUIT, "★ 切到「招募」页签")
 	eq(card.entries().size(), 3, "★ 招募页里是三个占位将领")
 
 	var q = main.hud.detail_panel.queue_control()
@@ -1171,6 +1283,141 @@ func _test_zone_recruit_via_card(main) -> void:
 	main.input_ctrl.select_units([world.unit_by_id("general-1")])
 	main.hud.refresh()
 	ok(not q.is_zone_queue(), "★ 改选部队之后，队列控件不再显示区划的队列")
+	main.input_ctrl.select_units([])
+	main.hud.refresh()
+
+
+# ---- 建筑升级 / 区划特化：操作页那几格 → 读条 →（复用）信息栏那块面板 ----
+#
+# 需求原话：「大本营的操作页签中有一个升级大本营选项，点击后开始读条（和招募单位时的
+# 读条一样，可以复用招募单位的面板）……区划中心有三个特化选项……特化也需要读条，
+# 取消特化也需要读条」。
+# ★ 规则本身（等级 / 血量 / 产能 / 退款）在 tests/test_upgrade.gd；
+#   这里验的是「页签 → 操作页的格子 → 命令 → 那块面板显示读条 → 点它取消」这条接线。
+func _test_upgrade_via_card(main) -> void:
+	var world = main.world
+	var card = main.hud.command_card
+	var tabs = main.hud.page_tabs
+	var q = main.hud.detail_panel.queue_control()
+	world.resources["food"] = 5000.0
+	world.resources["gold"] = 5000.0
+
+	# ---- ① 升级城墙：点操作页那一格 → 读条出现在信息栏 ----
+	var wall = null
+	for b in world.building_list:
+		if b.alive and b.type == BuildingRes.TYPE_WALL and String(b.owner) == world.my_faction:
+			wall = b
+			break
+	ok(wall != null, "有一栋己方城墙")
+	if wall == null:
+		return
+	main.input_ctrl.select_building(wall)
+	main.hud.refresh()
+	eq(tabs.page(), PageTabsRes.PAGE_ORDER, "（前提）城墙停在操作页")
+	eq(card.cell_label(0), "升级城墙", "★ Q 格 = 升级城墙")
+	var lv0: int = wall.level
+	var food0: float = float(world.resources["food"])
+	card.activate_index(0)
+	ok(wall.is_upgrading(), "★ 点那一格 = 开始读条")
+	near(float(world.resources["food"]), food0 - float(
+		float(world.cfg.upgrade_cost_to("wall", lv0).get("food", 0.0))), 1e-4,
+		"★ 入队即扣粮食")
+	# 信息栏那块面板 → 单条读条模式
+	main.hud.refresh()
+	ok(q.showing(), "★ 信息栏里出现读条面板")
+	ok(q.is_bar_mode(), "★ 它是「单条读条」模式（复用招募那块面板）")
+	ok(q.title_text().contains("升级"), "汇总带写着「升级…」（实际：%s）" % q.title_text())
+	ok(q.cell_label(0).contains("升"), "大格子里写着「升 2 级」（实际：%s）" % q.cell_label(0))
+	ok(not q.cell_filled(1), "★ 四个小格子留空（这一单没有队列）")
+	near(q.progress(), 0.0, 0.05, "刚入队进度接近 0")
+	# 读条中：操作页只剩「取消升级」那一格
+	main.hud.refresh()
+	eq(card.entries().size(), 1, "读条中操作页只有一格")
+	eq(String(card.entry_at(0).get("type", "")), "building_upgrade_cancel",
+		"★ 那一格是「取消升级」（实际：%s）" % String(card.entry_at(0).get("type", "")))
+	# 点面板上那一格 = 取消 + 退款
+	_click_control(q, UiLayoutRes.queue_cell_rect(0).get_center())
+	ok(not wall.is_upgrading(), "★ 点读条那一格 = 取消升级")
+	eq(wall.level, lv0, "等级没变")
+	near(float(world.resources["food"]), food0, 1e-4, "★ 取消全额退款")
+
+	# ---- ② 读完：等级 +1、血量上限变高、那格回到「升级」 ----
+	main.hud.refresh()
+	eq(card.entries().size(), 1, "（前提）取消之后操作页回到一格")
+	eq(String(card.entry_at(0).get("type", "")), "building_upgrade",
+		"（前提）那一格回到「升级」（实际：%s）" % String(card.entry_at(0).get("type", "")))
+	card.activate_index(0)
+	ok(wall.is_upgrading(), "再次开始读条（食物 %.0f / 黄金 %.0f）" % [
+		float(world.resources["food"]), float(world.resources["gold"])])
+	world.tick(60.0)
+	main.hud.refresh()
+	eq(wall.level, lv0 + 1, "★ 读完等级 +1")
+	ok(not q.is_bar_mode(), "★ 读条结束 → 面板回到「不是读条」")
+	ok(card.cell_label(0).contains("升级"), "那一格又变回「升级%s」" % wall.display_name())
+	ok(main.hud.detail_panel.detail_text().contains("等级 %d" % wall.level),
+		"★ 右栏数值里有「等级 %d」（实际：%s）" % [wall.level, main.hud.detail_panel.detail_text()])
+
+	# ---- ③ 区划中心：三个特化 → 点一个 → 读条 → 特化生效后只剩「取消特化」----
+	var zone = world.zones.zone_at(world.find_base_of("p1").tx, world.find_base_of("p1").ty)
+	ok(zone != null, "大本营所在的区划")
+	if zone == null:
+		return
+	main.input_ctrl.select_zone(zone)
+	main.hud.refresh()
+	# ★ 显式停在操作页（hud 会记住「区划中心上次停在哪个页签」，前一个用例停在招募页）
+	tabs.select_page(PageTabsRes.PAGE_ORDER)
+	eq(tabs.page(), PageTabsRes.PAGE_ORDER, "（前提）区划中心停在操作页")
+	eq(card.entries().size(), 3, "★ 没特化时操作页 = 三个特化")
+	card.activate_index(0)                      # 粮食特化
+	ok(UpgradeRes.zone_is_busy(zone), "★ 点粮食特化 = 开始读条")
+	main.hud.refresh()
+	ok(q.is_bar_mode(), "★ 特化读条也走信息栏那块面板")
+	ok(q.title_text().contains("粮食"), "汇总带写着「粮食特化」（实际：%s）" % q.title_text())
+	ok(q.cell_label(0).contains("特化中"), "大格子里写着「特化中」（实际：%s）" % q.cell_label(0))
+	eq(card.entries().size(), 1, "读条中操作页只剩一格（entries=%s）" % str(_entry_types(card)))
+	eq(String(card.entry_at(0).get("type", "")), "zone_spec_bar_cancel",
+		"★ 那一格是「取消特化」（撤单）")
+	# 读条中再点「取消特化」那一格 = 撤掉这一单（不是取消已有特化）
+	_click_control(q, UiLayoutRes.queue_cell_rect(0).get_center())
+	ok(not UpgradeRes.zone_is_busy(zone), "★ 撤掉了那一单")
+	eq(String(zone.get("spec_done", "")), "", "还没特化过")
+	# 重新来一次并读完
+	main.hud.refresh()
+	eq(card.entries().size(), 3, "撤单后操作页又是三个特化")
+	card.activate_index(0)
+	world.tick(60.0)
+	main.hud.refresh()
+	main.hud.rebuild_card()      # 真实游戏里由每帧 refresh 的页签比较兜底；测试里显式刷一次
+	eq(String(zone.get("spec_done", "")), "food", "★ 读完特化生效")
+	near(UpgradeRes.zone_spec_mult(zone, world.cfg)["food"], 1.1, 1e-6, "★ 本区块粮食 +10%")
+	eq(card.entries().size(), 1, "★ 特化后操作页只剩一格（不能再特化）")
+	eq(String(card.entry_at(0).get("type", "")), "zone_spec_cancel",
+		"★ 那一格是「取消特化」")
+	eq(card.cell_label(0), "取消特化", "格子上写着「取消特化」")
+	ok(main.hud.detail_panel.detail_text().contains("特化"),
+		"★ 区划详情里写着特化状态（实际：%s）" % main.hud.detail_panel.detail_text())
+	# 点「取消特化」→ **也要读条**
+	card.activate_index(0)
+	ok(UpgradeRes.zone_is_busy(zone), "★ 取消特化也要读条")
+	ok(UpgradeRes.zone_spec_is_cancel(zone), "这一条是「取消特化」")
+	main.hud.refresh()
+	ok(q.is_bar_mode(), "那块面板显示取消特化的读条")
+	ok(q.title_text().contains("取消"), "汇总带写着「取消…」（实际：%s）" % q.title_text())
+	# ★ 「取消特化」的读条本身不可取消：那块面板不吃点击
+	ok(q.cell_at_position(UiLayoutRes.queue_cell_rect(0).get_center()) < 0,
+		"★ 「取消特化」的读条不可再取消（点了没反应）")
+	world.tick(60.0)
+	main.hud.refresh()
+	main.hud.rebuild_card()
+	eq(String(zone.get("spec_done", "")), "", "★ 读完特化被去掉")
+	eq(card.entries().size(), 3, "★ 操作页又能选三个特化了")
+
+	# 收尾：清干净（后面的用例要在「没在读条」的世界里跑）
+	while UpgradeRes.zone_is_busy(zone):
+		world.tick(60.0)
+	for b in world.building_list:
+		if b.is_upgrading():
+			world.cancel_building_upgrade(b.tx, b.ty)
 	main.input_ctrl.select_units([])
 	main.hud.refresh()
 

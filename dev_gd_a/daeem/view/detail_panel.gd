@@ -429,9 +429,28 @@ func set_detail_title(text: String) -> void:
 
 ## 右栏右上角的招募队列：显示哪个将领 / 哪个区划的（null = 没有 → 整块收起来）
 ## @param is_zone true = holder 是一个**区划字典**（选中区划中心时的区划招募队列）
+## ★ 调它 = 退出「单条读条」模式（建筑升级 / 区划特化 —— 那块面板被两种内容复用）
 func set_queue(holder, is_zone: bool = false) -> void:
 	if _queue != null:
 		_queue.set_queue(holder, is_zone)
+
+
+## ★★ 右栏右上角显示**一条读条**（建筑升级 / 区划特化 —— 复用招募队列那块面板）。
+##
+## 需求原话：「点击后开始读条（和招募单位时的读条一样，可以复用招募单位的面板）」。
+## @param title 汇总带第一行（「升级大本营」/「粮食特化」/「取消特化」…）；空串 = 收起来
+## @param label 大格子里那一行字（「升 2 级」/「粮食」…）
+## @param progress / remaining 由**逻辑层**算好传进来（视图不自己推，pitfalls 5.20）
+## @param cancellable 现在能不能点它取消
+func set_progress_bar(title: String, label: String, progress: float, remaining: float,
+		cancellable: bool = true) -> void:
+	if _queue != null:
+		_queue.set_bar(title, label, progress, remaining, cancellable)
+
+
+## 右栏那块队列面板现在是不是「单条读条」模式（hud 用它决定点击该发哪条取消命令）
+func queue_is_bar() -> bool:
+	return _queue != null and _queue.is_bar_mode()
 
 
 ## 提示行（红字）。空串 = 收起来。

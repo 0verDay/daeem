@@ -308,11 +308,13 @@ func _on_local_ui_changed() -> void:
 
 ## 逻辑事件 → 界面文案 / 本地状态。★ **只有这里**把事件翻成中文（逻辑层不写 UI 文案）。
 ##
-## 现在处理三件事：
+## 现在处理五件事：
 ##   · `recruit_rejected` → 左栏那行红字（招募被拒的原因要给玩家看见）；
 ##   · `unit_recruited`   → **如果玩家此刻仍选中着那个将领，新兵也一起被选上**
 ##     （需求原话；选中是纯本地状态，所以落在 input_controller.notify_unit_recruited）；
-##   · `order_rejected`   → 「将领正在招募，它和它的部队不接受指令」（同上那行红字）。
+##   · `order_rejected`   → 「将领正在招募，它和它的部队不接受指令」（同上那行红字）；
+##   · `tech_rejected`    → ★ 「最多只能同时启用 3 个科技」（点第 4 个科技时）；
+##   · `upgrade_rejected` → ★ 升级 / 特化被拒（满级 / 读条中 / 钱不够 / 不是自己的）。
 ## 其它事件（击杀 / 建筑被拆…）暂时没有界面画它们，
 ## 要恢复日志的话在这里加翻译、再给 detail_panel 加一块列表即可。
 func _consume_events(events: Array) -> void:
@@ -328,5 +330,12 @@ func _consume_events(events: Array) -> void:
 					int(evt.get("max", 0))))
 			"order_rejected":
 				hud.show_notice(hud.order_reject_text(String(evt.get("reason", ""))))
+			"tech_rejected":
+				# ★ 科技启用被拒（满 3 条）。本地那一下已经给过一句提示了，
+				#   这条是**权威侧**的同一句话 —— 两条同文案，所以玩家看到的还是一句。
+				hud.show_notice(hud.tech_reject_text(String(evt.get("reason", ""))))
+			"upgrade_rejected":
+				# ★ 建筑升级 / 区划特化被拒（拒因码见 logic/upgrade.gd 的那几处判定）
+				hud.show_notice(hud.upgrade_reject_text(String(evt.get("reason", ""))))
 			"unit_recruited":
 				input_ctrl.notify_unit_recruited(evt.get("leader", null), evt.get("unit", null))

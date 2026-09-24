@@ -51,6 +51,21 @@ var world = null
 var _holder = null
 ## 这个主人是不是一个**区划**（true 时走 world 的 zone_* 那一套查询）
 var _is_zone: bool = false
+
+## ★★ 「单条读条」模式（建筑升级 / 区划特化复用同一块面板 —— 需求原话
+##    「点击后开始读条（和招募单位时的读条一样，可以复用招募单位的面板）」）。
+##
+## 它和上面那套「招募队列」**互斥**：`_bar_active` 为 true 时只画大格子那一条读条，
+## 四个小格子留空、汇总带写 `_bar_title` + 剩余秒数。
+## ★ 进度与秒数由**逻辑层算好**传进来（`world` 那几条查询），视图不自己推（pitfalls 5.20）。
+var _bar_active: bool = false
+var _bar_title: String = ""
+var _bar_label: String = ""
+var _bar_progress: float = 0.0
+var _bar_remaining: float = 0.0
+## 这条读条能不能点（点 = 取消这一单）。false 时鼠标不停留、点了也不发信号。
+var _bar_cancellable: bool = true
+
 ## 五个格子的文字标签（第 0 个是大格子）
 var _labels: Array[Label] = []
 ## 汇总带的两行字（「招募队列 3/5」/「共 22s」）
@@ -113,10 +128,37 @@ func _place(l: Label, r: Rect2) -> void:
 
 ## 这一帧要显示的队列主人（传 null = 没选中将领 / 选中的是建筑或区划）。
 ## @param is_zone true 时 holder 是一个**区划字典**（区划招募：点区划中心时显示它的队列）
+## ★ 调它 = 退出「单条读条」模式（两种内容互斥，见 `set_bar()`）
 func set_queue(holder, is_zone: bool = false) -> void:
 	_holder = holder
 	_is_zone = is_zone
+	_bar_active = false
 	refresh()
+
+
+## ★★ 显示**一条读条**（建筑升级 / 区划特化 —— 复用招募面板的那套画法）。
+##
+## @param title   汇总带第一行（如「升级大本营」/「粮食特化」/「取消特化」）
+## @param label   大格子里那一行字（如「升 2 级」/「粮食」）
+## @param progress 0~1（由逻辑层算好）
+## @param remaining 还剩几秒（由逻辑层算好）
+## @param cancellable 现在能不能点它取消（false → 不画悬停红框、点了不发信号）
+##
+## ★ 传空 title = 没有读条 → 整块收起来（与招募那条一样：不可见时收不到鼠标事件）。
+func set_bar(title: String, label: String, progress: float, remaining: float,
+		cancellable: bool = true) -> void:
+	_bar_active = title != ""
+	_bar_title = title
+	_bar_label = label
+	_bar_progress = clampf(progress, 0.0, 1.0)
+	_bar_remaining = maxf(0.0, remaining)
+	_bar_cancellable = cancellable
+	refresh()
+
+
+## 现在显示的是不是「单条读条」模式（测试与 hud 读它）
+func is_bar_mode() -> bool:
+	return _bar_active and showing()
 
 
 ## 旧接口（将领队列）：保留它，测试与调用方按「将领」读更清楚
@@ -137,7 +179,10 @@ func holder():
 ## 这个主人现在是不是「正在招募」。
 ## ★ 将领：`unit.is_training()`；区划：队列字段挂在区划字典上，判据由**逻辑层**给
 ##   （`world.zone_is_training`）—— 视图不自己发明判定（pitfalls 5.20）。
+## ★ 单条读条模式（`_bar_active`）**不看主人**：它的内容由 hud 直接喂（升级 / 特化）。
 func showing() -> bool:
+	if _bar_active:
+		return true
 	if _holder == null:
 		return false
 	if not _is_zone:
@@ -181,6 +226,11 @@ func refresh() -> void:
 		queue_redraw()
 		return
 
+	if _bar_active:
+		_refresh_bar()
+		queue_redraw()
+		return
+
 	# 汇总带：已排几个 / 上限 + 整条队列读完还要多久
 	_title.text = "招募队列 %d/%d" % [queue_count(), queue_max()]
 	_total.text = "共 %ds" % int(ceil(total_eta()))
@@ -202,13 +252,35 @@ func refresh() -> void:
 	queue_redraw()
 
 
+## ★ 单条读条模式的内容：汇总带写标题 + 剩余秒数，大格子写那一行字 + 剩余秒数，
+## 四个小格子留空（这一单没有队列）。
+func _refresh_bar() -> void:
+	_title.text = _bar_title
+	_total.text = "剩 %ds" % int(ceil(_bar_remaining))
+	for i in _labels.size():
+		if i == 0:
+			_labels[i].text = "%s\n剩 %.1fs" % [_bar_label, _bar_remaining]
+		else:
+			_labels[i].text = ""
+	# 鼠标停在**不可取消**的读条上时不留「手型」——那会让人以为点了有反应
+	if not _bar_cancellable and _hover_slot >= 0:
+		_hover_slot = -1
+		mouse_default_cursor_shape = Control.CURSOR_ARROW
+
+
 # ------------------------------------------------------------------
 # 状态（给渲染与测试读）
 # ------------------------------------------------------------------
 
 ## 第 i 格里的兵种（空串 = 空格子）。0 = 正在读条的大格子，1..4 = 排队的小格子。
 ## ★ 两种主人（将领 / 区划）读的字段名一样，只是挂在不同的对象上。
+## ★ 单条读条模式：只有大格子有内容（键 = 一个占位符，视图内部用来判「有没有东西」）。
+const BAR_SLOT_KEY := "__bar__"
+
+
 func cell_kind(i: int) -> String:
+	if _bar_active:
+		return BAR_SLOT_KEY if i == 0 else ""
 	if _holder == null:
 		return ""
 	if _is_zone:
@@ -233,7 +305,10 @@ func cell_filled(i: int) -> bool:
 
 
 ## 第 i 格显示的字（config 里的 short，没配就退回 label 首字）
+## ★ 单条读条模式走 `_bar_label`（它不是兵种，`recruit_short_of` 查不到）
 func cell_text(i: int) -> String:
+	if _bar_active:
+		return _bar_label if i == 0 else ""
 	var kind := cell_kind(i)
 	if kind == "":
 		return ""
@@ -244,6 +319,8 @@ func cell_text(i: int) -> String:
 
 ## 大格子的读条进度（0~1）
 func progress() -> float:
+	if _bar_active:
+		return _bar_progress
 	if _holder == null:
 		return 0.0
 	if _is_zone:
@@ -255,6 +332,8 @@ func progress() -> float:
 
 ## 第 i 格还要等多久（秒）。★ 走逻辑层的查询（见文件头第 ② 条），视图不自己推。
 func eta_of(i: int) -> float:
+	if _bar_active:
+		return _bar_remaining if i <= 0 else 0.0
 	if _holder == null:
 		return 0.0
 	if world == null:
@@ -346,6 +425,12 @@ func hover_slot() -> int:
 ##   （`queue_cell_rect()` 已经带上了那段偏移，所以这里天然判不到它）。
 func cell_at_position(p: Vector2) -> int:
 	if not showing():
+		return -1
+	# ★ 单条读条模式：只有大格子可点，而且**只有能取消时**才算命中
+	#   （有些读条不给取消 —— 例如「取消特化」本身，点了不该有任何反应）。
+	if _bar_active:
+		if UiLayoutRes.queue_cell_rect(0).has_point(p):
+			return 0 if _bar_cancellable else -1
 		return -1
 	for i in UiLayoutRes.QUEUE_SLOTS:
 		if UiLayoutRes.queue_cell_rect(i).has_point(p) and cell_filled(i):

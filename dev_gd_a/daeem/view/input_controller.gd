@@ -872,8 +872,96 @@ func notify_unit_recruited(leader, unit) -> void:
 	select_units(selected_units.duplicate() + [unit])
 
 
-## 拆除在哪：**这一版没有界面入口**。
+# ------------------------------------------------------------------
+# 科技（UI：右下「科技」页签的 3×3 九格）
+# ------------------------------------------------------------------
+
+## ★★ 启用 / 弃用一条科技（点科技九格里的某一格）。
 ##
+## ★ 与其他 UI 动作同一条约定：**只发命令**（`tech_toggle`），命令里只有
+##   科技 id + 目标状态 + 阵营。「最多同时启用 3 个」这条规则、以及这一条科技
+##   到底改什么数值，全在权威侧（world.set_tech_active）算 ——
+##   界面不预先判断「还能不能再启用一个」，否则规则就有两份实现（迟早漂开）。
+## ★ 同一个入口既能「启用」也能「弃用」：`on` 由调用方按**当前权威状态**取反给出，
+##   而当前状态是从 world 读的（`world.is_tech_active`），不是界面自己记的。
+##
+## @return true = 命令已发出（不代表逻辑层接受了 —— 满 3 条时逻辑层会拒并给提示）
+func request_tech_toggle(id: String, on: bool) -> bool:
+	if world == null or world.tech == null:
+		return false
+	if id == "":
+		return false
+	command_issued.emit({
+		"kind": "tech_toggle", "tech_id": id, "on": on,
+		"faction": world.my_faction,
+	})
+	return true
+
+
+# ------------------------------------------------------------------
+# 建筑升级 / 区划特化（UI：右下「操作」页签里那几格）
+#
+# ★ 与其它 UI 动作同一条约定：**只发命令**。「能不能升 / 升到几级 / 退多少钱 / 读条多久」
+#   全在权威侧（logic/upgrade.gd + world）算 —— 界面不预先判断，
+#   否则规则就有两份实现（迟早漂开）。
+# ------------------------------------------------------------------
+
+## 升级某一栋建筑（按**地块**定位：命令里不带对象引用，第 1 轮要过网络）。
+func request_building_upgrade(b) -> bool:
+	if world == null or b == null:
+		return false
+	command_issued.emit({
+		"kind": "building_upgrade", "tx": b.tx, "ty": b.ty,
+		"faction": world.my_faction,
+	})
+	return true
+
+
+## 取消读条中的那次建筑升级（全额退款）。
+func request_building_upgrade_cancel(b) -> bool:
+	if world == null or b == null:
+		return false
+	command_issued.emit({
+		"kind": "building_upgrade_cancel", "tx": b.tx, "ty": b.ty,
+		"faction": world.my_faction,
+	})
+	return true
+
+
+## 给某个区划做特化（`spec` = food / gold / population）。
+func request_zone_specialize(zone, spec: String) -> bool:
+	if world == null or typeof(zone) != TYPE_DICTIONARY or spec == "":
+		return false
+	command_issued.emit({
+		"kind": "zone_specialize", "zone_id": int((zone as Dictionary).get("id", -1)),
+		"spec": spec, "faction": world.my_faction,
+	})
+	return true
+
+
+## 取消已经完成的特化（**也要读条**，读完退款）。
+func request_zone_spec_cancel(zone) -> bool:
+	if world == null or typeof(zone) != TYPE_DICTIONARY:
+		return false
+	command_issued.emit({
+		"kind": "zone_spec_cancel", "zone_id": int((zone as Dictionary).get("id", -1)),
+		"faction": world.my_faction,
+	})
+	return true
+
+
+## 撤掉区划上**读条中**的那一单特化（放弃 + 退款）。
+func request_zone_spec_bar_cancel(zone) -> bool:
+	if world == null or typeof(zone) != TYPE_DICTIONARY:
+		return false
+	command_issued.emit({
+		"kind": "zone_spec_bar_cancel", "zone_id": int((zone as Dictionary).get("id", -1)),
+		"faction": world.my_faction,
+	})
+	return true
+
+
+## 拆除在哪：**这一版没有界面入口**。
 ## ★ 按需求「去掉这个拆除逻辑，暂时不绑定按键」：原来 X / Delete 会把选中的建筑拆掉，
 ##   现在这两个键**不再绑任何东西**（键位可能留给别的功能）。
 ## ★ 逻辑层那条命令照旧在（`command_processor.apply_demolish`，测试也在直接调它）——

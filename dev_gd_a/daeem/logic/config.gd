@@ -146,6 +146,25 @@ var gold_per_tile_per_sec: float = 1.0
 var start_food: float = 0.0
 var start_gold: float = 0.0
 
+## ---- 科技（config.json 的 tech 段）----
+## ★ 与战斗数值表一样：**载入时整理好、之后只读**（科技页每帧按它重画九格，
+##   而这是「每帧 × 9 格」的路径，不该每次去 split(".") 下潜 JSON）。
+## ★ 效果字段留在**每个条目自己的字典里**（`entry["effect"]`），
+##   聚合那一步在 logic/tech.gd。这里只负责「表怎么读、怎么查」。
+var tech_max_active: int = 3
+var _tech_list: Array = []
+var _tech_by_id: Dictionary = {}
+
+## ---- 建筑升级（config.json 的 upgrade.levels）+ 区划特化（zone_spec）----
+## ★ 与科技表一样：**载入时整理好、之后只读**（升级判定与每帧读条都要用）。
+## ★ 升级表按**建筑类型**分开存（base / wall / tower 各一张等级表，下标 0 = 1 级）；
+##   特化表是一张全局表（三档，cost / time_sec 是共用的默认值，条目可覆盖）。
+var _upgrade_levels: Dictionary = {}
+var _spec_list: Array = []
+var _spec_by_id: Dictionary = {}
+var _spec_cost: Dictionary = {}
+var _spec_time_sec: float = 0.0
+
 var respawn_sec: float = 0.0
 var destructible_base: bool = false
 
@@ -271,6 +290,10 @@ func _cache_scalars() -> void:
 
 	enemy_speed = num("debug.enemy_speed", 0.45)
 	enemy_hp = num("debug.enemy_hp", 60.0)
+
+	_cache_techs()
+	_cache_upgrades()
+	_cache_zone_specs()
 
 	# 战斗数值表：建一次、之后只读。
 	# ⚠️ 调用方**不要改**返回的字典（它是共享的）—— 要改数值就改 JSON 后重新 load。
@@ -488,3 +511,198 @@ func zone_capture_color(faction: String) -> Color:
 	if faction == "":
 		return color("zone_player")
 	return faction_color(faction, "main")
+
+
+# ------------------------------------------------------------------
+# 科技（config.json 的 tech 段）
+#
+# ★ 与上面的战斗数值表同一条规矩：**载入时整理好、之后只读**。
+#   科技页每帧要按这张表重画 3×3 九格（名字 / 第二行小字 / tooltip / 是否已启用），
+#   而 `num()` 那种写法每次都要 split(".") + 逐层下潜。
+# ------------------------------------------------------------------
+
+func _cache_techs() -> void:
+	tech_max_active = maxi(1, int_val("tech.max_active", 3))
+	_tech_list = []
+	_tech_by_id = {}
+	var raw: Variant = get_path_value("tech.list")
+	if typeof(raw) != TYPE_ARRAY:
+		return
+	for item in (raw as Array):
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		var src: Dictionary = item
+		var id := String(src.get("id", ""))
+		if id == "":
+			continue                       # 没有 id 就没法启用 / 弃用 —— 条目直接丢掉
+		var name := String(src.get("name", id))
+		var eff: Variant = src.get("effect")
+		# ★ line 与 desc 缺省时从 name 兜底（**不**从 effect 现拼文案：
+		#   逻辑层不写 UI 文案，效果说明是数据里给的）。
+		var line := String(src.get("line", ""))
+		var desc := String(src.get("desc", ""))
+		var entry := {
+			"id": id,
+			"name": name,
+			"line": line,
+			"desc": desc,
+			"effect": (eff as Dictionary) if typeof(eff) == TYPE_DICTIONARY else {},
+		}
+		_tech_list.append(entry)
+		_tech_by_id[id] = entry
+
+
+## 全部科技条目（顺序 = 命令卡九格的顺序；**只读**，别改返回的字典）
+func tech_list() -> Array:
+	return _tech_list
+
+
+## 某个科技的条目（查不到返回空字典）
+func tech_entry(id: String) -> Dictionary:
+	return _tech_by_id.get(id, {})
+
+
+func has_tech(id: String) -> bool:
+	return _tech_by_id.has(id)
+
+
+## 同一时间最多能启用几个（科技页拒绝第 4 个时的判据）
+func tech_max() -> int:
+	return tech_max_active
+
+
+# ------------------------------------------------------------------
+# 建筑升级（config.json 的 upgrade 段）
+#
+# ★★ 等级口径：`levels` 是**等级表**，**最大等级 = 条数**（这里 3 条 ⇒ 1→2→3）。
+#    所有查询都按「等级 → 下标 = 等级 - 1」换算，越界一律返回空 / 0 ——
+#    不在代码里写死 3：以后加等级只加一条 JSON。
+# ------------------------------------------------------------------
+
+func _cache_upgrades() -> void:
+	_upgrade_levels = {}
+	var raw: Variant = get_path_value("upgrade.levels")
+	if typeof(raw) != TYPE_DICTIONARY:
+		return
+	for type in (raw as Dictionary).keys():
+		var rows: Variant = (raw as Dictionary)[type]
+		if typeof(rows) != TYPE_ARRAY:
+			continue
+		var table: Array = []
+		for item in (rows as Array):
+			if typeof(item) != TYPE_DICTIONARY:
+				continue
+			var d: Dictionary = item
+			var cost: Variant = d.get("cost", {})
+			table.append({
+				"level": int(d.get("level", table.size() + 1)),
+				"hp_mult": maxf(0.01, float(d.get("hp_mult", 1.0))),
+				"cost": (cost as Dictionary) if typeof(cost) == TYPE_DICTIONARY else {},
+				"time_sec": maxf(0.0, float(d.get("time_sec", 0.0))),
+			})
+		_upgrade_levels[String(type)] = table
+
+
+## 某个建筑类型有没有升级表（区划中心没有 → 它的操作页只有特化）
+func has_upgrade(type: String) -> bool:
+	return not upgrade_levels(type).is_empty()
+
+
+## 某个建筑类型的等级表（只读；下标 0 = 1 级）
+func upgrade_levels(type: String) -> Array:
+	var v: Variant = _upgrade_levels.get(type, [])
+	return v if typeof(v) == TYPE_ARRAY else []
+
+
+## 最大等级（= 等级表的条数；没有表 → 1，也就是「不能升」）
+func upgrade_max_level(type: String) -> int:
+	return maxi(1, upgrade_levels(type).size())
+
+
+## 某个等级那一行（越界返回空字典）
+func upgrade_row(type: String, level: int) -> Dictionary:
+	var rows := upgrade_levels(type)
+	var i: int = level - 1
+	if i < 0 or i >= rows.size():
+		return {}
+	return rows[i]
+
+
+## 某个等级的**血量上限倍率**（= 该行 hp_mult；越界按 1.0）
+func upgrade_hp_mult(type: String, level: int) -> float:
+	var row := upgrade_row(type, level)
+	return maxf(0.01, float(row.get("hp_mult", 1.0))) if not row.is_empty() else 1.0
+
+
+## 「从 level 升到 level+1」要花的钱 / 读条秒数（已经是最高级 → 空字典 / 0）。
+## ★ 读的是**目标等级那一行**（`level` 级那行写的是「升到它」的代价，
+##   所以 1 级那行没有 cost —— 这正好表达「开局就是 1 级，不用花钱」）。
+func upgrade_cost_to(type: String, level: int) -> Dictionary:
+	var row := upgrade_row(type, level + 1)
+	var c: Variant = row.get("cost", {})
+	return c if typeof(c) == TYPE_DICTIONARY else {}
+
+
+func upgrade_time_to(type: String, level: int) -> float:
+	var row := upgrade_row(type, level + 1)
+	return maxf(0.0, float(row.get("time_sec", 0.0)))
+
+
+# ------------------------------------------------------------------
+# 区划特化（config.json 的 zone_spec 段）
+# ------------------------------------------------------------------
+
+func _cache_zone_specs() -> void:
+	_spec_list = []
+	_spec_by_id = {}
+	var c: Variant = get_path_value("zone_spec.cost")
+	_spec_cost = (c as Dictionary) if typeof(c) == TYPE_DICTIONARY else {}
+	_spec_time_sec = maxf(0.0, float(num("zone_spec.time_sec", 0.0)))
+	var raw: Variant = get_path_value("zone_spec.list")
+	if typeof(raw) != TYPE_ARRAY:
+		return
+	for item in (raw as Array):
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		var src: Dictionary = item
+		var id := String(src.get("id", ""))
+		if id == "":
+			continue
+		var eff: Variant = src.get("effect", {})
+		var entry := {
+			"id": id,
+			"name": String(src.get("name", id)),
+			"line": String(src.get("line", "")),
+			"desc": String(src.get("desc", "")),
+			"effect": (eff as Dictionary) if typeof(eff) == TYPE_DICTIONARY else {},
+		}
+		_spec_list.append(entry)
+		_spec_by_id[id] = entry
+
+
+## 全部特化条目（顺序 = 操作页里那三格的顺序；只读）
+func spec_list() -> Array:
+	return _spec_list
+
+
+func spec_entry(id: String) -> Dictionary:
+	return _spec_by_id.get(id, {})
+
+
+func has_spec(id: String) -> bool:
+	return _spec_by_id.has(id)
+
+
+## 特化的消耗 / 读条时间（条目没写就退回 zone_spec 的共用默认值）
+func spec_cost(id: String) -> Dictionary:
+	var c: Variant = spec_entry(id).get("cost", null)
+	if typeof(c) == TYPE_DICTIONARY:
+		return c
+	return _spec_cost
+
+
+func spec_time_sec(id: String) -> float:
+	var v: Variant = spec_entry(id).get("time_sec", null)
+	if typeof(v) == TYPE_FLOAT or typeof(v) == TYPE_INT:
+		return maxf(0.0, float(v))
+	return _spec_time_sec

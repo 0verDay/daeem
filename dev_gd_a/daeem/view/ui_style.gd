@@ -127,6 +127,57 @@ static func card_pressed() -> StyleBoxFlat:
 	return s
 
 
+# ------------------------------------------------------------------
+# 科技页的九格（3×3，**盖在命令卡上**）
+#
+# ★ 为什么底色是**不透明**的（与命令卡那几个格子刻意不同）：
+#   科技页是**另一套内容**，不是「往命令卡上填字」——
+#   命令卡在科技页里是空的（它按 entries 画格子底色 / 描边），
+#   半透明的科技格会让下面那 3×3 的旧网格与描边透出来（看着像两个网格叠在一起）。
+#   所以四个状态（普通 / 悬停 / 按下 / 禁用）都直接用 ui_style 的实色。
+# ------------------------------------------------------------------
+
+## 科技格：**没启用**的样子（浅底 + 描边，一眼能看出是「可点的格子」）
+static func tech_normal() -> StyleBoxFlat:
+	var s := StyleBoxFlat.new()
+	s.bg_color = BG
+	s.border_color = LINE
+	s.set_border_width_all(1)
+	s.set_content_margin_all(2.0)
+	return s
+
+
+static func tech_hover() -> StyleBoxFlat:
+	var s := tech_normal()
+	s.bg_color = BG_HOVER
+	s.border_color = ACCENT_DIM
+	return s
+
+
+## ★ 科技格：**已启用**的样子 —— 实心强调色（与「当前页签 / 设置按钮」同一档蓝），
+##   加上一圈更亮的外框，所以「哪三格在生效」一眼就看得出（需求要的可见反馈）。
+static func tech_active() -> StyleBoxFlat:
+	var s := tech_normal()
+	s.bg_color = ACCENT
+	s.border_color = Color(1.0, 1.0, 1.0, 0.55)
+	s.set_border_width_all(2)
+	return s
+
+
+static func tech_active_hover() -> StyleBoxFlat:
+	var s := tech_active()
+	s.bg_color = Color(ACCENT.r + 0.08, ACCENT.g + 0.06, ACCENT.b + 0.04, 1.0)
+	return s
+
+
+## 空格子（表里没有第 i 条科技时）：与「空命令格」同一档底，点了不做事
+static func tech_disabled() -> StyleBoxFlat:
+	var s := tech_normal()
+	s.bg_color = Color(0.05, 0.06, 0.075, 1.0)      # BG_EMPTY 的不透明版
+	s.border_color = LINE_SOFT
+	return s
+
+
 ## 页签按钮（普通 / 当前页 / 悬停）
 ##
 ## ★★ 普通态的底色是 **BG_EMPTY**（与「空命令格 / 空槽」同一套），**不是全透明**。

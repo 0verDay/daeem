@@ -26,6 +26,9 @@ extends RefCounted
 
 const ConfigRes = preload("res://logic/config.gd")
 const FactionRes = preload("res://logic/faction.gd")
+## ★ 特化的产能倍率在 logic/upgrade.gd 里（那份实现是**唯一**判据，见 `_spec_mult()`）。
+##   ⚠️ 方向是 zone → upgrade，**不能反过来**：upgrade.gd 的 `tick()` 要读 zone 的字段。
+const UpgradeRes = preload("res://logic/upgrade.gd")
 
 const ROW_LETTERS := "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
@@ -48,10 +51,14 @@ var lookup: Array = []
 var center_lookup: Array = []
 var cols: int = 0
 var rows: int = 0
+## 建这一份区划时用的配置（只读）。`production_of()` 要它来查「特化的产能倍率是多少」。
+## ⚠️ 不缓存成静态 / 不跨实例复用：测试会在同一进程里换配置建好几个世界。
+var cfg: ConfigRes = null
 
 
 static func build_from_map(map, cfg: ConfigRes, factions: Array) -> RefCounted:
 	var zs = new()
+	zs.cfg = cfg
 	zs.cols = map.terrain.cols
 	zs.rows = map.terrain.rows
 	var flist := _capture_factions(factions)
@@ -118,9 +125,30 @@ func _new_zone(zid: int, name: String, flist: Array) -> Dictionary:
 		"train_cost_food": 0.0,
 		"train_cost_gold": 0.0,
 		"train_cost_pop": 0.0,
-		# ⚠️ 这一组**目前不进快照**（`snapshot.gd` 只发 owner / 进度 / 人口）：
+		# ★★ 区划**特化**（见 logic/upgrade.gd 与 config.json 的 zone_spec 段）。
+		#
+		#   需求原话：「区划中心有三个特化选项……这三个特化玩家只能选一个升级……
+		#   特化后的区块无法再次特化，但选中特化后的区块可以在操作面板中选择
+		#   『取消特化』去除其特化，同理，特化也需要读条，取消特化也需要读条」。
+		#
+		# · spec_done   = **已经生效**的特化 id（"" = 没特化过）。★ 它跟着地块走：
+		#                 区划易主时**保留**（谁占谁吃这个加成）。
+		# · spec_kind   = **正在读条**的那一单：做特化时 = 那个特化 id，
+		#                 取消特化时 = 固定的 "__cancel__"（见 upgrade.gd）
+		# · spec_cancel = 这条读条是不是「取消特化」（读完要清掉 spec_done 并退款）
+		# · spec_remaining / spec_total = 读条进度（total <= 0 = 没在读条）
+		# · spec_cost_food / gold = **当初特化扣掉的**资源（取消特化读完时按它退款）。
+		#   ⚠️ 特化**完成时不清零** —— 要留着给后来的「取消特化」退款用。
+		"spec_done": "",
+		"spec_kind": "",
+		"spec_cancel": false,
+		"spec_remaining": 0.0,
+		"spec_total": 0.0,
+		"spec_cost_food": 0.0,
+		"spec_cost_gold": 0.0,
+		# ⚠️ 这两组**目前都不进快照**（`snapshot.gd` 只发 owner / 进度 / 人口）：
 		#    单机里本地就是权威，界面直接读它。第 1 轮联机时要像 `unit.train_*`
-		#    那样补进快照，否则客机点开区划中心看不到「这个区划在造什么」。
+		#    那样补进快照，否则客机点开区划中心看不到「这个区划在造什么 / 特化成什么」。
 	}
 
 
@@ -222,11 +250,27 @@ func center_zone_at_id(x: int, y: int) -> int:
 ##     · 测试也会直接给区划塞一个大的人口值。
 ##   两者都不该在下一帧被悄悄削掉 —— 上限的语义是「自然增长到此为止」，
 ##   不是「现值永远不许超过它」。
-func update_population(dt: float) -> void:
+##
+## ★★ 科技「区划人口产量 +10%」（本轮新增）：
+##   加的是**增长速度**，只对 `owner` 这一方**占领的**区划生效（需求原文
+##   「玩家占领的区划人口产量 +10%」，用户确认口径 = production.population × 地块数）。
+##   ⚠️ 上限 `population_cap` **不受科技影响** —— 加的是「涨得多快」，不是「能涨多高」。
+##   ⚠️ 阵营比较走 `FactionRes.same_side`（与占领 / 资源那几处的口径一致）：
+##      无主区划的 owner 是空串，`same_side(任何, "")` 恒为 false ⇒ 不加成。
+##
+## @param owner  享受加成的那一方（"" = 谁都不加成；单机 = world.my_faction）
+## @param owner_mult 该方占领区划的增长倍率（1.0 = 没加成）
+func update_population(dt: float, owner: String = "", owner_mult: float = 1.0) -> void:
+	var boost: float = maxf(0.0, owner_mult)
 	for z in zones:
 		var rate := float((z["production"] as Dictionary).get("population", 0.0))
+		# ★ 区划特化（本区块自己的倍率）先乘进来，再看科技的全局倍率 ——
+		#   两者是**不同作用域**的加成，所以相乘叠加（需求：与科技加成叠加）。
+		rate *= float(_spec_mult(z)["population"])
 		if rate <= 0.0:
 			continue
+		if owner != "" and boost != 1.0 and FactionRes.same_side(String(z["owner"]), owner):
+			rate *= boost
 		var cap := population_cap_of(z)
 		var pop := float(z["population"])
 		if pop >= cap:
@@ -255,6 +299,9 @@ func population_floor(z: Dictionary) -> int:
 ##
 ## ★ 这是经济从「全局按占领地块数 × 固定值」改成「按区划聚合」的落点：
 ##   抢区块 = 抢产能（见 docs/route.md 第十五节）。
+## ★★ 区划**特化**（本轮）在这里生效：特化是**本区块自己的产能倍率**
+##   （粮食 / 黄金 / 人口各自 +10%，见 `UpgradeRes.zone_spec_mult`），
+##   乘在「产能 × 地块数」上 —— 与科技那套**全局每地块加产量**叠加（那边在 world 里加）。
 ## @return {"food": float, "gold": float}
 func production_of(owner: String) -> Dictionary:
 	var food := 0.0
@@ -266,9 +313,21 @@ func production_of(owner: String) -> Dictionary:
 			continue
 		var p: Dictionary = z["production"]
 		var n := float(z["tile_count"])
-		food += float(p.get("food", 0.0)) * n
-		gold += float(p.get("gold", 0.0)) * n
+		var mult := _spec_mult(z)
+		food += float(p.get("food", 0.0)) * n * float(mult["food"])
+		gold += float(p.get("gold", 0.0)) * n * float(mult["gold"])
 	return {"food": food, "gold": gold}
+
+
+## 这个区划的产能倍率（特化给的；没特化 → 全 1.0）。
+##
+## ★ 走 logic/upgrade.gd 的那一份实现（**唯一**判据在那儿：spec_done 才生效、
+##   读条中不算），这里只做转发 —— 与「视图不许自己发明判定」同一条规矩，
+##   逻辑层也不该有第二份「特化到底生不生效」。
+func _spec_mult(z: Dictionary) -> Dictionary:
+	if cfg == null:
+		return {"food": 1.0, "gold": 1.0, "population": 1.0}
+	return UpgradeRes.zone_spec_mult(z, cfg)
 
 
 ## ---- 路线 1：读地图里的区块网格（地图编辑器导出的地图）----

@@ -73,6 +73,15 @@ var hp: float = 200.0
 var hp_max: float = 200.0
 var alive: bool = true
 
+## 上一次施加的**科技血量倍率**（1.0 = 没加成）。
+## ★ 它只服务于 `apply_hp_bonus()` 的「粘性」：倍率没变就什么都不做 ——
+##   没有它的话，反复施加会把当前血量反复放大（见那个函数的注释）。
+var tech_hp_mult: float = 1.0
+## ★ 这个单位**生出来时的生命上限**（config 给的那个数，永不被科技改写）。
+## 科技倍率每次都是「基础值 × 倍率」重算上限，而不是在旧上限上再乘一次 ——
+## 这样启用 / 弃用 / 反复切换都不会累积误差，弃用后能精确回到原值。
+var base_hp_max: float = 200.0
+
 ## 朝向：**单位向量**（不是 ±1）。
 ## ★ 八方向之后必须改成向量 —— 原来那个 `int ±1` 只能表示左右，
 ##   斜着走、斜着开火时朝向就画不出来了（渲染只画一条水平线，看着像没转）。
@@ -211,6 +220,7 @@ static func create(cfg: ConfigRes, p_id: String, p_name: String, tile: Vector2i,
 	# ★ 数值走 cfg.unit_*_of(kind)：原来写的是「是将领吗？不是就当敌人」，
 	#    加了第三种兵种之后那个二元判断会**静默把亲兵当成测试敌人**（60 血）。
 	u.hp_max = cfg.unit_hp_of(p_kind)
+	u.base_hp_max = u.hp_max
 	u.hp = u.hp_max
 	return u
 
@@ -993,3 +1003,34 @@ func hp_ratio() -> float:
 	if hp_max <= 0.0:
 		return 0.0
 	return clampf(hp / hp_max, 0.0, 1.0)
+
+
+# ------------------------------------------------------------------
+# 科技：血量倍率（见 logic/tech.gd 与 world._apply_tech_effects）
+# ------------------------------------------------------------------
+
+## ★★ 施加「将领血量 +10%」这类科技倍率（**粘性**：倍率没变就什么都不做）。
+##
+## 玩家确认的口径：加成作为**倍率实时生效** —— 已存在的将领也一起提升，
+## 弃用之后回到 1.0。
+##
+## 为什么必须粘性（`tech_hp_mult` 记住上一次的值）：
+##   倍率变了要**按比例缩放当前血量**（一块半血的血条在 +10% 之后仍然是半血），
+##   而「按比例」这件事只有在「知道上一次乘的是几」时才做得对。
+##   不记的话，`hp *= mult` 每调一次就再乘一次 —— 半血的兵会越乘越满。
+##
+## ⚠️ 血量为 0 / 单位不在场时不缩放（分母没有意义，复活时会走 `hp = hp_max`）。
+func apply_hp_bonus(mult: float) -> void:
+	var m: float = maxf(0.01, mult)
+	if absf(m - tech_hp_mult) < 1e-9:
+		return
+	tech_hp_mult = m
+	if base_hp_max <= 0.0:
+		return
+	# ★ 上限**从基础值重新算**（`base_hp_max × 倍率`），不是在旧上限上再乘一次 ——
+	#   见 `base_hp_max` 的说明（弃用之后要能精确回到原值）。
+	var ratio: float = 1.0
+	if hp_max > 0.0:
+		ratio = clampf(hp / hp_max, 0.0, 1.0)
+	hp_max = base_hp_max * m
+	hp = hp_max * ratio

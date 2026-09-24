@@ -20,6 +20,8 @@ const BuildingRes = preload("res://logic/building.gd")
 const UnitRes = preload("res://logic/unit.gd")
 const ZoneRes = preload("res://logic/zone.gd")
 const EconomyRes = preload("res://logic/economy.gd")
+const TechRes = preload("res://logic/tech.gd")
+const UpgradeRes = preload("res://logic/upgrade.gd")
 const CombatRes = preload("res://logic/combat.gd")
 const EnemyAiRes = preload("res://logic/enemy_ai.gd")
 const CollisionRes = preload("res://logic/collision.gd")
@@ -56,6 +58,19 @@ var owned_tiles: int = 0
 ## 每帧在 tick() 里刷新 —— 纯展示用，不参与任何判定。
 var production_food: float = 0.0
 var production_gold: float = 0.0
+
+## ★★ 科技（logic/tech.gd）：启用状态 + 效果聚合。
+## ★ 它是**世界状态**（谁启用了哪几条），不是界面状态 ——
+##   界面每帧读它画九格的高亮，命令层只调 `set_tech_active()`。
+var tech: TechRes = null
+## 本帧「加产量」那一份（启用中的每地块加成 / 血量倍率 / 人口增长倍率）。
+## 每帧在 tick() 里按 `tech.effects_of()` 重算；**每次都是新字典**，别留着当缓存。
+var tech_effects: Dictionary = {}
+## 科技启用状态每变一次 +1（`set_tech_active` 里加）。
+## ★ 血量倍率靠它决定「要不要重刷一遍所有建筑与单位」——**不是每帧刷**：
+##   那一步要遍历全部对象，而启用状态几秒才变一次（见 tick 第 0 步）。
+var tech_revision: int = 0
+var _tech_hp_revision: int = -1
 
 ## 每个阵营的大本营坐标与将领出生点（复活点、敌人 AI 目标都从这里取）
 var faction_bases: Dictionary = {}
@@ -124,6 +139,17 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 		for f in p_roster:
 			factions.append(String(f))
 
+	# ★★ 科技：**重开一局必须从零开始**（带着上一局的启用状态重开会静默改变开局数值）。
+	#    先建好 tech（下面建建筑时就要它算血量倍率），再清空启用状态。
+	tech = TechRes.new()
+	tech.setup(cfg)
+	tech.reset()
+	tech_effects = {}
+	# ★ 版本号归零（-1 表示「还没刷过」）：这样下面那次收口的 _apply_tech_effects()
+	#   一定会跑，预置建筑也一起对齐。
+	tech_revision = 0
+	_tech_hp_revision = -1
+
 	resources = {"food": cfg.start_food, "gold": cfg.start_gold}
 	faction_bases = {}
 	faction_spawns = {}
@@ -167,6 +193,17 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	# 出生点的大本营也会把所在区块直接收归己方（zone_owned_by_building）；
 	# 这一条在「开局第一帧之前」就该成立，否则 HUD 上的领地会在第一次 tick 前闪一下空
 	refresh_ownership()
+	# ★ 科技的收口：开局还没启用任何科技，这一句把「有没有加成」在任何对象
+	#   （含预置建筑）上都对齐一次，并把每秒产出先算出来 ——
+	#   于是 HUD 在第一次 tick 之前读到的是正确的「+n/秒」而不是 0。
+	tech_effects = tech.effects_of(my_faction)
+	_tech_hp_revision = tech_revision
+	_apply_tech_effects()
+	# ⚠️ 上面那句会顺手刷新 `owned_tiles`（它是「+n/秒」的乘数），
+	#    但 reset() 的契约是「刚 reset 完 = 还没跑过 tick ⇒ 领地数是 0」
+	#    （tests/test_logic.gd 钉着这一条：开局没有己方地块）。
+	#    所以这里把它放回 0 —— 第一次 tick 会立刻算出真值。
+	owned_tiles = 0
 
 
 ## 把地图里每个区块的「区划中心」落成一栋中立障碍建筑（无血量 / 无敌 / 无攻击）。
@@ -738,6 +775,9 @@ func _spawn_from_recruit(leader, kind: String) -> Variant:
 	u.pos = center
 	u.sync_tile(map)
 	units.append(u)
+	# ★ 科技「将领血量 +10%」：区划招募出来的将领**自己就是队长**，走将领那一档
+	#   （亲兵走 1.0 = 不加），与 world._apply_tech_effects 同一套判据。
+	u.apply_hp_bonus(_tech_hp_mult_for(u))
 	push_event({"type": "unit_recruited", "unit": u, "leader": leader})
 	return u
 
@@ -1005,6 +1045,8 @@ func _spawn_zone_recruit(zone, kind: String) -> Variant:
 		recruit_label_of(kind), tile, faction, kind, "", ""
 	)
 	units.append(u)
+	# ★ 区划招募出来的将领自己就是队长 → 吃「将领血量 +10%」（用同一个判据函数）
+	u.apply_hp_bonus(_tech_hp_mult_for(u))
 	push_event({"type": "zone_unit_recruited", "zone_id": int(zone["id"]), "unit": u})
 	return u
 
@@ -1206,6 +1248,14 @@ func add_building(type: String, tx: int, ty: int, owner: String, silent: bool = 
 	_building_at[Vector2i(tx, ty)] = b
 	building_list.append(b)
 	building_revision += 1
+	# ★ 科技的「建筑血量 +10%」在这里就地补上（**粘性**：倍率没变时是空操作）。
+	#   为什么落在这里而不是每帧刷：新建的建筑必须当场带上加成，
+	#   否则「刚造好的墙比开局那座脆」——那是玩家一眼就看得出的不一致。
+	if FactionRes.same_side(owner, my_faction):
+		b.apply_hp_bonus(float(tech_effects.get("building_hp_mult", 1.0)))
+	# ★ 新建建筑一律是 1 级：等级倍率显式落一次（`apply_level_mult` 是粘性的，
+	#   不落的话它会停在默认的 1.0，与配置里 1 级的倍率不一致时就错了）。
+	b.apply_level_mult(b.level_mult_from(cfg))
 	if not silent:
 		refresh_ownership()
 		push_event({"type": "building_built", "building": b})
@@ -1256,6 +1306,9 @@ func remove_building(b, force: bool = false) -> bool:
 		return false
 	if b.type == BuildingRes.TYPE_BASE and not force:
 		return false
+	# ★ 建筑离场 → 它的升级读条作废（**不退款**：钱花在这栋楼上了，楼没了就是没了 ——
+	#   见 logic/upgrade.gd 的 cancel_upgrade_on_removed）。
+	UpgradeRes.cancel_upgrade_on_removed(b)
 	b.alive = false
 	buildings.set_cell(b.tx, b.ty, null)
 	_building_at.erase(Vector2i(b.tx, b.ty))
@@ -1283,6 +1336,315 @@ func refresh_ownership() -> void:
 		return
 	last_ownership_revision = building_revision
 	zones.refresh_building_ownership(cfg, building_list, factions)
+
+
+# ------------------------------------------------------------------
+# 建筑升级 + 区划特化（规则在 logic/upgrade.gd，这里只做转发与「落效果」）
+#
+# ★ 命令流：右下「操作」页 → input_controller.request_*() → {kind: building_upgrade /
+#   building_upgrade_cancel / zone_specialize / zone_spec_cancel}
+#   → command_processor → **这里**。视图每帧读下面这几个查询决定那一页画哪几格。
+#
+# ★ 为什么要这一层转发（而不是让命令层直接调 upgrade.gd）：
+#   `upgrade.gd` 是纯规则（不持有 world），而命令里带的是**地块坐标 / 区划 id** ——
+#   「坐标 → 建筑」这一步只有 world 能做（`building_at`），所以解析放在这里。
+# ------------------------------------------------------------------
+
+## 建筑类型在 config 里有没有升级表（区划中心没有 → 它的操作页只有特化）
+func building_can_upgrade(type: String) -> bool:
+	return cfg.has_upgrade(type)
+
+
+## 这个建筑最多能到几级（= config 里那张等级表的条数）
+func building_max_level(type: String) -> int:
+	return cfg.upgrade_max_level(type)
+
+
+## 这个建筑升到下一级要花的钱 / 读条秒数（已经满级 → 空字典 / 0）
+func building_upgrade_cost(b) -> Dictionary:
+	if b == null:
+		return {}
+	return cfg.upgrade_cost_to(b.type, b.level)
+
+
+func building_upgrade_time(b) -> float:
+	if b == null:
+		return 0.0
+	return cfg.upgrade_time_to(b.type, b.level)
+
+
+## 开始升级某个建筑（`building_upgrade` 命令的落点；按**地块**定位）。
+func start_building_upgrade(tx: int, ty: int, faction: String = "") -> bool:
+	var b = building_at(tx, ty)
+	var f := _tech_faction(faction)
+	return UpgradeRes.start_upgrade(self, b, f)
+
+
+## 取消某个建筑**读条中的**升级（全额退款）。
+func cancel_building_upgrade(tx: int, ty: int, faction: String = "") -> bool:
+	var b = building_at(tx, ty)
+	var f := _tech_faction(faction)
+	return UpgradeRes.cancel_upgrade(self, b, f)
+
+
+## 开始区划特化（`zone_specialize` 命令的落点；按**区划 id** 定位）。
+func start_zone_specialize(zone_id: int, spec_id: String, faction: String = "") -> bool:
+	var f := _tech_faction(faction)
+	return UpgradeRes.start_specialize(self, _zone_by_id(zone_id), spec_id, f)
+
+
+## 发起「取消特化」读条（把已经生效的特化去掉，读完退款）。
+func cancel_zone_specialize(zone_id: int, faction: String = "") -> bool:
+	var f := _tech_faction(faction)
+	return UpgradeRes.cancel_spec(self, _zone_by_id(zone_id), f)
+
+
+## 撤掉区划上**读条中的**那一单特化（放弃 + 退款）。
+func cancel_zone_spec_bar(zone_id: int, faction: String = "") -> bool:
+	var f := _tech_faction(faction)
+	return UpgradeRes.cancel_spec_bar(self, _zone_by_id(zone_id), f)
+
+
+## 点区划中心时那个区划（HUD 用它把「选中的建筑」翻成「要特化的区划」）。
+func zone_of_center_building(b):
+	if b == null or b.type != BuildingRes.TYPE_ZONE_CENTER:
+		return null
+	return zone_center_zone_at(b.tx, b.ty)
+
+
+## 区划现在的特化倍率（HUD 显示「粮食产能 +10%」用；没特化 → 全 1.0）
+func zone_spec_mult(zone) -> Dictionary:
+	return UpgradeRes.zone_spec_mult(zone, cfg)
+
+
+## 区划的特化读条进度 / 剩余秒数（视图只读这两个，不自己算）
+func zone_spec_progress(zone) -> float:
+	return UpgradeRes.zone_spec_progress(zone, cfg)
+
+
+func zone_spec_eta(zone) -> float:
+	return UpgradeRes.zone_spec_eta(zone, cfg)
+
+
+func zone_spec_busy(zone) -> bool:
+	return UpgradeRes.zone_is_busy(zone)
+
+
+func zone_spec_is_cancel(zone) -> bool:
+	return UpgradeRes.zone_spec_is_cancel(zone)
+
+
+## ★ 升级读完时把新等级的**血量上限倍率**落到这栋建筑上（由 upgrade.gd 调）。
+## ★ 为什么要有这个入口：`upgrade.gd` 不认识 config 之外的算法，
+##   而「上限 = 基础 × 等级 × 科技」这条唯一的算法在 building.refresh_hp_max() 里。
+func apply_building_level_hp(b) -> void:
+	if b == null:
+		return
+	b.apply_level_mult(b.level_mult_from(cfg))
+
+
+## ★ 区划特化读完（或取消特化读完）时调：把「每秒产出」立刻重算一遍。
+##
+## ★ 为什么必须有这一句（**实测踩到的**）：`production_food / production_gold` 原本只在
+##   `tick()` 的资源那一段刷新，而特化是在**同一帧更早**完成的
+##   （`UpgradeRes.tick` 排在资源那一步**之前**）—— 于是「特化刚生效的那一帧」
+##   这两个数还是旧值，界面上的「+n/秒」要等下一帧才跟上。
+##   与科技那条（`set_tech_active` 里也调 `_refresh_production`）是同一条约定：
+##   **效果一变，展示数当场跟上**。
+func refresh_zone_production() -> void:
+	_refresh_production()
+
+
+# ------------------------------------------------------------------
+# 科技（logic/tech.gd 是规则，这里是权威状态的持有者与落点）
+#
+# ★★ 需求原话：「玩家同一时间仅可启用三个占位科技……当玩家启用的科技数到 3 时，
+#    玩家再启用科技会被阻止并提示；玩家可以点击已启用的科技以弃用科技」。
+#
+# ★ 命令流：右下九格 → input_controller.request_tech_toggle() → {kind: tech_toggle}
+#   → command_processor → **这里**。视图不自己记「谁启用了」，每帧读这几个查询。
+# ------------------------------------------------------------------
+
+## 科技表现在有几条（= 命令卡九格的条目数；表在 config.json 的 tech.list）
+func tech_list() -> Array:
+	if tech != null:
+		return tech.list()
+	if cfg != null:
+		return cfg.tech_list()
+	return []
+
+
+## 某个科技的条目（名字 / 第二行小字 / tooltip / 效果）
+func tech_entry(id: String) -> Dictionary:
+	return tech.entry(id) if tech != null else {}
+
+
+## 某一方现在启用的科技 id 数组（默认 = 本地玩家）
+func active_tech_ids(faction: String = "") -> Array:
+	if tech == null:
+		return []
+	return tech.active_ids(_tech_faction(faction))
+
+
+## 这条科技现在启用了没有
+func is_tech_active(id: String, faction: String = "") -> bool:
+	return tech != null and tech.is_active(id, _tech_faction(faction))
+
+
+## 还能再启用几条（界面显示「2/3」这类用；满了就是 0）
+func tech_remaining_slots(faction: String = "") -> int:
+	return tech.remaining_slots(_tech_faction(faction)) if tech != null else 0
+
+
+## 同一时间最多启用几条
+func tech_max_active() -> int:
+	return tech.max_active() if tech != null else 3
+
+
+## ★★ 科技页九格的**显示数据**（名字 / 第二行小字 / tooltip / 是否已启用）。
+##
+## 为什么在逻辑层拼好给视图（而不是让 view 自己去查 config + 状态）：
+##   「谁启用了哪几条」是**权威状态**，而视图只该读、不该自己把两处状态拼起来 ——
+##   拼法一旦有两份（比如以后加「研究中有进度」），高亮就会和实际效果不一致。
+##   视图拿到的是纯数据（无对象引用），也顺带满足「将来要过网络」那条约束。
+##
+## @return Array[Dictionary]，每项 {id, name, line, desc, active}，顺序 = 九格顺序
+func tech_entries(faction: String = "") -> Array:
+	var f := _tech_faction(faction)
+	var active: Array = tech.active_ids(f) if tech != null else []
+	var out: Array = []
+	for item in tech_list():
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		var e: Dictionary = item
+		var id := String(e.get("id", ""))
+		out.append({
+			"id": id,
+			"name": String(e.get("name", id)),
+			"line": String(e.get("line", "")),
+			"desc": String(e.get("desc", "")),
+			"active": active.has(id),
+		})
+	return out
+
+
+## ★ 点一下某条科技（`tech_toggle` 命令的唯一落点）：
+##   没启用 → 启用；已启用 → 弃用。启用满 3 条时再启用会被拒，并留一条事件给界面。
+##
+## @return true = 状态真的变了（被拒时返回 false，并在 `tech_rejected` 事件里带上拒因）
+##
+## ★ 为什么拒因走**事件**而不是返回值：命令层与界面之间隔着 tick 的事件收口
+##   （view/game_scene._consume_events 是唯一把事件翻成中文的地方）——
+##   与 recruit_rejected / order_rejected 完全同一条通道。
+## ★ 效果改动**立即落地**：产量 / 人口是每帧读的（下一帧自然生变），
+##   但血量是「建的时候写死的」，所以这里要显式刷一次（见 _apply_tech_effects）。
+func set_tech_active(id: String, on: bool, faction: String = "") -> bool:
+	if tech == null:
+		return false
+	var f := _tech_faction(faction)
+	# ⚠️ 先算「现在是不是启用着」：弃用与启用两条路的拒因不一样 ——
+	#    已启用的那条**不占新名额**（点它是弃用），不能被 limit 拦住。
+	var was: bool = tech.is_active(id, f)
+	if on and not was:
+		var reason := tech.can_activate(id, f)
+		if reason != "":
+			push_event({"type": "tech_rejected", "reason": reason, "tech_id": id})
+			return false
+	var changed: bool = tech.set_active(id, on, f)
+	if not changed:
+		return false
+	tech_revision += 1
+	_apply_tech_effects()
+	push_event({"type": "tech_changed", "tech_id": id, "active": tech.is_active(id, f)})
+	return true
+
+
+## 点一下（切换）—— 界面的唯一入口：`tech_toggle` 命令带的是 on/off，
+## 而玩家点格子那一下就是「切换」，所以这里包一层。
+func toggle_tech(id: String, faction: String = "") -> bool:
+	if tech == null:
+		return false
+	return set_tech_active(id, not tech.is_active(id, _tech_faction(faction)), faction)
+
+
+## 本帧的科技加成（启用状态变了之后 tick 里会重算；别留着当缓存用）
+func tech_bonus() -> Dictionary:
+	return tech_effects
+
+
+## 己方区划「人口自然增长速度」的科技倍率（1.0 = 没加成）——传给 zones.update_population
+func tech_population_mult() -> float:
+	return float(tech_effects.get("zone_population_mult", 1.0))
+
+
+## 阵营口径统一走这里：空串 = 本地玩家那一方。
+## ★ 内部一律用**真身**（`my_faction`）存，调用方传 "" / "p1" / "player" 都能对上 ——
+##   与 zones.refresh_building_ownership 的 same_side 是同一套宽容度。
+func _tech_faction(faction: String) -> String:
+	return faction if faction != "" else my_faction
+
+
+## ★★ 把科技的效果落到世界上的**对象**身上 —— 需要显式刷的只有「血量上限倍率」
+## （产量由 `_refresh_production()` 顺手算；人口是每帧读倍率的，不用在这里动）。
+##
+## 「粘性」的含义：对象自己记住上一次施加的倍率，倍率没变就**什么都不做**
+##   （所以反复调它是安全的）；倍率变了才按比例缩放当前血量。
+## 为什么是「按比例缩放当前血量」而不是「血量直接乘倍率」：
+##   一块被打掉一半的城墙在 +10% 之后应当还是「剩一半」。
+## 上限本身从**基础值**重算（`base_hp_max × 倍率`，见 building / unit 里的字段说明）：
+##   启用 / 弃用反复切换都不会累积误差，弃用后能精确回到原值。
+func _apply_tech_effects() -> void:
+	if tech == null:
+		return
+	tech_effects = tech.effects_of(my_faction)
+	var b_mult: float = float(tech_effects.get("building_hp_mult", 1.0))
+	for b in building_list:
+		if b.alive and FactionRes.same_side(b.owner, my_faction):
+			b.apply_hp_bonus(b_mult)
+	for u in units:
+		if not u.alive or not FactionRes.same_side(u.faction, my_faction):
+			continue
+		u.apply_hp_bonus(_tech_hp_mult_for(u))
+	# ★ 产量那一份也要当场重算：玩家点一下「粮食 +3」就该在图上的「+n/秒」里看见，
+	#   而不是等下一帧 tick（人口是每帧读倍率的，不用在这里动）。
+	_refresh_production()
+
+
+## 某个单位该吃的**将领血量**科技倍率（将领 = 队长 = `leader_id` 为空的那一个）。
+## ★ 需求原文只写了「玩家将领血量 +10%」，所以亲兵一律返回 1.0（不加）。
+##   判据集中在这里一处：开局将领 / 区划招募的占位将领（自己就是队长）/ 以后新加的
+##   单位类型都走它 —— 两处各写一套「谁是将领」迟早会漂开。
+func _tech_hp_mult_for(u) -> float:
+	if u == null or u.leader_id != "":
+		return 1.0
+	return float(tech_effects.get("leader_hp_mult", 1.0))
+
+
+## ★★ 重算「每秒产出」这两个展示数（tick 与科技状态变化都会调）。
+##
+## 口径（与 economy.gd 的文件头一致）：
+##   产出 = 己方各区划的（产能 × 该区划地块数）之和  +  科技加成
+## 科技加成 = 启用中的「每地块每秒」加成之和 × **己方占领地块数**。
+##
+## ⚠️ 加成只进 `production_*`（资源累加与 HUD 那个「+n/秒」），
+##   **不改区划自己的 production** —— 区划产能是地图给的静态数据，
+##   点开区划详情看到的那个数不该被科技改写。
+## ⚠️ `owned_tiles` 也在这里刷新（**不在 tick 之外保留旧值**）：
+##   科技一启用就要看到正确的「+n/秒」，而那时 `owned_tiles` 可能还是 0。
+##   ⚠️ 但**不要**把它挪进 `reset()` / 世界构造：`owned_tiles` 的旧契约是
+##      「tick 里算出来的数，reset 之后是 0」，tests/test_logic.gd 有断言钉着它。
+##      reset 末尾那次 `_apply_tech_effects()` 会走到这里把 0 覆盖成真实值 ——
+##      为了同时满足两边，`reset()` 里显式把它放回 0（见那里的注释）。
+func _refresh_production() -> void:
+	if zones == null:
+		return
+	var tiles: int = zones.owned_tile_count(my_faction)
+	owned_tiles = tiles
+	var bonus_food: float = float(tech_effects.get("food_per_tile_per_sec", 0.0)) * float(tiles)
+	var bonus_gold: float = float(tech_effects.get("gold_per_tile_per_sec", 0.0)) * float(tiles)
+	var rates: Dictionary = zones.production_of(my_faction)
+	production_food = float(rates["food"]) + bonus_food
+	production_gold = float(rates["gold"]) + bonus_gold
 
 
 # ------------------------------------------------------------------
@@ -1345,13 +1707,24 @@ func tick(dt: float) -> Array:
 	if crowd != null and cfg.combat_enabled:
 		crowd.refresh_targets(self, cfg)
 
+	# 0) ★ 科技加成：每帧重算一次聚合值（九条各查一次表、几条加法），产量 / 人口读它。
+	tech_effects = tech.effects_of(my_faction)
+	#    ⚠️ 血量那一步是**按版本号**触发的，不是每帧跑：它要遍历所有建筑与单位，
+	#       而且「新对象补一次加成」已经落在各出生点（见 apply_hp_bonus 的注释）。
+	if tech_revision != _tech_hp_revision:
+		_tech_hp_revision = tech_revision
+		_apply_tech_effects()
+
 	# 1) 区块占领（占位规则）
 	var _t_zones := _prof()
 	zones.update(cfg, dt, units, factions)
 
 	# 1.5) ★ 区划人口：每个区块各算各的，只按时间涨、不消耗（用户需求）。
 	#      与占领**无关**，也不进 HUD 的资源 —— 点开某个区划的中心能看它自己的人口。
-	zones.update_population(dt)
+	#      ★ 科技「区划人口产量 +10%」加的是**己方占领区划**的自然增长速度
+	#        （用户确认的口径：production.population × 地块数），只影响涨得多快，
+	#        上限 population_cap 不变。
+	zones.update_population(dt, my_faction, tech_population_mult())
 
 	# 2) 建筑归属变化时才重算
 	refresh_ownership()
@@ -1365,10 +1738,8 @@ func tick(dt: float) -> Array:
 	if tiles != owned_tiles:
 		owned_tiles = tiles
 		push_event({"type": "territory_changed", "tiles": tiles, "zones": zones.owned_zone_names(my_faction)})
-	var rates: Dictionary = zones.production_of(my_faction)
-	production_food = float(rates["food"])
-	production_gold = float(rates["gold"])
-	EconomyRes.tick(cfg, dt, rates, resources)
+	_refresh_production()
+	EconomyRes.tick(cfg, dt, {"food": production_food, "gold": production_gold}, resources)
 	_prof_done("economy", _t_econ)
 
 	# 3.5) ★ 招募读条（将领自己就是兵营）。
@@ -1379,6 +1750,9 @@ func tick(dt: float) -> Array:
 	# ★ 区划招募（区划 = 兵营，招将领）走同一段预算：与上面那条一样，
 	#   必须在「清理离场单位」之前跑完（它要在本帧内把读完的那一单落成单位）。
 	_tick_zone_recruitment(dt)
+	# ★★ 建筑升级 + 区划特化的读条（读完在**本帧内**落效果：等级 +1 / 特化生效）。
+	#    与招募同一套「一帧可能读满好几单」的预算算法，见 logic/upgrade.gd 的 tick()。
+	UpgradeRes.tick(self, dt)
 	_prof_done("recruit", _t_recruit)
 
 	# 4) 单位：移动 + 战斗 / 警戒

@@ -16,6 +16,15 @@
 ##   zone_recruit   unit_kind, zone_id, faction         ★ 把将领排进某个**区划**的招募队列
 ##                                                      （点区划中心 → 右下「招募」页签）
 ##   zone_recruit_cancel zone_id, slot, faction         取消区划招募队列里的某一格并退款
+##   tech_toggle    tech_id, on, faction               ★ 启用 / 弃用一条科技
+##                                                      （右下「科技」页签的三×三九格）
+##   building_upgrade        tx, ty, faction           ★ 升级一栋建筑（读条，可取消退款）
+##                                                      （右下「操作」页签里那一格）
+##   building_upgrade_cancel tx, ty, faction           取消读条中的那次建筑升级并退款
+##   zone_specialize         zone_id, spec, faction    ★ 给一个区划做特化（读条；
+##                                                      粮食 / 黄金 / 人口，只能选一个）
+##   zone_spec_cancel        zone_id, faction          取消已完成的特化（**也要读条**，读完退款）
+##   zone_spec_bar_cancel    zone_id, faction          撤掉**读条中**的那一单特化并退款
 ##   spawn_enemy    tx, ty               调试刷兵
 ##
 ## ★ 关键约束：**命令里只放意图，不放结果**。
@@ -62,6 +71,26 @@ static func apply(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 			return apply_zone_recruit(world, cfg, cmd)
 		"zone_recruit_cancel":
 			return apply_zone_recruit_cancel(world, cfg, cmd)
+		"tech_toggle":
+			return apply_tech_toggle(world, cfg, cmd)
+		"building_upgrade":
+			return world.start_building_upgrade(
+				int(cmd.get("tx", -1)), int(cmd.get("ty", -1)),
+				String(cmd.get("faction", world.my_faction)))
+		"building_upgrade_cancel":
+			return world.cancel_building_upgrade(
+				int(cmd.get("tx", -1)), int(cmd.get("ty", -1)),
+				String(cmd.get("faction", world.my_faction)))
+		"zone_specialize":
+			return world.start_zone_specialize(
+				int(cmd.get("zone_id", -1)), String(cmd.get("spec", "")),
+				String(cmd.get("faction", world.my_faction)))
+		"zone_spec_cancel":
+			return world.cancel_zone_specialize(
+				int(cmd.get("zone_id", -1)), String(cmd.get("faction", world.my_faction)))
+		"zone_spec_bar_cancel":
+			return world.cancel_zone_spec_bar(
+				int(cmd.get("zone_id", -1)), String(cmd.get("faction", world.my_faction)))
 		"spawn_enemy":
 			return apply_spawn_enemy(world, cmd)
 		"select":
@@ -452,3 +481,24 @@ static func apply_zone_recruit_cancel(world, _cfg: ConfigRes, cmd: Dictionary) -
 ## 调试刷兵命令
 static func apply_spawn_enemy(world, _cmd: Dictionary) -> bool:
 	return world.spawn_enemy() != null
+
+
+## ★ 科技启用 / 弃用命令（右下「科技」页签的九格 → `tech_toggle`）。
+##
+## 载荷只有三项：**科技 id + 目标状态 + 阵营** —— 命令里没有效果数值、没有对象引用。
+## 「最多同时启用 3 个」「这一条的效果是什么」全在 `world.set_tech_active()` 里算
+## （权威侧），命令层只转发。
+##
+## `on` 缺省时按「切换」处理（玩家点一下格子的语义就是切换）——
+## 这样界面既能发明确的 on/off（将来的研究完成、读档），也能发一次点击。
+##
+## ⚠️ 被拒时不在这里给提示：`world.set_tech_active` 会写一条 `tech_rejected` 事件，
+##    由 view/game_scene 翻成左栏那行红字（与招募 / 指令被拒同一条通道）。
+static func apply_tech_toggle(world, _cfg: ConfigRes, cmd: Dictionary) -> bool:
+	var id := String(cmd.get("tech_id", cmd.get("id", "")))
+	if id == "" or world.tech == null:
+		return false
+	var faction := String(cmd.get("faction", world.my_faction))
+	if cmd.has("on"):
+		return world.set_tech_active(id, bool(cmd.get("on", false)), faction)
+	return world.toggle_tech(id, faction)

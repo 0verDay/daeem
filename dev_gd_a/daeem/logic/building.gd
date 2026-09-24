@@ -77,6 +77,26 @@ var hp: float = 300.0
 var hp_max: float = 300.0
 var alive: bool = true
 
+## 上一次施加的**科技血量倍率**（1.0 = 没加成）——见 `apply_hp_bonus()` 的粘性说明。
+var tech_hp_mult: float = 1.0
+## ★ 这栋建筑**建出来时的上限**（config 给的那个数，永不被科技 / 等级改写）。
+## 上限每次都是「基础值 × 等级倍率 × 科技倍率」重算，而不是在旧上限上再乘一次 ——
+## 这样升级 / 降级 / 科技启用弃用反复切换都不会累积误差，弃用后能精确回到原值。
+var base_hp_max: float = 300.0
+## ★ 上次按等级算出来的上限倍率（见 `apply_hp_bonus`）
+var level_hp_mult: float = 1.0
+
+## ★★ 等级与升级读条（见 logic/upgrade.gd）。
+##   等级从 1 起；`upgrade_*` 是**读条状态**（remaining/total <= 0 = 没在读条）。
+##   ⚠️ 它们挂在建筑自己身上（与「招募队列挂在将领 / 区划上」同一个理由：
+##      「这栋楼正在干嘛」属于这栋楼）。
+var level: int = 1
+var upgrade_remaining: float = 0.0
+var upgrade_total: float = 0.0
+## 升级已经扣掉的钱（取消时按它全额退款）
+var upgrade_cost_food: float = 0.0
+var upgrade_cost_gold: float = 0.0
+
 ## ---- 箭塔 ----
 var cooldown_left: float = 0.0
 
@@ -93,6 +113,7 @@ static func create(cfg: ConfigRes, p_type: String, p_tx: int, p_ty: int, p_owner
 	b.owner = p_owner
 	b.zone_id = p_zone_id
 	b.hp_max = b.max_hp_from_config(cfg)
+	b.base_hp_max = b.hp_max
 	b.hp = b.hp_max
 	return b
 
@@ -272,3 +293,74 @@ func take_damage(cfg: ConfigRes, amount: float, _source = null) -> bool:
 ## 是否处于「还在场、可被选/可被打」的状态
 func is_selectable() -> bool:
 	return alive
+
+
+# ------------------------------------------------------------------
+# 血量上限：等级倍率 × 科技倍率（见 logic/upgrade.gd 与 world._apply_tech_effects）
+#
+# ★★ 上限只有一个算法：`base_hp_max × level_hp_mult × tech_hp_mult`。
+#   两个倍率各自「粘性」（记住上次施加的值，没变就什么都不做），
+#   最终都落到 `refresh_hp_max()` —— 于是「升级」与「科技启用 / 弃用」
+#   不会互相覆盖，也不会因为调用顺序不同得出不同的数。
+# ------------------------------------------------------------------
+
+## 某个等级对应的血量倍率（由 `logic/upgrade.gd` 的配置表给；没配 → 1.0）
+func level_mult_from(cfg: ConfigRes) -> float:
+	if not cfg.has_upgrade(type):
+		return 1.0
+	return cfg.upgrade_hp_mult(type, level)
+
+
+## 施加「建筑血量 +10%」这类**科技**倍率（**粘性**：倍率没变就什么都不做）。
+##
+## 玩家确认的口径：加成作为**倍率实时生效** —— 已经建好的城墙也一起提升，
+## 弃用之后回到 1.0。
+## ⚠️ 区划中心血量是 0（无敌建筑）：`base_hp_max = 0` 时只改倍率、不动血量，
+##   否则会算出 0 * ratio = 0 这种没意义的「血量」。
+func apply_hp_bonus(mult: float) -> void:
+	var m: float = maxf(0.01, mult)
+	if absf(m - tech_hp_mult) < 1e-9:
+		return
+	tech_hp_mult = m
+	refresh_hp_max()
+
+
+## 按等级重算上限（升级读完时由 world 调；倍率没变时是空操作）
+func apply_level_mult(mult: float) -> void:
+	var m: float = maxf(0.01, mult)
+	if absf(m - level_hp_mult) < 1e-9:
+		return
+	level_hp_mult = m
+	refresh_hp_max()
+
+
+## ★★ 唯一的「上限怎么算」：基础值 × 等级 × 科技，当前血量**按比例**带过去。
+##
+## 为什么是「从基础值重算 + 按比例缩放当前血量」而不是「当前上限 / 当前血量直接乘」：
+##   · 反复乘会累积误差，弃用 / 降级时回不到原值；
+##   · 一块被打掉一半的城墙在 +10% 或升一级之后，应当**仍然是剩一半**。
+func refresh_hp_max() -> void:
+	if base_hp_max <= 0.0:
+		return                          # 区划中心：没有血量这回事
+	var ratio: float = 1.0
+	if hp_max > 0.0:
+		ratio = clampf(hp / hp_max, 0.0, 1.0)
+	hp_max = base_hp_max * level_hp_mult * tech_hp_mult
+	hp = hp_max * ratio
+
+
+## 这栋建筑现在有没有升级读条在跑（见 logic/upgrade.gd）
+func is_upgrading() -> bool:
+	return upgrade_total > 0.0
+
+
+## 升级读条进度（0~1；没在读条 → 0）—— 视图只读它，不自己算
+func upgrade_progress() -> float:
+	if not is_upgrading():
+		return 0.0
+	return clampf(1.0 - upgrade_remaining / upgrade_total, 0.0, 1.0)
+
+
+## 升级还要多久（秒）
+func upgrade_eta() -> float:
+	return maxf(0.0, upgrade_remaining)

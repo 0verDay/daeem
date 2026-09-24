@@ -76,6 +76,13 @@ dev_gd_a/daeem/
 │   ├── zone.gd                   #   区块占领（每阵营独立进度）+ 区划中心 / 人口 / 产能；
 │   │                             #   区块划分读地图的 zones 网格，老地图退回 6×4 均分占位
 │   ├── economy.gd                #   资源产出 + 扣费（can_afford / spend / try_spend）
+│   ├── tech.gd                   #   ★ 科技：占位表（config.tech.list）+ 每阵营的启用状态
+│   │                             #     + 效果聚合（每地块加产量 / 血量倍率 / 人口增长倍率）
+│   │                             #     规则：同一时间最多启用 config.tech.max_active 条
+│   ├── upgrade.gd                #   ★ 建筑升级 + 区划特化（右下「操作」页里那几格）
+│   │                             #     升级：等级 1→N（config.upgrade.levels），血量上限 ×倍率
+│   │                             #     特化：粮食 / 黄金 / 人口三选一，本区块产能 ×1.1
+│   │                             #     两者都是**读条**（复用招募那块面板）、入队即扣费、可取消退款
 │   ├── combat.gd                 #   战斗结算与事件（索敌 / 开火 / 拆建筑）
 │   ├── command_processor.gd      #   ★ 命令的唯一入口（move / build / demolish）
 │   ├── snapshot.gd               #   ★ to_snapshot / apply_snapshot（本轮用于调试，将来是网络包体）
@@ -83,7 +90,7 @@ dev_gd_a/daeem/
 │   │   ├── CrowdKernel.cs        #     空间哈希 + 软分离 + 本体推出（语义与 collision.gd 一致）
 │   │   ├── CrowdProbe.cs         #     跨语言通路探针（桥测试用）
 │   │   └── crowd_bridge.gd       #     ★ logic ↔ 内核的**唯一**接口：建表 + 批量编解码 + 回退
-│   └── world.gd                  #   世界容器：持有 units / buildings / zones，推进 tick()
+│   └── world.gd                  #   世界容器：持有 units / buildings / zones / tech / upgrade，推进 tick()
 ├── daeem.csproj                  # C# 工程（Godot.NET.Sdk）。★ 引擎必须用 mono(.NET) 版
 ├── NuGet.config                  # 本地包源（引擎自带 nupkgs；本机没有外网到 nuget.org）
 ├── view/                         # 渲染：Node2D / Control，禁止改逻辑状态
@@ -109,12 +116,17 @@ dev_gd_a/daeem/
 │   │                             #     多选 → 其余部队的将领（点一格 = 换展开哪一支）
 │   │                             #     单选 → 这支部队的单位（点一格 = 右栏切到那个单位；
 │   │                             #             超过 9 个用滚轮翻页，一次一页）
-│   ├── recruit_queue.gd          #   ★ 招募队列的五格显示（1 大 + 4 小 + 大格子里的读条）
-│   │                             #     住在**右栏右上角**；可点：点某一格 = 取消那一格（发 recruit_cancel 命令）
+│   ├── recruit_queue.gd          #   ★ 右栏右上角那块面板：招募队列（1 大 + 4 小 + 读条）
+│   │                             #     可点：点某一格 = 取消那一格（发 *_cancel 命令）
+│   │                             #     ★ 也用来显示**单条读条**（建筑升级 / 区划特化，
+│   │                             #       见 set_bar()：需求要的「复用招募单位的面板」）
 │   ├── command_card.gd           #   右下 3×3 命令卡（内容随页签切换）
+│   ├── tech_grid.gd              #   ★ 右下 3×3 科技九格（**盖在命令卡上**，只有「科技」页显示）
+│   │                             #     九条占位科技来自 config.json 的 tech.list；
+│   │                             #     已启用 = 实心蓝高亮；点一下 = 启用 / 弃用（发 tech_toggle）
 │   └── page_tabs.gd              #   右下那一列**动态页签**（按选中对象决定显示哪几颗：
-│                                 #     部队 = 操作/单位，区划中心 = 招募，大本营 = 科技，
-│                                 #     普通建筑 = 一颗空页签 PAGE_NONE，什么都没选中 = 建筑）
+│                                 #     部队 = 操作/单位，**所有建筑 = 操作**（+ 大本营的科技 /
+│                                 #     区划中心的招募），什么都没选中 = 建筑 + 科技）
 └── tests/                        # 无头断言测试（不进游戏包）
     ├── test_smoke.gd             #   脚手架自检 + 网格工具
     ├── test_logic.gd             #   玩法规则（移动 / 战斗 / 建造 / 占领 / 快照…）
@@ -126,6 +138,12 @@ dev_gd_a/daeem/
     ├── test_zone_capture.gd      #   ★ 占领进度显示：无主 / 我的地 / 别人的地 三种情况
     ├── test_recruit_queue.gd     #   ★ 招募队列：消耗 / 人口 / 队列上限 5 / 读条 10 秒 /
     │                             #     格心生成 + 排开 / 区划限制 / 读条期间钉住 / 阵亡退款 / 快照
+    ├── test_tech.gd              #   ★ 科技：九条占位铺满 3×3 / 启用与弃用 / 最多同时 3 条（第 4 条被拒
+    │                             #     + tech_rejected 事件）/ 三类效果（每地块加产量、建筑与将领
+    │                             #     血量倍率实时生效、己方区划人口增长 +10%）/ reset 清零 / 命令层
+    ├── test_upgrade.gd           #   ★ 建筑升级 + 区划特化：等级表与血量倍率 / 入队即扣费 / 读条 /
+    │                             #     取消退款 / 满级封顶 / 「特化只能选一个」/ 取消特化也要读条 /
+    │                             #     特化只影响本区块且与科技叠加 / 命令层
     ├── test_map_editor.gd        #   ★ 地图编辑器导出的地图：exists 存在格（地图外不可通行）
     │                             #   + zones 区块网格（非矩形区块、空区块保留）
     └── test_building_body.gd     #   ★ 建筑本体：尺寸居中、挡敌不挡己、缝隙能穿、城墙回归
@@ -264,7 +282,12 @@ Godot 里 DPR 由引擎处理，**但下面三条要原样继承**：
 | 选中列表 | `view/input_controller.gd` | 纯本地，**不进命令流**（第 1 轮也一样）。★ 左键**点选**与左键**框选**（拖出矩形，见 route.md 16.3）走的是同一个入口 `select_units()` —— 它会用 `world.expand_to_groups()` 把「一个单位」展开成「它所属的整支部队」 |
 | 玩家下达的攻击命令 | `logic/unit.gd` 的 `ordered_target` / `ordered_building` / `has_attack_move` | 与「这一帧在打谁」（`target` / `target_building`）**分开存**，见 route.md 12.3 |
 | UI 几何（面板位置与尺寸） | `view/ui_layout.gd` | 纯常量，照参考图的像素稿；其它 view 文件不写坐标字面量 |
-| 当前页签（操作 / 单位 / 招募 / 科技 / 建筑） | `view/page_tabs.gd` + `hud._tab_plan()` | 纯本地显示状态，只决定命令卡里有什么；**显示哪几颗由当前选中对象决定**（route.md 二十二节），每一类选中各记「上次停在哪一页」（`hud._page_memory`） |
+| 当前页签（操作 / 单位 / 招募 / 科技 / 建筑） | `view/page_tabs.gd` + `hud._tab_plan()` | 纯本地显示状态，只决定命令卡里有什么；**显示哪几颗由当前选中对象决定**（route.md 二十二节），每一类选中各记「上次停在哪一页」（`hud._page_memory`）。★ 科技页在**选中大本营**与**什么都没选中**两处都出现，是同一颗页签、同一套九格 |
+| 科技的启用状态（谁启用了哪几条） | `logic/tech.gd` 的 `active_by_faction`（由 `logic/world.gd` 持有并暴露查询） | ★ 它是**世界状态**（影响产量 / 血量 / 人口），不是界面状态：界面每帧读 `world.tech_entries()` 画高亮，命令只有 `tech_toggle` 一条。效果数值全在 `data/config.json` 的 `tech.list` |
+| 建筑升级的读条（等级 / 进度 / 已扣的钱） | `logic/building.gd` 的 `level` / `upgrade_*` 字段；规则在 `logic/upgrade.gd` | ★ 与「招募队列挂在将领 / 区划上」同一个理由：「这栋楼正在干嘛」属于这栋楼。命令只有 `building_upgrade` / `building_upgrade_cancel` 两条（按**地块**定位） |
+| 区划特化（已选哪一种 / 读条 / 已扣的钱） | `logic/zone.gd` 的 `spec_*` 字段；规则在 `logic/upgrade.gd` | `spec_done` = 已经生效的特化（**跟着地块走**，区划易主保留）；`spec_kind` = 正在读条的那一单。命令 `zone_specialize` / `zone_spec_cancel` / `zone_spec_bar_cancel` |
+| 建筑血量上限的**两个倍率**（等级 × 科技） | `logic/building.gd` 的 `base_hp_max` / `level_hp_mult` / `tech_hp_mult` → `refresh_hp_max()` | ★ 上限只有这一个算法：**基础值 × 等级倍率 × 科技倍率**；当前血量按比例缩放。升级读完由 `world.apply_building_level_hp()` 落一次 |
+| 科技的三类效果（每地块加产量 / 血量上限倍率 / 区划人口增长倍率） | `logic/tech.gd` 的 `effects_of()` → `world.tech_effects` | 每帧在 `tick()` 开头重算；启用 / 弃用时 `_apply_tech_effects()` **立即**落到对象上（血量按比例缩放、上限从 `base_hp_max` 重算） |
 | 操作页的「命令模式」（点了移动 / 攻击 / 行军之后等左键点地图） | `view/input_controller.gd` 的 `order_mode` | 纯本地输入状态，与 `build_type` 同源、互斥；命令照旧只走 `command_issued` |
 | 招募队列的实现细节（进度、五个格子的几何） | `logic/unit.gd` 的 `train_*` 字段 / `logic/zone.gd` 的 `train_*` 字段（**区划招募**）+ `view/recruit_queue.gd` | 进度由 `unit.train_progress()` / `world.zone_train_progress()` 算好，视图只取色与填格子（不让视图自己发明判定，见 pitfalls 5.20）；同一个控件显示「将领的队列」或「区划的队列」（`set_queue(holder, is_zone)`） |
 | 事件（击杀 / 建筑被拆 / 招募…） | `logic/world.gd` 收集 → `world.tick()` 返回 | **逻辑层不写 UI 文案**；目前只翻译三条：`recruit_rejected` / `order_rejected` → 左栏那行红字、`unit_recruited` → 把新兵选上（`view/game_scene.gd` → `hud` / `input_controller`） |
