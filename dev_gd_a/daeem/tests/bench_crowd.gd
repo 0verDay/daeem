@@ -487,7 +487,7 @@ func _hash01(x: int, y: int) -> float:
 	return float(absi(h) % 100000) / 100000.0
 
 
-## 把 world 里原有的 12 个单位（3 将领 + 亲兵）换成 n 个玩家单位，排成一个方阵。
+## 把 world 里原有的 12 个单位（3 将领 + 附属兵）换成 n 个玩家单位，排成一个方阵。
 func _place_units(w, cfg, n: int) -> void:
 	var fresh: Array = []
 	for i in n:
@@ -495,7 +495,7 @@ func _place_units(w, cfg, n: int) -> void:
 		var row := i / BLOCK_COLS
 		var u = UnitRes.create(
 			cfg, "bench-%d" % i, "bench %d" % i,
-			Vector2i(0, 0), w.my_faction, UnitRes.KIND_SUBORDINATE
+			Vector2i(0, 0), w.my_faction, UnitRes.UNIT_TYPE_SPEARMAN
 		)
 		u.pos = BLOCK_ORIGIN + Vector2(float(col) * BLOCK_SPACING, float(row) * BLOCK_SPACING)
 		u.sync_tile(w.map)

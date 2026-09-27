@@ -812,8 +812,10 @@ if String(b.owner) == "" or b.is_invulnerable():
 
 > ★ 这一条**改掉了旧口径**：原来是「己方占领地块数 × `config.resource.*_per_tile_per_sec`」，
 > 现在产能由**地图数据**说了算 —— 于是「占的地方好不好」比「占得多不多」更重要。
-> `test_map.json` 每个区划配的是 `1 粮食 / 1 黄金 / 0.5 人口`，
+> `test_map.json` 每个区划那时候配的是 `1 粮食 / 1 黄金 / 0.5 人口`，
 > 单机手感与旧版一致（人口因此会随时间真的涨起来）。
+> ⚠️ 第二十五轮之后这张图**全部改成了人口区划**（`0 / 0 / 0.15`，见第二十五节）——
+> 上面那几个数是那一轮的历史值。
 
 ### 14.6 看区划详情：点中心
 
@@ -2018,6 +2020,353 @@ y 200 .. 220   红字提示带 641×20
 | `tests/test_upgrade.gd`（新文件，+151） | 表（3 级 / 1.5 / 2.25 / 每级费用与秒数 / 三个特化各 +10%）；拒因（`type` / `owner` / `cost` / `max_level` / `busy` / `spec` / `zone` / `spec_done` / `idle`）；升级全流程（入队即扣费、读条中等级不变、读完 +1 级且上限 = 基础 × 倍率、半血按比例带血、`upgrade_done` 事件、满级封顶）；取消退款；建筑离场读条作废；**升级与科技叠加**（基础 × 等级 × 科技）；特化全流程（只能选一个、读完才生效、只影响本区块、易主保留）；**特化与科技叠加**；取消特化（也要读条、读完退款、读条期间特化仍生效）；撤单退款；「取消特化」不可再取消；命令层（四种命令 + 拒因事件） |
 | `tests/test_ui.gd` `_test_page_tabs_and_card`（改） | 普通建筑 = **操作**页（一格「升级城墙」）；大本营 = 操作 + 科技（操作页是「升级大本营」）；区划中心 = 操作（三个特化）+ 招募 |
 | `tests/test_ui.gd` `_test_upgrade_via_card`（新，+约 60） | 点「升级城墙」→ 扣费 + 那块面板切成**单条读条**（汇总带 / 大格子 / 小格子留空）→ 操作页只剩「取消升级」→ 点读条那一格取消退款 → 再升一次读完 → 等级 +1 且右栏写着「等级 2 / 3」；区划中心三个特化 → 点一个 → 读条面板 → 撤单 → 重来读完 → 操作页只剩「取消特化」→ 点它**也要读条**且那块面板不可再点 → 读完特化去掉、操作页又回到三个特化 |
+
+
+## 二十五、区划分成三种 + 特化改版 + 编辑器里选种类（这一轮）
+
+> 需求原话（三块一起提的）：
+> ① 「游戏中有三种区划，粮食区划，黄金区划，人口区划；默认区划属性为每地块每秒产 0.1 人口；
+>    粮食区划产量为每地块每秒产 1 粮食，黄金区划产量为每地块每秒产 1 黄金，
+>    人口区划是每地块每秒产 0.15 人口」；
+> ② 「粮食特化 = 每地块每秒额外产 0.5 粮食，黄金特化 = 每地块每秒额外产 0.5 黄金，
+>    人口特化 = 当前区划人口产量 +25%」+「粮食区划仅能进行黄金和人口特化，
+>    黄金区划仅能进行粮食和人口特化，人口区划仅能进行粮食和黄金特化」；
+> ③ 「更改 tools 目录下的区划编辑器，设计师可以在区划页签的详情页中选择该区划的种类，
+>    但是保留下方的数字输入框，当设计师为区划选择区划种类时，下方的数字输入框需要同步
+>    变化到上方的数值，但设计师也可以直接编辑下方的数字输入框中的资源产量，最终游戏中的
+>    区划产量以下方数字输入框中的产量为准」。
+>
+> ⚠️ 需求 ① 里「默认区划 = 0.1 人口」那条被用户当场改口**作废**：
+> 「没有默认区划了，所有区划默认值都改为人口区划」——所以只有三种，没有第四档。
+> 另外用户拍板：**发布的那张 `test_map.json` 14 个区块全部改成人口区划并同步数字**。
+>
+> ★ 随后用户又补了一条（本轮一起做掉）：「**所有区划至少会有 0.1 人口每地块每秒的基础产能**，
+> 这个要加上」——于是粮食 / 黄金区划的**预设**里也带上 0.1 人口
+> （见 25.1 的那张表；人口区划的 0.15 本身 ≥ 0.1，不用再叠）。
+
+### 25.1 三种区划（`config.zone_kind`）
+
+| | 粮食区划 `food` | 黄金区划 `gold` | 人口区划 `population` |
+|---|---|---|---|
+| 预设产能（每地块每秒） | 1 粮食 **+ 0.1 人口** | 1 黄金 **+ 0.1 人口** | 0.15 人口 |
+| 能做的特化 | 黄金 / 人口 | 粮食 / 人口 | 粮食 / 黄金 |
+
+- ★★ 用户后补的一条：「**所有区划至少会有 0.1 人口每地块每秒的基础产能**，
+  这个要加上」——于是粮食 / 黄金区划的预设里也带上 **0.1 人口**；
+  人口区划的 0.15 本身就 ≥ 0.1，不用再叠。
+  口径取**下限**（「至少」）：给足 0.1 的是**种类预设**，而不是在游戏里给所有区划
+  再叠一层人人都有的人口加成 —— 「产量以下方数字为准」那条铁律还在
+  （设计师把某一档手改成 0 就是 0）。
+- ★ **预设产能不是游戏里的兜底**：它只是**编辑器「选种类」时同步进数字输入框的那三个数**
+  （见 25.4）。游戏侧永远以地图 `zone_list[].production` 的数字为准；
+  **地图没写 production 的区划一律算 0**（用户确认：保持老图行为，不按种类预设兜底）——
+  这条与「缺 `population_cap` = 1」那种「缺字段 = 默认值」的约定**刻意不同**，别顺手统一。
+- `zone_kind.default = population`：地图没写 `kind` 的区划（老图 / 手写图）一律按人口区划算。
+  ⚠️ 默认那一种**不能取「表里的第一个」**——`zone_kind.list` 的第一项恰好是 `food`，
+  配置顺序一变「没写 kind」就会变成粮食区划（[`pitfalls.md`](pitfalls.md) 5.47）。
+- 认不出来的 `kind`（手改地图写错）**不报错也不猜**：`map_data` 不登记 → `zone.gd` 按默认那一档
+  处理，它的产量数字照旧生效。
+
+### 25.2 特化从「三种倍率」改成「两种形状」
+
+| 特化 | 旧（第二十四轮） | 新（这一轮） | `effect` 字段 |
+|---|---|---|---|
+| 粮食特化 | 本区块粮食 ×1.1 | **每地块每秒 +0.5 粮食** | `food_per_tile` |
+| 黄金特化 | 本区块黄金 ×1.1 | **每地块每秒 +0.5 黄金** | `gold_per_tile` |
+| 人口特化 | 本区块人口 ×1.1 | **本区划人口产量 ×1.25** | `population_mult` |
+
+- 判定入口从 `UpgradeRes.zone_spec_mult()` 改名成 **`zone_spec_effect()`**
+  （返回 `{food_per_tile, gold_per_tile, population_mult}`）——
+  ⚠️ **旧名字已删，不许留兼容壳**：它是「混合形状」，再叫 mult 必然被人当倍率表用。
+- 粮食 / 黄金特化是**加法**（与地图给的基础产能相加、再乘地块数），
+  与科技那套「每地块加产量」是**同一口径**（两者相加）；人口特化是**乘法**，
+  与科技的 `zone_population_mult` **相乘**（不同作用域）。
+- 读条 / 只能选一个 / 取消特化要读条 / 退款那四条规则**一字未改**（第二十四节那套）。
+- 特化跟着地块走（易主保留）也没变。
+
+### 25.3 种类白名单（拒因 `kind`）
+
+- 判据只有一处：`config.zone_kind.list[].specs` → `cfg.zone_kind_allows_spec(kind, spec)`。
+- 逻辑层：`upgrade.can_specialize()` 在**归属之后、读条状态之前**判它，拒因码 **`kind`**
+  （它比「忙不忙 / 已经特化过没有」更根本：一个粮食区划永远做不了粮食特化）。
+- 界面层：`hud._building_order_entries()` 只画 `world.zone_spec_choices(zone)` 那几格 ——
+  **界面不写第二份白名单**，两处读同一张配置表。
+- 中文化在 `hud.upgrade_reject_text()` 的 `"kind"` 一条。
+
+### 25.4 编辑器：区划页签「详情页选种类 → 下面的数字同步」
+
+`dev_gd_a/tools/map_editor/`（Python + tkinter）：
+
+| 位置 | 改动 |
+|---|---|
+| `model.py` | `Zone.kind`（默认人口区划）+ `zone_kind_table(cfg)` / `zone_kind_default(cfg)`（读 `config.json` 的 `zone_kind`，读不到用兜底表）+ `set_zone_kind(zid, kind, apply_preset=True)` / `zone_kind_is_preset()` |
+| `app.py` | 区块页签的「**区划种类**」一栏（三颗单选钮，在「产能」**上面**）；点一颗 = 换种类 **+ 把三个产能输入框同步成该档预设值**；数字与预设不一致时那一栏给一句「★ 数字已经手改过（预设：…）—— 游戏以数字为准」 |
+| `mapfile.py` | 读 `zone_list[].kind`（**`apply_preset=False`**：绝不动数字）+ 导出**每个区块都写 `kind`** |
+| `__main__.py` | 自检多打印一行 `[kinds]`，往返比较里带上 `kind` |
+
+- ★ 两条**不能混**的语义（需求 ③ 的原文就是这两条）：
+  · `set_zone_kind(apply_preset=True)` = 换种类 **+ 写预设数字**（界面点单选钮走这条）；
+  · `set_zone_production()` = 直接改数字 —— **导出时数字说了算**，种类不会把数字改回去。
+- **新建的区划直接带上默认种类的预设数字**（`0 / 0 / 0.15`）：用户说「所有区划默认值都改为
+  人口区划」，所以新建一块就是一块人口区划，界面上的单选钮与三个输入框完全自洽。
+  读地图那条路**不**这么做（文件里没写就是 0）。
+- 「点已经选中的那颗单选钮」= **什么都不改**（不留一步空撤销）；要重新同步就换一档再换回来，
+  或者直接改数字。
+- 撤销快照带上 `kind`（换种类一步就能退回去，与产能 / 人口上限同一套）。
+
+### 25.5 发布的地图：14 个区块全部改成人口区划
+
+用户拍板「要，而且默认全赋上人口区划」+「全部设为人口区划，并同步数字」，
+所以 `data/test_map.json` 的 `zone_list` 每一项都变成：
+
+```json
+{ "id": 0, "name": "a1", "kind": "population",
+  "production": { "food": 0, "gold": 0, "population": 0.15 }, ... }
+```
+
+改法走**编辑器自己的数据层**（load → `set_zone_kind(apply_preset=True)` → save），
+所以顺带验证了新格式能往返。⚠️ 后果要说清楚：**这张图现在不产粮食 / 黄金**
+（粮食 / 黄金只能靠科技那两条「每地块 +n/秒」）——这是用户要的，之后要在编辑器里
+逐块改种类 / 手改数字即可。
+> ★ 补「所有区划至少 0.1 人口」那一条时复查过一遍：14 个区块全是人口区划（预设 0.15），
+> **每一个都已经 ≥ 0.1 人口**，所以**这一版发布图一个数字都不用动**
+> （要产粮食 / 黄金就把某几块点成粮食 / 黄金区划，那时它们会自动带上 0.1 人口）。
+
+### 25.6 这一轮修掉 / 学到的两件事
+
+1. **`test_upgrade` 里「对账」那一节必须换一列资源对账**：旧的 ×1.1 倍率乘在 0 产能上还是 0，
+   所以从前「清空产能」就等于「没有收入」；现在粮食特化本身**每地块加 0.5**，
+   读条 60 秒就是 750 粮食 —— 断言当场红。改成**对黄金对账**（粮食特化不产黄金）。
+   → 记账类用例要**按「这一轮新加的那条产出」换一列**，见 [`pitfalls.md`](pitfalls.md) 5.46。
+2. **默认值不许取「表里的第一个」**（见 25.1 那条 ⚠️）：编辑器与 Godot 两侧都改成
+   「配置里写的 → `population` → 第一个条目」这个优先级。
+3. 顺带把 `zone.production_of()` 的注释、`upgrade.gd` 的文件头、`hud` 的区划详情
+   （多了一行「区划种类」）与新效果文案一起对齐了。
+
+### 25.7 测试覆盖（这一轮）
+
+| 位置 | 断言 |
+|---|---|
+| `tests/test_upgrade.gd`（改，186 项） | 新增**区划种类表**一节：三种 / 没有「默认区划」/ 默认 = population / 三档预设产能（**三种都 ≥ 0.1 人口**）/ 三条白名单逐条钉住 / 认不出的 kind 退回默认；特化效果改成 `zone_spec_effect()`（读条中不生效、粮食 +0.5、人口 ×1.25）；`kind` 拒因；发布地图全区划都是人口区划 |
+| `tests/test_map_editor.gd`（改，131 项） | 新增**区划种类**一节：`zone_list[].kind` 读得进来 / 认不出的按默认 / **写了种类但没写 production → 产量 0** / 白名单按种类挡（拒因 `kind`） |
+| `tests/test_logic.gd`（改，324 项） | 「占领之后开始产出」改成钉**新口径**：每帧入账 = `world.production_food`（区划产能之和），给占下来的那块地配 0.4 粮食／地块／秒 → 产出当场跟着涨 |
+| `tests/test_ui.gd`（改，817 项） | 人口区划的操作页只有**两格**（粮食 / 黄金，没有人口特化）；右栏详情里有「区划种类」那一行；`zone_spec_effect()` 生效值 |
+| `tools/map_editor/test_model.py`（改，330 项） | 新增 `[20] 区划种类`：三种 / 预设产能（**三种都 ≥ 0.1 人口**）/ `apply_preset` 两条语义 / 手改数字不改种类 / 导出每个区块都写 kind / 往返 / 认不出的 kind / 老图按默认种类且产量 0 |
+| `tools/map_editor/test_app.py`（改，385 项） | 新增 `[20] 区划种类`：新建区划默认人口区划且输入框显示 0.15 / 点「粮食区划」→ 数字同步成 1 粮食 + 0.1 人口 / 手改数字不改种类且提示「已手改」/ 导出写数字 / 撤销把种类与数字一起退回 / 点已选中不留空撤销 / 没选中时禁用 / 三颗单选钮的几何（不溢出侧边栏、从上到下）；`[21] 侧边栏滚动`：内容比视口高、滚到底最后一栏看得见、滚轮在侧边栏里被吃掉而在画布上放行 |
+
+### 25.8 这一轮动了哪些文件
+
+| 文件 | 改动 |
+|---|---|
+| `data/config.json` | **新增 `zone_kind` 段**（三种 + 预设产能（都带 ≥0.1 人口）+ 白名单 + `default`）；`zone_spec.list` 的 `effect` 换成 `food_per_tile` / `gold_per_tile` / `population_mult`，文案与注释重写 |
+| `data/test_map.json` | 14 个区块写 `"kind": "population"` 并把 production 同步成 `0 / 0 / 0.15` |
+| `logic/config.gd` | 缓存并查询 `zone_kind`：`zone_kind_list` / `zone_kind_default` / `zone_kind_entry` / `zone_kind_name` / `zone_kind_production` / `zone_kind_specs` / `zone_kind_allows_spec` |
+| `logic/map_data.gd` | 新增 `zones_kinds`（`_read_zones` 多收一个 `cfg`，只登记表里认识的 id） |
+| `logic/zone.gd` | 新增 `kind` 字段 / `_apply_map_kinds()` / `kind_of()` / `kind_entry_of()`；`production_of()` 改成「基础产能 + 特化每地块加成」；`update_population()` 用人口特化倍率；`_spec_mult` → `_spec_effect` |
+| `logic/upgrade.gd` | `zone_spec_mult` → **`zone_spec_effect`**；新增 `zone_kind_of()` / `spec_choices()`；`can_specialize()` 加 `kind` 拒因（排在读条状态之前） |
+| `logic/world.gd` | `zone_spec_mult` → `zone_spec_effect`；新增 `zone_kind_of()` / `zone_spec_choices()` 两个转发 |
+| `view/hud.gd` | 区划详情多一行「区划种类」；产能按新效果显示（加产量 / 倍率两种）；操作页只画白名单里的特化；拒因 `kind` 的中文 |
+| `tools/map_editor/model.py` | `Zone.kind` + 种类表读取 + `set_zone_kind` / `zone_kind_is_preset` 等；`add_zone` 带上默认预设 |
+| `tools/map_editor/mapfile.py` | 读 / 写 `zone_list[].kind`（读的时候 `apply_preset=False`）+ `empty_map(cfg)` + 导出说明 |
+| `tools/map_editor/app.py` | 「区划种类」单选钮一栏（在产能上面）+ 同步逻辑 + 提示 + 撤销快照带上 `kind`；★ 顺带把**侧边栏做成可滚动**（区块页内容实测 1597px vs 侧边栏 754px —— 加这一栏之前就已经溢出，人口上限 / 图例够不着），滚轮按「指针在不在侧边栏里」路由 |
+| `tools/map_editor/__main__.py` | 自检打印 `[kinds]`，往返比较带上 `kind` |
+| 测试 | 见 25.7（Godot 2837 项 / 编辑器 325 + 373 项全绿） |
+| 文档 | 本节 + `architecture.md` 的文件地图 + `tools/map_editor/README.md` + [`pitfalls.md`](pitfalls.md) 5.46 / 5.47 |
+
+
+## 二十六、单位类型（兵种）+ 步兵 / 骑兵标签 + 地图上的 2D 图标（这一轮）
+
+### 26.1 需求原文（逐条对照）
+
+| # | 需求 | 落点 |
+|---|---|---|
+| 1 | 「单位 / 将领分为两类，步兵和骑兵，这两个需要为相应的单位打上标签，后续会根据这两个做额外伤害属性」 | `config.unit.classes` + `unit.types.<id>.class`；单位上缓存成 `unit_class` / `ranged` |
+| 2 | 「弓箭手算作远处步兵，马弓手算作远程骑兵（但目前还没有专注于做这两个）」 | 标签是**两个正交字段**：`class`（infantry / cavalry）+ `ranged`（bool）。长弓兵 = 步兵 + 远程 = 显示「远程步兵」；将来的马弓手 = 骑兵 + 远程 = 「远程骑兵」（`unit.classes.cavalry.ranged_name` 已经备好，加一条 JSON 就行） |
+| 3 | 「将『亲兵』这个单位去除，向游戏中加入『长枪兵』『长弓兵』『骑手』三个单位，属性由你随便定（目前是占位单位）」 | 删掉 `kind = "subordinate"` 与 `unit.subordinate` 那一整块；新增 `unit.types.spearman / longbowman / rider`（+ `enemy`）与 `recruit.list` 三项 |
+| 4 | 「为游戏中的这些单位绘制在地图上显示的 2D 图标（简单用线条绘制成预制体即可，后续再考虑加素材）」 | 新文件 `view/unit_icon.gd`：线条画的「预制体」定义（圆盘 + 粗线段）+ 烘成 `ImageTexture`；`view/unit_view.gd` 按（类型 × 是否将领）取贴图来画 |
+| 5 | 「将领也暂时用这三个单位类型做出区分（当前游戏中给予的三个将领分别赋上方三个单位类型），同时将将领的描边变粗一点」 | `config.unit.general.types = [spearman, longbowman, rider]`（开局将领按序号、`general_N` 同序）；描边 `OUTLINE_W` 0.16 → `OUTLINE_W_LEADER` 0.34 |
+
+**用户当场确认的两个岔路口**（问过才动手）：
+
+- 开局编队：**各带 3 个同类型的兵**（将领 1 带长枪兵、将领 2 带长弓兵、将领 3 带骑手），
+  而不是「将领单独开局」；
+- 将领数值：**完全按对应兵种数值**（于是长弓兵将领是远程的、骑手将领跑得更快），
+  而不是「只换图标、数值仍走将领那一档」。
+
+### 26.2 数据模型：`kind` 与 `unit_type` 是两个字段
+
+| 字段 | 含义 | 取值 |
+|---|---|---|
+| `unit.kind` | **单位类别** | `general`（开局将领）/ `general_N`（区划招募的将领）/ 兵种 id（普通单位）/ `enemy`（测试敌人） |
+| `unit.unit_type` | **这个单位是什么兵** | 普通单位 = 自己的 kind；将领 = `unit.general.types` 里被赋予的那一个 |
+
+为什么必须有第二个字段：**三个开局将领的 `kind` 都是 `general`** —— 只看 kind 分不出谁是长枪兵、
+谁是骑手。而「描边更粗」要按「是不是将领」判、「数值 / 图标」要按「是什么兵」判，两者都得站得住。
+判据各写一处：`unit.is_general()`（看 kind 前缀，**不看 `leader_id`** —— 测试敌人的 `leader_id` 也是空的）
+与 `cfg.unit_type_of(kind)`（`general_index_of()` 做成**静态**函数，渲染与单测不必先有一个 cfg 实例）。
+
+数值一律按 `unit_type` 查表：`cfg.unit_hp_of / unit_speed_of / unit_radius_of / unit_combat_of`。
+**「将领的数值 = 它所属类型的数值」因此是免费的**（`UnitRes.create` 只按类型查一次表）。
+
+```
+unit.classes   = { infantry: {name 步兵,  ranged_name 远程步兵},
+                   cavalry:  {name 骑兵,  ranged_name 远程骑兵} }
+unit.types     = { spearman   {class infantry, ranged false, 160 血 / 0.6 速 / 20 伤 / 1.0 格 / 1.0s / 半径 0.09},
+                   longbowman {class infantry, ranged true,  110 血 / 0.6 速 / 16 伤 / 3.5 格 / 1.3s / 半径 0.085},
+                   rider      {class cavalry,  ranged false, 140 血 / 0.9 速 / 22 伤 / 1.0 格 / 1.0s / 半径 0.105},
+                   enemy      {class infantry, ranged false,  60 血 / 0.45 速 / 10 伤 / 1.0 格 / 1.2s / 半径 0.1} }
+unit.general   = { escort: 3, types: [spearman, longbowman, rider] }
+```
+
+★ **测试敌人也进了这张表**：它原来分散在 `debug.enemy_hp` / `debug.enemy_speed` / `combat.enemy` 三处，
+而「一个类型只在一个地方定义」正是为了不再出现「加了新兵种、老代码把它当成敌人」那个坑（见 pitfalls 5.x）。
+`cfg.enemy_hp / enemy_speed / enemy_damage / enemy_range / enemy_cooldown` 这几个老字段**保留**，
+但值是从这张表抄的（同一份数、只是别名）—— 所以引用它们的老测试照旧对得上。
+`combat.general` / `combat.enemy` 两小块**删除**（战斗数值跟着类型走），
+`combat` 里只留与类型无关的参数（警戒半径、追击、拆建筑伤害…）。
+
+★ **查不到的类型退回兜底值**（而不是当成测试敌人）：`_combat_fallback` = 第一个将领类型（长枪兵那一档），
+`unit_hp_of` 退回 `unit.hp_max`。手写地图 / 老快照里写错一个 kind 不该让那个单位变成 60 血。
+
+**未来的额外伤害怎么接**：`unit_class` / `ranged` 已经缓存在每个单位上（创建时从表里算好），
+伤害判定直接读这两个字段；要配克制矩阵就往 config 里加一张 `combat.class_bonus` 之类的表，
+`logic/` 那一侧不用再动数据来源。
+
+### 26.3 队伍模型一个字没改，只是「附属兵是什么」变了
+
+| 原来是 | 现在是 |
+|---|---|
+| 每个将领带 3 个 `subordinate`（固定兵种） | 每个将领带 `unit.general.escort` 个**自己那一类**的兵（`world.create_escort`） |
+| `unit.subordinate.count` | `unit.general.escort`（0 = 关掉开局编队） |
+| 出生在将领旁边一圈 / `_ring_tile` / 点任何一个选整队 / 右键整队一起走 / 招募期间整队收队 / 队长阵亡后各算各的 | **一模一样**（那些断言一条没删，只把「亲兵」的说法换成「同类型的附属兵」） |
+
+所以 `world.retinue_of()` / `group_of()` / `expand_to_groups()` / `is_order_locked()` 全都不用改；
+`world.create_retinue()` 改名成 `create_escort()`（内容只剩「类型取队长的、名字取类型名」）。
+招募出来的兵仍然挂在招它的将领名下（`leader_id`），于是「点队伍里任何一个 = 选中整队」自动带上它 ——
+**招长弓兵不需要将领自己是长弓兵**（招谁就是谁，见 `_spawn_from_recruit` 的 `unit_type = kind`）。
+
+### 26.4 图标：为什么是「预制体 + 烘贴图」而不是每单位一个节点
+
+需求原话是「简单用线条绘制成预制体即可」。「预制体」在本工程里有两条路：
+
+1. **每个单位一个 `Node2D` / 场景**（Godot 意义上的 prefab）—— 直接撞上 `unit_view.gd` 文件头那段实测：
+   `draw_circle ×1000 → 997 个 draw call、18.4 ms`（这两个 API **完全不参与 2D 合批**），
+   1000 单位常态下就是上千个节点与上千个批次；
+2. **一份「预制体定义」+ 烘成贴图**（本轮走的路）—— 图标只跟（类型 × 是否将领）有关，
+   一共十来张，运行时 `draw_texture_rect` 直接贴，仍然是一个批次一条路。
+
+`view/unit_icon.gd` 的结构：
+
+| 东西 | 说明 |
+|---|---|
+| 图标空间 | 原点 = 单位中心，**1.0 = 单位半径**，`-y` 是正面；整张图覆盖 `[-EXTENT, EXTENT]²`（`EXTENT = 1.6`，枪 / 弓伸得出去） |
+| 图元 | 只有两种：`disc`（圆）与 `capsule`（粗线段）。它们的有向距离场各三行，抗锯齿天然就有（`clampf(0.5 - sdf_px)`） |
+| 三层合成 | 描边（body 的**膨胀环** `sdf - w`，黑，α 0.72）→ 身体（白，运行时被阵营色乘）→ 兵种线条（深色，α 0.88） |
+| 四种图标 | 长枪兵 = 圆盘 + 斜枪 + 枪头；长弓兵 = 圆盘 + 三段折线拼的弓 + 弦 + 箭；骑手 = **拉长的马身** + 窄脖子马头 + 骑手 + 长矛；测试敌人 = 圆盘 + 叉 |
+| 描边 | `OUTLINE_W = 0.16`（普通）/ `OUTLINE_W_LEADER = 0.34`（将领）—— **一个数就是「描边变粗」** |
+| 缓存 | `static var _cache`：同一（类型 × 是否将领）只烘一次、所有 `UnitView` 实例共用（测试里反复建 view 也烧不了多少 CPU） |
+| 兜底 | 表里没有的类型 → 一个素圆盘（与改动前那一版长得一样），**不报错、不空白** |
+
+四种图标长这样（**左列 = 普通单位，右列 = 将领**；黄 = p1 阵营色，放大 3 倍、
+底是草地色 —— 这张对照图是临时探针烘出来的，见 26.5）：
+
+![单位图标：长枪兵 / 长弓兵 / 骑手 / 测试敌人（左普通、右将领）](unit_icons.png)
+
+`unit_view.gd` 那一边：第一遍扫描时按（类型 × 是否将领）查一次贴图，第二遍**按贴图分桶**再画
+（同一张贴图的单位连成一批，理由与文件头那段「按图元类型分组」相同）；
+图标矩形 = `半径 × EXTENT`（所以头顶的交战三角与血条都要让开这一段，见那里的注释）。
+
+★ **图标不随朝向旋转**（有意，写在 `unit_icon.gd` 文件头）：旋转要么每单位一次 `draw_set_transform`
+（把批次打散成上千个，等于退回 `draw_circle` 那条老路），要么把 8 个方向烘成图集。
+这一版先用那条一直在的**朝向线**表达朝向；等换上真素材、真要转的时候走图集那条路。
+
+### 26.5 验证方式（这一轮是怎么确认「画对了」的）
+
+- 逻辑与接线：`tests/test_unit_types.gd`（**新增，174 项**）—— 标签、将领 ↔ 类型、三个兵种都能招
+  且类型正确、图标烘得出来 / 不同兵种不同 / **将领那一档的深色（描边）像素明显更多** /
+  未知类型有兜底 / `UnitView._draw()` 在真场景树上跑通、快照往返后类型仍然对；
+  ★ 其中三条是**回归**（本轮真踩过一次静默不画，见 26.7）：分桶函数「n 个单位一个不漏」、
+  桶必须是 `Array`、`_draw()` 真的发出了 N 张图标（`icon_draw_count`）；
+- **人眼**：临时探针把四种图标按真实屏幕尺寸（zoom 0.8 / 1.0 / 1.6）画成对照图存成 PNG 看过 ——
+  1.0 倍下枪 / 弓 / 马 / 叉都能认出来，将领的粗描边一眼可见。上面那张
+  [`unit_icons.png`](unit_icons.png) 就是它（左普通 / 右将领，放大 3 倍）；探针脚本用完即删，只留下这张图；
+- **真机截图**（★ 修完 26.7 那个 bug 之后补的，也是唯一能直接回答「实机到底画了没有」的一层）：
+  开窗跑一遍游戏、把每种类型 + 将领 / 普通两档摆成一排、
+  `root.get_texture().get_image()` 存 PNG —— 见 [`unit_icons_ingame.png`](unit_icons_ingame.png)
+  （左边两个是长枪兵将领 / 长枪兵，中间两个长弓兵，右边是骑手；将军的描边明显更粗）；
+- 全量回归：`tools/run-tests.ps1`（23 个套件）。
+
+### 26.6 这一轮动了哪些文件
+
+| 文件 | 改动 |
+|---|---|
+| `data/config.json` | 删 `unit.subordinate` / `combat.general` / `combat.enemy` / `debug.enemy_hp` / `debug.enemy_speed`；新增 `unit.classes` / `unit.types`（四种，含 `enemy`）/ `unit.general`（`escort` + `types`）；`recruit.list` 换成三个兵种；`recruit.zone.list` 的说明补上「1/2/3 各是什么类型」 |
+| `logic/config.gd` | `_cache_unit_types()` + `unit_type_of` / `general_index_of`（**静态**）/ `is_general_kind` / `unit_type_entry` / `general_types` / `general_type_at` / `general_escort_count` / `unit_class_of` / `unit_is_ranged` / `unit_class_name` / `unit_class_line`；`unit_hp_of` / `unit_speed_of` / `unit_radius_of` / `unit_combat_of` / `unit_name_of` 全部改成按类型查表（查不到退回兜底）；删掉 `sub_*` 与 `general_damage / general_range / general_cooldown` |
+| `logic/unit.gd` | 新增 `unit_type` / `unit_class` / `ranged` 三个字段 + `create()` 的 `p_unit_type` 参数 + `is_general()` / `is_cavalry()`；`speed` / `combat_*` / `step_along_path` 改读 `unit_type`；`KIND_SUBORDINATE` 删除，换成三个类型的常量别名（`const X := ConfigRes.X`，字面量只写一处） |
+| `logic/world.gd` | `create_generals` 按 `cfg.general_type_at(i)` 赋类型；`create_retinue` → **`create_escort`**（同类型的兵）；`_spawn_from_recruit` 传 `unit_type = kind` |
+| `logic/snapshot.gd` | 新增字段 **`ut`**（单位类型）—— 三个将领 kind 都是 `general`，客机只有靠它才能画对图标、查对数值；老快照缺 `ut` 时按 kind 推 |
+| `logic/combat.gd` · `logic/crowd/crowd_bridge.gd` · `view/input_controller.gd` | 半径一律读 `u.unit_type`（原来读 `u.kind`：将领的 kind 分不出兵种） |
+| `view/unit_icon.gd` | **新增**（图标预制体 + 烘焙 + 静态缓存 + 兜底） |
+| `view/unit_view.gd` | 本体从「一张圆盘贴图」改成「按（类型 × 是否将领）取图标贴图」+ **按贴图分桶**绘制（`_bucket_by_icon()`，桶必须是 `Array` —— 见 26.7）；新增诊断计数 `icon_draw_count`；圆盘只留给选中光晕；交战三角 / 血条让开图标那一圈 |
+| `view/hud.gd` | 右栏数值区多一行「**兵种 X（步兵 / 远程步兵 / 骑兵）**」（`cfg.unit_class_line`） |
+| `view/palette.gd` | `unit_radius_px(cfg, unit_type)` 的参数语义改成单位类型 |
+| `tests/` | 新增 `test_unit_types.gd`；`test_retinue` / `test_recruit_queue` / `test_logic` / `test_ui` / `test_smoke` / `test_view` / `test_arrival` / `test_attack_orders` 与三个 bench / 桥接用例跟着类型表改写 |
+| 文档 | 本节 + [`README.md`](README.md) 的状态表 / 验收清单 / 已知限制 + `architecture.md` 的文件地图 + [`pitfalls.md`](pitfalls.md) 5.48 / 5.49 / **5.50** |
+
+### 26.7 交付之后用户实机报了「所有单位都变成一根线」——真 bug，已修
+
+**用户原话**：「我没有看到游戏内的单位图标，我看到的是**所有单位都变成了一根线**」。
+
+**根因**（一句话）：`unit_view` 里那个「按图标贴图分桶」的循环用了
+**值语义**的 `PackedInt32Array`：
+
+```gdscript
+    (bucket as PackedInt32Array).append(i)     # ← 只改到了临时副本，字典里的桶永远是空的
+```
+
+于是图标那一遍**一个 `draw_texture_rect` 都没发出去**，画面上只剩朝向线那一遍
+（`draw_line`，另一条路）。**不报错、不改任何状态、测试全绿**
+（我当时的测试只验了「`_draw()` 跑得通」，而它确实跑通了 —— 只是什么都没画）。
+
+**修法**（三件事，缺一件下次还会再犯）：
+
+| # | 做法 |
+|---|---|
+| ① | 分桶改用 **`Array`**（引用语义）：`bucket = []` + `(bucket as Array).append(i)` |
+| ② | 分桶抽成纯函数 **`UnitView._bucket_by_icon(icons, n)`**，测试直接钉「n 个单位一个不漏 / 桶是 `Array`」 |
+| ③ | 新增诊断计数 **`UnitView.icon_draw_count`**（本帧真的发出去了几张），测试钉「挪两个单位进镜头 ⇒ 恰好 2 张」 |
+
+★ 验证方式也补了一层：这次是**先改、再开窗截图看**（`root.get_texture().get_image()` 存 PNG），
+不再只凭「测试绿了」。回归断言照旧保留 —— 把 bug 临时改回去跑一遍，
+那三条断言确实会红（实测：分桶 0 个、`icon_draw_count` 0 张）。
+
+教训写在 [`pitfalls.md`](pitfalls.md) **5.50**：打包数组与 `Array` 的语义差别是**静默的**；
+以及「只往外发绘制指令、不改状态」的代码，必须留下一个**可数的痕迹**才测得动。
+
+### 26.8 顺手清掉两条「一直红着」的历史失败（都是过期前提，不是 bug）
+
+这一轮开工时先跑了一遍基线，当时就有 2 条红的（都在未提交的「区划种类」那批改动里）。
+交付之后用户问「这两条是什么、会不会影响游戏」，于是把它查到底：
+
+| 红的是谁 | 真根因 | 修法 |
+|---|---|---|
+| `test_upgrade`「发布地图的区划**全部是**人口区划」 | 那句断言是「默认全赋上人口区划」那一轮的事实。之后设计师在编辑器里把 **a2 改成粮食区划、f2 改成黄金区划**（用户确认「这是我自己改的」）⇒ 当前分布是 **12 人口 + 1 粮食 + 1 黄金**，断言的前提没了 | 改成钉**读取路径**：每个区块的种类都认得出来（写错 kind 会红）+ `world.zone_kind_of()` 与 `zones.kind_of()` 逐块一致；分布只 `print` 出来（`[kinds]` 那一行）。**不再把某一版数据写死进断言** —— 与 `test_smoke` 里那句「别再往测试里塞坐标」是同一条规矩 |
+| `test_logic`「给占下来的区划配 0.4 粮食／地块／秒 → 产出多出 0.4 × 地块数」 | 这条用例抓的是「**第一个无主区块**」，而它现在正是 **a2 = 粮食区划（1.0 粮食/格/秒 × 25 格 = 25/秒）**。直接把数字改成 0.4 ⇒ 实测差值 **(0.4 − 1.0) × 25 = −15**，而断言期望 +10（= 0.4 × 25，即「这块地原本是 0」）。**逻辑没错，是用例的算式前提过期了** | 断言前先把这块地的粮食产能**归零**再配 0.4 —— 于是「抢到一块地、给它配产能 ⇒ 产出按 0.4 × 地块数 涨」这条**与地图数据无关**地成立 |
+
+★ 两条都不是游戏逻辑的问题：地图上「抢到 a2 每秒多 25 粮食、抢到 f2 多 45 黄金」正是
+「抢区块 = 抢产能」的设计行为。修完之后**全量 23 个套件 / 3124 项断言第一次全绿**。
+
+★ 真实教训（写进 [`pitfalls.md`](pitfalls.md) 5.51）：**用例里凡是「地图 / 配置长什么样」的前提，
+迟早会随设计师改数据而过期**。要钉的是「读取路径 + 算式」，不是「这一版的具体数值」——
+否则红的是用例，而人会以为游戏坏了（这次就差点被当成「单位类型改动弄坏了经济」）。
+
+★ 顺带记一笔当前地图的三个「非默认」点（**都是设计师的选择，不是 bug**）：
+a2 = 粮食区划（1 粮食 + 0.1 人口／格）、f2 = 黄金区划（1 黄金 + 0.1 人口／格）、
+c1 = 人口区划但**手改过数字**（1 粮食 + 1 黄金 + 0.15 人口／格，49 格）——
+按「数字为准」的口径，c1 会真的按 1 粮食 + 1 黄金／格 产，是个经济上的高值点。
+
+
+
 
 
 

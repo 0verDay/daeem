@@ -760,7 +760,7 @@ func _test_squad_rows(main) -> void:
 	var world = main.world
 
 	eq(panel.slot_count(), UiLayoutRes.SQUAD_SLOTS, "部队列表有 10 个槽")
-	# 现在世界上有 3 支队伍（3 个将领各带亲兵）
+	# 现在世界上有 3 支队伍（3 个将领各带附属兵）
 	var teams := 0
 	for u in world.units:
 		if u.alive and world.is_team_leader(u) and FactionRes.same_side(u.faction, world.my_faction):
@@ -844,13 +844,17 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 	eq(card.cell_label(3), "停止", "操作页 A 格 = 停止")
 	ok(tabs.is_active(0), "当前页在页签上高亮")
 
-	# 切到「单位」页：还是原来那一项（招募单位的页）
+	# 切到「单位」页：三个可招募兵种（本轮：长枪兵 / 长弓兵 / 骑手）
 	tabs.button_at(1).emit_signal("pressed")
 	eq(tabs.page(), PageTabsRes.PAGE_UNIT, "点第二颗切到「单位」页")
-	eq(card.entries().size(), 1, "★ 单位页只有 1 项（需求：目前只有一个单位）")
+	eq(card.entries().size(), 3, "★ 单位页有 3 项（本轮三个占位兵种）")
 	eq(String(card.entry_at(0).get("type", "")), "recruit", "单位页那一项是「招募」")
-	eq(card.cell_label(0), "占位单位", "单位页的 Q 格写着占位单位")
-	eq(card.cell_label(1), "", "单位页第 2 格是空的")
+	eq(card.cell_label(0), "长枪兵", "单位页 Q 格 = 长枪兵")
+	eq(card.cell_label(1), "长弓兵", "单位页 W 格 = 长弓兵")
+	eq(card.cell_label(2), "骑手", "单位页 E 格 = 骑手")
+	eq(String(card.entry_at(0).get("unit_kind", "")), UnitRes.UNIT_TYPE_SPEARMAN,
+		"Q 格要招的是长枪兵")
+	eq(card.cell_label(3), "", "单位页第 4 格是空的")
 
 	# ---- 2) 什么都没选中 → 「建筑」+「科技」两页（★ 本轮：原来只有建筑一颗）----
 	main.input_ctrl.select_units([])
@@ -950,7 +954,7 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 		g.press(k)
 	eq(world.active_tech_ids().size(), 0, "收尾：弃用全部科技")
 
-	# ---- 5) 选中区划中心 → 操作（三个特化）+ 招募（三个占位将领）----
+	# ---- 5) 选中区划中心 → 操作（这个种类允许的几档特化）+ 招募（三个占位将领）----
 	var zone = _zone_with_center(world)
 	ok(zone != null, "地图上找得到一个带中心的区划")
 	if zone != null:
@@ -964,14 +968,19 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 		#   这里读到的会是招募页那三个将领（那不是 bug，是「记住上次那一页」）。
 		tabs.select_page(PageTabsRes.PAGE_ORDER)
 		eq(tabs.page(), PageTabsRes.PAGE_ORDER, "★ 停在「操作」页")
-		# 操作页 = 三个特化（只能选一个）
-		eq(card.entries().size(), 3, "★ 操作页里是三个特化")
+		# 操作页 = **这个种类允许的**特化（发布地图的区划都是人口区划 → 粮食 / 黄金两格）
+		eq(card.entries().size(), 2, "★ 人口区划的操作页里是两格特化")
 		eq(card.cell_label(0), "粮食特化", "Q 格 = 粮食特化")
 		eq(card.cell_label(1), "黄金特化", "W 格 = 黄金特化")
-		eq(card.cell_label(2), "人口特化", "E 格 = 人口特化")
 		eq(String(card.entry_at(0).get("type", "")), "zone_specialize",
 			"操作页那一项是「特化」")
 		eq(String(card.entry_at(0).get("spec", "")), "food", "第 1 格是粮食特化")
+		ok(not _entry_specs(card).has("population"),
+			"★ 人口区划**没有**人口特化那一格（需求：只能黄金 / 粮食特化）")
+		# 右栏详情要写清「这是什么种类的区划」（玩家据此判断能做哪些特化）
+		ok(main.hud.detail_panel.detail_text().contains("区划种类"),
+			"★ 区划详情里有「区划种类」那一行（实际：%s）"
+			% main.hud.detail_panel.detail_text())
 		# 切到招募页：还是原来那三个占位将领
 		tabs.button_at(1).emit_signal("pressed")
 		eq(tabs.page(), PageTabsRes.PAGE_RECRUIT, "★ 第二颗 = 招募页签")
@@ -999,6 +1008,17 @@ func _entry_types(card) -> Array:
 	var out: Array = []
 	for i in card.entries().size():
 		out.append(String(card.entry_at(i).get("type", "")))
+	return out
+
+
+## 命令卡上这几格各自是「哪一档特化」（只有特化那一套格子有 `spec` 字段）。
+## ★ 本轮用它钉「人口区划的操作页里没有人口特化那一格」。
+func _entry_specs(card) -> Array:
+	var out: Array = []
+	for i in card.entries().size():
+		var spec := String(card.entry_at(i).get("spec", ""))
+		if spec != "":
+			out.append(spec)
 	return out
 
 
@@ -1130,12 +1150,12 @@ func _test_recruit_via_card(main) -> void:
 	var world = main.world
 	var card = main.hud.command_card
 	var g1 = world.unit_by_id("general-1")
-	var per: int = int(main.cfg.num("unit.subordinate.count", 0.0))
+	var per: int = main.cfg.general_escort_count()
 	var before: int = world.retinue_of(g1.id).size()
 
 	# 没有选中将领时不发命令，只提示
 	main.input_ctrl.select_units([])
-	ok(not main.input_ctrl.request_recruit(UnitRes.KIND_SUBORDINATE),
+	ok(not main.input_ctrl.request_recruit(UnitRes.UNIT_TYPE_SPEARMAN),
 		"★ 没选中将领时招募命令**不发出去**（只给提示）")
 	eq(world.retinue_of(g1.id).size(), before, "没选中将领时没有凭空多出单位")
 
@@ -1171,7 +1191,7 @@ func _test_recruit_via_card(main) -> void:
 	world.zones.zone_at(g1.tx, g1.ty)["population"] = 5.0
 	card.activate_index(0)
 	ok(g1.is_training(), "★ 点单位页的 Q 格 → 排进招募队列")
-	eq(g1.train_kind, UnitRes.KIND_SUBORDINATE, "大格子里是刚排进去的那个")
+	eq(g1.train_kind, UnitRes.UNIT_TYPE_SPEARMAN, "大格子里是刚排进去的那个")
 	near(float(world.resources["food"]), 150.0, 1e-4, "★ 入队即扣 50 粮食")
 	eq(world.retinue_of(g1.id).size(), before, "★ 入队不会立刻生成单位（要读条 10 秒）")
 	eq(g1.leader_id, "", "将领自己还是队长")
@@ -1181,7 +1201,7 @@ func _test_recruit_via_card(main) -> void:
 	eq(queue.slot_count(), 5, "★ 一共五个格子")
 	ok(queue.cell_filled(0), "大格子填上了（正在读条的那个）")
 	ok(not queue.cell_filled(1), "小格子还是空的")
-	ok(queue.cell_label(0).contains("兵"),
+	ok(queue.cell_label(0).contains("枪"),
 		"大格子里写着兵种短名（实际：%s）" % queue.cell_label(0))
 	near(queue.progress(), 0.0, 1e-6, "刚入队时读条是 0")
 
@@ -1231,7 +1251,7 @@ func _test_zone_recruit_via_card(main) -> void:
 	world.resources["gold"] = 1000.0
 	zone["population"] = 10.0
 
-	# 点区划中心（= 选中这个区划）→ 操作（三个特化）+ 招募两颗页签
+	# 点区划中心（= 选中这个区划）→ 操作（这个种类允许的特化）+ 招募两颗页签
 	main.input_ctrl.select_zone(zone)
 	main.hud.refresh()
 	eq(main.hud.page_tabs.page_count(), 2, "★ 选中区划中心 → 操作 + 招募两颗页签")
@@ -1357,7 +1377,7 @@ func _test_upgrade_via_card(main) -> void:
 	ok(main.hud.detail_panel.detail_text().contains("等级 %d" % wall.level),
 		"★ 右栏数值里有「等级 %d」（实际：%s）" % [wall.level, main.hud.detail_panel.detail_text()])
 
-	# ---- ③ 区划中心：三个特化 → 点一个 → 读条 → 特化生效后只剩「取消特化」----
+	# ---- ③ 区划中心：这个种类允许的两档特化 → 点一个 → 读条 → 特化生效后只剩「取消特化」----
 	var zone = world.zones.zone_at(world.find_base_of("p1").tx, world.find_base_of("p1").ty)
 	ok(zone != null, "大本营所在的区划")
 	if zone == null:
@@ -1367,7 +1387,8 @@ func _test_upgrade_via_card(main) -> void:
 	# ★ 显式停在操作页（hud 会记住「区划中心上次停在哪个页签」，前一个用例停在招募页）
 	tabs.select_page(PageTabsRes.PAGE_ORDER)
 	eq(tabs.page(), PageTabsRes.PAGE_ORDER, "（前提）区划中心停在操作页")
-	eq(card.entries().size(), 3, "★ 没特化时操作页 = 三个特化")
+	eq(String(zone["kind"]), "population", "（前提）这块是人口区划")
+	eq(card.entries().size(), 2, "★ 没特化时操作页 = 这个种类允许的两格特化")
 	card.activate_index(0)                      # 粮食特化
 	ok(UpgradeRes.zone_is_busy(zone), "★ 点粮食特化 = 开始读条")
 	main.hud.refresh()
@@ -1383,13 +1404,14 @@ func _test_upgrade_via_card(main) -> void:
 	eq(String(zone.get("spec_done", "")), "", "还没特化过")
 	# 重新来一次并读完
 	main.hud.refresh()
-	eq(card.entries().size(), 3, "撤单后操作页又是三个特化")
+	eq(card.entries().size(), 2, "撤单后操作页又是两格特化")
 	card.activate_index(0)
 	world.tick(60.0)
 	main.hud.refresh()
 	main.hud.rebuild_card()      # 真实游戏里由每帧 refresh 的页签比较兜底；测试里显式刷一次
 	eq(String(zone.get("spec_done", "")), "food", "★ 读完特化生效")
-	near(UpgradeRes.zone_spec_mult(zone, world.cfg)["food"], 1.1, 1e-6, "★ 本区块粮食 +10%")
+	near(UpgradeRes.zone_spec_effect(zone, world.cfg)["food_per_tile"], 0.5, 1e-6,
+		"★ 粮食特化 = 每地块每秒 +0.5 粮食")
 	eq(card.entries().size(), 1, "★ 特化后操作页只剩一格（不能再特化）")
 	eq(String(card.entry_at(0).get("type", "")), "zone_spec_cancel",
 		"★ 那一格是「取消特化」")
@@ -1410,7 +1432,7 @@ func _test_upgrade_via_card(main) -> void:
 	main.hud.refresh()
 	main.hud.rebuild_card()
 	eq(String(zone.get("spec_done", "")), "", "★ 读完特化被去掉")
-	eq(card.entries().size(), 3, "★ 操作页又能选三个特化了")
+	eq(card.entries().size(), 2, "★ 操作页又能选这个种类的两档特化了")
 
 	# 收尾：清干净（后面的用例要在「没在读条」的世界里跑）
 	while UpgradeRes.zone_is_busy(zone):
@@ -1482,8 +1504,8 @@ func _test_auto_select_on_recruit(main) -> void:
 	var team_before: int = main.input_ctrl.selected_units.size()
 
 	# 造一个「刚招募出来的新兵」（就是他名下多了一个兵）
-	var fresh = UnitRes.create(main.cfg, "auto-r1", "亲兵 9",
-		Vector2i(g1.tx, g1.ty), g1.faction, UnitRes.KIND_SUBORDINATE, "", g1.id)
+	var fresh = UnitRes.create(main.cfg, "auto-r1", "长枪兵 9",
+		Vector2i(g1.tx, g1.ty), g1.faction, UnitRes.UNIT_TYPE_SPEARMAN, "", g1.id)
 	world.units.append(fresh)
 
 	main._consume_events([{"type": "unit_recruited", "unit": fresh, "leader": g1}])
@@ -1553,11 +1575,11 @@ func _test_order_locked_notice(main) -> void:
 		"★ 被锁住的队伍不会画「没人会走的移动标记」（不骗玩家）")
 	ok(main.input_ctrl.selection_locked(), "选中的整队确实处于「被招募锁住」状态")
 
-	# 亲兵也在锁的范围内：单独拿一个亲兵下令同样被拒
+	# 附属兵也在锁的范围内：单独拿一个附属兵下令同样被拒
 	var mate = world.retinue_of(g1.id)[0]
 	ok(not CommandRes.apply(world, main.cfg, {"kind": "move", "ids": [mate.id],
 		"x": float(empty.x), "y": float(empty.y), "faction": "p1"}),
-		"★ 将领辖下的亲兵也不接受指令")
+		"★ 将领辖下的附属兵也不接受指令")
 	# 别的将领照旧能下令
 	var g2 = world.unit_by_id("general-2")
 	ok(CommandRes.apply(world, main.cfg, {"kind": "move", "ids": [g2.id],
@@ -1592,13 +1614,13 @@ func _test_queue_control(cfg) -> void:
 	ok(not q.showing(), "选中的将领没在招募 → 还是不显示（需求：开始招募时才出现）")
 	eq(q.title_text(), "", "没在招募时汇总带是空的")
 
-	w.start_recruit(UnitRes.KIND_SUBORDINATE, g1.id, "p1")
-	w.start_recruit(UnitRes.KIND_SUBORDINATE, g1.id, "p1")
+	w.start_recruit(UnitRes.UNIT_TYPE_SPEARMAN, g1.id, "p1")
+	w.start_recruit(UnitRes.UNIT_TYPE_SPEARMAN, g1.id, "p1")
 	q.set_leader(g1)
 	ok(q.showing(), "★ 开始招募 → 五格出现")
 	eq(q.slot_count(), 5, "五个格子")
-	eq(q.cell_kind(0), UnitRes.KIND_SUBORDINATE, "大格子是正在读条的那个")
-	eq(q.cell_kind(1), UnitRes.KIND_SUBORDINATE, "第 1 个小格子是排队的那个")
+	eq(q.cell_kind(0), UnitRes.UNIT_TYPE_SPEARMAN, "大格子是正在读条的那个")
+	eq(q.cell_kind(1), UnitRes.UNIT_TYPE_SPEARMAN, "第 1 个小格子是排队的那个")
 	eq(q.cell_kind(2), "", "后面三个小格子是空的")
 	ok(q.cell_filled(0) and q.cell_filled(1) and not q.cell_filled(2), "填充状态跟着队列走")
 
@@ -1670,7 +1692,7 @@ func _test_recruit_queued_event(cfg) -> void:
 
 	w.tick(1.0 / 60.0)                  # 把上一帧的残留事件清干净
 	ok(CommandRes.apply(w, cfg, {
-		"kind": "recruit", "unit_kind": UnitRes.KIND_SUBORDINATE,
+		"kind": "recruit", "unit_kind": UnitRes.UNIT_TYPE_SPEARMAN,
 		"leader_id": g1.id, "faction": "p1"}), "招募命令被接受（入队）")
 	var events: Array = w.tick(1.0 / 60.0)
 	var queued := 0
@@ -1698,7 +1720,7 @@ func _test_right_click_orders(main) -> void:
 		return
 	# ★ 把「正好站在靶子这一格上」的自己人挪开：
 	#   `_pick_unit_at` 的语义是「鼠标底下最近的一个**自己人**」，靶子身上要是
-	#   正好叠着一个亲兵（出生站位撞上，实测 general-2-2 就在这一格），
+	#   正好叠着一个附属兵（出生站位撞上，实测 general-2-2 就在这一格），
 	#   它当然会被拾取到 —— 那条断言验的是「不会选中**敌人**」，不该被叠格搅乱。
 	for u in world.units:
 		if u != foe and u.tx == foe.tx and u.ty == foe.ty:
@@ -1809,10 +1831,10 @@ func _test_box_select(main) -> void:
 
 	var t1: Array = world.group_of(g1)
 	var t2: Array = world.group_of(g2)
-	# 1 队：**队长在框外**，亲兵在框内 —— 框到亲兵也必须把队长带出来
+	# 1 队：**队长在框外**，附属兵在框内 —— 框到附属兵也必须把队长带出来
 	_place_unit(world, g1, far_lo)
 	_place_units_in_rect(world, t1.slice(1), lo, hi)
-	# 2 队：只有第一个亲兵在框内，其余在框外（同样要整队被选中）
+	# 2 队：只有第一个附属兵在框内，其余在框外（同样要整队被选中）
 	_place_unit(world, g2, far_lo + Vector2(0.0, 2.0))
 	_place_units_in_rect(world, t2.slice(1, 2), lo, hi)
 	_place_units_in_rect(world, t2.slice(2), far_lo, far_hi)
@@ -1849,10 +1871,10 @@ func _test_box_select(main) -> void:
 	eq(_sorted_ids(main.input_ctrl.selected_units), _sorted_keys(expect),
 		"★ 选中的 = 框内单位**所属部队**的并集（不是「框里的那几个」）")
 	ok(main.input_ctrl.selected_units.has(g1),
-		"★ 队长在框外，也被一起选中（框到一个亲兵 = 选中整支部队）")
+		"★ 队长在框外，也被一起选中（框到一个附属兵 = 选中整支部队）")
 	ok(main.input_ctrl.selected_units.has(g2), "★ 第二支部队也一同选中")
 	eq(main.input_ctrl.selected_units.size(), t1.size() + t2.size(),
-		"★ 两支**完整**部队（队长 + 全部亲兵），哪怕一半人在框外")
+		"★ 两支**完整**部队（队长 + 全部附属兵），哪怕一半人在框外")
 	if g3 != null:
 		ok(not main.input_ctrl.selected_units.has(g3), "框外的第三支部队没被选中")
 	if foe != null:
@@ -1886,15 +1908,16 @@ func _test_box_select(main) -> void:
 		eq(roster.leader_short(), "将",
 			"★ 那一格的短字是「将」——**不再额外画一个「将」大方块**（手玩原话）")
 		eq(roster.short_name(t1[0]), "将", "★ 队长的短字是「将」（没有头像，用字代替）")
-		eq(roster.short_name(t1[1]), "兵", "★ 亲兵的短字是 config 的 short（兵）")
+		eq(roster.short_name(t1[1]), "枪",
+			"★ 附属兵的短字是 config.recruit.list 里的 short（长枪兵 = 枪）")
 
-		# ★ 右栏报的是**将领**，不是整队选中时排在最后的那个亲兵
-		#   （框选 / 点左侧列表拿到的都是整队；选中列表最后一个往往是亲兵，
-		#    不加这条判据的话右栏会写成「亲兵 3」——手玩一眼就能看出来）
+		# ★ 右栏报的是**将领**，不是整队选中时排在最后的那个附属兵
+		#   （框选 / 点左侧列表拿到的都是整队；选中列表最后一个往往是附属兵，
+		#    不加这条判据的话右栏会写成「长枪兵 3」——手玩一眼就能看出来）
 		eq(main.hud.detail_panel.unit_name_text(), String(g1.name),
-			"★ 整队选中时右栏报的是**将领**（不是排在最后的亲兵）")
-		ok(main.hud.detail_panel.detail_text().contains("血量 200"),
-			"★ 右栏那些数值也是将领的（满血 200，亲兵是 80）")
+			"★ 整队选中时右栏报的是**将领**（不是排在最后的附属兵）")
+		ok(main.hud.detail_panel.detail_text().contains("血量 %d" % int(round(g1.hp))),
+			"★ 右栏那些数值也是将领的（将领 1 是长枪兵型：满血 %d）" % int(round(g1.hp_max)))
 		# ★★ 本轮改版（数值区只留基础数值、两栏版式、编制只有将领有）单独放在
 		#    `_test_detail_basic_stats` 里 —— 它会临时改选中与展开的部队，
 		#    插在这里会把下面那批「多选 / 换展开」的断言搅乱（实测踩过）。
@@ -2090,7 +2113,7 @@ func _test_box_select(main) -> void:
 		ok(grid.cell_is_leader(0) == false, "单位格不是将领格（点击语义按单位走）")
 		eq(grid.cell_short(0), "将", "★ 将领那一格的方框里写「将」")
 		eq(grid.cell_name(0), String(g1.name), "格子右边写着单位名")
-		eq(grid.unit_at(1).id, t1[1].id, "第 2 格是第 1 个亲兵")
+		eq(grid.unit_at(1).id, t1[1].id, "第 2 格是第 1 个附属兵")
 
 		# 点一格单位（走真实命中判定）→ 右栏切到那个单位，且**不改选中**
 		var sel_before2: int = main.input_ctrl.selected_units.size()
@@ -2108,8 +2131,8 @@ func _test_box_select(main) -> void:
 
 		# 单位塞到 12 个（编制上限 11，这里只为了凑出第二页）→ 滚轮往下翻一页
 		for _k in 11:
-			var extra = UnitRes.create(main.cfg, "scroll-%d" % _k, "亲兵 s%d" % _k,
-				Vector2i(g1.tx, g1.ty), g1.faction, UnitRes.KIND_SUBORDINATE, "", g1.id)
+			var extra = UnitRes.create(main.cfg, "scroll-%d" % _k, "长枪兵 s%d" % _k,
+				Vector2i(g1.tx, g1.ty), g1.faction, UnitRes.UNIT_TYPE_SPEARMAN, "", g1.id)
 			world.units.append(extra)
 		main.input_ctrl.select_units([g1])
 		main.hud.refresh()
@@ -2216,7 +2239,7 @@ func _test_box_select(main) -> void:
 	#    ★ 位置换算是「视口坐标 ↔ 世界坐标」，用画布变换反算，与游戏里同一条路。
 	main.input_ctrl.hover_tile = Vector2i(-1, -1)      # 别让「按下那一下」顺手选中别的东西
 	main.input_ctrl.select_units([])
-	# 先验「单击那一下用的是事件自己的位置」：把鼠标停在别处，再点在 1 队亲兵身上
+	# 先验「单击那一下用的是事件自己的位置」：把鼠标停在别处，再点在 1 队附属兵身上
 	main.input_ctrl.mouse_world = Vector2(0.5, 0.5)
 	var some_sub = world.group_of(g1)[1]
 	var click := InputEventMouseButton.new()
@@ -2469,8 +2492,8 @@ func _test_detail_two_columns(main) -> void:
 		"★ 右栏接着写上编制 / 状态（实际：%s）" % rtext.replace("\n", "|"))
 	ok(panel.detail_text().contains("\t"),
 		"★ 合成读口照旧把两栏拼回「左\\t右」（文案断言都走它）")
-	ok(panel.detail_text().contains("血量 200"),
-		"合成文本里仍然能读到「血量 200」（旧断言不受影响）")
+	ok(panel.detail_text().contains("血量 %d" % int(round(g1.hp_max))),
+		"合成文本里仍然能读到「血量 N」（旧断言按 config 里的将领血量写）")
 
 	# ---- 2) 两个 Label 的几何：右栏在左栏右边、且互不重叠 ----
 	var left_label: Label = panel._body
@@ -2563,11 +2586,11 @@ func _test_detail_basic_stats(main) -> void:
 	# ★★ 为什么要直接调 `hud._unit_text()` 而不是「选一个兵再看面板」：
 	#   右栏显示谁由 `hud._right_unit()` 决定，而它有一条**有意**的规则 ——
 	#   玩家点到的东西必须是**当前展开那支部队的成员**，否则退回那支部队的将领。
-	#   所以「选一个亲兵」在界面上永远看到将领（实测：选敌人更是直接退回将领）。
+	#   所以「选一个附属兵」在界面上永远看到将领（实测：选敌人更是直接退回将领）。
 	#   那条规则是别的需求，不该为了测「兵的编制」去绕它 —— 直接喂一个兵进文案函数，
 	#   验的正好是本轮这条规则本身（将领才写编制）。
 	var retinue: Array = world.retinue_of(g1.id)
-	ok(retinue.size() > 0, "（前提）1 号将领带着亲兵（%d 个）" % retinue.size())
+	ok(retinue.size() > 0, "（前提）1 号将领带着附属兵（%d 个）" % retinue.size())
 	if retinue.size() > 0:
 		var soldier = retinue[0]
 		ok(not world.is_team_leader(soldier), "（前提）喂进去的这个确实是兵，不是将领")
@@ -2649,9 +2672,9 @@ func _test_clicked_unit_detail(main) -> void:
 	var mates: Array = world.group_of(g1)
 	if mates.size() < 2:
 		return
-	var mate = mates[1]                       # 将领 1 名下的第一个亲兵
+	var mate = mates[1]                       # 将领 1 名下的第一个附属兵
 
-	# 1) 地图上点那个**亲兵** → 整队被选中，但右栏报的是这个亲兵
+	# 1) 地图上点那个**附属兵** → 整队被选中，但右栏报的是这个附属兵
 	main.input_ctrl.select_units([])
 	main.input_ctrl.mouse_world = mate.pos
 	main.input_ctrl.hover_tile = Vector2i(mate.tx, mate.ty)
@@ -2660,7 +2683,7 @@ func _test_clicked_unit_detail(main) -> void:
 	ok(main.input_ctrl.selected_units.has(g1), "★ 整队仍然被选中（点一个兵 = 选整队，老行为不变）")
 	main.hud.refresh()
 	eq(main.hud.detail_panel.unit_name_text(), String(mate.name),
-		"★ 右栏报的是**玩家点到的那个亲兵**（不是将领）")
+		"★ 右栏报的是**玩家点到的那个附属兵**（不是将领）")
 	eq(main.hud.detail_panel.roster_control().leader().id, g1.id,
 		"★ 左栏上半仍然是那支部队（部队级），不受影响")
 
@@ -2673,7 +2696,7 @@ func _test_clicked_unit_detail(main) -> void:
 	main.input_ctrl.select_units([g1])
 	main.hud.refresh()
 	eq(main.hud.detail_panel.unit_name_text(), String(g1.name),
-		"★ 批量选中（框选 / 点左侧列表）时右栏退回**将领**（不是某个亲兵）")
+		"★ 批量选中（框选 / 点左侧列表）时右栏退回**将领**（不是某个附属兵）")
 	ok(before >= 0, "（前一步的选中规模：%d）" % before)
 
 	# 3) 点左栏下半的单位格 → 右栏切到那个单位（且不改选中）
@@ -2681,7 +2704,7 @@ func _test_clicked_unit_detail(main) -> void:
 	var roster = main.hud.detail_panel.roster_control()
 	var grid = main.hud.detail_panel.grid_control()
 	var sel_before: Array = main.input_ctrl.selected_units.duplicate()
-	eq(grid.unit_at(1).id, mates[1].id, "（前提）网格第 2 格就是那个亲兵")
+	eq(grid.unit_at(1).id, mates[1].id, "（前提）网格第 2 格就是那个附属兵")
 	_click_control(grid, UiLayoutRes.troop_cell_rect(1).get_center())
 	main.hud.refresh()
 	eq(main.hud.detail_panel.unit_name_text(), String(mates[1].name),

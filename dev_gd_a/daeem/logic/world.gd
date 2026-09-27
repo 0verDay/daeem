@@ -89,7 +89,7 @@ var pvp_enabled: bool = false
 var _events: Array = []
 var _enemy_serial: int = 0
 ## 招募序号：只用来生成**永不重复**的 id（`general-1-r3`）。
-## 为什么不用「现有亲兵数 + 1」：那个数会因为阵亡 / 离场而回退，回退就会撞名。
+## 为什么不用「现有附属兵数 + 1」：那个数会因为阵亡 / 离场而回退，回退就会撞名。
 var _recruit_serial: int = 0
 var enemy_spawn_timer: float = 0.0
 var debug_auto_spawn: bool = false
@@ -169,7 +169,7 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	# ★★ 区划中心（地图编辑器给每个区块指定的那一格）：**中立障碍建筑**。
 	#    ⚠️⚠️ 必须在**任何单位出生之前**建好（顺序踩过一次，实测）：
 	#       单位出生找站位时会避开建筑（`_ring_tile` 里那条 `building_at() != null`），
-	#       而中心是在 reset 末尾才建的 —— 于是「先出生的亲兵」正好站在中心那一格上，
+	#       而中心是在 reset 末尾才建的 —— 于是「先出生的附属兵」正好站在中心那一格上，
 	#       开局就有一个兵被卡在不可进入的建筑里（`test_retinue` 抓住的）。
 	#    `add_building` 对已占格会拒绝，所以「中心最优先」是这样落地的：
 	#      · 中心的格子是**编辑器的硬规则**（导出前 blockers 拦住与大本营叠格的那些）；
@@ -177,7 +177,7 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	_spawn_zone_centers()
 	# 地图上**预置**的单位（测试用的守军，写在 test_map.json 的 "units" 里）。
 	# id 走 _enemy_serial —— 与调试刷兵同一套序号，永远不会撞名。
-	# ⚠️ 顺序：**先建各方的将领与亲兵，再放预置单位**。
+	# ⚠️ 顺序：**先建各方的将领与附属兵，再放预置单位**。
 	#    `world.units` 的前几个永远是这一方的将领（快捷键 1/2/3 与按序号取将领
 	#    的代码都靠这条契约），预置单位插在前面会把它顶掉。
 	for f in factions:
@@ -281,11 +281,11 @@ func apply_faction_layout(faction: String, primary: String = "") -> void:
 		units = kept
 
 
-## 给某一方建出将领 + 亲兵（站位避开建筑与已有单位）。
+## 给某一方建出将领 + 各自同类型的附属兵（站位避开建筑与已有单位）。
 ##
 ## ★ 必须**在所有建筑都就位之后**调用（见 reset() 的顺序说明）：
-##   亲兵的站位规则会跳过「那一格上立着建筑」—— 区划中心要是还没建，
-##   亲兵就会挑到中心那一格上，开局直接卡在不可进入的建筑里。
+##   附属兵的站位规则会跳过「那一格上立着建筑」—— 区划中心要是还没建，
+##   它就会挑到中心那一格上，开局直接卡在不可进入的建筑里。
 func spawn_faction_units(faction: String) -> void:
 	for u in create_generals(faction):
 		units.append(u)
@@ -293,10 +293,14 @@ func spawn_faction_units(faction: String) -> void:
 
 ## 建立某一阵营的将领。站位取该阵营自己的出生点，退回地图默认站位，最后退回大本营。
 ##
-## 每个将领还会带上若干**亲兵**（附属单位）—— 见 create_retinue()。
-## ⚠️ 顺序有讲究：**将领先全部入列，亲兵跟在后面**。
+## ★★ 将领 = **带单位类型的队长**（不是一种兵种，见 config.json 的 unit._general_comment）：
+##   · 第 i 个将领的类型取 `cfg.general_type_at(i)` —— 于是「将领 1 = 长枪兵、
+##     将领 2 = 长弓兵、将领 3 = 骑手」（用户需求）；它的血量 / 伤害 / 射程 / 速度
+##     也全部等于那个类型的数值（`UnitRes.create` 里按 unit_type 查表）。
+##   · 每个将领开局带 `unit.general.escort` 个**同类型**的兵（见 create_escort）。
+## ⚠️ 顺序有讲究：**将领先全部入列，附属兵跟在后面**。
 ##    这样 world.units 里前几个永远是将领（快捷键 1/2/3 与按序号取将领的代码都靠它），
-##    亲兵的 id 也统一是 `general-1-1`（队长 1 的第 1 个兵）这种可读格式。
+##    附属兵的 id 也统一是 `general-1-1`（队长 1 的第 1 个兵）这种可读格式。
 func create_generals(faction: String) -> Array:
 	var names = ["将领 1", "将领 2", "将领 3"]
 	var spawns: Array = faction_spawns.get(faction, [])
@@ -309,33 +313,40 @@ func create_generals(faction: String) -> Array:
 			tile = spawns[i]
 		elif i < map.general_spawns.size():
 			tile = map.general_spawns[i]
-		var g = UnitRes.create(cfg, "%s-%d" % [prefix, i + 1], names[i], tile, faction, UnitRes.KIND_GENERAL, str(i + 1))
+		var unit_type: String = cfg.general_type_at(i)
+		var g = UnitRes.create(cfg, "%s-%d" % [prefix, i + 1], names[i], tile, faction,
+			UnitRes.KIND_GENERAL, str(i + 1), "", unit_type)
 		out.append(g)
 		leaders.append(g)
-	# 将领全部就位之后，再给每个将领配亲兵。
-	# ⚠️ `out` 是**本批**的单位（还没进 world.units）—— 传给 create_retinue 用来避让，
-	#    否则同一批里的亲兵会互相看不见、两个人都挑到同一格。
+	# 将领全部就位之后，再给每个将领配它自己那一类的兵。
+	# ⚠️ `out` 是**本批**的单位（还没进 world.units）—— 传给 create_escort 用来避让，
+	#    否则同一批里的兵会互相看不见、两个人都挑到同一格。
 	for g in leaders:
-		for s in create_retinue(faction, g, out):
+		for s in create_escort(faction, g, out):
 			out.append(s)
 	return out
 
 
-## 建立某个将领辖下的亲兵。站位围着将领一圈（就近找可通行的空地）。
+## 建立某个将领辖下的**附属兵**：与将领**同类型**（长枪兵将领带长枪兵…）。
+## 站位围着将领一圈（就近找可通行的空地）。
 ##
-## ⚠️ 必须**在将领落位之后**调用：亲兵要贴着将领站，将领不在场就没有参照物。
+## ★ 这是「亲兵」被移除之后接替它的那一套（需求：「将亲兵这个单位去除」）——
+##   队伍模型（出生在队长旁边 / 点任何一个选中整队 / 右键整队一起走 / 招募期间整队收队）
+##   一个字都没改，只是「附属兵是什么」从固定的亲兵变成了将领自己的兵种。
+## ⚠️ 必须**在将领落位之后**调用：附属兵要贴着将领站，将领不在场就没有参照物。
 ## @param pending 本批已创建、还没入列的单位（用来避开站位撞车）
-func create_retinue(faction: String, leader, pending: Array = []) -> Array:
+func create_escort(faction: String, leader, pending: Array = []) -> Array:
 	var out: Array = []
-	var count: int = int(cfg.num("unit.subordinate.count", 0.0))
+	var count: int = cfg.general_escort_count()
 	if count <= 0:
 		return out
-	var name: String = cfg.unit_name_of(UnitRes.KIND_SUBORDINATE)
+	var unit_type: String = String(leader.unit_type)
+	var base_name: String = cfg.unit_name_of(unit_type)
 	for i in count:
 		out.append(UnitRes.create(
-			cfg, "%s-%d" % [leader.id, i + 1], "%s %d" % [name, i + 1],
+			cfg, "%s-%d" % [leader.id, i + 1], "%s %d" % [base_name, i + 1],
 			_ring_tile(leader, faction, i, pending + out), faction,
-			UnitRes.KIND_SUBORDINATE, "", leader.id
+			unit_type, "", leader.id, unit_type
 		))
 	return out
 
@@ -347,7 +358,7 @@ func create_retinue(faction: String, leader, pending: Array = []) -> Array:
 ##
 ## ★★ 除了「地形 / 建筑放行」，还必须**避开已经站着人的格子**（同阵营也算）。
 ##    这一条是加区划中心之后暴露出来的（实测）：
-##    3 个将领各带 3 个亲兵、全挤在大本营周围那一圈时，`index` 撞车的两个亲兵
+##    3 个将领各带 3 个附属兵、全挤在大本营周围那一圈时，`index` 撞车的两个兵
 ##    （general-2-3 与 general-3-1）都会落到「大本营那一格」上 ——
 ##    因为原来的判定只看地形与建筑，而大本营格对己方是放行的。
 ##    症状是「开局有两个兵叠在同一个格子上」（测试里那条「所有单位都不能站在大本营格上」
@@ -381,7 +392,7 @@ func _ring_tile(leader, faction: String, index: int, pending: Array = []) -> Vec
 
 ## 围着某一格找站位的**方向表**：右、下、左、上、四个斜角，再往外一圈。
 ##
-## ★ 出生站位（`_ring_tile`，将领配亲兵）与区划招募的出兵格（`_zone_spawn_tile`）
+## ★ 出生站位（`_ring_tile`，将领配附属兵）与区划招募的出兵格（`_zone_spawn_tile`）
 ##   **共用这一张表** —— 两处各写一份「先正交、后斜角」迟早会漂开，
 ##   而它本来就是同一条规则（「围着某个格子就近找一格能站人的地方」）。
 static func ring_offsets() -> Array[Vector2i]:
@@ -602,11 +613,11 @@ func leader_zone_owned(leader) -> bool:
 ## 需求原话：「玩家无法为正在招募单位的将领及其附属队列发布任何指令（移动/攻击），
 ##            其附属单位只会执行警戒逻辑」。
 ## 所以被锁住的是**一整队**：将领自己在招募 → 它被锁；它辖下的部队 → 也一起被锁
-## （「附属队列」= 它名下那些亲兵）。
+## （「附属队列」= 它名下那些附属兵）。
 ##
 ## ★ 判据只写这一处：命令层（`command_processor`）用它过滤，
 ##   输入层要用也只问它 —— 两处各写一套「谁被锁住了」迟早会漂开。
-## ★ 队长已经不在场（阵亡）的亲兵**不算被锁**：它们已经各自为战了，
+## ★ 队长已经不在场（阵亡）的附属兵**不算被锁**：它们已经各自为战了，
 ##   再拦着玩家就没有道理（`team_leader()` 对这种情况返回 null）。
 func is_order_locked(u) -> bool:
 	if u == null or not u.alive:
@@ -768,7 +779,7 @@ func _spawn_from_recruit(leader, kind: String) -> Variant:
 	var u = UnitRes.create(
 		cfg, "%s-r%d" % [leader.id, _recruit_serial],
 		"%s %d" % [cfg.unit_name_of(kind), retinue_of(leader.id, false).size() + 1],
-		tile, leader.faction, kind, "", leader.id
+		tile, leader.faction, kind, "", leader.id, kind
 	)
 	# ★ 位置**显式**写一次格心：需求要的是「强制生成在中心」，
 	#   不能依赖 UnitRes.create 的实现（哪天它改成别处落点就会静默跑偏）。
@@ -776,7 +787,7 @@ func _spawn_from_recruit(leader, kind: String) -> Variant:
 	u.sync_tile(map)
 	units.append(u)
 	# ★ 科技「将领血量 +10%」：区划招募出来的将领**自己就是队长**，走将领那一档
-	#   （亲兵走 1.0 = 不加），与 world._apply_tech_effects 同一套判据。
+	#   （附属兵走 1.0 = 不加），与 world._apply_tech_effects 同一套判据。
 	u.apply_hp_bonus(_tech_hp_mult_for(u))
 	push_event({"type": "unit_recruited", "unit": u, "leader": leader})
 	return u
@@ -1412,9 +1423,23 @@ func zone_of_center_building(b):
 	return zone_center_zone_at(b.tx, b.ty)
 
 
-## 区划现在的特化倍率（HUD 显示「粮食产能 +10%」用；没特化 → 全 1.0）
-func zone_spec_mult(zone) -> Dictionary:
-	return UpgradeRes.zone_spec_mult(zone, cfg)
+## 区划现在的特化效果（HUD 显示「粮食 +0.5／地块／秒」用；没特化 → 加 0 / 倍率 1.0）
+func zone_spec_effect(zone) -> Dictionary:
+	return UpgradeRes.zone_spec_effect(zone, cfg)
+
+
+## 这个区划的**种类** id（"food" / "gold" / "population"）—— 界面上显示名字用。
+func zone_kind_of(zone) -> String:
+	if zone == null or typeof(zone) != TYPE_DICTIONARY:
+		return cfg.zone_kind_default() if cfg != null else ""
+	if zones != null:
+		return zones.kind_of(zone)
+	return UpgradeRes.zone_kind_of(zone, cfg)
+
+
+## 这个种类的区划现在能选哪几档特化（界面只画这几格，逻辑层还会再挡一次）
+func zone_spec_choices(zone) -> Array:
+	return UpgradeRes.spec_choices(zone, cfg)
 
 
 ## 区划的特化读条进度 / 剩余秒数（视图只读这两个，不自己算）
@@ -1611,7 +1636,7 @@ func _apply_tech_effects() -> void:
 
 
 ## 某个单位该吃的**将领血量**科技倍率（将领 = 队长 = `leader_id` 为空的那一个）。
-## ★ 需求原文只写了「玩家将领血量 +10%」，所以亲兵一律返回 1.0（不加）。
+## ★ 需求原文只写了「玩家将领血量 +10%」，所以附属兵一律返回 1.0（不加）。
 ##   判据集中在这里一处：开局将领 / 区划招募的占位将领（自己就是队长）/ 以后新加的
 ##   单位类型都走它 —— 两处各写一套「谁是将领」迟早会漂开。
 func _tech_hp_mult_for(u) -> float:
@@ -1956,7 +1981,7 @@ func alive_units_of(faction: String) -> Array:
 
 
 # ------------------------------------------------------------------
-# 队伍（队长 + 亲兵）
+# 队伍（队长 + 附属兵）
 #
 # ★ 这里没有 Squad 类，也没有队伍表 —— 队伍是**算出来的**：
 #     队长 = 没有 leader_id 的那个单位；队员 = leader_id 指向队长的那些单位。
@@ -1984,11 +2009,11 @@ func team_leader(u) -> Variant:
 	return leader
 
 
-## ★ 把「选中一个单位」展开成整队：队长 + 它辖下所有还活着的亲兵。
+## ★ 把「选中一个单位」展开成整队：队长 + 它辖下所有还活着的附属兵。
 ##
 ## 规则（手玩定的）：
-##   · 点队伍里**任何一个** → 整队一起被选中（亲兵有队长时先补上队长，再把队长的队员都带上）
-##   · 队长已经阵亡 → 剩下的亲兵各算各的（只选中自己），不会凭空造出一个队长
+##   · 点队伍里**任何一个** → 整队一起被选中（附属兵有队长时先补上队长，再把队长的队员都带上）
+##   · 队长已经阵亡 → 剩下的附属兵各算各的（只选中自己），不会凭空造出一个队长
 ##   · 不属于任何队伍的单位（测试敌人）→ 只选中自己
 ##
 ## @return Array 单位数组（去重，队长排在第一个）
@@ -2031,12 +2056,12 @@ func is_team_leader(u) -> bool:
 	return u != null and u.leader_id == ""
 
 
-## 某个队长辖下的亲兵。
+## 某个队长辖下的附属兵。
 ##
 ## @param alive_only true（默认）= 只要还活着的（正常玩法用）；
 ##        false = 连阵亡但还没被清掉的也算上 —— **查「原来跟着谁」时必须传 false**。
 ##   ⚠️ 这两个语义容易混：队长刚阵亡时，`retinue_of(id)` 仍然是**非空**的
-##      （亲兵还活着），只是它们的队长查不到了（team_leader 返回 null）。
+##      （附属兵还活着），只是它们的队长查不到了（team_leader 返回 null）。
 func retinue_of(leader_id: String, alive_only: bool = true) -> Array:
 	var out: Array = []
 	for u in units:

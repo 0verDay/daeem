@@ -37,7 +37,7 @@ func _cases() -> void:
 func _run_move(cfg, from_tile: Vector2i, to_pt: Vector2) -> Dictionary:
 	var w = WorldRes.create(cfg)
 	var u = w.units[0]
-	# ★ 只留这一个单位：轨迹与转角断言不能被亲兵的推挤/交战干扰。
+	# ★ 只留这一个单位：轨迹与转角断言不能被附属兵的推挤/交战干扰。
 	#   真的从 world.units 里摘掉 —— 光挪到地图角落仍然会被碰撞推挤影响轨迹
 	#   （test_logic.gd 里那个 _isolate 助手是同一个思路，只是那边还要保留多个单位）
 	w.units = [u]

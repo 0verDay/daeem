@@ -207,7 +207,7 @@ Linux 上要装 `python3-tk`）。
 > 面板里的按钮是**就地改值**的（不重建控件），所以连点几下改地形、换大本营都不会卡。
 > 只有「虚线格 ↔ 有地块」这种面板结构本身的切换才会重建一次（见第十节）。
 
-### 3. 划区块 + 设区划中心 + 配产能（「区块」页签）
+### 3. 划区块 + 设区划中心 + 选区划种类 + 配产能（「区块」页签）
 
 1. 切到上边栏的**「区块」**页签 → 侧边栏出现区块列表
 2. **新建区块**（默认名「区块1号」，可以改成「东关」这种）；**删除** / **双击重命名** / 在输入框里改名字
@@ -223,7 +223,33 @@ Linux 上要装 `python3-tk`）。
 | 中心与大本营同格 | 两栋建筑会叠在一起，所以**互相排斥**：先设的留下，后设的被清掉（大本营优先） |
 | 删地块 / 删区块 | 中心一起忘掉（不会留下一个指向虚线格的中心） |
 
-**产能**在同一个面板的「产能」一节里填，三档：**粮食产能 / 黄金产能 / 人口产能**，
+**区划种类**在中心下面那一栏（「区划种类」三颗单选钮），**它上面是种类、下面是数字**：
+
+| | 粮食区划 | 黄金区划 | 人口区划 |
+|---|---|---|---|
+| 预设产能（每地块每秒） | 1 粮食 **+ 0.1 人口** | 1 黄金 **+ 0.1 人口** | 0.15 人口 |
+| 能做的特化（游戏里） | 黄金 / 人口 | 粮食 / 人口 | 粮食 / 黄金 |
+
+> ★ **所有区划都带 0.1 人口的基础产出**（用户需求：「所有区划至少会有 0.1 人口每地块每秒
+> 的基础产能」）：粮食 / 黄金区划在给出自己的 1 点之外**同时产 0.1 人口**；
+> 人口区划的 0.15 本身 ≥ 0.1，不用再叠。
+> ⚠️ 给足 0.1 的是**预设数字**（点种类时同步进下面输入框的那三个数），
+> 不是游戏里的硬编码 —— 手改成 0 就是 0（游戏永远以数字为准）。
+
+- **新建的区块默认就是「人口区划」**（用户确认：「没有默认区划了，所有区划默认值都改为
+  人口区划」），并且**直接带着它的预设数字**（`0 / 0 / 0.15`）——单选钮与下面三个输入框
+  一开始就是自洽的。
+- **点一颗单选钮 = 换种类 + 把下面的三个数字同步成那一档的预设值**
+  （需求原文：「当设计师为区划选择区划种类时，下方的数字输入框需要同步变化到上方的数值」）。
+- **数字之后可以随便改**（需求原文：「设计师也可以直接编辑下方的数字输入框中的资源产量，
+  最终游戏中的区划产量以下方数字输入框中的产量为准」）——手改之后种类**不会**变，
+  种类那一栏会出现一句「★ 数字已经手改过（预设：…）——游戏以数字为准」；
+  想回到预设就换一档种类再换回来。
+- 点**已经选中**的那颗单选钮 = 什么都不做（不会把数字重置回预设，也不会留一步空撤销）。
+- 导出时**每个区块都会写 `kind`**；`production` 仍然按老规矩「有非零数字才写」——
+  三档全填 0 的区块在游戏里就是**不产出**（缺字段 = 0，不会按种类预设兜底）。
+
+**产能**在它下面那一节「产能」里填，三档：**粮食产能 / 黄金产能 / 人口产能**，
 单位统一是 **n 资源／地块／秒**（0 = 不产出）：
 
 - 填完按 `Enter` 或点到别处就生效；乱打字**不会**把原值弄坏（会恢复成原来的数）
@@ -346,6 +372,7 @@ Linux 上要装 `python3-tk`）。
   "zones": [[-1, -1, 0, ...], ...],     // ★ 地块 → 区块 id；-1 = 不属于任何区块
   "zone_list": [
     { "id": 0, "name": "东关",
+      "kind": "population",                      // ★ 区划种类：food / gold / population
       "center": [2, 1],                          // ★ 区划中心（每个区块必须有且只有一个）
       "production": { "food": 1, "gold": 1, "population": 0.5 },   // ★ 产能：每地块每秒
       "population_cap": 10,                      // ★ 人口上限；没填就不写 → 游戏侧默认 1
@@ -384,9 +411,17 @@ Linux 上要装 `python3-tk`）。
 - **`zone_list[].center` 是每个区块的「区划中心」**（`zone_centers` 网格是同一件事的按格写法）：
   游戏里那一格会落成一栋**中立障碍建筑**（谁都进不去、无敌、不可拆），
   点它能看这个区块的详情。**每个区块都必须有一个中心** —— 见下面第七节的硬规则。
+- ★ **`zone_list[].kind` 是区划种类**（`food` / `gold` / `population`，**每个区块都写**）：
+  它**不决定产量**，只决定这个区划在游戏里能做哪几档特化（粮食区划仅能黄金 / 人口特化，
+  黄金区划仅能粮食 / 人口特化，人口区划仅能粮食 / 黄金特化）。
+  地图里**没有**这个字段的区划（老图 / 手写图）一律按**人口区划**处理
+  （用户确认：「没有默认区划了，所有区划默认值都改为人口区划」）。
 - **`zone_list[].production` 是产能**（粮食 / 黄金 / 人口，单位 **n 资源/地块/秒**）：
   经济按「占领方拥有的各区划（产能 × 该区划地块数）」聚合。
-  **只有配过非零产能的区块才写这个字段**（老图导出后仍然干净）。
+  ★★ **游戏以这里的数字为准**（需求原文：「最终游戏中的区划产量以下方数字输入框中的产量为准」）——
+  种类只是个标签 + 编辑器里「选它就同步出预设数字」的快捷方式；地图**没写** production 的区划
+  在游戏里一律算 **0**（用户确认保持老图行为，**不**按种类预设兜底）。
+  编辑器只在真的有非零数字时才写这个字段。
 - ★ **`zone_list[].population_cap` 是人口上限**（单位「人」）：
   游戏里每个区块的人口涨到它就不再涨，招募单位会从将领所在区块扣 1 人口。
   **没填 / 填 1 都不写这个字段**（缺字段 = 1，与「只有非零产能才写 production」同一条约定）；
@@ -417,19 +452,26 @@ Linux 上要装 `python3-tk`）。
   —— 用户要求「每个区块都必须有中心」，自动挑一个是为了让「打开旧图」不会一上来就报
   「还差 24 个中心没设」；设计者再按需要挪
 - 老图里那个单数的 `base` 会**迁移**成 `p1` 的大本营（见第五节的 ★ 那一条）
+- 区块的 `kind` 会按**默认种类**（人口区划）写出去 —— 这是**行为等价**的（游戏侧缺字段时
+  也按它算），只是文件里把种类写明确了（用户确认「没有默认区划了」）；它的产能仍然是 0
+  （老图没有 `production`，而游戏侧「缺字段 = 0」，**不**按种类预设兜底）
 - `general_spawns` / `buildings` / `units` / `pvp_points` / `_comment` 原样保留
 
 所以「打开旧图 → 什么都不改 → 导出」得到的地图，游戏里的行为**一模一样**
 （`tests/test_model.py` 里有一条断言就是钉这个的：逐行比对 `layout`、
-区块网格的若干关键格、以及每个保留字段）。
+区块网格的若干关键格、以及每个保留字段；同时钉住「老图导出时不凭空补 `production`，
+但每个区块会带上默认种类 `kind`」）。
 
 一旦你在编辑器里真的划了区块 / 建了阵营，导出的图就会带上 `zones` / `zone_centers` /
-`production` / `faction_bases`，`zone.build_from_map()` 与 `map_data.spawn_layout_for()`
+`kind` / `production` / `faction_bases`，`zone.build_from_map()` 与 `map_data.spawn_layout_for()`
 自动切成读新字段那条路 —— 不需要改代码、不需要开关。
 
 > ⚠️ **随游戏发布的那张图已经搬到新格式**（只剩 `data/test_map.json`；老图 `map_01.json`
 > 已按用户要求删掉）：27×22、594 个地块、14 个区块（a1…g2）都有自己的中心与产能，并带
 > `faction_bases: {"p1": [7, 2], "p2": [19, 19]}`。
+> ★★ 最近一轮按用户要求把**14 个区块全部设成「人口区划」并同步数字**
+> （`kind: "population"` + `production: {0, 0, 0.15}`）—— 所以这张图现在**不产粮食 / 黄金**
+> （要靠科技那两条「每地块 +n/秒」），这是用户拍板的，改法是在编辑器里逐块换种类或手改数字。
 > 上面说的「老地图」兼容路径现在是给**手写 / 外部旧图**留的，不再是发布图的状态。
 >
 > ⚠️ 那张图是**设计师在编辑器里随时会改**的东西：加了地块 / 加了区块之后，
@@ -467,21 +509,21 @@ Linux 上要装 `python3-tk`）。
 
 | 文件 | 改动 |
 |---|---|
-| `logic/map_data.gd` | 新增 `exists` 网格（`tile_exists()`，`terrain_walkable()` 里把「地图外」当墙）；`zones_grid` / `zones_names` / **`zones_centers` / `zones_production` / `zones_population_caps`** 五个字段；连通性修正不碰地图外的格子。**阵营大本营**：`faction_bases` / `factions_meta` 与 `_read_faction_bases()`；`spawn_layout_for()` 改成「地图指定过就用它，否则退回老规则」，并把「大本营 + 将领站位 + 防御阵地」抽成 `_ring_layout()`。**老式 `base` 只读不写**：`_resolve_primary_base()` 的优先级是 `faction_bases` → 旧 `base` → 地块中心 |
-| `logic/zone.gd` | `build_from_map()` 分两条路：有 `zones` 网格 → 读网格（区块可非矩形、空区块保留、`tile_count` 按真实地块数）；没有 → 6×4 均分（老行为，一字不改）。**新增**：`_apply_map_centers()` / `_apply_map_production()`（读中心的产能）、**`_apply_map_population_caps()`（读人口上限，缺字段 = 默认 1）**、`center_zone_at()` / `center_zone_at_id()`（按格查中心）、`update_population()`（人口累积，**涨到上限就停**）、`population_cap_of()` / `population_of()` / `population_floor()`（**显示用的人口向下取整**）、`production_of(owner)`（按占领方聚合产量） |
+| `logic/map_data.gd` | 新增 `exists` 网格（`tile_exists()`，`terrain_walkable()` 里把「地图外」当墙）；`zones_grid` / `zones_names` / **`zones_centers` / `zones_production` / `zones_population_caps` / `zones_kinds`** 六个字段；连通性修正不碰地图外的格子。**阵营大本营**：`faction_bases` / `factions_meta` 与 `_read_faction_bases()`；`spawn_layout_for()` 改成「地图指定过就用它，否则退回老规则」，并把「大本营 + 将领站位 + 防御阵地」抽成 `_ring_layout()`。**老式 `base` 只读不写**：`_resolve_primary_base()` 的优先级是 `faction_bases` → 旧 `base` → 地块中心 |
+| `logic/zone.gd` | `build_from_map()` 分两条路：有 `zones` 网格 → 读网格（区块可非矩形、空区块保留、`tile_count` 按真实地块数）；没有 → 6×4 均分（老行为，一字不改）。**新增**：`_apply_map_centers()` / `_apply_map_production()`（读中心的产能）、**`_apply_map_population_caps()`（读人口上限，缺字段 = 默认 1）**、**`_apply_map_kinds()` + `kind_of()`（读区划种类，缺字段 / 认不出 → 默认人口区划）**、`center_zone_at()` / `center_zone_at_id()`（按格查中心）、`update_population()`（人口累积，**涨到上限就停**，人口特化 ×1.25 在这里生效）、`population_cap_of()` / `population_of()` / `population_floor()`（**显示用的人口向下取整**）、`production_of(owner)`（按占领方聚合产量：**基础产能 + 特化的每地块加成**） |
 | `logic/building.gd` | 新增建筑类型 **`zone_center`**：`owner` 为空、格级与本体级都挡所有阵营、`invulnerable`（`take_damage()` 直接返回 false、无血量、不闪光） |
-| `logic/world.gd` | `reset()` 里**在单位出生之前**落各区划中心（顺序踩过：反了会有亲兵被卡在中心格里）；新增 `zone_center_zone_at()`；单位出生的站位改成「避开建筑与已占格」；经济改成读 `zones.production_of(my_faction)` |
+| `logic/world.gd` | `reset()` 里**在单位出生之前**落各区划中心（顺序踩过：反了会有附属兵被卡在中心格里）；新增 `zone_center_zone_at()`；单位出生的站位改成「避开建筑与已占格」；经济改成读 `zones.production_of(my_faction)` |
 | `logic/combat.gd` | `nearest_enemy_building()` 跳过 **无主 / 无敌** 的建筑 —— 否则将军会跑去「拆」永远拆不掉的区划中心 |
 | `logic/command_processor.gd` | 拆除命令对 `invulnerable` 的建筑直接拒绝 |
 | `logic/economy.gd` | `tick()` 的入参从「己方地块数」改成「每秒产出 rates」，产出由 `zone.production_of()` 聚合 |
 | `logic/unit.gd` | **回到**「到终点的直线距离」判进度（试过改成路径长度，会让拥挤的人群永远停不下来，见注释） |
 | `view/building_view.gd` | 画区划中心（品红菱形 + 中心点，与编辑器里同一个形状）；无主建筑不套阵营色描边 |
 | `view/input_controller.gd` | 左键**先判区划中心**（点它 = 选中该区划）；新增 `select_zone()`；选中状态三种互斥 |
-| `view/hud.gd` | 左栏新增 `_zone_text()`：区划名 / 归属 / 大小 / 三档产能（每地块 + 合计）/ **人口（整数，向下取整）+ 上限**；右栏资源行加上 `+n/秒` |
+| `view/hud.gd` | 左栏新增 `_zone_text()`：区划名 / **区划种类** / 大小 / 三档产能（每地块 + 合计）/ **人口（整数，向下取整）+ 上限**；右栏资源行加上 `+n/秒` |
 | `logic/snapshot.gd` | 区块快照带上 `pop`（人口），缺字段时保持本地现状 |
 | `view/zone_view.gd` | 区块**按地块画**（底色逐格、轮廓沿地块边界）—— 不然非矩形区块会被画成它的包围盒；老地图的均分区块画出来与从前逐像素一致 |
 | `logic/unit.gd` | `STEP_GUARD := 512`（一帧最多推进几段路径）改成按地图对角线算的 `step_guard()` —— 地图尺寸不再写死，大图上一帧能走完该走的路 |
-| `tests/test_map_editor.gd` | 109 项断言：老地图不变、地图外不可通行、`zones` 网格、空区块、`exists` 三种写法、编辑器导出的地图能真的开一局、**阵营大本营**（指定 / 只指定一方 / 落在山上 / 越界）、**区划中心不会凭空立起障碍**（老图没有中心字段） |
+| `tests/test_map_editor.gd` | 131 项断言：老地图不变、地图外不可通行、`zones` 网格、空区块、`exists` 三种写法、编辑器导出的地图能真的开一局、**阵营大本营**（指定 / 只指定一方 / 落在山上 / 越界）、**区划中心不会凭空立起障碍**（老图没有中心字段）、**区划种类**（`zone_list[].kind` 读得进来 / 认不出的按默认 / 写了种类但没写 production → 产量 0 / 白名单按种类挡） |
 | `tests/test_logic.gd` | 新增两节：`_test_zone_centers`（不可进入 / 无敌 / 不可拆 / 不被索敌 / 点得出区块）与 `_test_zone_population_and_production`（人口累积、产能聚合、无主不产出） |
 | `tests/test_smoke.gd` | `test_map.json`（随游戏发布的唯一一张图）已带 `faction_bases` 且**没有**老 `base` 字段；出生点走 `_ring_layout`（自带防御阵地） |
 
@@ -490,13 +532,23 @@ Linux 上要装 `python3-tk`）。
 > `logic/map_data.gd` + `logic/zone.gd`（读上限、涨到上限就停、`population_floor()`）、
 > `view/hud.gd`（人口显示整数 + 上限）、`view/input_controller.gd` + `view/game_scene.gd` +
 > `view/overlay.gd`（左键框选）、`view/unit_roster.gd`（详细信息里「一行一支 + 方块头像」）。
+>
+> ★★ **最近一轮（区划种类 + 特化改版）** 也动了 Godot 侧，细节见
+> [`../../docs/route.md`](../../docs/route.md) 第二十五节：
+> `data/config.json` 新增 `zone_kind` 段（三种区划 + 预设产能 + 能做的特化白名单）、
+> `zone_spec.list` 的效果换成 `food_per_tile` / `gold_per_tile` / `population_mult`；
+> `logic/config.gd`（种类表的缓存与查询）、`logic/map_data.gd`（读 `zones_kinds`）、
+> `logic/zone.gd`（`kind` 字段 + 产量按新效果算）、`logic/upgrade.gd`
+> （`zone_spec_mult` → **`zone_spec_effect`**、`kind` 拒因、`spec_choices()`）、
+> `view/hud.gd`（详情里的「区划种类」一行 + 操作页只画白名单里的特化）。
+> 编辑器侧：`model.py` / `mapfile.py` / `app.py` 三处（见第四节第 3 小节与第五节）。
 
 跑测试：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File dev_gd_a/daeem/tools/run-tests.ps1   # Godot：18 套 / 1679 项
-python dev_gd_a/tools/map_editor/test_model.py                                # 编辑器数据层：283 项
-python dev_gd_a/tools/map_editor/test_app.py                                  # 编辑器界面动作：351 项
+powershell -ExecutionPolicy Bypass -File dev_gd_a/daeem/tools/run-tests.ps1   # Godot：22 套 / 2841 项
+python dev_gd_a/tools/map_editor/test_model.py                                # 编辑器数据层：330 项
+python dev_gd_a/tools/map_editor/test_app.py                                  # 编辑器界面动作：385 项
 python dev_gd_a/tools/map_editor/bench_app.py                                 # 跟手度基准（只测不判）
 ```
 
@@ -513,13 +565,13 @@ python dev_gd_a/tools/map_editor/bench_app.py                                 # 
 dev_gd_a/tools/map_editor/
 ├── map_editor.bat  ★ 双击这个就能开（自动找 Python；把地图拖到它上面可直接打开那张图）
 ├── __main__.py     入口（命令行参数 / --selftest）
-├── model.py        数据层：地形、存在格、区块（含**区划中心与产能**）、阵营与大本营、
-│                   两条硬规则（blockers）、撤销快照（**不依赖 tkinter**，可无头测试）
+├── model.py        数据层：地形、存在格、区块（含**区划中心 / 种类 / 产能 / 人口上限**）、
+│                   阵营与大本营、两条硬规则（blockers）、撤销快照（**不依赖 tkinter**，可无头测试）
 ├── mapfile.py      地图 JSON 的读写（Godot 格式、旧地图兼容与 base 迁移、字段保留、带 BOM 也能读）
 ├── app.py          tkinter 界面（画布、侧边栏、三个页签、工具栏的导入导出按钮、框选、快捷键）
-├── test_model.py   数据层无头测试（252 项）
-├── test_app.py     界面动作无头测试（341 项：含阵营 / 区划中心 / 产能 / 导出硬拦截 /
-│                   框选（含「焦点跑掉」那条） / 跟手度 / 缩小不卡 / 页签来回切不死循环）
+├── test_model.py   数据层无头测试（330 项）
+├── test_app.py     界面动作无头测试（385 项：含阵营 / 区划中心 / **区划种类** / 产能 / 导出硬拦截 /
+│                   框选（含「焦点跑掉」那条） / **侧边栏滚动** / 跟手度 / 缩小不卡 / 页签来回切不死循环）
 ├── bench_app.py    跟手度基准：一个鼠标事件（回调→重绘→画到屏上）要多少毫秒
 └── README.md       本文件
 ```
@@ -591,6 +643,19 @@ dev_gd_a/tools/map_editor/
     就**不再是「没设出生点」**，而只是「某个没设大本营的阵营会用到它」。
     没跟着改的后果是用户被一句不该出现的警告带着去改本来没问题的东西。
     **改了数据模型，就要回头把每一条校验的语义重读一遍。**
+19. **★★ 侧边栏必须能滚，而且滚轮要「按指针位置路由」**：区块页那一串内容实测
+    **1597px**，而 1280×800 的侧边栏只有 **754px** —— 固定高度的 Frame 会让
+    「人口上限 / 图例 / 整张地图」**永远够不着**（加「区划种类」那一栏之前就已经溢出）。
+    现在侧边栏是一个 `Canvas` + 右侧滚动条（`_build_sidebar()` 末尾顺手把
+    `scrollregion` 算对、并回到顶部）。
+    ⚠️ 滚轮**不能**只绑在侧边栏容器上：tk 的事件沿 bindtags 走
+    （`widget → class → toplevel → all`），指针停在某个 Label / Entry / 单选钮上时
+    容器根本收不到。所以绑在 **root** 上，再由 `on_any_wheel()` 按
+    「指针在不在侧边栏那棵子树里」决定**滚侧边栏**还是**放行给画布缩放**
+    （与第 17 条「只绑 canvas 会静默失效」是同一类坑）。`test_app.t_sidebar_scrolls()` 钉着它。
+20. **★ 「默认值」别取表里的第一个**：`zone_kind.list` 的第一项是 `food`，
+    兜底写成 `next(iter(...))` 会让「地图没写 kind」变成粮食区划。
+    默认值必须是**常量或配置项**（见 `docs/pitfalls.md` 5.47）。
 
 ---
 
@@ -598,7 +663,7 @@ dev_gd_a/tools/map_editor/
 
 | 不做 | 说明 |
 |---|---|
-| 预置建筑 / 预置单位 / 将领出生点 / 多方起点轮换 | 按需求：编辑器只管地形、区块（含**区划中心**与**产能**）、各阵营的大本营；其余由 Godot 侧脚本生成。字段本身会原样带过去 |
+| 预置建筑 / 预置单位 / 将领出生点 / 多方起点轮换 | 按需求：编辑器只管地形、区块（含**区划中心**、**区划种类**与**产能**）、各阵营的大本营；其余由 Godot 侧脚本生成。字段本身会原样带过去 |
 | 撤销栈落盘 | 导出即保存，`Ctrl+Z` 只在本次会话里有效 |
 | 地形笔刷（按住拖动批量刷） | 按需求：**没有笔刷**。单格改地形在属性面板里选，成批改就用 `Shift` 框选（见第四节第 5 小节） |
 | 「地图尺寸 / 铺满这个范围 / 裁剪到画布」 | 按需求：设计时不用考虑尺寸，导出范围永远是已画地块的包围盒（见第三节末尾的说明） |

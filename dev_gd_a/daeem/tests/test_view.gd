@@ -17,6 +17,7 @@ extends "res://tests/test_case.gd"
 
 const ConfigRes = preload("res://logic/config.gd")
 const WorldRes = preload("res://logic/world.gd")
+const UnitRes = preload("res://logic/unit.gd")
 const PaletteRes = preload("res://view/palette.gd")
 const FontLoaderRes = preload("res://view/font_loader.gd")
 const CommandRes = preload("res://logic/command_processor.gd")
@@ -59,7 +60,9 @@ func _test_palette(cfg) -> void:
 	near(PaletteRes.to_px(Vector2(2.0, 3.0), cfg).x, 2.0 * cfg.cell_px, 1e-6, "to_px 的 x")
 	near(PaletteRes.to_px(Vector2(2.0, 3.0), cfg).y, 3.0 * cfg.cell_px, 1e-6, "to_px 的 y")
 	v2_near(PaletteRes.to_logic(Vector2(2.5, 3.5) * cfg.cell_px, cfg), Vector2(2.5, 3.5), 1e-6, "to_logic 是 to_px 的逆")
-	near(PaletteRes.unit_radius_px(cfg, "general"), cfg.unit_radius_factor * cfg.cell_px, 1e-6,
+	# ★ 单位半径走的是**单位类型**（兵种）那一档，不再是「将领一个数、其它一个数」。
+	near(PaletteRes.unit_radius_px(cfg, UnitRes.UNIT_TYPE_SPEARMAN),
+		cfg.unit_radius_of(UnitRes.UNIT_TYPE_SPEARMAN) * cfg.cell_px, 1e-6,
 		"单位半径（像素）= 逻辑半径 × 格宽")
 
 	var r = PaletteRes.tile_rect(3, 2, cfg)
@@ -179,22 +182,22 @@ func _test_frames_and_input(cfg) -> void:
 
 	# 注入一次「选中 + 下令移动」：走的是命令这条路
 	#
-	# ★ 注意这里是**整队**选中：将领带亲兵，选中队长时会把亲兵一起带上，
-	#   所以选中数不是 1 而是「1 + 亲兵数」。这正是需求要的行为，断言照实写。
+	# ★ 注意这里是**整队**选中：将领带附属兵，选中队长时会把附属兵一起带上，
+	#   所以选中数不是 1 而是「1 + 附属兵数」。这正是需求要的行为，断言照实写。
 	var u = world.units[0]
 	var group_size: int = world.group_of(u).size()
 	game.input_ctrl.select_units([u])
 	eq(game.input_ctrl.selected_units.size(), group_size,
-		"★ 选中将领 1 会同步选中整队（1 + %d 个亲兵）" % (group_size - 1))
+		"★ 选中将领 1 会同步选中整队（1 + %d 个附属兵）" % (group_size - 1))
 	ok(u.selected, "选中后逻辑单位的 selected 标志被置上（view 写的是存在的字段）")
 	var sub_selected := 0
 	for su in game.input_ctrl.selected_units:
 		if su.leader_id == u.id:
 			sub_selected += 1
-	eq(sub_selected, group_size - 1, "整队里的亲兵也都被选中了")
+	eq(sub_selected, group_size - 1, "整队里的附属兵也都被选中了")
 
 	var before = u.pos
-	# ★ 命令要下给**整队**：这正是「右键移动同步给亲兵下达指令」那条需求，
+	# ★ 命令要下给**整队**：这正是「右键移动同步给附属兵下达指令」那条需求，
 	#   所以这里把选中列表里所有 id 都带上（input_controller 就是这么做的）
 	var all_ids: Array = []
 	for su in game.input_ctrl.selected_units:
@@ -209,7 +212,7 @@ func _test_frames_and_input(cfg) -> void:
 	for su in world.retinue_of(u.id):
 		if su.moving:
 			sub_moving += 1
-	eq(sub_moving, world.retinue_of(u.id).size(), "★ 亲兵也收到了同一条移动命令（都进入移动状态）")
+	eq(sub_moving, world.retinue_of(u.id).size(), "★ 附属兵也收到了同一条移动命令（都进入移动状态）")
 	for i in 120:
 		await process_frame
 	ok(u.pos.distance_to(before) > 0.05, "跑 120 帧后单位真的动了（命令 → 逻辑 → 渲染这条线通了）")

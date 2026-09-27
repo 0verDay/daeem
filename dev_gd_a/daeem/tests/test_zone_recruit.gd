@@ -45,7 +45,7 @@ func _test_config_table(cfg) -> void:
 	ok(not w.is_unit_recruitable(KIND),
 		"★ 区划表里的将领**不能**走「将领招兵」那条路（两张表是分开的）")
 	ok(w.is_recruitable(KIND), "但它仍然是「可招募兵种」（短字 / 消耗查表要用）")
-	ok(w.is_unit_recruitable(UnitRes.KIND_SUBORDINATE), "亲兵仍然只在单位那张表里")
+	ok(w.is_unit_recruitable(UnitRes.UNIT_TYPE_SPEARMAN), "长枪兵仍然只在单位那张表里")
 	eq(w.recruit_short_of(KIND), "将", "格子里写的短字是 config 的 short（将）")
 	eq(w.zone_recruit_queue_max(), 5, "★ 区划队列上限 5 个")
 	near(w.recruit_train_sec(KIND), 10.0, 1e-6, "★ 每个将领读条 10 秒")
@@ -81,7 +81,7 @@ func _test_only_own_zone(cfg) -> void:
 		eq(w.zone_recruit_queue_size(foreign), 0, "被拒时队列里什么都没有")
 
 	eq(w.can_recruit_zone(KIND, 9999, "p1"), "zone_not_found", "没有这个区划 → zone_not_found")
-	eq(w.can_recruit_zone(UnitRes.KIND_SUBORDINATE, zid, "p1"), "kind",
+	eq(w.can_recruit_zone(UnitRes.UNIT_TYPE_SPEARMAN, zid, "p1"), "kind",
 		"单位页那张表里的兵种不能在区划里招（拒因 kind）")
 
 	# 把无主那块划给己方 → 又能招了（判据是区划归属，不是「哪一块地」）
@@ -167,7 +167,7 @@ func _test_train_and_spawn_near_center(cfg) -> void:
 	ok(fresh.alive, "它是活的")
 	eq(String(fresh.leader_id), "", "★ 招出来的是**队长**（leader_id 为空）")
 	ok(w.is_team_leader(fresh), "★ 它是队长 → 会作为新的一支部队出现在左侧列表里")
-	eq(w.retinue_of(fresh.id).size(), 0, "刚招出来的将领名下还没有亲兵")
+	eq(w.retinue_of(fresh.id).size(), 0, "刚招出来的将领名下还没有附属兵")
 	ok(String(fresh.id).begins_with("zone-%d-" % zid), "id 里带着区划号（%s）" % fresh.id)
 
 	# 位置：不在中心那一格（那是障碍建筑），但在它旁边一圈内、且是空地

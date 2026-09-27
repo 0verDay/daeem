@@ -15,6 +15,7 @@ extends "res://tests/test_case.gd"
 ## 但 `--script` 模式下类型解析不跨文件，跨文件类型一律走本文件的 preload 常量。
 const GridRes = preload("res://logic/grid.gd")
 const ConfigRes = preload("res://logic/config.gd")
+const UnitRes = preload("res://logic/unit.gd")
 
 ## `config.json` 的 grid 是「编辑器新画一张图的默认画布尺寸」，**不是**某张图的实际尺寸。
 const EXPECTED_GRID_COLS := 24
@@ -83,18 +84,53 @@ func _cases() -> void:
 	# （docs/porting.md 第四节）
 	near(cfg.unit_speed, 0.6, 1e-6, "★ 单位速度 0.6 格/秒（降到 1/4）")
 	near(cfg.unit_forest_mult, 0.5, 1e-6, "森林减速 ×0.5")
-	near(cfg.unit_hp_max, 200.0, 1e-6, "将领生命 200")
-	near(cfg.unit_radius_factor, 0.1, 1e-6, "单位半径系数 0.1")
+	# ★ 注意：unit.hp_max / radius_factor 现在是**查不到类型时的兜底值**，
+	#   单位真正的数值在 unit.types 那张表里（见下面那一组断言）。
+	near(cfg.unit_hp_max, 200.0, 1e-6, "兜底生命 200")
+	near(cfg.unit_radius_factor, 0.1, 1e-6, "单位半径系数 0.1（兜底）")
 	near(cfg.aggro_range, 4.0, 1e-6, "警戒半径 4 格")
 	near(cfg.leash_factor, 1.8, 1e-6, "追击上限系数 1.8")
 	near(cfg.repath_sec, 0.3, 1e-6, "追击重寻路 0.3 秒")
 	near(cfg.building_damage, 40.0, 1e-6, "拆建筑伤害 40")
-	near(cfg.general_damage, 26.0, 1e-6, "将领伤害 26")
-	near(cfg.general_cooldown, 0.9, 1e-6, "将领攻击间隔 0.9s")
+
+	# ---- 单位类型表（本轮新增：unit.types / unit.classes / unit.general）----
+	# ★ 这三个兵种 + 测试敌人的数值与「是步兵还是骑兵」都在这里钉住。
+	#   ⚠️ 它们是**占位数值**（需求：「属性由你随便定」），改平衡就同步改这里。
+	near(cfg.unit_hp_of(UnitRes.UNIT_TYPE_SPEARMAN), 160.0, 1e-6, "长枪兵生命 160")
+	near(cfg.unit_hp_of(UnitRes.UNIT_TYPE_LONGBOWMAN), 110.0, 1e-6, "长弓兵生命 110")
+	near(cfg.unit_hp_of(UnitRes.UNIT_TYPE_RIDER), 140.0, 1e-6, "骑手生命 140")
+	near(cfg.unit_speed_of(UnitRes.UNIT_TYPE_SPEARMAN), 0.6, 1e-6, "长枪兵速度 0.6")
+	near(cfg.unit_speed_of(UnitRes.UNIT_TYPE_RIDER), 0.9, 1e-6, "★ 骑手更快（0.9 格/秒）")
+	near(float(cfg.unit_combat_of(UnitRes.UNIT_TYPE_LONGBOWMAN)["range"]), 3.5, 1e-6,
+		"★ 长弓兵是远程（3.5 格）")
+	near(float(cfg.unit_combat_of(UnitRes.UNIT_TYPE_SPEARMAN)["range"]), 1.0, 1e-6,
+		"长枪兵是近战（1 格）")
+	eq(cfg.unit_class_of(UnitRes.UNIT_TYPE_SPEARMAN), ConfigRes.CLASS_INFANTRY, "长枪兵 = 步兵")
+	eq(cfg.unit_class_of(UnitRes.UNIT_TYPE_LONGBOWMAN), ConfigRes.CLASS_INFANTRY, "长弓兵 = 步兵")
+	eq(cfg.unit_class_of(UnitRes.UNIT_TYPE_RIDER), ConfigRes.CLASS_CAVALRY, "骑手 = 骑兵")
+	ok(not cfg.unit_is_ranged(UnitRes.UNIT_TYPE_SPEARMAN), "长枪兵不是远程")
+	ok(cfg.unit_is_ranged(UnitRes.UNIT_TYPE_LONGBOWMAN), "★ 长弓兵是远程步兵（弓箭手那一类）")
+	ok(not cfg.unit_is_ranged(UnitRes.UNIT_TYPE_RIDER), "骑手是近战骑兵")
+	eq(cfg.unit_class_line(UnitRes.UNIT_TYPE_LONGBOWMAN), "远程步兵", "★ 长弓兵的标签是「远程步兵」")
+	eq(cfg.unit_class_line(UnitRes.UNIT_TYPE_RIDER), "骑兵", "骑手的标签是「骑兵」")
+	# 三个开局将领各自一种类型（顺序 = unit.general.types）
+	eq(cfg.general_types().size(), 3, "配置里给了三个将领类型")
+	eq(cfg.general_type_at(0), UnitRes.UNIT_TYPE_SPEARMAN, "将领 1 = 长枪兵")
+	eq(cfg.general_type_at(1), UnitRes.UNIT_TYPE_LONGBOWMAN, "将领 2 = 长弓兵")
+	eq(cfg.general_type_at(2), UnitRes.UNIT_TYPE_RIDER, "将领 3 = 骑手")
+	# general_N（区划招募的将领）按同一个顺序拿类型
+	eq(cfg.unit_type_of("general_2"), UnitRes.UNIT_TYPE_LONGBOWMAN, "general_2 也是长弓兵")
+	eq(cfg.unit_type_of("general"), UnitRes.UNIT_TYPE_SPEARMAN, "general 默认取第一个类型")
+	eq(cfg.unit_name_of(UnitRes.UNIT_TYPE_RIDER), "骑手", "unit_name_of 走类型表")
+	eq(cfg.unit_name_of("general_1"), "将领", "将领类的显示名仍是「将领」")
+	near(cfg.general_escort_count(), 3.0, 1e-6, "每个将领开局带 3 个同类型的兵")
+
+	# 测试敌人的数值也来自同一张表（原来是 debug / combat.enemy 两处）
 	near(cfg.enemy_damage, 10.0, 1e-6, "测试敌人伤害 10")
 	near(cfg.enemy_cooldown, 1.2, 1e-6, "测试敌人攻击间隔 1.2s")
 	near(cfg.enemy_speed, 0.45, 1e-6, "★ 测试敌人速度 0.45 格/秒（降到 1/4）")
 	near(cfg.enemy_hp, 60.0, 1e-6, "测试敌人生命 60")
+	near(cfg.unit_hp_of(UnitRes.KIND_ENEMY), 60.0, 1e-6, "测试敌人的血量走 unit.types.enemy")
 	eq(cfg.zone_cols, 6, "区块横向 6 列")
 	eq(cfg.zone_rows, 4, "区块纵向 4 行")
 	# ★ 这两个数是**需求定的**，但断言写成「等于 config 里的值」没意义 ——
@@ -148,7 +184,8 @@ func _cases() -> void:
 	ok(cfg.faction_line_color("p1", 0.4).a > 0.39, "攻击线颜色能按 alpha 现算")
 
 	# 读取任意路径
-	near(cfg.num("combat.general.damage", 0.0), 26.0, 1e-6, "get_path_value 支持嵌套路径")
+	near(cfg.num("unit.types.spearman.damage", 0.0), 20.0, 1e-6, "get_path_value 支持嵌套路径")
+	ok(cfg.get_path_value("unit.general.types") is Array, "get_path_value 也能取数组（将领类型表）")
 
 	# ---- 4. 地图 ----
 	# ★★ 现在只有**一张**图（`data/test_map.json`，地图编辑器导出件，27×22）。

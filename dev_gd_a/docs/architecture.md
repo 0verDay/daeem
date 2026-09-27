@@ -61,7 +61,8 @@ dev_gd_a/daeem/
 ├── data/                         # ★ 纯数据，不含代码
 │   ├── config.json               #   全部可调数值（对应 HTML 版 js/config.js）
 │   └── test_map.json             #   地形 / 区划网格 zones / 区划中心 zone_centers /
-│                                 #   区划产能 zone_list[].production /
+│                                 #   区划种类 zone_list[].kind（food/gold/population）/
+│                                 #   区划产能 zone_list[].production（游戏以它为准）/
 │                                 #   区划人口上限 zone_list[].population_cap（没填 = 1）/
 │                                 #   各阵营大本营 faction_bases
 ├── logic/                        # ★ 纯逻辑：extends RefCounted，禁止碰场景树
@@ -74,6 +75,8 @@ dev_gd_a/daeem/
 │   │                             #   + ★ 招募队列（将领自己就是兵营：train_* 字段）
 │   ├── building.gd               #   建筑定义与实例：blocks(faction) / 血量
 │   ├── zone.gd                   #   区块占领（每阵营独立进度）+ 区划中心 / 人口 / 产能；
+│   │                             #   ★ 区划**种类**（kind：粮食 / 黄金 / 人口）只决定能做哪些特化，
+│   │                             #     产量永远以地图 zone_list[].production 的数字为准
 │   │                             #   区块划分读地图的 zones 网格，老地图退回 6×4 均分占位
 │   ├── economy.gd                #   资源产出 + 扣费（can_afford / spend / try_spend）
 │   ├── tech.gd                   #   ★ 科技：占位表（config.tech.list）+ 每阵营的启用状态
@@ -81,7 +84,8 @@ dev_gd_a/daeem/
 │   │                             #     规则：同一时间最多启用 config.tech.max_active 条
 │   ├── upgrade.gd                #   ★ 建筑升级 + 区划特化（右下「操作」页里那几格）
 │   │                             #     升级：等级 1→N（config.upgrade.levels），血量上限 ×倍率
-│   │                             #     特化：粮食 / 黄金 / 人口三选一，本区块产能 ×1.1
+│   │                             #     特化：粮食 / 黄金 = 每地块每秒 +0.5；人口 = 本区划人口产量 ×1.25；
+│   │                             #     能做哪几档由**区划种类**（config.zone_kind.list[].specs）决定
 │   │                             #     两者都是**读条**（复用招募那块面板）、入队即扣费、可取消退款
 │   ├── combat.gd                 #   战斗结算与事件（索敌 / 开火 / 拆建筑）
 │   ├── command_processor.gd      #   ★ 命令的唯一入口（move / build / demolish）
@@ -98,6 +102,8 @@ dev_gd_a/daeem/
 │   ├── terrain_view.gd           #   地形（TileMapLayer）
 │   ├── building_view.gd          #   建筑（Node2D + 血条 + 受击闪光）
 │   ├── unit_view.gd              #   单位（Node2D + 血条 + 交战标记）
+│   ├── unit_icon.gd              #   ★ 单位在地图上的 2D 图标（线条「预制体」+ 烘成贴图）
+│   │                             #     按（单位类型 × 是否将领）一张图；将领的描边更粗
 │   ├── zone_view.gd              #   区块轮廓 + 占领进度
 │   ├── overlay.gd                #   攻击线 / 建造预览 / 移动标记（**不画**选中范围圈）
 │   ├── camera_rig.gd             #   相机：方向键平移 / 边缘滚屏 / 光标锚点缩放
@@ -209,6 +215,13 @@ func _process(_dt: float) -> void:
 
 **对象增删**：`world.units` 是权威列表；`view/` 只在**数量或 id 集合变化时**重建节点映射，
 不要每帧 `queue_free()` 重建（HTML 版每次整表替换建筑的做法在 Godot 里会造成明显卡顿）。
+
+> ★★ **1000 单位那档已经把上面第一条改掉了**：`unit_view.gd` 现在是「一个 CanvasItem 画全部」，
+> 而且单位本体走**贴图**而不是 `draw_circle / draw_arc` —— 实测那两个 API **完全不参与 2D 合批**
+> （`draw_circle ×1000 → 997 个 draw call、18.4 ms`），换成同一张贴图之后 1000 个单位合成一个批次；
+> 绘制命令还要**按图元类型 / 按贴图分组**（同一类连着画才合得了批）。
+> 单位图标（`unit_icon.gd`）也是按这条走的：线条画的「预制体」**烘成十来张贴图**，
+> 而不是每个单位一个节点 / 一个场景 —— 理由见 [`route.md`](route.md) 26.4。
 
 ### 3.3 快照（本轮：调试用；第 1 轮：网络包体）
 

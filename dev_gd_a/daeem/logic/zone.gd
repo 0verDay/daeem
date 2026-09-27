@@ -26,7 +26,7 @@ extends RefCounted
 
 const ConfigRes = preload("res://logic/config.gd")
 const FactionRes = preload("res://logic/faction.gd")
-## ★ 特化的产能倍率在 logic/upgrade.gd 里（那份实现是**唯一**判据，见 `_spec_mult()`）。
+## ★ 特化的产能效果在 logic/upgrade.gd 里（那份实现是**唯一**判据，见 `_spec_effect()`）。
 ##   ⚠️ 方向是 zone → upgrade，**不能反过来**：upgrade.gd 的 `tick()` 要读 zone 的字段。
 const UpgradeRes = preload("res://logic/upgrade.gd")
 
@@ -38,6 +38,14 @@ const ROW_LETTERS := "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 ## 编辑器那边只在「不等于 1」时才把 `population_cap` 写进地图 JSON，
 ## 所以**缺字段 = 1** 这条判据在两侧是同一套（map_data 不登记 → 这里补默认值）。
 const DEFAULT_POPULATION_CAP := 1.0
+
+## ★★ 区划种类的**兜底值**（地图没写 `kind` / 写了个不认识的值时算哪一种）。
+##
+## 用户确认原话：「没有默认区划了，所有区划默认值都改为人口区划」——
+## 所以这里不是第四种「默认区划」，而是「老图 / 手写图没写种类时，它就是人口区划」。
+## ⚠️ 真正的默认值来自 config.json 的 `zone_kind.default`（`cfg.zone_kind_default()`）；
+##    这个常量只在「配置表整个读不出来」时兜底（cfg == null / 表是空的）。
+const DEFAULT_KIND := "population"
 
 var zones: Array = []
 ## 地块索引 → 区块 id（-1 = 不属于任何区块）
@@ -75,6 +83,8 @@ static func build_from_map(map, cfg: ConfigRes, factions: Array) -> RefCounted:
 	zs._apply_map_production(map)
 	# ★ 人口上限（地图给的；缺字段的区块保持默认 1）
 	zs._apply_map_population_caps(map)
+	# ★ 区划种类（地图给的；缺字段 / 手改写错 → 默认那一档，见 cfg.zone_kind_default()）
+	zs._apply_map_kinds(map)
 	return zs
 
 
@@ -99,6 +109,19 @@ func _new_zone(zid: int, name: String, flist: Array) -> Dictionary:
 		#   · production 是**每地块每秒**的产能（food / gold / population）。
 		"center": null,
 		"production": {"food": 0.0, "gold": 0.0, "population": 0.0},
+		# ★★ 区划**种类**（本轮新增，见 data/config.json 的 zone_kind 段与
+		#    `_apply_map_kinds()`）："food" / "gold" / "population" 三选一。
+		#
+		#   需求原话：「游戏中有三种区划，粮食区划，黄金区划，人口区划」；
+		#   「粮食区划仅能进行黄金和人口特化，黄金区划仅能进行粮食和人口特化，
+		#    人口区划仅能进行粮食和黄金特化」。
+		#
+		#   · 它**不决定产量**：产量永远以地图 zone_list[].production 的数字为准
+		#     （用户原话：「最终游戏中的区划产量以下方数字输入框中的产量为准」）——
+		#     种类只决定「能做哪些特化」+ 界面上显示什么名字。
+		#   · 地图没写 / 写了个不认识的 id → 默认那一档（用户确认：「没有默认区划了，
+		#     所有区划默认值都改为人口区划」）。
+		"kind": cfg.zone_kind_default() if cfg != null else DEFAULT_KIND,
 		# ★ 区划人口：**每个区划各算各的**累积值，按时间涨、会被招募消耗（用户需求）。
 		#   它**不进 HUD 的资源**（那是各阵营的粮食 / 黄金），也不快照给客机（见 snapshot.gd）。
 		"population": 0.0,
@@ -215,6 +238,44 @@ func _apply_map_population_caps(map) -> void:
 		z["population_cap"] = maxf(0.0, float(d[zid]))
 
 
+## ★ 把地图里各区块的「区划种类」读进来（`zone_list[].kind`）。
+##
+## 缺字段（老地图 / 手写图）或写了个不认识的 id → 保持 `_new_zone()` 里的默认那一档
+## （`cfg.zone_kind_default()` = population）。**这里不报错也不猜**：
+## 地图是可以手改的文件，写错一个种类不该让游戏崩，也不该让那个区划凭空多出产量
+## （产量永远只看 `_apply_map_production` 那一路）。
+func _apply_map_kinds(map) -> void:
+	var raw: Variant = map.get("zones_kinds")
+	if typeof(raw) != TYPE_DICTIONARY or cfg == null:
+		return
+	var d: Dictionary = raw
+	for z in zones:
+		var zid := int(z["id"])
+		if not d.has(zid):
+			continue
+		var kind := String(d[zid])
+		if cfg.has_zone_kind(kind):
+			z["kind"] = kind
+
+
+## 这个区划的种类 id（"food" / "gold" / "population"）。
+## 缺字段 / 认不出来 → 默认那一档 —— 判定只有这一处（界面与 upgrade.gd 都读它）。
+func kind_of(z: Dictionary) -> String:
+	if cfg == null:
+		return String(z.get("kind", DEFAULT_KIND))
+	var kind := String(z.get("kind", ""))
+	if cfg.has_zone_kind(kind):
+		return kind
+	return cfg.zone_kind_default()
+
+
+## 这个区划种类的条目（名字 / 预设产量 / 允许的特化）—— 界面直接用。
+func kind_entry_of(z: Dictionary) -> Dictionary:
+	if cfg == null:
+		return {}
+	return cfg.zone_kind_entry(kind_of(z))
+
+
 ## 这一格的**区划中心**属于哪个区块（返回区块字典；不是任何中心 → null）。
 ##
 ## ★ 与 `zone_at()` 的分工：`zone_at` 回答「这一格归谁」（用于占领 / 资源），
@@ -258,6 +319,9 @@ func center_zone_at_id(x: int, y: int) -> int:
 ##   ⚠️ 阵营比较走 `FactionRes.same_side`（与占领 / 资源那几处的口径一致）：
 ##      无主区划的 owner 是空串，`same_side(任何, "")` 恒为 false ⇒ 不加成。
 ##
+## ★★ 人口特化（本轮改版）：本区划人口产量 **+25%**（倍率 1.25，见 `_spec_effect()`）——
+##   与上面的科技倍率**相乘叠加**（两者是不同作用域的加成）。
+##
 ## @param owner  享受加成的那一方（"" = 谁都不加成；单机 = world.my_faction）
 ## @param owner_mult 该方占领区划的增长倍率（1.0 = 没加成）
 func update_population(dt: float, owner: String = "", owner_mult: float = 1.0) -> void:
@@ -266,7 +330,7 @@ func update_population(dt: float, owner: String = "", owner_mult: float = 1.0) -
 		var rate := float((z["production"] as Dictionary).get("population", 0.0))
 		# ★ 区划特化（本区块自己的倍率）先乘进来，再看科技的全局倍率 ——
 		#   两者是**不同作用域**的加成，所以相乘叠加（需求：与科技加成叠加）。
-		rate *= float(_spec_mult(z)["population"])
+		rate *= float(_spec_effect(z)["population_mult"])
 		if rate <= 0.0:
 			continue
 		if owner != "" and boost != 1.0 and FactionRes.same_side(String(z["owner"]), owner):
@@ -299,9 +363,10 @@ func population_floor(z: Dictionary) -> int:
 ##
 ## ★ 这是经济从「全局按占领地块数 × 固定值」改成「按区划聚合」的落点：
 ##   抢区块 = 抢产能（见 docs/route.md 第十五节）。
-## ★★ 区划**特化**（本轮）在这里生效：特化是**本区块自己的产能倍率**
-##   （粮食 / 黄金 / 人口各自 +10%，见 `UpgradeRes.zone_spec_mult`），
-##   乘在「产能 × 地块数」上 —— 与科技那套**全局每地块加产量**叠加（那边在 world 里加）。
+## ★★ 区划**特化**（本轮改版）在这里生效，两种形状（见 `UpgradeRes.zone_spec_effect`）：
+##   · 粮食 / 黄金特化 = **每地块每秒加产量**（+0.5）—— 与地图给的基础产能**相加**，
+##     再乘地块数；与科技那套「全局每地块加产量」是同一口径（两者也相加，见 world）。
+##   · 人口特化 = 倍率，但它加的是**人口**（在 update_population 里生效），不进这两个数。
 ## @return {"food": float, "gold": float}
 func production_of(owner: String) -> Dictionary:
 	var food := 0.0
@@ -313,21 +378,22 @@ func production_of(owner: String) -> Dictionary:
 			continue
 		var p: Dictionary = z["production"]
 		var n := float(z["tile_count"])
-		var mult := _spec_mult(z)
-		food += float(p.get("food", 0.0)) * n * float(mult["food"])
-		gold += float(p.get("gold", 0.0)) * n * float(mult["gold"])
+		var eff := _spec_effect(z)
+		food += (float(p.get("food", 0.0)) + float(eff["food_per_tile"])) * n
+		gold += (float(p.get("gold", 0.0)) + float(eff["gold_per_tile"])) * n
 	return {"food": food, "gold": gold}
 
 
-## 这个区划的产能倍率（特化给的；没特化 → 全 1.0）。
+## 这个区划的特化效果（没特化 → 加 0 / 倍率 1.0）。
+## @return {"food_per_tile": float, "gold_per_tile": float, "population_mult": float}
 ##
 ## ★ 走 logic/upgrade.gd 的那一份实现（**唯一**判据在那儿：spec_done 才生效、
 ##   读条中不算），这里只做转发 —— 与「视图不许自己发明判定」同一条规矩，
 ##   逻辑层也不该有第二份「特化到底生不生效」。
-func _spec_mult(z: Dictionary) -> Dictionary:
+func _spec_effect(z: Dictionary) -> Dictionary:
 	if cfg == null:
-		return {"food": 1.0, "gold": 1.0, "population": 1.0}
-	return UpgradeRes.zone_spec_mult(z, cfg)
+		return {"food_per_tile": 0.0, "gold_per_tile": 0.0, "population_mult": 1.0}
+	return UpgradeRes.zone_spec_effect(z, cfg)
 
 
 ## ---- 路线 1：读地图里的区块网格（地图编辑器导出的地图）----

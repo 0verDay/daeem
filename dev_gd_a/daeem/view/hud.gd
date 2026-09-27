@@ -542,12 +542,14 @@ func _zone_center_building_of(zone):
 
 ## 建筑「操作」页的格子。三种建筑各一套（**数据驱动**，文案与数值都来自 config）：
 ##   · 大本营 / 城墙 / 箭塔 → **升级**那一格（读条中则换成「取消升级」）
-##   · 区划中心            → 粮食 / 黄金 / 人口特化三格；已经特化过则换成「取消特化」
+##   · 区划中心            → **这个种类允许的**特化（见 zone_kind.list[].specs，
+##                            通常是两格）；已经特化过则换成「取消特化」
 ##
 ## ★ 三种状态互斥，所以最多 3 格：
 ##     ① 读条中（升级 / 特化 / 取消特化）→ 只有「取消」那一格；
 ##     ② 区划已特化                      → 只有「取消特化」那一格；
-##     ③ 平常                            → 升级那一格（建筑）/ 三个特化（区划中心）。
+##     ③ 平常                            → 升级那一格（建筑）/
+##                                          这个种类允许的特化（区划中心）。
 ##   「读条中不给新的升级请求」这条规则由逻辑层把关（拒因 `busy`），
 ##   界面只是**不给入口**；两处都做是有意的 —— 界面上摆一颗点了必然被拒的格子，
 ##   玩家会以为功能坏了。
@@ -584,20 +586,21 @@ func _building_order_entries(b = null, sel_zone = null) -> Array:
 				"desc": "取消「%s」（**也要读条**，读完退回当初特化花掉的粮食与黄金）"
 					% String(cfg.spec_entry(done).get("name", done)),
 			}]
-		# ③ 平常：三个特化（只能选一个）
+		# ③ 平常：**这个种类允许的**特化（只能选一个）
+		#
+		# ★★ 本轮：白名单按区划种类过滤（需求：粮食区划仅能黄金 / 人口特化…）——
+		#   判据只有一处（`config.json` 的 zone_kind.list[].specs，经
+		#   `world.zone_spec_choices()` 取），界面**不**自己再写一份名单；
+		#   逻辑层（`upgrade.gd can_specialize`）用同一个白名单再挡一次。
 		var out: Array = []
-		var spec_path: Variant = cfg.get_path_value("zone_spec.list")
-		if typeof(spec_path) == TYPE_ARRAY:
-			for item in (spec_path as Array):
-				if typeof(item) != TYPE_DICTIONARY:
-					continue
-				var e: Dictionary = item
-				out.append({
-					"type": "zone_specialize",
-					"spec": String(e.get("id", "")),
-					"name": String(e.get("name", e.get("id", ""))),
-					"desc": String(e.get("desc", "")),
-				})
+		for e in world.zone_spec_choices(z):
+			var entry: Dictionary = e
+			out.append({
+				"type": "zone_specialize",
+				"spec": String(entry.get("id", "")),
+				"name": String(entry.get("name", entry.get("id", ""))),
+				"desc": String(entry.get("desc", "")),
+			})
 		return out
 	# 建筑：升级 / 取消升级
 	if not world.building_can_upgrade(b.type):
@@ -1041,6 +1044,8 @@ func upgrade_reject_text(reason: String) -> String:
 			return "这个区划已经特化过了：先「取消特化」才能换别的"
 		"spec":
 			return "没有这种特化"
+		"kind":
+			return "这个种类的区划做不了这种特化（粮食区划只能黄金 / 人口特化，黄金区划只能粮食 / 人口特化，人口区划只能粮食 / 黄金特化）"
 		"cost":
 			return "粮食或黄金不足"
 		"owner":
@@ -1376,7 +1381,8 @@ func _building_text(b) -> String:
 
 ## 一个区划的特化状态那一行（没特化 → ""）。
 ##   读条中：「正在特化：粮食特化，还剩 3 秒」/「正在取消特化：…，还剩 3 秒」
-##   已完成：「特化：粮食特化（本区块粮食 +10%）」
+##   已完成：「特化：粮食特化（本区块粮食 +0.5／地块／秒）」——
+##   括号里那句直接取 `config.json` 的 `zone_spec.list[].line`（效果文案跟着数据走）。
 func _zone_spec_line(z) -> String:
 	if typeof(z) != TYPE_DICTIONARY:
 		return ""
@@ -1397,15 +1403,19 @@ func _zone_spec_line(z) -> String:
 ##   制表符 `\t` 从 fs 列跳到下一栏（`\t` 的宽度由字体自己定，实测 fs=13 时落在 ~212px），
 ##   右栏正文因此长这样（不是「左右两栏控件」，就是一个 Label 里的两栏文本）：
 ##
-##     血量 200 / 200        编制 3 / 11          ← 将领才有右栏（★ 手玩原话）
-##     攻击力 10             状态：待命
+##     兵种 长枪兵（步兵）    编制 3 / 11          ← 第一行：兵种 + 编制（★ 编制只给将领）
+##     血量 200 / 200        状态：待命
+##     攻击力 10
 ##     攻击距离 3 格 / 间隔 1.2s
 ##
 ##   ★ 手玩拍板的取舍：
-##     · **只留基础数值**：血量 / 攻击力 / 攻击距离 / 间隔 / 编制；
+##     · **只留基础数值**：兵种 / 血量 / 攻击力 / 攻击距离 / 间隔 / 编制；
 ##       移动速度、所在区块、buff 占位行、行军攻击这些**一律不显示**（要恢复就在这里加回一行）。
 ##     · **编制只给将领看**（「假如是将领才要显示编制，兵不用显示编制」）——
-##       判据是 `world.is_team_leader()`，亲兵那一行右栏留空。
+##       判据是 `world.is_team_leader()`，附属兵那一行右栏留空。
+##     · ★ 本轮新增「兵种」那一行：单位与将领按**步兵 / 骑兵**（远的是远程步兵 / 远程骑兵）
+##       分了两类，而这条标签之后的「额外伤害」是玩家要看得见的信息 ——
+##       所以它必须在界面上露出来（值全部来自 config，见 cfg.unit_class_line）。
 ##   ⚠️ 每行**最多一行文字**：正文关掉了 autowrap，多出来的换行只能是制表位带来的两栏，
 ##      否则版式会散（见 detail_panel 里 _body 的注释）。
 ##   ⚠️ 「指定攻击」那一行要留着（tests/test_ui.gd 断言它在）：它是命令的**可见反馈**，
@@ -1417,11 +1427,13 @@ func _unit_text(shown, troops: Array) -> String:
 	var right: Array[String] = []
 	if troops.size() > 1 or (troops.size() == 1 and (troops[0]["units"] as Array).size() > 1):
 		left.append("已选中 %d 支部队" % troops.size())
+	left.append("兵种 %s（%s）" % [
+		cfg.unit_name_of(String(shown.unit_type)), cfg.unit_class_line(String(shown.unit_type))])
 	left.append("血量 %d / %d" % [int(round(shown.hp)), int(round(shown.hp_max))])
 	left.append("攻击力 %d" % int(shown.combat_damage(cfg)))
 	left.append("攻击距离 %d 格 / 间隔 %.1fs" % [
 		int(shown.combat_range(cfg)), shown.combat_cooldown(cfg)])
-	# 编制：★ 只有将领才有「编制」（它辖下的亲兵上限），亲兵自己不显示
+	# 编制：★ 只有将领才有「编制」（它辖下的附属兵上限），附属兵自己不显示
 	if world.is_team_leader(shown):
 		right.append("编制 %d / %d" % [_retinue_size(shown), UiLayoutRes.UNIT_CAP])
 	# 状态（含两条命令反馈）——`指定攻击` 那一条必须留着，见上面的注释
@@ -1451,14 +1463,14 @@ func _two_columns(left: Array, right: Array) -> String:
 	return "\n".join(out)
 
 
-## 一个将领辖下的亲兵数（不是将领自己 → 0）
+## 一个将领辖下的附属兵数（不是将领自己 → 0）
 func _retinue_size(u) -> int:
 	if world == null or u == null or not world.is_team_leader(u):
 		return 0
 	return world.retinue_of(u.id).size()
 
 
-## 区划详情（左键点区划中心时显示）：区划名 / 大小 / 产能 / 人口。
+## 区划详情（左键点区划中心时显示）：区划名 / 大小 / **种类** / 产能 / 人口。
 ##
 ## ★ 本版按需求**精简**：
 ##   · **去掉「归属」那一行**（点开区划详情的玩家早就知道这块地是谁的；
@@ -1470,21 +1482,27 @@ func _zone_text(z: Dictionary) -> String:
 	var lines: Array[String] = []
 	lines.append("区划「%s」" % String(z["name"]))
 	lines.append("区划大小：%d 个地块" % int(z["tile_count"]))
+	# ★★ 本轮新增：**区划种类**那一行（粮食 / 黄金 / 人口区划）——
+	#   它决定这个区划能做哪些特化（见 _building_order_entries），玩家必须看得见。
+	var kind_entry: Dictionary = world.zones.kind_entry_of(z)
+	if not kind_entry.is_empty():
+		lines.append("区划种类：%s（%s）" % [
+			String(kind_entry.get("name", "")), String(kind_entry.get("line", ""))])
 	var prod: Dictionary = z["production"]
 	var n := float(z["tile_count"])
-	var food := float(prod["food"])
-	var gold := float(prod["gold"])
-	# ★★ 本轮：产能按**特化倍率**显示（有特化时写成「2（+10% → 2.2）」那一套）——
-	#   不然玩家做完特化看到的数字纹丝不动，会以为特化没生效。
-	var mult: Dictionary = world.zone_spec_mult(z)
-	var f_mult := float(mult["food"])
-	var g_mult := float(mult["gold"])
-	var p_mult := float(mult["population"])
+	# ★★ 本轮：产能按**特化效果**显示（特化是两种形状，见 UpgradeRes.zone_spec_effect）：
+	#   · 粮食 / 黄金特化 = 每地块每秒 +0.5 ⇒ 这里直接加进「每地块产能」那一档；
+	#   · 人口特化 = 人口产量 ×1.25 ⇒ 乘在人口产能上。
+	#   不这么做的话，玩家做完特化看到的数字纹丝不动，会以为特化没生效。
+	var eff: Dictionary = world.zone_spec_effect(z)
+	var food := float(prod["food"]) + float(eff["food_per_tile"])
+	var gold := float(prod["gold"]) + float(eff["gold_per_tile"])
+	var pop := float(prod["population"]) * float(eff["population_mult"])
 	lines.append("粮食产能：%s（合计 %s）" % [
-		_fmt_num(food * f_mult), _fmt_num(food * f_mult * n)])
+		_fmt_num(food), _fmt_num(food * n)])
 	lines.append("黄金产能：%s（合计 %s）" % [
-		_fmt_num(gold * g_mult), _fmt_num(gold * g_mult * n)])
-	lines.append("人口产能：%s" % _fmt_num(float(prod["population"]) * p_mult))
+		_fmt_num(gold), _fmt_num(gold * n)])
+	lines.append("人口产能：%s" % _fmt_num(pop))
 	# 特化状态那一行（没特化 / 读条中 → 由 _zone_spec_line 决定写什么）
 	var spec_line := _zone_spec_line(z)
 	if spec_line != "":

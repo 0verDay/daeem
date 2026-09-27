@@ -1,17 +1,15 @@
 ## upgrade.gd —— 建筑升级 + 区划特化（右下「操作」页签里那几格）
 ##
-## ★★ 需求原话：
-##   「为所有单位/建筑都添加上『操作』页签，大本营的操作页签中有一个升级大本营选项，
-##     点击后开始读条（和招募单位时的读条一样，可以复用招募单位的面板），
-##     箭塔和城墙也有一个升级选项，区划中心有三个特化选项，分别是粮食特化，黄金特化，
-##     人口特化，这三个特化玩家只能选一个升级，效果分别为本区块粮食产量 +10%、
-##     本区块黄金产量 +10%、本区块人口产量 +10%，特化后的区块无法再次特化，
-##     但选中特化后的区块可以在操作面板中选择『取消特化』去除其特化，同理，
-##     特化也需要读条，取消特化也需要读条」。
+## ★★ 需求原话（本轮改版后）：
+##   「粮食特化 = 每地块每秒额外产 0.5 粮食，黄金特化 = 每地块每秒额外产 0.5 黄金，
+##     人口特化 = 当前区划人口产量 +25%」；
+##   「粮食区划仅能进行黄金和人口特化，黄金区划仅能进行粮食和人口特化，
+##     人口区划仅能进行粮食和黄金特化」。
+##   （历史：旧版是「三个特化只能选一个、各 +10%」，选一个 / 取消 / 读条那套规则不变。）
 ##
 ## 这一层是**规则**（与 logic/tech.gd 同一个定位：world 持有状态，规则写在这里）：
 ##   · 升级能不能开（等级上限 / 读条占用 / 归属 / 钱够不够）→ `can_upgrade()`
-##   · 特化能不能开（已经特化过 / 读条占用 / 归属 / 钱够不够）→ `can_specialize()`
+##   · 特化能不能开（种类白名单 / 已经特化过 / 读条占用 / 归属 / 钱够不够）→ `can_specialize()`
 ##   · 取消（读条中取消升级 / 取消特化）→ `can_cancel_upgrade()` / `can_cancel_spec()`
 ##   · 每帧推进两条读条 → `tick()`
 ##
@@ -33,11 +31,12 @@
 ## ★ 效果：
 ##   · 升级 = 等级 +1，血量上限 = `config.building.<type>.hp_max × hp_mult(等级)`
 ##     （tech 的「建筑血量 +10%」再乘在它上面，两者叠加）；
-##   · 特化 = 该区划自己的 food / gold / population 产能 ×1.1（**只影响那一个区块**），
-##     与科技的全局加成**叠加**（特化是乘在区划产能上，科技是每地块的加产量）。
+##   · 特化 = **只影响那一个区块**，两种形状（见 `zone_spec_effect()`）：
+##     粮食 / 黄金特化是「每地块每秒 +0.5」（与科技那套每地块加产量相加），
+##     人口特化是本区划人口产量 ×1.25（与科技的人口增长倍率相乘）。
 ##
 ## ⚠️ 三条边界（架构铁律）：不碰场景树、不读输入、数值全来自 config.json；
-##    拒因只给**码**（"busy" / "max_level" / "cost" / "owner" / "spec_done" / …），
+##    拒因只给**码**（"busy" / "max_level" / "cost" / "owner" / "spec_done" / "kind" / …），
 ##    中文文案在 view/hud.gd 里翻译。
 extends RefCounted
 
@@ -46,7 +45,7 @@ const FactionRes = preload("res://logic/faction.gd")
 const EconomyRes = preload("res://logic/economy.gd")
 ## ⚠️ 这里**不要** preload zone.gd / building.gd / world.gd：
 ##    这一层只做静态查询与判定，`world` / `b` / `zone` 都是**参数传进来**的。
-##    zone.gd 反过来 preload 了本文件（它要 `zone_spec_mult()` 算产能倍率），
+##    zone.gd 反过来 preload 了本文件（它要 `zone_spec_effect()` 算特化效果），
 ##    形成环会让 `--script` 模式下的载入顺序变得不可预测。
 
 
@@ -79,6 +78,8 @@ static func can_upgrade(world, b, faction: String) -> String:
 ## 这个区划**现在**能不能做某个特化。@return "" = 可以；否则是拒因码：
 ##   "spec"      没有这种特化（表里查不到）
 ##   "zone"      没有这个区划 / 这个区划不是自己这一方的（无主也算）
+##   "kind"      ★ 这个**种类**的区划不允许这种特化（需求：粮食区划仅能黄金 / 人口特化、
+##               黄金区划仅能粮食 / 人口特化、人口区划仅能粮食 / 黄金特化）
 ##   "busy"      ★ 已经在读条了（正在特化，或正在取消特化）
 ##   "spec_done" ★ 已经特化过了（需求：只能选一个、特化后不能再次特化）
 ##   "cost"      粮食 / 黄金不够
@@ -87,12 +88,17 @@ static func can_upgrade(world, b, faction: String) -> String:
 ##   反过来的话，正在特化的那 10 秒里点别的特化会拿到 `spec_done`
 ##   （"这个区划已经特化过了：先取消特化"）—— 而那时根本还没特化成功，
 ##   提示与实际状态驴唇不对马嘴（实测撞到过）。两条的界面文案完全不同。
+## ⚠️ 种类白名单（`kind`）排在**读条状态之前**：它是这个区划的**固有属性**，
+##   优先级高于「现在忙不忙 / 已经特化过没有」—— 一个粮食区划永远做不了粮食特化，
+##   提示就该这么说，而不是拿一个临时状态把人绕晕。
 static func can_specialize(world, zone, spec_id: String, faction: String) -> String:
 	if not world.cfg.has_spec(spec_id):
 		return "spec"
 	var reason := _zone_reject(zone, faction)
 	if reason != "":
 		return reason
+	if not world.cfg.zone_kind_allows_spec(zone_kind_of(zone, world.cfg), spec_id):
+		return "kind"
 	if zone_is_busy(zone):
 		return "busy"
 	if String(zone.get("spec_done", "")) != "":
@@ -100,6 +106,42 @@ static func can_specialize(world, zone, spec_id: String, faction: String) -> Str
 	if not EconomyRes.can_afford(world.resources, world.cfg.spec_cost(spec_id)):
 		return "cost"
 	return ""
+
+
+## 这个区划的**种类** id（缺字段 / 认不出来的值 → cfg 的默认那一档）。
+##
+## ⚠️ 与 `logic/zone.gd` 的 `kind_of()` 是同一条规则、两份实现 —— 这是**有意的**：
+##    zone.gd 已经 preload 了本文件（它要 `zone_spec_effect()` 算产量），
+##    本文件不能再 preload 回去（会成环，`--script` 下的载入顺序会变得不可预测）。
+##    规则只有一行（认识的 id 就用它，否则 default），两边都有断言钉着。
+static func zone_kind_of(zone, cfg: ConfigRes) -> String:
+	if cfg == null:
+		return ""
+	var kind := ""
+	if typeof(zone) == TYPE_DICTIONARY:
+		kind = String((zone as Dictionary).get("kind", ""))
+	if cfg.has_zone_kind(kind):
+		return kind
+	return cfg.zone_kind_default()
+
+
+## 这个**种类**的区划现在能选哪几档特化（顺序 = config.json 里 zone_spec.list 的顺序）。
+##
+## ★ 界面上「操作」页那几格直接读它 —— 界面不许自己再写一份白名单
+##   （逻辑层用 `can_specialize` 的 `kind` 拒因挡第二次，两处共用同一张配置表）。
+## ★ 传 null / 不认识的区划 → 按默认种类算（与 `zone_kind_of` 同一条兜底）。
+static func spec_choices(zone, cfg: ConfigRes) -> Array:
+	var out: Array = []
+	if cfg == null:
+		return out
+	var kind := zone_kind_of(zone, cfg)
+	for item in cfg.spec_list():
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		var e: Dictionary = item
+		if cfg.zone_kind_allows_spec(kind, String(e.get("id", ""))):
+			out.append(e)
+	return out
 
 
 ## 能不能取消**读条中的**那次升级。@return "" / "owner" / "idle"
@@ -206,11 +248,20 @@ static func zone_spec_is_cancel(zone) -> bool:
 	return bool((zone as Dictionary).get("spec_cancel", false))
 
 
-## 这个区划的产能倍率表：`{"food": 1.0/1.1, "gold": ..., "population": ...}`
-## （没特化 / 正在读条中 → 全是 1.0；**只有读完那一下才生效**）
-static func zone_spec_mult(zone, cfg: ConfigRes) -> Dictionary:
-	var out := {"food": 1.0, "gold": 1.0, "population": 1.0}
-	if typeof(zone) != TYPE_DICTIONARY:
+## 这个区划的特化**效果**（没特化 / 正在读条中 → 加 0 / 倍率 1.0；只有读完那一下才生效）。
+##
+## @return {"food_per_tile": float, "gold_per_tile": float, "population_mult": float}
+##   · food_per_tile / gold_per_tile —— **每地块每秒加多少产量**（粮食 / 黄金特化 = 0.5），
+##     与地图给的基础产能、以及科技那套全局每地块加产量**相加**（见 zone.production_of）；
+##   · population_mult —— 本区划**人口产量**的倍率（人口特化：配置写 0.25 ⇒ 1.25）。
+##
+## ★★ 本轮改版：旧版三档都是「本区块产量 +10%」的倍率；现在粮食 / 黄金改成
+##    **每地块加产量**（需求：「粮食特化 = 每地块每秒额外产 0.5 粮食」），
+##    人口保留倍率形状（需求：「人口特化 = 当前区划人口产量 +25%」）。
+##    所以这里返回的是**混合形状**，别再当成一个倍率表用（旧名字 `zone_spec_mult` 已删）。
+static func zone_spec_effect(zone, cfg: ConfigRes) -> Dictionary:
+	var out := {"food_per_tile": 0.0, "gold_per_tile": 0.0, "population_mult": 1.0}
+	if typeof(zone) != TYPE_DICTIONARY or cfg == null:
 		return out
 	var done := String((zone as Dictionary).get("spec_done", ""))
 	if done == "":
@@ -218,10 +269,12 @@ static func zone_spec_mult(zone, cfg: ConfigRes) -> Dictionary:
 	var e: Variant = cfg.spec_entry(done).get("effect", {})
 	if typeof(e) != TYPE_DICTIONARY:
 		return out
-	for k in (e as Dictionary).keys():
-		var key := String(k)
-		if out.has(key):
-			out[key] = 1.0 + float((e as Dictionary)[k])
+	var d: Dictionary = e
+	# 负数当 0（「加产量」写成负的等于扣产量，是数据写错，不该悄悄生效）；
+	# 倍率同理：负的 +25% 会让产量变负，也夹成 0（= 1.0 倍）。
+	out["food_per_tile"] = maxf(0.0, float(d.get("food_per_tile", 0.0)))
+	out["gold_per_tile"] = maxf(0.0, float(d.get("gold_per_tile", 0.0)))
+	out["population_mult"] = 1.0 + maxf(0.0, float(d.get("population_mult", 0.0)))
 	return out
 
 

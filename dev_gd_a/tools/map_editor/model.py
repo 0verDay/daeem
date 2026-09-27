@@ -112,6 +112,51 @@ PRODUCTION_LABELS: Dict[str, str] = {
 PRODUCTION_MIN = 0.0
 PRODUCTION_MAX = 999.0
 
+#: ★★ 区划**种类**（用户需求：「游戏中有三种区划，粮食区划，黄金区划，人口区划」）。
+#:
+#: 真正的表在 `dev_gd_a/daeem/data/config.json` 的 `zone_kind` 段（Godot 侧读同一份），
+#: 这里只是**读不到配置时的兜底**（与 Godot 侧逐字一致，改一处要改两处）。
+#:
+#: 每条：id / 名字 / 一行说明 / **预设产能**（选种类时同步进数字输入框的那三个数）/
+#: 允许做的特化 id。
+#:
+#: ★★ 三种区划的预设产能里**都带 0.1 人口**（用户补充需求：「所有区划至少会有 0.1 人口
+#:   每地块每秒的基础产能」）：
+#:     粮食区划 = 1 粮食 + 0.1 人口／地块／秒；
+#:     黄金区划 = 1 黄金 + 0.1 人口／地块／秒；
+#:     人口区划 = 0.15 人口／地块／秒（0.15 本身就 ≥ 0.1）。
+#:   ⚠️ 这是**预设值**（「至少」的下限口径），不是游戏里的硬编码：数字仍然是权威的，
+#:      设计师把某一档手改成 0 就是 0。
+#: ★ 只有这三种 —— **没有「默认区划」那一档**（用户确认：「没有默认区划了，
+#:   所有区划默认值都改为人口区划」）：`ZONE_KIND_DEFAULT` 只是「老图 / 没写 kind 时
+#:   算哪一种」，不是第四种区划。
+#: ★ 预设产能**不是**游戏里的硬编码：游戏永远以 `zone_list[].production` 的数字为准
+#:   （需求原话：「最终游戏中的区划产量以下方数字输入框中的产量为准」）。
+ZONE_KIND_DEFAULT = "population"
+FALLBACK_ZONE_KINDS: Tuple[Dict[str, object], ...] = (
+    {
+        "id": "food",
+        "name": "粮食区划",
+        "line": "每地块每秒 1 粮食 + 0.1 人口",
+        "production": {"food": 1.0, "gold": 0.0, "population": 0.1},
+        "specs": ("gold", "population"),
+    },
+    {
+        "id": "gold",
+        "name": "黄金区划",
+        "line": "每地块每秒 1 黄金 + 0.1 人口",
+        "production": {"food": 0.0, "gold": 1.0, "population": 0.1},
+        "specs": ("food", "population"),
+    },
+    {
+        "id": "population",
+        "name": "人口区划",
+        "line": "每地块每秒 0.15 人口",
+        "production": {"food": 0.0, "gold": 0.0, "population": 0.15},
+        "specs": ("food", "gold"),
+    },
+)
+
 #: ★ 区块人口的**上限**（用户需求：「设计师可以在区块页签中选中任意区块为其设置人口上限，
 #: 此人口上限也会被应用到游戏中；每个区块都需要有人口上限，如果没有填则默认为 1；
 #: 当人口自然增长至上限时停止增长」）。
@@ -282,6 +327,73 @@ def config_grid(cfg: dict) -> Tuple[int, int]:
     return (24, 16)
 
 
+def _norm_kind_production(value) -> Dict[str, float]:
+    """把一条 zone_kind 的 production 补齐成三个键（缺的算 0、负数算 0）。"""
+    out: Dict[str, float] = {k: 0.0 for k in PRODUCTION_KEYS}
+    if isinstance(value, dict):
+        for key in PRODUCTION_KEYS:
+            try:
+                out[key] = max(PRODUCTION_MIN, float(value.get(key, 0.0)))
+            except (TypeError, ValueError):
+                out[key] = 0.0
+    return out
+
+
+def zone_kind_table(cfg: Optional[dict] = None) -> Dict[str, Dict[str, object]]:
+    """读 config.json 的 ``zone_kind`` 段 → ``{id: 条目}``（顺序 = 界面上的顺序）。
+
+    条目里的键：``id`` / ``name`` / ``line`` / ``production``（三档预设产能）/
+    ``specs``（这个种类允许做的特化 id）。
+
+    ⚠️ 配置读不到 / 段写坏了 → 退回 `FALLBACK_ZONE_KINDS`（与 Godot 侧同一份数值）。
+    ⚠️ **编辑器不许自己再写第二份种类表**：界面、导出、测试全读这里。
+    """
+    raw = cfg.get("zone_kind") if isinstance(cfg, dict) else None
+    items = raw.get("list") if isinstance(raw, dict) else None
+    out: Dict[str, Dict[str, object]] = {}
+    if isinstance(items, list):
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            kid = str(item.get("id", "")).strip()
+            if not kid or kid in out:
+                continue
+            specs = item.get("specs")
+            spec_list = tuple(str(s) for s in specs if str(s)) if isinstance(specs, list) else ()
+            out[kid] = {
+                "id": kid,
+                "name": str(item.get("name", kid)),
+                "line": str(item.get("line", "")),
+                "production": _norm_kind_production(item.get("production")),
+                "specs": spec_list,
+            }
+    if not out:
+        for item in FALLBACK_ZONE_KINDS:
+            entry = dict(item)
+            entry["production"] = _norm_kind_production(item.get("production"))
+            out[str(item["id"])] = entry
+    return out
+
+
+def zone_kind_default(cfg: Optional[dict] = None, kinds: Optional[Dict[str, Dict[str, object]]] = None) -> str:
+    """地图里没写 kind 的区划算哪一种（用户确认 = population）。
+
+    ⚠️ 与 Godot 侧 `cfg.zone_kind_default()` 同一条规则：配置里写的那个值**必须真的存在**，
+    否则退回第一个条目（表是空的 → `ZONE_KIND_DEFAULT`）。
+    """
+    table = kinds if kinds is not None else zone_kind_table(cfg)
+    raw = cfg.get("zone_kind") if isinstance(cfg, dict) else None
+    want = str(raw.get("default", "")).strip() if isinstance(raw, dict) else ""
+    if want and want in table:
+        return want
+    # ⚠️ 兜底不能是「表里的第一个」：那会随配置顺序漂（配置里第一个恰好是 food，
+    #    于是「地图没写 kind」会变成粮食区划）。默认那一档是**写死的 population**，
+    #    只有它真的不在表里才退回第一个条目。
+    if ZONE_KIND_DEFAULT in table:
+        return ZONE_KIND_DEFAULT
+    return next(iter(table), ZONE_KIND_DEFAULT)
+
+
 # ----------------------------------------------------------------------
 # 地图模型
 # ----------------------------------------------------------------------
@@ -311,13 +423,19 @@ class Faction:
 
 
 class Zone:
-    """一个区块（= 区划）：一个名字 + 一组地块 + 一个区划中心 + 三档产能 + 人口上限。
+    """一个区块（= 区划）：一个名字 + 一组地块 + 一个区划中心 + 三档产能 + 人口上限 + 种类。
 
     · ``center``     ：**区划中心**所在的那一格（世界坐标）。编辑器保证每个区块恰好
                        有一个；游戏里它落成一个「中立障碍」建筑，点它能看这个区划的详情。
     · ``production`` ：每地块每秒的产能，键是 PRODUCTION_KEYS（food / gold / population）。
                        缺键按 0 算 —— 所以 `model_to_dict` 只在真的有非零产能时才写出去，
                        没有产能的老地图导出后与从前逐字节一致。
+    · ``kind``       ：★★ **区划种类**（用户需求：粮食 / 黄金 / 人口三种）。
+                       它**不决定产量**（产量永远以 production 的数字为准，见需求原文
+                       「最终游戏中的区划产量以下方数字输入框中的产量为准」），只决定
+                       ① 选种类时同步哪套预设数字（`MapModel.set_zone_kind`）、
+                       ② 这个区划能做哪些特化（`zone_kind_specs`）、
+                       ③ 游戏里显示成什么名字。
     · ``population_cap``：★★ **人口上限**（用户需求）。``None`` = 没填 → 游戏里默认 1；
                        导出时只写「不等于默认值」的那些（见 `POPULATION_CAP_KEY`）。
 
@@ -325,9 +443,9 @@ class Zone:
     但 Godot 侧的 zone_view 还按包围盒画底色，所以导出时会带一个最小包围盒。
     """
 
-    __slots__ = ("zone_id", "name", "tiles", "center", "production", "population_cap")
+    __slots__ = ("zone_id", "name", "tiles", "center", "production", "population_cap", "kind")
 
-    def __init__(self, zone_id: int, name: str = "") -> None:
+    def __init__(self, zone_id: int, name: str = "", kind: str = ZONE_KIND_DEFAULT) -> None:
         self.zone_id = int(zone_id)
         self.name = name or DEFAULT_ZONE_NAME_FORMAT.format(1)
         self.tiles: set[Tile] = set()
@@ -335,6 +453,8 @@ class Zone:
         self.production: Dict[str, float] = {k: 0.0 for k in PRODUCTION_KEYS}
         #: None = 设计师没填（游戏里按 DEFAULT_POPULATION_CAP 处理）
         self.population_cap: Optional[float] = None
+        #: 区划种类 id（默认 = ZONE_KIND_DEFAULT = population，见类注释）
+        self.kind: str = kind or ZONE_KIND_DEFAULT
 
     def __repr__(self) -> str:  # pragma: no cover - 调试用
         return "Zone(%d, %r, %d tiles)" % (self.zone_id, self.name, len(self.tiles))
@@ -375,13 +495,29 @@ class MapModel:
       于是「绝对坐标」只在编辑器界面与导出时存在，模型内部永远是 0 起的下标。
     """
 
-    def __init__(self, cols: int, rows: int) -> None:
+    def __init__(self, cols: int, rows: int,
+                 kinds: Optional[Dict[str, Dict[str, object]]] = None,
+                 kind_default: str = "") -> None:
         self.cols = 0
         self.rows = 0
         self.existing: List[bool] = []
         self.terrain: List[str] = []
         self.zones: List[Zone] = []
         self.zone_of: Dict[int, int] = {}
+        #: ★★ 区划种类表（``{id: 条目}``，条目见 `zone_kind_table`）与「没写 kind 时算哪一种」。
+        #:
+        #: 由 `mapfile.dict_to_model` 按 config.json 建好传进来（界面 / 导出 / 测试都读它）；
+        #: 不传就是 config 读不到时的兜底表。**模型自己不读 config** —— 保持数据层无 IO。
+        self.kinds: Dict[str, Dict[str, object]] = (
+            kinds if kinds else zone_kind_table(None))
+        # ⚠️ 默认那一种不能取「表里的第一个」（配置顺序一变，默认种类就跟着变）：
+        #    优先用调用方给的、其次 `ZONE_KIND_DEFAULT`，最后才退回第一个条目。
+        if kind_default and kind_default in self.kinds:
+            self.kind_default: str = kind_default
+        elif ZONE_KIND_DEFAULT in self.kinds:
+            self.kind_default = ZONE_KIND_DEFAULT
+        else:
+            self.kind_default = next(iter(self.kinds), ZONE_KIND_DEFAULT)
         #: 世界坐标 (0, 0) 落在数组里的哪一格（见类注释里的「往左上画」）。
         #: 正常从 (0,0) 起画时它一直是 (0, 0)，对老代码没有任何影响。
         self.origin_x = 0
@@ -727,14 +863,22 @@ class MapModel:
         return self.set_existing(*self.world_of(vx, vy), value=True)
 
     def add_zone(self, name: str = "") -> Zone:
-        """新建区块（默认名「区块N」，不与现有名字撞车）。"""
+        """新建区块（默认名「区块N」，不与现有名字撞车）。
+
+        ★★ 新建的区划**直接带上默认种类的预设产能**（用户确认：「没有默认区划了，
+        所有区划默认值都改为人口区划」）—— 于是「新建一块 = 人口区划 = 每地块每秒
+        0.15 人口」，与界面上单选钮 / 三个输入框显示的数字完全一致。
+        ⚠️ 只有**新建**走这条：读地图时（`mapfile`）数字一律以文件为准，
+           缺 production 就是 0（用户确认保持老图行为，不按种类预设兜底）。
+        """
         used = {z.zone_id for z in self.zones}
         new_id = 0
         while new_id in used:
             new_id += 1
-        zone = Zone(new_id, name)
+        zone = Zone(new_id, name, self.kind_default)
         if not name.strip():
             zone.name = self._next_default_name()
+        zone.production = self.zone_kind_production(self.kind_default)
         self.zones.append(zone)
         return zone
 
@@ -905,6 +1049,96 @@ class MapModel:
         if zone is None:
             return False
         return any(abs(float(zone.production.get(k, 0.0))) > 1e-9 for k in PRODUCTION_KEYS)
+
+    # ---------------- 区划种类 ----------------
+    #
+    # ★★ 用户需求：
+    #   「游戏中有三种区划，粮食区划，黄金区划，人口区划；默认区划属性为每地块每秒产
+    #     0.1 人口；粮食区划产量为每地块每秒产 1 粮食，黄金区划产量为每地块每秒产 1 黄金，
+    #     人口区划是每地块每秒产 0.15 人口」；
+    #   「设计师可以在区划页签的详情页中选择该区划的种类，但是保留下方的数字输入框，
+    #     当设计师为区划选择区划种类时，下方的数字输入框需要同步变化到上方的数值，
+    #     但设计师也可以直接编辑下方的数字输入框中的资源产量，最终游戏中的区划产量
+    #     以下方数字输入框中的产量为准」。
+    #   （后来用户改口：「没有默认区划了，所有区划默认值都改为人口区划」——
+    #    所以这里只有三种，没写 kind 的按 `ZONE_KIND_DEFAULT` 处理。）
+    #
+    # ★ 两条**不能混**的语义：
+    #   · `set_zone_kind()` 会把预设数字**写进** production（这就是「同步变化」那一下）；
+    #   · 之后 `set_zone_production()` 直接改数字 —— 导出时**数字说了算**，
+    #     种类不会在导出 / 读入时把数字改回去（游戏里也不读种类算产量）。
+
+    def zone_kind(self, zone_id: int) -> str:
+        """某个区划的种类 id（没有这个区划 → ""）。认不出来的值退回默认那一档。"""
+        zone = self.zone(zone_id)
+        if zone is None:
+            return ""
+        return zone.kind if zone.kind in self.kinds else self.kind_default
+
+    def zone_kind_entry(self, kind: str) -> Dict[str, object]:
+        """某个种类的那一条（名字 / 说明 / 预设产能 / 允许的特化）。查不到 → 默认那一档。"""
+        if kind in self.kinds:
+            return self.kinds[kind]
+        return self.kinds.get(self.kind_default, {})
+
+    def zone_kind_production(self, kind: str) -> Dict[str, float]:
+        """这个种类「选种类时同步进数字输入框」的那三个数（**拷贝**一份，别改表）。"""
+        entry = self.zone_kind_entry(kind)
+        prod = entry.get("production") if isinstance(entry, dict) else None
+        return _norm_kind_production(prod)
+
+    def zone_kind_name(self, kind: str) -> str:
+        entry = self.zone_kind_entry(kind)
+        return str(entry.get("name", kind)) if isinstance(entry, dict) else str(kind)
+
+    def zone_kind_line(self, kind: str) -> str:
+        """种类的一行说明（界面上跟在名字后面）—— 没写就返回 ""。"""
+        entry = self.zone_kind_entry(kind)
+        return str(entry.get("line", "")) if isinstance(entry, dict) else ""
+
+    def zone_kind_specs(self, kind: str) -> Tuple[str, ...]:
+        """这个种类允许做的特化 id（需求：粮食区划仅能黄金 / 人口特化…）。"""
+        entry = self.zone_kind_entry(kind)
+        specs = entry.get("specs") if isinstance(entry, dict) else None
+        return tuple(specs) if isinstance(specs, (list, tuple)) else ()
+
+    def zone_kind_allows_spec(self, kind: str, spec_id: str) -> bool:
+        return spec_id in self.zone_kind_specs(kind)
+
+    def set_zone_kind(self, zone_id: int, kind: str, apply_preset: bool = True) -> bool:
+        """把区划设成某个种类。返回是否真的变了。
+
+        ``apply_preset = True``（界面上的默认）→ 同时把那三个数字**设成该种类的预设值**
+        （需求原文：「当设计师为区划选择区划种类时，下方的数字输入框需要同步变化到
+        上方的数值」）。``False`` 只改种类（读地图时用：文件里的数字是权威的，
+        不能被预设覆盖 —— 需求原文：「最终游戏中的区划产量以下方数字输入框中的产量为准」）。
+
+        拒绝的两种情况（返回 False，调用方负责提示）：
+          · 没有这个区划；表里没有这个种类（不会静默改成别的种类）。
+        """
+        zone = self.zone(zone_id)
+        if zone is None or kind not in self.kinds:
+            return False
+        changed = zone.kind != kind
+        zone.kind = kind
+        if not apply_preset:
+            return changed
+        preset = self.zone_kind_production(kind)
+        for key in PRODUCTION_KEYS:
+            value = max(PRODUCTION_MIN, min(PRODUCTION_MAX, float(preset.get(key, 0.0))))
+            if abs(value - float(zone.production.get(key, 0.0))) > 1e-9:
+                zone.production[key] = value
+                changed = True
+        return changed
+
+    def zone_kind_is_preset(self, zone_id: int) -> bool:
+        """这个区划的数字是不是**刚好等于**它那个种类的预设值（界面提示用）。"""
+        zone = self.zone(zone_id)
+        if zone is None:
+            return False
+        preset = self.zone_kind_production(zone.kind)
+        return all(abs(float(zone.production.get(k, 0.0)) - float(preset.get(k, 0.0))) < 1e-9
+                   for k in PRODUCTION_KEYS)
 
     # ---------------- 区划人口上限 ----------------
     #

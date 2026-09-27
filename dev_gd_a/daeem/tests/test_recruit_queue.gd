@@ -25,7 +25,7 @@ const SnapshotRes = preload("res://logic/snapshot.gd")
 const FactionRes = preload("res://logic/faction.gd")
 
 const DT := 1.0 / 60.0
-const KIND := "subordinate"
+const KIND := "spearman"
 
 
 func _initialize() -> void:
@@ -59,7 +59,7 @@ func _cases() -> void:
 # ------------------------------------------------------------------
 func _test_config_table(cfg) -> void:
 	var w = WorldRes.create(cfg)
-	ok(w.is_recruitable(KIND), "config.recruit.list 里亲兵可招募")
+	ok(w.is_recruitable(KIND), "config.recruit.list 里长枪兵可招募")
 	ok(not w.is_recruitable("nope"), "表里没有的兵种不能招募")
 	eq(w.recruit_queue_max(), 5, "★ 队列上限 5 个（1 大格 + 4 小格）")
 	near(w.recruit_train_sec(KIND), 10.0, 1e-6, "★ 每个单位读条 10 秒")
@@ -67,7 +67,7 @@ func _test_config_table(cfg) -> void:
 	var cost: Dictionary = w.recruit_cost(KIND)
 	near(float(cost.get("food", 0.0)), 50.0, 1e-6, "★ 每个单位 50 粮食")
 	near(float(cost.get("gold", 0.0)), 50.0, 1e-6, "★ 每个单位 50 黄金")
-	eq(w.recruit_short_of(KIND), "兵", "信息栏格子里用 config 的 short（兵）")
+	eq(w.recruit_short_of(KIND), "枪", "信息栏格子里用 config 的 short（长枪兵 = 枪）")
 
 
 # ------------------------------------------------------------------
@@ -178,10 +178,10 @@ func _leader_reject_checks(cfg) -> void:
 	var g1 = w.unit_by_id("general-1")
 	var sub = w.retinue_of(g1.id)[0]
 	eq(w.can_recruit(KIND, "general-99", "p1"), "leader", "队长不存在 → leader")
-	eq(w.can_recruit(KIND, sub.id, "p1"), "leader", "★ 亲兵不是队长，不能往它名下招兵")
+	eq(w.can_recruit(KIND, sub.id, "p1"), "leader", "★ 附属兵不是队长，不能往它名下招兵")
 	eq(w.can_recruit(KIND, g1.id, FactionRes.NPC_FACTION), "faction",
 		"★ 防冒充：别的阵营不能拿我方将领的 id 招兵")
-	ok(not w.start_recruit(KIND, sub.id, "p1"), "往亲兵名下招募被拒")
+	ok(not w.start_recruit(KIND, sub.id, "p1"), "往附属兵名下招募被拒")
 
 
 # ------------------------------------------------------------------
@@ -264,7 +264,7 @@ func _test_push_units_aside(cfg) -> void:
 	var tile := Vector2i(g1.tx, g1.ty)
 	var center := GridRes.center_of(tile)
 
-	# 将领让开半格（还在自己那一格里），把一个亲兵正好放在格心上
+	# 将领让开半格（还在自己那一格里），把一个附属兵正好放在格心上
 	g1.pos = center + Vector2(0.35, 0.0)
 	g1.sync_tile(w.map)
 	var squatter = w.retinue_of(g1.id)[0]
@@ -333,7 +333,7 @@ func _test_rooted_while_training(cfg) -> void:
 # 需求原话：「玩家无法为正在招募单位的将领及其附属队列发布任何指令（移动/攻击），
 #            其附属单位只会执行警戒逻辑」。
 # 这一节盯四条：
-#   1. 锁的是**一整队**（将领本人 + 它名下的亲兵），不是只有将领；
+#   1. 锁的是**一整队**（将领本人 + 它名下的附属兵），不是只有将领；
 #   2. 别的将领的部队**不受影响**（锁的是那一队，不是全场）；
 #   3. 已经开始执行的旧命令要**收队**（「只会执行警戒逻辑」不能带着旧路走）；
 #   4. 「只警戒」不是「发呆」：靠近的敌人照样会打；而且队列一取消就解锁。
@@ -346,7 +346,7 @@ func _test_retinue_locked_while_training(cfg) -> void:
 	w.zones.zone_at(g1.tx, g1.ty)["population"] = 10.0
 	var mates: Array = w.retinue_of(g1.id)
 	var other: Array = w.retinue_of(g2.id)
-	ok(not mates.is_empty() and not other.is_empty(), "两个将领各带亲兵")
+	ok(not mates.is_empty() and not other.is_empty(), "两个将领各带附属兵")
 
 	# ---- 先给整队下一条移动命令（验证招募一开始会「收队」）----
 	var squad: Array = [g1.id]
@@ -354,12 +354,12 @@ func _test_retinue_locked_while_training(cfg) -> void:
 	var far := GridRes.center_of(Vector2i(g1.tx, g1.ty + 5))
 	ok(CommandRes.apply(w, cfg, {"kind": "move", "ids": squad,
 		"x": far.x, "y": far.y, "faction": "p1"}), "先给整队下一条移动命令")
-	ok(mates[0].moving, "亲兵确实在赶路")
+	ok(mates[0].moving, "附属兵确实在赶路")
 
 	# ---- 开始招募：整队被锁 + 旧命令收队 ----
 	ok(w.start_recruit(KIND, g1.id, "p1"), "将领开始招募")
 	ok(not mates[0].moving and mates[0].path.is_empty(),
-		"★ 招募一开始，亲兵就**收队**（不再执行旧命令）")
+		"★ 招募一开始，附属兵就**收队**（不再执行旧命令）")
 	ok(w.is_order_locked(g1), "将领自己被锁住")
 	ok(w.is_order_locked(mates[0]), "★ 它辖下的部队也被锁住")
 	ok(not w.is_order_locked(other[0]), "别的将领的部队不受影响")
@@ -374,7 +374,7 @@ func _test_retinue_locked_while_training(cfg) -> void:
 		foe.hold_position = true                   # 别让它跑掉
 		ok(not CommandRes.apply(w, cfg, {"kind": "attack", "ids": squad,
 			"target_id": foe.id, "faction": "p1"}), "★ 整队的 attack 命令被拒")
-	ok(not mates[0].moving and mates[0].path.is_empty(), "被拒之后亲兵还是原地待命")
+	ok(not mates[0].moving and mates[0].path.is_empty(), "被拒之后附属兵还是原地待命")
 	ok(mates[0].ordered_target == null and not mates[0].has_attack_move, "也没有留下玩家命令")
 
 	# 界面靠事件显示「这会儿不接受指令」
@@ -389,7 +389,7 @@ func _test_retinue_locked_while_training(cfg) -> void:
 	if foe != null:
 		for _i in 120:
 			w.tick(DT)
-		ok(foe.hp < foe.hp_max, "★ 亲兵仍然执行警戒逻辑（自己上去打了，敌人掉了血）")
+		ok(foe.hp < foe.hp_max, "★ 附属兵仍然执行警戒逻辑（自己上去打了，敌人掉了血）")
 		ok(g1.target == null, "★ 将领本人还是不动手（读条期间无法攻击）")
 
 	# ---- 取消掉最后一单 → 立刻解锁 ----
@@ -405,7 +405,7 @@ func _test_retinue_locked_while_training(cfg) -> void:
 #
 # 需求原话：「点击对应的格子取消对应格子上的造兵队列，其后方的造兵队列前移」。
 # ★ 为了验「前移」是真的前移（而不是只少了一个），这一节临时往可招募表里
-#   加**第二个兵种**：队列变成「亲兵 / 二号 / 亲兵」之后，取消中间那个就能看出
+#   加**第二个兵种**：队列变成「长枪兵 / 二号 / 长枪兵」之后，取消中间那个就能看出
 #   谁补了上来。recruit.list 是**每次现读** cfg.data 的，所以这里改得动
 #   （那些载入时算好的标量才改不动，见 architecture.md 第一节第 7 条）。
 # ------------------------------------------------------------------
@@ -422,7 +422,7 @@ func _test_cancel_queue(cfg) -> void:
 	var z = w.zones.zone_at(g1.tx, g1.ty)
 	z["population"] = 10.0
 
-	# 排三单：大格子 = 亲兵，两个小格子 = 二号 / 亲兵
+	# 排三单：大格子 = 长枪兵，两个小格子 = 二号 / 长枪兵
 	ok(w.start_recruit(KIND, g1.id, "p1"), "排第 1 单")
 	ok(w.start_recruit(other, g1.id, "p1"), "排第 2 单")
 	ok(w.start_recruit(KIND, g1.id, "p1"), "排第 3 单")
@@ -499,7 +499,7 @@ func _test_recruit_eta(cfg) -> void:
 		return
 	c.combat_enabled = false
 	# 塞一个**读条时长不同**的兵种（25 秒）：这样才能验出「各自按自己的 train_sec 累加」
-	var slow_kind := "subordinate_long"
+	var slow_kind := "testkind_slow"
 	(c.get_path_value("recruit.list") as Array).append({
 		"kind": slow_kind, "label": "慢兵", "short": "慢",
 		"train_sec": 25, "population_cost": 1, "cost": {"food": 10, "gold": 10},
@@ -515,8 +515,8 @@ func _test_recruit_eta(cfg) -> void:
 	near(w.recruit_eta(null, 0), 0.0, 1e-6, "null 将领也返回 0（视图不必先判空）")
 	near(w.recruit_eta(g1, -1), 0.0, 1e-6, "负数格号返回 0")
 
-	# 排两单：大格子 = 亲兵（10 秒），第 1 小格 = 慢兵（25 秒）
-	ok(w.start_recruit(KIND, g1.id, "p1"), "排第 1 单（亲兵，10 秒）")
+	# 排两单：大格子 = 长枪兵（10 秒），第 1 小格 = 慢兵（25 秒）
+	ok(w.start_recruit(KIND, g1.id, "p1"), "排第 1 单（长枪兵，10 秒）")
 	ok(w.start_recruit(slow_kind, g1.id, "p1"), "排第 2 单（慢兵，25 秒）")
 	near(w.recruit_eta(g1, 0), 10.0, 1e-6, "★ 大格子 = 这一单自己的剩余秒（10）")
 	near(w.recruit_eta(g1, 1), 35.0, 1e-6,
@@ -524,8 +524,8 @@ func _test_recruit_eta(cfg) -> void:
 	near(w.recruit_eta(g1, 2), 0.0, 1e-6, "空槽位是 0")
 	near(w.recruit_eta(g1, 4), 0.0, 1e-6, "最后一格空着也是 0")
 
-	# 再排一单亲兵（10 秒）→ 第 2 小格 = 35 + 10
-	ok(w.start_recruit(KIND, g1.id, "p1"), "排第 3 单（亲兵，10 秒）")
+	# 再排一单长枪兵（10 秒）→ 第 2 小格 = 35 + 10
+	ok(w.start_recruit(KIND, g1.id, "p1"), "排第 3 单（长枪兵，10 秒）")
 	near(w.recruit_eta(g1, 1), 35.0, 1e-6, "前面那格的 ETA 不变（10 + 25）")
 	near(w.recruit_eta(g1, 2), 45.0, 1e-6, "★ 第 2 小格 = 第 1 小格 + 第 1 小格那一单的 10")
 
@@ -539,7 +539,7 @@ func _test_recruit_eta(cfg) -> void:
 	ok(w.cancel_recruit(g1.id, 0, "p1"), "取消大格子")
 	eq(g1.train_kind, slow_kind, "（前提）慢兵前移进了大格子")
 	near(w.recruit_eta(g1, 0), 25.0, 0.05, "★ 前移的那一单从头读条 → 它的 ETA = 自己的 25 秒")
-	eq(w.recruit_kind_at(g1, 1), KIND, "（前提）原来第 2 小格的亲兵前移到第 1 小格")
+	eq(w.recruit_kind_at(g1, 1), KIND, "（前提）原来第 2 小格的长枪兵前移到第 1 小格")
 	near(w.recruit_eta(g1, 1), 35.0, 0.05, "★ 前移之后重算：25 + 10 = 35")
 	near(w.recruit_eta(g1, 2), 0.0, 1e-6, "后面那格空出来了")
 
@@ -605,7 +605,7 @@ func _test_death_refund(cfg) -> void:
 	near(float(w.resources["gold"]), gold0, 1e-4, "★ 阵亡后退还全部黄金")
 	near(float(z["population"]), 10.0, 1e-4, "★ 阵亡后退还全部人口")
 	eq(w.units.size(), units0 - 1, "阵亡的将领被摘出世界")
-	eq(w.retinue_of(g1.id).size(), int(cfg.num("unit.subordinate.count", 0.0)),
+	eq(w.retinue_of(g1.id).size(), cfg.general_escort_count(),
 		"★ 队列作废：**没有**偷偷生成新兵")
 
 	var cancelled := 0
@@ -761,10 +761,10 @@ func _ids(units: Array) -> Array:
 func _inject_second_kind(cfg) -> String:
 	var list = cfg.get_path_value("recruit.list")
 	(list as Array).append({
-		"kind": "subordinate2", "label": "二号占位", "short": "贰",
+		"kind": "testkind2", "label": "二号占位", "short": "贰",
 		"train_sec": 10, "population_cost": 1, "cost": {"food": 50, "gold": 50},
 	})
-	return "subordinate2"
+	return "testkind2"
 
 
 func _tick_secs(w, secs: float) -> void:

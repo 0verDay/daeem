@@ -1406,14 +1406,15 @@
     {
       "id": 0,
       "name": "a1",
+      "kind": "population",
       "center": [
         5,
         0
       ],
       "production": {
-        "food": 1,
-        "gold": 1,
-        "population": 0.01
+        "food": 0,
+        "gold": 0,
+        "population": 0.15
       },
       "x0": 5,
       "y0": 0,
@@ -1526,14 +1527,15 @@
     {
       "id": 1,
       "name": "a2",
+      "kind": "food",
       "center": [
         5,
         5
       ],
       "production": {
         "food": 1,
-        "gold": 1,
-        "population": 0.5
+        "gold": 0,
+        "population": 0.1
       },
       "x0": 5,
       "y0": 5,
@@ -1646,14 +1648,15 @@
     {
       "id": 2,
       "name": "b1",
+      "kind": "population",
       "center": [
         17,
         0
       ],
       "production": {
-        "food": 1,
-        "gold": 1,
-        "population": 0.5
+        "food": 0,
+        "gold": 0,
+        "population": 0.15
       },
       "x0": 17,
       "y0": 0,
@@ -1766,14 +1769,15 @@
     {
       "id": 3,
       "name": "b2",
+      "kind": "population",
       "center": [
         17,
         5
       ],
       "production": {
-        "food": 1,
-        "gold": 1,
-        "population": 0.5
+        "food": 0,
+        "gold": 0,
+        "population": 0.15
       },
       "x0": 17,
       "y0": 5,
@@ -1886,6 +1890,7 @@
     {
       "id": 4,
       "name": "c1",
+      "kind": "population",
       "center": [
         10,
         4
@@ -1893,7 +1898,7 @@
       "production": {
         "food": 1,
         "gold": 1,
-        "population": 0.5
+        "population": 0.15
       },
       "x0": 10,
       "y0": 4,
@@ -2102,14 +2107,15 @@
     {
       "id": 5,
       "name": "c2",
+      "kind": "population",
       "center": [
         10,
         11
       ],
       "production": {
-        "food": 1,
-        "gold": 1,
-        "population": 0.5
+        "food": 0,
+        "gold": 0,
+        "population": 0.15
       },
       "x0": 10,
       "y0": 11,
@@ -2318,14 +2324,15 @@
     {
       "id": 6,
       "name": "d1",
+      "kind": "population",
       "center": [
         5,
         12
       ],
       "production": {
-        "food": 1,
-        "gold": 1,
-        "population": 0.5
+        "food": 0,
+        "gold": 0,
+        "population": 0.15
       },
       "x0": 5,
       "y0": 12,
@@ -2438,14 +2445,15 @@
     {
       "id": 7,
       "name": "d2",
+      "kind": "population",
       "center": [
         5,
         17
       ],
       "production": {
-        "food": 1,
-        "gold": 1,
-        "population": 0.5
+        "food": 0,
+        "gold": 0,
+        "population": 0.15
       },
       "x0": 5,
       "y0": 17,
@@ -2558,14 +2566,15 @@
     {
       "id": 8,
       "name": "e1",
+      "kind": "population",
       "center": [
         17,
         12
       ],
       "production": {
-        "food": 1,
-        "gold": 1,
-        "population": 0.5
+        "food": 0,
+        "gold": 0,
+        "population": 0.15
       },
       "x0": 17,
       "y0": 12,
@@ -2678,14 +2687,15 @@
     {
       "id": 9,
       "name": "e2",
+      "kind": "population",
       "center": [
         17,
         17
       ],
       "production": {
-        "food": 1,
-        "gold": 1,
-        "population": 0.5
+        "food": 0,
+        "gold": 0,
+        "population": 0.15
       },
       "x0": 17,
       "y0": 17,
@@ -2798,10 +2808,16 @@
     {
       "id": 10,
       "name": "f1",
+      "kind": "population",
       "center": [
         0,
         9
       ],
+      "production": {
+        "food": 0,
+        "gold": 0,
+        "population": 0.15
+      },
       "x0": 0,
       "y0": 9,
       "x1": 4,
@@ -2913,10 +2929,16 @@
     {
       "id": 11,
       "name": "f2",
+      "kind": "gold",
       "center": [
         0,
         0
       ],
+      "production": {
+        "food": 0,
+        "gold": 1,
+        "population": 0.1
+      },
       "x0": 0,
       "y0": 0,
       "x1": 4,
@@ -3108,10 +3130,16 @@
     {
       "id": 12,
       "name": "g1",
+      "kind": "population",
       "center": [
         22,
         8
       ],
+      "production": {
+        "food": 0,
+        "gold": 0,
+        "population": 0.15
+      },
       "x0": 22,
       "y0": 8,
       "x1": 26,
@@ -3223,10 +3251,16 @@
     {
       "id": 13,
       "name": "g2",
+      "kind": "population",
       "center": [
         22,
         13
       ],
+      "production": {
+        "food": 0,
+        "gold": 0,
+        "population": 0.15
+      },
       "x0": 22,
       "y0": 13,
       "x1": 26,

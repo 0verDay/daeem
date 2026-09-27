@@ -66,6 +66,8 @@ def selftest(project_dir: Path) -> int:
     print("[centers] %s" % ", ".join(
         "%s=(%d,%d)" % (z.name, z.center[0], z.center[1])
         for z in model.zones[:4] if z.center is not None))
+    print("[kinds] %s" % ", ".join(
+        "%s=%s" % (z.name, model.zone_kind(z.zone_id)) for z in model.zones[:4]))
     for problem in model.problems():
         print("[warn] %s" % problem)
 
@@ -75,9 +77,9 @@ def selftest(project_dir: Path) -> int:
     same = (again.existing == model.existing and again.terrain == model.terrain
             and again.cols == model.cols and again.rows == model.rows
             and again.faction_bases == model.faction_bases
-            and sorted((z.zone_id, z.name, sorted(z.tiles), z.center,
+            and sorted((z.zone_id, z.name, z.kind, sorted(z.tiles), z.center,
                         tuple(sorted(z.production.items()))) for z in again.zones)
-            == sorted((z.zone_id, z.name, sorted(z.tiles), z.center,
+            == sorted((z.zone_id, z.name, z.kind, sorted(z.tiles), z.center,
                        tuple(sorted(z.production.items()))) for z in model.zones))
     print("[roundtrip] %s" % ("OK" if same else "FAILED"))
     return 0 if same else 1

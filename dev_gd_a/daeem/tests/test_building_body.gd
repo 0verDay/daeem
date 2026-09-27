@@ -394,7 +394,7 @@ func _test_map_outpost(cfg) -> void:
 	if tower_tile.x < 0:
 		return
 	var g = w.unit_by_id("general-1")
-	w.units = [g]                        # 隔离：只留将领，别让亲兵与敌兵干扰
+	w.units = [g]                        # 隔离：只留将领，别让附属兵与敌兵干扰
 	g.stop()
 	g.pos = Vector2(tower_tile) + Vector2(-2.0, 0.5)   # 站在塔西边 2 格（射程 3 格内）
 	g.sync_tile(w.map)

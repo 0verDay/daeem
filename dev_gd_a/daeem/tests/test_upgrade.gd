@@ -1,16 +1,18 @@
 ## test_upgrade.gd —— 建筑升级 + 区划特化（右下「操作」页签里那几格）
 ##
-## 需求原话：
-##   「为所有单位/建筑都添加上『操作』页签，大本营的操作页签中有一个升级大本营选项，
-##     点击后开始读条（和招募单位时的读条一样，可以复用招募单位的面板），
-##     箭塔和城墙也有一个升级选项，区划中心有三个特化选项，分别是粮食特化，黄金特化，
-##     人口特化，这三个特化玩家只能选一个升级，效果分别为本区块粮食产量 +10%、
-##     本区块黄金产量 +10%、本区快人口产量 +10%，特化后的区块无法再次特化，
+## ★★ 需求原话（本轮改版后）：
+##   「粮食特化 = 每地块每秒额外产 0.5 粮食，黄金特化 = 每地块每秒额外产 0.5 黄金，
+##     人口特化 = 当前区划人口产量 +25%」；
+##   「粮食区划仅能进行黄金和人口特化，黄金区划仅能进行粮食和人口特化，
+##     人口区划仅能进行粮食和黄金特化」；
+##   （读条 / 只能选一个 / 取消特化那几条规则不变：「特化后的区块无法再次特化，
 ##     但选中特化后的区块可以在操作面板中选择『取消特化』去除其特化，同理，
-##     特化也需要读条，取消特化也需要读条」。
+##     特化也需要读条，取消特化也需要读条」。）
+##   ★ 历史：旧版三档都是「本区块产量 +10%」的倍率 —— 那套断言已经全部改掉。
 ##
-## ★ 这里钉**逻辑层**这条链：config 表 → 判定（等级上限 / 读条占用 / 归属 / 费用）
-##   → 入队即扣费 → 读条 → 落效果（等级与血量 / 本区块产能）→ 取消与退款 → 命令层。
+## ★ 这里钉**逻辑层**这条链：config 表 → 判定（种类白名单 / 等级上限 / 读条占用 /
+##   归属 / 费用）→ 入队即扣费 → 读条 → 落效果（等级与血量 / 本区块产能）→
+##   取消与退款 → 命令层。
 ##   「页签有哪几颗、操作页画哪几格、信息栏那块面板显示什么」在 tests/test_ui.gd 里验。
 extends "res://tests/test_case.gd"
 
@@ -35,6 +37,7 @@ func _cases() -> void:
 	if cfg == null:
 		return
 	_test_config_table(cfg)
+	_test_zone_kind_table(cfg)
 	_test_reject_rules(cfg)
 	_test_upgrade_flow(cfg)
 	_test_cancel_refund(cfg)
@@ -73,18 +76,96 @@ func _test_config_table(cfg) -> void:
 	eq(cfg.spec_list().size(), 3, "★ 三个特化（粮食 / 黄金 / 人口）")
 	for want in ["food", "gold", "population"]:
 		ok(cfg.has_spec(want), "特化表里有 %s" % want)
-	near(float(cfg.spec_entry("food").get("effect", {}).get("food", 0.0)), 0.1, 1e-6,
-		"★ 粮食特化 = 本区块粮食 +10%")
-	near(float(cfg.spec_entry("gold").get("effect", {}).get("gold", 0.0)), 0.1, 1e-6,
-		"★ 黄金特化 = 本区块黄金 +10%")
-	near(float(cfg.spec_entry("population").get("effect", {}).get("population", 0.0)), 0.1, 1e-6,
-		"★ 人口特化 = 本区块人口 +10%")
+	# ★★ 本轮：粮食 / 黄金特化是「每地块每秒**加** 0.5」，人口特化是「**倍率** +25%」——
+	#    两种形状不同，所以断言分两条写（旧的 `effect.food == 0.1` 那套已经作废）。
+	near(float(cfg.spec_entry("food").get("effect", {}).get("food_per_tile", 0.0)), 0.5, 1e-6,
+		"★ 粮食特化 = 每地块每秒额外 0.5 粮食")
+	near(float(cfg.spec_entry("gold").get("effect", {}).get("gold_per_tile", 0.0)), 0.5, 1e-6,
+		"★ 黄金特化 = 每地块每秒额外 0.5 黄金")
+	near(float(cfg.spec_entry("population").get("effect", {}).get("population_mult", 0.0)), 0.25, 1e-6,
+		"★ 人口特化 = 本区划人口产量 +25%")
 	near(cfg.spec_time_sec("food"), 10.0, 1e-6, "★ 特化读条 10 秒")
 	var sc: Dictionary = cfg.spec_cost("food")
 	near(float(sc.get("food", 0.0)), 50.0, 1e-6, "特化要 50 粮食")
 	near(float(sc.get("gold", 0.0)), 50.0, 1e-6, "特化要 50 黄金")
 	ok(w.building_can_upgrade("base"), "world 转发：大本营能升级")
 	ok(not w.building_can_upgrade(BuildingRes.TYPE_ZONE_CENTER), "world 转发：区划中心不能升级")
+
+
+# ------------------------------------------------------------------
+# 一之二、区划种类表（config.json 的 zone_kind 段）—— 本轮新增
+# ------------------------------------------------------------------
+##
+## 需求原话：「游戏中有三种区划，粮食区划，黄金区划，人口区划；粮食区划产量为每地块每秒
+## 产 1 粮食，黄金区划产量为每地块每秒产 1 黄金，人口区划是每地块每秒产 0.15 人口」；
+## 「粮食区划仅能进行黄金和人口特化，黄金区划仅能进行粮食和人口特化，
+## 人口区划仅能进行粮食和黄金特化」。
+## 用户另外确认：「没有默认区划了，所有区划默认值都改为人口区划」（所以只有三种，
+## 地图没写 kind 的区划算 population）。
+func _test_zone_kind_table(cfg) -> void:
+	eq(cfg.zone_kind_list().size(), 3, "★ 三种区划（粮食 / 黄金 / 人口）")
+	for want in ["food", "gold", "population"]:
+		ok(cfg.has_zone_kind(want), "种类表里有 %s" % want)
+	eq(cfg.zone_kind_default(), "population", "★ 地图没写 kind 时算人口区划（用户确认）")
+	ok(not cfg.has_zone_kind("none"), "★ 没有「默认区划」这一档了")
+	eq(cfg.zone_kind_name("food"), "粮食区划", "种类名字来自 config")
+	# 预设产能：这是**编辑器选种类时同步进数字输入框**的数，不是游戏里的兜底
+	var pf: Dictionary = cfg.zone_kind_production("food")
+	near(float(pf["food"]), 1.0, 1e-6, "★ 粮食区划预设 = 每地块每秒 1 粮食")
+	near(float(pf["gold"]), 0.0, 1e-6, "粮食区划不产黄金")
+	near(float(pf["population"]), 0.1, 1e-6,
+		"★ 粮食区划也带 0.1 人口（用户补充：所有区划至少 0.1 人口／地块／秒）")
+	var pg: Dictionary = cfg.zone_kind_production("gold")
+	near(float(pg["gold"]), 1.0, 1e-6, "★ 黄金区划预设 = 每地块每秒 1 黄金")
+	near(float(pg["population"]), 0.1, 1e-6, "★ 黄金区划也带 0.1 人口")
+	var pp: Dictionary = cfg.zone_kind_production("population")
+	near(float(pp["population"]), 0.15, 1e-6, "★ 人口区划预设 = 每地块每秒 0.15 人口")
+	# ★★ 用户补充需求：「所有区划至少会有 0.1 人口每地块每秒的基础产能」——
+	#    三种预设逐个钉住（种类是数据驱动的，以后加第四种也会被这条守住）。
+	for kind_id in ["food", "gold", "population"]:
+		ok(float(cfg.zone_kind_production(kind_id)["population"]) >= 0.1 - 1e-9,
+			"★ %s 的预设人口产能 ≥ 0.1（实际 %s）"
+			% [kind_id, cfg.zone_kind_production(kind_id)["population"]])
+	# ★ 特化白名单（三条需求原文逐条钉住）
+	ok(cfg.zone_kind_allows_spec("food", "gold"), "粮食区划能做黄金特化")
+	ok(cfg.zone_kind_allows_spec("food", "population"), "粮食区划能做人口特化")
+	ok(not cfg.zone_kind_allows_spec("food", "food"), "★ 粮食区划**不能**做粮食特化")
+	ok(cfg.zone_kind_allows_spec("gold", "food"), "黄金区划能做粮食特化")
+	ok(cfg.zone_kind_allows_spec("gold", "population"), "黄金区划能做人口特化")
+	ok(not cfg.zone_kind_allows_spec("gold", "gold"), "★ 黄金区划**不能**做黄金特化")
+	ok(cfg.zone_kind_allows_spec("population", "food"), "人口区划能做粮食特化")
+	ok(cfg.zone_kind_allows_spec("population", "gold"), "人口区划能做黄金特化")
+	ok(not cfg.zone_kind_allows_spec("population", "population"), "★ 人口区划**不能**做人口特化")
+	# 认不出来的 kind → 退回默认那一档（手改地图写错时不该崩、也不该多出产量）
+	eq(cfg.zone_kind_name("banana"), "人口区划", "认不出的种类 → 默认那一档")
+	near(float(cfg.zone_kind_production("banana")["population"]), 0.15, 1e-9,
+		"认不出的种类 → 拿默认那一档的预设值")
+
+	# 发布地图的区块种类：**由设计师在编辑器里定**（当前：11 个人口 + a2 粮食 + f2 黄金）。
+	#
+	# ★ 这里**不再**断言「全部是人口区划」——那是「默认全赋上人口区划」那一轮的事实，
+	#   之后设计师按需要把 a2 / f2 改成了粮食 / 黄金区划（用户确认：这是他自己改的）。
+	#   地图是设计师手里的东西：把某一版的具体分布写死进断言，改一次图就集体假失败
+	#   （同一条教训见 tests/test_smoke.gd 里那句「别再往测试里塞坐标」）。
+	#   所以这一节钉的是**读取路径**，而不是那一版数据：
+	#     ① 每个区块的种类都认得出来（写错一个 kind 会红）；
+	#     ② world 转发的种类 == 区块自己那两个字段（转发/兜底逻辑没漂）。
+	#   分布本身只打印出来（一眼看得到当前是什么，但不构成断言）。
+	var w = _quiet(cfg)
+	var kinds: Dictionary = {}
+	var unknown: Array = []
+	for z in w.zones.zones:
+		var k := String(z["kind"])
+		kinds[k] = int(kinds.get(k, 0)) + 1
+		if not cfg.has_zone_kind(k):
+			unknown.append("%s=%s" % [String(z["name"]), k])
+		eq(w.zone_kind_of(z), w.zones.kind_of(z),
+			"world 转发的种类 = 区块自己那一格（%s）" % String(z["name"]))
+	ok(unknown.is_empty(),
+		"★ 发布地图的每个区块都是表里认识的种类（认不出的：%s）" % str(unknown))
+	print("   [kinds] 发布地图的区划种类分布：%s（共 %d 块）" % [str(kinds), w.zones.zones.size()])
+	eq(w.zone_kind_of(w.zones.zones[0]), w.zones.kind_of(w.zones.zones[0]),
+		"world 转发的种类查询（第一个区块）")
 
 
 # ------------------------------------------------------------------
@@ -284,6 +365,12 @@ func _test_specialize_flow(cfg) -> void:
 	eq(UpgradeRes.can_specialize(w, mine, "food", f), "", "平常状态下可以做粮食特化")
 	eq(UpgradeRes.can_specialize(w, mine, "nope", f), "spec", "不存在的特化 → spec")
 	eq(UpgradeRes.can_specialize(w, null, "food", f), "zone", "没有区划 → zone")
+	# ★★ 本轮：种类白名单（发布地图的区划都是人口区划 → 只能做粮食 / 黄金特化）
+	eq(String(mine["kind"]), "population", "（前提）这一块是人口区划")
+	eq(UpgradeRes.can_specialize(w, mine, "population", f), "kind",
+		"★ 人口区划做不了人口特化（拒因 kind）")
+	eq(UpgradeRes.spec_choices(mine, cfg).size(), 2,
+		"★ 人口区划的操作页只有两格特化（粮食 / 黄金）")
 	var foreign = _foreign_zone(w)
 	if foreign != null:
 		eq(UpgradeRes.can_specialize(w, foreign, "food", f), "zone",
@@ -298,25 +385,29 @@ func _test_specialize_flow(cfg) -> void:
 		"★ 入队即扣粮食")
 	eq(UpgradeRes.can_specialize(w, mine, "gold", f), "busy", "★ 读条中拒绝别的特化")
 	near(UpgradeRes.zone_spec_progress(mine, cfg), 0.0, 1e-6, "刚入队进度 0")
-	near(UpgradeRes.zone_spec_mult(mine, cfg)["food"], 1.0, 1e-6,
+	near(UpgradeRes.zone_spec_effect(mine, cfg)["food_per_tile"], 0.0, 1e-6,
 		"★ 读条还没读完 → 加成还没生效")
 
 	# 读条一半：还没生效
 	w.tick(5.0)
 	near(UpgradeRes.zone_spec_progress(mine, cfg), 0.5, 0.05, "读条走到一半")
-	near(UpgradeRes.zone_spec_mult(mine, cfg)["food"], 1.0, 1e-6, "一半时加成仍未生效")
+	near(UpgradeRes.zone_spec_effect(mine, cfg)["food_per_tile"], 0.0, 1e-6, "一半时加成仍未生效")
 
 	# 读完
 	w.tick(BIG_STEP)
 	ok(not UpgradeRes.zone_is_busy(mine), "★ 读条结束")
 	eq(String(mine.get("spec_done", "")), "food", "★ 特化生效（spec_done = food）")
-	near(UpgradeRes.zone_spec_mult(mine, cfg)["food"], 1.1, 1e-6, "★ 本区块粮食倍率 1.1")
-	near(UpgradeRes.zone_spec_mult(mine, cfg)["gold"], 1.0, 1e-6, "黄金不受粮食特化影响")
+	near(UpgradeRes.zone_spec_effect(mine, cfg)["food_per_tile"], 0.5, 1e-6,
+		"★ 粮食特化 = 每地块每秒 +0.5 粮食")
+	near(UpgradeRes.zone_spec_effect(mine, cfg)["gold_per_tile"], 0.0, 1e-6,
+		"黄金不受粮食特化影响")
+	near(UpgradeRes.zone_spec_effect(mine, cfg)["population_mult"], 1.0, 1e-6,
+		"人口倍率不受粮食特化影响")
 
-	# 产能：本区块 ×1.1，别的区块不变
+	# 产能：本区块每地块 +0.5（加在它自己的产能上），别的区块不变
 	var rates: Dictionary = w.zones.production_of(f)
-	near(float(rates["food"]), 2.0 * n_mine * 1.1 + 2.0 * n_other, 1e-3,
-		"★ 粮食产出 = 本区块 ×1.1 + 别的区块不变")
+	near(float(rates["food"]), (2.0 + 0.5) * n_mine + 2.0 * n_other, 1e-3,
+		"★ 粮食产出 = 本区块（2 + 0.5）× 地块 + 别的区块不变")
 	near(float(rates["gold"]), 3.0 * n_mine + 3.0 * n_other, 1e-3, "黄金产出不变")
 
 	# 只能选一个：已特化 → 别的特化被拒（命令也不该生效）
@@ -327,9 +418,11 @@ func _test_specialize_flow(cfg) -> void:
 		"★ 换一个特化的命令也走不通")
 	eq(String(mine.get("spec_done", "")), "food", "★ 还是原来的粮食特化")
 
-	# 人口特化同样只加本区块的增长速度
+	# 人口特化同样只加本区块的增长速度（★ 本轮：×1.25 的倍率形状，不是每地块加产量）
 	#
 	# ⚠️ 资源直接写（不用 `_give()`）：本段要的正是产能，而 `_give()` 会把它清掉。
+	# ⚠️ 人口特化只能由**粮食区划 / 黄金区划**做（人口区划做不了自己的特化），
+	#    所以这里先把它的种类改成粮食区划。
 	var w2 = _quiet(cfg)
 	w2.resources["food"] = 1000.0
 	w2.resources["gold"] = 1000.0
@@ -343,6 +436,9 @@ func _test_specialize_flow(cfg) -> void:
 	ok(z3 != null, "（人口特化那条用例也要第二块己方区划）")
 	if z3 == null:
 		return
+	z2["kind"] = "food"
+	eq(UpgradeRes.can_specialize(w2, z2, "population", w2.my_faction), "",
+		"★ 粮食区划可以做人口特化")
 	for z in [z2, z3]:
 		z["production"] = {"food": 0.0, "gold": 0.0, "population": 2.0}
 		z["population"] = 0.0
@@ -355,20 +451,21 @@ func _test_specialize_flow(cfg) -> void:
 	ok(w2.start_zone_specialize(int(z2["id"]), "population"), "（前提）人口特化入队")
 	w2.tick(BIG_STEP)
 	eq(String(z2.get("spec_done", "")), "population", "人口特化生效")
-	near(UpgradeRes.zone_spec_mult(z2, cfg)["population"], 1.1, 1e-6, "（前提）倍率 1.1")
+	near(UpgradeRes.zone_spec_effect(z2, cfg)["population_mult"], 1.25, 1e-6,
+		"★ 人口特化 = 人口产量 ×1.25")
 	# ★ 把两块地都归零，再各跑一秒 —— 这样算的是「一秒钟涨了多少」，与 tick 期间
 	#   已经涨过的量无关（tick 里本来也会按秒推进人口）。
 	z2["population"] = 0.0
 	z3["population"] = 0.0
 	w2.zones.update_population(1.0, w2.my_faction, w2.tech_population_mult())
-	near(float(z2["population"]), 2.0 * float(z2["tile_count"]) * 1.1, 1e-3,
-		"★ 本区块人口涨快 10%")
+	near(float(z2["population"]), 2.0 * float(z2["tile_count"]) * 1.25, 1e-3,
+		"★ 本区块人口涨快 25%")
 	near(float(z3["population"]), 2.0 * float(z3["tile_count"]), 1e-3,
 		"★ 别的区块不受影响")
 
 	# 特化跟着地块走：区划易主后特化**保留**
 	mine["owner"] = "p2"
-	near(UpgradeRes.zone_spec_mult(mine, cfg)["food"], 1.1, 1e-6,
+	near(UpgradeRes.zone_spec_effect(mine, cfg)["food_per_tile"], 0.5, 1e-6,
 		"★ 区划易主后特化保留（谁占谁吃加成）")
 	mine["owner"] = f
 
@@ -391,20 +488,23 @@ func _test_spec_stacks_with_tech(cfg) -> void:
 	near(base, 1.0 * tiles_n, 1e-3, "（前提）只有本区块的产能")
 	w.start_zone_specialize(int(mine["id"]), "food")
 	w.tick(BIG_STEP)
-	near(w.production_food, base * 1.1, 1e-3, "★ 只有特化时：本区块产能 ×1.1")
-	# 科技：每地块加产量（乘的是**占领地块数**，不是产能）
+	near(w.production_food, base + 0.5 * tiles_n, 1e-3,
+		"★ 只有特化时：本区块每地块 +0.5 粮食")
+	# 科技：每地块加产量（乘的是**占领地块数**，不是产能）—— 与特化是**同一口径**的加法
 	ok(w.set_tech_active("food_1", true), "再启用科技「粮食 +1/地块/秒」")
 	var tiles: int = int(w.owned_tiles)
-	near(w.production_food, base * 1.1 + 1.0 * float(tiles), 1e-3,
-		"★ 特化（乘在区划产能上）与科技（每地块加产量）叠加")
+	near(w.production_food, base + 0.5 * tiles_n + 1.0 * float(tiles), 1e-3,
+		"★ 特化（每地块 +0.5）与科技（每地块 +1）相加，都乘在占领地块数上")
 
 
 # ------------------------------------------------------------------
 # 八、取消特化：也要读条，读完去掉特化并退款
 # ------------------------------------------------------------------
 func _test_cancel_spec(cfg) -> void:
-	# ★★ 这一段**不做产能对账**（只验特化 / 取消 / 退款这条链），所以把产能清零 ——
-	#    读条动辄 60 秒，有产能的话粮食一路在涨，「退回多少」根本算不准。
+	# ★★ 这一段**不做粮食对账**（只验特化 / 取消 / 退款这条链），所以把产能清零，
+	#    并且**对黄金对账**：本轮粮食特化本身会给区划加 0.5 粮食／地块／秒
+	#    （旧的「×1.1 倍率」乘在 0 产能上还是 0，所以从前不需要这条讲究）。
+	#    黄金那边没有任何加成，读条跑 60 秒也一动不动，「扣了多少 / 退了多少」才算得准。
 	var w = _quiet(cfg)
 	_no_income(w)
 	w.resources["food"] = 1000.0
@@ -412,10 +512,10 @@ func _test_cancel_spec(cfg) -> void:
 	var mine = _own_zone(w)
 	var f: String = String(w.my_faction)
 	var cost: Dictionary = cfg.spec_cost("food")
-	var food0: float = float(w.resources["food"])
+	var gold0: float = float(w.resources["gold"])
 	ok(w.start_zone_specialize(int(mine["id"]), "food"), "（前提）粮食特化入队")
-	near(float(w.resources["food"]), food0 - float(cost.get("food", 0.0)), 1e-6,
-		"★ 入队即扣 50 粮食")
+	near(float(w.resources["gold"]), gold0 - float(cost.get("gold", 0.0)), 1e-6,
+		"★ 入队即扣 50 黄金")
 	w.tick(BIG_STEP)
 	eq(String(mine.get("spec_done", "")), "food", "先做一次粮食特化")
 
@@ -426,12 +526,12 @@ func _test_cancel_spec(cfg) -> void:
 	ok(UpgradeRes.zone_spec_is_cancel(mine), "这一条读条标成「取消特化」")
 	eq(String(mine.get("spec_done", "")), "food",
 		"★ 读条期间特化**仍然生效**（读完才去掉）")
-	near(UpgradeRes.zone_spec_mult(mine, cfg)["food"], 1.1, 1e-6, "加成还在")
+	near(UpgradeRes.zone_spec_effect(mine, cfg)["food_per_tile"], 0.5, 1e-6, "加成还在")
 	w.tick(BIG_STEP)
 	ok(not UpgradeRes.zone_is_busy(mine), "读条结束")
 	eq(String(mine.get("spec_done", "")), "", "★ 特化被去掉")
-	near(UpgradeRes.zone_spec_mult(mine, cfg)["food"], 1.0, 1e-6, "加成没了")
-	near(float(w.resources["food"]), food0, 1e-6, "★ 读完退回当初特化花掉的粮食")
+	near(UpgradeRes.zone_spec_effect(mine, cfg)["food_per_tile"], 0.0, 1e-6, "加成没了")
+	near(float(w.resources["gold"]), gold0, 1e-6, "★ 读完退回当初特化花掉的黄金")
 
 	# 没特化过 → 没什么可取消
 	eq(UpgradeRes.can_cancel_spec(mine, f), "idle", "没特化过时不能取消特化")

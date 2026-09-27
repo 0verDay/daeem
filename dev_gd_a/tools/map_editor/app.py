@@ -59,6 +59,8 @@ from .model import (
     load_config,
     parse_color,
     to_hex,
+    zone_kind_default,
+    zone_kind_table,
 )
 
 #: 编辑器自己的界面配色（与游戏里的画面无关）
@@ -151,10 +153,16 @@ class EditorApp:
         self.project_dir = Path(project_dir)
         self.cfg = load_config(self.project_dir)
         self.color_cfg = config_colors(self.cfg)
+        # ★★ 区划种类表（粮食 / 黄金 / 人口，见 config.json 的 zone_kind 段）。
+        #   界面上的「区划种类」那一栏、以及导入新地图时建的模型都读它 ——
+        #   **编辑器不许自己再写一份种类表**（数值只有一个来源）。
+        self.zone_kinds = zone_kind_table(self.cfg)
+        self.zone_kind_default = zone_kind_default(self.cfg, self.zone_kinds)
 
         # 初始画布：一张 0×0 的网格 —— 界面上的虚线格是**无限**的（不占内存），
         # 点哪一格就长到哪一格（见 model.MapModel 的 ensure_tile / _grow_to_include）。
-        self.model: MapModel = model if model is not None else MapModel(0, 0)
+        self.model: MapModel = model if model is not None else MapModel(
+            0, 0, self.zone_kinds, self.zone_kind_default)
         self.current_path: Optional[Path] = Path(current_path) if current_path else None
         self.dirty = False
         self._undo: List[dict] = []
@@ -365,9 +373,34 @@ class EditorApp:
 
         self.zone_page_var = tk.StringVar(value="区块页：先选一个区块")
 
-        self.sidebar = tk.Frame(body, bg=UI["panel"], width=320)
-        self.sidebar.pack(side="right", fill="y")
-        self.sidebar.pack_propagate(False)
+        # ---- 侧边栏（**可滚动**）
+        #
+        # ★ 为什么必须能滚（实测，不是猜的）：区块页那一串——区块列表 / 选中的区块 /
+        #   区划中心 / **区划种类** / 产能 / 人口上限 / 图例（14 行）/ 整张地图——
+        #   在 1280×800 下内容高 **1491px**，而侧边栏只有 **754px**：
+        #   不可滚的话「人口上限」与「图例」整块够不着。
+        #   （加「区划种类」那一栏之前就已经溢出，只是溢出得少一点。）
+        # ★ 滚轮路由见 `on_any_wheel()`：指针在侧边栏里 → 滚侧边栏；在画布上 → 照旧缩放。
+        side_wrap = tk.Frame(body, bg=UI["panel"], width=336)
+        side_wrap.pack(side="right", fill="y")
+        side_wrap.pack_propagate(False)
+        self.sidebar_scroll = ttk.Scrollbar(side_wrap, orient="vertical")
+        self.sidebar_canvas = tk.Canvas(side_wrap, bg=UI["panel"], width=320,
+                                        highlightthickness=0, bd=0, takefocus=0,
+                                        yscrollcommand=self.sidebar_scroll.set)
+        self.sidebar_scroll.configure(command=self.sidebar_canvas.yview)
+        self.sidebar_scroll.pack(side="right", fill="y")
+        self.sidebar_canvas.pack(side="left", fill="both", expand=True)
+        self.sidebar = tk.Frame(self.sidebar_canvas, bg=UI["panel"], width=320)
+        self._sidebar_item = self.sidebar_canvas.create_window(
+            (0, 0), window=self.sidebar, anchor="nw", width=320)
+        self.sidebar.bind("<Configure>", self.on_sidebar_content_configure)
+        self.sidebar_canvas.bind("<Configure>", self.on_sidebar_canvas_configure)
+        # ★ 滚轮绑在 **root** 上（不是只绑侧边栏那个容器）：tk 的事件沿 bindtags
+        #   往上走（widget → class → **toplevel** → all），绑在 root 上才收得到
+        #   「指针停在某个 Label / Entry 上」时发出的滚轮事件 —— 只绑容器会漏掉它们
+        #   （与 Shift 那条「只绑 canvas 会静默失效」是同一类坑）。
+        self.root.bind("<MouseWheel>", self.on_any_wheel, add="+")
         self._build_sidebar()
 
         self.canvas.bind("<Configure>", self.on_canvas_configure)
@@ -397,6 +430,49 @@ class EditorApp:
     # 侧边栏
     # ------------------------------------------------------------------
 
+    def on_sidebar_content_configure(self, event=None) -> None:
+        """侧边栏内容尺寸变了 → 更新滚动范围（内容比窗口高时才滚得动）。"""
+        try:
+            self.sidebar_canvas.configure(scrollregion=self.sidebar_canvas.bbox("all"))
+        except tk.TclError:
+            pass
+
+    def on_sidebar_canvas_configure(self, event) -> None:
+        """滚动容器本身变了 → 让内容宽度跟着容器走（不然换窗口大小时会露白边）。"""
+        try:
+            self.sidebar_canvas.itemconfigure(self._sidebar_item, width=event.width)
+        except tk.TclError:
+            pass
+
+    def _widget_in_sidebar(self, widget) -> bool:
+        """这个控件在不在侧边栏那一棵子树里（滚轮路由用）。"""
+        node = widget
+        while node is not None:
+            if node is self.sidebar:
+                return True
+            node = getattr(node, "master", None)
+        return False
+
+    def on_any_wheel(self, event):
+        """滚轮：指针在侧边栏里 → 滚侧边栏；否则**什么都不做**（画布自己那份绑定负责缩放）。
+
+        ★ 为什么是「root 上一份 + 画布上一份」而不是只绑一个：
+          tk 的事件沿 bindtags 走（widget → class → toplevel → all），
+          绑在 root 上收得到侧边栏里**任意子控件**（Label / Entry / 单选钮）上的滚轮；
+          而画布那份（`canvas.bind`）在侧边栏上根本不会响。
+          两处都不做的事：在画布上滚时**不要**再滚侧边栏（这里 `return None` 放行）。
+        """
+        if not self._widget_in_sidebar(getattr(event, "widget", None)):
+            return None
+        delta = getattr(event, "delta", 0)
+        if delta == 0:
+            return None
+        try:
+            self.sidebar_canvas.yview_scroll(-1 if delta > 0 else 1, "units")
+        except tk.TclError:
+            return None
+        return "break"
+
     def _build_sidebar(self) -> None:
         self._tile_widgets = {}
         #: 这条侧边栏是**照着哪一页**建的：`set_page` 靠它跳过「点同一个页签」的白重建。
@@ -412,6 +488,14 @@ class EditorApp:
             self._build_zone_sidebar()
         self._build_map_section()
         self._sidebar_page = self.page
+        # ★ 重建之后内容高度多半变了 → 顺手把滚动范围算对；换页签时回到顶部
+        #   （不回到顶部的话，从很长的区块页切到地块页会停在中间的空白处）。
+        try:
+            self.sidebar.update_idletasks()
+            self.sidebar_canvas.yview_moveto(0.0)
+        except tk.TclError:
+            pass
+        self.on_sidebar_content_configure()
 
     def _section(self, parent, title: str) -> tk.Frame:
         tk.Label(parent, text=title, bg=UI["panel"], fg=UI["accent"], anchor="w",
@@ -1095,6 +1179,42 @@ class EditorApp:
                  bg=UI["panel"], fg=UI["text_dim"], anchor="w", justify="left",
                  wraplength=290).pack(fill="x", pady=(4, 0))
 
+        # ---- 区划种类（本轮新增：粮食 / 黄金 / 人口三种）
+        #
+        # ★ 需求原话：「设计师可以在区划页签的详情页中选择该区划的种类，但是保留下方的
+        #   数字输入框，当设计师为区划选择区划种类时，下方的数字输入框需要同步变化到
+        #   上方的数值，但设计师也可以直接编辑下方的数字输入框中的资源产量，最终游戏中的
+        #   区划产量以下方数字输入框中的产量为准」。
+        #   —— 所以这里是**单选框 + 说明**：点一下 = 换种类 + 把下面的数字同步成预设值；
+        #      下面的数字输入框照旧能改，导出时以数字为准（种类只写进 kind 字段）。
+        ksec = self._section(self.sidebar, "区划种类")
+        tk.Label(ksec, text="点一下会把下面的产能数字同步成该种类的预设值；\n"
+                            "之后可以接着手改数字 —— 游戏以数字为准。",
+                 bg=UI["panel"], fg=UI["text_dim"], anchor="w", justify="left",
+                 wraplength=290).pack(fill="x", pady=(0, 4))
+        self.zone_kind_var = tk.StringVar(value="")
+        self._zone_kind_buttons: Dict[str, tk.Radiobutton] = {}
+        for kind_id, kind_entry in self.zone_kinds.items():
+            # ⚠️ 单选按钮也走「点完把焦点交还画布」那条规矩（见 `_button()` 的说明）：
+            #    不然空格键会去「按」它，用户按住空格拖画面时种类会被反复重选。
+            def on_pick(cmd=self.apply_zone_kind) -> None:
+                self._focus_canvas()
+                cmd()
+
+            btn = tk.Radiobutton(
+                ksec, text="%s（%s）" % (kind_entry.get("name", kind_id),
+                                         kind_entry.get("line", "")),
+                variable=self.zone_kind_var, value=kind_id, command=on_pick,
+                bg=UI["panel"], fg=UI["text"], selectcolor=UI["panel_alt"],
+                activebackground=UI["panel"], activeforeground=UI["text"],
+                anchor="w", justify="left", takefocus=0, bd=0,
+                highlightthickness=0, wraplength=270)
+            btn.pack(fill="x")
+            self._zone_kind_buttons[kind_id] = btn
+        self.zone_kind_hint = tk.Label(ksec, text="", bg=UI["panel"], fg=UI["text_dim"],
+                                       anchor="w", justify="left", wraplength=290)
+        self.zone_kind_hint.pack(fill="x", pady=(2, 0))
+
         # ---- 产能（每地块每秒；单位就是「n 资源 / 地块 / 秒」）
         psec = self._section(self.sidebar, "产能")
         tk.Label(psec, text="该区划每地块每秒的产出（0 = 没有产出）：", bg=UI["panel"],
@@ -1214,6 +1334,9 @@ class EditorApp:
         # ---- 区划中心那一栏（按钮的文字与可用性跟着「选中的区划 + 面板正在看的格子」变）
         self._refresh_zone_center_row(zone)
 
+        # ---- 区划种类（在产能上面：选了它下面的数字就跟着变）
+        self._refresh_zone_kind_row(zone)
+
         # ---- 产能
         self._refresh_zone_production_row(zone)
 
@@ -1266,8 +1389,50 @@ class EditorApp:
             self.zone_center_btn.configure(state="disabled", text="把中心设在这一格",
                                            fg=UI["text_dim"])
 
+    def _refresh_zone_kind_row(self, zone) -> None:
+        """刷新「区划种类」那一栏：选中哪个单选钮 + 一句「数字是不是预设值」的提示。
+
+        ★ 两个刻意的设计：
+          · `var.set()` **不会**触发 `command`（tk 只在用户点击时回调），所以刷新
+            不会绕回来再改一次模型 —— 否则「换选中项」就会把数字同步成预设值；
+          · 提示那一句是为了让「我改了数字，种类还是原来的」这件事在界面上说得清
+            （需求：游戏以数字为准）。数字改回预设值它就自己消失。
+        """
+        var = getattr(self, "zone_kind_var", None)
+        if var is None:
+            return
+        buttons = getattr(self, "_zone_kind_buttons", {})
+        hint = getattr(self, "zone_kind_hint", None)
+        if zone is None:
+            var.set("")
+            for btn in buttons.values():
+                btn.configure(state="disabled", fg=UI["text_dim"])
+            if hint is not None:
+                hint.configure(text="")
+            return
+        kind = self.model.zone_kind(zone.zone_id)
+        var.set(kind)
+        for kid, btn in buttons.items():
+            btn.configure(state="normal",
+                          fg=UI["text"] if kid == kind else UI["text_dim"])
+        if hint is None:
+            return
+        if self.model.zone_kind_is_preset(zone.zone_id):
+            hint.configure(text="", fg=UI["text_dim"])
+            return
+        preset = self.model.zone_kind_production(kind)
+        hint.configure(text="★ 数字已经手改过（预设：粮食 %g / 黄金 %g / 人口 %g）——"
+                            "游戏以数字为准"
+                            % (preset["food"], preset["gold"], preset["population"]),
+                       fg=UI["center"])
+
     def _refresh_zone_production_row(self, zone) -> None:
-        """把选中区划的产能填进三个输入框（没选中 → 全禁用）。"""
+        """把选中区划的产能填进三个输入框（没选中 → 全禁用）。
+
+        ⚠️ 显示的是**模型里的数字**（不是种类预设）——「设计师手改过的数字」必须一眼看见，
+        因为需求写死了「最终游戏中的区划产量以下方数字输入框中的产量为准」。
+        与预设不一致时会由 `_refresh_zone_kind_row()` 在种类那一栏补一句提示。
+        """
         for key in PRODUCTION_KEYS:
             var = getattr(self, "_zone_prod_vars", {}).get(key)
             entry = getattr(self, "_zone_prod_entries", {}).get(key)
@@ -2501,6 +2666,44 @@ class EditorApp:
         self.refresh_zone_panel()
         self.redraw()
 
+    def apply_zone_kind(self) -> None:
+        """把选中的区划换成单选钮上那个种类，**并把下面的产能数字同步成预设值**。
+
+        ★ 需求原文：「当设计师为区划选择区划种类时，下方的数字输入框需要同步变化到
+        上方的数值，但设计师也可以直接编辑下方的数字输入框中的资源产量，最终游戏中的
+        区划产量以下方数字输入框中的产量为准」。
+        所以这里只做「换种类 + 写预设数字」；数字之后可以在下面的输入框里随便改
+        （那一步走 `apply_zone_production`，本函数**不会**再把它们改回来）。
+
+        ★ 与别处同一套撤销规矩：快照取在**改动之前**，改了才压栈
+        （点已经选中的那个种类 = 没变化 = 不留一步空撤销）。
+        """
+        zone = self.model.zone(self.selected_zone) if self.selected_zone is not None else None
+        if zone is None:
+            return
+        kind = str(self.zone_kind_var.get())
+        if kind not in self.zone_kinds:
+            self._refresh_zone_kind_row(zone)
+            return
+        if kind == self.model.zone_kind(zone.zone_id):
+            # 点的是已经选中的那一个：只把界面刷回权威值（顺手把可能被手改脏的单选框纠正）
+            self._refresh_zone_kind_row(zone)
+            return
+        self.prepare_undo()
+        if self.model.set_zone_kind(zone.zone_id, kind):
+            self.commit_undo()
+            self.mark_dirty()
+            preset = self.model.zone_kind_production(kind)
+            self.status("「%s」改成%s，产能同步为 粮食 %g / 黄金 %g / 人口 %g（每地块每秒）"
+                        % (zone.name, self.model.zone_kind_name(kind),
+                           preset["food"], preset["gold"], preset["population"]))
+        else:
+            self.drop_undo()
+        # 种类与产能两栏都要刷（数字被同步过了）
+        self._refresh_zone_kind_row(zone)
+        self._refresh_zone_production_row(zone)
+        self.redraw()
+
     def apply_zone_production(self, key: str) -> None:
         """把输入框里的产能写回模型（Enter 或失焦触发）。
 
@@ -2537,6 +2740,9 @@ class EditorApp:
             self.drop_undo()
         # 无论成败都把输入框刷成「模型里现在是什么」（夹过范围 / 非法输入都能看出来）
         self._refresh_zone_production_row(zone)
+        # ★ 种类那一栏也要刷：手改数字之后要出现「数字已手改，游戏以数字为准」那句提示
+        #   （改回预设值它自己消失 —— 判据在 `zone_kind_is_preset`，界面不自己比数）。
+        self._refresh_zone_kind_row(zone)
 
     def apply_zone_population_cap(self) -> None:
         """把输入框里的人口上限写回模型（Enter 或失焦触发）。
@@ -2634,7 +2840,7 @@ class EditorApp:
         """
         if not self._confirm_discard():
             return
-        self.model = mapfile.empty_map(0, 0, None)
+        self.model = mapfile.empty_map(0, 0, None, self.cfg)
         self.current_path = None
         self.inspect = None
         self.selected_zone = None
@@ -2733,11 +2939,11 @@ class EditorApp:
             "rows": m.rows,
             "existing": list(m.existing),
             "terrain": list(m.terrain),
-            # 区块也要把「区划中心 + 产能 + 人口上限」一起存：否则「设了中心 / 改了产能 /
-            # 改了人口上限 → Ctrl+Z」只会退掉地块，那几项留在原地
-            # （与「设了大本营按 Ctrl+Z」同一类漏洞）。
+            # 区块也要把「区划中心 + 产能 + 人口上限 + **区划种类**」一起存：否则
+            # 「设了中心 / 改了产能 / 改了人口上限 / 换了种类 → Ctrl+Z」只会退掉地块，
+            # 那几项留在原地（与「设了大本营按 Ctrl+Z」同一类漏洞）。
             "zones": [(z.zone_id, z.name, set(z.tiles), z.center, dict(z.production),
-                       z.population_cap)
+                       z.population_cap, z.kind)
                       for z in m.zones],
             "zone_of": dict(m.zone_of),
             # 阵营表与大本营也要进撤销栈（否则「设了大本营 → Ctrl+Z」会把它们漏掉）
@@ -2751,7 +2957,7 @@ class EditorApp:
         }
 
     def _restore(self, snap: dict) -> None:
-        m = MapModel(snap["cols"], snap["rows"])
+        m = MapModel(snap["cols"], snap["rows"], self.zone_kinds, self.zone_kind_default)
         m.existing = list(snap["existing"])
         m.terrain = list(snap["terrain"])
         m.zone_of = dict(snap["zone_of"])
@@ -2760,14 +2966,17 @@ class EditorApp:
         m.zones = []
         from .model import Faction, Zone
         for entry in snap["zones"]:
-            # ⚠️ 老快照（本次改动之前压进栈的）只有 5 项：缺 population_cap 时按 None 处理，
-            #    免得「撤销一份旧快照」直接抛异常。它只在同一个会话里存在，正常不会遇到。
+            # ⚠️ 老快照（本次改动之前压进栈的）只有 5~6 项：缺 population_cap / kind 时
+            #    按默认处理，免得「撤销一份旧快照」直接抛异常。它只在同一个会话里存在，
+            #    正常不会遇到。
             zid, name, tiles, center, production = entry[:5]
             zone = Zone(zid, name)
             zone.tiles = set(tiles)
             zone.center = center
             zone.production = dict(production)
             zone.population_cap = entry[5] if len(entry) > 5 else None
+            kind = entry[6] if len(entry) > 6 else self.zone_kind_default
+            zone.kind = kind if kind in self.zone_kinds else self.zone_kind_default
             m.zones.append(zone)
         for fid, name, color in snap.get("factions", []):
             m.factions.append(Faction(fid, name, color))

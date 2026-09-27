@@ -68,7 +68,7 @@ func _test_chase_needs_no_arrival_slot(cfg) -> void:
 	ok(a != null and b != null, "有两个己方单位")
 	if a == null or b == null:
 		return
-	# 只留这两个，避免亲兵把它们挤走
+	# 只留这两个，避免附属兵把它们挤走
 	w.units = [a, b]
 	var spot := _free_tile(w, a.tx + 6, a.ty)
 	var want: Vector2 = GridRes.center_of(spot)
@@ -187,7 +187,7 @@ func _test_attack_unit(cfg) -> void:
 	ok(g != null and e != null, "有将领 1 和一个敌人")
 	if g == null or e == null:
 		return
-	w.units = [g, e]                     # 隔离：只留这两个，别让亲兵/守军搅乱
+	w.units = [g, e]                     # 隔离：只留这两个，别让附属兵/守军搅乱
 	e.hold_position = true               # 靶子别跑
 	var hp0: float = e.hp
 
@@ -265,6 +265,15 @@ func _test_ordered_building_not_distracted(cfg) -> void:
 		return
 	w.units = [g, decoy]
 	decoy.hold_position = true           # 让它在原地打，别追着跑
+
+	# ★★ 给将领补足血量：这一节验的是**「点名的建筑不会被旁边的敌人顶掉」**这条瞄准规则，
+	#    不是数值平衡。而本轮将领的数值改成「= 它所属兵种那一套」之后
+	#    （长枪兵 160 血 / 20 伤害，原来 200 血 / 26 伤害），单个将领已经打不过
+	#    「箭塔 + 旁边一个敌人」的合击 —— 它会先阵亡，于是箭塔永远拆不掉，
+	#    这条断言就会因为**和它要验的东西无关**的原因假失败。
+	#    （同类做法在本项目里已有先例：test_zone_capture / test_building_body 也这样借血。）
+	g.hp_max = 5000.0
+	g.hp = 5000.0
 
 	ok(CommandRes.apply(w, cfg, {
 		"kind": "attack", "ids": [g.id], "tx": tower.tx, "ty": tower.ty, "faction": "p1"}),

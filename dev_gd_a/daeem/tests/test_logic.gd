@@ -69,10 +69,9 @@ func _test_world_setup(world, cfg) -> void:
 		ok(base_b.hp == base_b.hp_max, "大本营满血开局")
 		eq(base_b.owner, "p1", "大本营属于 player")
 
-	# ★ 开局既有将领也有亲兵，所以断言要按 kind 分别看 ——
+	# ★ 开局既有将领也有附属兵，所以断言要按 kind 分别看 ——
 	#   写「所有单位都该是将领」在加兵种的那一天必然假失败（这一条就是这么发现的）
 	var generals := _units_of_kind(world, UnitRes.KIND_GENERAL)
-	var subs := _units_of_kind(world, UnitRes.KIND_SUBORDINATE)
 	eq(generals.size(), 3, "开局 3 个将领")
 	var hotkeys: Array[String] = []
 	for u in generals:
@@ -80,23 +79,47 @@ func _test_world_setup(world, cfg) -> void:
 		eq(u.faction, "p1", "将领属于 player")
 	ok(hotkeys.has("1") and hotkeys.has("2") and hotkeys.has("3"), "三个将领带 1/2/3 快捷键")
 
-	# 亲兵：每个将领带 count 个，id 以队长 id 开头，leader_id 指向队长
-	var per_leader: int = int(cfg.num("unit.subordinate.count", 0.0))
-	eq(subs.size(), 3 * per_leader, "每个将领带 %d 个亲兵（共 %d 个）" % [per_leader, subs.size()])
-	for s in subs:
-		eq(s.faction, "p1", "亲兵属于 player")
-		eq(s.hp_max, cfg.unit_hp_of(UnitRes.KIND_SUBORDINATE), "亲兵血量走 config.unit.subordinate")
-		ok(s.leader_id != "", "亲兵有队长 id：%s" % s.id)
-		ok(s.id.begins_with(s.leader_id), "亲兵 id 以队长 id 开头：%s ← %s" % [s.id, s.leader_id])
-		ok(world.unit_by_id(s.leader_id) != null, "亲兵的队长真的在场：%s" % s.leader_id)
-		eq(s.hotkey, "", "亲兵没有快捷键（快捷键盘只给将领）")
+	# ★★ 三个将领各是一种**单位类型**（长枪兵 / 长弓兵 / 骑手），顺序 = config.unit.general.types。
+	#    他们的 kind 都是 general，所以「谁是什么兵」只能看 unit_type —— 这一节就是钉它。
+	var want_types: Array = cfg.general_types()
+	eq(want_types.size(), 3, "配置里给了三个将领类型（unit.general.types）")
+	for i in generals.size():
+		var want := String(want_types[i])
+		eq(String(generals[i].unit_type), want,
+			"★ 将领 %d 是 %s" % [i + 1, cfg.unit_name_of(want)])
+		eq(generals[i].hp_max, cfg.unit_hp_of(want),
+			"★ 将领血量 = 所属类型的血量（用户口径：完全按对应兵种数值）")
+		eq(generals[i].combat_damage(cfg), float(cfg.unit_combat_of(want)["damage"]),
+			"将领伤害也走所属类型")
+		eq(generals[i].combat_range(cfg), float(cfg.unit_combat_of(want)["range"]),
+			"将领射程也走所属类型（于是长弓兵将领是远程的）")
+		ok(generals[i].is_general(), "★ is_general() 认得出将领（描边加粗与科技加成共用这条判据）")
 
-	# 所有单位（将领 + 亲兵）都不能站在山上或大本营格上
+	# 附属兵：每个将领带 escort 个**同类型**的兵，id 以队长 id 开头，leader_id 指向队长
+	var per_leader: int = cfg.general_escort_count()
+	var subs: Array = []
+	for u in world.units:
+		if u.leader_id != "":
+			subs.append(u)
+	eq(subs.size(), 3 * per_leader, "每个将领带 %d 个同类型的附属兵（共 %d 个）" % [per_leader, subs.size()])
+	for s in subs:
+		eq(s.faction, "p1", "附属兵属于 player")
+		var leader = world.unit_by_id(s.leader_id)
+		ok(leader != null, "附属兵有队长 id：%s" % s.id)
+		ok(s.id.begins_with(s.leader_id), "附属兵 id 以队长 id 开头：%s ← %s" % [s.id, s.leader_id])
+		eq(s.hotkey, "", "附属兵没有快捷键（快捷键盘只给将领）")
+		if leader != null:
+			eq(String(s.unit_type), String(leader.unit_type), "★ 附属兵与队长是同一个类型")
+		eq(s.kind, String(s.unit_type), "★ 普通单位的 kind 就是它的单位类型")
+		eq(s.hp_max, cfg.unit_hp_of(String(s.unit_type)), "附属兵血量走单位类型表")
+		ok(not s.is_general(), "附属兵不是将领（描边不加粗）")
+
+	# 所有单位（将领 + 附属兵）都不能站在山上或大本营格上
 	for u in world.units:
 		ok(world.map.terrain_walkable(u.tx, u.ty), "开局单位站在可通行格：%s" % u.id)
 		ok(not (u.tx == base_b.tx and u.ty == base_b.ty), "开局单位与大本营不同格：%s" % u.id)
 
-	# 亲兵挨着队长站（1~2 格内）
+	# 附属兵挨着队长站（1~2 格内）
 	if per_leader > 0:
 		var g1 = world.unit_by_id("general-1")
 		ok(g1 != null, "有 general-1")
@@ -105,7 +128,7 @@ func _test_world_setup(world, cfg) -> void:
 			for s in world.retinue_of(g1.id):
 				if maxi(absi(s.tx - g1.tx), absi(s.ty - g1.ty)) <= 2:
 					near += 1
-			eq(near, world.retinue_of(g1.id).size(), "★ 亲兵都出生在将领旁边（2 格内）")
+			eq(near, world.retinue_of(g1.id).size(), "★ 附属兵都出生在将领旁边（2 格内）")
 
 	# 区块划分来自**地图文件**（地图编辑器导出的 zones 网格），不再按 6×4 均分。
 	# ⚠️ 断言别再写死 24 块 / 16 格 —— 那是老地图（24×16 均分）的数；换图时会整体假失败。
@@ -302,7 +325,7 @@ func _test_pathfinding(world, cfg) -> void:
 # ------------------------------------------------------------------
 func _test_movement(world, cfg) -> void:
 	var u = world.units[0]
-	# 只留这一个单位：移动与路径断言不该被亲兵的推挤/交战干扰
+	# 只留这一个单位：移动与路径断言不该被附属兵的推挤/交战干扰
 	_isolate(world, [u])
 	# 放到一片开阔地
 	var start = _find_free_tile(world, cfg, Vector2i(2, 12))
@@ -512,8 +535,8 @@ func _test_combat(world, cfg) -> void:
 	eq(e.faction, "enemy", "测试敌人阵营")
 	eq(e.hp, cfg.enemy_hp, "测试敌人血量来自 config.debug.enemy_hp")
 
-	# ★ 把亲兵和其他将领挪走：否则「谁掉了多少血」「打了几下」全都会被打乱
-	#   （亲兵也会一起开火，敌人几帧就被打死，冷却断言反而永远不成立）
+	# ★ 把附属兵和其他将领挪走：否则「谁掉了多少血」「打了几下」全都会被打乱
+	#   （附属兵也会一起开火，敌人几帧就被打死，冷却断言反而永远不成立）
 	_isolate(w2, [g, e])
 
 	# 距离 6 格 > 警戒 4 格：静止不索敌
@@ -620,7 +643,7 @@ func _test_wall_and_enemy_ai(world, cfg) -> void:
 		"拆墙用例：敌人确实在围墙外面（%d,%d）" % [e.tx, e.ty])
 	eq(e.hp, cfg.enemy_hp, "敌人血量 60")
 
-	# ★ 把将领与亲兵全部撤走：这里只验「拆墙」这一条链路本身。
+	# ★ 把将领与附属兵全部撤走：这里只验「拆墙」这一条链路本身。
 	#   留着防守单位的话敌人会先跟它们打起来 —— 那是**正确**的防守行为，
 	#   但会把「墙掉血」这个断言变得又慢又随机（第一版就是被这个绕进去的：
 	#   敌人一路被将领咬到 12,6 就死了，一次墙都没砸到）。
@@ -711,10 +734,10 @@ func _test_tower(world, cfg) -> void:
 		return
 	ok(e.tx == free_e.x and e.ty == free_e.y, "箭塔用例：敌人就站在射程内的靶位上")
 
-	# ⚠️ 把**所有**友方单位（将领 + 亲兵）挪走：它们在警戒半径内会去打这个敌人，
+	# ⚠️ 把**所有**友方单位（将领 + 附属兵）挪走：它们在警戒半径内会去打这个敌人，
 	#    那样「敌人掉了多少血」就分不清是箭塔打的还是友军打的。
 	#    （第一次写这个用例时就是这么被骗过去的 —— 敌人 30 帧掉了 26 点血，那是将领的伤害；
-	#      加了亲兵之后更是几帧就打死了，于是这条断言又假失败一次）
+	#      加了附属兵之后更是几帧就打死了，于是这条断言又假失败一次）
 	_isolate(w, [e])
 
 	var hp0: float = e.hp
@@ -738,7 +761,7 @@ func _test_tower(world, cfg) -> void:
 	ok(tower2 != null, "不误伤用例：箭塔建好了")
 	if tower2 != null:
 		var gu2 = wt.units[0]
-		_isolate(wt, [gu2])          # 同样只留这一个，别让亲兵跑过来当靶子
+		_isolate(wt, [gu2])          # 同样只留这一个，别让附属兵跑过来当靶子
 		gu2.pos = GridRes.center_of(Vector2i(tower2.tx, tower2.ty - 1))
 		gu2.sync_tile(wt.map)
 		gu2.stop()
@@ -762,7 +785,7 @@ func _test_tower(world, cfg) -> void:
 func _test_zones_and_economy(world, cfg) -> void:
 	var w = WorldRes.create(cfg)
 	var u = w.units[0]
-	# 只留这一个：亲兵也会占区块进度，混在一起就分不清是「将领站在那里」还是「亲兵站在那里」
+	# 只留这一个：附属兵也会占区块进度，混在一起就分不清是「将领站在那里」还是「附属兵站在那里」
 	_isolate(w, [u])
 	# 找一个无主区块，把将领放进去（避开大本营所在的那个区块）
 	var z = null
@@ -822,10 +845,33 @@ func _test_zones_and_economy(world, cfg) -> void:
 	ok(tiles >= int(z["tile_count"]), "己方地块数包含新占的区块")
 	eq(w.owned_tiles, tiles, "world.owned_tiles 与区块统计一致")
 
+	# ★★ 产出口径（本轮）：不再等于「己方地块数 × 全局值」，而是**各区划产能之和**
+	#    （见 zone.production_of；发布地图现在全是人口区划，粮食产能是 0）。
+	#    所以这里钉两件事：① 每帧入账 = world.production_food 那个权威值；
+	#    ② 给刚占下来的这块地配上粮食产能，产出当场跟着涨 —— 这才是「抢区块 = 抢产能」。
 	var food0: float = float(w.resources["food"])
 	w.tick(1.0)
 	var gain: float = float(w.resources["food"]) - food0
-	near(gain, float(tiles), 1e-3, "每秒粮食产出 = 己方地块数")
+	near(gain, w.production_food, 1e-3, "每秒粮食产出 = 己方各区划产能之和")
+	var zone_now: Dictionary = w.zones.zones[zid]
+	# ★★ 先把这块地的粮食产能**归零**，再配上 0.4 —— 这样「+0.4/地块」的算式才与地图无关。
+	#
+	# 为什么必须归零（实测踩过）：这个用例抓的是「**第一个无主区块**」，而发布地图里
+	# 那个区块现在是 **a2 = 粮食区划（1 粮食/格/秒，设计师在编辑器里定的）**。
+	# 于是占领之后 p1 的粮食产出已经是 1.0 × 25 = 25，直接把数字改成 0.4 得到的是
+	# (0.4 − 1.0) × 25 = **−15**，而断言期望 +10 —— 逻辑没错，是用例的算式前提过期了。
+	# 归零之后再配 0.4，验的就正好是「抢到一块地、给它配产能 ⇒ 产出按 0.4 × 地块数 涨」。
+	(zone_now["production"] as Dictionary)["food"] = 0.0
+	w.refresh_zone_production()
+	var rate0: float = w.production_food
+	(zone_now["production"] as Dictionary)["food"] = 0.4
+	w.refresh_zone_production()
+	near(w.production_food - rate0, 0.4 * float(zone_now["tile_count"]), 1e-6,
+		"★ 给占下来的区划配 0.4 粮食／地块／秒 → 每秒产出多出 0.4 × 地块数")
+	var food1: float = float(w.resources["food"])
+	w.tick(1.0)
+	near(float(w.resources["food"]) - food1, w.production_food, 1e-3,
+		"配上产能之后每帧入账仍然 = 区划产能之和")
 
 	# 每阵营独立进度（不再互相抵消）——联机能力的地基，单机也要成立
 	var z2: Dictionary = w.zones.zones[zid]
@@ -934,7 +980,7 @@ func _test_zone_population_and_production(world, cfg) -> void:
 	# ---- 人口：开局 0，按人口产能累积
 	eq(float(z0["population"]), 0.0, "★ 区划人口开局是 0")
 	# ★ 随游戏发布的地图必须给非 0 的人口产能 —— 否则实机里人口根本不涨
-	#   （`test_map.json` 里每个区划都是 1 粮食 / 1 黄金 / 0.5 人口）。
+	#   （`test_map.json` 里每个区划都是人口区划：0 粮食 / 0 黄金 / 0.15 人口）。
 	ok(float(z0["production"]["population"]) > 0.0,
 		"★ 发布地图的区划配了人口产能（%s）" % z0["production"]["population"])
 	# ★★ 发布地图**没填人口上限** → 默认 1（用户需求：没填就是 1）。
@@ -1095,11 +1141,11 @@ func _test_snapshot(world, cfg) -> void:
 	w.tick(DT)
 	var snap = SnapshotRes.to_snapshot(w)
 
-	# 开局单位数 = 将领数 + 将领数×亲兵数 + 1 个敌人 + 地图预置的守军
-	var per_leader: int = int(cfg.num("unit.subordinate.count", 0.0))
+	# 开局单位数 = 将领数 + 将领数×附属兵数 + 1 个敌人 + 地图预置的守军
+	var per_leader: int = cfg.general_escort_count()
 	var expect_units: int = 3 + 3 * per_leader + 1 + w.map.prefab_units.size()
 	eq((snap["units"] as Array).size(), expect_units,
-		"快照里有 %d 个单位（3 将领 + %d 亲兵 + 1 敌人 + %d 地图守军）" % [
+		"快照里有 %d 个单位（3 将领 + %d 附属兵 + 1 敌人 + %d 地图守军）" % [
 			expect_units, 3 * per_leader, w.map.prefab_units.size()])
 	ok((snap["buildings"] as Array).size() >= 1, "快照里有建筑")
 	# 区块数随地图走（别写死 24：地图一换就假失败）
@@ -1110,16 +1156,32 @@ func _test_snapshot(world, cfg) -> void:
 	ok(not (snap["units"] as Array)[0].has("path"), "★ 快照不发路径（只发结果）")
 	ok((snap["units"] as Array)[0].has("x") and (snap["units"] as Array)[0].has("fa"), "快照带位置与朝向")
 
-	# 每个单位都要带队长字段（客机靠它做「选中将领=选中整队」）
+	# 每个附属兵都要带队长字段（客机靠它做「选中将领=选中整队」）
+	# ★ 同时钉住单位类型（ut）也在快照里：三个将领的 kind 都是 general，
+	#   只有 ut 分得清谁是长枪兵、谁是长弓兵、谁是骑手（客机才能画对图标、查对数值）。
+	var by_id: Dictionary = {}
+	for su in (snap["units"] as Array):
+		by_id[String(su.get("i", ""))] = su
 	var sub_in_snap := 0
 	var ld_ok := true
+	var ut_ok := true
+	var snap_general_types: Array = []
 	for su in (snap["units"] as Array):
-		if String(su.get("k", "")) == UnitRes.KIND_SUBORDINATE:
+		if String(su.get("ut", "")) == "":
+			ut_ok = false
+		# ⚠️ 没有队长的单位发的是 "ld": null，不能直接 String(null)（运行时报错、整段断言被中断）
+		var ld_v: Variant = su.get("ld", null)
+		var ld := String(ld_v) if ld_v != null else ""
+		if ld != "":
 			sub_in_snap += 1
-			if su.get("ld", null) == null:
-				ld_ok = false
-	eq(sub_in_snap, 3 * per_leader, "快照里有 %d 个亲兵" % (3 * per_leader))
-	ok(ld_ok, "★ 快照里的亲兵都带队长 id（客机才做得出整队选中）")
+			if not by_id.has(ld):
+				ld_ok = false          # 队长不在快照里 → 客机展开不了整队
+		elif String(su.get("k", "")) == UnitRes.KIND_GENERAL:
+			snap_general_types.append(String(su.get("ut", "")))
+	eq(sub_in_snap, 3 * per_leader, "快照里有 %d 个附属兵" % (3 * per_leader))
+	ok(ld_ok, "★ 快照里的附属兵都指向一个**在场的**队长 id（客机才做得出整队选中）")
+	ok(ut_ok, "★ 快照里每个单位都带单位类型（ut）")
+	eq(snap_general_types, cfg.general_types(), "★ 三个将领的 ut 就是配置里那三个类型")
 
 	# 应用到一个全新的世界：单位 / 建筑 / 资源都应当对齐
 	var w2 = WorldRes.create(cfg)
@@ -1136,13 +1198,19 @@ func _test_snapshot(world, cfg) -> void:
 		eq(int(dst.hp), int(src.hp), "单位血量对齐")
 		v2i_eq(Vector2i(dst.tx, dst.ty), Vector2i(src.tx, src.ty), "★ tx/ty 也跟着写了（否则点选/射程判定会错）")
 
-	# 新建的远端亲兵也要认得队长（否则客机上「选中将领」选不到它）
+	# 新建的远端附属兵也要认得队长（否则客机上「选中将领」选不到它）
 	if per_leader > 0:
 		var leader = w2.unit_by_id("general-1")
 		ok(leader != null, "客机侧有 general-1")
 		if leader != null:
 			var got: Array = w2.group_of(leader)
-			eq(got.size(), 1 + per_leader, "★ 客机侧队伍展开得到「队长 + %d 亲兵」" % per_leader)
+			eq(got.size(), 1 + per_leader, "★ 客机侧队伍展开得到「队长 + %d 附属兵」" % per_leader)
+		# ★ 客机侧的单位类型也要重建对（否则图标与数值全错 —— 三个将领 kind 都是 general）
+		for i in mini(3, cfg.general_types().size()):
+			var remote = w2.unit_by_id("general-%d" % (i + 1))
+			if remote != null:
+				eq(String(remote.unit_type), String(cfg.general_types()[i]),
+					"★ 客机侧将领 %d 的类型也重建对了" % (i + 1))
 
 	# 快照里没有的单位 = 已阵亡 → 被删掉
 	var small = {"units": [], "buildings": [], "zones": []}
@@ -1165,13 +1233,13 @@ func _test_snapshot(world, cfg) -> void:
 
 ## ★ 把世界里除了 keep 之外的**其他单位全部移出世界**。
 ##
-## 为什么需要：自从「将领带亲兵」之后，一个世界里默认有 12 个单位（3 将领 + 9 亲兵）。
+## 为什么需要：自从「将领带附属兵」之后，一个世界里默认有 12 个单位（3 将领 + 9 附属兵）。
 ## 凡是断言「谁打了谁」「掉了多少血」「走到了哪」「哪个区块是谁的」的用例，
 ## 都会被旁观者搅乱 —— 这类坑本项目已经踩过三次
-## （将领干扰箭塔测试、将领把测试敌人打死、亲兵占区块进度）。
+## （将领干扰箭塔测试、将领把测试敌人打死、附属兵占区块进度）。
 ##
 ## 做法是**真的从 world.units 里摘掉**，而不是挪到地图角落：
-##   · 挪到角落仍然会占区块进度（`站满 4 秒完成占领` 就是这么假失败的：亲兵在角落把区块占了）；
+##   · 挪到角落仍然会占区块进度（`站满 4 秒完成占领` 就是这么假失败的：附属兵在角落把区块占了）；
 ##   · 挪到角落仍然会被碰撞推挤影响轨迹。
 ##   摘掉则是干净的 —— 被测单位看到的就是一个「只有它自己」的世界。
 ##

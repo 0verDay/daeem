@@ -24,8 +24,16 @@ const FactionRes = preload("res://logic/faction.gd")
 
 const KIND_GENERAL := "general"
 const KIND_ENEMY := "enemy"
-## 亲兵：将领辖下的附属单位（出生在将领旁边，选中将领时一起被选中）
-const KIND_SUBORDINATE := "subordinate"
+## ★★ 单位类型 id（兵种）：长枪兵 / 长弓兵 / 骑手 / 测试敌人。
+## 权威定义在 data/config.json 的 `unit.types`（数值、步兵还是骑兵、远不远都在那里），
+## 这里只是**同一批字符串的常量别名** —— 字面量只写一处（config.gd），
+## 免得「改了 JSON 里的 id、代码里还留着一个旧字面量」这种查不出来的错。
+const UNIT_TYPE_SPEARMAN := ConfigRes.UNIT_TYPE_SPEARMAN
+const UNIT_TYPE_LONGBOWMAN := ConfigRes.UNIT_TYPE_LONGBOWMAN
+const UNIT_TYPE_RIDER := ConfigRes.UNIT_TYPE_RIDER
+## 兵种大类：步兵 / 骑兵
+const CLASS_INFANTRY := ConfigRes.CLASS_INFANTRY
+const CLASS_CAVALRY := ConfigRes.CLASS_CAVALRY
 
 ## 路径推进一步的最大段数（防止病态路径把一帧卡死）。
 ##
@@ -51,6 +59,26 @@ const ARRIVE_EPS := 1e-4
 var id: String = ""
 var name: String = ""
 var kind: String = KIND_GENERAL
+## ★★ 单位类型（兵种）：长枪兵 / 长弓兵 / 骑手 / 测试敌人。
+##
+## 与 `kind` 的分工（这是本轮引入的两个字段，别混起来）：
+##   · `kind`     —— 单位**类别**：general（将领）/ general_N（区划招募的将领）/
+##                   兵种 id（普通单位）/ enemy（测试敌人）。招募表、快照、
+##                   「谁能当队长」都按它判。
+##   · `unit_type`—— 这个单位**是什么兵**。普通单位 = 自己的 kind；
+##                   将领 = unit.general.types 里被赋予的那一个（将领 1 长枪兵、
+##                   将领 2 长弓兵、将领 3 骑手）—— 所以将领的 kind 分不出兵种，
+##                   必须有这个字段。
+## ★ 数值（血 / 速度 / 半径 / 攻击三件套）一律按 `unit_type` 查表 ——
+##   于是「将领的数值 = 它所属类型的数值」（用户确认的口径）自动成立。
+var unit_type: String = ""
+## 兵种大类（infantry / cavalry）与「是不是远程」。
+##
+## ★★ 为什么要**存在单位上**而不是每次查表：这两个字段就是「后续按兵种做额外伤害」
+##    的标签（步兵 / 骑兵，远近是另一维 —— 弓箭手 = 远程步兵、马弓手 = 远程骑兵）。
+##    伤害判定在每帧每单位的路径上，创建时算好、之后只读，比每次下潜 JSON 便宜。
+var unit_class: String = CLASS_INFANTRY
+var ranged: bool = false
 var faction: String = FactionRes.DEFAULT_FACTION
 var hotkey: String = ""
 
@@ -206,23 +234,44 @@ var hold_position: bool = false
 var selected: bool = false
 
 
-static func create(cfg: ConfigRes, p_id: String, p_name: String, tile: Vector2i, p_faction: String, p_kind: String = KIND_GENERAL, p_hotkey: String = "", p_leader_id: String = "") -> RefCounted:
+## @param p_unit_type 单位类型（兵种）id。空 = 由 kind 推（普通单位推出来就是它自己，
+##        将领推出来是 unit.general.types[0]）—— **开局那三个将领必须显式传**，
+##        因为它们 kind 都是 general，只有这个参数能区分谁是谁。
+static func create(cfg: ConfigRes, p_id: String, p_name: String, tile: Vector2i, p_faction: String, p_kind: String = KIND_GENERAL, p_hotkey: String = "", p_leader_id: String = "", p_unit_type: String = "") -> RefCounted:
 	var u = new()
 	u.id = p_id
 	u.name = p_name
 	u.kind = p_kind
+	u.unit_type = p_unit_type if p_unit_type != "" else cfg.unit_type_of(p_kind)
+	u.unit_class = cfg.unit_class_of(u.unit_type)
+	u.ranged = cfg.unit_is_ranged(u.unit_type)
 	u.faction = p_faction
 	u.hotkey = p_hotkey
 	u.leader_id = p_leader_id
 	u.pos = GridRes.center_of(tile)
 	u.tx = tile.x
 	u.ty = tile.y
-	# ★ 数值走 cfg.unit_*_of(kind)：原来写的是「是将领吗？不是就当敌人」，
-	#    加了第三种兵种之后那个二元判断会**静默把亲兵当成测试敌人**（60 血）。
-	u.hp_max = cfg.unit_hp_of(p_kind)
+	# ★ 数值走 cfg.unit_*_of(unit_type)：原来写的是「是将领吗？不是就当敌人」，
+	#    加了第三种兵种之后那个二元判断会**静默把新兵种当成测试敌人**（60 血）。
+	#    现在每个单位类型都在 config.unit.types 里明确定义，查不到才用兜底值。
+	u.hp_max = cfg.unit_hp_of(u.unit_type)
 	u.base_hp_max = u.hp_max
 	u.hp = u.hp_max
 	return u
+
+
+## 这个单位是不是**将领**（开局的 general，或区划招募出来的 general_N）。
+##
+## ★ 判据是 kind，**不是 leader_id**：测试敌人的 leader_id 也是空的，
+##   用「有没有队长」分不出将领与敌人（那样测试敌人会被画成粗描边的将领）。
+## ★ 这是渲染（描边更粗）与「将领吃的科技加成」共用的判据，别在别处另写一份。
+func is_general() -> bool:
+	return ConfigRes.general_index_of(kind) >= 0
+
+
+## 是不是骑兵（后续「按兵种额外伤害」的标签之一）
+func is_cavalry() -> bool:
+	return unit_class == CLASS_CAVALRY
 
 
 ## 是否正在等待复活（单机永远 false —— 死亡即离场）
@@ -256,24 +305,26 @@ func train_progress() -> float:
 	return clampf(1.0 - train_remaining / train_total, 0.0, 1.0)
 
 
-## 基础移动速度（格 / 秒）；森林里减半
+## 基础移动速度（格 / 秒）；森林里减半。
+## ★ 按 `unit_type` 查表（不是 kind）：将领的速度 = 它所属兵种的速度 ——
+##   于是「骑手型的将领跑得更快」是数据决定的，代码里没有特例。
 func speed(cfg: ConfigRes, map) -> float:
-	var base: float = cfg.unit_speed_of(kind)
+	var base: float = cfg.unit_speed_of(unit_type)
 	var on_forest: bool = map != null and map.is_forest(tx, ty)
 	return base * (cfg.unit_forest_mult if on_forest else 1.0)
 
 
-## 该单位的战斗数值（将领 / 亲兵 / 敌人各自配置，见 cfg.unit_combat_of）
+## 该单位的战斗数值（按单位类型查 config.unit.types，见 cfg.unit_combat_of）
 func combat_damage(cfg: ConfigRes) -> float:
-	return float(cfg.unit_combat_of(kind)["damage"])
+	return float(cfg.unit_combat_of(unit_type)["damage"])
 
 
 func combat_range(cfg: ConfigRes) -> float:
-	return float(cfg.unit_combat_of(kind)["range"])
+	return float(cfg.unit_combat_of(unit_type)["range"])
 
 
 func combat_cooldown(cfg: ConfigRes) -> float:
-	return float(cfg.unit_combat_of(kind)["cooldown_sec"])
+	return float(cfg.unit_combat_of(unit_type)["cooldown_sec"])
 
 
 ## 警戒半径（格）
@@ -764,7 +815,7 @@ func step_along_path(world, cfg: ConfigRes, dt: float) -> void:
 	#
 	# ★ 这里刻意**内联 speed()**：那是每单位每帧一次的方法调用，
 	#   而它内部又只是「查一次基础速度 + 查一次森林」。语义与 speed() 完全一致。
-	var base_speed: float = cfg.unit_speed_of(kind)
+	var base_speed: float = cfg.unit_speed_of(unit_type)
 	var on_forest: bool = map != null and map.is_forest(tx, ty)
 	var remaining: float = base_speed * (cfg.unit_forest_mult if on_forest else 1.0) * dt
 

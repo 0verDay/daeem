@@ -277,7 +277,7 @@ func _place_units(w, cfg, n: int) -> void:
 		var col := i % BLOCK_COLS
 		var row := i / BLOCK_COLS
 		var u = UnitRes.create(cfg, "fps-%d" % i, "fps %d" % i,
-			Vector2i(0, 0), w.my_faction, UnitRes.KIND_SUBORDINATE)
+			Vector2i(0, 0), w.my_faction, UnitRes.UNIT_TYPE_SPEARMAN)
 		u.pos = origin + Vector2(float(col) * BLOCK_SPACING, float(row) * BLOCK_SPACING)
 		u.sync_tile(w.map)
 		fresh.append(u)

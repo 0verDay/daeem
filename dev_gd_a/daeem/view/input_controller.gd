@@ -986,7 +986,7 @@ func _pick_unit_at(world_pos: Vector2) -> Variant:
 			continue
 		if not FactionRes.same_side(u.faction, world.my_faction):
 			continue
-		var r: float = cfg.unit_radius_of(u.kind) + cfg.num("unit.hit_pad", 6.0) / cfg.cell_px
+		var r: float = cfg.unit_radius_of(u.unit_type) + cfg.num("unit.hit_pad", 6.0) / cfg.cell_px
 		var d: float = world_pos.distance_to(u.pos)
 		if d <= r and d < best_d:
 			best_d = d
@@ -1004,7 +1004,7 @@ func _pick_foe_unit_at(world_pos: Vector2) -> Variant:
 			continue
 		if FactionRes.same_side(u.faction, world.my_faction):
 			continue
-		var r: float = cfg.unit_radius_of(u.kind) + cfg.num("unit.hit_pad", 6.0) / cfg.cell_px
+		var r: float = cfg.unit_radius_of(u.unit_type) + cfg.num("unit.hit_pad", 6.0) / cfg.cell_px
 		var d: float = world_pos.distance_to(u.pos)
 		if d <= r and d < best_d:
 			best_d = d

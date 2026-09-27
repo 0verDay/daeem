@@ -9,6 +9,8 @@
 ##   2. 地图外的格子：不可通行、不会被连通性修正塞成山、寻路绕开它
 ##   3. zones 网格：区块按网格划分（可非矩形）、名字从 zone_list 来、空区块也保留
 ##   4. exists 的几种写法（二维数组 / 字符串行 / 扁平数组）都认
+##   5. ★ 区划种类（`zone_list[].kind`）：读得进来、认不出的按默认人口区划、
+##      「写了种类但没写 production」的区划产量一律 0（不按种类预设兜底）
 ##
 ## ⚠️ 测试地图写在 user:// 下（无头模式下也能写），不往 res:// 里塞临时文件。
 extends "res://tests/test_case.gd"
@@ -18,6 +20,7 @@ const ConfigRes = preload("res://logic/config.gd")
 const MapDataRes = preload("res://logic/map_data.gd")
 const ZoneRes = preload("res://logic/zone.gd")
 const WorldRes = preload("res://logic/world.gd")
+const UpgradeRes = preload("res://logic/upgrade.gd")
 
 ## ⚠️ 测试地图写在工程里的一个临时目录下（跑完就删）。不用 user://：
 ##    某些沙箱 / CI 环境下 user:// 不可写，会变成「测试自己写不出文件」的假失败。
@@ -41,6 +44,7 @@ func _cases() -> void:
 	_test_missing_tile_blocks(cfg)
 	_test_zones_grid(cfg)
 	_test_empty_zone_kept(cfg)
+	_test_zone_kinds(cfg)
 	_test_faction_bases(cfg)
 	_test_world_with_editor_map(cfg)
 	_test_real_test_map(cfg)
@@ -444,6 +448,75 @@ func _test_empty_zone_kept(cfg) -> void:
 
 	# 地块不属于任何区块时，区块系统不会把它算进任何一方
 	eq(zs.owned_tile_count("p1"), 0, "开局谁的地块数都是 0")
+
+
+# ------------------------------------------------------------------
+# 6.5 ★ 区划种类（zone_list[].kind）—— 本轮新增
+# ------------------------------------------------------------------
+##
+## 用户需求：「设计师可以在区划页签的详情页中选择该区划的种类……最终游戏中的区划产量
+## 以下方数字输入框中的产量为准」；「粮食区划仅能进行黄金和人口特化，黄金区划仅能进行
+## 粮食和人口特化，人口区划仅能进行粮食和黄金特化」。
+## 另外确认：「没有默认区划了，所有区划默认值都改为人口区划」+「地图没写 production
+## 的区划一律算 0，保持老图行为（不按种类预设兜底）」。
+func _test_zone_kinds(cfg) -> void:
+	var path := _write_map("zone_kinds.json", {
+		"cols": 4, "rows": 2,
+		"layout": ["....", "...."],
+		"zones": [[0, 0, 1, 1],
+		          [2, 2, 3, 3]],
+		"zone_list": [
+			{"id": 0, "name": "粮区", "kind": "food",
+			 "production": {"food": 1, "gold": 0, "population": 0}},
+			{"id": 1, "name": "金区", "kind": "gold",
+			 "production": {"food": 0, "gold": 1, "population": 0}},
+			# ★ 写了 kind、**故意不写 production**：游戏侧一律算 0（用户确认保持老图行为，
+			#   不按种类预设的 0.15 兜底）——「数字输入框里的产量说了算」。
+			{"id": 2, "name": "人区", "kind": "population"},
+			# ★ 不认识的 kind：按默认（人口区划）处理，不崩、也不吞掉它的产量数字
+			{"id": 3, "name": "怪区", "kind": "banana",
+			 "production": {"food": 2, "gold": 0, "population": 0}},
+		],
+		"base": [0, 0],
+	})
+	var m = MapDataRes.load_from(path, cfg)
+	ok(m != null, "带区划种类的地图能载入")
+	if m == null:
+		return
+	eq(m.zones_kinds.size(), 3, "★ zone_list[].kind 读进来（不认识的 id 不登记）")
+	var zs = ZoneRes.build_from_map(m, cfg, ["p1"])
+	eq(zs.kind_of(zs.zones[0]), "food", "粮食区划读对了")
+	eq(zs.kind_of(zs.zones[1]), "gold", "黄金区划读对了")
+	eq(zs.kind_of(zs.zones[2]), "population", "人口区划读对了")
+	eq(zs.kind_of(zs.zones[3]), "population", "★ 不认识的 kind → 默认人口区划（不崩）")
+	near(float((zs.zones[0]["production"] as Dictionary)["food"]), 1.0, 1e-9,
+		"产量以地图的数字为准（写了 1 就是 1）")
+	near(float((zs.zones[2]["production"] as Dictionary)["population"]), 0.0, 1e-9,
+		"★ 写了种类但没写 production → 产量 0（不按种类预设兜底）")
+	near(float((zs.zones[3]["production"] as Dictionary)["food"]), 2.0, 1e-9,
+		"★ 种类认不出来也不影响它的产量数字")
+
+	# ---- 特化白名单按种类挡（逻辑层；界面那一侧在 test_ui.gd 里验）
+	var w = WorldRes.create(cfg, path)
+	ok(w != null, "带种类的地图能开出世界")
+	if w == null:
+		return
+	var f: String = String(w.my_faction)
+	# 给足资源：这一段验的是**种类白名单**（拒因 `kind`），别让它落到 `cost` 上
+	w.resources["food"] = 1000.0
+	w.resources["gold"] = 1000.0
+	var zf: Dictionary = w.zones.zones[0]
+	zf["owner"] = f                      # 大本营在 (0,0) → 0 号区划归玩家
+	eq(String(zf["kind"]), "food", "（前提）这一块是粮食区划")
+	eq(UpgradeRes.can_specialize(w, zf, "gold", f), "", "粮食区划能做黄金特化")
+	eq(UpgradeRes.can_specialize(w, zf, "population", f), "", "粮食区划能做人口特化")
+	eq(UpgradeRes.can_specialize(w, zf, "food", f), "kind",
+		"★ 粮食区划做不了粮食特化（拒因 kind）")
+	eq(UpgradeRes.spec_choices(zf, cfg).size(), 2, "★ 操作页只有这个种类的两格")
+	var zg: Dictionary = w.zones.zones[1]
+	zg["owner"] = f
+	eq(UpgradeRes.can_specialize(w, zg, "food", f), "", "黄金区划能做粮食特化")
+	eq(UpgradeRes.can_specialize(w, zg, "gold", f), "kind", "★ 黄金区划做不了黄金特化")
 
 
 # ------------------------------------------------------------------

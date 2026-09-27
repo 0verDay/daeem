@@ -89,7 +89,7 @@ func _test_no_friendly_fire(cfg) -> void:
 	# 自己人 4 个（第 2 个在赶路，**夹在中间**），敌人 4 个站定（让两边都在索敌）
 	var batch: Array = []
 	for i in 4:
-		var u = UnitRes.create(cfg, "ff-a-%d" % i, "a", Vector2i(0, 0), "p1", UnitRes.KIND_SUBORDINATE)
+		var u = UnitRes.create(cfg, "ff-a-%d" % i, "a", Vector2i(0, 0), "p1", UnitRes.UNIT_TYPE_SPEARMAN)
 		u.pos = Vector2(10.5, 8.5 + float(i) * 0.5)
 		u.sync_tile(w.map)
 		batch.append(u)
@@ -152,7 +152,7 @@ func _test_targeting_with_filtered_units(cfg) -> void:
 	var fake_path: Array[Vector2] = [Vector2(8.0, 18.0)]
 	var batch: Array = []
 	for i in 30:
-		var m = UnitRes.create(cfg, "flt-m%d" % i, "m", Vector2i(0, 0), "p1", UnitRes.KIND_SUBORDINATE)
+		var m = UnitRes.create(cfg, "flt-m%d" % i, "m", Vector2i(0, 0), "p1", UnitRes.UNIT_TYPE_SPEARMAN)
 		m.pos = Vector2(6.0 + float(i % 6) * 0.4, 20.0 + float(i / 6) * 0.4)
 		m.sync_tile(w.map)
 		m.moving = true
@@ -162,7 +162,7 @@ func _test_targeting_with_filtered_units(cfg) -> void:
 
 	# 被测的索敌者：一个**待命**的自己人
 	var spot := Vector2(10.5, 10.5)
-	var watcher = UnitRes.create(cfg, "flt-w", "w", Vector2i(0, 0), "p1", UnitRes.KIND_SUBORDINATE)
+	var watcher = UnitRes.create(cfg, "flt-w", "w", Vector2i(0, 0), "p1", UnitRes.UNIT_TYPE_SPEARMAN)
 	watcher.pos = spot
 	watcher.sync_tile(w.map)
 	batch.append(watcher)
@@ -206,7 +206,7 @@ func _test_targeting_matches_gdscript(cfg) -> void:
 	# 造两拨人：p1 一拨、enemy 一拨，位置固定（确定性，便于比对）
 	var batch: Array = []
 	for i in 12:
-		var u = UnitRes.create(cfg, "tg-a-%d" % i, "a", Vector2i(0, 0), "p1", UnitRes.KIND_SUBORDINATE)
+		var u = UnitRes.create(cfg, "tg-a-%d" % i, "a", Vector2i(0, 0), "p1", UnitRes.UNIT_TYPE_SPEARMAN)
 		u.pos = Vector2(4.0 + float(i % 4) * 1.3, 6.0 + float(i / 4) * 1.1)
 		u.sync_tile(w.map)
 		batch.append(u)
@@ -278,11 +278,11 @@ func _run_overlap_scenario(cfg, backend: String) -> Array:
 	# ★ 用 cfg 上的字段切后端（不再是改 cfg.data —— 那些值现在都是载入时算好的）
 	cfg.unit_collision_backend = backend
 	var w = WorldRes.create(cfg)
-	# ★ 只留这一批：将领/亲兵的推挤会把对照搅浑
+	# ★ 只留这一批：将领/附属兵的推挤会把对照搅浑
 	var batch: Array = []
 	for i in 8:
 		var u = UnitRes.create(
-			cfg, "eq-%d" % i, "eq", Vector2i(2, 13), w.my_faction, UnitRes.KIND_SUBORDINATE
+			cfg, "eq-%d" % i, "eq", Vector2i(2, 13), w.my_faction, UnitRes.UNIT_TYPE_SPEARMAN
 		)
 		# 4 个一列、两行，间距远小于最小圆心距（0.252）→ 一开始就全在互相重叠
 		u.pos = Vector2(2.5 + float(i % 4) * 0.05, 13.5 + float(i / 4) * 0.04)

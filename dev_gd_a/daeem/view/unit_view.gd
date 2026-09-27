@@ -13,11 +13,12 @@
 extends Node2D
 
 const ConfigRes = preload("res://logic/config.gd")
-const PaletteRes = preload("res://view/palette.gd")
 ## ★ 给 for 循环变量加类型：`u.pos` / `u.alive` 这类成员访问在有类型时是静态解析，
 ##   无类型时是动态查找（每单位每批次一次）。见 docs/pitfalls.md 1.7。
 ##   unit.gd 不 preload view/，所以这里不是循环依赖。
 const UnitRes = preload("res://logic/unit.gd")
+## ★ 单位图标（线条画的「预制体」+ 烘贴图）—— 见那个文件的说明。
+const UnitIconRes = preload("res://view/unit_icon.gd")
 
 ## 屏幕外剔除的余量（像素）：血条 / 选中圈会画到单位本体之外一点
 const CULL_PAD_PX := 48.0
@@ -26,21 +27,19 @@ const CULL_PAD_PX := 48.0
 const FACING_COLOR := Color(0, 0, 0, 0.5)
 const ENGAGED_COLOR := Color(1.0, 0.45, 0.35, 0.95)
 const HP_BACK_COLOR := Color(0, 0, 0, 0.55)
-## 描边（黑，0.45）烘进本体贴图里，见 _make_disc_texture
-const OUTLINE_ALPHA := 0.45
+## 选中光晕（那张纯白圆盘贴图）的贴图边长（像素）。
+## ⚠️ 单位本体现在画的是**兵种图标**（见 view/unit_icon.gd），不再是这张圆盘 ——
+##   圆盘只留给「选中光晕」这一层用（它本来就是一团柔和的圆）。
+const HALO_TEX_SIZE := 32
 
-## 单位贴图的边长（像素）。单位在屏幕上是 4~13 像素直径，32 足够，还能抗缩放。
-const DISC_TEX_SIZE := 32
-
-## ★★ 为什么单位本体改成「贴图」而不是 draw_circle / draw_arc：
+## ★★ 为什么单位本体是「贴图」而不是 draw_circle / draw_arc：
 ##    实测（1000 单位、100×100 图）——
 ##      draw_circle ×1000 → **997 个 draw call、18.4 ms**
 ##      draw_arc    ×1000 → **997 个 draw call、10.2 ms**
 ##      draw_line   ×1000 → 只多 **1 个 draw call**、几乎不耗时（线能合批）
 ##    也就是说这两个 API **完全不参与 2D 合批**，每单位各占一个绘制批次。
-##    换成同一张贴图之后，1000 个单位合成 1 个批次。
-##    （描边也一起烘进贴图了，所以 draw_arc 那一笔整笔消失。）
-var _tex_body: ImageTexture = null
+##    换成贴图之后，同一兵种/同一描边档位的单位合成一个批次 —— 图标也走同一条路：
+##    「线条画的预制体」在 view/unit_icon.gd 里烘成十来张贴图，运行时只贴图。
 var _tex_halo: ImageTexture = null
 
 var cfg: ConfigRes = null
@@ -50,6 +49,13 @@ var world = null
 var _selection: Dictionary = {}
 ## 阵营 → [主体色, 选中色, 血条色]。每帧每单位都查一次的东西，缓存成一次查表。
 var _color_cache: Dictionary = {}
+## ★★ 最近一次 `_draw()` 里**真的发出了几张单位图标**（纯诊断，只有测试读它）。
+##
+## 为什么要有这个计数器：无头测试里 `_draw()` 内部的错误**不会**让测试失败，
+## 而「一个图标都没画」这件事既不报错、也不改变任何逻辑状态 ——
+## 只有留下一个可数的痕迹才钉得住它（本轮真踩过：分桶用了值语义的 PackedInt32Array，
+## 桶永远是空的 ⇒ 画面上只剩朝向线。见 docs/pitfalls.md 5.50）。
+var icon_draw_count: int = 0
 
 
 func setup(p_cfg: ConfigRes, p_world) -> void:
@@ -57,30 +63,20 @@ func setup(p_cfg: ConfigRes, p_world) -> void:
 	world = p_world
 	z_index = 10
 	_color_cache = {}
-	_tex_body = _make_disc_texture(true)
-	_tex_halo = _make_disc_texture(false)
+	_tex_halo = _make_disc_texture()
 
 
-## 生成一张圆盘贴图。
-## rim = true 时把「黑描边」烘进去：贴图里白色部分是本体（会被实例色染成阵营色），
-## 黑色半透明部分是描边（乘任何颜色都还是黑）。
-static func _make_disc_texture(rim: bool) -> ImageTexture:
-	var size := DISC_TEX_SIZE
+## 生成「选中光晕」用的那张纯白圆盘贴图（白色部分会被实例色染成阵营色）。
+static func _make_disc_texture() -> ImageTexture:
+	var size := HALO_TEX_SIZE
 	var img := Image.create(size, size, false, Image.FORMAT_RGBA8)
 	var c := float(size) * 0.5
 	var r_out := c - 0.5
-	var r_in := r_out - (2.5 if rim else 0.0)
 	for y in size:
 		for x in size:
 			var d := Vector2(float(x) + 0.5 - c, float(y) + 0.5 - c).length()
 			var cov := clampf(r_out - d + 0.5, 0.0, 1.0)          # 外缘抗锯齿
-			if rim:
-				var inner := clampf(d - r_in + 0.5, 0.0, 1.0)     # 0 = 描边, 1 = 本体
-				var col := Color(0.0, 0.0, 0.0, OUTLINE_ALPHA).lerp(Color(1, 1, 1, 1), inner)
-				col.a *= cov
-				img.set_pixel(x, y, col)
-			else:
-				img.set_pixel(x, y, Color(1, 1, 1, cov))
+			img.set_pixel(x, y, Color(1, 1, 1, cov))
 	return ImageTexture.create_from_image(img)
 
 
@@ -122,7 +118,8 @@ func _draw() -> void:
 	#    而 draw call 只有个位数 —— 也就是说贵的是**在 GDScript 里攒绘制命令**，
 	#    不是 GPU。所以这里做的是「少一次查表、少一次开方」这类便宜但确定的事：
 	#      · `u.pos * cell_px` **内联**，不再每单位调一次 PaletteRes.to_px；
-	#      · 半径按 kind 每帧查一次表（原来是每单位一次 `unit_radius_of` + 一次乘法）；
+	#      · 半径与图标贴图按**单位类型**每帧查一次表（原来是每单位一次
+	#        `unit_radius_of` + 一次乘法）—— 类型只有几种，查表几乎免费；
 	#      · 朝向上不再 `normalized()`（facing 本来就存的是单位向量），
 	#        判零也改成平方比较，省掉每单位一次开方。
 	var cell_px: float = cfg.cell_px
@@ -133,21 +130,34 @@ func _draw() -> void:
 	var body_cols := PackedColorArray()
 	var ring_cols := PackedColorArray()
 	var hp_cols := PackedColorArray()
-	var radius_by_kind: Dictionary = {}
+	var icons: Array = []
+	## 单位类型 → 屏幕半径（像素）。**逻辑半径**，图标矩形另乘 unit_icon.EXTENT
+	## （枪 / 弓会伸到半径之外，见那个文件的图标空间说明）。
+	var radius_by_type: Dictionary = {}
+	## 单位类型 + 是不是将领 → 图标贴图（十来张，静态缓存在 unit_icon 里）
+	var icon_tex_by_key: Dictionary = {}
 	for u: UnitRes in world.units:
 		if not u.alive:
 			continue
 		var p: Vector2 = u.pos * cell_px
 		if not vis.has_point(p):
 			continue                    # 屏幕外：连指令都不发
-		var r: float = radius_by_kind.get(u.kind, -1.0)
+		var utype := String(u.unit_type)
+		var r: float = radius_by_type.get(utype, -1.0)
 		if r < 0.0:
-			r = cfg.unit_radius_of(u.kind) * cell_px
-			radius_by_kind[u.kind] = r
+			r = cfg.unit_radius_of(utype) * cell_px
+			radius_by_type[utype] = r
+		var is_leader: bool = u.is_general()
+		var key := "%s|%d" % [utype, 1 if is_leader else 0]
+		var tex: ImageTexture = icon_tex_by_key.get(key, null)
+		if tex == null:
+			tex = UnitIconRes.bake(utype, is_leader)
+			icon_tex_by_key[key] = tex
 		var col: Array = _colors_for(u.faction)
 		units.append(u)
 		pts.append(p)
 		radii.append(r)
+		icons.append(tex)
 		body_cols.append(col[0])
 		ring_cols.append(col[1])
 		hp_cols.append(col[2])
@@ -169,13 +179,28 @@ func _draw() -> void:
 			var rc: Color = ring_cols[i]
 			draw_texture_rect(_tex_halo, Rect2(pts[i] - Vector2(rr, rr), Vector2(rr * 2.0, rr * 2.0)),
 				false, Color(rc.r, rc.g, rc.b, 0.35))
-	# 2) 单位本体（贴图里已经烘了描边；同一张贴图 → 1000 个单位合一个批次）
-	for i in n:
-		var r2: float = radii[i]
-		draw_texture_rect(_tex_body,
-			Rect2(pts[i] - Vector2(r2, r2), Vector2(r2 * 2.0, r2 * 2.0)),
-			false, body_cols[i])
+	# 2) 单位本体 = **兵种图标**（view/unit_icon.gd 烘出来的贴图；将领那一档描边更粗）。
+	#
+	# ★ 按贴图**分组**再画：Godot 的 2D 画布按「贴图 + 状态」合批，一个单位换一次贴图
+	#   就等于把批次切断。图标一共十来张，所以先分桶、再一桶一桶连着画 ——
+	#   与文件头那段「按图元类型分组，而不是一个单位画完自己那一套」是同一条道理。
+	#   ⚠️ 分组本身抽成了 _bucket_by_icon()，并且有测试钉它（那里踩过一次**静默不画**的坑）。
+	var by_tex := _bucket_by_icon(icons, n)
+	var drawn := 0
+	for key_tex in by_tex.keys():
+		var tex: ImageTexture = key_tex
+		for i in (by_tex[key_tex] as Array):
+			# ⚠️ 矩形是**图标空间**那一片：半径 × EXTENT（EXTENT > 1，所以图标比圆盘大一圈）
+			var r2: float = radii[i] * UnitIconRes.EXTENT
+			draw_texture_rect(tex,
+				Rect2(pts[i] - Vector2(r2, r2), Vector2(r2 * 2.0, r2 * 2.0)),
+				false, body_cols[i])
+			drawn += 1
+	icon_draw_count = drawn
 	# 3) 朝向：一条短线，指向 facing（八方向之后 facing 是完整向量）—— 线能合批，随便画
+	#
+	# ⚠️ 图标本身**不随朝向旋转**（理由写在 unit_icon.gd 文件头：旋转会把批次打散）。
+	#    朝向由这一条线表达 —— 它是从图标中心往外画的，所以压在图标上也看得见。
 	for i in n:
 		var f: Vector2 = units[i].facing
 		# ⚠️ facing 存的本来就是单位向量（face_toward / step_along_path 都归一过），
@@ -183,10 +208,13 @@ func _draw() -> void:
 		if f.x * f.x + f.y * f.y > 1e-12:
 			draw_line(pts[i], pts[i] + f * (radii[i] * 1.5), FACING_COLOR, 2.0)
 	# 5) 交战标记：头顶小三角
+	#
+	# ⚠️ 头顶 / 血条的偏移都要**让开图标**：图标画到 `半径 × EXTENT`（枪 / 弓比圆盘大一圈），
+	#    还用旧的「半径 + 4」的话，三角与血条会压在枪杆上。
 	for i in n:
 		var u2 = units[i]
 		if u2.target != null or u2.target_building != null:
-			var d: float = radii[i] + 5.0
+			var d: float = radii[i] * UnitIconRes.EXTENT + 1.0
 			draw_colored_polygon(PackedVector2Array([
 				pts[i] + Vector2(-3.5, -d), pts[i] + Vector2(3.5, -d), pts[i] + Vector2(0.0, -d - 5.0),
 			]), ENGAGED_COLOR)
@@ -197,7 +225,7 @@ func _draw() -> void:
 		var u3 = units[i]
 		if u3.hp < u3.hp_max - 1e-6:
 			var w: float = radii[i] * 2.4
-			var top: float = pts[i].y + radii[i] + 4.0
+			var top: float = pts[i].y + radii[i] * UnitIconRes.EXTENT + 1.0
 			draw_rect(Rect2(Vector2(pts[i].x - w * 0.5, top), Vector2(w, 3.0)), HP_BACK_COLOR, true)
 			draw_rect(Rect2(Vector2(pts[i].x - w * 0.5, top), Vector2(w * u3.hp_ratio(), 3.0)),
 				hp_cols[i], true)
@@ -213,6 +241,30 @@ func _colors_for(faction: String) -> Array:
 		]
 		_color_cache[faction] = c
 	return c
+
+
+## 把「每个单位用哪张贴图」整理成「贴图 → 该贴图下要画的单位下标」。
+##
+## ★★ 为什么要分组：Godot 的 2D 画布按「贴图 + 状态」合批 —— 一个单位换一次贴图就等于
+##    把批次切断（与文件头那段「按图元类型分组，而不是一个单位画完自己那一套」同一条道理）。
+##
+## ⚠️⚠️ **桶必须是 `Array`，绝不能图省事换成 `PackedInt32Array`**：
+##   打包数组是**值语义**（写时复制），而 `(bucket as PackedInt32Array).append(i)`
+##   改到的是那个临时副本 —— 字典里的桶**永远是空的**，于是**一个图标都画不出来**，
+##   画面上只剩那条朝向线，而且**不报任何错**（本轮实测踩过，见 pitfalls.md 5.50）。
+##   `Array` 是引用语义，所以 `append` 才真的落进字典里那个桶。
+##
+## ★ 它是 static 且不碰任何状态，正是为了让测试能直接钉住「n 个单位一个不漏地分完」。
+static func _bucket_by_icon(icons: Array, n: int) -> Dictionary:
+	var out: Dictionary = {}
+	for i in n:
+		var tex: ImageTexture = icons[i]
+		var bucket: Variant = out.get(tex, null)
+		if bucket == null:
+			bucket = []
+			out[tex] = bucket
+		(bucket as Array).append(i)
+	return out
 
 
 ## 当前可见的世界像素矩形（用来剔除屏幕外的单位）。

@@ -1384,6 +1384,153 @@ def t_zone_center_and_production_ui() -> None:
         root.destroy()
 
 
+def t_zone_kind_ui() -> None:
+    """★ 区划种类那一栏（需求：区划页签详情页里选种类 → 下面的产能数字同步成预设值）。
+
+    需求原文：「设计师可以在区划页签的详情页中选择该区划的种类，但是保留下方的数字
+    输入框，当设计师为区划选择区划种类时，下方的数字输入框需要同步变化到上方的数值，
+    但设计师也可以直接编辑下方的数字输入框中的资源产量，最终游戏中的区划产量以下方
+    数字输入框中的产量为准」。
+
+    所以这条测试钉住三件事：
+      ① 单选钮 = 种类（新建的区划默认停在人口区划上，输入框显示的是它的预设数字）；
+      ② 点一颗单选钮 → 种类变了 **且** 三个输入框同步成那一档的预设值；
+      ③ 之后手改数字 → 种类不动、导出写的是**数字**（不是预设）。
+    另外撤销要把「种类 + 数字」一起退回去（与产能 / 人口上限同一套）。
+    """
+    print("\n[20] 区划种类（区块页签：选种类 → 产能数字同步）")
+    root, editor = build_editor()
+    try:
+        for tile in ((0, 0), (1, 0)):
+            click_at(editor, *tile)
+        editor.set_page("zone")
+        editor.add_zone()
+        zone = editor.model.zones[0]
+        editor.zone_tree.selection_set(str(zone.zone_id))
+        editor.on_zone_select(None)
+        editor.refresh_zone_panel()
+
+        # ---- ① 新建的区划默认是人口区划，输入框显示的就是它的预设数字
+        eq(editor.model.zone_kind(zone.zone_id), "population",
+           "★ 新建的区划默认是人口区划（用户确认：没有默认区划了）")
+        eq(editor.zone_kind_var.get(), "population", "单选钮停在「人口区划」上")
+        eq(editor._zone_prod_vars["population"].get(), "0.15",
+           "★ 输入框里是人口区划的预设值（0.15）")
+        eq(editor._zone_prod_vars["food"].get(), "0", "粮食那一档是 0")
+        eq(editor.zone_kind_hint.cget("text"), "", "新建的区划与预设一致 → 不提示「已手改」")
+        # ---- 几何：三颗单选钮都在侧边栏宽度之内、从上到下排列（新控件不许溢出/叠住）
+        kinds = [k for k in ("food", "gold", "population") if k in editor._zone_kind_buttons]
+        eq(len(kinds), 3, "三颗单选钮都建出来了（粮食 / 黄金 / 人口）")
+        for kind_id in kinds:
+            btn = editor._zone_kind_buttons[kind_id]
+            ok(btn.winfo_x() + btn.winfo_reqwidth() <= 320,
+               "★ 单选钮「%s」不超出侧边栏宽度（x=%d + 宽=%d ≤ 320）"
+               % (kind_id, btn.winfo_x(), btn.winfo_reqwidth()))
+        ys = [editor._zone_kind_buttons[k].winfo_y() for k in kinds]
+        eq(ys, sorted(ys), "★ 三颗单选钮从上到下排列（顺序 = config 里的顺序）")
+
+        # ---- ② 点「粮食区划」：种类变了 + 三个数字同步
+        editor._zone_kind_buttons["food"].invoke()
+        eq(editor.model.zone_kind(zone.zone_id), "food", "★ 点单选钮 = 换种类")
+        eq([editor.model.zone_production(zone.zone_id, k)
+            for k in ("food", "gold", "population")], [1.0, 0.0, 0.1],
+           "★ 选粮食区划 → 产能数字同步成 1 粮食 + 0.1 人口（所有区划都有 0.1 人口基础产能）")
+        eq(editor._zone_prod_vars["food"].get(), "1", "输入框显示同步后的粮食产能")
+        eq(editor._zone_prod_vars["population"].get(), "0.1", "输入框显示同步后的 0.1 人口")
+        eq(editor.zone_kind_hint.cget("text"), "", "刚同步过 → 仍然与预设一致")
+
+        # ---- ③ 手改数字：种类不动，导出以数字为准
+        editor._zone_prod_vars["gold"].set("2.5")
+        editor.apply_zone_production("gold")
+        eq(editor.model.zone_production(zone.zone_id, "gold"), 2.5, "★ 手改的黄金产能生效")
+        eq(editor.model.zone_kind(zone.zone_id), "food", "★ 手改数字**不会**改种类")
+        ok("手改" in editor.zone_kind_hint.cget("text"),
+           "★ 数字与预设不一致时种类那一栏给提示（%s）" % editor.zone_kind_hint.cget("text"))
+        data = mapfile.model_to_dict(editor.model)
+        entry = {z["id"]: z for z in data["zone_list"]}[zone.zone_id]
+        eq(entry["kind"], "food", "导出写种类")
+        eq(entry["production"], {"food": 1, "gold": 2.5, "population": 0.1},
+           "★ 导出的是数字输入框里的产量（不是预设）")
+
+        # ---- 撤销：手改数字一步、换种类一步，两步都能退
+        editor.undo()
+        eq(editor.model.zone_production(zone.zone_id, "gold"), 0.0, "★ Ctrl+Z 退掉手改的数字")
+        editor.undo()
+        eq(editor.model.zone_kind(zone.zone_id), "population", "★ 再退一步：种类回到人口区划")
+        eq(editor.model.zone_production(zone.zone_id, "population"), 0.15,
+           "★ 数字也跟着回到人口区划的预设")
+        eq(editor.zone_kind_var.get(), "population", "单选钮跟着退回去")
+        editor.redo()
+        eq(editor.model.zone_kind(zone.zone_id), "food", "★ 重做又回到粮食区划")
+
+        # ---- 点已经选中的那一颗：什么都不改（不留一步空撤销）
+        undo_len = len(editor._undo)
+        editor._zone_kind_buttons["food"].invoke()
+        eq(len(editor._undo), undo_len, "点已选中的种类 → 不往撤销栈里塞空操作")
+
+        # ---- 没选中区划：单选钮禁用
+        editor.selected_zone = None
+        editor.refresh_zone_panel()
+        eq(str(editor._zone_kind_buttons["food"].cget("state")), "disabled",
+           "没选中区划 → 单选钮禁用")
+        eq(editor.zone_kind_var.get(), "", "没选中区划 → 不显示任何种类")
+    finally:
+        root.destroy()
+
+
+def t_sidebar_scrolls() -> None:
+    """★ 侧边栏要能滚：区块页那一串内容比窗口高（实测 1597px vs 754px）。
+
+    这条是加「区划种类」那一栏时暴露出来的**老问题**：侧边栏原来是个固定高度的 Frame、
+    没有滚动条，于是「人口上限 / 图例 / 整张地图」这几栏在 1280×800 下根本够不着。
+    现在侧边栏放在一个 Canvas 里（右边一条滚动条），滚轮**指针在侧边栏里**时滚它、
+    在画布上时照旧缩放地图。
+    """
+    print("\n[21] 侧边栏滚动（区块页内容比窗口高）")
+    from map_editor.model import load_config as _load_cfg
+    project = PROJECT_DIR
+    model = mapfile.load_map(project / "data" / "test_map.json", _load_cfg(project))
+    root = tk.Tk()
+    root.geometry("1280x800")
+    root.deiconify()
+    root.update()
+    editor = app_module.EditorApp(root, project, model, project / "data" / "test_map.json")
+    root.update()
+    editor.set_page("zone")
+    root.update()
+    try:
+        content = editor.sidebar_canvas.bbox("all")
+        viewport = editor.sidebar_canvas.winfo_height()
+        ok(content is not None and content[3] > viewport,
+           "★ 区块页内容（%s px）比侧边栏（%s px）高 → 必须能滚"
+           % (content[3] if content else "?", viewport))
+
+        # 滚到底：最后一栏（整张地图）要真的进到视口里
+        editor.sidebar_canvas.yview_moveto(1.0)
+        root.update()
+        top = editor.sidebar_canvas.canvasy(0)
+        last = editor.sidebar.winfo_children()[-1]
+        bottom = last.winfo_y() + last.winfo_height()
+        ok(top > 0, "★ 滚到底之后内容确实上移了（canvasy(0) = %.0f）" % top)
+        ok(bottom <= top + viewport + 1,
+           "★ 最后一栏（%s）滚到底能看见（内容底 %.0f ≤ 视口底 %.0f）"
+           % (last.winfo_class(), bottom, top + viewport))
+
+        # 滚轮事件：指针在侧边栏里 → 滚侧边栏；在画布上 → 放行给画布缩放
+        before = editor.sidebar_canvas.yview()[0]
+        ev = FakeEvent(10, 10)
+        ev.widget = editor._zone_kind_buttons["food"]
+        ev.delta = 120
+        eq(editor.on_any_wheel(ev), "break", "★ 指针在侧边栏里 → 事件被吃掉（滚侧边栏）")
+        ok(editor.sidebar_canvas.yview()[0] < before, "★ 往上的滚轮把侧边栏滚上去了")
+        ev2 = FakeEvent(10, 10)
+        ev2.widget = editor.canvas
+        ev2.delta = 120
+        eq(editor.on_any_wheel(ev2), None, "★ 指针在画布上 → 放行（画布自己那份绑定负责缩放）")
+    finally:
+        root.destroy()
+
+
 def t_export_blocked_without_center_or_base() -> None:
     """★ 硬规则：缺大本营 / 缺区划中心时**导出被拦住**（用户要的「保证」）。
 
@@ -1925,6 +2072,8 @@ def main() -> int:
     t_draw_up_left_no_invisible_wall()
     t_faction_page()
     t_zone_center_and_production_ui()
+    t_zone_kind_ui()
+    t_sidebar_scrolls()
     t_export_blocked_without_center_or_base()
     t_box_selection_batch_edit()
     t_shift_drag_survives_missing_state_bit()

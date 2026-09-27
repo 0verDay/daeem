@@ -33,6 +33,10 @@ static func to_snapshot(world) -> Dictionary:
 			"i": u.id,
 			"f": u.faction,
 			"k": u.kind,
+			# ★ 单位类型（兵种）：**必须发**，因为 kind 分不出将领的兵种 ——
+			#   三个开局将领的 kind 都是 "general"，只有 ut 说得清谁是长枪兵谁是骑手。
+			#   客机靠它查数值（血/速度/射程）与画图标，缺了就会把将领画成同一种兵。
+			"ut": u.unit_type,
 			"x": round2(u.pos.x),
 			"y": round2(u.pos.y),
 			"h": int(round(u.hp)),
@@ -104,16 +108,27 @@ static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void:
 		if u == null:
 			var kind := String(su.get("k", UnitRes.KIND_GENERAL))
 			var fac := String(su.get("f", FactionRes.DEFAULT_FACTION))
+			# ★ 单位类型：缺字段（老快照）就按 kind 推 —— 普通单位推出来就是它自己，
+			#   将领推出来是默认那一个（types[0]）。别把缺字段当成空串传进去，
+			#   那会让 UnitRes.create 再去推一次（结果一样，但这里写出来更清楚）。
+			var utype := String(su.get("ut", ""))
+			if utype == "":
+				utype = cfg.unit_type_of(kind)
 			u = UnitRes.create(
 				cfg, uid, cfg.unit_name_of(kind),
 				Vector2i(floori(float(su.get("x", 0.0))), floori(float(su.get("y", 0.0)))),
 				fac, kind,
 				String(su.get("hk", "")) if su.get("hk", null) != null else "",
-				String(su.get("ld", "")) if su.get("ld", null) != null else ""
+				String(su.get("ld", "")) if su.get("ld", null) != null else "",
+				utype
 			)
 			world.units.append(u)
 		u.alive = true
 		u.faction = String(su.get("f", u.faction))
+		# ⚠️ 单位类型（ut）**只在新建时读**，不在这里覆盖已有单位：
+		#    一个单位的类型当局内不会变，而 hp_max / base_hp_max / unit_class
+		#    都是创建时按类型算好的 —— 单独改 unit_type 会让它与血量上限对不上。
+		#    （快照里带 ut 是为了**新单位**能被正确地建出来，见上面那段。）
 		u.hp = float(su.get("h", u.hp))
 		u.moving = bool(su.get("m", 0))
 		# 队长 id：缺字段就保持本地现状（同上，别把「没有队长」当成默认值覆盖掉）

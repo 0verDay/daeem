@@ -91,6 +91,17 @@ var zones_names: Dictionary = {}
 ## `zone.build_from_map` 不为任何区块落中心建筑（行为与加这个功能之前一致）。
 var zones_centers: Dictionary = {}
 var zones_production: Dictionary = {}
+## ★ 每个区块的**区划种类**：id → kind 字符串（"food" / "gold" / "population"）。
+##
+## 来源是 `zone_list[].kind`（地图编辑器「区划」页签里选的那个种类）。三种用法：
+##   · 决定这个区划**能做哪些特化**（需求：粮食区划仅能黄金 / 人口特化…）；
+##   · 决定界面上显示的区划种类；
+##   · 编辑器「选种类」时同步的那套预设产量 —— ⚠️ 游戏侧**不**拿它兜底：
+##     地图没写 `production` 的区划一律算 0（用户确认保持老图行为）。
+##
+## ★ 缺字段（老图 / 手写图）或不认识的 kind → **不登记** → `zone.gd` 按
+##   `cfg.zone_kind_default()`（= population）处理 —— 判据只在那一处。
+var zones_kinds: Dictionary = {}
 ## ★ 每个区块的**人口上限**：id → float（人）。缺字段的区块**不在这张表里** →
 ## `zone.gd` 按默认 1 处理（用户需求：「每个区块都需要有人口上限，如果没有填则默认为 1」）。
 ##
@@ -157,7 +168,7 @@ func _load(path: String, cfg: ConfigRes) -> bool:
 	factions_meta = d.get("factions", []) if d.get("factions", []) is Array else []
 	prefab_buildings = _read_buildings(d.get("buildings", []))
 	prefab_units = _read_units(d.get("units", []))
-	_read_zones(d.get("zones", null), d.get("zone_list", null))
+	_read_zones(cfg, d.get("zones", null), d.get("zone_list", null))
 
 	forest_mult = cfg.unit_forest_mult
 	# ★ 读 cfg 上载入时算好的字段（与 grid.directions / pathfinder 同一个来源）：
@@ -247,17 +258,20 @@ func _read_faction_bases(v: Variant) -> void:
 		faction_bases[fid] = p
 
 
-## 读区块网格 + 名字表（地图编辑器导出的地图才有）。
+## 读区块网格 + 名字表 + 每种区划的种类（地图编辑器导出的地图才有）。
 ##
-## 缺字段 / 格式不认识 → 两张都留空 → zone 走「均分」的老路（行为与加这个字段之前一致）。
+## 缺字段 / 格式不认识 → 几张表都留空 → zone 走「均分」的老路（行为与加这个字段之前一致）。
+## ★ `kind`（区划种类）只登记 `cfg` 表里认识的 id：写错的那个区划按默认种类处理
+##   （判据在 logic/zone.gd），这里不塞假种类、也不报错。
 ## 网格原样存起来（不在这里翻译成区块对象：那是 logic/zone.gd 的事，
 ## 地图只管「地图长什么样」，不管「区块怎么被占领」）。
-func _read_zones(grid_v: Variant, list_v: Variant) -> void:
+func _read_zones(cfg: ConfigRes, grid_v: Variant, list_v: Variant) -> void:
 	zones_grid = []
 	zones_names = {}
 	zones_centers = {}
 	zones_production = {}
 	zones_population_caps = {}
+	zones_kinds = {}
 	if typeof(grid_v) != TYPE_ARRAY:
 		return
 	zones_grid = grid_v
@@ -273,6 +287,12 @@ func _read_zones(grid_v: Variant, list_v: Variant) -> void:
 		var name := String(z.get("name", "")).strip_edges()
 		if name != "":
 			zones_names[zid] = name
+		# ★ 区划种类（编辑器「区划」页签里选的）：**只登记表里认识的 id** ——
+		#   手改地图写一个不认识的 kind 时，那个区划按默认种类处理（判据在 zone.gd），
+		#   而不是在这里塞一个假种类进去。
+		var kind := String(z.get("kind", "")).strip_edges()
+		if kind != "" and cfg != null and cfg.has_zone_kind(kind):
+			zones_kinds[zid] = kind
 		# ★ 区划中心（编辑器保证每个区块都有；老地图没有 → 跳过）
 		var c: Variant = z.get("center", null)
 		if typeof(c) == TYPE_ARRAY and (c as Array).size() >= 2:

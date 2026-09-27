@@ -11,7 +11,7 @@ extends RefCounted
 ##     cfg.cell_px                           # 像素换算只在这里（view/ 用）
 ##     cfg.num("combat.aggro_range", 4.0)    # 取任意路径，带默认值
 ##
-## ⚠️ 数值路径用 `.` 分隔（"combat.general.damage"）。返回的是 JSON 里的原始类型，
+## ⚠️ 数值路径用 `.` 分隔（"unit.types.spearman.damage"）。返回的是 JSON 里的原始类型，
 ##    取标量请走 num / int_val / bool_val，别自己 as float（GDScript 会静默变 0）。
 ##
 
@@ -84,19 +84,27 @@ var path_corner_round_enabled: bool = true
 var path_corner_round_cutting: float = 0.35
 var path_corner_round_min_angle_deg: float = 20.0
 
-## ---- 亲兵数值（unit_*_of(kind) 每帧每单位都会查一次）----
-var sub_hp_max: float = 80.0
-var sub_speed: float = 0.6
-var sub_damage: float = 14.0
-var sub_range: float = 1.0
-var sub_cooldown_sec: float = 1.1
-var sub_radius_factor: float = 0.065
+## ---- 单位类型表（config.json 的 unit.types / unit.classes / unit.general）----
+##
+## ★★ 这是「单位是什么」的唯一来源（见 data/config.json 的 _types_comment）：
+##   · `_unit_types`   —— 类型 id → 整套数值（血量 / 速度 / 半径 / 战斗三件套 / 兵种标签）
+##   · `_unit_classes` —— 兵种大类（步兵 / 骑兵）的显示名
+##   · `_general_types`—— 三个开局将领（以及 general_N）各自的类型，来自 unit.general.types
+## ★ 与下面的战斗数值表同一条规矩：**载入时整理好、之后只读**。
+##   这些查询全在「每帧每单位」的路径上（unit_hp_of / unit_combat_of / unit_radius_of），
+##   所以表里存的是**算好的标量**，而不是每次去 split(".") 下潜 JSON。
+var _unit_types: Dictionary = {}
+var _unit_classes: Dictionary = {}
+var _general_types: Array = []
+## 每个将领开局带几个**同类型**的兵（原 unit.subordinate.count）—— 见 unit.general.escort
+var general_escort: int = 0
+## 查不到类型时的兜底战斗数值（= 第一个将领类型，也就是长枪兵那一档）。
+## ★ 为什么兜底是长枪兵而不是测试敌人：本项目踩过「二元判断（是将领吗？不是就当敌人）
+##   把新加的类型静默当成测试敌人」这个坑（见 docs/pitfalls.md 5.x）——
+##   兜底落在敌人身上就会让「漏配一个类型」表现为「它变成了 60 血」。
+var _combat_fallback: Dictionary = {"damage": 10.0, "range": 1.0, "cooldown_sec": 1.2}
 
 ## 战斗数值表：**载入时建好、之后只读**（原先每次 unit_combat_of() 都新建一个字典）
-var _combat_general: Dictionary = {}
-var _combat_enemy: Dictionary = {}
-var _combat_subordinate: Dictionary = {}
-
 var combat_enabled: bool = true
 var aggro_range: float = 4.0
 var leash_factor: float = 1.8
@@ -115,9 +123,9 @@ var flash_sec: float = 0.22
 ##   每次都要算一遍常数。
 var flash_sec_safe: float = 0.22
 var building_damage: float = 40.0
-var general_damage: float = 26.0
-var general_range: float = 1.0
-var general_cooldown: float = 0.9
+## 测试敌人的那几个数（单位类型的战斗数值已搬进 unit.types，见 _unit_types）。
+## ★ 保留这几个字段只是「同一份数的另一个名字」：_cache_unit_types() 会把
+##   unit.types.enemy 那一档抄进来，老调用方与测试按它们读仍然对得上。
 var enemy_damage: float = 10.0
 var enemy_range: float = 1.0
 var enemy_cooldown: float = 1.2
@@ -164,6 +172,18 @@ var _spec_list: Array = []
 var _spec_by_id: Dictionary = {}
 var _spec_cost: Dictionary = {}
 var _spec_time_sec: float = 0.0
+
+## ---- 区划种类（config.json 的 zone_kind 段）----
+## ★★ 游戏里只有三种区划（粮食 / 黄金 / 人口），**没有「默认区划」那一档**：
+##   地图没写 kind 的区划（老图 / 手写图）按 `zone_kind_default()` 那一种算。
+## ★ 每种给两样东西：
+##   · `production` —— **编辑器选种类时同步进数字输入框的预设值**（每地块每秒）；
+##     游戏里**不**拿它当兜底：地图没写 production 的区划一律算 0（用户确认保持老图行为）。
+##   · `specs`      —— 这种区划**能选**哪些特化（需求：粮食区划仅能黄金 / 人口特化…）。
+## ★ 同样是**载入时整理好、之后只读**（区划详情每帧读名字 / 特化判定每次点击都读白名单）。
+var _zone_kind_default: String = "population"
+var _zone_kind_list: Array = []
+var _zone_kind_by_id: Dictionary = {}
 
 var respawn_sec: float = 0.0
 var destructible_base: bool = false
@@ -247,13 +267,6 @@ func _cache_scalars() -> void:
 	path_corner_round_cutting = num("path.corner_round_cutting", 0.35)
 	path_corner_round_min_angle_deg = num("path.corner_round_min_angle_deg", 20.0)
 
-	sub_hp_max = num("unit.subordinate.hp_max", 80.0)
-	sub_speed = num("unit.subordinate.speed", unit_speed)
-	sub_damage = num("unit.subordinate.damage", 14.0)
-	sub_range = num("unit.subordinate.range", 1.0)
-	sub_cooldown_sec = num("unit.subordinate.cooldown_sec", 1.1)
-	sub_radius_factor = num("unit.subordinate.radius_factor", unit_radius_factor)
-
 	combat_enabled = bool_val("combat.enabled", true)
 	aggro_range = num("combat.aggro_range", 4.0)
 	leash_factor = num("combat.leash_factor", 1.8)
@@ -263,12 +276,6 @@ func _cache_scalars() -> void:
 	flash_sec = num("combat.flash_sec", 0.22)
 	flash_sec_safe = maxf(0.01, flash_sec)
 	building_damage = num("combat.building_damage", 40.0)
-	general_damage = num("combat.general.damage", 26.0)
-	general_range = num("combat.general.range", 1.0)
-	general_cooldown = num("combat.general.cooldown_sec", 0.9)
-	enemy_damage = num("combat.enemy.damage", 10.0)
-	enemy_range = num("combat.enemy.range", 1.0)
-	enemy_cooldown = num("combat.enemy.cooldown_sec", 1.2)
 
 	zone_cols = int_val("zone.zone_cols", 6)
 	zone_rows = int_val("zone.zone_rows", 4)
@@ -288,18 +295,205 @@ func _cache_scalars() -> void:
 	destructible_base = bool_val("pvp.destructible_base", false)
 	sim_max_dt = num("sim.max_dt", 0.05)
 
-	enemy_speed = num("debug.enemy_speed", 0.45)
-	enemy_hp = num("debug.enemy_hp", 60.0)
-
 	_cache_techs()
 	_cache_upgrades()
+	_cache_zone_kinds()
 	_cache_zone_specs()
+	# ★★ 单位类型表（unit.types / unit.classes / unit.general）—— 必须在其它
+	#   单位字段之后调：它拿 unit_speed / unit_hp_max / unit_radius_factor 当兜底值，
+	#   并且会顺手把「测试敌人」那几个兼容字段填好。
+	#   于是 enemy_hp / enemy_speed / enemy_damage… 不再是**另一份**配置，
+	#   而是这张表里 enemy 那一档的别名（见 _cache_unit_types）。
+	_cache_unit_types()
 
-	# 战斗数值表：建一次、之后只读。
-	# ⚠️ 调用方**不要改**返回的字典（它是共享的）—— 要改数值就改 JSON 后重新 load。
-	_combat_general = {"damage": general_damage, "range": general_range, "cooldown_sec": general_cooldown}
-	_combat_enemy = {"damage": enemy_damage, "range": enemy_range, "cooldown_sec": enemy_cooldown}
-	_combat_subordinate = {"damage": sub_damage, "range": sub_range, "cooldown_sec": sub_cooldown_sec}
+
+# ------------------------------------------------------------------
+# 单位类型（config.json 的 unit.types / unit.classes / unit.general）
+#
+# ★★ 这一层回答四个问题（判定与文案在别处）：
+#   1. 有哪些单位类型、各自什么数值（unit_hp_of / unit_speed_of / unit_radius_of /
+#      unit_combat_of —— 全都是「每帧每单位」的查询）；
+#   2. 某个 kind 属于哪个单位类型（unit_type_of：兵种 id 就是它自己，
+#      将领 kind 走 unit.general.types）；
+#   3. 它是**步兵还是骑兵**、远不远（unit_class_of / unit_is_ranged）——
+#      「后续按兵种做额外伤害」就读这两个；
+#   4. 三个开局将领各是什么类型、各带几个同类型的兵（general_type_at / general_escort_count）。
+# ⚠️ 表里查不到的 kind 一律**退回兜底值**（而不是当成测试敌人）：手写地图里写错一个
+#   kind 不该让那个单位变成 60 血的敌人 —— 那正是本项目踩过的坑（见 _combat_fallback）。
+# ------------------------------------------------------------------
+
+## 载入时整理单位类型表（**只读**，之后别再改它）。
+func _cache_unit_types() -> void:
+	_unit_types = {}
+	_unit_classes = {}
+	_general_types = []
+
+	# 1) 兵种大类（unit.classes）：id → 显示名（带 / 不带远近两种说法）
+	var raw_classes: Variant = get_path_value("unit.classes")
+	if typeof(raw_classes) == TYPE_DICTIONARY:
+		for cid in (raw_classes as Dictionary).keys():
+			var c: Variant = (raw_classes as Dictionary)[cid]
+			if typeof(c) != TYPE_DICTIONARY:
+				continue
+			var cd: Dictionary = c
+			_unit_classes[String(cid)] = {
+				"id": String(cid),
+				"name": String(cd.get("name", cid)),
+				"ranged_name": String(cd.get("ranged_name", cd.get("name", cid))),
+			}
+
+	# 2) 单位类型表（unit.types）
+	var raw: Variant = get_path_value("unit.types")
+	if typeof(raw) == TYPE_DICTIONARY:
+		for tid in (raw as Dictionary).keys():
+			var t: Variant = (raw as Dictionary)[tid]
+			if typeof(t) != TYPE_DICTIONARY:
+				continue
+			var td: Dictionary = t
+			var id := String(tid)
+			var cls := String(td.get("class", CLASS_INFANTRY))
+			if not _unit_classes.has(cls):
+				cls = CLASS_INFANTRY          # 写错 class 就当步兵，而不是留一个查不到的大类
+			_unit_types[id] = {
+				"id": id,
+				"name": String(td.get("name", id)),
+				"class": cls,
+				"ranged": bool(td.get("ranged", false)),
+				"hp_max": maxf(1.0, float(td.get("hp_max", unit_hp_max))),
+				"speed": maxf(0.0, float(td.get("speed", unit_speed))),
+				"radius_factor": clampf(float(td.get("radius_factor", unit_radius_factor)), 0.01, 0.5),
+				"combat": {
+					"damage": maxf(0.0, float(td.get("damage", 0.0))),
+					"range": maxf(0.0, float(td.get("range", 1.0))),
+					"cooldown_sec": maxf(0.01, float(td.get("cooldown_sec", 1.0))),
+				},
+			}
+
+	# 3) 开局将领（general_N 同序）各自的类型
+	var types: Variant = get_path_value("unit.general.types")
+	if typeof(types) == TYPE_ARRAY:
+		for item in (types as Array):
+			var sid := String(item)
+			if _unit_types.has(sid):
+				_general_types.append(sid)
+	if _general_types.is_empty() and _unit_types.has(UNIT_TYPE_SPEARMAN):
+		_general_types.append(UNIT_TYPE_SPEARMAN)
+	general_escort = maxi(0, int_val("unit.general.escort", 0))
+
+	# 4) 兜底值 + 测试敌人的兼容字段（都来自同一张表，不再是第二份配置）
+	var fb: Variant = _unit_types.get(String(_general_types[0]), null) if not _general_types.is_empty() else null
+	if typeof(fb) == TYPE_DICTIONARY:
+		_combat_fallback = (fb as Dictionary)["combat"]
+	var e: Variant = _unit_types.get(KIND_ENEMY, null)
+	if typeof(e) == TYPE_DICTIONARY:
+		var ed: Dictionary = e
+		var ec: Dictionary = ed["combat"]
+		enemy_hp = float(ed["hp_max"])
+		enemy_speed = float(ed["speed"])
+		enemy_damage = float(ec["damage"])
+		enemy_range = float(ec["range"])
+		enemy_cooldown = float(ec["cooldown_sec"])
+
+
+## 某个 kind 对应的**单位类型 id**。
+##   · 兵种 id（spearman / longbowman / rider / enemy…）→ 它自己；
+##   · general → unit.general.types[0]；general_N → types[N-1]；
+##   · 其它（写错的 kind）→ 原样返回，各 `unit_*_of()` 会退回兜底值。
+func unit_type_of(kind: String) -> String:
+	if _unit_types.has(kind):
+		return kind
+	var idx := general_index_of(kind)
+	if idx >= 0 and idx < _general_types.size():
+		return String(_general_types[idx])
+	return kind
+
+
+## kind 是不是「将领类」（general / general_N）？是的话返回它的序号（0 起），否则 -1。
+##
+## ★ 判据只看 kind 前缀，**不看 leader_id** —— 测试敌人的 leader_id 也是空的，
+##   靠「有没有队长」分不出将领与敌人（见 logic/unit.gd 的 is_general()）。
+## ★ 集中在这里一处：unit.gd / world.gd / 渲染都调它，免得各写一份前缀判断慢慢漂开。
+## ★★ 它是 **static** 的（只读常量、不看配置实例）：`unit.is_general()` 要在
+##    「手里只有一个 preload 常量、没有 cfg 实例」的地方调它（例如渲染与单测）。
+static func general_index_of(kind: String) -> int:
+	if kind == KIND_GENERAL:
+		return 0
+	if kind.begins_with("general_"):
+		var tail := kind.substr(8)
+		if tail.is_valid_int():
+			return maxi(0, int(tail) - 1)
+	return -1
+
+
+## 这个 kind 是不是将领类
+func is_general_kind(kind: String) -> bool:
+	return general_index_of(kind) >= 0
+
+
+## 表里有没有这个单位类型
+func has_unit_type(id: String) -> bool:
+	return _unit_types.has(id)
+
+
+## 全部单位类型 id（**顺序不保证** —— 只用来遍历，不当界面顺序）
+func unit_type_ids() -> Array:
+	return _unit_types.keys()
+
+
+## 某个类型的条目（**只读**，别改返回的字典）；查不到返回空字典
+func unit_type_entry(id: String) -> Dictionary:
+	var e: Variant = _unit_types.get(unit_type_of(id), null)
+	return e if typeof(e) == TYPE_DICTIONARY else {}
+
+
+## 三个开局将领（以及 general_N）各自的类型 id
+func general_types() -> Array:
+	return _general_types
+
+
+## 第 i 个将领（0 起）的类型；越界退回第一个（再没有就退回 general）
+func general_type_at(i: int) -> String:
+	if _general_types.is_empty():
+		return KIND_GENERAL
+	if i < 0 or i >= _general_types.size():
+		return String(_general_types[0])
+	return String(_general_types[i])
+
+
+## 每个将领开局带几个同类型的兵
+func general_escort_count() -> int:
+	return general_escort
+
+
+## 兵种大类：infantry（步兵）/ cavalry（骑兵）—— 「后续额外伤害」的主键
+func unit_class_of(id: String) -> String:
+	var e := unit_type_entry(id)
+	return String(e.get("class", CLASS_INFANTRY))
+
+
+## 是不是远程单位（长弓兵那种；将来的马弓手也是骑兵 + 远程）
+func unit_is_ranged(id: String) -> bool:
+	return bool(unit_type_entry(id).get("ranged", false))
+
+
+## 大类的显示名（步兵 / 骑兵）—— 不带远近
+func unit_class_name(id: String) -> String:
+	var c: Variant = _unit_classes.get(unit_class_of(id), null)
+	if typeof(c) != TYPE_DICTIONARY:
+		return ""
+	return String((c as Dictionary).get("name", ""))
+
+
+## 大类的显示名，**带远近**（远程步兵 / 远程骑兵 / 步兵 / 骑兵）—— HUD 用这一条。
+## ★ 「弓箭手算作远程步兵、马弓手算作远程骑兵」就是这一行拼出来的。
+func unit_class_line(id: String) -> String:
+	var c: Variant = _unit_classes.get(unit_class_of(id), null)
+	if typeof(c) != TYPE_DICTIONARY:
+		return ""
+	var cd: Dictionary = c
+	if unit_is_ranged(id):
+		return String(cd.get("ranged_name", cd.get("name", "")))
+	return String(cd.get("name", ""))
 
 
 # ------------------------------------------------------------------
@@ -446,62 +640,71 @@ func unit_radius() -> float:
 	return unit_radius_factor
 
 
-## 某个单位种类对应的单位半径（格）。
+## 某个单位类型对应的单位半径（格）。查不到类型就用兜底值。
 ##
-## ★ 亲兵比将领小一点，所以「谁大谁小」一眼能看出来 —— 但那只是**体积**，
-##   它会影响判定（警戒距离减体积、攻击距离加体积），所以是个逻辑参数而不是纯美术参数。
+## ★ 半径是**逻辑参数**而不是纯美术参数：警戒距离要减它、攻击距离要加它
+##   （见 combat.gd），所以它必须和战斗数值放在同一张表里。
 ##   碰撞半径是另一套（unit.collision_radius），两者刻意分开：碰撞要的是「挤不挤」，
-##   体积要的是「占多大地方」，混在一起会让小单位挤不过窄口。
-func unit_radius_of(kind: String) -> float:
-	if kind == KIND_SUBORDINATE:
-		return sub_radius_factor
-	return unit_radius_factor
+##   半径要的是「占多大地方」，混在一起会让小单位挤不过窄口。
+## ⚠️ 参数可以是**单位类型 id**，也可以是 kind（将领 kind 会自动换算，见 unit_type_of）。
+func unit_radius_of(id: String) -> float:
+	var e := unit_type_entry(id)
+	if e.is_empty():
+		return unit_radius_factor
+	return float(e.get("radius_factor", unit_radius_factor))
 
 
-## 单位种类 id（与 logic/unit.gd 的 const 保持一致）。
+## 单位类型 id 常量（与 logic/unit.gd 的 const 保持一致）。
 ## ⚠️ 这里刻意只是字符串字面量而不是 preload：config.gd 是依赖图最底层，
 ##    让它去 import unit.gd 会形成环（unit.gd 已经 preload 了 config.gd）。
-const KIND_SUBORDINATE := "subordinate"
+##    unit.gd 那边用 `const X := ConfigRes.X` 引用这里，保证只有一处字面量。
+const KIND_GENERAL := "general"
+const KIND_ENEMY := "enemy"
+const UNIT_TYPE_SPEARMAN := "spearman"
+const UNIT_TYPE_LONGBOWMAN := "longbowman"
+const UNIT_TYPE_RIDER := "rider"
+## 兵种大类（unit.classes）—— 后续「按兵种做额外伤害」的主键。
+const CLASS_INFANTRY := "infantry"
+const CLASS_CAVALRY := "cavalry"
 
 
-## 某个单位种类的最大生命
-func unit_hp_of(kind: String) -> float:
-	match kind:
-		"enemy":
-			return enemy_hp
-		KIND_SUBORDINATE:
-			return sub_hp_max
-	return unit_hp_max
+## 某个单位类型的最大生命
+func unit_hp_of(id: String) -> float:
+	var e := unit_type_entry(id)
+	if e.is_empty():
+		return unit_hp_max
+	return float(e.get("hp_max", unit_hp_max))
 
 
-## 某个单位种类的基础移动速度（格 / 秒；森林减速在 unit.speed() 里另外乘）
-func unit_speed_of(kind: String) -> float:
-	match kind:
-		"enemy":
-			return enemy_speed
-		KIND_SUBORDINATE:
-			return sub_speed
-	return unit_speed
+## 某个单位类型的基础移动速度（格 / 秒；森林减速在 unit.speed() 里另外乘）
+func unit_speed_of(id: String) -> float:
+	var e := unit_type_entry(id)
+	if e.is_empty():
+		return unit_speed
+	return float(e.get("speed", unit_speed))
 
 
-## 某个单位种类的攻击数值 {damage, range, cooldown_sec}。
+## 某个单位类型的攻击数值 {damage, range, cooldown_sec}。
 ## ★ 返回的是**共享的只读字典**（载入时建好），调用方不许改它 ——
 ##   原先这里每次都新建一个字典，而它每帧每单位都要被读一次。
-func unit_combat_of(kind: String) -> Dictionary:
-	match kind:
-		"enemy":
-			return _combat_enemy
-		KIND_SUBORDINATE:
-			return _combat_subordinate
-	return _combat_general
+func unit_combat_of(id: String) -> Dictionary:
+	var e := unit_type_entry(id)
+	if e.is_empty():
+		return _combat_fallback
+	var c: Variant = e.get("combat", null)
+	return c if typeof(c) == TYPE_DICTIONARY else _combat_fallback
 
 
-## 某个单位种类的显示名
-func unit_name_of(kind: String) -> String:
-	var v = get_path_value("unit.%s.name" % kind)
-	if typeof(v) == TYPE_STRING:
-		return v
-	return "敌人" if kind == "enemy" else "将领"
+## 某个单位类型的显示名（长枪兵 / 长弓兵 / 骑手 / 测试敌人）。将领类返回「将领」。
+func unit_name_of(id: String) -> String:
+	# ⚠️ 先判将领：general / general_N 的 unit_type_of() 会算出一个兵种，
+	#    不先拦住的话「将领 2」会显示成「长弓兵」（那是它的**类型**，不是它的名字）。
+	if is_general_kind(id) and not _unit_types.has(id):
+		return "将领"
+	var e := unit_type_entry(id)
+	if e.is_empty():
+		return "单位"
+	return String(e.get("name", "单位"))
 
 
 func zone_capture_color(faction: String) -> Color:
@@ -646,6 +849,126 @@ func upgrade_cost_to(type: String, level: int) -> Dictionary:
 func upgrade_time_to(type: String, level: int) -> float:
 	var row := upgrade_row(type, level + 1)
 	return maxf(0.0, float(row.get("time_sec", 0.0)))
+
+
+# ------------------------------------------------------------------
+# 区划种类（config.json 的 zone_kind 段）
+#
+# ★★ 这一层只回答四件事（判定与文案在别处）：
+#   1. 有哪几种区划、各自叫什么（`zone_kind_list` / `zone_kind_name`）；
+#   2. 地图没写 kind 时算哪一种（`zone_kind_default`）；
+#   3. 选这个种类时编辑器该同步出什么产量（`zone_kind_production`；
+#      ⚠️ 游戏侧**不用**它兜底：没写 production 就是 0）；
+#   4. 这个种类允许做哪些特化（`zone_kind_specs` / `zone_kind_allows_spec`）。
+# ⚠️ 表里查不到的 kind 一律退回 `default` 那一档 —— 地图可以被手改，
+#   写一个不认识的 kind 不该让游戏崩，也不该让那个区划凭空多出产量。
+# ------------------------------------------------------------------
+
+func _cache_zone_kinds() -> void:
+	_zone_kind_list = []
+	_zone_kind_by_id = {}
+	var raw: Variant = get_path_value("zone_kind.list")
+	if typeof(raw) == TYPE_ARRAY:
+		for item in (raw as Array):
+			if typeof(item) != TYPE_DICTIONARY:
+				continue
+			var src: Dictionary = item
+			var id := String(src.get("id", ""))
+			if id == "":
+				continue                       # 没有 id 就查不到，条目直接丢掉
+			# 预设产能：只留三档、负数当 0（与地图那边的夹法一致）
+			var prod_out := {"food": 0.0, "gold": 0.0, "population": 0.0}
+			var prod: Variant = src.get("production", {})
+			if typeof(prod) == TYPE_DICTIONARY:
+				for k in prod_out.keys():
+					prod_out[k] = maxf(0.0, float((prod as Dictionary).get(k, 0.0)))
+			# 允许的特化 id 列表（顺序 = 界面上的顺序）
+			var spec_out: Array = []
+			var specs: Variant = src.get("specs", [])
+			if typeof(specs) == TYPE_ARRAY:
+				for s in (specs as Array):
+					var sid := String(s)
+					if sid != "" and not spec_out.has(sid):
+						spec_out.append(sid)
+			var entry := {
+				"id": id,
+				"name": String(src.get("name", id)),
+				"line": String(src.get("line", "")),
+				"production": prod_out,
+				"specs": spec_out,
+			}
+			_zone_kind_list.append(entry)
+			_zone_kind_by_id[id] = entry
+
+	# 默认种类：配置里写了且真的存在才用它；否则优先 "population"（用户确认的默认），
+	# 再否则退回第一个条目。
+	# ⚠️ 不能直接取「表里的第一个」：配置顺序一变，默认种类就跟着变
+	#    （`zone_kind.list` 的第一个恰好是 food，那会让「地图没写 kind」变成粮食区划）。
+	var want := str_val("zone_kind.default", "")
+	if want != "" and _zone_kind_by_id.has(want):
+		_zone_kind_default = want
+	elif _zone_kind_by_id.has("population"):
+		_zone_kind_default = "population"
+	elif not _zone_kind_list.is_empty():
+		_zone_kind_default = String((_zone_kind_list[0] as Dictionary)["id"])
+	else:
+		_zone_kind_default = "population"
+
+
+## 全部区划种类（顺序 = 界面上显示的顺序；**只读**，别改返回的字典）
+func zone_kind_list() -> Array:
+	return _zone_kind_list
+
+
+## 地图没写 kind 的区划算哪一种（用户确认 = population）
+func zone_kind_default() -> String:
+	return _zone_kind_default
+
+
+func has_zone_kind(id: String) -> bool:
+	return _zone_kind_by_id.has(id)
+
+
+## 某个种类的条目；**查不到退回默认那一档**（手改地图写错 kind 时的兜底）。
+func zone_kind_entry(id: String) -> Dictionary:
+	var k := id
+	if not _zone_kind_by_id.has(k):
+		k = _zone_kind_default
+	if not _zone_kind_by_id.has(k) and not _zone_kind_list.is_empty():
+		k = String((_zone_kind_list[0] as Dictionary)["id"])
+	return _zone_kind_by_id.get(k, {})
+
+
+## 某个种类的显示名（查不到 → 默认那一档的名字；再查不到 → id 原样）
+func zone_kind_name(id: String) -> String:
+	var e := zone_kind_entry(id)
+	if e.is_empty():
+		return id
+	return String(e.get("name", id))
+
+
+## 这个种类「选种类时同步进数字输入框」的那三个数（每地块每秒）。
+## ⚠️ 拷贝一份给调用方：条目里的字典是**共享只读**的，被谁改一下就会污染整张表。
+func zone_kind_production(id: String) -> Dictionary:
+	var e := zone_kind_entry(id)
+	var p: Variant = e.get("production", {})
+	var out := {"food": 0.0, "gold": 0.0, "population": 0.0}
+	if typeof(p) == TYPE_DICTIONARY:
+		for k in out.keys():
+			out[k] = float((p as Dictionary).get(k, 0.0))
+	return out
+
+
+## 这个种类允许做哪些特化（id 数组）
+func zone_kind_specs(id: String) -> Array:
+	var e := zone_kind_entry(id)
+	var v: Variant = e.get("specs", [])
+	return v if typeof(v) == TYPE_ARRAY else []
+
+
+## 这个种类能不能做这种特化（逻辑层「按种类限制特化」的唯一判据）
+func zone_kind_allows_spec(kind: String, spec_id: String) -> bool:
+	return zone_kind_specs(kind).has(spec_id)
 
 
 # ------------------------------------------------------------------

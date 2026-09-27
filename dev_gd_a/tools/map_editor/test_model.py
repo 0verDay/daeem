@@ -197,6 +197,12 @@ def t_legacy_roundtrip_is_byte_stable() -> None:
     with_prod = [z["id"] for z in out["zone_list"] if "production" in z]
     eq(with_prod, [], "★ 没配过产能的区块导出时不写 production")
     # ⚠️ 反过来的那一半（配过就一定要写）在 [12] 里，用随游戏发布的 test_map.json 验。
+    # ★★ 区划种类（本轮）：**每个区块都写** —— 用户确认「没有默认区划了，
+    #    所有区划默认值都改为人口区划」，所以老图的区块带上 population 是**行为等价**的
+    #    （游戏侧缺 kind 时也算 population）；`kind` 只决定能做哪些特化，不影响产量。
+    kinds = {z["id"]: z.get("kind") for z in out["zone_list"]}
+    eq(sorted(set(kinds.values())), ["population"],
+       "★ 老地图的区块导出时都带上默认种类（人口区划）")
 
     # 区块网格与老实现的均分结果一致：A1 = x 0..3 / y 0..3
     zones = out["zones"]
@@ -489,7 +495,12 @@ def t_zone_center_and_production() -> None:
     # ---- 产能
     c = m.add_zone("襄阳")
     m.assign_tile(1, 1, c.zone_id)
-    eq(m.zone_production(c.zone_id, "food"), 0.0, "默认产能是 0")
+    # ★★ 本轮：新建的区划**自带默认种类的预设产能**（用户确认：所有区划默认值都改为
+    #    人口区划）—— 所以 n 不再是 0，而是 0 粮食 / 0 黄金 / 0.15 人口。
+    eq(m.zone_kind(c.zone_id), "population", "新区块的默认种类是人口区划")
+    eq(m.zone_production(c.zone_id, "food"), 0.0, "人口区划的预设粮食产能是 0")
+    eq(m.zone_production(c.zone_id, "population"), 0.15,
+       "★ 新区块默认带人口区划的预设（每地块每秒 0.15 人口）")
     # ⚠️ `set_zone_production` 的返回值是「**有没有变化**」，不是「成没成功」——
     #    与 `set_zone_center` / `set_faction_base` 一致（调用方靠它决定推不推撤销栈）。
     ok(m.set_zone_production(c.zone_id, "food", "1.5"), "填粮食产能（字符串也认）")
@@ -497,7 +508,7 @@ def t_zone_center_and_production() -> None:
     ok(not m.set_zone_production(c.zone_id, "food", 1.5), "填同一个值 → 没变化（返回 False）")
     eq(m.zone_production(c.zone_id, "food"), 1.5, "粮食 1.5")
     eq(m.zone_production(c.zone_id, "gold"), 2.0, "黄金 2")
-    eq(m.zone_production(c.zone_id, "population"), 0.0, "人口没填 → 0")
+    eq(m.zone_production(c.zone_id, "population"), 0.15, "人口那一档没被碰 → 还是预设值")
     ok(m.zone_has_production(c.zone_id), "★ 有非零产能 → 导出时要写 production")
     # ★ 负数夹到 0（产能不是消耗）；这算「有变化」，所以返回 True 且值真的变了
     eq(m.set_zone_production(c.zone_id, "food", -3), True, "负数照样写进去（夹到 0）")
@@ -520,10 +531,12 @@ def t_zone_center_and_production() -> None:
     d = mapfile.model_to_dict(m)
     entries = {z["id"]: z for z in d["zone_list"]}
     eq(entries[c.zone_id]["center"], [1, 1], "襄阳的中心写对了（导出坐标系）")
-    eq(entries[c.zone_id]["production"], {"food": 1.5, "gold": 999, "population": 0},
+    eq(entries[c.zone_id]["production"], {"food": 1.5, "gold": 999, "population": 0.15},
        "★ 产能是整对象写出去（缺的档补 0；小数照原样）")
-    ok(all("production" not in z for z in d["zone_list"] if z["id"] != c.zone_id),
-       "★ 没配过产能的区块不写 production")
+    # ★ 其余区块写的是它们**自己的默认预设**（新建时就带上了，不是「没配过就不写」）
+    others = [z for z in d["zone_list"] if z["id"] != c.zone_id]
+    ok(all(z.get("production") == {"food": 0, "gold": 0, "population": 0.15} for z in others),
+       "★ 其它区块写的是默认人口区划的预设产能（新建即带上）")
     # 出口那一层还要求「一个都不缺中心」——正常是在 do_export 前由 blockers() 保证，
     # 这里把剩下的补上（本用例中途删过一个区块，所以有一个区划缺中心）
     mapfile.fill_missing_centers(m)
@@ -916,6 +929,128 @@ def t_rect_selection() -> None:
     ok((5, 5) not in m.rect_tiles(0, 0, 2, 1), "框外的不算")
 
 
+def t_zone_kind() -> None:
+    """区划种类（用户需求：粮食 / 黄金 / 人口三种 + 选种类同步产能数字）。
+
+    这一节钉住**数据层**的那几条约定：
+      · 只有三种、没有「默认区划」；新建 / 老图读进来都是 population（用户确认）；
+      · `set_zone_kind(apply_preset=True)` = 换种类 **并且**把三个数字同步成预设值
+        （这就是界面上「选种类」那一下）；
+      · `apply_preset=False`（读地图时用）只改种类、**绝不动数字** ——
+        需求原文：「最终游戏中的区划产量以下方数字输入框中的产量为准」；
+      · 导出**每个区块都写 kind**；读回来一致；认不出的 kind → 默认那一档；
+      · 特化白名单（粮食区划仅能黄金 / 人口特化……）来自 config，不在代码里写死。
+    """
+    print("\n[20] 区划种类（数据层）")
+    cfg = load_config(PROJECT_DIR)
+    table = model_module.zone_kind_table(cfg)
+    eq(sorted(table), ["food", "gold", "population"], "★ 配置里有三种区划（没有「默认区划」）")
+    eq(model_module.zone_kind_default(cfg, table), "population",
+       "★ 地图没写 kind 时算人口区划（用户确认）")
+
+    m = MapModel(0, 0, table, model_module.zone_kind_default(cfg, table))
+    for y in range(2):
+        for x in range(2):
+            m.ensure_tile(x, y)
+            m.create_tile(x, y)
+    a = m.add_zone("东关")
+    m.assign_tile(0, 0, a.zone_id)
+    m.assign_tile(1, 0, a.zone_id)
+    m.set_zone_center(a.zone_id, 0, 0)
+    eq(a.kind, "population", "新建的区划默认是人口区划")
+    eq(m.zone_kind(a.zone_id), "population", "查询生效种类")
+    eq(m.zone_kind_name("food"), "粮食区划", "种类名字来自 config")
+    # ★ 新建即带上默认种类的预设数字（用户确认：所有区划默认值都改为人口区划）
+    eq([m.zone_production(a.zone_id, k) for k in ("food", "gold", "population")],
+       [0.0, 0.0, 0.15], "★ 新建的区划直接带人口区划的预设产能")
+    ok(m.zone_kind_is_preset(a.zone_id), "新建的区划与预设一致（界面不提示「已手改」）")
+
+    # ★★ 用户补充需求：「所有区划至少会有 0.1 人口每地块每秒的基础产能」
+    #    —— 三种区划的**预设**里都要给足 0.1 人口（粮食 / 黄金各自还带自己的 1 点）。
+    for kind_id in ("food", "gold", "population"):
+        ok(m.zone_kind_production(kind_id)["population"] >= 0.1 - 1e-9,
+           "★ %s 的预设人口产能 ≥ 0.1（实际 %g）"
+           % (kind_id, m.zone_kind_production(kind_id)["population"]))
+    eq(m.zone_kind_production("food")["food"], 1.0, "粮食区划仍然产 1 粮食")
+    eq(m.zone_kind_production("gold")["gold"], 1.0, "黄金区划仍然产 1 黄金")
+
+    # ---- 选种类：同时把数字同步成预设值（需求原文那一条）
+    ok(m.set_zone_kind(a.zone_id, "food"), "改成粮食区划（数字也跟着变）")
+    eq(m.zone_kind(a.zone_id), "food", "种类变了")
+    eq([m.zone_production(a.zone_id, k) for k in ("food", "gold", "population")],
+       [1.0, 0.0, 0.1],
+       "★ 粮食区划 → 每地块每秒 1 粮食 + 0.1 人口（所有区划都带 0.1 人口基础产能）")
+    ok(not m.set_zone_kind(a.zone_id, "food"), "点已经选中的那个种类 → 没变化（返回 False）")
+    ok(m.set_zone_kind(a.zone_id, "population"), "改成人口区划")
+    eq([m.zone_production(a.zone_id, k) for k in ("food", "gold", "population")],
+       [0.0, 0.0, 0.15], "★ 人口区划 → 每地块每秒 0.15 人口")
+    ok(m.zone_kind_is_preset(a.zone_id), "数字与预设一致")
+
+    # ---- 手改数字：种类不变，数字说了算（需求原文：游戏以数字为准）
+    ok(m.set_zone_production(a.zone_id, "food", 3), "手改一档数字")
+    ok(not m.zone_kind_is_preset(a.zone_id), "★ 改过数字 → 与预设不一致（界面会提示）")
+    eq(m.zone_kind(a.zone_id), "population", "★ 手改数字**不会**改种类")
+
+    # ---- apply_preset=False：只改种类（读地图时走这条，数字是权威的）
+    m.set_zone_kind(a.zone_id, "gold", apply_preset=False)
+    eq(m.zone_kind(a.zone_id), "gold", "只改种类")
+    eq(m.zone_production(a.zone_id, "food"), 3.0, "★ 数字一个都没动（文件里的产量是权威的）")
+    eq(m.set_zone_kind(a.zone_id, "banana"), False, "表里没有的种类 → 拒（不静默改成别的）")
+    eq(m.zone_kind(a.zone_id), "gold", "被拒之后种类还是原来的")
+    eq(m.set_zone_kind(999, "food"), False, "没有这个区块 → 拒")
+
+    # ---- 特化白名单（数据驱动，不在代码里写死）
+    ok(m.zone_kind_allows_spec("food", "gold"), "粮食区划能做黄金特化")
+    ok(m.zone_kind_allows_spec("food", "population"), "粮食区划能做人口特化")
+    ok(not m.zone_kind_allows_spec("food", "food"), "★ 粮食区划不能做粮食特化")
+    ok(m.zone_kind_allows_spec("population", "gold"), "人口区划能做黄金特化")
+    ok(not m.zone_kind_allows_spec("population", "population"), "★ 人口区划不能做人口特化")
+
+    # ---- 导出：每个区块都写 kind；数字照旧「只在非零时才写」
+    b = m.add_zone("江陵")
+    m.assign_tile(1, 1, b.zone_id)
+    m.set_zone_center(b.zone_id, 1, 1)
+    d = mapfile.model_to_dict(m)
+    entries = {z["id"]: z for z in d["zone_list"]}
+    eq(entries[a.zone_id]["kind"], "gold", "★ 种类写进 zone_list[].kind")
+    eq(entries[b.zone_id]["kind"], "population", "★ 没特意改过的新区块也写（默认人口区划）")
+    eq(entries[a.zone_id]["production"], {"food": 3, "gold": 0, "population": 0.15},
+       "★ 产能按**数字**导出（手改过的 3 也在）")
+    eq(entries[b.zone_id]["production"], {"food": 0, "gold": 0, "population": 0.15},
+       "★ 新建的区块带默认预设，导出时照写")
+    # 把 b 的三档都改成 0 → 「这个区块就是不产出」→ 不写 production
+    #   （游戏侧缺字段就是 0，**不**按种类预设兜底 —— 数字说了算）
+    for key in ("food", "gold", "population"):
+        m.set_zone_production(b.zone_id, key, 0)
+    entries2 = {z["id"]: z for z in mapfile.model_to_dict(m)["zone_list"]}
+    ok("production" not in entries2[b.zone_id],
+       "★ 三档都填 0 → 不写 production（游戏侧按 0 算，不按种类预设兜底）")
+
+    # ---- 往返：kind 与数字都读得回来；认不出的 kind → 默认那一档
+    again = mapfile.dict_to_model(json.loads(mapfile.dumps(m)), cfg)
+    eq(again.zone_kind(a.zone_id), "gold", "★ 往返：种类读得回来")
+    eq(again.zone_kind(b.zone_id), "population", "往返：默认种类也读得回来")
+    eq(again.zone_production(a.zone_id, "food"), 3.0, "★ 往返：手改过的数字没被预设覆盖")
+
+    weird = {
+        "cols": 2, "rows": 2,
+        "layout": ["..", ".."],
+        "zones": [[0, 0], [0, 0]],
+        "zone_list": [{"id": 0, "name": "怪区", "kind": "banana",
+                       "production": {"food": 2, "gold": 0, "population": 0}}],
+    }
+    w = mapfile.dict_to_model(weird, cfg)
+    eq(w.zone_kind(0), "population", "★ 手改地图写了个不认识的 kind → 默认人口区划")
+    eq(w.zone_production(0, "food"), 2.0, "★ 种类认不出来也不吞掉它的产量数字")
+    # 老地图（完全没有 zone_list / kind）：默认那一档，产能 0
+    # ⚠️ 尺寸要够被 6×4 均分切出格子来（2×2 那种小图会一块都切不出来）
+    old = mapfile.dict_to_model(
+        {"cols": 12, "rows": 8, "layout": ["." * 12] * 8}, cfg)
+    eq(old.zone(0).kind, "population", "★ 老地图的区块按默认种类（人口区划）算")
+    eq(old.zone_production(0, "population"), 0.0,
+       "★ 老地图没写 production → 产量 0（不按种类预设兜底）")
+
+
 def main() -> int:
     print("DAEEM 地图编辑器 · 数据层测试")
     print("工程目录：%s" % PROJECT_DIR)
@@ -936,6 +1071,7 @@ def main() -> int:
     t_memory_guard()
     t_faction_bases()
     t_rect_selection()
+    t_zone_kind()
     print("\n[CASE] test_model -> passed %d / failed %d" % (_PASSED, _FAILED))
     return 1 if _FAILED else 0
 

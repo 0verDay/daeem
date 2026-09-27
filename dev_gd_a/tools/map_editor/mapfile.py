@@ -9,9 +9,10 @@
       "layout": ["...", "...", ...],     // 地形：'.' 草地  '^' 森林  '#' 山地
 
       "zones": [[-1,0,0,...], ...],      // ★ 地块 → 区块 id，-1 = 不属于任何区块
-      "zone_list": [                     // ★ 区块表（名字 / 区划中心 / 产能 / 人口上限）
-        { "id": 0, "name": "A1", "center": [2, 1],
-          "production": {"food": 1.0, "gold": 1.0, "population": 0.5},
+      "zone_list": [                     // ★ 区块表（名字 / 种类 / 区划中心 / 产能 / 人口上限）
+        { "id": 0, "name": "A1", "kind": "population",   // ★ 区划种类（food / gold / population）
+          "center": [2, 1],
+          "production": {"food": 1.0, "gold": 1.0, "population": 0.5},   // 游戏以此为准
           "population_cap": 10,          // 没填就不写 → 游戏侧默认 1
           "x0": 0, "y0": 0, "x1": 3, "y1": 3, "tiles": [[0,0], ...] }
       ],
@@ -48,6 +49,8 @@ from .model import (
     MapError,
     MapModel,
     Zone,
+    zone_kind_default,
+    zone_kind_table,
 )
 
 #: 旧格式的单数 `base` 迁移给哪个阵营（见 `_migrate_legacy_base`）。
@@ -70,9 +73,10 @@ EDITOR_COMMENT: Tuple[str, ...] = (
     "DAEEM · 地图编辑器导出。",
     "exists：1 = 这个格子存在，0 = 地图外（Godot 里一律不可通行）。",
     "layout：'.' 草地　'^' 森林　'#' 山地；不存在的地块写 '.' 占位，一切以 exists 为准。",
-    "zones：地块 → 区块 id（-1 = 不属于任何区块）；zone_list 里是区块的名字。",
+    "zones：地块 → 区块 id（-1 = 不属于任何区块）；zone_list 里是区块的名字与种类。",
     "zone_list[].center：该区块的「区划中心」地块坐标；每个区块必须有且只有一个。",
-    "zone_list[].production：该区块的产能（每地块每秒）：food / gold / population。",
+    "zone_list[].kind：区划种类（food / gold / population），决定这个区划能做哪些特化。",
+    "zone_list[].production：该区块的产能（每地块每秒）：food / gold / population —— 游戏以此为准。",
     "zone_list[].population_cap：该区块的人口上限；不写 = 默认 1（涨到上限就不再涨）。",
     "zone_centers：地块 → 中心所属的区块 id（-1 = 不是任何区块的中心），由 center 推出来。",
     "factions / faction_bases：阵营表与每个阵营的大本营（每个阵营必须有且只有一个）。",
@@ -132,7 +136,8 @@ def dict_to_model(data: dict, cfg: Optional[dict] = None,
         if cols <= 0 or rows <= 0:
             raise MapError("地图缺少可用的 cols / rows（%s）" % (source or "内存数据"))
 
-    model = MapModel(cols, rows)
+    kinds = zone_kind_table(cfg)
+    model = MapModel(cols, rows, kinds, zone_kind_default(cfg, kinds))
 
     # ---- 地形：三种来源按优先级 layout → terrain 网格 → 全草地
     # ⚠️ 文件里的 x/y 是**从 (0,0) 起算的网格下标**，而模型对外用世界坐标
@@ -185,6 +190,9 @@ def dict_to_model(data: dict, cfg: Optional[dict] = None,
     # 区块的中心与产能（编辑器加的字段；老地图没有 → 保持 None / 0）
     _read_zone_centers(model, data.get("zone_centers"))
     _read_zone_production(model, data.get("zone_list"))
+    # ★ 区划种类（编辑器加的字段；老地图 / 没写 → 保持默认那一档 = population）。
+    #   ⚠️ 只改种类、**不动数字**：文件里的 production 是权威的，不能被预设覆盖。
+    _read_zone_kinds(model, data.get("zone_list"))
     # ★ 人口上限（编辑器加的字段；老地图 / 没填过 → 保持 None = 游戏侧默认 1）
     _read_zone_population_caps(model, data.get("zone_list"))
     # ★ 每个区块都必须有中心：从文件里读不到（老地图 / 手写图）的，
@@ -337,6 +345,26 @@ def _read_zone_population_caps(model: MapModel, zone_list) -> None:
         model.set_zone_population_cap(zid, item[POPULATION_CAP_KEY])
 
 
+## 读每个区块的区划种类：`zone_list[].kind = "food" / "gold" / "population"`。
+##
+## 宽容点（与别处一致）：
+##   · 缺字段（老图 / 手写图）→ 什么都不设（模型里已经是默认那一档 = population）；
+##   · 表里没有的 id（手改地图写错 / 以后新增的种类在这版编辑器里没有）→ **同样跳过**，
+##     那个区划按默认种类算 —— 不报错，也不把它悄悄改成别的已有种类；
+##   · ⚠️ `apply_preset=False`：**绝不动 production**。文件里那三个数字是权威的
+##     （需求原文：「最终游戏中的区划产量以下方数字输入框中的产量为准」）。
+def _read_zone_kinds(model: MapModel, zone_list) -> None:
+    if not isinstance(zone_list, list):
+        return
+    for item in zone_list:
+        if not isinstance(item, dict) or "kind" not in item:
+            continue
+        zid = _as_int(item.get("id"), -1)
+        if zid < 0 or model.zone(zid) is None:
+            continue
+        model.set_zone_kind(zid, str(item["kind"]).strip(), apply_preset=False)
+
+
 ## 给「还没有中心的区块」自动挑一个：该区块按行优先的第一个地块。
 ##
 ## ★ 只补空的，不动已经设过的 —— 设计者挪过的中心不能被导入流程改掉。
@@ -419,7 +447,7 @@ def _fill_zones_from_grid(model: MapModel, zones_raw, zone_list, source: str) ->
                 continue
             zone = by_id.get(zid)
             if zone is None:
-                zone = Zone(zid, names.get(zid, ""))
+                zone = Zone(zid, names.get(zid, ""), model.kind_default)
                 by_id[zid] = zone
             # 区块的 tiles 一律存**世界坐标**（模型对外都是世界坐标）
             zone.tiles.add((x - ox, y - oy))
@@ -427,7 +455,7 @@ def _fill_zones_from_grid(model: MapModel, zones_raw, zone_list, source: str) ->
     # zone_list 里注册过、但一个地块都没有的区块也要建出来（不然重命名 / 删不掉）
     for zid, name in names.items():
         if zid not in by_id:
-            by_id[zid] = Zone(zid, name)
+            by_id[zid] = Zone(zid, name, model.kind_default)
 
     model.zones = [by_id[k] for k in sorted(by_id)]
     model.zone_of = {}
@@ -462,7 +490,7 @@ def _fill_legacy_zones(model: MapModel, cfg: dict) -> None:
                 continue
             zid = zy * zone_cols + zx
             name = "%s%d" % (ROW_LETTERS[zy:zy + 1], zx + 1)
-            zone = Zone(zid, name)
+            zone = Zone(zid, name, model.kind_default)
             for y in range(y0, y1 + 1):
                 for x in range(x0, x1 + 1):
                     if model.existing[model.idx(x + ox, y + oy)]:
@@ -536,10 +564,16 @@ def model_to_dict(model: MapModel) -> dict:
             "id": zone.zone_id,
             "name": zone.name,
         }
+        # ★★ 区划种类：**每个区块都写**（用户确认「没有默认区划了」—— 三种之一必须明确）。
+        #   它只决定「这个区划能做哪些特化」；产量看下面的 production。
+        kind = zone.kind if zone.kind in model.kinds else model.kind_default
+        entry["kind"] = kind
         # 中心：每个区块都该有（`blockers()` 保证导出前一定有）；坐标同样搬到左上角
         if zone.center is not None:
             entry["center"] = [int(zone.center[0]) - x0, int(zone.center[1]) - y0]
         # 产能：只在真的有非零产能时才写 —— 没配产能的区块导出后与从前逐字节一致
+        # ⚠️ **游戏侧不按种类兜底**（用户确认保持老图行为）：没写 production 就是 0 产量，
+        #    所以「数字全填 0」与「种类预设是 0.15」不会打架 —— 以数字为准。
         if model.zone_has_production(zone.zone_id):
             entry["production"] = {
                 key: _clean_number(zone.production.get(key, 0.0)) for key in PRODUCTION_KEYS
@@ -668,13 +702,16 @@ def save_map(path, model: MapModel, indent: int = 2) -> Path:
 # 新建空地图
 # ----------------------------------------------------------------------
 
-def empty_map(cols: int, rows: int, start_terrain: Optional[str] = None) -> MapModel:
+def empty_map(cols: int, rows: int, start_terrain: Optional[str] = None,
+              cfg: Optional[dict] = None) -> MapModel:
     """新建一张地图。
 
     ``start_terrain`` 为 None → 整张画布都是「不存在」的虚线格（从零开始画）；
     给一个地形 id（"grass" / "forest" / "mountain"）→ 整张画布先铺满这种地形。
+    ``cfg`` 只用来取区划种类表（选种类时要同步的预设数字）；不传就用兜底表。
     """
-    model = MapModel(cols, rows)
+    kinds = zone_kind_table(cfg)
+    model = MapModel(cols, rows, kinds, zone_kind_default(cfg, kinds))
     if start_terrain is not None:
         if start_terrain not in TERRAIN_CHARS:
             start_terrain = TERRAIN_ORDER[0]

@@ -210,7 +210,7 @@ static func acquire_target(world, cfg: ConfigRes, u: UnitRes, idx: int = -1) -> 
 			if FactionRes.same_side(other.faction, u.faction):
 				continue
 			# 距离减去目标体积：允许「半个身子进射程」的目标被发现
-			var d: float = u.pos.distance_to(other.pos) - cfg.unit_radius_of(other.kind)
+			var d: float = u.pos.distance_to(other.pos) - cfg.unit_radius_of(other.unit_type)
 			if d <= aggro and d < best_d:
 				best_d = d
 				best = other
@@ -301,7 +301,7 @@ static func update_combat(world, cfg: ConfigRes, u: UnitRes) -> void:
 		u.drop_engagement()
 		return
 
-	var reach: float = u.combat_range(cfg) + cfg.unit_radius_of(t.kind)
+	var reach: float = u.combat_range(cfg) + cfg.unit_radius_of(t.unit_type)
 	var d: float = u.pos.distance_to(t.pos)
 
 	if d <= reach:                    # 进入攻击距离：站住打
@@ -423,7 +423,7 @@ static func update_towers(world, cfg: ConfigRes, dt: float) -> void:
 
 		var range_tiles: float = b.tower_range(cfg)
 		# 允许打到「半个身子进射程」的敌人：用**被瞄准的具体单位**的半径，
-		# 而不是写死 enemy —— 亲兵比将领小，写死会让射程口径不一致。
+		# 而不是写死某一种类型 —— 各单位类型的半径不同（骑兵最大、长弓兵最小），写死会让射程口径不一致。
 		var target = null
 		var best_d := INF
 		for u in world.units:
@@ -432,7 +432,7 @@ static func update_towers(world, cfg: ConfigRes, dt: float) -> void:
 			if FactionRes.same_side(u.faction, b.owner):
 				continue
 			var d: float = b.center().distance_to(u.pos)
-			if d <= range_tiles + cfg.unit_radius_of(u.kind) and d < best_d:
+			if d <= range_tiles + cfg.unit_radius_of(u.unit_type) and d < best_d:
 				best_d = d
 				target = u
 		b.last_target = target

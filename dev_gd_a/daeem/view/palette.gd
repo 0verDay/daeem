@@ -31,9 +31,11 @@ static func tile_rect(tx: int, ty: int, cfg: ConfigRes) -> Rect2:
 	return Rect2(Vector2(tx * c, ty * c), Vector2(c, c))
 
 
-## 单位半径（像素）—— 由逻辑半径（格）换算，不要各处自己写 cell * factor
-static func unit_radius_px(cfg: ConfigRes, kind: String = "general") -> float:
-	return cfg.unit_radius_of(kind) * cfg.cell_px
+## 单位半径（像素）—— 由逻辑半径（格）换算，不要各处自己写 cell * factor。
+## ⚠️ 参数是**单位类型 id**（unit_type），不是 kind：将领的 kind 是 general，
+##    它真正的半径为所属类型（长枪兵 / 长弓兵 / 骑手）的那一个。
+static func unit_radius_px(cfg: ConfigRes, unit_type: String = "spearman") -> float:
+	return cfg.unit_radius_of(unit_type) * cfg.cell_px
 
 
 ## 建筑在屏幕上的矩形。

@@ -219,7 +219,7 @@ func _test_hp_bonus(cfg) -> void:
 	ok(base != null, "有己方大本营")
 	ok(wall != null, "有一栋己方城墙（大本营旁的防御阵地）")
 	ok(leader != null, "有将领 general-1")
-	ok(sub != null, "有亲兵（用来验「只加将领、不加亲兵」）")
+	ok(sub != null, "有附属兵（用来验「只加将领、不加附属兵」）")
 	if base == null or wall == null or leader == null or sub == null:
 		return
 
@@ -240,7 +240,7 @@ func _test_hp_bonus(cfg) -> void:
 
 	ok(w.set_tech_active(T_LEADER, true), "启用「将领强化」")
 	near(leader.hp_max, leader_max * 1.1, 1e-3, "★ 将领血量上限 +10%")
-	near(sub.hp_max, sub_max, 1e-6, "★ 亲兵不吃这一条（需求只写将领）")
+	near(sub.hp_max, sub_max, 1e-6, "★ 附属兵不吃这一条（需求只写将领）")
 	near(base.hp_max, base_max * 1.1, 1e-3, "建筑那一条仍在生效（两条互不影响）")
 
 	# 再刷一帧：倍率没变的时候**不许**把血量重复放大（粘性）

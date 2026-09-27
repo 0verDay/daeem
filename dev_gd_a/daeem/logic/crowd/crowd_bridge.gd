@@ -260,7 +260,7 @@ func refresh_targets(world, cfg: ConfigRes) -> void:
 		_tgt_alive[m] = 1
 		_tgt_side[m] = si
 		_tgt_aggro[m] = cfg.aggro_range
-		_tgt_radius[m] = cfg.unit_radius_of(u.kind)
+		_tgt_radius[m] = cfg.unit_radius_of(u.unit_type)
 		m += 1
 
 	# 第二遍：把「可能被锁定的敌人」也补进去。
@@ -294,7 +294,7 @@ func refresh_targets(world, cfg: ConfigRes) -> void:
 			_tgt_alive[m] = 1
 			_tgt_side[m] = si2
 			_tgt_aggro[m] = cfg.aggro_range
-			_tgt_radius[m] = cfg.unit_radius_of(u2.kind)
+			_tgt_radius[m] = cfg.unit_radius_of(u2.unit_type)
 			m += 1
 	_side_scans.fill(0)
 
