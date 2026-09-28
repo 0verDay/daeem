@@ -1,4 +1,10 @@
-## detail_panel.gd —— 底栏「详细信息」面板（1030×240）
+## detail_panel.gd —— 底栏「详细信息」面板（1030×**260**）
+##
+## ★★ 面板高度：参考图标的是 240，**本版按需求加高到 260**（用户原话：「也可以适当
+##    扩大详细信息面板的竖直方向长度」）。底栏贴着屏幕下沿 ⇒ 它是**向上长**的，
+##    底边仍在屏幕底部、顶边从 y=840 抬到 y=820，不会掉出屏幕。
+##    多出来的 20px 全部给了右栏的数值框（96 → 116），好让最坏 7 行的区划详情
+##    用**原字号**就装得下；`_fit_body_text()` 再兜一层「塞不下就缩字」。
 ##
 ## ★★ 第四轮改版（照新参考图逐像素重量的）：整块仍然是**左右两栏**，
 ##    但**左栏换成了「1 + 3×3 = 10 个格子」**（几何见 view/ui_layout.gd）：
@@ -16,11 +22,12 @@
 ##                 点一格 = 把右栏详情切到那个建筑；超过 9 个同样是滚轮翻页。
 ##
 ##   右栏（645 宽，第六轮排成「三条带 + 一条提示带」，几何见 ui_layout 那段注释）
-##     y   0.. 72  选中单位的**头像**（72×72）+「单位名称」+ 一行 **buff 图标**（占位，无效果）
+##     y   8.. 96  顶带：选中单位的**头像**（72×72）+「单位名称」+ 一行 **buff 图标**（占位，无效果）
 ##                 右上角还有招募队列（view/recruit_queue.gd，只有正在招募时才出现）：
-##                 左边 129px 汇总带（「招募队列 3/5」+「共 22s」）+ 1 大 4 小五个格子
-##     y  80..196  「详细信息」数值区（血量 / 攻击力 / 射程 / 状态…）—— **横跨整个右栏**
-##     y 200..220  **红字提示**（操作被拒的原因，约 ui.notice_sec 秒，见 hud.show_notice）
+##                 左边汇总带（「招募队列 3/5」+「共 22s」）+ 1 大 4 小五个格子
+##     y 100..216  数值区（血量 / 攻击力 / 攻击距离·间隔…）—— **横跨整个右栏**，
+##                 ★ 本版按需求去掉了这一块顶上那行「详细信息」标题（只剩正文）
+##     y 220..240  **红字提示**（操作被拒的原因，约 ui.notice_sec 秒，见 hud.show_notice）
 ##
 ## ★★ 第六轮那三处对齐（起因：右栏几块的对齐边各走各的，看着像四块补丁）：
 ##   · 头像 / 名称上移到 y=0，与左栏第一块方块齐平；
@@ -36,7 +43,14 @@
 ## ★ 按需求砍掉的东西（别再默默加回来）：
 ##   · **「阵营 + 粮食 + 黄金」那一行资源 —— 本轮按参考图删掉了**
 ##   · **选中单位的那些汇总文字**（队伍人数 / 合计生命 / 指定攻击 / 状态）—— 一并删掉；
-##     现在右栏只画「详细信息」这一块数值
+##     右栏那一块数值现在只画**基础数值**（本版连第二栏的编制 / 状态也去掉了，见 hud._unit_text）
+##   · **数值区顶上那行「详细信息」标题**（用户原话：「把所有的详细信息栏的『详细信息』字样去除」）；
+##     标题一删，正文必须**整体上移**到 `DETAIL_BODY_TEXT_Y`（= 方框内边距）——
+##     不然原标题那一段就变成一条空白（实测就是「第一行是空的」）
+##   · **选中单位那三条之外的一切**：第二栏（编制 / 状态）、「已选中 N 支部队」、
+##     「兵种 …（步兵）」—— 见 hud._unit_text（用户原话两批需求都写在那边）
+##   · **建筑详情里的「升级到 N 级：花费（时间）」那两行**（含满级那句「已经是最高等级」）、
+##     大本营那句「开局自带，不可建造、不可拆除」，以及区划详情开头那行「区划「xx」」
 ##   · **建筑 / 区划详情里的「归属」与「位置」两行**（选中建筑那一轮按需求精简掉），
 ##     以及区划产能后面的「／地块／秒」和大本营那句锁血注释
 ##   · 己方地块 / 区块 / 建造模式 / 暂停 —— 都不显示
@@ -86,7 +100,6 @@ var _unit_avatar: Control
 var _unit_name: Label
 var _buffs: Array[Label] = []
 var _detail_box: Panel
-var _detail_title: Label
 ## 正文**左栏**（单栏文本也用它）与**右栏**（只有两栏文本才显示）
 var _body: Label
 var _body_right: Label
@@ -230,11 +243,11 @@ func _build_right(cols: HBoxContainer, world) -> void:
 		right.add_child(b)
 		_buffs.append(b)
 
-	# 数值区：标题 + 正文（单位 / 建筑 / 区划的数值）——
+	# 数值区：正文（单位 / 建筑 / 区划的数值）——
 	# 横跨整个右栏的一个独立方框，左边缘与头像对齐。
-	# ★★ 本轮重排（手玩报的「太拥挤」）：方框 90 → 116 高，正文 FS_TINY(11) → FS_SMALL(13)
-	#    且行距回正（原来是 -1，硬压出来的）。正文改成**两栏制表位**，
-	#    见下面 _body 的注释与 hud._unit_text()。
+	# ★★ 重排（手玩报的「太拥挤」）：方框 90 → 116 高，正文 FS_TINY(11) → FS_SMALL(13)
+	#    且行距回正（原来是 -1，硬压出来的）。正文是**两栏制表位**（见下面 _body 的注释
+	#    与 hud._unit_text() / _zone_text() / _building_text()）。
 	_detail_box = Panel.new()
 	_detail_box.name = "DetailBox"
 	_detail_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -244,16 +257,9 @@ func _build_right(cols: HBoxContainer, world) -> void:
 		UiStyleRes.panel_style(UiStyleRes.BG_EMPTY, UiStyleRes.LINE_SOFT))
 	right.add_child(_detail_box)
 
-	_detail_title = Label.new()
-	_detail_title.name = "DetailTitle"
-	_detail_title.text = "详细信息"
-	_detail_title.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_detail_title.add_theme_font_size_override("font_size", UiStyleRes.FS_BODY)
-	_detail_title.add_theme_color_override("font_color", UiStyleRes.ACCENT)
-	_detail_title.position = Vector2(8.0, 3.0)
-	_detail_title.size = Vector2(UiLayoutRes.DETAIL_BODY_W - 16.0, 18.0)
-	_detail_box.add_child(_detail_title)
-
+	# ★★ 本版按需求**去掉「详细信息」这四个字**（用户原话：「把所有的详细信息栏的
+	#    『详细信息』字样去除」）—— 整块标题 Label（含 `set_detail_title()`）一并删掉，
+	#    数值框里现在**只剩正文**（正文随之上移，见下面那段 ⚠️⚠️）。
 	# 正文：**真·两栏** = 两个 Label（左栏 / 右栏），x 由 ui_layout 定死。
 	#   ★★ 第七轮修的：以前是一整段带 `\t` 的字符串，而 **Godot 的 Label 不把 `\t` 当制表位**
 	#      （只推进一个很小的固定宽度）⇒ 画面上两栏**粘在一起**（「血量 200 / 200状态：待命」），
@@ -262,10 +268,19 @@ func _build_right(cols: HBoxContainer, world) -> void:
 	#      把一行拆成两行（版式就散了）。宽度不够宁可裁（clip_text = true），那说明文案该改短。
 	#   ⚠️ hud.set_detail() 收到带 `\t` 的文本时才会分两栏；区划 / 建筑那种单栏多行文本
 	#      只填左栏，右栏空着（`_body_right.visible = false`）。
-	_body = _new_body_label("DetailBody", Vector2(UiLayoutRes.DETAIL_BODY_PAD, 20.0),
-		Vector2(UiLayoutRes.DETAIL_BODY_COL_W, UiLayoutRes.DETAIL_BODY_H - 24.0))
-	_body_right = _new_body_label("DetailBodyRight", Vector2(UiLayoutRes.DETAIL_BODY_COL2_X, 20.0),
-		Vector2(UiLayoutRes.DETAIL_BODY_COL2_W, UiLayoutRes.DETAIL_BODY_H - 24.0))
+	#   ⚠️⚠️ 正文的 y = **DETAIL_BODY_TEXT_Y**（= 8）：标题删掉之后它必须整体上移。
+	#      原来写死 20（标题 Label 占 3..21 那一段），标题一删就成了**顶上一条空白** ——
+	#      实测表现正是「第一行是空的」（用户报的）。现在顶边就是 DETAIL_BODY_PAD。
+	#   ⚠️ 高度 = 方框高 − 顶边（**整块**都归正文）：文字再高也只会落在方框里，
+	#      外加 `_fit_body_text()` 的自动缩放兜底（见那个函数）。
+	_body = _new_body_label("DetailBody",
+		Vector2(UiLayoutRes.DETAIL_BODY_PAD, UiLayoutRes.DETAIL_BODY_TEXT_Y),
+		Vector2(UiLayoutRes.DETAIL_BODY_COL_W,
+			UiLayoutRes.DETAIL_BODY_H - UiLayoutRes.DETAIL_BODY_TEXT_Y))
+	_body_right = _new_body_label("DetailBodyRight",
+		Vector2(UiLayoutRes.DETAIL_BODY_COL2_X, UiLayoutRes.DETAIL_BODY_TEXT_Y),
+		Vector2(UiLayoutRes.DETAIL_BODY_COL2_W,
+			UiLayoutRes.DETAIL_BODY_H - UiLayoutRes.DETAIL_BODY_TEXT_Y))
 	_body_right.visible = false
 
 	# 招募队列：贴右栏**右上角**（只有正在招募时才出现；不可见时收不到鼠标事件）
@@ -296,7 +311,7 @@ func _new_body_label(node_name: String, pos: Vector2, size_v: Vector2) -> Label:
 ## 提示行（红字）：**右栏数值框下面那一条 20px**，绝对定位的浮层。
 ##
 ## ★★ 它以前是面板 VBox 的第二行 —— 一出现就让上面那两栏各少 20px，
-##    而左栏那 3×3 网格是**正好铺满 220** 的（40 + 15 + 3×55），于是最下面一截
+##    而左栏那 3×3 网格是一整段铺满内容高的（40 + 15 + 3×55），于是最下面一截
 ##    被裁掉（`right` 有 clip_contents，右栏的数值框也会被切掉底边）。
 ##    现在它住进数值框下面**本来就空着**的那条带（NOTICE_Y..NOTICE_Y+NOTICE_H），
 ##    出现 / 消失都不动任何一块的几何。
@@ -315,7 +330,8 @@ func _build_notice(right: Control) -> void:
 	right.add_child(_notice)
 	# ⚠️ size 必须在 **add_child 之后**再设：控件还没在树上时主题（= 中文字体）还没继承到，
 	#    Label 的最小高度按**引擎兜底字体**算出来是 23px > 20px，于是 `set_size` 当场被夹成 23，
-	#    整个提示带就顶出右栏下沿（实测：200 + 23 = 223 > 220）。进树之后再设就不会被夹。
+	#    整个提示带就顶出右栏下沿（实测：200 + 23 = 223 > 当时的内容高 220；
+	#    现在内容高 240、提示带在 220..240，夹成 23 也只是压到 243 —— 仍在面板内）。
 	# ★ 宽度取 `UNIT_CONTENT_RIGHT`（= 641）：与数值框 / 招募队列共用同一条右缘。
 	_notice.size = Vector2(UiLayoutRes.UNIT_CONTENT_RIGHT, UiLayoutRes.NOTICE_H)
 
@@ -382,7 +398,7 @@ func grid_mode() -> String:
 	return "units"
 
 
-## 右栏：选中单位的**名称**（空串 = 没有选中单位 → 只留「详细信息」标题）
+## 右栏：选中单位的**名称**（空串 = 没有选中单位 → 数值框里只剩「未选中」/空）
 func set_unit_name(text: String) -> void:
 	if _unit_name != null:
 		_unit_name.text = text
@@ -394,10 +410,14 @@ func set_unit_name(text: String) -> void:
 ##    （两个 Label 的 x 由 ui_layout 定死，永远对齐）。没有 `\t` 就是普通单栏多行文本。
 ##
 ## ★ 为什么按 `\t` 分而不是让 hud 直接喂两份：
-##   hud 那边（`_two_columns`）本来就把正文写成「左栏 + `\t` + 右栏」的字符串，
-##   而**渲染**不该由 hud 管；这一层按同一个分隔符拆开只是把它画成两栏，
+##   正文的组装规则只有一处（hud），它写成「左栏 + `\t` + 右栏」的字符串；
+##   而**渲染**不该由 hud 管。这一层按同一个分隔符拆开只是把它画成两栏，
 ##   文案的组装规则仍然只有一处（hud）。`detail_text()` 会把两栏**合回原样**，
 ##   所以「文案对不对」的断言照旧在同一个出口上验。
+##
+## ⚠️ 本版三条文案（`hud._unit_text` / `_building_text` / `_zone_text`）**都不带 `\t`**
+##    （单位那条按需求砍掉了第二栏的编制 / 状态）⇒ 实际走的都是上面那条单栏分支，
+##    右栏 Label 一直收着。两栏这条路留着：有 `\t` 就照旧分栏画。
 func set_detail(text: String) -> void:
 	if _body == null:
 		return
@@ -408,6 +428,7 @@ func set_detail(text: String) -> void:
 		if _body_right != null:
 			_body_right.text = ""
 			_body_right.visible = false
+		_fit_body_text(_body)
 		return
 	var left: PackedStringArray = []
 	var right: PackedStringArray = []
@@ -419,12 +440,77 @@ func set_detail(text: String) -> void:
 	if _body_right != null:
 		_body_right.text = "\n".join(right)
 		_body_right.visible = true
+		_fit_body_text(_body_right)
+	_fit_body_text(_body)
 
 
-## 右栏：数值区的标题（默认「详细信息」）
-func set_detail_title(text: String) -> void:
-	if _detail_title != null:
-		_detail_title.text = text
+# ------------------------------------------------------------------
+# 竖直方向自适应：**所有文本都别想跑出这一格**
+# ------------------------------------------------------------------
+
+## 正文字号的**下限**。到这个字号还塞不下就只压行距、再不行就让它裁 ——
+## 再小就成蚂蚁腿了，那时候该做的是把文案改短（或者再给面板加高）。
+const BODY_FS_MIN := 10
+## 行距下限（负数才是「压紧」；`LineSpacing` 是**加**在行高上的，所以负数 = 行间更紧）。
+## ⚠️ 别再往下调：-6 时 10 号字的两行几乎贴在一起，只适合「这一屏就是塞得满满」的兜底。
+const BODY_LS_MIN := -6.0
+
+## 把一段多行文本**压进 Label 自己的矩形**（竖直方向），必要时缩字号 / 压行距。
+##
+## ★ 需求原话：「能否强制让所有文本都挤进详细信息栏（在竖直方向上可以适当缩放）」。
+##   这一段就是那个「强制」：先按默认字号（FS_SMALL = 13）试，塞不下就一路缩到
+##   `BODY_FS_MIN`，再不行才压行距 —— 字号优先，因为字小比行挤更伤可读性。
+##
+## ★ 为什么量的是「行高 × 行数」而不是 `get_minimum_size().y`：
+##   `Label` 的最小高度**按当前主题字体**算，而 `add_theme_font_size_override()`
+##   改的就是那个字体 ⇒ 用最小高度也行，但那样要等一帧排版；这里直接按字体行高算，
+##   同一个函数里就能算出「要缩到几号」（无头测试也是即时可验的）。
+##
+## ⚠️ 这条路是**兜底**，不是日常：面板按需求加高之后，区划详情那最坏的 7 行
+##   （7 × 14 = 98px）在 13 号字下就装得进 108px 的可视高，字号根本不会动。
+##   它保的是「以后谁再加一行文案 / 用户把窗口调小」这类情况 ——
+##   表现是字略小，而不是最后一行跑到面板外面。
+func _fit_body_text(l: Label) -> void:
+	if l == null or l.text == "":
+		return
+	var f: Font = l.get_theme_default_font()
+	if f == null:
+		return
+	var avail: float = l.size.y
+	var rows: int = l.text.split("\n").size()
+	var fs: int = UiStyleRes.FS_SMALL
+	var spacing: float = 0.0
+	# ① 字号优先：从 FS_SMALL 一路往下试，够装就停
+	while fs > BODY_FS_MIN and float(rows) * _body_row_h(f, fs, 0.0) > avail:
+		fs -= 1
+	# ② 还不行就压行距（最多压到 BODY_LS_MIN）
+	if float(rows) * _body_row_h(f, fs, 0.0) > avail:
+		while spacing > BODY_LS_MIN and float(rows) * _body_row_h(f, fs, spacing) > avail:
+			spacing = maxf(BODY_LS_MIN, spacing - 0.5)
+	l.add_theme_font_size_override("font_size", fs)
+	l.add_theme_constant_override("line_spacing", int(round(spacing)))
+
+
+## 一行占多高：字体行高（`get_height` 已经把字体自带的行距算进去了）+ `LineSpacing`。
+## ⚠️ 字号的兜底用 FS_SMALL 的 1.6 倍，纯粹是防「字体没字库 / 返回 0」那种情况。
+func _body_row_h(f: Font, fs: int, spacing: float) -> float:
+	var h := f.get_height(fs)
+	if h <= 0.0:
+		h = float(fs) * 1.6
+	return h + spacing
+
+
+## 测试读口：正文当前**实际用的**字号 / 行距（自动缩放之后的值）
+func body_font_size() -> int:
+	if _body == null:
+		return UiStyleRes.FS_SMALL
+	return _body.get_theme_font_size("font_size")
+
+
+func body_line_spacing() -> int:
+	if _body == null:
+		return 0
+	return _body.get_theme_constant("line_spacing")
 
 
 ## 右栏右上角的招募队列：显示哪个将领 / 哪个区划的（null = 没有 → 整块收起来）

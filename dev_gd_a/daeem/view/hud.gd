@@ -5,8 +5,12 @@
 ##   右上 设置（80×160，点不动）
 ##   左侧 部队 1~10（10 槽 × 60 高，内容动态生成）
 ##   左下 小地图（400×400：整张地图 + 视野框，左键点击移动镜头、按住拖动跟手，见 view/minimap.gd）
-##   底栏 y 840..1080：
-##     详细信息 1030×240（左栏 = 1 + 3×3 共 10 格；右栏 = 选中单位的头像 / 名称 / 数值）
+##   底栏 y 820..1080（★ 详细信息面板本版加高到 260，所以从 820 起）：
+##     资源面板 200×56（**本版新增**：粮食 / 黄金**竖着排**两行；下缘压在详细信息面板顶边
+##                       y=820 上、左缘与面板对齐 x=400，数值每帧读 `world.resources`，
+##                       见 `_build_resource_bar()`）
+##     详细信息 1030×260（左栏 = 1 + 3×3 共 10 格；右栏 = 选中单位的头像 / 名称 / 基础数值）
+##       ★ 数值那一块现在**只有正文**：顶上那行「详细信息」标题按需求去掉了
 ##     阵营 / 盾徽 / 旗帜（150 宽，**本轮不做**，只留位置）
 ##     命令卡 3×3（每格 80，内容随页签实时切换）
 ##     页签（**按选中对象动态显示**：选中部队 = 操作 / 单位两页；选中区划中心 = 招募；
@@ -53,6 +57,8 @@ var settings_button: Button = null
 var map_placeholder: Control = null
 var minimap: Control = null
 var faction_placeholder: PanelContainer = null
+## 资源条（粮食 / 黄金，横排）—— 详细信息面板**正上方**那一条。见 `_build_resource_bar()`。
+var resource_bar: Panel = null
 
 var _root: Control = null
 
@@ -122,6 +128,9 @@ func setup(p_cfg: ConfigRes, p_world, p_input, theme: Theme, p_camera_rig = null
 
 	_build_minimap()
 	_build_faction_placeholder()
+	# ★ 资源条要在详细信息面板**之前**建：两块在屏幕上上下紧贴，
+	#   先建的那块在下层 —— 万一以后谁把资源条调高了，它压住的是面板上沿而不是反过来。
+	_build_resource_bar()
 	_build_detail_panel()
 	_build_command_card()
 	_build_page_tabs()
@@ -186,6 +195,96 @@ func _build_faction_placeholder() -> void:
 	label.add_theme_font_size_override("font_size", UiStyleRes.FS_TITLE)
 	label.add_theme_color_override("font_color", UiStyleRes.TEXT_FAINT)
 	faction_placeholder.add_child(label)
+
+
+## 资源面板：**粮食 / 黄金**两个资源，**竖着排**，落在详细信息面板左段的正上方。
+##
+## 需求原话：「在详细信息界面上方紧贴地图的地方加上资源显示面板，只需要显示粮食和黄金
+##          两个资源，横着显示」→「面板不需要那么长，粮食和黄金栏改为竖着排列」。
+##
+## ★ 结构（与详细信息的数字区同一套观感）：
+##     资源面板（200×56，下缘压在面板顶边 y=820 上、左缘与面板对齐 x=400）
+##       ├─ [粮] 粮食 120        ← 20×20 色块（13 号「粮」）+ 右边一行 15 号字
+##       └─ [金] 黄金 80         ← 第二行（色块 x 0，文字 x 26；两行 y 5 / 31）
+## ★ 数值**每帧**从 `world.resources` 取（见 `_refresh_resource_bar`）：
+##   它是权威值（economy.tick 往里累加、招募 / 升级从里扣），界面只在显示层格式化。
+## ★ 颜色：底色 / 描边 / 字色全部走 ui_style（与其它面板同一套深色半透明）；
+##   两个色块自己定（粮食暖黄、黄金亮金）—— 没有图标素材，用色块 + 一个汉字顶上。
+## ★ `mouse_filter = IGNORE`：整块只有字和色块，点不动也不需要拦鼠标
+##   （边缘滚屏照样能在它上面工作，见 ui_layout.interactive_rects 的规矩）。
+func _build_resource_bar() -> void:
+	resource_bar = Panel.new()
+	resource_bar.name = "ResourceBar"
+	resource_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# Panel（不是 PanelContainer）：子控件按**绝对坐标**摆 —— stylebox 的 content margin
+	# 只有 PanelContainer 那种容器才会套用，这里用默认那套底板就行。
+	resource_bar.add_theme_stylebox_override("panel",
+		UiStyleRes.panel_style(UiStyleRes.BG, UiStyleRes.LINE_SOFT))
+	UiLayoutRes.apply_rect(resource_bar, UiLayoutRes.RES_BAR_RECT, false, true)
+	_root.add_child(resource_bar)
+
+	# 两行（色块 + 文字）：**竖着排**，顺序 = 粮食（上）、黄金（下）
+	var rows := [
+		{"short": "粮", "color": Color(0.85, 0.72, 0.32), "y": UiLayoutRes.RES_ROW_Y},
+		{"short": "金", "color": Color(0.95, 0.80, 0.20), "y": UiLayoutRes.RES_ROW2_Y},
+	]
+	for r in rows:
+		var chip := Label.new()
+		chip.name = "ResIcon_" + String(r["short"])
+		chip.text = String(r["short"])
+		chip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		chip.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		chip.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		chip.clip_text = true
+		# 色块里那个字用 FS_SMALL（13）：20×20 的方块，13 号字实测宽 13 ≤ 20
+		chip.add_theme_font_size_override("font_size", UiStyleRes.FS_SMALL)
+		chip.add_theme_color_override("font_color", Color(0.10, 0.09, 0.06))
+		var cs := StyleBoxFlat.new()
+		cs.bg_color = r["color"]
+		cs.set_corner_radius_all(3)
+		chip.add_theme_stylebox_override("normal", cs)
+		resource_bar.add_child(chip)
+		chip.position = Vector2(0.0, float(r["y"]))
+		# ⚠️ 位置 / 尺寸都在 `add_child` **之后**设（与提示行那条同一个坑）：
+		#    进树之前主题里的中文字体还没继承到，Label 会按引擎兜底字体算一次最小高度
+		#    并**把 set_size 的结果夹掉**（实测：想在 24 高的条里设 16，被夹成 23 ⇒ 顶出条外）。
+		chip.size = Vector2(UiLayoutRes.RES_ICON, UiLayoutRes.RES_ICON)
+
+		var value := Label.new()
+		value.name = "ResText_" + String(r["short"])
+		value.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		value.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		value.clip_text = true
+		# ★ 数字用 FS_BODY（15）：每行 20 高，15 号字（行高 16）装得下。
+		value.add_theme_font_size_override("font_size", UiStyleRes.FS_BODY)
+		value.add_theme_color_override("font_color", UiStyleRes.TEXT)
+		resource_bar.add_child(value)
+		value.position = Vector2(UiLayoutRes.RES_TEXT_X, float(r["y"]))
+		value.size = Vector2(UiLayoutRes.RES_TEXT_W, UiLayoutRes.RES_ICON)
+
+	_refresh_resource_bar()
+
+
+## 资源条上的两个数字：**每帧**从权威值（`world.resources`）重新格式化。
+## ★ 取整显示（与命令卡的消耗文案同一口径，见 `_cost_text`）：
+##   资源是浮点累加的，直接印会看到「119.99999」。
+## ★ `world` 为 null 时按 0 显示 —— 界面不该因为逻辑层还没准备好就报错。
+func _refresh_resource_bar() -> void:
+	if resource_bar == null:
+		return
+	var res: Dictionary = {}
+	if world != null:
+		res = world.resources
+	var pairs := [
+		{"short": "粮", "key": "food", "label": "粮食"},
+		{"short": "金", "key": "gold", "label": "黄金"},
+	]
+	for p in pairs:
+		var l := resource_bar.get_node_or_null("ResText_" + String(p["short"])) as Label
+		if l == null:
+			continue
+		l.text = "%s %d" % [String(p["label"]),
+			int(round(float(res.get(String(p["key"]), 0.0))))]
 
 
 func _build_detail_panel() -> void:
@@ -1132,6 +1231,8 @@ func view_size() -> Vector2:
 func refresh() -> void:
 	if world == null or input_ctrl == null or detail_panel == null:
 		return
+	# ★ 资源条先刷（它只读 `world.resources`，与选中了什么无关；每帧一次）
+	_refresh_resource_bar()
 	# ★★ 页签先按「现在选中了什么」推上去（选中部队 = 操作/单位；选中区划中心 = 招募；
 	#    选中大本营 = 科技；选中普通建筑 = 一颗都没有；什么都没选中 = 建筑 + 科技）。
 	#    命令卡的内容跟着页签走（page_tabs 发 page_changed → _rebuild_card）。
@@ -1144,8 +1245,10 @@ func refresh() -> void:
 	_refresh_tech_grid(page_tabs != null and String(page_tabs.page()) == PageTabsRes.PAGE_TECH)
 	# ★ 详细信息是**左右两栏**（第三轮改版，见 view/detail_panel.gd 的文件头）：
 	#   左栏 = 当前展开的那支部队（上半）+ 选中部队的将领头像网格（下半）
-	#   右栏 = 选中单位的头像 / 名称 / buff / 数值
+	#   右栏 = 选中单位的头像 / 名称 / buff / 基础数值（★ 数值那块的「详细信息」标题已删）
 	# 选中对象的三种互斥情况：区划 → 建筑 → 单位（见 refresh 里的分支）
+	# ★ 区划这一支：标题那一行写**区划名本身**（不再套「区划「xx」」那层壳），
+	#   正文里也不再出现「区划「xx」」那一行（需求：「选中区划中心时去掉『区划[xx]』文本」）。
 	if input_ctrl.selected_zone != null:
 		detail_panel.set_troops(null, [])
 		detail_panel.set_unit_avatar_text("区")
@@ -1317,9 +1420,11 @@ func _queue_leader(troop):
 # 右栏的文案（区划 / 建筑 / 选中单位的数值）
 # ------------------------------------------------------------------
 
-## 区划的标题（右栏「单位名称」那一行显示的）
+## 区划的标题（右栏「单位名称」那一行显示的）。
+## ★★ 本版按需求只写**区划名本身**（用户原话：「选中区划中心时去掉『区划[xx]』文本」）——
+##   原来这里写「区划「xx」」、详情正文开头又写一遍，两处都带那层壳，现在都没了。
 func _zone_title(z: Dictionary) -> String:
-	return "区划「%s」" % String(z["name"])
+	return String(z["name"])
 
 
 ## 建筑的短字（头像方块里的占位）
@@ -1344,9 +1449,16 @@ func _unit_short(u) -> String:
 ##   · **去掉「归属」与「位置」两行**（谁的在建筑描边上一眼就看得出；坐标对玩家没用）；
 ##   · **大本营那句「（本版不会被打掉：血量保底 1）」也去掉** —— 那是说明锁血机制的
 ##     注释，不该出现在玩家界面上（用户原话：「大本营中的注释也去掉」）。
-## ★★ 本轮新增：**等级**那一行（需求确认「等级显示在右栏数值里」）——
-##   有升级表的建筑写「等级 2 / 3」，同时把「升到下一级要什么」写清楚，
-##   于是「为什么这一格点了没反应（满级 / 钱不够）」在界面上有据可查。
+## ★★ **等级**那一行保留（需求确认「等级显示在右栏数值里」）：有升级表的建筑写
+##   「等级 2 / 3」。
+## ★★ 本版又按需求去掉两处（用户原话：「不要显示『升级到 2 级』文本」+
+##   「去除大本营的『开局自带，不可建造，不可拆除』文本」）：
+##   · **「升级到 N 级：花费（时间）」那两行**（含满级那句「已经是最高等级」）——
+##     要花多少钱 / 多久从界面上撤掉，等级本身照旧看得到；
+##   · **大本营那句说明**。`config.json` 里 `building.base.desc` 一个字没动
+##     （它是地图编辑器那边的数据），只是不再往详情栏里画。
+##   ⚠️ 「正在升级：升到 N 级，还剩 X 秒」**留着** —— 那是**进行中**的读条反馈，
+##      不是「升级到 N 级」那条花费说明。
 func _building_text(b) -> String:
 	var lines: Array[String] = []
 	lines.append("生命 %d / %d" % [int(round(b.hp)), int(round(b.hp_max))])
@@ -1356,12 +1468,6 @@ func _building_text(b) -> String:
 		if b.is_upgrading():
 			lines.append("正在升级：升到 %d 级，还剩 %s 秒" % [
 				b.level + 1, _fmt_num(b.upgrade_eta())])
-		elif b.level < max_lv:
-			lines.append("升级到 %d 级：%s（%s 秒）" % [
-				b.level + 1, _cost_text(world.building_upgrade_cost(b)),
-				_fmt_num(world.building_upgrade_time(b))])
-		else:
-			lines.append("已经是最高等级")
 	if b.type == BuildingRes.TYPE_TOWER:
 		lines.append("伤害 %d　射程 %d 格　间隔 %.1fs" % [
 			int(b.tower_damage(cfg)), int(b.tower_range(cfg)), b.tower_cooldown(cfg),
@@ -1374,8 +1480,6 @@ func _building_text(b) -> String:
 		var spec_line := _zone_spec_line(world.zone_of_center_building(b))
 		if spec_line != "":
 			lines.append(spec_line)
-	if b.type == BuildingRes.TYPE_BASE:
-		lines.append("开局自带，不可建造、不可拆除")
 	return "\n".join(lines)
 
 
@@ -1399,95 +1503,75 @@ func _zone_spec_line(z) -> String:
 	return "特化：%s（%s）" % [String(e.get("name", done)), String(e.get("line", ""))]
 
 
-## ★★ 数值区改成**两栏制表位**（本轮，手玩原话：「只需要给基础数值即可」）。
-##   制表符 `\t` 从 fs 列跳到下一栏（`\t` 的宽度由字体自己定，实测 fs=13 时落在 ~212px），
-##   右栏正文因此长这样（不是「左右两栏控件」，就是一个 Label 里的两栏文本）：
+## ★★ 本版按需求**砍成单栏、只留三项数值**（用户原话：「选中部队时在第一列只显示选中的
+##   单位血量，攻击力和攻击距离攻击速度，第二列的编制和状态去掉」+
+##   「把选中部队时的『已选中x支部队』去掉，把兵种显示也去掉」）：
 ##
-##     兵种 长枪兵（步兵）    编制 3 / 11          ← 第一行：兵种 + 编制（★ 编制只给将领）
-##     血量 200 / 200        状态：待命
+##     血量 200 / 200
 ##     攻击力 10
 ##     攻击距离 3 格 / 间隔 1.2s
 ##
-##   ★ 手玩拍板的取舍：
-##     · **只留基础数值**：兵种 / 血量 / 攻击力 / 攻击距离 / 间隔 / 编制；
-##       移动速度、所在区块、buff 占位行、行军攻击这些**一律不显示**（要恢复就在这里加回一行）。
-##     · **编制只给将领看**（「假如是将领才要显示编制，兵不用显示编制」）——
-##       判据是 `world.is_team_leader()`，附属兵那一行右栏留空。
-##     · ★ 本轮新增「兵种」那一行：单位与将领按**步兵 / 骑兵**（远的是远程步兵 / 远程骑兵）
-##       分了两类，而这条标签之后的「额外伤害」是玩家要看得见的信息 ——
-##       所以它必须在界面上露出来（值全部来自 config，见 cfg.unit_class_line）。
-##   ⚠️ 每行**最多一行文字**：正文关掉了 autowrap，多出来的换行只能是制表位带来的两栏，
-##      否则版式会散（见 detail_panel 里 _body 的注释）。
-##   ⚠️ 「指定攻击」那一行要留着（tests/test_ui.gd 断言它在）：它是命令的**可见反馈**，
-##      玩家下了指定攻击必须能在界面上看见目标。
+##   · **右栏（第二栏）整块不再出现** —— 编制与状态（含「指定攻击」那几条命令反馈）
+##     都按需求去掉了，所以这里返回的文本里**没有 `\t`**，detail_panel 那边自然
+##     只填左栏、把右栏 Label 收起来（见 detail_panel.set_detail）。
+##   · **「兵种 …（步兵）」那一行也去掉了**（同上，第二条需求）—— 步兵 / 骑兵、
+##     远程与额外伤害那套标签不再进详情栏。
+##   · **多选时那句「已选中 N 支部队」也去掉了**（同上）—— 选中了几支看左侧部队列表的
+##     高亮就知道，详情栏只报**当前这一个单位**的三项数值。
+##   · `troops` 这个参数仍然收着（调用方照旧传）：现在文案与它无关，但接口不变，
+##     免得以后再要「多选提示」时又去改所有调用点。
+##   · 移动速度、所在区块、buff 占位行这些**一律不显示**（要恢复就在这里加回一行）。
+##   ⚠️ 每行**最多一行文字**：正文关掉了 autowrap，一行太长会被 `clip_text` 裁掉
+##      （版式不散，但说明文案该改短）。
 func _unit_text(shown, troops: Array) -> String:
 	if shown == null:
 		return "未选中"
-	var left: Array[String] = []
-	var right: Array[String] = []
-	if troops.size() > 1 or (troops.size() == 1 and (troops[0]["units"] as Array).size() > 1):
-		left.append("已选中 %d 支部队" % troops.size())
-	left.append("兵种 %s（%s）" % [
-		cfg.unit_name_of(String(shown.unit_type)), cfg.unit_class_line(String(shown.unit_type))])
-	left.append("血量 %d / %d" % [int(round(shown.hp)), int(round(shown.hp_max))])
-	left.append("攻击力 %d" % int(shown.combat_damage(cfg)))
-	left.append("攻击距离 %d 格 / 间隔 %.1fs" % [
+	var lines: Array[String] = []
+	lines.append("血量 %d / %d" % [int(round(shown.hp)), int(round(shown.hp_max))])
+	lines.append("攻击力 %d" % int(shown.combat_damage(cfg)))
+	lines.append("攻击距离 %d 格 / 间隔 %.1fs" % [
 		int(shown.combat_range(cfg)), shown.combat_cooldown(cfg)])
-	# 编制：★ 只有将领才有「编制」（它辖下的附属兵上限），附属兵自己不显示
-	if world.is_team_leader(shown):
-		right.append("编制 %d / %d" % [_retinue_size(shown), UiLayoutRes.UNIT_CAP])
-	# 状态（含两条命令反馈）——`指定攻击` 那一条必须留着，见上面的注释
-	if shown.ordered_target != null and shown.ordered_target.alive:
-		right.append("★ 指定攻击：%s" % shown.ordered_target.name)
-	elif shown.ordered_building != null and shown.ordered_building.alive:
-		right.append("★ 指定拆除：%s" % shown.ordered_building.display_name())
-	elif shown.has_attack_move:
-		right.append("★ 行军攻击中")
-	elif shown.target != null and shown.target.alive:
-		right.append("交战中：%s" % shown.target.name)
-	elif shown.target_building != null and shown.target_building.alive:
-		right.append("正在拆：%s" % shown.target_building.display_name())
-	else:
-		right.append("状态：%s" % ("移动中" if shown.moving else "待命"))
-	return _two_columns(left, right)
+	return "\n".join(lines)
 
 
-## 把两栏文本拼成「左栏 + \t + 右栏」的若干行；某一栏不够长就留空（制表位照样对齐）。
-func _two_columns(left: Array, right: Array) -> String:
-	var n: int = maxi(left.size(), right.size())
-	var out: PackedStringArray = []
-	for i in n:
-		var l: String = String(left[i]) if i < left.size() else ""
-		var r: String = String(right[i]) if i < right.size() else ""
-		out.append("%s\t%s" % [l, r] if r != "" else l)
-	return "\n".join(out)
-
-
-## 一个将领辖下的附属兵数（不是将领自己 → 0）
-func _retinue_size(u) -> int:
-	if world == null or u == null or not world.is_team_leader(u):
-		return 0
-	return world.retinue_of(u.id).size()
-
-
-## 区划详情（左键点区划中心时显示）：区划名 / 大小 / **种类** / 产能 / 人口。
+## 区划详情（左键点区划中心时显示）：大小 / **种类** / 产能 / 人口。
 ##
 ## ★ 本版按需求**精简**：
 ##   · **去掉「归属」那一行**（点开区划详情的玩家早就知道这块地是谁的；
 ##     归属在整个底栏里也不再出现）；
 ##   · 产能**不写单位**（原来写的是「／地块／秒」）——左边那个数是地图编辑器里填的
 ##     **每地块**产能，括号里的「合计」才是这个区划实际的产出（每地块 × 地块数）。
-##     两个数都不带单位（用户原话：「区划产能不需要写单位」）。
+##     两个数都不带单位（用户原话：「区划产能不需要写单位」）；
+##   · ★★ **去掉开头那行「区划「xx」」**（用户原话：「选中区划中心时去掉『区划[xx]』文本」）——
+##     区划名只在上方那一行（detail_panel.set_unit_name ← `_zone_title`，见 hud.refresh）
+##     里出现一次，详情正文里不再重复；
+##   · ★★ **区划种类后面那串「（每地块每秒 …）」不再写**（用户原话：「区划种类后不要加
+##     『（每地块每秒xxx）』」）—— 产能下面三行里逐个列着，种类那一行只报名字。
+##     ⚠️ 那句文案来自 `config.json` 的 `zone_kind.list[].line`：**数据一个字没动**
+##     （它是地图编辑器那边的说明），只是不再往详情栏里画；
+##   · ★★ **「人口产能」与「人口」两行合并成一行**（用户原话：「人口产能和人口两个信息
+##     合并，变成『人口：x（产能x）』」）：括号里是**每地块**的人口产能（与粮食 / 黄金
+##     那两行的口径一致，特化加成也算进去了），括号外是区划现在的人口（向下取整）。
+##
+## ⚠️ 行的顺序（本版调过一次，别随手挪回去）：
+##     大小 → 种类 → **特化状态** → 粮食 → 黄金 → 人口 → 人口上限
+##   特化那句原来排在最末。合并之后整屏最多 7 行（84 + 14 = 98px），而数值框的可视高只有
+##   88px ⇒ 排在最后的那一行**会被 clip 掉**，被切掉的恰好是「正在特化 / 已完成特化」——
+##   最该看见的那一条。所以它上移到产能前面（它本来就属于「种类」那一带的信息）。
 func _zone_text(z: Dictionary) -> String:
 	var lines: Array[String] = []
-	lines.append("区划「%s」" % String(z["name"]))
 	lines.append("区划大小：%d 个地块" % int(z["tile_count"]))
 	# ★★ 本轮新增：**区划种类**那一行（粮食 / 黄金 / 人口区划）——
 	#   它决定这个区划能做哪些特化（见 _building_order_entries），玩家必须看得见。
+	# ★ 本版**只写种类名**，后面那串每地块产能说明按需求去掉了（见函数头）。
 	var kind_entry: Dictionary = world.zones.kind_entry_of(z)
 	if not kind_entry.is_empty():
-		lines.append("区划种类：%s（%s）" % [
-			String(kind_entry.get("name", "")), String(kind_entry.get("line", ""))])
+		lines.append("区划种类：%s" % String(kind_entry.get("name", "")))
+	# 特化状态那一行（没特化 / 读条中 → 由 _zone_spec_line 决定写什么）。
+	# ★ 位置见函数头那段 ⚠️：它必须在产能前面，否则整屏 7 行时会被裁掉。
+	var spec_line := _zone_spec_line(z)
+	if spec_line != "":
+		lines.append(spec_line)
 	var prod: Dictionary = z["production"]
 	var n := float(z["tile_count"])
 	# ★★ 本轮：产能按**特化效果**显示（特化是两种形状，见 UpgradeRes.zone_spec_effect）：
@@ -1498,21 +1582,19 @@ func _zone_text(z: Dictionary) -> String:
 	var food := float(prod["food"]) + float(eff["food_per_tile"])
 	var gold := float(prod["gold"]) + float(eff["gold_per_tile"])
 	var pop := float(prod["population"]) * float(eff["population_mult"])
+	var pop_cap := float(world.zones.population_cap_of(z))
 	lines.append("粮食产能：%s（合计 %s）" % [
 		_fmt_num(food), _fmt_num(food * n)])
 	lines.append("黄金产能：%s（合计 %s）" % [
 		_fmt_num(gold), _fmt_num(gold * n)])
-	lines.append("人口产能：%s" % _fmt_num(pop))
-	# 特化状态那一行（没特化 / 读条中 → 由 _zone_spec_line 决定写什么）
-	var spec_line := _zone_spec_line(z)
-	if spec_line != "":
-		lines.append(spec_line)
-	# ★ 人口显示**永远是整数**（向下取整，用户需求）—— 权威值是浮点（按秒累积），
-	#   直接印出小数点会让玩家看到「1.9999998」这种数。
-	# ★ 上限一并显示：不然「人口怎么不涨了」在界面上没有任何解释。
-	lines.append("人口：%d（上限 %s）" % [
-		world.zones.population_floor(z), _fmt_num(world.zones.population_cap_of(z)),
-	])
+	# ★ 人口这一行（本版合并了「人口产能」与「人口」两行）：
+	#   括号里 = 每地块人口产能（特化后的），括号外 = 当前人口。
+	#   ⚠️ 人口显示**永远是整数**（向下取整，用户需求）—— 权威值是浮点（按秒累积），
+	#      直接印出小数点会让玩家看到「1.9999998」这种数。
+	lines.append("人口：%d（产能%s）" % [world.zones.population_floor(z), _fmt_num(pop)])
+	# ★ 上限**单列一行**：不然「人口怎么不涨了」在界面上没有任何解释。
+	#   （合并后那一行按需求只放「人口 + 产能」，塞不下上限，所以它留在下面这一行。）
+	lines.append("人口上限：%s" % _fmt_num(pop_cap))
 	return "\n".join(lines)
 
 

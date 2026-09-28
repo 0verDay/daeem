@@ -63,10 +63,17 @@ func _run() -> void:
 # 一、几何：逐条对着参考图
 # ------------------------------------------------------------------
 func _test_layout_against_reference(cfg) -> void:
-	# 参考图上直接标了「详细信息 1030×240」
+	# 参考图上直接标了「详细信息 1030×240」；★★ 本版按需求**加高到 260**
+	# （用户原话：「也可以适当扩大详细信息面板的竖直方向长度」）——
+	# 底边贴屏幕下沿 ⇒ 面板是**向上长**的，不会掉出屏幕。
 	eq(UiLayoutRes.DETAIL_RECT.size.x, 1030.0, "详细信息面板宽 1030（参考图标注）")
-	eq(UiLayoutRes.DETAIL_RECT.size.y, 240.0, "详细信息面板高 240（参考图标注）")
-	eq(UiLayoutRes.BAR_H, 240.0, "底栏高 240")
+	eq(UiLayoutRes.DETAIL_RECT.size.y, 260.0,
+		"★ 详细信息面板高 260（参考图是 240，本版加高 20 给数值框）")
+	eq(UiLayoutRes.DETAIL_RECT.position.y + UiLayoutRes.DETAIL_RECT.size.y,
+		UiLayoutRes.DESIGN_H, "★ 面板底边仍贴屏幕下沿（加高是向上长）")
+	eq(UiLayoutRes.DETAIL_CONTENT_H, 240.0,
+		"★ 面板内容高 = 260 − 2×10 = 240（以前各处写死的 220 收进这个常量）")
+	eq(UiLayoutRes.BAR_H, 240.0, "底栏高 240（其它面板不动，只有详细信息面板用了多出来的 20px）")
 
 	# 左侧部队列表：宽 120，从 y=40 起，10 行 × 60
 	eq(UiLayoutRes.SQUAD_RECT.size.x, 120.0, "部队列表宽 120（参考图 x 0..119）")
@@ -108,7 +115,9 @@ func _test_layout_against_reference(cfg) -> void:
 	eq(UiLayoutRes.QUEUE_INFO_W, 141.0, "汇总带宽 141（表格子段左边那一条）")
 	eq(UiLayoutRes.QUEUE_W, UiLayoutRes.QUEUE_INFO_W + UiLayoutRes.QUEUE_CELLS_W,
 		"★ 控件总宽 = 汇总带 141 + 五个格子 172 = 313（常量之间是推算式，不会对不上）")
-	eq(UiLayoutRes.QUEUE_H, 92.0, "★ 控件总高 92（整块放大：64 → 92，格子 84 + 上下各 4）")
+	eq(UiLayoutRes.QUEUE_H, UiLayoutRes.UNIT_BAND_H,
+		"★ 控件总高 = 顶带高（本版 92 → 88，格子 84 + 上下各 2）—— 两者同高才会共用中轴线")
+	eq(UiLayoutRes.QUEUE_H, 88.0, "★ 控件总高 88（顶带一起收的 4px 都给了数值框）")
 	eq(UiLayoutRes.QUEUE_BIG, 84.0, "★ 大格子 84×84（64 → 84）")
 	eq(UiLayoutRes.QUEUE_SMALL, 40.0, "★ 小格子 40×40（30 → 40）")
 	# ★★ 贴不贴裁剪线：这是「上方被裁剪」那条反馈的回归判据
@@ -120,17 +129,17 @@ func _test_layout_against_reference(cfg) -> void:
 		"★ 队列块右缘 = 右栏内容的公共右缘（641 = 645 − 4，同样不贴裁剪线）")
 	ok(UiLayoutRes.QUEUE_X + UiLayoutRes.QUEUE_W < UiLayoutRes.DETAIL_RIGHT_W,
 		"★ 队列块右缘**不**顶到 645（顶到就会被切）")
-	eq(UiLayoutRes.queue_info_rect(), Rect2(0, 0, 141, 92), "汇总带占控件左边那条 141×92")
+	eq(UiLayoutRes.queue_info_rect(), Rect2(0, 0, 141, 88), "汇总带占控件左边那条 141×88")
 	eq(UiLayoutRes.queue_info_line_rect(0), Rect2(8, 27, 125, 18), "汇总第一行（招募队列 3/5）")
 	eq(UiLayoutRes.queue_info_line_rect(1), Rect2(8, 49, 125, 16), "汇总第二行（共 22s）")
 	ok(UiLayoutRes.queue_info_line_rect(1).position.y + UiLayoutRes.queue_info_line_rect(1).size.y
 			<= UiLayoutRes.QUEUE_H,
 		"★ 汇总两行都落在控件里（否则会被右栏裁掉）")
-	eq(UiLayoutRes.queue_cell_rect(0), Rect2(141, 4, 84, 84), "大格子紧跟在汇总带右边（84×84）")
-	eq(UiLayoutRes.queue_cell_rect(1), Rect2(229, 4, 40, 40), "第 1 个小格排在大格右边")
-	eq(UiLayoutRes.queue_cell_rect(2), Rect2(273, 4, 40, 40), "第 2 个小格在它右边")
-	eq(UiLayoutRes.queue_cell_rect(3), Rect2(229, 48, 40, 40), "第 3 个小格换行")
-	eq(UiLayoutRes.queue_cell_rect(4), Rect2(273, 48, 40, 40), "第 4 个小格在右下角")
+	eq(UiLayoutRes.queue_cell_rect(0), Rect2(141, 2, 84, 84), "大格子紧跟在汇总带右边（84×84）")
+	eq(UiLayoutRes.queue_cell_rect(1), Rect2(229, 2, 40, 40), "第 1 个小格排在大格右边")
+	eq(UiLayoutRes.queue_cell_rect(2), Rect2(273, 2, 40, 40), "第 2 个小格在它右边")
+	eq(UiLayoutRes.queue_cell_rect(3), Rect2(229, 46, 40, 40), "第 3 个小格换行")
+	eq(UiLayoutRes.queue_cell_rect(4), Rect2(273, 46, 40, 40), "第 4 个小格在右下角")
 	var small_last := UiLayoutRes.queue_cell_rect(4)
 	ok(small_last.position.x + small_last.size.x <= UiLayoutRes.QUEUE_W + 1e-6
 		and small_last.position.y + small_last.size.y <= UiLayoutRes.QUEUE_H + 1e-6,
@@ -206,9 +215,14 @@ func _test_queue_info_text_fit(cfg) -> void:
 		"页签列贴住屏幕右边缘")
 	eq(UiLayoutRes.DETAIL_RECT.position.x, UiLayoutRes.MAP_RECT.size.x,
 		"详细信息从地图占位的右边缘开始（x=400）")
+	# ★★ 详细信息面板按需求**加高到 260**（顶部因此抬到 y=820），其余三块仍是 240 高。
 	for r in [UiLayoutRes.DETAIL_RECT, UiLayoutRes.FACTION_RECT, UiLayoutRes.CARD_RECT, UiLayoutRes.TABS_RECT]:
-		eq(r.position.y, UiLayoutRes.BAR_TOP, "底栏各块顶边都在 y=840")
 		eq(r.position.y + r.size.y, UiLayoutRes.DESIGN_H, "底栏各块都贴住屏幕下沿")
+		if r == UiLayoutRes.DETAIL_RECT:
+			eq(r.position.y, UiLayoutRes.DESIGN_H - r.size.y,
+				"★ 详细信息面板（260 高）顶边在 y=820 —— 加高是向上长，底边仍贴屏幕下沿")
+		else:
+			eq(r.position.y, UiLayoutRes.BAR_TOP, "底栏其余各块顶边仍在 y=840（它们没长高）")
 
 	_test_left_column_geometry()
 
@@ -227,7 +241,8 @@ func _test_left_column_geometry() -> void:
 	eq(UiLayoutRes.TROOP_GRID_SLOTS, 9, "★ 下半 3×3 = 9 格（手玩原话：1333 排列）")
 	eq(UiLayoutRes.GRID_PAGE, 9, "单选时滚轮**一次翻一页 = 9 格**（手玩原话）")
 	# 每格 40×40，行距 **55**（本轮从 44 加大 —— 手玩报的「左栏 3×3 网格也太挤」）：
-	# 3 行共 165，加上上半 40 + 缝 15 = **220 = 内容高**，正好铺满、不溢出
+	# 3 行共 165，加上上半 40 + 缝 15 = **220** —— 左栏整段就是 220；
+	# ★ 本版内容高 240，所以这 220 是**居中**放的（上面空 DETAIL_LEFT_Y = 10）。
 	v2_near(UiLayoutRes.troop_avatar_rect(0).size, Vector2(40.0, 40.0), 0.01, "格里的方框 40×40")
 	eq(UiLayoutRes.troop_cell_rect(0), Rect2(0, 0, 112, 55), "第 0 格在左上（宽 116 - 内侧 4）")
 	eq(UiLayoutRes.troop_cell_rect(1).position.x, UiLayoutRes.TROOP_CELL_W,
@@ -236,15 +251,24 @@ func _test_left_column_geometry() -> void:
 	eq(UiLayoutRes.troop_cell_rect(8).position.y, 2.0 * UiLayoutRes.TROOP_CELL_H, "第 8 格在第三行")
 	# 9 格 + 上半那一格都必须落在左栏内容区里（不然会被面板裁掉）
 	var bottom := UiLayoutRes.troop_cell_rect(8)
-	ok(bottom.position.y + UiLayoutRes.TROOP_AVATAR <= 220.0,
-		"★ 第 3 行的方框装得进左栏内容高（%s ≤ 220）" % str(bottom.position.y + UiLayoutRes.TROOP_AVATAR))
-	# ★★ 本轮加大行距之后，左栏**正好铺满 220** —— 上下都不该再剩空（这就是「不挤」的定义：
-	#    多出来的 33px 全分给了三行之间的空白，而不是留在底部发霉）。
-	ok(UiLayoutRes.troop_grid_rect().position.y + UiLayoutRes.TROOP_GRID_H <= 220.0 + 1e-6,
-		"★ 网格铺得进内容高（%s ≤ 220）" % str(
-			UiLayoutRes.troop_grid_rect().position.y + UiLayoutRes.TROOP_GRID_H))
-	ok(UiLayoutRes.troop_grid_rect().position.y + UiLayoutRes.TROOP_GRID_H >= 220.0 - 1e-6,
-		"★ 左栏竖直方向**正好铺满** 220（行距加大之后不该还留着底部空白）")
+	ok(UiLayoutRes.troop_grid_rect().position.y + bottom.position.y
+			+ UiLayoutRes.TROOP_AVATAR <= UiLayoutRes.DETAIL_CONTENT_H,
+		"★ 第 3 行的方框装得进内容高（%s ≤ %.0f）" % [
+			str(UiLayoutRes.troop_grid_rect().position.y + bottom.position.y
+				+ UiLayoutRes.TROOP_AVATAR),
+			UiLayoutRes.DETAIL_CONTENT_H])
+	# ★★ 左栏整段 220 在 240 的内容高里**居中**（上下各 10）—— 不是贴顶留一截空白。
+	near(UiLayoutRes.DETAIL_LEFT_Y,
+		(UiLayoutRes.DETAIL_CONTENT_H - UiLayoutRes.DETAIL_LEFT_H) * 0.5, 1e-6,
+		"★ 左栏整段在内容高里垂直居中（上留 %.0f）" % UiLayoutRes.DETAIL_LEFT_Y)
+	ok(UiLayoutRes.troop_grid_rect().position.y + UiLayoutRes.TROOP_GRID_H
+			<= UiLayoutRes.DETAIL_CONTENT_H + 1e-6,
+		"★ 网格铺得进内容高（%s ≤ %.0f）" % [
+			str(UiLayoutRes.troop_grid_rect().position.y + UiLayoutRes.TROOP_GRID_H),
+			UiLayoutRes.DETAIL_CONTENT_H])
+	ok(UiLayoutRes.DETAIL_LEFT_H <= 220.0 + 1e-6,
+		"★ 左栏整段仍是 220（那 10 个格子的几何不动，只是整段往下挪了 %.0f）"
+			% UiLayoutRes.DETAIL_LEFT_Y)
 	ok(UiLayoutRes.TROOP_CELL_H >= UiLayoutRes.TROOP_AVATAR + 8.0,
 		"★ 每行留得出行间空白（格高 %.0f ≥ 方框 %.0f + 8）—— 这就是「不挤」的那 8px" % [
 			UiLayoutRes.TROOP_CELL_H, UiLayoutRes.TROOP_AVATAR])
@@ -449,16 +473,19 @@ func _test_panels(cfg) -> void:
 	# ---- 节点树 ----
 	for path in ["HudRoot/SquadPanel", "HudRoot/MapPlaceholder", "HudRoot/DetailPanel",
 			"HudRoot/FactionPlaceholder", "HudRoot/CommandCard", "HudRoot/PageTabs",
-			"HudRoot/SettingsButton"]:
+			"HudRoot/SettingsButton", "HudRoot/ResourceBar"]:
 		ok(main.hud.get_node_or_null(path) != null, "节点树里有 %s" % path)
+
+	# ---- 资源条：粮食 / 黄金，横排，落在详细信息面板**正上方**（本版新增）----
+	_test_resource_bar(main)
 
 	# ---- 几何真的落到控件上了（设计空间已在 _run 里钉成 1920×1080）----
 	var vp: Vector2 = main.hud.view_size()
 	eq(vp, Vector2(UiLayoutRes.DESIGN_W, UiLayoutRes.DESIGN_H), "设计空间 = 1920×1080")
 	v2_near(main.hud.detail_panel.position, UiLayoutRes.DETAIL_RECT.position, 1.0,
-		"详细信息面板落在 (400, 840)")
+		"详细信息面板落在 (400, 820)")
 	v2_near(main.hud.detail_panel.size, UiLayoutRes.DETAIL_RECT.size, 1.0,
-		"★ 详细信息面板实际尺寸 = 1030×240（参考图标注）")
+		"★ 详细信息面板实际尺寸 = 1030×260（参考图 240 + 本版加高的 20）")
 
 	# ★ 招募队列控件（五个格子）必须整个装在详细信息面板里 —— 否则会被面板裁掉 / 压到右栏
 	var qc = main.hud.detail_panel.queue_control()
@@ -505,6 +532,7 @@ func _test_panels(cfg) -> void:
 	await _test_box_select(main)
 	_test_detail_basic_stats(main)
 	_test_detail_two_columns(main)
+	_test_detail_vertical_fit(main)
 	_test_clicked_unit_detail(main)
 	_test_settings_inert(main)
 	_test_box_select_buildings(main)
@@ -514,6 +542,10 @@ func _test_panels(cfg) -> void:
 	main.input_ctrl.select_units([main.world.unit_by_id("general-1")])
 	main.hud.refresh()
 	ok(not main.hud.detail_panel.has_log(), "★ 事件日志整块删掉了（detail_panel 里没有日志栏）")
+	# ★★ 需求原话：「把所有的详细信息栏的『详细信息』字样去除」——
+	#    数值区顶上那个标题 Label 整块删掉（不是把文字清空）。
+	ok(main.hud.detail_panel.get_node_or_null("DetailBox/DetailTitle") == null,
+		"★ 数值区里没有「详细信息」标题控件了")
 	ok(main.hud.detail_panel.detail_text().contains("血量"), "右栏数值区显示选中单位的数值")
 	eq(main.hud.detail_panel.buff_count(), UiLayoutRes.BUFF_SLOTS, "★ 右栏有 3 个 buff 占位格")
 	ok(main.hud.detail_panel.unit_name_text() != "", "右栏写着单位名称")
@@ -564,6 +596,119 @@ func _test_panels(cfg) -> void:
 
 	root_node.queue_free()
 	await process_frame
+
+
+# ------------------------------------------------------------------
+# 资源面板：粮食 / 黄金**竖着排**，紧贴详细信息面板上沿（本版新增）
+# ------------------------------------------------------------------
+##
+## 需求原话：「在详细信息界面上方紧贴地图的地方加上资源显示面板，
+##          只需要显示粮食和黄金两个资源，横着显示」
+##          → 后来改成「面板不需要那么长，粮食和黄金栏改为竖着排列」。
+func _test_resource_bar(main) -> void:
+	var bar = main.hud.resource_bar
+	ok(bar != null, "★ 资源面板控件在（HudRoot/ResourceBar）")
+	if bar == null:
+		return
+
+	# ---- 1) 几何：左缘与详细信息面板对齐、下缘压在面板顶边，且**不铺满整宽** ----
+	v2_near(bar.position, UiLayoutRes.RES_BAR_RECT.position, 1.0, "资源面板落在 (400, 764)")
+	v2_near(bar.size, UiLayoutRes.RES_BAR_RECT.size, 1.0, "资源面板尺寸 = 200×56（两行竖排）")
+	eq(UiLayoutRes.RES_BAR_RECT.position.x, UiLayoutRes.DETAIL_RECT.position.x,
+		"★ 资源面板与详细信息面板同一个左边缘")
+	ok(UiLayoutRes.RES_BAR_RECT.size.x < UiLayoutRes.DETAIL_RECT.size.x,
+		"★ 资源面板**不再铺满整宽**（%.0f < %.0f）—— 需求：面板不需要那么长" % [
+			UiLayoutRes.RES_BAR_RECT.size.x, UiLayoutRes.DETAIL_RECT.size.x])
+	eq(UiLayoutRes.RES_BAR_RECT.position.y + UiLayoutRes.RES_BAR_RECT.size.y,
+		UiLayoutRes.DETAIL_RECT.position.y,
+		"★ 资源面板下缘正好压在详细信息面板顶边（%.0f）—— 这就是「紧贴」" % [
+			UiLayoutRes.DETAIL_RECT.position.y])
+	# 不压到左下小地图（它在 x 0..400）—— 左缘取 400 就是为了这条
+	ok(not UiLayoutRes.MAP_RECT.intersects(UiLayoutRes.RES_BAR_RECT),
+		"★ 资源面板与左下小地图不重叠（左缘 x=400 = 小地图右缘）")
+	ok(UiLayoutRes.RES_BAR_RECT.position.y >= 0.0
+			and UiLayoutRes.RES_BAR_RECT.position.y + UiLayoutRes.RES_BAR_RECT.size.y
+				<= UiLayoutRes.DESIGN_H,
+		"★ 资源面板整个在设计空间里（不掉出屏幕）")
+
+	# ---- 2) 内容：只有粮食 / 黄金两项，且**竖着排**（同一列、后者在下面）----
+	var food := bar.get_node_or_null("ResText_粮") as Label
+	var gold := bar.get_node_or_null("ResText_金") as Label
+	ok(food != null, "★ 资源面板里有「粮食」那一项")
+	ok(gold != null, "★ 资源面板里有「黄金」那一项")
+	eq(bar.get_child_count(), 4, "★ 整块正好 4 个控件 = 2 个色块 + 2 个数字（只显示两种资源）")
+	if food != null and gold != null:
+		ok(gold.position.y > food.position.y, "★ 黄金排在粮食**下面**（%.0f > %.0f）—— 竖着排" % [
+			gold.position.y, food.position.y])
+		eq(food.position.x, gold.position.x, "★ 两项**左边对齐**（同一列）")
+		eq(food.position.y, UiLayoutRes.RES_ROW_Y, "★ 粮食那一行的 y = RES_ROW_Y")
+		eq(gold.position.y, UiLayoutRes.RES_ROW2_Y, "★ 黄金那一行的 y = RES_ROW2_Y")
+		ok(UiLayoutRes.RES_ROW2_Y >= UiLayoutRes.RES_ROW_Y + UiLayoutRes.RES_ICON,
+			"★ 两行不重叠（第二行 y %.0f ≥ 第一行下缘 %.0f）" % [
+				UiLayoutRes.RES_ROW2_Y, UiLayoutRes.RES_ROW_Y + UiLayoutRes.RES_ICON])
+		ok(gold.position.y + gold.size.y <= UiLayoutRes.RES_BAR_RECT.size.y + 0.01,
+			"★ 黄金那一行不越出面板下缘（%.0f ≤ %.0f）" % [
+				gold.position.y + gold.size.y, UiLayoutRes.RES_BAR_RECT.size.y])
+		ok(food.position.x + food.size.x <= UiLayoutRes.RES_BAR_RECT.size.x + 0.01,
+			"★ 文字不越出面板右缘（%.0f ≤ %.0f）" % [
+				food.position.x + food.size.x, UiLayoutRes.RES_BAR_RECT.size.x])
+		# 两个色块名与两项对得上（顺序 = 粮食、黄金）
+		var icon_food := bar.get_node_or_null("ResIcon_粮") as Label
+		var icon_gold := bar.get_node_or_null("ResIcon_金") as Label
+		ok(icon_food != null and icon_gold != null, "★ 两个色块都在")
+		if icon_food != null and icon_gold != null:
+			eq(icon_food.size, Vector2(UiLayoutRes.RES_ICON, UiLayoutRes.RES_ICON),
+				"色块 20×20（没有图标素材，用色块 + 一个字顶上）")
+			ok(icon_food.position.x < food.position.x and icon_gold.position.x < gold.position.x,
+				"★ 色块排在各自数字**左边**")
+			eq(icon_food.position.y, food.position.y, "★ 色块与同一行的数字**同一 y**（一行一组）")
+			eq(icon_gold.position.y, gold.position.y, "★ 第二行同理")
+
+	# ---- 3) 数字来自权威值 `world.resources`，且每帧刷新 ----
+	if food != null and gold != null:
+		main.world.resources["food"] = 120.6
+		main.world.resources["gold"] = 80.2
+		main.hud.refresh()
+		eq(food.text, "粮食 121", "★ 粮食取整显示（120.6 → 121），实际：%s" % food.text)
+		eq(gold.text, "黄金 80", "★ 黄金取整显示（80.2 → 80），实际：%s" % gold.text)
+		# 换成整数也不留小数点
+		main.world.resources["food"] = 7.0
+		main.world.resources["gold"] = 0.0
+		main.hud.refresh()
+		eq(food.text, "粮食 7", "★ 整数资源不带小数点")
+		eq(gold.text, "黄金 0", "★ 0 也照实显示")
+
+		# ---- 3b) 文字**装得下**：节点尺寸真的落在条内，且最长的一串按真实字体量得进 ----
+		#  ⚠️ 这一条是踩出来的：子控件的 size 若在 `add_child` 之前设，会被 Label 的
+		#     最小高度（按引擎兜底字体算）夹大 ⇒ 数字那一行顶出 24 高的条、压到面板上。
+		ok(food.size.y <= UiLayoutRes.RES_ICON + 0.01
+				and food.position.y + food.size.y
+					<= UiLayoutRes.RES_BAR_RECT.size.y + 0.01,
+			"★ 数字那一行真的在资源条里（pos.y %.0f + size.y %.0f ≤ 条高 %.0f）" % [
+				food.position.y, food.size.y, UiLayoutRes.RES_BAR_RECT.size.y])
+		var font: Font = main.hud._font
+		if font != null:
+			for pair in [[food, "粮食 1234"], [gold, "黄金 1234"]]:
+				var w: float = font.get_string_size(String(pair[1]),
+					HORIZONTAL_ALIGNMENT_LEFT, -1, UiStyleRes.FS_BODY).x
+				ok(w <= (pair[0] as Label).size.x + 0.01,
+					"★ 「%s」宽 %.0f ≤ 可写 %.0f（4 位数也不被裁）" % [
+						pair[1], w, (pair[0] as Label).size.x])
+			ok(font.get_height(UiStyleRes.FS_BODY) <= UiLayoutRes.RES_ICON + 0.01,
+				"★ 15 号字的行高 %.0f 装得进 %.0f 高那一行" % [
+					font.get_height(UiStyleRes.FS_BODY), UiLayoutRes.RES_ICON])
+		else:
+			ok(true, "（没装中文字体，跳过资源条文字宽度的量算）")
+
+	# ---- 4) 它不吃鼠标（点不动）：边缘滚屏在它上面照样能用 ----
+	eq(bar.mouse_filter, Control.MOUSE_FILTER_IGNORE, "★ 资源条不吃鼠标事件")
+	ok(not main.hud.blocks_edge_scroll(UiLayoutRes.RES_BAR_RECT.get_center()),
+		"★ 鼠标停在资源条上 → 仍然允许边缘滚屏（它只是文字与色块）")
+
+
+## `res` 这个名字只是为了让上面的读口短一点：资源条的节点名 = "ResText_粮" / "ResText_金"
+static func res_bar_label_name(short: String) -> String:
+	return "ResText_" + short
 
 
 # ---- 滚轮缩放：鼠标在底栏（除左下小地图）上时不许缩放地图 ----
@@ -645,12 +790,16 @@ func _test_notice_band(main) -> void:
 	eq(Rect2(body.position, body.size), body_rect, "★ 右栏数值框的几何也不动")
 	ok(notice.visible, "提示行显示出来了")
 
-	# 提示带的位置：在数值框下面、右栏下沿之内、右栏宽度之内
+	# 提示带的位置：在数值框**下面**、右栏下沿之内、右栏宽度之内
+	# ★ 本版数值框加高到 y 100..216、提示带搬到 220..240（面板也加高到 260）——
+	#   所以「在数值框下面」这条仍然成立。
 	var nr := Rect2(notice.position, notice.size)
 	ok(nr.position.y >= UiLayoutRes.DETAIL_BODY_Y + UiLayoutRes.DETAIL_BODY_H,
 		"★ 提示带在数值框**下面**（%.0f ≥ %.0f）" % [
 			nr.position.y, UiLayoutRes.DETAIL_BODY_Y + UiLayoutRes.DETAIL_BODY_H])
-	ok(nr.position.y + nr.size.y <= 220.0 + 0.01, "★ 提示带收在右栏内容高 220 之内")
+	ok(nr.position.y + nr.size.y <= UiLayoutRes.DETAIL_CONTENT_H + 0.01,
+		"★ 提示带收在右栏内容高之内（%.0f ≤ %.0f）" % [
+			nr.position.y + nr.size.y, UiLayoutRes.DETAIL_CONTENT_H])
 	ok(nr.size.x <= UiLayoutRes.DETAIL_RIGHT_W + 0.01, "提示行不越出右栏")
 	if grid.visible:
 		var gr := Rect2(grid.global_position, grid.size)
@@ -1739,11 +1888,6 @@ func _test_right_click_orders(main) -> void:
 	eq(String(got[0].get("target_id", "")), foe.id, "命令里带的是那个敌人的 id")
 	ok(main.input_ctrl._pick_foe_unit_at(foe.pos) == foe, "鼠标底下是敌人时，敌对拾取拿得到它")
 	ok(main.input_ctrl._pick_unit_at(foe.pos) == null, "自己人的拾取函数不会选中敌人")
-	# 左栏要能看见这条命令（不然玩家不知道单位在打谁）——趁命令还在，先验这一条
-	main.hud.refresh()
-	ok(main.hud.detail_panel.detail_text().contains("指定攻击"),
-		"★ 左栏显示「指定攻击：…」（命令可见）")
-
 	# 2) 单击空地 → move
 	got.clear()
 	var empty := Vector2i(-1, -1)
@@ -1918,7 +2062,7 @@ func _test_box_select(main) -> void:
 			"★ 整队选中时右栏报的是**将领**（不是排在最后的附属兵）")
 		ok(main.hud.detail_panel.detail_text().contains("血量 %d" % int(round(g1.hp))),
 			"★ 右栏那些数值也是将领的（将领 1 是长枪兵型：满血 %d）" % int(round(g1.hp_max)))
-		# ★★ 本轮改版（数值区只留基础数值、两栏版式、编制只有将领有）单独放在
+		# ★★ 数值区那套文案（只留基础数值、**单栏**、编制 / 状态都去掉）单独放在
 		#    `_test_detail_basic_stats` 里 —— 它会临时改选中与展开的部队，
 		#    插在这里会把下面那批「多选 / 换展开」的断言搅乱（实测踩过）。
 
@@ -1942,8 +2086,9 @@ func _test_box_select(main) -> void:
 		eq(roster.leader().id, g1.id, "（前提）展开的是序号靠前的第 1 支部队")
 		eq(main.hud.detail_panel.unit_name_text(), String(g1.name),
 			"★ 拖拽选中多个部队 → 右栏显示**展开那支部队的将领**")
-		ok(main.hud.detail_panel.detail_text().contains("已选中 2 支部队"),
-			"★ 多选时右栏补一行「已选中 N 支部队」")
+		# ★★ 本版按需求去掉「已选中 N 支部队」那一行（选中几支看左侧列表的高亮就知道）：
+		ok(not main.hud.detail_panel.detail_text().contains("已选中"),
+			"★ 多选时也不再补「已选中 N 支部队」那一行")
 		# ★ 多选时下半网格只画**其余部队的将领**，不画单位（单位只在单选时出现）
 		eq(grid.cell_count(), 1, "★ 多选时下半网格里只有那 1 支没展开的部队")
 		ok(grid.unit_at(0) == g2, "★ 那一格画的是将领本人（不是单位）")
@@ -2020,8 +2165,8 @@ func _test_box_select(main) -> void:
 		eq(UiLayoutRes.DETAIL_BODY_X + UiLayoutRes.DETAIL_BODY_W,
 			UiLayoutRes.QUEUE_X + UiLayoutRes.QUEUE_W,
 			"★ 数值框右缘 = 招募队列右缘（右栏右侧没有任何一块短一截 / 长一截）")
-		eq(UiLayoutRes.NOTICE_Y + UiLayoutRes.NOTICE_H, 220.0,
-			"★ 提示带正好收在右栏下沿（200..220 = 数值框下面那条本来空着的带）")
+		eq(UiLayoutRes.NOTICE_Y + UiLayoutRes.NOTICE_H, UiLayoutRes.DETAIL_CONTENT_H,
+			"★ 提示带正好收在右栏下沿（220..240 = 数值框下面那条本来空着的带）")
 		ok(UiLayoutRes.NOTICE_Y >= UiLayoutRes.DETAIL_BODY_Y + UiLayoutRes.DETAIL_BODY_H,
 			"★ 提示带与数值框不重叠（%s ≥ %s）" % [
 				str(UiLayoutRes.NOTICE_Y),
@@ -2041,14 +2186,15 @@ func _test_box_select(main) -> void:
 		# ★★ 数值框加高之后要真的「装得下」：正文（关掉 autowrap 的多行文本）按 13 号字
 		#    实测自然高度必须 ≤ 可视高度 —— 这是「太拥挤」那轮的核心判据。
 		#    旧版是 90-24 = 66 的可视高配 7 行 11 号字，**根本装不下**（最后 1~2 行被裁）。
+		#    ⚠️ 可视高 = 方框高 − 正文顶边（DETAIL_BODY_TEXT_Y，标题删掉后正文上移过）。
 		var font: Font = main.hud._font
 		if font != null:
 			var body_fs: int = UiStyleRes.FS_SMALL
 			var lh: float = font.get_height(body_fs)
-			var visible: float = UiLayoutRes.DETAIL_BODY_H - 24.0
+			var visible: float = UiLayoutRes.DETAIL_BODY_H - UiLayoutRes.DETAIL_BODY_TEXT_Y
 			var capacity: int = int(floor(visible / lh))
-			ok(capacity >= 5,
-				"★ 数值框（可视高 %.0f）按 %d 号字装得下 %d 行（≥5 行才够放基础数值）" % [
+			ok(capacity >= 7,
+				"★ 数值框（可视高 %.0f）按 %d 号字装得下 %d 行 —— 区划详情最坏 7 行也要装得下" % [
 					visible, body_fs, capacity])
 			var probe := "攻击距离 3 格 / 间隔 1.2s"
 			ok(font.get_string_size(probe, HORIZONTAL_ALIGNMENT_LEFT, -1, body_fs).x
@@ -2395,12 +2541,33 @@ func _test_box_select_buildings(main) -> void:
 	eq(grid.cell_sub_text(0), "%d/%d" % [int(round(expect[1].hp)), int(round(expect[1].hp_max))],
 		"★ 建筑格第二行是血量 x/y")
 
-	# ---- 5) 右栏：主选中建筑的详情（本版精简掉「归属」「位置」与大本营锁血注释）----
+	# ---- 5) 右栏：主选中建筑的详情（本版精简掉「归属」「位置」与大本营锁血注释，
+	#          ★ 又去掉了「升级到 N 级：…」那两行）----
 	eq(panel.unit_name_text(), expect[0].display_name(), "★ 右栏报的是主选中的建筑")
 	var btext: String = panel.detail_text()
 	ok(btext.contains("生命"), "建筑详情里有生命值（实际：%s）" % btext.replace("\n", "|"))
 	ok(not btext.contains("归属") and not btext.contains("位置"),
 		"★ 建筑详情里没有「归属」「位置」（本版精简掉了）")
+	# ★★ 需求原话：「选中建筑时不要显示『升级到2级』文本」——
+	#    「升级到 N 级：花费（时间）」那条升级预览与满级那句一并去掉。
+	#    ⚠️ 「正在升级：升到 N 级，还剩 X 秒」是**进行中**的读条反馈，它是另一条（那条留着）。
+	ok(not btext.contains("升级到"),
+		"★ 建筑详情里没有「升级到 N 级…」那条预览（实际：%s）" % btext.replace("\n", "|"))
+	ok(not btext.contains("已经是最高等级"), "★ 满级那句也不再写")
+	# ★★ 需求原话：「去除大本营的『开局自带，不可建造，不可拆除』文本」
+	var base = null
+	for b in world.building_list:
+		if b != null and b.alive and b.type == BuildingRes.TYPE_BASE and b.owner == world.my_faction:
+			base = b
+			break
+	if base != null:
+		var basetext: String = main.hud._building_text(base)
+		ok(not basetext.contains("开局自带"),
+			"★ 大本营详情里没有「开局自带，不可建造、不可拆除」（实际：%s）"
+				% basetext.replace("\n", "|"))
+		ok(basetext.contains("生命"), "★ 大本营的生命那一行照旧在")
+	else:
+		ok(false, "★ 找不到己方大本营 —— 这条断言本该验它详情里没有那句说明")
 
 	# ---- 6) 点建筑格 = 换「正在看哪一个」，不改选中了哪些 ----
 	var sel_before: int = main.input_ctrl.selected_buildings.size()
@@ -2445,13 +2612,75 @@ func _test_box_select_buildings(main) -> void:
 	var zones: Array = world.zones.zones
 	if zones.size() > 0:
 		var ztext: String = main.hud._zone_text(zones[0])
-		ok(ztext.contains("区划「") and ztext.contains("粮食产能"), "区划详情有名字与产能")
+		ok(ztext.contains("区划大小") and ztext.contains("粮食产能"), "区划详情有大小与产能")
+		# ★★ 本版按需求去掉正文开头那行「区划「xx」」（区划名上方已经有一处了）：
+		ok(not ztext.contains("区划「"),
+			"★ 区划详情里没有「区划「xx」」那一行（实际：%s）" % ztext.replace("\n", "|"))
 		ok(not ztext.contains("归属") and not ztext.contains("地块／"),
 			"★ 区划详情里没有「归属」，产能也不写「／地块／秒」（本版精简）")
+		# ★★ 本版按需求：区划种类后面不再跟「（每地块每秒 …）」（那句来自
+		#    config.zone_kind.list[].line —— 数据没动，只是不再画进详情栏）。
+		ok(ztext.contains("区划种类："),
+			"★ 区划种类那一行还在（实际：%s）" % ztext.replace("\n", "|"))
+		ok(not ztext.contains("每地块每秒"),
+			"★ 种类后面不再跟「（每地块每秒 …）」（实际：%s）" % ztext.replace("\n", "|"))
+		var kind_line := ""
+		for row in ztext.split("\n"):
+			if String(row).begins_with("区划种类："):
+				kind_line = String(row)
+		eq(kind_line, "区划种类：%s" % world.zones.kind_entry_of(zones[0]).get("name", ""),
+			"★ 种类那一行只有种类名，没有括号里的说明")
+		# ★★ 本版按需求：「人口产能」与「人口」两行合并成「人口：x（产能x）」。
+		var z0prod: Dictionary = zones[0]["production"]
+		var z0eff: Dictionary = UpgradeRes.zone_spec_effect(zones[0], world.cfg)
+		var z0pop: float = float(z0prod["population"]) * float(z0eff["population_mult"])
+		var pop_line := ""
+		for row in ztext.split("\n"):
+			if String(row).begins_with("人口："):
+				pop_line = String(row)
+		eq(pop_line, "人口：%d（产能%s）" % [
+				world.zones.population_floor(zones[0]), main.hud._fmt_num(z0pop)],
+			"★ 人口那一行 = 「人口：x（产能x）」（两行合并后长这样）")
+		ok(not ztext.contains("人口产能"),
+			"★ 不再单独有「人口产能」那一行（已合并进人口那行）")
+		ok(ztext.contains("人口上限："),
+			"★ 人口上限仍然看得见（只是从「人口：x（上限 y）」搬到单独一行）")
+		# ★★ 行的顺序：大小 → 种类 → **特化状态** → 粮食 → 黄金 → 人口 → 人口上限。
+		#    特化那句原来排在最末，而合并之后整屏是 7 行（98px > 可视高 88px）⇒
+		#    排在最后的那一行会被 `clip_text` 裁掉 —— 被切掉的恰好是最该看见的「正在特化」。
+		var i_kind: int = ztext.find("区划种类：")
+		var i_pop: int = ztext.find("人口：")
+		var i_cap: int = ztext.find("人口上限：")
+		ok(i_kind >= 0 and i_pop > i_kind and i_cap > i_pop,
+			"★ 顺序 = 种类 … 人口 … 人口上限（实际：%s）" % ztext.replace("\n", "|"))
+		# 造一个「已特化」的区划：特化那一行必须排在产能前面（不然 7 行时被裁）
+		var spec_zone: Dictionary = zones[0].duplicate(true)
+		spec_zone["spec_done"] = "food"
+		var stext: String = main.hud._zone_text(spec_zone)
+		var i_spec: int = stext.find("特化：")
+		var i_food: int = stext.find("粮食产能：")
+		ok(i_spec >= 0, "★ 已特化的区划会写一行特化状态（实际：%s）" % stext.replace("\n", "|"))
+		ok(i_spec < i_food,
+			"★ 特化那一行排在产能**前面**（第 %d 字符 < 第 %d 字符）—— 整屏 7 行时它才不会被裁"
+				% [i_spec, i_food])
+		# ★ 最坏情况（7 行）比可视高多一行：会被裁掉的是**最末那一行**（= 人口上限）。
+		#   所以除了「人口上限排在最后」，还要钉住「多出来的行数 ≤ 1」——
+		#   再多就会连人口那一行也看不全了（那时候该改文案，而不是改断言）。
+		if main.hud._font != null:
+			var zlh: float = main.hud._font.get_height(UiStyleRes.FS_SMALL)
+			var zvisible: float = UiLayoutRes.DETAIL_BODY_H - UiLayoutRes.DETAIL_BODY_TEXT_Y
+			var zcap: int = int(floor(zvisible / zlh))
+			var zrows: int = stext.split("\n").size()
+			ok(zrows - zcap <= 1,
+				"★ 区划详情最多 %d 行，比可视的 %d 行最多多 1 行 —— 只裁得到最后那行「人口上限」"
+					% [zrows, zcap])
 		main.input_ctrl.select_zone(zones[0])
 		main.hud.refresh()
-		eq(main.hud.detail_panel.unit_name_text(), "区划「%s」" % String(zones[0]["name"]),
-			"★ 选中区划时右栏标题是区划名")
+		eq(main.hud.detail_panel.unit_name_text(), String(zones[0]["name"]),
+			"★ 选中区划时右栏标题就是区划名本身（不再套「区划「xx」」）")
+		# 面板里画出来的就是这一份（不是只测了文案函数）
+		eq(main.hud.detail_panel.detail_text(), ztext,
+			"★ 面板详情与 `_zone_text()` 的输出一致（没有第二处拼装）")
 
 	# ---- 10) 拆除入口整块删掉（需求：去掉这个拆除逻辑，暂时不绑定按键）----
 	ok(not main.input_ctrl.has_method("demolish_selected"), "★ 拆除入口已删除")
@@ -2467,13 +2696,17 @@ func _test_box_select_buildings(main) -> void:
 
 
 # ------------------------------------------------------------------
-# 右栏数值区的正文：**真·两栏**（两个 Label），不是制表符
+# 右栏数值区的正文：单栏（本版） / 有 `\t` 时仍然**真·两栏**（两个 Label）
 # ------------------------------------------------------------------
 #
 # 手玩反馈「招募那块面板的 ui 还是不好看」时截图看到的：正文两栏**粘在一起** ——
 # 「血量 200 / 200状态：待命」。根因：原来正文是一整段带 `\t` 的字符串，
 # 而 **Godot 的 Label 不把 `\t` 当制表位**（只推进一个很小的固定宽度）。
-# 现在 `detail_panel.set_detail()` 按 `\t` 拆成左右两个 Label，x 由 ui_layout 定死。
+# 所以 `detail_panel.set_detail()` 按 `\t` 拆成左右两个 Label，x 由 ui_layout 定死。
+#
+# ★★ 本版按需求砍掉了第二栏（编制 / 状态）⇒ `hud._unit_text()` 现在返回**单栏**文本，
+#    `set_detail()` 走的是单栏那条分支：右栏 Label 收起来。两栏渲染这条路仍然保留
+#    （下面第 3 步手工喂一段带 `\t` 的文本验它还在）。
 func _test_detail_two_columns(main) -> void:
 	var panel = main.hud.detail_panel
 	var world = main.world
@@ -2481,24 +2714,36 @@ func _test_detail_two_columns(main) -> void:
 	main.input_ctrl.select_units([g1])
 	main.hud.refresh()
 
-	# ---- 1) 将领：两栏都被填上，而且两栏各自都**不含** `\t` ----
+	# ---- 1) 将领：**单栏**（没有 `\t`，右栏收起来），左栏是基础数值 ----
 	var ltext: String = panel.detail_left_text()
 	var rtext: String = panel.detail_right_text()
 	ok(not ltext.contains("\t"), "★ 左栏 Label 里没有制表符（它只画左栏）")
-	ok(not rtext.contains("\t"), "★ 右栏 Label 里没有制表符")
 	ok(ltext.contains("血量") and ltext.contains("攻击力"),
 		"左栏是基础数值（血量 / 攻击力）")
-	ok(rtext.contains("编制") or rtext.contains("状态"),
-		"★ 右栏接着写上编制 / 状态（实际：%s）" % rtext.replace("\n", "|"))
-	ok(panel.detail_text().contains("\t"),
-		"★ 合成读口照旧把两栏拼回「左\\t右」（文案断言都走它）")
+	# ★★ 本版按需求去掉「兵种 …（步兵）」那一行：
+	ok(not ltext.contains("兵种"),
+		"★ 不再显示「兵种 …（步兵）」（实际：%s）" % ltext.replace("\n", "|"))
+	eq(rtext, "", "★ 第二栏（编制 / 状态）按需求去掉 → 右栏 Label 是空的")
+	ok(not panel._body_right.visible, "★ 右栏 Label 收起来了")
+	ok(not panel.detail_text().contains("\t"),
+		"★ 单位文案是单栏（本版砍掉了第二栏）")
 	ok(panel.detail_text().contains("血量 %d" % int(round(g1.hp_max))),
 		"合成文本里仍然能读到「血量 N」（旧断言按 config 里的将领血量写）")
+
+	# ★★ 用户报的「详细信息字样去掉之后第一行是空的」：
+	#    ① 正文 Label 的顶边必须上移到方框的内边距处（老值是 20 = 标题占位那一段）；
+	#    ② 第一行**必须真的有字**（不是从第二行才开始写）。
+	var text_top: float = panel._body.position.y
+	eq(text_top, UiLayoutRes.DETAIL_BODY_TEXT_Y,
+		"★ 正文顶边 = DETAIL_BODY_TEXT_Y（标题删掉后不留空白行）")
+	eq(text_top, UiLayoutRes.DETAIL_BODY_PAD,
+		"★ 正文顶边 = 方框内边距（%.0f）—— 贴着方框上沿起排" % UiLayoutRes.DETAIL_BODY_PAD)
+	eq(String(ltext.split("\n")[0]), "血量 %d / %d" % [int(round(g1.hp)), int(round(g1.hp_max))],
+		"★ 第一行就是血量（不是空行）—— 实际：%s" % ltext.replace("\n", "|"))
 
 	# ---- 2) 两个 Label 的几何：右栏在左栏右边、且互不重叠 ----
 	var left_label: Label = panel._body
 	var right_label: Label = panel._body_right
-	ok(right_label.visible, "★ 右栏 Label 显示出来了")
 	ok(right_label.position.x > left_label.position.x,
 		"★ 右栏的 x（%.0f）在左栏（%.0f）右边" % [right_label.position.x, left_label.position.x])
 	ok(left_label.position.x + left_label.size.x <= right_label.position.x + 0.01,
@@ -2507,10 +2752,18 @@ func _test_detail_two_columns(main) -> void:
 	ok(right_label.position.x + right_label.size.x <= UiLayoutRes.DETAIL_BODY_W,
 		"★ 右栏不越出数值框")
 
-	# ---- 3) 两栏里每一行都装得进各自的可写宽（按真实字体量，见 pitfalls 5.42）----
+	# ---- 3) 真的喂一段带 `\t` 的文本 → 两栏渲染这条路照旧（区划 / 建筑是单栏）----
+	panel.set_detail("左A\t右A\n左B\t右B")
+	eq(panel.detail_left_text(), "左A\n左B", "★ 带 `\\t` 的文本按制表位拆成两栏（左栏）")
+	eq(panel.detail_right_text(), "右A\n右B", "★ 右栏拿到 `\\t` 右边那一段")
+	ok(right_label.visible, "★ 这时候右栏 Label 显示出来")
+	eq(panel.detail_text(), "左A\t右A\n左B\t右B", "合成读口把两栏拼回原样")
+
+	# ---- 4) 两栏里每一行都装得进各自的可写宽（按真实字体量，见 pitfalls 5.42）----
 	var font: Font = main.hud._font
 	if font != null:
-		for pair in [[ltext, left_label.size.x, "左栏"], [rtext, right_label.size.x, "右栏"]]:
+		for pair in [[panel.detail_left_text(), left_label.size.x, "左栏"],
+				[panel.detail_right_text(), right_label.size.x, "右栏"]]:
 			var body: String = String(pair[0])
 			var avail: float = float(pair[1])
 			var name_cn: String = String(pair[2])
@@ -2525,7 +2778,7 @@ func _test_detail_two_columns(main) -> void:
 	else:
 		ok(true, "（没装中文字体，跳过两栏宽度的量算）")
 
-	# ---- 4) 单栏文本（区划 / 建筑）→ 右栏收起来，文本原样进左栏 ----
+	# ---- 5) 单栏文本（区划 / 建筑）→ 右栏收起来，文本原样进左栏 ----
 	panel.set_detail("第一行\n第二行")
 	eq(panel.detail_right_text(), "", "★ 没有制表符的文本（区划 / 建筑）→ 右栏收起来")
 	eq(panel.detail_text(), "第一行\n第二行", "单栏文本原样读出来（不多不少）")
@@ -2535,11 +2788,80 @@ func _test_detail_two_columns(main) -> void:
 
 
 # ------------------------------------------------------------------
-# 右栏数值区：只留基础数值 / 两栏版式 / 编制只有将领有
+# 竖直方向：**所有文本都塞进那一格**（缩字号 / 压行距 / 面板加高）
+# ------------------------------------------------------------------
+##
+## 需求原话：「能否强制让所有文本都挤进详细信息栏（在竖直方向上可以适当缩放）」。
+##
+## 这一条是**兜底**性质：面板按需求加高到 260（数值框 116 高、可视 108）之后，
+## 最坏的区划详情（7 行 13 号字 = 98px）原字号就装得下。所以这里既验
+##   ① 真文案装得下（字号没被缩）；
+##   ② 真塞不下时 `_fit_body_text()` 会缩字号 / 压行距把它压进去（不会溢出被裁）。
+func _test_detail_vertical_fit(main) -> void:
+	var panel = main.hud.detail_panel
+	var world = main.world
+	var g1 = world.unit_by_id("general-1")
+	var font: Font = main.hud._font
+	if font == null:
+		ok(true, "（没装中文字体，跳过竖直方向的自适应量算）")
+		return
+	var avail: float = float(panel._body.size.y)
+
+	# ---- 1) 单位：3 行，原字号（不该被缩）----
+	main.input_ctrl.select_units([g1])
+	main.hud.refresh()
+	eq(panel.body_font_size(), UiStyleRes.FS_SMALL, "★ 单位详情 3 行，字号仍是默认的 13")
+	eq(panel.body_line_spacing(), 0, "★ 也没压行距")
+	ok(float(3) * font.get_height(panel.body_font_size()) <= avail + 0.01,
+		"★ 3 行装得进可视高 %.0f" % avail)
+
+	# ---- 2) 区划（最坏情况：加一条特化状态 = 7 行）：仍然原字号就装得下 ----
+	var z: Dictionary = (world.zones.zones[0] as Dictionary).duplicate(true)
+	z["spec_done"] = "food"
+	var ztext: String = main.hud._zone_text(z)
+	eq(ztext.split("\n").size(), 7, "（前提）这条区划详情是 7 行：%s" % ztext.replace("\n", "|"))
+	panel.set_detail(ztext)
+	eq(panel.body_font_size(), UiStyleRes.FS_SMALL,
+		"★ 7 行也不用缩字号（面板加高 20px 就是为这个）")
+	ok(float(7) * font.get_height(panel.body_font_size()) <= avail + 0.01,
+		"★ 7 行 × 行高 %.0f ≤ 可视高 %.0f —— 最后一行不会跑到面板外" % [
+			font.get_height(panel.body_font_size()), avail])
+
+	# ---- 3) 塞不下的极端文案：自动缩小 / 压行距，绝不溢出 ----
+	var long_text := ""
+	for i in 12:
+		long_text += ("第%d行 用来把这一格塞爆的一行字" % (i + 1)) + ("\n" if i < 11 else "")
+	panel.set_detail(long_text)
+	var fs_after: int = panel.body_font_size()
+	var ls_after: int = panel.body_line_spacing()
+	ok(fs_after < UiStyleRes.FS_SMALL or ls_after < 0,
+		"★ 12 行塞不下时真的会缩字号 / 压行距（字号 %d、行距 %d）" % [fs_after, ls_after])
+	var used: float = 12.0 * (font.get_height(fs_after) + float(ls_after))
+	ok(used <= avail + 0.01,
+		"★ 缩放之后 12 行（%.0f px）装进可视高 %.0f —— 没有任何一行落在面板外" % [used, avail])
+	ok(fs_after >= detail_panel_fs_floor(panel),
+		"★ 字号没有缩到不可读（下限 %d，实际 %d）" % [detail_panel_fs_floor(panel), fs_after])
+
+	# 收尾：恢复成「选中 1 号将领」，别把状态留给后面的用例
+	main.input_ctrl.select_units([g1])
+	main.hud.refresh()
+	eq(panel.body_font_size(), UiStyleRes.FS_SMALL, "★ 换回短文案之后字号恢复默认")
+
+
+## `detail_panel.BODY_FS_MIN` 的读口（测试读常量，别在断言里写死数字）
+func detail_panel_fs_floor(panel) -> int:
+	return int(panel.BODY_FS_MIN)
+
+
+# ------------------------------------------------------------------
+# 右栏数值区：只留基础数值 / 单位是**单栏**（编制与状态都去掉了）
 # ------------------------------------------------------------------
 ##
 ## 需求原话：「底部的详细信息 ui 还是有些排版问题，具体表现在太拥挤了」+
-##          「只需要给基础数值即可」+「假如是将领才要显示编制，兵不用显示编制」。
+##          「只需要给基础数值即可」+
+##          「选中部队时在第一列只显示选中的单位血量，攻击力和攻击距离攻击速度，
+##            第二列的编制和状态去掉」+
+##          「把选中部队时的『已选中x支部队』去掉，把兵种显示也去掉」。
 ##
 ## ★★ 为什么单独一个函数、而且放在 `_test_box_select` **之后**：
 ##    它会临时改「选中谁 / 展开哪一支」，插在那个用例中间会把下面那批
@@ -2552,60 +2874,65 @@ func _test_detail_basic_stats(main) -> void:
 	if g1 == null:
 		return
 
-	# ---- 1) 将领：两栏版式 + 基础数值 + 编制 ----
+	# ---- 1) 将领：**单栏**基础数值（只有血量 / 攻击力 / 攻击距离·间隔）----
 	main.input_ctrl.select_units([g1])
 	main.hud.refresh()
-	var gtext: String = main.hud.detail_panel.detail_text()
-	ok(gtext.contains("\t"), "★ 数值区是两栏制表位版式（正文里有 \\t）")
+	var panel = main.hud.detail_panel
+	var gtext: String = panel.detail_text()
+	ok(not gtext.contains("\t"),
+		"★ 单位详情是单栏（本版砍掉第二栏，实际：%s）" % gtext.replace("\n", "|"))
 	ok(gtext.contains("血量") and gtext.contains("攻击力") and gtext.contains("攻击距离"),
 		"★ 基础数值：血量 / 攻击力 / 攻击距离都在")
-	ok(gtext.contains("编制"), "★ 将领显示「编制」")
+	ok(gtext.contains("间隔"), "★ 攻击速度（= 间隔 Ns，与「攻击距离」同一行）也在")
+	ok(not gtext.contains("编制"), "★ 将领也不再显示「编制」（本版按需求去掉）")
+	ok(not gtext.contains("状态") and not gtext.contains("待命"),
+		"★ 也不再显示「状态」（同上）")
+	# ★★ 本版按需求整行去掉的两样：
+	ok(not gtext.contains("兵种"), "★ 不再显示「兵种 …（步兵）」（实际：%s）" % gtext.replace("\n", "|"))
+	ok(not gtext.contains("已选中"), "★ 不再显示「已选中 N 支部队」")
 	ok(not gtext.contains("速度") and not gtext.contains("区块") and not gtext.contains("buff"),
-		"★ 速度 / 所在区块 / buff 占位这些不再出现（手玩：只需要基础数值）")
+		"★ 移动速度 / 所在区块 / buff 占位这些不再出现（手玩：只需要基础数值）")
 	var g_lines: int = gtext.split("\n").size()
-	ok(g_lines <= 5, "★ 将领最多 5 行（实际 %d 行）—— 13 号字装得进加高后的数值框" % g_lines)
-	# ★★ 本轮「太拥挤」的**核心判据**：真正喂进去的这段文案，按 13 号字量出来的自然高度
+	eq(g_lines, 3, "★ 将领正好 3 行：血量 / 攻击力 / 攻击距离·间隔（实际：%s）"
+		% gtext.replace("\n", "|"))
+	# ★★ 「太拥挤」的**核心判据**：真正喂进去的这段文案，按 13 号字量出来的自然高度
 	#    必须 ≤ 数值框的可视高度。旧版是 7 行 11 号字挤进 66px 的可视高 ⇒ **必然被裁**
 	#    （`clip_text` 把最后 1~2 行切掉），肉眼看就是「下面那行没了 / 挤在一起」。
 	if main.hud._font != null:
 		var lh: float = main.hud._font.get_height(UiStyleRes.FS_SMALL)
 		var natural: float = lh * float(g_lines)
-		var visible: float = UiLayoutRes.DETAIL_BODY_H - 24.0
+		# ⚠️ 可视高 = 方框高 − 正文顶边（DETAIL_BODY_TEXT_Y，见 ui_layout 那段注释）：
+		#    正文现在从方框上沿起排，能用的就是下面这一整段。
+		var visible: float = UiLayoutRes.DETAIL_BODY_H - UiLayoutRes.DETAIL_BODY_TEXT_Y
 		ok(natural <= visible,
 			"★ 将领这段文案（%d 行 × 行高 %.1f = %.0f px）装得进可视高 %.0f —— 一行都不会被裁"
 			% [g_lines, lh, natural, visible])
-	# 每一行都只有一处制表位（= 两栏），不许出现「一行里塞三栏」这种又挤起来的版式
-	var bad_rows := 0
-	for row in gtext.split("\n"):
-		if String(row).count("\t") > 1:
-			bad_rows += 1
-	eq(bad_rows, 0, "★ 每行最多一个制表位（就是两栏，没有三栏挤在一起的行）")
 
-	# ---- 2) 兵（非将领）：同样两栏版式，但**没有**编制那一行 ----
+	# ---- 2) 兵（非将领）：同一套单栏字段（编制 / 状态 / 兵种对谁都不写）----
 	#
 	# ★★ 为什么要直接调 `hud._unit_text()` 而不是「选一个兵再看面板」：
 	#   右栏显示谁由 `hud._right_unit()` 决定，而它有一条**有意**的规则 ——
 	#   玩家点到的东西必须是**当前展开那支部队的成员**，否则退回那支部队的将领。
 	#   所以「选一个附属兵」在界面上永远看到将领（实测：选敌人更是直接退回将领）。
-	#   那条规则是别的需求，不该为了测「兵的编制」去绕它 —— 直接喂一个兵进文案函数，
-	#   验的正好是本轮这条规则本身（将领才写编制）。
+	#   那条规则是别的需求，不该为了测兵的文案去绕它 —— 直接喂一个兵进文案函数。
 	var retinue: Array = world.retinue_of(g1.id)
 	ok(retinue.size() > 0, "（前提）1 号将领带着附属兵（%d 个）" % retinue.size())
 	if retinue.size() > 0:
 		var soldier = retinue[0]
 		ok(not world.is_team_leader(soldier), "（前提）喂进去的这个确实是兵，不是将领")
 		var stext: String = main.hud._unit_text(soldier, [])
-		ok(stext.contains("血量") and stext.contains("攻击力"),
-			"★ 兵的基础数值照常显示（血量 / 攻击力）")
-		ok(stext.contains("\t"), "★ 兵的数值也是两栏版式")
-		ok(not stext.contains("编制"),
-			"★ 兵不显示「编制」（手玩原话：假如是将领才要显示编制，兵不用显示编制）")
-		ok(stext.split("\n").size() <= 5,
-			"★ 兵最多 5 行（实际 %d 行）" % stext.split("\n").size())
-		# 同一份文案函数喂将领时必须**有**编制 —— 否则上面那条可能是因为整块都没写
+		ok(stext.contains("血量") and stext.contains("攻击力") and stext.contains("攻击距离"),
+			"★ 兵的基础数值照常显示（血量 / 攻击力 / 攻击距离）")
+		ok(not stext.contains("\t"), "★ 兵的数值也是单栏")
+		ok(not stext.contains("编制") and not stext.contains("状态"),
+			"★ 兵不显示「编制」「状态」（第二栏整块去掉）")
+		ok(not stext.contains("兵种") and not stext.contains("已选中"),
+			"★ 兵也不显示「兵种」「已选中 N 支部队」")
+		eq(stext.split("\n").size(), 3, "★ 兵也是正好 3 行（血量 / 攻击力 / 攻击距离·间隔）")
+		# 将领与兵现在是**同一套字段**（编制那处差异随第二栏一起去掉了）
 		var ltext2: String = main.hud._unit_text(g1, [])
-		ok(ltext2.contains("编制") and not stext.contains("编制"),
-			"★ 同一套文案：将领有编制、兵没有（对照，排除「编制整块丢了」）")
+		ok(not ltext2.contains("编制") and not ltext2.contains("状态"),
+			"★ 同一套文案：将领那边也没有编制 / 状态（对照）")
 
 	# ---- 3) 敌人不进右栏（既有规则，顺手钉一下别被本轮改动带坏）----
 	var foe = world.spawn_enemy(g1.tx + 5, g1.ty)
