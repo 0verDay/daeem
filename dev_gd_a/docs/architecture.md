@@ -112,6 +112,14 @@ dev_gd_a/daeem/
 │   ├── ui_layout.gd              #   ★ UI 的全部几何常量（照参考图的像素稿）+ 贴边规则
 │   ├── ui_style.gd               #   UI 配色与 StyleBox 工厂
 │   ├── hud.gd                    #   UI 装配：左部队列表 / 左下地图占位 / 底栏 / 右上设置
+│   │                             #     ★ 也是**界面词**的唯一出处（拒因码 → 中文、悬停详情文案）
+│   ├── hover_tip.gd              #   ★ 悬停详情面板（本版新增）：住在**命令卡正上方**，
+│   │                             #     水平范围 = 命令卡 + 右边那一列页签那一整段
+│   │                             #     （**左缘对命令卡左缘、右缘对页签列右缘**，宽 340），
+│   │                             #     高度按悬停到的文本**动态缩放**（向上长，下缘离命令卡 8px）
+│   │                             #     ⚠️ 高度**只问 Label 自己**（get_minimum_size），
+│   │                             #     不许拿 Font.get_multiline_string_size 顶替（见 pitfalls 5.52）
+│   │                             #     文案由 hud 喂（`_hover_detail`），本控件只排版与画
 │   ├── squad_panel.gd            #   左侧「部队 1~10」（动态生成，点了只选中）
 │   ├── detail_panel.gd           #   ★ 底栏「详细信息」：**左右两栏**（第四轮改版）
 │   │                             #     左 = view/unit_roster.gd（上）+ view/troop_grid.gd（下）
@@ -127,6 +135,8 @@ dev_gd_a/daeem/
 │   │                             #     ★ 也用来显示**单条读条**（建筑升级 / 区划特化，
 │   │                             #       见 set_bar()：需求要的「复用招募单位的面板」）
 │   ├── command_card.gd           #   右下 3×3 命令卡（内容随页签切换）
+│   │                             #     ★ 每格还报 `cell_hovered / cell_unhovered`（鼠标悬停），
+│   │                             #       hud 收到后弹 hover_tip —— **不报内容，只报第几格**
 │   ├── tech_grid.gd              #   ★ 右下 3×3 科技九格（**盖在命令卡上**，只有「科技」页显示）
 │   │                             #     九条占位科技来自 config.json 的 tech.list；
 │   │                             #     已启用 = 实心蓝高亮；点一下 = 启用 / 弃用（发 tech_toggle）
@@ -137,7 +147,8 @@ dev_gd_a/daeem/
     ├── test_smoke.gd             #   脚手架自检 + 网格工具
     ├── test_logic.gd             #   玩法规则（移动 / 战斗 / 建造 / 占领 / 快照…）
     ├── test_view.gd              #   渲染层接线（能挂上树、跑帧不炸、中文字体）
-    ├── test_ui.gd                #   ★ 新 UI：几何对着参考图、部队列表 / 命令卡 / 招募 / 右键手势
+    ├── test_ui.gd                #   ★ 新 UI：几何对着参考图、部队列表 / 命令卡 / 招募 / 右键手势 /
+    │                             #     **悬停详情面板**（命令卡 + 页签列那一段的宽 + 下缘 + 按文本长高 + 折行不被裁 + 换页收起）
     │                             #     ⚠️ 它必须在 **GameScene**（按下 test 之后那个）上断言 ——
     │                             #     在 main.tscn 的根上取 hud 会报错并静默跳过整节（pitfalls 5.35）
     ├── test_attack_orders.gd     #   ★ 攻击命令：点名打单位 / 建筑、行军攻击、索敌建筑
@@ -296,6 +307,7 @@ Godot 里 DPR 由引擎处理，**但下面三条要原样继承**：
 | 玩家下达的攻击命令 | `logic/unit.gd` 的 `ordered_target` / `ordered_building` / `has_attack_move` | 与「这一帧在打谁」（`target` / `target_building`）**分开存**，见 route.md 12.3 |
 | UI 几何（面板位置与尺寸） | `view/ui_layout.gd` | 纯常量，照参考图的像素稿；其它 view 文件不写坐标字面量 |
 | 当前页签（操作 / 单位 / 招募 / 科技 / 建筑） | `view/page_tabs.gd` + `hud._tab_plan()` | 纯本地显示状态，只决定命令卡里有什么；**显示哪几颗由当前选中对象决定**（route.md 二十二节），每一类选中各记「上次停在哪一页」（`hud._page_memory`）。★ 科技页在**选中大本营**与**什么都没选中**两处都出现，是同一颗页签、同一套九格 |
+| **悬停到哪一格 / 悬停面板写什么** | 序号由 `view/command_card.gd` · `view/tech_grid.gd` 报（`cell_hovered` / `cell_unhovered`）；**文案**由 `hud._hover_detail()` 现取；面板本身是 `view/hover_tip.gd` | 纯本地显示状态，**不进命令、不进快照**。★ 与点击同一条划分：格子控件只报「第几格」，**界面词只在 hud 一处**（`_hover_detail` 那一段）；对应关系见 route.md 第二十七节 |
 | 科技的启用状态（谁启用了哪几条） | `logic/tech.gd` 的 `active_by_faction`（由 `logic/world.gd` 持有并暴露查询） | ★ 它是**世界状态**（影响产量 / 血量 / 人口），不是界面状态：界面每帧读 `world.tech_entries()` 画高亮，命令只有 `tech_toggle` 一条。效果数值全在 `data/config.json` 的 `tech.list` |
 | 建筑升级的读条（等级 / 进度 / 已扣的钱） | `logic/building.gd` 的 `level` / `upgrade_*` 字段；规则在 `logic/upgrade.gd` | ★ 与「招募队列挂在将领 / 区划上」同一个理由：「这栋楼正在干嘛」属于这栋楼。命令只有 `building_upgrade` / `building_upgrade_cancel` 两条（按**地块**定位） |
 | 区划特化（已选哪一种 / 读条 / 已扣的钱） | `logic/zone.gd` 的 `spec_*` 字段；规则在 `logic/upgrade.gd` | `spec_done` = 已经生效的特化（**跟着地块走**，区划易主保留）；`spec_kind` = 正在读条的那一单。命令 `zone_specialize` / `zone_spec_cancel` / `zone_spec_bar_cancel` |

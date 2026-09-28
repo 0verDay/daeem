@@ -1499,7 +1499,7 @@ func tech_list() -> Array:
 	return []
 
 
-## 某个科技的条目（名字 / 第二行小字 / tooltip / 效果）
+## 某个科技的条目（名字 / 第二行小字 / 悬停详情 / 效果）
 func tech_entry(id: String) -> Dictionary:
 	return tech.entry(id) if tech != null else {}
 
@@ -1526,7 +1526,7 @@ func tech_max_active() -> int:
 	return tech.max_active() if tech != null else 3
 
 
-## ★★ 科技页九格的**显示数据**（名字 / 第二行小字 / tooltip / 是否已启用）。
+## ★★ 科技页九格的**显示数据**（名字 / 第二行小字 / 悬停详情 / 是否已启用）。
 ##
 ## 为什么在逻辑层拼好给视图（而不是让 view 自己去查 config + 状态）：
 ##   「谁启用了哪几条」是**权威状态**，而视图只该读、不该自己把两处状态拼起来 ——

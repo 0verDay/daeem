@@ -17,6 +17,7 @@ const DetailPanelRes = preload("res://view/detail_panel.gd")
 const PageTabsRes = preload("res://view/page_tabs.gd")
 const RecruitQueueRes = preload("res://view/recruit_queue.gd")
 const TroopGridRes = preload("res://view/troop_grid.gd")
+const HoverTipRes = preload("res://view/hover_tip.gd")
 const FontLoaderRes = preload("res://view/font_loader.gd")
 const PaletteRes = preload("res://view/palette.gd")
 const UnitRes = preload("res://logic/unit.gd")
@@ -97,6 +98,32 @@ func _test_layout_against_reference(cfg) -> void:
 	eq(UiLayoutRes.card_cell_local(8), Rect2(160, 160, 80, 80), "C 格在右下")
 	eq(String(UiLayoutRes.CARD_KEYS[0]), "Q", "第一格是 Q")
 	eq(String(UiLayoutRes.CARD_KEYS[8]), "C", "第九格是 C")
+
+	# ★★ 悬停详情面板（本版新增）：住在命令卡**正上方**，水平范围 = 命令卡 + 右边那一列
+	#    页签那一整段（左缘对命令卡左缘、右缘对页签列右缘），高度按文本缩放。
+	#    需求原话与补充见 ui_layout 的 HOVER_* 那一节。
+	eq(UiLayoutRes.HOVER_W, UiLayoutRes.CARD_RECT.size.x + UiLayoutRes.TABS_RECT.size.x,
+		"★ 悬停面板宽 = 命令卡 240 + 页签列 100 = 340（需求补充：旁边的页签栏也要对齐上）")
+	eq(UiLayoutRes.HOVER_W, 340.0, "面板实宽 340")
+	eq(UiLayoutRes.hover_rect(100.0).size.x, 340.0, "hover_rect 的宽也是 340")
+	eq(UiLayoutRes.hover_rect(100.0).position.x, UiLayoutRes.CARD_RECT.position.x,
+		"悬停面板左缘与命令卡左缘对齐")
+	eq(UiLayoutRes.hover_rect(100.0).position.x + UiLayoutRes.HOVER_W,
+		UiLayoutRes.TABS_RECT.position.x + UiLayoutRes.TABS_RECT.size.x,
+		"★ 悬停面板右缘与**页签列右缘**齐平（第一版只对到命令卡右缘 1820，页签那 100px 露在外面）")
+	eq(UiLayoutRes.HOVER_BOTTOM, UiLayoutRes.CARD_RECT.position.y - UiLayoutRes.HOVER_GAP,
+		"★ 面板**下缘**落在命令卡顶边上方 HOVER_GAP（%.0fpx，竖直距离是自己定的）"
+			% UiLayoutRes.HOVER_GAP)
+	ok(UiLayoutRes.HOVER_GAP > 0.0, "★ 与命令卡之间留了缝（= 0 时 1px 描边会贴着命令卡上沿）")
+	eq(UiLayoutRes.hover_rect(120.0).position.y + UiLayoutRes.hover_rect(120.0).size.y,
+		UiLayoutRes.HOVER_BOTTOM, "★ 下缘钉住 ⇒ 面板变高是**向上长**（绝不压住命令卡）")
+	eq(UiLayoutRes.hover_rect(120.0).size.y, 120.0, "高度按传进去的文本高度走")
+	ok(UiLayoutRes.hover_rect(200.0).size.y > UiLayoutRes.hover_rect(80.0).size.y,
+		"★ 文本越多、面板越高（「根据文本动态缩放」那一条的几何落点）")
+	ok(UiLayoutRes.hover_rect(5.0).size.y >= UiLayoutRes.HOVER_MIN_H,
+		"极短的文本也有兜底下限（不会薄成一条线）")
+	ok(UiLayoutRes.hover_rect(99999.0).position.y >= 0.0,
+		"文案长到离谱时面板也不许顶出屏幕上沿")
 
 	# 页签列与设置
 	eq(UiLayoutRes.TABS_RECT.size.x, 100.0, "页签列宽 100")
@@ -519,6 +546,8 @@ func _test_panels(cfg) -> void:
 
 	_test_squad_rows(main)
 	_test_page_tabs_and_card(main, cfg)
+	_test_hover_panel(main, cfg)
+	await _test_hover_tip_control(cfg)
 	_test_card_keys(main)
 	_test_avatar_text_fit(cfg)
 	_test_recruit_via_card(main)
@@ -1045,6 +1074,40 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 		eq(card.cell_label(0), "升级%s" % plain_b.display_name(),
 			"★ 格子上写着「升级%s」" % plain_b.display_name())
 
+	# ---- 3b) ★★ 改选**另一栋同类建筑**：命令卡那一格必须跟着换（手玩报的 bug）----
+	# 症状：先选中城墙、再改选箭塔，右下角还写着「升级城墙」（反过来也一样）。
+	# 根因：`_sync_tabs()` 只在**页签组合**变了时才重建命令卡，而城墙与箭塔同属
+	#       kind = building、页都是 [操作] ⇒ 页签那一路察觉不到「换了一栋楼」。
+	# 修法：`refresh()` 每帧比一次**内容签名**（`hud._card_sig()`），变了就重建。
+	var wall_b = _building_of_type(world, "wall")
+	var tower_b = _building_of_type(world, "tower")
+	ok(wall_b != null and tower_b != null, "（前提）地图上同时有城墙与箭塔")
+	if wall_b != null and tower_b != null:
+		eq(wall_b.type, "wall", "（前提）第 1 栋是城墙")
+		eq(tower_b.type, "tower", "（前提）第 2 栋是箭塔")
+		main.input_ctrl.select_building(wall_b)
+		main.hud.refresh()
+		eq(card.cell_label(0), "升级城墙", "（前提）选中城墙 → 操作页写着「升级城墙」")
+		main.input_ctrl.select_building(tower_b)
+		main.hud.refresh()
+		eq(card.cell_label(0), "升级箭塔",
+			"★ 改选箭塔 → 那一格必须跟着变成「升级箭塔」（不许还写着城墙）")
+		eq(String(card.entry_at(0).get("type", "")), "building_upgrade",
+			"换选中之后那一格还是「升级」那一套（只是换了目标）")
+		main.input_ctrl.select_building(wall_b)
+		main.hud.refresh()
+		eq(card.cell_label(0), "升级城墙", "★ 再改回城墙 → 又跟着变回来（反方向也要对）")
+		# 换一栋**同类型但不同位置**的建筑：内容一样，但不许崩 / 不许留旧目标
+		var wall_b2 = null
+		for b2 in world.building_list:
+			if b2 != null and b2.alive and b2.type == "wall" and b2 != wall_b:
+				wall_b2 = b2
+				break
+		if wall_b2 != null:
+			main.input_ctrl.select_building(wall_b2)
+			main.hud.refresh()
+			eq(card.cell_label(0), "升级城墙", "换同类型的另一栋城墙：文案照旧（内容本来就一样）")
+
 	# ---- 4) 选中大本营 → 操作 + 科技（★ 本轮：操作页里有「升级大本营」）----
 	var base = world.find_base_of("p1")
 	ok(base != null, "有己方大本营")
@@ -1145,6 +1208,25 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 		tabs.button_at(0).emit_signal("pressed")
 		eq(tabs.page(), PageTabsRes.PAGE_ORDER, "切回操作页")
 
+		# ---- 5b) ★★ 改选**另一个种类**的区划中心：操作页那几档特化也要跟着换 ----
+		# 与 3b 是同一个 bug 的另一面：「能做哪几档特化」由**区划种类**决定
+		# （`config.zone_kind.list[].specs`），而页签组合一模一样。
+		var z_other = _zone_with_center_of_other_kind(world, zone)
+		ok(z_other != null, "（前提）地图上还有一个**种类不同**、且没特化过的区划中心")
+		if z_other != null:
+			main.input_ctrl.select_zone(z_other)
+			main.hud.refresh()
+			tabs.select_page(PageTabsRes.PAGE_ORDER)
+			eq(_entry_specs(card), _specs_of(world, z_other),
+				"★ 改选另一个种类的区划中心 → 操作页那几档特化跟着换（期望 %s，实际 %s）"
+					% [str(_specs_of(world, z_other)), str(_entry_specs(card))])
+			ok(not _entry_specs(card).is_empty(), "（前提）这个种类的区划还有可选的档位")
+			# 收尾：选回原来那个区划，后面的用例按它起步
+			main.input_ctrl.select_zone(zone)
+			main.hud.refresh()
+			tabs.select_page(PageTabsRes.PAGE_ORDER)
+			eq(_entry_specs(card), _specs_of(world, zone), "（收尾）选回来 → 又跟着换回来")
+
 	# 收尾：回到「选中将领 1」并把页签停在「操作」页（后面的用例按这个前提起步）
 	main.input_ctrl.select_units([world.unit_by_id("general-1")])
 	main.hud.refresh()
@@ -1182,7 +1264,7 @@ func _eq_tech_page(main, where: String) -> void:
 	eq(g.cell_name(0), "粮食产量 I", "%s：第 1 格 = 粮食产量 I" % where)
 	eq(g.cell_line(0), "粮食 +1", "%s：第 1 格第二行写效果" % where)
 	ok(String((g.entry_at(0) as Dictionary).get("desc", "")).contains("地块"),
-		"%s：tooltip 里是完整效果说明" % where)
+		"%s：entries 里带着完整效果说明（悬停详情面板写它）" % where)
 	eq(g.cell_name(6), "建筑加固", "%s：第 7 格 = 建筑加固" % where)
 	eq(g.cell_name(7), "将领强化", "%s：第 8 格 = 将领强化" % where)
 	eq(g.cell_name(8), "区划人口", "%s：第 9 格 = 区划人口" % where)
@@ -1204,12 +1286,293 @@ func _plain_building(world):
 	return null
 
 
+## 地图上**指定类型**的第一栋建筑（城墙 / 箭塔）——
+## ★ 「改选另一栋同类建筑」那条回归要用它（3b：城墙 ⇄ 箭塔）
+func _building_of_type(world, t: String):
+	for b in world.building_list:
+		if b != null and b.alive and b.type == t:
+			return b
+	return null
+
+
+## 另一个**种类不同**、带中心、且**还没特化过**的区划 ——
+## 拿它验「换一个种类的区划中心 ⇒ 操作页那几档特化跟着换」（5b）
+func _zone_with_center_of_other_kind(world, zone):
+	var k: String = String(world.zone_kind_of(zone))
+	for z in world.zones.zones:
+		if z["center"] == null:
+			continue
+		if world.zone_kind_of(z) == k or String(z.get("spec_done", "")) != "":
+			continue
+		return z
+	return null
+
+
+## 一个区划现在**能做哪几档特化**的 id 列表（权威判据，与操作页画格子同源）
+func _specs_of(world, zone) -> Array:
+	var out: Array = []
+	for e in world.zone_spec_choices(zone):
+		out.append(String((e as Dictionary).get("id", "")))
+	return out
+
+
 ## 一个**带中心**的区划（点它的中心 = 看这个区划的详情 / 招募）
 func _zone_with_center(world):
 	for z in world.zones.zones:
 		if z["center"] != null:
 			return z
 	return null
+
+
+# ------------------------------------------------------------------
+# ★★ 悬停详情面板（本版新增）
+#
+# 需求原话：「为右下角面板中的按钮添加悬停显示，悬停显示显示在右下角面板上方，
+#           宽度与右下角面板宽度相同，竖直方向距离你自己定，需要根据悬停详细信息
+#           文本动态缩放。目前只需要为区域的特化，招募的单位/将领，科技，建筑
+#           这些内容添加详细信息即可」。
+#
+# 分两层验：
+#   ① `_test_hover_tip_control` —— **控件自己**：同宽 / 下缘对齐 / 按文本长高 / 长行折行 / 收起；
+#   ② `_test_hover_panel`       —— **接线与文案**：停在哪一格弹哪一块、移开 / 换页收起、
+#      四类内容各写了什么、以及「本轮没做详情的那几格不弹空面板」。
+# ------------------------------------------------------------------
+
+## ② 接线与文案（跑在真实游戏场景上）
+func _test_hover_panel(main, cfg) -> void:
+	var hud = main.hud
+	var card = hud.command_card
+	var tabs = hud.page_tabs
+	var tip = hud.hover_tip
+	var world = main.world
+
+	ok(tip != null, "★ HUD 里有悬停详情面板")
+	if tip == null:
+		return
+	ok(hud.get_node_or_null("HudRoot/HoverTip") != null, "节点树里有 HudRoot/HoverTip")
+	eq(tip.mouse_filter, Control.MOUSE_FILTER_IGNORE, "★ 悬停面板不吃鼠标（否则挡住地图点击）")
+	ok(not tip.showing(), "开局没有悬停 → 面板收着")
+
+	# ---- 建筑页：Q 格 = 城墙 ----
+	main.input_ctrl.select_units([])
+	hud.refresh()
+	tabs.select_page(PageTabsRes.PAGE_BUILD)
+	card.hover(0)
+	ok(tip.showing(), "★ 鼠标停在命令卡某一格上 → 弹出悬停详情")
+	eq(tip.title_text(), "城墙", "标题就是那一格的名字")
+	var bt: String = tip.body_text()
+	ok(bt.contains("地块"), "★ 建筑详情里有建筑说明（实际：%s）" % bt.replace("\n", " | "))
+	ok(bt.contains("血量"), "★ 建筑详情里有血量上限")
+	ok(bt.contains("造价"), "建筑详情里有造价")
+
+	# ---- 位置：命令卡**正上方**、左缘对命令卡、右缘对页签列 ----
+	var card_rect: Rect2 = card.get_global_rect()
+	var tabs_rect: Rect2 = tabs.get_global_rect()
+	var tip_rect: Rect2 = tip.get_global_rect()
+	eq(tip_rect.size.x, card_rect.size.x + tabs_rect.size.x,
+		"★ 宽度 = 命令卡 + 页签列那一整段（需求补充）")
+	near(tip_rect.position.x, card_rect.position.x, 1.0, "左缘与命令卡对齐")
+	near(tip_rect.position.x + tip_rect.size.x,
+		tabs_rect.position.x + tabs_rect.size.x, 1.0,
+		"★ 右缘与**页签列右缘**齐平（整块贴在命令卡正上方、盖住页签那一条的水平范围）")
+	ok(tip_rect.position.y + tip_rect.size.y <= card_rect.position.y + 0.01,
+		"★ 面板整个落在命令卡**上方**（不压住那九格）")
+
+	card.unhover(0)
+	ok(not tip.showing(), "鼠标移开 → 面板收起来")
+	card.hover(2)
+	ok(not tip.showing(), "★ 空格子上不弹面板（没内容就不弹一块空的）")
+
+	# ---- ★ 回归：enter / exit 的**先后顺序不保证** ----
+	# 「先 hover 新的、再 unhover 旧的」不许把新的那一块收掉（实测过：面板会闪一下就没）。
+	card.hover(0)
+	card.hover(1)          # 新的一格先到
+	card.unhover(0)        # 迟到的旧 exit
+	ok(tip.showing() and tip.title_text() == "箭塔",
+		"★ 迟到的 mouse_exited 不会把新面板收掉（实际：%s）" % tip.title_text())
+	card.unhover(1)
+	ok(not tip.showing(), "（收尾）面板收起来")
+
+	# ---- 科技：同一块面板、另一层九格 ----
+	main.input_ctrl.select_units([])
+	hud.refresh()
+	tabs.select_page(PageTabsRes.PAGE_TECH)
+	ok(hud.tech_grid.visible, "（前提）切到科技页")
+	var g = hud.tech_grid
+	g.hover(0)
+	ok(tip.showing(), "★ 科技九格也能弹悬停详情（与命令卡共用同一块面板）")
+	eq(tip.title_text(), "粮食产量 I", "标题是科技名")
+	ok(tip.body_text().contains("地块"), "科技详情里有完整效果说明")
+	ok(tip.body_text().contains("未启用"), "★ 状态那一行读的是**权威状态**（现在没启用）")
+	# 点一格启用 → 面板**还开着**时那两行就跟着变（玩家的鼠标一直在这一格上，
+	# 不重算的话要等鼠标移开再移回来才更新，看着像没生效）
+	var first_id := String((g.entry_at(0) as Dictionary).get("id", ""))
+	g.press(0)
+	ok(world.is_tech_active(first_id), "（前提）点一格 = 启用")
+	ok(tip.showing() and tip.title_text() == "粮食产量 I", "（前提）点完之后面板还是同一格")
+	ok(tip.body_text().contains("已启用"),
+		"★ 启用之后悬停详情里立刻写着「已启用」（不用移开鼠标；实际：%s）"
+			% tip.body_text().replace("\n", " | "))
+	g.press(0)                                     # 收尾：弃用，别把加成留给后面的用例
+	eq(world.active_tech_ids().size(), 0, "（收尾）科技全部弃用")
+	ok(tip.body_text().contains("未启用"), "★ 弃用之后又变回「未启用」")
+	# ⚠️ 这里**故意不 unhover**：下一节要验「鼠标还停在这一格上时切页，面板必须收起」。
+
+	# ★ 换页要把面板收掉：切页会**隐藏**科技那一层，而 Godot 不会为「被隐藏」补发
+	#   mouse_exited —— 不收的话那块说明会一直挂在命令卡上方（看着像界面卡死）。
+	ok(tip.showing(), "（前提）切页之前面板还开着")
+	tabs.select_page(PageTabsRes.PAGE_BUILD)
+	ok(not tip.showing(), "★ 换页时悬停面板收起来")
+
+	# ---- 招募：单位页那几个兵种 ----
+	main.input_ctrl.select_units([world.unit_by_id("general-1")])
+	hud.refresh()
+	tabs.select_page(PageTabsRes.PAGE_UNIT)
+	eq(card.cell_label(0), "长枪兵", "（前提）单位页 Q 格 = 长枪兵")
+	card.hover(0)
+	ok(tip.showing() and tip.title_text() == "长枪兵", "★ 单位页那一格有悬停详情")
+	var rt: String = tip.body_text()
+	for token in ["血量", "攻击", "射程", "速度", "兵种", "造价", "人口", "读条"]:
+		ok(rt.contains(token), "★ 招募详情里有「%s」（实际：%s）" % [token, rt.replace("\n", " | ")])
+	card.unhover(0)
+
+	# ---- 招募页（区划招将领）+ 操作页（区域的特化）：都选中区划中心 ----
+	var zone = _zone_with_center(world)
+	ok(zone != null, "（前提）地图上找得到一个带中心的区划")
+	if zone != null:
+		main.input_ctrl.select_zone(zone)
+		hud.refresh()
+		tabs.select_page(PageTabsRes.PAGE_RECRUIT)
+		eq(card.cell_label(0), "将领 1", "（前提）招募页 Q 格 = 将领 1")
+		card.hover(0)
+		ok(tip.showing() and tip.title_text() == "将领 1", "★ 招募页那一格也有悬停详情")
+		ok(tip.body_text().contains("区划"),
+			"★ 将领详情里说明了人口从哪里扣（实际：%s）" % tip.body_text().replace("\n", " | "))
+		ok(tip.body_text().contains("兵种"), "将领的数值按它所属兵种查同一张表")
+		card.unhover(0)
+
+		tabs.select_page(PageTabsRes.PAGE_ORDER)
+		eq(card.cell_label(0), "粮食特化", "（前提）这个区划的操作页 Q 格 = 粮食特化")
+		card.hover(0)
+		ok(tip.showing() and tip.title_text() == "粮食特化", "★ 区域的特化有悬停详情")
+		var st: String = tip.body_text()
+		ok(st.contains("效果") and st.contains("地块"), "★ 特化详情里有效果那一行")
+		ok(st.contains("造价") and st.contains("读条"), "特化详情里有造价与读条")
+		ok(st.contains("一种"), "★ 特化详情里说明「一个区划只能选一种」")
+		card.unhover(0)
+		# ---- 「取消特化」那两格也归在「区域的特化」里 ----
+		# ★ 白盒直调 `_hover_detail`：要让这两格**真的出现**在操作页上，得先特化一个区划、
+		#   再读完 10 秒读条 —— 本用例不想把世界状态改成那样（后面的用例还要用）。
+		var cancel_d: Dictionary = hud._hover_detail("card", {
+			"type": "zone_spec_bar_cancel", "name": "取消特化",
+			"desc": "撤掉正在读条的这一单特化，全额退还已经扣掉的粮食与黄金"})
+		ok(not cancel_d.is_empty(), "★ 「取消特化」那一格也有悬停详情")
+		ok(String(cancel_d.get("title", "")) == "取消特化", "标题就是那一格的名字")
+		ok(String(cancel_d.get("body", "")).contains("退还"), "详情里说明退款")
+
+	# ---- 建筑：操作页那一格升级 ----
+	var base = world.find_base_of("p1")
+	ok(base != null, "（前提）有己方大本营")
+	if base != null:
+		main.input_ctrl.select_building(base)
+		hud.refresh()
+		tabs.select_page(PageTabsRes.PAGE_ORDER)
+		eq(String(card.entry_at(0).get("type", "")), "building_upgrade",
+			"（前提）大本营操作页那一格是「升级」")
+		card.hover(0)
+		ok(tip.showing() and tip.title_text() == "升级大本营", "★ 建筑的升级那一格有悬停详情")
+		ok(tip.body_text().contains("当前等级"), "★ 详情里有当前等级")
+		ok(tip.body_text().contains("血量"), "★ 详情里有血量")
+		card.unhover(0)
+
+	# ---- 本轮**没有**做详情的那几格：不弹空面板（需求：目前只需要那四类）----
+	main.input_ctrl.select_units([world.unit_by_id("general-1")])
+	hud.refresh()
+	tabs.select_page(PageTabsRes.PAGE_ORDER)
+	eq(card.cell_label(0), "移动", "（前提）操作页 Q 格 = 移动")
+	card.hover(0)
+	ok(not tip.showing(),
+		"★ 部队指令（移动 / 攻击 / 行军 / 停止）本轮还没有悬停详情 → 不弹空面板")
+	card.unhover(0)
+
+	# 收尾：回到「选中将领 1、停在操作页」（后面的用例按这个前提起步）
+	hud.refresh()
+	tabs.select_page(PageTabsRes.PAGE_ORDER)
+	eq(tabs.page(), PageTabsRes.PAGE_ORDER, "（收尾）停在操作页")
+
+
+## ① 面板控件本身（单独造一个，不去动主场景那个世界）
+func _test_hover_tip_control(cfg) -> void:
+	var font: Font = FontLoaderRes.load_font(cfg)
+	ok(font != null, "（前提）拿得到中文字体")
+	var tip = HoverTipRes.new()
+	root.add_child(tip)
+	tip.setup(font)
+	await process_frame
+
+	# ★ 它只是一张「画出来的说明」：吃鼠标会挡掉底下的地图点击，而且它自己出现在光标
+	#   下方时会把悬停链掐断（见 hover_tip 的文件头）。
+	eq(tip.mouse_filter, Control.MOUSE_FILTER_IGNORE, "★ 悬停面板不吃鼠标")
+	ok(not tip.showing() and not tip.visible, "刚建出来时不显示")
+	eq(tip.size, Vector2.ZERO, "收起时尺寸归零（不留一个幽灵矩形）")
+
+	# ---- 宽度 / 下缘：与命令卡对齐 ----
+	tip.show_text("城墙", "填满整个地块\n血量上限 300")
+	ok(tip.showing() and tip.visible, "喂了文本就显示出来")
+	eq(tip.title_text(), "城墙", "标题是那一格的名字")
+	ok(tip.body_text().contains("血量"), "正文里是多行说明")
+	eq(tip.size.x, UiLayoutRes.HOVER_W, "★ 面板宽 = HOVER_W（340 = 命令卡 + 页签列）")
+	near(tip.position.x, UiLayoutRes.CARD_RECT.position.x, 1.0, "左缘与命令卡对齐")
+	near(tip.position.y + tip.size.y, UiLayoutRes.HOVER_BOTTOM, 0.01,
+		"★ 下缘钉在命令卡顶边上方（变高是**向上长**）")
+
+	# ---- 高度按文本缩放 ----
+	tip.show_text("城墙", "一行")
+	var h_short: float = tip.content_height()
+	tip.show_text("城墙", "一行\n两行")
+	ok(tip.content_height() > h_short, "★ 两行正文比一行高（%.0f > %.0f）"
+		% [tip.content_height(), h_short])
+	tip.show_text("城墙", "一行\n两行\n三行\n四行")
+	var h_four: float = tip.content_height()
+	# ★ 中文行**真实**高度（≈17px）比 `font.get_height(13)`（14px）大 —— 这一条正是在钉
+	#   「高度必须问 Label 自己」：多出三行实测涨 51px > 3 × 14 = 42px。
+	ok(h_four - h_short > 3.0 * font.get_height(UiStyleRes.FS_SMALL),
+		"★ 每多一行正文涨的高度**大于** font.get_height（%.0f > 3 × %.0f）—— 用的是 Label 的真实行高"
+			% [h_four - h_short, font.get_height(UiStyleRes.FS_SMALL)])
+	# ★★ 回归（开窗截图才发现的坑）：中文一行**真正**要 ≈16.6px，而 `font.get_height(13)`
+	#   只有 14px。曾经用 `Font.get_multiline_string_size(..., 宽度, ...)` 量高度，
+	#   于是 8 行的正文矮掉 21px —— **最后两行整条看不见**，而测试全绿。
+	#   判据就是这一条：Label 报的「画得出来的行数」必须 ≥「总行数」。
+	ok(tip.body_lines() >= 4, "（前提）Label 认为这段正文有 ≥4 行（实际 %d）" % tip.body_lines())
+	eq(tip.body_visible_lines(), tip.body_lines(),
+		"★ 正文每一行都画得出来（%d / %d 行）—— 少了就是面板高度量错了"
+			% [tip.body_visible_lines(), tip.body_lines()])
+
+	# ---- 一行太长要**折行**（宽度锁死 HOVER_W，长句只能往上长，不会被裁掉）----
+	# ⚠️ 面板加宽到 340（内宽 324）之后，这条样本也要够长才折得出 ≥3 行
+	var long_line := "本区块每地块每秒额外产出 0.5 粮食，一个区划只能选一种特化；取消特化也要读条，读完才真的撤掉，并且把当初花掉的粮食与黄金全额退回来"
+	tip.show_text("粮食特化", long_line)
+	var inner_w: float = UiLayoutRes.HOVER_W - 2.0 * UiLayoutRes.HOVER_PAD
+	var raw_w: float = font.get_string_size(long_line, HORIZONTAL_ALIGNMENT_LEFT, -1,
+		UiStyleRes.FS_SMALL).x
+	ok(raw_w > inner_w * 2.0, "（前提）这一行比面板宽得多（%.0fpx > 2 × %.0f）" % [raw_w, inner_w])
+	ok(tip.body_lines() >= 3, "★ 超长的一行被**折行**成 ≥3 行（实际 %d 行）" % tip.body_lines())
+	ok(tip.content_height() > h_short, "折行之后面板跟着长高（%.0f）" % tip.content_height())
+	eq(tip.body_visible_lines(), tip.body_lines(),
+		"★ 折行之后每一行仍然都画得出来（%d / %d）"
+			% [tip.body_visible_lines(), tip.body_lines()])
+	eq(tip.body_text(), long_line, "折行是**画**的时候做的，正文文本一个字没改")
+
+	# ---- 收起 ----
+	tip.clear()
+	ok(not tip.showing() and not tip.visible, "clear() 之后收起来")
+	eq(tip.title_text(), "", "收起后标题清空")
+	eq(tip.content_height(), 0.0, "收起后内容高度归零")
+	tip.show_text("", "")
+	ok(not tip.showing(), "喂两个空串也等于收起（不留空面板）")
+
+	tip.queue_free()
+	await process_frame
 
 
 # ---- 命令卡的九个字母键 ----

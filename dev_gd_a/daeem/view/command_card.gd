@@ -23,6 +23,14 @@ const UiStyleRes = preload("res://view/ui_style.gd")
 ## 某一格被激活（鼠标点 / 键盘按）时发出，原样带上那一条目
 signal entry_activated(entry: Dictionary)
 
+## ★★ 某一格被**鼠标悬停**（进入 / 离开）时发出，带上格子序号。
+##   hud 收到后会弹「悬停详情面板」（见 view/hover_tip.gd 与 hud._hover_detail）。
+##   ★ 只报序号、不报内容：内容是 hud 按**当前的 entries** 取的 ——
+##     与点击那条路（`activate_index`）同一套判据，界面不会出现
+##     「点的是这一格、说明写的是上一页那一格」这种错位。
+signal cell_hovered(index: int)
+signal cell_unhovered(index: int)
+
 ## 键位 → 格子序号。格子序号是行优先（0..2 = Q/W/E）。
 const KEY_TO_SLOT := {
 	KEY_Q: 0, KEY_W: 1, KEY_E: 2,
@@ -45,10 +53,17 @@ func setup() -> void:
 		var cell := Button.new()
 		cell.name = "CardSlot%d" % (i + 1)
 		cell.focus_mode = Control.FOCUS_NONE
-		cell.tooltip_text = ""
+		# ★★ 本版**不用** Godot 原生的 `tooltip_text` 了：说明改由「命令卡正上方的
+		#    悬停详情面板」画（需求要的是那块面板）。两个一起挂会同时冒出两个提示框。
+		#   ⚠️ `desc` 这个**数据字段**照旧留着（文案的出处是 config / 逻辑层），
+		#      只是不再塞给 Button 的原生 tooltip —— 见 hud._hover_detail。
 		_cell_style(cell, false)
 		UiLayoutRes.apply_rect(cell, UiLayoutRes.card_cell_local(i))
 		cell.pressed.connect(_on_cell_pressed.bind(i))
+		# ★ 悬停：Godot 的 Control 自带这两个信号（不需要自己算鼠标位置）。
+		#   子 Label 全是 IGNORE，所以事件一定落在 Button 自己身上。
+		cell.mouse_entered.connect(_on_cell_mouse_entered.bind(i))
+		cell.mouse_exited.connect(_on_cell_mouse_exited.bind(i))
 		add_child(cell)
 
 		# 键位字母贴左上角（参考图就是这样：字母小、名字居中）
@@ -99,13 +114,11 @@ func set_entries(list: Array) -> void:
 			_name_labels[i].text = String(e2.get("name", ""))
 			_name_labels[i].add_theme_color_override("font_color", UiStyleRes.TEXT)
 			_key_labels[i].add_theme_color_override("font_color", UiStyleRes.ACCENT)
-			cell.tooltip_text = String(e2.get("desc", ""))
 			_cell_style(cell, true)
 		else:
 			_name_labels[i].text = ""
 			_name_labels[i].add_theme_color_override("font_color", UiStyleRes.TEXT_FAINT)
 			_key_labels[i].add_theme_color_override("font_color", UiStyleRes.TEXT_FAINT)
-			cell.tooltip_text = ""
 			_cell_style(cell, false)
 
 
@@ -119,6 +132,25 @@ func _cell_style(cell: Button, filled: bool) -> void:
 
 func _on_cell_pressed(i: int) -> void:
 	activate_index(i)
+
+
+## 鼠标进入 / 离开第 i 格 —— **只转发序号**（内容由 hud 现取，见上面那两个信号的说明）
+func _on_cell_mouse_entered(i: int) -> void:
+	cell_hovered.emit(i)
+
+
+func _on_cell_mouse_exited(i: int) -> void:
+	cell_unhovered.emit(i)
+
+
+## 模拟悬停第 i 格 / 离开它（等价于玩家的鼠标停上去 / 移开）。
+## ★ 与 `press()` 那条同一条约定：测试走**和引擎同一条信号**，不另开一条捷径。
+func hover(i: int) -> void:
+	_on_cell_mouse_entered(i)
+
+
+func unhover(i: int) -> void:
+	_on_cell_mouse_exited(i)
 
 
 ## 激活第 i 格。@return true = 这一格有内容、动作已发出

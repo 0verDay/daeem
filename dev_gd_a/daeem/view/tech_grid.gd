@@ -13,7 +13,7 @@
 ##
 ## ★ 为什么单独一个控件、而不是把科技塞进 command_card 的九格里：
 ##   命令卡那九格是「页签的另一套内容」（操作 / 单位 / 建筑 / 招募），它只认 `entries`；
-##   科技格需要**自己的三态样式**（已启用 / 未启用 / 悬停）、两行文字与 tooltip。
+##   科技格需要**自己的三态样式**（已启用 / 未启用 / 悬停）、两行文字与悬停详情。
 ##   塞进去会让命令卡同时认识三种数据形状。这里复用**它的几何**（card_cell_local），
 ##   于是两套内容在屏幕上完全重合 —— 换页时看不出是换了控件。
 ##
@@ -23,6 +23,13 @@ extends Control
 
 ## 某一格被点：带上那一条科技的 id
 signal cell_activated(id: String)
+
+## ★★ 某一格被**鼠标悬停**（进入 / 离开）：带上格子序号。
+##   hud 收到后弹「悬停详情面板」（与命令卡共用同一块，见 view/hover_tip.gd）——
+##   两个控件的九格在屏幕上**逐像素重合**，所以悬停这件事也必须走同一块面板。
+##   ★ 与命令卡同一条约定：只报序号，内容由 hud 按当前 entries 现取。
+signal cell_hovered(index: int)
+signal cell_unhovered(index: int)
 
 const UiLayoutRes = preload("res://view/ui_layout.gd")
 const UiStyleRes = preload("res://view/ui_style.gd")
@@ -54,6 +61,11 @@ func setup() -> void:
 		_style_cell(cell, false, false)
 		UiLayoutRes.apply_rect(cell, UiLayoutRes.card_cell_local(i))
 		cell.pressed.connect(_on_cell_pressed.bind(i))
+		# ★ 悬停信号（与命令卡同一套，见文件头那个信号块）。
+		#   ⚠️ 空格子（`disabled = true`）也照样发 mouse_entered —— hud 那一侧取不到
+		#      entry，自然什么都不弹（`entry_at` 越界返回 {}）。
+		cell.mouse_entered.connect(_on_cell_mouse_entered.bind(i))
+		cell.mouse_exited.connect(_on_cell_mouse_exited.bind(i))
 		add_child(cell)
 
 		# 第一行：科技名（居中偏上，给第二行留出位置）
@@ -138,7 +150,6 @@ func _apply() -> void:
 			active = bool(e.get("active", false))
 			_name_labels[i].text = String(e.get("name", ""))
 			_line_labels[i].text = String(e.get("line", ""))
-			cell.tooltip_text = String(e.get("desc", ""))
 			cell.disabled = false
 			_name_labels[i].add_theme_color_override(
 				"font_color", UiStyleRes.TEXT_ON_ACCENT if active else UiStyleRes.TEXT)
@@ -148,7 +159,6 @@ func _apply() -> void:
 		else:
 			_name_labels[i].text = ""
 			_line_labels[i].text = ""
-			cell.tooltip_text = ""
 			cell.disabled = true              # 空格子点了不做事（也不吃键盘）
 			_name_labels[i].add_theme_color_override("font_color", UiStyleRes.TEXT_FAINT)
 			_line_labels[i].add_theme_color_override("font_color", UiStyleRes.TEXT_FAINT)
@@ -179,6 +189,24 @@ func _on_cell_pressed(i: int) -> void:
 	if i < 0 or i >= _entries.size():
 		return
 	cell_activated.emit(String((_entries[i] as Dictionary).get("id", "")))
+
+
+## 鼠标进入 / 离开第 i 格 —— 只转发序号（内容由 hud 现取，与命令卡同一条约定）
+func _on_cell_mouse_entered(i: int) -> void:
+	cell_hovered.emit(i)
+
+
+func _on_cell_mouse_exited(i: int) -> void:
+	cell_unhovered.emit(i)
+
+
+## 模拟悬停第 i 格 / 离开它（测试用；与 `press()` 一样走引擎同一条信号）
+func hover(i: int) -> void:
+	_on_cell_mouse_entered(i)
+
+
+func unhover(i: int) -> void:
+	_on_cell_mouse_exited(i)
 
 
 # ------------------------------------------------------------------

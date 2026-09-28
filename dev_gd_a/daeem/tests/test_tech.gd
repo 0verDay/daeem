@@ -59,7 +59,7 @@ func _test_config_table(cfg) -> void:
 	for want in ["food_1", "food_2", "food_3", "gold_1", "gold_2", "gold_3",
 			"building_hp", "leader_hp", "zone_population"]:
 		ok(ids.has(want), "表里有 %s" % want)
-	# 每一条都要能拿到「名字 + 第二行小字 + tooltip」——九格上要写这些
+	# 每一条都要能拿到「名字 + 第二行小字 + 悬停详情那一句 desc」——九格上要写这些
 	var missing: Array = []
 	for e2 in w.tech_list():
 		var d: Dictionary = e2

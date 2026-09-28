@@ -57,6 +57,23 @@ static func panel_style(bg: Color = BG, border: Color = LINE, border_width: int 
 	return s
 
 
+## ★★ 悬停详情面板（住在命令卡**正上方**，见 ui_layout 的 HOVER_* 那一节）的底板。
+##
+## 与其它面板同一套深色半透明，但两处**有意不同**：
+##   · 描边用 `ACCENT_DIM`（那档淡蓝）而不是通用白线 —— 它是**浮在地图上**的临时面板，
+##     周围没有底栏那条深色衬底，白线 + 半透明底会让它看着像地图上的一块脏斑；
+##   · 底色比底栏**再不透明一点**（0.86 → 0.93）：它只有 340 宽、又**浮在地图上**，
+##     地图的格子线与区块轮廓会从下面透上来，字（13 号）就糊了。
+static func hover_panel() -> StyleBoxFlat:
+	var s := StyleBoxFlat.new()
+	s.bg_color = Color(0.055, 0.065, 0.085, 0.93)
+	s.border_color = ACCENT_DIM
+	s.set_border_width_all(1)
+	s.set_corner_radius_all(3)
+	s.set_content_margin_all(0.0)      # 内侧留白由 ui_layout.HOVER_PAD 定，子控件自己摆
+	return s
+
+
 ## 部队列表的一行（四态）
 static func row_normal() -> StyleBoxFlat:
 	var s := StyleBoxFlat.new()

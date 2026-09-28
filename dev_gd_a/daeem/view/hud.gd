@@ -38,6 +38,7 @@ const TroopGridRes = preload("res://view/troop_grid.gd")
 const CommandCardRes = preload("res://view/command_card.gd")
 const PageTabsRes = preload("res://view/page_tabs.gd")
 const TechGridRes = preload("res://view/tech_grid.gd")
+const HoverTipRes = preload("res://view/hover_tip.gd")
 const MinimapRes = preload("res://view/minimap.gd")
 
 var cfg: ConfigRes = null
@@ -51,6 +52,10 @@ var command_card: Control = null
 var page_tabs: Control = null
 ## ★ 科技九格（盖在命令卡上，只有「科技」页才显示）。见 view/tech_grid.gd。
 var tech_grid: Control = null
+## ★★ 悬停详情面板（本版新增）：住在**命令卡正上方**，水平范围 = **命令卡 + 右边那一列页签**
+##    那一整段（左缘对命令卡左缘、右缘对页签列右缘，宽 340），
+##    高度按悬停到的文本动态缩放（向上长）。见 view/hover_tip.gd 的文件头。
+var hover_tip: Control = null
 var settings_button: Button = null
 ## 左下角的小地图（400×400）。★ 变量名仍然是占位时代的 `map_placeholder`：
 ## 测试（tests/test_ui.gd）按这个名字断言它的位置与尺寸，换名字只会白改一把。
@@ -102,6 +107,17 @@ var _detail_troop_number: int = 0
 ##   页列表不同，记忆必须分开 —— 否则点过大本营（停在科技页）之后，
 ##   一松开选中就会直接停在科技页，而空手那一屏的默认页是「建筑」。
 var _tab_kind: String = ""
+## ★★ 悬停面板现在**是谁**弹出来的：来源（"card" / "tech"）+ 格子序号。
+## 为什么要记这一对（本轮实测踩到的顺序问题）：`mouse_exited` 与 `mouse_entered`
+## **不保证**谁先到 —— 从 A 格移到 B 格时，若 B 的 enter 先到、A 的 exit 后到，
+## 光凭「收到 exit 就收面板」会把 B 刚弹出来的面板收掉（表现：面板闪一下就没）。
+## 所以 exit 只在**它确实是当前这一格**时才收（见 `_on_hover_out`）。
+var _hover_src: String = ""
+var _hover_index: int = -1
+## ★★ 上一次画命令卡时算出来的**内容签名**（见 `_card_sig()`）。
+## `refresh()` 每帧比一次：签名变了就重建 —— 页签组合没变、但「选中的东西」或
+## 「选中对象的权威状态」变了，靠的就是这一条（手玩报的「改选箭塔还写着升级城墙」）。
+var _card_sig_key: String = ""
 ## 上一次推给 page_tabs 的配置（kind + 页列表）。每帧比一次，不变就不重推 ——
 ## 否则每帧都会重建命令卡。
 var _tab_key: String = ""
@@ -134,6 +150,9 @@ func setup(p_cfg: ConfigRes, p_world, p_input, theme: Theme, p_camera_rig = null
 	_build_detail_panel()
 	_build_command_card()
 	_build_page_tabs()
+	# ★ 悬停面板最后建（在命令卡 / 科技九格**之上**）：它画在那两块的正上方，
+	#   万一以后谁把它的高度调过头，压住的是命令卡的上沿而不是被命令卡压住。
+	_build_hover_tip()
 	_build_settings_button()
 	_build_squad_panel()
 
@@ -317,6 +336,29 @@ func _build_page_tabs() -> void:
 	_root.add_child(page_tabs)
 	page_tabs.setup()
 	page_tabs.page_changed.connect(_on_page_changed)
+
+
+## ★★ 悬停详情面板（本版新增）—— 命令卡正上方那块说明。
+##
+## 需求原话：「为右下角面板中的按钮添加悬停显示，悬停显示显示在右下角面板上方，
+##           宽度与右下角面板宽度相同，竖直方向距离你自己定，需要根据悬停详细信息
+##           文本动态缩放」。
+##
+## ★ 两个控件的悬停**共用这一块面板**：命令卡的九格与科技页那九格在屏幕上逐像素
+##   重合（换页时看不出换了控件），分成两块就会出现「切页那一刻旧面板还没收掉」。
+##
+## ★ 接线只有两条：`cell_hovered` → 弹（`_on_hover_in`）、`cell_unhovered` → 收
+##   （`_on_hover_out`）。文案由 `_hover_detail()` 现取 —— 本控件不认识任何玩法概念，
+##   与 command_card / tech_grid 同一条边界（它们只报「第几格」）。
+func _build_hover_tip() -> void:
+	hover_tip = HoverTipRes.new()
+	_root.add_child(hover_tip)
+	# 字体要传进去：面板高度是**量中文文本**算出来的（见 hover_tip 的文件头）
+	hover_tip.setup(_font)
+	command_card.cell_hovered.connect(_on_hover_in.bind("card"))
+	command_card.cell_unhovered.connect(_on_hover_out.bind("card"))
+	tech_grid.cell_hovered.connect(_on_hover_in.bind("tech"))
+	tech_grid.cell_unhovered.connect(_on_hover_out.bind("tech"))
 
 
 ## 设置：参考图里它是右上角一条实心蓝。**点不动**（需求）——
@@ -536,6 +578,16 @@ func _rebuild_card() -> void:
 			#    升级 / 特化那一套（需求：「为所有单位/建筑都添加上『操作』页签」）。
 			entries = _order_entries_for_selection()
 	command_card.set_entries(entries)
+	# ★★ 记下「这一屏是按哪个签名画的」：`refresh()` 每帧比一次，签名一变就重建
+	#    （见 `_card_sig()`）。写在**画完之后**：中间任何一步改了会进签名的状态，
+	#    下一帧都会被重新比出来，不会漏。
+	_card_sig_key = _card_sig()
+	# ★ 换页 = 换了九格的内容（甚至换了**哪一层**在画：科技页是 tech_grid 盖在上面）：
+	#   悬停面板必须跟着收起来。
+	#   ⚠️ 为什么非显式收不可：鼠标正停在一格上时把那一层**藏起来**（切页会把 tech_grid
+	#      整个隐藏），Godot **不会**补发 `mouse_exited` —— 不收的话那块说明会一直挂在
+	#      屏幕右上角，看着像界面卡死了。
+	_dismiss_hover()
 	# ★ 科技那一层只有「科技」页才显示。这一句放在这里（而不是只放在 refresh 里）：
 	#   `_rebuild_card` 是「页变了」那一刻同步跑的，玩家切页那一下
 	#   **必须立刻**把九格盖上 / 掀开 —— 等到下一帧才变就是肉眼可见的一帧错页。
@@ -562,6 +614,245 @@ func _refresh_tech_grid(visible: bool) -> void:
 	tech_grid.set_visible_page(visible)
 
 
+# ------------------------------------------------------------------
+# ★★ 悬停详情面板：内容（本版新增）
+#
+# 需求原话：「为右下角面板中的按钮添加悬停显示……需要根据悬停详细信息文本动态缩放。
+#           目前只需要为**区域的特化，招募的单位 / 将领，科技，建筑**这些内容
+#           添加详细信息即可」。
+#   ⇒ 这一节只给这四类**格子内容**产出文案；其余（操作页对部队下达的那几条指令：
+#     移动 / 攻击 / 行军 / 停止）返回空字典 ⇒ **不弹面板**（而不是弹一块空的）。
+#
+# ★ 为什么文案在 hud 而不在两个格子控件里：
+#   与「拒因码 → 中文」同一条约定（见 recruit_reject_text 那一段）——**界面词只在这
+#   一个文件里**。command_card / tech_grid 只报「第几格」，数值与说明在这里按
+#   config 与**权威状态**现取，于是不会出现「界面写着旧数值」那种漂移。
+# ------------------------------------------------------------------
+
+## 鼠标进入某一格。@param src "card"（命令卡）/"tech"（科技九格）
+func _on_hover_in(index: int, src: String) -> void:
+	_hover_src = src
+	_hover_index = index
+	var d := _hover_detail(src, _hover_entry(src, index))
+	if d.is_empty():
+		# 这一格还没有悬停详情（本版只做了四类内容）—— 收起来，不留一块空面板
+		hover_tip.clear()
+		return
+	hover_tip.show_text(String(d.get("title", "")), String(d.get("body", "")))
+
+
+## 鼠标离开某一格。★ 只有「确实是我这一格」才收 —— 见 `_hover_src` 那段说明
+## （enter / exit 的先后顺序不保证，无脑收会把刚弹出来的面板闪掉）。
+func _on_hover_out(index: int, src: String) -> void:
+	if src != _hover_src or index != _hover_index:
+		return
+	_dismiss_hover()
+
+
+## 收起悬停面板，并清掉「现在是谁弹的」那个记号
+func _dismiss_hover() -> void:
+	_hover_src = ""
+	_hover_index = -1
+	if hover_tip != null:
+		hover_tip.clear()
+
+
+## 悬停到的那一格数据。命令卡与科技九格是**两份不同形状**的 entries，所以按来源取。
+func _hover_entry(src: String, index: int) -> Dictionary:
+	if src == "tech":
+		return tech_grid.entry_at(index) if tech_grid != null else {}
+	return command_card.entry_at(index) if command_card != null else {}
+
+
+## 某一格的悬停详情：`{title, body}`；**空字典 = 这一格没有详情**（不弹面板）。
+##
+## 本版覆盖的四类（就是需求点的那四样）：
+##   · **建筑**         → `build`（建筑页的城墙 / 箭塔）+ 建筑那一格升级
+##                        （`building_upgrade` / 取消 / 已满级）
+##   · **招募单位 / 将领** → `recruit`（单位页：长枪兵 / 长弓兵 / 骑手）+
+##                        `zone_recruit`（招募页：将领 1/2/3）
+##   · **区域的特化**    → `zone_specialize`
+##   · **科技**          → 科技九格（那一份数据没有 `type`，按 `src == "tech"` 分派）
+func _hover_detail(src: String, entry: Dictionary) -> Dictionary:
+	if entry.is_empty():
+		return {}
+	if src == "tech":
+		return _hover_tech(entry)
+	match String(entry.get("type", "")):
+		"build":
+			return _hover_build(entry)
+		"recruit", "zone_recruit":
+			return _hover_recruit(entry)
+		"zone_specialize":
+			return _hover_spec(entry)
+		"zone_spec_cancel", "zone_spec_bar_cancel":
+			return _hover_spec_cancel(entry)
+		"building_upgrade", "building_upgrade_cancel", "building_upgrade_max":
+			return _hover_building(entry)
+	return {}
+
+
+## 拼一块悬停详情：`body` 是**多行**文本（每行一个字段），空行自动丢掉。
+## ★ 面板按 `HOVER_W`（= 命令卡 240 + 页签列 100 = 340）的宽**折行**（见 view/hover_tip.gd），
+##   所以这里只负责「给哪几句」，
+##   不管每句多长 —— 长句子不会被裁掉，只会多占几行。
+func _hover_text(title: String, lines: Array) -> Dictionary:
+	var clean: Array[String] = []
+	for l in lines:
+		var s := String(l)
+		if s != "":
+			clean.append(s)
+	return {"title": title, "body": "\n".join(clean)}
+
+
+## 条目里那一小份造价（招募表带过来的；缺了就是空 → `_cost_text` 写「免费」）
+func _entry_cost(entry: Dictionary) -> Dictionary:
+	var v: Variant = entry.get("cost", {})
+	return v if typeof(v) == TYPE_DICTIONARY else {}
+
+
+## 建筑（建筑页那两格：城墙 / 箭塔）—— 说明 + 血量 + 攻击（箭塔）+ 占地 + 造价 + 快捷键。
+## ★ 数值全部来自 `config.json` 的 `building.<type>.*`，与 logic/building.gd 读的是同一份；
+##   `tower.hp_max` 在 config 里没写（走建筑的兜底 300），这里也用同一个兜底值。
+func _hover_build(entry: Dictionary) -> Dictionary:
+	var t := String(entry.get("build_type", ""))
+	var lines: Array = []
+	lines.append(cfg.str_val("building.%s.desc" % t, ""))
+	lines.append("血量上限 %s" % _fmt_num(cfg.num("building.%s.hp_max" % t, 300.0)))
+	if t == BuildingRes.TYPE_TOWER:
+		lines.append("攻击 %s / 射程 %s 格 / 间隔 %ss" % [
+			_fmt_num(cfg.num("building.tower.damage", 0.0)),
+			_fmt_num(cfg.num("building.tower.range", 0.0)),
+			_fmt_num(cfg.num("building.tower.cooldown", 0.0))])
+	lines.append("本体占格 %d%%（居中；本体之外的缝隙走得过去）" % int(round(
+		cfg.building_body_scale(t) * 100.0)))
+	var cost: Variant = cfg.get_path_value("building.%s.cost" % t)
+	lines.append("造价 %s" % _cost_text(cost if typeof(cost) == TYPE_DICTIONARY else {}))
+	lines.append("快捷键 %s（也可点这一格进入建造模式）" % cfg.str_val("building.%s.hotkey" % t, ""))
+	return _hover_text(String(entry.get("name", "")), lines)
+
+
+## 招募：单位页那几个兵种（`recruit`）+ 招募页那三个将领（`zone_recruit`）。
+##
+## ★ 将领与兵种的数值是**同一张表**：都按 `cfg.unit_type_of(kind)` 查兵种
+##   （「将领的数值 = 它所属兵种」，见 logic/config.gd 的 unit.* 那一段），
+##   两者只差两点：占谁的队列、人口从哪个区划扣。
+func _hover_recruit(entry: Dictionary) -> Dictionary:
+	var kind := String(entry.get("unit_kind", ""))
+	var ut := cfg.unit_type_of(kind)
+	var is_zone := String(entry.get("type", "")) == "zone_recruit"
+	var lines: Array = []
+	lines.append(String(entry.get("desc", "")))
+	if cfg.has_unit_type(ut):
+		lines.append("血量 %s" % _fmt_num(cfg.unit_hp_of(ut)))
+		var c := cfg.unit_combat_of(ut)
+		lines.append("攻击 %s / 射程 %s 格 / 间隔 %ss" % [
+			_fmt_num(float(c.get("damage", 0.0))),
+			_fmt_num(float(c.get("range", 0.0))),
+			_fmt_num(float(c.get("cooldown_sec", 0.0)))])
+		lines.append("速度 %s 格/秒" % _fmt_num(cfg.unit_speed_of(ut)))
+		lines.append("兵种 %s" % cfg.unit_class_line(ut))
+	lines.append("造价 %s" % _cost_text(_entry_cost(entry)))
+	var pop := int(entry.get("population_cost", 0))
+	if pop > 0:
+		lines.append("占用人口 %d（%s）" % [pop,
+			"从本区划的人口里扣" if is_zone else "从将领所在区划的人口里扣"])
+	var train: float = float(entry.get("train_sec", 0.0))
+	if train > 0.0:
+		lines.append("读条 %s 秒%s" % [_fmt_num(train),
+			"" if is_zone else "（挂在将领名下，读条期间它不能动）"])
+	return _hover_text(String(entry.get("name", "")), lines)
+
+
+## 区域的特化（选中区划中心 → 操作页里那几格）—— 说明 + 效果 + 造价 + 读条 + 「只能选一个」。
+## ★ 「能做哪几档」由区划种类白名单决定（`config.zone_kind.list[].specs`），
+##   操作页上**只画允许的那几格**，所以这里不必再重复一遍限制条件。
+func _hover_spec(entry: Dictionary) -> Dictionary:
+	var id := String(entry.get("spec", ""))
+	var e := cfg.spec_entry(id)
+	var lines: Array = []
+	lines.append(String(e.get("desc", entry.get("desc", ""))))
+	var line := String(e.get("line", ""))
+	if line != "":
+		lines.append("效果 %s" % line)
+	lines.append("造价 %s" % _cost_text(cfg.spec_cost(id)))
+	lines.append("读条 %s 秒" % _fmt_num(cfg.spec_time_sec(id)))
+	lines.append("一个区划只能选一种特化；选错了可以在操作页取消（取消也要读条，全额退款）")
+	return _hover_text(String(entry.get("name", e.get("name", ""))), lines)
+
+
+## 「取消特化」那两格（读条中 / 已特化）—— 说明 + **这一单是哪一档** + 退款提醒。
+## ★ 它同样属于需求点名的「区域的特化」：旁边那两格（粮食 / 黄金特化）有详情，
+##   同一排的「取消特化」没有就说不过去。
+## ★ 目标区划与操作页画格子用同一条判据（`_recruit_zone()`：选中区划，或从区划中心反查）。
+func _hover_spec_cancel(entry: Dictionary) -> Dictionary:
+	var lines: Array = [String(entry.get("desc", ""))]
+	var z = _recruit_zone()
+	if z != null and typeof(z) == TYPE_DICTIONARY:
+		var zd: Dictionary = z
+		var done := String(zd.get("spec_done", ""))
+		var busy := String(zd.get("spec_kind", ""))
+		var which := busy if busy != "" else done
+		if busy != "":
+			var eta: float = world.zone_spec_eta(zd)
+			lines.append("%s：%s，还剩 %s 秒" % [
+				"正在取消特化" if world.zone_spec_is_cancel(zd) else "正在特化",
+				String(cfg.spec_entry(busy).get("name", busy)), _fmt_num(eta)])
+		elif done != "":
+			lines.append("当前特化：%s（%s）" % [
+				String(cfg.spec_entry(done).get("name", done)),
+				String(cfg.spec_entry(done).get("line", ""))])
+		if which != "":
+			lines.append("撤掉之后全额退还：%s" % _cost_text(cfg.spec_cost(which)))
+		lines.append("取消特化也要读条（读完才真的撤掉）")
+	return _hover_text(String(entry.get("name", "")), lines)
+
+
+## 建筑「操作」页那几格（升级 / 取消升级 / 已满级）—— 那一格的说明 + 等级 + 血量 + 下一级的上限。
+## ★ 目标建筑与操作页画格子用的是**同一条判据**（选中区划时从中心格反查那栋建筑），
+##   见 `_building_order_entries`。
+func _hover_building(entry: Dictionary) -> Dictionary:
+	var b = _primary_building()
+	if b == null and input_ctrl.selected_zone != null:
+		b = _zone_center_building_of(input_ctrl.selected_zone)
+	var lines: Array = []
+	# ⚠️ 这里**故意不写** `building.<type>.desc`：大本营那句「开局自带，不可建造，不可拆除」
+	#    是用户明确要求从界面上撤掉的（见 `_building_text` 的注释）。
+	#    建筑的说明只有**建造那一格**（`_hover_build`）才写 —— 那是玩家真正需要它的地方。
+	lines.append(String(entry.get("desc", "")))
+	if b != null:
+		var kind := String(entry.get("type", ""))
+		lines.append("当前等级 %d / %d" % [b.level, world.building_max_level(b.type)])
+		lines.append("血量 %s / %s" % [_fmt_num(b.hp), _fmt_num(b.hp_max)])
+		if kind == "building_upgrade":
+			var nxt: int = b.level + 1
+			var mult: float = cfg.upgrade_hp_mult(b.type, nxt)
+			lines.append("升到 %d 级：血量上限 ×%s ⇒ %s" % [
+				nxt, _fmt_num(mult), _fmt_num(b.base_hp_max * mult * b.tech_hp_mult)])
+		elif kind == "building_upgrade_cancel":
+			lines.append("已经扣掉：%s（取消后全额退还）" % _cost_text(
+				{"food": b.upgrade_cost_food, "gold": b.upgrade_cost_gold}))
+	return _hover_text(String(entry.get("name", "")), lines)
+
+
+## 科技九格 —— 说明 + 效果那一行 + 当前启用状态（含「最多几条 / 现在几条」）。
+## ★ 状态读的是**权威状态**（`world.is_tech_active`），界面不自己记一份「哪几格亮着」。
+func _hover_tech(entry: Dictionary) -> Dictionary:
+	var id := String(entry.get("id", ""))
+	var lines: Array = []
+	lines.append(String(entry.get("desc", "")))
+	var line := String(entry.get("line", ""))
+	if line != "":
+		lines.append("效果 %s" % line)
+	var on: bool = world != null and world.is_tech_active(id)
+	var max_n: int = world.tech_max_active() if world != null else 0
+	var used: int = max_n - (world.tech_remaining_slots() if world != null else 0)
+	lines.append("状态 %s（同一时间最多启用 %d 条，现在 %d / %d）" % [
+		"已启用" if on else "未启用", max_n, used, max_n])
+	lines.append("点这一格 = %s" % ("弃用（把名额让出来）" if on else "启用"))
+	return _hover_text(String(entry.get("name", "")), lines)
+
+
 ## 把一张招募表（recruit.list / recruit.zone.list）翻成命令卡的条目。
 ## @param entry_type 抛给 hud._on_card_entry 的动作类型（"recruit" = 排进将领 / "zone_recruit" = 排进区划）
 func _recruit_entries(entry_type: String, cfg_path: String) -> Array:
@@ -578,6 +869,12 @@ func _recruit_entries(entry_type: String, cfg_path: String) -> Array:
 			"unit_kind": String(e.get("kind", "")),
 			"name": String(e.get("label", e.get("kind", ""))),
 			"desc": String(e.get("desc", "")),
+			# ★★ 悬停详情要用的三个字段，一并带在条目里（见 `_hover_recruit`）：
+			#   两张招募表（recruit.list / recruit.zone.list）字段名一样，
+			#   所以「单位页」与「招募页」的详情共用同一段代码，不各写一份。
+			"cost": e.get("cost", {}),
+			"train_sec": e.get("train_sec", 0.0),
+			"population_cost": e.get("population_cost", 0),
 		})
 	return out
 
@@ -774,6 +1071,24 @@ func _on_tech_cell_activated(id: String) -> void:
 	#   顺序有意如此：先发命令、再由权威状态决定画成什么样 ——
 	#   界面永远不自作主张地翻转本地高亮。
 	refresh()
+	# ★ 悬停面板还开着的话，那两行（「状态 …」「点这一格 = …」）也要跟着变 ——
+	#   玩家的鼠标正停在这一格上，不重算的话它要等鼠标移开再移回来才更新（看着像没生效）。
+	_refresh_hover()
+
+
+## 悬停面板还开着时，按**权威状态**重算一次内容。
+##
+## ★ 只在「点了那一格」这种**状态当场变了**的路径上调（见 `_on_tech_cell_activated`）：
+##   悬停进来的那一帧已经取过一次，没必要每帧重量一遍 ——
+##   `hover_tip.show_text()` 是真的在排版与量高度（见那个文件的 `_measure()`）。
+func _refresh_hover() -> void:
+	if hover_tip == null or _hover_src == "":
+		return
+	var d := _hover_detail(_hover_src, _hover_entry(_hover_src, _hover_index))
+	if d.is_empty():
+		_dismiss_hover()
+		return
+	hover_tip.show_text(String(d.get("title", "")), String(d.get("body", "")))
 
 
 ## 命令卡 → 动作。★ 这里只调输入层的接口，自己绝不碰逻辑状态。
@@ -1206,16 +1521,50 @@ func blocks_wheel_zoom(global_pos: Vector2) -> bool:
 	return UiLayoutRes.point_hits_any(UiLayoutRes.bottom_bar_rects(view_size()), global_pos)
 
 
-## ★★ 当前这一屏「操作」页该画哪几格 —— 用一个**短字符串签名**表达。
+## ★★ 当前这一屏「操作」页该画哪几格 —— 用一个**短字符串签名**表达（见 `_card_sig()`）。
 ##
-## 为什么需要它（本轮踩到的）：操作页的内容不只取决于「页签 + 选中了谁」，
-## 还取决于**选中对象的权威状态**（建筑在不在读条 / 区划特化到哪一步 / 满没满级）。
-## 而 `_rebuild_card()` 原来只在「页签组合变了」时才跑 ——
-## 于是「点读条面板取消升级」之后，那一格还写着「升级城墙」，
-## 要等下一次切页才更新（看着像点了没反应）。
+## 为什么需要它（手玩报的 bug）：「先选中城墙、再改选箭塔，右下角还写着『升级城墙』」——
+## `_sync_tabs()` 只在**页签组合**变了时才重建命令卡，而城墙与箭塔属于**同一类选中**
+## （kind 都是 building、页都是 [操作]）⇒ 页签那一路察觉不到「换了一栋楼」。
+## 同一类问题的另一面：两个**种类不同**的区划中心轮流点（能做哪几档特化不一样）。
 ##
 ## 做法：把「与内容有关的那些事实」拼成签名，`refresh()` 每帧比一次，变了就重建。
-## ⚠️ 签名只放**便宜、稳定**的字段（枚举字符串 + 两个计数），不放对象引用。
+## ⚠️ 签名只放**便宜、稳定**的字段（枚举字符串 + 地块 / 区划 id + 等级 + 两个布尔），
+##    不放对象引用，也**不放读条百分比**（那一格画的是「取消升级」/「取消特化」，
+##    与读了几成无关；放进去就变成每变 1% 白重建一次）。
+func _card_sig() -> String:
+	if input_ctrl == null or page_tabs == null or world == null:
+		return ""
+	var parts: Array[String] = [String(page_tabs.page())]
+	# ① 选中的建筑（选中区划时用「它的中心建筑」代替 —— 与 `_building_order_entries` 同一条判据）
+	var b = _primary_building()
+	if b == null and input_ctrl.selected_zone != null:
+		b = _zone_center_building_of(input_ctrl.selected_zone)
+	if b != null:
+		parts.append("b:%s@%d,%d:lv%d:up%d" % [
+			b.type, b.tx, b.ty, b.level, 1 if b.is_upgrading() else 0])
+	# ② 选中的那个区划：**种类**决定能做哪几档特化，spec_done / spec_kind 决定
+	#    操作页画的是「三档特化」还是「取消特化」那一格
+	var z = _recruit_zone()
+	if z != null and typeof(z) == TYPE_DICTIONARY:
+		var zd: Dictionary = z
+		parts.append("z:%d:%s:%s:%s" % [int(zd.get("id", -1)), world.zone_kind_of(zd),
+			String(zd.get("spec_done", "")), String(zd.get("spec_kind", ""))])
+	# ③ 选中部队 / 什么都没选中这两档**不进签名**：它们的命令卡内容是静态的
+	#    （操作页那四条指令写死在 `_order_entries()`、建筑页来自 `BuildingRes.DEFS`），
+	#    与「选中了哪一支部队」无关 —— 放进去只会每次换选中都白重建一遍。
+	return "|".join(parts)
+
+
+## 命令卡的内容变了就重建（每帧按签名比一次，见 `_card_sig()`）。
+## ★ 绝大多数帧是空转（签名没变直接返回）——这比「每帧无条件重建」便宜得多，
+##   也比「只在切页时重建」正确：**换了一栋同类建筑 / 换了一个种类的区划中心**都算内容变了。
+func _refresh_card_if_changed() -> void:
+	if _card_sig() == _card_sig_key:
+		return
+	_rebuild_card()
+
+
 ## 当前设计空间大小（canvas_items + expand 拉伸后可能比 1920×1080 大）
 func view_size() -> Vector2:
 	var vp := get_viewport()
@@ -1237,11 +1586,14 @@ func refresh() -> void:
 	#    选中大本营 = 科技；选中普通建筑 = 一颗都没有；什么都没选中 = 建筑 + 科技）。
 	#    命令卡的内容跟着页签走（page_tabs 发 page_changed → _rebuild_card）。
 	_sync_tabs()
+	# ★★ 命令卡的内容**每帧按签名比一次**（见 `_card_sig()`）：页签组合没变、但
+	#   「选中的东西换了」（城墙 → 箭塔）或者「选中对象的权威状态变了」（开始升级 /
+	#   取消升级 / 区划特化到哪一步）时，那一格必须跟着重画 ——
+	#   这是手玩报的「改选箭塔，右下角还写着升级城墙」那个 bug 的修法。
+	_refresh_card_if_changed()
 	# ★ 科技九格每帧刷一次（内容 / 高亮都取决于权威的启用状态，见 _refresh_tech_grid）：
-	#   命令卡那条路只在「页签组合变了」时跑，跟不上「玩家点了一格科技」这种变化。
-	# ★★ 命令卡的内容还跟**权威状态**走（建筑在不在读条 / 区划特化到哪一步 / 满没满级），
-	#   而状态是**点一下那一格**就变的 —— 所以在那条命令流里显式重建一次
-	#   （见 `_on_building_action`）。`refresh()` 只负责「页签 / 选中变了」那一路。
+	#   命令卡那条路只在「签名变了」时跑（`_refresh_card_if_changed`），跟不上
+	#   「玩家点了一格科技」这种变化。
 	_refresh_tech_grid(page_tabs != null and String(page_tabs.page()) == PageTabsRes.PAGE_TECH)
 	# ★ 详细信息是**左右两栏**（第三轮改版，见 view/detail_panel.gd 的文件头）：
 	#   左栏 = 当前展开的那支部队（上半）+ 选中部队的将领头像网格（下半）
