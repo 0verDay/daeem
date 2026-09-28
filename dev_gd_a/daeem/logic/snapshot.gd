@@ -120,7 +120,10 @@ static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void:
 				fac, kind,
 				String(su.get("hk", "")) if su.get("hk", null) != null else "",
 				String(su.get("ld", "")) if su.get("ld", null) != null else "",
-				utype
+				utype,
+				# ★ 将领序号：按 kind 认（`general` / `general_N` → 同一个序号槽位），
+				#   这样重建出来的将领同样带上 unit.general.stats 里那份数值覆盖。
+				ConfigRes.general_index_of(kind)
 			)
 			world.units.append(u)
 		u.alive = true

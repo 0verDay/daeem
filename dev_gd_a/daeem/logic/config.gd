@@ -96,6 +96,18 @@ var path_corner_round_min_angle_deg: float = 20.0
 var _unit_types: Dictionary = {}
 var _unit_classes: Dictionary = {}
 var _general_types: Array = []
+## ★★ 将领的**数值覆盖**（本轮新增，config.json 的 `unit.general.stats`）。
+##   `_general_stats[i]` = 第 i 位将领写了的键（空字典 = 完全跟随所属兵种）；
+##   `_general_names[i]` = 它的显示名覆盖（空字符串 = 没写）；
+##   `_general_combat[i]` = 预拼好的战斗字典（没覆盖的那几位**共享**兵种那一份）。
+var _general_stats: Array = []
+var _general_names: Array = []
+var _general_combat: Array = []
+## 单位类型 id → 地图上显示的那**一个字**（config 的 `unit.types.<id>.icon`）。
+## ★ 空串 = 配置里没写（`unit_icon_of` 退成名字的第一个字）。
+## ★★ 它是**数据**而不是美术：设计师在单位编辑器里给每个兵种挑一个字，
+##    新加的兵种也就有了自己的样子（见 view/unit_icon.gd 的文件头）。
+var _unit_icons: Dictionary = {}
 ## 每个将领开局带几个**同类型**的兵（原 unit.subordinate.count）—— 见 unit.general.escort
 var general_escort: int = 0
 ## 查不到类型时的兜底战斗数值（= 第一个将领类型，也就是长枪兵那一档）。
@@ -368,6 +380,8 @@ func _cache_unit_types() -> void:
 					"cooldown_sec": maxf(0.01, float(td.get("cooldown_sec", 1.0))),
 				},
 			}
+			# 地图上那个字：没写这个键就是空串（`unit_icon_of` 会退成名字的第一个字）
+			_unit_icons[id] = String(td.get("icon", ""))
 
 	# 3) 开局将领（general_N 同序）各自的类型
 	var types: Variant = get_path_value("unit.general.types")
@@ -379,6 +393,32 @@ func _cache_unit_types() -> void:
 	if _general_types.is_empty() and _unit_types.has(UNIT_TYPE_SPEARMAN):
 		_general_types.append(UNIT_TYPE_SPEARMAN)
 	general_escort = maxi(0, int_val("unit.general.escort", 0))
+
+	# 3.5) ★★ 将领的**数值覆盖**（config.json 的 `unit.general.stats`，本轮新增；
+	#      editor：tools/unit_editor 的「单位」页 → 将领）。
+	#   · 下标 = 将领序号（与 types 同序）；`general` 与 `general_N` 共用同一个槽位
+	#     （general_index_of 那套规则），所以开局那三位与区划招募出来的对得上。
+	#   · **没写的键 = 跟随所属兵种** —— 空字典 `{}` 就是「完全等于那一档兵种」，
+	#     与加这张表之前的行为逐位一致。
+	#   ⚠️ 覆盖只认数字键与 name：别的键（写错了 / 将来加的）在这里就被丢掉，
+	#      免得 `stat_overrides.get("damage")` 拿到一个字符串。
+	_general_stats = []
+	_general_names = []
+	var stats_raw: Variant = get_path_value("unit.general.stats")
+	if typeof(stats_raw) == TYPE_ARRAY:
+		for item in (stats_raw as Array):
+			var ov: Dictionary = {}
+			var nm := ""
+			if typeof(item) == TYPE_DICTIONARY:
+				var d: Dictionary = item
+				for key in ["hp_max", "speed", "damage", "range", "cooldown_sec"]:
+					var v: Variant = d.get(key, null)
+					if typeof(v) == TYPE_INT or typeof(v) == TYPE_FLOAT:
+						ov[key] = float(v)
+				if typeof(d.get("name", null)) == TYPE_STRING:
+					nm = String(d["name"])
+			_general_stats.append(ov)
+			_general_names.append(nm)
 
 	# 4) 兜底值 + 测试敌人的兼容字段（都来自同一张表，不再是第二份配置）
 	var fb: Variant = _unit_types.get(String(_general_types[0]), null) if not _general_types.is_empty() else null
@@ -393,6 +433,25 @@ func _cache_unit_types() -> void:
 		enemy_damage = float(ec["damage"])
 		enemy_range = float(ec["range"])
 		enemy_cooldown = float(ec["cooldown_sec"])
+
+	# 5) ★ 每位将领预拼一份 combat 字典：`unit_combat_of()` 的契约是「返回**共享的只读字典**」
+	#    （每帧每单位都要读，不新建），所以覆盖也要在载入时拼好。
+	#    没覆盖的那几位**直接共享所属兵种那一份** —— 一个字典都不多建。
+	_general_combat = []
+	for i in _general_types.size():
+		var ov: Dictionary = _general_stats[i] if i < _general_stats.size() else {}
+		var tid := String(_general_types[i])
+		var base: Dictionary = _combat_fallback
+		if _unit_types.has(tid):
+			base = (_unit_types[tid] as Dictionary)["combat"]
+		if ov.has("damage") or ov.has("range") or ov.has("cooldown_sec"):
+			_general_combat.append({
+				"damage": float(ov.get("damage", base["damage"])),
+				"range": float(ov.get("range", base["range"])),
+				"cooldown_sec": float(ov.get("cooldown_sec", base["cooldown_sec"])),
+			})
+		else:
+			_general_combat.append(base)
 
 
 ## 某个 kind 对应的**单位类型 id**。
@@ -463,6 +522,84 @@ func general_type_at(i: int) -> String:
 ## 每个将领开局带几个同类型的兵
 func general_escort_count() -> int:
 	return general_escort
+
+
+# ------------------------------------------------------------------
+# 将领的数值覆盖（config.json 的 unit.general.stats）—— 本轮新增
+#
+# ★★ 为什么要有一层覆盖，而不是「直接把 unit.types.<类型> 改掉」：
+#   「将领 = 带类型的队长」这条设计还在（改兵种数值，所有该类型的兵与将领一起变），
+#   而需求又要求「将领可以单独调血量 / 攻击」—— 两者只能靠**覆盖**共存：
+#   没写的键跟随兵种，写了的键归这位将领。
+#
+# ★ 查的是**序号**（0 起），与 unit.general.types 同序。
+#   ⚠️ 不要用 kind 去查：开局那三位的 kind 都是 `general`（见 world.create_generals），
+#      `general` 与 `general_N` 靠 general_index_of 映射到同一个序号 ——
+#      单位对象在 create 时就知道自己是第几位（unit.general_index），
+#      所以数值是**单位自己**带上身的，不是每次按 kind 去猜。
+# ------------------------------------------------------------------
+
+## 第 index 位将领写了的数值（只读，别改返回的字典；空字典 = 完全跟随兵种）
+func general_stat_overrides(index: int) -> Dictionary:
+	if index < 0 or index >= _general_stats.size():
+		return {}
+	return _general_stats[index]
+
+
+## 第 index 位将领的**显示名覆盖**（没写 → 空字符串，调用方自己兜底「将领」/「将领 N」）
+func general_name_at(index: int) -> String:
+	if index < 0 or index >= _general_names.size():
+		return ""
+	return _general_names[index]
+
+
+## 第 index 位将领的**生效战斗字典**（覆盖 ⊕ 所属兵种）—— 共享只读字典，别改。
+func general_combat_at(index: int) -> Dictionary:
+	if index < 0 or index >= _general_combat.size():
+		return _combat_fallback
+	return _general_combat[index]
+
+
+## 第 index 位将领的**生效血量 / 速度**（覆盖 ⊕ 所属兵种）。
+## ★ 给悬停详情与编辑器对照用；单位自己那边在 create 时就把值抄走了（见 unit.gd）。
+func general_hp_at(index: int) -> float:
+	var ov: Dictionary = general_stat_overrides(index)
+	var type_id := general_type_at(index)
+	if ov.has("hp_max"):
+		return float(ov["hp_max"])
+	return unit_hp_of(type_id)
+
+
+func general_speed_at(index: int) -> float:
+	var ov: Dictionary = general_stat_overrides(index)
+	var type_id := general_type_at(index)
+	if ov.has("speed"):
+		return float(ov["speed"])
+	return unit_speed_of(type_id)
+
+
+## ★★ 单位在地图上显示的那**一个字**（config 的 `unit.types.<id>.icon`）。
+##
+## 本轮改版（用户需求：「地图上的所有单位图标都改下，改为只显示一个字作为其 2D 图像」）：
+## 原来这里返回的是**一份线条画预制体的名字**（枪 / 弓 / 骑 / 叉四份，见 view/unit_icon.gd），
+## 现在直接就是地图上要画的**那个字**本身。
+##
+## 取值顺序（前一个没有就用后一个）：
+##   1. `unit.types.<类型>.icon`（**正好一个字符**；编辑器里那一栏写的就是它）；
+##   2. 单位名字的第一个字（没写 icon 时的兜底 —— 手写地图 / 老配置里的怪 kind 也有字可画）；
+##   3. `"?"`（名字也是空的，理论上到不了这儿）。
+##
+## ⚠️ 参数可以是**单位类型 id**，也可以是 kind（将领类会被换算成它所属的类型）——
+##   于是「将领 1」画的是长枪兵那个字（将领本身不单独配字；它靠描边更粗与普通兵区分）。
+func unit_icon_of(id: String) -> String:
+	var tid := unit_type_of(id)
+	var icon: Variant = _unit_icons.get(tid, null)
+	if typeof(icon) == TYPE_STRING and String(icon) != "":
+		return String(icon).substr(0, 1)          # 防御：手改配置写了两个字也只画一个
+	var name := unit_name_of(tid)
+	if name != "":
+		return name.substr(0, 1)
+	return "?"
 
 
 ## 兵种大类：infantry（步兵）/ cavalry（骑兵）—— 「后续额外伤害」的主键
@@ -625,6 +762,8 @@ func faction_line_color(faction: String, alpha: float) -> Color:
 ##   `cfg.num("building.%s.body_scale" % type, 1.0)` ——
 ##   每次一次字符串格式化 + split(".") + 逐层下潜。1000 个单位待命时这一项就是每帧几万次。
 var _body_scale_cache: Dictionary = {}
+## 建筑攻击三件套的缓存（键 = "类型|等级"，见 building_attack_of）
+var _building_attack_cache: Dictionary = {}
 
 
 func building_body_scale(type: String) -> float:
@@ -634,6 +773,104 @@ func building_body_scale(type: String) -> float:
 	var v: float = clampf(num("building.%s.body_scale" % type, 1.0), 0.05, 1.0)
 	_body_scale_cache[type] = v
 	return v
+
+
+# ------------------------------------------------------------------
+# 建筑定义（config.json 的 `building` 段）—— 本轮从 building.gd 的 DEFS 搬过来
+#
+# ★★ 为什么搬：地图编辑器管地形、单位编辑器管数值 —— 而「有哪些建筑、各自什么名字」
+#   原本写死在 logic/building.gd 的 DEFS 里，设计师加一栋楼**游戏里根本出不来**
+#   （建造页是遍历 DEFS 生成的）。搬进 config 之后：
+#     · 加一栋建筑 = 往 building 段加一条（编辑器有「新建建筑」按钮）；
+#     · 名字 / 说明 / 快捷键 / 能不能建造 / 阻挡语义 全都在数据里。
+#   DEFS 剩下两件事：**区划中心**（它不是建筑，编辑器不管它）+ 未知类型的兜底。
+#
+# ⚠️ config.gd 是依赖图最底层，**不能** preload logic/building.gd（会成环），
+#    所以「兜底定义」由调用方传进来：`cfg.building_def(type, DEFS.get(type, {}))`。
+# ------------------------------------------------------------------
+
+## 某个建筑类型的完整定义：`fallback`（内置兜底）⊕ config 里写的键（**config 优先**）。
+func building_def(type: String, fallback: Dictionary = {}) -> Dictionary:
+	var out: Dictionary = fallback.duplicate()
+	var raw: Variant = get_path_value("building.%s" % type)
+	if typeof(raw) == TYPE_DICTIONARY:
+		for key in (raw as Dictionary).keys():
+			var k := String(key)
+			if k.begins_with("_"):            # `_defs_comment` 这类注释键
+				continue
+			out[k] = (raw as Dictionary)[key]
+	return out
+
+
+## config 里有没有这个建筑类型（建造命令的准入判据）
+func has_building_type(type: String) -> bool:
+	return typeof(get_path_value("building.%s" % type)) == TYPE_DICTIONARY
+
+
+## config 里定义的全部建筑类型 id（顺序 = 文件里的顺序）
+func building_type_ids() -> Array:
+	var out: Array = []
+	var raw: Variant = get_path_value("building")
+	if typeof(raw) != TYPE_DICTIONARY:
+		return out
+	for key in (raw as Dictionary).keys():
+		var k := String(key)
+		if k.begins_with("_"):
+			continue
+		if typeof((raw as Dictionary)[key]) == TYPE_DICTIONARY:
+			out.append(k)
+	return out
+
+
+## 右下「建筑」页要显示的那几项（`buildable = true`），每项 = 完整的建筑定义。
+func buildable_building_defs() -> Array:
+	var out: Array = []
+	for type in building_type_ids():
+		var d := building_def(type)
+		if bool(d.get("buildable", false)):
+			out.append(d)
+	return out
+
+
+## 建筑的基础血量上限（等级 / 科技都是在它上面乘倍率）
+func building_max_hp(type: String) -> float:
+	return maxf(0.0, num("building.%s.hp_max" % type, 300.0))
+
+
+## ★ 建造读条秒数（config 的 `building.<type>.build_sec`）。**0 = 瞬发**（默认）。
+func building_build_sec(type: String) -> float:
+	return maxf(0.0, num("building.%s.build_sec" % type, 0.0))
+
+
+## ★ 能不能攻击（config 的 `building.<type>.attackable`）。不打勾就不读攻击三件套。
+func building_attackable(type: String) -> bool:
+	return bool_val("building.%s.attackable" % type, false)
+
+
+## ★★ 某个等级的攻击三件套 {damage, range, cooldown}：
+##   等级行里写了就用它（`upgrade.levels.<type>[k].damage` …），没写就用
+##   `building.<type>` 那一档的基础值。← 于是「现在的数据」逐位不变（等级行里没写）。
+##
+## ★ 按 (类型, 等级) 缓存：箭塔每开一炮都要读一次，而 `num()` 那种写法每次都要
+##   split(".") + 逐层下潜；配置在运行期不会变，缓存是安全的。
+func building_attack_of(type: String, level: int) -> Dictionary:
+	var key := "%s|%d" % [type, level]
+	var cached: Variant = _building_attack_cache.get(key, null)
+	if cached != null:
+		return cached
+	var dmg := num("building.%s.damage" % type, 0.0)
+	var rng := num("building.%s.range" % type, 0.0)
+	var cd := num("building.%s.cooldown" % type, 0.0)
+	var row := upgrade_row(type, level)
+	var atk: Variant = row.get("attack", null)
+	if typeof(atk) == TYPE_DICTIONARY:
+		var a: Dictionary = atk
+		dmg = float(a.get("damage", dmg))
+		rng = float(a.get("range", rng))
+		cd = float(a.get("cooldown", cd))
+	var out := {"damage": maxf(0.0, dmg), "range": maxf(0.0, rng), "cooldown": maxf(0.01, cd)}
+	_building_attack_cache[key] = out
+	return out
 
 
 func unit_radius() -> float:
@@ -797,11 +1034,19 @@ func _cache_upgrades() -> void:
 				continue
 			var d: Dictionary = item
 			var cost: Variant = d.get("cost", {})
+			# ★ 本轮新增：这一级**可以**自带攻击三件套（不写 = 沿用 building.<type> 的基础值）。
+			#   只收数字键：写错的键在这里就被丢掉，免得 building_attack_of 拿到字符串。
+			var atk: Dictionary = {}
+			for key in ["damage", "range", "cooldown"]:
+				var v: Variant = d.get(key, null)
+				if typeof(v) == TYPE_INT or typeof(v) == TYPE_FLOAT:
+					atk[key] = float(v)
 			table.append({
 				"level": int(d.get("level", table.size() + 1)),
 				"hp_mult": maxf(0.01, float(d.get("hp_mult", 1.0))),
 				"cost": (cost as Dictionary) if typeof(cost) == TYPE_DICTIONARY else {},
 				"time_sec": maxf(0.0, float(d.get("time_sec", 0.0))),
+				"attack": atk,
 			})
 		_upgrade_levels[String(type)] = table
 

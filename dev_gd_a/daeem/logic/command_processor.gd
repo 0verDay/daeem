@@ -369,7 +369,12 @@ static func apply_attack_move(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 static func apply_build(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 	var owner := String(cmd.get("faction", world.my_faction))
 	var type := String(cmd.get("build_type", cmd.get("build", "")))
-	if type == "" or not BuildingRes.DEFS.has(type):
+	# ★★ 本轮起判据是**数据**（config.json 的 building 段），不再是写死的 DEFS：
+	#   编辑器里新加的建筑要真的能建出来。`buildable = false` 的类型（大本营 /
+	#   区划中心那类「开局自带」的东西）拒绝 —— 建造页本来就不列它们。
+	if type == "" or not cfg.has_building_type(type):
+		return false
+	if not bool(cfg.building_def(type).get("buildable", false)):
 		return false
 	if not world.can_build_at(int(cmd.get("tx", -1)), int(cmd.get("ty", -1))):
 		world.push_event({"type": "build_rejected", "tile": Vector2i(int(cmd.get("tx", -1)), int(cmd.get("ty", -1))), "reason": "occupied_or_terrain"})

@@ -165,7 +165,7 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	# 地图上**预置**的建筑（对家据点这类固定摆设，坐标写在 test_map.json 的 "buildings" 里）。
 	# 放在各阵营出生点之后：它们的坐标是手写的，不与出生点抢格；被占住的格子 add_building 会自己拒。
 	for p in map.prefab_buildings:
-		add_building(String(p["type"]), int(p["x"]), int(p["y"]), String(p["owner"]), true)
+		add_building(String(p["type"]), int(p["x"]), int(p["y"]), String(p["owner"]), true, true)
 	# ★★ 区划中心（地图编辑器给每个区块指定的那一格）：**中立障碍建筑**。
 	#    ⚠️⚠️ 必须在**任何单位出生之前**建好（顺序踩过一次，实测）：
 	#       单位出生找站位时会避开建筑（`_ring_tile` 里那条 `building_at() != null`），
@@ -221,7 +221,7 @@ func _spawn_zone_centers() -> void:
 		if c == null:
 			continue
 		var t: Vector2i = c
-		if add_building(BuildingRes.TYPE_ZONE_CENTER, t.x, t.y, "", true) == null:
+		if add_building(BuildingRes.TYPE_ZONE_CENTER, t.x, t.y, "", true, true) == null:
 			push_warning("区划「%s」的中心 (%d, %d) 建不出来：那一格已经被别的建筑占了"
 				% [String(z["name"]), t.x, t.y])
 
@@ -262,10 +262,12 @@ func apply_faction_layout(faction: String, primary: String = "") -> void:
 		if stale:
 			remove_building(b, true)
 
-	# 3) 大本营 + 防御阵地（silent：不写日志、不逐个重算区块归属）
-	add_building(BuildingRes.TYPE_BASE, base_tile.x, base_tile.y, faction, true)
+	# 3) 大本营 + 防御阵地（silent：不写日志、不逐个重算区块归属；
+	#    ★ instant：**开局自带的东西一律直接完工** —— 建造读条只属于玩家下达的建造命令，
+	#      否则开局的大本营要先傻站几秒（而 config 里 build_sec 默认就是 0，两者不冲突）
+	add_building(BuildingRes.TYPE_BASE, base_tile.x, base_tile.y, faction, true, true)
 	for d in (layout["defenses"] as Array):
-		add_building(String(d["type"]), int(d["x"]), int(d["y"]), faction, true)
+		add_building(String(d["type"]), int(d["x"]), int(d["y"]), faction, true, true)
 	building_revision += 1
 
 	# 4) 将领（多阵营时追加本阵营的，保留其他阵营的）
@@ -302,20 +304,27 @@ func spawn_faction_units(faction: String) -> void:
 ##    这样 world.units 里前几个永远是将领（快捷键 1/2/3 与按序号取将领的代码都靠它），
 ##    附属兵的 id 也统一是 `general-1-1`（队长 1 的第 1 个兵）这种可读格式。
 func create_generals(faction: String) -> Array:
-	var names = ["将领 1", "将领 2", "将领 3"]
 	var spawns: Array = faction_spawns.get(faction, [])
 	var out: Array = []
 	var prefix = "general" if faction == FactionRes.DEFAULT_FACTION else "general-%s" % faction
 	var leaders: Array = []
-	for i in names.size():
+	for i in 3:
+		# ★★ 名字与类型都走 config：
+		#   · `cfg.general_name_at(i)` = 编辑器里给这位将领起的名字（没写 → 原来的「将领 N」）；
+		#   · `cfg.general_type_at(i)` = unit.general.types[i]。
+		#   ⚠️ 名字在这里读一次**存进单位**（`unit.name`）—— 部队列表、右栏都读它。
+		var gname: String = cfg.general_name_at(i)
+		if gname == "":
+			gname = "将领 %d" % (i + 1)
 		var tile: Vector2i = map.base
 		if i < spawns.size():
 			tile = spawns[i]
 		elif i < map.general_spawns.size():
 			tile = map.general_spawns[i]
 		var unit_type: String = cfg.general_type_at(i)
-		var g = UnitRes.create(cfg, "%s-%d" % [prefix, i + 1], names[i], tile, faction,
-			UnitRes.KIND_GENERAL, str(i + 1), "", unit_type)
+		# ★ 最后那个参数 = **第几位将领**：它决定套不套 unit.general.stats 里那份数值覆盖
+		var g = UnitRes.create(cfg, "%s-%d" % [prefix, i + 1], gname, tile, faction,
+			UnitRes.KIND_GENERAL, str(i + 1), "", unit_type, i)
 		out.append(g)
 		leaders.append(g)
 	# 将领全部就位之后，再给每个将领配它自己那一类的兵。
@@ -1053,7 +1062,8 @@ func _spawn_zone_recruit(zone, kind: String) -> Variant:
 	_recruit_serial += 1
 	var u = UnitRes.create(
 		cfg, "zone-%d-r%d" % [int(zone["id"]), _recruit_serial],
-		recruit_label_of(kind), tile, faction, kind, "", ""
+		recruit_label_of(kind), tile, faction, kind, "", "", "",
+		ConfigRes.general_index_of(kind)          # ★ 第几位将领（决定套不套它的数值覆盖）
 	)
 	units.append(u)
 	# ★ 区划招募出来的将领自己就是队长 → 吃「将领血量 +10%」（用同一个判据函数）
@@ -1247,7 +1257,11 @@ func spawn_enemy(tx: int = -1, ty: int = -1) -> Variant:
 
 ## 在某格放一个建筑。**每个地块最多一个**。
 ## silent = true 时不写日志、不重算区块归属（批量布置出生点时用）。
-func add_building(type: String, tx: int, ty: int, owner: String, silent: bool = false) -> Variant:
+## instant = true 时**跳过建造读条**（开局自带的大本营 / 防御阵地 / 区划中心用）。
+##   ★ 为什么要有这个参数：`building.<type>.build_sec` 是**玩家建造**的读条时间
+##     （编辑器里那一栏），开局摆好的东西不该等几秒才生效。
+func add_building(type: String, tx: int, ty: int, owner: String, silent: bool = false,
+		instant: bool = false) -> Variant:
 	if not map.terrain.has(tx, ty):
 		return null
 	if buildings.get_cell(tx, ty) != null:
@@ -1255,6 +1269,9 @@ func add_building(type: String, tx: int, ty: int, owner: String, silent: bool = 
 	var z = zones.zone_at(tx, ty)
 	var zone_id: int = int(z["id"]) if z != null else -1
 	var b = BuildingRes.create(cfg, type, tx, ty, owner, zone_id)
+	# ★ 建造读条（config 的 build_sec；0 = 瞬发 = 与从前逐位一致）
+	if not instant:
+		b.start_construction(cfg.building_build_sec(type))
 	buildings.set_cell(tx, ty, b)
 	_building_at[Vector2i(tx, ty)] = b
 	building_list.append(b)
@@ -1720,6 +1737,21 @@ func _prof_done(key: String, t0: int) -> void:
 ##   （建造 / 拆除 / 招募 / 刷敌人）必须跟着下一次 tick 一起交出去。
 ##   以前是在开头 `_events = []`，于是命令事件在送到 HUD 之前就被丢掉了 ——
 ##   症状是「建好了没有日志、招募了没有提示」，而逻辑本身是对的，很难查。
+## ★ 建筑建造读条（config 的 `building.<type>.build_sec`；0 = 瞬发 = 与从前一致）。
+##
+## 读条期间这栋楼**不开火**（还没有战斗力），但已经在图上、也照常能被打 ——
+## 「边造边挨打」是即时战略里正常的取舍，这里不做额外的免伤。
+## ⚠️ 它只跑一次（一栋楼只有一次建造），与 upgrade.gd 那条升级读条互不相干。
+func _tick_construction(dt: float) -> void:
+	for b in building_list:
+		if not b.alive or not b.is_under_construction():
+			continue
+		b.build_remaining = maxf(0.0, b.build_remaining - dt)
+		if b.build_remaining <= 0.0:
+			b.finish_construction()
+			push_event({"type": "building_ready", "building": b})
+
+
 func tick(dt: float) -> Array:
 	if dt <= 0.0:
 		return _events
@@ -1820,7 +1852,11 @@ func tick(dt: float) -> Array:
 	units = keep
 
 	# 5) 箭塔开火 + 建筑受击闪光衰减
+	#    ★★ 前面先走一段「建筑建造读条」（config 的 building.<type>.build_sec；默认 0 = 瞬发）：
+	#       排在开火**之前**，于是「这一帧读完的那栋楼」本帧就能开火 ——
+	#       与招募 / 升级那两条读条「读完在本帧内落效果」是同一条约定。
 	var _t_towers := _prof()
+	_tick_construction(dt)
 	CombatRes.update_towers(self, cfg, dt)
 	CombatRes.update_building_effects(self, dt)
 	_prof_done("towers", _t_towers)

@@ -409,19 +409,30 @@ static func attack_building(world, cfg: ConfigRes, u: UnitRes, b) -> void:
 		world.push_event({"type": "building_down", "building": b, "source": u})
 
 
-## 箭塔开火：对射程内**最近的敌人**造成单体伤害。
+## 会攻击的建筑（箭塔，以及编辑器里新加的任何 `attackable = true` 的建筑）开火：
+## 对射程内**最近的敌人**造成单体伤害。
+##
+## ★★ 判据从「type == "tower"」改成 config 的 `attackable`（本轮）：
+##    原来写死 tower，于是设计师在编辑器里加一栋「炮塔」永远打不出伤害 ——
+##    一个改了没用的字段。伤害 / 射程 / 间隔也改成按**当前等级**取
+##    （见 building.attack_damage 与 cfg.building_attack_of）。
+## ★ 建造读条中的建筑**不开火**（b.is_under_construction()）：它还没有战斗力。
 ##
 ## ★ 索敌用 `same_side`，**不要**写成 `u.faction == b.owner`：
 ##   HTML 版的箭塔就是这么写的，偏离了它自己声明的规则 —— 单人下行为等价，
 ##   但一旦引入结盟/组队就会变成「箭塔打队友」（见 docs/pitfalls.md 3.7）。
 static func update_towers(world, cfg: ConfigRes, dt: float) -> void:
 	for b in world.building_list:
-		if not b.alive or b.type != "tower":
+		if not b.alive:
 			continue
+		if not b.is_attackable(cfg):
+			continue
+		if b.is_under_construction():
+			continue                       # ★ 还在建造：这一栋先不开火
 		if b.cooldown_left > 0.0:
 			b.cooldown_left = maxf(0.0, b.cooldown_left - dt)
 
-		var range_tiles: float = b.tower_range(cfg)
+		var range_tiles: float = b.attack_range(cfg)
 		# 允许打到「半个身子进射程」的敌人：用**被瞄准的具体单位**的半径，
 		# 而不是写死某一种类型 —— 各单位类型的半径不同（骑兵最大、长弓兵最小），写死会让射程口径不一致。
 		var target = null
@@ -438,8 +449,8 @@ static func update_towers(world, cfg: ConfigRes, dt: float) -> void:
 		b.last_target = target
 
 		if target != null and b.cooldown_left <= 0.0:
-			target.take_damage(cfg, world, b.tower_damage(cfg), b)
-			b.cooldown_left = b.tower_cooldown(cfg)
+			target.take_damage(cfg, world, b.attack_damage(cfg), b)
+			b.cooldown_left = b.attack_cooldown(cfg)
 			b.flash = 1.0
 
 

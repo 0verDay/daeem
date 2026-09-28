@@ -72,6 +72,19 @@ var kind: String = KIND_GENERAL
 ## ★ 数值（血 / 速度 / 半径 / 攻击三件套）一律按 `unit_type` 查表 ——
 ##   于是「将领的数值 = 它所属类型的数值」（用户确认的口径）自动成立。
 var unit_type: String = ""
+## ★★ 这是**第几位将领**（0 起；非将领 = -1），以及它的**数值覆盖**。
+##
+## 为什么要这两个字段（本轮新增，config 的 `unit.general.stats`）：
+##   需求是「将领可以单独调血量 / 攻击」，而将领的 kind 分不出谁是谁 ——
+##   开局那三位的 kind **都是 `general`**（见 world.create_generals），
+##   只有「序号」能区分。于是序号在 create 时由调用方给（开局的 i、
+##   区划招募的 general_index_of(kind)），数值那一刻就拼好带在身上：
+##   没写的键 = 跟随所属兵种（`stat_overrides` 里就没有那个键）。
+##
+## ⚠️ 覆盖必须**落在单位自己身上**，不能在 `unit_hp_of()` 里按 kind 查 ——
+##    否则三位将领的 kind 相同，会一起被第 0 位覆盖掉（一个很安静的错）。
+var general_index: int = -1
+var stat_overrides: Dictionary = {}
 ## 兵种大类（infantry / cavalry）与「是不是远程」。
 ##
 ## ★★ 为什么要**存在单位上**而不是每次查表：这两个字段就是「后续按兵种做额外伤害」
@@ -237,7 +250,10 @@ var selected: bool = false
 ## @param p_unit_type 单位类型（兵种）id。空 = 由 kind 推（普通单位推出来就是它自己，
 ##        将领推出来是 unit.general.types[0]）—— **开局那三个将领必须显式传**，
 ##        因为它们 kind 都是 general，只有这个参数能区分谁是谁。
-static func create(cfg: ConfigRes, p_id: String, p_name: String, tile: Vector2i, p_faction: String, p_kind: String = KIND_GENERAL, p_hotkey: String = "", p_leader_id: String = "", p_unit_type: String = "") -> RefCounted:
+## @param p_general_index 第几位将领（0 起；非将领 / 附属兵传 -1）。
+##        ★ 它决定要不要套 `unit.general.stats` 里那一份**数值覆盖**
+##          （见 unit.gd 上面 `stat_overrides` 的说明）。
+static func create(cfg: ConfigRes, p_id: String, p_name: String, tile: Vector2i, p_faction: String, p_kind: String = KIND_GENERAL, p_hotkey: String = "", p_leader_id: String = "", p_unit_type: String = "", p_general_index: int = -1) -> RefCounted:
 	var u = new()
 	u.id = p_id
 	u.name = p_name
@@ -248,13 +264,17 @@ static func create(cfg: ConfigRes, p_id: String, p_name: String, tile: Vector2i,
 	u.faction = p_faction
 	u.hotkey = p_hotkey
 	u.leader_id = p_leader_id
+	u.general_index = p_general_index
+	if p_general_index >= 0:
+		u.stat_overrides = cfg.general_stat_overrides(p_general_index)
 	u.pos = GridRes.center_of(tile)
 	u.tx = tile.x
 	u.ty = tile.y
 	# ★ 数值走 cfg.unit_*_of(unit_type)：原来写的是「是将领吗？不是就当敌人」，
 	#    加了第三种兵种之后那个二元判断会**静默把新兵种当成测试敌人**（60 血）。
 	#    现在每个单位类型都在 config.unit.types 里明确定义，查不到才用兜底值。
-	u.hp_max = cfg.unit_hp_of(u.unit_type)
+	# ★★ 将领的**数值覆盖**在这里落地（没写的键 = 跟随所属兵种那一档）。
+	u.hp_max = float(u.stat_overrides.get("hp_max", cfg.unit_hp_of(u.unit_type)))
 	u.base_hp_max = u.hp_max
 	u.hp = u.hp_max
 	return u
@@ -308,23 +328,27 @@ func train_progress() -> float:
 ## 基础移动速度（格 / 秒）；森林里减半。
 ## ★ 按 `unit_type` 查表（不是 kind）：将领的速度 = 它所属兵种的速度 ——
 ##   于是「骑手型的将领跑得更快」是数据决定的，代码里没有特例。
+## ★ 将领自己填过速度就用它（config 的 unit.general.stats，见 stat_overrides）。
 func speed(cfg: ConfigRes, map) -> float:
-	var base: float = cfg.unit_speed_of(unit_type)
+	var base: float = float(stat_overrides.get("speed", cfg.unit_speed_of(unit_type)))
 	var on_forest: bool = map != null and map.is_forest(tx, ty)
 	return base * (cfg.unit_forest_mult if on_forest else 1.0)
 
 
-## 该单位的战斗数值（按单位类型查 config.unit.types，见 cfg.unit_combat_of）
+## 该单位的战斗数值（按单位类型查 config.unit.types，见 cfg.unit_combat_of）。
+## ★★ 将领自己填过的那一项优先（config 的 unit.general.stats）——
+##    没填的**不比**、直接走兵种那一档（`get(键, 兵种值)` 一句就表达了「跟随」）。
 func combat_damage(cfg: ConfigRes) -> float:
-	return float(cfg.unit_combat_of(unit_type)["damage"])
+	return float(stat_overrides.get("damage", cfg.unit_combat_of(unit_type)["damage"]))
 
 
 func combat_range(cfg: ConfigRes) -> float:
-	return float(cfg.unit_combat_of(unit_type)["range"])
+	return float(stat_overrides.get("range", cfg.unit_combat_of(unit_type)["range"]))
 
 
 func combat_cooldown(cfg: ConfigRes) -> float:
-	return float(cfg.unit_combat_of(unit_type)["cooldown_sec"])
+	return float(stat_overrides.get("cooldown_sec",
+		cfg.unit_combat_of(unit_type)["cooldown_sec"]))
 
 
 ## 警戒半径（格）

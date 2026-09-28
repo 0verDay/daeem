@@ -2078,7 +2078,10 @@ for i in n:
 **做法**：
 ① 要往容器里塞东西的分桶表，一律用 **`Array`**（`by_tex[tex] = []`）；
 ② 分桶这一步抽成 `UnitView._bucket_by_icon(icons, n)`（纯函数），测试直接钉
-   「n 个单位一个不漏地分完」「桶是 Array」；
+   「n 个单位一个不漏地分完」「桶是 Array」
+   （⚠️ 第二十九节把图标从一个字换成…准确说：**单位图标改成「一个字」之后**，
+   这个函数改名叫 `_bucket_by_size(radii, n)`、改成**按字号**分桶 ——
+   坑本身与分桶键无关，`Array` 不能换成打包数组这条一直有效）；
 ③ 顺手加了一个诊断计数器 **`UnitView.icon_draw_count`**（本帧真的发出去几张图标），
    测试钉「挪两个单位进镜头 ⇒ 恰好 2 张」。**这是唯一能抓住「画了但没有/没画」的东西**；
 ④ 最后真的**开窗截图看**（`root.get_texture().get_image()` 存 PNG）——
@@ -2199,9 +2202,57 @@ for i in n:
 判据漏掉一个输入，那条输入变化时就永远看不到更新，而且**通常不报错**，
 只在玩家手里表现为「界面卡在上一状态」。
 
+### 5.55 ★★ Tk 的 Canvas 在「内容比视口矮」时**照样能滚**：`yview()` 还说没滚
 
+**症状**（用户报的，单位编辑器）：右侧详细信息面板换到内容比较短的那几张表单
+（`enemy`、将领 1/2/3）之后，**上下滚一下内容就被推走，面板上方空出一大块**；
+换个人又会跳回来，看着像「面板在乱跳」。
 
+**实测（Tk 9.0，内容 713px / 视口 930px —— 明明装得下）**：
 
+```python
+cv.yview("scroll", -5, "units")
+cv.canvasy(0.0)     # → -217.0   ← 内容被推下去 217px，上方就是那块空白
+cv.yview()          # → (0.0, 1.0)  ← ★★ 它还说「没滚」
+```
 
+**根因**：canvas 的滚动范围（`scrollregion`）比视口矮时，Tk 并不禁止滚动 ——
+它把偏移夹到「**视口底边与内容底边对齐**」那一位（这里是 `-(930-713) = -217`），
+于是内容整体下移、上方露白。而 `yview()` 是按 scrollregion 分数算的，**看不出这件事**
+（这也解释了为什么第一版排查时盯着 `yview()` 什么都没发现）。
 
+**修法**（`tools/unit_editor/app.py`）：把滚动**收敛到一个入口**，动作之前先判一次：
 
+```python
+def sidebar_yview(self, *args):          # 滚动条 / 滚轮 / 拖动都走这里
+    overflow = self.sidebar_overflow()   # 内容高 - 视口高，<= 0 = 装得下
+    if overflow <= 0:
+        self._pin_sidebar_top()          # 钉回顶部 + 滑块铺满滑槽（看着就是不可滚）
+        return
+    self.sidebar_canvas.yview(*args)
+    self.clamp_sidebar_view(overflow)    # 再按 canvasy(0) 夹回 [0, 溢出]
+
+def clamp_sidebar_view(self, overflow=None):
+    ...
+    offset = self.sidebar_canvas.canvasy(0.0)   # ★ 判据必须是它，不是 yview()
+    if overflow <= 0 or offset < 0.0: self._pin_sidebar_top()
+    elif offset > float(overflow): <落到最底>
+```
+
+三条要点：
+① **判据用 `canvasy(0)`**（视口顶端在画布坐标里的位置），别用 `yview()` —— 见上面的实测；
+② **统一入口**：滚动条 `command=`、画布 `yscrollcommand=`、滚轮、`<Configure>` 全指向它，
+   否则总有一条路绕过判断（原来滚动条直接连着 `canvas.yview`）；
+③ **窗口尺寸变化时也要夹一次**：拉高窗口之后，原先「滚到一半」的偏移可能已经越界，
+   不夹的话照样露空白。
+
+**回归判据**（`tools/unit_editor/test_app.py` 的 `[8] 侧边栏滚动`，+23 项）：
+装得下 → 向下滚 / 向上滚 / 拖滚动条 / 滚轮**四个方向都不许动**，且 `sidebar_scroll.get() == (0.0, 1.0)`；
+装不下 → 能滚、但滚过头夹在两端（`canvasy(0)` 永远落在 `[0, 溢出]`）。
+★ 把 `sidebar_yview` 临时换回「直接 `canvas.yview`」那一版，这两条**确实红**：
+`装得下时向上滚 → 一动不动（实际 -217.0，期望 0.0）`、
+`将领表单同样滚不动（实际 -232.0，期望 0.0）` —— 与用户看到的现象逐位对上。
+
+**一句话记法**：**「能不能滚」是「装不装得下」的函数**；容器/控件默认允许滚动，
+所以「内容短了就不许滚」必须自己判、自己夹，而且**判据要选那个真的会动的量**
+（这里是 `canvasy(0)`，不是 `yview()`）。

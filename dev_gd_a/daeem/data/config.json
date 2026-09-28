@@ -133,6 +133,11 @@
       "    一个类型只在一个地方定义，就没有「漏了一种类型」的余地。",
       "  · 数值口径与旧字段完全一致：距离一律是**格**，速度是**格 / 秒**，",
       "    radius_factor 是格半径（渲染与射程判定共用，碰撞另走 unit.collision_radius）。",
+      "  ★★ icon = **地图上这个单位显示的那一个字**（本轮改版：原来是一份线条画的预制体）。",
+      "     · 正好一个字符（中文 / 字母都行）；地图上就画这一个字，按阵营色上色。",
+      "     · 不写这个键 → 退成**名字的第一个字**（见 config.gd 的 unit_icon_of）。",
+      "     · 将领用它所属兵种的那一个字（三位的 kind 都是 general，还靠描边更粗区分）。",
+      "     · 编辑器：tools/unit_editor 的「单位」页 →「地图上的字」那一栏。",
       "  ★ 将领的数值 = 它所属类型的数值（用户确认「完全按对应兵种数值」）：",
       "    所以这里没有单独的将领数值块。想单独强化将领就在 unit.general 里加倍率，",
       "    并在 logic/config.gd 的 unit_hp_of / unit_combat_of 里乘上去。"
@@ -140,6 +145,7 @@
     "types": {
       "spearman": {
         "name": "长枪兵",
+        "icon": "枪",
         "class": "infantry",
         "ranged": false,
         "hp_max": 160,
@@ -151,6 +157,7 @@
       },
       "longbowman": {
         "name": "长弓兵",
+        "icon": "弓",
         "class": "infantry",
         "ranged": true,
         "hp_max": 110,
@@ -162,6 +169,7 @@
       },
       "rider": {
         "name": "骑手",
+        "icon": "骑",
         "class": "cavalry",
         "ranged": false,
         "hp_max": 140,
@@ -173,6 +181,7 @@
       },
       "enemy": {
         "name": "测试敌人",
+        "icon": "敌",
         "class": "infantry",
         "ranged": false,
         "hp_max": 60,
@@ -201,7 +210,21 @@
     ],
     "general": {
       "escort": 3,
-      "types": ["spearman", "longbowman", "rider"]
+      "types": ["spearman", "longbowman", "rider"],
+
+      "_stats_comment": [
+        "★★ 将领的**数值覆盖**（本轮新增；editor：tools/unit_editor 的「单位」页 → 将领）。",
+        "  下标 = 第几个将领（0 起，与 types 同序）。**没写的键 = 跟随所属兵种** ——",
+        "  于是 `{}` 的语义就是「这一位将领完全等于它那一档兵种的数值」（默认，与从前逐位一致）。",
+        "  可写的键：name / hp_max / speed / damage / range / cooldown_sec。",
+        "  读的地方只有一处：logic/config.gd 的 _cache_unit_types()（整理成 _general_stats，",
+        "  再由 unit_hp_of / unit_speed_of / unit_combat_of 按 general 序号取覆盖值）。",
+        "  ⚠️ 覆盖不了的：**兵种大类（步兵/骑兵）与远近**仍然由 types[i] 那个兵种决定 ——",
+        "     「按兵种做额外伤害」读的是 unit_class_of / unit_is_ranged，那两条只看兵种。",
+        "  ⚠️ name 不写时：unit_name_of 返回「将领」，world.create_generals 用「将领 N」——",
+        "     两处都是**原有的**兜底，写在这里才会盖掉。"
+      ],
+      "stats": [{}, {}, {}]
     },
 
     "_collision_comment": [
@@ -443,26 +466,62 @@
       "  测试敌人的碰撞半径是 unit.collision_radius（0.18，直径 0.36），所以刚好挤得过去；",
       "  想让它过不去就把 body_scale 调大（≥ 0.65 就堵死了），想更宽松就调小。"
     ],
+
+    "_defs_comment": [
+      "★★ 本轮起：**可建造的建筑定义以这一段为准**（editor：tools/unit_editor 的「建筑」页）。",
+      "  logic/building.gd 的 DEFS 现在只剩「区划中心（不是建筑，编辑器不管它）」+ 未知类型的兜底；",
+      "  base / wall / tower 的**阻挡语义也搬到这里**了（下面的 blocks_* 四个键），读法是",
+      "  `cfg.building_def(type)` = DEFS 兜底 ⊕ 这一段（**这一段优先**）。",
+      "★ 每个类型能写的键：",
+      "  name / desc / hotkey  —— 名字 / 说明 / 建造页快捷键（右下「建筑」页直接读这一段）",
+      "  buildable             —— 会不会出现在「建筑」页的命令卡里（大本营 false）",
+      "  build_sec             —— ★ 建造读条秒数。**0 = 瞬发**（默认，与从前的行为逐位一致）",
+      "  cost {food, gold}     —— 造价（economy.enabled = false 时建造免费，见 logic/economy.gd）",
+      "  hp_max                —— 基础血量上限（等级 / 科技都是在它上面乘倍率，不叠着乘）",
+      "  body_scale            —— 本体边长占一格的比例（渲染与碰撞共用同一个数）",
+      "  blocks_player / blocks_enemy           —— **格级**阻挡（只给 A* 用，见 building.gd 文件头）",
+      "  body_blocks_player / body_blocks_enemy —— **本体级**阻挡（只给移动碰撞用）",
+      "  attackable            —— 能不能攻击：true 才读 damage / range / cooldown",
+      "  damage / range / cooldown —— 攻击力 / 攻击距离（格）/ 攻击间隔（秒）",
+      "  color                 —— 地图上的颜色（view 读它）",
+      "★ 能升到几级、每级多少血 / 多少钱多少秒，写在 upgrade.levels.<type> 那一段，不在这里。",
+      "★ 编辑器的「添加建筑」会照这份键表建一个完整条目 + 一张 3 级升级表。"
+    ],
+
     "wall": {
-      "id": "wall", "name": "城墙", "hotkey": "B",
-      "body_scale": 1.0,
+      "id": "wall", "name": "城墙", "hotkey": "B", "buildable": true,
+      "build_sec": 0,
       "cost": { "food": 0, "gold": 0 },
       "hp_max": 300,
+      "body_scale": 1.0,
+      "blocks_player": false, "blocks_enemy": true,
+      "body_blocks_player": false, "body_blocks_enemy": true,
+      "attackable": false,
       "color": "#7d7466",
       "desc": "填满整个地块；己方单位可穿过，敌方单位不可进入"
     },
     "tower": {
-      "id": "tower", "name": "箭塔", "hotkey": "T",
-      "body_scale": 0.6,
+      "id": "tower", "name": "箭塔", "hotkey": "T", "buildable": true,
+      "build_sec": 0,
       "cost": { "food": 0, "gold": 0 },
+      "hp_max": 300,
+      "body_scale": 0.6,
+      "blocks_player": false, "blocks_enemy": false,
+      "body_blocks_player": false, "body_blocks_enemy": true,
+      "attackable": true,
       "damage": 12, "range": 3, "cooldown": 0.8,
       "color": "#8d6e63",
       "desc": "对范围内最近的敌人造成单体伤害"
     },
     "base": {
-      "id": "base", "name": "大本营",
-      "body_scale": 0.6,
+      "id": "base", "name": "大本营", "buildable": false,
+      "build_sec": 0,
+      "cost": { "food": 0, "gold": 0 },
       "hp_max": 1000,
+      "body_scale": 0.6,
+      "blocks_player": false, "blocks_enemy": false,
+      "body_blocks_player": false, "body_blocks_enemy": true,
+      "attackable": false,
       "color": "#4a90d9",
       "desc": "开局自带，不可建造、不可拆除"
     }
@@ -585,7 +644,12 @@
       "    1.0 / 1.5 / 2.25（每级 ×1.5）。等级越高越耐打，这是升级的唯一效果。",
       "  · cost / time_sec 是**升到下一级**要花的钱与读条秒数（本级没有 next 就是不能升）。",
       "  只有大本营 / 城墙 / 箭塔有这个入口：区划中心是**中立无敌障碍**（无血量）——",
-      "  需求里它走的是「特化」那三个选项，见下面的 zone_spec。"
+      "  需求里它走的是「特化」那三个选项，见下面的 zone_spec。",
+      "★★ 本轮新增：每一行还可以写 **damage / range / cooldown**（攻击力 / 距离 / 间隔）——",
+      "  **没写的键 = 沿用 building.<type> 那一档的基础攻击值**，所以现在的数据逐位不变。",
+      "  读的地方只有一处：cfg.building_attack_of(type, level)（building.gd 的",
+      "  attack_damage / attack_range / attack_cooldown 走它）—— 每次开火都按**当前等级**取一次，",
+      "  所以升级读完不需要再刷任何缓存的状态。"
     ],
     "levels": {
       "base": [
@@ -726,7 +790,7 @@
       "  以后加真科技：往 list 里加条目即可（world / command_processor / 视图都不用改），",
       "  要新的效果形状才需要在 logic/tech.gd 的 effects_of() 与 world 的取用处各加一条。",
       "★ desc 是鼠标悬停时**命令卡正上方那块悬停详情面板**里的说明（一句话说清效果）；",
-      "  line 是格子里的第二行小字（格子只有 80×80，名字一行 + 效果一行最清楚）。",
+      "  line 是格子里的第二行小字（格子只有 80×80，名字一行 + 效果一行最清楚）。"
     ],
     "max_active": 3,
     "list": [

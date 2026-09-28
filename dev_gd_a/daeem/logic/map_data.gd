@@ -389,7 +389,7 @@ func _read_points(v: Variant) -> Array[Vector2i]:
 
 
 ## 读地图上预置的建筑。每项要 {type, x, y, owner}：
-##   · type 是建筑定义里的 id（wall / tower / base，见 logic/building.gd 的 DEFS）
+##   · type 是建筑定义里的 id（wall / tower / base，见 config.json 的 building 段）
 ##   · owner 缺省 = "enemy"（测试敌人的那一方）
 ##   · 越界 / 缺字段 / 落在山上的项会被**跳过**（world.add_building 自己会拒），
 ##     但坐标越界的项在这里就先丢，免得留一堆"看起来配了、其实没建出来"的谜团

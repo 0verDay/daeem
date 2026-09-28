@@ -39,6 +39,16 @@ const TYPE_ZONE_CENTER := "zone_center"
 
 ## 建筑定义表。blocks_* 是**格级**、body_blocks_* 是**本体级** —— 别按阵营写死，
 ## 两侧都走 same_side()，见下面 blocks() / body_blocks() 的注释。
+##
+## ★★ 本轮起：**可建造的建筑（大本营 / 城墙 / 箭塔）的定义在 config.json 的 `building` 段**
+##    （editor：tools/unit_editor 的「建筑」页），这里是**内置兜底** ——
+##    `def()` 读的是 `cfg.building_def(type, DEFS.get(type, …))`，**config 里写的键优先**。
+##    搬家的理由：建造页原本是遍历这张表生成的，于是「编辑器里加一栋楼」在游戏里根本
+##    出不来（一个死字段）。现在加建筑 = 加一条 config，代码一行不改。
+## ★ 这张表剩下的两件事：
+##    · **区划中心**（`zone_center`）—— 它不是建筑（无血量 / 无敌 / 不可拆），
+##      编辑器不管它，所以它只在这里定义；
+##    · 未知类型的兜底（手改地图写出一个不认识的 type 时按城墙算）。
 const DEFS := {
 	"base": {
 		"id": "base", "name": "大本营", "buildable": false,
@@ -68,6 +78,17 @@ const DEFS := {
 	},
 }
 
+## 完全不认识的 type 按它算（宁可挡死也不要漏 —— 与从前 `DEFS.get(type, DEFS["wall"])` 一致）
+const FALLBACK_DEF := {
+	"id": "unknown", "name": "建筑", "buildable": false,
+	"blocks_player": false, "blocks_enemy": true,
+	"body_blocks_player": false, "body_blocks_enemy": true,
+}
+
+## ★ 这个建筑类型是不是「配置里定义的建筑」（区划中心不是 —— 它是中立障碍）
+static func is_building_type(cfg: ConfigRes, type: String) -> bool:
+	return type != TYPE_ZONE_CENTER and cfg != null and cfg.has_building_type(type)
+
 var type: String = TYPE_WALL
 var tx: int = 0
 var ty: int = 0
@@ -76,6 +97,12 @@ var zone_id: int = -1
 var hp: float = 300.0
 var hp_max: float = 300.0
 var alive: bool = true
+
+## ★★ 这一栋认得的配置对象（`create()` 塞进来的）。
+##   为什么挂在实例上而不是当参数一路传：`def()` / `display_name()` / `blocks()` /
+##   `body_blocks()` 这些方法在渲染、寻路、索敌里被到处调用，全改成带 cfg 的参数会
+##   牵动一大片签名（而它们的语义就是「这一栋楼自己是什么」）。
+var cfg: ConfigRes = null
 
 ## 上一次施加的**科技血量倍率**（1.0 = 没加成）——见 `apply_hp_bonus()` 的粘性说明。
 var tech_hp_mult: float = 1.0
@@ -97,8 +124,14 @@ var upgrade_total: float = 0.0
 var upgrade_cost_food: float = 0.0
 var upgrade_cost_gold: float = 0.0
 
-## ---- 箭塔 ----
+## ---- 箭塔（以及任何 attackable = true 的建筑）----
 var cooldown_left: float = 0.0
+
+## ★★ 建造读条（config 的 `building.<type>.build_sec`；0 = 瞬发，默认）。
+##   读条期间：**不开火**（还没有战斗力），但已经在图上、也照常能被打。
+##   ⚠️ 它**不是**升级读条（`upgrade_*`）—— 两条互不相干：建造读条一栋楼只有一次。
+var build_remaining: float = 0.0
+var build_total: float = 0.0
 
 ## ---- 渲染用（不进快照、纯表现）----
 var last_target = null      # 最近锁定的目标单位，画攻击线用
@@ -107,6 +140,7 @@ var flash: float = 0.0      # 受击闪光 1 → 0
 
 static func create(cfg: ConfigRes, p_type: String, p_tx: int, p_ty: int, p_owner: String, p_zone_id: int = -1) -> RefCounted:
 	var b = new()
+	b.cfg = cfg
 	b.type = p_type
 	b.tx = p_tx
 	b.ty = p_ty
@@ -118,18 +152,12 @@ static func create(cfg: ConfigRes, p_type: String, p_tx: int, p_ty: int, p_owner
 	return b
 
 
-## 该类型的基础血量（来自 config.json）
+## 该类型的基础血量（来自 config.json 的 `building.<type>.hp_max`）。
+## ★ 本轮起是**通用**的：设计师新加的建筑也能有自己的血量（从前是按类型写死的 if/match）。
 func max_hp_from_config(cfg: ConfigRes) -> float:
-	match type:
-		TYPE_BASE:
-			return cfg.num("building.base.hp_max", 1000.0)
-		TYPE_WALL:
-			return cfg.num("building.wall.hp_max", 300.0)
-		TYPE_TOWER:
-			return cfg.num("building.tower.hp_max", 300.0)
-		TYPE_ZONE_CENTER:
-			return 0.0          # ★ 无血量（无敌，见 take_damage）
-	return 300.0
+	if type == TYPE_ZONE_CENTER:
+		return 0.0          # ★ 无血量（无敌，见 take_damage）
+	return cfg.building_max_hp(type)
 
 
 ## 这个建筑是不是「无敌」的（区划中心）。
@@ -140,24 +168,92 @@ func is_invulnerable() -> bool:
 
 
 func def() -> Dictionary:
-	return DEFS.get(type, DEFS["wall"])
+	var fallback: Dictionary = DEFS.get(type, FALLBACK_DEF)
+	if cfg == null:
+		return fallback
+	# ★ config 优先（见 DEFS 上面那段说明）：名字 / 阻挡语义 / 能不能建造…都在数据里
+	return cfg.building_def(type, fallback)
 
 
 func display_name() -> String:
 	return String(def().get("name", type))
 
 
-## 箭塔数值（config.json；非箭塔返回 0）
+## ---- 攻击（大本营 / 城墙这类 attackable = false 的建筑没有攻击手段）----
+##
+## ★★ 本轮起是**通用**的：原来写死 `type == TYPE_TOWER`，于是「编辑器里新加一栋炮塔」
+##    永远打不出伤害。现在判据是 config 的 `attackable`，数值按**当前等级**取
+##    （`upgrade.levels.<type>[k].damage` 写了就用它，没写用基础值）。
+## ⚠️ 老名字 `tower_*` 保留：HUD 与测试都在用（语义 = 「这一栋的攻击数值」）。
+
+## 这一栋现在能不能攻击（不能攻击的类型不会进 update_towers）
+func is_attackable(cfg: ConfigRes) -> bool:
+	if cfg == null:
+		return type == TYPE_TOWER       # 没有 cfg 的极端情况：保持旧行为
+	return cfg.building_attackable(type)
+
+
+func attack_damage(cfg: ConfigRes) -> float:
+	if not is_attackable(cfg):
+		return 0.0
+	return float(cfg.building_attack_of(type, level)["damage"])
+
+
+func attack_range(cfg: ConfigRes) -> float:
+	if not is_attackable(cfg):
+		return 0.0
+	return float(cfg.building_attack_of(type, level)["range"])
+
+
+func attack_cooldown(cfg: ConfigRes) -> float:
+	if not is_attackable(cfg):
+		return 0.0
+	return float(cfg.building_attack_of(type, level)["cooldown"])
+
+
 func tower_damage(cfg: ConfigRes) -> float:
-	return cfg.num("building.tower.damage", 0.0) if type == TYPE_TOWER else 0.0
+	return attack_damage(cfg)
 
 
 func tower_range(cfg: ConfigRes) -> float:
-	return cfg.num("building.tower.range", 0.0) if type == TYPE_TOWER else 0.0
+	return attack_range(cfg)
 
 
 func tower_cooldown(cfg: ConfigRes) -> float:
-	return cfg.num("building.tower.cooldown", 0.0) if type == TYPE_TOWER else 0.0
+	return attack_cooldown(cfg)
+
+
+## ---- 建造读条（config 的 build_sec；0 = 瞬发，默认）----
+
+## 开始建造读条（world.add_building 里调；sec <= 0 就什么都不做 = 瞬发）
+func start_construction(sec: float) -> void:
+	if sec <= 0.0:
+		return
+	build_total = sec
+	build_remaining = sec
+
+
+## 这一栋现在是不是**还在建造**（读条中不能开火）
+func is_under_construction() -> bool:
+	return build_total > 0.0
+
+
+## 建造进度（0~1；不是建造中 → 1.0 = 已经好了）
+func build_progress() -> float:
+	if build_total <= 0.0:
+		return 1.0
+	return clampf(1.0 - build_remaining / build_total, 0.0, 1.0)
+
+
+## 建造还要多久（秒）
+func build_eta() -> float:
+	return maxf(0.0, build_remaining)
+
+
+## 读条走完（world 的建造 tick 里调）：立刻可战斗
+func finish_construction() -> void:
+	build_remaining = 0.0
+	build_total = 0.0
 
 
 ## 该建筑**整格**是否阻挡某个阵营的单位（只给 A* 用）。

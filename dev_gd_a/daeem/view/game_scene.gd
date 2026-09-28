@@ -119,7 +119,7 @@ func _build_view() -> void:
 	unit_view.name = "UnitView"
 	unit_view.z_index = 10
 	add_child(unit_view)
-	unit_view.setup(cfg, world)
+	unit_view.setup(cfg, world, _font)
 
 	overlay = OverlayRes.new()
 	overlay.name = "Overlay"

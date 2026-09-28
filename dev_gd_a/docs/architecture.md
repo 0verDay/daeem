@@ -163,11 +163,19 @@ dev_gd_a/daeem/
     │                             #     特化只影响本区块且与科技叠加 / 命令层
     ├── test_map_editor.gd        #   ★ 地图编辑器导出的地图：exists 存在格（地图外不可通行）
     │                             #   + zones 区块网格（非矩形区块、空区块保留）
+    ├── test_unit_editor.gd       #   ★ 单位编辑器改的那些数**游戏侧真的读**：建筑定义（config 优先）
+    │                             #     / 建造读条（读条不开火、读完开火、开局 instant）/ 逐级攻击 /
+    │                             #     将领独立数值 / 新建筑能建能打 / 建造页读 config
     └── test_building_body.gd     #   ★ 建筑本体：尺寸居中、挡敌不挡己、缝隙能穿、城墙回归
 ```
 
 **地图编辑器**在 `dev_gd_a/tools/map_editor/`（Python + tkinter，**不在游戏包里**，
 只是往 `data/` 里写 JSON）：见 [`../tools/map_editor/README.md`](../tools/map_editor/README.md)。
+
+**单位编辑器**在 `dev_gd_a/tools/unit_editor/`（同样是 Python + tkinter、同样不在游戏包里）：
+它写的是 `data/config.json`（单位 / 将领 / 建筑 / 科技的全部数值）。
+两个工具的分工：地图编辑器管**地形与区划**（`test_map.json`），单位编辑器管**数值**（`config.json`）。
+见 [`../tools/unit_editor/README.md`](../tools/unit_editor/README.md)。
 
 **为什么 `data/` 放项目根而不是 `logic/` 里**：数据将来要被地图编辑器生成、被人手改、
 被服务器读，放根目录最中性。Godot 会把项目根下的 `.json` 一起导出（非资源文件默认包含）。

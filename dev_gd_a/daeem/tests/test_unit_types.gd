@@ -23,6 +23,7 @@ const WorldRes = preload("res://logic/world.gd")
 const UnitRes = preload("res://logic/unit.gd")
 const UnitIconRes = preload("res://view/unit_icon.gd")
 const UnitViewRes = preload("res://view/unit_view.gd")
+const FontLoaderRes = preload("res://view/font_loader.gd")
 const SnapshotRes = preload("res://logic/snapshot.gd")
 
 const DT := 1.0 / 60.0
@@ -212,68 +213,103 @@ func _test_recruit_all_three(cfg) -> void:
 
 
 # ------------------------------------------------------------------
-# 四、地图上的 2D 图标（线条画的「预制体」→ 烘成贴图）
+# 四、地图上的 2D 图标 = **阵营色圆盘底 + 一个字**
 # ------------------------------------------------------------------
-## ★★ 这一节不验「好不好看」（那是手玩的事），只验三件会**静默出错**的事：
-##    1. 每个类型都烘得出一张非空贴图（漏一个 → 那个兵在地图上是个空白）；
-##    2. 将领那一档的描边**真的更粗**（需求第 5 条；不验的话「描边变粗」可能根本没生效）；
-##    3. 不同兵种烘出来的图**不一样**（否则三种兵长得一样，图标就白画了）；
-##       未知类型有兜底（老快照 / 手写地图里的怪 kind 不能把渲染搞崩）。
+## ★★ 这一节不验「好不好看」（那是手玩的事），只验五件会**静默出错**的事：
+##    1. 每个单位在地图上都有**正好一个字**可画（漏一个 → 那个兵在地图上是个空白）；
+##    2. 不同兵种的字**不一样**（否则三种兵长得一样，图标就白设了）；
+##    3. 圆盘底烘得出来、且**将领那一档的描边真的更粗**（用深色像素数**量**出来，
+##       不是只看常量 —— 常量对但没画进去是最容易发生的那种错）；
+##    4. 字的字号能跟着半径走且装得进圆盘（需求是「圆盘底 + 字」，字不能比盘还大）；
+##    5. 未知类型有兜底（老快照 / 手写地图里的怪 kind 不能把渲染搞崩）。
 func _test_icons(cfg) -> void:
-	ok(UnitIconRes.EXTENT > 1.0, "图标画到单位半径之外（枪 / 弓才伸得出去）")
-	ok(UnitIconRes.outline_width(true) > UnitIconRes.outline_width(false),
-		"★ 将领那一档的描边宽度**常量**更粗（%.2f > %.2f）"
-			% [UnitIconRes.outline_width(true), UnitIconRes.outline_width(false)])
+	ok(UnitIconRes.EXTENT > UnitIconRes.DISC_R, "贴图半宽装得下圆盘")
+	ok(UnitIconRes.EXTENT >= UnitIconRes.DISC_R + UnitIconRes.OUTLINE_W_LEADER,
+		"★ 最粗的那一圈描边也不会被贴图边缘切掉（%.2f + %.2f <= %.2f）"
+			% [UnitIconRes.DISC_R, UnitIconRes.OUTLINE_W_LEADER, UnitIconRes.EXTENT])
+	ok(UnitIconRes.OUTLINE_W_LEADER > UnitIconRes.OUTLINE_W,
+		"★ 将领那一档的描边**常量**更粗（%.2f > %.2f）"
+			% [UnitIconRes.OUTLINE_W_LEADER, UnitIconRes.OUTLINE_W])
+	ok(UnitIconRes.OUTLINE_W > 0.0, "★ 普通单位也有描边（圆盘要有边，不然在浅色地形上看不清）")
+	ok(UnitIconRes.outline_w(true) > UnitIconRes.outline_w(false), "outline_w() 与常量一致")
 
+	# ---- 圆盘底：两张贴图，烘得出来、且将领那张的深色圈更宽 ----
+	var troop_tex: ImageTexture = UnitIconRes.bake(false)
+	var leader_tex: ImageTexture = UnitIconRes.bake(true)
+	ok(troop_tex != null and leader_tex != null, "普通 / 将领两张圆盘都烘得出来")
+	if troop_tex != null and leader_tex != null:
+		ok(troop_tex != leader_tex, "★ 将领的圆盘与普通单位**不是同一张**")
+		var troop_img := troop_tex.get_image()
+		var leader_img := leader_tex.get_image()
+		ok(_count_pixels(troop_img, true) > 0, "圆盘底真的画了东西（不透明像素 %d）"
+			% _count_pixels(troop_img, true))
+		var dark_troop := _count_pixels(troop_img, false)
+		var dark_leader := _count_pixels(leader_img, false)
+		ok(dark_leader > dark_troop,
+			"★★ 将领那圈的深色像素**明显更多**（%d > %d）—— 描边真的画粗了"
+				% [dark_leader, dark_troop])
+		# 圆盘是**白**的（运行时被阵营色乘），不是已经染好色的
+		var center := troop_img.get_pixel(troop_img.get_width() / 2, troop_img.get_height() / 2)
+		ok(center.a > 0.9 and center.r > 0.9 and center.g > 0.9 and center.b > 0.9,
+			"★ 圆盘中心是**白色**（阵营色是运行时 modulate 上去的）")
+	eq(UnitIconRes.bake(false), troop_tex, "同一档圆盘走缓存（同一个对象）")
+
+	# ---- 那个字：每个类型一个字，互不相同 ----
 	var distinct: Dictionary = {}
 	for id in [UnitRes.UNIT_TYPE_SPEARMAN, UnitRes.UNIT_TYPE_LONGBOWMAN,
 			UnitRes.UNIT_TYPE_RIDER, UnitRes.KIND_ENEMY]:
 		var t := String(id)
-		ok(UnitIconRes.has_icon(t), "%s 有专属图标" % t)
-		var def: Dictionary = UnitIconRes.icon_def(t)
-		ok(not (def["body"] as Array).is_empty(), "%s 的图标有身体" % t)
-		ok(not (def["glyph"] as Array).is_empty(), "%s 的图标有兵种线条（枪 / 弓 / 矛 / 叉）" % t)
+		# ⚠️ `cfg` 是无类型的（测试脚手架里 require_config() 返回 Variant），
+		#    所以这里不能写 `:=` —— 推断不出来会直接 Parse Error。
+		var ch: String = cfg.unit_icon_of(t)
+		eq(ch.length(), 1, "%s 的地图图标**正好一个字**（实际 %r）" % [t, ch])
+		ok(ch != "?" and ch != "", "%s 的字不是兜底占位（%r）" % [t, ch])
+		distinct[ch] = true
+	eq(distinct.size(), 4, "★ 四个类型各是一个不同的字")
 
-		var tex: ImageTexture = UnitIconRes.bake(t, false)
-		ok(tex != null, "%s 烘得出贴图" % t)
-		var img := tex.get_image()
-		ok(img != null and img.get_width() > 0, "%s 的贴图非空" % t)
-		var opaque := _count_pixels(img, true)
-		ok(opaque > 0, "%s 的图标真的画了东西（不透明像素 %d）" % [t, opaque])
-		distinct[tex] = true
-	eq(distinct.size(), 4, "★ 四个类型各有一张**不同的**贴图")
+	# 字是**数据**：改 config 里的 icon → 游戏读到的字跟着变（编辑器改的就是这个键）
+	eq(cfg.unit_icon_of(UnitRes.UNIT_TYPE_SPEARMAN), "枪", "长枪兵的字来自 config（枪）")
+	eq(cfg.unit_icon_of(UnitRes.UNIT_TYPE_LONGBOWMAN), "弓", "长弓兵（弓）")
+	eq(cfg.unit_icon_of(UnitRes.UNIT_TYPE_RIDER), "骑", "骑手（骑）")
+	eq(cfg.unit_icon_of(UnitRes.KIND_ENEMY), "敌", "测试敌人（敌）")
 
-	# 三个兵种的图标内容也必须不同（不是同一张图换个名字）
-	var tex_s: ImageTexture = UnitIconRes.bake(UnitRes.UNIT_TYPE_SPEARMAN, false)
-	var tex_b: ImageTexture = UnitIconRes.bake(UnitRes.UNIT_TYPE_LONGBOWMAN, false)
-	var tex_r: ImageTexture = UnitIconRes.bake(UnitRes.UNIT_TYPE_RIDER, false)
-	ok(_count_pixels(tex_s.get_image(), true) != _count_pixels(tex_b.get_image(), true)
-			or _count_pixels(tex_s.get_image(), true) != _count_pixels(tex_r.get_image(), true),
-		"★ 三个兵种的图标内容也不一样（不是同一张图换了个名字）")
+	# 将领（kind = general / general_N）用的是**所属兵种**那个字
+	eq(cfg.unit_icon_of("general"), cfg.unit_icon_of(UnitRes.UNIT_TYPE_SPEARMAN),
+		"★ 将领 1 画长枪兵那个字")
+	eq(cfg.unit_icon_of("general_3"), cfg.unit_icon_of(UnitRes.UNIT_TYPE_RIDER),
+		"★ basic general_3（区划招募的骑手将领）也画骑手那个字")
 
-	# ★★ 将领那一档：描边更粗 —— 用「深色（描边 / 兵种线条）像素数」量出来。
-	#    同一兵种下，将领的深色像素必须**明显更多**（多出来的那一圈就是加粗的描边）。
-	for t2 in [UnitRes.UNIT_TYPE_SPEARMAN, UnitRes.UNIT_TYPE_RIDER, UnitRes.UNIT_TYPE_LONGBOWMAN]:
-		var troop_tex: ImageTexture = UnitIconRes.bake(String(t2), false)
-		var leader_tex: ImageTexture = UnitIconRes.bake(String(t2), true)
-		ok(troop_tex != leader_tex, "%s：将领的贴图与普通单位不是同一张" % t2)
-		var dark_troop := _count_pixels(troop_tex.get_image(), false)
-		var dark_leader := _count_pixels(leader_tex.get_image(), false)
-		ok(dark_leader > dark_troop,
-			"★ %s 的将领描边更粗（深色像素 %d > %d）" % [t2, dark_leader, dark_troop])
+	# 没写 icon → 退成**名字的第一个字**；名字也没有 → "?"
+	var cfg2 = require_config()
+	cfg2.data["unit"]["types"]["spearman"].erase("icon")
+	var cfg3 = _reload_cfg(cfg2)
+	eq(cfg3.unit_icon_of(UnitRes.UNIT_TYPE_SPEARMAN), "长",
+		"★ 没写 icon → 用名字的第一个字（长枪兵 → 长）")
+	cfg3.data["unit"]["types"]["ghost"] = {"name": "", "class": "infantry"}
+	eq(_reload_cfg(cfg3).unit_icon_of("ghost"), "?",
+		"★ 名字也是空的 → 兜底成 ? （不崩、不留空白）")
+	# 表里**根本没有**这个类型 → 走 unit_name_of 的兜底名「单位」→ 第一个字「单」
+	eq(cfg3.unit_icon_of("no_such_type"), "单",
+		"★ 认不出来的类型用兜底名「单位」的第一个字（总有字可画）")
 
-	# 静态缓存：同一（类型 × 是否将领）只烘一次（不然每建一个 view 都要重烧一遍）
-	eq(UnitIconRes.bake(UnitRes.UNIT_TYPE_SPEARMAN, false), tex_s, "同一档图标走缓存（同一个对象）")
+	# 手改配置写了两个字：只画第一个（防御性，不让它变成两个字挤在一起）
+	var cfg4 = require_config()
+	cfg4.data["unit"]["types"]["rider"]["icon"] = "骑手"
+	eq(_reload_cfg(cfg4).unit_icon_of(UnitRes.UNIT_TYPE_RIDER), "骑",
+		"★ 手改写了两个字也只取第一个")
 
-	# 未知类型：兜底成一个素圆盘，而且不能崩
-	var unknown: ImageTexture = UnitIconRes.bake("no_such_type", false)
-	ok(unknown != null, "未知类型也有兜底图标")
-	ok(_count_pixels(unknown.get_image(), true) > 0, "兜底图标也画了东西")
-	ok(not UnitIconRes.has_icon("no_such_type"), "未知类型不算「有专属图标」")
+	# 字号：半径越大字越大，有下限，而且**装得进圆盘**（需求是「圆盘底 + 字」）
+	ok(UnitIconRes.font_size_for(13.44) > UnitIconRes.font_size_for(8.0), "半径越大字号越大")
+	ok(UnitIconRes.font_size_for(0.0) >= UnitIconRes.MIN_FONT_SIZE, "字号有下限（不缩成 0）")
+	for radius_px in [8.0, 11.52, 13.44, 20.0]:
+		var fsize: float = float(UnitIconRes.font_size_for(radius_px))
+		var disc_d: float = 2.0 * UnitIconRes.DISC_R * radius_px
+		ok(fsize <= disc_d,
+			"★ 半径 %.1fpx 时字号 %.0f 装得进圆盘（盘直径 %.1fpx）" % [radius_px, fsize, disc_d])
 
 
 ## 数一张图里「不透明」或「深色」的像素。
-## @param opaque true = 数 alpha 明显的；false = 数又深又不透明的（描边 / 兵种线条）
+## @param opaque true = 数 alpha 明显的；false = 数又深又不透明的（= 圆盘那一圈描边）
 func _count_pixels(img: Image, opaque: bool) -> int:
 	if img == null:
 		return 0
@@ -290,32 +326,39 @@ func _count_pixels(img: Image, opaque: bool) -> int:
 	return n
 
 
+## 改完 config 的 data 之后要重新整理一遍缓存才看得到（与「编辑器改完文件再开一局」同理）
+func _reload_cfg(src) -> RefCounted:
+	var cfg = ConfigRes.new()
+	cfg.data = src.data
+	cfg._cache_scalars()
+	return cfg
+
+
 # ------------------------------------------------------------------
-# 五、渲染真的用上了这些图标
+# 五、渲染真的把这个字画了出去
 # ------------------------------------------------------------------
-## ★ 只验「接线」：UnitView 在这些类型上跑得通、贴图确实随类型 / 是否将领而变 ——
+## ★ 只验「接线」：UnitView 在这些类型上跑得通、字确实随类型走 ——
 ##   至于画出来什么样，是手玩验收的事（与 test_view.gd 的分工一致）。
 func _test_view_uses_icons(cfg) -> void:
 	var w = WorldRes.create(cfg)
 	var view = UnitViewRes.new()
-	view.setup(cfg, w)
+	# ★ 用**真字体**建 view：无头下引擎兜底字体没有中文字形，但断言只看「画了几笔」，
+	#   所以两者都能过；这里传真字体是为了走与游戏完全一致的那条路。
+	view.setup(cfg, w, FontLoaderRes.load_font(cfg))
 	root.add_child(view)
 	await process_frame
 
-	view._draw()                     # 真跑一遍：贴图缺失 / 类型字段拼错都会在这里炸
-	ok(true, "UnitView._draw() 跑通了（长枪兵 / 长弓兵 / 骑手 / 将领四档图标都贴过）")
+	view._draw()                     # 真跑一遍：字取不到 / 字段拼错都会在这里炸
+	ok(true, "UnitView._draw() 跑通了")
 
-	# ★★ 回归（本轮真踩过）：**图标那一遍到底画了没有**。
+	# ★★ 回归（上一轮真踩过）：**图标那两遍到底画了没有**。
 	#    症状是「所有单位在地图上只剩一根朝向线」—— 不报错、也不改任何状态，
 	#    根因是分桶用了值语义的 `PackedInt32Array`（`(bucket as PackedInt32Array).append()`
-	#    写不进字典），于是每个桶都是空的、`draw_texture_rect` 一次都没发出去。
-	#    所以这里既钉**分桶函数**（纯函数），也钉**_draw 真的发出了几张**（`icon_draw_count`）。
-	var tex_a: ImageTexture = UnitIconRes.bake(UnitRes.UNIT_TYPE_SPEARMAN, false)
-	var tex_b: ImageTexture = UnitIconRes.bake(UnitRes.UNIT_TYPE_LONGBOWMAN, false)
-	var tex_c: ImageTexture = UnitIconRes.bake(UnitRes.UNIT_TYPE_RIDER, true)
-	var probe: Array = [tex_a, tex_a, tex_b, tex_c, tex_a]
-	var buckets: Dictionary = UnitViewRes._bucket_by_icon(probe, probe.size())
-	eq(buckets.size(), 3, "★ 同一张贴图合成一个桶（3 + 1 + 1 → 3 桶）")
+	#    写不进字典），于是每个桶都是空的、一次绘制都没发出去。
+	#    所以这里既钉**两个分桶函数**（纯函数），也钉**_draw 真的画了几个圆盘 / 几个字**。
+	var probe := PackedFloat32Array([12.0, 12.0, 9.0, 15.0, 12.0])
+	var buckets: Dictionary = UnitViewRes._bucket_by_size(probe, probe.size())
+	eq(buckets.size(), 3, "★ 同一字号的合成一个桶（12/12/9/15/12 → 12、9、15 三桶）")
 	var total := 0
 	var all_arrays := true
 	for k in buckets.keys():
@@ -323,7 +366,22 @@ func _test_view_uses_icons(cfg) -> void:
 			all_arrays = false
 		total += (buckets[k] as Array).size()
 	ok(all_arrays, "★ 桶是 Array（引用语义）—— 换成 PackedInt32Array 会静默变成空桶")
-	eq(total, probe.size(), "★ 5 个单位一个不漏地分进桶里（空桶 = 地图上一个图标都看不到）")
+	eq(total, probe.size(), "★ 5 个单位一个不漏地分进桶里（空桶 = 地图上一个字都看不到）")
+
+	var tex_a: ImageTexture = UnitIconRes.bake(false)
+	var tex_b: ImageTexture = UnitIconRes.bake(true)
+	var tex_buckets: Dictionary = UnitViewRes._bucket_by_tex([tex_a, tex_a, tex_b, tex_b, tex_a], 5)
+	eq(tex_buckets.size(), 2, "★ 圆盘按贴图分桶：普通 / 将领两桶")
+	eq((tex_buckets[tex_a] as Array).size(), 3, "普通那一桶 3 个")
+	eq((tex_buckets[tex_b] as Array).size(), 2, "将领那一桶 2 个")
+
+	# 先挑一个**普通兵**（附属兵）出来备用：它要用来验「普通兵用普通那张圆盘」
+	var plain = null
+	for u in w.units:
+		if not u.is_general() and String(u.unit_type) == UnitRes.UNIT_TYPE_SPEARMAN:
+			plain = u
+			break
+	ok(plain != null, "队里有一个长枪兵附属兵（拿它当普通单位的样本）")
 
 	# 让世界只剩两个**挪到镜头里**的单位：骑手将领 + 长枪兵将领
 	var g1 = w.unit_by_id("general-1")
@@ -336,11 +394,26 @@ func _test_view_uses_icons(cfg) -> void:
 		g3.sync_tile(w.map)
 		w.units = [g1, g3]
 		view._draw()
-		eq(view.icon_draw_count, 2, "★ _draw() 真的把这两个单位的图标画了出去（实际 %d 张）"
+		eq(view.icon_disc_count, 2, "★ _draw() 真的把这两个单位的**圆盘底**画了出去（实际 %d 张）"
+			% view.icon_disc_count)
+		eq(view.icon_draw_count, 2, "★ 同时把两个字也画了出去（实际 %d 个）"
 			% view.icon_draw_count)
-		eq(String(g3.unit_type), UnitRes.UNIT_TYPE_RIDER, "★ general-3 走的是骑手图标那一档")
-		eq(String(g1.unit_type), UnitRes.UNIT_TYPE_SPEARMAN, "★ general-1 走的是长枪兵那一档")
-		ok(g1.is_general() and g3.is_general(), "两个都吃「将领描边更粗」那一档")
+		eq(UnitIconRes.char_of(cfg, String(g3.unit_type)), "骑", "★ general-3 画的是「骑」")
+		eq(UnitIconRes.char_of(cfg, String(g1.unit_type)), "枪", "★ general-1 画的是「枪」")
+
+		# 普通兵：同一个字、同一套画法，只是**圆盘那张贴图不同**（描边细）
+		if plain != null:
+			plain.pos = Vector2(7.5, 3.5)
+			plain.sync_tile(w.map)
+			w.units = [g1, plain]
+			view._draw()
+			eq(view.icon_disc_count, 2, "将领 + 普通兵：两个圆盘都画了")
+			eq(view.icon_draw_count, 2, "将领 + 普通兵：两个字都画了")
+			eq(UnitIconRes.char_of(cfg, String(plain.unit_type)), "枪",
+				"★ 附属兵与它的将领画同一个字（靠圆盘描边区分）")
+		# ⚠️ 还原成原来那两个单位：下面那一节要拿 w 做快照往返，
+		#    少一个单位会让「快照重建出了 general-3」假失败（实测踩到）。
+		w.units = [g1, g3]
 
 	view.queue_free()
 

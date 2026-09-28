@@ -165,13 +165,22 @@ func handle_key(event: InputEventKey) -> bool:
 			select_general_by_hotkey(str(i + 1))
 			return true
 
+	# ★ 建筑快捷键（config.json 的 `building.<type>.hotkey`，现在是城墙 B / 箭塔 T）。
+	#   ★★ 数据驱动：编辑器里新加一栋楼、填一个字母，这里就认它
+	#      （原来写死 KEY_B / KEY_T 两条，新建筑只能点卡片建造）。
+	#   ⚠️ 排在下面的 match **之前**：填了 N / P / E / G 这类已被占用的字母，
+	#      就会把那几个键抢走 —— 编辑器那一栏的说明里写着这条。
+	#   ⚠️ 只认**单个字母**：多字符 / 空的快捷键在这里被跳过（不会误匹配）。
+	for d in cfg.buildable_building_defs():
+		var hk := String(d.get("hotkey", ""))
+		if hk.length() != 1:
+			continue
+		if k == OS.find_keycode_from_string(hk.to_upper()):
+			var t := String(d.get("id", ""))
+			set_build_type(t if build_type != t else "")
+			return true
+
 	match k:
-		KEY_B:
-			set_build_type("wall" if build_type != "wall" else "")
-			return true
-		KEY_T:
-			set_build_type("tower" if build_type != "tower" else "")
-			return true
 		KEY_ESCAPE:
 			if build_type != "":
 				set_build_type("")

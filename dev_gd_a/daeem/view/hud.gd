@@ -535,7 +535,7 @@ func _refresh_progress_panel(holder) -> void:
 ## 按当前页重组命令卡。
 ##
 ## 六张表都是**数据驱动 / 固定文案**的，这里不写死兵种名：
-##   建筑页 ← logic/building.gd 的 DEFS 里 buildable = true 的那几项（城墙 / 箭塔）
+##   建筑页 ← config.json 的 building 段里 buildable = true 的那几项（默认是城墙 / 箭塔）
 ##   单位页 ← config.json 的 recruit.list（现在只有一项：占位单位 = 招募亲兵）
 ##   招募页 ← config.json 的 recruit.zone.list（三个占位将领，排进**区划**的队列）
 ##   操作页 ← `_order_entries()`（对当前选中的部队下达的指令）
@@ -559,15 +559,16 @@ func _rebuild_card() -> void:
 	var page := String(page_tabs.page()) if page_tabs != null else ""
 	match page:
 		PageTabsRes.PAGE_BUILD:
-			for key in BuildingRes.DEFS.keys():
-				var d: Dictionary = BuildingRes.DEFS[key]
-				if not bool(d.get("buildable", false)):
-					continue
+			# ★★ 本轮起读 **config.json 的 building 段**（`buildable = true` 的那几项），
+			#    不再是写死的 `BuildingRes.DEFS`：编辑器里新加的建筑要真的出现在这一页，
+			#    名字 / 说明 / 快捷键也跟着数据走。
+			for d in cfg.buildable_building_defs():
 				entries.append({
 					"type": "build",
-					"build_type": String(d.get("id", key)),
-					"name": String(d.get("name", key)),
-					"desc": "%s（快捷键 %s，也可点这一格）" % [String(d.get("desc", "")), String(d.get("hotkey", ""))],
+					"build_type": String(d.get("id", "")),
+					"name": String(d.get("name", "")),
+					"desc": "%s（快捷键 %s，也可点这一格）" % [String(d.get("desc", "")),
+															String(d.get("hotkey", ""))],
 				})
 		PageTabsRes.PAGE_UNIT:
 			entries = _recruit_entries("recruit", "recruit.list")
@@ -740,17 +741,30 @@ func _hover_build(entry: Dictionary) -> Dictionary:
 func _hover_recruit(entry: Dictionary) -> Dictionary:
 	var kind := String(entry.get("unit_kind", ""))
 	var ut := cfg.unit_type_of(kind)
+	# ★ 将领类（general / general_N）有序号：它的数值可能是**这位将领自己的覆盖**
+	#   （config 的 unit.general.stats，编辑器里那个「自定 / 跟随」）。
+	var gidx: int = ConfigRes.general_index_of(kind)
 	var is_zone := String(entry.get("type", "")) == "zone_recruit"
 	var lines: Array = []
 	lines.append(String(entry.get("desc", "")))
 	if cfg.has_unit_type(ut):
-		lines.append("血量 %s" % _fmt_num(cfg.unit_hp_of(ut)))
-		var c := cfg.unit_combat_of(ut)
-		lines.append("攻击 %s / 射程 %s 格 / 间隔 %ss" % [
-			_fmt_num(float(c.get("damage", 0.0))),
-			_fmt_num(float(c.get("range", 0.0))),
-			_fmt_num(float(c.get("cooldown_sec", 0.0)))])
-		lines.append("速度 %s 格/秒" % _fmt_num(cfg.unit_speed_of(ut)))
+		if gidx >= 0:
+			# 将领：覆盖 ⊕ 所属兵种（与单位身上用的同一套数据，见 config.gd）
+			lines.append("血量 %s" % _fmt_num(cfg.general_hp_at(gidx)))
+			var gc: Dictionary = cfg.general_combat_at(gidx)
+			lines.append("攻击 %s / 射程 %s 格 / 间隔 %ss" % [
+				_fmt_num(float(gc.get("damage", 0.0))),
+				_fmt_num(float(gc.get("range", 0.0))),
+				_fmt_num(float(gc.get("cooldown_sec", 0.0)))])
+			lines.append("速度 %s 格/秒" % _fmt_num(cfg.general_speed_at(gidx)))
+		else:
+			lines.append("血量 %s" % _fmt_num(cfg.unit_hp_of(ut)))
+			var c := cfg.unit_combat_of(ut)
+			lines.append("攻击 %s / 射程 %s 格 / 间隔 %ss" % [
+				_fmt_num(float(c.get("damage", 0.0))),
+				_fmt_num(float(c.get("range", 0.0))),
+				_fmt_num(float(c.get("cooldown_sec", 0.0)))])
+			lines.append("速度 %s 格/秒" % _fmt_num(cfg.unit_speed_of(ut)))
 		lines.append("兵种 %s" % cfg.unit_class_line(ut))
 	lines.append("造价 %s" % _cost_text(_entry_cost(entry)))
 	var pop := int(entry.get("population_cost", 0))
@@ -1551,7 +1565,7 @@ func _card_sig() -> String:
 		parts.append("z:%d:%s:%s:%s" % [int(zd.get("id", -1)), world.zone_kind_of(zd),
 			String(zd.get("spec_done", "")), String(zd.get("spec_kind", ""))])
 	# ③ 选中部队 / 什么都没选中这两档**不进签名**：它们的命令卡内容是静态的
-	#    （操作页那四条指令写死在 `_order_entries()`、建筑页来自 `BuildingRes.DEFS`），
+	#    （操作页那四条指令写死在 `_order_entries()`、建筑页来自 config.json 的 building 段），
 	#    与「选中了哪一支部队」无关 —— 放进去只会每次换选中都白重建一遍。
 	return "|".join(parts)
 
@@ -1814,15 +1828,20 @@ func _unit_short(u) -> String:
 func _building_text(b) -> String:
 	var lines: Array[String] = []
 	lines.append("生命 %d / %d" % [int(round(b.hp)), int(round(b.hp_max))])
+	# ★ 建造读条（config 的 build_sec > 0 时才有）：造完之前不开火，这里给一句进行中的反馈
+	if b.is_under_construction():
+		lines.append("建造中：还剩 %s 秒" % _fmt_num(b.build_eta()))
 	if world.building_can_upgrade(b.type):
 		var max_lv: int = world.building_max_level(b.type)
 		lines.append("等级 %d / %d" % [b.level, max_lv])
 		if b.is_upgrading():
 			lines.append("正在升级：升到 %d 级，还剩 %s 秒" % [
 				b.level + 1, _fmt_num(b.upgrade_eta())])
-	if b.type == BuildingRes.TYPE_TOWER:
+	# ★ 攻击那一行改成**通用**的（原来是 `type == TYPE_TOWER` 才有）：判据是
+	#   config 的 attackable，数值按当前等级取（编辑器里新加的炮塔也看得见自己的数值）。
+	if b.is_attackable(cfg):
 		lines.append("伤害 %d　射程 %d 格　间隔 %.1fs" % [
-			int(b.tower_damage(cfg)), int(b.tower_range(cfg)), b.tower_cooldown(cfg),
+			int(b.attack_damage(cfg)), int(b.attack_range(cfg)), b.attack_cooldown(cfg),
 		])
 		if b.last_target != null and b.last_target.alive:
 			lines.append("正在打：%s" % b.last_target.name)

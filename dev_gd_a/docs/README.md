@@ -43,7 +43,9 @@
 | 手感修正（手玩反馈） | ✅ 滚轮方向 / 拐角圆化 / 贴边落点 / 近距离点选 / 八方向移动 / 单位碰撞与局部避让 / **拥挤到达收敛**，见 [`pitfalls.md`](pitfalls.md) 5.6~5.12 |
 | 与 HTML 版的有意偏离 | ✅ **5 处**（八方向 / 禁止对角穿角 / 拐角圆化 / 单位软分离 / 建筑本体阻挡），都有开关，见 [`route.md`](route.md) 第七节 |
 | **地图编辑器** | ✅ **已完成** —— `dev_gd_a/tools/map_editor/`（Python + tkinter，零依赖）：画地形 / 划区块 / 设区划中心 / **选区划种类** / 配产能 / 定各阵营大本营，导出 Godot 直接读的地图 JSON。见 [`../tools/map_editor/README.md`](../tools/map_editor/README.md) |
-| 测试 | **23 个套件 / 3303 项断言 / 全过**（`tools/run-tests.ps1`）；**地图编辑器另有 715 项**（`test_model.py` 330 + `test_app.py` 385，手动跑） |
+| **单位编辑器（最新一轮）** | ✅ **已完成** —— `dev_gd_a/tools/unit_editor/`（Python + tkinter，零依赖，双击 `unit_editor.bat` 进入）：三个页签 **单位 / 建筑 / 科技**，改的是 `data/config.json`。单位（归属·名称·**地图上的字**·血量·攻击三件套·移速·造价粮/金/人口·招募时间）、**将领 1/2/3 各自一套数值**、建筑（造价·**建造时间**·名称·血量·**是否可攻击**·逐级价格/时间/血量/攻击）、科技（名称·加成数值），**可新建兵种与建筑**。为了让这些字段真的生效，游戏侧同步改成数据驱动（建筑定义从 `building.gd` 的 DEFS 搬进 config、建造读条、通用 attackable、逐级攻击、单位图标可选）。右侧属性面板「装得下就不许滚」（用户报的过度滚动见 [`route.md`](route.md) 第三十一节与 [`pitfalls.md`](pitfalls.md) 5.55）。见 [`route.md`](route.md) 第二十八节与 [`../tools/unit_editor/README.md`](../tools/unit_editor/README.md) |
+| **地图上的单位 = 圆盘 + 一个字（最新两轮）** | ✅ **已完成**：不再画线条预制体，而是**阵营色圆盘底 + 一个字**（那个字按需求「只显示一个字作为其 2D 图像」压在盘上），**将领那一档的圆盘描边更粗**（「将领描边更粗」那条需求）。那个字就是 `unit.types.<id>.icon`（正好一个字符，内置写着 枪/弓/骑/敌），**在单位编辑器里可编辑**（「地图上的字」一栏）。实现：圆盘走贴图（能合批）、字走 `draw_char`（动态字体的字形**取不成 Image**，实测记录见 [`route.md`](route.md) 29.2），两者各自按贴图 / 字号分桶。见 [`route.md`](route.md) 第二十九、三十节 |
+| 测试 | **24 个套件 / 3433 项断言 / 全过**（`tools/run-tests.ps1`，含新增的 `test_unit_editor.gd` 123 项）；**地图编辑器另有 715 项**（`test_model.py` 330 + `test_app.py` 385，手动跑）；**单位编辑器另有 645 项**（`test_model.py` 461 + `test_app.py` 184，手动跑） |
 | 引擎位置 | ★ **必须用 mono(.NET) 版**：`C:\D\GodotEngine\gd4.7.2mono\Godot_v4.7.2-stable_mono_win64_console.exe`（**未加入 PATH**，命令行必须用 `_console.exe`；可用 `$env:GODOT_EXE` 覆盖）。工程里有 C# 群体内核（`logic/crowd/*.cs`），普通版引擎加载不了它，见 [`pitfalls.md`](pitfalls.md) 1.1b |
 | 性能基准 | **两个**：`tests/bench_crowd.gd`（无头，量**逻辑**耗时，`DAEEM_ONLY=move/idle/am` 一个进程只跑一个场景）；`tests/bench_fps.gd`（**开窗**，量**实机帧率**，含渲染与 draw call；`DAEEM_FPS_MODE=am` 切到行军攻击）。用法见文件头；环境变量 `DAEEM_BENCH_*` / `DAEEM_FPS_*` 可改规模。⚠️ 两个基准都会打印**机器漂移倍率**，>1.3 时数字不可比；`DAEEM_FPS_PROFILE=0` 关剖析量**真实**帧时间（见 [`pitfalls.md`](pitfalls.md) 1.6 / 1.8） |
 
@@ -103,6 +105,11 @@ dev_gd_a/daeem/
 地图编辑器**不在** `daeem/` 里（它是给开发者用的 Python 工具，不进游戏包）：
 `dev_gd_a/tools/map_editor/`，跑法 `python dev_gd_a/tools/map_editor`，
 说明见 [`../tools/map_editor/README.md`](../tools/map_editor/README.md)。
+
+**单位编辑器**同样不在游戏包里：`dev_gd_a/tools/unit_editor/`（双击
+`unit_editor.bat`，或 `python dev_gd_a/tools/unit_editor`），它改的是 `daeem/data/config.json`
+（单位 / 将领 / 建筑 / 科技的全部数值），说明见
+[`../tools/unit_editor/README.md`](../tools/unit_editor/README.md)。
 
 ## 操作方式（与 HTML 版一致）
 

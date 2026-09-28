@@ -95,6 +95,19 @@ class BuildingBox:
 			draw_rect(Rect2(bar.position, Vector2(bar.size.x * building.hp_ratio(), bar.size.y)),
 				cfg.faction_color(building.owner, "bar"), true)
 
+		# ★ 建造读条（config 的 `building.<type>.build_sec` > 0 时才有）：
+		#   画在**本体下沿**，与血条同一套画法但用黄绿色 ——
+		#   「这栋楼还在造」是玩家要一眼知道的事（造完之前它不开火）。
+		if building.is_under_construction():
+			var cbar_h: float = 4.0
+			var cbar := Rect2(
+				Vector2(local.position.x, local.position.y + local.size.y + 3.0),
+				Vector2(local.size.x, cbar_h))
+			draw_rect(cbar, Color(0, 0, 0, 0.6), true)
+			draw_rect(Rect2(cbar.position,
+					Vector2(cbar.size.x * building.build_progress(), cbar.size.y)),
+				Color(0.85, 0.78, 0.35, 0.95), true)
+
 var cfg: ConfigRes = null
 var world = null
 

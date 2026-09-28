@@ -17,7 +17,9 @@ const ConfigRes = preload("res://logic/config.gd")
 ##   无类型时是动态查找（每单位每批次一次）。见 docs/pitfalls.md 1.7。
 ##   unit.gd 不 preload view/，所以这里不是循环依赖。
 const UnitRes = preload("res://logic/unit.gd")
-## ★ 单位图标（线条画的「预制体」+ 烘贴图）—— 见那个文件的说明。
+## ★ 单位在地图上 = **阵营色圆盘底 + 一个字**（见 view/unit_icon.gd 的文件头：
+##   圆盘走贴图（能合批），字走 draw_char（动态字体的字形取不成 Image）；
+##   将领那一档的**圆盘描边更粗**，用来与普通兵区分）。
 const UnitIconRes = preload("res://view/unit_icon.gd")
 
 ## 屏幕外剔除的余量（像素）：血条 / 选中圈会画到单位本体之外一点
@@ -28,22 +30,21 @@ const FACING_COLOR := Color(0, 0, 0, 0.5)
 const ENGAGED_COLOR := Color(1.0, 0.45, 0.35, 0.95)
 const HP_BACK_COLOR := Color(0, 0, 0, 0.55)
 ## 选中光晕（那张纯白圆盘贴图）的贴图边长（像素）。
-## ⚠️ 单位本体现在画的是**兵种图标**（见 view/unit_icon.gd），不再是这张圆盘 ——
+## ⚠️ 单位本体现在画的是**一个字的图标**（见 view/unit_icon.gd），不再是圆盘 ——
 ##   圆盘只留给「选中光晕」这一层用（它本来就是一团柔和的圆）。
 const HALO_TEX_SIZE := 32
 
-## ★★ 为什么单位本体是「贴图」而不是 draw_circle / draw_arc：
-##    实测（1000 单位、100×100 图）——
-##      draw_circle ×1000 → **997 个 draw call、18.4 ms**
-##      draw_arc    ×1000 → **997 个 draw call、10.2 ms**
-##      draw_line   ×1000 → 只多 **1 个 draw call**、几乎不耗时（线能合批）
-##    也就是说这两个 API **完全不参与 2D 合批**，每单位各占一个绘制批次。
-##    换成贴图之后，同一兵种/同一描边档位的单位合成一个批次 —— 图标也走同一条路：
-##    「线条画的预制体」在 view/unit_icon.gd 里烘成十来张贴图，运行时只贴图。
+## ★★ 为什么单位本体是「贴图 + 字」这两条路各走各的：
+##    圆盘底走**贴图**（两张：普通 / 将领），同贴图的几百个单位合成一个批次 ——
+##    这是为 1000 单位基准做的（实测：draw_circle ×1000 = **997 个 draw call、18.4 ms**，
+##    贴图版同贴图合成一个批次；draw_line 能合批所以朝向线照旧随便画）。
+##    那个字只能走 **draw_char**：动态字体的字形取不成 Image（实测记录见 unit_icon.gd 文件头）。
 var _tex_halo: ImageTexture = null
 
 var cfg: ConfigRes = null
 var world = null
+## 画字用的字体（game_scene 传进来；没传就用引擎兜底字体 —— 无头测试走这条路）。
+var _font: Font = null
 
 ## unit.id -> true（纯本地，不进命令流）
 var _selection: Dictionary = {}
@@ -53,14 +54,18 @@ var _color_cache: Dictionary = {}
 ##
 ## 为什么要有这个计数器：无头测试里 `_draw()` 内部的错误**不会**让测试失败，
 ## 而「一个图标都没画」这件事既不报错、也不改变任何逻辑状态 ——
-## 只有留下一个可数的痕迹才钉得住它（本轮真踩过：分桶用了值语义的 PackedInt32Array，
+## 只有留下一个可数的痕迹才钉得住它（上一轮真踩过：分桶用了值语义的 PackedInt32Array，
 ## 桶永远是空的 ⇒ 画面上只剩朝向线。见 docs/pitfalls.md 5.50）。
 var icon_draw_count: int = 0
+## ★ 其中圆盘底画了几张（正常情况 = icon_draw_count：每个单位一个盘 + 一个字）。
+##   两个字分开数，是为了「盘画了、字没画」和「字画了、盘没画」都能被测出来。
+var icon_disc_count: int = 0
 
 
-func setup(p_cfg: ConfigRes, p_world) -> void:
+func setup(p_cfg: ConfigRes, p_world, p_font: Font = null) -> void:
 	cfg = p_cfg
 	world = p_world
+	_font = p_font if p_font != null else ThemeDB.fallback_font
 	z_index = 10
 	_color_cache = {}
 	_tex_halo = _make_disc_texture()
@@ -130,12 +135,13 @@ func _draw() -> void:
 	var body_cols := PackedColorArray()
 	var ring_cols := PackedColorArray()
 	var hp_cols := PackedColorArray()
-	var icons: Array = []
-	## 单位类型 → 屏幕半径（像素）。**逻辑半径**，图标矩形另乘 unit_icon.EXTENT
-	## （枪 / 弓会伸到半径之外，见那个文件的图标空间说明）。
+	var glyphs: Array = []          # 每个单位要画的**那个字**
+	var discs: Array = []           # 每个单位那张**圆盘贴图**（普通 / 将领两档）
+	var leaders := PackedByteArray()
+	## 单位类型 → 屏幕半径（像素）。**逻辑半径**，字的外框另乘 unit_icon.EXTENT。
 	var radius_by_type: Dictionary = {}
-	## 单位类型 + 是不是将领 → 图标贴图（十来张，静态缓存在 unit_icon 里）
-	var icon_tex_by_key: Dictionary = {}
+	## 单位类型 → 地图上那个字（同一个兵种几百个单位只查一次表）
+	var char_by_type: Dictionary = {}
 	for u: UnitRes in world.units:
 		if not u.alive:
 			continue
@@ -147,23 +153,29 @@ func _draw() -> void:
 		if r < 0.0:
 			r = cfg.unit_radius_of(utype) * cell_px
 			radius_by_type[utype] = r
-		var is_leader: bool = u.is_general()
-		var key := "%s|%d" % [utype, 1 if is_leader else 0]
-		var tex: ImageTexture = icon_tex_by_key.get(key, null)
-		if tex == null:
-			tex = UnitIconRes.bake(utype, is_leader)
-			icon_tex_by_key[key] = tex
+		var ch: String = char_by_type.get(utype, "")
+		if ch == "":
+			# ★ 字走**数据**：config 的 `unit.types.<类型>.icon`（编辑器里那一栏），
+			#   没写就退成名字的第一个字 —— 规则在 config.gd 的 unit_icon_of 里，只一份。
+			ch = UnitIconRes.char_of(cfg, utype)
+			char_by_type[utype] = ch
 		var col: Array = _colors_for(u.faction)
+		var is_leader: bool = u.is_general()
 		units.append(u)
 		pts.append(p)
 		radii.append(r)
-		icons.append(tex)
+		glyphs.append(ch)
+		# ★ 圆盘贴图只有两张（普通 / 将领那一档的**描边更粗**），静态缓存
+		discs.append(UnitIconRes.bake(is_leader))
+		leaders.append(1 if is_leader else 0)
 		body_cols.append(col[0])
 		ring_cols.append(col[1])
 		hp_cols.append(col[2])
 
 	var n := units.size()
 	if n == 0:
+		icon_draw_count = 0
+		icon_disc_count = 0
 		return
 	# ---- 后面 6 遍：**按图元类型分组**，而不是「一个单位画完自己那一套」 ----
 	# ★★ 为什么必须分组：Godot 的 2D 画布按图元/状态合批。
@@ -179,28 +191,36 @@ func _draw() -> void:
 			var rc: Color = ring_cols[i]
 			draw_texture_rect(_tex_halo, Rect2(pts[i] - Vector2(rr, rr), Vector2(rr * 2.0, rr * 2.0)),
 				false, Color(rc.r, rc.g, rc.b, 0.35))
-	# 2) 单位本体 = **兵种图标**（view/unit_icon.gd 烘出来的贴图；将领那一档描边更粗）。
+	# 2) 单位本体 = **阵营色圆盘底 + 一个字**（本轮：圆盘保留，字压在盘上，将领的描边更粗）。
 	#
-	# ★ 按贴图**分组**再画：Godot 的 2D 画布按「贴图 + 状态」合批，一个单位换一次贴图
-	#   就等于把批次切断。图标一共十来张，所以先分桶、再一桶一桶连着画 ——
-	#   与文件头那段「按图元类型分组，而不是一个单位画完自己那一套」是同一条道理。
-	#   ⚠️ 分组本身抽成了 _bucket_by_icon()，并且有测试钉它（那里踩过一次**静默不画**的坑）。
-	var by_tex := _bucket_by_icon(icons, n)
-	var drawn := 0
+	# ★★ 分两遍画，两遍各自按「会被批次切断的那个键」分桶：
+	#   2a) 圆盘：按**贴图**分桶（普通 / 将领两张）—— 一个单位换一次贴图就等于把批次切断
+	#       （与文件头那段「按图元类型分组，而不是一个单位画完自己那一套」同一条道理）；
+	#   2b) 字：按**字号**分桶（字号由半径算出来，同兵种天然同字号）。
+	#   颜色都是逐图元的顶点色 / modulate（阵营色不同不会切断批次）。
+	#   ⚠️ 分桶本身抽成了纯函数（`_bucket_by_tex` / `_bucket_by_size`），并且有测试钉它 ——
+	#      上一轮在分桶上踩过一次**静默不画**的坑，见 docs/pitfalls.md 5.50。
+	var by_tex := _bucket_by_tex(discs, n)
+	var disc_drawn := 0
 	for key_tex in by_tex.keys():
 		var tex: ImageTexture = key_tex
 		for i in (by_tex[key_tex] as Array):
-			# ⚠️ 矩形是**图标空间**那一片：半径 × EXTENT（EXTENT > 1，所以图标比圆盘大一圈）
+			# ⚠️ 矩形是**图标空间**那一片：半径 × EXTENT（装得下圆盘 + 最粗的描边）
 			var r2: float = radii[i] * UnitIconRes.EXTENT
 			draw_texture_rect(tex,
 				Rect2(pts[i] - Vector2(r2, r2), Vector2(r2 * 2.0, r2 * 2.0)),
 				false, body_cols[i])
-			drawn += 1
+			disc_drawn += 1
+	icon_disc_count = disc_drawn
+	var by_size := _bucket_by_size(radii, n)
+	var drawn := 0
+	for fsize in by_size.keys():
+		for i in (by_size[fsize] as Array):
+			drawn += UnitIconRes.draw_char_at(self, _font, String(glyphs[i]), pts[i], radii[i])
 	icon_draw_count = drawn
 	# 3) 朝向：一条短线，指向 facing（八方向之后 facing 是完整向量）—— 线能合批，随便画
 	#
-	# ⚠️ 图标本身**不随朝向旋转**（理由写在 unit_icon.gd 文件头：旋转会把批次打散）。
-	#    朝向由这一条线表达 —— 它是从图标中心往外画的，所以压在图标上也看得见。
+	# ⚠️ 字**不随朝向旋转**（画出格会挤到旁边单位身上）。朝向由这一条线表达。
 	for i in n:
 		var f: Vector2 = units[i].facing
 		# ⚠️ facing 存的本来就是单位向量（face_toward / step_along_path 都归一过），
@@ -209,8 +229,8 @@ func _draw() -> void:
 			draw_line(pts[i], pts[i] + f * (radii[i] * 1.5), FACING_COLOR, 2.0)
 	# 5) 交战标记：头顶小三角
 	#
-	# ⚠️ 头顶 / 血条的偏移都要**让开图标**：图标画到 `半径 × EXTENT`（枪 / 弓比圆盘大一圈），
-	#    还用旧的「半径 + 4」的话，三角与血条会压在枪杆上。
+	# ⚠️ 头顶 / 血条的偏移都要**让开那个字**：字的外框是 `半径 × EXTENT`，
+	#    用「半径 + 4」在字号偏大时会压到笔画上。
 	for i in n:
 		var u2 = units[i]
 		if u2.target != null or u2.target_building != null:
@@ -243,7 +263,7 @@ func _colors_for(faction: String) -> Array:
 	return c
 
 
-## 把「每个单位用哪张贴图」整理成「贴图 → 该贴图下要画的单位下标」。
+## 把「每个单位用哪张圆盘贴图」整理成「贴图 → 该贴图下要画的单位下标」。
 ##
 ## ★★ 为什么要分组：Godot 的 2D 画布按「贴图 + 状态」合批 —— 一个单位换一次贴图就等于
 ##    把批次切断（与文件头那段「按图元类型分组，而不是一个单位画完自己那一套」同一条道理）。
@@ -251,18 +271,32 @@ func _colors_for(faction: String) -> Array:
 ## ⚠️⚠️ **桶必须是 `Array`，绝不能图省事换成 `PackedInt32Array`**：
 ##   打包数组是**值语义**（写时复制），而 `(bucket as PackedInt32Array).append(i)`
 ##   改到的是那个临时副本 —— 字典里的桶**永远是空的**，于是**一个图标都画不出来**，
-##   画面上只剩那条朝向线，而且**不报任何错**（本轮实测踩过，见 pitfalls.md 5.50）。
+##   画面上只剩那条朝向线，而且**不报任何错**（实测踩过，见 pitfalls.md 5.50）。
 ##   `Array` 是引用语义，所以 `append` 才真的落进字典里那个桶。
 ##
 ## ★ 它是 static 且不碰任何状态，正是为了让测试能直接钉住「n 个单位一个不漏地分完」。
-static func _bucket_by_icon(icons: Array, n: int) -> Dictionary:
+static func _bucket_by_tex(textures: Array, n: int) -> Dictionary:
 	var out: Dictionary = {}
 	for i in n:
-		var tex: ImageTexture = icons[i]
+		var tex: ImageTexture = textures[i]
 		var bucket: Variant = out.get(tex, null)
 		if bucket == null:
 			bucket = []
 			out[tex] = bucket
+		(bucket as Array).append(i)
+	return out
+
+
+## 把「每个单位该用哪个字号」整理成「字号 → 该字号下要画的单位下标」。
+## 分桶的理由与桶必须是 Array 的理由，与 `_bucket_by_tex` 完全一样（那边注释更细）。
+static func _bucket_by_size(radii: PackedFloat32Array, n: int) -> Dictionary:
+	var out: Dictionary = {}
+	for i in n:
+		var fsize: int = UnitIconRes.font_size_for(radii[i])
+		var bucket: Variant = out.get(fsize, null)
+		if bucket == null:
+			bucket = []
+			out[fsize] = bucket
 		(bucket as Array).append(i)
 	return out
 
