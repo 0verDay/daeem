@@ -58,7 +58,7 @@ func _cases() -> void:
 # 一、数值表来自 config.json（代码里不写字面量）
 # ------------------------------------------------------------------
 func _test_config_table(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	ok(w.is_recruitable(KIND), "config.recruit.list 里长枪兵可招募")
 	ok(not w.is_recruitable("nope"), "表里没有的兵种不能招募")
 	eq(w.recruit_queue_max(), 5, "★ 队列上限 5 个（1 大格 + 4 小格）")
@@ -74,7 +74,7 @@ func _test_config_table(cfg) -> void:
 # 二、只能在己方区划内招募
 # ------------------------------------------------------------------
 func _test_zone_restriction(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	_give(w, 1000.0, 1000.0)
 	var g1 = w.unit_by_id("general-1")
 	ok(g1 != null, "有 general-1")
@@ -108,7 +108,7 @@ func _test_zone_restriction(cfg) -> void:
 # 三、入队即扣费（粮食 / 黄金 / 区划人口）
 # ------------------------------------------------------------------
 func _test_enqueue_pays(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	_give(w, 200.0, 200.0)
 	var g1 = w.unit_by_id("general-1")
 	var z = w.zones.zone_at(g1.tx, g1.ty)
@@ -143,7 +143,7 @@ func _test_enqueue_pays(cfg) -> void:
 # 四、拒因：钱 / 人口 / 队长
 # ------------------------------------------------------------------
 func _test_reject_reasons(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var g1 = w.unit_by_id("general-1")
 	var z = w.zones.zone_at(g1.tx, g1.ty)
 
@@ -173,7 +173,7 @@ func _test_reject_reasons(cfg) -> void:
 
 ## （拆出来只是为了让上面那段读起来像规则本身）
 func _leader_reject_checks(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	_give(w, 1000.0, 1000.0)
 	var g1 = w.unit_by_id("general-1")
 	var sub = w.retinue_of(g1.id)[0]
@@ -188,7 +188,7 @@ func _leader_reject_checks(cfg) -> void:
 # 五、队列上限 5（1 正在读条 + 4 排队）
 # ------------------------------------------------------------------
 func _test_queue_cap(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	_give(w, 10000.0, 10000.0)
 	var g1 = w.unit_by_id("general-1")
 	var z = w.zones.zone_at(g1.tx, g1.ty)
@@ -288,7 +288,7 @@ func _test_push_units_aside(cfg) -> void:
 # 八、读条期间：钉在原地、无法行动、无法攻击
 # ------------------------------------------------------------------
 func _test_rooted_while_training(cfg) -> void:
-	var w = WorldRes.create(cfg)              # 这一节要**开着战斗**（验「无法攻击」）
+	var w = require_world(cfg)              # 这一节要**开着战斗**（验「无法攻击」）
 	var g1 = w.unit_by_id("general-1")
 	_give(w, 1000.0, 1000.0)
 	var z = w.zones.zone_at(g1.tx, g1.ty)
@@ -339,7 +339,7 @@ func _test_rooted_while_training(cfg) -> void:
 #   4. 「只警戒」不是「发呆」：靠近的敌人照样会打；而且队列一取消就解锁。
 # ------------------------------------------------------------------
 func _test_retinue_locked_while_training(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var g1 = w.unit_by_id("general-1")
 	var g2 = w.unit_by_id("general-2")
 	_give(w, 1000.0, 1000.0)
@@ -415,7 +415,7 @@ func _test_cancel_queue(cfg) -> void:
 		return
 	c.combat_enabled = false
 	var other := _inject_second_kind(c)
-	var w = WorldRes.create(c)
+	var w = require_world(c)
 	_no_income(w)
 	_give(w, 1000.0, 1000.0)
 	var g1 = w.unit_by_id("general-1")
@@ -504,7 +504,7 @@ func _test_recruit_eta(cfg) -> void:
 		"kind": slow_kind, "label": "慢兵", "short": "慢",
 		"train_sec": 25, "population_cost": 1, "cost": {"food": 10, "gold": 10},
 	})
-	var w = WorldRes.create(c)
+	var w = require_world(c)
 	_no_income(w)
 	_give(w, 1000.0, 1000.0)
 	var g1 = w.unit_by_id("general-1")
@@ -642,7 +642,7 @@ func _test_snapshot_round_trip(cfg) -> void:
 	ok(typeof(su.get("tq", null)) == TYPE_ARRAY and (su["tq"] as Array).size() == 1,
 		"★ 快照带着排队的那一个（tq）")
 
-	var w2 = WorldRes.create(cfg)
+	var w2 = require_world(cfg)
 	SnapshotRes.apply_snapshot(w2, cfg, snap)
 	var g2 = w2.unit_by_id(g1.id)
 	ok(g2 != null, "客机侧有同一个将领")
@@ -716,7 +716,7 @@ func _quiet_world(cfg) -> RefCounted:
 		c = cfg
 	else:
 		c.combat_enabled = false
-	return WorldRes.create(c)
+	return require_world(c)
 
 
 func _give(w, food: float, gold: float) -> void:

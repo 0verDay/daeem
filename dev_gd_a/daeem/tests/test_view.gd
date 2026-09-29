@@ -71,7 +71,7 @@ func _test_palette(cfg) -> void:
 	near(r.size.x, cfg.cell_px, 1e-6, "tile_rect 宽度 = 一格")
 
 	# 建筑矩形：城墙填满整格，其它内缩
-	var w0 = WorldRes.create(cfg)
+	var w0 = require_world(cfg)
 	var base_b = w0.find_base_of("p1")
 	ok(base_b != null, "取得到大本营建筑")
 	if base_b != null:

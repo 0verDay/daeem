@@ -334,6 +334,8 @@ func _cache_scalars() -> void:
 	_cache_upgrades()
 	_cache_zone_kinds()
 	_cache_zone_specs()
+	# ★ AI（本轮新增）：阵营 AI 的名单 + 两种 AI 的行为参数（见 _cache_ai）。
+	_cache_ai()
 	# ★★ 单位类型表（unit.types / unit.classes / unit.general）—— 必须在其它
 	#   单位字段之后调：它拿 unit_speed / unit_hp_max / unit_radius_factor 当兜底值，
 	#   并且会顺手把「测试敌人」那几个兼容字段填好。
@@ -1345,3 +1347,102 @@ func spec_time_sec(id: String) -> float:
 	if typeof(v) == TYPE_FLOAT or typeof(v) == TYPE_INT:
 		return maxf(0.0, float(v))
 	return _spec_time_sec
+
+
+# ------------------------------------------------------------------
+# AI（config.json 的 ai 段）—— 本轮新增的两种 AI
+#
+# ★ 与科技 / 升级 / 区划那几张表同一条规矩：**载入时整理好、之后只读**。
+#   原因一样 —— 这几个数在「每帧每 AI / 每帧每驻防将领」的路径上，
+#   不该每次都 split(".") 下潜一遍 JSON。
+#
+# ★★ 分工（两套 AI 的规则分别在 logic/faction_ai.gd 与 logic/general_ai.gd）：
+#   · `ai.factions[]` —— **阵营 AI**：附属在哪个阵营（id）、大本营摆哪（base）、
+#     资源倍率（resource_mult，难度旋钮）、开局资源（start_food / start_gold）。
+#     它是一张**列表**：一张图上可以挂好几个阵营 AI，各带各的资源库。
+#   · `ai.faction`    —— 阵营 AI 的**行为参数**（招几个将领 / 补到几个人 / 多久试一次
+#                        招兵与升级 / 派兵门槛）。所有阵营 AI 共用这一份（要各自不同
+#                        就改这里、让它按 id 分流 —— 现在没有必要）。
+#   · `ai.general`    —— **将领性（防御性）AI** 的行为参数（巡逻间隔 / 巡逻半径 /
+#                        脱战多久算闲 / 多久查一次招兵 / 满员门槛）。
+# ⚠️ 表是空的（老配置 / 手改删掉这一节）时**两种 AI 都不跑** —— 行为与加它们之前一致。
+# ------------------------------------------------------------------
+
+## 「每帧每 AI」的读取口：AI 的阵营表（只读，别改返回的数组）
+var _ai_factions: Array = []
+## AI 的行为参数（整理成同一层字典，省得每帧下潜 JSON）。
+var _ai_faction_cfg: Dictionary = {}
+var _ai_general_cfg: Dictionary = {}
+
+
+func _cache_ai() -> void:
+	_ai_factions = []
+	_ai_faction_cfg = {}
+	_ai_general_cfg = {}
+
+	var raw: Variant = get_path_value("ai.factions")
+	if typeof(raw) == TYPE_ARRAY:
+		for item in (raw as Array):
+			if typeof(item) != TYPE_DICTIONARY:
+				continue
+			var src: Dictionary = item
+			var id := String(src.get("id", ""))
+			if id == "":
+				continue
+			# ⚠️ 玩家席位（p1…p8）**不许**出现在这里：那会变成「AI 接管玩家的资源池」，
+			#    玩家自己的招募就会开始花 AI 的钱（两边其实是同一个池子）。
+			var base := Vector2i(-1, -1)
+			var b: Variant = src.get("base", null)
+			if typeof(b) == TYPE_ARRAY and (b as Array).size() >= 2:
+				base = Vector2i(int((b as Array)[0]), int((b as Array)[1]))
+			_ai_factions.append({
+				"id": id,
+				"base": base,
+				# ★ 难度旋钮：1.0 = 与玩家同速；2.0 = 两倍产出
+				"resource_mult": maxf(0.0, float(src.get("resource_mult", 1.0))),
+				"start_food": maxf(0.0, float(src.get("start_food", 0.0))),
+				"start_gold": maxf(0.0, float(src.get("start_gold", 0.0))),
+			})
+
+	_ai_faction_cfg = {
+		"generals": maxi(0, int(num("ai.faction.generals", 3.0))),
+		"min_retinue": maxi(0, int(num("ai.faction.min_retinue", 3.0))),
+		"recruit_cooldown_sec": maxf(0.0, num("ai.faction.recruit_cooldown_sec", 1.0)),
+		"upgrade_cooldown_sec": maxf(0.0, num("ai.faction.upgrade_cooldown_sec", 5.0)),
+		"upgrade_reserve_food": maxf(0.0, num("ai.faction.upgrade_reserve_food", 0.0)),
+		"upgrade_reserve_gold": maxf(0.0, num("ai.faction.upgrade_reserve_gold", 0.0)),
+		"ready_mult": num("ai.faction.ready_mult", 0.5),
+		"min_ready": maxi(1, int(num("ai.faction.min_ready", 2.0))),
+		"attack_repeat_sec": maxf(0.1, num("ai.faction.attack_repeat_sec", 6.0)),
+	}
+	_ai_general_cfg = {
+		"patrol_interval_sec": maxf(0.1, num("ai.general.patrol_interval_sec", 4.0)),
+		"patrol_leash_tiles": maxf(1.0, num("ai.general.patrol_leash_tiles", 1.0)),
+		"combat_idle_sec": maxf(0.0, num("ai.general.combat_idle_sec", 10.0)),
+		"retarget_cooldown_sec": maxf(0.0, num("ai.general.retarget_cooldown_sec", 5.0)),
+		"recruit_check_sec": maxf(0.1, num("ai.general.recruit_check_sec", 2.0)),
+		"min_retinue": maxi(0, int(num("ai.general.min_retinue", 3.0))),
+	}
+
+
+## 全部「阵营 AI」条目（每项 {id, base, resource_mult, start_food, start_gold}；只读）
+func ai_factions() -> Array:
+	return _ai_factions
+
+
+## 阵营 AI 的行为参数（只读；键见 `_cache_ai()`）
+func ai_faction_cfg() -> Dictionary:
+	return _ai_faction_cfg
+
+
+## 将领性（防御性）AI 的行为参数（只读）
+func ai_general_cfg() -> Dictionary:
+	return _ai_general_cfg
+
+
+## 这个阵营是不是「由 AI 接管」的（单机 / 联机都能问：AI 只跑在权威侧）
+func is_ai_faction(fid: String) -> bool:
+	for e in _ai_factions:
+		if String((e as Dictionary)["id"]) == fid:
+			return true
+	return false

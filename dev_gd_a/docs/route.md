@@ -2971,3 +2971,188 @@ canvas.yview()                        →   (0.0, 1.0)          ← 它还说「
 （改了 config 那一栏 → 重新载入生效 / 删掉键 → 退回 `fog.vision_building` /
 **开局那栋塔身上真的带着 12**）；`test_model.py` 多 11 项、
 `test_app.py` 多 14 项（建筑表单那一栏显示**生效值**、清空 → 删键、列表刷新）。
+
+---
+
+## 三十三、两种 AI：**阵营性 AI** 与 **将领性（防御性）AI**（这一轮）
+
+### 33.1 需求原文（逐条对照）
+
+> 「1. 阵营性 ai：该类 ai 会附属在某个阵营/势力下，该类 ai 有自己的资源库，其资源会随着其占领区划
+>   产出资源而增长；该类 ai 会花费资源招募自己的将领/升级自己的建筑，并花费资源让将领招募单位，
+>   需要有明确的资源规划；该类 ai 在若干将领招募满员后会派遣这些将领行军攻击某处；
+>   该类 ai 可为其提高资源获取倍率以调整难度。
+>  2. 将领性 ai（防御性 ai）：该类 ai 会附属在某个将领下，其没有资源库，没有大本营；
+>   该类 ai 会有其归属的区划，且在其归属的区划中有时间间隔地巡逻，若其警戒到敌方单位会发动攻击，
+>   但不会追击超过一个区划；该类 ai 在脱战（没有攻击行为 10 秒后）且不满员的情况下会无资源消耗地
+>   招募单位（或者可以认定该类 ai 资源无限）」
+
+| 需求那条 | 落在哪 |
+|---|---|
+| 阵营 AI 有**自己的资源库** | `world.ai_resources`（与玩家的 `world.resources` **两个字典**）+ `world.resource_pool_for(faction)`；招募 / 升级的扣费与退款全部改走它 |
+| 资源**随占领区划产出**增长 | `faction_ai._income()`：`zones.production_of(faction) × resource_mult × dt`（与玩家那条口径逐条同义）。★ 它开局那块地是**大本营收归自己**的（`zone.refresh_building_ownership` 现在对**任何**阵营都成立 —— 原来只认玩家，那会让 AI 一块地都没有） |
+| 花资源**招自己的将领** | `faction_ai._decide()` 第 a 段 → `world.start_zone_recruit()`（复用区划招募那一整套） |
+| 花资源**升级自己的建筑** | 第 c 段 → `world.start_building_upgrade()`（挑**最便宜**的那一栋） |
+| 花资源**让将领招兵** | 第 b 段 → `world.start_recruit()`（每个将领补到 `min_retinue`） |
+| **明确的资源规划** | 四段**固定优先级**（招将 → 招兵 → 升级 → 出兵）；a / b 命中即收工（一帧一件事），c 与 d 可以同帧发生 |
+| 将领**满员后派遣行军攻击某处** | 第 d 段 → `unit.order_attack_move()` 打「离自己最近的**敌方区划中心**」（没有区划就打敌方大本营） |
+| **资源倍率调难度** | `config.ai.factions[].resource_mult`（1.0 = 与玩家同速，2.0 = 两倍） |
+| 将领性 AI **没有资源库、没有大本营** | 状态全挂在**单位自己**身上（`garrison_zone_id` / `patrol_timer` / `combat_idle_timer` / `retarget_cd`），不建 AI 对象、不开资源池 —— 它那一方的 `resource_pool_for()` 就是 **null**（= 资源无限） |
+| **有归属区划 + 按间隔巡逻** | `unit.garrison_zone_id`（地图 `units[].zone`）+ `general_ai._patrol()`：每 `patrol_interval_sec` 秒朝**自己区划的中心**走一趟 |
+| 警戒到敌人**会打，但不追出一个区划** | 交战交给 `combat.gd`；`general_ai._out_of_garrison()` 补一条区划级硬约束：**脚踩进别的区划**（主判据）**或**在无主空地上离区划中心太远（兜底）→ 当场脱战走回去 |
+| 脱战 **10 秒**且不满员 → **无消耗**招兵 | `combat_idle_timer >= ai.general.combat_idle_sec`（默认 **10**）→ `world.start_recruit(..., free = true)` |
+
+### 33.2 落点（新增 2 个文件 + 改 9 个）
+
+| 文件 | 作用 |
+|---|---|
+| `logic/faction_ai.gd` | ★ **新增**：阵营 AI。收入 + 四段决策（招将 / 招兵 / 升级 / 出兵）+ 挑目标 |
+| `logic/general_ai.gd` | ★ **新增**：将领性（防御性）AI。巡逻 / 区划级追击上限 / 脱战计时 / 免费招兵 |
+| `data/config.json` | 新增 `ai` 段（`factions[]` 名单 + `faction` / `general` 两组行为参数）；`colors.faction.ai` 配色 |
+| `logic/config.gd` | `_cache_ai()` + `ai_factions()` / `ai_faction_cfg()` / `ai_general_cfg()` / `is_ai_faction()` |
+| `logic/world.gd` | `ai_resources` / `ai_factions` / `with_ai`；`resource_pool_for()`；`_setup_ai_factions()` / `_register_config_bases()` / `_map_declares_owner()`；`start_recruit(free)`；tick 第 7.5 步；区划招募 id 加阵营前缀 |
+| `logic/economy.gd` | `can_afford()` / `spend()` 的参数改成 `Variant`，**null = 资源无限**（见 33.4） |
+| `logic/upgrade.gd` | 升级 / 特化的**扣费与退款**改走 `world.resource_pool_for(owner)`（原来写死 `world.resources`） |
+| `logic/unit.gd` | `garrison_zone_id` / `patrol_timer` / `combat_idle_timer` / `retarget_cd` / `garrison_recruit_timer`；`retinue_size()` / `is_garrison()` |
+| `logic/map_data.gd` | `units[].zone`（归属区划）、`zone_list[].owner`（开局归属 → `zones_owners`）、`set_faction_base()` |
+| `logic/zone.gd` | `apply_initial_ownership()`（把地图写的开局归属落到区块上） |
+| `logic/enemy_ai.gd` | 跳过 `is_garrison()` 的单位（两条 AI 的判据必须**互斥**） |
+| `logic/faction.gd` | `AI_FACTION` 常量 + `is_ai_faction()` 兜底 |
+| `tests/test_ai.gd` | ★ **新增**：133 项断言（见 33.7） |
+
+### 33.3 ★★ 两条 AI 的分工：判据必须**互斥**
+
+同一个单位被两条 AI 同时指挥会出现「一边巡逻、一边朝玩家家跑」这种自相矛盾的画面，
+所以两条路的**入口判据**是互补的：
+
+| | 管谁 | 判据 |
+|---|---|---|
+| `enemy_ai.gd`（旧） | 地图上的推进型测试敌人 | `not hold_position and not is_garrison()` |
+| `general_ai.gd`（新） | 驻防将领 | `is_garrison()`（= `garrison_zone_id >= 0`） |
+| `faction_ai.gd`（新） | 阵营的**内政与出兵** | 按 `st["faction"]` 遍历那一方的将领，与上面两条不冲突（它下的是命令，不是逐帧移动） |
+
+`world.reset()` 给带 `zone` 的预置单位**同时**置 `hold_position = true`，
+但那**不是**重复判断：`enemy_ai` 里那两条都要有（将来手改地图可能只写 `zone` 不写 `hold`）。
+
+### 33.4 ★★ `with_ai` 开关，以及「资源池 = null」这个语义
+
+**两件事都是被真实问题逼出来的，别顺手删。**
+
+**① `World.create(cfg, map, with_ai = true)`**
+
+开了 AI，世界上就多出**一整个阵营**（三个将领 + 一座大本营 + 一块地 + 一个资源池）。
+单机游戏当然要开着；但几十个测试验的是移动 / 碰撞 / 迷雾，它们的世界里不该凭空多出三个将领 ——
+「开局 3 个将领」「场上有 22 个单位」这类断言会**集体变红**，而它们本来验的东西一个字都没错。
+
+于是：
+- `tests/test_case.gd` 多一个 **`require_world(cfg)`**：默认造**不带 AI** 的干净世界；
+- 那些测试全部改成 `require_world(cfg)`（**104 处**），`tests/test_ai.gd` 用 `World.create()`；
+- `with_ai = false` 是一条**真的什么都没发生**的路：`ai_factions` 为空、`_setup_ai_factions()`
+  只登记大本营点位（见下）就返回。
+
+**② `resource_pool_for()` 返回 `null` = 「这一方没有资源库」= 资源无限**
+
+需求原话是「其没有资源库……（或者可以认定该类 AI 资源无限）」。落地时分成了两条**不同**的路，
+混起来就会出错：
+
+| 场景 | 机制 |
+|---|---|
+| 某一方**没有资源库**（驻防将领那一方） | `resource_pool_for()` → **null**；`EconomyRes.can_afford(null, cost)` **一律判得过**，`spend(null, cost)` 什么都不扣 |
+| `world.start_recruit(..., free = true)`（免费那一档） | 调用方把 **cost 清空**（`cost = {}`、`pop = 0`），所以「免费」是真的免费、而且**不记账**（取消 / 阵亡一分钱也退不出来） |
+
+⚠️ `EconomyRes.can_afford()` / `spend()` 的参数类型**必须是 `Variant`**：
+GDScript 对**有类型**的参数会把 null 判成
+`Cannot convert argument 1 from Nil to Dictionary` 直接报错 —— 这正是第一版撞到的错。
+
+### 33.5 ★ 真踩到的四个坑（都在代码注释里）
+
+**① 大本营不能落在区划中心上**
+第一版把 AI 的大本营摆在 (10,11)，而那一格正好是区块 5 的**中心** ——
+`_spawn_zone_centers()` 建不出中心建筑（只有一条 `push_warning`），
+于是 AI 的 `_recruit_zone()` 永远挑不到「有中心的区块」⇒ **AI 一个将也招不出来**，
+症状是「AI 就是不招人」，而没有任何报错。
+
+**② 大本营必须落在「还没被别人占走」的区块里**
+`refresh_building_ownership()` 的规则是「**只在区块无主时**收归」。
+地图东南侧那片预置据点（对家的大本营 + 箭塔 + 城墙）会先把它所在的区块吃掉 ——
+第二版把 AI 的大本营摆在 (13,11)（区块 5），而那一块**正是对家据点所在的区块** ⇒
+AI 开局一块地都没有：收入 0、也没有中心格，症状同样是「AI 站着不动」。
+现在它在 **(18,18)**（区块 9，无主、且离玩家出生区足够远 ——
+摆太近的版本里 AI 的将领刚招出来就被玩家开局那三支部队打死，
+永远凑不满「招满 3 个 + 每个 3 个兵」那条出兵条件）。
+
+**③ 「不追出一个区划」必须配一个**再战冷却
+`combat.acquire_target` 的触发条件是「静止 + 敌人进警戒半径」，而 `aggro_range` 是全局值（默认 4）——
+于是「守将追出去 → general_ai 叫它脱战走回来 → 它站定 → 下一帧又把同一个敌人锁上」
+会形成**每 2~3 帧一次的高频抖动**（肉眼看是「在区划边缘原地抽动」，而且它永远走不回中心）。
+所以脱战那一帧要 `u.retarget_cd = retarget_cooldown_sec`（默认 5 秒），冷却期内**只巡逻不接战**。
+
+**④ 升级那一段**不能**跟着一起 `return`**
+「一事一帧」这条规矩要看对象：招将 / 招兵是长期动作（一帧连下几单会瞬间堆满队列），
+而升级与**出兵并不冲突**。第一版让升级也 `return` 了，结果是
+**只要有闲钱，AI 永远在升级、永远不出兵**（实测：`attack_timer` 一直被刷、`has_attack_move` 恒为假）。
+
+### 33.6 数据：怎么在一张图上挂 AI
+
+```jsonc
+// data/config.json
+"ai": {
+  "factions": [
+    // 阵营 AI 的**名单**：id 就是阵营 id（会进 world.factions）
+    { "id": "ai", "base": [13, 11], "resource_mult": 1.0, "start_food": 100, "start_gold": 100 }
+  ],
+  "faction": { "generals": 3, "min_retinue": 3, "ready_mult": 0.5, "min_ready": 2, ... },
+  "general": { "patrol_interval_sec": 4, "patrol_leash_tiles": 1,
+               "combat_idle_sec": 10, "retarget_cooldown_sec": 5, "min_retinue": 3 }
+}
+```
+
+```jsonc
+// data/test_map.json —— 把某个将领交给「将领性 AI」（也是这一轮唯一改地图的地方）
+"units": [
+  { "x": 8, "y": 13, "name": "驻防将领", "faction": "enemy", "kind": "enemy",
+    "hold": true, "zone": 6 }        // ← zone = 它负责的区划 id
+]
+```
+
+**想让某个 NPC 阵营开局就有一块地**（于是它的驻防将领能招兵），在**地图**里写：
+
+```jsonc
+"zone_list": [ { "id": 6, "name": "d1", "center": [5,12], "production": {...},
+                 "owner": "enemy" } ]   // ← 写了它，world.reset() 会自动把 "enemy" 加进阵营名单
+```
+
+⚠️ 那条路还要求 `config.ai.factions` 里给这一方一个 **base** ——
+名单里的一方若没有基地点位，`map.spawn_layout_for()` 会走 `pvp_points` 兜底，
+而那张表为空时大本营落到 **(0,0)**，正好把区块 11 的中心顶掉（就是坑 ① 的同一类问题）。
+所以 `_register_config_bases()` 是**不看 `with_ai`** 的：基地是布局数据，与「有没有 AI 脑子」无关。
+
+**随游戏发布的那张图（`test_map.json`）里没有写 `owner`** —— 于是默认局里
+NPC 阵营不进名单、驻防将领在自己那块无主地上巡逻（有人来就打），
+要验「免费招兵」那一条得先把它的区划给它（见 `test_ai.gd` 的夹具）。
+
+### 33.7 断言（`tests/test_ai.gd`，150 项）
+
+| 组 | 验什么 |
+|---|---|
+| 配置 | 名单里的 id、行为参数都读得到；**脱战判定默认就是 10 秒**；`'enemy'` 默认不在名单里 |
+| 存在与资源库 | AI 阵营进了名单 / 有大本营 / 开局**不带附属兵**（玩家那三个照旧带满）；**大本营把它所在的区块收归自己**（否则它一块地都没有）；两个池子是**两个字典**；初始资金 = config 的 `start_*`；**收入公式**（占领区划产能 × 秒数进自己的池子、玩家一分没动）；`resource_mult = 2.0` 时同样一块地**收入翻倍** |
+| 资源规划 | 有钱有地 → 招将（钱从 **AI 自己的池子**扣，**玩家一分没动**）；冷却期内不连招；让将领招**与它自己同类型**的兵；钱够就升级自己的建筑；招满 + 满员 → **派出 `min_ready` 个将领行军攻击敌方区划** |
+| ★ 端到端（跑 60 秒真世界） | AI 真的下了招将的单、**区划招的将领真的读条读完出现在地图上**、而且它全程花的是自己的钱（玩家那一侧的账一分没动） |
+| 将领性 AI | 地图预置的 `zone` 落到 `garrison_zone_id` 上；**它那一方没有资源池**；到点朝区划中心巡逻（已在中心则不空跑寻路）；**追进别的区划当场脱战**（在自己家里离中心多远都不算）；脱战时拉起再战冷却、冷却期内不接战、冷却结束 + 回自家又能接战；无主空地上按距离兜底；**免费招兵**（钱 / 人口都不动、记账值为 0、读完真的出人） |
+| 两条 AI 互斥 | `enemy_ai` 不会指挥驻防将领朝玩家大本营推进 |
+
+### 33.8 已知取舍
+
+- **阵营 AI 不研究科技**：科技是玩家的那九条，NPC 的难度旋钮是 `resource_mult`。
+  要给它加成请调倍率（口径统一、也好调）。
+- **`ai.faction` 那一组参数是所有阵营 AI 共用的**：现在只有一个 AI，没必要按 id 分流。
+  真要多档难度时，把它改成 `factions[].faction_cfg` 那种按 id 覆盖的形状即可。
+- **AI 的花钱决策是确定性的**（不随机）：出兵按「离目标近」排序，所以同一局可复现 ——
+  联机 / 回放时不会因为随机数而漂。
+- **`ai_factions` 状态表不进快照**：它现在只跑在权威侧（单机 = 本地），
+  第 1 轮联机时要像 `unit.train_*` 那样补进快照（客机不跑 AI，但要让房主的状态能对账）。
+- **发布那张图上 AI 的日常收入是 0**：区块 9 是**人口区块**（不产粮食 / 黄金），
+  所以它是靠开局那 150 + 人口增长在运转（`start_food / start_gold` 就是为这个调的）。
+  真实地图上把 AI 摆在有产能的区块里，这两个数就不重要了。
+

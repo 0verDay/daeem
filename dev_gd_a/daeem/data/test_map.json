@@ -87,6 +87,33 @@
       "y": 13,
       "name": "巡逻兵",
       "hold": false
+    },
+    {
+      "x": 8,
+      "y": 13,
+      "name": "驻防将领",
+      "faction": "enemy",
+      "kind": "enemy",
+      "hold": true,
+      "zone": 6
+    },
+    {
+      "x": 20,
+      "y": 13,
+      "name": "驻防将领",
+      "faction": "enemy",
+      "kind": "enemy",
+      "hold": true,
+      "zone": 8
+    },
+    {
+      "x": 20,
+      "y": 17,
+      "name": "驻防将领",
+      "faction": "enemy",
+      "kind": "enemy",
+      "hold": true,
+      "zone": 9
     }
   ],
   "_comment": [

@@ -32,6 +32,19 @@ const DEFAULT_FACTION := "p1"
 ## NPC 阵营（测试敌人）
 const NPC_FACTION := "enemy"
 
+## ★★ 阵营 AI 的默认阵营 id（本轮新增，见 logic/faction_ai.gd 与 config.ai.factions）。
+##
+## ★ 为什么需要一个新的 id、而不是复用 'enemy'：
+##   'enemy' 是**地图上那批测试敌人**（守军 + 巡逻兵）的阵营，它们跑的是
+##   `enemy_ai.gd` 的推进逻辑；而「阵营 AI」是一条**完全不同的**玩法
+##   （有自己的资源库、招将、升级、出兵）。两者同属 NPC，但行为与状态互不相干 ——
+##   挤在同一个 id 上会让「这张图有几个 AI 在经营」说不清楚。
+## ★ 它**不是玩家席位**（不在 FACTION_ROSTER 里）⇒ 不被玩家指挥、不会自动索敌占区块、
+##   也不吃科技加成 —— 正是需求里「附属在某个阵营/势力下」的那个「势力」。
+## ★ 真正的 AI 名单在 `config.ai.factions`（可以挂好几个，也可以一个都不挂）；
+##   这个常量只是**默认值**与「配置读不出来时的兜底」。
+const AI_FACTION := "ai"
+
 ## 联机时的玩家席位顺序：第一个连上的是房主
 const FACTION_ROSTER: Array[String] = ["p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8"]
 
@@ -90,6 +103,19 @@ static func faction_name(f: String) -> String:
 	if is_player_faction(f):
 		return f.to_upper()
 	return f
+
+
+## ★ 这个阵营是不是「由 AI 接管」的？
+##
+## ★★ 与 `is_player_faction` 的分工（别混起来）：
+##   · `is_player_faction` —— 决定「谁受玩家控制 / 谁自动索敌占区块 / 谁吃科技」；
+##     它**不读配置**（联机名单与阵营表都是常量），所以它认不出 AI 阵营。
+##   · 本函数 —— 决定「谁由 AI 驱动」；名单与行为参数来自 `config.ai.factions`。
+##     所以它是**数据驱动**的，换一张图 / 改一次配置就能换一批 AI 阵营。
+##   ⚠️ 逻辑层真正的判据是 `cfg.is_ai_faction()`（它才知道配置）；
+##      这里这一份只作常量兜底 —— 两者判据必须一致（同一个 AI 阵营 id）。
+static func is_ai_faction(f: String) -> bool:
+	return AI_FACTION == f
 
 
 ## 单机模式（没有联机）下的阵营表

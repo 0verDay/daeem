@@ -30,7 +30,7 @@ func _cases() -> void:
 	var cfg = require_config()
 	if cfg == null:
 		return
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	if w == null:
 		return
 	w.tick(DT)                  # 触发桥的建表（tick 里第一次用到内核）

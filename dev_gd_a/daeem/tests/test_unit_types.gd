@@ -108,7 +108,7 @@ func _test_class_tags(cfg) -> void:
 # 二、将领 ↔ 类型
 # ------------------------------------------------------------------
 func _test_general_types(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var types: Array = cfg.general_types()
 	eq(types.size(), 3, "配置里给了三个将领类型")
 
@@ -166,7 +166,7 @@ func _test_general_types(cfg) -> void:
 # ------------------------------------------------------------------
 func _test_recruit_all_three(cfg) -> void:
 	cfg.combat_enabled = false
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	# 只留己方单位（地图上的巡逻兵会来搅局）
 	var kept: Array = []
 	for u in w.units:
@@ -340,7 +340,7 @@ func _reload_cfg(src) -> RefCounted:
 ## ★ 只验「接线」：UnitView 在这些类型上跑得通、字确实随类型走 ——
 ##   至于画出来什么样，是手玩验收的事（与 test_view.gd 的分工一致）。
 func _test_view_uses_icons(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var view = UnitViewRes.new()
 	# ★ 用**真字体**建 view：无头下引擎兜底字体没有中文字形，但断言只看「画了几笔」，
 	#   所以两者都能过；这里传真字体是为了走与游戏完全一致的那条路。
@@ -419,7 +419,7 @@ func _test_view_uses_icons(cfg) -> void:
 
 	# 快照往返之后，类型仍然对（客机画图标靠它）
 	var snap = SnapshotRes.to_snapshot(w)
-	var w2 = WorldRes.create(cfg)
+	var w2 = require_world(cfg)
 	SnapshotRes.apply_snapshot(w2, cfg, snap)
 	var remote3 = w2.unit_by_id("general-3")
 	ok(remote3 != null, "快照重建出了 general-3")

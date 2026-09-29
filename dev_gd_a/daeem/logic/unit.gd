@@ -250,6 +250,36 @@ var deaths: int = 0
 ## 用处：地图上摆几个「测试用守军」时，不希望它们开局就朝玩家据点行军。
 var hold_position: bool = false
 
+## ---- ★★ 将领性（防御性）AI 的归属（本轮新增，见 logic/general_ai.gd）----
+##
+## `garrison_zone_id` = 这个将领**负责的区划 id**（-1 = 不归任何将领性 AI 管）。
+##
+## ★ 为什么是「区划 id」而不是「巡逻点坐标」：需求的整段语义都挂在区划上 ——
+##   「在其归属的区划中有时间间隔地巡逻」「不会追击超过一个区划」「在脱战后招兵」。
+##   存 id 之后，巡逻目标（区划中心）与「追出区划了没有」两件事都只是**一次查表**，
+##   而存坐标就得自己维护一套「这些点属于哪个区划」的映射。
+## ★ 归属从两处来：
+##   · 地图 `units[]` 里的 `zone` 字段（地图作者明写，见 map_data._read_units）；
+##   · 出生时所在的那一格（区划中心招出来的守将 —— 本轮还没有这条路，留着给以后）。
+## ★ 有它的单位**不再跑 enemy_ai 的推进逻辑**（与 hold_position 同一条效果，
+##   见 enemy_ai.gd 的说明）：它只巡逻自己那一亩地。
+var garrison_zone_id: int = -1
+## 下一次巡逻移动还有几秒（由 general_ai 每帧递减，<= 0 时朝区划中心走一趟）。
+var patrol_timer: float = 0.0
+## 距上一次「正在交战」过去了多久（秒）。达到 ai.general.combat_idle_sec 就认为脱战。
+var combat_idle_timer: float = 0.0
+## ★★ 再战冷却：> 0 时这个驻防将领**不接战**（见到敌人也不锁）。
+##
+## 为什么必须有它（真实行为问题，不是优化）：`combat.acquire_target` 的触发条件是
+##   「静止 + 敌人进警戒半径」，而`combat.aggro_range` 是全局值（默认 4 格）——
+##   于是「守将追出一个区划 → general_ai 叫它脱战走回来 → 它站定 → 下一帧又把同一个
+##   敌人锁上」会形成**高频抖动**（实测每 2~3 帧一次），肉眼看就是
+##   「守将在区划边缘原地抽动」，而且它永远走不回中心（每次都被新命令顶掉）。
+##   冷却期内它只巡逻、不接战，抖动的回路就断了。
+var retarget_cd: float = 0.0
+## 下一次检查「要不要无消耗招兵」还有几秒（把 O(附庸兵数) 的统计摊到几秒一次）。
+var garrison_recruit_timer: float = 0.0
+
 ## ---- 纯表现的本地标志 ----
 ## selected：由 view/input_controller 写、view/overlay 与 unit_view 读。
 ## ★ 它不是权威状态：不进快照、不进命令流（第 1 轮联机时也一样）。
@@ -332,6 +362,26 @@ func train_queue_size() -> int:
 	if train_kind != "":
 		n += 1
 	return n
+
+
+## 这个将领现在有**几个兵账**（= 队列里排着的 + 已经生成出来的附属兵）。
+##
+## ★★ 「满员」的唯一判据就是它 —— 见 logic/general_ai.gd 与 faction_ai.gd：
+##   两边都用 `retinue_size() >= min_retinue` 判「补够了没有」，
+##   各写一套「算不算满」迟早会漂开（一个看队列、一个不看，AI 就会永远补不满）。
+## ★ 为什么两个都要算：「已经排上队、还在读条」的那几个**迟早会出来**，
+##   不把它们算进去的话，AI 每帧都会觉得「还差人」而反复下单 —— 队列会瞬间堆满上限。
+##   ⚠️ `train_queue_size()` 已经把正在读条的那个算进去了，别再 `+1`（会虚报一个兵）。
+## ⚠️ `world.retinue_of()` 是遍历 world.units 的（O(单位数)），所以这个函数
+##   只该在**几秒一次**的 AI 决策里调，不要塞进每帧每单位的循环。
+func retinue_size(world) -> int:
+	return world.retinue_of(id, false).size() + train_queue_size()
+
+
+## 这个单位是不是「将领性（防御性）AI」管的驻防将领（见 logic/general_ai.gd）。
+## ★ 判据只有 garrison_zone_id 一处：地图写了 zone、或出生在某个区划里。
+func is_garrison() -> bool:
+	return garrison_zone_id >= 0
 
 
 ## 正在读条那个的进度（0~1；没在读条时 0）

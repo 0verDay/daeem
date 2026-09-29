@@ -33,6 +33,14 @@ static func update(world, cfg: ConfigRes) -> void:
 		#   地图预置的测试守军走这条；调试刷兵（E 键）默认不驻守，照旧推进。
 		if u.hold_position:
 			continue
+		# ★★ 驻防将领（有归属区划的单位）**不归这条 AI 管** —— 它们由
+		#   logic/general_ai.gd 接管（在自己区划里巡逻 / 不追出一个区划 / 脱战招兵）。
+		#   ⚠️ 这条判据与上面那句 hold_position **不是重复**：
+		#      world.reset() 给带 zone 的预置单位同时置了 hold_position，
+		#      但将来（或手改地图）完全可能出现「有 garrison_zone_id 却没置 hold」的单位 ——
+		#      那时少了这一句，同一个守将会被两条 AI 同时指挥（一边巡逻一边冲向玩家家）。
+		if u.is_garrison():
+			continue
 
 		# 正在交战（警戒发现了我方单位）：交给 combat.gd 的攻击 / 追击逻辑
 		if u.target != null:

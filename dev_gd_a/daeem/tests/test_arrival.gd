@@ -57,7 +57,7 @@ func _cases() -> void:
 ##      挤在柱子之间验的就不是拥挤收敛而是寻路了；
 ##    · 对家据点摆在 (13~16, 12~15)，地标选在 x≤10 就不会撞上它。
 func _test_solo_still_exact(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var u = w.units[0]
 	w.units = [u]
 	var target = GridRes.center_of(Vector2i(10, 15))
@@ -86,7 +86,7 @@ func _test_solo_still_exact(cfg) -> void:
 ##   战斗与障碍本身分别在 test_logic / test_attack_orders 里单独验。
 func _test_crowd_settles(cfg) -> void:
 	cfg.combat_enabled = false
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	_clear_zone_centers(w)
 	_keep_player_units(w)
 	var target = GridRes.center_of(Vector2i(6, 12))
@@ -154,7 +154,7 @@ func _test_crowd_settles(cfg) -> void:
 ## 停下之后必须**真的静止**：位置与朝向都不再变
 func _test_crowd_stays_still(cfg) -> void:
 	cfg.combat_enabled = false
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	_clear_zone_centers(w)
 	_keep_player_units(w)
 	var target = GridRes.center_of(Vector2i(6, 12))
@@ -202,7 +202,7 @@ func _test_crowd_stays_still(cfg) -> void:
 ## 拥挤下每帧位移仍然不许超过速度预算（落位那一帧最容易超）
 func _test_speed_budget_in_crowd(cfg) -> void:
 	cfg.combat_enabled = false
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	_clear_zone_centers(w)
 	_keep_player_units(w)
 	var target = GridRes.center_of(Vector2i(6, 12))
@@ -242,7 +242,7 @@ func _test_speed_budget_in_crowd(cfg) -> void:
 ## jam_giveup：挤不过去时要认账，不能无限努力
 func _test_jam_giveup_bounds_effort(cfg) -> void:
 	cfg.combat_enabled = false
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	_clear_zone_centers(w)
 	_keep_player_units(w)
 	var target = GridRes.center_of(Vector2i(6, 12))

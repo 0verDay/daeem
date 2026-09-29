@@ -32,7 +32,7 @@ func _cases() -> void:
 	var cfg = require_config()
 	if cfg == null:
 		return
-	var world = WorldRes.create(cfg)
+	var world = require_world(cfg)
 	ok(world != null, "World 能创建（地图载入成功）")
 	if world == null:
 		return
@@ -526,7 +526,7 @@ func _test_nearest_reachable(world, cfg) -> void:
 # 战斗与警戒
 # ------------------------------------------------------------------
 func _test_combat(world, cfg) -> void:
-	var w2 = WorldRes.create(cfg)
+	var w2 = require_world(cfg)
 	var g = w2.units[0]
 	var e = w2.spawn_enemy(g.tx + 6, g.ty)
 	ok(e != null, "能刷出测试敌人")
@@ -581,7 +581,7 @@ func _test_combat(world, cfg) -> void:
 	ok(w2.unit_by_id(e.id) == null, "阵亡单位在 tick 后离场")
 
 	# CONFIG.combat.enabled = false 时不索敌、不保留旧目标
-	var w3 = WorldRes.create(cfg)
+	var w3 = require_world(cfg)
 	cfg.combat_enabled = false
 	var g3 = w3.units[0]
 	var e3 = w3.spawn_enemy(g3.tx + 2, g3.ty)
@@ -595,7 +595,7 @@ func _test_combat(world, cfg) -> void:
 # 城墙血量 + 敌人拆墙（真实 AI 全链路）
 # ------------------------------------------------------------------
 func _test_wall_and_enemy_ai(world, cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var base_b = w.find_base_of("p1")
 	ok(base_b != null, "拆墙用例：有大本营")
 	if base_b == null:
@@ -705,7 +705,7 @@ func _test_wall_and_enemy_ai(world, cfg) -> void:
 # 箭塔
 # ------------------------------------------------------------------
 func _test_tower(world, cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	# ★ 先把这张图**自带的塔**（p1 的 + 对家据点的）全部撤掉：这一节要精确控制
 	#   「敌人只被这一座塔打」。不清的话：射程 3 格，敌人可能在新建那座塔的射程外，
 	#   却被别处的塔打了 —— 实测「第一帧掉 24 点」而不是 12 点。
@@ -755,7 +755,7 @@ func _test_tower(world, cfg) -> void:
 	# ⚠️ 别把这个断言塞进上面那个有敌人的世界里：把将领挪进箭塔射程时，
 	#    它同时也进了敌人的警戒半径，敌人会来打它 —— 掉的血是敌人打的，
 	#    断言就会误报成「箭塔打自己人」（第一版就是这么被骗的）。
-	var wt = WorldRes.create(cfg)
+	var wt = require_world(cfg)
 	_remove_buildings_of_type(wt, "tower")     # 同上：只留下面这一座，别让别的塔插进来
 	var tower2 = wt.add_building("tower", wt.units[0].tx + 3, wt.units[0].ty, "p1")
 	ok(tower2 != null, "不误伤用例：箭塔建好了")
@@ -783,7 +783,7 @@ func _test_tower(world, cfg) -> void:
 # 区块占领与资源
 # ------------------------------------------------------------------
 func _test_zones_and_economy(world, cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var u = w.units[0]
 	# 只留这一个：附属兵也会占区块进度，混在一起就分不清是「将领站在那里」还是「附属兵站在那里」
 	_isolate(w, [u])
@@ -886,7 +886,7 @@ func _test_zones_and_economy(world, cfg) -> void:
 ## 其本身无血量且无敌，没有攻击手段，点击选中该区划中心时会显示该区划的详情」。
 ## 这一节把「不可进入 / 无敌 / 不被索敌 / 不可拆 / 点得出区块」逐条钉住。
 func _test_zone_centers(world, cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var centers := _zone_center_buildings(w)
 	eq(centers.size(), w.zones.zones.size(), "★ 每个区划都落了一栋中心建筑")
 
@@ -973,7 +973,7 @@ func _zone_center_buildings(w) -> Array:
 ## · 产能：格式「粮食 / 黄金 / 人口」，单位 **n 资源/地块/秒**；
 ##   经济按「占领方拥有的各区划」聚合（产能 × 该区划地块数）。
 func _test_zone_population_and_production(world, cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var z0: Dictionary = w.zones.zones[0]
 	var z1: Dictionary = w.zones.zones[1]
 
@@ -1041,7 +1041,7 @@ func _test_zone_population_and_production(world, cfg) -> void:
 ##   · 上限**不会**把已经超过它的现值拉回来（退款 / 直接塞值那两条路）；
 ##   · 显示用的人口向下取整。
 func _test_zone_population_cap(world, cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var z: Dictionary = w.zones.zones[0]
 	# 人口产能调大、上限压低，几条边界才在一两帧里就能撞到
 	z["production"] = {"food": 0.0, "gold": 0.0, "population": 10.0}
@@ -1092,7 +1092,7 @@ func _test_zone_population_cap(world, cfg) -> void:
 # 建造命令（走 command_processor，不直接调 world）
 # ------------------------------------------------------------------
 func _test_build_commands(world, cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var free = _find_free_tile(w, cfg, Vector2i(3, 3))
 	ok(free != null, "建造用例：找得到空地")
 	if free == null:
@@ -1136,7 +1136,7 @@ func _test_build_commands(world, cfg) -> void:
 # 快照往返 + 缺字段容忍
 # ------------------------------------------------------------------
 func _test_snapshot(world, cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	w.spawn_enemy(10, 12)
 	w.tick(DT)
 	var snap = SnapshotRes.to_snapshot(w)
@@ -1184,7 +1184,7 @@ func _test_snapshot(world, cfg) -> void:
 	eq(snap_general_types, cfg.general_types(), "★ 三个将领的 ut 就是配置里那三个类型")
 
 	# 应用到一个全新的世界：单位 / 建筑 / 资源都应当对齐
-	var w2 = WorldRes.create(cfg)
+	var w2 = require_world(cfg)
 	SnapshotRes.apply_snapshot(w2, cfg, snap)
 	eq(w2.units.size(), expect_units, "快照应用后单位数一致")
 	eq(w2.owned_tiles, w.owned_tiles, "己方地块数一致")
@@ -1218,7 +1218,7 @@ func _test_snapshot(world, cfg) -> void:
 	eq(w2.units.size(), 0, "快照里没有的单位被删除")
 
 	# ★ 缺字段容忍：不含 match / res / time 的旧快照不能把本地状态重置掉
-	var w3 = WorldRes.create(cfg)
+	var w3 = require_world(cfg)
 	w3.resources["food"] = 42.0
 	w3.time = 7.0
 	SnapshotRes.apply_snapshot(w3, cfg, {"units": [], "buildings": []})

@@ -107,6 +107,16 @@ var zones_kinds: Dictionary = {}
 ##
 ## 与产能一样是「地图说了算」的静态数据：进游戏之后不会变，所以不进快照。
 var zones_population_caps: Dictionary = {}
+## ★★ 每个区块的**开局归属**：id → 阵营 id（本轮新增）。
+##
+## 来源是 `zone_list[].owner`（手写地图里的可选项）。用途只有一类：
+## **NPC / AI 阵营一开始就有的地**（玩家的地靠出生点的大本营自动收归，
+## 见 zone.refresh_building_ownership —— 那条只认玩家阵营，所以 NPC 的地必须在这里写）。
+##
+## ⚠️ 缺字段（老图 / 编辑器导出的图）→ 一张空表 → **所有区块无主**，行为与从前一字不差。
+## ⚠️ 这里只登记 id → 阵营；「这个阵营认不认识」由 `zone.gd` 在应用时兜底
+##    （认不出来的一律当无主，与 `kind_of` 的宽容度一致）。
+var zones_owners: Dictionary = {}
 ## 旧格式里那个单数 `base` 读进来的值（**只读不写**的兼容入口）。
 ##
 ## ★ 编辑器**不再导出**这个字段了（用户要求把老式大本营彻底删掉），但**手写老地图
@@ -258,6 +268,23 @@ func _read_faction_bases(v: Variant) -> void:
 		faction_bases[fid] = p
 
 
+## ★★ 运行时给某一方**登记一个大本营点位**（本轮新增；阵营 AI 用）。
+##
+## 为什么需要它：`faction_bases` 原本只来自地图 JSON（地图编辑器画出来的），
+## 而「阵营 AI 的大本营摆哪」是**配置**（config.json 的 `ai.factions[].base`）——
+## 两个 AI 阵营不该逼着地图作者每张图都手画一遍。
+##
+## ★ 幂等、可覆盖：同一个阵营调两次就是改点位（世界每次 `reset()` 都会重放一遍配置）。
+## ★ 只写点位，不做任何校验：`spawn_layout_for` 会用 `nearest_walkable()` 把它挪到
+##   最近的可通行格上，越界点会退到地图参考点 —— 与「地图里写了越界坐标」同一套兜底。
+## ⚠️ 必须在 `apply_faction_layout()`（= 建基地）**之前**调，否则这一方会先按
+##   兜底点位建一座基地、再被重建成第二座（见 world.apply_faction_layout 的孤儿清理）。
+func set_faction_base(fid: String, tile: Vector2i) -> void:
+	if fid == "" or tile.x < 0 or tile.y < 0:
+		return
+	faction_bases[fid] = tile
+
+
 ## 读区块网格 + 名字表 + 每种区划的种类（地图编辑器导出的地图才有）。
 ##
 ## 缺字段 / 格式不认识 → 几张表都留空 → zone 走「均分」的老路（行为与加这个字段之前一致）。
@@ -272,6 +299,7 @@ func _read_zones(cfg: ConfigRes, grid_v: Variant, list_v: Variant) -> void:
 	zones_production = {}
 	zones_population_caps = {}
 	zones_kinds = {}
+	zones_owners = {}
 	if typeof(grid_v) != TYPE_ARRAY:
 		return
 	zones_grid = grid_v
@@ -312,6 +340,12 @@ func _read_zones(cfg: ConfigRes, grid_v: Variant, list_v: Variant) -> void:
 		var cap: Variant = z.get("population_cap", null)
 		if typeof(cap) == TYPE_FLOAT or typeof(cap) == TYPE_INT:
 			zones_population_caps[zid] = float(cap)
+		# ★★ 开局归属（本轮新增）：`zone_list[].owner` 写了阵营 id 就登记。
+		#    ⚠️ 不做「这个阵营存不存在」的校验：阵营名单要到 world.reset() 才定下来，
+		#       而这张表在那之前就读完了 —— 认不出来的由 zone 在应用时当无主处理。
+		var own := String(z.get("owner", "")).strip_edges()
+		if own != "":
+			zones_owners[zid] = own
 
 
 ## 读 exists 网格：地图编辑器导出的是 `[[1,1,0,...], ...]`（1 = 存在，0 = 地图外）。
@@ -414,10 +448,14 @@ func _read_buildings(v: Variant) -> Array[Dictionary]:
 	return out
 
 
-## 读地图上预置的单位。每项要 {x, y}，可选 {kind, faction, name, hold}：
+## 读地图上预置的单位。每项要 {x, y}，可选 {kind, faction, name, hold, zone}：
 ##   · kind 缺省 "enemy"（测试敌人）—— 目前只支持它
 ##   · faction 缺省 "enemy"；name 缺省 "测试敌人"
 ##   · hold = true → 不执行推进 AI（原地驻守）
+##   · ★ zone = 归属的**区划 id**（本轮新增，给「将领性 / 防御性 AI」用）：
+##     写了它 → 这个单位由 logic/general_ai.gd 接管（在自己区划里巡逻，
+##     不追出区划，脱战满 10 秒无消耗招兵），**不再跑推进 AI**（与 hold 同一条效果）。
+##     没写（-1）→ 行为与从前一字不差（守军靠 hold、巡逻兵照旧推进）。
 ## 坐标越界 / 落在山上的项在这里就丢掉（world 那边建不出来），
 ## tests/test_building_body.gd 会断言每一条都真的建出来了。
 func _read_units(v: Variant) -> Array[Dictionary]:
@@ -436,12 +474,17 @@ func _read_units(v: Variant) -> Array[Dictionary]:
 		if not terrain_walkable(x, y):
 			push_warning("地图预置单位落在不可通行的地形上，已跳过：(%d, %d)" % [x, y])
 			continue
+		# ★ 归属区划：-1 = 没写。写了才接管（见上面 zone 那条说明）。
+		#   ⚠️ 不做「这个 id 存不存在」的校验：zone 表要等 zone.build_from_map 之后才建好，
+		#      而这张表在那之前就读完了 —— 越界的 id 由 general_ai 那边当「找不到区划」处理。
+		var gz := int(u.get("zone", -1))
 		out.append({
 			"kind": String(u.get("kind", "enemy")),
 			"x": x, "y": y,
 			"faction": String(u.get("faction", "enemy")),
 			"name": String(u.get("name", "测试敌人")),
 			"hold": bool(u.get("hold", false)),
+			"zone": gz,
 		})
 	return out
 

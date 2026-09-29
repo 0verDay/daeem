@@ -213,7 +213,7 @@ func _test_general_overrides() -> void:
 	near(cfg.general_speed_at(2), cfg.unit_speed_of("rider"), 1e-6,
 		"将领 3 的移速 = 骑手那一档")
 	eq(cfg.general_name_at(0), "", "默认没有名字覆盖（调用方兜底「将领 N」）")
-	var w0 = WorldRes.create(cfg)
+	var w0 = require_world(cfg)
 	var g0 = w0.unit_by_id("general-1")
 	ok(g0 != null, "开局将领在场")
 	near(g0.hp_max, cfg.unit_hp_of("spearman"), 1e-6, "开局将领 1 的血量走兵种表")
@@ -227,7 +227,7 @@ func _test_general_overrides() -> void:
 		{"hp_max": 300, "damage": 40},
 		{},
 	]))
-	var w = WorldRes.create(cfg4)
+	var w = require_world(cfg4)
 	var g1 = w.unit_by_id("general-1")
 	var g2 = w.unit_by_id("general-2")
 	var g3 = w.unit_by_id("general-3")
@@ -298,7 +298,7 @@ func _test_vision() -> void:
 	near(cfg2.unit_vision_of("rider"), 3.0, 1e-6, "★ 改了兵种的 vision → 查询口读到新值")
 
 	# ---- 出生时抄进单位身上（迷雾读的就是它）----
-	var w = WorldRes.create(cfg2)
+	var w = require_world(cfg2)
 	var g3 = w.unit_by_id("general-3")
 	ok(g3 != null, "（前提）将领 3 在场")
 	if g3 != null:
@@ -321,7 +321,7 @@ func _test_vision() -> void:
 		"★ 将领 2 没写 → 仍然跟随长弓兵（10）")
 	near(cfg3.unit_vision_of("spearman"), 8.0, 1e-6,
 		"★ 覆盖只作用于那一位将领，不改兵种本身")
-	var w2 = WorldRes.create(cfg3)
+	var w2 = require_world(cfg3)
 	var g1b = w2.unit_by_id("general-1")
 	var g2b = w2.unit_by_id("general-2")
 	if g1b != null:
@@ -351,7 +351,7 @@ func _test_vision() -> void:
 		"★★ 没写 / 删掉 vision → 退回 fog.vision_building（编辑器里「清空」那一下）")
 
 	# 出生时抄进建筑身上（迷雾读的就是它）
-	var w3 = WorldRes.create(cfg3)
+	var w3 = require_world(cfg3)
 	var t3 = null
 	for bb in w3.building_list:
 		if bb.type == "tower" and bb.owner == FactionRes.DEFAULT_FACTION:
@@ -398,7 +398,7 @@ func _test_new_building() -> void:
 	near(cfg.building_attack_of("outpost", 1)["damage"], 20.0, 1e-6, "攻击力来自 config")
 
 	# ---- 世界里真的建得出来 ----
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var base_b = w.find_base_of(FactionRes.DEFAULT_FACTION)
 	ok(base_b != null, "（前提）有己方大本营")
 	if base_b == null:
@@ -474,7 +474,7 @@ func _test_construction() -> void:
 		return
 	cfg.data["building"]["outpost"] = NEW_BUILDING.duplicate(true)
 
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var base_b = w.find_base_of(FactionRes.DEFAULT_FACTION)
 	var tile: Vector2i = _free_tile_near(w, base_b.tx + 4, base_b.ty)
 	ok(tile.x >= 0, "（前提）找得到一个空格")
@@ -528,7 +528,7 @@ func _test_construction() -> void:
 	var cfg2 = require_config()
 	cfg2.data["building"]["base"]["build_sec"] = 5.0
 	cfg2.data["building"]["tower"]["build_sec"] = 5.0
-	var w2 = WorldRes.create(cfg2)
+	var w2 = require_world(cfg2)
 	var b2 = w2.find_base_of(FactionRes.DEFAULT_FACTION)
 	ok(b2 != null, "（前提）开局有己方大本营")
 	if b2 != null:

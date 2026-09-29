@@ -29,7 +29,7 @@ func _cases() -> void:
 	var cfg = require_config()
 	if cfg == null:
 		return
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	if w == null:
 		return
 	_test_slots_distinct_and_passable(w, cfg)
@@ -80,7 +80,7 @@ func _test_slots_distinct_and_passable(w, cfg) -> void:
 func _test_small_group_lands_exactly(w, cfg) -> void:
 	ok(cfg.formation_min_units > 1, "formation.min_units 大于 1（否则这条验不到东西）")
 	cfg.combat_enabled = false
-	var w2 = WorldRes.create(cfg)
+	var w2 = require_world(cfg)
 	var u = w2.units[0]
 	w2.units = [u]
 	var target := _open_spot(w2)
@@ -99,7 +99,7 @@ func _test_small_group_lands_exactly(w, cfg) -> void:
 ## 整队排阵之后：真的散开了、没有严重重叠、都停在点击点附近
 func _test_group_spreads_out(w, cfg) -> void:
 	cfg.combat_enabled = false
-	var w2 = WorldRes.create(cfg)
+	var w2 = require_world(cfg)
 	var group: Array = []
 	for u in w2.units:
 		if FactionRes.same_side(u.faction, w2.my_faction):
@@ -152,7 +152,7 @@ func _test_group_spreads_out(w, cfg) -> void:
 ## 点到不可通行的格子（山 / 建筑）时不排阵 —— 那种情况下每个单位的落点会被
 ## move_to 各自改成「贴边最近的可达点」，共用的那张距离场覆盖不到它们。
 func _test_no_rank_when_click_is_blocked(w, cfg) -> void:
-	var w2 = WorldRes.create(cfg)
+	var w2 = require_world(cfg)
 	var group: Array = []
 	for u in w2.units:
 		if FactionRes.same_side(u.faction, w2.my_faction):

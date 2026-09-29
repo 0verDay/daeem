@@ -49,7 +49,7 @@ func _cases() -> void:
 # 1. 几何：本体大小 / 居中 / 渲染 = 碰撞
 # ------------------------------------------------------------------
 func _test_geometry(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var base_b = w.find_base_of(FactionRes.DEFAULT_FACTION)
 	ok(base_b != null, "有大本营")
 	if base_b == null:
@@ -121,7 +121,7 @@ func _test_geometry(cfg) -> void:
 # 2. 己方：整格放行 + 本体不挡
 # ------------------------------------------------------------------
 func _test_ally_passes(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var base_b = w.find_base_of(FactionRes.DEFAULT_FACTION)
 	var g = w.unit_by_id("general-1")
 	ok(base_b != null and g != null, "有大本营与将领 1")
@@ -163,7 +163,7 @@ func _test_ally_passes(cfg) -> void:
 # 3. 敌方：格子能走，但本体挡
 # ------------------------------------------------------------------
 func _test_enemy_blocked_by_body(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var base_b = w.find_base_of(FactionRes.DEFAULT_FACTION)
 	if base_b == null:
 		return
@@ -216,7 +216,7 @@ func _test_enemy_blocked_by_body(cfg) -> void:
 ## 这条盯的是 A* 的建筑惩罚：塔格虽然可通行，但不该被当成捷径穿过去。
 ## 只验寻路（不跑 tick），所以不怕塔把敌人打死 —— 断言是确定性的。
 func _test_path_avoids_body(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var base_b = w.find_base_of(FactionRes.DEFAULT_FACTION)
 	if base_b == null:
 		return
@@ -247,7 +247,7 @@ func _test_path_avoids_body(cfg) -> void:
 # 4. 缝：对角相邻的两个箭塔之间能挤过去（墙不能）
 # ------------------------------------------------------------------
 func _test_gap_between_towers(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var e = w.spawn_enemy(0, 0)
 	if e == null:
 		return
@@ -306,7 +306,7 @@ func _test_gap_between_towers(cfg) -> void:
 # 5. 城墙：语义一字未变（整格挡敌方、放行己方）
 # ------------------------------------------------------------------
 func _test_wall_unchanged(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var t := _free_tile_near(w, 6, 6)
 	var wall = w.add_building("wall", t.x, t.y, FactionRes.DEFAULT_FACTION)
 	ok(wall != null, "建了一段城墙")
@@ -345,7 +345,7 @@ func _test_wall_unchanged(cfg) -> void:
 # 断言盯三件事：每一条都真的建出来了、归属对、**离玩家大本营足够远**。
 # ------------------------------------------------------------------
 func _test_map_outpost(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var prefab: Array = w.map.prefab_buildings
 	ok(prefab.size() >= 5, "地图里有预置建筑（%d 条）" % prefab.size())
 	if prefab.is_empty():
@@ -411,7 +411,7 @@ func _test_map_outpost(cfg) -> void:
 # 外加一条行为：hold 的单位**不会**朝玩家据点行军（那是它们能当靶子的前提）。
 # ------------------------------------------------------------------
 func _test_map_units(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var prefab: Array = w.map.prefab_units
 	ok(prefab.size() >= 4, "地图里有预置单位（%d 条）" % prefab.size())
 	if prefab.is_empty():

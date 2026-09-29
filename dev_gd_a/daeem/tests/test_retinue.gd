@@ -49,7 +49,7 @@ func _cases() -> void:
 
 ## 出生：数量、类型、id 规则、没有快捷键
 func _test_spawn(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var per: int = cfg.general_escort_count()
 	ok(per > 0, "配置里附属兵数量大于 0（不然整套测试没有意义）")
 	var generals = _kind(w, UnitRes.KIND_GENERAL)
@@ -93,7 +93,7 @@ func _test_spawn(cfg) -> void:
 
 ## 出生位置：挨着队长（不能被挤到地图另一头）
 func _test_spawn_near_leader(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var g = w.unit_by_id("general-1")
 	ok(g != null, "有 general-1")
 	if g == null:
@@ -114,7 +114,7 @@ func _test_spawn_near_leader(cfg) -> void:
 
 ## 队伍模型的语义
 func _test_group_model(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var per: int = cfg.general_escort_count()
 	var g1 = w.unit_by_id("general-1")
 	var sub0 = w.retinue_of(g1.id)[0]
@@ -150,7 +150,7 @@ func _test_group_model(cfg) -> void:
 
 ## ★ 队长阵亡后：附属兵不能被凭空造出一个队长，也不该互相牵连
 func _test_leader_dead(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var per: int = cfg.general_escort_count()
 	var g1 = w.unit_by_id("general-1")
 	var ret = w.retinue_of(g1.id)
@@ -184,7 +184,7 @@ func _test_leader_dead(cfg) -> void:
 
 ## ★ 一条 move 命令覆盖整队（「右键移动同步下达指令」的逻辑层那一半）
 func _test_move_command_hits_whole_group(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var g1 = w.unit_by_id("general-1")
 	var group = w.group_of(g1)
 	var ids: Array = []
@@ -226,7 +226,7 @@ func _test_move_command_hits_whole_group(cfg) -> void:
 func _test_group_move_actually_works(cfg) -> void:
 	var was_combat: bool = cfg.combat_enabled
 	cfg.combat_enabled = false
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	w.units = _keep_player_units(w)
 	var g1 = w.unit_by_id("general-1")
 	var group = w.group_of(g1)
@@ -283,7 +283,7 @@ func _keep_player_units(w) -> Array:
 ##   这一条验的是「不自动跟随」这条契约，不是战斗。
 func _test_does_not_follow_on_its_own(cfg) -> void:
 	cfg.combat_enabled = false
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var g1 = w.unit_by_id("general-1")
 	var ret = w.retinue_of(g1.id)
 	ok(ret.size() > 0, "有附属兵")
@@ -318,7 +318,7 @@ func _test_does_not_follow_on_its_own(cfg) -> void:
 ##    所以这里不再断言「附属兵比将领弱」，而是断言
 ##    「将领与它的附属兵同类型 ⇒ 同数值」「不同类型 ⇒ 不同数值」「谁都不等于测试敌人」。
 func _test_stats_are_per_type(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var g1 = w.unit_by_id("general-1")
 	var s = w.retinue_of(g1.id)[0]
 	var e = w.spawn_enemy(10, 12)
@@ -376,7 +376,7 @@ func _test_recruit(cfg) -> void:
 	# 这一节要 tick 满 10 秒（读条），所以关掉战斗与场上的敌人：
 	# 地图预置的巡逻兵会推进过来、把附属兵打死，人数断言就不可靠了（见 pitfalls 5.34）
 	cfg.combat_enabled = false
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	w.units = _keep_player_units(w)
 	var per: int = cfg.general_escort_count()
 	var g1 = w.unit_by_id("general-1")

@@ -81,7 +81,7 @@ func _cases() -> void:
 ##    顺序刚好没被打乱（见 _test_targeting_with_filtered_units 的注释）——
 ##    必须让「移动中的自己人」夹在站定的自己人中间才会露出来。
 func _test_no_friendly_fire(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	if w.crowd == null or not w.crowd.available():
 		ok(false, "C# 索敌内核可用（友军误伤是内核结果的下标映射问题）")
 		return
@@ -143,7 +143,7 @@ func _test_no_friendly_fire(cfg) -> void:
 ##   · 1000 单位基准只有**一个阵营**、没有敌人 → 内核结果全是 -1 → 映射错了也看不出来。
 ##   暴露条件是「大批自己人在行军（被过滤）+ 有敌人」—— 也就是真实对局。
 func _test_targeting_with_filtered_units(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	w.tick(DT)                       # 先建表
 
 	# 30 个自己人排在**最前面**、并且处于「移动中」→ 会被索敌过滤掉
@@ -198,7 +198,7 @@ func _test_targeting_with_filtered_units(cfg) -> void:
 ## 判定条件写了三处（敌对 = 阵营下标不同 / 命中 = 距离−体积 ≤ 警戒 / 取最近且平局取小下标），
 ## 任何一处写错都不会报错，只会表现成「单位有时不还手」「打近的反而追远的」。
 func _test_targeting_matches_gdscript(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	if w.crowd == null or not w.crowd.available():
 		ok(false, "C# 索敌内核可用")
 		return
@@ -247,7 +247,7 @@ func _test_targeting_matches_gdscript(cfg) -> void:
 
 ## 碰撞内核真的被挂上了吗（否则「测试全绿」可能只是悄悄退回了慢路径）
 func _test_kernel_is_active(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	ok(w.crowd != null, "world 建出了碰撞桥")
 	if w.crowd == null:
 		return
@@ -277,7 +277,7 @@ func _test_collision_matches_gdscript(cfg) -> void:
 func _run_overlap_scenario(cfg, backend: String) -> Array:
 	# ★ 用 cfg 上的字段切后端（不再是改 cfg.data —— 那些值现在都是载入时算好的）
 	cfg.unit_collision_backend = backend
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	# ★ 只留这一批：将领/附属兵的推挤会把对照搅浑
 	var batch: Array = []
 	for i in 8:

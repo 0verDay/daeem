@@ -349,7 +349,7 @@ func _quiet(cfg) -> RefCounted:
 		c = cfg
 	else:
 		c.combat_enabled = false
-	return WorldRes.create(c)
+	return require_world(c)
 
 
 func _no_income(w) -> void:

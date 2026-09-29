@@ -141,3 +141,25 @@ func require_map(cfg, path: String = "res://data/test_map.json") -> RefCounted:
 	var m = cls.load_from(path, cfg)
 	ok(m != null, "map json 能载入：%s" % path)
 	return m
+
+
+## 建一个**不带阵营 AI** 的干净世界（绝大多数测试要的就是它）。
+##
+## ★★ 为什么不直接 `World.create(cfg)`：默认那个是**开了 AI 的**（单机游戏要的），
+##   而开了 AI 之后世界上会多出**一整个阵营**（三个将领 + 大本营 + 资源池）——
+##   于是「开局 3 个将领」「场上有 22 个单位」「对家的守军看不见」这类
+##   与 AI 无关的断言会集体变红，而它们本来验的东西（移动 / 碰撞 / 迷雾）一个字都没错。
+##
+## ★ 要验 AI 本身的测试（tests/test_ai.gd）当然用 `World.create(cfg)`
+##   （或者显式传 `with_ai = true`）—— 那条路一眼就能看出「这个用例依赖 AI 存在」。
+##
+## @param world_path World 脚本的 res:// 路径（默认 `res://logic/world.gd`）；
+##        调用方自己 preload 了的话传进来就省一次 load。
+func require_world(cfg, world_path: String = "res://logic/world.gd",
+		map_path: String = "res://data/test_map.json") -> RefCounted:
+	var cls := script_at(world_path)
+	if cls == null:
+		return null
+	var w = cls.create(cfg, map_path, false)
+	ok(w != null, "世界能建出来（不带阵营 AI）")
+	return w

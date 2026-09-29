@@ -144,7 +144,10 @@ func _initialize() -> void:
 		quit(1)
 		return
 
-	var w = WorldRes.create(cfg, map_path)
+	# ★ 基准里**不开阵营 AI**（with_ai = false）：基准量的是群体碰撞 / 寻路，
+	#   多一个阵营的将领、建筑与 AI 逻辑只会把噪声混进测出来的微秒数。
+	#   （基准脚本本来就不该依赖玩法层的东西 —— 见 tests/test_case.require_world 的说明。）
+	var w = WorldRes.create(cfg, map_path, false)
 	if w == null:
 		printerr("[BENCH] world 建不起来（地图载入失败：%s）" % map_path)
 		quit(1)

@@ -82,7 +82,7 @@ func _test_real_test_map(cfg) -> void:
 	# 真的开一局。⚠️ World.create() 走的是**单机名单**（只有 "p1"），
 	#    所以这一局只该立起 player 一方的基地 —— p1/p2 的大本营这时用不到
 	#    （它们在联机名单里才生效，下面单独验）。
-	var w = WorldRes.create(cfg, path)
+	var w = require_world(cfg, "res://logic/world.gd", path)
 	ok(w != null, "★ 用仓库里的 test_map.json 能开出完整一局")
 	if w == null:
 		return
@@ -497,7 +497,7 @@ func _test_zone_kinds(cfg) -> void:
 		"★ 种类认不出来也不影响它的产量数字")
 
 	# ---- 特化白名单按种类挡（逻辑层；界面那一侧在 test_ui.gd 里验）
-	var w = WorldRes.create(cfg, path)
+	var w = require_world(cfg, "res://logic/world.gd", path)
 	ok(w != null, "带种类的地图能开出世界")
 	if w == null:
 		return
@@ -571,7 +571,7 @@ func _test_world_with_editor_map(cfg) -> void:
 	ok(not m.tile_exists(0, 0), "角落是地图外（八边形地图）")
 	ok(m.tile_exists(0, 3), "中间那行顶到了最左边")
 
-	var w = WorldRes.create(cfg, path)
+	var w = require_world(cfg, "res://logic/world.gd", path)
 	ok(w != null, "★ 编辑器导出的地图能开出完整一局（world.create）")
 	if w == null:
 		return

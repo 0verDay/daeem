@@ -70,7 +70,8 @@ static func can_upgrade(world, b, faction: String) -> String:
 		return "busy"
 	if b.level >= world.cfg.upgrade_max_level(b.type):
 		return "max_level"
-	if not EconomyRes.can_afford(world.resources, world.cfg.upgrade_cost_to(b.type, b.level)):
+	var pool: Variant = world.resource_pool_for(String(b.owner))
+	if not EconomyRes.can_afford(pool, world.cfg.upgrade_cost_to(b.type, b.level)):
 		return "cost"
 	return ""
 
@@ -103,7 +104,8 @@ static func can_specialize(world, zone, spec_id: String, faction: String) -> Str
 		return "busy"
 	if String(zone.get("spec_done", "")) != "":
 		return "spec_done"
-	if not EconomyRes.can_afford(world.resources, world.cfg.spec_cost(spec_id)):
+	var pool: Variant = world.resource_pool_for(String((zone as Dictionary).get("owner", "")))
+	if not EconomyRes.can_afford(pool, world.cfg.spec_cost(spec_id)):
 		return "cost"
 	return ""
 
@@ -292,7 +294,9 @@ static func start_upgrade(world, b, faction: String) -> bool:
 			"kind": "building_upgrade", "building": b})
 		return false
 	var cost: Dictionary = world.cfg.upgrade_cost_to(b.type, b.level)
-	if not EconomyRes.spend(world.resources, cost):
+	# ★ 钱从**这栋楼的归属方**自己的池子里扣（不是写死的 world.resources）——
+	#   AI 升级自己的建筑不该掏玩家的兜。池子为 null = 那一方没有资源库（见 resource_pool_for）。
+	if not EconomyRes.spend(world.resource_pool_for(String(b.owner)), cost):
 		world.push_event({"type": "upgrade_rejected", "reason": "cost",
 			"kind": "building_upgrade", "building": b})
 		return false
@@ -314,11 +318,12 @@ static func cancel_upgrade(world, b, faction: String) -> bool:
 		return false
 	var food: float = b.upgrade_cost_food
 	var gold: float = b.upgrade_cost_gold
+	var owner := String(b.owner)
 	b.upgrade_remaining = 0.0
 	b.upgrade_total = 0.0
 	b.upgrade_cost_food = 0.0
 	b.upgrade_cost_gold = 0.0
-	_refund_resources(world, food, gold)
+	_refund_resources(world, owner, food, gold)
 	world.push_event({"type": "upgrade_cancelled", "kind": "building_upgrade", "building": b,
 		"refund_food": food, "refund_gold": gold})
 	return true
@@ -332,7 +337,7 @@ static func start_specialize(world, zone, spec_id: String, faction: String) -> b
 			"kind": "zone_specialize", "spec": spec_id, "zone_id": _zone_id(zone)})
 		return false
 	var cost: Dictionary = world.cfg.spec_cost(spec_id)
-	if not EconomyRes.spend(world.resources, cost):
+	if not EconomyRes.spend(world.resource_pool_for(String((zone as Dictionary).get("owner", ""))), cost):
 		world.push_event({"type": "upgrade_rejected", "reason": "cost",
 			"kind": "zone_specialize", "spec": spec_id, "zone_id": _zone_id(zone)})
 		return false
@@ -376,9 +381,10 @@ static func cancel_spec_bar(world, zone, faction: String) -> bool:
 		return false
 	var food := float(zone.get("spec_cost_food", 0.0))
 	var gold := float(zone.get("spec_cost_gold", 0.0))
+	var owner := String(zone.get("owner", ""))
 	# 只有「正在做特化」的那条读条要退钱；「取消特化」那条本来就没再扣钱
 	if not bool(zone.get("spec_cancel", false)):
-		_refund_resources(world, food, gold)
+		_refund_resources(world, owner, food, gold)
 		_clear_spec_bar(zone)
 		zone["spec_cost_food"] = 0.0
 		zone["spec_cost_gold"] = 0.0
@@ -402,9 +408,18 @@ static func _zone_id(zone) -> int:
 	return int((zone as Dictionary).get("id", -1))
 
 
-static func _refund_resources(world, food: float, gold: float) -> void:
-	world.resources["food"] = float(world.resources.get("food", 0.0)) + food
-	world.resources["gold"] = float(world.resources.get("gold", 0.0)) + gold
+## 退款：退给**下单那一方自己的池子**（不是写死的 world.resources）。
+##
+## ⚠️ `faction` 必须由调用方传进来：退款那几处的对象（建筑 / 区划）在退款之前
+##    可能已经易主 / 被清场，而钱当初是从**原来那一方**扣的。
+##    这与 `world._refund` 里那句「zid 必须由调用方传进来」是**同一个坑**。
+## ★ 池子为 null（那一方没有资源库）→ 本来就一分没扣，这里也不加（见 resource_pool_for）。
+static func _refund_resources(world, faction: String, food: float, gold: float) -> void:
+	var pool: Variant = world.resource_pool_for(faction)
+	if pool == null:
+		return
+	pool["food"] = float(pool.get("food", 0.0)) + food
+	pool["gold"] = float(pool.get("gold", 0.0)) + gold
 
 
 ## 建筑离场（被打掉 / 被拆）时调：**读条作废、不退款**。
@@ -488,10 +503,11 @@ static func _finish_spec(world, z) -> void:
 	if was_cancel:
 		var food := float(z.get("spec_cost_food", 0.0))
 		var gold := float(z.get("spec_cost_gold", 0.0))
+		var owner := String(z.get("owner", ""))
 		z["spec_done"] = ""
 		z["spec_cost_food"] = 0.0
 		z["spec_cost_gold"] = 0.0
-		_refund_resources(world, food, gold)
+		_refund_resources(world, owner, food, gold)
 		world.refresh_zone_production()
 		world.push_event({"type": "upgrade_done", "kind": "zone_spec_cancel",
 			"zone_id": _zone_id(z), "refund_food": food, "refund_gold": gold})

@@ -549,12 +549,21 @@ func _zone_has_building(building_list: Array, zone_id: int, owner: String) -> bo
 
 ## 重算建筑带给区块的归属（建筑建成 / 被毁时调用，不每帧跑）。
 ##
-## 任意玩家阵营的建筑都能把区块直接收归自己 —— 旧实现只认 'player'。
+## 任意阵营的建筑都能把区块直接收归自己 —— 旧实现只认 'player'。
 ## ⚠️ 副作用（照搬 HTML 版，可玩性后议）：一个大本营会让**整个区块瞬间**归己方，
 ##    于是出生区的「站 4 秒占领」玩法在那个区块里失效。开关在 config.zone.zone_owned_by_building。
 ##
 ## 与 HTML 版的一处刻意差异：只在「该区块当前无主」时收归，而不是每个玩家阵营都无条件改写。
 ## 否则两个阵营在同一区块都有建筑时，归属会每帧翻转（单机下两者等价）。
+##
+## ★★ 为什么名单里**不再过滤**玩家阵营（本轮改动，与 AI 一起做的）：
+##   NPC / AI 阵营也有大本营（见 world.apply_faction_layout），
+##   而「大本营把它所在的区块收归自己」这条规则对**任何**阵营都成立 ——
+##   不放行的话阵营 AI 开局一个区块都没有：它的收入是 0（没钱）、
+##   它的区划里也没有中心格（`_recruit_zone` 挑不到）⇒ **它一个将都招不出来**。
+##   实测症状就是「AI 只是站着不动、什么都没干」（资源池一直是 0）。
+##   ⚠️ 无主建筑的 owner 是空串：`_zone_has_building(..., f)` 只在 f 非空时才可能命中，
+##      所以「中立障碍（区划中心）把区块吃掉」这种事不会发生。
 func refresh_building_ownership(cfg: ConfigRes, building_list: Array, factions: Array) -> void:
 	if not cfg.zone_owned_by_building:
 		return
@@ -563,7 +572,7 @@ func refresh_building_ownership(cfg: ConfigRes, building_list: Array, factions: 
 		if z["owner"] != "":
 			continue
 		for f in flist:
-			if not FactionRes.is_player_faction(f):
+			if f == "":
 				continue
 			if _zone_has_building(building_list, z["id"], f):
 				z["owner"] = f
@@ -786,3 +795,49 @@ func owned_zone_names(owner: String) -> Array[String]:
 		if z["owner"] == owner:
 			out.append(String(z["name"]))
 	return out
+
+
+## ★★ 应用地图给的**开局归属**（`zone_list[].owner`，本轮新增）。
+##
+## 需求背景：玩家那一方的地靠「出生点的大本营自动收归」就够了
+## （`refresh_building_ownership`），但那条路**只认玩家阵营** ——
+## 于是 NPC / AI 阵营在开局时要有一块地，地图里必须能直接把它写出来。
+##
+## ★ 判据（与 `kind_of` 同一套宽容度）：
+##   · 归属方**在当前名单里**（`factions` 或默认阵营）→ 收下，并把程序值填成 1.0
+##     （`refresh_building_ownership` 也是这么补的：owner 非空 + progress 1.0 =
+##      「这块地本来就是它的，不是读条抢来的」）；
+##   · 认不出来（名单里没这个 id / 空串）→ **保持无主**，不报错也不猜
+##     —— 地图是可以手改的文件，写错一个阵营 id 不该让那块地凭空有主。
+##
+## @param map 地图数据（读它的 `zones_owners`；null = 没有开局归属）
+## @param factions 这一局的阵营名单（world.factions）
+## @return 真的收下的区块数（测试与日志用）
+func apply_initial_ownership(map, factions: Array) -> int:
+	var applied := 0
+	if map == null or typeof(map.zones_owners) != TYPE_DICTIONARY:
+		return applied
+	var table: Dictionary = map.zones_owners
+	for z in zones:
+		var zid := int(z["id"])
+		if not table.has(zid):
+			continue
+		var own := String(table[zid])
+		if not _faction_known(own, factions):
+			continue
+		z["owner"] = own
+		if (z["progress_by"] as Dictionary).has(own):
+			(z["progress_by"] as Dictionary)[own] = 1.0
+		z["progress"] = 1.0
+		z["claimed_by"] = "map"
+		applied += 1
+	return applied
+
+
+## 这个阵营 id 在不在当前这一局的名单里（空名单时按「只有一个默认阵营」处理）。
+static func _faction_known(fid: String, factions: Array) -> bool:
+	if fid == "":
+		return false
+	if factions.is_empty():
+		return fid == FactionRes.DEFAULT_FACTION
+	return factions.has(fid)

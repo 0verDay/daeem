@@ -1098,9 +1098,16 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 		main.hud.refresh()
 		eq(card.cell_label(0), "升级城墙", "★ 再改回城墙 → 又跟着变回来（反方向也要对）")
 		# 换一栋**同类型但不同位置**的建筑：内容一样，但不许崩 / 不许留旧目标
+		#
+		# ⚠️ 这里必须限定「和 wall_b **同一方**」：`building_list` 里现在混着 NPC 阵营的
+		#    建筑（地图上预置的对家据点，以及阵营 AI 的大本营与防御阵地）——
+		#    随便挑一栋 "wall" 很可能挑到 AI 的那一堵，而那一堵**正被 AI 升级着**
+		#    （faction_ai 会花自己的钱升级自己的楼），于是卡片上写的是「取消升级」。
+		#    那是对的行为，只是这条用例想验的是「换一栋同类建筑，文案照旧」。
 		var wall_b2 = null
 		for b2 in world.building_list:
-			if b2 != null and b2.alive and b2.type == "wall" and b2 != wall_b:
+			if b2 != null and b2.alive and b2.type == "wall" and b2 != wall_b \
+					and FactionRes.same_side(String(b2.owner), String(wall_b.owner)):
 				wall_b2 = b2
 				break
 		if wall_b2 != null:
@@ -2110,7 +2117,7 @@ func _test_order_locked_notice(main) -> void:
 # ★ 这里单独构造一个控件、直接喂一个「正在招募」的将领 ——
 #   不去动主场景那个世界（它还要给后面的用例用，tick 满 10 秒会把巡逻兵引过来）。
 func _test_queue_control(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	w.resources["food"] = 1000.0
 	w.resources["gold"] = 1000.0
 	var g1 = w.unit_by_id("general-1")
@@ -2196,7 +2203,7 @@ func _hover_queue_cell(q: Control, slot: int) -> void:
 # 症状有多难查见 pitfalls 5.14：命令是输入事件触发的、跑在两次 tick 之间，
 # 而 tick 曾经在**开头**清空 _events —— 命令事件在送到界面前就被丢掉了。
 func _test_recruit_queued_event(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	w.resources["food"] = 1000.0
 	w.resources["gold"] = 1000.0
 	var g1 = w.unit_by_id("general-1")

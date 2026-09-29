@@ -69,16 +69,22 @@ dev_gd_a/daeem/
 │   ├── grid.gd                   #   网格工具 + 索引换算 + 方向集（DIRS4/DIRS8/octile）
 │   ├── pathfinder.gd             #   A*（四连通或八方向）+ segment_clear（超覆盖 DDA）
 │   │                             #   + smooth_path（拉直）+ round_corners（拐角圆化）
-│   ├── faction.gd                #   阵营模型：is_player_faction / same_side
+│   ├── faction.gd                #   阵营模型：is_player_faction / same_side / is_ai_faction
 │   ├── map_data.gd               #   载入地图（地形 + exists 存在格 + zones 区块网格）、连通性修正
+│   │                             #   + ★ 预置单位可带 `zone`（归属区划，给防御性 AI）
+│   │                             #   + ★ `zone_list[].owner`（开局归属）+ set_faction_base()（config 给的基地）
 │   ├── unit.gd                   #   单位：移动 + 战斗 + 警戒 + 复活（本轮不做复活）
 │   │                             #   + ★ 招募队列（将领自己就是兵营：train_* 字段）
+│   │                             #   + ★ 驻防 AI 的字段（garrison_zone_id / patrol_timer /
+│   │                             #     combat_idle_timer / retarget_cd）+ retinue_size()
 │   ├── building.gd               #   建筑定义与实例：blocks(faction) / 血量
 │   ├── zone.gd                   #   区块占领（每阵营独立进度）+ 区划中心 / 人口 / 产能；
 │   │                             #   ★ 区划**种类**（kind：粮食 / 黄金 / 人口）只决定能做哪些特化，
 │   │                             #     产量永远以地图 zone_list[].production 的数字为准
 │   │                             #   区块划分读地图的 zones 网格，老地图退回 6×4 均分占位
+│   │                             #   + ★ apply_initial_ownership()（地图写的开局归属）
 │   ├── economy.gd                #   资源产出 + 扣费（can_afford / spend / try_spend）
+│   │                             #   ★ 池子是 null ⇒「这一方没有资源库 = 资源无限」
 │   ├── tech.gd                   #   ★ 科技：占位表（config.tech.list）+ 每阵营的启用状态
 │   │                             #     + 效果聚合（每地块加产量 / 血量倍率 / 人口增长倍率）
 │   │                             #     规则：同一时间最多启用 config.tech.max_active 条
@@ -101,13 +107,24 @@ dev_gd_a/daeem/
 │   │                             #     能做哪几档由**区划种类**（config.zone_kind.list[].specs）决定
 │   │                             #     两者都是**读条**（复用招募那块面板）、入队即扣费、可取消退款
 │   ├── combat.gd                 #   战斗结算与事件（索敌 / 开火 / 拆建筑）
+│   ├── enemy_ai.gd               #   调试用「测试敌人」的推进 AI（朝玩家据点走、拆挡路的墙）
+│   ├── faction_ai.gd             #   ★★ **阵营性 AI**（本轮新增）：附属在某个阵营下，
+│   │                             #     有**自己的资源库**（world.ai_resources，与玩家分开），
+│   │                             #     资源 = 占领区划产能 × resource_mult；四段资源规划
+│   │                             #     （招将 → 招兵 → 升级 → 出兵），满员后行军攻击敌方区划中心
+│   ├── general_ai.gd             #   ★★ **将领性（防御性）AI**（本轮新增）：附属在某个将领下，
+│   │                             #     **没有资源库、没有大本营**；在**归属区划**里按间隔巡逻，
+│   │                             #     不追出一个区划（追出去当场脱战 + 再战冷却），
+│   │                             #     脱战 10 秒且不满员时**无消耗**招兵（free = true）
 │   ├── command_processor.gd      #   ★ 命令的唯一入口（move / build / demolish）
 │   ├── snapshot.gd               #   ★ to_snapshot / apply_snapshot（本轮用于调试，将来是网络包体）
 │   ├── crowd/                    #   ★ 群体碰撞的 C# 内核（1000 单位群编的性能前提）
 │   │   ├── CrowdKernel.cs        #     空间哈希 + 软分离 + 本体推出（语义与 collision.gd 一致）
 │   │   ├── CrowdProbe.cs         #     跨语言通路探针（桥测试用）
 │   │   └── crowd_bridge.gd       #     ★ logic ↔ 内核的**唯一**接口：建表 + 批量编解码 + 回退
-│   └── world.gd                  #   世界容器：持有 units / buildings / zones / tech / upgrade，推进 tick()
+│   └── world.gd                  #   世界容器：持有 units / buildings / zones / tech / upgrade，
+│                                 #   推进 tick()；★ 也持有 AI 的权威状态
+│                                 #   （`ai_resources` / `ai_factions` / `with_ai`）
 ├── daeem.csproj                  # C# 工程（Godot.NET.Sdk）。★ 引擎必须用 mono(.NET) 版
 ├── NuGet.config                  # 本地包源（引擎自带 nupkgs；本机没有外网到 nuget.org）
 ├── view/                         # 渲染：Node2D / Control，禁止改逻辑状态
@@ -181,6 +198,10 @@ dev_gd_a/daeem/
     │                             #     特化只影响本区块且与科技叠加 / 命令层
     ├── test_map_editor.gd        #   ★ 地图编辑器导出的地图：exists 存在格（地图外不可通行）
     │                             #   + zones 区块网格（非矩形区块、空区块保留）
+    ├── test_ai.gd                #   ★★ 两种 AI（本轮新增）：阵营 AI（自己的资源库 / 资源随
+    │                             #     占领区划增长 / 资源倍率 / 招将 → 招兵 → 升级 → 出兵）
+    │                             #     + 将领性（防御性）AI（归属区划巡逻 / 不追出一个区划 /
+    │                             #     脱战 10 秒无消耗招兵）+ 两条 AI 判据互斥（133 项）
     ├── test_unit_editor.gd       #   ★ 单位编辑器改的那些数**游戏侧真的读**：建筑定义（config 优先）
     │                             #     / 建造读条（读条不开火、读完开火、开局 instant）/ 逐级攻击 /
     │                             #     将领独立数值 / 新建筑能建能打 / 建造页读 config
@@ -333,6 +354,12 @@ Godot 里 DPR 由引擎处理，**但下面三条要原样继承**：
 | 区块（`owner` / `progress_by`） | `logic/zone.gd` | **每阵营独立进度**，不要退回单一 `progress` |
 | 区划**中心** / 产能 / 人口 / **人口上限** | `logic/zone.gd`（区块字典的 `center` / `production` / `population` / `population_cap`）；中心那一格上另有一栋 `TYPE_ZONE_CENTER` 建筑 | 中心、产能与**人口上限**都来自地图 JSON（上限缺字段 = 1，见 route.md 16.1）；人口是**运行时累积**的，每区划各算各的，**涨到上限就停**（见 route.md 14.5 / 16.1）；目前**唯一的消耗**是招募（每个单位扣将领所在区划 1 人口） |
 | 资源、己方地块数 | `logic/economy.gd` | 招募的扣费**不受** `economy.enabled` 影响（那个开关只管建造免费） |
+| ★★ **NPC / AI 阵营的资源库** | `logic/world.gd` 的 `ai_resources`（"faction" → `{food, gold}`）+ `resource_pool_for(faction)` | 与玩家的 `resources` **两个字典**。招募（将领 / 区划）、升级、特化的**扣费与退款**全部问 `resource_pool_for()` —— 这就是「谁下单、扣谁的钱」的唯一判据（见 route.md 33.4）。★ 返回 **null = 这一方没有资源库 = 资源无限**（将领性 AI 走这条） |
+| ★★ **阵营 AI 的状态** | `logic/world.gd` 的 `ai_factions[]`（每项 `{faction, mult, general_index, recruit_timer, upgrade_timer, attack_timer}`），规则在 `logic/faction_ai.gd` | 它是**世界状态**（与 `tech.active_by_faction` 同源），不是界面状态。`setup()` 在 `world.reset()` 末尾建；每帧 `faction_ai.update()` 推进 |
+| ★★ **将领性 AI 的状态** | `logic/unit.gd` 的 `garrison_zone_id` / `patrol_timer` / `combat_idle_timer` / `retarget_cd` / `garrison_recruit_timer`，规则在 `logic/general_ai.gd` | ★ 挂在**单位自己**身上（与 `train_*` 同一个理由：它天然属于某个将领，单位没了状态就该没）。它**不**在 world 上另开一张表，也**不**进 `ai_resources` |
+| ★ AI 阵营的名单与基地 | `data/config.json` 的 `ai.factions[]`（id / base / resource_mult / start_*） | 名单决定「谁由 AI 驱动 + 谁有自己的资源池」；**base 与 AI 无关**（`_register_config_bases()` 不看 `with_ai`）—— 名单里的一方若没有基地点位会落到 (0,0) 顶掉区块 11 的中心（route.md 33.5 坑①） |
+| ★ 地图里 NPC 阵营的开局归属 | `data/test_map.json` 的 `zone_list[].owner` → `logic/map_data.gd` 的 `zones_owners` → `logic/zone.gd` 的 `apply_initial_ownership()` | 玩家那一方的地靠出生点大本营自动收归（`refresh_building_ownership`），那条**只认玩家阵营** —— 所以 NPC 的地必须能在地图里直接写出来 |
+| ★ 这一局开不开 AI | `logic/world.gd` 的 `with_ai`（`World.create(cfg, map, with_ai)`，默认 true） | 开了就多一整个阵营（三个将领 + 大本营 + 资源池）。测试 / 基准走 `tests/test_case.require_world()`（= `with_ai = false`），要验 AI 的用例才用默认那条（route.md 33.4） |
 | 相机 / 缩放 | `view/camera_rig.gd` | 纯表现，不进快照。★ 它的 `camera.edge_size` 与 HUD 的「屏幕最外圈不拦滚屏」是**同一个数**（`cfg.camera_edge_size`） |
 | 选中列表 | `view/input_controller.gd` | 纯本地，**不进命令流**（第 1 轮也一样）。★ 左键**点选**与左键**框选**（拖出矩形，见 route.md 16.3）走的是同一个入口 `select_units()` —— 它会用 `world.expand_to_groups()` 把「一个单位」展开成「它所属的整支部队」 |
 | 玩家下达的攻击命令 | `logic/unit.gd` 的 `ordered_target` / `ordered_building` / `has_attack_move` | 与「这一帧在打谁」（`target` / `target_building`）**分开存**，见 route.md 12.3 |

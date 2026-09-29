@@ -62,7 +62,7 @@ func _cases() -> void:
 #   `move_to(settle = false)` = 向某个点靠近（追击）→ 落点原样保留
 # ------------------------------------------------------------------
 func _test_chase_needs_no_arrival_slot(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var a = w.units[0]
 	var b = w.units[1]
 	ok(a != null and b != null, "有两个己方单位")
@@ -102,7 +102,7 @@ func _test_chase_needs_no_arrival_slot(cfg) -> void:
 # 几百个单位同帧锁定目标 = 同帧几十次 Dijkstra（实测单帧 21.5 ms）。
 # ------------------------------------------------------------------
 func _test_chase_direct_line(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var u = w.units[0]
 	ok(u != null, "有一个单位")
 	if u == null:
@@ -147,7 +147,7 @@ func _test_chase_direct_line(cfg) -> void:
 # （墙 / 建筑 / 站定的单位）时，每秒 3000+ 次完整寻路全是白费。
 # ------------------------------------------------------------------
 func _test_chase_repath_gate(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var u = w.units[0]
 	var e = w.spawn_enemy(u.tx + 3, u.ty)
 	ok(u != null and e != null, "有一个单位和它旁边的敌人")
@@ -181,7 +181,7 @@ func _test_chase_repath_gate(cfg) -> void:
 # 1. 点名攻击单位：一路追上去打掉
 # ------------------------------------------------------------------
 func _test_attack_unit(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var g = w.unit_by_id("general-1")
 	var e = w.spawn_enemy(g.tx + 4, g.ty)
 	ok(g != null and e != null, "有将领 1 和一个敌人")
@@ -209,7 +209,7 @@ func _test_attack_unit(cfg) -> void:
 # 2. 点名攻击建筑：靠近 → 拆
 # ------------------------------------------------------------------
 func _test_attack_building(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var g = w.unit_by_id("general-1")
 	# ★ 先把这张图自带的建筑（对家据点的城墙 / 箭塔）清掉：
 	#   「拆完之后 `target_building` 要清空」这条断言会被**别的**敌方建筑搅乱 ——
@@ -254,7 +254,7 @@ func _test_attack_building(cfg) -> void:
 # 修法：`ordered_building` 还活着时，这一帧**不做任何自动索敌**（见 combat.update_unit）。
 # ------------------------------------------------------------------
 func _test_ordered_building_not_distracted(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var g = w.unit_by_id("general-1")
 	var t := _free_tile(w, g.tx + 5, g.ty)
 	var tower = w.add_building("tower", t.x, t.y, "p2")
@@ -302,7 +302,7 @@ func _test_ordered_building_not_distracted(cfg) -> void:
 # ------------------------------------------------------------------
 ## 警戒自己找到的目标，追出 leash_range 就会放弃；玩家点名的目标必须一路追。
 func _test_ordered_target_ignores_leash(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var g = w.unit_by_id("general-1")
 	var e = w.spawn_enemy(g.tx + 10, g.ty)
 	if g == null or e == null:
@@ -329,7 +329,7 @@ func _test_ordered_target_ignores_leash(cfg) -> void:
 # 4. 行军攻击：路上遇敌就打，打完了继续走
 # ------------------------------------------------------------------
 func _test_attack_move_resumes(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var g = w.unit_by_id("general-1")
 	if g == null:
 		return
@@ -373,7 +373,7 @@ func _test_attack_move_resumes(cfg) -> void:
 # 5. 普通移动 / 停止会取消攻击命令
 # ------------------------------------------------------------------
 func _test_move_cancels_orders(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var g = w.unit_by_id("general-1")
 	var e = w.spawn_enemy(g.tx + 3, g.ty)
 	if g == null or e == null:
@@ -400,7 +400,7 @@ func _test_move_cancels_orders(cfg) -> void:
 # 6. 索敌建筑：玩家会，NPC 不会
 # ------------------------------------------------------------------
 func _test_players_acquire_buildings(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var g = w.unit_by_id("general-1")
 	if g == null:
 		return
@@ -430,7 +430,7 @@ func _test_players_acquire_buildings(cfg) -> void:
 
 
 func _test_npc_does_not_acquire_buildings(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var e = w.spawn_enemy(4, 13)
 	if e == null:
 		return
@@ -452,7 +452,7 @@ func _test_npc_does_not_acquire_buildings(cfg) -> void:
 # 7. 命令校验
 # ------------------------------------------------------------------
 func _test_command_guards(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var g = w.unit_by_id("general-1")
 	var mate = w.retinue_of(g.id)[0]
 	var e = w.spawn_enemy(g.tx + 4, g.ty)

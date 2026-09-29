@@ -609,7 +609,7 @@ func _aim_at(ctrl, tx: int, ty: int) -> void:
 
 func _test_pick_blocked_by_fog(cfg) -> void:
 	# 在**真地图 + 真 world** 上验（这条要求联动 input_controller，合成世界不够）
-	var w = load("res://logic/world.gd").create(cfg, "res://data/test_map.json")
+	var w = require_world(cfg)
 	ok(w != null, "world 能建出来（真地图）")
 	if w == null:
 		return
