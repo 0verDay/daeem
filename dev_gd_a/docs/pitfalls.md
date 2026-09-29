@@ -1278,8 +1278,8 @@ on_zone_select → refresh_sidebar → _build_zone_sidebar → ttk.Treeview(...)
 
 ### 5.27 ★ 改了数据模型，就要回头把每一条校验的语义重读一遍
 
-**症状（用户报的）**：`test_map.json` 里两个阵营的大本营都设好了，导出时仍弹
-「大本营点位没设（Godot 会退回地图中心）」。
+**症状（用户报的）**：`data/maps/frontier/map.json`（当时还叫 `data/test_map.json`）里
+两个阵营的大本营都设好了，导出时仍弹「大本营点位没设（Godot 会退回地图中心）」。
 
 **根因**：这句话检查的是 JSON 里那个单数的 `base`（默认点位）。加了阵营大本营之后，
 它的语义已经从「地图的出生点」变成「**某个没设大本营的阵营的兜底**」——
@@ -1458,7 +1458,7 @@ editor.on_left_down(fake_mouse(..., shift=False))
 ### 5.33 ★★ 地图是「设计师手里的活文件」：它在编辑器里被改一次，Godot 测试就红一片
 
 **症状**：跑 Godot 全套突然红了 14 条（6 个套件）。看断言名字像是「地图坏了」，
-但打开 `data/test_map.json` 一比才发现：它**被地图编辑器重新导出过** ——
+但打开 `data/maps/frontier/map.json` 一比才发现：它**被地图编辑器重新导出过** ——
 从 17×22 / 374 地块 / 10 区块变成了 **27×22 / 594 地块 / 14 区块**（多了 f1/f2/g1/g2），
 玩家大本营也从 (2,2) 挪到了 (7,2)。
 
@@ -1547,7 +1547,9 @@ if main.hud == null:
 **修法**：走真实入口再断言（与 `tests/test_view.gd` 的 `_enter_game()` 一样）：
 
 ```gdscript
-root_node._on_test_pressed()      # 等价于玩家点一下「test」按钮
+# 等价于玩家点一下「test」按钮。★ 入参是**选中的那张地图**（test_pressed 信号带出来的）：
+# 不给的话这一调用直接失败、main.game 永远是 null，而下面那些断言就成了「在等一个不会发生的事」
+root_node._on_test_pressed(root_node.start_screen.selected_map_path())
 await process_frame
 var main = root_node.game         # ← 之后所有断言都在 GameScene 上
 ```

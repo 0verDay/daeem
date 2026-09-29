@@ -32,7 +32,7 @@ const BuildingRes = preload("res://logic/building.gd")
 const GridRes = preload("res://logic/grid.gd")
 const EnemyAiRes = preload("res://logic/enemy_ai.gd")
 
-## 地图上给防御性 AI 摆的三个驻防将领（写在 data/test_map.json 的 units[] 里）
+## 地图上给防御性 AI 摆的三个驻防将领（写在 data/maps/frontier/map.json 的 units[] 里）
 const GARRISON_NAME := "驻防将领"
 
 
@@ -66,7 +66,7 @@ func _cases() -> void:
 
 ## 造一个干净的世界（用的是随游戏发布的那张真地图）。
 func _world(cfg) -> RefCounted:
-	var w = WorldRes.create(cfg, "res://data/test_map.json")
+	var w = WorldRes.create(cfg, "res://data/maps/frontier/map.json")
 	ok(w != null, "世界能建出来")
 	return w
 

@@ -1,4 +1,4 @@
-﻿extends "res://tests/test_case.gd"
+extends "res://tests/test_case.gd"
 const MapDataRes = preload("res://logic/map_data.gd")
 const WorldRes = preload("res://logic/world.gd")
 const BuildingRes = preload("res://logic/building.gd")
@@ -10,7 +10,7 @@ func _initialize() -> void:
 	var cfg = require_config()
 	if cfg == null:
 		return
-	var m = MapDataRes.load_from("res://data/test_map.json", cfg)
+	var m = MapDataRes.load_from("res://data/maps/frontier/map.json", cfg)
 	_w = WorldRes.new()
 	_w.cfg = cfg
 	_w.map = m

@@ -4,7 +4,10 @@
 ##   · 参考图给的是**像素稿**（还专门标了「详细信息 1030×240」）。几何一旦被人手改坏，
 ##     肉眼看「差不多大」是看不出来的 —— 只有断言能发现。
 ##   · 几条**需求原话**必须钉住：点部队行「只选中、镜头不动」、命令卡「随页签实时切换」、
-##     「科技点不动」、「设置点不动」、空槽显示「…」。
+##     「科技点不动」、空槽显示「…」。
+##     ⚠️ 原话里还有一条「**设置点不动**」，**本轮作废**：设置按钮现在会弹出设置二级菜单
+##        （全屏 / 返回主菜单），那两条的断言搬到了 tests/test_settings_menu.gd。
+##        这里保留的只有「点设置不会顺手切页签」这条副作用断言。
 ##   · 无头也能跑 = 这套 UI 不依赖真实窗口（headless 视口就是工程设置的那一个）。
 ##
 ## ⚠️ 挂节点必须在 `await process_frame` 之后 —— `_initialize()` 阶段
@@ -482,7 +485,7 @@ func _test_panels(cfg) -> void:
 	var root_node = (packed as PackedScene).instantiate()
 	root.add_child(root_node)
 	await process_frame
-	root_node._on_test_pressed()          # 与玩家点一下 test 按钮完全同一条路
+	root_node._on_test_pressed(root_node.start_screen.selected_map_path())          # 与玩家点一下 test 按钮完全同一条路
 	await process_frame
 	await process_frame
 
@@ -3097,8 +3100,11 @@ func _test_detail_two_columns(main) -> void:
 	ok(not panel._body_right.visible, "★ 右栏 Label 收起来了")
 	ok(not panel.detail_text().contains("\t"),
 		"★ 单位文案是单栏（本版砍掉了第二栏）")
-	ok(panel.detail_text().contains("血量 %d" % int(round(g1.hp_max))),
-		"合成文本里仍然能读到「血量 N」（旧断言按 config 里的将领血量写）")
+	# ⚠️ 判据必须用**当前血量** `g1.hp`，不是 `hp_max`：正文那一行写的是
+	#    「血量 当前 / 上限」（见 hud._unit_text），而这条用例跑在一串会真的跑帧、
+	#    真的打起来的用例之后 —— 将领挨过打时 `hp != hp_max`，按 hp_max 断言就会红。
+	ok(panel.detail_text().contains("血量 %d" % int(round(g1.hp))),
+		"合成文本里仍然能读到「血量 N」（当前血量 %d）" % int(round(g1.hp)))
 
 	# ★★ 用户报的「详细信息字样去掉之后第一行是空的」：
 	#    ① 正文 Label 的顶边必须上移到方框的内边距处（老值是 20 = 标题占位那一段）；
@@ -3434,14 +3440,19 @@ func _test_clicked_unit_detail(main) -> void:
 	main.hud.refresh()
 
 
-# ---- 设置点不动 ----
+# ---- 设置按钮：不再「点不动」，但点它不该顺手切页 ----
+##
+## ★ 本轮改需求：设置从「点不动」变成「弹出设置二级菜单」（全屏 / 返回主菜单）。
+##   那两颗按钮的行为在 tests/test_settings_menu.gd 里测；这里只钉一条**副作用**：
+##   点设置**不能**改变右下那排页签（它属于「选中什么」的推导，与设置无关）。
 func _test_settings_inert(main) -> void:
 	var page_before := String(main.hud.page_tabs.page())
-	eq(main.hud.settings_button.pressed.get_connections().size(), 0,
-		"★ 设置按钮没接任何处理函数（点不动，需求原话）")
 	main.hud.settings_button.emit_signal("pressed")
 	eq(main.hud.page_tabs.page(), page_before, "点设置不会顺手切页")
 	ok(main.hud.settings_button.text == "设置", "设置按钮上写着「设置」")
+	# ★ 把菜单收回去：它现在真的会弹出来（开关式），而下面那些用例靠鼠标点地图 ——
+	#   留着这一块浮在右上，后面的点击会落到它身上（那会变成一串莫名其妙的假失败）。
+	main.hud.set_settings_menu_open(false)
 
 
 # ---- 命令产生的事件必须能被下一次 tick 取到（回归：tick 曾经在开头清空 _events）----

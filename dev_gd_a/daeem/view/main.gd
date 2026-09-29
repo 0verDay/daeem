@@ -3,18 +3,29 @@
 ## 流程（需求原文）：
 ##   1. 启动 = 白屏入场页：上方标题 DAEEM；屏幕下方「————点击任意处进入游戏————」，
 ##      呼吸式渐显渐隐
-##   2. 点击任意处 → 主界面（本轮没有别的 UI，屏幕正中央一个 test 按钮）
-##   3. 按下 test → 建逻辑世界并进入游戏内场景（就是以前启动就直接进的那一套）
+##   2. 点击任意处 → 主界面（屏幕正中的一条**地图选择条** + 它下面的 test 按钮）
+##   3. 按下 test → 用**选中的那张地图**建逻辑世界并进入游戏内场景
+##   4. ★ 游戏内的「设置 → 返回主菜单」→ 拆掉游戏场景、把主界面放回**第 2 步**那个状态
 ##
 ## ★ 为什么把「建世界」从 _ready 挪到按下 test 那一刻（而不是先建好再拿白屏盖住）：
 ##   进游戏之前 world / 相机 / HUD 都不该存在 —— 否则世界会在菜单背后偷偷 tick，
 ##   而「地图载入失败」这种错也会在玩家还没进游戏时就弹出来。
 ##   代价是按下按钮那一帧要跑一次装配（载地图 + 字体 + 搭 HUD），原型阶段这点开销无所谓。
+## ★ 地图是**按那一刻选中的那张**建的：选择条的意义就在这里 ——
+##   建世界的调用只在本文件一处，所以「选了第二张图却进了第一张」这种错没有第二个入口。
+##
+## ★★ 窗口模式与「回菜单」这两件事**只在本文件实现**（本轮新增的设置菜单是第二条入口）：
+##   · `toggle_fullscreen()` —— Ctrl+Q 与设置菜单里的「全屏」都走它，
+##     否则两份实现迟早会漂（一份记得还原进入全屏前的窗口模式、另一份忘了）。
+##   · `return_to_menu()` —— 拆游戏场景、放回开场页。★ 不重启进程、不新建开场页：
+##     玩家上一次选的地图还留在那条选择条上（见那里的注释）。
 ##
 ## ★ 职责边界（三层各管一段，谁都不越界）：
-##   view/start_screen.gd  开场两页：只认输入与自己的两个信号，不认识 world
+##   view/start_screen.gd  开场两页：只认输入、地图选择与自己的两个信号，不认识 world
 ##   view/game_scene.gd    游戏内场景：装配 world + view + hud，跑主循环
-##   本文件                只做连接：把「按钮被按了」翻译成「进游戏」
+##   view/hud.gd           游戏内 UI：设置菜单只**发信号**，不切窗口也不拆场景
+##   本文件                只做连接：把「按钮被按了 + 选了哪张图」翻译成「进哪个游戏」，
+##                         把「设置里点了全屏 / 回菜单」翻译成窗口模式与流程切换
 ##   没有任何一层把玩法规则写进来 —— 规则全在 logic/。
 ##
 ## 调试句柄：控制台里 `RTS`（等价于 HTML 版的 window.RTS）。★ 现在它指向游戏内场景
@@ -72,15 +83,19 @@ func _on_intro_dismissed() -> void:
 	pass
 
 
-## 主界面按下 test：建世界并进游戏。
-func _on_test_pressed() -> void:
+## 主界面按下 test：用**选中的那张地图**建世界并进游戏。
+##
+## ★ 参数由 start_screen 带出来（它才知道玩家在下拉框里选了哪一项）；
+##   这里不读任何默认值 —— 「默认进哪张图」这件事只该有一个决定点，
+##   否则以后改默认地图就会出现「按钮显示的是一张、进去的是另一张」。
+func _on_test_pressed(map_path: String) -> void:
 	if game != null:
 		return          # 已经进过游戏了（按钮只该生效一次）
 
 	game = GameSceneRes.new()
 	game.name = "GameScene"
 	add_child(game)
-	if not game.start():
+	if not game.start(map_path):
 		# 装配失败：把半成品撤掉，玩家留在主界面上，而不是进到一个空的游戏里
 		game.queue_free()
 		game = null
@@ -88,6 +103,60 @@ func _on_test_pressed() -> void:
 
 	# 进游戏之后开场页整层下线：白底与「点击任意处」的处理器一起停掉
 	start_screen.close()
+
+	# ★★ 设置菜单里那两条请求（全屏 / 返回主菜单）——见本文件头部「职责边界」。
+	game.fullscreen_toggled.connect(toggle_fullscreen)
+	game.return_to_menu_requested.connect(return_to_menu)
+
+
+## ★ 设置菜单里点了「返回主菜单」：拆掉游戏场景，把开场页放回**主界面那一页**。
+##
+## ★★ 为什么不重启进程 / 不新建开场页：
+##   · 不重启：玩家只是想换张图（甚至只是误点），重启等于把窗口、全屏状态、字体
+##     全部重来一遍 —— 又慢又可能丢状态；
+##   · 不新建：原来那个 StartScreen 一直挂在树上（只是 `close()` 成隐藏），
+##     它里面那条地图选择条**还留着玩家上次选的那张图** —— 新开一局就是同一个选择，
+##     这正是「退回菜单再进来」该有的手感。
+##
+## ★ 顺序（拆旧 → 放新）不能反：
+##   1. 先把 game 摘下来（`remove_child` + `queue_free`）而不是只 `queue_free()`：
+##      `queue_free` 要到帧末才真的销毁，那一帧里 game_scene 的 `_process` 还会跑、
+##      `_unhandled_input` 还会接事件，而此时菜单已经在底下等着被点了 ——
+##      表现就是「刚回到菜单，底下那个世界还在动，点一下还指挥到了单位」。
+##      `remove_child` 立刻让它离开场景树（`_process` / 输入一起停）。
+##   2. 再把 game 置空：`_unhandled_input` 与 `_on_test_pressed` 都以它为「有没有在游戏里」
+##      的判据，置空之后「再点一次 test」才会真的建一局新的。
+##   3. 最后 `open_menu()`：回主界面、**不**回入场页（那一次「点击任意处」玩家已经付过了）。
+##      ⚠️ 必须走 `open_menu()` 而不是 `show_page(PAGE_MENU)`：前者带 `show()` ——
+##         `close()` 那次 hide() 之后整层是隐藏的，只切页内两层的话主界面看着在、
+##         实际点不动（坑写在 start_screen.gd 那个函数的注释里）。
+##
+## ★ 幂等：不在游戏里（game 为 null）时什么都不做 —— 设置菜单的按钮可能被连点，
+##   而那一下不该造出第二个开场页。
+func return_to_menu() -> void:
+	if game == null:
+		return
+	var leaving := game
+	game = null
+	# ★ 顺手把设置菜单收起来：那个面板活在这一局里，而回到菜单之后开场页的
+	#   白底会盖在它下面（CanvasLayer layer=100 对 HUD 的默认 1）——
+	#   不收的话，等下次进游戏它会**还开着**（HUD 是新建的，但同一帧的旧 HUD
+	#   会带着开着的面板一起被销毁，看着像闪了一下）。
+	# ⚠️ 这里必须用 `is_instance_valid()` 而不是 `!= null`：走进本函数的那条路
+	#    （HUD 按钮 → 信号 → game_scene → 本函数）中间**可能已经被裁决销毁过一次**
+	#    （比如玩家连点、或者场景正在被拆），此时 `hud` 已经不是 null 而是
+	#    「previously freed」，写 `!= null` 会直接报
+	#    「Invalid call. Nonexistent function '...' in base 'previously freed'」。
+	if is_instance_valid(leaving) and is_instance_valid(leaving.hud):
+		leaving.hud.set_settings_menu_open(false)
+	# ⚠️ 拆之前再确认一次：上面那几行（尤其 `is_instance_valid(leaving.hud)`）在
+	#   「本场景正在被销毁」那条路上可能刚好跨过一帧，`leaving` 那时已经没了。
+	#   `remove_child` 一个已释放的对象会直接报错，所以两道判断都留着。
+	if is_instance_valid(leaving):
+		remove_child(leaving)
+		leaving.queue_free()
+	if start_screen != null:
+		start_screen.open_menu()
 
 
 # ------------------------------------------------------------------
@@ -128,6 +197,21 @@ func _handle_window_hotkey(event: InputEvent) -> bool:
 		return false
 	if k.keycode != KEY_Q or not k.ctrl_pressed:
 		return false
+	toggle_fullscreen()
+	return true
+
+
+## ★★ 全屏 ↔ 窗口（**唯一的实现**）。
+##
+## 两条入口都走它：开发者快捷键 Ctrl+Q（`_handle_window_hotkey`）与
+## 游戏内「设置 → 全屏 / 窗口化」（`game.fullscreen_toggled` 连到这里）。
+## ★ 为什么必须只有一份：它记着「进全屏之前是哪种窗口模式」（见下面那条注释），
+##   抄成两份的话，其中一份早晚会忘了还原 —— 表现是「按 Ctrl+Q 退出全屏之后
+##   窗口变成 1280×720」，而用设置菜单退就不会。
+##
+## ⚠️ 无头（`--headless`）下 DisplayServer 是空实现：这个函数**什么都不会发生**
+##   （也不会报错）。所以测试只验「请求真的走到了这里」，不去断言真实窗口模式。
+func toggle_fullscreen() -> void:
 	var mode: int = DisplayServer.window_get_mode()
 	if mode == DisplayServer.WINDOW_MODE_FULLSCREEN \
 			or mode == DisplayServer.WINDOW_MODE_EXCLUSIVE_FULLSCREEN:
@@ -135,7 +219,6 @@ func _handle_window_hotkey(event: InputEvent) -> bool:
 	else:
 		_windowed_mode = mode
 		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
-	return true
 
 
 func _notification(what: int) -> void:

@@ -55,7 +55,7 @@
 
 ### 2.3 地图与数值用 JSON
 
-- **选**：`res://data/config.json`（全部可调数值）+ `res://data/test_map.json`（地形/出生点/区块）。
+- **选**：`res://data/config.json`（全部可调数值）+ `res://data/maps/frontier/map.json`（地形/出生点/区块）。
 - **放弃**：Godot `Resource`（`.tres`）的编辑器友好性与类型检查；`TileMapLayer` 作为权威地图。
 - **为什么**：JSON 与现在的 HTML 版**逐字可对照**（迁移时能机械比对），
   纯文本可 diff、可被未来地图编辑器直接生成、Godot 原生支持（`JSON.parse_string`）。
@@ -200,7 +200,7 @@ C:\D\GodotEngine\gd4.7.2mono\Godot_v4.7.2-stable_mono_win64_console.exe `
 
 ### M1 · 地图与相机
 
-- `data/test_map.json`：地形（草/森林/山）+ 大本营 + 将领出生点（M1 时用的是老图 `map_01.json`，24×16；它已按用户要求删掉）
+- `data/maps/frontier/map.json`：地形（草/森林/山）+ 大本营 + 将领出生点（M1 时用的是老图 `map_01.json`，24×16；它已按用户要求删掉）
 - `logic/map_data.gd`：载入 + 连通性修正（把走不到的孤岛变成山，**这条要保留**）
 - `view/terrain_view.gd`：用 `TileMapLayer` 画地形
 - `view/camera_rig.gd`：WASD 平移、滚轮以光标为锚点缩放、F 适应全图
@@ -2118,7 +2118,7 @@ y 200 .. 220   红字提示带 641×20
 ### 25.5 发布的地图：14 个区块全部改成人口区划
 
 用户拍板「要，而且默认全赋上人口区划」+「全部设为人口区划，并同步数字」，
-所以 `data/test_map.json` 的 `zone_list` 每一项都变成：
+所以 `data/maps/frontier/map.json` 的 `zone_list` 每一项都变成：
 
 ```json
 { "id": 0, "name": "a1", "kind": "population",
@@ -2160,7 +2160,7 @@ y 200 .. 220   红字提示带 641×20
 | 文件 | 改动 |
 |---|---|
 | `data/config.json` | **新增 `zone_kind` 段**（三种 + 预设产能（都带 ≥0.1 人口）+ 白名单 + `default`）；`zone_spec.list` 的 `effect` 换成 `food_per_tile` / `gold_per_tile` / `population_mult`，文案与注释重写 |
-| `data/test_map.json` | 14 个区块写 `"kind": "population"` 并把 production 同步成 `0 / 0 / 0.15` |
+| `data/maps/frontier/map.json` | 14 个区块写 `"kind": "population"` 并把 production 同步成 `0 / 0 / 0.15` |
 | `logic/config.gd` | 缓存并查询 `zone_kind`：`zone_kind_list` / `zone_kind_default` / `zone_kind_entry` / `zone_kind_name` / `zone_kind_production` / `zone_kind_specs` / `zone_kind_allows_spec` |
 | `logic/map_data.gd` | 新增 `zones_kinds`（`_read_zones` 多收一个 `cfg`，只登记表里认识的 id） |
 | `logic/zone.gd` | 新增 `kind` 字段 / `_apply_map_kinds()` / `kind_of()` / `kind_entry_of()`；`production_of()` 改成「基础产能 + 特化每地块加成」；`update_population()` 用人口特化倍率；`_spec_mult` → `_spec_effect` |
@@ -2515,7 +2515,7 @@ c1 = 人口区划但**手改过数字**（1 粮食 + 1 黄金 + 0.15 人口／�
 | # | 需求 | 落点 |
 |---|---|---|
 | 1 | 工具放在 `tools/unit_editor`，布局仿 map_editor，双击 bat 进入 | 新增 `dev_gd_a/tools/unit_editor/`（Python + tkinter，零依赖）：`app.py` 用地图编辑器同一套顶栏（左上页签 / 右上文件按钮）+ 左侧列表 + 右侧可滚侧边栏 + 底部状态栏；`unit_editor.bat` 与 `map_editor.bat` 同一套启动姿势（`start "" pythonw <包目录>`、路径规范化、缺 Python / 缺 tkinter / 缺 config 三种兜底提示） |
-| 2 | 改的是**游戏里的单位数值** | 写 `daeem/data/config.json`（`logic/config.gd` 读的那一份，**唯一**的数值源）。地图编辑器改 `data/test_map.json` —— 两个工具各管一头 |
+| 2 | 改的是**游戏里的单位数值** | 写 `daeem/data/config.json`（`logic/config.gd` 读的那一份，**唯一**的数值源）。地图编辑器改 `data/maps/frontier/map.json` —— 两个工具各管一头 |
 | 3 | 三个页签：单位 / 建筑 / 科技 | `app.py` 的 `PAGES`；单位页再分「兵种」与「将领」两块（下面那个列表） |
 | 4 | 单位：归属 / 名称 / 血量 / 攻击力 / 攻击距离 / 攻击速度 / 移动速度 / 造价（粮·金·人口）/ 招募时间 | `unit.types.<id>` 的 `class` / `name` / `hp_max` / `damage` / `range` / `cooldown_sec` / `speed` + `recruit.list[].cost` / `population_cost` / `train_sec`（名称同时写 `label`） |
 | 5 | 将领 1/2/3 也能在单位页签里编辑 | 单位页下面的「将领」列表：类型（`unit.general.types[i]`）、名字、**自己的一套数值**（`unit.general.stats[i]`，本轮新增）、造价 / 招募时间（`recruit.zone.list`）、开局护卫数（`unit.general.escort`） |
@@ -3108,7 +3108,7 @@ AI 开局一块地都没有：收入 0、也没有中心格，症状同样是「
 ```
 
 ```jsonc
-// data/test_map.json —— 把某个将领交给「将领性 AI」（也是这一轮唯一改地图的地方）
+// data/maps/frontier/map.json —— 把某个将领交给「将领性 AI」（也是这一轮唯一改地图的地方）
 "units": [
   { "x": 8, "y": 13, "name": "驻防将领", "faction": "enemy", "kind": "enemy",
     "hold": true, "zone": 6 }        // ← zone = 它负责的区划 id
@@ -3155,4 +3155,396 @@ NPC 阵营不进名单、驻防将领在自己那块无主地上巡逻（有人�
 - **发布那张图上 AI 的日常收入是 0**：区块 9 是**人口区块**（不产粮食 / 黄金），
   所以它是靠开局那 150 + 人口增长在运转（`start_food / start_gold` 就是为这个调的）。
   真实地图上把 AI 摆在有产能的区块里，这两个数就不重要了。
+
+---
+
+## 三十四、开场**地图选择条** + 地图改成「一个地图一个目录」（这一轮）
+
+**需求原文**：
+
+> 更改原本有 "test" 按钮的页面，在其上方加一个选择条，可以在其中选择地图，目前仅有一个地图，
+> 但后续如果有新的地图，游戏会根据地图目录下的文件自动给出新的选项，你可以新建一个占位地图
+> 用于测试新选项的生成逻辑。
+
+### 34.1 目录约定：一个地图一个目录
+
+```
+daeem/data/maps/
+├── frontier/
+│   └── map.json        ← 目录名 = 地图 id（'frontier'）；原来是 data/test_map.json，这一轮搬进来
+└── arena/
+    └── map.json        ← ★ 占位图：只为证明「多一个目录 = 多一个选项」
+```
+
+地图 json 里新增两个**可选**字段（编辑器不编辑，但会 `PRESERVED_KEYS` 原样带过去）：
+
+```jsonc
+{
+  "id": "frontier",     // 写给人看的标识；目录名才是权威 id（见 34.4）
+  "name": "边关",       // ★ 选择条上的显示名；不写 / 写空 → 退回目录名
+  "cols": 27, "rows": 22, ...
+}
+```
+
+**为什么不是「扫 `data/*.json`」**：`config.json` 就在同一层，靠内容 / 命名去排除它迟早误判
+（配置多一个 `cols` 字段就会被当成地图）。一个地图一个目录还有个好处：以后加缩略图 /
+说明文件时不用再改一轮结构。
+
+### 34.2 扫描规则（`logic/map_library.gd`）
+
+| 步骤 | 规则 | 为什么 |
+|---|---|---|
+| 认哪些目录 | `res://data/maps` 下的**一级子目录**；目录不存在 / 打不开 → 空表（不报错） | 「还没建任何地图」不是错误路径 |
+| 每个目录找哪张图 | `map.json` → `<目录名>.json` → 任一 `*.json`（按文件名排序取第一个）；都没有 → 跳过该目录 | 给手写 / 外部工具留余地，同时**顺序固定**、不看文件系统枚举顺序 |
+| 读不到 / 不是合法 JSON | 跳过，**不冒泡** | 一张图写坏了不该让整条选择条空掉、更不该让主界面开不出来 |
+| 显示名 | json 的 `name`（去空白）→ 空 / 不是字符串 → 目录名 | 只影响下拉框上的一行字，不值得为它挡住一局 |
+| 排序 | 按**目录名**（不区分大小写） | 选项顺序必须稳定，否则「第几项是哪张图」会看文件系统的脸色 |
+| 占位图 | json 里 `"placeholder": true` → 选项照样列出，但**默认图跳过它** | 加一张测试图不该把默认局换掉（见下） |
+
+★ **默认地图 = 扫描结果里第一张不是占位图的**（`default_map_path()`）；一张都没有才退回
+`FALLBACK_MAP_PATH`（`config.gd` 的 `DEFAULT_MAP_PATH` 也指向它，**几处常量同源，只有一处字面量**）。
+
+★★ **为什么要有「占位图」这个概念**：`arena` 那种图只为验证「选项是扫出来的」，
+它的地形 / 区划根本没调过平衡。没有这一条的话，「往目录里放一张测试图」会顺手把**默认局**
+换掉 —— 加测试数据不该改默认行为。而选择条上它当然该出现（那正是要验的东西）。
+
+- 判据写在**图自己身上**（`placeholder: true`），不是代码里的白名单：地图目录一变，
+  `map_library.gd` 不用跟着改，以后多几张临时图也不用回来维护名单。
+- 下拉框的**初始选中项**同样取 `default_map_path()`（不是无脑第 0 项）：选择条上高亮着
+  `试炼场`、按下去却进了 `边关` 的话，玩家只会说「选择条没用」。
+- 正式图之间仍然是「目录名排序取第一张」—— 所以想改默认图，改目录名，
+  或者把原默认图标成 `placeholder`（不推荐：那是给测试图用的）。
+
+### 34.3 主界面（`view/start_screen.gd`）
+
+```
+        ┌──────────────┐
+        │  地图  [ 边关 ▾] │   ← 新建的一行：Label + OptionButton
+        └──────────────┘
+              ┌────────┐
+              │  test  │        ← 原来的按钮
+              └────────┘
+```
+
+- 用 `CenterContainer` + `VBoxContainer` 表达「**在选择条上方** / 在按钮下方」这条**相对关系**，
+  而不是写死两个绝对 y（那样改一次按钮高度就会让两者叠在一起）。
+- 选项**不写在这里**：`setup()` 里先 `map_library.list_maps()`，再把结果铺进下拉框 ——
+  view 层里没有任何地图清单。
+- 默认选第一项：需求只要求「可以选」，但「什么都不选直接按 test」必须有确定结果。
+- 一张图都扫不到时：下拉框 `disabled` + 显示 `menu.map_select_empty_text`，
+  **test 按钮照旧可用**（走兜底路径）—— 菜单不该因为地图目录空了就整个点不动。
+- 文案 / 字号 / 宽度 / 颜色 / 间距全在 `config.json` 的 `menu.map_*` 里（代码不写字面量）。
+
+### 34.4 ★ 选中的地图真的被带进游戏
+
+选择条唯一的作用就是**决定 `game_scene.start()` 的入参**，所以这条链只有一条：
+
+```
+OptionButton.item_selected → selected_map_path() → start_screen.test_pressed(map_path)
+    → view/main.gd 的 _on_test_pressed(map_path) → game_scene.start(map_path) → world.create(cfg, map_path)
+```
+
+- `test_pressed` 的信号**带参数**（地图路径）：谁建世界谁就该知道建哪一张，
+  不该自己去猜默认值 —— 否则「选了第二张、进去还是第一张」这种错会在两个地方各写一份默认值。
+- `selected_map_path()`（唯一的读法）：选中项下标 → `_maps[index]["path"]`；
+  越界 / 没选过 → 第一项；`_maps` 为空 → `default_map_path()`。
+  ⚠️ **不去反解下拉框上的文字**：文字是显示名，两张图可以同名。
+- `game_scene.MAP_PATH` 现在 = `map_library.FALLBACK_MAP_PATH`：正常路径永远由 main.gd
+  传参进来，那个常量只服务基准脚本与「直接在编辑器里跑 game_scene」这两种调用方。
+
+### 34.5 占位图 `arena` 怎么来的
+
+`tools/map_editor/gen_arena_map.py`（一次性脚本，**不是编辑器的一部分**）：
+用编辑器自己的数据层（`MapModel` + `mapfile.save_map`）拼一张 16×12、2×2 区划、
+两个大本营都在北侧的小图，跑完自己回读一遍确认格式自洽：
+
+```powershell
+python dev_gd_a/tools/map_editor/gen_arena_map.py
+```
+
+故意做得与 `frontier`（27×22、6×4 区划、西北 / 东南）**一眼可分**：
+这样测试与手玩都能看出「进的是选中的那张图」，而不只是「名字变了」。
+不要它了直接删 `data/maps/arena/` 目录即可（选择条会自己少一项）。
+
+### 34.6 这一轮动过的地方
+
+| 文件 | 改动 |
+|---|---|
+| `data/test_map.json` → `data/maps/frontier/map.json` | **搬迁**（git mv）+ 补 `id` / `name` 与 `_comment` 说明 |
+| `data/maps/arena/map.json` | **新增**（占位图，脚本生成） |
+| `logic/map_library.gd` | **新增**：扫目录 / 找地图文件 / 读显示名 / 默认路径 / JSON 读法 |
+| `logic/config.gd` | `DEFAULT_MAP_PATH` 指向新目录，并与 `map_library` 的常量同源 |
+| `logic/world.gd` | `create()` 的默认地图路径改成同一个常量 |
+| `view/start_screen.gd` | 主界面改成「选择条 + test」一列；`test_pressed` 带地图路径；新增 `selected_map_path()` / `map_options()` / `map_select_*()` 访问器 |
+| `view/map_select.gd` | **新增**：地图选择条本体（**自绘按钮 + 自己的 PopupMenu** —— 34.9 换掉 `OptionButton`） |
+| `view/main.gd` | `_on_test_pressed(map_path)` → `game_scene.start(map_path)` |
+| `view/game_scene.gd` | `MAP_PATH` 改指 `map_library.FALLBACK_MAP_PATH` |
+| `data/config.json` | `menu` 段新增 `map_*`（标签文案 / 字号 / 宽度 / 颜色 / 间距 / 空表文案） |
+| `tools/map_editor/mapfile.py` | `PRESERVED_KEYS` 加 `id` / `name`（导入 → 导出不掉字段）+ `EDITOR_COMMENT` 补说明 |
+| `tools/map_editor/{app.py,__main__.py,map_editor.bat,README.md}` | 默认打开 / 导出路径改成 `data/maps/frontier/map.json` |
+| `tools/map_editor/gen_arena_map.py` | **新增**（一次性生成器） |
+| `tests/*.gd`（10 个文件） | 地图路径同步；`test_case.gd` 提出 `DEFAULT_MAP_PATH` 常量；`test_start_flow.gd` 改成「选择条在按钮上方」并修掉写死的点击坐标 |
+| `tests/test_map_select.gd` | **新增**：目录扫描 + 选择条本身 + 「选中的图真的被带进游戏」 |
+
+### 34.7 断言（`tests/test_map_select.gd`，59 项）
+
+| 组 | 验什么 |
+|---|---|
+| 目录扫描 | `data/maps` 下两张图都被扫到；每项路径存在、有显示名、带 `placeholder` 标记；**显示名读的是 json 的 `name`**（不是目录名）；**按目录名排序**（第一项 = arena，不看文件系统枚举顺序）；**默认图跳过占位图**（= frontier，不是排序第一的 arena）；读不到的地图 → 显示名退回兜底、`find_map_file` 返回空串、`is_placeholder` 返回 false |
+| 选择条本身 | 按钮 + 它自己的 `PopupMenu` 都在；**选项条数 = 扫描结果条数、逐项文字一致**；默认选中**默认地图**那一项（不是无脑第 0 项）、有图时可用；**选择条在 test 按钮上方**（相对位置）；★ **真实点击弹出列表 → 按钮上那行字仍然是当前项**（第 34.9 那个 bug 的回归）；换一项后文字与 `selected_map_path()` 都跟着变；**列表关掉之后那行字照样在** |
+| ★ 端到端 | 挑一张**尺寸与默认图不同**的图选中（默认是 27×22 的 frontier，所以选到的是 16×12 的 arena）→ 真实点击 test → `world.map` 的 cols / rows 就是那一张（只断言「下拉框多一项」是不够的：选项对了而 `start()` 还是用默认图，表现就是「选了没用」） |
+
+### 34.8 已知取舍
+
+- **默认图 = 目录名最小的那张非占位图**：代价是「想改默认图」要改目录名
+  （或者进游戏前先在下拉框里选一下）。以后要做「记住上次选的地图 / 配置里指定默认图」，
+  在这里加一层覆盖即可 —— 探针已经留好：`map_library.declared_id()`（读 json 里的 `id`，
+  目前不参与任何判定）。
+- **`arena` 是占位图，不是设计内容**：它的地形 / 区划只为「看得出与 frontier 不同」，
+  玩法平衡没调过；靠 `"placeholder": true` 保证它不会变成默认局。正式发版前应该删掉它
+  （或者换一张真的第二张图）。
+- **扫描不递归**：只认 `data/maps/<id>/` 这一层。多层嵌套（`data/maps/asia/snow/map.json`）
+  现在扫不到 —— 真需要分地区时再改 `list_maps()`，别在目录结构上先猜。
+- **地图没有缩略图 / 说明**：以后要加，放在同一个目录里（`thumb.png` / `README.md`）即可，
+  扫描逻辑不用动（`find_map_file` 只找 JSON）。
+
+### 34.9 手玩反馈：选择条上的字会消失 → 换成自绘选择条
+
+**症状（用户报的，报了两次）**：点开选择条之后，**选择条上那行字变成空白**；
+把鼠标移到某一项上时，那行字又出现（显示的还是原先选的那张地图）。
+
+**第一次修（不够）**：以为是「引擎没重画」，于是在 `view/start_screen.gd` 里自己把
+显示名写进 `OptionButton.text` + `queue_redraw()`。**用户复测仍然会空白** ——
+说明问题不在「文字是什么」，而在 **OptionButton 自身的绘制时机 / 原生列表窗口**
+那条路径上（`PopupMenu` 默认是**独立 OS 窗口**：无头 / 子视口里都复现不出来，
+连截图也截不到它）。
+
+**最终修法：换掉 OptionButton，自己画**（`view/map_select.gd`，本轮新增）：
+
+- 那行字是 `Button.text`，由 `_sync_text()` **每次选中都重新写一遍**；
+- 列表用 `PopupMenu`，**只在选中 / 取消时回调，不参与按钮的绘制**；
+- 按钮的 `pressed` 只负责开关列表 —— 没有任何「等引擎重画」的时机问题；
+- 对外 API 与 `OptionButton` 同名同义（`item_count` / `get_item_text` / `selected` /
+  `select()` / `disabled` / `item_selected`），所以 `start_screen.gd` 的用法几乎没变。
+- ⚠️ 它**不再是一个节点**：原来测试里的 `.../MapRow/MapSelect` 路径失效了，
+  改成问 `start_screen.map_select_button()` / `map_select_item_count()` 那几个访问器。
+
+★★ 这一轮真正值钱的是「**把界面渲染出来截图看**」：为了查这个 bug，搭了一个一次性的
+SubViewport 探针（1920×1080 + `gui_embed_subwindows = true`），把主界面渲染成 PNG 自己看。
+它当场抓出两个光靠断言发现不了的问题：
+
+1. **列表弹出来是一坨黑**：`PopupMenu` 的 `panel` 用的是引擎默认**深色 HUD** 配色，
+   而这两页是白底 + 深灰字 —— 选项几乎读不出来。修法：底板 / 悬停底纹也由
+   `start_screen.gd` 造好传进去（`map_select.build(...)` 的 `popup_panel` / `row_hover`）。
+2. **列表压住 test 按钮**：列表是**向下**展开的，而 `menu.map_gap` 只有 48 ——
+   两层文字叠在一起像画坏了。修法：间距调到 **112**（`config.json` 里带注释说明），
+   并把列表宽度对齐按钮（`size` 与 `min_size` **两处都要设**，只设一处引擎会按内容重算）。
+
+**教训**：「按钮上的字会消失」这类**渲染时机**的 bug，断言能测的只有「文字值对不对」；
+真正的判据是**把它画出来看一眼**。另外：一个两百行、纯文本可 diff 的自绘控件，
+比跟一个引擎控件的内部行为缠斗省事得多 —— 而且顺带把配色与宽度两个连带问题一起解决了。
+
+---
+
+## 三十五、游戏内**设置二级菜单**：全屏 / 返回主菜单（这一轮）
+
+**需求原文**：
+
+> 现在为游戏内的设置按钮也添加二级菜单，向其中加入全屏选项和返回到菜单选项。
+
+### 35.1 谁执行哪个动作（这是这一节最重要的一张表）
+
+设置面板自己**什么都不改**，它只发信号 —— 两个动作一个动窗口、一个动整个流程，
+两者都是 `view/main.gd` 的地盘：
+
+| 按钮 | 信号链 | 真正执行的地方 | 为什么 |
+|---|---|---|---|
+| 全屏 / 窗口化 | `hud.fullscreen_toggled` → `game_scene._on_fullscreen_toggled` → `game_scene.fullscreen_toggled` → `main.toggle_fullscreen()` | `view/main.gd`（**唯一**改窗口模式的函数） | `Ctrl+Q` 也走它。抄成两份的话，其中一份早晚会忘了还原「进全屏前的窗口模式」（表现：退出全屏后窗口变成 1280×720） |
+| 返回主菜单 | `hud.return_to_menu_requested` → `game_scene._on_return_to_menu_requested` → `game_scene.return_to_menu_requested` → `main.return_to_menu()` | `view/main.gd`（**唯一**管流程的文件） | 它要**销毁游戏场景自己**。让一个节点「自己删自己」是最容易留下半条命的写法；扔给调度者是干净的 |
+
+`game_scene` 这一层不是多余的转发：它是「游戏内场景」这个整体对外的出口 ——
+`main.gd` 连的是**场景**而不是场景里某个控件（以后换一套 HUD，这里一行都不用改）。
+
+### 35.2 界面（`view/hud.gd` 的 `_build_settings_menu`）
+
+```
+                    ┌────────┐
+                    │  设置  │  ← 80×160，实心蓝（参考图），现在**点了会弹菜单**
+                    ├────────┤
+                    │  全屏  │  ← 面板挂在按钮正下方（ui_layout.SETTINGS_MENU_RECT）
+                    ├────────┤
+                    │返回主菜单│
+                    └────────┘
+```
+
+- 结构：`PanelContainer`（底板 / 描边走 `ui_style.panel_style`）+ `VBoxContainer`
+  + 两颗 `Button`（三态底纹走 `ui_style.accent_button*`，与设置按钮同一档蓝）。
+- **整块是 STOP**：它浮在地图上，点在它身上不该穿到地图去 ——
+  穿下去就是「顺手给单位下了一条移动命令」。
+- **高度按格数算**（`_settings_menu_height(SETTINGS_MENU_SLOTS)`）：
+  加一项时改格数即可，不用手调坐标（写死高度会让最后一项被裁掉一半 ——
+  「界面看着还好、按钮点不到」的经典成因）。
+- 文案 / 字号在 `config.json` 的 `settings` 段；几何在 `ui_layout.gd` 的
+  `SETTINGS_MENU_*`（`interactive_rects` 也把它算进去了）。
+- ★ 「全屏」那颗按钮写的是**按下去的后果**：窗口态写「全屏」、全屏态写「窗口化」。
+  每次打开菜单都重算一遍（`_refresh_fullscreen_label`）—— 玩家可能刚用 `Ctrl+Q` 切过。
+
+### 35.3 ★ 返回主菜单：一个**已实测的坑**
+
+`start_screen.close()` 用了 `hide()`（进游戏时把整层收起来）。而 **`CanvasLayer` 被
+`hide()` 过之后，光调 `show_page()` 是回不来的**：页内那两层（Intro / MainMenu）的
+`visible` 都对了，**整层却还是隐的** —— 白底与主界面不参与命中测试，
+表现就是「回到菜单了，看得见，但按钮点不动」，玩家会以为游戏卡死。
+
+所以「从游戏里回到菜单」必须走 `start_screen.open_menu()`（= `show()` + `show_page(PAGE_MENU)`），
+而不是 `show_page(PAGE_MENU)`。这个名字是刻意的：语义是「打开菜单」，
+把 `show()` 藏进它里面，调用点就不会漏。
+
+> 这条**只有在「来回切两次」时才会暴露**：第一次从游戏回菜单时，那个
+> layer=100 的层刚好还是可见的（`hide()` 的效果还没轮到它），第二次才现原形。
+> 所以 `tests/test_settings_menu.gd` 第 3 节专门在**同一次进游戏**里往返两遍。
+
+### 35.4 拆场景的顺序与「幂等」
+
+`main.return_to_menu()` 的四步（顺序不能反）：
+
+1. `game = null` —— `_unhandled_input` 与 `_on_test_pressed` 都以它为判据；
+2. 收起设置菜单（`is_instance_valid` 双保险：这条路走的是信号，中途可能已经被释放）；
+3. `remove_child(game)` + `queue_free()` —— **不能只 `queue_free`**：
+   它要到帧末才真的销毁，那一帧里 `_process` 还在跑、输入还在接，
+   而此时菜单已经在底下等着被点了（表现：刚回菜单，底下那个世界还在动、
+   点一下还指挥到了单位）；
+4. `start_screen.open_menu()`。
+
+★ **不新建开场页**：原来那个 `StartScreen` 一直挂在树上（只是隐藏），
+它里面的地图选择条**还留着玩家上次选的那张图** —— 回菜单再进就是同一个选择。
+★ **幂等**：不在游戏里时什么都不做（按钮可能被连点，那一下不该造出第二个开场页）。
+
+### 35.5 动过的地方
+
+| 文件 | 改动 |
+|---|---|
+| `view/hud.gd` | 新增 `settings_panel` / `fullscreen_button` / `return_menu_button` 与 `_build_settings_menu`、`toggle_settings_menu`、`set_settings_menu_open`、`_refresh_fullscreen_label`；两个新信号；设置按钮接上 `pressed` |
+| `view/game_scene.gd` | 两个新信号（转发）；`_on_return_to_menu_requested` 里用 `is_instance_valid(self)` 判活 |
+| `view/main.gd` | 新增公开的 `toggle_fullscreen()`（Ctrl+Q 与设置菜单共用）与 `return_to_menu()`；`_handle_window_hotkey` 改成调前者 |
+| `view/start_screen.gd` | 新增 `open_menu()`（`show()` + 主界面那一页）；`show_page()` 里补 `show()`（防呆） |
+| `view/ui_layout.gd` | `SETTINGS_MENU_RECT` / `SETTINGS_MENU_ITEM_H` / `SETTINGS_MENU_GAP` / `SETTINGS_MENU_SLOTS`；`interactive_rects` 收进面板 |
+| `data/config.json` | 新增 `settings` 段（标题 / 两颗按钮的文案 / 字号 / 字色） |
+| `tests/test_ui.gd` | 原「设置点不动」那条断言作废，改成「点设置不会顺手切页签」（并把菜单收回去，免得影响后面那些用鼠标的用例） |
+| `tests/test_settings_menu.gd` | **新增**（53 项）：结构 / 几何 / 吃鼠标 / 全屏信号链 / 返回主菜单（含同一次进游戏里往返两遍） |
+
+### 35.6 断言（`tests/test_settings_menu.gd`，53 项）
+
+| 组 | 验什么 |
+|---|---|
+| 结构 | 面板挂在 `HudRoot/SettingsMenu`；两颗按钮在；三处文案都来自 `config`；刚进游戏是收着的；**真实点击**设置按钮 → 弹出 / 再点 → 收起 |
+| 几何 | 面板在设置按钮**下方**、不重叠、有实际尺寸、装得下两格；两颗按钮上下排开；面板靠在设置按钮那一侧；面板与两颗按钮的 `mouse_filter` 都是 STOP |
+| 全屏 | 两条接线都在（hud → game_scene → main）；**真实点击**「全屏」不报错、不切页签、不收面板；文案跟着窗口状态（全屏 → 「窗口化」）；`main.toggle_fullscreen` 存在且可直接调 |
+| ★ 返回主菜单 | **真实点击**「返回主菜单」→ `main.game` 清空、`GameScene` 不在树上、旧场景已离开场景树；开场页重新可见且停在**主界面**那一页（入场页没回来、白底回来了）；选择条还留着上次选的地图；**回到菜单后鼠标真的点得到东西**（拒「看着在、点不动」）；再按 test 能开出**新的一局**；**再回一次菜单同样成立** |
+
+### 35.7 已知取舍
+
+- **菜单打开时世界照常跑**（不暂停）：这一轮的设置项没有一个需要停下世界，
+  加「暂停」是另一件事（`input_controller.paused` 已经存在，接上很容易，但需求没要）。
+- **菜单点外面不会自动收起**：只有再点一次设置才收。做「点空白处收起」要抢
+  `_unhandled_input`（那是输入层的地盘），收益不值这个复杂度。
+- **`Esc` 没接**：需求只给了「全屏 / 返回主菜单」两项。
+- **无头下测不到真全屏**：`DisplayServer` 在 `--headless` 下是空实现，
+  所以测试只验「请求真的走到了 `main.toggle_fullscreen`」，不去断言真实窗口模式
+  （手玩验收清单里有一条专门让人开窗看一眼）。
+
+---
+
+## 三十六、**阵营归属（盟友）**：边关的两个 NPC 不再互相打（这一轮）
+
+**需求原文**：
+
+> 现在为游戏添加阵营归属，让『边关』地图中的两个 ai 的阵营关系变为友善，不再相互攻击。
+> （追问确认：**不相互攻击，且不争夺同一区划**；关系**写在地图文件里**；
+>   玩家与两边**仍然互为敌人**。）
+
+**边关上的两个 NPC**（实测，颜色对上了）：`enemy`（地图对家 · 红 `#e05a5a` · 9 个守军 +
+1 本营 + 2 箭塔 + 3 城墙）与 `ai`（阵营 AI · 橙 `#ff8a4a` · 有资源库、会招将出兵）。
+
+### 36.1 数据放在哪：地图的 `allies` 字段
+
+```jsonc
+// data/maps/frontier/map.json
+"allies": [["enemy", "ai"]],
+```
+
+- **地图数据**，不是全局配置 ⇒「只有边关友善、别的图照旧」是天然的（用户要的就是这个）。
+  换图必须清干净：`world.reset()` 里 `FactionRes.set_allies(map.allies)` —— 它是 static 的，
+  而 reset 每次都**先清后写**。
+- 语义是**双方互相**（没有单向盟友）。`[["a","b"],["b","c"]]` 这种会**传递闭包**成三方一方。
+- 编辑器不编辑它，但 `PRESERVED_KEYS` 把它原样带回去 —— 否则「在编辑器里打开边关再导出」
+  会让两个 AI 又开始互相打（一个很安静的回归）。已有往返断言（手动跑的那一句）。
+
+### 36.2 ★★ 三个口径，别混（这一节最要紧的一张表）
+
+| 口径 | 函数 | 谁在用 | 盟友算不算「一边人」 |
+|---|---|---|---|
+| **同阵营** | `FactionRes.same_side(a,b)` | **建筑通行**（城墙 / 本体挡谁）、寻路惩罚、拆自家建筑、防冒充 | ❌ **不算** |
+| **攻击口径** | `FactionRes.same_side_for_attack(a,b)` | 索敌、箭塔开火、手动点名、AI 挑目标 | ✅ 算 |
+| **同一方** | `FactionRes.side_of(f)` | 占领判定「这块地上站着几方人」 | ✅ 折叠成同一个代表 |
+
+- 为什么**不**直接把 `same_side` 改宽：它还管着「建筑挡谁」。改宽会让盟友的城墙对彼此的
+  军队形同虚设 —— 那是另一条需求，用户没要（**测里专门钉了这一条**：
+  `test_alliance._test_walls_still_block`）。
+- `side_of()` 的代表 = 这一方里**字典序最小**的 id（与「谁先被发现」无关）⇒ 可复现；
+  没有盟友时就是它自己 ⇒ 老图行为逐位一致。
+
+### 36.3 改动落在哪（五处）
+
+| 文件 | 改动 |
+|---|---|
+| `logic/faction.gd` | **新增**：`_ALLY` / `_ALLY_PAIRS`、`set_allies()` / `clear_allies()` / `allied()` / `same_side_for_attack()` / `side_of()` / `side_members()` / `ally_pairs()`；登记时展开传递闭包 |
+| `logic/map_data.gd` | 读 `allies` 字段（`_read_allies`，宽容：坏项跳过、不做阵营名校验） |
+| `logic/world.gd` | `reset()` 里紧跟名单确立之后注入（`FactionRes.set_allies(map.allies)`） |
+| `logic/combat.gd` | 索敌 / 找敌方建筑 / **箭塔开火**三处换成 `same_side_for_attack` |
+| `logic/unit.gd` + `logic/command_processor.gd` | 手动点名（`order_attack_unit` / `order_attack_building`）与命令层同口径 |
+| `logic/faction_ai.gd` | `_attack_target` 不再把盟友的区划 / 大本营当行军目标 |
+| `logic/zone.gd` | 占领：`present_by`（真实阵营，人数加成用）+ `present_sides`（一方，判「只有一方」用）；**主人那一方在场也算一方**（否则盟友的兵会去抢盟友的地） |
+| `logic/crowd/crowd_bridge.gd` | **新增** `_side_list` / `_side_index`：内核的 `AcquireTargets` 只认「下标不同 = 敌对」，所以让**盟友共用同一个下标** —— 一行 C# 都不用改（C# 那边的注释本来就写着「同一方 = 同一个值」）。⚠️ 与 `_faction_index` **不能合并**：那个还管碰撞 / 通行 / 搬运 |
+
+### 36.4 ★ 两个踩到的坑（都是断言先红、我再去查的）
+
+1. **`progress_by` 的键缺了「一方」**：某局名单是 `['p1','ai']`，而 `_capture_factions()`
+   总会额外塞进 `'enemy'`；折叠之后往 `by[...]` 里写了一个从没铺过的键 ⇒
+   `test_ui` 当场报「Invalid access to property or key 'ai'」（栈直接指到 `zone.gd`）。
+   修法：铺键时**既按名单、也按这一帧真站在这里的每一个阵营**。
+2. **「只有一方」不能只看阵营数**：把两个盟友折成一个代表之后，`present.keys()` 里
+   可能同时有 `ai` 与 `enemy`，`present.size() == 1` 永远不成立 ⇒ 谁都不读条；
+   而只看「方」又会把**主人自己**当成外来者 ⇒ 盟友的兵去抢盟友的地（实测：进度真的在涨）。
+   修法：`present_sides`（方）+「主人那一方在场也登记进 `present_sides`」，
+   读条方仍然取**真实阵营 id** ⇒ 区块归属与进度条颜色都不会写成代表 id。
+
+> ⚠️ 第二条还把 `test_zone_capture` 拖成了 **575 秒**（11 条断言红）：占领读不满 ⇒
+> 那些「跑到某一方占下为止」的 while 循环一直跑到 guard 上限。**测试突然变慢本身
+> 就是一条线索** —— 修完之后回到 5 秒。
+
+### 36.5 断言（`tests/test_alliance.gd`，73 项）
+
+| 组 | 验什么 |
+|---|---|
+| 纯查询 | `allied` 互相成立 / 空 id·同名·坏数据不吃进表 / `side_of` 两个成员算同一个代表 / 三方传递闭包 / 重复对去重 / `clear_allies` 之后又变回敌人 |
+| ★ 口径分离 | `same_side_for_attack(NPC, AI)` 为 true，而 **`same_side(NPC, AI)` 仍为 false**（城墙照样挡盟友） |
+| 地图数据 | 边关读到 `enemy ↔ ai`；**没写 allies 的图 = 空表**；坏项全跳过；缺字段 = 空表 |
+| 世界接线 | 带 AI 开一局 ⇒ 盟友表被注入；换到没结盟的图 ⇒ 关系**没有**跟过来；换回来又有 |
+| ★ 不互相攻击 | GDScript 逐单位索敌路 / C# 内核批量索敌路 / 箭塔开火 / `order_attack_unit` / 命令层 —— 五条都**不**把盟友当目标；同时确认**玩家与两边仍然是敌人** |
+| ★ 不争同一区划 | AI 的兵站在盟友（enemy）的区划里**不读条**、进度为 0；两个盟友的兵同处一区**不冻住**而是按一方读条；盟友的建筑不会把对方的地翻走 |
+
+### 36.6 已知取舍
+
+- **只影响「打」与「占」，不影响「挡」**：盟友的城墙 / 箭塔本体照样挡盟友的军队
+  （用户只要求不互相攻击）。要做「友军放行」是另一条需求，改 `building.blocks` /
+  `body_blocks` 那一层的判据即可 —— 但那时 `same_side` 这个名字的含义就要重新想。
+- **视野（迷雾）没动**：两个盟友各有各的视野，看不到对方的视野。
+  现在玩家与两边都是敌人，所以观感上没有差异；要做「共享视野」是迷雾那一侧的事。
+- **盟友之间不共享资源 / 不协同出兵**：它们是各自经营的独立阵营，只是不互相打。
+- **`allies` 不做阵营名校验**：写错的 id 天然无效（不会与真实阵营同名），
+  与 `zone_list[].owner` 的宽容度一致 —— 地图是可以手改的文件，写错一个 id 不该让整局开不出来。
+
+
+
 

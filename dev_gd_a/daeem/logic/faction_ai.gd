@@ -260,9 +260,13 @@ static func _launch_attack(world, cfg: ConfigRes, fc: Dictionary, generals: Arra
 ## 攻击目标：离自己最近的**敌方区划中心**（没有中心格的区划跳过），
 ## 全都没有 → 敌方大本营。
 ##
-## ★ 判据用 `FactionRes.same_side(z.owner, faction)` 取反，而不是写 `z.owner != faction`：
-##   空 owner（无主区划）在 same_side 下是「不同方」—— 但无主区划不该是攻击目标
-##   （AI 去打一片没人的地毫无意义），所以这里额外要求 `owner != ""`。
+## ★ 判据用 `FactionRes.same_side_for_attack(z.owner, faction)` 取反，而不是写
+##   `z.owner != faction`：
+##   · 空 owner（无主区划）不是「敌方」—— 去打一片没人的地毫无意义（额外判 `owner != ""`）；
+##   · ★★ **盟友的地也不是敌方**（阵营归属）：这一条决定了「两个 AI 友善」在
+##     AI 这一侧真的成立 —— 不改成「同阵营或盟友」的话，阵营 AI 照样会
+##     把盟友的区划当成进攻目标，一路推过去把友军打死（自动索敌只是不主动开火，
+##     但行军攻击的目标点是 AI 自己挑的）。
 static func _attack_target(world, faction: String) -> Variant:
 	if world.zones == null:
 		return null
@@ -271,7 +275,7 @@ static func _attack_target(world, faction: String) -> Variant:
 	var best_d := INF
 	for z in world.zones.zones:
 		var owner := String((z as Dictionary)["owner"])
-		if owner == "" or FactionRes.same_side(owner, faction):
+		if owner == "" or FactionRes.same_side_for_attack(owner, faction):
 			continue
 		var c: Variant = (z as Dictionary).get("center", null)
 		if c == null:
@@ -286,7 +290,7 @@ static func _attack_target(world, faction: String) -> Variant:
 	for b in world.building_list:
 		if not b.alive or b.type != BuildingRes.TYPE_BASE:
 			continue
-		if FactionRes.same_side(String(b.owner), faction):
+		if FactionRes.same_side_for_attack(String(b.owner), faction):
 			continue
 		var d2: float = GridRes.octile_distance(b.tx - home.x, b.ty - home.y)
 		if d2 < best_d:

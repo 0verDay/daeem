@@ -16,10 +16,23 @@
 ##
 ## 调试句柄：控制台里 `RTS`（等价于 HTML 版的 window.RTS）。
 ## 无头测试用不上它，但手玩调参时非常有用（改数值不必重启：RTS.cfg 就是那份配置对象）。
+##
+## ★★ 设置二级菜单那两颗按钮要干的活，本文件**只是转发**（本轮新增）：
+##    · 全屏 → `fullscreen_toggled` → view/main.gd 的 `toggle_fullscreen()`
+##    · 返回主菜单 → `return_to_menu_requested` → view/main.gd 的 `return_to_menu()`
+##    为什么不在这里直接做：一个动的是窗口模式（main 还管着 Ctrl+Q 那条快捷键，
+##    两处必须同一份实现），另一个要**销毁本场景自己**（自己删自己是最容易留下
+##    半条命的写法）。所以这一层只把 hud 的信号原样往上抛。
 extends Node2D
+
+## 设置菜单里点了「全屏 / 窗口化」（请求，执行在 view/main.gd）
+signal fullscreen_toggled
+## 设置菜单里点了「返回主菜单」（请求，执行在 view/main.gd）
+signal return_to_menu_requested
 
 const ConfigRes = preload("res://logic/config.gd")
 const WorldRes = preload("res://logic/world.gd")
+const MapLibraryRes = preload("res://logic/map_library.gd")
 const CommandRes = preload("res://logic/command_processor.gd")
 const PaletteRes = preload("res://view/palette.gd")
 const FontLoaderRes = preload("res://view/font_loader.gd")
@@ -33,7 +46,13 @@ const CameraRigRes = preload("res://view/camera_rig.gd")
 const InputControllerRes = preload("res://view/input_controller.gd")
 const HudRes = preload("res://view/hud.gd")
 
-const MAP_PATH := "res://data/test_map.json"
+## 默认地图（`start()` 不传参时用它）。
+##
+## ★ 正常路径**永远**由 `view/main.gd` 把开局页上选中的那张图传进来 ——
+##   这个默认值只服务两种调用方：基准脚本（bench_fps 之类）与手玩时直接在编辑器里
+##   跑本场景。所以它就是「地图选择条上的第一张」（`logic/map_library.gd` 扫出来的），
+##   而不是某个写死的文件名：地图目录一变，这里跟着变，不需要改代码。
+const MAP_PATH := MapLibraryRes.FALLBACK_MAP_PATH
 
 var cfg: ConfigRes = null
 var world = null
@@ -161,6 +180,31 @@ func _build_hud() -> void:
 	hud.name = "Hud"
 	add_child(hud)
 	hud.setup(cfg, world, input_ctrl, theme, camera_rig)
+	# ★★ 设置二级菜单的两个请求：原样往上抛（见文件头）。
+	#    上面那几条 local_ui_changed / command_issued 是「界面 → 逻辑」，
+	#    这两条是「界面 → 流程」，所以它们**不经过逻辑层**。
+	hud.fullscreen_toggled.connect(_on_fullscreen_toggled)
+	hud.return_to_menu_requested.connect(_on_return_to_menu_requested)
+
+
+## 设置菜单里点了「全屏 / 窗口化」——转给 main.gd（它管窗口模式，也管 Ctrl+Q）。
+func _on_fullscreen_toggled() -> void:
+	fullscreen_toggled.emit()
+
+
+## 设置菜单里点了「返回主菜单」——转给 main.gd（它会拆掉本场景）。
+##
+## ★ 先确认「本场景确实活着」再转发：返回主菜单的路上，本节点会被摘下来销毁，
+##   而这期间队列里可能还压着一次点击 —— 那种情况下不该再发第二条请求
+##   （main.gd 侧也有同样的幂等判断，两处都留着是因为代价只有一行）。
+##   ⚠️ 用 `is_instance_valid()` 而不是 `is_inside_tree()` 单独判：本函数有可能在
+##     **自己已经被释放之后**才被叫到（信号连在已销毁的节点上），
+##     那时 `is_inside_tree()` 自己就会报
+##     「Invalid call. Nonexistent function 'is_inside_tree' in base 'previously freed'」。
+func _on_return_to_menu_requested() -> void:
+	if not is_instance_valid(self) or not is_inside_tree():
+		return
+	return_to_menu_requested.emit()
 
 
 func _build_debug_handles() -> void:

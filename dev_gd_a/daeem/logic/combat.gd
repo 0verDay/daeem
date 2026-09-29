@@ -200,14 +200,14 @@ static func acquire_target(world, cfg: ConfigRes, u: UnitRes, idx: int = -1) -> 
 		#    docs/pitfalls.md 5.38 与 tests/test_csharp_bridge.gd 的 _test_no_friendly_fire。
 		#    ⚠️ 这道闸门只是**保险**，不是修法：串位本身必须在内核映射那一侧修掉
 		#      （否则单位会「看到了敌人却当没看到」，表现成有时不还手）。
-		if best != null and FactionRes.same_side(String(best.faction), String(u.faction)):
+		if best != null and FactionRes.same_side_for_attack(String(best.faction), String(u.faction)):
 			best = null
 
 	if not used_kernel:
 		for other in world.units:
 			if other == u or not other.alive:
 				continue
-			if FactionRes.same_side(other.faction, u.faction):
+			if FactionRes.same_side_for_attack(other.faction, u.faction):
 				continue
 			# 距离减去目标体积：允许「半个身子进射程」的目标被发现
 			var d: float = u.pos.distance_to(other.pos) - cfg.unit_radius_of(other.unit_type)
@@ -255,7 +255,7 @@ static func nearest_enemy_building(world, cfg: ConfigRes, u: UnitRes, aggro: flo
 			continue
 		if String(b.owner) == "" or b.is_invulnerable():
 			continue                      # 中立 / 无敌：不是可打的目标
-		if FactionRes.same_side(b.owner, u.faction):
+		if FactionRes.same_side_for_attack(b.owner, u.faction):
 			continue
 		var d: float = u.pos.distance_to(b.center()) - b.body_half(cfg)
 		if d <= aggro and d < best_d:
@@ -418,9 +418,11 @@ static func attack_building(world, cfg: ConfigRes, u: UnitRes, b) -> void:
 ##    （见 building.attack_damage 与 cfg.building_attack_of）。
 ## ★ 建造读条中的建筑**不开火**（b.is_under_construction()）：它还没有战斗力。
 ##
-## ★ 索敌用 `same_side`，**不要**写成 `u.faction == b.owner`：
+## ★ 索敌走「攻击口径的同一方」（`same_side_for_attack` = 同阵营 **或盟友**），
+##   **不要**写成 `u.faction == b.owner`：
 ##   HTML 版的箭塔就是这么写的，偏离了它自己声明的规则 —— 单人下行为等价，
 ##   但一旦引入结盟/组队就会变成「箭塔打队友」（见 docs/pitfalls.md 3.7）。
+##   ★ 这一行就是那句预言的落点：加了阵营归属（盟友）之后，两方的箭塔不再互射。
 static func update_towers(world, cfg: ConfigRes, dt: float) -> void:
 	for b in world.building_list:
 		if not b.alive:
@@ -440,7 +442,7 @@ static func update_towers(world, cfg: ConfigRes, dt: float) -> void:
 		for u in world.units:
 			if not u.alive:
 				continue
-			if FactionRes.same_side(u.faction, b.owner):
+			if FactionRes.same_side_for_attack(u.faction, b.owner):
 				continue
 			var d: float = b.center().distance_to(u.pos)
 			if d <= range_tiles + cfg.unit_radius_of(u.unit_type) and d < best_d:

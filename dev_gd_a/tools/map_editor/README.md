@@ -17,9 +17,14 @@
 
 直接双击 **`dev_gd_a/tools/map_editor/map_editor.bat`** 就行，不用敲命令行：
 
-- 默认打开工程里的 `data/test_map.json`；
+- 默认打开工程里的 `data/maps/frontier/map.json`（随游戏发布的默认地图）；
 - 想开别的地图：**把那张 JSON 拖到 `map_editor.bat` 上**；
 - 找不到 Python（或 Python 缺少 tkinter）时，它会**停住并给出提示**，不会一闪而过。
+
+> ★ **地图在 `data/maps/<id>/map.json`**（一个地图一个目录，目录名 = 地图 id）——
+> 这是游戏开场那条**地图选择条**扫描的目录（见 `daeem/logic/map_library.gd`）：
+> 编辑完把文件导出到这个目录下，重新开一局它就会多出一个选项。
+> 地图 json 里的 `id` / `name` 编辑器不改，但会**原样带过去**（`name` 就是选择条上的显示名）。
 
 > `.bat` 里踩过的四个坑都写在文件头部注释里（`start "" pythonw` 才不会被黑框连坐杀掉、
 > 路径要先消掉 `..`、目录层数不能少一层、行尾必须 CRLF）—— 改它之前先读那几行。
@@ -31,8 +36,8 @@
 python dev_gd_a/tools/map_editor
 
 # 直接打开现有地图（相对 dev_gd_a/daeem/ 或当前目录都认）
-python dev_gd_a/tools/map_editor dev_gd_a/daeem/data/test_map.json
-python dev_gd_a/tools/map_editor data/test_map.json
+python dev_gd_a/tools/map_editor dev_gd_a/daeem/data/maps/frontier/map.json
+python dev_gd_a/tools/map_editor data/maps/frontier/map.json
 
 # 不开窗口，只跑一遍数据层自检（读 config / 读地图 / 导出再导入）
 python dev_gd_a/tools/map_editor --selftest
@@ -359,10 +364,12 @@ Linux 上要装 `python3-tk`）。
 
 ## 五、导出的 JSON 长什么样
 
-就是 `data/test_map.json` 那一套，**多加两张网格 + 阵营那块**：
+就是 `data/maps/frontier/map.json` 那一套，**多加两张网格 + 阵营那块**：
 
 ```json
 {
+  "id": "frontier",                     // 编辑器不改、原样带过去；目录名才是 id
+  "name": "边关",                       // ★ 开场地图选择条上的显示名（不写就用目录名）
   "cols": 17,
   "rows": 22,
 
@@ -466,7 +473,7 @@ Linux 上要装 `python3-tk`）。
 `kind` / `production` / `faction_bases`，`zone.build_from_map()` 与 `map_data.spawn_layout_for()`
 自动切成读新字段那条路 —— 不需要改代码、不需要开关。
 
-> ⚠️ **随游戏发布的那张图已经搬到新格式**（只剩 `data/test_map.json`；老图 `map_01.json`
+> ⚠️ **随游戏发布的默认地图已经搬到新格式**（`data/maps/frontier/map.json`；老图 `map_01.json`
 > 已按用户要求删掉）：27×22、594 个地块、14 个区块（a1…g2）都有自己的中心与产能，并带
 > `faction_bases: {"p1": [7, 2], "p2": [19, 19]}`。
 > ★★ 最近一轮按用户要求把**14 个区块全部设成「人口区划」并同步数字**
@@ -525,7 +532,8 @@ Linux 上要装 `python3-tk`）。
 | `logic/unit.gd` | `STEP_GUARD := 512`（一帧最多推进几段路径）改成按地图对角线算的 `step_guard()` —— 地图尺寸不再写死，大图上一帧能走完该走的路 |
 | `tests/test_map_editor.gd` | 131 项断言：老地图不变、地图外不可通行、`zones` 网格、空区块、`exists` 三种写法、编辑器导出的地图能真的开一局、**阵营大本营**（指定 / 只指定一方 / 落在山上 / 越界）、**区划中心不会凭空立起障碍**（老图没有中心字段）、**区划种类**（`zone_list[].kind` 读得进来 / 认不出的按默认 / 写了种类但没写 production → 产量 0 / 白名单按种类挡） |
 | `tests/test_logic.gd` | 新增两节：`_test_zone_centers`（不可进入 / 无敌 / 不可拆 / 不被索敌 / 点得出区块）与 `_test_zone_population_and_production`（人口累积、产能聚合、无主不产出） |
-| `tests/test_smoke.gd` | `test_map.json`（随游戏发布的唯一一张图）已带 `faction_bases` 且**没有**老 `base` 字段；出生点走 `_ring_layout`（自带防御阵地） |
+| `tests/test_smoke.gd` | `data/maps/frontier/map.json`（随游戏发布的默认地图）已带 `faction_bases` 且**没有**老 `base` 字段；出生点走 `_ring_layout`（自带防御阵地） |
+| `logic/map_library.gd` | 扫 `data/maps/` 列出所有地图（开场主界面那条地图选择条的**唯一**数据源）；`id` / `name` 两个字段编辑器不改、但**原样带过去** |
 
 > ★ 本轮（区块**人口上限** + 框选）还动了这些地方，细节见 [`../../docs/route.md`](../../docs/route.md) 第十六节：
 > `mapfile.py`（读写 `population_cap`）、`app.py`（区块页的「人口上限」输入框 + 撤销栈）、

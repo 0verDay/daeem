@@ -177,6 +177,24 @@ const TABS_COUNT := 3
 const SETTINGS_RECT := Rect2(1840.0, 0.0, 80.0, 160.0)
 
 ## ------------------------------------------------------------------
+## ★★ 设置**二级菜单**（点设置按钮弹出来的那一块）
+##
+## 位置：**挂在设置按钮正下方**（右边缘与按钮右边缘对齐、贴着屏幕右边），
+## 所以「点哪儿弹出、就在哪儿下面」这件事不用解释。
+##
+## 尺寸由**内容决定**（见 hud.gd 的 `_build_settings_menu`）：这里只给宽度与
+## 两个按钮那一列的高度常量，测试按它们断言「面板在按钮下方、且不与按钮重叠」。
+## ------------------------------------------------------------------
+const SETTINGS_MENU_RECT := Rect2(1820.0, 168.0, 100.0, 152.0)
+## 菜单里每一格的高度与格间距（面板高度 = N × 格高 + (N-1) × 间距）
+const SETTINGS_MENU_ITEM_H := 72.0
+const SETTINGS_MENU_GAP := 8.0
+## 菜单里有几格（全屏 + 返回主菜单）。★ 与 hud.gd 的 `SETTINGS_MENU_SLOTS` 是**同一个数**：
+## 这边用它算「面板多高」（给 `interactive_rects` 与测试用），那边用它算实际高度 ——
+## 两处必须一起改，所以刻意**没有**做成「一处 import 另一处」（view 层内部循环 preload 会打架）。
+const SETTINGS_MENU_SLOTS := 2
+
+## ------------------------------------------------------------------
 ## 详细信息**左栏**（见 view/unit_roster.gd 与 view/troop_grid.gd）
 ##
 ## ★★ 第四轮改版（照新参考图逐像素重量的）：左栏就是 **1 + 3×3 = 10 个格子**，
@@ -693,6 +711,16 @@ static func interactive_rects(view_size: Vector2) -> Array[Rect2]:
 	var s := SETTINGS_RECT
 	s.position.x += shift.x                                     # 贴右上
 	out.append(s)
+	# ★★ 设置二级菜单（点设置弹出来的那一块）也在名单里 —— 那两颗按钮真的能点。
+	#   ⚠️ 但它整块都落在 `in_edge_band`（最外圈 44px）里，所以那条例外照样生效：
+	#   鼠标停在它身上时**边缘滚屏还是能滚**（与设置按钮同一条规矩）。
+	#   换句话说：加进来不影响「贴边控件不拦最外圈」，只是让名单与「哪些控件能点」保持一致
+	#   —— 以后有人把菜单往左挪出贴边带，行为自动就跟上了。
+	var m := SETTINGS_MENU_RECT
+	m.size.y = SETTINGS_MENU_ITEM_H * SETTINGS_MENU_SLOTS \
+		+ SETTINGS_MENU_GAP * float(maxi(0, SETTINGS_MENU_SLOTS - 1))
+	m.position.x += shift.x                                     # 贴右上
+	out.append(m)
 	return out
 
 

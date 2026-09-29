@@ -292,6 +292,10 @@ static func _snap_slot(world, cfg: ConfigRes, slot: Vector2, faction: String, cl
 ##   · tx, ty       敌对**建筑**所在的地块
 ##
 ## 与 move 一样带 faction 防冒充；目标必须真的是敌对的一方（不能拿自己人当靶子）。
+##
+## ★★ 「敌对」的口径是 `same_side_for_attack`（同阵营 **或盟友**）：加了阵营归属之后，
+##    命令层也必须认这一套 —— 否则命令层放行、`unit.order_attack_unit` 再拦一道，
+##    拒因会变成「你自己人」而不是「它是你的盟友」，玩家看到的提示就错了。
 static func apply_attack(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 	var owner_faction := String(cmd.get("faction", world.my_faction))
 	var target_unit = null
@@ -300,13 +304,13 @@ static func apply_attack(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 		target_unit = world.unit_by_id(String(cmd.get("target_id", "")))
 		if target_unit == null or not target_unit.alive:
 			return false
-		if FactionRes.same_side(target_unit.faction, owner_faction):
+		if FactionRes.same_side_for_attack(target_unit.faction, owner_faction):
 			return false
 	else:
 		target_building = world.building_at(int(cmd.get("tx", -1)), int(cmd.get("ty", -1)))
 		if target_building == null or not target_building.alive:
 			return false
-		if FactionRes.same_side(target_building.owner, owner_faction):
+		if FactionRes.same_side_for_attack(target_building.owner, owner_faction):
 			return false
 		# ★ 无敌建筑（区划中心）连命令都不该被接受 —— 它不是「敌方建筑」，是中立障碍。
 		#   这里挡一道，`unit.order_attack_building()` 里再挡一道：命令层与逻辑层各管各的，

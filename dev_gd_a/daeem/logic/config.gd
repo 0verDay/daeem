@@ -18,9 +18,16 @@ extends RefCounted
 ## ⚠️ 跨文件引用只用**自己文件里的 preload 常量**：命令行 `--script` 下全局 class_name
 ##    表不可用，写 `GridRes` 作类型会直接 Parse Error（见 docs/pitfalls.md 第五节）。
 const GridRes = preload("res://logic/grid.gd")
+## ★ 与地图目录有关的常量**只有一个源头**（`logic/map_library.gd` 的 MAPS_DIR /
+##   FALLBACK_MAP_PATH）：默认地图路径就是它给的兜底值，这里不重复写字符串字面量。
+const MapLibraryRes = preload("res://logic/map_library.gd")
 
 const DEFAULT_CONFIG_PATH := "res://data/config.json"
-const DEFAULT_MAP_PATH := "res://data/test_map.json"
+## ★ 默认地图：`data/maps/<id>/map.json` 里的那一张（一个地图一个目录）。
+## ⚠️ 开场主界面那条**地图选择条**用的是 `logic/map_library.gd` 扫出来的结果
+##    （几张图就有几个选项），这里的常量只是**没有地图目录时**的兜底
+##    —— 加地图不用改这一行，往 data/maps/ 下放个新目录就行。
+const DEFAULT_MAP_PATH := MapLibraryRes.FALLBACK_MAP_PATH
 
 ## 缓存 JSON 的字典形式（阵营 id → 字典 / 颜色名 → 字典 这类查找用得着）
 var data: Dictionary = {}

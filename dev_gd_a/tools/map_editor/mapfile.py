@@ -60,7 +60,21 @@ from .model import (
 MIGRATED_BASE_FACTION = "p1"
 
 #: 编辑器不负责编辑、但要原样带过去的字段（Godot 用它们生成据点 / 守军 / 多人起点）
+#:
+#: ★ `id` / `name` / `placeholder`：这张图的标识、显示名与「是不是占位图」。
+#:   开场主界面的**地图选择条**读它们（Godot 侧 `logic/map_library.gd`）：
+#:   `name` = 下拉框上的文字（不写就用目录名），`placeholder: true` = 只为测试选项生成
+#:   而存在的图（选择条上照样列出，但「不选就按 test」的默认图会跳过它）。
+#:   编辑器不改这三个值，只保证「导入 → 导出」不掉。
+#: ★ `allies`：**阵营归属（盟友）** —— 形如 `[["enemy","ai"]]`，表示这两方是同方
+#:   （不互相攻击 / 不争夺同一区划）。见 `daeem/logic/faction.gd` 的那一大段说明。
+#:   同样是「地图数据」：只有写了它的那张图生效。编辑器不改它，但必须原样带回去 ——
+#:   不然在编辑器里打开边关再导出，两个 AI 就会开始互相打（一个很安静的回归）。
 PRESERVED_KEYS: Tuple[str, ...] = (
+    "id",
+    "name",
+    "placeholder",
+    "allies",
     "general_spawns",
     "buildings",
     "units",
@@ -80,6 +94,9 @@ EDITOR_COMMENT: Tuple[str, ...] = (
     "zone_list[].population_cap：该区块的人口上限；不写 = 默认 1（涨到上限就不再涨）。",
     "zone_centers：地块 → 中心所属的区块 id（-1 = 不是任何区块的中心），由 center 推出来。",
     "factions / faction_bases：阵营表与每个阵营的大本营（每个阵营必须有且只有一个）。",
+    "id / name：这张图的标识与显示名；开场主界面的地图选择条按 name 显示（不写就用目录名）。",
+    "placeholder：true = 占位图（只为测试选择条的选项生成）；选项照样列出，但默认进的那张会跳过它。",
+    "allies：阵营归属（盟友），形如 [[\"enemy\",\"ai\"]] —— 这两方不互相攻击、不争夺同一区划。",
     "其余出生点 / 预置建筑 / 预置单位由 Godot 脚本生成。",
 )
 

@@ -240,22 +240,37 @@ func _test_entry_flow() -> void:
 	# 页面刚切过来时容器还没排过版（按钮 rect 还是 (0,0)），等一帧才量得到真实位置
 	await process_frame
 
-	var button = menu.get_node_or_null("StartRoot/MainMenu/TestButton")
+	var button = menu.get_node_or_null("StartRoot/MainMenu/MenuColumn/TestButton")
 	ok(button is Button, "主界面有一个按钮")
 	if button is Button:
 		eq((button as Button).text, "test", "按钮文案是 test")
+		# ★ 主界面现在是一列「地图选择条 + test 按钮」（见 view/start_screen.gd），
+		#   所以按钮**不再**落在整页正中 —— 但它仍然必须在这一列里水平居中。
 		# ⚠️ 参照物是**装着它的那一层**（MainMenu），不是 root.get_visible_rect()：
 		#    无头下视口高宽会被压成正方形（1920×1920），拿视口当基准会测出一条假失败。
 		#    真正的居中保证是 MainMenu 铺满整页 + CenterContainer 居中，所以对着它测。
-		var area_owner: Control = (button as Control).get_parent()
+		var area_owner: Control = (button as Control).get_parent().get_parent()
 		var area: Rect2 = area_owner.get_global_rect()
 		var center: Vector2 = (button as Control).get_global_rect().get_center()
 		ok(absf(center.x - area.get_center().x) < 2.0, "test 按钮水平居中")
-		ok(absf(center.y - area.get_center().y) < 2.0, "test 按钮垂直居中")
 		ok(area.size.x >= 100.0 and area.size.y >= 100.0, "按钮所在的那一层铺满了可用的窗口（不是缩成一团）")
+		# ★ 需求：「在 test 按钮**上方**加一个选择条」——这条相对位置归这个文件钉
+		#   （选择条自己的行为在 tests/test_map_select.gd 里测）。
+		#   ⚠️ 选择条不是一个 Control 节点（它是 view/map_select.gd 自己画的按钮），
+		#      所以要问 menu.map_select_button()，不能走节点路径。
+		var select: Button = menu.map_select_button()
+		ok(select is Button, "★ test 按钮上方有一条地图选择条")
+		if select is Button:
+			ok((select as Control).get_global_rect().end.y
+					<= (button as Control).get_global_rect().position.y + 1.0,
+				"★ 选择条在 test 按钮上方（需求原文「在其上方」）")
 
-	# 真实点击 test 按钮（白底之上它是最上层，事件该落到它自己身上）
-	await _click_at(Vector2(960.0, 960.0))
+	# 真实点击 test 按钮（白底之上它是最上层，事件该落到它自己身上）。
+	# ⚠️ 坐标不能再写「整页正中」：主界面现在是一列「选择条 + 按钮」，按钮在这一列的下半截，
+	#    正中那个点落在**选择条**上（点下去只会弹下拉框，不会进游戏）。
+	#    无头下视口是 1920×1920（见上面那条注释），实测这一列在 y 868..1052、
+	#    按钮在 972..1052 → 中心 (960, 1012)。改布局就要跟着改这一行。
+	await _click_at(Vector2(960.0, 1012.0))
 
 	var game = main.game
 	ok(game != null, "按下 test 之后出现了游戏内场景")

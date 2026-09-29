@@ -922,7 +922,17 @@
       "click_alpha_min / click_alpha_max 是提示呼吸的暗端与亮端透明度（0~1）：",
       "  暗端不要设 0，否则文字会整个消失、看起来像在闪；节奏（每段 1.2 秒）在",
       "  view/start_screen.gd 的 BLINK_PHASE_SEC 里。",
-      "click_text 里那串破折号是需求指定的原文（前后各四个全角「—」），改文案只动这里。"
+      "click_text 里那串破折号是需求指定的原文（前后各四个全角「—」），改文案只动这里。",
+      "map_* 是主界面那条**地图选择条**（在 test 按钮上方）：",
+      "  ★ 选项**不是**在这里配的 —— 代码扫描 data/maps/ 下每个目录里的地图 JSON，",
+      "    有几张图就有几个选项；地图 json 里写了 name 就显示 name，没写就显示目录名。",
+      "    所以加一张新地图不需要改这个文件（见 logic/map_library.gd）。",
+      "  这里只放「长什么样」与「一张地图都没有时显示什么」。",
+      "  地图 json 里写了 \"placeholder\": true 的图（比如 arena）照样是一个选项，",
+      "  但「不选就按 test」默认进的那张会跳过它 —— 加测试图不该换掉默认局。",
+      "map_gap 是选择条与 test 按钮之间的间距。★ 它刻意留得比较宽（112）：",
+      "  点开选择条时列表是**向下**展开的，间距太小的话列表会压住 test 按钮、",
+      "  两层文字叠在一起看着像画坏了（实测截图抓到的）。"
     ],
     "bg": "#ffffff",
     "title": "DAEEM",
@@ -936,11 +946,41 @@
     "click_alpha_min": 0.15,
     "click_alpha_max": 1.0,
 
+    "map_select_label": "地图",
+    "map_select_label_color": "#333333",
+    "map_select_label_size": 28,
+    "map_select_width": 320,
+    "map_select_height": 56,
+    "map_select_color": "#333333",
+    "map_select_size": 26,
+    "map_select_empty_text": "没有可用地图",
+    "map_select_border_color": "#333333",
+    "map_select_border_width": 2,
+    "map_gap": 112,
+
     "test_button_text": "test",
     "test_button_color": "#333333",
     "test_button_size": 28,
     "test_button_width": 240,
     "test_button_height": 80
+  },
+
+  "settings": {
+    "_comment": [
+      "★★ 游戏内右上角「设置」按钮点开的那条**二级菜单**（本轮新增）。",
+      "  位置（贴着设置按钮下方、靠屏幕右边）在 view/ui_layout.gd 的 SETTINGS_MENU_* 里，",
+      "  这一节只管**文案、字号与格子颜色**（与 menu 段同一条规矩：view 里不写文案字面量）。",
+      "  ★ 「全屏」是**开关**：全屏时显示 fullscreen_on_text（写「窗口化」，即「按它回到窗口」）。",
+      "  两个动作分别由 view/game_scene.gd 转发给 view/main.gd（窗口模式与整个流程都归 main 管），",
+      "  设置面板自己不改任何东西 —— 它只发信号。"
+    ],
+    "title": "设置",
+    "title_size": 15,
+    "button_size": 14,
+    "text_color": "#f7fdff",
+    "fullscreen_on_text": "窗口化",
+    "fullscreen_off_text": "全屏",
+    "menu_text": "返回主菜单"
   },
 
   "debug": {

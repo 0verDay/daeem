@@ -1,6 +1,6 @@
 extends RefCounted
 ##
-## 载入地图 JSON（`data/test_map.json`）+ 连通性修正（对应 HTML 版 js/map.js）。
+## 载入地图 JSON（`data/maps/<id>/map.json`）+ 连通性修正（对应 HTML 版 js/map.js）。
 ##
 ## 地形用字符串网格存（'grass' / 'forest' / 'mountain'），**不是** TileMapLayer 的属性。
 ## 理由见 docs/pitfalls.md 2.2：换一张图集/改一个图块属性不该悄悄改变玩法。
@@ -57,6 +57,13 @@ var base: Vector2i = Vector2i.ZERO
 var faction_bases: Dictionary = {}
 ## 阵营表（地图编辑器给：id / 名字 / 颜色）。游戏逻辑**不读**它，留着给 UI 与工具用。
 var factions_meta: Array = []
+## ★★ 阵营归属（盟友）：形如 `[["enemy", "ai"]]` —— 这一局里这些阵营互为**同方**
+## （不互相攻击、不争夺同一区划）。见 `logic/faction.gd` 那一大段说明。
+##
+## ★ 来源是地图 JSON 的 `allies` 字段（**地图数据**，不是全局配置）：
+##   所以「只有某一张图友善」是天然的，别的图一行不用改。
+## ★ 缺字段 / 格式不认识 → 空数组 → 没有任何盟友（与加这个功能之前逐位一致）。
+var allies: Array = []
 ## 将领开局站位（单机用，也是 P1 的）
 var general_spawns: Array[Vector2i] = []
 ## 多玩家起点（本轮不用，第 1 轮联机用）
@@ -176,6 +183,7 @@ func _load(path: String, cfg: ConfigRes) -> bool:
 		pvp_points.append(p)
 	_read_faction_bases(d.get("faction_bases", null))
 	factions_meta = d.get("factions", []) if d.get("factions", []) is Array else []
+	allies = _read_allies(d.get("allies", null))
 	prefab_buildings = _read_buildings(d.get("buildings", []))
 	prefab_units = _read_units(d.get("units", []))
 	_read_zones(cfg, d.get("zones", null), d.get("zone_list", null))
@@ -283,6 +291,40 @@ func set_faction_base(fid: String, tile: Vector2i) -> void:
 	if fid == "" or tile.x < 0 or tile.y < 0:
 		return
 	faction_bases[fid] = tile
+
+
+## ★★ 读阵营归属（盟友）：`allies: [["enemy", "ai"]]`。
+##
+## ★ 只用**前两个**元素：这一版的语义是「两方互为盟友」，写三个以上没有定义的收益
+##   （真要多方同盟就写成多对，比如 `[["a","b"],["b","c"]]` —— `FactionRes` 侧本来就是
+##   按「对」做连通搜索的，三条边自然连成一方）。
+##
+## 宽容度与其它读字段的地方一致：
+##   · 缺字段 / 不是数组 → 空表（这一局没有任何盟友，行为与加这个功能之前**逐位一致**）；
+##   · 单项不是数组 / 少于两个 / 有一项是空串 / 两个是同一个阵营 → **跳过那一项**，
+##     不报错、也不把半条关系写进去；
+##   · 重复的对会被 `FactionRes.set_allies()` 去重。
+##
+## ⚠️ 这里**不做**「这个阵营认不认识」的校验：名单要到 `world.reset()` 才定下来
+##   （地图的 `factions` 只是元数据，真正在场的是名单 + config 里的 AI 阵营），
+##   而认不出来的 id 在判定时天然无效（它不会与任何真实阵营同名）。
+##   与 `zones_owners` 的宽容度一致。
+func _read_allies(v: Variant) -> Array:
+	var out: Array = []
+	if typeof(v) != TYPE_ARRAY:
+		return out
+	for item in (v as Array):
+		if typeof(item) != TYPE_ARRAY:
+			continue
+		var pair: Array = item as Array
+		if pair.size() < 2:
+			continue
+		var a := String(pair[0]).strip_edges()
+		var b := String(pair[1]).strip_edges()
+		if a == "" or b == "" or a == b:
+			continue
+		out.append([a, b])
+	return out
 
 
 ## 读区块网格 + 名字表 + 每种区划的种类（地图编辑器导出的地图才有）。

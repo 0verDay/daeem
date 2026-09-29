@@ -980,7 +980,7 @@ func _test_zone_population_and_production(world, cfg) -> void:
 	# ---- 人口：开局 0，按人口产能累积
 	eq(float(z0["population"]), 0.0, "★ 区划人口开局是 0")
 	# ★ 随游戏发布的地图必须给非 0 的人口产能 —— 否则实机里人口根本不涨
-	#   （`test_map.json` 里每个区划都是人口区划：0 粮食 / 0 黄金 / 0.15 人口）。
+	#   （`data/maps/frontier/map.json` 里每个区划都是人口区划：0 粮食 / 0 黄金 / 0.15 人口）。
 	ok(float(z0["production"]["population"]) > 0.0,
 		"★ 发布地图的区划配了人口产能（%s）" % z0["production"]["population"])
 	# ★★ 发布地图**没填人口上限** → 默认 1（用户需求：没填就是 1）。

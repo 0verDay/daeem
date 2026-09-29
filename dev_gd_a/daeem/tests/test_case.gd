@@ -26,6 +26,13 @@ const PATH_CONFIG := "res://logic/config.gd"
 const PATH_MAP_DATA := "res://logic/map_data.gd"
 const PATH_GRID := "res://logic/grid.gd"
 
+## 随游戏发布的那张地图（`data/maps/<id>/map.json`，一个地图一个目录 —— 见 docs）。
+##
+## ★ 写死这一串而不是去读 `logic/map_library.gd`：默认参数必须是**编译期常量**，
+##   而且这里刻意钉住「测试用的到底是哪个文件」—— 地图再搬家时应该在这里失败，
+##   而不是跟着一起改、把「地图搬错了」测成永远通过。
+const DEFAULT_MAP_PATH := "res://data/maps/frontier/map.json"
+
 var _pass: int = 0
 var _fail: int = 0
 var _case_name: String = "unnamed"
@@ -134,7 +141,7 @@ func require_config() -> RefCounted:
 	return cfg
 
 
-func require_map(cfg, path: String = "res://data/test_map.json") -> RefCounted:
+func require_map(cfg, path: String = DEFAULT_MAP_PATH) -> RefCounted:
 	var cls := script_at(PATH_MAP_DATA)
 	if cls == null:
 		return null
@@ -156,7 +163,7 @@ func require_map(cfg, path: String = "res://data/test_map.json") -> RefCounted:
 ## @param world_path World 脚本的 res:// 路径（默认 `res://logic/world.gd`）；
 ##        调用方自己 preload 了的话传进来就省一次 load。
 func require_world(cfg, world_path: String = "res://logic/world.gd",
-		map_path: String = "res://data/test_map.json") -> RefCounted:
+		map_path: String = DEFAULT_MAP_PATH) -> RefCounted:
 	var cls := script_at(world_path)
 	if cls == null:
 		return null

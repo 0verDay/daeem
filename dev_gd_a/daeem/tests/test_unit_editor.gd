@@ -554,7 +554,7 @@ func _test_hud_build_page() -> void:
 	var root_node = (packed as PackedScene).instantiate()
 	root.add_child(root_node)
 	await process_frame
-	root_node._on_test_pressed()          # 与玩家点一下 test 完全同一条路
+	root_node._on_test_pressed(root_node.start_screen.selected_map_path())          # 与玩家点一下 test 完全同一条路
 	await process_frame
 	await process_frame
 	var main = root_node.game

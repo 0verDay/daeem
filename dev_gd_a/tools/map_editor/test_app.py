@@ -852,8 +852,8 @@ def t_zone_tab_with_real_map() -> None:
     print("\n[13] 地块 ↔ 区块 来回切（曾经死循环）")
     cfg = mapfile.load_config(PROJECT_DIR) if hasattr(mapfile, "load_config") else None
     from map_editor.model import load_config as _load_cfg
-    # ★ 用随游戏发布的那张图（老图 map_01.json 已删，只剩 test_map.json）
-    map_path = PROJECT_DIR / "data" / "test_map.json"
+    # ★ 用随游戏发布的那张图（老图 map_01.json 已删，只剩 data/maps/frontier/map.json）
+    map_path = PROJECT_DIR / "data" / "maps" / "frontier" / "map.json"
     model = mapfile.load_map(map_path, _load_cfg(PROJECT_DIR))
     zone_count = len(model.zones)
     root = tk.Tk()
@@ -1218,17 +1218,17 @@ def t_file_buttons_wired() -> None:
         ok(target.is_file(), "★ 点「导出 JSON」真的写出了文件")
 
         # 点「导入地图…」：同样替换对话框，确认它读进一张真图
-        # ★ 用随游戏发布的那张图（老图 map_01.json 已删，只剩 test_map.json）。
+        # ★ 用随游戏发布的那张图（老图 map_01.json 已删，只剩 data/maps/frontier/map.json）。
         # ⚠️ 断言用**真实图上的数**，别写死 374/10：设计师往图里加地块 / 加区块是常事
         #    （这一轮就加了 4 个区块），写死的后果是一批「导入没生效」的假失败。
-        pub_map = PROJECT_DIR / "data" / "test_map.json"
+        pub_map = PROJECT_DIR / "data" / "maps" / "frontier" / "map.json"
         from map_editor.model import load_config as _load_cfg_pub
         pub_model = mapfile.load_map(pub_map, _load_cfg_pub(PROJECT_DIR))
         filedialog.askopenfilename = lambda **kwargs: str(pub_map)
         editor.file_buttons["import"].invoke()
         filedialog.askopenfilename = original_open
         eq(editor.model.existing_count(), pub_model.existing_count(),
-           "★ 点「导入地图…」真的把 test_map.json 读进来了")
+           "★ 点「导入地图…」真的把仓库里那张默认地图读进来了")
         eq(len(editor.model.zones), len(pub_model.zones), "导入之后区块也一起进来了")
 
         # 「新建」不再弹任何对话框：直接给一张全新的无限虚线画布
@@ -1489,12 +1489,12 @@ def t_sidebar_scrolls() -> None:
     print("\n[21] 侧边栏滚动（区块页内容比窗口高）")
     from map_editor.model import load_config as _load_cfg
     project = PROJECT_DIR
-    model = mapfile.load_map(project / "data" / "test_map.json", _load_cfg(project))
+    model = mapfile.load_map(project / "data" / "maps" / "frontier" / "map.json", _load_cfg(project))
     root = tk.Tk()
     root.geometry("1280x800")
     root.deiconify()
     root.update()
-    editor = app_module.EditorApp(root, project, model, project / "data" / "test_map.json")
+    editor = app_module.EditorApp(root, project, model, project / "data" / "maps" / "frontier" / "map.json")
     root.update()
     editor.set_page("zone")
     root.update()

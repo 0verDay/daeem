@@ -46,7 +46,7 @@ func _run() -> void:
 	#    这里显式钉成参考图的 1920×1080（与 test_ui.gd 同一个理由）。
 	root.size = Vector2i(int(UiLayoutRes.DESIGN_W), int(UiLayoutRes.DESIGN_H))
 	await process_frame
-	main._on_test_pressed()
+	main._on_test_pressed(main.start_screen.selected_map_path())
 	await process_frame
 	await process_frame
 

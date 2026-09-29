@@ -516,7 +516,12 @@ func _finish_zones() -> void:
 
 
 
-## 该状态里所有会参与占领的阵营（玩家方 + NPC）
+## 该状态里所有会参与占领的**阵营**（玩家方 + NPC）。
+##
+## ★ 这里返回的是**阵营 id**（不是 `FactionRes.side_of` 折算出来的「一方」）：
+##   它只用来铺 `progress_by` 的键（每个 id 一份进度，UI 按 id 取色）与遍历。
+##   「谁算一方、谁在抢谁的地」由 `_advance_zone` 里的 `same_side` 判定 ——
+##   那里天然认盟友（同一个阵营 或 结盟），所以本函数**不需要**为阵营归属改动。
 static func _capture_factions(factions: Array) -> Array:
 	var out: Array = []
 	if factions.is_empty():
@@ -598,6 +603,16 @@ func refresh_building_ownership(cfg: ConfigRes, building_list: Array, factions: 
 ##      也是 UI 只画一条的前提（手玩明确要求）。
 ##   5. 主人在自己的地里什么都不读（它只负责「挡住别人」）。
 ##
+## ★★ 阵营归属（盟友）怎么进来（本轮新增，只改了**一处**）：
+##   下面清点「站着哪些阵营」时，把每个单位折算成它那一**方**的代表
+##   （`FactionRes.side_of`：没有盟友时就是它自己）。于是：
+##     · 两个**盟友**的兵站在同一块地上算**一方**（人数合并）——
+##       既不互相抵消读条，也不会因为「两边同场」而谁都读不了；
+##     · 站在**盟友的地**上时，`same_side(owner, reader)` 成立 → 不会被判成外来者
+##       （不会去抢盟友的区划，这正是需求要的「不争夺同一区划」）。
+##   合作愉快这条改动**只落在这一处**：下面 `_advance_zone` 的规则一个字没动 ——
+##   它本来就是按「一方」写的，只是以前「一方 == 一个阵营」。
+##
 ## ★★ 人数加成（本轮需求，改掉了原来「同阵营多单位不叠加」那条）：
 ##   同一个区块里**同一方**的单位越多，读条越快；曲线与上限见 `speed_multiplier()`。
 ##   只有 1 个单位时倍率正好是 1.0 —— 所以「占领速度缩小为 1/8」那条需求
@@ -614,24 +629,67 @@ func update(cfg: ConfigRes, dt: float, units: Array, factions: Array) -> void:
 	var curve_p: float = maxf(0.01, cfg.zone_speed_curve_power)
 	var flist := _capture_factions(factions)
 
-	# 1) 逐区块清点「站着哪些阵营、各几个活单位」
-	#    ⚠️ 这里必须存**数目**（不是布尔）：人数加成要它。原来的 bool 集合会让
-	#       「10 个兵」和「1 个兵」看起来一模一样。
+	# 1) 逐区块清点「站着哪些**阵营**、各几个活单位」，同时算出「有几个**方**」。
+	#
+	# ★★ 阵营归属（盟友）在这里落地，而且**两份数据都要**（这是这一节最要紧的设计）：
+	#   · `present_by`：**键 = 真实阵营 id**，值 = 活单位数。
+	#     → 人数加成按真实阵营数（一个 AI 的兵不该替盟友算人头）；
+	#     → `progress_by` 仍然按真实阵营铺键，UI 取色 / `capture_faction` 拿到的还是
+	#       「enemy / ai / p1」这些**真名字**（拿代表 id 去画会把颜色画错）。
+	#   · `present_sides`：这个区块里站着**几方**（联盟折叠后）。
+	#     → 只有「恰好一方」才有人能读条；两个盟友的兵同处一区算**一方**（不互相抵消）。
+	#
+	# ⚠️ 两者必须一起给 `_advance_zone`：只给「方」会让归属写成代表 id（实测：
+	#    区块归属变成 `ai`，test_zone_capture 11 条断言红了）；只给「阵营」则
+	#    两个盟友会被当成两方对峙（谁都读不了 —— 正是需求要避免的那件事）。
 	var present_by: Dictionary = {}
+	var present_sides: Dictionary = {}
 	for z in zones:
 		present_by[int(z["id"])] = {}
+		present_sides[int(z["id"])] = {}
 	for u in units:
 		if not u.alive:
 			continue
 		var z = zone_at(u.tx, u.ty)
 		if z == null:
 			continue
-		var counts: Dictionary = present_by[int(z["id"])]
-		counts[u.faction] = int(counts.get(u.faction, 0)) + 1
+		var zid := int(z["id"])
+		var fid := String(u.faction)
+		var counts: Dictionary = present_by[zid]
+		counts[fid] = int(counts.get(fid, 0)) + 1
+		var sides: Dictionary = present_sides[zid]
+		sides[FactionRes.side_of(fid)] = true
+
+	# ★★ 还要知道「**主人自己**在不在场」—— 折叠成「一方」时最容易漏掉的一条。
+	#
+	# 为什么：`_advance_zone` 判「谁有资格读条」时问的是「区块里是不是只有一方人」，
+	#   而主人那一方的兵**不是外来者**，不该算进去。
+	#   没有盟友时这不成问题（主人的兵在 `present` 里的键就是主人自己，正好等于 owner，
+	#   `same_side(owner, only)` 直接拦掉）；但**结成盟友之后**，盟友（ai）的兵那一方
+	#   的代表是 `ai`，而这一格的 owner 是 `enemy` —— `same_side("enemy", "ai")` 为 false
+	#   ⇒ 被当成外来者 ⇒ 盟友的兵会去抢盟友的地（实测：进度真的在涨）。
+	#
+	# 做法：主人那一方**只要有人在场**，就把 owner 也登记成「一方」。
+	#    ⚠️ 它**不进** `present_by`：人数加成不该把主人的兵算进读条那一方的人头里。
+	var owner_present: Dictionary = {}
+	for u in units:
+		if not u.alive:
+			continue
+		var z2 = zone_at(u.tx, u.ty)
+		if z2 == null:
+			continue
+		var own := String((z2 as Dictionary)["owner"])
+		if own == "":
+			continue
+		if FactionRes.same_side(own, String(u.faction)):
+			owner_present[int((z2 as Dictionary)["id"])] = FactionRes.side_of(own)
+	for zid2 in owner_present.keys():
+		(present_sides[zid2] as Dictionary)[owner_present[zid2]] = true
 
 	# 2) 逐区块推进
 	for z in zones:
-		_advance_zone(z, present_by[int(z["id"])], flist,
+		var zi := int(z["id"])
+		_advance_zone(z, present_by[zi], present_sides[zi], flist,
 			capture_time, decay, max_mult, curve_k, curve_p, dt)
 
 
@@ -675,13 +733,24 @@ static func speed_multiplier(n: int, max_mult: float, curve_k: float, curve_powe
 
 
 ## 推进一个区块一帧（抽出来只是为了让上面那段读起来像规则本身）
-func _advance_zone(z: Dictionary, present: Dictionary, flist: Array,
+##
+## @param present       这个区块里「阵营 id → 活单位数」（**真实阵营**，用于人数加成与归属）
+## @param present_sides 这个区块里「方 → true」（联盟折叠后，用于判「是不是只有一方」）
+func _advance_zone(z: Dictionary, present: Dictionary, present_sides: Dictionary, flist: Array,
 		capture_time: float, decay: float, max_mult: float, curve_k: float,
 		curve_p: float, dt: float) -> void:
 	if not z.has("progress_by"):
 		z["progress_by"] = {}
 	var by: Dictionary = z["progress_by"]
+
+	# ★ `progress_by` 的键：名单里的每一方 + 这一帧真站在这里的每一个阵营。
+	#   （后者不能省：场上可能出现名单外的阵营 —— 地图预置的 "enemy" 就是。
+	#    不铺的话下面 `by[reader] = ...` 会直接报「Invalid access to property」。
+	#    没有盟友时这一句是空转，行为与从前逐位一致。）
 	for f in flist:
+		if not by.has(f):
+			by[f] = 0.0
+	for f in present.keys():
 		if not by.has(f):
 			by[f] = 0.0
 	var owner := String(z["owner"])
@@ -697,12 +766,28 @@ func _advance_zone(z: Dictionary, present: Dictionary, flist: Array,
 			holder_v = float(by[f])
 			holder = f
 
-	# 这一帧谁有资格读条：区块里**恰好只有一个阵营**的兵，且它不是主人
+	# 这一帧谁有资格读条：区块里**恰好只有一方**的兵，且那一方不是主人。
+	#
+	# ★★ 判据从「只有一个**阵营**」改成「只有一方」（`present_sides`）——
+	#    这是「两个 AI 友善」在占领这一侧的核心：两个盟友的兵同处一区算**一方**，
+	#    既不互相抵消，也不会去抢盟友的地（主人那一方只要有人在场就先被登记进
+	#    `present_sides`，见 `update()` 里那段说明）。
+	#    ⚠️ 读条用的仍然是**真实阵营 id**（`reader` 取自 `present`），
+	#       所以区块归属 / 进度条的阵营名字不会被写成代表 id。
 	var reader := ""
-	if present.size() == 1:
-		var only := String(present.keys()[0])
-		if not FactionRes.same_side(owner, only):
-			reader = only
+	if present_sides.size() == 1:
+		# 恰好一方 ⇒ `present` 里的阵营要么都属这一方（可能多个人口同方但不同阵营），
+		# 取**人数最多的那个**当读条方（同方多阵营时「谁在读」要有个确定答案；
+		# 人数相同则按 id 字典序，保证可复现）。
+		var best := ""
+		var best_n := -1
+		for cand in present.keys():
+			var n2: int = int(present[cand])
+			if n2 > best_n or (n2 == best_n and String(cand) < best):
+				best_n = n2
+				best = String(cand)
+		if best != "" and not FactionRes.same_side(owner, best):
+			reader = best
 	# ★ 规则 4：别人还有进度没归零 → 这一方不开读（等它退完）
 	if reader != "" and holder != "" and holder != reader:
 		reader = ""

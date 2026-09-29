@@ -3,7 +3,7 @@
 命令行：
 
     python dev_gd_a/tools/map_editor                 # 打开一张空白画布
-    python dev_gd_a/tools/map_editor data/test_map.json # 直接打开一张地图
+    python dev_gd_a/tools/map_editor data/maps/frontier/map.json   # 直接打开一张地图
                                                      #（路径相对 dev_gd_a/daeem/ 或当前目录都行）
     python dev_gd_a/tools/map_editor --selftest      # 不开窗口，跑一遍数据层自检
 """
@@ -55,7 +55,7 @@ def selftest(project_dir: Path) -> int:
         ", ".join(sorted(k for k in (cfg.get("colors") or {}) if isinstance(
             (cfg.get("colors") or {}).get(k), str)))))
 
-    sample = project_dir / "data" / "test_map.json"
+    sample = project_dir / "data" / "maps" / "frontier" / "map.json"
     if not sample.is_file():
         print("[map] 找不到样例地图：%s" % sample)
         return 1

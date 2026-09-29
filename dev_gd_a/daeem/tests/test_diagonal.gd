@@ -146,7 +146,7 @@ func _test_diagonal_shortens_path(cfg) -> void:
 
 ## ★ 对角不许穿角：两座山对着一个格，斜着穿不过去
 func _test_no_corner_cutting(cfg) -> void:
-	var map = MapDataRes.load_from("res://data/test_map.json", cfg)
+	var map = MapDataRes.load_from("res://data/maps/frontier/map.json", cfg)
 	ok(map != null, "载入地图用于造对角障碍")
 	if map == null:
 		return
@@ -182,7 +182,7 @@ func _test_no_corner_cutting(cfg) -> void:
 
 ## 放开开关后，对角缝就允许穿（这是 config 里那个开关的契约）。
 func _test_corner_cut_switch(cfg) -> void:
-	var map = MapDataRes.load_from("res://data/test_map.json", cfg)
+	var map = MapDataRes.load_from("res://data/maps/frontier/map.json", cfg)
 	var cx := 4
 	var cy := 12
 	map.terrain.set_cell(cx + 1, cy, MapDataRes.TERRAIN_MOUNTAIN)

@@ -14,6 +14,9 @@ extends RefCounted
 const ConfigRes = preload("res://logic/config.gd")
 const GridRes = preload("res://logic/grid.gd")
 const MapDataRes = preload("res://logic/map_data.gd")
+## ★ 只为「默认地图路径」这一处常量（`FALLBACK_MAP_PATH`）：地图目录是唯一源头，
+##   这里不重复写 `res://data/maps/...` 字符串。
+const MapLibraryRes = preload("res://logic/map_library.gd")
 const PathfinderRes = preload("res://logic/pathfinder.gd")
 const FactionRes = preload("res://logic/faction.gd")
 const BuildingRes = preload("res://logic/building.gd")
@@ -137,7 +140,7 @@ var debug_auto_spawn: bool = false
 ## ★ 传 false 时，世界与「加 AI 之前」**逐位一致**（`ai_factions` 为空、
 ##   `reset()` 里那段 AI 设置整段跳过）。这也是加这个开关的唯一目的 ——
 ##   让「不开 AI」是一条真的什么都没发生的路，而不是「开了但没跑」。
-static func create(p_cfg: ConfigRes, map_path: String = "res://data/test_map.json",
+static func create(p_cfg: ConfigRes, map_path: String = MapLibraryRes.FALLBACK_MAP_PATH,
 		with_ai: bool = true) -> RefCounted:
 	var w = new()
 	w.cfg = p_cfg
@@ -186,6 +189,17 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	else:
 		for f in p_roster:
 			factions.append(String(f))
+	# ★★ 阵营归属（盟友）——**地图数据**说了算（`map.json` 的 `allies`，
+	#    见 logic/faction.gd 那一大段说明与 logic/map_data.gd 的 `_read_allies`）。
+	#
+	# ★ 为什么在这里注入（而不是建 world 时一次性设好）：
+	#   `FactionRes` 的盟友表是 **static**（查询在每帧每单位的路径上），
+	#   而「换一张图 / 重开一局」必须把它换掉 —— 放在 reset 里，与地图数据同生命周期。
+	# ★ 必须在**任何索敌 / 占领 / 建东西之前**（下面 zones.build_from_map 会读名单，
+	#   而占领判定要问「站着的算几方人」）—— 所以紧跟在名单确立之后。
+	# ★ 顺序上也在 `_setup_ai_factions()` 之前：那一句会往名单里加 AI 阵营，
+	#   而盟友表只按**名字**查表，与名单里有没有它无关（认不出来的 id 天然无效）。
+	FactionRes.set_allies(map.allies)
 	# ★★ NPC 阵营（"enemy"）要不要进名单：**看地图里有没有它名下的区块**
 	#    （`zone_list[].owner`，见 map_data 的 zones_owners）。
 	#
@@ -247,7 +261,8 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	for f in factions:
 		if f != my_faction:
 			apply_faction_layout(f, primary)
-	# 地图上**预置**的建筑（对家据点这类固定摆设，坐标写在 test_map.json 的 "buildings" 里）。
+	# 地图上**预置**的建筑（对家据点这类固定摆设，坐标写在 `data/maps/<id>/map.json`
+	# 的 "buildings" 里）。
 	# 放在各阵营出生点之后：它们的坐标是手写的，不与出生点抢格；被占住的格子 add_building 会自己拒。
 	for p in map.prefab_buildings:
 		add_building(String(p["type"]), int(p["x"]), int(p["y"]), String(p["owner"]), true, true)
@@ -260,7 +275,7 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	#      · 中心的格子是**编辑器的硬规则**（导出前 blockers 拦住与大本营叠格的那些）；
 	#      · 真出现叠格（手改地图），这里会静默建不出来 —— 但绝不会把已有建筑顶掉。
 	_spawn_zone_centers()
-	# 地图上**预置**的单位（测试用的守军，写在 test_map.json 的 "units" 里）。
+	# 地图上**预置**的单位（测试用的守军，写在 `data/maps/<id>/map.json` 的 "units" 里）。
 	# id 走 _enemy_serial —— 与调试刷兵同一套序号，永远不会撞名。
 	# ⚠️ 顺序：**先建各方的将领与附属兵，再放预置单位**。
 	#    `world.units` 的前几个永远是这一方的将领（快捷键 1/2/3 与按序号取将领

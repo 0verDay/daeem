@@ -114,7 +114,12 @@ func _enter_game(packed):
 	root.add_child(main)
 	await process_frame
 	# 走真实入口：按下「test」才建游戏内场景（与玩家点一下按钮完全同一条路）
-	main._on_test_pressed()
+	# ⚠️ 现在必须把**选中的地图**传进去：`_on_test_pressed(map_path)` 的入参就是
+	#    `test_pressed` 信号带出来的那个值（见 view/main.gd）。不传 = 调用失败、
+	#    `main.game` 永远是 null，而后面那些断言会变成「在等一个不会发生的事」——
+	#    实测的后果是整套测试卡住不退出（某些用例在循环等关卡加载完）。
+	#    下面这一行与「玩家在下拉框里选了哪张」用同一个读法（start_screen 里唯一那处）。
+	main._on_test_pressed(main.start_screen.selected_map_path())
 	await process_frame
 	return main
 

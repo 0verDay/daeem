@@ -348,7 +348,7 @@ func _write_bench_map() -> String:
 	}
 	var f := FileAccess.open(path, FileAccess.WRITE)
 	if f == null:
-		return "res://data/test_map.json"
+		return "res://data/maps/frontier/map.json"
 	f.store_string(JSON.stringify(data))
 	f.close()
 	return path

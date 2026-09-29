@@ -613,7 +613,7 @@ func _test_pick_blocked_by_fog(cfg) -> void:
 	ok(w != null, "world 能建出来（真地图）")
 	if w == null:
 		return
-	# 对家据点（test_map.json 的 buildings：base(14,14) / tower(14,12) / tower(16,14) / 墙×3）
+	# 对家据点（data/maps/frontier/map.json 的 buildings：base(14,14) / tower(14,12) / tower(16,14) / 墙×3）
 	var tower = null
 	for b in w.building_list:
 		if b.owner == "enemy" and b.type == "tower":
@@ -708,7 +708,7 @@ func _test_game_scene_wires_fog() -> void:
 	var main = (packed as PackedScene).instantiate()
 	root.add_child(main)
 	await process_frame
-	main._on_test_pressed()
+	main._on_test_pressed(main.start_screen.selected_map_path())
 	await process_frame
 	await process_frame
 

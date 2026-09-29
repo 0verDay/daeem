@@ -638,10 +638,14 @@ func order_move(world, cfg: ConfigRes, world_pt: Vector2) -> bool:
 
 ## 优先攻击某个敌对单位（右键单击敌人）。
 ## @return 命令是否被接受（不是自己人、还活着）
+##
+## ★★ 判据走 `same_side_for_attack`（同阵营 **或盟友**）：加了阵营归属之后，
+##    玩家**手动点名**也不该能指挥一方去打它的盟友 ——
+##    否则「友善」只挡住了自动索敌，右键一点照样能挑起来（那不是需求要的东西）。
 func order_attack_unit(world, cfg: ConfigRes, enemy) -> bool:
 	if enemy == null or not enemy.alive:
 		return false
-	if FactionRes.same_side(enemy.faction, faction):
+	if FactionRes.same_side_for_attack(enemy.faction, faction):
 		return false
 	drop_engagement()
 	target = enemy
@@ -653,10 +657,12 @@ func order_attack_unit(world, cfg: ConfigRes, enemy) -> bool:
 
 
 ## 优先攻击某个敌对建筑（右键单击建筑）。
+##
+## ★ 判据同样走 `same_side_for_attack`（见 `order_attack_unit` 的说明）。
 func order_attack_building(world, cfg: ConfigRes, b) -> bool:
 	if b == null or not b.alive:
 		return false
-	if FactionRes.same_side(b.owner, faction):
+	if FactionRes.same_side_for_attack(b.owner, faction):
 		return false
 	# ★ 无敌建筑（区划中心）不接受攻击命令：它 owner 是空字符串，`same_side` 拦不住，
 	#   放进来会变成「走过去对着打不掉的柱子敲一辈子」，而且 ordered_building 黏住之后

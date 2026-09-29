@@ -279,7 +279,7 @@ func _test_jam_giveup_bounds_effort(cfg) -> void:
 
 ## 把世界隔离开「只有玩家这一方的单位」。
 ##
-## ★ 为什么必须有这一步：地图上预置了对家守军（`test_map.json` 的 `units`），
+## ★ 为什么必须有这一步：地图上预置了对家守军（`data/maps/frontier/map.json` 的 `units`），
 ##   它们会跟玩家单位交战、也会挤在同一个落点上 —— 这一整套断言验的是
 ##   「自己人挤在一起时的到达行为」，混进敌人就变成在测战斗了。
 ##   （docs/pitfalls.md 5.11 记过这条：加任何「默认在场」的单位之前，
