@@ -25,6 +25,7 @@ const PaletteRes = preload("res://view/palette.gd")
 const FontLoaderRes = preload("res://view/font_loader.gd")
 const TerrainViewRes = preload("res://view/terrain_view.gd")
 const ZoneViewRes = preload("res://view/zone_view.gd")
+const FogViewRes = preload("res://view/fog_view.gd")
 const BuildingViewRes = preload("res://view/building_view.gd")
 const UnitViewRes = preload("res://view/unit_view.gd")
 const OverlayRes = preload("res://view/overlay.gd")
@@ -40,6 +41,7 @@ var cam: Camera2D = null
 
 var terrain_view: Node2D = null
 var zone_view: Node2D = null
+var fog_view: Node2D = null
 var building_view: Node2D = null
 var unit_view: Node2D = null
 var overlay: Node2D = null
@@ -94,7 +96,7 @@ func _build_view() -> void:
 	add_child(cam)
 	cam.make_current()
 
-	# 绘制顺序：地形 -100 / 区块 -50 / 建筑 0 / 单位 10 / 覆盖层 20
+	# 绘制顺序：地形 -100 / 区块 -50 / 建筑 0 / 单位 10 / **迷雾 15** / 覆盖层 20
 	terrain_view = TerrainViewRes.new()
 	terrain_view.name = "TerrainView"
 	terrain_view.z_index = -100
@@ -108,6 +110,16 @@ func _build_view() -> void:
 	zone_view.z_index = -50
 	add_child(zone_view)
 	zone_view.setup(cfg, world, _font, 12)
+
+	# ★★ 战争迷雾：灰色遮罩压在**地形 / 区块 / 建筑 / 单位**之上、覆盖层（攻击线 /
+	#    框选矩形 / 建造预览）之下 —— 于是没视野的区域连敌人带地形一起变暗，
+	#    而玩家自己的操作标记永远看得清（用户确认：标记与准星不该被雾吃掉）。
+	#    ⚠️ 顺序很关键：z_index 15 必须**大于** unit_view 的 10、小于 overlay 的 20。
+	fog_view = FogViewRes.new()
+	fog_view.name = "FogView"
+	fog_view.z_index = 15
+	add_child(fog_view)
+	fog_view.setup(cfg, world)
 
 	building_view = BuildingViewRes.new()
 	building_view.name = "BuildingView"
@@ -218,6 +230,8 @@ func _process(dt: float) -> void:
 	# 逻辑 → 渲染：每帧读状态同步节点（view 从不改逻辑）
 	unit_view.sync(dt)
 	building_view.sync()
+	# ★ 迷雾：世界先动，遮罩后盖（`sync()` 里按需重烘掩码贴图）
+	fog_view.sync()
 	unit_view.set_selection(_selected_ids())
 	# ★ 选中的建筑可能是一整批（框选建筑）—— 它们**都**要点亮金色外框
 	building_view.set_selected_buildings(input_ctrl.selected_buildings)

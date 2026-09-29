@@ -82,6 +82,19 @@ dev_gd_a/daeem/
 │   ├── tech.gd                   #   ★ 科技：占位表（config.tech.list）+ 每阵营的启用状态
 │   │                             #     + 效果聚合（每地块加产量 / 血量倍率 / 人口增长倍率）
 │   │                             #     规则：同一时间最多启用 config.tech.max_active 条
+│   ├── fog.gd                    #   ★ 战争迷雾：**按阵营**算「谁能看见哪一格」
+│   │                             #     · 视野半径是**两张对称的类型表**：
+│   │                             #       `unit.types.<id>.vision`（将领可被
+│   │                             #        unit.general.stats[i].vision 覆盖）与
+│   │                             #        `building.<type>.vision`
+│   │                             #       —— 没写那个键各自退回 fog.vision_default /
+│   │                             #        fog.vision_building，在 create() 时抄进
+│   │                             #        u.vision / b.vision
+│   │                             #     · 视线被**山脉**挡住（其他地形不挡），走 DDA 视线
+│   │                             #     · 敌方**建筑**「见过一次就永久记住」（被摧毁才忘），
+│   │                             #       敌方**单位**只显示当前视野内的（不保留记忆）
+│   │                             #     · **只影响显示**：战斗 / 索敌 / 寻路 / 占领都不看它
+│   │                             #     · 性能：按格缓存视野扇区 + 没变化就不重算
 │   ├── upgrade.gd                #   ★ 建筑升级 + 区划特化（右下「操作」页里那几格）
 │   │                             #     升级：等级 1→N（config.upgrade.levels），血量上限 ×倍率
 │   │                             #     特化：粮食 / 黄金 = 每地块每秒 +0.5；人口 = 本区划人口产量 ×1.25；
@@ -100,6 +113,11 @@ dev_gd_a/daeem/
 ├── view/                         # 渲染：Node2D / Control，禁止改逻辑状态
 │   ├── main.tscn / main.gd       #   入口场景：装配 world + view + hud
 │   ├── terrain_view.gd           #   地形（TileMapLayer）
+│   ├── fog_view.gd               #   ★ 战争迷雾的**灰色遮罩**（本版新增）：把 logic/fog.gd
+│   │                             #     算出来的视野掩码烘成「1 像素 = 1 格」的贴图，
+│   │                             #     一次 draw_texture_rect 铺满地图（与格数无关）
+│   │                             #     ⚠️ 它只管「盖灰」；「谁不该被画出来」由各视图自己
+│   │                             #       问 fog.unit_visible / building_visible
 │   ├── building_view.gd          #   建筑（Node2D + 血条 + 受击闪光）
 │   ├── unit_view.gd              #   单位（Node2D + 血条 + 交战标记）
 │   ├── unit_icon.gd              #   ★ 单位在地图上的 2D 图标（线条「预制体」+ 烘成贴图）
@@ -166,7 +184,12 @@ dev_gd_a/daeem/
     ├── test_unit_editor.gd       #   ★ 单位编辑器改的那些数**游戏侧真的读**：建筑定义（config 优先）
     │                             #     / 建造读条（读条不开火、读完开火、开局 instant）/ 逐级攻击 /
     │                             #     将领独立数值 / 新建筑能建能打 / 建造页读 config
-    └── test_building_body.gd     #   ★ 建筑本体：尺寸居中、挡敌不挡己、缝隙能穿、城墙回归
+    ├── test_building_body.gd     #   ★ 建筑本体：尺寸居中、挡敌不挡己、缝隙能穿、城墙回归
+    └── test_fog.gd               #   ★ 战争迷雾（本版新增）：合成地图上的视野规则（山脉挡视线 /
+                                  #     森林不挡 / 半径边界 / 按阵营各算各的 / 建筑给视野 /
+                                  #     中立障碍不给）+ 敌方建筑「见过就永久记住、摧毁才忘」+
+                                  #     敌方单位不保留记忆 + 灰色遮罩的掩码与贴图 +
+                                  #     真地图上「迷雾里的敌人点不中」+ 没变化就不重算
 ```
 
 **地图编辑器**在 `dev_gd_a/tools/map_editor/`（Python + tkinter，**不在游戏包里**，
@@ -321,6 +344,9 @@ Godot 里 DPR 由引擎处理，**但下面三条要原样继承**：
 | 区划特化（已选哪一种 / 读条 / 已扣的钱） | `logic/zone.gd` 的 `spec_*` 字段；规则在 `logic/upgrade.gd` | `spec_done` = 已经生效的特化（**跟着地块走**，区划易主保留）；`spec_kind` = 正在读条的那一单。命令 `zone_specialize` / `zone_spec_cancel` / `zone_spec_bar_cancel` |
 | 建筑血量上限的**两个倍率**（等级 × 科技） | `logic/building.gd` 的 `base_hp_max` / `level_hp_mult` / `tech_hp_mult` → `refresh_hp_max()` | ★ 上限只有这一个算法：**基础值 × 等级倍率 × 科技倍率**；当前血量按比例缩放。升级读完由 `world.apply_building_level_hp()` 落一次 |
 | 科技的三类效果（每地块加产量 / 血量上限倍率 / 区划人口增长倍率） | `logic/tech.gd` 的 `effects_of()` → `world.tech_effects` | 每帧在 `tick()` 开头重算；启用 / 弃用时 `_apply_tech_effects()` **立即**落到对象上（血量按比例缩放、上限从 `base_hp_max` 重算） |
+| **战争迷雾（谁能看见哪一格 + 已知的敌方建筑）** | `logic/fog.gd`（由 `logic/world.gd` 持有并暴露成 `world.fog`） | ★ 它是**派生数据**：只读 `map.terrain` + 各单位 / 建筑的位置算出来，**不进快照**（联机时各端各算一遍）。`world.tick()` 末尾按需重算（`fog.refresh_needed()`）；`reset()` 末尾也算一次，于是进游戏第一帧之前就有正确的迷雾。★ 单位 / 建筑各自的视野半径在 `unit.vision` 字段上（出生时从 config 抄进对象） |
+| 视野半径的数值 | `data/config.json` 的 `fog.vision_default` / `fog.vision_building` / `unit.types.<id>.vision` / `unit.general.stats[i].vision` / **`building.<type>.vision`** | ★ **单位与建筑各有一张「每类型一个值」的表**，两处完全对称。游戏侧只读 `cfg.unit_vision_of()` / `cfg.general_vision_at()` / `cfg.building_vision_of()`（后两个的兜底分别是 `fog.vision_default` 与 `fog.vision_building`）；编辑器（tools/unit_editor）改的是同一批键 |
+| 灰色遮罩的颜色与不透明度 | `data/config.json` 的 `fog.mask_color` / `fog.mask_alpha` → `cfg.fog_mask_color` | 纯显示；`view/fog_view.gd` 烘的贴图只存「看得见 / 看不见」，颜色靠 `draw_texture_rect` 的 modulate —— 换颜色不必重烘贴图 |
 | 操作页的「命令模式」（点了移动 / 攻击 / 行军之后等左键点地图） | `view/input_controller.gd` 的 `order_mode` | 纯本地输入状态，与 `build_type` 同源、互斥；命令照旧只走 `command_issued` |
 | 招募队列的实现细节（进度、五个格子的几何） | `logic/unit.gd` 的 `train_*` 字段 / `logic/zone.gd` 的 `train_*` 字段（**区划招募**）+ `view/recruit_queue.gd` | 进度由 `unit.train_progress()` / `world.zone_train_progress()` 算好，视图只取色与填格子（不让视图自己发明判定，见 pitfalls 5.20）；同一个控件显示「将领的队列」或「区划的队列」（`set_queue(holder, is_zone)`） |
 | 事件（击杀 / 建筑被拆 / 招募…） | `logic/world.gd` 收集 → `world.tick()` 返回 | **逻辑层不写 UI 文案**；目前只翻译三条：`recruit_rejected` / `order_rejected` → 左栏那行红字、`unit_recruited` → 把新兵选上（`view/game_scene.gd` → `hud` / `input_controller`） |

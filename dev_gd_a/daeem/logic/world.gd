@@ -26,6 +26,7 @@ const CombatRes = preload("res://logic/combat.gd")
 const EnemyAiRes = preload("res://logic/enemy_ai.gd")
 const CollisionRes = preload("res://logic/collision.gd")
 const CrowdBridgeRes = preload("res://logic/crowd/crowd_bridge.gd")
+const FogRes = preload("res://logic/fog.gd")
 
 var cfg: ConfigRes = null
 var map: MapDataRes = null
@@ -80,6 +81,16 @@ var time: float = 0.0
 ## 帧序号：每 tick +1。给「每帧预算一次、当帧有效」的缓存做对齐用
 ## （例如 crowd_bridge 的警戒索敌结果 —— 在 tick 之外读到上一帧的结果就是 bug）。
 var frame_serial: int = 0
+
+## ★★ 战争迷雾（logic/fog.gd）：**按阵营算「谁能看见哪一格」** + 「见过一次的敌方建筑」。
+##
+## ★ 它是**世界状态的一部分，但不是玩法状态**：战斗 / 索敌 / 寻路 / 占领全都不看它，
+##   view/ 每帧读它决定「画什么」（灰色遮罩、看不见的敌人不画、点不到）。
+## ★ 为什么不进快照：它是**派生**数据（同一份权威状态算出来的结果），
+##   而快照只发「结果」不发「过程」—— 联机时各端按同一份状态各算一遍即可。
+## ★ `my_faction` 那一方的视野就是玩家看到的（上屏的那个阵营由 game_scene 定）。
+var fog: FogRes = null
+
 ## 对战规则总开关 —— **本轮永远是 false**。第 1 轮联机时才置 true。
 ##
 ## ★ 存在的理由（见 docs/pitfalls.md 3.8）：HTML 版的复活一开始泄漏进了单机，
@@ -98,10 +109,14 @@ var debug_auto_spawn: bool = false
 static func create(p_cfg: ConfigRes, map_path: String = "res://data/test_map.json") -> RefCounted:
 	var w = new()
 	w.cfg = p_cfg
+	# ★ 迷雾对象先建出来（哪怕地图载入失败）：view/ 每帧都会问它「这一格看得见吗」，
+	#   留一个 null 就等于让每个调用点都要判空（那种判空迟早会漏一处）。
+	w.fog = FogRes.create()
 	w.map = MapDataRes.load_from(map_path, p_cfg)
 	if w.map == null:
 		push_error("World.create：地图载入失败（%s）" % map_path)
 		return null
+	w.fog.reset_cache()
 	w.reset()
 	return w
 
@@ -149,6 +164,13 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	#   一定会跑，预置建筑也一起对齐。
 	tech_revision = 0
 	_tech_hp_revision = -1
+
+	# ★★ 战争迷雾：重开一局要把「上一局看见过哪些敌方建筑」彻底忘掉
+	#    （不清的话，新开一局的对家据点会**开局就显示出来** —— 那是上一局的记忆）。
+	#    ⚠️ 必须在建任何建筑 / 单位**之前**清，否则下面出生点的建筑会先把视野算进去。
+	if fog == null:
+		fog = FogRes.create()
+	fog.reset_cache()
 
 	resources = {"food": cfg.start_food, "gold": cfg.start_gold}
 	faction_bases = {}
@@ -204,6 +226,12 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	#    （tests/test_logic.gd 钉着这一条：开局没有己方地块）。
 	#    所以这里把它放回 0 —— 第一次 tick 会立刻算出真值。
 	owned_tiles = 0
+
+	# ★★ 迷雾收口：所有建筑与单位都就位之后算一次视野 ——
+	#    于是「进游戏第一帧之前」玩家屏上就已经是正确的迷雾，
+	#    而不是先整屏灰一下、等第一次 tick 才亮起来。
+	#    （与上面那句 tech 收口同一个道理：HUD / 渲染在 tick 之前就会读到这些值。）
+	fog.update(self)
 
 
 ## 把地图里每个区块的「区划中心」落成一栋中立障碍建筑（无血量 / 无敌 / 无攻击）。
@@ -1899,6 +1927,19 @@ func tick(dt: float) -> Array:
 	#      （放在碰撞之后：这一步是覆盖，不是参与推挤）
 	_pin_training_leaders()
 	_prof_done("collision", _t_col)
+
+	# 8.8) ★★ 战争迷雾：本帧所有位置都定下来之后，重算「谁能看见哪一格」。
+	#
+	# ★ 为什么排在最后、而不是单位逻辑之前：迷雾是**只读派生物**（不影响任何玩法判定），
+	#   所以它只该读「这一帧结束时的世界」。放在前面会让刚走出一格视野的单位
+	#   晚一帧才被迷雾更新（观感上就是「视野框跟不上部队」）。
+	# ★ 换地形的系统（全在 `map.terrain` 里改过之后调 `rebuild_terrain_masks()`）要让
+	#   迷雾重算，必须调 `fog.reset_cache()` —— 视野扇区是**按地形缓存**的。
+	# ★ 没有变化就整段跳过（见 fog.refresh_needed）：这是 1000 单位下的性能前提。
+	var _t_fog := _prof()
+	if fog != null and (fog.sight.is_empty() or fog.refresh_needed(self)):
+		fog.update(self)
+	_prof_done("fog", _t_fog)
 
 	# 9) 胜负判定（大本营被打掉 / 超时比血量）
 	check_victory(dt)

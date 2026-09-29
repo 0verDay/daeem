@@ -145,6 +145,13 @@ func _draw() -> void:
 	for u: UnitRes in world.units:
 		if not u.alive:
 			continue
+		# ★★ 战争迷雾：看不见的敌方单位**一个图元都不发**。
+		#    · 己方单位永远可见（`unit_visible` 内部先判同一阵营）；
+		#    · 敌方单位只有落在当前视野里的才画（走出视野就消失，
+		#      需求确认「不保留记忆」—— 所以这里没有额外的「已发现」表）。
+		#    ⚠️ 判据只在 logic/fog.gd 一处，视图不许自己写「距离多少算看见」。
+		if not _visible_to_me(u):
+			continue
 		var p: Vector2 = u.pos * cell_px
 		if not vis.has_point(p):
 			continue                    # 屏幕外：连指令都不发
@@ -249,6 +256,20 @@ func _draw() -> void:
 			draw_rect(Rect2(Vector2(pts[i].x - w * 0.5, top), Vector2(w, 3.0)), HP_BACK_COLOR, true)
 			draw_rect(Rect2(Vector2(pts[i].x - w * 0.5, top), Vector2(w * u3.hp_ratio(), 3.0)),
 				hp_cols[i], true)
+
+
+## 这个单位现在该不该画给玩家看（战争迷雾的唯一判据入口）。
+##
+## ★ 兵种 / 单位本身不判断「多少格算看见」——那是 logic/fog.gd 的事（含山脉遮挡）。
+##   这里只做一件事：把「我这边的阵营」传给它。
+## ★ 没建世界 / 没建迷雾（无头测试直接调 _draw 时）一律**画**：
+##   宁可多画，也不要让测试里一个图标都发不出来（那正是这一层最容易静默失败的地方）。
+func _visible_to_me(u) -> bool:
+	if world == null or world.fog == null or cfg == null:
+		return true
+	if not cfg.fog_enabled:
+		return true
+	return world.fog.unit_visible(world.my_faction, u)
 
 
 func _colors_for(faction: String) -> Array:

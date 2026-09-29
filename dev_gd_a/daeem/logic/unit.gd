@@ -92,6 +92,16 @@ var stat_overrides: Dictionary = {}
 ##    伤害判定在每帧每单位的路径上，创建时算好、之后只读，比每次下潜 JSON 便宜。
 var unit_class: String = CLASS_INFANTRY
 var ranged: bool = false
+## ★★ 视野半径（**格**）—— 战争迷雾用（见 logic/fog.gd）。
+##
+## ★ 与 hp_max / unit_class 同一个口径：**生出来那一刻就把 config 里的数抄到身上**，
+##   之后迷雾每帧只读这一个字段（不做「每帧每单位一次 JSON 下潜」）。
+##   · 值来自 `cfg.unit_vision_of(unit_type)`，也就是
+##     `unit.types.<类型>.vision`，将领还叠加 `unit.general.stats[i].vision` 的覆盖
+##     （`cfg.general_vision_at(i)`）；
+##   · ⚠️ 它不是玩法数值：战斗 / 索敌 / 射程一律不受它影响，
+##     改它只改变「玩家能看见什么」。
+var vision: float = 8.0
 var faction: String = FactionRes.DEFAULT_FACTION
 var hotkey: String = ""
 
@@ -277,6 +287,12 @@ static func create(cfg: ConfigRes, p_id: String, p_name: String, tile: Vector2i,
 	u.hp_max = float(u.stat_overrides.get("hp_max", cfg.unit_hp_of(u.unit_type)))
 	u.base_hp_max = u.hp_max
 	u.hp = u.hp_max
+	# ★ 视野半径同样在出生那一刻定下来（战争迷雾只读它，见上面 `vision` 的说明）。
+	#   将领走 general_vision_at（覆盖 ⊕ 所属兵种），普通单位走 unit_vision_of。
+	if p_general_index >= 0:
+		u.vision = cfg.general_vision_at(p_general_index)
+	else:
+		u.vision = cfg.unit_vision_of(u.unit_type)
 	return u
 
 

@@ -2256,3 +2256,73 @@ def clamp_sidebar_view(self, overflow=None):
 **一句话记法**：**「能不能滚」是「装不装得下」的函数**；容器/控件默认允许滚动，
 所以「内容短了就不许滚」必须自己判、自己夹，而且**判据要选那个真的会动的量**
 （这里是 `canvasy(0)`，不是 `yview()`）。
+
+### 5.56 ★★★ 「按阵营分开的东西」如果在**收集**那一步就合并了，后面怎么分都是错的（战争迷雾）
+
+**症状**：战争迷雾做出来之后，p1 的单位站在地图左边、敌人在右边，**p1 的地图上整条走廊全亮** ——
+看起来像「迷雾只是颜色淡了一点」，而不是「这里有雾」。
+
+**根因**：第一版把「谁从哪几格产生视野」收集成**一张全局表** `{格索引: 半径}`，
+然后拿**同一张表**去填**每个阵营**的视野掩码：
+
+```gdscript
+# ❌ 错的：p1 的掩码把 enemy 的眼睛也算进去了
+_collect_all_contributors(world)          # 一张全局表
+for f in world.factions:
+    for idx in _contrib.keys():           # ← 这里面有敌人的贡献格
+        _or_into(mask, _ensure_sector(idx))
+```
+
+**修法**：把「按阵营」这件事**提到收集那一步**，`_contrib` 本身就是 `"faction" → {格: 半径}`：
+
+```gdscript
+# ✅ 对的：每一方只并入自己的来源
+_contrib["p1"]    = {格: 半径, …}
+_contrib["enemy"] = {格: 半径, …}
+for f in world.factions:
+    for idx in _contrib[f].keys():
+        _or_into(mask, _ensure_sector(idx))
+```
+
+**教训（可复用的判据）**：一旦某个概念是「**按阵营 / 按玩家 / 按视角**」的，
+**收集它的容器就必须带着那个维度**，不能先压成一张全局表再想着「后面按需要分开取」——
+后者一定会漏掉某一处（本次漏的是「填掩码」这一步，而它恰好是最不容易一眼看出来的那一步）。
+
+### 5.57 ★★ 「派生数据的缓存」不能让调用方**必须按某种顺序**调用（战争迷雾的 `update()`）
+
+**症状**：单位走到新位置之后调 `fog.update(world)`，视野掩码还是按**旧格子**填的 ——
+「走进视野了，敌方建筑还是不显示」。**而且只在没先问 `refresh_needed()` 的调用路径上出现**：
+游戏主循环先问、后调，所以**手玩完全看不出来**；测试直接调 `update()`，一眼就红。
+
+**根因**：`update()` 里写了「阵营数没变就沿用上一次收集的贡献格」：
+
+```gdscript
+# ❌ 错的：_contrib 装的是**上一帧**的格子
+if _contrib.is_empty() or _last_faction_count != world.factions.size():
+    _collect_contributors(world)
+```
+
+**修法**：`update()` **每次进来都重新收集**（O(单位数 + 建筑数) 的一次遍历，
+而每帧本来也要空转这么多）。不值得为省它引入一条「必须先调 A 再调 B」的隐式契约 ——
+那种契约没有任何东西能强制，只能靠人记住。
+
+**教训**：在 `update()` 这种「幂等地重建一份派生数据」的函数里，
+**不许读自己上一次留下的中间结果**。要么每次算全，要么把「复用」做成参数显式传进来。
+
+### 5.58 ★★ `Building` 上**没有** `id` 字段；`def()["id"]` 是**类型**，不能当身份
+
+**症状**：`Invalid access to property or key 'id' on a base object of type 'RefCounted (building.gd)'`。
+
+**根因**：`Unit` 有 `u.id`（`"general-1"` 这种**身份**），于是很自然地在建筑上也写 `b.id` ——
+但 `Building` 只有 `type`（`"tower"`），它的 `def()["id"]` 也是**类型**。
+两座箭塔的 `def()["id"]` 都是 `"tower"`，拿它当 key 会让**两座塔互相顶掉**。
+
+**修法**：记忆表直接用**建筑对象本身**当键（GDScript 的 Dictionary 对 Object 按**引用**哈希，
+对象就是一个完美的身份）：
+
+```gdscript
+var _sighted: Dictionary = {}      # faction → {Building: true}
+```
+
+⚠️ 顺带记一句：`logic/collision.gd` 里有 `moved[a.id]`，但那个 `a` 是**单位**（有 `id`），
+别看到 `b.id` 就以为是同一回事。改任何 `xxx.id` 之前先确认那个对象的类型。

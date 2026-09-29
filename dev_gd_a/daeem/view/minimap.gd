@@ -267,6 +267,11 @@ func _draw() -> void:
 	_draw_terrain()
 	_draw_buildings()
 	_draw_units()
+	# ★★ 战争迷雾（用户确认：小地图套**同一份**迷雾）：
+	#    先画完地形 / 建筑 / 单位，再把没视野的格子盖灰 —— 与大地图上的
+	#    fog_view 同一个口径（地形照旧看得见，敌人先被剔除再盖灰）。
+	#    顺序也在这一行里：盖在最后 = 盖在那些图元之上。
+	_draw_fog()
 	_draw_view_rect()
 
 
@@ -302,6 +307,10 @@ func _draw_buildings() -> void:
 	for b in world.building_list:
 		if not b.alive:
 			continue
+		# ★ 战争迷雾：看不见的敌方建筑不画（记忆规则见 logic/fog.gd）——
+		#   与大地图的 building_view 读的是同一个查询，两边不会各显示一套。
+		if not _building_visible(b):
+			continue
 		var body: float = clampf(b.body_scale(cfg), 0.15, 1.0)
 		var side: float = maxf(MIN_BUILDING, s * body)
 		var center: Vector2 = o + (Vector2(float(b.tx), float(b.ty)) + Vector2(0.5, 0.5)) * s
@@ -324,9 +333,34 @@ func _draw_units() -> void:
 	for u in world.units:
 		if not u.alive:
 			continue
+		# ★ 战争迷雾：敌方单位只显示当前视野里的（走出视野就消失，不保留记忆）
+		if not _unit_visible(u):
+			continue
 		var p: Vector2 = o + u.pos * s
 		draw_rect(Rect2(p - Vector2(UNIT_R, UNIT_R), Vector2(UNIT_R, UNIT_R) * 2.0),
 			_faction_color(String(u.faction)), true)
+
+
+## ★★ 迷雾：没视野的格子盖一层灰（与大地图同一份掩码、同一个颜色）。
+##
+## ★ 逐格画小方块而不是像 fog_view 那样烘一张贴图：小地图的格子只有 3~15 px，
+##   594 格里绝大多数帧只需要画「视野外」的那些，而且这里本来每帧就在画地形
+##   （同一个循环结构），多一条分支比多一张贴图 + 一次等比缩放简单得多。
+## ★ 地图外的格子（exists = false）不画 —— 与 `_draw_terrain()` 同一条规则。
+func _draw_fog() -> void:
+	if not cfg.fog_enabled or world.fog == null:
+		return
+	var s := scale()
+	var o := origin()
+	var m = world.map
+	for ty in m.rows:
+		for tx in m.cols:
+			if not m.tile_exists(tx, ty):
+				continue
+			if world.fog.tile_visible(world.my_faction, tx, ty):
+				continue
+			draw_rect(Rect2(o + Vector2(float(tx), float(ty)) * s, Vector2(s, s)),
+				cfg.fog_mask_color, true)
 
 
 ## 视野框：先铺一层淡白，再描一圈亮白边。
@@ -355,6 +389,32 @@ func _faction_color(faction: String) -> Color:
 	var c: Color = cfg.faction_color(faction, "main")
 	_color_cache[faction] = c
 	return c
+
+
+## 这个单位 / 建筑现在该不该画在小地图上（战争迷雾）。
+##
+## ★ 与 unit_view / building_view 的同名判据完全同源：**只**问 logic/fog.gd，
+##   视图不许自己算「多少格算看见」。
+## ★ 没建迷雾（无头测试）或总开关关着 → 一律画。
+##
+## ⚠️ 刻意写成**两个**函数而不是一个带 `is BuildingRes` 判断的：建筑与单位在
+##    logic/ 里是两种没有共同基类的 RefCounted，用一个函数接两种参数就只能靠
+##    duck typing / `is` 猜，而猜错的代价是「静默走错分支」（例如把建筑当单位查视野）。
+##    两个入口各自一行，调用点自己知道手上是什么。
+func _unit_visible(u) -> bool:
+	if cfg == null or world == null or world.fog == null:
+		return true
+	if not cfg.fog_enabled:
+		return true
+	return world.fog.unit_visible(world.my_faction, u)
+
+
+func _building_visible(b) -> bool:
+	if cfg == null or world == null or world.fog == null:
+		return true
+	if not cfg.fog_enabled:
+		return true
+	return world.fog.building_visible(world.my_faction, b)
 
 
 # ------------------------------------------------------------------

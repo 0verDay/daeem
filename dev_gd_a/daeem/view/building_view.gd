@@ -130,6 +130,16 @@ func sync() -> void:
 	for b in world.building_list:
 		if not b.alive:
 			continue
+		# ★★ 战争迷雾：看不见的敌方建筑**连节点都不留**（"一个图元都不发"的同一条口径）。
+		#
+		# ★ 判据在 logic/fog.gd 的 `building_visible()`：己方 / 无主（区划中心）永远可见；
+		#   敌方建筑「进过视野一次就永久可见」（记忆表在 fog.gd 里维护），
+		#   被摧毁时那一份记忆才清掉 —— 所以这里不需要任何「已发现」状态。
+		# ⚠️ 用 `continue`（而不是把节点 hide）会走到下面的「回收」逻辑：节点被 queue_free，
+		#    等它再被看见时重建。建筑本来就少（这张图上不到 30 栋），重建的代价可忽略，
+		#    换来的是「地图上有多少节点 = 玩家看得见多少建筑」这条干净的对应关系。
+		if not _visible_to_me(b):
+			continue
 		seen[b] = true
 		var box: BuildingBox = _boxes.get(b, null)
 		if box == null:
@@ -147,6 +157,18 @@ func sync() -> void:
 			var box: BuildingBox = _boxes[b]
 			box.queue_free()
 			_boxes.erase(b)
+
+
+## 这栋建筑现在该不该画给玩家看（战争迷雾的唯一判据入口）。
+##
+## ★ 与 unit_view 的同名函数同一条口径：判据在 logic/fog.gd，视图只提供「我这边的阵营」。
+## ★ 没建迷雾（无头测试）或总开关关着 → 一律画（宁可多画，不要静默少画）。
+func _visible_to_me(b) -> bool:
+	if world == null or world.fog == null or cfg == null:
+		return true
+	if not cfg.fog_enabled:
+		return true
+	return world.fog.building_visible(world.my_faction, b)
 
 
 ## 当前选中的建筑（框选可以一次选中一批；空数组 = 没选中任何建筑）。

@@ -10,6 +10,8 @@
 ##   三、编辑器里「新建建筑」写出来的那一份数据，在游戏里能建、能打、名字来自 config
 ##   四、建造读条：读条期间不开火、读满就开火、开局自带的东西不等读条
 ##   五、建造页（HUD）读的是 config：加一栋楼，那一页立刻多一格
+##   六、★★ 视野半径（本版新增）：兵种的 `unit.types.<id>.vision` 就是单位的视野，
+##        将领的 `unit.general.stats[i].vision` 能单独覆盖 —— 编辑器里那两个输入框改的就是它们
 ##
 ## ⚠️ 每节都拿**自己那一份 cfg**（`require_config()` 每次都是新实例），
 ##    因为这一份文件里会往 cfg.data 里注入测试用的建筑 / 数值，
@@ -51,6 +53,7 @@ func _initialize() -> void:
 func _run() -> void:
 	_test_config_contract()
 	_test_general_overrides()
+	_test_vision()
 	_test_new_building()
 	_test_construction()
 	# ★ 关键：先等一帧，root.add_child() 才会真的生效（见 pitfalls 1.2）
@@ -256,6 +259,123 @@ func _test_general_overrides() -> void:
 	cfg4.data["unit"]["general"]["escort"] = 5
 	var cfg5 = _reload(cfg4)
 	eq(cfg5.general_escort_count(), 5, "改成 5 立刻生效")
+
+
+# ------------------------------------------------------------------
+# 二·五、视野半径（`unit.types.<id>.vision` / `unit.general.stats[i].vision`）
+#
+# ★ 编辑器里那两个输入框改的就是这两个键，所以这里必须验到「**游戏侧真的读它**」：
+#   `cfg.unit_vision_of()` 是对外的查询口，而 `unit.vision` 是出生那一刻抄进对象的值
+#   （战争迷雾每帧只读后者，见 logic/fog.gd）。
+# ⚠️ `unit.types` 与 `unit.general.stats` 都是**载入时缓存**的，
+#    所以改了 data 必须 `_reload()` —— 与编辑器改完文件再开一局同一个道理。
+# ------------------------------------------------------------------
+
+func _test_vision() -> void:
+	var cfg = require_config()
+	if cfg == null:
+		return
+
+	# ---- 契约：四个兵种都有自己的视野 ----
+	for t in ["spearman", "longbowman", "rider", "enemy"]:
+		ok(cfg.unit_vision_of(t) > 0.0, "%s 的视野 > 0（编辑器里那一栏有数）" % t)
+	ok(cfg.fog_vision_default > 0.0, "fog.vision_default > 0（没写 vision 的兜底）")
+	ok(cfg.fog_vision_building > 0.0, "fog.vision_building > 0（建筑也给视野）")
+	near(cfg.unit_vision_of("longbowman"), 10.0, 1e-6,
+		"长弓兵视野 10（看得比长枪兵远 —— 这是 config 里写的那组数）")
+	ok(cfg.unit_vision_of("longbowman") > cfg.unit_vision_of("spearman"),
+		"★ 长弓兵视野 > 长枪兵（编辑器里改这两个数就能调）")
+
+	# ---- 将领默认跟随所属兵种 ----
+	eq(String(cfg.general_type_at(0)), "spearman", "（前提）将领 1 是长枪兵型")
+	near(cfg.general_vision_at(0), cfg.unit_vision_of("spearman"), 1e-6,
+		"★ 将领 1 没写覆盖 → 视野跟随长枪兵")
+	near(cfg.general_vision_at(1), cfg.unit_vision_of("longbowman"), 1e-6,
+		"★ 将领 2 跟随长弓兵（10）")
+
+	# ---- 改了 unit.types 里的 vision → 重新载入之后生效 ----
+	var cfg2 = _reload(_mutated("unit", "types", "rider", "vision", 3))
+	near(cfg2.unit_vision_of("rider"), 3.0, 1e-6, "★ 改了兵种的 vision → 查询口读到新值")
+
+	# ---- 出生时抄进单位身上（迷雾读的就是它）----
+	var w = WorldRes.create(cfg2)
+	var g3 = w.unit_by_id("general-3")
+	ok(g3 != null, "（前提）将领 3 在场")
+	if g3 != null:
+		near(g3.vision, 3.0, 1e-6,
+			"★★ 将领 3 的视野 = 骑手那一档（出生时从 config 抄到单位身上）")
+	var g1 = w.unit_by_id("general-1")
+	if g1 != null:
+		near(g1.vision, cfg2.unit_vision_of("spearman"), 1e-6, "将领 1 的视野走长枪兵那一档")
+		# 附属兵吃**兵种**那一档，不吃将领的覆盖（与血量同一条口径）
+		var esc: Array = w.retinue_of(g1.id)
+		ok(esc.size() > 0, "（前提）将领 1 带着附属兵")
+		if esc.size() > 0:
+			near(esc[0].vision, cfg2.unit_vision_of("spearman"), 1e-6,
+				"附属兵的视野走兵种那一档")
+
+	# ---- 将领单独覆盖视野 ----
+	var cfg3 = _reload(_with_general_stats([{"vision": 20}, {}, {}]))
+	near(cfg3.general_vision_at(0), 20.0, 1e-6, "★ 将领 1 单独覆盖视野 20")
+	near(cfg3.general_vision_at(1), cfg3.unit_vision_of("longbowman"), 1e-6,
+		"★ 将领 2 没写 → 仍然跟随长弓兵（10）")
+	near(cfg3.unit_vision_of("spearman"), 8.0, 1e-6,
+		"★ 覆盖只作用于那一位将领，不改兵种本身")
+	var w2 = WorldRes.create(cfg3)
+	var g1b = w2.unit_by_id("general-1")
+	var g2b = w2.unit_by_id("general-2")
+	if g1b != null:
+		near(g1b.vision, 20.0, 1e-6, "★★ 开局将领 1 真的带着 20 格视野上场")
+	if g2b != null:
+		near(g2b.vision, cfg3.unit_vision_of("longbowman"), 1e-6,
+			"★★ 将领 2 不受影响（还是 10）")
+
+	# ---- 建筑（大本营 / 箭塔）也给视野，而且是**每个类型自己一个值** ----
+	near(cfg3.building_vision(), cfg3.fog_vision_building, 1e-6,
+		"`building_vision()` = fog.vision_building（没写 vision 的建筑用它兜底）")
+	near(cfg3.building_vision_of("tower"), 12.0, 1e-6,
+		"★★ 箭塔自己的视野 12（编辑器「建筑」页那一栏）")
+	near(cfg3.building_vision_of("base"), 9.0, 1e-6, "大本营 9")
+	near(cfg3.building_vision_of("wall"), 5.0, 1e-6, "城墙 5")
+	# 改了 config 里那一栏 → 重新载入之后生效
+	var cfg_b = require_config()
+	if cfg_b.data.has("building") and cfg_b.data["building"].has("tower"):
+		cfg_b.data["building"]["tower"]["vision"] = 3
+	var cfg_b2 = _reload(cfg_b)
+	near(cfg_b2.building_vision_of("tower"), 3.0, 1e-6,
+		"★ 改了箭塔的 vision → 查询口读到新值")
+	# 删掉那个键 → 退回 fog.vision_building
+	var cfg_b3 = require_config()
+	cfg_b3.data["building"]["tower"].erase("vision")
+	near(_reload(cfg_b3).building_vision_of("tower"), cfg_b3.fog_vision_building, 1e-6,
+		"★★ 没写 / 删掉 vision → 退回 fog.vision_building（编辑器里「清空」那一下）")
+
+	# 出生时抄进建筑身上（迷雾读的就是它）
+	var w3 = WorldRes.create(cfg3)
+	var t3 = null
+	for bb in w3.building_list:
+		if bb.type == "tower" and bb.owner == FactionRes.DEFAULT_FACTION:
+			t3 = bb
+			break
+	ok(t3 != null, "（前提）开局有己方箭塔")
+	if t3 != null:
+		near(t3.vision, 12.0, 1e-6,
+			"★★ 箭塔身上带着自己那个视野（出生时从 config 抄到建筑身上）")
+	var base3 = w3.find_base_of(FactionRes.DEFAULT_FACTION)
+	if base3 != null:
+		near(base3.vision, 9.0, 1e-6, "大本营身上带着 9")
+
+	# ---- 迷雾侧真的按这些数算（与 tests/test_fog.gd 的分工：
+	#      那边验「视野规则」，这里只验「编辑器改的那个数传到了迷雾手里」）----
+	var base_b = w2.find_base_of(FactionRes.DEFAULT_FACTION)
+	if base_b != null:
+		ok(w2.fog.tile_visible(FactionRes.DEFAULT_FACTION, base_b.tx, base_b.ty),
+			"★ 迷雾算过了：己方大本营那一格自己有视野")
+		var own_units: Array = w2.alive_units_of(FactionRes.DEFAULT_FACTION)
+		if own_units.size() > 0:
+			var u = own_units[0]
+			ok(w2.fog.tile_visible(FactionRes.DEFAULT_FACTION, u.tx, u.ty),
+				"★ 自己人站的那一格一定有视野")
 
 
 # ------------------------------------------------------------------

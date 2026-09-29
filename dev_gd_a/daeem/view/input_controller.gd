@@ -472,7 +472,10 @@ func _on_left_click(additive: bool) -> void:
 		return
 
 	var hit_building = world.building_at(hover_tile.x, hover_tile.y)
-	if hit_building != null:
+	# ★★ 战争迷雾：看不见的敌方建筑不能被左键选中（用户确认）。
+	#    ⚠️ 判据用 `_foe_building_visible()`：己方 / 无主（区划中心）它一律放行 ——
+	#      所以「点自己的建筑」与「点区划中心」（上面那条先判了）都不受影响。
+	if hit_building != null and _foe_building_visible(hit_building):
 		select_building(hit_building)
 		return
 
@@ -531,7 +534,8 @@ func _on_right_click(double_click: bool = false) -> void:
 	#    （单位走到旁边站住），而不是发一条会被逻辑层拒掉的攻击命令。
 	var foe_b = world.building_at(hover_tile.x, hover_tile.y)
 	if foe_b != null and foe_b.alive and not foe_b.is_invulnerable() \
-			and not FactionRes.same_side(foe_b.owner, world.my_faction):
+			and not FactionRes.same_side(foe_b.owner, world.my_faction) \
+			and _foe_building_visible(foe_b):
 		command_issued.emit({
 			"kind": "attack", "ids": ids, "tx": hover_tile.x, "ty": hover_tile.y,
 			"faction": world.my_faction,
@@ -755,7 +759,8 @@ func _issue_order_click() -> void:
 				return
 			var foe_b = world.building_at(hover_tile.x, hover_tile.y)
 			if foe_b != null and foe_b.alive and not foe_b.is_invulnerable() \
-					and not FactionRes.same_side(foe_b.owner, world.my_faction):
+					and not FactionRes.same_side(foe_b.owner, world.my_faction) \
+					and _foe_building_visible(foe_b):
 				command_issued.emit({
 					"kind": "attack", "ids": ids,
 					"tx": hover_tile.x, "ty": hover_tile.y,
@@ -1005,6 +1010,12 @@ func _pick_unit_at(world_pos: Vector2) -> Variant:
 
 ## 命中判定：世界坐标 → 最近的、半径内的**敌对**单位（右键点它 = 优先攻击）
 ## 与 _pick_unit_at 正好互补：那边的判据是 same_side，这边是「不是同一方」。
+##
+## ★★ 战争迷雾（用户确认）：「被迷雾盖住的敌方单位不能被右键指定为攻击目标」。
+##    所以这里多一道 `fog.unit_visible()` —— 看不见的敌人点不到，玩家不会
+##    「隔着一屏黑雾点到一个人」。想要打它就得先把它纳入视野（走过去 / 派侦察）。
+##    ⚠️ 注意这只挡**玩家这条输入路**：逻辑层自己的索敌 / 开火完全不受影响
+##      （迷雾是「玩家能看见什么」，不是「世界里能打什么」）。
 func _pick_foe_unit_at(world_pos: Vector2) -> Variant:
 	var best = null
 	var best_d := INF
@@ -1013,12 +1024,39 @@ func _pick_foe_unit_at(world_pos: Vector2) -> Variant:
 			continue
 		if FactionRes.same_side(u.faction, world.my_faction):
 			continue
+		if not _foe_unit_visible(u):
+			continue
 		var r: float = cfg.unit_radius_of(u.unit_type) + cfg.num("unit.hit_pad", 6.0) / cfg.cell_px
 		var d: float = world_pos.distance_to(u.pos)
 		if d <= r and d < best_d:
 			best_d = d
 			best = u
 	return best
+
+
+## 迷雾判据：这个敌方单位 / 建筑现在看得见吗？
+##
+## ★ 唯一的真判据在 logic/fog.gd（含山脉遮挡、敌方建筑的「见过就记住」），
+##   这里只是把「我这边的阵营」传进去，并且**在没有迷雾时一律放行**
+##   （总开关关掉 = 行为与加迷雾之前一字不差，测试也靠这一条稳定）。
+##
+## ⚠️ 刻意分成两个函数（与 view/minimap.gd 同一条理由）：建筑与单位在 logic/ 里是
+##    两种没有共同基类的 RefCounted，用一个函数接两种参数就只能靠 duck typing 猜，
+##    猜错的代价是「静默走错分支」（拿建筑去查单位视野 → 永远返回 false → 点不动）。
+func _foe_unit_visible(u) -> bool:
+	if world == null or world.fog == null or cfg == null:
+		return true
+	if not cfg.fog_enabled:
+		return true
+	return world.fog.unit_visible(world.my_faction, u)
+
+
+func _foe_building_visible(b) -> bool:
+	if world == null or world.fog == null or cfg == null:
+		return true
+	if not cfg.fog_enabled:
+		return true
+	return world.fog.building_visible(world.my_faction, b)
 
 
 ## 清理已经阵亡的选中项（由 main 每帧调一次）

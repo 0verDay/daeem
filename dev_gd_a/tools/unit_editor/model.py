@@ -32,8 +32,16 @@ CLASS_CHOICES: Tuple[Tuple[str, str], ...] = (
 
 #: 图标 = **地图上显示的那一个字**（本轮改版：原来是借一份线条预制体）。
 #: 空字符串 = 不写这个键 → 游戏侧退成「名字的第一个字」（见 `Unit.icon_char`）。
-ICON_HINT = ("地图上这个单位就显示这**一个字**（正好一个字符）；"
-             "不写 = 用名字的第一个字。将领用所属兵种的字，靠描边更粗区分")
+#: ⚠️ 这段提示**只写一行**是刻意的：编辑器右栏是「装得下就不许滚」的，
+#:   提示每多折一行就有一张表单在 1080p 上装不下（见 test_app.py 的 [8] 那一节）。
+ICON_HINT = "地图上就显示这**一个字**；不写 = 用名字的第一个字（将领用所属兵种的字）"
+
+#: ★ 视野（战争迷雾）：半径是**格**，从单位所在的**格心**算起，被**山脉**挡住视线。
+#: 兵种写在 `unit.types.<id>.vision`；将领想单独调就写 `unit.general.stats[i].vision`。
+#: ⚠️ 这段提示**只写一行**是刻意的：编辑器右栏那一列是「装得下就不许滚」的，
+#:   提示每多折一行，就有人的表单装不下（见 test_app.py 的 [8] 那一节）。
+VISION_HINT = "战争迷雾的视野半径（格）：从单位所在的格心算起，视线被山脉挡住（其他地形不挡）"
+
 #: 科技效果的形状（`logic/tech.gd` 的 effects_of 认这几个键；数值全是单个数字）
 TECH_EFFECTS: Tuple[Tuple[str, str, str], ...] = (
     ("food_per_tile_per_sec", "粮食产量", "每地块每秒 +n（与地图编辑器给区划配的产能同一口径）"),
@@ -109,6 +117,7 @@ UNIT_FIELDS: Tuple[Field, ...] = (
     Field("speed", "移动速度", "float", "格 / 秒（森林里会乘 unit.forest_mult）", minimum=0),
     Field("radius_factor", "身体半径", "float", "格；渲染与射程判定共用", minimum=0.01, maximum=0.5),
     Field("icon", "地图上的字", "text", ICON_HINT),
+    Field("vision", "视野半径", "float", VISION_HINT, minimum=0),
 )
 
 #: 招募（`recruit.list[]`，按 kind 找那一项）—— 造价与读条
@@ -130,6 +139,7 @@ GENERAL_STAT_FIELDS: Tuple[Field, ...] = (
     Field("range", "攻击距离", "float", minimum=0),
     Field("cooldown_sec", "攻击速度", "float", minimum=0.01),
     Field("speed", "移动速度", "float", minimum=0),
+    Field("vision", "视野半径", "float", VISION_HINT, minimum=0),
 )
 
 #: 建筑（`building.<type>`）
@@ -147,6 +157,7 @@ BUILDING_FIELDS: Tuple[Field, ...] = (
     Field("hp_max", "血量", "float", "基础血量上限；等级与科技都在它上面乘倍率", minimum=1),
     Field("body_scale", "本体大小", "float",
           "本体边长占一格的比例（渲染与碰撞共用）：1.0 = 填满整格", minimum=0.05, maximum=1.0),
+    Field("vision", "视野半径", "float", VISION_HINT, minimum=0),
     Field("attackable", "可攻击", "bool", "不打勾 = 不显示也不需要下面的攻击三属性"),
     Field("damage", "攻击力", "float", minimum=0),
     Field("range", "攻击距离", "float", "格", minimum=0),
@@ -230,8 +241,13 @@ class Unit:
     """一个单位类型 + 它在招募表里的那一项（没有就是 has_recruit = False）。"""
 
     def __init__(self, uid: str, data: Dict[str, Any],
-                 recruit: Optional[Dict[str, Any]], recruit_index: int) -> None:
+                 recruit: Optional[Dict[str, Any]], recruit_index: int,
+                 fog_default: float = 0.0) -> None:
         self.id = uid
+        #: 这一条在 JSON 里的**原文**（判「哪个键真的写了」要它，不能只看取到的数）
+        self.raw: Dict[str, Any] = dict(data)
+        #: config 的 `fog.vision_default`（没写 vision 的兵种实际生效的那个数）
+        self.fog_default = fog_default
         self.name = _s(data.get("name"), uid)
         self.unit_class = _s(data.get("class"), "infantry")
         self.ranged = _b(data.get("ranged"), False)
@@ -242,6 +258,9 @@ class Unit:
         self.speed = _f(data.get("speed"), 0.0)
         self.radius_factor = _f(data.get("radius_factor"), 0.0)
         self.icon = _s(data.get("icon"), "")
+        #: ★ 视野半径（格）—— 战争迷雾。**读的是「写了的那个数」**：
+        #: 没写 = 0，界面上得显示 `vision_effective`（免得看着像「这个兵是瞎子」）。
+        self.vision = _f(data.get("vision"), 0.0)
         self.has_recruit = recruit is not None
         self.recruit_index = recruit_index
         rec = recruit or {}
@@ -277,6 +296,23 @@ class Unit:
     def class_label(self) -> str:
         return dict(CLASS_CHOICES).get(self.unit_class, self.unit_class)
 
+    @property
+    def vision_effective(self) -> float:
+        """**实际生效**的视野半径（格）。
+
+        ★ 数据里写了 `vision` 就是它；没写就是 config 的 `fog.vision_default`
+          （游戏侧 `cfg.unit_vision_of()` 的兜底是同一条规则）。界面上显示这一个值，
+          免得一个没写 vision 的兵种在编辑器里显示成 0（看着像「这个兵是瞎子」）。
+        """
+        if "vision" in self.raw:
+            return self.vision
+        return _f(self.fog_default, 0.0)
+
+    @property
+    def inherits_vision(self) -> bool:
+        """视野是不是「没写、吃全局兜底」的（界面要标出来）。"""
+        return "vision" not in self.raw
+
     def field(self, key: str) -> Any:
         return getattr(self, key, None)
 
@@ -306,7 +342,10 @@ class General:
         self.inherited = dict(defaults)
         #: 真正生效的数值 = 覆盖 ⊕ 兵种
         self.effective = dict(defaults)
-        for key in ("hp_max", "damage", "range", "cooldown_sec", "speed"):
+        # ★ 可覆盖的数值键全在这里（与 GENERAL_STAT_FIELDS 同序）。
+        #   ⚠️ 加一个可覆盖字段就必须同时加进 GENERAL_STAT_FIELDS（那张表是界面的来源）
+        #      和这一行 —— 少一处就会「界面上有输入框、改了却没生效」。
+        for key in ("hp_max", "damage", "range", "cooldown_sec", "speed", "vision"):
             if key in self.override and isinstance(self.override[key], (int, float)):
                 self.effective[key] = float(self.override[key])
 
@@ -359,8 +398,13 @@ class Level:
 class Building:
     """一个建筑类型 + 它的升级表。"""
 
-    def __init__(self, bid: str, data: Dict[str, Any], levels: List[Dict[str, Any]]) -> None:
+    def __init__(self, bid: str, data: Dict[str, Any], levels: List[Dict[str, Any]],
+                 fog_default: float = 0.0) -> None:
         self.id = bid
+        #: 这一条在 JSON 里的**原文**（判「哪个键真的写了」要它，不能只看取到的数）
+        self.raw: Dict[str, Any] = dict(data)
+        #: config 的 `fog.vision_building`（没写 vision 的建筑实际生效的那个数）
+        self.fog_default = fog_default
         self.name = _s(data.get("name"), bid)
         self.buildable = _b(data.get("buildable"), False)
         self.hotkey = _s(data.get("hotkey"), "")
@@ -374,10 +418,29 @@ class Building:
         self.damage = _f(data.get("damage"), 0.0)
         self.range = _f(data.get("range"), 0.0)
         self.cooldown = _f(data.get("cooldown"), 0.0)
+        #: ★ 视野半径（格）—— 战争迷雾。没写那个键时显示的是 `vision_effective`
+        self.vision = _f(data.get("vision"), 0.0)
         self.color = _s(data.get("color"), "#888888")
         self.desc = _s(data.get("desc"), "")
         base = {"damage": self.damage, "range": self.range, "cooldown": self.cooldown}
         self.levels = [Level(i, row, base) for i, row in enumerate(levels)]
+
+    @property
+    def vision_effective(self) -> float:
+        """**实际生效**的视野半径（格）。
+
+        ★ 与 `Unit.vision_effective` 是同一条规则：数据里写了 `vision` 就是它，
+          没写就是 config 的 `fog.vision_building`（游戏侧 `cfg.building_vision_of()`
+          的兜底）。界面上显示这一个值，免得没写的建筑显示成 0。
+        """
+        if "vision" in self.raw:
+            return self.vision
+        return _f(self.fog_default, 0.0)
+
+    @property
+    def inherits_vision(self) -> bool:
+        """视野是不是「没写、吃全局兜底」的（界面要标出来）。"""
+        return "vision" not in self.raw
 
     @property
     def builtin(self) -> bool:
@@ -535,7 +598,22 @@ class ConfigModel:
             raise ModelError("没有这个单位类型：%s" % uid)
         idx = self._recruit_index(uid)
         recruit = self._recruit_rows()[idx] if idx >= 0 else None
-        return Unit(uid, data, recruit, idx)
+        return Unit(uid, data, recruit, idx, self.fog_vision_default())
+
+    def fog_vision_default(self) -> float:
+        """config 的 `fog.vision_default`（没写 `vision` 的**兵种**实际生效的视野半径）。
+
+        ★ 编辑器**读**它只是为了把「没写」显示成「实际会用多少」；
+          改它不在这里（那是 config 的 fog 段，属于游戏侧参数，本轮不给编辑器做页面）。
+        """
+        return _f(self.doc.value(["fog", "vision_default"], 0.0), 0.0)
+
+    def fog_vision_building_default(self) -> float:
+        """config 的 `fog.vision_building`（没写 `vision` 的**建筑**实际生效的视野半径）。
+
+        ★ 与 `fog_vision_default` 是同一条口径的两半：单位一份、建筑一份。
+        """
+        return _f(self.doc.value(["fog", "vision_building"], 0.0), 0.0)
 
     def units(self) -> List[Unit]:
         return [self.unit(uid) for uid in self.unit_ids()]
@@ -562,7 +640,13 @@ class ConfigModel:
                 self.doc.remove(unit_path + ["icon"])
             return
         if field in ("name", "ranged", "hp_max", "damage", "range", "cooldown_sec",
-                     "speed", "radius_factor"):
+                     "speed", "radius_factor", "vision"):
+            # ★ `vision = None` = **删掉这个键** → 回到 config 的 fog.vision_default
+            #   （与将领数值覆盖那套「不写就跟随」同一条语义）。
+            if field == "vision" and value is None:
+                if self.doc.has(unit_path + ["vision"]):
+                    self.doc.remove(unit_path + ["vision"])
+                return
             self.doc.set(unit_path + [field], value)
             # ★ 名称与招募卡的名字**同步**：设计师改一次名字，不该还要记得改第二处
             #   （两处不一致时，界面上会同时出现两个名字，看着像 bug）。
@@ -708,7 +792,10 @@ class ConfigModel:
         if self.doc.has(["unit", "types", type_id]):
             u = self.unit(type_id)
             defaults = {"hp_max": u.hp_max, "damage": u.damage, "range": u.range,
-                        "cooldown_sec": u.cooldown_sec, "speed": u.speed}
+                        "cooldown_sec": u.cooldown_sec, "speed": u.speed,
+                        # ★ 视野跟随所属兵种（含「兵种没写 → fog.vision_default」那一层，
+                        #   见 Unit.vision_effective）—— 将领的覆盖就是在这个数上覆盖。
+                        "vision": u.vision_effective}
         return General(index, kind, type_id, override, recruit, defaults)
 
     def generals(self) -> List[General]:
@@ -804,7 +891,8 @@ class ConfigModel:
         if not isinstance(data, dict):
             raise ModelError("没有这个建筑：%s" % bid)
         rows = self.doc.value(["upgrade", "levels", bid], [])
-        return Building(bid, data, rows if isinstance(rows, list) else [])
+        return Building(bid, data, rows if isinstance(rows, list) else [],
+                        self.fog_vision_building_default())
 
     def buildings(self) -> List[Building]:
         return [self.building(bid) for bid in self.building_ids()]
@@ -817,8 +905,13 @@ class ConfigModel:
             self.doc.set(path + ["cost", "food"], value)
         elif field == "cost_gold":
             self.doc.set(path + ["cost", "gold"], value)
+        elif field == "vision" and value is None:
+            # ★ `vision = None` = **删掉这个键** → 回到 config 的 fog.vision_building
+            #   （与兵种那边的 `set_unit("vision", None)` 同一条语义）。
+            if self.doc.has(path + ["vision"]):
+                self.doc.remove(path + ["vision"])
         elif field in ("name", "buildable", "hotkey", "build_sec", "hp_max", "body_scale",
-                       "attackable", "damage", "range", "cooldown", "color", "desc"):
+                       "vision", "attackable", "damage", "range", "cooldown", "color", "desc"):
             self.doc.set(path + [field], value)
         else:
             raise ModelError("不认识的建筑字段：%s" % field)

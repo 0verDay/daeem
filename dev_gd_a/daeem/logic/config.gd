@@ -55,6 +55,22 @@ var unit_forest_mult: float = 0.5
 var unit_hp_max: float = 200.0
 var unit_radius_factor: float = 0.1
 
+## ---- ★★ 战争迷雾（config.json 的 fog 段 + unit.types.<id>.vision）----
+##
+## 迷雾**只作用于显示**（见 logic/fog.gd）：这几个数不进任何玩法判定，
+## 所以它们不在「每帧每单位」的热路径上，但仍然按同一条规矩在载入时算好。
+##
+##   · fog_enabled        —— 总开关（关掉 = 回到「全图可见」，行为与加迷雾之前一致）；
+##   · fog_vision_default —— `unit.types.<id>` 没写 vision 时用它的**单位**视野半径（格）；
+##   · fog_vision_building—— `building.<type>` 没写 vision 时用它的**建筑**视野半径（格）。
+##     ★ 这两条是**对称的两个兜底**：单位一个、建筑一个。真正生效的值优先取各自
+##       类型表里那个键（`cfg.unit_vision_of()` / `cfg.building_vision_of()`）。
+##   · fog_mask_color / fog_mask_alpha —— 灰色遮罩的样子（纯显示）。
+var fog_enabled: bool = true
+var fog_vision_default: float = 8.0
+var fog_vision_building: float = 9.0
+var fog_mask_color: Color = Color(0.0, 0.0, 0.0, 0.45)
+
 ## ---- 碰撞（★ 每帧每单位都会读；原先走 num() 每次都要 split(".") + 逐层下潜）----
 var unit_collision_enabled: bool = true
 var unit_collision_backend: String = "csharp"
@@ -254,6 +270,13 @@ func _cache_scalars() -> void:
 	unit_hp_max = num("unit.hp_max", 200.0)
 	unit_radius_factor = num("unit.radius_factor", 0.1)
 
+	# ★ 迷雾：开关 / 兜底视野 / 遮罩颜色（颜色走 parse_color，与 colors.* 同一套写法）
+	fog_enabled = bool_val("fog.enabled", true)
+	fog_vision_default = maxf(0.0, num("fog.vision_default", 8.0))
+	fog_vision_building = maxf(0.0, num("fog.vision_building", 9.0))
+	fog_mask_color = parse_color(str_val("fog.mask_color", "#000000"))
+	fog_mask_color.a = clampf(num("fog.mask_alpha", 0.45), 0.0, 1.0)
+
 	unit_collision_enabled = bool_val("unit.collision_enabled", true)
 	unit_collision_backend = str_val("unit.collision_backend", "csharp")
 	unit_collision_radius = num("unit.collision_radius", 0.18)
@@ -374,6 +397,8 @@ func _cache_unit_types() -> void:
 				"hp_max": maxf(1.0, float(td.get("hp_max", unit_hp_max))),
 				"speed": maxf(0.0, float(td.get("speed", unit_speed))),
 				"radius_factor": clampf(float(td.get("radius_factor", unit_radius_factor)), 0.01, 0.5),
+				# ★ 视野半径（格）：战争迷雾用。没写 → fog.vision_default。
+				"vision": maxf(0.0, float(td.get("vision", fog_vision_default))),
 				"combat": {
 					"damage": maxf(0.0, float(td.get("damage", 0.0))),
 					"range": maxf(0.0, float(td.get("range", 1.0))),
@@ -411,7 +436,7 @@ func _cache_unit_types() -> void:
 			var nm := ""
 			if typeof(item) == TYPE_DICTIONARY:
 				var d: Dictionary = item
-				for key in ["hp_max", "speed", "damage", "range", "cooldown_sec"]:
+				for key in ["hp_max", "speed", "damage", "range", "cooldown_sec", "vision"]:
 					var v: Variant = d.get(key, null)
 					if typeof(v) == TYPE_INT or typeof(v) == TYPE_FLOAT:
 						ov[key] = float(v)
@@ -576,6 +601,52 @@ func general_speed_at(index: int) -> float:
 	if ov.has("speed"):
 		return float(ov["speed"])
 	return unit_speed_of(type_id)
+
+
+## ★★ 第 index 位将领的**生效视野半径**（覆盖 ⊕ 所属兵种）。
+##
+## ★ 与 general_hp_at / general_speed_at 同一条口径：写了的键归这位将领，
+##   没写的跟随它所属兵种那一档。迷雾每帧按**单位自己**的 `vision` 取值
+##   （见 logic/fog.gd），所以这里主要是给编辑器与悬停详情对照用。
+func general_vision_at(index: int) -> float:
+	var ov: Dictionary = general_stat_overrides(index)
+	if ov.has("vision"):
+		return float(ov["vision"])
+	return unit_vision_of(general_type_at(index))
+
+
+## ★★ 某个单位类型的**视野半径（格）** —— 战争迷雾唯一读的地方。
+##
+## 口径：从单位所在的**格心**算半径，视线被**山脉**挡住（见 logic/fog.gd）。
+##   · 参数可以是单位类型 id，也可以是 kind（将领会被换算成它所属的类型，
+##     与 unit_hp_of / unit_combat_of 完全一致）；
+##   · 查不到的类型 → `fog.vision_default`（不是 0：漏配一个类型不该让那个单位变成瞎子）。
+func unit_vision_of(id: String) -> float:
+	var e := unit_type_entry(id)
+	if e.is_empty():
+		return fog_vision_default
+	return maxf(0.0, float(e.get("vision", fog_vision_default)))
+
+
+## ★★ 建筑类型表里的视野半径（格）—— 与 `unit.types.<id>.vision` **对称**的那一处。
+##
+## ★ 优先级（老地图 / 老配置的行为不变）：
+##   1. `building.<type>.vision` 写了 → 用它（编辑器「建筑」页那一栏写的就是它）；
+##   2. 没写 → `fog.vision_building`（默认 9，也就是加类型表之前那个共用值）；
+##   3. 类型根本不存在（手改地图写了一个不认识的 type）→ 同样退回 `fog.vision_building`。
+##
+## ★ 热路径提醒：战争迷雾**不调这个函数** —— 建筑在 `create()` 时就把值抄进
+##   `b.vision` 了（与单位的 `u.vision` 同一个口径）。这个查询口是给
+##   悬停详情 / 测试 / 编辑器对照用的。
+func building_vision_of(type: String) -> float:
+	if type == "" or not has_building_type(type):
+		return fog_vision_building
+	return maxf(0.0, num("building.%s.vision" % type, fog_vision_building))
+
+
+## 建筑的**兜底**视野半径（`fog.vision_building`）——没有类型 / 没写 `vision` 时用它。
+func building_vision() -> float:
+	return fog_vision_building
 
 
 ## ★★ 单位在地图上显示的那**一个字**（config 的 `unit.types.<id>.icon`）。

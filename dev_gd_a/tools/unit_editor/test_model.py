@@ -442,6 +442,13 @@ def t_buildings() -> None:
     near(wall.body_scale, 1.0, "本体大小")
     ok(not wall.attackable, "城墙不能攻击")
     ok(wall.buildable, "城墙在建造页里")
+    # ★ 视野（战争迷雾）：**每个建筑类型自己一个值**，与 unit.types.<id>.vision 对称
+    near(wall.vision, 5.0, "★ 城墙的视野 5")
+    ok(not wall.inherits_vision, "城墙写了 vision（不是吃全局兜底）")
+    eq(model.building("tower").vision, 12.0, "★ 箭塔的视野 12（瞭望塔看得最远）")
+    eq(model.building("base").vision, 9.0, "大本营的视野 9")
+    ok(model.building("tower").vision > model.building("wall").vision,
+       "★ 每个类型各写各的（塔 > 墙）")
     ok(not model.building("base").buildable, "★ 大本营不在建造页里")
     tower = model.building("tower")
     ok(tower.attackable, "箭塔能攻击")
@@ -467,6 +474,7 @@ def t_buildings() -> None:
             ("cost_gold", 20, ["building", "wall", "cost", "gold"]),
             ("hp_max", 500, ["building", "wall", "hp_max"]),
             ("body_scale", 0.8, ["building", "wall", "body_scale"]),
+            ("vision", 7, ["building", "wall", "vision"]),
             ("attackable", True, ["building", "wall", "attackable"]),
             ("damage", 9, ["building", "wall", "damage"]),
             ("range", 2, ["building", "wall", "range"]),
@@ -478,6 +486,18 @@ def t_buildings() -> None:
         eq(model.doc.value(path), value, "set_building(%s) → %s" % (field, ".".join(path)))
     raises(lambda: model.set_building("wall", "banana", 1), "不认识的建筑字段被拒")
     raises(lambda: model.set_building("nope", "hp_max", 1), "不存在的建筑被拒")
+
+    # ---- ★★ 清空视野 = **删掉那个键** → 退回 fog.vision_building（与兵种那边同一条）----
+    m_v = fresh_model()
+    eq(m_v.doc.has(["building", "tower", "vision"]), True, "（前提）箭塔写了 vision")
+    m_v.set_building("tower", "vision", None)
+    eq(m_v.doc.has(["building", "tower", "vision"]), False,
+       "★★ set_building(vision = None) → 删掉那个键")
+    tower_v = m_v.building("tower")
+    ok(tower_v.inherits_vision, "★ 于是它变成「吃全局兜底」")
+    near(tower_v.vision_effective, m_v.fog_vision_building_default(),
+         "★★ 生效值 = config 的 fog.vision_building（编辑器里显示的就是它）")
+    near(m_v.fog_vision_building_default(), 9.0, "（前提）fog.vision_building = 9")
 
     # 升级表：每一级
     m2 = fresh_model()

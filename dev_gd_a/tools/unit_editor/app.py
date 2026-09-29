@@ -80,6 +80,38 @@ PAGES: Tuple[Tuple[str, str, str], ...] = (
     ("tech", "科技", "科技页：名字与属性加成（这一版不支持新增科技）"),
 )
 
+#: 兵种列表（左上 Treeview）的列：key → （表头，列宽）。
+#:
+#: ★★ 为什么把它提成模块常量：测试要按**列名**取那一格的值，而不是写死下标 ——
+#:   本轮在「攻速」后面插了一列「视野」，写死下标的断言会去读错格子，
+#:   报出来的还是「造价那一列不对」，完全指不到真正的原因（踩过一次）。
+UNIT_TREE_COLUMNS: Tuple[Tuple[str, str, int], ...] = (
+    ("glyph", "字", 38),
+    ("name", "名称", 100),
+    ("cls", "归属", 76),
+    ("hp", "血量", 60),
+    ("dmg", "攻击", 60),
+    ("rng", "距离", 56),
+    ("spd", "移速", 56),
+    ("cd", "攻速", 56),
+    ("vision", "视野", 50),
+    ("cost", "造价 粮/金/人口", 150),
+    ("train", "招募秒", 64),
+)
+
+#: 建筑列表（左下 Treeview）的列 —— 与 `UNIT_TREE_COLUMNS` 同一个理由提成常量
+#: （测试按列名取那一格，而不是写死下标：本轮给建筑也加了「视野」一列）。
+BUILDING_TREE_COLUMNS: Tuple[Tuple[str, str, int], ...] = (
+    ("name", "名称", 110),
+    ("hp", "血量", 66),
+    ("atk", "攻击", 120),
+    ("vision", "视野", 50),
+    ("build", "建造秒", 66),
+    ("lv", "升级", 70),
+    ("buildable", "建造页", 60),
+    ("cost", "造价 粮/金", 130),
+)
+
 UNDO_LIMIT = 200
 
 
@@ -443,11 +475,7 @@ class EditorApp:
     def _build_unit_lists(self) -> None:
         tk.Label(self.list_host, text="兵种", bg=UI["bg"], fg=UI["accent"], anchor="w",
                  font=("Microsoft YaHei UI", 10, "bold")).pack(fill="x", padx=10, pady=(8, 0))
-        self.unit_tree = self._tree(self.list_host, [
-            ("glyph", "字", 38), ("name", "名称", 100), ("cls", "归属", 76), ("hp", "血量", 60),
-            ("dmg", "攻击", 60), ("rng", "距离", 56), ("spd", "移速", 56),
-            ("cd", "攻速", 56), ("cost", "造价 粮/金/人口", 150), ("train", "招募秒", 64),
-        ], height=9)
+        self.unit_tree = self._tree(self.list_host, UNIT_TREE_COLUMNS, height=9)
         self.unit_tree.tag_configure("builtin", foreground=UI["text"])
         for unit in self.model.units():
             cost = "%g / %g / %g" % (unit.cost_food, unit.cost_gold, unit.population_cost)
@@ -456,7 +484,11 @@ class EditorApp:
             self.unit_tree.insert("", "end", iid="u:" + unit.id, text=unit.id,
                                   values=(unit.icon_char, unit.name, unit.class_label,
                                           fmt(unit.hp_max), fmt(unit.damage), fmt(unit.range),
-                                          fmt(unit.speed), fmt(unit.cooldown_sec), cost,
+                                          fmt(unit.speed), fmt(unit.cooldown_sec),
+                                          # ★ 视野：显示**实际生效值**（没写那个键的兵种
+                                          #   吃 config 的 fog.vision_default）——
+                                          #   免得一列 0 让人以为这些兵都是瞎子。
+                                          fmt(unit.vision_effective), cost,
                                           fmt(unit.train_sec) if unit.has_recruit else "—"),
                                   tags=() if not unit.builtin else ("builtin",))
 
@@ -466,6 +498,7 @@ class EditorApp:
         self.general_tree = self._tree(self.list_host, [
             ("name", "名字", 100), ("type", "类型", 110), ("hp", "血量", 60),
             ("dmg", "攻击", 60), ("rng", "距离", 56), ("spd", "移速", 56),
+            ("vis", "视野", 50),
             ("cost", "造价 粮/金/人口", 150), ("train", "招募秒", 64),
         ], height=4)
         for gen in self.model.generals():
@@ -476,6 +509,9 @@ class EditorApp:
                                              fmt(gen.effective_of("damage")),
                                              fmt(gen.effective_of("range")),
                                              fmt(gen.effective_of("speed")),
+                                             # ★ 视野：覆盖 ⊕ 所属兵种（与游戏侧
+                                             #   cfg.general_vision_at 同一条口径）
+                                             fmt(gen.effective_of("vision")),
                                              "%g / %g / %g" % (gen.cost_food, gen.cost_gold,
                                                                gen.population_cost),
                                              fmt(gen.train_sec)))
@@ -500,18 +536,17 @@ class EditorApp:
     def _build_building_list(self) -> None:
         tk.Label(self.list_host, text="建筑", bg=UI["bg"], fg=UI["accent"], anchor="w",
                  font=("Microsoft YaHei UI", 10, "bold")).pack(fill="x", padx=10, pady=(8, 0))
-        self.building_tree = self._tree(self.list_host, [
-            ("name", "名称", 110), ("hp", "血量", 66), ("atk", "攻击", 120),
-            ("build", "建造秒", 66), ("lv", "升级", 70), ("buildable", "建造页", 60),
-            ("cost", "造价 粮/金", 130),
-        ], height=14)
+        self.building_tree = self._tree(self.list_host, BUILDING_TREE_COLUMNS, height=14)
         for b in self.model.buildings():
             atk = "—"
             if b.attackable:
                 atk = "%g / %g 格 / %gs" % (b.damage, b.range, b.cooldown)
             levels = "%d 级" % b.max_level if b.levels else "没有升级表"
             self.building_tree.insert("", "end", iid="b:" + b.id, text=b.id,
-                                      values=(b.name, fmt(b.hp_max), atk, fmt(b.build_sec),
+                                      values=(b.name, fmt(b.hp_max), atk,
+                                              # ★ 视野：显示**实际生效值**（没写那个键的建筑
+                                              #   吃 config 的 fog.vision_building）
+                                              fmt(b.vision_effective), fmt(b.build_sec),
                                               levels, "是" if b.buildable else "否",
                                               "%g / %g" % (b.cost_food, b.cost_gold)))
         bar = self.action_bar
@@ -680,6 +715,19 @@ class EditorApp:
             return
         text = var.get().strip()
         if field.kind in ("int", "float"):
+            # ★ 空框 = **不要这个键**（`None`）—— 只有明确允许为空的字段才认这条路。
+            #   目前只有「视野半径」用得上：删掉键 = 回到 config 的 fog.vision_default
+            #   （与 icon 清空 = 跟着名字第一个字是同一种语义）。
+            if not text and allow_empty:
+                value = None
+                self._editing = True
+                try:
+                    if not self._mutate("「%s」改回默认" % field.label,
+                                        lambda: commit(None)):
+                        var.set(text)
+                finally:
+                    self._editing = False
+                return
             number = parse_number(text)
             if number is None:
                 self.status("✗ 「%s」要填一个数字，%r 不是 —— 原值没动" % (field.label, text))
@@ -823,6 +871,17 @@ class EditorApp:
             elif field.kind == "bool":
                 self._bool_row(sec, field, bool(unit.field(field.key)),
                                lambda v, u=unit, f=field: self.model.set_unit(u.id, f.key, v))
+            elif field.key == "vision":
+                # ★ 视野半径（战争迷雾）：显示的是**实际生效值** ——
+                #   数据里写了 vision 就是它，没写就是 config 的 fog.vision_default
+                #   （与游戏侧 cfg.unit_vision_of() 的兜底同一条规则）。
+                #   清空输入框 = 删掉这个键 → 回到那个全局默认值。
+                #   ⚠️ 这里**不再**多挂一行「没写就用 fog.vision_default」的提示：
+                #      右栏是「装得下就不许滚」的（test_app.py 的 [8]），
+                #      表单每高一截就有人的窗口装不下 —— 那句话说在字段的 hint 里就够。
+                self._entry_row(sec, field, unit.vision_effective,
+                                lambda v, u=unit: self.model.set_unit(u.id, "vision", v),
+                                allow_empty=True)
             else:
                 self._entry_row(sec, field, unit.field(field.key),
                                 lambda v, u=unit, f=field: self.model.set_unit(u.id, f.key, v))
@@ -941,6 +1000,15 @@ class EditorApp:
                                lambda v, bb=b: self.model.set_building(bb.id, "buildable", v))
             elif field.key in ("damage", "range", "cooldown") and not b.attackable:
                 continue                        # 不能攻击就把那三行收起来
+            elif field.key == "vision":
+                # ★ 视野半径（战争迷雾）：显示的是**实际生效值** ——
+                #   数据里写了 vision 就是它，没写就是 config 的 fog.vision_building
+                #   （与游戏侧 cfg.building_vision_of() 的兜底同一条规则）。
+                #   清空输入框 = 删掉这个键 → 回到那个全局默认值。
+                #   ⚠️ 与兵种那一栏是同一条规则、同一段提示文字（VISION_HINT）。
+                self._entry_row(sec, field, b.vision_effective,
+                                lambda v, bb=b: self.model.set_building(bb.id, "vision", v),
+                                allow_empty=True)
             else:
                 self._entry_row(sec, field, b.field(field.key),
                                 lambda v, bb=b, f=field: self.model.set_building(bb.id, f.key, v))

@@ -43,9 +43,10 @@
 | 手感修正（手玩反馈） | ✅ 滚轮方向 / 拐角圆化 / 贴边落点 / 近距离点选 / 八方向移动 / 单位碰撞与局部避让 / **拥挤到达收敛**，见 [`pitfalls.md`](pitfalls.md) 5.6~5.12 |
 | 与 HTML 版的有意偏离 | ✅ **5 处**（八方向 / 禁止对角穿角 / 拐角圆化 / 单位软分离 / 建筑本体阻挡），都有开关，见 [`route.md`](route.md) 第七节 |
 | **地图编辑器** | ✅ **已完成** —— `dev_gd_a/tools/map_editor/`（Python + tkinter，零依赖）：画地形 / 划区块 / 设区划中心 / **选区划种类** / 配产能 / 定各阵营大本营，导出 Godot 直接读的地图 JSON。见 [`../tools/map_editor/README.md`](../tools/map_editor/README.md) |
-| **单位编辑器（最新一轮）** | ✅ **已完成** —— `dev_gd_a/tools/unit_editor/`（Python + tkinter，零依赖，双击 `unit_editor.bat` 进入）：三个页签 **单位 / 建筑 / 科技**，改的是 `data/config.json`。单位（归属·名称·**地图上的字**·血量·攻击三件套·移速·造价粮/金/人口·招募时间）、**将领 1/2/3 各自一套数值**、建筑（造价·**建造时间**·名称·血量·**是否可攻击**·逐级价格/时间/血量/攻击）、科技（名称·加成数值），**可新建兵种与建筑**。为了让这些字段真的生效，游戏侧同步改成数据驱动（建筑定义从 `building.gd` 的 DEFS 搬进 config、建造读条、通用 attackable、逐级攻击、单位图标可选）。右侧属性面板「装得下就不许滚」（用户报的过度滚动见 [`route.md`](route.md) 第三十一节与 [`pitfalls.md`](pitfalls.md) 5.55）。见 [`route.md`](route.md) 第二十八节与 [`../tools/unit_editor/README.md`](../tools/unit_editor/README.md) |
+| **战争迷雾 + 单位 / 建筑的视野范围（最新一轮）** | ✅ **本轮新增**：`logic/fog.gd`（按**阵营**算「谁能看见哪一格」）+ `view/fog_view.gd`（**灰色遮罩**）。口径全部按确认写死：**地形永远可见**（只有「有视野 / 没视野」两种区域，**没有「未探索 = 全黑」那一档**）；敌方**建筑**「**看见过一次就永久显示**，只有被摧毁才消失」；敌方**单位**只显示当前视野内的（不保留记忆）；视线被**山脉**阻断（其他地形不阻断）；迷雾里的敌人**不能被选中 / 不能被点名攻击**；**小地图套同一份迷雾**。视野半径是**数值**，且**单位与建筑各有一张「每类型一个值」的表**（`unit.types.<id>.vision` 长枪兵 8 / 长弓兵 10 / 骑手 9 / 敌人 7，将领可被 `unit.general.stats[i].vision` 覆盖；`building.<type>.vision` 城墙 5 / **箭塔 12** / 大本营 9；没写那个键各自退回 `fog.vision_default` / `fog.vision_building`），**两张表都同步进了单位编辑器**。见 [`route.md`](route.md) 第三十二节（32.9 是建筑那张表） |
+| **单位编辑器（最新一轮）** | ✅ **已完成** —— `dev_gd_a/tools/unit_editor/`（Python + tkinter，零依赖，双击 `unit_editor.bat` 进入）：三个页签 **单位 / 建筑 / 科技**，改的是 `data/config.json`。单位（归属·名称·**地图上的字**·血量·攻击三件套·移速·造价粮/金/人口·招募时间·**视野半径**）、**将领 1/2/3 各自一套数值（含视野）**、建筑（造价·**建造时间**·名称·血量·**是否可攻击**·逐级价格/时间/血量/攻击）、科技（名称·加成数值），**可新建兵种与建筑**。为了让这些字段真的生效，游戏侧同步改成数据驱动（建筑定义从 `building.gd` 的 DEFS 搬进 config、建造读条、通用 attackable、逐级攻击、单位图标可选、**视野半径**）。右侧属性面板「装得下就不许滚」（用户报的过度滚动见 [`route.md`](route.md) 第三十一节与 [`pitfalls.md`](pitfalls.md) 5.55）。见 [`route.md`](route.md) 第二十八节与 [`../tools/unit_editor/README.md`](../tools/unit_editor/README.md) |
 | **地图上的单位 = 圆盘 + 一个字（最新两轮）** | ✅ **已完成**：不再画线条预制体，而是**阵营色圆盘底 + 一个字**（那个字按需求「只显示一个字作为其 2D 图像」压在盘上），**将领那一档的圆盘描边更粗**（「将领描边更粗」那条需求）。那个字就是 `unit.types.<id>.icon`（正好一个字符，内置写着 枪/弓/骑/敌），**在单位编辑器里可编辑**（「地图上的字」一栏）。实现：圆盘走贴图（能合批）、字走 `draw_char`（动态字体的字形**取不成 Image**，实测记录见 [`route.md`](route.md) 29.2），两者各自按贴图 / 字号分桶。见 [`route.md`](route.md) 第二十九、三十节 |
-| 测试 | **24 个套件 / 3433 项断言 / 全过**（`tools/run-tests.ps1`，含新增的 `test_unit_editor.gd` 123 项）；**地图编辑器另有 715 项**（`test_model.py` 330 + `test_app.py` 385，手动跑）；**单位编辑器另有 645 项**（`test_model.py` 461 + `test_app.py` 184，手动跑） |
+| 测试 | **25 个套件 / 3597 项断言 / 全过**（`tools/run-tests.ps1`，含新增的 `test_fog.gd` 126 项与 `test_unit_editor.gd` 新加的视野一节 38 项）；**地图编辑器另有 715 项**（`test_model.py` 330 + `test_app.py` 385，手动跑）；**单位编辑器另有 667 项**（`test_model.py` 472 + `test_app.py` 195，手动跑） |
 | 引擎位置 | ★ **必须用 mono(.NET) 版**：`C:\D\GodotEngine\gd4.7.2mono\Godot_v4.7.2-stable_mono_win64_console.exe`（**未加入 PATH**，命令行必须用 `_console.exe`；可用 `$env:GODOT_EXE` 覆盖）。工程里有 C# 群体内核（`logic/crowd/*.cs`），普通版引擎加载不了它，见 [`pitfalls.md`](pitfalls.md) 1.1b |
 | 性能基准 | **两个**：`tests/bench_crowd.gd`（无头，量**逻辑**耗时，`DAEEM_ONLY=move/idle/am` 一个进程只跑一个场景）；`tests/bench_fps.gd`（**开窗**，量**实机帧率**，含渲染与 draw call；`DAEEM_FPS_MODE=am` 切到行军攻击）。用法见文件头；环境变量 `DAEEM_BENCH_*` / `DAEEM_FPS_*` 可改规模。⚠️ 两个基准都会打印**机器漂移倍率**，>1.3 时数字不可比；`DAEEM_FPS_PROFILE=0` 关剖析量**真实**帧时间（见 [`pitfalls.md`](pitfalls.md) 1.6 / 1.8） |
 
@@ -91,14 +92,14 @@ dotnet build daeem.csproj -c Debug
 dev_gd_a/daeem/
 ├── data/       config.json（全部可调数值，含可招募表）· test_map.json（地形 / 区划网格 /
 │               区划中心 / 区划产能 / 各阵营大本营 / 预置建筑与守军）
-├── logic/      纯 RefCounted：world / unit / combat / pathfinder / collision / zone / building / …
-├── view/       渲染与输入：main.tscn + main.gd / terrain_view / unit_view / unit_icon（单位图标）/ input_controller
+├── logic/      纯 RefCounted：world / unit / combat / pathfinder / collision / zone / building / fog（战争迷雾）/ …
+├── view/       渲染与输入：main.tscn + main.gd / terrain_view / fog_view（灰色遮罩）/ unit_view / unit_icon（单位图标）/ input_controller
 │               UI：hud / ui_layout（几何常量）/ ui_style / squad_panel / detail_panel /
 │                   unit_roster（左栏上半：展开那支部队的将领格，就一格）/ troop_grid（左栏下半：3×3 = 9 格）/
 │                   recruit_queue（招募五格 + 读条）/ command_card / tech_grid / page_tabs /
 │                   hover_tip（右下角按钮的悬停详情面板：命令卡正上方、横跨命令卡 + 页签列、按文本长高）
 ├── tests/      无头断言（smoke / logic / view / ui / attack_orders / zone_capture / building_body /
-│                   path_feel / diagonal / collision / retinue / recruit_queue / arrival / map_editor）
+│                   path_feel / diagonal / collision / retinue / recruit_queue / arrival / map_editor / fog）
 └── tools/      run-tests.ps1 · check-syntax.ps1 · setup-font.ps1（+ README-tools.md）
 ```
 
@@ -142,7 +143,7 @@ dev_gd_a/daeem/
 
 ## 手玩验收清单（自动化测试覆盖不到的那部分）
 
-逻辑已由 3303 项断言覆盖，**画面与手感**要到编辑器里跑一遍（`--editor` 或直接 `--path .`）：
+逻辑已由 3597 项断言覆盖，**画面与手感**要到编辑器里跑一遍（`--editor` 或直接 `--path .`）：
 
 - [ ] 地形颜色与 HTML 版一致；山地一眼能看出来；能看到 14 个区块的轮廓与 a1~g2 的名字
       （**区块名在四个角上各写了一份**，半透明的字：不管从哪边看进去都认得出自己看的是哪个区）
@@ -288,6 +289,25 @@ dev_gd_a/daeem/
       而**招募一个单位就从这个区划扣掉 1 人口**（两个不同区划的人口各涨各的、也各扣各的）
 - [ ] **区划产能**：右下资源行能看到 `+n/秒`；占领一个有产能的区划后那个数字变大
       （无主区划不产出；产能写在 `test_map.json` 的 `zone_list[].production` 里）
+- [ ] **战争迷雾**：开局时**屏幕大部分是灰的**、家附近是亮的（灰层**不会**抹掉地形 ——
+      山、森林、区块轮廓在灰下面照样看得见）；把镜头拖到地图东南角的对家据点 →
+      **什么都没多出来**（箭塔 / 大本营 / 守军都看不见）；
+      选一个将领（按 `1`/`2`/`3`）**往东南推进**：走到大约一半时，对家的**箭塔 / 城墙 / 大本营**
+      一格一格地「亮」出来（**守军是动态的**：它们在视野里才出现，走出视野就消失）；
+      然后把部队**撤回家里**：**对家的建筑仍然显示**（见过一次就记住了），
+      但**守军又消失了**；再打掉一座箭塔 → 它才从图上消失
+- [ ] **山脉挡住视线**：把部队停在山脊这一侧 —— **山自己那一格看得见**，
+      但**山后面**的格子仍然是灰的；沿着山脊挪几步，灰的边界要跟着视野一起动
+      （具体地形见 `data/test_map.json`：`(10..16, 0..3)` 那一片是北路口的山墙）
+- [ ] **建筑各有各的视野**（`building.<type>.vision`）：开局家里那座**箭塔（12）**周围比
+      **大本营（9）**亮得远一截、**城墙（5）**只有贴身一小圈；把城墙随便建到远处，
+      它周围那一小圈亮起来之后**不会**像塔那样照出一大片（塔是瞭望塔）
+- [ ] **迷雾里的敌人点不动**：把镜头推到灰里（对家据点还没发现时）**左键点那一格** ——
+      选不中任何东西；部队选好后**右键点那一格** = 普通移动（**不会**出现「指定拆除」）；
+      等发现之后再点，就正常了
+- [ ] **小地图也套迷雾**：左下小地图上没视野的地方是灰的，看不见的敌人**不在小地图上出现**
+- [ ] **迷雾只是显示**：灰里的敌人**照样会打你**（被看不见的守军射击是正常的 ——
+      迷雾管的是「玩家看得见什么」，不是「世界里发生了什么」）
 - [ ] 中文正常显示（不是方框）；没装字体时跑 `tools/setup-font.ps1`
 
 ## 本轮已知限制（有意不做）
@@ -321,6 +341,6 @@ dev_gd_a/daeem/
 | **人口只有招募在消耗** | 区划人口按人口产能累积（无主区划也涨），**目前唯一的消耗是招募单位（每个 1 人口）**；它仍然不进 HUD 的资源，只在点开区划中心时看得到 |
 | **区划中心不参与玩法** | 它目前只是「中立障碍 + 点开看详情的入口」：不产出、不防守、不提供视野。要不要让它成为「占了这个中心才算占了区划」的判定点是下一步的设计问题 |
 | **占位美术** | 圆 = 单位、矩形 = 建筑（尺寸与碰撞本体一致）、菱形 = 区划中心。换 2.5D/3D 时只动 `view/` |
-| **没有地形高低差 / 战争迷雾 / 存档** | 与 HTML 版一致 |
+| **没有地形高低差 / 存档** | 战争迷雾**本轮已做**（见上面那一行与 [`route.md`](route.md) 第三十二节） |
 | **大本营会让整个区块瞬间归己方** | 照搬 HTML 版的行为（开关在 `config.zone.zone_owned_by_building`，副作用见那里的注释） |
 

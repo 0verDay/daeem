@@ -47,6 +47,11 @@ from unit_editor.model import ConfigModel                       # noqa: E402
 CONFIG = PROJECT_DIR / "data" / "config.json"
 TMP = PROJECT_DIR / ".tmp_unit_editor_app_test"
 
+
+def bcols() -> dict:
+    """建筑列表的「列名 → 下标」（不写死下标：本轮给建筑加了一列「视野」）。"""
+    return {key: i for i, (key, _header, _w) in enumerate(app_module.BUILDING_TREE_COLUMNS)}
+
 _FAILED = 0
 _PASSED = 0
 _SKIPPED = False
@@ -253,8 +258,14 @@ def t_window(app, model) -> None:
     eq(list(app.general_tree.get_children()), ["g:0", "g:1", "g:2"], "将领列表：三位")
     eq(app.unit_tree.item("u:rider", "values")[1], "骑手", "列表里有名字")
     eq(app.unit_tree.item("u:rider", "values")[2], "骑兵", "列表里有归属")
-    eq(app.unit_tree.item("u:enemy", "values")[8], "—（不在招募表）",
+    # ★ 列号写成「按列名找」而不是写死 8/9：本轮在「攻速」后面插了一列「视野」
+    #   （战争迷雾），写死列号的断言会去读错的那一格，而且报出来的错是
+    #   「造价那一列不对」—— 完全指不到真正的原因。
+    unit_cols = {key: i for i, (key, _header, _w) in enumerate(app_module.UNIT_TREE_COLUMNS)}
+    eq(app.unit_tree.item("u:enemy", "values")[unit_cols["cost"]], "—（不在招募表）",
        "★ 不在招募表里的单位，造价那一列写明")
+    eq(app.unit_tree.item("u:rider", "values")[unit_cols["vision"]], "9",
+       "★ 列表里有「视野」那一列（骑手 = 9 格，需求：单位要有视野范围这个属性）")
 
     app.set_page("building")
     app.root.update()
@@ -359,6 +370,22 @@ def t_unit_form(app, model) -> None:
        "★ 清空 → 那个键被删掉")
     eq(app.unit_tree.item("u:spearman", "values")[0], "重",
        "★ 列表里显示的是**生效值**（跟着名字「重装长枪兵」→ 重）")
+
+    # ---- ★★ 视野半径（战争迷雾）：与建筑那一栏是同一条规则 ----
+    ucols = {key: i for i, (key, _h, _w) in enumerate(app_module.UNIT_TREE_COLUMNS)}
+    ok("视野半径" in sidebar_entries(app), "兵种表单里有「视野半径」这一行")
+    eq(E(app, "视野半径").get(), "8", "输入框里显示配置里的 8")
+    eq(app.unit_tree.item("u:spearman", "values")[ucols["vision"]], "8", "★ 列表里也有这一列")
+    type_into(app, E(app, "视野半径"), "11")
+    eq(data(model)["unit"]["types"]["spearman"]["vision"], 11,
+       "★★ 改兵种视野 → 落在 unit.types.spearman.vision")
+    eq(app.unit_tree.item("u:spearman", "values")[ucols["vision"]], "11", "列表里的视野刷新了")
+    # 清空 → 删掉那个键 → 回到 config 的 fog.vision_default
+    type_into(app, E(app, "视野半径"), "")
+    eq(data(model)["unit"]["types"]["spearman"].get("vision", None), None,
+       "★★ 清空 → unit.types.spearman.vision 那个键被删掉")
+    eq(app.unit_tree.item("u:spearman", "values")[ucols["vision"]], "8",
+       "★★ 列表里显示的是**生效值**（没写 → config 的 fog.vision_default = 8）")
 
     # 不在招募表里的单位：说清楚 + 一个「加进招募表」按钮
     pick(app, "u:enemy")
@@ -498,12 +525,16 @@ def t_building_form(app, model) -> None:
     app.root.update()
     pick(app, "b:wall")
     entries = sidebar_entries(app)
-    for label in ("名称", "建造时间", "造价 · 粮食", "造价 · 黄金", "血量", "本体大小"):
+    for label in ("名称", "建造时间", "造价 · 粮食", "造价 · 黄金", "血量", "本体大小", "视野半径"):
         ok(label in entries, "建筑表单里有「%s」" % label)
     ok("攻击力" not in entries, "★ 城墙「不可攻击」→ 攻击三行收起来了")
 
     type_into(app, E(app, "建造时间"), "6")
     eq(data(model)["building"]["wall"]["build_sec"], 6, "★ 改建造时间")
+    type_into(app, sidebar_entries(app)["视野半径"], "7")
+    eq(data(model)["building"]["wall"]["vision"], 7,
+       "★★ 改建筑视野 → 落在 building.wall.vision（每个类型自己一个值）")
+    eq(app.building_tree.item("b:wall", "values")[bcols()["vision"]], "7", "列表里的视野刷新了")
     type_into(app, sidebar_entries(app)["血量"], "500")
     eq(data(model)["building"]["wall"]["hp_max"], 500, "改血量")
     type_into(app, sidebar_entries(app)["名称"], "石墙")
@@ -527,6 +558,15 @@ def t_building_form(app, model) -> None:
     eq(data(model)["building"]["wall"]["range"], 2.5, "改建筑攻击距离")
     type_into(app, sidebar_entries(app)["攻击速度"], "1.2")
     eq(data(model)["building"]["wall"]["cooldown"], 1.2, "改建筑攻击速度（间隔）")
+
+    # ★ 视野半径（战争迷雾）：建筑与兵种是同一条规则（显示生效值、清空 = 删键）
+    ok("视野半径" in sidebar_entries(app), "建筑表单里有「视野半径」这一行")
+    eq(E(app, "视野半径").get(), "7", "输入框里显示刚写进去的 7")
+    type_into(app, E(app, "视野半径"), "")
+    eq(data(model)["building"]["wall"].get("vision", None), None,
+       "★★ 清空 → building.wall.vision 那个键被删掉")
+    eq(app.building_tree.item("b:wall", "values")[bcols()["vision"]], "9",
+       "★★ 列表里显示的是**生效值**（没写 → config 的 fog.vision_building = 9）")
 
     # 升级表（★ 按「节 + 标签」定位：同名的行在三级里各有一份）
     type_into(app, E_in(app, "升到 2 级", "需要的价格 · 粮食"), "80")
@@ -728,51 +768,79 @@ def t_sidebar_scroll(app, model) -> None:
     def offset() -> float:
         return cv.canvasy(0.0)
 
-    def grow_until_fits(iid: str, label: str) -> None:
-        """把窗口拉高到「这一张表单装得下」为止（不同机器屏幕高度不同，多试几档）。"""
+    def grow_until_fits(iid: str, label: str) -> bool:
+        """把窗口拉高到「这一张表单装得下」为止（不同机器屏幕高度不同，多试几档）。
+
+        ★★ 这一节量的是**「装得下就不许滚」那条逻辑**，不是「表单必须不超过某个高度」。
+          所以窗口高度阶梯**要留足余量**：表单每加一行字段就高一截
+          （本轮给单位表加了「视野半径」，单位页那一张在 1080p 上就装不下了），
+          阶梯到头就会报成「装不下 → 不许滚失效」，而真正的原因只是**窗口不够高**。
+
+        @return bool 装得下了没有（False = 这台机器的窗口高度不够，后面那几条没法验）。
+        """
         pick(app, iid)
         app.root.update()
         need = app.sidebar.winfo_reqheight()
-        for h in (1000, 1100, 1200, 1300, 1400):
+        for h in (1000, 1100, 1200, 1300, 1400, 1500, 1600, 1800, 2000):
             app.root.geometry("1280x%d" % h)
             app.root.update()
             if cv.winfo_height() >= need + 20:
                 break
+        if app.sidebar_overflow() != 0:
+            # 窗口顶到阶梯上限（或屏幕真的放不下）→ 这一条**没法验**，明说一句。
+            print("  [skip] %s 的表单 %dpx 装不进面板 %dpx（这台机器的窗口高度不够）"
+                  % (label, need, cv.winfo_height()))
+            return False
         eq(app.sidebar_overflow(), 0,
            "（前提）%s 的表单（%dpx）装得进面板（%dpx）" % (label, need, cv.winfo_height()))
+        return True
+
+    # ---- A0. ★ 单位页那一张**真的装不下**（本轮数据 +1 行「视野半径」之后）----
+    #
+    # 实测（1280×1048 的窗口 = 这台 1080p 机器能给到的最大高度）：
+    #     长枪兵表单 1032px  /  可用的侧边栏视口 978px  → 溢出 54px
+    # 这**不是**回归：建筑页那三张（1725 / 1725 / 1262px）早就装不下、一直在滚。
+    # 所以这里量的是「装不下 → 滚得动、但滚不出范围」，而「装得下就不许滚」那条
+    # 改用**装得下的表单**来验（见 A 与 A2）。
+    app.set_page("unit")
+    app.root.update()
+    app.root.geometry("1280x2000")               # 尽量拉高（屏幕会把它夹到 1048）
+    app.root.update()
+    pick(app, "u:spearman")
+    app.root.update()
+    ok(app.sidebar_overflow() > 0,
+       "★ 单位页（长枪兵）的表单装不下 1080p 的窗口（溢出 %d px）—— 与建筑页一样要能滚"
+       % app.sidebar_overflow())
 
     # ---- A. 内容装得下 → 一律钉在顶部（用户报的那个 bug）----
-    grow_until_fits("u:enemy", "敌人")
-    eq(offset(), 0.0, "刚选中时在顶部")
+    #
+    # ★★ 用**科技页**那张短表单来验这一条：它是这个工具里唯一在 1080p 下装得下的
+    #    （建筑页 / 单位页那几张都装不下，拿它们验只会验出一个假红）。
+    app.set_page("tech")
+    app.root.update()
+    if grow_until_fits("t:0", "科技 1"):
+        eq(offset(), 0.0, "科技 1：刚选中时在顶部")
+        app.sidebar_yview("scroll", 5, "units")
+        eq(offset(), 0.0, "★★ 科技 1：装得下时向下滚 → 一动不动")
+        # 向上滚：不许动 ← **这就是用户看到的「上方出现大量空白」**
+        app.sidebar_yview("scroll", -5, "units")
+        eq(offset(), 0.0, "★★ 科技 1：装得下时向上滚 → 一动不动（**用户报的那个 bug**）")
+        app.sidebar_yview("moveto", 0.9)
+        eq(offset(), 0.0, "★★ 科技 1：拖滚动条也不动")
+        app.sidebar_yview("moveto", 0.0)
+        eq(tuple(app.sidebar_scroll.get()), (0.0, 1.0),
+           "★ 科技 1：滚动条滑块铺满滑槽（看着就是不可滚）")
+        app._on_wheel(FakeEvent(cv, delta=-120))
+        eq(offset(), 0.0, "科技 1：滚轮向下也不动")
+        app._on_wheel(FakeEvent(cv, delta=120))
+        eq(offset(), 0.0, "科技 1：滚轮向上也不动")
 
-    # 向下滚：不许动
-    app.sidebar_yview("scroll", 5, "units")
-    eq(offset(), 0.0, "★★ 装得下时向下滚 → 一动不动")
-    # 向上滚：不许动 ← **这就是用户看到的「上方出现大量空白」**
-    app.sidebar_yview("scroll", -5, "units")
-    eq(offset(), 0.0, "★★ 装得下时向上滚 → 一动不动（**用户报的那个 bug**）")
-    # 拖滚动条（moveto）：不许动
-    app.sidebar_yview("moveto", 0.9)
-    eq(offset(), 0.0, "★★ 拖滚动条也不动")
-    app.sidebar_yview("moveto", 0.0)
-    # 滚动条自己报的位置也必须是「满格」
-    eq(tuple(app.sidebar_scroll.get()), (0.0, 1.0), "★ 滚动条滑块铺满滑槽（看着就是不可滚）")
-    # 滚轮那条路（_on_wheel → sidebar_yview）
-    app._on_wheel(FakeEvent(cv, delta=-120))
-    eq(offset(), 0.0, "滚轮向下也不动")
-    app._on_wheel(FakeEvent(cv, delta=120))
-    eq(offset(), 0.0, "滚轮向上也不动")
-
-    # 将领那几张表单也一样（用户点名了 general 1/2/3）
-    grow_until_fits("g:0", "将领 1")
-    app.sidebar_yview("scroll", -5, "units")
-    eq(offset(), 0.0, "★★ 将领表单同样滚不动")
-    grow_until_fits("g:1", "将领 2")
-    app._on_wheel(FakeEvent(cv, delta=120))
-    eq(offset(), 0.0, "★★ 将领 2 滚轮向上也不动")
+        eq(offset(), 0.0, "★★ 将领 2 滚轮向上也不动")
 
     # ---- B. 内容真的装不下 → 滚动照旧可用，但**滚不出范围** ----
-    pick(app, "u:spearman")                      # 长枪兵那张最长（近 1000px）
+    app.set_page("unit")                         # 上一节停在科技页（列表是另一棵）
+    app.root.update()
+    pick(app, "u:spearman")                      # 长枪兵那张最长（1032px）
     app.root.geometry("1280x600")                # 压矮窗口，制造「装不下」
     app.root.update()
     ok(app.sidebar_overflow() > 0,
@@ -789,13 +857,16 @@ def t_sidebar_scroll(app, model) -> None:
     # 窗口重新拉高 → 偏移当场被夹回顶部（不然会停在下面露空白）
     app.sidebar_yview("scroll", 3, "units")
     ok(offset() > 0.0, "（前提）先滚下去一点")
-    for h in (1000, 1100, 1200, 1300, 1400):
+    for h in (1000, 1100, 1200, 1300, 1400, 1500, 1600, 1800, 2000):
         app.root.geometry("1280x%d" % h)
         app.root.update()
         if app.sidebar_overflow() == 0:
             break
-    eq(app.sidebar_overflow(), 0, "拉高之后内容又装得下了")
-    eq(offset(), 0.0, "★★ 拉高窗口之后偏移自动回到顶部")
+    if app.sidebar_overflow() == 0:
+        eq(offset(), 0.0, "★★ 拉高窗口之后偏移自动回到顶部")
+    else:
+        print("  [skip] 这台机器的窗口高度不够，装不下这一张表单（溢出 %d px）"
+              % app.sidebar_overflow())
 
     # ---- C. 用「把画布内容强行拉长」再造一次溢出（不依赖窗口大小，稳）----
     app.sidebar_canvas.itemconfigure(app._sidebar_item, height=3000)

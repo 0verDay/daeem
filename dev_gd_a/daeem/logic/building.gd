@@ -40,11 +40,14 @@ const TYPE_ZONE_CENTER := "zone_center"
 ## 建筑定义表。blocks_* 是**格级**、body_blocks_* 是**本体级** —— 别按阵营写死，
 ## 两侧都走 same_side()，见下面 blocks() / body_blocks() 的注释。
 ##
-## ★★ 本轮起：**可建造的建筑（大本营 / 城墙 / 箭塔）的定义在 config.json 的 `building` 段**
+## ★★ 可建造的建筑（大本营 / 城墙 / 箭塔）的定义在 config.json 的 `building` 段**
 ##    （editor：tools/unit_editor 的「建筑」页），这里是**内置兜底** ——
 ##    `def()` 读的是 `cfg.building_def(type, DEFS.get(type, …))`，**config 里写的键优先**。
 ##    搬家的理由：建造页原本是遍历这张表生成的，于是「编辑器里加一栋楼」在游戏里根本
 ##    出不来（一个死字段）。现在加建筑 = 加一条 config，代码一行不改。
+##    ★ **视野半径（战争迷雾）也是一个「每类型一个值」**：`building.<type>.vision`
+##      （城墙 5 / 箭塔 12 / 大本营 9），在 `create()` 时抄进 `b.vision`
+##      —— 与 `unit.types.<id>.vision` → `u.vision` 完全对称，见 `vision` 字段的说明。
 ## ★ 这张表剩下的两件事：
 ##    · **区划中心**（`zone_center`）—— 它不是建筑（无血量 / 无敌 / 不可拆），
 ##      编辑器不管它，所以它只在这里定义；
@@ -124,6 +127,15 @@ var upgrade_total: float = 0.0
 var upgrade_cost_food: float = 0.0
 var upgrade_cost_gold: float = 0.0
 
+## ★★ 视野半径（**格**）—— 战争迷雾用（见 logic/fog.gd）。
+##
+## ★ 与单位的 `u.vision` 是**完全对称**的一处：数值来自 config 的
+##   `building.<type>.vision`（没写就退回 `fog.vision_building`），
+##   在 `create()` 那一刻就抄到对象身上 —— 于是迷雾每帧只读这一个字段，
+##   不做「每帧每建筑一次 JSON 下潜」。
+## ⚠️ 它不是玩法数值：阻挡、血量、攻击一律不受它影响，改它只改变「玩家能看见什么」。
+var vision: float = 9.0
+
 ## ---- 箭塔（以及任何 attackable = true 的建筑）----
 var cooldown_left: float = 0.0
 
@@ -149,6 +161,9 @@ static func create(cfg: ConfigRes, p_type: String, p_tx: int, p_ty: int, p_owner
 	b.hp_max = b.max_hp_from_config(cfg)
 	b.base_hp_max = b.hp_max
 	b.hp = b.hp_max
+	# ★ 视野半径同样在生出来那一刻定下来（战争迷雾只读它，见上面 `vision` 的说明）。
+	#   区划中心（中立障碍）不走这条路：它不给任何阵营视野，值多少都无所谓。
+	b.vision = cfg.building_vision_of(p_type)
 	return b
 
 

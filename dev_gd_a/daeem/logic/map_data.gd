@@ -546,19 +546,41 @@ var dirs: Array[Vector2i] = GridRes.DIRS8
 ##    `rebuild_terrain_masks()`**，否则掩码与地形不一致。
 var _forest_mask := PackedByteArray()
 
+## 山地掩码：1 = 山。**战争迷雾的视线判定**专用（见 logic/fog.gd 的 `_los_blocked`）。
+##
+## ★ 为什么也要单独一份：一条视线要逐格问「中间有没有山」，而视线是「每格视野扇区
+##   算一次、每次几十格」的东西 —— 走 `String(terrain.get_cell(...))` 就是几十次
+##   装箱 + 字符串比较，和 `is_forest()` 当初的问题是同一个。
+## ★ 与 `_forest_mask` 同一条规矩：**手改 `terrain` 之后必须 `rebuild_terrain_masks()`**，
+##   否则迷雾的视线还按旧地形算（改完之后连视野都是错的，而且**不报任何错**）。
+var _mountain_mask := PackedByteArray()
+
 
 func rebuild_terrain_masks() -> void:
 	_forest_mask = PackedByteArray()
 	_forest_mask.resize(cols * rows)
+	_mountain_mask = PackedByteArray()
+	_mountain_mask.resize(cols * rows)
 	var cells: Array = terrain.data
 	for i in cells.size():
-		_forest_mask[i] = 1 if String(cells[i]) == TERRAIN_FOREST else 0
+		var t := String(cells[i])
+		_forest_mask[i] = 1 if t == TERRAIN_FOREST else 0
+		_mountain_mask[i] = 1 if t == TERRAIN_MOUNTAIN else 0
 
 
 func is_forest(x: int, y: int) -> bool:
 	if x < 0 or y < 0 or x >= cols or y >= rows:
 		return false
 	return _forest_mask[y * cols + x] != 0
+
+
+## 这一格是不是山（战争迷雾的视线阻断判据 —— 只有山挡视线，其余地形不挡）。
+## ★ 走掩码，与 `terrain_walkable()` 的字符串比较是同一份地形的两种读法：
+##   判定通行性仍然只认 `terrain_walkable()`，这里只服务「眼睛」。
+func is_mountain(x: int, y: int) -> bool:
+	if x < 0 or y < 0 or x >= cols or y >= rows:
+		return false
+	return _mountain_mask[y * cols + x] != 0
 
 
 # ------------------------------------------------------------------

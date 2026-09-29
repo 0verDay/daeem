@@ -55,6 +55,37 @@
     "decimals": 1
   },
 
+  "fog": {
+    "_comment": [
+      "★★ 战争迷雾（本轮新增）。规则全部来自需求，**只有两种区域**：",
+      "   · 有视野：地形照常、自己人照常、看到的敌人显示；",
+      "   · 没视野：叠一层**灰色遮罩**。地形**不会**被抹掉（用户原话：",
+      "     「所有地形都是默认全图可见的」）—— 也就是「探过一遍全图之后的星际争霸迷雾」，",
+      "     没有「未探索 = 全黑」那一档（用户确认）。",
+      "  迷雾**只作用于显示**，不影响任何玩法判定（战斗 / 索敌 / 寻路一律照旧）。",
+      "★ 谁能看见：",
+      "   · 己方（同一阵营）单位与建筑**永远可见**；",
+      "   · 敌方**建筑**：进过视野一次就**永久**记下来（除非被摧毁），",
+      "     之后再被迷雾盖住也照样显示 —— 见 logic/fog.gd 的 `_sighted` / known_buildings()；",
+      "   · 敌方**单位**：只显示当前在视野里的（走出视野就消失，不保留记忆，用户确认）；",
+      "   · 中立障碍（区划中心 owner = \"\"）与地形照常显示。",
+      "★ 视线会被**山脉**挡住（视野半径不是正方形，也不是纯圆：山后的格子看不见）。",
+      "  其余地形不挡 —— 森林只是减速，不影响视线。",
+      "★★ 每个东西的视野半径写在哪（两处对称的「类型表」）：",
+      "   · 单位：`unit.types.<id>.vision`（将领可被 unit.general.stats[i].vision 覆盖）；",
+      "   · 建筑：`building.<type>.vision`（城墙 5 / 箭塔 12 / 大本营 9 —— 塔是瞭望塔，看得最远）。",
+      "  两个键都**没写**时各自退回下面的 vision_default / vision_building（老图行为不变）。",
+      "  参考：这张 27×22 的测试图上，p1 大本营在 (7,2)、对家据点在 (14,14)，",
+      "  直线距离约 14 格 —— 视野 8~9 的单位从家里看不到对家，要往前推进才会发现它。",
+      "★ mask_color / mask_alpha：灰色遮罩的颜色与不透明度（纯显示，随便调）。"
+    ],
+    "enabled": true,
+    "vision_default": 8,
+    "vision_building": 9,
+    "mask_color": "#000000",
+    "mask_alpha": 0.45
+  },
+
   "ui": {
     "_comment": [
       "★ UI 的时间类数值（几何常量在 view/ui_layout.gd，配色在 view/ui_style.gd）。",
@@ -140,7 +171,12 @@
       "     · 编辑器：tools/unit_editor 的「单位」页 →「地图上的字」那一栏。",
       "  ★ 将领的数值 = 它所属类型的数值（用户确认「完全按对应兵种数值」）：",
       "    所以这里没有单独的将领数值块。想单独强化将领就在 unit.general 里加倍率，",
-      "    并在 logic/config.gd 的 unit_hp_of / unit_combat_of 里乘上去。"
+      "    并在 logic/config.gd 的 unit_hp_of / unit_combat_of 里乘上去。",
+      "  ★★ vision = **视野半径（格）**（本轮新增：战争迷雾）。",
+      "     半径从「单位所在的**格心**」算起，被**山脉**挡住视线（其他地形不挡，见 fog.gd `_los_blocked`）。",
+      "     领地半径要写多大看 fog.vision_default 那段说明。",
+      "     · 编辑器：tools/unit_editor 的「单位」页 →「视野半径」那一栏；",
+      "     · 将领想单独调 → unit.general.stats[i].vision（没写就跟随所属兵种）。"
     ],
     "types": {
       "spearman": {
@@ -153,7 +189,8 @@
         "damage": 20,
         "range": 1,
         "cooldown_sec": 1.0,
-        "radius_factor": 0.09
+        "radius_factor": 0.09,
+        "vision": 8
       },
       "longbowman": {
         "name": "长弓兵",
@@ -165,7 +202,8 @@
         "damage": 16,
         "range": 3.5,
         "cooldown_sec": 1.3,
-        "radius_factor": 0.085
+        "radius_factor": 0.085,
+        "vision": 10
       },
       "rider": {
         "name": "骑手",
@@ -177,7 +215,8 @@
         "damage": 22,
         "range": 1,
         "cooldown_sec": 1.0,
-        "radius_factor": 0.105
+        "radius_factor": 0.105,
+        "vision": 9
       },
       "enemy": {
         "name": "测试敌人",
@@ -189,7 +228,8 @@
         "damage": 10,
         "range": 1,
         "cooldown_sec": 1.2,
-        "radius_factor": 0.1
+        "radius_factor": 0.1,
+        "vision": 7
       }
     },
 
@@ -216,9 +256,10 @@
         "★★ 将领的**数值覆盖**（本轮新增；editor：tools/unit_editor 的「单位」页 → 将领）。",
         "  下标 = 第几个将领（0 起，与 types 同序）。**没写的键 = 跟随所属兵种** ——",
         "  于是 `{}` 的语义就是「这一位将领完全等于它那一档兵种的数值」（默认，与从前逐位一致）。",
-        "  可写的键：name / hp_max / speed / damage / range / cooldown_sec。",
+        "  可写的键：name / hp_max / speed / damage / range / cooldown_sec / vision。",
         "  读的地方只有一处：logic/config.gd 的 _cache_unit_types()（整理成 _general_stats，",
         "  再由 unit_hp_of / unit_speed_of / unit_combat_of 按 general 序号取覆盖值）。",
+        "  ★ vision 也是可覆盖的键（战争迷雾）：没写就跟随所属兵种的 vision。",
         "  ⚠️ 覆盖不了的：**兵种大类（步兵/骑兵）与远近**仍然由 types[i] 那个兵种决定 ——",
         "     「按兵种做额外伤害」读的是 unit_class_of / unit_is_ranged，那两条只看兵种。",
         "  ⚠️ name 不写时：unit_name_of 返回「将领」，world.create_generals 用「将领 N」——",
@@ -483,6 +524,12 @@
       "  body_blocks_player / body_blocks_enemy —— **本体级**阻挡（只给移动碰撞用）",
       "  attackable            —— 能不能攻击：true 才读 damage / range / cooldown",
       "  damage / range / cooldown —— 攻击力 / 攻击距离（格）/ 攻击间隔（秒）",
+      "  vision                —— ★★ **这一栋建筑自己的视野半径（格）**（战争迷雾）。",
+      "                            与 unit.types.<id>.vision 同一条口径：从建筑所在的**格心**算起，",
+      "                            视线被**山脉**挡住（其他地形不挡）。",
+      "                            · 没写这个键 → 退回 `fog.vision_building`（默认 9，老图行为不变）；",
+      "                            · 编辑器：tools/unit_editor 的「建筑」页 →「视野半径」那一栏",
+      "                              （清空就是删掉这个键 → 回到 fog.vision_building）。",
       "  color                 —— 地图上的颜色（view 读它）",
       "★ 能升到几级、每级多少血 / 多少钱多少秒，写在 upgrade.levels.<type> 那一段，不在这里。",
       "★ 编辑器的「添加建筑」会照这份键表建一个完整条目 + 一张 3 级升级表。"
@@ -497,6 +544,7 @@
       "blocks_player": false, "blocks_enemy": true,
       "body_blocks_player": false, "body_blocks_enemy": true,
       "attackable": false,
+      "vision": 5,
       "color": "#7d7466",
       "desc": "填满整个地块；己方单位可穿过，敌方单位不可进入"
     },
@@ -510,6 +558,7 @@
       "body_blocks_player": false, "body_blocks_enemy": true,
       "attackable": true,
       "damage": 12, "range": 3, "cooldown": 0.8,
+      "vision": 12,
       "color": "#8d6e63",
       "desc": "对范围内最近的敌人造成单体伤害"
     },
@@ -522,6 +571,7 @@
       "blocks_player": false, "blocks_enemy": false,
       "body_blocks_player": false, "body_blocks_enemy": true,
       "attackable": false,
+      "vision": 9,
       "color": "#4a90d9",
       "desc": "开局自带，不可建造、不可拆除"
     }
