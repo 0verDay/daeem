@@ -95,13 +95,17 @@ func _test_world_setup(world, cfg) -> void:
 			"将领射程也走所属类型（于是长弓兵将领是远程的）")
 		ok(generals[i].is_general(), "★ is_general() 认得出将领（描边加粗与科技加成共用这条判据）")
 
-	# 附属兵：每个将领带 escort 个**同类型**的兵，id 以队长 id 开头，leader_id 指向队长
-	var per_leader: int = cfg.general_escort_count()
+	# 附属兵：每个将领带**它自己序号那一档**的兵（`unit.general.escort = [4,5,6]`），
+	#   id 以队长 id 开头，leader_id 指向队长
+	var per_total := 0
+	for i in 3:
+		per_total += cfg.general_escort_at(i)
 	var subs: Array = []
 	for u in world.units:
 		if u.leader_id != "":
 			subs.append(u)
-	eq(subs.size(), 3 * per_leader, "每个将领带 %d 个同类型的附属兵（共 %d 个）" % [per_leader, subs.size()])
+	eq(subs.size(), per_total,
+		"每个将领带它自己那一档的附属兵（共 %d 个）" % per_total)
 	for s in subs:
 		eq(s.faction, "p1", "附属兵属于 player")
 		var leader = world.unit_by_id(s.leader_id)
@@ -120,7 +124,7 @@ func _test_world_setup(world, cfg) -> void:
 		ok(not (u.tx == base_b.tx and u.ty == base_b.ty), "开局单位与大本营不同格：%s" % u.id)
 
 	# 附属兵挨着队长站（1~2 格内）
-	if per_leader > 0:
+	if cfg.general_escort_at(0) > 0:
 		var g1 = world.unit_by_id("general-1")
 		ok(g1 != null, "有 general-1")
 		if g1 != null:
@@ -1141,12 +1145,14 @@ func _test_snapshot(world, cfg) -> void:
 	w.tick(DT)
 	var snap = SnapshotRes.to_snapshot(w)
 
-	# 开局单位数 = 将领数 + 将领数×附属兵数 + 1 个敌人 + 地图预置的守军
-	var per_leader: int = cfg.general_escort_count()
-	var expect_units: int = 3 + 3 * per_leader + 1 + w.map.prefab_units.size()
+	# 开局单位数 = 将领数 + 每位将领自己那一档的附属兵 + 1 个敌人 + 地图预置的守军
+	var per_total := 0
+	for i in 3:
+		per_total += cfg.general_escort_at(i)
+	var expect_units: int = 3 + per_total + 1 + w.map.prefab_units.size()
 	eq((snap["units"] as Array).size(), expect_units,
 		"快照里有 %d 个单位（3 将领 + %d 附属兵 + 1 敌人 + %d 地图守军）" % [
-			expect_units, 3 * per_leader, w.map.prefab_units.size()])
+			expect_units, per_total, w.map.prefab_units.size()])
 	ok((snap["buildings"] as Array).size() >= 1, "快照里有建筑")
 	# 区块数随地图走（别写死 24：地图一换就假失败）
 	var zone_total: int = w.zones.zones.size()
@@ -1178,7 +1184,7 @@ func _test_snapshot(world, cfg) -> void:
 				ld_ok = false          # 队长不在快照里 → 客机展开不了整队
 		elif String(su.get("k", "")) == UnitRes.KIND_GENERAL:
 			snap_general_types.append(String(su.get("ut", "")))
-	eq(sub_in_snap, 3 * per_leader, "快照里有 %d 个附属兵" % (3 * per_leader))
+	eq(sub_in_snap, per_total, "快照里有 %d 个附属兵" % per_total)
 	ok(ld_ok, "★ 快照里的附属兵都指向一个**在场的**队长 id（客机才做得出整队选中）")
 	ok(ut_ok, "★ 快照里每个单位都带单位类型（ut）")
 	eq(snap_general_types, cfg.general_types(), "★ 三个将领的 ut 就是配置里那三个类型")
@@ -1199,12 +1205,13 @@ func _test_snapshot(world, cfg) -> void:
 		v2i_eq(Vector2i(dst.tx, dst.ty), Vector2i(src.tx, src.ty), "★ tx/ty 也跟着写了（否则点选/射程判定会错）")
 
 	# 新建的远端附属兵也要认得队长（否则客机上「选中将领」选不到它）
-	if per_leader > 0:
+	var per_g1: int = cfg.general_escort_at(0)
+	if per_g1 > 0:
 		var leader = w2.unit_by_id("general-1")
 		ok(leader != null, "客机侧有 general-1")
 		if leader != null:
 			var got: Array = w2.group_of(leader)
-			eq(got.size(), 1 + per_leader, "★ 客机侧队伍展开得到「队长 + %d 附属兵」" % per_leader)
+			eq(got.size(), 1 + per_g1, "★ 客机侧队伍展开得到「队长 + %d 附属兵」" % per_g1)
 		# ★ 客机侧的单位类型也要重建对（否则图标与数值全错 —— 三个将领 kind 都是 general）
 		for i in mini(3, cfg.general_types().size()):
 			var remote = w2.unit_by_id("general-%d" % (i + 1))

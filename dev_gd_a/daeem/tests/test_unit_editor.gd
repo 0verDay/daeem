@@ -254,11 +254,21 @@ func _test_general_overrides() -> void:
 			"★★ 附属兵的血量走**兵种**那一档（160），不是将领的 260")
 		eq(esc[0].general_index, -1, "附属兵不是将领（序号 -1）")
 
-	# ---- 护卫数（三位共用同一个数）----
-	eq(cfg4.general_escort_count(), 3, "开局护卫数 3")
+	# ---- 护卫数（现在是**逐将一份**：`escort` 可以是数组，也可以仍是单个数字）----
+	ok(cfg4.general_escort_at(0) > 0, "第 1 位将领的开局护卫数是正数")
+	ok(cfg4.general_escort_at(1) > 0 and cfg4.general_escort_at(2) > 0,
+		"另外两位也各有编制（%d / %d）" % [cfg4.general_escort_at(1), cfg4.general_escort_at(2)])
+	# 单个数字的写法仍然生效（老数据 / 编辑器里只填一个数）：三位都变成 5
 	cfg4.data["unit"]["general"]["escort"] = 5
 	var cfg5 = _reload(cfg4)
-	eq(cfg5.general_escort_count(), 5, "改成 5 立刻生效")
+	eq(cfg5.general_escort_count(), 5, "改成 5 立刻生效（写法一：一个数 = 三位共用）")
+	eq(cfg5.general_escort_at(2), 5, "一个数的写法对第 3 位也生效")
+	# 数组的写法：逐将不同，且**越界按长度循环**
+	cfg5.data["unit"]["general"]["escort"] = [2, 4]
+	var cfg6 = _reload(cfg5)
+	eq(cfg6.general_escort_at(0), 2, "写法二（数组）：第 1 位 = 2")
+	eq(cfg6.general_escort_at(1), 4, "写法二（数组）：第 2 位 = 4")
+	eq(cfg6.general_escort_at(2), 2, "★ 越界按长度循环（第 3 位回到第 1 项）")
 
 
 # ------------------------------------------------------------------

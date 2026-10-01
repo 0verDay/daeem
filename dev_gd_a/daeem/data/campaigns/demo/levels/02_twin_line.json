@@ -1,0 +1,117 @@
+{
+  "_comment": [
+    "第二关 · 双子防线。双人合作样例：两个玩家各有大本营（b1 / a1 相邻），共享视野。",
+    "目标仍是守住 c1 120 秒；额外失败条件：外圈 f1 失守。"
+  ],
+  "name": "第二关·双子防线",
+  "mode": "coop",
+  "map": "dongzheng",
+  "players": [
+    {
+      "faction": "F1",
+      "base": [
+        4,
+        5
+      ]
+    },
+    {
+      "faction": "F2",
+      "base": [
+        5,
+        1
+      ]
+    }
+  ],
+  "factions": [
+    {
+      "id": "F2",
+      "ai": "none",
+      "color": "#ffd166"
+    },
+    {
+      "id": "F1",
+      "ai": "none",
+      "base": [
+        2,
+        2
+      ],
+      "color": "#5ac8ff"
+    },
+    {
+      "id": "E1",
+      "ai": "faction",
+      "base": [
+        16,
+        5
+      ],
+      "color": "#e05a5a",
+      "resource_mult": 1.1,
+      "start_food": 300,
+      "start_gold": 300,
+      "attack_target": {
+        "kind": "zone",
+        "zone": 4
+      },
+      "faction_ai": {
+        "generals": 3,
+        "min_retinue": 3,
+        "min_ready": 2,
+        "ready_mult": 0.5,
+        "attack_repeat_sec": 20.0
+      }
+    }
+  ],
+  "allies": [
+    [
+      "F1",
+      "F2"
+    ]
+  ],
+  "start_units": [
+    {
+      "faction": "E1",
+      "kind": "enemy",
+      "x": 12,
+      "y": 2,
+      "hold": true,
+      "name": "边军斥候"
+    }
+  ],
+  "start_buildings": [],
+  "zones": [
+    {
+      "id": 4,
+      "owner": "F1"
+    },
+    {
+      "id": 6,
+      "owner": "F1"
+    },
+    {
+      "id": 1,
+      "owner": "E1"
+    },
+    {
+      "id": 3,
+      "owner": "E1"
+    },
+    {
+      "id": 5,
+      "owner": "E1"
+    }
+  ],
+  "objectives": [
+    {
+      "kind": "hold_zone",
+      "zone": 4,
+      "hold_sec": 120
+    }
+  ],
+  "fail_conditions": [
+    {
+      "kind": "zone_lost",
+      "zone": 6
+    }
+  ],
+  "briefing": []
+}

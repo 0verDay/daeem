@@ -290,15 +290,21 @@ static func zone_spec_effect(zone, cfg: ConfigRes) -> Dictionary:
 static func start_upgrade(world, b, faction: String) -> bool:
 	var reason := can_upgrade(world, b, faction)
 	if reason != "":
-		world.push_event({"type": "upgrade_rejected", "reason": reason,
-			"kind": "building_upgrade", "building": b})
+		# ⚠️ `b` 可能是 **null**（命令指到一格没有建筑的地块 —— `can_upgrade` 会返回 "none"），
+		#   而这里要读 `b.owner` ⇒ 必须分开写，否则越界命令会当场报
+		#   "Invalid access to property 'owner' on a base object of type Nil"（实测踩到）。
+		var ev := {"type": "upgrade_rejected", "reason": reason, "kind": "building_upgrade"}
+		if b != null:
+			ev["building"] = b
+			ev["faction"] = String(b.owner)
+		world.push_event(ev)
 		return false
 	var cost: Dictionary = world.cfg.upgrade_cost_to(b.type, b.level)
 	# ★ 钱从**这栋楼的归属方**自己的池子里扣（不是写死的 world.resources）——
 	#   AI 升级自己的建筑不该掏玩家的兜。池子为 null = 那一方没有资源库（见 resource_pool_for）。
 	if not EconomyRes.spend(world.resource_pool_for(String(b.owner)), cost):
 		world.push_event({"type": "upgrade_rejected", "reason": "cost",
-			"kind": "building_upgrade", "building": b})
+			"kind": "building_upgrade", "building": b, "faction": String(b.owner)})
 		return false
 	b.upgrade_remaining = world.cfg.upgrade_time_to(b.type, b.level)
 	b.upgrade_total = b.upgrade_remaining
@@ -313,8 +319,13 @@ static func start_upgrade(world, b, faction: String) -> bool:
 static func cancel_upgrade(world, b, faction: String) -> bool:
 	var reason := can_cancel_upgrade(b, faction)
 	if reason != "":
-		world.push_event({"type": "upgrade_cancel_rejected", "reason": reason,
-			"kind": "building_upgrade"})
+		# ⚠️ 与 start_upgrade 同一条：`b` 可能是 null（命令指到空格），别去读 `b.owner`
+		var ev := {"type": "upgrade_cancel_rejected", "reason": reason,
+			"kind": "building_upgrade"}
+		if b != null:
+			ev["building"] = b
+			ev["faction"] = String(b.owner)
+		world.push_event(ev)
 		return false
 	var food: float = b.upgrade_cost_food
 	var gold: float = b.upgrade_cost_gold
@@ -334,12 +345,14 @@ static func start_specialize(world, zone, spec_id: String, faction: String) -> b
 	var reason := can_specialize(world, zone, spec_id, faction)
 	if reason != "":
 		world.push_event({"type": "upgrade_rejected", "reason": reason,
-			"kind": "zone_specialize", "spec": spec_id, "zone_id": _zone_id(zone)})
+			"kind": "zone_specialize", "spec": spec_id, "zone_id": _zone_id(zone),
+			"faction": ("" if zone == null else String((zone as Dictionary).get("owner", "")))})
 		return false
 	var cost: Dictionary = world.cfg.spec_cost(spec_id)
 	if not EconomyRes.spend(world.resource_pool_for(String((zone as Dictionary).get("owner", ""))), cost):
 		world.push_event({"type": "upgrade_rejected", "reason": "cost",
-			"kind": "zone_specialize", "spec": spec_id, "zone_id": _zone_id(zone)})
+			"kind": "zone_specialize", "spec": spec_id, "zone_id": _zone_id(zone),
+			"faction": ("" if zone == null else String((zone as Dictionary).get("owner", "")))})
 		return false
 	zone["spec_kind"] = spec_id                 # ★ 读条中：这一格就是「在读什么」
 	zone["spec_cancel"] = false
@@ -360,7 +373,8 @@ static func cancel_spec(world, zone, faction: String) -> bool:
 	var reason := can_cancel_spec(zone, faction)
 	if reason != "":
 		world.push_event({"type": "upgrade_rejected", "reason": reason,
-			"kind": "zone_spec_cancel", "zone_id": _zone_id(zone)})
+			"kind": "zone_spec_cancel", "zone_id": _zone_id(zone),
+			"faction": ("" if zone == null else String((zone as Dictionary).get("owner", "")))})
 		return false
 	var done := String(zone.get("spec_done", ""))
 	zone["spec_kind"] = "__cancel__"            # 读条占位：这一格现在忙着「取消特化」
@@ -377,7 +391,8 @@ static func cancel_spec_bar(world, zone, faction: String) -> bool:
 	var reason := can_cancel_spec_bar(zone, faction)
 	if reason != "":
 		world.push_event({"type": "upgrade_cancel_rejected", "reason": reason,
-			"kind": "zone_specialize"})
+			"kind": "zone_specialize", "zone_id": _zone_id(zone),
+			"faction": ("" if zone == null else String((zone as Dictionary).get("owner", "")))})
 		return false
 	var food := float(zone.get("spec_cost_food", 0.0))
 	var gold := float(zone.get("spec_cost_gold", 0.0))

@@ -42,43 +42,64 @@ const ConfigRes = preload("res://logic/config.gd")
 const GridRes = preload("res://logic/grid.gd")
 const FactionRes = preload("res://logic/faction.gd")
 const BuildingRes = preload("res://logic/building.gd")
+const CommandProcessorRes = preload("res://logic/command_processor.gd")
 
 ## 一次决策里最多下几条命令（护栏）。见 `_decide()` 的说明。
 const MAX_ORDERS_PER_TICK := 4
 
 
-## 建出这张图上的全部阵营 AI（由 `world.reset()` 在所有单位就位之后调一次）。
+## ★★ 建出这一局该跑的阵营 AI（由 `world.reset()` 在所有单位就位之后调一次）。
 ##
 ## @return Array[Dictionary]，每项：
-##   {faction, mult, general_index, recruit_timer, upgrade_timer, attack_timer}
+##   {faction, mult, general_index, recruit_timer, upgrade_timer, attack_timer, params}
+##
+## ★ 名单从哪来（本轮改过，别改回去）：**`world.ai_roster_cfg`** —— 它是
+##   「关卡显式写了 `ai` 的阵营优先 + `config.json` 的 `ai.factions` 兜底」合并出来的
+##   那一份（唯一实现在 `logic/level.gd` 的 `merged_ai_factions()`）。
+##
+##   ⚠️ 以前这里是**直接遍历 `cfg.ai_factions()`** 的 —— 那条路在加战役之后会漏掉
+##   「关卡点名的阵营」（地图与 config 里都没有它）。而且 `world._setup_ai_factions()`
+##   已经按同一份名单建过资源池了，**两处判据必须同源**，否则会出现
+##   「状态表里有这一方、资源池里没有」，而 `_income()` 会直接把 null 当 Dictionary 用
+##   （`pool["food"] = ...`）当场报错。这种「两处判据漂开」的错最难查。
 ##
 ## ★ 为什么在这里就把 `general_index` 定下来：将领是**按序号招**的
 ##   （general_1 / general_2 / …，见 config 的 recruit.zone.list 与
 ##   `ConfigRes.general_index_of`），而「已经招了几个」是**只增不减**的 ——
 ##   看当前场上有几个将领也不行（死掉的会重招、序号会撞车）。
-## ★ 为什么这里也拦一次玩家席位（`world._setup_ai_factions` 已经拦过了）：
-##   那一处拦的是「名单与资源池」，这一处拦的是「**状态表**」——
-##   两处判据必须一致，否则会出现「状态表里有这一方、资源池里没有」，
-##   而 `_income()` 会直接把 null 当 Dictionary 用（`pool["food"] = ...`）当场报错。
-##   这种「两处判据漂开」的错最难查，所以宁可重复一句。
+##
+## ★★ 为什么 `ai != "faction"` 的阵营**不进这张表**（本轮新增）：
+##   · `ai: "general"` 的那些靠**单位上的**将领性 AI 驱动（`garrison_zone_id`），
+##     这里再建一份会让两边同时指挥同一批单位 —— route.md 33.3 那条「判据必须互斥」
+##     就是这么踩出来的；
+##   · `ai: "none"` 的那些这一局**就是不动**（用户明确要的「不动」）。
 static func setup(world, cfg: ConfigRes) -> Array:
 	var out: Array = []
-	for e in cfg.ai_factions():
-		var entry: Dictionary = e
-		var fid := String(entry["id"])
+	for item in world.ai_roster_cfg:
+		var entry: Dictionary = item
+		var fid := String(entry.get("id", ""))
+		if fid == "":
+			continue
 		# ⚠️ 玩家席位不许被 AI 接管（玩家自己那一方的资源池与命令流都是本地输入在写）。
-		if FactionRes.is_player_faction(fid):
-			push_warning("ai.factions 里写了玩家阵营「%s」，已忽略（AI 不接管玩家席位）" % fid)
+		#    ★★ 这一条就是「**玩家选中哪一方，运行时就把那一方的 AI 摘掉**」
+		#    （dev_plan_7 拍板第 13 项）的落点 —— 关卡给它配了 AI 也不建。
+		if world.player_factions.has(fid):
+			continue
+		if String(entry.get("ai", "faction")) != "faction":
 			continue
 		# ⚠️ 资源池必须已经开好（见 world._setup_ai_factions）——没开就说明名单没对齐，
-		#    这一条排在上面那个 continue 之后，所以正常配置永远不会命中。
+		#    这一条排在上面那些 continue 之后，所以正常配置永远不会命中。
 		if world.resource_pool_for(fid) == null:
-			push_warning("ai.factions 里的「%s」没有资源池，已跳过（名单没对齐？）" % fid)
+			push_warning("AI 名单里的「%s」没有资源池，已跳过（名单没对齐？）" % fid)
 			continue
 		out.append({
 			"faction": fid,
 			"mult": float(entry.get("resource_mult", 1.0)),
-			# 下一个要招的将领序号（0 起）。招满 cfg.ai.faction.generals 个就停。
+			# ★★ 这一方自己的 AI 参数（关卡按阵营覆盖；缺省 = config.json 的 ai.faction）
+			#    在这里**算一次存下来** —— 它每帧要用（招兵节奏 / 出兵间隔），
+			#    不该每帧重算一遍合并（那是白花花的字典复制）。
+			"params": world.faction_ai_cfg(fid),
+			# 下一个要招的将领序号（0 起）。招满 params.generals 个就停。
 			"general_index": 0,
 			"recruit_timer": 0.0,
 			"upgrade_timer": 0.0,
@@ -91,11 +112,18 @@ static func setup(world, cfg: ConfigRes) -> Array:
 static func update(world, cfg: ConfigRes, dt: float) -> void:
 	if dt <= 0.0 or world.ai_factions.is_empty():
 		return
-	var fc: Dictionary = cfg.ai_faction_cfg()
 	for st in world.ai_factions:
 		var faction := String(st["faction"])
 		_income(world, st, faction, dt)
-		_decide(world, cfg, fc, st, faction, dt)
+		_decide(world, cfg, _params_of(world, st), st, faction, dt)
+
+
+## 某一方这一局实际生效的 AI 参数（setup 时算好存在状态里；老状态没有 → 现算一份兜底）。
+static func _params_of(world, st: Dictionary) -> Dictionary:
+	var p: Variant = st.get("params", null)
+	if typeof(p) == TYPE_DICTIONARY:
+		return p
+	return world.faction_ai_cfg(String(st["faction"]))
 
 
 ## ★★ 资源增长：**占领的区划** 的（产能 × 地块数）× `resource_mult` × dt。
@@ -150,19 +178,60 @@ static func _decide(world, cfg: ConfigRes, fc: Dictionary, st: Dictionary,
 	var min_retinue: int = int(fc["min_retinue"])
 	var generals: Array = _generals_of(world, faction)
 
-	# ---- a) 招将领（没招满，且不在读条）----
-	if int(st["general_index"]) < max_generals and float(st["recruit_timer"]) <= 0.0:
+	# ---- 编制上限：**按将领序号各一个值**（`unit.general.escort` 可以是数组）----
+	#   需求原话：「敌方将领的编制上限应该在 4 到 6 不等，这个不等的区间就是攻击
+	#             波次的浮动间隔时间」—— 所以目标编制**逐将不同**，而不是一个全局数。
+	#   `fc["min_retinue"]`（config / 关卡写的那个整数）仍然生效，但只当**下限托底**：
+	#   整方想统一写一个数时就靠它（例如 `[4,5,6]` 的编制配 `min_retinue: 3` 没影响）。
+	#   ⚠️ 0 或负数 = 这一方不要求满员（原来就是这个语义：`min_retinue <= 0` 时跳过补员）。
+	var target_retinue := func(g) -> int:
+		var own: int = cfg.general_escort_at(int(g.general_index))
+		return maxi(own, min_retinue)
+
+	# ---- 哪些将领**已经在场**（按序号）----
+	#   ★★ 这一条修的是一个实测 bug：原来判「将领招够没有」看的是自己那个
+	#      **只增不减的计数器** `st["general_index"]`，而世界初始化时**已经**给每一方
+	#      建好了将领（`world.create_generals`，一建就是 3 位）。
+	#      于是「计数器说我只招了 2 个」与「场上已经有 3 个」两件事同时成立 ⇒
+	#      实际将领数 = 初始那几位 + `generals`，比配置多；而派兵比例
+	#      `want = ceil(将领数 × ready_mult)` 是拿**场上人数**算的 ⇒
+	#      多出来的将领直接把「派几成」算歪（实测：配置 2 位、场上 5 位、
+	#      有时派 1 位有时派 2 位）。
+	#   ★ 现在按**序号占位**判断：第 i 个槽位上有活着的将领就不招它。
+	#      这比计数器更准，而且顺带修好「某位将领阵亡 → 它的槽位会被补招回来」
+	#      （计数器只增不减，阵亡的永远不会补）。
+	var occupied: Dictionary = {}
+	for g in generals:
+		var gi: int = int(g.general_index)
+		if gi >= 0:
+			occupied[gi] = true
+	var next_slot := 0
+	while occupied.has(next_slot):
+		next_slot += 1
+	# ★ 状态里的计数器仍然参与判断，但只当**下限**（`max`）：它是「我招到第几号了」的
+	#   记忆，而上面那个是从**世界状态**现算出来的真相。
+	#   为什么还要留着它：① 快照 / 测试会直接写它来「跳过招将」（见 tests/test_ai.gd）；
+	#   ② 招募单在**区划队列**里读条时，那位将领还没进 `world.units` ——
+	#      只看世界会以为槽位空着而重复下单，计数器记住了那一步。
+	#   ⚠️ 反过来「只看计数器」就是这一轮修掉的那个 bug：
+	#      世界初始化白建的将领它看不到（实测：配置 2 位、场上有 3 位）。
+	next_slot = maxi(next_slot, int(st.get("general_index", 0)))
+
+	# ---- a) 招将领（有空槽位、且不在读条）----
+	if next_slot < max_generals and float(st["recruit_timer"]) <= 0.0:
 		var zone = _recruit_zone(world, faction)
 		if zone != null:
-			var kind := _general_kind_for(int(st["general_index"]))
+			var kind := _general_kind_for(next_slot)
 			if kind != "" and world.can_recruit_zone(kind, int((zone as Dictionary)["id"]), faction) == "" \
 					and world.can_afford_zone_recruit(kind, int((zone as Dictionary)["id"])) == "":
 				if world.start_zone_recruit(kind, int((zone as Dictionary)["id"]), faction):
-					st["general_index"] = int(st["general_index"]) + 1
+					# ★ 计数器 = **下一个**要招的槽位（+1），与原来「招了几个」是同一个读法：
+					#   `>= max_generals` 就等于「招满了」。
+					st["general_index"] = next_slot + 1
 					st["recruit_timer"] = float(fc["recruit_cooldown_sec"])
 					return
 
-	# ---- b) 让将领招兵（每个将领补到 min_retinue 个）----
+	# ---- b) 让将领招兵（每个将领补到**它自己**的编制上限）----
 	if min_retinue > 0 and float(st["recruit_timer"]) <= 0.0:
 		var orders := 0
 		for g in generals:
@@ -170,7 +239,7 @@ static func _decide(world, cfg: ConfigRes, fc: Dictionary, st: Dictionary,
 				break
 			if g.is_training():
 				continue                      # 它已经在造了（队列里排着的也算）
-			if g.retinue_size(world) >= min_retinue:
+			if g.retinue_size(world) >= int(target_retinue.call(g)):
 				continue
 			var kind2 := _unit_kind_for(world, g)
 			if kind2 == "":
@@ -190,38 +259,101 @@ static func _decide(world, cfg: ConfigRes, fc: Dictionary, st: Dictionary,
 	if float(st["upgrade_timer"]) <= 0.0:
 		var b = _pick_upgrade(world, cfg, faction, float(fc["upgrade_reserve_food"]),
 			float(fc["upgrade_reserve_gold"]))
-		if b != null and world.start_building_upgrade(b.tx, b.ty, faction):
+		if b != null:
+			# ★★ 无论成不成，都要把冷却记上（实测报回来的 bug）：
+			#   原来只有**成功**才写 `upgrade_timer`，于是 `start_building_upgrade`
+			#   被拒（`busy` / 钱不够）时冷却保持 0 ⇒ **下一帧立刻再试一次**，
+			#   每帧推一条 `upgrade_rejected`。玩家看到的是别人的拒因刷屏。
+			world.start_building_upgrade(b.tx, b.ty, faction)
 			st["upgrade_timer"] = float(fc["upgrade_cooldown_sec"])
 
-	# ---- d) 出兵：将领招满 + 每个都补满员 → 派一批行军攻击 ----
-	if int(st["general_index"]) < max_generals:
-		return                                # 还没招满，不谈出兵
+	# ---- d) 出兵：**闲着的**可进攻将领都补满员 → 派一批行军攻击 ----
+	#
+	# ★★ 「可进攻的将领」= 全部将领 **减去驻防的**（`is_garrison()`，判据是
+	#   `unit.garrison_zone_id >= 0`：地图给了 zone、或出生在某个区划里的将领）。
+	#   为什么要减（实测踩到）：原来 `_generals_of()` 把**所有**将领都算进来，
+	#   于是地图上守点的将领也会被派出去打 —— 它一走，守的那个点就空了，
+	#   而且「派几成」的分母里混进了本来不该动的人。
+	#   ★ 驻防将领与玩家那边的驻防将领是同一套规则（`logic/general_ai.gd` 驱动它们
+	#     巡逻与警戒），所以这里只是「不把它们编进攻势」。
+	var field: Array = []
 	for g in generals:
-		if g.retinue_size(world) < min_retinue:
-			return                            # 还有将领没满员，不谈出兵
+		if not g.is_garrison():
+			field.append(g)
+	if next_slot < max_generals:
+		return                                # 还有空槽位没招满，不谈出兵
+	# ★★ 只等**闲着的**那些人满员，而且只等「正在补**编外将领**」的那种读条。
+	#
+	# 修的是实测报回来的两条（同一处 gate 造成的）：
+	#   · **「骑兵将领一直不出兵」**：它那一档编制最大（`[4,5,6]` 里的 6），
+	#     永远是最后一个补满的 ⇒ 每次都卡在这一句上；而 `_launch_attack` 里
+	#     那句 `if g.is_training(): continue` 又会跳过它 ⇒ **永远不派它**。
+	#     ⇒ 判据从「`g.is_training()`（在读条就跳过）」改成
+	#       「**只在它正在招编外将领时才跳过**」：补自己兵的那种读条**不该**挡出征
+	#       （兵账在 `retinue_size()` 里已经算上了，它们会跟着走）。
+	#   · **「一个将领死了就再也不出兵」**：原来 gate 是「**全员**满员」，
+	#     死一个就永远补不齐 ⇒ 出兵被永久卡死。
+	#     ⇒ 已经在打的（`target != null`）不再算进 gate：它们本来就不该被重派，
+	#       也就没资格拦住整批人。
+	for g in field:
+		if g.target != null or g.target_building != null:
+			continue                          # 正在交战的：不重派、也不拦别人
+		if _is_recruiting_general(cfg, g):
+			return                            # 它自己正在招一位新将领：等它
+		# ★★ 「满员」不能只看**兵账**（`retinue_size()` 把**还在读条**的那几个也算上了）。
+		#
+		# 实测报回来的原文：「第一波时骑兵将领还是不会行军攻击过来，但第二波却和
+		#                   新招募的将领一起行军过来了」。
+		# 根因就在这一句的**旧写法**上：编制最大的那位（骑兵，`[4,5,6]` 里的 6）
+		# 在发起那一波时第 6 个兵**还在读条** —— 兵账已经算成 6（gate 放行），
+		# 但它自己被「招募期间钉在原地」那条规则锁在家里（`is_training()` 为真），
+		# 于是：
+		#   · 同队的另外两位（兵少、早就出完了）已经出发；
+		#   · 它要等读完条才动 —— 玩家看到的是「骑兵将领没跟着来」，
+		#     而下一波（它读完了）它就跟着来了。
+		# ⇒ 判据加上「**不能有在读条的东西**」：发兵那一刻全队都必须真的能走。
+		#   ⚠️ 这一条**不会**死锁：AI 的兵全是它自己招的（`with_escort = false`），
+		#      读条一定会读完（有资源/人口就继续招，没有就等产出）——
+		#      它只是把「发兵」推迟到全队真的站在场上那一刻。
+		if g.is_training():
+			return                            # 它还有兵在读条：等一下，别把它落下
+		if g.retinue_size(world) < int(target_retinue.call(g)):
+			return                            # 闲着的还没满员，不谈出兵
 	if float(st["attack_timer"]) > 0.0:
 		return
-	if generals.size() < int(fc["min_ready"]):
+	# ★ 「至少 min_ready 位」这条只在**凑得出来**的时候才拦：`generals` 是这一方编制里
+	#   的将领数，`field` 是现在真能动的。打光之后 `field` 会长期小于配置那个常数，
+	#   那时**不该**永久卡死 —— 让剩下的将领继续出击，同时（见上面 a 段）把死掉的槽位补回来。
+	#   ⚠️ `field` 里还含着「正在打的那几位」，它们不可能被重派 ⇒ 能派的上限是
+	#      `field.size() - 1`。所以门槛取 `min(min_ready, max_generals - 1)`：
+	#      编制 3 位 / min_ready 3 时门槛是 2（1 个在打 + 1 个闲着的就能再派），
+	#      编制 5 位 / min_ready 3 时门槛仍是 3（不会变成「一个就敢冲」）。
+	if field.size() < mini(int(fc["min_ready"]), maxi(1, max_generals - 1)):
 		return
-	_launch_attack(world, cfg, fc, generals, faction)
-	st["attack_timer"] = _attack_repeat(cfg)
+	_launch_attack(world, cfg, fc, field, faction)
+	st["attack_timer"] = _attack_repeat(fc)
 
 
 ## `ai.faction.attack_repeat_sec` 的安全版（读一次、夹一次）。
-## ★ 单独抽出来只是为了让 `_decide()` 最后那段读起来是「规则」而不是「取值」。
-static func _attack_repeat(cfg: ConfigRes) -> float:
-	return maxf(0.1, float(cfg.ai_faction_cfg()["attack_repeat_sec"]))
+## ★ 参数是**这一方自己那一份**（关卡可按阵营覆盖），不是全局那一份。
+static func _attack_repeat(fc: Dictionary) -> float:
+	return maxf(0.1, float(fc.get("attack_repeat_sec", 6.0)))
 
 
 ## 派兵：按 `ready_mult` 决定这次派几个将领（至少 min_ready 个），
 ## 挑**离目标最近的**那几位，对它们下达行军攻击命令。
 ##
-## 目标：离这个 AI 最近的**敌方区划中心**；没有敌方区划 → 敌方大本营。
+## 目标：**先问关卡数据**（`attack_target`），没写 → 离这个 AI 最近的**敌方区划中心**，
+## 没有敌方区划 → 敌方大本营。
 ##
 ## ★ 为什么挑「离目标最近」而不是「全部一起上」：需求要的是「派遣这些将领行军攻击某处」——
 ##   分兵去打最近的那块地才叫「攻击某处」；全员扑同一个点会让它自己的地盘没人守。
 ## ★ 用 `order_attack_move`（行军攻击）而不是 `order_move`：
 ##   路上遇到守军会停下来打（那是 A 键的语义），打完继续走 —— 这正是「行军攻击某处」。
+##
+## ★★ 末尾那一条 `ai_attack_launched` 事件是本文为「波次播报」保留的**唯一一处新代码**
+##   （dev_plan_7 1.3.5）：用户嘴里的「一波红点」= 这里的一次派兵。
+##   逻辑层**只给参数**（哪一方 / 派了几位 / 目标是什么），文案在 `view/` 一处翻译。
 static func _launch_attack(world, cfg: ConfigRes, fc: Dictionary, generals: Array,
 		faction: String) -> void:
 	var goal: Variant = _attack_target(world, faction)
@@ -248,16 +380,75 @@ static func _launch_attack(world, cfg: ConfigRes, fc: Dictionary, generals: Arra
 		# 已经在打的将领不打断（它可能正被玩家的兵缠住）。
 		if g.target != null or g.target_building != null:
 			continue
-		if g.is_training():
+		# ★ 只有「正在招**编外将领**」时才跳过（补自己兵的那种读条不挡出征）。
+		#   原来这里是无条件 `g.is_training(): continue`，而编制最大的那位
+		#   （骑兵将领）永远是最后一个补满的 ⇒ 每次都被这一句跳过、**永远不出征**。
+		if _is_recruiting_general(cfg, g):
 			continue
-		# ⚠️ 行军攻击**只有一条命令入口**：`order_attack_move` 会写 has_attack_move +
-		#    attack_move_goal，combat.gd 每帧按它推进（到点 / 路上打完继续走）。
-		#    这里不额外写 settling_* 之类的字段 —— 那些由 order_move 内部统一处理。
-		if g.order_attack_move(world, cfg, goal_pt):
+		# ★★ 整队出动：将领 + 它辖下的**全部**部队一起行军攻击。
+		#
+		# 需求原话：「当敌方将领招募满兵时，只有将领会行军攻击，我要的是他的
+		#           整个部队都行军攻击」。
+		# ⚠️ 原来只对 `g` 自己下一句 `order_attack_move` —— 部队一动不动地留在原地
+		#   （它们没有 `leader_id` 之外的任何「跟着队长走」的机制：玩家那边是
+		#    `world.expand_to_groups()` 展开成一整队再逐个下令，见 input_controller）。
+		#   ⇒ 这里走**与玩家同一条**路：`order_group_attack_move`（队形 + 逐单位下令）。
+		if CommandProcessorRes.order_group_attack_move(world, cfg, world.group_of(g), goal_pt):
 			sent += 1
 
+	# ★★ 「红点来袭」的体感就靠这一条：哪一方出兵了、派了几位、往哪打。
+	#    ⚠️ 一位都没派出去时不发（那不是「一波」）—— 免得播报与画面不一致。
+	if sent > 0:
+		world.push_event({
+			"type": "ai_attack_launched",
+			"faction": faction,
+			"leaders": sent,
+			"target": _target_label(world, goal_tile),
+			"x": goal_tile.x,
+			"y": goal_tile.y,
+		})
 
-## 攻击目标：离自己最近的**敌方区划中心**（没有中心格的区划跳过），
+
+## 目标点的**人话标签**（给播报用）：那一格落在某个区划里就用区划名，否则用坐标。
+##
+## ★ 只做「格 → 区划」这一层翻译，不判断「这是谁的区划」—— 那属于界面文案，
+##   而逻辑层只给参数（见 dev_plan_7 3.9）。
+static func _target_label(world, tile: Vector2i) -> String:
+	if world == null or world.zones == null:
+		return "(%d,%d)" % [tile.x, tile.y]
+	var z = world.zones.zone_at(tile.x, tile.y)
+	if z != null:
+		var zid := int((z as Dictionary).get("id", -1))
+		var nm := String((z as Dictionary).get("name", ""))
+		if nm != "":
+			return nm
+		if zid >= 0:
+			return "c%d" % zid
+	return "(%d,%d)" % [tile.x, tile.y]
+
+
+## ★★ 攻击目标：**先问关卡数据，没有就退回现状挑选逻辑**（dev_plan_7 3.3 改动①）。
+##
+## 关卡数据里的 `attack_target`（四种 kind，见 `world.level_attack_target`）就是
+## 用户嘴里「规定其行军攻击的目标点」那件事的落点 —— **「波次」在这个数据格式里没有独立字段**，
+## 它就是「这一方挂着阵营 AI」+「它的 attack_target 指着哪」这两件事的组合。
+##
+## ⚠️ 三条不能破（写进断言）：
+##   1. **缺省必须逐位不变**：没写 `attack_target` 的关卡 / 不做战役的老路径，
+##      走的还是下面 `_attack_target_default()` —— 一个字都没改；
+##   2. 关卡给的目标**不可达时要退回现状挑选**（`world.level_attack_target` 已经过了一遍
+##      `nearest_reachable` 过滤）：否则会出现「AI 对着一个走不到的点原地发呆」
+##      —— 这类症状在 HTML 版出现过；
+##   3. 出兵仍然走现成的 `order_attack_move`（行军攻击），**不新写一套命令**。
+static func _attack_target(world, faction: String) -> Variant:
+	if world != null and world.has_method("level_attack_target"):
+		var t: Variant = world.level_attack_target(faction)
+		if t != null:
+			return t
+	return _attack_target_default(world, faction)
+
+
+## 攻击目标（**现状**）：离自己最近的**敌方区划中心**（没有中心格的区划跳过），
 ## 全都没有 → 敌方大本营。
 ##
 ## ★ 判据用 `FactionRes.same_side_for_attack(z.owner, faction)` 取反，而不是写
@@ -267,7 +458,10 @@ static func _launch_attack(world, cfg: ConfigRes, fc: Dictionary, generals: Arra
 ##     AI 这一侧真的成立 —— 不改成「同阵营或盟友」的话，阵营 AI 照样会
 ##     把盟友的区划当成进攻目标，一路推过去把友军打死（自动索敌只是不主动开火，
 ##     但行军攻击的目标点是 AI 自己挑的）。
-static func _attack_target(world, faction: String) -> Variant:
+##
+## ⚠️ 这段逻辑是**缺省**（第 1 条）：加战役时它被**原样**搬进这个函数，一个字都没改
+##   —— 所以「不做战役」的行为与从前逐位一致（tests/test_ai.gd 的 150 项是回归）。
+static func _attack_target_default(world, faction: String) -> Variant:
 	if world.zones == null:
 		return null
 	var home: Vector2i = world.home_base_of(faction)
@@ -311,6 +505,31 @@ static func _generals_of(world, faction: String) -> Array:
 		if u.is_general():
 			out.append(u)
 	return out
+
+
+## 这个将领现在是不是「正在招**另一位将领**」（编外将领）。
+##
+## ★★ 为什么要区分「招将领」与「招自己的兵」：两者都会让 `is_training()` 为真，
+##   但只有前者意味着「这个将领还没成形」。原来出兵那一段用的是无条件的
+##   `is_training()`，于是**编制最大的那位**（`[4,5,6]` 里的骑兵将领，要 6 个兵）
+##   永远是最后一个补满的 ⇒ 每次都在读条中被跳过 ⇒ **永远不出征**（实测报回来的
+##   「骑兵将领招募满单位后不会行军攻击」）。
+##
+## 判据只认一个地方：`unit.train_kind` 是不是将领类（`ConfigRes.is_general_kind`）——
+## 与 `general_index_of` / 招募表用的是同一套编号，不另写前缀判断。
+static func _is_recruiting_general(cfg: ConfigRes, g) -> bool:
+	if g == null:
+		return false
+	if not g.is_training():
+		return false
+	var kind := String(g.train_kind)
+	if kind == "":
+		# 只在排队、没在读条：队列里排的是将领也算（`train_queue` 里存的是 kind 字符串）
+		for k in g.train_queue:
+			if cfg.is_general_kind(String(k)):
+				return true
+		return false
+	return cfg.is_general_kind(kind)
 
 
 ## 招将领用的 kind：`general_1` / `general_2` / …（序号 1 起，与 config 的
@@ -366,6 +585,16 @@ static func _pick_upgrade(world, cfg: ConfigRes, faction: String,
 		if not b.alive or String(b.owner) != faction:
 			continue
 		if not world.building_can_upgrade(b.type):
+			continue
+		# ★★ 在读条的那一栋**跳过**（实测报回来的 bug）。
+		# 不加这一句会怎样：这里每秒重挑中同一栋（它的升级代价仍然算得出来），
+		# 于是每秒下一次单 → 被 `can_upgrade` 拒（`busy`）→ 推一条
+		# `upgrade_rejected`。玩家那边看到的就是「城墙正在读条…」这种
+		# **别人的**消息刷屏（60 秒实测几百条）。
+		# ⚠️ 这类事件本来只该由**玩家的**命令产生，所以它同时暴露了界面漏过滤
+		#    （见 view/game_scene.gd 的 `_is_my_event`）——**两处都要修**：
+		#    这里治「不该产生的报错」，那里治「别人的报错别显示给我」。
+		if b.is_upgrading():
 			continue
 		var cost: Dictionary = world.building_upgrade_cost(b)
 		if cost.is_empty():

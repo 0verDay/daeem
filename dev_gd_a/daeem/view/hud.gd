@@ -1612,10 +1612,25 @@ func tech_reject_text(reason: String) -> String:
 
 
 ## 建筑升级 / 区划特化被拒的**拒因码 → 中文**（码见 logic/upgrade.gd 的那几处判定）。
-## 与招募 / 科技同一条约定：逻辑层只给码，文案只在这里。
-func upgrade_reject_text(reason: String) -> String:
+## 与招募 / 科技同一条约定：逻辑层只给码 + **对象**，文案只在这里。
+##
+## ★★ `busy` 那条文案必须**点名是哪个对象、并说明什么都没发生**（实测报回来的）：
+##   玩家原话是「详细信息栏经常显示『这一项正在读条…』，但我什么都没做」。
+##   原因有两层：
+##     ① 「正在读条」的东西**可能不是玩家自己下的单** —— 敌方 AI 也会升级自己的建筑
+##        （实测：样例第一关开局第 0 帧，E1 的城墙就已经在升级了）；
+##     ② 旧文案只有一个「这一项」：既不说哪一项、也不说「这一下没有生效」，
+##        于是看起来像凭空冒出来的报错。
+##   ⇒ 现在带上对象名，并明说「这一下没有生效（没扣资源、也没排队）」。
+##
+## @param evt 可选：那条 `upgrade_rejected` 事件本身（带 `building` / `zone_id`）。
+##        不传也能用（退回旧的那句泛泛文案）。
+func upgrade_reject_text(reason: String, evt: Variant = null) -> String:
 	match reason:
 		"busy":
+			var who := _reject_target_name(evt)
+			if who != "":
+				return "「%s」正在读条：这一下没有生效（没扣资源、也没排队）。等它读完，或者点信息栏那一格取消" % who
 			return "这一项正在读条：等它读完，或者点信息栏那一格取消"
 		"max_level":
 			return "已经是最高等级了"
@@ -1638,6 +1653,25 @@ func upgrade_reject_text(reason: String) -> String:
 		"idle":
 			return "现在没有可以取消的读条"
 	return "这一项现在做不了"
+
+
+## 被拒的那**一个对象**的人话名字（建筑 → 显示名；区划 → 区划名）。
+## ★ 只做「对象 → 名字」这一层翻译，不判断「这是谁的」—— 那属于逻辑层。
+func _reject_target_name(evt: Variant) -> String:
+	if typeof(evt) != TYPE_DICTIONARY:
+		return ""
+	var d: Dictionary = evt
+	var b = d.get("building", null)
+	if b != null and b.has_method("display_name"):
+		return String(b.display_name())
+	var zid := int(d.get("zone_id", -1))
+	if zid >= 0 and world != null:
+		var z = world.zone_by_id(zid)
+		if z != null:
+			var zd: Dictionary = z
+			var nm := String(zd.get("name", "")).strip_edges()
+			return nm if nm != "" else ("区划 c%d" % zid)
+	return ""
 
 
 # ------------------------------------------------------------------

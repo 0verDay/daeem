@@ -133,6 +133,17 @@ var _general_combat: Array = []
 var _unit_icons: Dictionary = {}
 ## 每个将领开局带几个**同类型**的兵（原 unit.subordinate.count）—— 见 unit.general.escort
 var general_escort: int = 0
+## ★★ 每位将领**各自**的编制上限（`unit.general.escort` 写成数组时用这一份）。
+##
+## 需求原话：「我预期的是敌方将领的编制上限应该在 4 到 6 不等，这个不等的区间
+##           就是攻击波次的浮动间隔时间」—— 也就是**靠每位将领带兵数不同**
+##           制造波次大小的浮动，而不是靠随机。
+##
+## 写法（两种都支持，向后兼容）：
+##   · 一个数 `3`   → 所有将领都是 3（老行为，数组会是 `[3]`，见 `general_escort_at`）；
+##   · 一个数组 `[4, 5, 6]` → 第 1 位带 4、第 2 位带 5、第 3 位带 6（**与
+##     `unit.general.types` 同序**；下标超出时按循环取，见 `general_escort_at`）。
+var general_escorts: Array = []
 ## 查不到类型时的兜底战斗数值（= 第一个将领类型，也就是长枪兵那一档）。
 ## ★ 为什么兜底是长枪兵而不是测试敌人：本项目踩过「二元判断（是将领吗？不是就当敌人）
 ##   把新加的类型静默当成测试敌人」这个坑（见 docs/pitfalls.md 5.x）——
@@ -426,7 +437,20 @@ func _cache_unit_types() -> void:
 				_general_types.append(sid)
 	if _general_types.is_empty() and _unit_types.has(UNIT_TYPE_SPEARMAN):
 		_general_types.append(UNIT_TYPE_SPEARMAN)
-	general_escort = maxi(0, int_val("unit.general.escort", 0))
+	# ★ 两个读法各有用途：
+	#   · `general_escort` = 数组的**第一项**（给「不知道自己是第几位」的调用方兜底，
+	#     也是 `general_escort_count()` 的返回值）；
+	#   · `general_escorts` = 逐将那一份（真正的口径，见 `general_escort_at()`）。
+	general_escorts = []
+	var escort_raw: Variant = get_path_value("unit.general.escort")
+	if typeof(escort_raw) == TYPE_ARRAY:
+		for item in (escort_raw as Array):
+			general_escorts.append(maxi(0, int(float(item))))
+	elif typeof(escort_raw) == TYPE_FLOAT or typeof(escort_raw) == TYPE_INT:
+		general_escorts.append(maxi(0, int(float(escort_raw))))
+	if general_escorts.is_empty():
+		general_escorts.append(0)
+	general_escort = int(general_escorts[0])
 
 	# 3.5) ★★ 将领的**数值覆盖**（config.json 的 `unit.general.stats`，本轮新增；
 	#      editor：tools/unit_editor 的「单位」页 → 将领）。
@@ -553,9 +577,31 @@ func general_type_at(i: int) -> String:
 	return String(_general_types[i])
 
 
-## 每个将领开局带几个同类型的兵
+## 每个将领开局带几个同类型的兵（**全局一份**，= `unit.general.escort` 的第一个值）。
+## ⚠️ 真正的口径请用 `general_escort_at(index)`：配置写成数组时每位将领不一样，
+##    这个函数只是给「不知道自己是第几位」的调用方兜底（例如地图上摆的测试敌人）。
 func general_escort_count() -> int:
 	return general_escort
+
+
+## ★★ 第 `index` 位将领（0 起，与 `unit.general.types` / `unit.general.stats` 同序）
+## 开局带几个同类型的兵 —— 「编制上限」。
+##
+## 需求：「敌方将领的编制上限应该在 4 到 6 不等，这个不等的区间就是攻击波次的
+##       浮动间隔时间」。所以这是**按将领序号**取值的：`[4, 5, 6]` ⇒
+##       第 1 位 4 个、第 2 位 5 个、第 3 位 6 个，一波兵自然就在 4~6 之间浮动。
+##
+## ★ 下标越界时**按长度循环**（`index % size`）而不是退到第一个值：
+##   将领数量多于配置项时不至于「第 4 位起全变成最少的那一档」——
+##   那种退化会让加一个 `general_4` 之后的波次突然变小，且毫无提示。
+func general_escort_at(index: int) -> int:
+	if general_escorts.is_empty():
+		return general_escort
+	var n := general_escorts.size()
+	var i := index % n
+	if i < 0:
+		i += n
+	return int(general_escorts[i])
 
 
 # ------------------------------------------------------------------
@@ -792,6 +838,76 @@ static func parse_color(s: String, fallback: Color = Color.MAGENTA) -> Color:
 	return fallback
 
 
+## ★★ 运行时登记的阵营颜色："faction" → {"main": Color, "sel": Color, "bar": Color}。
+##
+## 为什么需要它：配色表（`colors.faction.*`）里只有 p1~p8 / enemy / ai 这些**内置**阵营 id，
+## 而**战役可以用自己的阵营 id**（`campaign.json` 的 `factions[].color` 就是给它们准备的）。
+## 不登记的话 `faction_color("F1")` 会一路退到兜底的 **品红** ——
+## 症状是「整个战场一片紫、分不清敌我」（实测踩到：样例战役的 F1/E1 就是这么来的）。
+##
+## ★ 状态放在 config 上而不是 view 上：`view/` 里所有取色都走 `cfg.faction_color()`
+##   （单位 / 建筑 / 区块 / 小地图），在这里登记一处就全通了 —— 不必给每个 view 传调色板。
+## ★ 生命周期：每次 `world.reset()` 按关卡数据重登记一遍（见 `world._register_level_colors`），
+##   所以换一局不会串色。
+var _faction_color_override: Dictionary = {}
+
+
+## ★★ 登记一个阵营的三个颜色（`main` 主色 / `sel` 选中态 / `bar` 血条）。
+##
+## @param main / sel / bar 十六进制或 `rgba(...)`（与 config 里其它颜色同一种写法）
+## @return bool 认出来了没有（**写错了**会返回 false 并保持原样，不会悄悄设成黑色）
+##
+## ⚠️ 只在**内容认得出来**时才登记：写错的颜色宁可让它退回原来的兜底
+##   （一品红总比「所有阵营都变成黑色」好查 —— 后者看起来像渲染坏了）。
+func register_faction_color(faction: String, main: String, sel: String = "", bar: String = "") -> bool:
+	var fid := faction.strip_edges()
+	if fid == "":
+		return false
+	# ⚠️ 这几个用 `=` 而不是 `:=`：`_parse_color_or_null()` 返回 Variant（null 或 Color），
+	#    对它用 `:=` 会被引擎当成错误（"The variable type is being inferred from a Variant value"）。
+	var m = _parse_color_or_null(main)
+	if m == null:
+		return false
+	# sel / bar 没给就跟 main 走（只给一个颜色的战役数据也能用）
+	var s = m
+	var b = m
+	if sel.strip_edges() != "":
+		var sv = _parse_color_or_null(sel)
+		if sv != null:
+			s = sv
+	if bar.strip_edges() != "":
+		var bv = _parse_color_or_null(bar)
+		if bv != null:
+			b = bv
+	_faction_color_override[fid] = {"main": m, "sel": s, "bar": b}
+	return true
+
+
+## 这个阵营有没有被登记过颜色（给测试与排查用）。
+func has_faction_color(faction: String) -> bool:
+	return _faction_color_override.has(faction)
+
+
+## 清掉运行时登记的颜色（重开一局 / 换战役时用）。
+func clear_faction_colors() -> void:
+	_faction_color_override = {}
+
+
+## 解析一个颜色字符串：**认得出来**返回 Color，认不出来返回 null。
+##
+## ⚠️ 与 `parse_color(v, fallback)` 的差别：那个「认不出来就给兜底」，
+##    所以它分不出「解析失败」与「解析成了兜底色」；登记颜色时需要这个区分。
+func _parse_color_or_null(text: String) -> Variant:
+	var t := text.strip_edges()
+	if t == "":
+		return null
+	var sentinel := Color(0.0, 0.0, 0.0, 0.0)   # 不会被当成合法配色的哨兵
+	var got := parse_color(t, sentinel)
+	if got == sentinel:
+		return null
+	return got
+
+
 ## 取 colors.* 里的一项
 func color(key: String) -> Color:
 	var v: Variant = get_path_value("colors." + key)
@@ -802,7 +918,21 @@ func color(key: String) -> Color:
 
 ## 阵营配色。未登记的阵营退回 player —— 保证「配色表只到 p4」这类情况不会崩，
 ## 也不会把 p5~p8 悄悄画成别的阵营的颜色（见 docs/pitfalls.md 3.12）。
+##
+## ★★ 查找顺序（**先看运行时登记的，再看配色表**）：
+##   1. `register_faction_color()` 登记过的（**战役自己的阵营 id**，比如 F1/E1）——
+##      它必须在配色表之前，否则「战役想覆盖内置 id 的颜色」会被配色表压住；
+##   2. `colors.faction.<id>.<field>`（内置的 p1~p8 / enemy / ai）；
+##   3. `colors.faction.player.<field>`（老的兜底键，当前 config 里没有）；
+##   4. `Color.MAGENTA` —— ⚠️ **走到这一步就是「忘了登记颜色」**：
+##      画面上表现为「整个战场一片紫、敌我分不清」。战役里出现紫色先查这条
+##      （见 docs/pitfalls.md 8.1）。
 func faction_color(faction: String, field: String = "main") -> Color:
+	var over: Variant = _faction_color_override.get(faction, null)
+	if typeof(over) == TYPE_DICTIONARY:
+		var got: Variant = (over as Dictionary).get(field, null)
+		if got is Color:
+			return got
 	var v: Variant = get_path_value("colors.faction.%s.%s" % [faction, field])
 	if typeof(v) == TYPE_STRING:
 		return parse_color(v)

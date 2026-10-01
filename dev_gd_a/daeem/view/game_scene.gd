@@ -34,6 +34,7 @@ const ConfigRes = preload("res://logic/config.gd")
 const WorldRes = preload("res://logic/world.gd")
 const MapLibraryRes = preload("res://logic/map_library.gd")
 const CommandRes = preload("res://logic/command_processor.gd")
+const FactionRes = preload("res://logic/faction.gd")
 const PaletteRes = preload("res://view/palette.gd")
 const FontLoaderRes = preload("res://view/font_loader.gd")
 const TerrainViewRes = preload("res://view/terrain_view.gd")
@@ -57,6 +58,12 @@ const MAP_PATH := MapLibraryRes.FALLBACK_MAP_PATH
 var cfg: ConfigRes = null
 var world = null
 var cam: Camera2D = null
+
+## ★ 这一局是从哪一关开的（`start()` 那条「按一张图直接开一局」的老路径上两者都是 null）。
+## ★ 它们**不是玩法状态**：世界自己持有 `level`（`world.level`），这里只是让界面层
+##   能回答「我在玩哪一战 / 哪一关」（以后的「返回关卡列表 / 结算面板」要用）。
+var level_campaign = null
+var level_playing = null
 
 var terrain_view: Node2D = null
 var zone_view: Node2D = null
@@ -102,6 +109,54 @@ func start(map_path: String = MAP_PATH) -> bool:
 	#   逻辑层的事件仍然在 world.tick() 的返回值里（测试在用），只是没人显示它们。
 
 	# 开场就把 1 号将领选中并放到镜头里，玩家一进来就知道该干什么
+	if world.units.size() > 0:
+		input_ctrl.select_units([world.units[0]])
+		camera_rig.center_on_px(PaletteRes.to_px(world.units[0].pos, cfg))
+
+	return true
+
+
+## ★★ 从**一关**进游戏（战役路径；`start()` 是「按一张图直接开一局」的老路径）。
+##
+## 与 `start()` 的差别只有「世界怎么造出来」这一处，之后**完全同一条尾**：
+##   `World.create_from_level()` 会依次应用关卡覆盖层（大本营 / 阵营 / 区块归属 / AI 名单）
+##   → 关卡的开局摆放（`start_units` / `start_buildings`）→ 目标与胜负（`objective.setup`）。
+##   所以 `view/` 一个字都不用改：它读的还是同一个 `world`。
+##
+## @param campaign `logic/campaign.gd` 的 Campaign（**只记下「在玩哪一战」**；
+##        本版没有进度存档，所以它只被 `level_campaign_playing()` 用上 ——
+##        留着是为了以后做「返回关卡列表 / 结算」时不必再改这里的签名）
+## @param level    `logic/level.gd` 的 Level（必填）
+## @param my_faction 本机席位（单人战役 = `level.seats()[0]`）
+## @return bool 是否装配成功（与 `start()` 同一条约定：失败时调用方把半成品撤掉）
+func start_level(campaign, level, my_faction: String) -> bool:
+	cfg = ConfigRes.load_default()
+	if cfg == null:
+		push_error("配置载入失败，游戏无法启动：%s" % ConfigRes.last_error)
+		return false
+	if level == null:
+		push_error("关卡是 null，战役无法启动")
+		return false
+
+	# ★ roster 传**空数组**：`create_from_level` 会用关卡 `players[]` 的**席位顺序**
+	#   （单人关就是那一个席位；合作关才会需要显式传两个 —— 那是后面的轮次）。
+	#   ⚠️ 传错成 `[my_faction]` 在单人关上结果一样，但合作关上会让「第二个席位
+	#      没有资源池」，所以这里宁可把「席位顺序由关卡说了算」这件事讲清楚。
+	world = WorldRes.create_from_level(cfg, level, my_faction, [], true)
+	if world == null:
+		push_error("关卡装配失败，游戏无法启动（地图 = %s）" % String(level.map_id))
+		return false
+
+	# 记下「这一局是从哪一关来的」。★ 它们是**公开变量**（与 `world` / `cfg` 同一个读法：
+	#   本工程不给自己持有的状态套一层 getter），界面与测试直接读 `game.level_playing`。
+	level_campaign = campaign
+	level_playing = level
+
+	_build_view()
+	_build_hud()
+	_build_debug_handles()
+
+	# 与 `start()` 同一条收尾：开场选中 1 号将领并把它放进镜头
 	if world.units.size() > 0:
 		input_ctrl.select_units([world.units[0]])
 		camera_rig.center_on_px(PaletteRes.to_px(world.units[0].pos, cfg))
@@ -393,7 +448,34 @@ func _consume_events(events: Array) -> void:
 				#   这条是**权威侧**的同一句话 —— 两条同文案，所以玩家看到的还是一句。
 				hud.show_notice(hud.tech_reject_text(String(evt.get("reason", ""))))
 			"upgrade_rejected":
-				# ★ 建筑升级 / 区划特化被拒（拒因码见 logic/upgrade.gd 的那几处判定）
-				hud.show_notice(hud.upgrade_reject_text(String(evt.get("reason", ""))))
+				# ★ 建筑升级 / 区划特化被拒（拒因码见 logic/upgrade.gd 的那几处判定）。
+				# ★★ 把**整个事件**传进去：`busy` 那条文案要点名是哪个对象。
+				# ⚠️⚠️ 而且**必须先按阵营过滤**（实测报回来的 bug）：
+				#   阵营 AI 每帧都会对**它自己**在读条的建筑重下一次升级单（它的
+				#   `upgrade_timer` 在那一帧刚好到点），被拒后推一条 `upgrade_rejected` ——
+				#   如果界面不加判断地显示，玩家就会看到「城墙正在读条…」「箭塔正在读条…」
+				#   这种**别人的**消息（玩家原话：「可能是敌人的消息传到我这来了」——正是）。
+				#   所以只显示**自己这一方**产出的拒因（见 `_is_my_event`）。
+				if _is_my_event(evt):
+					hud.show_notice(hud.upgrade_reject_text(String(evt.get("reason", "")), evt))
 			"unit_recruited":
 				input_ctrl.notify_unit_recruited(evt.get("leader", null), evt.get("unit", null))
+
+
+## ★★ 这条事件是**本机玩家这一方**产生的吗？（不是就别拿它去打扰玩家）
+##
+## 为什么需要它（实测报回来的 bug）：阵营 AI 也会升级自己的建筑，而它每帧都会对
+## **在读条的那一栋**重下一次升级单（它的冷却计时在那一帧刚好到点），被拒后推
+## `upgrade_rejected` —— 界面不加判断地显示，玩家就会看到「城墙正在读条…」
+## 「箭塔正在读条…」（原话：「可能是敌人的消息传到我这来了」，正是）。
+##
+## 判据（**只在逻辑层不知道「谁是本机」时用** —— 逻辑层是权威，它不知道谁是本机）：
+##   · 事件带 `faction`：== 本机阵营才算我的；
+##   · 不带：**保守地认为是我这边**（宁可多一句提示，也不要漏掉玩家自己的报错）——
+##     这类事件都是「有人下了命令、被拒了」，而目前只有命令与 AI 两条来源。
+func _is_my_event(evt: Dictionary) -> bool:
+	if world == null:
+		return true
+	if not evt.has("faction"):
+		return true
+	return FactionRes.same_side(String(evt.get("faction", "")), String(world.my_faction))

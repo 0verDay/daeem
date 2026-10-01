@@ -369,6 +369,58 @@ static func apply_attack_move(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 	return accepted
 
 
+## 行军攻击 + 队形：如果 group ≥ formation_min_units 就按队形排，否则逐个下。
+## 逻辑与 `apply_attack_move` 里那段**同义**，但入参是**已经收集好的单位数组**。
+##
+## ★★ 为什么单独抽出来（这是「阵营 AI 的部队不跟着走」那个 bug 的修法）：
+##   `apply_attack_move` 收的是**命令字典**（ids / faction / x,y），而 AI 是从逻辑层
+##   直接下命令的（没有命令字典，也不该为了这个去伪造一条）。这条公开入口让
+##   AI 走**与玩家完全同一条**路径：`world.group_of(将领)` 展开成一整队 →
+##   逐单位 `order_attack_move_at`（各自的槽位 + 同一个全队目标点）。
+##   ⇒ 将领和它辖下的部队真的会一起行军，而不是只有将领一个人走。
+static func order_group_attack_move(world, cfg: ConfigRes, group: Array, pt: Vector2) -> bool:
+	var group2 := _collect_units(world, _ids_of(group), world.my_faction if world != null else "")
+	if group2.is_empty():
+		# `_collect_units` 按「同方」过滤，AI 那些单位不属于玩家阵营 ⇒ 走不过去。
+		# 这条路径是**逻辑层内部**调用（不是网络命令），所以直接用传来的数组。
+		group2 = []
+		for u in group:
+			if u != null and u.alive:
+				group2.append(u)
+	if group2.is_empty():
+		return false
+	var accepted := false
+	if group2.size() >= cfg.formation_min_units:
+		var anchor_ok: bool = PathfinderRes.passable(world.map, world.buildings, cfg,
+			floori(pt.x), floori(pt.y), group2[0].faction)
+		# ⚠️ 这里必须写成「先声明带类型的变量、再赋值」：三目里那个 `[] as Array[Vector2]`
+		#   在 `:=` 推断下会得到无类型 `Array`，赋给 `Array[Vector2]` 会当场报
+		#   "Trying to assign an array of type Array to a variable of type Array[Vector2]"
+		#   （实测踩到 —— 而且它**每帧都报**，非常吵）。
+		var slots: Array[Vector2] = []
+		if anchor_ok:
+			slots = formation_slots(world, cfg, group2, pt)
+		if not slots.is_empty():
+			var anchor := Vector2i(floori(pt.x), floori(pt.y))
+			for i in group2.size():
+				if group2[i].order_attack_move_at(world, cfg, slots[i], anchor):
+					accepted = true
+			return accepted
+	for u in group2:
+		if u.order_attack_move(world, cfg, pt):
+			accepted = true
+	return accepted
+
+
+## 一组单位的 id（`order_group_attack_move` 内部复用 `_collect_units` 的过滤用）。
+static func _ids_of(group: Array) -> Array:
+	var out: Array = []
+	for u in group:
+		if u != null:
+			out.append(String(u.id))
+	return out
+
+
 ## 建造命令：owner 缺省时用本地阵营
 static func apply_build(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 	var owner := String(cmd.get("faction", world.my_faction))

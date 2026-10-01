@@ -36,12 +36,19 @@ const ConfigRes = preload("res://logic/config.gd")
 const FontLoaderRes = preload("res://view/font_loader.gd")
 const StartScreenRes = preload("res://view/start_screen.gd")
 const GameSceneRes = preload("res://view/game_scene.gd")
+## ★ 单人战役的**占位界面**（主界面第二颗按钮 `campaign_test` 点进来的那一页）。
+const CampaignTestRes = preload("res://view/campaign_test.gd")
+## 扫 `data/campaigns/` 给那一页出选项（★ 扫目录这件事只做在 main 这一处：
+## 界面不认识「战役数据从哪来」，与地图选择条同一个口径）。
+const CampaignLibraryRes = preload("res://logic/campaign_library.gd")
 
 ## 开场页用的字体基准字号（标题 / 提示 / 按钮各自另有字号，见 config.json 的 menu 段）
 const MENU_FONT_SIZE := 32
 
 var cfg: ConfigRes = null
 var start_screen: CanvasLayer = null
+## ★ 单人战役的占位界面（`view/campaign_test.gd`；没打开时是 null）。
+var campaign_screen: CanvasLayer = null
 var game: Node2D = null
 
 ## 进全屏之前是哪种窗口模式（退出全屏时还原，见 _handle_window_hotkey）
@@ -71,6 +78,7 @@ func _build_start_screen() -> void:
 
 	start_screen.intro_dismissed.connect(_on_intro_dismissed)
 	start_screen.test_pressed.connect(_on_test_pressed)
+	start_screen.campaign_test_pressed.connect(_on_campaign_test_pressed)
 
 
 # ------------------------------------------------------------------
@@ -109,6 +117,81 @@ func _on_test_pressed(map_path: String) -> void:
 	game.return_to_menu_requested.connect(return_to_menu)
 
 
+# ------------------------------------------------------------------
+# 单人战役的占位入口（主界面 campaign_test 按钮）
+# ------------------------------------------------------------------
+
+## ★ 按下 `campaign_test`：挂出 `view/campaign_test.gd` 那一页（列关卡 + 选阵营 + 开始）。
+##
+## ★★ 三件事刻意放在这里而不是那一页里（见 `view/campaign_test.gd` 的文件头）：
+##   1. **扫战役目录**（`campaign_library.list_campaigns(cfg)`）—— 数据只有一个来源，
+##      那一页只管显示；扫出来的选项与「点进去真的能载入」是同一条路。
+##   2. 那一页是 `CanvasLayer`（layer 与开场页同一层），挂在 main 下。
+##   3. 「选了哪一关就进游戏」这条接线（`level_chosen` → `_on_campaign_level_chosen`）——
+##      那一页不认识 `game_scene`，也不认识 `world`。
+##
+## ⚠️ 幂等：已经开着就不再挂第二页（连点两下按钮不会挂出两层白底）。
+func _on_campaign_test_pressed() -> void:
+	if campaign_screen != null or game != null:
+		return
+	var font := FontLoaderRes.load_font(cfg)
+	campaign_screen = CampaignTestRes.new()
+	campaign_screen.name = "CampaignTestScreen"
+	add_child(campaign_screen)
+	campaign_screen.setup(CampaignLibraryRes.list_campaigns(cfg), cfg, font)
+	campaign_screen.level_chosen.connect(_on_campaign_level_chosen)
+	campaign_screen.back_pressed.connect(_on_campaign_back)
+
+
+## ★★ 在战役页里选好了「哪一关 + 用哪一方」→ 用**关卡装配**那条路进游戏。
+##
+## 与 `_on_test_pressed()` 的差别只有「怎么建世界」那一处（`game.start()` vs
+## `game.start_level()`），其余完全同一条尾：失败就把半成品撤掉、留在菜单上。
+##
+## ⚠️ 顺序：**先把战役页收掉**再建世界。反过来（先建再收）在无头测试里会看到
+##    `_unhandled_input` 一条帧内同时发给两页；而且玩家会看到「载入那一帧」上面
+##    还压着一层白底。
+func _on_campaign_level_chosen(campaign, level, faction: String) -> void:
+	if game != null:
+		return                          # 已经在游戏里了（按钮只该生效一次）
+	_close_campaign_screen()
+
+	game = GameSceneRes.new()
+	game.name = "GameScene"
+	add_child(game)
+	if not game.start_level(campaign, level, faction):
+		game.queue_free()
+		game = null
+		# 装配失败：把战役页放回来，玩家还能换一关/换一方再试 —— 而不是被丢回主界面
+		# （「菜单上有个进不去的入口」比「这一页还开着、能改选」难查得多）。
+		_on_campaign_test_pressed()
+		return
+
+	# 进游戏之后开场页整层下线（与老路径同一个理由：白底与点击处理器一起停掉）
+	start_screen.close()
+
+	game.fullscreen_toggled.connect(toggle_fullscreen)
+	game.return_to_menu_requested.connect(return_to_menu)
+
+
+## 战役页里点了「返回」：收掉那一页，回主界面（开场页本来就还在，只要别关它）。
+func _on_campaign_back() -> void:
+	_close_campaign_screen()
+
+
+## 收掉战役占位页（幂等：没开时什么都不做）。
+func _close_campaign_screen() -> void:
+	if campaign_screen == null:
+		return
+	var leaving := campaign_screen
+	campaign_screen = null
+	# ⚠️ 与 return_to_menu() 里那两处同一个理由：这一帧里它可能已经被裁决销毁过，
+	#    判空要用 is_instance_valid()，不能写 `!= null`。
+	if is_instance_valid(leaving):
+		remove_child(leaving)
+		leaving.queue_free()
+
+
 ## ★ 设置菜单里点了「返回主菜单」：拆掉游戏场景，把开场页放回**主界面那一页**。
 ##
 ## ★★ 为什么不重启进程 / 不新建开场页：
@@ -136,6 +219,9 @@ func _on_test_pressed(map_path: String) -> void:
 func return_to_menu() -> void:
 	if game == null:
 		return
+	# ★ 顺手收掉战役占位页：它是「进游戏之前」的一层，回到主界面时不该还开着
+	#   （正常路径上它进游戏之前就收了；这一句挡的是「装配失败又放回来」那条路）。
+	_close_campaign_screen()
 	var leaving := game
 	game = null
 	# ★ 顺手把设置菜单收起来：那个面板活在这一局里，而回到菜单之后开场页的

@@ -243,13 +243,18 @@
       "    亲兵被去掉之后改成「带自己这一类的兵」—— 用户确认的取舍：",
       "    将领 1 带 3 个长枪兵、将领 2 带 3 个长弓兵、将领 3 带 3 个骑手。",
       "    0 = 不带（等于关掉开局编队）。",
+      "  ★★ escort 可以写成**数组**：`[4, 5, 6]` = 第 1 位带 4 个、第 2 位带 5 个、",
+      "    第 3 位带 6 个（与 types 同序）。这就是用户要的「编制上限 4~6 不等，",
+      "    那个不等的区间就是攻击波次的浮动」—— 波次大小靠**每位将领带兵数不同**",
+      "    自然浮动，而不是靠随机。下标超出时按长度循环（见 Config.general_escort_at）。",
+      "    写成单个数字就是老行为：所有将领一样多。",
       "  · 数值不在这里：将领的血量 / 攻击 / 射程 / 速度**完全等于它所属类型那一套**",
       "    （用户确认「完全按对应兵种数值」）—— 长弓兵将领因此是远程的、",
       "    骑手将领跑得更快。将领与普通单位的差别只剩「描边更粗 + 它是队长」。",
       "  ★ 描边粗细在 view/unit_icon.gd（OUTLINE_W / OUTLINE_W_LEADER），不是这里的数。"
     ],
     "general": {
-      "escort": 3,
+      "escort": [4, 5, 6],
       "types": ["spearman", "longbowman", "rider"],
 
       "_stats_comment": [
@@ -962,7 +967,39 @@
     "test_button_color": "#333333",
     "test_button_size": 28,
     "test_button_width": 240,
-    "test_button_height": 80
+    "test_button_height": 80,
+
+    "_campaign_comment": [
+      "★ campaign_test 按钮与「单人战役 · 占位界面」（view/main.gd + view/campaign_test.gd）。",
+      "campaign_test_button_text 按钮上那行字。",
+      "campaign_test_button_gap 它与 test 按钮之间的间距。★ 刻意比 map_gap 小（48 < 112）：",
+      "  test 与地图选择条之间那个 112 是为了「下拉列表弹出来不压住按钮」，",
+      "  而 campaign_test 与 test 是**同一类**的两个入口，挨近一点才像一组。",
+      "campaign_test_* 界面上的文案：标题 / 关卡列表标签 / 阵营标签 / 开始按钮 / 返回 / 空列表兜底。",
+      "campaign_test_row_width/height 关卡与阵营那两行按钮的尺寸（固定宽，避免长短不一的行把列撑歪）。",
+      "campaign_test_back_width/height 「返回」那颗按钮的尺寸（比行按钮小一圈）。",
+      "campaign_test_title_size / label_size / row_size / back_size 四档字号。",
+      "campaign_test_gap 那一列里各块之间的间距；campaign_test_info_color 说明文字的颜色。"
+    ],
+    "campaign_test_button_text": "campaign_test",
+    "campaign_test_button_gap": 48,
+    "campaign_test_title": "单人战役",
+    "campaign_test_levels_label": "关卡",
+    "campaign_test_faction_label": "你的阵营",
+    "campaign_test_start_text": "开始",
+    "campaign_test_loading_text": "载入中…",
+    "campaign_test_back_text": "返回",
+    "campaign_test_empty_text": "没有单人关卡",
+    "campaign_test_row_width": 360,
+    "campaign_test_row_height": 56,
+    "campaign_test_back_width": 120,
+    "campaign_test_back_height": 44,
+    "campaign_test_title_size": 40,
+    "campaign_test_label_size": 26,
+    "campaign_test_row_size": 24,
+    "campaign_test_back_size": 20,
+    "campaign_test_gap": 20,
+    "campaign_test_info_color": "#666666"
   },
 
   "settings": {

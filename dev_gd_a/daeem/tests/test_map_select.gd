@@ -151,7 +151,11 @@ func _test_menu_selector() -> void:
 		"★ 选择条自己带一个下拉列表（PopupMenu），不依赖引擎的 OptionButton")
 	var button = menu.get_node_or_null("StartRoot/MainMenu/MenuColumn/TestButton")
 	ok(button is Button, "主界面上还有那个 test 按钮")
-	var label = menu.get_node_or_null("StartRoot/MainMenu/MenuColumn/MapRow/MapLabel")
+	# ⚠️ 路径在「主界面加 campaign_test 按钮」那一轮变过一次：选择条那一格现在
+	#    包在一层 `MarginContainer` 里（`MapRowWrap` —— 它的下边距负责把
+	#    「选择条 → test」的间距做成 `menu.map_gap`，而整列的 separation 是
+	#    两颗按钮之间那个更小的 `campaign_test_button_gap`，见 start_screen._build_menu）。
+	var label = menu.get_node_or_null("StartRoot/MainMenu/MenuColumn/MapRowWrap/MapRow/MapLabel")
 	ok(label is Label, "选择条左边有一个「地图」标签")
 
 	if select is Button and button is Button:

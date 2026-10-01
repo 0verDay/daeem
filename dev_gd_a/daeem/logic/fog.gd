@@ -55,7 +55,12 @@ const MAX_VISION := 160.0
 const LOS_GUARD := 4096
 
 ## ---- 权威状态 ----
-## 本帧各阵营的视野掩码："faction" → PackedByteArray（长度 = cols × rows，非 0 = 有视野）。
+## ★★ 本帧各**方**的视野掩码："同方代表 id"（`FactionRes.side_of`）→ PackedByteArray
+## （长度 = cols × rows，非 0 = 有视野）。
+##
+## ★ 为什么键是「同方」而不是「阵营」：合作模式要求两名玩家**共享视野**
+##   （用户已拍板），而「同一方」这件事在 `FactionRes` 里已经有一套判据。
+##   单机时 `side_of(f) == f` ⇒ 键与从前一模一样，**逐位一致**。
 ## ★ 每帧 `update()` 里**整块重建**（填 0 再一次 OR 扫描），不做增量：
 ##   重建是 O(格数) 的纯内存操作（27×22 只有 594 字节），比维护增量便宜也更不容易错。
 var sight: Dictionary = {}
@@ -162,6 +167,10 @@ func update(world) -> void:
 
 	for f in world.factions:
 		var fid := String(f)
+		# ★★ 掩码按**同一方**存（键 = `side_of`）—— 合作的两个玩家落进同一份，
+		#    于是「p1 看到的格，p2 也看得见」（用户要的共享视野）。
+		#    单机时 side_of(f) == f ⇒ 与从前逐位一致。
+		var side := FactionRes.side_of(fid)
 		# 1) 整块填 0（PackedByteArray.fill 是引擎侧的一次 memset）
 		var mask := PackedByteArray()
 		mask.resize(cells)
@@ -169,7 +178,7 @@ func update(world) -> void:
 		# 2) 把**这一方**每一个贡献格的视野扇区并进来。
 		#    ★ OR（`|`）而不是加法：这里要的是布尔量「这一格我看不看得见」，
 		#      两支部队都看得见同一格时结果仍然是有视野。
-		var mine: Variant = _contrib.get(fid, null)
+		var mine: Variant = _contrib.get(side, null)
 		if typeof(mine) == TYPE_DICTIONARY:
 			for idx in (mine as Dictionary).keys():
 				var sector := _ensure_sector(world, int(idx), (mine as Dictionary)[idx])
@@ -177,7 +186,7 @@ func update(world) -> void:
 				for i in n:
 					if sector[i] != 0:
 						mask[i] = 1
-		sight[fid] = mask
+		sight[side] = mask
 
 	_prune_sighted(world)
 	_last_contrib = _contrib.duplicate(true)
@@ -200,11 +209,15 @@ func update(world) -> void:
 ##    1000 单位下每帧新建一个字典就是白花花的垃圾回收。
 func _collect_contributors(world) -> void:
 	_contrib.clear()
+	# ★★ 分桶键是**「同方」的代表阵营**（`FactionRes.side_of`），不是阵营本身 ——
+	#    合作模式要求两名玩家**共享视野**（用户已拍板），而「同一方」这件事
+	#    在 `FactionRes` 里已经有一套判据（含传递闭包），这里不另发明一份。
+	#    ⚠️ 单机时 `side_of(p1) == "p1"` ⇒ 行为与加这个功能之前**逐位一致**。
+	#    ⚠️ 名单之外的单位（单机时的 "enemy" 守军）也要有桶：它们挪一格也是
+	#       「视野变了」，漏掉会让 refresh_needed 误判成 false（见下面第 1 条）。
 	for f in world.factions:
-		_contrib[String(f)] = {}
+		_side_bucket(String(f))
 	# 1) 单位（含将领与附属兵；阵亡的不给视野）。
-	#    ⚠️ 阵营**不在名单里**的单位（单机时的 "enemy" 守军）也要收集：
-	#      它们挪一格也是「视野变了」，漏掉会让 refresh_needed 误判成 false。
 	for u in world.units:
 		if u == null or not u.alive:
 			continue
@@ -227,13 +240,21 @@ func _collect_contributors(world) -> void:
 			_building_vision(world.cfg, b))
 
 
-## 取（必要时新建）某一方的那张贡献格表。
+## ★★ 取（必要时新建）**某一方**（= 同方代表阵营）的那张贡献格表。
+##
+## ⚠️ 桶键是 `FactionRes.side_of(faction)` 而不是 `faction` 本身 —— 这**一处**就是
+##   「合作模式两人共享视野」的全部实现（合作要求两个玩家同方，于是他们落进同一个桶）。
+##   单机时 `side_of(f)` 就是 `f`，所以这是**纯增量**、不改任何旧行为。
 func _bucket(faction: String) -> Dictionary:
-	var t: Variant = _contrib.get(faction, null)
+	return _side_bucket(FactionRes.side_of(faction))
+
+
+func _side_bucket(side: String) -> Dictionary:
+	var t: Variant = _contrib.get(side, null)
 	if typeof(t) == TYPE_DICTIONARY:
 		return t
 	var fresh := {}
-	_contrib[faction] = fresh
+	_contrib[side] = fresh
 	return fresh
 
 
@@ -419,8 +440,12 @@ static func _los_blocked(map, ox: int, oy: int, tx: int, ty: int) -> bool:
 # ------------------------------------------------------------------
 
 ## 这一格对某阵营有视野吗？（越界 / 未知阵营 / 还没算过 → false）
+##
+## ★★ 查的是**同一方**那一份掩码（`FactionRes.side_of`）—— 这是「共享视野」的另一半。
+## ⚠️ 忘了改这一句的症状很隐蔽：**掩码按方存了、查询还按阵营查** ⇒
+##   p1（代表 id 恰好等于自己）一切正常，而 p2 永远查不到东西（整屏全黑）。
 func tile_visible(faction: String, tx: int, ty: int) -> bool:
-	var mask: Variant = sight.get(faction, null)
+	var mask: Variant = sight.get(FactionRes.side_of(faction), null)
 	if mask == null:
 		return false
 	var m: PackedByteArray = mask

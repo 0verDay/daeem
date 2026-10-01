@@ -135,11 +135,12 @@ func _test_general_types(cfg) -> void:
 		eq(g.ranged, cfg.unit_is_ranged(want), "将领的远近标记")
 
 	# 附属兵与队长同一类型（需求：「将领带一批同类型的兵」）
+	# ★ 编制上限**逐将不同**：第 i 位将领按 `general_escort_at(i)` 取（config 是 [4,5,6]）
 	for i in 3:
 		var g2 = w.unit_by_id("general-%d" % (i + 1))
+		var want_n: int = cfg.general_escort_at(i)
 		var ret = w.retinue_of(g2.id)
-		eq(ret.size(), cfg.general_escort_count(),
-			"general-%d 带 %d 个附属兵" % [i + 1, cfg.general_escort_count()])
+		eq(ret.size(), want_n, "general-%d 带 %d 个附属兵" % [i + 1, want_n])
 		for s in ret:
 			eq(String(s.unit_type), String(g2.unit_type), "★ 附属兵与将领同类型")
 			eq(s.kind, String(g2.unit_type), "附属兵的 kind 就是它的类型")

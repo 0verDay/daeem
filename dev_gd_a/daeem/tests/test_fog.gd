@@ -47,6 +47,7 @@ func _run() -> void:
 	_test_other_terrain_does_not_block(cfg)
 	_test_radius(cfg)
 	_test_faction_vision(cfg)
+	_test_shared_vision_same_side(cfg)
 	_test_buildings_give_vision(cfg)
 	_test_building_discovery(cfg)
 	_test_unit_no_memory(cfg)
@@ -348,6 +349,76 @@ func _test_faction_vision(cfg) -> void:
 	ok(fog.refresh_needed(fake), "阵亡的单位会让 refresh_needed 为 true")
 	fog.update(fake)
 	_dont_see(fog, "enemy", 4, 2, "阵亡的单位不再提供视野")
+
+
+# ------------------------------------------------------------------
+# 5.5) ★★ 迷雾按**同方**分桶：合作模式两名玩家共享视野
+#
+# 需求（dev_plan_7 1.3.8）：合作模式要求 p1、p2 **共享视野**，而「同一方」这件事
+# 在 `logic/faction.gd` 里已经有一套判据（含传递闭包）。所以 fog 只把**分桶键**
+# 从「阵营」换成 `FactionRes.side_of(阵营)`，查询也走同一个 key。
+#
+# ★ 单机时 `side_of(p1) == "p1"` ⇒ 与从前**逐位一致**（`_test_faction_vision` 那一段是回归）。
+# ⚠️ 忘了改查询那一句的症状很隐蔽：掩码按方存了、查询还按阵营查 ⇒
+#    p1（代表 id 恰好等于自己）一切正常，而 p2 永远查不到东西（整屏全黑）。
+# ------------------------------------------------------------------
+
+func _test_shared_vision_same_side(cfg) -> void:
+	var row := "........................"
+	var map = _make_map(cfg, [row, row, row, row, row])
+
+	# ---- 同方：p1 与 p2 结盟 ⇒ 两人共用一份视野 ----
+	# p1 在左（视野 8，最远看到 x=9），p2 在右（x=20 → 视野覆盖 x≈12..24 里可见的），
+	# enemy 在中间看不到的地方（x=16）—— 这样「p2 能看到 p1 那边」只可能来自共享。
+	FactionRes.set_allies([["p1", "p2"]])
+	eq(FactionRes.side_of("p1"), FactionRes.side_of("p2"), "（前提）p1 / p2 现在是同一方")
+	var fog = FogRes.create()
+	var fake = _make_fake(cfg, map, ["p1", "p2", "enemy"])
+	_add_unit(fake, cfg, "a1", 1, 2, "p1")
+	_add_unit(fake, cfg, "b1", 20, 2, "p2")
+	_add_unit(fake, cfg, "e1", 16, 2, "enemy")
+	fog.update(fake)
+	_see(fog, "p1", 4, 2, "p1 看得见自己单位周围")
+	_see(fog, "p2", 21, 2, "p2 看得见自己单位周围")
+	_see(fog, "p2", 4, 2, "★★ p2 看得见 p1 那边（两人共享视野）")
+	_see(fog, "p1", 21, 2, "★★ 反过来也一样（共享是双向的）")
+	# ⚠️ 这里**不能**写「中间那一段仍然看不见」：x=16 那儿站着敌方单位，
+	#    它的**自己的视野**本来就照亮了周围那一圈（迷雾是按「谁有眼睛」算的，
+	#    不是按「谁的脸」算的）—— 那条断言会假红，而且验的是错的东西。
+	#    真正要钉的是「对**没有视野来源的第三方**严格」（见下面 enemy 那一条 +
+	#    「解除结盟之后 p2 立刻看不见」那一条）。
+	_dont_see(fog, "enemy", 3, 2, "★★ 共享视野不会泄漏给敌方")
+
+	# 单位可见性也一起（三类查询必须同时改，见 fog.gd 那三条）
+	var foe = fake.units[2]
+	ok(fog.unit_visible("p2", foe), "p2 在自己的视野里看得见敌方单位")
+	ok(not fog.unit_visible("enemy", fake.units[0]),
+		"★ enemy 看不到 p1 的单位（哪怕 p1/p2 共享，也没泄漏给它）")
+
+	# ---- 解除结盟 ⇒ 立刻不再共享 ----
+	FactionRes.clear_allies()
+	fog.reset_cache()                      # ★ 换关系 = 换桶键，缓存必须清（与换地图同一条约定）
+	fog.update(fake)
+	_dont_see(fog, "p2", 4, 2, "★ 解除结盟之后 p2 看不到 p1 那边了")
+	_see(fog, "p2", 21, 2, "p2 自己的视野照旧")
+	_see(fog, "p1", 4, 2, "p1 自己的视野照旧")
+
+	# ---- 三方连成一方：传递闭包也算同一方（a-b、b-c ⇒ a 与 c 共享） ----
+	FactionRes.set_allies([["p1", "p2"], ["p2", "p3"]])
+	eq(FactionRes.side_of("p1"), FactionRes.side_of("p3"),
+		"（前提）隔着 p2 也算同一方（传递闭包）")
+	var fog3 = FogRes.create()
+	var fake3 = _make_fake(cfg, map, ["p1", "p2", "p3", "enemy"])
+	_add_unit(fake3, cfg, "a1", 1, 2, "p1")
+	_add_unit(fake3, cfg, "c1", 21, 2, "p3")
+	fog3.update(fake3)
+	_see(fog3, "p1", 21, 2, "★★ 三方连成一方时，p1 也看得见 p3 那边")
+	_see(fog3, "p3", 4, 2, "★★ 反过来也一样")
+	_dont_see(fog3, "enemy", 3, 2, "★ 还是不会泄漏给没结盟的 enemy")
+
+	# ⚠️ 收尾：`FactionRes` 的盟友表是 **static** —— 不清掉会串到后面的用例
+	#    （那些用例默认「谁跟谁都不是盟友」，沿用加这个功能之前的行为）。
+	FactionRes.clear_allies()
 
 
 # ------------------------------------------------------------------

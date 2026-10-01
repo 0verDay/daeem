@@ -357,7 +357,14 @@ def t_generals() -> None:
     print("\n[3] 将领（类型 + 造价 + 单独数值）")
     model = fresh_model()
     eq(model.general_count(), 3, "开局三位将领")
-    eq(model.escort(), 3, "开局护卫数（三位共用）")
+    # ★★ 护卫数现在是**逐将一份**：`unit.general.escort` 可以写成数组（config 里是
+    #   `[4,5,6]`）。这里只钉「配了、且是正数、且三位各有各的值」——
+    #   具体数值是平衡数据，不该被用例写死。逐将口径走 `escort_at(i)`。
+    ok(model.escort_at(0) > 0, "开局护卫数（将领 1）是正数（%r）" % model.escort_at(0))
+    ok(model.escort_at(1) > 0 and model.escort_at(2) > 0,
+       "将领 2 / 3 也各有编制（%r / %r）" % (model.escort_at(1), model.escort_at(2)))
+    ok(model.escort_at(2) >= model.escort_at(0),
+       "★ 样例配置有意做成「后一位带得不少于前一位」（逐将不同 ⇒ 波次规模会浮动）")
     g0, g1, g2 = model.generals()
     eq(g0.type_id, "spearman", "将领 1 = 长枪兵")
     eq(g1.type_id, "longbowman", "将领 2 = 长弓兵")

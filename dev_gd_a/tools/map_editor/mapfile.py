@@ -70,10 +70,16 @@ MIGRATED_BASE_FACTION = "p1"
 #:   （不互相攻击 / 不争夺同一区划）。见 `daeem/logic/faction.gd` 的那一大段说明。
 #:   同样是「地图数据」：只有写了它的那张图生效。编辑器不改它，但必须原样带回去 ——
 #:   不然在编辑器里打开边关再导出，两个 AI 就会开始互相打（一个很安静的回归）。
+#: ★★ `hidden`：**只给战役关卡用**的图（`true` = 不进「自由对战 / 试炼场」的选择条、
+#:   也不当默认图；关卡照样按 id 引用它）。见 `daeem/logic/map_library.gd` 的 `KEY_HIDDEN`。
+#:   ★ 判断标准与 `allies` 一样：**游戏会读它 ⇒ 编辑器必须原样带回** ——
+#:   否则「打开一张战役图再导出」会把它弄丢，那张图就冒到自由对战的选择条上了
+#:   （`daeem/tests/test_campaign.gd` 末尾有这一条的回归断言）。
 PRESERVED_KEYS: Tuple[str, ...] = (
     "id",
     "name",
     "placeholder",
+    "hidden",
     "allies",
     "general_spawns",
     "buildings",

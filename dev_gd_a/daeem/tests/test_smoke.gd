@@ -123,7 +123,14 @@ func _cases() -> void:
 	eq(cfg.unit_type_of("general"), UnitRes.UNIT_TYPE_SPEARMAN, "general 默认取第一个类型")
 	eq(cfg.unit_name_of(UnitRes.UNIT_TYPE_RIDER), "骑手", "unit_name_of 走类型表")
 	eq(cfg.unit_name_of("general_1"), "将领", "将领类的显示名仍是「将领」")
-	near(cfg.general_escort_count(), 3.0, 1e-6, "每个将领开局带 3 个同类型的兵")
+	# ★ 编制上限是**逐将不同**的（`unit.general.escort = [4,5,6]`）：
+	#   `general_escort_count()` 只回答「第一个将领带几个」，逐将口径走 general_escort_at()
+	var e0: int = cfg.general_escort_at(0)
+	ok(e0 > 0, "将领 1 的开局护卫数是正数（%d）" % e0)
+	near(cfg.general_escort_count(), float(e0), 1e-6,
+		"general_escort_count() = escort 的第一项（给「不知道自己是第几位」的调用方兜底）")
+	ok(cfg.general_escort_at(1) > 0 and cfg.general_escort_at(2) > 0,
+		"另外两位将领也各有编制（%d / %d）" % [cfg.general_escort_at(1), cfg.general_escort_at(2)])
 
 	# 测试敌人的数值也来自同一张表（原来是 debug / combat.enemy 两处）
 	near(cfg.enemy_damage, 10.0, 1e-6, "测试敌人伤害 10")

@@ -414,6 +414,55 @@ def t_validation() -> None:
     ok(Zone is not None, "Zone 可以正常构造")
 
 
+def t_zone_must_be_contiguous() -> None:
+    """★★ 硬规则：**同一区划的地块必须连成一片**（用户明确要求）。
+
+    为什么是硬拦截而不是提醒（实测坑）：不连续的区划会让运行时的**包围盒**横跨两片地
+    （`logic/zone.gd` 按地块求最小/最大 x,y），于是那一份区划看起来「把夹在中间的
+    另一块地整片包住」—— 样例地图原来是 c1 分成上下两条、把 a1 夹在中间，
+    玩家报「c1 跑到 a1 上面去了」。
+    """
+    print("\n[8b] 区划必须连续（硬拦截）")
+    model = mapfile.empty_map(4, 4, None)
+    for y in range(4):
+        for x in range(4):
+            model.create_tile(x, y)
+    za = model.add_zone("上片")
+    zb = model.add_zone("下片")
+    # 上片：第 0、2 行；下片：第 1、3 行 —— 两个区划都被隔开（都不连续）
+    for y in range(4):
+        for x in range(4):
+            model.assign_tile(x, y, za.zone_id if y % 2 == 0 else zb.zone_id)
+    ok(any("不连续" in b and "上片" in b for b in model.blockers()),
+       "★★ 「上片」（第 0/2 行，中间被隔开）被硬拦住")
+    ok(any("不连续" in b and "下片" in b for b in model.blockers()),
+       "★★ 「下片」也一起被点名")
+    ok(any("2 片" in b for b in model.blockers()), "★ 拦截文案里写清了分成几片")
+
+    # 把区划改成「一片」（左半边 / 右半边）→ 不再拦
+    for y in range(4):
+        for x in range(4):
+            model.assign_tile(x, y, za.zone_id if x <= 1 else zb.zone_id)
+    eq([b for b in model.blockers() if "不连续" in b], [],
+       "★★ 刷成「左半边 / 右半边」两片之后不再拦")
+
+    # 斜角相接**不算**连成一片（(0,0) 与 (1,1) 只共一个角）
+    zc = model.add_zone("斜角")
+    model.assign_tile(0, 0, zc.zone_id)
+    model.assign_tile(1, 1, zc.zone_id)
+    ok(any("不连续" in b and "斜角" in b for b in model.blockers()),
+       "★★ 只在斜角相接的两格**不算**连成一片（四邻才算）")
+
+    # 单格区划当然连续（不该被误报）
+    # ⚠️ 判据只能看「不连续」这几个字：`blockers()` 里还有一条「这些区划还没设中心：
+    #    上片、下片、斜角、单格 …」的文案里**也带着**「单格」这个名字 ——
+    #    写成 `"单格" in b` 会命中那一条（实测踩到，我的测试自己假红了一次）。
+    zd = model.add_zone("单格")
+    model.assign_tile(3, 3, zd.zone_id)
+    eq([b for b in model.blockers() if "不连续" in b and "单格" in b], [],
+       "★ 只有一个地块的区划不会被误报成「不连续」")
+
+
 def t_zone_center_and_production() -> None:
     """区划中心与产能（数据层）。
 
@@ -1051,6 +1100,51 @@ def t_zone_kind() -> None:
        "★ 老地图没写 production → 产量 0（不按种类预设兜底）")
 
 
+def t_cli_map_option() -> None:
+    """★ `--map <值>` 的解析（战役编辑器的「一键打开地图编辑器」靠它）。
+
+    ★ 为什么单独测这个：它**不是**数据层的函数，而是命令行入口的一小块逻辑
+      （`__main__.resolve_map_arg`）—— 而它一旦解析错，`map_editor --map frontier`
+      会安静地打开一张空白画布，用户看到的是「编辑器没反应」。
+      三种写法都要认（与 `logic/map_library.gd` 的目录约定同源）：
+        ① 地图 **id**（目录名，比如 `frontier`）—— 战役编辑器只知道 id，用它最多；
+        ② `map.json` 的**路径**（相对工程目录 或 当前目录）；
+        ③ 指向**目录**的路径（`data/maps/<id>`）。
+      ⚠️ 解析不出来必须返回 `None`（好让命令行打印错误并退出 2），**不许**退回某个默认图。
+    """
+    from map_editor.__main__ import resolve_map_arg
+
+    # 拿真图当样本，这样「认不认得出目录名」是可证的（不是靠字符串拼接猜的）
+    real_ids = sorted(p.name for p in (PROJECT_DIR / "data" / "maps").iterdir() if p.is_dir())
+    ok(len(real_ids) >= 1, "工程里至少有 1 张地图可用来验 --map（实际 %s）" % real_ids)
+    if not real_ids:
+        return
+    sample = "frontier" if "frontier" in real_ids else real_ids[0]
+
+    # ① 地图 id（目录名）
+    got = resolve_map_arg(sample, PROJECT_DIR)
+    ok(got is not None and got.is_file(), "★ --map <id> 认目录名（%s）" % sample)
+    eq(got.name if got else "", "map.json", "解析出来的是地图目录里的 map.json")
+    eq(got.parent.name if got else "", sample, "解析到的是那一张图（目录名对得上）")
+
+    # ② 路径（相对工程目录）
+    rel = "data/maps/%s/map.json" % sample
+    got2 = resolve_map_arg(rel, PROJECT_DIR)
+    eq(str(got2) if got2 else None, str(got) if got else None,
+       "★ --map <相对路径> 与 --map <id> 解析到同一个文件")
+
+    # ③ 指向目录的路径
+    got3 = resolve_map_arg("data/maps/%s" % sample, PROJECT_DIR)
+    eq(str(got3) if got3 else None, str(got) if got else None,
+       "★ --map <目录> 也认（退回那个目录里的 map.json）")
+
+    # 一张真的不存在的图 / 空值 → None（命令行据此报错退出，不许静默开空白画布）
+    eq(resolve_map_arg("no_such_map_id", PROJECT_DIR), None,
+       "解析不出来返回 None（不静默退回默认图）")
+    eq(resolve_map_arg("", PROJECT_DIR), None, "空值返回 None")
+    eq(resolve_map_arg("   ", PROJECT_DIR), None, "只有空白也返回 None")
+
+
 def main() -> int:
     print("DAEEM 地图编辑器 · 数据层测试")
     print("工程目录：%s" % PROJECT_DIR)
@@ -1062,6 +1156,7 @@ def main() -> int:
     t_zone_ops()
     t_shape_ops()
     t_validation()
+    t_zone_must_be_contiguous()
     t_base_warning_with_factions()
     t_zone_center_and_production()
     t_zone_population_cap()
@@ -1072,6 +1167,7 @@ def main() -> int:
     t_faction_bases()
     t_rect_selection()
     t_zone_kind()
+    t_cli_map_option()
     print("\n[CASE] test_model -> passed %d / failed %d" % (_PASSED, _FAILED))
     return 1 if _FAILED else 0
 

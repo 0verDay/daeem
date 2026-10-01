@@ -49,8 +49,17 @@ const FALLBACK_MAP_PATH := "res://data/maps/frontier/map.json"
 ## 地图 JSON 里那几个字段（`id` 只是写给人看的；`name` / `placeholder` 有实际用途）。
 const KEY_ID := "id"
 const KEY_NAME := "name"
-## `placeholder: true` = 这张图只为测试「选项生成」而存在，`default_map_path()` 会跳过它。
+## ★★ 选择条上的两类特殊图 —— **两种标记的含义不一样，别合并**：
+##
+## ★ `placeholder: true`：只为测试「选项生成」而存在的图（`data/maps/arena/`）。
+##   **选择条上照样列出它**（那正是要验的东西），但 `default_map_path()` 跳过它。
+## ★★ `hidden: true`（本轮新增）：**只给战役关卡用**的图 —— 它有剧情与平衡，
+##   不是「自由对战 / 试炼场」的一张图。**选择条上不列**，也**不当默认图**。
+##   关卡照样能按 id 直接引用它（`logic/level.gd` 走的是 `find_map_file`，不看这个标记）。
+##   ⚠️ 为什么不能只靠命名习惯：选择条与默认图都是**扫目录**决定的 ——
+##     加一张战役图不该把玩家「不选就按 test」进的那一局换掉（加 arena 那次定的就是这条规矩）。
 const KEY_PLACEHOLDER := "placeholder"
+const KEY_HIDDEN := "hidden"
 
 
 ## 扫描地图目录，返回按目录名排序的选项表。
@@ -75,12 +84,17 @@ static func list_maps() -> Array:
 		var path := find_map_file(folder, sub)
 		if path == "":
 			continue
+		# ★★ 只给战役用的图（`hidden: true`）：**不进选择条**（见 KEY_HIDDEN 那一段）。
+		#    ⚠️ 占位图（`placeholder: true`）**照样进**：选择条上能看到它，只是不当默认 ——
+		#      这是加 arena 那次定下的口径（test_map_select 有断言钉着）。
+		if is_hidden(path):
+			continue
 		out.append({
 			"id": sub,
 			"name": display_name(path, sub),
 			"path": path,
-			# ★ 占位图标记（见 default_map_path）：选择条上它照样是一个选项，
-			#   只是「没人选时默认进哪张」会跳过它。
+			# ★ 占位图标记：选择条上它照样是一个选项，
+			#   只是「没人选时默认进哪张」会跳过它（见 default_map_path）。
 			"placeholder": is_placeholder(path),
 		})
 	return out
@@ -142,7 +156,7 @@ static func declared_id(path: String) -> String:
 	return ""
 
 
-## 进游戏时用哪张图（`game_scene.start()` 的默认值 / 主界面下拉框的初始选中项）。
+## ★★ 进游戏时用哪张图（`game_scene.start()` 的默认值 / 主界面下拉框的初始选中项）。
 ##
 ## ★ 规则：扫描结果里**第一张不是占位图的**（= 目录名最小的正式图，稳定）；
 ##   全是占位图 → 第一张；一张都没有 → `FALLBACK_MAP_PATH`。
@@ -152,6 +166,8 @@ static func declared_id(path: String) -> String:
 ##    但「不选就按 test」默认进的**不该**是它 —— 否则加一张测试图就把默认局换掉了。
 ##    判据写在图自己身上（`placeholder: true`），不是在这里列白名单：
 ##    地图目录一变，这个函数不需要跟着改。
+## ★★ 只给战役用的图（`hidden: true`）**压根不在 `list_maps()` 里**（那一步就过滤掉了），
+##    所以这里看不到它们 —— 加一张战役图同样不会换掉默认局。
 ##
 ## ⚠️ 这里**不读 config**：启动路径上多一次 JSON 解析不值得，而且「默认地图是哪张」
 ##    本来就该由目录内容决定（与选择条同一个来源）。
@@ -167,12 +183,26 @@ static func default_map_path() -> String:
 
 ## 这张图是不是**占位图**（`placeholder: true`）。
 ##
-## 用途只有一处：`default_map_path()` 跳过它（见那里）。缺字段 / 不是 true → 不是占位图。
+## 用途：与 `is_hidden` 一起决定「它进不进选择条」（见 `list_maps`）。
+## 缺字段 / 不是 true → 不是占位图。
 static func is_placeholder(path: String) -> bool:
+	return _flag(path, KEY_PLACEHOLDER)
+
+
+## ★★ 这张图是不是**只给战役关卡用**的（`hidden: true`）。
+##
+## ★ 关卡不受影响（它按 id 直接引用地图文件）；
+##   受影响的是「自由对战 / 试炼场」的选择条与默认图（见 `list_maps` / `default_map_path`）。
+static func is_hidden(path: String) -> bool:
+	return _flag(path, KEY_HIDDEN)
+
+
+## 读一张图身上的某个布尔标记（读不到 / 不是 true → false）。
+static func _flag(path: String, key: String) -> bool:
 	var data: Variant = read_json(path)
 	if typeof(data) != TYPE_DICTIONARY:
 		return false
-	return bool((data as Dictionary).get(KEY_PLACEHOLDER, false))
+	return bool((data as Dictionary).get(key, false))
 
 
 ## 把 JSON 文件读成 Variant（读不到 / 解析不了都返回 null，由调用方兜底）。

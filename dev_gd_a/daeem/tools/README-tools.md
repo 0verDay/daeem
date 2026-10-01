@@ -53,17 +53,32 @@ powershell -ExecutionPolicy Bypass -File tools/run-tests.ps1 -List              
 `--check-only` 是排查 GDScript 解析/编译问题最快的一条路，
 它比跑整个测试更早、更准地指出出错的行号。
 
-## setup-font.ps1 —— 把中文字体拷进 assets/
+## setup-font.ps1 —— 把中文字体拷进 assets/ 并导入
 
 Godot 默认字体没有中文字形，不装字体的话 HUD 与事件日志全是方框。
 跑一次：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools/setup-font.ps1
+powershell -ExecutionPolicy Bypass -File tools/setup-font.ps1 -Force   # 重新拷一份
 ```
 
-它从 `C:\Windows\Fonts` 拷一份中文字体到 `assets/fonts/`（**不进 git**，
-见根目录 `.gitignore`）。换台机器重新跑一次即可。
+它做两件事：
+
+1. 从 `C:\Windows\Fonts` 拷一份中文字体到 `assets/fonts/`（**不进 git**，
+   见 `.gitignore`）。换台机器重新跑一次即可。
+2. 再跑一次 `--headless --import`（引擎路径与 run-tests.ps1 同一套约定：
+   `$env:GODOT_EXE` 优先，否则 `C:\D\GodotEngine\gd4.7.2mono\..._console.exe`）。
+
+> ⚠️ **第 2 步不能省。** `view/font_loader.gd` 先找 `res://assets/fonts/...`，
+> 而这条路径**只有被 Godot 导入过**（旁边有 `.import`）才成立；没导入就会退到
+> `C:\Windows\Fonts`，按 `config.json` 里的候选顺序**抓到另一份字体**（雅黑，而不是刚拷进去的黑体）。
+> 游戏照样显示中文，但**字体度量不一样**：`tests/test_ui.gd` 里 4 条「文字装得下」的断言会红，
+> 而红的原因跟代码无关（在一台全新机器上实测过：不导入 4094/4098，导入之后 4098/4098）。
+>
+> 找不到引擎时脚本会黄字提醒，然后**保留已拷好的字体**退出（退出码 0）；导入失败
+> （或跑的是会 detach 的 GUI 版、`$LASTEXITCODE` 为空）则退出码 1 ——
+> 别让「其实是没导入」被当成绿灯。
 
 ## 引擎路径
 

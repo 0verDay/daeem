@@ -605,8 +605,8 @@ func _test_death_refund(cfg) -> void:
 	near(float(w.resources["gold"]), gold0, 1e-4, "★ 阵亡后退还全部黄金")
 	near(float(z["population"]), 10.0, 1e-4, "★ 阵亡后退还全部人口")
 	eq(w.units.size(), units0 - 1, "阵亡的将领被摘出世界")
-	eq(w.retinue_of(g1.id).size(), cfg.general_escort_count(),
-		"★ 队列作废：**没有**偷偷生成新兵")
+	eq(w.retinue_of(g1.id).size(), cfg.general_escort_at(int(g1.general_index)),
+		"★ 队列作废：**没有**偷偷生成新兵（= 这位将领自己的编制上限）")
 
 	var cancelled := 0
 	for e in evts:

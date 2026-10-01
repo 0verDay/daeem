@@ -50,8 +50,13 @@ func _cases() -> void:
 ## 出生：数量、类型、id 规则、没有快捷键
 func _test_spawn(cfg) -> void:
 	var w = require_world(cfg)
-	var per: int = cfg.general_escort_count()
-	ok(per > 0, "配置里附属兵数量大于 0（不然整套测试没有意义）")
+	# ★★ 编制上限现在是**逐将不同**的（`unit.general.escort = [4,5,6]`，见 config 那段说明），
+	#   所以不能再拿 `general_escort_count()`（= 数组第一项）当所有人的值 ——
+	#   这个函数只该用来问「有没有配」。
+	var total_escort := 0
+	for i in 3:
+		total_escort += cfg.general_escort_at(i)
+	ok(total_escort > 0, "配置里附属兵数量大于 0（不然整套测试没有意义）")
 	var generals = _kind(w, UnitRes.KIND_GENERAL)
 	eq(generals.size(), 3, "3 个将领")
 
@@ -59,9 +64,12 @@ func _test_spawn(cfg) -> void:
 	for u in w.units:
 		if u.leader_id != "":
 			subs.append(u)
-	eq(subs.size(), 3 * per, "每个将领带 %d 个附属兵" % per)
+	eq(subs.size(), total_escort, "三个将领一共带 %d 个附属兵（逐将 %s）" % [
+		total_escort, str([cfg.general_escort_at(0), cfg.general_escort_at(1), cfg.general_escort_at(2)])])
 
 	for g in generals:
+		# ★ 每位将领按**它自己的序号**取编制上限
+		var per: int = cfg.general_escort_at(int(g.general_index))
 		eq(w.retinue_of(g.id).size(), per, "%s 辖下有 %d 个附属兵" % [g.id, per])
 		eq(g.leader_id, "", "将领自己没有队长")
 		ok(w.is_team_leader(g), "将领是队长")
@@ -115,8 +123,8 @@ func _test_spawn_near_leader(cfg) -> void:
 ## 队伍模型的语义
 func _test_group_model(cfg) -> void:
 	var w = require_world(cfg)
-	var per: int = cfg.general_escort_count()
 	var g1 = w.unit_by_id("general-1")
+	var per: int = cfg.general_escort_at(int(g1.general_index))
 	var sub0 = w.retinue_of(g1.id)[0]
 
 	# 从队长出发
@@ -135,9 +143,11 @@ func _test_group_model(cfg) -> void:
 	eq(expanded.size(), 1 + per, "★ expand_to_groups 会去重并展开成整队")
 
 	# 两个不同队伍混在一起 → 两支队伍都展开
+	# ★ 编制上限逐将不同（`[4,5,6]`）⇒ 两队的规模**可以不一样**，要各算各的
 	var g2 = w.unit_by_id("general-2")
+	var per2: int = cfg.general_escort_at(int(g2.general_index))
 	var two = w.expand_to_groups([g1, g2])
-	eq(two.size(), 2 * (1 + per), "两支队伍的队长一起选中 → 展开出两队所有人")
+	eq(two.size(), (1 + per) + (1 + per2), "两支队伍的队长一起选中 → 展开出两队所有人")
 	eq(two[0].id, g1.id, "第一队的队长在最前（顺序稳定）")
 	eq(two[1 + per].id, g2.id, "第二队的队长紧随其后")
 
@@ -151,8 +161,8 @@ func _test_group_model(cfg) -> void:
 ## ★ 队长阵亡后：附属兵不能被凭空造出一个队长，也不该互相牵连
 func _test_leader_dead(cfg) -> void:
 	var w = require_world(cfg)
-	var per: int = cfg.general_escort_count()
 	var g1 = w.unit_by_id("general-1")
+	var per: int = cfg.general_escort_at(int(g1.general_index))
 	var ret = w.retinue_of(g1.id)
 	eq(ret.size(), per, "先确认有附属兵")
 
@@ -378,10 +388,11 @@ func _test_recruit(cfg) -> void:
 	cfg.combat_enabled = false
 	var w = require_world(cfg)
 	w.units = _keep_player_units(w)
-	var per: int = cfg.general_escort_count()
 	var g1 = w.unit_by_id("general-1")
 	var g2 = w.unit_by_id("general-2")
 	ok(g1 != null and g2 != null, "有两个将领可用")
+	# ★ 编制上限逐将不同 ⇒ 这一节盯的是**将领 2**（它排到的兵要接在它自己那份之后）
+	var per: int = cfg.general_escort_at(int(g2.general_index))
 
 	# 三个兵种都可招；表里没有的不能招
 	for tt in cfg.general_types():
@@ -434,7 +445,8 @@ func _test_recruit(cfg) -> void:
 	for _i in 601:
 		w.tick(DT)
 	eq(w.retinue_of(g2.id).size(), per + 1, "★ 10 秒后将领 2 名下多了一个兵")
-	eq(w.retinue_of(g1.id).size(), per, "★ 将领 1 名下一个不多")
+	eq(w.retinue_of(g1.id).size(), cfg.general_escort_at(int(g1.general_index)),
+		"★ 将领 1 名下一个不多（它自己的编制上限与将领 2 不同）")
 
 	var fresh = w.retinue_of(g2.id)[per]        # 新兵排在最后
 	eq(fresh.kind, kind, "招出来的就是招的那个兵种")

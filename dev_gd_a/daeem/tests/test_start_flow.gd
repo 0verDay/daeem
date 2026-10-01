@@ -265,12 +265,36 @@ func _test_entry_flow() -> void:
 					<= (button as Control).get_global_rect().position.y + 1.0,
 				"★ 选择条在 test 按钮上方（需求原文「在其上方」）")
 
+		# ★★ campaign_test：单人战役的占位入口，**在 test 下面**（用户原话
+		#    「就在 test 下面单独放一个 campaign_test 按钮」）。
+		var camp_btn: Button = menu.campaign_test_button()
+		ok(camp_btn is Button, "★ 主界面上有 campaign_test 按钮（战役占位入口）")
+		if camp_btn is Button:
+			eq(camp_btn.text, "campaign_test", "★ 按钮上那行字就是 campaign_test")
+			ok(camp_btn.get_global_rect().position.y
+					>= (button as Control).get_global_rect().end.y - 1.0,
+				"★ campaign_test 在 test 按钮**下面**（用户原话「就在 test 下面」）")
+			# 间距比「选择条 → test」那个 112 小（见 start_screen._build_campaign_button）：
+			# 那一个宽是为了「下拉列表弹出来不压住按钮」，这两颗是同一类入口。
+			var gap_px: float = camp_btn.get_global_rect().position.y \
+				- (button as Control).get_global_rect().end.y
+			ok(gap_px >= 8.0 and gap_px <= 80.0,
+				"★ 两颗按钮挨得比较近（实测间距 %.1f px，期望 8~80）" % gap_px)
+			# 同一个节点路径也要能找到（方法只是转一层，不是另造一个按钮）
+			ok(menu.get_node_or_null("StartRoot/MainMenu/MenuColumn/CampaignTestButton") == camp_btn,
+				"campaign_test 按钮就在 MenuColumn 里（与 test 同一个容器）")
+
 	# 真实点击 test 按钮（白底之上它是最上层，事件该落到它自己身上）。
-	# ⚠️ 坐标不能再写「整页正中」：主界面现在是一列「选择条 + 按钮」，按钮在这一列的下半截，
-	#    正中那个点落在**选择条**上（点下去只会弹下拉框，不会进游戏）。
-	#    无头下视口是 1920×1920（见上面那条注释），实测这一列在 y 868..1052、
-	#    按钮在 972..1052 → 中心 (960, 1012)。改布局就要跟着改这一行。
-	await _click_at(Vector2(960.0, 1012.0))
+	#
+	# ★★ 坐标**算出来**，不写死（原来这里是 `Vector2(960.0, 1012.0)` + 一条
+	#    「改布局就要跟着改这一行」的注释）：主界面这一列现在是
+	#    「地图选择条 + test + campaign_test」三块，中间还插了一个垫片，
+	#    任何一次布局改动都会让写死的坐标落到别的控件上 —— 而那种失败看起来像
+	#    「进不了游戏」，排查方向完全错。改成点**按钮自己的中心**之后，
+	#    这一行只依赖「按钮存在」，与它被摆在哪儿无关。
+	var test_rect: Rect2 = (button as Control).get_global_rect()
+	ok(test_rect.size.x > 1.0 and test_rect.size.y > 1.0, "test 按钮已经排过版（量得到尺寸）")
+	await _click_at(test_rect.get_center())
 
 	var game = main.game
 	ok(game != null, "按下 test 之后出现了游戏内场景")

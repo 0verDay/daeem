@@ -802,10 +802,52 @@ class ConfigModel:
         return [self.general(i) for i in range(self.general_count())]
 
     def escort(self) -> int:
-        return int(_f(self.doc.value(["unit", "general", "escort"], 0), 0.0))
+        """开局护卫数 —— **第一位将领**的那个值（兼容「一个数 = 三位共用」的老写法）。
+
+        ★★ 这个字段现在是**逐将一份**的：`unit.general.escort` 可以写成数组
+          `[4,5,6]`（第 1 位带 4 个、第 2 位带 5 个…），这是用户要的
+          「编制上限 4~6 不等 ⇒ 波次规模自然浮动」。
+          要读某一位的具体值请用 `escort_at(index)`；逐将口径以它为准。
+        """
+        return self.escort_at(0)
+
+    def escort_at(self, index: int) -> int:
+        """第 `index` 位将领（0 起）的编制上限。
+
+        ★ 下标越界按长度**循环**取值 —— 与逻辑层 `Config.general_escort_at()` 同一套规则
+          （那边是 GDScript，这边是编辑器模型；两边规则必须一致，否则
+          「编辑器里看到的」和「游戏里跑的」会不一致）。
+        """
+        raw = self.doc.value(["unit", "general", "escort"], 0)
+        if isinstance(raw, list):
+            if not raw:
+                return 0
+            n = len(raw)
+            i = index % n
+            if i < 0:
+                i += n
+            return int(_f(raw[i], 0.0))
+        return int(_f(raw, 0.0))
 
     def set_escort(self, value: int) -> None:
+        """把护卫数设成一个**统一值**（老写法：一个数 = 三位共用）。"""
         self.doc.set(["unit", "general", "escort"], int(value))
+
+    def set_escort_at(self, index: int, value: int) -> None:
+        """只改第 `index` 位将领的编制上限（必要时把标量展开成数组）。"""
+        raw = self.doc.value(["unit", "general", "escort"], 0)
+        n = max(1, self.general_count())
+        if isinstance(raw, list):
+            arr = [int(_f(v, 0.0)) for v in raw]
+            while len(arr) < n:
+                arr.append(arr[-1] if arr else 0)
+            arr[index % len(arr)] = int(value)
+            self.doc.set(["unit", "general", "escort"], arr)
+            return
+        base = int(_f(raw, 0.0))
+        arr = [base] * n
+        arr[index % n] = int(value)
+        self.doc.set(["unit", "general", "escort"], arr)
 
     def set_general_type(self, index: int, type_id: str) -> None:
         self._check_general_index(index)

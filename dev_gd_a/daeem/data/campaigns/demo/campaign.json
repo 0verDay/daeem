@@ -1,0 +1,42 @@
+{
+  "_comment": [
+    "战役元信息。关卡顺序以 levels[] 为准（不是文件名的字典序）。",
+    "factions[].playable = 玩家能选谁；没被选中的参展阵营由 AI 驱动。"
+  ],
+  "name": "东征·第一章",
+  "description": "样例战役：单人守中场 + 双人合作双子防线。",
+  "default_mode": "solo",
+  "factions": [
+    {
+      "id": "F1",
+      "name": "赤军",
+      "color": "#5AC8FF",
+      "playable": true
+    },
+    {
+      "id": "F2",
+      "name": "金军",
+      "color": "#FFD166",
+      "playable": false
+    },
+    {
+      "id": "E1",
+      "name": "边军",
+      "color": "#FF6B6B",
+      "playable": false
+    }
+  ],
+  "levels": [
+    {
+      "id": "01_beachhead",
+      "file": "levels/01_beachhead.json",
+      "name": "第一关·渡口"
+    },
+    {
+      "id": "02_twin_line",
+      "file": "levels/02_twin_line.json",
+      "name": "第二关·双子防线"
+    }
+  ],
+  "unlock": "in_order"
+}

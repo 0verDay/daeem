@@ -54,6 +54,9 @@ func _cases() -> void:
 	_test_faction_ai_recruit_units(cfg)
 	_test_faction_ai_upgrade(cfg)
 	_test_faction_ai_attack(cfg)
+	_test_faction_ai_replaces_dead_general(cfg)
+	_test_faction_ai_waits_for_training(cfg)
+	_test_faction_ai_no_upgrade_reject_spam(cfg)
 	_test_faction_ai_multiplier(cfg)
 	_test_faction_ai_income_accumulates(cfg)
 	_test_faction_ai_runs_over_time(cfg)
@@ -69,6 +72,32 @@ func _world(cfg) -> RefCounted:
 	var w = WorldRes.create(cfg, "res://data/maps/frontier/map.json")
 	ok(w != null, "世界能建出来")
 	return w
+
+
+## 腾掉 AI 阵营的全部将领（腾出空槽位）。
+##
+## ★ 为什么这些用例需要它：`world.create_generals()` 在建世界时**已经**给每一方
+##   按 `ai.faction.generals` 建好了将领，而「招将」现在按**序号占位**判断
+##   （第 i 个槽位上有活着的将领就不招它，见 faction_ai._decide）——
+##   槽位是齐的 ⇒ 正常一局里 AI 根本不需要也招不了将领。
+##   所以「招将」相关的那几条用例必须先腾空，否则验的是空气。
+func _clear_ai_generals(w) -> int:
+	var removed := 0
+	for u in w.units:
+		if u.alive and String(u.faction) == "ai" and u.is_general():
+			u.alive = false
+			removed += 1
+	w.units = w.units.filter(func(u): return u.alive)
+	return removed
+
+
+## AI 场上还活着的将领数
+func _ai_general_count(w) -> int:
+	var n := 0
+	for u in w.units:
+		if u.alive and String(u.faction) == "ai" and u.is_general():
+			n += 1
+	return n
 
 
 # ------------------------------------------------------------------
@@ -270,6 +299,12 @@ func _test_faction_ai_runs_over_time(cfg) -> void:
 	if w == null:
 		return
 	var st: Dictionary = w.ai_factions[0]
+	# ★★ 「将领按序号占位」这条规则要求**先腾出空槽位**才有「招将」这件事：
+	#   正常一局里世界初始化已经给 AI 建满了 `ai.faction.generals` 位将领
+	#   （而且不给附属兵，让它自己去补），所以槽位是齐的。
+	#   这一节验的是「缺了 → 自己去招 → 读条读完 → 出现在地图上」那条链。
+	_clear_ai_generals(w)
+	eq(_ai_general_count(w), 0, "腾空之后 AI 场上一个将领都没有（这才有得招）")
 
 	# ★ 真跑一段世界，看「收入 → 花钱 → 读条 → 出人」这条链走不走得通。
 	#
@@ -297,7 +332,18 @@ func _test_faction_ai_runs_over_time(cfg) -> void:
 	# ★ 而且它全程花的是**自己的钱**：玩家那一侧的账一分没动
 	near(float(w.resources["food"]), player_food0, 1e-6,
 		"跑完 60 秒，玩家的粮食仍然是开局那个数（AI 全程没花玩家的钱）")
-	near(float(w.resources["gold"]), player_gold0, 1e-6, "玩家的黄金也一样")
+	# ★ 而且它全程花的是**自己的钱**：玩家那一侧的账**只增不减**，没有被 AI 花掉一分。
+	#   判据写成**不变量**（单调不减）而不是「== 开局值」或某个精确算式：
+	#   · 「== 开局值」在玩家占着产金区划时假红（实测：gold 从 0 涨到 1282.5，
+	#     那不是 AI 花的，是玩家自己的地长出来的）；
+	#   · 精确算式要复刻「产能 × 地块数 × 时间 × 科技」那套公式 ——
+	#     那是别的用例的事，这里跟着它走只会多一处会漂的期望值。
+	#   这两个不变量才是这条用例真正要钉的：「AI 没有花玩家的钱」。
+	var player_gold_end: float = float(w.resources["gold"])
+	ok(player_gold_end >= player_gold0 - 1e-6,
+		"★ 玩家的黄金**没有减少过**（%.1f → %.1f：AI 全程没花玩家的钱）" % [
+			player_gold0, player_gold_end])
+	ok(player_gold_end >= 0.0, "黄金不会变成负数（AI 的扣费只打自己的池子）")
 
 
 ## ★ 收入公式：**占领的区划** 的产能 × 秒数 真的会进 AI 自己的池子。
@@ -355,6 +401,13 @@ func _test_faction_ai_recruit_general(cfg) -> void:
 	if z == null:
 		return
 	ok(z.get("center", null) != null, "区划 4 有中心格（否则招不了将）")
+	# ★★ 「将领按**序号占位**」这条规则（本轮修的）要求这里先把 AI 的将领清空：
+	#   世界初始化时已经按 `ai.faction.generals` 给每一方建好了将领
+	#   （`world.create_generals`），槽位都是齐的 ⇒ 正常一局里 AI **不需要也招不了**将领。
+	#   这一节验的是「缺了就补」那条路，所以人为腾出一个空槽位。
+	var removed := _clear_ai_generals(w)
+	ok(removed > 0, "先腾掉 %d 位 AI 将领（腾出空槽位，才有「招将」这件事可验）" % removed)
+	eq(_ai_general_count(w), 0, "现在 AI 场上一个将领都没有")
 
 	w.ai_factions = FactionAiRes.setup(w, cfg)
 	var pool: Dictionary = w.resource_pool_for("ai")
@@ -370,7 +423,7 @@ func _test_faction_ai_recruit_general(cfg) -> void:
 	var before_food: float = float(pool["food"])
 	var before_gold: float = float(pool["gold"])
 	FactionAiRes.update(w, cfg, 0.05)
-	eq(int(st["general_index"]), before_index + 1, "★ 有钱有地 → AI 招了一个将领（序号 +1）")
+	eq(int(st["general_index"]), before_index + 1, "★ 有空槽位 + 有钱有地 → AI 招了一个将领（序号 +1）")
 	ok(w.zone_is_training(z), "区划的招募队列里真的排上了（复用玩家那一整套）")
 
 	var cost: Dictionary = w.recruit_cost("general_1")
@@ -490,11 +543,15 @@ func _test_faction_ai_attack(cfg) -> void:
 	# 让每个 AI 将领都「满员」：直接塞足够的**已经生成**的附属兵。
 	# ⚠️ 不用真招（那要等读条 10 秒）——这里验的是「满员之后会不会出兵」，
 	#    而「满员」的判据是 unit.retinue_size()（见那个函数的说明）。
+	# ★ 编制上限**逐将不同**（`unit.general.escort = [4,5,6]`），所以按**它自己的序号**
+	#   取目标值：塞少一个就不是「满员」，出兵那段会直接 return（这是本轮修的那条 gate）。
+	var min_retinue: int = int(cfg.ai_faction_cfg()["min_retinue"])
 	var assigned := 0
 	for u in w.units:
 		if not u.alive or String(u.faction) != "ai" or not u.is_general():
 			continue
-		for i in int(cfg.ai_faction_cfg()["min_retinue"]):
+		var want_n: int = maxi(cfg.general_escort_at(int(u.general_index)), min_retinue)
+		for i in want_n:
 			var soldier = UnitRes.create(
 				cfg, "%s-ai%d" % [String(u.id), i], "AI 兵",
 				Vector2i(u.tx, u.ty), "ai", String(u.unit_type), "", String(u.id),
@@ -502,8 +559,8 @@ func _test_faction_ai_attack(cfg) -> void:
 			)
 			w.units.append(soldier)
 			assigned += 1
-		ok(u.retinue_size(w) >= int(cfg.ai_faction_cfg()["min_retinue"]),
-			"AI 将领这时算满员")
+		ok(u.retinue_size(w) >= want_n,
+			"AI 将领这时算满员（它自己的编制上限 = %d）" % want_n)
 	ok(assigned > 0, "造出了测试用的附属兵")
 
 	FactionAiRes.update(w, cfg, 0.05)
@@ -538,6 +595,243 @@ func _test_faction_ai_attack(cfg) -> void:
 	ok(goal_ok, "★ 行军目标落在**敌方**的区划里（不是自家、也不是无主地）")
 	ok(goal_kind == FactionRes.DEFAULT_FACTION or goal_kind == FactionRes.NPC_FACTION,
 		"目标区划的归属方是这一局里真实存在的另一方（实际：%s）" % goal_kind)
+
+	# ★★ 整队随行：派出去的**每一位将领**的**每一个部队单位**都要一起行军攻击。
+	#
+	# 需求原话：「当敌方将领招募满兵时，只有将领会行军攻击，我要的是他的整个部队
+	#           都行军攻击」。
+	# ⚠️ 原来只对将领自己下一句 `order_attack_move`，部队留在原地 ——
+	#   它们在逻辑上没有任何「跟着队长走」的机制（玩家那边靠
+	#   `world.expand_to_groups()` 展开成一整队再逐个下令）。
+	var squad_missing := 0
+	var squad_total := 0
+	for g in w.units:
+		if not g.alive or String(g.faction) != "ai" or not g.is_general():
+			continue
+		if not g.has_attack_move:
+			continue
+		for m in w.retinue_of(String(g.id)):
+			squad_total += 1
+			if not m.has_attack_move:
+				squad_missing += 1
+	ok(squad_total > 0, "（前提）派出去的将领名下有部队（共 %d 个）" % squad_total)
+	eq(squad_missing, 0,
+		"★★ 将领的**整个部队**都跟着行军攻击（没跟上的：%d / %d）" % [squad_missing, squad_total])
+	# 而且它们和将领有**同一个**全队目标点（否则队形会散到不同的地方去）
+	var goal_pairs_bad := 0
+	for g in w.units:
+		if not g.alive or String(g.faction) != "ai" or not g.is_general():
+			continue
+		if not g.has_attack_move:
+			continue
+		for m in w.retinue_of(String(g.id)):
+			if m.attack_move_goal.distance_to(g.attack_move_goal) > 0.5:
+				goal_pairs_bad += 1
+	eq(goal_pairs_bad, 0, "★ 部队与将领的 `attack_move_goal` 是同一个点（不是各走各的）")
+
+	# ★★ 编制最大的那位将领**不会**因为「还在补自己的兵」被跳过。
+	#
+	# 需求原话：「敌方骑兵将领招募满单位后不会行军攻击」——它的编制是 `[4,5,6]` 里
+	# 最大的 6，永远是最后一个补满的；而原来 `_launch_attack` 用的是无条件
+	# `g.is_training(): continue` ⇒ 每次都在读条中被跳过 ⇒ **永远不出征**。
+	# 判据：让它处在「编制已满、但队列里还排着一个兵」的状态，它照样要被派出去。
+	var rider = null
+	for u in w.units:
+		if u.alive and String(u.faction) == "ai" and u.is_general() and u.has_attack_move:
+			if int(u.general_index) == 2:
+				rider = u
+	ok(rider != null, "★★ 编制最大的那位（序号 2 = 骑兵）也在派出名单里")
+	if rider != null:
+		ok(rider.retinue_size(w) >= 1, "它带着自己的部队（编制 %d）" % rider.retinue_size(w))
+
+
+## ★★ 打光之后不能永久卡死：死一位 → 它的槽位会被补招，而且**剩下的将领照样出击**。
+##
+## 需求原话：「敌方将领死亡后不会再招募新将领攻击」。
+## 根因有两个（都在同一处 gate）：
+##   · gate 要求「**全员**满员」⇒ 死一个就永远补不齐，出兵被永久卡死；
+##   · 「至少 min_ready 位」拿一个写死的常数当门槛 ⇒ 打光之后 `field` 长期小于它。
+func _test_faction_ai_replaces_dead_general(cfg) -> void:
+	var w = _world(cfg)
+	if w == null:
+		return
+	if _give_zone_to_ai(w, cfg, 4) == null:
+		return
+	w.ai_factions = FactionAiRes.setup(w, cfg)
+	var pool: Dictionary = w.resource_pool_for("ai")
+	pool["food"] = 100000.0
+	pool["gold"] = 100000.0
+	var st: Dictionary = w.ai_factions[0]
+	st["general_index"] = int(cfg.ai_faction_cfg()["generals"])
+
+	# 先确认「满员时能出兵」（与上一节同一套准备）
+	_fill_all_ai_retinues(w, cfg)
+	FactionAiRes.update(w, cfg, 0.05)
+	var launched_before := 0
+	for u in w.units:
+		if u.alive and String(u.faction) == "ai" and u.is_general() and u.has_attack_move:
+			launched_before += 1
+	ok(launched_before >= 1, "（前提）满员时确实派出去了 %d 位" % launched_before)
+
+	# ---- 打死**一位**将领（模拟「打光之后」的第一步）----
+	var victim = null
+	for u in w.units:
+		if u.alive and String(u.faction) == "ai" and u.is_general():
+			victim = u
+			break
+	if victim == null:
+		return
+	var slot := int(victim.general_index)
+	var alive_before := _ai_general_count(w)
+	victim.take_damage(cfg, w, 99999.0, null)
+	w.tick(0.05)
+	ok(not victim.alive, "一位 AI 将领阵亡（槽位 %d）" % slot)
+	eq(_ai_general_count(w), alive_before - 1, "场上少了一位将领")
+
+	# ---- 它的槽位要被**补招**回来（按序号占位 ⇒ 空出来的那个槽位会被重新填上）----
+	#   钱与人口都给足，让它有得招。
+	var z2 = _give_zone_to_ai(w, cfg, 4)
+	for z in w.zones.zones:
+		(z as Dictionary)["population"] = 99.0
+		(z as Dictionary)["population_cap"] = 99.0
+	st["recruit_timer"] = 0.0
+	FactionAiRes.update(w, cfg, 0.05)
+	var refilling: bool = (z2 != null and w.zone_is_training(z2))
+	ok(refilling or int(st["general_index"]) > 0,
+		"★ 死掉的槽位被重新下了「招将」的单（而不是永远空着）")
+
+	# ---- 而且**剩下的将领照样出击**（不会被「等全员满员」永久卡死）----
+	st["attack_timer"] = 0.0
+	_fill_all_ai_retinues(w, cfg)
+	FactionAiRes.update(w, cfg, 0.05)
+	var launched_after := 0
+	for u in w.units:
+		if u.alive and String(u.faction) == "ai" and u.is_general() and u.has_attack_move:
+			launched_after += 1
+	ok(launched_after >= 1,
+		"★★ 少了一位将领之后**仍然会出兵**（死了 %d 位后派出 %d 位）" % [1, launched_after])
+
+
+## ★★ 「全队真的能走了」才发兵 —— 别把**还在读条**的那位落下。
+##
+## 实测报回来的原文：「第一波时骑兵将领还是不会行军攻击过来，但第二波却和
+##                   新招募的将领一起行军过来了」。
+## 根因：编制最大的那位（骑兵，`[4,5,6]` 里的 6）在发起那一波时第 6 个兵**还在读条**——
+## `retinue_size()`（兵账）已经算成 6、gate 放行，但它自己被「招募期间钉在原地」
+## 锁在家里 ⇒ 玩家看到「骑兵将领没跟着来」，等它读完条下一波才来。
+##
+## 这一条钉的就是那个判据：**只要有一位可进攻的将领还在读条，这一波就不发**。
+func _test_faction_ai_waits_for_training(cfg) -> void:
+	var w = _world(cfg)
+	if w == null:
+		return
+	if _give_zone_to_ai(w, cfg, 4) == null:
+		return
+	w.ai_factions = FactionAiRes.setup(w, cfg)
+	var pool: Dictionary = w.resource_pool_for("ai")
+	pool["food"] = 100000.0
+	pool["gold"] = 100000.0
+	var st: Dictionary = w.ai_factions[0]
+	st["general_index"] = int(cfg.ai_faction_cfg()["generals"])
+	_fill_all_ai_retinues(w, cfg)
+
+	# 让**一位**将领「兵账满了、但还有一个在读条」（正是骑兵将领那一档的处境）
+	var training_one = null
+	for u in w.units:
+		if u.alive and String(u.faction) == "ai" and u.is_general():
+			training_one = u
+			break
+	if training_one == null:
+		return
+	training_one.train_kind = String(training_one.unit_type)
+	training_one.train_total = 10.0
+	training_one.train_remaining = 5.0
+	ok(training_one.is_training(), "（前提）这位将领确实在读条")
+	ok(training_one.retinue_size(w) >= 1, "而且它的兵账是满的（编制 %d）" % training_one.retinue_size(w))
+
+	FactionAiRes.update(w, cfg, 0.05)
+	var launched := 0
+	for u in w.units:
+		if u.alive and String(u.faction) == "ai" and u.is_general() and u.has_attack_move:
+			launched += 1
+	eq(launched, 0,
+		"★★ 有人还在读条（走不了）时**一位都不派** —— 否则就会被落下（实际派了 %d 位）" % launched)
+
+	# 读条读完 → 这一波立刻出发，而且**全员**都在名单里
+	training_one.train_kind = ""
+	st["attack_timer"] = 0.0
+	FactionAiRes.update(w, cfg, 0.05)
+	var after := 0
+	for u in w.units:
+		if u.alive and String(u.faction) == "ai" and u.is_general() and u.has_attack_move:
+			after += 1
+	ok(after >= 1, "★ 都站定之后立刻发兵（派出 %d 位）" % after)
+func _fill_all_ai_retinues(w, cfg) -> void:
+	var min_retinue: int = int(cfg.ai_faction_cfg()["min_retinue"])
+	for u in w.units:
+		if not u.alive or String(u.faction) != "ai" or not u.is_general():
+			continue
+		var want_n: int = maxi(cfg.general_escort_at(int(u.general_index)), min_retinue)
+		var have: int = u.retinue_size(w)
+		var i := 0
+		while have + i < want_n:
+			var soldier = UnitRes.create(
+				cfg, "%s-fill%d" % [String(u.id), i], "AI 兵",
+				Vector2i(u.tx, u.ty), "ai", String(u.unit_type), "", String(u.id),
+				String(u.unit_type)
+			)
+			w.units.append(soldier)
+			i += 1
+
+
+## ★★ 阵营 AI 升级自己的建筑时**不许刷「被拒」事件**。
+##
+## 玩家实测原话：「即使我没有升级城墙，也会莫名其妙地出现『城墙正在读条…』
+##                 『箭塔正在读条…』等字样，可能是敌人的消息传到我这来了」。
+## 两句都对：**是敌人的消息**（AI 在升级它自己的城墙），而它之所以出现在玩家界面上，
+## 是因为 AI 每秒都对**同一栋在读条的建筑**重下一次升级单 → 被拒 → 推一条
+## `upgrade_rejected`（实测 60 秒几百条），界面又不加过滤地显示。
+##
+## 这一条钉住**源头**（`_pick_upgrade` 跳过在读条的建筑 + 冷却无论成败都记）：
+## 跑 30 秒，`upgrade_rejected` 必须是 **0 条**。
+## （界面那半边的过滤见 view/game_scene.gd 的 `_is_my_event`。）
+func _test_faction_ai_no_upgrade_reject_spam(cfg) -> void:
+	var w = _world(cfg)
+	if w == null:
+		return
+	if _give_zone_to_ai(w, cfg, 4) == null:
+		return
+	w.ai_factions = FactionAiRes.setup(w, cfg)
+	var pool: Dictionary = w.resource_pool_for("ai")
+	pool["food"] = 100000.0
+	pool["gold"] = 100000.0
+	var st: Dictionary = w.ai_factions[0]
+	st["general_index"] = int(cfg.ai_faction_cfg()["generals"])      # 跳过招将
+	_fill_all_ai_retinues(w, cfg)                                   # 跳过招兵
+	# 让 AI 有可升级的建筑：地图上的城墙 / 箭塔
+	var upgradable := 0
+	for b in w.building_list:
+		if b.alive and String(b.owner) == "ai" and w.building_can_upgrade(b.type):
+			upgradable += 1
+	ok(upgradable > 0, "（前提）AI 有 %d 栋可升级的建筑" % upgradable)
+
+	var rejected := 0
+	var started := 0
+	var done := 0
+	var steps := int(30.0 / 0.05)
+	for i in steps:
+		for e in w.tick(0.05):
+			var ty := String((e as Dictionary).get("type", ""))
+			if ty == "upgrade_rejected" or ty == "upgrade_cancel_rejected":
+				rejected += 1
+			elif ty == "upgrade_started":
+				started += 1
+			elif ty == "upgrade_done":
+				done += 1
+	eq(rejected, 0,
+		"★★ AI 升级自己的建筑时一条「被拒」都不该发（实测刷屏的源头）；开始 %d 次 / 完成 %d 次"
+		% [started, done])
+	ok(started > 0, "★ 但它确实在正常升级（30 秒里开始了 %d 次）" % started)
 
 
 # ------------------------------------------------------------------

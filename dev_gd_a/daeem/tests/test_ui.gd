@@ -3488,6 +3488,44 @@ func _test_command_events_reach_consumer(main) -> void:
 
 	# 招募走的是同一条路（入队也是一条命令事件）—— 用一个干净的世界验，别动主场景那个
 	_test_recruit_queued_event(main.cfg)
+	# ★★ 升级 / 特化被拒的文案要点名对象（实测报的「什么都没做就看到正在读条」）
+	_test_upgrade_reject_names_target(main)
+
+
+## ★★ `upgrade_reject_text("busy")` 必须**点名是哪个对象**，并说明「这一下没有生效」。
+##
+## 玩家实测原话：「详细信息栏经常显示『这一项正在读条…』，但我什么都没做」。
+## 两层原因（都在这一条里钉住）：
+##   ① 「正在读条」的可能**不是玩家下的单** —— 敌方 AI 也会升级自己的建筑
+##      （实测：样例第一关开局第 0 帧，E1 的城墙就在升级了）；
+##   ② 旧文案只有一个「这一项」，像凭空冒出来的报错。
+func _test_upgrade_reject_names_target(main) -> void:
+	var b = null
+	for it in main.world.building_list:
+		if String(it.owner) == String(main.world.my_faction) and it.has_method("display_name"):
+			b = it
+			break
+	ok(b != null, "（前提）找得到一栋自己的建筑")
+	# ① 带对象的事件 → 文案里有那栋楼的名字，而且明说「没有生效」
+	var txt: String = main.hud.upgrade_reject_text("busy", {"reason": "busy", "building": b})
+	ok(txt.contains(String(b.display_name())),
+		"★★ busy 的文案点名了被拒的那栋建筑（实际：%s）" % txt)
+	ok(txt.contains("没有生效"), "★ 而且明说这一下没有生效（没扣资源、没排队）")
+	# ② 不带事件（老调用方）→ 仍然给一句能用的泛泛文案，不报错
+	var txt2: String = main.hud.upgrade_reject_text("busy")
+	ok(txt2.contains("读条") and not txt2.contains("null"),
+		"★ 不传事件时退回泛泛文案（不会打出 null）")
+	# ③ 区划那一支：靠 zone_id 找出区划名
+	var z = null
+	for it in main.world.zones.zones:
+		if String((it as Dictionary).get("owner", "")) == String(main.world.my_faction):
+			z = it
+			break
+	if z != null:
+		var zid := int((z as Dictionary).get("id", -1))
+		var txt3: String = main.hud.upgrade_reject_text("busy", {"reason": "busy", "zone_id": zid})
+		ok(txt3.contains("c%d" % zid) or txt3.contains(String((z as Dictionary).get("name", "@"))),
+			"★★ 区划那一支也点到了名（实际：%s）" % txt3)
 
 
 func _key(code: int, ctrl: bool = false) -> InputEventKey:

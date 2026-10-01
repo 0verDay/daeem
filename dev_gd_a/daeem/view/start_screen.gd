@@ -44,6 +44,13 @@ signal intro_dismissed
 ##   而不是自己去猜一个默认值 —— 否则选择条选了第二张图，进去的还是第一张。
 signal test_pressed(map_path: String)
 
+## ★ 玩家按下了 **campaign_test**（单人战役的占位界面，见 `view/campaign_test.gd`）。
+##
+## ★ 它**不带载荷**：这一页不认识战役数据 —— 谁去扫 `data/campaigns/`、谁去建世界，
+##   都由 `view/main.gd` 决定。这正是它与 `test_pressed(map_path)` 的差别：
+##   地图是**这一页自己选的**（选择条就住在这里），而战役不是。
+signal campaign_test_pressed()
+
 const PAGE_INTRO := 0
 const PAGE_MENU := 1
 
@@ -66,6 +73,9 @@ var _map_label: Label = null
 ## ★ 地图选择条（`view/map_select.gd`：自己画的按钮 + 自己的列表，**不是** OptionButton）
 var _map_select = null
 var _test_button: Button = null
+## ★ 主界面第二颗按钮（**单人战役的占位入口**，用它进战役里手玩）。
+## 它在 `_test_button` **下面**，间距是 `menu.campaign_test_button_gap`（比 map_gap 小）。
+var _campaign_button: Button = null
 var _blink_tween: Tween = null
 
 ## 选择条当前的选项表（`logic/map_library.gd` 扫出来的），与控件上的顺序一一对应。
@@ -222,21 +232,32 @@ func _build_menu() -> void:
 
 	# ★ 用 VBoxContainer 而不是自己算 y 偏移：需求是「选择条在 test 按钮**上方**」——
 	#   这是一条**相对**关系，自己写死两个绝对 y 的话，以后改按钮高度就会让它俩叠在一起。
-	#   竖排容器 + 一个间距（menu.map_gap）表达的就是这条关系本身。
+	#
+	# ★★ 间距的口径（两处，别再合并成一个）：
+	#   · 列的 `separation` = **两颗按钮之间**的间距
+	#     （`menu.campaign_test_button_gap`，48 —— 它们是一类入口，挨近一点才像一组）；
+	#   · 「选择条 → test」那一格要更宽（`menu.map_gap`，112 —— 下拉列表弹出来
+	#     不能压住按钮），所以**给它单独包一层 MarginContainer 加下边距**，
+	#     差值算在 `_build_map_row` 里。
+	#   ⚠️ 别再想「往列里插一个垫片 Control 来撑大/缩小某一段」：`separation` 作用于
+	#      **每一对**相邻子节点，插进去只会让那一段变成「separation + 垫片 + separation」
+	#      （实测：想要 48，量出来 268）。
 	# ★ 对齐方式（实测出来的，改布局前先读这三行）：
 	#   VBoxContainer 里的控件默认横向**撑满容器宽度** —— 而容器的宽度由最宽的那个
 	#   子控件决定（下拉框 `menu.map_select_width` = 320），所以 test 按钮会被拉到
 	#   和选择条一样宽，两个方块看起来才是一组（按钮自己设的 240 只是**最小**宽度）。
 	#   ALIGNMENT_CENTER 管的是**竖直**方向（整列在 CenterContainer 里居中）。
+	var button_gap := cfg.int_val("menu.campaign_test_button_gap", 48)
 	var column := VBoxContainer.new()
 	column.name = "MenuColumn"
 	column.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	column.add_theme_constant_override("separation", cfg.int_val("menu.map_gap", 48))
+	column.add_theme_constant_override("separation", button_gap)
 	column.alignment = BoxContainer.ALIGNMENT_CENTER
 	_menu.add_child(column)
 
 	_build_map_row(column)
 	_build_test_button(column)
+	_build_campaign_button(column)
 
 
 ## 地图选择条：一行「地图」标签 + 一个下拉选择框。
@@ -251,11 +272,23 @@ func _build_menu() -> void:
 ##    不是引擎的 `OptionButton` —— 换掉的理由写在那份文件头上（一句话：
 ##    点开列表之后按钮上那行字会变空白，那是 OptionButton 内部 / 原生列表窗口的毛病）。
 func _build_map_row(column: VBoxContainer) -> void:
+	# ★★ 「选择条 → test」要比「test → campaign_test」宽（112 vs 48，见 `_build_menu`
+	#    里那段间距口径）。列的 separation 只能是一个值，所以这里**把选择条那一格
+	#    包进一层 MarginContainer 补上差值** —— 于是这一格的「占位高度」=
+	#    选择条 + (map_gap - separation)，与 test 之间的净间距就正好是 map_gap。
+	var wrap := MarginContainer.new()
+	wrap.name = "MapRowWrap"
+	wrap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var extra := maxi(0, cfg.int_val("menu.map_gap", 112)
+		- cfg.int_val("menu.campaign_test_button_gap", 48))
+	wrap.add_theme_constant_override("margin_bottom", extra)
+	column.add_child(wrap)
+
 	var row := HBoxContainer.new()
 	row.name = "MapRow"
 	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	row.add_theme_constant_override("separation", 16)
-	column.add_child(row)
+	wrap.add_child(row)
 
 	_map_label = _make_label(
 		cfg.str_val("menu.map_select_label", "地图"),
@@ -341,6 +374,44 @@ func _build_test_button(column: VBoxContainer) -> void:
 	_test_button.add_theme_stylebox_override("focus", _button_style(Color.WHITE, border, border_w))
 	_test_button.pressed.connect(_on_test_pressed)
 	column.add_child(_test_button)
+
+
+## ★ 单人战役的**占位入口**（`campaign_test`）：一颗与 test 同款的按钮，摆在它**下面**。
+##
+## 为什么要有它：战役的数据与逻辑（M7.0~M7.2）已经能跑，但**正式入口还没做**
+## （dev_plan_7 5.1 的战役选择条 / 关卡列表 / 简报是后面几轮的事）——
+## 没有入口就只能靠无头脚本开局，手玩验不了。所以先放这颗按钮进
+## `view/campaign_test.gd` 那一页（列关卡 + 选阵营 + 开始）。
+##
+## ★ 两处刻意与 test 按钮不同：
+##   1. 它在 test **下面**，两颗之间的间距是 `menu.campaign_test_button_gap`（48，
+##      也就是整列的 `separation`）—— 见 `_build_menu` 里那段间距口径；
+##   2. 它**不参与**「选了哪张地图」这件事：战役进哪张图由关卡数据说了算
+##      （`level.map_id`），与选择条无关。
+func _build_campaign_button(column: VBoxContainer) -> void:
+	_campaign_button = Button.new()
+	_campaign_button.name = "CampaignTestButton"
+	_campaign_button.text = cfg.str_val("menu.campaign_test_button_text", "campaign_test")
+	_campaign_button.custom_minimum_size = Vector2(
+		cfg.num("menu.test_button_width", 240.0),
+		cfg.num("menu.test_button_height", 80.0)
+	)
+	if _font != null:
+		_campaign_button.add_theme_font_override("font", _font)
+	_campaign_button.add_theme_font_size_override("font_size",
+		cfg.int_val("menu.test_button_size", 28))
+	var text_color := _menu_color("menu.test_button_color", Color(0.2, 0.2, 0.2))
+	for slot in ["font_color", "font_hover_color", "font_pressed_color"]:
+		_campaign_button.add_theme_color_override(slot, text_color)
+	# 边框与 test / 选择条同一套（视觉上是一组）
+	var border := _menu_color("menu.map_select_border_color", Color(0.2, 0.2, 0.2))
+	var border_w := cfg.int_val("menu.map_select_border_width", 2)
+	_campaign_button.add_theme_stylebox_override("normal", _button_style(Color.WHITE, border, border_w))
+	_campaign_button.add_theme_stylebox_override("hover", _button_style(Color(0.94, 0.94, 0.94), border, border_w))
+	_campaign_button.add_theme_stylebox_override("pressed", _button_style(Color(0.88, 0.88, 0.88), border, border_w))
+	_campaign_button.add_theme_stylebox_override("focus", _button_style(Color.WHITE, border, border_w))
+	_campaign_button.pressed.connect(_on_campaign_test_pressed)
+	column.add_child(_campaign_button)
 
 
 
@@ -455,6 +526,17 @@ func _on_test_pressed() -> void:
 	test_pressed.emit(selected_map_path())
 
 
+## ★ 按下了 campaign_test：把「该开战役页了」这件事交给 `view/main.gd`。
+##
+## ⚠️ 与 `_on_test_pressed` 同一条守卫（`not visible` ⇒ 不生效）：
+##    进了游戏之后开场页整层是隐藏的，正常路径上按不到第二次；
+##    留着这一道是为了「连点两下」永远不会挂出两页来。
+func _on_campaign_test_pressed() -> void:
+	if not visible:
+		return
+	campaign_test_pressed.emit()
+
+
 ## 选择条换了一项。★ 不预载地图、也不建世界：
 ##   选一张图只是「待会儿按 test 时进哪张」，现在载入等于把一张没人玩的地图读进内存。
 ## ★ 按钮上那行字**不用在这里管**：`view/map_select.gd` 在它自己那边每次选中都会
@@ -519,4 +601,14 @@ func map_select_selected() -> int:
 func map_select_select(index: int) -> void:
 	if _map_select != null:
 		_map_select.select(index)
+
+
+## ★ 主界面第二颗按钮（`campaign_test`）本身 —— 给测试量几何 / 点它用。
+##
+## ⚠️ 它**可以**走节点路径找（`.../MenuColumn/CampaignTestButton`，因为它就是一个
+##    `Button` 节点、不在别的类内部）；这个方法留着是为了让测试与
+##   `map_select_button()` 的用法对称 —— 也为了以后这一列再改动时，
+##   测试不用跟着改路径。
+func campaign_test_button() -> Button:
+	return _campaign_button
 
