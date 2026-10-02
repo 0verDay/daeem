@@ -211,10 +211,20 @@ func faction_count() -> int:
 	return _factions.size()
 
 
+## 第 i 个阵营按钮上**显示的字**（越界 → ""）。
+##
+## ★★ 显示的是**数据里的名字**（样例第一关 = 「蓝方」/「红方」），不是 id（`F1` / `F2`）——
+##    玩家要挑的是「哪一方」，看 id 还得回去对数据。
+##    ⚠️ 名字只有**一个来源**：`logic/level.gd` 的 `faction_name(fid)`
+##       （关卡 `factions[].name` 优先，其次地图，最后退回 id）。界面**不自己拼**。
 func faction_text(index: int) -> String:
 	if index < 0 or index >= _factions.size():
 		return ""
-	return String(_factions[index])
+	var fid := String(_factions[index])
+	var lv = chosen_level()
+	if lv != null and (lv as RefCounted).has_method("faction_name"):
+		return String((lv as RefCounted).faction_name(fid))
+	return fid
 
 
 func selected_faction() -> int:
@@ -327,7 +337,9 @@ func _rebuild_factions() -> void:
 		_sync_start_button()
 		return
 	for i in _factions.size():
-		var b := _make_button(String(_factions[i]),
+		# ★ 按钮上写**显示名**（蓝方 / 红方），点下去选中仍是**阵营 id**
+		#   （`chosen_faction()` 返回 id —— 谁去建世界由 id 决定）。
+		var b := _make_button(faction_text(i),
 			cfg.int_val("menu.campaign_test_row_size", 24),
 			Vector2(cfg.num("menu.campaign_test_row_width", 360.0),
 				cfg.num("menu.campaign_test_row_height", 56.0)))

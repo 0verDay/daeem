@@ -202,6 +202,17 @@ func _test_level_and_faction_lists() -> void:
 		eq(screen.selected_faction(), 0, "★ 默认选中第一个可玩阵营（一进来就能按开始）")
 		eq(screen.chosen_faction(), String((lv0 as RefCounted).playable_ids()[0]),
 			"取出来的就是第一个可玩阵营的 id")
+		# ★★ 按钮上显示的是**数据里的名字**（蓝方 / 红方），不是 id（F1 / F2）——
+		#    玩家挑的是「哪一方」，看 id 还得回去对数据。名字只有一个来源：
+		#    `logic/level.gd` 的 `faction_name()`（界面不自己拼）。
+		eq(screen.faction_text(0), (lv0 as RefCounted).faction_name("F1"),
+			"★ 阵营按钮显示数据里的名字（第 1 个 = 蓝方）")
+		ok(screen.faction_text(0) != "F1",
+			"★ 显示的是名字不是 id（实际「%s」）" % screen.faction_text(0))
+		if screen.faction_count() >= 2:
+			eq(screen.faction_text(1), (lv0 as RefCounted).faction_name("F2"),
+				"★ 第 2 个按钮 = 红方")
+			ok(screen.faction_text(1) != "F2", "★ 第 2 个也不是 id")
 	eq(screen.level_count() >= 1 and screen.faction_count() >= 1, true,
 		"（前提）这一页有得选，下面的断言才有意义")
 	ok(screen.can_start(), "★ 选好了关卡与阵营 → 可以开始")

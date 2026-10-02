@@ -165,37 +165,115 @@ def pick_base(zid: int, prefer):
     raise AssertionError("区块 %d 里找不到能当基地的点位" % zid)
 
 
-BASE_F1 = pick_base(2, (5, 8))      # a1（玩家一）：偏南一点好，但别贴下边界（见 check_base 第 4 条）
-BASE_F2 = pick_base(0, (6, 1))      # b1（玩家二，合作关）
-BASE_E1 = pick_base(3, (17, 8))     # a2（敌方）
-for _name, (_bx, _by), _zid in (("F1", BASE_F1, 2), ("F2", BASE_F2, 0), ("E1", BASE_E1, 3)):
+BASE_F1 = pick_base(2, (4, 5))      # a1（玩家一）：偏南一点好，但别贴下边界（见 check_base 第 4 条）
+# ★★ F2 的大本营（b1：y=0..2, x<=11）。挑点位有三条硬约束，都是实测踩出来的：
+#   1. 不能压区划中心（中心是中立障碍建筑，叠格会让它静默建不出来）；
+#   2. ★ 也不能**靠近**区划中心 —— `map_data._ring_layout` 给每一方自动生成的
+#      防御阵地是「城墙 = 基地正上方」「箭塔 = 基地 + (2,0)」。基地放 (4,1) 时
+#      那支箭塔正好落在 (6,1) = b1 的中心上，把那栋中心建筑顶掉了
+#      （引擎只 push 一条 warning，非常安静）；
+#   3. 还要给 `_ring_layout` 的 6 个将领站位留出平地。
+#   ⇒ (10,1)：离 b1 中心 (6,1) 4 格、离 f1 中心 (1,0) 9 格，站位与防御全在 b1 内。
+# ★★ 红方（攻方）的家要**离目标区划 c1 远一点**，理由（实测）：c1 是下半场 x=0..11,
+#    y=7..17 —— 它的**北沿就是 y=7**。红方原来放在 b1 的东头 (10,1)，它的开局部队
+#    往下走两格就压到 c1 的地块上了：实测玩家选红方时 **31 秒**就占领完了
+#    （目标是 1~2 分钟）。放到 b1 西头之后它得真的推下来。
+BASE_F2 = pick_base(1, (20, 1))      # b1 西北角（离 c1 最远；b1 是唯一够大又不在 c1 边上的地）
+# ⚠️ 这张图现在只有 F1 / F2 两个阵营（E1 已删除，第二关的敌人位也取消了）——
+#    所以**不再**给 E1 挑基地。`pick_base` 那三条约束仍然保留（下面是 F1 / F2 在用）。
+# ⚠️ 这里钉的 `_zid` 必须与 `pick_base` 的**第一个参数一致**：写错了这一步会在
+#    「基地不在那个区划里」上直接 assert 失败 —— 而它失败得**很晚**（关卡文件已经写完了），
+#    于是工作区会留下一份「地图是新的、关卡是旧的」的混合数据（实测踩到）。
+BASE_ZONE = {"F1": 2, "F2": 1}
+for _name, (_bx, _by) in (("F1", BASE_F1), ("F2", BASE_F2)):
+    _zid = BASE_ZONE[_name]
     _ok, _why = check_base(_bx, _by, _zid)
     assert _ok, (_name, _why)
     assert zone_centers[_by][_bx] == -1, (_name, "大本营压在区划中心上")
 
+# ---------------- 可玩席位（F1 / F2：玩家挑一个来玩） ----------------
+#
+# ★★ 两个可玩阵营**都写 `ai: "faction"`**，并在 `campaign.json` 里都标 `playable`。
+#    玩家选中哪一方，运行时就把那一方的 AI 摘掉（`world._is_ai_piloted` /
+#    `_setup_ai_factions`）；没被选中的那一边照这份数据自己经营。
+# ⚠️ 只给一方写 ai 是不够的 —— 另一方在玩家不选它的时候就站在场上发呆
+#    （实测：选 F2 时 F1 从头到尾 3 个光杆将领、一波都不出）。
+# ★ 两个席位**开局都给附属兵**（`world._keeps_opening_escort` 按 `playable` 判）：
+#    它们是我方战线，不是「靠招兵补员」的 NPC 敌人。
+FACTION_AI = {
+    # ⚠️ 必须等于 `world.create_generals` 给每一方建的那 3 位
+    "generals": 3,
+    "min_retinue": 3,
+    "min_ready": 2,
+    "ready_mult": 0.5,
+    "attack_repeat_sec": 20.0,
+}
+
+
+def _seat(fid: str, name: str, color: str, base, ai: str, food: int, gold: int) -> dict:
+    """一个可玩席位的 `factions[]` 条目。
+
+    ★ 字段顺序与「缺省不写」的口径**要和战役编辑器写出来的一致**
+      （`tools/campaign_editor/model.py` 的 `_faction_to_dict`）—— `test_model.py` 有一条
+      「写出来的关卡与源文件逐字段一致」的往返断言，这里漂了它就会红。"""
+    return {
+        "id": fid,
+        "ai": ai,
+        "base": list(base),
+        "start_food": food,
+        "start_gold": gold,
+        "faction_ai": dict(FACTION_AI),
+        "name": name,
+        "color": color,
+    }
+
+
+def BLUE_SEAT(fid: str, name: str, color: str, base) -> dict:
+    """★ 蓝方（守方）：挂**将领性（守家）AI** —— 在自己的归属区划里巡逻警戒、
+    脱战无消耗招兵，**不反推**对方的家（玩家选红方时，它是「只守 c1 周边」的对手）。"""
+    # ★ 开局资源：守方要在第一波打过来之前能补上人（不然它 100 秒左右就被拆穿）。
+    #   实测：200/200 时它守到 110 秒；给到 600/600 之后能撑过 150 秒。
+    return _seat(fid, name, color, base, "general", 600, 600)
+
+
+def RED_SEAT(fid: str, name: str, color: str, base) -> dict:
+    """★ 红方（攻方）：挂**阵营性 AI** —— 招将 → 招兵 → 满员 → 行军攻击，
+    会主动打过来（玩家选蓝方时，它就是那波「红点」）。
+    ★ 开局多给一点资源：它的地盘（b1 + g1）比蓝方的 c1/c2 小得多，
+      不给启动资金的话成型太慢、红方那一路打不动。
+    ★★ 进攻目标固定指向 **c1**（这一关的目标区划）：不给的话它会自己挑
+      「离自己最近的敌方区划」（多半是 c2）—— 玩家守的是 c1，威胁就摊薄了；
+      而且校验第 15 条会为此发一条警告。"""
+    # ★ 开局资源压到 200/200：给太多的话它 31 秒就把 c1 打下来了
+    #   （目标是「中速：1~2 分钟」），也顺带让它那一路有「招满再出征」的过程。
+    out = _seat(fid, name, color, base, "faction", 200, 200)
+    out["attack_target"] = {"kind": "zone", "zone": 4}
+    out["faction_ai"]["min_ready"] = 3
+    out["faction_ai"]["ready_mult"] = 1.0
+    return out
+
+
 # ---------------- 守军 / 建筑 ----------------
-# 中立守军摆在 c1 的**北沿**（y=8..9，「一进关就有压力」：玩家从 a1 往南推进进 c1
-# 就会撞上它们）。
-# ⚠️ 必须落在 **c1 的地块里**（那一片是 y=7..17）：摆在 a1 里会变成
-#    「敌方单位站在玩家自己的开发区里」，既不中立也会挡住建东西。
-# ⚠️ 也别摆在 y=7（c1 的第一排）—— 那一排紧挨着玩家大本营的出生环，一进关就打起来。
-GUARDS = [(10, 8), (10, 9), (11, 9)]
 
 
 def owner_of(x: int, y: int) -> str:
+    """地图层的开局归属。
+
+    ★ 这张图现在只有两个阵营（F1 蓝方 / F2 红方），而且**开局归属主要由关卡决定**
+      （`levels/*.json` 的 `zones[]` 覆盖地图这一份，见 logic/level.gd 的覆盖规则）。
+      地图这里只划「谁一出生就有的那块北带」：b1/a1（z 0/2）归 F1；
+      其余（含 a2/b2 与下半场 c1/c2）留空 —— 空 = 开局无主，谁先站进去算谁的，
+      这正是「红方要从北边打下来」「蓝方要守住 c1」两条目标的前提。
+    """
     z = zones[y][x]
-    if z in (2, 0):          # a1 / b1：玩家
+    if z in (2, 0):          # a1 / b1：F1 的北带
         return "F1"
-    if z in (3, 1):          # a2 / b2：敌方
-        return "E1"
-    if z in (6, 7):          # f1 / g1：中立地带（开局无主，双方都能抢）
-        return ""
     return ""
 
 
+# ★ 地图上**不再预置中立守军**：原来的 3 个 E1 哨兵是给「单机试炼」当压力用的，
+#   而 E1 已经从这张图移除（它会把 F1/F2 之外的第三方带进名单，见上面 owner_of 的说明）。
 units = []
-for (x, y) in GUARDS:
-    units.append({"x": x, "y": y, "name": "哨兵", "faction": "E1", "kind": "enemy", "hold": True})
 
 # 开局归属（zone_list[].owner）：写在区块表里
 for entry in zone_list:
@@ -219,11 +297,7 @@ map_json = {
     "zones": zones,
     "zone_list": zone_list,
     "zone_centers": zone_centers,
-    "factions": [
-        {"id": "F1", "name": "赤军", "color": "#5AC8FF"},
-        {"id": "E1", "name": "边军", "color": "#FF6B6B"},
-    ],
-    "faction_bases": {"F1": list(BASE_F1), "E1": list(BASE_E1)},
+    "faction_bases": {"F1": list(BASE_F1), "F2": list(BASE_F2)},
     "units": units,
     "buildings": [],
     "_comment": [
@@ -247,80 +321,63 @@ out_map.write_text(json.dumps(map_json, ensure_ascii=False, indent=2) + "\n",
 # ---------------- 关卡 ----------------
 LEVEL_1 = {
     "_comment": [
-        "第一关 · 守住中场。单人战役样例：玩家守住 c1 90 秒。",
-        "边军（E1）挂阵营性 AI，进攻目标固定指向 c1 —— 这就是「波次」的全部配置。",
+        "第一关 · 渡口。★★ 一关两个可玩阵营，各打各的：",
+        "   蓝方（F1）守住 c1 150 秒；红方（F2）攻占 c1。选谁就取谁那条目标，",
+        "   没被选中的那一边由 AI 接管（蓝方 = 守家 AI，红方 = 阵营 AI 主动来打）。",
+        "c1 开局归蓝方；红方从北边（b1 + g1）南下进攻。",
     ],
     "name": "第一关·渡口",
     "mode": "solo",
     "map": "dongzheng",
     "players": [{"faction": "F1", "base": list(BASE_F1)}],
     "factions": [
-        # ★ 只列出**本关真的要挂 AI 的**那一方。全局 config.ai.factions 里那个 "ai"
-        #   不需要在这里写 —— 有 level 时「这一关有哪些阵营」由关卡数据说了算，
-        #   只有 config 提过的阵营**不会**悄悄进场（见 world._merged_ai_roster 的说明）。
-        {
-            "id": "E1",
-            "ai": "faction",
-            "base": list(BASE_E1),
-            # ★★ 颜色**必须写**：配色表 `colors.faction.*` 里只有内置阵营 id（p1~p8/enemy/ai），
-            #   而本战役用的是自己的 id（F1/E1）—— 不写的话 `cfg.faction_color("E1")`
-            #   会一路退到兜底的**品红**，症状是「整个战场一片紫、敌我分不清」（实测踩到）。
-            #   运行时会按 `campaign.json` / 关卡 `factions[]` 里的 color 登记
-            #   （见 `world._register_level_colors`）。
-            "color": "#e05a5a",
-            "resource_mult": 1.6,
-            "start_food": 700,
-            "start_gold": 700,
-            "attack_target": {"kind": "zone", "zone": 4},
-            "faction_ai": {
-                # ⚠️★ `generals` 必须与「世界初始化给这一方建的将领数」对得上
-                #   （`world.create_generals` 一次建 3 位）。写小了**不会少建** ——
-                #   世界那 3 位是既成事实；写大了才会让 AI 去补招第 4、5 位
-                #   （一支敌军变成无限增兵，而且「派几成」的分母跟着涨）。
-                "generals": 3,
-                # 这一方的**最低要求**：每位将领至少补到 3 个才算出兵。
-                #   ★ 真正的目标编制是 `max(将领自己的编制, min_retinue)`，
-                #   而「将领自己的编制」= `unit.general.escort = [4,5,6]`（逐将不同）
-                #   ⇒ 第一波满编 = 4+5(+6) 个兵，波次大小自然在 4~6 这个量级浮动。
-                "min_retinue": 3,
-                # ⚠️★ `min_ready` 是「一波至少派几位」。第一关设成 **3 = 全员一起上**：
-                #   原先写 2 配合 `ready_mult 0.6` 会算出「只派 1 位」——
-                #   玩家实测的抱怨「只派一个将领过来」正是从这里来的。
-                #   留在 3 还有第二个作用：三条「编制上限 4/5/6」的线**同时**满足，
-                #   于是一波的总兵力就是 4+5+6=15 这个满编规模（而不是随人数抖动）。
-                "min_ready": 3,
-                "ready_mult": 1.0,
-                "attack_repeat_sec": 18.0,
-            },
-        }
+        # ★★ 两个**可选**阵营，两种完全不同的脑子：
+        #    · 蓝方 F1：`ai: "general"` —— 守家 AI（将领在自己归属区划里巡逻警戒、
+        #      脱战无消耗招兵），**只守 c1 周边、不反推**红方的家；
+        #    · 红方 F2：`ai: "faction"` —— 阵营 AI（招将 → 招兵 → 满员 → 行军攻击），
+        #      会主动打过来（这是「红点波次」的来源）。
+        #    玩家选中哪一方，运行时就把哪一方的 AI 摘掉（见 world._is_ai_piloted）。
+        BLUE_SEAT("F1", "蓝方", "#5ac8ff", BASE_F1),
+        RED_SEAT("F2", "红方", "#e05a5a", BASE_F2),
     ],
-    "start_units": [],
+    # ★★ 蓝方在 c1 上**开局就摆一支守备队**（`zone: 4` = 挂守家 AI，原地守住那一区）。
+    #
+    # 为什么必须有（实测）：没有它的话，蓝方的兵要从 a1 的大本营**走过来**才守得住 ——
+    #   而红方（进攻方）从 b1 出发，两边的**先到者**就决定了那一帧的归属：
+    #     · 玩家选红方时，红方 30 秒出头就白捡了 c1（目标是 1~2 分钟）；
+    #     · 玩家选蓝方时，红方的 AI 一波就把 c1 端了（守方来不及）。
+    #   摆上守备队之后，c1 是**真的有人在守**：红方必须打赢他们才占得下来。
+    "start_units": [
+        {"faction": "F1", "kind": "enemy", "x": 4, "y": 10, "ai": "general", "zone": 4,
+         "name": "渡口守军"},
+        {"faction": "F1", "kind": "enemy", "x": 6, "y": 10, "ai": "general", "zone": 4,
+         "name": "渡口守军"},
+        {"faction": "F1", "kind": "enemy", "x": 5, "y": 11, "ai": "general", "zone": 4,
+         "name": "渡口守军"},
+    ],
     # ★ 手工加一栋塔：给「关卡的开局摆放」（`start_buildings`）留一个真样本，
     #   位置刻意避开基地自己那圈防御（城墙在 base+(0,-1)、箭塔在 base+(2,0)）——
     #   叠在同一个格子上 `add_building` 会拒掉，那就会变成一条「配了但没建出来」的谜团。
     "start_buildings": [
         {"type": "tower", "x": BASE_F1[0] + 3, "y": BASE_F1[1], "owner": "F1"},
     ],
+    # ⚠️ **不写 `allies`**：蓝方与红方是对立的（这一关就是「选边打」）。
     "zones": [
+        # 开局归属：c1/c2（下半场，132 格）归蓝方 —— 目标区划 c1 开局必须是蓝方的，
+        # 否则「丢掉即判负」会让蓝方一进关就输；
+        # 红方从北边 b1（产粮 30 格）+ g1（产金 6 格）起家，要自己打下 c1。
         {"id": 4, "owner": "F1"},
+        {"id": 5, "owner": "F1"},
+        {"id": 0, "owner": "F2"},
+        {"id": 7, "owner": "F2"},
     ],
-    "zones": [
-        # ★ 地图上 a1/b1（下半场）划给玩家、a2/b2（上半场）划给敌方 —— c1/c2 留作中立的中场。
-        {"id": 2, "owner": "F1"},
-        {"id": 4, "owner": "F1"},
-        # ★★ 敌方**必须有一块产粮的地**（`zone_kind` 里只有 food 区划产粮）：
-        #    a2 / b2 都是 gold 区划 ⇒ 只有钱、没有粮 ⇒ 阵营 AI 招不出将领
-        #    （实测：「一进去就白送胜利」，AI 单位从头到尾只有地图上那几个守军）。
-        {"id": 1, "owner": "E1"},
-        {"id": 3, "owner": "E1"},
-        {"id": 5, "owner": "E1"},
+    # ★★ 两条目标，各点名给谁（`for`）。这是「一关两个可玩阵营各打各的」的全部配置：
+    #    · 蓝方：守住 c1 150 秒（守满判胜；c1 一丢当场判负）
+    #    · 红方：占领 c1 —— 归属翻成红方的那一帧**立刻判胜**（不要求再守）
+    "objectives": [
+        {"for": "F1", "kind": "hold_zone", "zone": 4, "hold_sec": 150},
+        {"for": "F2", "kind": "capture_zone", "zone": 4},
     ],
-    # ★★ 守住 150 秒（原来 90）：调平衡调出来的，理由写在这里免得下次又改回去 ——
-    #   敌人**开局没有任何附属兵**（AI 阵营靠招，见 `world.spawn_faction_units`），
-    #   要先把 3 位将领各补到 4/5/6 个兵（共 15 个，每单 10 秒读条、队列上限 5），
-    #   所以**第一波大约 50 秒才出发**。守 90 秒的话打完第一波就到点了，
-    #   「一波接一波」根本看不出来 —— 实测确认过。150 秒能压进 3~4 波。
-    "objectives": [{"kind": "hold_zone", "zone": 4, "hold_sec": 150}],
     "fail_conditions": [],
     "briefing": [],
 }
@@ -338,7 +395,7 @@ LEVEL_2 = {
         {"faction": "F2", "base": list(BASE_F2)},
     ],
     "factions": [
-        {"id": "F2", "ai": "none", "color": "#ffd166"},
+        {"id": "F2", "ai": "none", "base": list(BASE_F2), "color": "#ffd166"},
         # ★ f1 开局划给玩家同方（它是额外失败条件），所以要给 F1 一个基地点位 ——
         #   关卡点名的阵营**必须**有点位（校验第 4 条），而且**不能压在区划中心上**：
         #   f1 的中心是 (1,0)，所以基地摆在 (2,2)。
@@ -347,39 +404,24 @@ LEVEL_2 = {
         #   ★ 三个阵营的颜色都写全（两处都写是有意的：关卡是覆盖层，
         #     设计者可能想让**这一关**的某一方换个颜色）。
         {"id": "F1", "ai": "none", "base": [2, 2], "color": "#5ac8ff"},
-        {
-            "id": "E1",
-            "ai": "faction",
-            "base": list(BASE_E1),
-            "color": "#e05a5a",
-            "resource_mult": 1.1,
-            "start_food": 300,
-            "start_gold": 300,
-            "attack_target": {"kind": "zone", "zone": 4},
-            "faction_ai": {
-                "generals": 3,
-                "min_retinue": 3,
-                "min_ready": 2,
-                "ready_mult": 0.5,
-                "attack_repeat_sec": 20.0,
-            },
-        },
     ],
     "allies": [["F1", "F2"]],
-    "start_units": [
-        {"faction": "E1", "kind": "enemy", "x": 12, "y": 2, "hold": True, "name": "边军斥候"},
-    ],
+    "start_units": [],
     "start_buildings": [],
     "zones": [
+        # ★ F2 是第二个玩家席位，原来**一块地都没有**（没产粮就招不了兵）——
+        #   选 F2 时它得有自己的家底。
+        {"id": 0, "owner": "F2"},
+        {"id": 7, "owner": "F2"},
         {"id": 4, "owner": "F1"},
         # ⚠️⚠️ 额外失败条件的那个区划**必须开局就归玩家同方** —— `zone_lost` 的判据是
         #   「不再归玩家同方就立刻判负」，开局不归己方的话第一帧就判负。
         #   （实测踩到：第一版没给 f1 归属 ⇒ 那一关一进去就输。校验会拦这一条。）
         {"id": 6, "owner": "F1"},
-        # 敌方拿 a2 / b2 / c2（与第一关同一套归属；c2 是产粮区，它得靠这个招兵）
-        {"id": 1, "owner": "E1"},
-        {"id": 3, "owner": "E1"},
-        {"id": 5, "owner": "E1"},
+        # ★ 这一关是**两个玩家守住一条线**，没有第三方敌人（E1 已从这张图移除）：
+        #   两名玩家各自有粮有金（F1：a1 产粮 + c1 人口；F2：b1 产粮 + g1 产金）。
+        #  ⚠️ 原来这里给 E1 划了 a2/b2/c2 —— 那些 id 现在在这张图上不存在了，
+        #     继续写会让 `zones[]` 指向一个没有基地的阵营（静默变成中立地）。
     ],
     "objectives": [{"kind": "hold_zone", "zone": 4, "hold_sec": 120}],
     "fail_conditions": [{"kind": "zone_lost", "zone": 6}],
@@ -390,19 +432,18 @@ CAMPAIGN_JSON = {
     "_comment": [
         "战役元信息。关卡顺序以 levels[] 为准（不是文件名的字典序）。",
         "factions[].playable = 玩家能选谁；没被选中的参展阵营由 AI 驱动。",
+        "★★ 第一关是「选边关」：蓝方（F1）守住 c1，红方（F2）攻占 c1 —— 两边各有一条",
+        "   属于自己的目标（objectives[].for），选中谁就打谁那条；两边是对立的。",
     ],
     "name": "东征·第一章",
-    "description": "样例战役：单人守中场 + 双人合作双子防线。",
+    "description": "样例战役：第一关选边打（蓝方守 c1 / 红方攻 c1）+ 第二关双人合作。",
     "default_mode": "solo",
     "factions": [
-        # ★ `playable` 只给**第一关能选的那一方**（F1）。F2 是合作关里的第二个玩家，
-        #   但「可玩」是**战役级**属性，而它在第一关与 F1 **不是盟友** ⇒
-        #   标成可玩会让第一关过不了校验第 7 条（可玩阵营必须互为同方）。
-        #   ⚠️ 这条约束是**故意的**：同一战役里「这一关能选谁」不能因关而异，
-        #      否则「选中的那一方」在另一关里可能根本不在场。
-        {"id": "F1", "name": "赤军", "color": "#5AC8FF", "playable": True},
-        {"id": "F2", "name": "金军", "color": "#FFD166", "playable": False},
-        {"id": "E1", "name": "边军", "color": "#FF6B6B", "playable": False},
+        # ★★ F1 与 F2 **都可玩**：用户要「选择两个阵营其中的一个进行游戏」。
+        #   它们在关卡里互为盟友（第一关现在写了 `allies`），所以过得了校验第 7 条。
+        #   选中哪一方由玩家在战役页决定；没被选中的那一个由**阵营 AI** 接管。
+        {"id": "F1", "name": "蓝方", "color": "#5AC8FF", "playable": True},
+        {"id": "F2", "name": "红方", "color": "#E05A5A", "playable": True},
     ],
     "levels": [
         {"id": "01_beachhead", "file": "levels/01_beachhead.json", "name": "第一关·渡口"},
@@ -422,9 +463,7 @@ for name, data in (("01_beachhead.json", LEVEL_1), ("02_twin_line.json", LEVEL_2
 # ---------------- 自检 ----------------
 print("map ->", out_map)
 print("centers:", {k: tuple(v) for k, v in sorted(centers.items())})
-for gx, gy in GUARDS:
-    assert terrain[gy][gx] == ".", f"守军 ({gx},{gy}) 不在草地上"
-print("bases:", {"F1": BASE_F1, "F2": BASE_F2, "E1": BASE_E1})
+print("bases:", {"F1": BASE_F1, "F2": BASE_F2})
 for zid, (cx, cy) in centers.items():
     assert terrain[cy][cx] != "#", f"区块 {zid} 的中心落在山上"
     assert zones[cy][cx] == zid, f"区块 {zid} 的中心不属于它自己"

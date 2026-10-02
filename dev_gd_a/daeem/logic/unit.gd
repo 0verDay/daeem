@@ -264,8 +264,19 @@ var hold_position: bool = false
 ## ★ 有它的单位**不再跑 enemy_ai 的推进逻辑**（与 hold_position 同一条效果，
 ##   见 enemy_ai.gd 的说明）：它只巡逻自己那一亩地。
 var garrison_zone_id: int = -1
-## 下一次巡逻移动还有几秒（由 general_ai 每帧递减，<= 0 时朝区划中心走一趟）。
+## 下一次巡逻移动还有几秒（由 general_ai 每帧递减，<= 0 时朝**下一个巡逻点**走一趟）。
 var patrol_timer: float = 0.0
+## ★★ 这位守将自己的**巡逻路线**（巡逻点，网格坐标；空 = 还没算，general_ai 会补算）。
+##
+## ⚠️ **必须存在单位自己身上**（不是每帧现算）：路线要「换一个点再走」得记住走到第几个；
+##   而且它由 `_patrol_zone_id` + `id` 派生，重算一次结果也一样（确定性伪随机）。
+var patrol_points: Array[Vector2i] = []
+## 走到路线里的第几个点了（走到底之后**折返**，不是回头从第一个重来）。
+var patrol_index: int = 0
+## 折返方向：+1 = 往数组后面走，-1 = 往回走。
+var patrol_dir: int = 1
+## 这条路线是**给哪个区划**算的（区划换了 / 被改派 → 重算路线）。
+var patrol_zone_id: int = -2
 ## 距上一次「正在交战」过去了多久（秒）。达到 ai.general.combat_idle_sec 就认为脱战。
 var combat_idle_timer: float = 0.0
 ## ★★ 再战冷却：> 0 时这个驻防将领**不接战**（见到敌人也不锁）。

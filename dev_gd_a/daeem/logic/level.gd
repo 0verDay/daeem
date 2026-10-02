@@ -45,6 +45,11 @@ const MODE_COOP := "coop"
 
 ## 目标种类：第一版**只有**这一种（「守住指定区划 N 秒」，见 dev_plan_7 1.3.6）
 const OBJ_HOLD_ZONE := "hold_zone"
+## ★★ 「**攻占**指定区划」——一关两个可玩阵营各打各的时候，进攻方用这一条。
+## 判胜是**立刻**的：目标区划的归属方翻成玩家同方的那一帧就赢（不要求再守 N 秒）。
+const OBJ_CAPTURE_ZONE := "capture_zone"
+## `objectives[].for` 的字段名（这一条目标是给哪个阵营的）。空 = 对任何玩家都成立。
+const OBJ_FIELD_FOR := "for"
 
 ## 额外的失败条件种类：第一批**只有**这一种（大本营被拆那条是常开的，不写在数据里）
 const FAIL_ZONE_LOST := "zone_lost"
@@ -92,10 +97,11 @@ static func load_level(campaign, file: String, cfg: ConfigRes = null) -> RefCoun
 	lv.campaign_id = String(campaign.id) if campaign != null else ""
 	lv.playable = []
 	lv.faction_colors = {}
+	lv.faction_names = {}
 	if campaign != null:
 		for fid_p in campaign.playable_ids():
 			lv.playable.append(String(fid_p))
-		# ★★ 阵营颜色也在这里抄一份（**顺序：先战役、后关卡** ⇒ 关卡覆盖战役）。
+		# ★★ 阵营**颜色**与**显示名**也在这里各抄一份（顺序：先战役、后关卡 ⇒ 关卡覆盖战役）。
 		#    为什么不运行时再去问那个 Campaign 对象：`Level` 不持有它（引用环，
 		#    见 `playable` 那段注释）。运行时要用的东西一律在载入时抄下来。
 		for e_c in campaign.faction_meta:
@@ -103,6 +109,9 @@ static func load_level(campaign, file: String, cfg: ConfigRes = null) -> RefCoun
 			var ccol := String((e_c as Dictionary).get("color", "")).strip_edges()
 			if cid != "" and ccol != "":
 				lv.faction_colors[cid] = ccol
+			var cname := String((e_c as Dictionary).get("name", "")).strip_edges()
+			if cid != "" and cname != "":
+				lv.faction_names[cid] = cname
 	lv.raw = data
 	lv.map_id = String((data as Dictionary).get("map", "")).strip_edges()
 	lv.name = _text((data as Dictionary).get("name", ""), lv.id)
@@ -113,12 +122,15 @@ static func load_level(campaign, file: String, cfg: ConfigRes = null) -> RefCoun
 	lv.mode = _mode((data as Dictionary).get("mode", ""), fallback_mode)
 	lv.players = _read_players((data as Dictionary).get("players", null))
 	lv.faction_meta = _read_level_factions((data as Dictionary).get("factions", null))
-	# ★ 关卡自己的 `factions[].color` 覆盖战役那一份（与其它字段「关卡优先」一致）
+	# ★ 关卡自己的 `factions[].color` / `.name` 覆盖战役那一份（与其它字段「关卡优先」一致）
 	for e_l in lv.faction_meta:
 		var lid := String((e_l as Dictionary).get("id", ""))
 		var lcol := String((e_l as Dictionary).get("color", "")).strip_edges()
 		if lid != "" and lcol != "":
 			lv.faction_colors[lid] = lcol
+		var lname := String((e_l as Dictionary).get("name", "")).strip_edges()
+		if lid != "" and lname != "":
+			lv.faction_names[lid] = lname
 	lv.allies_declared = (data as Dictionary).has("allies")
 	lv.allies = _read_allies((data as Dictionary).get("allies", null))
 	lv.zone_owners = _read_zone_owners((data as Dictionary).get("zones", null))
@@ -221,6 +233,13 @@ var campaign_id: String = ""
 ##   （症状：「整个战场一片紫、敌我分不清」，玩家实测报过）。
 ##   运行时的登记在 `world._register_level_colors()`，数据来源就是这一份。
 var faction_colors: Dictionary = {}
+## ★★ 这一关各阵营的**显示名**："faction" → "蓝方"（**载入时抄下来的**，理由同颜色）。
+##
+## 来源两处、关卡优先：`campaign.json` 的 `factions[].name` → 关卡 `factions[].name`。
+## ⚠️ 为什么也要抄一份：`Level` **不持有 `Campaign` 对象**（避引用环，见上面那段），
+##   而关卡页要在按钮上写「蓝方 / 红方」而不是 `F1` / `F2` —— 运行时要用的东西
+##   一律在载入时抄下来（与 `playable` / `faction_colors` 同一条规矩）。
+var faction_names: Dictionary = {}
 
 
 ## 这一关的玩家席位（faction id 数组，按席位顺序）。
@@ -330,11 +349,52 @@ func present_ids() -> Array:
 	return out
 
 
-## 目标区划号（没有目标 / 不是 hold_zone → -1）。
+## 目标区划号（没有目标 / 不是守区划类 → -1）。
+##
+## ⚠️ 这是**向后兼容**的那一份：取 `objectives[0]`。
+##    一关只有一条目标时（老数据 / 绝大多数关卡）它就是那一份，行为逐位不变。
+##    ★ 一关有**两条**（选边关卡）时请用 `objective_for(fid)` 取属于某一方的那一条。
 func objective_zone() -> int:
 	if objectives.is_empty():
 		return -1
 	return int((objectives[0] as Dictionary).get("zone", -1))
+
+
+## ★★ 属于 `fid` 的那一条目标（一关两个可玩阵营各打各的时候用）。
+##
+## 口径（顺序不能反）：
+##   1. `objectives[].for` **正好等于** `fid` 的那一条 → 就是它；
+##   2. 没有点名 `fid` 的，就找 `for` **为空**的那一条（= 对任何玩家都成立）；
+##   3. 都没有 → `null`（**不退回「第一条」**：那样红方会拿到蓝方的目标）。
+##
+## @param fid 玩家席位（空串 = 只要「通用」那一条）
+## @return Dictionary 或 null
+func objective_for(fid: String) -> Variant:
+	var generic: Variant = null
+	for item in objectives:
+		var d: Dictionary = item
+		var who := String(d.get(OBJ_FIELD_FOR, ""))
+		if who != "" and who == fid:
+			return d
+		if who == "" and generic == null:
+			generic = d
+	return generic
+
+
+## `objective_for()` 的显示版：没有目标时给一份「空目标」（字段齐全，便于读）。
+func objective_of(fid: String) -> Dictionary:
+	var o: Variant = objective_for(fid)
+	if o == null:
+		return {"kind": "", "zone": -1, "hold_sec": 0.0, OBJ_FIELD_FOR: ""}
+	return o
+
+
+## 这一关有没有**按阵营分开**的目标（= 存在带 `for` 的目标）。
+func has_per_faction_objectives() -> bool:
+	for item in objectives:
+		if String((item as Dictionary).get(OBJ_FIELD_FOR, "")) != "":
+			return true
+	return false
 
 
 ## 目标要守住的秒数（没有目标 → 0）
@@ -345,11 +405,18 @@ func objective_hold_sec() -> float:
 
 
 ## 这一关的目标用一句人话怎么说（界面 / 编辑器列表都要它，所以写在数据这一层）。
-func objective_label() -> String:
-	if objectives.is_empty():
+##
+## @param fid 取**属于这一方**的目标（空串 = 第一条 / 通用那一条；老调用不受影响）
+func objective_label(fid: String = "") -> String:
+	var o: Dictionary = objective_of(fid) if fid != "" else (
+		objectives[0] if not objectives.is_empty() else {})
+	if o.is_empty():
 		return "（没有目标）"
-	var z := objective_zone()
-	return "守住 %s %s 秒" % [_zone_label(z), _fmt_sec(objective_hold_sec())]
+	var z := int(o.get("zone", -1))
+	var kind := String(o.get("kind", ""))
+	if kind == OBJ_CAPTURE_ZONE:
+		return "占领 %s" % _zone_label(z)
+	return "守住 %s %s 秒" % [_zone_label(z), _fmt_sec(float(o.get("hold_sec", 0.0)))]
 
 
 ## 关卡列表上那一行：模式 + 目标
@@ -723,7 +790,7 @@ func _ck_point_walkable(t: Vector2i, what: String) -> void:
 			return
 
 
-## 7/8) 可玩阵营必须互为同方；目标区划开局必须归玩家同方
+## 7/8) 可玩阵营的目标；目标区划的开局归属
 func _ck_allies() -> void:
 	if map == null:
 		return
@@ -731,8 +798,24 @@ func _ck_allies() -> void:
 	FactionRes.set_allies(pairs)
 
 	var playable := playable_ids()
-	# 7) 有 ≥ 2 个可玩阵营时，它们必须互为同方
-	if playable.size() >= 2:
+	# 7) ★★ 两个口径（**按是否有「点名目标」自动切换**）：
+	#
+	#    (a) **普通关卡**（目标没有 `for` 字段 / 只有一个可玩阵营）：
+	#        沿用老口径 —— ≥2 个可玩阵营必须**互为同方**。
+	#        理由：目标只有**一份**，判定走「玩家同方」；可玩阵营如果各占一边，
+	#        「选谁」就变成了两场不同的仗，而数据只描述了一场。
+	#
+	#    (b) ★ **选边关卡**（`objectives[]` 里有带 `for` 的目标）：
+	#        两个可玩阵营**本来就是对立的**（蓝方守、红方攻），所以「互为同方」不成立、
+	#        也不该成立。这时改拦**另一条**：★ **每一个可玩阵营都要有属于它的目标** ——
+	#        否则玩家选了它就没目标可打（那是最难查的一类：列表上有它，点进去无事发生）。
+	if has_per_faction_objectives():
+		for fid in playable:
+			if objective_for(String(fid)) == null:
+				_add(SEV_BLOCK, "playable_no_objective",
+					"可玩阵营「%s」没有属于自己的目标：它选了也没得打（objectives[] 里补一条 for=%s 的）"
+					% [String(fid), String(fid)])
+	elif playable.size() >= 2:
 		var rep := FactionRes.side_of(String(playable[0]))
 		for fid in playable:
 			if FactionRes.side_of(String(fid)) != rep:
@@ -741,19 +824,43 @@ func _ck_allies() -> void:
 					% [String(playable[0]), String(fid)])
 				break
 
-	# 8) ★ 目标区划的开局归属方必须与玩家同方
-	#    （否则「丢掉即判负」会让玩家一进关就判负 —— 这是「规则没错、数据写错就炸」的组合）
-	var zid := objective_zone()
-	if zid < 0 or not _zone_exists(zid):
-		return                              # 「没写 / 不存在」两档由 `_ck_objectives` 拦
-	var owner := _initial_zone_owner(zid)
+	# 8) ★★ 目标区划的开局归属 —— **逐条目标**判，判据按目标种类分：
+	#
+	#    · `hold_zone`（守住）：区划**必须开局就归这一方**。
+	#      否则「丢掉即判负」会让玩家一进关就判负（规则没错、数据写错就炸的组合）。
+	#    · `capture_zone`（攻占）：区划**必须开局不归这一方**。
+	#      否则一进关就判胜（同一个坑的另一面）。
+	#
+	#  ⚠️ 「这一方」= 目标点名的 `for`；没点名时用第一个席位（老数据的行为）。
+	#  ⚠️ 这里**不再**用「玩家同方」判：选边关卡里红方与蓝方是敌对，
+	#     而红方那条 `capture_zone` 恰恰要求区划在**敌方**手里。
 	var seat := String(seats()[0]) if not seats().is_empty() else ""
-	if owner == "":
-		_add(SEV_BLOCK, "objective_unowned",
-			"目标区划 %s 开局无主：玩家一进关就会判负（本版没有「先占领再守」）" % _zone_label(zid))
-	elif seat != "" and not FactionRes.same_side_for_attack(owner, seat):
-		_add(SEV_BLOCK, "objective_not_players",
-			"目标区划 %s 开局归 %s，玩家一进关就会判负" % [_zone_label(zid), owner])
+	for item in objectives:
+		var od: Dictionary = item
+		var zid := int(od.get("zone", -1))
+		if zid < 0 or not _zone_exists(zid):
+			continue                        # 「没写 / 不存在」两档由 `_ck_objectives` 拦
+		var who := String(od.get(OBJ_FIELD_FOR, ""))
+		var fid_own := who if who != "" else seat
+		var kind := String(od.get("kind", ""))
+		var owner := _initial_zone_owner(zid)
+		if kind == OBJ_CAPTURE_ZONE:
+			if owner != "" and fid_own != "" and FactionRes.same_side_for_attack(owner, fid_own):
+				_add(SEV_BLOCK, "objective_already_mine",
+					"「占领 %s」的目标区划开局就归 %s（自己）—— 一进关就判胜；请把它划给对手"
+					% [_zone_label(zid), owner])
+			elif owner == "":
+				_add(SEV_WARN, "objective_capture_unowned",
+					"「占领 %s」的目标区划开局无主：红方走进去就算占领，可能比预期容易"
+					% _zone_label(zid))
+			continue
+		# hold_zone（以及以后任何「守住」类）
+		if owner == "":
+			_add(SEV_BLOCK, "objective_unowned",
+				"目标区划 %s 开局无主：玩家一进关就会判负（本版没有「先占领再守」）" % _zone_label(zid))
+		elif fid_own != "" and not FactionRes.same_side_for_attack(owner, fid_own):
+			_add(SEV_BLOCK, "objective_not_players",
+				"目标区划 %s 开局归 %s，%s 一进关就会判负" % [_zone_label(zid), owner, fid_own])
 
 	# ★★ 8b) **额外失败条件**的区划也必须**开局就归玩家同方**（同一个坑的第二面）。
 	#
@@ -782,21 +889,33 @@ func _ck_allies() -> void:
 func _ck_objectives() -> void:
 	if objectives.is_empty():
 		_add(SEV_BLOCK, "objective_empty", "这一关没有目标")
-	elif objectives.size() > 1:
+	# ★★ 一关可以有多条目标 —— 但**只在「按阵营分开」时**（每条都点名 `for`）。
+	#    两条都不点名的话，运行时按谁的都说不清（`objective_for` 只会取第一条），
+	#    那是「写了但没生效」的典型，必须拦。
+	if objectives.size() > 1 and not has_per_faction_objectives():
 		_add(SEV_BLOCK, "objective_too_many",
-			"第一版只支持一个「守住区划」目标（现在写了 %d 个）" % objectives.size())
+			"写了 %d 个目标、但一条都没点名给谁（每条加一个 for=阵营；只有一个阵营时只写一条）"
+			% objectives.size())
+	var seen_for: Dictionary = {}
 	for o in objectives:
 		var od: Dictionary = o
-		if String(od.get("kind", "")) != OBJ_HOLD_ZONE:
-			_add(SEV_BLOCK, "objective_kind", "目标种类「%s」不认识（只支持 %s）"
-				% [String(od.get("kind", "")), OBJ_HOLD_ZONE])
+		var kind := String(od.get("kind", ""))
+		var who := String(od.get(OBJ_FIELD_FOR, ""))
+		if kind != OBJ_HOLD_ZONE and kind != OBJ_CAPTURE_ZONE:
+			_add(SEV_BLOCK, "objective_kind", "目标种类「%s」不认识（支持 %s / %s）"
+				% [kind, OBJ_HOLD_ZONE, OBJ_CAPTURE_ZONE])
 			continue
+		# 同一个阵营不能有两条目标（谁生效说不清）
+		if who != "" and seen_for.has(who):
+			_add(SEV_BLOCK, "objective_dup_for", "阵营「%s」配了两条目标（只能一条）" % who)
+		seen_for[who] = true
 		var zid := int(od.get("zone", -1))
 		if zid < 0:
-			_add(SEV_BLOCK, "objective_no_zone", "守住区划的目标没写 zone")
+			_add(SEV_BLOCK, "objective_no_zone", "目标没写 zone")
 		elif not _zone_exists(zid):
 			_add(SEV_BLOCK, "objective_zone_missing", "目标区划 c%d 不存在" % zid)
-		if float(od.get("hold_sec", 0.0)) <= 0.0:
+		# ⚠️ `hold_sec` 只有「守住」类才要求 > 0：「占领即赢」那条不需要时间
+		if kind == OBJ_HOLD_ZONE and float(od.get("hold_sec", 0.0)) <= 0.0:
 			_add(SEV_BLOCK, "objective_hold_sec",
 				"守住时间必须大于 0 秒（现在写的是 %s）" % str(od.get("hold_sec", 0.0)))
 
@@ -812,9 +931,12 @@ func _ck_objectives() -> void:
 			continue
 		if not _zone_exists(fz):
 			_add(SEV_BLOCK, "fail_zone_missing", "失败条件的区划 c%d 不存在" % fz)
-		if fz == objective_zone():
-			_add(SEV_BLOCK, "fail_zone_is_objective",
-				"额外失败条件的区划不能就是目标区划（重复配置是笔误）")
+		# ⚠️ 与**任何一条**目标区划重合都算笔误（一关可能有多条目标）
+		for o in objectives:
+			if fz == int((o as Dictionary).get("zone", -1)):
+				_add(SEV_BLOCK, "fail_zone_is_objective",
+					"额外失败条件的区划不能就是目标区划（重复配置是笔误）")
+				break
 
 
 ## 4/10/12/13/14/15) AI 指派、进攻目标、摆放里的将领性 AI
@@ -831,9 +953,20 @@ func _ck_ai_assign(config_ai: Array) -> void:
 		_ck_attack_target(fid, spec)
 
 	# 15) 挂着阵营 AI 的阵营一个都没写 attack_target → 警告
+	#
+	# ⚠️ 只算**这一关真的会有 AI 的**那几方，两种都要排除掉：
+	#    · `source == "map"`：地图 `factions_meta` 里登记的阵营只是「地图上划过它」，
+	#      默认 `ai` 是 `none`（把地图登记也算进来，**任何一张划过阵营的地图**都会常驻
+	#      一条假警告 —— 实测踩到）；
+	#    · `source == "config"`：**有 level 的时候这些根本不进这一局**
+	#      （`world._keep_level_sourced()` 会把它们丢掉，口径见 dev_plan_7 1.3.4）。
+	#      ⚠️ 原来漏了这一条：样例第二关（纯合作关、一个 AI 都没有）因此常驻一条假警告。
 	var faction_ais: Array = []
 	for item in ai_list:
 		var it2: Dictionary = item
+		var src := String(it2.get("source", ""))
+		if src == "map" or src == "config":
+			continue
 		if String(it2.get("ai", AI_NONE)) == AI_FACTION:
 			faction_ais.append(it2)
 	if faction_ais.size() > 0:
@@ -978,6 +1111,28 @@ func _map_base(fid: String) -> Vector2i:
 	if v == null:
 		return Vector2i(-1, -1)
 	return v
+
+
+## 这一方在**关卡 / 战役**数据里的显示名（没写 → 退回 id）。
+##
+## ★ 用途：关卡页上那两颗「选谁」的按钮要显示 **蓝方 / 红方**，而不是 `F1` / `F2`。
+##   查表顺序（**一处实现**，界面不自己拼名字、也不去反查战役对象）：
+##     1. 关卡 `factions[].name`（载入时抄进 `faction_names`，**关卡优先**）；
+##     2. 地图 `factions_meta[].name`；
+##     3. 退回 id。
+func faction_name(fid: String) -> String:
+	var nm := String(faction_names.get(fid, "")).strip_edges()
+	if nm != "":
+		return nm
+	if map != null:
+		for m in map.factions_meta:
+			if typeof(m) != TYPE_DICTIONARY:
+				continue
+			if String((m as Dictionary).get("id", "")) == fid:
+				var nm2 := String((m as Dictionary).get("name", "")).strip_edges()
+				if nm2 != "":
+					return nm2
+	return fid
 
 
 ## 这一方**关卡合并之后**的大本营：关卡写了用关卡的，没写用地图的。
@@ -1238,6 +1393,10 @@ static func _read_objectives(v: Variant) -> Array:
 			"kind": String(d.get("kind", "")).strip_edges().to_lower(),
 			"zone": int(d.get("zone", -1)),
 			"hold_sec": _num(d.get("hold_sec", null), 0.0),
+			# ★★ 这一条目标是**给哪个阵营的**（空串 = 对任何玩家都成立）。
+			#    一关可以有**两项**目标：一项给蓝方（守住）、一项给红方（攻占）——
+			#    玩家选谁，运行时由 `objective_for()` 取对应的那一条。
+			"for": String(d.get("for", "")).strip_edges(),
 		})
 	return out
 

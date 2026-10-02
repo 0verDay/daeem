@@ -18,6 +18,8 @@ const CampaignRes = preload("res://logic/campaign.gd")
 const LevelRes = preload("res://logic/level.gd")
 const LibraryRes = preload("res://logic/campaign_library.gd")
 const MapLibraryRes = preload("res://logic/map_library.gd")
+## 「可玩阵营必须互为同方」那条断言要用它（校验第 7 条用的是同一个 `side_of`）。
+const FactionRes = preload("res://logic/faction.gd")
 
 ## 随游戏发布的那份样例战役（**测试不许改它**，见最后那一组断言）。
 const DEMO_DIR := "res://data/campaigns/demo"
@@ -162,7 +164,9 @@ func _group_load(cfg) -> void:
 	eq(String(c.level_at(0).id), "01_beachhead", "第一关 id 来自 levels[]")
 	eq(String(c.level_at(0).name), "第一关·渡口", "第一关显示名来自 levels[]")
 	eq(String(c.level_at(1).mode), "coop", "第二关是合作关（关卡文件里的 mode）")
-	eq(c.playable_ids(), ["F1"], "战役里可玩的是 F1")
+	# ★★ 两个阵营都可玩（用户要求「选择两个阵营其中的一个进行游戏」）：
+	#   顺序 = `present_ids()` 的顺序（本关席位在前，然后是关卡点名的参展阵营）。
+	eq(c.playable_ids(), ["F1", "F2"], "战役里可玩的是 F1 与 F2")
 
 	var lv = c.level("01_beachhead")
 	ok(lv != null, "按 id 取关卡")
@@ -186,20 +190,23 @@ func _group_load(cfg) -> void:
 		"那句话里的秒数与 hold_sec 一致（%s）" % label)
 	eq(lv.start_buildings.size(), 1, "开局摆放 1 栋建筑")
 	eq(String((lv.start_buildings[0] as Dictionary)["type"]), "tower", "摆放的是箭塔")
-	eq(lv.rosters(), ["F1", "E1"], "出场名单 = 席位 + 挂了 AI 的参展阵营")
+	# ⚠️ 顺序 = `players[]` 的席位在前，然后**关卡 `factions[]` 的声明顺序**。
+	#    样例第一关现在是 [F1, F2]（一关两个可玩阵营，各打各的）。
+	eq(lv.rosters(), ["F1", "F2"], "出场名单 = 席位 + 挂了 AI 的参展阵营（蓝方 F1 / 红方 F2）")
 	ok(lv.summary().contains("单人"), "summary() 里有模式")
 
 	# ★ 缺字段默认值：只写最少的字段，看它怎么补
-	var minimal := "%s/minimal" % TMP_ROOT
-	_write("%s/campaign.json" % minimal, JSON.stringify({"levels": [{"file": "levels/m.json"}]}))
-	_write("%s/levels/m.json" % minimal, JSON.stringify({
+	#
+	# ⚠️⚠️ 这一条用 `_minimal_level`（**从零**写一份），不用 `_load_level` ——
+	#   后者的补丁是盖在样例第一关之上的，而样例第一关现在写了
+	#   `allies: [["F1","F2"]]`（两个可玩阵营必须互为同方），于是「没写 allies」
+	#   会被悄悄继承成「写了 allies」，这条断言就验成另一件事了（实测踩到）。
+	var m = _minimal_level(cfg, "minimal", {
 		"map": "dongzheng", "players": [{"faction": "F1"}],
 		"objectives": [{"kind": "hold_zone", "zone": 4, "hold_sec": 10}],
-	}))
-	var c2 = CampaignRes.load_campaign(minimal, cfg)
-	ok(c2 != null, "最小字段的战役能载入")
-	if c2 != null:
-		var m = c2.level_at(0)
+	})
+	ok(m != null, "最小字段的战役能载入")
+	if m != null:
 		eq(String(m.mode), "solo", "mode 缺省 → 战役 default_mode → solo")
 		eq(String(m.name), "m", "name 缺省 → 文件名")
 		eq((m.players[0] as Dictionary)["base"], Vector2i(-1, -1), "players[].base 缺省 → (-1,-1)")
@@ -226,7 +233,9 @@ func _group_load(cfg) -> void:
 # 三、覆盖规则（关卡 vs 地图）
 # ------------------------------------------------------------------
 func _group_merge(cfg) -> void:
-	var lv = _load_level(cfg, "merge_base", {"zones": []})
+	# ★★ `_erase`：样例第一关现在写了 `allies`（两个可玩阵营必须互为同方），
+	#    而这一组要验的是「关卡**没写** allies 时会怎样」⇒ 必须把它删掉再载入。
+	var lv = _load_level(cfg, "merge_base", {"zones": [], "_erase": ["allies"]})
 	ok(lv != null, "构造一个用于合并测试的关卡")
 	if lv == null:
 		return
@@ -234,8 +243,11 @@ func _group_merge(cfg) -> void:
 	#    `faction_bases`）—— 它们由 `tests/_gen_demo_campaign.py` 算出来。
 	#    地图一改这两条就会红，那正是它们的作用：钉住「关卡没写 base 时用的是地图的」。
 	var map_base_f1 = lv.map.faction_bases.get("F1", Vector2i(-1, -1))
-	var map_base_e1 = lv.map.faction_bases.get("E1", Vector2i(-1, -1))
-	ok(map_base_f1.x >= 0 and map_base_e1.x >= 0, "样例地图给 F1 / E1 都划了基地")
+	var map_base_f2 = lv.map.faction_bases.get("F2", Vector2i(-1, -1))
+	ok(map_base_f1.x >= 0 and map_base_f2.x >= 0, "样例地图给 F1 / F2 都划了基地")
+	# ★ 地图**自己**那份归属数（合并是「返回新对象」，不许改原始地图）——
+	#   先记下来，下面用它做「一个不多一个不少」的判据（不写死数字）。
+	var lv_orig_owners: int = lv.map.zones_owners.size()
 	var merged: Dictionary = lv.merge_over_map(cfg.ai_factions())
 	var map = merged["map"]
 	ok(map != null, "合并能得到一张地图")
@@ -243,8 +255,8 @@ func _group_merge(cfg) -> void:
 		return
 	eq(map.faction_bases.get("F1", Vector2i(-1, -1)), map_base_f1,
 		"关卡没写 players[].base 时用的是地图的（F1）")
-	eq(map.faction_bases.get("E1", Vector2i(-1, -1)), map_base_e1,
-		"关卡没写 factions[].base 时用的是地图的（E1）")
+	eq(map.faction_bases.get("F2", Vector2i(-1, -1)), map_base_f2,
+		"关卡没写 factions[].base 时用的是地图的（F2）")
 	# ★ 关卡写了 base 就**覆盖**地图的（拿两个明显不同的点位来验）
 	var lv_ov = _load_level(cfg, "merge_base_override", {
 		"players": [{"faction": "F1", "base": [4, 15]}],
@@ -261,8 +273,11 @@ func _group_merge(cfg) -> void:
 		"★ 合并不改原始地图（F1 还是地图上那个点位）")
 	eq(String(map.zones_owners.get(6, "")), "", "地图没给归属的区划合并后仍然无主")
 	# ★ 合并**不改**关卡自己那份地图（校验必须在原始数据上跑，见 merge_over_map 的说明）：
-	#    原始那份的归属就是**地图自己**写的那 4 个区划，一个不多一个不少。
-	eq(lv.map.zones_owners.size(), 4, "★ merge_over_map 不改原始 map（地图自己那 4 个归属）")
+	#    原始那份的归属就是**地图自己**写的那几个区划（样例地图现在只划 F1 的北带，
+	#    其余开局无主要靠关卡 `zones[]` 决定）。这里钉的是**关系**：
+	#    「合并前后，原始 map 的归属数一个都没变」。
+	eq(lv.map.zones_owners.size(), lv_orig_owners,
+		"★ merge_over_map 不改原始 map（原始那 %d 个归属一个不多一个不少）" % lv_orig_owners)
 
 	# 关卡 `zones[].owner` 覆盖地图的开局归属
 	var lvz = _load_level(cfg, "merge_zones", {"zones": [{"id": 6, "owner": "F1"}]})
@@ -309,14 +324,16 @@ func _group_merge(cfg) -> void:
 	ok(ids.has("CONF"), "关卡没写的阵营照旧吃 config（向后兼容）")
 	for e in roster:
 		var it: Dictionary = e
-		if String(it["id"]) == "E1":
+		if String(it["id"]) == "F2":
 			# ★ 断言的是**关系**，不是调平衡用的那几个数字：
 			#   「关卡写了的就用关卡那一份」= 与关卡数据里的值一致，且**不等于** config 的 9.0。
-			#   ⚠️ 原来这里写死 1.2 / 320：那种断言会在**改关卡难度**时假红，
+			#   ⚠️ 原来这里写死 1.6 / 700：那种断言会在**改关卡难度**时假红，
 			#   而它想钉的其实是「覆盖规则走的是关卡那一份」（实测踩到）。
-			near(float(it["resource_mult"]), 1.6, 0.001,
+			var f2_meta: Dictionary = lv4.faction_config("F2")
+			near(float(it["resource_mult"]), float(f2_meta["resource_mult"]), 0.001,
 				"★ 关卡写了 ai 的用关卡的倍率（随关卡数据）")
-			near(float(it["start_food"]), 700.0, 0.001, "关卡的开局资源（随关卡数据）")
+			near(float(it["start_food"]), float(f2_meta["start_food"]), 0.001,
+				"关卡的开局资源（随关卡数据）")
 			ok(not is_equal_approx(float(it["resource_mult"]), 9.0),
 				"★★ 用的**不是** config 那一份（9.0）—— 这才是「关卡覆盖生效」的判据")
 			ok(bool(it["from_level"]), "关卡来的条目 from_level = true")
@@ -344,11 +361,12 @@ func _group_merge(cfg) -> void:
 	ok(lv4.faction_ai_ids(stub).has("E1"), "ai: faction 的进「阵营 AI」那一份")
 
 	# 关卡自己按阵营覆盖 AI 参数（波次节奏与规模在这里）
-	var e1: Dictionary = lv.faction_config("E1")
-	var fa: Variant = e1["faction_ai"]
-	ok(typeof(fa) == TYPE_DICTIONARY, "关卡给 E1 配了 faction_ai")
+	var f2c: Dictionary = lv.faction_config("F2")
+	var fa: Variant = f2c["faction_ai"]
+	ok(typeof(fa) == TYPE_DICTIONARY, "关卡给 F2（红方攻方）配了 faction_ai")
 	if typeof(fa) == TYPE_DICTIONARY:
-		near(float((fa as Dictionary)["attack_repeat_sec"]), 18.0, 0.001, "出兵间隔 18 秒")
+		ok(float((fa as Dictionary)["attack_repeat_sec"]) > 0.0,
+			"出兵间隔是正数（实际 %s）" % str((fa as Dictionary)["attack_repeat_sec"]))
 		# ★★ `generals` 必须与「世界初始化给这一方建的将领数」一致
 		#   （`world.create_generals` 一次建 3 位）。写小了不会少建、写大了会无限增兵，
 		#   所以这条断言钉的是**两者对得上**，而不是某个具体数字。
@@ -358,18 +376,33 @@ func _group_merge(cfg) -> void:
 			"一波至少派 1 位（实际 %d）" % int((fa as Dictionary)["min_ready"]))
 
 	# 派生入口
-	eq(String((lv.faction_config("E1") as Dictionary)["ai"]), "faction", "faction_config 能读到 ai")
-	eq(String(lv.attack_target_of("E1").get("kind")), "zone", "attack_target_of 读到区划目标")
+	eq(String((lv.faction_config("F2") as Dictionary)["ai"]), "faction",
+		"faction_config 能读到 ai（红方是阵营性 AI）")
+	eq(String(lv.faction_config("F1")["ai"]), "general",
+		"★ 蓝方挂的是将领性（守家）AI —— 只守 c1 周边、不反推")
+	eq(String(lv.attack_target_of("F2").get("kind")), "zone",
+		"attack_target_of 读到红方的进攻目标（指向 c1）")
 	ok(lv.attack_target_of("F1") == null, "没写的阵营 → attack_target 是 null")
 	# ⚠️ 「可玩」是**战役级**属性，而 `_load_level` 造出来的关卡**不属于任何战役**
 	#    （`campaign == null`）—— 所以这里必须用**真的那份战役**来验它。
 	ok(not lv.is_playable("F1"), "没挂战役时谁也谈不上「可玩」（可玩是战役级属性）")
-	ok(not lv.is_playable("E1"), "没挂战役时 E1 也不可玩")
 	var c_demo = CampaignRes.load_campaign(DEMO_DIR, cfg)
 	var lv_demo = c_demo.level("01_beachhead")
 	ok(lv_demo.is_playable("F1"), "样例战役里 F1 可玩")
-	ok(not lv_demo.is_playable("E1"), "样例战役里 E1 不可玩（playable=false）")
-	eq(lv_demo.playable_ids(), ["F1"], "样例关卡可玩阵营 = [F1]（从地图 factions 里也认得出 F1）")
+	ok(lv_demo.is_playable("F2"), "★ 样例战役里 F2 也可玩（两个阵营任选一个）")
+	eq(lv_demo.playable_ids(), ["F1", "F2"], "样例关卡可玩阵营 = [F1, F2]")
+	# ★★ 这个样例关卡是**「选边关」**：两个可玩阵营各有一条属于自己的目标
+	#    （蓝方守 c1 / 红方攻 c1），所以它们**不是**同盟 —— 这正是设计。
+	#    「可玩阵营必须互为同方」那条规则只在**普通关卡**（目标只有一份）上成立，
+	#    见 `logic/level.gd` 的 `_ck_allies()` 第 7 条那两条分支。
+	ok(not FactionRes.same_side_for_attack("F1", "F2"),
+		"★ 选边关里两个可玩阵营是**对立的**（蓝方守 / 红方攻）")
+	# ★ 每条目标都点名给了谁 —— 这是「选谁就打谁那条」的依据
+	ok(lv_demo.has_per_faction_objectives(), "★ 第一关是按阵营分开的目标（选边关）")
+	eq(String(lv_demo.objective_of("F1")["kind"]), "hold_zone", "蓝方的目标是守住")
+	eq(String(lv_demo.objective_of("F2")["kind"]), "capture_zone", "红方的目标是攻占")
+	eq(int(lv_demo.objective_of("F1")["zone"]), int(lv_demo.objective_of("F2")["zone"]),
+		"两边打的是**同一个**区划（c1）")
 
 
 # ------------------------------------------------------------------
@@ -408,18 +441,38 @@ func _group_check(cfg) -> void:
 		[{"players": [{"faction": "F1", "base": [0, 9]}]}, "point_on_mountain"],
 		[{"players": [{"faction": "F1", "base": [99, 99]}]}, "point_outside"],
 		[{"start_units": [{"faction": "E1", "kind": "enemy", "x": 0, "y": 9}]}, "point_on_mountain"],
-		# 7) ★ 可玩阵营必须互为同方
-		[{"allies": [], "_playable": ["F1", "E1"]}, "playable_not_same_side"],
-		# 8) ★ 目标区划开局不归玩家同方 / 无主（空串 = 显式清空那一格的归属）
-		[{"zones": [{"id": 4, "owner": "E1"}]}, "objective_not_players"],
+		# 7) ★ 可玩阵营必须互为同方（**普通关卡**：目标只有一份、走同一方判定）
+		#    ★★ 样例第一关现在是「选边关」（**每个可玩阵营都有带 `for` 的目标**），
+		#    走的是另一条口径（7b）—— 所以这里要用一份**没有 per-faction 目标**的关卡
+		#    来造「两个可玩阵营各占一边」：清掉 `objectives[].for`，让目标变成通用的。
+		[{"allies": [], "_playable": ["F1", "F2"],
+			"objectives": [{"kind": "hold_zone", "zone": 4, "hold_sec": 10}]},
+			"playable_not_same_side"],
+		# 7b) ★★ 选边关：每个可玩阵营都要有属于它的目标（漏一个 = 选了没得打）
+		#    ⚠️ 造这个坏样例要**显式给 `_playable`**：`_load_level` 造出来的关卡
+		#       不属于任何战役 ⇒ `playable` 是空的（`is_playable()` 全 false）——
+		#       不给覆盖的话「可玩阵营」一个都没有，这条规则根本不会被触发。
+		[{"_playable": ["F1", "F2"],
+			"objectives": [{"for": "F1", "kind": "hold_zone", "zone": 4, "hold_sec": 10},
+				{"for": "F3", "kind": "hold_zone", "zone": 5, "hold_sec": 10}]},
+			"playable_no_objective"],
+		# 8) ★ 目标区划开局不归这一方 / 无主（空串 = 显式清空那一格的归属）
+		[{"zones": [{"id": 4, "owner": "F2"}]}, "objective_not_players"],
 		[{"zones": [{"id": 4, "owner": ""}]}, "objective_unowned"],
-		# 9) 目标恰好一项 + 种类 + 秒数 + 区划存在
+		# 8b) ★★ 攻占类的反面：目标区划开局就归自己 ⇒ 一进关就判胜，必须拦。
+		#     用两份 patch（普通关 + 两条带 `for` 的目标里红方那条是 capture_zone）
+		[{"zones": [{"id": 4, "owner": "F2"}],
+			"objectives": [{"for": "F1", "kind": "hold_zone", "zone": 4, "hold_sec": 10},
+				{"for": "F2", "kind": "capture_zone", "zone": 4}]}, "objective_already_mine"],
+		# 9) 目标条数 / 种类 / 秒数 / 区划存在
 		[{"objectives": []}, "objective_empty"],
 		[{"objectives": [{"kind": "hold_zone", "zone": 4, "hold_sec": 10},
 			{"kind": "hold_zone", "zone": 5, "hold_sec": 10}]}, "objective_too_many"],
 		[{"objectives": [{"kind": "hold_zone", "zone": 4, "hold_sec": 0}]}, "objective_hold_sec"],
 		[{"objectives": [{"kind": "hold_zone", "zone": 99, "hold_sec": 10}]}, "objective_zone_missing"],
-		[{"objectives": [{"kind": "capture_zone", "zone": 4, "hold_sec": 10}]}, "objective_kind"],
+		# ⚠️ `capture_zone` 现在是**认识的**种类了（一关两目标用的就是它），
+		#    所以「种类不认识」这条要用一个真的不存在的名字来造。
+		[{"objectives": [{"for": "F2", "kind": "teleport_zone", "zone": 4}]}, "objective_kind"],
 		# 10) 进攻目标：区划不存在 / 地图外 / 山地 / 种类不认识 / 指向没有家的一方
 		[{"factions": [{"id": "E1", "ai": "faction", "base": [18, 10],
 			"attack_target": {"kind": "zone", "zone": 99}}]}, "attack_target_zone"],
@@ -438,8 +491,9 @@ func _group_check(cfg) -> void:
 		# 11b) ★★ 额外失败条件的区划开局也必须归玩家同方（否则第一帧就判负）
 		#     f1（id=6）在样例地图上开场无主 —— 直接拿它当失败条件就是那个坑
 		[{"fail_conditions": [{"kind": "zone_lost", "zone": 6}]}, "fail_zone_unowned"],
-		[{"fail_conditions": [{"kind": "zone_lost", "zone": 3}]}, "fail_zone_not_players"],
-		# 12) 挂了将领性 AI 却没有归属区划
+		# 给 c2（id=3）显式划给敌方 AI（F2）—— 额外失败条件的区划不许开局就归敌人
+		[{"zones": [{"id": 3, "owner": "F2"}],
+			"fail_conditions": [{"kind": "zone_lost", "zone": 3}]}, "fail_zone_not_players"],		# 12) 挂了将领性 AI 却没有归属区划
 		[{"start_units": [{"faction": "E1", "kind": "enemy", "x": 10, "y": 4, "ai": "general"}]},
 			"unit_general_no_zone"],
 		# 13) 关卡摆放里用到的 faction 没有定义
@@ -474,9 +528,10 @@ func _group_check(cfg) -> void:
 
 	# 14/15/16) 三条**警告**（不是拦截）
 	var warn_cases: Array = [
-		# 14) 进攻目标指向自己的地
-		[{"factions": [{"id": "E1", "ai": "faction", "base": [18, 10],
-			"attack_target": {"kind": "zone", "zone": 3}}]}, "attack_target_own_land"],
+		# 14) 进攻目标指向自己的地（把 c1 划给 AI 那一方，它再打 c1 就是打自己的地）
+		[{"zones": [{"id": 4, "owner": "F2"}],
+			"factions": [{"id": "F2", "ai": "faction", "base": [10, 1],
+				"attack_target": {"kind": "zone", "zone": 4}}]}, "attack_target_own_land"],
 		# 16) 盟友表里有未定义的阵营
 		[{"allies": [["F1", "ZZ"]]}, "ally_unknown"],
 	]
@@ -588,9 +643,19 @@ func _load_level(cfg, name: String, patch: Dictionary):
 	if raw.is_empty():
 		return null
 	for k in patch.keys():
-		if String(k) == "_playable":
+		if String(k) == "_playable" or String(k) == "_erase":
 			continue
 		raw[k] = patch[k]
+	# ★★ `_erase`：把继承自样例关卡的那几个键**删掉**，用来验「这个键没写会怎样」。
+	#
+	# 为什么需要一个独立的开关（而不是传 `"allies": []`）：
+	#   补丁是**盖在样例第一关之上**的，所以「不写 allies」这件事没法用补丁表达 ——
+	#   样例第一关现在写了 `allies: [["F1","F2"]]`（两个可玩阵营必须互为同方，校验第 7 条）。
+	#   而 `allies_declared` 判的是**这个键在不在**（`logic/level.gd`），
+	#   传空数组等于「写了但是空的」—— 语义完全不同，会把断言验成另一件事。
+	if patch.has("_erase"):
+		for k2 in (patch["_erase"] as Array):
+			raw.erase(String(k2))
 	var p := "%s/%s/levels/l.json" % [TMP_ROOT, name]
 	_write(p, JSON.stringify(raw))
 	var lv = LevelRes.load_level(null, p, cfg)
@@ -603,6 +668,19 @@ func _load_level(cfg, name: String, patch: Dictionary):
 			ov.append(String(fid))
 		lv.playable_override = ov
 	return lv
+
+
+## 直接写一份**最小**关卡文件（不继承样例关卡的任何东西）。
+##
+## ⚠️ 「缺字段默认值」那一组必须用**这个**，不能用 `_load_level` ——
+##    补丁是盖在样例关卡之上的，样例里写过的键（现在有 `allies`）会悄悄继承下来，
+##    于是「没写 X → 用缺省」这类断言验的其实是「样例里那份 X」。
+func _minimal_level(cfg, name: String, data: Dictionary):
+	var dir := "%s/%s" % [TMP_ROOT, name]
+	_write("%s/campaign.json" % dir, JSON.stringify({"levels": [{"file": "levels/m.json"}]}))
+	_write("%s/levels/m.json" % dir, JSON.stringify(data))
+	var c = CampaignRes.load_campaign(dir, cfg)
+	return c.level_at(0) if c != null else null
 
 
 func _demo_level_raw() -> Dictionary:

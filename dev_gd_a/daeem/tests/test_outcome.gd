@@ -142,7 +142,11 @@ func _group_base(cfg) -> void:
 	eq(String(st["reason"]), ObjectiveRes.R_BASE_DESTROYED, "原因是 base_destroyed")
 	eq(ObjectiveRes.reason_label(st), "大本营被拆", "判负原因有人话文案")
 
-	# ★ 「拆一半不算」：两个玩家席位各一个大本营，拆掉一个**不判负**
+	# ★★ 「任何一个玩家席位被拆 ⇒ 判负」（口径修正，见 objective.gd 的 `_has_any_base`）：
+	#   原来这里是「两个玩家的大本营都被拆才判负（拆一半不算）」—— 那是**同方**口径，
+	#   它有两个问题：① 合作模式里一个人的家没了还能继续打，不像「本关失守」；
+	#   ② 一关两个可玩阵营时，盟友 AI 的家会被当成玩家的家 ⇒ 自家被拆光也不判负。
+	#   现在判据是**席位**：拆掉任何一个 ⇒ 负。
 	var w2 = _make_world_coop(cfg)
 	ok(w2 != null, "能造出双人世界（两个大本营）")
 	if w2 == null:
@@ -150,26 +154,36 @@ func _group_base(cfg) -> void:
 	var st2: Dictionary = w2.objective_state
 	ok(w2.find_base_of("F1") != null and w2.find_base_of("F2") != null,
 		"双人世界两个席位各有一个大本营")
+	eq((st2["defend"] as Array).size(), 2, "两个守方席位都在（F1 + F2）")
 	var b1 = w2.find_base_of("F1")
 	_kill_building(w2, b1)
 	ObjectiveRes.update(w2, cfg, st2, 0.5)
-	eq(String(st2["state"]), "running", "★ 只拆掉一个玩家的大本营 → 不判负（另一个还在）")
-	# 两个都被拆才判负
-	var b2 = w2.find_base_of("F2")
-	_kill_building(w2, b2)
-	ObjectiveRes.update(w2, cfg, st2, 0.5)
-	eq(String(st2["state"]), "lost", "★ 两个大本营都被拆 → 判负")
+	eq(String(st2["state"]), "lost", "★ 拆掉其中一个席位的大本营 → 判负")
 	eq(String(st2["reason"]), ObjectiveRes.R_BASE_DESTROYED, "原因是 base_destroyed")
 
+	# ★ 盟友 AI 的大本营被拆**不算**玩家丢家（只有玩家自己的席位算）
+	var w2b = _make_world_coop(cfg)
+	var st2b: Dictionary = w2b.objective_state
+	# 把 F2 从「守方席位」里摘掉，模拟「F2 是盟友 AI、不是本机席位」
+	st2b["defend"] = ["F1"]
+	var b2only = w2b.find_base_of("F2")
+	_kill_building(w2b, b2only)
+	ObjectiveRes.update(w2b, cfg, st2b, 0.5)
+	eq(String(st2b["state"]), "running",
+		"★ 只拆掉**盟友 AI** 的家 → 不判负（它不在守方席位里）")
+
 	# 拆掉**敌方**大本营不影响胜负（那不是玩家同方的）
+	#
+	# ⚠️ 用 **F2**（红方）当敌方：这一关是「选边关」，F1 与 F2 是对立的
+	#   （样例地图上已经没有 E1 这个第三方了）。判据不变：只拆敌人（非玩家席位）的家 ⇒ 不判负。
 	var w3 = _make_world(cfg, {"objectives": [{"kind": "hold_zone", "zone": OBJ_ZONE, "hold_sec": 100.0}]})
 	var st3: Dictionary = w3.objective_state
-	var eb = w3.find_base_of("E1")
-	ok(eb != null, "E1 也有大本营")
+	var eb = w3.find_base_of("F2")
+	ok(eb != null, "红方 F2 也有大本营")
 	if eb != null:
 		_kill_building(w3, eb)
 	ObjectiveRes.update(w3, cfg, st3, 0.5)
-	eq(String(st3["state"]), "running", "拆敌方的家不判负（判据只看玩家同方）")
+	eq(String(st3["state"]), "running", "拆敌方的家不判负（判据只看玩家席位）")
 
 
 # ------------------------------------------------------------------
@@ -338,10 +352,16 @@ func _make_world(cfg, patch: Dictionary):
 
 
 ## 造一个双人世界（F1 + F2，同方）。
+##
+## ⚠️ `factions` 里**不要**给 F1 / F2 写 `ai`：写了（哪怕写 `none`）就等于
+##   「关卡点名让这两方在这一局不动」，它们就不会被算进守方席位
+##   （`world._setup_ai_factions()` 只把「本机在操作的」与「有 AI 的」分清楚）。
+##   这里要造的是**两个真人合作**，所以只留一个 NPC 敌人 E1 当陪练。
 func _make_world_coop(cfg):
 	var lv = _make_level(cfg, "coop_lv", {
 		"mode": "coop",
 		"players": [{"faction": "F1", "base": [5, 10]}, {"faction": "F2", "base": [5, 1]}],
+		"factions": [{"id": "E1", "ai": "faction", "base": [18, 10]}],
 		"allies": [["F1", "F2"]],
 		"zones": [{"id": OBJ_ZONE, "owner": "F1"}],
 		"objectives": [{"kind": "hold_zone", "zone": OBJ_ZONE, "hold_sec": 1000.0}],

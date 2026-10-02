@@ -35,6 +35,11 @@ extends RefCounted
 
 const ConfigRes = preload("res://logic/config.gd")
 const GridRes = preload("res://logic/grid.gd")
+## 挑巡逻路线上的点时要用它判「这一格能不能站人」（与出生点 / 招募共用同一套判据）。
+const PathfinderRes = preload("res://logic/pathfinder.gd")
+## ★★ 巡逻的**整队命令**走它（`order_group_attack_move`）—— 与玩家 / 阵营 AI 同一条路径，
+##    队形落点与通行判定都在里面，见 `_patrol_group`。
+const CommandProcessorRes = preload("res://logic/command_processor.gd")
 
 
 ## 每帧推进所有「驻防将领」。
@@ -53,9 +58,38 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 	var min_retinue: int = int(gc["min_retinue"])
 	var orders := 0
 
+	# ★★ 每个区划里有几位「要巡逻的将领」（= 巡逻队长；见 `is_patrol_leader`）。
+	#
+	# 为什么要先统计一遍：巡逻路线要**按区划切成几块**（`zone_count` 是切几段），
+	#   而那个数必须在**同一帧里对同一区划的每个人都一致** —— 边遍历边算的话，
+	#   先被访问到的那个拿到的是「还没数完」的数。
+	#   ★ 至于「我分到第几段」——由 `_sector_of()` 按 **id** 稳定派生，不是遍历序号。
+	# ⚠️ 只数「活着 + 有归属区划 + 自己带队」的：附属兵**不算**（它们跟着队长走，
+	#    各算一个的话「同一个区划里几个队长」这个数会虚高、扇区被切得太碎）。
+	# ⚠️ 正在招兵的那些**不算**（它们这一帧不巡逻，算进去会让别人的下标跟着跳）。
+	var patrol_counts: Dictionary = {}
+	for u2 in world.units:
+		if not u2.alive or int(u2.garrison_zone_id) < 0:
+			continue
+		if not is_patrol_leader(world, u2):
+			continue
+		var zid2 := int(u2.garrison_zone_id)
+		patrol_counts[zid2] = int(patrol_counts.get(zid2, 0)) + 1
+
 	for u in world.units:
 		if not u.alive or not u.is_garrison():
 			continue
+		# ★★ 附属兵**不走这一套**：它们不是「守将」，而是队长手下的兵 ——
+		#    队长的巡逻命令会把整队带上（见 `_patrol_leader` 的 `_patrol_group`）。
+		#    ⚠️ 少了这一条就是手玩报的那个 bug：「将领会巡逻，但将领招募出来的
+		#       单位不会巡逻」—— 每个兵各算一个巡逻队长时，它们要么站着不动
+		#       （没有路线可用），要么各走各的（一支小队散成四个人）。
+		if not is_patrol_leader(world, u):
+			continue
+		# ★ 这一方在自己区划里排第几个**不看**（扇区由 `_sector_of()` 按 id 稳定派生）——
+		#   只有「这个区划里有几位要巡逻」这一个数会影响切分。
+		var zid_self := int(u.garrison_zone_id)
+		var zone_count := int(patrol_counts.get(zid_self, 1))
 		# ★ 招募读条期间将领被钉在原地（world._pin_training_leaders），
 		#   这一段它的移动 / 战斗本来就被 world.tick 整段跳过 —— 这里也别再下命令，
 		#   否则那条「走回区划中心」的路径会一直挂着，读条一完就冲出去。
@@ -79,7 +113,7 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 			#    「追出去 → 被叫回来 → 又追出去」原地抖（见 unit.retarget_cd 的说明）。
 			u.retarget_cd = retarget_cd
 			# 追出去了就立刻回去，不等巡逻计时（不然它会站在别人家里等着挨打）
-			_patrol(world, cfg, u, z)
+			_patrol_leader(world, cfg, u, z, zone_count)
 			u.patrol_timer = patrol_interval
 			continue
 
@@ -114,11 +148,11 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 					orders += 1
 					continue      # 刚下单：这一帧别再插一条巡逻命令（会把它顶掉）
 
-		# ---- 5) 巡逻：按时间间隔朝自己区划的中心走一趟 ----
+		# ---- 5) 巡逻：按时间间隔朝**自己路线的下一个点**走 ----
 		u.patrol_timer -= dt
 		if u.patrol_timer <= 0.0:
 			u.patrol_timer = patrol_interval
-			_patrol(world, cfg, u, z)
+			_patrol_leader(world, cfg, u, z, zone_count)
 
 
 ## 每次决策里最多下几条「招兵」指令（护栏）。
@@ -165,27 +199,283 @@ static func _out_of_garrison(world, u, z, leash: float) -> bool:
 	return u.pos.distance_to(center) > leash
 
 
-## 巡逻一趟：朝**自己区划的中心**走。
+## ★★ 这个单位是不是一位「**巡逻队长**」（= 该自己带队巡逻的那个）。
 ##
-## ★ 为什么是区划中心而不是「随机挑一格」：中心的语义是稳定的（地图作者指定的那个点），
-##   而且它一定在区划里 —— 随机挑格会挑到区划边缘甚至别的区划里去。
-## ★ 用 `order_move`（明确命令）而不是 `move_to`：需求要的是「巡逻」——
-##   路上遇到敌人**不**主动迎战，靠警戒（静止时的索敌）接敌。这是刻意的：
-##   真正的守将不该被路过的敌人牵着走。
-## ★ 已经站在中心附近（半格内）就不下命令：否则每 4 秒重算一次路径，白费。
-static func _patrol(world, cfg: ConfigRes, u, z) -> void:
-	var tile: Vector2i = _patrol_tile(world, u, z)
+## 判据两条：
+##   1. 有归属区划（`is_garrison()`）；
+##   2. **自己带队**：没有队长，或者队长已经不在了（阵亡 / 被清场）。
+##
+## ★★ 为什么要这一条（手玩报的 bug）：将领性 AI 原先的循环是「所有 `is_garrison()`
+##   的单位各自巡逻」—— 而将领**招出来的兵**只要跟着沾上归属区划，就会各算一个
+##   巡逻队长：它们要么因为路线算不出来而站着不动，要么四个人朝四个方向走，
+##   一支小队散成一盘沙。正确的模型是「**一个队长带队**，兵跟着队长的命令走」。
+##
+## ★ 队长阵亡之后**不**让那一队站死：`world.team_leader()` 查不到队长 ⇒ 剩下的兵
+##   自己接手巡逻（那一块地照样有人守）。
+static func is_patrol_leader(world, u) -> bool:
+	if u == null or not u.alive:
+		return false
+	if int(u.garrison_zone_id) < 0:
+		return false
+	return world.team_leader(u) == null
+
+
+## 巡逻一趟：**整队**（队长 + 辖下附属兵）朝自己路线的下一个点走。
+##
+## ★★ 这一版（docs/route.md 39.2）把「只有将领一个人走」改成**整队一起走**：
+##   命令走 `CommandProcessorRes.order_group_attack_move` —— 与玩家「选中整队再点地图」
+##   和阵营 AI「派一批将领出征」是**同一条**路径（队形落点、避开障碍都由它保证），
+##   所以不会出现「将领在前面走、兵在后面杵着」。
+##   ⚠️ 之前只调 `u.order_move()`：那是**单个单位**的命令，附属兵根本收不到。
+##
+## ★ 路线仍是每位队长一条（`patrol_points` 个点，由 `_ensure_route()` 用
+##   **单位 id 派生的固定种子**在自己的归属区划里挑出来），走到尽头折返。
+## ★ 为什么用行军攻击（attack move）而不是普通移动：巡逻中的守军**路上遇敌要打**
+##   （需求里「警戒到敌人会发动攻击」那条），而行军攻击正好是「边走边打」；
+##   普通移动是「明确命令、遇敌不停」，用在守军身上会变成被路过的敌人白打一顿。
+## ★ 已经站在目标点附近（半格内）就**直接跳到下一个点**：否则每几秒重算一次路径，白费。
+##
+## @param zone_count 同一区划里**要巡逻的队长总数**（用来把区划切成几个扇区）
+static func _patrol_leader(world, cfg: ConfigRes, u, z, zone_count: int) -> void:
+	var tile: Vector2i = _next_patrol_tile(world, cfg, u, z, zone_count)
 	if tile.x < 0:
 		return
 	var pt: Vector2 = GridRes.center_of(tile)
-	if u.pos.distance_to(pt) <= 0.5:
+	if u.pos.distance_to(pt) > 0.5:
+		_patrol_group(world, cfg, u, pt)
+	# ★★ 即使队长**已经站在**这个点上（这一趟不挪窝），也要检查一次队里有没有人掉队：
+	#    「队长到了、兵还落在后面」正是最常见的掉队形态，只在队长移动时才检查的话
+	#    那几个人会一直站在半路（它们没有新命令，旧的 goal 早就到了）。
+	_catch_up_retinue(world, cfg, u, pt)
+
+
+## 让**整队**朝 `pt` 走（队长 + 它辖下活着的附属兵）。
+##
+## ★ 队形槽位由命令层算：`group.size() >= unit.formation.min_units`（默认 4）时排阵，
+##   否则逐个下 —— 「一个将领 + 3 个兵」正好是 4 个，所以默认就会排开，
+##   不会四个人挤在同一个格子上。
+static func _patrol_group(world, cfg: ConfigRes, u, pt: Vector2) -> void:
+	var group: Array = [u]
+	for m in _retinue_of(world, u):
+		group.append(m)
+	# ⚠️ 用命令层那一条（而不是自己写循环调 order_move）：
+	#    队形 / 落点挑选 / 通行判定全在它里面，抄一份出来迟早会漂开。
+	if not CommandProcessorRes.order_group_attack_move(world, cfg, group, pt):
+		# 兜底：命令层整队那条失败（理论上到不了）时，至少别让队长站着不动。
+		u.order_attack_move(world, cfg, pt)
+
+
+## 队里有没有人掉队 —— 有就重新下一次整队命令（把它们叫上）。
+##
+## ★★ 为什么需要它：巡逻是**一步一个命令**的，命令只在「队长走到某个点那一帧」下。
+##   路上要是有人被地形卡住、被别人挤开、或者去追了一下路过的敌人，
+##   它就会**永远**停在那儿（它自己的目标早就到了，没有任何新命令会再来）。
+##
+## ★ 判据两条，**都成立**才算掉队（这是为了不打断正在赶路的兵）：
+##   1. 离队长超过 `patrol_retinue_leash_tiles` 格（默认 3 —— 队形槽位本身就有
+##      一格间距，卡太紧会让每一步都重下一遍命令、整队一直在互相挤）；
+##   2. 它**没有在朝目标走**（停着，或者动了半天离自己的目标还是那么远）。
+##      ⚠️ 少了第 2 条就会「把一个正在努力爬山的兵每秒打断一次」——
+##      重新下命令会把它的路径重算一遍，反而更慢。
+## ★ 只对**附属兵**做这件事：队长自己的位置由路线决定，不需要被谁叫。
+static func _catch_up_retinue(world, cfg: ConfigRes, u, pt: Vector2) -> void:
+	var gc: Dictionary = cfg.ai_general_cfg()
+	var leash: float = float(gc.get("patrol_retinue_leash_tiles", 3.0))
+	var missing := false
+	for m in _retinue_of(world, u):
+		if m.pos.distance_to(u.pos) <= leash:
+			continue
+		if not m.moving or m.path.is_empty() or m.pos.distance_to(m.goal) >= m.best_dist:
+			# 停着 / 没有路径 / 走了半天离目标还是那么远 ⇒ 它到不了，重新叫一次
+			missing = true
+			break
+	if missing:
+		_patrol_group(world, cfg, u, pt)
+
+
+## 某位队长**还活着**的附属兵（`world.retinue_of` 的薄封装，只为少写一遍 id 转换）。
+static func _retinue_of(world, u) -> Array:
+	return world.retinue_of(String(u.id))
+
+
+## 下一个巡逻点（网格坐标；`x < 0` = 这一帧没有可去的点）。
+##
+## ⚠️ 顺序：先确保路线存在 → 看当前那个点到了没 → 到了就推进下标（折返）→ 返回那个点。
+static func _next_patrol_tile(world, cfg: ConfigRes, u, z, zone_count: int) -> Vector2i:
+	_ensure_route(world, cfg, u, z, zone_count)
+	if u.patrol_points.is_empty():
+		return _patrol_fallback_tile(world, u, z)
+	var tile: Vector2i = u.patrol_points[clampi(u.patrol_index, 0, u.patrol_points.size() - 1)]
+	# 已经到了 → 换下一个（走到底就折返，而不是从第一个重来：那样会在两端"瞬移"）
+	if u.pos.distance_to(GridRes.center_of(tile)) <= 0.5:
+		_advance_patrol_index(u)
+		tile = u.patrol_points[clampi(u.patrol_index, 0, u.patrol_points.size() - 1)]
+	return tile
+
+
+## 把巡逻下标推进一格；到头折返。
+static func _advance_patrol_index(u) -> void:
+	if u.patrol_points.size() <= 1:
+		u.patrol_index = 0
+		u.patrol_dir = 1
 		return
-	u.order_move(world, cfg, pt)
+	var nxt: int = int(u.patrol_index) + int(u.patrol_dir)
+	if nxt < 0 or nxt >= u.patrol_points.size():
+		u.patrol_dir = -int(u.patrol_dir)
+		nxt = int(u.patrol_index) + int(u.patrol_dir)
+	u.patrol_index = clampi(nxt, 0, u.patrol_points.size() - 1)
 
 
-## 巡逻目标格：优先自己区划的中心，没有中心就退回「区划里第一个地块」。
-## 区划整个找不到 → 退回大本营坐标（不然守将会因为没有目标而彻底不动）。
-static func _patrol_tile(world, u, z) -> Vector2i:
+## ★★ 这位守将的巡逻路线：**没算过、或换了区划**时算一次，之后一直复用。
+##
+## 判据用 `patrol_zone_id`（路线是给哪个区划算的）：-2 = 从没算过。
+## ⚠️ 路线存在**单位自己身上**（`unit.patrol_points`），不进快照 ——
+##   客机不跑 AI，也用不到它（与 `patrol_timer` 那些一样是权威侧的状态）。
+static func _ensure_route(world, cfg: ConfigRes, u, z, zone_count: int) -> void:
+	if u.patrol_zone_id == u.garrison_zone_id and not u.patrol_points.is_empty():
+		return
+	u.patrol_zone_id = u.garrison_zone_id
+	u.patrol_points = _build_route(world, cfg, u, z, zone_count)
+	u.patrol_index = 0
+	u.patrol_dir = 1
+
+
+## 在某位守将的**归属区划**里挑 `patrol_points` 个能站人的点。
+##
+## ★★ 做法（两层「分开」）：
+##   1. **按人切扇区**：把区划的地块列表切成 `zone_count` 段，这位守将只在自己那一段里挑点
+##      —— 于是同一区划的几位守将**各占一块**（不会几个人都围着中心转，实测那会互相重叠）。
+##      ⚠️ 分到第几段由 `_sector_of()` **按 id 稳定派生**（不是遍历序号）；
+##   2. **段内随机**：在自己那一段里用**由单位 id 派生的固定种子**随机挑锚点，再在
+##      `patrol_spread_tiles` 格内挑其余的点 —— 于是路线看起来是乱的、不是整齐划一。
+##
+## ⚠️ 一格都挑不出来（扇区里全是山地 / 建筑）→ 退回**整个区划**再挑一次；
+##    再挑不出来就返回空数组，调用方退回老口径（区划中心 / 大本营）。
+static func _build_route(world, cfg: ConfigRes, u, z, zone_count: int) -> Array[Vector2i]:
+	var out: Array[Vector2i] = []
+	if z == null or world == null:
+		return out
+	var tiles: Array = (z as Dictionary).get("tiles", [])
+	if tiles.is_empty():
+		return out
+	var rng := RandomNumberGenerator.new()
+	rng.seed = _route_seed(String(u.id), String(u.faction))
+	var want: int = maxi(1, int(cfg.ai_general_cfg().get("patrol_points", 3)))
+	var spread: float = maxf(1.0, float(cfg.ai_general_cfg().get("patrol_spread_tiles", 3.0)))
+
+	# 1) 先在自己那个扇区里挑（扇区序号由 **id 稳定派生**，见下）
+	var slice: Array = _sector_tiles(tiles, zone_count, _sector_of(u, zone_count))
+	if not slice.is_empty():
+		out = _pick_points(world, cfg, u, slice, rng, want, spread)
+	# 2) 扇区里挑不出来（全是障碍 / 扇区太小）→ 退回整个区划挑一次，
+	#    免得那位守将彻底不巡逻（它是「有归属区划但不走」的静默失败）
+	if out.is_empty():
+		out = _pick_points(world, cfg, u, tiles, rng, want, spread)
+	return out
+
+
+## ★★ 这位守将分到第几个扇区：**由单位 id 稳定派生**，不看「它是第几个被遍历到的」。
+##
+## ⚠️⚠️ 为什么不能用遍历序号（实测踩到）：路线的确定性是**硬要求**（存档 / 回放），
+##   而遍历序号会随着「别人死没死 / 有没有在招兵 / 集合顺序」变化 ——
+##   同一个单位重算一次就可能换到另一个扇区，于是「同 id ⇒ 同路线」不成立。
+##   改成 id 派生之后：**同一个单位永远在自己那块地里巡逻**，
+##   不管同区划里还有几个人、也不管谁先被访问。
+##
+## ★ 不同的 id 会散到不同扇区（`_route_seed` 是稳定哈希）；万一两个人撞进同一扇区，
+##   它们仍然会因为**种子不同**而走出不同的路线（只是地盘重叠，不会并排走）。
+static func _sector_of(u, zone_count: int) -> int:
+	if zone_count <= 1:
+		return 0
+	return _route_seed(String(u.id), String(u.faction)) % zone_count
+
+
+## 把区划的地块切成 `count` 段，返回第 `index` 段。
+##
+## ⚠️ **不排序**：直接按原顺序切片 —— 地图的 `tiles` 顺序是按行扫出来的
+##   （`zone_list[].tiles` 由生成器逐行 append），所以天然连续；
+##   排一次序反而会让「同一段」散成好几片（区划是矩形时也一样连续，但没必要冒险）。
+## ⚠️ 段大小至少 1（地块数比守将数还少时，后面的守将会拿到空段 → 由调用方退回全区划）。
+static func _sector_tiles(tiles: Array, count: int, index: int) -> Array:
+	var n: int = tiles.size()
+	if count <= 1 or n <= 0:
+		return tiles
+	var per: int = maxi(1, int(ceil(float(n) / float(count))))
+	var from: int = clampi(index * per, 0, n)
+	var to: int = clampi(from + per, 0, n)
+	if from >= to:
+		return []
+	return tiles.slice(from, to)
+
+
+## 在给定的一批地块里挑 `want` 个点（锚点 + 周围限距内的点）。
+##
+## ⚠️ 锚点必须**可通行且没有建筑**：巡逻点落在山地上会让守将永远走不到（路径找不到），
+##   落在建筑上会卡在建筑里（与出生点同一条判据，见 `_zone_spawn_tile`）。
+static func _pick_points(world, cfg: ConfigRes, u, tiles: Array, rng: RandomNumberGenerator,
+		want: int, spread: float) -> Array[Vector2i]:
+	var out: Array[Vector2i] = []
+	if tiles.is_empty():
+		return out
+	var anchor := Vector2i(-1, -1)
+	var start: int = rng.randi_range(0, tiles.size() - 1)
+	for k in tiles.size():
+		var t: Vector2i = tiles[(start + k) % tiles.size()]
+		if _can_stand(world, cfg, u, t):
+			anchor = t
+			break
+	if anchor.x < 0:
+		return out
+	out.append(anchor)
+	var start2: int = rng.randi_range(0, tiles.size() - 1)
+	for k in tiles.size():
+		if out.size() >= want:
+			break
+		var t2: Vector2i = tiles[(start2 + k) % tiles.size()]
+		if not _can_stand(world, cfg, u, t2):
+			continue
+		var d_anchor := Vector2(t2 - anchor).length()
+		if d_anchor > spread or d_anchor < 1.0:
+			continue
+		var too_close := false
+		for p in out:
+			if Vector2(t2 - p).length() < 1.0:
+				too_close = true
+				break
+		if too_close:
+			continue
+		out.append(t2)
+	return out
+
+
+## 这一格能不能站人（可通行 + 没有建筑）。
+static func _can_stand(world, cfg: ConfigRes, u, t: Vector2i) -> bool:
+	if not PathfinderRes.passable(world.map, world.buildings, cfg, t.x, t.y, String(u.faction)):
+		return false
+	return world.building_at(t.x, t.y) == null
+
+
+## ★★ 巡逻路线的种子：**由单位 id 派生**，而不是取引擎随机数。
+##
+## 为什么必须这样（这是本项目的硬规矩，见 dev_plan_7 3.10）：
+##   「出兵成形与 AI 决策**都不许**用『随机数决定结果』」——
+##   房主权威下客机不需要确定性，但**存档 / 回放需要**：
+##   同一份关卡 + 同一份快照必须还原出同一个世界。
+##   ⇒ 用**确定性伪随机**（种子只来自稳定的数据）：看起来杂乱，
+##     但同一个单位在同一局里每次算出来的路线**完全一样**，重复跑也不变。
+##
+## ⚠️⚠️ **不能**用 `String.hash()`：Godot 的字符串哈希在**不同进程之间不一样**
+##   （实测：同 id 的守将两次算出完全不同的路线）—— 那样「确定性」是假的，
+##   存档 / 回放会漂。所以自己按**字符码**做一个稳定的小哈希（只用整数运算）。
+static func _route_seed(unit_id: String, faction: String) -> int:
+	var h: int = 2166136261            # FNV-1a 的 32 位偏移基数
+	for i in (unit_id + "|" + faction).length():
+		h = ((h ^ int((unit_id + "|" + faction).unicode_at(i))) * 16777619) & 0x7FFFFFFF
+	return h
+
+
+## 路线算不出来时的兜底：老口径 —— 区划中心，其次区划第一格，最后大本营。
+static func _patrol_fallback_tile(world, u, z) -> Vector2i:
 	if z != null:
 		var c: Variant = (z as Dictionary).get("center", null)
 		if c != null:

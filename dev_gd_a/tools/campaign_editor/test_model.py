@@ -368,7 +368,10 @@ def t_load_and_roundtrip() -> None:
     eq(model.unlock, "in_order", "解锁方式")
     eq([lv.level_id for lv in model.levels], ["01_beachhead", "02_twin_line"],
        "关卡顺序 = levels[] 的顺序（不是文件名字典序）")
-    eq(model.playable_ids(), ["F1"], "可玩阵营 = campaign.json 里 playable 的那些（样例战役是 F1）")
+    # ★★ 样例战役有**两个**可玩阵营（F1 赤军 / F2 金军）—— 用户在关卡里挑一个来玩，
+    #    没被选中的那一个由阵营 AI 接管（见 docs/route.md 37.18）。
+    eq(model.playable_ids(), ["F1", "F2"],
+       "可玩阵营 = campaign.json 里 playable 的那些（样例战役是 F1 与 F2）")
     eq(model.levels[0].mode, M.MODE_SOLO, "第一关是单人")
     eq(model.levels[1].mode, M.MODE_COOP, "第二关是合作")
     ok(model.levels[1].allies, "第二关的 allies 读进来了（两两一对）")
@@ -462,9 +465,9 @@ def t_override_rules() -> None:
     #   （实测：把 c1/c2 改成连续之后大本营挪到了 (4,5)/(16,5)，这几条当场假红）。
     #   要钉的是「读进来了、而且与地图 JSON 里那一份一致」。
     map_base_f1 = info.faction_base("F1")
-    map_base_e1 = info.faction_base("E1")
-    ok(map_base_f1 is not None and map_base_e1 is not None,
-       "★ 地图自带两个阵营的大本营（F1=%s / E1=%s）" % (map_base_f1, map_base_e1))
+    map_base_f2 = info.faction_base("F2")
+    ok(map_base_f1 is not None and map_base_f2 is not None,
+       "★ 地图自带两个阵营的大本营（F1=%s / F2=%s）" % (map_base_f1, map_base_f2))
     eq(info.zone_owners.get(0), "F1", "地图自带 b1 的开局归属")
     ok(4 not in info.zone_owners, "地图上 c1 开局无主（没写 owner）")
     eq(info.allies, [], "样例地图没有 allies")
@@ -473,7 +476,7 @@ def t_override_rules() -> None:
     lv = M.LevelModel("bare", "dongzheng")
     lv.name = "bare"
     eq(lv.factions, [], "关卡没写 factions：列表是空的（运行时用地图的）")
-    eq(M._base_of(lv, info, "E1"), map_base_e1, "★ 关卡没写大本营 → 落回地图的")
+    eq(M._base_of(lv, info, "F2"), map_base_f2, "★ 关卡没写大本营 → 落回地图的")
     eq(M._initial_zone_owner(lv, info, 0), "F1", "★ 关卡没写 zones → 用地图的归属")
     eq(M._initial_zone_owner(lv, info, 4), "", "★ 地图上无主的区划 → 空串（不是 None）")
     eq(M._effective_allies(lv, info), [], "★ 关卡没写 allies → 用地图的（这里是空表）")

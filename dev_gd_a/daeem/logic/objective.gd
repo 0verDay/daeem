@@ -45,23 +45,28 @@ const R_ZONE_LOST := "zone_lost"
 ##
 ## @param world 世界
 ## @param level `logic/level.gd` 的 Level（**可以是 null**：不做战役的老路径 / 测试）
-## @param seats 本局的玩家席位（faction id 数组；空 → 用 `world.my_faction` 兜底）
-## @return Dictionary 目标状态（同时挂到 `world.objective_state` 上）
+## @param seats 本局的**本地席位**（合作模式两个；判定「谁的家算玩家的家」用它）
+## @param seat_arg ★ **本机在操作的那一方**（决定「打哪条目标」）。
+##        缺省 = `seats[0]`（老调用不受影响）。
 ##
-## ★★ `level == null` 时返回**空状态**（`kind == ""` / `state == "running"`）：
-##    于是「不做战役」的那条老路径上，`update()` 每一帧只多一次 `kind == ""` 判断，
-##    **一个玩法行为都不受影响** —— 这是「向后兼容」那一条在逻辑层的写法。
-static func setup(world, level, seats: Array) -> Dictionary:
+## ⚠️⚠️ 为什么 `seat_arg` 必须能单独传（实测踩到）：合作模式下 `seats` 是两个席位
+##    （两个都是人）；而「选边关」里本地席位名单是 `[我选的那一方, 另一边]`，
+##    其中**只有第一个是本机操作的**。如果在这里靠「第一个不是 AI 的席位」去猜目标，
+##    选红方时会猜成蓝方 ⇒ 红方拿到「守住 c1」；而且 `defend` 会把**两边**都算成
+##    「玩家的家」⇒ 蓝方无人指挥（玩家不动它、AI 又不管它）⇒ 红方一路平推。
+## @return Dictionary 目标状态（同时挂到 `world.objective_state` 上）
+static func setup(world, level, seats: Array, seat_arg: String = "") -> Dictionary:
 	var st := _empty_state()
 	if level == null:
 		world.objective_state = st
 		return st
 
-	var seat := ""
-	if not seats.is_empty():
-		seat = String(seats[0])
-	elif world != null:
-		seat = String(world.my_faction)
+	var seat := seat_arg
+	if seat == "":
+		if not seats.is_empty():
+			seat = String(seats[0])
+		elif world != null:
+			seat = String(world.my_faction)
 
 	# 玩家同方的全部席位（合作：两个玩家都在这一份里）
 	var mine: Array = []
@@ -75,12 +80,23 @@ static func setup(world, level, seats: Array) -> Dictionary:
 	st["seat"] = seat
 	st["reason"] = ""
 
-	# ---- 目标：**恰好取第一项**（校验会保证只有一项）----
-	if not level.objectives.is_empty():
-		var o: Dictionary = level.objectives[0]
-		st["kind"] = String(o.get("kind", ""))
-		st["zone"] = int(o.get("zone", -1))
-		st["sec"] = float(o.get("hold_sec", 0.0))
+	# ---- 目标：★★ **按本机席位取属于它的那一条** ----
+	#
+	# 一关可以有两条目标（蓝方守住 / 红方攻占），选谁就取谁那条
+	# （`logic/level.gd` 的 `objective_for()`；没有点名的那条是所有玩家通用的）。
+	# ⚠️ 老数据（一条目标、没有 `for`）走的是同一个函数 ⇒ 行为逐位不变。
+	if level.has_method("objective_for"):
+		var o: Variant = level.objective_for(seat)
+		if typeof(o) == TYPE_DICTIONARY:
+			var od: Dictionary = o
+			st["kind"] = String(od.get("kind", ""))
+			st["zone"] = int(od.get("zone", -1))
+			st["sec"] = float(od.get("hold_sec", 0.0))
+	elif not level.objectives.is_empty():
+		var o2: Dictionary = level.objectives[0]
+		st["kind"] = String(o2.get("kind", ""))
+		st["zone"] = int(o2.get("zone", -1))
+		st["sec"] = float(o2.get("hold_sec", 0.0))
 
 	# ---- 额外的失败条件（第一批只有 zone_lost）----
 	var fc: Array = []
@@ -91,7 +107,10 @@ static func setup(world, level, seats: Array) -> Dictionary:
 		fc.append(int(d.get("zone", -1)))
 	st["fail"] = fc
 
-	# ---- 开局兜底：目标区划开局就必须归玩家同方（否则第一帧就得判负）----
+	# ---- 开局兜底：**守住**类的目标，区划开局就必须归玩家同方 ----
+	#      （否则第一帧就成立「不再归我方」⇒ 第一帧判负）
+	# ★ `capture_zone`（攻占）**不做这个兜底** —— 它要求的正好相反（区划在敌手里）。
+	#   这一条由 `level._ck_allies()` 的第 8 条按目标种类分开拦。
 	if st["kind"] == "hold_zone":
 		var owner := zone_owner(world, int(st["zone"]))
 		if owner == "":
@@ -100,6 +119,12 @@ static func setup(world, level, seats: Array) -> Dictionary:
 		elif seat != "" and not _mine_side(owner, mine):
 			st["state"] = STATE_LOST
 			st["reason"] = R_OBJECTIVE_NEVER
+	elif st["kind"] == "capture_zone":
+		# 兜底反面：数据写错（目标区划开局就归自己）时**别静默判胜**，留一条痕迹。
+		var owner2 := zone_owner(world, int(st["zone"]))
+		if owner2 != "" and seat != "" and _mine_side(owner2, mine):
+			push_warning("「占领 %s」的目标区划开局就归玩家自己：一进关就会判胜（数据写错了）"
+				% str(int(st["zone"])))
 
 	world.objective_state = st
 	return st
@@ -111,8 +136,14 @@ static func setup(world, level, seats: Array) -> Dictionary:
 ## @param cfg 配置
 ## @param st  `setup()` 返回的那一份状态（也等于 `world.objective_state`）
 ## @param dt  这一帧的秒数
+##
+## 两种目标：
+##   · `hold_zone`（守住 N 秒）：累加 → 守满判胜；**丢掉即判负**。
+##   · `capture_zone`（攻占）：区划归属翻成玩家同方的那一帧**立刻判胜**；
+##     丢了不算输（本来就是对攻，允许反复）。
 static func update(world, cfg, st: Dictionary, dt: float) -> void:
-	if st.is_empty() or String(st.get("kind", "")) != "hold_zone":
+	var kind := String(st.get("kind", ""))
+	if st.is_empty() or (kind != "hold_zone" and kind != "capture_zone"):
 		return
 	if String(st.get("state", STATE_RUNNING)) != STATE_RUNNING:
 		return                              # 已经结算：不再改判（界面读它播报一次）
@@ -121,6 +152,16 @@ static func update(world, cfg, st: Dictionary, dt: float) -> void:
 
 	var zone := int(st.get("zone", -1))
 	var mine: Array = st.get("defend", [])
+
+	# 0) ★★ 攻占类：**归属翻过来的那一帧就赢**（不等下一帧、也不要求再守多久）
+	if kind == "capture_zone":
+		var own_now := zone_owner(world, zone)
+		if own_now != "" and _mine_side(own_now, mine):
+			st["held"] = float(st.get("held", 0.0)) + dt
+			st["state"] = STATE_WON
+			return
+		# 还没打下来：继续。★ 丢了**不算输**（对攻关卡允许反复争夺）。
+		return
 
 	# 1) ★ 丢掉即判负（在累加之前判：这一帧已经不归我了，就不该再记 0.1 秒）
 	var owner := zone_owner(world, zone)
@@ -138,8 +179,8 @@ static func update(world, cfg, st: Dictionary, dt: float) -> void:
 		st["state"] = STATE_WON
 		return
 
-	# 4) ★ 常开：玩家同方的大本营**全部**被拆 ⇒ 负（拆一半不算）
-	if not _has_any_base(world, mine):
+	# 4) ★ 常开：玩家席位的**任何一个**大本营被拆 ⇒ 负（见 `_all_seat_bases_alive`）
+	if not _all_seat_bases_alive(world, mine):
 		st["state"] = STATE_LOST
 		st["reason"] = R_BASE_DESTROYED
 		return
@@ -249,16 +290,40 @@ static func _mine_side(owner: String, mine: Array) -> bool:
 	return false
 
 
-## 玩家同方**还有没有**大本营（一个都没有 → 全部被拆）。
+## 玩家**每一个席位**的大本营是不是都还在（有一个没了 → 它被拆了 → 判负）。
 ##
-## ★ 判据是「同方里有**任意一个**大本营还活着」—— 合作模式下两个人各有大本营，
-##   一个被拆不算输（另一个还在），两个都被拆才算。
-static func _has_any_base(world, mine: Array) -> bool:
+## ★★ 判据是**席位**，不是「同方」（实测踩到，两个理由）：
+##
+## 1. **同方会把盟友 AI 的家算进来**：一关可以有两个都可玩的阵营，玩家选一个、
+##    另一个由盟友 AI 接管（`world.player_seats` 里有它，但 `player_factions` 里没有）。
+##    用 `same_side` 判的话，玩家自己的家被拆光之后只要盟友的家还在就**永远不判负** ——
+##    「大本营被拆 = 判负」这条常开规则就被静默废掉了。
+## 2. **口径是「任何一个都没了 ⇒ 负」**，不是「全部都没了」：
+##    合作模式里两个人各一个大本营，其中**任何一个**被拆 = 这一路已经守不住了，
+##    所以当场判负（用户拍板：「自己那一个被拆就输」）。
+##    ⚠️ 别写成「还有任意一个活着就放行」—— 那样拆掉一个玩家席位的大本营不会判负，
+##       表现就是「家没了还能继续打」（实测踩到：`running`，期望 `lost`）。
+##
+## ⇒ 「同方」仍然管另外两件事：**目标区划归谁**（盟友守的也算）与**共享视野**。
+##   两处不能混用同一个判据。
+static func _all_seat_bases_alive(world, defend: Array) -> bool:
 	if world == null:
+		return false
+	if defend.is_empty():
+		return false
+	for s in defend:
+		if not _has_base_of(world, String(s)):
+			return false
+	return true
+
+
+## 某一方在场上还有没有活着的大本营。
+static func _has_base_of(world, faction: String) -> bool:
+	if faction == "":
 		return false
 	for b in world.building_list:
 		if not b.alive or String(b.type) != BuildingRes.TYPE_BASE:
 			continue
-		if _mine_side(String(b.owner), mine):
+		if String(b.owner) == faction:
 			return true
 	return false

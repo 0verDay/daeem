@@ -138,11 +138,31 @@ func start_level(campaign, level, my_faction: String) -> bool:
 		push_error("关卡是 null，战役无法启动")
 		return false
 
-	# ★ roster 传**空数组**：`create_from_level` 会用关卡 `players[]` 的**席位顺序**
-	#   （单人关就是那一个席位；合作关才会需要显式传两个 —— 那是后面的轮次）。
-	#   ⚠️ 传错成 `[my_faction]` 在单人关上结果一样，但合作关上会让「第二个席位
-	#      没有资源池」，所以这里宁可把「席位顺序由关卡说了算」这件事讲清楚。
-	world = WorldRes.create_from_level(cfg, level, my_faction, [], true)
+	# ★★ roster = **本机负责的席位**（不是「玩家操作的那一方」）。它由两半拼出来：
+	#
+	#   ① 关卡 `players[]` 声明的席位（`level.seats()`）——
+	#      一关可以有**两个都可玩的阵营**（样例第一关 F1 / F2）：玩家挑一个来玩，
+	#      但**两个阵营都要有自己的大本营与属地**（选谁就从谁的家开打）。
+	#   ② 关卡点名要挂 AI 的参展阵营里、**本机也要负责**的那些 ——
+	#      也就是「给玩家当选择、但玩家没选它」的那一方（它照样要有家）。
+	#      ⚠️ 真正的 NPC 敌人（E1）**不进** roster：它由 `world._setup_ai_factions()`
+	#         自己加进这一局的名单，不需要本机认领（认领了反而会被当成玩家的家判负）。
+	#
+	# `my_faction` 才是「本机**操作**哪一方」：没被选中的那一方由**盟友 AI** 接管 ——
+	# 判据在 `world._setup_ai_factions()` / `_is_ai_piloted()`，它们看
+	# `world.player_factions`（= 只有 `my_faction`），**不是** roster。
+	#
+	# ⚠️ 不要改成 `[my_faction]`：那样另一个阵营连大本营都不会建，地图上根本没有它
+	#    （实测：选 F2 时 F2 的 base = (-1,-1) ⇒ 开局直接 `objective_never_held` 判负）。
+	# ⚠️ 也不要只传 `level.seats()`：样例第一关的 `players[]` 只声明了 F1 一个席位，
+	#    另一个可玩阵营 F2 就没家了（实测：选 F2 时它的 base 是 (-1,-1)）。
+	#
+	# ★★ **我选的那一方放第一个**（`build_roster` 的第三个参数）：
+	#    `objective.setup()` 用**第一个席位**决定「这一局打哪条目标」——
+	#    选红方时 roster 是 [F2, F1]，取到的就是红方那条「占领 c1」，
+	#    而不是蓝方那条「守住 c1」。顺序本身就是一条契约，别随手改。
+	var roster: Array = build_roster(level, cfg, my_faction)
+	world = WorldRes.create_from_level(cfg, level, my_faction, roster, true)
 	if world == null:
 		push_error("关卡装配失败，游戏无法启动（地图 = %s）" % String(level.map_id))
 		return false
@@ -163,6 +183,38 @@ func start_level(campaign, level, my_faction: String) -> bool:
 
 	return true
 
+
+## ★★ 本局的**席位名单**（本机负责的阵营，顺序有讲究）。
+##
+## 拼法 = 关卡 `players[]` 声明的席位 + 「**可玩**、且关卡点名要挂 AI」的那几个
+##        （后者就是「另一个可选阵营」：它的家也要建出来，但不本机操作）；
+##        最后把 `my_faction` 提到**第一位**。
+##
+## ⚠️⚠️ 顺序不是小事：`objective.setup()` 取**第一个席位**决定「这一局打哪条目标」。
+##    一关可以配两条目标（蓝方「守住 c1」/ 红方「占领 c1」），选红方时
+##    roster 必须是 `[F2, F1]` —— 否则红方会拿着蓝方的目标进关。
+##
+## ⚠️ 真正的 NPC 敌人（样例的 E1）**不进**这份名单：它由 `world._setup_ai_factions()`
+##    自己加进这一局；认领了反而会被当成「玩家的家」而影响判负。
+##
+## 抽成静态函数是为了能**被无头测试直接调**（`start_level` 要建场景树，测试里跑不了）——
+## `tests/test_campaign_seats.gd` 钉着它，免得两处口径漂开。
+static func build_roster(level, cfg, my_faction: String) -> Array:
+	var roster: Array = level.seats()
+	for e in level.merged_ai_factions(cfg.ai_factions()):
+		var fid := String((e as Dictionary).get("id", ""))
+		if fid == "" or roster.has(fid):
+			continue
+		if level.is_playable(fid):
+			roster.append(fid)
+	if roster.is_empty():
+		roster.append(my_faction)
+	# ★ 把「我在操作的那一方」提到第一位（它必须是第一个席位）
+	var idx: int = roster.find(my_faction)
+	if idx > 0:
+		roster.remove_at(idx)
+		roster.push_front(my_faction)
+	return roster
 
 func _build_view() -> void:
 	cam = Camera2D.new()

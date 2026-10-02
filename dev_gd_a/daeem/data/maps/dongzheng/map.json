@@ -1246,8 +1246,7 @@
           23,
           2
         ]
-      ],
-      "owner": "E1"
+      ]
     },
     {
       "id": 2,
@@ -1674,8 +1673,7 @@
           23,
           6
         ]
-      ],
-      "owner": "E1"
+      ]
     },
     {
       "id": 4,
@@ -3336,54 +3334,17 @@
       -1
     ]
   ],
-  "factions": [
-    {
-      "id": "F1",
-      "name": "赤军",
-      "color": "#5AC8FF"
-    },
-    {
-      "id": "E1",
-      "name": "边军",
-      "color": "#FF6B6B"
-    }
-  ],
   "faction_bases": {
     "F1": [
       4,
       5
     ],
-    "E1": [
-      16,
-      5
+    "F2": [
+      20,
+      1
     ]
   },
-  "units": [
-    {
-      "x": 10,
-      "y": 8,
-      "name": "哨兵",
-      "faction": "E1",
-      "kind": "enemy",
-      "hold": true
-    },
-    {
-      "x": 10,
-      "y": 9,
-      "name": "哨兵",
-      "faction": "E1",
-      "kind": "enemy",
-      "hold": true
-    },
-    {
-      "x": 11,
-      "y": 9,
-      "name": "哨兵",
-      "faction": "E1",
-      "kind": "enemy",
-      "hold": true
-    }
-  ],
+  "units": [],
   "buildings": [],
   "_comment": [
     "DAEEM · 战役样例地图（东征·第一章）。",

@@ -31,14 +31,37 @@ const UnitRes = preload("res://logic/unit.gd")
 const BuildingRes = preload("res://logic/building.gd")
 const GridRes = preload("res://logic/grid.gd")
 const EnemyAiRes = preload("res://logic/enemy_ai.gd")
+const LevelRes = preload("res://logic/level.gd")
 
 ## 地图上给防御性 AI 摆的三个驻防将领（写在 data/maps/frontier/map.json 的 units[] 里）
 const GARRISON_NAME := "驻防将领"
+
+## 临时目录（工程内，测试末尾清掉）。
+## ⚠️ 与 test_campaign.gd 同一个理由：这个工程里 `user://` 写不进去，只能写工程内。
+const TMP_ROOT := "res://.tmp_ai_tests"
 
 
 func _initialize() -> void:
 	_case_name = "test_ai"
 	run_all(_cases)
+	# ★ 临时目录用完就删（`_patrol_probe_level` 会往里写一份最小关卡 JSON）。
+	#   ⚠️ 放在 `run_all()` **之后**：它内部就 `quit()` 了，但 `quit()` 只是排队，
+	#   这一句仍会执行 —— 所以临时文件不会留在仓库里（工程内不能留垃圾）。
+	_clean_tmp()
+
+
+## 删掉临时目录（工程内；`user://` 在这个工程里写不进去，见 test_campaign.gd 同款说明）
+func _clean_tmp() -> void:
+	if not DirAccess.dir_exists_absolute(TMP_ROOT):
+		return
+	for f in DirAccess.get_files_at(TMP_ROOT):
+		DirAccess.remove_absolute("%s/%s" % [TMP_ROOT, f])
+	for d in DirAccess.get_directories_at(TMP_ROOT):
+		var sub := "%s/%s" % [TMP_ROOT, d]
+		for f2 in DirAccess.get_files_at(sub):
+			DirAccess.remove_absolute("%s/%s" % [sub, f2])
+		DirAccess.remove_absolute(sub)
+	DirAccess.remove_absolute(TMP_ROOT)
 
 
 func _cases() -> void:
@@ -62,6 +85,9 @@ func _cases() -> void:
 	_test_faction_ai_runs_over_time(cfg)
 	_test_general_ai_from_map(cfg)
 	_test_general_ai_patrol(cfg)
+	_test_general_ai_patrol_spread(cfg)
+	_test_general_ai_patrol_with_retinue(cfg)
+	_test_general_ai_patrol_route_is_automatic(cfg)
 	_test_general_ai_no_pursuit(cfg)
 	_test_general_ai_free_recruit(cfg)
 	_test_general_ai_not_advancing(cfg)
@@ -131,6 +157,12 @@ func _test_config(cfg) -> void:
 	ok(int(gc["min_retinue"]) > 0, "ai.general.min_retinue > 0")
 	# 需求：「没有攻击行为 10 秒后」——默认必须是 10
 	near(float(gc["combat_idle_sec"]), 10.0, 1e-6, "脱战判定默认就是 10 秒")
+	# ★ 巡逻**带兵**（本轮新增）：掉队阈值必须从配置来、而且不能小于队形间距
+	#   （否则每一步都重下命令、整队一直在互相挤，见 general_ai._catch_up_retinue）
+	ok(float(gc["patrol_retinue_leash_tiles"]) >= 1.0,
+		"patrol_retinue_leash_tiles >= 1（巡逻带兵的掉队阈值）")
+	ok(float(gc["patrol_retinue_leash_tiles"]) >= float(cfg.formation_spacing_scale),
+		"掉队阈值不小于队形间距（不然队形本身就一直在触发重排队）")
 
 
 # ------------------------------------------------------------------
@@ -874,10 +906,10 @@ func _test_general_ai_patrol(cfg) -> void:
 	if u == null:
 		return
 
-	# ---- 站得离区划中心远 → 到点就该巡逻（朝中心走）----
+	# ---- 站得离巡逻点远 → 到点就该巡逻（朝自己路线的第一个点走）----
 	u.patrol_timer = 0.0
 	GeneralAiRes.update(w, cfg, 0.05)
-	ok(not u.path.is_empty() or u.moving, "★ 巡逻计时到点 → 驻防将领朝区划中心出发")
+	ok(not u.path.is_empty() or u.moving, "★ 巡逻计时到点 → 驻防将领朝自己的巡逻点出发")
 	ok(float(u.patrol_timer) > 0.0, "巡逻计时被重置（有时间间隔，不是每帧都动）")
 
 	# ---- 冷却期内再跑一帧：不应该又下一条新命令 ----
@@ -885,13 +917,334 @@ func _test_general_ai_patrol(cfg) -> void:
 	GeneralAiRes.update(w, cfg, 0.05)
 	ok(u.path.size() <= path_len, "巡逻间隔之内不会每帧重算路径")
 
-	# ---- 已经站在区划中心上 → 不该再下移动命令 ----
+	# ---- ★★ 路线：每位守将分到几个点（由单位 id 派生的固定种子算出来的）----
+	ok(u.patrol_points.size() >= 1,
+		"★ 守将拿到了自己的巡逻路线（%d 个点）" % u.patrol_points.size())
+	var want_points: int = int(cfg.ai_general_cfg()["patrol_points"])
+	ok(u.patrol_points.size() <= want_points,
+		"巡逻点数不超过配置（%d ≤ %d）" % [u.patrol_points.size(), want_points])
+	ok(u.garrison_zone_id == u.patrol_zone_id, "路线是给**自己那个区划**算的")
+	# 每个点都必须落在自己的区划里（巡逻不许跑出地盘）
+	var z6 = w.zone_by_id(6)
+	if z6 != null:
+		for p in u.patrol_points:
+			var here: Variant = w.zones.zone_at(p.x, p.y)
+			ok(here != null and int((here as Dictionary)["id"]) == 6,
+				"★ 巡逻点 (%d,%d) 在自己区划里" % [p.x, p.y])
+
+	# ---- ★★ 已经站在路线上的点 → 推进到下一个点（而不是原地空跑寻路）----
+	#   这是老断言「站在中心上就不下命令」在新语义下的写法：巡逻是**多点往返**，
+	#   到了就该换下一个点 —— 但换的是**别的点**，不会把同一条命令重下一遍。
 	var u2 = _make_garrison(w, cfg, Vector2i(5, 12), 6)   # (5,12) 就是区划 6 的中心
 	if u2 != null:
-		u2.stop()
 		u2.patrol_timer = 0.0
-		GeneralAiRes.update(w, cfg, 0.05)
-		ok(u2.path.is_empty() and not u2.moving, "已经站在中心上就不下移动命令（不再空跑寻路）")
+		GeneralAiRes.update(w, cfg, 0.05)      # 先算出路线
+		ok(u2.patrol_points.size() >= 1, "（前提）u2 也拿到了路线")
+		if u2.patrol_points.size() >= 2:
+			# 站在「当前那个点」上 → 下一次决策应当推进下标
+			u2.pos = GridRes.center_of(u2.patrol_points[0])
+			u2.patrol_index = 0
+			u2.patrol_dir = 1
+			u2.stop()
+			u2.patrol_timer = 0.0
+			GeneralAiRes.update(w, cfg, 0.05)
+			eq(u2.patrol_index, 1, "★ 站在当前巡逻点上 → 下标推进到下一个点")
+			ok(not u2.path.is_empty() or u2.moving, "★ 于是它朝**下一个点**出发（不是原地站着）")
+		else:
+			# 只分到一个点：到了就该站着（与老行为一致）
+			u2.pos = GridRes.center_of(u2.patrol_points[0])
+			u2.stop()
+			u2.patrol_timer = 0.0
+			GeneralAiRes.update(w, cfg, 0.05)
+			ok(u2.path.is_empty() and not u2.moving,
+				"只有一个巡逻点时：站在那儿就不下移动命令（不空跑寻路）")
+
+
+## ★★ 同一个区划里的几位守将：**路线各不重复 + 各占一块**（dev_plan_7 补的一条）。
+##
+## 需求原话：「将领**随机**路线巡逻，只要确保他们巡逻的**不整齐划一**就行」。
+## 这一组盯两件事：
+##   1. 路线由**单位 id 派生的固定种子**算出来 ⇒ 各不相同（不整齐划一）；
+##   2. 同区划的人**按扇区**分地盘 ⇒ 各自的锚点不重合、路线整体错开（不会挤在中心）。
+##
+## ⚠️ 不许用引擎随机数（dev_plan_7 3.10：AI 决策不许用随机数决定结果，存档 / 回放要可复现）
+##   —— 所以第 3 条断言「同 id 重算 => 同一条路线」必须成立。
+func _test_general_ai_patrol_spread(cfg) -> void:
+	var w = _world(cfg)
+	if w == null:
+		return
+	# 在区划 6 里摆 4 位守将（同一区划，正是"会挤在一起"的场景）
+	var put := [Vector2i(5, 13), Vector2i(1, 13), Vector2i(5, 14), Vector2i(1, 14)]
+	var units: Array = []
+	for t in put:
+		var u = _make_garrison(w, cfg, t, 6)
+		if u != null:
+			units.append(u)
+	if units.size() < 2:
+		return
+
+	# 跑一帧（`patrol_interval` 到点）让每位的路线都建出来
+	for u in units:
+		u.patrol_timer = 0.0
+	GeneralAiRes.update(w, cfg, 0.05)
+
+	var routes: Array = []
+	var anchors: Array = []
+	for u in units:
+		ok(u.patrol_points.size() >= 1, "★ %s 拿到了巡逻路线（%d 个点）"
+			% [String(u.id), u.patrol_points.size()])
+		routes.append(str(u.patrol_points))
+		if not u.patrol_points.is_empty():
+			anchors.append(u.patrol_points[0])
+
+	# ① 路线不重复（"不整齐划一"）
+	var uniq: Dictionary = {}
+	for r in routes:
+		uniq[r] = true
+	eq(uniq.size(), routes.size(),
+		"★★ %d 位守将的路线**互不相同**（不整齐划一）" % routes.size())
+
+	# ② 锚点两两不重合（各占一块，不挤在同一个点）
+	var dup_anchor := 0
+	for i in anchors.size():
+		for j in range(i + 1, anchors.size()):
+			if (anchors[i] as Vector2i) == (anchors[j] as Vector2i):
+				dup_anchor += 1
+	eq(dup_anchor, 0, "★★ 同区划的守将锚点两两不重合（按扇区分地盘）")
+
+	# ③ 确定性：**同一个 id ⇒ 同一条路线**（存档 / 回放那条硬要求）
+	#
+	# ⚠️ 重算时 `zone_count` 必须一样 —— 扇区是「区划切成 zone_count 段」之后再按 id
+	#    取第几段的，所以「同区划里有几个人」变了，切法就变了（路线跟着变）。
+	#    这里不新增单位，所以 zone_count 不变。
+	var u_a = units[0]
+	var route_before: Array = u_a.patrol_points.duplicate()
+	u_a.patrol_zone_id = -2                     # 假装没算过 → 逼它重算
+	u_a.patrol_points = [] as Array[Vector2i]
+	u_a.patrol_timer = 0.0                      # ⚠️ 路线只在**巡逻到点那一帧**建，
+	                                            #    不归零的话它这一帧根本不会重算（实测踩到）
+	GeneralAiRes.update(w, cfg, 0.05)
+	eq(u_a.patrol_points, route_before,
+		"★★ 同一位守将重算路线 ⇒ 逐点一致（种子来自 id，不是引擎随机数）")
+
+
+# ------------------------------------------------------------------
+# ★★ 巡逻要带上**自己招出来的兵**（手玩报的 bug：将领在巡逻，招出来的兵站着不动）
+# ------------------------------------------------------------------
+
+## 造一个「驻防将领 + 它自己招出来的附属兵」的小队。
+##
+## ★ 复刻**招募**那条路的三个事实（用 `_spawn_from_recruit` 而不是手写 create）：
+##   · 附属兵的 `leader_id` = 将领 id；
+##   · 位置在将领那一格的中心（`_spawn_from_recruit` 会排开别人再放）；
+##   · 走的正是「区划中心招将 / 将领脱战招兵」用的那一个函数 ⇒
+##     这里要是漂了，测的就不是生产路径了。
+##
+## ⚠️ 用 `spearman` 而不是 `enemy`：`_spawn_from_recruit` **不看**招募表
+##   （那条路只在把兵排进队列时查），但守将自己的兵种是敌人时也没什么意义。
+func _make_garrison_with_retinue(w, cfg, tile: Vector2i, zone_id: int, count: int) -> Dictionary:
+	var g = _make_garrison(w, cfg, tile, zone_id)
+	if g == null:
+		return {}
+	g.unit_type = "spearman"
+	g.unit_class = cfg.unit_class_of("spearman")
+	g.ranged = cfg.unit_is_ranged("spearman")
+	var soldiers: Array = []
+	for i in count:
+		var s = w._spawn_from_recruit(g, "spearman")
+		if s != null:
+			soldiers.append(s)
+	return {"leader": g, "soldiers": soldiers}
+
+
+func _test_general_ai_patrol_with_retinue(cfg) -> void:
+	var w = _world(cfg)
+	if w == null:
+		return
+	var pack := _make_garrison_with_retinue(w, cfg, Vector2i(5, 13), 6, 3)
+	if pack.is_empty():
+		return
+	var g = pack["leader"]
+	var soldiers: Array = pack["soldiers"]
+	eq(soldiers.size(), 3, "（前提）将领招出来了 3 个附属兵")
+
+	# ---- 0) 前提：附属兵确实挂在将领名下（跟着走的前提就是这一条）----
+	var attached := 0
+	for s in soldiers:
+		if String(s.leader_id) == String(g.id):
+			attached += 1
+	eq(attached, soldiers.size(), "（前提）附属兵的 leader_id 都指向这位将领")
+	# ★★ 它们**不该**各自当巡逻队长（否则 4 个人各走各的，而不是一支小队）
+	for s in soldiers:
+		ok(not GeneralAiRes.is_patrol_leader(w, s),
+			"★★ 附属兵不是巡逻队长（只有带队的那个将领巡逻，兵跟着走）")
+
+	# ---- 1) 将领巡逻那一帧：整队都要动起来 ----
+	#
+	# ★★ 这就是手玩报的那条：「将领会巡逻，但将领招募出来的单位不会巡逻」——
+	#    改之前只有将领拿到命令，兵一动不动地站在原地。
+	g.patrol_timer = 0.0
+	GeneralAiRes.update(w, cfg, 0.05)
+	ok(not g.path.is_empty() or g.moving, "（前提）将领出发了")
+	var idle := 0
+	for s in soldiers:
+		if s.path.is_empty() and not s.moving:
+			idle += 1
+	eq(idle, 0, "★★ 巡逻那一帧里**一个站着不动的附属兵都没有**（兵跟着将领一起巡逻）")
+
+	# ---- 1.5) 而且真的会走（不是挂了一条永远走不动的路径）----
+	var before_pos: Array[Vector2] = []
+	for s in soldiers:
+		before_pos.append(s.pos)
+	for tick in 20:
+		w.tick(0.05)
+	var walked := 0
+	for i in soldiers.size():
+		if soldiers[i].pos.distance_to(before_pos[i]) > 0.1:
+			walked += 1
+	eq(walked, soldiers.size(), "★★ 跑 1 秒之后每个附属兵都真的挪了位置（跟着走了）")
+	ok(soldiers.size() > 0 and soldiers[0].garrison_zone_id == g.garrison_zone_id,
+		"★ 附属兵继承了队长的归属区划（同属一块地 ⇒ 也受「不追出一个区划」管）")
+
+	# ---- 2) 真的跑起来之后，谁都不许掉队站在原地 ----
+	#
+	# ★ 判据用「离将领多远」而不是「有没有路径」：路上会被地形、别人挤、被敌人拦住，
+	#   有路径不等于走得动；「一直在将领身边」才是这条需求真正要的结果。
+	for tick in 240:
+		w.tick(0.05)
+	var leash: float = float(cfg.ai_general_cfg()["patrol_retinue_leash_tiles"])
+	var stayed := 0
+	for s in soldiers:
+		if not s.alive:
+			continue
+		if s.pos.distance_to(g.pos) <= leash:
+			stayed += 1
+	eq(stayed, soldiers.size(),
+		"★★ 跑了 12 秒之后每个附属兵都还在将领 %.1f 格以内（掉队的会被重新叫上）" % leash)
+	ok(g.patrol_points.size() >= 1, "将领一直有路线（巡逻没有中断）")
+
+	# ---- 3) 将领阵亡（被清掉）之后，剩下的兵要**自己接手**巡逻 ----
+	#
+	# 需求原话是「将领性 AI 附属于某个将领」，但队长没了就让这一队站着不动 =
+	# 那一块地彻底没人守。判据在 `is_patrol_leader()`：队长查不到 ⇒ 自己带队。
+	g.alive = false
+	if soldiers.size() >= 1:
+		ok(GeneralAiRes.is_patrol_leader(w, soldiers[0]),
+			"★ 队长阵亡后，剩下的附属兵自己接手巡逻（不会因为「没队长了」而站死）")
+
+
+## ★★ 巡逻点**不用手摆**：归属区划与路线都由 AI 从「自己在哪一格」推出来。
+##
+## 需求原文：「将领性 ai 要做到可以自己清楚该区划要怎么巡逻（笨一些没关系），
+##           而不能每个要巡逻的区划都再手动给将领设置巡逻点，节省成本」。
+##
+## 这里钉住三件事：
+##   1. 关卡摆放里**只写 kind / x / y**（不写 zone、也不写任何巡逻点）的将领，开局自己拿归属；
+##   2. 归属取的就是**它脚下那一格所在的区划**（大本营在哪块，就守哪块）；
+##   3. 路线是从区划地块算出来的、非空，且每个点都落在自己区划里。
+func _test_general_ai_patrol_route_is_automatic(cfg) -> void:
+	# ⚠️ 阵容要点：`my_faction` 故意**不是** F1 —— 那一方的 AI 才不会被摘掉
+	#    （「玩家选中哪一方，运行时就把那一方的 AI 摘掉」那条）。F1 在这一关挂的是
+	#    `ai: "general"`，于是 `spawn_faction_units` 会走「兜底给将领一个归属区划」那段。
+	var level = _patrol_probe_level(cfg)
+	if level == null:
+		return
+	var w = WorldRes.create_from_level(cfg, level, "F2", ["F1", "F2"], false)
+	ok(w != null, "（前提）能按关卡建出世界")
+	if w == null:
+		return
+
+	var found = null
+	for u in w.units:
+		if String(u.faction) != "F1":
+			continue
+		if String(u.name) == "无归属守将":
+			found = u
+	if found == null:
+		ok(false, "关卡摆放的将领进了世界（后面这些断言不会执行）")
+		return
+	var u = found
+
+	# ---- 1) 归属自动落到「它脚下那一格所在的区划」----
+	ok(int(u.garrison_zone_id) >= 0,
+		"★★ 关卡只写了坐标、没写 zone：将领自己拿到了归属区划（id=%d）" % int(u.garrison_zone_id))
+	eq(int(u.garrison_zone_id), _zone_id_of(w, Vector2i(5, 13)),
+		"★★ 归属 = 它脚下那一格所在的区划（不需要地图作者手填）")
+	ok(GeneralAiRes.is_patrol_leader(w, u), "★ 它是这一队的巡逻队长（没人带它）")
+
+	# ---- 2) 路线由 AI 自己按区划算出来（不是预先摆好的点）----
+	eq(u.patrol_points.size(), 0, "（前提）还没巡逻过 ⇒ 路线还没算（不是预先摆好的点）")
+	u.patrol_timer = 0.0
+	GeneralAiRes.update(w, cfg, 0.05)
+	ok(u.patrol_points.size() >= 1,
+		"★★ 路线是 AI **自己按区划**算出来的（%d 个点，没有任何手摆的巡逻点）"
+		% u.patrol_points.size())
+	for p in u.patrol_points:
+		var here: Variant = w.zones.zone_at(p.x, p.y)
+		ok(here != null and int((here as Dictionary)["id"]) == int(u.garrison_zone_id),
+			"★ 巡逻点 (%d,%d) 在它自己的区划里" % [p.x, p.y])
+
+	# ---- 3) 同一区的**另一位**守将拿到的是另一条路线（各走各的，不挤在一起）----
+	var u2 = UnitRes.create(cfg, "probe-2", "第二个守将", Vector2i(1, 13),
+		"F1", UnitRes.KIND_ENEMY)
+	u2.garrison_zone_id = int(u.garrison_zone_id)
+	u2.hold_position = true
+	w.units.append(u2)
+	u2.patrol_timer = 0.0
+	u.patrol_timer = 0.0
+	GeneralAiRes.update(w, cfg, 0.05)
+	ok(u2.patrol_points.size() >= 1, "第二位守将也自己算出了路线")
+	ok(str(u2.patrol_points) != str(u.patrol_points),
+		"★★ 同一区划的两位守将路线不同（扇区分地盘，不用手动摆点）")
+
+
+## 关卡实例（只为了让「不写 zone 的将领」有一条真实入口）。
+##
+## ★★ 走的是**真实载入路径**（写一份最小关卡 JSON 再 `LevelRes.load_level`），
+##    不是手搓一个 `Level` 对象 —— 实测手搓那条路会在 `merge_over_map` 里炸
+##    （`Level` 的那些字段谁负责填、什么时候填，只有 `load_level` 知道）。
+##
+## 借的是随游戏发布的那张图（`data/maps/frontier/map.json`）：坐标 (5,13) 落在**区划 6** 里。
+func _patrol_probe_level(cfg):
+	var dir := "%s/patrol_probe" % TMP_ROOT
+	var path := "%s/level.json" % dir
+	_write_text(path, JSON.stringify({
+		"map": "frontier",
+		"name": "巡逻归属探针",
+		"players": [{"faction": "F1"}],
+		# ★ 这一关的 F1 挂**将领性 AI**（于是世界会给它的将领兜底归属区划）
+		"factions": [{"id": "F1", "ai": "general", "base": [4, 5]}],
+		# ★★ 只写 kind / x / y：**不写 zone**（这就是需求要的「不用手摆巡逻点」）
+		"start_units": [
+			{"faction": "F1", "kind": "enemy", "x": 5, "y": 13, "name": "无归属守将"}
+		]
+	}))
+	var lv = LevelRes.load_level(null, path, cfg)
+	if lv == null:
+		ok(false, "探针关卡能载入（%s）" % path)
+	return lv
+
+
+## 写一个临时文本文件（工程内的临时目录；`user://` 在这个工程里写不进去，
+## 见 test_campaign.gd 的 TMP_ROOT 说明）。
+func _write_text(path: String, text: String) -> void:
+	var d := path.get_base_dir()
+	if d != "":
+		DirAccess.make_dir_recursive_absolute(d)
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		ok(false, "能写临时文件：%s" % path)
+		return
+	f.store_string(text)
+	f.close()
+
+
+## 某一格属于哪个区划（-1 = 不属于任何区划）
+func _zone_id_of(w, tile: Vector2i) -> int:
+	var z: Variant = w.zones.zone_at(tile.x, tile.y)
+	if z == null:
+		return -1
+	return int((z as Dictionary)["id"])
 
 
 func _test_general_ai_no_pursuit(cfg) -> void:

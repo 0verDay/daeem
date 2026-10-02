@@ -52,7 +52,14 @@ func _group_roster(cfg) -> void:
 	if w == null:
 		return
 	ok(w.ai_roster_cfg.size() >= 1, "合并后的 AI 名单非空")
-	eq(_roster_ids(w), ["E1", "F1"], "名单 = 关卡点名的 AI 阵营 + 地图划过的阵营")
+	# 这一份 fixture 的关卡 `factions[]` 是 `[F1(没写 ai), E1(ai: faction)]`：
+	#   · F1 没写 `ai` ⇒ 关卡把它当 `ai: none`（= 这一局不动）⇒ **不进** AI 名单；
+	#   · E1 写了 `ai: faction` ⇒ 进名单。
+	# ⇒ 名单就是 `["E1"]`（`E1` 那条带 `source == "level"`，是**关卡点名**的那一档）。
+	var cfg_ids: Array = []
+	for e in w.ai_roster_cfg:
+		cfg_ids.append(String((e as Dictionary)["id"]))
+	eq(cfg_ids, ["E1"], "名单 = 关卡点名挂 AI 的那几方（这里只有 E1）")
 	ok(w.ai_resources.has("E1"), "E1 有资源池")
 	ok(w.ai_factions.size() >= 1, "E1 有 AI 状态表")
 	eq(w.resource_pool_for("E1"), w.ai_resources["E1"], "resource_pool_for(E1) 就是它那份池子")
@@ -84,7 +91,11 @@ func _group_roster(cfg) -> void:
 	if w3 == null:
 		return
 	ok(w3.factions.has("E1"), "ai: general 的阵营进名单（要建基地与地）")
-	ok(not w3.ai_resources.has("E1"), "★ ai: general 的阵营**不建**阵营 AI 资源池")
+	# ★★ 口径修正（守家 AI 那一轮）：`ai: general` 的阵营**照样要开一个 AI 池** ——
+	#    它的「脱战无消耗招兵」也走 `resource_pool_for()`，池子是 null 的话招募会被判
+	#    「付不起」而**静默失败**（实测：挂守家 AI 的那一方 15 个单位卡在原地不动）。
+	#    它仍然是**互斥**的：**不建阵营 AI 状态表**（下面那条）。
+	ok(w3.ai_resources.has("E1"), "★ ai: general 的阵营**有**资源池（守家 AI 招兵要花钱）")
 	eq(w3.ai_factions.size(), 0, "★ ai: general 的阵营**不建**阵营 AI 状态表（互斥）")
 
 
@@ -93,11 +104,18 @@ func _group_roster(cfg) -> void:
 # ------------------------------------------------------------------
 func _group_player_seat_no_ai(cfg) -> void:
 	# 关卡给**玩家那一方**也写了 ai: faction（编辑器允许这么做，拍板第 13 项）
+	#
+	# ⚠️ `start_units` 要显式清空：补丁是盖在**样例第一关**之上的，而那一关现在
+	#    在目标区划上摆了一支**守备队**（`{faction: F1, ai: "general", zone: 4}`）。
+	#    不盖掉的话这一组会继承那 3 个单位 —— 它们是**关卡显式摆的**（挂着将领性 AI 的
+	#    归属区划），于是下面「玩家那一方没有单位被将领性 AI 接管」那条会假红。
+	#    这一组验的是「**配置层面**给玩家配了阵营 AI 也不接管」，不是「关卡摆了守备队」。
 	var w = _make(cfg, "seat_no_ai", {
 		"factions": [
 			{"id": "F1", "ai": "faction", "base": [5, 10], "start_food": 999},
 			{"id": "E1", "ai": "faction", "base": [18, 10]},
 		],
+		"start_units": [],
 	}, ["F1"])
 	ok(w != null, "能造出「玩家那一方也配了 AI」的世界")
 	if w == null:

@@ -1559,6 +1559,20 @@ func _cache_ai() -> void:
 		"retarget_cooldown_sec": maxf(0.0, num("ai.general.retarget_cooldown_sec", 5.0)),
 		"recruit_check_sec": maxf(0.1, num("ai.general.recruit_check_sec", 2.0)),
 		"min_retinue": maxi(0, int(num("ai.general.min_retinue", 3.0))),
+		# ★★ 巡逻路线（让同一个区划里的几位守将**不要挤在同一点**）：
+		#   · `patrol_points`：每位守将分到几个巡逻点（1 = 老行为：只去一个点）；
+		#   · `patrol_spread_tiles`：巡逻点之间最多相隔几格（限住巡逻范围，免得
+		#     一个将领的路线横跨整个区块、与别人的路线搅在一起）。
+		#   ★ 路线本身是**由单位 id 派生的固定种子**算出来的（确定性伪随机，见
+		#     logic/general_ai.gd 的 `_route_seed`）—— 看起来杂乱，但同一局每次
+		#     跑出来完全一样，存档 / 回放不会漂（dev_plan_7 3.10 那条硬要求）。
+		"patrol_points": maxi(1, int(num("ai.general.patrol_points", 3.0))),
+		"patrol_spread_tiles": maxf(1.0, num("ai.general.patrol_spread_tiles", 3.0)),
+		# ★★ 巡逻**带兵**（本轮新增，手玩报的 bug「将领巡逻、招出来的兵站着不动」）：
+		#   附属兵离带队将领超过这么多格就会被重新叫上（巡逻每一步都会检查一次）。
+		#   ⚠️ 不能太小：队形落点本身就有一格的间距（formation.spacing_scale），
+		#      卡到 1 格会让它们每一步都被重下一遍命令、永远在挤。
+		"patrol_retinue_leash_tiles": maxf(1.0, num("ai.general.patrol_retinue_leash_tiles", 3.0)),
 	}
 
 

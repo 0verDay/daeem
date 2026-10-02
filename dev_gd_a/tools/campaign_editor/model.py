@@ -49,6 +49,9 @@ TARGET_BASE = "base"
 
 #: 目标种类：第一版**只有**这一种。
 OBJ_HOLD_ZONE = "hold_zone"
+## ★★ 「攻占指定区划」——一关两个可玩阵营各打各的时，进攻方用这一条
+## （判胜是**立刻**的：归属翻成自己那一帧就赢）。与 `logic/level.gd` 同名同义。
+OBJ_CAPTURE_ZONE = "capture_zone"
 
 #: 额外失败条件：第一批**只有**这一种。
 FAIL_ZONE_LOST = "zone_lost"
@@ -1207,7 +1210,11 @@ def _load_objectives(raw: Any, lv: LevelModel) -> None:
     for item in _as_list(raw):
         if not isinstance(item, dict):
             continue
+        # ★★ `for` = 这一条目标是**给哪个阵营的**。一关两个可玩阵营各打各的时，
+        #    两条目标靠它区分（空串 = 对任何玩家都成立）。见 daeem/logic/level.gd
+        #    的 `_read_objectives` / `objective_for` —— 两边必须同一个口径。
         lv.objectives.append({"kind": _as_str(item.get("kind", ""), "").lower(),
+                              "for": _as_str(item.get("for", ""), ""),
                               "zone": _as_int(item.get("zone"), -1),
                               "hold_sec": _as_float(item.get("hold_sec"), 0.0)})
 
@@ -1562,13 +1569,43 @@ def _building_to_dict(b: BuildingEntry) -> dict:
 
 
 def _objective_to_dict(o: dict) -> dict:
-    return {"kind": str(o.get("kind", "")),
-            "zone": int(o.get("zone", -1)),
-            "hold_sec": clean_number(o.get("hold_sec", 0.0))}
+    out: Dict[str, Any] = {}
+    # ★ `for` 排在最前（与游戏侧 `logic/level.gd` 的字段顺序一致）：空串不写
+    #   （= 这条目标对所有玩家成立，向后兼容老数据）。
+    who = str(o.get("for", ""))
+    if who:
+        out["for"] = who
+    out["kind"] = str(o.get("kind", ""))
+    out["zone"] = int(o.get("zone", -1))
+    # ★★ `hold_sec` **只对「守住」类有意义**：
+    #    · `hold_zone` → 写出来（必须 > 0，校验会拦）；
+    #    · `capture_zone`（占领即赢）→ **一个字都不写** —— 写了 `0` 也能读，
+    #      但往返会比源文件多一个字段（`test_model.py` 有一条「写出来与源文件逐字段
+    #      一致」的断言，实测就是这么红的）。
+    if str(o.get("kind", "")) == OBJ_HOLD_ZONE:
+        out["hold_sec"] = clean_number(o.get("hold_sec", 0.0))
+    return out
 
 
 def _fail_to_dict(f: dict) -> dict:
     return {"kind": str(f.get("kind", "")), "zone": int(f.get("zone", -1))}
+
+
+def _objective_for(lv: LevelModel, fid: str) -> Optional[dict]:
+    """属于 `fid` 的那条目标（与 `logic/level.gd` 的 `objective_for` 同一口径）。
+
+    1. `for` 正好等于 `fid` 的那条；
+    2. 否则 `for` 为空的那条（= 对任何玩家都成立）；
+    3. 都没有 → None（**不退回第一条**：那样红方会拿到蓝方的目标）。
+    """
+    generic: Optional[dict] = None
+    for o in lv.objectives:
+        who = str(o.get("for", ""))
+        if who and who == fid:
+            return o
+        if not who and generic is None:
+            generic = o
+    return generic
 
 
 # ======================================================================
@@ -1823,8 +1860,24 @@ def _ck_sides(add, model: CampaignModel, lv: LevelModel, info: MapInfo) -> None:
     present = set(lv.present_ids())
     if info is not None:
         present |= {str(f.get("id", "")) for f in info.factions}
+    # ★★ 7) 两个口径（**与游戏侧 `logic/level.gd` 的 `_ck_allies` 分支条件一致**）：
+    #    (a) **普通关卡**（目标没有 `for`）：≥2 个可玩阵营必须**互为同方**
+    #        —— 目标只有一份，判定走「玩家同方」；可玩阵营各占一边的话，
+    #        「选谁」就变成两场不同的仗，而数据只描述了一场。
+    #    (b) ★ **选边关**（有带 `for` 的目标）：两个可玩阵营**本来就是对立的**
+    #        （蓝方守 / 红方攻），所以改拦「每个可玩阵营都要有属于它的目标」。
+    present = set(lv.present_ids())
+    if info is not None:
+        present |= {str(f.get("id", "")) for f in info.factions}
     playable = [f for f in model.playable_ids() if f in present]
-    if len(playable) >= 2:
+    has_for = any(str(o.get("for", "")) for o in lv.objectives)
+    if has_for:
+        for fid in playable:
+            if not _objective_for(lv, fid):
+                add(SEV_BLOCK, "playable_no_objective",
+                    "可玩阵营「%s」没有属于自己的目标：它选了也没得打"
+                    "（objectives[] 里补一条 for=%s 的）" % (fid, fid))
+    elif len(playable) >= 2:
         rep = sides.side_of(playable[0])
         for fid in playable:
             if sides.side_of(fid) != rep:
@@ -1833,20 +1886,35 @@ def _ck_sides(add, model: CampaignModel, lv: LevelModel, info: MapInfo) -> None:
                     % (playable[0], fid))
                 break
 
-    # 8) ★ 目标区划的开局归属方必须与玩家同方
-    #    （否则「丢掉即判负」会让玩家一进关就判负 —— 规则没错、数据写错就炸）
-    zid = lv.objective_zone()
-    if zid < 0 or not info.has_zone(zid):
-        return                          # 「没写 / 不存在」两档由 `_ck_objectives` 拦
-    owner = _initial_zone_owner(lv, info, zid)
-    seat = lv.seats()[0] if lv.seats() else ""
-    if owner == "":
-        add(SEV_BLOCK, "objective_unowned",
-            "目标区划 %s 开局无主：玩家一进关就会判负（本版没有「先占领再守」）"
-            % info.zone_label(zid))
-    elif seat and not sides.same_side(owner, seat):
-        add(SEV_BLOCK, "objective_not_players",
-            "目标区划 %s 开局归 %s，玩家一进关就会判负" % (info.zone_label(zid), owner))
+    # 8) ★★ 目标区划的开局归属 —— **逐条目标**判，判据按目标种类分
+    #    （与游戏侧同一套口径）：
+    #      · `hold_zone`（守住）：区划**必须开局就归这一方**（否则一进关就判负）；
+    #      · `capture_zone`（攻占）：区划**必须开局不归这一方**（否则一进关就判胜）。
+    for o in lv.objectives:
+        zid = int(o.get("zone", -1))
+        if zid < 0 or info is None or not info.has_zone(zid):
+            continue                    # 「没写 / 不存在」两档由 `_ck_objectives` 拦
+        kind = str(o.get("kind", ""))
+        who = str(o.get("for", "")) or (lv.seats()[0] if lv.seats() else "")
+        owner = _initial_zone_owner(lv, info, zid)
+        if kind == OBJ_CAPTURE_ZONE:
+            if owner and who and sides.same_side(owner, who):
+                add(SEV_BLOCK, "objective_already_mine",
+                    "「占领 %s」的目标区划开局就归 %s（自己）—— 一进关就判胜；"
+                    "请把它划给对手" % (info.zone_label(zid), owner))
+            elif owner == "":
+                add(SEV_WARN, "objective_capture_unowned",
+                    "「占领 %s」的目标区划开局无主：走进去就算占领，可能比预期容易"
+                    % info.zone_label(zid))
+            continue
+        if owner == "":
+            add(SEV_BLOCK, "objective_unowned",
+                "目标区划 %s 开局无主：玩家一进关就会判负（本版没有「先占领再守」）"
+                % info.zone_label(zid))
+        elif who and not sides.same_side(owner, who):
+            add(SEV_BLOCK, "objective_not_players",
+                "目标区划 %s 开局归 %s，%s 一进关就会判负"
+                % (info.zone_label(zid), owner, who))
 
     # 16) allies 里出现了不存在的 faction id → 警告
     known = set(lv.present_ids())
@@ -1859,23 +1927,35 @@ def _ck_sides(add, model: CampaignModel, lv: LevelModel, info: MapInfo) -> None:
 
 
 def _ck_objectives(add, lv: LevelModel, info: Optional[MapInfo]) -> None:
-    """9/11：目标恰好 1 项 + 失败条件的区划存在、不是目标区划、**开局归玩家同方**。"""
+    """9/11：目标条数 + 种类 + 区划 + 秒数；失败条件的区划存在、不是目标区划。"""
     if not lv.objectives:
         add(SEV_BLOCK, "objective_empty", "这一关没有目标")
-    elif len(lv.objectives) > 1:
+    # ★★ 一关可以有多条目标 —— 但**只在「按阵营分开」时**（每条都点名 `for`）。
+    #    两条都不点名的话运行时取谁那条说不清（游戏侧 `objective_for` 只会取第一条）。
+    #    口径与 `logic/level.gd` 的 `_ck_objectives` 逐字对齐。
+    has_for = any(str(o.get("for", "")) for o in lv.objectives)
+    if len(lv.objectives) > 1 and not has_for:
         add(SEV_BLOCK, "objective_too_many",
-            "第一版只支持一个「守住区划」目标（现在写了 %d 个）" % len(lv.objectives))
+            "写了 %d 个目标、但一条都没点名给谁（每条加一个 for=阵营；"
+            "只有一个阵营时只写一条）" % len(lv.objectives))
+    seen_for: Dict[str, bool] = {}
     for o in lv.objectives:
-        if str(o.get("kind", "")) != OBJ_HOLD_ZONE:
+        kind = str(o.get("kind", ""))
+        who = str(o.get("for", ""))
+        if kind not in (OBJ_HOLD_ZONE, OBJ_CAPTURE_ZONE):
             add(SEV_BLOCK, "objective_kind",
-                "目标种类「%s」不认识（只支持 %s）" % (str(o.get("kind", "")), OBJ_HOLD_ZONE))
+                "目标种类「%s」不认识（支持 %s / %s）" % (kind, OBJ_HOLD_ZONE, OBJ_CAPTURE_ZONE))
             continue
+        if who and who in seen_for:
+            add(SEV_BLOCK, "objective_dup_for", "阵营「%s」配了两条目标（只能一条）" % who)
+        seen_for[who] = True
         zid = int(o.get("zone", -1))
         if zid < 0:
-            add(SEV_BLOCK, "objective_no_zone", "守住区划的目标没写 zone")
+            add(SEV_BLOCK, "objective_no_zone", "目标没写 zone")
         elif info is None or not info.has_zone(zid):
             add(SEV_BLOCK, "objective_zone_missing", "目标区划 c%d 不存在" % zid)
-        if float(o.get("hold_sec", 0.0)) <= 0.0:
+        # ⚠️ `hold_sec` 只有「守住」类才要求 > 0：「占领即赢」那条不需要时间
+        if kind == OBJ_HOLD_ZONE and float(o.get("hold_sec", 0.0)) <= 0.0:
             add(SEV_BLOCK, "objective_hold_sec",
                 "守住时间必须大于 0 秒（现在写的是 %s）" % str(o.get("hold_sec", 0.0)))
 
