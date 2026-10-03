@@ -25,6 +25,9 @@
 ##                                                      粮食 / 黄金 / 人口，只能选一个）
 ##   zone_spec_cancel        zone_id, faction          取消已完成的特化（**也要读条**，读完退款）
 ##   zone_spec_bar_cancel    zone_id, faction          撤掉**读条中**的那一单特化并退款
+##   revive         leader_id, faction              ★ 让一个**濒死**的将领「再起」
+##                                                      （扣 revive.cost、读条 channel_sec）
+##   revive_cancel  leader_id, faction              取消读条中的再起并**全额退款**
 ##   spawn_enemy    tx, ty               调试刷兵
 ##
 ## ★ 关键约束：**命令里只放意图，不放结果**。
@@ -91,6 +94,17 @@ static func apply(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 		"zone_spec_bar_cancel":
 			return world.cancel_zone_spec_bar(
 				int(cmd.get("zone_id", -1)), String(cmd.get("faction", world.my_faction)))
+		"revive":
+			# ★ 将领濒死 → 花资源「再起」（读条 channel_sec 秒）。
+			#   规则（能不能点 / 多少钱 / 读条多久）全在 world.start_revive 里，
+			#   这里只把意图转过去（与招募 / 升级那几条同一条约定）。
+			return world.start_revive(
+				String(cmd.get("leader_id", "")),
+				String(cmd.get("faction", world.my_faction)))
+		"revive_cancel":
+			return world.cancel_revive(
+				String(cmd.get("leader_id", "")),
+				String(cmd.get("faction", world.my_faction)))
 		"spawn_enemy":
 			return apply_spawn_enemy(world, cmd)
 		"select":
@@ -135,8 +149,17 @@ static func note_order_rejected(world, ids: Array, owner_faction: String) -> voi
 			continue
 		if not FactionRes.same_side(u.faction, owner_faction):
 			continue
-		if world.is_order_locked(u):
-			world.push_event({"type": "order_rejected", "reason": "recruiting", "unit_id": u.id})
+		# ★ 拒因码走 `world.order_lock_reason()`（它区分「正在招募」与「已倒地」）：
+		#   ⚠️ 这里**不能**用 `:=` —— 那个函数的返回值在动态调用下没有确定类型，
+		#      GDScript 会当场报 "Cannot infer the type of reason variable"
+		#      （实测踩到；与 test_case.gd 注释里那条「返回值是 Variant 时不要用 :=」同源）。
+		var reason: String = String(world.order_lock_reason(u))
+		if reason != "":
+			# ★ 带上 `faction`：这条目前**只有玩家命令**会产生（上面已经按阵营过滤过），
+			#   但事件带上阵营是这条通道的统一约定 —— 界面靠 `_is_my_event()` 判「要不要
+			#   打扰玩家」，将来多一条来源时不会又变成「别人的消息传到我这儿」。
+			world.push_event({"type": "order_rejected", "reason": reason, "unit_id": u.id,
+				"faction": String(u.faction)})
 			return
 
 
@@ -379,14 +402,21 @@ static func apply_attack_move(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 ##   逐单位 `order_attack_move_at`（各自的槽位 + 同一个全队目标点）。
 ##   ⇒ 将领和它辖下的部队真的会一起行军，而不是只有将领一个人走。
 static func order_group_attack_move(world, cfg: ConfigRes, group: Array, pt: Vector2) -> bool:
-	var group2 := _collect_units(world, _ids_of(group), world.my_faction if world != null else "")
+	var owner: String = String(world.my_faction) if world != null else ""
+	var group2 := _collect_units(world, _ids_of(group), owner)
 	if group2.is_empty():
 		# `_collect_units` 按「同方」过滤，AI 那些单位不属于玩家阵营 ⇒ 走不过去。
 		# 这条路径是**逻辑层内部**调用（不是网络命令），所以直接用传来的数组。
 		group2 = []
 		for u in group:
-			if u != null and u.alive:
-				group2.append(u)
+			# ★ 濒死者不下行军命令（它倒在原地，命令只会在它身上挂一条走不了的路径）。
+			#   兜底这一支是逻辑层内部调用（阵营 AI / 驻防巡逻 / 濒死集结），
+			#   它们传进来的数组可能含队长自己，所以这里也要过一遍 `is_order_locked`。
+			if u == null or not u.alive:
+				continue
+			if world != null and world.is_order_locked(u):
+				continue
+			group2.append(u)
 	if group2.is_empty():
 		return false
 	var accepted := false

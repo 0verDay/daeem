@@ -131,19 +131,18 @@ var _general_combat: Array = []
 ## ★★ 它是**数据**而不是美术：设计师在单位编辑器里给每个兵种挑一个字，
 ##    新加的兵种也就有了自己的样子（见 view/unit_icon.gd 的文件头）。
 var _unit_icons: Dictionary = {}
-## 每个将领开局带几个**同类型**的兵（原 unit.subordinate.count）—— 见 unit.general.escort
-var general_escort: int = 0
-## ★★ 每位将领**各自**的编制上限（`unit.general.escort` 写成数组时用这一份）。
+## ★★ 开局**没有**任何「每位将领带几个兵」的全局缺省（本轮口径变更）。
 ##
-## 需求原话：「我预期的是敌方将领的编制上限应该在 4 到 6 不等，这个不等的区间
-##           就是攻击波次的浮动间隔时间」—— 也就是**靠每位将领带兵数不同**
-##           制造波次大小的浮动，而不是靠随机。
-##
-## 写法（两种都支持，向后兼容）：
-##   · 一个数 `3`   → 所有将领都是 3（老行为，数组会是 `[3]`，见 `general_escort_at`）；
-##   · 一个数组 `[4, 5, 6]` → 第 1 位带 4、第 2 位带 5、第 3 位带 6（**与
-##     `unit.general.types` 同序**；下标超出时按循环取，见 `general_escort_at`）。
-var general_escorts: Array = []
+## 原先是 `unit.general.escort`（一个数或一个数组）+ `general_escort_count()` /
+## `general_escort_at(index)` 两个读法。**整条已删除**，理由是「所见即所得」：
+##   开局场上有多少兵，必须**完全等于**关卡 `start_units[]` 里摆出来的那些。
+## 于是：
+##   · 编制不再来自 config，而是**关卡 `start_units[].escort_of`**（逐兵一个坐标，
+##     `escort_of` = 归属将领序号，1 起，与 `general_index` 同规）；
+##   · 关卡没摆 ⇒ 将领开局**光杆**（0 个附属兵），绝不补任何缺省；
+##   · 运行时唯一的读法是 `Level.escort_leader_index()` ⊕ `world.escort_target_of()`。
+## ⚠️ 所以这里**故意不再留**任何 escort 字段与查询函数 ——
+##    留一个「全局缺省」就等于又给了第二条真相来源，正是本轮要拆掉的东西。
 ## 查不到类型时的兜底战斗数值（= 第一个将领类型，也就是长枪兵那一档）。
 ## ★ 为什么兜底是长枪兵而不是测试敌人：本项目踩过「二元判断（是将领吗？不是就当敌人）
 ##   把新加的类型静默当成测试敌人」这个坑（见 docs/pitfalls.md 5.x）——
@@ -154,6 +153,15 @@ var _combat_fallback: Dictionary = {"damage": 10.0, "range": 1.0, "cooldown_sec"
 var combat_enabled: bool = true
 var aggro_range: float = 4.0
 var leash_factor: float = 1.8
+## ★★ 因为追击上限（leash）放弃之后，多久**不许再自动锁定单位**（秒）。
+##
+## 为什么必须有它（实测报回来的 bug：单位在区划边界「原地抽搐」）：
+##   放弃那一下只清 `target`，而目标**还在警戒半径里** —— 下一帧 `acquire_target`
+##   立刻又把它锁上，而锁定那一刻 `anchor` 就是当前位置（距离 0，判据必然通过）
+##   ⇒ 再走一格又超上限、又放弃 …… 一帧一放一锁 = 原地抽搐。
+##   冷却期内它只待命，抖动的回路就断了。
+## ⚠️ 只挡**自动索敌**：玩家点名的目标、行军攻击继续走、拆建筑都不受影响。
+var leash_release_cd: float = 0.5
 var repath_sec: float = 0.3
 ## 追击时，目标从上一次算路的位置挪出这么多格，才值得重算一次路径。
 ## ★ 见 unit.gd `last_repath_to` 的说明：只按周期无条件重算会让 1000 单位追击
@@ -233,6 +241,25 @@ var _zone_kind_by_id: Dictionary = {}
 
 var respawn_sec: float = 0.0
 var destructible_base: bool = false
+
+## ---- ★★ 将领**濒死保护**（config.json 的 revive 段；规则见 logic/unit.gd / world.gd）----
+##
+## 六个数各管一件事，全部在 config 里可调（用户要求「消耗写 config，可调」）：
+##   · `revive_cost`        —— 「再起」要花的粮食 / 黄金（入队即扣，取消全额退）；
+##   · `revive_channel_sec` —— 「再起」的读条秒数（0 = 瞬发）；
+##   · `revive_ready_ratio` —— 血量到上限的这个比例才允许再起（= 10%）；
+##   · `revive_regen_sec` / `revive_regen_ratio` —— 每几秒回上限的百分之几（= 每 3 秒 1%）；
+##   · `revive_regen_cap_ratio` —— 自然回复的天花板（= 上限的 20%）。
+##
+## ★ 为什么整段在载入时算好：这些数在**每帧每濒死将领**的路径上（回复计时），
+##   而且 UI 悬停 / 拒因文案也要读同一份 —— 与 unit_hp_max / aggro_range 同一条规矩，
+##   不在调用点重下潜一次 JSON（那样两处口径一定会漂）。
+var revive_cost: Dictionary = {}
+var revive_channel_sec: float = 0.0
+var revive_ready_ratio: float = 0.1
+var revive_regen_sec: float = 3.0
+var revive_regen_ratio: float = 0.01
+var revive_regen_cap_ratio: float = 0.2
 
 ## 一帧最多按多少秒推进逻辑（防止「帧慢→dt 大→活更多→更慢」的死亡螺旋）
 var sim_max_dt: float = 0.05
@@ -323,6 +350,7 @@ func _cache_scalars() -> void:
 	combat_enabled = bool_val("combat.enabled", true)
 	aggro_range = num("combat.aggro_range", 4.0)
 	leash_factor = num("combat.leash_factor", 1.8)
+	leash_release_cd = maxf(0.0, num("combat.leash_release_cd", 0.5))
 	repath_sec = num("combat.repath_sec", 0.3)
 	repath_min_move = num("combat.repath_min_move", 0.5)
 	chase_direct_range = num("combat.chase_direct_range", 8.0)
@@ -348,6 +376,20 @@ func _cache_scalars() -> void:
 	destructible_base = bool_val("pvp.destructible_base", false)
 	sim_max_dt = num("sim.max_dt", 0.05)
 
+	# ★★ 将领濒死保护（见上面那组字段的说明）。cost 走与招募 / 升级同一套形状
+	#    （{"food":…, "gold":…}），所以 EconomyRes.can_afford / spend 直接就能用。
+	revive_cost = _read_cost("revive.cost")
+	revive_channel_sec = maxf(0.0, num("revive.channel_sec", 5.0))
+	# ⚠️ `ready_ratio` 夹到 (0, 1]：写成 0 会让「0 血就能再起」（绕开需求里的 10% 门槛），
+	#    写成负数更没意义。上限 1.0 = 必须回满才让再起。
+	revive_ready_ratio = clampf(num("revive.ready_ratio", 0.1), 0.0001, 1.0)
+	revive_regen_sec = maxf(0.01, num("revive.regen_sec", 3.0))
+	revive_regen_ratio = maxf(0.0, num("revive.regen_ratio", 0.01))
+	# 天花板至少得够得着门槛，否则「再起」永远点不亮（配错数据时给一条活路：
+	# 取两者的较大值，而不是让玩家面对一颗永远灰着的格子）。
+	revive_regen_cap_ratio = clampf(
+		maxf(num("revive.regen_cap_ratio", 0.2), revive_ready_ratio), 0.0, 1.0)
+
 	_cache_techs()
 	_cache_upgrades()
 	_cache_zone_kinds()
@@ -372,7 +414,9 @@ func _cache_scalars() -> void:
 #      将领 kind 走 unit.general.types）；
 #   3. 它是**步兵还是骑兵**、远不远（unit_class_of / unit_is_ranged）——
 #      「后续按兵种做额外伤害」就读这两个；
-#   4. 三个开局将领各是什么类型、各带几个同类型的兵（general_type_at / general_escort_count）。
+#   4. 三个开局将领各是什么类型、叫什么名字（general_type_at / general_name_at）。
+#      ⚠️ 「各带几个兵」**不在这一层**（本轮口径变更）：开局附属兵完全由关卡的
+#         `start_units[].escort_of` 摆放决定，config 里没有任何缺省（见上面那段说明）。
 # ⚠️ 表里查不到的 kind 一律**退回兜底值**（而不是当成测试敌人）：手写地图里写错一个
 #   kind 不该让那个单位变成 60 血的敌人 —— 那正是本项目踩过的坑（见 _combat_fallback）。
 # ------------------------------------------------------------------
@@ -437,20 +481,12 @@ func _cache_unit_types() -> void:
 				_general_types.append(sid)
 	if _general_types.is_empty() and _unit_types.has(UNIT_TYPE_SPEARMAN):
 		_general_types.append(UNIT_TYPE_SPEARMAN)
-	# ★ 两个读法各有用途：
-	#   · `general_escort` = 数组的**第一项**（给「不知道自己是第几位」的调用方兜底，
-	#     也是 `general_escort_count()` 的返回值）；
-	#   · `general_escorts` = 逐将那一份（真正的口径，见 `general_escort_at()`）。
-	general_escorts = []
-	var escort_raw: Variant = get_path_value("unit.general.escort")
-	if typeof(escort_raw) == TYPE_ARRAY:
-		for item in (escort_raw as Array):
-			general_escorts.append(maxi(0, int(float(item))))
-	elif typeof(escort_raw) == TYPE_FLOAT or typeof(escort_raw) == TYPE_INT:
-		general_escorts.append(maxi(0, int(float(escort_raw))))
-	if general_escorts.is_empty():
-		general_escorts.append(0)
-	general_escort = int(general_escorts[0])
+	# ⚠️ 这里**不再读** `unit.general.escort`：本轮把「全局开局编制」整个删掉了
+	#    （开局有几个附属兵 = 关卡 `start_units[].escort_of` 摆了几个，
+	#     见本文件上面那段说明与 `Level.escort_leader_index()`）。
+	# ★ 于是 `config.json` 里**残留**的 `escort` 键会被**静默忽略**：`get_path_value()`
+	#   只在**主动查**某个路径时才看它，没人查的键等于不存在，不会报错、也不会警告。
+	#   这一条是有意的 —— 另一路 agent 正在改 config 与单位编辑器，两边不必同步落地。
 
 	# 3.5) ★★ 将领的**数值覆盖**（config.json 的 `unit.general.stats`，本轮新增；
 	#      editor：tools/unit_editor 的「单位」页 → 将领）。
@@ -577,31 +613,14 @@ func general_type_at(i: int) -> String:
 	return String(_general_types[i])
 
 
-## 每个将领开局带几个同类型的兵（**全局一份**，= `unit.general.escort` 的第一个值）。
-## ⚠️ 真正的口径请用 `general_escort_at(index)`：配置写成数组时每位将领不一样，
-##    这个函数只是给「不知道自己是第几位」的调用方兜底（例如地图上摆的测试敌人）。
-func general_escort_count() -> int:
-	return general_escort
-
-
-## ★★ 第 `index` 位将领（0 起，与 `unit.general.types` / `unit.general.stats` 同序）
-## 开局带几个同类型的兵 —— 「编制上限」。
-##
-## 需求：「敌方将领的编制上限应该在 4 到 6 不等，这个不等的区间就是攻击波次的
-##       浮动间隔时间」。所以这是**按将领序号**取值的：`[4, 5, 6]` ⇒
-##       第 1 位 4 个、第 2 位 5 个、第 3 位 6 个，一波兵自然就在 4~6 之间浮动。
-##
-## ★ 下标越界时**按长度循环**（`index % size`）而不是退到第一个值：
-##   将领数量多于配置项时不至于「第 4 位起全变成最少的那一档」——
-##   那种退化会让加一个 `general_4` 之后的波次突然变小，且毫无提示。
-func general_escort_at(index: int) -> int:
-	if general_escorts.is_empty():
-		return general_escort
-	var n := general_escorts.size()
-	var i := index % n
-	if i < 0:
-		i += n
-	return int(general_escorts[i])
+## ⚠️ 这里原先还有两个「开局编制」的读法（本轮**整个删掉**）：
+##   · `general_escort_count()`     —— `unit.general.escort` 的第一个值；
+##   · `general_escort_at(index)`   —— 逐将那一份（下标越界按长度循环）。
+## 新口径下**没有任何全局缺省**：开局有几个附属兵完全等于关卡 `start_units[]` 里
+## 摆了几个（`escort_of` 指向哪位将领）。要问「这位将领的目标编制」请用
+## `world.escort_target_of(fid, general_index)`。
+## ★ 不保留「读不到就返回 0」的兼容函数是**有意的**：留一个恒 0 的接口会让
+##   调用点看起来还在工作，而这个接口存在的意义已经没有了（见文件上方那段说明）。
 
 
 # ------------------------------------------------------------------
@@ -808,6 +827,19 @@ func str_val(path: String, fallback: String) -> String:
 	if typeof(v) == TYPE_STRING:
 		return v
 	return fallback
+
+
+## 读一份 `{"food": n, "gold": n}` 形状的**消耗**（招募 / 升级 / 特化 / 再起共用这一套）。
+##
+## ★ 为什么要这个函数（本轮新增）：`EconomyRes.can_afford` / `spend` 认的就是这个形状，
+##   而 `get_path_value` 返回 Variant —— 直接在调用点 `if typeof(...) == TYPE_DICTIONARY`
+##   判一次的话，每个新消耗点都要抄一遍（抄漏一次就是「钱不够也放行」这种安静的错误）。
+## ★ 缺字段 / 类型不对 → 返回**空字典**（= 免费），与 `recruit_cost` 的兜底同义。
+func _read_cost(path: String) -> Dictionary:
+	var v: Variant = get_path_value(path)
+	if typeof(v) == TYPE_DICTIONARY:
+		return v
+	return {}
 
 
 # ------------------------------------------------------------------
@@ -1551,6 +1583,11 @@ func _cache_ai() -> void:
 		"ready_mult": num("ai.faction.ready_mult", 0.5),
 		"min_ready": maxi(1, int(num("ai.faction.min_ready", 2.0))),
 		"attack_repeat_sec": maxf(0.1, num("ai.faction.attack_repeat_sec", 6.0)),
+		# ★★ 再起预留（本轮新增）：AI 判断「付得起再起」时，除了 revive.cost
+		#    还要多留这么多钱 —— 0 = 只要付得起就再起（见 faction_ai._try_revive）。
+		#    与 upgrade_reserve_* 同一条思路：调大 = 更愿意保住将领而不是乱花钱。
+		"revive_reserve_food": maxf(0.0, num("ai.faction.revive_reserve_food", 0.0)),
+		"revive_reserve_gold": maxf(0.0, num("ai.faction.revive_reserve_gold", 0.0)),
 	}
 	_ai_general_cfg = {
 		"patrol_interval_sec": maxf(0.1, num("ai.general.patrol_interval_sec", 4.0)),

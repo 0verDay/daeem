@@ -172,6 +172,12 @@ def campaign_payload(model: CampaignModel) -> dict:
 #:   可是 JSON 数组是有序的，直接比会报成「往返不一致」这种极难查的假红。
 #: ⚠️ **别**把有序的列表塞进来：`players[]` 的顺序 = 席位顺序、`objectives[]`
 #:   虽然第一版只有一项但顺序有意义 —— 它们必须逐位比较。
+#:
+#: ★★ `start_units` 是**后加的**（本轮）：编辑器导出时会把**将领排到它自己的兵前面**
+#:   （运行时的硬约定：`world.units` 的前几个必须是将领），于是数组顺序会与源文件不同 ——
+#:   那是同一份数据的另一种写法，不是数据变了。⚠️ 前提是「顺序不携带语义」：
+#:   `units[].escort_of` 指的是**第几位将领**（按将领自己的 `general_index`），
+#:   不是「数组里的第几项」，所以排序之后语义不变。
 UNORDERED_KEYS: Tuple[str, ...] = ("zones", "factions", "start_units", "start_buildings",
                                    "fail_conditions", "briefing")
 
@@ -187,7 +193,10 @@ def canonical_payload(value: Any, key: str = "") -> Any:
     if isinstance(value, (int, float)):
         return float(value)
     if isinstance(value, dict):
-        return {k: canonical_payload(v, k) for k, v in value.items()}
+        # ★★ 键排序：JSON 对象的**成员顺序不携带语义**，而导出时 `escort_of` 是最后
+        #    追加的键、作者手写的 JSON 里可能排在 `name` 前面 —— 按位置比会报成
+        #    「往返不一致」这种假红（实测踩到）。排序之后：多键 / 少键 / 值变了照样抓得住。
+        return {k: canonical_payload(v, k) for k, v in sorted(value.items())}
     if isinstance(value, list):
         items = [canonical_payload(v, key) for v in value]
         if key in UNORDERED_KEYS:

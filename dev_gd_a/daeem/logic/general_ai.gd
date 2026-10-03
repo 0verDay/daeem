@@ -71,6 +71,10 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 	for u2 in world.units:
 		if not u2.alive or int(u2.garrison_zone_id) < 0:
 			continue
+		# ★ 濒死者不算「这一帧要巡逻的队长」（本轮新增）：它倒在原地，
+		#   算进去会让同一区划里**别人**分到的扇区跟着变（路线随人数切分）。
+		if u2.is_downed():
+			continue
 		if not is_patrol_leader(world, u2):
 			continue
 		var zid2 := int(u2.garrison_zone_id)
@@ -95,9 +99,22 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 		#   否则那条「走回区划中心」的路径会一直挂着，读条一完就冲出去。
 		if u.is_training():
 			continue
+		# ★★ 濒死的驻防将领**这一帧什么都不做**（本轮新增）：需求是「倒在原地」——
+		#    不能巡逻、不能接战、也不该把整队带向某个巡逻点。
+		#    ⚠️ 这一条必须**早于**下面那些「脱战 / 收队 / 招兵」的判定：
+		#      它现在没有交战目标（濒死时 stop() 清过了），往下走也不会有副作用，
+		#      但「走到这里」本身就意味着这一帧会去碰它的命令队列 —— 不值得。
+		#    ★ 它辖下的部队**不受影响**：救它那支行军命令是 `world.enter_near_death`
+		#      下的（它们正朝倒下点走），而 `_catch_up_retinue` 那类「叫回来巡逻」
+		#      的逻辑不该把援军又拽走。
+		if u.is_downed():
+			continue
 
 		var z: Variant = _garrison_zone(world, u)
 		u.retarget_cd = maxf(0.0, u.retarget_cd - dt)
+		# ★★ 冷却结束 = 返程这一段也结束了（见下面「回家」那一支与 `returning_home`）
+		if u.retarget_cd <= 0.0:
+			u.returning_home = false
 
 		# ---- 1) 区划级追击上限：追出自己那个区划了 → 当场脱战、走回去 ----
 		#
@@ -112,8 +129,14 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 			#    少了它，下一帧 combat.gd 会把同一个敌人再锁一次，于是
 			#    「追出去 → 被叫回来 → 又追出去」原地抖（见 unit.retarget_cd 的说明）。
 			u.retarget_cd = retarget_cd
-			# 追出去了就立刻回去，不等巡逻计时（不然它会站在别人家里等着挨打）
-			_patrol_leader(world, cfg, u, z, zone_count)
+			# ★★ 返程**只下一道命令**（本轮修 bug）：实测报回来的「卡边界时还是会抽搐」
+			#    就是这里——原来每一帧命中这一支都会重下一条「回巡逻点」的命令，
+			#    而巡逻路线上的下一个点还会被 `_next_patrol_tile` 换掉 ⇒
+			#    路径每帧重置、人永远走不回家，看着就是在区划边缘原地抽。
+			#    ⇒ 只在**还没上路**时下这一道；走到了（或冷却结束）由下面第 5 步接手。
+			if not u.returning_home:
+				u.returning_home = true
+				_patrol_leader(world, cfg, u, z, zone_count)
 			u.patrol_timer = patrol_interval
 			continue
 
@@ -149,6 +172,11 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 					continue      # 刚下单：这一帧别再插一条巡逻命令（会把它顶掉）
 
 		# ---- 5) 巡逻：按时间间隔朝**自己路线的下一个点**走 ----
+		# ★★ 正在回家的路上（`returning_home`）：**不再插新的巡逻命令** ——
+		#    那会把返程路径顶掉，于是它一步都走不回去（本轮修的「卡边界抽搐」）。
+		#    等它走到（见 `_patrol_leader` 末尾的到达判定）或冷却结束（上面那句）再恢复。
+		if u.returning_home:
+			continue
 		u.patrol_timer -= dt
 		if u.patrol_timer <= 0.0:
 			u.patrol_timer = patrol_interval
@@ -215,6 +243,12 @@ static func _out_of_garrison(world, u, z, leash: float) -> bool:
 static func is_patrol_leader(world, u) -> bool:
 	if u == null or not u.alive:
 		return false
+	# ★ 濒死的将领不是「这一块的巡逻队长」（本轮新增）：它倒在原地，
+	#   而「队长」这个身份是用来派巡逻命令的（见 `_patrol_leader`）。
+	#   ⚠️ 于是它辖下的部队会**自己接手**巡逻（它们的 `team_leader()` 仍然返回这个
+	#      倒下的将领 —— 濒死是 alive 的，所以这里必须显式挡一下，不能靠 team_leader）。
+	if u.is_downed():
+		return false
 	if int(u.garrison_zone_id) < 0:
 		return false
 	return world.team_leader(u) == null
@@ -239,6 +273,9 @@ static func is_patrol_leader(world, u) -> bool:
 static func _patrol_leader(world, cfg: ConfigRes, u, z, zone_count: int) -> void:
 	var tile: Vector2i = _next_patrol_tile(world, cfg, u, z, zone_count)
 	if tile.x < 0:
+		# ★ 算不出巡逻点（区划被删 / 数据坏了）⇒ 返程也算结束，否则这个标志会
+		#   一直挂着、第 5 步永远不巡逻（人就定死在原地了）。
+		u.returning_home = false
 		return
 	var pt: Vector2 = GridRes.center_of(tile)
 	if u.pos.distance_to(pt) > 0.5:
@@ -247,6 +284,13 @@ static func _patrol_leader(world, cfg: ConfigRes, u, z, zone_count: int) -> void
 	#    「队长到了、兵还落在后面」正是最常见的掉队形态，只在队长移动时才检查的话
 	#    那几个人会一直站在半路（它们没有新命令，旧的 goal 早就到了）。
 	_catch_up_retinue(world, cfg, u, pt)
+	# ★★ 返程走到头了（本轮修 bug，见 `unit.returning_home`）：
+	#    队长已经站在这一趟的目标点上 ⇒ 这一段「回家」结束，恢复正常巡逻节奏。
+	#    ⚠️ 阈值必须**不小于**上面判「要不要下命令」的那个 0.5 —— 否则会出现
+	#      「下了命令、下一帧又判成到了」的循环。这里取 0.75，且只在真的停住时清。
+	#    ⚠️ 不断言「路径已空」：被挤住（人群 / 窄口）时路径可能还在，但它已经站住了。
+	if u.returning_home and not u.moving and u.pos.distance_to(pt) <= 0.75:
+		u.returning_home = false
 
 
 ## 让**整队**朝 `pt` 走（队长 + 它辖下活着的附属兵）。

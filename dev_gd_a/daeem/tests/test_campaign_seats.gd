@@ -23,6 +23,9 @@ const WorldRes = preload("res://logic/world.gd")
 const ObjectiveRes = preload("res://logic/objective.gd")
 const BuildingRes = preload("res://logic/building.gd")
 const FactionRes = preload("res://logic/faction.gd")
+## ★ 本轮新增：`_group_escort` 要用 `LevelRes.escort_leader_index()` 读关卡摆放数据
+## （判据只有那一处，别再自己写一份 `escort_of - 1`）。
+const LevelRes = preload("res://logic/level.gd")
 
 const DEMO_DIR := "res://data/campaigns/demo"
 const LEVEL_ID := "01_beachhead"
@@ -172,7 +175,19 @@ func _group_ai_swap(cfg) -> void:
 
 
 # ------------------------------------------------------------------
-# 四、★ 开局附属兵：只有玩家自己那一方有
+# 四、★★ 关卡摆放：**谁摆了就给谁**（本轮口径推翻重写）
+#
+# 旧口径（已废弃）：「只有本机操作的那一方有开局附属兵」
+#   ⇒ 对手**永远**是 3 位光杆将领 + 0 个附属兵。
+# 新口径（本轮）：「所见即所得」—— 开局场上有多少兵，完全等于**关卡摆出来的那些**；
+#   谁摆了就给谁（AI 摆的也照样出现），关卡没摆的那一方照旧自动生成 3 位光杆将领。
+#
+# ⚠️ 这一节**按关卡数据本身**断言，不写死「两边都摆了 15 个」：
+#    `data/campaigns/` 归另一路 agent 在改（样例关卡还在填），写死数字会把
+#    「数据还没填完」误报成「摆放逻辑坏了」。要钉的是**机制**：
+#      · 关卡摆的每一个单位都在场上；
+#      · 带 `escort_of` 的兵都挂在**同阵营、同序号**的将领上；
+#      · 同一方不会既有关卡摆的将领、又冒出自动生成的重名将领。
 # ------------------------------------------------------------------
 func _group_escort(cfg) -> void:
 	var camp = CampaignRes.load_campaign(DEMO_DIR, cfg)
@@ -183,15 +198,53 @@ func _group_escort(cfg) -> void:
 		if w == null:
 			continue
 		ok(w.units.size() > 0, "[%s] 世界里有单位" % seat)
-		var mine := _unit_count(w, String(seat))
-		ok(mine > 3,
-			"★ [%s] 玩家自己的那一方有开局附属兵（%d 个单位 > 3 位光杆将领）" % [seat, mine])
 		var foe := "F2" if String(seat) == "F1" else "F1"
-		# ★★ AI 那一方**没有**开局附属兵：它得自己「招将 → 招满 → 出征」，
-		#    那才是波次节奏（给满编的话第一波瞬间就到，中间那段经营不存在）。
-		eq(_general_count(w, foe), 3, "★ [%s] 对手只有 3 位光杆将领" % seat)
-		eq(_escort_count(w, foe), 0,
-			"★ [%s] 对手一个附属兵都没有（它必须自己招）" % seat)
+		# ---- 关卡给「对手」摆的每一个单位都必须在场（不再被 with_escort 挡掉）----
+		var placed: Array = lv.placed_units_for(foe)
+		for u in placed:
+			var ud: Dictionary = u
+			var at := Vector2i(int(ud.get("x", -1)), int(ud.get("y", -1)))
+			var found := false
+			for wu in w.units:
+				if String(wu.faction) == foe and wu.alive and Vector2i(wu.tx, wu.ty) == at:
+					found = true
+					break
+			ok(found, "★★ [%s] 关卡给对手摆的单位 (%d,%d) 真的出现在场上（AI 摆的也算）"
+				% [seat, at.x, at.y])
+		# ---- 带 escort_of 的兵：挂同阵营同序号的将领，而且那位将领真的在场 ----
+		var checked := 0
+		for u in placed:
+			var ud2: Dictionary = u
+			var ei: int = LevelRes.escort_leader_index(ud2)
+			if ei < 0:
+				continue
+			checked += 1
+			var at2 := Vector2i(int(ud2.get("x", -1)), int(ud2.get("y", -1)))
+			var sub = null
+			for wu2 in w.units:
+				if String(wu2.faction) == foe and Vector2i(wu2.tx, wu2.ty) == at2:
+					sub = wu2
+					break
+			ok(sub != null, "（前提）找到那一格的附属兵")
+			if sub == null:
+				continue
+			var want_ld: String = w.escort_of_index(foe, ei)
+			eq(String(sub.leader_id), want_ld,
+				"★★ [%s] escort_of=%d 的兵挂在 %s 上" % [seat, ei + 1, want_ld])
+			var ld = w.unit_by_id(want_ld)
+			ok(ld != null, "★★ [%s] 那位将领真的在场（%s）" % [seat, want_ld])
+		ok(checked >= 0, "[%s] 对手摆了 %d 个附属兵（逐条验过）" % [seat, checked])
+		# ---- 不重名：同一方不会同时有「关卡摆的将领」与「自动生成的重名将领」----
+		var seen_ids: Dictionary = {}
+		var dup := 0
+		for wu3 in w.units:
+			if String(wu3.faction) != foe or not wu3.alive:
+				continue
+			if seen_ids.has(String(wu3.id)):
+				dup += 1
+			seen_ids[String(wu3.id)] = true
+		eq(dup, 0,
+			"★★ [%s] 对手的单位 id 不重复（摆了将领就不该再自动生成一批同 id 的）" % seat)
 
 
 # ------------------------------------------------------------------

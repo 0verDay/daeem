@@ -454,6 +454,76 @@ def t_step4_export_import() -> None:
         root.destroy()
 
 
+def t_units_preset_dropped_by_editor() -> None:
+    """★★ 行为变更（本轮）：`units`（地图预置单位）已废弃 —— 编辑器**不再保留**它。
+
+    用户口径：地图预置单位整个废弃（运行时不读、编辑器不再允许摆、数据清掉），
+    而**地图预置建筑 `buildings` 照旧保留**。落到编辑器上就是：
+
+        「打开一张带 units 的老图 → 什么都不改 → 导出」⇒ 导出的 JSON 里**没有** units。
+
+    ⚠️ 这条**不是**「编辑器不小心吃掉了字段」那种 bug —— 它就是需求要的结果
+      （`PRESERVED_KEYS` 白名单里故意没有 units）。所以这一条钉的是**行为**，不是回归修复。
+
+    为什么在界面层再钉一遍（数据层 test_model.py 里已经有了）：
+      文件对话框 → `do_open()` → 导出这条**真实路径**才是有可能出岔子的地方
+      （比如 `do_open` 里哪天多写一句「把原文件的顶层键补回 extra」就会把 units 捞回来）。
+      样本直接用仓库里那张真图（frontier）+ 现场注入一个 units，所以「buildings 原样保留」
+      也是在真数据上验的（那张图有 6 栋预置建筑）。
+    """
+    print("\n[28] ★★ units 已废弃：编辑器打开 + 导出之后它必须消失（buildings 保留）")
+    pub_map = PROJECT_DIR / "data" / "maps" / "frontier" / "map.json"
+    with open(pub_map, encoding="utf-8-sig") as fh:
+        source = json.load(fh)
+    # 那张真图现在自己已经没有 units 了（数据清理过），所以现场注入一份 ——
+    # 否则这条用例会「因为样本里本来就没有」而假绿。
+    source["units"] = [
+        {"x": 15, "y": 13, "name": "守军", "hold": True},
+        {"x": 13, "y": 13, "name": "守军", "hold": True},
+    ]
+    source_buildings = source.get("buildings")
+    ok(bool(source_buildings), "（真图里有 buildings，下面「原样保留」才验得出来）")
+
+    tmp = PROJECT_DIR / ".tmp_map_editor_units_test"
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True, exist_ok=True)
+    root, editor = build_editor()
+    restore_dialogs = stub_dialogs()
+    original_save = filedialog.asksaveasfilename
+    original_open = filedialog.askopenfilename
+    try:
+        src = tmp / "with_units.json"
+        src.write_text(json.dumps(source, ensure_ascii=False, indent=2) + "\n",
+                       encoding="utf-8")
+        dst = tmp / "exported.json"
+
+        # ---- 读（走界面那条路）
+        filedialog.askopenfilename = lambda **kwargs: str(src)
+        editor.do_open()
+        filedialog.askopenfilename = original_open
+        ok("units" not in editor.model.extra,
+           "★★ 导入时 units 就连 extra 都不进（不是「留着不写」）")
+        ok("buildings" in editor.model.extra, "★ buildings 照旧进 extra（另一回事）")
+
+        # ---- 写（走界面那条路）
+        filedialog.asksaveasfilename = lambda **kwargs: str(dst)
+        editor.do_export()
+        filedialog.asksaveasfilename = original_save
+        ok(dst.is_file(), "导出真的写出了文件")
+        with open(dst, encoding="utf-8") as fh:
+            out = json.load(fh)
+        ok("units" not in out,
+           "★★ 导出里没有 units 这个键（老图的预置单位被丢弃 = 需求要的行为）")
+        eq(out.get("buildings"), source_buildings, "★ buildings 原样保留（逐项一致，没被扩大打击面）")
+        eq(out.get("id"), "frontier", "图标识这类保留字段照旧带过去")
+    finally:
+        restore_dialogs()
+        filedialog.asksaveasfilename = original_save
+        filedialog.askopenfilename = original_open
+        shutil.rmtree(tmp, ignore_errors=True)
+        root.destroy()
+
+
 def t_infinite_canvas() -> None:
     """★ 需求：初始应当是一个无限大小的虚线地图。
 
@@ -2080,6 +2150,7 @@ def main() -> int:
     t_shift_drag_after_sidebar_click()
     t_zone_name_labels()
     t_file_buttons_wired()
+    t_units_preset_dropped_by_editor()
     print("\n[CASE] test_app -> passed %d / failed %d" % (_PASSED, _FAILED))
     return 1 if _FAILED else 0
 

@@ -521,6 +521,14 @@ C:\D\GodotEngine\gd4.7.2mono\Godot_v4.7.2-stable_mono_win64_console.exe `
 
 **同一张地图还预置了 6 个对家单位**（`test_map.json` 的 `units` 字段）：
 
+> ★★ **状态变更（后续一轮）：「地图预置单位」整个废弃。** `data/maps/*/map.json` 的 `units[]`
+> 运行时不读了，地图编辑器也不再保留 / 导出（`units` 被移出 `PRESERVED_KEYS`，
+> 见 `tools/map_editor/README.md` 第五节与 `docs/pitfalls.md` 6.10），
+> 随游戏发布的图里的 `units` 数据也一并清掉了（`frontier` 的 9 条已删、`dongzheng` 本来就是 `[]`）。
+> ⇒ **下面这张表与本节描述的单位已经不在任何地图上了**，这一节只作历史记录。
+> 眼下要在地图上摆敌人，只能走**关卡**的 `start_units`（见第三十七节）。
+> ⚠️ 别把「预置单位没了」当 bug 修回来：那是需求要的结果。
+
 | 单位 | 位置 | `hold` | 行为 |
 |---|---|---|---|
 | 守军 ×4 | (15,13) / (13,13) / (15,15) / (16,13) | `true` | 原地驻守，有人靠近就迎战 |
@@ -691,6 +699,9 @@ var local := Rect2(Vector2.ZERO, r.size)           # ← 偏移被丢掉了
 > 你走进去是「抢回来」；但如果你的兵和守军**同时**在区块里，谁都读不了条 ——
 > 必须先把对方清出场（这就是这套规则带来的玩法）。不想要那批守军的话，
 > 把 `test_map.json` 的 `units` 删掉即可。
+>
+> ★ **状态变更**：`units` 已整个废弃（见第一节末尾的 ★★）—— 现在**不用再手动删**了，
+> 地图里的 `units` 数据已经清掉，而且地图编辑器导出一次也会把它丢掉。
 
 ---
 
@@ -791,8 +802,17 @@ if String(b.owner) == "" or b.is_invulnerable():
 （`test_retinue` 抓到的）。现在 `world.reset()` 的顺序是：
 
 ```
-大本营/城墙/箭塔 → 地图预置建筑 → **区划中心** → 将领+亲兵 → 地图预置单位
+大本营/城墙/箭塔 → 地图预置建筑 → **区划中心** → 将领+亲兵 → 关卡摆放（start_units）
 ```
+
+> ★ **状态变更（本轮）**：第五步原来是「地图预置单位」（`map.json` 的 `units[]`），
+> 现在整个废弃 —— 运行时不读它，开局守军一律由**关卡的 `start_units`** 摆
+> （`world._apply_level_placement()`，字段语义与老的 `units[]` 一字不差：
+> `kind` / `faction` / `hold` / `zone` / `name` / `general_index` / `unit_type`）。
+> 所以顺序图上这一步的**位置没变**，变的只是数据来源；
+> `buildings`（地图预置建筑）照旧在第二步，不受影响。
+> `logic/map_data.gd` 的 `prefab_units` 成员与那行读取都删了，
+> `_read_units()` 保留但**已无调用点**（只有注释提到它）。
 
 ### 14.5 人口与产能：数据结构与经济口径
 
@@ -2594,7 +2614,7 @@ powershell -ExecutionPolicy Bypass -File dev_gd_a\daeem\tools\run-tests.ps1
 | 将领不能增删 | 开局固定三位（`unit.general.types` 的长度就是将领数） |
 | 升级表的血量是**倍率** | 游戏里的口径就是「基础血量 × 等级倍率 × 科技倍率」；编辑器在下面把换算结果写出来（`= 血量 300 × 1.5 = 450`） |
 | `blocks_*`（格级 / 本体级阻挡）没进界面 | 新建筑带一份「格子不封、本体挡敌方」的默认值，够用；要精细调就手改那几个键 |
-| 编辑器不管地图里引用的 id | 地图（`test_map.json`）里预置单位 / 建筑用的是同一批 id —— 删掉一个兵种后，老地图里那一项会走兜底值 |
+| 编辑器不管地图里引用的 id | 地图（`test_map.json`）里预置单位 / 建筑用的是同一批 id —— 删掉一个兵种后，老地图里那一项会走兜底值（⚠️ 预置单位 `units` 现已废弃 ⇒ **现在只剩 `buildings` 还在引用建筑 id**） |
 | 建筑的建造进度不进快照 | 单机阶段没有联机；给快照加字段要连带改快照版本与对齐测试，留到联机那一轮 |
 
 ## 二十九、地图上的单位图标改成**一个字**（这一轮）
@@ -3002,6 +3022,13 @@ canvas.yview()                        →   (0.0, 1.0)          ← 它还说「
 | 警戒到敌人**会打，但不追出一个区划** | 交战交给 `combat.gd`；`general_ai._out_of_garrison()` 补一条区划级硬约束：**脚踩进别的区划**（主判据）**或**在无主空地上离区划中心太远（兜底）→ 当场脱战走回去 |
 | 脱战 **10 秒**且不满员 → **无消耗**招兵 | `combat_idle_timer >= ai.general.combat_idle_sec`（默认 **10**）→ `world.start_recruit(..., free = true)` |
 
+> ★★ **状态变更（后续一轮）**：下面这些「**地图预置**的驻防将领 / 带 `zone` 的预置单位」
+> 已经没有数据来源了 —— 地图的 `units[]` 整个废弃（运行时不读、编辑器不保留、数据清掉，
+> 见本节开头那条与 `docs/pitfalls.md` 6.10）。归属区划（`zone`）这条路现在只剩
+> **关卡**的 `start_units`（第三十七节）会用到；第三十九节的
+> `_assign_garrison_zones()` 也正是给「关卡里手摆的将领」兜底归属的那一步。
+> ⚠️ 本节其余内容（两条 AI 的分工 / 参数 / 互斥判据）**不受影响**，照旧有效。
+
 ### 33.2 落点（新增 2 个文件 + 改 9 个）
 
 | 文件 | 作用 |
@@ -3014,7 +3041,7 @@ canvas.yview()                        →   (0.0, 1.0)          ← 它还说「
 | `logic/economy.gd` | `can_afford()` / `spend()` 的参数改成 `Variant`，**null = 资源无限**（见 33.4） |
 | `logic/upgrade.gd` | 升级 / 特化的**扣费与退款**改走 `world.resource_pool_for(owner)`（原来写死 `world.resources`） |
 | `logic/unit.gd` | `garrison_zone_id` / `patrol_timer` / `combat_idle_timer` / `retarget_cd` / `garrison_recruit_timer`；`retinue_size()` / `is_garrison()` |
-| `logic/map_data.gd` | `units[].zone`（归属区划）、`zone_list[].owner`（开局归属 → `zones_owners`）、`set_faction_base()` |
+| `logic/map_data.gd` | ~~`units[].zone`（归属区划）~~ ★ **本轮废弃**：地图 `units[]` 运行时不再读（见 14.4 的状态变更）；`zone_list[].owner`（开局归属 → `zones_owners`）、`set_faction_base()` 照旧 |
 | `logic/zone.gd` | `apply_initial_ownership()`（把地图写的开局归属落到区块上） |
 | `logic/enemy_ai.gd` | 跳过 `is_garrison()` 的单位（两条 AI 的判据必须**互斥**） |
 | `logic/faction.gd` | `AI_FACTION` 常量 + `is_ai_faction()` 兜底 |
@@ -3031,8 +3058,11 @@ canvas.yview()                        →   (0.0, 1.0)          ← 它还说「
 | `general_ai.gd`（新） | 驻防将领 | `is_garrison()`（= `garrison_zone_id >= 0`） |
 | `faction_ai.gd`（新） | 阵营的**内政与出兵** | 按 `st["faction"]` 遍历那一方的将领，与上面两条不冲突（它下的是命令，不是逐帧移动） |
 
-`world.reset()` 给带 `zone` 的预置单位**同时**置 `hold_position = true`，
-但那**不是**重复判断：`enemy_ai` 里那两条都要有（将来手改地图可能只写 `zone` 不写 `hold`）。
+`world.reset()` / `world._apply_level_placement()` 给带 `zone` 的开局摆放单位**同时**置
+`hold_position = true`，但那**不是**重复判断：`enemy_ai` 里那两条都要有
+（将来手写关卡可能只写 `zone` 不写 `hold`）。
+（★ 本轮之前这句话说的是「地图预置单位」；`units[]` 废弃后，这类单位唯一的来源
+就是关卡的 `start_units` —— 语义一字未改。）
 
 ### 33.4 ★★ `with_ai` 开关，以及「资源池 = null」这个语义
 
@@ -3114,6 +3144,11 @@ AI 开局一块地都没有：收入 0、也没有中心格，症状同样是「
     "hold": true, "zone": 6 }        // ← zone = 它负责的区划 id
 ]
 ```
+
+> ★★ **状态变更（后续一轮）：这一段已经不成立了。** 地图的 `units` 字段整个废弃
+> （运行时不读它、地图编辑器也不再保留 / 导出，`frontier` 里这 3 个驻防将领的数据已删）。
+> 要写「带归属区划的驻防将领」现在必须写在**关卡**的 `start_units[]` 里
+> （同样支持 `zone`，见第三十七节与第三十九节）。那个 `zone` 样例留作格式参考。
 
 **想让某个 NPC 阵营开局就有一块地**（于是它的驻防将领能招兵），在**地图**里写：
 
@@ -3577,12 +3612,46 @@ data/campaigns/<id>/
 | `players[].base` / `factions[].base` | **覆盖**地图的 `faction_bases[那一方]` |
 | `zones[].owner` | **覆盖**地图 `zone_list[].owner` 的开局归属 |
 | `allies` | 写了就用关卡的；**一个字都没写**才用地图的 |
-| `start_units` / `start_buildings` | **追加**在地图的 `units` / `buildings` 之后 |
+| `start_units` / `start_buildings` | **追加**在地图的 `units` / `buildings` 之后（⚠️ 地图的 `units` 已废弃 ⇒ `start_units` 实际上就是**唯一**的一份；`buildings` 照旧追加在地图的 `buildings` 之后） |
 | `factions[].ai` / `resource_mult` / `start_*` / `attack_target` / `faction_ai` / `general_ai` | 关卡显式写了就用关卡的；没写照旧吃 `config.json` |
+| `start_units[].escort_of` | ★★ **附属兵归属**（本轮口径，整数、**1 起**、与 `general_index` 同规）：这一项归**同阵营第几位将领**。缺省 / 非法值（`0` / `-3` / `"2"` / `2.5` / `true`）一律当**没写** = 普通摆放单位。判据只有一处：`Level.escort_leader_index(u)`（0 起，非附属兵 = `-1`）；运行时 id 的换算只有一处：`World.escort_of_index(fid, index)` |
+| ~~`factions[].general_escort`~~ | ★★ **已删除**（连同 `config.json` 的 `unit.general.escort` 全局缺省）：开局附属兵**只**来自 `start_units[]` 的逐兵摆放，没有缺省可退。原口径函数 `world.escort_count_at()` / `cfg.general_escort_at()` 一并删掉，改成 `World.escort_target_of(fid, index)`（见 37.2.1） |
 
 ★★ `Level.merge_over_map()` 返回一个**新的地图对象**（不是就地改）——
 校验（`Level.check()`）必须在**原始数据**上跑，否则同一份数据会因为调用顺序不同
 得出不同的拦截结果（pitfalls 6.1）。
+
+### 37.2.1 ★★ 状态变更（本轮）：开局附属兵 = **关卡摆出来的那些**
+
+上一轮那张表里的两个键（`config.json` 的 `unit.general.escort`、关卡
+`factions[].general_escort`）**整套推翻**，理由只有一句「所见即所得」：
+**开局场上有多少兵，必须完全等于关卡 `start_units[]` 里摆出来的那些。**
+
+| 旧 | 新 |
+|---|---|
+| `config.json` 的 `unit.general.escort` 当全局缺省；`Config.general_escort_count()` / `general_escort_at()` | **整条删除**（`config.general_escort` / `general_escorts` 两个字段也没了）。残留的键**静默忽略**（没人查的键等于不存在，不报错） |
+| 关卡 `factions[].general_escort`（逐将个数，越界循环） | **整条删除**（`Level.general_escort_of/for/at_index`、`_read_escort_list/_escort_int`） |
+| 运行时按编制**自动生成**附属兵（`world.create_escort()`） | `create_escort()` **整个删除**。附属兵改为 `start_units[]` 里**逐兵一个坐标** + `escort_of` 绑定将领 |
+| 「只有本机操作的那一方有开局附属兵」（`with_escort = (faction == my_faction)`） | **删掉参数与判据**：谁摆了就给谁（AI 摆的照样出现） |
+| 关卡没写 → 回退 config 的缺省 | 关卡没摆 ⇒ 将领**光杆**（0 个），不补任何缺省 |
+| 自动生成 3 位将领 + 关卡摆放追加 | ★★ 这一方**自己带了部队**（摆了带 `escort_of` 的兵，**或**摆了将领类 `start_units`）⇒ **整方由关卡接管**：连 3 位将领都不自动生成 |
+
+**口径只有两处**（别再在别处判「该给几个兵」）：
+`Level.escort_leader_index(u)`（`escort_of - 1`，0 起）与
+`World.escort_of_index(fid, index)`（→ 运行时 id `general-<fid>-<n>`）；
+AI 的补员目标走 `World.escort_target_of(fid, index)`。
+
+★★ **两条实测踩到的坑**（都不报错，只静静地挂错 / 多一倍）：
+1. **关卡摆的将领必须拿到 canonical 的运行时 id** —— 第一版当普通摆放单位造
+   （id = `level-N`），`escort_of` 算出来的队长 id（`general-F1-1`）**谁都不认识**，
+   15 个兵全挂空。⇒ `_place_faction_units()` 里将领走 `create_general()`（名字 / 坐标仍以关卡为准）。
+2. **「摆了将领」也算接管** —— 否则自动生成的那 3 位与作者摆的 3 位 **id 完全相同**，
+   场上 6 位将领、3 组重名（样例战役 F2 就是这么暴露出来的）。
+
+★ **顺序不变量**：`world.units` 里**每位将领都排在它自己的兵前面**。
+摆放按**方**分批：先补这一方的将领、再摆这一方的兵
+（`world._apply_level_placement()` / `_place_faction_units()`），
+所以作者在 `start_units[]` 里怎么排都不会破坏它。
 
 ### 37.3 战役入口：`World.create_from_level()`
 
@@ -3752,7 +3821,7 @@ HUD 读它、扣费走 `resource_pool_for()`、快照发它，三者天然同一
 |---|---|---|---|
 | 1 | 开局第 **1.4 秒**就来一波；「招满再出兵」的阶段**从来没发生过** | `world.spawn_faction_units()` 判「要不要给开局附属兵」时问的是 `cfg.is_ai_faction()`，而它**只查 `config.json` 的 `ai.factions`** —— 关卡点名的 AI 阵营（样例的 E1 写 `ai: "faction"`）查不到 ⇒ `with_escort = true` ⇒ 3 位将领各白送满编 | `world._is_ai_piloted()`：改问**这一局真正的 AI 名单**（`ai_roster_cfg`，关卡优先 + config 兜底），`config` 那份只作兜底 |
 | 2 | 配置写 `generals: 2`，场上却有 3 位；「派几成」被算歪（有时派 1 位、有时 2 位） | `_decide()` 判「将领招够没有」看的是自己那个**只增不减的计数器** `st["general_index"]`，而世界初始化**已经**建好了将领 ⇒ 「我只招了 2 个」与「场上已有 3 个」同时成立；而 `want = ceil(将领数 × ready_mult)` 是拿**场上人数**算的 | `_decide()`：改成按**序号占位**判断（第 i 个槽位上有活着的将领就不招它），计数器只当**下限**（`max`）。顺带修好「某位将领阵亡 → 它的槽位会被补招回来」 |
-| 3 | 每个将领都带**同一个数**（3 个），没有 4~6 的差别 | 编制上限 `unit.general.escort` 是**一个全局标量**，`create_escort()` 与 AI 的 `min_retinue` 都读它 | `unit.general.escort` 支持**数组**：`[4,5,6]` ⇒ 第 1 位带 4、第 2 位 5、第 3 位 6（与 `types` 同序，越界按长度循环）。新增 `Config.general_escort_at(index)`；`world.create_escort()` 按 `leader.general_index` 取；AI 的目标编制 = `max(将领自己那一档, min_retinue)` |
+| 3 | 每个将领都带**同一个数**（3 个），没有 4~6 的差别 | 编制上限 `unit.general.escort` 是**一个全局标量**，`create_escort()` 与 AI 的 `min_retinue` 都读它 | `unit.general.escort` 支持**数组**：`[4,5,6]` ⇒ 第 1 位带 4、第 2 位 5、第 3 位 6（与 `types` 同序，越界按长度循环）。新增 `Config.general_escort_at(index)`；`world.create_escort()` 按 `leader.general_index` 取；AI 的目标编制 = `max(将领自己那一档, min_retinue)`。<br>★★ **后续一轮又加了一层**：关卡可以**逐关**给某一方写 `factions[].general_escort`（同一条数组规则），关卡没写才回退 config。口径收敛成**一个**函数 `world.escort_count_at(fid, index)` —— 开局编队（`create_escort`）与 AI 补员目标（`faction_ai._decide`）都走它 |
 
 ★ 另外做了一条（用户选的）：「**驻防将领不参与进攻**」—— `_decide()` 的出兵那一段
 把将领分成 `field`（非驻防）与驻防两拨，只用前者，且 gate 也只看前者
@@ -4231,7 +4300,7 @@ F2 `#FFD166` 金 / E1 `#FF6B6B` 红）+ 关卡 `factions[].color`（关卡可以
 | 细节 | 为什么 |
 |---|---|
 | 关卡摆放的单位要在 `_apply_level_placement()` **之后**再收口一次 | 那之前它们还没进 `world.units` —— 少了这一句，「关卡里手摆的守将」就永远没有归属（实测：`level-10` 的 zone 还是 -1） |
-| `from` = 「这一批新造出来的单位」的起点，**不能扫全表** | 地图预置的 NPC 守军（`data/maps/*/map.json` 的 `units[]`，没写 `zone` 的那些）归 `enemy_ai` 管、**朝玩家家推进**；被这一步收编成守将会当场变成「原地不动」——症状是「这张图上的敌人突然不来了」，而且只在引擎侧看得见 |
+| `from` = 「这一批新造出来的单位」的起点，**不能扫全表** | 地图预置的 NPC 守军（`data/maps/*/map.json` 的 `units[]`，没写 `zone` 的那些）归 `enemy_ai` 管、**朝玩家家推进**；被这一步收编成守将会当场变成「原地不动」——症状是「这张图上的敌人突然不来了」，而且只在引擎侧看得见。⚠️ **`units[]` 现已废弃、数据也清掉了** ⇒ 这批「不该被收编的单位」现在只可能来自关卡的 `start_units`；这条细节的**理由**照旧成立，别因为地图里没有 `units` 就把 `from` 改成扫全表 |
 | 只给 `leader_id == ""` 的兜底 | 与 39.2 同一条口径；给附属兵也安归属会让「同一区划里有几位要巡逻」虚高 ⇒ 扇区被切碎、队长的路线越缩越小 |
 
 ### 39.4 断言与实测（`tests/test_ai.gd` 174 → **216 项**）
@@ -4249,6 +4318,22 @@ F2 `#FFD166` 金 / E1 `#FF6B6B` 红）+ 关卡 `factions[].color`（关卡可以
   ① 将领自己拿到了归属区划、且 = 它脚下那一格的区划；② 它是巡逻队长；
   ③ 路线是 AI 自己算出来的（跑一帧前是空的）、每个点都在自己区划里；
   ④ 同区第二位守将拿到**另一条**路线（扇区分地盘）。
+- ★★ **判据改走关卡摆放**（同一轮的地图 `units[]` 废弃）：驻防将领不再从地图长出来，
+  改为**往 `res://.tmp_ai_tests/` 写一份带 `start_units`（含 `zone`）的最小关卡**再建世界
+  （`_garrison_level()` → `WorldRes.create_from_level()`），用例名相应改成
+  `_test_general_ai_from_level`。断言一条都没删弱：3 个守将 / 各自带归属区划 /
+  区划表里找得到 / 开局站在自己区划里 / 开局没有附属兵 / 没有专属资源库。
+- ★★ **新增 `_test_level_general_escort`**：关卡的 `factions[].general_escort`（逐将开局编制）。
+  同样走真实载入路径，钉住：① 关卡写了就**按位**生效（`[2,1,3]` ⇒ 三个将领真的各带 2/1/3 个）；
+  ② 越界按长度**循环**（第 4 位回到第 1 项；`index = -1` 取最后一项）；
+  ③ 关卡没提的阵营回退 `config.json` 的 `unit.general.escort`；
+  ④ ★ 数组里**任一**项不是非负整数（`-1` / `"5"` / `5.5` / `true`）⇒ **整条当没写**，
+  整条回退 config，而不是「那一项当 0」—— 与 Python 侧 `_escort_values()` 同规。
+  ★★ **再下一轮整套推翻**（见 37.2.1）：`factions[].general_escort` 与 config 的
+  `unit.general.escort` 都删掉了，用例改名成 **`_test_level_placed_escorts`**，
+  改钉「`start_units[].escort_of` 逐兵摆放」的五条契约（`leader_id` 指向同阵营同序号将领 /
+  `retinue_of` 含它 / 摆了就整方接管不再自动生成将领 / 没摆的仍自动生成 3 位且光杆 /
+  ★ **AI 摆的附属兵也真的出现**），外加非法 `escort_of` 一律当没写。
 - ★★ **验过「新断言真的能红」**：把 `_patrol_group` 里的「带上附属兵」临时关掉，
   上面 ②③④ 三条当场变红（「站着不动的兵」实际 **3**、期望 **0**；
   「跑了 12 秒还在 3 格内」实际 **0**、期望 **3**）——
@@ -4259,6 +4344,128 @@ F2 `#FFD166` 金 / E1 `#FF6B6B` 红）+ 关卡 `factions[].color`（关卡可以
 - ⚠️ 探针还顺带印证了一件事：守将**会在整个区划里走**（c1 是 12×11 的大区划，
   实测看到 (8,9)、(10,9)、(1,12) 这些位置）—— 巡逻不是为了「站着好看」，
   它是真的在区划里绕。
+
+
+---
+
+## 四十、将领濒死保护（本轮新增）
+
+### 40.1 需求原话 → 可验收的条目
+
+| 用户原话 | 落点 |
+|---|---|
+| 「被攻击血量降至 0 的将领进入濒死状态，若濒死状态的将领旗下部队全部死亡，则该将领死亡」 | `unit.take_damage` → `world.enter_near_death` → `unit.tick_near_death` 的**每帧全灭判定** |
+| 「若否（仍存在部队），则该将领血量从 0 提升至 1，并持续缓慢回复，每 3 秒回复 1% 血量，依此法回复的血量不会高于 20%」 | `unit.enter_near_death`（hp = 1）+ `tick_near_death` 的回复段（`nd_regen_timer` / `nd_regen_hp`，封顶 `revive.regen_cap_ratio`） |
+| 「回复期间血量一定不会因其他因素下降，只增不减」 | ① `take_damage` 第一句 `if downed: return true`（免疫）；② `apply_hp_bonus` 对濒死者**只改上限、不动血量**；③ 回复基准取 `max(记账, hp)` |
+| 「在将领濒死期间，该将领无法被选中为攻击对象且不会受到伤害（无论是行军攻击还是指定攻击都不行）」 | `unit.is_attackable()`（= `alive and not downed`）—— 索敌（逐个扫描 + C# 内核结果两道闸门）、`order_attack_unit`、箭塔 / 可攻击建筑、`view/input_controller._pick_foe_unit_at` 全走它 |
+| 「拥有该将领的玩家可以选中该将领，若其血量回复至 10% 及以上，则其操作栏中会出现『再起』按钮，点击后可消耗资源使其脱离濒死状态重新投入战斗」 | `view/hud.gd` 的 `_revive_entries()`（操作页**第一格**，未满 10% 时 `ready = false` ⇒ 按钮 disabled）+ `command_card` 的置灰支持 + `world.start_revive()` |
+| 「要为 ai 做将领濒死系统的新适配，ai 在将领濒死后可在符合条件时使用资源让其再起」 | `logic/faction_ai.gd` 的 `_try_revive()`（优先级：招将 / 招兵 **之后**，升级 / 出兵 **之前**） |
+| 「濒死的将领也会占用 ai 的将领槽位暂时阻止招募新将领，直到该将领真正死亡」 | `faction_ai._generals_of()` 只筛 `alive` —— 濒死**仍然 alive**，所以天然占位（⚠️ 别在别处加 `and not u.is_downed()`，那会变成「一倒下就补招一位」） |
+
+**用户拍板的四条**（需求原文没写、但实现里必须钉住的）：
+
+1. **无附属部队时直接死亡，不进濒死**（`world.has_living_retinue()` 为空 ⇒ `enter_near_death` 返回 false ⇒ 走 `_die`）；
+2. **「将领濒死后无法移动，视作倒在原地」** ⇒ 集结点是**固定的倒下点**（`downed_anchor`），不是跟踪一个会动的目标；
+3. **「只要点击再起，就将这个将领视作是单位，读条期间暂停全灭判定」** ⇒ `unit.revive_pending` 那个**显式开关**；
+4. **「再起时该将领血量是多少，再起后就是多少」** ⇒ `_finish_revive()` 里一个「重置血量」都没有（只按科技上限对齐比例）。
+
+### 40.2 状态放在哪
+
+| 字段 | 含义 |
+|---|---|
+| `unit.downed` | 濒死中（**仍然 `alive == true`** —— 这是它占 AI 槽位、进区块读条、被渲染的原因） |
+| `unit.downed_anchor` | 倒下点（钉住位置 + 附属兵的行军目标） |
+| `unit.nd_regen_timer` / `nd_regen_hp` / `nd_hp_ratio` | 回复倒计时 / 回复记账 / 比例刻度 |
+| `unit.revive_pending` / `revive_remaining` / `revive_total` | 「正在读条再起」的开关 + 进度 |
+
+★ 全部挂在**单位自己**身上（与招募队列同一条理由：状态天然属于某个将领；另开一张表就多出一份要对齐、要快照、要在摘除时清理的状态）。★ `world._pin_training_leaders()` 现在同时钉住「读条中的将领」与「濒死的将领」。
+
+### 40.3 ⚠️ 四条实测踩出来的坑（写在这里免得以后重踩）
+
+| 坑 | 症状 | 修法 |
+|---|---|---|
+| **`tick_near_death` 被跑了两遍** | 「每 3 秒回 1%」实际变成**每 2 秒**（`world.tick` 与 `combat.update_unit` 各补了一支） | 唯一入口是 `combat.update_unit()` 的第一句；`world.tick` 与 `combat.tick_frame` 都**不许**再补 |
+| **回复计时器初值留 0** | 进入濒死后的**第一帧**就兑现一次回复（3 秒周期变成 1/60 秒），看起来像「回复调快了」 | `enter_near_death(regen_sec)` 按 config 设成**一个完整周期**（unit 不能 preload config，所以那个值由 `world.enter_near_death` 传进来） |
+| **`world._apply_tech_effects()` 把回复出来的血覆盖掉** | 濒死将领的血量从 16.5 **掉回 2.1**（正是需求禁止的「血量下降」） | `apply_hp_bonus` 遇到 `downed` **只改上限**；比例对齐挪到 `_finish_revive()` |
+| **读条读完那一帧跳过全灭判定** | 一个**没有部队却活着**的将领站起来（`kill_unit_now` 送不走它） | 「暂停到什么时候」用显式开关 `revive_pending`，不要从倒计时 `> 0` 推 |
+
+★ 前三条都是 `tests/test_downed.gd` 抓出来的（158 项断言）—— 对这类跨四个文件的状态机，**先把断言写出来再调实现**是这一轮最省时间的做法。
+
+### 40.4 配置（`data/config.json` 的 `revive` 段）
+
+| 键 | 默认 | 含义 |
+|---|---|---|
+| `cost` | `{food: 200, gold: 200}` | 再起造价（入队即扣，取消全额退；钱从**下单那一方自己的池子**里出） |
+| `channel_sec` | `5.0` | 再起读条秒数（可取消 + 全额退款） |
+| `ready_ratio` | `0.1` | 血量到上限的这个比例才允许再起（= 10%） |
+| `regen_sec` / `regen_ratio` | `3.0` / `0.01` | 每 3 秒回上限的 1% |
+| `regen_cap_ratio` | `0.2` | 回复天花板（= 20%）；回到它之后**仍然是濒死**，必须点再起才解除 |
+
+★ 另有 `ai.faction.revive_reserve_food` / `revive_reserve_gold`（默认 0）：AI 判断「付得起再起」时额外预留的钱。★ 命令层新增两条：`revive` / `revive_cancel`（`leader_id` + `faction`）。
+
+### 40.5 「操作」页那一格
+
+- 濒死将领被选中时，操作页**只画一格**（它不能移动 / 攻击 / 行军，摆着也是点了被拒）；
+- 三态：**血量未到 10%**（灰格 + 悬停说明还差多少）→ **可再起**（带造价与读条秒数）→ **取消再起**（全额退款）；
+- `view/command_card.gd` 新增 `ready` 字段支持（`disabled` + 名字与键位字母一起变暗，且**键盘也不吃**那一格）；
+- `view/hud.gd` 的 `_card_sig()` 把「这个将领是否濒死 / 是否到 10% / 是否在读条」放进签名 —— 否则血量到 10% 那一刻格子不会亮（要等玩家改选一次）；
+- 右栏数值区（`_unit_text`）会写「濒死 / 回复到几 % / 再过多久能再起」，濒死将领在地图上**压暗 + 头顶一个小十字**（`view/unit_view.gd`）。
+
+### 40.6 断言
+
+- 新增 **`tests/test_downed.gd`（158 项）**：数值表 / 进入濒死（0 → 1 血、就地倒下、拒因码 `downed`）/ 无部队直接死 / 免疫与不可被选为目标（含箭塔与点名攻击）/ 回复速率与 20% 封顶与只增不减 / 全灭即死 / 附属兵解除命令并向倒下点集结 / 再起门槛与扣费与拒因 / 读条期间暂停全灭判定 + 取消全额退款 / 再起后血量不变 / 科技改上限 / 快照往返（含老快照缺字段容忍）/ AI 占槽与自动再起；
+- `tests/test_case.gd` 新增 **`kill_unit_now()`**（先撤队列 → 打光部队 → 再打将领），三处「打死一个将领」的老用例（`test_retinue` / `test_recruit_queue` / `test_ai`）改成走它 —— 它们验的是**阵亡之后的收尾**，不是濒死。★ 它必须**先撤掉队列**：在读条 / 排队的兵也算「旗下还有部队」，不撤的话那位将领照样进濒死（实测踩到）；
+- `test_recruit_queue` 里那两处**不能**用 `kill_unit_now`（它们验的正是「队列还在时将领阵亡 ⇒ 作废并退款」），改用文件内的 `_kill_leader_keep_queue()`（保留队列、按规则送走将领、并把退款事件一起返回给断言）；
+- 合计 **36 套 / 5116 项 / 全过**（`tools/run-tests.ps1` 的 `ALL PASS`）。
+
+### 40.7 手玩报回来的两个 bug（同日修完）
+
+**① 「单位在区划边界时，要追击的敌方单位会在原地抽搐」**
+
+三层根因，缺一不可（都在 `logic/combat.gd`）：
+
+| 层 | 原来的写法 | 为什么抖 | 修法 |
+|---|---|---|---|
+| 参照点 | `acquire_target` 里**每次索敌成功**都把 `anchor` 设成当前位置 | 锁定那一刻距离恒为 0 ⇒ 判据必然通过；走一格就超上限、放弃，下一帧又锁上 | 只在**真正锁定**那一刻设一次 |
+| 参照点会不会跟着目标走 | 永不更新 | 上限量的是「离当初站那个点多远」而不是「我掉队多远」⇒ 长距离追击永远判超上限 | 新增 `_refresh_leash_anchor()`：目标挪过 `repath_min_move` 格就把参照点推到**目标身上**（目标不动时**逐位不变**） |
+| 放弃之后 | 只清 `target` | 目标还在警戒半径里 ⇒ 下一帧立刻又锁上，一帧一放一锁 | 新增 `combat.leash_release_cd`（默认 0.5 秒）冷却，期间不再自动锁定单位（只挡自动索敌，不挡玩家命令） |
+
+★ 另外把「已经在打一个还能打的目标 ⇒ 不重新索敌」写成 `acquire_target` **自己的契约**（原来靠调用方「没有 target 才调它」这条隐式约定，一旦有别的代码在已有目标时调一次，参照点就被抹平 —— 实测就是在这里踩到的）。
+★ 区划边界最容易复现的原因：驻防将领正好在那条线上被 `general_ai` 叫回（`retarget_cd`）又被重新锁定，两层抖动叠在一起。
+
+**② 「进入濒死的敌方将领有概率一直和我的某个单位连线（触发攻击特效）」**
+
+- 攻击线渲染读的是 `attack_flash` + `last_target`（`view/overlay.gd`），而单位**进濒死之后整段单位逻辑都被跳过**（`world.tick` 与 `combat.update_unit` 都提前 return）⇒ 那个 `1.0` 永不衰减、`last_target` 一直指着对方；
+- `_die()` 走的是 `stop()` → `clear_target()`，那条路本来没问题 —— **漏的只是「进濒死」这条本轮新增的分支**；
+- 修法三处：`enter_near_death()` 当场把 `attack_flash` / `last_target` / `last_building` 清零（立刻不画）；`tick_near_death()` 里也每帧衰减一次（以后谁再改 `enter_near_death` 也不会留下永久连线）；`overlay._draw_attack_lines()` 的判据从 `alive` 改成 `is_attackable()`（第三道保险）。
+
+**断言**：`test_attack_orders` 新增 `_test_leash_no_jitter`（参照点不被重复索敌重置 / 超上限放弃 + 冷却期内锁不上 + 冷却完自己重新接战 + 冷却不拦玩家命令）与 `_test_leash_anchor_follows_target`（目标动 ⇒ 参照点跟着走；目标几乎不动 ⇒ 不更新；点名目标不设参照点）—— **82 → 102 项**；`test_downed` 新增 `_test_no_attack_line_when_downed`（开火后进濒死 ⇒ 特效与残留目标当场清零；濒死期间特效仍会自己衰减；活着单位同口径）—— **158 → 168 项**。
+
+### 40.8 手玩第二轮回来的两个问题（同日修完）
+
+**① 「卡边界时还是会抽搐」—— 第二层根因在驻防 AI（`logic/general_ai.gd`）**
+
+上面 40.7 修的是 `combat` 的追击上限；而**驻防将领另有自己的一条区划级上限**，那一条的「叫回来」写成了**每帧重下命令**：
+
+| 层 | 原来的写法 | 为什么抖 | 修法 |
+|---|---|---|---|
+| 返程命令 | 「追出区划」那一支**每次命中**都调 `_patrol_leader()` 下一条「回巡逻点」的命令；而 `_next_patrol_tile()` 还会把目标点换成路线上的下一个 | 路径**每帧被重置**、目标点每帧在换 ⇒ 永远走不回家，肉眼看就是在区划边缘原地抽搐 | 新增 `unit.returning_home`：返程**只下一道**命令；走到了（`_patrol_leader` 末尾的到达判定）或冷却结束才恢复巡逻 |
+| 巡逻那一段 | 冷却期内第 5 步仍按 `patrol_interval` 插命令 | 返程的路又被顶掉 | 返程途中**跳过**第 5 步 |
+
+★ 触发条件（也是「为什么只在区划边界看到」）：守将站在「自己区划的边缘 + 脚下那一格已经不属于自己」时，`_out_of_garrison()` 每帧为真 —— 而它又刚把玩家单位锁上（`combat` 的 aggro 是 4 格），于是「脱战 → 下命令回家 → 命令被自己顶掉 → 没走成 → 下一帧再判为追出区划」无限循环。
+★ 新命令（`order_move` / 点名攻击 / 行军攻击）会清掉 `returning_home`，所以玩家一指挥它，返程就作废（不会把它卡在返程模式里）；`stop()` **不清**它 —— 那是内部「就地停手」，驻防 AI 自己也用它摆场面。
+
+**② 「正在招募的将领被打进濒死 ⇒ 队列要作废」**
+
+- 实测报回来的现象：「一个濒死的将领没有任何单位，最后还是招募了一个单位出来，我把这个单位打死之后这个将领才死」；
+- 根因：`world._tick_recruitment()` 只筛 `alive`，而濒死者**仍然 alive** ⇒ 读条照走、兵照出，而那个兵又算「旗下有部队」⇒ **全灭判定永远不成立**，将领靠「一直在造兵」续命（招募队列成了无限血包）；
+- 修法三处：
+  1. `world.enter_near_death()` 里 `_release_recruit(leader, true, "leader_downed")` —— **队列整个作废 + 全额退款**（与将领阵亡那一条同一套实现）；
+  2. `_tick_recruitment()` 补一道 `is_downed()` 保险（给「别的路径让它进濒死」兜底）；
+  3. `leader_reject_reason()` 新增拒因 `"downed"` —— **濒死期间不能再下单**（将领当兵营 + 区划招募两条路一起挡），界面文案见 `hud.recruit_reject_text()`。
+- ★ 顺序：**先判「旗下还有没有部队」（用队列还没作废时的状态）、再撤单退款、最后进濒死** —— 那一单兵「已经付过钱、也快出来了」，它算这一位将领的部队，所以「队列里那一单撑着 ⇒ 将领因此没能当场死」是对的；撤单是**换成退款**，不是否认它的存在。净效果：只要「打光活兵**或**退款取消在造的兵」里还有一条能给援军，它就进濒死；两条都不成立时才直接死。
+
+**断言**：`test_ai` 的驻防 AI 那一节加了「返程只下一道命令」的 5 条（`returning_home` 置位 / 路径只减不增 / 到家清标志 / 新命令清标志）—— **216 → 223 项**；`test_downed` 新增 `_test_recruit_queue_cleared`（进濒死 ⇒ 队列清空 + 粮食/黄金/人口全额退回 + 拒因 `downed` + 等 12 秒也不出新兵 + 打光部队之后当场死亡）—— **168 → 183 项**。合计 **36 套 / 5170 项 / 全过**。
 
 
 

@@ -191,8 +191,11 @@ func _group_load(cfg) -> void:
 	eq(lv.start_buildings.size(), 1, "开局摆放 1 栋建筑")
 	eq(String((lv.start_buildings[0] as Dictionary)["type"]), "tower", "摆放的是箭塔")
 	# ⚠️ 顺序 = `players[]` 的席位在前，然后**关卡 `factions[]` 的声明顺序**。
-	#    样例第一关现在是 [F1, F2]（一关两个可玩阵营，各打各的）。
-	eq(lv.rosters(), ["F1", "F2"], "出场名单 = 席位 + 挂了 AI 的参展阵营（蓝方 F1 / 红方 F2）")
+	#    ★★ 样例第一关本轮多了一方：渡口守军从「挂在 F1 名下」改成**独立阵营 GD1**
+	#       （`allies: ["F1","GD1"]`）—— 挂在 F1 名下时它们是**玩家自己的部队**
+	#       （能选中、能下令），手玩报回来的正是这条。判定与这个名单是**同一份数据**。
+	eq(lv.rosters(), ["F1", "GD1", "F2"],
+		"出场名单 = 席位 + 参展阵营（蓝方 F1 / 守军 GD1 / 红方 F2）")
 	ok(lv.summary().contains("单人"), "summary() 里有模式")
 
 	# ★ 缺字段默认值：只写最少的字段，看它怎么补
@@ -551,8 +554,14 @@ func _group_check(cfg) -> void:
 		ok(found != "", "★ 校验给出了警告：%s" % code2)
 
 	# 15) 一个都没写进攻目标 → 警告（**不是**拦截：那是设计者的自由）
+	#
+	# ⚠️⚠️ 补丁必须**连 `start_units` 一起换掉**：样例第一关本轮摆了
+	#    F1 / GD1 / F2 三方的单位（`start_units[]`），只换 `factions[]` 的话
+	#    那些摆放单位指向的阵营就「没有定义」了 ⇒ 校验第 13 条会**正确地**报
+	#    `faction_unknown`（拦截），于是这条断言验的就不再是「进攻目标」那件事。
 	var lv3 = _load_level(cfg, "warn_no_target", {
-		"factions": [{"id": "E1", "ai": "faction", "base": [18, 10]}]})
+		"factions": [{"id": "E1", "ai": "faction", "base": [18, 10]}],
+		"start_units": [{"faction": "E1", "kind": "enemy", "x": 18, "y": 10}]})
 	var issues3: Array = lv3.check(cfg.ai_factions())
 	var found3 := ""
 	for i in issues3:

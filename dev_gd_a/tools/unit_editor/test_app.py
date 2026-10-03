@@ -109,6 +109,14 @@ def sidebar_entries(app) -> dict:
     return out
 
 
+def sidebar_labels(app) -> list:
+    """侧边栏里**所有 Label 的文字**（用来断言「某句话在不在」——不碰输入框）。
+
+    ⚠️ 与 `sidebar_entries` 一样，每次用之前都要重新抓（每次提交都会重建侧边栏）。
+    """
+    return [w.cget("text") for w in walk(app.sidebar) if isinstance(w, tk.Label)]
+
+
 def E(app, label):
     """按标签取输入框（每次重新抓，见 `sidebar_entries` 的说明）。"""
     entries = sidebar_entries(app)
@@ -503,7 +511,7 @@ def t_general_form(app, model) -> None:
     eq(data(model)["unit"]["general"]["stats"][0]["damage"], 30,
        "★ 自己填过的项不跟着类型走")
 
-    # 名字 / 造价 / 招募时间 / 护卫数
+    # 名字 / 造价 / 招募时间
     type_into(app, E(app, "名字"), "西境骑将")
     eq(data(model)["unit"]["general"]["stats"][0]["name"], "西境骑将", "改将领名字")
     eq(data(model)["recruit"]["zone"]["list"][0]["label"], "西境骑将", "★ 招募卡标题同步")
@@ -511,8 +519,21 @@ def t_general_form(app, model) -> None:
     eq(data(model)["recruit"]["zone"]["list"][0]["train_sec"], 14, "改将领招募时间")
     type_into(app, E(app, "造价 · 粮食"), "88")
     eq(data(model)["recruit"]["zone"]["list"][0]["cost"]["food"], 88, "改将领造价")
-    type_into(app, E(app, "开局护卫数"), "4")
-    eq(data(model)["unit"]["general"]["escort"], 4, "改开局护卫数")
+    # ★★ 「开局护卫数」那一行输入控件**已经删掉**（产品决策：开局带几个附属兵不再由
+    #    config.json 给全局缺省，只能在战役编辑器的摆放页里摆）。这里**不是把这行断言删掉**，
+    #    而是反过来钉住「入口没了」+「原地留了指向新家的灰字提示」——
+    #    哪天有人把控件加回来（或把提示删了），当场变红。
+    #    ⚠️ 附属兵这个玩法机制本身没动，动的只是「开局白送几个」这个配置项。
+    ok("开局护卫数" not in sidebar_entries(app),
+       "★★ 将领表单里不再有「开局护卫数」这一行（输入入口已移除）")
+    ok(not hasattr(model, "escort") and not hasattr(model, "set_escort"),
+       "★★ 模型层也不再提供 escort() / set_escort() 接口")
+    ok("escort" not in data(model)["unit"]["general"],
+       "★★ 编辑器的数据里也不再有 unit.general.escort")
+    hints = [t for t in sidebar_labels(app) if "战役编辑器" in t and "摆放页" in t]
+    ok(bool(hints),
+       "★ 原地留了一行只读灰字提示，指向「战役编辑器的摆放页」（读者不会被坑第二次）：%s"
+       % (hints or "（一句都没有）"))
 
 
 # ======================================================================

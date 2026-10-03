@@ -608,10 +608,21 @@ func refresh_building_ownership(cfg: ConfigRes, building_list: Array, factions: 
 ##   （`FactionRes.side_of`：没有盟友时就是它自己）。于是：
 ##     · 两个**盟友**的兵站在同一块地上算**一方**（人数合并）——
 ##       既不互相抵消读条，也不会因为「两边同场」而谁都读不了；
-##     · 站在**盟友的地**上时，`same_side(owner, reader)` 成立 → 不会被判成外来者
+##     · 站在**盟友的地**上时，`same_side_for_attack(owner, reader)` 成立 → 不会被判成外来者
 ##       （不会去抢盟友的区划，这正是需求要的「不争夺同一区划」）。
 ##   合作愉快这条改动**只落在这一处**：下面 `_advance_zone` 的规则一个字没动 ——
 ##   它本来就是按「一方」写的，只是以前「一方 == 一个阵营」。
+##
+## ⚠️⚠️ **修正（实测踩到，改之前先读）**：上面那句「`same_side(owner, reader)` 成立」
+##   曾经是**假的** —— `FactionRes.same_side()` 按设计只回答「同一个阵营」
+##   （它同时管着城墙通行，见 `logic/faction.gd` 第 77 行那一整段，**不许**把它改宽）。
+##   于是「主人的地」这一路全靠 `update()` 里那段 `owner_present` 补丁兜着，而那个补丁
+##   **只在主人自己有兵站在那块地里时才成立** ⇒ 主人不在场（地是它名下、兵却不在）
+##   的时候，盟友就被当成外来者开始读条抢地。
+##   实测：`data/maps/frontier/map.json` 的 6 个 enemy 守军一被删掉（地图预置单位废弃），
+##   `tests/test_alliance.gd` 的「AI 的兵站在盟友的地里不读条」当场变红。
+##   ⇒ `_advance_zone` 里那三处「算不算自己人」的判定现在统一走
+##   `same_side_for_attack()`（同阵营**或**盟友），与 `_ALLY` 表的语义一致。
 ##
 ## ★★ 人数加成（本轮需求，改掉了原来「同阵营多单位不叠加」那条）：
 ##   同一个区块里**同一方**的单位越多，读条越快；曲线与上限见 `speed_multiplier()`。
@@ -755,12 +766,14 @@ func _advance_zone(z: Dictionary, present: Dictionary, present_sides: Dictionary
 			by[f] = 0.0
 	var owner := String(z["owner"])
 
-	# 「谁手上还有没走完的进度」——**跳过主人**：主人那份 1.0 只表示「这块地是我的」，
+	# 「谁手上还有没走完的进度」——**跳过主人那一方**：主人那份 1.0 只表示「这块地是我的」，
 	# 不该被当成「还有人在抢占」而卡住后来者。
+	# ★ 用 `same_side_for_attack`（同阵营**或**盟友）：盟友的进度也不该卡住主人这一方
+	#   （与下面选读条方那条同一个口径，别只用一半）。
 	var holder := ""
 	var holder_v := 0.0
 	for f in flist:
-		if FactionRes.same_side(owner, f):
+		if FactionRes.same_side_for_attack(owner, f):
 			continue
 		if float(by[f]) > holder_v:
 			holder_v = float(by[f])
@@ -774,6 +787,9 @@ func _advance_zone(z: Dictionary, present: Dictionary, present_sides: Dictionary
 	#    `present_sides`，见 `update()` 里那段说明）。
 	#    ⚠️ 读条用的仍然是**真实阵营 id**（`reader` 取自 `present`），
 	#       所以区块归属 / 进度条的阵营名字不会被写成代表 id。
+	# ★★ 「是不是主人那一方」必须用 `same_side_for_attack()`（同阵营**或**盟友）：
+	#    用严格同名的 `same_side()` 会把**盟友**当成外来者 ⇒ 盟友的兵会去抢盟友的地
+	#    （主人不在场时尤其明显 —— `owner_present` 那个补丁救不了它）。见 `update()` 上方的说明。
 	var reader := ""
 	if present_sides.size() == 1:
 		# 恰好一方 ⇒ `present` 里的阵营要么都属这一方（可能多个人口同方但不同阵营），
@@ -786,7 +802,7 @@ func _advance_zone(z: Dictionary, present: Dictionary, present_sides: Dictionary
 			if n2 > best_n or (n2 == best_n and String(cand) < best):
 				best_n = n2
 				best = String(cand)
-		if best != "" and not FactionRes.same_side(owner, best):
+		if best != "" and not FactionRes.same_side_for_attack(owner, best):
 			reader = best
 	# ★ 规则 4：别人还有进度没归零 → 这一方不开读（等它退完）
 	if reader != "" and holder != "" and holder != reader:
@@ -815,8 +831,9 @@ func _advance_zone(z: Dictionary, present: Dictionary, present_sides: Dictionary
 			bar_value = float(by[reader])
 	else:
 		# 没人在读：凡是「有进度」的，按它的人还在不在场分成两种状态
+		# ★ 同样跳过**主人那一方**（含盟友）：盟友残留在盟友地里的进度不该画成「冻结中」。
 		for f in flist:
-			if FactionRes.same_side(owner, f):
+			if FactionRes.same_side_for_attack(owner, f):
 				continue
 			if float(by[f]) <= 0.0:
 				continue

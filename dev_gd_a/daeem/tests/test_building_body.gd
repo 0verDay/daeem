@@ -42,7 +42,6 @@ func _cases() -> void:
 	_test_gap_between_towers(cfg)
 	_test_wall_unchanged(cfg)
 	_test_map_outpost(cfg)
-	_test_map_units(cfg)
 
 
 # ------------------------------------------------------------------
@@ -402,68 +401,6 @@ func _test_map_outpost(cfg) -> void:
 	for i in 90:
 		w.tick(DT)
 	ok(g.hp < hp0, "★ 走近对家箭塔会挨打（生命 %.0f → %.0f）" % [hp0, g.hp])
-
-
-# ------------------------------------------------------------------
-# 7. 地图上预置的对家单位（data/maps/frontier/map.json 的 "units"）
-#
-# 给手玩测试用的守军：断言盯「每一条都建出来了 / 位置对 / hold 标记对 / 离大本营够远」，
-# 外加一条行为：hold 的单位**不会**朝玩家据点行军（那是它们能当靶子的前提）。
-# ------------------------------------------------------------------
-func _test_map_units(cfg) -> void:
-	var w = require_world(cfg)
-	var prefab: Array = w.map.prefab_units
-	ok(prefab.size() >= 4, "地图里有预置单位（%d 条）" % prefab.size())
-	if prefab.is_empty():
-		return
-
-	var home: Vector2i = w.home_base_of(FactionRes.DEFAULT_FACTION)
-	var min_dist := 999
-	var placed := 0
-	var held := 0
-	var movers := 0
-	for p in prefab:
-		var tile := Vector2i(int(p["x"]), int(p["y"]))
-		min_dist = mini(min_dist, absi(tile.x - home.x) + absi(tile.y - home.y))
-		var found = null
-		for u in w.units:
-			if u.alive and u.tx == tile.x and u.ty == tile.y and not FactionRes.same_side(u.faction, w.my_faction):
-				found = u
-				break
-		if found == null:
-			continue
-		placed += 1
-		if found.hold_position:
-			held += 1
-		else:
-			movers += 1
-		eq(String(found.name), String(p["name"]), "预置单位的名字与地图里写的一致（%s）" % found.name)
-
-	eq(placed, prefab.size(), "★ 每一条预置单位都真的建出来了")
-	ok(held >= 1, "有驻守（hold）的守军 —— 拿来当靶子用")
-	ok(movers >= 1, "也有不驻守的巡逻兵 —— 用来验「敌人行军」这条老行为还在")
-	ok(min_dist >= 6, "★ 预置单位离玩家大本营足够远（最近的一条 %d 格）" % min_dist)
-
-	# hold 单位的核心行为：不朝玩家据点行军
-	var holder = null
-	for u in w.units:
-		if u.alive and u.hold_position and not FactionRes.same_side(u.faction, w.my_faction):
-			holder = u
-			break
-	ok(holder != null, "取到一个驻守单位")
-	if holder != null:
-		# ★ 关掉战斗再验「不推进」：
-		#   `hold_position` 的语义是「**不执行推进 AI**」，迎战不受影响（有人靠近照样打）。
-		#   而这张图的 p2 大本营就在 (14,19)、离它不远，开着战斗时它会迎战并移动 ——
-		#   那是**正确**的防守行为，不是「跑去打据点」。这一条只验推进 AI 不启动。
-		var was_combat: bool = cfg.combat_enabled
-		cfg.combat_enabled = false
-		var start: Vector2 = holder.pos
-		for i in 300:
-			w.tick(DT)
-		cfg.combat_enabled = was_combat
-		ok(holder.pos.distance_to(start) < 0.6,
-			"★ 驻守单位不会自己跑去打据点（5 秒位移 %.3f 格）" % holder.pos.distance_to(start))
 
 
 # ---- 工具 ----

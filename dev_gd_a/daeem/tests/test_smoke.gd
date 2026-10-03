@@ -123,14 +123,16 @@ func _cases() -> void:
 	eq(cfg.unit_type_of("general"), UnitRes.UNIT_TYPE_SPEARMAN, "general 默认取第一个类型")
 	eq(cfg.unit_name_of(UnitRes.UNIT_TYPE_RIDER), "骑手", "unit_name_of 走类型表")
 	eq(cfg.unit_name_of("general_1"), "将领", "将领类的显示名仍是「将领」")
-	# ★ 编制上限是**逐将不同**的（`unit.general.escort = [4,5,6]`）：
-	#   `general_escort_count()` 只回答「第一个将领带几个」，逐将口径走 general_escort_at()
-	var e0: int = cfg.general_escort_at(0)
-	ok(e0 > 0, "将领 1 的开局护卫数是正数（%d）" % e0)
-	near(cfg.general_escort_count(), float(e0), 1e-6,
-		"general_escort_count() = escort 的第一项（给「不知道自己是第几位」的调用方兜底）")
-	ok(cfg.general_escort_at(1) > 0 and cfg.general_escort_at(2) > 0,
-		"另外两位将领也各有编制（%d / %d）" % [cfg.general_escort_at(1), cfg.general_escort_at(2)])
+	# ★★ 本轮口径变更：`unit.general.escort`（全局缺省编制）与它的两个读法
+	#    （`general_escort_count()` / `general_escort_at()`）**整条删除** ——
+	#    开局有几个附属兵完全等于**关卡 `start_units[]` 里摆出来的那些**。
+	#    ⇒ 这里改成钉**删除之后仍然必须成立**的那条契约：
+	#      这一层**不再提供**任何「编制」接口（问了就该报错，而不是给个 0 让人接着用）。
+	#    ⚠️ 这不是「把断言删掉」：原来那三条验的是「逐将编制读得回来」，
+	#      现在那件事由 `world.escort_target_of()` 负责，契约更强（见 test_ai.gd 的
+	#      `_test_level_placed_escorts` 与 test_logic / test_retinue 的探针关卡）。
+	ok(not cfg.has_method("general_escort_at"), "★★ 全局缺省编制已删除：cfg 没有 general_escort_at()")
+	ok(not cfg.has_method("general_escort_count"), "★★ 也没有 general_escort_count()")
 
 	# 测试敌人的数值也来自同一张表（原来是 debug / combat.enemy 两处）
 	near(cfg.enemy_damage, 10.0, 1e-6, "测试敌人伤害 10")

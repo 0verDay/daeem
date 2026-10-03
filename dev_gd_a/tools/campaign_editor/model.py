@@ -91,6 +91,24 @@ CONFIG_SUBDIR = ("data", "config.json")
 #: 编辑器往返一次就把它抹掉的话，第一份关卡文件的注释就白写了。
 COMMENT_KEY = "_comment"
 
+#: `start_units[].escort_of`：**这个兵属于第几位将领**（1 起，与 `general_index` 同一套编号）。
+#:
+#: ★★ 为什么要有它（本轮返工的核心）：开局附属兵改成**在摆放页一个一个摆出来**，
+#:   所以要有一个字段把「这个兵」和「它的将领」绑起来 —— 运行时靠它填
+#:   `unit.leader_id`，于是它真的算那位将领的**部队**（点一个兵选中整队、
+#:   将领濒死时它去集结、将领死了它算「部队没了」）。
+#:
+#: ⚠️ 缺省（不写）= **不是附属兵**，就是一个普通摆放单位 —— 与今天的行为一样。
+#: ⚠️ **不再有全局缺省**：`config.json` 的 `unit.general.escort` 已经删掉，
+#:    没摆就是 0 个兵（将领光杆）。这一条是用户明确要的「所见即所得」。
+ESCORT_OF_KEY = "escort_of"
+
+#: 运行时开局会为每一方自动生成几位将领（`logic/world.gd` 的 `create_generals`）。
+#: ⚠️ 只在「这一方**没有**摆附属部队」时才自动生成 —— 摆了就整方交给作者（见 README）。
+#:    ⚠️ 目前**只是文档**（没有代码读它）：真要按它做检查时，记得与运行时的
+#:    `for i in 3` 一起改。
+GENERAL_SLOTS = 3
+
 
 class ModelError(Exception):
     """数据层说不行的原因（界面直接显示这句话，测试也断言它）。"""
@@ -104,7 +122,7 @@ class FactionEntry:
     """关卡 `factions[]` 的一行 —— 「这一方在这一关里怎么打」。
 
     字段与 `logic/level.gd` 的 `_read_level_factions()` **逐字段对齐**：
-    `id / ai / base / resource_mult / start_food / start_gold /
+    `id / ai / base / color / resource_mult / start_food / start_gold /
      attack_target / faction_ai / general_ai`。
 
     ★ 多出来的 `name` / `color` 是 `merge_over_map()` 会读的两个字段
@@ -155,7 +173,7 @@ class UnitEntry:
     """
 
     __slots__ = ("faction", "kind", "general_index", "unit_type", "x", "y",
-                 "ai", "zone", "hold", "name")
+                 "ai", "zone", "hold", "name", "escort_of", "declared")
 
     def __init__(self, faction: str = "", kind: str = "", x: int = 0, y: int = 0) -> None:
         self.faction = faction
@@ -171,12 +189,29 @@ class UnitEntry:
         self.zone = -1
         self.hold = False
         self.name = ""
+        #: ★★ 这个兵**属于第几位将领**（1 起，见 `ESCORT_OF_KEY`）；`-1` = 不是附属兵。
+        #:   运行时靠它填 `unit.leader_id` —— 于是它在游戏里真的是那位将领的**部队**
+        #:   （点一个兵选中整队 / 将领濒死时它去集结 / 将领死了它算「部队没了」）。
+        self.escort_of = -1
+        #: 源 JSON 里**出现过**的键（`{"general_index": 1}` 与「没写」是两件事：
+        #: 前者要原样写回去，后者不该被凭空补一个键）。
+        #: ★ 这是 `_declared` 那一套在**每一项**上的落点 —— 关卡层的 `_declared` 只管
+        #:   顶层键，管不到 `start_units[]` 里面，所以每个单位自己记一份。
+        self.declared: set = set()
 
     def point(self) -> Tuple[int, int]:
         return (int(self.x), int(self.y))
 
+    def has(self, key: str) -> bool:
+        """源 JSON 里写过这个键没有（决定导出时要不要写出去）。"""
+        return key in self.declared
+
     def is_general(self) -> bool:
         return str(self.kind).split("_")[0] == "general" or self.kind.startswith("general_")
+
+    def is_escort(self) -> bool:
+        """这个兵是不是「附属部队」（挂了归属将领）。"""
+        return int(self.escort_of) >= 1
 
     def __repr__(self) -> str:                          # pragma: no cover - 调试用
         return "<UnitEntry %s %s (%d,%d)>" % (self.faction, self.kind, self.x, self.y)
@@ -439,7 +474,7 @@ class LevelModel:
                             for z in sorted(self.zone_owners)]
 
         if self.start_units or "start_units" in self._declared:
-            out["start_units"] = [_unit_to_dict(u) for u in self.start_units]
+            out["start_units"] = [_unit_to_dict(u) for u in ordered_start_units(self)]
         if self.start_buildings or "start_buildings" in self._declared:
             out["start_buildings"] = [_building_to_dict(b) for b in self.start_buildings]
 
@@ -718,7 +753,7 @@ class ConfigInfo:
     ★ 只读是硬约定：兵种与建筑数值归 unit_editor 管，本编辑器只拿来填下拉框。
     """
 
-    __slots__ = ("unit_types", "unit_names", "general_types", "escort_count",
+    __slots__ = ("unit_types", "unit_names", "general_types",
                  "general_names", "building_types", "zone_kinds", "ai_faction_cfg",
                  "ai_general_cfg", "colors", "raw")
 
@@ -726,7 +761,6 @@ class ConfigInfo:
         self.unit_types: List[str] = []
         self.unit_names: Dict[str, str] = {}
         self.general_types: List[str] = []
-        self.escort_count = 0
         self.general_names: List[str] = []
         self.building_types: List[str] = []
         self.zone_kinds: List[str] = []
@@ -788,17 +822,6 @@ def _read_json(path: Path) -> Any:
     except json.JSONDecodeError as exc:
         raise ModelError("不是合法 JSON：%s（第 %d 行：%s）"
                          % (path, exc.lineno, exc.msg)) from exc
-
-
-def _escort_first(value: Any) -> int:
-    """`unit.general.escort` 的**第一位**护卫数（数组取第一项，标量原样）。
-
-    ★ 这个字段支持两种写法：一个数（三位共用）或数组（逐将 `[4,5,6]`）。
-      编辑器这里只做**只读展示**，所以取第一项即可 —— 逐将编辑在 unit_editor。
-    """
-    if isinstance(value, list):
-        return _as_int(value[0], 0) if value else 0
-    return _as_int(value, 0)
 
 
 def _as_int(value: Any, fallback: int = -1) -> int:
@@ -883,10 +906,8 @@ def load_config(project_dir: Any) -> ConfigInfo:
                        for k, v in types.items() if isinstance(v, dict)}
     general = unit.get("general", {}) if isinstance(unit.get("general"), dict) else {}
     info.general_types = [str(x) for x in _as_list(general.get("types"))]
-    # ★★ 护卫数现在是**逐将一份**的：`unit.general.escort` 可以写成数组 `[4,5,6]`。
-    #    这里是**只读快照的展示值**（第一位将领的编制上限），
-    #    真要逐将读请用 unit_editor 的模型；校验/导出都不依赖这个数。
-    info.escort_count = _escort_first(general.get("escort"))
+    # ⚠️ 这里**没有**「开局附属兵个数」了：`config.json` 的 `unit.general.escort` 已被删掉，
+    #    开局附属兵改由**本编辑器的摆放页**一个一个摆出来（`start_units[].escort_of`）。
     stats = _as_list(general.get("stats"))
     names: List[str] = []
     for item in stats:
@@ -1191,6 +1212,13 @@ def _load_start_units(raw: Any, lv: LevelModel) -> None:
         u.zone = _as_int(item.get("zone"), -1)
         u.hold = bool(item.get("hold", False))
         u.name = _as_str(item.get("name", ""), "")
+        # ★★ 归属将领：**1 起**；坏值 / 缺省一律当 -1（= 不是附属兵）。
+        #    宽容度与逻辑层一致：宁可当「没写」，也不要在运行时造出一个找不到队长的兵。
+        u.escort_of = _as_int(item.get(ESCORT_OF_KEY), -1)
+        if u.escort_of < 1:
+            u.escort_of = -1
+        # 记下源里出现过的键（导出时按它决定写不写，见 `_unit_to_dict`）
+        u.declared = set(item.keys())
         lv.start_units.append(u)
 
 
@@ -1542,22 +1570,29 @@ def _target_to_dict(spec: dict) -> dict:
 def _unit_to_dict(u: UnitEntry) -> dict:
     out: Dict[str, Any] = {"faction": u.faction, "kind": u.kind}
     gi = int(u.general_index) if u.general_index else 1
-    # ★ 只在与缺省不同（1）时才写 `general_index`：`general` 的序号本来就是 1，
-    #   写出来只是噪音。其它序号必须写 —— 它决定用哪一套将领数值。
-    if gi != 1:
+    # ★★ 写不写 `general_index`：**与缺省不同**（≠1）或**源里本来就有这个键**。
+    #    只写「≠1」会丢掉源文件里显式的 `"general_index": 1` ——
+    #    那样「导入 → 导出不许掉字段」这条契约就破了（实测踩到：demo 第一关第一关的
+    #    主将写了 `general_index: 1`，导出后这个键消失，往返比对当场报不一致）。
+    if gi != 1 or u.has("general_index"):
         out["general_index"] = gi
     if u.unit_type:
         out["unit_type"] = u.unit_type
     out["x"] = int(u.x)
     out["y"] = int(u.y)
-    if u.ai != AI_NONE:
+    if u.ai != AI_NONE or u.has("ai"):
         out["ai"] = u.ai
-    if int(u.zone) >= 0:
+    if int(u.zone) >= 0 or u.has("zone"):
         out["zone"] = int(u.zone)
+    # ⚠️ `hold` 只在 true 时写：`false` 与「没写」在运行时**完全同义**
+    #    （`logic/level.gd` 是 `bool(d.get("hold", false))`），所以这里不学上面两条。
     if u.hold:
         out["hold"] = True
     if u.name:
         out["name"] = u.name
+    # ★★ 归属将领：只有真的是附属部队时才写（-1 = 普通摆放单位，不写这个键）。
+    if u.is_escort():
+        out[ESCORT_OF_KEY] = int(u.escort_of)
     return out
 
 
@@ -1608,6 +1643,69 @@ def _objective_for(lv: LevelModel, fid: str) -> Optional[dict]:
     return generic
 
 
+def escorts_of(lv: LevelModel, fid: str, index: int) -> List[UnitEntry]:
+    """这一关给「第 `index` 位将领」摆了哪几个附属兵（按摆放顺序）。
+
+    ★★ 这是编辑器侧对运行时口径的镜像：运行时把这些兵的 `leader_id` 指向那位将领，
+       于是它们真的算它的**部队**（点一个兵选中整队 / 将领濒死时去集结）。
+
+    ⚠️ 「第 `index` 位将领」= **`general_index == index`** 的那个将领，
+      **不是**「摆放列表里的第 index 个」（作者可以乱序摆、也可以改 `将领序号`）。
+      两边必须是同一个判据，否则编辑器里画的连线与游戏里的编队会对不上。
+    """
+    out: List[UnitEntry] = []
+    for u in lv.start_units:
+        if str(u.faction) == str(fid) and int(u.escort_of) == int(index):
+            out.append(u)
+    return out
+
+
+def general_with_index(lv: LevelModel, fid: str, index: int) -> Optional[UnitEntry]:
+    """这一方 `general_index == index` 的那位将领（没有 → None）。"""
+    for u in lv.start_units:
+        if str(u.faction) == str(fid) and u.is_general() and int(u.general_index or 1) == int(index):
+            return u
+    return None
+
+
+def placed_generals(lv: LevelModel, fid: str) -> List[UnitEntry]:
+    """这一关给某一方摆出来的将领（按摆放顺序）。
+
+    ★ 用途：摆放页「这个兵属于哪个将领」的下拉只能列出**真的摆了**的将领 ——
+      运行时不会为「摆过附属部队的那一方」再自动补 3 位将领（见 README 的接管规则）。
+    """
+    return [u for u in lv.start_units
+            if str(u.faction) == str(fid) and u.is_general()]
+
+
+def ordered_start_units(lv: LevelModel) -> List[UnitEntry]:
+    """导出 / 进游戏用的摆放顺序：**每一位将领紧跟着它自己的附属兵**。
+
+    ★★ 为什么要排（这不是美观问题）：运行时按这个顺序造单位，而 `world.units`
+       有一条硬约定 —— **每一方的前几个必须是它的将领**（快捷键 1/2/3、AI 的将领槽位、
+       `create_generals` 都靠它）。作者在摆放页上「先摆兵、后补将领」是很自然的操作，
+       不排一下就会让某个兵插在将领前面。
+    ★ 同一组里保持作者自己的摆放顺序（`sorted` 是稳定的）：兵的相对位置是作者的设计。
+    ★ 不是将领、也没挂将领的「散兵」排在最前面 —— 它们本来就不参与这条约定，
+       而把将领放前面更符合「先看帅旗」的阅读习惯。
+    """
+    out: List[UnitEntry] = []
+    for u in lv.start_units:
+        if not u.is_general() and not u.is_escort():
+            out.append(u)
+    for fid in dict.fromkeys(str(u.faction) for u in lv.start_units):
+        for g in placed_generals(lv, fid):
+            out.append(g)
+            for e in escorts_of(lv, fid, int(g.general_index or 1)):
+                out.append(e)
+    return out
+
+
+def faction_has_placed_escorts(lv: LevelModel, fid: str) -> bool:
+    """这一方在这一关**摆过附属部队**没有（= 运行时要不要整个接管这一方）。"""
+    return any(str(u.faction) == str(fid) and u.is_escort() for u in lv.start_units)
+
+
 # ======================================================================
 # 校验：dev_plan_7 2.5 那张表（16 条）+ 9.1 风险 4 的 overload_hint
 # ======================================================================
@@ -1620,22 +1718,26 @@ def _objective_for(lv: LevelModel, fid: str) -> Optional[dict]:
 #   警告（warn）—— 只提醒，设计者的自由。
 
 def validate_campaign(model: CampaignModel,
-                      maps: Dict[str, MapInfo]) -> List[Issue]:
+                      maps: Dict[str, MapInfo],
+                      config: Optional[ConfigInfo] = None) -> List[Issue]:
     """跑全部校验，返回问题数组（顺序稳定：按关卡顺序、按检查顺序）。
 
     @param maps `{map_id: MapInfo}`（`list_maps()` 的结果做成字典）——
                 **关卡用到的每一张图都要在里面**，否则会报 `map_not_found`。
+    @param config `load_config()` 的快照；给了才能报「关卡编制与 config 继承值」那几条
+                （不给时那两条跳过，其余校验一条不少）。
     """
     issues: List[Issue] = []
     for lv in model.levels:
         where = "战役 %s / 关卡 %s" % (model.campaign_id, lv.level_id)
-        validate_level(model, lv, maps, issues, where)
+        validate_level(model, lv, maps, issues, where, config)
     return issues
 
 
 def validate_level(model: CampaignModel, lv: LevelModel, maps: Dict[str, MapInfo],
                    issues: Optional[List[Issue]] = None,
-                   where: str = "") -> List[Issue]:
+                   where: str = "",
+                   config: Optional[ConfigInfo] = None) -> List[Issue]:
     """校验**单关**（界面可以只跑当前关；`validate_campaign` 走它）。"""
     out = issues if issues is not None else []
     where = where or "战役 %s / 关卡 %s" % (model.campaign_id, lv.level_id)
@@ -1677,6 +1779,9 @@ def validate_level(model: CampaignModel, lv: LevelModel, maps: Dict[str, MapInfo
 
     # ---- ★ 17) 自定义阵营必须有配色（否则游戏里整场一片紫）----
     _ck_colors(add, model, lv, info)
+
+    # ---- ★ 18) 附属部队的归属（start_units[].escort_of）----
+    _ck_escort_links(add, lv)
 
     return out
 
@@ -2078,6 +2183,55 @@ def _ck_colors(add, model: CampaignModel, lv: LevelModel, info: Optional[MapInfo
             "阵营「%s」没有写颜色，而且它不在内置配色表里 —— 运行时会退成品红"
             "（整个战场一片紫、敌我分不清）。请在 `campaign.json` 的 factions[] "
             "或本关的 factions[] 里给它一个 color（如 \"#5AC8FF\"）" % fid)
+
+
+def _ck_escort_links(add, lv: LevelModel) -> None:
+    """★ 18) 附属部队的归属：`start_units[].escort_of` 必须指向同阵营**真的摆了**的将领。
+
+    ★★ 为什么这三条都要拦（本轮返工的核心契约）：
+       开局附属兵现在**只在摆放页摆出来**（`config.json` 的全局缺省已删）。
+       一个兵写了 `escort_of: 2` 而这一方**没有**第 2 位将领时，运行时找不到队长 ——
+       它要么变成普通散兵（玩家以为它是某个将领的部队，其实点它只选中它自己），
+       要么直接消失。两种都是「编辑器里看着对、进游戏不是那回事」，
+       正是这一轮要消灭的那类问题，所以导出前必须拦住。
+
+    ⚠️ 判据与运行时/`general_with_index()` **必须是同一套**：**同一阵营 + `general_index`
+       等于 `escort_of`**（两者都是 1 起）。用「摆放列表里的第几个」当判据就会两边对不上。
+    """
+    for u in lv.start_units:
+        if not u.is_escort():
+            continue
+        want = int(u.escort_of)
+        fid = str(u.faction)
+        # 将领自己不能再挂到别人名下（那是数据环，运行时会造出「队长跟随队长」）
+        if u.is_general():
+            add(SEV_BLOCK, "escort_is_general",
+                "摆放单位 (%d,%d) 是一个将领，却又写了 %s=%d：将领不能当别人的附属兵"
+                % (u.x, u.y, ESCORT_OF_KEY, want))
+            continue
+        if general_with_index(lv, fid, want) is None:
+            add(SEV_BLOCK, "escort_no_general",
+                "摆放单位 (%d,%d) 写了 %s=%d，但阵营「%s」没有「将领序号 = %d」的将领"
+                "（它没有队长，进游戏不会算作任何人的部队）—— 要么补一位将领，要么改这个序号"
+                % (u.x, u.y, ESCORT_OF_KEY, want, fid or "（空）", want))
+    # 将领序号必须**唯一**：两个将领都写 2 的话，`escort_of: 2` 的兵挂到谁身上是不确定的
+    for fid in {str(u.faction) for u in lv.start_units if u.is_general()}:
+        seen: Dict[int, int] = {}
+        for g in placed_generals(lv, fid):
+            idx = int(g.general_index or 1)
+            seen[idx] = seen.get(idx, 0) + 1
+        for idx, n in sorted(seen.items()):
+            if n > 1:
+                add(SEV_BLOCK, "general_index_dup",
+                    "阵营「%s」有 %d 位将领都写着将领序号 %d：附属兵该跟谁就不确定了"
+                    % (fid, n, idx))
+    # 摆了附属部队的那一方：运行时**整个接管**（连将领都不自动生成）——
+    # 这是个「设计者要知道」的事实，不是错误，所以只在**没摆将领**时警告。
+    for fid in {str(u.faction) for u in lv.start_units if u.is_escort()}:
+        if not placed_generals(lv, fid):
+            add(SEV_WARN, "escort_faction_no_general",
+                "阵营「%s」摆了附属部队却一个将领都没摆：运行时看到这一方有附属部队就"
+                "**不再自动生成那 3 位将领**，于是这些兵开局群龙无首" % fid)
 
 
 def _ck_attack_target(add, lv: LevelModel, info: Optional[MapInfo], fid: str,

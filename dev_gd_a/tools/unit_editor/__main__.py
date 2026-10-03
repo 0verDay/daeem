@@ -88,7 +88,10 @@ def selftest(project_dir: Path) -> int:
                  fmt_number(gen.cost_food), fmt_number(gen.cost_gold),
                  fmt_number(gen.population_cost), fmt_number(gen.train_sec),
                  "　单独数值：%s" % "、".join(own) if own else "　（完全跟随兵种）"))
-    print("[general] 开局护卫数 %d（三位共用）" % model.escort())
+    # ★ 「开局护卫数」这个全局缺省已经删掉：开局带几个附属兵只能在**战役编辑器的
+    #   摆放页**里一个一个摆出来（见 app.py 里那一行灰字提示）。
+    print("[general] 开局附属兵：改在**战役编辑器的摆放页**里摆"
+          "（config.json 里不再有这个全局缺省）")
     for b in model.buildings():
         atk = ("攻 %s / 距离 %s / 攻速 %ss" % (fmt_number(b.damage), fmt_number(b.range),
                                               fmt_number(b.cooldown))

@@ -23,13 +23,14 @@ const DT := 1.0 / 60.0
 func _initialize() -> void:
 	_case_name = "test_formation"
 	run_all(_cases)
+	cleanup_escort_scaffold()
 
 
 func _cases() -> void:
 	var cfg = require_config()
 	if cfg == null:
 		return
-	var w = require_world(cfg)
+	var w = require_world_with_escorts(cfg, 2)
 	if w == null:
 		return
 	_test_slots_distinct_and_passable(w, cfg)

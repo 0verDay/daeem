@@ -17,9 +17,17 @@
     ① 战役    战役名 / 简介 / 默认模式 / 关卡顺序（上下箭头 + 增删关卡）
     ② 关卡    当前关的名字 / 模式 / 地图下拉 / 目标（区划 + 秒数）/ 额外失败条件
     ③ 阵营与AI 每一方一行：可玩 / 颜色 / 大本营 / AI 类型 / 资源倍率 / 开局资源 /
-              进攻目标 / 「高级」AI 参数；玩家席位单独一栏
-    ④ 摆放    画布（点一下放东西、右键删、【设进攻目标】模式）
+               **开局编制（逐将带几个兵）** / 进攻目标 / 「高级」AI 参数；玩家席位单独一栏
+    ④ 摆放    画布（点一下放东西、右键删、滚轮缩放、中键或**空格 + 左键拖动**平移、
+               【设进攻目标】模式）
     ⑤ 校验与导出 16+4 条逐条显示；有拦截就不许写文件；一键打开地图编辑器
+
+★★ 摆放页**就是**开局部队的全部真相：地图上摆了什么，进游戏就有什么。
+   那 3 位将领与它们的附属兵都**在这里摆**（画笔选「将领」/「附属兵」，
+   附属兵还要选它**属于哪位将领**）；`config.json` 里已经没有任何「开局带几个兵」的开关了。
+   ⚠️ 唯一的「看不到的东西」：某一方**一个附属兵都没摆**时，运行时会替它自动生成 3 位将领
+      （历史行为，自由对战地图也靠它）；**只要摆了任何附属兵，运行时就整个不管这一方** ——
+      连将领也得你自己摆。这条规则写在摆放页的侧栏提示里。
 
 ★★ 界面上必须写清楚的那条分工（不是只写在 README 里）：
     「地形 / 区划 / 中心从地图读出来画成背景；要改地形请点『打开地图编辑器』」
@@ -29,8 +37,13 @@
   （`LevelModel.factions[i].attack_target`）——所以两边都走 `set_attack_target()`，
   改完统一 `_after_change()` 重建界面；这是最容易写出不一致的地方。
 
-★ 画布手势照 `map_editor/app.py`：滚轮以光标为锚点缩放、中键（或空格）拖动平移、
-  右键删除。唯一的有意差异是 **左键单击**：那边是「涂地形」，这边是「放东西 / 选中」。
+★ 画布手势照 `map_editor/app.py`：滚轮以光标为锚点缩放、中键拖动（或**空格 + 左键拖动**）
+  平移、右键删除。唯一的有意差异是 **左键单击**：那边是「涂地形」，这边是「放东西 / 选中」。
+
+★ 平移有两种按法，**中键**与**空格 + 左键**：后者是给没有中键的机器（触控板 / 笔记本）
+  留的路，也是用户点名要的那条手势。它由 `space_held` + `_pan_anchor` 两个状态表达，
+  按下与拖动都在 `on_left_down` / `on_left_drag` / `on_motion` 三处分派 ——
+  **不能只绑 `<B1-Motion>`**（tk 不保证拖动期间发的是它，见 `BUTTON1_MASK` 那段注释）。
 """
 
 from __future__ import annotations
@@ -49,6 +62,7 @@ from .model import (
     AI_GENERAL,
     AI_KINDS,
     AI_NONE,
+    ESCORT_OF_KEY,
     FAIL_ZONE_LOST,
     MODE_COOP,
     MODE_SOLO,
@@ -74,6 +88,9 @@ from .model import (
     target_label,
 )
 
+#: 「属于将领」下拉里表示「不是附属兵」的那一项（普通摆放单位）。
+ESCORT_NONE_LABEL = "（不是附属兵）"
+
 #: 界面配色（与另两个编辑器同一套 —— 三个工具看起来是一家的）。
 UI = {
     "bg": "#1e1f22",
@@ -94,7 +111,7 @@ PAGES: Tuple[Tuple[str, str, str], ...] = (
     ("campaign", "战役", "战役页：名字 / 简介 / 默认模式 / 关卡顺序（上下箭头排、增删关卡）"),
     ("level", "关卡", "关卡页：当前关的名字 / 模式 / 地图 / 目标 / 额外失败条件"),
     ("factions", "阵营与AI", "阵营页：每一方的 AI 指派 / 资源 / 大本营 / 进攻目标；玩家席位单独一栏"),
-    ("place", "摆放", "摆放页：画布上点一下放东西；右键删；滚轮缩放；中键拖动；「设进攻目标」模式"),
+    ("place", "摆放", "摆放页：画布上点一下放东西；右键删；滚轮缩放；中键或空格+左键拖动；「设进攻目标」模式"),
     ("check", "校验与导出", "校验页：跑 16 条硬拦截 + 4 条警告；有拦截时不许写文件"),
 )
 
@@ -102,11 +119,28 @@ PAGES: Tuple[Tuple[str, str, str], ...] = (
 CANVAS_HINT = ("地形 / 区划 / 中心是从地图读出来画成**背景**的；要改地形、区划或中心，"
                "请点本页的『打开地图编辑器』。")
 
+#: 按住空格时印在状态栏上的话（`on_space_down` 用；测试也读它，别在测试里再拼一遍）。
+PAN_MODE_HINT = ("平移模式：按住空格 + 左键拖动 = 移动视野（松开空格回到「放东西 / 选中」；"
+                 "中键拖动同样能平移）")
+
 #: 1 格在 100% 缩放下的像素（与 map_editor 的 CELL_PX 同一量级）。
 CELL_PX = 30.0
 MIN_ZOOM = 0.35
 MAX_ZOOM = 4.0
 ZOOM_STEP = 1.12
+
+#: 左键按下到抬起之间，移动超过这个像素数就当成「拖动」而不是「点击」。
+#: ★ 判据是**两个像素坐标**，不是「拖过几次事件」：手抖一两像素不该被当成拖动
+#:   （否则空格 + 左键轻点想放东西，会变成平移）。与 `map_editor` 同一个常量值。
+DRAG_TOLERANCE = 3
+
+#: tk 事件里「左键按住」那一位。
+#:
+#: ★★ 为什么要看它：**tk 不保证拖动期间发的是 `<B1-Motion>`**（实测：带 B1 位的
+#:    `<Motion>` 走的是 `<Motion>` 那条绑定）。所以「空格 + 左键拖动」这件事不能只靠
+#:    绑在 `<B1-Motion>` 上的那个回调 —— 漏了它，拖动看起来就是「没反应」。
+#:    与 `map_editor/app.py` 里那个同名常量是同一件事（两个编辑器的手势要一致）。
+BUTTON1_MASK = 0x0100
 
 #: 画布上的图元颜色。
 C = {
@@ -124,6 +158,8 @@ C = {
     "building": "#c0a080",
     "base": "#5ac8ff",
     "arrow": "#ff6b6b",
+    #: 附属部队与它的将领之间的虚线。
+    "escort_link": "#7fd4a0",
 }
 
 #: 阵营配色的兜底（config 里没写这一方时用）。
@@ -154,6 +190,8 @@ class EditorApp:
         self.brush_kind = "unit"
         self.brush_value = (self.config.unit_types[0] if self.config.unit_types else "enemy")
         self.brush_faction = ""
+        #: ★★ 附属兵画笔：「这个兵属于第几位将领」（1 起）。只对 `brush_kind == "escort"` 有意义。
+        self.brush_escort_of = 1
         #: 摆放页选中的东西：("unit"|"building", 下标)。
         self.selection: Optional[Tuple[str, int]] = None
         #: 「设进攻目标」模式：选中的阵营 id（None = 不在这个模式里）。
@@ -163,7 +201,12 @@ class EditorApp:
         self.ox = 0.0
         self.oy = 0.0
         self._pan_anchor: Optional[Tuple[int, int]] = None
-        self._space_held = False
+        #: ★ 按住空格 = 进入平移模式（左键拖动移视野，不再放东西 / 选中）。
+        #:   名字与 `map_editor` 一致，测试也读它。
+        self.space_held = False
+        #: 左键**按下**时的像素位置（`on_left_down` 记、`on_left_up` 读）：
+        #: 用来把「单击」与「拖动了几像素」分开，见 `DRAG_TOLERANCE`。
+        self._left_down_at: Optional[Tuple[int, int]] = None
         self.hover: Optional[Tuple[int, int]] = None
         self._redraw_job: Optional[str] = None
         #: ★★ 重建期间的**重入闸门**：重建控件时给 Treeview 调 `selection_set()` 会触发
@@ -232,7 +275,14 @@ class EditorApp:
         style.map("TCheckbutton", background=[("active", UI["panel"])])
 
     def _button(self, parent, text: str, command: Callable[[], None], **kw) -> tk.Button:
-        """统一造按钮：一律 `takefocus=0`（否则空格会去「按」最后点过的按钮）。"""
+        """统一造按钮：一律 `takefocus=0`（否则空格会去「按」最后点过的按钮），
+        并在点完之后把键盘焦点交还画布。
+
+        ★★ 为什么要交还焦点：tk 的按钮**点过之后会拿住键盘焦点**（`takefocus=0` 只影响
+           Tab 键遍历，不影响鼠标点击），而**空格在 tk 里是「激活当前焦点控件」** ——
+           于是「按住空格拖画面」会变成「反复点最后按过的那颗按钮」（页签乱跳）。
+           与 `map_editor/app.py` 里那颗按钮是同一套做法。
+        """
         kw.setdefault("bg", UI["panel_alt"])
         kw.setdefault("fg", UI["text"])
         kw.setdefault("activebackground", "#3a3d42")
@@ -242,7 +292,35 @@ class EditorApp:
         kw.setdefault("font", ("Microsoft YaHei UI", 9))
         kw["takefocus"] = 0
         kw["relief"] = "flat"
-        return tk.Button(parent, text=text, command=command, **kw)
+
+        def wrapped() -> None:
+            self._focus_canvas()
+            command()
+
+        return tk.Button(parent, text=text, command=wrapped, **kw)
+
+    def _focus_canvas(self) -> None:
+        """把键盘焦点交还给摆放页的画布（别的页签上没有画布 → 什么都不做）。
+
+        没有它，「按住空格 + 左键拖动」这条手势会在点过任何按钮之后静默失效。
+        """
+        canvas = getattr(self, "canvas", None)
+        if canvas is None or self.page != "place":
+            return
+        try:
+            canvas.focus_set()
+        except tk.TclError:
+            pass
+
+    def _set_cursor(self, cursor: str) -> None:
+        """给画布换鼠标指针（`""` = 默认；平移模式给 `fleur`，一眼看出「现在能拖」）。"""
+        canvas = getattr(self, "canvas", None)
+        if canvas is None:
+            return
+        try:
+            canvas.configure(cursor=cursor or "")
+        except tk.TclError:
+            pass
 
     def _build_widgets(self) -> None:
         # ---- 顶栏：左页签 + 右文件按钮 ----
@@ -485,6 +563,11 @@ class EditorApp:
             return
         self.page = key
         self.selection = None
+        # ★ 换页签 = 丢掉上一页的「正在拖 / 按着空格」状态：画布会被整块重建，
+        #   留着锚点会让新画布一进来就跟着鼠标跑（`_pan_anchor` 指着一个不存在的按下）。
+        self._pan_anchor = None
+        self._left_down_at = None
+        self.space_held = False
         self.refresh_all()
         for k, _label, hint in PAGES:
             if k == key:
@@ -727,7 +810,9 @@ class EditorApp:
         self.canvas = tk.Canvas(self.canvas_host, bg=UI["canvas_bg"], highlightthickness=0,
                                 bd=0, takefocus=1)
         self.canvas.pack(side="top", fill="both", expand=True, padx=10, pady=(2, 4))
-        self.canvas.bind("<Button-1>", self.on_left_click)
+        self.canvas.bind("<Button-1>", self.on_left_down)
+        self.canvas.bind("<B1-Motion>", self.on_left_drag)
+        self.canvas.bind("<ButtonRelease-1>", self.on_left_up)
         self.canvas.bind("<Button-3>", self.on_right_click)
         self.canvas.bind("<Button-2>", self.on_middle_down)
         self.canvas.bind("<B2-Motion>", self.on_middle_drag)
@@ -735,6 +820,11 @@ class EditorApp:
         self.canvas.bind("<Motion>", self.on_motion)
         self.canvas.bind("<Leave>", self.on_leave)
         self.canvas.bind("<MouseWheel>", self.on_wheel)
+        # ★ 空格 = 平移模式（按住空格 + 左键拖动）。绑在**画布**上：焦点在别处时不算，
+        #   免得用户在侧边栏输入框里打空格却把画布切进了平移模式（`on_space_down` 还会
+        #   再挡一道输入框）。
+        self.canvas.bind("<KeyPress-space>", self.on_space_down)
+        self.canvas.bind("<KeyRelease-space>", self.on_space_up)
 
         bar = self.action_bar
         tk.Label(bar, text="缩放", bg=UI["bg"], fg=UI["text_dim"]).pack(side="left")
@@ -744,7 +834,7 @@ class EditorApp:
         self.target_button = self._button(bar, "设进攻目标…", self.do_target_mode,
                                           bg="#3a3220", fg=UI["warn"])
         self.target_button.pack(side="left", padx=10)
-        tk.Label(bar, text="左键放 / 选　右键删（大本营不在这里删）　中键拖动　滚轮缩放　Esc 退出目标模式",
+        tk.Label(bar, text="左键放 / 选　右键删（大本营不在这里删）　中键或空格+左键拖动平移　滚轮缩放　Esc 退出目标模式",
                  bg=UI["bg"], fg=UI["text_dim"],
                  font=("Microsoft YaHei UI", 8)).pack(side="left", padx=10)
 
@@ -923,9 +1013,27 @@ class EditorApp:
             for i, b in enumerate(lv.start_buildings):
                 self._draw_cell_marker(b.point(), "建", self.faction_color(b.owner),
                                        ("building", i))
+            # ★★ 附属部队先画「它属于哪位将领」的连线（画在方块下面）——
+            #    这是「所见即所得」那条要求在本页的落点：一眼能看出哪个兵跟着谁。
             for i, u in enumerate(lv.start_units):
-                self._draw_cell_marker(u.point(), "将" if u.is_general() else "兵",
-                                       self.faction_color(u.faction), ("unit", i))
+                if not u.is_escort():
+                    continue
+                leader = self._leader_of(lv, u)
+                if leader is None:
+                    continue                     # 序号越界（校验会拦），不画假线
+                lx, ly = self.cell_origin(leader.x + 0.5, leader.y + 0.5)
+                ux, uy = self.cell_origin(u.x + 0.5, u.y + 0.5)
+                self.canvas.create_line(lx, ly, ux, uy, fill=C["escort_link"],
+                                        width=2, dash=(3, 3))
+            for i, u in enumerate(lv.start_units):
+                if u.is_general():
+                    glyph, tag = "将", "将"
+                elif u.is_escort():
+                    glyph, tag = "兵", "属"       # 「属」= 它是某个将领的附属部队
+                else:
+                    glyph, tag = "兵", "兵"
+                self._draw_cell_marker(u.point(), glyph, self.faction_color(u.faction),
+                                       ("unit", i), corner=tag if tag != glyph else "")
 
         # ---- 进攻目标的箭头 ----
         if lv is not None:
@@ -953,7 +1061,7 @@ class EditorApp:
                                 font=("Microsoft YaHei UI", 8))
 
     def _draw_cell_marker(self, point: Tuple[int, int], glyph: str, color: str,
-                          tag: Tuple[str, int]) -> None:
+                          tag: Tuple[str, int], corner: str = "") -> None:
         size = self.tile_px()
         sx, sy = self.cell_origin(point[0], point[1])
         pad = max(2.0, size * 0.16)
@@ -961,9 +1069,32 @@ class EditorApp:
                                 fill=color, outline="")
         self.canvas.create_text(sx + size / 2, sy + size / 2, text=glyph, fill="#101010",
                                 font=("Microsoft YaHei UI", max(7, int(size * 0.3)), "bold"))
+        # ★ 右上角的小记号（目前只有「属」= 这个兵是某个将领的附属部队）。
+        #   为什么不换掉中间那个字：「兵 / 将」是**单位性质**（决定它是什么），
+        #   附属关系是**附加信息**，两者要能同时看见。
+        if corner and size >= 16:
+            self.canvas.create_text(sx + size - pad * 0.9, sy + pad * 0.9, text=corner,
+                                    fill="#101010", anchor="ne",
+                                    font=("Microsoft YaHei UI", max(7, int(size * 0.22))))
         if self.selection == tag:
             self.canvas.create_rectangle(sx + 1, sy + 1, sx + size - 1, sy + size - 1,
                                          outline=C["select"], width=2)
+
+    def _escort_suffix(self, lv: LevelModel, u: UnitEntry) -> str:
+        """状态栏 / 列表里那个「（属于 将领 2）」后缀；不是附属兵就返回空串。"""
+        if not u.is_escort():
+            return ""
+        return "（属于 %s）" % self._escort_label(u)
+
+    def _leader_of(self, lv: LevelModel, u: UnitEntry) -> Optional[UnitEntry]:
+        """这个附属兵的带队将领（按「同阵营 + 将领序号」找，与运行时同一套判据）。
+
+        找不到（序号对不上 / 那位将领被删了）→ None：校验会拦（`escort_no_general`），
+        这里只负责不要画出指向空气的连线。
+        """
+        if not u.is_escort():
+            return None
+        return model_mod.general_with_index(lv, str(u.faction), int(u.escort_of))
 
     def _base_point(self, lv: LevelModel, info: MapInfo,
                     fid: str) -> Optional[Tuple[int, int]]:
@@ -989,6 +1120,13 @@ class EditorApp:
     # ---- 画布事件 ----
 
     def on_motion(self, event) -> None:
+        # ★★ 先分派「按着左键在动」这件事 —— 它**不能**只靠绑在 `<B1-Motion>` 上的回调：
+        #   tk 在拖动期间不保证发 `<B1-Motion>`（实测：带 B1 位的 `<Motion>` 走的是
+        #   `<Motion>` 这条绑定）。漏了它，「空格 + 左键拖动」看起来就是没反应。
+        state = getattr(event, "state", 0)
+        if self._pan_anchor is not None or (self.space_held and state & BUTTON1_MASK):
+            self.on_left_drag(event)
+            return
         cell = self.screen_to_cell(event.x, event.y)
         self.hover = cell
         self.update_status(cell)
@@ -998,20 +1136,98 @@ class EditorApp:
         self.hover = None
         self.request_redraw()
 
-    def on_middle_down(self, event) -> None:
+    # ---- 平移：中键拖动 / 空格 + 左键拖动 ----
+
+    def _start_pan(self, event) -> None:
+        """这次按下是「拖画面」，不是「放东西 / 选中」。"""
         self._pan_anchor = (event.x, event.y)
+        self.hover = None               # 平移时不留高亮：鼠标底下那一格一直在换
+        self._set_cursor("fleur")
+        self.request_redraw()
+
+    def on_middle_down(self, event) -> None:
+        self._start_pan(event)
 
     def on_middle_drag(self, event) -> None:
+        self.on_left_drag(event)
+
+    def on_middle_up(self, _event=None) -> None:
+        self._end_pan()
+
+    def _end_pan(self) -> None:
+        self._pan_anchor = None
+        self._set_cursor("fleur" if self.space_held else "")
+
+    def on_left_down(self, event) -> None:
+        """左键按下：空格按住 → 武装一次平移；否则记下起点，等松手时再决定「点 / 拖」。"""
+        if self.page != "place":
+            return
+        self._left_down_at = (event.x, event.y)
+        try:
+            self.canvas.focus_set()     # 空格要靠画布拿住键盘焦点才收得到
+        except tk.TclError:
+            pass
+        if self.space_held:
+            self._start_pan(event)
+            return
+        # 不是平移：这里**什么都不做** —— 放东西 / 选中都留到 `on_left_up`
+        # （这样「按下之后拖了两像素又松开」不会被误当成点击，见 DRAG_TOLERANCE）。
+        self._pan_anchor = None
+
+    def on_left_drag(self, event) -> None:
+        """拖动中：`_pan_anchor` 有值 = 正在平移（中键或空格 + 左键都走这里）。"""
         if self._pan_anchor is None:
-            self._pan_anchor = (event.x, event.y)
             return
         self.ox += event.x - self._pan_anchor[0]
         self.oy += event.y - self._pan_anchor[1]
         self._pan_anchor = (event.x, event.y)
+        self.hover = None
         self.request_redraw()
 
-    def on_middle_up(self, _event=None) -> None:
-        self._pan_anchor = None
+    def on_left_up(self, event) -> None:
+        was_panning = self._pan_anchor is not None
+        self._end_pan()
+        start = self._left_down_at
+        self._left_down_at = None
+        if was_panning:
+            return                      # ★ 拖过画面了：这一次不算「点」（不放东西、不改选中）
+        if start is None:
+            return                      # 没配对上按下（按下时不在这一页）：不猜，丢弃
+        if abs(event.x - start[0]) > DRAG_TOLERANCE or abs(event.y - start[1]) > DRAG_TOLERANCE:
+            return                      # 手抖拖了几像素：不当地点击处理
+        self.on_left_click(event)
+        # ★ 放东西 / 选中都会 `refresh_all()` —— 画布被整块销毁重建，键盘焦点跟着没了。
+        #   不补这一下，用户「摆一个 → 按住空格拖」时空格就收不到了（第三条手势静默失效）。
+        self._focus_canvas()
+
+    def on_space_down(self, event) -> None:
+        """按住空格 = 进入平移模式（左键拖动移视野，不再放东西 / 选中）。"""
+        if self._typing_in_entry():
+            return                      # 正在输入框里打字（关卡名 / 坐标），别抢
+        if self.space_held:
+            return "break"
+        self.space_held = True
+        self._set_cursor("fleur")
+        self.status(PAN_MODE_HINT)
+        return "break"                  # 别让空格顺带「按」了当前焦点里的那颗按钮
+
+    def on_space_up(self, _event=None) -> None:
+        if not self.space_held:
+            return None
+        self.space_held = False
+        self._set_cursor("")
+        self.update_status(self.hover)
+        return "break"
+
+    def _typing_in_entry(self) -> bool:
+        """键盘焦点现在在某个能打字的控件里吗（空格该给文字，不该给画布）。"""
+        try:
+            focus = self.root.focus_get()
+        except (tk.TclError, KeyError):    # 窗口还没映射时 focus_get 会抛
+            return False
+        if focus is None:
+            return False
+        return isinstance(focus, (tk.Entry, tk.Text, ttk.Entry, ttk.Combobox))
 
     def on_escape(self) -> None:
         if self.target_mode_faction is not None:
@@ -1040,12 +1256,14 @@ class EditorApp:
         self.refresh_all()
 
     def on_left_click(self, event) -> None:
+        """左键**点一下**（按下与松开之间没怎么动，由 `on_left_up` 判定后才走到这里）。
+
+        ⚠️ `on_left_down` 里已经拦掉了「空格 + 拖动」：走到这里的都已经不是平移，
+           所以这里只看「目标模式 / 选中 / 放东西」三件事。
+        """
         if self.page != "place":
             return
         cell = self.screen_to_cell(event.x, event.y)
-        if self._space_held:
-            self._pan_anchor = (event.x, event.y)
-            return
         if self.target_mode_faction is not None:
             self._click_target(cell)
             return
@@ -1074,6 +1292,7 @@ class EditorApp:
             self.status("(%d,%d) 上没有可删的东西（大本营在「阵营与AI」页里改）" % cell)
             return
         self.delete_entry(hit)
+        self._focus_canvas()            # 同上：重建之后把键盘焦点交回新画布
 
     def _hit_test(self, cell: Tuple[int, int]) -> Optional[Tuple[str, int]]:
         lv = self.level()
@@ -1133,7 +1352,8 @@ class EditorApp:
         if lv is not None:
             for u in lv.start_units:
                 if u.point() == cell:
-                    what.append("单位 %s/%s" % (u.faction, u.kind))
+                    what.append("单位 %s/%s%s" % (u.faction, u.kind,
+                                                 self._escort_suffix(lv, u)))
             for b in lv.start_buildings:
                 if b.point() == cell:
                     what.append("建筑 %s/%s" % (b.owner, b.type))
@@ -1172,14 +1392,28 @@ class EditorApp:
                 kind = "general"
             entry = UnitEntry(faction, kind, cell[0], cell[1])
             if self.brush_kind == "general":
-                entry.general_index = 1
-                entry.unit_type = (self.config.general_types[0]
-                                   if self.config.general_types else "")
+                # ★★ 新摆的将领序号 = 这一方已有将领的**最大序号 + 1**（1 起）——
+                #    与运行时「第 i 位将领」的编号必须同一套（`escort_of` 指的就是它）。
+                #    ⚠️ 不能用「已有几位 + 1」：作者可能把序号改成 1/3 之后再摆一位，
+                #       那样会撞成 3（校验的 `general_index_dup` 会拦，但没必要先撞上）。
+                used = [int(g.general_index or 1) for g in
+                        model_mod.placed_generals(lv, faction)]
+                entry.general_index = (max(used) + 1) if used else 1
+                gtypes = self.config.general_types or [""]
+                entry.unit_type = gtypes[min(entry.general_index - 1, len(gtypes) - 1)]
+            elif self.brush_kind == "escort":
+                # ★★ 附属兵：必须挂到一个**真的摆了**的将领上（校验会拦没得挂的）。
+                entry.escort_of = int(self.brush_escort_of)
             lv.start_units.append(entry)
             lv.mark_declared("start_units")
             self.selection = ("unit", len(lv.start_units) - 1)
-            self.status("放了单位「%s」在 (%d,%d)（归属 %s）"
-                        % (kind, cell[0], cell[1], faction or "？"))
+            if self.brush_kind == "escort":
+                self.status("放了附属兵「%s」在 (%d,%d)：属于「%s」（归属 %s）"
+                            % (kind, cell[0], cell[1], self._escort_label(entry),
+                               faction or "？"))
+            else:
+                self.status("放了单位「%s」在 (%d,%d)（归属 %s）"
+                            % (kind, cell[0], cell[1], faction or "？"))
         self.refresh_all()
 
     def delete_entry(self, tag: Tuple[str, int]) -> None:
@@ -1254,33 +1488,43 @@ class EditorApp:
         self.run_checks()
 
     def run_checks(self) -> List[Issue]:
-        """跑一遍校验，把结果显示在这一页上，并返回问题列表。"""
-        issues = model_mod.validate_campaign(self.model, self.maps)
+        """跑一遍校验，把结果显示在这一页上，并返回问题列表。
+
+        ⚠️ 表格控件可能**已经不存在**：换页时侧栏 / 主体会被重建、
+        `issue_tree` 也随之销毁，而 `do_save()` 与测试都会在**别的页**上调这个函数。
+        所以整段填表都要防 TclError（只给 delete 加保护是不够的 —— 实测踩到：
+        在摆放页调它，`insert` 撞上 `invalid command name`，直接把调用方打崩）。
+        """
+        issues = model_mod.validate_campaign(self.model, self.maps, self.config)
         self.last_issues = issues
-        if hasattr(self, "issue_tree"):
-            try:
+        try:
+            if hasattr(self, "issue_tree") and self.issue_tree.winfo_exists():
                 self.issue_tree.delete(*self.issue_tree.get_children())
-            except tk.TclError:
-                pass
-            for i, issue in enumerate(issues):
-                self.issue_tree.insert("", "end", iid="issue:%d" % i,
-                                       values=(issue.label(), issue.code, issue.where, issue.msg),
-                                       tags=(issue.sev,))
+                for i, issue in enumerate(issues):
+                    self.issue_tree.insert(
+                        "", "end", iid="issue:%d" % i,
+                        values=(issue.label(), issue.code, issue.where, issue.msg),
+                        tags=(issue.sev,))
+        except tk.TclError:
+            pass
         blocks = model_mod.blockers(issues)
         warns = model_mod.warnings(issues)
-        if hasattr(self, "check_summary"):
-            if blocks:
-                self.check_summary.configure(
-                    text="拦截 %d 条、警告 %d 条 —— **有拦截项，不许写文件**；"
-                         "修好它们再回来。" % (len(blocks), len(warns)), fg=UI["bad"])
-            else:
-                self.check_summary.configure(
-                    text="通过：0 条拦截、%d 条警告（警告不挡导出）" % len(warns), fg=UI["ok"])
+        try:
+            if hasattr(self, "check_summary") and self.check_summary.winfo_exists():
+                if blocks:
+                    self.check_summary.configure(
+                        text="拦截 %d 条、警告 %d 条 —— **有拦截项，不许写文件**；"
+                             "修好它们再回来。" % (len(blocks), len(warns)), fg=UI["bad"])
+                else:
+                    self.check_summary.configure(
+                        text="通过：0 条拦截、%d 条警告（警告不挡导出）" % len(warns), fg=UI["ok"])
+        except tk.TclError:
+            pass
         return issues
 
     def do_save(self) -> None:
         """写文件：**有拦截就不写**（这是 dev_plan_7 2.5 的硬要求）。"""
-        issues = model_mod.validate_campaign(self.model, self.maps)
+        issues = model_mod.validate_campaign(self.model, self.maps, self.config)
         self.last_issues = issues
         blocks = model_mod.blockers(issues)
         if blocks:
@@ -1930,6 +2174,10 @@ class EditorApp:
                              lambda text, f=fid: self._set_float(f, "start_food", text))
             self._entry_cell(section, "开局黄金", "%g" % e.start_gold,
                              lambda text, f=fid: self._set_float(f, "start_gold", text))
+            # ---- ★★ 开局附属兵在这里摆（不在「阵营与AI」页，也不再由 config 决定）----
+            self._hint(section, "★ 开局带几个附属兵：**去「摆放」页一个一个摆**（画笔选「附属兵」，"
+                                "放到地上并选它属于哪位将领）。没摆 = 这一关这一方开局没有附属兵；"
+                                "摆了任何附属兵 = 运行时**整个接管这一方**（连 3 位将领也得你自己摆）。")
             self._target_rows(section, fid, e)
 
             # ---- 「高级」AI 参数（缺省 = 继承 config）----
@@ -2087,15 +2335,27 @@ class EditorApp:
             return
         section = self._section("画笔", "左键点空格 = 放一个；右键点它 = 删；点已有的 = 选中")
         self._combo_cell(section, "放什么", self._brush_label(),
-                         ("单位", "将领", "建筑"), self._set_brush_kind)
-        values = (self.config.unit_types if self.brush_kind == "unit"
+                         ("单位", "附属兵", "将领", "建筑"), self._set_brush_kind)
+        values = (self.config.unit_types if self.brush_kind in ("unit", "escort")
                   else self.config.building_types if self.brush_kind == "building"
                   else ["general"])
+        # ★ 附属兵先选兵种（选完再选「属于哪个将领」），所以「种类」这一行对它同样有意义。
         self._combo_cell(section, "种类", self.brush_value,
                          tuple(values) or ("（config 里没有）",), self._set_brush_value)
         factions = self.all_faction_ids()
         self._combo_cell(section, "归属", self.brush_faction or (factions[0] if factions else ""),
                          tuple(factions) or ("（没有阵营）",), self._set_brush_faction)
+        # ★★ 附属兵画笔：放下去的时候就把「属于哪个将领」写进 `escort_of`。
+        #    下拉只列**这一方真的摆了**的将领 —— 运行时不会为「摆过附属部队的那一方」
+        #    再补 3 位将领（见 README 的接管规则），所以列一个不存在的将领必然报错。
+        if self.brush_kind == "escort":
+            self._combo_cell(section, "属于将领", self._escort_choice_label(self.brush_faction),
+                             self._escort_choices(self.brush_faction),
+                             lambda text: self._set_brush_escort(text))
+            self._hint(section, "★ 附属兵会被绑到那个将领名下：游戏里点它跟点将领是**同一支部队**"
+                                "（点一个选中整队、将领濒死时它去集结）。"
+                                "「属于将领」的下拉里只有**这一方已经摆好的**将领 —— "
+                                "先把将领摆下来，再来摆它的兵。")
 
         if self.target_mode_faction is not None:
             self._hint(section, "★ 正在「设进攻目标」模式：「%s」—— 点区划 / 空格改它的目标，Esc 退出"
@@ -2113,8 +2373,10 @@ class EditorApp:
         self.entry_tree.pack(side="top", fill="x")
         for i, u in enumerate(lv.start_units):
             self.entry_tree.insert("", "end", iid="unit:%d" % i,
-                                   values=("将领" if u.is_general() else "单位",
-                                           "%s/%s" % (u.faction, u.kind),
+                                   values=("将领" if u.is_general() else
+                                           ("附属兵" if u.is_escort() else "单位"),
+                                           "%s/%s%s" % (u.faction, u.kind,
+                                                        self._escort_suffix(lv, u)),
                                            "%d,%d" % (u.x, u.y)))
         for i, b in enumerate(lv.start_buildings):
             self.entry_tree.insert("", "end", iid="building:%d" % i,
@@ -2146,6 +2408,14 @@ class EditorApp:
                                  str(unit.general_index or 1),
                                  tuple(str(i) for i in self.config.general_indices()),
                                  lambda text: self._set_unit_field("general_index", int(text)))
+            else:
+                # ★★ 附属部队：这个兵属于哪位将领（`escort_of`）。
+                #    只列**这一方真的摆了**的将领 —— 运行时按「同阵营 + 序号」找队长。
+                self._combo_cell(sec, "属于将领", self._escort_label(unit),
+                                 self._escort_choices(unit.faction),
+                                 lambda text: self._set_unit_escort(text))
+                self._hint(sec, "★ 选了将领 = 这个兵是它的**附属部队**（点一个选中整队、"
+                                "将领濒死时它去集结）；选「（不是附属兵）」= 它就是普通摆放单位。")
             self._entry_cell(sec, "x,y", "%d,%d" % (unit.x, unit.y),
                              lambda text: self._set_unit_point(text))
             self._entry_cell(sec, "zone", str(unit.zone),
@@ -2177,11 +2447,13 @@ class EditorApp:
             self._section("选中的东西", "在画布上点一个已有的单位 / 建筑，这里就会出现它的全部字段")
 
     def _brush_label(self) -> str:
-        return {"unit": "单位", "general": "将领", "building": "建筑"}.get(self.brush_kind, "单位")
+        return {"unit": "单位", "escort": "附属兵", "general": "将领",
+                "building": "建筑"}.get(self.brush_kind, "单位")
 
     def _set_brush_kind(self, label: str) -> None:
-        self.brush_kind = {"单位": "unit", "将领": "general", "建筑": "building"}.get(label, "unit")
-        if self.brush_kind == "unit":
+        self.brush_kind = {"单位": "unit", "附属兵": "escort", "将领": "general",
+                           "建筑": "building"}.get(label, "unit")
+        if self.brush_kind in ("unit", "escort"):
             self.brush_value = self.config.unit_types[0] if self.config.unit_types else "enemy"
         elif self.brush_kind == "building":
             self.brush_value = (self.config.building_types[0]
@@ -2193,10 +2465,91 @@ class EditorApp:
     def _set_brush_value(self, text: str) -> None:
         self.brush_value = str(text)
         self.status("画笔：%s" % self.brush_value)
+        self.refresh_all()
 
     def _set_brush_faction(self, text: str) -> None:
         self.brush_faction = str(text)
+        # ★ 换了阵营 → 「属于将领」那个下拉的内容也全变了（只列这一方摆过的将领）。
+        self.brush_escort_of = 1
         self.status("画笔归属：%s" % self.brush_faction)
+        self.refresh_all()
+
+    # ---- ★★ 附属部队（`start_units[].escort_of`）----
+    #
+    # 这一组是「所见即所得」那一轮的落点：开局附属兵不再由 config 的全局缺省决定，
+    # 而是**在这里一个兵一个兵摆出来**，并明确它属于哪位将领。
+    # 运行时会把它读成 `unit.leader_id`，于是它在游戏里真的是那位将领的部队。
+
+    def _escort_choices(self, fid: str) -> Tuple[str, ...]:
+        """「属于将领」下拉的选项：只列**这一方真的摆了**的将领。
+
+        ⚠️ 不列「第 2 位将领」这种空头衔：运行时不会为摆过附属部队的一方补将领，
+           列一个不存在的将领只会让设计者导出一个被校验拦下的关卡。
+        ⚠️ 标签里的序号是**将领序号**（`general_index`），不是「列表里第几个」——
+           与运行时找队长的判据必须一致。
+        """
+        lv = self.level()
+        out = [ESCORT_NONE_LABEL]
+        if lv is None:
+            return tuple(out)
+        for g in model_mod.placed_generals(lv, str(fid)):
+            out.append(self._general_choice_label(int(g.general_index or 1), g))
+        return tuple(out)
+
+    def _general_choice_label(self, index: int, g: UnitEntry) -> str:
+        name = (g.name or "").strip()
+        kind = g.unit_type or g.kind
+        return "将领 %d（%s%s）" % (index, kind, "·%s" % name if name else "")
+
+    def _escort_choice_label(self, fid: str) -> str:
+        """画笔那一行的当前值（`brush_escort_of` → 下拉文字）。"""
+        lv = self.level()
+        if lv is None:
+            return ESCORT_NONE_LABEL
+        g = model_mod.general_with_index(lv, str(fid), int(self.brush_escort_of))
+        if g is None:
+            return ESCORT_NONE_LABEL
+        return self._general_choice_label(int(g.general_index or 1), g)
+
+    def _escort_label(self, u: UnitEntry) -> str:
+        """某个摆放单位的「属于将领」显示值。"""
+        lv = self.level()
+        if lv is None or not u.is_escort():
+            return ESCORT_NONE_LABEL
+        g = model_mod.general_with_index(lv, str(u.faction), int(u.escort_of))
+        if g is not None:
+            return self._general_choice_label(int(g.general_index or 1), g)
+        # 序号找不到对应将领（例如那位将领被删了）：显示成「将领 N（已经没有这位将领）」——
+        # 校验会拦住它（`escort_no_general`），这里只负责别静默显示成「不是附属兵」。
+        return "将领 %d（已经没有这位将领）" % int(u.escort_of)
+
+    def _set_brush_escort(self, text: str) -> None:
+        if str(text) == ESCORT_NONE_LABEL:
+            self.brush_escort_of = 1
+            self.status("附属兵画笔要选一位将领（下拉里只有这一方已经摆好的将领）")
+            self.refresh_all()
+            return
+        self.brush_escort_of = self._escort_index_from_label(str(text))
+        self.status("附属兵将属于：%s" % text)
+
+    def _escort_index_from_label(self, text: str) -> int:
+        """从「将领 2（长弓兵）」这种文字里取回序号（取不到就当 1）。"""
+        try:
+            head = str(text).split("（")[0].replace("将领", "").strip()
+            return max(1, int(head))
+        except (ValueError, IndexError):
+            return 1
+
+    def _set_unit_escort(self, text: str) -> None:
+        """选中单位的「属于将领」提交入口（写 `escort_of`）。"""
+        u = self.selected_unit()
+        if u is None:
+            return
+        if str(text) == ESCORT_NONE_LABEL:
+            u.escort_of = -1
+        else:
+            u.escort_of = self._escort_index_from_label(str(text))
+        self.refresh_all()
 
     def _on_entry_select(self, _event=None) -> None:
         """摆放页那个列表里点了一行 → 选中它（**大本营不在这个列表里**，见 6.3）。

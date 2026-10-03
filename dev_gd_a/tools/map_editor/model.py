@@ -540,8 +540,16 @@ class MapModel:
         #:   而且**每一方都必须有** —— 导出前由 `blockers()` 强制（见那里的说明）。
         self.factions: List[Faction] = []
         self.faction_bases: Dict[str, Tile] = {}
-        #: 从原文件里读到的、编辑器不管的字段（general_spawns / buildings / units / pvp_points /
+        #: 从原文件里读到的、编辑器不管的字段（general_spawns / buildings / pvp_points /
         #: _comment …）——导出时原样写回，免得编辑器把 Godot 会用的东西吃掉。
+        #:
+        #: ★★ **`units`（地图预置单位）不在这里，也永远不会进来**：该字段整个废弃，
+        #:   运行时不再读它（`logic/map_data.gd` / `logic/world.gd`），编辑器也不再保留。
+        #:   `mapfile.dict_to_model` 读到它就丢掉（见 `mapfile.DROPPED_KEYS`），
+        #:   导出侧的白名单 `mapfile.PRESERVED_KEYS` 里也没有它 ⇒ **导出一定不写 `units`**。
+        #:   ⚠️ 于是「打开一张带预置单位的老图 → 导出」会**静默丢掉那些单位** ——
+        #:   这是需求要的结果（规则上禁止地图预置单位），**不是 bug**，别去「修」它。
+        #:   ⚠️ `buildings`（地图预置建筑）**照旧保留**，是另一回事。
         self.extra: Dict[str, object] = {}
         self.resize(cols, rows)
 

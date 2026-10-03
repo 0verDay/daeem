@@ -841,6 +841,8 @@ func _hover_detail(src: String, entry: Dictionary) -> Dictionary:
 			return _hover_spec_cancel(entry)
 		"building_upgrade", "building_upgrade_cancel", "building_upgrade_max":
 			return _hover_building(entry)
+		"revive", "revive_cancel":
+			return _hover_revive(entry)
 	return {}
 
 
@@ -927,6 +929,33 @@ func _hover_recruit(entry: Dictionary) -> Dictionary:
 		lines.append("读条 %s 秒%s" % [_fmt_num(train),
 			"" if is_zone else "（挂在将领名下，读条期间它不能动）"])
 	return _hover_text(String(entry.get("name", "")), lines)
+
+
+## 濒死将领那颗「再起 / 取消再起」（本轮新增）—— 说明 + 造价 + 读条 + 当前状态。
+##
+## ★ 数值全部取自**权威侧**（`world.revive_*` 与选中的那个将领的实时血量），
+##   与界面上那颗格子的文案同一个出处 —— 不会出现「说明写着 10%、格子却要求 15%」。
+func _hover_revive(entry: Dictionary) -> Dictionary:
+	var leader = input_ctrl.first_selected_leader() if input_ctrl != null else null
+	var lines: Array = []
+	lines.append(String(entry.get("desc", "")))
+	if leader != null and leader.is_downed():
+		var pct := int(round(leader.hp_ratio() * 100.0))
+		lines.append("当前血量 %d%%（上限 %d%%）" % [
+			pct, int(round(cfg.revive_regen_cap_ratio * 100.0))])
+		lines.append("回复速度：每 %s 秒回 %d%% 上限（濒死期间只增不减、也不会挨打）" % [
+			_fmt_num(cfg.revive_regen_sec), int(round(cfg.revive_regen_ratio * 100.0))])
+		if leader.is_reviving():
+			lines.append("再起读条中：还剩 %s 秒（进度 %d%%）" % [
+				_fmt_num(leader.revive_remaining),
+				int(round(leader.revive_progress() * 100.0))])
+		else:
+			lines.append("再起点：血量 %d%%（现在 %d%%）" % [
+				int(round(world.revive_ready_ratio() * 100.0)), pct])
+		lines.append("再起造价 %s　读条 %s 秒" % [
+			_cost_text(world.revive_cost()), _fmt_num(world.revive_channel_sec())])
+		lines.append("★ 再起后血量**保持不变**；它辖下的部队已在向它集结")
+	return _hover_text(String(entry.get("name", "再起")), lines)
 
 
 ## 区域的特化（选中区划中心 → 操作页里那几格）—— 说明 + 效果 + 造价 + 读条 + 「只能选一个」。
@@ -1048,6 +1077,12 @@ func _recruit_entries(entry_type: String, cfg_path: String) -> Array:
 ## ★ 前三格是「进命令模式 → 左键点地图 / 点目标」那种两步式（见 input_controller.order_mode）；
 ##   「停止」不需要目标，点一下当场生效。
 ## ★ 键位按命令卡的顺序 Q/W/E/A…（第 4 格是 A），与其它页同一套规则。
+##
+## ★★ 将领**濒死**时，第一格换成「再起 / 取消再起」（本轮新增）——
+##   用户原话：「若其血量回复至 10% 及以上，则其操作栏中会出现『再起』按钮，
+##   点击后可消耗资源使其脱离濒死状态重新投入战斗」。
+##   ⚠️ 只用**一格**：濒死将领不能移动 / 攻击 / 行军，那三格摆着也是点了没用
+##      （点了会被逻辑层拒），所以整页只留「再起」这一格。
 func _order_entries() -> Array:
 	return [
 		{"type": "order", "mode": "move", "name": "移动",
@@ -1059,6 +1094,49 @@ func _order_entries() -> Array:
 		{"type": "order", "mode": "stop", "name": "停止",
 			"desc": "就地停止，并清掉移动 / 攻击 / 行军攻击（点一下立刻生效）"},
 	]
+
+
+## ★★ 濒死将领的「操作」页（本轮新增）。
+##
+## 三种状态各一格，互斥（与建筑升级那一套同一种写法）：
+##   ① 血量还没回到 `revive.ready_ratio`（默认 10%）→ 一颗**说明用**的格子
+##      （名字就叫「再起」，`revive` 类型 + `ready = false`，界面把它画灰）；
+##   ② 到 10% 且没在读条 → 真正可点的「再起」（带造价与读条时间）；
+##   ③ 正在读条 → 「取消再起」（全额退款）。
+##
+## ★ 判据**全部来自权威侧**（`unit.revive_ready()` / `world.revive_cost()` /
+##   `world.revive_ready_ratio()`）：界面不自己复算一遍「够不够 10%」——
+##   那会变成两份规则，一旦漂开就会出现「格子亮着、点下去被拒」这种最恼人的状态。
+func _revive_entries(leader) -> Array:
+	# ⚠️ 这里**不能用** `:=`：`leader.revive_ready(cfg)` 是动态调用，
+	#    返回值没有确定类型（GDScript 会报 "Cannot infer the type of ready variable"）。
+	var ready: bool = leader.revive_ready(cfg)
+	var cost_text: String = _cost_text(world.revive_cost())
+	var channel: String = _fmt_num(world.revive_channel_sec())
+	if leader.is_reviving():
+		return [{
+			"type": "revive_cancel",
+			"name": "取消再起",
+			"desc": "撤掉正在读条的再起，**全额退还**已经扣掉的%s（%s）" % [cost_text, channel],
+			"ready": true,
+		}]
+	var need_pct := int(round(world.revive_ready_ratio() * 100.0))
+	if not ready:
+		return [{
+			"type": "revive",
+			"name": "再起",
+			"desc": "血量回复到 %d%% 才能再起（现在 %d%%）—— 濒死期间每秒都在慢慢回血" % [
+				need_pct, int(round(leader.hp_ratio() * 100.0))],
+			"ready": false,
+		}]
+	return [{
+		"type": "revive",
+		"name": "再起",
+		"desc": "消耗%s，读条 %s 秒后脱离濒死（**血量保持不变**）重新投入战斗" % [
+			cost_text, channel],
+		"ready": true,
+	}]
+
 
 
 ## ★★ 「操作」页该画什么：选中建筑时是升级 / 特化那一套，否则是部队的四条指令。
@@ -1083,6 +1161,17 @@ func _order_entries_for_selection() -> Array:
 		if not out.is_empty():
 			return out
 		return []
+	# ★★ 第四种（本轮新增）：选中了**自己那一方的部队** ——
+	#   这时要判「选中的将领是不是濒死了」：濒死就把整页换成「再起」那一格。
+	#
+	# ⚠️ 顺序放在建筑那两支**之后**：三种选中（区划 / 建筑 / 部队）互斥，
+	#   而前两支各自 return 了，所以走到这里的一定是「选中部队」这一支。
+	#   放到前面去的话，选中区划时 `first_selected_leader()` 可能仍然返回
+	#   上一次选中留下的将领（`selected_units` 与 `selected_zone` 是两套字段），
+	#   于是区划的操作页会被将领的「再起」顶掉。
+	var leader = input_ctrl.first_selected_leader()
+	if leader != null and leader.is_downed():
+		return _revive_entries(leader)
 	return _order_entries()
 
 
@@ -1302,6 +1391,24 @@ func _on_card_entry(entry: Dictionary) -> void:
 			_on_building_action(entry)
 		"zone_spec_bar_cancel":
 			_on_building_action(entry)
+		"revive":
+			# ★★ 濒死将领的「再起」（本轮新增）：与「停止」那一格一样，
+			#    点一下当场发命令（不需要目标、也不进命令模式）。
+			#    ⚠️ 被置灰的那一档（血量还没到 10%）**根本点不到**：
+			#       按钮是 disabled 的（见 command_card.set_entries），
+			#       这里再判一次只是保险（键盘 / 测试直接调 activate_index 时也走这条路）。
+			if not bool(entry.get("ready", true)):
+				show_notice(String(entry.get("desc", "现在还不能再起")))
+				return
+			if input_ctrl.request_revive():
+				show_notice("再起：%s" % String(entry.get("desc", "")))
+			else:
+				show_notice("先选中一个濒死的将领，才能让它再起")
+		"revive_cancel":
+			if input_ctrl.request_revive_cancel():
+				show_notice("已取消再起读条（全额退款）")
+			else:
+				show_notice("先选中一个正在再起的将领，才能取消")
 
 
 ## ★ 建筑「操作」页那几格 → 命令（升级 / 取消升级 / 特化 / 取消特化）。
@@ -1555,6 +1662,7 @@ func notice_text() -> String:
 ##
 ## 拒因码是 logic/world.gd 的 can_recruit / can_afford_recruit / can_recruit_zone 产出的：
 ##   kind / leader / faction / zone / zone_owner / zone_not_found / queue_full / cost / population
+##   / **downed**（★ 本轮新增：将领濒死倒地，不能继续造兵）
 ## ★ 注意两个「区划」拒因是**不同的话**：
 ##   · "zone"          将领招募时它是「将领不站在己方区划里」；
 ##   · "zone_owner"    区划招募时它是「这个区划不属于你」。
@@ -1567,6 +1675,8 @@ func recruit_reject_text(reason: String, kind: String, max_count: int = 0) -> St
 			return "这个兵种不在可招募表里"
 		"leader":
 			return "先选中一个将领，才能把新兵排到它名下"
+		"downed":
+			return "将领已经倒地濒死：它不能再造兵（在造的那一单已作废并全额退款）"
 		"faction":
 			return "不能给别的阵营的将领招募"
 		"zone":
@@ -1589,13 +1699,43 @@ func recruit_reject_text(reason: String, kind: String, max_count: int = 0) -> St
 
 ## 指令被拒的**拒因码 → 中文**（与上面那条同一条约定：逻辑层只给码）。
 ##
-## 目前唯一的拒因是 `recruiting`：将领正在招募时，**它和它辖下的部队**都不接受
-## 移动 / 攻击命令（用户需求），而玩家右键点下去什么都没发生看起来就是坏了。
+## 目前两种拒因（都由 `world.order_lock_reason()` 产出）：
+##   · `recruiting` —— 将领正在招募时，**它和它辖下的部队**都不接受移动 / 攻击命令；
+##   · ★ `downed`   —— **本轮新增**：将领濒死倒在地上，它自己不接受任何指令。
+##     ⚠️ 这一条**只锁它自己**（它辖下的部队照旧能打、能去救它）——与上面那条不同，
+##        文案也要说清「去救它」，否则玩家会以为整支部队都废了。
 func order_reject_text(reason: String) -> String:
 	match reason:
 		"recruiting":
 			return "将领正在招募单位：它和它的部队这会儿只警戒，不接受指令"
+		"downed":
+			return "将领已经倒地濒死：它自己不能行动，先让它「再起」（它辖下的部队照常能打）"
 	return "这条指令现在下不了"
+
+
+## 「再起」被拒的**拒因码 → 中文**（码见 logic/world.gd 的 revive_reject_reason）。
+##
+## ★ 常规路径下这些码玩家**看不到**：那颗格子在血量不到 10% 时就是灰的（点不动）。
+##   但 AI 也会下单（它走同一个入口），而且「资源不够」这一条玩家那颗格子**照样是亮的**
+##   ——钱不够的判断在扣费那一步，界面没有提前拦（拦了就等于把规则抄两份）。
+##   所以这条翻译是给「钱不够」那一下用的，其余几条是兜底。
+func revive_reject_text(reason: String) -> String:
+	match reason:
+		"leader":
+			return "先选中一个将领，才能让它再起"
+		"faction":
+			return "不能给别的阵营的将领再起"
+		"not_downed":
+			return "这个将领没有倒地，不需要再起"
+		"channeling":
+			return "它已经在再起了（想中断就点「取消再起」）"
+		"hp":
+			return "血量还没回到 %d%%，再起还点不亮" % int(round(world.revive_ready_ratio() * 100.0))
+		"cost":
+			var c: Dictionary = world.revive_cost()
+			return "粮食或黄金不足，再起需要 粮食 %d / 黄金 %d" % [
+				int(round(float(c.get("food", 0.0)))), int(round(float(c.get("gold", 0.0))))]
+	return "现在不能让它再起"
 
 
 ## 科技被拒的**拒因码 → 中文**（逻辑层只给码：见 logic/tech.gd 的 can_activate）。
@@ -1752,6 +1892,19 @@ func _card_sig() -> String:
 	# ③ 选中部队 / 什么都没选中这两档**不进签名**：它们的命令卡内容是静态的
 	#    （操作页那四条指令写死在 `_order_entries()`、建筑页来自 config.json 的 building 段），
 	#    与「选中了哪一支部队」无关 —— 放进去只会每次换选中都白重建一遍。
+	#
+	# ★★ 唯一的例外是**濒死的将领**（本轮新增）：它的操作页不是那四条静态指令，
+	#    而是「再起 / 取消再起 / 血量还没回到 10%」这三态之一，且会**自己变化**
+	#    （血量到 10% 那一刻格子要亮起来；读条开始 / 结束也要换字）。
+	#    不把它放进签名的话，那两颗格子的字会一直停在生产它的那一帧
+	#    （表现：血量明明回到 10% 了，格子还是灰的，直到玩家改选一次）。
+	#    ⚠️ 只放**这几个会进文案的判据**，不要把 hp 放进去 —— 濒死期间血量每 3 秒
+	#      动一次，放进去等于每 3 秒重建一次命令卡（没必要，格子上不显示具体血量）。
+	var ld = input_ctrl.first_selected_leader()
+	if ld != null and ld.is_downed():
+		parts.append("nd:%s:%d:%d" % [String(ld.id),
+			1 if ld.revive_ready(cfg) else 0,
+			1 if ld.is_reviving() else 0])
 	return "|".join(parts)
 
 
@@ -2084,6 +2237,25 @@ func _unit_text(shown, troops: Array) -> String:
 		return "未选中"
 	var lines: Array[String] = []
 	lines.append("血量 %d / %d" % [int(round(shown.hp)), int(round(shown.hp_max))])
+	# ★★ 濒死的将领（本轮新增）：右栏这块数值区是玩家唯一能读到「还要等多久」的地方，
+	#    所以把状态 / 回复进度 / 再起门槛都写出来（需求要玩家能判断什么时候能再起）。
+	if shown.is_downed():
+		lines.append("★ 濒死：倒在原地、不会受到伤害，也不能行动")
+		lines.append("回复 %d%%（上限 %d%%）· 每 %s 秒 +%d%%" % [
+			int(round(shown.hp_ratio() * 100.0)),
+			int(round(cfg.revive_regen_cap_ratio * 100.0)),
+			_fmt_num(cfg.revive_regen_sec),
+			int(round(cfg.revive_regen_ratio * 100.0))])
+		if shown.is_reviving():
+			lines.append("再起读条中：%d%%（还剩 %s 秒）" % [
+				int(round(shown.revive_progress() * 100.0)), _fmt_num(shown.revive_remaining)])
+		elif shown.revive_ready(cfg):
+			lines.append("可以在「操作」页点「再起」（%s，读条 %s 秒）" % [
+				_cost_text(world.revive_cost()), _fmt_num(world.revive_channel_sec())])
+		else:
+			lines.append("血量回到 %d%% 才能再起" % int(round(world.revive_ready_ratio() * 100.0)))
+		lines.append("攻击力 %d（濒死期间不出手）" % int(shown.combat_damage(cfg)))
+		return "\n".join(lines)
 	lines.append("攻击力 %d" % int(shown.combat_damage(cfg)))
 	lines.append("攻击距离 %d 格 / 间隔 %.1fs" % [
 		int(shown.combat_range(cfg)), shown.combat_cooldown(cfg)])

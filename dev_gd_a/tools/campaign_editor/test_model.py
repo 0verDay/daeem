@@ -469,8 +469,10 @@ def t_override_rules() -> None:
     ok(map_base_f1 is not None and map_base_f2 is not None,
        "★ 地图自带两个阵营的大本营（F1=%s / F2=%s）" % (map_base_f1, map_base_f2))
     eq(info.zone_owners.get(0), "F1", "地图自带 b1 的开局归属")
-    ok(4 not in info.zone_owners, "地图上 c1 开局无主（没写 owner）")
-    eq(info.allies, [], "样例地图没有 allies")
+    # ★ c1（区划 4）现在**有主**：归与蓝方结盟的渡口守军 GD1 ——
+    #   用户口径「守住任务只要区划属于己方**或友方**都可」，于是把 c1 划给了友军。
+    eq(info.zone_owners.get(4), "GD1", "★ 地图上 c1 开局归友军 GD1（不再是「无主」）")
+    eq(info.allies, [], "样例地图没有 allies（盟友写在关卡那一份里）")
 
     # 关卡没写 factions / zones / allies → 一律用地图的
     lv = M.LevelModel("bare", "dongzheng")
@@ -478,7 +480,12 @@ def t_override_rules() -> None:
     eq(lv.factions, [], "关卡没写 factions：列表是空的（运行时用地图的）")
     eq(M._base_of(lv, info, "F2"), map_base_f2, "★ 关卡没写大本营 → 落回地图的")
     eq(M._initial_zone_owner(lv, info, 0), "F1", "★ 关卡没写 zones → 用地图的归属")
-    eq(M._initial_zone_owner(lv, info, 4), "", "★ 地图上无主的区划 → 空串（不是 None）")
+    eq(M._initial_zone_owner(lv, info, 4), "GD1", "★ 关卡没写 zones → c1 也用地图的（GD1）")
+    # 「无主」那一档仍然要能表达（找一块地图上真没写 owner 的区划来验）
+    empty_zid = next((z for z in info.zone_ids if z not in info.zone_owners), None)
+    if empty_zid is not None:
+        eq(M._initial_zone_owner(lv, info, empty_zid), "",
+           "★ 地图上无主的区划 → 空串（不是 None）")
     eq(M._effective_allies(lv, info), [], "★ 关卡没写 allies → 用地图的（这里是空表）")
     lv.allies_declared = True
     eq(M._effective_allies(lv, info), [], "★★ 关卡写了空 allies → **就用这个空表**（不是回退地图）")
@@ -505,9 +512,13 @@ def t_config_and_maps() -> None:
     info = levelfile.load_config(TMP_PROJECT)
     eq(info.unit_types, ["spearman", "longbowman", "rider", "enemy"], "config：四个兵种")
     eq(info.general_types, ["spearman", "longbowman", "rider"], "config：三位将领的类型")
-    # ★ 护卫数现在是**逐将一份**（`unit.general.escort` 可以是数组）：
-    #   这里只钉「配了、且是正数」，逐将口径由 unit_editor 那边验。
-    ok(info.escort_count > 0, "config：开局护卫数是正数（%r）" % info.escort_count)
+    # ★★ 开局附属兵**没有全局缺省**了：`config.json` 的 `unit.general.escort` 已被删掉，
+    #    每个兵都在摆放页里摆出来（`start_units[].escort_of`）。
+    #    这里反过来钉住它 —— 守卫「有人把那个全局开关加回来」这种回归。
+    ok("escort" not in (info.raw.get("unit", {}).get("general", {}) or {}),
+       "★★ config 的 unit.general 里**没有** escort（开局附属兵改在摆放页摆）")
+    ok(not hasattr(info, "escort_count") and not hasattr(info, "escorts"),
+       "★ 只读快照也不再提供「开局编制」那种字段")
     eq(info.building_types, ["base", "tower", "wall"], "config：三种建筑")
     eq(info.zone_kinds, ["food", "gold", "population"], "config：三种区划")
     ok("attack_repeat_sec" in info.ai_faction_cfg, "config：阵营 AI 的默认参数拿到了")
@@ -671,6 +682,22 @@ def t_validation_sides() -> None:
     issues = check(base_level(zones=[{"id": f.obj_zone, "owner": f.enemy}]))
     ok(has(issues, "objective_not_players"),
        "★★ 目标区划开局归敌方 → objective_not_players（拦）")
+    # ★★ 归**友军**（盟友）→ **不拦**（用户口径：「守住」任务只要区划属于己方**或友方**都可）
+    #
+    # 这一条是把「目标区划只能归玩家自己」放宽成「归玩家**同方**」的回归断言。
+    # 样例战役第一关正是这个形状：c1 归与蓝方结盟的渡口守军（GD1），目标写「蓝方守住 c1」。
+    # ⚠️ 判据只有一处：`_Sides.same_side()`（由 `allies` 建出来的连通分量）——
+    #    它同时服务目标区划与额外失败条件那四条。
+    issues = check(base_level(allies=[[f.player, "ALLY1"]],
+                              zones=[{"id": f.obj_zone, "owner": "ALLY1"}]))
+    ok(not has(issues, "objective_not_players"),
+       "★★ 目标区划开局归**友军** → **不拦**（守住友军的地是合法设计）")
+    ok(not has(issues, "objective_unowned"),
+       "★ 而且也不算「无主」（它有主，只是主是盟友）")
+    # 同一份数据但**没有**盟友声明 → 那就是敌人（区划 id 不在 present 里也照样拦）
+    issues = check(base_level(zones=[{"id": f.obj_zone, "owner": "ALLY1"}]))
+    ok(has(issues, "objective_not_players"),
+       "★ 没声明盟友时同一份数据照旧拦（区别就在 allies 那一行上）")
     issues = check(base_level(objectives=[{"kind": "hold_zone", "zone": f.attack_zone,
                                           "hold_sec": 60}],
                               factions=[{"id": f.enemy, "ai": "faction"}],
@@ -960,6 +987,109 @@ def t_attack_target_roundtrip() -> None:
     ok(has(issues, "attack_target_zone"), "★ 引用不存在的区划被拦")
 
 
+def t_escort_placement() -> None:
+    print("\n[3b2] 附属部队：摆在 start_units 里 + escort_of 绑定将领 + 往返")
+    f = FACTS
+    data = base_level(start_units=[
+        {"faction": f.enemy, "kind": "general", "general_index": 1, "x": f.enemy_base[0],
+         "y": f.enemy_base[1], "name": "主将"},
+        {"faction": f.enemy, "kind": "spearman", "x": f.spot[0], "y": f.spot[1],
+         "escort_of": 1, "name": "兵 1"},
+    ])
+    model = campaign_with(data)
+    lv = model.levels[0]
+    gen = M.general_with_index(lv, f.enemy, 1)
+    ok(gen is not None and gen.is_general(), "★ 按「将领序号」找得到那位将领")
+    squad = M.escorts_of(lv, f.enemy, 1)
+    eq(len(squad), 1, "★★ escorts_of 数出「属于第 1 位将领」的兵")
+    eq(squad[0].unit_type if squad else "", "", "（不必有 unit_type）")
+    eq(M.escorts_of(lv, f.enemy, 2), [], "★ 第 2 位将领名下没有兵")
+    ok(M.faction_has_placed_escorts(lv, f.enemy), "★★ 这一方被判定为「摆了附属部队」")
+    ok(not M.faction_has_placed_escorts(lv, f.player), "★ 另一方没有")
+    eq(len(M.placed_generals(lv, f.enemy)), 1, "★ 数得出摆了 1 位将领")
+
+    # 导出：`escort_of` 只写在真的是附属兵的那一项上
+    out = lv.to_dict()["start_units"]
+    escorts = [u for u in out if u.get("escort_of")]
+    eq(len(escorts), 1, "★★ 导出时只有附属兵带 escort_of")
+    eq(escorts[0].get("escort_of"), 1, "★ 归属将领序号写对了")
+    eq([u for u in out if u.get("kind") == "general"][0].get("escort_of"), None,
+       "★ 将领自己没有这个键")
+    same, diffs = levelfile.roundtrip_ok(model, TMP_ROOT / "escort_rt", TMP_PROJECT)
+    ok(same, "★★ 带附属部队的关卡往返逐字段一致%s" % ("" if same else "：%s" % diffs[:3]))
+
+    # 没摆 = 不是附属兵（不写这个键）
+    model = campaign_with(base_level(start_units=[
+        {"faction": f.enemy, "kind": "spearman", "x": f.spot[0], "y": f.spot[1]}]))
+    eq(model.levels[0].start_units[0].escort_of, -1, "★ 没写 escort_of = -1（普通摆放单位）")
+    ok("escort_of" not in model.levels[0].to_dict()["start_units"][0],
+       "★ 缺省不落这个键（老关卡一个字节都不变）")
+    ok(not M.faction_has_placed_escorts(model.levels[0], f.enemy),
+       "★ 没摆附属兵 → 运行时照样自动生成将领")
+
+
+def t_validation_escort_links() -> None:
+    print("\n[3b3] 校验：附属部队的归属（没队长 / 将领当兵 / 序号重复）")
+    f = FACTS
+    gen = {"faction": f.enemy, "kind": "general", "general_index": 1,
+           "x": f.enemy_base[0], "y": f.enemy_base[1]}
+
+    # 1) 有队长 → 通过
+    issues = check(base_level(start_units=[
+        dict(gen), {"faction": f.enemy, "kind": "spearman", "x": f.spot[0], "y": f.spot[1],
+                    "escort_of": 1}]))
+    eq(block_codes(issues), [], "★ 有对应将领 → 0 条拦截")
+
+    # 2) 没有那位将领 → 拦
+    issues = check(base_level(start_units=[
+        dict(gen), {"faction": f.enemy, "kind": "spearman", "x": f.spot[0], "y": f.spot[1],
+                    "escort_of": 2}]))
+    ok(has(issues, "escort_no_general"),
+       "★★ escort_of 指向不存在的将领序号 → 拦截（它进游戏没有队长）")
+
+    # 3) 一个将领都没摆，却有附属兵 → 拦 + 警告
+    issues = check(base_level(start_units=[
+        {"faction": f.enemy, "kind": "spearman", "x": f.spot[0], "y": f.spot[1],
+         "escort_of": 1}]))
+    ok(has(issues, "escort_no_general"), "★★ 一个将领都没摆 → 拦截")
+    ok(has(issues, "escort_faction_no_general", M.SEV_WARN),
+       "★★ 并且警告「这一方被运行时整个接管，连将领都不自动生成」")
+
+    # 4) 将领自己挂了 escort_of → 拦
+    issues = check(base_level(start_units=[
+        dict(gen, escort_of=1)]))
+    ok(has(issues, "escort_is_general"), "★ 将领当别人的附属兵 → 拦截")
+
+    # 5) 两位将领同一个序号 → 拦（兵的归属不确定）
+    issues = check(base_level(start_units=[
+        dict(gen), dict(gen, x=f.spot[0], y=f.spot[1]),
+        {"faction": f.enemy, "kind": "spearman", "x": f.enemy_base[0], "y": f.enemy_base[1],
+         "escort_of": 1}]))
+    ok(has(issues, "general_index_dup"), "★★ 两位将领同一个将领序号 → 拦截")
+
+
+def t_ordered_start_units() -> None:
+    print("\n[3b4] 导出顺序：将领必须排在它自己的兵前面（运行时的硬约定）")
+    f = FACTS
+    # 故意「先摆兵、后摆将」，看导出会不会排回来
+    lv_data = base_level(start_units=[
+        {"faction": f.enemy, "kind": "spearman", "x": f.spot[0], "y": f.spot[1],
+         "escort_of": 1, "name": "兵 1"},
+        {"faction": f.enemy, "kind": "general", "general_index": 1,
+         "x": f.enemy_base[0], "y": f.enemy_base[1], "name": "主将"},
+        {"faction": f.player, "kind": "enemy", "x": f.spot[0], "y": f.spot[1],
+         "name": "散兵"},
+    ])
+    model = campaign_with(lv_data)
+    out = model.levels[0].to_dict()["start_units"]
+    kinds = [str(u.get("kind")) for u in out]
+    ok(kinds.index("general") < kinds.index("spearman"),
+       "★★ 导出时将领排在它自己的兵前面（源文件里是先兵后将）：%s" % kinds)
+    eq(len(out), 3, "★ 一个都不多、一个都不少")
+    eq([u.get("name") for u in out if u.get("kind") == "enemy"], ["散兵"],
+       "★ 散兵照旧带出去")
+
+
 def t_ordering() -> None:
     print("\n[3c] 关卡的新增 / 删除 / 排序")
     model = levelfile.load_campaign(tmp_campaign_dir(), TMP_PROJECT)
@@ -1173,6 +1303,9 @@ def main() -> int:
         t_validation_faction_color()
         t_ai_assignment_roundtrip()
         t_attack_target_roundtrip()
+        t_escort_placement()
+        t_validation_escort_links()
+        t_ordered_start_units()
         t_ordering()
         t_preserved_unknown_fields()
         t_bad_input()

@@ -56,6 +56,17 @@ static func to_snapshot(world) -> Dictionary:
 			"tr": round2(u.train_remaining),
 			"tt": round2(u.train_total),
 			"tq": (u.train_queue.duplicate() if not u.train_queue.is_empty() else null),
+			# ★★ 将领濒死（本轮新增）：这是**权威状态**，客机不发就只能看到一个
+			#   站在原地的将领（它会照旧被画成能打、也能被点成目标，两边就不一致了）。
+			#   · nd = 是否濒死；nh = 已回复出来的血量（比例口径见 unit.nd_hp_ratio）；
+			#   · nt = 离下一次回复还有几秒；nv/nvt = 再起读条的剩余 / 总秒数。
+			#   ⚠️ 与 tk 那一组同一条约定：**nd 在不在**决定新旧格式，
+			#      老快照没有 nd ⇒ 整组保持本地现状（不要把濒死状态静默清掉）。
+			"nd": 1 if u.downed else 0,
+			"nh": round2(u.nd_regen_hp),
+			"nt": round2(u.nd_regen_timer),
+			"nv": round2(u.revive_remaining),
+			"nvt": round2(u.revive_total),
 		})
 
 	var buildings_out: Array = []
@@ -167,6 +178,26 @@ static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void:
 				for k in (tq as Array):
 					u.train_queue.append(String(k))
 			u.train_anchor = u.pos
+		# ★★ 将领濒死：与 tk 那一组同一条约定 —— **nd 在不在**决定新旧格式。
+		#    ⚠️ 回复进度**不要**在这里按比例重算：权威侧给的就是已经写进 hp 的那个数
+		#      （见 unit.nd_regen_hp），而比例口径 `nd_hp_ratio` 由这里反推，
+		#      两处算两份的话「科技改过上限」的场面会对不上。
+		if su.has("nd"):
+			u.downed = int(su.get("nd", 0)) != 0
+			u.nd_regen_hp = float(su.get("nh", u.nd_regen_hp))
+			u.nd_regen_timer = float(su.get("nt", u.nd_regen_timer))
+			u.revive_remaining = float(su.get("nv", u.revive_remaining))
+			u.revive_total = float(su.get("nvt", u.revive_total))
+			# ★★ 「正在读条」这个开关**从倒计时推出来**（权威侧也是同一个语义：
+			#    见 unit.revive_pending 的说明）。快照里不单发一个布尔字段 ——
+			#    多发一个就多一处要与 nv 对齐的状态，而两者本来就是同一件事。
+			u.revive_pending = u.downed and u.revive_remaining > 0.0
+			u.nd_hp_ratio = u.hp / u.hp_max if u.hp_max > 0.0 else 0.0
+			# ★ 倒下点：濒死期间位置被 `world._pin_training_leaders()` 钉在它上面，
+			#   所以客机必须跟着权威位置更新 —— 缺了它，客机会把这个将领拖回
+			#   本地那份旧的 downed_anchor（画面上一抖一抖）。
+			if u.downed:
+				u.downed_anchor = u.pos
 
 	# 快照里没有的单位 = 已经阵亡（客机上的世界完全以快照为准）
 	var keep: Array = []

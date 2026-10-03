@@ -48,15 +48,9 @@
       "F2"
     ]
   ],
-  "start_units": [],
-  "start_buildings": [],
   "zones": [
     {
       "id": 0,
-      "owner": "F2"
-    },
-    {
-      "id": 7,
       "owner": "F2"
     },
     {
@@ -66,8 +60,307 @@
     {
       "id": 6,
       "owner": "F1"
+    },
+    {
+      "id": 7,
+      "owner": "F2"
     }
   ],
+  "start_units": [
+    {
+      "faction": "F1",
+      "kind": "general",
+      "unit_type": "spearman",
+      "x": 4,
+      "y": 5,
+      "name": "左翼主将"
+    },
+    {
+      "faction": "F1",
+      "kind": "spearman",
+      "x": 3,
+      "y": 4,
+      "name": "长枪兵 1",
+      "escort_of": 1
+    },
+    {
+      "faction": "F1",
+      "kind": "spearman",
+      "x": 4,
+      "y": 4,
+      "name": "长枪兵 2",
+      "escort_of": 1
+    },
+    {
+      "faction": "F1",
+      "kind": "spearman",
+      "x": 3,
+      "y": 5,
+      "name": "长枪兵 3",
+      "escort_of": 1
+    },
+    {
+      "faction": "F1",
+      "kind": "spearman",
+      "x": 5,
+      "y": 5,
+      "name": "长枪兵 4",
+      "escort_of": 1
+    },
+    {
+      "faction": "F1",
+      "kind": "general",
+      "general_index": 2,
+      "unit_type": "longbowman",
+      "x": 3,
+      "y": 6,
+      "name": "左翼副将"
+    },
+    {
+      "faction": "F1",
+      "kind": "longbowman",
+      "x": 4,
+      "y": 6,
+      "name": "长弓兵 1",
+      "escort_of": 2
+    },
+    {
+      "faction": "F1",
+      "kind": "longbowman",
+      "x": 5,
+      "y": 6,
+      "name": "长弓兵 2",
+      "escort_of": 2
+    },
+    {
+      "faction": "F1",
+      "kind": "longbowman",
+      "x": 2,
+      "y": 3,
+      "name": "长弓兵 3",
+      "escort_of": 2
+    },
+    {
+      "faction": "F1",
+      "kind": "longbowman",
+      "x": 3,
+      "y": 3,
+      "name": "长弓兵 4",
+      "escort_of": 2
+    },
+    {
+      "faction": "F1",
+      "kind": "longbowman",
+      "x": 4,
+      "y": 3,
+      "name": "长弓兵 5",
+      "escort_of": 2
+    },
+    {
+      "faction": "F1",
+      "kind": "general",
+      "general_index": 3,
+      "unit_type": "rider",
+      "x": 5,
+      "y": 3,
+      "name": "左翼游骑"
+    },
+    {
+      "faction": "F1",
+      "kind": "rider",
+      "x": 6,
+      "y": 3,
+      "name": "骑手 1",
+      "escort_of": 3
+    },
+    {
+      "faction": "F1",
+      "kind": "rider",
+      "x": 2,
+      "y": 4,
+      "name": "骑手 2",
+      "escort_of": 3
+    },
+    {
+      "faction": "F1",
+      "kind": "rider",
+      "x": 6,
+      "y": 4,
+      "name": "骑手 3",
+      "escort_of": 3
+    },
+    {
+      "faction": "F1",
+      "kind": "rider",
+      "x": 2,
+      "y": 5,
+      "name": "骑手 4",
+      "escort_of": 3
+    },
+    {
+      "faction": "F1",
+      "kind": "rider",
+      "x": 6,
+      "y": 5,
+      "name": "骑手 5",
+      "escort_of": 3
+    },
+    {
+      "faction": "F1",
+      "kind": "rider",
+      "x": 2,
+      "y": 6,
+      "name": "骑手 6",
+      "escort_of": 3
+    },
+    {
+      "faction": "F2",
+      "kind": "general",
+      "unit_type": "spearman",
+      "x": 20,
+      "y": 1,
+      "name": "右翼主将"
+    },
+    {
+      "faction": "F2",
+      "kind": "spearman",
+      "x": 19,
+      "y": 0,
+      "name": "长枪兵 1",
+      "escort_of": 1
+    },
+    {
+      "faction": "F2",
+      "kind": "spearman",
+      "x": 20,
+      "y": 0,
+      "name": "长枪兵 2",
+      "escort_of": 1
+    },
+    {
+      "faction": "F2",
+      "kind": "spearman",
+      "x": 21,
+      "y": 0,
+      "name": "长枪兵 3",
+      "escort_of": 1
+    },
+    {
+      "faction": "F2",
+      "kind": "spearman",
+      "x": 19,
+      "y": 1,
+      "name": "长枪兵 4",
+      "escort_of": 1
+    },
+    {
+      "faction": "F2",
+      "kind": "general",
+      "general_index": 2,
+      "unit_type": "longbowman",
+      "x": 21,
+      "y": 1,
+      "name": "右翼副将"
+    },
+    {
+      "faction": "F2",
+      "kind": "longbowman",
+      "x": 19,
+      "y": 2,
+      "name": "长弓兵 1",
+      "escort_of": 2
+    },
+    {
+      "faction": "F2",
+      "kind": "longbowman",
+      "x": 20,
+      "y": 2,
+      "name": "长弓兵 2",
+      "escort_of": 2
+    },
+    {
+      "faction": "F2",
+      "kind": "longbowman",
+      "x": 21,
+      "y": 2,
+      "name": "长弓兵 3",
+      "escort_of": 2
+    },
+    {
+      "faction": "F2",
+      "kind": "longbowman",
+      "x": 18,
+      "y": 0,
+      "name": "长弓兵 4",
+      "escort_of": 2
+    },
+    {
+      "faction": "F2",
+      "kind": "longbowman",
+      "x": 18,
+      "y": 1,
+      "name": "长弓兵 5",
+      "escort_of": 2
+    },
+    {
+      "faction": "F2",
+      "kind": "general",
+      "general_index": 3,
+      "unit_type": "rider",
+      "x": 22,
+      "y": 1,
+      "name": "右翼游骑"
+    },
+    {
+      "faction": "F2",
+      "kind": "rider",
+      "x": 18,
+      "y": 2,
+      "name": "骑手 1",
+      "escort_of": 3
+    },
+    {
+      "faction": "F2",
+      "kind": "rider",
+      "x": 22,
+      "y": 2,
+      "name": "骑手 2",
+      "escort_of": 3
+    },
+    {
+      "faction": "F2",
+      "kind": "rider",
+      "x": 18,
+      "y": 3,
+      "name": "骑手 3",
+      "escort_of": 3
+    },
+    {
+      "faction": "F2",
+      "kind": "rider",
+      "x": 19,
+      "y": 3,
+      "name": "骑手 4",
+      "escort_of": 3
+    },
+    {
+      "faction": "F2",
+      "kind": "rider",
+      "x": 20,
+      "y": 3,
+      "name": "骑手 5",
+      "escort_of": 3
+    },
+    {
+      "faction": "F2",
+      "kind": "rider",
+      "x": 21,
+      "y": 3,
+      "name": "骑手 6",
+      "escort_of": 3
+    }
+  ],
+  "start_buildings": [],
   "objectives": [
     {
       "kind": "hold_zone",

@@ -97,6 +97,12 @@ func setup() -> void:
 # ------------------------------------------------------------------
 
 ## 换一整页内容（最多 9 条，顺序就是 Q/W/E/A/S/D/Z/X/C）
+##
+## ★★ 条目里的 `ready`（缺省 = true）是本版新增的**置灰**开关：条目在、说明也在，
+##    但这一格现在点了没用（典型是濒死将领那颗「再起」——血量还没回到 10%）。
+##    ⚠️ 为什么不干脆不画那一格：需求原话是「血量回复至 10% 及以上，则其操作栏中
+##      会出现『再起』按钮」——**玩家要能看见它在等什么**（一次都不画的话，
+##      玩家只会以为这个功能不存在）。所以画灰 + 悬停说明才是对的做法。
 func set_entries(list: Array) -> void:
 	_entries = []
 	for i in list.size():
@@ -111,15 +117,22 @@ func set_entries(list: Array) -> void:
 		var cell := _cells[i]
 		if filled:
 			var e2: Dictionary = _entries[i]
+			var ready: bool = bool(e2.get("ready", true))
 			_name_labels[i].text = String(e2.get("name", ""))
-			_name_labels[i].add_theme_color_override("font_color", UiStyleRes.TEXT)
-			_key_labels[i].add_theme_color_override("font_color", UiStyleRes.ACCENT)
-			_cell_style(cell, true)
+			# ★ 置灰那一档的**文字也一起变暗**：只把按钮禁掉而名字照旧是亮白的话，
+			#   看起来仍然像「能点」（实测里这类「看着能点、点了没反应」最难自查）。
+			_name_labels[i].add_theme_color_override("font_color",
+				UiStyleRes.TEXT if ready else UiStyleRes.TEXT_FAINT)
+			_key_labels[i].add_theme_color_override("font_color",
+				UiStyleRes.ACCENT if ready else UiStyleRes.TEXT_FAINT)
+			_cell_style(cell, ready)
+			cell.disabled = not ready
 		else:
 			_name_labels[i].text = ""
 			_name_labels[i].add_theme_color_override("font_color", UiStyleRes.TEXT_FAINT)
 			_key_labels[i].add_theme_color_override("font_color", UiStyleRes.TEXT_FAINT)
 			_cell_style(cell, false)
+			cell.disabled = false
 
 
 func _cell_style(cell: Button, filled: bool) -> void:
@@ -163,6 +176,10 @@ func activate_index(i: int) -> bool:
 
 ## 键盘：只有**有内容的格**才吃掉按键（空格子让给别人，见 hud.handle_key）
 ##
+## ★★ 被置灰的格子（`ready == false`）**也不吃按键**（本版新增）：与点击那条路
+##   保持一致 —— 否则按 Q 会静默地什么都不发生（格子画着灰、键盘却"接受了"这一下），
+##   而玩家更可能只是想按 Q 做别的事（那几个字母同时也是别的绑定的候选）。
+##
 ## ★ 带修饰键的组合（Ctrl / Alt / Cmd）一律放行，不吃。
 ##   为什么必须有这条：`game_scene._unhandled_input` 里命令卡**排在 input_controller 之前**
 ##   （先问 hud 再问输入控制器），不放行的话 Ctrl+Q（开发者快捷键：全屏）会先被 Q 格吃掉
@@ -176,6 +193,8 @@ func handle_key(event: InputEventKey) -> bool:
 		return false
 	var slot: int = int(KEY_TO_SLOT.get(event.keycode, -1))
 	if slot < 0 or slot >= _entries.size():
+		return false
+	if not bool((_entries[slot] as Dictionary).get("ready", true)):
 		return false
 	activate_index(slot)
 	return true

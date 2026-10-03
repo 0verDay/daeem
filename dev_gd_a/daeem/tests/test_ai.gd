@@ -11,7 +11,7 @@
 ##      · 有钱 → 升级自己的建筑（升级读条落在建筑上）；
 ##      · 招满 generals 个 && 每个都满员 → **出兵**（派将领行军攻击敌方区划中心）。
 ##   C. 将领性（防御性）AI
-##      · 归属区划从地图 `units[].zone` 落到单位上；
+##      · 归属区划从关卡摆放 `start_units[].zone` 落到单位上；
 ##      · **没有资源池**（问 resource_pool_for 拿不到它那一份）；
 ##      · 按时间间隔在归属区划里巡逻（朝区划中心走）；
 ##      · **不追出一个区划**：追进别人的区划就当场脱战；
@@ -33,7 +33,11 @@ const GridRes = preload("res://logic/grid.gd")
 const EnemyAiRes = preload("res://logic/enemy_ai.gd")
 const LevelRes = preload("res://logic/level.gd")
 
-## 地图上给防御性 AI 摆的三个驻防将领（写在 data/maps/frontier/map.json 的 units[] 里）
+## 测试里给**驻防将领**起的名字（也用来在 `world.units` 里把它认出来）。
+##
+## ⚠️ 它**不再**来自地图：`data/maps/*/map.json` 的 `units[]` 本轮整个废弃、运行时不再读。
+##    摆驻防将领一律走**关卡的 `start_units`** —— 本文件里的探针关卡就是干这个的
+##    （见 `_garrison_level()` / `_patrol_probe_level()`）。
 const GARRISON_NAME := "驻防将领"
 
 ## 临时目录（工程内，测试末尾清掉）。
@@ -83,7 +87,8 @@ func _cases() -> void:
 	_test_faction_ai_multiplier(cfg)
 	_test_faction_ai_income_accumulates(cfg)
 	_test_faction_ai_runs_over_time(cfg)
-	_test_general_ai_from_map(cfg)
+	_test_general_ai_from_level(cfg)
+	_test_level_placed_escorts(cfg)
 	_test_general_ai_patrol(cfg)
 	_test_general_ai_patrol_spread(cfg)
 	_test_general_ai_patrol_with_retinue(cfg)
@@ -138,18 +143,23 @@ func _test_config(cfg) -> void:
 	ok(cfg.is_ai_faction("ai"), "cfg.is_ai_faction('ai') 为真")
 	ok(not cfg.is_ai_faction("p1"), "玩家席位不是 AI 阵营")
 	ok(not cfg.is_ai_faction("p2"), "联机席位也不是 AI 阵营")
-	# ★ 'enemy' 是**地图上那批测试守军**的阵营，默认配置里它不是阵营 AI。
+	# ★ 'enemy' 是**摆在地图上的那些测试守军**的阵营，默认配置里它不是阵营 AI。
 	#   ⚠️ 但这是**数据**：把 'enemy' 写进 ai.factions 它就变成阵营 AI 了
 	#   （那时它也会跟着走「将领不带开局附属兵」那条）。所以这里断言的是
 	#   「**随游戏发布的那份配置**里没有它」，不是「它永远不能是」。
+	#   ⚠️ 守军现在由**关卡的 `start_units`** 摆（地图的 `units[]` 已废弃，见 GARRISON_NAME）。
 	ok(not cfg.is_ai_faction("enemy"),
-		"随游戏发布的配置里 'enemy' 不是阵营 AI（它由地图的 units[] 自己摆）")
+		"随游戏发布的配置里 'enemy' 不是阵营 AI（它由关卡的 start_units 自己摆）")
 	ok(FactionRes.is_ai_faction("ai"), "faction.gd 的常量兜底也认 'ai'")
 
 	# 行为参数：每一项都要有、且不能是「取不到就 0」那种静默坏值
 	var fc: Dictionary = cfg.ai_faction_cfg()
 	ok(int(fc["generals"]) > 0, "ai.faction.generals > 0")
-	ok(int(fc["min_retinue"]) > 0, "ai.faction.min_retinue > 0")
+	# ★★ `min_retinue` 在本轮**换了语义**（不再是「补员目标 / 编制缺省」）：
+	#    补员目标现在 = 关卡里给这位将领摆了几个附属兵（`world.escort_target_of`），
+	#    而这个键只剩「这一方要不要做补员这件事」的总开关作用（`<= 0` 跳过 b 段）。
+	#    ⇒ 它的取值仍然必须 > 0（配置完整性），但**不再**是任何「编制」。
+	ok(int(fc["min_retinue"]) > 0, "ai.faction.min_retinue > 0（本轮起只是补员总开关，不是编制）")
 	ok(float(fc["attack_repeat_sec"]) > 0.0, "ai.faction.attack_repeat_sec > 0")
 	var gc: Dictionary = cfg.ai_general_cfg()
 	ok(float(gc["patrol_interval_sec"]) > 0.0, "ai.general.patrol_interval_sec > 0")
@@ -227,14 +237,20 @@ func _test_faction_ai_presence(cfg) -> void:
 			eq(String((rz as Dictionary)["owner"]), "ai", "那个区划是 AI 自己的")
 			ok((rz as Dictionary).get("center", null) != null, "而且它有区划中心格")
 
-	# 玩家那一侧一个字不变：p1 的将领照旧带满开局编队
+	# ★★ 玩家那一侧：**没有关卡 ⇒ 没有附属兵**（本轮口径：所见即所得）。
+	#
+	# 这里的断言换了个方向，但**没有变弱**：原来它钉的是「玩家有开局编队、AI 没有」
+	# 那个**不对称**；现在钉的是「两边对称 —— 谁都没白送，兵只能来自关卡摆放」。
+	#   ⚠️ 这不是「把断言删了让它变绿」：`World.create()` 这一局**没有关卡**，
+	#      按新口径就应该一个附属兵都没有；「摆了就有」由
+	#      `_test_level_placed_escorts()` 那几条更硬的用例钉着。
 	var p1_generals := 0
 	for u in w.units:
 		if u.alive and String(u.faction) == FactionRes.DEFAULT_FACTION and u.is_general():
 			p1_generals += 1
-			ok(w.retinue_of(String(u.id)).size() > 0,
-				"玩家将领开局仍然带满 unit.general.escort 个附属兵（老行为不变）")
-	eq(p1_generals, 3, "玩家的三个开局将领照旧")
+			eq(w.retinue_of(String(u.id)).size(), 0,
+				"★★ 没有关卡的这一局：玩家将领开局也**光杆**（不再有全局缺省编制）")
+	eq(p1_generals, 3, "玩家的三个开局将领照旧（照旧自动生成）")
 
 
 ## 把一块地交给 AI，并给够人口（**区划招募**要 1 人口 / 单位）。
@@ -411,8 +427,9 @@ func _test_faction_ai_income_accumulates(cfg) -> void:
 ## 所以它的断言**刻意宽容**：只要「至少有一个区划招的将领真的读条读完、
 ## 出现在地图上」就算通过。理由有两个，都是实测出来的：
 ##
-##   1. **同一张图上的 NPC 会真的打仗**：地图东南侧的对家据点（守军 + 箭塔）
+##   1. **同一张图上的 NPC 会真的打仗**：地图东南侧的对家据点（箭塔 + 城墙）
 ##      就在 AI 的隔壁区块，AI 的将领招出来之后会被卷进去打（也会被打死）。
+##      （地图的 `units[]` 废弃之后这里不再有预置守军，但箭塔还在、AI 之间照旧会打。）
 ##      要求「三个将领同时活着」会把这条用例变成**平衡测试**，而不是 AI 测试。
 ##   2. **区块 9 是人口区块**（不产粮食 / 黄金）：AI 的日常收入是 0，
 ##      全靠开局那点钱 + 人口增长运转。钱花光之后就只剩「等人口」——
@@ -503,7 +520,10 @@ func _test_faction_ai_recruit_units(cfg) -> void:
 	var player_food: float = float(w.resources["food"])
 
 	var before: int = g.retinue_size(w)
-	eq(before, 0, "开局这个将领一个兵都没有")
+	eq(before, 0, "开局这个将领一个兵都没有（★★ 新口径：没摆就是 0，没有全局缺省）")
+	# ★ 这一局没有关卡 ⇒ 「AI 的编制」本来是 0（连 b 段都不会动）——
+	#   本节要验的是**补员那条路本身**，所以显式摆一份测试规模出来。
+	_set_test_retinue_target(w, "ai", int(cfg.ai_faction_cfg()["min_retinue"]))
 	FactionAiRes.update(w, cfg, 0.05)
 	ok(g.is_training(), "★ AI 让将领开始招兵了（读条 / 队列）")
 	ok(g.retinue_size(w) > before, "「兵账」把排队中的那一单也算进去了")
@@ -575,14 +595,18 @@ func _test_faction_ai_attack(cfg) -> void:
 	# 让每个 AI 将领都「满员」：直接塞足够的**已经生成**的附属兵。
 	# ⚠️ 不用真招（那要等读条 10 秒）——这里验的是「满员之后会不会出兵」，
 	#    而「满员」的判据是 unit.retinue_size()（见那个函数的说明）。
-	# ★ 编制上限**逐将不同**（`unit.general.escort = [4,5,6]`），所以按**它自己的序号**
-	#   取目标值：塞少一个就不是「满员」，出兵那段会直接 return（这是本轮修的那条 gate）。
-	var min_retinue: int = int(cfg.ai_faction_cfg()["min_retinue"])
+	# ★★ 目标编制 = **关卡里给这位将领摆了几个附属兵**
+	#    （`world.escort_target_of()`；全局缺省编制本轮已删除）。
+	#   这一局的 AI 阵营（"ai"）是 config 名单里的，关卡没给它摆过任何附属兵
+	#   ⇒ 目标 0 ⇒ 这里要**自己定一个数**喂满它（下面用 `min_retinue` 当测试用的规模）。
+	#   ⚠️ 别再用 `max(关卡编制, min_retinue)` 那个老口径：它已经不存在了。
+	var per_general: int = maxi(1, int(cfg.ai_faction_cfg()["min_retinue"]))
+	_set_test_retinue_target(w, "ai", per_general)
 	var assigned := 0
 	for u in w.units:
 		if not u.alive or String(u.faction) != "ai" or not u.is_general():
 			continue
-		var want_n: int = maxi(cfg.general_escort_at(int(u.general_index)), min_retinue)
+		var want_n: int = per_general
 		for i in want_n:
 			var soldier = UnitRes.create(
 				cfg, "%s-ai%d" % [String(u.id), i], "AI 兵",
@@ -592,7 +616,7 @@ func _test_faction_ai_attack(cfg) -> void:
 			w.units.append(soldier)
 			assigned += 1
 		ok(u.retinue_size(w) >= want_n,
-			"AI 将领这时算满员（它自己的编制上限 = %d）" % want_n)
+			"AI 将领这时算满员（测试喂了 %d 个）" % want_n)
 	ok(assigned > 0, "造出了测试用的附属兵")
 
 	FactionAiRes.update(w, cfg, 0.05)
@@ -715,7 +739,10 @@ func _test_faction_ai_replaces_dead_general(cfg) -> void:
 		return
 	var slot := int(victim.general_index)
 	var alive_before := _ai_general_count(w)
-	victim.take_damage(cfg, w, 99999.0, null)
+	# ★★ 走 `kill_unit_now`（本轮）：加了将领濒死保护之后，直接 take_damage 只会让
+	#    AI 的将领倒地（它**仍然占着槽位**，正是需求要的行为）—— 而本节验的是
+	#    「一个槽位真的空出来之后会被补招」，所以要先按规则把它送走。
+	kill_unit_now(cfg, w, victim)
 	w.tick(0.05)
 	ok(not victim.alive, "一位 AI 将领阵亡（槽位 %d）" % slot)
 	eq(_ai_general_count(w), alive_before - 1, "场上少了一位将领")
@@ -799,11 +826,16 @@ func _test_faction_ai_waits_for_training(cfg) -> void:
 			after += 1
 	ok(after >= 1, "★ 都站定之后立刻发兵（派出 %d 位）" % after)
 func _fill_all_ai_retinues(w, cfg) -> void:
-	var min_retinue: int = int(cfg.ai_faction_cfg()["min_retinue"])
+	# ★★ 目标编制 = 关卡里给这位将领摆了几个附属兵（本轮口径）；
+	#    这一局的 AI 阵营是 config 名单里的，关卡没摆过 ⇒ 目标 0
+	#    ⇒ 这里**显式摆一份测试规模**（取 config 的 `min_retinue` 当规模；
+	#      它在新口径下已经不是「补员目标」了，见 faction_ai._decide 那段说明）。
+	var per_general: int = maxi(1, int(cfg.ai_faction_cfg()["min_retinue"]))
+	_set_test_retinue_target(w, "ai", per_general)
 	for u in w.units:
 		if not u.alive or String(u.faction) != "ai" or not u.is_general():
 			continue
-		var want_n: int = maxi(cfg.general_escort_at(int(u.general_index)), min_retinue)
+		var want_n: int = per_general
 		var have: int = u.retinue_size(w)
 		var i := 0
 		while have + i < want_n:
@@ -870,8 +902,21 @@ func _test_faction_ai_no_upgrade_reject_spam(cfg) -> void:
 # C. 将领性（防御性）AI
 # ------------------------------------------------------------------
 
-func _test_general_ai_from_map(cfg) -> void:
-	var w = _world(cfg)
+## ★★ 驻防将领从**关卡摆放**长出来（`start_units[].zone` → `unit.garrison_zone_id`）。
+##
+## ⚠️ 这条用例原来叫 `_test_general_ai_from_map`，读的是**地图** `units[]` 里那三个
+##    「驻防将领」条目。本轮地图预置单位整个废弃（运行时不再读 `units[]`），
+##    于是这里改成**走关卡的摆放** —— 断言一条都没删弱：
+##    「3 个守将」「各自带归属区划」「区划表里找得到」「开局站在自己区划里」
+##    「开局没有附属兵」「没有专属资源库」全部照旧。
+##    ★ 坐标与区划沿用原来地图里那三条（(8,13)@6 / (20,13)@8 / (20,17)@9），
+##      所以「站在自己区划里」验的仍然是同一件事。
+func _test_general_ai_from_level(cfg) -> void:
+	var lv = _garrison_level(cfg)
+	if lv == null:
+		return
+	var w = WorldRes.create_from_level(cfg, lv, "p1", ["p1"], false)
+	ok(w != null, "按关卡建出「三个驻防将领」的世界")
 	if w == null:
 		return
 	var found := 0
@@ -879,7 +924,7 @@ func _test_general_ai_from_map(cfg) -> void:
 		if not u.alive or String(u.name) != GARRISON_NAME:
 			continue
 		found += 1
-		ok(u.is_garrison(), "地图预置的驻防将领带上了归属区划（units[].zone）")
+		ok(u.is_garrison(), "关卡摆放的驻防将领带上了归属区划（start_units[].zone）")
 		ok(u.garrison_zone_id >= 0, "归属区划 id 是非负的")
 		ok(u.hold_position, "它同时被置了 hold_position（推进 AI 不许管它）")
 		var z = w.zone_by_id(u.garrison_zone_id)
@@ -895,7 +940,7 @@ func _test_general_ai_from_map(cfg) -> void:
 			"驻防将领的阵营不在阵营 AI 名单里 ⇒ 它没有专属资源库（走「资源无限」那条）")
 		ok(w.resource_pool_for(String(u.faction)) == null,
 			"resource_pool_for 对它返回 null（= 没有资源库）")
-	eq(found, 3, "地图上摆了 3 个驻防将领")
+	eq(found, 3, "关卡里摆了 3 个驻防将领")
 
 
 func _test_general_ai_patrol(cfg) -> void:
@@ -1225,6 +1270,294 @@ func _patrol_probe_level(cfg):
 	return lv
 
 
+## 一份「三个驻防将领」的最小关卡 —— **替代**原来地图 `units[]` 里那三条。
+##
+## ★★ 为什么改成走关卡：`map.json` 的 `units[]` 本轮**整个废弃、运行时不再读**，
+##    「开局就摆好的守军」现在只能由关卡的 `start_units` 摆（字段语义与它一字不差）。
+## ★ 坐标 / 阵营 / 归属区划沿用原来地图里那三条，所以
+##   「3 个守将」「各自站在自己那个区划里」这些断言验的仍然是同一件事。
+func _garrison_level(cfg):
+	var path := "%s/garrison/level.json" % TMP_ROOT
+	_write_text(path, JSON.stringify({
+		"map": "frontier",
+		"name": "驻防将领探针",
+		"players": [{"faction": "p1"}],
+		"start_units": [
+			{"faction": "enemy", "kind": "enemy", "x": 8, "y": 13,
+				"name": GARRISON_NAME, "hold": true, "zone": 6},
+			{"faction": "enemy", "kind": "enemy", "x": 20, "y": 13,
+				"name": GARRISON_NAME, "hold": true, "zone": 8},
+			{"faction": "enemy", "kind": "enemy", "x": 20, "y": 17,
+				"name": GARRISON_NAME, "hold": true, "zone": 9},
+		]
+	}))
+	var lv = LevelRes.load_level(null, path, cfg)
+	if lv == null:
+		ok(false, "驻防将领探针关卡能载入（%s）" % path)
+	return lv
+
+
+## ★★ 测试里给**关卡没摆过附属兵**的那一方定一个「补员规模」。
+##
+## 为什么需要它（本轮口径）：AI 的补员目标现在**只有一个来源** ——
+##   关卡 `start_units[]` 里给这位将领摆了几个附属兵（`world.escort_target_of`）。
+##   而这些用例用的世界是 `World.create()`（**没有关卡**），于是目标恒为 0
+##   ⇒ b 段不招兵、出兵 gate 也「开局就算满员」—— 那两个用例要验的东西
+##   （「AI 会补员」「满员之后才出兵」）就全成了空气。
+## 所以这里**显式**给一个规模：把它写进 `world.placed_escorts`（AI 补员目标读的就是它）、
+## 同时也写进 `min_retinue`（保留原本「这一方会补员」这条语义）。
+##
+## ⚠️ 这不是「绕过新口径」，而是**把它摆出来**：新口径下「AI 的编制」本来就只能
+##    来自关卡摆放，测试要一个具体的数就得自己摆一份记账。
+func _set_test_retinue_target(w, faction: String, per_general: int) -> void:
+	per_general = maxi(1, per_general)
+	# ★ 按**将领槽位**预填 0..2（`ai.general.generals` 那一档最多就是 3 位；
+	#   多填几个不花什么，`escort_target_of` 只查表）。
+	for i in 4:
+		w.placed_escorts["%s|%d" % [faction, i]] = per_general
+
+
+## ★★ 关卡**逐兵摆放**的附属部队（本轮口径）：`start_units[].escort_of`。
+##
+## 上一轮这里是「关卡 `factions[].general_escort` 逐将编制 + 回退 `config.json` 的
+## `unit.general.escort`」—— **整套已推翻**（理由「所见即所得」：开局场上有多少兵，
+## 必须完全等于关卡里摆出来的那些）。于是这个用例验的东西**整个换了**，
+## 但每一条都是**更强**的契约（不是放宽）：
+##   1. 摆了 `escort_of` 的兵 → 开局 `leader_id` 指向**同阵营同序号**的将领；
+##   2. `world.retinue_of(那位将领)` **包含**它（它真的算「附属部队」）；
+##   3. 摆了附属部队的那一方**不再自动生成将领**（场上将领数 = 作者摆的个数）；
+##   4. 没摆 `escort_of` 的一方**仍然**自动生成 3 位将领，且他们**不带**附属兵（0 个）；
+##   5. 非法 `escort_of`（`0` / `-3` / `"2"` / `2.5` / `true`）一律当**没写**
+##      （= 普通摆放单位，没有队长，也不触发整方接管）。
+func _test_level_placed_escorts(cfg) -> void:
+	# ---- 1) / 2) / 3) 关卡摆了附属兵：绑定 + 整方接管 ----
+	var lv = _escort_probe_level(cfg, "placed", [
+		{"faction": "p1", "kind": "spearman", "x": 4, "y": 6, "hold": true, "escort_of": 2},
+		{"faction": "p1", "kind": "longbowman", "x": 6, "y": 5, "hold": true, "escort_of": 2},
+		{"faction": "p1", "kind": "spearman", "x": 3, "y": 5, "hold": true, "escort_of": 1},
+	])
+	if lv == null:
+		return
+	ok(lv.faction_has_placed_escorts("p1"), "★ 关卡这一方摆了附属部队（判据 = 有任何一项带 escort_of）")
+	ok(not lv.faction_has_placed_escorts("enemy"), "（对照）没摆的那一方不是「由关卡接管」")
+	eq(lv.placed_escort_count_for("p1", 1), 2, "★ 第 2 位将领摆了 2 个附属兵（口径函数）")
+	eq(lv.placed_escort_count_for("p1", 0), 1, "★ 第 1 位将领摆了 1 个")
+	eq(lv.placed_escort_count_for("p1", 2), 0, "★ 第 3 位一个都没摆")
+
+	var w = WorldRes.create_from_level(cfg, lv, "p1", ["p1"], false)
+	ok(w != null, "按关卡建出世界（逐兵摆放的附属部队）")
+	if w == null:
+		return
+	eq(Array(w.level.placed_units_for("p1")).size(), 3, "关卡摆放读得回来（placed_units_for）")
+
+	# ---- 3) 整方接管：将领数 = 作者摆的个数，**不是** +3 ----
+	var all_p1 := 0
+	var generals_p1 := 0
+	var leaders_seen: Array = []
+	for u in w.units:
+		if String(u.faction) != "p1":
+			continue
+		all_p1 += 1
+		if u.is_general():
+			generals_p1 += 1
+			leaders_seen.append(u.id)
+	# ★★ 这一方**连将领都由关卡接管**：场上恰好 = 作者摆的 3 个兵 + 补出来的 2 位将领。
+	#    ⚠️ 不是「3 个」——口径是「**不自动生成 3 位将领**」，不是「不生成将领」：
+	#      `escort_of` 真正点名的那几位必须存在，否则那些兵根本没有队长。
+	eq(all_p1, 5, "★★ 场上 = 3 个摆放兵 + escort_of 点名的 2 位将领（一位都没多）")
+	eq(generals_p1, 2, "★★ 这一方**不再自动生成** 3 位将领（只有 escort_of 点名的第 1/2 位）")
+	ok(leaders_seen.has("general-1") and leaders_seen.has("general-2"),
+		"★ 补出来的将领就是关卡点名的那两位（id 全名：%s）" % str(leaders_seen))
+
+	# ---- 1) escort_of → leader_id（本轮的核心契约）----
+	var g2 = w.unit_by_id("general-2")
+	var g1 = w.unit_by_id("general-1")
+	ok(g2 != null and g1 != null, "（前提）两位将领都在场")
+	if g2 == null or g1 == null:
+		return
+	var by_leader := {}
+	for u in w.units:
+		if String(u.faction) != "p1" or u.is_general():
+			continue
+		eq(String(u.leader_id) != "", true, "★ 摆放的附属兵有队长（%s）" % u.id)
+		by_leader[u.id] = String(u.leader_id)
+
+	# ★★ 逐条对照：谁该归谁，是**按 escort_of 说的**，不是按摆放顺序猜的。
+	#    坐标是上面摆的那三个（(6,5)@2 / (4,6)@2 / (3,5)@1）。
+	const WANT_LEADER := {Vector2i(6, 5): "general-2", Vector2i(4, 6): "general-2", Vector2i(3, 5): "general-1"}
+	var sub_ids: Array = by_leader.keys()
+	sub_ids.sort()
+	eq(sub_ids.size(), 3, "（前提）3 个附属兵")
+	for sid in sub_ids:
+		var sub = w.unit_by_id(String(sid))
+		var want_leader: String = WANT_LEADER.get(Vector2i(sub.tx, sub.ty), "")
+		ok(want_leader != "", "（前提）%s 站在预期的那一格 (%d,%d)" % [String(sid), sub.tx, sub.ty])
+		eq(String(by_leader[sid]), want_leader,
+			"★★ escort_of → leader_id：%s 归 %s" % [String(sid), want_leader])
+		# ★ 同阵营同序号：队长确实在场上，而且类型跟得上
+		var ld = w.unit_by_id(String(by_leader[sid]))
+		ok(ld != null, "队长在场：%s" % String(by_leader[sid]))
+		if ld != null:
+			eq(String(ld.faction), "p1", "★ 队长与兵**同阵营**")
+			eq(String(ld.unit_type), String(sub.unit_type),
+				"★ 附属兵与队长**同类型**（作者没写 unit_type 时跟随队长）")
+
+	# ---- 2) retinue_of 真的把它算成「附属部队」----
+	eq(w.retinue_of("general-2").size(), 2, "★★ retinue_of(第 2 位将领) 包含那 2 个兵")
+	eq(w.retinue_of("general-1").size(), 1, "★★ retinue_of(第 1 位将领) 包含那 1 个兵")
+	eq(w.retinue_of("general-3").size(), 0, "（对照）没被点名的将领名下 0 个")
+	# ★ 分组：点附属兵也得到整队
+	#   ⚠️ 分两步拿（先取出 retinue 再取第 0 个）：链式下标在某些写法下会被
+	#      解析成「字符串下标」而静默拿到 null，那会让断言看起来像「队伍模型坏了」。
+	var g2_mates: Array = w.retinue_of("general-2")
+	var one_mate = g2_mates[0]
+	eq(w.group_of(one_mate).size(), 3,
+		"★ group_of(附属兵) = 将领 + 它的 2 个兵（队伍模型对摆放的兵一样成立）")
+
+	# ---- 4) 没摆 escort_of 的一方：**仍然**自动生成 3 位将领，且 0 个附属兵 ----
+	#
+	# ★ 「enemy」在探针关卡里**只摆了一个普通单位**（没有 escort_of）——
+	#   它必须照旧拿到 3 位自动生成的将领。
+	var lv2 = _escort_probe_level(cfg, "plain", [
+		{"faction": "enemy", "kind": "enemy", "x": 8, "y": 13, "hold": true},
+	], [{"id": "enemy", "ai": LevelRes.AI_FACTION, "base": [10, 13]}])
+	if lv2 == null:
+		return
+	ok(not lv2.faction_has_placed_escorts("enemy"), "（前提）这一方一项 escort_of 都没写")
+	var w2 = WorldRes.create_from_level(cfg, lv2, "p1", ["p1"], true)
+	ok(w2 != null, "按关卡建出世界（有一方没摆附属部队）")
+	if w2 == null:
+		return
+	var gens_enemy := 0
+	var subs_enemy := 0
+	for u in w2.units:
+		if String(u.faction) != "enemy":
+			continue
+		if u.is_general():
+			gens_enemy += 1
+			eq(w2.retinue_of(String(u.id)).size(), 0,
+				"★★ 自动生成的将领开局**光杆**（0 个附属兵，没有全局缺省可补）：%s" % u.id)
+		elif String(u.leader_id) != "":
+			subs_enemy += 1
+	eq(gens_enemy, 3, "★★ 没摆 escort_of 的一方**仍然**自动生成 3 位将领")
+	eq(subs_enemy, 0, "★★ 而且一个附属兵都没有（no global default）")
+
+	# ---- 4b) ★★ 回归：没摆附属兵的一方，补员目标**不能是 0** ----
+	#
+	# 手玩实测报回来的原文：「红方的将领没有招满单位就向目标点行军攻击了」。
+	# 根因：`escort_target_of()` 原来只回答「关卡给这位将领摆了几个」⇒ 没摆的一方
+	#   目标恒为 0 ⇒ `faction_ai` 的「闲着的将领都满员了吗」当场成立 ⇒ **第 1 帧就出征**。
+	#   （旧世界由 `config.json` 的 `unit.general.escort` 兜着，那个全局缺省被删掉之后
+	#     兜底责任落到 `min_retinue` 身上。）
+	# 修法：这一方**没摆过**附属兵 → 退到它自己的 `ai.faction.min_retinue`。
+	# ⚠️ 这一条钉的是**行为**（一个非 0 的目标），不是某个具体数字 ——
+	#    `min_retinue` 是难度旋钮，会在 `config.json` 里被调。
+	var want_env: int = maxi(0, int(w2.faction_ai_cfg("enemy").get("min_retinue", 0)))
+	ok(want_env > 0, "（前提）enemy 这一方的 min_retinue 是正数（%d）" % want_env)
+	for gi in 3:
+		eq(w2.escort_target_of("enemy", gi), want_env,
+			"★★ 没摆附属兵的一方：第 %d 位将领的补员目标 = min_retinue（%d），**不是 0**"
+			% [gi + 1, want_env])
+	# 对照：**摆过**附属兵的那一方，目标仍然是「关卡摆了几个」（不是 min_retinue）
+	var lv_min = _escort_probe_level(cfg, "min_ret", [
+		{"faction": "p1", "kind": "spearman", "x": 4, "y": 6, "hold": true, "escort_of": 1},
+	])
+	if lv_min != null:
+		var w_min = WorldRes.create_from_level(cfg, lv_min, "p1", ["p1"], true)
+		if w_min != null:
+			eq(w_min.escort_target_of("p1", 0), 1,
+				"★★ 摆过附属兵的一方：目标 = 关卡摆了几个（作者摆 1 个，min_retinue 不参与）")
+	# ---- 5) 非法 escort_of 一律当「没写」----
+	var clean: Array = []
+	for c in [
+		{"tag": "zero", "v": 0},
+		{"tag": "neg", "v": -3},
+		{"tag": "str", "v": "2"},
+		{"tag": "frac", "v": 2.5},
+		{"tag": "bool", "v": true},
+	]:
+		var tag := String(c["tag"])
+		var lv3 = _escort_probe_level(cfg, "bad_%s" % tag, [
+			{"faction": "p1", "kind": "spearman", "x": 4, "y": 6, "hold": true,
+				"escort_of": c["v"]},
+		])
+		if lv3 == null:
+			continue
+		ok(not lv3.faction_has_placed_escorts("p1"),
+			"★★ escort_of = %s（非法）→ 当没写，不触发整方接管" % str(c["v"]))
+		var w3 = WorldRes.create_from_level(cfg, lv3, "p1", ["p1"], false)
+		if w3 == null:
+			continue
+		var gens3 := 0
+		var lone := 0
+		for u in w3.units:
+			if String(u.faction) != "p1":
+				continue
+			if u.is_general():
+				gens3 += 1
+			elif String(u.leader_id) == "":
+				lone += 1
+		eq(gens3, 3, "★★ 非法 escort_of 的那一方照旧自动生成 3 位将领（%s）" % tag)
+		eq(lone, 1, "★ 那个兵成了**普通摆放单位**（自己就是队长，没有 leader_id）")
+		clean.append(tag)
+	eq(clean.size(), 5, "五条非法值都验过了")
+
+	# ---- 6) ★ 权威解析：1 起、越界/缺省 → -1（口径只有 `escort_leader_index` 一处）----
+	eq(LevelRes.escort_leader_index({"escort_of": 1}), 0, "escort_of: 1 → 第 1 位（下标 0）")
+	eq(LevelRes.escort_leader_index({"escort_of": 3}), 2, "escort_of: 3 → 第 3 位（下标 2）")
+	eq(LevelRes.escort_leader_index({"escort_of": 2.0}), 1, "整数值的 float 认（2.0 → 下标 1）")
+	eq(LevelRes.escort_leader_index({}), -1, "缺省 → -1（不是附属兵）")
+	eq(LevelRes.escort_leader_index({"escort_of": 0}), -1, "0 不是合法序号（1 起）→ -1")
+
+	# ---- 7) ★★ **AI 摆的附属兵也真的出现**（本轮删掉了 with_escort = 只给本机）----
+	#
+	# 旧口径下「开局附属兵」只给 `faction == my_faction` 的那一方 ——
+	# 于是关卡给 AI 阵营摆的附属兵**根本不会出现**。本轮整个删掉了那个限制：
+	# 谁摆了就给谁。这一条钉住它（AI 那一方也由关卡接管、也照摆不误）。
+	var lv4 = _escort_probe_level(cfg, "ai_placed", [
+		{"faction": "E1", "kind": "spearman", "x": 16, "y": 13, "hold": true, "escort_of": 1},
+		{"faction": "E1", "kind": "spearman", "x": 17, "y": 13, "hold": true, "escort_of": 1},
+	], [{"id": "E1", "ai": LevelRes.AI_FACTION, "base": [18, 14]}])
+	if lv4 == null:
+		return
+	var w4 = WorldRes.create_from_level(cfg, lv4, "p1", ["p1"], true)
+	ok(w4 != null, "按关卡建出世界（AI 阵营摆的附属兵）")
+	if w4 == null:
+		return
+	var g_e1 = w4.unit_by_id("general-E1-1")
+	ok(g_e1 != null, "★★ AI 阵营的将领也在场（关卡点名了它的附属部队 ⇒ 整方由关卡接管）")
+	eq(w4.retinue_of("general-E1-1").size(), 2,
+		"★★ AI 摆的附属兵**真的出现了**（不再被 with_escort 挡掉）")
+	var e1_subs := 0
+	for u in w4.units:
+		if String(u.faction) == "E1" and String(u.leader_id) == "general-E1-1":
+			e1_subs += 1
+	eq(e1_subs, 2, "★★ 而且它们都挂在 AI 将领的 id 上（同阵营同序号）")
+
+
+## 写一份只带 `start_units[]` 的最小关卡（本轮：附属兵靠**逐兵摆放**）。
+##
+## @param extra_factions 额外要写进 `factions[]` 的阵营条目（**AI 阵营必须写**：
+##        关卡没点名、又不在 config 名单里的阵营不会进这一局的名单，
+##        于是它的将领一个都不会生成 —— 见 `world.spawn_faction_units` 第一道门）。
+func _escort_probe_level(cfg, tag: String, units: Array, extra_factions: Array = []):
+	var path := "%s/escort/%s.json" % [TMP_ROOT, tag]
+	var facs: Array = [{"id": "p1"}]
+	for f in extra_factions:
+		facs.append(f)
+	_write_text(path, JSON.stringify({
+		"map": "frontier",
+		"name": "摆放附属兵探针",
+		"players": [{"faction": "p1"}],
+		"factions": facs,
+		"start_units": units,
+	}))
+	var lv = LevelRes.load_level(null, path, cfg)
+	if lv == null:
+		ok(false, "探针关卡能载入（%s）" % path)
+	return lv
+
+
 ## 写一个临时文本文件（工程内的临时目录；`user://` 在这个工程里写不进去，
 ## 见 test_campaign.gd 的 TMP_ROOT 说明）。
 func _write_text(path: String, text: String) -> void:
@@ -1361,6 +1694,61 @@ func _test_general_ai_no_pursuit(cfg) -> void:
 	g.patrol_timer = 0.0
 	GeneralAiRes.update(w, cfg, 0.05)
 	ok(not g.path.is_empty() or g.moving, "脱战之后它朝自己区划的中心走（没有继续朝敌人冲）")
+
+	# ---- 7) ★★ 返程**只下一道命令**（本轮修的「卡边界还是抽搐」）----
+	#
+	# 实测报回来的现象：「卡边界时还是会抽搐」。根因：原来**每一帧**命中
+	#   「追出区划」那一支都会重下一条「回巡逻点」的命令，而 `_next_patrol_tile()`
+	#   还会把目标点换成路线上的下一个 ⇒ 路径每帧被重置，人永远走不回家，
+	#   看着就是在区划边缘原地抽搐。
+	# 修法：`unit.returning_home` —— 只在**还没上路**时下那一道命令，走到头再恢复巡逻。
+	g.pos = GridRes.center_of(Vector2i(10, 12))       # 又踩进隔壁区划
+	g.sync_tile(w.map)
+	g.stop()
+	g.returning_home = false
+	g.retarget_cd = 0.0
+	g.target = foe                                     # 站进别人家里、还锁着敌人
+	g.anchor = g.pos
+	GeneralAiRes.update(w, cfg, 0.05)
+	ok(g.returning_home, "★★ 追出区划之后进入「回家」状态")
+	var path_home: int = g.path.size()
+	ok(path_home > 0 or g.moving, "★ 它已经上路了（这一道返程命令是真的下了）")
+
+	# 再来两帧：**不该**再有新命令把它顶掉（路径条数不变、状态不变）
+	GeneralAiRes.update(w, cfg, 0.05)
+	GeneralAiRes.update(w, cfg, 0.05)
+	ok(g.returning_home, "★★ 还在回家路上（标志没有被清掉）")
+	ok(g.path.size() <= path_home,
+		"★★★ 返程途中不再重复下命令（路径只减不增：%d → %d）—— 这就是「不再抽搐」" % [
+			path_home, g.path.size()])
+
+	# ---- 8) 走到家（队长站定在那个点上）→ 返程结束、恢复正常巡逻 ----
+	g.pos = GridRes.center_of(Vector2i(9, 12))        # 回到自己的区划
+	g.sync_tile(w.map)
+	g.stop()
+	g.retarget_cd = 0.0
+	g.patrol_timer = 0.0
+	GeneralAiRes.update(w, cfg, 0.05)
+	ok(not g.returning_home,
+		"★★ 站定在自己的区划里之后返程结束（否则它再也回不到巡逻节奏）")
+
+	# ---- 9) 玩家/别的 AI 重下命令时，这个标志不该留成幽灵 ----
+	g.pos = GridRes.center_of(Vector2i(10, 12))       # 又跑到隔壁
+	g.sync_tile(w.map)
+	g.stop()
+	g.returning_home = false
+	g.retarget_cd = 0.0
+	g.target = foe
+	g.anchor = g.pos
+	GeneralAiRes.update(w, cfg, 0.05)
+	ok(g.returning_home, "（前提）它正在回家")
+	# ★ 走**命令入口**（`order_move`）：返程必须被新命令作废，否则第 5 步（巡逻）
+	#   会永远被跳过，人就定死在原地了。
+	#   ⚠️ 不用 `stop()`：它是内部「就地停手」，驻防 AI 自己也用它（比如第 6 步摆场面），
+	#     在那里清标志会把「正在回家」误判成「已经到家」。
+	var dst := GridRes.center_of(Vector2i(9, 12))
+	g.order_move(w, cfg, dst)
+	ok(not g.returning_home, "★★ 新命令会清掉「回家」状态（不会把它卡在返程模式里）")
 
 
 func _test_general_ai_free_recruit(cfg) -> void:

@@ -490,15 +490,23 @@ func _consume_events(events: Array) -> void:
 			"recruit_rejected":
 				# ★ max 来自事件（区划招募的队列上限可能与「将领招募」那条不同）；
 				#   没带（0）时 hud 用单位那条表的上限。
-				hud.show_notice(hud.recruit_reject_text(
-					String(evt.get("reason", "")), String(evt.get("kind", "")),
-					int(evt.get("max", 0))))
+				# ★★ 必须按阵营过滤（与下面 upgrade/revive 同一条，**这一类 bug 犯过三次**）：
+				#   阵营 AI 每帧重试招募，被拒后推 `recruit_rejected` —— 不过滤的话
+				#   玩家会一直看到「只能在己方区划内招募…」这种**别人的**红字，
+				#   而且 AI 每帧重试 ⇒ 提示被反复续期、永远不消失（实测报回来的正是这个）。
+				if _is_my_event(evt):
+					hud.show_notice(hud.recruit_reject_text(
+						String(evt.get("reason", "")), String(evt.get("kind", "")),
+						int(evt.get("max", 0))))
 			"order_rejected":
-				hud.show_notice(hud.order_reject_text(String(evt.get("reason", ""))))
+				if _is_my_event(evt):
+					hud.show_notice(hud.order_reject_text(String(evt.get("reason", ""))))
 			"tech_rejected":
 				# ★ 科技启用被拒（满 3 条）。本地那一下已经给过一句提示了，
 				#   这条是**权威侧**的同一句话 —— 两条同文案，所以玩家看到的还是一句。
-				hud.show_notice(hud.tech_reject_text(String(evt.get("reason", ""))))
+				# ★★ 同样要按阵营过滤：AI 也会 `set_tech_active()`（名额满了会推这条）。
+				if _is_my_event(evt):
+					hud.show_notice(hud.tech_reject_text(String(evt.get("reason", ""))))
 			"upgrade_rejected":
 				# ★ 建筑升级 / 区划特化被拒（拒因码见 logic/upgrade.gd 的那几处判定）。
 				# ★★ 把**整个事件**传进去：`busy` 那条文案要点名是哪个对象。
@@ -510,6 +518,13 @@ func _consume_events(events: Array) -> void:
 				#   所以只显示**自己这一方**产出的拒因（见 `_is_my_event`）。
 				if _is_my_event(evt):
 					hud.show_notice(hud.upgrade_reject_text(String(evt.get("reason", "")), evt))
+			"revive_rejected":
+				# ★★ 「再起」被拒（本轮新增；拒因码见 logic/world.gd 的 revive_reject_reason）。
+				#    ⚠️ 与 upgrade_rejected 同一条：**必须先按阵营过滤** ——
+				#       AI 也会下单再起（它走同一个入口），不过滤的话玩家会看到
+				#       「粮食或黄金不足」这种**别人**的报错。
+				if _is_my_event(evt):
+					hud.show_notice(hud.revive_reject_text(String(evt.get("reason", ""))))
 			"unit_recruited":
 				input_ctrl.notify_unit_recruited(evt.get("leader", null), evt.get("unit", null))
 

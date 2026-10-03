@@ -26,6 +26,7 @@ const DT := 1.0 / 60.0
 func _initialize() -> void:
 	_case_name = "test_logic"
 	run_all(_cases)
+	cleanup_escort_scaffold()
 
 
 func _cases() -> void:
@@ -95,44 +96,27 @@ func _test_world_setup(world, cfg) -> void:
 			"将领射程也走所属类型（于是长弓兵将领是远程的）")
 		ok(generals[i].is_general(), "★ is_general() 认得出将领（描边加粗与科技加成共用这条判据）")
 
-	# 附属兵：每个将领带**它自己序号那一档**的兵（`unit.general.escort = [4,5,6]`），
-	#   id 以队长 id 开头，leader_id 指向队长
-	var per_total := 0
-	for i in 3:
-		per_total += cfg.general_escort_at(i)
+	# ★★ 附属兵（本轮口径）：**没有关卡 ⇒ 一个都没有**。
+	#
+	# `require_world()` 走的 `World.create()` **不带关卡**，而 `config.json` 的
+	# `unit.general.escort` 全局缺省本轮已删除 ⇒ 三位将领开局**光杆**。
+	# 于是这一节从「每个将领带它自己那一档的兵」改成**钉住 0**（口径要的就是这个），
+	# 而「摆了就有、而且绑定到正确的将领」由 `require_world_with_escorts()` 造的
+	# 探针关卡（见 `_test_snapshot` 与 tests/test_ai.gd）钉着。
 	var subs: Array = []
 	for u in world.units:
 		if u.leader_id != "":
 			subs.append(u)
-	eq(subs.size(), per_total,
-		"每个将领带它自己那一档的附属兵（共 %d 个）" % per_total)
-	for s in subs:
-		eq(s.faction, "p1", "附属兵属于 player")
-		var leader = world.unit_by_id(s.leader_id)
-		ok(leader != null, "附属兵有队长 id：%s" % s.id)
-		ok(s.id.begins_with(s.leader_id), "附属兵 id 以队长 id 开头：%s ← %s" % [s.id, s.leader_id])
-		eq(s.hotkey, "", "附属兵没有快捷键（快捷键盘只给将领）")
-		if leader != null:
-			eq(String(s.unit_type), String(leader.unit_type), "★ 附属兵与队长是同一个类型")
-		eq(s.kind, String(s.unit_type), "★ 普通单位的 kind 就是它的单位类型")
-		eq(s.hp_max, cfg.unit_hp_of(String(s.unit_type)), "附属兵血量走单位类型表")
-		ok(not s.is_general(), "附属兵不是将领（描边不加粗）")
+	eq(subs.size(), 0, "★★ 没有关卡的这一局：开局一个附属兵都没有（不再有全局缺省编制）")
+	for u in world.units:
+		if u.is_general():
+			eq(world.retinue_of(String(u.id)).size(), 0,
+				"★★ 将领开局光杆：%s（要兵只能靠招募 / 关卡摆放）" % u.id)
 
-	# 所有单位（将领 + 附属兵）都不能站在山上或大本营格上
+	# 所有单位都不能站在山上或大本营格上
 	for u in world.units:
 		ok(world.map.terrain_walkable(u.tx, u.ty), "开局单位站在可通行格：%s" % u.id)
 		ok(not (u.tx == base_b.tx and u.ty == base_b.ty), "开局单位与大本营不同格：%s" % u.id)
-
-	# 附属兵挨着队长站（1~2 格内）
-	if cfg.general_escort_at(0) > 0:
-		var g1 = world.unit_by_id("general-1")
-		ok(g1 != null, "有 general-1")
-		if g1 != null:
-			var near := 0
-			for s in world.retinue_of(g1.id):
-				if maxi(absi(s.tx - g1.tx), absi(s.ty - g1.ty)) <= 2:
-					near += 1
-			eq(near, world.retinue_of(g1.id).size(), "★ 附属兵都出生在将领旁边（2 格内）")
 
 	# 区块划分来自**地图文件**（地图编辑器导出的 zones 网格），不再按 6×4 均分。
 	# ⚠️ 断言别再写死 24 块 / 16 格 —— 那是老地图（24×16 均分）的数；换图时会整体假失败。
@@ -1140,19 +1124,26 @@ func _test_build_commands(world, cfg) -> void:
 # 快照往返 + 缺字段容忍
 # ------------------------------------------------------------------
 func _test_snapshot(world, cfg) -> void:
-	var w = require_world(cfg)
+	# ★★ 这一节要验「附属兵的队长字段在快照里」，所以世界必须**真的有附属兵**——
+	#    本轮改成用探针关卡摆出来（`config.json` 的全局缺省已删除）。
+	#    ⚠️ 不能用上面那个共享的 `world`：其它用例假设开局只有将领（见 `_isolate` 的说明）。
+	var per_general: int = 3
+	var w = require_world_with_escorts(cfg, per_general)
+	if w == null:
+		return
 	w.spawn_enemy(10, 12)
 	w.tick(DT)
 	var snap = SnapshotRes.to_snapshot(w)
 
-	# 开局单位数 = 将领数 + 每位将领自己那一档的附属兵 + 1 个敌人 + 地图预置的守军
-	var per_total := 0
-	for i in 3:
-		per_total += cfg.general_escort_at(i)
-	var expect_units: int = 3 + per_total + 1 + w.map.prefab_units.size()
+	# 开局单位数 = 将领数 + 关卡摆的附属兵 + 1 个敌人
+	# ★★ 曾经还要 `+ w.map.prefab_units.size()`（frontier 图上预置的 9 个守军）——
+	#    本轮「地图预置单位」整个废弃了：运行时**不再读** `map.json` 的 `units[]`，
+	#    所以这一局里除了玩家自己那几个将领与附属兵，就只有测试刚刷的那个敌人。
+	var per_total: int = per_general * 3
+	var expect_units: int = 3 + per_total + 1
 	eq((snap["units"] as Array).size(), expect_units,
-		"快照里有 %d 个单位（3 将领 + %d 附属兵 + 1 敌人 + %d 地图守军）" % [
-			expect_units, per_total, w.map.prefab_units.size()])
+		"快照里有 %d 个单位（3 将领 + %d 附属兵 + 1 敌人；地图预置单位已废弃）" % [
+			expect_units, per_total])
 	ok((snap["buildings"] as Array).size() >= 1, "快照里有建筑")
 	# 区块数随地图走（别写死 24：地图一换就假失败）
 	var zone_total: int = w.zones.zones.size()
@@ -1205,7 +1196,8 @@ func _test_snapshot(world, cfg) -> void:
 		v2i_eq(Vector2i(dst.tx, dst.ty), Vector2i(src.tx, src.ty), "★ tx/ty 也跟着写了（否则点选/射程判定会错）")
 
 	# 新建的远端附属兵也要认得队长（否则客机上「选中将领」选不到它）
-	var per_g1: int = cfg.general_escort_at(0)
+	var per_g1: int = w.retinue_of("general-1").size()
+	eq(per_g1, per_general, "（前提）关卡给 general-1 摆了 %d 个附属兵" % per_general)
 	if per_g1 > 0:
 		var leader = w2.unit_by_id("general-1")
 		ok(leader != null, "客机侧有 general-1")

@@ -30,6 +30,7 @@ const T_POP := "zone_population"
 func _initialize() -> void:
 	_case_name = "test_tech"
 	run_all(_cases)
+	cleanup_escort_scaffold()
 
 
 func _cases() -> void:
@@ -343,13 +344,17 @@ func _test_commands(cfg) -> void:
 # ------------------------------------------------------------------
 
 ## 一张干净的图：关掉战斗、清零区划产能之外的副作用不动（与其它逻辑测试同一套做法）
+##
+## ★★ 带**开局附属兵**（本轮口径变更）：`config.json` 的 `unit.general.escort` 全局缺省
+##    已删除 ⇒ 开局兵只能来自**关卡摆放**。本文件第五节要拿一个附属兵验
+##    「将领加成不落到底下的兵身上」，没有它就少了半条断言。
 func _quiet(cfg) -> RefCounted:
 	var c = require_config()
 	if c == null:
 		c = cfg
 	else:
 		c.combat_enabled = false
-	return require_world(c)
+	return require_world_with_escorts(c, 3)
 
 
 func _no_income(w) -> void:

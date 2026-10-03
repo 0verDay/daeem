@@ -115,6 +115,24 @@ var _merged: Dictionary = {}
 ## ★ `ai == "general"` 的那些**只挂将领性 AI**（靠单位上的 `garrison_zone_id` 驱动），
 ##   不进 `ai_factions` 状态表；`ai == "none"` 的整条不进这份名单。
 var ai_roster_cfg: Array = []
+## ★★ 关卡摆放的**附属兵归属表**（本轮口径的唯一落点）：
+## `"<faction>|<将领序号 0 起>"` → 该方在关卡 `start_units[]` 里摆给这一位将领的
+## **附属兵数量**。
+##
+## ★ 它由 `_apply_placement_escorts()` 在 `_apply_level_placement()` 里填好，
+##   `reset()` 开头**清空**（不清的话上一关的编制会漏给下一关，
+##   那是「重开一局数值不对」这类最难查的事故）。
+## ★★ 为什么要有这张表，而不是每次去扫 `level.start_units`：
+##   读它的是 **AI 的补员目标**（`escort_target_of()`，一帧一次、每方每位将领一次），
+##   而 `start_units` 可能有几百项 —— 扫表是 O(单位数 × 将领数)。
+##   ⚠️ 键里的序号是**0 起**（与 `unit.general_index` 同规），不是 JSON 里的 1 起。
+var placed_escorts: Dictionary = {}
+## ★★ 这一方**在关卡里摆过附属部队**吗（`fid → true`）—— 与 `placed_escorts` 同一次缓存。
+##
+## ★ 用途只有一个：`escort_target_of()` 判断「关卡没给这位将领摆过兵」时，
+##   补员目标该退到哪儿（见那个函数的说明）——**不能**每次都去问 `level`
+##   （AI 每帧都要问，那是 O(单位数) 的一次扫描）。
+var faction_escort_placed: Dictionary = {}
 ## ★★ 目标与胜负（`logic/objective.gd` 的状态）。
 ## ★ 空字典 / `kind == ""` ⇒ 这一局没有目标（不做战役的老路径），
 ##   `objective.update()` 每帧只多一次判断，**一个玩法行为都不受影响**。
@@ -272,6 +290,10 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	_events = []
 	_objective_reported = ""
 	_enemy_serial = 0
+	# ★★ 关卡摆的附属兵归属表也是**上一局的数据**：必须在 `_apply_level_placement()`
+	#    之前清掉（下面那一段清理全都在摆放之前，这里跟着它们走 ——
+	#     放到后面会把这一局刚填好的表一起抹掉）。
+	placed_escorts = {}
 	enemy_spawn_timer = 0.0
 	debug_auto_spawn = false
 	time = 0.0
@@ -428,29 +450,16 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	#      · 中心的格子是**编辑器的硬规则**（导出前 blockers 拦住与大本营叠格的那些）；
 	#      · 真出现叠格（手改地图），这里会静默建不出来 —— 但绝不会把已有建筑顶掉。
 	_spawn_zone_centers()
-	# 地图上**预置**的单位（测试用的守军，写在 `data/maps/<id>/map.json` 的 "units" 里）。
-	# id 走 _enemy_serial —— 与调试刷兵同一套序号，永远不会撞名。
-	# ⚠️ 顺序：**先建各方的将领与附属兵，再放预置单位**。
-	#    `world.units` 的前几个永远是这一方的将领（快捷键 1/2/3 与按序号取将领
-	#    的代码都靠这条契约），预置单位插在前面会把它顶掉。
+	# ★★ 各方的将领与附属兵。顺序是**死的契约**：
+	#    `world.units` 的前几个永远是这一方的将领 —— 快捷键 1/2/3 与「按序号取将领」
+	#    的代码都靠它，所以任何「开局就在场的单位」都只能**排在后面**。
+	#
+	# ⚠️ 地图预置单位（`map.json` 的 `units[]`）**本轮整个废弃、运行时不再读**：
+	#    要摆开局的守军 / 靶子，一律用**关卡的 `start_units`**（见下面的
+	#    `_apply_level_placement()`，字段语义与老的 `units[]` 一字不差）。
+	#    所以这里**只剩**「各方自己的将领与附属兵」这一段。
 	for f in factions:
 		spawn_faction_units(f)
-	for p in map.prefab_units:
-		_enemy_serial += 1
-		var pu = UnitRes.create(
-			cfg, "enemy-%d" % _enemy_serial, String(p["name"]),
-			Vector2i(int(p["x"]), int(p["y"])), String(p["faction"]), String(p["kind"])
-		)
-		pu.hold_position = bool(p["hold"])
-		# ★★ 归属区划（本轮新增）：地图写了 `zone` 就把它交给**将领性（防御性）AI**
-		#    （在自己区划里巡逻、不追出一个区划、脱战无消耗招兵）。
-		#    ⚠️ 同时置 hold_position：那条推进 AI（enemy_ai）就不该再管它了 ——
-		#       两边都管会让守将「一边巡逻一边朝玩家家跑」（两者判据必须互斥）。
-		var gz := int(p.get("zone", -1))
-		if gz >= 0:
-			pu.garrison_zone_id = gz
-			pu.hold_position = true
-		units.append(pu)
 	# 出生点的大本营也会把所在区块直接收归己方（zone_owned_by_building）；
 	# 这一条在「开局第一帧之前」就该成立，否则 HUD 上的领地会在第一次 tick 前闪一下空
 	refresh_ownership()
@@ -466,20 +475,25 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	#    所以这里把它放回 0 —— 第一次 tick 会立刻算出真值。
 	owned_tiles = 0
 
-	# ★★ 关卡的**开局摆放**（本轮新增）：`start_units` / `start_buildings`
-	#    **追加**在地图的预置单位 / 建筑**之后**（覆盖规则：追加，不是替换）。
+	# ★★ 关卡的**开局摆放**：`start_units` / `start_buildings`
+	#    **追加**在地图预置建筑与各方将领**之后**（覆盖规则：追加，不是替换）。
+	#
+	# ★★ 这是「开局就摆好的守军 / 靶子」**唯一**的入口（本轮把地图的 `units[]` 废弃了）：
+	#    字段语义与老的 `map.json` 的 `units[]` 一字不差（kind / faction / hold / zone / name）。
 	#
 	# ⚠️ 顺序（三个「之前 / 之后」都不能挪）：
 	#    · 在 `_spawn_zone_centers()` **之后** —— 中心是中立障碍，摆放不许压在它上面
 	#      （编辑器的导出校验第 5 条会拦，这里靠 add_building / 站位避让兜底）；
 	#    · 在 `spawn_faction_units()` **之后** —— `world.units` 的前几个必须还是各方将领
 	#      （快捷键 1/2/3 与按序号取将领的代码都靠这条契约）；
-	#    · 与地图预置单位**同一套读法**（kind / faction / hold / zone 的语义完全一致）。
+	#    · `start_buildings` 在 `start_units` **之前**（单位找站位时要避开建筑）。
 	var placement_from := units.size()
 	_apply_level_placement()
 	# ★★ 关卡摆放进来的守将也要有归属（本轮收口）——
 	#   顺序是死的：`_apply_level_placement` **必须**先跑，否则这些单位还没进 `units`。
-	#   ⚠️ `from` 用**摆放之前**的长度：只扫这一批新造的，别去碰地图预置的 NPC 守军。
+	#   ⚠️ `from` 用**摆放之前**的长度：只扫这一批新造的，别回头去碰前面
+	#      `spawn_faction_units()` 造出来的将领与附属兵（那些的归属另有出处：
+	#      将领由 `spawn_faction_units()` 收尾兜底、附属兵继承队长）。
 	for lf in factions:
 		if _is_garrison_ai(String(lf)):
 			_assign_garrison_zones(String(lf), placement_from)
@@ -826,7 +840,8 @@ func _reset_player_pools() -> void:
 ##
 ## 建筑先于单位（单位出生要找站位、要避开建筑 —— 与 reset 里那两段的顺序同理）。
 ##
-## ⚠️ 单位的**语义与地图 `units[]` 完全一致**（见 `map_data._read_units`）：
+## ⚠️ 单位的**语义与老的 `map.json` 的 `units[]` 完全一致**（那套本轮已废弃，
+##    这里就是它**唯一**的入口；解析在 `level._read_start_units`）：
 ##    · `hold = true` → 不执行推进 AI（原地驻守）；
 ##    · `zone >= 0` → 交给**将领性 AI**（在自己区划里巡逻、脱战无消耗招兵），
 ##      ★ 同时置 `hold_position`：那条推进 AI 就不该再管它了 ——
@@ -838,20 +853,134 @@ func _apply_level_placement() -> void:
 		var bd: Dictionary = b
 		add_building(String(bd["type"]), int(bd["x"]), int(bd["y"]),
 			String(bd["owner"]), true, true)
+
+	# ==============================================================
+	# ★★ 关卡摆放的分批规则（本轮新增，顺序是**不变量**，别改）
+	# ==============================================================
+	#
+	# 不变量：**一位将领必须排在「它自己的兵」前面**（`world.units` 里）。
+	#   原来这条靠「将领全部由 `spawn_faction_units()` 在摆放之前造好」来保证，
+	#   而本轮之后「摆了附属部队的那一方**连将领都由关卡摆**」——
+	#   将领与兵在 `start_units[]` 里的先后是**作者的自由**，
+	#   直接按作者顺序建就会破坏不变量（兵排在将前面 → 队伍归并 / 快捷键的语义坏了）。
+	# ⇒ 所以这里**按方分批**处理每一方：
+	#     ① 先补这一方的将领（`_ensure_placed_generals`）——
+	#        只有「这一方摆了附属部队」时才补，且只补 `escort_of` 真正点名的那几位
+	#        （作者自己摆了的将领不重复建）；
+	#     ② 再按作者顺序摆这一方的**其余单位**，`escort_of` 的那几个
+	#        在这一步把 `leader_id` 指向①里那位将领的运行时 id。
+	#   于是「将领在它自己的兵前面」在**每一方内部**都成立，
+	#   而全局顺序仍然是「各方先入列顺序，再是摆放」。
+	#
+	# ⚠️ 没摆附属部队的那一方整段跳过：它的将领已由 `spawn_faction_units()` 造好，
+	#    这一方的摆放单位照旧只是「追加在后面」（老行为一字不变）。
+	_cache_placed_escorts()
+	var done: Dictionary = {}
 	for u in level.start_units:
 		var ud: Dictionary = u
-		_enemy_serial += 1
 		var fid := String(ud["faction"])
+		if fid == "" or done.has(fid):
+			continue
+		done[fid] = true
+		_place_faction_units(fid, level.placed_units_for(fid))
+
+
+## ★★ 把关卡 `start_units[]` 里的附属兵**数成一张表**：`"<fid>|<序号 0 起>"` → 个数。
+##
+## ★ 读它的是 AI 的补员目标（`escort_target_of()`，一帧一次、每方每位将领一次），
+##   而 `start_units` 可能有几百项 —— 每次现扫是 O(单位数 × 将领数)。
+## ★ 在 `_apply_level_placement()` 的**建单位之前**调一次（那时 `level.start_units`
+##   已经解析完，而 `placed_escorts` 在 `reset()` 开头刚被清空）。
+## ⚠️ 只统计 `escort_of >= 1` 的那些（= 真正的附属兵）；普通摆放单位不进表。
+func _cache_placed_escorts() -> void:
+	placed_escorts = {}
+	faction_escort_placed = {}
+	if level == null:
+		return
+	for u in level.start_units:
+		var ud: Dictionary = u
+		var ei := LevelRes.escort_leader_index(ud)
+		if ei < 0:
+			continue
+		var fid := String(ud.get("faction", ""))
+		var key := "%s|%d" % [fid, ei]
+		placed_escorts[key] = int(placed_escorts.get(key, 0)) + 1
+		faction_escort_placed[fid] = true
+
+
+## 把**某一方**在关卡里摆的单位全部建出来（先将领、后其余 —— 见上面的分批说明）。
+##
+## ★★ 关卡里**摆出来的将领**用 `create_general()` 造（不是普通的摆放单位）：
+##    只有这样才能拿到 **canonical 的运行时 id**（`general-1` / `general-F1-2`…）——
+##    而 `escort_of` 的映射（`escort_of_index()`）算的就是这个 id。
+##    第一版按普通单位造（id = `level-N`），于是附属兵算出来的队长 id **谁都不认识**，
+##    场上表现为「将领与它的兵各站各的」（实测：样例战役 F1 的 15 个兵全挂空）。
+##    ⚠️ 名字（`name`）/ 坐标（`x,y`）仍然**以关卡数据为准**（作者摆在哪、叫什么就是什么）。
+##
+## @param placed 这一方在 `start_units[]` 里的那几条（`level.placed_units_for(fid)`）
+func _place_faction_units(fid: String, placed: Array) -> void:
+	_ensure_placed_generals(fid, placed)
+	for u in placed:
+		var ud: Dictionary = u
 		var kind := String(ud["kind"])
+		var tile := Vector2i(int(ud["x"]), int(ud["y"]))
 		var uname := String(ud.get("name", ""))
 		if uname == "":
 			uname = kind
-		var utype := String(ud.get("unit_type", ""))
-		var pu = UnitRes.create(
-			cfg, "level-%d" % _enemy_serial, uname,
-			Vector2i(int(ud["x"]), int(ud["y"])), fid, kind,
-			"", "", utype, int(ud.get("general_index", 1)) - 1
-		)
+		var pu = null
+		var is_placed_general := ConfigRes.general_index_of(kind) >= 0
+		if is_placed_general:
+			# ★ 作者自己摆的将领：canonical id + 那个 id 对应的将领槽位。
+			var gi_g := int(ud.get("general_index", 1)) - 1
+			var utype_g := String(ud.get("unit_type", ""))
+			var pg = create_general(fid, gi_g)
+			if pg != null:
+				# ⚠️ 只有「没写 `unit_type`」时才用 config 那一档的类型（写了就以作者为准，
+				#    否则 id 与槽位对得上、兵种却被换掉，读的人会以为数据没生效）。
+				if utype_g != "" and utype_g != String(pg.unit_type):
+					pg = UnitRes.create(cfg, pg.id, uname, tile, fid, kind,
+						str(gi_g + 1), "", utype_g, gi_g)
+				else:
+					pg.name = uname
+					pg.pos = GridRes.center_of(tile)
+					pg.tx = tile.x
+					pg.ty = tile.y
+				pu = pg
+		if pu == null:
+			# ★★ 附属兵（`escort_of >= 1`）：队长 id 在这一步落定 —— 这就是
+			#    「`escort_of` → 运行时 `leader_id`」的**那一行**（见 `escort_of_index`）。
+			var ei := LevelRes.escort_leader_index(ud)
+			var leader_id := ""
+			var leader = null
+			if ei >= 0:
+				leader_id = escort_of_index(fid, ei)
+				leader = unit_by_id(leader_id) if leader_id != "" else null
+				if leader == null:
+					push_warning("关卡摆放的附属兵 (%d,%d) 的 escort_of = %d 指向的将领不在场，已按普通单位摆放"
+						% [int(ud["x"]), int(ud["y"]), ei + 1])
+			# ★★ 附属兵的**类型跟随队长**（与老 `create_escort` 同一条口径：
+			#    「长枪兵将领带长枪兵」）。作者没填 `unit_type` 时这一步才生效；
+			#    填了就以作者为准（沿用「摆放单位自带类型」这条老行为）。
+			var utype := String(ud.get("unit_type", ""))
+			if utype == "" and leader != null:
+				utype = String(leader.unit_type)
+			# ★★ 附属兵**不吃将领的数值覆盖**：`general_index` 传 `-1`。
+			#    它只是个兵 —— 把 `general_index` 传成将领的序号会让它套上
+			#    `unit.general.stats` 那一份覆盖（血量 / 伤害白白变强），
+			#    而老 `create_escort` 造的兵**从来就没有**覆盖（那一个参数用的默认值 -1）。
+			var gi := -1
+			if ei < 0:
+				gi = int(ud.get("general_index", 1)) - 1
+			_enemy_serial += 1
+			pu = UnitRes.create(
+				cfg, "level-%d" % _enemy_serial, uname,
+				tile, fid, kind, "", leader_id, utype, gi
+			)
+			# ★ 归属区划**继承队长**（与老 `create_escort` / `_spawn_from_recruit` 同一条口径）：
+			#   队长有归属 ⇒ 兵也有（跟着队长巡逻、受同一个区划约束）；
+			#   队长没有 ⇒ 兵也没有（`-1`）。⚠️ 只在作者没显式写 `zone` 时继承。
+			if leader != null and int(ud.get("zone", -1)) < 0:
+				pu.garrison_zone_id = int(leader.garrison_zone_id)
 		pu.hold_position = bool(ud.get("hold", false))
 		var gz := int(ud.get("zone", -1))
 		if gz >= 0:
@@ -864,6 +993,154 @@ func _apply_level_placement() -> void:
 				push_warning("关卡摆放的将领 (%d,%d) 挂了将领性 AI 却没有 zone，已按不挂处理"
 					% [int(ud["x"]), int(ud["y"])])
 		units.append(pu)
+
+
+## ★★ **这一方由关卡接管时**，把作者点名要用、却没自己摆的将领补出来。
+##
+## 判据（与 `spawn_faction_units` 里那条**同一份口径**）：
+## 这一方在 `start_units[]` 里**有任何一项带 `escort_of`** ⇒ 整方由关卡接管 ⇒
+## 运行时不再自动生成 3 位将领，这里只补 `escort_of` 真正点名的那几位
+## （第 1 位 / 第 2 位 / …，序号**不连续也没关系**：要哪一位补哪一位）。
+##
+## ⚠️ 作者**自己摆了的**将领不重复建：按 `kind` 的将领序号去重
+##    （`general_index` 由 `_read_start_units` 按 kind 补齐，
+##      所以「摆了 kind: general_3」就说明第 3 位有人了）。
+## ⚠️ 没摆附属部队的那一方**整段不进来**：它的 3 位将领由 `spawn_faction_units()`
+##    照旧自动生成（这就是口径第 5 条的后半句）。
+func _ensure_placed_generals(fid: String, placed: Array) -> void:
+	if not level.faction_has_placed_escorts(fid):
+		return
+	var have: Dictionary = {}
+	var want: Dictionary = {}
+	for u in placed:
+		var ud: Dictionary = u
+		var ei := LevelRes.escort_leader_index(ud)
+		if ei >= 0:
+			want[ei] = true
+		elif ConfigRes.general_index_of(String(ud.get("kind", ""))) >= 0:
+			have[int(ud.get("general_index", 1)) - 1] = true
+	var indices: Array = want.keys()
+	indices.sort()
+	for i in indices:
+		var idx := int(i)
+		if have.has(idx):
+			continue
+		var g = create_general(fid, idx)
+		if g != null:
+			units.append(g)
+
+
+## ★★ **运行时**一位将领的 id 前缀（`general` = 默认那一方，其余 `general-<faction>`）。
+##
+## ★★ 它是「`escort_of` → `leader_id`」这套映射的**基石**，所以收成**一处**：
+##    `create_generals` / `create_general`（造 id）与 `escort_of_index`（算 id）
+##    必须用同一个前缀 —— 两边各写一份的话，改了命名规则就会「附属兵挂不上队长」，
+##    而那种错在场上表现为「几个兵自己站着」，极难联想到 id 拼写。
+static func general_id_prefix(fid: String) -> String:
+	return "general" if fid == FactionRes.DEFAULT_FACTION else "general-%s" % fid
+
+
+## ★★ `escort_of` → **该将领的运行时 id**（本轮映射的出口）。
+##
+## @param fid   阵营 id（编制与将领都是**按方**的）
+## @param index 将领序号，**0 起**（与 `unit.general_index` 同规）
+## @return `general-<fid>-<index+1>`（默认那一方是 `general-<index+1>`）；
+##         序号 < 0 或阵营为空 → `""`（= 没有这位将领）
+##
+## ★ 造 id 的规则**不在这里重复实现**：它就是 `create_general` 用的那一条
+##   （`general_id_prefix()` + 序号），所以「谁是谁」不会两处漂开。
+func escort_of_index(fid: String, index: int) -> String:
+	if fid == "" or index < 0:
+		return ""
+	return "%s-%d" % [general_id_prefix(fid), index + 1]
+
+
+## ★★ **这一方第 `index` 位将领（0 起）的目标编制** —— AI 的补员目标与「满员」判据都读它。
+##
+## 两个来源，按**这一方有没有在关卡里摆过附属部队**分：
+##
+##   · 摆过（`faction_escort_placed[fid]`）→ **关卡摆了几个就是几个**。
+##     这让作者「摆了 0 个」变成一条明确的指令（别擅自给它补兵），
+##     `ai.faction.min_retinue` 在这条路上**不参与**。
+##
+##   · 没摆过 → 退到这一方的 `ai.faction.min_retinue`（config 打底、关卡可覆盖），
+##     0 或负数时才真的是 0。
+##
+## ★★ 为什么必须有第二条（实测回归，2026-10 手玩报回来的）：
+##    只有第一条时，**没摆附属兵的一方**（最典型的就是**自由对战 / 自动生成将领**的
+##    AI，以及作者故意只摆了将领的关卡）目标编制恒为 **0** ⇒ `faction_ai` 的
+##    「闲着的将领都满员了吗」当场成立 ⇒ **AI 一个兵都不招、开局第 1 帧就出征**。
+##    症状就是玩家报的那句「红方的将领没有招满单位就向目标点行军攻击了」。
+##    旧世界里那件事由 `config.json` 的 `unit.general.escort` 兜着，
+##    那个全局缺省被删掉之后，兜底责任落在 `min_retinue` 身上 —— 它本来就是这个语义
+##    （「至少补到几个」），只是以前被 `max(编制, min_retinue)` 埋在下面看不出来。
+##
+## ⚠️ `index < 0`（非将领）→ 0：没有「这位将领」，也就没有目标编制。
+func escort_target_of(fid: String, index: int) -> int:
+	if fid == "" or index < 0:
+		return 0
+	if faction_escort_placed.has(fid):
+		var n: Variant = placed_escorts.get("%s|%d" % [fid, index], 0)
+		return int(n)
+	# 这一方没摆过附属部队 → 用这一方的 min_retinue 当目标（0 / 负数 = 不要求补员）
+	return maxi(0, int(faction_ai_cfg(fid).get("min_retinue", 0)))
+
+
+## ★ 建出**一位**将领（第 `index` 位，0 起）——`create_generals` 的单件版。
+##
+## ★★ 为什么要拆出单件版：本轮之后「摆了附属部队的那一方」的将领是**按需补**的
+##    （只补 `escort_of` 真正点名的那几位，见 `_ensure_placed_generals`），
+##    所以「一次造 3 位」那条路不能复用。两条路共用这一个函数 ⇒ 名字 / 类型 /
+##    数值覆盖 / id 规则**只有一份**。
+func create_general(faction: String, index: int):
+	var spawns: Array = faction_spawns.get(faction, [])
+	# ★★ 名字与类型都走 config：
+	#   · `cfg.general_name_at(i)` = 编辑器里给这位将领起的名字（没写 → 原来的「将领 N」）；
+	#   · `cfg.general_type_at(i)` = unit.general.types[i]。
+	#   ⚠️ 名字在这里读一次**存进单位**（`unit.name`）—— 部队列表、右栏都读它。
+	var gname: String = cfg.general_name_at(index)
+	if gname == "":
+		gname = "将领 %d" % (index + 1)
+	var tile: Vector2i = map.base
+	if index < spawns.size():
+		tile = spawns[index]
+	elif index < map.general_spawns.size():
+		tile = map.general_spawns[index]
+	var unit_type: String = cfg.general_type_at(index)
+	# ★ 最后那个参数 = **第几位将领**：它决定套不套 unit.general.stats 里那份数值覆盖
+	return UnitRes.create(cfg, "%s-%d" % [general_id_prefix(faction), index + 1], gname, tile,
+		faction, UnitRes.KIND_GENERAL, str(index + 1), "", unit_type, index)
+
+
+## 建立某一阵营的**开局 3 位将领**。站位取该阵营自己的出生点，退回地图默认站位，
+## 最后退回大本营。
+##
+## ★★ 将领 = **带单位类型的队长**（不是一种兵种，见 config.json 的 unit._general_comment）：
+##   · 第 i 个将领的类型取 `cfg.general_type_at(i)` —— 于是「将领 1 = 长枪兵、
+##     将领 2 = 长弓兵、将领 3 = 骑手」（用户需求）；它的血量 / 伤害 / 射程 / 速度
+##     也全部等于那个类型的数值（`UnitRes.create` 里按 unit_type 查表）。
+##   · ★★ **开局不带任何附属兵**（本轮口径变更）：编制不再有全局缺省，
+##     开局有几个兵完全等于关卡 `start_units[]` 里摆了几个
+##     （见 `create_escort` 已删除的说明与 `spawn_faction_units` 的判据）。
+## ⚠️ 顺序有讲究：**将领先全部入列，附属兵跟在后面**。
+##    这样 world.units 里前几个永远是将领（快捷键 1/2/3 与按序号取将领的代码都靠它），
+##    而**关卡摆的**附属兵也不再破坏这条（见 `_place_faction_units` 的分批规则）。
+func create_generals(faction: String) -> Array:
+	var out: Array = []
+	for i in 3:
+		var g = create_general(faction, i)
+		if g != null:
+			out.append(g)
+	return out
+
+
+## ⚠️ 这里原先有两条**本轮整个删掉**的东西：
+##   · `escort_count_at(fid, index)` —— 开局编制的唯一口径（关卡 `factions[].general_escort`
+##     优先、没写回退 `config.json` 的 `unit.general.escort`）；
+##   · `create_escort(faction, leader, pending)` —— 按那个编制**自动生成**附属兵。
+## 新口径下两条都**没有存在意义**：开局附属兵完全由关卡 `start_units[].escort_of`
+## 逐兵摆出来（映射见 `escort_of_index()`），「这一方第 i 位将领该带几个」这个问题
+## 只由 `escort_target_of()` 回答（= 关卡里摆了几个），AI 的补员目标读的也是它。
 
 
 ## ★★ 某一方的阵营 AI 参数（**关卡按阵营覆盖**的唯一入口）。
@@ -1128,68 +1405,58 @@ func apply_faction_layout(faction: String, primary: String = "") -> void:
 		units = kept
 
 
-## 给某一方建出将领 + 各自同类型的附属兵（站位避开建筑与已有单位）。
+## 给某一方建出**将领**（站位避开建筑与已有单位）。
 ##
-## ★ 必须**在所有建筑都就位之后**调用（见 reset() 的顺序说明）：
-##   附属兵的站位规则会跳过「那一格上立着建筑」—— 区划中心要是还没建，
-##   它就会挑到中心那一格上，开局直接卡在不可进入的建筑里。
+## ★ 必须**在所有建筑都就位之后**调用（见 reset() 的顺序说明）。
 ##
-## ★★ 判据是 `cfg.is_ai_faction`（= 挂在 **config.ai.factions 名单**里的那一方）：
-##    只有**真的写了**才会走「不带开局兵」这条路。
-##    ⚠️ 也就是说「把 enemy 写进 ai.factions」是**可以**的，而它的将军同样不带开局编队 ——
-##       这是有意的：那一方本来就设定成「靠招兵补员的 NPC」。
+## ★★ 这里**不再有任何开局附属兵**（本轮口径变更）：`create_escort()` 整个删掉了。
+##    理由「所见即所得」—— 开局场上有多少兵，必须**完全等于**关卡 `start_units[]`
+##    里摆出来的那些。于是：
+##      · 关卡摆了那一方的附属部队（`escort_of`）⇒ 那一方**整个跳过**本函数
+##        （连 3 位将领都归作者摆，见下面的判据）；
+##      · 关卡没摆 ⇒ 本函数照旧造 3 位将领，而他们**光杆**（0 个附属兵，
+##        不再有任何「全局缺省编制」可补）。
 ##
-## ★★ 但**不开 AI 的那一局**（`with_ai = false`：测试 / 基准）里，NPC 阵营
-##    **一个将领都不建** —— 见下面那段说明。
+## ★★ 判据是 `level.faction_has_placed_escorts(faction)`（= 这一方在关卡
+##    `start_units[]` 里**有任何一项带 `escort_of`**）：
+##    摆了就整方由关卡接管 —— 将领与附属兵**都不自动生成**。
+##    ⚠️ 用它而不是「这一方有没有摆单位」：「摆了一个守将」是既有的、与附属兵
+##       无关的用法（驻防将领就靠它），拿它当接管判据会连带删掉三位将领。
+##    ⚠️ `level == null`（不做战役 / 绝大多数测试）⇒ 照旧自动生成 3 位。
+##
+## ★★ 还有一条**与 AI 无关**的历史约束（保留）：不开 AI 的那一局
+##    （`with_ai = false`：测试 / 基准）里，NPC 阵营**一个将领都不建**。
+##    理由：把 NPC 阵营加进名单之后，一个**只有玩家 + 地图摆设**的干净世界就会多出
+##    三个将领、三份招募状态、以及「它们站在哪一格」这一整套副作用 ——
+##    而那一整套断言（「开局 3 个将领」「场上有 22 个单位」）在几十个测试里都有，
+##    它们验的是移动 / 碰撞 / 迷雾，不是 AI。
+##    ⚠️ 注意这里跳掉的只是**将领**：NPC 的**地**（zone_list[].owner）与**大本营**
+##       照旧成立（那两样是「这一局的布局」，与 AI 开关无关）。
+##    于是「把 enemy 写进名单」在两种世界里只差「它有没有军队」，
+##    而两支军队的有无正好由 with_ai 决定 —— 这就是那个开关的定义。
 func spawn_faction_units(faction: String) -> void:
-	# ★★ 为什么不开 AI 时跳掉 NPC 阵营的将领（这一条是为了「世界逐位一致」）：
-	#    把 NPC 阵营加进名单之后，一个**只有玩家 + 地图摆设**的干净世界就会多出
-	#    三个将领、三份招募状态、以及「它们站在哪一格」这一整套副作用 ——
-	#    而那一整套断言（「开局 3 个将领」「场上有 22 个单位」）在几十个测试里都有，
-	#    它们验的是移动 / 碰撞 / 迷雾，不是 AI。
-	#    ⚠️ 注意这里跳掉的只是**将领**：NPC 的**地**（zone_list[].owner）与**大本营**
-	#       照旧成立（那两样是「这一局的布局」，与 AI 开关无关）。
-	#    于是「把 enemy 写进名单」在两种世界里只差「它有没有军队」，
-	#    而两支军队的有无正好由 with_ai 决定 —— 这就是那个开关的定义。
 	if not with_ai and not FactionRes.is_player_faction(faction):
 		return
-	# ★★ 开局**不给**附属兵的条件：这一方是「阵营性 AI」驱动的。
+	# ★★ 这一方在关卡里摆了附属部队 ⇒ **整方由关卡接管**：这里什么都不造。
+	#    （将领由 `_apply_level_placement()` 按 `escort_of` / `general_index` 补出来，
+	#      附属兵由作者逐兵摆好 —— 见那个函数里的分批说明。）
 	#
-	# 需求（本模块要成立的前提）：「先招将 → 再花资源让将领招兵 → 招满员之后才派兵出击」。
-	#   开局白送满员的话，那个「招满」的阶段永远不存在 —— AI 一出生就直接进入出兵状态
-	#   （看起来像没有经营）。
-	#
-	# ⚠️⚠️ 这里原来问的是 `cfg.is_ai_faction(faction)`，那是个**错的判据**（实测踩到）：
-	#   它只查 `config.json` 的 `ai.factions`，而**战役关卡可以点名**一个只属于自己的
-	#   AI 阵营（样例战役的 E1 就是 `factions[].ai: "faction"`，config 里根本没有它）。
-	#   于是 E1 拿到 `with_escort = true` ⇒ 开局 3 位将领各带 3 个兵、**第 1.4 秒**
-	#   就全员满员出发：玩家看到的「一进场就来一波」就是这么来的，
-	#   而「招满再出兵」的阶段在战役里从来没发生过。
-	# ★ 现在问的是**这一局真正被 AI 驱动的名单**（`ai_roster_cfg`，由 `_apply_level()`
-	#   在 `spawn_faction_units` 之前建好，见 reset 的顺序），config 名单只作兜底。
-	#
-	# ★★ 判据：**只有本机在操作的那一方**给开局附属兵。
-	#
-	#    AI 驱动的每一方（敌人、以及选边关里「没被选中的那一边」）都**不给** ——
-	#    它们必须自己「招将 → 招满 → 出征」，那才是波次节奏；给满编的话第一波瞬间就到、
-	#    中间那段经营根本不存在（实测：240 秒里只出过 1 波）。
-	#
-	#  ⚠️ 这里**不能**用 `_is_ai_piloted()`：它把 `my_faction` 排除在外，
-	#     于是「另一个可玩阵营」（有 `ai` 指派、但本机没在操作它）会被算成
-	#     「不是 AI 驱动」而拿到附属兵（实测：选红方时蓝方 15 个兵站着不动）。
-	#  ⚠️ 也不能用「在 `player_seats` 里吗」：选边关里敌人也在 `player_seats` 里
-	#     （它的家要建出来）。
-	var with_escort: bool = (faction == my_faction)
+	# ⚠️ 判据与「谁在操作这一方」「是不是 AI 驱动」**全都无关**：
+	#    这就是本轮口径第 3 条 —— 谁摆了附属兵就给谁（AI 摆的也照样出现），
+	#    于是原来那句 `with_escort = (faction == my_faction)` 与传给
+	#    `create_generals` 的那个参数**整个删掉了**。
+	if level != null and level.faction_has_placed_escorts(faction):
+		return
 	# ★ 记下「本函数造出来的那一段是从哪开始的」：下面兜底归属区划时只许扫这一段，
-	#   不许扫到地图预置的 NPC 守军（理由见 `_assign_garrison_zones` 的 `from`）。
+	#   不许回头扫前面 `reset()` 已经放好的单位（理由见 `_assign_garrison_zones` 的 `from`）。
 	var created_from: int = units.size()
-	for u in create_generals(faction, with_escort):
+	for u in create_generals(faction):
 		units.append(u)
 	# ★★ 挂**将领性（守家）AI** 的那一方：给每位将领一个**归属区划**。
 	#
 	# 为什么需要这一步（实测）：`logic/general_ai.gd` 的一切行为都以
 	#   `garrison_zone_id >= 0` 为前提 —— 巡逻、警戒、脱战招兵全在「自己的区划里」。
-	#   而它平时只由**地图 / 关卡的摆放**（`units[].zone`）赋值，于是「一整个阵营
+	#   而它平时只由**关卡的摆放**（`start_units[].zone`）赋值，于是「一整个阵营
 	#   挂 `ai: "general"`」这种配置下，它的将领一个归属区划都没有
 	#   ⇒ 那一方**从头到尾一动不动**（实测：选红方时蓝方 18 个单位站着不动，
   #     区划归属还从 3 块掉到 2 块 —— 完全没有守家行为）。
@@ -1208,19 +1475,23 @@ func spawn_faction_units(faction: String) -> void:
 ## ★★ 给「挂将领性 AI 的那一方」中**还没有归属区划的带队单位**兜底一个归属（本轮收口）。
 ##
 ## 为什么要这一步（实测）：`logic/general_ai.gd` 的一切行为都以 `garrison_zone_id >= 0`
-##   为前提 —— 巡逻、警戒、脱战招兵全在「自己的区划里」。而它平时只由**地图 / 关卡的
-##   摆放**（`units[].zone`）赋值，于是「一整个阵营挂 `ai: "general"`」这种配置下，
+##   为前提 —— 巡逻、警戒、脱战招兵全在「自己的区划里」。而它平时只由**关卡的
+##   摆放**（`start_units[].zone`）赋值，于是「一整个阵营挂 `ai: "general"`」这种配置下，
 ##   它的将领一个归属区划都没有 ⇒ 那一方**从头到尾一动不动**。
 ##
 ## ★★ 「不用手摆巡逻点」也落在这一句上（需求原话）：归属取**它脚下那一格所在的区划**
 ##   （`_zone_id_at`）—— 摆在哪块地就守哪块地，**巡逻路线再由区划自己算**
-##   （见 `general_ai._build_route`）。地图 / 关卡里写 `zone` 仍然是优先的（显式覆盖）。
+##   （见 `general_ai._build_route`）。关卡里写 `zone` 仍然是优先的（显式覆盖）。
 ##
-## ★ `from` = 从第几个单位开始扫：**不能**扫到地图预置的 NPC 守军
-##   （`data/maps/<id>/map.json` 的 `units[]` 里那些没写 `zone` 的）——
-##   它们归 enemy_ai 管（朝玩家家推进），被这一步收编成守将就会**原地不动**
-##   （症状是「这张图上的敌人突然不来了」，而且只在引擎侧看得见）。
-##   所以调用点传「本方这一轮**新造出来**的那些单位」的起点。
+## ★★ `from` = 从第几个单位开始扫，**必须是「这一批新造出来的单位」的起点，不能是 0**。
+##   理由：这一步会**无条件**给扫到的带队单位安上归属 + `hold_position = true`，
+##   而一个单位只要有了归属，`enemy_ai`（推进 AI）就不该再管它了 ——
+##   「没写 `zone` 的推进型单位」被这一步收编就会当场变成**原地不动**，
+##   症状是「这张图上的敌人突然不来了」，而且只在引擎侧看得见。
+##   （★ 本轮把地图 `units[]` 废弃之后，会被「误收编」的候选只剩**各方的将领**：
+##     它们由 `spawn_faction_units()` 自己的收尾处理，各调用点传的 `from` 都排在
+##     那一段之后 —— 这条约束仍然要留着，改顺序 / 加摆放入口时先看这里。）
+##   所以调用点一律传「本方这一轮**新造出来**的那些单位」的起点。
 ##
 ## ★★ 只给**带队的那些**兜底（`leader_id == ""`）：
 ##   巡逻是「一个队长带队、兵跟着走」（见 `general_ai.is_patrol_leader`），
@@ -1355,91 +1626,16 @@ func ai_kind_of(faction: String) -> String:
 	return LevelRes.AI_NONE
 
 
-## 建立某一阵营的将领。站位取该阵营自己的出生点，退回地图默认站位，最后退回大本营。
+## 围着某个队长找一格能站的位置：右、下、左、上、右下…（第 index 个方向）。
+##   · `escort_count_at(fid, index)` —— 开局编制的唯一口径（关卡 `factions[].general_escort`
+##     优先、没写回退 `config.json` 的 `unit.general.escort`）；
+##   · `create_escort(faction, leader, pending)` —— 按那个编制**自动生成**附属兵。
+## 新口径下两条都**没有存在意义**：开局附属兵完全由关卡 `start_units[].escort_of`
+## 逐兵摆出来（映射见 `escort_of_index()`），「这一方第 i 位将领该带几个」这个问题
+## 只由 `escort_target_of()` 回答（= 关卡里摆了几个），AI 的补员目标读的也是它。
 ##
-## ★★ 将领 = **带单位类型的队长**（不是一种兵种，见 config.json 的 unit._general_comment）：
-##   · 第 i 个将领的类型取 `cfg.general_type_at(i)` —— 于是「将领 1 = 长枪兵、
-##     将领 2 = 长弓兵、将领 3 = 骑手」（用户需求）；它的血量 / 伤害 / 射程 / 速度
-##     也全部等于那个类型的数值（`UnitRes.create` 里按 unit_type 查表）。
-##   · 每个将领开局带 `unit.general.escort` 个**同类型**的兵（见 create_escort）。
-## ⚠️ 顺序有讲究：**将领先全部入列，附属兵跟在后面**。
-##    这样 world.units 里前几个永远是将领（快捷键 1/2/3 与按序号取将领的代码都靠它），
-##    附属兵的 id 也统一是 `general-1-1`（队长 1 的第 1 个兵）这种可读格式。
-##
-## @param with_escort ★ false = **不带开局附属兵**（本轮新增，阵营 AI 专用）。
-##   为什么阵营 AI 要这个开关：需求要的是「先招将 → 再花资源让将领招兵 →
-##   招满员之后才派兵出击」。开局就白送满员的话，那个「招满」的阶段永远不存在，
-##   AI 一出生就直接进入出兵状态（看起来像没有经营）。
-##   ⚠️ 默认值 true：玩家与联机各方的开局编队**一个字都不变**（老行为）。
-func create_generals(faction: String, with_escort: bool = true) -> Array:
-	var spawns: Array = faction_spawns.get(faction, [])
-	var out: Array = []
-	var prefix = "general" if faction == FactionRes.DEFAULT_FACTION else "general-%s" % faction
-	var leaders: Array = []
-	for i in 3:
-		# ★★ 名字与类型都走 config：
-		#   · `cfg.general_name_at(i)` = 编辑器里给这位将领起的名字（没写 → 原来的「将领 N」）；
-		#   · `cfg.general_type_at(i)` = unit.general.types[i]。
-		#   ⚠️ 名字在这里读一次**存进单位**（`unit.name`）—— 部队列表、右栏都读它。
-		var gname: String = cfg.general_name_at(i)
-		if gname == "":
-			gname = "将领 %d" % (i + 1)
-		var tile: Vector2i = map.base
-		if i < spawns.size():
-			tile = spawns[i]
-		elif i < map.general_spawns.size():
-			tile = map.general_spawns[i]
-		var unit_type: String = cfg.general_type_at(i)
-		# ★ 最后那个参数 = **第几位将领**：它决定套不套 unit.general.stats 里那份数值覆盖
-		var g = UnitRes.create(cfg, "%s-%d" % [prefix, i + 1], gname, tile, faction,
-			UnitRes.KIND_GENERAL, str(i + 1), "", unit_type, i)
-		out.append(g)
-		leaders.append(g)
-	if not with_escort:
-		return out
-	# 将领全部就位之后，再给每个将领配它自己那一类的兵。
-	# ⚠️ `out` 是**本批**的单位（还没进 world.units）—— 传给 create_escort 用来避让，
-	#    否则同一批里的兵会互相看不见、两个人都挑到同一格。
-	for g in leaders:
-		for s in create_escort(faction, g, out):
-			out.append(s)
-	return out
-
-
-## 建立某个将领辖下的**附属兵**：与将领**同类型**（长枪兵将领带长枪兵…）。
-## 站位围着将领一圈（就近找可通行的空地）。
-##
-## ★ 这是「亲兵」被移除之后接替它的那一套（需求：「将亲兵这个单位去除」）——
-##   队伍模型（出生在队长旁边 / 点任何一个选中整队 / 右键整队一起走 / 招募期间整队收队）
-##   一个字都没改，只是「附属兵是什么」从固定的亲兵变成了将领自己的兵种。
-## ⚠️ 必须**在将领落位之后**调用：附属兵要贴着将领站，将领不在场就没有参照物。
-## @param pending 本批已创建、还没入列的单位（用来避开站位撞车）
-func create_escort(faction: String, leader, pending: Array = []) -> Array:
-	var out: Array = []
-	# ★★ 编制上限按**这位将领的序号**取（`unit.general.escort` 可以写
-	#   `[4, 5, 6]` ⇒ 第 1 位带 4、第 2 位带 5、第 3 位带 6）。
-	#   需求原话：「编制上限应该在 4 到 6 不等，这个不等的区间就是攻击波次的浮动」——
-	#   所以这里**不能**再用那个全局单值 `general_escort_count()`：
-	#   那样每位将领都是同一个数，波次大小就永远一样了。
-	#   ⚠️ 非将领（general_index < 0）走 `general_escort_at(-1)`，也就是数组的最后一项
-	#      （见那个函数的下标循环规则）。
-	var count: int = cfg.general_escort_at(int(leader.general_index))
-	if count <= 0:
-		return out
-	var unit_type: String = String(leader.unit_type)
-	var base_name: String = cfg.unit_name_of(unit_type)
-	for i in count:
-		var s = UnitRes.create(
-			cfg, "%s-%d" % [leader.id, i + 1], "%s %d" % [base_name, i + 1],
-			_ring_tile(leader, faction, i, pending + out), faction,
-			unit_type, "", leader.id, unit_type
-		)
-		# ★ 归属区划**继承队长**（与 `_spawn_from_recruit` 同一条口径）：
-		#   队长有归属 ⇒ 兵也有（跟着队长巡逻、受同一个区划约束）；
-		#   队长没有 ⇒ 兵也没有（`-1`，玩家 / 阵营 AI 的将领行为一点不变）。
-		s.garrison_zone_id = int(leader.garrison_zone_id)
-		out.append(s)
-	return out
+## ⚠️ 注：`_ring_tile()` / `ring_offsets()` **留着** —— 招募（`_spawn_from_recruit`）
+##    还在用同一条站位规则（「出生与招募共用这一份」那条约定没变）。
 
 
 ## 围着某个队长找一格能站的位置：右、下、左、上、右下…（第 index 个方向）。
@@ -1678,7 +1874,7 @@ func can_recruit(kind: String, leader_id: String, faction: String) -> String:
 
 
 ## 「这个单位能不能当招募对象」的公共校验（招募 / 取消招募共用）。
-## @return "" / "leader" / "faction"
+## @return "" / "leader" / "faction" / "downed"
 ##
 ## ★ 取消招募**不走** `can_recruit`：那边还管区划与队列上限，而取消是「把已经
 ##   排上的撤掉」——区划被敌人打回去了也得让人取消，不该被 zone 拦住。
@@ -1689,6 +1885,17 @@ func leader_reject_reason(leader, faction: String) -> String:
 		return "leader"
 	if not FactionRes.same_side(leader.faction, faction):
 		return "faction"
+	# ★★ 濒死的将领**不能再招募**（本轮修 bug）。
+	#
+	# 需求/规则：进濒死时它的招募队列**整个作废并退款**（见 `enter_near_death`），
+	#   所以「已经排上的」那一条不归这里管；这一句管的是**新的下单** ——
+	#   它倒在原地连动都动不了，还能继续造兵的话就成了「无限续命的血包」：
+	#   只要队列里还挂着人，它旗下的部队就永远不为空，全灭判定永远不成立。
+	#   （实测报回来的现象：一个旗下什么都没有的濒死将领，最后又造出来一个兵。）
+	# ⚠️ 判据放在这里 = 招募（将领当兵营）与**区划招募**两条路一起被挡住
+	#    （`can_recruit_zone` 也走本函数）。
+	if leader.is_downed():
+		return "downed"
 	return ""
 
 
@@ -1710,13 +1917,217 @@ func leader_zone_owned(leader) -> bool:
 ##   输入层要用也只问它 —— 两处各写一套「谁被锁住了」迟早会漂开。
 ## ★ 队长已经不在场（阵亡）的附属兵**不算被锁**：它们已经各自为战了，
 ##   再拦着玩家就没有道理（`team_leader()` 对这种情况返回 null）。
+##
+## ★★ 濒死的将领（本轮新增）：它自己**被锁**（倒在原地，不能动也不能打）。
+##   ⚠️ 但**只锁它自己**，不锁它辖下的部队 —— 需求里那支援军正是要照常行动
+##      （它们得能走去救它、也能被玩家指挥）。所以这一条与招募那条不同：
+##      招募锁整队，濒死只锁将领本人。判据落在**调用方传进来的那个单位**上。
 func is_order_locked(u) -> bool:
 	if u == null or not u.alive:
 		return false
+	if u.is_downed():
+		return true
 	if u.is_training():
 		return true
 	var leader = team_leader(u)
 	return leader != null and leader.is_training()
+
+
+## 这个单位现在不接受指令的**原因码**（"" = 可以下令）。
+##
+## ★ 为什么要单独给码（而不是让命令层猜）：`note_order_rejected` 要把拒因**报给玩家**
+##   （界面按码翻中文，见 view/hud.gd 的 order_reject_text）——
+##   「将领正在招募」和「将领倒在地上」给玩家的下一步动作完全不同。
+func order_lock_reason(u) -> String:
+	if u == null or not u.alive:
+		return "dead"
+	if u.is_downed():
+		return "downed"
+	if u.is_training():
+		return "recruiting"
+	var leader = team_leader(u)
+	if leader != null and leader.is_training():
+		return "recruiting"
+	return ""
+
+
+# ------------------------------------------------------------------
+# ★★ 将领濒死 / 再起（本轮新增，config.json 的 revive 段）
+#
+# 分工（与招募那一套逐条对齐）：
+#   · 规则（还允不允许、要多少钱、读条多久）在这里；
+#   · 状态（回复计时 / 读条剩余）在 unit 自己身上（见 unit.gd 那组字段的说明）；
+#   · 界面只发命令（command_processor 的 revive / revive_cancel）。
+#
+# ★★ 为什么「进濒死」要 world 来判而不是 unit 自己：判据是「旗下还有没有部队」，
+#    那要看整个 world.units（unit 不能 preload world，会形成循环依赖）。
+# ------------------------------------------------------------------
+
+## 旗下还有没有存活部队（含队列里在读条 / 排队的兵）。
+##
+## ★ 口径与 `unit.retinue_size()` 一致，但这里只要「有没有」——
+##   濒死判定每帧都要跑，不必去数总数。
+func has_living_retinue(leader) -> bool:
+	if leader == null:
+		return false
+	if not retinue_of(String(leader.id), true).is_empty():
+		return true
+	return leader.train_queue_size() > 0
+
+
+## ★★ 试着让一个刚被打到 0 血的将领进入濒死。
+##
+## @return true = 已经进入濒死；false = **旗下已经一个兵都没有 ⇒ 调用方应当让它直接死**
+##         （用户拍板：「无附属部队时直接死亡，不进濒死」）。
+##
+## ★ 进入濒死时会做两件额外的事：
+##   1. 给这一方推一条 `leader_downed` 事件（界面播报 / 测试盯它）；
+##   2. **把旗下部队叫回来**：解除它们现有的所有命令，改成行军攻击到**倒下点**
+##      （用户原话：「其附属兵会先解除当前玩家给予的或现有的所有命令，
+##      立刻行军攻击至其将领处」）。
+##      ⚠️ 目标是**固定点**（`downed_anchor`）：用户拍板「将领濒死后无法移动，
+##        视作倒在原地」——所以不需要跟踪一个会动的目标，走现成的
+##        `order_group_attack_move` 就够了（与阵营 AI 派兵同一条路）。
+##
+## ★★ 顺序有讲究（本轮修 bug 时定了下来）：
+##   1. **先判「旗下还有没有部队」** —— 用**队列还没作废时**的状态。
+##      为什么：那一单兵**已经付过钱、也快出来了**，它当然算「这一位将领的部队」，
+##      所以「队列里那一单撑着 ⇒ 将领因此没能当场死」是对的；
+##   2. **队列整个作废并全额退款**（reason = `leader_downed`）——
+##      它都倒下了，不能继续造兵（见下面那段实测记录）；
+##   3. 进濒死。
+##   ⇒ 净效果：只要「打光活兵**或**退款取消在造的兵」里**还有一条**能给出援军，
+##     它就进濒死；两条都不成立时才 `return false`，由调用方让它直接死。
+func enter_near_death(leader) -> bool:
+	if leader == null or not leader.alive:
+		return false
+	if leader.downed:
+		return true                   # 已经倒着了（重复调用不该再叫一次援军）
+	if not has_living_retinue(leader):
+		return false
+	# ★★ 招募队列**整个作废并退款**（本轮修 bug）。
+	#
+	# 实测报回来的现象：「一个濒死的将领没有任何单位，最后还是招募了一个单位出来，
+	#   我把这个单位打死之后这个将领才死」——根因就是队列没停：
+	#   `_tick_recruitment` 只看 `alive`（濒死者**仍然 alive**），于是读条照走、兵照出，
+	#   而那个兵又算「旗下有部队」⇒ 全灭判定永远不成立，将领靠「一直在造兵」续命。
+	# ⇒ 倒下就是「停止一切生产」：撤回这一单并**全额退款**（与将领阵亡那一套同一条路，
+	#   见 `_release_recruit`），于是「旗下部队全灭」那条判据又能正常生效了。
+	# ⚠️ 这一步必须放在 `has_living_retinue` **之后**：上一句已经用「队列还在」的
+	#   事实决定过「它能不能进濒死」了，这里只是把那一单**换成退款**。
+	_release_recruit(leader, true, "leader_downed")
+	leader.enter_near_death(cfg.revive_regen_sec)
+	push_event({"type": "leader_downed", "unit": leader, "faction": String(leader.faction)})
+	rally_retinue_to_leader(leader)
+	return true
+
+
+## 让某个将领辖下的存活部队**立刻向它（的倒下点）行军攻击**。
+##
+## ★ 走 `command_processor.order_group_attack_move`：与玩家「选中整队点地图」、
+##   阵营 AI「派一批将领出征」、驻防将领巡逻是**同一条**路径（队形落点、通行判定
+##   都在它里面）—— 自己写一遍循环迟早会漂开。
+## ★ 已经贴着倒下点站着的兵会被它自动跳过（命令层内部判距离），不必在这里特判。
+func rally_retinue_to_leader(leader) -> void:
+	if leader == null:
+		return
+	var mates: Array = retinue_of(String(leader.id), true)
+	if mates.is_empty():
+		return
+	var cmd: GDScript = load("res://logic/command_processor.gd")
+	if cmd == null:
+		return
+	cmd.order_group_attack_move(self, cfg, mates, leader.downed_anchor)
+
+
+## 「再起」要花多少（config.json 的 revive.cost；缺字段 = 免费）。
+func revive_cost() -> Dictionary:
+	return cfg.revive_cost
+
+
+## 「再起」的读条秒数（config.json 的 revive.channel_sec；0 = 瞬发）。
+func revive_channel_sec() -> float:
+	return cfg.revive_channel_sec
+
+
+## 让将领脱离濒死所需的最低血量比例（config.json 的 revive.ready_ratio，默认 10%）。
+func revive_ready_ratio() -> float:
+	return cfg.revive_ready_ratio
+
+
+## 某个单位现在**能不能**开始再起。@return "" = 可以；否则是拒因码：
+##   "leader"  / "dead"     找不到人 / 已经真的死了（死人不该走这条路）
+##   "not_downed"           它没有濒死（根本没倒，或者已经再起过了）
+##   "channeling"           ★ 已经在读条了（这时该走 cancel，不是再来一单）
+##   "hp"                   血量还没回到 10%（界面那颗格子就是靠它置灰的）
+##   "faction"              防冒充：不能替别人家的将领再起
+##   "cost"                 粮食 / 黄金不够
+## ★ 顺序有讲究：先「是不是这个人 / 是不是这一方」再「状态对不对」——
+##   否则客机拿别人的将领 id 会先收到一条「血量不够」这种莫名其妙的原因。
+func revive_reject_reason(leader, faction: String = "") -> String:
+	if leader == null or not leader.alive:
+		return "leader"
+	if faction != "" and not FactionRes.same_side(String(leader.faction), faction):
+		return "faction"
+	if not leader.is_general():
+		return "not_downed"
+	if not leader.downed:
+		return "not_downed"
+	if leader.revive_remaining > 0.0:
+		return "channeling"
+	if not leader.revive_ready(cfg):
+		return "hp"
+	if not EconomyRes.can_afford(resource_pool_for(String(leader.faction)), revive_cost()):
+		return "cost"
+	return ""
+
+
+## ★★ 开始「再起」：**先校验 → 再扣费 → 最后开始读条**（与招募三步同序）。
+##
+## ★★ 用户拍板的两条口径都落在这一句 `leader.start_revive(cfg)` 上：
+##   · 从这一刻起该将领**被视为单位** —— 全灭判定**暂停**
+##     （`unit.tick_near_death()` 里判 `revive_remaining > 0`），所以读条不会因为它
+##     手下的兵死光而中断；
+##   · 读条读完**不改血量**（几点血就是几点血，见 `unit._finish_revive`）。
+##
+## ★ 钱从**这一方自己的池子**里出（`resource_pool_for`：AI 花自己的钱；
+##   池子为 null = 这一方没有资源库 = 资源无限，见那个函数）。与招募同一条语义。
+func start_revive(leader_id: String, faction: String = "") -> bool:
+	var leader = unit_by_id(leader_id)
+	var reason := revive_reject_reason(leader, faction)
+	if reason != "":
+		push_event({"type": "revive_rejected", "reason": reason, "unit": leader,
+			"faction": String(leader.faction) if leader != null else faction})
+		return false
+	var cost := revive_cost()
+	var pool: Variant = resource_pool_for(String(leader.faction))
+	if not EconomyRes.spend(pool, cost):
+		push_event({"type": "revive_rejected", "reason": "cost", "unit": leader,
+			"faction": String(leader.faction)})
+		return false
+	leader.start_revive(cfg)
+	push_event({"type": "revive_started", "unit": leader, "faction": String(leader.faction)})
+	return true
+
+
+## 取消读条中的「再起」并**全额退还**已经扣掉的那笔钱。
+##
+## @return true = 确实撤掉了一单（false = 它没在读条，或找不到人）。
+## ★ 只有「正在读条」才退钱：没读条时点取消不该凭空造出一笔资源。
+##   ⚠️ 退还走 `_refund`（它按**这一方自己的池子**退，池子为 null 时什么都不做）——
+##      与「取消招募」共用同一条路，不另写一份扣/退实现。
+func cancel_revive(leader_id: String, faction: String = "") -> bool:
+	var leader = unit_by_id(leader_id)
+	if leader == null or not leader.alive or not leader.is_reviving():
+		return false
+	if faction != "" and not FactionRes.same_side(String(leader.faction), faction):
+		return false
+	var cost := revive_cost()
+	leader.cancel_revive()
+	_refund(leader, float(cost.get("food", 0.0)), float(cost.get("gold", 0.0)), 0.0, -1)
+	push_event({"type": "revive_cancelled", "unit": leader, "faction": String(leader.faction)})
+	return true
+
 
 
 ## 钱与人口够不够。@return "" / "cost" / "population"
@@ -1765,7 +2176,13 @@ func start_recruit(kind: String, leader_id: String, faction: String,
 	if reason == "" and not free:
 		reason = can_afford_recruit(kind, leader_id)
 	if reason != "":
-		push_event({"type": "recruit_rejected", "reason": reason, "kind": kind})
+		# ★★ 必须带上 `faction`（下单那一方）—— 与 `upgrade_rejected` / `revive_rejected`
+		#    同一条约定，理由也一样：**阵营 AI 也会下单**（`faction_ai` 每帧重试），
+		#    不带 faction 的话界面那条 `_is_my_event()` 会把它当成玩家自己的报错，
+		#    于是玩家一直看到「只能在己方区划内招募…」这种**别人的**红字
+		#    （而且 AI 每帧重试 ⇒ 提示被反复续期、永远不消失。实测报回来的正是这个）。
+		push_event({"type": "recruit_rejected", "reason": reason, "kind": kind,
+			"faction": faction})
 		return false
 
 	var leader = unit_by_id(leader_id)
@@ -1789,7 +2206,8 @@ func start_recruit(kind: String, leader_id: String, faction: String,
 	#    对空 cost 直接通过 —— 两条语义都不必在这里再抄一遍。
 	var pool: Variant = resource_pool_for(String(leader.faction))
 	if not EconomyRes.spend(pool, cost):
-		push_event({"type": "recruit_rejected", "reason": "cost", "kind": kind})
+		push_event({"type": "recruit_rejected", "reason": "cost", "kind": kind,
+			"faction": faction})
 		return false
 	# 2) 扣人口（**同一个区划**：将领站在哪就从哪扣）
 	if zone != null and pop > 0.0:
@@ -1861,6 +2279,15 @@ func _tick_recruitment(dt: float) -> void:
 			continue
 		if not u.alive:
 			_release_recruit(u, true, "leader_died")
+			continue
+		# ★★ 濒死的将领**停止招募**（本轮修 bug，第二道保险）：
+		#    正常路径上 `world.enter_near_death()` 已经把队列撤掉了（并退款），
+		#    所以走到这里时它通常已经 `train_kind == ""`、上面那句就 continue 了。
+		#    这一句是给「别的路径让它进了濒死」（测试摆场面、以后新加的效果）兜底的 ——
+		#    少了它就会出现实测报回来的那个现象：**一个旗下什么都没有的濒死将领
+		#    又造出来一个兵，靠那个兵续命**（`has_living_retinue` 一直是真）。
+		if u.is_downed():
+			_release_recruit(u, true, "leader_downed")
 			continue
 		if u.train_kind == "":
 			_start_next_in_queue(u)
@@ -2106,7 +2533,7 @@ func start_zone_recruit(kind: String, zone_id: int, faction: String) -> bool:
 		# ★ 走**同一个事件类型**（recruit_rejected）：界面那条「拒因码 → 中文」的通道
 		#   只写一处，这里多带一个 max（队列上限的文案要用它）。
 		push_event({"type": "recruit_rejected", "reason": reason, "kind": kind,
-			"zone_id": zone_id, "max": zone_recruit_queue_max()})
+			"zone_id": zone_id, "max": zone_recruit_queue_max(), "faction": faction})
 		return false
 
 	var z = _zone_by_id(zone_id)
@@ -2116,7 +2543,8 @@ func start_zone_recruit(kind: String, zone_id: int, faction: String) -> bool:
 	# ★ 钱从下单那一方的池子里扣（与 start_recruit 同一条；null = 无资源库 = 无限）
 	var pool: Variant = resource_pool_for(faction)
 	if not EconomyRes.spend(pool, cost):
-		push_event({"type": "recruit_rejected", "reason": "cost", "kind": kind, "zone_id": zone_id})
+		push_event({"type": "recruit_rejected", "reason": "cost", "kind": kind,
+			"zone_id": zone_id, "faction": faction})
 		return false
 	if pop > 0.0:
 		z["population"] = maxf(0.0, float(z["population"]) - pop)
@@ -2366,13 +2794,29 @@ func _zone_by_id(zid: int) -> Variant:
 ##
 ## ★ 放在 tick 的碰撞消解**之后**：那时推挤已经把位置写回了，这里再把它们摁回去。
 ## ★ 只钉「正在招募」的将领 —— 普通单位被推走是软分离的正常行为（collision.gd）。
+## 被**钉住**的将领（招募读条中 / 濒死倒地）拉回原位：推挤不许把它们挪走。
+##
+## 两种「钉住」的共同点是「位置在这个机制里是语义的一部分」，所以放在同一个函数里：
+##   · **招募读条中**：位置取自开招那一刻记下的 `train_anchor`（用户需求：
+##     「将领固定在原地、无法行动、无法攻击」）；
+##   · **濒死**：位置取自倒下点 `downed_anchor`（用户拍板：「将领濒死后无法移动，
+##     视作倒在原地」）—— 附属兵的行军目标也是它，所以这里被推走会直接让援军走错地方。
+##
+## ⚠️ 必须跑在碰撞消解**之后**：这一步是覆盖，不是参与推挤。
 func _pin_training_leaders() -> void:
 	for u in units:
-		if not u.alive or not u.is_training():
+		if not u.alive:
 			continue
-		if u.pos.distance_squared_to(u.train_anchor) <= 1e-12:
+		var anchor: Vector2
+		if u.is_training():
+			anchor = u.train_anchor
+		elif u.is_downed():
+			anchor = u.downed_anchor
+		else:
 			continue
-		u.pos = u.train_anchor
+		if u.pos.distance_squared_to(anchor) <= 1e-12:
+			continue
+		u.pos = anchor
 		u.sync_tile(map)
 
 
@@ -2385,6 +2829,22 @@ func spawn_enemy(tx: int = -1, ty: int = -1) -> Variant:
 	var spawn = Vector2i(map.cols - 1, 3)      # 默认从地图右侧（北侧隘口附近）出现
 	if tx >= 0 and ty >= 0:
 		spawn = Vector2i(tx, ty)
+	else:
+		# ★★ **不传坐标时**先自己挑一个能站人的默认点（本轮修）。
+		#
+		# 为什么必须挑（实测踩到）：`nearest_reachable()` 的 BFS 是从**目标**往外扩散，
+		#   但它的可达性 region 是从 **from** 算出来的 —— `from` 本身落在山上时
+		#   region 一个格子都没有，于是它**结构上只能返回 null**。
+		#   而默认点 `(cols-1, 3)` 是硬编码的「地图右边缘」，`frontier` 那张图最后一列
+		#   **整列是山**（`layout` 每行都以 `.#####` 结尾）⇒ `spawn_enemy()` 在真地图上
+		#   永远刷不出兵（`CommandRes.apply({"kind":"spawn_enemy"})` 恒为 false，
+		#   症状是「调试刷兵没反应」；`tests/test_view.gd` 那条断言一直红）。
+		# ★ 挑法：从右往左、从上往下扫，取第一格可通行的 —— 保住「从地图右侧出现」
+		#   这个既有意图（北侧隘口附近），只是不再假定最右那一列能站人。
+		spawn = _first_passable_spawn(spawn, FactionRes.NPC_FACTION)
+		if spawn.x < 0:
+			push_event({"type": "spawn_failed", "tile": Vector2i(map.cols - 1, 3)})
+			return null
 	var open = spawn
 	if not PathfinderRes.passable(map, buildings, cfg, spawn.x, spawn.y, FactionRes.NPC_FACTION):
 		var found = PathfinderRes.nearest_reachable(map, buildings, cfg, spawn, spawn, FactionRes.NPC_FACTION, 20, crowd)
@@ -2397,6 +2857,24 @@ func spawn_enemy(tx: int = -1, ty: int = -1) -> Variant:
 	units.append(e)
 	push_event({"type": "enemy_spawned", "unit": e})
 	return e
+
+
+## 从 `hint` 出发找一格**可通行**的位置：同一个 x 上从上往下、然后 x 逐列往左退。
+##
+## ★ 为什么需要它：`spawn_enemy()` 的默认点是「地图右边缘」，而地图右边缘完全可能是
+##   山 / 墙（`frontier` 就是整列山）—— 那种坐标喂给 `nearest_reachable()` 只会拿到 null
+##   （它从不可通行的起点算不出可达区域）。
+## ★ 只做**有限**扫描（`max_cols` 列），找不到就返回 `(-1,-1)` 让调用方报失败 ——
+##   不要在刷一个调试敌人的路径上扫全图。
+func _first_passable_spawn(hint: Vector2i, faction: String, max_cols: int = 8) -> Vector2i:
+	for dx in max_cols:
+		var x: int = hint.x - dx
+		if x < 0:
+			break
+		for y in map.rows:
+			if PathfinderRes.passable(map, buildings, cfg, x, y, faction):
+				return Vector2i(x, y)
+	return Vector2i(-1, -1)
 
 
 # ------------------------------------------------------------------
@@ -2738,7 +3216,9 @@ func set_tech_active(id: String, on: bool, faction: String = "") -> bool:
 	if on and not was:
 		var reason := tech.can_activate(id, f)
 		if reason != "":
-			push_event({"type": "tech_rejected", "reason": reason, "tech_id": id})
+			# ★ 带上 `f`（解析出来的那一方，不是可能为空的形参）—— 阵营 AI 也会走
+			#   `set_tech_active()`，不带阵营的话界面会把 AI 的「名额满了」当成玩家的报错。
+			push_event({"type": "tech_rejected", "reason": reason, "tech_id": id, "faction": f})
 			return false
 	var changed: bool = tech.set_active(id, on, f)
 	if not changed:
@@ -3021,6 +3501,12 @@ func tick(dt: float) -> Array:
 		#    _pin_training_leaders() 保证不被碰撞推走。
 		if u.is_training():
 			continue
+		# ★★ 濒死的将领（本轮新增）**不要**在这里另开一支：它这一帧只跑「濒死状态机」
+		#    （缓慢回复 / 全灭判定 / 再起读条，见 unit.tick_near_death），而那一支
+		#    已经由下面 `CombatRes.tick_frame` → `update_unit` 的第一句接管了。
+		#    ⚠️⚠️ 在这里再写一次 `if u.is_downed(): u.tick_near_death(...); continue`
+		#      会让回复与全灭判定**每帧跑两遍**（实测：每 3 秒 1% 变成每 2 秒 1%，
+		#      而且读条会提前读完）—— 这是本轮踩到的最隐蔽的一个坑。
 		var c0 := _prof()
 		CombatRes.tick_frame(self, cfg, u, dt, ui)
 		var _c1 := _prof()

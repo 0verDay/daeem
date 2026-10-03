@@ -198,18 +198,28 @@ func _group_launch(cfg) -> void:
 
 ## 把某一方的将领**直接喂到各自满员**（塞已经生成的附属兵，不走读条）。
 ##
-## ★ 为什么用例需要它：出兵的 gate 是「每个可进攻的将领都补满**它自己那一档编制**」，
-##   而编制来自 `unit.general.escort = [4,5,6]`（15 个兵）。真让 AI 自己招的话，
-##   它要跟「区划人口上限（默认 1）+ 读条 10 秒 + 资源」缠好几分钟 ——
+## ★ 为什么用例需要它：出兵的 gate 是「每个可进攻的将领都补满**它的目标编制**」，
+##   而目标编制 = **关卡里给这位将领摆了几个附属兵**（`world.escort_target_of`）——
+##   本轮把 `config.json` 的 `unit.general.escort` 全局缺省删掉了。
+##   真让 AI 自己招的话，它要跟「区划人口上限 + 读条 10 秒 + 资源」缠好几分钟 ——
 ##   那几件事与「进攻目标解析成哪一格」毫无关系，却能把断言拖红（实测踩到）。
+##
+## ★★ 而这些用例的关卡里**一个附属兵都没摆** ⇒ 目标编制是 0 ⇒ gate 从一开始就通过、
+##   「补员」那条链根本没被走过。所以这里**显式摆一份测试规模**：
+##   把它写进 `world.placed_escorts`（AI 的补员目标读的就是它），再按它喂满。
+##   这不是绕过新口径，而是把「关卡摆了几个」这件事在测试里写出来。
+const TEST_RETINUE := 5
+
 func _fill_retinues(w, faction: String) -> void:
 	if w == null:
 		return
-	var min_retinue: int = int(w.faction_ai_cfg(faction).get("min_retinue", 0))
 	for u in w.units:
 		if not u.alive or String(u.faction) != faction or not u.is_general():
 			continue
-		var want_n: int = maxi(int(w.cfg.general_escort_at(int(u.general_index))), min_retinue)
+		var gi: int = int(u.general_index)
+		if gi >= 0:
+			w.placed_escorts["%s|%d" % [faction, gi]] = TEST_RETINUE
+		var want_n: int = TEST_RETINUE
 		var have: int = u.retinue_size(w)
 		var i := 0
 		while have + i < want_n:

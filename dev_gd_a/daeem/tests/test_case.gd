@@ -170,3 +170,146 @@ func require_world(cfg, world_path: String = "res://logic/world.gd",
 	var w = cls.create(cfg, map_path, false)
 	ok(w != null, "世界能建出来（不带阵营 AI）")
 	return w
+
+
+## ★★ 建一个**开局就带附属兵**的干净世界（不带阵营 AI）—— 本轮口径的测试入口。
+##
+## 为什么需要它（本轮口径变更）：`config.json` 的 `unit.general.escort` 全局缺省
+## **已经删除**，开局有几个附属兵**完全等于关卡 `start_units[]` 里摆出来的那些**
+## （`escort_of` 指向同阵营第几位将领）。于是「开局就有附属兵」这类老用例
+## 不能再靠 config —— 必须像关卡作者那样**在探针关卡里把兵摆出来**。
+##
+## ★★ 摆在哪：**围着各自的将领一圈**（`ESCORT_RING`，与老 `create_escort` 的
+##    「出生在队长旁边」同一个手感）。为什么不能摆到地图角落去：
+##      · 本文件的好几个用例验的是**拥挤**（一整队人点到同一点），
+##        兵要是从地图另一头出发，那条路会把「拥挤收敛」验成「长途寻路」；
+##      · 关卡作者摆兵也是摆在将领身边的（样例战役就是这么摆的）。
+##    ⇒ 先在**没有摆放**的情况下造一次世界，取到这一方将领的真实出生格，
+##      再把附属兵摆到它周围那些格子上（那些格子由 `spawn_layout_for` 保证可通行）。
+##
+## 于是对这一局而言：
+##   · `general-1` 名下有 `per_general` 个兵（`retinue_of` 数得出来）；
+##   · p1 **不再自动生成将领**，但 `escort_of` 点名的 1/2/3 位会被补出来，
+##     id 正好是 `general-1` / `general-2` / `general-3`（与自动生成的那套一致）；
+##   · `world.units` 里**每位将领都排在它自己的兵前面**（见 world 的分批规则）。
+##
+## @param per_general 每位将领摆几个（≤ 0 = 一个都不摆 ⇒ 与 `require_world()` 等价：
+##        将领光杆，但**不会**触发「整方由关卡接管」那条路）。
+## @param faction     摆给哪一方（默认 `p1`；`p1` 是默认阵营，所以 id 不带后缀）。
+## @return World（`level != null`，可当普通世界用）；失败时返回 null 并记一条断言。
+func require_world_with_escorts(cfg, per_general: int = 3, faction: String = "p1",
+		map_path: String = DEFAULT_MAP_PATH) -> RefCounted:
+	if per_general <= 0:
+		return require_world(cfg, "res://logic/world.gd", map_path)
+	var world_path := "res://logic/world.gd"
+	var level_path := "res://logic/level.gd"
+	var wcls := script_at(world_path)
+	var lcls := script_at(level_path)
+	if wcls == null or lcls == null:
+		return null
+	# ① 先造一次「没有任何摆放」的世界：只为拿到这一方将领的真实出生格
+	#    （`spawn_layout_for` 已经把它们落在可通行格上了）。
+	var probe = wcls.create(cfg, map_path, false)
+	if probe == null:
+		ok(false, "探针世界能建出来（%s）" % map_path)
+		return null
+	var spawns: Array = probe.faction_spawns.get(faction, [])
+	# ② 把附属兵摆到那些出生格的四周（绕圈取格子；不够就换外圈）。
+	var ccls := script_at(PATH_CONFIG)
+	var c = ccls.load_default() if ccls != null else null
+	var units: Array = []
+	for gi in 3:
+		var gt: String = String(c.general_type_at(gi)) if c != null else "spearman"
+		var anchor := Vector2i(-1, -1)
+		if gi < spawns.size():
+			anchor = spawns[gi]
+		if anchor.x < 0:
+			anchor = Vector2i(int(probe.map.base.x), int(probe.map.base.y))
+		for i in per_general:
+			var off: Vector2i = ESCORT_RING[i % ESCORT_RING.size()]
+			var ring := i / ESCORT_RING.size()          # 第几圈（整数除法：0 = 内圈）
+			units.append({
+				"faction": faction, "kind": gt, "unit_type": gt,
+				# ★ 附属兵的**类型 = 队长的类型**（口径：长枪兵将领带长枪兵）。
+				#   显式写 `unit_type` 更贴近编辑器导出的样子。
+				"x": anchor.x + off.x * (ring + 1),
+				"y": anchor.y + off.y * (ring + 1),
+				"hold": true, "escort_of": gi + 1,
+			})
+	# ③ 写探针关卡 → 用它造真正的世界
+	var text := JSON.stringify({
+		"map": "frontier",
+		"name": "escort scaffold",
+		"players": [{"faction": "p1"}],
+		"factions": [{"id": faction}],
+		"start_units": units,
+	})
+	var path := "res://.tmp_test_case/escort_scaffold.json"
+	DirAccess.make_dir_recursive_absolute("res://.tmp_test_case")
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		ok(false, "能写探针关卡：%s" % path)
+		return null
+	f.store_string(text)
+	f.close()
+	var lv = lcls.load_level(null, path, cfg)
+	if lv == null:
+		ok(false, "探针关卡能载入：%s" % path)
+		return null
+	var w = wcls.create_from_level(cfg, lv, faction, [faction], false)
+	ok(w != null, "世界能建出来（带关卡摆放的附属兵）")
+	return w
+
+
+## 附属兵围着将领摆的那一圈方向（与 `world.ring_offsets()` 同一套手感：
+## 先正交、再斜角 —— 正交邻格比斜角更不容易被墙 / 山挤掉）。
+## ★ 只用于**测试探针**的摆放，所以留在测试侧（玩法逻辑里那一份仍是权威）。
+const ESCORT_RING: Array = [
+	Vector2i(1, 0), Vector2i(0, 1), Vector2i(-1, 0), Vector2i(0, -1),
+	Vector2i(1, 1), Vector2i(-1, 1), Vector2i(-1, -1), Vector2i(1, -1),
+]
+
+
+## 删掉上面那个探针关卡留下的临时文件（测试末尾调一次；工程内不能留垃圾）。
+func cleanup_escort_scaffold() -> void:
+	var path := "res://.tmp_test_case/escort_scaffold.json"
+	if FileAccess.file_exists(path):
+		DirAccess.remove_absolute(path)
+	if DirAccess.dir_exists_absolute("res://.tmp_test_case"):
+		DirAccess.remove_absolute("res://.tmp_test_case")
+
+
+## ★★ 让某个单位**当场死亡**（本轮新增，因为「将领濒死保护」把 `take_damage` 的语义改了）。
+##
+## 为什么需要这个帮助函数：加了濒死保护之后，**旗下还有部队的将领不会被打死**，
+## 而是进入濒死（见 logic/unit.gd 与 data/config.json 的 revive 段）。
+## 于是「打死一个将领，看世界怎么收尾」这类老用例会集体变红 ——
+## 而它们验的本来是**阵亡之后的收尾**（退款 / 清场 / 补招槽位），不是濒死。
+##
+## 这个函数按权威规则把三件事按顺序做掉：
+##   1. 撤掉它**队列里还没出来的兵**（`cancel_recruit`，全额退款）——
+##      ⚠️ 这一步是必须的：**在读条 / 排队的兵也算「旗下还有部队」**
+##      （`world.has_living_retinue()` 的口径与 `unit.retinue_size()` 一致），
+##      不撤的话它照样会进濒死（实测：`kill_unit_now` 送不走一个正在招兵的将领，
+##      而那看起来像「濒死规则坏了」）；
+##   2. 把它旗下的活兵全部打死（走 `take_damage`，所以死因、事件都是真的）；
+##   3. tick 一帧让世界收尸，再给它自己那一下 —— 此时它「旗下没有部队」，
+##      于是**直接死亡**（用户拍板：「无附属部队时直接死亡，不进濒死」）。
+##
+## ⚠️ 它**不是**「绕过濒死」的后门：任何一步都在濒死规则之内，只是把
+##    「先撤单、再打光部队、最后打将领」这个必然过程写成了一个调用。
+##    要验濒死本身请用 tests/test_downed.gd（那里直接 `take_damage` 将领）。
+func kill_unit_now(cfg, w, u, dt: float = 1.0 / 60.0) -> void:
+	if u == null or not u.alive:
+		return
+	while u.train_queue_size() > 0:
+		if not w.cancel_recruit(String(u.id), 0, String(u.faction)):
+			break
+	for m in w.retinue_of(String(u.id), true):
+		m.take_damage(cfg, w, m.hp + 999999.0, null)
+	w.tick(dt)
+	# ⚠️ 伤害必须写成 `hp + 大数`（**不能**只写一个固定的「99999」）：地图预置的
+	#    守军 / 测试单位血量可能是 1000+，固定值在某些用例里恰好打不死它 ——
+	#    那种失败看起来像「濒死规则又坏了」，其实是这一行算错了（实测踩到）。
+	u.take_damage(cfg, w, u.hp + 999999.0, null)
+

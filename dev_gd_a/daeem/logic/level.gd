@@ -10,7 +10,9 @@
 ##                     "faction_ai": {"generals": 2, "attack_repeat_sec": 12.0}}],
 ##       "allies":   [["E1", "E2"]]        ← 不写就用地图的
 ##       "zones":    [{"id": 4, "owner": "F1"}]   ← 开局的区块归属（覆盖地图的）
-##       "start_units":     [{"faction": "E1", "kind": "enemy", "x": 11, "y": 4, "hold": true}],
+##       "start_units":     [{"faction": "E1", "kind": "enemy", "x": 11, "y": 4, "hold": true},
+##                           {"faction": "p1", "kind": "spearman", "x": 6, "y": 5,
+##                            "escort_of": 2}]   ← ★ 附属兵：归第 **2** 位将领（1 起）
 ##       "start_buildings": [{"type": "tower", "x": 5, "y": 3, "owner": "F1"}],
 ##       "objectives":      [{"kind": "hold_zone", "zone": 2, "hold_sec": 90}],
 ##       "fail_conditions": [{"kind": "zone_lost", "zone": 4}],
@@ -22,13 +24,20 @@
 ##   · `factions[].base` 同上；
 ##   · `allies` 写了就用关卡的，**一个字都没写**才用地图的；
 ##   · `zones[].owner` 覆盖地图 `zone_list[].owner` 的开局归属；
-##   · `start_units` / `start_buildings` 是**追加**（地图的预置单位 / 建筑照旧先生效）。
+##   · ★★ `start_units[].escort_of`：**附属兵**（本轮口径）—— 整数、**1 起**、
+##     与 `general_index` 同一套编号，指向**同阵营**的第几位将领。
+##     缺省 = 不是附属兵（普通摆放单位，行为与加这个字段之前一字不差）。
+##   · `start_units` / `start_buildings` 是**追加**（地图的预置建筑照旧先生效）。
+##     ⚠️ 地图的**预置单位**（`map.json` 的 `units[]`）本轮已整个废弃、运行时不再读：
+##        「开局就摆好的守军」现在**只能**由关卡的 `start_units` 摆（字段语义与它一字不差）。
 ##   ⚠️ 覆盖是**逐字段**的，不是「整块替换」——所以「关卡只改了大本营」不会把
 ##      地图的盟友关系一起抹掉。
 ##
 ## ★ 为什么关卡不把地图数据搬进来（1.3.3）：`data/maps/frontier/map.json` 里那套
-##   对家据点与守军**是给手玩测试用的**，它必须继续有效（地图选择条 → 按 test 直接开一局）；
-##   关卡是**在它之上的另一层**，不是它的替代品。
+##   对家**据点**（`buildings[]`）**是给手玩测试用的**，它必须继续有效
+##   （地图选择条 → 按 test 直接开一局）；关卡是**在它之上的另一层**，不是它的替代品。
+##   ⚠️ 但**守军**（老的 `units[]`）本轮已经废弃：那类「开局就站在哪儿的单位」属于
+##      **关卡**（可以逐关不同），不再属于地图。
 ##
 ## ⚠️ 跨文件引用只用**本文件里的 preload 常量**（`--script` 下全局 class_name 不可用）。
 extends RefCounted
@@ -191,7 +200,8 @@ var raw: Dictionary = {}
 ## 玩家席位：每项 {faction: String, base: Vector2i(-1,-1) 表示没写}
 ## ★★ **顺序 = 席位顺序**（房主第 1 个、客机第 2 个）——见 dev_plan_7 拍板第 18 项。
 var players: Array = []
-## 参展阵营的 AI 指派 / 难度 / 开局资源 / 大本营 / 进攻目标。每项见 `faction_config()`。
+## 参展阵营的 AI 指派 / 难度 / 开局资源 / 大本营 / 进攻目标 / **逐将开局编制**。
+## 每项见 `faction_config()`。
 var faction_meta: Array = []
 ## 盟友关系是不是**关卡显式写了**（决定用关卡还是用地图的）
 var allies_declared: bool = false
@@ -279,7 +289,12 @@ func rosters() -> Array:
 ## 这一方在这一关里的参展配置（没写就返回一个「全都是缺省」的字典）。
 ##
 ## 返回 {id, ai, base: Vector2i(-1,-1), resource_mult, start_food, start_gold,
-##       attack_target: Variant, faction_ai: Variant, general_ai: Variant, declared: bool}
+##       attack_target: Variant, faction_ai: Variant, general_ai: Variant,
+##       color, declared: bool}
+##
+## ⚠️ 本轮**删掉了** `general_escort` 键（连同 `unit.general.escort` 的全局缺省）：
+##    开局附属兵不再是「这一方每位将领带几个」，而是**逐兵摆出来的坐标**
+##    （`start_units[].escort_of`，见 `escort_leader_index()`）。
 func faction_config(fid: String) -> Dictionary:
 	for e in faction_meta:
 		if String((e as Dictionary)["id"]) == fid:
@@ -291,6 +306,85 @@ func faction_config(fid: String) -> Dictionary:
 		"start_food": 0.0, "start_gold": 0.0, "attack_target": null,
 		"faction_ai": null, "general_ai": null, "declared": false,
 	}
+
+
+## ★★ `start_units[].escort_of` → **这位附属兵归第几位将领**（0 起；不是附属兵 → -1）。
+##
+## ★★ 这是本轮「附属兵」的**唯一判据**（口径只有这一处）：
+##   · JSON 里的键名是 `escort_of`，**整数、1 起**，与 `general_index` 同一套编号
+##     （读进来时已经归一：非法值 / 缺省一律 `-1`，见 `_read_start_units`）；
+##   · 这里再减 1 → **0 起**的将领序号，与 `unit.general_index` / `Unit.general_index`
+##     同一套下标（于是「第 2 位将领」= `escort_of: 2` = 下标 1）。
+##
+## ⚠️ 它**只**回答「归哪位将领」，不回答「那一位在场吗」——
+##    「这一方摆了附属部队 ⇒ 整方由关卡接管」的判据是 `faction_has_placed_escorts()`。
+static func escort_leader_index(u: Dictionary) -> int:
+	var v := int(u.get("escort_of", -1))
+	return v - 1 if v >= 1 else -1
+
+
+## ★★ 这一方**自己带了部队**吗（= 在 `start_units[]` 里摆了附属兵，或**摆了将领**）。
+##
+## ★★ 这是「**整方由关卡接管**」的判据（本轮口径第 5 条）：
+##    自己带了部队的那一方，运行时**连 3 位将领都不自动生成** ——
+##    将领与附属兵全部由作者自己摆（`start_units[]`）。
+##    没摆的任何一方 → 保持今天的自动生成（造 3 位将领，且**不带**附属兵）。
+##
+## ★ 判据的两半，缺一不可：
+##   · **带 `escort_of` 的附属兵** —— 口径第 5 条的原话；
+##   · **摆出来的将领**（`kind: general*`）—— 这一半是**实测补上来的**：
+##     作者把 3 位将领摆在 `start_units[]` 里、兵准备另（下一关 / 下一轮）再摆时，
+##     自动生成的那 3 位会**与作者摆的 3 位重名**（id 都是 `general-<fid>-N`），
+##     场上直接出现 6 位将领、其中 3 组同 id（实测：样例战役 F2 摆了 3 位将领
+##     ⇒ 世界里 F2 有 6 个将领）。
+##     ⚠️ 「只摆了一个守将」**不算**接管：那种单位 `general_index` 由 kind 推出来但
+##        `kind` 不是 `general*`（例如 `enemy`），本文的判据只看**将领类 kind**
+##        —— 驻防将领可以放心继续只摆一个（老行为一字不变）。
+func faction_has_placed_escorts(fid: String) -> bool:
+	if fid == "":
+		return false
+	for u in start_units:
+		var ud: Dictionary = u
+		if String(ud.get("faction", "")) != fid:
+			continue
+		if escort_leader_index(ud) >= 0:
+			return true
+		if ConfigRes.general_index_of(String(ud.get("kind", ""))) >= 0:
+			return true
+	return false
+
+
+## 这一方在关卡 `start_units[]` 里摆的单位（**只读**；不做任何过滤）。
+##
+## ★ 用途：`world._apply_level_placement()` 按它建单位、`world.escort_target_of()`
+##   数「这位将领名下有几位摆出来的附属兵」。返回的是 `start_units` 里那几条
+##   字典本身（**别改它们** —— 关卡数据是这一局的只读输入）。
+func placed_units_for(fid: String) -> Array:
+	var out: Array = []
+	for u in start_units:
+		var ud: Dictionary = u
+		if String(ud.get("faction", "")) == fid:
+			out.append(ud)
+	return out
+
+
+## 这一方在关卡里给**第 `index` 位将领**（0 起）摆了几个附属兵。
+##
+## ★★ 这是 AI 补员目标的**唯一来源**（见 `faction_ai._decide`）：
+##    「关卡里给这位将领摆了几个，就补到几个」——
+##    config 里那份全局编制（`unit.general.escort`）本轮已经删除，没有缺省可退。
+## ★ 运行时自己招出来的将领（关卡没给它摆过）自然得到 **0**：不要求补员。
+func placed_escort_count_for(fid: String, index: int) -> int:
+	if index < 0:
+		return 0
+	var n := 0
+	for u in start_units:
+		var ud: Dictionary = u
+		if String(ud.get("faction", "")) != fid:
+			continue
+		if escort_leader_index(ud) == index:
+			n += 1
+	return n
 
 
 ## 这一方的 `attack_target` 原始配置（没写 → null；写了 `kind` 不认识 → null）。
@@ -530,6 +624,10 @@ func merged_ai_factions(config_ai: Array = []) -> Array:
 			"attack_target": (e as Dictionary).get("attack_target", null),
 			"faction_ai": (e as Dictionary).get("faction_ai", null),
 			"general_ai": (e as Dictionary).get("general_ai", null),
+			# ⚠️ 本轮**删掉了** `"general_escort"` 这个键：编制不再是「这一方每位将领
+			#    带几个兵」，而是**逐兵摆出来的坐标**（`start_units[].escort_of`）——
+			#    它属于**摆放**，不属于 AI 名单。读取请走
+			#    `Level.escort_leader_index()` / `world.escort_target_of()`。
 			"from_level": true,
 			"source": "level",
 		})
@@ -548,6 +646,7 @@ func merged_ai_factions(config_ai: Array = []) -> Array:
 			"base": _map_base(mid),
 			"resource_mult": 1.0, "start_food": 0.0, "start_gold": 0.0,
 			"attack_target": null, "faction_ai": null, "general_ai": null,
+			# 地图来的条目当然没有摆放数据（摆放是关卡数据）。
 			"from_level": false,
 			"source": "map",
 		})
@@ -569,6 +668,7 @@ func merged_ai_factions(config_ai: Array = []) -> Array:
 			"attack_target": null,
 			"faction_ai": null,
 			"general_ai": null,
+			# config 来的条目当然没有摆放数据（摆放是关卡数据）。
 			"from_level": false,
 			"source": "config",
 		})
@@ -1005,7 +1105,16 @@ func _ck_ai_assign(config_ai: Array) -> void:
 				_add(SEV_WARN, "ally_unknown", "盟友表里有未定义的阵营「%s」" % String(x))
 
 
-## 12) `start_units[]` 里 `ai: "general"` 的项**都必须有** zone
+## 12) `start_units[]` 里 `ai: "general"` 的项**都必须有** zone；
+##     ★ 附属兵（`escort_of >= 1`）**必须**有对应的将领。
+##
+## ★★ 「对应的将领」= **同一方**在 `start_units[]` 里摆着第 `escort_of` 位将领。
+##    判据只有这一条（与 `world._apply_level_placement` 的建将规则**同一份口径**）：
+##    运行时不会再替摆了附属部队的一方自动补将领（那一方整方由关卡接管），
+##    所以「摆了兵、忘了摆将」的后果是**这个兵挂不上队长**（它自己当队长）。
+##    那种静默行为比拦下来难查得多，所以在**导出前**就拦。
+## ⚠️ 这一条对**整方**要求「同方有对应的将领」而不是「全局有」：
+##    不同阵营的将领序号各算各的（p1 的第 2 位与 E1 的第 2 位不是同一个人）。
 func _ck_start_units() -> void:
 	for u in start_units:
 		var ud: Dictionary = u
@@ -1016,6 +1125,27 @@ func _ck_start_units() -> void:
 		var fid := String(ud.get("faction", ""))
 		if fid == "":
 			_add(SEV_BLOCK, "unit_no_faction", "摆放单位 (%d,%d) 没写 faction" % [int(ud["x"]), int(ud["y"])])
+		var ei := escort_leader_index(ud)
+		if ei >= 0 and not _placed_general_for(fid, ei):
+			_add(SEV_BLOCK, "escort_of_no_general",
+				"摆放的附属兵 (%d,%d) 写的是 escort_of = %d，但 %s 没有摆第 %d 位将领"
+				% [int(ud["x"]), int(ud["y"]), ei + 1, fid, ei + 1])
+
+
+## `fid` 这一方在 `start_units[]` 里摆过**第 `index` 位将领**（0 起）吗。
+##
+## ★ 这类单位是 `general_index == index + 1` 的**将领类** kind
+##   （`kind: "general"` / `"general_2"`；`general_index` 由 `_read_start_units` 补齐）。
+func _placed_general_for(fid: String, index: int) -> bool:
+	for u in start_units:
+		var ud: Dictionary = u
+		if String(ud.get("faction", "")) != fid:
+			continue
+		if ConfigRes.general_index_of(String(ud.get("kind", ""))) < 0:
+			continue
+		if int(ud.get("general_index", 1)) - 1 == index:
+			return true
+	return false
 
 
 ## 13) 关卡**摆放**里用到的 faction 都必须有定义。
@@ -1270,6 +1400,8 @@ static func _read_level_factions(v: Variant) -> Array:
 			"attack_target": null,
 			"faction_ai": null,
 			"general_ai": null,
+			# ⚠️ 本轮删掉了 `general_escort`（逐将开局编制）：开局附属兵改由
+			#    `start_units[].escort_of` **逐兵摆出来**，这里不再有那一层配置。
 		}
 		var spec: Variant = d.get("attack_target", null)
 		if typeof(spec) == TYPE_DICTIONARY:
@@ -1329,6 +1461,13 @@ static func _read_zone_owners(v: Variant) -> Dictionary:
 
 
 ## `start_units[]`：每项补齐成固定形状（见 dev_plan_7 2.3 那张表）。
+##
+## ★★ `escort_of`（本轮口径的落点）：**附属兵**归第几位将领。
+##   · JSON 里是**整数、1 起**，与 `general_index` 同一套编号（1/2/3 = 第 1/2/3 位）；
+##   · **缺省 / 非法值一律归一成 `-1`**（= 不是附属兵，普通摆放单位）——
+##     与 `general_index` 那条「非法值一律当没写」同一个手法：
+##     读不出来就当没写，绝不去猜（`"2"` / `2.5` / `true` / `0` / `-3` 都不是附属兵）。
+##   · 判据只有一个 `escort_leader_index(u)`（0 起），调用方别再自己 `-1`。
 static func _read_start_units(v: Variant) -> Array:
 	var out: Array = []
 	if typeof(v) != TYPE_ARRAY:
@@ -1347,6 +1486,8 @@ static func _read_start_units(v: Variant) -> Array:
 			"faction": String(d.get("faction", "")).strip_edges(),
 			"kind": kind,
 			"general_index": maxi(1, gi),
+			# ★★ 附属兵归属（1 起；-1 = 不是附属兵）。只认**正整数**。
+			"escort_of": _escort_of_int(d.get("escort_of", null)),
 			"unit_type": String(d.get("unit_type", "")).strip_edges(),
 			"x": int(d.get("x", -1)),
 			"y": int(d.get("y", -1)),
@@ -1358,6 +1499,23 @@ static func _read_start_units(v: Variant) -> Array:
 			"name": String(d.get("name", "")).strip_edges(),
 		})
 	return out
+
+
+## `escort_of` 的读取：**只认正整数**，其余（缺省 / 字符串 / 小数 / bool / ≤ 0）→ `-1`。
+##
+## ⚠️ 为什么不像 `general_index` 那样「非法就当 1」：附属兵指向错将领比不指向
+##    更难查（它会静默挂到另一位将领名下、跟着别人走）。读不出来就当普通单位。
+## ★ 整数值的 float（`2.0`）认 —— 编辑器可能导出成浮点（与老 `_escort_int` 同规）。
+static func _escort_of_int(v: Variant) -> int:
+	var t := typeof(v)
+	if t == TYPE_INT:
+		return int(v) if int(v) >= 1 else -1
+	if t == TYPE_FLOAT:
+		var f := float(v)
+		if f < 1.0 or absf(f - roundf(f)) > 0.000001:
+			return -1
+		return int(roundf(f))
+	return -1
 
 
 ## `start_buildings[]`：每项 {type, x, y, owner}（与地图 `buildings` 同构）。

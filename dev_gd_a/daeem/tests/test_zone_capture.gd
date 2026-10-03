@@ -74,6 +74,7 @@ func _run_until_zero(w, z: Dictionary, faction: String) -> int:
 func _initialize() -> void:
 	_case_name = "test_zone_capture"
 	run_all(_cases)
+	cleanup_escort_scaffold()
 
 
 func _cases() -> void:
@@ -462,7 +463,10 @@ func _test_speed_curve(cfg) -> void:
 	near(solo, 1.0 / full_sec(cfg), 1e-3, "1 人 1 秒 = 基准 %.3f" % (1.0 / full_sec(cfg)))
 
 	# 4 人：把同一方的 4 个单位塞进同一个区块
-	var w2 = require_world(cfg)
+	#
+	# ★★ 本轮口径：`config.json` 的全局缺省编制已删除 ⇒ 「同一方有 4 个单位」
+	#    只能来自**关卡摆放**（探针给每位将领摆 2 个 ⇒ 3 将 + 6 兵 = 9 个，够挑 4 个）。
+	var w2 = require_world_with_escorts(cfg, 2)
 	var spot2 := _neutral_spot(w2, cfg)
 	if spot2.is_empty():
 		return

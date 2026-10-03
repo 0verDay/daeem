@@ -743,14 +743,16 @@ func _test_pick_blocked_by_fog(cfg) -> void:
 		"★★ 走开之后（迷雾重新盖住）仍然点得中它 —— 见过一次就永久记住")
 
 	# ---- 迷雾里的敌方**单位**同样点不到 ----
-	var foe = null
-	for cand in w.units:
-		if not FactionRes.same_side(cand.faction, w.my_faction) and cand.alive:
-			foe = cand
-			break
-	ok(foe != null, "真地图上有敌方单位（守军 / 巡逻兵）")
+	# ★★ 敌人**现造**（`w.spawn_enemy()`），不依赖地图预置单位：
+	#    `data/maps/*/map.json` 的 `units[]` 已经废弃（运行时不读它），所以
+	#    原来那句「从 w.units 里找一个敌方单位」在真地图上永远是 null。
+	#    ⚠️ 不能写死坐标：默认刷兵点在地图右边缘，而那张图右边缘那一列不可通行
+	#    （实测），所以这里挑一个**确实刷出来**的坐标，并断言它真的刷出来了 ——
+	#    刷不出来时下面那几条断言会全部静默跳过，那就是假绿灯。
+	var foe = w.spawn_enemy(20, 20)
+	ok(foe != null, "刷出一个敌方单位来做「迷雾里的敌人」这条用例")
 	if foe != null:
-		ok(not w.fog.unit_visible(w.my_faction, foe), "开局看不见对家的守军")
+		ok(not w.fog.unit_visible(w.my_faction, foe), "开局看不见刷出来的那个敌人")
 		eq(ctrl._pick_foe_unit_at(GridRes.center_of(Vector2i(foe.tx, foe.ty))), null,
 			"★★ 迷雾里的敌方单位不能被点名（_pick_foe_unit_at 返回 null）")
 		# 把 p1 的单位挪到它旁边 → 立刻能被点名

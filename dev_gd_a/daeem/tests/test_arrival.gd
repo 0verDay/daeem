@@ -27,12 +27,17 @@ const WorldRes = preload("res://logic/world.gd")
 const CollisionRes = preload("res://logic/collision.gd")
 const FactionRes = preload("res://logic/faction.gd")
 
+## ★★ 探针关卡给每位将领摆几个附属兵（本轮口径：开局附属兵只能来自关卡摆放）。
+##    3 位将领 × 3 = 9 个兵，加上 3 位将领共 12 个单位 —— 与 CROWD_N 同一个数。
+const ESCORTS_PER_GENERAL := 3
+
 const DT := 1.0 / 60.0
 
 
 func _initialize() -> void:
 	_case_name = "test_arrival"
 	run_all(_cases)
+	cleanup_escort_scaffold()
 
 
 func _cases() -> void:
@@ -78,15 +83,21 @@ func _test_solo_still_exact(cfg) -> void:
 
 ## 拥挤：整队点到同一点，必须在合理时间内全部停下
 ##
-## ★ 先关掉战斗：这一套验的是「到达与推挤」；地图预置的两个巡逻兵会在这几秒里
-##   迎上来打起来，那会让单位「一边被打一边挤」、`moving` 永远有真。
+## ★ 先关掉战斗：这一套验的是「到达与推挤」；战斗会让单位「一边被打一边挤」、
+##   `moving` 永远有真，验的东西就变了。
+##   ⚠️ 「地图预置的两个巡逻兵」这个**具体**理由已经随本轮废弃消失了
+##   （`map.json` 的 `units[]` 运行时不再读，开局场上没有默认在场的敌人）——
+##   这一句仍然保留：它让这一套只依赖「自己人的推挤」，以后谁往地图 / 关卡里
+##   加默认在场的单位，都不会把这几条搅乱（`_keep_player_units` 是同一道保险）。
 ## ★ 同时把**区划中心**从世界里摘掉（`_clear_zone_centers`）：
 ##   它们是中立障碍柱，按 6×4 的规律每隔 4 格一根；一整队人挤在柱子之间时，
 ##   验的就不是「拥挤收敛」而是「绕柱子」。这一套只看到达与推挤。
 ##   战斗与障碍本身分别在 test_logic / test_attack_orders 里单独验。
 func _test_crowd_settles(cfg) -> void:
 	cfg.combat_enabled = false
-	var w = require_world(cfg)
+	var w = require_world_with_escorts(cfg, ESCORTS_PER_GENERAL)
+	if w == null:
+		return
 	_clear_zone_centers(w)
 	_keep_player_units(w)
 	var target = GridRes.center_of(Vector2i(6, 12))
@@ -143,12 +154,12 @@ func _test_crowd_settles(cfg) -> void:
 	#   调大（2.4）绕路正常，极端拥挤下队伍就散到 2.05 格。这里选了保「点哪走哪」。
 	#   注意这 12 个单位是**被点到同一个精确坐标**的（合成场景）：实战里 ≥4 个单位
 	#   走的是队形落点（unit.formation），各自有槽位，不会全挤一个点。
-	# ★★ 容差随**拥挤程度**放宽：编制变成逐将 `[4,5,6]` 之后，被点到同一个精确坐标的
-	#   单位从 12 个变成 18 个（3 将领 + 15 兵），推挤更强、队形也摊得更开
-	#   （实测：12 个时 2.5 格够用；18 个时最远 ≈3.4 格）。
-	#   实测：12 个时 2.5 格够用；18 个时最远 ≈4.0 格 ⇒ 每个多出来的单位 ≈0.3 格
-	#   （线性放大，留了一点余量：这是**实测拟合**，不是从几何推出来的。
-	#    理论上它只该按 sqrt(人数) 长，实际被碰撞推力顶得更开。）
+	# ★★ 容差随**拥挤程度**放宽：单位数越多、推挤越强、队形摊得越开。
+	#    ⚠️ 本轮之后「队伍里有多少个单位」**不再由 config 的编制决定**（那条全局缺省
+	#      已删除），而是**关卡摆出来的那些** —— 这里由 `ESCORTS_PER_GENERAL` 定
+	#      （3 位将领 × 3 + 3 = 12 个，正好等于 `CROWD_N`）。
+	#   实测：12 个时 2.5 格够用；18 个时最远 ≈4.0 格 ⇒ 每个多出来的单位 ≈0.35 格
+	#   （线性放大，留了一点余量：这是**实测拟合**，不是从几何推出来的）。
 	#   这条断言要拦的是「谁被挤到天边」，不是「挤开半格的差异」。
 	var spread := 2.5 + 0.35 * maxf(0.0, float(group.size() - CROWD_N))
 	var far := 0
@@ -162,7 +173,9 @@ func _test_crowd_settles(cfg) -> void:
 ## 停下之后必须**真的静止**：位置与朝向都不再变
 func _test_crowd_stays_still(cfg) -> void:
 	cfg.combat_enabled = false
-	var w = require_world(cfg)
+	var w = require_world_with_escorts(cfg, ESCORTS_PER_GENERAL)
+	if w == null:
+		return
 	_clear_zone_centers(w)
 	_keep_player_units(w)
 	var target = GridRes.center_of(Vector2i(6, 12))
@@ -210,7 +223,9 @@ func _test_crowd_stays_still(cfg) -> void:
 ## 拥挤下每帧位移仍然不许超过速度预算（落位那一帧最容易超）
 func _test_speed_budget_in_crowd(cfg) -> void:
 	cfg.combat_enabled = false
-	var w = require_world(cfg)
+	var w = require_world_with_escorts(cfg, ESCORTS_PER_GENERAL)
+	if w == null:
+		return
 	_clear_zone_centers(w)
 	_keep_player_units(w)
 	var target = GridRes.center_of(Vector2i(6, 12))
@@ -264,7 +279,9 @@ func _test_speed_budget_in_crowd(cfg) -> void:
 ## jam_giveup：挤不过去时要认账，不能无限努力
 func _test_jam_giveup_bounds_effort(cfg) -> void:
 	cfg.combat_enabled = false
-	var w = require_world(cfg)
+	var w = require_world_with_escorts(cfg, ESCORTS_PER_GENERAL)
+	if w == null:
+		return
 	_clear_zone_centers(w)
 	_keep_player_units(w)
 	var target = GridRes.center_of(Vector2i(6, 12))
@@ -301,9 +318,13 @@ func _test_jam_giveup_bounds_effort(cfg) -> void:
 
 ## 把世界隔离开「只有玩家这一方的单位」。
 ##
-## ★ 为什么必须有这一步：地图上预置了对家守军（`data/maps/frontier/map.json` 的 `units`），
-##   它们会跟玩家单位交战、也会挤在同一个落点上 —— 这一整套断言验的是
-##   「自己人挤在一起时的到达行为」，混进敌人就变成在测战斗了。
+## ★ 为什么必须有这一步：这一整套断言验的是「自己人挤在一起时的到达行为」，
+##   混进敌人就变成在测战斗了。
+##   它当初是为「地图预置的对家守军」（`data/maps/frontier/map.json` 的 `units`）写的 ——
+##   那批单位本轮已废弃（运行时不再读 `units[]`），所以**现在这是一个空操作**
+##   （干净世界里只有玩家这一方的将领与附属兵）。
+##   ⚠️ 但**不要删**：它保证这一套与「场上有没有第三方单位」这个外部条件无关 ——
+##   以后谁往地图 / 关卡里加默认在场的单位，这几条不会跟着红。
 ##   （docs/pitfalls.md 5.11 记过这条：加任何「默认在场」的单位之前，
 ##     先想一遍哪些断言会被它搅乱。）
 func _keep_player_units(w) -> void:

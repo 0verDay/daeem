@@ -51,6 +51,9 @@ static var repath_calls: int = 0
 ## @param idx 本单位在 world.units 里的下标（用于取本帧批量算好的索敌结果）
 static func tick_frame(world, cfg: ConfigRes, u: UnitRes, dt: float, idx: int) -> void:
 	# ★★ 生产路径：三段直接连着跑，**不做任何逐段计时**。
+	#    ⚠️ 濒死的将领不在这里特判（`update_unit` 第一句就接管了）：这一层被
+	#       `world.tick` 只在「活着 + 没在招募 + 没濒死」时调用，所以那一支走不到；
+	#       真在这里也补一次的话，`update_unit` 那一支会让回复**跑两遍**（实测踩到）。
 	#    分段计时如果写在这个循环里（每单位 4 次 `_prof()`），即使 profile 关着也要付那 4 次调用
 	#    —— 1000 单位就是每帧 ~0.8 ms，纯属为了「跑 bench 时能看细分」在生产路径上白交的钱。
 	if not world.profile_on:
@@ -81,12 +84,29 @@ static func tick_frame(world, cfg: ConfigRes, u: UnitRes, dt: float, idx: int) -
 ## @param idx 这个单位在 world.units 里的下标（由 world.tick 传进来）。
 ##        有它才能取「本帧批量算好的索敌结果」；不传就走原来的逐个扫描（测试里会这样调）。
 static func update_unit(world, cfg: ConfigRes, u: UnitRes, dt: float, idx: int = -1) -> void:
+	# ★★ 濒死的将领（本轮新增）：这一帧**只跑濒死状态机**（缓慢回复 / 全灭判定 /
+	#    再起读条），其余什么都不做 —— 需求是「倒在原地」：不能移动、不能攻击、
+	#    也不做任何索敌（它已经不可能被谁选中了，见 `is_attackable()`）。
+	#
+	# ⚠️⚠️ 这一支**只能出现在这里或 `tick_frame` 里，二选一**（实测踩到）：
+	#    `tick_frame` 会调 `update_unit`，两处都补一次的话回复速度翻倍
+	#    （实测：每 3 秒 1% 变成每 2 秒 1%），而且「全灭判定」也会跑两遍。
+	#    现在唯一入口是 `tick_frame` 的开头，这里保留的只是「有人绕过 tick_frame
+	#    直接调本函数」时的兜底 —— 所以它排在最前面并立即返回。
+	if u.is_downed():
+		u.tick_near_death(cfg, world, dt)
+		return
+
 	if u.attack_cd > 0.0:
 		u.attack_cd = maxf(0.0, u.attack_cd - dt)
 	if u.attack_flash > 0.0:
 		u.attack_flash = maxf(0.0, u.attack_flash - dt / cfg.flash_sec_safe)
 	if u.repath_timer > 0.0:
 		u.repath_timer = maxf(0.0, u.repath_timer - dt)
+	# ★★ 「因为追击上限放弃」之后的冷却（见 config 的 leash_release_cd）：
+	#    它只挡**自动索敌**，不影响任何玩家命令。
+	if u.leash_cd > 0.0:
+		u.leash_cd = maxf(0.0, u.leash_cd - dt)
 
 	# 己方单位站在**己方**领地内缓慢回血（便于肉眼确认领地归属是否生效）
 	# ★ 用 u.faction 比对，而不是写死 'player' —— 联机下「己方领地」= 自己那一方的区块
@@ -164,10 +184,34 @@ static func update_unit(world, cfg: ConfigRes, u: UnitRes, dt: float, idx: int =
 static func acquire_target(world, cfg: ConfigRes, u: UnitRes, idx: int = -1) -> bool:
 	if not cfg.combat_enabled:
 		return false
+	# ★★ 已经在打一个还能打的目标 ⇒ **不重新索敌**（本轮修 bug 时补上的一句）。
+	#
+	# 为什么必须有它（这是「原地抽搐」这条 bug 的**第二层**根因）：
+	#   下面「锁定那一刻把参照点设成当前位置」那一句，原来在**每次**索敌成功时都会执行；
+	#   生产路径上 `update_unit` 是「没有 target 才索敌」，所以平时碰不到 ——
+	#   但**只要有一次在「已经有目标」时也调了它**（测试、以后新加的 AI 逻辑），
+	#   参照点就被抹回当前位置，追击上限立刻失效，症状与玩家报的一模一样。
+	#   ⇒ 把「已经锁着目标就别再索敌」写成**函数自己的契约**，调用方怎么写都不会踩。
+	# ★ 顺带也是性能：待命单位每帧索敌时，已经锁定的那些一句就返回了。
+	# ⚠️ 目标失效（阵亡 / 刚进濒死）时**不能**在这里返回：那种情况必须让
+	#    `update_combat` 去脱战，否则它会一直挂着一个打不动的目标（见那里的判据）。
+	if u.target != null and u.target.is_attackable():
+		return false
 	# ★ 直接读 cfg 上的字段而不是走 u.aggro_range(cfg)：那是每单位每帧一次的方法调用
 	var aggro: float = cfg.aggro_range
 	if aggro <= 0.0:
 		return false
+	# ★★ 「因为追击上限刚放弃过」的冷却期内**不再自动锁定单位**（本轮修 bug）。
+	#
+	# 修的是实测报回来的现象：「单位在区划边界要追击的敌方单位会在原地抽搐」。
+	#   放弃那一下只清 `target`，而目标**还在警戒半径里** —— 下一帧这里立刻又把它锁上，
+	#   而锁定那一刻「离参照点 `anchor` 的距离」当然是 0 ⇒ 再走一格又超上限、又放弃，
+	#   一帧一放一锁就是抽搐。
+	#   ⚠️ 判据放在**索敌这一层**（不是 `update_combat` 里）：要挡的就是「重新锁上」这件事。
+	#   ⚠️ 只挡**单位**索敌：下面的「索敌敌方建筑」照旧要跑（那是另一条路 ——
+	#      玩家阵营的兵贴到对家塔边就该开打，与「追人追过头了」无关）；
+	#      玩家点名的目标也不受影响（它本来就不受 leash 约束）。
+	var scan_units: bool = u.leash_cd <= 0.0
 
 	var best = null
 	var best_d := INF
@@ -181,7 +225,7 @@ static func acquire_target(world, cfg: ConfigRes, u: UnitRes, idx: int = -1) -> 
 	#    （1000 单位就是每帧 0.6 ms）。同一个 logic 模块内部读自己的字段，值这个钱。
 	var crowd: CrowdBridgeRes = world.crowd
 	var used_kernel := false
-	if idx >= 0 and crowd != null and crowd._targets_ready \
+	if scan_units and idx >= 0 and crowd != null and crowd._targets_ready \
 			and crowd._targets_serial == world.frame_serial:
 		used_kernel = true
 		if idx < crowd._target_idx.size():
@@ -202,22 +246,41 @@ static func acquire_target(world, cfg: ConfigRes, u: UnitRes, idx: int = -1) -> 
 		#      （否则单位会「看到了敌人却当没看到」，表现成有时不还手）。
 		if best != null and FactionRes.same_side_for_attack(String(best.faction), String(u.faction)):
 			best = null
+		#  ★★ 同一道闸门还要挡「濒死的将领」（本轮新增）：内核只认「活着的单位」，
+		#     而濒死将领在它眼里就是活的（alive == true，见 unit.downed 的说明）——
+		#     不过滤的话「已经倒地的将领照旧挨打」，正是需求禁止的那件事。
+		#     ⚠️ 只用 `alive` 判是不够的：`_tgt_alive` 那一档在内核里表达的是
+		#     「这个单位在不在场」，把它写成 0 会让濒死将领**连索敌都做不了**，
+		#     而它作为「在场单位」要照旧占位（占 AI 槽位、进区块读条）。
+		#     所以过滤放在这里、读目标的 `is_attackable()`。
+		if best != null and not best.is_attackable():
+			best = null
 
 	if not used_kernel:
-		for other in world.units:
-			if other == u or not other.alive:
-				continue
-			if FactionRes.same_side_for_attack(other.faction, u.faction):
-				continue
-			# 距离减去目标体积：允许「半个身子进射程」的目标被发现
-			var d: float = u.pos.distance_to(other.pos) - cfg.unit_radius_of(other.unit_type)
-			if d <= aggro and d < best_d:
-				best_d = d
-				best = other
+		# ★ 冷却期（scan_units == false）时这一段整个跳过 —— 这就是「不重新锁定」。
+		#   ⚠️ 写成 `for other in (world.units if scan_units else [])` 会**每次分配一个空数组**
+		#      （这一段在每单位每帧的路径上），所以用外层 if 收口。
+		if scan_units:
+			for other in world.units:
+				# ★★ 濒死的将领**不能被选为攻击对象**（需求原话）——
+				#    判据走 `is_attackable()`（= alive and not downed），不是 alive。
+				if other == u or not other.is_attackable():
+					continue
+				if FactionRes.same_side_for_attack(other.faction, u.faction):
+					continue
+				# 距离减去目标体积：允许「半个身子进射程」的目标被发现
+				var d: float = u.pos.distance_to(other.pos) - cfg.unit_radius_of(other.unit_type)
+				if d <= aggro and d < best_d:
+					best_d = d
+					best = other
 
 	if best != null:
 		u.target = best
-		u.anchor = u.pos                  # 从这里开始算「追出去多远」
+		# ★★ 参照点只在**这里**（真正锁定那一刻）设一次 —— 之后由
+		#    `_refresh_leash_anchor()` 跟着目标往前挪。见 `unit.anchor` 与
+		#    `_refresh_leash_anchor` 的说明（本轮修的「原地抽搐」就是这里原来写成了
+		#    「每次索敌都重置」）。
+		u.anchor = u.pos
 		u.reset_repath()
 		world.push_event({"type": "alert", "unit": u, "target": best})
 		return true
@@ -293,7 +356,11 @@ static func needs_repath(u: UnitRes, cfg: ConfigRes, to_pos: Vector2) -> bool:
 ## 有目标时每帧的决策：够得着 → 站住开火；够不着 → 先移动靠近（追击）；追太远 → 放弃
 static func update_combat(world, cfg: ConfigRes, u: UnitRes) -> void:
 	var t = u.target
-	if t == null or not t.alive or t == u:
+	# ★★ `not t.is_attackable()` 覆盖两种「这个目标不该再打了」：
+	#   · 目标阵亡（老行为，用 alive）；
+	#   · ★ 目标**刚进濒死**（本轮新增）—— 需求明确「濒死期间无法被选中为攻击对象」，
+	#     所以已经锁定它的单位要当场脱战，否则它会一路走到那个打不动的人身上站着。
+	if t == null or not t.is_attackable() or t == u:
 		# ⚠️ 用 drop_engagement 而不是 clear_target：行军攻击要能在打完一个之后继续走。
 		#    只有「玩家点名的那个目标」才连命令一起清掉（命令已经完成了）。
 		if u.ordered_target == t:
@@ -308,6 +375,9 @@ static func update_combat(world, cfg: ConfigRes, u: UnitRes) -> void:
 		u.halt()
 		# 朝向指向目标（八方向下是完整向量，不再只有左右）
 		face_toward(u, t.pos)
+		# ★★ 已经贴上目标 ⇒ 这一段追击结束了，把参照点推到**目标身上**
+		#    （跟着打、目标边走边追时，leash 量的是「我掉队多远」而不是「我跑了多远」）。
+		_refresh_leash_anchor(u, cfg, t.pos)
 		if u.attack_cd <= 0.0:
 			attack_unit(world, cfg, u, t)
 		return
@@ -316,16 +386,52 @@ static func update_combat(world, cfg: ConfigRes, u: UnitRes) -> void:
 	# ★ 例外：玩家点名的目标（右键点敌人）不受这条约束 —— 那是玩家的命令，不是它自己追出去的。
 	if u.ordered_target == null and u.anchor != null and u.pos.distance_to(u.anchor) > u.leash_range(cfg):
 		u.drop_engagement()
+		# ★★ 放弃之后**拉一段冷却**（本轮修 bug）：不拉的话下一帧又会把还在警戒半径里的
+		#    同一个目标锁上，而锁定那一刻距离参照点是 0 ⇒ 再走一格又放弃 …… 原地抽搐。
+		#    见 config 的 `combat.leash_release_cd` 与 `combat.acquire_target` 里那一句。
+		u.leash_cd = cfg.leash_release_cd
 		return
 
 	# 先移动靠近。目标一直在动，但**只有它真挪了地方**才重算路径（见 needs_repath）
 	if needs_repath(u, cfg, t.pos):
+		# ★★ 参照点跟着目标往前挪（先于这一步：它的节流判据就是「目标挪过地方了没」）。
+		_refresh_leash_anchor(u, cfg, t.pos)
 		# ★★ settle = false：追击不需要「落点空位」。
 		#    落点就是敌人脚下那格，必然被判为拥挤，于是每次寻路都白跑一遍
 		#    _find_arrival_slot（全图可达掩码 + 十几个候选点各扫 1000 个单位 ≈ 226 µs）。
 		#    1000 个单位同帧首次锁定目标 → 一帧几百次 → **200+ ms 单帧卡顿**。
 		#    另外走 chase_to 而不是 move_to：近距离追击用不着距离场与拉直（见它的注释）。
 		u.chase_to(world, cfg, t.pos)
+
+
+## ★★ 把「追击参照点」`anchor` 跟着目标往前挪（本轮修 bug）。
+##
+## 为什么必须有它（实测报回来的现象：「单位在区划边界要追击的敌方单位会在原地抽搐」）：
+##   参照点原来只在**锁定那一刻**设一次、之后永不更新 ⇒ 追击上限量的其实是
+##   「我离（当时站的那个位置）有多远」—— 这是一个**恒真的判据**：
+##   一旦追出 `aggro_range × leash_factor`，之后就永远是「超了」，
+##   于是每一帧都在「锁定 → 走一格 → 超上限 → 放弃 → 下一帧又锁上」之间打转。
+##   （区划边界最容易看到：驻防将领正好在那条线上被 `general_ai` 叫回、又被重新锁定。）
+##
+## 改法：把参照点更新成**目标当前所在的位置**，于是判据变成
+##   「我离**当前这一轮追击的起点**有多远」= 「我掉队掉了多远」——
+##   这正是追击上限本来要表达的意思（追出去太远就回家），而且**目标不动时行为完全不变**
+##   （目标不动 ⇒ 这条判据永不通过 ⇒ 参照点永不更新 ⇒ 与从前逐位一致）。
+##
+## ⚠️ 节流用 `repath_timer`：它与 `needs_repath()` 的判据同源（「目标挪过地方了没」），
+##    所以既不会每帧更新（便宜），也不会在目标慢慢挪时永远不更新。
+##    `repath_timer` 在 `update_unit` 里每帧递减，`needs_repath()` 命中时会把它重置成
+##    `cfg.repath_sec`，所以刚算过的一次不会再更新 —— 那是对的（那一刻参照点刚挪过）。
+##
+## @param to_pos 目标**现在**所在的位置
+static func _refresh_leash_anchor(u: UnitRes, cfg: ConfigRes, to_pos: Vector2) -> void:
+	if u.anchor == null:
+		return                            # 玩家点名的目标：锚点为空 = 不受追击上限约束
+	if u.repath_timer > 0.0:
+		return
+	if u.anchor.distance_squared_to(to_pos) < cfg.repath_min_move * cfg.repath_min_move:
+		return
+	u.anchor = to_pos
 
 
 ## 让单位朝向某个点（八方向之后朝向是完整向量，所以要单独一个函数）。
@@ -440,7 +546,8 @@ static func update_towers(world, cfg: ConfigRes, dt: float) -> void:
 		var target = null
 		var best_d := INF
 		for u in world.units:
-			if not u.alive:
+			# ★ 濒死的将领不在箭塔的目标列表里（需求：不会受到任何伤害）。
+			if not u.is_attackable():
 				continue
 			if FactionRes.same_side_for_attack(u.faction, b.owner):
 				continue

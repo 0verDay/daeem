@@ -500,6 +500,19 @@ func _test_panels(cfg) -> void:
 		root_node.queue_free()
 		return
 
+	# ★★ 给这一局的将领配上附属兵（本轮口径变更）。
+	#
+	# 为什么必须在这里补：`main._on_test_pressed(map_path)` 走的是**不带关卡的**
+	# `World.create()`（`view/game_scene.gd` 的 `start()`），而 `config.json` 的
+	# `unit.general.escort` 全局缺省本轮已删除 ⇒ 开局三位将领**光杆**。
+	# 于是本文件里所有依赖「一支队伍 = 将领 + 它的兵」的用例（框选整队、部队列表高亮、
+	# 下拉里的队伍人数……）全都失去了被测对象，报出来的是「框里 0 个己方单位」这种
+	# 看起来像框选坏了的现象。
+	# ⚠️ 这里**不是**给玩法开后门：真游戏那一条路是关卡 `start_units[].escort_of`
+	#    （见 `view/game_scene.gd` 的 `start_level()`）；本文件用的是「按 test 直接开一局」
+	#    那条老路径，没有关卡数据可摆，所以由测试自己把队伍摆出来。
+	_seed_player_escorts(main, 5)
+
 	# ---- 节点树 ----
 	for path in ["HudRoot/SquadPanel", "HudRoot/MapPlaceholder", "HudRoot/DetailPanel",
 			"HudRoot/FactionPlaceholder", "HudRoot/CommandCard", "HudRoot/PageTabs",
@@ -560,6 +573,7 @@ func _test_panels(cfg) -> void:
 	_test_queue_cancel_via_click(main)
 	_test_auto_select_on_recruit(main)
 	_test_order_locked_notice(main)
+	_test_foreign_reject_notice_filter(main)
 	_test_right_click_orders(main)
 	await _test_box_select(main)
 	_test_detail_basic_stats(main)
@@ -1672,7 +1686,8 @@ func _test_recruit_via_card(main) -> void:
 	var world = main.world
 	var card = main.hud.command_card
 	var g1 = world.unit_by_id("general-1")
-	var per: int = main.cfg.general_escort_count()
+	# ★★ 本轮口径：`Config.general_escort_count()` 已删除（没有全局缺省编制了）——
+	#    这里的 `before` 只当**基线**用（新兵要接在它后面），不再去问配置要一个数。
 	var before: int = world.retinue_of(g1.id).size()
 
 	# 没有选中将领时不发命令，只提示
@@ -2115,6 +2130,66 @@ func _test_order_locked_notice(main) -> void:
 	ok(not g1.is_training(), "收尾：队列已清空")
 
 
+## ★★ 「别人的报错不许传到玩家界面上」——**这一类 bug 已经犯过三次**，所以单独立一条。
+##
+## 历史（都是实测报回来的，症状一模一样：玩家什么都没做，左栏一直挂着一句别人的红字）：
+##   1. `upgrade_rejected` —— 阵营 AI 对**在读条的建筑**每帧重下升级单（玩家原话：
+##      「可能是敌人的消息传到我这来了」）；
+##   2. `revive_rejected` —— AI 也会让将领「再起」，被拒后推原因；
+##   3. `recruit_rejected` —— AI 每帧重试招募，被拒后推「只能在己方区划内招募…」。
+##      ⚠️ 第三条最烦人：AI 每帧重试 ⇒ 提示被**反复续期**，2 秒的限时永远走不完，
+##      看起来就是「一直挂着」。
+##
+## 判据（`view/game_scene.gd` 的 `_consume_events` → `_is_my_event`）：
+##   · 事件带 `faction`：**只有本机阵营**（含盟友，走 `same_side`）才显示；
+##   · 不带 `faction`：保守地当成自己的（宁可多一句，也别漏掉玩家自己的报错）。
+## 所以逻辑层那几处 push 事件**必须带上下单的那一方** —— 这一条同时钉住两半。
+func _test_foreign_reject_notice_filter(main) -> void:
+	# 先把提示清干净
+	main.hud.show_notice("")
+	ok(not main.hud.notice_active(), "（前提）提示是空的")
+
+	# ---- ① 别人的拒因：**不许**出现在玩家界面上 ----
+	var foreign: Array = [
+		{"type": "recruit_rejected", "reason": "zone", "kind": "spearman", "faction": "enemy"},
+		{"type": "upgrade_rejected", "reason": "busy", "kind": "building_upgrade",
+			"faction": "enemy"},
+		{"type": "revive_rejected", "reason": "cost", "faction": "enemy"},
+		{"type": "tech_rejected", "reason": "limit", "tech_id": "t1", "faction": "enemy"},
+	]
+	main._consume_events(foreign)
+	ok(not main.hud.notice_active(),
+		"★★ 敌方的被拒事件**不显示**在自己的详细信息栏（实际：%s）" % main.hud.notice_text())
+	eq(main.hud.notice_text(), "", "★ 而且文案是空的（不是「显示了但很短」）")
+
+	# ---- ② 自己这一方的拒因：照旧要显示（别把过滤做过头） ----
+	main._consume_events([{"type": "recruit_rejected", "reason": "zone",
+		"kind": "spearman", "faction": "p1"}])
+	ok(main.hud.notice_active(), "★ 自己这一方的拒因照旧显示")
+	ok(main.hud.notice_text().contains("己方区划"),
+		"★ 文案还是那一句（实际：%s）" % main.hud.notice_text())
+
+	# ---- ③ 不带 faction 的事件：保守地当成自己的（宁可多一句，也别漏报错） ----
+	main.hud.show_notice("")
+	main._consume_events([{"type": "order_rejected", "reason": "recruiting"}])
+	ok(main.hud.notice_active(),
+		"★ 不带 faction 的事件照旧显示（保守策略：漏掉玩家自己的报错更糟）")
+
+	# ---- ④ 逻辑层真的带上了 faction（不然上面那三条过滤全是摆设） ----
+	var world = main.world
+	var leader = world.unit_by_id("general-1")
+	world.start_recruit("spearman", leader.id, "enemy")     # 拿敌方名义下单 → 必被拒
+	var seen: Dictionary = {}
+	for e in world.tick(1.0 / 60.0):
+		var ev: Dictionary = e
+		if String(ev.get("type", "")) == "recruit_rejected":
+			seen = ev
+	ok(seen.has("faction"),
+		"★★ recruit_rejected 事件带上了 faction（界面那条过滤才有依据）")
+	eq(String(seen.get("faction", "")), "enemy", "★ 带的是**下单那一方**，不是本机")
+	main.hud.show_notice("")
+
+
 # ---- 招募队列控件（RecruitQueue）：汇总带 + 五格的显示与读条（第七轮的显示优化）----
 #
 # ★ 这里单独构造一个控件、直接喂一个「正在招募」的将领 ——
@@ -2330,6 +2405,42 @@ func _test_right_click_orders(main) -> void:
 #
 # ★ 这一节刻意**把队伍摆到受控的位置上**再用框去框 —— 出生站位是挤在大本营周围的，
 #   用真实站位断言「框里有几支队伍」会变成一件碰运气的事。
+## ★★ 给「本机这一方」的每位将领塞 `per` 个附属兵（本轮口径变更，见调用点的说明）。
+##
+## 与真游戏同一条口径：兵的 `leader_id` 指向将领、类型跟随将领、站在将领旁边；
+## 只是**没有关卡数据可摆**（这条路径按 test 直接按一张图开一局），所以由测试直接建。
+## @return 造出来的兵数
+func _seed_player_escorts(main, per: int) -> int:
+	var world = main.world
+	var cfg = main.cfg
+	var made := 0
+	for g in world.units.duplicate():
+		if not g.is_general() or String(g.faction) != world.my_faction:
+			continue
+		var utype := String(g.unit_type)
+		for i in per:
+			var off: Vector2i = ESCORT_OFFSETS[i % ESCORT_OFFSETS.size()]
+			var tile := Vector2i(g.tx + off.x, g.ty + off.y)
+			if not world.map.terrain_walkable(tile.x, tile.y):
+				continue
+			var nid := "%s-s%d" % [String(g.id), i + 1]
+			if world.unit_by_id(nid) != null:
+				continue                        # 已经有了（重复调用不叠加）
+			var sub = UnitRes.create(cfg, nid, "%s %d" % [cfg.unit_name_of(utype), i + 1],
+				tile, String(g.faction), utype, "", String(g.id), utype)
+			sub.garrison_zone_id = int(g.garrison_zone_id)
+			world.units.append(sub)
+			made += 1
+	return made
+
+
+## 塞附属兵时围着将领取的方向（正交优先 —— 与 `world.ring_offsets()` 同一套手感）。
+const ESCORT_OFFSETS: Array = [
+	Vector2i(1, 0), Vector2i(0, 1), Vector2i(-1, 0), Vector2i(0, -1),
+	Vector2i(1, 1), Vector2i(-1, 1), Vector2i(-1, -1), Vector2i(1, -1),
+]
+
+
 func _test_box_select(main) -> void:
 	var world = main.world
 	var cfg = main.cfg

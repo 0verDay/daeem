@@ -6,6 +6,10 @@
 
 为什么要有它：编辑器的导出格式是**游戏要读的**东西（map_data.gd / zone.gd），
 格式写错了要等跑起来才发现。这里把「旧地图读进来 → 一字不差地导出回去」钉成断言。
+
+⚠️ 「一字不差」有**一个刻意的例外**：已废弃的 `units`（地图预置单位）会被丢掉
+（读进来就丢、导出也不写）—— 那是需求要的行为，见 `mapfile.PRESERVED_KEYS` 的注释
+与 `tools/map_editor/README.md` 第五节末尾。别把它当 bug 修回去。
 """
 
 from __future__ import annotations
@@ -80,8 +84,12 @@ def legacy_field() -> dict:
     """一张 24×16 的老格式地图（只有 cols/rows/layout + 已废弃的单数 base）。
 
     ★ 还带上「编辑器不管、但要原样带过去」的那几个字段
-      （`general_spawns` / `buildings` / `units`）—— 老图里本来就有它们，
+      （`general_spawns` / `buildings`）—— 老图里本来就有它们，
       往返测试要钉住「它们不会被丢掉」。
+
+    ★★ 另外**故意**带上一个 `units`（地图预置单位）—— 那个字段已经废弃，
+      钉的是相反的一面：「导入当场丢掉、导出绝不写」（见 t_legacy_import /
+      t_legacy_roundtrip_is_byte_stable）。留在这里它就成了活的回归样本。
     """
     layout = ["." * LEGACY_COLS for _ in range(LEGACY_ROWS)]
     layout[4] = "...." + "^" + "." * (LEGACY_COLS - 5)
@@ -96,6 +104,7 @@ def legacy_field() -> dict:
             {"type": "tower", "x": 14, "y": 12, "owner": "enemy"},
             {"type": "wall", "x": 13, "y": 12, "owner": "enemy"},
         ],
+        # ★★ 废弃字段：老图里曾经有它，现在**导出时必须消失**（不是被保留）
         "units": [{"x": 15, "y": 13, "name": "守军", "hold": True}],
     }
 
@@ -161,11 +170,20 @@ def t_legacy_import() -> None:
     eq(model.zone_at(4, 3).zone_id, 1, "(4,3) 属于 A2（列优先：列 1 行 0）")
 
     ok("general_spawns" in model.extra, "编辑器不管的字段被带在 extra 里")
-    ok("buildings" in model.extra and "units" in model.extra, "预置建筑 / 单位也在 extra 里")
+    ok("buildings" in model.extra, "★ 预置建筑照旧留在 extra 里（另一回事，别一起删）")
+    # ★★ 行为变更：units（地图预置单位）已废弃 —— **导入时就连 extra 都不进**。
+    #    这一条与 t_legacy_roundtrip_is_byte_stable 里「导出没有 units」互为两面。
+    ok("units" not in model.extra, "★★ 废弃的 units 连 extra 都不进（导入当场丢掉）")
+    ok("units" not in mapfile.PRESERVED_KEYS, "★★ units 不在保留键清单里")
 
 
 def t_legacy_roundtrip_is_byte_stable() -> None:
-    print("\n[4] 老地图「打开 → 导出」：地块与区块归属一字不差 + 新字段被补齐")
+    """老地图「打开 → 导出」：地块与区块归属一字不差 + 新字段被补齐。
+
+    ⚠️ 「逐字节一致」有**一个例外**（本轮的行为变更）：样本里那个已废弃的 `units`
+    会被丢掉 —— 所以这里的措辞是「地块与区块一字不差」，不是「整份文件一模一样」。
+    """
+    print("\n[4] 老地图「打开 → 导出」：地块与区块归属一字不差（units 例外，见下）")
     cfg = load_config(PROJECT_DIR)
     path, tmp = legacy_fixture("legacy_roundtrip.json")
     try:
@@ -181,6 +199,18 @@ def t_legacy_roundtrip_is_byte_stable() -> None:
     for key in mapfile.PRESERVED_KEYS:
         if key in original:
             eq(out[key], original[key], "字段 %s 原样带过去" % key)
+
+    # ★★ 行为变更（本轮）：units（地图预置单位）已废弃 —— 老图里带着它，
+    #    导出之后必须**没有**这个键。这正是上面那个 PRESERVED_KEYS 循环抓不到的：
+    #    units 被移出清单后循环根本不会看它，所以这里必须单独钉一条，
+    #    否则「哪天有人把它加回清单」这种回归会静默通过。
+    ok("units" in original, "（样本里确实带着 units，下面这条断言才有意义）")
+    ok("units" not in out, "★★ 导出的 JSON 里没有 units（预置单位已废弃，导出会丢弃）")
+    ok(set(mapfile.DROPPED_KEYS) & set(mapfile.PRESERVED_KEYS) == set(),
+       "★ 丢弃清单与保留键清单不重叠（units 不可能被两边同时认领）")
+    # ⚠️ buildings 是**另一回事**：它仍然在游戏里用，必须原样带过去
+    #    （用户明确要求「别顺手删了它」）。上面那个循环已经比过内容，这里再钉个存在性。
+    ok("buildings" in out, "★ 预置建筑照旧保留（别扩大打击面）")
 
     # ★ 导出里**不再有**老式大本营的 base 字段（用户要求彻底删掉）
     ok("base" not in out, "★ 导出的 JSON 里没有 base 字段了")

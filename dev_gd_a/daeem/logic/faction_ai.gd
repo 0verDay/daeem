@@ -19,10 +19,13 @@
 ##        world.start_recruit / world.start_building_upgrade），
 ##        所以扣费、读条、队列上限、人口这些规则一行都不用重写。
 ##   3. 「该类 AI 在若干将领招募满员后会派遣这些将领行军攻击某处」
-##      → 一旦「招满 generals 个将领，且每个将领都补到 min_retinue」，
+##      → 一旦「招满 generals 个将领，且每个将领都补到**它的目标编制**」，
 ##        就按 `min_ready` / `ready_mult` 算出一个派兵比例，
 ##        对**离目标最近的**那几位将领下达 `order_attack_move`（行军攻击）——
 ##        目标选「离自己最近的敌方区划中心」，没有敌方区划就选敌方大本营。
+##        ★★ 目标编制 = **关卡 `start_units[]` 里给这位将领摆了几个附属兵**
+##           （`world.escort_target_of()`）—— 本轮把全局缺省编制删掉了，
+##           没摆过的将领（含运行时自己招的）目标是 **0**，见 `_decide` 里那段说明。
 ##   4. 「该类 AI 可为其提高资源获取倍率以调整难度」
 ##      → `config.ai.factions[].resource_mult`（1.0 = 与玩家同速，2.0 = 两倍）。
 ##
@@ -178,15 +181,25 @@ static func _decide(world, cfg: ConfigRes, fc: Dictionary, st: Dictionary,
 	var min_retinue: int = int(fc["min_retinue"])
 	var generals: Array = _generals_of(world, faction)
 
-	# ---- 编制上限：**按将领序号各一个值**（`unit.general.escort` 可以是数组）----
-	#   需求原话：「敌方将领的编制上限应该在 4 到 6 不等，这个不等的区间就是攻击
-	#             波次的浮动间隔时间」—— 所以目标编制**逐将不同**，而不是一个全局数。
-	#   `fc["min_retinue"]`（config / 关卡写的那个整数）仍然生效，但只当**下限托底**：
-	#   整方想统一写一个数时就靠它（例如 `[4,5,6]` 的编制配 `min_retinue: 3` 没影响）。
-	#   ⚠️ 0 或负数 = 这一方不要求满员（原来就是这个语义：`min_retinue <= 0` 时跳过补员）。
+	# ---- 编制上限：★★ 新口径 = **关卡里给这位将领摆了几个附属兵** ----
+	#
+	# 本轮把「全局缺省编制」整个删掉了（`config.json` 的 `unit.general.escort`
+	# 与 `Config.general_escort_at()` 都没了），理由「所见即所得」：
+	#   开局场上有多少兵，必须完全等于关卡 `start_units[]` 里摆出来的那些。
+	#
+	# ★★ `fc["min_retinue"]` 在新口径下的作用（**别再把它删掉**，实测回归过）：
+	#   目标编制按「这一方有没有在关卡里摆过附属部队」分两条路（实现只有一处：
+	#   `world.escort_target_of()`）：
+	#     · **摆过** → 关卡摆几个就是几个（作者摆 0 个 = 明确指令「别给我补兵」），
+	#       `min_retinue` 在这条路上不参与；
+	#     · **没摆过**（自由对战的自动生成将领、只摆了将领的关卡）→ 退到 `min_retinue`。
+	#   ⚠️⚠️ 少了第二条的后果（手玩实测报回来：「红方的将领没有招满单位就向目标点
+	#      行军攻击了」）：没摆附属兵的一方目标恒为 0 ⇒ 下面「闲着的将领都满员了吗」
+	#      当场成立 ⇒ **AI 一个兵都不招、开局第 1 帧就出征**。
+	#   ★ `min_retinue` 仍然兼任「这一方要不要做 b 段（补员）」的开关：
+	#     它 `<= 0` 时整段跳过（见下面 b 段的 `if min_retinue > 0`）。
 	var target_retinue := func(g) -> int:
-		var own: int = cfg.general_escort_at(int(g.general_index))
-		return maxi(own, min_retinue)
+		return world.escort_target_of(faction, int(g.general_index))
 
 	# ---- 哪些将领**已经在场**（按序号）----
 	#   ★★ 这一条修的是一个实测 bug：原来判「将领招够没有」看的是自己那个
@@ -239,6 +252,12 @@ static func _decide(world, cfg: ConfigRes, fc: Dictionary, st: Dictionary,
 				break
 			if g.is_training():
 				continue                      # 它已经在造了（队列里排着的也算）
+			# ★★ 濒死的将领**不招兵**（本轮新增）：它倒在原地，招出来的兵只会
+			#    堆在它身上，而它是全队最不该吸引火力的那个位置。
+			#    ⚠️ 它**照样占槽位**（那是 `_generals_of` 的事，与这一句无关）——
+			#      这一句只是「不让一个躺着的人读条」。
+			if g.is_downed():
+				continue
 			if g.retinue_size(world) >= int(target_retinue.call(g)):
 				continue
 			var kind2 := _unit_kind_for(world, g)
@@ -253,6 +272,22 @@ static func _decide(world, cfg: ConfigRes, fc: Dictionary, st: Dictionary,
 		if orders > 0:
 			st["recruit_timer"] = float(fc["recruit_cooldown_sec"])
 			return
+
+	# ---- 0) ★★ 让**濒死的**将领再起（本轮新增）----
+	#
+	# 需求原话：「ai 在将领濒死后可在符合条件时使用资源让其再起」。
+	#
+	# ★★ 为什么排在「招将领 / 招兵」**之后**、升级 / 出兵**之前**（次序是本轮定的）：
+	#   · 招将（a 段）是**填空槽位**——濒死的将领虽然占着槽位，但那一方若本来就还有
+	#     空位（编制 3 位只招出来 2 位），先补满编制比救一个倒下的更划算；
+	#   · 再起排在升级（c 段）**之前**：一位能打的将领比一堵更厚的墙值钱，
+	#     而升级正是「任何时候只要有闲钱就会一直做」的那一件（见 c 段那段说明）。
+	#
+	# ★ 「没有更高优先级开支」的实际口径 = **这一帧 a / b 两段都没有下单**：
+	#   那两段一命中就 `return`，所以能走到这里的帧本来就已经「把兵源安排好了」。
+	#   这不是新加的闸门，而是既有的优先级链条自然给出的位置。
+	if _try_revive(world, cfg, fc, faction):
+		return
 
 	# ---- c) 升级建筑（挑最便宜的那一栋；留出 reserve 不花光）----
 	#      ★ 这一段**不 return**：升级与出兵可以同一帧发生（理由见上面那段注释）。
@@ -276,10 +311,15 @@ static func _decide(world, cfg: ConfigRes, fc: Dictionary, st: Dictionary,
 	#   而且「派几成」的分母里混进了本来不该动的人。
 	#   ★ 驻防将领与玩家那边的驻防将领是同一套规则（`logic/general_ai.gd` 驱动它们
 	#     巡逻与警戒），所以这里只是「不把它们编进攻势」。
+	#   ★★ 濒死的将领也**不进攻势**（本轮新增）：它连动都动不了，编进去只会让
+	#      「派几位」的分母虚高、把真正能打的那几位挤掉。它由上面 0 段负责救。
 	var field: Array = []
 	for g in generals:
-		if not g.is_garrison():
-			field.append(g)
+		if g.is_garrison():
+			continue
+		if g.is_downed():
+			continue
+		field.append(g)
 	if next_slot < max_generals:
 		return                                # 还有空槽位没招满，不谈出兵
 	# ★★ 只等**闲着的**那些人满员，而且只等「正在补**编外将领**」的那种读条。
@@ -312,7 +352,8 @@ static func _decide(world, cfg: ConfigRes, fc: Dictionary, st: Dictionary,
 		#   · 它要等读完条才动 —— 玩家看到的是「骑兵将领没跟着来」，
 		#     而下一波（它读完了）它就跟着来了。
 		# ⇒ 判据加上「**不能有在读条的东西**」：发兵那一刻全队都必须真的能走。
-		#   ⚠️ 这一条**不会**死锁：AI 的兵全是它自己招的（`with_escort = false`），
+		#   ⚠️ 这一条**不会**死锁：AI 的兵全是它自己招的（开局附属兵由关卡摆放决定，
+		#      而 AI 自己招的那些将领目标编制是 0 ⇒ 它们立刻就是「满员」），
 		#      读条一定会读完（有资源/人口就继续招，没有就等产出）——
 		#      它只是把「发兵」推迟到全队真的站在场上那一刻。
 		if g.is_training():
@@ -497,6 +538,13 @@ static func _attack_target_default(world, faction: String) -> Variant:
 ##
 ## ★ 判据走 `unit.is_general()`（= `ConfigRes.general_index_of(kind) >= 0`）：
 ##   与渲染（描边更粗）、科技血量加成用的是**同一个**判据 —— 不另写一份前缀判断。
+##
+## ★★ **濒死的将领也算在这一份里**（本轮确认的口径）：需求原话「濒死的将领也会
+##   占用 ai 的将领槽位暂时阻止招募新将领，直到该将领真正死亡」——
+##   而 `alive` 在濒死期间仍然是 true（见 unit.downed 的说明），所以这一句
+##   `not u.alive` 天然就把「濒死者照旧占位」表达出来了。
+##   ⚠️ 别在这里加 `and not u.is_downed()`：那会变成「将领一倒下 AI 就立刻补招一位」，
+##      槽位被绕过，而且白花一份招将的钱。
 static func _generals_of(world, faction: String) -> Array:
 	var out: Array = []
 	for u in world.units:
@@ -505,6 +553,46 @@ static func _generals_of(world, faction: String) -> Array:
 		if u.is_general():
 			out.append(u)
 	return out
+
+
+## ★★ AI 让濒死的将领再起（本轮新增）。
+##
+## 条件（逐条对应需求 + 用户拍板）：
+##   1. 血量已经回到 `revive.ready_ratio`（默认 10%）—— 与玩家**同一个门槛**
+##      （`world.revive_reject_reason` 里判的，AI 不另写一份）；
+##   2. 这一方**付得起** `revive.cost` + `ai.faction.revive_reserve_*`（预留部分
+##      默认 0 = 只要付得起就再起）；
+##   3. 没有人正在读条再起（一帧最多下一单，`MAX_ORDERS_PER_TICK` 那条护栏的同类）。
+##
+## ★ 走 `world.start_revive()` —— 与玩家点「再起」那一格**完全同一条**路：
+##   扣费、读条、事件、取消退款全都在那边，AI 这边不复制任何规则。
+## ★ 已经因「部队全灭」而死的将领不在 `_generals_of` 里（它 alive == false），
+##   所以 AI 不会对着一个死人反复下单。
+##
+## @return true = 这一帧确实下了一单再起（调用方据此收工）
+static func _try_revive(world, cfg: ConfigRes, fc: Dictionary, faction: String) -> bool:
+	var reserve_food := float(fc.get("revive_reserve_food", 0.0))
+	var reserve_gold := float(fc.get("revive_reserve_gold", 0.0))
+	var cost: Dictionary = world.revive_cost()
+	var pool: Variant = world.resource_pool_for(faction)
+	for g in _generals_of(world, faction):
+		if not g.is_downed():
+			continue
+		if g.revive_remaining > 0.0:
+			continue                          # 已经在读条了（这一单正在走）
+		if not g.revive_ready(cfg):
+			continue                          # 还没回到 10%
+		# ★ 预留：`can_afford` 只看「够不够 cost」，预留要自己加上去比。
+		#   ⚠️ 池子是 null（这一方没有资源库 = 资源无限）时直接放行 ——
+		#      与 `EconomyRes.can_afford` 对 null 的语义一致。
+		if pool != null:
+			if float((pool as Dictionary).get("food", 0.0)) < float(cost.get("food", 0.0)) + reserve_food:
+				continue
+			if float((pool as Dictionary).get("gold", 0.0)) < float(cost.get("gold", 0.0)) + reserve_gold:
+				continue
+		if world.start_revive(String(g.id), faction):
+			return true
+	return false
 
 
 ## 这个将领现在是不是「正在招**另一位将领**」（编外将领）。

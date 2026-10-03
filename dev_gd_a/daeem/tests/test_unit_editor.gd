@@ -227,7 +227,7 @@ func _test_general_overrides() -> void:
 		{"hp_max": 300, "damage": 40},
 		{},
 	]))
-	var w = require_world(cfg4)
+	var w = require_world_with_escorts(cfg4)
 	var g1 = w.unit_by_id("general-1")
 	var g2 = w.unit_by_id("general-2")
 	var g3 = w.unit_by_id("general-3")
@@ -254,21 +254,22 @@ func _test_general_overrides() -> void:
 			"★★ 附属兵的血量走**兵种**那一档（160），不是将领的 260")
 		eq(esc[0].general_index, -1, "附属兵不是将领（序号 -1）")
 
-	# ---- 护卫数（现在是**逐将一份**：`escort` 可以是数组，也可以仍是单个数字）----
-	ok(cfg4.general_escort_at(0) > 0, "第 1 位将领的开局护卫数是正数")
-	ok(cfg4.general_escort_at(1) > 0 and cfg4.general_escort_at(2) > 0,
-		"另外两位也各有编制（%d / %d）" % [cfg4.general_escort_at(1), cfg4.general_escort_at(2)])
-	# 单个数字的写法仍然生效（老数据 / 编辑器里只填一个数）：三位都变成 5
-	cfg4.data["unit"]["general"]["escort"] = 5
-	var cfg5 = _reload(cfg4)
-	eq(cfg5.general_escort_count(), 5, "改成 5 立刻生效（写法一：一个数 = 三位共用）")
-	eq(cfg5.general_escort_at(2), 5, "一个数的写法对第 3 位也生效")
-	# 数组的写法：逐将不同，且**越界按长度循环**
-	cfg5.data["unit"]["general"]["escort"] = [2, 4]
-	var cfg6 = _reload(cfg5)
-	eq(cfg6.general_escort_at(0), 2, "写法二（数组）：第 1 位 = 2")
-	eq(cfg6.general_escort_at(1), 4, "写法二（数组）：第 2 位 = 4")
-	eq(cfg6.general_escort_at(2), 2, "★ 越界按长度循环（第 3 位回到第 1 项）")
+	# ---- ★★ 「开局护卫数」（`unit.general.escort`）**已经整条删除** ----
+	#
+	# 为什么不再测「一个数 / 数组两种写法、越界按长度循环」：那个全局缺省没有了。
+	# 新口径是「所见即所得」—— 开局有几个附属兵**完全等于关卡 `start_units[]` 里
+	# 摆了几个**（每个兵一个坐标 + `escort_of` 指向哪位将领，在**战役编辑器的摆放页**里摆）。
+	# 所以这里反过来钉住「它真的没了」，免得有人又把那个全局开关加回来：
+	ok(not cfg4.data["unit"]["general"].has("escort"),
+		"★★ config 的 unit.general 里**没有** escort（开局附属兵改在战役编辑器摆放页里摆）")
+	ok(not cfg4.has_method("general_escort_at") and not cfg4.has_method("general_escort_count"),
+		"★ Config 也不再提供 general_escort_at / general_escort_count 这两个接口")
+	# 残留的 escort 键必须被**静默忽略**（老 config 文件里可能还留着它）：
+	cfg4.data["unit"]["general"]["escort"] = [2, 4]
+	var cfg6 = _reload(cfg4)
+	ok(cfg6 != null, "★ 残留的 escort 键不影响载入（静默忽略，不报错）")
+	eq(cfg6.general_type_at(0), cfg4.general_type_at(0),
+		"★ 而且它一个字段都影响不到（将领类型照旧走 types）")
 
 
 # ------------------------------------------------------------------
@@ -308,7 +309,7 @@ func _test_vision() -> void:
 	near(cfg2.unit_vision_of("rider"), 3.0, 1e-6, "★ 改了兵种的 vision → 查询口读到新值")
 
 	# ---- 出生时抄进单位身上（迷雾读的就是它）----
-	var w = require_world(cfg2)
+	var w = require_world_with_escorts(cfg2)
 	var g3 = w.unit_by_id("general-3")
 	ok(g3 != null, "（前提）将领 3 在场")
 	if g3 != null:

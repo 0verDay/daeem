@@ -12,6 +12,7 @@
 
     [1] 页签切换（五个页签 + 当前页签高亮 + 换页清选中）
     [2] 画布：放置 / 选中 / 删除（大本营不许在这里删）/ 缩放（以光标为锚点）/ 适应视图
+    [2b] ★ 摆放手势：空格 + 左键拖动平移（放东西 / 选中都不许发生）；中键那条在 [2] 里
     [3] 「设进攻目标」模式：点区划 → zone / 点空格 → point / Esc 退出
     [4] ★ ③ 与 ④ 改的是**同一个字段**（最容易写成不一致的地方）
     [5] 导出：有拦截项时**禁止写文件**并弹框说清楚；没有拦截时才真写
@@ -47,6 +48,10 @@ from campaign_editor import app as app_module                      # noqa: E402
 from campaign_editor import levelfile                              # noqa: E402
 from campaign_editor import model as M                             # noqa: E402
 
+#: 「属于将领」下拉里表示「不是附属兵」的那一项（与 `app.py` 里同一个常量 ——
+#: 不在测试里重写一遍字符串，否则改名时测试会「跟着一起错」）。
+ESCORT_NONE_LABEL = app_module.ESCORT_NONE_LABEL
+
 #: ★ 临时目录放在**工具目录里**（不放系统 temp）：受限环境下系统 temp 不一定可写
 #:   （实测踩到：`mkdtemp()` 成功、往里建子目录 `PermissionError`）。
 TMP = HERE.parent / ".tmp_campaign_editor_app_test"
@@ -74,13 +79,19 @@ def eq(actual, expected, label: str) -> None:
 
 
 class FakeEvent:
-    """假事件（界面代码只读 x / y / delta / widget 这几样）。"""
+    """假事件（界面代码只读 x / y / delta / state / widget 这几样）。
 
-    def __init__(self, widget=None, x: int = 0, y: int = 0, delta: int = 0) -> None:
+    ★ `state` 是 tk 的修饰键/按键位；摆放页只用其中一位（左键按住 = B1），
+      用来复现「拖动期间 tk 发的是带 B1 位的 `<Motion>` 而不是 `<B1-Motion>`」那条实测行为。
+    """
+
+    def __init__(self, widget=None, x: int = 0, y: int = 0, delta: int = 0,
+                 state: int = 0) -> None:
         self.widget = widget
         self.x = x
         self.y = y
         self.delta = delta
+        self.state = state
 
 
 class FakePopen:
@@ -408,6 +419,119 @@ def t_canvas(app, model) -> None:
         ok("地形" in app.status_var.get(), "★ 状态栏还写了地形与区划")
 
 
+# ======================================================================
+# [2b] ★ 摆放手势：空格 + 左键拖动 = 平移视野（放东西 / 选中都不许发生）
+# ======================================================================
+
+def t_space_drag_pan(app, model) -> None:
+    print("\n[2b] ★ 摆放手势：空格 + 左键拖动 = 平移（中键那条已在 [2] 里钉过）")
+    app.root.deiconify()
+    app.root.geometry("1340x900")
+    app.set_page("place")
+    app.root.update()
+    app.fit_view()
+    app.root.update()
+    app.root.update_idletasks()
+
+    # ---- A. 「按下空格」这件事真的接上了：不只是回调存在，而是真绑到了画布上 ----
+    ok(bool(app.canvas.bind("<KeyPress-space>")) and bool(app.canvas.bind("<KeyRelease-space>")),
+       "★★ 画布上绑了 <KeyPress-space> / <KeyRelease-space>（只有回调不算接上）")
+    ok(bool(app.canvas.bind("<Button-1>")) and bool(app.canvas.bind("<ButtonRelease-1>")),
+       "★ 画布上绑了左键的按下与松开（单击判定靠这一对）")
+    ok(not app.space_held, "一开始不在平移模式")
+    app.canvas.focus_set()                    # 空格要画布拿住键盘焦点才收得到
+    app.root.update()
+    app.canvas.event_generate("<KeyPress-space>")
+    app.root.update()
+    ok(app.space_held, "★★ 画布上按空格 → 进入平移模式")
+    ok(str(app.canvas.cget("cursor")) == "fleur", "★ 平移模式下鼠标指针变成 fleur（一眼看出能拖）")
+    app.canvas.event_generate("<KeyRelease-space>")
+    app.root.update()
+    ok(not app.space_held, "★ 松开空格 → 退出平移模式")
+
+    # Space 的所有权：焦点在输入框里时不该被画布抢走（走的是回调，避免无头窗口抢不到焦点）
+    entries = [widget for widget in walk(app.sidebar) if isinstance(widget, ttk.Entry)]
+    if not entries:
+        print("  [skip] 侧边栏里没找到输入框，跳过「输入框里空格不被抢」那一条")
+    else:
+        entry = entries[0]
+        entry.focus_set()
+        app.root.update()
+        app.on_space_down(FakeEvent(app.canvas, 100, 100))
+        ok(not app.space_held, "★★ 键盘焦点在输入框里时按空格**不**进平移模式（还能打字）")
+        app.canvas.focus_set()
+        app.root.update()
+
+    # ---- B. 空格 + 左键拖动 = 平移视野，而且**什么都没放到地图上** ----
+    f = _facts(app)
+    before_units = len(level(app).start_units)
+    app.selection = None
+    app.brush_kind = "unit"
+    app.brush_faction = f["player"]
+    app.root.update()
+    ox0, oy0 = app.ox, app.oy
+    zoom0 = app.zoom
+
+    app.on_space_down(FakeEvent(app.canvas, 300, 300))
+    ok(app.space_held, "★ `on_space_down` 进入平移模式")
+    ok(app_module.PAN_MODE_HINT in app.status_var.get(),
+       "★ 状态栏说了怎么用：%s" % app.status_var.get())
+    app.on_left_down(FakeEvent(app.canvas, 300, 300, state=app_module.BUTTON1_MASK))
+    eq(app._pan_anchor, (300, 300), "★ 空格按住时左键按下 = 武装一次平移")
+    app.on_left_drag(FakeEvent(app.canvas, 340, 322, state=app_module.BUTTON1_MASK))
+    app.on_left_up(FakeEvent(app.canvas, 340, 322, state=app_module.BUTTON1_MASK))
+    eq((app.ox, app.oy), (ox0 + 40, oy0 + 22), "★★ 空格 + 左键拖动平移了视野")
+    eq(app.zoom, zoom0, "★ 平移不改缩放")
+    eq(len(level(app).start_units), before_units, "★★ 拖过画面不算「点」：一个单位都没放")
+    eq(app.selection, None, "★ 也没改选中")
+    eq(app._pan_anchor, None, "★ 松手之后平移状态清干净")
+
+    # ---- C. ★★ 拖动期间 tk 只发带 B1 位的 <Motion>：那条路也必须能拖 ----
+    #   （这是 map_editor 里实测过的 tk 行为；只绑 <B1-Motion> 的实现会在这里装作没反应。）
+    ox1, oy1 = app.ox, app.oy
+    app.on_space_down(FakeEvent(app.canvas, 300, 300))
+    app.on_left_down(FakeEvent(app.canvas, 300, 300, state=app_module.BUTTON1_MASK))
+    app.on_motion(FakeEvent(app.canvas, 325, 310, state=app_module.BUTTON1_MASK))
+    eq((app.ox, app.oy), (ox1 + 25, oy1 + 10), "★★ 带 B1 位的 <Motion> 也把视野推到位")
+    ok(app.hover is None, "★ 平移期间不留「光标底下那一格」的高亮")
+    app.on_left_up(FakeEvent(app.canvas, 325, 310, state=app_module.BUTTON1_MASK))
+    eq(len(level(app).start_units), before_units, "★ 这一路也没有放东西")
+
+    # ---- D. 空格 + 左键「点一下」（没拖）= 什么都不做（既不放东西，也不移视野）----
+    ox2, oy2 = app.ox, app.oy
+    app.on_left_down(FakeEvent(app.canvas, 300, 300, state=app_module.BUTTON1_MASK))
+    app.on_left_up(FakeEvent(app.canvas, 300, 300, state=app_module.BUTTON1_MASK))
+    eq((app.ox, app.oy), (ox2, oy2), "★★ 空格 + 左键轻点：视野不动")
+    eq(len(level(app).start_units), before_units, "★★ 空格 + 左键轻点：也不放东西（左键被平移接管了）")
+
+    # ---- E. 没按空格时：单击照旧能放东西（**别把正常摆放弄坏**）----
+    app.on_space_up(FakeEvent(app.canvas, 300, 300))
+    ok(not app.space_held, "★ 松开空格回到「放东西 / 选中」")
+    ok(str(app.canvas.cget("cursor")) == "", "★ 指针也恢复默认")
+    sx, sy = app.cell_origin(f["spot"][0] + 0.5, f["spot"][1] + 0.5)
+    app.on_left_down(FakeEvent(app.canvas, int(sx), int(sy)))
+    app.on_left_up(FakeEvent(app.canvas, int(sx), int(sy)))
+    app.root.update()
+    eq(len(level(app).start_units), before_units + 1, "★★ 没按空格时左键单击照旧放东西")
+    eq(app.selection, ("unit", before_units), "★ 并且选中刚放的那一个")
+
+    # ---- F. 手抖容差：按下与松开之间挪了几像素 → 当点击，不当拖动 ----
+    app.on_left_down(FakeEvent(app.canvas, 300, 300))
+    app.on_left_up(FakeEvent(app.canvas, 302, 301))
+    ok(app._left_down_at is None, "★ 一次按下-松开配对之后起点被清掉")
+
+    # ---- G. 换页签时把平移状态丢掉（画布会被整块重建，别让新画布跟着鼠标跑）----
+    app.on_space_down(FakeEvent(app.canvas, 300, 300))
+    app.on_left_down(FakeEvent(app.canvas, 300, 300, state=app_module.BUTTON1_MASK))
+    ok(app._pan_anchor is not None, "（前提）现在正按着空格拖画面")
+    app.set_page("campaign")
+    app.root.update()
+    ok(not app.space_held and app._pan_anchor is None and app._left_down_at is None,
+       "★★ 换页签之后平移状态清干净（新画布不会一进来就跟着鼠标跑）")
+    app.set_page("place")
+    app.root.update()
+
+
 def _facts(app) -> dict:
     """测试用例用到的「合成事实」——从被测工程的地图里现读（不写死坐标）。
 
@@ -559,6 +683,102 @@ def t_same_field(app, model) -> None:
     eq(M.target_label(level(app).faction(f["player"]).attack_target),
        "指定区划 %s" % M.zone_label(other),
        "★ 目标的一行人话也跟着变（`target_label` 不查地图，所以只用 c<id> 记法）")
+
+
+# ======================================================================
+# [4b] ★★ 附属部队：在摆放页摆兵 + 指定它属于哪位将领（所见即所得）
+# ======================================================================
+
+def t_escort_placement(app, model) -> None:
+    print("\n[4b] ★★ 摆放页：摆将领 → 摆附属兵 → 指定归属（escort_of）")
+    f = _facts(app)
+    lv = level(app)
+    lv.start_units = []
+    lv.mark_declared("start_units")
+    lv.ensure_faction(f["player"])
+    app.refresh_all()
+    app.set_page("place")
+    app.root.update()
+
+    # ---- 1) 画笔选「将领」，在玩家大本营旁边放一位 ----
+    pick_combo(app, row(app, "画笔", "combo:放什么"), "将领")
+    app.root.update()
+    pick_combo(app, row(app, "画笔", "combo:归属"), f["player"])
+    cell = f["player_base"]
+    app.brush_faction = f["player"]
+    app.place_at(cell)
+    eq(len(level(app).start_units), 1, "★ 画布上放过了一个单位")
+    gen = level(app).start_units[0]
+    ok(gen.is_general(), "★ 它是将领")
+    eq(int(gen.general_index or 1), 1, "★★ 第一位将领的序号自动是 1")
+    eq(gen.escort_of, -1, "★ 将领自己不是附属兵")
+
+    # ---- 2) 画笔换「附属兵」：下拉里能选到刚摆的那位将领 ----
+    pick_combo(app, row(app, "画笔", "combo:放什么"), "附属兵")
+    app.root.update()
+    choices = row(app, "画笔", "combo:属于将领").cget("values")
+    ok(len(choices) == 2, "★★ 「属于将领」下拉 = （不是附属兵）+ 这一方的将领，实际 %r" % (choices,))
+    ok(any("将领 1" in str(c) for c in choices), "★ 里面有刚摆的那位将领（%r）" % (choices,))
+    pick_combo(app, row(app, "画笔", "combo:属于将领"), str(choices[1]))
+
+    # ---- 3) 放两个兵：它们都应当挂到那位将领名下 ----
+    spots = [p for p in sorted(app.map_info().walkable) if p != cell][:2]
+    for s in spots:
+        app.place_at(s)
+    app.root.update()
+    units = level(app).start_units
+    eq(len(units), 3, "★ 一共摆了 3 个（1 将 + 2 兵）")
+    escorts = [u for u in units if u.is_escort()]
+    eq(len(escorts), 2, "★★ 两个兵都算附属部队")
+    eq([int(u.escort_of) for u in escorts], [1, 1], "★★ 它们的归属将领都是 1")
+    eq(len(M.escorts_of(level(app), f["player"], 1)), 2,
+       "★★ 模型数得出「第 1 位将领名下 2 个兵」")
+    ok(M.faction_has_placed_escorts(level(app), f["player"]),
+       "★★ 这一方被判定为「摆了附属部队」（运行时会整个接管这一方）")
+
+    # ---- 4) 导出：附属兵带 escort_of，将领排在兵前面 ----
+    out = level(app).to_dict()["start_units"]
+    eq([u.get("escort_of") for u in out if u.get("escort_of")], [1, 1],
+       "★★ 导出时两个兵都写了 escort_of=1")
+    eq(out[0].get("kind"), "general",
+       "★★ 导出顺序把将领排在它自己的兵前面（world.units 的硬约定）")
+
+    # ---- 5) 右侧选中项里也能改归属：改成「不是附属兵」 ----
+    app.set_page("place")
+    app.root.update()
+    app.selection = ("unit", 1)                       # 第 1 个兵
+    app.refresh_all()
+    app.root.update()
+    sec = "选中的单位"
+    pick_combo(app, row(app, sec, "combo:属于将领"), ESCORT_NONE_LABEL)
+    eq(level(app).start_units[1].escort_of, -1, "★★ 选「不是附属兵」→ escort_of 回到 -1")
+    ok("escort_of" not in [k for k in level(app).to_dict()["start_units"][1]],
+       "★ 导出时也不再写这个键")
+
+    # ---- 6) 校验：把归属改回 1，再删掉那位将领 → 应当被拦 ----
+    app.set_page("place")
+    app.selection = ("unit", 1)
+    app.refresh_all()
+    app.root.update()
+    pick_combo(app, row(app, sec, "combo:属于将领"),
+               [c for c in row(app, sec, "combo:属于将领").cget("values")
+                if "将领 1" in str(c)][0])
+    eq(level(app).start_units[1].escort_of, 1, "★ 又指回了第 1 位将领")
+    app.delete_entry(("unit", 0))                     # 把将领删掉
+    app.root.update()
+    codes = [i.code for i in app.run_checks()]
+    ok("escort_no_general" in codes,
+       "★★ 删掉将领之后校验拦住它（escort_no_general），实际：%s" % codes)
+    ok("escort_faction_no_general" in codes,
+       "★★ 并警告「这一方被整个接管、却一个将领都没有」")
+
+def faction_section_frame(app, fid: str):
+    """按标题取「某方那一节」的 Frame 本体（`faction_section` 只给标题）。"""
+    for section in app.sidebar.winfo_children():
+        title = getattr(section, "section_title", None)
+        if title and (title == fid or title.startswith(fid + " ")):
+            return section
+    raise AssertionError("阵营页里没有「%s」那一节" % fid)
 
 
 # ======================================================================
@@ -837,8 +1057,10 @@ def main() -> int:
     try:
         t_window(app, model)
         t_canvas(app, model)
+        t_space_drag_pan(app, model)
         t_target_mode(app, model)
         t_same_field(app, model)
+        t_escort_placement(app, model)
         t_export_blocked(app, model)
         t_open_map_editor(app, model)
         t_sidebar_scroll(app, model)
