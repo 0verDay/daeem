@@ -1,0 +1,34 @@
+{
+  "_comment": [
+    "战役元信息。关卡顺序以 levels[] 为准（不是文件名的字典序）。",
+    "factions[].playable = 玩家能选谁；没被选中的参展阵营由 AI 驱动。",
+    "★★ 这是「选边关」：蓝方 F1 守住 c1、红方 F2 攻占 c1 —— 两边各有一条属于自己的",
+    "   目标（objectives[].for），开局前选谁就打谁那条；两边是对立的（不是盟友）。",
+    "★ GD1（桥头堡守军）**不可玩**：它是南岸的盟友 NPC，玩家选哪一方都不会操作它。"
+  ],
+  "name": "渡口争夺",
+  "description": "单关战役：南岸蓝方守住桥头堡 150 秒，北岸红方要把它夺下来。开局选边。",
+  "default_mode": "solo",
+  "factions": [
+    {
+      "id": "F1",
+      "name": "蓝方",
+      "color": "#5AC8FF",
+      "playable": true
+    },
+    {
+      "id": "F2",
+      "name": "红方",
+      "color": "#E05A5A",
+      "playable": true
+    }
+  ],
+  "levels": [
+    {
+      "id": "ferry",
+      "file": "levels/ferry.json",
+      "name": "渡口争夺"
+    }
+  ],
+  "unlock": "in_order"
+}

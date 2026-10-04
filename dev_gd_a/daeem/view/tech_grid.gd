@@ -33,6 +33,9 @@ signal cell_unhovered(index: int)
 
 const UiLayoutRes = preload("res://view/ui_layout.gd")
 const UiStyleRes = preload("res://view/ui_style.gd")
+## ★★ 悬停时「金色自下而上填进来」+「启用后常驻满格并增亮」的那套动效
+##   （见 view/fill_button.gd）。
+const FillButtonRes = preload("res://view/fill_button.gd")
 
 ## 格子里那两行小字的字号（80×80 的格子：名字一行 + 效果一行）
 const FS_NAME := 13
@@ -66,6 +69,11 @@ func setup() -> void:
 		#      entry，自然什么都不弹（`entry_at` 越界返回 {}）。
 		cell.mouse_entered.connect(_on_cell_mouse_entered.bind(i))
 		cell.mouse_exited.connect(_on_cell_mouse_exited.bind(i))
+		# ★★ 悬停填充 + 启用常驻（一行挂上，见 view/fill_button.gd）
+		FillButtonRes.attach_text(cell)
+		# ★ 与命令卡同一口径：字色走「跟着金色前沿由白变黑」那条统一规则
+		#   （`set_prefer_light` 是历史遗留的作废开关，见 fill_button 里的说明）。
+		FillButtonRes.set_prefer_light(cell, true)
 		add_child(cell)
 
 		# 第一行：科技名（居中偏上，给第二行留出位置）
@@ -89,6 +97,10 @@ func setup() -> void:
 		line_label.position = Vector2(0.0, cell_size.y * 0.58)
 		cell.add_child(line_label)
 
+		# ★ 两条子 Label 登记到填充上：填满时它们会一起被压成暖黑（否则暖白压金读不出来）
+		FillButtonRes.on_fill_text(cell, name_label, UiStyleRes.text())
+		FillButtonRes.on_fill_text(cell, line_label, UiStyleRes.text_dim())
+
 		_cells.append(cell)
 		_name_labels.append(name_label)
 		_line_labels.append(line_label)
@@ -103,7 +115,7 @@ func setup() -> void:
 ## 换一份内容。每条 = {id, name, line, desc, active}
 ##   · 最多 9 条（顺序 = 左上 → 右下）；
 ##   · 缺的格子画成空（置灰、点了不做事）；
-##   · `active` 决定这一格画「已启用」的那套样式（实心蓝 + 亮描边）。
+##   · `active` 决定这一格画「已启用」的那套样式（实心金 + 亮描边）。
 ##
 ## ★ 每帧都会被调（hud.refresh 里）——所以这里只在**内容真的变了**时才写控件，
 ##   否则每帧 add_theme_*_override 会白白重建 StyleBox（与 page_tabs 同一条讲究）。
@@ -151,21 +163,39 @@ func _apply() -> void:
 			_name_labels[i].text = String(e.get("name", ""))
 			_line_labels[i].text = String(e.get("line", ""))
 			cell.disabled = false
-			_name_labels[i].add_theme_color_override(
-				"font_color", UiStyleRes.TEXT_ON_ACCENT if active else UiStyleRes.TEXT)
-			_line_labels[i].add_theme_color_override(
-				"font_color",
-				Color(1.0, 1.0, 1.0, 0.85) if active else UiStyleRes.TEXT_DIM)
+			# ★★ 走「登记原色」的接口，而不是直接写 font_color override：
+			#   填充动效每帧都按「原色 + 当前填充进度」重算（见 fill_button._sync_text）。
+			FillButtonRes.set_base_font_color(cell,
+				UiStyleRes.text_on_accent() if active else UiStyleRes.text())
+			FillButtonRes.on_fill_text(cell, _line_labels[i],
+				Color(1.0, 1.0, 1.0, 0.85) if active else UiStyleRes.text_dim())
+			# ★★ 已启用 = 常驻满格 + 更亮那一档金（需求：点击启用后亮度稍微变大）
+			FillButtonRes.set_latched(cell, active)
+			# ★ 这一格「有科技」⇒ 参与填充动效（悬停填金 / 已启用常驻）。
+			#   上一帧它可能是空格子（被关掉过），所以这里要显式放回来。
+			FillButtonRes.set_available(cell, true)
 		else:
 			_name_labels[i].text = ""
 			_line_labels[i].text = ""
 			cell.disabled = true              # 空格子点了不做事（也不吃键盘）
-			_name_labels[i].add_theme_color_override("font_color", UiStyleRes.TEXT_FAINT)
-			_line_labels[i].add_theme_color_override("font_color", UiStyleRes.TEXT_FAINT)
+			FillButtonRes.set_base_font_color(cell, UiStyleRes.text_faint())
+			FillButtonRes.on_fill_text(cell, _line_labels[i], UiStyleRes.text_faint())
+			FillButtonRes.set_latched(cell, false)
+			# ★ 空格子**不参与填充**：它连「科技」都没有，填起来会让人以为这一格能点。
+			#   ⚠️ 与「已启用但点数不够」那种**置灰**不同 —— 那种照旧有灰色填充反馈，
+			#      走的是填充层对 `disabled` 的自动换档（见 view/fill_button.gd）。
+			FillButtonRes.set_available(cell, false)
 		_style_cell(cell, filled, active)
 
 
-## 三个状态各自一套样式（**不透明底**，见 ui_style.gd 那一节的说明）
+## 三个状态各自一套样式。
+##
+## ★★ 本版把「未启用」与「已启用」的底色**交给填充层**（`tech_fill()` / `tech_latched()`：
+##    底透明、只留描边）—— 旧那版是不透明实底（`tech_normal()` / `tech_active()`），
+##    它会把画在底纹**下面**的填充金整个盖住，于是「悬停自下而上填金」根本看不见。
+##   ⇒ 现在：没悬停 = 空框；悬停 = 金从下往上填；已启用 = 常驻满格且更亮一档。
+##   ⚠️ 空格子（`filled = false`）仍用 `tech_disabled()` 的实底 —— 它不是按钮，
+##      它是「这里没有科技」的一块底板，本来就该是死的。
 func _style_cell(cell: Button, filled: bool, active: bool) -> void:
 	if not filled:
 		cell.add_theme_stylebox_override("normal", UiStyleRes.tech_disabled())
@@ -173,15 +203,15 @@ func _style_cell(cell: Button, filled: bool, active: bool) -> void:
 		cell.add_theme_stylebox_override("pressed", UiStyleRes.tech_disabled())
 		cell.add_theme_stylebox_override("disabled", UiStyleRes.tech_disabled())
 	elif active:
-		cell.add_theme_stylebox_override("normal", UiStyleRes.tech_active())
-		cell.add_theme_stylebox_override("hover", UiStyleRes.tech_active_hover())
-		cell.add_theme_stylebox_override("pressed", UiStyleRes.tech_active_hover())
-		cell.add_theme_stylebox_override("disabled", UiStyleRes.tech_active())
+		cell.add_theme_stylebox_override("normal", UiStyleRes.tech_latched())
+		cell.add_theme_stylebox_override("hover", UiStyleRes.tech_latched())
+		cell.add_theme_stylebox_override("pressed", UiStyleRes.tech_latched())
+		cell.add_theme_stylebox_override("disabled", UiStyleRes.tech_latched())
 	else:
-		cell.add_theme_stylebox_override("normal", UiStyleRes.tech_normal())
-		cell.add_theme_stylebox_override("hover", UiStyleRes.tech_hover())
-		cell.add_theme_stylebox_override("pressed", UiStyleRes.tech_hover())
-		cell.add_theme_stylebox_override("disabled", UiStyleRes.tech_normal())
+		cell.add_theme_stylebox_override("normal", UiStyleRes.tech_fill())
+		cell.add_theme_stylebox_override("hover", UiStyleRes.tech_fill_hover())
+		cell.add_theme_stylebox_override("pressed", UiStyleRes.tech_fill_hover())
+		cell.add_theme_stylebox_override("disabled", UiStyleRes.tech_fill())
 	cell.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
 
 

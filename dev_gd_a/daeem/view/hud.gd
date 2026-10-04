@@ -51,6 +51,8 @@ const PageTabsRes = preload("res://view/page_tabs.gd")
 const TechGridRes = preload("res://view/tech_grid.gd")
 const HoverTipRes = preload("res://view/hover_tip.gd")
 const MinimapRes = preload("res://view/minimap.gd")
+## ★★ 悬停时「金色自下而上填进来」的那套动效（见 view/fill_button.gd）。
+const FillButtonRes = preload("res://view/fill_button.gd")
 
 ## 设置二级菜单里有几格（全屏 + 返回主菜单）。
 ## ★ 与 view/ui_layout.gd 的 `SETTINGS_MENU_SLOTS` 是**同一个数**：那边用它算面板高度
@@ -208,7 +210,7 @@ func _build_minimap() -> void:
 	map_placeholder = PanelContainer.new()
 	map_placeholder.name = "MapPlaceholder"
 	map_placeholder.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	map_placeholder.add_theme_stylebox_override("panel", UiStyleRes.panel_style(UiStyleRes.BG_SOFT))
+	map_placeholder.add_theme_stylebox_override("panel", UiStyleRes.panel_style(UiStyleRes.bg_soft()))
 	UiLayoutRes.apply_rect(map_placeholder, UiLayoutRes.MAP_RECT, false, true)
 	_root.add_child(map_placeholder)
 
@@ -236,7 +238,7 @@ func _build_faction_placeholder() -> void:
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	label.add_theme_font_size_override("font_size", UiStyleRes.FS_TITLE)
-	label.add_theme_color_override("font_color", UiStyleRes.TEXT_FAINT)
+	label.add_theme_color_override("font_color", UiStyleRes.text_faint())
 	faction_placeholder.add_child(label)
 
 
@@ -262,7 +264,7 @@ func _build_resource_bar() -> void:
 	# Panel（不是 PanelContainer）：子控件按**绝对坐标**摆 —— stylebox 的 content margin
 	# 只有 PanelContainer 那种容器才会套用，这里用默认那套底板就行。
 	resource_bar.add_theme_stylebox_override("panel",
-		UiStyleRes.panel_style(UiStyleRes.BG, UiStyleRes.LINE_SOFT))
+		UiStyleRes.panel_style(UiStyleRes.bg(), UiStyleRes.line_soft()))
 	UiLayoutRes.apply_rect(resource_bar, UiLayoutRes.RES_BAR_RECT, false, true)
 	_root.add_child(resource_bar)
 
@@ -300,7 +302,7 @@ func _build_resource_bar() -> void:
 		value.clip_text = true
 		# ★ 数字用 FS_BODY（15）：每行 20 高，15 号字（行高 16）装得下。
 		value.add_theme_font_size_override("font_size", UiStyleRes.FS_BODY)
-		value.add_theme_color_override("font_color", UiStyleRes.TEXT)
+		value.add_theme_color_override("font_color", UiStyleRes.text())
 		resource_bar.add_child(value)
 		value.position = Vector2(UiLayoutRes.RES_TEXT_X, float(r["y"]))
 		value.size = Vector2(UiLayoutRes.RES_TEXT_W, UiLayoutRes.RES_ICON)
@@ -385,7 +387,7 @@ func _build_hover_tip() -> void:
 	tech_grid.cell_unhovered.connect(_on_hover_out.bind("tech"))
 
 
-## 设置：参考图里它是右上角一条实心蓝。
+## 设置：参考图里它是右上角一条实心的强调色（现在是金，见 view/theme.gd）。
 ##
 ## ★★ 本轮起它**能点了**（原需求是「点不动」，现改为点开二级菜单）：
 ##    按下 = 弹出 / 收起 `_build_settings_menu()` 那一块（见 `toggle_settings_menu`）。
@@ -397,15 +399,24 @@ func _build_settings_button() -> void:
 	settings_button.text = cfg.str_val("settings.title", "设置")
 	settings_button.focus_mode = Control.FOCUS_NONE
 	settings_button.add_theme_font_size_override("font_size", UiStyleRes.FS_TITLE)
-	settings_button.add_theme_color_override("font_color", UiStyleRes.TEXT_ON_ACCENT)
-	settings_button.add_theme_color_override("font_hover_color", UiStyleRes.TEXT_ON_ACCENT)
-	settings_button.add_theme_color_override("font_pressed_color", UiStyleRes.TEXT_ON_ACCENT)
-	settings_button.add_theme_stylebox_override("normal", UiStyleRes.accent_button())
-	settings_button.add_theme_stylebox_override("hover", UiStyleRes.accent_button_hover())
-	settings_button.add_theme_stylebox_override("pressed", UiStyleRes.accent_button_hover())
+	# ★★ 初始**没有填充**（需求）：四档底纹都用「透明底 + 金线」那一档，
+	#   那片金完全交给自绘填充层 —— 鼠标停上去才由下往上填，移开退回去。
+	#   ⚠️ 不能再挂 `accent_button()`（那是**实心金**）：实心底会把填充盖住，
+	#      观感就是「填充层在文字之上」（用户报的）。
+	settings_button.add_theme_stylebox_override("normal", UiStyleRes.accent_button_clear())
+	settings_button.add_theme_stylebox_override("hover", UiStyleRes.accent_button_clear())
+	settings_button.add_theme_stylebox_override("pressed", UiStyleRes.accent_button_clear())
+	settings_button.add_theme_stylebox_override("disabled", UiStyleRes.accent_button_clear())
 	settings_button.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
 	UiLayoutRes.apply_rect(settings_button, UiLayoutRes.SETTINGS_RECT, true, false)
 	settings_button.pressed.connect(toggle_settings_menu)
+	# ★★ 悬停填充（一行挂上）：初始是空的，鼠标停上去才填；展开菜单时锁在满格。
+	#   ★ 字色从**暖白**起步，金扫上来时由白变黑（`fill_button._sync_text()` 的唯一规则）。
+	#     `set_prefer_light` 那行是**历史遗留**（开关已作废）：白字压金读不出来，
+	#     正是用户报的「字被金色填充遮挡」，别把它当成「要白字」的口径。
+	FillButtonRes.attach_text(settings_button)
+	FillButtonRes.set_prefer_light(settings_button, true)
+	FillButtonRes.set_base_font_color(settings_button, UiStyleRes.text())
 	_root.add_child(settings_button)
 
 
@@ -425,7 +436,7 @@ func _build_settings_menu() -> void:
 	settings_panel.name = "SettingsMenu"
 	settings_panel.mouse_filter = Control.MOUSE_FILTER_STOP
 	settings_panel.add_theme_stylebox_override("panel",
-		UiStyleRes.panel_style(UiStyleRes.BG, UiStyleRes.LINE))
+		UiStyleRes.panel_style(UiStyleRes.bg(), UiStyleRes.line()))
 	var menu_rect := UiLayoutRes.SETTINGS_MENU_RECT
 	menu_rect.size.y = _settings_menu_height(SETTINGS_MENU_SLOTS)
 	UiLayoutRes.apply_rect(settings_panel, menu_rect, true, false)
@@ -458,13 +469,23 @@ func _make_settings_item(node_name: String, text: String, handler: Callable) -> 
 	b.custom_minimum_size = Vector2(
 		UiLayoutRes.SETTINGS_MENU_RECT.size.x, UiLayoutRes.SETTINGS_MENU_ITEM_H)
 	b.add_theme_font_size_override("font_size", cfg.int_val("settings.button_size", 14))
-	for slot in ["font_color", "font_hover_color", "font_pressed_color"]:
-		b.add_theme_color_override(slot, UiStyleRes.TEXT_ON_ACCENT)
-	b.add_theme_stylebox_override("normal", UiStyleRes.accent_button())
-	b.add_theme_stylebox_override("hover", UiStyleRes.accent_button_hover())
-	b.add_theme_stylebox_override("pressed", UiStyleRes.accent_button_hover())
+	# ★★ 初始**没有填充**（需求）：四档都是「透明底 + 金线」，那片金交给填充层。
+	#   ⚠️ 挂 `accent_button()`（实心金）会把填充盖住 —— 那就是「填充层压在文字上」的观感。
+	#   按下态也用同一档：这一下由填充自己给反馈（按下时悬停被钉住，金是满的）。
+	b.add_theme_stylebox_override("normal", UiStyleRes.accent_button_clear())
+	b.add_theme_stylebox_override("hover", UiStyleRes.accent_button_clear())
+	b.add_theme_stylebox_override("pressed", UiStyleRes.accent_button_clear())
+	b.add_theme_stylebox_override("disabled", UiStyleRes.accent_button_clear())
 	b.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
 	b.pressed.connect(handler)
+	# ★★ 悬停填充（一行挂上，见 view/fill_button.gd）。
+	#   禁用时它自动换档填**灰** —— 菜单里那两颗在某些状态下不可点，
+	#   鼠标停上去也该有「这里暂时不行」的反馈，而不是一点反应都没有。
+	#   ★ 字色从暖白起步、金扫上来时由白变黑（与页签栏同一条规则；
+	#     `set_prefer_light` 是作废的历史开关，见 view/fill_button.gd）。
+	FillButtonRes.attach_text(b)
+	FillButtonRes.set_prefer_light(b, true)
+	FillButtonRes.set_base_font_color(b, UiStyleRes.text())
 	return b
 
 
@@ -487,12 +508,21 @@ func toggle_settings_menu() -> void:
 
 
 ## 直接指定设置菜单开 / 关（按钮之外只有测试与「返回主菜单」会用到）。
+##
+## ★★ 菜单开着 = 那颗按钮处于「**已启用**」那一档（常驻满格 + 更亮一档，
+##    见 view/fill_button.gd 与 ui_style.accent_button_latched()）——
+##    玩家一眼能看出「设置现在是展开的」，而不必回头看菜单在不在。
 func set_settings_menu_open(open: bool) -> void:
 	if settings_panel == null:
 		return
 	if open:
 		_refresh_fullscreen_label()
 	settings_panel.visible = open
+	if settings_button != null:
+		FillButtonRes.set_latched(settings_button, open)
+		# ★ 两档都是**透明底 + 金线**（那片金由填充层给）：收起 = 空，展开 = 满格。
+		settings_button.add_theme_stylebox_override("normal",
+			UiStyleRes.accent_button_latched() if open else UiStyleRes.accent_button_clear())
 
 
 ## 「全屏 / 窗口化」这颗按钮现在该写什么 —— 它显示的是**按下去的后果**：
@@ -551,6 +581,22 @@ func _on_page_changed(_page: String) -> void:
 func _tab_plan() -> Dictionary:
 	if input_ctrl == null:
 		return {"kind": "none", "pages": [], "default": ""}
+	# ★★ 敌对的**单位 / 建筑**（本轮新增）：右下角**不给任何页签** ——
+	#    只立一颗**空格子**（`PAGE_NONE`：没有标签、对应的命令卡也是空的）。
+	#
+	#    需求原话：「玩家可以选中敌对单位/建筑（且只能单个选中），但其右下角不会显示
+	#              任何页签（有格子，但格子内没东西）」。
+	#    ★ 为什么是「一颗空格子」而不是「一列都不画」：
+	#      后者与「选中普通建筑」那条路是一致的（那一版也是空页签），而且实测截图里
+	#      「整列消失」看起来像界面缺了一块。`PAGE_NONE` 就是为这件事存在的常量
+	#      （见 view/page_tabs.gd 的文件头）。
+	#    ★★ 它必须排在**所有分支最前面**：敌人的大本营 / 区划中心与自己的长得一样，
+	#      落到下面那几条分支里会给出一整页「升级 / 特化 / 招募」——
+	#      那是**给敌人下自己的命令**，逻辑层虽然会拒（拒因 faction / zone_owner），
+	#      但界面上摆着一颗点了必然被拒的格子，玩家只会以为功能坏了。
+	if _selected_enemy_kind() != "":
+		return {"kind": "enemy", "pages": [PageTabsRes.PAGE_NONE],
+			"default": PageTabsRes.PAGE_NONE}
 	# 区划中心（左键点中心 = 看这个区划的详情）→ 「操作」（三个特化）+「招募」
 	# ★ 本轮改动：原来这里只有「招募」一页；需求要求所有单位 / 建筑都有操作页，
 	#   而区划中心的操作页就是粮食 / 黄金 / 人口特化那一页。
@@ -1950,7 +1996,12 @@ func refresh() -> void:
 	# ★ 详细信息是**左右两栏**（第三轮改版，见 view/detail_panel.gd 的文件头）：
 	#   左栏 = 当前展开的那支部队（上半）+ 选中部队的将领头像网格（下半）
 	#   右栏 = 选中单位的头像 / 名称 / buff / 基础数值（★ 数值那块的「详细信息」标题已删）
-	# 选中对象的三种互斥情况：区划 → 建筑 → 单位（见 refresh 里的分支）
+	# 选中对象的四种互斥情况：敌人 → 区划 → 建筑 → 单位（见下）
+	# ★★ 敌人排在最前：它是**唯一**一种「选中了但不给任何操作入口」的对象，
+	#    落到下面任何一支都会把敌人当自己人显示（升级按钮、军队编组…）。
+	if _selected_enemy_kind() != "":
+		_refresh_enemy_detail()
+		return
 	# ★ 区划这一支：标题那一行写**区划名本身**（不再套「区划「xx」」那层壳），
 	#   正文里也不再出现「区划「xx」」那一行（需求：「选中区划中心时去掉『区划[xx]』文本」）。
 	if input_ctrl.selected_zone != null:
@@ -2118,6 +2169,97 @@ func _queue_leader(troop):
 		if l != null:
 			return l
 	return input_ctrl.first_selected_leader() if input_ctrl != null else null
+
+
+# ------------------------------------------------------------------
+# 选中的敌人（敌对单位 / 敌对建筑）
+#
+# 需求原话：「玩家可以选中敌对单位/建筑（且只能单个选中），但其右下角不会显示任何页签
+#            （有格子，但格子内没东西）」。
+#
+# ★ 这一节只做**显示**：操作入口一个都不给（页签那一列见 `_tab_plan` 的 enemy 分支，
+#   命令卡是空的）。所以这里的文案也**不出现任何己方动作**（升级 / 特化 / 招募 / 编队）。
+# ------------------------------------------------------------------
+
+## 现在选中的敌人是单位还是建筑（""=没选中敌人）。
+##
+## ★ 判据只有一处：`input_ctrl.selected_enemy_kind()` —— 单位与建筑在 logic/ 里
+##   没有共同基类，那种「靠字段猜类型」的事只该在一个地方做（见那个函数的注释）。
+func _selected_enemy_kind() -> String:
+	if input_ctrl == null:
+		return ""
+	return String(input_ctrl.selected_enemy_kind())
+
+
+## 选中敌人时把详细信息面板刷成「它是什么」。
+##
+## ★★ 左栏**整块留空**（`set_troops(null, [])`）：左栏那 1 + 3×3 是「选中的己方部队 /
+##    建筑」的编组视图，敌人只有**一个**、也进不了编组 —— 填进去只会让玩家以为
+##    自己能指挥它。右栏照常报它的名称与数值（那是「看一眼它多硬」该有的信息）。
+## ★ 右上角那块面板（招募队列 / 读条）也不给：`set_queue(null)`。
+## ★ 选中**敌方的区划中心**时走的是这条路（不是区划详情那一条，见 input_controller
+##   `_on_left_click` 里的归属判定）—— 否则玩家能给敌人的区划做特化。
+func _refresh_enemy_detail() -> void:
+	var e = input_ctrl.selected_enemy
+	if e == null:
+		return
+	detail_panel.set_troops(null, [])
+	detail_panel.set_queue(null)
+	match _selected_enemy_kind():
+		"unit":
+			detail_panel.set_unit_avatar_text(_unit_short(e))
+			detail_panel.set_unit_name(String(e.name))
+			detail_panel.set_detail(_enemy_unit_text(e))
+		"building":
+			detail_panel.set_unit_avatar_text(_building_short(e))
+			detail_panel.set_unit_name(e.display_name())
+			detail_panel.set_detail(_enemy_building_text(e))
+
+
+## 敌对单位的数值（**只有它是什么 + 打得多疼**）。
+##
+## ★ 与己方的 `_unit_text` 只差一件事：**不写濒死那一段**。
+##   濒死是「玩家自己的将领」才有的机制（要读回复进度、判断能不能再起），
+##   敌人的将领濒死时对玩家的意义只是「它现在打不了人」，多写三行反而会误导。
+##   ⚠️ 也正因为不写那一段，敌人那几行永远是固定的三行 —— 面板不会忽然变高。
+func _enemy_unit_text(u) -> String:
+	if u == null:
+		return "未选中"
+	var lines: Array[String] = []
+	lines.append("血量 %d / %d" % [int(round(u.hp)), int(round(u.hp_max))])
+	# ★ 兵种那一行（「长枪兵 · 近战步兵」这种）——走 `cfg.unit_class_line`，
+	#   与单位编辑器 / 其它界面同一处口径（界面不自己拼「步兵 / 骑兵」）。
+	var klass := cfg.unit_class_line(String(u.unit_type))
+	if klass != "":
+		lines.append("兵种 %s · %s" % [cfg.unit_name_of(String(u.unit_type)), klass])
+	lines.append("攻击力 %d" % int(u.combat_damage(cfg)))
+	lines.append("攻击距离 %d 格 / 间隔 %.1fs" % [
+		int(u.combat_range(cfg)), u.combat_cooldown(cfg)])
+	return "\n".join(lines)
+
+
+## 敌对建筑的数值（**只有它是什么 + 有多硬 + 打得多疼**）。
+##
+## ★★ 与己方的 `_building_text` 的差别（**故意不共用**，因为差的正是「操作性」）：
+##   · 不写「等级 N / M」——那是**升级**表的进度，升级是己方动作（玩家对敌人的建筑
+##     无能为力，写出来只会让人以为能升它）；
+##   · 不写「正在升级：还剩 X 秒」同上（那是敌人自己的内政，与玩家无关）；
+##   · 不写区划特化状态 —— 特化那一行本来就是「点自己的区划中心」看的；
+##   · 不写「建造中」—— 敌方在建的建筑信息对玩家没有价值。
+##   保留的：生命（决定要打多久）、攻击数值（决定站多远打它）、血量保底那句提示。
+func _enemy_building_text(b) -> String:
+	if b == null:
+		return "未选中"
+	var lines: Array[String] = []
+	lines.append("生命 %d / %d" % [int(round(b.hp)), int(round(b.hp_max))])
+	if b.is_attackable(cfg):
+		lines.append("伤害 %d　射程 %d 格　间隔 %.1fs" % [
+			int(b.attack_damage(cfg)), int(b.attack_range(cfg)), b.attack_cooldown(cfg),
+		])
+		if b.last_target != null and b.last_target.alive:
+			# ★ 它正在打谁 —— 这条对玩家有用（那多半是自己人），所以留着
+			lines.append("正在打：%s" % b.last_target.name)
+	return "\n".join(lines)
 
 
 # ------------------------------------------------------------------

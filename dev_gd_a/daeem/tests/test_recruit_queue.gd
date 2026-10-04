@@ -320,18 +320,48 @@ func _test_rooted_while_training(cfg) -> void:
 		"★ 招募期间 attack 命令不生效")
 	ok(not g1.moving and g1.path.is_empty(), "将领没有被命令带走")
 
-	_tick_secs(w, 3.0)
-	v2_near(g1.pos, anchor, 1e-6, "★ 招募期间位置一动不动（碰撞推挤也推不走）")
-	ok(g1.target == null and g1.target_building == null, "★ 招募期间不索敌、不还手")
-	ok(g1.hp < g1.hp_max, "旁边那个敌人确实在打它（所以「不还手」是有意义的断言）")
-	eq(g1.train_kind, KIND, "读条还在继续（没有被打断）")
+	# ★★ 本轮改口径（用户需求）：「当自己在招募时，若有敌方单位进入己方攻击范围，
+	#    则取消该招募转而攻击」—— 上面那个敌人就在**紧邻的一格**（长枪兵将领攻击距离 1 格），
+	#    所以它应当立刻被打断、并转去还手。
+	#    ⚠️ 旧断言写的是「读条还在继续（没有被打断）」+「不索敌、不还手」，
+	#       那正是这次要改掉的行为 —— 留着它就会把新需求钉死成 bug。
+	#    ⚠️ 判据必须在**打断发生的那一两帧**上取：这个敌人只有 60 血、将领 10 点伤害/次，
+	#       几秒内就被打死，之后 `ordered_target` 会被战斗逻辑清掉（目标没了）、
+	#       将领也会靠己方领地回血回满 —— 那时候再看「它在打谁 / 它掉没掉血」都已经晚了。
+	var interrupted_at := -1.0
+	var saw_ordered := false
+	var el := 0.0
+	while el < 3.0:
+		w.tick(0.1)
+		el += 0.1
+		if not g1.is_training():
+			interrupted_at = el
+			saw_ordered = (g1.ordered_target == foe)
+			break
+	ok(interrupted_at >= 0.0,
+		"★★ 敌人贴脸 ⇒ 招募被打断（%.1f 秒内；旧行为是「照样读完条」）" % interrupted_at)
+	ok(saw_ordered, "★★ 打断的那一帧就点名了威胁（ordered_target 指着它）")
+	eq(g1.train_queue_size(), 0, "★★ 打断的是整单（队列也清空）")
+	v2_near(g1.pos, anchor, 1e-6, "★ 打断之前它一直钉在原地（位置没被推走）")
 
-	# 读条结束之后恢复行动能力
-	_tick_secs(w, 8.0)
-	ok(not g1.is_training(), "读条结束了")
+	# 接着跑：它应当真的还手（对着那个敌人出现攻击特效 = 渲染那条线读的东西）
+	ok(g1.hp < g1.hp_max or not foe.alive,
+		"旁边那个敌人确实在打它（所以「被贴脸」是它被打断的原因）")
+	var hit_back := false
+	var t2 := 0.0
+	while t2 < 3.0:
+		w.tick(0.1)
+		t2 += 0.1
+		if g1.last_target == foe and g1.attack_flash > 0.0:
+			hit_back = true
+			break
+	ok(hit_back or not foe.alive, "★★ 打断之后它真的还手了（朝那个敌人开火）")
+
+	# 打断之后它不再是「读条中」，命令层也就不再锁它
+	ok(not g1.is_training(), "打断之后它不在读条")
 	ok(CommandRes.apply(w, cfg, {"kind": "move", "ids": [g1.id],
 		"x": float(g1.tx), "y": float(g1.ty + 2), "faction": "p1"}),
-		"★ 读条结束后又能接受 move 命令了")
+		"★ 打断之后又能接受 move 命令了")
 
 
 # ------------------------------------------------------------------

@@ -19,6 +19,8 @@ extends Control
 
 const UiLayoutRes = preload("res://view/ui_layout.gd")
 const UiStyleRes = preload("res://view/ui_style.gd")
+## ★★ 悬停时「金色自下而上填进来」的那套动效（见 view/fill_button.gd）。
+const FillButtonRes = preload("res://view/fill_button.gd")
 
 ## 某一格被激活（鼠标点 / 键盘按）时发出，原样带上那一条目
 signal entry_activated(entry: Dictionary)
@@ -62,8 +64,19 @@ func setup() -> void:
 		cell.pressed.connect(_on_cell_pressed.bind(i))
 		# ★ 悬停：Godot 的 Control 自带这两个信号（不需要自己算鼠标位置）。
 		#   子 Label 全是 IGNORE，所以事件一定落在 Button 自己身上。
+		#   ⚠️ 填充动效**也用这两个信号**（它自己连的，见 fill_button.setup_host）——
+		#      两条路互不干扰：这里只报「第几格」给 hud 弹说明面板。
 		cell.mouse_entered.connect(_on_cell_mouse_entered.bind(i))
 		cell.mouse_exited.connect(_on_cell_mouse_exited.bind(i))
+		# ★★ 悬停填充：一行挂上「自绘填充（画在底纹下面）+ 鼠标跟随 + 填满时把字压成暖黑」
+		FillButtonRes.attach_text(cell)
+		# ★★ 字色的**统一口径**（用户要求）：「3×3 里的文字都由下往上由白变黑，
+		#   与金色填充线同步」。
+		#   ⇒ 一律走「原色 + 跟着金色前沿翻面」那条路（`_sync_text()` 里唯一的规则）。
+		#   ⚠️ `set_prefer_light` 这行是**历史遗留**（那个开关已经作废，见 fill_button）：
+		#      当年它代表「填满时仍用白字」，而白字压金**读不出来** ——
+		#      那正是用户报的「3×3 的字被金色填充遮挡」，别再把它当成有效开关。
+		FillButtonRes.set_prefer_light(cell, true)
 		add_child(cell)
 
 		# 键位字母贴左上角（参考图就是这样：字母小、名字居中）
@@ -71,19 +84,24 @@ func setup() -> void:
 		key_label.text = String(UiLayoutRes.CARD_KEYS[i])
 		key_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		key_label.add_theme_font_size_override("font_size", UiStyleRes.FS_TINY)
-		key_label.add_theme_color_override("font_color", UiStyleRes.TEXT_FAINT)
+		key_label.add_theme_color_override("font_color", UiStyleRes.text_faint())
 		key_label.position = Vector2(4.0, 1.0)
 		cell.add_child(key_label)
 
 		var name_label := Label.new()
 		name_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		name_label.add_theme_font_size_override("font_size", UiStyleRes.FS_BODY)
-		name_label.add_theme_color_override("font_color", UiStyleRes.TEXT_FAINT)
+		name_label.add_theme_color_override("font_color", UiStyleRes.text_faint())
 		name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		name_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 		name_label.size = Vector2(UiLayoutRes.card_cell_local(i).size.x, UiLayoutRes.card_cell_local(i).size.y)
 		name_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		cell.add_child(name_label)
+
+		# ★★ 两条子 Label 也要**登记**到填充上：不登记的话填充满格时它们仍然是
+		#    暖白 / 暗金（压在那片金上读不出来）。登记之后由填充按进度一起压成暖黑。
+		FillButtonRes.on_fill_text(cell, key_label, UiStyleRes.text_faint())
+		FillButtonRes.on_fill_text(cell, name_label, UiStyleRes.text_faint())
 
 		_cells.append(cell)
 		_key_labels.append(key_label)
@@ -121,16 +139,36 @@ func set_entries(list: Array) -> void:
 			_name_labels[i].text = String(e2.get("name", ""))
 			# ★ 置灰那一档的**文字也一起变暗**：只把按钮禁掉而名字照旧是亮白的话，
 			#   看起来仍然像「能点」（实测里这类「看着能点、点了没反应」最难自查）。
-			_name_labels[i].add_theme_color_override("font_color",
-				UiStyleRes.TEXT if ready else UiStyleRes.TEXT_FAINT)
-			_key_labels[i].add_theme_color_override("font_color",
-				UiStyleRes.ACCENT if ready else UiStyleRes.TEXT_FAINT)
+			# ⚠️ 走 `set_base_font_color` / `on_fill_text` 而**不是**直接写
+			#    `add_theme_color_override("font_color", …)`：填充动效每帧都会按
+			#    「原色 + 当前填充进度」重算这四条字的颜色，直接写 override 会被下一帧盖掉。
+			# ★★ 字色口径（用户要求）：「页签内的 3×3 按钮中的文字要改成白色，
+			#   和科技页的一样」。所以这里**名字与键位字母统一用暖白**
+			#   （`UiStyleRes.text()`）—— 原来键位字母是暗金、名字是暖白，两套色看着不齐。
+			#   ★ 科技页那九格的「名字」那一条也是暖白，这里对齐的就是那一档。
+			FillButtonRes.set_base_font_color(cell,
+				UiStyleRes.text() if ready else UiStyleRes.text_faint())
+			# ★★ 名字那条**单独再登记一次**（否则它会停在建出来时的灰色上）。
+			#
+			# 为什么非要多这一句：这条 Label 是在建按钮时用**灰**（`text_faint`）建出来的，
+			#   而填充层在 `attach_text()` 那一刻就把「当下的颜色」当成了这条字的**原色**
+			#   （见 fill_button 的 `_current_font_color`）。之后调用点把它改成暖白时，
+			#   填充层那边「登记的原色」可能已经等于暖白 ⇒ 走 `on_fill_text` 的
+			#   「原色没变」那条近路 ⇒ **一次都没写进 Label**，屏幕上一直是灰的
+			#   （用户报的「3×3 里的字是灰的」）。这里显式再登记一次，把渲染色压实。
+			FillButtonRes.on_fill_text(cell, _name_labels[i],
+				UiStyleRes.text() if ready else UiStyleRes.text_faint())
+			FillButtonRes.on_fill_text(cell, _key_labels[i],
+				UiStyleRes.text() if ready else UiStyleRes.text_faint())
 			_cell_style(cell, ready)
 			cell.disabled = not ready
+			# ★★ 置灰的格子**照旧有悬停反馈**，只是填的是**灰**（见 view/fill_button.gd）：
+			#   填充层自己看 `disabled` 换档，所以这里**不要**再 `set_available(false)`
+			#   —— 那会把动效整个关掉，鼠标停上去一点反应都没有（与需求的「灰色填充」相反）。
 		else:
 			_name_labels[i].text = ""
-			_name_labels[i].add_theme_color_override("font_color", UiStyleRes.TEXT_FAINT)
-			_key_labels[i].add_theme_color_override("font_color", UiStyleRes.TEXT_FAINT)
+			FillButtonRes.set_base_font_color(cell, UiStyleRes.text_faint())
+			FillButtonRes.on_fill_text(cell, _key_labels[i], UiStyleRes.text_faint())
 			_cell_style(cell, false)
 			cell.disabled = false
 

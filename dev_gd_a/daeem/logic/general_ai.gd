@@ -112,41 +112,77 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 
 		var z: Variant = _garrison_zone(world, u)
 		u.retarget_cd = maxf(0.0, u.retarget_cd - dt)
-		# ★★ 冷却结束 = 返程这一段也结束了（见下面「回家」那一支与 `returning_home`）
-		if u.retarget_cd <= 0.0:
-			u.returning_home = false
-
-		# ---- 1) 区划级追击上限：追出自己那个区划了 → 当场脱战、走回去 ----
-		#
-		# ⚠️ 顺序：先判「该不该收队」，再更新脱战计时。
-		#    反过来的话，「追出区划」那一帧会被记成「正在交战」，
-		#    于是 IDLE 计时被清零、招兵要再等满一个 idle_sec。
+		# ★★ 返程的**兜底终点**（本轮修 bug，见 `unit.returning_home_sec`）：
+		#    实测卡过一次 —— 放弃追击之后它一直没能回到自己区划，
+		#    `returning_home` 挂着不清 ⇒ 第 5 步永远跳过 ⇒ 它定死在原地、
+		#    再也接不到新的巡逻命令。给它一个上限，超了就当到家。
+		if u.returning_home:
+			u.returning_home_sec += dt
+			if u.returning_home_sec > RETURN_HOME_MAX_SEC:
+				u.returning_home = false
+				u.returning_home_sec = 0.0
+		else:
+			u.returning_home_sec = 0.0
 		var in_combat: bool = u.target != null or u.target_building != null
-		if in_combat and _out_of_garrison(world, u, z, leash):
-			u.drop_engagement()
+
+		# ---- 1) ★★ 追击状态机（本轮重写，用户口径）----
+		#
+		# 需求原话：「巡逻时发现敌人后向该敌人追击，当该敌人死亡或在自己的警戒范围外时，
+		#           放弃追击转为立刻返回所属区划继续巡逻」。
+		#
+		# 于是「交战中」拆成两档（`u.chasing`）：
+		#   · **追击**（chasing = true）：combt 在巡逻中警戒到的敌人。**不拦它**——
+		#     这一帧交给 combat.gd 去追去打（下面第 3 步的 `continue`）；
+		#     只要「那个敌人」还活着、还没跑出当初发现它时的警戒范围，就一路追。
+		#   · **放弃追击**：上面任一条不成立（或追不动了）⇒ 当场脱战、
+		#     拉一段再战冷却（别在回家路上被同一个敌人又锁上），并**立刻**走上返程。
+		#
+		# ⚠️⚠️ 为什么把旧口径换掉（实测报回来的「在非其所属区域攻击敌人时一定原地抽搐」）：
+		#   旧口径是**按我自己的位置**判的（「我一脚踩出自己那个区划就叫回」）——
+		#   而边界上的场面天然是自相矛盾的：我在区划外（该回），敌人还在警戒半径内（该打）；
+		#   我一回区划里（该打），combat 把敌人再锁一次，我又迈出去（该回）……
+		#   两个判据各说各话，肉眼看就是**在区划边缘原地抽**。
+		#   ⇒ 新口径把「打不打」只挂在**一个**判据上：**敌人**离「我发现它的那个起点」
+		#     有多远（`u.chase_alert_range`，发现那一刻它离我多远，天然 ≤ aggro_range）。
+		#     判据只跟**目标的移动**有关，跟我自己被挤到哪、区划边界画在哪都无关 ⇒ 抖动的
+		#     回路从根上断掉（只剩「敌人跑了 → 我回家」这一条单调的转移）。
+		if in_combat and u.chasing and not _chase_should_continue(world, u, retarget_cd):
+			_abandon_chase(world, cfg, u, z, zone_count, retarget_cd)
 			in_combat = false
-			# ★★ 拉起再战冷却：这是「不追出一个区划」能真正成立的**配套**。
-			#    少了它，下一帧 combat.gd 会把同一个敌人再锁一次，于是
-			#    「追出去 → 被叫回来 → 又追出去」原地抖（见 unit.retarget_cd 的说明）。
-			u.retarget_cd = retarget_cd
-			# ★★ 返程**只下一道命令**（本轮修 bug）：实测报回来的「卡边界时还是会抽搐」
-			#    就是这里——原来每一帧命中这一支都会重下一条「回巡逻点」的命令，
-			#    而巡逻路线上的下一个点还会被 `_next_patrol_tile` 换掉 ⇒
-			#    路径每帧重置、人永远走不回家，看着就是在区划边缘原地抽。
-			#    ⇒ 只在**还没上路**时下这一道；走到了（或冷却结束）由下面第 5 步接手。
-			if not u.returning_home:
-				u.returning_home = true
-				_patrol_leader(world, cfg, u, z, zone_count)
-			u.patrol_timer = patrol_interval
-			continue
+
+		# ---- 1.2) ★ 追击中：让这一队跟上（本轮新增）----
+		#
+		# 队长追出去时，**附属兵不会自动跟**（`combat.gd` 只管命令层给它们下的命令，
+		# 而追击是 combat 直接驱动队长本人的）。不补这一手的话队长会单枪匹马追出去、
+		# 兵留在原地 —— 「将领性 AI 是一支小队」这条设定就废了。
+		# ⚠️ 用的是巡逻那一条现成的「掉队就叫上」（`_catch_up_retinue`），阈值
+		#    `patrol_retinue_leash_tiles` 与巡逻时同一个口径（不另立一套）。
+		if in_combat and u.chasing:
+			var stuck := _catch_up_retinue(world, cfg, u, u.pos, dt)
+			if stuck or not _chase_should_continue(world, u, retarget_cd):
+				_abandon_chase(world, cfg, u, z, zone_count, retarget_cd)
+				in_combat = false
 
 		# ---- 1.5) 再战冷却期内：见到敌人也不接（把它刚锁上的那个放掉）----
 		#
-		# ⚠️ 这段必须在「脱战计时」**之前**：冷却期内被锁上的那一帧不该算「正在交战」，
+		# ⚠️ 这一段必须在「脱战计时」**之前**：冷却期内被锁上的那一帧不该算「正在交战」，
 		#    否则 IDLE 计时被反复清零，它永远招不了兵（冷却与招兵会互相饿死）。
 		if in_combat and u.retarget_cd > 0.0:
 			u.drop_engagement()
+			u.clear_chase()
 			in_combat = false
+
+		# ---- 1.6) 刚警戒到敌人 ⇒ 进入追击状态（记下「发现点」与当时的距离）----
+		#
+		# ⚠️ 只在**真的锁上了**（`target` 非空）那一帧记一次：`chase_alert_range`
+		#    是「这一轮追击的警戒范围」，追的过程中不能再刷新它（那会变成
+		#    「敌人跑多远都不算远」，等于没有上限）。
+		if in_combat and not u.chasing and u.target != null:
+			u.chasing = true
+			u.chase_anchor = u.pos
+			u.chase_alert_range = maxf(ATTACK_REACH_MIN, u.pos.distance_to(u.target.pos))
+			u.chase_stuck_timer = 0.0
+			u.chase_last_pos = u.pos
 
 		# ---- 2) 脱战计时（有攻击行为的那一步清零）----
 		#
@@ -163,20 +199,43 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 			continue
 
 		# ---- 4) 脱战：先看看要不要无消耗招兵，再巡逻 ----
-		if u.combat_idle_timer >= idle_sec and min_retinue > 0:
+		# ★★ 编制上限的口径（本轮修的一个实测 bug）：
+		#   · **有关卡** ⇒ 听**关卡数据**（`world.escort_target_of`：谁摆了附属兵就按摆的算，
+		#     没摆的那一方退到它自己在关卡 `factions[].faction_ai` 里写的 `min_retinue`）；
+		#   · **没有关卡**（自由对战、纯单位测试的世界）⇒ 听全局配置的
+		#     `ai.general.min_retinue`（老行为，`tests/test_ai.gd` 那一批靠它）。
+		#   ⚠️ 判据必须是「有没有关卡」，不能是「这一关有没有人摆过附属兵」：
+		#     后者在「有关卡、但谁都没摆」时也是 false，那就会去读全局配置，
+		#     把关卡作者写的 `min_retinue`（比如守军的 **0 = 别给我补兵**）整个无视掉。
+		#   ⚠️ 这里原来**直接吃** config 的 `min_retinue`（默认 3）⇒ 关卡里的编制被完全无视：
+		#     实测「守军 `min_retinue: 0`」照样一路白嫖到 24 个单位，而它招兵是
+		#     **无消耗**的 ⇒ 攻方的兵要付人口、被打得抬不起头，
+		#     「攻占目标区划」那条目标**永远拿不下来**。
+		var want: int = min_retinue
+		if world.level != null:
+			want = int(world.escort_target_of(String(u.faction), int(u.general_index)))
+		if u.combat_idle_timer >= idle_sec and want > 0:
 			u.garrison_recruit_timer -= dt
 			if u.garrison_recruit_timer <= 0.0:
 				u.garrison_recruit_timer = recruit_check
-				if orders < MAX_RECRUIT_ORDERS_PER_TICK and _try_recruit(world, u, min_retinue):
+				if orders < MAX_RECRUIT_ORDERS_PER_TICK and _try_recruit(world, u, want):
 					orders += 1
 					continue      # 刚下单：这一帧别再插一条巡逻命令（会把它顶掉）
 
 		# ---- 5) 巡逻：按时间间隔朝**自己路线的下一个点**走 ----
 		# ★★ 正在回家的路上（`returning_home`）：**不再插新的巡逻命令** ——
 		#    那会把返程路径顶掉，于是它一步都走不回去（本轮修的「卡边界抽搐」）。
-		#    等它走到（见 `_patrol_leader` 末尾的到达判定）或冷却结束（上面那句）再恢复。
+		#
+		# ★★ 但这个标志必须**保证会结束**（否则它一挂上就永远跳过这一步 = 人定死原地）：
+		#    · 一脚踏回**自己的区划** ⇒ 返程的目的已经达到，标志当场清掉；
+		#      ⚠️ 清掉之后这一帧仍然 `continue`（见下面那半句）：让它在走完最后几步
+		#        之前别被新命令打断，但**下一帧**若还没停稳也不会再来一遍 —— flag 已经没了。
+		#    · 或者走到了这一趟那个巡逻点上（见 `_patrol_leader` 末尾）。
 		if u.returning_home:
-			continue
+			if _in_own_garrison(world, u):
+				u.returning_home = false
+			else:
+				continue
 		u.patrol_timer -= dt
 		if u.patrol_timer <= 0.0:
 			u.patrol_timer = patrol_interval
@@ -192,6 +251,87 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 const MAX_RECRUIT_ORDERS_PER_TICK := 1
 
 
+## 追击时，「警戒范围」的最小值（格）。
+##
+## 为什么要有下限：警戒范围取的是「发现敌人那一刻它离我多远」，而如果两者
+## **贴在同一格**（距离 ≈ 0），那这一轮就变成「敌人挪半格就算跑出警戒范围 ⇒ 立刻回家」——
+## 贴脸战斗反而不敢追。给它一个下限，贴脸发现的敌人也允许追出这一小段。
+const ATTACK_REACH_MIN := 2.0
+
+## 追击中「原地不动」多久算追不动了（秒）⇒ 放弃追击、转回家。
+##
+## 为什么需要它：`chase_anchor` 那套判据只管「敌人跑远了没」，管不住
+##   「敌人站在我够不着的地方」（隔着城墙 / 河 / 别人堵着）。没有这一条的话，
+##   守将会一直贴着障碍站着 —— 既追不到也回不了家（需求要的是「放弃后立刻返回」）。
+const CHASE_STUCK_SEC := 3.0
+
+## 追击中「这一帧算动了」的位移阈值（格）。与巡逻那套「到了没有」的 0.5 别混用：
+## 这里判的是「有没有在挪」，被挤着微微动一点不算。
+const CHASE_MOVE_EPS := 0.05
+
+## 「回家」这一段最多允许持续多久（秒）。超了就当到家，恢复正常巡逻。
+##
+## 为什么必须有（实测）：返程的终止条件原来只有「走回自己区划」——
+##   而**走不回去**的场面是真实存在的（被地形挡住、被人群挤在边缘、目标点在区划另一头
+##   而路径被截断）。那时 `returning_home` 挂着不清，`update()` 第 5 步被永远跳过，
+##   这位守将就**定死在原地**、再也接不到新巡逻命令。
+##   集成探针实测到过一次（25 秒都没回家）；这条兜底把「走不回去」变成「转两圈继续巡逻」。
+const RETURN_HOME_MAX_SEC := 6.0
+
+
+## 这一轮追击还要不要继续（用户口径的两个终止条件 + 「追不动了」那条兜底）。
+##
+## 终止条件（任一条成立就放弃）：
+##   1. **目标没了 / 打不了了**（死亡、进濒死、被别的逻辑结算掉）——`is_attackable()`；
+##   2. **目标跑出了警戒范围**：离「我发现它的那个起点」超过 `chase_alert_range`；
+##   3. ★ 兜底：追不动了（连续 `CHASE_STUCK_SEC` 秒原地不动）。
+##
+## ⚠️ 判据**只**看目标的位置与死活 —— 不看「我自己在哪个区划」。
+##    那正是旧口径抖动的原因，见 `update()` 第 1 步那一大段说明。
+static func _chase_should_continue(world, u, retarget_cd: float) -> bool:
+	var t = u.target
+	if t == null or not t.is_attackable():
+		return false                       # 目标死了 / 打不了了
+	if int(u.retarget_cd) > 0:
+		return false                       # 冷却期内（理论上进不来，防御性）
+	var reach: float = maxf(ATTACK_REACH_MIN, float(u.chase_alert_range))
+	if t.pos.distance_to(u.chase_anchor) > reach:
+		return false                       # 跑出警戒范围了
+	return true
+
+
+## 放弃追击：当场脱战、拉一段再战冷却，并**立刻**走上返程（用户口径）。
+##
+## ⚠️ 返程只下一道命令（`returning_home` 把这一段变成**一次**命令）：
+##    每帧重下会把路径一帧一帧重置，人永远走不回家（那正是「原地抽搐」的成因之一）。
+static func _abandon_chase(world, cfg: ConfigRes, u, z, zone_count: int,
+		retarget_cd: float) -> void:
+	u.drop_engagement()
+	u.clear_chase()
+	# ★ 冷却：回家路上别被同一个敌人立刻再锁上（距离判据已经能防抖，
+	#   这一条只是把「刚放弃就被再锁」那一下挡掉，不需要很长）。
+	u.retarget_cd = maxf(float(u.retarget_cd), retarget_cd)
+	if not u.returning_home:
+		u.returning_home = true
+		_patrol_leader(world, cfg, u, z, zone_count)
+	u.patrol_timer = float(cfg.ai_general_cfg()["patrol_interval_sec"])
+
+
+## 追击中「原地不动」的累计与判定（由 `_catch_up_retinue` 顺带驱动，见它的 `dt`）。
+##
+## ★ 放在 `_catch_up_retinue` 里而不是每帧另起一段：那一手**只在追击/巡逻时**跑，
+##   正好覆盖「追不动」的两种场面（被障碍挡着 / 被人群挤住），不必再开一条遍历。
+static func _track_chase_stuck(u, dt: float) -> bool:
+	if dt <= 0.0:
+		return false
+	if u.pos.distance_to(u.chase_last_pos) <= CHASE_MOVE_EPS:
+		u.chase_stuck_timer += dt
+	else:
+		u.chase_stuck_timer = 0.0
+	u.chase_last_pos = u.pos
+	return u.chase_stuck_timer >= CHASE_STUCK_SEC
+
+
 ## 这个驻防将领负责的区划字典（区划 id 找不到 / 地图换了 → null）。
 static func _garrison_zone(world, u) -> Variant:
 	if u.garrison_zone_id < 0 or world.zones == null:
@@ -199,7 +339,29 @@ static func _garrison_zone(world, u) -> Variant:
 	return world.zone_by_id(u.garrison_zone_id)
 
 
+## 它现在是不是**站在自己负责的那个区划里**（区划级归属的唯一判据，本轮新增）。
+##
+## 用途只有一处：判断「返程」有没有走到（见 `update()` 第 5 步）。
+## ⚠️ 与旧的 `_out_of_garrison()` 不是一回事：那一个判的是「**算不算追出去了**」，
+##    而它已经**整个删掉**了 —— 新口径下「打不打」只看敌人离发现点的距离，
+##    与我自己站在哪个区划完全无关（那正是抖动 bug 的根因）。
+static func _in_own_garrison(world, u) -> bool:
+	if u.garrison_zone_id < 0 or world.zones == null:
+		return true                        # 没有归属：不限制（与旧口径一致）
+	var here: Variant = world.zones.zone_at(u.tx, u.ty)
+	if here == null:
+		return false
+	return int((here as Dictionary)["id"]) == int(u.garrison_zone_id)
+
+
 ## 它现在算不算「追出自己那个区划了」。
+##
+## ⚠️⚠️ **本轮已被 `_chase_should_continue()` 取代，不要再拿它做判断**（保留此函数
+##    只为留下那段推理）：它的判据是「**我自己**在不在归属区划里」，而边界上的场面
+##    天然自相矛盾 —— 我在区划外（该回），敌人还在警戒半径内（该打）；我一回区划里
+##    （该打），combat 又把敌人锁上，我再迈出去（该回）…… 两个判据各说各话，
+##    肉眼看就是**在区划边缘原地抽搐**（用户报回来的正是这个）。
+##    新口径只认「**敌人**离我发现它的那个起点有多远」，与我在哪个区划无关。
 ##
 ## ★★ 主判据是**区划归属**（`zones.zone_at()` 给出另一个 id）：
 ##   需求原话就是「不会追击超过**一个区划**」，而区划形状是不规则的
@@ -284,13 +446,22 @@ static func _patrol_leader(world, cfg: ConfigRes, u, z, zone_count: int) -> void
 	#    「队长到了、兵还落在后面」正是最常见的掉队形态，只在队长移动时才检查的话
 	#    那几个人会一直站在半路（它们没有新命令，旧的 goal 早就到了）。
 	_catch_up_retinue(world, cfg, u, pt)
-	# ★★ 返程走到头了（本轮修 bug，见 `unit.returning_home`）：
-	#    队长已经站在这一趟的目标点上 ⇒ 这一段「回家」结束，恢复正常巡逻节奏。
-	#    ⚠️ 阈值必须**不小于**上面判「要不要下命令」的那个 0.5 —— 否则会出现
-	#      「下了命令、下一帧又判成到了」的循环。这里取 0.75，且只在真的停住时清。
-	#    ⚠️ 不断言「路径已空」：被挤住（人群 / 窄口）时路径可能还在，但它已经站住了。
-	if u.returning_home and not u.moving and u.pos.distance_to(pt) <= 0.75:
-		u.returning_home = false
+	# ★★ 返程什么时候算结束（本轮重写，别只留「到点」那一条）：
+	#   `returning_home` 的语义是「回家路上，别插新的巡逻命令」。它必须**保证会结束**，
+	#   否则这个标志一挂上，第 5 步就永远跳过 —— 人定死在原地（那正是旧代码靠
+	#   「再战冷却结束」兜住的那个洞，而冷却与返程本来就是两件事）。
+	#   两条结束判据，任一条成立即可：
+	#     a) **站定在自己的区划里**：这就是「到家了」。巡逻点可能在区划另一头，
+	#        要求它一定停在某个**具体点**上会把返程拖成永远（实测：站在自己区划里
+	#        不动、离那个点 3 格 ⇒ 标志挂死）。
+	#     b) 已经站在这一趟那个点上了（原判据，保留：正常情况走的就是这一条）。
+	#   ⚠️ 两条都要求 `not u.moving`：还在路上时不许判结束（不然等于没返程）。
+	if u.returning_home and not u.moving:
+		var home: Variant = world.zones.zone_at(u.tx, u.ty)
+		var in_own_zone: bool = home != null and z != null \
+			and int((home as Dictionary)["id"]) == int(u.garrison_zone_id)
+		if in_own_zone or u.pos.distance_to(pt) <= 0.75:
+			u.returning_home = false
 
 
 ## 让**整队**朝 `pt` 走（队长 + 它辖下活着的附属兵）。
@@ -322,7 +493,15 @@ static func _patrol_group(world, cfg: ConfigRes, u, pt: Vector2) -> void:
 ##      ⚠️ 少了第 2 条就会「把一个正在努力爬山的兵每秒打断一次」——
 ##      重新下命令会把它的路径重算一遍，反而更慢。
 ## ★ 只对**附属兵**做这件事：队长自己的位置由路线决定，不需要被谁叫。
-static func _catch_up_retinue(world, cfg: ConfigRes, u, pt: Vector2) -> void:
+##
+## ★★ `dt`（可选，> 0 时）还顺带驱动「追击卡住了没」（见 `_track_chase_stuck`）：
+##    那个判据本来就是「队长自己挪没挪」，而这一手**恰好只在队长带队时跑**
+##    （巡逻 / 追击两条路都会调它），不必再开一条遍历。
+##
+## @return true = 这一队**追不动了**（调用方在追击中据此放弃追击、转回家）
+static func _catch_up_retinue(world, cfg: ConfigRes, u, pt: Vector2, dt: float = 0.0) -> bool:
+	if dt > 0.0 and u.chasing and _track_chase_stuck(u, dt):
+		return true
 	var gc: Dictionary = cfg.ai_general_cfg()
 	var leash: float = float(gc.get("patrol_retinue_leash_tiles", 3.0))
 	var missing := false
@@ -335,6 +514,7 @@ static func _catch_up_retinue(world, cfg: ConfigRes, u, pt: Vector2) -> void:
 			break
 	if missing:
 		_patrol_group(world, cfg, u, pt)
+	return false
 
 
 ## 某位队长**还活着**的附属兵（`world.retinue_of` 的薄封装，只为少写一遍 id 转换）。

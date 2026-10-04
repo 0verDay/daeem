@@ -731,7 +731,13 @@ func _test_pick_blocked_by_fog(cfg) -> void:
 		"★★ 单位走到旁边之后，对家的箭塔被发现了")
 	_aim_at(ctrl, tower.tx, tower.ty)
 	ctrl._on_left_click(false)
-	ok(ctrl.selected_building == tower, "★ 现在左键点得中它了")
+	# ★★ 本轮起「选中敌方建筑」走的是 `selected_enemy`（**只有它一个**，
+	#    右下角不给任何页签 —— 见 input_controller.select_enemy 那一段的理由）。
+	#    ⚠️ 它**不再**进 `selected_buildings`：那份列表是**己方**建筑，
+	#      进去的话「升级」那一页会对着敌人的塔打开。
+	eq(ctrl.selected_enemy, tower, "★ 现在左键点得中它了（进 selected_enemy）")
+	ok(ctrl.selected_buildings.is_empty(),
+		"★ 它不进己方建筑列表（否则会对着一座敌塔弹出「升级」）")
 
 	# ---- 走开：记忆还在 → 仍然点得中（需求第 2 条） ----
 	_move_unit(u, 7, 2)
@@ -739,7 +745,7 @@ func _test_pick_blocked_by_fog(cfg) -> void:
 	w.fog.update(w)
 	_aim_at(ctrl, tower.tx, tower.ty)
 	ctrl._on_left_click(false)
-	ok(ctrl.selected_building == tower,
+	eq(ctrl.selected_enemy, tower,
 		"★★ 走开之后（迷雾重新盖住）仍然点得中它 —— 见过一次就永久记住")
 
 	# ---- 迷雾里的敌方**单位**同样点不到 ----

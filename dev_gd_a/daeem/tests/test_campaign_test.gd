@@ -16,12 +16,25 @@ const MainScene := preload("res://view/main.tscn")
 const CampaignLibraryRes = preload("res://logic/campaign_library.gd")
 const CampaignRes = preload("res://logic/campaign.gd")
 const ObjectiveRes = preload("res://logic/objective.gd")
+const ThemeRes = preload("res://view/theme.gd")
+const MenuThemeRes = preload("res://view/menu_theme.gd")
+## ★★ 「金色自下而上填充」那一层（本版新增）：关卡 / 阵营行都挂着它。
+const FillButtonRes = preload("res://view/fill_button.gd")
 
 const DEMO_ID := "demo"
 ## 样例战役第一关的 id（见 data/campaigns/demo/campaign.json 的 levels[]）
 const SOLO_LEVEL_ID := "01_beachhead"
 ## 样例战役第二关（**合作关** —— 它不该出现在战役页的关卡列表里）
 const COOP_LEVEL_ID := "02_twin_line"
+## ★ 第二个战役（本轮新加的那一个：`data/campaigns/ferry/`）。
+##   ⚠️ 它**只是本文件选的一个「另一个战役」样本**，不是产品常量：
+##      用例会先检查它确实在扫出来的表里，不在就把那一段跳过（说明数据搬走了），
+##      而不是让这一页的用例跟着数据一起红。
+const OTHER_CAMPAIGN_ID := "ferry"
+
+## 扫出来的战役表（`_run()` 开头填一次）与它的第一项 —— 「默认开哪一个」由它算出来。
+var _campaigns_now: Array = []
+var _default_id: String = ""
 
 
 func _initialize() -> void:
@@ -40,10 +53,16 @@ func _run() -> void:
 
 	var cfg = require_config()
 	if cfg != null:
+		# ★ 先看数据：这一整页（尤其「默认开哪一个战役」）都要从**扫出来的表**算，
+		#   不能写死 demo —— 往 data/campaigns/ 放一个新目录就会把默认值顶掉。
+		_campaigns_now = CampaignLibraryRes.list_campaigns(cfg)
+		_default_id = String((_campaigns_now[0] as Dictionary)["id"]) \
+			if not _campaigns_now.is_empty() else ""
 		if _assert_demo_exists():
 			await _test_button_on_menu()
 			await _test_open_and_back()
 			await _test_level_and_faction_lists()
+			await _test_campaign_selector()
 			await _test_start_enters_the_level()
 			await _test_coop_level_hidden()
 			await _test_old_path_untouched()
@@ -95,7 +114,7 @@ func _test_button_on_menu() -> void:
 		return
 	var menu = main.start_screen
 
-	var test_btn: Button = menu.get_node_or_null("StartRoot/MainMenu/MenuColumn/TestButton")
+	var test_btn: Button = menu.test_button()
 	var camp_btn: Button = menu.campaign_test_button()
 	ok(test_btn is Button, "（前提）主界面上有 test 按钮")
 	ok(camp_btn is Button, "★ 主界面上有 campaign_test 按钮（战役占位入口）")
@@ -135,7 +154,11 @@ func _test_open_and_back() -> void:
 	eq(String(screen.name), "CampaignTestScreen", "它挂在 main 下的 CampaignTestScreen 上")
 	ok(main.get_node_or_null("CampaignTestScreen") == screen, "★ 它确实挂在 main 上（不是野节点）")
 	ok(screen.campaign() != null, "★ 页里挂着一份**真的载入出来**的战役（不是选项表）")
-	eq(String(screen.campaign().id), DEMO_ID, "载入的就是样例战役 demo")
+	# ★ 默认开的是**扫出来的第一项**（`list_campaigns()` 按目录名排序 ⇒ 稳定可预期）。
+	#   ⚠️ 这里刻意不写死 demo：往 data/campaigns/ 放一个新目录会把它顶掉，
+	#      而「默认跟着数据走」正是这一页该有的行为（写死反而会假红）。
+	eq(String(screen.campaign().id), _default_id, "载入的就是扫出来的第一个战役（%s）" % _default_id)
+	eq(screen.selected_campaign(), 0, "★ 选择条也停在第一项上（与载入的那个一致）")
 
 	# 再按一次不该挂出第二页（幂等）
 	main._on_campaign_test_pressed()
@@ -179,18 +202,20 @@ func _test_level_and_faction_lists() -> void:
 			solo_ids.append(String((lv as RefCounted).id))
 	eq(screen.level_count(), solo_ids.size(),
 		"★ 关卡条数 = 战役里**单人关**的条数（%d）" % solo_ids.size())
-	ok(solo_ids.has(SOLO_LEVEL_ID), "（前提）样例战役里有单人关 %s" % SOLO_LEVEL_ID)
-	eq(screen.level_text(0), String(campaign.level(SOLO_LEVEL_ID).name),
-		"第一项就是那一关的显示名")
-	# 关卡按钮真的在树上（不是只存在数据里）
+	ok(not solo_ids.is_empty(), "（前提）默认战役里有单人关（这一页才有得测）")
+	if solo_ids.is_empty():
+		main.queue_free()
+		return
+	var lv0_id := String(solo_ids[0])
+	var lv0_data = campaign.level(lv0_id)
 	var level_btn: Button = screen.get_node_or_null(
 		"CampaignRoot/CampaignCenter/CampaignColumn/LevelBox/LevelButton0")
 	ok(level_btn is Button, "★ 关卡列表在界面上真的建出了按钮")
 	if level_btn is Button:
-		ok(level_btn.text.contains(String(campaign.level(SOLO_LEVEL_ID).name)),
-			"按钮上那行字带着关卡名")
+		ok(level_btn.text.contains(String(lv0_data.name)), "第一项就是那一关的显示名")
 		ok(level_btn.text.contains("单人"), "★ 按钮上标着模式（单人）")
-		ok(level_btn.text.contains("守住"), "★ 按钮上带着目标一句话（Level.summary()）")
+		ok(level_btn.text.contains(String(lv0_data.objective_label()).substr(0, 1)),
+			"★ 按钮上带着目标一句话（Level.summary()）")
 
 	# ---- 阵营：= 这一关的 playable_ids() ----
 	var lv0 = screen.chosen_level()
@@ -213,6 +238,53 @@ func _test_level_and_faction_lists() -> void:
 			eq(screen.faction_text(1), (lv0 as RefCounted).faction_name("F2"),
 				"★ 第 2 个按钮 = 红方")
 			ok(screen.faction_text(1) != "F2", "★ 第 2 个也不是 id")
+
+	# ---- ★★ 这一页的皮肤：与入场页 / 主界面同一套（暗金），不是旧的白底 ----
+	# ⚠️ 这一页与主界面**共用** `menu.campaign_test_*` 那批键，所以改皮肤时它最容易漏 ——
+	#    漏了的表现是「点进战役页，白底上一排深灰字」（暗底按钮里那份字色看不见）。
+	var camp_bg = screen.get_node_or_null("CampaignRoot/Background")
+	ok(camp_bg is Control, "战役页的背景那一层在")
+	ok(camp_bg != null and camp_bg.get("_gradient") is GradientTexture2D,
+		"★ 它用的是**渐变暗底**（与入场页同一个类），不是一块纯色 / 白底")
+	var camp_theme := ThemeRes.bg_top()
+	ok(camp_theme.get_luminance() < 0.35,
+		"★ 主题底色是暗的（亮度 %.2f）" % camp_theme.get_luminance())
+	if level_btn is Button:
+		var lv_sb: StyleBox = level_btn.get_theme_stylebox("normal")
+		ok(lv_sb is StyleBoxFlat, "关卡按钮有一个 StyleBoxFlat 底纹")
+		if lv_sb is StyleBoxFlat:
+			# 第一关是**默认选中**的 ⇒ 它应该是「常驻满格的金」那一档；未选中的那些是透明底 + 金线。
+			#
+			# ★★ 本版口径变更（悬停填充动效那一轮）：那一档金**不再由 StyleBox 画**，
+			#   而是由自绘的「金色填充层」常驻满格给（见 view/fill_button.gd）——
+			#   它画在底纹**下面**，StyleBox 一旦铺实底就会把整片金盖住。
+			#   ⇒ 断言拆成两半：底纹只留描边；「实心金」这件事看填充层的进度与锁定态。
+			var is_selected: bool = screen.selected_level() == 0
+			var glow := FillButtonRes.animator_of(level_btn)
+			ok(glow != null, "★ 关卡按钮挂着「金色填充层」（悬停填金 / 选中常驻满格）")
+			if is_selected:
+				ok(lv_sb.border_color.r > lv_sb.border_color.b,
+					"★ 选中那一关的框是**金色系**（R > B）")
+				ok(glow != null and glow.latched(),
+					"★ 默认选中的那一关是**锁定态**（金一直亮着，一眼看出选中了哪一关）")
+				ok(glow != null and glow.fill() > 0.99,
+					"★ 而且填充是**满格**的（那支金 = 实心金的观感）")
+				# ★ 字色也要跟着换：实心金底上必须是**能被那片金衬出来**的暗字。
+				#   ⚠️ 判据用「够不够暗」（而不是等于某个公式值）：这一页的按钮上
+				#      `_make_button` 本来就挂着一支近黑（`text_on_accent`），
+				#      填充层登记到的「原色」就是它 —— 再压一次会漂到另一个暗值上。
+				#      这里要守住的是**观感**：字够暗、读得出来。
+				var lv_font: Color = level_btn.get_theme_color("font_color")
+				ok(lv_font.get_luminance() < 0.35,
+					"★ 实心金底上的字是暗字（L=%.3f；暖白 L=0.89 压金几乎读不出来）"
+					% lv_font.get_luminance())
+				ok(lv_font.get_luminance() < MenuThemeRes.text_normal().get_luminance() * 0.5,
+					"★ 而且比常态的暖白明显更暗（换过字色，不是照旧）")
+				ok((level_btn.get_theme_color("font_color") as Color).get_luminance() < 0.35,
+					"★ 而且确实够暗（不是暖白）")
+			else:
+				ok(lv_sb.bg_color.a < 0.3,
+					"未选中的关卡是透明底 + 金线")
 	eq(screen.level_count() >= 1 and screen.faction_count() >= 1, true,
 		"（前提）这一页有得选，下面的断言才有意义")
 	ok(screen.can_start(), "★ 选好了关卡与阵营 → 可以开始")
@@ -234,15 +306,208 @@ func _test_level_and_faction_lists() -> void:
 
 
 # ------------------------------------------------------------------
-# 4) ★★ 按「开始」真的进了**那一关**
+# 4) ★★ 战役选择条：选项来自目录扫描 + 点它能真的换战役
+#
+# 需求原话：「点击选项条后读取相应目录下的战役配置项动态生成选项，玩家可以点击选项
+#           切换战役（类似主界面选 test 地图）」。
+# 这一节盯的就是那两半：
+#   · **选项从哪来** —— 必须等于 `campaign_library.list_campaigns()`（同一份来源，
+#     界面不自己编清单；多一个战役目录就多一项）；
+#   · **点了真的换** —— 换完关卡列表 / 阵营列表 / 「开始」都跟着换成新战役的。
+# ------------------------------------------------------------------
+func _test_campaign_selector() -> void:
+	var main = await _spawn_main()
+	if main == null:
+		return
+	main._on_campaign_test_pressed()
+	await process_frame
+	var screen = main.campaign_screen
+	if screen == null:
+		ok(false, "战役页能打开")
+		main.queue_free()
+		return
+
+	# ---- 选项 = 扫出来的战役表（逐项同名同序）----
+	var want: Array = []
+	for o in _campaigns_now:
+		want.append(String((o as Dictionary)["name"]))
+	eq(screen.campaign_select_item_count(), _campaigns_now.size(),
+		"★ 选择条的项数 = 扫出来的战役数（%d）" % _campaigns_now.size())
+	for i in _campaigns_now.size():
+		eq(screen.campaign_select_item_text(i), String(want[i]),
+			"第 %d 项就是那个战役的显示名（%s）" % [i, String(want[i])])
+	ok(screen.campaign_select_item_count() >= 2,
+		"★ 至少两个战役可选（样例 demo + 新加的 ferry）—— 否则「切换」这条根本没法验")
+
+	# ---- 选择条本身是个真控件（不是只有数据）----
+	var bar: Button = screen.campaign_select_button()
+	ok(bar is Button, "★ 选择条在界面上真的建出了按钮")
+	if bar is Button:
+		eq(String(bar.name), "CampaignSelect", "按钮的名字是 CampaignSelect（与地图那条区分开）")
+		eq(bar.text, screen.campaign_select_item_text(screen.selected_campaign()),
+			"★ 按钮上那行字 = 当前选中的那一项（map_select 每次选中都会重写它）")
+		# ★ 与地图选择条同一个部件 ⇒ 同一套「暗底金线」皮肤（含下拉列表底板）。
+		# ⚠️ 判据是**颜色值**，不是「与 `menu_theme` 那个对象相等」——实测：
+		#    `add_theme_stylebox_override()` 会给每个控件存一份**自己的拷贝**，
+		#    `sb == MenuThemeRes.button_normal()` 永远是 false（那是引用比较）。
+		var sb: StyleBox = bar.get_theme_stylebox("normal")
+		ok(sb is StyleBoxFlat, "选择条底纹是 StyleBoxFlat（menu_theme 造的）")
+		if sb is StyleBoxFlat:
+			var sbf := sb as StyleBoxFlat
+			ok(sbf.bg_color.a <= 0.001,
+				"★ 常态是**透明底 + 金线**（menu_theme.button_normal 那一档），不是浅色实底")
+			eq(sbf.border_color, ThemeRes.line(), "金线用的是主题的 line()")
+			ok(sbf.border_width_left >= 1, "有一圈边框（不是光秃秃的字）")
+		var sb_hover: StyleBox = bar.get_theme_stylebox("hover")
+		if sb_hover is StyleBoxFlat:
+			# ★★ 本版口径变更（填充动效那一轮）：悬停那层金改由自绘填充层给，
+			#   底纹只留「透明底 + 亮线」（叠两层会把那片金压暗）。
+			ok((sb_hover as StyleBoxFlat).bg_color.a <= 0.001,
+				"★ 悬停底纹是**透明底**（金交给填充层）")
+			ok((sb_hover as StyleBoxFlat).border_color.r > (sb_hover as StyleBoxFlat).border_color.b,
+				"★ 悬停时线是亮的金（鼠标在哪儿要看得出来）")
+		var sb_pressed: StyleBox = bar.get_theme_stylebox("pressed")
+		if sb_pressed is StyleBoxFlat:
+			eq((sb_pressed as StyleBoxFlat).bg_color, ThemeRes.accent(),
+				"★ 按下/选中是**实心金**（menu_theme.button_selected 那一档）")
+		eq(bar.get_theme_color("font_color"), MenuThemeRes.text_normal(),
+			"字色走 menu_theme（暖白），不是写死的深灰")
+		ok(bar.get_child_count() >= 1, "（前提）选择条下面挂着东西（下拉列表 / 填充层）")
+		# ★ 下拉列表挂在按钮下面（同一个部件的做法）。
+		#   ⚠️ 本版起按钮下面**不止一个**孩子：还有那层自绘的「金色填充」
+		#      （`FillAnimator`，见 view/fill_button.gd）—— 所以按**类型**找它，
+		#      不按 `get_child(0)` 的下标找（那条断言会因为多挂一层而假红）。
+		var sel_popup: PopupMenu = null
+		for child in bar.get_children():
+			if child is PopupMenu:
+				sel_popup = child as PopupMenu
+				break
+		ok(sel_popup != null, "★ 下拉列表挂在按钮下面（同一个部件的做法）")
+		# ★★ 列表那块底板**必须显式给、而且必须不透明**（引擎默认是浅色 HUD 皮，
+		#    在暗金页面上会弹出一块刺眼的白；PopupMenu 是独立窗口，半透明会看到桌面）。
+		var popup_style: StyleBox = null
+		if sel_popup != null:
+			popup_style = sel_popup.get_theme_stylebox("panel")
+		ok(popup_style is StyleBoxFlat, "下拉列表有显式底板（不是引擎默认那套）")
+		if popup_style is StyleBoxFlat:
+			var ps := popup_style as StyleBoxFlat
+			eq(ps.bg_color.a, 1.0, "★ 列表底板是**不透明**的（这一条是实测踩过的坑）")
+			# ★★ 本版新增：列表也要**风格化**（与「暗底 + 金线」同一件东西），
+			#    不是「把引擎默认皮换成纯黑」就算完。
+			ok(ps.bg_color.r <= ps.bg_color.b + 0.05,
+				"★ 底是**暗冷色**（与页面底板同源，不是一块纯黑）")
+			ok(ps.border_color.r > ps.border_color.b,
+				"★ 而且有**金色描边**（与线框按钮同一条线）")
+			ok(ps.border_width_left >= 1, "★ 描边宽度 ≥ 1")
+		if sel_popup != null:
+			var row_hover := sel_popup.get_theme_stylebox("hover")
+			ok(row_hover is StyleBoxFlat, "列表行也有显式的悬停底纹")
+			if row_hover is StyleBoxFlat:
+				ok((row_hover as StyleBoxFlat).bg_color.a > 0.0,
+					"★ 悬停那行**有底色**（独立窗口里只靠字色变亮不够）")
+				ok((row_hover as StyleBoxFlat).bg_color.r
+						> (row_hover as StyleBoxFlat).bg_color.b,
+					"★ 而且底色是**金系**（R > B）")
+			ok(sel_popup.get_theme_color("font_hover_color")
+					!= sel_popup.get_theme_color("font_color"),
+				"★ 悬停那行字也更亮（鼠标停在哪一项要看得出来）")
+
+	# ---- 位置：在标题金线之下、关卡列表之上（这一页的「选择条 → 内容」顺序）----
+	var rule = screen.get_node_or_null("CampaignRoot/CampaignCenter/CampaignColumn/TitleRuleWrap")
+	var level_box = screen.get_node_or_null("CampaignRoot/CampaignCenter/CampaignColumn/LevelBox")
+	ok(rule is Control and level_box is Control, "（前提）金线与关卡列表都在")
+	if bar is Button and rule is Control and level_box is Control:
+		ok(bar.get_global_rect().position.y >= (rule as Control).get_global_rect().end.y - 1.0,
+			"★ 选择条在标题金线**下面**")
+		ok((level_box as Control).get_global_rect().position.y
+				>= bar.get_global_rect().end.y - 1.0,
+			"★ 选择条在关卡列表**上面**")
+
+	# ---- ★★ 点它换战役：关卡 / 阵营 / 按钮上的字全跟着换 ----
+	var other := -1
+	for i in _campaigns_now.size():
+		if String((_campaigns_now[i] as Dictionary)["id"]) == OTHER_CAMPAIGN_ID:
+			other = i
+	if other < 0:
+		ok(true, "（跳过）扫出来的表里没有 %s，换战役那一半这次不验" % OTHER_CAMPAIGN_ID)
+		main.queue_free()
+		await process_frame
+		return
+
+	# 走**下拉列表真实的事件**（不是直接调页里的私有函数）：接线断了这一条会红
+	#
+	# ⚠️ 按**类型**找它，不要写 `bar.get_child(0)`：本版起按钮下面多挂了一层
+	#    自绘的「金色填充」（`FillAnimator`，见 view/fill_button.gd），
+	#    `get_child(0)` 会取到那一层、转成 PopupMenu 得到 null，接着就是
+	#    「Invalid access to property 'id_pressed' on Nil」——本条用例整段作废。
+	var popup: PopupMenu = null
+	for child in bar.get_children():
+		if child is PopupMenu:
+			popup = child as PopupMenu
+			break
+	ok(popup != null, "（前提）选择条下面挂着下拉列表")
+	if popup == null:
+		main.queue_free()
+		return
+	popup.id_pressed.emit(other)
+	await process_frame
+	var want_camp = CampaignRes.load_campaign(
+		"res://data/campaigns/%s" % OTHER_CAMPAIGN_ID)
+	ok(want_camp != null, "（前提）%s 能被载入" % OTHER_CAMPAIGN_ID)
+	if want_camp == null:
+		main.queue_free()
+		await process_frame
+		return
+	eq(screen.selected_campaign(), other, "★ 选择条的下标跟着走")
+	eq(bar.text, screen.campaign_select_item_text(other), "★ 按钮上那行字换成了新战役")
+	ok(screen.campaign() != null, "★ 换完挂着的是一份真的载入出来的战役")
+	if screen.campaign() != null:
+		eq(String(screen.campaign().id), OTHER_CAMPAIGN_ID, "★ 换的就是那一个战役")
+	# 关卡列表 = 新战役的单人关条数（不是旧战役的）
+	var want_solo := 0
+	for lv in want_camp.levels:
+		if String((lv as RefCounted).mode) == "solo":
+			want_solo += 1
+	eq(screen.level_count(), want_solo, "★ 关卡列表换成了新战役的（%d 关）" % want_solo)
+	if screen.level_count() >= 1:
+		eq(screen.level_text(0), String((screen.level_options()[0] as RefCounted).name),
+			"★ 第一关的名字来自新战役")
+		# 阵营列表 = **新那一关**的 playable_ids()（换战役最容易漏掉的一处）
+		var lv_new = screen.chosen_level()
+		if lv_new != null:
+			eq(screen.faction_options(), (lv_new as RefCounted).playable_ids(),
+				"★ 阵营列表 = 新战役那一关的 playable_ids()")
+		ok(screen.can_start(), "★ 换完战役之后「开始」是可用的（不是卡在旧的选中状态上）")
+
+	# ---- 再换回来：来回切都要稳（幂等，不会把下标弄坏）----
+	if popup != null:
+		popup.id_pressed.emit(0)
+		await process_frame
+		eq(screen.selected_campaign(), 0, "★ 换回第 0 项，下标正确")
+		eq(String(screen.campaign().id), _default_id, "★ 换回来的就是默认那个战役")
+		# 越界的下标要被忽略（点空项 / 列表被清空那一档）
+		screen.campaign_select_select(99)
+		eq(screen.selected_campaign(), 0, "★ 越界的下标被忽略（不会把选中弄坏）")
+
+	main.queue_free()
+	await process_frame
+
+
+# ------------------------------------------------------------------
+# 5) ★★ 按「开始」真的进了**那一关**
 # ------------------------------------------------------------------
 func _test_start_enters_the_level() -> void:
 	var main = await _spawn_main()
 	if main == null:
 		return
 	# 先记下这一关应该长什么样（从**同一份数据**算出来，不写死数字）
-	var campaign = CampaignRes.load_campaign("res://data/campaigns/%s" % DEMO_ID)
+	var campaign = CampaignRes.load_campaign("res://data/campaigns/%s" % _default_id)
 	var level = campaign.level(SOLO_LEVEL_ID)
+	ok(campaign != null and level != null,
+		"（前提）默认战役 %s 里有单人关 %s" % [_default_id, SOLO_LEVEL_ID])
+	if campaign == null or level == null:
+		main.queue_free()
+		return
 
 	main._on_campaign_test_pressed()
 	await process_frame
@@ -282,7 +547,7 @@ func _test_start_enters_the_level() -> void:
 			"而且就是界面上那一关（目标区划对得上）")
 	ok(game.level_campaign != null, "★ 也记下了是哪个战役")
 	if game.level_campaign != null:
-		eq(String(game.level_campaign.id), DEMO_ID, "战役 id 就是 demo")
+		eq(String(game.level_campaign.id), _default_id, "战役 id 就是默认那一个")
 	eq(String(game.world.level.id), SOLO_LEVEL_ID, "★ world 挂的关卡就是它")
 	eq(game.world.my_faction, want_faction, "★ 本机席位 = 界面上选的那一方")
 	eq(game.world.player_factions, [want_faction], "★ 单人关的席位就一个（关卡 players[] 说了算）")

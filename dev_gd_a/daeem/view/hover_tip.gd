@@ -57,7 +57,7 @@ func setup(p_font: Font = null) -> void:
 	_title.clip_text = true
 	_title.vertical_alignment = VERTICAL_ALIGNMENT_TOP
 	_title.add_theme_font_size_override("font_size", UiStyleRes.FS_BODY)
-	_title.add_theme_color_override("font_color", UiStyleRes.TEXT)
+	_title.add_theme_color_override("font_color", UiStyleRes.text())
 	# ★ 字体**显式**设在两个 Label 上（不靠主题继承）：量高度和画字必须是同一个字体，
 	#   否则「量出来的行数」与「画出来的行数」会对不上（那正是下面那个坑的同类问题）。
 	if _font != null:
@@ -72,7 +72,7 @@ func setup(p_font: Font = null) -> void:
 	# 正文**自动折行**（一行太长时按宽度折，而不是被裁掉）
 	_body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_body.add_theme_font_size_override("font_size", UiStyleRes.FS_SMALL)
-	_body.add_theme_color_override("font_color", UiStyleRes.TEXT_DIM)
+	_body.add_theme_color_override("font_color", UiStyleRes.text_dim())
 	if _font != null:
 		_body.add_theme_font_override("font", _font)
 	add_child(_body)

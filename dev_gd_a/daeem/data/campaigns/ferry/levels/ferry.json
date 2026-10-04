@@ -1,0 +1,199 @@
+{
+  "_comment": [
+    "渡口争夺 · 选边关。两边各打各的：",
+    "   蓝方 F1（南岸）守住 c1 150 秒；红方 F2（北岸）攻占 c1 —— 选谁就取谁那条目标，",
+    "   没被选中的那一边由 AI 接管。",
+    "★★ c1 是桥头堡，**归 GD1（桥头堡守军）**，而 GD1 与南岸 F1 结盟（allies）：",
+    "   · 玩家选 F1：守军是**友军**，不归你指挥，会自己守着自己的地（被打光也不连累你判负）；",
+    "   · 玩家选 F2：守军是**敌军**，正挡在你和 c1 之间。",
+    "   ⚠️ 它们**不能**写成 F1：玩家能操控的单位绝不附加 AI（见 world._is_player_piloted）。",
+    "★★ 开局归属写在 zones[] 里（那一份比地图的 zone_list[].owner 优先）：",
+    "   守住类目标的区划必须开局归玩家**同方** —— c1 归 GD1 而 GD1 是 F1 的盟友，",
+    "   所以 F1 那条「守住 c1」成立；c2/c4 归 F2，所以 F2 那条「攻占 c1」不会开局判胜。"
+  ],
+  "name": "渡口争夺",
+  "mode": "solo",
+  "map": "crossing",
+  "players": [
+    {
+      "faction": "F1",
+      "base": [
+        5,
+        7
+      ]
+    }
+  ],
+  "factions": [
+    {
+      "id": "F1",
+      "ai": "general",
+      "base": [
+        5,
+        7
+      ],
+      "start_food": 600,
+      "start_gold": 600,
+      "faction_ai": {
+        "generals": 3,
+        "min_retinue": 3,
+        "min_ready": 2,
+        "ready_mult": 0.5,
+        "attack_repeat_sec": 20
+      },
+      "name": "蓝方",
+      "color": "#5AC8FF"
+    },
+    {
+      "id": "GD1",
+      "ai": "general",
+      "base": [
+        8,
+        7
+      ],
+      "faction_ai": {
+        "generals": 3,
+        "min_retinue": 0,
+        "ready_mult": 0.5,
+        "min_ready": 2,
+        "attack_repeat_sec": 20
+      },
+      "name": "桥头堡守军",
+      "color": "#C9A0FF"
+    },
+    {
+      "id": "F2",
+      "ai": "faction",
+      "base": [
+        5,
+        2
+      ],
+      "start_food": 1200,
+      "start_gold": 1200,
+      "attack_target": {
+        "kind": "zone",
+        "zone": 0
+      },
+      "faction_ai": {
+        "generals": 3,
+        "min_retinue": 12,
+        "min_ready": 3,
+        "ready_mult": 1.0,
+        "attack_repeat_sec": 20
+      },
+      "name": "红方",
+      "color": "#E05A5A"
+    }
+  ],
+  "allies": [
+    [
+      "F1",
+      "GD1"
+    ]
+  ],
+  "zones": [
+    {
+      "id": 0,
+      "owner": "GD1"
+    },
+    {
+      "id": 3,
+      "owner": "GD1"
+    },
+    {
+      "id": 6,
+      "owner": "F1"
+    },
+    {
+      "id": 7,
+      "owner": "F1"
+    },
+    {
+      "id": 1,
+      "owner": "F2"
+    },
+    {
+      "id": 2,
+      "owner": "F2"
+    },
+    {
+      "id": 4,
+      "owner": "F2"
+    },
+    {
+      "id": 5,
+      "owner": "F2"
+    }
+  ],
+  "start_units": [
+    {
+      "faction": "GD1",
+      "kind": "enemy",
+      "x": 0,
+      "y": 7,
+      "ai": "general",
+      "zone": 0,
+      "name": "桥头堡守军"
+    },
+    {
+      "faction": "GD1",
+      "kind": "enemy",
+      "x": 1,
+      "y": 7,
+      "ai": "general",
+      "zone": 0,
+      "name": "桥头堡守军"
+    },
+    {
+      "faction": "GD1",
+      "kind": "enemy",
+      "x": 0,
+      "y": 8,
+      "ai": "general",
+      "zone": 0,
+      "name": "桥头堡守军"
+    },
+    {
+      "faction": "GD1",
+      "kind": "enemy",
+      "x": 1,
+      "y": 8,
+      "ai": "general",
+      "zone": 0,
+      "name": "桥头堡守军"
+    },
+    {
+      "faction": "GD1",
+      "kind": "enemy",
+      "x": 2,
+      "y": 8,
+      "ai": "general",
+      "zone": 0,
+      "name": "桥头堡守军"
+    },
+    {
+      "faction": "GD1",
+      "kind": "enemy",
+      "x": 2,
+      "y": 9,
+      "ai": "general",
+      "zone": 0,
+      "name": "桥头堡守军"
+    }
+  ],
+  "start_buildings": [],
+  "objectives": [
+    {
+      "for": "F1",
+      "kind": "hold_zone",
+      "zone": 0,
+      "hold_sec": 150
+    },
+    {
+      "for": "F2",
+      "kind": "capture_zone",
+      "zone": 0
+    }
+  ],
+  "fail_conditions": [],
+  "briefing": []
+}

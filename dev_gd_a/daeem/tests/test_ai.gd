@@ -1,4 +1,4 @@
-## test_ai.gd —— ★ 本轮新增的两种 AI：阵营性 AI + 将领性（防御性）AI
+﻿## test_ai.gd —— ★ 本轮新增的两种 AI：阵营性 AI + 将领性（防御性）AI
 ##
 ## 覆盖（每条都对着需求原话写）：
 ##   A. 阵营 AI 的**存在与资源库**
@@ -96,6 +96,9 @@ func _cases() -> void:
 	_test_general_ai_no_pursuit(cfg)
 	_test_general_ai_free_recruit(cfg)
 	_test_general_ai_not_advancing(cfg)
+	# ★ 本轮新增：读条与开火之间的两个衔接（攻击线残留 / 被贴脸就取消招募）
+	_test_training_clears_attack_line(cfg)
+	_test_training_interrupted_by_threat(cfg)
 
 
 ## 造一个干净的世界（用的是随游戏发布的那张真地图）。
@@ -103,6 +106,148 @@ func _world(cfg) -> RefCounted:
 	var w = WorldRes.create(cfg, "res://data/maps/frontier/map.json")
 	ok(w != null, "世界能建出来")
 	return w
+
+
+## 给一位将领把招募所需的东西备齐（钱 + 它脚下区划的人口）。
+##
+## ⚠️ `WorldRes.create()`（无关卡那条路）**不跑经济收口**，池子是 0/0、区划人口是 0 ——
+##    不补给的话招募会被 `can_afford_recruit()` 以 "cost" / "population" 拒掉，
+##    于是用例验的就不是「招募与开火的衔接」，而是「它没钱」。
+func _fund_recruit(w, gen, food: float = 500.0, gold: float = 500.0, pop: float = 5.0) -> void:
+	var pool: Variant = w.resource_pool_for(String(gen.faction))
+	if typeof(pool) == TYPE_DICTIONARY:
+		(pool as Dictionary)["food"] = food
+		(pool as Dictionary)["gold"] = gold
+	for z in w.zones.zones:
+		(z as Dictionary)["population"] = pop
+
+
+## 造一个「敌对的」探针单位（"enemy" 是内建的非玩家阵营，与 p1 天然敌对）。
+func _make_foe(w, cfg, tile: Vector2i):
+	var u = UnitRes.create(cfg, "probe-foe-%d" % w.units.size(), "探针敌人",
+		tile, FactionRes.NPC_FACTION, UnitRes.KIND_ENEMY)
+	w.units.append(u)
+	return u
+
+
+## ★★ 开始招募时，**上一次开火的渲染残留必须清掉**。
+##
+## 报回来的 bug（用户原话）：「有概率当将领从攻击转为招募或由招募转为攻击时，
+##   该将领会有一条连线一直连在被攻击对象上」。
+## 机制：招募读条期间将领被钉在原地，`world.tick` 第 4 步**整段跳过**它的单位逻辑，
+##   而 `attack_flash` 的衰减就在那段里（`combat.update_unit` 开头）⇒ flash 冻在
+##   开招那一刻的值上、`last_target` 也一直指着那个人，渲染就永远画着那条线。
+##   「有概率」= 取决于开招那一刻 flash 还剩多少。
+func _test_training_clears_attack_line(cfg) -> void:
+	var w = _world(cfg)
+	if w == null:
+		return
+	var gen = null
+	for u in w.units:
+		if u.alive and String(u.faction) == String(w.my_faction) and u.is_general():
+			gen = u
+			break
+	ok(gen != null, "★ 找得到一位本机将领（这条用例的前提）")
+	if gen == null:
+		return
+	var foe = _make_foe(w, cfg, Vector2i(gen.tx + 1, gen.ty))
+	_fund_recruit(w, gen)
+
+	# 造出「刚刚开过一炮」的状态（这正是渲染画线读的两样东西）
+	gen.attack_flash = 1.0
+	gen.last_target = foe
+	gen.last_building = null
+	ok(gen.attack_flash > 0.0 and gen.last_target == foe, "（前提）它刚刚开过火")
+
+	ok(w.start_recruit("spearman", String(gen.id), String(gen.faction)),
+		"★ 招募能开起来（将领就是兵营）")
+	ok(gen.is_training(), "（前提）它现在在读条")
+	eq(gen.attack_flash, 0.0, "★★ 开始招募 ⇒ attack_flash 归零（那条线不会冻住）")
+	eq(gen.last_target, null, "★★ last_target 也被清掉（渲染读的另一半）")
+	eq(gen.last_building, null, "last_building 一样清干净")
+
+	# 读条期间整段单位逻辑被跳过 ⇒ 不清的话它**永远不会**衰减（这就是那个 bug 的根因）。
+	# 跑一段再确认一次：值不会变成负数 / NaN 这类坏状态。
+	var t := 0.0
+	while t < 2.0 and gen.is_training():
+		w.tick(0.1)
+		t += 0.1
+	ok(gen.attack_flash >= 0.0 and gen.attack_flash <= 1.0,
+		"（跑了一段之后 flash 仍然是个有效值：%.2f）" % gen.attack_flash)
+
+
+## ★★ 读条中若有敌人进入**自己的攻击范围** ⇒ 取消招募、转去攻击（用户需求）。
+##
+## 需求原话：「增加 ai 逻辑，当自己在招募时，若有敌方单位进入己方攻击范围，
+##           则取消该招募转而攻击」。
+## 反向也要验：敌人**在范围外**时不许打断（否则招募永远开不完）。
+func _test_training_interrupted_by_threat(cfg) -> void:
+	var w = _world(cfg)
+	if w == null:
+		return
+	var gen = null
+	for u in w.units:
+		if u.alive and String(u.faction) == String(w.my_faction) and u.is_general():
+			gen = u
+			break
+	if gen == null:
+		ok(false, "★ 找得到一位本机将领（这条用例的前提）")
+		return
+	_fund_recruit(w, gen)
+	var reach: float = gen.combat_range(cfg)
+	ok(reach > 0.0, "（前提）它有攻击距离（%.2f 格）" % reach)
+
+	# ---- 反面：敌人在**攻击范围之外**（12 格）⇒ 不许打断 ----
+	var far = _make_foe(w, cfg, Vector2i(gen.tx + 12, gen.ty + 12))
+	ok(w.start_recruit("spearman", String(gen.id), String(gen.faction)), "★ 招募开起来了")
+	var t := 0.0
+	while t < 3.0 and gen.is_training():
+		w.tick(0.1)
+		t += 0.1
+	ok(gen.is_training(),
+		"★★ 敌人在 12 格外（攻击距离只有 %.1f 格）⇒ **不打断**，继续读条" % reach)
+	# 收尾：把它撤掉，免得干扰下一段
+	far.alive = false
+	w.units = w.units.filter(func(u): return u.alive)
+	gen.stop()                        # 停止读条（stop 不动 train_*，所以下面显式清）
+	gen.train_kind = ""
+	gen.train_remaining = 0.0
+	gen.train_total = 0.0
+	gen.train_queue.clear()
+	ok(not gen.is_training(), "（前提）它现在不在读条")
+
+	# ---- 正面：敌人贴到脸上（1 格）⇒ 取消招募并转去攻击 ----
+	var near_foe = _make_foe(w, cfg, Vector2i(gen.tx + 1, gen.ty))
+	# ★ 记下「再开一单之前」的池子：取消要**退款**，所以结算后应当回到这个数
+	#   （写死数字会随上面那几单花掉多少而漂：实测第一版写成 500 就红了）。
+	var pool_before: Variant = w.resource_pool_for(String(gen.faction))
+	var food_before := float((pool_before as Dictionary)["food"]) \
+		if typeof(pool_before) == TYPE_DICTIONARY else 0.0
+	ok(w.start_recruit("spearman", String(gen.id), String(gen.faction)), "★ 再开一单招募")
+	ok(gen.is_training(), "（前提）它正在读条")
+	var t2 := 0.0
+	while t2 < 3.0 and gen.is_training():
+		w.tick(0.1)
+		t2 += 0.1
+	ok(not gen.is_training(), "★★ 敌人贴脸 ⇒ 招募被取消（%.1f 秒内）" % t2)
+	eq(gen.train_queue_size(), 0, "★★ 队列也清空了（取消的是整单）")
+	ok(gen.ordered_target == near_foe, "★★ 转去攻击那个威胁（ordered_target 指着它）")
+	# 再跑几帧：应当真的朝它开火（渲染那条线读的正是这两样）
+	var fired := false
+	var t3 := 0.0
+	while t3 < 5.0:
+		w.tick(0.1)
+		t3 += 0.1
+		if gen.attack_flash > 0.0 and gen.last_target == near_foe:
+			fired = true
+			break
+	ok(fired, "★★ 取消之后**真的开火了**（flash>0 且 last_target = 那个敌人）")
+	# 取消要**退款**（走的是现成的 cancel_recruit 那条路）：池子回到开单之前
+	var pool: Variant = w.resource_pool_for(String(gen.faction))
+	if typeof(pool) == TYPE_DICTIONARY:
+		near(float((pool as Dictionary)["food"]), food_before, 0.01,
+			"★ 取消的那一单退回了粮食（%.0f → 开单前 %.0f）"
+			% [float((pool as Dictionary)["food"]), food_before])
 
 
 ## 腾掉 AI 阵营的全部将领（腾出空槽位）。
@@ -1585,21 +1730,20 @@ func _test_general_ai_no_pursuit(cfg) -> void:
 	if w == null:
 		return
 
-	# ★★ 怎么摆这个场面（第一版绕了两圈弯路，把结论留在这里）：
-	#   需求那条是「警戒到敌人会打，但**不会追击超过一个区划**」，所以真正要验的是
-	#   「**已经交战中**的驻防将领，一旦不在自己那个区划里，就当场脱战」。
-	#   ⚠️ 别去指望「让它自己追出去」：守将巡逻的落点是**自己区划的中心**，
-	#      而任意两个区划的中心都隔着 5 格以上（> 警戒半径 4）——
-	#      它巡逻到中心就停住了，根本不会自己跨过边界。
-	#   ⚠️ 更要命的是「追出去」本身要靠 `leader_zone_owned` 之外的一堆条件
-	#      （索敌要静止、追击要过 leash），摆场面比直接验规则脆得多。
-	#   所以这里**直接造出「交战中 + 不在自己区划里」这个状态**，再断言规则本身。
+	# ★★ 本轮口径（用户原话）：
+	#   「巡逻时发现敌人后向该敌人追击，当该敌人死亡或在自己的警戒范围外时，
+	#     放弃追击转为立刻返回所属区划继续巡逻」。
+	#   ⇒ 旧断言（「一跨进别的区划就当场脱战」「无主空地上离中心太远也算追出去」）
+	#     钉的是**上一版**的行为（按**自己**的位置判），而那个判据正是这次要修掉的抖动源：
+	#     它在边界上自相矛盾（我在区划外 = 该回，敌人在警戒内 = 该打），于是来回抽。
+	#     所以这一组**整组重写**成新口径：只按「敌人离发现点的距离」与「目标死活」判。
 	#
-	# 区划 6 与区划 5 的分界是 x = 10：(9,12) 属区划 6、(10,12) 属区划 5，
-	# 两者相距 1 格 —— 也就是「追过了一个区划」的最短形式。
+	# 场面仍然用同一条最短边界：区划 6 与区划 5 的分界是 x = 10
+	# （(9,12) 属区划 6、(10,12) 属区划 5，相距 1 格）。
 	var g = _make_garrison(w, cfg, Vector2i(9, 12), 6)
 	if g == null:
 		return
+	g.hold_position = false          # 让 combat 的追击逻辑能驱动它（下面几段要真追）
 	var foe = UnitRes.create(cfg, "test-foe-1", "入侵者", Vector2i(10, 12),
 		FactionRes.DEFAULT_FACTION, UnitRes.KIND_ENEMY)
 	w.units.append(foe)
@@ -1609,121 +1753,101 @@ func _test_general_ai_no_pursuit(cfg) -> void:
 	eq(w.zones.zone_at(9, 12), z6, "测试前提：(9,12) 是守将自己的区划（区划 6）")
 	eq(w.zones.zone_at(10, 12), z5, "测试前提：(10,12) 是隔壁区划（区划 5）")
 
-	# ---- 1) 在自己家里交战 → 不该被叫回去 ----
-	g.pos = GridRes.center_of(Vector2i(9, 12))
+	# ---- ★★ 0) 抖动回归：**就站在隔壁区划里**打敌人，位置不许来回抽 ----
+	#
+	# 这一条钉的就是报回来的那个 bug：「将领性 AI 在非其所属区域内攻击敌人时一定原地抽搐」。
+	# 判据用**位置轨迹**：新口径下「区划边界」与「打不打」完全无关，
+	# 所以它应当朝敌人稳步靠近，而不是一帧进一帧出地原地跳。
+	g.pos = GridRes.center_of(Vector2i(10, 12))      # 故意站在**别人的区划**里
 	g.sync_tile(w.map)
-	g.target = foe
-	g.anchor = g.pos
+	g.hold_position = false
+	g.clear_chase()
 	g.retarget_cd = 0.0
-	GeneralAiRes.update(w, cfg, 0.05)
-	eq(g.target, foe, "在自己区划里交战时不会被强行脱战（该打就打）")
+	g.target = foe
+	g.target_building = null
+	g.anchor = g.pos
+	g.chase_anchor = g.pos
+	g.chase_alert_range = 4.0
+	g.chase_last_pos = g.pos
+	g.chasing = true                                 # 等价于「巡逻时刚警戒到它」
+	foe.pos = g.pos + Vector2(3.0, 0.0)              # 敌人在警戒范围内（3 ≤ 4）
+	foe.sync_tile(w.map)
+	var flips := 0
+	var last_side := 0
+	for i in 20:
+		GeneralAiRes.update(w, cfg, 0.05)
+		w.tick(0.05)
+		var side := signi(int(round(g.pos.x - 10.5)))   # 相对那条边界在哪一侧
+		if side != 0 and last_side != 0 and side != last_side:
+			flips += 1
+		if side != 0:
+			last_side = side
+	eq(flips, 0,
+		"★★★ 站在**别人的区划**里打敌人时位置不在边界上来回跳（跨边界 %d 次）" % flips)
+	ok(g.chasing, "★★ 而且它还在追（没有被「我不在自己区划里」那条旧规则叫回去）")
 
-	# ---- 2) 追过了一个区划（脚踩进隔壁）→ 当场脱战 + 拉起再战冷却 ----
+	# ---- 1) 追击中：敌人在警戒范围内 ⇒ 一路追（不因为我踩出区划就脱战）----
 	g.pos = GridRes.center_of(Vector2i(10, 12))
 	g.sync_tile(w.map)
-	g.target = foe
-	g.anchor = g.pos
+	g.clear_chase()
 	g.retarget_cd = 0.0
-	g.stop()                       # 清掉上一轮的路径，只看这一帧下了什么命令
-	g.target = foe                 # stop() 会清目标，这里重新锁上
+	g.target = foe
+	g.target_building = null
+	g.anchor = g.pos
+	var dist0: float = g.pos.distance_to(foe.pos)
+	g.chase_anchor = g.pos
+	g.chase_alert_range = maxf(dist0, 4.0)
+	g.chase_last_pos = g.pos
+	GeneralAiRes.update(w, cfg, 0.05)
+	ok(g.chasing, "★ 在别人的区划里交战：进入追击状态（旧口径会在这里当场脱战）")
+	eq(g.target, foe, "★ 目标还在（该打就打，与我在哪个区划无关）")
+
+	# ---- 2) 目标**跑出警戒范围** ⇒ 放弃追击 + 立刻回家 + 拉再战冷却 ----
+	#
+	# 把敌人挪到「离发现点超出警戒范围」的地方（判据量的是敌人，不是我）。
+	foe.pos = g.chase_anchor + Vector2(g.chase_alert_range + 2.0, 0.0)
+	foe.sync_tile(w.map)
+	g.stop()                        # 清掉这一轮的路径，只看这一帧下了什么命令
+	g.target = foe
+	g.target_building = null
 	g.anchor = g.pos
 	GeneralAiRes.update(w, cfg, 0.05)
 	ok(g.target == null and g.target_building == null,
-		"★ 一跨进别的区划就当场脱战（需求：不会追击超过一个区划）")
+		"★★ 敌人跑出警戒范围 ⇒ 放弃追击（当场脱战）")
+	ok(not g.chasing, "★★ 追击状态也清掉了")
 	ok(float(g.retarget_cd) > 0.0,
-		"★ 脱战时拉起了再战冷却（否则 combat.gd 下一帧就把同一个敌人再锁上）")
-
-	# ---- 3) 冷却期内它不会再接战（只巡逻）----
-	g.target = foe                 # 模拟「combat.gd 又给它锁了一个」
-	GeneralAiRes.update(w, cfg, 0.05)
-	ok(g.target == null, "★ 再战冷却期内不会被重新拖进战斗（抖动回路断开了）")
-
-	# ---- 4) 冷却结束、而且**回到自己的区划里**，才可能再战 ----
-	#
-	# ⚠️ 这两个条件缺一不可：冷却只是「暂时不接」，而「不在自己区划里」
-	#    是永远成立的硬约束（第 2 步那条）—— 站在别人家里等冷却结束是等不来接战的。
-	g.pos = GridRes.center_of(Vector2i(9, 12))
-	g.sync_tile(w.map)
-	g.target = foe
-	g.anchor = g.pos
-	g.retarget_cd = 0.0
-	GeneralAiRes.update(w, cfg, 0.05)
-	eq(g.target, foe, "冷却结束 + 回到自己区划之后又能正常接敌（不是永久不还手）")
-
-	# ---- 5) 无主空地那条兜底：脚下不属于任何区划时，按「离家多远」判 ----
-	#
-	# 为什么单列这一条：区划形状不规则、区块之间还有不属于任何区划的空地 ——
-	# 那里 `zone_at` 给的是 null，主判据永远不成立，只靠距离判据兜住。
-	# ⚠️ 这条兜底**只在无主空地上生效**：在自己区划里站得再远也不算「追出去了」
-	#    （主判据是区划归属，见 _out_of_garrison）。所以这里先把同一位置
-	#    在「有主」与「无主」两种情况下各验一次 —— 正好把那条边界钉住。
-	var g2 = _make_garrison(w, cfg, Vector2i(5, 13), 6)
-	if g2 != null:
-		# 5-a) 在自己的区划里、**离中心很远**（4 格 > 巡逻半径 1）→ 不该被叫回去
-		g2.pos = GridRes.center_of(Vector2i(9, 12))
-		g2.sync_tile(w.map)
-		g2.target = foe
-		g2.anchor = g2.pos
-		g2.retarget_cd = 0.0
-		eq(w.zones.zone_at(9, 12), z6, "测试前提：(9,12) 仍然属于区划 6")
-		var c6: Vector2 = GridRes.center_of(z6["center"])
-		ok(g2.pos.distance_to(c6) > float(cfg.ai_general_cfg()["patrol_leash_tiles"]),
-			"测试前提：它离区划中心已经远超巡逻半径")
-		GeneralAiRes.update(w, cfg, 0.05)
-		eq(g2.target, foe,
-			"★ 只要还在**自己的区划里**，离中心多远都不算「追出去」（区划归属才是主判据）")
-
-		# 5-b) 同一套状态，把「脚下那一格」改成无主空地 → 距离判据兜住
-		#
-		# 造法：临时把区划查表清掉（等同「这一格不属于任何区划」）——
-		# 这比去地图上找一块真的无主空地稳（区块之间还有没有空地是地图说了算的）。
-		g2.retarget_cd = 0.0
-		g2.target = foe
-		g2.anchor = g2.pos
-		var saved: Array = w.zones.lookup.duplicate()
-		w.zones.lookup.fill(-1)
-		GeneralAiRes.update(w, cfg, 0.05)
-		ok(g2.target == null,
-			"★ 无主空地上站得离中心太远 → 也算「追出去了」→ 脱战（距离兜底生效）")
-		w.zones.lookup = saved
-
-	# ---- 6) 脱战之后会往自己的区划走 ----
-	var home6: Vector2 = GridRes.center_of(z6["center"])
-	g.stop()
-	g.retarget_cd = 0.0
-	g.patrol_timer = 0.0
-	GeneralAiRes.update(w, cfg, 0.05)
-	ok(not g.path.is_empty() or g.moving, "脱战之后它朝自己区划的中心走（没有继续朝敌人冲）")
-
-	# ---- 7) ★★ 返程**只下一道命令**（本轮修的「卡边界还是抽搐」）----
-	#
-	# 实测报回来的现象：「卡边界时还是会抽搐」。根因：原来**每一帧**命中
-	#   「追出区划」那一支都会重下一条「回巡逻点」的命令，而 `_next_patrol_tile()`
-	#   还会把目标点换成路线上的下一个 ⇒ 路径每帧被重置，人永远走不回家，
-	#   看着就是在区划边缘原地抽搐。
-	# 修法：`unit.returning_home` —— 只在**还没上路**时下那一道命令，走到头再恢复巡逻。
-	g.pos = GridRes.center_of(Vector2i(10, 12))       # 又踩进隔壁区划
-	g.sync_tile(w.map)
-	g.stop()
-	g.returning_home = false
-	g.retarget_cd = 0.0
-	g.target = foe                                     # 站进别人家里、还锁着敌人
-	g.anchor = g.pos
-	GeneralAiRes.update(w, cfg, 0.05)
-	ok(g.returning_home, "★★ 追出区划之后进入「回家」状态")
+		"★ 放弃追击时拉起再战冷却（回家路上别被同一个敌人立刻再锁上）")
+	ok(g.returning_home, "★★ 转为「回家」状态（用户口径：**立刻**返回所属区划）")
+	ok(not g.path.is_empty() or g.moving, "★ 它真的上路了（返程命令下出去了）")
 	var path_home: int = g.path.size()
-	ok(path_home > 0 or g.moving, "★ 它已经上路了（这一道返程命令是真的下了）")
 
-	# 再来两帧：**不该**再有新命令把它顶掉（路径条数不变、状态不变）
+	# 再来两帧：返程途中**不该**重复下命令（路径只减不增）—— 这就是「不再抽搐」
 	GeneralAiRes.update(w, cfg, 0.05)
 	GeneralAiRes.update(w, cfg, 0.05)
 	ok(g.returning_home, "★★ 还在回家路上（标志没有被清掉）")
 	ok(g.path.size() <= path_home,
-		"★★★ 返程途中不再重复下命令（路径只减不增：%d → %d）—— 这就是「不再抽搐」" % [
-			path_home, g.path.size()])
+		"★★★ 返程途中不重复下命令（路径只减不增：%d → %d）" % [path_home, g.path.size()])
 
-	# ---- 8) 走到家（队长站定在那个点上）→ 返程结束、恢复正常巡逻 ----
-	g.pos = GridRes.center_of(Vector2i(9, 12))        # 回到自己的区划
+	# ---- 3) 目标**死亡** ⇒ 同样放弃追击、立刻回家 ----
+	foe.alive = false
+	g.pos = GridRes.center_of(Vector2i(10, 12))
+	g.sync_tile(w.map)
+	g.stop()
+	g.returning_home = false
+	g.retarget_cd = 0.0
+	g.clear_chase()
+	g.chasing = true
+	g.chase_anchor = g.pos
+	g.chase_alert_range = 4.0
+	g.target = foe                     # combat 还没结算掉（模拟「这一帧刚死」）
+	g.target_building = null
+	GeneralAiRes.update(w, cfg, 0.05)
+	ok(g.target == null, "★★ 敌人死亡 ⇒ 放弃追击（脱战）")
+	ok(not g.chasing, "★★ 追击状态清掉")
+	ok(g.returning_home, "★★ 目标死了也走「立刻返回所属区划」这一条")
+
+	# ---- 4) 走到家（站定在巡逻点上）⇒ 返程结束、恢复正常巡逻 ----
+	g.pos = GridRes.center_of(Vector2i(9, 12))
 	g.sync_tile(w.map)
 	g.stop()
 	g.retarget_cd = 0.0
@@ -1731,26 +1855,25 @@ func _test_general_ai_no_pursuit(cfg) -> void:
 	GeneralAiRes.update(w, cfg, 0.05)
 	ok(not g.returning_home,
 		"★★ 站定在自己的区划里之后返程结束（否则它再也回不到巡逻节奏）")
+	ok(g.patrol_points.size() >= 1, "★ 返程结束之后照旧有自己的巡逻路线")
 
-	# ---- 9) 玩家/别的 AI 重下命令时，这个标志不该留成幽灵 ----
-	g.pos = GridRes.center_of(Vector2i(10, 12))       # 又跑到隔壁
-	g.sync_tile(w.map)
-	g.stop()
-	g.returning_home = false
-	g.retarget_cd = 0.0
+	# ---- 5) 冷却期内不接战（防「刚放弃又被锁」那一下）----
 	g.target = foe
-	g.anchor = g.pos
+	g.retarget_cd = 1.0
 	GeneralAiRes.update(w, cfg, 0.05)
-	ok(g.returning_home, "（前提）它正在回家")
-	# ★ 走**命令入口**（`order_move`）：返程必须被新命令作废，否则第 5 步（巡逻）
-	#   会永远被跳过，人就定死在原地了。
-	#   ⚠️ 不用 `stop()`：它是内部「就地停手」，驻防 AI 自己也用它（比如第 6 步摆场面），
-	#     在那里清标志会把「正在回家」误判成「已经到家」。
+	ok(g.target == null, "★ 再战冷却期内不会被重新拖进战斗")
+
+	# ---- 6) 玩家/别的 AI 重下命令时，这两个标志不该留成幽灵 ----
+	g.pos = GridRes.center_of(Vector2i(10, 12))
+	g.sync_tile(w.map)
+	g.clear_chase()
+	g.returning_home = true
+	g.retarget_cd = 0.0
+	g.chasing = true
 	var dst := GridRes.center_of(Vector2i(9, 12))
 	g.order_move(w, cfg, dst)
 	ok(not g.returning_home, "★★ 新命令会清掉「回家」状态（不会把它卡在返程模式里）")
-
-
+	ok(not g.chasing, "★★ 新命令也清掉「追击」状态")
 func _test_general_ai_free_recruit(cfg) -> void:
 	var w = _world(cfg)
 	if w == null:

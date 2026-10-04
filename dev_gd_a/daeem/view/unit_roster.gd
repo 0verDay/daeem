@@ -151,19 +151,19 @@ func _draw_leader_cell(f: Font) -> void:
 	if _entry.is_empty():
 		return
 	var av := UiLayoutRes.roster_cell_avatar_rect()
-	draw_rect(av, UiStyleRes.BG_PRESSED, true)
-	draw_rect(av, UiStyleRes.ACCENT if bool(_entry.get("highlight", false)) else UiStyleRes.LINE,
+	draw_rect(av, UiStyleRes.bg_pressed(), true)
+	draw_rect(av, UiStyleRes.accent() if bool(_entry.get("highlight", false)) else UiStyleRes.line(),
 		false, 1.0)
-	_draw_centered(f, leader_short(), av, UiStyleRes.TEXT, UiStyleRes.FS_BODY)
+	_draw_centered(f, leader_short(), av, UiStyleRes.text(), UiStyleRes.FS_BODY)
 	# 两行都用 FS_SMALL（13 号字、汉字约 15px 高）—— 与下面 9 个格子同一套字号。
 	draw_string(f, Vector2(UiLayoutRes.ROSTER_CELL_TEXT_X, UiLayoutRes.ROSTER_ID_Y),
 		_clip_text(f, leader_name(), UiLayoutRes.ROSTER_ID_W, UiStyleRes.FS_SMALL),
 		HORIZONTAL_ALIGNMENT_LEFT, UiLayoutRes.ROSTER_ID_W, UiStyleRes.FS_SMALL,
-		UiStyleRes.TEXT)
+		UiStyleRes.text())
 	draw_string(f, Vector2(UiLayoutRes.ROSTER_COUNT_X, UiLayoutRes.ROSTER_COUNT_Y),
 		_clip_text(f, count_text(), UiLayoutRes.ROSTER_COUNT_W, UiStyleRes.FS_SMALL),
 		HORIZONTAL_ALIGNMENT_LEFT, UiLayoutRes.ROSTER_COUNT_W, UiStyleRes.FS_SMALL,
-		UiStyleRes.TEXT_DIM)
+		UiStyleRes.text_dim())
 
 
 ## 第一行写的字：**将领的真名**（参考图上这一行就是部队 / 将领的名字）。

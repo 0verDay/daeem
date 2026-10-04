@@ -1,11 +1,25 @@
 """一次性生成 data/campaigns/demo 的样例地图与关卡 JSON（生成后本文件删除）。
 
+⚠️⚠️ **不要再跑这个脚本**（实测过，会丢数据）：
+   它是**当时那一版** demo 的生成器，而那两个关卡文件后来被**手工扩充**过 ——
+   现在 `levels/01_beachhead.json` 有 **24** 个 `start_units`（两位可玩阵营各 3 位将领 +
+   各自的附属兵），而本脚本只会写 **3** 个「渡口守军」。跑一次就等于把
+   手工摆好的开局部队全部砍掉，而且**不会报错**。
+   ⇒ 要改 demo 请**直接改 JSON**；本文件只当历史记录与字段口径的参考。
+   （`map.json` 也一样：手工调过的东西比这里的多。）
+
 地图 dongzheng：24x18，东征第一章用。四角 + 中心 + 两条边角地带。
 地块规则（用代码保证 exists/zones/terrain/中心/摆放全部自洽）：
 
     x:  0..11 | 12..17 | 18..23
     y:  0..2  | A 外圈 | A 外圈 | A 外圈
         ...
+
+★ 下面这两处改动是「玩家单位不许自带 AI」那条原则在 demo 数据里的落点 ——
+  与真数据现在的写法**一致**（真数据已经这么写了），只是把口径记在这里，
+  免得以后有人照着旧脚本再生成一遍、又把它改回去：
+    · 渡口守军属于 **GD1**（不是 F1），且关卡写了 `allies: [["F1","GD1"]]`；
+    · c1（区划 4）开局归 **GD1**。
 """
 from __future__ import annotations
 
@@ -338,6 +352,11 @@ LEVEL_1 = {
         #      会主动打过来（这是「红点波次」的来源）。
         #    玩家选中哪一方，运行时就把哪一方的 AI 摘掉（见 world._is_ai_piloted）。
         BLUE_SEAT("F1", "蓝方", "#5ac8ff", BASE_F1),
+        # ★★ **守军阵营 GD1**（不可玩）：渡口守备队属于它（见下面 `start_units`）。
+        #    不能写进 F1 —— 玩家能操控的单位绝不附加 AI（见 `world._is_player_piloted`）。
+        #    ⚠️ 关卡点名的阵营**必须有大本营**（校验第 4 条），所以它跟着蓝方用同一个点位。
+        {"id": "GD1", "ai": "general", "base": list(BASE_F1),
+         "name": "渡口守军", "color": "#c9a0ff"},
         RED_SEAT("F2", "红方", "#e05a5a", BASE_F2),
     ],
     # ★★ 蓝方在 c1 上**开局就摆一支守备队**（`zone: 4` = 挂守家 AI，原地守住那一区）。
@@ -347,12 +366,18 @@ LEVEL_1 = {
     #     · 玩家选红方时，红方 30 秒出头就白捡了 c1（目标是 1~2 分钟）；
     #     · 玩家选蓝方时，红方的 AI 一波就把 c1 端了（守方来不及）。
     #   摆上守备队之后，c1 是**真的有人在守**：红方必须打赢他们才占得下来。
+    #
+    # ★★ 它们属于 **GD1**（独立的守军阵营，见 `allies: [["F1","GD1"]]`），**不是 F1**：
+    #   「玩家能操控的单位绝不附加 AI」是硬原则 —— 挂在 F1 名下时它们是**玩家自己的部队**
+    #   （能选中、能下令），却又被将领性 AI 接管（`garrison_zone_id`），指挥权互相覆盖，
+    #   手玩报回来的正是这条。判定与修复落在 `data/campaigns/demo/levels/01_beachhead.json`
+    #   与 `logic/world.gd` 的 `_is_player_piloted()`（那一道让本机席位永不被 AI 接管）。
     "start_units": [
-        {"faction": "F1", "kind": "enemy", "x": 4, "y": 10, "ai": "general", "zone": 4,
+        {"faction": "GD1", "kind": "enemy", "x": 4, "y": 10, "ai": "general", "zone": 4,
          "name": "渡口守军"},
-        {"faction": "F1", "kind": "enemy", "x": 6, "y": 10, "ai": "general", "zone": 4,
+        {"faction": "GD1", "kind": "enemy", "x": 6, "y": 10, "ai": "general", "zone": 4,
          "name": "渡口守军"},
-        {"faction": "F1", "kind": "enemy", "x": 5, "y": 11, "ai": "general", "zone": 4,
+        {"faction": "GD1", "kind": "enemy", "x": 5, "y": 11, "ai": "general", "zone": 4,
          "name": "渡口守军"},
     ],
     # ★ 手工加一栋塔：给「关卡的开局摆放」（`start_buildings`）留一个真样本，
@@ -361,12 +386,16 @@ LEVEL_1 = {
     "start_buildings": [
         {"type": "tower", "x": BASE_F1[0] + 3, "y": BASE_F1[1], "owner": "F1"},
     ],
-    # ⚠️ **不写 `allies`**：蓝方与红方是对立的（这一关就是「选边打」）。
+    # ★★ **要写 `allies`**：渡口守军被拆成了独立阵营 **GD1**（见 `start_units` 那段），
+    #    而「守住 c1」那条目标的区划 c1 开局归 GD1 —— 玩家同方判据（`_mine_side`）
+    #    靠这张盟友表把 F1 与 GD1 算成一边，不然蓝方一进关就判负
+    #    （校验第 8 条 `objective_unowned` / `objective_not_players` 也会拦）。
+    "allies": [["F1", "GD1"]],
     "zones": [
-        # 开局归属：c1/c2（下半场，132 格）归蓝方 —— 目标区划 c1 开局必须是蓝方的，
-        # 否则「丢掉即判负」会让蓝方一进关就输；
+        # 开局归属：c1 归**守军 GD1**（它是 F1 的盟友，见 `allies`），c2 归蓝方；
+        # 目标区划 c1 因此开局归「玩家同方」—— 否则「丢掉即判负」会让蓝方一进关就输。
         # 红方从北边 b1（产粮 30 格）+ g1（产金 6 格）起家，要自己打下 c1。
-        {"id": 4, "owner": "F1"},
+        {"id": 4, "owner": "GD1"},
         {"id": 5, "owner": "F1"},
         {"id": 0, "owner": "F2"},
         {"id": 7, "owner": "F2"},

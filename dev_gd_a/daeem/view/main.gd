@@ -1,7 +1,7 @@
 ## main.gd —— ★ 入口 / 唯一的流程调度者：开场页 → 主界面 → 游戏内场景
 ##
 ## 流程（需求原文）：
-##   1. 启动 = 白屏入场页：上方标题 DAEEM；屏幕下方「————点击任意处进入游戏————」，
+##   1. 启动 = 暗色渐变入场页：上方徽记 + 标题 DAEEM；屏幕下方「————点击任意处进入游戏————」，
 ##      呼吸式渐显渐隐
 ##   2. 点击任意处 → 主界面（屏幕正中的一条**地图选择条** + 它下面的 test 按钮）
 ##   3. 按下 test → 用**选中的那张地图**建逻辑世界并进入游戏内场景
@@ -109,7 +109,7 @@ func _on_test_pressed(map_path: String) -> void:
 		game = null
 		return
 
-	# 进游戏之后开场页整层下线：白底与「点击任意处」的处理器一起停掉
+	# 进游戏之后开场页整层下线：背景与「点击任意处」的处理器一起停掉
 	start_screen.close()
 
 	# ★★ 设置菜单里那两条请求（全屏 / 返回主菜单）——见本文件头部「职责边界」。
@@ -130,7 +130,7 @@ func _on_test_pressed(map_path: String) -> void:
 ##   3. 「选了哪一关就进游戏」这条接线（`level_chosen` → `_on_campaign_level_chosen`）——
 ##      那一页不认识 `game_scene`，也不认识 `world`。
 ##
-## ⚠️ 幂等：已经开着就不再挂第二页（连点两下按钮不会挂出两层白底）。
+## ⚠️ 幂等：已经开着就不再挂第二页（连点两下按钮不会挂出两层背景）。
 func _on_campaign_test_pressed() -> void:
 	if campaign_screen != null or game != null:
 		return
@@ -150,7 +150,7 @@ func _on_campaign_test_pressed() -> void:
 ##
 ## ⚠️ 顺序：**先把战役页收掉**再建世界。反过来（先建再收）在无头测试里会看到
 ##    `_unhandled_input` 一条帧内同时发给两页；而且玩家会看到「载入那一帧」上面
-##    还压着一层白底。
+##    还压着一层背景。
 func _on_campaign_level_chosen(campaign, level, faction: String) -> void:
 	if game != null:
 		return                          # 已经在游戏里了（按钮只该生效一次）
@@ -167,7 +167,7 @@ func _on_campaign_level_chosen(campaign, level, faction: String) -> void:
 		_on_campaign_test_pressed()
 		return
 
-	# 进游戏之后开场页整层下线（与老路径同一个理由：白底与点击处理器一起停掉）
+	# 进游戏之后开场页整层下线（与老路径同一个理由：背景与点击处理器一起停掉）
 	start_screen.close()
 
 	game.fullscreen_toggled.connect(toggle_fullscreen)
@@ -225,7 +225,7 @@ func return_to_menu() -> void:
 	var leaving := game
 	game = null
 	# ★ 顺手把设置菜单收起来：那个面板活在这一局里，而回到菜单之后开场页的
-	#   白底会盖在它下面（CanvasLayer layer=100 对 HUD 的默认 1）——
+	#   背景会盖在它下面（CanvasLayer layer=100 对 HUD 的默认 1）——
 	#   不收的话，等下次进游戏它会**还开着**（HUD 是新建的，但同一帧的旧 HUD
 	#   会带着开着的面板一起被销毁，看着像闪了一下）。
 	# ⚠️ 这里必须用 `is_instance_valid()` 而不是 `!= null`：走进本函数的那条路

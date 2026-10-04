@@ -40,7 +40,7 @@ const BuildingRes = preload("res://logic/building.gd")
 const VIEW_FILL := Color(1.0, 1.0, 1.0, 0.13)
 const VIEW_LINE := Color(1.0, 1.0, 1.0, 0.95)
 const VIEW_LINE_W := 2.0
-## 拖动中的视野框：底色更浓 + 描边换成主题蓝（与 ui_style.ACCENT 同一支），
+## 拖动中的视野框：底色更浓 + 描边换成主题金（与 ui_style.accent() 同一支），
 ## 玩家一眼能看出「现在按着的是小地图、拖的就是这个框」。
 const VIEW_FILL_DRAG := Color(0.12, 0.60, 0.84, 0.32)
 const VIEW_LINE_DRAG := Color(0.12, 0.60, 0.84, 1.0)
@@ -369,7 +369,7 @@ func _draw_fog() -> void:
 ##   亮框画上去会让人以为外面还有地 —— 所以框只在地图范围内出现，
 ##   贴边时它的边框自然与地图边界重合。理由见 `view_rect_clipped()`。
 ##
-## ★ 拖动中换成主题蓝（更浓）：这是「我现在按着的是小地图」的唯一视觉反馈 ——
+## ★ 拖动中换成主题金（更浓）：这是「我现在按着的是小地图」的唯一视觉反馈 ——
 ##   不然玩家按住拖动时看到画面在动，却分不清是拖小地图还是边缘滚屏在推。
 func _draw_view_rect() -> void:
 	var r := view_rect_clipped()

@@ -88,10 +88,10 @@ func setup(p_world) -> void:
 
 	# 汇总带的两行字：第一行是数量（15 号，与右栏名称以外的正文同级），
 	# 第二行是全部读完还要多久（13 号 —— 次要信息那一档）。
-	_title = _new_label("QueueTitle", UiStyleRes.FS_BODY, UiStyleRes.TEXT)
+	_title = _new_label("QueueTitle", UiStyleRes.FS_BODY, UiStyleRes.text())
 	_title.text = ""
 	_place(_title, UiLayoutRes.queue_info_line_rect(0))
-	_total = _new_label("QueueTotal", UiStyleRes.FS_SMALL, UiStyleRes.TEXT_DIM)
+	_total = _new_label("QueueTotal", UiStyleRes.FS_SMALL, UiStyleRes.text_dim())
 	_total.text = ""
 	_place(_total, UiLayoutRes.queue_info_line_rect(1))
 
@@ -99,7 +99,7 @@ func setup(p_world) -> void:
 		# 大格子里的字大一号（它是正在读条的那个）：15 号；小格子两行用 13 号
 		# —— 40×40 装两行 13 号（28px）还剩 12px 余量（第七轮整块放大前是 30×30 + 11 号）。
 		var fs: int = UiStyleRes.FS_BODY if i == 0 else UiStyleRes.FS_SMALL
-		var l := _new_label("QueueCell%d" % i, fs, UiStyleRes.TEXT)
+		var l := _new_label("QueueCell%d" % i, fs, UiStyleRes.text())
 		_place(l, UiLayoutRes.queue_cell_rect(i))
 		_labels.append(l)
 
@@ -468,13 +468,13 @@ func _draw() -> void:
 	# ① 整块底板 + 1px 描边（与「详细信息」方框、底栏其它面板同一套板式）——
 	#    它让「这 261×64 是一组东西」一眼可见，而不是几个孤零零的方块浮在右栏上。
 	draw_rect(Rect2(Vector2.ZERO, Vector2(UiLayoutRes.QUEUE_W, UiLayoutRes.QUEUE_H)),
-		UiStyleRes.BG_SOFT, true)
+		UiStyleRes.bg_soft(), true)
 	draw_rect(Rect2(Vector2.ZERO, Vector2(UiLayoutRes.QUEUE_W, UiLayoutRes.QUEUE_H)),
-		UiStyleRes.LINE, false, 1.0)
+		UiStyleRes.line(), false, 1.0)
 	# ② 汇总带与格子之间的一条竖分隔线（底栏那套「1px 线分隔」的同一手法）
 	var split_x := UiLayoutRes.QUEUE_INFO_W
 	draw_line(Vector2(split_x, 0.0), Vector2(split_x, UiLayoutRes.QUEUE_H),
-		UiStyleRes.LINE_SOFT, 1.0)
+		UiStyleRes.line_soft(), 1.0)
 
 	# ③ 五个格子
 	for i in UiLayoutRes.QUEUE_SLOTS:
@@ -484,28 +484,28 @@ func _draw() -> void:
 
 		if big:
 			# 大格子：空槽色轨道 + 从下往上填的进度 + 填充顶端一条亮色「读头」
-			draw_rect(r, UiStyleRes.BG_EMPTY, true)
+			draw_rect(r, UiStyleRes.bg_empty(), true)
 			if filled:
 				var p: float = clampf(progress(), 0.0, 1.0)
 				if p > 0.0:
 					var h: float = r.size.y * p
 					var top := r.position.y + r.size.y - h
-					draw_rect(Rect2(r.position.x, top, r.size.x, h), UiStyleRes.ACCENT_DIM, true)
+					draw_rect(Rect2(r.position.x, top, r.size.x, h), UiStyleRes.accent_dim(), true)
 					if p < 1.0:
 						# 读头只有 3px：远看是「进度到哪了」的一根亮线，不抢文字
-						draw_rect(Rect2(r.position.x, top, r.size.x, 3.0), UiStyleRes.ACCENT, true)
+						draw_rect(Rect2(r.position.x, top, r.size.x, 3.0), UiStyleRes.accent(), true)
 		else:
-			draw_rect(r, UiStyleRes.BG_PRESSED if filled else UiStyleRes.BG_EMPTY, true)
+			draw_rect(r, UiStyleRes.bg_pressed() if filled else UiStyleRes.bg_empty(), true)
 
 		# 边框：大格子（正在读条）用强调色、排队的小格子用弱化的强调色、空槽用白线；
 		# 鼠标停在哪一格，那一格换成红框 —— 「哪一格可以点、点了会取消谁」一眼看得见。
-		var edge: Color = UiStyleRes.LINE
+		var edge: Color = UiStyleRes.line()
 		if big and filled:
-			edge = UiStyleRes.ACCENT
+			edge = UiStyleRes.accent()
 		elif filled:
-			edge = UiStyleRes.ACCENT_DIM
+			edge = UiStyleRes.accent_dim()
 		if i == _hover_slot and filled:
-			edge = UiStyleRes.WARN
+			edge = UiStyleRes.warn()
 		draw_rect(r, edge, false, 1.0)
 
 		# 悬停那一格右上角画个「×」：这是「点它会取消这一单」的记号
@@ -516,6 +516,6 @@ func _draw() -> void:
 			var x0 := r.position.x + r.size.x - x_pad - x_size
 			var y0 := r.position.y + x_pad
 			draw_line(Vector2(x0, y0), Vector2(x0 + x_size, y0 + x_size),
-				UiStyleRes.WARN, 1.0)
+				UiStyleRes.warn(), 1.0)
 			draw_line(Vector2(x0 + x_size, y0), Vector2(x0, y0 + x_size),
-				UiStyleRes.WARN, 1.0)
+				UiStyleRes.warn(), 1.0)

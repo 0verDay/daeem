@@ -163,7 +163,7 @@ func _build_left(cols: HBoxContainer, world, font: Font) -> void:
 	_empty_label.text = "未选中"
 	_empty_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_empty_label.add_theme_font_size_override("font_size", UiStyleRes.FS_BODY)
-	_empty_label.add_theme_color_override("font_color", UiStyleRes.TEXT_FAINT)
+	_empty_label.add_theme_color_override("font_color", UiStyleRes.text_faint())
 	_empty_label.position = rd.position + Vector2(6.0, 6.0)
 	left.add_child(_empty_label)
 
@@ -214,7 +214,7 @@ func _build_right(cols: HBoxContainer, world) -> void:
 	_unit_name.clip_text = true
 	_unit_name.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	_unit_name.add_theme_font_size_override("font_size", UiStyleRes.FS_UNIT_NAME)
-	_unit_name.add_theme_color_override("font_color", UiStyleRes.TEXT)
+	_unit_name.add_theme_color_override("font_color", UiStyleRes.text())
 	_unit_name.position = Vector2(head_x, UiLayoutRes.UNIT_NAME_Y)
 	_unit_name.size = Vector2(UiLayoutRes.UNIT_NAME_W, UiStyleRes.FS_UNIT_NAME + 6.0)
 	right.add_child(_unit_name)
@@ -234,7 +234,7 @@ func _build_right(cols: HBoxContainer, world) -> void:
 		#   在放大的右栏里看着像两个小疙瘩（手玩：「ui 内容也太小了」）。
 		#   `tests/test_ui.gd` 里有一条断言按真实字体量这件事（别改回去）。
 		b.add_theme_font_size_override("font_size", UiStyleRes.FS_SMALL)
-		b.add_theme_color_override("font_color", UiStyleRes.TEXT_FAINT)
+		b.add_theme_color_override("font_color", UiStyleRes.text_faint())
 		b.position = Vector2(
 			UiLayoutRes.BUFF_X + float(i) * (UiLayoutRes.BUFF_SIZE + UiLayoutRes.BUFF_GAP),
 			UiLayoutRes.BUFF_Y)
@@ -254,7 +254,7 @@ func _build_right(cols: HBoxContainer, world) -> void:
 	_detail_box.position = Vector2(UiLayoutRes.DETAIL_BODY_X, UiLayoutRes.DETAIL_BODY_Y)
 	_detail_box.size = Vector2(UiLayoutRes.DETAIL_BODY_W, UiLayoutRes.DETAIL_BODY_H)
 	_detail_box.add_theme_stylebox_override("panel",
-		UiStyleRes.panel_style(UiStyleRes.BG_EMPTY, UiStyleRes.LINE_SOFT))
+		UiStyleRes.panel_style(UiStyleRes.bg_empty(), UiStyleRes.line_soft()))
 	right.add_child(_detail_box)
 
 	# ★★ 本版按需求**去掉「详细信息」这四个字**（用户原话：「把所有的详细信息栏的
@@ -301,7 +301,7 @@ func _new_body_label(node_name: String, pos: Vector2, size_v: Vector2) -> Label:
 	l.autowrap_mode = TextServer.AUTOWRAP_OFF
 	l.clip_text = true
 	l.add_theme_font_size_override("font_size", UiStyleRes.FS_SMALL)
-	l.add_theme_color_override("font_color", UiStyleRes.TEXT)
+	l.add_theme_color_override("font_color", UiStyleRes.text())
 	l.position = pos
 	l.size = size_v
 	_detail_box.add_child(l)
@@ -324,7 +324,7 @@ func _build_notice(right: Control) -> void:
 	_notice.clip_text = true
 	_notice.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_notice.add_theme_font_size_override("font_size", UiStyleRes.FS_BODY)
-	_notice.add_theme_color_override("font_color", UiStyleRes.WARN)
+	_notice.add_theme_color_override("font_color", UiStyleRes.warn())
 	_notice.position = Vector2(0.0, UiLayoutRes.NOTICE_Y)
 	_notice.visible = false
 	right.add_child(_notice)
@@ -581,11 +581,11 @@ func _draw_unit_avatar() -> void:
 	_avatar_draws += 1
 	var side := UiLayoutRes.UNIT_AVATAR
 	var r := Rect2(Vector2.ZERO, Vector2(side, side))
-	_unit_avatar.draw_rect(r, UiStyleRes.BG_EMPTY, true)
-	_unit_avatar.draw_rect(r, UiStyleRes.LINE, false, 1.0)
+	_unit_avatar.draw_rect(r, UiStyleRes.bg_empty(), true)
+	_unit_avatar.draw_rect(r, UiStyleRes.line(), false, 1.0)
 	var f: Font = _unit_avatar.get_theme_default_font()
 	if _avatar_text != "" and f != null:
-		_draw_centered(f, _avatar_text, r, UiStyleRes.TEXT, _avatar_font_size(f))
+		_draw_centered(f, _avatar_text, r, UiStyleRes.text(), _avatar_font_size(f))
 
 
 ## 头像方框里那个字该用多大：**按方框量出来的**，不是写死的字号。
@@ -635,8 +635,8 @@ func avatar_draw_count() -> int:
 
 func _draw_buff_box(b: Label) -> void:
 	var r := Rect2(Vector2.ZERO, b.size)
-	b.draw_rect(r, UiStyleRes.BG_EMPTY, true)
-	b.draw_rect(r, UiStyleRes.LINE_SOFT, false, 1.0)
+	b.draw_rect(r, UiStyleRes.bg_empty(), true)
+	b.draw_rect(r, UiStyleRes.line_soft(), false, 1.0)
 
 
 # ------------------------------------------------------------------

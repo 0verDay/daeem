@@ -3,7 +3,7 @@
 ##
 ## ★ 这个文件是从 view/main.gd **整段搬过来**的，只改了一件事：
 ##   建世界的时机从「启动时」变成「玩家在主界面按下 test 之后」。
-##   开场那两页（白屏入场页 / 主界面）在 view/start_screen.gd，
+##   开场那两页（暗色渐变入场页 / 主界面）在 view/start_screen.gd，
 ##   由 view/main.gd 负责把两者接起来 —— 本文件不认识菜单，也不该认识。
 ##
 ## ★ 仍然只有一处主循环（就是这里的 _process）：菜单没有自己的 _process。
@@ -385,7 +385,8 @@ func _process(dt: float) -> void:
 	fog_view.sync()
 	unit_view.set_selection(_selected_ids())
 	# ★ 选中的建筑可能是一整批（框选建筑）—— 它们**都**要点亮金色外框
-	building_view.set_selected_buildings(input_ctrl.selected_buildings)
+	#   ★ 本轮起这一份还包含「选中的敌对建筑」（见 `_selected_buildings()`）。
+	building_view.set_selected_buildings(_selected_buildings())
 
 	# 把纯本地的 UI 状态交给覆盖层画
 	overlay.hover_tile = input_ctrl.hover_tile
@@ -407,7 +408,28 @@ func _selected_ids() -> Array:
 	var ids: Array = []
 	for u in input_ctrl.selected_units:
 		ids.append(u.id)
+	# ★★ 选中的**敌人**也要画选中圈（本轮新增：玩家可以选中敌对单位）。
+	#    ⚠️ 只加单位 —— 建筑不走这条（它的高亮在下面 `_selected_buildings()` 那一份里）。
+	#    不加这一句的表现是「右栏报着敌人的数值，地图上却看不出选的是哪一个」。
+	if input_ctrl.selected_enemy_kind() == "unit" and input_ctrl.selected_enemy != null:
+		ids.append(input_ctrl.selected_enemy.id)
 	return ids
+
+
+## 该点亮金色外框的建筑：**己方那批 + 选中的那个敌人**（如果有）。
+##
+## ★ 为什么要合并这两份：`building_view` 只认一个集合（谁在里面谁就高亮），
+##   而「选中的敌人」是单独一个字段（见 input_controller.selected_enemy 那段理由）。
+##   合并放在这一层，是因为它正是「把本地选中状态翻译成渲染输入」的那一层。
+##
+## ★ 返回的是**新数组**（不是 `selected_buildings` 本身）：后者是 input_controller 的
+##   权威列表，往里 append 会把「选中的敌人」永久混进己方选中里 ——
+##   那正是这一轮特意避开的坑。
+func _selected_buildings() -> Array:
+	var out: Array = input_ctrl.selected_buildings.duplicate()
+	if input_ctrl.selected_enemy_kind() == "building" and input_ctrl.selected_enemy != null:
+		out.append(input_ctrl.selected_enemy)
+	return out
 
 
 ## 暂停时把世界冻住（渲染照常）
@@ -468,7 +490,7 @@ func _on_command(cmd: Dictionary) -> void:
 func _on_local_ui_changed() -> void:
 	# 本地 UI 变了只需要重画，不碰逻辑
 	unit_view.set_selection(_selected_ids())
-	building_view.set_selected_buildings(input_ctrl.selected_buildings)
+	building_view.set_selected_buildings(_selected_buildings())
 
 
 ## 逻辑事件 → 界面文案 / 本地状态。★ **只有这里**把事件翻成中文（逻辑层不写 UI 文案）。

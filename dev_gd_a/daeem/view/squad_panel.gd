@@ -17,6 +17,8 @@ extends Control
 const UiLayoutRes = preload("res://view/ui_layout.gd")
 const UiStyleRes = preload("res://view/ui_style.gd")
 const FactionRes = preload("res://logic/faction.gd")
+## ★★ 悬停时「金色自下而上填进来」的那套动效（见 view/fill_button.gd）。
+const FillButtonRes = preload("res://view/fill_button.gd")
 
 var cfg = null
 var world = null
@@ -41,7 +43,7 @@ func setup(p_cfg, p_world, p_input) -> void:
 	backdrop.name = "SquadBackdrop"
 	backdrop.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	backdrop.add_theme_stylebox_override("panel",
-		UiStyleRes.panel_style(UiStyleRes.BG_SOFT, UiStyleRes.LINE_SOFT, 0))
+		UiStyleRes.panel_style(UiStyleRes.bg_soft(), UiStyleRes.line_soft(), 0))
 	UiLayoutRes.apply_rect(backdrop, Rect2(Vector2.ZERO, UiLayoutRes.SQUAD_RECT.size))
 	add_child(backdrop)
 
@@ -55,6 +57,9 @@ func setup(p_cfg, p_world, p_input) -> void:
 		_row_style(b, UiStyleRes.row_empty())
 		UiLayoutRes.apply_rect(b, UiLayoutRes.squad_slot_local(i))
 		b.pressed.connect(_on_slot_pressed.bind(i))
+		# ★★ 悬停填充（一行挂上，见 view/fill_button.gd）——
+		#   部队列表的行本来就是「按钮」，它也该有同一套悬停手感。
+		FillButtonRes.attach_text(b)
 		add_child(b)
 		_rows.append(b)
 		_teams.append([])
@@ -93,7 +98,9 @@ func refresh() -> void:
 			var leader = team[0]
 			_teams[i] = team
 			b.text = "部队%d  %s\n%d 人" % [i + 1, String(leader.name), team.size()]
-			b.add_theme_color_override("font_color", UiStyleRes.TEXT)
+			# ★★ 字色走「登记原色」的接口（不是 add_theme_color_override）：
+			#   填充动效每帧按「原色 + 当前填充进度」重算，直接写 override 会被盖掉。
+			FillButtonRes.set_base_font_color(b, UiStyleRes.text())
 			var active: bool = input_ctrl.selected_units.has(leader)
 			if active:
 				_row_style(b, UiStyleRes.row_active())
@@ -102,7 +109,7 @@ func refresh() -> void:
 		else:
 			_teams[i] = []
 			b.text = "…"
-			b.add_theme_color_override("font_color", UiStyleRes.TEXT_FAINT)
+			FillButtonRes.set_base_font_color(b, UiStyleRes.text_faint())
 			_row_style(b, UiStyleRes.row_empty())
 
 

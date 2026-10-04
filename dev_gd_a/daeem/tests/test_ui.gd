@@ -16,6 +16,9 @@ extends "res://tests/test_case.gd"
 
 const UiLayoutRes = preload("res://view/ui_layout.gd")
 const UiStyleRes = preload("res://view/ui_style.gd")
+## ★★ 「金色自下而上填充」那一层（本版新增）。测试直接读按钮身上的动画器元数据 ——
+##   元数据键就是那边导出的 `META`，不另抄一份字符串。
+const FillButtonRes = preload("res://view/fill_button.gd")
 const DetailPanelRes = preload("res://view/detail_panel.gd")
 const PageTabsRes = preload("res://view/page_tabs.gd")
 const RecruitQueueRes = preload("res://view/recruit_queue.gd")
@@ -580,6 +583,7 @@ func _test_panels(cfg) -> void:
 	_test_detail_two_columns(main)
 	_test_detail_vertical_fit(main)
 	_test_clicked_unit_detail(main)
+	_test_enemy_selection(main)
 	_test_settings_inert(main)
 	_test_box_select_buildings(main)
 	await _test_command_events_reach_consumer(main)
@@ -1077,7 +1081,9 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 		eq(tabs.page(), PageTabsRes.PAGE_ORDER, "★ 它是「操作」页")
 		ok(tabs.button_at(0) != null and tabs.button_at(0).visible,
 			"页签按钮是可见的")
-		eq(tabs.button_at(0).text, "操作", "页签上写着「操作」")
+		# ⚠️ 读 `label_at()` 而不是 `button.text`：本版起页签的文字被**逐字 Label** 接管
+		#    （为了让「白→黑」跟着金色前沿逐字变），`button.text` 被刻意置空以免重影。
+		eq(tabs.label_at(0), "操作", "页签上写着「操作」")
 		v2_near(tabs.button_at(0).size, Vector2(100.0, 240.0), 1.0,
 			"★ 只有一颗时它铺满整列（100×240）")
 		ok(tabs.is_active(0), "★ 当前页画成高亮")
@@ -3549,6 +3555,198 @@ func _test_clicked_unit_detail(main) -> void:
 	# 收尾：回到干净状态（后面的用例接着用）
 	main.input_ctrl.select_units([g1])
 	main.hud.refresh()
+
+
+# ---- 选中敌人：只能单个选中，右下角**不给任何页签**（本轮新增）----
+#
+# 需求原话：「玩家可以选中敌对单位/建筑（且只能单个选中），但其右下角不会显示任何页签
+#            （有格子，但格子内没东西）」。
+#
+# 这个用例盯四件事（每一件都是「不写就会静默错」的那一类）：
+#   ① 左键点敌人**真的能选中**（`_pick_any_unit_at` 把敌我合成一个判据之后，
+#      原来的 `_pick_unit_at` 只认己方 —— 漏改就会表现成「点敌人没反应」）；
+#   ② 只选中**它自己**（不展开成整队、不把己方那一份带过来）；
+#   ③ 右下角**一颗页签都不给**（只有一颗空格子），命令卡也是空的 ——
+#      尤其不能落到「操作」页（那会变成给敌人下自己的命令）；
+#   ④ 右栏照常报它的名称与数值（那是「看一眼它多硬」该有的信息），
+#      且文案里**不出现己方动作**（升级 / 特化 / 招募）。
+func _test_enemy_selection(main) -> void:
+	var world = main.world
+	var ic = main.input_ctrl
+	var hud = main.hud
+
+	# ---- 找一个敌人（测试敌人「enemy」阵营；`spawn_enemy` 是逻辑层的公开入口）----
+	var foe = null
+	for u in world.units:
+		if u.alive and not FactionRes.same_side(u.faction, world.my_faction):
+			foe = u
+			break
+	if foe == null:
+		foe = world.spawn_enemy(2, 2)
+	ok(foe != null, "（前提）场上有一个敌人可供点选")
+	if foe == null:
+		return
+	# ★ 把正好叠在这一格上的自己人挪开：命中判据是「鼠标底下最近的一个」，
+	#   叠着的话选中谁就变成看运气（这是测试的排布问题，不是被测逻辑的问题）。
+	for u in world.units:
+		if u != foe and u.alive and u.tx == foe.tx and u.ty == foe.ty:
+			_place_unit(world, u, Vector2(foe.tx + 2.5, foe.ty + 2.5))
+
+	# ---- ① 选中前的状态：先选上一支自己的部队（这样才能验「换选时清干净」）----
+	var g1 = world.unit_by_id("general-1")
+	if g1 != null:
+		ic.select_units([g1])
+	ok(not ic.selected_units.is_empty(), "（前提）先选中了一支己方部队")
+
+	# ---- ② 左键点敌人 ----
+	ic.mouse_world = foe.pos
+	ic.hover_tile = Vector2i(foe.tx, foe.ty)
+	ic._on_left_click(false)
+
+	eq(ic.selected_enemy, foe, "★ 左键点敌人 → 它被选中了（`_pick_any_unit_at` 认敌我两方）")
+	eq(ic.selected_enemy_kind(), "unit", "★ 判定它是**单位**（不是建筑）")
+	# ★ 地图上的选中圈：`game_scene._selected_ids()` 是「本地选中 → 渲染输入」的唯一出口，
+	#   漏了敌人的话表现是「右栏报着敌人的数值，地图上却看不出选的是哪一个」。
+	ok(main._selected_ids().has(foe.id), "★ 敌人的 id 进了选中集合（地图上要画它的选中圈）")
+	ok(main._selected_buildings().is_empty(), "★ 选中敌人**单位**时建筑高亮集合是空的")
+	ok(ic.selected_units.is_empty(),
+		"★ 选敌人时己方选中被清空（否则命令会发给一支看不见的队伍）")
+	ok(ic.selected_buildings.is_empty() and ic.selected_zone == null,
+		"★ 四种选中互斥：没有同时选中建筑 / 区划")
+	eq(ic.selected_enemy_kind() == "unit", true, "★ 需求「只能单个选中」：只有一个敌人字段")
+
+	# ---- ③ 右下角：一颗空格子，命令卡空 ----
+	hud.refresh()
+	var tabs = hud.page_tabs
+	eq(tabs.page_count(), 1, "★ 选中敌人时页签只有一颗（「有格子」）")
+	eq(tabs.page(), PageTabsRes.PAGE_NONE, "★ 那一颗是**空页签**（没有标签）")
+	eq(tabs.page_id_at(0), PageTabsRes.PAGE_NONE, "★ 它不指向操作 / 单位 / 建筑任何一页")
+	var tab0: Button = tabs.button_at(0)
+	ok(tab0 != null and tab0.visible, "★ 那颗格子是可见的（不是整列消失）")
+	if tab0 != null:
+		eq(tab0.text, "", "★ 格子内没有字（需求：「格子内没东西」）")
+		# ★★ 本版口径变更（悬停填充动效那一轮）：
+		#   页签的底色**不再由 StyleBox 画**，而是由自绘的「金色填充层」给
+		#   （见 view/fill_button.gd —— 那一层画在底纹**下面**，StyleBox 一旦铺实底就把它盖住了）。
+		#   所以「看得见」这件事现在由两半共同保证，断言也拆成两半：
+		#     ① 底纹：**透明底 + 金线**（线还在 ⇒ 空框仍然是个框，不是隐形的一块）；
+		#     ② 填充层：挂在按钮上、而且**常驻满格**（空页签不亮 ⇒ 它不算「当前页」）。
+		var sb0: StyleBox = tab0.get_theme_stylebox("normal")
+		ok(sb0 is StyleBoxFlat, "★ 空格子有一个 StyleBoxFlat 底纹")
+		if sb0 is StyleBoxFlat:
+			var f0 := sb0 as StyleBoxFlat
+			ok(f0.bg_color.a <= 0.001, "★ 底纹是**透明底**（底色交给填充层）")
+			ok(f0.border_color.r > f0.border_color.b and f0.border_width_left >= 1,
+				"★ 但**金线还在**（立在地图上看得见它是个框）")
+		ok(tab0.has_meta(FillButtonRes.META),
+			"★ 页签挂着「金色填充层」（悬停自下而上填金 / 当前页常驻满格）")
+	ok(not tabs.is_active(0), "★ 空页签不算「当前页」（不高亮）")
+	eq(hud.command_card.entries().size(), 0,
+		"★★ 命令卡是**空的**（一颗格子内容都没有）—— 绝不能落到「操作」页")
+	ok(hud.tech_grid == null or not hud.tech_grid.visible,
+		"★ 科技九格也没被翻出来（它只属于科技页）")
+
+	# ---- ④ 右栏：报敌人的名称与数值，且不出现己方动作 ----
+	eq(hud.detail_panel.unit_name_text(), String(foe.name), "★ 右栏报的是那个敌人的名字")
+	var txt: String = hud.detail_panel.detail_text()
+	ok(txt.contains("血量"), "★ 右栏有敌人的血量（玩家要判断打多久）")
+	ok(txt.contains("攻击力") or txt.contains("伤害"), "★ 也有它的攻击数值（判断站多远打）")
+	for bad in ["升级", "特化", "招募", "再起"]:
+		ok(not txt.contains(bad), "★ 敌人详情里不出现己方动作「%s」" % bad)
+	eq(hud.detail_panel.grid_mode(), "empty", "★ 左栏下半网格是空的（敌人进不了编组）")
+
+	# ---- ⑤ 敌对建筑：同样只选中它自己、同样不给页签 ----
+	ic.select_units([])
+	var foe_b = null
+	for b in world.building_list:
+		if b != null and b.alive and not b.is_invulnerable() \
+				and not FactionRes.same_side(b.owner, world.my_faction):
+			foe_b = b
+			break
+	ok(foe_b != null, "（前提）场上有敌对的建筑（对家据点 / 测试建筑）")
+	if foe_b != null:
+		ic.mouse_world = Vector2(float(foe_b.tx) + 0.5, float(foe_b.ty) + 0.5)
+		ic.hover_tile = Vector2i(foe_b.tx, foe_b.ty)
+		ic._on_left_click(false)
+		eq(ic.selected_enemy, foe_b, "★ 左键点敌对建筑 → 它被选中了")
+		eq(ic.selected_enemy_kind(), "building", "★ 判定它是**建筑**")
+		ok(ic.selected_buildings.is_empty(),
+			"★ 它**不在**己方建筑选中列表里（否则「升级」那一页会对着它打开）")
+		ok(main._selected_buildings().has(foe_b),
+			"★ 但建筑高亮集合里**有**它（地图上要给它描金框）")
+		hud.refresh()
+		eq(hud.page_tabs.page_count(), 1, "★ 敌对建筑同样只有一颗空格子")
+		eq(hud.page_tabs.page(), PageTabsRes.PAGE_NONE, "★ 空页签")
+		eq(hud.command_card.entries().size(), 0, "★ 命令卡空（没有「升级」那一格）")
+		eq(hud.detail_panel.unit_name_text(), foe_b.display_name(), "★ 右栏报的是那栋建筑的名字")
+		var btxt: String = hud.detail_panel.detail_text()
+		ok(btxt.contains("生命"), "★ 右栏有它的血量")
+		for bad2 in ["等级", "升级", "特化", "建造中"]:
+			ok(not btxt.contains(bad2), "★ 敌对建筑详情里不出现「%s」" % bad2)
+
+	# ---- ⑥ 敌方的**区划中心**：走「敌对建筑」那条路，不是「区划详情」----
+	#     ⚠️ 这一条是这轮最容易漏的：区划中心在自己和敌方那边长得一模一样，
+	#        不判归属的话点它会落到 `select_zone`，右下角照样弹出
+	#        「操作（三个特化）+ 招募」—— 等于给敌人的区划做特化。
+	# 找一个**不属于自己**的区划的中心格：区划中心那栋建筑本身是**中立障碍**
+	# （owner 恒为空），所以「是不是敌人的」要看**它所在那个区划**归谁 ——
+	# 这正是被测代码的判据（input_controller 用的是 zone_center_zone_at + zone.owner）。
+	var foe_center_tile := Vector2i(-1, -1)
+	for z in world.zones.zones:
+		if FactionRes.same_side(String((z as Dictionary).get("owner", "")), world.my_faction):
+			continue
+		var c: Variant = (z as Dictionary).get("center", null)
+		if c != null:
+			foe_center_tile = c
+			break
+	ok(foe_center_tile.x >= 0, "（前提）场上有一个**不属于自己**的区划（它的中心格可点）")
+	if foe_center_tile.x >= 0:
+		ic.select_units([])
+		ic.mouse_world = Vector2(float(foe_center_tile.x) + 0.5, float(foe_center_tile.y) + 0.5)
+		ic.hover_tile = foe_center_tile
+		ic._on_left_click(false)
+		eq(ic.selected_zone, null, "★★ 点**别人区划**的中心不会打开区划详情（不给特化 / 招募）")
+		ok(ic.selected_enemy != null, "★ 它走的是「选中敌对建筑」那条路（实际 %s）"
+			% ("空" if ic.selected_enemy == null else ic.selected_enemy_kind()))
+		hud.refresh()
+		eq(hud.page_tabs.page(), PageTabsRes.PAGE_NONE, "★ 别人区划的中心也只有一颗空格子")
+		eq(hud.command_card.entries().size(), 0, "★ 命令卡空（没有三个特化那一页）")
+
+	# ★ 反过来：点**自己区划**的中心仍然照旧打开区划详情（老行为不能被这轮改坏）
+	var own_center_tile := Vector2i(-1, -1)
+	for z2 in world.zones.zones:
+		if not FactionRes.same_side(String((z2 as Dictionary).get("owner", "")), world.my_faction):
+			continue
+		var c2: Variant = (z2 as Dictionary).get("center", null)
+		if c2 != null:
+			own_center_tile = c2
+			break
+	if own_center_tile.x >= 0:
+		ic.select_units([])
+		ic.mouse_world = Vector2(float(own_center_tile.x) + 0.5, float(own_center_tile.y) + 0.5)
+		ic.hover_tile = own_center_tile
+		ic._on_left_click(false)
+		ok(ic.selected_zone != null, "★ 点自己区划的中心 → 照旧打开区划详情（老行为不变）")
+		eq(ic.selected_enemy, null, "★ 这时没有「选中的敌人」")
+		hud.refresh()
+		eq(hud.page_tabs.page_count(), 2, "★ 自己区划中心仍是两颗页签（操作 + 招募）")
+
+	# ---- ⑦ 改选自己的东西 → 敌人选中被清掉（互斥，不留残影）----
+	if g1 != null:
+		ic.select_units([g1])
+		eq(ic.selected_enemy, null, "★ 改选己方部队 → 敌人的选中被清掉")
+		hud.refresh()
+		# ⚠️ 不断言「一定是操作页」：hud 会**记住**玩家上一次在「部队这一类」里停在哪一页
+		#    （`_page_memory`），上一个用例可能停在「单位」页。这里要钉的是
+		#    「页签回到了**己方部队那一套**、命令卡有内容」——那才是与敌人那一屏的差别。
+		ok(hud.page_tabs.page() == PageTabsRes.PAGE_ORDER
+				or hud.page_tabs.page() == PageTabsRes.PAGE_UNIT,
+			"★ 页签回到己方部队那一套（操作 / 单位），实际「%s」" % hud.page_tabs.page())
+		ok(hud.command_card.entries().size() > 0, "★ 命令卡回到己方内容")
+
+	# 收尾：回到干净状态（后面的用例接着用）
+	ic.select_units([] if g1 == null else [g1])
+	hud.refresh()
 
 
 # ---- 设置按钮：不再「点不动」，但点它不该顺手切页 ----

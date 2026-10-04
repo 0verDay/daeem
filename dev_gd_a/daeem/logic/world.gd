@@ -992,6 +992,20 @@ func _place_faction_units(fid: String, placed: Array) -> void:
 			if pu.garrison_zone_id < 0:
 				push_warning("关卡摆放的将领 (%d,%d) 挂了将领性 AI 却没有 zone，已按不挂处理"
 					% [int(ud["x"]), int(ud["y"])])
+		# ★★ **玩家的单位不许自带 AI**（本轮新增，与 `_assign_garrison_zones` 开头那条是一对）：
+		#   本机在操作的那一方，摆在关卡里的单位**一律不带归属区划 / 不置 hold_position** ——
+		#   数据里写了 `zone` / `ai: general` 也不带。上面那几句已经把 AI 状态挂上了，
+		#   这里**最后撤掉**（放在最末，于是「将领」与「普通单位」两条路都被覆盖）。
+		#
+		#   为什么必须在**这里**也拦一道（有实测）：关卡的 `start_units[]` 是**数据**，
+		#   而「这一方这一局归谁操作」是**运行时**才知道的 —— 同一份数据，玩家选它时
+		#   那些单位是玩家的兵，玩家不选它时才该由 AI 接管。只在 `_assign_garrison_zones`
+		#   里拦拦不住这条路（那条只管「没写 zone 的兜底」，显式写了 zone 的走这里）。
+		#   ⚠️ 判据与那一条**必须是同一份口径**（`_is_player_piloted`），改一处就一起改。
+		if _is_player_piloted(fid):
+			if int(pu.garrison_zone_id) >= 0 or pu.hold_position:
+				pu.garrison_zone_id = -1
+				pu.hold_position = false
 		units.append(pu)
 
 
@@ -1084,6 +1098,16 @@ func escort_target_of(fid: String, index: int) -> int:
 		return int(n)
 	# 这一方没摆过附属部队 → 用这一方的 min_retinue 当目标（0 / 负数 = 不要求补员）
 	return maxi(0, int(faction_ai_cfg(fid).get("min_retinue", 0)))
+
+
+## ★★ **这一关（整份关卡数据）里有没有摆过任何附属部队**（`escort_of`）。
+##
+## ⚠️ 它**不是**「该不该按关卡编制」的判据（那是 `world.level != null`）：
+##    两者在「有关卡、但谁都没摆附属兵」这一档上都是 false，
+##    而那一档**仍然应该听关卡的**（关卡作者写的 `min_retinue` 要生效）。
+##    留这个函数是因为它读起来比「去翻两张私有表」清楚，也方便测试与排查。
+func has_placed_escorts() -> bool:
+	return not faction_escort_placed.is_empty()
 
 
 ## ★ 建出**一位**将领（第 `index` 位，0 起）——`create_generals` 的单件版。
@@ -1497,6 +1521,11 @@ func spawn_faction_units(faction: String) -> void:
 ##   巡逻是「一个队长带队、兵跟着走」（见 `general_ai.is_patrol_leader`），
 ##   给附属兵也安上归属不但没用，还会让巡逻计数把同一块地数成好几个人。
 func _assign_garrison_zones(faction: String, from: int) -> void:
+	# ★★ **本机在操作的那一方，永远不许被将领性 AI 接管**（本轮新增，见 `_is_player_piloted`）。
+	#   这一条是「基本原则」在引擎侧的落点：**玩家的单位不许自带 AI** ——
+	#   数据写错了（比如把守军写成玩家的阵营又挂了 `zone` / `ai: "general"`）也不该发生。
+	if _is_player_piloted(faction):
+		return
 	var anchor := _objective_zone_for_ai()
 	for i in range(maxi(0, from), units.size()):
 		var u = units[i]
@@ -1508,6 +1537,25 @@ func _assign_garrison_zones(faction: String, from: int) -> void:
 			continue
 		u.garrison_zone_id = anchor if anchor >= 0 else _zone_id_at(u.tx, u.ty)
 		u.hold_position = true
+
+
+## ★★ 这一方这一局是不是**本机在操作**的（= 玩家的单位）。
+##
+## 用途只有一处：上面那些「给 AI 的归属区划」必须**绕开玩家** —— 玩家的单位一旦拿到
+## `garrison_zone_id`（`unit.is_garrison()` 就会为真），将领性 AI 就有权指挥它：
+## 巡逻、警戒、脱战招兵全都会作用在**玩家自己的部队**上。实测症状：
+## 关卡里把守军写成玩家阵营 + `zone`，玩家选那一方时那些单位就带着 AI 状态
+## （探针：6/6 都挂着 `garrison_zone_id`），指挥权与 AI 的输入会互相覆盖。
+##
+## ★★ 判据**只有 `my_faction`**（本机正在操作的那一方）—— 单机 / 房主都是它。
+##   ❌ **不要**把 `player_seats` 也算进来（试过，是错的）：选边关的 roster 是
+##      `[我选的那一方, 敌人那一方]`（两边的家都要建），把整份名单排掉会把**由 AI 接管的
+##      那一边**也一起排掉 ⇒ 它的将领拿不到归属区划 ⇒ 那一方一动不动、一波兵都不出。
+##      实测（渡口争夺）：玩家选 F1 时 F2 全场只剩 **4** 个单位、150 秒都摸不到目标。
+##   ✅ 那一边本来就该由 AI 接管（数据里写了 `ai: "faction"` / 单位的 `zone`），
+##      所以这里**只**保护玩家自己那一方。
+func _is_player_piloted(faction: String) -> bool:
+	return faction != "" and faction == my_faction
 
 
 ## 这一方虽然挂着 AI，但**开局照样给附属兵**吗？
@@ -2243,6 +2291,70 @@ func _stop_retinue(leader) -> void:
 		r.stop()
 
 
+## ★★ 读条中的将领**被贴脸就取消招募、转去迎战**（本轮新增，用户需求）。
+##
+## 需求原话：「增加 ai 逻辑，当自己在招募时，若有敌方单位进入己方攻击范围，
+##           则取消该招募转而攻击」。
+##
+## 为什么要有它：招募读条期间将领被**钉在原地**、不能动也不能还手（用户更早的需求），
+## 于是敌兵贴到脸上时它只是个活靶子 —— 继续把 10 秒的读条走完等于白送一位将领。
+##
+## 实现要点（每一条都是刻意的）：
+##   · 判据是**自己的攻击范围**（`cfg.unit_range_of`）而不是索敌半径 `aggro_range`：
+##     需求说的是「进入攻击范围」，也就是「现在就能打到它」；
+##   · 距离扣掉目标体积（与 `combat.gd` 的索敌同一口径）—— 允许「半个身子进射程」；
+##   · 只认**能被攻击的敌方单位**（`is_attackable()`：濒死将领不算，与 combat 一致），
+##     并且走 `same_side_for_attack()`（盟友不算敌人）；
+##   · 取消用 `cancel_recruit(..., slot = 0)`：那是**正在读条**的那一单，
+##     它会退回已扣的粮食 / 黄金 / 人口（`_refund()`），并让队列里的下一单前移 ——
+##     ⚠️ 这里**只用现成的命令路径**，不自己拼一份「取消」逻辑（两份必然漂开）。
+##
+## @return true = 这一帧确实取消了招募（调用方据此让它继续参与战斗）
+func _interrupt_training_if_threatened(u) -> bool:
+	if not u.is_training():
+		return false
+	var threat = _nearest_threat_in_attack_range(u)
+	if threat == null:
+		return false
+	if not cancel_recruit(String(u.id), 0, String(u.faction)):
+		return false                   # 取消被拒（理论上不会）：维持原状，下一帧再看
+	# ★ 顺手把「上一次开火的残留」清掉：它这一帧就要去打新目标，
+	#   不清的话会有一条线从它连到**旧目标**（与 `_start_training` 里那一手同一个理由）。
+	u.clear_attack_fx()
+	# ★ 直接点名这个威胁当目标：不然它这一帧还要等一次「索敌冷却」才动手，
+	#   而贴脸的敌人一秒都不该等。`ordered_target` 是玩家命令那一档，
+	#   与 `combat.gd` 的自动索敌同一个消费方式（下一帧就走「有目标」那条路）。
+	u.ordered_target = threat
+	u.reset_repath()
+	push_event({"type": "recruit_interrupted", "unit": u, "target": threat})
+	return true
+
+
+## 找一位将领**攻击范围内**最近的敌方单位（没有 → null）。
+##
+## ⚠️ 与 `combat.gd` 的索敌口径刻意保持一致（距离扣目标体积、跳过濒死、认盟友）：
+##    两处判据漂开的表现是「AI 说没人、combat 说有人」这种最难查的不一致。
+func _nearest_threat_in_attack_range(u) -> Variant:
+	# ★ 走 `u.combat_range(cfg)`（不是 `cfg.unit_combat_of(...)["range"]`）：
+	#   它会先看**将领自己的数值覆盖**（`unit.general.stats`）—— 那一位将领的射程
+	#   与它兵种的射程本来就可能是两回事，判据要跟「它真能打到多远」一致。
+	var reach: float = u.combat_range(cfg)
+	if reach <= 0.0:
+		return null
+	var best = null
+	var best_d := INF
+	for other in units:
+		if other == u or not other.is_attackable():
+			continue
+		if FactionRes.same_side_for_attack(String(other.faction), String(u.faction)):
+			continue
+		var d: float = u.pos.distance_to(other.pos) - cfg.unit_radius_of(other.unit_type)
+		if d <= reach and d < best_d:
+			best_d = d
+			best = other
+	return best
+
+
 ## 让某个兵种进「大格子」开始读条。
 ##
 ## ⚠️ 与 `_start_next_in_queue()` 分开写：那个是「从队列里提拔下一个」，
@@ -2253,6 +2365,17 @@ func _start_training(leader, kind: String) -> void:
 	leader.train_kind = kind
 	leader.train_total = recruit_train_sec(kind)
 	leader.train_remaining = leader.train_total
+	# ★★ 开始读条 ⇒ 把「上一次开火的渲染残留」清掉（本轮修的 bug）。
+	#    为什么要在这里清（实测报回来的症状：**有概率**有一条攻击线一直连在被攻击对象上）：
+	#      读条期间将领被钉在原地、`world.tick` 第 4 步**整段跳过**它的单位逻辑，
+	#      而 `attack_flash` 的衰减就在那段里（`combat.update_unit` 开头）⇒
+	#      flash **冻在开招那一刻的值上**、`last_target` 也一直指着那个人，
+	#      渲染（`view/overlay.gd` 的 `_draw_attack_lines`）就永远画着那条线。
+	#      说「有概率」是因为它取决于开招那一刻 flash 还剩多少：
+	#      刚开过火（flash ≈ 1）就开招 ⇒ 线一直留着；脱战一会儿再开招 ⇒ 看不出问题。
+	#    ⚠️ 逆方向（读条 → 攻击）也靠这一手：不清的话恢复战斗后那条线会从
+	#      「旧目标」跳一下才回到新目标（残留的 `last_target` 一直指着旧的那位）。
+	leader.clear_attack_fx()
 
 
 ## 把队列里的下一个提到「大格子」里开始读条（队列空 → 变回空闲）。
@@ -3499,8 +3622,19 @@ func tick(dt: float) -> Array:
 		# ★★ 招募期间将领**钉在原地**（用户需求：固定在原地、无法行动、无法攻击）：
 		#    整段单位逻辑（移动 / 索敌 / 开火 / 回位）都跳过。位置由末尾的
 		#    _pin_training_leaders() 保证不被碰撞推走。
+		#
+		# ★★ 但在跳过**之前**先看一眼「有没有敌人进了它的攻击范围」（本轮新增）：
+		#    有 ⇒ **取消招募、转去迎战**（用户需求原话：「当自己在招募时，若有敌方单位
+		#    进入己方攻击范围，则取消该招募转而攻击」）。理由很直白：读条期间将领
+		#    不能动也不能还手，是活靶子 —— 被贴脸时继续读条等于白送一位将领。
+		#    ⚠️ 必须放在 `is_training()` 这一支**里面**（而不是循环外）：
+		#       取消之后要**立刻接着**跑这一帧的正常单位逻辑（索敌 / 开火），
+		#       放到外面的话它会白等一帧，而那正是「贴脸了还在读条」的那一帧。
 		if u.is_training():
-			continue
+			if _interrupt_training_if_threatened(u) and not u.is_training():
+				pass                      # 已取消：往下走，这一帧就参与战斗
+			else:
+				continue
 		# ★★ 濒死的将领（本轮新增）**不要**在这里另开一支：它这一帧只跑「濒死状态机」
 		#    （缓慢回复 / 全灭判定 / 再起读条，见 unit.tick_near_death），而那一支
 		#    已经由下面 `CombatRes.tick_frame` → `update_unit` 的第一句接管了。

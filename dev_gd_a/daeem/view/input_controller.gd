@@ -70,6 +70,26 @@ var selection_origin: String = "drag"
 ## ★ 选中的**区划**（左键点区划中心 = 看这个区划的详情）。
 ## 与上面两者互斥：面板「详细信息」只有一个左栏，同一时刻只有一种选中对象。
 var selected_zone = null
+## ★★ 选中的**敌对单位 / 敌对建筑**（纯本地，**不进命令流**）。
+##
+## 需求原话：「玩家可以选中敌对单位/建筑（且只能单个选中），但其右下角不会显示任何页签
+##           （有格子，但格子内没东西）」。
+##
+## ★ 为什么单开一个字段，而不是把它塞进 `selected_units` / `selected_buildings`：
+##   那两个字段是**己方**选中集合，下游会拿它们去干己方的事 ——
+##   `expand_to_groups()`（按队伍展开）、左侧部队列表、命令卡的「操作 / 单位」页、
+##   招募队列、`_selected_troops()`… 把敌人放进去，等于让一处敌方引用在整条 UI 链上漂，
+##   任何一处漏判都会变成「给敌人下自己的命令」。单独一个字段则相反：
+##   **所有既有路径天然看不到它**（它们读的是那两个己方字段），
+##   敌人只在明确要显示它的地方（详细信息右栏 + 地图上的选中圈）出现。
+##
+## ★ 与另外三种选中互斥：同一时刻只有一种选中对象（详细信息面板只有一个左栏）。
+##   写入点只有 `_on_left_click` 那一处；清空点在 setup / select_units /
+##   select_zone / select_buildings / drop_dead_selection 这五处。
+##
+## ⚠️ 值是**对象引用**（Unit 或 Building），两者没有共同基类 —— 所以读它的人
+##   要用 `owner` 有没有来判断是建筑、用 `faction` 判断是单位（见 hud._selected_enemy_kind）。
+var selected_enemy = null
 ## 建造模式：'' | 'wall' | 'tower'
 var build_type: String = ""
 ## ★★ 操作页的**命令模式**（右下「操作」页的命令格 → 点一下进这个模式 → 左键点地图下达）。
@@ -127,6 +147,7 @@ func setup(p_cfg: ConfigRes, p_world, p_camera_rig) -> void:
 	selected_building = null
 	selected_buildings = []
 	selected_zone = null
+	selected_enemy = null
 	clicked_unit = null
 	selection_origin = "drag"
 	order_mode = ""
@@ -450,13 +471,25 @@ func _on_left_click(additive: bool) -> void:
 	#   它是中立障碍（任何单位都进不去那一格），所以点它的时候不会有单位挡在上面；
 	#   而且它的语义是「看这个区划的详情」，不是「选中一栋建筑」——
 	#   先判它，能让「点中心」这条路不受单位命中半径的影响。
+	#   ★★ 本轮：**只有自己的区划**才展开成「区划详情」——
+	#      敌方的区划中心要当作一栋普通敌对建筑来选中（需求：选中敌对建筑 = 只选中它、
+	#      右下角不给任何页签）。不判归属的话，点敌方中心会落到 `select_zone`，
+	#      于是右下角照样弹出「操作（三个特化）+ 招募」——等于给敌人的区划做特化。
 	var center_zone = world.zone_center_zone_at(hover_tile.x, hover_tile.y)
-	if center_zone != null:
+	if center_zone != null and FactionRes.same_side(
+			String((center_zone as Dictionary).get("owner", "")), world.my_faction):
 		select_zone(center_zone)
 		return
 
-	var hit_unit = _pick_unit_at(mouse_world)
+	# ★★ 鼠标底下的单位：己方的照旧（点一个 = 带出整队），
+	#    敌方的**只选中它自己**（需求「只能单个选中」）。
+	#    ⚠️ 判据用同一个命中函数：它内部已经挡掉了「看不见的敌人」（战争迷雾）与
+	#      濒死的将领（点不到），所以这里不必再抄一遍。
+	var hit_unit = _pick_any_unit_at(mouse_world)
 	if hit_unit != null:
+		if not FactionRes.same_side(hit_unit.faction, world.my_faction):
+			select_enemy(hit_unit)
+			return
 		var next: Array = selected_units.duplicate() if additive else []
 		if additive and next.has(hit_unit):
 			next.erase(hit_unit)
@@ -474,8 +507,12 @@ func _on_left_click(additive: bool) -> void:
 	var hit_building = world.building_at(hover_tile.x, hover_tile.y)
 	# ★★ 战争迷雾：看不见的敌方建筑不能被左键选中（用户确认）。
 	#    ⚠️ 判据用 `_foe_building_visible()`：己方 / 无主（区划中心）它一律放行 ——
-	#      所以「点自己的建筑」与「点区划中心」（上面那条先判了）都不受影响。
+	#      所以「点自己的建筑」与「点自己的区划中心」（上面那条先判了）都不受影响。
 	if hit_building != null and _foe_building_visible(hit_building):
+		# ★★ 敌对建筑：**只选中它一个**（需求「只能单个选中」；框选那条路也照旧只收己方）。
+		if not FactionRes.same_side(hit_building.owner, world.my_faction):
+			select_enemy(hit_building)
+			return
 		select_building(hit_building)
 		return
 
@@ -606,6 +643,7 @@ func select_units(units: Array) -> void:
 	selected_building = null
 	selected_buildings = []
 	selected_zone = null
+	selected_enemy = null
 	clicked_unit = null
 	# ★ 批量入口一律记成 "drag"（框选 / 点左侧列表 / 1-2-3 / 清空都是这一类）；
 	#   地图上单击那一路会在调完本函数之后自己把它改回 "click"（见 `_on_left_click`）。
@@ -626,6 +664,7 @@ func select_zone(zone) -> void:
 	selected_units = []
 	selected_building = null
 	selected_buildings = []
+	selected_enemy = null
 	clicked_unit = null
 	for u in world.units:
 		u.selected = false
@@ -654,10 +693,49 @@ func select_buildings(list: Array) -> void:
 	selected_building = selected_buildings[0] if not selected_buildings.is_empty() else null
 	selected_units = []
 	selected_zone = null
+	selected_enemy = null
 	clicked_unit = null
 	for u in world.units:
 		u.selected = false
 	local_ui_changed.emit()
+
+
+## ★★ 选中**一个敌对单位 / 敌对建筑**（左键点它；需求要「只能单个选中」）。
+##
+## ★ 为什么这里就把「单个」钉死，而不是留给调用方：
+##   选中状态是**纯本地**的，规则写在哪一处就该由哪一处保证 —— 选定一个入口
+##   （`_on_left_click`）之后，其余任何入口（框选 / 列表 / 快捷键）都进不来，
+##   所以「只能单个」这条不可能被别的路绕过。
+## ★ 与另外三种选中互斥：进来先把己方那三份清干净（详细信息只有一个左栏）。
+##
+## @param target Unit 或 Building（**必须是敌对阵营**；调用方负责判）
+func select_enemy(target) -> void:
+	selected_enemy = target
+	selected_units = []
+	selected_building = null
+	selected_buildings = []
+	selected_zone = null
+	clicked_unit = null
+	selection_origin = "drag"      # 不是「点自己的兵」，右栏那条点击规则不适用
+	for u in world.units:
+		u.selected = false
+	local_ui_changed.emit()
+
+
+## 现在选中的那个敌人**是单位还是建筑**：
+##   · ""      = 没选中敌人；
+##   · "unit"  = 敌对单位；
+##   · "building" = 敌对建筑。
+##
+## ★ 为什么不给两个字段 / 两次判断：单位与建筑在 logic/ 里是两种没有共同基类的
+##   RefCounted，只能靠「有没有某个字段」区分。这个函数就是**唯一**做这件事的地方
+##   （与 view/input_controller.gd 的 `_foe_unit_visible` / `_foe_building_visible`
+##   分两个函数是同一条理由：猜错的代价是静默走错分支）。
+func selected_enemy_kind() -> String:
+	if selected_enemy == null:
+		return ""
+	# 单位有 `faction`（单位自己的阵营字段），建筑只有 `owner`
+	return "unit" if selected_enemy.get("faction") != null else "building"
 
 
 func select_general_by_hotkey(key: String) -> void:
@@ -1023,10 +1101,51 @@ func _build_name(t: String) -> String:
 	return String(v) if typeof(v) == TYPE_STRING else t
 
 
+## 命中判定：世界坐标 → 最近的、半径内的单位（**己方与敌方都算**）。
+##
+## ★★ 本轮新增（需求：玩家可以选中敌对单位）：左键那条路现在既要能点自己的兵，
+##    也要能点敌人的兵 —— 两个判据（`same_side` / 不同方）合成一个函数。
+##
+## ★ 为什么合成而**不是**「先试己方、再试敌方」：
+##   两队人挤在一起时，两次独立命中会各自返回一个结果，最后选中谁取决于
+##   调用点里两个 if 的先后顺序 —— 那是「点到谁全看运气」。
+##   合成之后判据只有一个：**离鼠标最近的那个**（不分敌我），这才是玩家的直觉。
+##
+## ★ 过滤规则（三条都沿用原来那套，没有新规则）：
+##   · 死掉的不算；
+##   · 看不见的敌人不算（战争迷雾，见 `_foe_unit_visible`）——己方永远看得见；
+##   · 濒死的将领不算（`is_attackable()`，需求：濒死期间不能被选为攻击对象）。
+##
+## ⚠️ 敌我之分留给调用方（`_on_left_click` 按 `same_side` 分派到 select_units /
+##   select_enemy）：这里只管「鼠标底下是谁」，与「选中它是干什么」无关。
+func _pick_any_unit_at(world_pos: Vector2) -> Variant:
+	var best = null
+	var best_d := INF
+	for u in world.units:
+		if not u.alive:
+			continue
+		var mine: bool = FactionRes.same_side(u.faction, world.my_faction)
+		if not mine:
+			# 敌方的两条额外门槛：能打得到（不是濒死将领）、看得见（战争迷雾）
+			if not u.is_attackable():
+				continue
+			if not _foe_unit_visible(u):
+				continue
+		var r: float = cfg.unit_radius_of(u.unit_type) + cfg.num("unit.hit_pad", 6.0) / cfg.cell_px
+		var d: float = world_pos.distance_to(u.pos)
+		if d <= r and d < best_d:
+			best_d = d
+			best = u
+	return best
+
+
 ## 命中判定：世界坐标 → 最近的、半径内的、**自己这一方**的单位
 ##
 ## ★ 只看自己这一方的：重叠时 pickAt 只该选得中自己的单位
 ##   （HTML 版专门为这条写过回归测试）。
+## ★★ 本轮起**左键选中不再用这个函数**（改成 `_pick_any_unit_at`，敌人也能点）——
+##   它还留着，是因为「只要己方」这个语义仍然有别的用处（例如以后做框选加点、
+##   或者别的只认己方的交互），而且已经有测试直接调它。
 func _pick_unit_at(world_pos: Vector2) -> Variant:
 	var best = null
 	var best_d := INF
@@ -1127,6 +1246,31 @@ func drop_dead_selection() -> void:
 	if selected_zone != null and not _zone_still_exists():
 		selected_zone = null
 		local_ui_changed.emit()
+	# ★★ 选中的**敌人**：它被打死、或者重新被战争迷雾盖住（走开了 / 视野没了）时，
+	#    选中要跟着断掉 —— 否则右栏会一直显示一个「地图上已经看不见、甚至已经不存在」的
+	#    敌人数值（玩家点不到它，也就没法改选别的，只能靠点空地清掉）。
+	#    ⚠️ 判据与左键命中那两条**完全一致**（活着 + 看得见），
+	#      见 `_pick_any_unit_at` / `_on_left_click`。
+	if selected_enemy != null and not _enemy_selection_alive():
+		selected_enemy = null
+		local_ui_changed.emit()
+
+
+## 现在选中的那个敌人还该不该继续选中（活着 + 看得见）。
+## ★ 单位与建筑分开判（两者没有共同基类，见 `selected_enemy_kind()` 那段说明）。
+func _enemy_selection_alive() -> bool:
+	if selected_enemy == null:
+		return false
+	match selected_enemy_kind():
+		"unit":
+			if not selected_enemy.alive:
+				return false
+			return _foe_unit_visible(selected_enemy)
+		"building":
+			if not selected_enemy.alive:
+				return false
+			return _foe_building_visible(selected_enemy)
+	return false
 
 
 func _zone_still_exists() -> bool:

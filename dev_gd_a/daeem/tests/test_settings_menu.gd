@@ -37,10 +37,12 @@ const UiLayoutRes = preload("res://view/ui_layout.gd")
 ## 与 start_screen.gd 的页面常量对齐（刻意写数字：改名时这里应该直接失败）
 const PAGE_MENU := 1
 
-## 进游戏时点 test 按钮的坐标（无头下视口是 1920×1920，量出来的值 —— 与
+## 点掉入场页的坐标（无头下视口是 1920×1920；点整页正中，与
 ## tests/test_start_flow.gd / test_map_select.gd 用的是同一个）。
 const CLICK_CENTER := Vector2(960.0, 540.0)
-const CLICK_TEST := Vector2(960.0, 1012.0)
+## ⚠️ **不再写死 test 按钮的坐标**：本轮 UI 改版（标题条与按钮列连成一条 VBox）
+##    把那一列挪了位置，写死的 y 会落到按钮外面 —— 表现是「按了 test 没反应」。
+##    现在一律算 `main.start_screen.test_button().get_global_rect().get_center()`。
 
 
 func _initialize() -> void:
@@ -238,7 +240,8 @@ func _test_return_to_menu() -> void:
 		"★ 回到的是**主界面**那一页（不收入场页：那一次「点击任意处」玩家已经付过）")
 	ok(screen.get_node("StartRoot/MainMenu").visible, "主界面那一层可见")
 	ok(not screen.get_node("StartRoot/Intro").visible, "入场页那一层没有回来")
-	ok(screen.get_node("StartRoot/Background").visible, "白底回来了（菜单不是浮在游戏画面上）")
+	ok(screen.get_node("StartRoot/Background").visible,
+		"背景那一层回来了（菜单不是浮在游戏画面上）")
 
 	# ---- 选择条上的地图还在（整个菜单对象没被重建）----
 	eq(screen.selected_map_path(), picked,
@@ -252,10 +255,13 @@ func _test_return_to_menu() -> void:
 	var sel_node: Button = screen.map_select_button()
 	await _hover_at((sel_node as Control).get_global_rect().get_center())
 	ok(root.gui_get_hovered_control() != null,
-		"★ 回到菜单后鼠标停在选择条上有控件接住（白底那一层活着，不是「看着在、点不动」）")
+		"★ 回到菜单后鼠标停在选择条上有控件接住（背景那一层活着，不是「看着在、点不动」）")
 
 	# ---- ★ 再按一次 test：应该建出**新的一局**（旧的那个 game 不能复活）----
-	await _click_at(CLICK_TEST)
+	#    ★ 点**按钮自己的中心**（算出来），不是写死的坐标 —— 理由见 CLICK_CENTER 那一段。
+	var tb: Button = screen.test_button()
+	ok(tb is Button and tb.get_global_rect().size.y > 1.0, "（前提）test 按钮排过版了")
+	await _click_at(tb.get_global_rect().get_center())
 	var second = main.game
 	ok(second != null, "★ 回到菜单之后再按 test 能开出一局新的")
 	ok(second != game, "★ 新一局是**新的** game_scene（不是那个已经被拆掉的）")

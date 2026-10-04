@@ -19,3 +19,6 @@ dev_gd_a/.nuget-packages/
 
 # Godot 导出的可执行文件（export_presets.cfg 里 export_path="exports/DAEEM.exe"）
 dev_gd_a/daeem/exports/
+
+# UI 看样子的截图（tests/bench_menu_shot.gd 生成，看完整理掉即可）
+dev_gd_a/daeem/shots/

@@ -375,15 +375,15 @@ func _draw() -> void:
 func _draw_cell(i: int, f: Font) -> void:
 	var av := UiLayoutRes.troop_avatar_rect(i)
 	var leader_cell := cell_is_leader(i)
-	draw_rect(av, UiStyleRes.BG_PRESSED if leader_cell else UiStyleRes.BG_EMPTY, true)
+	draw_rect(av, UiStyleRes.bg_pressed() if leader_cell else UiStyleRes.bg_empty(), true)
 	# 描边：交战中的点亮成红，鼠标悬停的点亮成强调色，其余普通线色
-	var edge: Color = UiStyleRes.LINE
+	var edge: Color = UiStyleRes.line()
 	if _in_combat(unit_at(i)):
-		edge = UiStyleRes.WARN
+		edge = UiStyleRes.warn()
 	elif i == _hover:
-		edge = UiStyleRes.ACCENT_DIM
-	draw_rect(av, edge, false, 2.0 if edge != UiStyleRes.LINE else 1.0)
-	_draw_centered(f, cell_short(i), av, UiStyleRes.TEXT, UiStyleRes.FS_BODY)
+		edge = UiStyleRes.accent_dim()
+	draw_rect(av, edge, false, 2.0 if edge != UiStyleRes.line() else 1.0)
+	_draw_centered(f, cell_short(i), av, UiStyleRes.text(), UiStyleRes.FS_BODY)
 	# 右边两行：名字 / x÷y（都用 FS_SMALL = 13 号字，与参考图的字号一致）
 	# ★★ 位置必须带**这一格自己的偏移**：取 `cell_text_origin(i)`（= 这一格的左上 + 格内偏移）。
 	#    ⛔ 这里踩过（手玩报的「选中多个单位或将领时，第二、三列的字挤到第一列」）：
@@ -394,12 +394,12 @@ func _draw_cell(i: int, f: Font) -> void:
 	var tw := UiLayoutRes.TROOP_NAME_W
 	draw_string(f, Vector2(tp.x, tp.y + UiLayoutRes.TROOP_NAME_Y),
 		_clip_text(f, cell_name(i), tw, UiStyleRes.FS_SMALL),
-		HORIZONTAL_ALIGNMENT_LEFT, tw, UiStyleRes.FS_SMALL, UiStyleRes.TEXT)
+		HORIZONTAL_ALIGNMENT_LEFT, tw, UiStyleRes.FS_SMALL, UiStyleRes.text())
 	var line2 := cell_sub_text(i)
 	if line2 != "":
 		draw_string(f, Vector2(tp.x, tp.y + UiLayoutRes.TROOP_NAME2_Y),
 			_clip_text(f, line2, tw, UiStyleRes.FS_SMALL),
-			HORIZONTAL_ALIGNMENT_LEFT, tw, UiStyleRes.FS_SMALL, UiStyleRes.TEXT_DIM)
+			HORIZONTAL_ALIGNMENT_LEFT, tw, UiStyleRes.FS_SMALL, UiStyleRes.text_dim())
 
 
 ## 第二行小字：将领格写「x/y」（现有单位数/编制上限，手玩定的 y=11）；
@@ -443,7 +443,7 @@ func _draw_page_hint(f: Font) -> void:
 		return
 	var text := "%d/%d" % [page() + 1, _page_count()]
 	draw_string(f, Vector2(0.0, UiLayoutRes.TROOP_GRID_H - 4.0), text,
-		HORIZONTAL_ALIGNMENT_LEFT, 40.0, UiStyleRes.FS_TINY, UiStyleRes.TEXT_FAINT)
+		HORIZONTAL_ALIGNMENT_LEFT, 40.0, UiStyleRes.FS_TINY, UiStyleRes.text_faint())
 	var cx := 44.0
 	var cy := UiLayoutRes.TROOP_GRID_H - 9.0
 	if has_prev_pages():
@@ -464,7 +464,7 @@ func _draw_arrow(x: float, cy: float, left: bool) -> void:
 		pts.append(Vector2(x + w, cy))
 		pts.append(Vector2(x, cy - h))
 		pts.append(Vector2(x, cy + h))
-	draw_colored_polygon(pts, UiStyleRes.TEXT_FAINT)
+	draw_colored_polygon(pts, UiStyleRes.text_faint())
 
 
 ## 首字（没有名字就写「?」；将领格由外面给短字，这里是兜底）

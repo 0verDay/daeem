@@ -47,6 +47,15 @@ func _initialize() -> void:
 
 
 ## 子类在 _initialize() 里调它：跑完所有断言并退出，退出码反映成败
+##
+## ★ `cases.call()` **不能 await**（实测 4.7）：调用一个 async 函数而不 await 是
+##   运行时错误（"Trying to call an async function without await"），包一层
+##   `Callable.call()` 也一样报。所以这里**只支持同步用例** —— 用例是协程的话，
+##   `call()` 一返回就会执行下面的 `quit()`，表现是「通过 N 项 / 失败 0 / 退出码 1」
+##   或者干脆挂住（runner 看上去像引擎卡死）。
+##   ⇒ 要等帧的用例请**不要**写 `await`，改成手动推进
+##     （例：`tests/test_fill_button.gd` 直接喂 `animator._process(dt)`，
+##      进度是纯数学，不需要真帧 —— 快、稳、与渲染无关）。
 func run_all(cases: Callable) -> void:
 	print("[CASE] %s" % _case_name)
 	cases.call()

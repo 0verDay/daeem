@@ -49,6 +49,84 @@ func _run() -> void:
 	_group_base_loss(cfg)
 	_group_capture(cfg)
 	_group_ai_ally_acts(cfg)
+	_group_player_units_have_no_ai(cfg)
+
+
+# ------------------------------------------------------------------
+# ★★ 九、基本原则：**玩家能操控的单位绝不附加 AI**
+#
+# 用户点出来的 bug（原话：「玩家可操控的单位/部队/建筑绝不附加阵营性 ai/将领性 ai，
+# 目前我看到新的战役中我自己的单位有自我的 ai 逻辑」）。
+# 机制：`unit.is_garrison()` 的判据就是 `garrison_zone_id >= 0`，而将领性 AI
+# （`logic/general_ai.gd`）**遍历全世界**的驻防单位 —— 不管那一方是不是玩家在操作。
+# 于是「关卡把守军写在玩家阵营名下 + 给了 `zone`」时，玩家自己的部队就被 AI 接管了。
+#
+# 这一节钉**机制**而不是钉某一关的数据：
+#   · 造一份「把带 `ai: general` + `zone` 的单位写在**本机席位**名下」的关卡
+#     （这正是那个 bug 的写法），断言它们**拿不到** `garrison_zone_id`、也不 `hold`；
+#   · 对照组：同一份数据、那个阵营这一局由 **AI 接管**时，装备照旧生效
+#     （不能修 bug 修成「AI 也不会守了」）。
+# ------------------------------------------------------------------
+func _group_player_units_have_no_ai(cfg) -> void:
+	var camp = CampaignRes.load_campaign(DEMO_DIR, cfg)
+	var base_level = camp.level(LEVEL_ID)
+	if base_level == null:
+		ok(false, "（前提）样例第一关能载入")
+		return
+	var obj_zone := int(base_level.objective_zone())
+
+	# 造一份合成关卡：**玩家席位那一方**（F1）摆 3 个带 zone 的单位
+	# —— 这就是那个 bug 的写法（「我自己的单位带着自己的 AI」）。
+	var units: Array = []
+	for i in 3:
+		units.append({"faction": "F1", "kind": "enemy", "x": 4 + i, "y": 10,
+			"ai": "general", "zone": obj_zone, "name": "越权守军"})
+	base_level.start_units = units
+	# 目的就是把「玩家单位 + AI」这个组合造出来，所以这里**刻意**保留 `zone`：
+	# 校验层会照旧认这份数据（它不认识「运行时谁在操作」），引擎层必须兜住。
+
+	for seat in ["F1", "F2"]:
+		var w = _world(cfg, base_level, String(seat))
+		ok(w != null, "[%s] 能建出世界" % seat)
+		if w == null:
+			continue
+		var mine := _player_seat(w)
+		var checked := 0
+		var leaked: Array = []
+		var ai_side_ok := 0
+		for u in w.units:
+			if not u.alive:
+				continue
+			var fid := String(u.faction)
+			var is_garrison: bool = int(u.garrison_zone_id) >= 0
+			if fid == mine:
+				checked += 1
+				# ★★ 这一条就是用户报的那件事：玩家的单位不许带 AI 状态。
+				if is_garrison or bool(u.hold_position):
+					leaked.append("%s(gz=%d hold=%s)" % [String(u.id),
+						int(u.garrison_zone_id), str(u.hold_position)])
+			elif fid == "F1":
+				# 对照组：这一局 F1 由 AI 接管 ⇒ 装备**照旧**生效（别修过头）。
+				if is_garrison:
+					ai_side_ok += 1
+		ok(checked > 0, "[%s] 场上真有本机那一方的单位（否则这段白测）" % seat)
+		eq(leaked.size(), 0,
+			"★★ [%s] 本机（%s）的单位**一个都不带** garrison / hold（漏的：%s）"
+			% [seat, mine, str(leaked)])
+		if String(seat) == "F2":
+			ok(ai_side_ok > 0,
+				"★ [%s] 对照组：由 AI 接管的 F1 照样拿到归属（%d 个，别修过头）"
+				% [seat, ai_side_ok])
+		# 再补一条机制断言：这些单位**不在**将领性 AI 的处理范围内
+		for u in w.units:
+			if String(u.faction) == mine:
+				ok(not u.is_garrison(), "★ [%s] %s 不是「驻防单位」" % [seat, String(u.id)])
+				break
+
+
+## 本机在操作的那一方（= 世界里的 `my_faction` 落在玩家席位上）。
+func _player_seat(w) -> String:
+	return String(w.my_faction)
 
 
 # ------------------------------------------------------------------

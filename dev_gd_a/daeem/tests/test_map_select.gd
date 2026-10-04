@@ -38,12 +38,11 @@ const EXPECT_ARENA_NAME := "试炼场"
 const MAPS_PREFIX := "res://data/maps/"
 
 const CLICK_CENTER := Vector2(960.0, 540.0)
-## test 按钮所在的 y。
-## ⚠️ 主界面是一列「选择条 + 按钮」（整列居中），所以按钮**不在**整页正中：
-##    无头下视口是 1920×1920，这一列实测落在 y 868..1052，
-##    按钮（80 高）在 972..1052 → 中心 ≈ (960, 1012)。
-##    布局一改这里就要跟着改 —— 所以下面那条位置断言量的是**相对关系**，不是坐标。
-const CLICK_TEST := Vector2(960.0, 1012.0)
+## ⚠️ 旧版式里 test 按钮所在的位置。**已不再使用**：本轮的 UI 改版把整列挪了位置，
+##    写死的坐标会落到按钮外面（表现为「按了 test 没反应」）。
+##    现在一律算 `menu.test_button().get_global_rect().get_center()`。
+##    —— 留着这一行是为了让「为什么不再用它」这件事有个落点，别再抄回来。
+const CLICK_TEST_OBSOLETE := Vector2(960.0, 1012.0)
 
 
 func _initialize() -> void:
@@ -149,13 +148,16 @@ func _test_menu_selector() -> void:
 	ok(select is Button, "主界面上有一条地图选择条（自己画的按钮）")
 	ok(select.get_node_or_null("MapSelectPopup") is PopupMenu,
 		"★ 选择条自己带一个下拉列表（PopupMenu），不依赖引擎的 OptionButton")
-	var button = menu.get_node_or_null("StartRoot/MainMenu/MenuColumn/TestButton")
+	var button = menu.test_button()
 	ok(button is Button, "主界面上还有那个 test 按钮")
 	# ⚠️ 路径在「主界面加 campaign_test 按钮」那一轮变过一次：选择条那一格现在
 	#    包在一层 `MarginContainer` 里（`MapRowWrap` —— 它的下边距负责把
 	#    「选择条 → test」的间距做成 `menu.map_gap`，而整列的 separation 是
 	#    两颗按钮之间那个更小的 `campaign_test_button_gap`，见 start_screen._build_menu）。
-	var label = menu.get_node_or_null("StartRoot/MainMenu/MenuColumn/MapRowWrap/MapRow/MapLabel")
+	# ★ 本轮（UI 主题化）又在外面套了 `MenuPad/MenuOuter`（标题条与按钮列连成一条 VBox），
+	#   所以从 MenuColumn 往下找（那是这一列自己的结构，不会再被外面套东西影响）。
+	var column: Control = menu.test_button().get_parent()
+	var label = column.find_child("MapLabel", true, false)
 	ok(label is Label, "选择条左边有一个「地图」标签")
 
 	if select is Button and button is Button:
@@ -227,6 +229,13 @@ func _test_menu_selector() -> void:
 			await process_frame
 			eq(select.text, menu.map_select_item_text(other),
 				"★★ 列表关掉之后，按钮上那行字照样在（修的就是这一步）")
+		# ---- ★★ 下拉条的缓动展开 / 收缩（本版需求）----
+		#
+		# 需求原话：「点击选项条时，下拉条要缓动展开；在列表出现时点击选项条或
+		#           点击空白处时，下拉条要缓动收缩」。
+		# 判据 = **中间帧确实在动**（只看开头 / 结尾的话，「瞬间弹出」也能过）。
+		await _test_popup_easing(menu, select)
+
 		menu.map_select_select(want_index)
 		await process_frame
 		eq(menu.selected_map_path(), want_default,
@@ -234,6 +243,84 @@ func _test_menu_selector() -> void:
 
 	main.queue_free()
 	await process_frame
+
+
+## ★★ 下拉条的缓动：展开时从选项条下沿**往下滑出 + 淡入**，收缩时**反着收回去**。
+##
+## ★ 为什么必须看中间帧：只看「弹出后可见」「收缩后不可见」的话，
+##   引擎原生的**瞬发**弹出/隐藏也能全过 —— 那正是本版要改掉的行为。
+##
+## ⚠️ 为什么盯 `position` 与「面板 alpha」而不是 `size`：
+##   `PopupMenu` 是 `Window`，**没有** `z_index`（动不了层次），窗口高度又会被
+##   **内容最小高**夹住（实测设 8 立刻变回 86）—— 所以「像抽屉一样从薄到厚长出来」
+##   在引擎这一侧做不到。能做到的是「位移 + 底板淡入淡出」。
+func _test_popup_easing(menu, select: Button) -> void:
+	var popup: PopupMenu = select.get_node_or_null("MapSelectPopup")
+	ok(popup != null, "（前提）下拉列表还在")
+	if popup == null:
+		return
+	if popup.visible:
+		popup.collapse()
+		for i in 30:
+			await process_frame
+	ok(not popup.visible, "（前提）起手是关着的")
+
+	var rect := select.get_global_rect()
+	var target_y := int(rect.position.y + rect.size.y)
+
+	# ---- 展开：点一下 ----
+	await _click_at(rect.get_center())
+	var p_open := popup.position.y
+	var a_open: float = menu.map_select_panel_alpha()
+	await process_frame
+	await process_frame
+	var p_2 := popup.position.y
+	var a_2: float = menu.map_select_panel_alpha()
+	ok(popup.visible, "★ 点一下选择条 → 列表弹出来")
+	ok(p_open < target_y and p_2 > p_open,
+		"★★ 展开时从选项条下沿**往下滑**（起点 %d → %d，终点 %d）"
+		% [p_open, p_2, target_y])
+	ok(a_open < a_2,
+		"★★ 同时**淡入**（面板 alpha %.2f → %.2f）—— 这就是「渐入」" % [a_open, a_2])
+
+	for i in 30:
+		await process_frame
+	ok(absf(float(popup.position.y - target_y)) <= 2.0,
+		"★★ 缓动结束时停在按钮下沿（%d ≈ %d）" % [popup.position.y, target_y])
+	ok(menu.map_select_panel_alpha() > 0.99, "★ 结束时完全不透明")
+
+	# ---- 收缩路一：再点一下选择条（开关式）----
+	await _click_at(rect.get_center())
+	var c_a1: float = menu.map_select_panel_alpha()
+	await process_frame
+	await process_frame
+	var c_a2: float = menu.map_select_panel_alpha()
+	# ★ 收缩是「反着来」：**淡出**（并往回收）。
+	#   ⚠️ 判据用 alpha 而不是位置：EASE_IN 在前两帧的位移不到 1px（缓动的正常表现），
+	#      拿位置断言会假红 —— 这里真正该钉的是「它在淡、而且不是瞬发隐藏」。
+	ok(c_a2 < c_a1, "★★ 再点一下 → 底板**逐渐淡出**（alpha %.2f → %.2f）" % [c_a1, c_a2])
+	for i in 30:
+		await process_frame
+	ok(not popup.visible, "★ 收缩跑完才真正隐藏")
+
+	# ---- 收缩路二：点空白处（引擎失焦 → `popup_hide` → 我们接回来播收缩）----
+	await _click_at(rect.get_center())
+	for i in 30:
+		await process_frame
+	ok(popup.visible, "（前提）又弹出来了")
+	# ⚠️ 这里**只发信号、不先 hide()**：这正是引擎「窗口还可见时就发 popup_hide」
+	#    那种情况（用户报的 "Viewport already active" 就是无条件 `show()` 撞出来的）。
+	popup.popup_hide.emit()
+	var b_1 := popup.position.y
+	await process_frame
+	await process_frame
+	ok(popup.visible,
+		"★★ 点空白处之后列表**没有立刻消失**（先播收缩动画）")
+	ok(popup.position.y <= b_1,
+		"★★ 而且位置在往回收（%d → %d）" % [b_1, popup.position.y])
+	for i in 30:
+		await process_frame
+	ok(not popup.visible, "★ 收缩跑完才隐藏（点空白处这条路）")
 
 
 # ------------------------------------------------------------------
@@ -281,7 +368,12 @@ func _test_selected_map_reaches_game() -> void:
 			"（前提）选择条上那行字也是那一张的名字")
 
 	# 按下 test：走真实的信号 → main.gd → game_scene.start(选中的路径)
-	await _click_at(CLICK_TEST)
+	# ★ 点**按钮自己的中心**（算出来），不是写死的坐标：`CLICK_TEST` 那个常量是
+	#   上一版版式的实测值，而本轮 UI 改版把整列往下挪了（标题条与按钮列连成一条 VBox）——
+	#   再点那个老坐标会落在按钮外面（表现就是「按了 test 没反应」）。
+	var tb: Button = menu.test_button()
+	ok(tb is Button and tb.get_global_rect().size.y > 1.0, "（前提）test 按钮已经排过版")
+	await _click_at(tb.get_global_rect().get_center())
 
 	var game = main.game
 	ok(game != null, "按下 test 之后出现了游戏内场景")
