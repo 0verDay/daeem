@@ -3,7 +3,7 @@
 ## M0 只测三件事（见 docs/route.md 第五节 M0）：
 ##   1. 脚手架本身能跑、退出码正确
 ##   2. GridRes 的索引换算与边界
-##   3. config.json / test_map.json 能解析，且关键数值与 HTML 版一致
+##   3. config.json / data/maps/frontier/map.json 能解析，且关键数值与 HTML 版一致
 ##
 ## ⚠️ 为什么先测 config：所有平衡数值都在 JSON 里，一旦它悄悄坏了，
 ##    表现是「手感不对」而不是「报错」，是最难查的一类问题。
@@ -20,7 +20,7 @@ const UnitRes = preload("res://logic/unit.gd")
 ## `config.json` 的 grid 是「编辑器新画一张图的默认画布尺寸」，**不是**某张图的实际尺寸。
 const EXPECTED_GRID_COLS := 24
 const EXPECTED_GRID_ROWS := 16
-## 随游戏发布的那张图（`data/test_map.json`，地图编辑器导出）的实际尺寸。
+## 随游戏发布的默认地图（`data/maps/frontier/map.json`，地图编辑器导出）的实际尺寸。
 const EXPECTED_MAP_COLS := 27
 const EXPECTED_MAP_ROWS := 22
 
@@ -123,7 +123,16 @@ func _cases() -> void:
 	eq(cfg.unit_type_of("general"), UnitRes.UNIT_TYPE_SPEARMAN, "general 默认取第一个类型")
 	eq(cfg.unit_name_of(UnitRes.UNIT_TYPE_RIDER), "骑手", "unit_name_of 走类型表")
 	eq(cfg.unit_name_of("general_1"), "将领", "将领类的显示名仍是「将领」")
-	near(cfg.general_escort_count(), 3.0, 1e-6, "每个将领开局带 3 个同类型的兵")
+	# ★★ 本轮口径变更：`unit.general.escort`（全局缺省编制）与它的两个读法
+	#    （`general_escort_count()` / `general_escort_at()`）**整条删除** ——
+	#    开局有几个附属兵完全等于**关卡 `start_units[]` 里摆出来的那些**。
+	#    ⇒ 这里改成钉**删除之后仍然必须成立**的那条契约：
+	#      这一层**不再提供**任何「编制」接口（问了就该报错，而不是给个 0 让人接着用）。
+	#    ⚠️ 这不是「把断言删掉」：原来那三条验的是「逐将编制读得回来」，
+	#      现在那件事由 `world.escort_target_of()` 负责，契约更强（见 test_ai.gd 的
+	#      `_test_level_placed_escorts` 与 test_logic / test_retinue 的探针关卡）。
+	ok(not cfg.has_method("general_escort_at"), "★★ 全局缺省编制已删除：cfg 没有 general_escort_at()")
+	ok(not cfg.has_method("general_escort_count"), "★★ 也没有 general_escort_count()")
 
 	# 测试敌人的数值也来自同一张表（原来是 debug / combat.enemy 两处）
 	near(cfg.enemy_damage, 10.0, 1e-6, "测试敌人伤害 10")
@@ -188,9 +197,10 @@ func _cases() -> void:
 	ok(cfg.get_path_value("unit.general.types") is Array, "get_path_value 也能取数组（将领类型表）")
 
 	# ---- 4. 地图 ----
-	# ★★ 现在只有**一张**图（`data/test_map.json`，地图编辑器导出件，27×22）。
-	#    `EXPECTED_MAP_*` 是**这一张图自己的尺寸**（改了地图就跟着改这两个常量），
-	#    它不是「游戏要求地图多大」—— 游戏侧一切尺寸都从地图读（见下面那些断言）。
+	# ★★ `require_map(cfg)` 读的是**默认地图**（`data/maps/frontier/map.json`，
+	#    地图编辑器导出件，27×22）。`EXPECTED_MAP_*` 是**这一张图自己的尺寸**
+	#    （换了默认地图就跟着改这两个常量），它不是「游戏要求地图多大」——
+	#    游戏侧一切尺寸都从地图读（见下面那些断言）。
 	#    ⚠️ 别再往测试里塞「(2,2) 是玩家大本营」这种坐标：地图是设计师手里的东西，
 	#       搬一次家就会让一批断言集体假失败（这一轮已经领教过）。
 	var m = require_map(cfg)
@@ -244,7 +254,7 @@ func _cases() -> void:
 		ok(m.terrain_cost(forest_tile.x, forest_tile.y) > 1.0, "森林的移动代价高于草地")
 	near(m.terrain_cost(m.base.x, m.base.y), 1.0, 1e-6, "草地（大本营格）的移动代价是 1")
 
-	# 出生点布局：p1 用地图里指定的那一格（test_map.json 的 faction_bases.p1）
+	# 出生点布局：p1 用地图里指定的那一格（data/maps/frontier/map.json 的 faction_bases.p1）
 	var layout = m.spawn_layout_for("p1", "p1")
 	v2i_eq(layout["base"], declared_p1, "p1 大本营就在地图指定的那一格")
 	eq(layout["spawns"].size(), 3, "p1 有 3 个将领站位")

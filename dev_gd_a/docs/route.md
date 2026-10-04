@@ -4,8 +4,8 @@
 > 架构细节见 [`architecture.md`](architecture.md)，HTML → Godot 的逐模块对照见 [`porting.md`](porting.md)，
 > 已实测踩到的坑见 [`pitfalls.md`](pitfalls.md)。
 >
-> 原型阶段的旧版（HTML）在 [`../../dev_html/`](../../dev_html/)：
-> 玩法见它的 `README.md`，联机设计见它的 `docs/multiplayer.md`。**本项目的玩法规则以那份文档为准** ——
+> 原型阶段的旧版（HTML）**已从仓库删除**（见根目录 `README.md` 的 2026.9.20 条目，要看只能翻 git 历史）：
+> 它当年的 `README.md`（玩法）与 `docs/multiplayer.md`（联机设计）曾是**本项目玩法规则的权威说明** ——
 > 我们不重新发明规则，只换一套更合适的工程底座。
 
 ---
@@ -55,7 +55,7 @@
 
 ### 2.3 地图与数值用 JSON
 
-- **选**：`res://data/config.json`（全部可调数值）+ `res://data/test_map.json`（地形/出生点/区块）。
+- **选**：`res://data/config.json`（全部可调数值）+ `res://data/maps/frontier/map.json`（地形/出生点/区块）。
 - **放弃**：Godot `Resource`（`.tres`）的编辑器友好性与类型检查；`TileMapLayer` 作为权威地图。
 - **为什么**：JSON 与现在的 HTML 版**逐字可对照**（迁移时能机械比对），
   纯文本可 diff、可被未来地图编辑器直接生成、Godot 原生支持（`JSON.parse_string`）。
@@ -200,7 +200,7 @@ C:\D\GodotEngine\gd4.7.2mono\Godot_v4.7.2-stable_mono_win64_console.exe `
 
 ### M1 · 地图与相机
 
-- `data/test_map.json`：地形（草/森林/山）+ 大本营 + 将领出生点（M1 时用的是老图 `map_01.json`，24×16；它已按用户要求删掉）
+- `data/maps/frontier/map.json`：地形（草/森林/山）+ 大本营 + 将领出生点（M1 时用的是老图 `map_01.json`，24×16；它已按用户要求删掉）
 - `logic/map_data.gd`：载入 + 连通性修正（把走不到的孤岛变成山，**这条要保留**）
 - `view/terrain_view.gd`：用 `TileMapLayer` 画地形
 - `view/camera_rig.gd`：WASD 平移、滚轮以光标为锚点缩放、F 适应全图
@@ -521,6 +521,14 @@ C:\D\GodotEngine\gd4.7.2mono\Godot_v4.7.2-stable_mono_win64_console.exe `
 
 **同一张地图还预置了 6 个对家单位**（`test_map.json` 的 `units` 字段）：
 
+> ★★ **状态变更（后续一轮）：「地图预置单位」整个废弃。** `data/maps/*/map.json` 的 `units[]`
+> 运行时不读了，地图编辑器也不再保留 / 导出（`units` 被移出 `PRESERVED_KEYS`，
+> 见 `tools/map_editor/README.md` 第五节与 `docs/pitfalls.md` 6.10），
+> 随游戏发布的图里的 `units` 数据也一并清掉了（`frontier` 的 9 条已删、`dongzheng` 本来就是 `[]`）。
+> ⇒ **下面这张表与本节描述的单位已经不在任何地图上了**，这一节只作历史记录。
+> 眼下要在地图上摆敌人，只能走**关卡**的 `start_units`（见第三十七节）。
+> ⚠️ 别把「预置单位没了」当 bug 修回来：那是需求要的结果。
+
 | 单位 | 位置 | `hold` | 行为 |
 |---|---|---|---|
 | 守军 ×4 | (15,13) / (13,13) / (15,15) / (16,13) | `true` | 原地驻守，有人靠近就迎战 |
@@ -691,6 +699,9 @@ var local := Rect2(Vector2.ZERO, r.size)           # ← 偏移被丢掉了
 > 你走进去是「抢回来」；但如果你的兵和守军**同时**在区块里，谁都读不了条 ——
 > 必须先把对方清出场（这就是这套规则带来的玩法）。不想要那批守军的话，
 > 把 `test_map.json` 的 `units` 删掉即可。
+>
+> ★ **状态变更**：`units` 已整个废弃（见第一节末尾的 ★★）—— 现在**不用再手动删**了，
+> 地图里的 `units` 数据已经清掉，而且地图编辑器导出一次也会把它丢掉。
 
 ---
 
@@ -791,8 +802,17 @@ if String(b.owner) == "" or b.is_invulnerable():
 （`test_retinue` 抓到的）。现在 `world.reset()` 的顺序是：
 
 ```
-大本营/城墙/箭塔 → 地图预置建筑 → **区划中心** → 将领+亲兵 → 地图预置单位
+大本营/城墙/箭塔 → 地图预置建筑 → **区划中心** → 将领+亲兵 → 关卡摆放（start_units）
 ```
+
+> ★ **状态变更（本轮）**：第五步原来是「地图预置单位」（`map.json` 的 `units[]`），
+> 现在整个废弃 —— 运行时不读它，开局守军一律由**关卡的 `start_units`** 摆
+> （`world._apply_level_placement()`，字段语义与老的 `units[]` 一字不差：
+> `kind` / `faction` / `hold` / `zone` / `name` / `general_index` / `unit_type`）。
+> 所以顺序图上这一步的**位置没变**，变的只是数据来源；
+> `buildings`（地图预置建筑）照旧在第二步，不受影响。
+> `logic/map_data.gd` 的 `prefab_units` 成员与那行读取都删了，
+> `_read_units()` 保留但**已无调用点**（只有注释提到它）。
 
 ### 14.5 人口与产能：数据结构与经济口径
 
@@ -2118,7 +2138,7 @@ y 200 .. 220   红字提示带 641×20
 ### 25.5 发布的地图：14 个区块全部改成人口区划
 
 用户拍板「要，而且默认全赋上人口区划」+「全部设为人口区划，并同步数字」，
-所以 `data/test_map.json` 的 `zone_list` 每一项都变成：
+所以 `data/maps/frontier/map.json` 的 `zone_list` 每一项都变成：
 
 ```json
 { "id": 0, "name": "a1", "kind": "population",
@@ -2160,7 +2180,7 @@ y 200 .. 220   红字提示带 641×20
 | 文件 | 改动 |
 |---|---|
 | `data/config.json` | **新增 `zone_kind` 段**（三种 + 预设产能（都带 ≥0.1 人口）+ 白名单 + `default`）；`zone_spec.list` 的 `effect` 换成 `food_per_tile` / `gold_per_tile` / `population_mult`，文案与注释重写 |
-| `data/test_map.json` | 14 个区块写 `"kind": "population"` 并把 production 同步成 `0 / 0 / 0.15` |
+| `data/maps/frontier/map.json` | 14 个区块写 `"kind": "population"` 并把 production 同步成 `0 / 0 / 0.15` |
 | `logic/config.gd` | 缓存并查询 `zone_kind`：`zone_kind_list` / `zone_kind_default` / `zone_kind_entry` / `zone_kind_name` / `zone_kind_production` / `zone_kind_specs` / `zone_kind_allows_spec` |
 | `logic/map_data.gd` | 新增 `zones_kinds`（`_read_zones` 多收一个 `cfg`，只登记表里认识的 id） |
 | `logic/zone.gd` | 新增 `kind` 字段 / `_apply_map_kinds()` / `kind_of()` / `kind_entry_of()`；`production_of()` 改成「基础产能 + 特化每地块加成」；`update_population()` 用人口特化倍率；`_spec_mult` → `_spec_effect` |
@@ -2515,7 +2535,7 @@ c1 = 人口区划但**手改过数字**（1 粮食 + 1 黄金 + 0.15 人口／�
 | # | 需求 | 落点 |
 |---|---|---|
 | 1 | 工具放在 `tools/unit_editor`，布局仿 map_editor，双击 bat 进入 | 新增 `dev_gd_a/tools/unit_editor/`（Python + tkinter，零依赖）：`app.py` 用地图编辑器同一套顶栏（左上页签 / 右上文件按钮）+ 左侧列表 + 右侧可滚侧边栏 + 底部状态栏；`unit_editor.bat` 与 `map_editor.bat` 同一套启动姿势（`start "" pythonw <包目录>`、路径规范化、缺 Python / 缺 tkinter / 缺 config 三种兜底提示） |
-| 2 | 改的是**游戏里的单位数值** | 写 `daeem/data/config.json`（`logic/config.gd` 读的那一份，**唯一**的数值源）。地图编辑器改 `data/test_map.json` —— 两个工具各管一头 |
+| 2 | 改的是**游戏里的单位数值** | 写 `daeem/data/config.json`（`logic/config.gd` 读的那一份，**唯一**的数值源）。地图编辑器改 `data/maps/frontier/map.json` —— 两个工具各管一头 |
 | 3 | 三个页签：单位 / 建筑 / 科技 | `app.py` 的 `PAGES`；单位页再分「兵种」与「将领」两块（下面那个列表） |
 | 4 | 单位：归属 / 名称 / 血量 / 攻击力 / 攻击距离 / 攻击速度 / 移动速度 / 造价（粮·金·人口）/ 招募时间 | `unit.types.<id>` 的 `class` / `name` / `hp_max` / `damage` / `range` / `cooldown_sec` / `speed` + `recruit.list[].cost` / `population_cost` / `train_sec`（名称同时写 `label`） |
 | 5 | 将领 1/2/3 也能在单位页签里编辑 | 单位页下面的「将领」列表：类型（`unit.general.types[i]`）、名字、**自己的一套数值**（`unit.general.stats[i]`，本轮新增）、造价 / 招募时间（`recruit.zone.list`）、开局护卫数（`unit.general.escort`） |
@@ -2594,7 +2614,7 @@ powershell -ExecutionPolicy Bypass -File dev_gd_a\daeem\tools\run-tests.ps1
 | 将领不能增删 | 开局固定三位（`unit.general.types` 的长度就是将领数） |
 | 升级表的血量是**倍率** | 游戏里的口径就是「基础血量 × 等级倍率 × 科技倍率」；编辑器在下面把换算结果写出来（`= 血量 300 × 1.5 = 450`） |
 | `blocks_*`（格级 / 本体级阻挡）没进界面 | 新建筑带一份「格子不封、本体挡敌方」的默认值，够用；要精细调就手改那几个键 |
-| 编辑器不管地图里引用的 id | 地图（`test_map.json`）里预置单位 / 建筑用的是同一批 id —— 删掉一个兵种后，老地图里那一项会走兜底值 |
+| 编辑器不管地图里引用的 id | 地图（`test_map.json`）里预置单位 / 建筑用的是同一批 id —— 删掉一个兵种后，老地图里那一项会走兜底值（⚠️ 预置单位 `units` 现已废弃 ⇒ **现在只剩 `buildings` 还在引用建筑 id**） |
 | 建筑的建造进度不进快照 | 单机阶段没有联机；给快照加字段要连带改快照版本与对齐测试，留到联机那一轮 |
 
 ## 二十九、地图上的单位图标改成**一个字**（这一轮）
@@ -2971,3 +2991,1481 @@ canvas.yview()                        →   (0.0, 1.0)          ← 它还说「
 （改了 config 那一栏 → 重新载入生效 / 删掉键 → 退回 `fog.vision_building` /
 **开局那栋塔身上真的带着 12**）；`test_model.py` 多 11 项、
 `test_app.py` 多 14 项（建筑表单那一栏显示**生效值**、清空 → 删键、列表刷新）。
+
+---
+
+## 三十三、两种 AI：**阵营性 AI** 与 **将领性（防御性）AI**（这一轮）
+
+### 33.1 需求原文（逐条对照）
+
+> 「1. 阵营性 ai：该类 ai 会附属在某个阵营/势力下，该类 ai 有自己的资源库，其资源会随着其占领区划
+>   产出资源而增长；该类 ai 会花费资源招募自己的将领/升级自己的建筑，并花费资源让将领招募单位，
+>   需要有明确的资源规划；该类 ai 在若干将领招募满员后会派遣这些将领行军攻击某处；
+>   该类 ai 可为其提高资源获取倍率以调整难度。
+>  2. 将领性 ai（防御性 ai）：该类 ai 会附属在某个将领下，其没有资源库，没有大本营；
+>   该类 ai 会有其归属的区划，且在其归属的区划中有时间间隔地巡逻，若其警戒到敌方单位会发动攻击，
+>   但不会追击超过一个区划；该类 ai 在脱战（没有攻击行为 10 秒后）且不满员的情况下会无资源消耗地
+>   招募单位（或者可以认定该类 ai 资源无限）」
+
+| 需求那条 | 落在哪 |
+|---|---|
+| 阵营 AI 有**自己的资源库** | `world.ai_resources`（与玩家的 `world.resources` **两个字典**）+ `world.resource_pool_for(faction)`；招募 / 升级的扣费与退款全部改走它 |
+| 资源**随占领区划产出**增长 | `faction_ai._income()`：`zones.production_of(faction) × resource_mult × dt`（与玩家那条口径逐条同义）。★ 它开局那块地是**大本营收归自己**的（`zone.refresh_building_ownership` 现在对**任何**阵营都成立 —— 原来只认玩家，那会让 AI 一块地都没有） |
+| 花资源**招自己的将领** | `faction_ai._decide()` 第 a 段 → `world.start_zone_recruit()`（复用区划招募那一整套） |
+| 花资源**升级自己的建筑** | 第 c 段 → `world.start_building_upgrade()`（挑**最便宜**的那一栋） |
+| 花资源**让将领招兵** | 第 b 段 → `world.start_recruit()`（每个将领补到 `min_retinue`） |
+| **明确的资源规划** | 四段**固定优先级**（招将 → 招兵 → 升级 → 出兵）；a / b 命中即收工（一帧一件事），c 与 d 可以同帧发生 |
+| 将领**满员后派遣行军攻击某处** | 第 d 段 → `unit.order_attack_move()` 打「离自己最近的**敌方区划中心**」（没有区划就打敌方大本营） |
+| **资源倍率调难度** | `config.ai.factions[].resource_mult`（1.0 = 与玩家同速，2.0 = 两倍） |
+| 将领性 AI **没有资源库、没有大本营** | 状态全挂在**单位自己**身上（`garrison_zone_id` / `patrol_timer` / `combat_idle_timer` / `retarget_cd`），不建 AI 对象、不开资源池 —— 它那一方的 `resource_pool_for()` 就是 **null**（= 资源无限） |
+| **有归属区划 + 按间隔巡逻** | `unit.garrison_zone_id`（地图 `units[].zone`）+ `general_ai._patrol()`：每 `patrol_interval_sec` 秒朝**自己区划的中心**走一趟 |
+| 警戒到敌人**会打，但不追出一个区划** | 交战交给 `combat.gd`；`general_ai._out_of_garrison()` 补一条区划级硬约束：**脚踩进别的区划**（主判据）**或**在无主空地上离区划中心太远（兜底）→ 当场脱战走回去 |
+| 脱战 **10 秒**且不满员 → **无消耗**招兵 | `combat_idle_timer >= ai.general.combat_idle_sec`（默认 **10**）→ `world.start_recruit(..., free = true)` |
+
+> ★★ **状态变更（后续一轮）**：下面这些「**地图预置**的驻防将领 / 带 `zone` 的预置单位」
+> 已经没有数据来源了 —— 地图的 `units[]` 整个废弃（运行时不读、编辑器不保留、数据清掉，
+> 见本节开头那条与 `docs/pitfalls.md` 6.10）。归属区划（`zone`）这条路现在只剩
+> **关卡**的 `start_units`（第三十七节）会用到；第三十九节的
+> `_assign_garrison_zones()` 也正是给「关卡里手摆的将领」兜底归属的那一步。
+> ⚠️ 本节其余内容（两条 AI 的分工 / 参数 / 互斥判据）**不受影响**，照旧有效。
+
+### 33.2 落点（新增 2 个文件 + 改 9 个）
+
+| 文件 | 作用 |
+|---|---|
+| `logic/faction_ai.gd` | ★ **新增**：阵营 AI。收入 + 四段决策（招将 / 招兵 / 升级 / 出兵）+ 挑目标 |
+| `logic/general_ai.gd` | ★ **新增**：将领性（防御性）AI。巡逻 / 区划级追击上限 / 脱战计时 / 免费招兵 |
+| `data/config.json` | 新增 `ai` 段（`factions[]` 名单 + `faction` / `general` 两组行为参数）；`colors.faction.ai` 配色 |
+| `logic/config.gd` | `_cache_ai()` + `ai_factions()` / `ai_faction_cfg()` / `ai_general_cfg()` / `is_ai_faction()` |
+| `logic/world.gd` | `ai_resources` / `ai_factions` / `with_ai`；`resource_pool_for()`；`_setup_ai_factions()` / `_register_config_bases()` / `_map_declares_owner()`；`start_recruit(free)`；tick 第 7.5 步；区划招募 id 加阵营前缀 |
+| `logic/economy.gd` | `can_afford()` / `spend()` 的参数改成 `Variant`，**null = 资源无限**（见 33.4） |
+| `logic/upgrade.gd` | 升级 / 特化的**扣费与退款**改走 `world.resource_pool_for(owner)`（原来写死 `world.resources`） |
+| `logic/unit.gd` | `garrison_zone_id` / `patrol_timer` / `combat_idle_timer` / `retarget_cd` / `garrison_recruit_timer`；`retinue_size()` / `is_garrison()` |
+| `logic/map_data.gd` | ~~`units[].zone`（归属区划）~~ ★ **本轮废弃**：地图 `units[]` 运行时不再读（见 14.4 的状态变更）；`zone_list[].owner`（开局归属 → `zones_owners`）、`set_faction_base()` 照旧 |
+| `logic/zone.gd` | `apply_initial_ownership()`（把地图写的开局归属落到区块上） |
+| `logic/enemy_ai.gd` | 跳过 `is_garrison()` 的单位（两条 AI 的判据必须**互斥**） |
+| `logic/faction.gd` | `AI_FACTION` 常量 + `is_ai_faction()` 兜底 |
+| `tests/test_ai.gd` | ★ **新增**：133 项断言（见 33.7） |
+
+### 33.3 ★★ 两条 AI 的分工：判据必须**互斥**
+
+同一个单位被两条 AI 同时指挥会出现「一边巡逻、一边朝玩家家跑」这种自相矛盾的画面，
+所以两条路的**入口判据**是互补的：
+
+| | 管谁 | 判据 |
+|---|---|---|
+| `enemy_ai.gd`（旧） | 地图上的推进型测试敌人 | `not hold_position and not is_garrison()` |
+| `general_ai.gd`（新） | 驻防将领 | `is_garrison()`（= `garrison_zone_id >= 0`） |
+| `faction_ai.gd`（新） | 阵营的**内政与出兵** | 按 `st["faction"]` 遍历那一方的将领，与上面两条不冲突（它下的是命令，不是逐帧移动） |
+
+`world.reset()` / `world._apply_level_placement()` 给带 `zone` 的开局摆放单位**同时**置
+`hold_position = true`，但那**不是**重复判断：`enemy_ai` 里那两条都要有
+（将来手写关卡可能只写 `zone` 不写 `hold`）。
+（★ 本轮之前这句话说的是「地图预置单位」；`units[]` 废弃后，这类单位唯一的来源
+就是关卡的 `start_units` —— 语义一字未改。）
+
+### 33.4 ★★ `with_ai` 开关，以及「资源池 = null」这个语义
+
+**两件事都是被真实问题逼出来的，别顺手删。**
+
+**① `World.create(cfg, map, with_ai = true)`**
+
+开了 AI，世界上就多出**一整个阵营**（三个将领 + 一座大本营 + 一块地 + 一个资源池）。
+单机游戏当然要开着；但几十个测试验的是移动 / 碰撞 / 迷雾，它们的世界里不该凭空多出三个将领 ——
+「开局 3 个将领」「场上有 22 个单位」这类断言会**集体变红**，而它们本来验的东西一个字都没错。
+
+于是：
+- `tests/test_case.gd` 多一个 **`require_world(cfg)`**：默认造**不带 AI** 的干净世界；
+- 那些测试全部改成 `require_world(cfg)`（**104 处**），`tests/test_ai.gd` 用 `World.create()`；
+- `with_ai = false` 是一条**真的什么都没发生**的路：`ai_factions` 为空、`_setup_ai_factions()`
+  只登记大本营点位（见下）就返回。
+
+**② `resource_pool_for()` 返回 `null` = 「这一方没有资源库」= 资源无限**
+
+需求原话是「其没有资源库……（或者可以认定该类 AI 资源无限）」。落地时分成了两条**不同**的路，
+混起来就会出错：
+
+| 场景 | 机制 |
+|---|---|
+| 某一方**没有资源库**（驻防将领那一方） | `resource_pool_for()` → **null**；`EconomyRes.can_afford(null, cost)` **一律判得过**，`spend(null, cost)` 什么都不扣 |
+| `world.start_recruit(..., free = true)`（免费那一档） | 调用方把 **cost 清空**（`cost = {}`、`pop = 0`），所以「免费」是真的免费、而且**不记账**（取消 / 阵亡一分钱也退不出来） |
+
+⚠️ `EconomyRes.can_afford()` / `spend()` 的参数类型**必须是 `Variant`**：
+GDScript 对**有类型**的参数会把 null 判成
+`Cannot convert argument 1 from Nil to Dictionary` 直接报错 —— 这正是第一版撞到的错。
+
+### 33.5 ★ 真踩到的四个坑（都在代码注释里）
+
+**① 大本营不能落在区划中心上**
+第一版把 AI 的大本营摆在 (10,11)，而那一格正好是区块 5 的**中心** ——
+`_spawn_zone_centers()` 建不出中心建筑（只有一条 `push_warning`），
+于是 AI 的 `_recruit_zone()` 永远挑不到「有中心的区块」⇒ **AI 一个将也招不出来**，
+症状是「AI 就是不招人」，而没有任何报错。
+
+**② 大本营必须落在「还没被别人占走」的区块里**
+`refresh_building_ownership()` 的规则是「**只在区块无主时**收归」。
+地图东南侧那片预置据点（对家的大本营 + 箭塔 + 城墙）会先把它所在的区块吃掉 ——
+第二版把 AI 的大本营摆在 (13,11)（区块 5），而那一块**正是对家据点所在的区块** ⇒
+AI 开局一块地都没有：收入 0、也没有中心格，症状同样是「AI 站着不动」。
+现在它在 **(18,18)**（区块 9，无主、且离玩家出生区足够远 ——
+摆太近的版本里 AI 的将领刚招出来就被玩家开局那三支部队打死，
+永远凑不满「招满 3 个 + 每个 3 个兵」那条出兵条件）。
+
+**③ 「不追出一个区划」必须配一个**再战冷却
+`combat.acquire_target` 的触发条件是「静止 + 敌人进警戒半径」，而 `aggro_range` 是全局值（默认 4）——
+于是「守将追出去 → general_ai 叫它脱战走回来 → 它站定 → 下一帧又把同一个敌人锁上」
+会形成**每 2~3 帧一次的高频抖动**（肉眼看是「在区划边缘原地抽动」，而且它永远走不回中心）。
+所以脱战那一帧要 `u.retarget_cd = retarget_cooldown_sec`（默认 5 秒），冷却期内**只巡逻不接战**。
+
+**④ 升级那一段**不能**跟着一起 `return`**
+「一事一帧」这条规矩要看对象：招将 / 招兵是长期动作（一帧连下几单会瞬间堆满队列），
+而升级与**出兵并不冲突**。第一版让升级也 `return` 了，结果是
+**只要有闲钱，AI 永远在升级、永远不出兵**（实测：`attack_timer` 一直被刷、`has_attack_move` 恒为假）。
+
+### 33.6 数据：怎么在一张图上挂 AI
+
+```jsonc
+// data/config.json
+"ai": {
+  "factions": [
+    // 阵营 AI 的**名单**：id 就是阵营 id（会进 world.factions）
+    { "id": "ai", "base": [13, 11], "resource_mult": 1.0, "start_food": 100, "start_gold": 100 }
+  ],
+  "faction": { "generals": 3, "min_retinue": 3, "ready_mult": 0.5, "min_ready": 2, ... },
+  "general": { "patrol_interval_sec": 4, "patrol_leash_tiles": 1,
+               "combat_idle_sec": 10, "retarget_cooldown_sec": 5, "min_retinue": 3 }
+}
+```
+
+```jsonc
+// data/maps/frontier/map.json —— 把某个将领交给「将领性 AI」（也是这一轮唯一改地图的地方）
+"units": [
+  { "x": 8, "y": 13, "name": "驻防将领", "faction": "enemy", "kind": "enemy",
+    "hold": true, "zone": 6 }        // ← zone = 它负责的区划 id
+]
+```
+
+> ★★ **状态变更（后续一轮）：这一段已经不成立了。** 地图的 `units` 字段整个废弃
+> （运行时不读它、地图编辑器也不再保留 / 导出，`frontier` 里这 3 个驻防将领的数据已删）。
+> 要写「带归属区划的驻防将领」现在必须写在**关卡**的 `start_units[]` 里
+> （同样支持 `zone`，见第三十七节与第三十九节）。那个 `zone` 样例留作格式参考。
+
+**想让某个 NPC 阵营开局就有一块地**（于是它的驻防将领能招兵），在**地图**里写：
+
+```jsonc
+"zone_list": [ { "id": 6, "name": "d1", "center": [5,12], "production": {...},
+                 "owner": "enemy" } ]   // ← 写了它，world.reset() 会自动把 "enemy" 加进阵营名单
+```
+
+⚠️ 那条路还要求 `config.ai.factions` 里给这一方一个 **base** ——
+名单里的一方若没有基地点位，`map.spawn_layout_for()` 会走 `pvp_points` 兜底，
+而那张表为空时大本营落到 **(0,0)**，正好把区块 11 的中心顶掉（就是坑 ① 的同一类问题）。
+所以 `_register_config_bases()` 是**不看 `with_ai`** 的：基地是布局数据，与「有没有 AI 脑子」无关。
+
+**随游戏发布的那张图（`test_map.json`）里没有写 `owner`** —— 于是默认局里
+NPC 阵营不进名单、驻防将领在自己那块无主地上巡逻（有人来就打），
+要验「免费招兵」那一条得先把它的区划给它（见 `test_ai.gd` 的夹具）。
+
+### 33.7 断言（`tests/test_ai.gd`，150 项）
+
+| 组 | 验什么 |
+|---|---|
+| 配置 | 名单里的 id、行为参数都读得到；**脱战判定默认就是 10 秒**；`'enemy'` 默认不在名单里 |
+| 存在与资源库 | AI 阵营进了名单 / 有大本营 / 开局**不带附属兵**（玩家那三个照旧带满）；**大本营把它所在的区块收归自己**（否则它一块地都没有）；两个池子是**两个字典**；初始资金 = config 的 `start_*`；**收入公式**（占领区划产能 × 秒数进自己的池子、玩家一分没动）；`resource_mult = 2.0` 时同样一块地**收入翻倍** |
+| 资源规划 | 有钱有地 → 招将（钱从 **AI 自己的池子**扣，**玩家一分没动**）；冷却期内不连招；让将领招**与它自己同类型**的兵；钱够就升级自己的建筑；招满 + 满员 → **派出 `min_ready` 个将领行军攻击敌方区划** |
+| ★ 端到端（跑 60 秒真世界） | AI 真的下了招将的单、**区划招的将领真的读条读完出现在地图上**、而且它全程花的是自己的钱（玩家那一侧的账一分没动） |
+| 将领性 AI | 地图预置的 `zone` 落到 `garrison_zone_id` 上；**它那一方没有资源池**；到点朝区划中心巡逻（已在中心则不空跑寻路）；**追进别的区划当场脱战**（在自己家里离中心多远都不算）；脱战时拉起再战冷却、冷却期内不接战、冷却结束 + 回自家又能接战；无主空地上按距离兜底；**免费招兵**（钱 / 人口都不动、记账值为 0、读完真的出人） |
+| 两条 AI 互斥 | `enemy_ai` 不会指挥驻防将领朝玩家大本营推进 |
+
+### 33.8 已知取舍
+
+- **阵营 AI 不研究科技**：科技是玩家的那九条，NPC 的难度旋钮是 `resource_mult`。
+  要给它加成请调倍率（口径统一、也好调）。
+- **`ai.faction` 那一组参数是所有阵营 AI 共用的**：现在只有一个 AI，没必要按 id 分流。
+  真要多档难度时，把它改成 `factions[].faction_cfg` 那种按 id 覆盖的形状即可。
+- **AI 的花钱决策是确定性的**（不随机）：出兵按「离目标近」排序，所以同一局可复现 ——
+  联机 / 回放时不会因为随机数而漂。
+- **`ai_factions` 状态表不进快照**：它现在只跑在权威侧（单机 = 本地），
+  第 1 轮联机时要像 `unit.train_*` 那样补进快照（客机不跑 AI，但要让房主的状态能对账）。
+- **发布那张图上 AI 的日常收入是 0**：区块 9 是**人口区块**（不产粮食 / 黄金），
+  所以它是靠开局那 150 + 人口增长在运转（`start_food / start_gold` 就是为这个调的）。
+  真实地图上把 AI 摆在有产能的区块里，这两个数就不重要了。
+
+---
+
+## 三十四、开场**地图选择条** + 地图改成「一个地图一个目录」（这一轮）
+
+**需求原文**：
+
+> 更改原本有 "test" 按钮的页面，在其上方加一个选择条，可以在其中选择地图，目前仅有一个地图，
+> 但后续如果有新的地图，游戏会根据地图目录下的文件自动给出新的选项，你可以新建一个占位地图
+> 用于测试新选项的生成逻辑。
+
+### 34.1 目录约定：一个地图一个目录
+
+```
+daeem/data/maps/
+├── frontier/
+│   └── map.json        ← 目录名 = 地图 id（'frontier'）；原来是 data/test_map.json，这一轮搬进来
+└── arena/
+    └── map.json        ← ★ 占位图：只为证明「多一个目录 = 多一个选项」
+```
+
+地图 json 里新增两个**可选**字段（编辑器不编辑，但会 `PRESERVED_KEYS` 原样带过去）：
+
+```jsonc
+{
+  "id": "frontier",     // 写给人看的标识；目录名才是权威 id（见 34.4）
+  "name": "边关",       // ★ 选择条上的显示名；不写 / 写空 → 退回目录名
+  "cols": 27, "rows": 22, ...
+}
+```
+
+**为什么不是「扫 `data/*.json`」**：`config.json` 就在同一层，靠内容 / 命名去排除它迟早误判
+（配置多一个 `cols` 字段就会被当成地图）。一个地图一个目录还有个好处：以后加缩略图 /
+说明文件时不用再改一轮结构。
+
+### 34.2 扫描规则（`logic/map_library.gd`）
+
+| 步骤 | 规则 | 为什么 |
+|---|---|---|
+| 认哪些目录 | `res://data/maps` 下的**一级子目录**；目录不存在 / 打不开 → 空表（不报错） | 「还没建任何地图」不是错误路径 |
+| 每个目录找哪张图 | `map.json` → `<目录名>.json` → 任一 `*.json`（按文件名排序取第一个）；都没有 → 跳过该目录 | 给手写 / 外部工具留余地，同时**顺序固定**、不看文件系统枚举顺序 |
+| 读不到 / 不是合法 JSON | 跳过，**不冒泡** | 一张图写坏了不该让整条选择条空掉、更不该让主界面开不出来 |
+| 显示名 | json 的 `name`（去空白）→ 空 / 不是字符串 → 目录名 | 只影响下拉框上的一行字，不值得为它挡住一局 |
+| 排序 | 按**目录名**（不区分大小写） | 选项顺序必须稳定，否则「第几项是哪张图」会看文件系统的脸色 |
+| 占位图 | json 里 `"placeholder": true` → 选项照样列出，但**默认图跳过它** | 加一张测试图不该把默认局换掉（见下） |
+
+★ **默认地图 = 扫描结果里第一张不是占位图的**（`default_map_path()`）；一张都没有才退回
+`FALLBACK_MAP_PATH`（`config.gd` 的 `DEFAULT_MAP_PATH` 也指向它，**几处常量同源，只有一处字面量**）。
+
+★★ **为什么要有「占位图」这个概念**：`arena` 那种图只为验证「选项是扫出来的」，
+它的地形 / 区划根本没调过平衡。没有这一条的话，「往目录里放一张测试图」会顺手把**默认局**
+换掉 —— 加测试数据不该改默认行为。而选择条上它当然该出现（那正是要验的东西）。
+
+- 判据写在**图自己身上**（`placeholder: true`），不是代码里的白名单：地图目录一变，
+  `map_library.gd` 不用跟着改，以后多几张临时图也不用回来维护名单。
+- 下拉框的**初始选中项**同样取 `default_map_path()`（不是无脑第 0 项）：选择条上高亮着
+  `试炼场`、按下去却进了 `边关` 的话，玩家只会说「选择条没用」。
+- 正式图之间仍然是「目录名排序取第一张」—— 所以想改默认图，改目录名，
+  或者把原默认图标成 `placeholder`（不推荐：那是给测试图用的）。
+
+### 34.3 主界面（`view/start_screen.gd`）
+
+```
+        ┌──────────────┐
+        │  地图  [ 边关 ▾] │   ← 新建的一行：Label + OptionButton
+        └──────────────┘
+              ┌────────┐
+              │  test  │        ← 原来的按钮
+              └────────┘
+```
+
+- 用 `CenterContainer` + `VBoxContainer` 表达「**在选择条上方** / 在按钮下方」这条**相对关系**，
+  而不是写死两个绝对 y（那样改一次按钮高度就会让两者叠在一起）。
+- 选项**不写在这里**：`setup()` 里先 `map_library.list_maps()`，再把结果铺进下拉框 ——
+  view 层里没有任何地图清单。
+- 默认选第一项：需求只要求「可以选」，但「什么都不选直接按 test」必须有确定结果。
+- 一张图都扫不到时：下拉框 `disabled` + 显示 `menu.map_select_empty_text`，
+  **test 按钮照旧可用**（走兜底路径）—— 菜单不该因为地图目录空了就整个点不动。
+- 文案 / 字号 / 宽度 / 颜色 / 间距全在 `config.json` 的 `menu.map_*` 里（代码不写字面量）。
+
+### 34.4 ★ 选中的地图真的被带进游戏
+
+选择条唯一的作用就是**决定 `game_scene.start()` 的入参**，所以这条链只有一条：
+
+```
+OptionButton.item_selected → selected_map_path() → start_screen.test_pressed(map_path)
+    → view/main.gd 的 _on_test_pressed(map_path) → game_scene.start(map_path) → world.create(cfg, map_path)
+```
+
+- `test_pressed` 的信号**带参数**（地图路径）：谁建世界谁就该知道建哪一张，
+  不该自己去猜默认值 —— 否则「选了第二张、进去还是第一张」这种错会在两个地方各写一份默认值。
+- `selected_map_path()`（唯一的读法）：选中项下标 → `_maps[index]["path"]`；
+  越界 / 没选过 → 第一项；`_maps` 为空 → `default_map_path()`。
+  ⚠️ **不去反解下拉框上的文字**：文字是显示名，两张图可以同名。
+- `game_scene.MAP_PATH` 现在 = `map_library.FALLBACK_MAP_PATH`：正常路径永远由 main.gd
+  传参进来，那个常量只服务基准脚本与「直接在编辑器里跑 game_scene」这两种调用方。
+
+### 34.5 占位图 `arena` 怎么来的
+
+`tools/map_editor/gen_arena_map.py`（一次性脚本，**不是编辑器的一部分**）：
+用编辑器自己的数据层（`MapModel` + `mapfile.save_map`）拼一张 16×12、2×2 区划、
+两个大本营都在北侧的小图，跑完自己回读一遍确认格式自洽：
+
+```powershell
+python dev_gd_a/tools/map_editor/gen_arena_map.py
+```
+
+故意做得与 `frontier`（27×22、6×4 区划、西北 / 东南）**一眼可分**：
+这样测试与手玩都能看出「进的是选中的那张图」，而不只是「名字变了」。
+不要它了直接删 `data/maps/arena/` 目录即可（选择条会自己少一项）。
+
+### 34.6 这一轮动过的地方
+
+| 文件 | 改动 |
+|---|---|
+| `data/test_map.json` → `data/maps/frontier/map.json` | **搬迁**（git mv）+ 补 `id` / `name` 与 `_comment` 说明 |
+| `data/maps/arena/map.json` | **新增**（占位图，脚本生成） |
+| `logic/map_library.gd` | **新增**：扫目录 / 找地图文件 / 读显示名 / 默认路径 / JSON 读法 |
+| `logic/config.gd` | `DEFAULT_MAP_PATH` 指向新目录，并与 `map_library` 的常量同源 |
+| `logic/world.gd` | `create()` 的默认地图路径改成同一个常量 |
+| `view/start_screen.gd` | 主界面改成「选择条 + test」一列；`test_pressed` 带地图路径；新增 `selected_map_path()` / `map_options()` / `map_select_*()` 访问器 |
+| `view/map_select.gd` | **新增**：地图选择条本体（**自绘按钮 + 自己的 PopupMenu** —— 34.9 换掉 `OptionButton`） |
+| `view/main.gd` | `_on_test_pressed(map_path)` → `game_scene.start(map_path)` |
+| `view/game_scene.gd` | `MAP_PATH` 改指 `map_library.FALLBACK_MAP_PATH` |
+| `data/config.json` | `menu` 段新增 `map_*`（标签文案 / 字号 / 宽度 / 颜色 / 间距 / 空表文案） |
+| `tools/map_editor/mapfile.py` | `PRESERVED_KEYS` 加 `id` / `name`（导入 → 导出不掉字段）+ `EDITOR_COMMENT` 补说明 |
+| `tools/map_editor/{app.py,__main__.py,map_editor.bat,README.md}` | 默认打开 / 导出路径改成 `data/maps/frontier/map.json` |
+| `tools/map_editor/gen_arena_map.py` | **新增**（一次性生成器） |
+| `tests/*.gd`（10 个文件） | 地图路径同步；`test_case.gd` 提出 `DEFAULT_MAP_PATH` 常量；`test_start_flow.gd` 改成「选择条在按钮上方」并修掉写死的点击坐标 |
+| `tests/test_map_select.gd` | **新增**：目录扫描 + 选择条本身 + 「选中的图真的被带进游戏」 |
+
+### 34.7 断言（`tests/test_map_select.gd`，59 项）
+
+| 组 | 验什么 |
+|---|---|
+| 目录扫描 | `data/maps` 下两张图都被扫到；每项路径存在、有显示名、带 `placeholder` 标记；**显示名读的是 json 的 `name`**（不是目录名）；**按目录名排序**（第一项 = arena，不看文件系统枚举顺序）；**默认图跳过占位图**（= frontier，不是排序第一的 arena）；读不到的地图 → 显示名退回兜底、`find_map_file` 返回空串、`is_placeholder` 返回 false |
+| 选择条本身 | 按钮 + 它自己的 `PopupMenu` 都在；**选项条数 = 扫描结果条数、逐项文字一致**；默认选中**默认地图**那一项（不是无脑第 0 项）、有图时可用；**选择条在 test 按钮上方**（相对位置）；★ **真实点击弹出列表 → 按钮上那行字仍然是当前项**（第 34.9 那个 bug 的回归）；换一项后文字与 `selected_map_path()` 都跟着变；**列表关掉之后那行字照样在** |
+| ★ 端到端 | 挑一张**尺寸与默认图不同**的图选中（默认是 27×22 的 frontier，所以选到的是 16×12 的 arena）→ 真实点击 test → `world.map` 的 cols / rows 就是那一张（只断言「下拉框多一项」是不够的：选项对了而 `start()` 还是用默认图，表现就是「选了没用」） |
+
+### 34.8 已知取舍
+
+- **默认图 = 目录名最小的那张非占位图**：代价是「想改默认图」要改目录名
+  （或者进游戏前先在下拉框里选一下）。以后要做「记住上次选的地图 / 配置里指定默认图」，
+  在这里加一层覆盖即可 —— 探针已经留好：`map_library.declared_id()`（读 json 里的 `id`，
+  目前不参与任何判定）。
+- **`arena` 是占位图，不是设计内容**：它的地形 / 区划只为「看得出与 frontier 不同」，
+  玩法平衡没调过；靠 `"placeholder": true` 保证它不会变成默认局。正式发版前应该删掉它
+  （或者换一张真的第二张图）。
+- **扫描不递归**：只认 `data/maps/<id>/` 这一层。多层嵌套（`data/maps/asia/snow/map.json`）
+  现在扫不到 —— 真需要分地区时再改 `list_maps()`，别在目录结构上先猜。
+- **地图没有缩略图 / 说明**：以后要加，放在同一个目录里（`thumb.png` / `README.md`）即可，
+  扫描逻辑不用动（`find_map_file` 只找 JSON）。
+
+### 34.9 手玩反馈：选择条上的字会消失 → 换成自绘选择条
+
+**症状（用户报的，报了两次）**：点开选择条之后，**选择条上那行字变成空白**；
+把鼠标移到某一项上时，那行字又出现（显示的还是原先选的那张地图）。
+
+**第一次修（不够）**：以为是「引擎没重画」，于是在 `view/start_screen.gd` 里自己把
+显示名写进 `OptionButton.text` + `queue_redraw()`。**用户复测仍然会空白** ——
+说明问题不在「文字是什么」，而在 **OptionButton 自身的绘制时机 / 原生列表窗口**
+那条路径上（`PopupMenu` 默认是**独立 OS 窗口**：无头 / 子视口里都复现不出来，
+连截图也截不到它）。
+
+**最终修法：换掉 OptionButton，自己画**（`view/map_select.gd`，本轮新增）：
+
+- 那行字是 `Button.text`，由 `_sync_text()` **每次选中都重新写一遍**；
+- 列表用 `PopupMenu`，**只在选中 / 取消时回调，不参与按钮的绘制**；
+- 按钮的 `pressed` 只负责开关列表 —— 没有任何「等引擎重画」的时机问题；
+- 对外 API 与 `OptionButton` 同名同义（`item_count` / `get_item_text` / `selected` /
+  `select()` / `disabled` / `item_selected`），所以 `start_screen.gd` 的用法几乎没变。
+- ⚠️ 它**不再是一个节点**：原来测试里的 `.../MapRow/MapSelect` 路径失效了，
+  改成问 `start_screen.map_select_button()` / `map_select_item_count()` 那几个访问器。
+
+★★ 这一轮真正值钱的是「**把界面渲染出来截图看**」：为了查这个 bug，搭了一个一次性的
+SubViewport 探针（1920×1080 + `gui_embed_subwindows = true`），把主界面渲染成 PNG 自己看。
+它当场抓出两个光靠断言发现不了的问题：
+
+1. **列表弹出来是一坨黑**：`PopupMenu` 的 `panel` 用的是引擎默认**深色 HUD** 配色，
+   而这两页是白底 + 深灰字 —— 选项几乎读不出来。修法：底板 / 悬停底纹也由
+   `start_screen.gd` 造好传进去（`map_select.build(...)` 的 `popup_panel` / `row_hover`）。
+2. **列表压住 test 按钮**：列表是**向下**展开的，而 `menu.map_gap` 只有 48 ——
+   两层文字叠在一起像画坏了。修法：间距调到 **112**（`config.json` 里带注释说明），
+   并把列表宽度对齐按钮（`size` 与 `min_size` **两处都要设**，只设一处引擎会按内容重算）。
+
+**教训**：「按钮上的字会消失」这类**渲染时机**的 bug，断言能测的只有「文字值对不对」；
+真正的判据是**把它画出来看一眼**。另外：一个两百行、纯文本可 diff 的自绘控件，
+比跟一个引擎控件的内部行为缠斗省事得多 —— 而且顺带把配色与宽度两个连带问题一起解决了。
+
+---
+
+## 三十五、游戏内**设置二级菜单**：全屏 / 返回主菜单（这一轮）
+
+**需求原文**：
+
+> 现在为游戏内的设置按钮也添加二级菜单，向其中加入全屏选项和返回到菜单选项。
+
+### 35.1 谁执行哪个动作（这是这一节最重要的一张表）
+
+设置面板自己**什么都不改**，它只发信号 —— 两个动作一个动窗口、一个动整个流程，
+两者都是 `view/main.gd` 的地盘：
+
+| 按钮 | 信号链 | 真正执行的地方 | 为什么 |
+|---|---|---|---|
+| 全屏 / 窗口化 | `hud.fullscreen_toggled` → `game_scene._on_fullscreen_toggled` → `game_scene.fullscreen_toggled` → `main.toggle_fullscreen()` | `view/main.gd`（**唯一**改窗口模式的函数） | `Ctrl+Q` 也走它。抄成两份的话，其中一份早晚会忘了还原「进全屏前的窗口模式」（表现：退出全屏后窗口变成 1280×720） |
+| 返回主菜单 | `hud.return_to_menu_requested` → `game_scene._on_return_to_menu_requested` → `game_scene.return_to_menu_requested` → `main.return_to_menu()` | `view/main.gd`（**唯一**管流程的文件） | 它要**销毁游戏场景自己**。让一个节点「自己删自己」是最容易留下半条命的写法；扔给调度者是干净的 |
+
+`game_scene` 这一层不是多余的转发：它是「游戏内场景」这个整体对外的出口 ——
+`main.gd` 连的是**场景**而不是场景里某个控件（以后换一套 HUD，这里一行都不用改）。
+
+### 35.2 界面（`view/hud.gd` 的 `_build_settings_menu`）
+
+```
+                    ┌────────┐
+                    │  设置  │  ← 80×160，实心蓝（参考图），现在**点了会弹菜单**
+                    ├────────┤
+                    │  全屏  │  ← 面板挂在按钮正下方（ui_layout.SETTINGS_MENU_RECT）
+                    ├────────┤
+                    │返回主菜单│
+                    └────────┘
+```
+
+- 结构：`PanelContainer`（底板 / 描边走 `ui_style.panel_style`）+ `VBoxContainer`
+  + 两颗 `Button`（三态底纹走 `ui_style.accent_button*`，与设置按钮同一档蓝）。
+- **整块是 STOP**：它浮在地图上，点在它身上不该穿到地图去 ——
+  穿下去就是「顺手给单位下了一条移动命令」。
+- **高度按格数算**（`_settings_menu_height(SETTINGS_MENU_SLOTS)`）：
+  加一项时改格数即可，不用手调坐标（写死高度会让最后一项被裁掉一半 ——
+  「界面看着还好、按钮点不到」的经典成因）。
+- 文案 / 字号在 `config.json` 的 `settings` 段；几何在 `ui_layout.gd` 的
+  `SETTINGS_MENU_*`（`interactive_rects` 也把它算进去了）。
+- ★ 「全屏」那颗按钮写的是**按下去的后果**：窗口态写「全屏」、全屏态写「窗口化」。
+  每次打开菜单都重算一遍（`_refresh_fullscreen_label`）—— 玩家可能刚用 `Ctrl+Q` 切过。
+
+### 35.3 ★ 返回主菜单：一个**已实测的坑**
+
+`start_screen.close()` 用了 `hide()`（进游戏时把整层收起来）。而 **`CanvasLayer` 被
+`hide()` 过之后，光调 `show_page()` 是回不来的**：页内那两层（Intro / MainMenu）的
+`visible` 都对了，**整层却还是隐的** —— 白底与主界面不参与命中测试，
+表现就是「回到菜单了，看得见，但按钮点不动」，玩家会以为游戏卡死。
+
+所以「从游戏里回到菜单」必须走 `start_screen.open_menu()`（= `show()` + `show_page(PAGE_MENU)`），
+而不是 `show_page(PAGE_MENU)`。这个名字是刻意的：语义是「打开菜单」，
+把 `show()` 藏进它里面，调用点就不会漏。
+
+> 这条**只有在「来回切两次」时才会暴露**：第一次从游戏回菜单时，那个
+> layer=100 的层刚好还是可见的（`hide()` 的效果还没轮到它），第二次才现原形。
+> 所以 `tests/test_settings_menu.gd` 第 3 节专门在**同一次进游戏**里往返两遍。
+
+### 35.4 拆场景的顺序与「幂等」
+
+`main.return_to_menu()` 的四步（顺序不能反）：
+
+1. `game = null` —— `_unhandled_input` 与 `_on_test_pressed` 都以它为判据；
+2. 收起设置菜单（`is_instance_valid` 双保险：这条路走的是信号，中途可能已经被释放）；
+3. `remove_child(game)` + `queue_free()` —— **不能只 `queue_free`**：
+   它要到帧末才真的销毁，那一帧里 `_process` 还在跑、输入还在接，
+   而此时菜单已经在底下等着被点了（表现：刚回菜单，底下那个世界还在动、
+   点一下还指挥到了单位）；
+4. `start_screen.open_menu()`。
+
+★ **不新建开场页**：原来那个 `StartScreen` 一直挂在树上（只是隐藏），
+它里面的地图选择条**还留着玩家上次选的那张图** —— 回菜单再进就是同一个选择。
+★ **幂等**：不在游戏里时什么都不做（按钮可能被连点，那一下不该造出第二个开场页）。
+
+### 35.5 动过的地方
+
+| 文件 | 改动 |
+|---|---|
+| `view/hud.gd` | 新增 `settings_panel` / `fullscreen_button` / `return_menu_button` 与 `_build_settings_menu`、`toggle_settings_menu`、`set_settings_menu_open`、`_refresh_fullscreen_label`；两个新信号；设置按钮接上 `pressed` |
+| `view/game_scene.gd` | 两个新信号（转发）；`_on_return_to_menu_requested` 里用 `is_instance_valid(self)` 判活 |
+| `view/main.gd` | 新增公开的 `toggle_fullscreen()`（Ctrl+Q 与设置菜单共用）与 `return_to_menu()`；`_handle_window_hotkey` 改成调前者 |
+| `view/start_screen.gd` | 新增 `open_menu()`（`show()` + 主界面那一页）；`show_page()` 里补 `show()`（防呆） |
+| `view/ui_layout.gd` | `SETTINGS_MENU_RECT` / `SETTINGS_MENU_ITEM_H` / `SETTINGS_MENU_GAP` / `SETTINGS_MENU_SLOTS`；`interactive_rects` 收进面板 |
+| `data/config.json` | 新增 `settings` 段（标题 / 两颗按钮的文案 / 字号 / 字色） |
+| `tests/test_ui.gd` | 原「设置点不动」那条断言作废，改成「点设置不会顺手切页签」（并把菜单收回去，免得影响后面那些用鼠标的用例） |
+| `tests/test_settings_menu.gd` | **新增**（53 项）：结构 / 几何 / 吃鼠标 / 全屏信号链 / 返回主菜单（含同一次进游戏里往返两遍） |
+
+### 35.6 断言（`tests/test_settings_menu.gd`，53 项）
+
+| 组 | 验什么 |
+|---|---|
+| 结构 | 面板挂在 `HudRoot/SettingsMenu`；两颗按钮在；三处文案都来自 `config`；刚进游戏是收着的；**真实点击**设置按钮 → 弹出 / 再点 → 收起 |
+| 几何 | 面板在设置按钮**下方**、不重叠、有实际尺寸、装得下两格；两颗按钮上下排开；面板靠在设置按钮那一侧；面板与两颗按钮的 `mouse_filter` 都是 STOP |
+| 全屏 | 两条接线都在（hud → game_scene → main）；**真实点击**「全屏」不报错、不切页签、不收面板；文案跟着窗口状态（全屏 → 「窗口化」）；`main.toggle_fullscreen` 存在且可直接调 |
+| ★ 返回主菜单 | **真实点击**「返回主菜单」→ `main.game` 清空、`GameScene` 不在树上、旧场景已离开场景树；开场页重新可见且停在**主界面**那一页（入场页没回来、白底回来了）；选择条还留着上次选的地图；**回到菜单后鼠标真的点得到东西**（拒「看着在、点不动」）；再按 test 能开出**新的一局**；**再回一次菜单同样成立** |
+
+### 35.7 已知取舍
+
+- **菜单打开时世界照常跑**（不暂停）：这一轮的设置项没有一个需要停下世界，
+  加「暂停」是另一件事（`input_controller.paused` 已经存在，接上很容易，但需求没要）。
+- **菜单点外面不会自动收起**：只有再点一次设置才收。做「点空白处收起」要抢
+  `_unhandled_input`（那是输入层的地盘），收益不值这个复杂度。
+- **`Esc` 没接**：需求只给了「全屏 / 返回主菜单」两项。
+- **无头下测不到真全屏**：`DisplayServer` 在 `--headless` 下是空实现，
+  所以测试只验「请求真的走到了 `main.toggle_fullscreen`」，不去断言真实窗口模式
+  （手玩验收清单里有一条专门让人开窗看一眼）。
+
+---
+
+## 三十六、**阵营归属（盟友）**：边关的两个 NPC 不再互相打（这一轮）
+
+**需求原文**：
+
+> 现在为游戏添加阵营归属，让『边关』地图中的两个 ai 的阵营关系变为友善，不再相互攻击。
+> （追问确认：**不相互攻击，且不争夺同一区划**；关系**写在地图文件里**；
+>   玩家与两边**仍然互为敌人**。）
+
+**边关上的两个 NPC**（实测，颜色对上了）：`enemy`（地图对家 · 红 `#e05a5a` · 9 个守军 +
+1 本营 + 2 箭塔 + 3 城墙）与 `ai`（阵营 AI · 橙 `#ff8a4a` · 有资源库、会招将出兵）。
+
+### 36.1 数据放在哪：地图的 `allies` 字段
+
+```jsonc
+// data/maps/frontier/map.json
+"allies": [["enemy", "ai"]],
+```
+
+- **地图数据**，不是全局配置 ⇒「只有边关友善、别的图照旧」是天然的（用户要的就是这个）。
+  换图必须清干净：`world.reset()` 里 `FactionRes.set_allies(map.allies)` —— 它是 static 的，
+  而 reset 每次都**先清后写**。
+- 语义是**双方互相**（没有单向盟友）。`[["a","b"],["b","c"]]` 这种会**传递闭包**成三方一方。
+- 编辑器不编辑它，但 `PRESERVED_KEYS` 把它原样带回去 —— 否则「在编辑器里打开边关再导出」
+  会让两个 AI 又开始互相打（一个很安静的回归）。已有往返断言（手动跑的那一句）。
+
+### 36.2 ★★ 三个口径，别混（这一节最要紧的一张表）
+
+| 口径 | 函数 | 谁在用 | 盟友算不算「一边人」 |
+|---|---|---|---|
+| **同阵营** | `FactionRes.same_side(a,b)` | **建筑通行**（城墙 / 本体挡谁）、寻路惩罚、拆自家建筑、防冒充 | ❌ **不算** |
+| **攻击口径** | `FactionRes.same_side_for_attack(a,b)` | 索敌、箭塔开火、手动点名、AI 挑目标 | ✅ 算 |
+| **同一方** | `FactionRes.side_of(f)` | 占领判定「这块地上站着几方人」 | ✅ 折叠成同一个代表 |
+
+- 为什么**不**直接把 `same_side` 改宽：它还管着「建筑挡谁」。改宽会让盟友的城墙对彼此的
+  军队形同虚设 —— 那是另一条需求，用户没要（**测里专门钉了这一条**：
+  `test_alliance._test_walls_still_block`）。
+- `side_of()` 的代表 = 这一方里**字典序最小**的 id（与「谁先被发现」无关）⇒ 可复现；
+  没有盟友时就是它自己 ⇒ 老图行为逐位一致。
+
+### 36.3 改动落在哪（五处）
+
+| 文件 | 改动 |
+|---|---|
+| `logic/faction.gd` | **新增**：`_ALLY` / `_ALLY_PAIRS`、`set_allies()` / `clear_allies()` / `allied()` / `same_side_for_attack()` / `side_of()` / `side_members()` / `ally_pairs()`；登记时展开传递闭包 |
+| `logic/map_data.gd` | 读 `allies` 字段（`_read_allies`，宽容：坏项跳过、不做阵营名校验） |
+| `logic/world.gd` | `reset()` 里紧跟名单确立之后注入（`FactionRes.set_allies(map.allies)`） |
+| `logic/combat.gd` | 索敌 / 找敌方建筑 / **箭塔开火**三处换成 `same_side_for_attack` |
+| `logic/unit.gd` + `logic/command_processor.gd` | 手动点名（`order_attack_unit` / `order_attack_building`）与命令层同口径 |
+| `logic/faction_ai.gd` | `_attack_target` 不再把盟友的区划 / 大本营当行军目标 |
+| `logic/zone.gd` | 占领：`present_by`（真实阵营，人数加成用）+ `present_sides`（一方，判「只有一方」用）；**主人那一方在场也算一方**（否则盟友的兵会去抢盟友的地） |
+| `logic/crowd/crowd_bridge.gd` | **新增** `_side_list` / `_side_index`：内核的 `AcquireTargets` 只认「下标不同 = 敌对」，所以让**盟友共用同一个下标** —— 一行 C# 都不用改（C# 那边的注释本来就写着「同一方 = 同一个值」）。⚠️ 与 `_faction_index` **不能合并**：那个还管碰撞 / 通行 / 搬运 |
+
+### 36.4 ★ 两个踩到的坑（都是断言先红、我再去查的）
+
+1. **`progress_by` 的键缺了「一方」**：某局名单是 `['p1','ai']`，而 `_capture_factions()`
+   总会额外塞进 `'enemy'`；折叠之后往 `by[...]` 里写了一个从没铺过的键 ⇒
+   `test_ui` 当场报「Invalid access to property or key 'ai'」（栈直接指到 `zone.gd`）。
+   修法：铺键时**既按名单、也按这一帧真站在这里的每一个阵营**。
+2. **「只有一方」不能只看阵营数**：把两个盟友折成一个代表之后，`present.keys()` 里
+   可能同时有 `ai` 与 `enemy`，`present.size() == 1` 永远不成立 ⇒ 谁都不读条；
+   而只看「方」又会把**主人自己**当成外来者 ⇒ 盟友的兵去抢盟友的地（实测：进度真的在涨）。
+   修法：`present_sides`（方）+「主人那一方在场也登记进 `present_sides`」，
+   读条方仍然取**真实阵营 id** ⇒ 区块归属与进度条颜色都不会写成代表 id。
+
+> ⚠️ 第二条还把 `test_zone_capture` 拖成了 **575 秒**（11 条断言红）：占领读不满 ⇒
+> 那些「跑到某一方占下为止」的 while 循环一直跑到 guard 上限。**测试突然变慢本身
+> 就是一条线索** —— 修完之后回到 5 秒。
+
+### 36.5 断言（`tests/test_alliance.gd`，73 项）
+
+| 组 | 验什么 |
+|---|---|
+| 纯查询 | `allied` 互相成立 / 空 id·同名·坏数据不吃进表 / `side_of` 两个成员算同一个代表 / 三方传递闭包 / 重复对去重 / `clear_allies` 之后又变回敌人 |
+| ★ 口径分离 | `same_side_for_attack(NPC, AI)` 为 true，而 **`same_side(NPC, AI)` 仍为 false**（城墙照样挡盟友） |
+| 地图数据 | 边关读到 `enemy ↔ ai`；**没写 allies 的图 = 空表**；坏项全跳过；缺字段 = 空表 |
+| 世界接线 | 带 AI 开一局 ⇒ 盟友表被注入；换到没结盟的图 ⇒ 关系**没有**跟过来；换回来又有 |
+| ★ 不互相攻击 | GDScript 逐单位索敌路 / C# 内核批量索敌路 / 箭塔开火 / `order_attack_unit` / 命令层 —— 五条都**不**把盟友当目标；同时确认**玩家与两边仍然是敌人** |
+| ★ 不争同一区划 | AI 的兵站在盟友（enemy）的区划里**不读条**、进度为 0；两个盟友的兵同处一区**不冻住**而是按一方读条；盟友的建筑不会把对方的地翻走 |
+
+### 36.6 已知取舍
+
+- **只影响「打」与「占」，不影响「挡」**：盟友的城墙 / 箭塔本体照样挡盟友的军队
+  （用户只要求不互相攻击）。要做「友军放行」是另一条需求，改 `building.blocks` /
+  `body_blocks` 那一层的判据即可 —— 但那时 `same_side` 这个名字的含义就要重新想。
+- **视野（迷雾）没动**：两个盟友各有各的视野，看不到对方的视野。
+  现在玩家与两边都是敌人，所以观感上没有差异；要做「共享视野」是迷雾那一侧的事。
+- **盟友之间不共享资源 / 不协同出兵**：它们是各自经营的独立阵营，只是不互相打。
+- **`allies` 不做阵营名校验**：写错的 id 天然无效（不会与真实阵营同名），
+  与 `zone_list[].owner` 的宽容度一致 —— 地图是可以手改的文件，写错一个 id 不该让整局开不出来。
+
+---
+
+## 三十七、战役模式 / 关卡覆盖层 / 共享视野（这一轮）
+
+> 规划书是独立编号的 [`dev_plan_7.md`](../dev_plan_7.md)（三/四轮问答共 23 项拍板）。
+> **本轮落地的是它的 M7.0 / M7.1 / M7.2 三个里程碑**：
+> 战役数据格式 → 单人一关能跑（含目标与胜负）→ 进攻目标（= 波次）。
+> 其余的（编辑器、合作网络层、服务器部署）留在后面几轮。
+
+### 37.1 一句话：关卡 = 「一张地图 + 一层覆盖」
+
+```
+data/campaigns/<id>/
+├── campaign.json          战役元信息 + 关卡顺序（levels[] 的顺序 = 关卡顺序）
+└── levels/01_xxx.json     一关 = {"map": "<地图 id>", …覆盖层…}
+```
+
+★ **地图文件一个字都没改**：`map.json` 继续拥有地形 / 区划网格 / 区划中心 / 产能 / 阵营大本营；
+关卡只拥有**这一关专属的东西**（玩家里有谁、每一方挂什么 AI 与往哪打、开局摆放、目标与额外失败条件）。
+
+这条取舍是刻意的（dev_plan_7 1.3.3）：
+`data/maps/frontier/map.json` 里那套对家据点与守军**是给手玩测试用的**，
+「地图选择条 → 按 test 直接开一局」这条路一个字都不能坏 ——
+所以关卡是**在它之上的另一层**，不是它的替代品。
+
+### 37.2 覆盖规则只有一处实现（`logic/level.gd`）
+
+| 字段 | 覆盖还是追加 |
+|---|---|
+| `players[].base` / `factions[].base` | **覆盖**地图的 `faction_bases[那一方]` |
+| `zones[].owner` | **覆盖**地图 `zone_list[].owner` 的开局归属 |
+| `allies` | 写了就用关卡的；**一个字都没写**才用地图的 |
+| `start_units` / `start_buildings` | **追加**在地图的 `units` / `buildings` 之后（⚠️ 地图的 `units` 已废弃 ⇒ `start_units` 实际上就是**唯一**的一份；`buildings` 照旧追加在地图的 `buildings` 之后） |
+| `factions[].ai` / `resource_mult` / `start_*` / `attack_target` / `faction_ai` / `general_ai` | 关卡显式写了就用关卡的；没写照旧吃 `config.json` |
+| `start_units[].escort_of` | ★★ **附属兵归属**（本轮口径，整数、**1 起**、与 `general_index` 同规）：这一项归**同阵营第几位将领**。缺省 / 非法值（`0` / `-3` / `"2"` / `2.5` / `true`）一律当**没写** = 普通摆放单位。判据只有一处：`Level.escort_leader_index(u)`（0 起，非附属兵 = `-1`）；运行时 id 的换算只有一处：`World.escort_of_index(fid, index)` |
+| ~~`factions[].general_escort`~~ | ★★ **已删除**（连同 `config.json` 的 `unit.general.escort` 全局缺省）：开局附属兵**只**来自 `start_units[]` 的逐兵摆放，没有缺省可退。原口径函数 `world.escort_count_at()` / `cfg.general_escort_at()` 一并删掉，改成 `World.escort_target_of(fid, index)`（见 37.2.1） |
+
+★★ `Level.merge_over_map()` 返回一个**新的地图对象**（不是就地改）——
+校验（`Level.check()`）必须在**原始数据**上跑，否则同一份数据会因为调用顺序不同
+得出不同的拦截结果（pitfalls 6.1）。
+
+### 37.2.1 ★★ 状态变更（本轮）：开局附属兵 = **关卡摆出来的那些**
+
+上一轮那张表里的两个键（`config.json` 的 `unit.general.escort`、关卡
+`factions[].general_escort`）**整套推翻**，理由只有一句「所见即所得」：
+**开局场上有多少兵，必须完全等于关卡 `start_units[]` 里摆出来的那些。**
+
+| 旧 | 新 |
+|---|---|
+| `config.json` 的 `unit.general.escort` 当全局缺省；`Config.general_escort_count()` / `general_escort_at()` | **整条删除**（`config.general_escort` / `general_escorts` 两个字段也没了）。残留的键**静默忽略**（没人查的键等于不存在，不报错） |
+| 关卡 `factions[].general_escort`（逐将个数，越界循环） | **整条删除**（`Level.general_escort_of/for/at_index`、`_read_escort_list/_escort_int`） |
+| 运行时按编制**自动生成**附属兵（`world.create_escort()`） | `create_escort()` **整个删除**。附属兵改为 `start_units[]` 里**逐兵一个坐标** + `escort_of` 绑定将领 |
+| 「只有本机操作的那一方有开局附属兵」（`with_escort = (faction == my_faction)`） | **删掉参数与判据**：谁摆了就给谁（AI 摆的照样出现） |
+| 关卡没写 → 回退 config 的缺省 | 关卡没摆 ⇒ 将领**光杆**（0 个），不补任何缺省 |
+| 自动生成 3 位将领 + 关卡摆放追加 | ★★ 这一方**自己带了部队**（摆了带 `escort_of` 的兵，**或**摆了将领类 `start_units`）⇒ **整方由关卡接管**：连 3 位将领都不自动生成 |
+
+**口径只有两处**（别再在别处判「该给几个兵」）：
+`Level.escort_leader_index(u)`（`escort_of - 1`，0 起）与
+`World.escort_of_index(fid, index)`（→ 运行时 id `general-<fid>-<n>`）；
+AI 的补员目标走 `World.escort_target_of(fid, index)`。
+
+★★ **两条实测踩到的坑**（都不报错，只静静地挂错 / 多一倍）：
+1. **关卡摆的将领必须拿到 canonical 的运行时 id** —— 第一版当普通摆放单位造
+   （id = `level-N`），`escort_of` 算出来的队长 id（`general-F1-1`）**谁都不认识**，
+   15 个兵全挂空。⇒ `_place_faction_units()` 里将领走 `create_general()`（名字 / 坐标仍以关卡为准）。
+2. **「摆了将领」也算接管** —— 否则自动生成的那 3 位与作者摆的 3 位 **id 完全相同**，
+   场上 6 位将领、3 组重名（样例战役 F2 就是这么暴露出来的）。
+
+★ **顺序不变量**：`world.units` 里**每位将领都排在它自己的兵前面**。
+摆放按**方**分批：先补这一方的将领、再摆这一方的兵
+（`world._apply_level_placement()` / `_place_faction_units()`），
+所以作者在 `start_units[]` 里怎么排都不会破坏它。
+
+### 37.3 战役入口：`World.create_from_level()`
+
+```gdscript
+var lv = CampaignRes.load_campaign("res://data/campaigns/demo", cfg).level("01_beachhead")
+var w  = WorldRes.create_from_level(cfg, lv, "F1", ["F1"], true)
+```
+
+它做四件事（顺序是硬约定）：
+
+1. `level.merge_over_map()` → **合并后的地图**（新对象）+ AI 名单；
+2. `reset(my_faction, roster)` —— **玩家席位可能是 2 个**（合作时两个大本营都建、两支部队都出生）；
+3. `reset()` 里依次：应用关卡覆盖层 → 关卡覆盖**区块归属** → 关卡**开局摆放** → 目标收口；
+4. `level == null` 时**一个字段都不动**（老路径 / 绝大多数测试走这条）。
+
+### 37.4 ★★ AI 改成「按阵营挂」，玩家选中的那一方自动摘掉
+
+关卡的 `factions[]` 里每一方可以有 `ai`：`"faction"`（阵营性）/ `"general"`（将领性）/ `"none"`（不动）。
+
+| 谁 | 进 `world.factions`？ | 有 AI 状态表？ | 有资源池？ |
+|---|---|---|---|
+| 玩家席位（`roster`） | 是 | **不**（哪怕关卡给它配了 AI） | 走 `player_resources` |
+| `ai: "faction"` | 是 | 是 | 是（`ai_resources`） |
+| `ai: "general"` | 是 | **不**（靠单位上的 `garrison_zone_id` 驱动） | 不 |
+| `ai: "none"` | 是（关卡点名过就有地有摆放） | 不 | 不 |
+| 只有 `config.ai.factions` 提过它 | **不**（有 level 时） | 不 | 不 |
+
+★★ **「玩家选中哪一方，运行时就把那一方的 AI 摘掉」**（拍板第 13 项）落在
+`world._setup_ai_factions()` 里那一条 `player_factions.has(fid)` —— **唯一的一处判据**。
+编辑器**允许**给任何参展阵营配 AI（它可能是 AI 局的一方，也可能被玩家选中），
+「摘」这件事只发生在运行时。
+
+★ 第 5 行（`source == "config"` 的那些不进这一局）是**实测补上的**：
+不然「往全局 `config.json` 里加一个 AI 阵营」会悄悄改变**已有战役的每一关**。
+老路径（`level == null`）不看这一条，照旧把 config 那一份全用上。
+
+### 37.5 进攻目标（= 用户嘴里的「红点波次」）
+
+★★ **没有触发器、没有时间轴**（dev_plan_7 1.3.5）：
+「波次」= 「这一方挂着阵营 AI」+「它的 `attack_target` 指着哪」这两件事的组合。
+
+```json
+"attack_target": {"kind": "zone", "zone": 4}    // zone / point / building / base（不写 = 现状）
+```
+
+| 用户嘴里的词 | 在数据里的对应 |
+|---|---|
+| 一波红点 | `faction_ai._launch_attack()` 的一次派兵（它现在会发一条 `ai_attack_launched` 事件） |
+| 波次间隔 | `faction_ai.attack_repeat_sec` |
+| 每波规模 | `generals` / `min_retinue` / `min_ready` / `ready_mult` |
+| 难度 | `resource_mult` + `start_food` / `start_gold` |
+| 「清完一波再来一波」 | 现有 AI 的自然行为（被打光就重招、攒够再派）—— **不需要额外调度代码** |
+| 多个方向同时来 | 多挂几个 AI 阵营，各自一个 `attack_target` |
+
+改动只有两处（`logic/faction_ai.gd`）：`_attack_target()` 先问
+`world.level_attack_target(faction)`（**不可达就返回 null ⇒ 退回现状挑选**），
+以及出兵末尾发那条事件。⚠️ **缺省必须逐位不变**（`test_ai.gd` 的 150 项是回归）。
+
+### 37.6 目标与胜负：只做「守住指定区划 N 秒」
+
+```json
+"objectives":      [{"kind": "hold_zone", "zone": 4, "hold_sec": 90}]
+"fail_conditions": [{"kind": "zone_lost", "zone": 6}]     ← 额外的；大本营被拆是常开的
+```
+
+| 规则 | 口径 |
+|---|---|
+| 判定「归玩家」 | 一律走**同方**（`FactionRes.side_of`）⇒ 合作时 p2 守住也算 |
+| ★ 目标区划**不再归玩家同方** | **当场判负**（用户拍板：连「暂停不清零」都不要） |
+| `held >= hold_sec` | **当场判胜**（跨过阈值的那一帧生效，不等下一帧） |
+| ★ 玩家同方的**大本营全部被拆** | 判负（**常开不可关**；拆一半不算） |
+| `zone_lost` 额外条件 | 指定区划一旦不再归玩家同方就判负（可以配多个，谁先触发算谁的） |
+| ★ 目标区划**开局就不归玩家同方** | 立刻判负并留 `objective_never_held` 痕迹（**编辑器导出会先拦一遍**） |
+
+★ 开局兜底那一条是「规则没错、数据写错就炸」的组合：`objective.gd` 的 `setup()` 里判一次，
+编辑器的导出校验第 8 条再拦一次 —— **两道，别只靠一道**。
+
+`world.objective_state` 是**世界状态**：`reset()` 末尾建好（HUD 第一帧就读得到），
+`tick()` **末尾**推进（目标最后判 ⇒ 刚守满就立刻结算），结算那一次发一条 `level_end`（去重过）。
+
+### 37.7 迷雾改「按同方」——合作模式共享视野
+
+`logic/fog.gd` 的分桶键从 `faction` 换成 `FactionRes.side_of(faction)`，
+**三类查询**（`tile_visible` / `unit_visible` / `building_visible`）一起走同一个键。
+
+★ 单机时 `side_of(p1) == "p1"` ⇒ **逐位不变**（`test_fog.gd` 原有那 127 项是回归）；
+合作时「p1 看到的格，p2 也看得见」，而**没结盟的第三方照样看不到**（不会泄漏）。
+⚠️ 忘了改查询那一句的症状很隐蔽：掩码按方存了、查询还按阵营查 ⇒
+p1（代表 id 恰好等于自己）一切正常，而 p2 永远查不到东西（整屏全黑）。
+
+### 37.8 玩家资源从「一个字典」改成「按席位」
+
+| 改动 | 说明 |
+|---|---|
+| `world.player_resources: {faction: {food, gold}}` | 新增；玩家席位各一份 |
+| `world.resource_pool_for(faction)` | **已经是**所有扣费 / 退款的唯一入口 ⇒ 加一条分支，招募 / 升级 / 特化的扣费一行都没改 |
+| `world.resources` | 保留为「本机席位那一份」的**别名**（`view/` 读它，一个字不用改） |
+
+★★ 本机席位那一份与 `resources` 是**同一个字典对象**（不是副本）——
+HUD 读它、扣费走 `resource_pool_for()`、快照发它，三者天然同一份数，不需要任何同步代码。
+⚠️ 空字典/内容相同的字典在 GDScript 里 `==` 会判「相等」（逐键比较）——
+要问「是不是同一个对象」必须用 `is_same()`（pitfalls 6.4）。
+
+### 37.9 断言与验收
+
+| 套件 | 项数 | 盯什么 |
+|---|---|---|
+| `tests/test_campaign.gd` | 229 | 目录扫描 / 关卡载入 / 缺字段默认值 / **覆盖规则** / **16 条校验各一个坏样例** / 坏输入 / 战役图不改变自由对战的默认局 |
+| `tests/test_outcome.gd` | 70 | 守住计时 / ★丢掉即负 / 守满那帧判胜 / 大本营**全部**被拆才判负 / `zone_lost` / 开局兜底痕迹 / `level_end` 只播一次 |
+| `tests/test_campaign_ai.gd` | 66 | `faction`/`general`/`none` 三种指派 / ★★玩家席位不被 AI 接管 / `resource_mult` 只乘收入 / 关卡按阵营覆盖 AI 参数 / 向后兼容 |
+| `tests/test_ai_target.gd` | 44 | 四种 `attack_target` 的解析 / ★缺省退回现状 / 不可达也照样出兵 / `ai_attack_launched` 的载荷 |
+| `tests/test_fog.gd`（扩展） | 127 → 142 | 单机逐位不变 + ★★同方共享视野、第三方不泄漏 |
+
+样例战役 `data/campaigns/demo`（东征·第一章）：第一关**单人**守住 c1 90 秒、
+第二关**双人合作**守住 c1 120 秒且 f1 失守即负。它引用 `data/maps/dongzheng/` ——
+一张 `hidden: true` 的**战役专用图**（不进自由对战的选择条、也不当默认图，
+见 pitfalls 6.6）。
+
+★ 全量门槛：**34 套 / 4807 项**（本轮之前是 29 套 / 4098）。三个编辑器的测试另算：
+地图编辑器 724 项（339 + 385）、单位编辑器 668 项（472 + 196）、
+战役编辑器 322 项（223 + 99）—— 都是 `python tools/<编辑器>/test_*.py`，靠退出码判成败。
+
+### 37.11 单人战役的**占位图形入口**（`campaign_test`）
+
+需求原文：「为单人战役加一个占位界面吧，我要通过这个界面进入战役里面测试，
+就在 test 下面单独放一个 `campaign_test` 按钮」。
+
+★ **它只是占位**：正式的入口那一套（战役选择条 / 关卡进度 / 简报 / 目标面板 / 结算面板 /
+合作大厅）是规划书 5.1~5.4 的事。这一版只做「**能进得去、能操作、AI 在动**」最少需要的几件。
+
+| 落点 | 做什么 |
+|---|---|
+| `view/start_screen.gd` | 主界面多一颗 `campaign_test` 按钮，在 `test` **下面**（同一列）；新信号 `campaign_test_pressed()`（**不带载荷**：这一页不认识战役数据） |
+| `view/campaign_test.gd`（新） | 「单人战役」页：**列单人关** + 选阵营 + 开始 / 返回。它不认识 `world`，也不认识 `game_scene` |
+| `view/game_scene.gd` | 新增 `start_level(campaign, level, my_faction)` —— 与 `start()` **只差「世界怎么造出来」**（`create_from_level` vs `create`），之后完全同一条尾 |
+| `view/main.gd` | 扫 `data/campaigns/`（`campaign_library.list_campaigns(cfg)`）→ 挂那一页 → 接 `level_chosen` → `game.start_level()`；`return_to_menu()` 顺手收掉那一页 |
+| `logic/campaign_library.gd` | 新增 `load_campaign_by_option()`：把选项表里的一项**按同一条路**载入成 `Campaign`（界面不许自己拼路径再读一遍） |
+| `logic/campaign.gd` | `load_campaign()` 的 `cfg` 省略时自己兜底载一份配置 —— 少了它，「界面忘了传 cfg」会表现成「地图载入时对着 null 取 `cols`」 |
+
+★★ **四件刻意为之的事**（改之前先读，判据都有断言钉着）：
+
+1. **关卡列表只列单人关**（`mode == "solo"`）。合作关要**两个**玩家席位（`players[]` 恰好 2 项），
+   这一条路给不了第二个 —— 列出来点进去只会得到「席位不够」的半成品。
+2. **阵营列表 = 那一关的 `playable_ids()`**（一次来源），默认选第一个可玩阵营 ⇒ 一进来就能按开始。
+3. **按「开始」先切「载入中…」再等一帧**：`create_from_level` 是同步的（载地图 + 建 14 个区划 +
+   出生二十几个单位 + 三个 AI 阵营），直接建的话那一帧界面一帧都没画过，玩家看到的是「卡住」。
+   `await get_tree().process_frame` 让它先画出那一帧；`_loading` 同时是**重入闸门**。
+4. **间距的口径有两处**：整列的 `separation` = **两颗按钮之间**（`campaign_test_button_gap` = 48），
+   而「选择条 → test」要更宽（`map_gap` = 112）⇒ 给选择条那一格**包一层 `MarginContainer`
+   补下边距**。⚠️ 别用「往列里插垫片」那种做法：`separation` 作用于**每一对**相邻子节点，
+   插进去会变成「separation + 垫片 + separation」（实测想要 48、量出来 268）。
+
+★ 断言在 `tests/test_campaign_test.gd`（70 项）：按钮位置与文案、开/关/幂等、
+关卡只列单人、阵营跟着关卡走、**按开始真的进了那一关**（id / 席位 / 目标 / 选中单位对得上）、
+合作关不出现、以及老路径（按 test）不受影响。`tests/test_start_flow.gd` 另加了按钮几何断言，
+并把原来那条**写死坐标**的点击改成点「按钮自己的中心」（布局一改就得改坐标那种脆弱写法去掉了）。
+
+### 37.13 ★★ 阵营 AI 的「招将 → 满员 → 出兵」：三个实测 bug 与「编制上限逐将不同」
+
+需求原文（玩家实测报的）：「我目前看到的是敌方阵营只会派一个将领向我攻击，而不是让将领
+招满部队后向我攻击，我预期的是敌方将领的编制上限应该在 4 到 6 不等，这个不等的区间
+就是攻击波次的浮动间隔时间」。
+
+★ 实测（样例第一关，240 秒）发现**三个各自独立的 bug**，它们叠在一起才造成体感：
+
+| # | 症状 | 根因 | 落点 |
+|---|---|---|---|
+| 1 | 开局第 **1.4 秒**就来一波；「招满再出兵」的阶段**从来没发生过** | `world.spawn_faction_units()` 判「要不要给开局附属兵」时问的是 `cfg.is_ai_faction()`，而它**只查 `config.json` 的 `ai.factions`** —— 关卡点名的 AI 阵营（样例的 E1 写 `ai: "faction"`）查不到 ⇒ `with_escort = true` ⇒ 3 位将领各白送满编 | `world._is_ai_piloted()`：改问**这一局真正的 AI 名单**（`ai_roster_cfg`，关卡优先 + config 兜底），`config` 那份只作兜底 |
+| 2 | 配置写 `generals: 2`，场上却有 3 位；「派几成」被算歪（有时派 1 位、有时 2 位） | `_decide()` 判「将领招够没有」看的是自己那个**只增不减的计数器** `st["general_index"]`，而世界初始化**已经**建好了将领 ⇒ 「我只招了 2 个」与「场上已有 3 个」同时成立；而 `want = ceil(将领数 × ready_mult)` 是拿**场上人数**算的 | `_decide()`：改成按**序号占位**判断（第 i 个槽位上有活着的将领就不招它），计数器只当**下限**（`max`）。顺带修好「某位将领阵亡 → 它的槽位会被补招回来」 |
+| 3 | 每个将领都带**同一个数**（3 个），没有 4~6 的差别 | 编制上限 `unit.general.escort` 是**一个全局标量**，`create_escort()` 与 AI 的 `min_retinue` 都读它 | `unit.general.escort` 支持**数组**：`[4,5,6]` ⇒ 第 1 位带 4、第 2 位 5、第 3 位 6（与 `types` 同序，越界按长度循环）。新增 `Config.general_escort_at(index)`；`world.create_escort()` 按 `leader.general_index` 取；AI 的目标编制 = `max(将领自己那一档, min_retinue)`。<br>★★ **后续一轮又加了一层**：关卡可以**逐关**给某一方写 `factions[].general_escort`（同一条数组规则），关卡没写才回退 config。口径收敛成**一个**函数 `world.escort_count_at(fid, index)` —— 开局编队（`create_escort`）与 AI 补员目标（`faction_ai._decide`）都走它 |
+
+★ 另外做了一条（用户选的）：「**驻防将领不参与进攻**」—— `_decide()` 的出兵那一段
+把将领分成 `field`（非驻防）与驻防两拨，只用前者，且 gate 也只看前者
+（判据是现成的 `unit.is_garrison()` = `garrison_zone_id >= 0`）。
+
+**改完之后的实测（样例第一关）**：
+
+```
+t=0.0   E1 将领 1/2/3 编制 0/0/0        ← 不再白送，必须自己去招（#1 修好）
+t=60.0  编制 4/5/6                      ← 逐将不同（#3 修好）
+t=150.3 出兵 3 位：4 + 5 + 6 = 15 个兵   ← 满员才出发、规模由编制决定
+```
+
+⚠️ **节奏提醒（实测，不是 bug）**：全军覆没后要重建 3 位将领 + 15 个兵，
+而区划人口上限默认是 **1**（`logic/zone.gd`）⇒ 每个区划同一时刻只够招一个兵。
+所以「一波打光 → 下一波」要等 **100 秒以上**。样例第一关的目标时长已从 90 秒
+调到 **150 秒**，否则第一波（≈50 秒）之后就到点了、看不出「一波接一波」。
+要加快就动这三处：`unit.general.escort`（兵数）、地图区划的 `population_cap`（人口上限）、
+`recruit.list[].train_sec`（读条）。
+
+★ 断言：`test_campaign_ai.gd`（AI 名单/倍率/参数 + 配色）、`test_ai.gd`（招将 → 招兵 → 升级 → 出兵，
+含「腾空槽位才有得招」那条前提）、`test_retinue.gd`（逐将编制）、`test_unit_types.gd`、
+`test_ai_target.gd`（进攻目标四态 + 出兵播报）、`test_arrival.gd`（人数变化后的推挤阈值）。
+
+### 37.14 阵营 AI 的第二轮修复（整队出征 / 编制最大的那位 / 打光后不卡死）
+
+玩家实测报回来的四条：
+
+| # | 症状 | 根因 | 修法 |
+|---|---|---|---|
+| 1 | 详细信息栏「经常显示『这一项正在读条…』」 | ★ 那句话是 `upgrade_reject_text("busy")`，**只在玩家点操作页那一格、被服务端拒时才出现**。而玩家会觉得「我没做什么」：**「正在读条」的可能根本不是他下的单** —— 实测样例第一关**开局第 0 帧 E1 的城墙就在升级**（AI 有钱、冷却 5 秒、首帧就下单）。旧文案只有一个「这一项」，看不出是哪个对象、也不说这一下没生效 | 文案**点名对象** + 明说「这一下没有生效（没扣资源、也没排队）」：`upgrade_reject_text(reason, evt)` 从事件里取 `building.display_name()` / `zone_id` |
+| 2 | 只有将领会行军攻击，部队留在原地 | `_launch_attack` 只对将领自己下 `order_attack_move`，而部队**在逻辑上没有任何「跟着队长走」的机制**（玩家那边靠 `world.expand_to_groups()` 展开成一整队再逐个下令） | 新增 `CommandProcessor.order_group_attack_move(world, cfg, group, pt)`：AI 走**与玩家同一条路** —— `world.group_of(将领)` 展开 → 队形槽位 + 同一个全队目标点 |
+| 3 | 骑兵将领招满后不出征 | 它那一档编制最大（`[4,5,6]` 里的 6），永远最后一个补满；而 `_launch_attack` 里无条件 `if g.is_training(): continue` 每次都在读条中跳过它 ⇒ **永远不派它** | 新增 `_is_recruiting_general(cfg, g)`：只在它「正在招**编外将领**」时才跳过（判据是 `train_kind` 是不是将领类）。补自己兵的那种读条不该挡出征 —— 兵账在 `retinue_size()` 里已经算上了 |
+| 4 | 将领死后不再招募、也不再出兵 | 两个都在同一处 gate：① 要求「**全员**满员」⇒ 死一个永远补不齐 ⇒ 永久卡死；②「至少 `min_ready` 位」拿写死的常数当门槛 ⇒ 打光后 `field` 长期小于它 | ① gate 只等**闲着的**那些人（正在交战的 `target != null` 不重派、也不拦别人）；② 门槛取 `min(min_ready, max_generals - 1)` |
+
+**实测（样例第一关，420 秒）**：
+
+```
+第 1 波 t= 52.9  派了 3 位；在行军：将领 3 位 + 部队 14 个（将领 3 = 骑兵，编制 6）← #2 #3 修好
+第 2 波 t=152.9  派了 4 位；在行军：将领 4 位 + 部队 20 个
+... 共 6 波，间隔 18 秒
+全程出现 6 个不同的将领 id：general-E1-1/2/3 → E1-zone-1-r17/r19/r22（死后补招）← #4 修好
+```
+
+★★ **#1 的查证过程值得记一笔**（差点改错地方）：
+- 先怀疑「卡片没按读条状态重建」→ 去读 `_card_sig()`，发现它**已经**包含 `up:%d`（建筑是否在读条）
+  与区划的 `spec_kind` ⇒ 那个判断**是错的**，没有照它改。
+- 然后写探针**实测开局 240 帧的 HUD 通知栏**：一个字都没有（默认选中 5 个单位，不是建筑/区划）
+  ⇒ 那句话**不是开局自带的**。
+- 同一支探针顺手打「开局有没有东西在读条」⇒ 抓到 **E1 的 wall @17,6 正在升级** ——
+  这才是「我什么都没做却在读条」的真相（是**别人的**单）。
+- 结论：逻辑没错，是**文案没有对象** + **敌方 AI 首帧就下单**这两件事叠起来看着像 bug。
+  ⇒ 修文案（点名 + 说明没生效），并把「AI 首帧就会升级」记为已知行为。
+
+★ 断言：`test_ai.gd` 新增 11 项（整队随行 + 部队与将领同一个 `attack_move_goal` +
+序号 2 那位也在派出名单里 + 死一位后槽位被补招且仍然出兵），`test_ui.gd` 新增 5 项
+（`busy` 文案点名建筑 / 区划，且不传事件时不打 null）。
+
+### 37.15 「骑兵将领第一波不来、第二波才来」——**兵账不算「能走了」**
+
+玩家实测原话：「第一波时骑兵将领还是不会行军攻击过来，但第二波却和新招募的将领一起
+行军过来了」。
+
+**根因**（37.14 的 #3 只修了一半）：出兵的 gate 用的是 `retinue_size()`，而它是**兵账** ——
+**把还在读条的那几个也算上了**（那是有意的，见 `unit.retinue_size()` 的注释：
+不算的话 AI 每帧都会觉得「还差人」而反复下单）。于是：
+
+| 时刻 | 骑兵将领（编制 6） | gate | 结果 |
+|---|---|---|---|
+| 发起那一波 | 第 6 个兵**还在读条**，兵账 = 6 | 放行 | 另外两位（兵少、早出完）出发了 |
+| 它还在读条期间 | 被「招募期间钉在原地」锁在家里 | —— | 玩家看到「骑兵将领没跟着来」 |
+| 约 10 秒后 | 读条读完 | 下一波放行 | 它跟着第二波一起来了 |
+
+⇒ **「兵账满」≠「能走了」**。37.14 修的是「派兵时别因为它在读条就跳过它」，
+但那一波**已经把它落在家里了**（它那时确实走不了），所以必须在 **gate** 上再要一条
+「真的能走」：
+
+```gdscript
+if g.is_training():
+    return      # 它还有兵在读条：等一下，别把它落下
+```
+
+★ 这一条**不会死锁**：AI 的兵全是它自己招的（`spawn_faction_units` 对 AI 阵营
+`with_escort = false`），读条一定会读完（有资源/人口就继续招，没有就等产出）——
+它只是把「发兵」推迟到全队真的站在场上那一刻。实测：第一波从 t=52.9 推到 **t=62.9**，
+而**三位将领全在名单里**（骑兵将领 idx=2、编制 6、`has_attack_move = true`），随行部队 15 个。
+
+★ 断言：`test_ai.gd` 的 `_test_faction_ai_waits_for_training`（5 项）——
+「有人在读条时**一位都不派**」+「都站定之后立刻发兵」。
+
+### 37.16 「别人的消息传到我这来了」——AI 的升级被拒事件刷屏
+
+玩家实测原话：「即使我没有升级城墙，也会莫名其妙地出现『城墙正在读条…』
+『箭塔正在读条…』等字样，**可能是敌人的消息传到我这来了**」。
+★ **两句都对**：确实是敌人的消息（AI 在升级它自己的城墙），而它出现在玩家界面上
+是**两个 bug 叠起来**：
+
+| 层 | bug | 修法 |
+|---|---|---|
+| **源头**（逻辑） | `faction_ai._pick_upgrade()` **没有排除「正在升级」的建筑** —— 那一栋的升级代价仍然算得出来，于是 AI 每秒都重新挑中它、下一单、被 `busy` 拒；而冷却只在**成功**时记（`if ... and world.start_building_upgrade(...)`）⇒ 被拒后 `upgrade_timer` 保持 0，下一帧再试。实测 60 秒推了**几百条** `upgrade_rejected` | ① `_pick_upgrade` 里 `if b.is_upgrading(): continue`；② **无论成不成**都记冷却 |
+| **界面**（view） | `game_scene._consume_events` 把**所有** `upgrade_rejected` 都显示给玩家 —— 而这类事件没有 `faction` 字段，界面**无从判断是谁的** | ① `logic/upgrade.gd` 的每条 `upgrade_rejected` / `upgrade_cancel_rejected` 都补上 `faction`（建筑取 `owner`，区划取 `owner`）；② 界面加 `_is_my_event()`：带 `faction` 且**不是自己这一方**的就不显示（不带则保守地显示 —— 宁可多一句提示，也别漏掉玩家自己的报错） |
+
+**实测（60 秒）**：改前 `upgrade_rejected` 几百条；改后 **0 条**，
+只剩 `upgrade_started` 6 次 + `upgrade_done` 6 次（AI 正常升级、轮着升不同的楼）。
+
+⚠️ 顺手修掉两个**改这段时自己引入**的崩溃（都在测试里当场现形）：
+- `start_upgrade` / `cancel_upgrade` 的拒因分支读了 `b.owner`，而 `b` **可能是 null**
+  （命令指到一格没有建筑的地块，`can_upgrade` 返回 `"none"`）；
+- `start_specialize` / `cancel_spec` 的同类分支读了 `(zone as Dictionary)`，
+  而 `zone` 可能是 null（区划 id 不存在 ⇒ `"zone_not_found"`）。
+⇒ 都改成「先判空再取字段」。
+★ 教训：**给事件加字段时，那个字段的来源本身可能是 null** —— 加之前先想一遍所有拒因分支。
+
+★ 断言：`test_ai.gd` 的 `_test_faction_ai_no_upgrade_reject_spam`（3 项：30 秒里
+`upgrade_rejected` 必须是 0 条，而且它确实在正常升级）、
+`test_upgrade.gd` 新增 2 项（被拒事件必须带 `faction` 与对象）。
+
+### 37.17 「同一区划的地块必须连续」—— 硬规则 + 编辑器护栏
+
+需求原话：「**同一区划下的区块必须是连续的**，把 c1c2 改了」。
+
+**问题**（玩家先报的现象）：样例地图 `dongzheng` 原来是「y=3..6 给 c1/c2、
+y=7..11 给 a1/a2、y=12..17 又给 c1/c2」—— 于是 c1/c2 各自**分成上下两条**、
+把 a1/a2 **夹在中间**。连带两件事：
+
+1. 运行时的**包围盒**按地块求 min/max（`logic/zone.gd`），c1 的盒子就成了 `(0,3)-(11,17)`
+   —— 从盒子上看它「把 a1 整片包住」，玩家看到的就是「c1 跑到 a1 上面去了」；
+2. 「守住某个区划」这类目标落在一个玩家在地图上**认不出边界**的区域上。
+
+**修法（三层）**：
+
+| 层 | 做法 |
+|---|---|
+| 数据（生成器） | `zone_of()` 改成**一条横带 = 一个区划**：北带 y=0..2 = b1/b2、中上带 y=3..6 = a1/a2、下半场 y=7..17 = c1/c2。带内只有 `x<=11` / `x>11` 两段 ⇒ 每个区划都是**单个矩形**，天然连续 |
+| 编辑器护栏 | `map_editor` 的 `blockers()` 新增第 3 条：对每个区划的地块做**四邻连通分量**统计，> 1 就**硬拦住导出**（斜角相接**不算**连成一片） |
+| 断言 | `map_editor/test_model.py` 的 `t_zone_must_be_contiguous`（6 项）：横条状区划被拦 / 刷成一片后放行 / 斜角不算 / 单格不误报 |
+
+★★ **重排区划会连带挪走大本营与出生点** —— 这一轮实测踩到的两件事（都写进断言了）：
+
+1. **大本营不能贴着自己区划的下边界**：开局单位是 `world.create_generals()` 围着大本营
+   **就近找空格**摆的（`_ring_tile` 一圈圈找），大本营若在区划最后一排，出生环往南一步
+   就掉进**下一块地**。⇒ 生成器的 `check_base()` 加了第 4 条：要求 `y+1` 也在同一区划里
+   （并顺带把 `BASE_F1` / `BASE_E1` 的偏好点挪到更靠北的行）。
+2. **写死地图坐标的断言会全部过期**：`test_ai_target.gd` 的「箭塔在 (8,11)」、
+   `campaign_editor` 的「地图自带 F1 大本营 (5,11)」都是**地图数据**。
+   ⇒ 前者改成**从关卡 JSON 读**那栋建筑（`_first_start_building`），后者改成
+   「与世界地图里那一份一致」（读 `info.faction_base()` 再比）。**判据是关系，不是那一版坐标。**
+
+**重排后的实测（样例第一关，200 秒）**：区划不连续数 **0**；
+F1 大本营 (4,5) 在 a1、E1 (16,5) 在 a2；c1 中心 (5,12) 且开局归 F1；
+AI 出兵 6 波（每波 1~3 位将领）全打 c1；玩家守着 c1 到 118.6 秒被反占 ⇒ `objective_lost`
+（**这是 150 秒目标下的正常难度结果**，不是布局 bug —— 布局本身完全正常）。
+
+### 37.18 ★★ **选边关**：一关两个可玩阵营，蓝方守 c1 / 红方攻 c1
+
+需求原话（两步）：①「选择两个阵营其中的一个进行游戏」；②「当我选择 f2 进入游戏时，应当是选择了
+f1 的**对立面**（红方）进行游戏，而不是选择 f1 的友军……改为玩家选择红方时，目标是**占领 c1** 区域」。
+
+**先纠正一版走错的路**：第一版把 F2 做成了「可选**友军**」（两边互为盟友、没选中的那方挂 AI 友军）。
+那是把「选边」理解成了「选队友」，与「对立面」正好相反 —— 这一版按**对立**重做。
+
+#### 与三条硬约定的冲突，以及怎么解的
+
+| 原约定（dev_plan_7） | 为什么冲突 | 这一版的做法 |
+|---|---|---|
+| 一关 `objectives[]` **只能一项** | 蓝方要「守住 c1」、红方要「占领 c1」——**两份不同目标** | `objectives[].for` = 这一条给哪个阵营；选谁由 `level.objective_for(seat)` 取谁那条 |
+| 可玩阵营**必须互为同方**（校验第 7 条） | 选边关里两边**本来就是对立的** | 有 `for` 的关卡改拦**另一条**：★ 每个可玩阵营都要有属于它的目标；「互为同方」只在普通关卡（目标只有一份）上仍然生效 |
+| **不做「先占领再守」**（1.3.6） | 红方开局 c1 在蓝方手里，必须先打下来 | 新增目标种类 `capture_zone`：归属**翻成自己那一帧立刻判胜**；校验第 8 条按种类分——`hold_zone` 要求开局归自己，`capture_zone` 要求**开局不归自己**（否则一进关就判胜） |
+
+三条都是规划书自己说的「以后按同一张表加一个 `kind`」那类加法，**数据格式没有推倒**。
+
+#### 样例第一关现在的样子
+
+| | **蓝方 F1** | **红方 F2** |
+|---|---|---|
+| 目标 | 守住 c1 **150 秒**（丢掉即判负） | **占领 c1**（归属翻过来那一帧就赢） |
+| 家 | a1 (4,5)，大本营 + 17 个附属兵 | b1 (20,1)，AI 自己招兵 |
+| 脑子 | `ai: "general"`（将领性 / 守家 AI） | `ai: "faction"`（阵营性 AI，会来打） |
+| 属地 | c1 + c2 | b1 + g1 |
+
+★ 另外在 c1 上摆了 **3 个守备兵**（`start_units[]` 带 `zone: 4`）——
+见下面「第三个 bug」，没有它们这关两边都不成立。
+
+#### ★★ 运行时改了什么（`player_seats` / `player_factions` / `ai_kind_of`）
+
+这一版把「**本机负责的席位**」与「**本机在操作的那一方**」彻底分开了，三个概念各管一段：
+
+| 概念 | 含义 | 谁用它 |
+|---|---|---|
+| `player_seats` | 本机负责**建出基地与钱包**的席位（= roster；选红方时含**敌人**那一边，因为它的家也要建） | `_reset_player_pools` / `resource_pool_for` |
+| `player_factions` | 本机**在操作**的那些席位（= `player_seats` 里 `ai_kind_of == "none"` 的） | 目标判定（谁的家算玩家的家）、`defend` 名单 |
+| `ai_kind_of(fid)` | 这一方**这一局**的 AI 指派（关卡点名优先，其余退回 config） | 「谁该被 AI 接管」（组装期口径） |
+
+⚠️ 这三个混用会静默改玩法 —— 这一轮实测踩到的三个 bug 全部出自这里（下面）。
+
+#### 这一轮实测踩到的 bug（都是真 bug，不是测试写错）
+
+| # | 现象 | 根因 | 修法 |
+|---|---|---|---|
+| 1 | ★ 选红方时**红方「第一帧就赢」** | `defend` 用了 `player_seats`（含**敌人** F1）⇒「占领 c1」的判据变成「c1 归 F2 **或 F1**」 | `defend` 改用 `player_factions`（只含本机操作的）；目标由 `objective.setup(..., seat_arg)` 按**本机席位**取 |
+| 2 | ★ 选红方时**蓝方一动不动** | ① `_is_ai_piloted()` 把 `my_faction` 排除，于是「另一半时间会被 AI 接管」的蓝方被当成「不是 AI」⇒ 拿到开局满编、又不建 AI 状态表；② `ai: "general"` 的阵营原来**不开 AI 资源池**，而它的「脱战招兵」要走 `resource_pool_for()` ⇒ 招募被判「付不起」 | 新增 `ai_kind_of()`（**组装期**口径：只有 `my_faction` 不算 AI）；`general` 类也开池；`player_factions` 按 `ai_kind_of != none` 过滤 |
+| 3 | ★ c1 的归属两边都不对：选红方 **27 秒**白捡、选蓝方被**一波推平** | 守方 AI 的归属取的是**它大本营所在的区划**（a1），于是它**离开 c1** 往北去打对手的家，把目标区划空着 | ① 有 `capture_zone` 目标时，守方 AI 的归属取**那个目标区划**（`_objective_zone_for_ai()`）；② c1 上直接摆 3 个守备兵，让「争夺点」真的有人在守 |
+| 4 | 红方（AI）开局就满编 ⇒ **一局只出一波兵** | `with_escort` 曾经有一条「playable 就照样给附属兵」的例外（第一版为救「AI 友军被秒」加的） | 删掉例外：**只有本机操作的那一方**有开局附属兵（`faction == my_faction`）⇒ AI 必须自己「招将 → 招满 → 出征」 |
+| 5 | 生成器自检拿**旧区划号**校验新基地 ⇒ 中途 assert 失败，留下「地图是新的、关卡是旧的」混合数据 | 自检写死了 `_zid` | 自检改用与 `pick_base` 同一个来源的 `BASE_ZONE` 表 |
+
+#### 按钮上写「蓝方 / 红方」，不是 `F1` / `F2`
+
+关卡页那两颗「选谁」的按钮原来显示的是 **阵营 id**（`F1` / `F2`）——玩家挑的是「哪一方」，
+看 id 还得回去对数据。现在显示 **数据里的名字**：
+
+* `logic/level.gd` 新增 `faction_names`（**载入时抄一份**，与 `faction_colors` / `playable`
+  同一条规矩：`Level` 不持有 `Campaign` 对象，避引用环）；
+* `faction_name(fid)` 是**唯一**的取名入口（关卡 `factions[].name` 优先 → 地图 → 退回 id）；
+* `view/campaign_test.gd` 的按钮文字走它，**点下去选中仍然是 id**（`chosen_faction()` 返回 id）。
+
+★ 由此样例战役里两个阵营的显示名就是「蓝方」/「红方」；断言在
+`tests/test_campaign_test.gd`（显示的是名字、不是 id）。
+
+#### 实测（样例第一关，两侧各跑一遍）
+
+```
+选蓝方：AI=[F2]  守方席位=[F1]  目标=hold_zone(150s)
+        t=25 c1=F1 蓝=24 红=9 … t=125 蓝=15 红=7
+        结果 won 于 t=150.1；红方 AI 出兵 2 波（「招满再出征」的节奏回来了）
+选红方：AI=[]（蓝方挂守家 AI，靠单位上的 garrison_zone_id）
+        目标=capture_zone(c1)  守方席位=[F2]
+        t=20 c1=F1 蓝=5 红=18 红最南 y=10.5
+        结果 won 于 t=43.8（c1 归 F2）—— 落在「中速：1~2 分钟」区间
+```
+
+**断言**：`tests/test_campaign_seats.gd` 重写成 **8 组 56 项**：两个可玩阵营的敌对关系、
+两条目标按 `for` 取、运行时 `objective_state` 就是选的那条、两边的 AI 名单**正好互换**、
+★ 守方席位只含本机操作的那一方、只有玩家自己那一方有开局附属兵、
+每个区划中心都建得出来、拆自家判负而拆对手的家不判负、
+★ **归属一翻过来就立刻判胜**、红方没打下来之前一直进行中、AI 那一方真的会招兵出兵。
+另改 `test_campaign` / `test_campaign_ai` / `test_outcome` 里一批把旧现状钉死的断言。
+
+★ 全量门槛：**35 套 / 4886 项全绿**；三个编辑器（战役 229+99、地图 345+385、单位 474+196）全绿。
+
+### 37.19 ★★ 将领性 AI 的巡逻：**每人一条自己的路线、各占一块**（不再挤中心）
+
+需求原话：「为这些将领性 ai 添加更智能的巡逻逻辑吧，比如会将单位**散开**，分组在自己所属的
+区划进行巡逻」+「将领**随机**路线巡逻，只要确保他们巡逻的**不整齐划一**就行」+「走一圈：多点循环往返」。
+
+#### 改之前是什么样（一句话）
+
+所有驻防将领的巡逻目标点都是**自己区划的中心**（`_patrol_tile()`）——
+于是同一个区划里有几位守将，它们就**全挤在中心那一格附近**（实测 6 个守将、两两最近距离
+一度掉到 **0.8 格**）。c1 有 132 格，而「巡逻」看起来就是一群人围着中心站着。
+
+#### 改之后（两层「分开」）
+
+| 层 | 做法 |
+|---|---|
+| **按人切扇区** | 把区划的地块列表切成 `zone_count` 段（`zone_count` = 这一区划里有几位要巡逻的守将），**每位守将只在自己那一段里挑点** |
+| **段内随机** | 在自己那一段里随机挑一个**锚点**，再在 `patrol_spread_tiles` 格内挑其余的点 ⇒ 看起来是乱的（不整齐划一） |
+| **多点往返** | 路线是 `patrol_points` 个点，走到尽头**折返**（不是回头从第一个重来 —— 那样会在两端"瞬移"） |
+| **硬约束不变** | 仍然**不许追出自己那个区划**（`_out_of_garrison` 那条，一个字没改） |
+
+★★ **到底"随机"在哪、为什么这不违反确定性硬要求**（这一条是本节的要点）：
+
+* 种子来自 **`_route_seed(unit_id, faction)`** —— 自己按**字符码**做的稳定哈希
+  （FNV-1a 那一套）。**不是**引擎随机数、**也不是** `String.hash()`；
+* ⚠️⚠️ 为什么不能用 `String.hash()`（实测踩到）：Godot 的字符串哈希**跨进程不一样** ——
+  同一个 id 两次跑出**完全不同的路线**，那样「确定性」是假的、存档 / 回放会漂。
+  换成自己按字符码算之后：同 id ⇒ 同路线，实测逐点一致；
+* ⚠️ 扇区序号也**必须由 id 派生**（`_sector_of`），**不能**用「第几个被遍历到」：
+  遍历序号会随「别人死没死 / 有没有人在招兵」变化 ⇒ 同一个单位重算一次就可能换一块地，
+  「同 id ⇒ 同路线」当场不成立（实测就是这么红的）。
+
+⇒ 结论：**看起来杂乱、但逐帧可复现**，满足 dev_plan_7 3.10「不许用随机数决定结果」那条。
+
+#### 新增的两个可调配项（`config.json` 的 `ai.general`）
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `patrol_points` | 3 | 每位守将分到几个巡逻点（**1 = 老行为**：只去一个点） |
+| `patrol_spread_tiles` | 3 | 巡逻点之间最多隔几格（限住活动范围，免得几个人的圈子互相交叉） |
+
+两者都走**关卡按阵营覆盖**那条现成的路（`factions[].general_ai` → `world.general_ai_cfg()`），
+与红方的 `faction_ai` 同一个口径，**没有新增覆盖机制**。
+
+#### 实测（样例第一关，c1 里的 6 位守将）
+
+```
+改前：两两最近距离最低 0.8 格          ← 会挤到一起
+改后：两两最近距离稳定 1.7 ~ 3.0 格    ← 各占一块
+      活动中心两两距离 最小 2.3 / 平均 6.6 格
+      跨度 11.7 格（摊得开）、6 条路线**全不相同**
+      全程移动距离：16 / 15 / 25 格（确实在走，不是站桩）
+```
+
+胜负不受影响：选蓝方仍守满 150 秒判胜、选红方仍在 ~45 秒拿下 c1（占领即赢）。
+
+★ 断言：`tests/test_ai.gd` 扩到 **190 项** —— 新增一组 `_test_general_ai_patrol_spread`：
+同区划 4 位守将的**路线互不相同**、**锚点两两不重合**、
+★ **同一位守将重算路线 ⇒ 逐点一致**（确定性）、每个巡逻点都落在**自己的区划里**、
+以及「站在当前巡逻点上 ⇒ 下标推进到下一个点」。
+
+★ 全量门槛：**35 套 / 4931 项全绿**。
+
+### 37.12 阵营配色：战役用自己的 id，就得自己带颜色（★ 玩家实测报的 bug）
+
+需求原文（玩家实测）：「我进入战役后，发现全场都是紫色的，是什么意思，
+我右侧紫色的单位还会攻击我」。
+
+**根因**：样例战役用的是**自己的阵营 id**（`F1` / `E1`），而配色表 `colors.faction.*`
+里只有**内置** id（`p1`~`p8` / `enemy` / `ai`）。`cfg.faction_color()` 的兜底链
+（`colors.faction.<id>` → `colors.faction.player` → **`Color.MAGENTA`**）里，
+`player` 这个键在 config 里并不存在 ⇒ 自定义 id 一路落到**品红**。
+而它是 `view/` 里所有取色的唯一入口，于是「每个区块的底色」+「敌方单位的圆盘」全是紫的。
+⚠️ 它**不报任何错**（品红是有意的兜底），所以只能靠玩家来报。
+
+| 画面 | 实际是什么 |
+|---|---|
+| 整场一片紫 | 每个区块底色 = 品红的 13% 透明版 |
+| 右侧紫色的单位 | 敌方 `E1` 的单位（**本该是红的**） |
+| 「紫色单位还会攻击我」 | 那是敌方 AI 的部队 —— **行为一直是对的，只是颜色错了** |
+
+**修法（四层）**：
+
+| 层 | 落点 |
+|---|---|
+| 游戏登记 | `logic/config.gd` 的 `register_faction_color()` / `_faction_color_override`（查找顺序：**先登记的、后配色表**）；`world._register_level_colors()` 在 `reset()` 里按数据登记 |
+| 数据来源 | 载入关卡时把颜色抄进 `level.faction_colors`（先 `campaign.json`、后关卡 `factions[]`，关卡优先）—— 运行时不回头问 `Campaign` 对象（那是 37.10 那个引用环） |
+| 兜底 | 还没颜色的阵营按**内置配色顺序**（p1/p2/…）补一个，并 `push_warning` 留痕迹 |
+| 编辑器 | `campaign_editor` 新增警告 `faction_no_color`（自定义 id 在哪一层都没写 color ⇒ 导出前就提示） |
+
+★ 样例数据现在两处都写了颜色：`campaign.json` 的 `factions[].color`（F1 `#5AC8FF` 青蓝 /
+F2 `#FFD166` 金 / E1 `#FF6B6B` 红）+ 关卡 `factions[].color`（关卡可以给**这一关**换色）。
+断言在 `tests/test_campaign_ai.gd` 的 `_group_faction_colors`（13 项）：
+登记生效 / 写错要兜底不能变黑 / 内置 id 不受影响 / **老路径一个颜色都不登记**。
+踩坑细节见 [`pitfalls.md`](pitfalls.md) 8.1（含 `Color.to_html()` 不带 `#` 那个二次坑）。
+
+### 37.10 这一轮**不做**的（明确写下，免得以后又绕回来）
+
+| 不做 | 为什么 / 什么时候回头 |
+|---|---|
+| 触发器 / 条件-动作系统、时间轴刷怪、波次强度递增曲线 | dev_plan_7 1.3.5：现有阵营 AI 已经覆盖需求，只缺「打哪」；要在其上叠调度时它是加法，**数据格式不用改** |
+| 关卡简报 / 剧情文本 / 结算面板 | 用户说「以后扩展」；关卡数据里留了 `briefing` 字段（运行时**一个字都不读**） |
+| 存读档 / 战役进度存档 | 用户说「目前可以不考虑」；留口子的方式是 **`campaign_library.unlocked_levels(campaign, progress)` 是个纯函数** —— 将来把 `progress` 从「本会话内存」换成「读文件」，界面一行不用改 |
+| 「每个可玩阵营各配一份目标」 | 可玩阵营必须互为同方，所以目标只需**一份**；要做敌对多视角就**复制一关** |
+| 「先占领再守」的进攻关 | 开局必须就是自己的（否则「丢掉即负」会让玩家第一帧就输） |
+| 大本营之外的失败条件（单位全灭 / 关键建筑被拆 / 限时 / 累计阵亡） | 第一批只做 `zone_lost`；要加时它们是同一张表里的新 `kind`（`fail_conditions[]` 已经是数组） |
+| 存档所需的确定性约束 | ⚠️ 这一条是**做事的方式**而不是「不做的事」：出兵成形与 AI 决策**都不许**用「随机数决定结果」（站位轮询、按距离排序这类确定性写法都可以）—— 房主权威下客机不需要确定性，但**存档 / 回放需要** |
+
+## 三十八、地图上所有区划的**加粗白色描边**（这一轮）
+
+### 38.1 需求与口径
+
+原话：**「给当前游戏中地图上的所有区划增加清晰的加粗白色描边」**。
+动手前问过一轮（避免做完不是那个意思），三个选项的结果：
+
+| 问 | 选的 |
+|---|---|
+| 粗到什么程度 | **3px 纯白 + 外圈白光晕**（原来的 `zone_line` 是 **10% 白 + 固定 1px**，深色地形上基本看不见） |
+| 白色描边的口径 | **无主区划 = 纯白；有主区划 = 仍用该阵营的主色**（归属照样看得出来） |
+| 顺带改什么 | **都不要**：不动地图编辑器那套 Python 渲染，不做抗锯齿 / 拐角缝合等额外项 |
+
+★ 这里有一个**看起来矛盾**的点必须写清楚：需求说「加粗白色描边」，而口径又说「有主的保留阵营色」——
+这不是理解错了，是**有主跟无主用不同的描边色**：
+
+| 区划状态 | 主线颜色 | 主线宽 | 光晕 |
+|---|---|---|---|
+| 无主 | `colors.zone_stroke` = **纯白 `rgba(255,255,255,1.0)`** | **3.0 px** | 半透明白，每边多 2px |
+| 有主（p1 / p2 / …） | `cfg.faction_color(owner, "main")` = **该阵营自己的主色** | **2.5 px** | 同上 |
+
+### 38.2 改了哪三处（加上一处顺带修掉的 bug）
+
+| 文件 | 改动 |
+|---|---|
+| `data/config.json` | `colors` 段新增 `zone_stroke` / `zone_stroke_owned` / `zone_halo` / `zone_stroke_width`（3.0）/ `zone_stroke_width_owned`（2.5）/ `zone_halo_delta`（2.0），并留了一段 `_zone_stroke_comment` 写清口径。**旧的 `zone_line` 保留**（别的工具还在读它） |
+| `view/zone_view.gd` | `draw_shapes()` 里的轮廓改成**两遍 `draw_multiline`**（光晕一遍 + 主线一遍）；几何改成**建一次缓存**；新增 `_outline_groups()`（按归属分组，纯函数，便于断言） |
+| `tests/test_view.gd` | 新增 `_test_zone_outline()`：**63 → 90 项**（新加 27 项，全是口径断言） |
+| ★ **顺带修掉的 bug** | 原来的写法是「每块区划：先涂底色、紧接着画它的轮廓」——于是**后画的区块底色会盖掉先画的区块轮廓**，相邻区划的那条公共边在旧版里是**时隐时现**的（同一张图上取决于遍历顺序）。现在所有底色先涂完，**轮廓在最后统一画**（压在底色上、进度条下），所以「所有区划都有描边」这件事才是真的 |
+
+### 38.3 三个实现决定，及为什么（这一节的正文）
+
+1. **两遍 `draw_multiline`，而不是「每段画两次线」**：
+   段数一样，draw 调用少一半；更重要的是**主线画在光晕之上**，重叠处（拐角、两段端点叠在一起的地方）
+   那层半透明光晕不会被反复叠加成一块白斑。
+2. **轮廓几何只在 `setup()` 算一次并缓存**（`_edges_by_zone` / `_edges_all`）：
+   「按地块算轮廓」= 每格问 4 次 `zone_at`，100×100 图上是 **4 万次** ——
+   这正是当年 **23 ms/帧**那一课踩过的坑（[`pitfalls.md`](pitfalls.md) 2.0）。形状不随归属变，
+   所以算一次；归属一变重画的只是「两条 `draw_multiline`」。
+   缓存的失效判据是**几何签名**（格宽 + 每块区划的地块数），换地图 / 改地图时自动重建。
+3. **分组按「阵营 id」而不是「有主 / 无主」两档**：
+   合作模式下一张图上会有**两个玩家阵营同时占着区划** —— 要是把所有「有主」的区块合成一组、
+   拿第一个阵营的颜色去画，另一个阵营的区划就会被描成别人的颜色。
+   ⚠️ 这个错**在单机下测不出来**（单机只有一个玩家阵营），所以 `_outline_groups()` 被拆成纯函数、
+   在 `test_view.gd` 里直接断言「p1 的进 p1 组、p2 的进 p2 组」。
+4. 顺带一条：**每段轮廓的两个端点都各画一次**，让相邻段的线头互相盖住接缝；
+   地块数据里若出现**重复地块**（同一格被两块区划都填过）会被去重，否则同一条边画两遍、
+   半透明光晕就叠成一块白斑。
+
+### 38.4 怎么验的（**没打包、没截图验收工具链**）
+
+- **无头断言**：`tests/test_view.gd` **90 项全过**。测的是**口径**而不是观感：
+  参数真的从 config 读到（改键名忘改代码会红，而不是画面悄悄退回默认值）、无主主线是**纯白不透明**、
+  宽度 ≥ 2.5px、有主走**自己阵营**的色、每块区划都算出了非空轮廓、缓存命中与 force 重建结果一致、
+  分组按阵营 id 分。全量套件见 [`README.md`](README.md) 的「测试」一行。
+- **画出来量过一遍**（下面这些是**当时的实测数字**，探针与测量脚本本身已经删掉了 ——
+  它们是「一次性」的，留着只会变成没人维护的遗留产物）：
+  · 探针出**两张同机位**的图（正常 / 把描边线宽设成 0 的对照组），量的时候**逐像素相减**，
+    把描边单独抠出来量宽度 —— 实测：**描边像素 17360 个**（近白 6074 / 光晕 11286），
+    **每一行的连续白段都是 3px**（706 行里 701 行正好 3px，其余 5 行是区划边界那条横线，
+    本来就该是整条白的），近白像素平均通道值 **246/247/246**。
+    ⇒ 「3px 纯白 + 2px 光晕、且光晕没有被叠成白板」这件事是**量出来的**，不是看图看出来的。
+  · 要重做这套测量的话：造一个 `SubViewport` + 相机、把 `TerrainView` / `ZoneView` 装进去，
+    同一机位出两张图（第二张把 `zone_view._w_stroke` / `_w_stroke_owned` / `_halo_delta` 设成 0），
+    再逐像素相减即可 —— 判据就是上面那三个数。
+- ⚠️ 量的时候踩到两个坑（都不是代码问题，记下来省得下次再踩）：
+  ① **`--headless` 下 `SubViewport.get_texture().get_image()` 返回 null**（没有渲染后端），
+     这种探针必须开窗跑；
+  ② **DSH 文件沙箱下 Godot 往 `user://`（`%APPDATA%\Godot`）写 PNG 会失败**（`err=7`），
+     要写就写进工作区内（`res://` 底下的目录），而且**建目录要用绝对路径**：
+     `DirAccess` 对 `res://` 相对路径的基准是当前工作目录、不是工程目录。
+
+### 38.5 已知取舍 / 这一轮**不做**的
+
+| 不做 | 为什么 / 什么时候回头 |
+|---|---|
+| 描边线宽跟着 `cell_px` 缩放 | 现在一律写**像素**（cell_px=128；镜头缩放 0.8~1.6 ⇒ 屏幕上 2.4~4.8px）。**理由**：描边是「UI 级的线」，换格宽不该让它变粗到糊住地块（与 `mountain_edge` 用 `cell * 0.04` 的做法**刻意不同**，原因写在 config 的注释里） |
+| 抗锯齿开关 / 拐角专门缝合 | 用户明确说「都不要」。当前靠「每段两端各画一次」盖住接缝；要更干净就得走 `Line2D` 或离屏 2× 超采 |
+| 地图编辑器里的区划轮廓跟着变 | 用户明确说不要（那是另一套 Python / tkinter 渲染，`tools/map_editor/app.py`） |
+| 描边随镜头缩放的动态粗细 | 没需求。真要做的话落点是 `zone_view.sync()` 里读相机 zoom 后重设 `_w_*`（形状本来就会重画） |
+| 无主 / 有主的**线宽**也区分 | 现在有主略细（2.5 vs 3.0）只是为了让「领地」看着不那么抢眼，**不是**需求；嫌乱就都调成 3.0（两个 config 键） |
+
+## 三十九、将领性 AI：巡逻要**带上自己招出来的兵**，且归属**不用手摆**（这一轮）
+
+### 39.1 手玩报的两条
+
+玩家的原话（两条一起报的）：
+
+1. 「将领会巡逻，但将领招募出来的单位不会巡逻」；
+2. 「将领性 ai 要做到可以自己清楚该区划要怎么巡逻（笨一些没关系），
+   而**不能每个要巡逻的区划都再手动给将领设置巡逻点**，节省成本」。
+
+第 1 条是**真 bug**，第 2 条是**口径确认 + 一处收口**。两条的修法如下。
+
+### 39.2 第 1 条：巡逻从「一个人走」改成「整队走」
+
+| 位置 | 改法 |
+|---|---|
+| `logic/general_ai.gd` | 巡逻命令从 `u.order_move(...)`（**单个单位**）换成 `CommandProcessorRes.order_group_attack_move(world, cfg, group, pt)` —— `group` = 队长 + `world.retinue_of(队长)` 里活着的兵。这与玩家「选中整队再点地图」、阵营 AI「派一批将领出征」是**同一条**路径（队形落位、通行判定都在里面） |
+| `logic/general_ai.gd` | 新增 `is_patrol_leader(world, u)`：**只有带队的那一个**才巡逻。判据 = 有归属区划 **且**（没有队长 **或** 队长已经不在了）。附属兵不再各算一个巡逻队长 |
+| `logic/general_ai.gd` | 新增 `_catch_up_retinue()`：巡逻每一步检查一次「有没有人掉队」，有就重下整队命令 |
+| `logic/world.gd` | `_spawn_from_recruit` / `create_escort`：新兵的 `garrison_zone_id` **继承队长**（队长有归属 ⇒ 兵也有；队长的 `-1` ⇒ 兵的也是 `-1`，玩家与阵营 AI 的将领行为一个字不变） |
+| `data/config.json` | `ai.general.patrol_retinue_leash_tiles`（默认 3.0）= 掉队阈值 |
+
+★★ **为什么附属兵不能自己巡逻**（这条写下来免得以后又走回去）：
+守将的巡逻模型是「**一个队长带队**，兵跟着队长的命令走」。让每个兵也各拿一条路线，
+结果是两种丑画面 —— 要么它算不出路线（`_ensure_route` 只用队长的 id 派生种子，
+兵自己没有归属时**站着不动**，这就是玩家看到的那一幕），要么四个人朝四个方向走、
+一支小队散成一盘沙。
+
+★★ **掉队的两个判据**（`_catch_up_retinue`）：离队长超过阈值 **且**（停着 **或** 没有路径
+**或** 走了半天离自己的目标还是那么远）。★ 第二个条件是必须的 —— 少了它就会
+「把一个正在努力爬山的兵每秒打断一次」，重新下命令会重算它的路径，反而更慢。
+⚠️ 阈值也不能小于队形间距，否则队形本身就一直在触发重排队、整队互相挤。
+
+### 39.3 第 2 条：归属区划**自己从脚下那一格推**，巡逻路线**从区划推**
+
+- **路线**其实早就不是手摆的：`_ensure_route()` → `_build_route()` 用**单位 id 派生的固定种子**
+  在自己归属区划的 `tiles` 里挑 `patrol_points` 个点（同区多人按扇区分地盘）。
+  这一轮**没动**它，只是在文档与断言里把它钉死（`test_ai` 新增「路线是 AI 自己按区划算的、
+  每个点都在自己区划里」那一组）。
+- **归属**这一轮收口成一条规则：**摆在哪块地就守哪块地**。
+  `world._assign_garrison_zones(faction, from)` 给「挂将领性 AI 那一方」里
+  **还没归属的带队单位**兜底 `garrison_zone_id = _zone_id_at(它脚下那一格)`；
+  地图 / 关卡里显式写的 `zone` 仍然优先（不覆盖）。
+  ⇒ 关卡作者现在**只要摆一个将领**（`kind` / `x` / `y`），巡逻点一个都不用填。
+
+★ 三个**必须**记住的细节（都是实测踩出来的）：
+
+| 细节 | 为什么 |
+|---|---|
+| 关卡摆放的单位要在 `_apply_level_placement()` **之后**再收口一次 | 那之前它们还没进 `world.units` —— 少了这一句，「关卡里手摆的守将」就永远没有归属（实测：`level-10` 的 zone 还是 -1） |
+| `from` = 「这一批新造出来的单位」的起点，**不能扫全表** | 地图预置的 NPC 守军（`data/maps/*/map.json` 的 `units[]`，没写 `zone` 的那些）归 `enemy_ai` 管、**朝玩家家推进**；被这一步收编成守将会当场变成「原地不动」——症状是「这张图上的敌人突然不来了」，而且只在引擎侧看得见。⚠️ **`units[]` 现已废弃、数据也清掉了** ⇒ 这批「不该被收编的单位」现在只可能来自关卡的 `start_units`；这条细节的**理由**照旧成立，别因为地图里没有 `units` 就把 `from` 改成扫全表 |
+| 只给 `leader_id == ""` 的兜底 | 与 39.2 同一条口径；给附属兵也安归属会让「同一区划里有几位要巡逻」虚高 ⇒ 扇区被切碎、队长的路线越缩越小 |
+
+### 39.4 断言与实测（`tests/test_ai.gd` 174 → **216 项**）
+
+- 新增 `_test_general_ai_patrol_with_retinue`：用 `world._spawn_from_recruit()`（**招募那条真实路径**）
+  造出「将领 + 3 个兵」，然后断言：
+  ① 附属兵的 `leader_id` 都指向它、且**都不是**巡逻队长；
+  ② ★★ 巡逻那一帧**一个站着不动的兵都没有**；
+  ③ ★★ 跑 1 秒之后**每个兵都真的挪了位置**；
+  ④ ★★ 跑 12 秒之后每个兵都还在将领 **3 格以内**（掉队的会被重新叫上）；
+  ⑤ 附属兵继承了队长的归属区划；⑥ 队长阵亡后剩下的兵**自己接手**巡逻。
+- 新增 `_test_general_ai_patrol_route_is_automatic`：**走真实载入路径**（往
+  `res://.tmp_ai_tests/` 写一份最小关卡 JSON 再 `LevelRes.load_level`，测试末尾会删掉），
+  关卡里那一方挂 `ai: "general"`、`start_units` **只写 kind / x / y**（不写 `zone`），断言：
+  ① 将领自己拿到了归属区划、且 = 它脚下那一格的区划；② 它是巡逻队长；
+  ③ 路线是 AI 自己算出来的（跑一帧前是空的）、每个点都在自己区划里；
+  ④ 同区第二位守将拿到**另一条**路线（扇区分地盘）。
+- ★★ **判据改走关卡摆放**（同一轮的地图 `units[]` 废弃）：驻防将领不再从地图长出来，
+  改为**往 `res://.tmp_ai_tests/` 写一份带 `start_units`（含 `zone`）的最小关卡**再建世界
+  （`_garrison_level()` → `WorldRes.create_from_level()`），用例名相应改成
+  `_test_general_ai_from_level`。断言一条都没删弱：3 个守将 / 各自带归属区划 /
+  区划表里找得到 / 开局站在自己区划里 / 开局没有附属兵 / 没有专属资源库。
+- ★★ **新增 `_test_level_general_escort`**：关卡的 `factions[].general_escort`（逐将开局编制）。
+  同样走真实载入路径，钉住：① 关卡写了就**按位**生效（`[2,1,3]` ⇒ 三个将领真的各带 2/1/3 个）；
+  ② 越界按长度**循环**（第 4 位回到第 1 项；`index = -1` 取最后一项）；
+  ③ 关卡没提的阵营回退 `config.json` 的 `unit.general.escort`；
+  ④ ★ 数组里**任一**项不是非负整数（`-1` / `"5"` / `5.5` / `true`）⇒ **整条当没写**，
+  整条回退 config，而不是「那一项当 0」—— 与 Python 侧 `_escort_values()` 同规。
+  ★★ **再下一轮整套推翻**（见 37.2.1）：`factions[].general_escort` 与 config 的
+  `unit.general.escort` 都删掉了，用例改名成 **`_test_level_placed_escorts`**，
+  改钉「`start_units[].escort_of` 逐兵摆放」的五条契约（`leader_id` 指向同阵营同序号将领 /
+  `retinue_of` 含它 / 摆了就整方接管不再自动生成将领 / 没摆的仍自动生成 3 位且光杆 /
+  ★ **AI 摆的附属兵也真的出现**），外加非法 `escort_of` 一律当没写。
+- ★★ **验过「新断言真的能红」**：把 `_patrol_group` 里的「带上附属兵」临时关掉，
+  上面 ②③④ 三条当场变红（「站着不动的兵」实际 **3**、期望 **0**；
+  「跑了 12 秒还在 3 格内」实际 **0**、期望 **3**）——
+  与玩家报的症状逐字对上；改回来就全绿。
+- **样例战役第一关实跑 90 秒**（临时探针，用完已删）：三个渡口守将**各自 3 个巡逻点**，
+  招出来的兵从 0 → 3 个，**每一刻「掉队」计数都是 0**（阈值 3 格）。
+  ⇒ 「将领巡逻、兵跟着走」在真实关卡里成立，不是只在夹具里成立。
+- ⚠️ 探针还顺带印证了一件事：守将**会在整个区划里走**（c1 是 12×11 的大区划，
+  实测看到 (8,9)、(10,9)、(1,12) 这些位置）—— 巡逻不是为了「站着好看」，
+  它是真的在区划里绕。
+
+
+---
+
+## 四十、将领濒死保护（本轮新增）
+
+### 40.1 需求原话 → 可验收的条目
+
+| 用户原话 | 落点 |
+|---|---|
+| 「被攻击血量降至 0 的将领进入濒死状态，若濒死状态的将领旗下部队全部死亡，则该将领死亡」 | `unit.take_damage` → `world.enter_near_death` → `unit.tick_near_death` 的**每帧全灭判定** |
+| 「若否（仍存在部队），则该将领血量从 0 提升至 1，并持续缓慢回复，每 3 秒回复 1% 血量，依此法回复的血量不会高于 20%」 | `unit.enter_near_death`（hp = 1）+ `tick_near_death` 的回复段（`nd_regen_timer` / `nd_regen_hp`，封顶 `revive.regen_cap_ratio`） |
+| 「回复期间血量一定不会因其他因素下降，只增不减」 | ① `take_damage` 第一句 `if downed: return true`（免疫）；② `apply_hp_bonus` 对濒死者**只改上限、不动血量**；③ 回复基准取 `max(记账, hp)` |
+| 「在将领濒死期间，该将领无法被选中为攻击对象且不会受到伤害（无论是行军攻击还是指定攻击都不行）」 | `unit.is_attackable()`（= `alive and not downed`）—— 索敌（逐个扫描 + C# 内核结果两道闸门）、`order_attack_unit`、箭塔 / 可攻击建筑、`view/input_controller._pick_foe_unit_at` 全走它 |
+| 「拥有该将领的玩家可以选中该将领，若其血量回复至 10% 及以上，则其操作栏中会出现『再起』按钮，点击后可消耗资源使其脱离濒死状态重新投入战斗」 | `view/hud.gd` 的 `_revive_entries()`（操作页**第一格**，未满 10% 时 `ready = false` ⇒ 按钮 disabled）+ `command_card` 的置灰支持 + `world.start_revive()` |
+| 「要为 ai 做将领濒死系统的新适配，ai 在将领濒死后可在符合条件时使用资源让其再起」 | `logic/faction_ai.gd` 的 `_try_revive()`（优先级：招将 / 招兵 **之后**，升级 / 出兵 **之前**） |
+| 「濒死的将领也会占用 ai 的将领槽位暂时阻止招募新将领，直到该将领真正死亡」 | `faction_ai._generals_of()` 只筛 `alive` —— 濒死**仍然 alive**，所以天然占位（⚠️ 别在别处加 `and not u.is_downed()`，那会变成「一倒下就补招一位」） |
+
+**用户拍板的四条**（需求原文没写、但实现里必须钉住的）：
+
+1. **无附属部队时直接死亡，不进濒死**（`world.has_living_retinue()` 为空 ⇒ `enter_near_death` 返回 false ⇒ 走 `_die`）；
+2. **「将领濒死后无法移动，视作倒在原地」** ⇒ 集结点是**固定的倒下点**（`downed_anchor`），不是跟踪一个会动的目标；
+3. **「只要点击再起，就将这个将领视作是单位，读条期间暂停全灭判定」** ⇒ `unit.revive_pending` 那个**显式开关**；
+4. **「再起时该将领血量是多少，再起后就是多少」** ⇒ `_finish_revive()` 里一个「重置血量」都没有（只按科技上限对齐比例）。
+
+### 40.2 状态放在哪
+
+| 字段 | 含义 |
+|---|---|
+| `unit.downed` | 濒死中（**仍然 `alive == true`** —— 这是它占 AI 槽位、进区块读条、被渲染的原因） |
+| `unit.downed_anchor` | 倒下点（钉住位置 + 附属兵的行军目标） |
+| `unit.nd_regen_timer` / `nd_regen_hp` / `nd_hp_ratio` | 回复倒计时 / 回复记账 / 比例刻度 |
+| `unit.revive_pending` / `revive_remaining` / `revive_total` | 「正在读条再起」的开关 + 进度 |
+
+★ 全部挂在**单位自己**身上（与招募队列同一条理由：状态天然属于某个将领；另开一张表就多出一份要对齐、要快照、要在摘除时清理的状态）。★ `world._pin_training_leaders()` 现在同时钉住「读条中的将领」与「濒死的将领」。
+
+### 40.3 ⚠️ 四条实测踩出来的坑（写在这里免得以后重踩）
+
+| 坑 | 症状 | 修法 |
+|---|---|---|
+| **`tick_near_death` 被跑了两遍** | 「每 3 秒回 1%」实际变成**每 2 秒**（`world.tick` 与 `combat.update_unit` 各补了一支） | 唯一入口是 `combat.update_unit()` 的第一句；`world.tick` 与 `combat.tick_frame` 都**不许**再补 |
+| **回复计时器初值留 0** | 进入濒死后的**第一帧**就兑现一次回复（3 秒周期变成 1/60 秒），看起来像「回复调快了」 | `enter_near_death(regen_sec)` 按 config 设成**一个完整周期**（unit 不能 preload config，所以那个值由 `world.enter_near_death` 传进来） |
+| **`world._apply_tech_effects()` 把回复出来的血覆盖掉** | 濒死将领的血量从 16.5 **掉回 2.1**（正是需求禁止的「血量下降」） | `apply_hp_bonus` 遇到 `downed` **只改上限**；比例对齐挪到 `_finish_revive()` |
+| **读条读完那一帧跳过全灭判定** | 一个**没有部队却活着**的将领站起来（`kill_unit_now` 送不走它） | 「暂停到什么时候」用显式开关 `revive_pending`，不要从倒计时 `> 0` 推 |
+
+★ 前三条都是 `tests/test_downed.gd` 抓出来的（158 项断言）—— 对这类跨四个文件的状态机，**先把断言写出来再调实现**是这一轮最省时间的做法。
+
+### 40.4 配置（`data/config.json` 的 `revive` 段）
+
+| 键 | 默认 | 含义 |
+|---|---|---|
+| `cost` | `{food: 200, gold: 200}` | 再起造价（入队即扣，取消全额退；钱从**下单那一方自己的池子**里出） |
+| `channel_sec` | `5.0` | 再起读条秒数（可取消 + 全额退款） |
+| `ready_ratio` | `0.1` | 血量到上限的这个比例才允许再起（= 10%） |
+| `regen_sec` / `regen_ratio` | `3.0` / `0.01` | 每 3 秒回上限的 1% |
+| `regen_cap_ratio` | `0.2` | 回复天花板（= 20%）；回到它之后**仍然是濒死**，必须点再起才解除 |
+
+★ 另有 `ai.faction.revive_reserve_food` / `revive_reserve_gold`（默认 0）：AI 判断「付得起再起」时额外预留的钱。★ 命令层新增两条：`revive` / `revive_cancel`（`leader_id` + `faction`）。
+
+### 40.5 「操作」页那一格
+
+- 濒死将领被选中时，操作页**只画一格**（它不能移动 / 攻击 / 行军，摆着也是点了被拒）；
+- 三态：**血量未到 10%**（灰格 + 悬停说明还差多少）→ **可再起**（带造价与读条秒数）→ **取消再起**（全额退款）；
+- `view/command_card.gd` 新增 `ready` 字段支持（`disabled` + 名字与键位字母一起变暗，且**键盘也不吃**那一格）；
+- `view/hud.gd` 的 `_card_sig()` 把「这个将领是否濒死 / 是否到 10% / 是否在读条」放进签名 —— 否则血量到 10% 那一刻格子不会亮（要等玩家改选一次）；
+- 右栏数值区（`_unit_text`）会写「濒死 / 回复到几 % / 再过多久能再起」，濒死将领在地图上**压暗 + 头顶一个小十字**（`view/unit_view.gd`）。
+
+### 40.6 断言
+
+- 新增 **`tests/test_downed.gd`（158 项）**：数值表 / 进入濒死（0 → 1 血、就地倒下、拒因码 `downed`）/ 无部队直接死 / 免疫与不可被选为目标（含箭塔与点名攻击）/ 回复速率与 20% 封顶与只增不减 / 全灭即死 / 附属兵解除命令并向倒下点集结 / 再起门槛与扣费与拒因 / 读条期间暂停全灭判定 + 取消全额退款 / 再起后血量不变 / 科技改上限 / 快照往返（含老快照缺字段容忍）/ AI 占槽与自动再起；
+- `tests/test_case.gd` 新增 **`kill_unit_now()`**（先撤队列 → 打光部队 → 再打将领），三处「打死一个将领」的老用例（`test_retinue` / `test_recruit_queue` / `test_ai`）改成走它 —— 它们验的是**阵亡之后的收尾**，不是濒死。★ 它必须**先撤掉队列**：在读条 / 排队的兵也算「旗下还有部队」，不撤的话那位将领照样进濒死（实测踩到）；
+- `test_recruit_queue` 里那两处**不能**用 `kill_unit_now`（它们验的正是「队列还在时将领阵亡 ⇒ 作废并退款」），改用文件内的 `_kill_leader_keep_queue()`（保留队列、按规则送走将领、并把退款事件一起返回给断言）；
+- 合计 **36 套 / 5116 项 / 全过**（`tools/run-tests.ps1` 的 `ALL PASS`）。
+
+### 40.7 手玩报回来的两个 bug（同日修完）
+
+**① 「单位在区划边界时，要追击的敌方单位会在原地抽搐」**
+
+三层根因，缺一不可（都在 `logic/combat.gd`）：
+
+| 层 | 原来的写法 | 为什么抖 | 修法 |
+|---|---|---|---|
+| 参照点 | `acquire_target` 里**每次索敌成功**都把 `anchor` 设成当前位置 | 锁定那一刻距离恒为 0 ⇒ 判据必然通过；走一格就超上限、放弃，下一帧又锁上 | 只在**真正锁定**那一刻设一次 |
+| 参照点会不会跟着目标走 | 永不更新 | 上限量的是「离当初站那个点多远」而不是「我掉队多远」⇒ 长距离追击永远判超上限 | 新增 `_refresh_leash_anchor()`：目标挪过 `repath_min_move` 格就把参照点推到**目标身上**（目标不动时**逐位不变**） |
+| 放弃之后 | 只清 `target` | 目标还在警戒半径里 ⇒ 下一帧立刻又锁上，一帧一放一锁 | 新增 `combat.leash_release_cd`（默认 0.5 秒）冷却，期间不再自动锁定单位（只挡自动索敌，不挡玩家命令） |
+
+★ 另外把「已经在打一个还能打的目标 ⇒ 不重新索敌」写成 `acquire_target` **自己的契约**（原来靠调用方「没有 target 才调它」这条隐式约定，一旦有别的代码在已有目标时调一次，参照点就被抹平 —— 实测就是在这里踩到的）。
+★ 区划边界最容易复现的原因：驻防将领正好在那条线上被 `general_ai` 叫回（`retarget_cd`）又被重新锁定，两层抖动叠在一起。
+
+**② 「进入濒死的敌方将领有概率一直和我的某个单位连线（触发攻击特效）」**
+
+- 攻击线渲染读的是 `attack_flash` + `last_target`（`view/overlay.gd`），而单位**进濒死之后整段单位逻辑都被跳过**（`world.tick` 与 `combat.update_unit` 都提前 return）⇒ 那个 `1.0` 永不衰减、`last_target` 一直指着对方；
+- `_die()` 走的是 `stop()` → `clear_target()`，那条路本来没问题 —— **漏的只是「进濒死」这条本轮新增的分支**；
+- 修法三处：`enter_near_death()` 当场把 `attack_flash` / `last_target` / `last_building` 清零（立刻不画）；`tick_near_death()` 里也每帧衰减一次（以后谁再改 `enter_near_death` 也不会留下永久连线）；`overlay._draw_attack_lines()` 的判据从 `alive` 改成 `is_attackable()`（第三道保险）。
+
+**断言**：`test_attack_orders` 新增 `_test_leash_no_jitter`（参照点不被重复索敌重置 / 超上限放弃 + 冷却期内锁不上 + 冷却完自己重新接战 + 冷却不拦玩家命令）与 `_test_leash_anchor_follows_target`（目标动 ⇒ 参照点跟着走；目标几乎不动 ⇒ 不更新；点名目标不设参照点）—— **82 → 102 项**；`test_downed` 新增 `_test_no_attack_line_when_downed`（开火后进濒死 ⇒ 特效与残留目标当场清零；濒死期间特效仍会自己衰减；活着单位同口径）—— **158 → 168 项**。
+
+### 40.8 手玩第二轮回来的两个问题（同日修完）
+
+**① 「卡边界时还是会抽搐」—— 第二层根因在驻防 AI（`logic/general_ai.gd`）**
+
+上面 40.7 修的是 `combat` 的追击上限；而**驻防将领另有自己的一条区划级上限**，那一条的「叫回来」写成了**每帧重下命令**：
+
+| 层 | 原来的写法 | 为什么抖 | 修法 |
+|---|---|---|---|
+| 返程命令 | 「追出区划」那一支**每次命中**都调 `_patrol_leader()` 下一条「回巡逻点」的命令；而 `_next_patrol_tile()` 还会把目标点换成路线上的下一个 | 路径**每帧被重置**、目标点每帧在换 ⇒ 永远走不回家，肉眼看就是在区划边缘原地抽搐 | 新增 `unit.returning_home`：返程**只下一道**命令；走到了（`_patrol_leader` 末尾的到达判定）或冷却结束才恢复巡逻 |
+| 巡逻那一段 | 冷却期内第 5 步仍按 `patrol_interval` 插命令 | 返程的路又被顶掉 | 返程途中**跳过**第 5 步 |
+
+★ 触发条件（也是「为什么只在区划边界看到」）：守将站在「自己区划的边缘 + 脚下那一格已经不属于自己」时，`_out_of_garrison()` 每帧为真 —— 而它又刚把玩家单位锁上（`combat` 的 aggro 是 4 格），于是「脱战 → 下命令回家 → 命令被自己顶掉 → 没走成 → 下一帧再判为追出区划」无限循环。
+★ 新命令（`order_move` / 点名攻击 / 行军攻击）会清掉 `returning_home`，所以玩家一指挥它，返程就作废（不会把它卡在返程模式里）；`stop()` **不清**它 —— 那是内部「就地停手」，驻防 AI 自己也用它摆场面。
+
+**② 「正在招募的将领被打进濒死 ⇒ 队列要作废」**
+
+- 实测报回来的现象：「一个濒死的将领没有任何单位，最后还是招募了一个单位出来，我把这个单位打死之后这个将领才死」；
+- 根因：`world._tick_recruitment()` 只筛 `alive`，而濒死者**仍然 alive** ⇒ 读条照走、兵照出，而那个兵又算「旗下有部队」⇒ **全灭判定永远不成立**，将领靠「一直在造兵」续命（招募队列成了无限血包）；
+- 修法三处：
+  1. `world.enter_near_death()` 里 `_release_recruit(leader, true, "leader_downed")` —— **队列整个作废 + 全额退款**（与将领阵亡那一条同一套实现）；
+  2. `_tick_recruitment()` 补一道 `is_downed()` 保险（给「别的路径让它进濒死」兜底）；
+  3. `leader_reject_reason()` 新增拒因 `"downed"` —— **濒死期间不能再下单**（将领当兵营 + 区划招募两条路一起挡），界面文案见 `hud.recruit_reject_text()`。
+- ★ 顺序：**先判「旗下还有没有部队」（用队列还没作废时的状态）、再撤单退款、最后进濒死** —— 那一单兵「已经付过钱、也快出来了」，它算这一位将领的部队，所以「队列里那一单撑着 ⇒ 将领因此没能当场死」是对的；撤单是**换成退款**，不是否认它的存在。净效果：只要「打光活兵**或**退款取消在造的兵」里还有一条能给援军，它就进濒死；两条都不成立时才直接死。
+
+**断言**：`test_ai` 的驻防 AI 那一节加了「返程只下一道命令」的 5 条（`returning_home` 置位 / 路径只减不增 / 到家清标志 / 新命令清标志）—— **216 → 223 项**；`test_downed` 新增 `_test_recruit_queue_cleared`（进濒死 ⇒ 队列清空 + 粮食/黄金/人口全额退回 + 拒因 `downed` + 等 12 秒也不出新兵 + 打光部队之后当场死亡）—— **168 → 183 项**。合计 **36 套 / 5170 项 / 全过**。
+
+
+

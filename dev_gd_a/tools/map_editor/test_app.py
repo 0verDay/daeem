@@ -454,6 +454,76 @@ def t_step4_export_import() -> None:
         root.destroy()
 
 
+def t_units_preset_dropped_by_editor() -> None:
+    """★★ 行为变更（本轮）：`units`（地图预置单位）已废弃 —— 编辑器**不再保留**它。
+
+    用户口径：地图预置单位整个废弃（运行时不读、编辑器不再允许摆、数据清掉），
+    而**地图预置建筑 `buildings` 照旧保留**。落到编辑器上就是：
+
+        「打开一张带 units 的老图 → 什么都不改 → 导出」⇒ 导出的 JSON 里**没有** units。
+
+    ⚠️ 这条**不是**「编辑器不小心吃掉了字段」那种 bug —— 它就是需求要的结果
+      （`PRESERVED_KEYS` 白名单里故意没有 units）。所以这一条钉的是**行为**，不是回归修复。
+
+    为什么在界面层再钉一遍（数据层 test_model.py 里已经有了）：
+      文件对话框 → `do_open()` → 导出这条**真实路径**才是有可能出岔子的地方
+      （比如 `do_open` 里哪天多写一句「把原文件的顶层键补回 extra」就会把 units 捞回来）。
+      样本直接用仓库里那张真图（frontier）+ 现场注入一个 units，所以「buildings 原样保留」
+      也是在真数据上验的（那张图有 6 栋预置建筑）。
+    """
+    print("\n[28] ★★ units 已废弃：编辑器打开 + 导出之后它必须消失（buildings 保留）")
+    pub_map = PROJECT_DIR / "data" / "maps" / "frontier" / "map.json"
+    with open(pub_map, encoding="utf-8-sig") as fh:
+        source = json.load(fh)
+    # 那张真图现在自己已经没有 units 了（数据清理过），所以现场注入一份 ——
+    # 否则这条用例会「因为样本里本来就没有」而假绿。
+    source["units"] = [
+        {"x": 15, "y": 13, "name": "守军", "hold": True},
+        {"x": 13, "y": 13, "name": "守军", "hold": True},
+    ]
+    source_buildings = source.get("buildings")
+    ok(bool(source_buildings), "（真图里有 buildings，下面「原样保留」才验得出来）")
+
+    tmp = PROJECT_DIR / ".tmp_map_editor_units_test"
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True, exist_ok=True)
+    root, editor = build_editor()
+    restore_dialogs = stub_dialogs()
+    original_save = filedialog.asksaveasfilename
+    original_open = filedialog.askopenfilename
+    try:
+        src = tmp / "with_units.json"
+        src.write_text(json.dumps(source, ensure_ascii=False, indent=2) + "\n",
+                       encoding="utf-8")
+        dst = tmp / "exported.json"
+
+        # ---- 读（走界面那条路）
+        filedialog.askopenfilename = lambda **kwargs: str(src)
+        editor.do_open()
+        filedialog.askopenfilename = original_open
+        ok("units" not in editor.model.extra,
+           "★★ 导入时 units 就连 extra 都不进（不是「留着不写」）")
+        ok("buildings" in editor.model.extra, "★ buildings 照旧进 extra（另一回事）")
+
+        # ---- 写（走界面那条路）
+        filedialog.asksaveasfilename = lambda **kwargs: str(dst)
+        editor.do_export()
+        filedialog.asksaveasfilename = original_save
+        ok(dst.is_file(), "导出真的写出了文件")
+        with open(dst, encoding="utf-8") as fh:
+            out = json.load(fh)
+        ok("units" not in out,
+           "★★ 导出里没有 units 这个键（老图的预置单位被丢弃 = 需求要的行为）")
+        eq(out.get("buildings"), source_buildings, "★ buildings 原样保留（逐项一致，没被扩大打击面）")
+        eq(out.get("id"), "frontier", "图标识这类保留字段照旧带过去")
+    finally:
+        restore_dialogs()
+        filedialog.asksaveasfilename = original_save
+        filedialog.askopenfilename = original_open
+        shutil.rmtree(tmp, ignore_errors=True)
+        root.destroy()
+
+
 def t_infinite_canvas() -> None:
     """★ 需求：初始应当是一个无限大小的虚线地图。
 
@@ -852,8 +922,8 @@ def t_zone_tab_with_real_map() -> None:
     print("\n[13] 地块 ↔ 区块 来回切（曾经死循环）")
     cfg = mapfile.load_config(PROJECT_DIR) if hasattr(mapfile, "load_config") else None
     from map_editor.model import load_config as _load_cfg
-    # ★ 用随游戏发布的那张图（老图 map_01.json 已删，只剩 test_map.json）
-    map_path = PROJECT_DIR / "data" / "test_map.json"
+    # ★ 用随游戏发布的那张图（老图 map_01.json 已删，只剩 data/maps/frontier/map.json）
+    map_path = PROJECT_DIR / "data" / "maps" / "frontier" / "map.json"
     model = mapfile.load_map(map_path, _load_cfg(PROJECT_DIR))
     zone_count = len(model.zones)
     root = tk.Tk()
@@ -1218,17 +1288,17 @@ def t_file_buttons_wired() -> None:
         ok(target.is_file(), "★ 点「导出 JSON」真的写出了文件")
 
         # 点「导入地图…」：同样替换对话框，确认它读进一张真图
-        # ★ 用随游戏发布的那张图（老图 map_01.json 已删，只剩 test_map.json）。
+        # ★ 用随游戏发布的那张图（老图 map_01.json 已删，只剩 data/maps/frontier/map.json）。
         # ⚠️ 断言用**真实图上的数**，别写死 374/10：设计师往图里加地块 / 加区块是常事
         #    （这一轮就加了 4 个区块），写死的后果是一批「导入没生效」的假失败。
-        pub_map = PROJECT_DIR / "data" / "test_map.json"
+        pub_map = PROJECT_DIR / "data" / "maps" / "frontier" / "map.json"
         from map_editor.model import load_config as _load_cfg_pub
         pub_model = mapfile.load_map(pub_map, _load_cfg_pub(PROJECT_DIR))
         filedialog.askopenfilename = lambda **kwargs: str(pub_map)
         editor.file_buttons["import"].invoke()
         filedialog.askopenfilename = original_open
         eq(editor.model.existing_count(), pub_model.existing_count(),
-           "★ 点「导入地图…」真的把 test_map.json 读进来了")
+           "★ 点「导入地图…」真的把仓库里那张默认地图读进来了")
         eq(len(editor.model.zones), len(pub_model.zones), "导入之后区块也一起进来了")
 
         # 「新建」不再弹任何对话框：直接给一张全新的无限虚线画布
@@ -1489,12 +1559,12 @@ def t_sidebar_scrolls() -> None:
     print("\n[21] 侧边栏滚动（区块页内容比窗口高）")
     from map_editor.model import load_config as _load_cfg
     project = PROJECT_DIR
-    model = mapfile.load_map(project / "data" / "test_map.json", _load_cfg(project))
+    model = mapfile.load_map(project / "data" / "maps" / "frontier" / "map.json", _load_cfg(project))
     root = tk.Tk()
     root.geometry("1280x800")
     root.deiconify()
     root.update()
-    editor = app_module.EditorApp(root, project, model, project / "data" / "test_map.json")
+    editor = app_module.EditorApp(root, project, model, project / "data" / "maps" / "frontier" / "map.json")
     root.update()
     editor.set_page("zone")
     root.update()
@@ -2080,6 +2150,7 @@ def main() -> int:
     t_shift_drag_after_sidebar_click()
     t_zone_name_labels()
     t_file_buttons_wired()
+    t_units_preset_dropped_by_editor()
     print("\n[CASE] test_app -> passed %d / failed %d" % (_PASSED, _FAILED))
     return 1 if _FAILED else 0
 

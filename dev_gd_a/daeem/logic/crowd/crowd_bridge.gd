@@ -56,8 +56,23 @@ func world_here():
 ## 表的重建时机
 var _map_ref = null
 var _revision: int = -1
+## 阵营 → 下标。**所有按阵营的查表都用它**（格级阻挡 / 建筑本体 / 单位搬运 / 碰撞）。
+## ⚠️ 不要把索敌的目标分组也塞进这里 —— 那一处要的是「一方」（含盟友），见 `_side_index`。
 var _faction_list: Array = []
 var _faction_index: Dictionary = {}
+
+## ★★ 「一方」→ 下标（**阵营归属 / 盟友**用；见 logic/faction.gd 那一大段说明）。
+##
+## 内核的 `AcquireTargets` 只认「下标不同 = 敌对」，而 C# 那边的注释本来就写着
+## 「同一方 = 同一个值」——所以「两个阵营结盟」在这一层就是**让它们映射到同一个下标**：
+## 内核自然不会再让它们互相索敌，一行 C# 都不用改。
+##
+## ★ 与 `_faction_index` 的关系：这两个表**不能合并**。
+##   `_faction_index` 还管着「城墙挡谁 / 建筑本体挡谁」（那是**按阵营**的，盟友照样互相挡），
+##   把两方折进一个下标会让盟友的城墙对彼此形同虚设。
+##   所以：**碰撞与通行查 `_faction_index`，索敌分组查 `_side_index`**。
+var _side_list: Array = []
+var _side_index: Dictionary = {}
 
 ## 每帧复用的 Packed 缓冲（不每帧新建，避免无谓分配）
 var _xy := PackedFloat64Array()
@@ -247,7 +262,9 @@ func refresh_targets(world, cfg: ConfigRes) -> void:
 		if not _faction_index.has(f):
 			_add_faction(f)
 			_rebuild_all_tables(world, cfg)
-		var si: int = int(_faction_index[f])
+		# ★★ `si` 是**一方**的下标（盟友共用同一个）：内核据此分组索敌，
+		#    所以两个盟友阵营在它眼里就是「同一方」，不会互相锁定。
+		var si: int = _side_index_of(f)
 		if _side_scans.size() <= si:
 			_side_scans.resize(si + 1)
 		if _side_scans[si] == 0:
@@ -284,7 +301,9 @@ func refresh_targets(world, cfg: ConfigRes) -> void:
 			if not _faction_index.has(f2):
 				_add_faction(f2)
 				_rebuild_all_tables(world, cfg)
-			var si2: int = int(_faction_index[f2])
+			var si2: int = _side_index_of(f2)
+			# ★ 「唯一在索敌的那一方」比较也用**一方**下标：盟友算同一方 ⇒
+			#   「我这一方在索敌、对面是盟友」这种组合会被正确跳过（它不可能是目标）。
 			var can_be_target: bool = scan_count >= 2 or si2 != only_scan_side
 			if not can_be_target:
 				continue
@@ -366,10 +385,12 @@ func _sync_tables(world, cfg: ConfigRes) -> void:
 		_field_order = []
 
 
-## 阵营 → 下标。内核里所有按阵营的查表都用这个下标。
+## 阵营 → 下标（`_faction_index`）。**碰撞 / 通行 / 搬运**用这一套。
 func _rebuild_factions(world) -> void:
 	_faction_list = []
 	_faction_index = {}
+	_side_list = []
+	_side_index = {}
 	for f in world.factions:
 		_add_faction(String(f))
 	for u in world.units:
@@ -382,10 +403,39 @@ func _rebuild_factions(world) -> void:
 
 func _add_faction(f: String) -> void:
 	# 空 owner（区划中心那种中立建筑）不需要自己的阵营下标：它只挡别人，不会被当成单位
-	if f == "" or _faction_index.has(f):
+	if f == "":
 		return
-	_faction_index[f] = _faction_list.size()
-	_faction_list.append(f)
+	if not _faction_index.has(f):
+		_faction_index[f] = _faction_list.size()
+		_faction_list.append(f)
+	# ★ 同一句里顺手把「一方」也登记上：盟友共用同一个下标（见 `_side_index` 的说明）
+	_add_side(f)
+
+
+## 登记某一方的下标。★ 幂等：同一方的第二个阵营进来时**复用**已有的下标 ——
+## 那正是「让内核认不出它们是两个阵营」的落点。
+##
+## ★ 判据直接用 `FactionRes.side_of(f)`（同一方的**代表 id**，盟友算出来是同一个）：
+##   不需要遍历已有条目去比对，O(1) 一张表就够。
+func _add_side(f: String) -> void:
+	if f == "" or _side_index.has(f):
+		return
+	var s := FactionRes.side_of(f)
+	if not _side_index.has(s):
+		_side_index[s] = _side_list.size()
+		_side_list.append(s)
+	_side_index[f] = int(_side_index[s])
+
+
+## 某个阵营的**一方**下标（未登记过 → 立刻补登记，别让它查到 -1）。
+##
+## ⚠️ 补登记之后**不需要**重建整张表：一方只影响索敌分组，不影响格级阻挡 / 建筑本体
+##   （那些查的是 `_faction_index`）。这与 `_faction_index` 那条路刻意不同 ——
+##   那边补一个阵营要重建全表（因为要按它算一遍建筑阻挡）。
+func _side_index_of(f: String) -> int:
+	if not _side_index.has(f):
+		_add_side(f)
+	return int(_side_index.get(f, 0))
 
 
 func _build_terrain(world) -> void:
@@ -497,6 +547,10 @@ func _pack(world, cfg: ConfigRes) -> void:
 			# 出现了没登记过的阵营（联机换阵营 / 新刷的兵）：立刻补表，别让它查到 -1
 			_add_faction(f)
 			_rebuild_all_tables(world, cfg)
+		# ★ 这里必须是**阵营**下标（不是「一方」）：内核拿它去查
+		#   `CanStand` / `BodyBlocks` / 距离场那几张**按阵营**的表 ——
+		#   盟友的城墙对本方照样要挡（用户只要「不互相攻击」，没要拆墙）。
+		#   ⚠️ 别跟 `refresh_targets` 里那个 `_tgt_side` 混了：那个是索敌分组，要「一方」。
 		_fac[i] = int(_faction_index[f])
 		_alive[i] = 1 if u.alive else 0
 		# ★ 权重口径必须与 collision.gd 的 _weight() 一字不差

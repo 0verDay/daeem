@@ -6,6 +6,10 @@
 
 为什么要有它：编辑器的导出格式是**游戏要读的**东西（map_data.gd / zone.gd），
 格式写错了要等跑起来才发现。这里把「旧地图读进来 → 一字不差地导出回去」钉成断言。
+
+⚠️ 「一字不差」有**一个刻意的例外**：已废弃的 `units`（地图预置单位）会被丢掉
+（读进来就丢、导出也不写）—— 那是需求要的行为，见 `mapfile.PRESERVED_KEYS` 的注释
+与 `tools/map_editor/README.md` 第五节末尾。别把它当 bug 修回去。
 """
 
 from __future__ import annotations
@@ -80,8 +84,12 @@ def legacy_field() -> dict:
     """一张 24×16 的老格式地图（只有 cols/rows/layout + 已废弃的单数 base）。
 
     ★ 还带上「编辑器不管、但要原样带过去」的那几个字段
-      （`general_spawns` / `buildings` / `units`）—— 老图里本来就有它们，
+      （`general_spawns` / `buildings`）—— 老图里本来就有它们，
       往返测试要钉住「它们不会被丢掉」。
+
+    ★★ 另外**故意**带上一个 `units`（地图预置单位）—— 那个字段已经废弃，
+      钉的是相反的一面：「导入当场丢掉、导出绝不写」（见 t_legacy_import /
+      t_legacy_roundtrip_is_byte_stable）。留在这里它就成了活的回归样本。
     """
     layout = ["." * LEGACY_COLS for _ in range(LEGACY_ROWS)]
     layout[4] = "...." + "^" + "." * (LEGACY_COLS - 5)
@@ -96,6 +104,7 @@ def legacy_field() -> dict:
             {"type": "tower", "x": 14, "y": 12, "owner": "enemy"},
             {"type": "wall", "x": 13, "y": 12, "owner": "enemy"},
         ],
+        # ★★ 废弃字段：老图里曾经有它，现在**导出时必须消失**（不是被保留）
         "units": [{"x": 15, "y": 13, "name": "守军", "hold": True}],
     }
 
@@ -161,11 +170,20 @@ def t_legacy_import() -> None:
     eq(model.zone_at(4, 3).zone_id, 1, "(4,3) 属于 A2（列优先：列 1 行 0）")
 
     ok("general_spawns" in model.extra, "编辑器不管的字段被带在 extra 里")
-    ok("buildings" in model.extra and "units" in model.extra, "预置建筑 / 单位也在 extra 里")
+    ok("buildings" in model.extra, "★ 预置建筑照旧留在 extra 里（另一回事，别一起删）")
+    # ★★ 行为变更：units（地图预置单位）已废弃 —— **导入时就连 extra 都不进**。
+    #    这一条与 t_legacy_roundtrip_is_byte_stable 里「导出没有 units」互为两面。
+    ok("units" not in model.extra, "★★ 废弃的 units 连 extra 都不进（导入当场丢掉）")
+    ok("units" not in mapfile.PRESERVED_KEYS, "★★ units 不在保留键清单里")
 
 
 def t_legacy_roundtrip_is_byte_stable() -> None:
-    print("\n[4] 老地图「打开 → 导出」：地块与区块归属一字不差 + 新字段被补齐")
+    """老地图「打开 → 导出」：地块与区块归属一字不差 + 新字段被补齐。
+
+    ⚠️ 「逐字节一致」有**一个例外**（本轮的行为变更）：样本里那个已废弃的 `units`
+    会被丢掉 —— 所以这里的措辞是「地块与区块一字不差」，不是「整份文件一模一样」。
+    """
+    print("\n[4] 老地图「打开 → 导出」：地块与区块归属一字不差（units 例外，见下）")
     cfg = load_config(PROJECT_DIR)
     path, tmp = legacy_fixture("legacy_roundtrip.json")
     try:
@@ -181,6 +199,18 @@ def t_legacy_roundtrip_is_byte_stable() -> None:
     for key in mapfile.PRESERVED_KEYS:
         if key in original:
             eq(out[key], original[key], "字段 %s 原样带过去" % key)
+
+    # ★★ 行为变更（本轮）：units（地图预置单位）已废弃 —— 老图里带着它，
+    #    导出之后必须**没有**这个键。这正是上面那个 PRESERVED_KEYS 循环抓不到的：
+    #    units 被移出清单后循环根本不会看它，所以这里必须单独钉一条，
+    #    否则「哪天有人把它加回清单」这种回归会静默通过。
+    ok("units" in original, "（样本里确实带着 units，下面这条断言才有意义）")
+    ok("units" not in out, "★★ 导出的 JSON 里没有 units（预置单位已废弃，导出会丢弃）")
+    ok(set(mapfile.DROPPED_KEYS) & set(mapfile.PRESERVED_KEYS) == set(),
+       "★ 丢弃清单与保留键清单不重叠（units 不可能被两边同时认领）")
+    # ⚠️ buildings 是**另一回事**：它仍然在游戏里用，必须原样带过去
+    #    （用户明确要求「别顺手删了它」）。上面那个循环已经比过内容，这里再钉个存在性。
+    ok("buildings" in out, "★ 预置建筑照旧保留（别扩大打击面）")
 
     # ★ 导出里**不再有**老式大本营的 base 字段（用户要求彻底删掉）
     ok("base" not in out, "★ 导出的 JSON 里没有 base 字段了")
@@ -412,6 +442,55 @@ def t_validation() -> None:
     eq(model.problems(), [], "都齐了就没有提醒")
     eq(model.blockers(), [], "★ 都齐了就能导出")
     ok(Zone is not None, "Zone 可以正常构造")
+
+
+def t_zone_must_be_contiguous() -> None:
+    """★★ 硬规则：**同一区划的地块必须连成一片**（用户明确要求）。
+
+    为什么是硬拦截而不是提醒（实测坑）：不连续的区划会让运行时的**包围盒**横跨两片地
+    （`logic/zone.gd` 按地块求最小/最大 x,y），于是那一份区划看起来「把夹在中间的
+    另一块地整片包住」—— 样例地图原来是 c1 分成上下两条、把 a1 夹在中间，
+    玩家报「c1 跑到 a1 上面去了」。
+    """
+    print("\n[8b] 区划必须连续（硬拦截）")
+    model = mapfile.empty_map(4, 4, None)
+    for y in range(4):
+        for x in range(4):
+            model.create_tile(x, y)
+    za = model.add_zone("上片")
+    zb = model.add_zone("下片")
+    # 上片：第 0、2 行；下片：第 1、3 行 —— 两个区划都被隔开（都不连续）
+    for y in range(4):
+        for x in range(4):
+            model.assign_tile(x, y, za.zone_id if y % 2 == 0 else zb.zone_id)
+    ok(any("不连续" in b and "上片" in b for b in model.blockers()),
+       "★★ 「上片」（第 0/2 行，中间被隔开）被硬拦住")
+    ok(any("不连续" in b and "下片" in b for b in model.blockers()),
+       "★★ 「下片」也一起被点名")
+    ok(any("2 片" in b for b in model.blockers()), "★ 拦截文案里写清了分成几片")
+
+    # 把区划改成「一片」（左半边 / 右半边）→ 不再拦
+    for y in range(4):
+        for x in range(4):
+            model.assign_tile(x, y, za.zone_id if x <= 1 else zb.zone_id)
+    eq([b for b in model.blockers() if "不连续" in b], [],
+       "★★ 刷成「左半边 / 右半边」两片之后不再拦")
+
+    # 斜角相接**不算**连成一片（(0,0) 与 (1,1) 只共一个角）
+    zc = model.add_zone("斜角")
+    model.assign_tile(0, 0, zc.zone_id)
+    model.assign_tile(1, 1, zc.zone_id)
+    ok(any("不连续" in b and "斜角" in b for b in model.blockers()),
+       "★★ 只在斜角相接的两格**不算**连成一片（四邻才算）")
+
+    # 单格区划当然连续（不该被误报）
+    # ⚠️ 判据只能看「不连续」这几个字：`blockers()` 里还有一条「这些区划还没设中心：
+    #    上片、下片、斜角、单格 …」的文案里**也带着**「单格」这个名字 ——
+    #    写成 `"单格" in b` 会命中那一条（实测踩到，我的测试自己假红了一次）。
+    zd = model.add_zone("单格")
+    model.assign_tile(3, 3, zd.zone_id)
+    eq([b for b in model.blockers() if "不连续" in b and "单格" in b], [],
+       "★ 只有一个地块的区划不会被误报成「不连续」")
 
 
 def t_zone_center_and_production() -> None:
@@ -1051,6 +1130,51 @@ def t_zone_kind() -> None:
        "★ 老地图没写 production → 产量 0（不按种类预设兜底）")
 
 
+def t_cli_map_option() -> None:
+    """★ `--map <值>` 的解析（战役编辑器的「一键打开地图编辑器」靠它）。
+
+    ★ 为什么单独测这个：它**不是**数据层的函数，而是命令行入口的一小块逻辑
+      （`__main__.resolve_map_arg`）—— 而它一旦解析错，`map_editor --map frontier`
+      会安静地打开一张空白画布，用户看到的是「编辑器没反应」。
+      三种写法都要认（与 `logic/map_library.gd` 的目录约定同源）：
+        ① 地图 **id**（目录名，比如 `frontier`）—— 战役编辑器只知道 id，用它最多；
+        ② `map.json` 的**路径**（相对工程目录 或 当前目录）；
+        ③ 指向**目录**的路径（`data/maps/<id>`）。
+      ⚠️ 解析不出来必须返回 `None`（好让命令行打印错误并退出 2），**不许**退回某个默认图。
+    """
+    from map_editor.__main__ import resolve_map_arg
+
+    # 拿真图当样本，这样「认不认得出目录名」是可证的（不是靠字符串拼接猜的）
+    real_ids = sorted(p.name for p in (PROJECT_DIR / "data" / "maps").iterdir() if p.is_dir())
+    ok(len(real_ids) >= 1, "工程里至少有 1 张地图可用来验 --map（实际 %s）" % real_ids)
+    if not real_ids:
+        return
+    sample = "frontier" if "frontier" in real_ids else real_ids[0]
+
+    # ① 地图 id（目录名）
+    got = resolve_map_arg(sample, PROJECT_DIR)
+    ok(got is not None and got.is_file(), "★ --map <id> 认目录名（%s）" % sample)
+    eq(got.name if got else "", "map.json", "解析出来的是地图目录里的 map.json")
+    eq(got.parent.name if got else "", sample, "解析到的是那一张图（目录名对得上）")
+
+    # ② 路径（相对工程目录）
+    rel = "data/maps/%s/map.json" % sample
+    got2 = resolve_map_arg(rel, PROJECT_DIR)
+    eq(str(got2) if got2 else None, str(got) if got else None,
+       "★ --map <相对路径> 与 --map <id> 解析到同一个文件")
+
+    # ③ 指向目录的路径
+    got3 = resolve_map_arg("data/maps/%s" % sample, PROJECT_DIR)
+    eq(str(got3) if got3 else None, str(got) if got else None,
+       "★ --map <目录> 也认（退回那个目录里的 map.json）")
+
+    # 一张真的不存在的图 / 空值 → None（命令行据此报错退出，不许静默开空白画布）
+    eq(resolve_map_arg("no_such_map_id", PROJECT_DIR), None,
+       "解析不出来返回 None（不静默退回默认图）")
+    eq(resolve_map_arg("", PROJECT_DIR), None, "空值返回 None")
+    eq(resolve_map_arg("   ", PROJECT_DIR), None, "只有空白也返回 None")
+
+
 def main() -> int:
     print("DAEEM 地图编辑器 · 数据层测试")
     print("工程目录：%s" % PROJECT_DIR)
@@ -1062,6 +1186,7 @@ def main() -> int:
     t_zone_ops()
     t_shape_ops()
     t_validation()
+    t_zone_must_be_contiguous()
     t_base_warning_with_factions()
     t_zone_center_and_production()
     t_zone_population_cap()
@@ -1072,6 +1197,7 @@ def main() -> int:
     t_faction_bases()
     t_rect_selection()
     t_zone_kind()
+    t_cli_map_option()
     print("\n[CASE] test_model -> passed %d / failed %d" % (_PASSED, _FAILED))
     return 1 if _FAILED else 0
 

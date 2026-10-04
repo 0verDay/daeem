@@ -540,8 +540,16 @@ class MapModel:
         #:   而且**每一方都必须有** —— 导出前由 `blockers()` 强制（见那里的说明）。
         self.factions: List[Faction] = []
         self.faction_bases: Dict[str, Tile] = {}
-        #: 从原文件里读到的、编辑器不管的字段（general_spawns / buildings / units / pvp_points /
+        #: 从原文件里读到的、编辑器不管的字段（general_spawns / buildings / pvp_points /
         #: _comment …）——导出时原样写回，免得编辑器把 Godot 会用的东西吃掉。
+        #:
+        #: ★★ **`units`（地图预置单位）不在这里，也永远不会进来**：该字段整个废弃，
+        #:   运行时不再读它（`logic/map_data.gd` / `logic/world.gd`），编辑器也不再保留。
+        #:   `mapfile.dict_to_model` 读到它就丢掉（见 `mapfile.DROPPED_KEYS`），
+        #:   导出侧的白名单 `mapfile.PRESERVED_KEYS` 里也没有它 ⇒ **导出一定不写 `units`**。
+        #:   ⚠️ 于是「打开一张带预置单位的老图 → 导出」会**静默丢掉那些单位** ——
+        #:   这是需求要的结果（规则上禁止地图预置单位），**不是 bug**，别去「修」它。
+        #:   ⚠️ `buildings`（地图预置建筑）**照旧保留**，是另一回事。
         self.extra: Dict[str, object] = {}
         self.resize(cols, rows)
 
@@ -1383,9 +1391,10 @@ class MapModel:
     ##   · `problems()`  = 「你这样导出去游戏里会怪怪的」——**提醒**，用户确认后照导；
     ##   · `blockers()`  = 「这份地图不合法，游戏读不了 / 规则不成立」——**拦住**。
     ##
-    ## 目前两条（都是用户明确要求的「保证」）：
+    ## 目前三条（都是用户明确要求的「保证」）：
     ##   1. 每个阵营**恰好一个**大本营（「多了」在数据层不可能，所以这里只查「少了」）；
-    ##   2. 每个区划**恰好一个**中心（同上）。
+    ##   2. 每个区划**恰好一个**中心（同上）；
+    ##   3. ★★ 每个区划的地块必须**连成一片**（用户明确要求：「同一区划下的区块必须是连续的」）。
     def blockers(self) -> List[str]:
         out: List[str] = []
         if self.existing_count() == 0:
@@ -1403,6 +1412,43 @@ class MapModel:
             out.append("这些区划还没设区划中心：%s —— 每个区划都必须有且只有一个中心"
                        "（在「区块」页签里选中区划 → 左键点它自己的一个地块 → 点「设为区划中心」）。"
                        % "、".join(missing_centers))
+
+        out.extend(self._disconnected_zone_blockers())
+        return out
+
+    ## ★★ 「同一区划的地块必须连成一片」的硬拦截。
+    ##
+    ## 为什么是**硬规则**（用户明确要求）而不是提醒：不连续的区划会连带出两件事 ——
+    ##   1. 运行时的**包围盒**会横跨两片地（`logic/zone.gd` 按地块求最小/最大 x,y），
+    ##      于是那份区划看起来「把夹在中间的另一块地整片包住」（实测样例地图就是这样：
+    ##      c1 分成上下两条、把 a1 夹在中间，玩家报「c1 跑到 a1 上面去了」）；
+    ##   2. 「守住某个区划」这类目标、以及按区划算的产能，都会落在一个
+    ##      玩家在地图上**认不出边界**的区域上。
+    ##
+    ## 判据：对每个区划的地块做一次**四邻连通分量**统计，分量 > 1 就是断开。
+    ## 复杂度 O(地块总数)，导出前跑一次完全够用。
+    def _disconnected_zone_blockers(self) -> List[str]:
+        out: List[str] = []
+        for zone in self.zones:
+            tiles = set(zone.tiles)
+            if len(tiles) <= 1:
+                continue
+            left = set(tiles)
+            parts = 0
+            while left:
+                parts += 1
+                # 从任意一格开始洪泛（只看四邻：斜角相接不算连成一片）
+                stack = [left.pop()]
+                while stack:
+                    x, y = stack.pop()
+                    for nb in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+                        if nb in left:
+                            left.discard(nb)
+                            stack.append(nb)
+            if parts > 1:
+                out.append("区块「%s」的地块不连续（分成了 %d 片）：同一区划必须连成一片 —— "
+                           "在「区块」页签里把它刷成一片相邻的地块，或者把多出来的那一片划给别的区划。"
+                           % (zone.name, parts))
         return out
 
     ## 区划中心的提醒（**不阻止**：硬拦截在 `blockers()` 里）。

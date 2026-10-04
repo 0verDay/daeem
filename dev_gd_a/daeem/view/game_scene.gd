@@ -16,11 +16,25 @@
 ##
 ## 调试句柄：控制台里 `RTS`（等价于 HTML 版的 window.RTS）。
 ## 无头测试用不上它，但手玩调参时非常有用（改数值不必重启：RTS.cfg 就是那份配置对象）。
+##
+## ★★ 设置二级菜单那两颗按钮要干的活，本文件**只是转发**（本轮新增）：
+##    · 全屏 → `fullscreen_toggled` → view/main.gd 的 `toggle_fullscreen()`
+##    · 返回主菜单 → `return_to_menu_requested` → view/main.gd 的 `return_to_menu()`
+##    为什么不在这里直接做：一个动的是窗口模式（main 还管着 Ctrl+Q 那条快捷键，
+##    两处必须同一份实现），另一个要**销毁本场景自己**（自己删自己是最容易留下
+##    半条命的写法）。所以这一层只把 hud 的信号原样往上抛。
 extends Node2D
+
+## 设置菜单里点了「全屏 / 窗口化」（请求，执行在 view/main.gd）
+signal fullscreen_toggled
+## 设置菜单里点了「返回主菜单」（请求，执行在 view/main.gd）
+signal return_to_menu_requested
 
 const ConfigRes = preload("res://logic/config.gd")
 const WorldRes = preload("res://logic/world.gd")
+const MapLibraryRes = preload("res://logic/map_library.gd")
 const CommandRes = preload("res://logic/command_processor.gd")
+const FactionRes = preload("res://logic/faction.gd")
 const PaletteRes = preload("res://view/palette.gd")
 const FontLoaderRes = preload("res://view/font_loader.gd")
 const TerrainViewRes = preload("res://view/terrain_view.gd")
@@ -33,11 +47,23 @@ const CameraRigRes = preload("res://view/camera_rig.gd")
 const InputControllerRes = preload("res://view/input_controller.gd")
 const HudRes = preload("res://view/hud.gd")
 
-const MAP_PATH := "res://data/test_map.json"
+## 默认地图（`start()` 不传参时用它）。
+##
+## ★ 正常路径**永远**由 `view/main.gd` 把开局页上选中的那张图传进来 ——
+##   这个默认值只服务两种调用方：基准脚本（bench_fps 之类）与手玩时直接在编辑器里
+##   跑本场景。所以它就是「地图选择条上的第一张」（`logic/map_library.gd` 扫出来的），
+##   而不是某个写死的文件名：地图目录一变，这里跟着变，不需要改代码。
+const MAP_PATH := MapLibraryRes.FALLBACK_MAP_PATH
 
 var cfg: ConfigRes = null
 var world = null
 var cam: Camera2D = null
+
+## ★ 这一局是从哪一关开的（`start()` 那条「按一张图直接开一局」的老路径上两者都是 null）。
+## ★ 它们**不是玩法状态**：世界自己持有 `level`（`world.level`），这里只是让界面层
+##   能回答「我在玩哪一战 / 哪一关」（以后的「返回关卡列表 / 结算面板」要用）。
+var level_campaign = null
+var level_playing = null
 
 var terrain_view: Node2D = null
 var zone_view: Node2D = null
@@ -89,6 +115,106 @@ func start(map_path: String = MAP_PATH) -> bool:
 
 	return true
 
+
+## ★★ 从**一关**进游戏（战役路径；`start()` 是「按一张图直接开一局」的老路径）。
+##
+## 与 `start()` 的差别只有「世界怎么造出来」这一处，之后**完全同一条尾**：
+##   `World.create_from_level()` 会依次应用关卡覆盖层（大本营 / 阵营 / 区块归属 / AI 名单）
+##   → 关卡的开局摆放（`start_units` / `start_buildings`）→ 目标与胜负（`objective.setup`）。
+##   所以 `view/` 一个字都不用改：它读的还是同一个 `world`。
+##
+## @param campaign `logic/campaign.gd` 的 Campaign（**只记下「在玩哪一战」**；
+##        本版没有进度存档，所以它只被 `level_campaign_playing()` 用上 ——
+##        留着是为了以后做「返回关卡列表 / 结算」时不必再改这里的签名）
+## @param level    `logic/level.gd` 的 Level（必填）
+## @param my_faction 本机席位（单人战役 = `level.seats()[0]`）
+## @return bool 是否装配成功（与 `start()` 同一条约定：失败时调用方把半成品撤掉）
+func start_level(campaign, level, my_faction: String) -> bool:
+	cfg = ConfigRes.load_default()
+	if cfg == null:
+		push_error("配置载入失败，游戏无法启动：%s" % ConfigRes.last_error)
+		return false
+	if level == null:
+		push_error("关卡是 null，战役无法启动")
+		return false
+
+	# ★★ roster = **本机负责的席位**（不是「玩家操作的那一方」）。它由两半拼出来：
+	#
+	#   ① 关卡 `players[]` 声明的席位（`level.seats()`）——
+	#      一关可以有**两个都可玩的阵营**（样例第一关 F1 / F2）：玩家挑一个来玩，
+	#      但**两个阵营都要有自己的大本营与属地**（选谁就从谁的家开打）。
+	#   ② 关卡点名要挂 AI 的参展阵营里、**本机也要负责**的那些 ——
+	#      也就是「给玩家当选择、但玩家没选它」的那一方（它照样要有家）。
+	#      ⚠️ 真正的 NPC 敌人（E1）**不进** roster：它由 `world._setup_ai_factions()`
+	#         自己加进这一局的名单，不需要本机认领（认领了反而会被当成玩家的家判负）。
+	#
+	# `my_faction` 才是「本机**操作**哪一方」：没被选中的那一方由**盟友 AI** 接管 ——
+	# 判据在 `world._setup_ai_factions()` / `_is_ai_piloted()`，它们看
+	# `world.player_factions`（= 只有 `my_faction`），**不是** roster。
+	#
+	# ⚠️ 不要改成 `[my_faction]`：那样另一个阵营连大本营都不会建，地图上根本没有它
+	#    （实测：选 F2 时 F2 的 base = (-1,-1) ⇒ 开局直接 `objective_never_held` 判负）。
+	# ⚠️ 也不要只传 `level.seats()`：样例第一关的 `players[]` 只声明了 F1 一个席位，
+	#    另一个可玩阵营 F2 就没家了（实测：选 F2 时它的 base 是 (-1,-1)）。
+	#
+	# ★★ **我选的那一方放第一个**（`build_roster` 的第三个参数）：
+	#    `objective.setup()` 用**第一个席位**决定「这一局打哪条目标」——
+	#    选红方时 roster 是 [F2, F1]，取到的就是红方那条「占领 c1」，
+	#    而不是蓝方那条「守住 c1」。顺序本身就是一条契约，别随手改。
+	var roster: Array = build_roster(level, cfg, my_faction)
+	world = WorldRes.create_from_level(cfg, level, my_faction, roster, true)
+	if world == null:
+		push_error("关卡装配失败，游戏无法启动（地图 = %s）" % String(level.map_id))
+		return false
+
+	# 记下「这一局是从哪一关来的」。★ 它们是**公开变量**（与 `world` / `cfg` 同一个读法：
+	#   本工程不给自己持有的状态套一层 getter），界面与测试直接读 `game.level_playing`。
+	level_campaign = campaign
+	level_playing = level
+
+	_build_view()
+	_build_hud()
+	_build_debug_handles()
+
+	# 与 `start()` 同一条收尾：开场选中 1 号将领并把它放进镜头
+	if world.units.size() > 0:
+		input_ctrl.select_units([world.units[0]])
+		camera_rig.center_on_px(PaletteRes.to_px(world.units[0].pos, cfg))
+
+	return true
+
+
+## ★★ 本局的**席位名单**（本机负责的阵营，顺序有讲究）。
+##
+## 拼法 = 关卡 `players[]` 声明的席位 + 「**可玩**、且关卡点名要挂 AI」的那几个
+##        （后者就是「另一个可选阵营」：它的家也要建出来，但不本机操作）；
+##        最后把 `my_faction` 提到**第一位**。
+##
+## ⚠️⚠️ 顺序不是小事：`objective.setup()` 取**第一个席位**决定「这一局打哪条目标」。
+##    一关可以配两条目标（蓝方「守住 c1」/ 红方「占领 c1」），选红方时
+##    roster 必须是 `[F2, F1]` —— 否则红方会拿着蓝方的目标进关。
+##
+## ⚠️ 真正的 NPC 敌人（样例的 E1）**不进**这份名单：它由 `world._setup_ai_factions()`
+##    自己加进这一局；认领了反而会被当成「玩家的家」而影响判负。
+##
+## 抽成静态函数是为了能**被无头测试直接调**（`start_level` 要建场景树，测试里跑不了）——
+## `tests/test_campaign_seats.gd` 钉着它，免得两处口径漂开。
+static func build_roster(level, cfg, my_faction: String) -> Array:
+	var roster: Array = level.seats()
+	for e in level.merged_ai_factions(cfg.ai_factions()):
+		var fid := String((e as Dictionary).get("id", ""))
+		if fid == "" or roster.has(fid):
+			continue
+		if level.is_playable(fid):
+			roster.append(fid)
+	if roster.is_empty():
+		roster.append(my_faction)
+	# ★ 把「我在操作的那一方」提到第一位（它必须是第一个席位）
+	var idx: int = roster.find(my_faction)
+	if idx > 0:
+		roster.remove_at(idx)
+		roster.push_front(my_faction)
+	return roster
 
 func _build_view() -> void:
 	cam = Camera2D.new()
@@ -161,6 +287,31 @@ func _build_hud() -> void:
 	hud.name = "Hud"
 	add_child(hud)
 	hud.setup(cfg, world, input_ctrl, theme, camera_rig)
+	# ★★ 设置二级菜单的两个请求：原样往上抛（见文件头）。
+	#    上面那几条 local_ui_changed / command_issued 是「界面 → 逻辑」，
+	#    这两条是「界面 → 流程」，所以它们**不经过逻辑层**。
+	hud.fullscreen_toggled.connect(_on_fullscreen_toggled)
+	hud.return_to_menu_requested.connect(_on_return_to_menu_requested)
+
+
+## 设置菜单里点了「全屏 / 窗口化」——转给 main.gd（它管窗口模式，也管 Ctrl+Q）。
+func _on_fullscreen_toggled() -> void:
+	fullscreen_toggled.emit()
+
+
+## 设置菜单里点了「返回主菜单」——转给 main.gd（它会拆掉本场景）。
+##
+## ★ 先确认「本场景确实活着」再转发：返回主菜单的路上，本节点会被摘下来销毁，
+##   而这期间队列里可能还压着一次点击 —— 那种情况下不该再发第二条请求
+##   （main.gd 侧也有同样的幂等判断，两处都留着是因为代价只有一行）。
+##   ⚠️ 用 `is_instance_valid()` 而不是 `is_inside_tree()` 单独判：本函数有可能在
+##     **自己已经被释放之后**才被叫到（信号连在已销毁的节点上），
+##     那时 `is_inside_tree()` 自己就会报
+##     「Invalid call. Nonexistent function 'is_inside_tree' in base 'previously freed'」。
+func _on_return_to_menu_requested() -> void:
+	if not is_instance_valid(self) or not is_inside_tree():
+		return
+	return_to_menu_requested.emit()
 
 
 func _build_debug_handles() -> void:
@@ -339,17 +490,59 @@ func _consume_events(events: Array) -> void:
 			"recruit_rejected":
 				# ★ max 来自事件（区划招募的队列上限可能与「将领招募」那条不同）；
 				#   没带（0）时 hud 用单位那条表的上限。
-				hud.show_notice(hud.recruit_reject_text(
-					String(evt.get("reason", "")), String(evt.get("kind", "")),
-					int(evt.get("max", 0))))
+				# ★★ 必须按阵营过滤（与下面 upgrade/revive 同一条，**这一类 bug 犯过三次**）：
+				#   阵营 AI 每帧重试招募，被拒后推 `recruit_rejected` —— 不过滤的话
+				#   玩家会一直看到「只能在己方区划内招募…」这种**别人的**红字，
+				#   而且 AI 每帧重试 ⇒ 提示被反复续期、永远不消失（实测报回来的正是这个）。
+				if _is_my_event(evt):
+					hud.show_notice(hud.recruit_reject_text(
+						String(evt.get("reason", "")), String(evt.get("kind", "")),
+						int(evt.get("max", 0))))
 			"order_rejected":
-				hud.show_notice(hud.order_reject_text(String(evt.get("reason", ""))))
+				if _is_my_event(evt):
+					hud.show_notice(hud.order_reject_text(String(evt.get("reason", ""))))
 			"tech_rejected":
 				# ★ 科技启用被拒（满 3 条）。本地那一下已经给过一句提示了，
 				#   这条是**权威侧**的同一句话 —— 两条同文案，所以玩家看到的还是一句。
-				hud.show_notice(hud.tech_reject_text(String(evt.get("reason", ""))))
+				# ★★ 同样要按阵营过滤：AI 也会 `set_tech_active()`（名额满了会推这条）。
+				if _is_my_event(evt):
+					hud.show_notice(hud.tech_reject_text(String(evt.get("reason", ""))))
 			"upgrade_rejected":
-				# ★ 建筑升级 / 区划特化被拒（拒因码见 logic/upgrade.gd 的那几处判定）
-				hud.show_notice(hud.upgrade_reject_text(String(evt.get("reason", ""))))
+				# ★ 建筑升级 / 区划特化被拒（拒因码见 logic/upgrade.gd 的那几处判定）。
+				# ★★ 把**整个事件**传进去：`busy` 那条文案要点名是哪个对象。
+				# ⚠️⚠️ 而且**必须先按阵营过滤**（实测报回来的 bug）：
+				#   阵营 AI 每帧都会对**它自己**在读条的建筑重下一次升级单（它的
+				#   `upgrade_timer` 在那一帧刚好到点），被拒后推一条 `upgrade_rejected` ——
+				#   如果界面不加判断地显示，玩家就会看到「城墙正在读条…」「箭塔正在读条…」
+				#   这种**别人的**消息（玩家原话：「可能是敌人的消息传到我这来了」——正是）。
+				#   所以只显示**自己这一方**产出的拒因（见 `_is_my_event`）。
+				if _is_my_event(evt):
+					hud.show_notice(hud.upgrade_reject_text(String(evt.get("reason", "")), evt))
+			"revive_rejected":
+				# ★★ 「再起」被拒（本轮新增；拒因码见 logic/world.gd 的 revive_reject_reason）。
+				#    ⚠️ 与 upgrade_rejected 同一条：**必须先按阵营过滤** ——
+				#       AI 也会下单再起（它走同一个入口），不过滤的话玩家会看到
+				#       「粮食或黄金不足」这种**别人**的报错。
+				if _is_my_event(evt):
+					hud.show_notice(hud.revive_reject_text(String(evt.get("reason", ""))))
 			"unit_recruited":
 				input_ctrl.notify_unit_recruited(evt.get("leader", null), evt.get("unit", null))
+
+
+## ★★ 这条事件是**本机玩家这一方**产生的吗？（不是就别拿它去打扰玩家）
+##
+## 为什么需要它（实测报回来的 bug）：阵营 AI 也会升级自己的建筑，而它每帧都会对
+## **在读条的那一栋**重下一次升级单（它的冷却计时在那一帧刚好到点），被拒后推
+## `upgrade_rejected` —— 界面不加判断地显示，玩家就会看到「城墙正在读条…」
+## 「箭塔正在读条…」（原话：「可能是敌人的消息传到我这来了」，正是）。
+##
+## 判据（**只在逻辑层不知道「谁是本机」时用** —— 逻辑层是权威，它不知道谁是本机）：
+##   · 事件带 `faction`：== 本机阵营才算我的；
+##   · 不带：**保守地认为是我这边**（宁可多一句提示，也不要漏掉玩家自己的报错）——
+##     这类事件都是「有人下了命令、被拒了」，而目前只有命令与 AI 两条来源。
+func _is_my_event(evt: Dictionary) -> bool:
+	if world == null:
+		return true
+	if not evt.has("faction"):
+		return true
+	return FactionRes.same_side(String(evt.get("faction", "")), String(world.my_faction))

@@ -35,7 +35,7 @@ func _cases() -> void:
 
 ## 跑完一次移动，返回轨迹与统计
 func _run_move(cfg, from_tile: Vector2i, to_pt: Vector2) -> Dictionary:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var u = w.units[0]
 	# ★ 只留这一个单位：轨迹与转角断言不能被附属兵的推挤/交战干扰。
 	#   真的从 world.units 里摘掉 —— 光挪到地图角落仍然会被碰撞推挤影响轨迹
@@ -86,7 +86,7 @@ func _run_move(cfg, from_tile: Vector2i, to_pt: Vector2) -> Dictionary:
 ##   （换地图时真的踩到了，而且是**看起来像功能坏了**的那种失败）。
 ##   挑法：在候选路线里找「一条关掉圆化时 ≥3 点且单帧转角 > 25°」的路线。
 ##
-## ⚠️ 候选表是**照着当前 `test_map.json`（27×22）实测挑的**（每组都是关掉圆化、
+## ⚠️ 候选表是**照着当前 `data/maps/frontier/map.json`（27×22）实测挑的**（每组都是关掉圆化、
 ##    跑完全程、记录路径点与真实轨迹单帧转角得到的）。换图之后这一节最容易红。
 ##    红的时候先看打印出来的 `[corner]` 那几行：全是「路径 1 点 / 0.0°」就说明
 ##    这些坐标在新图上已经不成 L 形了 —— 用探针重新挑几条，别去改下面的阈值。
@@ -185,7 +185,7 @@ func _test_rounded_path_is_walkable(cfg) -> void:
 #    另：点到「己方打不进」的格子（敌方城墙）时，仍然要贴到离点击最近的边界上。
 # ------------------------------------------------------------------
 func _test_own_base_landing(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var b = w.find_base_of("p1")
 	ok(b != null, "有大本营")
 	if b == null:
@@ -218,7 +218,7 @@ func _test_own_base_landing(cfg) -> void:
 ## 「贴边落点」这套机制仍然要作用在**己方进不去**的格子（用到的 p2 的城墙）时，
 ## 落点贴到那格边界，而不是钉到格心或原地不动。
 func _test_hug_enemy_wall(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var u = w.units[0]
 	var spot := Vector2i(-1, -1)
 	for ty in range(3, w.map.rows - 3):
@@ -255,7 +255,7 @@ func _test_hug_enemy_wall(cfg) -> void:
 # 4. 点不可通行格（山 / 连片建筑内部）仍然要有合理落点
 # ------------------------------------------------------------------
 func _test_click_for_impassable(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var u = w.units[0]
 
 	# 点一座山：必须给出落点、走得到、且停在可通行格上

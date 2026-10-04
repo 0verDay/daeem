@@ -590,10 +590,20 @@ func _test_commands(cfg) -> void:
 		{"kind": "building_upgrade", "tx": base.tx, "ty": base.ty}),
 		"钱不够时升级命令被拒")
 	var got := false
+	var got_faction := ""
+	var got_building := false
 	for e in w.tick(DT):
 		if String((e as Dictionary).get("type", "")) == "upgrade_rejected":
 			got = true
+			got_faction = String((e as Dictionary).get("faction", "<无>"))
+			got_building = (e as Dictionary).get("building", null) != null
 	ok(got, "★ 被拒时留了一条 upgrade_rejected 事件（界面拿去显示红字）")
+	# ★★ 事件必须带 `faction` 与对象：界面要靠前者**过滤掉别人的报错**
+	#   （实测 bug：阵营 AI 也会升级自己的建筑，它的被拒事件被界面当成玩家的消息显示，
+	#    于是玩家看到「城墙正在读条…」这种别人的消息刷屏）。
+	ok(got_faction != "<无>",
+		"★★ 被拒事件带上了 faction（界面才能只显示自己这一方的）实际=%s" % got_faction)
+	ok(got_building, "★ 被拒事件带着那栋建筑（`busy` 的文案要点名是哪个对象）")
 	# 未知命令照旧被拒
 	ok(not CommandRes.apply(w, w.cfg, {"kind": "not_a_command"}), "未知命令被拒")
 
@@ -608,7 +618,7 @@ func _quiet(cfg) -> RefCounted:
 		c = cfg
 	else:
 		c.combat_enabled = false
-	return WorldRes.create(c)
+	return require_world(c)
 
 
 func _give(w, food: float, gold: float) -> void:

@@ -46,9 +46,14 @@ func _draw() -> void:
 
 
 ## 攻击线：单位 → 最近一次开火的目标（单位或建筑），以及箭塔 → 目标
+##
+## ★★ 判据用 `is_attackable()` 而不是 `alive`（本轮修 bug）：
+##    濒死的将领**仍然是 alive**，但它倒在原地、这一帧根本不出手 ——
+##    它倒下那一刻的 `attack_flash` 还剩着（`enter_near_death` 会把它清零，
+##    这里只是第二道保险），画出来就是「濒死的将领一直和某个单位连着一条线」。
 func _draw_attack_lines() -> void:
 	for u in world.units:
-		if not u.alive or u.attack_flash <= 0.0:
+		if not u.is_attackable() or u.attack_flash <= 0.0:
 			continue
 		var from := PaletteRes.to_px(u.pos, cfg)
 		var to := Vector2.ZERO

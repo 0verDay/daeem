@@ -801,12 +801,6 @@ class ConfigModel:
     def generals(self) -> List[General]:
         return [self.general(i) for i in range(self.general_count())]
 
-    def escort(self) -> int:
-        return int(_f(self.doc.value(["unit", "general", "escort"], 0), 0.0))
-
-    def set_escort(self, value: int) -> None:
-        self.doc.set(["unit", "general", "escort"], int(value))
-
     def set_general_type(self, index: int, type_id: str) -> None:
         self._check_general_index(index)
         if not self.doc.has(["unit", "types", type_id]):

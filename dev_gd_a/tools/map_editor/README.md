@@ -17,9 +17,14 @@
 
 直接双击 **`dev_gd_a/tools/map_editor/map_editor.bat`** 就行，不用敲命令行：
 
-- 默认打开工程里的 `data/test_map.json`；
+- 默认打开工程里的 `data/maps/frontier/map.json`（随游戏发布的默认地图）；
 - 想开别的地图：**把那张 JSON 拖到 `map_editor.bat` 上**；
 - 找不到 Python（或 Python 缺少 tkinter）时，它会**停住并给出提示**，不会一闪而过。
+
+> ★ **地图在 `data/maps/<id>/map.json`**（一个地图一个目录，目录名 = 地图 id）——
+> 这是游戏开场那条**地图选择条**扫描的目录（见 `daeem/logic/map_library.gd`）：
+> 编辑完把文件导出到这个目录下，重新开一局它就会多出一个选项。
+> 地图 json 里的 `id` / `name` 编辑器不改，但会**原样带过去**（`name` 就是选择条上的显示名）。
 
 > `.bat` 里踩过的四个坑都写在文件头部注释里（`start "" pythonw` 才不会被黑框连坐杀掉、
 > 路径要先消掉 `..`、目录层数不能少一层、行尾必须 CRLF）—— 改它之前先读那几行。
@@ -31,8 +36,8 @@
 python dev_gd_a/tools/map_editor
 
 # 直接打开现有地图（相对 dev_gd_a/daeem/ 或当前目录都认）
-python dev_gd_a/tools/map_editor dev_gd_a/daeem/data/test_map.json
-python dev_gd_a/tools/map_editor data/test_map.json
+python dev_gd_a/tools/map_editor dev_gd_a/daeem/data/maps/frontier/map.json
+python dev_gd_a/tools/map_editor data/maps/frontier/map.json
 
 # 不开窗口，只跑一遍数据层自检（读 config / 读地图 / 导出再导入）
 python dev_gd_a/tools/map_editor --selftest
@@ -359,10 +364,12 @@ Linux 上要装 `python3-tk`）。
 
 ## 五、导出的 JSON 长什么样
 
-就是 `data/test_map.json` 那一套，**多加两张网格 + 阵营那块**：
+就是 `data/maps/frontier/map.json` 那一套，**多加两张网格 + 阵营那块**：
 
 ```json
 {
+  "id": "frontier",                     // 编辑器不改、原样带过去；目录名才是 id
+  "name": "边关",                       // ★ 开场地图选择条上的显示名（不写就用目录名）
   "cols": 17,
   "rows": 22,
 
@@ -392,10 +399,11 @@ Linux 上要装 `python3-tk`）。
   },
   "general_spawns": [...],              // ↓ 这些编辑器不管：读进来时原样留着，导出时原样写回
   "buildings": [...],
-  "units": [...],
   "pvp_points": [...]
 }
 ```
+
+⚠️ **`units`（地图预置单位）不在这张表里** —— 它整个废弃了。见第五节末尾那条 ★★。
 
 几条约定：
 
@@ -430,9 +438,22 @@ Linux 上要装 `python3-tk`）。
   而**每个阵营都必须有一个大本营**。手写的老图如果只有 `base`，
   编辑器**读进来时会把它迁移成 `p1` 的大本营**（那个点位本来就是主阵营的出生点），
   再导出就是新格式。游戏侧仍然能读老字段当兜底（见第五节）。
-- 编辑器不碰 `general_spawns` / `buildings` / `units` / `pvp_points`（按需求：
+- 编辑器不碰 `general_spawns` / `buildings` / `pvp_points`（按需求：
   除了大本营，其它出生点与预置内容暂时由 Godot 侧脚本生成）——
   但**打开一张地图再导出，这几个字段会被完整带回去**，不会因为过一遍编辑器就丢了。
+- ★★ **`units`（地图预置单位）已废弃：编辑器不读、不保留、导出时丢弃。**
+  用户口径是「地图预置单位整个废弃」—— 运行时不再读它（`logic/map_data.gd` /
+  `logic/world.gd` 那一侧同时改掉了），编辑器也不再允许摆、不再保留。
+  落到这个工具上的具体语义：
+  - **读**：`mapfile.dict_to_model()` 读到 `units` **当场丢掉**，连 `model.extra` 都不进；
+  - **写**：`units` **不在 `PRESERVED_KEYS` 白名单里** ⇒ 导出的 JSON 里一定没有这个键；
+  - **⚠️ 副作用（这是需求要的，不是 bug）**：**用编辑器打开一张带预置单位的老图、
+    什么都不改再导出，那张图的预置单位就没了**（会被静默丢掉）。
+    将来的你别把它当回归去「修」回来 —— 钉住这条行为的是
+    `test_model.t_legacy_roundtrip_is_byte_stable` / `t_legacy_import`
+    与 `test_app.t_units_preset_dropped_by_editor`。
+  - ⚠️ **`buildings`（地图预置建筑）是另一回事，照旧原样保留**：它仍然在游戏里用，
+    别人明确要求「别顺手删了它」。
 - `layout` 用 `.` / `^` / `#`，与 `logic/map_data.gd` 的 `LAYOUT_LEGEND` 一致。
 - **文件带 BOM 也能读**（Windows 记事本 / PowerShell 存出来的 UTF-8 基本都带 BOM），
   编辑器按 `utf-8-sig` 读、按不带 BOM 的 UTF-8 写。这条不是小事：
@@ -455,7 +476,8 @@ Linux 上要装 `python3-tk`）。
 - 区块的 `kind` 会按**默认种类**（人口区划）写出去 —— 这是**行为等价**的（游戏侧缺字段时
   也按它算），只是文件里把种类写明确了（用户确认「没有默认区划了」）；它的产能仍然是 0
   （老图没有 `production`，而游戏侧「缺字段 = 0」，**不**按种类预设兜底）
-- `general_spawns` / `buildings` / `units` / `pvp_points` / `_comment` 原样保留
+- `general_spawns` / `buildings` / `pvp_points` / `_comment` 原样保留
+- ⚠️ **`units` 是唯一的例外：老图里带着它也会被丢掉**（该字段已废弃，见第五节 ★★ 那一条）
 
 所以「打开旧图 → 什么都不改 → 导出」得到的地图，游戏里的行为**一模一样**
 （`tests/test_model.py` 里有一条断言就是钉这个的：逐行比对 `layout`、
@@ -466,7 +488,7 @@ Linux 上要装 `python3-tk`）。
 `kind` / `production` / `faction_bases`，`zone.build_from_map()` 与 `map_data.spawn_layout_for()`
 自动切成读新字段那条路 —— 不需要改代码、不需要开关。
 
-> ⚠️ **随游戏发布的那张图已经搬到新格式**（只剩 `data/test_map.json`；老图 `map_01.json`
+> ⚠️ **随游戏发布的默认地图已经搬到新格式**（`data/maps/frontier/map.json`；老图 `map_01.json`
 > 已按用户要求删掉）：27×22、594 个地块、14 个区块（a1…g2）都有自己的中心与产能，并带
 > `faction_bases: {"p1": [7, 2], "p2": [19, 19]}`。
 > ★★ 最近一轮按用户要求把**14 个区块全部设成「人口区划」并同步数字**
@@ -525,7 +547,8 @@ Linux 上要装 `python3-tk`）。
 | `logic/unit.gd` | `STEP_GUARD := 512`（一帧最多推进几段路径）改成按地图对角线算的 `step_guard()` —— 地图尺寸不再写死，大图上一帧能走完该走的路 |
 | `tests/test_map_editor.gd` | 131 项断言：老地图不变、地图外不可通行、`zones` 网格、空区块、`exists` 三种写法、编辑器导出的地图能真的开一局、**阵营大本营**（指定 / 只指定一方 / 落在山上 / 越界）、**区划中心不会凭空立起障碍**（老图没有中心字段）、**区划种类**（`zone_list[].kind` 读得进来 / 认不出的按默认 / 写了种类但没写 production → 产量 0 / 白名单按种类挡） |
 | `tests/test_logic.gd` | 新增两节：`_test_zone_centers`（不可进入 / 无敌 / 不可拆 / 不被索敌 / 点得出区块）与 `_test_zone_population_and_production`（人口累积、产能聚合、无主不产出） |
-| `tests/test_smoke.gd` | `test_map.json`（随游戏发布的唯一一张图）已带 `faction_bases` 且**没有**老 `base` 字段；出生点走 `_ring_layout`（自带防御阵地） |
+| `tests/test_smoke.gd` | `data/maps/frontier/map.json`（随游戏发布的默认地图）已带 `faction_bases` 且**没有**老 `base` 字段；出生点走 `_ring_layout`（自带防御阵地） |
+| `logic/map_library.gd` | 扫 `data/maps/` 列出所有地图（开场主界面那条地图选择条的**唯一**数据源）；`id` / `name` 两个字段编辑器不改、但**原样带过去** |
 
 > ★ 本轮（区块**人口上限** + 框选）还动了这些地方，细节见 [`../../docs/route.md`](../../docs/route.md) 第十六节：
 > `mapfile.py`（读写 `population_cap`）、`app.py`（区块页的「人口上限」输入框 + 撤销栈）、
@@ -663,7 +686,8 @@ dev_gd_a/tools/map_editor/
 
 | 不做 | 说明 |
 |---|---|
-| 预置建筑 / 预置单位 / 将领出生点 / 多方起点轮换 | 按需求：编辑器只管地形、区块（含**区划中心**、**区划种类**与**产能**）、各阵营的大本营；其余由 Godot 侧脚本生成。字段本身会原样带过去 |
+| 预置建筑 / 将领出生点 / 多方起点轮换 | 按需求：编辑器只管地形、区块（含**区划中心**、**区划种类**与**产能**）、各阵营的大本营；其余由 Godot 侧脚本生成。字段本身（含 `buildings`）会原样带过去 |
+| **地图预置单位（`units`）** | ★★ **字段整个废弃**（运行时不读、编辑器不再允许摆）：编辑器**不读也不保留**，导出时**丢弃**它。连数据都清掉了（`data/maps/frontier/map.json` 里的 `units` 已删）。副作用见第五节 ★★ —— 「打开带预置单位的老图再导出」会静默丢掉它们，那是需求要的行为、不是 bug |
 | 撤销栈落盘 | 导出即保存，`Ctrl+Z` 只在本次会话里有效 |
 | 地形笔刷（按住拖动批量刷） | 按需求：**没有笔刷**。单格改地形在属性面板里选，成批改就用 `Shift` 框选（见第四节第 5 小节） |
 | 「地图尺寸 / 铺满这个范围 / 裁剪到画布」 | 按需求：设计时不用考虑尺寸，导出范围永远是已画地块的包围盒（见第三节末尾的说明） |

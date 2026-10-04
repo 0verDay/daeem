@@ -189,12 +189,27 @@ var stuck_timer: float = 0.0
 ## ---- 战斗 / 警戒 ----
 var target = null             # 当前交战的敌方单位
 var target_building = null    # 当前正在拆的建筑（敌人拆城墙走这条路）
-var anchor: Variant = null    # 发现目标时所站的位置，用于「追出去多远」的判定
+## ★★ 「追击参照点」：自动索敌锁定目标时记下**当时所在的位置**，之后**只由
+## `combat._refresh_leash_anchor()` 按目标走的路线往前挪**，用于「追出去多远」的判定。
+##
+## ⚠️ 它**不能**在每次 `acquire_target` 里都无条件重置（实测报回来的 bug：
+##    单位在区划边界原地抽搐）：锁定那一刻距离当然是 0 ⇒ 判据必然通过，走一格就超上限、
+##    放弃，下一帧又锁上 …… 一帧一放一锁。见 `leash_cd` 与 config 的 `leash_release_cd`。
+var anchor: Variant = null
 var attack_cd: float = 0.0
+## 开火特效的剩余量（1 → 0，`flash_sec` 秒衰减完）。**渲染攻击线**读它。
+## ⚠️ 它必须**每帧衰减**，而濒死的将领整段单位逻辑都被跳过 —— 所以
+##    `tick_near_death()` 里也要衰减一次（否则倒下那一刻的 1.0 会永远留着，
+##    画面上就是「濒死的将领一直和某个单位连着一条线」，实测报回来的 bug）。
 var attack_flash: float = 0.0
 var last_target = null        # 最近一次开火的目标单位（渲染攻击线用）
 var last_building = null      # 最近一次攻击的建筑（渲染攻击线用）
 var repath_timer: float = 0.0
+## ★★ 因为追击上限（leash）放弃之后，还要等几秒才允许**再自动锁定单位**。
+## 见 config 的 `combat.leash_release_cd` 与 `combat.acquire_target` 里的那一句。
+## ★ 与驻防将领的 `retarget_cd` 是**两件事**（那个由 general_ai 驱动、管「不追出区划」），
+##   不要合并：玩家阵营的普通单位也要防这个抖动。
+var leash_cd: float = 0.0
 ## 上一次「为追击而重算路径」时，目标所在的位置。
 ##
 ## ★★ 用途：追击时不再无条件按周期重算路径，而是**只在目标真的挪过地方**时才重算。
@@ -245,10 +260,108 @@ var train_anchor: Vector2 = Vector2.ZERO
 var death_timer: float = 0.0  # > 0 表示已阵亡且正在等复活
 var deaths: int = 0
 
+## ---- ★★ 将领**濒死**（本轮新增，见 config.json 的 revive 段）----
+##
+## 需求：将领被打到 0 血不立刻死，而是「濒死」——期间**无敌**（谁也点不到它、
+## 箭塔也不打它）、**不能动也不能打**、血量**只增不减**地慢慢回到上限的 20%；
+## 玩家（或 AI）花资源点「再起」，读条结束后才真正回到战场。
+##
+## ★ 为什么这些状态挂在**单位自己**身上（而不是 world 里另开一张「濒死表」）：
+##   与招募队列同一条理由 —— 濒死天然属于某个将领（它死了状态就该没），
+##   而 `world.units` 已经是权威列表。另开一张表就多出一份要对齐、要快照、
+##   要在「单位被摘出列表」时清理的状态（漏一处就是幽灵将领）。
+##
+## ★★ `downed` 与 `alive` 的分工（这是本机制最容易搞混的一处）：
+##   · `downed == true` **仍然 `alive == true`** —— 因此它照旧占着 AI 的将领槽位
+##     （`_generals_of` 只看 alive）、照旧进 zone 读条、照旧被渲染；
+##   · 「能不能被打 / 能不能被选中为攻击目标」的唯一判据是 `is_attackable()`
+##     （= alive and not downed），**不是** alive。别在别处另写一份。
+var downed: bool = false
+## 离下一次回复还有几秒（每 `revive.regen_sec` 秒回 1% 上限）。
+var nd_regen_timer: float = 0.0
+## 已经回复出来的血量（**绝对量**；写进 hp 的就是它）——见 `nd_hp_ratio`。
+var nd_regen_hp: float = 0.0
+## ★★ 回复量的**比例口径**：`nd_hp_ratio = hp / hp_max` 在「濒死回复」这一路上的镜像。
+##
+## 为什么不能用 `hp / hp_max` 现算：科技（leader_hp_mult）会在回复期间改 `hp_max`，
+## 而需求要的是「按比例重算」（上限 200 → 220 时，30 血（15%）变 33 血（仍是 15%））。
+## 记下比例之后，`hp_max` 一变只要 `hp = hp_max × nd_hp_ratio` 就精确成立，
+## 不会因为浮点误差在长时间回复后漂出一个百分点。
+var nd_hp_ratio: float = 0.0
+## 「再起」的读条：剩余 / 总秒数（`revive_pending` = 正在读条）。
+## ⚠️ 与招募的 train_* 是**两套独立字段**，不要合并：将领可能同时在招兵（读条）与再起，
+##   而两者的规则完全不同（招兵期间被钉住、再起期间无敌且暂停全灭判定）。
+var revive_remaining: float = 0.0
+var revive_total: float = 0.0
+## ★★ 「正在读条再起」这个**布尔开关**（本轮新增）。
+##
+## 为什么不能只看 `revive_remaining > 0`（这是实测踩到的一个真 bug）：
+##   `revive_remaining` 会在**读完的那一帧**被减到 0，于是「全灭判定暂停」那一条
+##   在同一次调用里立刻失效 —— 而函数是**先**走「读条完成 → 站起来」那一支的
+##   直接 `return`，全灭判定整段被跳过。结果：读条读完的那一帧如果它旗下正好一个兵
+##   都没有，它就**带着 0 个兵活着站起来了**（实测：`kill_unit_now` 送不走的将领，
+##   它会在场上以一个「没有部队却活着」的幽灵状态继续存在）。
+##   ⇒ 「暂停到什么时候」必须由一个**显式开关**表达，而不是从倒计时里推。
+var revive_pending: bool = false
+## 倒下的位置（濒死期间钉在这上面：用户拍板「将领濒死后无法移动，视作倒在原地」）。
+## 附属兵的行军攻击目标也是它（**固定点**，不跟踪移动 —— 它本来就动不了）。
+var downed_anchor: Vector2 = Vector2.ZERO
+
 ## ★ 驻守（地图预置单位用的开关）：true = **不执行推进 AI**，原地待着。
 ## 迎战不受影响 —— 有人靠近照样会打（警戒与战斗是另一条路，见 combat.gd）。
 ## 用处：地图上摆几个「测试用守军」时，不希望它们开局就朝玩家据点行军。
 var hold_position: bool = false
+
+## ---- ★★ 将领性（防御性）AI 的归属（本轮新增，见 logic/general_ai.gd）----
+##
+## `garrison_zone_id` = 这个将领**负责的区划 id**（-1 = 不归任何将领性 AI 管）。
+##
+## ★ 为什么是「区划 id」而不是「巡逻点坐标」：需求的整段语义都挂在区划上 ——
+##   「在其归属的区划中有时间间隔地巡逻」「不会追击超过一个区划」「在脱战后招兵」。
+##   存 id 之后，巡逻目标（区划中心）与「追出区划了没有」两件事都只是**一次查表**，
+##   而存坐标就得自己维护一套「这些点属于哪个区划」的映射。
+## ★ 归属从两处来：
+##   · 地图 `units[]` 里的 `zone` 字段（地图作者明写，见 map_data._read_units）；
+##   · 出生时所在的那一格（区划中心招出来的守将 —— 本轮还没有这条路，留着给以后）。
+## ★ 有它的单位**不再跑 enemy_ai 的推进逻辑**（与 hold_position 同一条效果，
+##   见 enemy_ai.gd 的说明）：它只巡逻自己那一亩地。
+var garrison_zone_id: int = -1
+## 下一次巡逻移动还有几秒（由 general_ai 每帧递减，<= 0 时朝**下一个巡逻点**走一趟）。
+var patrol_timer: float = 0.0
+## ★★ 这位守将自己的**巡逻路线**（巡逻点，网格坐标；空 = 还没算，general_ai 会补算）。
+##
+## ⚠️ **必须存在单位自己身上**（不是每帧现算）：路线要「换一个点再走」得记住走到第几个；
+##   而且它由 `_patrol_zone_id` + `id` 派生，重算一次结果也一样（确定性伪随机）。
+var patrol_points: Array[Vector2i] = []
+## 走到路线里的第几个点了（走到底之后**折返**，不是回头从第一个重来）。
+var patrol_index: int = 0
+## 折返方向：+1 = 往数组后面走，-1 = 往回走。
+var patrol_dir: int = 1
+## 这条路线是**给哪个区划**算的（区划换了 / 被改派 → 重算路线）。
+var patrol_zone_id: int = -2
+## 距上一次「正在交战」过去了多久（秒）。达到 ai.general.combat_idle_sec 就认为脱战。
+var combat_idle_timer: float = 0.0
+## ★★ 再战冷却：> 0 时这个驻防将领**不接战**（见到敌人也不锁）。
+##
+## 为什么必须有它（真实行为问题，不是优化）：`combat.acquire_target` 的触发条件是
+##   「静止 + 敌人进警戒半径」，而`combat.aggro_range` 是全局值（默认 4 格）——
+##   于是「守将追出一个区划 → general_ai 叫它脱战走回来 → 它站定 → 下一帧又把同一个
+##   敌人锁上」会形成**高频抖动**（实测每 2~3 帧一次），肉眼看就是
+##   「守将在区划边缘原地抽动」，而且它永远走不回中心（每次都被新命令顶掉）。
+##   冷却期内它只巡逻、不接战，抖动的回路就断了。
+var retarget_cd: float = 0.0
+## ★★ 「我正在回家的路上」（本轮修 bug 新增，见 logic/general_ai.gd）。
+##
+## 为什么必须有它（实测报回来的「卡边界时还是会抽搐」）：
+##   守将追出区划时 `general_ai` 会**当场**给它下一条「回巡逻点」的命令，之后每一帧
+##   还在下 —— 因为「该不该收队」那一支每次命中都会调 `_patrol_leader`。
+##   于是那条返程命令被一帧一帧重下、目标点也在巡逻路线上来回换 ⇒
+##   它的路径每帧被重置，肉眼看就是**在区划边缘原地抽搐**（永远走不回家）。
+##   ⇒ 用这个标志把「返程」变成**一次**的命令：上路了就一路走回去，
+##     走到了（或冷却结束）再恢复正常巡逻。
+var returning_home: bool = false
+## 下一次检查「要不要无消耗招兵」还有几秒（把 O(附庸兵数) 的统计摊到几秒一次）。
+var garrison_recruit_timer: float = 0.0
 
 ## ---- 纯表现的本地标志 ----
 ## selected：由 view/input_controller 写、view/overlay 与 unit_view 读。
@@ -316,6 +429,62 @@ func awaiting_respawn() -> bool:
 
 
 # ------------------------------------------------------------------
+# ★★ 将领濒死（config.json 的 revive 段；规则细节见文件上方那组字段的说明）
+# ------------------------------------------------------------------
+
+## 这个单位现在是不是**濒死**（倒在原地、无敌、不能动也不能打）。
+func is_downed() -> bool:
+	return alive and downed
+
+
+## ★★ **能不能被打 / 能不能被选为攻击目标**的唯一判据。
+##
+## ⚠️ 别在索敌 / 开火 / 点选里写 `alive`：濒死的将领照样 `alive == true`，
+##    用 alive 判就会变成「已经倒地的将领还在挨打」（需求明确禁止）。
+##    与 `is_general()` 一样，这是个**只有一处实现**的判据 —— 多写一份迟早会漂开。
+func is_attackable() -> bool:
+	return alive and not downed
+
+
+## 现在是不是「已经点了再起、正在读条」。
+##
+## ★ 它的语义不止是「有个进度条」：从点下再起那一刻起，该将领**被视为单位**，
+##   全灭判定**暂停**（用户拍板）—— 见 `tick_near_death()`。
+## ★ 判据是那个显式开关 `revive_pending`（不是倒计时 > 0）：读完的那一帧倒计时已经归零，
+##   用它当判据会让「读完 → 站起来」那一步把全灭判定整段跳过（见 `revive_pending` 的说明）。
+func is_reviving() -> bool:
+	return downed and revive_pending
+
+
+## 濒死将领的血量到「允许再起」那条线了吗（config 的 revive.ready_ratio，默认 10%）。
+##
+## ★ 判据放在**单位**上而不是界面里：这是玩法规则（逻辑层也要用它拒命令），
+##   界面只是拿它决定那一格亮不亮。
+func revive_ready(cfg: ConfigRes) -> bool:
+	if not downed or hp_max <= 0.0:
+		return false
+	return hp / hp_max >= cfg.revive_ready_ratio - 1e-9
+
+
+## 濒死回复的进度（0~1；渲染 / 信息栏画那条小进度条用）。
+## ★ 分母是**回复天花板**而不是 hp_max：这条进度要表达的是「离回复满还差多少」。
+func nd_regen_progress(cfg: ConfigRes) -> float:
+	if not downed:
+		return 0.0
+	var cap: float = hp_max * cfg.revive_regen_cap_ratio
+	if cap <= 0.0:
+		return 1.0
+	return clampf(nd_regen_hp / cap, 0.0, 1.0)
+
+
+## 「再起」读条进度（0~1；没在读条时 0）
+func revive_progress() -> float:
+	if revive_remaining <= 0.0 or revive_total <= 0.0:
+		return 0.0
+	return clampf(1.0 - revive_remaining / revive_total, 0.0, 1.0)
+
+
+# ------------------------------------------------------------------
 # 招募队列（将领 = 兵营）
 # ------------------------------------------------------------------
 
@@ -332,6 +501,26 @@ func train_queue_size() -> int:
 	if train_kind != "":
 		n += 1
 	return n
+
+
+## 这个将领现在有**几个兵账**（= 队列里排着的 + 已经生成出来的附属兵）。
+##
+## ★★ 「满员」的唯一判据就是它 —— 见 logic/general_ai.gd 与 faction_ai.gd：
+##   两边都用 `retinue_size() >= min_retinue` 判「补够了没有」，
+##   各写一套「算不算满」迟早会漂开（一个看队列、一个不看，AI 就会永远补不满）。
+## ★ 为什么两个都要算：「已经排上队、还在读条」的那几个**迟早会出来**，
+##   不把它们算进去的话，AI 每帧都会觉得「还差人」而反复下单 —— 队列会瞬间堆满上限。
+##   ⚠️ `train_queue_size()` 已经把正在读条的那个算进去了，别再 `+1`（会虚报一个兵）。
+## ⚠️ `world.retinue_of()` 是遍历 world.units 的（O(单位数)），所以这个函数
+##   只该在**几秒一次**的 AI 决策里调，不要塞进每帧每单位的循环。
+func retinue_size(world) -> int:
+	return world.retinue_of(id, false).size() + train_queue_size()
+
+
+## 这个单位是不是「将领性（防御性）AI」管的驻防将领（见 logic/general_ai.gd）。
+## ★ 判据只有 garrison_zone_id 一处：地图写了 zone、或出生在某个区划里。
+func is_garrison() -> bool:
+	return garrison_zone_id >= 0
 
 
 ## 正在读条那个的进度（0~1；没在读条时 0）
@@ -576,9 +765,16 @@ func order_move(world, cfg: ConfigRes, world_pt: Vector2) -> bool:
 	var ok := move_to(world, cfg, world_pt)
 	if ok:
 		clear_target()
+		# ★★ 顺手清掉「刚因为追击上限放弃过」的冷却：那是**自动索敌**的节流，
+		#    玩家明确下了命令之后，它就只该管「别再自己追出去」，不该拦住新命令。
+		leash_cd = 0.0
 		# 真正的「新命令」：旧落点与回位计数一起作废。
 		# ⚠️ 清零放在这里而不是 move_to —— 否则回位动作会把自己的计数器清零（见 move_to 的注释）。
 		clear_settled_spot()
+		# ★★ 新命令也把「回家」状态清掉（本轮修 bug）：它是**返程**那一段的私有标志，
+		#    玩家 / 别的 AI 一旦下了新命令，那一段返程就该作废 —— 留着这个标志的话，
+		#    驻防将领的第 5 步（巡逻）会永远被跳过，人就定死在原地了。
+		returning_home = false
 	return ok
 
 
@@ -588,12 +784,22 @@ func order_move(world, cfg: ConfigRes, world_pt: Vector2) -> bool:
 
 ## 优先攻击某个敌对单位（右键单击敌人）。
 ## @return 命令是否被接受（不是自己人、还活着）
+##
+## ★★ 判据走 `same_side_for_attack`（同阵营 **或盟友**）：加了阵营归属之后，
+##    玩家**手动点名**也不该能指挥一方去打它的盟友 ——
+##    否则「友善」只挡住了自动索敌，右键一点照样能挑起来（那不是需求要的东西）。
 func order_attack_unit(world, cfg: ConfigRes, enemy) -> bool:
-	if enemy == null or not enemy.alive:
+	# ★★ 濒死的将领**不能被选为攻击对象**（需求原话：「无论是行军攻击还是
+	#    指定攻击都不行」）——所以点名这一路也要挡住。
+	#    ⚠️ 用 `is_attackable()` 而不是 `alive`：濒死者是 alive 的，用 alive 判会漏掉。
+	#    这里返回 false 会让命令层推一条 `order_rejected`（见 _collect_units 那一路：
+	#    整队里只要还有能打的，命令照旧发出去，只是这一个目标被挡掉）。
+	if enemy == null or not enemy.is_attackable():
 		return false
-	if FactionRes.same_side(enemy.faction, faction):
+	if FactionRes.same_side_for_attack(enemy.faction, faction):
 		return false
 	drop_engagement()
+	leash_cd = 0.0             # 新命令：清掉自动索敌的节流（见 config.leash_release_cd）
 	target = enemy
 	ordered_target = enemy
 	ordered_building = null
@@ -603,10 +809,12 @@ func order_attack_unit(world, cfg: ConfigRes, enemy) -> bool:
 
 
 ## 优先攻击某个敌对建筑（右键单击建筑）。
+##
+## ★ 判据同样走 `same_side_for_attack`（见 `order_attack_unit` 的说明）。
 func order_attack_building(world, cfg: ConfigRes, b) -> bool:
 	if b == null or not b.alive:
 		return false
-	if FactionRes.same_side(b.owner, faction):
+	if FactionRes.same_side_for_attack(b.owner, faction):
 		return false
 	# ★ 无敌建筑（区划中心）不接受攻击命令：它 owner 是空字符串，`same_side` 拦不住，
 	#   放进来会变成「走过去对着打不掉的柱子敲一辈子」，而且 ordered_building 黏住之后
@@ -614,6 +822,7 @@ func order_attack_building(world, cfg: ConfigRes, b) -> bool:
 	if b.has_method("is_invulnerable") and b.is_invulnerable():
 		return false
 	drop_engagement()
+	leash_cd = 0.0             # 新命令：清掉自动索敌的节流（见 config.leash_release_cd）
 	target_building = b
 	ordered_building = b
 	ordered_target = null
@@ -629,6 +838,7 @@ func order_attack_move(world, cfg: ConfigRes, world_pt: Vector2) -> bool:
 	if not ok:
 		return false
 	drop_engagement()          # 先脱离当前交战：新命令优先
+	leash_cd = 0.0             # 新命令：清掉自动索敌的节流（见 config.leash_release_cd）
 	ordered_target = null
 	ordered_building = null
 	has_attack_move = true
@@ -1021,19 +1231,249 @@ func clear_settled_spot() -> void:
 ## ⚠️ 只有 world.pvp_enabled 时才开复活。单机必须是「死了就没了」的行为，
 ##    否则「杀死测试敌人」这件事在单机下就不再成立（见 docs/pitfalls.md 3.8：
 ##    HTML 版的复活一开始泄漏进了单机）。
+##
+## ★★ 将领的**濒死**分支（本轮新增，见 config.json 的 revive 段）：
+##    将领血量归零时不再直接死，而是进「濒死」——前提是它**旗下还有存活部队**
+##    （判定在 `world.enter_near_death` 里，因为「旗下有谁」要看整个 world.units）；
+##    已经濒死的单位**免疫一切伤害**，所以第一句直接挡掉（`is_attackable()`）。
+##
+## @return 本击之后这个单位**还能不能被当作在场单位**（true = 还活着 / 或已濒死）
 func take_damage(cfg: ConfigRes, world, amount: float, _source = null) -> bool:
+	# ★ 濒死 = 无敌：需求原话「在将领濒死期间，该将领无法被选中为攻击对象且不会受到伤害」。
+	#   ⚠️ 这一句同时兜住了「读条中被打断」：读条期间仍然免疫（用户拍板）。
+	if downed:
+		return true
 	hp = maxf(0.0, hp - amount)
 	if hp <= 0.0 and alive:
-		alive = false
-		stop()
-		deaths += 1
-		var sec := 0.0
-		if world != null and world.pvp_enabled:
-			sec = maxf(0.0, cfg.respawn_sec)
-		death_timer = sec
-		if world != null:
-			world.push_event({"type": "kill", "unit": self, "source": _source})
+		# ★★ 将领先走「濒死」这条路：world 决定它到底是倒下去还是当场阵亡
+		#    （旗下还有兵 → 濒死；一个兵都没有 → 直接死，用户拍板）。
+		#    ⚠️ 判据用 `world.has_method(...)`：unit 不能 preload world（循环依赖），
+		#      而测试里也真的存在「不给 world 就直接扣血」的调用。
+		if is_general() and world != null and world.has_method("enter_near_death") \
+				and world.enter_near_death(self):
+			return alive
+		_die(cfg, world, _source)
 	return alive
+
+
+## ★ 当场阵亡（含濒死判定失败、与「濒死期间旗下部队全灭」那一条）。
+##
+## ★ 为什么单独抽出来：死亡这件事现在有**三条**入口（吃到致命伤、进濒死时发现没兵、
+##   濒死期间兵全死光），三条都要做同一套收尾（停手 / 计数 / 事件），
+##   抄三份的话「哪次忘了 push_event」会表现成「将领没了但界面什么都没说」。
+func _die(cfg: ConfigRes, world, _source = null) -> void:
+	if not alive:
+		return
+	# ★★ 濒死 / 读条中的状态一起清掉：它们是「还活着」的附属状态，
+	#    不清的话（比如在读条中被判死）会留下一个 hp=0、downed=true 的幽灵对象。
+	downed = false
+	nd_regen_hp = 0.0
+	nd_hp_ratio = 0.0
+	nd_regen_timer = 0.0
+	revive_pending = false
+	revive_remaining = 0.0
+	revive_total = 0.0
+	alive = false
+	stop()
+	deaths += 1
+	var sec := 0.0
+	if world != null and world.pvp_enabled:
+		sec = maxf(0.0, cfg.respawn_sec)
+	death_timer = sec
+	if world != null:
+		world.push_event({"type": "kill", "unit": self, "source": _source})
+
+
+## 立刻死亡（对外入口：world 判定「旗下部队全灭」时调它）。
+func die_now(cfg: ConfigRes, world, reason: String = "") -> void:
+	if not alive:
+		return
+	_die(cfg, world, null)
+	if world != null and reason != "":
+		world.push_event({"type": "leader_lost", "unit": self, "reason": reason})
+
+
+## ★★ 每帧推进「濒死」这一套状态（回复 + 全灭判定 + 再起读条）。
+##
+## 调用点只有一个：`logic/combat.gd` 的 `tick_frame()`（在「这一帧做什么」之前）。
+## 为什么不做成 world.tick 里的另一个循环：那会让 tick 多一遍 O(单位数) 的扫描，
+## 而这件事**本来就只属于将领**，挂在单位自己的每帧更新上最省。
+##
+## 规则（逐条对应需求）：
+##   1. **再起读条**：推进剩余秒数，读完 → 脱离濒死（**血量不变**，用户拍板）；
+##   2. **全灭判定**：旗下存活部队（含队列里在读条 / 排队的兵）空 → 立即死亡；
+##      ⚠️ **正在读条再起时暂停**（用户拍板：「只要点击再起，就将这个将领视作是单位」）——
+##      判据是显式开关 `revive_pending`，**不是** `revive_remaining > 0`（见它的说明）；
+##   3. **回复**：每 `regen_sec` 秒回 `regen_ratio × hp_max`，总量封顶
+##      `regen_cap_ratio × hp_max`，**只增不减**（濒死期间不吃伤害 + 基准取较大值）。
+func tick_near_death(cfg: ConfigRes, world, dt: float) -> void:
+	if not downed or not alive:
+		return
+	# ★★ 先衰减**开火特效**（本轮修 bug）：这一帧之后马上就可能 `return` 掉
+	#    （读条读完 / 部队全灭），而濒死期间 `combat.update_unit` 整段不跑 ——
+	#    不在这里衰减的话 `attack_flash` 会永远停在倒下那一刻的值，
+	#    渲染就会一直画那条攻击线（见 `attack_flash` 的字段说明）。
+	if attack_flash > 0.0:
+		attack_flash = maxf(0.0, attack_flash - dt / cfg.flash_sec_safe)
+	# ★★ 顺序不能反：**先推进再起读条**（这一帧读完就站起来），
+	#    **再**跑全灭判定（有开关就跳过）。
+	#    ⚠️ 反过来（先判全灭）会让「正在读条的最后一帧」被全灭判定抢先生效 ——
+	#      用户拍板说过读条期间暂停全灭判定，那一帧正是它最该生效的时候。
+	#
+	# ---- 1) 再起读条 ----
+	if revive_pending:
+		revive_remaining = maxf(0.0, revive_remaining - dt)
+		if revive_remaining <= 0.0:
+			_finish_revive(world)
+			return
+	# ---- 2) 全灭判定（读条期间暂停 —— 开关是 `revive_pending`，不是倒计时）----
+	if not revive_pending and not _has_living_retinue(world):
+		die_now(cfg, world, "retinue_wiped")
+		return
+	# ---- 3) 缓慢回复血量（只增不减）----
+	# ★ 停下条件是「已经到天花板」：进入濒死那一刻 hp 已经是 1 点（需求原文的
+	#   「从 0 提升至 1」），所以这里**不能**用 `hp > 0` 当门槛 —— 那会让回复一次都不发生。
+	#   ⚠️ 回复量写在 `nd_regen_hp` 上（不是 `hp += …`）：科技改 `hp_max` 时，
+	#      比例对齐（`_finish_revive`）与「只增不减」的下限都要用它，
+	#      见 `apply_hp_bonus` 与下面那条 `max(记账, 当前血量)` 的说明。
+	#
+	# ★★ 计时器初值必须是**一个完整周期**（`enter_near_death` 里按 config 设的）：
+	#    设 0 的话，「<= 0 就回一次」这条判据会在**进入濒死后的第一帧**立刻兑现一次 ——
+	#    实测症状是「几乎瞬间回满 1%」（3 秒周期变成 1/60 秒），
+	#    而需求要的是「每 3 秒回复」。这个坑很隐蔽：它看起来像「回复调快了」，
+	#    其实是初始化漏了。
+	var cap: float = hp_max * cfg.revive_regen_cap_ratio
+	if nd_regen_hp >= cap - 1e-9:
+		return
+	nd_regen_timer -= dt
+	if nd_regen_timer > 0.0:
+		return
+	# ★★ 计时器是 `+= regen_sec` 而不是 `= regen_sec`：一帧跨过多个周期时
+	#    （dt 大 / regen_sec 配得小）时间轴**不漂** —— 与招募读条那条预算算法同一套计较。
+	nd_regen_timer += cfg.revive_regen_sec
+	# ⚠️ 基准取 `max(记账, 当前血量)` 而不是只用记账：两者在正常情况下逐帧相等，
+	#    但**任何**从别处写 `hp` 的动作（测试摆场面、以后新加的增益）都会让记账落后 ——
+	#    那时「hp = 记账 + 1%」会把血量**往下压**，正好违反需求里那条「只增不减」。
+	#    取较大值之后，回复永远只可能把血量抬高（这条判据是免费的，一次比较）。
+	var base: float = maxf(nd_regen_hp, hp)
+	nd_regen_hp = minf(cap, base + hp_max * cfg.revive_regen_ratio)
+	nd_hp_ratio = nd_regen_hp / hp_max if hp_max > 0.0 else 0.0
+	hp = nd_regen_hp
+
+
+## 旗下**还有没有存活部队**（含队列里在读条 / 排队的兵）。
+##
+## ★ 口径与 `retinue_size()` 一致（= `world.retinue_of(id, true)` + 队列里的账）：
+##   「排上队、还在读条」的那几个迟早会出来，它们当然算「旗下还有部队」——
+##   否则会出现「将领刚倒下、因为援兵还在读条就被判死」这种最冤的死法。
+func _has_living_retinue(world) -> bool:
+	if world == null:
+		# 没有 world（无头测试直接调）时**按还有部队处理**：宁可让它留着，
+		# 也不要让「世界没传进来」表现成「将领当场暴毙」。
+		return true
+	if not world.retinue_of(id, true).is_empty():
+		return true
+	return train_queue_size() > 0
+
+
+## ★★ 进入濒死（由 `world.enter_near_death()` 在确认「旗下还有部队」之后调）。
+##
+## 做四件事，顺序不能反：
+##   1. `stop()` —— 清掉移动 / 玩家命令 / 交战（「倒在原地」= 什么都不做了）；
+##      ⚠️ 必须在记 anchor **之前**调：`stop()` 只改 path / 命令，**不改 pos**，
+##         所以 anchor 取到的仍然是它倒下的那一刻的位置；
+##   2. 记下倒下点 `downed_anchor`（附属兵的行军目标，也是钉住的位置）；
+##   3. 血量归零 → **再抬到 1 点**：需求原文「若否（仍存在部队），则该将领血量
+##      从 0 提升至 1，并持续缓慢回复」。★ 回复记账（`nd_regen_hp`）从这 1 点开始，
+##      于是「每 3 秒 +1% 上限」是这个 1 点**之上**的增量，总量仍然封顶 20%；
+##   4. 标记 downed（此后免疫伤害、不可被选为攻击对象、不能动也不能打）。
+##
+## @param regen_sec 回复周期（config 的 `revive.regen_sec`，默认 3 秒）。
+##        ⚠️ 必须由调用方传进来：`nd_regen_timer` 是「离下一次回复还有几秒」，
+##        初值留 0 的话 `tick_near_death` 里那条「<= 0 就回一次」的判据会**在
+##        进入濒死后的第一帧立刻兑现** —— 实测症状是「几乎瞬间回满 1%」
+##        （3 秒周期实际变成 1/60 秒），而需求要的是「每 3 秒回复」。
+##        unit 不能 preload config（会与 config 的单位类型表形成循环依赖），
+##        所以这个值只能从外面给（调用方 `world.enter_near_death()`）。
+func enter_near_death(regen_sec: float = 3.0) -> void:
+	if not alive or downed:
+		return
+	stop()
+	# ★★ 顺手把**攻击特效**也灭掉（本轮修 bug）：
+	#   `stop()` → `clear_target()` → `drop_engagement()` 清的是 `target` / `anchor`，
+	#   而**渲染攻击线读的是 `attack_flash` + `last_target`** —— 那两个字段它是故意不动的
+	#   （打完一发之后线要留 flash_sec 秒才淡掉）。
+	#   倒下之后整段单位逻辑被跳过 ⇒ flash 永不衰减、`last_target` 也一直指着那个人，
+	#   画面上就是「濒死的将领一直和某个单位连着一条线」（实测报回来的 bug）。
+	attack_flash = 0.0
+	last_target = null
+	last_building = null
+	downed_anchor = pos
+	downed = true
+	hp = minf(hp_max, 1.0)
+	nd_regen_hp = hp
+	nd_hp_ratio = hp / hp_max if hp_max > 0.0 else 0.0
+	# 第一次回复发生在一个完整周期之后（见 tick_near_death 那段 ⚠️）。
+	nd_regen_timer = maxf(0.01, regen_sec)
+	# 刚倒下时当然没有在读条（「再起」要等血量回到 10% 才允许点）。
+	revive_pending = false
+	revive_remaining = 0.0
+	revive_total = 0.0
+
+
+## 开始「再起」读条（扣费由 `world.start_revive()` 负责 —— 这里只管状态）。
+func start_revive(cfg: ConfigRes) -> void:
+	revive_pending = true
+	revive_total = maxf(0.0, cfg.revive_channel_sec)
+	revive_remaining = revive_total
+	# ★ 0 秒读条（配置成瞬发）时 `revive_remaining` 是 0，那样进度条与「还剩几秒」
+	#   都会显示成 0。用一个极小正值当哨兵：下一帧 tick 立刻读完。
+	if revive_remaining <= 0.0:
+		revive_remaining = 1e-6
+		revive_total = 1e-6
+
+
+## 取消「再起」读条（回到「只是濒死」的状态；退款由 world 负责）。
+## ★ 取消之后**全灭判定立刻恢复**（`revive_pending = false`）—— 这正是「退款」的代价。
+func cancel_revive() -> void:
+	revive_pending = false
+	revive_remaining = 0.0
+	revive_total = 0.0
+
+
+## 读条结束 → 真正脱离濒死。
+##
+## ★★ **不改血量**（用户拍板：「再起时该将领血量是多少，再起后就是多少」）——
+##   所以这里一个 hp 赋值都没有。脱险之后它照旧从当前这点血开始，
+##   靠己方领地的缓慢回血（combat.gd 那一条）慢慢恢复。
+func _finish_revive(world) -> void:
+	downed = false
+	revive_pending = false
+	revive_remaining = 0.0
+	revive_total = 0.0
+	# ★★ 站起来这一刻要把「濒死期间科技改过的血量上限」对齐一次：
+	#    濒死期间 `apply_hp_bonus()` **只改上限、不动当前血量**（那是为了守住
+	#    「回复期间只增不减」），所以按上限重算当前血量的那一步挪到了这里 ——
+	#    比例仍然取 `nd_hp_ratio`（= 回复到哪一档），于是「上限涨了、占比不变」照旧成立。
+	if hp_max > 0.0 and nd_hp_ratio > 0.0:
+		hp = clampf(hp_max * nd_hp_ratio, 1.0, hp_max)
+	nd_regen_hp = 0.0
+	nd_hp_ratio = 0.0
+	nd_regen_timer = 0.0
+	# ★ 满血 / 0 血的边界：读条期间不会掉血，所以这里 hp 至少是 1%（或 0 血那 1 点）。
+	#   仍然兜一下：万一 hp 是 0（0 秒读条 + 还没回过血），给它 1 点，
+	#   否则它会以一个「0 血但活着」的状态回到战场（下一次挨打立刻又濒死）。
+	if hp <= 0.0:
+		hp = minf(hp_max, 1.0)
+	# 交战的余数清掉：刚站起来不该继承倒下前的追击路径（那些路径是给「倒下点」的）。
+	clear_target()
+	attack_cd = 0.0
+	# ★ 再战冷却：站起来那一下附近往往还有敌人，用驻防将领那条冷却挡住
+	#   「一睁眼就被同一个敌人再锁一次」（见 retarget_cd 的说明）。
+	retarget_cd = maxf(retarget_cd, 1.0)
+	if world != null:
+		world.push_event({"type": "leader_revived", "unit": self})
+
 
 
 ## 复活倒计时。到点后满血、回到自家大本营旁边、清空所有交战状态。
@@ -1111,6 +1551,16 @@ func hp_ratio() -> float:
 ##   不记的话，`hp *= mult` 每调一次就再乘一次 —— 半血的兵会越乘越满。
 ##
 ## ⚠️ 血量为 0 / 单位不在场时不缩放（分母没有意义，复活时会走 `hp = hp_max`）。
+##
+## ★★ 濒死将领（本轮新增）：**只改上限，当前血量与回复记账一概不动** ——
+##   那是「回复期间血量只增不减」这条需求在代码里的落点（见下面那段 ⚠️⚠️）。
+##   比例存在 `nd_hp_ratio` 里，站起来那一刻（`_finish_revive`）才按它把当前血量对齐，
+##   于是「上限涨了、占比不变」（用户拍板）在**能安全对齐的时刻**成立。
+##
+## ⚠️⚠️ 为什么濒死期间一律不许改 `hp`（实测踩到的真 bug）：
+##    `world._apply_tech_effects()` 会遍历所有单位调这个函数，而它算的是
+##    「按比例缩放当前血量」—— 对濒死者来说，那等于**把回复出来的血覆盖掉**
+##    （实测：本应 16.5 血的濒死将领被压回 2.1，正是需求里禁止的「血量下降」）。
 func apply_hp_bonus(mult: float) -> void:
 	var m: float = maxf(0.01, mult)
 	if absf(m - tech_hp_mult) < 1e-9:
@@ -1120,8 +1570,12 @@ func apply_hp_bonus(mult: float) -> void:
 		return
 	# ★ 上限**从基础值重新算**（`base_hp_max × 倍率`），不是在旧上限上再乘一次 ——
 	#   见 `base_hp_max` 的说明（弃用之后要能精确回到原值）。
+	if downed:
+		hp_max = base_hp_max * m
+		return
 	var ratio: float = 1.0
 	if hp_max > 0.0:
 		ratio = clampf(hp / hp_max, 0.0, 1.0)
 	hp_max = base_hp_max * m
 	hp = hp_max * ratio
+

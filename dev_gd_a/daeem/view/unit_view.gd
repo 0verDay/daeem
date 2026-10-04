@@ -29,6 +29,12 @@ const CULL_PAD_PX := 48.0
 const FACING_COLOR := Color(0, 0, 0, 0.5)
 const ENGAGED_COLOR := Color(1.0, 0.45, 0.35, 0.95)
 const HP_BACK_COLOR := Color(0, 0, 0, 0.55)
+## ★★ 濒死将领（本轮新增）：身体压暗 + 头顶一个小十字。
+##   为什么要「看得见地不一样」：它现在**免疫伤害、也点不到**（需求），
+##   如果画得和普通将领一样，玩家会一直右键它、然后以为攻击坏了。
+##   压暗表达「它没在战斗」，十字表达「它需要处理」（与医疗类标识的通用读法一致）。
+const DOWNED_TINT := Color(1, 1, 1, 0.38)
+const DOWNED_MARK_COLOR := Color(0.98, 0.82, 0.35, 0.95)
 ## 选中光晕（那张纯白圆盘贴图）的贴图边长（像素）。
 ## ⚠️ 单位本体现在画的是**一个字的图标**（见 view/unit_icon.gd），不再是圆盘 ——
 ##   圆盘只留给「选中光晕」这一层用（它本来就是一团柔和的圆）。
@@ -138,6 +144,8 @@ func _draw() -> void:
 	var glyphs: Array = []          # 每个单位要画的**那个字**
 	var discs: Array = []           # 每个单位那张**圆盘贴图**（普通 / 将领两档）
 	var leaders := PackedByteArray()
+	## ★ 每个单位是不是**濒死**（本轮新增）——身体要压暗、头顶要画一个小十字。
+	var downeds := PackedByteArray()
 	## 单位类型 → 屏幕半径（像素）。**逻辑半径**，字的外框另乘 unit_icon.EXTENT。
 	var radius_by_type: Dictionary = {}
 	## 单位类型 → 地图上那个字（同一个兵种几百个单位只查一次表）
@@ -168,6 +176,7 @@ func _draw() -> void:
 			char_by_type[utype] = ch
 		var col: Array = _colors_for(u.faction)
 		var is_leader: bool = u.is_general()
+		var is_down: bool = u.is_downed()
 		units.append(u)
 		pts.append(p)
 		radii.append(r)
@@ -175,7 +184,15 @@ func _draw() -> void:
 		# ★ 圆盘贴图只有两张（普通 / 将领那一档的**描边更粗**），静态缓存
 		discs.append(UnitIconRes.bake(is_leader))
 		leaders.append(1 if is_leader else 0)
-		body_cols.append(col[0])
+		downeds.append(1 if is_down else 0)
+		# ★★ 濒死的将领**压暗**（见 DOWNED_TINT 的说明）：圆盘那一遍用的是
+		#    `body_cols[i]` 当 modulate，所以这里直接给一个带透明度的颜色，
+		#    不必在绘制循环里再判一次（1000 单位下这省下的是每单位一次乘法）。
+		#    ⚠️ 必须是**四参构造**：`Color(某个Color, alpha)` 不是 Godot 的合法重载
+		#      （实测会直接报 "Too many arguments for Color() constructor"）。
+		var base_col: Color = col[0]
+		body_cols.append(base_col if not is_down
+			else Color(base_col.r, base_col.g, base_col.b, DOWNED_TINT.a))
 		ring_cols.append(col[1])
 		hp_cols.append(col[2])
 
@@ -245,6 +262,18 @@ func _draw() -> void:
 			draw_colored_polygon(PackedVector2Array([
 				pts[i] + Vector2(-3.5, -d), pts[i] + Vector2(3.5, -d), pts[i] + Vector2(0.0, -d - 5.0),
 			]), ENGAGED_COLOR)
+	# 5.5) ★★ 濒死标记（本轮新增）：头顶一个小十字 —— 「这个将领倒了，需要处理」。
+	#      ⚠️ 画在交战三角**后面**、血条**前面**：濒死的将领没有交战目标
+	#      （进濒死时 stop() 清过），所以两者不会打架；放在这里只是为了让
+	#      「头顶那一片」的图层顺序稳定（三角 → 十字 → 血条，从下往上）。
+	#      ★ 十字的位置用**同一个**让开字的偏移，与三角保持一致。
+	for i in n:
+		if downeds[i] == 0:
+			continue
+		var md: float = radii[i] * UnitIconRes.EXTENT + 2.0
+		var mc: Vector2 = pts[i] + Vector2(0.0, -md - 3.0)
+		draw_line(mc + Vector2(-4.0, -4.0), mc + Vector2(4.0, 4.0), DOWNED_MARK_COLOR, 2.0)
+		draw_line(mc + Vector2(-4.0, 4.0), mc + Vector2(4.0, -4.0), DOWNED_MARK_COLOR, 2.0)
 	# 6) 血条：不满血才画（满血不画，避免刷屏）。
 	#    底 + 填充合成**一遍**：两笔都是 draw_rect（顶点色不同，仍然合批），
 	#    拆成两遍只是白扫 1000 个单位、白判两次血量。

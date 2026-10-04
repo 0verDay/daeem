@@ -4,7 +4,10 @@
 ##   · 参考图给的是**像素稿**（还专门标了「详细信息 1030×240」）。几何一旦被人手改坏，
 ##     肉眼看「差不多大」是看不出来的 —— 只有断言能发现。
 ##   · 几条**需求原话**必须钉住：点部队行「只选中、镜头不动」、命令卡「随页签实时切换」、
-##     「科技点不动」、「设置点不动」、空槽显示「…」。
+##     「科技点不动」、空槽显示「…」。
+##     ⚠️ 原话里还有一条「**设置点不动**」，**本轮作废**：设置按钮现在会弹出设置二级菜单
+##        （全屏 / 返回主菜单），那两条的断言搬到了 tests/test_settings_menu.gd。
+##        这里保留的只有「点设置不会顺手切页签」这条副作用断言。
 ##   · 无头也能跑 = 这套 UI 不依赖真实窗口（headless 视口就是工程设置的那一个）。
 ##
 ## ⚠️ 挂节点必须在 `await process_frame` 之后 —— `_initialize()` 阶段
@@ -482,7 +485,7 @@ func _test_panels(cfg) -> void:
 	var root_node = (packed as PackedScene).instantiate()
 	root.add_child(root_node)
 	await process_frame
-	root_node._on_test_pressed()          # 与玩家点一下 test 按钮完全同一条路
+	root_node._on_test_pressed(root_node.start_screen.selected_map_path())          # 与玩家点一下 test 按钮完全同一条路
 	await process_frame
 	await process_frame
 
@@ -496,6 +499,19 @@ func _test_panels(cfg) -> void:
 	if main.hud == null:
 		root_node.queue_free()
 		return
+
+	# ★★ 给这一局的将领配上附属兵（本轮口径变更）。
+	#
+	# 为什么必须在这里补：`main._on_test_pressed(map_path)` 走的是**不带关卡的**
+	# `World.create()`（`view/game_scene.gd` 的 `start()`），而 `config.json` 的
+	# `unit.general.escort` 全局缺省本轮已删除 ⇒ 开局三位将领**光杆**。
+	# 于是本文件里所有依赖「一支队伍 = 将领 + 它的兵」的用例（框选整队、部队列表高亮、
+	# 下拉里的队伍人数……）全都失去了被测对象，报出来的是「框里 0 个己方单位」这种
+	# 看起来像框选坏了的现象。
+	# ⚠️ 这里**不是**给玩法开后门：真游戏那一条路是关卡 `start_units[].escort_of`
+	#    （见 `view/game_scene.gd` 的 `start_level()`）；本文件用的是「按 test 直接开一局」
+	#    那条老路径，没有关卡数据可摆，所以由测试自己把队伍摆出来。
+	_seed_player_escorts(main, 5)
 
 	# ---- 节点树 ----
 	for path in ["HudRoot/SquadPanel", "HudRoot/MapPlaceholder", "HudRoot/DetailPanel",
@@ -557,6 +573,7 @@ func _test_panels(cfg) -> void:
 	_test_queue_cancel_via_click(main)
 	_test_auto_select_on_recruit(main)
 	_test_order_locked_notice(main)
+	_test_foreign_reject_notice_filter(main)
 	_test_right_click_orders(main)
 	await _test_box_select(main)
 	_test_detail_basic_stats(main)
@@ -1098,9 +1115,16 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 		main.hud.refresh()
 		eq(card.cell_label(0), "升级城墙", "★ 再改回城墙 → 又跟着变回来（反方向也要对）")
 		# 换一栋**同类型但不同位置**的建筑：内容一样，但不许崩 / 不许留旧目标
+		#
+		# ⚠️ 这里必须限定「和 wall_b **同一方**」：`building_list` 里现在混着 NPC 阵营的
+		#    建筑（地图上预置的对家据点，以及阵营 AI 的大本营与防御阵地）——
+		#    随便挑一栋 "wall" 很可能挑到 AI 的那一堵，而那一堵**正被 AI 升级着**
+		#    （faction_ai 会花自己的钱升级自己的楼），于是卡片上写的是「取消升级」。
+		#    那是对的行为，只是这条用例想验的是「换一栋同类建筑，文案照旧」。
 		var wall_b2 = null
 		for b2 in world.building_list:
-			if b2 != null and b2.alive and b2.type == "wall" and b2 != wall_b:
+			if b2 != null and b2.alive and b2.type == "wall" and b2 != wall_b \
+					and FactionRes.same_side(String(b2.owner), String(wall_b.owner)):
 				wall_b2 = b2
 				break
 		if wall_b2 != null:
@@ -1662,7 +1686,8 @@ func _test_recruit_via_card(main) -> void:
 	var world = main.world
 	var card = main.hud.command_card
 	var g1 = world.unit_by_id("general-1")
-	var per: int = main.cfg.general_escort_count()
+	# ★★ 本轮口径：`Config.general_escort_count()` 已删除（没有全局缺省编制了）——
+	#    这里的 `before` 只当**基线**用（新兵要接在它后面），不再去问配置要一个数。
 	var before: int = world.retinue_of(g1.id).size()
 
 	# 没有选中将领时不发命令，只提示
@@ -2105,12 +2130,72 @@ func _test_order_locked_notice(main) -> void:
 	ok(not g1.is_training(), "收尾：队列已清空")
 
 
+## ★★ 「别人的报错不许传到玩家界面上」——**这一类 bug 已经犯过三次**，所以单独立一条。
+##
+## 历史（都是实测报回来的，症状一模一样：玩家什么都没做，左栏一直挂着一句别人的红字）：
+##   1. `upgrade_rejected` —— 阵营 AI 对**在读条的建筑**每帧重下升级单（玩家原话：
+##      「可能是敌人的消息传到我这来了」）；
+##   2. `revive_rejected` —— AI 也会让将领「再起」，被拒后推原因；
+##   3. `recruit_rejected` —— AI 每帧重试招募，被拒后推「只能在己方区划内招募…」。
+##      ⚠️ 第三条最烦人：AI 每帧重试 ⇒ 提示被**反复续期**，2 秒的限时永远走不完，
+##      看起来就是「一直挂着」。
+##
+## 判据（`view/game_scene.gd` 的 `_consume_events` → `_is_my_event`）：
+##   · 事件带 `faction`：**只有本机阵营**（含盟友，走 `same_side`）才显示；
+##   · 不带 `faction`：保守地当成自己的（宁可多一句，也别漏掉玩家自己的报错）。
+## 所以逻辑层那几处 push 事件**必须带上下单的那一方** —— 这一条同时钉住两半。
+func _test_foreign_reject_notice_filter(main) -> void:
+	# 先把提示清干净
+	main.hud.show_notice("")
+	ok(not main.hud.notice_active(), "（前提）提示是空的")
+
+	# ---- ① 别人的拒因：**不许**出现在玩家界面上 ----
+	var foreign: Array = [
+		{"type": "recruit_rejected", "reason": "zone", "kind": "spearman", "faction": "enemy"},
+		{"type": "upgrade_rejected", "reason": "busy", "kind": "building_upgrade",
+			"faction": "enemy"},
+		{"type": "revive_rejected", "reason": "cost", "faction": "enemy"},
+		{"type": "tech_rejected", "reason": "limit", "tech_id": "t1", "faction": "enemy"},
+	]
+	main._consume_events(foreign)
+	ok(not main.hud.notice_active(),
+		"★★ 敌方的被拒事件**不显示**在自己的详细信息栏（实际：%s）" % main.hud.notice_text())
+	eq(main.hud.notice_text(), "", "★ 而且文案是空的（不是「显示了但很短」）")
+
+	# ---- ② 自己这一方的拒因：照旧要显示（别把过滤做过头） ----
+	main._consume_events([{"type": "recruit_rejected", "reason": "zone",
+		"kind": "spearman", "faction": "p1"}])
+	ok(main.hud.notice_active(), "★ 自己这一方的拒因照旧显示")
+	ok(main.hud.notice_text().contains("己方区划"),
+		"★ 文案还是那一句（实际：%s）" % main.hud.notice_text())
+
+	# ---- ③ 不带 faction 的事件：保守地当成自己的（宁可多一句，也别漏报错） ----
+	main.hud.show_notice("")
+	main._consume_events([{"type": "order_rejected", "reason": "recruiting"}])
+	ok(main.hud.notice_active(),
+		"★ 不带 faction 的事件照旧显示（保守策略：漏掉玩家自己的报错更糟）")
+
+	# ---- ④ 逻辑层真的带上了 faction（不然上面那三条过滤全是摆设） ----
+	var world = main.world
+	var leader = world.unit_by_id("general-1")
+	world.start_recruit("spearman", leader.id, "enemy")     # 拿敌方名义下单 → 必被拒
+	var seen: Dictionary = {}
+	for e in world.tick(1.0 / 60.0):
+		var ev: Dictionary = e
+		if String(ev.get("type", "")) == "recruit_rejected":
+			seen = ev
+	ok(seen.has("faction"),
+		"★★ recruit_rejected 事件带上了 faction（界面那条过滤才有依据）")
+	eq(String(seen.get("faction", "")), "enemy", "★ 带的是**下单那一方**，不是本机")
+	main.hud.show_notice("")
+
+
 # ---- 招募队列控件（RecruitQueue）：汇总带 + 五格的显示与读条（第七轮的显示优化）----
 #
 # ★ 这里单独构造一个控件、直接喂一个「正在招募」的将领 ——
 #   不去动主场景那个世界（它还要给后面的用例用，tick 满 10 秒会把巡逻兵引过来）。
 func _test_queue_control(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	w.resources["food"] = 1000.0
 	w.resources["gold"] = 1000.0
 	var g1 = w.unit_by_id("general-1")
@@ -2196,7 +2281,7 @@ func _hover_queue_cell(q: Control, slot: int) -> void:
 # 症状有多难查见 pitfalls 5.14：命令是输入事件触发的、跑在两次 tick 之间，
 # 而 tick 曾经在**开头**清空 _events —— 命令事件在送到界面前就被丢掉了。
 func _test_recruit_queued_event(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	w.resources["food"] = 1000.0
 	w.resources["gold"] = 1000.0
 	var g1 = w.unit_by_id("general-1")
@@ -2320,6 +2405,42 @@ func _test_right_click_orders(main) -> void:
 #
 # ★ 这一节刻意**把队伍摆到受控的位置上**再用框去框 —— 出生站位是挤在大本营周围的，
 #   用真实站位断言「框里有几支队伍」会变成一件碰运气的事。
+## ★★ 给「本机这一方」的每位将领塞 `per` 个附属兵（本轮口径变更，见调用点的说明）。
+##
+## 与真游戏同一条口径：兵的 `leader_id` 指向将领、类型跟随将领、站在将领旁边；
+## 只是**没有关卡数据可摆**（这条路径按 test 直接按一张图开一局），所以由测试直接建。
+## @return 造出来的兵数
+func _seed_player_escorts(main, per: int) -> int:
+	var world = main.world
+	var cfg = main.cfg
+	var made := 0
+	for g in world.units.duplicate():
+		if not g.is_general() or String(g.faction) != world.my_faction:
+			continue
+		var utype := String(g.unit_type)
+		for i in per:
+			var off: Vector2i = ESCORT_OFFSETS[i % ESCORT_OFFSETS.size()]
+			var tile := Vector2i(g.tx + off.x, g.ty + off.y)
+			if not world.map.terrain_walkable(tile.x, tile.y):
+				continue
+			var nid := "%s-s%d" % [String(g.id), i + 1]
+			if world.unit_by_id(nid) != null:
+				continue                        # 已经有了（重复调用不叠加）
+			var sub = UnitRes.create(cfg, nid, "%s %d" % [cfg.unit_name_of(utype), i + 1],
+				tile, String(g.faction), utype, "", String(g.id), utype)
+			sub.garrison_zone_id = int(g.garrison_zone_id)
+			world.units.append(sub)
+			made += 1
+	return made
+
+
+## 塞附属兵时围着将领取的方向（正交优先 —— 与 `world.ring_offsets()` 同一套手感）。
+const ESCORT_OFFSETS: Array = [
+	Vector2i(1, 0), Vector2i(0, 1), Vector2i(-1, 0), Vector2i(0, -1),
+	Vector2i(1, 1), Vector2i(-1, 1), Vector2i(-1, -1), Vector2i(1, -1),
+]
+
+
 func _test_box_select(main) -> void:
 	var world = main.world
 	var cfg = main.cfg
@@ -3090,8 +3211,11 @@ func _test_detail_two_columns(main) -> void:
 	ok(not panel._body_right.visible, "★ 右栏 Label 收起来了")
 	ok(not panel.detail_text().contains("\t"),
 		"★ 单位文案是单栏（本版砍掉了第二栏）")
-	ok(panel.detail_text().contains("血量 %d" % int(round(g1.hp_max))),
-		"合成文本里仍然能读到「血量 N」（旧断言按 config 里的将领血量写）")
+	# ⚠️ 判据必须用**当前血量** `g1.hp`，不是 `hp_max`：正文那一行写的是
+	#    「血量 当前 / 上限」（见 hud._unit_text），而这条用例跑在一串会真的跑帧、
+	#    真的打起来的用例之后 —— 将领挨过打时 `hp != hp_max`，按 hp_max 断言就会红。
+	ok(panel.detail_text().contains("血量 %d" % int(round(g1.hp))),
+		"合成文本里仍然能读到「血量 N」（当前血量 %d）" % int(round(g1.hp)))
 
 	# ★★ 用户报的「详细信息字样去掉之后第一行是空的」：
 	#    ① 正文 Label 的顶边必须上移到方框的内边距处（老值是 20 = 标题占位那一段）；
@@ -3427,14 +3551,19 @@ func _test_clicked_unit_detail(main) -> void:
 	main.hud.refresh()
 
 
-# ---- 设置点不动 ----
+# ---- 设置按钮：不再「点不动」，但点它不该顺手切页 ----
+##
+## ★ 本轮改需求：设置从「点不动」变成「弹出设置二级菜单」（全屏 / 返回主菜单）。
+##   那两颗按钮的行为在 tests/test_settings_menu.gd 里测；这里只钉一条**副作用**：
+##   点设置**不能**改变右下那排页签（它属于「选中什么」的推导，与设置无关）。
 func _test_settings_inert(main) -> void:
 	var page_before := String(main.hud.page_tabs.page())
-	eq(main.hud.settings_button.pressed.get_connections().size(), 0,
-		"★ 设置按钮没接任何处理函数（点不动，需求原话）")
 	main.hud.settings_button.emit_signal("pressed")
 	eq(main.hud.page_tabs.page(), page_before, "点设置不会顺手切页")
 	ok(main.hud.settings_button.text == "设置", "设置按钮上写着「设置」")
+	# ★ 把菜单收回去：它现在真的会弹出来（开关式），而下面那些用例靠鼠标点地图 ——
+	#   留着这一块浮在右上，后面的点击会落到它身上（那会变成一串莫名其妙的假失败）。
+	main.hud.set_settings_menu_open(false)
 
 
 # ---- 命令产生的事件必须能被下一次 tick 取到（回归：tick 曾经在开头清空 _events）----
@@ -3470,6 +3599,44 @@ func _test_command_events_reach_consumer(main) -> void:
 
 	# 招募走的是同一条路（入队也是一条命令事件）—— 用一个干净的世界验，别动主场景那个
 	_test_recruit_queued_event(main.cfg)
+	# ★★ 升级 / 特化被拒的文案要点名对象（实测报的「什么都没做就看到正在读条」）
+	_test_upgrade_reject_names_target(main)
+
+
+## ★★ `upgrade_reject_text("busy")` 必须**点名是哪个对象**，并说明「这一下没有生效」。
+##
+## 玩家实测原话：「详细信息栏经常显示『这一项正在读条…』，但我什么都没做」。
+## 两层原因（都在这一条里钉住）：
+##   ① 「正在读条」的可能**不是玩家下的单** —— 敌方 AI 也会升级自己的建筑
+##      （实测：样例第一关开局第 0 帧，E1 的城墙就在升级了）；
+##   ② 旧文案只有一个「这一项」，像凭空冒出来的报错。
+func _test_upgrade_reject_names_target(main) -> void:
+	var b = null
+	for it in main.world.building_list:
+		if String(it.owner) == String(main.world.my_faction) and it.has_method("display_name"):
+			b = it
+			break
+	ok(b != null, "（前提）找得到一栋自己的建筑")
+	# ① 带对象的事件 → 文案里有那栋楼的名字，而且明说「没有生效」
+	var txt: String = main.hud.upgrade_reject_text("busy", {"reason": "busy", "building": b})
+	ok(txt.contains(String(b.display_name())),
+		"★★ busy 的文案点名了被拒的那栋建筑（实际：%s）" % txt)
+	ok(txt.contains("没有生效"), "★ 而且明说这一下没有生效（没扣资源、没排队）")
+	# ② 不带事件（老调用方）→ 仍然给一句能用的泛泛文案，不报错
+	var txt2: String = main.hud.upgrade_reject_text("busy")
+	ok(txt2.contains("读条") and not txt2.contains("null"),
+		"★ 不传事件时退回泛泛文案（不会打出 null）")
+	# ③ 区划那一支：靠 zone_id 找出区划名
+	var z = null
+	for it in main.world.zones.zones:
+		if String((it as Dictionary).get("owner", "")) == String(main.world.my_faction):
+			z = it
+			break
+	if z != null:
+		var zid := int((z as Dictionary).get("id", -1))
+		var txt3: String = main.hud.upgrade_reject_text("busy", {"reason": "busy", "zone_id": zid})
+		ok(txt3.contains("c%d" % zid) or txt3.contains(String((z as Dictionary).get("name", "@"))),
+			"★★ 区划那一支也点到了名（实际：%s）" % txt3)
 
 
 func _key(code: int, ctrl: bool = false) -> InputEventKey:

@@ -144,7 +144,10 @@ func _initialize() -> void:
 		quit(1)
 		return
 
-	var w = WorldRes.create(cfg, map_path)
+	# ★ 基准里**不开阵营 AI**（with_ai = false）：基准量的是群体碰撞 / 寻路，
+	#   多一个阵营的将领、建筑与 AI 逻辑只会把噪声混进测出来的微秒数。
+	#   （基准脚本本来就不该依赖玩法层的东西 —— 见 tests/test_case.require_world 的说明。）
+	var w = WorldRes.create(cfg, map_path, false)
 	if w == null:
 		printerr("[BENCH] world 建不起来（地图载入失败：%s）" % map_path)
 		quit(1)
@@ -441,7 +444,7 @@ func _count_if(units: Array, field: String) -> int:
 
 ## 生成一张 map_size × map_size 的基准地图，写到**系统临时目录**（不往仓库里塞文件）。
 ##
-## 为什么要有这张图而不是直接用 data/test_map.json：那张图是 24×16 = 384 格，
+## 为什么要有这张图而不是直接用 data/maps/frontier/map.json：那张图是 24×16 = 384 格，
 ## 而 A* 的代价随格数增长（当前还是线性扫 open list，最坏 O(N²)）——
 ## 在小图上量出来的寻路开销会把问题**严重低估**。用户的预期地图是 100×100。
 func _write_bench_map(cols: int, rows: int) -> String:

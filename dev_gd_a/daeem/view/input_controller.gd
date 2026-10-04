@@ -887,6 +887,41 @@ func notify_unit_recruited(leader, unit) -> void:
 
 
 # ------------------------------------------------------------------
+# ★★ 将领「再起」（UI：右下「操作」页签的第一格；将领濒死时出现）
+#
+# ★ 与其它 UI 动作同一条约定：**只发命令**。「现在能不能再起 / 要多少钱 /
+#   读条多久 / 退多少」全在权威侧（world.start_revive / cancel_revive）算 ——
+#   界面不预先判断，只负责给玩家一颗看得懂的格子。
+# ------------------------------------------------------------------
+
+## 让当前选中的将领「再起」（花资源、读条）。
+##
+## @return true = 命令已发出（不代表已经入队 —— 权威侧还会再校验一次血量 / 钱）。
+## ★ 没有选中将领时**不发命令**（命令里必须带 leader_id），由调用方（view/hud.gd）
+##   给一句提示 —— 与 `request_recruit` 同一条理由：硬发只会被逻辑层拒掉，
+##   而玩家看不到任何反馈。
+func request_revive() -> bool:
+	var leader = first_selected_leader()
+	if leader == null:
+		return false
+	command_issued.emit({
+		"kind": "revive", "leader_id": leader.id, "faction": world.my_faction,
+	})
+	return true
+
+
+## 取消读条中的「再起」（全额退款）。★ 同一颗格子：读条中再点一次 = 取消。
+func request_revive_cancel() -> bool:
+	var leader = first_selected_leader()
+	if leader == null:
+		return false
+	command_issued.emit({
+		"kind": "revive_cancel", "leader_id": leader.id, "faction": world.my_faction,
+	})
+	return true
+
+
+# ------------------------------------------------------------------
 # 科技（UI：右下「科技」页签的 3×3 九格）
 # ------------------------------------------------------------------
 
@@ -1021,6 +1056,15 @@ func _pick_foe_unit_at(world_pos: Vector2) -> Variant:
 	var best_d := INF
 	for u in world.units:
 		if not u.alive:
+			continue
+		# ★★ 濒死的将领**点不到**（本轮新增）：需求原话「在将领濒死期间，该将领
+		#    无法被选中为攻击对象……无论是行军攻击还是指定攻击都不行」。
+		#    挡在**输入层**这一步是必要的：不挡的话鼠标底下就有一个"敌人"，
+		#    右键会发出一条必然被逻辑层拒掉的 attack 命令 —— 玩家看到的是
+		#    「我点了它，什么都没发生」（与「招募被拒却毫无反馈」同一类观感问题）。
+		#    ⚠️ 逻辑层（command_processor / combat）**也要**挡一遍：输入层只是
+		#      本地那一份，权威侧才是最终判据（联机时客机的输入不可信）。
+		if not u.is_attackable():
 			continue
 		if FactionRes.same_side(u.faction, world.my_faction):
 			continue

@@ -20,8 +20,14 @@
 
       "faction_bases": {"p1": [2, 2], "p2": [14, 19]},
       ...（导入时文件里有、而编辑器不管的字段原样带过去：general_spawns / buildings /
-            units / pvp_points / _comment …）
+            pvp_points / _comment …）
     }
+
+★★ `units`（地图预置单位）**整个废弃**：运行时不再读它，编辑器也不再保留 ——
+   导入时读到就丢掉，导出时绝不写这个键。⚠️ 副作用：**用编辑器打开一张老图再导出，
+   那张图里的预置单位就静默没了**。这是需求要的结果（规则上禁止地图预置单位），
+   不是 bug（见 PRESERVED_KEYS 的注释与 README 第五节）。
+   ⚠️ `buildings`（地图预置建筑）**照旧原样保留**，别顺手一起删了。
 
 ★ 读旧地图（没有 exists / zones）完全兼容：所有格子都算存在，
   区块按 config.json 的 zone_cols × zone_rows **均分**（与 zone.gd 的老行为一字不差），
@@ -60,13 +66,54 @@ from .model import (
 MIGRATED_BASE_FACTION = "p1"
 
 #: 编辑器不负责编辑、但要原样带过去的字段（Godot 用它们生成据点 / 守军 / 多人起点）
+#:
+#: ★ `id` / `name` / `placeholder`：这张图的标识、显示名与「是不是占位图」。
+#:   开场主界面的**地图选择条**读它们（Godot 侧 `logic/map_library.gd`）：
+#:   `name` = 下拉框上的文字（不写就用目录名），`placeholder: true` = 只为测试选项生成
+#:   而存在的图（选择条上照样列出，但「不选就按 test」的默认图会跳过它）。
+#:   编辑器不改这三个值，只保证「导入 → 导出」不掉。
+#: ★ `allies`：**阵营归属（盟友）** —— 形如 `[["enemy","ai"]]`，表示这两方是同方
+#:   （不互相攻击 / 不争夺同一区划）。见 `daeem/logic/faction.gd` 的那一大段说明。
+#:   同样是「地图数据」：只有写了它的那张图生效。编辑器不改它，但必须原样带回去 ——
+#:   不然在编辑器里打开边关再导出，两个 AI 就会开始互相打（一个很安静的回归）。
+#: ★★ `hidden`：**只给战役关卡用**的图（`true` = 不进「自由对战 / 试炼场」的选择条、
+#:   也不当默认图；关卡照样按 id 引用它）。见 `daeem/logic/map_library.gd` 的 `KEY_HIDDEN`。
+#:   ★ 判断标准与 `allies` 一样：**游戏会读它 ⇒ 编辑器必须原样带回** ——
+#:   否则「打开一张战役图再导出」会把它弄丢，那张图就冒到自由对战的选择条上了
+#:   （`daeem/tests/test_campaign.gd` 末尾有这一条的回归断言）。
+#:
+#: ★★ `units`（地图预置单位）**故意不在这张清单里** —— 这个字段整个废弃了：
+#:   运行时不再读它（那一条由 `logic/map_data.gd` / `logic/world.gd` 那一侧负责），
+#:   编辑器也不再允许摆、不再保留。读（`dict_to_model`）与写（`model_to_dict` /
+#:   `_empty_dict`）两头都不认它。
+#:
+#:   ⚠️ **副作用必须知道**：这个清单就是「哪些字段能活着穿过编辑器」的白名单，
+#:   所以「打开一张带 `units` 的老图 → 导出」会**静默丢掉那张图的预置单位**。
+#:   这正是需求要的结果（规则上禁止地图预置单位），**不是 bug** ——
+#:   将来的你别把它当回归去「修」回来。README 第五节也写着同一条。
+#:
+#:   ⚠️ `buildings`（地图预置建筑）**是另一回事，照旧保留**：它还在游戏里用，
+#:   而且用户明确要求「别顺手删了它」。
 PRESERVED_KEYS: Tuple[str, ...] = (
+    "id",
+    "name",
+    "placeholder",
+    "hidden",
+    "allies",
     "general_spawns",
     "buildings",
-    "units",
     "pvp_points",
     "_comment",
 )
+
+#: 导入时**直接丢掉、绝不进 `model.extra`** 的字段（不在 `PRESERVED_KEYS` 里）。
+#:
+#: ★ 为什么要在读的时候也丢一次，而不是只靠「不在 PRESERVED_KEYS 里 ⇒ 导出时自然不写」：
+#:   `model.extra` 是**模型的公开状态**（撤销快照会整份 deepcopy 它、测试也会读它）。
+#:   要是读进来还留着 `units`，就会出现「模型里明明有一份预置单位、导出却没有」的
+#:   表里不一 —— 以后任何读着 `extra` 做判断的代码都会把废弃字段当成活的。
+#:   在入口丢干净，语义只有一条：「编辑器从头到尾不认识 `units`」。
+DROPPED_KEYS: Tuple[str, ...] = ("units",)
 
 #: 导出时写在 _comment 里的说明（Godot 读不读都行，是给手改 JSON 的人看的）
 EDITOR_COMMENT: Tuple[str, ...] = (
@@ -80,7 +127,12 @@ EDITOR_COMMENT: Tuple[str, ...] = (
     "zone_list[].population_cap：该区块的人口上限；不写 = 默认 1（涨到上限就不再涨）。",
     "zone_centers：地块 → 中心所属的区块 id（-1 = 不是任何区块的中心），由 center 推出来。",
     "factions / faction_bases：阵营表与每个阵营的大本营（每个阵营必须有且只有一个）。",
-    "其余出生点 / 预置建筑 / 预置单位由 Godot 脚本生成。",
+    "id / name：这张图的标识与显示名；开场主界面的地图选择条按 name 显示（不写就用目录名）。",
+    "placeholder：true = 占位图（只为测试选择条的选项生成）；选项照样列出，但默认进的那张会跳过它。",
+    "allies：阵营归属（盟友），形如 [[\"enemy\",\"ai\"]] —— 这两方不互相攻击、不争夺同一区划。",
+    "其余出生点 / 预置建筑由 Godot 脚本生成。",
+    "★ units（地图预置单位）**已废弃**：运行时不再读它，这个编辑器也不再保留 ——",
+    "   打开一张带 units 的老图再导出，那些预置单位会被**丢掉**（需求要求的行为，不是 bug）。",
 )
 
 
@@ -205,6 +257,10 @@ def dict_to_model(data: dict, cfg: Optional[dict] = None,
     for key, value in data.items():
         if key in ("cols", "rows", "exists", "layout", "terrain", "zones", "zone_list",
                    "zone_centers", "base", "factions", "faction_bases"):
+            continue
+        # ★★ `units`（地图预置单位）已废弃 ⇒ 读进来当场丢掉，连 `extra` 都不进。
+        #    （导出侧本来也不会写它 —— 见 `PRESERVED_KEYS` 上面那段说明。）
+        if key in DROPPED_KEYS:
             continue
         model.extra[key] = value
     return model
@@ -603,6 +659,9 @@ def model_to_dict(model: MapModel) -> dict:
         center_rows.append(center_row)
 
     out: Dict[str, object] = {}
+    # ★ 这里是**白名单**：`PRESERVED_KEYS` 之外的键一律不写出去。
+    #   已废弃的 `units`（地图预置单位）就是靠这一条被挡在导出之外的 —— 即使有人
+    #   （脚本 / 老代码）往 `model.extra` 里塞了一个 `units`，导出的 JSON 里也不会有它。
     for key in PRESERVED_KEYS:
         if key in model.extra:
             out[key] = model.extra[key]
@@ -667,6 +726,7 @@ def _write_faction_bases(out: Dict[str, object], model: MapModel, origin: Tuple[
 ## 空地图（一个地块都没有）导出成 0×0 + 空网格 —— Godot 读进来是一张空地图。
 def _empty_dict(model: MapModel) -> dict:
     out: Dict[str, object] = {}
+    # ★ 同一条白名单（空地图这条路也不会漏出已废弃的 units / 任何不在清单里的键）。
     for key in PRESERVED_KEYS:
         if key in model.extra:
             out[key] = model.extra[key]

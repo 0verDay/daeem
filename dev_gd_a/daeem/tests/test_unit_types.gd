@@ -28,6 +28,11 @@ const SnapshotRes = preload("res://logic/snapshot.gd")
 
 const DT := 1.0 / 60.0
 
+## ★★ 本轮口径：开局附属兵**只来自关卡摆放**（`config.json` 的 `unit.general.escort`
+## 全局缺省已删除）⇒ 「将领带几个同类型的兵」这条断言必须靠
+## `require_world_with_escorts()` 造的探针关卡，而不是 config。见 test_case.gd。
+const ESCORTS_PER_GENERAL := 3
+
 
 func _initialize() -> void:
 	_case_name = "test_unit_types"
@@ -46,6 +51,7 @@ func _run() -> void:
 	# ★ 关键：先等一帧，root.add_child() 才会真的生效（见 pitfalls 1.2）
 	await process_frame
 	await _test_view_uses_icons(cfg)
+	cleanup_escort_scaffold()
 
 	print("[CASE] %s -> 通过 %d 项，失败 %d 项" % [_case_name, _pass, _fail])
 	if _fail > 0:
@@ -108,7 +114,7 @@ func _test_class_tags(cfg) -> void:
 # 二、将领 ↔ 类型
 # ------------------------------------------------------------------
 func _test_general_types(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world_with_escorts(cfg, ESCORTS_PER_GENERAL)
 	var types: Array = cfg.general_types()
 	eq(types.size(), 3, "配置里给了三个将领类型")
 
@@ -135,11 +141,13 @@ func _test_general_types(cfg) -> void:
 		eq(g.ranged, cfg.unit_is_ranged(want), "将领的远近标记")
 
 	# 附属兵与队长同一类型（需求：「将领带一批同类型的兵」）
+	# ★★ 「几位」现在的来源是**关卡摆放**（本轮把 `unit.general.escort` 全局缺省删掉了）：
+	#    这个探针给每位将领摆了 `ESCORTS_PER_GENERAL` 个，所以每个人都是这个数。
 	for i in 3:
 		var g2 = w.unit_by_id("general-%d" % (i + 1))
+		var want_n: int = ESCORTS_PER_GENERAL
 		var ret = w.retinue_of(g2.id)
-		eq(ret.size(), cfg.general_escort_count(),
-			"general-%d 带 %d 个附属兵" % [i + 1, cfg.general_escort_count()])
+		eq(ret.size(), want_n, "general-%d 带 %d 个附属兵（关卡摆的）" % [i + 1, want_n])
 		for s in ret:
 			eq(String(s.unit_type), String(g2.unit_type), "★ 附属兵与将领同类型")
 			eq(s.kind, String(g2.unit_type), "附属兵的 kind 就是它的类型")
@@ -166,7 +174,7 @@ func _test_general_types(cfg) -> void:
 # ------------------------------------------------------------------
 func _test_recruit_all_three(cfg) -> void:
 	cfg.combat_enabled = false
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	# 只留己方单位（地图上的巡逻兵会来搅局）
 	var kept: Array = []
 	for u in w.units:
@@ -340,7 +348,8 @@ func _reload_cfg(src) -> RefCounted:
 ## ★ 只验「接线」：UnitView 在这些类型上跑得通、字确实随类型走 ——
 ##   至于画出来什么样，是手玩验收的事（与 test_view.gd 的分工一致）。
 func _test_view_uses_icons(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	# ★ 要有**附属兵**才能拿一个普通单位当样本（本轮：附属兵来自关卡摆放）
+	var w = require_world_with_escorts(cfg, ESCORTS_PER_GENERAL)
 	var view = UnitViewRes.new()
 	# ★ 用**真字体**建 view：无头下引擎兜底字体没有中文字形，但断言只看「画了几笔」，
 	#   所以两者都能过；这里传真字体是为了走与游戏完全一致的那条路。
@@ -419,7 +428,7 @@ func _test_view_uses_icons(cfg) -> void:
 
 	# 快照往返之后，类型仍然对（客机画图标靠它）
 	var snap = SnapshotRes.to_snapshot(w)
-	var w2 = WorldRes.create(cfg)
+	var w2 = require_world(cfg)
 	SnapshotRes.apply_snapshot(w2, cfg, snap)
 	var remote3 = w2.unit_by_id("general-3")
 	ok(remote3 != null, "快照重建出了 general-3")

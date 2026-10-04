@@ -796,11 +796,6 @@ class EditorApp:
             self._hint(parent, field.hint)
         return row
 
-    def _plain_row(self, parent) -> tk.Frame:
-        row = tk.Frame(parent, bg=UI["panel"])
-        row.pack(fill="x", pady=2)
-        return row
-
     def _optional_row(self, parent, field: Field, value: float, inheriting: bool,
                       commit: Callable[[Any], None], clear: Optional[Callable[[], None]] = None,
                       inherited_text: str = "") -> tk.Frame:
@@ -953,25 +948,13 @@ class EditorApp:
                 clear=lambda g=gen, f=field: self.model.set_general_stat(g.index, f.key, None),
                 inherited_text=("　跟随类型：%s（%s）" % (fmt(inherited), gen.type_id)
                                 if inheriting else "　自己填的值（按「跟随」回到类型数值）"))
-        row = self._plain_row(nsec)
-        tk.Label(row, text="开局护卫数", bg=UI["panel"], fg=UI["text"], width=13,
-                 anchor="w").pack(side="left")
-
-        def commit_escort() -> None:
-            value = parse_number(escort_var.get())
-            if value is None:
-                self.status("✗ 护卫数要填一个整数")
-                return
-            self._mutate("开局护卫数 → %d" % int(value),
-                         lambda: self.model.set_escort(int(value)))
-
-        escort_var = tk.StringVar(value=str(self.model.escort()))
-        entry = ttk.Entry(row, textvariable=escort_var)
-        entry.pack(side="left", fill="x", expand=True, padx=(4, 0))
-        entry.bind("<Return>", lambda e: commit_escort())
-        entry.bind("<FocusOut>", lambda e: commit_escort())
-        entry.commit_action = commit_escort               # 见 _entry_row 里的说明（测试直通）
-        self._hint(nsec, "开局每位将领带几个同类型的兵（**三位共用这一个数**）。")
+        # ★★ 「开局护卫数」这个输入框**已经删掉**（产品决策）：开局带几个附属兵不再由
+        #    `config.json` 给一个全局缺省，只能在**战役编辑器的摆放页**里一个一个摆出来。
+        #    ⚠️ 附属兵这个**玩法机制本身一个字没改**（将领带兵 / 点一个兵选整队 /
+        #       招募 / 濒死集结 / 队伍列表都在），去掉的只是「开局白送几个」这个配置项。
+        #    ★ 这行灰字是**有意留的**：用户就是被「在两个编辑器里改同一件事」坑过的。
+        self._hint(nsec, "开局附属兵改在**战役编辑器的摆放页**里摆"
+                         "（每个兵一个坐标、可指定属于哪个将领）—— 这里不再提供这个全局缺省。")
 
         # ---- 造价与招募（recruit.zone.list）
         rsec = self._section("造价与招募", "recruit.zone.list")

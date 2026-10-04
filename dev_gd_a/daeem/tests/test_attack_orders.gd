@@ -47,6 +47,8 @@ func _cases() -> void:
 	_test_chase_needs_no_arrival_slot(cfg)
 	_test_chase_direct_line(cfg)
 	_test_chase_repath_gate(cfg)
+	_test_leash_no_jitter(cfg)
+	_test_leash_anchor_follows_target(cfg)
 
 
 # ------------------------------------------------------------------
@@ -62,7 +64,7 @@ func _cases() -> void:
 #   `move_to(settle = false)` = 向某个点靠近（追击）→ 落点原样保留
 # ------------------------------------------------------------------
 func _test_chase_needs_no_arrival_slot(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var a = w.units[0]
 	var b = w.units[1]
 	ok(a != null and b != null, "有两个己方单位")
@@ -102,7 +104,7 @@ func _test_chase_needs_no_arrival_slot(cfg) -> void:
 # 几百个单位同帧锁定目标 = 同帧几十次 Dijkstra（实测单帧 21.5 ms）。
 # ------------------------------------------------------------------
 func _test_chase_direct_line(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var u = w.units[0]
 	ok(u != null, "有一个单位")
 	if u == null:
@@ -147,7 +149,7 @@ func _test_chase_direct_line(cfg) -> void:
 # （墙 / 建筑 / 站定的单位）时，每秒 3000+ 次完整寻路全是白费。
 # ------------------------------------------------------------------
 func _test_chase_repath_gate(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var u = w.units[0]
 	var e = w.spawn_enemy(u.tx + 3, u.ty)
 	ok(u != null and e != null, "有一个单位和它旁边的敌人")
@@ -181,7 +183,7 @@ func _test_chase_repath_gate(cfg) -> void:
 # 1. 点名攻击单位：一路追上去打掉
 # ------------------------------------------------------------------
 func _test_attack_unit(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var g = w.unit_by_id("general-1")
 	var e = w.spawn_enemy(g.tx + 4, g.ty)
 	ok(g != null and e != null, "有将领 1 和一个敌人")
@@ -209,7 +211,7 @@ func _test_attack_unit(cfg) -> void:
 # 2. 点名攻击建筑：靠近 → 拆
 # ------------------------------------------------------------------
 func _test_attack_building(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var g = w.unit_by_id("general-1")
 	# ★ 先把这张图自带的建筑（对家据点的城墙 / 箭塔）清掉：
 	#   「拆完之后 `target_building` 要清空」这条断言会被**别的**敌方建筑搅乱 ——
@@ -254,7 +256,7 @@ func _test_attack_building(cfg) -> void:
 # 修法：`ordered_building` 还活着时，这一帧**不做任何自动索敌**（见 combat.update_unit）。
 # ------------------------------------------------------------------
 func _test_ordered_building_not_distracted(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var g = w.unit_by_id("general-1")
 	var t := _free_tile(w, g.tx + 5, g.ty)
 	var tower = w.add_building("tower", t.x, t.y, "p2")
@@ -302,7 +304,7 @@ func _test_ordered_building_not_distracted(cfg) -> void:
 # ------------------------------------------------------------------
 ## 警戒自己找到的目标，追出 leash_range 就会放弃；玩家点名的目标必须一路追。
 func _test_ordered_target_ignores_leash(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var g = w.unit_by_id("general-1")
 	var e = w.spawn_enemy(g.tx + 10, g.ty)
 	if g == null or e == null:
@@ -329,7 +331,7 @@ func _test_ordered_target_ignores_leash(cfg) -> void:
 # 4. 行军攻击：路上遇敌就打，打完了继续走
 # ------------------------------------------------------------------
 func _test_attack_move_resumes(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var g = w.unit_by_id("general-1")
 	if g == null:
 		return
@@ -373,7 +375,7 @@ func _test_attack_move_resumes(cfg) -> void:
 # 5. 普通移动 / 停止会取消攻击命令
 # ------------------------------------------------------------------
 func _test_move_cancels_orders(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var g = w.unit_by_id("general-1")
 	var e = w.spawn_enemy(g.tx + 3, g.ty)
 	if g == null or e == null:
@@ -400,7 +402,7 @@ func _test_move_cancels_orders(cfg) -> void:
 # 6. 索敌建筑：玩家会，NPC 不会
 # ------------------------------------------------------------------
 func _test_players_acquire_buildings(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var g = w.unit_by_id("general-1")
 	if g == null:
 		return
@@ -430,7 +432,7 @@ func _test_players_acquire_buildings(cfg) -> void:
 
 
 func _test_npc_does_not_acquire_buildings(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var e = w.spawn_enemy(4, 13)
 	if e == null:
 		return
@@ -452,7 +454,7 @@ func _test_npc_does_not_acquire_buildings(cfg) -> void:
 # 7. 命令校验
 # ------------------------------------------------------------------
 func _test_command_guards(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var g = w.unit_by_id("general-1")
 	var mate = w.retinue_of(g.id)[0]
 	var e = w.spawn_enemy(g.tx + 4, g.ty)
@@ -491,3 +493,121 @@ func _free_tile(w, x: int, y: int) -> Vector2i:
 				if w.can_build_at(t.x, t.y):
 					return t
 	return Vector2i(x, y)
+
+
+# ------------------------------------------------------------------
+# 7. ★★ 追击上限（leash）不该把「自动索敌」变成原地抽搐（本轮修的 bug）
+#
+# 玩家实测报回来的现象：「当我的单位在区划边界时，要追击的敌方单位会在原地抽搐」。
+# 根因：参照点 `anchor` 原来在**每次 `acquire_target`** 里都被重置成当前位置 →
+#   「离参照点超没超上限」在刚锁定那一刻必然不成立（距离 0），
+#   于是「锁定 → 走一格 → 超上限 → 放弃 → 下一帧又锁上」一帧一放一锁 = 抽搐。
+#   （区划边界最容易看到：驻防将领正好在那条线上被 general_ai 叫回、又被重新锁定。）
+#
+# 修法两条（都在 combat.gd）：
+#   ① 参照点只在**真正锁定那一刻**设一次，之后由 `_refresh_leash_anchor()` 跟着目标挪；
+#   ② 因为上限放弃之后拉一段 `combat.leash_release_cd` 冷却，期间不再自动锁定。
+# ------------------------------------------------------------------
+func _test_leash_no_jitter(cfg) -> void:
+	var w = require_world(cfg)
+	var g = w.unit_by_id("general-1")
+	# ⚠️ 距离必须**真的在警戒半径内**：`aggro_range` 默认只有 4 格，
+	#    而 `acquire_target` 判的是「距离 − 目标半径 ≤ aggro」—— 放远了这一节前提就不成立
+	#    （实测踩到：放在 +5 格时距离 5.0 > 4，第一句就锁不上，看起来像「索敌坏了」）。
+	var e = w.spawn_enemy(g.tx + 2, g.ty)
+	if g == null or e == null:
+		return
+	w.units = [g, e]
+	e.hold_position = true                 # 敌人站着不动：这一节量的是**我方**有没有抽
+	g.stop()                               # 让它待命 → 靠**自动索敌**去追（玩家命令会绕开 leash）
+	ok(g.pos.distance_to(e.pos) - cfg.unit_radius_of(e.unit_type) <= cfg.aggro_range,
+		"（前提）敌人确实在警戒半径内（距离 %.2f ≤ %.2f）" % [
+			g.pos.distance_to(e.pos), cfg.aggro_range])
+
+	# ---- ① 锁定那一刻：参照点 = 它自己站的位置 ----
+	ok(CombatRes.acquire_target(w, cfg, g, 0), "★ 警戒半径内的敌人被锁上")
+	ok(g.anchor != null, "★ 自动索敌会设「追击参照点」")
+	v2_near(g.anchor, g.pos, 1e-6, "★ 参照点 = **锁定那一刻**它自己站的位置")
+
+	# ---- ② 参照点不该在「同一次交战的再一次索敌」里被重置 ----
+	#     把参照点人为推远（模拟「已经追出去 5 格」），单位自己**不动**，再索敌一次：
+	#     旧实现会把 anchor 重置成当前位置（距离又变回 0 ⇒ 上限形同不存在）。
+	#     ★ 单位必须留在警戒半径内，否则 `acquire_target` 会因为「没东西可锁」而直接返回，
+	#       那验的就不是这一条了。
+	var keep: Vector2 = g.anchor
+	g.anchor = keep - Vector2(5.0, 0.0)
+	CombatRes.acquire_target(w, cfg, g, 0)
+	v2_near(g.anchor, keep - Vector2(5.0, 0.0), 1e-6,
+		"★★ 重复索敌**不会**重置参照点（旧实现就是这里把它抹掉的）")
+
+	# ---- ③ 超出上限 → 放弃 + 拉冷却（而不是下一帧又锁上）----
+	ok(g.target == e, "（前提）它现在锁着那个敌人")
+	g.anchor = g.pos - Vector2(100.0, 0.0)  # 参照点推远 ⇒ 一定超上限
+	CombatRes.update_combat(w, cfg, g)
+	ok(g.target == null, "★ 追出上限就放弃")
+	ok(g.leash_cd > 0.0, "★★ 放弃之后进入冷却（leash_release_cd = %.2f）" % cfg.leash_release_cd)
+	ok(not CombatRes.acquire_target(w, cfg, g, 0),
+		"★★★ 冷却期内**不再**把还在警戒半径里的同一个敌人锁上（这就是「抽搐」的断点）")
+
+	# ---- ④ 冷却走完 → 恢复自动索敌 ----
+	#     ★ 真实流程：冷却结束后的下一帧，`update_unit` 那一支（「没有 target 才索敌」）
+	#       会自己把还在警戒半径里的敌人重新锁上 —— 这里就验证那一件事：
+	#       先清掉目标（模拟「刚放弃」），再跑几帧，看它会不会自己接战。
+	g.drop_engagement()
+	ok(g.target == null, "（前提）现在没有目标")
+	for _i in int(ceil(cfg.leash_release_cd / DT)) + 2:
+		w.tick(DT)
+	ok(g.leash_cd <= 0.0, "★ 冷却会自己走完")
+	ok(g.target != null, "★ 冷却完了会**自己**重新接战（没有变成「永远不接战」）")
+	# ★ 顺带钉住新加的契约：已经锁着目标时不再重复索敌（否则参照点会被抹平 —— 见 combat.gd）
+	ok(not CombatRes.acquire_target(w, cfg, g, 0),
+		"★ 已经锁着目标时 `acquire_target` 直接返回（不重复锁、不会抹平参照点）")
+
+	# ---- ⑤ 冷却不拦玩家命令 ----
+	g.leash_cd = 10.0
+	var far := GridRes.center_of(Vector2i(
+		clampi(g.tx + 3, 0, w.map.cols - 1), clampi(g.ty + 3, 0, w.map.rows - 1)))
+	ok(CommandRes.apply(w, cfg, {"kind": "move", "ids": [g.id],
+		"x": far.x, "y": far.y, "faction": "p1"}), "★ 冷却期内玩家的移动命令照旧生效")
+	eq(g.leash_cd, 0.0, "★ 而且新命令会把冷却清掉（它只是自动索敌的节流）")
+
+
+# ------------------------------------------------------------------
+# 8. ★★ 参照点跟着目标挪（移动目标不该把参照点永远落在原处）
+# ------------------------------------------------------------------
+## 目标挪过地方之后，参照点要跟着走 —— 于是「追击上限」量的是**我掉队多远**，
+## 而不是「我离当初站的那个点多远」（后者会让长距离追击永远判超上限）。
+##
+## ⚠️ 目标**不动**时这条判据永不通过 ⇒ 参照点永不更新 ⇒ 与修复前**逐位一致**
+##    （这正是 `test_attack_orders` 里其它追击用例仍然绿的原因，也是这个修法安全的地方）。
+func _test_leash_anchor_follows_target(cfg) -> void:
+	var w = require_world(cfg)
+	var g = w.unit_by_id("general-2")
+	var e = w.spawn_enemy(g.tx + 2, g.ty)
+	if g == null or e == null:
+		return
+	w.units = [g, e]
+	e.hold_position = true
+	g.stop()
+	ok(CombatRes.acquire_target(w, cfg, g, 0), "（前提）锁上敌人")
+	var anchor0: Vector2 = g.anchor
+
+	# 目标挪出 repath_min_move 格 → 参照点跟着它走
+	g.repath_timer = 0.0                    # 这一节的节流判据就是它，先清零
+	var moved: Vector2 = e.pos + Vector2(cfg.repath_min_move * 2.0, 0.0)
+	CombatRes._refresh_leash_anchor(g, cfg, moved)
+	v2_near(g.anchor, moved, 1e-6, "★★ 目标挪过地方之后，参照点跟着它走")
+	ok(g.anchor.distance_to(anchor0) > 0.01, "★ 确实动了（不是原地没变）")
+
+	# 目标**没怎么动** → 参照点不动（这条保证「站着不动的目标」行为逐位不变）
+	var anchor1: Vector2 = g.anchor
+	g.repath_timer = 0.0
+	CombatRes._refresh_leash_anchor(g, cfg, Vector2(anchor1.x + 0.01, anchor1.y))
+	v2_near(g.anchor, anchor1, 1e-6, "★★ 目标几乎没动 ⇒ 参照点不更新（旧行为不变）")
+
+	# 玩家点名的目标（anchor == null）永远不设参照点
+	g.ordered_target = e
+	g.anchor = null
+	g.repath_timer = 0.0
+	CombatRes._refresh_leash_anchor(g, cfg, moved + Vector2(5.0, 0.0))
+	ok(g.anchor == null, "★ 点名目标（anchor 为空）不设参照点 ⇒ 不受追击上限约束")

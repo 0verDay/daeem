@@ -109,6 +109,14 @@ def sidebar_entries(app) -> dict:
     return out
 
 
+def sidebar_labels(app) -> list:
+    """侧边栏里**所有 Label 的文字**（用来断言「某句话在不在」——不碰输入框）。
+
+    ⚠️ 与 `sidebar_entries` 一样，每次用之前都要重新抓（每次提交都会重建侧边栏）。
+    """
+    return [w.cget("text") for w in walk(app.sidebar) if isinstance(w, tk.Label)]
+
+
 def E(app, label):
     """按标签取输入框（每次重新抓，见 `sidebar_entries` 的说明）。"""
     entries = sidebar_entries(app)
@@ -503,7 +511,7 @@ def t_general_form(app, model) -> None:
     eq(data(model)["unit"]["general"]["stats"][0]["damage"], 30,
        "★ 自己填过的项不跟着类型走")
 
-    # 名字 / 造价 / 招募时间 / 护卫数
+    # 名字 / 造价 / 招募时间
     type_into(app, E(app, "名字"), "西境骑将")
     eq(data(model)["unit"]["general"]["stats"][0]["name"], "西境骑将", "改将领名字")
     eq(data(model)["recruit"]["zone"]["list"][0]["label"], "西境骑将", "★ 招募卡标题同步")
@@ -511,8 +519,21 @@ def t_general_form(app, model) -> None:
     eq(data(model)["recruit"]["zone"]["list"][0]["train_sec"], 14, "改将领招募时间")
     type_into(app, E(app, "造价 · 粮食"), "88")
     eq(data(model)["recruit"]["zone"]["list"][0]["cost"]["food"], 88, "改将领造价")
-    type_into(app, E(app, "开局护卫数"), "4")
-    eq(data(model)["unit"]["general"]["escort"], 4, "改开局护卫数")
+    # ★★ 「开局护卫数」那一行输入控件**已经删掉**（产品决策：开局带几个附属兵不再由
+    #    config.json 给全局缺省，只能在战役编辑器的摆放页里摆）。这里**不是把这行断言删掉**，
+    #    而是反过来钉住「入口没了」+「原地留了指向新家的灰字提示」——
+    #    哪天有人把控件加回来（或把提示删了），当场变红。
+    #    ⚠️ 附属兵这个玩法机制本身没动，动的只是「开局白送几个」这个配置项。
+    ok("开局护卫数" not in sidebar_entries(app),
+       "★★ 将领表单里不再有「开局护卫数」这一行（输入入口已移除）")
+    ok(not hasattr(model, "escort") and not hasattr(model, "set_escort"),
+       "★★ 模型层也不再提供 escort() / set_escort() 接口")
+    ok("escort" not in data(model)["unit"]["general"],
+       "★★ 编辑器的数据里也不再有 unit.general.escort")
+    hints = [t for t in sidebar_labels(app) if "战役编辑器" in t and "摆放页" in t]
+    ok(bool(hints),
+       "★ 原地留了一行只读灰字提示，指向「战役编辑器的摆放页」（读者不会被坑第二次）：%s"
+       % (hints or "（一句都没有）"))
 
 
 # ======================================================================
@@ -795,22 +816,30 @@ def t_sidebar_scroll(app, model) -> None:
            "（前提）%s 的表单（%dpx）装得进面板（%dpx）" % (label, need, cv.winfo_height()))
         return True
 
-    # ---- A0. ★ 单位页那一张**真的装不下**（本轮数据 +1 行「视野半径」之后）----
+    # ---- A0. 单位页那一张在 1080p 上**真的装不下**（本轮数据 +1 行「视野半径」之后）----
     #
-    # 实测（1280×1048 的窗口 = 这台 1080p 机器能给到的最大高度）：
+    # 实测（1280×1048 的窗口 = 一台 1080p 机器能给到的最大高度）：
     #     长枪兵表单 1032px  /  可用的侧边栏视口 978px  → 溢出 54px
     # 这**不是**回归：建筑页那三张（1725 / 1725 / 1262px）早就装不下、一直在滚。
-    # 所以这里量的是「装不下 → 滚得动、但滚不出范围」，而「装得下就不许滚」那条
-    # 改用**装得下的表单**来验（见 A 与 A2）。
+    #
+    # ⚠️ 这里判的是**表单本身比 1080p 的侧边栏视口还高**（只跟表单有关，与窗口/屏幕无关），
+    #    **不是**「本机此刻溢出 > 0」—— 后者只对屏幕高约 1080 的机器成立：屏幕更高时
+    #    窗口真能长到 2000px，这张表单就装得下了（实测 1920×1200 的机器上溢出 0，
+    #    原来那条硬判红的断言就是这么假红的）。「装不下 → 滚得动、但滚不出范围」
+    #    由下面 B 节**压矮窗口**来验，那一条不依赖屏幕。
     app.set_page("unit")
-    app.root.update()
-    app.root.geometry("1280x2000")               # 尽量拉高（屏幕会把它夹到 1048）
     app.root.update()
     pick(app, "u:spearman")
     app.root.update()
-    ok(app.sidebar_overflow() > 0,
-       "★ 单位页（长枪兵）的表单装不下 1080p 的窗口（溢出 %d px）—— 与建筑页一样要能滚"
-       % app.sidebar_overflow())
+    need = app.sidebar.winfo_reqheight()
+    ok(need > 978,
+       "★ 单位页（长枪兵）的表单（%dpx）比 1080p 的侧边栏视口（978px）还高 —— 与建筑页一样要能滚"
+       % need)
+    app.root.geometry("1280x2000")               # 尽量拉高（1080p 的屏幕会把它夹到 1048）
+    app.root.update()
+    if app.sidebar_overflow() == 0:
+        print("  [skip] 本机屏幕高 %d，窗口拉高之后这张表单装得下（溢出 0）——"
+              "「装不下时能滚」由下面 B 节验" % app.root.winfo_screenheight())
 
     # ---- A. 内容装得下 → 一律钉在顶部（用户报的那个 bug）----
     #

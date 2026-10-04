@@ -74,6 +74,7 @@ func _run_until_zero(w, z: Dictionary, faction: String) -> int:
 func _initialize() -> void:
 	_case_name = "test_zone_capture"
 	run_all(_cases)
+	cleanup_escort_scaffold()
 
 
 func _cases() -> void:
@@ -135,7 +136,7 @@ func _bar_faction(z: Dictionary) -> String:
 # 1. 中立区块 + 只有一方 → 读它的条，满则占领
 # ------------------------------------------------------------------
 func _test_solo_reading(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var spot := _neutral_spot(w, cfg)
 	ok(not spot.is_empty(), "找得到一个无主区块")
 	if spot.is_empty():
@@ -166,7 +167,7 @@ func _test_solo_reading(cfg) -> void:
 # 2. 双方同场 → 无法读条；正在读的那条**冻住**
 # ------------------------------------------------------------------
 func _test_contested_freezes(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var spot := _neutral_spot(w, cfg)
 	if spot.is_empty():
 		return
@@ -204,7 +205,7 @@ func _test_contested_freezes(cfg) -> void:
 # 3. ★ A 读条中 B 进入并把 A 杀光 → A 缓慢降到 0 之后才读 B 的条
 # ------------------------------------------------------------------
 func _test_enemy_enters_then_wiped(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var spot := _neutral_spot(w, cfg)
 	if spot.is_empty():
 		return
@@ -257,7 +258,7 @@ func _test_enemy_enters_then_wiped(cfg) -> void:
 # 4. A 读条中 A 的单位全移出区块 → 缓慢降至 0（B 不在场）
 # ------------------------------------------------------------------
 func _test_reader_leaves(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var spot := _neutral_spot(w, cfg)
 	if spot.is_empty():
 		return
@@ -287,7 +288,7 @@ func _test_reader_leaves(cfg) -> void:
 # 5. 已有主的区块：只有 B 在场 → 读 B 的条；读满 → 易主
 # ------------------------------------------------------------------
 func _test_owned_zone_flip(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var spot := _neutral_spot(w, cfg)
 	if spot.is_empty():
 		return
@@ -347,7 +348,7 @@ func _test_owned_zone_flip(cfg) -> void:
 # 6. 严格阻塞：别人没归零，新来的一方不开读
 # ------------------------------------------------------------------
 func _test_strict_blocking(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var spot := _neutral_spot(w, cfg)
 	if spot.is_empty():
 		return
@@ -393,7 +394,7 @@ func _test_strict_blocking(cfg) -> void:
 ## ★ 怎么造「同一方 N 个单位」：把这方的单位**逐个挪进区块**（不用真的招募——
 ##   招募要读条 10 秒，而这里要验的是占领速率）。
 func _test_speed_curve(cfg) -> void:
-	var spot := _neutral_spot(WorldRes.create(cfg), cfg)
+	var spot := _neutral_spot(require_world(cfg), cfg)
 	if spot.is_empty():
 		ok(false, "人数加成用例需要一块无主区块")
 		return
@@ -450,7 +451,7 @@ func _test_speed_curve(cfg) -> void:
 	near(zmod.speed_multiplier(10, max_mult, k, p), 1.659, 1e-3, "★ 10 人 = x1.659")
 
 	# ---- 2) 真世界里对得上：1 人 vs 4 人，同样 tick 1 秒 ----
-	var w1 = WorldRes.create(cfg)
+	var w1 = require_world(cfg)
 	var spot1 := _neutral_spot(w1, cfg)
 	if spot1.is_empty():
 		return
@@ -462,7 +463,10 @@ func _test_speed_curve(cfg) -> void:
 	near(solo, 1.0 / full_sec(cfg), 1e-3, "1 人 1 秒 = 基准 %.3f" % (1.0 / full_sec(cfg)))
 
 	# 4 人：把同一方的 4 个单位塞进同一个区块
-	var w2 = WorldRes.create(cfg)
+	#
+	# ★★ 本轮口径：`config.json` 的全局缺省编制已删除 ⇒ 「同一方有 4 个单位」
+	#    只能来自**关卡摆放**（探针给每位将领摆 2 个 ⇒ 3 将 + 6 兵 = 9 个，够挑 4 个）。
+	var w2 = require_world_with_escorts(cfg, 2)
 	var spot2 := _neutral_spot(w2, cfg)
 	if spot2.is_empty():
 		return
@@ -486,7 +490,7 @@ func _test_speed_curve(cfg) -> void:
 	ok(four > solo, "★ 人多确实读得更快（4 人 %.4f > 1 人 %.4f）" % [four, solo])
 
 	# ---- 3) 加成不能跨阵营：敌人也在场时谁都读不动（既有规则不受影响）----
-	var w3 = WorldRes.create(cfg)
+	var w3 = require_world(cfg)
 	var spot3 := _neutral_spot(w3, cfg)
 	if spot3.is_empty():
 		return
@@ -508,7 +512,7 @@ func _test_speed_curve(cfg) -> void:
 # 7. ★ 同一时刻最多只有一条进度（UI 只画一条的前提）
 # ------------------------------------------------------------------
 func _test_no_two_bars(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var spot := _neutral_spot(w, cfg)
 	if spot.is_empty():
 		return

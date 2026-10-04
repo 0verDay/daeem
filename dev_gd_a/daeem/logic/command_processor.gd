@@ -25,6 +25,9 @@
 ##                                                      粮食 / 黄金 / 人口，只能选一个）
 ##   zone_spec_cancel        zone_id, faction          取消已完成的特化（**也要读条**，读完退款）
 ##   zone_spec_bar_cancel    zone_id, faction          撤掉**读条中**的那一单特化并退款
+##   revive         leader_id, faction              ★ 让一个**濒死**的将领「再起」
+##                                                      （扣 revive.cost、读条 channel_sec）
+##   revive_cancel  leader_id, faction              取消读条中的再起并**全额退款**
 ##   spawn_enemy    tx, ty               调试刷兵
 ##
 ## ★ 关键约束：**命令里只放意图，不放结果**。
@@ -91,6 +94,17 @@ static func apply(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 		"zone_spec_bar_cancel":
 			return world.cancel_zone_spec_bar(
 				int(cmd.get("zone_id", -1)), String(cmd.get("faction", world.my_faction)))
+		"revive":
+			# ★ 将领濒死 → 花资源「再起」（读条 channel_sec 秒）。
+			#   规则（能不能点 / 多少钱 / 读条多久）全在 world.start_revive 里，
+			#   这里只把意图转过去（与招募 / 升级那几条同一条约定）。
+			return world.start_revive(
+				String(cmd.get("leader_id", "")),
+				String(cmd.get("faction", world.my_faction)))
+		"revive_cancel":
+			return world.cancel_revive(
+				String(cmd.get("leader_id", "")),
+				String(cmd.get("faction", world.my_faction)))
 		"spawn_enemy":
 			return apply_spawn_enemy(world, cmd)
 		"select":
@@ -135,8 +149,17 @@ static func note_order_rejected(world, ids: Array, owner_faction: String) -> voi
 			continue
 		if not FactionRes.same_side(u.faction, owner_faction):
 			continue
-		if world.is_order_locked(u):
-			world.push_event({"type": "order_rejected", "reason": "recruiting", "unit_id": u.id})
+		# ★ 拒因码走 `world.order_lock_reason()`（它区分「正在招募」与「已倒地」）：
+		#   ⚠️ 这里**不能**用 `:=` —— 那个函数的返回值在动态调用下没有确定类型，
+		#      GDScript 会当场报 "Cannot infer the type of reason variable"
+		#      （实测踩到；与 test_case.gd 注释里那条「返回值是 Variant 时不要用 :=」同源）。
+		var reason: String = String(world.order_lock_reason(u))
+		if reason != "":
+			# ★ 带上 `faction`：这条目前**只有玩家命令**会产生（上面已经按阵营过滤过），
+			#   但事件带上阵营是这条通道的统一约定 —— 界面靠 `_is_my_event()` 判「要不要
+			#   打扰玩家」，将来多一条来源时不会又变成「别人的消息传到我这儿」。
+			world.push_event({"type": "order_rejected", "reason": reason, "unit_id": u.id,
+				"faction": String(u.faction)})
 			return
 
 
@@ -292,6 +315,10 @@ static func _snap_slot(world, cfg: ConfigRes, slot: Vector2, faction: String, cl
 ##   · tx, ty       敌对**建筑**所在的地块
 ##
 ## 与 move 一样带 faction 防冒充；目标必须真的是敌对的一方（不能拿自己人当靶子）。
+##
+## ★★ 「敌对」的口径是 `same_side_for_attack`（同阵营 **或盟友**）：加了阵营归属之后，
+##    命令层也必须认这一套 —— 否则命令层放行、`unit.order_attack_unit` 再拦一道，
+##    拒因会变成「你自己人」而不是「它是你的盟友」，玩家看到的提示就错了。
 static func apply_attack(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 	var owner_faction := String(cmd.get("faction", world.my_faction))
 	var target_unit = null
@@ -300,13 +327,13 @@ static func apply_attack(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 		target_unit = world.unit_by_id(String(cmd.get("target_id", "")))
 		if target_unit == null or not target_unit.alive:
 			return false
-		if FactionRes.same_side(target_unit.faction, owner_faction):
+		if FactionRes.same_side_for_attack(target_unit.faction, owner_faction):
 			return false
 	else:
 		target_building = world.building_at(int(cmd.get("tx", -1)), int(cmd.get("ty", -1)))
 		if target_building == null or not target_building.alive:
 			return false
-		if FactionRes.same_side(target_building.owner, owner_faction):
+		if FactionRes.same_side_for_attack(target_building.owner, owner_faction):
 			return false
 		# ★ 无敌建筑（区划中心）连命令都不该被接受 —— 它不是「敌方建筑」，是中立障碍。
 		#   这里挡一道，`unit.order_attack_building()` 里再挡一道：命令层与逻辑层各管各的，
@@ -363,6 +390,65 @@ static func apply_attack_move(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 	if not accepted:
 		note_order_rejected(world, ids, owner_faction)
 	return accepted
+
+
+## 行军攻击 + 队形：如果 group ≥ formation_min_units 就按队形排，否则逐个下。
+## 逻辑与 `apply_attack_move` 里那段**同义**，但入参是**已经收集好的单位数组**。
+##
+## ★★ 为什么单独抽出来（这是「阵营 AI 的部队不跟着走」那个 bug 的修法）：
+##   `apply_attack_move` 收的是**命令字典**（ids / faction / x,y），而 AI 是从逻辑层
+##   直接下命令的（没有命令字典，也不该为了这个去伪造一条）。这条公开入口让
+##   AI 走**与玩家完全同一条**路径：`world.group_of(将领)` 展开成一整队 →
+##   逐单位 `order_attack_move_at`（各自的槽位 + 同一个全队目标点）。
+##   ⇒ 将领和它辖下的部队真的会一起行军，而不是只有将领一个人走。
+static func order_group_attack_move(world, cfg: ConfigRes, group: Array, pt: Vector2) -> bool:
+	var owner: String = String(world.my_faction) if world != null else ""
+	var group2 := _collect_units(world, _ids_of(group), owner)
+	if group2.is_empty():
+		# `_collect_units` 按「同方」过滤，AI 那些单位不属于玩家阵营 ⇒ 走不过去。
+		# 这条路径是**逻辑层内部**调用（不是网络命令），所以直接用传来的数组。
+		group2 = []
+		for u in group:
+			# ★ 濒死者不下行军命令（它倒在原地，命令只会在它身上挂一条走不了的路径）。
+			#   兜底这一支是逻辑层内部调用（阵营 AI / 驻防巡逻 / 濒死集结），
+			#   它们传进来的数组可能含队长自己，所以这里也要过一遍 `is_order_locked`。
+			if u == null or not u.alive:
+				continue
+			if world != null and world.is_order_locked(u):
+				continue
+			group2.append(u)
+	if group2.is_empty():
+		return false
+	var accepted := false
+	if group2.size() >= cfg.formation_min_units:
+		var anchor_ok: bool = PathfinderRes.passable(world.map, world.buildings, cfg,
+			floori(pt.x), floori(pt.y), group2[0].faction)
+		# ⚠️ 这里必须写成「先声明带类型的变量、再赋值」：三目里那个 `[] as Array[Vector2]`
+		#   在 `:=` 推断下会得到无类型 `Array`，赋给 `Array[Vector2]` 会当场报
+		#   "Trying to assign an array of type Array to a variable of type Array[Vector2]"
+		#   （实测踩到 —— 而且它**每帧都报**，非常吵）。
+		var slots: Array[Vector2] = []
+		if anchor_ok:
+			slots = formation_slots(world, cfg, group2, pt)
+		if not slots.is_empty():
+			var anchor := Vector2i(floori(pt.x), floori(pt.y))
+			for i in group2.size():
+				if group2[i].order_attack_move_at(world, cfg, slots[i], anchor):
+					accepted = true
+			return accepted
+	for u in group2:
+		if u.order_attack_move(world, cfg, pt):
+			accepted = true
+	return accepted
+
+
+## 一组单位的 id（`order_group_attack_move` 内部复用 `_collect_units` 的过滤用）。
+static func _ids_of(group: Array) -> Array:
+	var out: Array = []
+	for u in group:
+		if u != null:
+			out.append(String(u.id))
+	return out
 
 
 ## 建造命令：owner 缺省时用本地阵营

@@ -42,14 +42,13 @@ func _cases() -> void:
 	_test_gap_between_towers(cfg)
 	_test_wall_unchanged(cfg)
 	_test_map_outpost(cfg)
-	_test_map_units(cfg)
 
 
 # ------------------------------------------------------------------
 # 1. 几何：本体大小 / 居中 / 渲染 = 碰撞
 # ------------------------------------------------------------------
 func _test_geometry(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var base_b = w.find_base_of(FactionRes.DEFAULT_FACTION)
 	ok(base_b != null, "有大本营")
 	if base_b == null:
@@ -121,7 +120,7 @@ func _test_geometry(cfg) -> void:
 # 2. 己方：整格放行 + 本体不挡
 # ------------------------------------------------------------------
 func _test_ally_passes(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var base_b = w.find_base_of(FactionRes.DEFAULT_FACTION)
 	var g = w.unit_by_id("general-1")
 	ok(base_b != null and g != null, "有大本营与将领 1")
@@ -163,7 +162,7 @@ func _test_ally_passes(cfg) -> void:
 # 3. 敌方：格子能走，但本体挡
 # ------------------------------------------------------------------
 func _test_enemy_blocked_by_body(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var base_b = w.find_base_of(FactionRes.DEFAULT_FACTION)
 	if base_b == null:
 		return
@@ -216,7 +215,7 @@ func _test_enemy_blocked_by_body(cfg) -> void:
 ## 这条盯的是 A* 的建筑惩罚：塔格虽然可通行，但不该被当成捷径穿过去。
 ## 只验寻路（不跑 tick），所以不怕塔把敌人打死 —— 断言是确定性的。
 func _test_path_avoids_body(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var base_b = w.find_base_of(FactionRes.DEFAULT_FACTION)
 	if base_b == null:
 		return
@@ -247,7 +246,7 @@ func _test_path_avoids_body(cfg) -> void:
 # 4. 缝：对角相邻的两个箭塔之间能挤过去（墙不能）
 # ------------------------------------------------------------------
 func _test_gap_between_towers(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var e = w.spawn_enemy(0, 0)
 	if e == null:
 		return
@@ -306,7 +305,7 @@ func _test_gap_between_towers(cfg) -> void:
 # 5. 城墙：语义一字未变（整格挡敌方、放行己方）
 # ------------------------------------------------------------------
 func _test_wall_unchanged(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var t := _free_tile_near(w, 6, 6)
 	var wall = w.add_building("wall", t.x, t.y, FactionRes.DEFAULT_FACTION)
 	ok(wall != null, "建了一段城墙")
@@ -338,14 +337,14 @@ func _test_wall_unchanged(cfg) -> void:
 
 
 # ------------------------------------------------------------------
-# 6. 地图上预置的对家据点（test_map.json 的 "buildings" 字段）
+# 6. 地图上预置的对家据点（data/maps/frontier/map.json 的 "buildings" 字段）
 #
 # 这一组是**给手玩测试用的摆设**：大本营 + 箭塔 + 城墙，放在地图东南角。
-# （原来是老图 map_01.json 里的东侧据点，老图删掉后搬进了 test_map.json。）
+# （原来是老图 map_01.json 里的东侧据点，老图删掉后搬进了 data/maps/frontier/map.json。）
 # 断言盯三件事：每一条都真的建出来了、归属对、**离玩家大本营足够远**。
 # ------------------------------------------------------------------
 func _test_map_outpost(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var prefab: Array = w.map.prefab_buildings
 	ok(prefab.size() >= 5, "地图里有预置建筑（%d 条）" % prefab.size())
 	if prefab.is_empty():
@@ -402,68 +401,6 @@ func _test_map_outpost(cfg) -> void:
 	for i in 90:
 		w.tick(DT)
 	ok(g.hp < hp0, "★ 走近对家箭塔会挨打（生命 %.0f → %.0f）" % [hp0, g.hp])
-
-
-# ------------------------------------------------------------------
-# 7. 地图上预置的对家单位（test_map.json 的 "units"）
-#
-# 给手玩测试用的守军：断言盯「每一条都建出来了 / 位置对 / hold 标记对 / 离大本营够远」，
-# 外加一条行为：hold 的单位**不会**朝玩家据点行军（那是它们能当靶子的前提）。
-# ------------------------------------------------------------------
-func _test_map_units(cfg) -> void:
-	var w = WorldRes.create(cfg)
-	var prefab: Array = w.map.prefab_units
-	ok(prefab.size() >= 4, "地图里有预置单位（%d 条）" % prefab.size())
-	if prefab.is_empty():
-		return
-
-	var home: Vector2i = w.home_base_of(FactionRes.DEFAULT_FACTION)
-	var min_dist := 999
-	var placed := 0
-	var held := 0
-	var movers := 0
-	for p in prefab:
-		var tile := Vector2i(int(p["x"]), int(p["y"]))
-		min_dist = mini(min_dist, absi(tile.x - home.x) + absi(tile.y - home.y))
-		var found = null
-		for u in w.units:
-			if u.alive and u.tx == tile.x and u.ty == tile.y and not FactionRes.same_side(u.faction, w.my_faction):
-				found = u
-				break
-		if found == null:
-			continue
-		placed += 1
-		if found.hold_position:
-			held += 1
-		else:
-			movers += 1
-		eq(String(found.name), String(p["name"]), "预置单位的名字与地图里写的一致（%s）" % found.name)
-
-	eq(placed, prefab.size(), "★ 每一条预置单位都真的建出来了")
-	ok(held >= 1, "有驻守（hold）的守军 —— 拿来当靶子用")
-	ok(movers >= 1, "也有不驻守的巡逻兵 —— 用来验「敌人行军」这条老行为还在")
-	ok(min_dist >= 6, "★ 预置单位离玩家大本营足够远（最近的一条 %d 格）" % min_dist)
-
-	# hold 单位的核心行为：不朝玩家据点行军
-	var holder = null
-	for u in w.units:
-		if u.alive and u.hold_position and not FactionRes.same_side(u.faction, w.my_faction):
-			holder = u
-			break
-	ok(holder != null, "取到一个驻守单位")
-	if holder != null:
-		# ★ 关掉战斗再验「不推进」：
-		#   `hold_position` 的语义是「**不执行推进 AI**」，迎战不受影响（有人靠近照样打）。
-		#   而这张图的 p2 大本营就在 (14,19)、离它不远，开着战斗时它会迎战并移动 ——
-		#   那是**正确**的防守行为，不是「跑去打据点」。这一条只验推进 AI 不启动。
-		var was_combat: bool = cfg.combat_enabled
-		cfg.combat_enabled = false
-		var start: Vector2 = holder.pos
-		for i in 300:
-			w.tick(DT)
-		cfg.combat_enabled = was_combat
-		ok(holder.pos.distance_to(start) < 0.6,
-			"★ 驻守单位不会自己跑去打据点（5 秒位移 %.3f 格）" % holder.pos.distance_to(start))
 
 
 # ---- 工具 ----

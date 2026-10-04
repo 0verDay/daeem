@@ -47,6 +47,7 @@ func _run() -> void:
 	_test_other_terrain_does_not_block(cfg)
 	_test_radius(cfg)
 	_test_faction_vision(cfg)
+	_test_shared_vision_same_side(cfg)
 	_test_buildings_give_vision(cfg)
 	_test_building_discovery(cfg)
 	_test_unit_no_memory(cfg)
@@ -351,6 +352,76 @@ func _test_faction_vision(cfg) -> void:
 
 
 # ------------------------------------------------------------------
+# 5.5) ★★ 迷雾按**同方**分桶：合作模式两名玩家共享视野
+#
+# 需求（dev_plan_7 1.3.8）：合作模式要求 p1、p2 **共享视野**，而「同一方」这件事
+# 在 `logic/faction.gd` 里已经有一套判据（含传递闭包）。所以 fog 只把**分桶键**
+# 从「阵营」换成 `FactionRes.side_of(阵营)`，查询也走同一个 key。
+#
+# ★ 单机时 `side_of(p1) == "p1"` ⇒ 与从前**逐位一致**（`_test_faction_vision` 那一段是回归）。
+# ⚠️ 忘了改查询那一句的症状很隐蔽：掩码按方存了、查询还按阵营查 ⇒
+#    p1（代表 id 恰好等于自己）一切正常，而 p2 永远查不到东西（整屏全黑）。
+# ------------------------------------------------------------------
+
+func _test_shared_vision_same_side(cfg) -> void:
+	var row := "........................"
+	var map = _make_map(cfg, [row, row, row, row, row])
+
+	# ---- 同方：p1 与 p2 结盟 ⇒ 两人共用一份视野 ----
+	# p1 在左（视野 8，最远看到 x=9），p2 在右（x=20 → 视野覆盖 x≈12..24 里可见的），
+	# enemy 在中间看不到的地方（x=16）—— 这样「p2 能看到 p1 那边」只可能来自共享。
+	FactionRes.set_allies([["p1", "p2"]])
+	eq(FactionRes.side_of("p1"), FactionRes.side_of("p2"), "（前提）p1 / p2 现在是同一方")
+	var fog = FogRes.create()
+	var fake = _make_fake(cfg, map, ["p1", "p2", "enemy"])
+	_add_unit(fake, cfg, "a1", 1, 2, "p1")
+	_add_unit(fake, cfg, "b1", 20, 2, "p2")
+	_add_unit(fake, cfg, "e1", 16, 2, "enemy")
+	fog.update(fake)
+	_see(fog, "p1", 4, 2, "p1 看得见自己单位周围")
+	_see(fog, "p2", 21, 2, "p2 看得见自己单位周围")
+	_see(fog, "p2", 4, 2, "★★ p2 看得见 p1 那边（两人共享视野）")
+	_see(fog, "p1", 21, 2, "★★ 反过来也一样（共享是双向的）")
+	# ⚠️ 这里**不能**写「中间那一段仍然看不见」：x=16 那儿站着敌方单位，
+	#    它的**自己的视野**本来就照亮了周围那一圈（迷雾是按「谁有眼睛」算的，
+	#    不是按「谁的脸」算的）—— 那条断言会假红，而且验的是错的东西。
+	#    真正要钉的是「对**没有视野来源的第三方**严格」（见下面 enemy 那一条 +
+	#    「解除结盟之后 p2 立刻看不见」那一条）。
+	_dont_see(fog, "enemy", 3, 2, "★★ 共享视野不会泄漏给敌方")
+
+	# 单位可见性也一起（三类查询必须同时改，见 fog.gd 那三条）
+	var foe = fake.units[2]
+	ok(fog.unit_visible("p2", foe), "p2 在自己的视野里看得见敌方单位")
+	ok(not fog.unit_visible("enemy", fake.units[0]),
+		"★ enemy 看不到 p1 的单位（哪怕 p1/p2 共享，也没泄漏给它）")
+
+	# ---- 解除结盟 ⇒ 立刻不再共享 ----
+	FactionRes.clear_allies()
+	fog.reset_cache()                      # ★ 换关系 = 换桶键，缓存必须清（与换地图同一条约定）
+	fog.update(fake)
+	_dont_see(fog, "p2", 4, 2, "★ 解除结盟之后 p2 看不到 p1 那边了")
+	_see(fog, "p2", 21, 2, "p2 自己的视野照旧")
+	_see(fog, "p1", 4, 2, "p1 自己的视野照旧")
+
+	# ---- 三方连成一方：传递闭包也算同一方（a-b、b-c ⇒ a 与 c 共享） ----
+	FactionRes.set_allies([["p1", "p2"], ["p2", "p3"]])
+	eq(FactionRes.side_of("p1"), FactionRes.side_of("p3"),
+		"（前提）隔着 p2 也算同一方（传递闭包）")
+	var fog3 = FogRes.create()
+	var fake3 = _make_fake(cfg, map, ["p1", "p2", "p3", "enemy"])
+	_add_unit(fake3, cfg, "a1", 1, 2, "p1")
+	_add_unit(fake3, cfg, "c1", 21, 2, "p3")
+	fog3.update(fake3)
+	_see(fog3, "p1", 21, 2, "★★ 三方连成一方时，p1 也看得见 p3 那边")
+	_see(fog3, "p3", 4, 2, "★★ 反过来也一样")
+	_dont_see(fog3, "enemy", 3, 2, "★ 还是不会泄漏给没结盟的 enemy")
+
+	# ⚠️ 收尾：`FactionRes` 的盟友表是 **static** —— 不清掉会串到后面的用例
+	#    （那些用例默认「谁跟谁都不是盟友」，沿用加这个功能之前的行为）。
+	FactionRes.clear_allies()
+
+
+# ------------------------------------------------------------------
 # 6) 建筑也给视野（需求第 3 条：单位和建筑都要有视野）
 # ------------------------------------------------------------------
 
@@ -609,11 +680,11 @@ func _aim_at(ctrl, tx: int, ty: int) -> void:
 
 func _test_pick_blocked_by_fog(cfg) -> void:
 	# 在**真地图 + 真 world** 上验（这条要求联动 input_controller，合成世界不够）
-	var w = load("res://logic/world.gd").create(cfg, "res://data/test_map.json")
+	var w = require_world(cfg)
 	ok(w != null, "world 能建出来（真地图）")
 	if w == null:
 		return
-	# 对家据点（test_map.json 的 buildings：base(14,14) / tower(14,12) / tower(16,14) / 墙×3）
+	# 对家据点（data/maps/frontier/map.json 的 buildings：base(14,14) / tower(14,12) / tower(16,14) / 墙×3）
 	var tower = null
 	for b in w.building_list:
 		if b.owner == "enemy" and b.type == "tower":
@@ -672,14 +743,16 @@ func _test_pick_blocked_by_fog(cfg) -> void:
 		"★★ 走开之后（迷雾重新盖住）仍然点得中它 —— 见过一次就永久记住")
 
 	# ---- 迷雾里的敌方**单位**同样点不到 ----
-	var foe = null
-	for cand in w.units:
-		if not FactionRes.same_side(cand.faction, w.my_faction) and cand.alive:
-			foe = cand
-			break
-	ok(foe != null, "真地图上有敌方单位（守军 / 巡逻兵）")
+	# ★★ 敌人**现造**（`w.spawn_enemy()`），不依赖地图预置单位：
+	#    `data/maps/*/map.json` 的 `units[]` 已经废弃（运行时不读它），所以
+	#    原来那句「从 w.units 里找一个敌方单位」在真地图上永远是 null。
+	#    ⚠️ 不能写死坐标：默认刷兵点在地图右边缘，而那张图右边缘那一列不可通行
+	#    （实测），所以这里挑一个**确实刷出来**的坐标，并断言它真的刷出来了 ——
+	#    刷不出来时下面那几条断言会全部静默跳过，那就是假绿灯。
+	var foe = w.spawn_enemy(20, 20)
+	ok(foe != null, "刷出一个敌方单位来做「迷雾里的敌人」这条用例")
 	if foe != null:
-		ok(not w.fog.unit_visible(w.my_faction, foe), "开局看不见对家的守军")
+		ok(not w.fog.unit_visible(w.my_faction, foe), "开局看不见刷出来的那个敌人")
 		eq(ctrl._pick_foe_unit_at(GridRes.center_of(Vector2i(foe.tx, foe.ty))), null,
 			"★★ 迷雾里的敌方单位不能被点名（_pick_foe_unit_at 返回 null）")
 		# 把 p1 的单位挪到它旁边 → 立刻能被点名
@@ -708,7 +781,7 @@ func _test_game_scene_wires_fog() -> void:
 	var main = (packed as PackedScene).instantiate()
 	root.add_child(main)
 	await process_frame
-	main._on_test_pressed()
+	main._on_test_pressed(main.start_screen.selected_map_path())
 	await process_frame
 	await process_frame
 

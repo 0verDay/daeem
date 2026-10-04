@@ -35,11 +35,28 @@ static func try_spend(cfg: ConfigRes, resources: Dictionary, cost: Dictionary) -
 
 
 ## 买得起吗（**无条件**判断，不看 economy 总开关）。
-static func can_afford(resources: Dictionary, cost: Dictionary) -> bool:
+##
+## ★★ `resources == null` 的语义是「这一方**没有资源库** = 资源无限」，不是「没钱」。
+##
+## 需求原文（将领性 / 防御性 AI）：「其没有资源库，没有大本营……会无资源消耗地招募单位
+## （或者可以认定该类 AI 资源无限）」。
+## 所以 null 一律**判得过**（连有消耗的 cost 也过）——
+## 这条与 `can_afford_recruit` / `can_afford_zone_recruit` 里那句
+## 「`pool != null and not can_afford(...)`」是**同一条语义**，两处必须一致。
+##
+## ⚠️ 参数类型必须是 `Variant`（不能是 `Dictionary`）：GDScript 对**有类型**的参数
+##    会把 null 判成「Cannot convert argument 1 from Nil to Dictionary」直接报错 ——
+##    这正是「驻防将领无消耗招兵」第一版撞到的那个错。
+## ⚠️ 那为什么还会有人想「无消耗」？因为 `world.start_recruit(free = true)` 会把
+##    **cost 清空**（那才是免费的真正落点）。null 池子只是「它没有账」，
+##    两者不是同一件事：一个有池子的 AI 仍然要按表付钱。
+static func can_afford(resources: Variant, cost: Dictionary) -> bool:
 	if cost.is_empty():
 		return true
+	if resources == null:
+		return true
 	for k in cost.keys():
-		if float(resources.get(k, 0.0)) < float(cost[k]):
+		if float((resources as Dictionary).get(k, 0.0)) < float(cost[k]):
 			return false
 	return true
 
@@ -50,9 +67,15 @@ static func can_afford(resources: Dictionary, cost: Dictionary) -> bool:
 ##   「建造免费」（本版建筑 cost 全是 0），而招募的 50 粮食 / 50 黄金是**玩法需求**，
 ##   不该被那个开关静默变成免费。所以 招募 → can_afford + spend（强制），
 ##   建造 → try_spend（受开关控制）。
-static func spend(resources: Dictionary, cost: Dictionary) -> bool:
+## ★★ `resources == null`（这一方没有资源库 = 资源无限）：`can_afford` 判得过，
+##   而这里**什么都不扣**（没有账可扣）就返回 true。
+##   ⚠️ 它不等于「免费那一档」：免费是调用方把 cost 清空
+##      （见 world.start_recruit 的 `free`），而这里只是「它没有账」。
+static func spend(resources: Variant, cost: Dictionary) -> bool:
 	if not can_afford(resources, cost):
 		return false
+	if resources == null:
+		return true
 	for k in cost.keys():
 		resources[k] = float(resources.get(k, 0.0)) - float(cost[k])
 	return true

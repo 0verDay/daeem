@@ -1,6 +1,6 @@
 extends RefCounted
 ##
-## 载入地图 JSON（`data/test_map.json`）+ 连通性修正（对应 HTML 版 js/map.js）。
+## 载入地图 JSON（`data/maps/<id>/map.json`）+ 连通性修正（对应 HTML 版 js/map.js）。
 ##
 ## 地形用字符串网格存（'grass' / 'forest' / 'mountain'），**不是** TileMapLayer 的属性。
 ## 理由见 docs/pitfalls.md 2.2：换一张图集/改一个图块属性不该悄悄改变玩法。
@@ -57,6 +57,13 @@ var base: Vector2i = Vector2i.ZERO
 var faction_bases: Dictionary = {}
 ## 阵营表（地图编辑器给：id / 名字 / 颜色）。游戏逻辑**不读**它，留着给 UI 与工具用。
 var factions_meta: Array = []
+## ★★ 阵营归属（盟友）：形如 `[["enemy", "ai"]]` —— 这一局里这些阵营互为**同方**
+## （不互相攻击、不争夺同一区划）。见 `logic/faction.gd` 那一大段说明。
+##
+## ★ 来源是地图 JSON 的 `allies` 字段（**地图数据**，不是全局配置）：
+##   所以「只有某一张图友善」是天然的，别的图一行不用改。
+## ★ 缺字段 / 格式不认识 → 空数组 → 没有任何盟友（与加这个功能之前逐位一致）。
+var allies: Array = []
 ## 将领开局站位（单机用，也是 P1 的）
 var general_spawns: Array[Vector2i] = []
 ## 多玩家起点（本轮不用，第 1 轮联机用）
@@ -70,13 +77,16 @@ var pvp_points: Array[Vector2i] = []
 ## ★ 归属只影响「挡谁 / 打谁」，**不会**替它抢占区块：zone.refresh_building_ownership()
 ##   只认 is_player_faction 的阵营，所以 "enemy" 的据点不会把区块吃掉（玩家照样能占领）。
 var prefab_buildings: Array[Dictionary] = []
-## 地图上**预置**的单位：每项 {"kind": String, "x": int, "y": int, "faction": String,
-##                            "name": String, "hold": bool}。
+## ★★ 地图预置**单位**（`map.json` 的 `units[]`）**整个废弃了**：运行时不再读它。
 ##
-## 用途：摆「测试用的敌方守军」这类固定单位。`hold = true` 的单位**不执行推进 AI**
-## （不会朝玩家据点行军），而是原地驻守、有人靠近就迎战 —— 拿来当靶子/测试用最省事。
-## 只有 kind 目前只支持 "enemy"（测试敌人）；以后要放别的兵种，往这里加即可。
-var prefab_units: Array[Dictionary] = []
+## 要摆「开局的守军 / 靶子」一律用**关卡的摆放**（关卡 JSON 的 `start_units`，
+## 见 `logic/level.gd` 的 `start_units` 与 `world._apply_level_placement`）——
+## 那一套的字段语义（`kind` / `faction` / `hold` / `zone` / `name`）与老的 `units[]`
+## 完全一致，只是**来源从地图换成了关卡**（可以逐关不同，而地图是死的）。
+##
+## ⚠️ 这里**故意不留 `prefab_units` 成员**：留着就一定会有人再读它，而
+##    「地图摆的单位」与「关卡摆的单位」两套并存正是这次要收掉的东西。
+## ⚠️ `_read_units()` 还留着，但**已无调用点**（原因见那个函数的注释）。
 ## 被连通性修正“封成山”的孤岛格数（测试与日志会看它）
 var sealed_islands: int = 0
 
@@ -107,6 +117,16 @@ var zones_kinds: Dictionary = {}
 ##
 ## 与产能一样是「地图说了算」的静态数据：进游戏之后不会变，所以不进快照。
 var zones_population_caps: Dictionary = {}
+## ★★ 每个区块的**开局归属**：id → 阵营 id（本轮新增）。
+##
+## 来源是 `zone_list[].owner`（手写地图里的可选项）。用途只有一类：
+## **NPC / AI 阵营一开始就有的地**（玩家的地靠出生点的大本营自动收归，
+## 见 zone.refresh_building_ownership —— 那条只认玩家阵营，所以 NPC 的地必须在这里写）。
+##
+## ⚠️ 缺字段（老图 / 编辑器导出的图）→ 一张空表 → **所有区块无主**，行为与从前一字不差。
+## ⚠️ 这里只登记 id → 阵营；「这个阵营认不认识」由 `zone.gd` 在应用时兜底
+##    （认不出来的一律当无主，与 `kind_of` 的宽容度一致）。
+var zones_owners: Dictionary = {}
 ## 旧格式里那个单数 `base` 读进来的值（**只读不写**的兼容入口）。
 ##
 ## ★ 编辑器**不再导出**这个字段了（用户要求把老式大本营彻底删掉），但**手写老地图
@@ -166,8 +186,10 @@ func _load(path: String, cfg: ConfigRes) -> bool:
 		pvp_points.append(p)
 	_read_faction_bases(d.get("faction_bases", null))
 	factions_meta = d.get("factions", []) if d.get("factions", []) is Array else []
+	allies = _read_allies(d.get("allies", null))
 	prefab_buildings = _read_buildings(d.get("buildings", []))
-	prefab_units = _read_units(d.get("units", []))
+	# ⚠️ 地图的 `units[]` **不再读**（本轮需求：地图预置单位整个废弃）。
+	#    开局守军一律由关卡的 `start_units` 摆（见 `logic/level.gd`）。
 	_read_zones(cfg, d.get("zones", null), d.get("zone_list", null))
 
 	forest_mult = cfg.unit_forest_mult
@@ -258,6 +280,57 @@ func _read_faction_bases(v: Variant) -> void:
 		faction_bases[fid] = p
 
 
+## ★★ 运行时给某一方**登记一个大本营点位**（本轮新增；阵营 AI 用）。
+##
+## 为什么需要它：`faction_bases` 原本只来自地图 JSON（地图编辑器画出来的），
+## 而「阵营 AI 的大本营摆哪」是**配置**（config.json 的 `ai.factions[].base`）——
+## 两个 AI 阵营不该逼着地图作者每张图都手画一遍。
+##
+## ★ 幂等、可覆盖：同一个阵营调两次就是改点位（世界每次 `reset()` 都会重放一遍配置）。
+## ★ 只写点位，不做任何校验：`spawn_layout_for` 会用 `nearest_walkable()` 把它挪到
+##   最近的可通行格上，越界点会退到地图参考点 —— 与「地图里写了越界坐标」同一套兜底。
+## ⚠️ 必须在 `apply_faction_layout()`（= 建基地）**之前**调，否则这一方会先按
+##   兜底点位建一座基地、再被重建成第二座（见 world.apply_faction_layout 的孤儿清理）。
+func set_faction_base(fid: String, tile: Vector2i) -> void:
+	if fid == "" or tile.x < 0 or tile.y < 0:
+		return
+	faction_bases[fid] = tile
+
+
+## ★★ 读阵营归属（盟友）：`allies: [["enemy", "ai"]]`。
+##
+## ★ 只用**前两个**元素：这一版的语义是「两方互为盟友」，写三个以上没有定义的收益
+##   （真要多方同盟就写成多对，比如 `[["a","b"],["b","c"]]` —— `FactionRes` 侧本来就是
+##   按「对」做连通搜索的，三条边自然连成一方）。
+##
+## 宽容度与其它读字段的地方一致：
+##   · 缺字段 / 不是数组 → 空表（这一局没有任何盟友，行为与加这个功能之前**逐位一致**）；
+##   · 单项不是数组 / 少于两个 / 有一项是空串 / 两个是同一个阵营 → **跳过那一项**，
+##     不报错、也不把半条关系写进去；
+##   · 重复的对会被 `FactionRes.set_allies()` 去重。
+##
+## ⚠️ 这里**不做**「这个阵营认不认识」的校验：名单要到 `world.reset()` 才定下来
+##   （地图的 `factions` 只是元数据，真正在场的是名单 + config 里的 AI 阵营），
+##   而认不出来的 id 在判定时天然无效（它不会与任何真实阵营同名）。
+##   与 `zones_owners` 的宽容度一致。
+func _read_allies(v: Variant) -> Array:
+	var out: Array = []
+	if typeof(v) != TYPE_ARRAY:
+		return out
+	for item in (v as Array):
+		if typeof(item) != TYPE_ARRAY:
+			continue
+		var pair: Array = item as Array
+		if pair.size() < 2:
+			continue
+		var a := String(pair[0]).strip_edges()
+		var b := String(pair[1]).strip_edges()
+		if a == "" or b == "" or a == b:
+			continue
+		out.append([a, b])
+	return out
+
+
 ## 读区块网格 + 名字表 + 每种区划的种类（地图编辑器导出的地图才有）。
 ##
 ## 缺字段 / 格式不认识 → 几张表都留空 → zone 走「均分」的老路（行为与加这个字段之前一致）。
@@ -272,6 +345,7 @@ func _read_zones(cfg: ConfigRes, grid_v: Variant, list_v: Variant) -> void:
 	zones_production = {}
 	zones_population_caps = {}
 	zones_kinds = {}
+	zones_owners = {}
 	if typeof(grid_v) != TYPE_ARRAY:
 		return
 	zones_grid = grid_v
@@ -312,6 +386,12 @@ func _read_zones(cfg: ConfigRes, grid_v: Variant, list_v: Variant) -> void:
 		var cap: Variant = z.get("population_cap", null)
 		if typeof(cap) == TYPE_FLOAT or typeof(cap) == TYPE_INT:
 			zones_population_caps[zid] = float(cap)
+		# ★★ 开局归属（本轮新增）：`zone_list[].owner` 写了阵营 id 就登记。
+		#    ⚠️ 不做「这个阵营存不存在」的校验：阵营名单要到 world.reset() 才定下来，
+		#       而这张表在那之前就读完了 —— 认不出来的由 zone 在应用时当无主处理。
+		var own := String(z.get("owner", "")).strip_edges()
+		if own != "":
+			zones_owners[zid] = own
 
 
 ## 读 exists 网格：地图编辑器导出的是 `[[1,1,0,...], ...]`（1 = 存在，0 = 地图外）。
@@ -414,12 +494,25 @@ func _read_buildings(v: Variant) -> Array[Dictionary]:
 	return out
 
 
-## 读地图上预置的单位。每项要 {x, y}，可选 {kind, faction, name, hold}：
+## ⚠️⚠️ **已无调用点**（本轮需求：地图预置单位整个废弃，运行时不读 `map.json` 的 `units[]`）。
+##
+## 留着它的原因有两个：
+##   · 这段解析是「关卡摆放」（`level._read_start_units`）的**前身与参照** ——
+##     两边字段语义一字不差，哪天要合并实现，这里就是那份定义；
+##   · 万一还有别处按名字引用它（grep 过：`logic/unit.gd` 与 `logic/world.gd`
+##     只在注释里提到 `_read_units`，**没有代码调用**）。
+## ★ 新增功能**不要**再接回这里 —— 要摆开局单位请用关卡的 `start_units`。
+##
+## 读地图上预置的单位。每项要 {x, y}，可选 {kind, faction, name, hold, zone}：
 ##   · kind 缺省 "enemy"（测试敌人）—— 目前只支持它
 ##   · faction 缺省 "enemy"；name 缺省 "测试敌人"
 ##   · hold = true → 不执行推进 AI（原地驻守）
-## 坐标越界 / 落在山上的项在这里就丢掉（world 那边建不出来），
-## tests/test_building_body.gd 会断言每一条都真的建出来了。
+##   · ★ zone = 归属的**区划 id**（本轮新增，给「将领性 / 防御性 AI」用）：
+##     写了它 → 这个单位由 logic/general_ai.gd 接管（在自己区划里巡逻，
+##     不追出区划，脱战满 10 秒无消耗招兵），**不再跑推进 AI**（与 hold 同一条效果）。
+##     没写（-1）→ 行为与从前一字不差（守军靠 hold、巡逻兵照旧推进）。
+## 坐标越界 / 落在山上的项在这里就丢掉（world 那边建不出来）。
+## （老的 `tests/test_building_body.gd` 第 7 节就是断言这个的，那一节已随本次废弃一起删掉。）
 func _read_units(v: Variant) -> Array[Dictionary]:
 	var out: Array[Dictionary] = []
 	if typeof(v) != TYPE_ARRAY:
@@ -436,12 +529,17 @@ func _read_units(v: Variant) -> Array[Dictionary]:
 		if not terrain_walkable(x, y):
 			push_warning("地图预置单位落在不可通行的地形上，已跳过：(%d, %d)" % [x, y])
 			continue
+		# ★ 归属区划：-1 = 没写。写了才接管（见上面 zone 那条说明）。
+		#   ⚠️ 不做「这个 id 存不存在」的校验：zone 表要等 zone.build_from_map 之后才建好，
+		#      而这张表在那之前就读完了 —— 越界的 id 由 general_ai 那边当「找不到区划」处理。
+		var gz := int(u.get("zone", -1))
 		out.append({
 			"kind": String(u.get("kind", "enemy")),
 			"x": x, "y": y,
 			"faction": String(u.get("faction", "enemy")),
 			"name": String(u.get("name", "测试敌人")),
 			"hold": bool(u.get("hold", false)),
+			"zone": gz,
 		})
 	return out
 

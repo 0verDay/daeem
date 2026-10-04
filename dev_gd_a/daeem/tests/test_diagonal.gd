@@ -115,7 +115,7 @@ func _test_direction_sets(cfg) -> void:
 
 ## 开阔地斜着走：八方向应该比四连通短
 func _test_diagonal_shortens_path(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	# ★ 摘掉区划中心再验「开阔地更短」：这张图上 (5,4) 就是一根中心柱，
 	#   正好卡在 (2,2) 到 (8,5) 的直线路径上（实测：不摘掉时 6 步变 7 步）。
 	_clear_zone_centers(w)
@@ -146,7 +146,7 @@ func _test_diagonal_shortens_path(cfg) -> void:
 
 ## ★ 对角不许穿角：两座山对着一个格，斜着穿不过去
 func _test_no_corner_cutting(cfg) -> void:
-	var map = MapDataRes.load_from("res://data/test_map.json", cfg)
+	var map = MapDataRes.load_from("res://data/maps/frontier/map.json", cfg)
 	ok(map != null, "载入地图用于造对角障碍")
 	if map == null:
 		return
@@ -182,7 +182,7 @@ func _test_no_corner_cutting(cfg) -> void:
 
 ## 放开开关后，对角缝就允许穿（这是 config 里那个开关的契约）。
 func _test_corner_cut_switch(cfg) -> void:
-	var map = MapDataRes.load_from("res://data/test_map.json", cfg)
+	var map = MapDataRes.load_from("res://data/maps/frontier/map.json", cfg)
 	var cx := 4
 	var cy := 12
 	map.terrain.set_cell(cx + 1, cy, MapDataRes.TERRAIN_MOUNTAIN)
@@ -206,7 +206,7 @@ func _test_corner_cut_switch(cfg) -> void:
 ##    (1,1)→(9,6) 这条线正好要绕过 (5,5) 那一根，于是「实际代价」会比 octile 大，
 ##    这一条就不再是「代价与启发式同口径」的验证了。
 func _test_cost_and_heuristic_agree(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	_clear_zone_centers(w)
 	var from := Vector2i(1, 1)
 	var to := Vector2i(9, 6)
@@ -232,7 +232,7 @@ func _test_switching_back_to_four(cfg) -> void:
 
 	eq(GridRes.directions(cfg).size(), 4, "diagonal=false 时方向集退回四个")
 
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	ok(not w.map.diagonal, "地图也跟着按四连通做连通性修正")
 	var from := Vector2i(2, 2)
 	var to := Vector2i(8, 5)          # 四连通下最短路 = 6 + 3 = 9 步
@@ -256,7 +256,7 @@ func _test_switching_back_to_four(cfg) -> void:
 
 ## ★ 城墙的阻挡语义在八方向下**不能变弱**（否则所有防御工事都被悄悄削弱）
 func _test_wall_still_blocks(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	# ★ 先摘掉区划中心：它们会占掉大本营周围的一格，让「围一圈」少一段；
 	#   而下面那条 `eq(solid, walled)` 会把中心也数进去（它是建筑、也对敌人不可通行），
 	#      于是「8 != 6」这种假失败。这一节验的是**城墙**。

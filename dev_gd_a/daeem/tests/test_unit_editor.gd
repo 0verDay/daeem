@@ -213,7 +213,7 @@ func _test_general_overrides() -> void:
 	near(cfg.general_speed_at(2), cfg.unit_speed_of("rider"), 1e-6,
 		"将领 3 的移速 = 骑手那一档")
 	eq(cfg.general_name_at(0), "", "默认没有名字覆盖（调用方兜底「将领 N」）")
-	var w0 = WorldRes.create(cfg)
+	var w0 = require_world(cfg)
 	var g0 = w0.unit_by_id("general-1")
 	ok(g0 != null, "开局将领在场")
 	near(g0.hp_max, cfg.unit_hp_of("spearman"), 1e-6, "开局将领 1 的血量走兵种表")
@@ -227,7 +227,7 @@ func _test_general_overrides() -> void:
 		{"hp_max": 300, "damage": 40},
 		{},
 	]))
-	var w = WorldRes.create(cfg4)
+	var w = require_world_with_escorts(cfg4)
 	var g1 = w.unit_by_id("general-1")
 	var g2 = w.unit_by_id("general-2")
 	var g3 = w.unit_by_id("general-3")
@@ -254,11 +254,22 @@ func _test_general_overrides() -> void:
 			"★★ 附属兵的血量走**兵种**那一档（160），不是将领的 260")
 		eq(esc[0].general_index, -1, "附属兵不是将领（序号 -1）")
 
-	# ---- 护卫数（三位共用同一个数）----
-	eq(cfg4.general_escort_count(), 3, "开局护卫数 3")
-	cfg4.data["unit"]["general"]["escort"] = 5
-	var cfg5 = _reload(cfg4)
-	eq(cfg5.general_escort_count(), 5, "改成 5 立刻生效")
+	# ---- ★★ 「开局护卫数」（`unit.general.escort`）**已经整条删除** ----
+	#
+	# 为什么不再测「一个数 / 数组两种写法、越界按长度循环」：那个全局缺省没有了。
+	# 新口径是「所见即所得」—— 开局有几个附属兵**完全等于关卡 `start_units[]` 里
+	# 摆了几个**（每个兵一个坐标 + `escort_of` 指向哪位将领，在**战役编辑器的摆放页**里摆）。
+	# 所以这里反过来钉住「它真的没了」，免得有人又把那个全局开关加回来：
+	ok(not cfg4.data["unit"]["general"].has("escort"),
+		"★★ config 的 unit.general 里**没有** escort（开局附属兵改在战役编辑器摆放页里摆）")
+	ok(not cfg4.has_method("general_escort_at") and not cfg4.has_method("general_escort_count"),
+		"★ Config 也不再提供 general_escort_at / general_escort_count 这两个接口")
+	# 残留的 escort 键必须被**静默忽略**（老 config 文件里可能还留着它）：
+	cfg4.data["unit"]["general"]["escort"] = [2, 4]
+	var cfg6 = _reload(cfg4)
+	ok(cfg6 != null, "★ 残留的 escort 键不影响载入（静默忽略，不报错）")
+	eq(cfg6.general_type_at(0), cfg4.general_type_at(0),
+		"★ 而且它一个字段都影响不到（将领类型照旧走 types）")
 
 
 # ------------------------------------------------------------------
@@ -298,7 +309,7 @@ func _test_vision() -> void:
 	near(cfg2.unit_vision_of("rider"), 3.0, 1e-6, "★ 改了兵种的 vision → 查询口读到新值")
 
 	# ---- 出生时抄进单位身上（迷雾读的就是它）----
-	var w = WorldRes.create(cfg2)
+	var w = require_world_with_escorts(cfg2)
 	var g3 = w.unit_by_id("general-3")
 	ok(g3 != null, "（前提）将领 3 在场")
 	if g3 != null:
@@ -321,7 +332,7 @@ func _test_vision() -> void:
 		"★ 将领 2 没写 → 仍然跟随长弓兵（10）")
 	near(cfg3.unit_vision_of("spearman"), 8.0, 1e-6,
 		"★ 覆盖只作用于那一位将领，不改兵种本身")
-	var w2 = WorldRes.create(cfg3)
+	var w2 = require_world(cfg3)
 	var g1b = w2.unit_by_id("general-1")
 	var g2b = w2.unit_by_id("general-2")
 	if g1b != null:
@@ -351,7 +362,7 @@ func _test_vision() -> void:
 		"★★ 没写 / 删掉 vision → 退回 fog.vision_building（编辑器里「清空」那一下）")
 
 	# 出生时抄进建筑身上（迷雾读的就是它）
-	var w3 = WorldRes.create(cfg3)
+	var w3 = require_world(cfg3)
 	var t3 = null
 	for bb in w3.building_list:
 		if bb.type == "tower" and bb.owner == FactionRes.DEFAULT_FACTION:
@@ -398,7 +409,7 @@ func _test_new_building() -> void:
 	near(cfg.building_attack_of("outpost", 1)["damage"], 20.0, 1e-6, "攻击力来自 config")
 
 	# ---- 世界里真的建得出来 ----
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var base_b = w.find_base_of(FactionRes.DEFAULT_FACTION)
 	ok(base_b != null, "（前提）有己方大本营")
 	if base_b == null:
@@ -474,7 +485,7 @@ func _test_construction() -> void:
 		return
 	cfg.data["building"]["outpost"] = NEW_BUILDING.duplicate(true)
 
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var base_b = w.find_base_of(FactionRes.DEFAULT_FACTION)
 	var tile: Vector2i = _free_tile_near(w, base_b.tx + 4, base_b.ty)
 	ok(tile.x >= 0, "（前提）找得到一个空格")
@@ -528,7 +539,7 @@ func _test_construction() -> void:
 	var cfg2 = require_config()
 	cfg2.data["building"]["base"]["build_sec"] = 5.0
 	cfg2.data["building"]["tower"]["build_sec"] = 5.0
-	var w2 = WorldRes.create(cfg2)
+	var w2 = require_world(cfg2)
 	var b2 = w2.find_base_of(FactionRes.DEFAULT_FACTION)
 	ok(b2 != null, "（前提）开局有己方大本营")
 	if b2 != null:
@@ -554,7 +565,7 @@ func _test_hud_build_page() -> void:
 	var root_node = (packed as PackedScene).instantiate()
 	root.add_child(root_node)
 	await process_frame
-	root_node._on_test_pressed()          # 与玩家点一下 test 完全同一条路
+	root_node._on_test_pressed(root_node.start_screen.selected_map_path())          # 与玩家点一下 test 完全同一条路
 	await process_frame
 	await process_frame
 	var main = root_node.game

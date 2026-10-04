@@ -30,6 +30,16 @@ const DT := 1.0 / 60.0
 func _initialize() -> void:
 	_case_name = "test_retinue"
 	run_all(_cases)
+	cleanup_escort_scaffold()
+
+
+## ★★ 本轮口径（重要，读一遍再改这个文件）：
+##   `config.json` 的 `unit.general.escort` 全局缺省**已删除** ——
+##   开局有几个附属兵**完全等于关卡 `start_units[]` 里摆出来的那些**
+##   （`escort_of` 指向同阵营第几位将领）。所以这一整套用例的世界改由
+##   `require_world_with_escorts()` 造（它写一份探针关卡，给每位将领摆 3 个兵）。
+##   ⇒ 「几个附属兵」这个数**不再来自 config**，而是来自那份探针（`PER`）。
+const PER := 3
 
 
 func _cases() -> void:
@@ -49,17 +59,20 @@ func _cases() -> void:
 
 ## 出生：数量、类型、id 规则、没有快捷键
 func _test_spawn(cfg) -> void:
-	var w = WorldRes.create(cfg)
-	var per: int = cfg.general_escort_count()
-	ok(per > 0, "配置里附属兵数量大于 0（不然整套测试没有意义）")
+	var w = require_world_with_escorts(cfg, PER)
+	if w == null:
+		return
+	# ★★ 「几个附属兵」现在的来源是**关卡摆放**（探针里每位将领摆了 PER 个）——
+	#   不再是 config 的 `unit.general.escort`（那一条本轮已删除）。
+	var per: int = PER
 	var generals = _kind(w, UnitRes.KIND_GENERAL)
-	eq(generals.size(), 3, "3 个将领")
+	eq(generals.size(), 3, "3 个将领（escort_of 点名了 1/2/3 位，于是三位都被补出来）")
 
 	var subs: Array = []
 	for u in w.units:
 		if u.leader_id != "":
 			subs.append(u)
-	eq(subs.size(), 3 * per, "每个将领带 %d 个附属兵" % per)
+	eq(subs.size(), per * 3, "三位将领一共带 %d 个附属兵（= 关卡摆了几个就是几个）" % (per * 3))
 
 	for g in generals:
 		eq(w.retinue_of(g.id).size(), per, "%s 辖下有 %d 个附属兵" % [g.id, per])
@@ -68,7 +81,6 @@ func _test_spawn(cfg) -> void:
 
 	for s in subs:
 		ok(s.leader_id != "", "附属兵有队长 id")
-		ok(s.id.begins_with(s.leader_id), "附属兵 id 以队长 id 开头（%s ← %s）" % [s.id, s.leader_id])
 		eq(s.hotkey, "", "附属兵没有快捷键")
 		eq(s.faction, FactionRes.DEFAULT_FACTION, "附属兵与队长同阵营")
 		# ★★ 本轮的核心：附属兵是**将领自己那一类**的兵（不再是固定的亲兵）
@@ -78,12 +90,20 @@ func _test_spawn(cfg) -> void:
 			eq(String(s.kind), String(leader.unit_type), "★ 附属兵的 kind = 队长的单位类型")
 			eq(String(s.unit_type), String(leader.unit_type), "★ 附属兵与队长同类型")
 
-	# 每个将领先全部入列，附属兵跟在后面（快捷键 1/2/3 与按序号取将领的代码都靠这个顺序）
-	var first_three = []
-	for i in 3:
-		first_three.append(w.units[i].kind)
-	eq(first_three, [UnitRes.KIND_GENERAL, UnitRes.KIND_GENERAL, UnitRes.KIND_GENERAL],
-		"★ world.units 前三个永远是将领（顺序契约）")
+	# ★★ 顺序契约：**每一位将领都排在它自己的兵前面**。
+	#
+	# 本轮之前这条靠「将领全部由 spawn_faction_units 在摆放之前造好」保证；
+	# 现在「摆了附属部队的那一方连将领都由关卡摆」，所以 `_apply_level_placement`
+	# 改成**按方分批**：先补这一方的将领，再摆这一方的兵（见 world.gd 那段说明）。
+	# 这里逐条钉住它：每个附属兵的队长必须**在它之前**出现在 world.units 里。
+	var pos: Dictionary = {}
+	for i in w.units.size():
+		pos[String(w.units[i].id)] = i
+	for s in subs:
+		var lp: Variant = pos.get(String(s.leader_id), -1)
+		ok(int(lp) >= 0 and int(lp) < int(pos[String(s.id)]),
+			"★★ 将领排在它自己的兵前面（%s @%d < %s @%d）"
+				% [String(s.leader_id), int(lp), String(s.id), int(pos[String(s.id)])])
 	# 三个将领分别是三种类型（长枪兵 / 长弓兵 / 骑手）
 	var got_types: Array = []
 	for g2 in generals:
@@ -91,21 +111,36 @@ func _test_spawn(cfg) -> void:
 	eq(got_types, cfg.general_types(), "★ 三个将领分别被赋上配置里的三个类型")
 
 
-## 出生位置：挨着队长（不能被挤到地图另一头）
+## 出生位置：附属兵站在**作者摆的那一格**上，而且能走、不卡建筑
+##
+## ★★ 本轮口径变更：附属兵不再是「围着将领自动生成一圈」（`create_escort` 已删除），
+##    而是**关卡 `start_units[]` 里逐兵摆出来的坐标** ⇒ 「挨着队长 2 格以内」
+##    这条**不再成立**（作者可以把兵摆在任何地方）。
+##    ⇒ 这里改钉三件本轮真的成立、而且更要紧的事：
+##      ① 附属兵真的站在作者写的那一格上（摆放坐标不被别处改写）；
+##      ② 那一格能走、没卡在建筑里；
+##      ③ 它仍然**挂在自己的将领**名下（这才是「附属」的定义）。
 func _test_spawn_near_leader(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world_with_escorts(cfg, PER)
+	if w == null:
+		return
 	var g = w.unit_by_id("general-1")
 	ok(g != null, "有 general-1")
 	if g == null:
 		return
 	var ret = w.retinue_of(g.id)
-	ok(ret.size() > 0, "general-1 有附属兵")
-	var max_dist := 0
-	for s in ret:
-		max_dist = maxi(max_dist, maxi(absi(s.tx - g.tx), absi(s.ty - g.ty)))
-	ok(max_dist <= 2, "★ 附属兵都出生在将领 2 格以内（实测最远 %d 格）" % max_dist)
+	eq(ret.size(), PER, "general-1 名下有 %d 个附属兵（关卡摆的）" % PER)
+	# 探针把 general-1 的兵摆到它的**出生格四周**（见 test_case.require_world_with_escorts）：
+	# 内圈就是 `ESCORT_RING` 的前三个方向（右 / 下 / 左）。
+	var want_off: Array = [Vector2i(1, 0), Vector2i(0, 1), Vector2i(-1, 0)]
+	for i in ret.size():
+		var s = ret[i]
+		eq(String(s.leader_id), "general-1", "★ 每个兵都挂在 general-1 名下（%s）" % s.id)
+		var want_tile := Vector2i(g.tx + (want_off[i] as Vector2i).x, g.ty + (want_off[i] as Vector2i).y)
+		v2i_eq(Vector2i(s.tx, s.ty), want_tile,
+			"★ 附属兵就站在作者摆的那一格上（%s）" % s.id)
 
-	# 附属兵不能站在大本营那一格 / 山上
+	# 附属兵不能站在山上 / 卡在不能站的建筑里
 	for s in ret:
 		ok(w.map.terrain_walkable(s.tx, s.ty), "附属兵站在可通行格上：%s" % s.id)
 		var b = w.building_at(s.tx, s.ty)
@@ -114,9 +149,11 @@ func _test_spawn_near_leader(cfg) -> void:
 
 ## 队伍模型的语义
 func _test_group_model(cfg) -> void:
-	var w = WorldRes.create(cfg)
-	var per: int = cfg.general_escort_count()
+	var w = require_world_with_escorts(cfg, PER)
+	if w == null:
+		return
 	var g1 = w.unit_by_id("general-1")
+	var per: int = PER
 	var sub0 = w.retinue_of(g1.id)[0]
 
 	# 从队长出发
@@ -135,9 +172,11 @@ func _test_group_model(cfg) -> void:
 	eq(expanded.size(), 1 + per, "★ expand_to_groups 会去重并展开成整队")
 
 	# 两个不同队伍混在一起 → 两支队伍都展开
+	# ★ 编制可以逐将不同（关卡摆几个就是几个）⇒ 两队的规模**可以不一样**，要各算各的
 	var g2 = w.unit_by_id("general-2")
+	var per2: int = w.retinue_of(g2.id).size()
 	var two = w.expand_to_groups([g1, g2])
-	eq(two.size(), 2 * (1 + per), "两支队伍的队长一起选中 → 展开出两队所有人")
+	eq(two.size(), (1 + per) + (1 + per2), "两支队伍的队长一起选中 → 展开出两队所有人")
 	eq(two[0].id, g1.id, "第一队的队长在最前（顺序稳定）")
 	eq(two[1 + per].id, g2.id, "第二队的队长紧随其后")
 
@@ -150,15 +189,35 @@ func _test_group_model(cfg) -> void:
 
 ## ★ 队长阵亡后：附属兵不能被凭空造出一个队长，也不该互相牵连
 func _test_leader_dead(cfg) -> void:
-	var w = WorldRes.create(cfg)
-	var per: int = cfg.general_escort_count()
+	var w = require_world_with_escorts(cfg, PER)
+	if w == null:
+		return
 	var g1 = w.unit_by_id("general-1")
+	var per: int = PER
 	var ret = w.retinue_of(g1.id)
 	eq(ret.size(), per, "先确认有附属兵")
 
 	# 让队长阵亡（单机：死了就离场）
-	g1.take_damage(cfg, w, 9999.0, null)
+	# ★★ 加了「将领濒死保护」之后不能像从前那样直接 take_damage（那样只会让它倒地：
+	#    旗下还有部队时它将进入濒死，见 logic/unit.gd 与 data/config.json 的 revive 段）。
+	#    本节要的场面是「**附属兵还活着、队长却没了**」，所以按权威规则摆出来：
+	#      ① 开局的附属兵先请离场（它们与本节无关：本节的 `per` 个兵下面会**重新**补上）；
+	#      ② 补上 `per` 个**新的**活兵挂在它名下；
+	#      ③ 打光它们 → 世界收尸 → 它因为「旗下无部队」当场阵亡（用户拍板）；
+	#      ④ 再补上 `per` 个活兵挂在它名下（它们的队长 id 仍然指着它，而它已经离场）——
+	#         这就是「孤儿附属兵」那个状态。
+	#    ⚠️ 不要图省事写成「清空 leader_id」这类改数据的手法：本节验的正是
+	#      「队长不在 world.units 里时，`team_leader` / `group_of` 怎么回答」。
+	for m in ret:
+		m.alive = false
+	w.units = w.units.filter(func(u): return u.alive)
+	_attach_mates(cfg, w, g1, per)
+	for _m in w.retinue_of(g1.id, true):
+		_m.take_damage(cfg, w, _m.hp + 999999.0, null)
+	w.tick(DT)
+	g1.take_damage(cfg, w, 999999.0, null)
 	ok(not g1.alive, "队长已阵亡")
+	_attach_mates(cfg, w, g1, per)
 	w.tick(DT)
 	ok(w.unit_by_id(g1.id) == null, "队长已离场")
 
@@ -184,7 +243,9 @@ func _test_leader_dead(cfg) -> void:
 
 ## ★ 一条 move 命令覆盖整队（「右键移动同步下达指令」的逻辑层那一半）
 func _test_move_command_hits_whole_group(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world_with_escorts(cfg, PER)
+	if w == null:
+		return
 	var g1 = w.unit_by_id("general-1")
 	var group = w.group_of(g1)
 	var ids: Array = []
@@ -209,7 +270,7 @@ func _test_move_command_hits_whole_group(cfg) -> void:
 			toward += 1
 	eq(toward, group.size(), "整队都记住了目标点")
 
-	# 队伍之外的单位不该被顺带命令
+	# ★ 同阵营的另一支队伍没有被顺带下令
 	var g2 = w.unit_by_id("general-2")
 	ok(not g2.moving, "★ 同阵营的另一支队伍没有被顺带下令")
 
@@ -226,7 +287,10 @@ func _test_move_command_hits_whole_group(cfg) -> void:
 func _test_group_move_actually_works(cfg) -> void:
 	var was_combat: bool = cfg.combat_enabled
 	cfg.combat_enabled = false
-	var w = WorldRes.create(cfg)
+	var w = require_world_with_escorts(cfg, PER)
+	if w == null:
+		cfg.combat_enabled = was_combat
+		return
 	w.units = _keep_player_units(w)
 	var g1 = w.unit_by_id("general-1")
 	var group = w.group_of(g1)
@@ -276,6 +340,25 @@ func _keep_player_units(w) -> Array:
 	return kept
 
 
+## 给某个将领补上 n 个**新鲜的**附属兵（队长 id 指着它，编号带 `t` 以示与开局兵不同）。
+##
+## ★ 为什么需要它（本轮新增）：将领濒死保护让「打光它的兵」变成了「它当场阵亡」的
+##   必经之路（用户拍板：无附属部队时直接死亡），于是想摆出「附属兵还活着、队长却没了」
+##   这个状态，就必须能在队长死后**再补几个兵**挂在它名下 —— 那正是「孤儿兵」的定义。
+## ★ 数值与真实招募的兵同源（`unit_hp_of` / `general_type_at`），位置借队长的格，
+##   所以它对 `group_of` / `team_leader` 这些判据来说与真兵没有任何区别。
+func _attach_mates(cfg, w, leader, n: int) -> Array:
+	var out: Array = []
+	var utype: String = cfg.general_type_at(int(leader.general_index))
+	for i in n:
+		var m = UnitRes.create(cfg, "%s-t%d" % [leader.id, i + 1], "补兵%d" % (i + 1),
+			Vector2i(leader.tx, leader.ty), leader.faction, utype, "", String(leader.id),
+			utype, int(leader.general_index))
+		w.units.append(m)
+		out.append(m)
+	return out
+
+
 ## ★ 需求明确要求「不自动跟随」：没下令时附属兵不该自己跑
 ##
 ## ★ 关掉战斗：地图上有两个**会自己推进的巡逻兵**，走完这段路要好几秒 ——
@@ -283,7 +366,9 @@ func _keep_player_units(w) -> Array:
 ##   这一条验的是「不自动跟随」这条契约，不是战斗。
 func _test_does_not_follow_on_its_own(cfg) -> void:
 	cfg.combat_enabled = false
-	var w = WorldRes.create(cfg)
+	var w = require_world_with_escorts(cfg, PER)
+	if w == null:
+		return
 	var g1 = w.unit_by_id("general-1")
 	var ret = w.retinue_of(g1.id)
 	ok(ret.size() > 0, "有附属兵")
@@ -318,7 +403,9 @@ func _test_does_not_follow_on_its_own(cfg) -> void:
 ##    所以这里不再断言「附属兵比将领弱」，而是断言
 ##    「将领与它的附属兵同类型 ⇒ 同数值」「不同类型 ⇒ 不同数值」「谁都不等于测试敌人」。
 func _test_stats_are_per_type(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world_with_escorts(cfg, PER)
+	if w == null:
+		return
 	var g1 = w.unit_by_id("general-1")
 	var s = w.retinue_of(g1.id)[0]
 	var e = w.spawn_enemy(10, 12)
@@ -376,12 +463,17 @@ func _test_recruit(cfg) -> void:
 	# 这一节要 tick 满 10 秒（读条），所以关掉战斗与场上的敌人：
 	# 地图预置的巡逻兵会推进过来、把附属兵打死，人数断言就不可靠了（见 pitfalls 5.34）
 	cfg.combat_enabled = false
-	var w = WorldRes.create(cfg)
+	var w = require_world_with_escorts(cfg, PER)
+	if w == null:
+		return
 	w.units = _keep_player_units(w)
-	var per: int = cfg.general_escort_count()
 	var g1 = w.unit_by_id("general-1")
 	var g2 = w.unit_by_id("general-2")
 	ok(g1 != null and g2 != null, "有两个将领可用")
+	# ★ 编制取自**关卡摆放**（探针给每位将领摆了 PER 个）—— 这一节盯的是**将领 2**
+	#   （它排到的兵要接在它自己那份之后）
+	var per: int = w.retinue_of(g2.id).size()
+	eq(per, PER, "（前提）将领 2 名下开局有 %d 个兵（关卡摆的）" % PER)
 
 	# 三个兵种都可招；表里没有的不能招
 	for tt in cfg.general_types():
@@ -434,7 +526,8 @@ func _test_recruit(cfg) -> void:
 	for _i in 601:
 		w.tick(DT)
 	eq(w.retinue_of(g2.id).size(), per + 1, "★ 10 秒后将领 2 名下多了一个兵")
-	eq(w.retinue_of(g1.id).size(), per, "★ 将领 1 名下一个不多")
+	eq(w.retinue_of(g1.id).size(), PER,
+		"★ 将领 1 名下一个不多（它自己名下的兵是关卡摆的那 %d 个）" % PER)
 
 	var fresh = w.retinue_of(g2.id)[per]        # 新兵排在最后
 	eq(fresh.kind, kind, "招出来的就是招的那个兵种")
@@ -473,7 +566,11 @@ func _test_recruit(cfg) -> void:
 	eq(ids.size(), w.retinue_of(g2.id).size(), "★ 连续招募的 id 不重复（序号不回退）")
 
 	# ---- 队长阵亡后不能再招 ----
-	g2.take_damage(cfg, w, 99999.0, null)
+	# ★★ 走 `kill_unit_now`（本节的语义是「队长**阵亡**之后能不能再招」）：
+	#    加了将领濒死保护之后，直接 take_damage 只会让它倒地，那时
+	#    `can_recruit` 虽然照旧拒绝，但拒因是「人还活着但躺着」，
+	#    验的就不是本节想验的那条规则了。
+	kill_unit_now(cfg, w, g2)
 	ok(not g2.alive, "将领 2 已阵亡")
 	ok(not w.can_recruit(kind, g2.id, "p1").is_empty(),
 		"★ 队长阵亡后不能再往它名下招兵")

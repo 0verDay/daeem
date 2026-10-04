@@ -2904,7 +2904,7 @@ class EditorApp:
             if not messagebox.askyesno("导出提醒", text):
                 return
         initial = str(self.current_path) if self.current_path else str(
-            self.project_dir / "data" / "test_map.json")
+            self.project_dir / "data" / "maps" / "frontier" / "map.json")
         path = filedialog.asksaveasfilename(
             title="导出地图 JSON", initialdir=self._default_dir(),
             initialfile=Path(initial).name,

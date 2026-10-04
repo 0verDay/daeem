@@ -26,13 +26,14 @@ const DT := 1.0 / 60.0
 func _initialize() -> void:
 	_case_name = "test_logic"
 	run_all(_cases)
+	cleanup_escort_scaffold()
 
 
 func _cases() -> void:
 	var cfg = require_config()
 	if cfg == null:
 		return
-	var world = WorldRes.create(cfg)
+	var world = require_world(cfg)
 	ok(world != null, "World 能创建（地图载入成功）")
 	if world == null:
 		return
@@ -95,40 +96,27 @@ func _test_world_setup(world, cfg) -> void:
 			"将领射程也走所属类型（于是长弓兵将领是远程的）")
 		ok(generals[i].is_general(), "★ is_general() 认得出将领（描边加粗与科技加成共用这条判据）")
 
-	# 附属兵：每个将领带 escort 个**同类型**的兵，id 以队长 id 开头，leader_id 指向队长
-	var per_leader: int = cfg.general_escort_count()
+	# ★★ 附属兵（本轮口径）：**没有关卡 ⇒ 一个都没有**。
+	#
+	# `require_world()` 走的 `World.create()` **不带关卡**，而 `config.json` 的
+	# `unit.general.escort` 全局缺省本轮已删除 ⇒ 三位将领开局**光杆**。
+	# 于是这一节从「每个将领带它自己那一档的兵」改成**钉住 0**（口径要的就是这个），
+	# 而「摆了就有、而且绑定到正确的将领」由 `require_world_with_escorts()` 造的
+	# 探针关卡（见 `_test_snapshot` 与 tests/test_ai.gd）钉着。
 	var subs: Array = []
 	for u in world.units:
 		if u.leader_id != "":
 			subs.append(u)
-	eq(subs.size(), 3 * per_leader, "每个将领带 %d 个同类型的附属兵（共 %d 个）" % [per_leader, subs.size()])
-	for s in subs:
-		eq(s.faction, "p1", "附属兵属于 player")
-		var leader = world.unit_by_id(s.leader_id)
-		ok(leader != null, "附属兵有队长 id：%s" % s.id)
-		ok(s.id.begins_with(s.leader_id), "附属兵 id 以队长 id 开头：%s ← %s" % [s.id, s.leader_id])
-		eq(s.hotkey, "", "附属兵没有快捷键（快捷键盘只给将领）")
-		if leader != null:
-			eq(String(s.unit_type), String(leader.unit_type), "★ 附属兵与队长是同一个类型")
-		eq(s.kind, String(s.unit_type), "★ 普通单位的 kind 就是它的单位类型")
-		eq(s.hp_max, cfg.unit_hp_of(String(s.unit_type)), "附属兵血量走单位类型表")
-		ok(not s.is_general(), "附属兵不是将领（描边不加粗）")
+	eq(subs.size(), 0, "★★ 没有关卡的这一局：开局一个附属兵都没有（不再有全局缺省编制）")
+	for u in world.units:
+		if u.is_general():
+			eq(world.retinue_of(String(u.id)).size(), 0,
+				"★★ 将领开局光杆：%s（要兵只能靠招募 / 关卡摆放）" % u.id)
 
-	# 所有单位（将领 + 附属兵）都不能站在山上或大本营格上
+	# 所有单位都不能站在山上或大本营格上
 	for u in world.units:
 		ok(world.map.terrain_walkable(u.tx, u.ty), "开局单位站在可通行格：%s" % u.id)
 		ok(not (u.tx == base_b.tx and u.ty == base_b.ty), "开局单位与大本营不同格：%s" % u.id)
-
-	# 附属兵挨着队长站（1~2 格内）
-	if per_leader > 0:
-		var g1 = world.unit_by_id("general-1")
-		ok(g1 != null, "有 general-1")
-		if g1 != null:
-			var near := 0
-			for s in world.retinue_of(g1.id):
-				if maxi(absi(s.tx - g1.tx), absi(s.ty - g1.ty)) <= 2:
-					near += 1
-			eq(near, world.retinue_of(g1.id).size(), "★ 附属兵都出生在将领旁边（2 格内）")
 
 	# 区块划分来自**地图文件**（地图编辑器导出的 zones 网格），不再按 6×4 均分。
 	# ⚠️ 断言别再写死 24 块 / 16 格 —— 那是老地图（24×16 均分）的数；换图时会整体假失败。
@@ -526,7 +514,7 @@ func _test_nearest_reachable(world, cfg) -> void:
 # 战斗与警戒
 # ------------------------------------------------------------------
 func _test_combat(world, cfg) -> void:
-	var w2 = WorldRes.create(cfg)
+	var w2 = require_world(cfg)
 	var g = w2.units[0]
 	var e = w2.spawn_enemy(g.tx + 6, g.ty)
 	ok(e != null, "能刷出测试敌人")
@@ -581,7 +569,7 @@ func _test_combat(world, cfg) -> void:
 	ok(w2.unit_by_id(e.id) == null, "阵亡单位在 tick 后离场")
 
 	# CONFIG.combat.enabled = false 时不索敌、不保留旧目标
-	var w3 = WorldRes.create(cfg)
+	var w3 = require_world(cfg)
 	cfg.combat_enabled = false
 	var g3 = w3.units[0]
 	var e3 = w3.spawn_enemy(g3.tx + 2, g3.ty)
@@ -595,7 +583,7 @@ func _test_combat(world, cfg) -> void:
 # 城墙血量 + 敌人拆墙（真实 AI 全链路）
 # ------------------------------------------------------------------
 func _test_wall_and_enemy_ai(world, cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var base_b = w.find_base_of("p1")
 	ok(base_b != null, "拆墙用例：有大本营")
 	if base_b == null:
@@ -705,7 +693,7 @@ func _test_wall_and_enemy_ai(world, cfg) -> void:
 # 箭塔
 # ------------------------------------------------------------------
 func _test_tower(world, cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	# ★ 先把这张图**自带的塔**（p1 的 + 对家据点的）全部撤掉：这一节要精确控制
 	#   「敌人只被这一座塔打」。不清的话：射程 3 格，敌人可能在新建那座塔的射程外，
 	#   却被别处的塔打了 —— 实测「第一帧掉 24 点」而不是 12 点。
@@ -755,7 +743,7 @@ func _test_tower(world, cfg) -> void:
 	# ⚠️ 别把这个断言塞进上面那个有敌人的世界里：把将领挪进箭塔射程时，
 	#    它同时也进了敌人的警戒半径，敌人会来打它 —— 掉的血是敌人打的，
 	#    断言就会误报成「箭塔打自己人」（第一版就是这么被骗的）。
-	var wt = WorldRes.create(cfg)
+	var wt = require_world(cfg)
 	_remove_buildings_of_type(wt, "tower")     # 同上：只留下面这一座，别让别的塔插进来
 	var tower2 = wt.add_building("tower", wt.units[0].tx + 3, wt.units[0].ty, "p1")
 	ok(tower2 != null, "不误伤用例：箭塔建好了")
@@ -783,7 +771,7 @@ func _test_tower(world, cfg) -> void:
 # 区块占领与资源
 # ------------------------------------------------------------------
 func _test_zones_and_economy(world, cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var u = w.units[0]
 	# 只留这一个：附属兵也会占区块进度，混在一起就分不清是「将领站在那里」还是「附属兵站在那里」
 	_isolate(w, [u])
@@ -886,7 +874,7 @@ func _test_zones_and_economy(world, cfg) -> void:
 ## 其本身无血量且无敌，没有攻击手段，点击选中该区划中心时会显示该区划的详情」。
 ## 这一节把「不可进入 / 无敌 / 不被索敌 / 不可拆 / 点得出区块」逐条钉住。
 func _test_zone_centers(world, cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var centers := _zone_center_buildings(w)
 	eq(centers.size(), w.zones.zones.size(), "★ 每个区划都落了一栋中心建筑")
 
@@ -973,14 +961,14 @@ func _zone_center_buildings(w) -> Array:
 ## · 产能：格式「粮食 / 黄金 / 人口」，单位 **n 资源/地块/秒**；
 ##   经济按「占领方拥有的各区划」聚合（产能 × 该区划地块数）。
 func _test_zone_population_and_production(world, cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var z0: Dictionary = w.zones.zones[0]
 	var z1: Dictionary = w.zones.zones[1]
 
 	# ---- 人口：开局 0，按人口产能累积
 	eq(float(z0["population"]), 0.0, "★ 区划人口开局是 0")
 	# ★ 随游戏发布的地图必须给非 0 的人口产能 —— 否则实机里人口根本不涨
-	#   （`test_map.json` 里每个区划都是人口区划：0 粮食 / 0 黄金 / 0.15 人口）。
+	#   （`data/maps/frontier/map.json` 里每个区划都是人口区划：0 粮食 / 0 黄金 / 0.15 人口）。
 	ok(float(z0["production"]["population"]) > 0.0,
 		"★ 发布地图的区划配了人口产能（%s）" % z0["production"]["population"])
 	# ★★ 发布地图**没填人口上限** → 默认 1（用户需求：没填就是 1）。
@@ -1041,7 +1029,7 @@ func _test_zone_population_and_production(world, cfg) -> void:
 ##   · 上限**不会**把已经超过它的现值拉回来（退款 / 直接塞值那两条路）；
 ##   · 显示用的人口向下取整。
 func _test_zone_population_cap(world, cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var z: Dictionary = w.zones.zones[0]
 	# 人口产能调大、上限压低，几条边界才在一两帧里就能撞到
 	z["production"] = {"food": 0.0, "gold": 0.0, "population": 10.0}
@@ -1092,7 +1080,7 @@ func _test_zone_population_cap(world, cfg) -> void:
 # 建造命令（走 command_processor，不直接调 world）
 # ------------------------------------------------------------------
 func _test_build_commands(world, cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var free = _find_free_tile(w, cfg, Vector2i(3, 3))
 	ok(free != null, "建造用例：找得到空地")
 	if free == null:
@@ -1136,17 +1124,26 @@ func _test_build_commands(world, cfg) -> void:
 # 快照往返 + 缺字段容忍
 # ------------------------------------------------------------------
 func _test_snapshot(world, cfg) -> void:
-	var w = WorldRes.create(cfg)
+	# ★★ 这一节要验「附属兵的队长字段在快照里」，所以世界必须**真的有附属兵**——
+	#    本轮改成用探针关卡摆出来（`config.json` 的全局缺省已删除）。
+	#    ⚠️ 不能用上面那个共享的 `world`：其它用例假设开局只有将领（见 `_isolate` 的说明）。
+	var per_general: int = 3
+	var w = require_world_with_escorts(cfg, per_general)
+	if w == null:
+		return
 	w.spawn_enemy(10, 12)
 	w.tick(DT)
 	var snap = SnapshotRes.to_snapshot(w)
 
-	# 开局单位数 = 将领数 + 将领数×附属兵数 + 1 个敌人 + 地图预置的守军
-	var per_leader: int = cfg.general_escort_count()
-	var expect_units: int = 3 + 3 * per_leader + 1 + w.map.prefab_units.size()
+	# 开局单位数 = 将领数 + 关卡摆的附属兵 + 1 个敌人
+	# ★★ 曾经还要 `+ w.map.prefab_units.size()`（frontier 图上预置的 9 个守军）——
+	#    本轮「地图预置单位」整个废弃了：运行时**不再读** `map.json` 的 `units[]`，
+	#    所以这一局里除了玩家自己那几个将领与附属兵，就只有测试刚刷的那个敌人。
+	var per_total: int = per_general * 3
+	var expect_units: int = 3 + per_total + 1
 	eq((snap["units"] as Array).size(), expect_units,
-		"快照里有 %d 个单位（3 将领 + %d 附属兵 + 1 敌人 + %d 地图守军）" % [
-			expect_units, 3 * per_leader, w.map.prefab_units.size()])
+		"快照里有 %d 个单位（3 将领 + %d 附属兵 + 1 敌人；地图预置单位已废弃）" % [
+			expect_units, per_total])
 	ok((snap["buildings"] as Array).size() >= 1, "快照里有建筑")
 	# 区块数随地图走（别写死 24：地图一换就假失败）
 	var zone_total: int = w.zones.zones.size()
@@ -1178,13 +1175,13 @@ func _test_snapshot(world, cfg) -> void:
 				ld_ok = false          # 队长不在快照里 → 客机展开不了整队
 		elif String(su.get("k", "")) == UnitRes.KIND_GENERAL:
 			snap_general_types.append(String(su.get("ut", "")))
-	eq(sub_in_snap, 3 * per_leader, "快照里有 %d 个附属兵" % (3 * per_leader))
+	eq(sub_in_snap, per_total, "快照里有 %d 个附属兵" % per_total)
 	ok(ld_ok, "★ 快照里的附属兵都指向一个**在场的**队长 id（客机才做得出整队选中）")
 	ok(ut_ok, "★ 快照里每个单位都带单位类型（ut）")
 	eq(snap_general_types, cfg.general_types(), "★ 三个将领的 ut 就是配置里那三个类型")
 
 	# 应用到一个全新的世界：单位 / 建筑 / 资源都应当对齐
-	var w2 = WorldRes.create(cfg)
+	var w2 = require_world(cfg)
 	SnapshotRes.apply_snapshot(w2, cfg, snap)
 	eq(w2.units.size(), expect_units, "快照应用后单位数一致")
 	eq(w2.owned_tiles, w.owned_tiles, "己方地块数一致")
@@ -1199,12 +1196,14 @@ func _test_snapshot(world, cfg) -> void:
 		v2i_eq(Vector2i(dst.tx, dst.ty), Vector2i(src.tx, src.ty), "★ tx/ty 也跟着写了（否则点选/射程判定会错）")
 
 	# 新建的远端附属兵也要认得队长（否则客机上「选中将领」选不到它）
-	if per_leader > 0:
+	var per_g1: int = w.retinue_of("general-1").size()
+	eq(per_g1, per_general, "（前提）关卡给 general-1 摆了 %d 个附属兵" % per_general)
+	if per_g1 > 0:
 		var leader = w2.unit_by_id("general-1")
 		ok(leader != null, "客机侧有 general-1")
 		if leader != null:
 			var got: Array = w2.group_of(leader)
-			eq(got.size(), 1 + per_leader, "★ 客机侧队伍展开得到「队长 + %d 附属兵」" % per_leader)
+			eq(got.size(), 1 + per_g1, "★ 客机侧队伍展开得到「队长 + %d 附属兵」" % per_g1)
 		# ★ 客机侧的单位类型也要重建对（否则图标与数值全错 —— 三个将领 kind 都是 general）
 		for i in mini(3, cfg.general_types().size()):
 			var remote = w2.unit_by_id("general-%d" % (i + 1))
@@ -1218,7 +1217,7 @@ func _test_snapshot(world, cfg) -> void:
 	eq(w2.units.size(), 0, "快照里没有的单位被删除")
 
 	# ★ 缺字段容忍：不含 match / res / time 的旧快照不能把本地状态重置掉
-	var w3 = WorldRes.create(cfg)
+	var w3 = require_world(cfg)
 	w3.resources["food"] = 42.0
 	w3.time = 7.0
 	SnapshotRes.apply_snapshot(w3, cfg, {"units": [], "buildings": []})

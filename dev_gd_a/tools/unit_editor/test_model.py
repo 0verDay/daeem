@@ -357,7 +357,17 @@ def t_generals() -> None:
     print("\n[3] 将领（类型 + 造价 + 单独数值）")
     model = fresh_model()
     eq(model.general_count(), 3, "开局三位将领")
-    eq(model.escort(), 3, "开局护卫数（三位共用）")
+    # ★★ 「开局护卫数」（`unit.general.escort`）这个配置项**已经整体删掉**（产品决策）：
+    #   开局带几个附属兵不再由 config.json 给一个全局缺省，只能在**战役编辑器的摆放页**
+    #   里一个一个摆出来。★ 这里**不是把旧断言删掉**，而是反过来钉住「键没了 + 接口没了」
+    #   —— 哪天有人把配置项或调用点加回来，这一组当场变红。
+    #   ⚠️ 附属兵这个**玩法机制本身一个字没改**（将领带兵 / 点一个兵选整队 / 招募 /
+    #      濒死集结 / 队伍列表），去掉的只是「开局白送几个」这个配置项与它的编辑器界面。
+    ok(not model.doc.has(["unit", "general", "escort"]),
+       "★★ unit.general.escort 已从 config 移除（开局编制不再有全局缺省）")
+    for _name in ("escort", "escort_at", "set_escort", "set_escort_at"):
+        ok(not hasattr(model, _name),
+           "★★ 模型不再提供 %s() 接口（配置项删了，接口不许留着当摆设）" % _name)
     g0, g1, g2 = model.generals()
     eq(g0.type_id, "spearman", "将领 1 = 长枪兵")
     eq(g1.type_id, "longbowman", "将领 2 = 长弓兵")
@@ -371,7 +381,7 @@ def t_generals() -> None:
     near(g1.cost_food, 50, "造价 · 粮食")
     near(g1.population_cost, 1, "造价 · 人口")
 
-    # 类型 / 名称 / 造价 / 招募时间 / 护卫数
+    # 类型 / 名称 / 造价 / 招募时间
     model.set_general_type(1, "rider")
     eq(model.general(1).type_id, "rider", "改类型 → unit.general.types[1]")
     eq(model.doc.value(["unit", "general", "types", 1]), "rider", "确实是这个键")
@@ -386,8 +396,8 @@ def t_generals() -> None:
     eq(model.doc.value(["recruit", "zone", "list", 1, "cost", "food"]), 80, "造价 · 粮食")
     model.set_general(1, "cost_gold", 90)
     model.set_general(1, "population_cost", 3)
-    model.set_escort(4)
-    eq(model.escort(), 4, "开局护卫数")
+    # ★ 这里原来有 `model.set_escort(4)` + `eq(model.escort(), 4, "开局护卫数")` 两行：
+    #   接口与配置项都删了（见 [3] 开头那一组断言），所以不再有可写的「开局护卫数」。
     raises(lambda: model.set_general_type(1, "no_such"), "类型必须是表里有的兵种")
     raises(lambda: model.set_general(9, "name", "越界"), "越界的将领序号被拒")
 
@@ -634,7 +644,11 @@ def t_game_contract() -> None:
     for idx in range(3):
         ok(model.doc.has(["unit", "general", "types", idx]),
            "unit.general.types[%d] 存在（将领 = 带类型的队长）" % idx)
-    ok(model.doc.has(["unit", "general", "escort"]), "unit.general.escort 存在")
+    # ★★ 反向契约：`unit.general.escort` **已经删掉**了 —— 开局带几个附属兵不再由
+    #   config.json 给全局缺省（只能在战役编辑器的摆放页里摆）。这一条是**反着钉**的：
+    #   谁把这个键加回来（比如为了让老代码还能跑），这里立刻变红。
+    ok(not model.doc.has(["unit", "general", "escort"]),
+       "★★ unit.general.escort 不存在（开局编制已改由战役编辑器摆放页决定）")
     ok(model.doc.has(["unit", "general", "stats"]), "unit.general.stats 存在（本轮新增）")
     for uid in model.unit_ids():
         if uid == "enemy":

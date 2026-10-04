@@ -55,7 +55,7 @@ func _test_radius_and_conf(cfg) -> void:
 
 ## 硬分离：两个单位叠在同一点，跑一帧后必须被分开
 func _test_separation_happens(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var a = w.units[0]
 	var b = w.units[1]
 	var tile := Vector2i(2, 13)
@@ -92,7 +92,7 @@ func _test_soft_overlap_allowed(cfg) -> void:
 	var soft: float = hard * allowance
 	ok(soft < hard, "软分离的最小距离小于硬碰撞（%.3f < %.3f）" % [soft, hard])
 
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var a = w.units[0]
 	var b = w.units[1]
 	var tile := Vector2i(2, 13)
@@ -115,7 +115,7 @@ func _test_commanded_pushes_idle(cfg) -> void:
 	var allowance: float = cfg.num("unit.overlap_allowance", 0.7)
 	var soft: float = r * 2.0 * allowance
 
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var mover = w.units[0]
 	var idler = w.units[1]
 	var tile := Vector2i(2, 13)
@@ -141,7 +141,7 @@ func _test_commanded_pushes_idle(cfg) -> void:
 		"★ 待命的那个被推得比有命令的多得多（%.4f vs %.4f）" % [idler_moved, mover_moved])
 
 	# 反向验证：把 mover 的意图清掉，两个都是待命 → 应当各推一半
-	var w2 = WorldRes.create(cfg)
+	var w2 = require_world(cfg)
 	var a = w2.units[0]
 	var b = w2.units[1]
 	a.stop()
@@ -161,7 +161,7 @@ func _test_commanded_pushes_idle(cfg) -> void:
 
 ## 推挤不许把单位推进山里 / 推穿不能穿的建筑
 func _test_push_respects_terrain(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	# 找一处「可通行格紧挨着山」的位置
 	var spot := Vector2i(-1, -1)
 	var mtn := Vector2i(-1, -1)
@@ -199,7 +199,7 @@ func _test_push_respects_terrain(cfg) -> void:
 
 ## ★ 推挤只改位置、不改意图：被推的单位不能忘了自己要去哪
 func _test_push_keeps_intent(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var a = w.units[0]
 	var b = w.units[1]
 	var tile := Vector2i(2, 13)
@@ -233,7 +233,7 @@ func _test_push_keeps_intent(cfg) -> void:
 
 ## 两个待命单位叠在一起时也要分开（否则出生点会一直叠着）——顺带验证这是稳定的
 func _test_idle_units_still_separate(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var a = w.units[0]
 	var b = w.units[1]
 	var tile := Vector2i(2, 13)
@@ -263,7 +263,7 @@ func _test_idle_units_still_separate(cfg) -> void:
 ## 如果哪天有人把「别的单位占着这格」塞进 A*，两队兵就会互相把对方当墙 ——
 ## 双方都认为无路可走，于是死锁。这条断言把那个行为钉死在「不允许」。
 func _test_pathfinding_ignores_units(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var a = w.units[0]
 	var b = w.units[1]
 

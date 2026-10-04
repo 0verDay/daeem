@@ -27,10 +27,17 @@ const FactionRes = preload("res://logic/faction.gd")
 const DT := 1.0 / 60.0
 const KIND := "spearman"
 
+## ★★ 本轮口径：开局附属兵**只来自关卡摆放**（`config.json` 的 `unit.general.escort`
+## 全局缺省已删除）⇒ 要验「往将领名下招兵」这类规则的用例，
+## 必须用 `require_world_with_escorts()` 造一个**开局就带附属兵**的世界
+## （它写一份探针关卡，给每位将领摆 `ESCORTS_PER_GENERAL` 个）。
+const ESCORTS_PER_GENERAL := 3
+
 
 func _initialize() -> void:
 	_case_name = "test_recruit_queue"
 	run_all(_cases)
+	cleanup_escort_scaffold()
 
 
 func _cases() -> void:
@@ -58,7 +65,7 @@ func _cases() -> void:
 # 一、数值表来自 config.json（代码里不写字面量）
 # ------------------------------------------------------------------
 func _test_config_table(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	ok(w.is_recruitable(KIND), "config.recruit.list 里长枪兵可招募")
 	ok(not w.is_recruitable("nope"), "表里没有的兵种不能招募")
 	eq(w.recruit_queue_max(), 5, "★ 队列上限 5 个（1 大格 + 4 小格）")
@@ -74,7 +81,7 @@ func _test_config_table(cfg) -> void:
 # 二、只能在己方区划内招募
 # ------------------------------------------------------------------
 func _test_zone_restriction(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world_with_escorts(cfg, ESCORTS_PER_GENERAL)
 	_give(w, 1000.0, 1000.0)
 	var g1 = w.unit_by_id("general-1")
 	ok(g1 != null, "有 general-1")
@@ -108,7 +115,7 @@ func _test_zone_restriction(cfg) -> void:
 # 三、入队即扣费（粮食 / 黄金 / 区划人口）
 # ------------------------------------------------------------------
 func _test_enqueue_pays(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world_with_escorts(cfg, ESCORTS_PER_GENERAL)
 	_give(w, 200.0, 200.0)
 	var g1 = w.unit_by_id("general-1")
 	var z = w.zones.zone_at(g1.tx, g1.ty)
@@ -143,7 +150,7 @@ func _test_enqueue_pays(cfg) -> void:
 # 四、拒因：钱 / 人口 / 队长
 # ------------------------------------------------------------------
 func _test_reject_reasons(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	var g1 = w.unit_by_id("general-1")
 	var z = w.zones.zone_at(g1.tx, g1.ty)
 
@@ -173,7 +180,7 @@ func _test_reject_reasons(cfg) -> void:
 
 ## （拆出来只是为了让上面那段读起来像规则本身）
 func _leader_reject_checks(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world_with_escorts(cfg, ESCORTS_PER_GENERAL)
 	_give(w, 1000.0, 1000.0)
 	var g1 = w.unit_by_id("general-1")
 	var sub = w.retinue_of(g1.id)[0]
@@ -188,7 +195,7 @@ func _leader_reject_checks(cfg) -> void:
 # 五、队列上限 5（1 正在读条 + 4 排队）
 # ------------------------------------------------------------------
 func _test_queue_cap(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world(cfg)
 	_give(w, 10000.0, 10000.0)
 	var g1 = w.unit_by_id("general-1")
 	var z = w.zones.zone_at(g1.tx, g1.ty)
@@ -288,7 +295,7 @@ func _test_push_units_aside(cfg) -> void:
 # 八、读条期间：钉在原地、无法行动、无法攻击
 # ------------------------------------------------------------------
 func _test_rooted_while_training(cfg) -> void:
-	var w = WorldRes.create(cfg)              # 这一节要**开着战斗**（验「无法攻击」）
+	var w = require_world(cfg)              # 这一节要**开着战斗**（验「无法攻击」）
 	var g1 = w.unit_by_id("general-1")
 	_give(w, 1000.0, 1000.0)
 	var z = w.zones.zone_at(g1.tx, g1.ty)
@@ -339,7 +346,7 @@ func _test_rooted_while_training(cfg) -> void:
 #   4. 「只警戒」不是「发呆」：靠近的敌人照样会打；而且队列一取消就解锁。
 # ------------------------------------------------------------------
 func _test_retinue_locked_while_training(cfg) -> void:
-	var w = WorldRes.create(cfg)
+	var w = require_world_with_escorts(cfg, ESCORTS_PER_GENERAL)
 	var g1 = w.unit_by_id("general-1")
 	var g2 = w.unit_by_id("general-2")
 	_give(w, 1000.0, 1000.0)
@@ -415,7 +422,7 @@ func _test_cancel_queue(cfg) -> void:
 		return
 	c.combat_enabled = false
 	var other := _inject_second_kind(c)
-	var w = WorldRes.create(c)
+	var w = require_world(c)
 	_no_income(w)
 	_give(w, 1000.0, 1000.0)
 	var g1 = w.unit_by_id("general-1")
@@ -504,7 +511,7 @@ func _test_recruit_eta(cfg) -> void:
 		"kind": slow_kind, "label": "慢兵", "short": "慢",
 		"train_sec": 25, "population_cost": 1, "cost": {"food": 10, "gold": 10},
 	})
-	var w = WorldRes.create(c)
+	var w = require_world(c)
 	_no_income(w)
 	_give(w, 1000.0, 1000.0)
 	var g1 = w.unit_by_id("general-1")
@@ -568,13 +575,19 @@ func _test_cancel_then_death(cfg) -> void:
 	ok(w.cancel_recruit(g1.id, 1, "p1"), "取消排队的第 2 单（先退 50）")
 	near(float(w.resources["food"]), food0 - 50.0, 1e-4, "这时只花了 50")
 
-	g1.take_damage(cfg, w, 99999.0, null)
-	var evts: Array = w.tick(DT)
+	# ★★ 让它**阵亡**（本轮加了将领濒死保护，直接 take_damage 只会让它倒地）。
+	#    ⚠️ 这里**故意不用** `kill_unit_now`：那个帮助函数会先把招募队列撤掉，
+	#    而**本节验的正是「队列还在时将领阵亡 → 队列作废并退款」**。
+	#    所以按权威规则走「先打光它旗下的兵、再打它自己」那条路，
+	#    而队列（这一单 50 粮 / 50 金 / 1 人口）原样留着。
+	var evts: Array = _kill_leader_keep_queue(cfg, w, g1)
+	evts.append_array(w.tick(DT))
 	near(float(w.resources["food"]), food0, 1e-4, "★ 阵亡后退还**剩下一单**的 50（不是 100）")
 	near(float(w.resources["gold"]), gold0, 1e-4, "★ 黄金同理（不会重复退已取消的那单）")
 	near(float(z["population"]), 10.0, 1e-4, "★ 人口也是刚好退满（不会多退）")
 	eq(_count_reason(evts, "recruit_cancelled", "leader_died"), 1,
 		"阵亡只发一条整队作废的事件（之前那次手动取消是另一条，reason 不同）")
+	ok(not g1.alive, "★ 将领确实阵亡了")
 
 
 # ------------------------------------------------------------------
@@ -589,7 +602,6 @@ func _test_death_refund(cfg) -> void:
 	z["population"] = 10.0
 	var food0: float = float(w.resources["food"])
 	var gold0: float = float(w.resources["gold"])
-	var units0: int = w.units.size()
 
 	ok(w.start_recruit(KIND, g1.id, "p1"), "排第一个")
 	_tick_secs(w, 3.0)                        # 读条到一半（退款要退**整队**）
@@ -597,16 +609,25 @@ func _test_death_refund(cfg) -> void:
 	near(float(w.resources["food"]), food0 - 100.0, 1e-4, "两单共扣 100 粮食")
 	near(float(z["population"]), 8.0, 1e-4, "两单共扣 2 人口")
 
-	g1.take_damage(cfg, w, 99999.0, null)
+	# ★★ 让它**阵亡**，但**保留**招募队列（见 `_kill_leader_keep_queue` 的说明）。
+	var evts: Array = _kill_leader_keep_queue(cfg, w, g1)
+	evts.append_array(w.tick(DT))
 	ok(not g1.alive, "将领已阵亡")
-	var evts: Array = w.tick(DT)
 
+	# ★★ 判据用「按 id 查不到它了」而不是「单位总数少了 1」：
+	#    这一节有真实的 tick（读条 / 收尸都要走世界），总数还会受**别人**的战斗影响
+	#    （实测：地图上有守军在打，附属兵会被打死几个，总数就不止少那一个）。
+	#    要钉的是「阵亡的将领被摘出去了」，所以直接查它自己。
+	ok(w.unit_by_id(g1.id) == null, "阵亡的将领被摘出世界（按 id 查不到它了）")
 	near(float(w.resources["food"]), food0, 1e-4, "★ 阵亡后退还全部粮食")
 	near(float(w.resources["gold"]), gold0, 1e-4, "★ 阵亡后退还全部黄金")
 	near(float(z["population"]), 10.0, 1e-4, "★ 阵亡后退还全部人口")
-	eq(w.units.size(), units0 - 1, "阵亡的将领被摘出世界")
-	eq(w.retinue_of(g1.id).size(), cfg.general_escort_count(),
-		"★ 队列作废：**没有**偷偷生成新兵")
+	# ★ 队列作废 ⇒ **没有**偷偷生成新兵：他名下的兵一个都不该比开局多。
+	#   ⚠️ 这里不断言「正好等于编制上限」：这一节跑了好几秒，地图上真的有敌人，
+	#     附属兵可能已经被打死了几个（那是战斗的结果，与「队列作废」无关）。
+	#     要钉的是「没有新兵冒出来」，所以用**上限**而不是等号。
+	ok(w.retinue_of(g1.id).size() <= ESCORTS_PER_GENERAL,
+		"★ 队列作废：**没有**偷偷生成新兵（名下数量不超过开局摆的那 %d 个）" % ESCORTS_PER_GENERAL)
 
 	var cancelled := 0
 	for e in evts:
@@ -642,7 +663,7 @@ func _test_snapshot_round_trip(cfg) -> void:
 	ok(typeof(su.get("tq", null)) == TYPE_ARRAY and (su["tq"] as Array).size() == 1,
 		"★ 快照带着排队的那一个（tq）")
 
-	var w2 = WorldRes.create(cfg)
+	var w2 = require_world(cfg)
 	SnapshotRes.apply_snapshot(w2, cfg, snap)
 	var g2 = w2.unit_by_id(g1.id)
 	ok(g2 != null, "客机侧有同一个将领")
@@ -710,13 +731,18 @@ func _test_population_cap_and_recruit(cfg) -> void:
 # ------------------------------------------------------------------
 
 ## 关掉战斗的世界（读条 / 落点这类用例不该被敌人搅进来，见 pitfalls 5.11 / 5.34）
+##
+## ★ 带开局附属兵（见 `ESCORTS_PER_GENERAL` 的说明）：
+##   本文件好几节要拿「将领名下已有的兵」当**基线**（`before = retinue_of(...)`），
+##   没有附属兵的话基线恒为 0，那些用例就退化成「从 0 数到 1」——
+##   验的东西少了一半（「新兵接在原有部队之后」这一条就没了）。
 func _quiet_world(cfg) -> RefCounted:
 	var c = require_config()
 	if c == null:
 		c = cfg
 	else:
 		c.combat_enabled = false
-	return WorldRes.create(c)
+	return require_world_with_escorts(c, ESCORTS_PER_GENERAL)
 
 
 func _give(w, food: float, gold: float) -> void:
@@ -728,6 +754,31 @@ func _give(w, food: float, gold: float) -> void:
 func _no_income(w) -> void:
 	for z in w.zones.zones:
 		z["production"] = {"food": 0.0, "gold": 0.0, "population": 0.0}
+
+
+## ★★ 让将领**阵亡**，但把它正在读条 / 排队的招募单**原样留着**。
+##
+## 为什么不能用 `test_case.kill_unit_now()`（本轮新增的那个帮助函数）：
+##   它会先 `cancel_recruit` 把队列撤掉 —— 那正是**本节要验的东西**
+##   （「将领阵亡时队列作废并退款」），提前撤掉就等于把被测对象删了。
+##
+## 它走的是与运行时完全相同的规则：
+##   1. 打光它旗下的活兵（`take_damage`）；
+##   2. tick 一帧让世界收尸 —— ⚠️ 此刻 `world.has_living_retinue()` 因为**队列里还有一单**
+##      仍然为真，所以它**会进濒死**（那是规则，不是 bug）；
+##   3. 再用一记致命伤把它从濒死里送走 —— 走的是「读条期间旗下部队全灭 → 将领立即死亡」
+##      同一条权威规则（`unit.die_now`），不是绕过它。
+##
+## @return 这两帧里产生的事件（调用方要拿它们断言 `recruit_cancelled` —— 退款事件
+##         是在**这里**那一帧发出来的，调用方之后再 tick 一次是读不到的）。
+func _kill_leader_keep_queue(cfg, w, leader) -> Array:
+	var evts: Array = []
+	for m in w.retinue_of(String(leader.id), true):
+		m.take_damage(cfg, w, m.hp + 999999.0, null)
+	evts.append_array(w.tick(1.0 / 60.0))     # 收尸：活兵清零（队列还在 → 它进濒死）
+	leader.die_now(cfg, w, "test_kill")
+	evts.append_array(w.tick(1.0 / 60.0))     # 世界把阵亡的它摘出去 + 队列作废退款
+	return evts
 
 
 ## 找一格「属于别人的区划、可通行、没有建筑」的地（区划限制用）

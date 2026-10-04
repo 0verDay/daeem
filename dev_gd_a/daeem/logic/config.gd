@@ -18,9 +18,16 @@ extends RefCounted
 ## ⚠️ 跨文件引用只用**自己文件里的 preload 常量**：命令行 `--script` 下全局 class_name
 ##    表不可用，写 `GridRes` 作类型会直接 Parse Error（见 docs/pitfalls.md 第五节）。
 const GridRes = preload("res://logic/grid.gd")
+## ★ 与地图目录有关的常量**只有一个源头**（`logic/map_library.gd` 的 MAPS_DIR /
+##   FALLBACK_MAP_PATH）：默认地图路径就是它给的兜底值，这里不重复写字符串字面量。
+const MapLibraryRes = preload("res://logic/map_library.gd")
 
 const DEFAULT_CONFIG_PATH := "res://data/config.json"
-const DEFAULT_MAP_PATH := "res://data/test_map.json"
+## ★ 默认地图：`data/maps/<id>/map.json` 里的那一张（一个地图一个目录）。
+## ⚠️ 开场主界面那条**地图选择条**用的是 `logic/map_library.gd` 扫出来的结果
+##    （几张图就有几个选项），这里的常量只是**没有地图目录时**的兜底
+##    —— 加地图不用改这一行，往 data/maps/ 下放个新目录就行。
+const DEFAULT_MAP_PATH := MapLibraryRes.FALLBACK_MAP_PATH
 
 ## 缓存 JSON 的字典形式（阵营 id → 字典 / 颜色名 → 字典 这类查找用得着）
 var data: Dictionary = {}
@@ -124,8 +131,18 @@ var _general_combat: Array = []
 ## ★★ 它是**数据**而不是美术：设计师在单位编辑器里给每个兵种挑一个字，
 ##    新加的兵种也就有了自己的样子（见 view/unit_icon.gd 的文件头）。
 var _unit_icons: Dictionary = {}
-## 每个将领开局带几个**同类型**的兵（原 unit.subordinate.count）—— 见 unit.general.escort
-var general_escort: int = 0
+## ★★ 开局**没有**任何「每位将领带几个兵」的全局缺省（本轮口径变更）。
+##
+## 原先是 `unit.general.escort`（一个数或一个数组）+ `general_escort_count()` /
+## `general_escort_at(index)` 两个读法。**整条已删除**，理由是「所见即所得」：
+##   开局场上有多少兵，必须**完全等于**关卡 `start_units[]` 里摆出来的那些。
+## 于是：
+##   · 编制不再来自 config，而是**关卡 `start_units[].escort_of`**（逐兵一个坐标，
+##     `escort_of` = 归属将领序号，1 起，与 `general_index` 同规）；
+##   · 关卡没摆 ⇒ 将领开局**光杆**（0 个附属兵），绝不补任何缺省；
+##   · 运行时唯一的读法是 `Level.escort_leader_index()` ⊕ `world.escort_target_of()`。
+## ⚠️ 所以这里**故意不再留**任何 escort 字段与查询函数 ——
+##    留一个「全局缺省」就等于又给了第二条真相来源，正是本轮要拆掉的东西。
 ## 查不到类型时的兜底战斗数值（= 第一个将领类型，也就是长枪兵那一档）。
 ## ★ 为什么兜底是长枪兵而不是测试敌人：本项目踩过「二元判断（是将领吗？不是就当敌人）
 ##   把新加的类型静默当成测试敌人」这个坑（见 docs/pitfalls.md 5.x）——
@@ -136,6 +153,15 @@ var _combat_fallback: Dictionary = {"damage": 10.0, "range": 1.0, "cooldown_sec"
 var combat_enabled: bool = true
 var aggro_range: float = 4.0
 var leash_factor: float = 1.8
+## ★★ 因为追击上限（leash）放弃之后，多久**不许再自动锁定单位**（秒）。
+##
+## 为什么必须有它（实测报回来的 bug：单位在区划边界「原地抽搐」）：
+##   放弃那一下只清 `target`，而目标**还在警戒半径里** —— 下一帧 `acquire_target`
+##   立刻又把它锁上，而锁定那一刻 `anchor` 就是当前位置（距离 0，判据必然通过）
+##   ⇒ 再走一格又超上限、又放弃 …… 一帧一放一锁 = 原地抽搐。
+##   冷却期内它只待命，抖动的回路就断了。
+## ⚠️ 只挡**自动索敌**：玩家点名的目标、行军攻击继续走、拆建筑都不受影响。
+var leash_release_cd: float = 0.5
 var repath_sec: float = 0.3
 ## 追击时，目标从上一次算路的位置挪出这么多格，才值得重算一次路径。
 ## ★ 见 unit.gd `last_repath_to` 的说明：只按周期无条件重算会让 1000 单位追击
@@ -215,6 +241,25 @@ var _zone_kind_by_id: Dictionary = {}
 
 var respawn_sec: float = 0.0
 var destructible_base: bool = false
+
+## ---- ★★ 将领**濒死保护**（config.json 的 revive 段；规则见 logic/unit.gd / world.gd）----
+##
+## 六个数各管一件事，全部在 config 里可调（用户要求「消耗写 config，可调」）：
+##   · `revive_cost`        —— 「再起」要花的粮食 / 黄金（入队即扣，取消全额退）；
+##   · `revive_channel_sec` —— 「再起」的读条秒数（0 = 瞬发）；
+##   · `revive_ready_ratio` —— 血量到上限的这个比例才允许再起（= 10%）；
+##   · `revive_regen_sec` / `revive_regen_ratio` —— 每几秒回上限的百分之几（= 每 3 秒 1%）；
+##   · `revive_regen_cap_ratio` —— 自然回复的天花板（= 上限的 20%）。
+##
+## ★ 为什么整段在载入时算好：这些数在**每帧每濒死将领**的路径上（回复计时），
+##   而且 UI 悬停 / 拒因文案也要读同一份 —— 与 unit_hp_max / aggro_range 同一条规矩，
+##   不在调用点重下潜一次 JSON（那样两处口径一定会漂）。
+var revive_cost: Dictionary = {}
+var revive_channel_sec: float = 0.0
+var revive_ready_ratio: float = 0.1
+var revive_regen_sec: float = 3.0
+var revive_regen_ratio: float = 0.01
+var revive_regen_cap_ratio: float = 0.2
 
 ## 一帧最多按多少秒推进逻辑（防止「帧慢→dt 大→活更多→更慢」的死亡螺旋）
 var sim_max_dt: float = 0.05
@@ -305,6 +350,7 @@ func _cache_scalars() -> void:
 	combat_enabled = bool_val("combat.enabled", true)
 	aggro_range = num("combat.aggro_range", 4.0)
 	leash_factor = num("combat.leash_factor", 1.8)
+	leash_release_cd = maxf(0.0, num("combat.leash_release_cd", 0.5))
 	repath_sec = num("combat.repath_sec", 0.3)
 	repath_min_move = num("combat.repath_min_move", 0.5)
 	chase_direct_range = num("combat.chase_direct_range", 8.0)
@@ -330,10 +376,26 @@ func _cache_scalars() -> void:
 	destructible_base = bool_val("pvp.destructible_base", false)
 	sim_max_dt = num("sim.max_dt", 0.05)
 
+	# ★★ 将领濒死保护（见上面那组字段的说明）。cost 走与招募 / 升级同一套形状
+	#    （{"food":…, "gold":…}），所以 EconomyRes.can_afford / spend 直接就能用。
+	revive_cost = _read_cost("revive.cost")
+	revive_channel_sec = maxf(0.0, num("revive.channel_sec", 5.0))
+	# ⚠️ `ready_ratio` 夹到 (0, 1]：写成 0 会让「0 血就能再起」（绕开需求里的 10% 门槛），
+	#    写成负数更没意义。上限 1.0 = 必须回满才让再起。
+	revive_ready_ratio = clampf(num("revive.ready_ratio", 0.1), 0.0001, 1.0)
+	revive_regen_sec = maxf(0.01, num("revive.regen_sec", 3.0))
+	revive_regen_ratio = maxf(0.0, num("revive.regen_ratio", 0.01))
+	# 天花板至少得够得着门槛，否则「再起」永远点不亮（配错数据时给一条活路：
+	# 取两者的较大值，而不是让玩家面对一颗永远灰着的格子）。
+	revive_regen_cap_ratio = clampf(
+		maxf(num("revive.regen_cap_ratio", 0.2), revive_ready_ratio), 0.0, 1.0)
+
 	_cache_techs()
 	_cache_upgrades()
 	_cache_zone_kinds()
 	_cache_zone_specs()
+	# ★ AI（本轮新增）：阵营 AI 的名单 + 两种 AI 的行为参数（见 _cache_ai）。
+	_cache_ai()
 	# ★★ 单位类型表（unit.types / unit.classes / unit.general）—— 必须在其它
 	#   单位字段之后调：它拿 unit_speed / unit_hp_max / unit_radius_factor 当兜底值，
 	#   并且会顺手把「测试敌人」那几个兼容字段填好。
@@ -352,7 +414,9 @@ func _cache_scalars() -> void:
 #      将领 kind 走 unit.general.types）；
 #   3. 它是**步兵还是骑兵**、远不远（unit_class_of / unit_is_ranged）——
 #      「后续按兵种做额外伤害」就读这两个；
-#   4. 三个开局将领各是什么类型、各带几个同类型的兵（general_type_at / general_escort_count）。
+#   4. 三个开局将领各是什么类型、叫什么名字（general_type_at / general_name_at）。
+#      ⚠️ 「各带几个兵」**不在这一层**（本轮口径变更）：开局附属兵完全由关卡的
+#         `start_units[].escort_of` 摆放决定，config 里没有任何缺省（见上面那段说明）。
 # ⚠️ 表里查不到的 kind 一律**退回兜底值**（而不是当成测试敌人）：手写地图里写错一个
 #   kind 不该让那个单位变成 60 血的敌人 —— 那正是本项目踩过的坑（见 _combat_fallback）。
 # ------------------------------------------------------------------
@@ -417,7 +481,12 @@ func _cache_unit_types() -> void:
 				_general_types.append(sid)
 	if _general_types.is_empty() and _unit_types.has(UNIT_TYPE_SPEARMAN):
 		_general_types.append(UNIT_TYPE_SPEARMAN)
-	general_escort = maxi(0, int_val("unit.general.escort", 0))
+	# ⚠️ 这里**不再读** `unit.general.escort`：本轮把「全局开局编制」整个删掉了
+	#    （开局有几个附属兵 = 关卡 `start_units[].escort_of` 摆了几个，
+	#     见本文件上面那段说明与 `Level.escort_leader_index()`）。
+	# ★ 于是 `config.json` 里**残留**的 `escort` 键会被**静默忽略**：`get_path_value()`
+	#   只在**主动查**某个路径时才看它，没人查的键等于不存在，不会报错、也不会警告。
+	#   这一条是有意的 —— 另一路 agent 正在改 config 与单位编辑器，两边不必同步落地。
 
 	# 3.5) ★★ 将领的**数值覆盖**（config.json 的 `unit.general.stats`，本轮新增；
 	#      editor：tools/unit_editor 的「单位」页 → 将领）。
@@ -544,9 +613,14 @@ func general_type_at(i: int) -> String:
 	return String(_general_types[i])
 
 
-## 每个将领开局带几个同类型的兵
-func general_escort_count() -> int:
-	return general_escort
+## ⚠️ 这里原先还有两个「开局编制」的读法（本轮**整个删掉**）：
+##   · `general_escort_count()`     —— `unit.general.escort` 的第一个值；
+##   · `general_escort_at(index)`   —— 逐将那一份（下标越界按长度循环）。
+## 新口径下**没有任何全局缺省**：开局有几个附属兵完全等于关卡 `start_units[]` 里
+## 摆了几个（`escort_of` 指向哪位将领）。要问「这位将领的目标编制」请用
+## `world.escort_target_of(fid, general_index)`。
+## ★ 不保留「读不到就返回 0」的兼容函数是**有意的**：留一个恒 0 的接口会让
+##   调用点看起来还在工作，而这个接口存在的意义已经没有了（见文件上方那段说明）。
 
 
 # ------------------------------------------------------------------
@@ -755,6 +829,19 @@ func str_val(path: String, fallback: String) -> String:
 	return fallback
 
 
+## 读一份 `{"food": n, "gold": n}` 形状的**消耗**（招募 / 升级 / 特化 / 再起共用这一套）。
+##
+## ★ 为什么要这个函数（本轮新增）：`EconomyRes.can_afford` / `spend` 认的就是这个形状，
+##   而 `get_path_value` 返回 Variant —— 直接在调用点 `if typeof(...) == TYPE_DICTIONARY`
+##   判一次的话，每个新消耗点都要抄一遍（抄漏一次就是「钱不够也放行」这种安静的错误）。
+## ★ 缺字段 / 类型不对 → 返回**空字典**（= 免费），与 `recruit_cost` 的兜底同义。
+func _read_cost(path: String) -> Dictionary:
+	var v: Variant = get_path_value(path)
+	if typeof(v) == TYPE_DICTIONARY:
+		return v
+	return {}
+
+
 # ------------------------------------------------------------------
 # 配色
 # ------------------------------------------------------------------
@@ -783,6 +870,76 @@ static func parse_color(s: String, fallback: Color = Color.MAGENTA) -> Color:
 	return fallback
 
 
+## ★★ 运行时登记的阵营颜色："faction" → {"main": Color, "sel": Color, "bar": Color}。
+##
+## 为什么需要它：配色表（`colors.faction.*`）里只有 p1~p8 / enemy / ai 这些**内置**阵营 id，
+## 而**战役可以用自己的阵营 id**（`campaign.json` 的 `factions[].color` 就是给它们准备的）。
+## 不登记的话 `faction_color("F1")` 会一路退到兜底的 **品红** ——
+## 症状是「整个战场一片紫、分不清敌我」（实测踩到：样例战役的 F1/E1 就是这么来的）。
+##
+## ★ 状态放在 config 上而不是 view 上：`view/` 里所有取色都走 `cfg.faction_color()`
+##   （单位 / 建筑 / 区块 / 小地图），在这里登记一处就全通了 —— 不必给每个 view 传调色板。
+## ★ 生命周期：每次 `world.reset()` 按关卡数据重登记一遍（见 `world._register_level_colors`），
+##   所以换一局不会串色。
+var _faction_color_override: Dictionary = {}
+
+
+## ★★ 登记一个阵营的三个颜色（`main` 主色 / `sel` 选中态 / `bar` 血条）。
+##
+## @param main / sel / bar 十六进制或 `rgba(...)`（与 config 里其它颜色同一种写法）
+## @return bool 认出来了没有（**写错了**会返回 false 并保持原样，不会悄悄设成黑色）
+##
+## ⚠️ 只在**内容认得出来**时才登记：写错的颜色宁可让它退回原来的兜底
+##   （一品红总比「所有阵营都变成黑色」好查 —— 后者看起来像渲染坏了）。
+func register_faction_color(faction: String, main: String, sel: String = "", bar: String = "") -> bool:
+	var fid := faction.strip_edges()
+	if fid == "":
+		return false
+	# ⚠️ 这几个用 `=` 而不是 `:=`：`_parse_color_or_null()` 返回 Variant（null 或 Color），
+	#    对它用 `:=` 会被引擎当成错误（"The variable type is being inferred from a Variant value"）。
+	var m = _parse_color_or_null(main)
+	if m == null:
+		return false
+	# sel / bar 没给就跟 main 走（只给一个颜色的战役数据也能用）
+	var s = m
+	var b = m
+	if sel.strip_edges() != "":
+		var sv = _parse_color_or_null(sel)
+		if sv != null:
+			s = sv
+	if bar.strip_edges() != "":
+		var bv = _parse_color_or_null(bar)
+		if bv != null:
+			b = bv
+	_faction_color_override[fid] = {"main": m, "sel": s, "bar": b}
+	return true
+
+
+## 这个阵营有没有被登记过颜色（给测试与排查用）。
+func has_faction_color(faction: String) -> bool:
+	return _faction_color_override.has(faction)
+
+
+## 清掉运行时登记的颜色（重开一局 / 换战役时用）。
+func clear_faction_colors() -> void:
+	_faction_color_override = {}
+
+
+## 解析一个颜色字符串：**认得出来**返回 Color，认不出来返回 null。
+##
+## ⚠️ 与 `parse_color(v, fallback)` 的差别：那个「认不出来就给兜底」，
+##    所以它分不出「解析失败」与「解析成了兜底色」；登记颜色时需要这个区分。
+func _parse_color_or_null(text: String) -> Variant:
+	var t := text.strip_edges()
+	if t == "":
+		return null
+	var sentinel := Color(0.0, 0.0, 0.0, 0.0)   # 不会被当成合法配色的哨兵
+	var got := parse_color(t, sentinel)
+	if got == sentinel:
+		return null
+	return got
+
+
 ## 取 colors.* 里的一项
 func color(key: String) -> Color:
 	var v: Variant = get_path_value("colors." + key)
@@ -793,7 +950,21 @@ func color(key: String) -> Color:
 
 ## 阵营配色。未登记的阵营退回 player —— 保证「配色表只到 p4」这类情况不会崩，
 ## 也不会把 p5~p8 悄悄画成别的阵营的颜色（见 docs/pitfalls.md 3.12）。
+##
+## ★★ 查找顺序（**先看运行时登记的，再看配色表**）：
+##   1. `register_faction_color()` 登记过的（**战役自己的阵营 id**，比如 F1/E1）——
+##      它必须在配色表之前，否则「战役想覆盖内置 id 的颜色」会被配色表压住；
+##   2. `colors.faction.<id>.<field>`（内置的 p1~p8 / enemy / ai）；
+##   3. `colors.faction.player.<field>`（老的兜底键，当前 config 里没有）；
+##   4. `Color.MAGENTA` —— ⚠️ **走到这一步就是「忘了登记颜色」**：
+##      画面上表现为「整个战场一片紫、敌我分不清」。战役里出现紫色先查这条
+##      （见 docs/pitfalls.md 8.1）。
 func faction_color(faction: String, field: String = "main") -> Color:
+	var over: Variant = _faction_color_override.get(faction, null)
+	if typeof(over) == TYPE_DICTIONARY:
+		var got: Variant = (over as Dictionary).get(field, null)
+		if got is Color:
+			return got
 	var v: Variant = get_path_value("colors.faction.%s.%s" % [faction, field])
 	if typeof(v) == TYPE_STRING:
 		return parse_color(v)
@@ -1345,3 +1516,121 @@ func spec_time_sec(id: String) -> float:
 	if typeof(v) == TYPE_FLOAT or typeof(v) == TYPE_INT:
 		return maxf(0.0, float(v))
 	return _spec_time_sec
+
+
+# ------------------------------------------------------------------
+# AI（config.json 的 ai 段）—— 本轮新增的两种 AI
+#
+# ★ 与科技 / 升级 / 区划那几张表同一条规矩：**载入时整理好、之后只读**。
+#   原因一样 —— 这几个数在「每帧每 AI / 每帧每驻防将领」的路径上，
+#   不该每次都 split(".") 下潜一遍 JSON。
+#
+# ★★ 分工（两套 AI 的规则分别在 logic/faction_ai.gd 与 logic/general_ai.gd）：
+#   · `ai.factions[]` —— **阵营 AI**：附属在哪个阵营（id）、大本营摆哪（base）、
+#     资源倍率（resource_mult，难度旋钮）、开局资源（start_food / start_gold）。
+#     它是一张**列表**：一张图上可以挂好几个阵营 AI，各带各的资源库。
+#   · `ai.faction`    —— 阵营 AI 的**行为参数**（招几个将领 / 补到几个人 / 多久试一次
+#                        招兵与升级 / 派兵门槛）。所有阵营 AI 共用这一份（要各自不同
+#                        就改这里、让它按 id 分流 —— 现在没有必要）。
+#   · `ai.general`    —— **将领性（防御性）AI** 的行为参数（巡逻间隔 / 巡逻半径 /
+#                        脱战多久算闲 / 多久查一次招兵 / 满员门槛）。
+# ⚠️ 表是空的（老配置 / 手改删掉这一节）时**两种 AI 都不跑** —— 行为与加它们之前一致。
+# ------------------------------------------------------------------
+
+## 「每帧每 AI」的读取口：AI 的阵营表（只读，别改返回的数组）
+var _ai_factions: Array = []
+## AI 的行为参数（整理成同一层字典，省得每帧下潜 JSON）。
+var _ai_faction_cfg: Dictionary = {}
+var _ai_general_cfg: Dictionary = {}
+
+
+func _cache_ai() -> void:
+	_ai_factions = []
+	_ai_faction_cfg = {}
+	_ai_general_cfg = {}
+
+	var raw: Variant = get_path_value("ai.factions")
+	if typeof(raw) == TYPE_ARRAY:
+		for item in (raw as Array):
+			if typeof(item) != TYPE_DICTIONARY:
+				continue
+			var src: Dictionary = item
+			var id := String(src.get("id", ""))
+			if id == "":
+				continue
+			# ⚠️ 玩家席位（p1…p8）**不许**出现在这里：那会变成「AI 接管玩家的资源池」，
+			#    玩家自己的招募就会开始花 AI 的钱（两边其实是同一个池子）。
+			var base := Vector2i(-1, -1)
+			var b: Variant = src.get("base", null)
+			if typeof(b) == TYPE_ARRAY and (b as Array).size() >= 2:
+				base = Vector2i(int((b as Array)[0]), int((b as Array)[1]))
+			_ai_factions.append({
+				"id": id,
+				"base": base,
+				# ★ 难度旋钮：1.0 = 与玩家同速；2.0 = 两倍产出
+				"resource_mult": maxf(0.0, float(src.get("resource_mult", 1.0))),
+				"start_food": maxf(0.0, float(src.get("start_food", 0.0))),
+				"start_gold": maxf(0.0, float(src.get("start_gold", 0.0))),
+			})
+
+	_ai_faction_cfg = {
+		"generals": maxi(0, int(num("ai.faction.generals", 3.0))),
+		"min_retinue": maxi(0, int(num("ai.faction.min_retinue", 3.0))),
+		"recruit_cooldown_sec": maxf(0.0, num("ai.faction.recruit_cooldown_sec", 1.0)),
+		"upgrade_cooldown_sec": maxf(0.0, num("ai.faction.upgrade_cooldown_sec", 5.0)),
+		"upgrade_reserve_food": maxf(0.0, num("ai.faction.upgrade_reserve_food", 0.0)),
+		"upgrade_reserve_gold": maxf(0.0, num("ai.faction.upgrade_reserve_gold", 0.0)),
+		"ready_mult": num("ai.faction.ready_mult", 0.5),
+		"min_ready": maxi(1, int(num("ai.faction.min_ready", 2.0))),
+		"attack_repeat_sec": maxf(0.1, num("ai.faction.attack_repeat_sec", 6.0)),
+		# ★★ 再起预留（本轮新增）：AI 判断「付得起再起」时，除了 revive.cost
+		#    还要多留这么多钱 —— 0 = 只要付得起就再起（见 faction_ai._try_revive）。
+		#    与 upgrade_reserve_* 同一条思路：调大 = 更愿意保住将领而不是乱花钱。
+		"revive_reserve_food": maxf(0.0, num("ai.faction.revive_reserve_food", 0.0)),
+		"revive_reserve_gold": maxf(0.0, num("ai.faction.revive_reserve_gold", 0.0)),
+	}
+	_ai_general_cfg = {
+		"patrol_interval_sec": maxf(0.1, num("ai.general.patrol_interval_sec", 4.0)),
+		"patrol_leash_tiles": maxf(1.0, num("ai.general.patrol_leash_tiles", 1.0)),
+		"combat_idle_sec": maxf(0.0, num("ai.general.combat_idle_sec", 10.0)),
+		"retarget_cooldown_sec": maxf(0.0, num("ai.general.retarget_cooldown_sec", 5.0)),
+		"recruit_check_sec": maxf(0.1, num("ai.general.recruit_check_sec", 2.0)),
+		"min_retinue": maxi(0, int(num("ai.general.min_retinue", 3.0))),
+		# ★★ 巡逻路线（让同一个区划里的几位守将**不要挤在同一点**）：
+		#   · `patrol_points`：每位守将分到几个巡逻点（1 = 老行为：只去一个点）；
+		#   · `patrol_spread_tiles`：巡逻点之间最多相隔几格（限住巡逻范围，免得
+		#     一个将领的路线横跨整个区块、与别人的路线搅在一起）。
+		#   ★ 路线本身是**由单位 id 派生的固定种子**算出来的（确定性伪随机，见
+		#     logic/general_ai.gd 的 `_route_seed`）—— 看起来杂乱，但同一局每次
+		#     跑出来完全一样，存档 / 回放不会漂（dev_plan_7 3.10 那条硬要求）。
+		"patrol_points": maxi(1, int(num("ai.general.patrol_points", 3.0))),
+		"patrol_spread_tiles": maxf(1.0, num("ai.general.patrol_spread_tiles", 3.0)),
+		# ★★ 巡逻**带兵**（本轮新增，手玩报的 bug「将领巡逻、招出来的兵站着不动」）：
+		#   附属兵离带队将领超过这么多格就会被重新叫上（巡逻每一步都会检查一次）。
+		#   ⚠️ 不能太小：队形落点本身就有一格的间距（formation.spacing_scale），
+		#      卡到 1 格会让它们每一步都被重下一遍命令、永远在挤。
+		"patrol_retinue_leash_tiles": maxf(1.0, num("ai.general.patrol_retinue_leash_tiles", 3.0)),
+	}
+
+
+## 全部「阵营 AI」条目（每项 {id, base, resource_mult, start_food, start_gold}；只读）
+func ai_factions() -> Array:
+	return _ai_factions
+
+
+## 阵营 AI 的行为参数（只读；键见 `_cache_ai()`）
+func ai_faction_cfg() -> Dictionary:
+	return _ai_faction_cfg
+
+
+## 将领性（防御性）AI 的行为参数（只读）
+func ai_general_cfg() -> Dictionary:
+	return _ai_general_cfg
+
+
+## 这个阵营是不是「由 AI 接管」的（单机 / 联机都能问：AI 只跑在权威侧）
+func is_ai_faction(fid: String) -> bool:
+	for e in _ai_factions:
+		if String((e as Dictionary)["id"]) == fid:
+			return true
+	return false

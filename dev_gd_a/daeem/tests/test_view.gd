@@ -38,6 +38,7 @@ func _run() -> void:
 
 	_test_palette(cfg)
 	_test_font(cfg)
+	_test_zone_outline(cfg)
 
 	# ★ 关键：先等一帧，root.add_child() 才会真的生效
 	await process_frame
@@ -71,7 +72,7 @@ func _test_palette(cfg) -> void:
 	near(r.size.x, cfg.cell_px, 1e-6, "tile_rect 宽度 = 一格")
 
 	# 建筑矩形：城墙填满整格，其它内缩
-	var w0 = WorldRes.create(cfg)
+	var w0 = require_world(cfg)
 	var base_b = w0.find_base_of("p1")
 	ok(base_b != null, "取得到大本营建筑")
 	if base_b != null:
@@ -114,7 +115,12 @@ func _enter_game(packed):
 	root.add_child(main)
 	await process_frame
 	# 走真实入口：按下「test」才建游戏内场景（与玩家点一下按钮完全同一条路）
-	main._on_test_pressed()
+	# ⚠️ 现在必须把**选中的地图**传进去：`_on_test_pressed(map_path)` 的入参就是
+	#    `test_pressed` 信号带出来的那个值（见 view/main.gd）。不传 = 调用失败、
+	#    `main.game` 永远是 null，而后面那些断言会变成「在等一个不会发生的事」——
+	#    实测的后果是整套测试卡住不退出（某些用例在循环等关卡加载完）。
+	#    下面这一行与「玩家在下拉框里选了哪张」用同一个读法（start_screen 里唯一那处）。
+	main._on_test_pressed(main.start_screen.selected_map_path())
 	await process_frame
 	return main
 
@@ -360,3 +366,108 @@ func _test_fixed_view_range(cfg, game) -> void:
 	ok(vp.x / cam.zoom.x < rig.map_size().x + 1e-6,
 		"★ 视野固定之后「缩到看全图」不再可能（可见 %.0f px < 地图 %.0f px）"
 		% [vp.x / cam.zoom.x, rig.map_size().x])
+
+
+# ------------------------------------------------------------------
+# 区划描边（需求：所有区划都要有清晰的加粗白色描边）
+#
+# ★ 这里测的是**口径**，不是观感（观感是手玩验收的事，见文件头）：
+#   · 描边参数真的从 config 读到了（改键名忘了改代码 → 这里红，而不是画面悄悄退回默认值）；
+#   · 无主区划的主线色是**纯白**、线宽够粗；
+#   · 有主区划走的是**它自己阵营**的主色（合作模式下两个玩家各占一块也不能串色）；
+#   · 轮廓几何被缓存下来了，而且缓存能在换地图时失效重建。
+# ------------------------------------------------------------------
+func _test_zone_outline(cfg) -> void:
+	var w = require_world(cfg)
+	if w == null:
+		return
+	var zv = script_at("res://view/zone_view.gd").new()
+	# ⚠️ 不挂到 root 上：这里在 `_initialize()` 阶段，「挂节点必须等一帧」那条坑
+	#    （见文件头 + pitfalls 1.2）会让 add_child 静默失效。视图的几何与取色
+	#    都不依赖场景树，所以直接建出来用（同 test_fog.gd 的 InputController 写法）。
+	zv.setup(cfg, w, null, 12)
+
+	# 1) 参数从 config 来（config.json 的 colors.zone_*）
+	var stroke_w: float = cfg.num("colors.zone_stroke_width", 3.0)
+	var owned_w: float = cfg.num("colors.zone_stroke_width_owned", 2.5)
+	var halo_delta: float = cfg.num("colors.zone_halo_delta", 2.0)
+	near(zv._w_stroke, stroke_w, 1e-6, "描边线宽来自 config（colors.zone_stroke_width）")
+	near(zv._w_stroke_owned, owned_w, 1e-6, "有主区划线宽来自 config")
+	near(zv._halo_delta, halo_delta, 1e-6, "光晕宽度来自 config")
+	ok(stroke_w >= 2.5, "★ 主线线宽 >= 2.5px（「加粗」：原来的固定 1px 太细）")
+	ok(halo_delta > 0.0, "光晕比主线更宽（否则「外圈光晕」根本不外扩）")
+	eq(zv._c_stroke, Color(1, 1, 1, 1), "★ 无主区划的描边是**纯白不透明**（不是 10% 白）")
+	near(zv._c_stroke.a, 1.0, 1e-6, "主线的 alpha = 1（「清晰」的一半在这里）")
+	ok(zv._c_halo.a > 0.0 and zv._c_halo.a < 1.0, "光晕是半透明白（叠在主线下面，不是又一条实心线）")
+
+	# 2) 轮廓几何：每块区划都有自己的边（没有地块明细的老地图走包围盒）
+	#
+	# ⚠️ 这里要**显式**建一次几何：生产路径上它由 ZoneShape 的 _draw() 触发，
+	#    而这个节点没挂进场景树（见上面的原因），_draw 不会自己跑。
+	var zones: Array = w.zones.zones
+	ok(zones.size() > 0, "世界上有区划")
+	zv._ensure_outline_geometry(cfg.cell_px)
+	ok(zv._edges_by_zone.size() == zones.size(), "几何缓存的长度 = 区划数（%d）" % zones.size())
+	var empty_zones := 0
+	var total_edges := 0
+	var all_ok := true
+	for i in zones.size():
+		var segs: PackedVector2Array = zv._edges_by_zone[i]
+		total_edges += segs.size()
+		if segs.is_empty():
+			empty_zones += 1
+			all_ok = false
+	ok(all_ok, "★ 每一块区划都算出了轮廓（空轮廓 = 这块没有描边）")
+	ok(total_edges > 0, "轮廓总线段数 > 0（%d 段 / %d 块区划）" % [total_edges, zones.size()])
+	ok(empty_zones == 0, "没有「算不出轮廓」的区划（%d 块）" % empty_zones)
+	# 线段按「两个端点一段」存，所以一定是偶数；奇数说明拼错了
+	ok(total_edges % 2 == 0,
+		"线段数组是成对的端点（%d 个点 = %d 段）" % [total_edges, int(total_edges / 2)])
+
+	# 3) 有主区划的颜色 = **该阵营自己的**主色（分工合作时不能串色）
+	var p1_color: Color = cfg.faction_color("p1", "main")
+	var p2_color: Color = cfg.faction_color("p2", "main")
+	eq(zv._stroke_color_owned("p1"), p1_color, "★ 有主区划用 p1 的阵营主色描边")
+	eq(zv._stroke_color_owned("p2"), p2_color, "★★ 第二个玩家阵营用它自己的颜色（不是「谁先占谁定色」）")
+	ok(p1_color != p2_color, "两个阵营的主色确实不同（否则上一条测了个寂寞）")
+
+	# 4) 缓存：同一帧里不该重算几何；换地图时靠 force 重建
+	# ⚠️ 不用 `:=`：zv 是 load 出来的实例，属性访问的返回值是 Variant，
+	#    推断类型会直接 Parse Error（见 test_case.gd 的引用约定 3）。
+	var before = zv._edges_all.size()
+	zv._edges_by_zone.clear()
+	zv._edges_all = PackedVector2Array()
+	zv._ensure_outline_geometry(cfg.cell_px)
+	ok(zv._edges_all.is_empty(), "几何签名没变时直接命中缓存（不清空重算）")
+	# ⚠️ 顺序要紧：上面为了验缓存把缓存清空过，这里必须先**重建回来**（force = true），
+	#    否则后面第 6 步的分组拿到的是空数据 —— 那种「测了个寂寞」不会报错，只会假绿。
+	zv._ensure_outline_geometry(cfg.cell_px, true)
+	eq(zv._edges_all.size(), before, "force 重建之后轮廓与第一次算出来的完全一致")
+
+	# 5) 画一遍不炸（draw_multiline 的宽度参数用错会直接报错）
+	zv.draw_shapes(zv)
+	ok(true, "draw_shapes 在缓存好的几何上跑得通")
+
+	# 6) ★★ 分组：按**阵营 id** 分，而不是「有主 / 无主」两档
+	#    （单机下把两个阵营合成一组也看不出来，合作模式里就会串色）
+	(zones[0] as Dictionary)["owner"] = "p1"
+	if zones.size() >= 2:
+		(zones[1] as Dictionary)["owner"] = "p2"
+	var groups: Dictionary = zv._outline_groups()
+	var owned: Dictionary = groups["owned"]
+	ok(owned.has("p1"), "★ p1 的区划进了 p1 这一组")
+	ok(owned.has("p2"), "★★ p2 的区划进了 p2 这一组（不是和 p1 合成一组）")
+	ok((groups["neutral"] as PackedVector2Array).size() > 0, "还有无主区划走纯白那一组")
+	var p1_segs: PackedVector2Array = owned.get("p1", PackedVector2Array())
+	var p2_segs: PackedVector2Array = owned.get("p2", PackedVector2Array())
+	ok(p1_segs.size() > 0 and p2_segs.size() > 0, "两组各自都有自己的线段")
+	# 恢复成「全部无主」，免得影响后面 / 别的用例看到的场面
+	(zones[0] as Dictionary)["owner"] = ""
+	if zones.size() >= 2:
+		(zones[1] as Dictionary)["owner"] = ""
+
+	# 收尾：这个节点**没挂进场景树**（见上面那条注释），所以用 free() 立刻释放 ——
+	# queue_free() 对不在树上的节点不会生效，会留到退出时由引擎报「还在泄漏」。
+	zv.free()
+	zv = null
+
