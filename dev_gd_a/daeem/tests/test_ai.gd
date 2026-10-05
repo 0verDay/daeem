@@ -1,4 +1,4 @@
-﻿## test_ai.gd —— ★ 本轮新增的两种 AI：阵营性 AI + 将领性（防御性）AI
+## test_ai.gd —— ★ 本轮新增的两种 AI：阵营性 AI + 将领性（防御性）AI
 ##
 ## 覆盖（每条都对着需求原话写）：
 ##   A. 阵营 AI 的**存在与资源库**
@@ -125,7 +125,7 @@ func _fund_recruit(w, gen, food: float = 500.0, gold: float = 500.0, pop: float 
 ## 造一个「敌对的」探针单位（"enemy" 是内建的非玩家阵营，与 p1 天然敌对）。
 func _make_foe(w, cfg, tile: Vector2i):
 	var u = UnitRes.create(cfg, "probe-foe-%d" % w.units.size(), "探针敌人",
-		tile, FactionRes.NPC_FACTION, UnitRes.KIND_ENEMY)
+		tile, FactionRes.NPC_FACTION, UnitRes.UNIT_TYPE_SPEARMAN)
 	w.units.append(u)
 	return u
 
@@ -1376,7 +1376,7 @@ func _test_general_ai_patrol_route_is_automatic(cfg) -> void:
 
 	# ---- 3) 同一区的**另一位**守将拿到的是另一条路线（各走各的，不挤在一起）----
 	var u2 = UnitRes.create(cfg, "probe-2", "第二个守将", Vector2i(1, 13),
-		"F1", UnitRes.KIND_ENEMY)
+		"F1", UnitRes.UNIT_TYPE_SPEARMAN)
 	u2.garrison_zone_id = int(u.garrison_zone_id)
 	u2.hold_position = true
 	w.units.append(u2)
@@ -1745,7 +1745,7 @@ func _test_general_ai_no_pursuit(cfg) -> void:
 		return
 	g.hold_position = false          # 让 combat 的追击逻辑能驱动它（下面几段要真追）
 	var foe = UnitRes.create(cfg, "test-foe-1", "入侵者", Vector2i(10, 12),
-		FactionRes.DEFAULT_FACTION, UnitRes.KIND_ENEMY)
+		FactionRes.DEFAULT_FACTION, UnitRes.UNIT_TYPE_SPEARMAN)
 	w.units.append(foe)
 
 	var z5 = w.zone_by_id(5)
@@ -1956,7 +1956,7 @@ func _test_general_ai_not_advancing(cfg) -> void:
 ##   要验「与将领同类型」那条，把 unit_type 换成 "spearman" 即可。
 func _make_garrison(w, cfg, tile: Vector2i, zone_id: int):
 	var u = UnitRes.create(cfg, "garrison-test-%d" % w.units.size(), GARRISON_NAME,
-		tile, FactionRes.NPC_FACTION, UnitRes.KIND_ENEMY)
+		tile, FactionRes.NPC_FACTION, UnitRes.UNIT_TYPE_SPEARMAN)
 	u.garrison_zone_id = zone_id
 	u.hold_position = true
 	w.units.append(u)

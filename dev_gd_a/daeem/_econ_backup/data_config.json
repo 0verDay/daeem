@@ -1,4 +1,4 @@
-{
+﻿{
   "_comment": [
     "DAEEM · 全部可调数值。对应 HTML 版 js/config.js —— 数值一个不改地搬过来（见 docs/porting.md 第四节）。",
     "铁律：代码里不写游戏数值字面量，只读这一份 JSON。",
@@ -157,14 +157,11 @@
       "  · spearman / longbowman / rider = 本轮新增的三个占位兵种，",
       "    亲兵（subordinate）已被移除（需求原话：「将『亲兵』这个单位去除」）。",
       "    属性是占位数值，之后按玩法调 —— 改这一张表就够了。",
-      "  · enemy = 测试敌人。★★ **本次已删除**（用户口径：「把所有的『敌』这个具体单位",
-      "    变成『长枪兵』，同时将『敌』从 editor 工具中移除」）——",
-      "    它原来存在的理由是「把散在 debug.enemy_hp / debug.enemy_speed / combat.enemy",
-      "    三处的数值并进同一张表」，那件事已经做完，占位单位本身不再需要：",
-      "      · 调试刷兵（`world.spawn_enemy`）现在直接刷**长枪兵**；",
-      "      · 编辑器（tools/unit_editor 的「单位」页）不再列出这一条；",
-      "      · 老地图 / 老关卡里若还写着 kind = \"enemy\"，会退到 `unit.<default>` 兜底值",
-      "        （`config.unit.hp_max` 等那几个），不会崩。",
+      "  · enemy = 测试敌人。**把它也放进这张表**是有意的：",
+      "    原来的数值散在 debug.enemy_hp / debug.enemy_speed / combat.enemy 三处，",
+      "    而「加了第三类兵种之后，老的二元判断（是将领吗？不是就当敌人）",
+      "    会静默把新兵种当成敌人」这个坑本项目踩过（见 docs/pitfalls.md 5.x）——",
+      "    一个类型只在一个地方定义，就没有「漏了一种类型」的余地。",
       "  · 数值口径与旧字段完全一致：距离一律是**格**，速度是**格 / 秒**，",
       "    radius_factor 是格半径（渲染与射程判定共用，碰撞另走 unit.collision_radius）。",
       "  ★★ icon = **地图上这个单位显示的那一个字**（本轮改版：原来是一份线条画的预制体）。",
@@ -179,12 +176,7 @@
       "     半径从「单位所在的**格心**」算起，被**山脉**挡住视线（其他地形不挡，见 fog.gd `_los_blocked`）。",
       "     领地半径要写多大看 fog.vision_default 那段说明。",
       "     · 编辑器：tools/unit_editor 的「单位」页 →「视野半径」那一栏；",
-      "     · 将领想单独调 → unit.general.stats[i].vision（没写就跟随所属兵种）。",
-      "  ★★ 资源层级（本次经济调参定的，招募价那一段照它排）：",
-      "     粮食 = 低级资源，黄金 = 高级资源，人口 = 通用资源（谁都要）。",
-      "     长枪兵 / 长弓兵 = **低级单位，只花粮食**；骑手 = **高级单位，要粮更要金**。",
-      "     ⚠️ 这三个仍是**占位单位**（用户口径：「只是占位单位看着来」）——",
-      "       数值是「能看出三种兵的区别」的量级，不是最终配平，之后按玩法再调这一张表。"
+      "     · 将领想单独调 → unit.general.stats[i].vision（没写就跟随所属兵种）。"
     ],
     "types": {
       "spearman": {
@@ -192,9 +184,9 @@
         "icon": "枪",
         "class": "infantry",
         "ranged": false,
-        "hp_max": 140,
+        "hp_max": 160,
         "speed": 0.6,
-        "damage": 16,
+        "damage": 20,
         "range": 1,
         "cooldown_sec": 1.0,
         "radius_factor": 0.09,
@@ -205,11 +197,11 @@
         "icon": "弓",
         "class": "infantry",
         "ranged": true,
-        "hp_max": 80,
-        "speed": 0.55,
-        "damage": 24,
-        "range": 4.0,
-        "cooldown_sec": 1.4,
+        "hp_max": 110,
+        "speed": 0.6,
+        "damage": 16,
+        "range": 3.5,
+        "cooldown_sec": 1.3,
         "radius_factor": 0.085,
         "vision": 10
       },
@@ -218,13 +210,26 @@
         "icon": "骑",
         "class": "cavalry",
         "ranged": false,
-        "hp_max": 110,
-        "speed": 1.2,
-        "damage": 26,
+        "hp_max": 140,
+        "speed": 0.9,
+        "damage": 22,
         "range": 1,
-        "cooldown_sec": 0.9,
+        "cooldown_sec": 1.0,
         "radius_factor": 0.105,
         "vision": 9
+      },
+      "enemy": {
+        "name": "测试敌人",
+        "icon": "敌",
+        "class": "infantry",
+        "ranged": false,
+        "hp_max": 60,
+        "speed": 0.45,
+        "damage": 10,
+        "range": 1,
+        "cooldown_sec": 1.2,
+        "radius_factor": 0.1,
+        "vision": 7
       }
     },
 
@@ -382,15 +387,6 @@
       "  调小 = 更黏人但更容易在边缘抖；0 = 退回旧行为（会抖）。"
     ],
     "leash_release_cd": 0.5,
-    "_rescue_comment": [
-      "★★ 濒死救援期间的警戒半径倍率（本次修 bug 新增，见 combat.acquire_target）。",
-      "  附属兵赶去救倒下的队长时，警戒半径 = combat.aggro_range × 这个值（默认 4 × 0.4 = 1.6 格）。",
-      "  为什么：沿用正常半径的话，路过的任何敌人都能把援军拽进追击，",
-      "    而追击上限一触发就脱战回家 —— 救援集结被打断（实测报回来的",
-      "    「将领倒了，部队不去保护」有一部分就是这个）。",
-      "  ⚠️ 不是禁止索敌：完全不还手会让援军在沿途被白打。0 = 完全不还手；1 = 与平时一样。"
-    ],
-    "rescue_aggro_mult": 0.4,
     "repath_sec": 0.3,
     "_repath_comment": [
       "★ 追击时多久重算一次路径（秒）。",
@@ -587,8 +583,8 @@
 
     "wall": {
       "id": "wall", "name": "城墙", "hotkey": "B", "buildable": true,
-      "build_sec": 4,
-      "cost": { "food": 25, "gold": 25 },
+      "build_sec": 0,
+      "cost": { "food": 0, "gold": 0 },
       "hp_max": 300,
       "body_scale": 1.0,
       "blocks_player": false, "blocks_enemy": true,
@@ -600,8 +596,8 @@
     },
     "tower": {
       "id": "tower", "name": "箭塔", "hotkey": "T", "buildable": true,
-      "build_sec": 6,
-      "cost": { "food": 50, "gold": 50 },
+      "build_sec": 0,
+      "cost": { "food": 0, "gold": 0 },
       "hp_max": 300,
       "body_scale": 0.6,
       "blocks_player": false, "blocks_enemy": false,
@@ -627,7 +623,7 @@
     }
   },
 
-  "economy": { "enabled": true },
+  "economy": { "enabled": false },
 
   "recruit": {
     "_comment": [
@@ -654,28 +650,28 @@
         "kind": "spearman",
         "label": "长枪兵",
         "short": "枪",
-        "desc": "在选中将领所在格的中心生成 1 名长枪兵（近战步兵，占位单位）。★ 低级单位：只花粮食",
+        "desc": "在选中将领所在格的中心生成 1 名长枪兵（近战步兵，占位单位）",
         "train_sec": 10,
         "population_cost": 1,
-        "cost": { "food": 60, "gold": 0 }
+        "cost": { "food": 50, "gold": 50 }
       },
       {
         "kind": "longbowman",
         "label": "长弓兵",
         "short": "弓",
-        "desc": "在选中将领所在格的中心生成 1 名长弓兵（远程步兵，占位单位）。★ 低级单位：只花粮食",
+        "desc": "在选中将领所在格的中心生成 1 名长弓兵（远程步兵，占位单位）",
         "train_sec": 10,
         "population_cost": 1,
-        "cost": { "food": 60, "gold": 0 }
+        "cost": { "food": 50, "gold": 50 }
       },
       {
         "kind": "rider",
         "label": "骑手",
         "short": "骑",
-        "desc": "在选中将领所在格的中心生成 1 名骑手（近战骑兵，占位单位）。★ 高级单位：要粮食，更要黄金",
+        "desc": "在选中将领所在格的中心生成 1 名骑手（近战骑兵，占位单位）",
         "train_sec": 10,
         "population_cost": 1,
-        "cost": { "food": 40, "gold": 80 }
+        "cost": { "food": 50, "gold": 50 }
       }
     ],
 
@@ -706,7 +702,7 @@
           "desc": "在本区划中心旁生成 1 名占位将领（长枪兵型，读条 10 秒）",
           "train_sec": 10,
           "population_cost": 1,
-          "cost": { "food": 100, "gold": 100 }
+          "cost": { "food": 50, "gold": 50 }
         },
         {
           "kind": "general_2",
@@ -715,7 +711,7 @@
           "desc": "在本区划中心旁生成 1 名占位将领（长弓兵型，读条 10 秒）",
           "train_sec": 10,
           "population_cost": 1,
-          "cost": { "food": 100, "gold": 100 }
+          "cost": { "food": 50, "gold": 50 }
         },
         {
           "kind": "general_3",
@@ -724,7 +720,7 @@
           "desc": "在本区划中心旁生成 1 名占位将领（骑手型，读条 10 秒）",
           "train_sec": 10,
           "population_cost": 1,
-          "cost": { "food": 100, "gold": 100 }
+          "cost": { "food": 50, "gold": 50 }
         }
       ]
     }
@@ -802,22 +798,22 @@
       {
         "id": "food",
         "name": "粮食区划",
-        "line": "每地块每秒 0.5 粮食 + 0.05 人口",
-        "production": { "food": 0.5, "gold": 0, "population": 0.05 },
+        "line": "每地块每秒 1 粮食 + 0.1 人口",
+        "production": { "food": 1, "gold": 0, "population": 0.1 },
         "specs": ["gold", "population"]
       },
       {
         "id": "gold",
         "name": "黄金区划",
-        "line": "每地块每秒 0.5 黄金 + 0.05 人口",
-        "production": { "food": 0, "gold": 0.5, "population": 0.05 },
+        "line": "每地块每秒 1 黄金 + 0.1 人口",
+        "production": { "food": 0, "gold": 1, "population": 0.1 },
         "specs": ["food", "population"]
       },
       {
         "id": "population",
         "name": "人口区划",
-        "line": "每地块每秒 0.075 人口",
-        "production": { "food": 0, "gold": 0, "population": 0.075 },
+        "line": "每地块每秒 0.15 人口",
+        "production": { "food": 0, "gold": 0, "population": 0.15 },
         "specs": ["food", "gold"]
       }
     ]
@@ -826,16 +822,10 @@
   "zone_spec": {
     "_comment": [
       "★ 区划特化（选中**区划中心** → 右下「操作」页签 → 粮食 / 黄金 / 人口特化）。",
-      "  需求原话（改版当时）：「粮食特化 = 每地块每秒额外产 0.5 粮食，",
+      "  需求原话（本轮改版后）：「粮食特化 = 每地块每秒额外产 0.5 粮食，",
       "  黄金特化 = 每地块每秒额外产 0.5 黄金，人口特化 = 当前区划人口产量 +25%」。",
-      "  历史：旧版三档都是「本区块产量 +10%」的倍率；之后粮食 / 黄金改成**每地块加产量**、",
-      "  人口保留倍率。",
-      "  ★★ 数值再次下调（本次）：0.5 → **0.25**、+25% → **+12.5%**。",
-      "     原因：区划基础产量连降两轮（×0.25 再 ×0.5）之后，特化这个 **固定加法**",
-      "     相对整个经济被放大了 —— 132 格的区块做一次粮食特化 = +66/秒，是当时全阵营",
-      "     基础收入的 3.5 倍，「一次特化定胜负」。现在与基础产量同比例降，",
-      "     特化回到「值得做、但不是一票定胜负」的位置。",
-      "     ⚠️ 它与区划基础产量是**两套独立的数**：以后调基础产量时，记得一起看这里。",
+      "  历史：旧版三档都是「本区块产量 +10%」的倍率；本轮粮食 / 黄金改成**每地块加产量**、",
+      "  人口保留倍率（改成 +25%）。",
       "★ 三个特化只能选一个：选了一个之后另外两个入口就不再显示（界面层），",
       "  逻辑层也会拒（拒因码 `spec_done`）——两处都挡，缺一个就会被绕过。",
       "★ 哪些区划能做哪些特化由 `zone_kind.list[].specs` 决定（拒因码 `kind`），",
@@ -857,23 +847,23 @@
       {
         "id": "food",
         "name": "粮食特化",
-        "line": "本区块粮食 +0.25／地块／秒",
-        "desc": "本区块每地块每秒额外产出 0.25 粮食（一个区划只能选一种特化）",
-        "effect": { "food_per_tile": 0.25 }
+        "line": "本区块粮食 +0.5／地块／秒",
+        "desc": "本区块每地块每秒额外产出 0.5 粮食（一个区划只能选一种特化）",
+        "effect": { "food_per_tile": 0.5 }
       },
       {
         "id": "gold",
         "name": "黄金特化",
-        "line": "本区块黄金 +0.25／地块／秒",
-        "desc": "本区块每地块每秒额外产出 0.25 黄金（一个区划只能选一种特化）",
-        "effect": { "gold_per_tile": 0.25 }
+        "line": "本区块黄金 +0.5／地块／秒",
+        "desc": "本区块每地块每秒额外产出 0.5 黄金（一个区划只能选一种特化）",
+        "effect": { "gold_per_tile": 0.5 }
       },
       {
         "id": "population",
         "name": "人口特化",
-        "line": "本区块人口产量 +12.5%",
-        "desc": "本区划人口产量 +12.5%（一个区划只能选一种特化）",
-        "effect": { "population_mult": 0.125 }
+        "line": "本区块人口产量 +25%",
+        "desc": "本区划人口产量 +25%（一个区划只能选一种特化）",
+        "effect": { "population_mult": 0.25 }
       }
     ]
   },

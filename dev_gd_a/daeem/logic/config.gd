@@ -162,6 +162,10 @@ var leash_factor: float = 1.8
 ##   冷却期内它只待命，抖动的回路就断了。
 ## ⚠️ 只挡**自动索敌**：玩家点名的目标、行军攻击继续走、拆建筑都不受影响。
 var leash_release_cd: float = 0.5
+## ★★ 濒死救援期间的警戒半径倍率（本次修 bug 新增；见 `combat.acquire_target`）。
+## 赶去救倒下的队长时警戒半径缩到 `aggro_range × 这个值`，
+## 免得路过的敌人把援军拽进追击、把救援集结令吃掉。0 = 完全不还手，1 = 与平时一样。
+var rescue_aggro_mult: float = 0.4
 var repath_sec: float = 0.3
 ## 追击时，目标从上一次算路的位置挪出这么多格，才值得重算一次路径。
 ## ★ 见 unit.gd `last_repath_to` 的说明：只按周期无条件重算会让 1000 单位追击
@@ -177,12 +181,12 @@ var flash_sec: float = 0.22
 ##   每次都要算一遍常数。
 var flash_sec_safe: float = 0.22
 var building_damage: float = 40.0
-## 测试敌人的那几个数（单位类型的战斗数值已搬进 unit.types，见 _unit_types）。
-## ★ 保留这几个字段只是「同一份数的另一个名字」：_cache_unit_types() 会把
-##   unit.types.enemy 那一档抄进来，老调用方与测试按它们读仍然对得上。
-var enemy_damage: float = 10.0
-var enemy_range: float = 1.0
-var enemy_cooldown: float = 1.2
+## ★★ 「测试敌人」的那几个数值字段（enemy_damage / enemy_range / enemy_cooldown /
+##    enemy_speed / enemy_hp）**本次随单位类型一起删除**（用户口径：「把所有的『敌』
+##    这个具体单位变成『长枪兵』」）。
+##    它们原本只是 `unit.types.enemy` 那一档的「另一个名字」，现在没有那一档了，
+##    留着只会让人以为「还有一个敌人类型可以调」。调试刷兵现在刷**长枪兵**，
+##    数值一律走 `unit.types.spearman`（读法：`cfg.unit_hp_of(UNIT_TYPE_SPEARMAN)`）。
 
 var zone_cols: int = 6
 var zone_rows: int = 4
@@ -263,9 +267,6 @@ var revive_regen_cap_ratio: float = 0.2
 
 ## 一帧最多按多少秒推进逻辑（防止「帧慢→dt 大→活更多→更慢」的死亡螺旋）
 var sim_max_dt: float = 0.05
-
-var enemy_speed: float = 0.45
-var enemy_hp: float = 60.0
 
 
 ## 载入配置。失败时返回 null，并把原因写进 last_error —— 调用方必须处理
@@ -351,6 +352,7 @@ func _cache_scalars() -> void:
 	aggro_range = num("combat.aggro_range", 4.0)
 	leash_factor = num("combat.leash_factor", 1.8)
 	leash_release_cd = maxf(0.0, num("combat.leash_release_cd", 0.5))
+	rescue_aggro_mult = clampf(num("combat.rescue_aggro_mult", 0.4), 0.0, 1.0)
 	repath_sec = num("combat.repath_sec", 0.3)
 	repath_min_move = num("combat.repath_min_move", 0.5)
 	chase_direct_range = num("combat.chase_direct_range", 8.0)
@@ -397,10 +399,7 @@ func _cache_scalars() -> void:
 	# ★ AI（本轮新增）：阵营 AI 的名单 + 两种 AI 的行为参数（见 _cache_ai）。
 	_cache_ai()
 	# ★★ 单位类型表（unit.types / unit.classes / unit.general）—— 必须在其它
-	#   单位字段之后调：它拿 unit_speed / unit_hp_max / unit_radius_factor 当兜底值，
-	#   并且会顺手把「测试敌人」那几个兼容字段填好。
-	#   于是 enemy_hp / enemy_speed / enemy_damage… 不再是**另一份**配置，
-	#   而是这张表里 enemy 那一档的别名（见 _cache_unit_types）。
+	#   单位字段之后调：它拿 unit_speed / unit_hp_max / unit_radius_factor 当兜底值。
 	_cache_unit_types()
 
 
@@ -514,19 +513,15 @@ func _cache_unit_types() -> void:
 			_general_stats.append(ov)
 			_general_names.append(nm)
 
-	# 4) 兜底值 + 测试敌人的兼容字段（都来自同一张表，不再是第二份配置）
+	# 4) 兜底值（来自同一张表，不再是第二份配置）
+	#
+	# ★★ 本次删除：原来这里还有一段「把 unit.types.enemy 抄进 enemy_hp / enemy_speed /
+	#    enemy_damage 那几个兼容字段」—— 随着「敌」这个单位类型被删除（用户口径：
+	#    「把所有的『敌』这个具体单位变成『长枪兵』」），那几个字段也一起没了。
+	#    调试刷兵现在用长枪兵，读法就是 `cfg.unit_hp_of(UNIT_TYPE_SPEARMAN)`。
 	var fb: Variant = _unit_types.get(String(_general_types[0]), null) if not _general_types.is_empty() else null
 	if typeof(fb) == TYPE_DICTIONARY:
 		_combat_fallback = (fb as Dictionary)["combat"]
-	var e: Variant = _unit_types.get(KIND_ENEMY, null)
-	if typeof(e) == TYPE_DICTIONARY:
-		var ed: Dictionary = e
-		var ec: Dictionary = ed["combat"]
-		enemy_hp = float(ed["hp_max"])
-		enemy_speed = float(ed["speed"])
-		enemy_damage = float(ec["damage"])
-		enemy_range = float(ec["range"])
-		enemy_cooldown = float(ec["cooldown_sec"])
 
 	# 5) ★ 每位将领预拼一份 combat 字典：`unit_combat_of()` 的契约是「返回**共享的只读字典**」
 	#    （每帧每单位都要读，不新建），所以覆盖也要在载入时拼好。
@@ -1138,7 +1133,6 @@ func unit_radius_of(id: String) -> float:
 ##    让它去 import unit.gd 会形成环（unit.gd 已经 preload 了 config.gd）。
 ##    unit.gd 那边用 `const X := ConfigRes.X` 引用这里，保证只有一处字面量。
 const KIND_GENERAL := "general"
-const KIND_ENEMY := "enemy"
 const UNIT_TYPE_SPEARMAN := "spearman"
 const UNIT_TYPE_LONGBOWMAN := "longbowman"
 const UNIT_TYPE_RIDER := "rider"

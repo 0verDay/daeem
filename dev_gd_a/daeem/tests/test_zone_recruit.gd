@@ -51,8 +51,8 @@ func _test_config_table(cfg) -> void:
 	near(w.recruit_train_sec(KIND), 10.0, 1e-6, "★ 每个将领读条 10 秒")
 	near(float(w.recruit_population_cost(KIND)), 1.0, 1e-6, "★ 每个将领吃 1 人口")
 	var cost: Dictionary = w.recruit_cost(KIND)
-	near(float(cost.get("food", 0.0)), 50.0, 1e-6, "★ 每个将领 50 粮食")
-	near(float(cost.get("gold", 0.0)), 50.0, 1e-6, "★ 每个将领 50 黄金")
+	near(float(cost.get("food", 0.0)), 100.0, 1e-6, "★ 每个将领 100 粮食")
+	near(float(cost.get("gold", 0.0)), 100.0, 1e-6, "★ 每个将领 100 黄金")
 	eq(w.recruit_label_of(KIND), "将领 1", "显示名来自 label")
 
 
@@ -109,8 +109,8 @@ func _test_enqueue_pays(cfg) -> void:
 	near(w.zone_train_progress(z), 0.0, 1e-6, "刚入队时进度是 0")
 	for e in (w.tick(DT) as Array):
 		events.append(e)
-	near(float(w.resources["food"]), 150.0, 1e-4, "★ 入队即扣 50 粮食")
-	near(float(w.resources["gold"]), 150.0, 1e-4, "★ 入队即扣 50 黄金")
+	near(float(w.resources["food"]), 100.0, 1e-4, "★ 入队即扣 100 粮食")
+	near(float(w.resources["gold"]), 100.0, 1e-4, "★ 入队即扣 100 黄金")
 	near(float(z["population"]), 4.0, 1e-4, "★ 入队即扣 1 人口（从**这个区划**扣）")
 	eq(_count_events(events, "zone_recruit_queued"), 1, "入队发一条 zone_recruit_queued 事件")
 
@@ -205,7 +205,7 @@ func _test_queue_cap_and_cancel(cfg) -> void:
 	# 取消第 1 个小格子：全额退款 + 后方前移
 	var pop0: float = float(z["population"])
 	ok(w.cancel_zone_recruit(zid, 1, "p1"), "★ 取消第 1 个小格子")
-	near(float(w.resources["food"]), food0 + 50.0, 1e-4, "★ 取消退 50 粮食")
+	near(float(w.resources["food"]), food0 + 100.0, 1e-4, "★ 取消退 100 粮食")
 	near(float(z["population"]), pop0 + 1.0, 1e-4, "★ 人口也退还给**这个区划**")
 	eq(w.zone_recruit_queue_size(z), 4, "队列少了一个（后方的自动前移）")
 

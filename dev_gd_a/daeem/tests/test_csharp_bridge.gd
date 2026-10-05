@@ -94,7 +94,7 @@ func _test_no_friendly_fire(cfg) -> void:
 		u.sync_tile(w.map)
 		batch.append(u)
 	for i in 4:
-		var e = UnitRes.create(cfg, "ff-b-%d" % i, "b", Vector2i(0, 0), "enemy", UnitRes.KIND_ENEMY)
+		var e = UnitRes.create(cfg, "ff-b-%d" % i, "b", Vector2i(0, 0), "enemy", UnitRes.UNIT_TYPE_SPEARMAN)
 		e.pos = Vector2(12.5, 8.5 + float(i) * 0.5)
 		e.sync_tile(w.map)
 		batch.append(e)
@@ -171,13 +171,13 @@ func _test_targeting_with_filtered_units(cfg) -> void:
 	# ⚠️ 把它们标成「移动中」是为了让它们**不进索敌方**（否则双方都在索敌，
 	#    过滤就退化成「全部打包」，这条测试也就验不到下标映射了）。
 	#    路径留空 → 它们这一帧不会真的动。
-	var want = UnitRes.create(cfg, "flt-e0", "e", Vector2i(0, 0), "enemy", UnitRes.KIND_ENEMY)
+	var want = UnitRes.create(cfg, "flt-e0", "e", Vector2i(0, 0), "enemy", UnitRes.UNIT_TYPE_SPEARMAN)
 	want.pos = spot + Vector2(1.5, 0.0)
 	want.sync_tile(w.map)
 	want.moving = true
 	batch.append(want)
 	for i in 2:
-		var far = UnitRes.create(cfg, "flt-e%d" % (i + 1), "e", Vector2i(0, 0), "enemy", UnitRes.KIND_ENEMY)
+		var far = UnitRes.create(cfg, "flt-e%d" % (i + 1), "e", Vector2i(0, 0), "enemy", UnitRes.UNIT_TYPE_SPEARMAN)
 		far.pos = spot + Vector2(0.0, 2.5 + float(i))
 		far.sync_tile(w.map)
 		far.moving = true
@@ -211,7 +211,7 @@ func _test_targeting_matches_gdscript(cfg) -> void:
 		u.sync_tile(w.map)
 		batch.append(u)
 	for i in 12:
-		var e = UnitRes.create(cfg, "tg-b-%d" % i, "b", Vector2i(0, 0), "enemy", UnitRes.KIND_ENEMY)
+		var e = UnitRes.create(cfg, "tg-b-%d" % i, "b", Vector2i(0, 0), "enemy", UnitRes.UNIT_TYPE_SPEARMAN)
 		e.pos = Vector2(5.1 + float(i % 4) * 1.3, 7.2 + float(i / 4) * 1.1)
 		e.sync_tile(w.map)
 		batch.append(e)

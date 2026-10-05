@@ -43,6 +43,7 @@ func _cases() -> void:
 	_test_move_cancels_orders(cfg)
 	_test_players_acquire_buildings(cfg)
 	_test_npc_does_not_acquire_buildings(cfg)
+	_test_ai_acquires_buildings(cfg)
 	_test_command_guards(cfg)
 	_test_chase_needs_no_arrival_slot(cfg)
 	_test_chase_direct_line(cfg)
@@ -446,19 +447,78 @@ func _test_npc_does_not_acquire_buildings(cfg) -> void:
 		w.tick(DT)
 		n += 1
 	ok(e.target_building == null,
-		"★ NPC 敌人**不会**主动索敌建筑（拆建筑由 enemy_ai 指定，否则推进节奏会被完全改掉）")
+		"★ 纯 `enemy_ai` 测试敌人**仍然不会**自动索敌建筑（它要一路推向据点；" +
+		"顺手拆路边建筑会把它钉在半路）")
 	ok(e.target == null, "附近没有玩家单位时它谁也不打")
+
+
+## ★★ 本次新增：AI 阵营对建筑的索敌（用户需求原话：「当我在敌方部队附近建造建筑时，
+##   敌方不会有想打掉这个建筑……需要为敌方 ai 添加检测和攻击周围环境中敌人的逻辑」）。
+##
+## 验的是**放开之后真正生效的那一类单位**：不是 `enemy_ai` 的测试敌人（见上一节，
+## 它被明确排除），而是有驻防归属 / 非 NPC 的 AI 单位 —— 也就是战役里的敌方阵营部队。
+## 判据与上面那条 NPC 用例**成对**：一条钉住「谁不看建筑」，一条钉住「谁看建筑」。
+func _test_ai_acquires_buildings(cfg) -> void:
+	var w = require_world(cfg)
+	var g = w.unit_by_id("general-1")
+	ok(g != null, "（前提）有己方将领")
+	if g == null:
+		return
+	# 把将领的阵营改成**非 NPC 的敌方 AI 阵营**：这正是「敌军 AI」在数据里的样子
+	# （`config.ai.factions[].id` 默认叫 `ai`，与 `enemy_ai` 的测试敌人 `enemy` 不是一族）。
+	var ai_side := "ai"
+	g.faction = ai_side
+	for m in w.retinue_of(String(g.id)):
+		m.faction = ai_side
+	w.units = [g]
+	g.hold_position = true
+
+	# ★ 先把它挪到**远离自家大本营**的空地：大本营本身也是「敌方建筑」，
+	#   站在自家基地旁边的话最近建筑永远是它（实测：第一版就是这么假失败的 ——
+	#   它去锁了 (7,2) 的大本营而不是我放的箭塔）。要验的是「会主动找建筑」，
+	#   所以场景里**只留一栋可打建筑**最干净。
+	var spot := _free_tile(w, 2, w.map.rows - 3)
+	g.stop()
+	g.pos = GridRes.center_of(spot)
+	g.sync_tile(w.map)
+
+	# 在它警戒半径内放一栋**玩家**的箭塔（`my_faction` 是 p1）
+	var t := _free_tile(w, g.tx + 2, g.ty)
+	var tower = w.add_building("tower", t.x, t.y, "p1")
+	ok(tower != null, "在敌方 AI 单位警戒半径内放了一栋玩家箭塔")
+	if tower == null:
+		return
+	# 场景里只留这栋塔与它自己：把世界里的建筑表按「这栋塔 + 大本营」收口太绕，
+	# 所以直接断言「它锁上的是**我放的那栋**」——最近建筑若不是它，这条就会红。
+	var n := 0
+	while n < 120:
+		w.tick(DT)
+		n += 1
+	ok(g.target_building == tower,
+		"★★ 敌方 AI 单位会**主动检测并锁定**附近的敌方建筑（本次按需求新增）")
+	ok(g.target == null, "★ 附近没有敌方单位时，它的目标只有那栋建筑")
 
 
 # ------------------------------------------------------------------
 # 7. 命令校验
 # ------------------------------------------------------------------
 func _test_command_guards(cfg) -> void:
-	var w = require_world(cfg)
+	# ★ 这一节要验「不能把自己人当攻击目标」，所以它必须有**一个自己人**可指 ——
+	#   用带附属兵的世界（`require_world_with_escorts`），别再用光杆将领的
+	#   `require_world()`：那一个 `retinue_of` 恒为空，取 `[0]` 会直接下标越界
+	#   （实测：本次改动之前它一直是**假通过**的 —— 前面某个用例留下的状态让它拿到了兵）。
+	var w = require_world_with_escorts(cfg, 3)
 	var g = w.unit_by_id("general-1")
-	var mate = w.retinue_of(g.id)[0]
+	if g == null:
+		ok(false, "（前提）找得到 general-1")
+		return
+	var mates: Array = w.retinue_of(g.id)
+	if mates.is_empty():
+		ok(false, "（前提）general-1 名下有附属兵")
+		return
+	var mate = mates[0]
 	var e = w.spawn_enemy(g.tx + 4, g.ty)
-	if g == null or e == null:
+	if e == null:
 		return
 	w.units = [g, e]
 

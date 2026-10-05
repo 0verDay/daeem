@@ -210,7 +210,7 @@ func _test_no_friendly_fire(cfg) -> void:
 		FactionRes.clear_allies()
 		return
 	var a = UnitRes.create(cfg, "ally-test-npc", "对家兵",
-		tiles[0], NPC, UnitRes.KIND_ENEMY)
+		tiles[0], NPC, UnitRes.UNIT_TYPE_SPEARMAN)
 	var b = UnitRes.create(cfg, "ally-test-ai", "AI 兵",
 		tiles[1], AI, UnitRes.UNIT_TYPE_SPEARMAN)
 	w.units.append(a)
@@ -325,7 +325,7 @@ func _test_zone_no_contest(cfg) -> void:
 	if not unowned.is_empty():
 		var t2 := _walkable_tile_in_zone(w, int(unowned["id"]))
 		if t2.x >= 0:
-			var u1 = UnitRes.create(cfg, "ally-test-c1", "对家兵", t2, NPC, UnitRes.KIND_ENEMY)
+			var u1 = UnitRes.create(cfg, "ally-test-c1", "对家兵", t2, NPC, UnitRes.UNIT_TYPE_SPEARMAN)
 			var u2 = UnitRes.create(cfg, "ally-test-c2", "AI 兵", t2, AI, UnitRes.UNIT_TYPE_SPEARMAN)
 			w.units.append(u1)
 			w.units.append(u2)

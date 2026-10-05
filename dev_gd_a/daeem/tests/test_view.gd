@@ -234,6 +234,10 @@ func _test_frames_and_input(cfg) -> void:
 			break
 	ok(free.x >= 0, "找得到一格可建造的空地")
 	if free.x >= 0:
+		# ★ 建造现在要花钱（economy.enabled = true，箭塔 50 粮 / 50 金）——
+		#   不给钱的话命令会因 cost 被拒（本次经济调参的连带改动）。
+		world.resources["food"] = 1000.0
+		world.resources["gold"] = 1000.0
 		ok(CommandRes.apply(world, cfg, {"kind": "build", "build_type": "tower", "tx": free.x, "ty": free.y, "faction": "p1"}),
 			"建造命令落成")
 		await process_frame

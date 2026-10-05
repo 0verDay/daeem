@@ -261,8 +261,8 @@ def t_window(app, model) -> None:
     eq(app.tab_buttons["unit"].cget("fg"), app_module.UI["accent"], "当前页签是强调色")
     eq(app.tab_buttons["building"].cget("fg"), app_module.UI["text_dim"], "其它页签是暗色")
 
-    eq(list(app.unit_tree.get_children()), ["u:spearman", "u:longbowman", "u:rider", "u:enemy"],
-       "兵种列表：四个单位类型")
+    eq(list(app.unit_tree.get_children()), ["u:spearman", "u:longbowman", "u:rider"],
+       "兵种列表：三个单位类型（★ 本次：「测试敌人」已从编辑器移除）")
     eq(list(app.general_tree.get_children()), ["g:0", "g:1", "g:2"], "将领列表：三位")
     eq(app.unit_tree.item("u:rider", "values")[1], "骑手", "列表里有名字")
     eq(app.unit_tree.item("u:rider", "values")[2], "骑兵", "列表里有归属")
@@ -270,8 +270,6 @@ def t_window(app, model) -> None:
     #   （战争迷雾），写死列号的断言会去读错的那一格，而且报出来的错是
     #   「造价那一列不对」—— 完全指不到真正的原因。
     unit_cols = {key: i for i, (key, _header, _w) in enumerate(app_module.UNIT_TREE_COLUMNS)}
-    eq(app.unit_tree.item("u:enemy", "values")[unit_cols["cost"]], "—（不在招募表）",
-       "★ 不在招募表里的单位，造价那一列写明")
     eq(app.unit_tree.item("u:rider", "values")[unit_cols["vision"]], "9",
        "★ 列表里有「视野」那一列（骑手 = 9 格，需求：单位要有视野范围这个属性）")
 
@@ -300,7 +298,10 @@ def t_unit_form(app, model) -> None:
     for label in ("名称", "血量", "攻击力", "攻击距离", "攻击速度", "移动速度", "身体半径",
                   "造价 · 粮食", "造价 · 黄金", "造价 · 人口", "招募时间"):
         ok(label in entries, "表单里有「%s」那一行" % label)
-    eq(E(app, "血量").get(), "160", "输入框里显示当前值")
+    eq(E(app, "血量").get(), ("%d" % model.unit("spearman").hp_max
+                              if float(model.unit("spearman").hp_max).is_integer()
+                              else str(model.unit("spearman").hp_max)),
+       "输入框里显示当前值（config 里的 %s）" % model.unit("spearman").hp_max)
 
     type_into(app, E(app, "血量"), "175")
     eq(data(model)["unit"]["types"]["spearman"]["hp_max"], 175, "改血量 → unit.types.spearman.hp_max")
@@ -396,16 +397,27 @@ def t_unit_form(app, model) -> None:
        "★★ 列表里显示的是**生效值**（没写 → config 的 fog.vision_default = 8）")
 
     # 不在招募表里的单位：说清楚 + 一个「加进招募表」按钮
-    pick(app, "u:enemy")
+    # ★ 本次改主角：原来是「测试敌人」（它已经从编辑器与 config 里删除）。
+    #   现在造一个「有类型、没招募条目」的兵种 —— 用的都是公开接口：
+    #   `add_unit` 会照 rider 复制一份（**连带招募条目**），再把它那一条删掉就是目标状态。
+    app_module._ask_new_entry = lambda *a, **k: ("skeleton", "骷髅", "rider")
+    app.do_new_unit()
+    app.root.update()
+    ok(model.unit("skeleton").has_recruit, "（前提）新建兵种默认带一条招募条目")
+    model.doc.remove(["recruit", "list", model.unit("skeleton").recruit_index])
+    ok(not model.unit("skeleton").has_recruit, "（前提）删掉之后它就不在招募表里了")
+    app.refresh_all()
+    app.root.update()
+    pick(app, "u:skeleton")
     ok("招募表" in " ".join(w.cget("text") for w in walk(app.sidebar)
                             if isinstance(w, tk.Label) and w.cget("text")), 
-       "★ 测试敌人那一页说明它不在招募表里")
+       "★ 不在招募表里的单位：那一页说明它不在招募表里")
     btn = buttons(app).get("把它加进招募表（照默认值）")
     ok(btn is not None, "有「加进招募表」按钮")
     btn.invoke()
     app.root.update()
     eq(len(data(model)["recruit"]["list"]), 4, "点一下 → 加进招募表")
-    eq(data(model)["recruit"]["list"][3]["kind"], "enemy", "新那一条的 kind = enemy")
+    eq(data(model)["recruit"]["list"][3]["kind"], "skeleton", "新那一条的 kind = skeleton")
 
 
 # ======================================================================
@@ -507,7 +519,11 @@ def t_general_form(app, model) -> None:
     combo.event_generate("<<ComboboxSelected>>")
     app.root.update()
     eq(data(model)["unit"]["general"]["types"][0], "rider", "★ 改将领类型")
-    eq(E(app, "移动速度").get(), "0.9", "★ 类型一换，跟随的数值跟着变（骑手 0.9）")
+    # ★ 期望值取**配置里的骑手速度**（不写死 0.9）：换类型之后它应当跟着变成那个数。
+    rider_speed = model.unit("rider").speed
+    eq(E(app, "移动速度").get(),
+       ("%d" % rider_speed if float(rider_speed).is_integer() else str(rider_speed)),
+       "★ 类型一换，跟随的数值跟着变（骑手 %s）" % rider_speed)
     eq(data(model)["unit"]["general"]["stats"][0]["damage"], 30,
        "★ 自己填过的项不跟着类型走")
 
@@ -678,6 +694,9 @@ def t_undo_save(app, model, path) -> None:
     app.root.update()
     pick(app, "u:longbowman")
     before = model.text
+    # ★ 记下**磁盘上原本那个血量**：下面「还没保存时磁盘没变」那条要拿它当期望值
+    #   （写死 110 的话，每次调配平都会假失败 —— 这条钉的是「保存」这条链）。
+    lb_hp_before = json.loads(path.read_text(encoding="utf-8"))["unit"]["types"]["longbowman"]["hp_max"]
     type_into(app, sidebar_entries(app)["血量"], "130")
     eq(data(model)["unit"]["types"]["longbowman"]["hp_max"], 130, "先改一笔")
     ok(model.dirty, "★ 改完是「脏」的")
@@ -690,8 +709,9 @@ def t_undo_save(app, model, path) -> None:
     eq(data(model)["unit"]["types"]["longbowman"]["hp_max"], 130, "★ Ctrl+Y 重做回来")
 
     ok(data(model)["unit"]["types"]["longbowman"]["hp_max"] == 130, "（保存前内存里是 130）")
+    # ★ 期望值取**磁盘上原本那个数**（不写死 110）：配平会调，这条钉的是「还没保存」。
     eq(json.loads(path.read_text(encoding="utf-8"))["unit"]["types"]["longbowman"]["hp_max"],
-       110, "★ 还没保存：磁盘上还是 110")
+       lb_hp_before, "★ 还没保存：磁盘上还是改动前那个值（%s）" % lb_hp_before)
     app.do_save()
     app.root.update()
     ok(not model.dirty, "保存之后不脏了")

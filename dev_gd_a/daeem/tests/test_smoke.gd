@@ -96,13 +96,13 @@ func _cases() -> void:
 	# ---- 单位类型表（本轮新增：unit.types / unit.classes / unit.general）----
 	# ★ 这三个兵种 + 测试敌人的数值与「是步兵还是骑兵」都在这里钉住。
 	#   ⚠️ 它们是**占位数值**（需求：「属性由你随便定」），改平衡就同步改这里。
-	near(cfg.unit_hp_of(UnitRes.UNIT_TYPE_SPEARMAN), 160.0, 1e-6, "长枪兵生命 160")
-	near(cfg.unit_hp_of(UnitRes.UNIT_TYPE_LONGBOWMAN), 110.0, 1e-6, "长弓兵生命 110")
-	near(cfg.unit_hp_of(UnitRes.UNIT_TYPE_RIDER), 140.0, 1e-6, "骑手生命 140")
+	near(cfg.unit_hp_of(UnitRes.UNIT_TYPE_SPEARMAN), 140.0, 1e-6, "长枪兵生命 140")
+	near(cfg.unit_hp_of(UnitRes.UNIT_TYPE_LONGBOWMAN), 80.0, 1e-6, "长弓兵生命 80")
+	near(cfg.unit_hp_of(UnitRes.UNIT_TYPE_RIDER), 110.0, 1e-6, "骑手生命 110")
 	near(cfg.unit_speed_of(UnitRes.UNIT_TYPE_SPEARMAN), 0.6, 1e-6, "长枪兵速度 0.6")
-	near(cfg.unit_speed_of(UnitRes.UNIT_TYPE_RIDER), 0.9, 1e-6, "★ 骑手更快（0.9 格/秒）")
-	near(float(cfg.unit_combat_of(UnitRes.UNIT_TYPE_LONGBOWMAN)["range"]), 3.5, 1e-6,
-		"★ 长弓兵是远程（3.5 格）")
+	near(cfg.unit_speed_of(UnitRes.UNIT_TYPE_RIDER), 1.2, 1e-6, "★ 骑手更快（1.2 格/秒）")
+	near(float(cfg.unit_combat_of(UnitRes.UNIT_TYPE_LONGBOWMAN)["range"]), 4.0, 1e-6,
+		"★ 长弓兵是远程（4 格）")
 	near(float(cfg.unit_combat_of(UnitRes.UNIT_TYPE_SPEARMAN)["range"]), 1.0, 1e-6,
 		"长枪兵是近战（1 格）")
 	eq(cfg.unit_class_of(UnitRes.UNIT_TYPE_SPEARMAN), ConfigRes.CLASS_INFANTRY, "长枪兵 = 步兵")
@@ -134,12 +134,14 @@ func _cases() -> void:
 	ok(not cfg.has_method("general_escort_at"), "★★ 全局缺省编制已删除：cfg 没有 general_escort_at()")
 	ok(not cfg.has_method("general_escort_count"), "★★ 也没有 general_escort_count()")
 
-	# 测试敌人的数值也来自同一张表（原来是 debug / combat.enemy 两处）
-	near(cfg.enemy_damage, 10.0, 1e-6, "测试敌人伤害 10")
-	near(cfg.enemy_cooldown, 1.2, 1e-6, "测试敌人攻击间隔 1.2s")
-	near(cfg.enemy_speed, 0.45, 1e-6, "★ 测试敌人速度 0.45 格/秒（降到 1/4）")
-	near(cfg.enemy_hp, 60.0, 1e-6, "测试敌人生命 60")
-	near(cfg.unit_hp_of(UnitRes.KIND_ENEMY), 60.0, 1e-6, "测试敌人的血量走 unit.types.enemy")
+	# ★★ 本次：「测试敌人」这个单位类型已删除（用户口径：「把所有的『敌』这个具体单位
+	#   变成『长枪兵』」），随之删掉的还有 cfg 上的 enemy_damage / enemy_hp / enemy_speed
+	#   那几个兼容字段。调试刷兵现在刷长枪兵，数值就是 unit.types.spearman 那一档。
+	#   这一条**反着钉**：谁把那几个字段加回来，这里立刻变红。
+	ok(not cfg.has_method("enemy_damage_at"), "（形状）cfg 不再有敌人专用数值入口")
+	ok(not cfg.has_unit_type("enemy"), "★★ unit.types 里不再有 enemy 这个类型")
+	ok(cfg.has_unit_type(UnitRes.UNIT_TYPE_SPEARMAN), "★★ 长枪兵仍然是合法类型（调试刷兵用它）")
+	near(cfg.unit_hp_of(UnitRes.UNIT_TYPE_SPEARMAN), 140.0, 1e-6, "长枪兵血量 140")
 	eq(cfg.zone_cols, 6, "区块横向 6 列")
 	eq(cfg.zone_rows, 4, "区块纵向 4 行")
 	# ★ 这两个数是**需求定的**，但断言写成「等于 config 里的值」没意义 ——
@@ -161,8 +163,10 @@ func _cases() -> void:
 	near(cfg.num("building.tower.range", 0.0), 3.0, 1e-6, "箭塔射程 3 格")
 	near(cfg.num("building.tower.cooldown", 0.0), 0.8, 1e-6, "箭塔间隔 0.8s")
 
-	# 单机总开关：建造免费、大本营不可摧毁、不复活（v0.3 行为）
-	eq(cfg.bool_val("economy.enabled", true), false, "单机建造免费（economy.enabled = false）")
+	# 单机总开关：**建造要花钱**（本次经济调参把 economy.enabled 打开，见 logic/economy.gd）、
+	#   大本营不可摧毁、不复活。
+	eq(cfg.bool_val("economy.enabled", false), true,
+		"★ 建造不再免费（economy.enabled = true）—— 城墙 / 箭塔的 cost 不再是空转的")
 	eq(cfg.destructible_base, false, "单机大本营不可摧毁")
 	eq(cfg.respawn_sec, 8.0, "复活的数值留着（第 1 轮用），但由运行时开关控制")
 
@@ -193,7 +197,7 @@ func _cases() -> void:
 	ok(cfg.faction_line_color("p1", 0.4).a > 0.39, "攻击线颜色能按 alpha 现算")
 
 	# 读取任意路径
-	near(cfg.num("unit.types.spearman.damage", 0.0), 20.0, 1e-6, "get_path_value 支持嵌套路径")
+	near(cfg.num("unit.types.spearman.damage", 0.0), 16.0, 1e-6, "get_path_value 支持嵌套路径")
 	ok(cfg.get_path_value("unit.general.types") is Array, "get_path_value 也能取数组（将领类型表）")
 
 	# ---- 4. 地图 ----

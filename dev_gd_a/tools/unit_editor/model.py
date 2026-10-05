@@ -53,7 +53,12 @@ TECH_EFFECTS: Tuple[Tuple[str, str, str], ...] = (
 
 #: 内置单位 / 建筑：**不许删**（代码与测试按 id 引用它们）。删掉它们不会报错，
 #: 而是让游戏在某条路上静默走兜底值 —— 那正是 docs/pitfalls.md 反复说的坑。
-BUILTIN_UNITS: Tuple[str, ...] = ("spearman", "longbowman", "rider", "enemy")
+#: ★★ 本次：「测试敌人」（enemy）从内置名单里**移除**（用户口径：「将『敌』从
+#:    editor 工具中移除」）—— 它已经从 data/config.json 的 unit.types 里删掉了，
+#:    调试刷兵改刷长枪兵，所以编辑器不该再列出这一条。
+#:    ⚠️ 它同时也是一个「可以被删除」的自定义单位 id 了；若某个旧地图/关卡里还写着
+#:       kind = "enemy"，游戏会退到 unit.<default> 的兜底值（不崩）。
+BUILTIN_UNITS: Tuple[str, ...] = ("spearman", "longbowman", "rider")
 BUILTIN_BUILDINGS: Tuple[str, ...] = ("wall", "tower", "base")
 
 #: id 的写法：小写字母开头 + 小写字母/数字/下划线。

@@ -103,7 +103,7 @@ func _run() -> void:
 			var col := i % 20
 			var row := i / 20
 			var e = UnitRes.create(cfg, "fps-foe-%d" % i, "foe %d" % i,
-				Vector2i(0, 0), "enemy", UnitRes.KIND_ENEMY)
+				Vector2i(0, 0), "enemy", UnitRes.UNIT_TYPE_SPEARMAN)
 			e.pos = Vector2(float(w.map.cols) * 0.60 + float(col) * 0.35,
 				float(w.map.rows) * 0.5 - 2.0 + float(row) * 0.35)
 			e.sync_tile(w.map)

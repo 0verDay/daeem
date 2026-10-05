@@ -102,7 +102,7 @@ func _test_config_contract() -> void:
 	# ---- 造价 / 血量 / 建造读条 / 能不能攻击 ----
 	eq(cfg.building_max_hp("wall"), 300.0, "城墙血量 300（从这里读）")
 	eq(cfg.building_max_hp("base"), 1000.0, "大本营血量 1000")
-	eq(cfg.building_build_sec("wall"), 0.0, "★ 城墙建造时间默认 0（瞬发，与从前一致）")
+	eq(cfg.building_build_sec("wall"), 4.0, "★ 城墙建造时间 4 秒（本次经济调参：不再瞬发）")
 	eq(cfg.building_attackable("tower"), true, "箭塔可攻击")
 	eq(cfg.building_attackable("wall"), false, "★ 城墙不可攻击（编辑器里那个勾没打）")
 
@@ -131,7 +131,11 @@ func _test_config_contract() -> void:
 
 	# ---- 地图上的那个字（unit.types.<id>.icon；编辑器里「地图上的字」那一栏）----
 	eq(cfg.unit_icon_of("spearman"), "枪", "★ 地图上的字来自 config（枪）")
-	eq(cfg.unit_icon_of("enemy"), "敌", "测试敌人也有自己的字")
+	eq(cfg.unit_icon_of("longbowman"), "弓", "长弓兵的字（弓）")
+	# ★★ 本次：`unit.types.enemy` 已删除，所以这里反着钉一条 —— 认不出来的类型
+	#   （包括删掉的那个 "enemy"）一律退成兜底名「单位」的第一个字「单」。
+	eq(cfg.unit_icon_of("enemy"), "单",
+		"★★ 删掉的「测试敌人」现在走兜底路径（不再有「敌」这个字）")
 	eq(cfg.unit_icon_of("no_such_type"), "单",
 		"★ 认不出来的类型退成兜底名「单位」的第一个字（总有字可画）")
 	eq(cfg.unit_icon_of("general"), "枪", "★ 将领（kind = general）用所属兵种那个字")
@@ -175,13 +179,15 @@ func _with_general_stats(stats: Array) -> RefCounted:
 	return _reload(cfg)
 
 
-## 直接在某个格子上摆一个测试敌人（**不走 spawn_enemy**）。
+## 直接在某个格子上摆一个**敌方阵营的单位**（**不走 spawn_enemy**）。
 ## ★ 为什么不用 spawn_enemy：它会做可达性检查、找不到就把人放到别处
 ##   （那时「敌人不在射程里」会让箭塔断言假失败）。这里要的是**确定性**：
 ##   我说它在 (x, y)，它就必须在 (x, y)。
+## ★ 本次：兵种从「测试敌人」改成**长枪兵**（用户口径：「把所有的『敌』这个具体单位
+##   变成『长枪兵』」）。阵营仍是 NPC_FACTION —— 被测的是箭塔打**敌方单位**，与兵种无关。
 func _place_enemy(w, cfg, tile: Vector2i):
-	var e = UnitRes.create(cfg, "tester-%d-%d" % [tile.x, tile.y], "测试敌人", tile,
-		FactionRes.NPC_FACTION, UnitRes.KIND_ENEMY)
+	var e = UnitRes.create(cfg, "tester-%d-%d" % [tile.x, tile.y], "长枪兵", tile,
+		FactionRes.NPC_FACTION, UnitRes.UNIT_TYPE_SPEARMAN)
 	w.units.append(e)
 	return e
 

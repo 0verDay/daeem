@@ -196,18 +196,26 @@ def t_unit_fields() -> None:
     eq(u.unit_class, "infantry", "归属 = infantry（步兵）")
     eq(u.class_label, "步兵", "归属的中文说法读 config 的 unit.classes")
     eq(u.ranged, False, "长枪兵不是远程")
-    near(u.hp_max, 160, "血量")
-    near(u.damage, 20, "攻击力")
+    near(u.hp_max, 140, "血量")
+    near(u.damage, 16, "攻击力")
     near(u.range, 1, "攻击距离")
     near(u.cooldown_sec, 1.0, "攻击速度（间隔秒）")
     near(u.speed, 0.6, "移动速度")
-    near(u.cost_food, 50, "造价 · 粮食（来自 recruit.list）")
-    near(u.cost_gold, 50, "造价 · 黄金")
+    # ★★ 本次：长枪兵是**低级单位，只吃粮食**（用户口径：「低级单位只需要粮食就可以招募」）
+    near(u.cost_food, 60, "造价 · 粮食（来自 recruit.list）")
+    near(u.cost_gold, 0, "造价 · 黄金（低级单位不要黄金）")
     near(u.population_cost, 1, "造价 · 人口")
     near(u.train_sec, 10, "招募时间")
     ok(u.has_recruit, "它在招募表里")
     ok(model.unit("longbowman").ranged, "★ 长弓兵是远程的（远程 + 步兵 = 两个维度）")
-    ok(not model.unit("enemy").has_recruit, "★ 测试敌人不在招募表里")
+    # ★ 一个**不在招募表里**的单位：has_recruit 为假。
+    #   （原来这里用「测试敌人」当例子，它已被删除；而 `add_unit` 造出来的新兵种
+    #    一定会带上招募条目，所以直接往文档里插一条没有招募项的类型。）
+    model.doc.set(["unit", "types", "no_recruit_probe"], {"name": "无招募",
+                                                          "class": "infantry",
+                                                          "ranged": False})
+    ok(not model.unit("no_recruit_probe").has_recruit,
+       "★ 不在招募表里的单位，has_recruit 为假")
 
     # 每一项都写到正确的键上
     for field, value, path in (
@@ -241,7 +249,7 @@ def t_unit_fields() -> None:
     m3 = fresh_model()
     eq(m3.unit("spearman").icon, "枪", "配置里写着地图上那个字（枪）")
     eq(m3.unit("spearman").icon_char, "枪", "生效的字 = 配置里那个字")
-    eq(m3.unit("enemy").icon_char, "敌", "测试敌人也有自己的字（敌）")
+    eq(m3.unit("longbowman").icon_char, "弓", "长弓兵也有自己的字（弓）")
     m3.set_unit("spearman", "icon", "矛")
     eq(m3.doc.value(["unit", "types", "spearman", "icon"]), "矛", "改成一个别的字")
     m3.set_unit("spearman", "icon", "")
@@ -263,16 +271,24 @@ def t_unit_fields() -> None:
            "归属只认 unit.classes 里那几种")
     raises(lambda: model.set_unit("spearman", "hp_maxx", 1), "不认识的字段被拒")
     raises(lambda: model.set_unit("nope", "hp_max", 1), "不存在的单位被拒")
-    raises(lambda: model.set_unit("enemy", "train_sec", 5),
+    # ---- 「不在招募表里的单位」那一整条路（★ 本次换主角：原来是「测试敌人」，
+    #      它已从编辑器与 config 里删除；现在用**自定义兵种**来验，语义完全一样）----
+    m4 = fresh_model()
+    m4.add_unit("zombie", "僵尸", "spearman")
+    # 造一个「不在招募表里」的状态：把它的招募条目删掉
+    idx_z = m4.unit("zombie").recruit_index
+    ok(idx_z >= 0, "（前提）新兵种默认是有招募条目的")
+    m4.doc.remove(["recruit", "list", idx_z])
+    ok(not m4.unit("zombie").has_recruit, "★ 删掉招募条目之后它就不在招募表里了")
+    raises(lambda: m4.set_unit("zombie", "train_sec", 5),
            "★ 不在招募表里的单位：改造价 / 招募时间会被拒（并提示先加进招募表）")
 
-    # 把测试敌人加进招募表
-    m4 = fresh_model()
+    # 再把它加回招募表
     before = m4.text
-    m4.add_recruit_entry("enemy")
+    m4.add_recruit_entry("zombie")
     eq(m4.doc.size(["recruit", "list"]), 4, "加进招募表：多了一条")
-    eq(m4.unit("enemy").has_recruit, True, "加完之后它有招募数值了")
-    m4.set_unit("enemy", "train_sec", 6)
+    eq(m4.unit("zombie").has_recruit, True, "加完之后它有招募数值了")
+    m4.set_unit("zombie", "train_sec", 6)
     eq(m4.doc.value(["recruit", "list", 3, "train_sec"]), 6, "加进去之后就能改招募时间")
     ok(changed_lines(before, m4.text) > 0, "确实动了文件")
 
@@ -290,10 +306,14 @@ def t_add_remove_unit() -> None:
     eq(u.name, "马弓手", "名字")
     eq(u.unit_class, "cavalry", "★ 照模板复制：归属跟着 rider（骑兵）")
     eq(u.ranged, False, "★ 远程标记也照抄（之后设计师自己改）")
-    near(u.hp_max, 140, "血量照抄模板")
+    # ★★ 照模板复制：拿**模板自己**当期望值（模型读的是同一份文档）。
+    #    不写死数字：配平会随玩法调，而这里要钉的是「复制」这条行为。
+    rider = model.unit("rider")
+    near(u.hp_max, rider.hp_max, "血量照抄模板（骑手的 %s）" % rider.hp_max)
     eq(u.has_recruit, True, "同时建了招募表那一项")
-    near(u.train_sec, 10, "招募时间照抄模板")
-    near(u.cost_food, 50, "造价照抄模板")
+    near(u.train_sec, rider.train_sec, "招募时间照抄模板")
+    near(u.cost_food, rider.cost_food, "造价照抄模板（骑手的 %s）" % rider.cost_food)
+    near(u.cost_gold, rider.cost_gold, "黄金造价照抄模板（骑手的 %s）" % rider.cost_gold)
     eq(u.label, "马弓手", "★ 命令卡标题 = 新名字")
     eq(u.icon, "", "★ 模板抄过来的那个字被删掉了（不留着模板的 icon）")
     eq(u.icon_char, "马", "★★ 新兵种地图上显示「马」（跟着名字的第一个字）")
@@ -311,9 +331,16 @@ def t_add_remove_unit() -> None:
     near(model.unit("horse_archer").range, 3.0, "改成 3 格射程")
 
     # 照一个**不在招募表**的模板加：招募条目按默认值新建
+    # ★ 本次改法：原来这里用「测试敌人」当那个模板（它不在招募表里），但那个单位
+    #   已经被删掉了。现在自己造一个「有类型、没招募条目」的模板 ——
+    #   先加一个兵种，再把它的招募条目删掉，它就正好是那个形状。
     m2 = fresh_model()
-    m2.add_unit("zombie", "僵尸", "enemy")
-    ok(m2.unit("zombie").has_recruit, "★ 模板不在招募表 → 新兵种仍然进招募表（照默认值）")
+    m2.add_unit("skeleton", "骷髅", "rider")
+    m2.doc.remove(["recruit", "list", m2.unit("skeleton").recruit_index])
+    ok(not m2.unit("skeleton").has_recruit, "（前提）skeleton 已不在招募表里")
+    m2.add_unit("zombie", "僵尸", "skeleton")
+    ok(m2.unit("zombie").has_recruit,
+       "★ 模板不在招募表 → 新兵种仍然进招募表（照默认值）")
     near(m2.unit("zombie").cost_food, 50, "默认造价 50 粮")
     near(m2.unit("zombie").train_sec, 10, "默认招募 10 秒")
 
@@ -374,11 +401,18 @@ def t_generals() -> None:
     eq(g2.type_id, "rider", "将领 3 = 骑手")
     eq(g0.kind, "general_1", "招募卡里的 kind")
     ok(g0.inherits("hp_max"), "★ 默认：数值跟随所属兵种（stats 里是空的）")
-    near(g0.effective_of("hp_max"), 160, "生效血量 = 长枪兵的 160")
-    near(g2.effective_of("speed"), 0.9, "将领 3 的移速 = 骑手的 0.9")
+    # ★★ 期望值取**兵种自己的数**（同一份文档）：不写死，配平改了这条也不会假失败。
+    near(g0.effective_of("hp_max"), model.unit("spearman").hp_max,
+         "生效血量 = 长枪兵的血量（%s）" % model.unit("spearman").hp_max)
+    near(g2.effective_of("speed"), model.unit("rider").speed,
+         "将领 3 的移速 = 骑手的移速（%s）" % model.unit("rider").speed)
     eq(g0.name, "将领 1", "名字默认取招募卡 label")
-    near(g1.train_sec, 10, "招募时间")
-    near(g1.cost_food, 50, "造价 · 粮食")
+    # ★★ 将领的造价来自**另一张表**（`recruit.zone.list`，区划招将领那一张），
+    #    不是 unit.types / recruit.list 里那个兵种造价 —— 所以这里读那一份。
+    zone_row = next(r for r in model.doc.value(["recruit", "zone", "list"])
+                    if r["kind"] == "general_1")
+    near(g1.train_sec, zone_row["train_sec"], "招募时间（来自 recruit.zone.list）")
+    near(g1.cost_food, zone_row["cost"]["food"], "造价 · 粮食（来自 recruit.zone.list）")
     near(g1.population_cost, 1, "造价 · 人口")
 
     # 类型 / 名称 / 造价 / 招募时间
@@ -407,8 +441,10 @@ def t_generals() -> None:
     g = m2.general(0)
     ok(not g.inherits("hp_max"), "写过之后 = 自己填")
     near(g.effective_of("hp_max"), 260, "生效血量 = 260")
-    near(g.inherited["hp_max"], 160, "★ 仍然记着「跟随类型时是多少」（界面要显示它）")
-    near(g.effective_of("damage"), 20, "★ 没覆盖的项还是跟随兵种")
+    near(g.inherited["hp_max"], m2.unit("spearman").hp_max,
+         "★ 仍然记着「跟随类型时是多少」（界面要显示它）")
+    near(g.effective_of("damage"), m2.unit("spearman").damage,
+         "★ 没覆盖的项还是跟随兵种")
     eq(m2.doc.value(["unit", "general", "stats", 0, "hp_max"]), 260, "写在 stats[0].hp_max")
     m2.set_general_stat(0, "damage", 33)
     m2.set_general_stat(0, "range", 1.5)
@@ -422,7 +458,8 @@ def t_generals() -> None:
     m2.set_general_stat(0, "hp_max", None)
     ok(m2.general(0).inherits("hp_max"), "★ 传 None = 删掉覆盖，回到「跟随兵种」")
     ok(not m2.doc.has(["unit", "general", "stats", 0, "hp_max"]), "键真的被删了")
-    near(m2.general(0).effective_of("hp_max"), 160, "生效值回到 160")
+    near(m2.general(0).effective_of("hp_max"), m2.unit("spearman").hp_max,
+         "生效值回到「跟随兵种」那一档")
     raises(lambda: m2.set_general_stat(0, "banana", 1), "不认识的将领数值被拒")
 
     # 老配置里没有 stats 整段时，也要能写进去
@@ -447,8 +484,12 @@ def t_buildings() -> None:
     wall = model.building("wall")
     eq(wall.name, "城墙", "名称")
     near(wall.hp_max, 300, "血量")
-    near(wall.build_sec, 0, "建造时间（默认 0 = 瞬发）")
-    near(wall.cost_food, 0, "造价 · 粮食")
+    # ★★ 城墙现在**要钱、要时间**（本次经济调参：堵掉「0 成本造墙占地」那条路）。
+    #    数值不写死 —— 读出来只钉「编辑器能正确读到 config 里的数」。
+    near(wall.build_sec, model.doc.value(["building", "wall", "build_sec"]),
+         "建造时间来自 config（%s 秒）" % model.doc.value(["building", "wall", "build_sec"]))
+    near(wall.cost_food, model.doc.value(["building", "wall", "cost", "food"]),
+         "造价 · 粮食来自 config（%s）" % model.doc.value(["building", "wall", "cost", "food"]))
     near(wall.body_scale, 1.0, "本体大小")
     ok(not wall.attackable, "城墙不能攻击")
     ok(wall.buildable, "城墙在建造页里")
@@ -651,8 +692,6 @@ def t_game_contract() -> None:
        "★★ unit.general.escort 不存在（开局编制已改由战役编辑器摆放页决定）")
     ok(model.doc.has(["unit", "general", "stats"]), "unit.general.stats 存在（本轮新增）")
     for uid in model.unit_ids():
-        if uid == "enemy":
-            continue
         idx = model.unit(uid).recruit_index
         ok(idx >= 0, "recruit.list 里有 %s 那一项" % uid)
         for key in ("kind", "label", "short", "desc", "train_sec", "population_cost", "cost"):
@@ -702,17 +741,22 @@ def t_save_and_reload() -> None:
     path = tmp_copy()
     model = ConfigModel.load(path)
     ok(not model.dirty, "刚载入：不脏")
+    # ★ 期望值**先读出来**：配平会调，而这些断言要钉的是「保存 / 重载这条链」，
+    #   不是某个具体的血量数字。
+    hp_before = model.unit("spearman").hp_max
+    dmg_before = model.unit("spearman").damage
     model.set_unit("spearman", "hp_max", 175)
     ok(model.dirty, "改一笔之后：脏")
     saved = parse(path.read_text(encoding="utf-8"))
-    eq(saved["unit"]["types"]["spearman"]["hp_max"], 160, "还没保存：磁盘上还是 160")
+    eq(saved["unit"]["types"]["spearman"]["hp_max"], hp_before,
+       "还没保存：磁盘上还是改动前那个值（%s）" % hp_before)
     model.save()
     ok(not model.dirty, "保存之后：不脏了")
     eq(parse(path.read_text(encoding="utf-8"))["unit"]["types"]["spearman"]["hp_max"], 175,
        "磁盘上确实写了 175")
     model.set_unit("spearman", "damage", 99)
     model.reload()
-    eq(model.unit("spearman").damage, 20, "★ 重载丢掉未保存的改动")
+    eq(model.unit("spearman").damage, dmg_before, "★ 重载丢掉未保存的改动")
     eq(model.unit("spearman").hp_max, 175, "重载保留已保存的改动")
     other = path.parent / "copy.json"
     model.save(other)

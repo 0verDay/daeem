@@ -520,8 +520,9 @@ func _test_combat(world, cfg) -> void:
 	ok(e != null, "能刷出测试敌人")
 	if e == null:
 		return
-	eq(e.faction, "enemy", "测试敌人阵营")
-	eq(e.hp, cfg.enemy_hp, "测试敌人血量来自 config.debug.enemy_hp")
+	eq(e.faction, "enemy", "刷出来的单位属于 enemy 阵营")
+	# ★★ 本次：刷出来的兵种是**长枪兵**（原来那个「测试敌人」类型已删除）
+	eq(e.hp, cfg.unit_hp_of(UnitRes.UNIT_TYPE_SPEARMAN), "刷出来的是长枪兵，血量按它的表值")
 
 	# ★ 把附属兵和其他将领挪走：否则「谁掉了多少血」「打了几下」全都会被打乱
 	#   （附属兵也会一起开火，敌人几帧就被打死，冷却断言反而永远不成立）
@@ -629,7 +630,7 @@ func _test_wall_and_enemy_ai(world, cfg) -> void:
 		return
 	ok(maxi(absi(e.tx - bx), absi(e.ty - by)) >= 4,
 		"拆墙用例：敌人确实在围墙外面（%d,%d）" % [e.tx, e.ty])
-	eq(e.hp, cfg.enemy_hp, "敌人血量 60")
+	eq(e.hp, cfg.unit_hp_of(UnitRes.UNIT_TYPE_SPEARMAN), "刷出来的是长枪兵，血量按它的表值")
 
 	# ★ 把将领与附属兵全部撤走：这里只验「拆墙」这一条链路本身。
 	#   留着防守单位的话敌人会先跟它们打起来 —— 那是**正确**的防守行为，
@@ -705,7 +706,10 @@ func _test_tower(world, cfg) -> void:
 		return
 	var free: Vector2i = spot["tower"]
 	var free_e: Vector2i = spot["enemy"]
-	var tower = w.add_building("tower", free.x, free.y, "p1")
+	# ★ 末尾那个 true = instant（跳过建造读条）：本节验的是箭塔的**开火**，
+	#   而 config 里箭塔现在有 6 秒读条（build_sec = 6，本次经济调参加的），
+	#   不跳过的话第一帧它还在建造中、根本不开火（实测：断言会假失败）。
+	var tower = w.add_building("tower", free.x, free.y, "p1", false, true)
 	ok(tower != null, "箭塔建造成功")
 	if tower == null:
 		return
@@ -745,7 +749,7 @@ func _test_tower(world, cfg) -> void:
 	#    断言就会误报成「箭塔打自己人」（第一版就是这么被骗的）。
 	var wt = require_world(cfg)
 	_remove_buildings_of_type(wt, "tower")     # 同上：只留下面这一座，别让别的塔插进来
-	var tower2 = wt.add_building("tower", wt.units[0].tx + 3, wt.units[0].ty, "p1")
+	var tower2 = wt.add_building("tower", wt.units[0].tx + 3, wt.units[0].ty, "p1", false, true)
 	ok(tower2 != null, "不误伤用例：箭塔建好了")
 	if tower2 != null:
 		var gu2 = wt.units[0]
@@ -1081,6 +1085,10 @@ func _test_zone_population_cap(world, cfg) -> void:
 # ------------------------------------------------------------------
 func _test_build_commands(world, cfg) -> void:
 	var w = require_world(cfg)
+	# ★ 建造现在要花钱（economy.enabled = true，城墙 25 粮 / 25 金）——
+	#   新世界的资源是 0，不给钱的话命令会因 cost 被拒（本次经济调参的连带改动）。
+	w.resources["food"] = 1000.0
+	w.resources["gold"] = 1000.0
 	var free = _find_free_tile(w, cfg, Vector2i(3, 3))
 	ok(free != null, "建造用例：找得到空地")
 	if free == null:

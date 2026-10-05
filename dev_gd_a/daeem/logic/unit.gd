@@ -23,8 +23,7 @@ const CollisionRes = preload("res://logic/collision.gd")
 const FactionRes = preload("res://logic/faction.gd")
 
 const KIND_GENERAL := "general"
-const KIND_ENEMY := "enemy"
-## ★★ 单位类型 id（兵种）：长枪兵 / 长弓兵 / 骑手 / 测试敌人。
+## ★★ 单位类型 id（兵种）：**长枪兵 / 长弓兵 / 骑手**（测试敌人「敌」已删除）。
 ## 权威定义在 data/config.json 的 `unit.types`（数值、步兵还是骑兵、远不远都在那里），
 ## 这里只是**同一批字符串的常量别名** —— 字面量只写一处（config.gd），
 ## 免得「改了 JSON 里的 id、代码里还留着一个旧字面量」这种查不出来的错。
@@ -59,12 +58,12 @@ const ARRIVE_EPS := 1e-4
 var id: String = ""
 var name: String = ""
 var kind: String = KIND_GENERAL
-## ★★ 单位类型（兵种）：长枪兵 / 长弓兵 / 骑手 / 测试敌人。
+## ★★ 单位类型（兵种）：长枪兵 / 长弓兵 / 骑手。
 ##
 ## 与 `kind` 的分工（这是本轮引入的两个字段，别混起来）：
 ##   · `kind`     —— 单位**类别**：general（将领）/ general_N（区划招募的将领）/
-##                   兵种 id（普通单位）/ enemy（测试敌人）。招募表、快照、
-##                   「谁能当队长」都按它判。
+##                   兵种 id（普通单位）。招募表、快照、「谁能当队长」都按它判。
+##                   ★ 调试刷出来的敌方单位 kind 就是它的兵种 id（长枪兵）。
 ##   · `unit_type`—— 这个单位**是什么兵**。普通单位 = 自己的 kind；
 ##                   将领 = unit.general.types 里被赋予的那一个（将领 1 长枪兵、
 ##                   将领 2 长弓兵、将领 3 骑手）—— 所以将领的 kind 分不出兵种，
@@ -234,6 +233,21 @@ var ordered_building = null
 ## 打完了**继续走**（见 combat.gd 的 update_unit 末尾）。
 var has_attack_move: bool = false
 var attack_move_goal: Vector2 = Vector2.ZERO
+
+## ---- ★★ 濒死救援（本次修 bug）：队长倒下 ⇒ 附属兵持续集结到倒下点 ----
+##
+## 为什么需要一个**独立标志**、而不是复用 `has_attack_move`（实测报回来的 bug）：
+##   行军攻击那套只有一个布尔量，而 `combat.gd` 的自动索敌在赶路途中会把附属兵
+##   锁到路过的敌人身上；一旦进入 `update_combat` 的追击状态，追击上限触发就会
+##   `drop_engagement()` + 回家 —— 那条救援命令**被静默清掉**，
+##   而且没有任何机制会重新下发它 ⇒ 表现就是「将领倒了，部队不去保护」。
+## ⇒ 所以救援是**意图**（`rescue_leader_id` 非空），不是一次性命令：
+##     · 它在「队长还活着且濒死」期间**一直有效**，不会被战斗清掉；
+##     · 脱战 / 掉队 / 命令丢失时由 `world.update_rescue_orders()` 自动重新下发；
+##     · 队长再起或真死时**自动失效**（不需要谁去清）。
+## ⚠️ 它不进快照：客机侧由「队长是否濒死 + 倒下点」推得出来，与 `leader_id` 同理。
+var rescue_leader_id: String = ""        ## 正在救援哪个队长（"" = 没在救援）
+var rescue_anchor: Vector2 = Vector2.ZERO ## 倒下点（下发那一刻的快照，兜底用）
 
 ## ---- 招募队列：**将领自己就是兵营**（星际争霸那套「一个在读条 + 最多四个排队」）----
 ##
@@ -483,6 +497,25 @@ func revive_ready(cfg: ConfigRes) -> bool:
 	if not downed or hp_max <= 0.0:
 		return false
 	return hp / hp_max >= cfg.revive_ready_ratio - 1e-9
+
+
+## ---- ★★ 濒死救援（本次修 bug，字段说明见文件上方 rescue_leader_id 那一段）----
+
+## 这个单位现在**是不是在执行救援集结**（队长倒下 ⇒ 往倒下点走）。
+func is_rescuing() -> bool:
+	return alive and rescue_leader_id != ""
+
+
+## 开始救援：记下队长 id（`anchor` 只是快照，掉队重发时用）。
+func begin_rescue(leader_id: String, anchor_pt: Vector2) -> void:
+	rescue_leader_id = leader_id
+	rescue_anchor = anchor_pt
+
+
+## 结束救援（队长再起 / 真死 / 自己已经到位）。
+func end_rescue() -> void:
+	rescue_leader_id = ""
+	rescue_anchor = Vector2.ZERO
 
 
 ## 濒死回复的进度（0~1；渲染 / 信息栏画那条小进度条用）。

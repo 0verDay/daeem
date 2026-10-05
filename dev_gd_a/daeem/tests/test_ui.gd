@@ -1244,6 +1244,11 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 		var z_other = _zone_with_center_of_other_kind(world, zone)
 		ok(z_other != null, "（前提）地图上还有一个**种类不同**、且没特化过的区划中心")
 		if z_other != null:
+			# ★★ 本次：页签的给不给**按归属**判（不是自己 / 友军的区划只给空格子，
+			#   用户需求：「选中区划中心时（不论是敌是友是中立）……显示其区划的产能」，
+			#   但命令入口仍然只能给自己人）。这一节验的是「不同种类 ⇒ 特化档位跟着换」，
+			#   所以先把这块地划给自己，别让归属把页签挡掉（那是另一条用例的事）。
+			z_other["owner"] = String(world.my_faction)
 			main.input_ctrl.select_zone(z_other)
 			main.hud.refresh()
 			tabs.select_page(PageTabsRes.PAGE_ORDER)
@@ -1735,7 +1740,7 @@ func _test_recruit_via_card(main) -> void:
 	card.activate_index(0)
 	ok(g1.is_training(), "★ 点单位页的 Q 格 → 排进招募队列")
 	eq(g1.train_kind, UnitRes.UNIT_TYPE_SPEARMAN, "大格子里是刚排进去的那个")
-	near(float(world.resources["food"]), 150.0, 1e-4, "★ 入队即扣 50 粮食")
+	near(float(world.resources["food"]), 140.0, 1e-4, "★ 入队即扣 60 粮食")
 	eq(world.retinue_of(g1.id).size(), before, "★ 入队不会立刻生成单位（要读条 10 秒）")
 	eq(g1.leader_id, "", "将领自己还是队长")
 
@@ -1813,7 +1818,7 @@ func _test_zone_recruit_via_card(main) -> void:
 	card.activate_index(0)
 	ok(world.zone_is_training(zone), "★ 点招募页的 Q 格 → 排进了**这个区划**的队列")
 	eq(world.zone_recruit_kind_at(zone, 0), "general_1", "大格子里是刚排进去的那个将领")
-	near(float(world.resources["food"]), food_before - 50.0, 1e-4, "★ 入队即扣 50 粮食")
+	near(float(world.resources["food"]), food_before - 100.0, 1e-4, "★ 入队即扣 100 粮食")
 	near(float(zone["population"]), pop_before - 1.0, 1e-4, "★ 入队即扣这个区划 1 人口")
 
 	main.hud.refresh()
@@ -1832,7 +1837,7 @@ func _test_zone_recruit_via_card(main) -> void:
 	food_before = float(world.resources["food"])
 	_click_control(q, UiLayoutRes.queue_cell_rect(1).get_center())
 	eq(world.zone_recruit_queue_size(zone), 1, "★ 点小格子 = 取消那一格")
-	near(float(world.resources["food"]), food_before + 50.0, 1e-4, "★ 取消会退款")
+	near(float(world.resources["food"]), food_before + 100.0, 1e-4, "★ 取消会退款（区划招募退 100，回到 1000）")
 	main.hud.refresh()
 	ok(not q.cell_filled(1), "那一格空了")
 
@@ -1953,8 +1958,8 @@ func _test_upgrade_via_card(main) -> void:
 	main.hud.refresh()
 	main.hud.rebuild_card()      # 真实游戏里由每帧 refresh 的页签比较兜底；测试里显式刷一次
 	eq(String(zone.get("spec_done", "")), "food", "★ 读完特化生效")
-	near(UpgradeRes.zone_spec_effect(zone, world.cfg)["food_per_tile"], 0.5, 1e-6,
-		"★ 粮食特化 = 每地块每秒 +0.5 粮食")
+	near(UpgradeRes.zone_spec_effect(zone, world.cfg)["food_per_tile"], 0.25, 1e-6,
+		"★ 粮食特化 = 每地块每秒 +0.25 粮食")
 	eq(card.entries().size(), 1, "★ 特化后操作页只剩一格（不能再特化）")
 	eq(String(card.entry_at(0).get("type", "")), "zone_spec_cancel",
 		"★ 那一格是「取消特化」")
@@ -2016,7 +2021,7 @@ func _test_queue_cancel_via_click(main) -> void:
 	var food_before: float = float(world.resources["food"])
 	_click_control(q, UiLayoutRes.queue_cell_rect(1).get_center())
 	eq(g1.train_queue_size(), 1, "★ 点小格子 = 取消那一格")
-	near(float(world.resources["food"]), food_before + 50.0, 1e-4, "★ 取消会退款")
+	near(float(world.resources["food"]), food_before + 60.0, 1e-4, "★ 取消会退款（退 60，回到 1000）")
 	main.hud.refresh()
 	ok(not q.cell_filled(1), "★ 那一格空了（界面下一帧按权威状态重画）")
 
@@ -3684,13 +3689,14 @@ func _test_enemy_selection(main) -> void:
 		for bad2 in ["等级", "升级", "特化", "建造中"]:
 			ok(not btxt.contains(bad2), "★ 敌对建筑详情里不出现「%s」" % bad2)
 
-	# ---- ⑥ 敌方的**区划中心**：走「敌对建筑」那条路，不是「区划详情」----
-	#     ⚠️ 这一条是这轮最容易漏的：区划中心在自己和敌方那边长得一模一样，
-	#        不判归属的话点它会落到 `select_zone`，右下角照样弹出
-	#        「操作（三个特化）+ 招募」—— 等于给敌人的区划做特化。
-	# 找一个**不属于自己**的区划的中心格：区划中心那栋建筑本身是**中立障碍**
-	# （owner 恒为空），所以「是不是敌人的」要看**它所在那个区划**归谁 ——
-	# 这正是被测代码的判据（input_controller 用的是 zone_center_zone_at + zone.owner）。
+	# ---- ⑥ 敌方的**区划中心**：★★ 本次改口径 ----
+	#   用户原话：「当玩家选中区划中心时（不论是敌是友是中立），**不用显示区划中心的
+	#   血量**（区划中心没有血量），可以显示其区划的产能（粮食 / 黄金 / 人口产能 /
+	#   人口上限），如果是友军 / 己方区划，额外显示其当前人口数量」。
+	#
+	#   旧口径是「敌方的中心当作一栋普通敌对建筑」—— 那条路会给一个**没有血量**的
+	#   中立障碍画出「生命 0 / 0」（就是用户报的那个 UI 错误）。
+	#   现在：不管归属都走「区划详情」，**但只有自己 / 友军才给页签**（不给命令入口）。
 	var foe_center_tile := Vector2i(-1, -1)
 	for z in world.zones.zones:
 		if FactionRes.same_side(String((z as Dictionary).get("owner", "")), world.my_faction):
@@ -3705,14 +3711,29 @@ func _test_enemy_selection(main) -> void:
 		ic.mouse_world = Vector2(float(foe_center_tile.x) + 0.5, float(foe_center_tile.y) + 0.5)
 		ic.hover_tile = foe_center_tile
 		ic._on_left_click(false)
-		eq(ic.selected_zone, null, "★★ 点**别人区划**的中心不会打开区划详情（不给特化 / 招募）")
-		ok(ic.selected_enemy != null, "★ 它走的是「选中敌对建筑」那条路（实际 %s）"
-			% ("空" if ic.selected_enemy == null else ic.selected_enemy_kind()))
+		ok(ic.selected_zone != null,
+			"★★ 点**别人区划**的中心也打开区划详情（本次改口径：不论敌友中立）")
 		hud.refresh()
-		eq(hud.page_tabs.page(), PageTabsRes.PAGE_NONE, "★ 别人区划的中心也只有一颗空格子")
+		eq(hud.page_tabs.page(), PageTabsRes.PAGE_NONE,
+			"★ 但别人区划只给一颗空格子（不给特化 / 招募入口）")
 		eq(hud.command_card.entries().size(), 0, "★ 命令卡空（没有三个特化那一页）")
+		# ★★ 核心：**没有血量**、有产能与人口上限、**没有当前人口**
+		var ftxt: String = hud.detail_panel.detail_text()
+		ok(not ftxt.contains("生命"),
+			"★★ 不显示区划中心的血量（区划中心没有血量）—— 实际：%s" % ftxt.replace("\n", "|"))
+		ok(ftxt.contains("粮食产能") and ftxt.contains("黄金产能"),
+			"★★ 显示区划产能（粮食 / 黄金）")
+		ok(ftxt.contains("人口上限："),
+			"★★ 显示人口上限（它是「这块地值多少钱」的一部分）")
+		ok(ftxt.contains("人口产能："),
+			"★★ 别人区划只报**人口产能**")
+		ok(not ftxt.contains("人口："),
+			"★★ 别人区划**不显示当前人口**（那是对手的情报）")
+		# 反向：`_zone_text(z, false)` 与面板画出来的必须是同一份
+		eq(ftxt, hud._zone_text(ic.selected_zone, false),
+			"★ 面板详情与 _zone_text(…, false) 一致（没有第二处拼装）")
 
-	# ★ 反过来：点**自己区划**的中心仍然照旧打开区划详情（老行为不能被这轮改坏）
+	# ★ 自己 / 友军区划：照旧打开详情、有页签，而且**多一行当前人口**
 	var own_center_tile := Vector2i(-1, -1)
 	for z2 in world.zones.zones:
 		if not FactionRes.same_side(String((z2 as Dictionary).get("owner", "")), world.my_faction):
@@ -3730,6 +3751,11 @@ func _test_enemy_selection(main) -> void:
 		eq(ic.selected_enemy, null, "★ 这时没有「选中的敌人」")
 		hud.refresh()
 		eq(hud.page_tabs.page_count(), 2, "★ 自己区划中心仍是两颗页签（操作 + 招募）")
+		var otxt: String = hud.detail_panel.detail_text()
+		ok(not otxt.contains("生命"), "★★ 自己区划也不显示血量")
+		ok(otxt.contains("人口：") and not otxt.contains("人口产能："),
+			"★★ 自己 / 友军区划**额外显示当前人口**（「人口：x（产能x）」）—— 实际：%s"
+			% otxt.replace("\n", "|"))
 
 	# ---- ⑦ 改选自己的东西 → 敌人选中被清掉（互斥，不留残影）----
 	if g1 != null:

@@ -99,9 +99,11 @@ func _test_class_tags(cfg) -> void:
 		ok(cfg.unit_class_name(t) != "", "%s 的大类有显示名" % t)
 		ok(String(entry.get("name", "")) != "", "%s 有显示名" % t)
 
-	# 测试敌人也在表里（老代码把它拆在 debug / combat 三处，本轮并进来）
-	ok(cfg.has_unit_type(UnitRes.KIND_ENEMY), "测试敌人也是表里的一个类型")
-	near(cfg.unit_hp_of(UnitRes.KIND_ENEMY), cfg.enemy_hp, 1e-6, "测试敌人的血量与老字段同源")
+	# ★★ 本次：「测试敌人」（enemy）已从 unit.types 删除（用户口径：「把所有的『敌』
+	#   这个具体单位变成『长枪兵』，同时将『敌』从 editor 工具中移除」）。
+	#   这一条**反着钉**：谁把那个类型加回来，这里立刻变红。
+	ok(not cfg.has_unit_type("enemy"),
+		"★★ unit.types 里不再有「测试敌人」（已并入长枪兵）")
 
 	# 未知类型退回兜底（而不是崩、也不是悄悄变成敌人）
 	eq(cfg.unit_class_of("no_such_type"), ConfigRes.CLASS_INFANTRY, "未知类型的大类是步兵（兜底）")
@@ -262,10 +264,10 @@ func _test_icons(cfg) -> void:
 			"★ 圆盘中心是**白色**（阵营色是运行时 modulate 上去的）")
 	eq(UnitIconRes.bake(false), troop_tex, "同一档圆盘走缓存（同一个对象）")
 
-	# ---- 那个字：每个类型一个字，互不相同 ----
+	# ---- 那个字：每个类型一个字，互不相同（本次只剩三个兵种）----
 	var distinct: Dictionary = {}
 	for id in [UnitRes.UNIT_TYPE_SPEARMAN, UnitRes.UNIT_TYPE_LONGBOWMAN,
-			UnitRes.UNIT_TYPE_RIDER, UnitRes.KIND_ENEMY]:
+			UnitRes.UNIT_TYPE_RIDER]:
 		var t := String(id)
 		# ⚠️ `cfg` 是无类型的（测试脚手架里 require_config() 返回 Variant），
 		#    所以这里不能写 `:=` —— 推断不出来会直接 Parse Error。
@@ -273,13 +275,12 @@ func _test_icons(cfg) -> void:
 		eq(ch.length(), 1, "%s 的地图图标**正好一个字**（实际 %r）" % [t, ch])
 		ok(ch != "?" and ch != "", "%s 的字不是兜底占位（%r）" % [t, ch])
 		distinct[ch] = true
-	eq(distinct.size(), 4, "★ 四个类型各是一个不同的字")
+	eq(distinct.size(), 3, "★ 三个兵种各是一个不同的字")
 
 	# 字是**数据**：改 config 里的 icon → 游戏读到的字跟着变（编辑器改的就是这个键）
 	eq(cfg.unit_icon_of(UnitRes.UNIT_TYPE_SPEARMAN), "枪", "长枪兵的字来自 config（枪）")
 	eq(cfg.unit_icon_of(UnitRes.UNIT_TYPE_LONGBOWMAN), "弓", "长弓兵（弓）")
 	eq(cfg.unit_icon_of(UnitRes.UNIT_TYPE_RIDER), "骑", "骑手（骑）")
-	eq(cfg.unit_icon_of(UnitRes.KIND_ENEMY), "敌", "测试敌人（敌）")
 
 	# 将领（kind = general / general_N）用的是**所属兵种**那个字
 	eq(cfg.unit_icon_of("general"), cfg.unit_icon_of(UnitRes.UNIT_TYPE_SPEARMAN),

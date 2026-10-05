@@ -1,4 +1,4 @@
-﻿## test_downed.gd —— ★★ 将领**濒死保护**（本轮新增，config.json 的 revive 段）
+## test_downed.gd —— ★★ 将领**濒死保护**（本轮新增，config.json 的 revive 段）
 ##
 ## 需求原文（逐条对照，这一份断言就是它的机器版）：
 ##   1.「被攻击血量降至 0 的将领进入濒死状态，若濒死状态的将领旗下部队全部死亡，
@@ -56,6 +56,8 @@ func _cases() -> void:
 	_test_regen_rate_and_cap(cfg)
 	_test_wipe_kills_downed(cfg)
 	_test_rally_retinue(cfg)
+	_test_rescue_lock(cfg)
+	_test_rescue_lock_released_on_revive(cfg)
 	_test_revive_gate_and_cost(cfg)
 	_test_revive_channel_and_cancel(cfg)
 	_test_revive_keeps_hp(cfg)
@@ -421,6 +423,78 @@ func _test_rally_retinue(cfg) -> void:
 
 
 # ------------------------------------------------------------------
+# 七点五、★★ 救援的两条硬要求（本次修 bug 新增）
+#
+# 需求原话：「当某个部队的主将进入濒死时，其旗下部队应当立刻行军攻击至其将领位置
+#            以保护他（并且在将领再起前不接受玩家或 ai 的指令），但我在测试中发现
+#            我的将领死后其部队不会去保护其将领」。
+#
+# 原实现只有「下发一次集结令」这一半，缺的正是下面这半：
+#   · 救援**意图**（`unit.rescue_leader_id`）不会因为战斗接管而被静默清掉；
+#   · 队长再起前，部队**不接受**任何命令（拒因码 `leader_downed`）。
+# ------------------------------------------------------------------
+func _test_rescue_lock(cfg) -> void:
+	var w = require_world_with_escorts(cfg, 3)
+	var g = w.unit_by_id("general-1")
+	var mates: Array = w.retinue_of(g.id, true)
+	ok(not mates.is_empty(), "（前提）它有附属兵")
+	if mates.is_empty():
+		return
+	var m = mates[0]
+
+	_give(w, 1000.0, 1000.0)
+	_smash(cfg, w, g)
+	ok(g.is_downed(), "（前提）将领已经倒下")
+
+	# ---- ① 部队不接受玩家指令（拒因码 leader_downed）----
+	eq(w.order_lock_reason(m), "leader_downed",
+		"★★ 队长濒死 ⇒ 附属兵被锁（拒因码 leader_downed）")
+	ok(w.is_order_locked(m), "★★ 附属兵现在不接受任何指令")
+	ok(not CommandRes.apply(w, cfg, {"kind": "move", "ids": [m.id],
+		"x": float(m.tx + 3), "y": float(m.ty), "faction": MY}),
+		"★★ 玩家把附属兵派走的命令**被拒**（将领再起前不接受指令）")
+
+	# ---- ② 而且它**仍然**在往倒下点行军攻击（锁不是「定在原地」）----
+	ok(m.has_attack_move, "★★ 被锁的同时，救援集结令照旧生效（锁不等于发呆）")
+	ok(m.is_rescuing(), "★★ 它处于「救援中」状态（意图挂在单位上）")
+
+	# ---- ③ 救援意图不会被「重新下命令」之外的东西清掉：跑几秒仍然在集结 ----
+	#   ⚠️ 这一条是本次修的核心 bug：原来战斗接管之后 `has_attack_move` 会被清掉，
+	#      而没有任何机制重发它 ⇒ 部队停在半路不走了。
+	for _i in int(2.0 / DT):
+		w.tick(DT)
+	ok((m.has_attack_move or m.is_rescuing() or m.pos.distance_to(g.downed_anchor) <= 1.2),
+		"★★ 跑 2 秒后它**仍在**执行救援（命令丢了就由 update_rescue_orders 重发）")
+
+
+## ★★ 队长再起之后，部队必须**恢复可指挥**（锁要能解掉，不能永久黏住）。
+func _test_rescue_lock_released_on_revive(cfg) -> void:
+	var w = require_world_with_escorts(cfg, 3)
+	var g = w.unit_by_id("general-1")
+	var mates: Array = w.retinue_of(g.id, true)
+	if mates.is_empty():
+		ok(false, "（前提）它有附属兵")
+		return
+	var m = mates[0]
+	_give(w, 2000.0, 2000.0)
+	_smash(cfg, w, g)
+	ok(g.is_downed(), "（前提）已经倒下")
+	eq(w.order_lock_reason(m), "leader_downed", "（前提）部队被锁住")
+
+	# 走到允许再起，然后读完再起读条
+	_set_downed_hp(g, 0.2)
+	ok(w.start_revive(g.id, MY), "（前提）再起下单成功")
+	for _i in int((cfg.revive_channel_sec + 0.5) / DT):
+		w.tick(DT)
+	ok(not g.is_downed(), "★★ 将领已经站起来了")
+	ok(not m.is_rescuing(), "★★ 救援意图自动结束（队长不再濒死）")
+	eq(w.order_lock_reason(m), "", "★★ 部队恢复可指挥（拒因码清空）")
+	ok(CommandRes.apply(w, cfg, {"kind": "move", "ids": [m.id],
+		"x": float(m.tx + 3), "y": float(m.ty), "faction": MY}),
+		"★★ 再起之后玩家又能指挥它了")
+
+
+# ------------------------------------------------------------------
 # 八、再起的门槛、扣费与拒因
 # ------------------------------------------------------------------
 func _test_revive_gate_and_cost(cfg) -> void:
@@ -564,11 +638,11 @@ func _test_recruit_queue_cleared(cfg) -> void:
 	z["population"] = 10.0
 	_no_income(w)                            # 对账：别让区划产出掺进来
 
-	# ---- 排一单（入队即扣 50 粮 / 50 金 / 1 人口）----
+	# ---- 排一单（入队即扣 60 粮 / 0 金 / 1 人口）----
 	var kind := "spearman"
 	ok(w.start_recruit(kind, g.id, "p1"), "（前提）将领开始招募")
 	ok(g.train_queue_size() > 0, "（前提）它确实在读条")
-	near(float(w.resources["food"]), 950.0, 1e-4, "（前提）已经扣了 50 粮食")
+	near(float(w.resources["food"]), 940.0, 1e-4, "（前提）已经扣了 60 粮食")
 	near(float(z["population"]), 9.0, 1e-4, "（前提）已经扣了 1 人口")
 
 	# ---- 把它打进濒死 ----

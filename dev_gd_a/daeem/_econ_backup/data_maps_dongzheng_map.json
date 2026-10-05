@@ -1,4 +1,4 @@
-{
+﻿{
   "id": "dongzheng",
   "name": "东征",
   "hidden": true,
@@ -974,11 +974,10 @@
         1
       ],
       "production": {
-        "food": 0.1,
+        "food": 1.0,
         "gold": 0.0,
-        "population": 0.0125
+        "population": 0.1
       },
-      "population_cap": 2,
       "x0": 0,
       "y0": 0,
       "x1": 11,
@@ -1118,10 +1117,9 @@
       ],
       "production": {
         "food": 0.0,
-        "gold": 0.1,
-        "population": 0.0125
+        "gold": 1.0,
+        "population": 0.1
       },
-      "population_cap": 2,
       "x0": 12,
       "y0": 0,
       "x1": 23,
@@ -1259,11 +1257,10 @@
         4
       ],
       "production": {
-        "food": 0.075,
+        "food": 1.0,
         "gold": 0.0,
-        "population": 0.01125
+        "population": 0.1
       },
-      "population_cap": 3,
       "x0": 0,
       "y0": 3,
       "x1": 11,
@@ -1475,10 +1472,9 @@
       ],
       "production": {
         "food": 0.0,
-        "gold": 0.075,
-        "population": 0.01125
+        "gold": 1.0,
+        "population": 0.1
       },
-      "population_cap": 3,
       "x0": 12,
       "y0": 3,
       "x1": 23,
@@ -1690,9 +1686,8 @@
       "production": {
         "food": 0.0,
         "gold": 0.0,
-        "population": 0.0075
+        "population": 0.15
       },
-      "population_cap": 6,
       "x0": 0,
       "y0": 7,
       "x1": 11,
@@ -2239,11 +2234,10 @@
         12
       ],
       "production": {
-        "food": 0.04375,
+        "food": 1.0,
         "gold": 0.0,
-        "population": 0.00625
+        "population": 0.1
       },
-      "population_cap": 6,
       "x0": 12,
       "y0": 7,
       "x1": 23,
@@ -2791,9 +2785,8 @@
       "production": {
         "food": 0.0,
         "gold": 0.0,
-        "population": 0.0175
+        "population": 0.15
       },
-      "population_cap": 2,
       "x0": 0,
       "y0": 0,
       "x1": 2,
@@ -2836,10 +2829,9 @@
       ],
       "production": {
         "food": 0.0,
-        "gold": 0.1125,
-        "population": 0.01125
+        "gold": 1.0,
+        "population": 0.1
       },
-      "population_cap": 2,
       "x0": 21,
       "y0": 0,
       "x1": 23,

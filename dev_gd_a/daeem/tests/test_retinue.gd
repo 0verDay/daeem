@@ -397,11 +397,15 @@ func _test_does_not_follow_on_its_own(cfg) -> void:
 	eq(near_target, 0, "附属兵没有跑到队长的目标点去")
 
 
-## 数值按**单位类型**分开：三种兵各自一套，而且都不会退化成测试敌人的数值
+## 数值按**单位类型**分开：三种兵各自一套，不会退化成兜底值
 ##
 ## ★★ 用户确认的口径是「将领数值 = 它所属类型的数值」——
 ##    所以这里不再断言「附属兵比将领弱」，而是断言
-##    「将领与它的附属兵同类型 ⇒ 同数值」「不同类型 ⇒ 不同数值」「谁都不等于测试敌人」。
+##    「将领与它的附属兵同类型 ⇒ 同数值」「不同类型 ⇒ 不同数值」。
+## ★★ 本次改动：原来末尾那两条断言拿「测试敌人」（`spawn_enemy` 刷出来的那种）
+##    当反例（「没退化成敌人的数值」）。那个类型已经删除，刷出来的是**长枪兵**，
+##    于是那两条会变成「长枪兵 ≠ 长枪兵」而恒假。现在改成拿**另一种兵**当反例 ——
+##    语义一样（「按类型分开」），而且不依赖那个被删掉的类型。
 func _test_stats_are_per_type(cfg) -> void:
 	var w = require_world_with_escorts(cfg, PER)
 	if w == null:
@@ -409,7 +413,7 @@ func _test_stats_are_per_type(cfg) -> void:
 	var g1 = w.unit_by_id("general-1")
 	var s = w.retinue_of(g1.id)[0]
 	var e = w.spawn_enemy(10, 12)
-	ok(e != null, "有测试敌人可比")
+	ok(e != null, "（本次口径）调试刷兵现在刷的是长枪兵")
 
 	var t := String(s.unit_type)
 	ok(cfg.has_unit_type(t), "附属兵的类型 %s 在 config.unit.types 里" % t)
@@ -430,8 +434,14 @@ func _test_stats_are_per_type(cfg) -> void:
 
 	# ★ 这一条是「加第三种兵种」最容易踩的坑：
 	#   老代码写的是「是将领吗？不是就当敌人」，于是新兵种会静默拿到敌人的数值。
-	ok(s.hp_max != e.hp_max, "★ 附属兵没有退化成测试敌人的数值")
-	ok(s.combat_damage(cfg) != e.combat_damage(cfg), "★ 附属兵的伤害也没有退化成敌人的")
+	#   现在换成「跟**另一种兵**必须不同」—— 同一个坑（数值没按类型查表）照样抓得住。
+	var other := "rider" if t != "rider" else "spearman"
+	ok(s.hp_max != cfg.unit_hp_of(other),
+		"★ 附属兵的数值没有退化成**另一种兵**（%s vs %s）" % [t, other])
+	ok(s.combat_damage(cfg) != float(cfg.unit_combat_of(other)["damage"]),
+		"★ 附属兵的伤害也没有退化成另一种兵的")
+	eq(e.hp_max, cfg.unit_hp_of(UnitRes.UNIT_TYPE_SPEARMAN),
+		"★ 调试刷出来的单位按**长枪兵**查表（不再有自己的那一档）")
 
 	# 三个类型之间也必须是**不同**的（否则「按类型区分」这件事没有意义）
 	var types: Array = cfg.general_types()

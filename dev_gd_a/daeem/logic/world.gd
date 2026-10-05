@@ -27,6 +27,11 @@ const BuildingRes = preload("res://logic/building.gd")
 const UnitRes = preload("res://logic/unit.gd")
 const ZoneRes = preload("res://logic/zone.gd")
 const EconomyRes = preload("res://logic/economy.gd")
+
+## ★★ 救援到位半径（格）：附属兵离倒下点这么近就算「已经护住了」，结束救援意图。
+## 与 `unit.order_attack_move` 的「到点了就算完成」（0.5 格）同源，稍放大一点 ——
+## 兵应该站在将领**身边**，而不是叠在他身上（叠着会被碰撞推开、来回抖）。
+const RESCUE_ARRIVE_RADIUS := 1.2
 const TechRes = preload("res://logic/tech.gd")
 const UpgradeRes = preload("res://logic/upgrade.gd")
 const CombatRes = preload("res://logic/combat.gd")
@@ -1967,9 +1972,18 @@ func leader_zone_owned(leader) -> bool:
 ##   再拦着玩家就没有道理（`team_leader()` 对这种情况返回 null）。
 ##
 ## ★★ 濒死的将领（本轮新增）：它自己**被锁**（倒在原地，不能动也不能打）。
-##   ⚠️ 但**只锁它自己**，不锁它辖下的部队 —— 需求里那支援军正是要照常行动
-##      （它们得能走去救它、也能被玩家指挥）。所以这一条与招募那条不同：
-##      招募锁整队，濒死只锁将领本人。判据落在**调用方传进来的那个单位**上。
+##
+## ★★ 本次修 bug —— 濒死将领**辖下的部队也一起被锁**（用户口径原话：
+##   「其旗下部队应当立刻行军攻击至其将领位置以保护他，并且在将领再起前
+##     不接受玩家或 ai 的指令」）。
+##   ⚠️ 这一条与上面那句旧注释**正好相反**，是本次按需求改掉的行为：
+##     旧口径是「只锁将领本人、不锁部队」（当时的理由是「援军要能行动」），
+##     但那样一来玩家的任何指令都能当场把救援集结令顶掉 ⇒ 部队被呼来喝去，
+##     根本走不到将领身边。现在救援令由 `update_rescue_orders()` 持续维持，
+##     玩家的指令被拒（拒因码 `leader_downed`），直到将领再起或真死。
+##   ⚠️ 与招募那条锁的**区别**：招募锁整队是因为将领钉在原地读条；
+##     濒死锁整队是因为部队正在执行不可打断的救援集结。两条都返回 true，
+##     但拒因码不同（`recruiting` / `leader_downed`），界面文案也不一样。
 func is_order_locked(u) -> bool:
 	if u == null or not u.alive:
 		return false
@@ -1978,7 +1992,9 @@ func is_order_locked(u) -> bool:
 	if u.is_training():
 		return true
 	var leader = team_leader(u)
-	return leader != null and leader.is_training()
+	if leader == null:
+		return false
+	return leader.is_training() or leader.is_downed()
 
 
 ## 这个单位现在不接受指令的**原因码**（"" = 可以下令）。
@@ -1994,8 +2010,13 @@ func order_lock_reason(u) -> String:
 	if u.is_training():
 		return "recruiting"
 	var leader = team_leader(u)
-	if leader != null and leader.is_training():
+	if leader == null:
+		return ""
+	if leader.is_training():
 		return "recruiting"
+	# ★★ 本次新增：队长濒死 ⇒ 部队正在救援集结，不接受任何新指令。
+	if leader.is_downed():
+		return "leader_downed"
 	return ""
 
 
@@ -2076,17 +2097,67 @@ func enter_near_death(leader) -> bool:
 ##   阵营 AI「派一批将领出征」、驻防将领巡逻是**同一条**路径（队形落点、通行判定
 ##   都在它里面）—— 自己写一遍循环迟早会漂开。
 ## ★ 已经贴着倒下点站着的兵会被它自动跳过（命令层内部判距离），不必在这里特判。
+##
+## ★★ 本次修 bug：这里同时给每个附属兵**打上救援意图**（`unit.begin_rescue`）。
+##   为什么必须有这个意图（实测报回来的「将领倒了部队不去保护」）：
+##     下面那条行军攻击命令只是一次性的，而 `combat.gd` 的自动索敌在赶路途中会把
+##     附属兵锁到路过的敌人身上；一旦进入追击、追击上限触发就 `drop_engagement()`
+##     回家 —— **命令被静默清掉，没人会再下发一次**。
+##     ⇒ 意图挂在单位上之后，`update_rescue_orders()` 每帧都能看见「它还在救援」，
+##       命令丢了就重发，直到队长再起或真死。
 func rally_retinue_to_leader(leader) -> void:
 	if leader == null:
 		return
+	if not leader.is_downed():
+		return                        # 只有「倒下」才叫援军（真死/站着都算）
 	var mates: Array = retinue_of(String(leader.id), true)
 	if mates.is_empty():
 		return
+	var anchor: Vector2 = leader.downed_anchor
+	for m in mates:
+		m.begin_rescue(String(leader.id), anchor)
 	var cmd: GDScript = load("res://logic/command_processor.gd")
 	if cmd == null:
 		return
-	cmd.order_group_attack_move(self, cfg, mates, leader.downed_anchor)
+	# ★ force = true：这次集结正是「被那道锁挡住的那一路」，详见命令层的参数说明。
+	cmd.order_group_attack_move(self, cfg, mates, anchor, true)
 
+
+## ★★ 每帧收口救援状态（本次修 bug）：停战 / 再起 / 真死 / 已经到位，都在这里处理。
+##
+## 三件事，顺序不能换：
+##   1. **清失效的救援意图**：队长再起或真死了 ⇒ `end_rescue()`（这一步让整套机制
+##      「自动过期」，不需要谁去记得收尾）；
+##   2. **已经到位**（离倒下点 ≤ 到达半径）⇒ 结束救援，让它回到正常行动
+##      （站在那里守尸就是「保护」，它不该被这条意图永久绑住）；
+##   3. **还没到、又不在赶路**（打完了 / 命令被战斗吃掉 / 被挤住）⇒ 重新下一遍集结令。
+##
+## ⚠️ 为什么不在单位循环里做、而是在这里集中做：判「队长还濒死不濒死」要查
+##    `unit_by_id`，那是每单位一次的表查询；集中一层只查「有救援意图的那几个」，
+##    而那几个正常情况下就是 0 个 —— 开销可以忽略（见 bench_crowd 的分段计时）。
+func update_rescue_orders() -> void:
+	for u in units:
+		if not u.alive or not u.is_rescuing():
+			continue
+		# ⚠️ 濒死的将领自己不参与救援（`begin_rescue` 只发给附属兵），所以这里
+		#    不需要再判 u.is_downed()：真有那种数据，下一句会把它自己算成队长。
+		var leader = unit_by_id(u.rescue_leader_id)
+		if leader == null or not leader.is_downed():
+			u.end_rescue()
+			continue
+		var anchor: Vector2 = leader.downed_anchor
+		# 到位半径：与 `order_attack_move` 的「到点了就算完成」（0.5 格）同一个口径，
+		# 稍放大一点 —— 兵要站在将领身边而不是叠在他身上。
+		if u.pos.distance_to(anchor) <= RESCUE_ARRIVE_RADIUS:
+			u.end_rescue()
+			continue
+		# 没到、也没在赶路 ⇒ 补一次集结令。
+		# ⚠️ 判据必须是「不在移动」，不能只判 `has_attack_move`：
+		#    战斗接管过的那些单位 `has_attack_move` 已经是 false 了，
+		#    正是它们最需要被叫回来。
+		if not u.moving:
+			u.order_attack_move(self, cfg, anchor)
+			u.begin_rescue(String(leader.id), anchor)
 
 ## 「再起」要花多少（config.json 的 revive.cost；缺字段 = 免费）。
 func revive_cost() -> Dictionary:
@@ -2943,7 +3014,20 @@ func _pin_training_leaders() -> void:
 		u.sync_tile(map)
 
 
-## 刷一个测试敌人（调试用）。
+## 刷一个**敌方阵营的单位**（调试用；E 键 / `spawn_enemy` 命令）。
+##
+## ★★ 本次改动：刷出来的兵种从「测试敌人（kind = enemy）」改成**长枪兵**。
+##   用户口径：「把所有的『敌』这个具体单位变成『长枪兵』，同时将『敌』从 editor
+##   工具中移除」—— 那个占位单位存在的唯一理由（把散在三处的数值并进同一张表）
+##   已经完成，它本身不再需要。
+##   ⚠️ **阵营没变**：刷出来的仍然是 `FactionRes.NPC_FACTION`（"enemy"）那一方，
+##     所以 `enemy_ai` 的推进逻辑、地图预置守军、盟友表里的 "enemy" 全都照旧 ——
+##     改的只是「它是哪一种兵」，不是「它属于谁」。
+##
+## ★ 函数名与事件名保留历史叫法：`spawn_enemy` / `enemy_spawned` 是**命令协议**
+##   与联机快照的公开接口（见 command_processor 的命令表与 tests 里 50+ 处调用），
+##   改名只有破坏性、没有收益 —— 「enemy」在这里指的是**阵营**，本来就没错。
+##
 ## ★ id 必须在权威侧生成：HTML 版的客机用自己的随机数算 id，会导致快照对齐时单位错位/闪烁。
 ##   第 1 轮联机时，客机要请房主代为生成 —— 这里把「权威生成 id」这件事先固定下来。
 func spawn_enemy(tx: int = -1, ty: int = -1) -> Variant:
@@ -2976,7 +3060,8 @@ func spawn_enemy(tx: int = -1, ty: int = -1) -> Variant:
 			return null
 		open = found
 	_enemy_serial += 1
-	var e = UnitRes.create(cfg, "enemy-%d" % _enemy_serial, "测试敌人", open, FactionRes.NPC_FACTION, UnitRes.KIND_ENEMY)
+	var e = UnitRes.create(cfg, "enemy-%d" % _enemy_serial, "长枪兵",
+		open, FactionRes.NPC_FACTION, ConfigRes.UNIT_TYPE_SPEARMAN)
 	units.append(e)
 	push_event({"type": "enemy_spawned", "unit": e})
 	return e
@@ -3542,8 +3627,7 @@ func tick(dt: float) -> Array:
 		crowd.refresh_targets(self, cfg)
 
 	# 0) ★ 科技加成：每帧重算一次聚合值（九条各查一次表、几条加法），产量 / 人口读它。
-	tech_effects = tech.effects_of(my_faction)
-	#    ⚠️ 血量那一步是**按版本号**触发的，不是每帧跑：它要遍历所有建筑与单位，
+	tech_effects = tech.effects_of(my_faction)	#    ⚠️ 血量那一步是**按版本号**触发的，不是每帧跑：它要遍历所有建筑与单位，
 	#       而且「新对象补一次加成」已经落在各出生点（见 apply_hp_bonus 的注释）。
 	if tech_revision != _tech_hp_revision:
 		_tech_hp_revision = tech_revision
@@ -3644,6 +3728,11 @@ func tick(dt: float) -> Array:
 		var c0 := _prof()
 		CombatRes.tick_frame(self, cfg, u, dt, ui)
 		var _c1 := _prof()
+	# ★★ 4.5) 濒死救援的收口（本次修 bug）：清掉失效的救援意图、把还没到位的
+	#   附属兵重新叫回倒下点。必须在**单位循环之后**跑 —— 它判「在不在赶路」用的
+	#   是这一帧刚更新完的状态（`u.moving` / `u.path`）。
+	# 只遍历「有救援意图」的那几个（正常情况 0 个），不影响 bench 的分段开销。
+	update_rescue_orders()
 	_prof_done("units", _t_units)
 	if profile_on:
 		profile_us["units/combat"] = int(profile_us.get("units/combat", 0)) + t_combat

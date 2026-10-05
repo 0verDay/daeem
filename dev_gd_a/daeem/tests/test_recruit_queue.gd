@@ -7,6 +7,9 @@
 ##     正在招募的单位在大格子中显示），同时开始读条；读条完毕后在将领所在格内生成
 ##     该单位（强制生成在中心，若中心有单位则将中心内的单位排开）」
 ##   「增加限制条件：将领只能在己方区划内招募单位」
+## ★★ 数值口径变更（本次经济调参）：单位消耗由 **50 粮 / 50 金 提到 100 粮 / 100 金**
+##   （见 data/config.json 的 `recruit.list[].cost`）。下面那些断言按**新价**钉住，
+##   上面这句需求原文保留不动 —— 它是历史来源，不是当前数值。
 ## 手玩补充的两条：
 ##   「开始招募后将领固定在原地无法行动且无法攻击」
 ##   「将领阵亡时队列作废，但已扣的粮食 / 黄金 / 人口要退还」
@@ -72,8 +75,8 @@ func _test_config_table(cfg) -> void:
 	near(w.recruit_train_sec(KIND), 10.0, 1e-6, "★ 每个单位读条 10 秒")
 	near(float(w.recruit_population_cost(KIND)), 1.0, 1e-6, "★ 每个单位吃 1 人口")
 	var cost: Dictionary = w.recruit_cost(KIND)
-	near(float(cost.get("food", 0.0)), 50.0, 1e-6, "★ 每个单位 50 粮食")
-	near(float(cost.get("gold", 0.0)), 50.0, 1e-6, "★ 每个单位 50 黄金")
+	near(float(cost.get("food", 0.0)), 60.0, 1e-6, "★ 每个单位 60 粮食（低级单位，只吃粮）")
+	near(float(cost.get("gold", 0.0)), 0.0, 1e-6, "★ 长枪兵不吃黄金")
 	eq(w.recruit_short_of(KIND), "枪", "信息栏格子里用 config 的 short（长枪兵 = 枪）")
 
 
@@ -123,8 +126,8 @@ func _test_enqueue_pays(cfg) -> void:
 	var before_subs: int = w.retinue_of(g1.id).size()
 
 	ok(w.start_recruit(KIND, g1.id, "p1"), "招募入队成功")
-	near(float(w.resources["food"]), 150.0, 1e-4, "★ 入队即扣 50 粮食")
-	near(float(w.resources["gold"]), 150.0, 1e-4, "★ 入队即扣 50 黄金")
+	near(float(w.resources["food"]), 140.0, 1e-4, "★ 入队即扣 60 粮食")
+	near(float(w.resources["gold"]), 200.0, 1e-4, "★ 长枪兵不吃黄金（一分没动）")
 	near(float(z["population"]), 4.0, 1e-4, "★ 入队即扣 1 人口（从将领所在区划扣）")
 
 	# 队列的形态：大格子里是正在读条的
@@ -463,7 +466,7 @@ func _test_cancel_queue(cfg) -> void:
 	ok(w.start_recruit(KIND, g1.id, "p1"), "排第 1 单")
 	ok(w.start_recruit(other, g1.id, "p1"), "排第 2 单")
 	ok(w.start_recruit(KIND, g1.id, "p1"), "排第 3 单")
-	near(float(w.resources["food"]), 850.0, 1e-4, "三单共扣 150 粮食")
+	near(float(w.resources["food"]), 830.0, 1e-4, "三单共扣 170 粮食（长枪 60 ×2 + 二号 50）")
 	eq(w.recruit_kind_at(g1, 0), KIND, "大格子里是第 1 单")
 	eq(w.recruit_kind_at(g1, 1), other, "第 2 单在第 1 个小格")
 	eq(w.recruit_kind_at(g1, 2), KIND, "第 3 单在第 2 个小格")
@@ -471,7 +474,7 @@ func _test_cancel_queue(cfg) -> void:
 
 	# ---- 取消**排队的**那一格：只退它，后面的前移 ----
 	ok(w.cancel_recruit(g1.id, 1, "p1"), "★ 取消第 2 格成功")
-	near(float(w.resources["food"]), 900.0, 1e-4, "★ 只退掉那一格的 50 粮食")
+	near(float(w.resources["food"]), 880.0, 1e-4, "★ 只退掉那一格的 50 粮食")
 	near(float(z["population"]), 8.0, 1e-4, "★ 人口也退 1（退给同一个区划）")
 	eq(g1.train_kind, KIND, "★ 正在读条的还是第 1 单（取消排队的不影响读条）")
 	eq(g1.train_queue.size(), 1, "队列里只剩 1 个")
@@ -482,7 +485,7 @@ func _test_cancel_queue(cfg) -> void:
 	_tick_secs(w, 6.0)
 	near(g1.train_remaining, 4.0, 0.1, "读了 6 秒（为下面验「不继承进度」做准备）")
 	ok(w.cancel_recruit(g1.id, 0, "p1"), "★ 取消大格子成功")
-	near(float(w.resources["food"]), 950.0, 1e-4, "第 1 单的 50 粮食退回来了")
+	near(float(w.resources["food"]), 940.0, 1e-4, "第 1 单的 60 粮食退回来了")
 	eq(g1.train_kind, KIND, "★ 后面那一单前移进了大格子")
 	near(g1.train_remaining, 10.0, 1e-6,
 		"★ 前移的那个**从头读条**（不继承被取消那单的进度）")
@@ -601,18 +604,18 @@ func _test_cancel_then_death(cfg) -> void:
 
 	w.start_recruit(KIND, g1.id, "p1")
 	w.start_recruit(KIND, g1.id, "p1")
-	near(float(w.resources["food"]), food0 - 100.0, 1e-4, "两单共扣 100 粮食")
-	ok(w.cancel_recruit(g1.id, 1, "p1"), "取消排队的第 2 单（先退 50）")
-	near(float(w.resources["food"]), food0 - 50.0, 1e-4, "这时只花了 50")
+	near(float(w.resources["food"]), food0 - 120.0, 1e-4, "两单共扣 120 粮食（60 ×2）")
+	ok(w.cancel_recruit(g1.id, 1, "p1"), "取消排队的第 2 单（先退 60）")
+	near(float(w.resources["food"]), food0 - 60.0, 1e-4, "这时只花了 60")
 
 	# ★★ 让它**阵亡**（本轮加了将领濒死保护，直接 take_damage 只会让它倒地）。
 	#    ⚠️ 这里**故意不用** `kill_unit_now`：那个帮助函数会先把招募队列撤掉，
 	#    而**本节验的正是「队列还在时将领阵亡 → 队列作废并退款」**。
 	#    所以按权威规则走「先打光它旗下的兵、再打它自己」那条路，
-	#    而队列（这一单 50 粮 / 50 金 / 1 人口）原样留着。
+	#    而队列（这一单 100 粮 / 100 金 / 1 人口）原样留着。
 	var evts: Array = _kill_leader_keep_queue(cfg, w, g1)
 	evts.append_array(w.tick(DT))
-	near(float(w.resources["food"]), food0, 1e-4, "★ 阵亡后退还**剩下一单**的 50（不是 100）")
+	near(float(w.resources["food"]), food0, 1e-4, "★ 阵亡后退还**剩下一单**的 60（不是 120）")
 	near(float(w.resources["gold"]), gold0, 1e-4, "★ 黄金同理（不会重复退已取消的那单）")
 	near(float(z["population"]), 10.0, 1e-4, "★ 人口也是刚好退满（不会多退）")
 	eq(_count_reason(evts, "recruit_cancelled", "leader_died"), 1,
@@ -636,7 +639,7 @@ func _test_death_refund(cfg) -> void:
 	ok(w.start_recruit(KIND, g1.id, "p1"), "排第一个")
 	_tick_secs(w, 3.0)                        # 读条到一半（退款要退**整队**）
 	ok(w.start_recruit(KIND, g1.id, "p1"), "排第二个")
-	near(float(w.resources["food"]), food0 - 100.0, 1e-4, "两单共扣 100 粮食")
+	near(float(w.resources["food"]), food0 - 120.0, 1e-4, "两单共扣 120 粮食（60 ×2）")
 	near(float(z["population"]), 8.0, 1e-4, "两单共扣 2 人口")
 
 	# ★★ 让它**阵亡**，但**保留**招募队列（见 `_kill_leader_keep_queue` 的说明）。

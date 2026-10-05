@@ -223,7 +223,7 @@ func _bench_attack_move(w, cfg, n_units: int, n_frames: int) -> void:
 		var col := i % 20
 		var row := i / 20
 		var e = UnitRes.create(cfg, "am-foe-%d" % i, "foe %d" % i,
-			Vector2i(0, 0), "enemy", UnitRes.KIND_ENEMY)
+			Vector2i(0, 0), "enemy", UnitRes.UNIT_TYPE_SPEARMAN)
 		e.pos = Vector2(ex + float(col) * 0.35, ey + float(row) * 0.35)
 		e.sync_tile(w.map)
 		foes.append(e)

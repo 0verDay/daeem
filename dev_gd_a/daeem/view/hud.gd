@@ -600,7 +600,15 @@ func _tab_plan() -> Dictionary:
 	# 区划中心（左键点中心 = 看这个区划的详情）→ 「操作」（三个特化）+「招募」
 	# ★ 本轮改动：原来这里只有「招募」一页；需求要求所有单位 / 建筑都有操作页，
 	#   而区划中心的操作页就是粮食 / 黄金 / 人口特化那一页。
+	# ★★ 本次改动：**只有自己 / 友军的区划才给页签**。
+	#   `input_controller` 现在把**任何**归属的区划中心都交给 `select_zone`（用户需求：
+	#   不论敌友中立都显示区划产能，而不是显示「区划中心的血量」），所以「能不能对它
+	#   下命令」这层把关就落在这里 —— 敌方 / 中立区划只给一颗空格子（`PAGE_NONE`），
+	#   与「选中敌对建筑」那条路一致（需求：选中敌对对象只立格子、不给任何页签）。
 	if input_ctrl.selected_zone != null:
+		if not _zone_is_friendly(input_ctrl.selected_zone):
+			return {"kind": "zone_center_foreign", "pages": [PageTabsRes.PAGE_NONE],
+				"default": PageTabsRes.PAGE_NONE}
 		return {"kind": "zone_center",
 			"pages": [PageTabsRes.PAGE_ORDER, PageTabsRes.PAGE_RECRUIT],
 			"default": PageTabsRes.PAGE_ORDER}
@@ -1748,14 +1756,18 @@ func recruit_reject_text(reason: String, kind: String, max_count: int = 0) -> St
 ## 目前两种拒因（都由 `world.order_lock_reason()` 产出）：
 ##   · `recruiting` —— 将领正在招募时，**它和它辖下的部队**都不接受移动 / 攻击命令；
 ##   · ★ `downed`   —— **本轮新增**：将领濒死倒在地上，它自己不接受任何指令。
-##     ⚠️ 这一条**只锁它自己**（它辖下的部队照旧能打、能去救它）——与上面那条不同，
-##        文案也要说清「去救它」，否则玩家会以为整支部队都废了。
+##   · ★★ `leader_downed` —— **本次修 bug 新增**：**附属兵**在队长濒死期间不接受指令。
+##     与上面那条的区别：`downed` 拒的是将领本人，`leader_downed` 拒的是它的部队。
+##     用户口径原话：「其旗下部队应当立刻行军攻击至其将领位置以保护他，
+##     并且在将领再起前不接受玩家或 ai 的指令」。
 func order_reject_text(reason: String) -> String:
 	match reason:
 		"recruiting":
 			return "将领正在招募单位：它和它的部队这会儿只警戒，不接受指令"
 		"downed":
 			return "将领已经倒地濒死：它自己不能行动，先让它「再起」（它辖下的部队照常能打）"
+		"leader_downed":
+			return "该部队的主将已经倒地：它们正在赶去保护主将，主将「再起」前不接受指令"
 	return "这条指令现在下不了"
 
 
@@ -2008,7 +2020,10 @@ func refresh() -> void:
 		detail_panel.set_troops(null, [])
 		detail_panel.set_unit_avatar_text("区")
 		detail_panel.set_unit_name(_zone_title(input_ctrl.selected_zone))
-		detail_panel.set_detail(_zone_text(input_ctrl.selected_zone))
+		# ★★ 本次：当前人口只给**自己 / 友军**的区划看（用户原话：「如果是友军/己方区划，
+		#   额外显示其当前人口数量」）—— 敌方与中立区划的「现在有多少人」属于对手的情报。
+		detail_panel.set_detail(_zone_text(input_ctrl.selected_zone,
+			_zone_is_friendly(input_ctrl.selected_zone)))
 		# ★ 右栏右上角那块面板（招募队列 / 单条读条共用，见 _refresh_progress_panel）
 		_refresh_progress_panel(input_ctrl.selected_zone)
 		return
@@ -2428,7 +2443,17 @@ func _unit_text(shown, troops: Array) -> String:
 ##   特化那句原来排在最末。合并之后整屏最多 7 行（84 + 14 = 98px），而数值框的可视高只有
 ##   88px ⇒ 排在最后的那一行**会被 clip 掉**，被切掉的恰好是「正在特化 / 已完成特化」——
 ##   最该看见的那一条。所以它上移到产能前面（它本来就属于「种类」那一带的信息）。
-func _zone_text(z: Dictionary) -> String:
+##
+## ★★ 本次改动（用户需求）：「选中区划中心时（不论是敌是友是中立），不用显示区划中心的
+##   血量（区划中心没有血量），可以显示其区划的产能（粮食 / 黄金 / 人口产能 / 人口上限），
+##   如果是友军 / 己方区划，额外显示其当前人口数量」。
+##   ⇒ 归路上由 `input_controller` 保证「任何归属的中心都走这一条」，
+##     这里再用 `show_population` 决定**当前人口**那一行给不给：
+##       · true  = 自己 / 友军区划 → 「人口：<现在>（产能 x）」
+##       · false = 敌方 / 中立区划 → 「人口产能：x」（只报产能，不报现在有多少人）
+##   ⚠️ 人口上限**两种都显示** —— 它是这块地值多少钱的一部分（用户把它列为产能之一），
+##     而不像「现在有多少人」那样是对手的情报。
+func _zone_text(z: Dictionary, show_population: bool = true) -> String:
 	var lines: Array[String] = []
 	lines.append("区划大小：%d 个地块" % int(z["tile_count"]))
 	# ★★ 本轮新增：**区划种类**那一行（粮食 / 黄金 / 人口区划）——
@@ -2457,15 +2482,29 @@ func _zone_text(z: Dictionary) -> String:
 		_fmt_num(food), _fmt_num(food * n)])
 	lines.append("黄金产能：%s（合计 %s）" % [
 		_fmt_num(gold), _fmt_num(gold * n)])
-	# ★ 人口这一行（本版合并了「人口产能」与「人口」两行）：
+	# ★ 人口那一行（本版合并了「人口产能」与「人口」两行）：
 	#   括号里 = 每地块人口产能（特化后的），括号外 = 当前人口。
 	#   ⚠️ 人口显示**永远是整数**（向下取整，用户需求）—— 权威值是浮点（按秒累积），
 	#      直接印出小数点会让玩家看到「1.9999998」这种数。
-	lines.append("人口：%d（产能%s）" % [world.zones.population_floor(z), _fmt_num(pop)])
+	# ★★ 本次：当前人口只给「自己 / 友军」看；敌占 / 无主区划只报产能（见函数头）。
+	if show_population:
+		lines.append("人口：%d（产能%s）" % [world.zones.population_floor(z), _fmt_num(pop)])
+	else:
+		lines.append("人口产能：%s" % _fmt_num(pop))
 	# ★ 上限**单列一行**：不然「人口怎么不涨了」在界面上没有任何解释。
 	#   （合并后那一行按需求只放「人口 + 产能」，塞不下上限，所以它留在下面这一行。）
 	lines.append("人口上限：%s" % _fmt_num(pop_cap))
 	return "\n".join(lines)
+
+
+## 这个区划是不是**自己 / 友军**的（用于「当前人口给不给看」与「给不给操作页签」）。
+##
+## ★ 判据走 `FactionRes.same_side`（盟友算同一方）—— 与占领 / 资源 / 视界那几处同一套口径。
+## ★ 空 owner（无主）恒为 false：`same_side(任何, "")` 为假（见 logic/faction.gd）。
+func _zone_is_friendly(z: Dictionary) -> bool:
+	if z == null or world == null:
+		return false
+	return FactionRes.same_side(String(z.get("owner", "")), String(world.my_faction))
 
 
 ## 数字显示：整数就不带小数点；小数最多 3 位、末尾的 0 去掉

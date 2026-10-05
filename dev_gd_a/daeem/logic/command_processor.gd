@@ -170,13 +170,17 @@ static func note_order_rejected(world, ids: Array, owner_faction: String) -> voi
 ##   需求原话「玩家无法为正在招募单位的将领及其附属队列发布任何指令（移动/攻击），
 ##   其附属单位只会执行警戒逻辑」。⚠️ 是**整队**，不是只有将领本人 ——
 ##   否则玩家可以用「选中整队右键」把护卫派走，将领身边就空了。
-static func _collect_units(world, ids: Array, owner_faction: String) -> Array:
+##
+## ★★ `force`：跳过那道锁（只给**逻辑层的濒死救援**用，理由见
+##   `order_group_attack_move` 的同名参数说明）。玩家 / AI 的命令一律走默认 false。
+static func _collect_units(world, ids: Array, owner_faction: String,
+		force: bool = false) -> Array:
 	var out: Array = []
 	for id in ids:
 		var u = world.unit_by_id(String(id))
 		if u == null or not u.alive:
 			continue
-		if world.is_order_locked(u):
+		if not force and world.is_order_locked(u):
 			continue
 		if not FactionRes.same_side(u.faction, owner_faction):
 			continue                      # ★ 防冒充：只能命令自己这一方的单位
@@ -401,9 +405,19 @@ static func apply_attack_move(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 ##   AI 走**与玩家完全同一条**路径：`world.group_of(将领)` 展开成一整队 →
 ##   逐单位 `order_attack_move_at`（各自的槽位 + 同一个全队目标点）。
 ##   ⇒ 将领和它辖下的部队真的会一起行军，而不是只有将领一个人走。
-static func order_group_attack_move(world, cfg: ConfigRes, group: Array, pt: Vector2) -> bool:
+## ★★ `force`（本次新增，默认 false）：**跳过 `is_order_locked` 过滤**。
+##
+##   为什么需要它（否则「濒死救援」会被自己新加的锁挡住）：本次把「队长濒死」
+##   加进了部队的锁定判据（用户口径：将领再起前不接受玩家或 ai 的指令），
+##   于是救援集结这下**自己**也会被那道锁滤掉 —— 部队原地不动，谁也救不了。
+##   ⇒ 只有**逻辑层内部的救援那一处**传 force = true（见
+##     `world.rally_retinue_to_leader` / `world.update_rescue_orders`），
+##     玩家命令与 AI 决策一律走默认值，照旧被锁挡住。
+##   ⚠️ 这是一个**面向逻辑层的**入口（不是网络命令），第 1 轮联机时不必发给客机。
+static func order_group_attack_move(world, cfg: ConfigRes, group: Array, pt: Vector2,
+		force: bool = false) -> bool:
 	var owner: String = String(world.my_faction) if world != null else ""
-	var group2 := _collect_units(world, _ids_of(group), owner)
+	var group2 := _collect_units(world, _ids_of(group), owner, force)
 	if group2.is_empty():
 		# `_collect_units` 按「同方」过滤，AI 那些单位不属于玩家阵营 ⇒ 走不过去。
 		# 这条路径是**逻辑层内部**调用（不是网络命令），所以直接用传来的数组。
@@ -414,7 +428,7 @@ static func order_group_attack_move(world, cfg: ConfigRes, group: Array, pt: Vec
 			#   它们传进来的数组可能含队长自己，所以这里也要过一遍 `is_order_locked`。
 			if u == null or not u.alive:
 				continue
-			if world != null and world.is_order_locked(u):
+			if not force and world != null and world.is_order_locked(u):
 				continue
 			group2.append(u)
 	if group2.is_empty():

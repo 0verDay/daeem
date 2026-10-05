@@ -181,7 +181,8 @@ func _assert_config(cfg) -> bool:
 	ok(cfg.fog_vision_default > 0.0, "fog.vision_default > 0（%s）" % str(cfg.fog_vision_default))
 	ok(cfg.fog_vision_building > 0.0, "fog.vision_building > 0（%s）" % str(cfg.fog_vision_building))
 	# ★ 每个内置兵种都要有自己的视野 —— 少一个就会静默吃全局兜底值
-	for t in ["spearman", "longbowman", "rider", "enemy"]:
+	# ★★ 本次：`enemy`（测试敌人）已从类型表里删除，只剩三个真兵种。
+	for t in ["spearman", "longbowman", "rider"]:
 		ok(cfg.has_unit_type(t), "单位类型表里有 %s" % t)
 		ok(cfg.unit_vision_of(t) > 0.0, "%s 的视野 > 0（%s 格）" % [t, str(cfg.unit_vision_of(t))])
 	# 长弓兵看得比长枪兵远、骑手居中 —— 这是 config.json 里写的那组数（编辑器可改）

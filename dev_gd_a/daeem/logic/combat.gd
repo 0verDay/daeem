@@ -174,13 +174,41 @@ static func update_unit(world, cfg: ConfigRes, u: UnitRes, dt: float, idx: int =
 					# 已经到不了（比如目标点被建筑占满）→ 认账，别再每帧试
 					u.has_attack_move = false
 
+	# ★★ 濒死救援的「打完了继续去救」（本次修 bug）。
+	#
+	# 为什么单独一支、而不是并进上面那个 `elif`：救援**不依赖** `has_attack_move`
+	#   —— 战斗接管过的附属兵那个标志已经是 false 了（`order_attack_unit` /
+	#   战斗内的清理都会清它），正是它们最需要被送回倒下点。
+	#   ⇒ 判据只看「意图还在 + 停下来了」；目的地每次现读队长的 `downed_anchor`
+	#     （队长在濒死期间位置被钉住，所以它就是倒下点）。
+	#   ⚠️ 这一支必须放在 `update_combat` **之后**：它要读的是「打完之后」的状态
+	#     （还在打的话 `u.moving` 为真或目标非空，这里自然不触发）。
+	if u.is_rescuing() and not u.moving and u.target == null and u.target_building == null:
+		var rescue_leader = world.unit_by_id(u.rescue_leader_id)
+		if rescue_leader != null and rescue_leader.is_downed():
+			if u.repath_timer <= 0.0:
+				u.repath_timer = cfg.repath_sec
+				u.order_attack_move(world, cfg, rescue_leader.downed_anchor)
+
 
 ## 警戒：静止且没有目标的单位搜索警戒半径内的敌方**单位**，锁定最近的一个。
 ##
-## 搜不到敌方单位时，**玩家阵营**的单位会再搜一次**敌方建筑**（需求：
+## 搜不到敌方单位时，**任何阵营**的单位都会再搜一次**敌方建筑**（需求：
 ## 「给己方单位增加索敌建筑的机制」）—— 走到对家箭塔/城墙边上就会自己开打。
-## ⚠️ NPC 敌人不做这一步：它们拆建筑由 enemy_ai 明确指定（拆挡路的城墙），
-##    否则「路过一堵墙就停下来拆」会把敌人推进的节奏彻底改掉。
+##
+## ★★ 本次改动：这一条原来是「只有玩家阵营才做」（`is_player_faction` 那道早退）。
+##   实测报回来的两条正是它的后果：
+##     ·「我在敌方部队附近建造建筑，敌方不会有想打掉这个建筑」；
+##     ·「他只会让箭塔持续攻击自己」（被塔打也不还手，因为「建筑」这个目标类别
+##       对 AI 单位根本不存在）。
+##   ⇒ 改成**按阵营无关**的通用规则。
+##
+## ⚠️ 与 `enemy_ai`（测试敌人的推进 AI）的关系：那条 AI 仍然负责「朝玩家据点推进 +
+##    拆挡路的城墙」，两条**不冲突** —— `enemy_ai` 只在 `target_building == null`
+##    时才动手（拆墙只是它推进受阻时的兜底），而这里只是多加了一个「附近有可打建筑
+##    就顺手拆掉」的来源。真正的推进节奏由 `enemy_ai` 的目标选择决定，没有被改掉。
+## ⚠️ 中立 / 无敌建筑（区划中心）在 `nearest_enemy_building` 里已被跳过，所以
+##    「AI 跑去对着打不掉的柱子敲一辈子」那条老坑不会复活。
 static func acquire_target(world, cfg: ConfigRes, u: UnitRes, idx: int = -1) -> bool:
 	if not cfg.combat_enabled:
 		return false
@@ -201,6 +229,16 @@ static func acquire_target(world, cfg: ConfigRes, u: UnitRes, idx: int = -1) -> 
 	var aggro: float = cfg.aggro_range
 	if aggro <= 0.0:
 		return false
+	# ★★ 濒死救援途中（`unit.is_rescuing()`）：警戒半径**缩一圈**（本次修 bug）。
+	#
+	# 为什么需要它：赶去救队长的那几个兵，如果沿用正常警戒半径，路过的任何敌人都会
+	#   把它们拽进追击；追击上限一触发就 `drop_engagement()` + 回家 ——
+	#   而那条救援命令**已经被战斗清掉了** ⇒ 表现就是「将领倒了，部队不去保护」。
+	#   ⇒ 救援期间只理「贴到脸上的威胁」（`ai.rescue_aggro_mult` × 正常半径，默认 40%），
+	#     打完继续往倒下点走（见 `update_unit` 末尾那一段）。
+	#   ⚠️ 注意这里**不是**禁止索敌：完全不还手会让援军被沿途的敌人白打。
+	if u.is_rescuing():
+		aggro *= cfg.rescue_aggro_mult
 	# ★★ 「因为追击上限刚放弃过」的冷却期内**不再自动锁定单位**（本轮修 bug）。
 	#
 	# 修的是实测报回来的现象：「单位在区划边界要追击的敌方单位会在原地抽搐」。
@@ -285,8 +323,24 @@ static func acquire_target(world, cfg: ConfigRes, u: UnitRes, idx: int = -1) -> 
 		world.push_event({"type": "alert", "unit": u, "target": best})
 		return true
 
-	# 没有敌方单位 → 玩家阵营再看一眼敌方建筑
-	if not FactionRes.is_player_faction(u.faction):
+	# 没有敌方单位 → 再看一眼敌方**建筑**（本次改动：从「只有玩家阵营」放开）
+	#
+	# ★★ 原来这一句是 `if not FactionRes.is_player_faction(u.faction): return false`
+	#    —— 也就是**只有玩家阵营**才会自动索敌建筑，AI 阵营根本走不到下面那几行。
+	#    实测报回来的现象正是它的后果：
+	#      ·「我在敌方部队附近建造建筑，敌方不会有想打掉这个建筑」；
+	#      ·「他只会让箭塔持续攻击自己」—— 被塔打也不还手，因为「建筑」这个目标类别
+	#        对 AI 单位根本不存在。
+	#
+	# ⚠️ 唯一的例外是 `enemy_ai` 驱动的那一类**测试敌人**（`FactionRes.NPC_FACTION`
+	#    且**没有驻防归属**）：它们的行为是「朝玩家据点一路推进」，路上顺手拆任何
+	#    警戒半径内的建筑会把它钉在半路（实测：全局放开之后
+	#    `test_logic` 的「敌人拆穿城墙后走进来并停在大本营旁」当场变红，
+	#    因为它转头去拆旁边的别的建筑了）。那类单位的建筑目标仍然只由
+	#    `enemy_ai` 明确指定（拆挡路的城墙）。
+	#   ★ 有驻防归属的守军**不受这个例外影响**（它们是 `ai: "general"` 的驻防将领，
+	#     由 general_ai 驱动）—— 用户要的「AI 对建筑有反应」正是它们。
+	if u.faction == FactionRes.NPC_FACTION and not u.is_garrison():
 		return false
 	var b = nearest_enemy_building(world, cfg, u, aggro)
 	if b == null:
