@@ -13,6 +13,9 @@
 extends Node2D
 
 const ConfigRes = preload("res://logic/config.gd")
+## ★ 2.5D 的换算与补偿都走它（`comp_scale` / `comp_extent`）——
+##   压扁口径只许有一个出处，这里不许自己写 `1.0 / cfg.render_squash`。
+const Palette2DRes = preload("res://view/palette2d.gd")
 ## ★ 给 for 循环变量加类型：`u.pos` / `u.alive` 这类成员访问在有类型时是静态解析，
 ##   无类型时是动态查找（每单位每批次一次）。见 docs/pitfalls.md 1.7。
 ##   unit.gd 不 preload view/，所以这里不是循环依赖。
@@ -66,6 +69,14 @@ var icon_draw_count: int = 0
 ## ★ 其中圆盘底画了几张（正常情况 = icon_draw_count：每个单位一个盘 + 一个字）。
 ##   两个字分开数，是为了「盘画了、字没画」和「字画了、盘没画」都能被测出来。
 var icon_disc_count: int = 0
+## ★★ 2.5D 诊断：最近一次 `_draw()` 里真的**进过几次反向补偿变换**（纯诊断，只有测试读它）。
+##
+## 为什么必须留这个数：补偿组是「进去 → 画 → 复位」的成对操作，
+##   漏了复位**不会报错**，只会让后面每一个图元都歪着画（而且要等到看画面才发现）。
+##   有了计数器就能断言「至少进过一次补偿」；`comp_inside` 则钉住「画完已经复位」。
+var comp_group_count: int = 0
+## 最近一次 `_draw()` 结束时补偿变换**是否已复位**（true = 正常，false = 漏了复位）。
+var comp_reset_ok: bool = true
 
 
 func setup(p_cfg: ConfigRes, p_world, p_font: Font = null) -> void:
@@ -128,7 +139,7 @@ func _draw() -> void:
 	#    整个 UnitView 约 8 ms（把节点 visible=false 一藏，帧时间直接掉 8 ms），
 	#    而 draw call 只有个位数 —— 也就是说贵的是**在 GDScript 里攒绘制命令**，
 	#    不是 GPU。所以这里做的是「少一次查表、少一次开方」这类便宜但确定的事：
-	#      · `u.pos * cell_px` **内联**，不再每单位调一次 PaletteRes.to_px；
+	#      · `u.pos * cell_px` **内联**，不再每单位调一次 Palette2DRes.to_px；
 	#      · 半径与图标贴图按**单位类型**每帧查一次表（原来是每单位一次
 	#        `unit_radius_of` + 一次乘法）—— 类型只有几种，查表几乎免费；
 	#      · 朝向上不再 `normalized()`（facing 本来就存的是单位向量），
@@ -160,14 +171,24 @@ func _draw() -> void:
 		#    ⚠️ 判据只在 logic/fog.gd 一处，视图不许自己写「距离多少算看见」。
 		if not _visible_to_me(u):
 			continue
-		var p: Vector2 = u.pos * cell_px
+		# ★★ 菱形投影：位置走 `palette.to_px`（唯一的投影出处）。
+		#   ⚠️ 这里**不再**内联成 `u.pos * cell_px`：投影是「旋转 + 压扁」的矩阵，
+		#      内联等于把口径抄了第二份（改一次角度就要改两处，迟早漂开）。
+		#      每单位一次静态函数调用的代价，在 1000 单位档要重新量（见 bench_fps）。
+		#   ★ 屏幕外剔除仍然用**轴对齐**的 `vis`（局部坐标与世界坐标同一套），
+		#     因为世界空间**保持轴对齐**——这正是「不去转父节点」换来的最大好处。
+		var p := Palette2DRes.to_px(u.pos, cfg)
 		if not vis.has_point(p):
 			continue                    # 屏幕外：连指令都不发
 		var utype := String(u.unit_type)
-		var r: float = radius_by_type.get(utype, -1.0)
+		# ★★ 透视：半径随位置变化（近大远小）⇒ **不能按兵种缓存**（老版本那样做，
+		#    会让站在远处和近处的同兵种看着一样大）。这里按「兵种 + 量化的格 y」缓存：
+		#    同一行（y 取整到 1 格）内的缩放差异极小，肉眼看不出来，但省掉了每单位一次投影。
+		var bucket := "%s|%d" % [utype, int(floor(u.pos.y))]
+		var r: float = radius_by_type.get(bucket, -1.0)
 		if r < 0.0:
-			r = cfg.unit_radius_of(utype) * cell_px
-			radius_by_type[utype] = r
+			r = Palette2DRes.unit_radius_px(cfg, utype, u.pos)
+			radius_by_type[bucket] = r
 		var ch: String = char_by_type.get(utype, "")
 		if ch == "":
 			# ★ 字走**数据**：config 的 `unit.types.<类型>.icon`（编辑器里那一栏），
@@ -200,21 +221,42 @@ func _draw() -> void:
 	if n == 0:
 		icon_draw_count = 0
 		icon_disc_count = 0
+		comp_group_count = 0
+		comp_reset_ok = true
 		return
-	# ---- 后面 6 遍：**按图元类型分组**，而不是「一个单位画完自己那一套」 ----
+	# ---- 后面这些遍：**按图元类型分组**，而不是「一个单位画完自己那一套」 ----
 	# ★★ 为什么必须分组：Godot 的 2D 画布按图元/状态合批。
 	#    原来每个单位连着画 circle→arc→line→(血条)，批次状态在单位之间反复横跳，
 	#    1000 个单位就变成 **4000+ 个 draw call**（实测 4204），完全合不了批。
 	#    分组之后同一类图元连着画 → 合批 → draw call 掉到个位数。
 	#    （实测：1000 单位实机帧从 60.8 ms 的渲染降到见 bench_fps 的输出。）
+	#
+	# ★★ 2.5D 之后这些遍分成**两类**（口径见 palette.comp_scale 的注释）：
+	#    · **世界里的东西** → 跟着父变换一起压扁：圆盘本体、朝向线
+	#      （「地面上的一个兵/一个方向」，压扁才与地面一致）；
+	#    · **屏幕上的东西** → 反向补偿回 1:1：字、血条、选中光晕、交战三角、濒死十字
+	#      （汉字竖着只剩 squash 倍会直接糊掉；血条会被压成一条缝）。
+	#    ⚠️ 补偿是「进去 → 画 → 复位」，**漏了复位不会报错**，只会让后面全歪 ——
+	#      所以成对写在下面，并用 comp_group_count / comp_reset_ok 留痕给测试。
 
-	# 1) 选中圈（先画，压在主体下面）：同一个贴图放大 + 半透明阵营色
-	for i in n:
-		if _selection.has(units[i].id):
-			var rr: float = radii[i] + 4.0
-			var rc: Color = ring_cols[i]
-			draw_texture_rect(_tex_halo, Rect2(pts[i] - Vector2(rr, rr), Vector2(rr * 2.0, rr * 2.0)),
-				false, Color(rc.r, rc.g, rc.b, 0.35))
+	# 1) 选中光晕（先画，压在主体下面）：那个圆盘贴图放大 + 半透明阵营色。
+	#    ★ 补偿组：光晕是**屏幕上的 UI 反馈**，被压成椭圆会被误读成「选中范围是个扁的」。
+	comp_group_count = 0
+	if _has_selection(units, n):
+		draw_set_transform(Vector2.ZERO, 0.0, Vector2(1.0, Palette2DRes.comp_scale(cfg)))
+		comp_group_count += 1
+		for i in n:
+			if _selection.has(units[i].id):
+				# ⚠️ 竖向半径必须先过 comp_extent：否则父变换会把它压回 rr（看着比横向小）
+				var e := Palette2DRes.comp_extent(cfg, Vector2(1.0, 1.0)) * (radii[i] + 4.0)
+				var rc: Color = ring_cols[i]
+				draw_texture_rect(_tex_halo, Rect2(pts[i] - e, e * 2.0),
+					false, Color(rc.r, rc.g, rc.b, 0.35))
+		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+		comp_reset_ok = true
+	else:
+		comp_reset_ok = true
+
 	# 2) 单位本体 = **阵营色圆盘底 + 一个字**（本轮：圆盘保留，字压在盘上，将领的描边更粗）。
 	#
 	# ★★ 分两遍画，两遍各自按「会被批次切断的那个键」分桶：
@@ -224,6 +266,9 @@ func _draw() -> void:
 	#   颜色都是逐图元的顶点色 / modulate（阵营色不同不会切断批次）。
 	#   ⚠️ 分桶本身抽成了纯函数（`_bucket_by_tex` / `_bucket_by_size`），并且有测试钉它 ——
 	#      上一轮在分桶上踩过一次**静默不画**的坑，见 docs/pitfalls.md 5.50。
+	#
+	# ★ 2.5D：圆盘**不补偿** —— 它在压扁空间里画的是圆，屏幕上就是椭圆，
+	#   与「地面上的一个兵」一致（与饥荒里地上的圆影同一条直觉）。
 	var by_tex := _bucket_by_tex(discs, n)
 	var disc_drawn := 0
 	for key_tex in by_tex.keys():
@@ -236,6 +281,13 @@ func _draw() -> void:
 				false, body_cols[i])
 			disc_drawn += 1
 	icon_disc_count = disc_drawn
+
+	# 2b) 字：★ 补偿组（屏幕 1:1）—— 汉字竖向只剩 squash 倍会糊成一团。
+	#     补偿只发**一次**变换（锚点取世界原点），所以批次只被切断一次，不是每单位一次。
+	#     ★★ 菱形档下这里**只需要管压扁**：世界空间是轴对齐的（旋转已经落在 to_px 里），
+	#        所以没有旋转要抵消 —— 这就是「不转父节点」省下来的那类 bug。
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2(1.0, Palette2DRes.comp_scale(cfg)))
+	comp_group_count += 1
 	var by_size := _bucket_by_size(radii, n)
 	var drawn := 0
 	for fsize in by_size.keys():
@@ -245,12 +297,23 @@ func _draw() -> void:
 	# 3) 朝向：一条短线，指向 facing（八方向之后 facing 是完整向量）—— 线能合批，随便画
 	#
 	# ⚠️ 字**不随朝向旋转**（画出格会挤到旁边单位身上）。朝向由这一条线表达。
+	# ★ 2.5D：facing 是**逻辑**方向（格空间），画到压扁空间里要把 y 分量乘 squash ——
+	#   否则朝右上 / 右下的单位，那根线在屏幕上的角度会与它真正走的方向不一致。
+	#   补偿组里画（与字同一层），所以线宽也要按补偿口径给。
+	var sq: float = 1.0
+	var lw_facing: float = 2.0
 	for i in n:
 		var f: Vector2 = units[i].facing
 		# ⚠️ facing 存的本来就是单位向量（face_toward / step_along_path 都归一过），
 		#    所以这里**不再 normalized()**；判零用平方比较，省掉每单位一次开方。
 		if f.x * f.x + f.y * f.y > 1e-12:
-			draw_line(pts[i], pts[i] + f * (radii[i] * 1.5), FACING_COLOR, 2.0)
+			# ★ 透视：方向也要投影（先投中心、再投「中心 + 方向·一格」，
+			#   取屏幕上的差分）—— 直接拿格空间的向量当屏幕向量在透视下是错的
+			#   （屏幕上方与下方的同一方向，屏幕角度并不相同）。
+			var tip := Palette2DRes.to_px(units[i].pos + f * 0.5, cfg)
+			var dir_screen: Vector2 = (tip - pts[i]).normalized()
+			draw_line(pts[i], pts[i] + dir_screen * (radii[i] * 1.5),
+				FACING_COLOR, lw_facing)
 	# 5) 交战标记：头顶小三角
 	#
 	# ⚠️ 头顶 / 血条的偏移都要**让开那个字**：字的外框是 `半径 × EXTENT`，
@@ -272,19 +335,26 @@ func _draw() -> void:
 			continue
 		var md: float = radii[i] * UnitIconRes.EXTENT + 2.0
 		var mc: Vector2 = pts[i] + Vector2(0.0, -md - 3.0)
-		draw_line(mc + Vector2(-4.0, -4.0), mc + Vector2(4.0, 4.0), DOWNED_MARK_COLOR, 2.0)
-		draw_line(mc + Vector2(-4.0, 4.0), mc + Vector2(4.0, -4.0), DOWNED_MARK_COLOR, 2.0)
+		draw_line(mc + Vector2(-4.0, -4.0), mc + Vector2(4.0, 4.0), DOWNED_MARK_COLOR, lw_facing)
+		draw_line(mc + Vector2(-4.0, 4.0), mc + Vector2(4.0, -4.0), DOWNED_MARK_COLOR, lw_facing)
 	# 6) 血条：不满血才画（满血不画，避免刷屏）。
 	#    底 + 填充合成**一遍**：两笔都是 draw_rect（顶点色不同，仍然合批），
 	#    拆成两遍只是白扫 1000 个单位、白判两次血量。
+	#    ★ 补偿组：条高 5px 被压成 3.5px 就看不清了，宽度也要除 squash 保持比例。
+	#    ★★ 透视档：世界像素**就是**屏幕像素 ⇒ 这里只需要管**透视本身的缩放**吗？
+	#       不需要 —— 血条是 UI 读数，宽度用投影后的半径算就已经与单位对齐了，
+	#       高度 3px 保持屏幕像素即可（透视不作用于 UI）。
+	var inv_s: float = 1.0
 	for i in n:
 		var u3 = units[i]
 		if u3.hp < u3.hp_max - 1e-6:
 			var w: float = radii[i] * 2.4
-			var top: float = pts[i].y + radii[i] * UnitIconRes.EXTENT + 1.0
-			draw_rect(Rect2(Vector2(pts[i].x - w * 0.5, top), Vector2(w, 3.0)), HP_BACK_COLOR, true)
-			draw_rect(Rect2(Vector2(pts[i].x - w * 0.5, top), Vector2(w * u3.hp_ratio(), 3.0)),
+			var top: float = radii[i] * UnitIconRes.EXTENT + 1.0
+			var bw: float = w * inv_s
+			draw_rect(Rect2(pts[i] + Vector2(-bw * 0.5, top), Vector2(bw, 3.0)), HP_BACK_COLOR, true)
+			draw_rect(Rect2(pts[i] + Vector2(-bw * 0.5, top), Vector2(bw * u3.hp_ratio(), 3.0)),
 				hp_cols[i], true)
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 
 ## 这个单位现在该不该画给玩家看（战争迷雾的唯一判据入口）。
@@ -353,6 +423,12 @@ static func _bucket_by_size(radii: PackedFloat32Array, n: int) -> Dictionary:
 
 ## 当前可见的世界像素矩形（用来剔除屏幕外的单位）。
 ## 不在场景树里时（无头测试直接调 _draw）返回一个巨大的矩形 —— 宁可多画，不要漏画。
+##
+## ★★ 2.5D：屏幕 → 局部的那一趟走 `get_global_transform_with_canvas().affine_inverse()`，
+##    它**天然包含父节点（ContentRoot）的压扁变换** ⇒ 剔除在压扁之后仍然正确，
+##    这里一个字都不用改。⚠️ 只有那个「宁多画别漏画」的余量要按口径放大：
+##    字 / 血条 / 光晕的活动范围在**屏幕**上是固定的几十像素，
+##    换到压扁空间里纵向要除以 squash（否则竖着会少留一截）。
 func _visible_rect() -> Rect2:
 	if not is_inside_tree():
 		return Rect2(-1e9, -1e9, 2e9, 2e9)
@@ -361,4 +437,13 @@ func _visible_rect() -> Rect2:
 	var a := inv * vp.position
 	var b := inv * vp.end
 	var rect := Rect2(a, Vector2.ZERO).expand(b)
-	return rect.grow(CULL_PAD_PX)
+	return rect.grow_individual(CULL_PAD_PX, Palette2DRes.screen_metric(cfg, CULL_PAD_PX),
+		CULL_PAD_PX, Palette2DRes.screen_metric(cfg, CULL_PAD_PX))
+
+
+## 这一批里有没有被选中的（有才需要开一次反向补偿变换；没有就整组跳过，省一次批次切断）。
+func _has_selection(units: Array, n: int) -> bool:
+	for i in n:
+		if units[i] != null and _selection.has(units[i].id):
+			return true
+	return false

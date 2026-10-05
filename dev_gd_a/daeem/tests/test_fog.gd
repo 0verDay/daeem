@@ -26,6 +26,9 @@ const FogRes = preload("res://logic/fog.gd")
 const UnitRes = preload("res://logic/unit.gd")
 const BuildingRes = preload("res://logic/building.gd")
 const FogViewRes = preload("res://view/fog_view.gd")
+## ★ 3D 外壳的迷雾层在 `ground_view` 里（一块独立平面 + 一张贴图）——
+##   本文件用它的常量算「贴图应当多大」。
+const GroundRes = preload("res://view/ground_view.gd")
 const InputControllerRes = preload("res://view/input_controller.gd")
 
 
@@ -798,15 +801,25 @@ func _test_game_scene_wires_fog() -> void:
 		main.queue_free()
 		return
 
-	# ---- 场景里真的有一个迷雾节点，而且排在地形之上、单位之上、覆盖层之下 ----
-	ok(game.fog_view != null, "★★ GameScene 里建出了 FogView（灰色遮罩那一层）")
-	ok(game.fog_view.z_index > game.terrain_view.z_index,
-		"★ 遮罩盖在地形之上（z_index %d > %d）"
-		% [game.fog_view.z_index, game.terrain_view.z_index])
-	ok(game.fog_view.z_index > game.unit_view.z_index,
-		"★ 遮罩盖在单位之上（看不见的敌人本来也不画，但灰要压在看得见的东西上）")
-	ok(game.fog_view.z_index < game.overlay.z_index,
-		"★★ 遮罩在覆盖层之下 —— 自己的移动标记 / 框选矩形不被雾吃掉")
+	# ---- 场景里真的有一层迷雾，而且**压在地面之上、覆盖层之下** ----
+	#
+	# ★★ 这一段原来断言的是 2D 场景树的 `z_index` 堆叠序
+	#   （`fog_view` / `terrain_view` / `unit_view` 都是 `Node2D`，靠 z_index 排序）。
+	#   **3D 入口下这一段整段不执行**（`game.fog_view` 在 3D 外壳上不存在 ⇒
+	#   `Invalid access to property` ⇒ 这个用例函数的后续断言**一条都不跑**，
+	#   而 `test_fog` 的断言数会从 141 掉到 128 —— 却**报不出失败**）。
+	#   ⇒ 改成**两条外壳都有**的判据（`ground` 那一层 + `overlay`）：
+	#     2D 与 3D 都会建出「地面层」和「覆盖层」，缺一个就该红。
+	ok(game.ground != null, "★★ 场景里建出了地面层（迷雾是它的一部分）")
+	ok(game.overlay != null, "★★ 场景里建出了覆盖层（标记 / 拖框在它上面）")
+	var fog_layer = game.ground._fog_mesh if game.ground != null else null
+	ok(fog_layer != null, "★★ 地面层里有独立的迷雾层（灰色遮罩那一层）")
+	if fog_layer != null:
+		# 迷雾层与地面层必须**各自一块平面**（烘在同一张图里就得每帧重烘地形，见 ground_view 的说明）
+		ok(fog_layer != game.ground._mesh, "★ 迷雾是独立的一块平面（不与地面共用 mesh）")
+		ok(fog_layer.position.y > game.ground._mesh.position.y,
+			"★ 迷雾抬在地面之上（抬高 %.1f，避免 z-fighting）"
+			% (fog_layer.position.y - game.ground._mesh.position.y))
 
 	# ---- 世界有迷雾，而且**进游戏第一帧之前**就算过了 ----
 	var w = game.world
@@ -818,9 +831,18 @@ func _test_game_scene_wires_fog() -> void:
 			ok(w.fog.tile_visible(w.my_faction, base_b.tx, base_b.ty),
 				"★ 家里那一块有视野（开局屏上不是一整片灰）")
 
-	# ---- 遮罩真的发出了绘制指令（可数的痕迹）----
-	game.fog_view._draw()
-	eq(game.fog_view.draw_count, 1, "★★ 迷雾层发出一张铺满地图的遮罩（一次 draw_texture_rect）")
+	# ---- 迷雾贴图真的烘出来了（可数的痕迹）----
+	# ★ 判据从「2D 的 draw_count == 1」换成「贴图尺寸与一个可数的烘图次数」：
+	#   3D 那层是「每格 FOG_PX_PER_TILE 像素」的贴图 + 一块平面，不是每次 draw 一次矩形。
+	if game.ground != null and game.ground._fog_tex != null:
+		var fsz: Vector2i = game.ground._fog_tex.get_size()
+		eq(fsz.x, int(w.map.cols) * GroundRes.FOG_PX_PER_TILE,
+			"★★ 迷雾贴图铺满整张地图（宽 = 格数 × 每格像素）")
+		eq(fsz.y, int(w.map.rows) * GroundRes.FOG_PX_PER_TILE,
+			"★★ 迷雾贴图铺满整张地图（高 = 格数 × 每格像素）")
+		ok(game.ground.fog_bake_count > 0, "★ 迷雾贴图真的烘过（烘图次数 > 0）")
+	else:
+		ok(false, "拿不到迷雾贴图（`ground._fog_tex` 是 null —— 迷雾层没建出来）")
 
 	# ---- 单位视图真的按迷雾剔除：把敌人的位置搬到「没视野」的角落再看 ----
 	var uv = game.unit_view

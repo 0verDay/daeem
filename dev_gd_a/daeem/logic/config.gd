@@ -37,6 +37,48 @@ var data: Dictionary = {}
 ##    （palette.to_px / tile_rect / unit_radius_px）。logic/ 里出现它 = 坐标单位混用的信号。
 ##    它放在这里而不是 view/，只是为了让所有可调数值集中在同一个 JSON 里。
 var cell_px: float = 128.0
+
+## ---- ★★ 斜俯视真透视（见 config.json 的 render._comment）----
+## ★★ 世界空间：逻辑格 (x, y) → 地面点 (x·cell_px, **0**, y·cell_px)。
+##    也就是「世界是一块水平地面，格是地面上的方格」，镜头在斜上方俯视。
+##    投影 = 视图矩阵 + 透视除法 ⇒ **近大远小**（参考图里墙呈梯形的唯一来源）。
+##    logic/ 依然完全不知道这件事：单位位置、半径、射程、寻路全都还是「格」。
+## ⚠️ 这些是**渲染常量**（与 cell_px 同性质），而且出现在每格每帧的内层循环里，
+##    必须走 _cache_scalars() 算好，不许用 cfg.num("render.camera_pitch_deg")。
+var cam_pitch: float = 0.0        # 俯角（弧度）
+var cam_height: float = 4000.0    # 镜头离地面高度（世界像素）
+var cam_fov: float = 0.0          # 竖直视场角（弧度）
+## 投影因子（`to_px` 内层循环直接用）：
+##   u = x / (A + y·B)   v = y / (A + y·B)     —— A、B 只跟 pitch / height / fov / 视口高有关
+##   推导：相机在 (0, H·cosθ, −H·sinθ) 朝原点俯视 θ；地面点 (x, 0, y) 经视图矩阵后
+##         z_cam = (A + y·B)，透视除法后 ndc_x = x / (z_cam·aspect·tan(fov/2))，ndc_y = −(v−1)
+##   于是屏幕像素 = (u·vp_w, v·vp_h)，其中视口比已并入 A。
+var proj_a: float = 1.0
+var proj_b: float = 0.0
+## 视口尺寸（投影的 ndc → 像素这一步用它；由 view 层在 setup 时喂进来）
+var proj_vp_w: float = 1920.0
+var proj_vp_h: float = 1080.0
+## 并入量（palette 做乘加时读它们，见 `_recompute_projection`）
+var proj_tan_half: float = 1.0
+var proj_aspect: float = 1.0
+var proj_vp_half: Vector2 = Vector2(960.0, 540.0)
+## 「相机在地面上的那一点」对应的竖直像素量（= H·cosθ）——
+## ★ 它决定**格 y = 0 那条线落在屏幕哪里**：为了让地面中心落在视口中心，
+##   palette.to_px 里减掉它（否则整张地图会整体偏上或偏下）。
+var proj_zero_y: float = 0.0
+## ★★ 投影后的**整体平移**（屏幕像素）——「让地图居中」用它。
+##
+## 为什么需要它：上面的推导把「格 y = 0」放在**视口中心**，于是整张地图
+##   （格 y ∈ [0, rows]）会整体落在屏幕**下半部分**（实测：22 行的图落在 y ≈ 1500~2400，
+##   而视口只有 1080 高 ⇒ 地图整个在屏幕外面，单位全被剔除）。
+##   修法不是改投影公式，而是**平移投影结果**：`proj_offset = 视口中心 − 地图中心`。
+##   game_scene 在开局算一次；测试要自己设（见 tests/test_case.gd 的 setup_projection）。
+var proj_offset: Vector2 = Vector2.ZERO
+## 建筑与单位按「脚下 Y」排前后（关掉 = 平铺层级，用来二分定位问题）
+var depth_sort: bool = true
+## 字 / 血条 / 选中光晕 / 地面标记**不被投影压扁**（屏幕 1:1）
+var ui_compensate: bool = true
+
 var cols: int = 24
 var rows: int = 16
 
@@ -306,6 +348,21 @@ func _cache_scalars() -> void:
 	rows = int_val("grid.rows", 16)
 	cell_px = num("render.cell_px", 128.0)
 
+	# ★★ 斜俯视真透视（见字段声明处的注释）：
+	#   · pitch 夹在 [5°, 90°]：90 = 正俯视（proj_b 趋 0 ⇒ 退化成仿射），太小则地平线进画面；
+	#   · height / fov 只影响「一格占屏幕多大」，不影响逻辑。
+	cam_pitch = deg_to_rad(clampf(num("render.camera_pitch_deg", 55.0), 5.0, 89.0))
+	cam_height = maxf(1.0, num("render.camera_distance", 3600.0))
+	cam_fov = deg_to_rad(clampf(num("render.camera_fov_deg", 40.0), 5.0, 120.0))
+	_recompute_projection()
+	depth_sort = bool_val("render.depth_sort", true)
+	ui_compensate = bool_val("render.ui_compensate", true)
+
+	# ---- ⚠️ 以下这一段原本就在 `_cache_scalars()` 里 ----
+	#   ★ 一次大段替换曾把它与函数头切断，症状是
+	#     `Parse Error: Could not preload resource script "res://logic/config.gd"`
+	#     —— 它是全工程的依赖，一旦解析失败**所有**测试文件都变成 "Compilation failed"。
+	#     教训：改动长函数时，替换块的两端要落在**函数边界**上，别停在函数体中间。
 	camera_edge_size = num("camera.edge_size", 44.0)
 	drag_select_min_px = num("ui.drag_select_min_px", 6.0)
 	minimap_drag_min_px = num("minimap.drag_min_px", 4.0)
@@ -401,6 +458,41 @@ func _cache_scalars() -> void:
 	# ★★ 单位类型表（unit.types / unit.classes / unit.general）—— 必须在其它
 	#   单位字段之后调：它拿 unit_speed / unit_hp_max / unit_radius_factor 当兜底值。
 	_cache_unit_types()
+
+
+## 视口尺寸变了就重算投影常数（view 层在 setup 时喂一次；窗口拉伸时再喂一次）。
+func set_viewport_size(w: float, h: float) -> void:
+	proj_vp_w = maxf(1.0, w)
+	proj_vp_h = maxf(1.0, h)
+	_recompute_projection()
+
+
+## 重算投影常数 —— **透视投影的唯一出处**（palette 只读这几个数）。
+##
+## 推导（相机在 (0, H·cosθ, +H·sinθ) 朝 −z 方向俯视 θ，地面是 y = 0）：
+##   地面点 P = (x, 0, y) 经视图矩阵（先平移 −cam，再绕 X 轴转）后：
+##       x_cam = x
+##       z_cam = H·sinθ − y·cosθ        （相机前方为正；格 y 越大离镜头**越近**）
+##   透视除法（竖直视场角 + 宽高比）：
+##       ndc_x = x_cam / (z_cam · aspect · tan(fov/2))
+##       ndc_y = (H·cosθ + y·sinθ) / (z_cam · tan(fov/2))
+##   屏幕像素：屏幕.x = vp_w/2·(1 + ndc_x)、屏幕.y = vp_h/2·(1 + ndc_y)
+##
+## ⚠️ 这一处是全项目「近大远小」的**唯一**来源：改 pitch / height / fov 只改这里，
+##    palette 的 to_px / to_logic 只是把它写成乘加与它的逆。
+func _recompute_projection() -> void:
+	proj_tan_half = tan(cam_fov * 0.5)
+	proj_aspect = proj_vp_w / maxf(1.0, proj_vp_h)
+	proj_vp_half = Vector2(proj_vp_w * 0.5, proj_vp_h * 0.5)
+	# A、B：深度 d = A + y_px·B（y_px = 格 y × cell_px）。
+	# ★★ 符号是**这一档最容易搞反的地方**（实测反过一次：近处格子反而更小）：
+	#    镜头在「地面 +z 那一侧」朝 −z 看 ⇒ 格 y 越大（越靠屏幕下方）离镜头**越近**，
+	#    所以深度里那一项必须是 **− y·cosθ**。
+	proj_a = cam_height * sin(cam_pitch)
+	proj_b = -cos(cam_pitch)
+	# 「相机看向地面上哪一点」的竖直量：格 y = 0 那条线要在视口中心
+	#   ⇒ 屏幕 y 的分子里保留 + y_px·sinθ（与 proj_b 的符号配套，见 palette.to_px）
+	proj_zero_y = cam_height * cos(cam_pitch)
 
 
 # ------------------------------------------------------------------

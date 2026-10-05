@@ -18,7 +18,7 @@
 extends "res://tests/test_case.gd"
 
 const UiLayoutRes = preload("res://view/ui_layout.gd")
-const PaletteRes = preload("res://view/palette.gd")
+const Palette2DRes = preload("res://view/palette2d.gd")
 const BuildingRes = preload("res://logic/building.gd")
 const MinimapRes = preload("res://view/minimap.gd")
 
@@ -57,6 +57,39 @@ func _run() -> void:
 		quit(1)
 		return
 
+	# ★★★ 「小地图的 2D 相机替身」这一整块**只对 2D 外壳成立**，在 3D 入口下**显式跳过**。
+	#
+	# ⚠️⚠️ 为什么必须显式跳过（这是本轮核查抓到的**第二个静默漏测**，与 `test_ui` 同一类）：
+	#   本文件后面的用例全都在读 `game.camera_rig`（`Camera2D` 替身）：
+	#   `rig.cam.position` / `cam_bounds()` / `clamp_position()` / `fit_to_map()` …
+	#   而 **3D 外壳上根本没有 `camera_rig`** ⇒ 每一处都抛
+	#     `Invalid access to property or key 'camera_rig' on a base object of type 'Node3D'`
+	#   ⇒ **每个用例函数各自中断**，`test_minimap` 的断言数从 145 掉到 19，
+	#     而报告上写的是「通过 19 项 / 失败 0 项」—— **不报失败**（pitfalls 10.7 那条）。
+	#   ⇒ 与其让它悄悄少跑，不如**明确说一句**「这些用例在当前入口下不适用」。
+	#
+	# ★★ 那么「小地图点哪去哪 / 视野框跟着相机走」在 3D 下谁在管？
+	#   `tests/test_view3d.gd` 的 `_test_hud_and_minimap` 与 `_test_camera_aim`：
+	#     · 视野框有面积、跟着相机挪；
+	#     · 小地图「点哪去哪」= `mm._jump_to(mm.to_minimap(格))` → 落点误差 < 0.05 格；
+	#     · 三条「摆相机 / 按格对准 / 按屏幕点对准」的误差 < 0.05 格。
+	#   ⇒ 2D 遗留路线的覆盖**只在本文件**；3D 主路线的覆盖在 `test_view3d`。两边都不丢。
+	if not (game.get("camera_rig") != null):
+		print("[CASE] （跳过）当前入口不是 2D 外壳（没有 camera_rig）⇒ 本文件那 8 组「2D 相机替身」用例不适用")
+		print("[CASE]   3D 入口下的等价覆盖在 tests/test_view3d.gd 的 _test_hud_and_minimap / _test_camera_aim")
+		# 仍然钉一条**两条外壳都成立**的：小地图存在，而且拿到了投影助手
+		ok(game.hud != null and game.hud.minimap != null, "★ HUD 与小地图仍然建出来了（3D 入口）")
+		main.queue_free()
+		await process_frame
+		print("[CASE] %s -> 通过 %d 项，失败 %d 项" % [_case_name, _pass, _fail])
+		if _fail > 0:
+			for n in _failed_names:
+				print("[CASE]   FAILED: %s" % n)
+			quit(1)
+		else:
+			quit(0)
+		return
+
 	var mm = game.hud.minimap
 	ok(mm != null, "HUD 里有小地图控件（不再是那个只有两个大字的占位）")
 	ok(game.hud.map_placeholder == null or game.hud.map_placeholder.get_child_count() > 0,
@@ -65,8 +98,9 @@ func _run() -> void:
 	if mm != null:
 		await _test_content(mm, game, cfg)
 		_test_geometry(mm, game)
-		_test_view_rect(mm, game)
-		_test_view_clip(mm, game)
+		await _test_view_rect(mm, game)
+		# ★ `_test_view_clip` 是 async（它每改一次相机都要等一帧让画布变换刷新，见那里的注释）
+		await _test_view_clip(mm, game)
 		_test_click(main, game, mm)
 		_test_drag(mm, game, cfg)
 	_test_camera_extremes(main, game, cfg)
@@ -232,9 +266,16 @@ func _test_view_rect(mm, game) -> void:
 		"★ 框心本帧就等于相机中心（世界坐标 %.1f px）" % cam.position.x)
 
 	# ---- 4) 框在屏幕上（小地图里）也要跟着动 ----
+	#
+	# ⚠️ 这一段的两个位置之间必须**各等一帧**（理由见 `_test_view_clip` 开头）：
+	#    `view_rect_local()` 是唯一走**画布变换**的换算（世界像素 → 格），
+	#    而画布变换每帧才刷新一次 ⇒ 同帧里改相机读两次会读到**同一份**角点，
+	#    表现就是「换了个镜头位置，框却一动不动」。
 	rig.center_on_px(map_px * 0.25)
+	await process_frame
 	var la: Rect2 = mm.view_rect_local()
 	rig.center_on_px(map_px * 0.75)
+	await process_frame
 	var lb: Rect2 = mm.view_rect_local()
 	ok(la.position.distance_to(lb.position) > 1.0,
 		"★ 换算到小地图坐标后框的位置同样在变（这是真正被画出来的那个矩形）")
@@ -273,6 +314,22 @@ func _test_view_clip(mm, game) -> void:
 	var outer := Rect2(Vector2.ZERO, mm.size)
 	cam.zoom = Vector2.ONE
 
+	# ★★ 这一节必须在**改完相机之后再等一帧**才能读视野框（本轮修好解析后实测到的）。
+	#
+	# 为什么：`minimap._view_corners_logic()` 走的是
+	#   `get_viewport().get_canvas_transform().affine_inverse()` ——
+	#   而 Godot 的**画布变换是每帧渲染时刷新的**，`cam.position` 改了之后
+	#   同帧里读到的还是**上一帧**的变换。本节的断言要求「框贴住刚移动到的那个极点」，
+	#   用的是**同帧**的值 ⇒ 永远读到上一个位置的框（实测：四个极点读出来的是同一份
+	#   `corners_logic`，于是「贴边」全部差一段）。
+	#   `_test_drag` / `_test_click` 不一样：它们直接断言 `cam.position`（同帧就是新的），
+	#   所以不需要等帧 —— 这不是「有些地方要等、有些不用」的口径混乱，
+	#   而是「变量的新鲜度不同」。
+	#
+	# ⚠️ 相机在**下一帧**才会被渲染读到，所以 `await` 必须写在 `center_on_px` **之后**。
+	#   代价：本节多跑约 40 帧（无头下每帧代价可忽略）。
+	await process_frame
+
 	# 用例自检：小地图里真的有「留边」（不然这一段测的是空气）
 	ok(bounds.size.x < mm.size.x + 1e-4 or bounds.size.y < mm.size.y + 1e-4,
 		"小地图里有地图之外的留边（地图矩形 %s，控件 %s）" % [str(bounds.size), str(mm.size)])
@@ -281,6 +338,7 @@ func _test_view_clip(mm, game) -> void:
 	#   ⚠️ 这一条**不假设**一定成立（「视野框比地图还大」也是合法状态），
 	#      所以先算出未裁剪的框，再决定该断言「原样保留」还是「确实被裁」。
 	rig.center_on_px(map_px * 0.5)
+	await process_frame
 	var raw: Rect2 = mm.view_rect_local()
 	var clipped: Rect2 = mm.view_rect_clipped()
 	if bounds.encloses(raw):
@@ -299,6 +357,7 @@ func _test_view_clip(mm, game) -> void:
 	var names: Array = ["左上", "右上", "左下", "右下"]
 	for i in corners.size():
 		rig.center_on_px(corners[i])
+		await process_frame
 		var c: Rect2 = mm.view_rect_clipped()
 		ok(c.size.x > 0.0 and c.size.y > 0.0,
 			"★ 贴%s极点时框还在（没被裁没）：%s" % [String(names[i]), str(c)])
@@ -332,6 +391,7 @@ func _test_view_clip(mm, game) -> void:
 	for ix in 5:
 		for iy in 5:
 			rig.center_on_px(Vector2(map_px.x * float(ix) / 4.0, map_px.y * float(iy) / 4.0))
+			await process_frame          # ★ 见本节开头：读框之前必须让画布变换刷新
 			var r: Rect2 = mm.view_rect_clipped()
 			if not (r.position.x >= bounds.position.x - 1e-4
 					and r.position.y >= bounds.position.y - 1e-4
@@ -352,6 +412,7 @@ func _test_view_clip(mm, game) -> void:
 		for ix in 3:
 			for iy in 3:
 				rig.center_on_px(Vector2(map_px.x * float(ix) / 2.0, map_px.y * float(iy) / 2.0))
+				await process_frame      # ★ 同上：换一个 zoom / 位置就等一帧再读
 				var rz: Rect2 = mm.view_rect_clipped()
 				if rz.position.x < bounds.position.x - 1e-4 \
 						or rz.position.y < bounds.position.y - 1e-4 \
@@ -363,6 +424,7 @@ func _test_view_clip(mm, game) -> void:
 	# ---- 5) 裁出来的框与「未裁剪框 ∩ 地图矩形」逐点一致（含边界）----
 	cam.zoom = Vector2.ONE
 	rig.center_on_px(Vector2(0.0, map_px.y * 0.5))
+	await process_frame
 	var expected: Rect2 = mm.view_rect_local().intersection(bounds)
 	var got: Rect2 = mm.view_rect_clipped()
 	v2_near(got.position, expected.position, 1e-3, "★ 裁剪结果 = 未裁剪框 ∩ 地图矩形（左上角）")
@@ -382,6 +444,8 @@ func _test_view_clip(mm, game) -> void:
 	mm._tick_drag(0.0)
 	var c_drag: Rect2 = mm.view_rect_clipped()
 	ok(outer.encloses(c_drag), "★ 拖动时光标贴到小地图角落：框同样不越出地图矩形")
+	# ★ 拖动这条路改相机也是走 `camera_rig.center_on_px`；上面那一条只验「不越界」，
+	#   不需要「贴住哪条边」，所以**同帧**读就够了（画布变换再旧也不会越出地图矩形）。
 	_release(mm, Vector2(2.0, 2.0))
 	mm.use_real_mouse_on_hold = true
 	mm.verify_button_held = true
@@ -407,29 +471,36 @@ func _test_click(main, game, mm) -> void:
 	game.cam.zoom = Vector2.ONE
 
 	# ---- 1) 点在正中 → 镜头中心 = 那一点 ----
-	rig.center_on_px(Vector2.ZERO)
+	# ★★ 菱形档：相机能去的范围是**地图外接框的内接矩形**（`cam_bounds()`）——
+	#    外接框的四个角根本不属于地图（斜放的菱形，角上是空白），
+	#    所以「极值点」一律以 cam_bounds 为准。见 camera_rig.cam_bounds() 的注释。
+	var bounds: Rect2 = rig.cam_bounds()
+	var map_center: Vector2 = bounds.get_center()
+	rig.center_on_px(map_center)
 	var mid: Vector2 = mm.to_minimap(Vector2(float(m.cols) * 0.5, float(m.rows) * 0.5))
 	_click(mm, mid)
-	v2_near(rig.cam.position, map_px * 0.5, 0.6, "★ 点小地图正中 → 镜头到地图中心")
+	v2_near(rig.cam.position, map_center, 0.6, "★ 点小地图正中 → 镜头到地图中心")
 
 	# ---- 2) 点在某个具体格子 → 镜头到那个格子 ----
 	var cell: Vector2 = Vector2(6.5, 5.5)
 	_click(mm, mm.to_minimap(cell))
-	v2_near(rig.cam.position, PaletteRes.to_px(cell, game.cfg), 0.6,
+	v2_near(rig.cam.position, Palette2DRes.to_px(cell, game.cfg), 0.6,
 		"★ 点在 (6.5, 5.5) 那一格 → 镜头到那一格")
-
-	# ---- 3) 四个角落 → 落在极点上（需求：点到地图边角时移动到极点）----
+	# ---- 3) 外接框的四个角点 → 夹到 cam_bounds 的四个极值 ----
+	#    ⚠️ 菱形档下「角」不再是「左上 / 右下」两个词能描述的：
+	#       地图被转过之后，AABB 的四角落在空白处，相机只能到 cam_bounds 的四角。
 	_click(mm, mm.to_minimap(Vector2.ZERO))
-	v2_near(rig.cam.position, Vector2.ZERO, 0.6, "★ 点左上角 → 左上极点 (0, 0)")
+	v2_near(rig.cam.position, bounds.position, 0.6,
+		"★ 点小地图左上区域 → 夹到 cam_bounds 左上极值")
 	_click(mm, mm.to_minimap(Vector2(float(m.cols), float(m.rows))))
-	v2_near(rig.cam.position, map_px, 0.6, "★ 点右下角 → 右下极点 (地图宽, 地图高)")
+	v2_near(rig.cam.position, bounds.end, 0.6,
+		"★ 点小地图右下区域 → 夹到 cam_bounds 右下极值")
 
-	# ---- 4) 点到地图外的留边 → 也夹在极点上（不越界、也不回到别的角落）----
-	#   上下的留边是「地图外」，点它应该只影响那一个轴。
-	rig.center_on_px(map_px * 0.5)
+	# ---- 4) 点到地图外的留边 → 也夹在极值上（不越界、也不回到别的角落）----
+	rig.center_on_px(map_center)
 	_click(mm, Vector2(mm.size.x * 0.5, 1.0))
-	near(rig.cam.position.x, map_px.x * 0.5, 0.6, "★ 点上方留边：横向不动（还是原来那一列）")
-	near(rig.cam.position.y, 0.0, 0.6, "★ 点上方留边：纵向夹到上极点")
+	near(rig.cam.position.x, map_center.x, 0.6, "★ 点上方留边：横向不动（还是原来那一列）")
+	near(rig.cam.position.y, bounds.position.y, 0.6, "★ 点上方留边：纵向夹到上极值")
 
 	# ---- 5) 非左键 / 抬起 不该移动镜头 ----
 	var before: Vector2 = rig.cam.position
@@ -530,12 +601,12 @@ func _test_drag(mm, game, cfg) -> void:
 	var p: Vector2 = mm.to_minimap(center)
 	rig.center_on_px(Vector2.ZERO)
 	_click(mm, p)
-	v2_near(cam.position, PaletteRes.to_px(center, cfg), 0.6,
+	v2_near(cam.position, Palette2DRes.to_px(center, cfg), 0.6,
 		"★ 按住的第一步仍是「按下就跳」：镜头到按下点（单击 = 跳转）")
 	ok(mm.is_pressed_held(), "按下之后处于「左键按着」态")
 	ok(not mm.is_dragging(), "★ 按下那一刻还不算拖动（没越过阈值，这一下可能是单击）")
 	mm._tick_drag(0.0)
-	v2_near(cam.position, PaletteRes.to_px(center, cfg), 0.6,
+	v2_near(cam.position, Palette2DRes.to_px(center, cfg), 0.6,
 		"★ 还没越过阈值：跑一帧也不动镜头（单击不会被判成拖动）")
 
 	# ---- 2) 按住拖动 → 镜头跟手 ----
@@ -552,7 +623,7 @@ func _test_drag(mm, game, cfg) -> void:
 	v2_near(cam.position, _expected_cam(mm, cfg, t), 0.6,
 		"★ 拖到 (6.5, 5.5) → 镜头跟到那一格")
 	# ★ 真正是「跟手」而不是「按下点的残影」：两者必须不同
-	ok(cam.position.distance_to(PaletteRes.to_px(center, cfg)) > 1.0,
+	ok(cam.position.distance_to(Palette2DRes.to_px(center, cfg)) > 1.0,
 		"★ 镜头确实跟着光标走了（不再停在按下点）")
 
 	# ---- 3) 连续拖动：每次移动都跟手，松手即停 ----
@@ -587,7 +658,7 @@ func _test_drag(mm, game, cfg) -> void:
 	var hold_press := Vector2(9.5, 7.5)
 	_click(mm, mm.to_minimap(hold_press))
 	ok(not mm.is_dragging(), "按住不动：时间还没到，不算拖动")
-	v2_near(cam.position, PaletteRes.to_px(hold_press, cfg), 0.6, "按下那一刻照旧跳过去")
+	v2_near(cam.position, Palette2DRes.to_px(hold_press, cfg), 0.6, "按下那一刻照旧跳过去")
 	mm._tick_drag(hold_sec * 0.5)
 	ok(not mm.is_dragging(), "按住 %.2fs（未到阈值 %.2fs）还不算拖动" % [hold_sec * 0.5, hold_sec])
 	mm._tick_drag(hold_sec)
@@ -675,7 +746,7 @@ func _expected_cam(mm, cfg, local_pos: Vector2) -> Vector2:
 	var cell: Vector2 = mm.to_world(local_pos)
 	cell.x = clampf(cell.x, 0.0, float(m.cols))
 	cell.y = clampf(cell.y, 0.0, float(m.rows))
-	return PaletteRes.to_px(cell, cfg)
+	return Palette2DRes.to_px(cell, cfg)
 
 
 # ------------------------------------------------------------------
@@ -760,27 +831,42 @@ func _test_camera_extremes(main, game, cfg) -> void:
 ##    拿它去断言需求原话只会得到假失败。
 ##
 ## ★ 这一段**只钉两件确定的事**（都在设计视口 1920×1080 上算）：
-##   1. 默认档 zoom 1.0 下，地图 3456×2816 px **比视口大** —— 横向 1.8 倍、纵向 2.6 倍，
+##   1. 默认档 zoom 1.0 下，地图**比视口大**（横向 = 列数 × 128 px ÷ 视口宽、
+##      纵向 = 行数 × 格高 ÷ 视口高，两个比例都 > 1），
 ##      所以中心被推到边界点时，屏幕外面那一半确实是「界外」，会露出默认背景；
 ##   2. zoom 1.0 / 1.6（视野更紧）时可见世界窗口比地图小 ⇒ 一帧最多只可能看到地图的
-##      一个角落，永不可能一屏装下整张地图。（最远档 0.8 可见 2400×1350，
-##      横向仍然小于地图宽 3456，所以同理。）
+##      一个角落，永不可能一屏装下整张地图。
 ##   ⚠️ 「正好 1/4、正好 1/2」这种精确比例**故意不钉**：它们同时取决于地图与视口的
 ##      长宽比，写死只会得到一条脆断言（本轮为它反复返工过）。真正的不变量
 ##      ——「屏幕中心停在边界点上，且界外那一侧不再有地图」—— 由 _test_camera_extremes 验。
+##
+## ★★ 2.5D：纵向比例**不能再用「格数 × 128 px」硬写** —— 地图高 = 行数 × **cell_h**
+##    （cell_h = cell_px × squash，squash 0.7 时 22 行是 1971 px，不是 2816）。
+##    所以下面按 `cfg.cell_h` 现算，并且**同时钉住「宽高比 = 格数比 ÷ squash」**这条关系：
+##    这样 squash 一改，测试跟着走；而若有人把某处的 cell_h 又写回 cell_px，它立刻红。
 func _test_design_viewport_fractions(game, cfg) -> void:
 	var rig = game.camera_rig
 	var map_px: Vector2 = rig.map_size()
 	var vis_w: float = UiLayoutRes.DESIGN_W / 1.0
 	var vis_h: float = UiLayoutRes.DESIGN_H / 1.0
+	# ⚠️ 格数取**地图的**（`game.world.map`），不是 `cfg.cols / cfg.rows` ——
+	#    后者是配置里的默认值（24×16），真地图的尺寸只有 `map_data` 知道
+	#    （实测：这张图是 27×22，拿 cfg.cols 算出来的期望值全错）。
+	var cols: int = int(game.world.map.cols)
+	var rows: int = int(game.world.map.rows)
 
 	ok(map_px.x > vis_w and map_px.y > vis_h,
 		"★ 默认档下地图比视口大（%.0f×%.0f vs %.0f×%.0f）⇒ 界外真的会露出来"
 		% [map_px.x, map_px.y, vis_w, vis_h])
-	near(map_px.x / vis_w, 1.8, 0.02,
-		"地图宽是视口的 1.8 倍（27 格 × 128 px = 3456）")
-	near(map_px.y / vis_h, 2.6, 0.05,
-		"地图高是视口的 2.6 倍（22 格 × 128 px = 2816）")
+	near(map_px.x / vis_w, cols * cfg.cell_px / vis_w, 1e-3,
+		"地图宽是视口的 %.2f 倍（%d 格 × %.0f px）" % [cols * cfg.cell_px / vis_w, cols, cfg.cell_px])
+	near(map_px.x / vis_w, Palette2DRes.map_rect(cfg, game.world.map.cols, game.world.map.rows).size.x / vis_w, 1e-3,
+		"地图外接框宽 = 投影出来的外接框宽")
+	ok(map_px.y > 0.0 and map_px.x > 0.0, "外接框两轴都非退化")
+	# ★★ 透视档：地图在屏幕上的高**不再等于**「行数 × 某个常数」——
+	#    透视下每格占多少像素随位置变化，所以这里只能验「外接框真的是投影的极值」。
+	near(map_px.y, Palette2DRes.map_rect(cfg, game.world.map.cols, game.world.map.rows).size.y, 1e-3,
+		"★ 地图外接框高 = 投影极值（透视下没有「格高 × 行数」这个式子）")
 
 	# 每个缩放档都验一遍：可见世界窗口总比地图小（地图永远装不满一屏）
 	for z: float in [float(cfg.num("camera.min_scale", 0.8)), 1.0,

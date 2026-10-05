@@ -10,7 +10,7 @@
 extends Node2D
 
 const ConfigRes = preload("res://logic/config.gd")
-const PaletteRes = preload("res://view/palette.gd")
+const Palette2DRes = preload("res://view/palette2d.gd")
 
 var cfg: ConfigRes = null
 var world = null
@@ -55,12 +55,12 @@ func _draw_attack_lines() -> void:
 	for u in world.units:
 		if not u.is_attackable() or u.attack_flash <= 0.0:
 			continue
-		var from := PaletteRes.to_px(u.pos, cfg)
+		var from := Palette2DRes.to_px(u.pos, cfg)
 		var to := Vector2.ZERO
 		if u.last_target != null and u.last_target.alive:
-			to = PaletteRes.to_px(u.last_target.pos, cfg)
+			to = Palette2DRes.to_px(u.last_target.pos, cfg)
 		elif u.last_building != null and u.last_building.alive:
-			to = PaletteRes.to_px(u.last_building.center(), cfg)
+			to = Palette2DRes.to_px(u.last_building.center(), cfg)
 		else:
 			continue
 		var c := cfg.faction_line_color(u.faction, 0.85 * clampf(u.attack_flash, 0.0, 1.0))
@@ -71,36 +71,58 @@ func _draw_attack_lines() -> void:
 			continue
 		if b.last_target == null or not b.last_target.alive:
 			continue
-		var from_b := PaletteRes.to_px(b.center(), cfg)
-		var to_b := PaletteRes.to_px(b.last_target.pos, cfg)
+		var from_b := Palette2DRes.to_px(b.center(), cfg)
+		var to_b := Palette2DRes.to_px(b.last_target.pos, cfg)
 		draw_line(from_b, to_b, cfg.faction_line_color(b.owner, 0.8), 2.5)
 
 
 ## 移动目标点（绿圈 + 十字）与行军攻击目标点（红圈 + 叉）
+##
+## ★★ 2.5D：这一整组走**反向补偿变换**（`palette.comp_scale`）—— 它们是「屏幕上的 UI 标记」，
+##    不是地面上的物体，所以**必须保持正圆**（被压成椭圆会被读成「范围是个扁的」）。
+##    做法：一次性 `draw_set_transform(Vector2.ZERO, 0, Vector2(1, 1/squash))`，
+##    组内的坐标写成**屏幕像素**（与改造前的数字逐字一致），画完立刻复位。
+##   ⚠️ 补偿只发**一次**变换（锚点取世界原点），所以它只切断批次一次，不是每个圆一次。
+##   ⚠️ 上一条 `_draw_attack_lines` 是**世界里的东西**（谁在打谁），不补偿：它随地面一起压扁。
 func _draw_move_marks() -> void:
+	if move_marks.is_empty() and attack_marks.is_empty():
+		return
+	var sq: float = Palette2DRes.comp_scale(cfg)
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2(1.0, sq))
+	# 线宽也要补偿：父变换会把纵向线宽压掉 squash 倍，这里先放大回去
+	var lw: float = 2.0 / maxf(1e-6, sq)
+	var lw_thin: float = 1.5 / maxf(1e-6, sq)
 	for m in move_marks:
-		var p := PaletteRes.to_px(m, cfg)
-		draw_arc(p, cfg.cell_px * 0.22, 0.0, TAU, 24, Color(0.6, 1.0, 0.7, 0.85), 2.0)
-		draw_line(p + Vector2(-6, 0), p + Vector2(6, 0), Color(0.6, 1.0, 0.7, 0.85), 1.5)
-		draw_line(p + Vector2(0, -6), p + Vector2(0, 6), Color(0.6, 1.0, 0.7, 0.85), 1.5)
+		var p := Palette2DRes.to_px(m, cfg)
+		draw_arc(p, cfg.cell_px * 0.22, 0.0, TAU, 24, Color(0.6, 1.0, 0.7, 0.85), lw)
+		draw_line(p + Vector2(-6, 0), p + Vector2(6, 0), Color(0.6, 1.0, 0.7, 0.85), lw_thin)
+		draw_line(p + Vector2(0, -6), p + Vector2(0, 6), Color(0.6, 1.0, 0.7, 0.85), lw_thin)
 	for m2 in attack_marks:
-		var q := PaletteRes.to_px(m2, cfg)
+		var q := Palette2DRes.to_px(m2, cfg)
 		var c := Color(1.0, 0.45, 0.4, 0.9)
-		draw_arc(q, cfg.cell_px * 0.26, 0.0, TAU, 28, c, 2.0)
+		draw_arc(q, cfg.cell_px * 0.26, 0.0, TAU, 28, c, lw)
 		# 叉：与移动的十字区分开，一眼能看出这是「行军攻击」
-		draw_line(q + Vector2(-7, -7), q + Vector2(7, 7), c, 2.0)
-		draw_line(q + Vector2(-7, 7), q + Vector2(7, -7), c, 2.0)
+		draw_line(q + Vector2(-7, -7), q + Vector2(7, 7), c, lw)
+		draw_line(q + Vector2(-7, 7), q + Vector2(7, -7), c, lw)
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 
-## 建造预览：绿 = 可建，红 = 不可建
+## 建造预览：绿 = 可建，红 = 不可建。
+##
+## ★★ 菱形档：预览框必须画成**菱形**（用 `palette.tile_poly`），不能是 `Rect2` ——
+##    否则「看着套住了这一格、其实框的是隔壁那一格」，那正是建造类操作最容易出的错位。
 func _draw_build_preview() -> void:
 	if build_type == "" or hover_tile.x < 0:
 		return
-	var r := PaletteRes.tile_rect(hover_tile.x, hover_tile.y, cfg)
+	var poly := Palette2DRes.tile_poly(hover_tile.x, hover_tile.y, cfg)
+	if poly.size() < 3:
+		return
 	var ok: bool = world.can_build_at(hover_tile.x, hover_tile.y)
 	var c := Color(0.45, 1.0, 0.5, 0.55) if ok else Color(1.0, 0.4, 0.4, 0.55)
-	draw_rect(r, Color(c.r, c.g, c.b, 0.18), true)
-	draw_rect(r, c, false, 2.5)
+	draw_polygon(poly, PackedColorArray([Color(c.r, c.g, c.b, 0.18)]))
+	var closed := poly.duplicate()
+	closed.append(poly[0])
+	draw_polyline(closed, c, 2.5)
 
 
 ## 框选矩形：淡填充 + 实线边（世界坐标 → 像素由 palette 换算，与别处同一条路）。
@@ -113,8 +135,8 @@ func _draw_drag_box() -> void:
 		return
 	if drag_rect.size.x <= 0.0 and drag_rect.size.y <= 0.0:
 		return
-	var a := PaletteRes.to_px(drag_rect.position, cfg)
-	var b := PaletteRes.to_px(drag_rect.position + drag_rect.size, cfg)
+	var a := Palette2DRes.to_px(drag_rect.position, cfg)
+	var b := Palette2DRes.to_px(drag_rect.position + drag_rect.size, cfg)
 	var r := Rect2(a, b - a)
 	var c := Color(0.75, 0.95, 1.0, 0.9)
 	draw_rect(r, Color(c.r, c.g, c.b, 0.12), true)
@@ -123,12 +145,25 @@ func _draw_drag_box() -> void:
 
 ## 坐标调试准星（G 键）：红叉 = 鼠标世界坐标，绿圈 = 判定出的地块中心。
 ## 两者必须重合 —— HTML 版就是靠它抓住 DPR 坐标错位的。
+##
+## ★★ 2.5D 下这个准星是**核对投影的最重要工具**，所以要按新口径复核一遍：
+##    · 红叉 = `to_px(mouse_world)`：鼠标 → 格（input_controller 走引擎画布变换）
+##      → 再画回像素，两趟必须回到鼠标底下；
+##    · 绿圈 = 判定地块的**中心**：格心在压扁后是 (x+0.5)·cell_px, (y+0.5)·cell_h，
+##      所以它应当正好套住压扁后的那一格；
+##    · 圆圈走补偿变换（保持正圆），否则「准星」本身被压扁就看不出圆心对不对了。
 func _draw_aim_debug() -> void:
 	if not debug_aim:
 		return
-	var w := PaletteRes.to_px(mouse_world, cfg)
+	var w := Palette2DRes.to_px(mouse_world, cfg)
 	var tile := Vector2i(floori(mouse_world.x), floori(mouse_world.y))
-	var center := PaletteRes.to_px(Vector2(float(tile.x) + 0.5, float(tile.y) + 0.5), cfg)
-	draw_line(w + Vector2(-9, 0), w + Vector2(9, 0), Color(1, 0.3, 0.3, 0.95), 2.0)
-	draw_line(w + Vector2(0, -9), w + Vector2(0, 9), Color(1, 0.3, 0.3, 0.95), 2.0)
-	draw_arc(center, cfg.cell_px * 0.42, 0.0, TAU, 40, Color(0.4, 1.0, 0.5, 0.95), 2.0)
+	# ★ 菱形档：格心就是 `to_px(格心)`（投影后仍在菱形正中）——
+	#   不再能写成 `(x+0.5)*cell_px, (y+0.5)*cell_h`，那套只对正放矩形成立。
+	var center := Palette2DRes.to_px(Vector2(float(tile.x) + 0.5, float(tile.y) + 0.5), cfg)
+	var sq: float = Palette2DRes.comp_scale(cfg)
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2(1.0, sq))
+	var lw: float = 2.0 / maxf(1e-6, sq)
+	draw_line(w + Vector2(-9, 0), w + Vector2(9, 0), Color(1, 0.3, 0.3, 0.95), lw)
+	draw_line(w + Vector2(0, -9), w + Vector2(0, 9), Color(1, 0.3, 0.3, 0.95), lw)
+	draw_arc(center, cfg.cell_px * 0.42, 0.0, TAU, 40, Color(0.4, 1.0, 0.5, 0.95), lw)
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)

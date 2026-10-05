@@ -35,7 +35,7 @@ const WorldRes = preload("res://logic/world.gd")
 const MapLibraryRes = preload("res://logic/map_library.gd")
 const CommandRes = preload("res://logic/command_processor.gd")
 const FactionRes = preload("res://logic/faction.gd")
-const PaletteRes = preload("res://view/palette.gd")
+const Palette2DRes = preload("res://view/palette2d.gd")
 const FontLoaderRes = preload("res://view/font_loader.gd")
 const TerrainViewRes = preload("res://view/terrain_view.gd")
 const ZoneViewRes = preload("res://view/zone_view.gd")
@@ -75,6 +75,13 @@ var camera_rig: Control = null
 var input_ctrl: Control = null
 var hud: CanvasLayer = null
 
+## ★★ 2.5D 压扁与深度排序的承载节点：**全部世界内容**都挂在它下面
+##   （地形 / 区划 / 建筑 / 单位 / 迷雾 / 覆盖层），它的 `scale.y = cfg.render_squash`。
+##   ⚠️ 三样东西**不在**它下面，而且这是刻意的：`cam`（否则相机自身的平移会被压扁）、
+##      `camera_rig` / `input_ctrl`（Control 要铺满屏幕接输入）、`hud`（CanvasLayer，
+##      本来就不吃 Node2D 的变换 ⇒ HUD 天然不受压扁影响）。`tests/test_view.gd` 钉着这一条。
+var content_root: Node2D = null
+
 var _font: Font = null
 
 ## 每帧推进逻辑的开关（暂停时关掉；渲染与相机照常跑）
@@ -94,6 +101,26 @@ func start(map_path: String = MAP_PATH) -> bool:
 	if cfg == null:
 		push_error("配置载入失败，游戏无法启动：%s" % ConfigRes.last_error)
 		return false
+	# ★★ 透视投影的常数里含视口尺寸（ndc → 屏幕像素那一步）——
+	#    必须在建任何视图之前喂一次，否则第一帧的投影是拿默认 1920×1080 算的
+	#    （窗口不是这个尺寸时，第一帧的位置会整体偏，第二帧才对）。
+	cfg.set_viewport_size(
+		float(ProjectSettings.get_setting("display/window/size/viewport_width", 1920)),
+		float(ProjectSettings.get_setting("display/window/size/viewport_height", 1080)))
+
+	# ★★ 投影整体平移：把**地图中心**搬到视口中心。
+	#   为什么必须要（实测）：投影公式把「格 y = 0」固定在视口中心，于是整张地图
+	#   落在屏幕**下半部分**（22 行的图落在 y ≈ 1500~2400，视口只有 1080 高）——
+	#   结果地图整个在屏幕外、所有单位被剔除逻辑正确剔掉（表现为「字没在单位身上」）。
+	#   ⚠️ 必须在建 world 之前设：`palette.to_px` 从第一帧就要用它。
+	#
+	#   算法（两趟，避免「用自己算自己」）：
+	#     ① 偏移先清零，算出「地图中心投影到哪」与「视口中心」之差；
+	#     ② 把这个差当成整体平移量。
+	cfg.proj_offset = Vector2.ZERO
+	var map_center_px := Palette2DRes.to_px(
+		Vector2(float(cfg.cols) * 0.5, float(cfg.rows) * 0.5), cfg)
+	cfg.proj_offset = map_center_px - Vector2(cfg.proj_vp_half)
 
 	world = WorldRes.create(cfg, map_path)
 	if world == null:
@@ -111,7 +138,7 @@ func start(map_path: String = MAP_PATH) -> bool:
 	# 开场就把 1 号将领选中并放到镜头里，玩家一进来就知道该干什么
 	if world.units.size() > 0:
 		input_ctrl.select_units([world.units[0]])
-		camera_rig.center_on_px(PaletteRes.to_px(world.units[0].pos, cfg))
+		camera_rig.center_on_px(Palette2DRes.to_px(world.units[0].pos, cfg))
 
 	return true
 
@@ -179,7 +206,7 @@ func start_level(campaign, level, my_faction: String) -> bool:
 	# 与 `start()` 同一条收尾：开场选中 1 号将领并把它放进镜头
 	if world.units.size() > 0:
 		input_ctrl.select_units([world.units[0]])
-		camera_rig.center_on_px(PaletteRes.to_px(world.units[0].pos, cfg))
+		camera_rig.center_on_px(Palette2DRes.to_px(world.units[0].pos, cfg))
 
 	return true
 
@@ -222,11 +249,28 @@ func _build_view() -> void:
 	add_child(cam)
 	cam.make_current()
 
+	# ★★ 菱形投影的承载节点（等距 / 斜俯视 45°，见 config.json 的 render._comment）。
+	#
+	#   ★★ 这里**故意不做任何旋转**（`scale` 保持 1、`rotation` 保持 0）：
+	#      菱形是 `view/palette.gd` 按顶点**画出来**的多边形，不是「转过的矩形」。
+	#      好处是世界空间保持**轴对齐** ⇒ 剔除 Rect2 / 血条 / draw_arc / 汉字
+	#      全部照旧正确，一整类「漏了反向补偿就静默画歪」的风险被消掉了。
+	#      （试过的那条路：转父节点 + 每处用 Transform2D.inverse() 救回来 —— 能做，
+	#        但那是给每一种图元各留一个坑，见 route.md 四十一节与 dev_plan_8。）
+	#
+	#   ★ 这个节点仍然保留：它是**深度排序**（`y_sort_enabled`）与**图层归属**的锚点
+	#     （地形 / 区划 / 建筑 / 单位 / 迷雾 / 覆盖层都挂在它下面）。
+	content_root = Node2D.new()
+	content_root.name = "ContentRoot"
+	content_root.scale = Vector2.ONE
+	content_root.y_sort_enabled = cfg.depth_sort
+	add_child(content_root)
+
 	# 绘制顺序：地形 -100 / 区块 -50 / 建筑 0 / 单位 10 / **迷雾 15** / 覆盖层 20
 	terrain_view = TerrainViewRes.new()
 	terrain_view.name = "TerrainView"
 	terrain_view.z_index = -100
-	add_child(terrain_view)
+	content_root.add_child(terrain_view)
 	terrain_view.setup(cfg, world.map)
 
 	_font = FontLoaderRes.load_font(cfg)
@@ -234,7 +278,7 @@ func _build_view() -> void:
 	zone_view = ZoneViewRes.new()
 	zone_view.name = "ZoneView"
 	zone_view.z_index = -50
-	add_child(zone_view)
+	content_root.add_child(zone_view)
 	zone_view.setup(cfg, world, _font, 12)
 
 	# ★★ 战争迷雾：灰色遮罩压在**地形 / 区块 / 建筑 / 单位**之上、覆盖层（攻击线 /
@@ -244,32 +288,36 @@ func _build_view() -> void:
 	fog_view = FogViewRes.new()
 	fog_view.name = "FogView"
 	fog_view.z_index = 15
-	add_child(fog_view)
+	content_root.add_child(fog_view)
 	fog_view.setup(cfg, world)
 
 	building_view = BuildingViewRes.new()
 	building_view.name = "BuildingView"
 	building_view.z_index = 0
-	add_child(building_view)
+	content_root.add_child(building_view)
 	building_view.setup(cfg, world)
 
 	unit_view = UnitViewRes.new()
 	unit_view.name = "UnitView"
 	unit_view.z_index = 10
-	add_child(unit_view)
+	content_root.add_child(unit_view)
 	unit_view.setup(cfg, world, _font)
 
 	overlay = OverlayRes.new()
 	overlay.name = "Overlay"
 	overlay.z_index = 20
-	add_child(overlay)
+	content_root.add_child(overlay)
 	overlay.setup(cfg, world)
 
+	# ★ 相机是 content_root 的**兄弟**（不是它的子节点）：相机位置是世界像素，
+	#   若挂在被压扁的父节点下，相机的平移自己也会被压扁一次（纵向移动变慢 30%）。
 	camera_rig = CameraRigRes.new()
 	camera_rig.name = "CameraRig"
 	add_child(camera_rig)
 	camera_rig.setup(cfg, cam, world.map)
 
+	# ★ 输入层也留在 content_root **外面**：它的 Control 要铺满屏幕接输入，
+	#   挂进去会被父变换缩放，全屏锚点与鼠标局部坐标就都对不上了。
 	input_ctrl = InputControllerRes.new()
 	input_ctrl.name = "InputController"
 	add_child(input_ctrl)
@@ -354,12 +402,18 @@ func _process(dt: float) -> void:
 	var in_window := Rect2(Vector2.ZERO, get_viewport_rect().size).has_point(mouse_screen)
 	camera_rig.set_mouse(in_window and not hud.blocks_edge_scroll(mouse_screen), mouse_screen)
 
-	# ★ 小地图正在被拖着走 → 这一帧只让「拖动」改相机。
+	# ★★ 小地图正在被拖着走 → 这一帧只让「拖动」改相机。
 	#   小地图贴着屏幕左下角，而最外圈永远允许边缘滚屏（那是所有贴边控件的共同规则），
 	#   两条路同时改相机会让画面贴着下沿发抖 —— 见 camera_rig._ui_dragging_camera。
 	#   ⚠️ 判据是**拖动**（越过阈值之后），不是「按着」：按下但没动的那一下是单击，
 	#      单击时边缘滚屏照旧（否则按住小地图不动、鼠标又贴着边时画面会突然停一拍）。
-	camera_rig.set_ui_dragging(hud.minimap != null and hud.minimap.is_dragging())
+	#
+	# ★★ 同一时刻的**框选**也要冻住相机（本轮修 bug）：
+	#   框的起点是一个**格坐标**，每帧要重投影回屏幕才画得出来 —— 相机一动，
+	#   同一个格坐标就落到屏幕上另一处，玩家看到的是「右上角的起点自己跑了」。
+	#   两个来源并列（`or`）：小地图拖动与左键框选都可能同时发生。
+	camera_rig.set_ui_dragging(
+		(hud.minimap != null and hud.minimap.is_dragging()) or input_ctrl.is_dragging_box())
 
 	# 逻辑推进（暂停时冻结；渲染与相机不受影响）
 	if _running:

@@ -30,6 +30,8 @@ signal toast(text: String)
 var cfg: ConfigRes = null
 var world = null
 var camera_rig = null
+## ★★ 3D 版的投影助手（持有 Camera3D）：为 null 时走 2D / 无头回退（见 `_to_logic`）
+var palette = null
 
 ## 选中列表（纯本地，**不进命令流**）
 var selected_units: Array = []
@@ -131,16 +133,22 @@ var _drag_pending: bool = false
 var _drag_additive: bool = false
 ## 按下的屏幕坐标（只用来算「移动了多少像素」——阈值是像素口径，与相机缩放无关）
 var _drag_press_screen: Vector2 = Vector2.ZERO
+## ★★ 框选期间冻住相机（见 is_dragging_box() 的说明）：起点是格坐标，
+##    相机一动它就会在屏幕上漂 —— 那就是「右上角起点自己跑」的根因。
+var _drag_freeze_cam: bool = false
 
 ## 暂停 / 区块名显示（纯本地开关）
 var paused: bool = false
 var show_zone_names: bool = true
 
 
-func setup(p_cfg: ConfigRes, p_world, p_camera_rig) -> void:
+func setup(p_cfg: ConfigRes, p_world, p_camera_rig, p_palette = null) -> void:
 	cfg = p_cfg
 	world = p_world
 	camera_rig = p_camera_rig
+	# ★★ 3D 版：投影是一个**实例**（它持有 Camera3D），不再是静态函数。
+	#    为 null 时退回「自己拿引擎画布变换反算」（无头测试与 2D 老路径仍可用）。
+	palette = p_palette
 	mouse_filter = Control.MOUSE_FILTER_PASS
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	selected_units = []
@@ -154,13 +162,14 @@ func setup(p_cfg: ConfigRes, p_world, p_camera_rig) -> void:
 	# 框选那条状态机也归零（重开一局时别留着上一局的半个框）
 	_drag_pending = false
 	drag_active = false
+	_drag_freeze_cam = false
 
 
 ## 每帧更新一次「鼠标在哪、指向哪个地块」——渲染要用，且**只有这里**读鼠标位置
 func poll_mouse() -> void:
 	if world == null:
 		return
-	mouse_world = PaletteRes.to_logic(get_global_mouse_position(), cfg)
+	mouse_world = _to_logic(get_global_mouse_position())
 	var t := Vector2i(floori(mouse_world.x), floori(mouse_world.y))
 	var inside: bool = world.map.terrain.has(t.x, t.y)
 	var changed: bool = (t != hover_tile) or (inside != hover_valid)
@@ -284,6 +293,12 @@ func handle_mouse_button(event: InputEventMouseButton) -> bool:
 ## ★ 位置换算走 `_screen_to_logic(event.position)`（引擎的画布变换，与
 ##   `get_global_mouse_position()` 内部同一条路）——见那个函数的注释。
 ## ★ 阈值判据用的是**屏幕像素**（`event.position`），所以「拖多远才算框选」与缩放无关。
+##
+## ★★ 拖框期间**不准相机再动**（本轮修 bug）：起点 `drag_start_world` 是一个**格坐标**，
+##    每帧都要重新投影回屏幕才能画出那个框。只要相机在拖框中动了（边缘滚屏、
+##    方向键、小地图拖动都算），同一个格坐标就会落到屏幕的另一个位置 ——
+##    表现就是用户报的「**右上角的起点自己跑了**」。
+##    ⇒ 拖框一开始就冻住相机，直到松手（见 `_drag_freeze_cam` 与 `_end_drag`）。
 func handle_mouse_motion(event: InputEventMouseMotion) -> bool:
 	if not _drag_pending:
 		return false
@@ -292,6 +307,9 @@ func handle_mouse_motion(event: InputEventMouseMotion) -> bool:
 		if moved < _drag_threshold_px():
 			return false
 		drag_active = true
+		# ★ 越过阈值、正式成为「拖框」的那一刻才冻相机：
+		#   单击（没越过阈值）不该影响边缘滚屏的老手感。
+		_drag_freeze_cam = true
 	drag_current_world = _screen_to_logic(event.position)
 	local_ui_changed.emit()
 	return true
@@ -306,8 +324,39 @@ func handle_mouse_motion(event: InputEventMouseMotion) -> bool:
 ##     · 框选因此不依赖全局鼠标状态 —— 无头测试能真的把一条拖拽走完并断言结果
 ##       （造不出真实鼠标移动的场合，`get_global_mouse_position()` 永远是 (0,0)）。
 ##   ⚠️ 这**不是**自己手算相机数学（那是 pitfalls 3.1 的错位根因），用的是同一个变换。
+## 视口（屏幕）坐标 → 世界坐标（格）。
+##
+## ★★ 两条路**入参语义不同**，所以画布变换只能在其中一条上做（本轮实测踩到）：
+##   · **3D 版**（`palette != null`）：`palette.to_logic()` 是「从 Camera3D 往地面
+##     打射线求交」，**它要的就是屏幕像素** —— 这里**不能**再过一次画布变换，
+##     否则等于把坐标先逆变换一次再拿去打射线，往返换算直接不闭合
+##     （实测表现：`test_ui` 里「世界 → 视口 → 世界」那三条断言失败）。
+##   · **2D / 无头回退**：`_to_logic` 收的是**画布逆变换之后**的相机坐标，
+##     所以要在这里先做那一步（与 `get_global_mouse_position()` 内部同一条路）。
+##
+## ⚠️ 这**不是**自己手算相机数学（那是 pitfalls 3.1 的错位根因）：
+##    3D 那条把全部数学交给了引擎的 `project_ray_normal`。
 func _screen_to_logic(screen_pos: Vector2) -> Vector2:
-	return PaletteRes.to_logic(get_viewport().get_canvas_transform().affine_inverse() * screen_pos, cfg)
+	if palette != null:
+		return _to_logic(screen_pos)
+	return _to_logic(get_viewport().get_canvas_transform().affine_inverse() * screen_pos)
+
+
+## ★★ 「像素 → 格」的**唯一**出口（本轮从静态函数改成走实例）。
+##
+## 两种口径并存是刻意的：
+##   · **3D 版**：`palette` 持有 `Camera3D`，`to_logic` = 「从相机往地面打射线求交」——
+##     这一条**必须**走它（手算就是上一版那一堆错位的来源）；
+##   · **2D / 无头回退**：没有 palette 时，入参已经是「画布逆变换之后的相机坐标」，
+##     除以格宽即可（老口径，在正俯视下仍然正确）。
+##
+## ⚠️ 两边的**入参语义不同**（有 palette：屏幕像素；没有：相机坐标），
+##    调用点已经按这个约定分好，别把两条路混起来用。
+func _to_logic(v: Vector2) -> Vector2:
+	if palette != null:
+		var r = palette.to_logic(v)
+		return r if r != null else Vector2.ZERO
+	return Vector2(v.x / maxf(1e-6, cfg.cell_px), v.y / maxf(1e-6, cfg.cell_px))
 
 
 ## 「拖多远才算框选」的像素阈值（config 的 `ui.drag_select_min_px`）。
@@ -362,6 +411,7 @@ func _finish_drag() -> void:
 	var additive := _drag_additive
 	_drag_pending = false
 	drag_active = false
+	_drag_freeze_cam = false
 	if not active:
 		return
 	box_select(start, end, additive)
@@ -444,7 +494,19 @@ func drag_box() -> Rect2:
 func _cancel_drag() -> void:
 	_drag_pending = false
 	drag_active = false
+	_drag_freeze_cam = false
 	local_ui_changed.emit()
+
+
+## ★★ 框选期间相机是不是被冻住了（由 game_scene 每帧读它、喂给 `camera_rig`）。
+##
+## 为什么必须冻：框的起点存的是**格坐标**，画的时候每帧要重新投影回屏幕。
+##   相机一动，同一个格坐标就落到屏幕的另一个位置 —— 玩家看到的就是
+##   「右上角的起点自己跑了」（本轮报回来的 bug）。
+##   ★ 与 `minimap.is_dragging()` 那条是同一个机制、同一个出口
+##     （`camera_rig.set_ui_dragging`），两处并列即可。
+func is_dragging_box() -> bool:
+	return _drag_freeze_cam
 
 
 
@@ -749,7 +811,7 @@ func select_general_by_hotkey(key: String) -> void:
 	for u in world.units:
 		if u.alive and FactionRes.same_side(u.faction, world.my_faction) and u.hotkey == key:
 			select_units([u])
-			camera_rig.center_on_px(PaletteRes.to_px(u.pos, cfg))
+			camera_rig.center_on_px(palette.to_px(u.pos))
 			return
 	toast.emit("没有快捷键 %s 的将领" % key)
 
@@ -1110,6 +1172,37 @@ func _build_name(t: String) -> String:
 
 ## 命中判定：世界坐标 → 最近的、半径内的单位（**己方与敌方都算**）。
 ##
+## 鼠标位置离这个单位的**归一化距离**（≤ 1 = 命中；1.0 恰好落在边界上）。
+##
+## ★★ 坐标系口径（**这里写死，别再猜**）：入参与 `u.pos` 都是**格**。
+##    本文件里那个「鼠标世界坐标」字段 `mouse_world` **就是格坐标**
+##    （`poll_mouse()` 里是 `to_logic(get_global_mouse_position())`，
+##     即引擎画布变换 → 世界像素 → **除以格宽** ⇒ 回到格）。
+##    所以判定**全程在格空间里做**，不碰像素 —— 这也是它一直以来的写法。
+##
+## ★★ 2.5D 之后的正确性论证（为什么这里**一个数都不用改**）：
+##    压扁是「格 → 世界像素」这一步的仿射变换，**格空间本身一点没变**。
+##    而屏幕上那个椭圆，正是「格空间里的这个圆判定」被**同一次投影**压出来的结果：
+##        判定圆（格） ──projection──> 屏幕椭圆
+##        单位本体（格）──projection──> 屏幕椭圆
+##    两边用的是同一个 transformation，所以「点到形状上」与「判定命中」永远一致。
+##    ⚠️ 反过来说：**千万不要在这里乘 render_squash** —— 那等于把压扁算两次，
+##       会变成「左右很宽、上下很窄」的怪手感（比不改还糟）。
+##    ★ 如果哪一天把判定改到像素空间去做，那时才需要用
+##      `cfg.cell_px` / `cfg.cell_h` 两个不同的分母（横向 / 纵向）算椭圆。
+##
+## ⚠️ `hit_pad` 是**像素**，所以除以格宽换成格 —— 与改造前逐位一致。
+##
+## ★ 抽成函数是为了让三处拾取（任意 / 己方 / 敌方）用**同一份**口径 ——
+##   三处各写一遍「距离怎么算」，早晚会出现「左键点得中、右键点不中」这种不对称。
+func _unit_hit_norm(u, world_grid: Vector2) -> float:
+	var rr: float = cfg.unit_radius_of(u.unit_type)
+	var pad_logical: float = cfg.num("unit.hit_pad", 6.0) / maxf(1e-6, cfg.cell_px)
+	var d: Vector2 = world_grid - u.pos
+	var r: float = maxf(1e-6, rr + pad_logical)
+	return d.length() / r
+
+
 ## ★★ 本轮新增（需求：玩家可以选中敌对单位）：左键那条路现在既要能点自己的兵，
 ##    也要能点敌人的兵 —— 两个判据（`same_side` / 不同方）合成一个函数。
 ##
@@ -1138,9 +1231,8 @@ func _pick_any_unit_at(world_pos: Vector2) -> Variant:
 				continue
 			if not _foe_unit_visible(u):
 				continue
-		var r: float = cfg.unit_radius_of(u.unit_type) + cfg.num("unit.hit_pad", 6.0) / cfg.cell_px
-		var d: float = world_pos.distance_to(u.pos)
-		if d <= r and d < best_d:
+		var d: float = _unit_hit_norm(u, world_pos)
+		if d <= 1.0 and d < best_d:
 			best_d = d
 			best = u
 	return best
@@ -1161,9 +1253,8 @@ func _pick_unit_at(world_pos: Vector2) -> Variant:
 			continue
 		if not FactionRes.same_side(u.faction, world.my_faction):
 			continue
-		var r: float = cfg.unit_radius_of(u.unit_type) + cfg.num("unit.hit_pad", 6.0) / cfg.cell_px
-		var d: float = world_pos.distance_to(u.pos)
-		if d <= r and d < best_d:
+		var d: float = _unit_hit_norm(u, world_pos)
+		if d <= 1.0 and d < best_d:
 			best_d = d
 			best = u
 	return best
@@ -1196,9 +1287,8 @@ func _pick_foe_unit_at(world_pos: Vector2) -> Variant:
 			continue
 		if not _foe_unit_visible(u):
 			continue
-		var r: float = cfg.unit_radius_of(u.unit_type) + cfg.num("unit.hit_pad", 6.0) / cfg.cell_px
-		var d: float = world_pos.distance_to(u.pos)
-		if d <= r and d < best_d:
+		var d: float = _unit_hit_norm(u, world_pos)
+		if d <= 1.0 and d < best_d:
 			best_d = d
 			best = u
 	return best

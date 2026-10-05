@@ -149,7 +149,22 @@ dev_gd_a/daeem/
 │   ├── map_select.gd             #   ★ 地图选择条本体（**自己画的按钮 + 自己的 PopupMenu**）：
 │   │                             #   不用引擎 OptionButton —— 点开列表后按钮上那行字会变空白
 │   │                             #   （实测，见 route.md 34.9）；对外 API 与 OptionButton 同名同义
-│   ├── game_scene.gd             #   游戏内场景：装配 world + view + hud，跑主循环
+│   ├── game_scene.gd             #   **2D 遗留栈**的游戏内场景：装配 world + view + hud，跑主循环
+│   │                             #   （★ 真机入口**已经是 3D** 的 `game_scene3d.gd`，见下一行）
+│   ├── game_scene3d.gd           #   ★★ **真 3D 游戏内场景**：装配 world + 3D 视图 + HUD，
+│   │                             #      跑主循环（`Camera3D` 固定俯角，只平移 / 缩放）
+│   ├── game_interaction.gd       #   ★ 与渲染无关的交互核心（事件提示 / 命令卡派发）：**已抽出**，
+│   │                             #      并且**已被 3D 场景委派使用**；2D 那份仍是自己的实现（遗留项）
+│   ├── ground_view.gd            #   3D 地面：一整块 `PlaneMesh` + 一张烘出来的地形贴图；
+│   │                             #      **迷雾是另一块平面**（两层各 1 次 draw call）
+│   ├── unit_view_3d.gd           #   3D 单位：`MultiMesh` 按「阵营 × 是否将领」分桶 + billboard
+│   ├── unit_sprite_3d.gd         #   程序化兵人立牌贴图（SDF 光栅化，按变体缓存）
+│   ├── building_view_3d.gd       #   3D 建筑：`MultiMesh` + `BoxMesh`（★ 视觉高度 ≠ 逻辑高度）
+│   ├── overlay_view_3d.gd        #   3D 版的覆盖层（屏幕空间：选中圈 / 标记 / 拖框 / 建造预览）
+│   ├── palette.gd                #   ★★ 坐标换算的**唯一**出处（3D 版）：**实例类**，持有 `Camera3D`；
+│   │                             #      `to_px` = `unproject_position`、`to_logic` = 地面射线求交
+│   │                             #      ⇒「格 ↔ 屏幕」的正反两面由**同一台相机**导出
+│   ├── palette2d.gd              #   ⚠️ **只服务 2D 遗留栈**的老静态签名；新 3D 代码不许 preload 它
 │   ├── terrain_view.gd           #   地形（TileMapLayer）
 │   ├── fog_view.gd               #   ★ 战争迷雾的**灰色遮罩**（本版新增）：把 logic/fog.gd
 │   │                             #     算出来的视野掩码烘成「1 像素 = 1 格」的贴图，
@@ -367,6 +382,67 @@ Godot 里 DPR 由引擎处理，**但下面三条要原样继承**：
 2. **单位位置是连续浮点，不吸附格心**：`tx/ty` 只作为「所在地块」的缓存，用于占区块/射程/警戒判定
 3. **点到哪走到哪**：右键目标是鼠标所指的世界坐标，不是格心；
    点到山/城墙/建筑时自动改走**最近的可达格**（且必须过滤「从起点真走得到」）
+
+### 4.3 ★★ 真 3D 场景：第三套坐标（世界是 `y = 0` 的平面，投影交给引擎）
+
+**逻辑格一个都没变**，变的是「格 → 屏幕」这一步：它现在由一台**真实的 `Camera3D`** 给出。
+
+> ⚠️ 本节原先写的是那一版 **2.5D 纵向压扁**（`ContentRoot.scale = (1, squash)`）。
+> 它后来被**连续推翻两次**（菱形等距 → 手算真透视），最终落到真 3D ——
+> 每次「为什么当初那么做、后来为什么推翻」记在 [`route.md`](route.md) 四十一节，
+> 设计与实测记在 [`../dev_plan_9.md`](../dev_plan_9.md)。
+
+| 名字 | 定义 | 谁用 |
+|---|---|---|
+| 逻辑坐标（格） | 一格 = `1.0`，`(0,0)` = 左上角 | `logic/` 全部、`data/maps/*.json`、**所有单位位置 / 半径 / 射程** |
+| 世界坐标（3D） | 逻辑格 `(x, y)` → 世界点 `(x · cell_px, 0, y · cell_px)`：地面是 `y = 0` 的水平面 | `Node3D` 节点的摆放（地面 / 单位 / 建筑） |
+| 屏幕像素 | 相机把世界点投到视口上（左上角为原点） | `CanvasLayer` 上的覆盖层与 HUD（用 `palette.to_px` 定位） |
+
+- ★★ 换算**只有** `view/palette.gd` 一处，而且它是个**实例类**（`PaletteRes.create(cfg, cam)`）：
+  `to_px` = `cam.unproject_position(世界点)`；`to_logic` = `cam.project_ray_normal()` 与地面求交。
+  **正向与逆向由同一台相机导出** ⇒ 不存在「画用一套、鼠标换算用另一套」（pitfalls 3.1）。
+- ★★ **为什么投影交给引擎**：手算那版要自己维护四个投影量（`proj_a / proj_b / proj_zero_y / proj_offset`），
+  改任何一处都得重推公式，而且出过两个真问题 ——
+  「向下滑动时地块越来越大」与「拖框起点在相机移动时自己漂」。
+  交给引擎之后，投影 / 求交 / 相机数学**只有一份实现**。
+  ⚠️ 这条的代价是：**相机必须先真的进场景树**（否则没有视口，投影 API 全部退化成零值，见 pitfalls 10.3）；
+  `far` 也必须跟着相机距离走（默认 4000，见 pitfalls 10.1）。
+- ★ 相机**不俯仰旋转**（俯角由相机位置表达），平移只沿世界 X / Z
+  ⇒ 同一个格在任何位置看到的**屏幕尺寸完全相同**。
+  ★ 透视仍然在（近大远小：同一格在画面下方更大，实测 y=2 行 → y=20 行是 **1.28 倍**），
+  但「尺寸随相机移动而变」这件事从根上不存在。
+- ★★ **覆盖层与「字 / 血条」留在屏幕空间**（`CanvasLayer` 上的 `Control`），用 `to_px` 定位：
+  天然 1:1、不受透视影响、也不必为每个标记建 3D 节点。
+  ⚠️ **透视下一个格在屏幕上不是矩形而是梯形** ⇒ 必须**逐个角投**；
+  `tile_poly` / `quad_poly` / `building_poly` 返回的是**四个点**，不是 `Rect2`
+  ——「只投中心再套一个矩形」在 3D 下四角都是错的。
+- ★ **地面是一整块 `PlaneMesh` + 一张烘出来的贴图**（网格线与区块归属是**贴图上的像素**
+  ⇒ 天然连续，不可能出现「斜着的区块线互相穿插」）；
+  **迷雾是另一块平面 + 另一张贴图**（它每帧都在变，而地形图只在归属变化时重烘），两层各 1 次 draw call。
+- ★ 单位与建筑各自用 `MultiMesh` 合批：单位按「**阵营 × 是否将领**」分桶
+  （`MultiMesh` 不支持逐实例贴图 ⇒ 变体数 = 阵营数 × 2，本项目是个位数），立牌用材质自带的 billboard；
+  建筑是一个单位 `BoxMesh` 靠**逐实例非等比缩放**表达尺寸差异。
+- ★ **视觉高度 ≠ 逻辑高度**：建筑的 3D 高度是**纯表现**常量（`render.building_height.<type>`），
+  寻路 / 碰撞 / 攻击一律读 `logic/building.gd` 的 `body_scale`（一格里的**平面块**）。
+  `logic/` 里没有、也不会加「高度」字段；单位也**不投阴影**（材质 `SHADING_MODE_UNSHADED`）。
+- ★ **HUD 整个复用 2D 那版**：它是 `CanvasLayer` 上的 `Control`，本来就不吃 3D 变换；
+  它对世界的唯一依赖是「通过 `camera_rig` 知道我现在看的是哪一块」⇒
+  把 `camera_rig` 换成一个 3D **替身**（`center_on_px` / `get_viewport_rect` / `cam`）就够了。
+- ★★ **入口现状**：`view/main.tscn` → `view/main.gd` **已经切到 3D**
+  （`GameSceneRes = res://view/game_scene3d.gd`），全套 **38 文件 / 5338 项 / fail 0**。
+  ⚠️ 这一步**不是「改一行 `preload`」**：从「只切 preload」（85 项失败）到全绿一共走了 **8 步**，
+  每一步都在补一个**视图层交互接口** —— 主循环的暂停门、`_unhandled_input` 的「先问 HUD」、
+  `_consume_events` 命名对齐、`level_playing` / `level_campaign`、开局自动选中……
+  完整曲线记在 route.md 四十一节与 [`../dev_plan_9.md`](../dev_plan_9.md) 6.1。
+  ★ 另外 `main.gd` 那个字段必须退到 `Node`（原本标 `Node2D`，装不下 `Node3D` ⇒
+  整个 `main.gd` 载不进来、主界面起不来，见 pitfalls 10.8）。
+  ★ `view/game_interaction.gd`（与渲染无关的交互核心）**已抽出、已被 3D 使用**；
+  2D 那份仍是自己的实现 ⇒ 「两边共用一份」是遗留项。
+- ⚠️ **2D 遗留栈还在仓库里**（`game_scene.gd` / `camera_rig.gd` / `terrain_view.gd` / `zone_view.gd` /
+  `fog_view.gd` / `overlay.gd` / `unit_view.gd` / `building_view.gd` / `minimap.gd`），
+  它们仍用自己那套 2D 换算，出处是 **`view/palette2d.gd`**（老静态签名）。
+  ★ 新写的 3D 代码一律不许 `preload` 它 —— 要用投影就走 `view/palette.gd` 的实例 API。
+- 取舍、里程碑与真踩到的坑：见 [`../dev_plan_9.md`](../dev_plan_9.md) 与 [`route.md`](route.md) 四十一节。
 
 ---
 

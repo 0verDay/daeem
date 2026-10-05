@@ -35,7 +35,53 @@ extends Node2D
 const ConfigRes = preload("res://logic/config.gd")
 const FontLoaderRes = preload("res://view/font_loader.gd")
 const StartScreenRes = preload("res://view/start_screen.gd")
-const GameSceneRes = preload("res://view/game_scene.gd")
+## ★★ 入口**暂时仍是 2D**（`game_scene.gd`）—— 这一轮试过切到 3D，**切完回退了**。
+##
+## ⚠️⚠️ 回退的原因与证据（改这行之前必读）：
+##   把这一行改成 `res://view/game_scene3d.gd` 之后，全套从「38 文件 / 5524 项全绿」
+##   掉到「**85 项失败**」，失败集中在 4 个集成测试，而且**不是节点名对不上那么简单**：
+##     · `test_ui`（原 1074 项全绿）→ 75 项失败：科技格点击不生效、招募队列不排、
+##       悬停提示不更新 —— 这些交互链**依赖 2D 场景暴露的一整套视图层接口**
+##       （`game.level_playing`、`hud` 信号接线、各面板 → 命令那条路），
+##       而 `game_scene3d` 目前**只重写了渲染**，还没把这些接回去；
+##     · `test_view` 8 项 / `test_campaign_test` 1 项 / `test_settings_menu` 1 项：
+##       同类原因（老路径的字段与信号）。
+##
+## ★★ 两次试切的实测曲线（本节最该看的东西）：
+##   ① 第一次（只切 preload，3D 场景还没补任何交互接口）
+##      ⇒ `38 文件 / 5249 项 / 5164 通过 / **85 失败**`
+##        （test_ui 75、test_view 8、test_campaign_test 1、test_settings_menu 1）
+##   ② 第二次（补了主循环的**暂停门** + 把事件提示委托给 `game_interaction.gd`）
+##      ⇒ `test_ui **929 通过 / 54 失败**`（第一次是 75 失败）
+##
+## ★ 第二次才看出来的关键事实：那 85 条**几乎全不是「缺成员」** ——
+##   运行期只有 1 条 `Nonexistent function '_selected_buildings'`，其余都是**行为差异**，
+##   其中最大的一类来自**主循环漏了暂停门**：
+##   2D 版把 `world.tick()` 夹在 `if _running:` 里
+##   （`_running = not input_ctrl.paused`）⇒ **暂停时逻辑冻结、但渲染与相机照旧**。
+##   3D 主循环一开始没有这个门，表现是「暂停之后世界还在跑」；在测试里的样子则是
+##   「同一条操作被记了两次」（`entries=["zone_specialize", "zone_specialize"]`）。
+##   补上之后 test_ui 直接从 75 失败降到 54。
+##
+## ★ 还差什么（下一轮从这里接着做）：剩下的 54 条集中在
+##   `_selected_buildings`（缺这个成员）、区划特化的读条/取消/汇总文案、
+##   以及悬停提示的刷新时机 ⇒ **交互接口还剩一小半没补**。
+##
+## ⚠️ 为什么两次都回退而不是留着红：**基线保持全绿**是本项目所有后续验证的前提
+##   （见 route.md 的验收口径）。留着 54 条红，后面任何一次改动都无法判断
+##   「是我弄坏的还是本来就红的」。3D 栈本身由 `tests/test_view3d.gd`（41 项）
+##   与 `tests/bench_fps_3d.gd` 独立验证，不受入口影响。
+#### ★ 所以「3D 渲染栈已完成」与「3D 场景可以当主入口」是**两件事**：
+##   前者已完成并在 `tests/test_view3d.gd`（41 项）与 `tests/bench_fps_3d.gd` 下验证；
+##   后者还差「把视图层的交互接口补齐」那一步，那是**独立的一项工作**。
+##   ⇒ 在补齐之前，入口保持 2D，基线保持全绿；3D 栈由测试与基准驱动。
+##
+## ⚠️ 回退过程中实测到的另一个坑（已随回退修掉，留作记录）：
+##   切 3D 时 `main.gd` 的 `var game: Node2D` 会直接 Parse Error
+##   （`Node3D` 与 `Node2D` 是平级的两个分支）⇒ **整个 main.gd 载不进来** ⇒
+##   主界面起不来、`test_map_select` 从 73 项掉到 25 项。症状看着像「界面坏了」，
+##   根因只是那一行的类型标注。所以那个字段现在写成 `Node`（见下面 `var game`）。
+const GameSceneRes = preload("res://view/game_scene3d.gd")
 ## ★ 单人战役的**占位界面**（主界面第二颗按钮 `campaign_test` 点进来的那一页）。
 const CampaignTestRes = preload("res://view/campaign_test.gd")
 ## 扫 `data/campaigns/` 给那一页出选项（★ 扫目录这件事只做在 main 这一处：
@@ -49,7 +95,16 @@ var cfg: ConfigRes = null
 var start_screen: CanvasLayer = null
 ## ★ 单人战役的占位界面（`view/campaign_test.gd`；没打开时是 null）。
 var campaign_screen: CanvasLayer = null
-var game: Node2D = null
+## ★★ 类型必须是 `Node`，不能是 `Node2D`（本轮实测踩到）：
+##    入口切到 3D 之后 `game_scene3d.gd` 是 **`Node3D`**，而 `Node3D` 与 `Node2D` 是
+##    **平级的两个分支** —— 写 `var game: Node2D` 会让这一行直接
+##      `Parse Error: Value of type "game_scene3d.gd" cannot be assigned to a variable of type "Node2D"`
+##    ⇒ **整个 `main.gd` 载不进来** ⇒ 主界面起不来、集成测试大面积掉断言
+##    （实测：`test_map_select` 从 73 项掉到 25 项，`test_start_flow` 报「主界面能起来」失败，
+##      而且症状看着像「界面坏了」，其实只是这一行的类型标注）。
+##    ★ 判据：`main.gd` 是**流程层**，它只该知道「游戏内场景是个节点」，
+##      **不该知道**视角是 2D 还是 3D —— 所以类型标注就该停在 `Node`。
+var game: Node = null
 
 ## 进全屏之前是哪种窗口模式（退出全屏时还原，见 _handle_window_hotkey）
 var _windowed_mode: int = DisplayServer.WINDOW_MODE_WINDOWED

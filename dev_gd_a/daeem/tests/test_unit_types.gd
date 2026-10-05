@@ -117,6 +117,18 @@ func _test_class_tags(cfg) -> void:
 # ------------------------------------------------------------------
 func _test_general_types(cfg) -> void:
 	var w = require_world_with_escorts(cfg, ESCORTS_PER_GENERAL)
+	# ★ 这一节只读逻辑字段（类型 / 数值 / 队伍），**不看屏幕位置** ——
+	#   所以不需要任何投影初始化。
+	#
+	# ⚠️ 这里本来有一行 `setup_projection(cfg, w.map.cols, w.map.rows)`：
+	#    它是 2D 仿射投影时代测试脚手架的辅助函数（把视口尺寸与
+	#    `proj_offset` 一起喂给 cfg）。3D 版之后投影由**真实的 Camera3D**
+	#    决定（`view/palette.gd` 的实例 API），脚手架的 `setup_projection`
+	#    已经删除，于是这一行变成 "Function not found" 的 **Parse Error**
+	#    —— 整个文件都载不进来（37 个文件一起红的那个坑）。
+	#    它在这里本来就**没有任何断言依赖**（这个用例一个字都没算屏幕坐标），
+	#    所以直接删掉；真要看位置请像 test_view 那样用
+	#    `make_test_camera()` + `make_test_palette()`。
 	var types: Array = cfg.general_types()
 	eq(types.size(), 3, "配置里给了三个将领类型")
 
@@ -351,6 +363,8 @@ func _reload_cfg(src) -> RefCounted:
 func _test_view_uses_icons(cfg) -> void:
 	# ★ 要有**附属兵**才能拿一个普通单位当样本（本轮：附属兵来自关卡摆放）
 	var w = require_world_with_escorts(cfg, ESCORTS_PER_GENERAL)
+	# ★ 同 `_test_general_types`：这里只数「画了几笔」，不算屏幕坐标 ——
+	#   原来那行 `setup_projection(...)` 已经随 2D 投影脚手架一起删掉了。
 	var view = UnitViewRes.new()
 	# ★ 用**真字体**建 view：无头下引擎兜底字体没有中文字形，但断言只看「画了几笔」，
 	#   所以两者都能过；这里传真字体是为了走与游戏完全一致的那条路。
@@ -398,9 +412,21 @@ func _test_view_uses_icons(cfg) -> void:
 	var g3 = w.unit_by_id("general-3")      # 骑手将领
 	ok(g1 != null and g3 != null, "有长枪兵将领 general-1 与骑手将领 general-3")
 	if g1 != null and g3 != null:
-		g1.pos = Vector2(3.5, 3.5)
+		# ★★ 2D 仿射投影的落点口径（**与上面那条 3D 注释相反，别照抄**）：
+		#    现在 `view/palette.gd` 是实例类、而这条无头用例走的是遗留 2D 换算，
+		#    屏幕像素 = 格 × cell_px（`cell_px` = 128）。所以「挪到镜头里」
+		#    就是「落在视口（1920×1080）加剔除余量（CULL_PAD_PX = 48）之内」：
+		#      · g1 (12.5, 8.5) → (1600, 1088)   ✓
+		#      · g3 (14.5, 8.5) → (1856, 1088)   ✓（右沿 1856 + 半径仍在 1968 内）
+		#      · 普通兵摆 (15.0, 8.5) → (1920, 1088)  ✓
+		#    ⚠️ 我第一版照抄了旧注释里的 (16.5, 8.5)：那是**真 3D 相机**在
+		#       某组参数下的落点，2D 下它等于 x = 2112 > 1968，会被
+		#       `_visible_rect()` 的剔除**正确地**剔掉 —— 表现就是
+		#       「将领 + 普通兵：两个圆盘都画了（实际 1，期望 2）」，
+		#       看着像画崩了，其实只是那个兵站在屏幕右边外面。
+		g1.pos = Vector2(12.5, 8.5)
 		g1.sync_tile(w.map)
-		g3.pos = Vector2(5.5, 3.5)
+		g3.pos = Vector2(14.5, 8.5)
 		g3.sync_tile(w.map)
 		w.units = [g1, g3]
 		view._draw()
@@ -413,7 +439,7 @@ func _test_view_uses_icons(cfg) -> void:
 
 		# 普通兵：同一个字、同一套画法，只是**圆盘那张贴图不同**（描边细）
 		if plain != null:
-			plain.pos = Vector2(7.5, 3.5)
+			plain.pos = Vector2(15.0, 8.5)
 			plain.sync_tile(w.map)
 			w.units = [g1, plain]
 			view._draw()

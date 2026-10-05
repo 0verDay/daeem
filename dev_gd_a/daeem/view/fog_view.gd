@@ -26,6 +26,7 @@
 extends Node2D
 
 const ConfigRes = preload("res://logic/config.gd")
+const Palette2DRes = preload("res://view/palette2d.gd")
 
 var cfg: ConfigRes = null
 var world = null
@@ -129,10 +130,11 @@ func _draw() -> void:
 		_tex_cols = cols
 		_tex_rows = rows
 		_tex = _bake(mask, world.map, cols, rows)
-	var cell: float = cfg.cell_px
 	# ★★ 一次 `draw_texture_rect` 铺满整张地图（贴图是 1 像素 = 1 格）：
 	#    594 格也只有 1 次 draw 调用 —— 与格数无关，也不必逐格判断 `exists`
 	#    （不存在的格子已经在那张贴图里烘成透明了）。
-	draw_texture_rect(_tex, Rect2(Vector2.ZERO, Vector2(float(cols), float(rows)) * cell),
-		false, cfg.fog_mask_color)
+	# ★ 2.5D：目标矩形纵向压扁（贴图本身仍然是 1 像素 = 1 格，**不必重烘**）——
+	#   NEAREST 采样下非等比拉伸正好是「每一格被压成扁平矩形」，边界仍然是硬的。
+	#   所以掩码贴图与投影完全解耦：改 squash 不用重建任何一张图。
+	draw_texture_rect(_tex, Palette2DRes.map_rect(cfg, cols, rows), false, cfg.fog_mask_color)
 	draw_count += 1

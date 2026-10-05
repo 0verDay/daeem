@@ -22,6 +22,10 @@
 ##     4. 本文件刻意不写 class_name，依赖一律用字符串路径在运行时 load()
 extends SceneTree
 
+## ⚠️ 用**文件私有**的名字（`_PaletteRes`）：子测试文件里大多已经自己 preload 了 `PaletteRes`，
+##    基类再声明一个同名常量会让它们全部 Parse Error（实测：4 个文件同时红）。
+const _PaletteRes = preload("res://view/palette.gd")
+
 const PATH_CONFIG := "res://logic/config.gd"
 const PATH_MAP_DATA := "res://logic/map_data.gd"
 const PATH_GRID := "res://logic/grid.gd"
@@ -137,6 +141,64 @@ func script_at(path: String) -> GDScript:
 		ok(false, "脚本能载入：%s" % path)
 		return null
 	return s
+
+
+## ★★ 投影的**测试侧初始化**：造一台相机 + 一个 palette 实例，供「要验屏幕位置」的用例用。
+##
+## ★★ 3D 版的口径变化（与上一版最大的区别）：投影不再是「几个静态函数 + 配置常量」，
+##   而是 **一个 `Camera3D`**（引擎负责投影与求交）。所以测试要么走 `game_scene3d`
+##   （它会自己建相机），要么用这个函数造一台。
+##
+## ⚠️⚠️ 为什么这个函数必须**永远能编过、且不依赖任何新 API**：
+##   它是**所有测试文件的父类**（`extends "res://tests/test_case.gd"`）。
+##   这里一旦解析失败，37 个文件会**一起报 Compilation failed** ——
+##   连 29 个纯逻辑用例也一起红，看着像「逻辑全坏了」，其实只是父类编不过。
+##   （本轮实测踩到一次：改 palette 的 API 之后 37 个文件全红。）
+##
+## @return 一台摆好的 `Camera3D`（调用方需要时可再包成 palette 实例）
+##
+## ★★ 相机**会被真的挂上场景树**（挂在 root 下，名字固定为 `TestCamera3D`）——
+##   这一步不是顺手加的，是**必须的**：`Camera3D.unproject_position()` /
+##   地面射线求交都要有**视口**，而没进树的相机 `get_viewport()` 是 null、
+##   unproject 一律返回 (0,0)（实测）。少了它，「近大远小」「地块是梯形」
+##   「正逆互逆」会一起报 0.0 / -nan，看着像投影坏了，其实是相机没有视口。
+##
+## ⚠️ 调用前提：**必须已经过至少一帧**（在 `_initialize()` 里挂节点会静默失效，
+##    见文件头与 pitfalls 1.2）。已经在 `_initialize()` 里同步调它的用例要改成
+##    `await process_frame` 之后再调。
+## ★ 只挂一台（重复调用复用同一台并重新摆位）：不然每个用例都会往 root 下堆一台相机。
+func make_test_camera(cfg, cols: int = 27, rows: int = 22,
+		vw: float = 1920.0, vh: float = 1080.0) -> Camera3D:
+	if cfg == null:
+		return null
+	cfg.set_viewport_size(vw, vh)
+	var cam: Camera3D = root.get_node_or_null("TestCamera3D")
+	if cam == null:
+		cam = Camera3D.new()
+		cam.name = "TestCamera3D"
+		root.add_child(cam)
+	cam.fov = rad_to_deg(cfg.cam_fov)
+	var center := Vector3(float(cols) * cfg.cell_px * 0.5, 0.0, float(rows) * cfg.cell_px * 0.5)
+	var up := Vector3(0.0, sin(cfg.cam_pitch), cos(cfg.cam_pitch)).normalized()
+	var d: float = cfg.cam_height
+	cam.near = 1.0
+	cam.far = d * 4.0 + 1000.0
+	# ★★ 必须**显式设位置**再设朝向（本轮实测的坑）：look_at_from_position 虽然给了
+	#    位置参数，但这个相机是**复用**的（上一轮测试可能在它上面平移过），
+	#    残留的 position 会让「俯角」算出来差 2°（实测 57° vs 期望 55°），
+	#    而俯角正是「相机高度不变」那条不变量的判据。
+	cam.position = center + up * d
+	cam.look_at(center, Vector3.UP)
+	# ⚠️ `look_at_from_position` 会把 fov 重置回默认 75 ⇒ 必须在它**之后**设
+	cam.fov = rad_to_deg(cfg.cam_fov)
+	return cam
+
+
+## 造一个 `view/palette.gd` **实例**（3D 版：它持有 Camera3D）
+func make_test_palette(cfg, cam: Camera3D) -> RefCounted:
+	if cfg == null or cam == null:
+		return null
+	return _PaletteRes.create(cfg, cam)
 
 
 ## 载入全局配置，失败即记一条失败断言（不静默用默认值 —— 静默默认值会让

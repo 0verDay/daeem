@@ -497,12 +497,24 @@ func _test_entry_flow() -> void:
 	#    所以要从 game 里找，不能在 main 根上找 —— 找不到就等于这几行白测。
 	ok(main.get_node_or_null("GameScene") == game, "游戏内场景挂在 main 下的 GameScene 节点上")
 	if game != null:
-		for node_name in ["Camera2D", "TerrainView", "ZoneView", "BuildingView", "UnitView",
-				"Overlay", "CameraRig", "InputController", "Hud"]:
+		# ★★ 入口**已切到 3D**（`view/game_scene3d.gd`），这里钉 3D 那套节点树。
+		#
+		# ⚠️ 这一处改过三次，记下来免得再绕：入口从 2D 切 3D 时，
+		#    这些断言先改 3D、又随第一次回退改回 2D（期间还踩到 `main.gd` 的
+		#    `var game: Node2D` 装不下 `Node3D` ⇒ 整个 main.gd 载不进来）。
+		#    现在 3D 场景的交互接口补齐了、`test_ui` 1060 项全绿，入口正式是 3D。
+		#
+		# ★ 判据：这 7 条同时钉住「相机是 3D 的」「四个渲染层各就各位」「HUD 挂上了」。
+		for node_name in ["Camera3D", "GroundView3D", "UnitView3D", "BuildingView3D",
+				"OverlayLayer", "InputController", "Hud"]:
 			ok(game.get_node_or_null(node_name) != null, "进游戏后节点树里有 %s" % node_name)
+		ok(game.get_node_or_null("Camera3D") is Camera3D,
+			"★ 相机是 Camera3D（不是 Camera2D —— 这就是本版与上一版的根本区别）")
 		ok(game.world != null, "进游戏后才建出 world")
 		ok(game.cfg != null, "游戏内场景拿到了配置")
 		ok(game.cam != null, "进游戏后建了相机")
+		ok(game.palette != null, "★ 建了 3D 投影助手（「格 ↔ 屏幕」换算的唯一入口）")
+		ok(game.interaction != null, "★ 建了交互核心（game_interaction.gd，与渲染无关）")
 		ok(game.world.units.size() > 0, "地图里的单位已经存在")
 		ok(not (game.world is Node), "★ world 仍然不是 Node（逻辑层与场景树分离）")
 
