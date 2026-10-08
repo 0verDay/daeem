@@ -1,10 +1,10 @@
-## unit_view_3d.gd —— 3D 单位：**按「阵营 × 是否将领」分组的多批次 MultiMesh**
+## unit_view_3d.gd —— 3D 单位：**按「阵营 × 是否将领 × 兵种」分组的多批次 MultiMesh**
 ##
 ## ★★ 为什么是「多批次」而不是「一个 MultiMesh 画全部」（本版最重要的性能取舍）：
 ##   `MultiMesh` 的所有实例**共用同一个 mesh ⇒ 同一张贴图**，因此它**不支持逐实例贴图**。
-##   而兵人立牌要做到「阵营色 + 将领更粗的描边」，就必须有多张图（阵营数 × 2）。
+##   而兵人立牌要做到「阵营色 + 将领更粗的描边 + 每个兵种一张占位素材」，就必须有多张图。
 ##   ⇒ 做法是：**每种变体一个 `MultiMeshInstance3D`**（各自一张贴图），
-##     变体数 = 阵营数 × 2，本项目是个位数 ⇒ **仍然只有个位数 draw call**，
+##     变体数 = 阵营数 × 2 × 兵种数，本项目每一项都是个位数 ⇒ **仍然只有个位数 draw call**，
 ##     1000 个单位全部塞在这些 MultiMesh 里，一个实例一个单位。
 ##   ★ 与 2D 那版「按贴图分桶再合批」是**同一个意图换了工具**：
 ##     那次踩过的坑是「桶用值语义的打包数组 ⇒ 永远是空的 ⇒ 什么都不画」，
@@ -73,15 +73,18 @@ func setup(p_cfg: ConfigRes, p_world, p_palette) -> void:
 	_hit_freq = cfg.num("render.hit_shake_freq", 26.0)
 
 
-## 取（或创建）一个变体的批次
-func _batch_for(key: String, faction: String, leader: bool) -> Dictionary:
+## 取（或创建）一个变体的批次。
+##
+## ★ 变体键 = `阵营|是否将领|兵种`（见 `sync` 的拼法）；贴图按变体烘一张。
+func _batch_for(key: String, faction: String, leader: bool, unit_type: String) -> Dictionary:
 	var hit: Variant = _batches.get(key, null)
 	if hit != null:
 		return hit
 	var col: Color = cfg.faction_color(faction, "main")
 	var outline: Color = Color(0.05, 0.05, 0.07, 1.0)
-	# ★ 将领的描边更粗：靠**另一张贴图**（见 unit_sprite_3d.gd 的说明）
-	var tex: ImageTexture = SpriteRes.bake(col, leader, outline)
+	# ★ 兵种素材（`unit.types.<id>.sprite`）+ 阵营色剪影；将领的描边更粗。
+	#   素材缺失 / 没配 → `bake_asset` 内部退回程序化剪影（见 unit_sprite_3d.gd 的说明）。
+	var tex: ImageTexture = SpriteRes.bake_asset(cfg.unit_sprite_of(unit_type), col, leader, outline)
 
 	# ★★ 自定义材质（本轮的「逐像素闪白」就落在这里）：
 	#   · billboard 由 **shader 自己**做（`BaseMaterial3D.billboard_mode` 对自定义材质无效）；
@@ -123,7 +126,7 @@ func _batch_for(key: String, faction: String, leader: bool) -> Dictionary:
 ##   ① **位置没变就不重写 MultiMesh 实例**：待命单位占多数时（1000 个单位里
 ##      真正在动的可能只有几十个），省掉的是「每帧每单位一次
 ##      `set_instance_transform` + 一次 `to_world`」；
-##   ② 分桶键用**预拼好的字符串**（`阵营|是否将领`）：每帧拼 1000 次
+##   ② 分桶键用**预拼好的字符串**（`阵营|是否将领|兵种`）：每帧拼 1000 次
 ##      `"%s|%d" % [...]` 是纯浪费，改成按单位缓存（阵营不会变）。
 ##   ⚠️ 缓存必须**逐槽位**跟着实例下标走：实例下标每帧都可能变
 ##      （单位死亡 / 被迷雾挡住 → 桶里的顺序变了），所以缓存键要带下标。
@@ -143,7 +146,8 @@ func sync() -> void:
 		if not _visible_to_me(u):
 			continue
 		var leader: bool = u.is_general()
-		var key := "%s|%d" % [String(u.faction), 1 if leader else 0]
+		# ★★ 变体键 = 阵营 | 是否将领 | 兵种：三个都会变，兵种决定用哪张兵种素材。
+		var key := "%s|%d|%s" % [String(u.faction), 1 if leader else 0, String(u.unit_type)]
 		var arr: Array = buckets.get(key, [])
 		arr.append(u)
 		buckets[key] = arr
@@ -159,7 +163,8 @@ func sync() -> void:
 		#    `var rec := _batch_for(...)` **不能**用 `:=`（返回值推不出类型）。
 		#    本轮第四次踩同类坑：凡是无类型容器 / 无类型参数参与，都要显式标类型。
 		var parts: PackedStringArray = key.split("|")
-		var rec: Dictionary = _batch_for(key, String(parts[0]), int(parts[1]) == 1)
+		var rec: Dictionary = _batch_for(key, String(parts[0]), int(parts[1]) == 1,
+			String(parts[2]))
 		var mm: MultiMesh = rec["mm"]
 		if mm.instance_count < arr.size():
 			mm.instance_count = maxi(arr.size(), mm.instance_count * 2)

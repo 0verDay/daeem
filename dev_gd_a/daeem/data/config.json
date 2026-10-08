@@ -234,6 +234,12 @@
       "     · 不写这个键 → 退成**名字的第一个字**（见 config.gd 的 unit_icon_of）。",
       "     · 将领用它所属兵种的那一个字（三位的 kind 都是 general，还靠描边更粗区分）。",
       "     · 编辑器：tools/unit_editor 的「单位」页 →「地图上的字」那一栏。",
+      "  ★★ sprite = **3D 立牌的素材路径**（本轮新增，占位素材）。",
+      "     · 取素材的**形状**（alpha 当剪影遮罩），运行时填充**阵营色** ⇒ 敌我仍分得清；",
+      "       **将领那一档的描边更粗**（与 icon 那条「靠描边区分将领」同一口径）。",
+      "     · 不写这个键 / 路径载不到 → 渲染层退回**程序化剪影**（view/unit_sprite_3d.gd 的 bake）。",
+      "     · 将领用它**所属兵种**的素材（unit_sprite_of 走 unit_type_of，与 icon 同口径）。",
+      "     · ⚠️ 只在 **3D 立牌**上生效；2D 遗留栈的「圆盘 + 一个字」不看这个键。",
       "  ★ 将领的数值 = 它所属类型的数值（用户确认「完全按对应兵种数值」）：",
       "    所以这里没有单独的将领数值块。想单独强化将领就在 unit.general 里加倍率，",
       "    并在 logic/config.gd 的 unit_hp_of / unit_combat_of 里乘上去。",
@@ -252,6 +258,7 @@
       "spearman": {
         "name": "长枪兵",
         "icon": "枪",
+        "sprite": "res://assets/test_units/SpearMan/cqb_k.png",
         "class": "infantry",
         "ranged": false,
         "hp_max": 140,
@@ -265,6 +272,7 @@
       "longbowman": {
         "name": "长弓兵",
         "icon": "弓",
+        "sprite": "res://assets/test_units/LongbowMan/cgb_k.png",
         "class": "infantry",
         "ranged": true,
         "hp_max": 80,
@@ -278,6 +286,7 @@
       "rider": {
         "name": "骑手",
         "icon": "骑",
+        "sprite": "res://assets/test_units/Rider/qs_k.png",
         "class": "cavalry",
         "ranged": false,
         "hp_max": 110,

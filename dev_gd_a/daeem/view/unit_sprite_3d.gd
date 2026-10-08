@@ -24,8 +24,18 @@ const OUTLINE_PX := 3.0
 const BODY_COLOR := Color(1, 1, 1, 1)
 ## 描边色（深色，压在剪影外缘）
 const OUTLINE_COLOR := Color(0.05, 0.05, 0.07, 1.0)
+## ★★ 素材版立牌的描边宽度（像素，加在剪影**外侧**）——将领那一档更粗。
+##   与程序化那版的 OUTLINE_PX 是同一种单位（64×96 画布上的像素）；
+##   素材的剪影更实心，所以数值略收敛。两档的「粗细分档」与 2D 图标
+##   （view/unit_icon.gd 的 OUTLINE_W / OUTLINE_W_LEADER）是同一个口径。
+const ASSET_OUTLINE_PX := 2.0
+const ASSET_OUTLINE_PX_LEADER := 5.0
+## 描边不透明度（与 view/unit_icon.gd 的 OUTLINE_ALPHA 同一档）
+const OUTLINE_ALPHA := 0.72
 
 static var _cache: Dictionary = {}
+## ★★ 素材源图缓存（路径 → Image；**载不到的记 `false` 哨兵**，免得每帧每单位都去 load 一次）。
+static var _asset_cache: Dictionary = {}
 
 
 ## 取一张兵人贴图。
@@ -52,6 +62,7 @@ static func bake(faction_color: Color, leader: bool, outline: Color) -> ImageTex
 
 static func clear_cache() -> void:
 	_cache = {}
+	_asset_cache = {}
 
 
 ## 逐像素光栅化：把「兵人剪影」写成一张 RGBA 图。
@@ -79,10 +90,136 @@ static func _bake_uncached(leader: bool, body: Color, outline: Color) -> ImageTe
 			var col := _over(Color(outline.r, outline.g, outline.b, a_rim), Color(0, 0, 0, 0))
 			col = _over(Color(body.r, body.g, body.b, body_cov), col)
 			img.set_pixel(x, y, col)
-	# ⚠️ 用 `Image.create` 逐像素写时，第 0 行是**顶部**；而 3D 里 QuadMesh 的
-	#    UV v=0 在**底部** ⇒ 需要翻转，否则兵人会**倒过来**。
-	img.flip_y()
+	# ★ 朝向：第 0 行是**顶部**，而 QuadMesh 的 UV v=0 也在**顶部**
+	#   （实测顶点 (−0.5, 0.5) 的 uv = (0,0)）⇒ **不需要翻转**，兵人就是头朝上。
+	#   ⚠️ 这里曾经写过 `flip_y()`（注释误以为 v=0 在底部），那会让兵人**倒过来**。
 	return ImageTexture.create_from_image(img)
+
+
+# ------------------------------------------------------------------
+# ★★ 素材版立牌（本轮新增）：用 `unit.types.<id>.sprite` 的那张占位图当形状
+#
+# 口径（用户拍板「阵营色剪影」）：
+#   · 取素材的**形状**（alpha 当剪影遮罩），填**阵营色** —— 敌我仍然分得清；
+#   · 素材**缺失 / 路径为空**时**退回程序化剪影**（`bake()`），
+#     所以未知兵种、老地图里的怪 kind 都不会「没图」。
+# ★ 与程序化那版共用同一块 QuadMesh / 同一个 shader ⇒ 画布尺寸与**朝向**必须一致
+#   （两者都**不翻转**：QuadMesh 的 UV v=0 在**顶部**，见 `_bake_uncached` 的说明）。
+# ------------------------------------------------------------------
+
+## 取一张**基于兵种素材**的立牌贴图。
+##
+## @param path  素材路径（`cfg.unit_sprite_of(unit_type)`；空串 = 没配）
+## @param faction_color 阵营主色（烘进剪影 —— MultiMesh 一批共用一张贴图，没法逐实例染色）
+## @param leader 将领档（描边更粗）
+## @param outline 描边色
+## @return 贴图；素材载不到时返回**程序化剪影**（永远不返回 null）
+static func bake_asset(path: String, faction_color: Color, leader: bool, outline: Color) -> ImageTexture:
+	var src: Image = _load_asset_image(path)
+	if src == null:
+		return bake(faction_color, leader, outline)
+	var key := "%s|%s|%d|%s" % [path, faction_color.to_html(false),
+		1 if leader else 0, outline.to_html(false)]
+	var hit: Variant = _cache.get(key, null)
+	if hit != null:
+		return hit
+	var tex := _bake_from_image(src, leader, faction_color, outline)
+	if tex == null:
+		return bake(faction_color, leader, outline)
+	_cache[key] = tex
+	return tex
+
+
+## 载入素材源图（路径 → Image），**静态缓存**；载不到返回 null 并记 `false` 哨兵。
+##
+## ★ 为什么缓存里要能存 `false`：素材一旦缺失就会**每帧每单位**被问一次，
+##   不记忆的话就是每帧几千次 `ResourceLoader.exists` + `load`（都白费）。
+static func _load_asset_image(path: String) -> Image:
+	if path == "":
+		return null
+	var hit: Variant = _asset_cache.get(path, null)
+	if hit != null:
+		return hit if hit is Image else null      # false 哨兵 = 已知载不到
+	var img: Image = null
+	if ResourceLoader.exists(path):
+		var res: Variant = load(path)
+		if res is Texture2D:
+			img = (res as Texture2D).get_image()
+	_asset_cache[path] = img if img != null else false
+	return img
+
+
+## 把一张素材图烘成 64×96 立牌：contain-fit（保长宽比）+ 底部对齐 + 阵营色剪影 + 膨胀描边。
+static func _bake_from_image(src: Image, leader: bool, body: Color, outline: Color) -> ImageTexture:
+	var sw: int = src.get_width()
+	var sh: int = src.get_height()
+	if sw <= 0 or sh <= 0:
+		return null
+	# ① contain-fit：整张装得进画布，水平居中、**底部对齐**（脚贴地）
+	var scale: float = minf(float(TEX_W) / float(sw), float(TEX_H) / float(sh))
+	var tw: int = maxi(1, int(round(float(sw) * scale)))
+	var th: int = maxi(1, int(round(float(sh) * scale)))
+	var scaled: Image = src.duplicate()
+	if scaled.is_compressed():
+		scaled.decompress()          # 导入设置可能压过（VRAM 压缩），先解回像素
+	scaled.convert(Image.FORMAT_RGBA8)
+	if tw != sw or th != sh:
+		scaled.resize(tw, th, Image.INTERPOLATE_NEAREST)   # 像素风：硬边更贴素材
+	var canvas := Image.create(TEX_W, TEX_H, false, Image.FORMAT_RGBA8)
+	canvas.blit_rect(scaled, Rect2i(0, 0, tw, th), Vector2i((TEX_W - tw) / 2, TEX_H - th))
+
+	# ② 剪影覆盖率（= 画布 alpha）+ 膨胀（取「环」当描边）
+	var cov := PackedFloat32Array()
+	cov.resize(TEX_W * TEX_H)
+	for y in TEX_H:
+		for x in TEX_W:
+			cov[y * TEX_W + x] = canvas.get_pixel(x, y).a
+	var rim_px: float = ASSET_OUTLINE_PX_LEADER if leader else ASSET_OUTLINE_PX
+	var dil := _dilate(cov, TEX_W, TEX_H, int(ceil(rim_px)))
+
+	# ③ 合成：描边在下、阵营色躯体在上（与程序化那版同一顺序）
+	var out := Image.create(TEX_W, TEX_H, false, Image.FORMAT_RGBA8)
+	for y in TEX_H:
+		for x in TEX_W:
+			var i := y * TEX_W + x
+			var body_cov: float = cov[i]
+			var ring: float = clampf(dil[i] - body_cov, 0.0, 1.0) * OUTLINE_ALPHA
+			var col := _over(Color(outline.r, outline.g, outline.b, ring), Color(0, 0, 0, 0))
+			col = _over(Color(body.r, body.g, body.b, body_cov), col)
+			out.set_pixel(x, y, col)
+	# ★ 朝向：与程序化那版一致 —— QuadMesh 的 UV v=0 在**顶部**（见 `_bake_uncached`），
+	#   素材头朝上 = 屏幕头朝上 ⇒ **不需要翻转**。
+	return ImageTexture.create_from_image(out)
+
+
+## 对一张覆盖率图做**可分离**的膨胀（max filter）：先横向、再纵向。
+## @return 每个像素在半径 r 邻域内的最大覆盖率（=「向外扩 r 像素」的形状）
+static func _dilate(cov: PackedFloat32Array, w: int, h: int, r: int) -> PackedFloat32Array:
+	if r <= 0:
+		return cov.duplicate()
+	var tmp := PackedFloat32Array()
+	tmp.resize(w * h)
+	for y in h:
+		for x in w:
+			var m := 0.0
+			for dx in range(-r, r + 1):
+				var xx: int = x + dx
+				if xx < 0 or xx >= w:
+					continue
+				m = maxf(m, cov[y * w + xx])
+			tmp[y * w + x] = m
+	var out := PackedFloat32Array()
+	out.resize(w * h)
+	for y in h:
+		for x in w:
+			var m := 0.0
+			for dy in range(-r, r + 1):
+				var yy: int = y + dy
+				if yy < 0 or yy >= h:
+					continue
+				m = maxf(m, tmp[yy * w + x])
+			out[y * w + x] = m
+	return out
 
 
 ## 兵人剪影的几何（归一化坐标：x ∈ [-0.5, 0.5] 居中，y ∈ [0, 1] 自下而上）

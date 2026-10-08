@@ -173,6 +173,10 @@ var _general_combat: Array = []
 ## ★★ 它是**数据**而不是美术：设计师在单位编辑器里给每个兵种挑一个字，
 ##    新加的兵种也就有了自己的样子（见 view/unit_icon.gd 的文件头）。
 var _unit_icons: Dictionary = {}
+## ★★ 单位类型 id → 3D 立牌的**素材路径**（config 的 `unit.types.<id>.sprite`）。
+## ★ 空串 = 配置里没写 → 渲染层退回程序化剪影（见 view/unit_sprite_3d.gd 的 bake）。
+## ★ 与 `_unit_icons` 同一口径：**数据**而不是代码里的字面量，加兵种只改 JSON。
+var _unit_sprites: Dictionary = {}
 ## ★★ 开局**没有**任何「每位将领带几个兵」的全局缺省（本轮口径变更）。
 ##
 ## 原先是 `unit.general.escort`（一个数或一个数组）+ `general_escort_count()` /
@@ -533,6 +537,7 @@ func _cache_unit_types() -> void:
 	_unit_types = {}
 	_unit_classes = {}
 	_general_types = []
+	_unit_sprites = {}
 
 	# 1) 兵种大类（unit.classes）：id → 显示名（带 / 不带远近两种说法）
 	var raw_classes: Variant = get_path_value("unit.classes")
@@ -578,6 +583,8 @@ func _cache_unit_types() -> void:
 			}
 			# 地图上那个字：没写这个键就是空串（`unit_icon_of` 会退成名字的第一个字）
 			_unit_icons[id] = String(td.get("icon", ""))
+			# 3D 立牌素材路径：没写就是空串（渲染层退回程序化剪影）
+			_unit_sprites[id] = String(td.get("sprite", ""))
 
 	# 3) 开局将领（general_N 同序）各自的类型
 	var types: Variant = get_path_value("unit.general.types")
@@ -848,6 +855,18 @@ func unit_icon_of(id: String) -> String:
 	if name != "":
 		return name.substr(0, 1)
 	return "?"
+
+
+## ★★ 单位类型 id → **3D 立牌素材路径**（config 的 `unit.types.<id>.sprite`）。
+##
+## ★ 与 `unit_icon_of` 完全同一条口径：
+##   · 参数可以是**单位类型 id**，也可以是 kind（将领类会被换算成它所属的类型）；
+##   · 空串 = 没配 / 查不到类型 → 渲染层退回程序化剪影（见 view/unit_sprite_3d.gd 的 bake_asset）。
+##   ⇒ 这一层只回答「用哪个文件」，**不去加载资源**（config 是依赖图最底层，不碰 Texture）。
+func unit_sprite_of(id: String) -> String:
+	var tid := unit_type_of(id)
+	var v: Variant = _unit_sprites.get(tid, "")
+	return String(v) if typeof(v) == TYPE_STRING else ""
 
 
 ## 兵种大类：infantry（步兵）/ cavalry（骑兵）—— 「后续额外伤害」的主键

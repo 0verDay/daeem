@@ -22,6 +22,7 @@ const GroundRes = preload("res://view/ground_view.gd")
 const UnitViewRes = preload("res://view/unit_view_3d.gd")
 const BuildingViewRes = preload("res://view/building_view_3d.gd")
 const SpriteRes = preload("res://view/unit_sprite_3d.gd")
+const UnitRes = preload("res://logic/unit.gd")
 
 
 func _initialize() -> void:
@@ -35,6 +36,7 @@ func _run() -> void:
 		quit(1)
 		return
 	_test_sprite_bake(cfg)
+	_test_sprite_bake_assets(cfg)
 	# ★★ 相机必须**先挂进树、再等一帧**才能用它的投影 API
 	#    （`project_ray_normal` / `unproject_position` 要视口；
 	#     `_initialize()` 阶段 add_child 会静默失效，见 pitfalls 1.2）
@@ -77,20 +79,23 @@ func _test_sprite_bake(cfg) -> void:
 	ok(opaque_t > 100, "普通兵贴图有实质剪影（不透明像素 %d）" % opaque_t)
 	ok(opaque_l > opaque_t, "★ 将领贴图更大（肩更宽 + 头顶缨：%d > %d）" % [opaque_l, opaque_t])
 	# ② 阵营色真的烘进去了（不是纯白）——否则所有阵营的兵人一个颜色
-	var c: Color = it.get_pixel(SpriteRes.TEX_W / 2, SpriteRes.TEX_H * 2 / 3)
+	#    ★ 取样点取**躯干中心**（不翻转之后，头在顶部、脚在底部，躯干在中段）：
+	#      `TEX_H * 5 / 12 = 40` 行落在躯干上（p.y ≈ 0.58）。
+	var c: Color = it.get_pixel(SpriteRes.TEX_W / 2, SpriteRes.TEX_H * 5 / 12)
 	ok(c.r > c.g + 0.2, "★ 阵营色烘进了贴图（取样点 r=%.2f 明显大于 g=%.2f）" % [c.r, c.g])
 	# ③ 缓存生效：同一组参数第二次必须拿到**同一张**
 	var again: ImageTexture = SpriteRes.bake(Color(0.9, 0.2, 0.2), false, Color(0, 0, 0))
 	ok(again == troop, "★ 同一组参数命中缓存（不重复光栅化）")
-	# ④ 底边必须**贴地**：最下面几行应当基本透明（兵人的脚只占中间一点）
-	#    ⚠️ 这里验的是「贴图里兵人没有顶到底边」——它直接对应「立牌抬到
-	#       底边贴地」那条摆法，写错了兵人会**浮空**或**陷进地里**。
+	# ④ 底边必须是**脚**（贴合地面的那一端）：既不是空（会浮空），也不是一整条宽块。
+	#    ★ 朝向口径见 `_bake_uncached`：QuadMesh 的 UV v=0 在**顶部**，不翻转 ⇒
+	#      贴图顶行是头、底行是脚；立牌抬到「贴图底边贴地」时脚正好落地。
 	var bottom_row_opaque := 0
 	for x in SpriteRes.TEX_W:
 		if it.get_pixel(x, SpriteRes.TEX_H - 1).a > 0.5:
 			bottom_row_opaque += 1
-	ok(bottom_row_opaque < SpriteRes.TEX_W / 3,
-		"★ 贴图最底一行几乎没有实体（脚不顶到底边 ⇒ 抬到贴地时不会陷进去）")
+	ok(bottom_row_opaque > 0 and bottom_row_opaque < SpriteRes.TEX_W / 2,
+		"★ 贴图最底一行是**脚**（%d 个不透明像素：> 0 不浮空、< 半宽也不是一整条）"
+			% bottom_row_opaque)
 
 
 static func _count_opaque(img: Image) -> int:
@@ -100,6 +105,83 @@ static func _count_opaque(img: Image) -> int:
 			if img.get_pixel(x, y).a > 0.5:
 				n += 1
 	return n
+
+
+## 第一个**被阵营色染过**的不透明像素（验「阵营色真的烘进去了」）。
+## ⚠️ 不能只看「第一个不透明像素」：描边（深色，r≈g）也在剪影外侧，
+##    按行扫先碰到的可能就是那一圈 —— 于是断言会误报「没染色」。所以找的是
+##    **红明显大于绿**（= 阵营色 0.9/0.2/0.2）的那个像素。
+static func _first_tinted_color(img: Image) -> Color:
+	for y in img.get_height():
+		for x in img.get_width():
+			var c := img.get_pixel(x, y)
+			if c.a > 0.5 and c.r > c.g + 0.2:
+				return c
+	return Color(0, 0, 0, 0)
+
+
+# ------------------------------------------------------------------
+# 一·补、兵种素材立牌：三个兵种各一张、且真的用了素材（本轮新增）
+# ------------------------------------------------------------------
+## ★★ 为什么必须钉住（这几条都会**静默失败**，画面不对但不报错）：
+##   · `sprite` 路径写了但**没被 Godot 导入** ⇒ `ResourceLoader.exists` 为假
+##     ⇒ `bake_asset` 退回程序化剪影 ⇒ **画面还是三个兵长得一样**；
+##   · 三个兵种共用一张图 ⇒ 同上；
+##   · 阵营色没烘进去 ⇒ 所有阵营一个颜色。
+func _test_sprite_bake_assets(cfg) -> void:
+	SpriteRes.clear_cache()
+	var types: Array = [UnitRes.UNIT_TYPE_SPEARMAN, UnitRes.UNIT_TYPE_LONGBOWMAN,
+		UnitRes.UNIT_TYPE_RIDER]
+	var seen_paths: Dictionary = {}
+	var images: Dictionary = {}
+	for id in types:
+		var t := String(id)
+		var path: String = cfg.unit_sprite_of(t)
+		ok(path != "", "%s 配了 sprite 路径" % t)
+		ok(ResourceLoader.exists(path), "★ %s 的素材被导入过（%s）" % [t, path])
+		var tex: ImageTexture = SpriteRes.bake_asset(path, Color(0.9, 0.2, 0.2), false, Color(0, 0, 0))
+		ok(tex != null, "%s 的兵种贴图烘得出来" % t)
+		if tex == null:
+			continue
+		var img: Image = tex.get_image()
+		ok(img != null and _count_opaque(img) > 100,
+			"★ %s 的剪影有实质像素（不透明 %d）" % [t, _count_opaque(img) if img != null else -1])
+		if img == null:
+			continue
+		var c := _first_tinted_color(img)
+		ok(c.a > 0.5 and c.r > c.g + 0.2,
+			"★ %s 的阵营色烘进了贴图（找到染色像素 r=%.2f > g=%.2f）" % [t, c.r, c.g])
+		seen_paths[path] = true
+		images[t] = img
+	ok(seen_paths.size() == 3, "★ 三个兵种的素材路径互不相同（%d 个）" % seen_paths.size())
+	# 三张图两两不同（形状不同 ⇒ 字节不同）——否则还是「三个兵长得一样」
+	var keys: Array = images.keys()
+	var all_distinct := keys.size() == 3
+	if all_distinct:
+		for i in keys.size():
+			for j in range(i + 1, keys.size()):
+				if (images[keys[i]] as Image).get_data() == (images[keys[j]] as Image).get_data():
+					all_distinct = false
+	ok(all_distinct, "★★ 三个兵种的贴图两两不同（否则还是「三个兵长得一样」）")
+	# 将领档：描边更粗 ⇒ 不透明像素更多
+	var p0: String = cfg.unit_sprite_of(UnitRes.UNIT_TYPE_SPEARMAN)
+	var troop: ImageTexture = SpriteRes.bake_asset(p0, Color(0.9, 0.2, 0.2), false, Color(0, 0, 0))
+	var leader: ImageTexture = SpriteRes.bake_asset(p0, Color(0.9, 0.2, 0.2), true, Color(0, 0, 0))
+	if troop != null and leader != null and troop.get_image() != null and leader.get_image() != null:
+		var ot := _count_opaque(troop.get_image())
+		var ol := _count_opaque(leader.get_image())
+		ok(ol > ot, "★ 将领档描边更粗（不透明像素 %d > %d）" % [ol, ot])
+	# 缓存：同一组参数第二次必须拿到**同一张**
+	ok(SpriteRes.bake_asset(p0, Color(0.9, 0.2, 0.2), false, Color(0, 0, 0)) == troop,
+		"★ 素材贴图命中缓存（不重复光栅化）")
+	# 素材缺失 / 路径为空 → 退回程序化剪影（不崩、也有图）
+	SpriteRes.clear_cache()
+	var fallback: ImageTexture = SpriteRes.bake_asset("", Color(0.9, 0.2, 0.2), false, Color(0, 0, 0))
+	var proc: ImageTexture = SpriteRes.bake(Color(0.9, 0.2, 0.2), false, Color(0, 0, 0))
+	ok(fallback != null and proc != null and fallback.get_image() != null
+		and proc.get_image() != null
+		and fallback.get_image().get_data() == proc.get_image().get_data(),
+		"★ 没配素材 / 载不到 → 退回程序化剪影（同一张图）")
 
 
 # ------------------------------------------------------------------
@@ -204,16 +286,17 @@ func _test_units_multimesh(cfg) -> void:
 	eq(game.units.instance_count, expect,
 		"★ MultiMesh 实例数 = 可见单位数（%d）" % expect)
 	ok(game.units.instance_count > 0, "★ 真有单位被画了出去（不是 0 —— 写成 0 就什么都不画）")
-	# ② 批次数 ≤ 变体数（阵营 × 2）—— 超了说明分桶键写错、合批失效
-	var max_batches: int = 0
-	var seen_factions: Dictionary = {}
+	# ② 批次数 ≤ 变体数（阵营 × 2 × 兵种）—— 超了说明分桶键写错、合批失效
+	var variants: Dictionary = {}
 	for u in w.units:
 		if u.alive and game.units._visible_to_me(u):
-			seen_factions[String(u.faction)] = true
-	max_batches = seen_factions.size() * 2
+			var vk := "%s|%d|%s" % [String(u.faction), 1 if u.is_general() else 0,
+				String(u.unit_type)]
+			variants[vk] = true
+	var max_batches: int = variants.size()
 	ok(game.units.mesh_batch_count <= max_batches,
-		"★★ 批次数不超过变体数（%d ≤ %d：阵营数 %d × 2）"
-		% [game.units.mesh_batch_count, max_batches, seen_factions.size()])
+		"★★ 批次数不超过变体数（%d ≤ %d：可见单位的 阵营|将领|兵种 组合数）"
+		% [game.units.mesh_batch_count, max_batches])
 	ok(game.units.batches_created <= max_batches,
 		"★ 累计创建的批次数也没超（%d ≤ %d）" % [game.units.batches_created, max_batches])
 
