@@ -32,10 +32,16 @@ const ASSET_OUTLINE_PX := 2.0
 const ASSET_OUTLINE_PX_LEADER := 5.0
 ## 描边不透明度（与 view/unit_icon.gd 的 OUTLINE_ALPHA 同一档）
 const OUTLINE_ALPHA := 0.72
+## 将领脚下**占位贴花**贴图的边长（像素）
+const DECAL_SIZE := 64
 
 static var _cache: Dictionary = {}
 ## ★★ 素材源图缓存（路径 → Image；**载不到的记 `false` 哨兵**，免得每帧每单位都去 load 一次）。
 static var _asset_cache: Dictionary = {}
+## 将领脚下占位贴花的缓存（只一张）
+static var _decal_cache: ImageTexture = null
+## 选中下标（空心圆）贴图的缓存（只一张）
+static var _sel_ring_cache: ImageTexture = null
 
 
 ## 取一张兵人贴图。
@@ -63,6 +69,8 @@ static func bake(faction_color: Color, leader: bool, outline: Color) -> ImageTex
 static func clear_cache() -> void:
 	_cache = {}
 	_asset_cache = {}
+	_decal_cache = null
+	_sel_ring_cache = null
 
 
 ## 逐像素光栅化：把「兵人剪影」写成一张 RGBA 图。
@@ -220,6 +228,60 @@ static func _dilate(cov: PackedFloat32Array, w: int, h: int, r: int) -> PackedFl
 				m = maxf(m, tmp[yy * w + x])
 			out[y * w + x] = m
 	return out
+
+
+# ------------------------------------------------------------------
+# 将领脚下的**占位贴花**（本轮新增）
+# ------------------------------------------------------------------
+
+## 一张白剪影 + alpha 的**占位贴花**：圆环 + 中心点 + 四向小节点。
+## ★ 一张图**复用到任意将领**，运行时靠实例色（阵营色）区分敌我（见 unit_view_3d 的贴花层）。
+## ★ 纯静态生成 + 缓存，不读任何状态。
+static func decal_texture() -> ImageTexture:
+	if _decal_cache != null:
+		return _decal_cache
+	var n := DECAL_SIZE
+	var img := Image.create(n, n, false, Image.FORMAT_RGBA8)
+	var c := Vector2(float(n) * 0.5, float(n) * 0.5)
+	var r_ring := float(n) * 0.36
+	var ring_w := maxf(1.5, float(n) * 0.05)
+	var r_dot := float(n) * 0.10
+	var node_r := float(n) * 0.075
+	for y in n:
+		for x in n:
+			var pp := Vector2(float(x) + 0.5, float(y) + 0.5)
+			var d := (pp - c).length()
+			# 圆环：离「半径 r_ring」越近越实（1px 软边）
+			var a: float = clampf(ring_w - absf(d - r_ring) + 0.5, 0.0, 1.0)
+			# 中心点
+			a = maxf(a, clampf(r_dot - d + 0.5, 0.0, 1.0))
+			# 四向小节点（东南西北各一个圆点）
+			for k in 4:
+				var ang := TAU * float(k) / 4.0
+				var q := c + Vector2(cos(ang), sin(ang)) * r_ring
+				a = maxf(a, clampf(node_r - (pp - q).length() + 0.5, 0.0, 1.0))
+			img.set_pixel(x, y, Color(1.0, 1.0, 1.0, a))
+	_decal_cache = ImageTexture.create_from_image(img)
+	return _decal_cache
+
+
+## 选中下标用的**空心圆**贴图（白剪影 + alpha）：一个圆环，中间是空的。
+## ★ 一张图复用到任意被选中的单位；颜色走材质 uniform（绿），透明度走逐实例数据（动画）。
+static func selection_ring_texture() -> ImageTexture:
+	if _sel_ring_cache != null:
+		return _sel_ring_cache
+	var n := DECAL_SIZE
+	var img := Image.create(n, n, false, Image.FORMAT_RGBA8)
+	var c := Vector2(float(n) * 0.5, float(n) * 0.5)
+	var r_ring := float(n) * 0.42
+	var half_thick := maxf(1.0, float(n) * 0.045)   # 环的半厚（总厚 ≈ 0.09n）
+	for y in n:
+		for x in n:
+			var d := (Vector2(float(x) + 0.5, float(y) + 0.5) - c).length()
+			var a: float = clampf(half_thick - absf(d - r_ring) + 0.5, 0.0, 1.0)
+			img.set_pixel(x, y, Color(1.0, 1.0, 1.0, a))
+	_sel_ring_cache = ImageTexture.create_from_image(img)
+	return _sel_ring_cache
 
 
 ## 兵人剪影的几何（归一化坐标：x ∈ [-0.5, 0.5] 居中，y ∈ [0, 1] 自下而上）

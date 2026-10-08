@@ -23,6 +23,8 @@ const UnitViewRes = preload("res://view/unit_view_3d.gd")
 const BuildingViewRes = preload("res://view/building_view_3d.gd")
 const SpriteRes = preload("res://view/unit_sprite_3d.gd")
 const UnitRes = preload("res://logic/unit.gd")
+const BuildingShaderRes = preload("res://view/building_flash.gdshader")
+const UnitDownedShaderRes = preload("res://view/unit_downed.gdshader")
 
 
 func _initialize() -> void:
@@ -45,9 +47,12 @@ func _run() -> void:
 	_test_camera_invariants(cfg)
 	await _test_hud_and_minimap(cfg)
 	await _test_units_multimesh(cfg)
+	await _test_units_downed_decal(cfg)
 	await _test_buildings_multimesh(cfg)
 	await _test_ground_bake(cfg)
 	await _test_camera_aim(cfg)
+	await _test_order_flags(cfg)
+	await _test_selection_ring(cfg)
 
 	print("[CASE] %s -> 通过 %d 项，失败 %d 项" % [_case_name, _pass, _fail])
 	if _fail > 0:
@@ -290,8 +295,8 @@ func _test_units_multimesh(cfg) -> void:
 	var variants: Dictionary = {}
 	for u in w.units:
 		if u.alive and game.units._visible_to_me(u):
-			var vk := "%s|%d|%s" % [String(u.faction), 1 if u.is_general() else 0,
-				String(u.unit_type)]
+			var vk := "%s|%d|%s|%d" % [String(u.faction), 1 if u.is_general() else 0,
+				String(u.unit_type), 1 if u.is_downed() else 0]
 			variants[vk] = true
 	var max_batches: int = variants.size()
 	ok(game.units.mesh_batch_count <= max_batches,
@@ -310,6 +315,68 @@ func _test_units_multimesh(cfg) -> void:
 		if u.alive and not game.units._visible_to_me(u):
 			hidden_count += 1
 	ok(hidden_count >= 0, "（诊断）被迷雾挡住的单位数 = %d" % hidden_count)
+
+	game.queue_free()
+	await process_frame
+
+
+# ------------------------------------------------------------------
+# 四·补、濒死将领半透明 + 将领脚下贴花（本轮新增）
+# ------------------------------------------------------------------
+func _test_units_downed_decal(cfg) -> void:
+	# shader 结构：濒死那档走**透明管线**（写 ALPHA、**不写** scissor）
+	var code: String = UnitDownedShaderRes.code
+	ok(code.contains("ALPHA"), "★ 濒死 shader 写了 ALPHA（半透明）")
+	ok(not code.contains("ALPHA_SCISSOR_THRESHOLD ="),
+		"★★ 濒死 shader **不写** scissor（否则半透明又变回「要么全有要么全无」）")
+	# 占位贴花烘得出来
+	var dt: ImageTexture = SpriteRes.decal_texture()
+	ok(dt != null and dt.get_image() != null, "★ 将领占位贴花烘得出来")
+	if dt != null and dt.get_image() != null:
+		ok(_count_opaque(dt.get_image()) > 50,
+			"★ 贴花有实质像素（不透明 %d）" % _count_opaque(dt.get_image()))
+
+	var game = Game3DRes.new()
+	root.add_child(game)
+	await process_frame
+	if not game.start():
+		game.queue_free()
+		return
+	await process_frame
+	await process_frame
+	var w = game.world
+	game.set_process(false)
+	game.units.sync()
+
+	# 贴花：每个可见将领一张
+	var expect_decals := 0
+	for u in w.units:
+		if u.alive and u.is_general() and game.units._visible_to_me(u):
+			expect_decals += 1
+	ok(expect_decals > 0, "（前提）场上至少有一位可见将领（%d）" % expect_decals)
+	eq(game.units.decal_count, expect_decals,
+		"★ 每个可见将领脚下都有一张贴花（%d）" % expect_decals)
+
+	# 濒死 ⇒ 走半透明批次
+	var g = null
+	for u2 in w.units:
+		if u2.alive and u2.is_general() and game.units._visible_to_me(u2):
+			g = u2
+			break
+	if g != null:
+		eq(game.units.downed_count, 0, "（前提）一开始没有濒死将领")
+		g.downed = true
+		game.units.sync()
+		ok(game.units.downed_count >= 1,
+			"★ 濒死将领计入 downed_count（%d）" % game.units.downed_count)
+		var has_downed_batch := false
+		for k in game.units._batches.keys():
+			if String(k).ends_with("|1"):
+				has_downed_batch = true
+		ok(has_downed_batch, "★ 濒死将领落在单独的批次（键以 |1 结尾）")
+		g.downed = false
+		game.units.sync()
+		eq(game.units.downed_count, 0, "★ 站起来后 downed_count 归零")
 
 	game.queue_free()
 	await process_frame
@@ -350,6 +417,52 @@ func _test_buildings_multimesh(cfg) -> void:
 		var h: float = t.basis.get_scale().y
 		ok(t.origin.y > h * 0.5 - 0.01 and t.origin.y < h * 0.5 + 2.0,
 			"★ 建筑底边贴地（中心 y = %.2f，高 = %.2f）" % [t.origin.y, h])
+
+	# ★★ 建筑排序：shader 必须 `depth_draw_always`（透明管线里也写深度 ⇒ 近的挡住远的）。
+	#    写 ALPHA = 走透明管线，而透明管线默认不写深度 ⇒ 建筑会按「谁后画谁在上」乱序。
+	ok(BuildingShaderRes.code.contains("depth_draw_always"),
+		"★★ 建筑 shader 写了 depth_draw_always（否则近的建筑会被远的盖住 —— 用户报的 bug）")
+	ok(BuildingShaderRes.code.contains("INSTANCE_CUSTOM.g"),
+		"★ 建筑 shader 从每实例数据读淡出量(.g)")
+
+	# ★★ 单位靠近 ⇒ 建筑淡出（以建筑为中心 3x3 内有可见单位）
+	game.set_process(false)         # 冻住主循环，让计数确定
+	game.buildings.sync()
+	var marked: Dictionary = game.buildings._fade_marked_tiles()
+	var expect_fade := 0
+	for b2 in w.building_list:
+		if b2.alive and game.buildings._visible_to_me(b2) \
+				and game.buildings.should_fade(b2, marked):
+			expect_fade += 1
+	eq(game.buildings.faded_last_frame, expect_fade,
+		"★ 淡出的建筑数 = 「3x3 内有可见单位」的建筑数（%d）" % expect_fade)
+
+	# 把一栋「当前没淡出」的建筑旁边放一个可见单位 ⇒ 它必须变成淡出
+	var target = null
+	for b3 in w.building_list:
+		if b3.alive and game.buildings._visible_to_me(b3) \
+				and not game.buildings.should_fade(b3, marked):
+			target = b3
+			break
+	if target != null:
+		var mover = null
+		for u2 in w.units:
+			if u2.alive and game.buildings._unit_visible(u2):
+				mover = u2
+				break
+		if mover != null:
+			mover.pos = Vector2(float(target.tx) + 1.5, float(target.ty) + 0.5)   # 紧邻一格
+			mover.sync_tile(w.map)
+			ok(game.buildings.should_fade(target, game.buildings._fade_marked_tiles()),
+				"★ 单位站到建筑旁边一格 ⇒ 该建筑要淡出（3x3 判定）")
+			mover.pos = Vector2(float(target.tx) + 5.5, float(target.ty) + 0.5)   # 离 5 格
+			mover.sync_tile(w.map)
+			ok(not game.buildings.should_fade(target, game.buildings._fade_marked_tiles()),
+				"★ 单位离建筑 5 格 ⇒ 不淡出")
+		else:
+			ok(false, "找不到可见单位来验淡出")
+	var fa: float = cfg.num("render.building_fade_alpha", 0.3)
+	ok(fa > 0.0 and fa < 1.0, "★ 建筑淡出的 alpha 在 (0,1) 之间（%.2f）" % fa)
 
 	game.queue_free()
 	await process_frame
@@ -747,3 +860,141 @@ func _test_camera_aim(cfg) -> void:
 ##    后者是按**启动时**窗口尺寸算的缓存值（实测 1920×1920 vs 960×540）。
 func _aim_readback(game) -> Vector2:
 	return game.palette.world_to_logic(game._ground_under_screen(game._view_center()))
+
+
+# ------------------------------------------------------------------
+# 九、右键指令的 3D 旗子（本轮新增）
+# ------------------------------------------------------------------
+func _test_order_flags(cfg) -> void:
+	var game = Game3DRes.new()
+	root.add_child(game)
+	await process_frame
+	if not game.start():
+		game.queue_free()
+		return
+	await process_frame
+	await process_frame
+	var w = game.world
+	var of = game.order_flags
+	ok(of != null, "★ 3D 场景建了指令旗视图（order_flags）")
+	if of == null:
+		game.queue_free()
+		return
+	var u = null
+	for x in w.units:
+		if x.alive:
+			u = x
+			break
+	if u == null:
+		ok(false, "找不到单位来验旗子")
+		game.queue_free()
+		return
+	game.set_process(false)
+
+	# 移动旗：单位到达（不再 moving）⇒ 自动收
+	of.plant("move", u.pos, [u.id])
+	ok(of.active, "★ 移动命令插上了旗子")
+	u.moving = false
+	u.has_attack_move = false
+	of.sync()
+	ok(not of.active, "★ 单位到达后移动旗自动收掉")
+
+	# 行军旗：has_attack_move 还在 ⇒ 不收；完成后收
+	of.plant("attack_move", u.pos, [u.id])
+	u.moving = true
+	u.has_attack_move = true
+	of.sync()
+	ok(of.active, "★ 行军攻击进行中旗子仍在")
+	u.moving = false
+	u.has_attack_move = false
+	of.sync()
+	ok(not of.active, "★ 行军攻击完成后旗子收掉")
+
+	# clear() 立即收旗
+	of.plant("move", u.pos, [u.id])
+	of.clear()
+	ok(not of.active, "★ clear() 收旗")
+	ok(of.flags_planted >= 3, "★ 至少插过 3 次旗（诊断 %d）" % of.flags_planted)
+
+	game.queue_free()
+	await process_frame
+
+
+# ------------------------------------------------------------------
+# 十、选中下标：脚下绿色空心圆 + 出现/收起动效（本轮新增）
+# ------------------------------------------------------------------
+func _test_selection_ring(cfg) -> void:
+	var rt: ImageTexture = SpriteRes.selection_ring_texture()
+	ok(rt != null and rt.get_image() != null, "★ 选中下标（空心圆）贴图烘得出来")
+	if rt != null and rt.get_image() != null:
+		var im: Image = rt.get_image()
+		var nn := im.get_width()
+		ok(_count_opaque(im) > 30, "★ 圆环有实质像素（不透明 %d）" % _count_opaque(im))
+		ok(im.get_pixel(nn / 2, nn / 2).a < 0.1, "★ 圆环中心是**空的**（空心圆）")
+
+	var game = Game3DRes.new()
+	root.add_child(game)
+	await process_frame
+	if not game.start():
+		game.queue_free()
+		return
+	await process_frame
+	await process_frame
+	var w = game.world
+	game.set_process(false)
+	var u = null
+	for x in w.units:
+		if x.alive and game.units._visible_to_me(x):
+			u = x
+			break
+	if u == null:
+		ok(false, "找不到可见单位验选中下标")
+		game.queue_free()
+		return
+
+	# 先全部收起（主循环开局自动选中了第一个单位，这里把它衰减掉）
+	game.units.set_selection([])
+	for _i in 60:
+		game.units.sync(1.0 / 60.0)
+	eq(game.units.selection_ring_count, 0, "（前提）全部收起后没有下标")
+
+	# 选中 ⇒ 动效出现：尺寸由大变小、不透明度渐显
+	game.units.set_selection([u.id])
+	game.units.sync(0.05)
+	eq(game.units.selection_ring_count, 1, "★ 选中后脚下一枚空心圆出现")
+	# ★ 直接读 MultiMesh 的实例数据读不回来（Godot 4.7 + 无头实测），
+	#   所以看视图留下的两个诊断字段（本帧第一个下标的缩放 / 不透明度）。
+	var s0: float = game.units.selection_scale_last
+	var a0: float = game.units.selection_alpha_last
+	ok(s0 > 1.0 and s0 < game.units._sel_scale_from,
+		"★ 动效起步：尺寸在 100%%~150%% 之间（%.3f）" % s0)
+	ok(a0 > 0.0 and a0 < cfg.num("render.selection_ring_alpha", 0.8),
+		"★ 动效起步：不透明度在 0~80%% 之间（%.3f）" % a0)
+	game.units.sync(0.05)
+	var s1: float = game.units.selection_scale_last
+	var a1: float = game.units.selection_alpha_last
+	ok(s1 < s0, "★ 动效：尺寸由大到小（%.3f → %.3f）" % [s0, s1])
+	ok(a1 > a0, "★ 动效：不透明度渐显（%.3f → %.3f）" % [a0, a1])
+
+	# 收敛：尺寸收到 100%（= 将领黄色贴花那个大小）、不透明度升到配置值
+	for _i2 in 30:
+		game.units.sync(1.0 / 60.0)
+	near(game.units.selection_scale_last, 1.0, 0.001,
+		"★ 终态尺寸 = 100%（与将领底面贴花同大小）")
+	near(game.units.selection_alpha_last, cfg.num("render.selection_ring_alpha", 0.8), 0.01,
+		"★ 终态不透明度 = 80%")
+
+	# 取消选中 ⇒ **反向播放**：尺寸回涨、不透明度回落，最后收完消失
+	game.units.set_selection([])
+	game.units.sync(1.0 / 60.0)
+	eq(game.units.selection_ring_count, 1, "★ 取消选中的第一帧还在反向播")
+	ok(game.units.selection_scale_last > 1.0,
+		"★ 反向：尺寸开始回涨（%.3f）" % game.units.selection_scale_last)
+	ok(game.units.selection_alpha_last < cfg.num("render.selection_ring_alpha", 0.8),
+		"★ 反向：不透明度开始回落（%.3f）" % game.units.selection_alpha_last)
+	for _i3 in 30:
+		game.units.sync(1.0 / 60.0)
+	eq(game.units.selection_ring_count, 0, "★ 反向收完、下标消失")
+
+	game.queue_free()
+	await process_frame

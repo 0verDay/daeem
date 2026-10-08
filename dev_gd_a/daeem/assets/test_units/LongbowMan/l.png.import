@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://s4ex4v61gc21"
-path="res://.godot/imported/cqb_k.png-239ffd655946ecc034e281d9dd7b138f.ctex"
+uid="uid://catog1sqdqfr"
+path="res://.godot/imported/l.png-2e9959cf834bfde171549cd666e4ce53.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://assets/test_units/SpearMan/cqb_k.png"
-dest_files=["res://.godot/imported/cqb_k.png-239ffd655946ecc034e281d9dd7b138f.ctex"]
+source_file="res://assets/test_units/LongbowMan/l.png"
+dest_files=["res://.godot/imported/l.png-2e9959cf834bfde171549cd666e4ce53.ctex"]
 
 [params]
 

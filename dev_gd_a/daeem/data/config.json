@@ -69,7 +69,40 @@
     ],
     "hit_shake_cells": 0.06,
     "hit_shake_freq": 26.0,
-    "hit_flash_alpha": 0.8
+    "hit_flash_alpha": 0.8,
+    "_building_fade_comment": [
+      "★★ 建筑「被单位挡住时淡出」的不透明度（见 view/building_flash.gdshader +",
+      "   view/building_view_3d.gd）：以建筑所在格为中心的 **3x3 内有可见单位**时，",
+      "   整栋建筑淡到这么透明（0 = 全透明，1 = 不淡出）—— 这样单位不会被建筑挡住。",
+      "   · 触发口径：**所有单位**（敌我都算），但**只看当前可见的**（迷雾里的敌人不会泄露）。",
+      "   · 它是**纯表现**（只改 alpha，不进逻辑 / 快照）。",
+      "   ⚠️ 该 shader 写了 ALPHA ⇒ 引擎按**透明管线**画建筑；靠 `depth_draw_always`",
+      "      强制写深度，建筑之间的前后遮挡才不会按「谁后画谁在上」乱掉（用户报的 bug）。"
+    ],
+    "building_fade_alpha": 0.3,
+    "_units_fx_comment": [
+      "★★ 单位表现（本轮新增；见 view/unit_view_3d.gd / unit_downed.gdshader / order_flag_view_3d.gd）：",
+      "   · downed_alpha —— **濒死将领立牌**的透明度（0 = 全透明，1 = 不淡）；濒死那档走透明管线。",
+      "   · general_decal_size —— 将领脚下**占位贴花**的边长（格）；一张程序化贴花复用到任意将领。",
+      "   · general_decal_alpha —— 将领脚下贴花的整体不透明度（0 = 全透明，1 = 不透明）。",
+      "   · flag_move_color / flag_attack_color —— 右键指令插的 **3D 旗子**颜色（移动 = 绿 / 行军 = 黄）。",
+      "   · flag_height —— 旗杆高度（格）。",
+      "   ★★ 选中下标（本轮新增，见 view/selection_ring.gdshader）：单位被选中时脚下出现一个",
+      "      **绿色空心圆**贴花，出现动效 = 由 `selection_ring_scale_from`（150%）缩到 100%",
+      "      （= 将领黄色底面贴花那个大小）、不透明度由 0 升到 `selection_ring_alpha`（80%）；",
+      "      取消选中时**反向播放**。`selection_ring_sec` = 单程时长（秒）。",
+      "   全是**纯表现**（只读 world，不进快照、不改逻辑、无碰撞）。"
+    ],
+    "downed_alpha": 0.4,
+    "general_decal_size": 0.6,
+    "general_decal_alpha": 0.5,
+    "flag_move_color": "#4cd964",
+    "flag_attack_color": "#e6c200",
+    "flag_height": 0.5,
+    "selection_ring_color": "#3ddc5a",
+    "selection_ring_alpha": 0.8,
+    "selection_ring_sec": 0.18,
+    "selection_ring_scale_from": 1.5
   },
 
   "camera": {
@@ -258,7 +291,7 @@
       "spearman": {
         "name": "长枪兵",
         "icon": "枪",
-        "sprite": "res://assets/test_units/SpearMan/cqb_k.png",
+        "sprite": "res://assets/test_units/SpearMan/s.png",
         "class": "infantry",
         "ranged": false,
         "hp_max": 140,
@@ -272,7 +305,7 @@
       "longbowman": {
         "name": "长弓兵",
         "icon": "弓",
-        "sprite": "res://assets/test_units/LongbowMan/cgb_k.png",
+        "sprite": "res://assets/test_units/LongbowMan/l.png",
         "class": "infantry",
         "ranged": true,
         "hp_max": 80,
@@ -286,7 +319,7 @@
       "rider": {
         "name": "骑手",
         "icon": "骑",
-        "sprite": "res://assets/test_units/Rider/qs_k.png",
+        "sprite": "res://assets/test_units/Rider/r.png",
         "class": "cavalry",
         "ranged": false,
         "hp_max": 110,

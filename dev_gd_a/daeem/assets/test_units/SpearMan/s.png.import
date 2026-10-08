@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://4owfu4srmy7s"
-path="res://.godot/imported/qs_k.png-5ddbd34143176bf97c42bd145d3219bc.ctex"
+uid="uid://dc2e80hiplikn"
+path="res://.godot/imported/s.png-5f6ef2a703a04159e633bda146f913ac.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://assets/test_units/Rider/qs_k.png"
-dest_files=["res://.godot/imported/qs_k.png-5ddbd34143176bf97c42bd145d3219bc.ctex"]
+source_file="res://assets/test_units/SpearMan/s.png"
+dest_files=["res://.godot/imported/s.png-5f6ef2a703a04159e633bda146f913ac.ctex"]
 
 [params]
 

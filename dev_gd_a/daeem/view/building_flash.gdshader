@@ -1,28 +1,41 @@
-// building_flash.gdshader —— 建筑方块：逐像素「受击闪白」
+// building_flash.gdshader —— 建筑方块：逐像素「受击闪白」+ 有单位靠近时整栋「淡出」
 //
 // ★ 建筑不 billboard（它是一个立方块），所以没有单位那份立牌代码。
-//   尺寸差异由 MultiMesh 的**逐实例缩放**表达（保持原样，这里只改颜色）。
+//   尺寸差异由 MultiMesh 的**逐实例缩放**表达（保持原样，这里只改颜色 / 透明度）。
 //
-// ★ 逐像素闪白：`INSTANCE_CUSTOM.r` 是这一实例的闪白程度（0 = 原色，1 = 纯白），
-//   在片元里 `mix(基色, 白, flash)`。基色由 `base_color` 逐批次给（阵营 / 类型色）。
+// ★★ `depth_draw_always` 是这里的**关键一行**（别删）：
+//   本 shader 写 `ALPHA` ⇒ 引擎把建筑归到**透明管线**，而透明管线**默认不写深度**。
+//   后果：建筑之间的遮挡变成「谁后画谁在上」——所有批次的节点原点都在 (0,0,0)，
+//   MultiMesh 内部也不排序 ⇒ 近的建筑会被远的盖住（用户报的 bug）。
+//   强制写深度之后：不管谁先画，**近的都正确挡住远的**（实测：同一 MultiMesh
+//   里「近 idx0 / 远 idx1」在加这一行前是远的在上、加了一行后是近的在上）。
 //
-// ★ 与原 StandardMaterial3D 对齐：unshaded（不投影）/ cull_back（原 CULL_BACK）。
+// ★ 逐像素闪白：`INSTANCE_CUSTOM.r` 是这一实例的闪白程度（0 = 原色，1 = 纯白）。
+// ★ 淡出：`INSTANCE_CUSTOM.g` 是这一实例的淡出程度（0 = 不透明，1 = 淡到 `fade_alpha`）。
+//   两者都走每实例自定义数据 ⇒ 一批共用材质、不必逐实例换材质。
+//
+// ★ 与原 StandardMaterial3D 对齐：unshaded（不投影）/ cull_back。
 shader_type spatial;
-render_mode unshaded, cull_back;
+render_mode unshaded, cull_back, depth_draw_always;
 
 uniform vec4 base_color : source_color = vec4(1.0);
 // 闪白峰值强度（config 的 render.hit_flash_alpha）：1 = 打到纯白，0 = 不闪
 uniform float flash_strength : hint_range(0.0, 1.0) = 0.8;
+// 有单位靠近时整栋淡到的不透明度（config 的 render.building_fade_alpha）
+uniform float fade_alpha : hint_range(0.0, 1.0) = 0.3;
 
 // ⚠️ INSTANCE_CUSTOM 只在 vertex 里可读（见 unit_flash.gdshader 的说明）
 varying float v_flash;
+varying float v_fade;
 
 void vertex() {
 	v_flash = INSTANCE_CUSTOM.r;
+	v_fade = INSTANCE_CUSTOM.g;
 }
 
 void fragment() {
 	float flash = clamp(v_flash * flash_strength, 0.0, 1.0);
 	ALBEDO = mix(base_color.rgb, vec3(1.0), flash);
-	ALPHA = base_color.a;
+	// 基础不透明度（base_color.a）× 淡出系数：v_fade = 0 → 不透明，= 1 → fade_alpha
+	ALPHA = base_color.a * mix(1.0, fade_alpha, clamp(v_fade, 0.0, 1.0));
 }

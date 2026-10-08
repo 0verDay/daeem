@@ -20,6 +20,8 @@ const GroundViewRes = preload("res://view/ground_view.gd")
 const UnitViewRes = preload("res://view/unit_view_3d.gd")
 const BuildingViewRes = preload("res://view/building_view_3d.gd")
 const ProjectileViewRes = preload("res://view/projectile_view_3d.gd")
+## ★ 右键指令的 3D 旗子（移动 = 绿 / 行军 = 黄；无碰撞）
+const OrderFlagRes = preload("res://view/order_flag_view_3d.gd")
 const Overlay3DRes = preload("res://view/overlay_view_3d.gd")
 const InputControllerRes = preload("res://view/input_controller.gd")
 const HudRes = preload("res://view/hud.gd")
@@ -48,6 +50,8 @@ var unit_view = null
 var buildings = null
 ## ★ 射箭投掷物层（本轮新增，见 view/projectile_view_3d.gd）：只读 world.projectiles
 var projectiles = null
+## ★ 右键指令的 3D 旗子（移动 = 绿 / 行军 = 黄）：由 `_on_command` 插 / 收，纯表现
+var order_flags = null
 var overlay = null
 var input_ctrl = null
 var hud: CanvasLayer = null
@@ -175,6 +179,12 @@ func _assemble() -> void:
 	projectiles.name = "ProjectileView3D"
 	add_child(projectiles)
 	projectiles.setup(cfg, world, palette)
+
+	# 右键指令的 3D 旗子（移动 = 绿 / 行军 = 黄）：在**目标点**立一面，命令完成自动收
+	order_flags = OrderFlagRes.new()
+	order_flags.name = "OrderFlags3D"
+	add_child(order_flags)
+	order_flags.setup(cfg, world, palette)
 
 	# 覆盖层（选中圈 / 移动与攻击标记 / 建造预览 / 拖框）：屏幕空间，用 palette 定位
 	var layer := CanvasLayer.new()
@@ -394,9 +404,12 @@ func _process(dt: float) -> void:
 		input_ctrl.drop_dead_selection()
 	_consume_events(events)
 	# ③ 视图：单位 MultiMesh 每帧重填（位置会变）
-	units.sync()
+	#    ★ 选中集合先喂给单位层：它据此画脚下的「绿色空心圆」选中下标（见 unit_view_3d）
+	units.set_selection(_selected_ids())
+	units.sync(dt)
 	buildings.sync()
 	projectiles.sync()
+	order_flags.sync()
 	# ④ 覆盖层：纯本地 UI 状态塞进去，它只画
 	overlay.hover_tile = input_ctrl.hover_tile
 	overlay.hover_valid = input_ctrl.hover_valid
@@ -749,12 +762,32 @@ func _on_command(cmd: Dictionary) -> void:
 	if world == null:
 		return
 	CommandRes.apply(world, cfg, cmd)
+	_update_order_flag(cmd)
+
+
+## ★★ 右键指令的提示：在**目标点插一面 3D 旗子**（移动 = 绿 / 行军 = 黄）；
+##    `attack`（点名打某个目标）/ `stop` 不是「到点」指令 ⇒ 收掉旗子。
+##
+## ★ 只认「本机发出去的命令」（`command_issued` 只来自 input_controller），所以不会
+##   因为 AI / 事件的命令而插旗。旗子的**消失**由 `order_flags.sync()` 按命令完成判定。
+func _update_order_flag(cmd: Dictionary) -> void:
+	if order_flags == null:
+		return
+	var kind := String(cmd.get("kind", ""))
+	if kind == "move" or kind == "attack_move":
+		order_flags.plant(kind,
+			Vector2(float(cmd.get("x", 0.0)), float(cmd.get("y", 0.0))),
+			cmd.get("ids", []))
+	elif kind == "attack" or kind == "stop":
+		order_flags.clear()
 
 
 ## 本地 UI 变了（选中 / 悬停 / 面板页签）：**只需要重画，不碰逻辑**。
 func _on_local_ui_changed() -> void:
 	if overlay != null:
 		overlay.set_selection(_selected_ids())
+	if units != null:
+		units.set_selection(_selected_ids())
 
 
 ## 当前选中的建筑（含**选中的敌对建筑** —— 敌方建筑被点中时也要亮金框）。

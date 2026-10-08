@@ -1,4 +1,4 @@
-## overlay_view_3d.gd —— 3D 版的覆盖层：选中圈 / 移动与攻击标记 / 建造预览 / 拖框
+## overlay_view_3d.gd —— 3D 版的覆盖层：血条 / 网格 / 区划轮廓 / 占领进度条 / 建造预览 / 拖框
 ##
 ## ★★ 为什么这一层留在 **2D 屏幕空间**而不是做成 3D 物件（本版的重要取舍）：
 ##   · 它们是**界面反馈**，不是世界里的东西 —— 玩家要的是「我的部队在哪、点到哪」，
@@ -13,10 +13,7 @@ extends Control
 
 const ConfigRes = preload("res://logic/config.gd")
 const PaletteRes = preload("res://view/palette.gd")
-const UnitIconRes = preload("res://view/unit_icon.gd")
 
-## 选中光晕贴图边长
-const HALO_TEX_SIZE := 32
 const HP_BACK_COLOR := Color(0, 0, 0, 0.55)
 
 var cfg: ConfigRes = null
@@ -40,7 +37,6 @@ var debug_aim: bool = false
 
 ## 诊断（只有测试读它）：最近一次 `_draw()` 发出的绘制命令数
 var draw_count: int = 0
-var _tex_halo: ImageTexture = null
 
 
 func setup(p_cfg: ConfigRes, p_world, p_palette, p_units, p_ground = null) -> void:
@@ -52,20 +48,6 @@ func setup(p_cfg: ConfigRes, p_world, p_palette, p_units, p_ground = null) -> vo
 	# 铺满屏幕、但不吃鼠标（输入走 input_controller 那条路）
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	set_anchors_preset(Control.PRESET_FULL_RECT)
-	_tex_halo = _make_disc_texture()
-
-
-static func _make_disc_texture() -> ImageTexture:
-	var size := HALO_TEX_SIZE
-	var img := Image.create(size, size, false, Image.FORMAT_RGBA8)
-	var c := float(size) * 0.5
-	var r_out := c - 0.5
-	for y in size:
-		for x in size:
-			var d := Vector2(float(x) + 0.5 - c, float(y) + 0.5 - c).length()
-			var cov := clampf(r_out - d + 0.5, 0.0, 1.0)
-			img.set_pixel(x, y, Color(1, 1, 1, cov))
-	return ImageTexture.create_from_image(img)
 
 
 func sync() -> void:
@@ -81,12 +63,12 @@ func _draw() -> void:
 	#      ⚠️ 它们必须**先于**单位画：否则网格线会盖在兵人身上（看起来像网格穿透了部队）。
 	#   ② 占领进度条 —— 也是地面上的东西，同样在单位之下
 	#      （2D 版里它属于 `zone_view`，与地块同层）。
-	#   ③ 单位头上的 UI（选中圈 / 血条）—— 最上面
+	#   ③ 单位头上的 UI（血条）—— 最上面
 	_draw_grid()
 	_draw_zone_outlines()
 	_draw_zone_capture()
 	_draw_units_ui()
-	_draw_move_marks()
+	# ★ 移动 / 行军目标点不再在这里画圈 —— 改成 3D 旗子（view/order_flag_view_3d.gd）
 	_draw_build_preview()
 	_draw_drag_box()
 
@@ -426,14 +408,10 @@ func _capture_items() -> Array:
 	return out
 
 
-## 单位头上的东西（选中圈 / 血条）——都是屏幕空间的圆与条
+## 单位头上的东西（血条）——屏幕空间的条
 func _draw_units_ui() -> void:
 	if units == null:
 		return
-	var sel: Dictionary = {}
-	if world != null:
-		# 选中集合由 game_scene 每帧喂进来（见 set_selection）
-		sel = _selection
 	for u in world.units:
 		if not u.alive or not _unit_visible(u):
 			continue
@@ -441,12 +419,8 @@ func _draw_units_ui() -> void:
 		var r: float = units.quad_screen_width(u) * 0.5
 		if r <= 0.0:
 			continue
-		# 选中光晕（脚下的一圈）
-		if sel.has(u.id):
-			var rr: float = maxf(r, 8.0) + 4.0
-			draw_texture_rect(_tex_halo, Rect2(p - Vector2(rr, rr * 0.5), Vector2(rr * 2.0, rr)),
-				false, Color(1.0, 0.85, 0.3, 0.45))
-			draw_count += 1
+		# ★ 选中下标不再在这里画圈 —— 改成单位层脚下的「绿色空心圆」贴花
+		#   （view/unit_view_3d.gd 的 `_sync_selection_rings`：150%→100% 缩放 + 淡入动效）。
 		# 血条：不满血才画（满血不画，避免刷屏）
 		if u.hp < u.hp_max - 1e-6:
 			var w: float = maxf(r * 2.2, 10.0)
@@ -476,6 +450,10 @@ func _unit_visible(u) -> bool:
 
 
 ## 移动目标点（绿圈 + 十字）与行军攻击目标点（红圈 + 叉）
+##
+## ★★ 本版**不再画**：右键指令的提示改成了 3D 旗子（`view/order_flag_view_3d.gd`）。
+##   `move_marks` / `attack_marks` 两个字段**保留**（input_controller 还在写、2D 遗留栈
+##   与既有测试还在读），只是 3D 这条路不再把它们画成屏幕空间的圈。
 func _draw_move_marks() -> void:
 	for m in move_marks:
 		var p: Vector2 = palette.to_px(m)

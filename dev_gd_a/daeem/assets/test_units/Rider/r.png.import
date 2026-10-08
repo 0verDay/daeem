@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://b40q22nlvptbw"
-path="res://.godot/imported/cgb_k.png-aaabfd2a0eaab5ba425bdfeca41d48ed.ctex"
+uid="uid://cnw5r2yfu31co"
+path="res://.godot/imported/r.png-3892d3343252ea3c1c1a108693a0fe74.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://assets/test_units/LongbowMan/cgb_k.png"
-dest_files=["res://.godot/imported/cgb_k.png-aaabfd2a0eaab5ba425bdfeca41d48ed.ctex"]
+source_file="res://assets/test_units/Rider/r.png"
+dest_files=["res://.godot/imported/r.png-3892d3343252ea3c1c1a108693a0fe74.ctex"]
 
 [params]
 

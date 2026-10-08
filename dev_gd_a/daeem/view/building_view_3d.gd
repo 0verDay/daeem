@@ -14,6 +14,11 @@
 ##   的 `body_scale`，仍然是一格里的平面块）。
 ##   ★ 这条边界很重要：视觉上立起来 ≠ 逻辑上有高度。
 ##
+## ★★ 有单位靠近 ⇒ 整栋淡出（见文件末尾 `_fade_marked_tiles` 与 building_flash.gdshader）：
+##   以建筑所在格为中心的 3x3 内有**可见单位**时，整栋淡到 `render.building_fade_alpha`，
+##   这样单位不会被建筑挡住。★ 该 shader 写了 ALPHA（走透明管线），靠 `depth_draw_always`
+##   强制写深度，建筑之间的前后遮挡才不会按「谁后画谁在上」乱掉。
+##
 ## ★ 不投影阴影（用户口径）。
 extends Node3D
 
@@ -40,6 +45,8 @@ var batches_created: int = 0
 var shake_applied_last_frame: int = 0
 ## ★ 本帧有多少栋建筑写了受击闪白（诊断，测试读它）
 var flash_written_last_frame: int = 0
+## ★ 本帧有多少栋建筑被「单位靠近」淡出（诊断，测试读它）
+var faded_last_frame: int = 0
 ## 受击振动参数（setup 缓存）
 var _cell: float = 128.0
 var _hit_amp: float = 0.06
@@ -86,6 +93,8 @@ func _batch_for(key: String, color: Color) -> Dictionary:
 	mat.shader = BUILDING_FLASH_SHADER
 	mat.set_shader_parameter("base_color", color)
 	mat.set_shader_parameter("flash_strength", cfg.num("render.hit_flash_alpha", 0.8))
+	# ★ 有单位靠近时整栋淡到的不透明度（见 building_flash.gdshader 的 depth_draw_always 说明）
+	mat.set_shader_parameter("fade_alpha", cfg.num("render.building_fade_alpha", 0.3))
 
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
@@ -111,6 +120,9 @@ func sync() -> void:
 		return
 	shake_applied_last_frame = 0
 	flash_written_last_frame = 0
+	faded_last_frame = 0
+	# ★ 先把「哪些格附近有可见单位」标出来（一次 O(单位数)），建筑逐栋查表即可
+	var marked: Dictionary = _fade_marked_tiles()
 	var buckets: Dictionary = {}
 	for b in world.building_list:
 		if not b.alive:
@@ -137,11 +149,15 @@ func sync() -> void:
 			mm.instance_count = maxi(arr.size(), mm.instance_count * 2)
 		for i in arr.size():
 			mm.set_instance_transform(i, _transform_of(arr[i]))
-			# ★ 受击闪白：逐实例自定义数据（建筑很少，直接每帧写，不做脏检查）
+			# ★ 受击闪白（.r）+ 靠近淡出（.g）：逐实例自定义数据
+			#   （建筑很少，直接每帧写，不做脏检查 —— 与闪白同一条口径）
 			var flash: float = clampf(arr[i].hit_flash, 0.0, 1.0)
-			mm.set_instance_custom_data(i, Color(flash, 0.0, 0.0, 0.0))
+			var fade: float = 1.0 if should_fade(arr[i], marked) else 0.0
+			mm.set_instance_custom_data(i, Color(flash, fade, 0.0, 0.0))
 			if flash > 0.0:
 				flash_written_last_frame += 1
+			if fade > 0.0:
+				faded_last_frame += 1
 		mm.visible_instance_count = arr.size()
 		(rec["node"] as MultiMeshInstance3D).visible = true
 		total += arr.size()
@@ -209,3 +225,41 @@ func _visible_to_me(b) -> bool:
 	if not cfg.fog_enabled:
 		return true
 	return world.fog.building_visible(world.my_faction, b)
+
+
+# ------------------------------------------------------------------
+# ★★ 有单位靠近 ⇒ 建筑淡出（本轮新增；口径见 config.json 的 _building_fade_comment）
+# ------------------------------------------------------------------
+
+## 「哪些格附近有可见单位」——以每个可见单位所在格为中心，连同它 8 个邻格一起标出。
+##
+## ★ 建筑只要落在这些格之一就淡出 ⇒ 「以建筑为中心的 3x3 内有单位」= 一次字典查找。
+##   比「逐建筑扫全部单位」便宜（建筑逐帧重画；单位可能有几十个）。
+## ★ 只算**当前可见**的单位：迷雾里的敌人不该让建筑淡出 —— 那会把它的位置漏出去。
+func _fade_marked_tiles() -> Dictionary:
+	var marked: Dictionary = {}
+	if world == null:
+		return marked
+	for u in world.units:
+		if not u.alive:
+			continue
+		if not _unit_visible(u):
+			continue
+		for dy in range(-1, 2):
+			for dx in range(-1, 2):
+				marked[Vector2i(u.tx + dx, u.ty + dy)] = true
+	return marked
+
+
+## 这栋建筑要不要淡出（它所在格在 `marked` 里 = 以它为中心的 3x3 内有可见单位）。
+func should_fade(b, marked: Dictionary) -> bool:
+	return marked.has(Vector2i(b.tx, b.ty))
+
+
+## 单位对「我这边」可不可见（与 unit_view_3d 同一条判据：迷雾的唯一出处是 logic/fog.gd）。
+func _unit_visible(u) -> bool:
+	if world == null or world.fog == null or cfg == null:
+		return true
+	if not cfg.fog_enabled:
+		return true
+	return world.fog.unit_visible(world.my_faction, u)

@@ -374,9 +374,15 @@ func _test_scene_tree(cfg) -> void:
 	var uv = game.unit_view
 	ok(uv != null, "unit_view 存在（3D 版是 units 的别名）")
 	if uv != null:
-		ok(uv.get_child_count() <= 4,
-			"★ unit_view 不为每个单位建节点（只有每变体一个 MultiMeshInstance3D，实测 %d 个）"
-			% uv.get_child_count())
+		# ★ 只数「单位批次」节点（名字以 `Units_` 开头）；将领贴花层 / 选中下标层是**额外的
+		#   辅助层**（各一个节点），不算「每单位一个节点」。
+		var unit_batches := 0
+		for ch in uv.get_children():
+			if String(ch.name).begins_with("Units_"):
+				unit_batches += 1
+		ok(unit_batches <= 4,
+			"★ unit_view 不为每个单位建节点（只有每变体一个 Units_* 批次，实测 %d 个）"
+			% unit_batches)
 
 	# ★★ 2.5D 的补偿组（2D 口径）：真的进过、而且**画完已经复位**。
 	#
