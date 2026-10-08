@@ -222,7 +222,16 @@ var flash_sec: float = 0.22
 ## ★ 预计算：闪光衰减那句在**每单位每帧**的路径上，而 `maxf(0.01, cfg.flash_sec)`
 ##   每次都要算一遍常数。
 var flash_sec_safe: float = 0.22
+## ★★ 受击动效（闪白 + 左右振动）的时长（秒）——见 combat.hit_flash_sec。
+var hit_flash_sec: float = 0.18
+## 预计算：受击衰减那句在「每单位每帧」的路径上，别每次算 maxf(0.01, ...)。
+var hit_flash_sec_safe: float = 0.18
 var building_damage: float = 40.0
+## ★★ 射箭投掷物（远程单位 / 可攻击建筑）的飞行速度与时长夹取（见 logic/projectile.gd）。
+## ★ 预计算进字段：它们在「每枚投掷物每帧」的路径上，不许用 `cfg.num("combat....")`。
+var projectile_speed: float = 12.0
+var projectile_min_sec: float = 0.08
+var projectile_max_sec: float = 0.6
 ## ★★ 「测试敌人」的那几个数值字段（enemy_damage / enemy_range / enemy_cooldown /
 ##    enemy_speed / enemy_hp）**本次随单位类型一起删除**（用户口径：「把所有的『敌』
 ##    这个具体单位变成『长枪兵』」）。
@@ -415,7 +424,14 @@ func _cache_scalars() -> void:
 	chase_direct_range = num("combat.chase_direct_range", 8.0)
 	flash_sec = num("combat.flash_sec", 0.22)
 	flash_sec_safe = maxf(0.01, flash_sec)
+	hit_flash_sec = maxf(0.01, num("combat.hit_flash_sec", 0.18))
+	hit_flash_sec_safe = maxf(0.01, hit_flash_sec)
 	building_damage = num("combat.building_damage", 40.0)
+	# ★★ 投掷物飞行（见 logic/projectile.gd）。速度必须 > 0，否则时长会除零；
+	#   时长的上下夹取保证「贴脸也看得见飞一下」且「远距离不飞太久」。
+	projectile_speed = maxf(0.1, num("combat.projectile_speed", 12.0))
+	projectile_min_sec = maxf(0.0, num("combat.projectile_min_sec", 0.08))
+	projectile_max_sec = maxf(projectile_min_sec + 0.001, num("combat.projectile_max_sec", 0.6))
 
 	zone_cols = int_val("zone.zone_cols", 6)
 	zone_rows = int_val("zone.zone_rows", 4)

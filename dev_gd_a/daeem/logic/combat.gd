@@ -34,6 +34,8 @@ const UnitRes = preload("res://logic/unit.gd")
 ##   `crowd._targets_ready` / `crowd._target_idx` 在**每单位每帧**的索敌路径上。
 ##   crowd_bridge.gd 不 preload 本文件，所以不是循环依赖。
 const CrowdBridgeRes = preload("res://logic/crowd/crowd_bridge.gd")
+## ★ 射箭投掷物（远程单位 / 可攻击建筑）。projectile.gd 只 preload config，无循环依赖。
+const ProjectileRes = preload("res://logic/projectile.gd")
 
 ## ★ 诊断计数器：本帧真正算了多少次「追击寻路」。只在基准里读，逻辑不依赖它。
 ##   用途：把「重寻路次数太多」和「单次寻路太贵」这两种可能分开 —— 实测实机行军攻击
@@ -101,6 +103,9 @@ static func update_unit(world, cfg: ConfigRes, u: UnitRes, dt: float, idx: int =
 		u.attack_cd = maxf(0.0, u.attack_cd - dt)
 	if u.attack_flash > 0.0:
 		u.attack_flash = maxf(0.0, u.attack_flash - dt / cfg.flash_sec_safe)
+	# ★ 受击反应（本轮新增）：闪白 + 左右振动，按 combat.hit_flash_sec 衰减
+	if u.hit_flash > 0.0:
+		u.hit_flash = maxf(0.0, u.hit_flash - dt / cfg.hit_flash_sec_safe)
 	if u.repath_timer > 0.0:
 		u.repath_timer = maxf(0.0, u.repath_timer - dt)
 	# ★★ 「因为追击上限放弃」之后的冷却（见 config 的 leash_release_cd）：
@@ -320,6 +325,13 @@ static func acquire_target(world, cfg: ConfigRes, u: UnitRes, idx: int = -1) -> 
 		#    「每次索敌都重置」）。
 		u.anchor = u.pos
 		u.reset_repath()
+		# ★★ 自动索敌到目标 ⇒ **作废「走回旧落点」**（本轮修的 bug）。
+		#   症状：近战单位走完移动命令、在落点站定 → 发现附近的敌人 → 去打，
+		#   可 `reclaim_settled_spot`（把「被推离落点」的单位送回落点）同时也在拽它，
+		#   于是它在**旧落点与目标之间无限徘徊**、像没在下命令。
+		#   ⚠️ 只在**自动索敌**这里清；敌人 AI 的 `set_building_target`（拆挡路的墙）
+		#      **不清** —— 那条路依赖「拆完继续赶路」，清了会破坏它（实测踩到）。
+		u.clear_settled_spot()
 		world.push_event({"type": "alert", "unit": u, "target": best})
 		return true
 
@@ -346,6 +358,8 @@ static func acquire_target(world, cfg: ConfigRes, u: UnitRes, idx: int = -1) -> 
 	if b == null:
 		return false
 	set_building_target(u, b)
+	# ★★ 同上：自动索敌到一座建筑 ⇒ 作废「走回旧落点」，否则会在落点与建筑之间徘徊。
+	u.clear_settled_spot()
 	world.push_event({"type": "alert_building", "unit": u, "building": b})
 	return true
 
@@ -504,7 +518,12 @@ static func attack_unit(world, cfg: ConfigRes, u: UnitRes, t: UnitRes) -> void:
 	u.attack_flash = 1.0
 	u.last_target = t
 	u.last_building = null
-	t.take_damage(cfg, world, u.combat_damage(cfg), u)
+	# ★★ 远程单位（长弓兵 / 远程将领）**发一枚投掷物**，伤害改到命中那一刻结算；
+	#    近战（长枪兵 / 骑手）仍是即时结算 —— 逐位不变。
+	if u.ranged:
+		ProjectileRes.spawn(world, cfg, String(u.faction), u, u.pos, t, false, u.combat_damage(cfg))
+	else:
+		t.take_damage(cfg, world, u.combat_damage(cfg), u)
 
 
 ## 锁定一个建筑开始拆它（敌人 AI 用它拆挡路的城墙）。
@@ -565,7 +584,11 @@ static func attack_building(world, cfg: ConfigRes, u: UnitRes, b) -> void:
 	#
 	# ⚠️ take_damage 返回的是「**本击是否造成摧毁**」，所以这里只在首次摧毁时广播。
 	#    否则同一帧里几个单位围着同一堵墙，会广播出好几条重复的 building_down。
-	if b.take_damage(cfg, cfg.building_damage, u):
+	# ★★ 远程单位拆建筑也走投掷物（伤害仍用共用的 building_damage）——
+	#    命中结算与 building_down 广播都在 projectile._impact 里。
+	if u.ranged:
+		ProjectileRes.spawn(world, cfg, String(u.faction), u, u.pos, b, true, cfg.building_damage)
+	elif b.take_damage(cfg, cfg.building_damage, u):
 		world.push_event({"type": "building_down", "building": b, "source": u})
 
 
@@ -612,13 +635,17 @@ static func update_towers(world, cfg: ConfigRes, dt: float) -> void:
 		b.last_target = target
 
 		if target != null and b.cooldown_left <= 0.0:
-			target.take_damage(cfg, world, b.attack_damage(cfg), b)
+			# ★★ 可攻击建筑（箭塔等）开火 = 发一枚投掷物（用户口径：所有可攻击建筑）。
+			ProjectileRes.spawn(world, cfg, String(b.owner), b, b.center(), target, false, b.attack_damage(cfg))
 			b.cooldown_left = b.attack_cooldown(cfg)
 			b.flash = 1.0
 
 
 ## 建筑受击闪光的衰减（只有渲染用；每帧一次，覆盖所有建筑）
-static func update_building_effects(world, dt: float) -> void:
+## ★ `flash` = 旧的红色覆盖；`hit_flash` = 本轮新增的「闪白 + 左右振动」。
+static func update_building_effects(world, cfg: ConfigRes, dt: float) -> void:
 	for b in world.building_list:
 		if b.flash > 0.0:
 			b.flash = maxf(0.0, b.flash - dt * 4.0)
+		if b.hit_flash > 0.0:
+			b.hit_flash = maxf(0.0, b.hit_flash - dt / cfg.hit_flash_sec_safe)

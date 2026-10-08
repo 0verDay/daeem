@@ -19,6 +19,9 @@ extends Node3D
 
 const ConfigRes = preload("res://logic/config.gd")
 const PaletteRes = preload("res://view/palette.gd")
+const HitFxRes = preload("res://view/hit_fx.gd")
+## ★ 建筑材质：逐像素受击闪白（自定义 shader，见文件）
+const BUILDING_FLASH_SHADER = preload("res://view/building_flash.gdshader")
 
 var cfg: ConfigRes = null
 var world = null
@@ -33,6 +36,14 @@ var _color_cache: Dictionary = {}
 var instance_count: int = 0
 var mesh_batch_count: int = 0
 var batches_created: int = 0
+## ★ 本帧有多少栋建筑被施加了「受击左右振动」（诊断，测试读它）
+var shake_applied_last_frame: int = 0
+## ★ 本帧有多少栋建筑写了受击闪白（诊断，测试读它）
+var flash_written_last_frame: int = 0
+## 受击振动参数（setup 缓存）
+var _cell: float = 128.0
+var _hit_amp: float = 0.06
+var _hit_freq: float = 26.0
 
 
 func setup(p_cfg: ConfigRes, p_world, p_palette) -> void:
@@ -42,6 +53,9 @@ func setup(p_cfg: ConfigRes, p_world, p_palette) -> void:
 	# 单位立方体（1×1×1，中心在原点）——靠逐实例缩放表达各建筑的真实尺寸
 	_box = BoxMesh.new()
 	_box.size = Vector3.ONE
+	_cell = palette.cell_size()
+	_hit_amp = cfg.num("render.hit_shake_cells", 0.06)
+	_hit_freq = cfg.num("render.hit_shake_freq", 26.0)
 
 
 ## 建筑在世界里的高度（格）——**纯表现**，缺省 1 格
@@ -68,15 +82,16 @@ func _batch_for(key: String, color: Color) -> Dictionary:
 	var hit: Variant = _batches.get(key, null)
 	if hit != null:
 		return hit
-	var mat := StandardMaterial3D.new()
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.albedo_color = color
-	# ★ 不投影阴影（用户口径）
-	mat.cull_mode = BaseMaterial3D.CULL_BACK
+	var mat := ShaderMaterial.new()
+	mat.shader = BUILDING_FLASH_SHADER
+	mat.set_shader_parameter("base_color", color)
+	mat.set_shader_parameter("flash_strength", cfg.num("render.hit_flash_alpha", 0.8))
 
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
 	mm.mesh = _box
+	# ★⚠️ `use_custom_data` 必须在 `instance_count` **之前**设（见 unit_view_3d 的说明）
+	mm.use_custom_data = true
 	mm.instance_count = 64
 
 	var node := MultiMeshInstance3D.new()
@@ -94,6 +109,8 @@ func _batch_for(key: String, color: Color) -> Dictionary:
 func sync() -> void:
 	if world == null or palette == null or _box == null:
 		return
+	shake_applied_last_frame = 0
+	flash_written_last_frame = 0
 	var buckets: Dictionary = {}
 	for b in world.building_list:
 		if not b.alive:
@@ -120,6 +137,11 @@ func sync() -> void:
 			mm.instance_count = maxi(arr.size(), mm.instance_count * 2)
 		for i in arr.size():
 			mm.set_instance_transform(i, _transform_of(arr[i]))
+			# ★ 受击闪白：逐实例自定义数据（建筑很少，直接每帧写，不做脏检查）
+			var flash: float = clampf(arr[i].hit_flash, 0.0, 1.0)
+			mm.set_instance_custom_data(i, Color(flash, 0.0, 0.0, 0.0))
+			if flash > 0.0:
+				flash_written_last_frame += 1
 		mm.visible_instance_count = arr.size()
 		(rec["node"] as MultiMeshInstance3D).visible = true
 		total += arr.size()
@@ -145,8 +167,13 @@ func _transform_of(b) -> Transform3D:
 	var h: float = cell * _height_of(b)
 	var c: Vector2 = b.center()
 	var base: Vector3 = palette.to_world(c)
+	# ★ 受击左右振动（纯表现）：X 方向一个小位移，随 hit_flash 衰减
+	var shake := 0.0
+	if b.hit_flash > 0.0:
+		shake = HitFxRes.shake_tiles(b.hit_flash, _hit_amp, _hit_freq) * cell
+		shake_applied_last_frame += 1
 	# 立方体以**中心**为原点 ⇒ 抬到「底边贴地」，并贴在地面之上一点避免 z-fighting
-	var pos := Vector3(base.x, h * 0.5 + 0.6, base.z)
+	var pos := Vector3(base.x + shake, h * 0.5 + 0.6, base.z)
 	return Transform3D(Basis().scaled(Vector3(w, h, w)), pos)
 
 

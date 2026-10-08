@@ -15,6 +15,7 @@ const ConfigRes = preload("res://logic/config.gd")
 const FactionRes = preload("res://logic/faction.gd")
 const BuildingRes = preload("res://logic/building.gd")
 const UnitRes = preload("res://logic/unit.gd")
+const ProjectileRes = preload("res://logic/projectile.gd")
 
 
 static func round2(v: float) -> float:
@@ -90,10 +91,28 @@ static func to_snapshot(world) -> Dictionary:
 			"pop": round2(float(z.get("population", 0.0))),
 		})
 
+	# ★★ 射箭投掷物（本轮新增）：在飞的投掷物也是**权威状态**（伤害在命中那一刻结算），
+	#    所以照 units / buildings 的口径一起发。字段全用短名：
+	#      sx/sy = 起点，ex/ey = 终点（目标当前位置），t = 进度，el/du = 已飞/总时长，
+	#      dmg = 命中伤害；目标与来源各用「单位 id（tu/su）」或「建筑 key（tk/sk）」。
+	#    ⚠️ 解析不到时置空 —— 投掷物会飞完自然消失、不造成伤害（不崩）。
+	var proj_out: Array = []
+	for p in world.projectiles:
+		proj_out.append({
+			"f": String(p.faction),
+			"sx": round2(p.start.x), "sy": round2(p.start.y),
+			"ex": round2(p.end.x), "ey": round2(p.end.y),
+			"t": round2(p.t), "el": round2(p.elapsed), "du": round2(p.duration),
+			"dmg": round2(p.damage),
+			"tu": _unit_id_of(p.target), "tk": _building_key_of(p.target),
+			"su": _unit_id_of(p.source), "sk": _building_key_of(p.source),
+		})
+
 	return {
 		"units": units_out,
 		"buildings": buildings_out,
 		"zones": zones_out,
+		"projectiles": proj_out,
 		"res": [round(float(world.resources["food"]) * 10.0) / 10.0, round(float(world.resources["gold"]) * 10.0) / 10.0],
 		"owned": world.owned_tiles,
 		"time": round2(world.time),
@@ -234,6 +253,10 @@ static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void:
 		world.owned_tiles = int(snap["owned"])
 	if snap.has("time"):
 		world.time = float(snap["time"])
+	# ★★ 投掷物（本轮新增）：整表重建。
+	#    ⚠️ 缺字段（老快照）→ **保持本地现状**（与 res / owned / time 同一条约定）。
+	if snap.has("projectiles"):
+		_sync_projectiles(world, snap["projectiles"])
 
 
 ## 客机：让本地建筑表与快照一致（按 (type,tx,ty,owner) 对齐，保留现有对象以减少闪烁）
@@ -261,3 +284,61 @@ static func _world_sync_buildings(world, cfg: ConfigRes, list: Array) -> void:
 			out.append(nb)
 	world.building_list = out
 	world.rebuild_building_index()
+
+
+# ------------------------------------------------------------------
+# 投掷物往返用的「引用编码」：单位 → id；建筑 → "type:tx:ty:owner"
+# ------------------------------------------------------------------
+
+## 一个对象是不是单位（单位有 `id`）。⚠️ 用 `has_method("center")` 区分：
+## 只有建筑有 `center()`（单位只有 `pos` 字段），所以它是最稳的判据。
+static func _unit_id_of(o) -> String:
+	if o == null or o.has_method("center"):
+		return ""
+	return String(o.id)
+
+
+static func _building_key_of(o) -> String:
+	if o == null or not o.has_method("center"):
+		return ""
+	return "%s:%d:%d:%s" % [String(o.type), int(o.tx), int(o.ty), String(o.owner)]
+
+
+static func _building_by_key(world, key: String):
+	var parts: PackedStringArray = key.split(":")
+	if parts.size() < 4:
+		return null
+	return world.building_at(int(parts[1]), int(parts[2]))
+
+
+## 客机 / 读档：按快照重建在飞的投掷物（整表替换）。
+## ⚠️ 目标 / 来源解析不到就置空 —— 投掷物照飞、飞完自然消失、不造成伤害（不崩）。
+static func _sync_projectiles(world, list: Array) -> void:
+	var out: Array = []
+	for sp in list:
+		var p = ProjectileRes.new()
+		p.faction = String(sp.get("f", ""))
+		p.start = Vector2(float(sp.get("sx", 0.0)), float(sp.get("sy", 0.0)))
+		p.end = Vector2(float(sp.get("ex", p.start.x)), float(sp.get("ey", p.start.y)))
+		p.t = clampf(float(sp.get("t", 0.0)), 0.0, 1.0)
+		p.pos = p.start.lerp(p.end, p.t)
+		p.elapsed = float(sp.get("el", 0.0))
+		p.duration = float(sp.get("du", 0.001))
+		p.damage = float(sp.get("dmg", 0.0))
+		var tu := String(sp.get("tu", ""))
+		var tk := String(sp.get("tk", ""))
+		if tu != "":
+			p.target = world.unit_by_id(tu)
+			p.target_is_building = false
+		elif tk != "":
+			p.target = _building_by_key(world, tk)
+			p.target_is_building = true
+		var su := String(sp.get("su", ""))
+		var sk := String(sp.get("sk", ""))
+		if su != "":
+			p.source = world.unit_by_id(su)
+		elif sk != "":
+			p.source = _building_by_key(world, sk)
+		p.alive = true
+		out.append(p)
+	world.projectiles = out

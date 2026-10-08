@@ -45,7 +45,31 @@
     "camera_fov_deg": 40.0,
     "ground_subdiv": 1,
     "depth_sort": true,
-    "ui_compensate": true
+    "ui_compensate": true,
+    "_projectile_comment": [
+      "★★ 射箭投掷物（远程单位 / 可攻击建筑）的**纯表现**参数（见 view/projectile_view_3d.gd）。",
+      "   伤害结算不在这里 —— 它在逻辑层（logic/projectile.gd，用 combat.projectile_speed）。",
+      "   · projectile_size = 小方块边长（相对格宽；0.10 ≈ 1/10 格）——用户口径是「先用一个小方块代替」。",
+      "   · projectile_arc_ratio = 抛物线拱高 = 起点↔终点距离 × 这个比例（它由视图施加，逻辑只走地面直线）。",
+      "   · projectile_trail_len = 拖尾保留的历史点数（一段短线跟在方块后方，随抛物线弯曲）。"
+    ],
+    "projectile_size": 0.10,
+    "projectile_arc_ratio": 0.18,
+    "projectile_trail_len": 6,
+    "_hit_fx_comment": [
+      "★★ 受击动效（本轮新增，见 view/hit_fx.gd 与 overlay_view_3d.gd）：",
+      "   被打中的单位 / 建筑**闪白 + 左右振动一小段**。",
+      "   · hit_shake_cells = 左右振动的幅度（格）——很小，只是「顿一下」的体感。",
+      "   · hit_shake_freq = 振动相位频率（越大抖得越快）；相位 = (1 - flash) × freq，",
+      "     所以它不是随机数、可复现（存档 / 回放不受影响）。",
+      "   · hit_flash_alpha = 闪白的峰值强度（1 = 打到纯白，0 = 不闪）。",
+      "   ★ 闪白是**逐像素的 shader 效果**（view/unit_flash.gdshader 与 view/building_flash.gdshader，",
+      "     走 MultiMesh 的每实例自定义数据 INSTANCE_CUSTOM.r）—— 不是盖一层白块。",
+      "   时长由 combat.hit_flash_sec 决定。"
+    ],
+    "hit_shake_cells": 0.06,
+    "hit_shake_freq": 26.0,
+    "hit_flash_alpha": 0.8
   },
 
   "camera": {
@@ -451,6 +475,23 @@
     "chase_direct_range": 8.0,
     "flash_sec": 0.22,
     "building_damage": 40,
+    "_projectile_comment": [
+      "★★ 射箭投掷物的飞行参数（本轮新增，见 logic/projectile.gd）。",
+      "   · projectile_speed = 飞行速度（格/秒）—— 飞行时长 = 距离 / 速度。",
+      "   · projectile_min_sec / projectile_max_sec = 飞行时长的上下夹取",
+      "     （贴脸也要看得见飞一下；远距离也别飞太久）。",
+      "   ★ 远程单位（长弓兵 / 远程将领）与**所有可攻击建筑**开火时生成投掷物；",
+      "     伤害在投掷物**命中那一刻**结算（用户口径）——近战仍是即时结算。",
+      "   ★ 必中：投掷物一定到达目标；目标中途死亡则飞完自然消失、不造成伤害。"
+    ],
+    "projectile_speed": 12.0,
+    "projectile_min_sec": 0.08,
+    "projectile_max_sec": 0.6,
+    "_hit_flash_comment": [
+      "★ 受击动效（闪白 + 左右振动）的**时长**（秒）——1 → 0 的衰减时间。",
+      "  与 combat.flash_sec（旧的开火 / 受击闪光）是两件事，别混。"
+    ],
+    "hit_flash_sec": 0.18,
     "_per_type_comment": [
       "★ 单位的攻击数值（damage / range / cooldown_sec）不在这一节里 ——",
       "  它们跟着**单位类型**走，全在 unit.types.<类型 id> 那张表里（见那里的说明）。",

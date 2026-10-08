@@ -19,6 +19,7 @@ const PaletteRes = preload("res://view/palette.gd")
 const GroundViewRes = preload("res://view/ground_view.gd")
 const UnitViewRes = preload("res://view/unit_view_3d.gd")
 const BuildingViewRes = preload("res://view/building_view_3d.gd")
+const ProjectileViewRes = preload("res://view/projectile_view_3d.gd")
 const Overlay3DRes = preload("res://view/overlay_view_3d.gd")
 const InputControllerRes = preload("res://view/input_controller.gd")
 const HudRes = preload("res://view/hud.gd")
@@ -45,6 +46,8 @@ var units = null
 ##    3D 版内部叫 units（一个 MultiMesh 层）—— 两个名字都给，省得调用方各记一套。
 var unit_view = null
 var buildings = null
+## ★ 射箭投掷物层（本轮新增，见 view/projectile_view_3d.gd）：只读 world.projectiles
+var projectiles = null
 var overlay = null
 var input_ctrl = null
 var hud: CanvasLayer = null
@@ -166,6 +169,12 @@ func _assemble() -> void:
 	buildings.name = "BuildingView3D"
 	add_child(buildings)
 	buildings.setup(cfg, world, palette)
+
+	# 射箭投掷物（小方块 + 拖尾）：只读 world.projectiles（索敌与命中结算都在逻辑层）
+	projectiles = ProjectileViewRes.new()
+	projectiles.name = "ProjectileView3D"
+	add_child(projectiles)
+	projectiles.setup(cfg, world, palette)
 
 	# 覆盖层（选中圈 / 移动与攻击标记 / 建造预览 / 拖框）：屏幕空间，用 palette 定位
 	var layer := CanvasLayer.new()
@@ -387,6 +396,7 @@ func _process(dt: float) -> void:
 	# ③ 视图：单位 MultiMesh 每帧重填（位置会变）
 	units.sync()
 	buildings.sync()
+	projectiles.sync()
 	# ④ 覆盖层：纯本地 UI 状态塞进去，它只画
 	overlay.hover_tile = input_ctrl.hover_tile
 	overlay.hover_valid = input_ctrl.hover_valid

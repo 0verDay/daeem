@@ -734,13 +734,22 @@ func _test_tower(world, cfg) -> void:
 
 	var hp0: float = e.hp
 	w.tick(DT)
-	ok(e.hp == hp0 - 12.0, "箭塔第一帧就打掉 12 点（首次开火无冷却）")
+	# ★ 本轮改口径：箭塔开火 = 发一枚投掷物，**伤害在命中那一刻才结算**（用户要求）。
+	ok(w.projectiles.size() >= 1, "★ 箭塔第一帧就开火：生成了一枚投掷物（首次开火无冷却）")
+	ok(e.hp == hp0, "★ 命中之前目标不掉血（伤害延迟到命中）")
 
-	# 冷却 0.8 秒：接下来 0.5 秒内不再掉血
+	# 让投掷物飞完 → 打掉 12 点
+	var drain := 0
+	while not w.projectiles.is_empty() and drain < 600:
+		w.tick(DT)
+		drain += 1
+	ok(absf(e.hp - (hp0 - 12.0)) < 1e-6, "★ 投掷物命中后打掉 12 点")
+
+	# 冷却 0.8 秒：命中之后 0.5 秒内**不再开火**（不生成新投掷物、不掉血）
 	var hp1: float = e.hp
 	for i in 30:
 		w.tick(DT)
-	ok(absf(e.hp - hp1) < 1e-6, "箭塔 0.8 秒冷却内不再开火")
+	ok(w.projectiles.is_empty() and absf(e.hp - hp1) < 1e-6, "箭塔 0.8 秒冷却内不再开火")
 
 	# 不误伤己方：**单独建一个世界来测**。
 	#

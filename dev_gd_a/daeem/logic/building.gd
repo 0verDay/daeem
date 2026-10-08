@@ -147,7 +147,9 @@ var build_total: float = 0.0
 
 ## ---- 渲染用（不进快照、纯表现）----
 var last_target = null      # 最近锁定的目标单位，画攻击线用
-var flash: float = 0.0      # 受击闪光 1 → 0
+var flash: float = 0.0      # 受击闪光 1 → 0（红色覆盖，沿用）
+## ★★ 受击反应（本轮新增）：被打中时置 1，按 `combat.hit_flash_sec` 衰减（视图画闪白 + 振动）。
+var hit_flash: float = 0.0
 
 
 static func create(cfg: ConfigRes, p_type: String, p_tx: int, p_ty: int, p_owner: String, p_zone_id: int = -1) -> RefCounted:
@@ -391,6 +393,7 @@ func take_damage(cfg: ConfigRes, amount: float, _source = null) -> bool:
 	if is_invulnerable():
 		return false                       # ★ 区划中心：无血量、无敌，连闪光都不给
 	flash = 1.0
+	hit_flash = 1.0          # ★ 受击反应：闪白 + 左右振动（视图读它）
 	var destructible: bool = cfg.destructible_base
 	var floor_hp: float = 1.0 if (type == TYPE_BASE and not destructible) else 0.0
 	hp = maxf(floor_hp, hp - amount)

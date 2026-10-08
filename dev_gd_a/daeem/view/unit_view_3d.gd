@@ -22,6 +22,9 @@ extends Node3D
 const ConfigRes = preload("res://logic/config.gd")
 const PaletteRes = preload("res://view/palette.gd")
 const SpriteRes = preload("res://view/unit_sprite_3d.gd")
+const HitFxRes = preload("res://view/hit_fx.gd")
+## ★ 立牌材质：billboard + 逐像素受击闪白（自定义 shader，见文件头）
+const UNIT_FLASH_SHADER = preload("res://view/unit_flash.gdshader")
 
 ## 立牌的世界宽度（一格的比例）
 const QUAD_W := 0.42
@@ -47,6 +50,14 @@ var mesh_batch_count: int = 0
 var batches_created: int = 0
 ## ★★ 最近一帧真的**写了几次**实例变换（优化的证据：位置没变的单位不算）
 var instance_writes_last_frame: int = 0
+## ★ 本帧有多少实例被施加了「受击左右振动」（诊断，测试读它）
+var shake_applied_last_frame: int = 0
+## ★ 本帧有多少实例真的**写了**受击闪白（诊断，测试读它）
+var flash_written_last_frame: int = 0
+## 受击振动参数（setup 缓存）
+var _cell: float = 128.0
+var _hit_amp: float = 0.06
+var _hit_freq: float = 26.0
 
 
 func setup(p_cfg: ConfigRes, p_world, p_palette) -> void:
@@ -56,6 +67,10 @@ func setup(p_cfg: ConfigRes, p_world, p_palette) -> void:
 	_quad = QuadMesh.new()
 	var w: float = palette.cell_size() * QUAD_W
 	_quad.size = Vector2(w, w * QUAD_H_RATIO)
+	# ★ 受击振动参数：setup 时缓存一次（受击是「每单位每帧」的路径，别在里面 cfg.num）
+	_cell = palette.cell_size()
+	_hit_amp = cfg.num("render.hit_shake_cells", 0.06)
+	_hit_freq = cfg.num("render.hit_shake_freq", 26.0)
 
 
 ## 取（或创建）一个变体的批次
@@ -68,19 +83,25 @@ func _batch_for(key: String, faction: String, leader: bool) -> Dictionary:
 	# ★ 将领的描边更粗：靠**另一张贴图**（见 unit_sprite_3d.gd 的说明）
 	var tex: ImageTexture = SpriteRes.bake(col, leader, outline)
 
-	var mat := StandardMaterial3D.new()
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
-	mat.albedo_texture = tex
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
-	mat.alpha_scissor_threshold = 0.35
-	mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS_ANISOTROPIC
-	# 双面：billboard 在极端角度下可能看到背面
-	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	# ★★ 自定义材质（本轮的「逐像素闪白」就落在这里）：
+	#   · billboard 由 **shader 自己**做（`BaseMaterial3D.billboard_mode` 对自定义材质无效）；
+	#   · 闪白走**每实例自定义数据** `INSTANCE_CUSTOM.r`（见 sync 里的 set_instance_custom_data）。
+	#   · unshaded / cull_disabled / alpha scissor 0.35 / 线性 mipmap 各向异性 —— 与原
+	#     StandardMaterial3D 逐条对齐，换材质不改观感。
+	var mat := ShaderMaterial.new()
+	mat.shader = UNIT_FLASH_SHADER
+	mat.set_shader_parameter("albedo_tex", tex)
+	mat.set_shader_parameter("scissor_threshold", 0.35)
+	mat.set_shader_parameter("flash_strength", cfg.num("render.hit_flash_alpha", 0.8))
 
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
 	mm.mesh = _quad
+	# ★⚠️ `use_custom_data` 必须在 `instance_count` **之前**设：
+	#   实测（真渲染器）在 instance_count > 0 之后再打开它会报
+	#   「Instance count must be 0 to toggle whether custom data is used」，
+	#   于是自定义数据整批失效、闪白永远读不到。
+	mm.use_custom_data = true
 	mm.instance_count = 256
 
 	var node := MultiMeshInstance3D.new()
@@ -89,7 +110,9 @@ func _batch_for(key: String, faction: String, leader: bool) -> Dictionary:
 	node.material_override = mat
 	add_child(node)
 	batches_created += 1
-	var rec := {"node": node, "mm": mm, "faction": faction, "leader": leader}
+	# ★ `last_flash` 必须**逐批次**存（每个批次的 MultiMesh 是各自一份自定义数据缓冲）：
+	#   共用一份全局缓存会在两个批次落在同一个下标时互相覆盖，把闪白**卡住**。
+	var rec := {"node": node, "mm": mm, "faction": faction, "leader": leader, "last_flash": []}
 	_batches[key] = rec
 	return rec
 
@@ -110,6 +133,8 @@ var _last_slot_key: Array = []     # 下标 → 上一次写的「桶键」（�
 func sync() -> void:
 	if world == null or palette == null or _quad == null:
 		return
+	shake_applied_last_frame = 0
+	flash_written_last_frame = 0
 	var buckets: Dictionary = {}
 	for u in world.units:
 		if not u.alive:
@@ -141,6 +166,10 @@ func sync() -> void:
 		for i in arr.size():
 			var u = arr[i]
 			var w: Vector3 = palette.to_world(u.pos)
+			# ★ 受击左右振动（纯表现）：X 方向一个小位移，随 hit_flash 衰减
+			if u.hit_flash > 0.0:
+				w.x += HitFxRes.shake_tiles(u.hit_flash, _hit_amp, _hit_freq) * _cell
+				shake_applied_last_frame += 1
 			# 立牌原点在**中心** ⇒ 抬到「底边贴地」
 			w.y = half_h
 			# ★ 优化①：位置与所在批次都没变 ⇒ **跳过这次写入**
@@ -152,6 +181,18 @@ func sync() -> void:
 				mm.set_instance_transform(i, Transform3D(Basis(), w))
 				_slot_set(i, w, key)
 				wrote += 1
+			# ★ 受击闪白：写进**每实例自定义数据**（shader 读 INSTANCE_CUSTOM.r）。
+			#   值没变就不写（待命单位占多数，每帧写 1000 次是白花）。
+			var flash: float = clampf(u.hit_flash, 0.0, 1.0)
+			var lf: Array = rec["last_flash"]
+			var cf: Variant = lf[i] if i < lf.size() else null
+			if cf == null or float(cf) != flash:
+				mm.set_instance_custom_data(i, Color(flash, 0.0, 0.0, 0.0))
+				while lf.size() <= i:
+					lf.append(null)
+				lf[i] = flash
+				if flash > 0.0:
+					flash_written_last_frame += 1
 		mm.visible_instance_count = arr.size()
 		(rec["node"] as MultiMeshInstance3D).visible = true
 		total += arr.size()

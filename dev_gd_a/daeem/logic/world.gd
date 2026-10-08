@@ -41,6 +41,7 @@ const GeneralAiRes = preload("res://logic/general_ai.gd")
 const CollisionRes = preload("res://logic/collision.gd")
 const CrowdBridgeRes = preload("res://logic/crowd/crowd_bridge.gd")
 const FogRes = preload("res://logic/fog.gd")
+const ProjectileRes = preload("res://logic/projectile.gd")
 
 var cfg: ConfigRes = null
 var map: MapDataRes = null
@@ -55,6 +56,10 @@ var last_ownership_revision: int = -1
 
 var zones: ZoneRes = null
 var units: Array = []
+## ★★ 在飞的射箭投掷物（本轮新增，见 logic/projectile.gd）。
+##    它们是**权威状态**（伤害在命中那一刻才结算），所以和 units / building_list 一样
+##    属于 world：参与 tick、进快照、随 reset 清空。视图只读它来画方块 + 拖尾。
+var projectiles: Array = []
 
 ## ★ 碰撞后端：C# 群体内核（空间哈希 + 批量接口）的 GDScript 桥。
 ## 内核加载不到（普通版 Godot / 还没构建）时它会自动退回 logic/collision.gd。
@@ -292,6 +297,7 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	building_revision = 0
 	last_ownership_revision = -1
 	units = []
+	projectiles = []
 	_events = []
 	_objective_reported = ""
 	_enemy_serial = 0
@@ -3759,7 +3765,10 @@ func tick(dt: float) -> Array:
 	var _t_towers := _prof()
 	_tick_construction(dt)
 	CombatRes.update_towers(self, cfg, dt)
-	CombatRes.update_building_effects(self, dt)
+	# ★★ 投掷物推进 + 命中结算：必须排在**单位与箭塔都开完火之后**（它们的开火
+	#    会在这一帧生成投掷物），这样本帧生成的投掷物本帧就开始飞。
+	ProjectileRes.update(self, cfg, dt)
+	CombatRes.update_building_effects(self, cfg, dt)
 	_prof_done("towers", _t_towers)
 
 	# 6) 调试：自动刷敌人

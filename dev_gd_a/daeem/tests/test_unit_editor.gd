@@ -25,6 +25,7 @@ const WorldRes = preload("res://logic/world.gd")
 const UnitRes = preload("res://logic/unit.gd")
 const BuildingRes = preload("res://logic/building.gd")
 const CombatRes = preload("res://logic/combat.gd")
+const ProjectileRes = preload("res://logic/projectile.gd")
 const CommandRes = preload("res://logic/command_processor.gd")
 const FactionRes = preload("res://logic/faction.gd")
 
@@ -451,7 +452,11 @@ func _test_new_building() -> void:
 	var hp0: float = e.hp
 	CombatRes.update_towers(w, cfg, DT)
 	eq(b.last_target, e, "★ 它锁定了这个敌人")
-	near(e.hp, hp0 - 20.0, 1e-6, "★★ 新建筑开火，伤害 = config 的 20")
+	# ★ 本轮改口径：开火 = 发一枚投掷物，伤害在**命中那一刻**才结算（用户要求）
+	ok(w.projectiles.size() >= 1, "★★ 新建筑开火：生成了一枚投掷物")
+	near(e.hp, hp0, 1e-6, "命中之前不掉血")
+	_settle_projectiles(w, cfg)
+	near(e.hp, hp0 - 20.0, 1e-6, "★★ 投掷物命中，伤害 = config 的 20")
 
 	# ---- 建造命令：只有「可建造」的类型能建 ----
 	var tile2: Vector2i = _free_tile_near(w, base_b.tx - 4, base_b.ty + 2)
@@ -479,6 +484,16 @@ func _free_tile_near(w, cx: int, cy: int) -> Vector2i:
 				if w.can_build_at(t.x, t.y):
 					return t
 	return Vector2i(-1, -1)
+
+
+## ★ 本轮：让在飞的投掷物结算完（可攻击建筑开火不再当帧扣血，改到命中那一刻）。
+## 直接调 ProjectileRes.update（不跑 world.tick）⇒ 世界里别的单位不会在用例中途行动。
+func _settle_projectiles(w, cfg, max_frames: int = 600) -> int:
+	var n := 0
+	while not w.projectiles.is_empty() and n < max_frames:
+		ProjectileRes.update(w, cfg, DT)
+		n += 1
+	return n
 
 
 # ------------------------------------------------------------------
@@ -539,7 +554,9 @@ func _test_construction() -> void:
 		var hp1: float = e2.hp
 		CombatRes.update_towers(w, cfg, DT)
 		eq(b.last_target, e2, "★ 造完之后锁定敌人了")
-		near(e2.hp, hp1 - 20.0, 1e-6, "★★ 造完之后就开火了")
+		ok(w.projectiles.size() >= 1, "★★ 造完之后就开火了（生成投掷物）")
+		_settle_projectiles(w, cfg)
+		near(e2.hp, hp1 - 20.0, 1e-6, "★★ 投掷物命中，伤害 = config 的 20")
 
 	# 开局自带的东西**不等读条**（哪怕 config 里写了 build_sec）
 	var cfg2 = require_config()

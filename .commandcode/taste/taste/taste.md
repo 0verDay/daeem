@@ -1,0 +1,11 @@
+# Taste
+- When a request has missing details, ambiguity, or gaps in the prompt that would change the output, ask clarifying questions before writing any code or files rather than guessing. Confidence: 0.9
+- Treat the project-root `README.md` as protected: do not edit, reformat, or delete it unless the user explicitly requests or approves it. Reading is fine. Silence is not approval. Confidence: 0.9
+- Avoid packaging/bundling/distribution builds and screenshot or visual-regression tests unless explicitly requested or approved; prefer fast focused checks (unit tests, type-check, lint). Confidence: 0.9
+- When packaging is explicitly requested, state the package artifact path(s) and how to use the package at the end of the final reply, not buried mid-response. Confidence: 0.9
+- Communicates in Chinese; respond in Chinese, keeping code identifiers/paths in their original form. Confidence: 0.7
+- Comfortable deferring visual/asset polish: happy to use crude placeholders (e.g. "just a small cube for now") in a first pass and refine the look later — doesn't expect polished assets to gate the mechanic. Confidence: 0.5
+- For visual effects, wants the real thing rather than a screen-space/overlay approximation — e.g. explicitly asked to reimplement a hit flash as a true per-pixel shader instead of a pasted white disc/rectangle, keeping the effect pixel-accurate (opaque texels recolor to white, transparent texels stay transparent). Confidence: 0.6
+- Values game-feel feedback on gameplay events (e.g. proactively asks to add hit reactions to units and buildings), but wants such effects restrained and brief — a white flash plus only a slight, short left-right shake, not exaggerated motion. Confidence: 0.5
+- Bug fixes ship with a regression test that reproduces the exact reported scenario, and the test must be proven to actually catch the bug — temporarily disable the fix, confirm the assertion goes red, then restore it. Confidence: 0.6
+- Prefers narrow, surgical fixes scoped to the exact failure path over broad fixes that alter shared behavior; narrows the change when it breaks unrelated existing tests. Confidence: 0.5

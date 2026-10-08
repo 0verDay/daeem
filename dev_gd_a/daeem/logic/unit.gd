@@ -201,6 +201,9 @@ var attack_cd: float = 0.0
 ##    `tick_near_death()` 里也要衰减一次（否则倒下那一刻的 1.0 会永远留着，
 ##    画面上就是「濒死的将领一直和某个单位连着一条线」，实测报回来的 bug）。
 var attack_flash: float = 0.0
+## ★★ 受击反应（本轮新增）：被打中时置 1，按 `combat.hit_flash_sec` 衰减回 0。
+## ★ 纯表现（视图拿它画「闪白 + 左右振动」），不进快照 —— 与 `attack_flash` 同一档。
+var hit_flash: float = 0.0
 var last_target = null        # 最近一次开火的目标单位（渲染攻击线用）
 var last_building = null      # 最近一次攻击的建筑（渲染攻击线用）
 var repath_timer: float = 0.0
@@ -1050,6 +1053,8 @@ func halt() -> void:
 ## ⇒ 凡是「要把它从『正常单位』切出去」的地方，都调一下这个函数。
 func clear_attack_fx() -> void:
 	attack_flash = 0.0
+	# 受击反应也是「一次性残留」：切出正常单位逻辑时一起清掉，免得冻在非零值上
+	hit_flash = 0.0
 	last_target = null
 	last_building = null
 
@@ -1323,6 +1328,7 @@ func take_damage(cfg: ConfigRes, world, amount: float, _source = null) -> bool:
 	#   ⚠️ 这一句同时兜住了「读条中被打断」：读条期间仍然免疫（用户拍板）。
 	if downed:
 		return true
+	hit_flash = 1.0          # ★ 受击反应：闪白 + 左右振动（视图读它，逻辑不用）
 	hp = maxf(0.0, hp - amount)
 	if hp <= 0.0 and alive:
 		# ★★ 将领先走「濒死」这条路：world 决定它到底是倒下去还是当场阵亡
@@ -1395,6 +1401,9 @@ func tick_near_death(cfg: ConfigRes, world, dt: float) -> void:
 	#    渲染就会一直画那条攻击线（见 `attack_flash` 的字段说明）。
 	if attack_flash > 0.0:
 		attack_flash = maxf(0.0, attack_flash - dt / cfg.flash_sec_safe)
+	# 受击反应同理（濒死这一支不跑 combat.update_unit，所以在这里衰减）
+	if hit_flash > 0.0:
+		hit_flash = maxf(0.0, hit_flash - dt / cfg.hit_flash_sec_safe)
 	# ★★ 顺序不能反：**先推进再起读条**（这一帧读完就站起来），
 	#    **再**跑全灭判定（有开关就跳过）。
 	#    ⚠️ 反过来（先判全灭）会让「正在读条的最后一帧」被全灭判定抢先生效 ——
