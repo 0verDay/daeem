@@ -643,31 +643,32 @@ func _test_wall_and_enemy_ai(world, cfg) -> void:
 	var direct = PathfinderRes.find_path(w.map, w.buildings, cfg, Vector2i(e.tx, e.ty), Vector2i(bx, by), "enemy")
 	ok(direct == null, "城墙拦住后敌人到不了大本营那一格（大本营本身也占格）")
 
-	# 跑一段时间：敌人应当锁定某段城墙并把第一下砸下去
-	var wall_lost := false
+	# ★★ 本轮**删除了 enemy_ai**（「测试敌人的推进 AI」）—— 敌人不再自己朝玩家据点推进 / 拆墙。
+	#    这里改成**手工驱动**同一条「建筑被拆」链路（`combat` 的 building target + tick），
+	#    于是城墙的受击 / 倒塌 / 缺口可通行这几条规则仍然被覆盖，只是不再依赖那条已删的 AI。
 	var target_wall = null
-	var ticks = 0
-	while ticks < 60 * 60 and not wall_lost:
-		w.tick(DT)
-		ticks += 1
-		var tb = e.target_building
-		if tb != null:
-			if target_wall == null:
-				target_wall = tb
-			if tb.hp < 300.0:
-				wall_lost = true
-	ok(target_wall != null, "敌人锁定了挡路的城墙（%d 帧内）")
-	ok(wall_lost, "敌人真的开始拆墙了（城墙掉血）")
-
+	var best_d := INF
+	for wl in walls:
+		var d: float = Vector2(e.tx - wl.tx, e.ty - wl.ty).length_squared()
+		if d < best_d:
+			best_d = d
+			target_wall = wl
+	ok(target_wall != null, "拆墙用例：取到一段城墙")
 	if target_wall != null:
-		ok(walls.has(target_wall), "锁定的确实是大本营周围的城墙")
+		var hp0: float = target_wall.hp
+		# 让敌人锁定这段城墙（走 combat 的公开入口），然后 tick 到它掉血。
+		CombatRes.set_building_target(e, target_wall)
+		var ticks := 0
+		while ticks < 60 * 60 and target_wall.hp >= hp0:
+			w.tick(DT)
+			ticks += 1
+		ok(target_wall.hp < hp0, "★ 敌人锁定并开始拆墙（城墙掉血，%d 帧内）" % ticks)
 		# 掉血必须是单次伤害（combat.building_damage = 40）的整数倍
-		var lost: float = 300.0 - target_wall.hp
+		var lost: float = hp0 - target_wall.hp
 		var steps: float = lost / cfg.building_damage
 		ok(absf(steps - roundf(steps)) < 1e-6, "掉血量是单次伤害 40 的整数倍（掉了 %.0f）" % lost)
-
 		# 拆穿：一直跑到它塌
-		var guard = 0
+		var guard := 0
 		while target_wall.alive and guard < 60 * 120:
 			w.tick(DT)
 			guard += 1
@@ -677,17 +678,6 @@ func _test_wall_and_enemy_ai(world, cfg) -> void:
 		ok(not w.building_list.has(target_wall), "拆毁的城墙也从建筑表里移除")
 		ok(PathfinderRes.passable(w.map, w.buildings, cfg, target_wall.tx, target_wall.ty, "enemy"),
 			"拆毁的城墙那一格立刻对敌方变成可通行")
-
-		# 敌人从缺口走进来：最终能贴到大本营旁边
-		# （将领死后不再有单位拦截它 —— 单机不复活，这正是「死了就没了」的行为）
-		var reached := false
-		var guard2 := 0
-		while guard2 < 60 * 180 and not reached:
-			w.tick(DT)
-			guard2 += 1
-			if absi(e.tx - bx) + absi(e.ty - by) <= 1:
-				reached = true
-		ok(reached, "敌人拆穿城墙后走进来并停在大本营旁")
 
 
 # ------------------------------------------------------------------

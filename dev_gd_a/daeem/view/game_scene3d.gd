@@ -33,6 +33,14 @@ const Game2DRes = preload("res://view/game_scene.gd")
 
 const MAP_PATH := MapLibraryRes.FALLBACK_MAP_PATH
 
+## 相机距离倍率的上下限（= 视野的两端）—— **唯一**的取值处（`fit_to_map` / `zoom_at` 都读它）。
+## `zoom` 是「**相机距离倍率**」：值越大 = 相机越远 = 看到越多（与 `Camera2D.zoom` 语义相反）。
+##   · ZOOM_MIN = 距离下限 = **最紧视野**（相机最近，看到最少）；
+##   · ZOOM_MAX = 距离上限 = **最远视野**（相机最远，看到最多）。
+## ★ 需求「摄像头拉近、视野缩到原来的一半，且最大/最小同步缩」⇒ 原来 0.35 / 3.0 整体 ×0.5。
+const ZOOM_MIN := 0.175
+const ZOOM_MAX := 1.5
+
 ## ★ 与 2D 版同名的两条流程信号：main.gd 原样接得上（不需要为 3D 改上层）。
 signal fullscreen_toggled
 signal return_to_menu_requested
@@ -306,7 +314,7 @@ class CameraFacade:
 	##   2D 里 `Camera2D.zoom` 越大 = 画面越大 = 拉近）；而 3D 的 `game.zoom` 是
 	##   **相机距离倍率**，越大 = 越远 = 画面越小，方向**天然相反**。
 	##   不取倒数的话：向上滚变成拉远、向下滚变成拉近（实测 `test_view` 里
-	##   「最远视野 = 3.0、最紧 = 0.35」正好反了）。
+	##   「最远视野 = ZOOM_MAX、最紧 = ZOOM_MIN」正好反了）。
 	##   ★ 修在这一层而不是 `input_controller`：那个文件同时服务 2D 与 3D，
 	##     改它会把 2D 的方向弄反 —— 语义差异就地消化掉。
 	func zoom_at(screen_pos: Vector2, factor: float) -> void:
@@ -535,7 +543,7 @@ func clamp_look_point() -> void:
 
 ## F 键：把镜头拉到「最远视野」并居中整张地图（与 2D 的 `fit_to_map()` 同一意图）
 func fit_to_map() -> void:
-	zoom = 3.0
+	zoom = ZOOM_MAX
 	center_on_tile(Vector2(float(world.map.cols) * 0.5, float(world.map.rows) * 0.5))
 
 
@@ -603,7 +611,7 @@ func zoom_at(screen_pos: Vector2, factor: float) -> void:
 	if anchor == null:
 		return
 	var before: Vector2 = palette.to_px(anchor)
-	zoom = clampf(zoom * factor, 0.35, 3.0)
+	zoom = clampf(zoom * factor, ZOOM_MIN, ZOOM_MAX)
 	_place_camera_looking_at(_ground_under_screen(_view_center()))
 	var after: Vector2 = palette.to_px(anchor)
 	pan_screen(before - after)

@@ -329,7 +329,7 @@ var downed_anchor: Vector2 = Vector2.ZERO
 ## 用处：地图上摆几个「测试用守军」时，不希望它们开局就朝玩家据点行军。
 var hold_position: bool = false
 
-## ---- ★★ 将领性（防御性）AI 的归属（本轮新增，见 logic/general_ai.gd）----
+## ---- ★★ 将领性（防御性）AI 的归属（本轮新增，见 logic/garrison_ai.gd）----
 ##
 ## `garrison_zone_id` = 这个将领**负责的区划 id**（-1 = 不归任何将领性 AI 管）。
 ##
@@ -366,7 +366,7 @@ var combat_idle_timer: float = 0.0
 ##      原来只靠这个冷却挡抖动，而冷却是**按时钟**的 —— 冷却一结束，如果敌人还在
 ##      警戒半径里，它又追出去、又被叫回来，几分钟内来回抽。
 var retarget_cd: float = 0.0
-## ★★ 「我正在回家的路上」（见 logic/general_ai.gd 的返程那一段）。
+## ★★ 「我正在回家的路上」（见 logic/garrison_ai.gd 的返程那一段）。
 ##   它保证返程**只下一道命令**（不是每帧重下 —— 那会把路径一帧一帧重置、
 ##   人永远走不回家，看着就是在区划边缘原地抽）。走到家或来了新命令才清。
 var returning_home: bool = false
@@ -560,7 +560,7 @@ func train_queue_size() -> int:
 
 ## 这个将领现在有**几个兵账**（= 队列里排着的 + 已经生成出来的附属兵）。
 ##
-## ★★ 「满员」的唯一判据就是它 —— 见 logic/general_ai.gd 与 faction_ai.gd：
+## ★★ 「满员」的唯一判据就是它 —— 见 logic/garrison_ai.gd 与 red_dot_ai.gd：
 ##   两边都用 `retinue_size() >= min_retinue` 判「补够了没有」，
 ##   各写一套「算不算满」迟早会漂开（一个看队列、一个不看，AI 就会永远补不满）。
 ## ★ 为什么两个都要算：「已经排上队、还在读条」的那几个**迟早会出来**，
@@ -572,7 +572,7 @@ func retinue_size(world) -> int:
 	return world.retinue_of(id, false).size() + train_queue_size()
 
 
-## 这个单位是不是「将领性（防御性）AI」管的驻防将领（见 logic/general_ai.gd）。
+## 这个单位是不是「将领性（防御性）AI」管的驻防将领（见 logic/garrison_ai.gd）。
 ## ★ 判据只有 garrison_zone_id 一处：地图写了 zone、或出生在某个区划里。
 func is_garrison() -> bool:
 	return garrison_zone_id >= 0

@@ -36,10 +36,15 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 MODE_SOLO = "solo"
 MODE_COOP = "coop"
 
-#: `factions[].ai` 的取值。
+#: `factions[].ai` 的取值（本轮口径，与 `logic/level.gd` 一致）。
 AI_NONE = "none"
-AI_FACTION = "faction"
-AI_GENERAL = "general"
+#: 阵地性 AI：附属一个区划（巡逻 / 无消耗招兵 / 濒死再起）。
+AI_GARRISON = "garrison"
+#: 红点性 AI：长冷却在指定区域刷一波满编将领、行军攻击目标点。
+AI_REDDOT = "reddot"
+#: 旧值（**只用于兼容读入**）：'faction' / 'general' 现在都归一成 'garrison'。
+AI_LEGACY_FACTION = "faction"
+AI_LEGACY_GENERAL = "general"
 
 #: `attack_target.kind` 的取值（不写这个键 = `None` = 「打离自己最近的敌方区划」）。
 TARGET_ZONE = "zone"
@@ -64,7 +69,7 @@ SEV_WARN = "warn"
 TARGET_KINDS: Tuple[str, ...] = (TARGET_ZONE, TARGET_POINT, TARGET_BUILDING, TARGET_BASE)
 
 #: `ai` 的三种取值（界面下拉用）。
-AI_KINDS: Tuple[str, ...] = (AI_NONE, AI_FACTION, AI_GENERAL)
+AI_KINDS: Tuple[str, ...] = (AI_NONE, AI_GARRISON, AI_REDDOT)
 
 #: `mode` 的两种取值。
 MODES: Tuple[str, ...] = (MODE_SOLO, MODE_COOP)
@@ -122,34 +127,37 @@ class FactionEntry:
     """关卡 `factions[]` 的一行 —— 「这一方在这一关里怎么打」。
 
     字段与 `logic/level.gd` 的 `_read_level_factions()` **逐字段对齐**：
-    `id / ai / base / color / resource_mult / start_food / start_gold /
-     attack_target / faction_ai / general_ai`。
+    `id / ai / base / color / attack_target / garrison_ai / reddot_ai / spawn_region`。
 
     ★ 多出来的 `name` / `color` 是 `merge_over_map()` 会读的两个字段
       （关卡新点名的阵营要靠它出现在阵营表里），不是运行时 AI 参数。
+
+    ⚠️ 本轮删掉了 `resource_mult` / `start_food` / `start_gold`（AI 不再有资源库）
+       与 `faction_ai` / `general_ai`（旧的两套 AI 参数）—— 换成 `garrison_ai` /
+       `reddot_ai`（按阵营覆盖）与 `spawn_region`（红点生成区域）。
     """
 
-    __slots__ = ("fid", "ai", "base", "resource_mult", "start_food", "start_gold",
-                 "attack_target", "faction_ai", "general_ai", "name", "color",
-                 "declared", "attack_target_raw")
+    __slots__ = ("fid", "ai", "base", "attack_target", "attack_target_raw",
+                 "garrison_ai", "reddot_ai", "spawn_region", "spawn_region_raw",
+                 "name", "color", "declared")
 
     def __init__(self, fid: str) -> None:
         self.fid = fid
         self.ai = AI_NONE
         self.base: Optional[Tuple[int, int]] = None
-        self.resource_mult = 1.0
-        self.start_food = 0.0
-        self.start_gold = 0.0
         #: 形状 {"kind": ..., ...}；None = 没写（运行时退回「打最近的敌方区划」）。
         self.attack_target: Optional[dict] = None
         #: `attack_target` 在源 JSON 里的**原样值**（`True` 表示「这个键出现过」）。
         #: ★ 为什么留着它：`attack_target: "4"` 这种**形状错**（不是对象）是校验第 10 条
         #:   要拦的一档，而规范化之后它就变成一个「kind 空」的字典、与「种类不认识」分不开了。
-        #:   留着原值，`attack_target_shape` 才报得准。
         self.attack_target_raw: Any = None
-        #: 覆盖 `config.ai.faction` / `config.ai.general` 的那几个键；None = 全部继承。
-        self.faction_ai: Optional[dict] = None
-        self.general_ai: Optional[dict] = None
+        #: 覆盖 `config.ai.garrison` / `config.ai.reddot` 的那几个键；None = 全部继承。
+        self.garrison_ai: Optional[dict] = None
+        self.reddot_ai: Optional[dict] = None
+        #: 红点 AI 的生成区域（形状与 `attack_target` 同构：kind = zone / point）；
+        #: None = 用这一方的出生点 + config 的默认半径。
+        self.spawn_region: Optional[dict] = None
+        self.spawn_region_raw: Any = None
         self.name = ""
         self.color = ""
         #: 「这一方在**这一关的 JSON 里**被点名了」—— 与「只是地图上划过」是两件事：
@@ -754,8 +762,8 @@ class ConfigInfo:
     """
 
     __slots__ = ("unit_types", "unit_names", "general_types",
-                 "general_names", "building_types", "zone_kinds", "ai_faction_cfg",
-                 "ai_general_cfg", "colors", "raw")
+                 "general_names", "building_types", "zone_kinds", "ai_garrison_cfg",
+                 "ai_reddot_cfg", "colors", "raw")
 
     def __init__(self) -> None:
         self.unit_types: List[str] = []
@@ -764,9 +772,9 @@ class ConfigInfo:
         self.general_names: List[str] = []
         self.building_types: List[str] = []
         self.zone_kinds: List[str] = []
-        #: `config.ai.faction` / `config.ai.general` —— 关卡「高级」区的**推荐值**。
-        self.ai_faction_cfg: Dict[str, Any] = {}
-        self.ai_general_cfg: Dict[str, Any] = {}
+        #: `config.ai.garrison` / `config.ai.reddot` —— 关卡「高级」区的**推荐值**。
+        self.ai_garrison_cfg: Dict[str, Any] = {}
+        self.ai_reddot_cfg: Dict[str, Any] = {}
         self.colors: Dict[str, Any] = {}
         self.raw: dict = {}
 
@@ -922,8 +930,8 @@ def load_config(project_dir: Any) -> ConfigInfo:
     info.zone_kinds = [str((z or {}).get("id", "")) for z in _as_list(zone_kind.get("list"))
                        if isinstance(z, dict)]
     ai = data.get("ai", {}) if isinstance(data.get("ai"), dict) else {}
-    info.ai_faction_cfg = dict(ai.get("faction", {})) if isinstance(ai.get("faction"), dict) else {}
-    info.ai_general_cfg = dict(ai.get("general", {})) if isinstance(ai.get("general"), dict) else {}
+    info.ai_garrison_cfg = dict(ai.get("garrison", {})) if isinstance(ai.get("garrison"), dict) else {}
+    info.ai_reddot_cfg = dict(ai.get("reddot", {})) if isinstance(ai.get("reddot"), dict) else {}
     info.colors = dict(data.get("colors", {})) if isinstance(data.get("colors"), dict) else {}
     return info
 
@@ -1156,9 +1164,6 @@ def _load_level_factions(raw: Any, lv: LevelModel) -> None:
         e = FactionEntry(fid)
         e.ai = normalize_ai(item.get("ai"))
         e.base = _as_point(item.get("base"))
-        e.resource_mult = _as_float(item.get("resource_mult"), 1.0)
-        e.start_food = _as_float(item.get("start_food"), 0.0)
-        e.start_gold = _as_float(item.get("start_gold"), 0.0)
         spec = item.get("attack_target")
         if isinstance(spec, dict) and spec:
             e.attack_target = normalize_target(spec)
@@ -1167,8 +1172,15 @@ def _load_level_factions(raw: Any, lv: LevelModel) -> None:
             # ★ 形状错（不是对象 / 是空对象）：留个痕迹给校验第 10 条，别静默吞掉
             e.attack_target = normalize_target(spec) if isinstance(spec, dict) else {"kind": ""}
             e.attack_target_raw = spec
-        e.faction_ai = _as_dict(item.get("faction_ai"))
-        e.general_ai = _as_dict(item.get("general_ai"))
+        e.garrison_ai = _as_dict(item.get("garrison_ai"))
+        e.reddot_ai = _as_dict(item.get("reddot_ai"))
+        region = item.get("spawn_region")
+        if isinstance(region, dict) and region:
+            e.spawn_region = normalize_target(region)
+            e.spawn_region_raw = region
+        elif "spawn_region" in item and region is not None:
+            e.spawn_region = normalize_target(region) if isinstance(region, dict) else {"kind": ""}
+            e.spawn_region_raw = region
         e.name = _as_str(item.get("name", ""), "")
         e.color = _as_str(item.get("color", ""), "")
         lv.factions.append(e)
@@ -1419,9 +1431,14 @@ _TERRAIN_BY_NAME = {"grass": ".", "forest": "^", "mountain": "#",
 
 
 def normalize_ai(value: Any) -> str:
-    """`ai` 字段：只认 `faction` / `general` / `none`；别的（含缺字段）→ `none`。"""
+    """`ai` 字段：认 `garrison` / `reddot` / `none`；旧值 `faction` / `general` 归一成
+    `garrison`；别的（含缺字段）→ `none`。"""
     s = _as_str(value, "").lower()
-    return s if s in AI_KINDS else AI_NONE
+    if s in AI_KINDS:
+        return s
+    if s in (AI_LEGACY_FACTION, AI_LEGACY_GENERAL):
+        return AI_GARRISON
+    return AI_NONE
 
 
 def normalize_mode(value: Any, fallback: str = MODE_SOLO) -> str:
@@ -1525,18 +1542,14 @@ def _faction_to_dict(e: FactionEntry) -> dict:
     out["ai"] = e.ai if e.ai in AI_KINDS else AI_NONE
     if e.base is not None:
         out["base"] = [int(e.base[0]), int(e.base[1])]
-    if abs(float(e.resource_mult) - 1.0) > 1e-9:
-        out["resource_mult"] = clean_number(e.resource_mult)
-    if abs(float(e.start_food)) > 1e-9:
-        out["start_food"] = clean_number(e.start_food)
-    if abs(float(e.start_gold)) > 1e-9:
-        out["start_gold"] = clean_number(e.start_gold)
     if e.attack_target:
         out["attack_target"] = _target_to_dict(e.attack_target)
-    if e.faction_ai:
-        out["faction_ai"] = _param_dict(e.faction_ai)
-    if e.general_ai:
-        out["general_ai"] = _param_dict(e.general_ai)
+    if e.garrison_ai:
+        out["garrison_ai"] = _param_dict(e.garrison_ai)
+    if e.reddot_ai:
+        out["reddot_ai"] = _param_dict(e.reddot_ai)
+    if e.spawn_region:
+        out["spawn_region"] = _target_to_dict(e.spawn_region)
     if e.name:
         out["name"] = e.name
     if e.color:
@@ -2107,8 +2120,8 @@ def _ck_objectives(add, lv: LevelModel, info: Optional[MapInfo]) -> None:
 
 def _ck_attack_targets(add, model: CampaignModel, lv: LevelModel,
                        info: Optional[MapInfo]) -> None:
-    """10/14/15/16 + overload_hint：进攻目标、自己人警告、缺省警告、AI 参数过载。"""
-    faction_ais = [e for e in lv.factions if e.ai == AI_FACTION]
+    """10/14/15：进攻目标（红点 AI 的行军目标）、自己人警告、缺省警告。"""
+    faction_ais = [e for e in lv.factions if e.ai == AI_REDDOT]
 
     # 10) 引用的区划 / 格 / 建筑 / 大本营必须存在且可通行
     for e in lv.factions:
@@ -2137,19 +2150,6 @@ def _ck_attack_targets(add, model: CampaignModel, lv: LevelModel,
             add(SEV_WARN, "attack_target_own_land",
                 "%s 的进攻目标 %s 是自己占的区划，确认是有意的吗"
                 % (e.fid, info.zone_label(zid) if info else zone_label(zid)))
-
-    # ★ 9.1 风险 4：出兵间隔很小 **且** 资源倍率很高 → 警告（**警告不是拦截**，
-    #   这是设计者的自由；编辑器只是把那个已知的坑指出来）。
-    #   阈值与文案取自 dev_plan_7 9.1：「这一方的出兵间隔 2s 且资源 3.0×，可能压不住」。
-    for e in faction_ais:
-        params = e.faction_ai or {}
-        repeat = params.get("attack_repeat_sec")
-        if not isinstance(repeat, (int, float)) or isinstance(repeat, bool):
-            continue
-        if float(repeat) <= 3.0 and float(e.resource_mult) >= 2.0:
-            add(SEV_WARN, "overload_hint",
-                "「%s」的出兵间隔 %s 秒且资源 %.1f×，可能压不住（一波接一波）"
-                % (e.fid, fmt_sec(float(repeat)), float(e.resource_mult)))
 
 
 def _ck_colors(add, model: CampaignModel, lv: LevelModel, info: Optional[MapInfo]) -> None:
@@ -2279,11 +2279,11 @@ def _ck_attack_target(add, lv: LevelModel, info: Optional[MapInfo], fid: str,
 
 
 def _ck_start_units(add, lv: LevelModel) -> None:
-    """12) 摆放里 `ai: "general"` 的项都必须有 zone。"""
+    """12) 摆放里 `ai: "garrison"` 的项都必须有 zone。"""
     for u in lv.start_units:
-        if u.ai == AI_GENERAL and int(u.zone) < 0:
+        if u.ai == AI_GARRISON and int(u.zone) < 0:
             add(SEV_BLOCK, "unit_general_no_zone",
-                "摆放的将领 (%d,%d) 挂了将领性 AI 却没有归属区划（它会原地发呆）"
+                "摆放的将领 (%d,%d) 挂了阵地性 AI 却没有归属区划（它会原地发呆）"
                 % (u.x, u.y))
         if not u.faction:
             add(SEV_BLOCK, "unit_no_faction", "摆放单位 (%d,%d) 没写 faction" % (u.x, u.y))

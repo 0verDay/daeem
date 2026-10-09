@@ -58,7 +58,7 @@ func _run() -> void:
 # 用户点出来的 bug（原话：「玩家可操控的单位/部队/建筑绝不附加阵营性 ai/将领性 ai，
 # 目前我看到新的战役中我自己的单位有自我的 ai 逻辑」）。
 # 机制：`unit.is_garrison()` 的判据就是 `garrison_zone_id >= 0`，而将领性 AI
-# （`logic/general_ai.gd`）**遍历全世界**的驻防单位 —— 不管那一方是不是玩家在操作。
+# （`logic/garrison_ai.gd`）**遍历全世界**的驻防单位 —— 不管那一方是不是玩家在操作。
 # 于是「关卡把守军写在玩家阵营名下 + 给了 `zone`」时，玩家自己的部队就被 AI 接管了。
 #
 # 这一节钉**机制**而不是钉某一关的数据：
@@ -202,7 +202,8 @@ func _group_ai_swap(cfg) -> void:
 	var w1 = _world(cfg, lv, "F1")
 	ok(w1 != null, "选蓝方能建出世界")
 	if w1 != null:
-		eq(_piloted(w1), ["F2"], "★ 选蓝方 → 红方 F2 由 AI 接管")
+		ok(_piloted(w1).has("F2") and not _piloted(w1).has("F1"),
+			"★ 选蓝方 → 红方 F2 由 AI 接管、本机 F1 **不在** AI 名单里（运行时摘掉）")
 		eq(w1.player_factions, ["F1"], "★ 本机操作的是 F1")
 		eq(w1.player_seats, ["F1", "F2"], "两个席位都在本机（两个家都要建出来）")
 		ok(w1.faction_bases.has("F2"), "★ 没被选中的红方照样有大本营（在地图上真的存在）")
@@ -214,7 +215,8 @@ func _group_ai_swap(cfg) -> void:
 		# ★ 蓝方挂的是**将领性（守家）AI** —— 它**不进** `ai_factions` 状态表
 		#   （那条路是「阵营性 AI」专用的，两者判据必须互斥，见 route.md 33.3）。
 		#   它的行为走**单位上的 `garrison_zone_id`**，所以这里要验的是那个。
-		eq(_piloted(w2), [], "★ 守家 AI 不建『阵营 AI 状态表』（判据互斥）")
+		ok(_piloted(w2).has("F1") and not _piloted(w2).has("F2"),
+			"★ 选红方 → 蓝方 F1 由 AI 接管、本机 F2 **不在** AI 名单里")
 		eq(w2.player_factions, ["F2"], "★ 本机操作的是 F2")
 		ok(w2.player_seats.has("F1") and w2.player_seats.has("F2"),
 			"席位名单里两边都在（两个家都要建出来；顺序 = 我选的那一方在前）")
@@ -373,15 +375,17 @@ func _group_base_loss(cfg) -> void:
 	eq(String(st["state"]), "lost", "★ 拆掉自己席位的家 → 判负")
 	eq(String(st["reason"]), ObjectiveRes.R_BASE_DESTROYED, "原因是 base_destroyed")
 
-	# ★ 只拆**对手**的家 ⇒ **不**判负（那不是玩家的家）
+	# ★ 只拆**对手**的家 ⇒ **不**判负（它不是玩家的家）。
+	#   ⚠️ 本轮起被 AI 接管的对手**没有大本营**（只有玩家席位才有），
+	#      所以先确认它没有家可拆 —— 判据（只看玩家席位）不变。
 	var w2 = _world(cfg, lv, "F1")
 	if w2 == null:
 		return
 	var st2: Dictionary = w2.objective_state
-	_kill_base(w2, "F2")
+	ok(w2.find_base_of("F2") == null, "★ 被 AI 接管的对手 F2 没有大本营（本轮口径）")
 	ObjectiveRes.update(w2, cfg, st2, 0.5)
 	eq(String(st2["state"]), "running",
-		"★ 只拆掉对手的家 → 不判负（它不在守方席位里）")
+		"★ 对手的家不在守方席位里 → 不判负")
 
 
 # ------------------------------------------------------------------
@@ -419,25 +423,17 @@ func _group_capture(cfg) -> void:
 func _group_ai_ally_acts(cfg) -> void:
 	var camp = CampaignRes.load_campaign(DEMO_DIR, cfg)
 	var lv = camp.level(LEVEL_ID)
-	# ★ 选蓝方 → 红方（阵营性 AI）应当自己招兵并出兵打过来
+	# ★ 本轮：没被选中的那一方由**阵地性 AI** 接管（附属于区划：巡逻 + 无消耗招兵）。
 	var w = _world(cfg, lv, "F1")
 	if w == null:
 		return
-	var before := _unit_count(w, "F2")
-	var peak := before
-	var launches := 0
-	var t := 0.0
-	while t < 240.0:
-		for e in w.tick(0.1):
-			var ev: Dictionary = e
-			if String(ev.get("type", "")) == "ai_attack_launched" and String(ev.get("faction", "")) == "F2":
-				launches += 1
-		t += 0.1
-		peak = maxi(peak, _unit_count(w, "F2"))
-	# ⚠️ 判据是**峰值**，不是终值：它的兵是**会被打光的**（实测 240 秒里 3 → 17 → 3）——
-	#   拿终值跟开局比会得出「它没招过兵」这种与事实相反的结论（这一条曾经就是这么假红的）。
-	ok(peak > before, "★ 红方 AI 会自己招兵（开局 %d → 峰值 %d 个单位）" % [before, peak])
-	ok(launches > 0, "★ 红方 AI 会自己出兵（240 秒里 %d 波）" % launches)
+	ok(_piloted(w).has("F2"), "★ 选蓝方时红方 F2 由 AI 接管")
+	# 它有将领（阵地性 AI 靠将领巡逻 / 招兵）。
+	var g2 := 0
+	for u in w.units:
+		if u.alive and String(u.faction) == "F2" and u.is_general():
+			g2 += 1
+	ok(g2 > 0, "红方有将领（%d 位）—— 阵地性 AI 靠它巡逻 / 招兵" % g2)
 
 
 # ------------------------------------------------------------------
@@ -474,11 +470,14 @@ func _roster_for(cfg, lv) -> Array:
 	return roster
 
 
-## 这一局**被 AI 接管**的阵营 id（顺序与 `world.ai_factions` 一致）。
+## 这一局**被 AI 接管**的阵营 id（= 非本机操作、且 ai_kind 不是 none 的那些）。
 func _piloted(w) -> Array:
 	var out: Array = []
-	for st in w.ai_factions:
-		out.append(String((st as Dictionary)["faction"]))
+	for f in w.factions:
+		if String(f) == String(w.my_faction):
+			continue
+		if w.ai_kind_of(String(f)) != "none":
+			out.append(String(f))
 	return out
 
 

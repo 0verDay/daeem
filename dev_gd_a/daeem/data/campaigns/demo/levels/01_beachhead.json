@@ -2,7 +2,7 @@
   "_comment": [
     "第一关 · 渡口。★★ 一关两个可玩阵营，各打各的：",
     "   蓝方（F1）守住 c1 150 秒；红方（F2）攻占 c1。选谁就取谁那条目标，",
-    "   没被选中的那一边由 AI 接管（蓝方 = 守家 AI，红方 = 阵营 AI 主动来打）。",
+    "   没被选中的那一边由 AI 接管（本轮全部是**阵地性 AI**：附属于区划、巡逻 + 无消耗招兵 / 再起）。",
     "c1 开局归蓝方；红方从北边（b1 + g1）南下进攻。",
     "★★ 开局部队（3 位将领 + 15 个附属兵）是**摆出来的**（start_units[].escort_of），",
     "   不再有任何全局缺省：编辑器画布上有什么，进游戏就有什么。",
@@ -24,26 +24,17 @@
   "factions": [
     {
       "id": "F1",
-      "ai": "general",
+      "ai": "garrison",
       "base": [
         4,
         5
       ],
-      "start_food": 100,
-      "start_gold": 100,
       "name": "蓝方",
-      "color": "#5ac8ff",
-      "faction_ai": {
-        "generals": 3,
-        "min_retinue": 3,
-        "min_ready": 2,
-        "ready_mult": 0.5,
-        "attack_repeat_sec": 20
-      }
+      "color": "#5ac8ff"
     },
     {
       "id": "GD1",
-      "ai": "general",
+      "ai": "garrison",
       "base": [
         4,
         5
@@ -53,25 +44,16 @@
     },
     {
       "id": "F2",
-      "ai": "faction",
+      "ai": "garrison",
       "base": [
         20,
         1
       ],
-      "start_food": 200,
-      "start_gold": 200,
       "name": "红方",
       "color": "#e05a5a",
       "attack_target": {
         "kind": "zone",
         "zone": 4
-      },
-      "faction_ai": {
-        "generals": 3,
-        "min_retinue": 3,
-        "min_ready": 3,
-        "ready_mult": 1.0,
-        "attack_repeat_sec": 20
       }
     }
   ],
@@ -245,7 +227,7 @@
       "kind": "enemy",
       "x": 4,
       "y": 10,
-      "ai": "general",
+      "ai": "garrison",
       "zone": 4,
       "name": "渡口守军"
     },
@@ -254,7 +236,7 @@
       "kind": "enemy",
       "x": 6,
       "y": 10,
-      "ai": "general",
+      "ai": "garrison",
       "zone": 4,
       "name": "渡口守军"
     },
@@ -263,7 +245,7 @@
       "kind": "enemy",
       "x": 5,
       "y": 11,
-      "ai": "general",
+      "ai": "garrison",
       "zone": 4,
       "name": "渡口守军"
     },

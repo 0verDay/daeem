@@ -341,8 +341,8 @@ def t_canvas(app, model) -> None:
     type_into(app, row(app, "选中的单位", "zone"), "3")
     eq(level(app).start_units[-1].zone, 3, "右栏改 zone")
     ai_combo = row(app, "选中的单位", "combo:ai")
-    pick_combo(app, ai_combo, "将领性")
-    eq(level(app).start_units[-1].ai, M.AI_GENERAL, "右栏把 AI 改成将领性")
+    pick_combo(app, ai_combo, "阵地性")
+    eq(level(app).start_units[-1].ai, M.AI_GARRISON, "右栏把 AI 改成阵地性")
     pick_combo(app, row(app, "选中的单位", "combo:ai"), "无")
     eq(level(app).start_units[-1].ai, M.AI_NONE, "改回「无」")
 
@@ -586,7 +586,7 @@ def t_target_mode(app, model) -> None:
 
     # 先清掉样例那一方的进攻目标，便于观察
     entry = lv.ensure_faction(f["player"])
-    entry.ai = M.AI_FACTION
+    entry.ai = M.AI_GARRISON
     entry.attack_target = None
     app.refresh_all()
     app.root.update()
@@ -641,7 +641,7 @@ def t_same_field(app, model) -> None:
     f = _facts(app)
     lv = level(app)
     info = app.map_info()
-    lv.ensure_faction(f["player"]).ai = M.AI_FACTION
+    lv.ensure_faction(f["player"]).ai = M.AI_GARRISON
     app.refresh_all()
 
     # ---- ③ 改：下拉选「指定区划」，再挑一个区划 ----

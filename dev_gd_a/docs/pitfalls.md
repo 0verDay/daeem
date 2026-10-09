@@ -610,6 +610,7 @@ Godot 自己打印的中文（`print`）在 `_console.exe` 下是正常的。
 
 **症状**：`target_building` 被设上又立刻被清掉，敌人站在原地一下也不拆。
 **根因**：`enemy_ai.update()` 里「已经贴到据点就 `stop()`」这一支写在**拆墙判定之前**。
+（★ 注：`enemy_ai.gd` 本轮已整个删除 —— 这一条留作**历史记录**。）
 敌人走进大本营相邻格后，每帧都被这一支先 `stop()` 按住，
 而 `combat.update_building_combat()` 那一帧又 `halt()` 一次 —— 两头一夹，谁也不动手。
 **修法**：「贴到据点就停」必须先问一句「我还欠着一段没拆的墙吗」；
@@ -2578,9 +2579,10 @@ const TMP_ROOT := "res://.tmp_campaign_tests"     # 不是 user://
 
 | 想问什么 | 该看什么 |
 |---|---|
-| 它在不在这一局里（有地 / 有基地 / 有摆放） | `world.factions` |
-| 它挂没挂 AI | `ai_entry_for(fid)["ai"] != "none"` |
-| 它建没建 AI 状态表 / 资源池 | `world.ai_factions` / `world.ai_resources` |
+| 它在不在这一局里（有地 / 有摆放） | `world.factions` |
+| 它挂没挂 AI / 挂哪种 | `ai_kind_of(fid) != "none"`（取值 `"garrison"` / `"reddot"`） |
+| 它有没有大本营 | `world.find_base_of(fid)` —— ★ 本轮 AI **没有大本营**，只有玩家席位有 |
+| 它有没有资源池 | `world.resource_pool_for(fid)` —— ★ AI 一律返回 `null` = 资源无限 |
 
 ### 6.10 ★ `hidden` / `placeholder` 这类新字段要被**地图编辑器原样带回**
 
@@ -2656,10 +2658,10 @@ const TMP_ROOT := "res://.tmp_campaign_tests"     # 不是 user://
 
 | 想问什么 | 该看什么 |
 |---|---|
-| 它挂没挂 AI | `world.ai_factions` 里没有这一方 / `ai_entry_for(fid)["ai"] == "none"` |
-| 它有没有 AI 的钱 | `world.ai_resources` 里没有这一方 |
-| AI 有没有给它下出兵命令 | 所有单位的 `has_attack_move` 都是 false（那是阵营 AI 唯一的出兵手段） |
-| 它有没有被将领性 AI 接管 | 所有单位的 `garrison_zone_id` 都是 -1 |
+| 它挂没挂 AI | `ai_kind_of(fid) == "none"` |
+| 它有没有资源池 | `resource_pool_for(fid) == null` —— ★ AI 一律 `null` = 无限 |
+| AI 有没有给它下出兵命令 | 红点性 AI 会下 `order_group_attack_move`（`has_attack_move` 为真）—— 阵地性 AI 不主动出征 |
+| 它有没有被阵地性 AI 接管 | 所有单位的 `garrison_zone_id` 都是 -1 |
 
 ---
 

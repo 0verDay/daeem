@@ -1640,35 +1640,32 @@ func spec_time_sec(id: String) -> float:
 
 
 # ------------------------------------------------------------------
-# AI（config.json 的 ai 段）—— 本轮新增的两种 AI
+# AI（config.json 的 ai 段）—— 两种 AI：阵地性 / 红点性
 #
 # ★ 与科技 / 升级 / 区划那几张表同一条规矩：**载入时整理好、之后只读**。
-#   原因一样 —— 这几个数在「每帧每 AI / 每帧每驻防将领」的路径上，
-#   不该每次都 split(".") 下潜一遍 JSON。
 #
-# ★★ 分工（两套 AI 的规则分别在 logic/faction_ai.gd 与 logic/general_ai.gd）：
-#   · `ai.factions[]` —— **阵营 AI**：附属在哪个阵营（id）、大本营摆哪（base）、
-#     资源倍率（resource_mult，难度旋钮）、开局资源（start_food / start_gold）。
-#     它是一张**列表**：一张图上可以挂好几个阵营 AI，各带各的资源库。
-#   · `ai.faction`    —— 阵营 AI 的**行为参数**（招几个将领 / 补到几个人 / 多久试一次
-#                        招兵与升级 / 派兵门槛）。所有阵营 AI 共用这一份（要各自不同
-#                        就改这里、让它按 id 分流 —— 现在没有必要）。
-#   · `ai.general`    —— **将领性（防御性）AI** 的行为参数（巡逻间隔 / 巡逻半径 /
-#                        脱战多久算闲 / 多久查一次招兵 / 满员门槛）。
+# ★★ 分工（规则分别在 logic/garrison_ai.gd 与 logic/red_dot_ai.gd）：
+#   · `ai.factions[]` —— 全局兜底名单：一张图上可以点名几个 AI 阵营（id + 出生锚点）。
+#     它们默认是**阵地性 AI**（缺省 `ai` 字段 = "garrison"）。
+#   · `ai.garrison`  —— 阵地性 AI 的行为参数（巡逻间隔 / 半径 / 脱战多久算闲 /
+#                        多久查一次招兵 / 满员门槛）。
+#   · `ai.reddot`    —— 红点性 AI 的行为参数（冷却 / 每波将领数 / 每位满编数 / 生成半径 / 波数）。
 # ⚠️ 表是空的（老配置 / 手改删掉这一节）时**两种 AI 都不跑** —— 行为与加它们之前一致。
+# ⚠️ AI 阵营**没有资源库、没有大本营**（本轮口径）：`ai.factions[].base` 只是
+#    「将领出生锚点」，不建任何建筑；红点阵营靠关卡 `spawn_region` 刷兵。
 # ------------------------------------------------------------------
 
 ## 「每帧每 AI」的读取口：AI 的阵营表（只读，别改返回的数组）
 var _ai_factions: Array = []
 ## AI 的行为参数（整理成同一层字典，省得每帧下潜 JSON）。
-var _ai_faction_cfg: Dictionary = {}
-var _ai_general_cfg: Dictionary = {}
+var _ai_garrison_cfg: Dictionary = {}
+var _ai_reddot_cfg: Dictionary = {}
 
 
 func _cache_ai() -> void:
 	_ai_factions = []
-	_ai_faction_cfg = {}
-	_ai_general_cfg = {}
+	_ai_garrison_cfg = {}
+	_ai_reddot_cfg = {}
 
 	var raw: Variant = get_path_value("ai.factions")
 	if typeof(raw) == TYPE_ARRAY:
@@ -1679,74 +1676,62 @@ func _cache_ai() -> void:
 			var id := String(src.get("id", ""))
 			if id == "":
 				continue
-			# ⚠️ 玩家席位（p1…p8）**不许**出现在这里：那会变成「AI 接管玩家的资源池」，
-			#    玩家自己的招募就会开始花 AI 的钱（两边其实是同一个池子）。
+			# ⚠️ 玩家席位（p1…p8）**不许**出现在这里：那会变成「AI 接管玩家的阵营」。
 			var base := Vector2i(-1, -1)
 			var b: Variant = src.get("base", null)
 			if typeof(b) == TYPE_ARRAY and (b as Array).size() >= 2:
 				base = Vector2i(int((b as Array)[0]), int((b as Array)[1]))
 			_ai_factions.append({
 				"id": id,
+				# 出生锚点（不是大本营建筑）：用来算将领站位，见 map.spawn_layout_for。
 				"base": base,
-				# ★ 难度旋钮：1.0 = 与玩家同速；2.0 = 两倍产出
-				"resource_mult": maxf(0.0, float(src.get("resource_mult", 1.0))),
-				"start_food": maxf(0.0, float(src.get("start_food", 0.0))),
-				"start_gold": maxf(0.0, float(src.get("start_gold", 0.0))),
+				# 缺省是阵地性 AI；允许在这里点名 reddot（一般由关卡点名，不写这里）。
+				"ai": String(src.get("ai", "garrison")),
 			})
 
-	_ai_faction_cfg = {
-		"generals": maxi(0, int(num("ai.faction.generals", 3.0))),
-		"min_retinue": maxi(0, int(num("ai.faction.min_retinue", 3.0))),
-		"recruit_cooldown_sec": maxf(0.0, num("ai.faction.recruit_cooldown_sec", 1.0)),
-		"upgrade_cooldown_sec": maxf(0.0, num("ai.faction.upgrade_cooldown_sec", 5.0)),
-		"upgrade_reserve_food": maxf(0.0, num("ai.faction.upgrade_reserve_food", 0.0)),
-		"upgrade_reserve_gold": maxf(0.0, num("ai.faction.upgrade_reserve_gold", 0.0)),
-		"ready_mult": num("ai.faction.ready_mult", 0.5),
-		"min_ready": maxi(1, int(num("ai.faction.min_ready", 2.0))),
-		"attack_repeat_sec": maxf(0.1, num("ai.faction.attack_repeat_sec", 6.0)),
-		# ★★ 再起预留（本轮新增）：AI 判断「付得起再起」时，除了 revive.cost
-		#    还要多留这么多钱 —— 0 = 只要付得起就再起（见 faction_ai._try_revive）。
-		#    与 upgrade_reserve_* 同一条思路：调大 = 更愿意保住将领而不是乱花钱。
-		"revive_reserve_food": maxf(0.0, num("ai.faction.revive_reserve_food", 0.0)),
-		"revive_reserve_gold": maxf(0.0, num("ai.faction.revive_reserve_gold", 0.0)),
-	}
-	_ai_general_cfg = {
-		"patrol_interval_sec": maxf(0.1, num("ai.general.patrol_interval_sec", 4.0)),
-		"patrol_leash_tiles": maxf(1.0, num("ai.general.patrol_leash_tiles", 1.0)),
-		"combat_idle_sec": maxf(0.0, num("ai.general.combat_idle_sec", 10.0)),
-		"retarget_cooldown_sec": maxf(0.0, num("ai.general.retarget_cooldown_sec", 5.0)),
-		"recruit_check_sec": maxf(0.1, num("ai.general.recruit_check_sec", 2.0)),
-		"min_retinue": maxi(0, int(num("ai.general.min_retinue", 3.0))),
+	_ai_garrison_cfg = {
+		"patrol_interval_sec": maxf(0.1, num("ai.garrison.patrol_interval_sec", 4.0)),
+		"patrol_leash_tiles": maxf(1.0, num("ai.garrison.patrol_leash_tiles", 1.0)),
+		"combat_idle_sec": maxf(0.0, num("ai.garrison.combat_idle_sec", 10.0)),
+		"retarget_cooldown_sec": maxf(0.0, num("ai.garrison.retarget_cooldown_sec", 5.0)),
+		"recruit_check_sec": maxf(0.1, num("ai.garrison.recruit_check_sec", 2.0)),
+		"min_retinue": maxi(0, int(num("ai.garrison.min_retinue", 3.0))),
 		# ★★ 巡逻路线（让同一个区划里的几位守将**不要挤在同一点**）：
 		#   · `patrol_points`：每位守将分到几个巡逻点（1 = 老行为：只去一个点）；
-		#   · `patrol_spread_tiles`：巡逻点之间最多相隔几格（限住巡逻范围，免得
-		#     一个将领的路线横跨整个区块、与别人的路线搅在一起）。
-		#   ★ 路线本身是**由单位 id 派生的固定种子**算出来的（确定性伪随机，见
-		#     logic/general_ai.gd 的 `_route_seed`）—— 看起来杂乱，但同一局每次
-		#     跑出来完全一样，存档 / 回放不会漂（dev_plan_7 3.10 那条硬要求）。
-		"patrol_points": maxi(1, int(num("ai.general.patrol_points", 3.0))),
-		"patrol_spread_tiles": maxf(1.0, num("ai.general.patrol_spread_tiles", 3.0)),
-		# ★★ 巡逻**带兵**（本轮新增，手玩报的 bug「将领巡逻、招出来的兵站着不动」）：
-		#   附属兵离带队将领超过这么多格就会被重新叫上（巡逻每一步都会检查一次）。
-		#   ⚠️ 不能太小：队形落点本身就有一格的间距（formation.spacing_scale），
-		#      卡到 1 格会让它们每一步都被重下一遍命令、永远在挤。
-		"patrol_retinue_leash_tiles": maxf(1.0, num("ai.general.patrol_retinue_leash_tiles", 3.0)),
+		#   · `patrol_spread_tiles`：巡逻点之间最多相隔几格。
+		#   ★ 路线本身是**由单位 id 派生的固定种子**算出来的（确定性伪随机）。
+		"patrol_points": maxi(1, int(num("ai.garrison.patrol_points", 3.0))),
+		"patrol_spread_tiles": maxf(1.0, num("ai.garrison.patrol_spread_tiles", 3.0)),
+		# ★★ 巡逻**带兵**：附属兵离带队将领超过这么多格就会被重新叫上。
+		"patrol_retinue_leash_tiles": maxf(1.0, num("ai.garrison.patrol_retinue_leash_tiles", 3.0)),
+	}
+	_ai_reddot_cfg = {
+		# 「冷却时间较长」：两波之间的间隔（秒）。
+		"cooldown_sec": maxf(0.1, num("ai.reddot.cooldown_sec", 120.0)),
+		# 每波刷几位将领。
+		"generals": maxi(1, int(num("ai.reddot.generals", 3.0))),
+		# 每位将领自带几个附属兵（「满编」）。
+		"retinue": maxi(0, int(num("ai.reddot.retinue", 4.0))),
+		# 生成区域缺省半径（格）。
+		"spawn_radius": maxf(0.0, num("ai.reddot.spawn_radius", 4.0)),
+		# 波数：0 = 无限（默认）；> 0 = 只刷这么多波。
+		"waves": maxi(0, int(num("ai.reddot.waves", 0.0))),
 	}
 
 
-## 全部「阵营 AI」条目（每项 {id, base, resource_mult, start_food, start_gold}；只读）
+## 全部「AI 阵营」条目（每项 {id, base, ai}；只读）
 func ai_factions() -> Array:
 	return _ai_factions
 
 
-## 阵营 AI 的行为参数（只读；键见 `_cache_ai()`）
-func ai_faction_cfg() -> Dictionary:
-	return _ai_faction_cfg
+## 阵地性 AI 的行为参数（只读；键见 `_cache_ai()`）
+func ai_garrison_cfg() -> Dictionary:
+	return _ai_garrison_cfg
 
 
-## 将领性（防御性）AI 的行为参数（只读）
-func ai_general_cfg() -> Dictionary:
-	return _ai_general_cfg
+## 红点性 AI 的行为参数（只读；键见 `_cache_ai()`）
+func ai_reddot_cfg() -> Dictionary:
+	return _ai_reddot_cfg
 
 
 ## 这个阵营是不是「由 AI 接管」的（单机 / 联机都能问：AI 只跑在权威侧）

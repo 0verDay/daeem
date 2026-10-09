@@ -392,9 +392,16 @@ func _test_map_outpost(cfg) -> void:
 		if b.owner == String(p["owner"]):
 			owner_ok += 1
 
-	eq(placed, prefab.size(), "★ 每一条预置建筑都真的建出来了（占格 / 山上会被静默跳过）")
+	# ★★ 本轮口径：地图里预置的 **AI 大本营不建**（只有玩家拥有大本营）——
+	#    期望的「建出来几条」要**扣掉**那些被跳过的 AI 大本营。
+	var expected := 0
+	for p in prefab:
+		if String(p["type"]) == "base" and not w.player_factions.has(String(p["owner"])):
+			continue
+		expected += 1
+	eq(placed, expected, "★ 每一条预置建筑都真的建出来了（AI 大本营除外，占格 / 山上会被静默跳过）")
 	eq(owner_ok, placed, "预置建筑的归属与地图里写的一致")
-	ok(kinds.has("base"), "预置据点里有大本营")
+	ok(not kinds.has("base"), "★ 预置据点里**没有**大本营（AI 的大本营已按本轮口径去掉）")
 	ok(kinds.has("tower"), "预置据点里有箭塔")
 	ok(kinds.has("wall"), "预置据点里有城墙")
 	ok(min_dist >= 6, "★ 预置据点离玩家大本营足够远（最近的一条 %d 格）" % min_dist)

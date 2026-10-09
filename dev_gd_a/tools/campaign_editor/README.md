@@ -70,7 +70,7 @@ python -m tools.campaign_editor --selftest
 |---|---|---|
 | **将领** | `kind: "general"` + `将领序号`（自动取「已有最大序号 + 1」） | 序号决定用哪一套将领数值（1 长枪兵 / 2 长弓兵 / 3 骑手） |
 | **附属兵** | 普通兵种 + **`escort_of`（属于第几位将领）** | 下拉里只有**这一方已经摆好的**将领 —— 先把将领摆下来 |
-| 单位 | 普通摆放单位（**不是**附属兵） | 例如守渡口的驻军：配 `zone` + 将领性 AI |
+| 单位 | 普通摆放单位（**不是**附属兵） | 例如守渡口的驻军：配 `zone` + 阵地性 AI |
 | 建筑 | 开局就立着的建筑 | |
 
 * 画布上**附属兵**画成绿色虚线连到它的将领，方块右上角带一个「属」字 —— 一眼看出哪个兵跟着谁。
@@ -118,12 +118,11 @@ python dev_gd_a/tools/campaign_editor --selftest
 
 | 字段 | 说明 |
 |---|---|
-| AI 类型 | 无（`none`）/ 阵营性（`faction`）/ 将领性（`general`） |
-| 大本营 | 关卡点位；留空 = 用地图的 `faction_bases` |
-| 资源倍率 | `resource_mult`：只乘**收入**（难度旋钮：2.0 = 两倍产出） |
-| 开局粮食 / 黄金 | 这一方资源池的初值 |
-| 进攻目标 | 最近敌方区划（缺省）/ 指定区划 / 指定格 / 指定建筑 / 某方的家 |
-| 高级 AI 参数 | 折叠区；**留空 = 继承 `config.json`**，旁边显示推荐值 |
+| AI 类型 | 无（`none`）/ 阵地性（`garrison`）/ 红点性（`reddot`） |
+| 大本营 | 关卡点位（★ AI **不建大本营**，这个点位只当出生锚点）；留空 = 用地图的 `faction_bases` |
+| 进攻目标 | **红点性 AI** 的行军目标：最近敌方区划（缺省）/ 指定区划 / 指定格 / 指定建筑 / 某方的家 |
+| 生成区域 | **红点性 AI** 每波刷将的地方：出生点（缺省）/ 指定区划 / 指定格 |
+| 高级 AI 参数 | 折叠区；**留空 = 继承 `config.json`**（`ai.garrison` / `ai.reddot`），旁边显示推荐值 |
 
 ★ **开局部队不在这一页摆**（也没有「这一方带几个兵」这种全局数字了）——
    它在 **④ 摆放页**里一个兵一个兵摆出来，见上一节与 ④。
@@ -215,21 +214,19 @@ python dev_gd_a/tools/campaign_editor --selftest
 
 | code | 判据 |
 |---|---|
-| `no_attack_target` | 有挂 `ai == "faction"` 的阵营，但一个都没写 `attack_target` |
-| `attack_target_own_land` | 某 AI 阵营的 `attack_target`（zone 型）指向自己占的区划 |
+| `no_attack_target` | 有挂 `ai == "reddot"`（红点性）的阵营，但一个都没写 `attack_target` |
+| `attack_target_own_land` | 红点性阵营的 `attack_target`（zone 型）指向自己占的区划 |
 | `ally_unknown` | `allies` 里出现未定义的阵营 id |
-| `overload_hint` | 某一方 `attack_repeat_sec <= 3` **且** `resource_mult >= 2.0`（「可能压不住」） |
 | **`escort_faction_no_general`** | ★ 某一方摆了附属兵却**一个将领都没摆**（运行时整个接管这一方 ⇒ 这些兵群龙无首） |
 
-`overload_hint` 来自 `dev_plan_7` 9.1 风险 4：出兵间隔很小 + 资源倍率很高 = 一波接一波。
-**是警告不是拦截** —— 那是设计者的自由，编辑器只把已知的坑指出来。
+★ 本轮**删掉了 `overload_hint`**：它绑的是旧「阵营 AI」的出兵间隔 + 资源倍率，两者都已不存在。
 
 ## 数据契约（改任何一处都要同步改逻辑层）
 
 * **LF 行尾、无 BOM**：写文件时 `encoding="utf-8"` + `newline="\n"`；读的时候宽容 `utf-8-sig`
   （Windows 记事本写出来的 UTF-8 常带 BOM，而 `json.loads` 见到 BOM 直接报错）。
-* **省略等于默认值的字段**：`resource_mult == 1.0` / `start_food == 0` / `base` 没写 /
-  `attack_target` 没写 / `start_units[].escort_of == -1` / `faction_ai` / `general_ai`
+* **省略等于默认值的字段**：`base` 没写 / `attack_target` 没写 /
+  `start_units[].escort_of == -1` / `garrison_ai` / `reddot_ai` / `spawn_region`
   为 `None` 时**都不写**。
 * ★★ 但 `start_units[]` 里**源文件写过**的键要原样写回去（`general_index` / `ai` / `zone`）：
   `{"general_index": 1}` 与「没写」在别人眼里是两件事。每个单位自己记一份 `declared`

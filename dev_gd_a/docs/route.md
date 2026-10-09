@@ -7,6 +7,11 @@
 > 原型阶段的旧版（HTML）**已从仓库删除**（见根目录 `README.md` 的 2026.9.20 条目，要看只能翻 git 历史）：
 > 它当年的 `README.md`（玩法）与 `docs/multiplayer.md`（联机设计）曾是**本项目玩法规则的权威说明** ——
 > 我们不重新发明规则，只换一套更合适的工程底座。
+>
+> ★★ **后续更新（AI 重做）**：本文里「阵营性 AI（`faction_ai.gd`）/ 将领性 AI
+> （`general_ai.gd`）/ `enemy_ai.gd`」已在后续一轮重做为 **阵地性 AI（`garrison_ai.gd`）**
+> 与 **红点性 AI（`red_dot_ai.gd`）**，AI 阵营不再有大本营 / 资源库。现状以
+> [`architecture.md`](architecture.md) 为准；本文相关旧描述当**历史**读。
 
 ---
 

@@ -58,8 +58,8 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from . import levelfile
 from . import model as model_mod
 from .model import (
-    AI_FACTION,
-    AI_GENERAL,
+    AI_GARRISON,
+    AI_REDDOT,
     AI_KINDS,
     AI_NONE,
     ESCORT_OF_KEY,
@@ -1812,21 +1812,17 @@ class EditorApp:
         entry = lv.ensure_faction(fid)
         if field == "ai":
             entry.ai = str(value)
-        elif field == "resource_mult":
-            entry.resource_mult = float(value)
-        elif field == "start_food":
-            entry.start_food = float(value)
-        elif field == "start_gold":
-            entry.start_gold = float(value)
+        elif field == "garrison_ai":
+            entry.garrison_ai = value
+        elif field == "reddot_ai":
+            entry.reddot_ai = value
+        elif field == "spawn_region":
+            entry.spawn_region = value
         elif field == "base":
             entry.base = value
         elif field == "color":
             entry.color = str(value)
             self.model.ensure_faction(fid, fid, str(value))["color"] = str(value)
-        elif field == "faction_ai":
-            entry.faction_ai = value
-        elif field == "general_ai":
-            entry.general_ai = value
         self._after_change()
 
     def set_attack_target(self, fid: str, spec: Optional[dict]) -> None:
@@ -2168,17 +2164,13 @@ class EditorApp:
                                                                         self._ai_value(text)))
             self._entry_cell(section, "大本营", e.base_label(),
                              lambda text, f=fid: self._set_base_text(f, text))
-            self._entry_cell(section, "资源倍率", "%g" % e.resource_mult,
-                             lambda text, f=fid: self._set_float(f, "resource_mult", text))
-            self._entry_cell(section, "开局粮食", "%g" % e.start_food,
-                             lambda text, f=fid: self._set_float(f, "start_food", text))
-            self._entry_cell(section, "开局黄金", "%g" % e.start_gold,
-                             lambda text, f=fid: self._set_float(f, "start_gold", text))
             # ---- ★★ 开局附属兵在这里摆（不在「阵营与AI」页，也不再由 config 决定）----
             self._hint(section, "★ 开局带几个附属兵：**去「摆放」页一个一个摆**（画笔选「附属兵」，"
                                 "放到地上并选它属于哪位将领）。没摆 = 这一关这一方开局没有附属兵；"
                                 "摆了任何附属兵 = 运行时**整个接管这一方**（连 3 位将领也得你自己摆）。")
             self._target_rows(section, fid, e)
+            if e.ai == AI_REDDOT:
+                self._spawn_rows(section, fid, e)
 
             # ---- 「高级」AI 参数（缺省 = 继承 config）----
             adv = tk.Frame(section, bg=UI["panel"])
@@ -2188,23 +2180,28 @@ class EditorApp:
             body = tk.Frame(section, bg=UI["panel"])
             body.pack(side="top", fill="x")
             body.visible = False                      # type: ignore[attr-defined]
-            defaults = ", ".join("%s=%s" % (k, v) for k, v in
-                                 sorted(self.config.ai_faction_cfg.items()))
-            self._hint(body, "阵营性 AI 推荐区间（缺省 = 继承 config）：%s" % (defaults or "（config 里没写）"))
-            fa = e.faction_ai or {}
-            for key in ("generals", "min_retinue", "min_ready", "ready_mult",
-                        "attack_repeat_sec", "recruit_cooldown_sec"):
-                inherit = self.config.ai_faction_cfg.get(key, "")
-                self._entry_cell(body, key, "" if key not in fa else "%g" % fa[key],
-                                 lambda text, f=fid, k=key: self._set_ai_param(f, "faction_ai",
+            gdefaults = ", ".join("%s=%s" % (k, v) for k, v in
+                                  sorted(self.config.ai_garrison_cfg.items()))
+            self._hint(body, "阵地性 AI 推荐区间（缺省 = 继承 config）：%s" % (gdefaults or "（config 里没写）"))
+            ga = e.garrison_ai or {}
+            for key in ("patrol_interval_sec", "patrol_leash_tiles", "combat_idle_sec",
+                        "retarget_cooldown_sec", "recruit_check_sec", "min_retinue"):
+                inherit = self.config.ai_garrison_cfg.get(key, "")
+                self._entry_cell(body, key, "" if key not in ga else "%g" % ga[key],
+                                 lambda text, f=fid, k=key: self._set_ai_param(f, "garrison_ai",
                                                                                k, text))
                 self._hint(body, "　缺省 = %s" % (inherit if inherit != "" else "（config 里没写）"))
-            gd = e.general_ai or {}
-            for key in ("patrol_interval_sec", "patrol_leash_tiles", "min_retinue"):
-                self._entry_cell(body, "将领·%s" % key,
-                                 "" if key not in gd else "%g" % gd[key],
-                                 lambda text, f=fid, k=key: self._set_ai_param(f, "general_ai",
+            rdefaults = ", ".join("%s=%s" % (k, v) for k, v in
+                                  sorted(self.config.ai_reddot_cfg.items()))
+            self._hint(body, "红点性 AI 推荐区间（缺省 = 继承 config）：%s" % (rdefaults or "（config 里没写）"))
+            ra = e.reddot_ai or {}
+            for key in ("cooldown_sec", "generals", "retinue", "spawn_radius", "waves"):
+                inherit = self.config.ai_reddot_cfg.get(key, "")
+                self._entry_cell(body, "红点·%s" % key,
+                                 "" if key not in ra else "%g" % ra[key],
+                                 lambda text, f=fid, k=key: self._set_ai_param(f, "reddot_ai",
                                                                                k, text))
+                self._hint(body, "　缺省 = %s" % (inherit if inherit != "" else "（config 里没写）"))
             self._button(section, "从这一关移除这一方",
                          lambda f=fid: self.remove_faction_entry(f),
                          bg="#3a2b2b").pack(anchor="w", pady=(6, 0))
@@ -2261,11 +2258,58 @@ class EditorApp:
             return
         self.set_attack_target(fid, {"kind": kind, "x": point[0], "y": point[1]})
 
+    def _spawn_rows(self, parent, fid: str, e: FactionEntry) -> None:
+        """红点生成区域：一个下拉 + 载荷（出生点缺省 / 指定区划 / 指定格）。"""
+        spec = e.spawn_region
+        kind = str(spec.get("kind", "")) if spec else ""
+        label = {"": "出生点（缺省）", TARGET_ZONE: "指定区划",
+                 TARGET_POINT: "指定格"}.get(kind, "不认识")
+        self._combo_cell(parent, "生成区域", label,
+                         ("出生点（缺省）", "指定区划", "指定格"),
+                         lambda text, f=fid: self._set_spawn_kind(f, text))
+        if kind == TARGET_ZONE:
+            self._combo_cell(parent, "　生成区划", self._zone_label(int(spec.get("zone", -1))),
+                             self._zone_choices(),
+                             lambda text, f=fid: self.set_spawn_region(
+                                 f, {"kind": TARGET_ZONE, "zone": self._zone_id_from_label(text)}))
+        elif kind == TARGET_POINT:
+            self._entry_cell(parent, "　中心 x,y",
+                             "%d,%d" % (int(spec.get("x", -1)), int(spec.get("y", -1))),
+                             lambda text, f=fid: self._set_spawn_point(f, text))
+        self._hint(parent, "留空 = 用这一方的出生点 + config 半径；红点每波在这里刷将领")
+
+    def _set_spawn_kind(self, fid: str, label: str) -> None:
+        if label.startswith("出生点"):
+            self.set_spawn_region(fid, None)
+        elif label == "指定区划":
+            info = self.map_info()
+            zid = info.zone_ids[0] if info is not None and info.zone_ids else -1
+            self.set_spawn_region(fid, {"kind": TARGET_ZONE, "zone": int(zid)})
+        else:
+            self.set_spawn_region(fid, {"kind": TARGET_POINT, "x": 0, "y": 0})
+
+    def _set_spawn_point(self, fid: str, text: str) -> None:
+        point = _parse_point(text)
+        if point is None:
+            self.status("坐标要写成 `x,y`")
+            self.refresh_all()
+            return
+        self.set_spawn_region(fid, {"kind": TARGET_POINT, "x": point[0], "y": point[1]})
+
+    def set_spawn_region(self, fid: str, spec: Optional[dict]) -> None:
+        """红点生成区域的唯一入口（与进攻目标同构的字段）。"""
+        lv = self.level()
+        if lv is None:
+            return
+        entry = lv.ensure_faction(fid)
+        entry.spawn_region = spec
+        self._after_change()
+
     def _ai_label(self, ai: str) -> str:
-        return {AI_NONE: "无", AI_FACTION: "阵营性", AI_GENERAL: "将领性"}.get(ai, "无")
+        return {AI_NONE: "无", AI_GARRISON: "阵地性", AI_REDDOT: "红点性"}.get(ai, "无")
 
     def _ai_value(self, label: str) -> str:
-        return {"无": AI_NONE, "阵营性": AI_FACTION, "将领性": AI_GENERAL}.get(label, AI_NONE)
+        return {"无": AI_NONE, "阵地性": AI_GARRISON, "红点性": AI_REDDOT}.get(label, AI_NONE)
 
     def _point_faction(self, fid: str) -> None:
         lv = self.level()

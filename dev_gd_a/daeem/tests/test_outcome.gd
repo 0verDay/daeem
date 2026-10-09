@@ -178,10 +178,10 @@ func _group_base(cfg) -> void:
 	#   （样例地图上已经没有 E1 这个第三方了）。判据不变：只拆敌人（非玩家席位）的家 ⇒ 不判负。
 	var w3 = _make_world(cfg, {"objectives": [{"kind": "hold_zone", "zone": OBJ_ZONE, "hold_sec": 100.0}]})
 	var st3: Dictionary = w3.objective_state
+	# ★ F2 是 AI 阵营 —— 本轮 AI **没有大本营**，它本来就没有家可拆。
+	#   这一条验的是「非玩家席位的大本营被拆不影响玩家」，所以先确认它没有家。
 	var eb = w3.find_base_of("F2")
-	ok(eb != null, "红方 F2 也有大本营")
-	if eb != null:
-		_kill_building(w3, eb)
+	ok(eb == null, "★ AI 阵营 F2 没有大本营（本轮口径）")
 	ObjectiveRes.update(w3, cfg, st3, 0.5)
 	eq(String(st3["state"]), "running", "拆敌方的家不判负（判据只看玩家席位）")
 

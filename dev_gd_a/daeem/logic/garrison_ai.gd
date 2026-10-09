@@ -1,30 +1,32 @@
-## general_ai.gd —— **将领性（防御性）AI**：附属在某个将领下的守将。
+## garrison_ai.gd —— **阵地性 AI**：附属在某个**区划**下的守将。
 ##
 ## 需求原文（逐条对照）：
-##   1. 「该类 AI 会附属在某个将领下，其没有资源库，没有大本营」
+##   1. 「该类 AI 会附属在一个区划下，其没有资源库，没有大本营」
 ##      → 状态全在**单位自己身上**（`garrison_zone_id` / `patrol_timer` /
 ##        `combat_idle_timer` / `garrison_recruit_timer`），不新建任何「AI 对象」，
-##        也不碰 world.resources。它不生产、不建造、不升级 —— 缺的东西就没有，
+##        也不碰 world 的资源表。它不生产、不建造、不升级 —— 缺的东西就没有，
 ##        不是「有但为 0」。
 ##   2. 「该类 AI 会有其归属的区划，且在其归属的区划中有时间间隔地巡逻」
-##      → 归属写在 `unit.garrison_zone_id`（地图 `units[].zone` 或出生格）；
-##        每 `ai.general.patrol_interval_sec` 秒朝**自己区划的中心**走一趟（往返巡逻）。
+##      → 归属写在 `unit.garrison_zone_id`（关卡 `start_units[].zone` 或出生格）；
+##        每 `ai.garrison.patrol_interval_sec` 秒朝**自己区划的中心**走一趟（往返巡逻）。
 ##   3. 「若其警戒到敌方单位会发动攻击，但不会追击超过一个区划」
 ##      → 交战本身交给 combat.gd（它已经有追击上限那一套）；本模块只补一条
 ##        **区划级**的硬约束：一旦脚踩进别人的区划（或离归属区划的中心太远），
 ##        当场脱战并走回去。见 `_out_of_garrison()`。
-##        ★ 配套：脱战之后拉起 `unit.retarget_cd`（`ai.general.retarget_cooldown_sec`）——
+##        ★ 配套：脱战之后拉起 `unit.retarget_cd`（`ai.garrison.retarget_cooldown_sec`）——
 ##          没有它的话 combat.gd 下一帧就把同一个敌人再锁一次，表现为原地抖动。
 ##   4. 「该类 AI 在脱战（没有攻击行为 10 秒后）且不满员的情况下会无资源消耗地招募单位
 ##        （或者可以认定该类 AI 资源无限）」
-##      → `combat_idle_timer` 连续 `ai.general.combat_idle_sec` 秒没有交战 → 调
+##      → `combat_idle_timer` 连续 `ai.garrison.combat_idle_sec` 秒没有交战 → 调
 ##        `world.start_recruit(kind, id, faction, free = true)`：
 ##        不扣粮食 / 黄金 / 人口（复用招募那一整套读条与队列）。
+##   5. ★★ 「保留将领的再起逻辑，当将领可以再起时无消耗地立刻执行再起（本轮口径）」
+##      → 每帧扫一遍 **AI 阵营的**濒死将领（`_tick_revive()`）：只要
+##        `revive_ready()`（血量回到门槛）且没在读条，当场 `world.start_revive()`。
+##        无消耗是因为 AI 阵营没有资源池（`resource_pool_for()` 返回 null = 无限）。
 ##
-## ★★ 为什么单独一个文件，而不是塞进 enemy_ai.gd：
-##   enemy_ai 干的是**完全相反**的事（没有目标就朝玩家大本营推进，走不到就拆墙）。
-##   两者判据互斥（本模块只管 `unit.is_garrison()`，enemy_ai 跳过它们），
-##   混在一个文件里迟早会出现「守将也在往玩家家跑」这种自相矛盾的画面。
+## ★★ 本模块是「阵地性 AI」—— 现在**所有** AI 阵营（原阵营性 + 原将领性）
+##    都用这一套：附属于区划、巡逻、无消耗招募。红点性 AI 见 `logic/red_dot_ai.gd`。
 ##
 ## ★ 每帧开销：只遍历 `world.units` 一次；重活儿（数附属兵、下单招募）
 ##   全部摊到几秒一次的计时器上（见 unit.retinue_size 的说明）。
@@ -35,6 +37,7 @@ extends RefCounted
 
 const ConfigRes = preload("res://logic/config.gd")
 const GridRes = preload("res://logic/grid.gd")
+const LevelRes = preload("res://logic/level.gd")
 ## 挑巡逻路线上的点时要用它判「这一格能不能站人」（与出生点 / 招募共用同一套判据）。
 const PathfinderRes = preload("res://logic/pathfinder.gd")
 ## ★★ 巡逻的**整队命令**走它（`order_group_attack_move`）—— 与玩家 / 阵营 AI 同一条路径，
@@ -47,9 +50,11 @@ const CommandProcessorRes = preload("res://logic/command_processor.gd")
 ## @param dt 本帧秒数。★ 必须由调用方传进来：world 上**没有** dt 字段，
 ##        而脱战计时 / 巡逻计时全靠它 —— 传 0 会让守将永远停在「刚脱战」那一帧。
 static func update(world, cfg: ConfigRes, dt: float) -> void:
+	# ★★ 再起与 dt 无关（只看血量门槛与是否在读条）—— 放在最前面，dt <= 0 时也照跑。
+	_tick_revive(world, cfg)
 	if dt <= 0.0:
 		return
-	var gc: Dictionary = cfg.ai_general_cfg()
+	var gc: Dictionary = cfg.ai_garrison_cfg()
 	var patrol_interval: float = float(gc["patrol_interval_sec"])
 	var leash: float = float(gc["patrol_leash_tiles"])
 	var idle_sec: float = float(gc["combat_idle_sec"])
@@ -314,7 +319,7 @@ static func _abandon_chase(world, cfg: ConfigRes, u, z, zone_count: int,
 	if not u.returning_home:
 		u.returning_home = true
 		_patrol_leader(world, cfg, u, z, zone_count)
-	u.patrol_timer = float(cfg.ai_general_cfg()["patrol_interval_sec"])
+	u.patrol_timer = float(cfg.ai_garrison_cfg()["patrol_interval_sec"])
 
 
 ## 追击中「原地不动」的累计与判定（由 `_catch_up_retinue` 顺带驱动，见它的 `dt`）。
@@ -502,7 +507,7 @@ static func _patrol_group(world, cfg: ConfigRes, u, pt: Vector2) -> void:
 static func _catch_up_retinue(world, cfg: ConfigRes, u, pt: Vector2, dt: float = 0.0) -> bool:
 	if dt > 0.0 and u.chasing and _track_chase_stuck(u, dt):
 		return true
-	var gc: Dictionary = cfg.ai_general_cfg()
+	var gc: Dictionary = cfg.ai_garrison_cfg()
 	var leash: float = float(gc.get("patrol_retinue_leash_tiles", 3.0))
 	var missing := false
 	for m in _retinue_of(world, u):
@@ -584,8 +589,8 @@ static func _build_route(world, cfg: ConfigRes, u, z, zone_count: int) -> Array[
 		return out
 	var rng := RandomNumberGenerator.new()
 	rng.seed = _route_seed(String(u.id), String(u.faction))
-	var want: int = maxi(1, int(cfg.ai_general_cfg().get("patrol_points", 3)))
-	var spread: float = maxf(1.0, float(cfg.ai_general_cfg().get("patrol_spread_tiles", 3.0)))
+	var want: int = maxi(1, int(cfg.ai_garrison_cfg().get("patrol_points", 3)))
+	var spread: float = maxf(1.0, float(cfg.ai_garrison_cfg().get("patrol_spread_tiles", 3.0)))
 
 	# 1) 先在自己那个扇区里挑（扇区序号由 **id 稳定派生**，见下）
 	var slice: Array = _sector_tiles(tiles, zone_count, _sector_of(u, zone_count))
@@ -735,3 +740,33 @@ static func _try_recruit(world, u, min_retinue: int) -> bool:
 		if kind == "":
 			return false
 	return world.start_recruit(kind, u.id, u.faction, true)
+
+
+## ★★ 让 **AI 阵营**的濒死将领「一够条件就再起」（本轮口径）。
+##
+## 需求原话：「保留将领的再起逻辑，当将领可以再起时，无消耗地立刻执行再起」。
+##
+## 三条件（逐条对应）：
+##   1. 是一位**将领**（`is_general()`）且属于 **AI 阵营**（`ai_kind_of` 是阵地性 / 红点性）；
+##   2. 正在**濒死**（`downed`）、且**还没在读条**（`revive_remaining <= 0`）；
+##   3. 血量已经回到门槛（`revive_ready()`，与玩家同一个 `revive.ready_ratio`）。
+##
+## ★ 走 `world.start_revive()` —— 与玩家点「再起」**同一条**路。无消耗是免费的：
+##   AI 阵营没有资源池（`resource_pool_for()` 返回 null = 无限），
+##   于是 `revive_reject_reason()` 里的 "cost" 那一关永远通过、也不扣任何东西。
+## ★ 一帧可以起多位（互不干扰），但每位最多一单 —— `revive_remaining > 0` 就跳过，
+##   不会对着同一位反复下单。
+static func _tick_revive(world, cfg: ConfigRes) -> void:
+	for u in world.units:
+		if not u.alive or not u.is_general():
+			continue
+		var kind: String = world.ai_kind_of(String(u.faction))
+		if kind != LevelRes.AI_GARRISON and kind != LevelRes.AI_REDDOT:
+			continue                        # 玩家 / 不挂 AI 的阵营不走这条路
+		if not u.is_downed():
+			continue
+		if u.revive_remaining > 0.0:
+			continue                        # 已经在读条了
+		if not u.revive_ready(cfg):
+			continue                        # 还没回到门槛
+		world.start_revive(String(u.id), String(u.faction))

@@ -49,6 +49,7 @@ func _run() -> void:
 	await _test_units_multimesh(cfg)
 	await _test_units_downed_decal(cfg)
 	await _test_buildings_multimesh(cfg)
+	await _test_zone_flag(cfg)
 	await _test_ground_bake(cfg)
 	await _test_camera_aim(cfg)
 	await _test_order_flags(cfg)
@@ -402,6 +403,14 @@ func _test_buildings_multimesh(cfg) -> void:
 	ok(game.buildings.mesh_batch_count <= game.buildings.instance_count,
 		"★ 建筑批次数不超过建筑数（%d ≤ %d）"
 		% [game.buildings.mesh_batch_count, game.buildings.instance_count])
+	# ★★ 有模型的类型必须**真的把网格加载进来**：加载不到 `_mesh_for` 返回 null ⇒
+	#    该类型静默不画（不退回方块）。这里钉住「城墙 / 箭塔 / 大本营 三个模型都在」。
+	for mt in BuildingViewRes.BUILDING_MODELS:
+		ok(game.buildings._model_meshes.get(mt, null) != null,
+			"★★ 模型类型 %s 的网格已加载（否则该类型静默不画）" % mt)
+	for mt in BuildingViewRes.BUILDING_MOVING_MODELS:
+		ok(game.buildings._moving_meshes.get(mt, null) != null,
+			"★★ 可动部件 %s 的网格已加载（旗面，否则旗子静默不画）" % mt)
 	# ★ 尺寸必须来自 `body_scale`（logic 的权威）：4 倍大的 body 应当得到 4 倍宽的方块
 	var b0 = null
 	for b in w.building_list:
@@ -410,13 +419,21 @@ func _test_buildings_multimesh(cfg) -> void:
 			break
 	if b0 != null:
 		var t: Transform3D = game.buildings._transform_of(b0)
+		var sz: Vector3 = t.basis.get_scale()
 		var expect_w: float = game.buildings.palette.cell_size() * b0.body_scale(cfg)
-		near(t.basis.get_scale().x, expect_w, 0.01,
+		near(sz.x, expect_w, 0.01,
 			"★ 建筑方块的宽 = 格宽 × body_scale（logic 的权威值）")
-		# 底边贴地：中心高度 = 高 / 2 + 一点抬起
-		var h: float = t.basis.get_scale().y
-		ok(t.origin.y > h * 0.5 - 0.01 and t.origin.y < h * 0.5 + 2.0,
-			"★ 建筑底边贴地（中心 y = %.2f，高 = %.2f）" % [t.origin.y, h])
+		# 底边贴地：方块的中心高度 = 高 / 2 + 抬起量；
+		# 模型自带底边（y = 0）且**等比缩放** ⇒ 中心就在抬起量上、高 = 宽。
+		# ★ 两种都要满足「底边落在同一个抬起量（0.6）」。
+		var bottom: float
+		if game.buildings._uses_model(String(b0.type)):
+			near(sz.y, expect_w, 0.01, "★ 模型等比缩放（高 = 宽 = 格宽 × body_scale）")
+			bottom = t.origin.y
+		else:
+			bottom = t.origin.y - sz.y * 0.5
+		near(bottom, 0.6, 0.01,
+			"★ 建筑底边贴地（底边 y = %.2f，类型 %s）" % [bottom, String(b0.type)])
 
 	# ★★ 建筑排序：shader 必须 `depth_draw_always`（透明管线里也写深度 ⇒ 近的挡住远的）。
 	#    写 ALPHA = 走透明管线，而透明管线默认不写深度 ⇒ 建筑会按「谁后画谁在上」乱序。
@@ -424,6 +441,10 @@ func _test_buildings_multimesh(cfg) -> void:
 		"★★ 建筑 shader 写了 depth_draw_always（否则近的建筑会被远的盖住 —— 用户报的 bug）")
 	ok(BuildingShaderRes.code.contains("INSTANCE_CUSTOM.g"),
 		"★ 建筑 shader 从每实例数据读淡出量(.g)")
+	# ★★ 立体感：场景无灯，shader 必须**自己按面法线做假光照**（读 NORMAL 算 shade），
+	#    否则每个面同色 ⇒ 退回「纯色剪影」的平面观感（用户报的）。
+	ok(BuildingShaderRes.code.contains("NORMAL") and BuildingShaderRes.code.contains("shade"),
+		"★★ 建筑 shader 走假光照（读 NORMAL 算 shade ⇒ 有立体感）")
 
 	# ★★ 单位靠近 ⇒ 建筑淡出（以建筑为中心 3x3 内有可见单位）
 	game.set_process(false)         # 冻住主循环，让计数确定
@@ -463,6 +484,74 @@ func _test_buildings_multimesh(cfg) -> void:
 			ok(false, "找不到可见单位来验淡出")
 	var fa: float = cfg.num("render.building_fade_alpha", 0.3)
 	ok(fa > 0.0 and fa < 1.0, "★ 建筑淡出的 alpha 在 (0,1) 之间（%.2f）" % fa)
+
+	game.queue_free()
+	await process_frame
+
+
+# ------------------------------------------------------------------
+# 五之二、区划中心的旗子动画：无人占领不画、占领时随进度上升、占领后升到顶
+# ------------------------------------------------------------------
+func _test_zone_flag(cfg) -> void:
+	var game = Game3DRes.new()
+	root.add_child(game)
+	await process_frame
+	if not game.start():
+		game.queue_free()
+		return
+	await process_frame
+	await process_frame
+	var w = game.world
+
+	# 找一栋区划中心建筑，反查它的区划
+	var b = null
+	for bb in w.building_list:
+		if bb.alive and String(bb.type) == "zone_center":
+			b = bb
+			break
+	ok(b != null, "地图里有区划中心建筑")
+	if b == null:
+		game.queue_free()
+		await process_frame
+		return
+	var z: Variant = w.zone_by_id(int(b.zone_id))
+	ok(z != null, "★ 区划中心能反查到它的区划（zone_id）")
+	if z == null:
+		game.queue_free()
+		await process_frame
+		return
+
+	# ① 无人占领 ⇒ 不画（旗杆上没有旗子）
+	z["owner"] = ""
+	z["capture_state"] = ""
+	z["capture_faction"] = ""
+	z["progress"] = 0.0
+	eq(float(game.buildings.zone_flag_state(b)["progress"]), 0.0,
+		"★ 无人占领 ⇒ progress = 0（不画旗子）")
+	game.buildings.sync()
+	var base_flags: int = game.buildings.flag_instance_count
+
+	# ② 正在占领 ⇒ progress = 占领进度；旗面从杆底随进度抬高
+	z["capture_state"] = "reading"
+	z["capture_faction"] = "p1"
+	z["progress"] = 0.5
+	near(float(game.buildings.zone_flag_state(b)["progress"]), 0.5, 1e-6,
+		"★ 占领中 ⇒ progress = 占领进度（0.5）")
+	var t0: Transform3D = game.buildings._flag_transform(b, 0.0)
+	var t1: Transform3D = game.buildings._flag_transform(b, 1.0)
+	ok(t1.origin.y > t0.origin.y, "★ 旗面随进度从杆底升到杆顶（y 变大）")
+	var k: float = game.buildings.palette.cell_size() * b.body_scale(cfg)
+	near(t0.origin.y, 0.6 + 0.12 * k, 0.01, "★ progress 0 时旗面底边在杆底")
+	near(t1.origin.y, 0.6 + (1.02 - 0.32) * k, 0.01, "★ progress 1 时旗面升到「杆顶 − 旗高」")
+	game.buildings.sync()
+	eq(game.buildings.flag_instance_count, base_flags + 1,
+		"★ 该区划转为占领中 ⇒ 恰好多画一面旗")
+
+	# ③ 已被占领 ⇒ 升到顶
+	z["owner"] = "p1"
+	z["capture_state"] = ""
+	near(float(game.buildings.zone_flag_state(b)["progress"]), 1.0, 1e-6,
+		"★ 已被占领 ⇒ 旗子升到顶（progress = 1）")
 
 	game.queue_free()
 	await process_frame

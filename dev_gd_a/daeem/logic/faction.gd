@@ -32,7 +32,7 @@ const DEFAULT_FACTION := "p1"
 ## NPC 阵营（测试敌人）
 const NPC_FACTION := "enemy"
 
-## ★★ 阵营 AI 的默认阵营 id（本轮新增，见 logic/faction_ai.gd 与 config.ai.factions）。
+## ★★ 阵营 AI 的默认阵营 id（本轮新增，见 logic/red_dot_ai.gd 与 config.ai.factions）。
 ##
 ## ★ 为什么需要一个新的 id、而不是复用 'enemy'：
 ##   'enemy' 是**地图上那批测试敌人**（守军 + 巡逻兵）的阵营，它们跑的是

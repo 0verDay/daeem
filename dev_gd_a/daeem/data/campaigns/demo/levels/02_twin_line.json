@@ -30,8 +30,6 @@
         20,
         1
       ],
-      "start_food": 100,
-      "start_gold": 100,
       "color": "#ffd166"
     },
     {
@@ -41,8 +39,6 @@
         2,
         2
       ],
-      "start_food": 100,
-      "start_gold": 100,
       "color": "#5ac8ff"
     }
   ],

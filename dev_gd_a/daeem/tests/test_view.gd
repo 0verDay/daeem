@@ -573,12 +573,13 @@ func _test_zoom_direction(cfg, game) -> void:
 	ok(game.zoom > z1, "★ 向下滚 = 拉远（相机距离倍率变大）")
 
 	# 上下限必须被夹住（不能无限拉近 / 拉远）
+	# ★ 数值钉住 `game_scene3d.ZOOM_MIN` / `ZOOM_MAX`（需求：视野缩到原来的一半 ⇒ 0.35/3.0 各 ×0.5）。
 	for i in 60:
 		input_ctrl.handle_mouse_button(up)
-	ok(game.zoom >= 0.35 - 1e-6, "★ 一直往上滚 = 夹在距离下限（最紧视野）")
+	ok(game.zoom >= 0.175 - 1e-6, "★ 一直往上滚 = 夹在距离下限（最紧视野）")
 	for i in 120:
 		input_ctrl.handle_mouse_button(down)
-	ok(game.zoom <= 3.0 + 1e-6, "★ 一直往下滚 = 夹在距离上限（最远视野）")
+	ok(game.zoom <= 1.5 + 1e-6, "★ 一直往下滚 = 夹在距离上限（最远视野）")
 
 
 ## 视野固定：最远视野确实比最紧视野看到更多（需求：给玩家一个缩放上限 + 下限）。

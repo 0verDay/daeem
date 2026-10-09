@@ -63,10 +63,16 @@ const OBJ_FIELD_FOR := "for"
 ## 额外的失败条件种类：第一批**只有**这一种（大本营被拆那条是常开的，不写在数据里）
 const FAIL_ZONE_LOST := "zone_lost"
 
-## `factions[].ai` 的取值。
-const AI_FACTION := "faction"
-const AI_GENERAL := "general"
+## `factions[].ai` 的取值（本轮口径）。
+##   · `garrison` = **阵地性 AI**（附属一个区划：巡逻 / 无消耗招兵 / 濒死再起）；
+##   · `reddot`   = **红点性 AI**（长冷却在指定区域刷一波满编将领、行军攻击目标点）；
+##   · `none`     = 这一方这一局不动。
+const AI_GARRISON := "garrison"
+const AI_REDDOT := "reddot"
 const AI_NONE := "none"
+## 旧值（**只用于兼容读入**）：'faction' / 'general' 现在都归一成 'garrison'。
+const AI_LEGACY_FACTION := "faction"
+const AI_LEGACY_GENERAL := "general"
 
 ## `attack_target.kind` 的取值（见 dev_plan_7 2.4）。
 const TARGET_ZONE := "zone"
@@ -288,13 +294,11 @@ func rosters() -> Array:
 
 ## 这一方在这一关里的参展配置（没写就返回一个「全都是缺省」的字典）。
 ##
-## 返回 {id, ai, base: Vector2i(-1,-1), resource_mult, start_food, start_gold,
-##       attack_target: Variant, faction_ai: Variant, general_ai: Variant,
-##       color, declared: bool}
+## 返回 {id, ai, base: Vector2i(-1,-1), attack_target: Variant, garrison_ai: Variant,
+##       reddot_ai: Variant, spawn_region: Variant, color, declared: bool}
 ##
-## ⚠️ 本轮**删掉了** `general_escort` 键（连同 `unit.general.escort` 的全局缺省）：
-##    开局附属兵不再是「这一方每位将领带几个」，而是**逐兵摆出来的坐标**
-##    （`start_units[].escort_of`，见 `escort_leader_index()`）。
+## ⚠️ 本轮**删掉了** `general_escort`、`resource_mult`、`start_food`、`start_gold` 几个键：
+##    AI 阵营不再有资源库（`start_*` 无用），难度也不再靠资源倍率。
 func faction_config(fid: String) -> Dictionary:
 	for e in faction_meta:
 		if String((e as Dictionary)["id"]) == fid:
@@ -302,9 +306,9 @@ func faction_config(fid: String) -> Dictionary:
 			d["declared"] = true
 			return d
 	return {
-		"id": fid, "ai": AI_NONE, "base": Vector2i(-1, -1), "resource_mult": 1.0,
-		"start_food": 0.0, "start_gold": 0.0, "attack_target": null,
-		"faction_ai": null, "general_ai": null, "declared": false,
+		"id": fid, "ai": AI_NONE, "base": Vector2i(-1, -1),
+		"attack_target": null, "garrison_ai": null, "reddot_ai": null,
+		"spawn_region": null, "declared": false,
 	}
 
 
@@ -587,7 +591,7 @@ func merge_over_map(config_ai: Array = []) -> Dictionary:
 ##      的行为逐位不变；
 ##   2. 关卡写了 `ai: "none"` 的阵营：**不进**这张表（明确关掉 AI，哪怕 config 里有它）；
 ##   3. 关卡写 `ai: "general"` 的阵营：进表但 `ai == "general"` ⇒ 不建阵营 AI
-##      （那一方靠单位上的**将领性 AI** 驱动，见 `logic/general_ai.gd`）；
+##      （那一方靠单位上的**将领性 AI** 驱动，见 `logic/garrison_ai.gd`）；
 ##   4. ★ `source` 字段标出这一条是哪来的（"level" / "map" / "config"）——
 ##      `world` 靠它决定「这一方要不要进这一局的名单」（见 `world._merged_ai_roster`）。
 ##      没有它的话，「关卡只点名了 E1，config 里的另一个 AI 阵营要不要一起进场」
@@ -618,16 +622,14 @@ func merged_ai_factions(config_ai: Array = []) -> Array:
 			"id": fid,
 			"ai": ai,
 			"base": base,
-			"resource_mult": float((e as Dictionary).get("resource_mult", 1.0)),
-			"start_food": float((e as Dictionary).get("start_food", 0.0)),
-			"start_gold": float((e as Dictionary).get("start_gold", 0.0)),
 			"attack_target": (e as Dictionary).get("attack_target", null),
-			"faction_ai": (e as Dictionary).get("faction_ai", null),
-			"general_ai": (e as Dictionary).get("general_ai", null),
-			# ⚠️ 本轮**删掉了** `"general_escort"` 这个键：编制不再是「这一方每位将领
-			#    带几个兵」，而是**逐兵摆出来的坐标**（`start_units[].escort_of`）——
-			#    它属于**摆放**，不属于 AI 名单。读取请走
-			#    `Level.escort_leader_index()` / `world.escort_target_of()`。
+			# 阵地性 AI 的按阵营覆盖（缺省 = config 的 ai.garrison）。
+			"garrison_ai": (e as Dictionary).get("garrison_ai", null),
+			# 红点性 AI 的按阵营覆盖 + 生成区域（缺省 = config 的 ai.reddot / 出生点）。
+			"reddot_ai": (e as Dictionary).get("reddot_ai", null),
+			"spawn_region": (e as Dictionary).get("spawn_region", null),
+			# ⚠️ 本轮**删掉了** `resource_mult` / `start_food` / `start_gold` 三个键
+			#    （AI 阵营不再有资源库）与 `general_escort`（编制改由 start_units 逐兵摆）。
 			"from_level": true,
 			"source": "level",
 		})
@@ -644,8 +646,7 @@ func merged_ai_factions(config_ai: Array = []) -> Array:
 			"id": mid,
 			"ai": AI_NONE,
 			"base": _map_base(mid),
-			"resource_mult": 1.0, "start_food": 0.0, "start_gold": 0.0,
-			"attack_target": null, "faction_ai": null, "general_ai": null,
+			"attack_target": null, "garrison_ai": null, "reddot_ai": null, "spawn_region": null,
 			# 地图来的条目当然没有摆放数据（摆放是关卡数据）。
 			"from_level": false,
 			"source": "map",
@@ -660,14 +661,9 @@ func merged_ai_factions(config_ai: Array = []) -> Array:
 		seen[cid] = true
 		out.append({
 			"id": cid,
-			"ai": AI_FACTION,
+			"ai": String(ce.get("ai", AI_GARRISON)),
 			"base": ce.get("base", Vector2i(-1, -1)),
-			"resource_mult": float(ce.get("resource_mult", 1.0)),
-			"start_food": float(ce.get("start_food", 0.0)),
-			"start_gold": float(ce.get("start_gold", 0.0)),
-			"attack_target": null,
-			"faction_ai": null,
-			"general_ai": null,
+			"attack_target": null, "garrison_ai": null, "reddot_ai": null, "spawn_region": null,
 			# config 来的条目当然没有摆放数据（摆放是关卡数据）。
 			"from_level": false,
 			"source": "config",
@@ -675,11 +671,11 @@ func merged_ai_factions(config_ai: Array = []) -> Array:
 	return out
 
 
-## 这一关合并之后到底给哪几方挂阵营 AI（= 名单里 `ai == "faction"` 的那些）。
-func faction_ai_ids(config_ai: Array = []) -> Array:
+## 这一关合并之后到底给哪几方挂红点 AI（= 名单里 `ai == "reddot"` 的那些）。
+func reddot_ai_ids(config_ai: Array = []) -> Array:
 	var out: Array = []
 	for e in merged_ai_factions(config_ai):
-		if String((e as Dictionary)["ai"]) == AI_FACTION:
+		if String((e as Dictionary)["ai"]) == AI_REDDOT:
 			out.append(String((e as Dictionary)["id"]))
 	return out
 
@@ -850,7 +846,7 @@ func _effective_ai_list(config_ai: Array = []) -> Array:
 		var b3: Vector2i = _map_base(fid3)
 		if b3.x < 0:
 			b3 = it.get("base", Vector2i(-1, -1))
-		out.append({"id": fid3, "ai": AI_FACTION, "base": b3, "exempt_base": false})
+		out.append({"id": fid3, "ai": AI_GARRISON, "base": b3, "exempt_base": false})
 	return out
 
 
@@ -1067,7 +1063,7 @@ func _ck_ai_assign(config_ai: Array) -> void:
 		var src := String(it2.get("source", ""))
 		if src == "map" or src == "config":
 			continue
-		if String(it2.get("ai", AI_NONE)) == AI_FACTION:
+		if String(it2.get("ai", AI_NONE)) == AI_REDDOT:
 			faction_ais.append(it2)
 	if faction_ais.size() > 0:
 		var any_target := false
@@ -1077,7 +1073,7 @@ func _ck_ai_assign(config_ai: Array) -> void:
 				break
 		if not any_target:
 			_add(SEV_WARN, "no_attack_target",
-				"挂着阵营 AI 的阵营一个都没写进攻目标：它们会各自去打「离自己最近的敌方区划」")
+				"挂着红点 AI 的阵营一个都没写行军目标：它们会各自去打「离自己最近的敌方区划」")
 
 	# 14) 某个 AI 阵营的进攻目标指向自己的地 → 警告（可能是笔误，也可能是故意的）
 	for item in faction_ais:
@@ -1118,9 +1114,9 @@ func _ck_ai_assign(config_ai: Array) -> void:
 func _ck_start_units() -> void:
 	for u in start_units:
 		var ud: Dictionary = u
-		if String(ud.get("ai", AI_NONE)) == AI_GENERAL and int(ud.get("zone", -1)) < 0:
+		if String(ud.get("ai", AI_NONE)) == AI_GARRISON and int(ud.get("zone", -1)) < 0:
 			_add(SEV_BLOCK, "unit_general_no_zone",
-				"摆放的将领 (%d,%d) 挂了将领性 AI 却没有归属区划（它会原地发呆）"
+				"摆放的将领 (%d,%d) 挂了阵地性 AI 却没有归属区划（它会原地发呆）"
 				% [int(ud["x"]), int(ud["y"])])
 		var fid := String(ud.get("faction", ""))
 		if fid == "":
@@ -1394,35 +1390,39 @@ static func _read_level_factions(v: Variant) -> Array:
 			# ★ 阵营颜色（`#rrggbb` / `rgba(...)`）：关卡可以给**这一关**的某一方换个颜色。
 			#   缺省是空串 = 「这一关没提」，于是用 `campaign.json` 里那一份。
 			"color": String(d.get("color", "")).strip_edges(),
-			"resource_mult": _num(d.get("resource_mult", null), 1.0),
-			"start_food": _num(d.get("start_food", null), 0.0),
-			"start_gold": _num(d.get("start_gold", null), 0.0),
-			"attack_target": null,
-			"faction_ai": null,
-			"general_ai": null,
-			# ⚠️ 本轮删掉了 `general_escort`（逐将开局编制）：开局附属兵改由
-			#    `start_units[].escort_of` **逐兵摆出来**，这里不再有那一层配置。
+			# ⚠️ 本轮删掉了 `resource_mult` / `start_food` / `start_gold`（AI 不再有资源库）
+			#    与 `faction_ai` / `general_ai`（旧的两套 AI 参数）—— 改成
+			#    `garrison_ai`（阵地性按阵营覆盖）/ `reddot_ai`（红点性按阵营覆盖）/
+			#    `spawn_region`（红点生成区域）。
+			"attack_target": null, "garrison_ai": null, "reddot_ai": null, "spawn_region": null,
 		}
 		var spec: Variant = d.get("attack_target", null)
 		if typeof(spec) == TYPE_DICTIONARY:
 			entry["attack_target"] = _read_attack_target(spec)
-		var fa: Variant = d.get("faction_ai", null)
-		if typeof(fa) == TYPE_DICTIONARY:
-			entry["faction_ai"] = (fa as Dictionary).duplicate(true)
-		var ga: Variant = d.get("general_ai", null)
+		var ga: Variant = d.get("garrison_ai", null)
 		if typeof(ga) == TYPE_DICTIONARY:
-			entry["general_ai"] = (ga as Dictionary).duplicate(true)
+			entry["garrison_ai"] = (ga as Dictionary).duplicate(true)
+		var ra: Variant = d.get("reddot_ai", null)
+		if typeof(ra) == TYPE_DICTIONARY:
+			entry["reddot_ai"] = (ra as Dictionary).duplicate(true)
+		# 生成区域与 `attack_target` 同形（kind = zone / point）。
+		var sr: Variant = d.get("spawn_region", null)
+		if typeof(sr) == TYPE_DICTIONARY:
+			entry["spawn_region"] = _read_attack_target(sr)
 		out.append(entry)
 	return out
 
 
-## `ai` 字段：只认 faction / general / none；别的（含缺字段）→ none，并留一条痕迹。
+## `ai` 字段：认 garrison / reddot / none；旧值 faction / general 归一成 garrison；
+## 别的（含缺字段）→ none。
 static func _ai_kind(v: Variant) -> String:
 	if typeof(v) != TYPE_STRING:
 		return AI_NONE
 	var s := String(v).strip_edges().to_lower()
-	if s == AI_FACTION or s == AI_GENERAL or s == AI_NONE:
+	if s == AI_GARRISON or s == AI_REDDOT or s == AI_NONE:
 		return s
+	if s == AI_LEGACY_FACTION or s == AI_LEGACY_GENERAL:
+		return AI_GARRISON
 	return AI_NONE
 
 

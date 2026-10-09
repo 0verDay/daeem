@@ -121,15 +121,16 @@ dev_gd_a/daeem/
 │   │                             #     能做哪几档由**区划种类**（config.zone_kind.list[].specs）决定
 │   │                             #     两者都是**读条**（复用招募那块面板）、入队即扣费、可取消退款
 │   ├── combat.gd                 #   战斗结算与事件（索敌 / 开火 / 拆建筑）
-│   ├── enemy_ai.gd               #   调试用「测试敌人」的推进 AI（朝玩家据点走、拆挡路的墙）
-│   ├── faction_ai.gd             #   ★★ **阵营性 AI**（本轮新增）：附属在某个阵营下，
-│   │                             #     有**自己的资源库**（world.ai_resources，与玩家分开），
-│   │                             #     资源 = 占领区划产能 × resource_mult；四段资源规划
-│   │                             #     （招将 → 招兵 → 升级 → 出兵），满员后行军攻击敌方区划中心
-│   ├── general_ai.gd             #   ★★ **将领性（防御性）AI**（本轮新增）：附属在某个将领下，
-│   │                             #     **没有资源库、没有大本营**；在**归属区划**里按间隔巡逻，
-│   │                             #     不追出一个区划（追出去当场脱战 + 再战冷却），
-│   │                             #     脱战 10 秒且不满员时**无消耗**招兵（free = true）
+│   ├── garrison_ai.gd            #   ★★ **阵地性 AI**（本轮重做；原 general_ai.gd）：
+│   │                             #     附属在一个**区划**下（state 挂在单位身上），
+│   │                             #     在归属区划里按间隔巡逻、不追出一个区划（追出去当场脱战 + 再战冷却），
+│   │                             #     脱战满 combat_idle_sec 且不满员时**无消耗**招兵（free = true）；
+│   │                             #     将领濒死且血量回门槛 → **无消耗立刻再起**（_tick_revive）
+│   ├── red_dot_ai.gd             #   ★★ **红点性 AI**（本轮新增；替代原 faction_ai.gd）：
+│   │                             #     按长冷却（ai.reddot.cooldown_sec）在 spawn_region 刷一波
+│   │                             #     **满编**将领（generals × retinue），带整队向 attack_target 行军
+│   │                             #     （走玩家同一条 order_group_attack_move）
+│   │                             #   ★ 旧的 enemy_ai.gd（测试敌人推进 AI）本轮**整个删除**
 │   ├── command_processor.gd      #   ★ 命令的唯一入口（move / build / demolish）
 │   ├── snapshot.gd               #   ★ to_snapshot / apply_snapshot（本轮用于调试，将来是网络包体）
 │   ├── crowd/                    #   ★ 群体碰撞的 C# 内核（1000 单位群编的性能前提）
@@ -138,7 +139,7 @@ dev_gd_a/daeem/
 │   │   └── crowd_bridge.gd       #     ★ logic ↔ 内核的**唯一**接口：建表 + 批量编解码 + 回退
 │   └── world.gd                  #   世界容器：持有 units / buildings / zones / tech / upgrade，
 │                                 #   推进 tick()；★ 也持有 AI 的权威状态
-│                                 #   （`ai_resources` / `ai_factions` / `with_ai`）
+│                                 #   （`ai_roster_cfg` / `reddot_states` / `with_ai`）
 ├── daeem.csproj                  # C# 工程（Godot.NET.Sdk）。★ 引擎必须用 mono(.NET) 版
 ├── NuGet.config                  # 本地包源（引擎自带 nupkgs；本机没有外网到 nuget.org）
 ├── view/                         # 渲染：Node2D / Control，禁止改逻辑状态
@@ -462,19 +463,19 @@ Godot 里 DPR 由引擎处理，**但下面三条要原样继承**：
 | 区块（`owner` / `progress_by`） | `logic/zone.gd` | **每阵营独立进度**，不要退回单一 `progress` |
 | 区划**中心** / 产能 / 人口 / **人口上限** | `logic/zone.gd`（区块字典的 `center` / `production` / `population` / `population_cap`）；中心那一格上另有一栋 `TYPE_ZONE_CENTER` 建筑 | 中心、产能与**人口上限**都来自地图 JSON（上限缺字段 = 1，见 route.md 16.1）；人口是**运行时累积**的，每区划各算各的，**涨到上限就停**（见 route.md 14.5 / 16.1）；目前**唯一的消耗**是招募（每个单位扣将领所在区划 1 人口） |
 | 资源、己方地块数 | `logic/economy.gd` | 招募的扣费**不受** `economy.enabled` 影响（那个开关只管建造免费） |
-| ★★ **NPC / AI 阵营的资源库** | `logic/world.gd` 的 `ai_resources`（"faction" → `{food, gold}`）+ `resource_pool_for(faction)` | 与玩家的 `resources` **两个字典**。招募（将领 / 区划）、升级、特化的**扣费与退款**全部问 `resource_pool_for()` —— 这就是「谁下单、扣谁的钱」的唯一判据（见 route.md 33.4）。★ 返回 **null = 这一方没有资源库 = 资源无限**（将领性 AI 走这条） |
-| ★★ **阵营 AI 的状态** | `logic/world.gd` 的 `ai_factions[]`（每项 `{faction, mult, general_index, recruit_timer, upgrade_timer, attack_timer}`），规则在 `logic/faction_ai.gd` | 它是**世界状态**（与 `tech.active_by_faction` 同源），不是界面状态。`setup()` 在 `world.reset()` 末尾建；每帧 `faction_ai.update()` 推进 |
-| ★★ **将领性 AI 的状态** | `logic/unit.gd` 的 `garrison_zone_id` / `patrol_timer` / `combat_idle_timer` / `retarget_cd` / `garrison_recruit_timer`，规则在 `logic/general_ai.gd` | ★ 挂在**单位自己**身上（与 `train_*` 同一个理由：它天然属于某个将领，单位没了状态就该没）。它**不**在 world 上另开一张表，也**不**进 `ai_resources` |
-| ★ AI 阵营的名单与基地 | `data/config.json` 的 `ai.factions[]`（id / base / resource_mult / start_*） | 名单决定「谁由 AI 驱动 + 谁有自己的资源池」；**base 与 AI 无关**（`_register_config_bases()` 不看 `with_ai`）—— 名单里的一方若没有基地点位会落到 (0,0) 顶掉区块 11 的中心（route.md 33.5 坑①） |
+| ★★ **各阵营的资源库** | `logic/world.gd` 的 `resource_pool_for(faction)` | ★ 本轮口径：**AI 阵营没有资源库**（旧的 `ai_resources` 已删）—— 非本机席位一律返回 **null = 资源无限**（招募 / 再起 / 红点刷兵都不花钱）。只有玩家席位走 `resources` / `player_resources`（「谁下单、扣谁的钱」的唯一判据，见 route.md 33.4） |
+| ★★ **红点 AI 的状态** | `logic/world.gd` 的 `reddot_states[]`（每项 `{faction, params, spawn_region, timer, waves_left, serial}`），规则在 `logic/red_dot_ai.gd` | 它是**世界状态**（与 `tech.active_by_faction` 同源），不是界面状态。`setup()` 在 `world.reset()` 末尾建；每帧 `red_dot_ai.update()` 推进（计时器到点就刷一波满编将领） |
+| ★★ **阵地性 AI 的状态** | `logic/unit.gd` 的 `garrison_zone_id` / `patrol_timer` / `combat_idle_timer` / `retarget_cd` / `garrison_recruit_timer`，规则在 `logic/garrison_ai.gd` | ★ 挂在**单位自己**身上（与 `train_*` 同一个理由：它天然属于某个将领，单位没了状态就该没）。它**不**在 world 上另开一张表，也**不**进任何资源库 |
+| ★ AI 阵营的名单与出生锚点 | `data/config.json` 的 `ai.factions[]`（`{id, ai, base}`，ai 缺省 = `garrison`） | 名单决定「谁由 AI 驱动」；★ 本轮 AI **没有大本营、没有资源库** —— `base` 只是**出生锚点**（`_register_config_bases()` 不看 `with_ai`），将来算将领站位用；名单里的一方若没有点位会落到 (0,0) 顶掉区块 11 的中心（route.md 33.5 坑①） |
 | ★ 地图里 NPC 阵营的开局归属 | `data/maps/frontier/map.json` 的 `zone_list[].owner` → `logic/map_data.gd` 的 `zones_owners` → `logic/zone.gd` 的 `apply_initial_ownership()` | 玩家那一方的地靠出生点大本营自动收归（`refresh_building_ownership`），那条**只认玩家阵营** —— 所以 NPC 的地必须能在地图里直接写出来 |
-| ★ 这一局开不开 AI | `logic/world.gd` 的 `with_ai`（`World.create(cfg, map, with_ai)`，默认 true） | 开了就多一整个阵营（三个将领 + 大本营 + 资源池）。测试 / 基准走 `tests/test_case.require_world()`（= `with_ai = false`），要验 AI 的用例才用默认那条（route.md 33.4） |
+| ★ 这一局开不开 AI | `logic/world.gd` 的 `with_ai`（`World.create(cfg, map, with_ai)`，默认 true） | 开了就多一整个 AI 阵营（阵地性的将领 / 红点刷兵）。★ 本轮 AI **没有大本营、没有资源池**（只有玩家席位才有大本营）。测试 / 基准走 `tests/test_case.require_world()`（= `with_ai = false`），要验 AI 的用例才用默认那条（route.md 33.4） |
 | ★★ **战役与关卡数据** | `data/campaigns/<id>/campaign.json` + `levels/*.json` → `logic/campaign.gd`、`logic/level.gd`、`logic/campaign_library.gd` | ★ **只读**：`Campaign` 管元信息与关卡顺序，`Level` 管一关的全部字段与**唯一的覆盖实现**（`merge_over_map`）。**它不改地图**：关卡是「地图 id + 覆盖层」，没写的字段一律用地图的（route.md 第三十七节、dev_plan_7 1.3.3） |
 | ★★ **这一局用哪张图 / 哪一关** | `logic/world.gd` 的 `level`（**null = 不做战役**）与 `_merged`（合并后的地图 + AI 名单缓存） | 入口是 `World.create_from_level()`；`create()` 是「按一张图直接开一局」的老路径。★ `level == null` 时新代码**一个字段都不动**（向后兼容那一条） |
-| ★★ **合并后的 AI 名单** | `logic/world.gd` 的 `ai_roster_cfg`（每项 `{id, ai, base, resource_mult, start_food, start_gold, attack_target, faction_ai, general_ai, from_level, source}`） | 由 `logic/level.gd` 的 `merged_ai_factions()` **一处**合并出来（关卡显式写了 `ai` 的优先，其余照旧吃 `config.ai.factions`）。★ 有 `level` 时 `source == "config"` 的那些**不进这一局** —— 「这一关有哪些阵营」由关卡数据说了算 |
+| ★★ **合并后的 AI 名单** | `logic/world.gd` 的 `ai_roster_cfg`（每项 `{id, ai, base, attack_target, garrison_ai, reddot_ai, spawn_region, from_level, source}`） | 由 `logic/level.gd` 的 `merged_ai_factions()` **一处**合并出来（关卡显式写了 `ai` 的优先，其余照旧吃 `config.ai.factions`）。★ 有 `level` 时 `source == "config"` 的那些**不进这一局** —— 「这一关有哪些阵营」由关卡数据说了算。`ai` 取值 `garrison` / `reddot` / `none`（旧值 `faction` / `general` 读入时归一成 `garrison`） |
 | ★★ **本机负责的席位** | `logic/world.gd` 的 `player_seats`（= `reset()` 的 `roster`） | 「谁的大本营要建 / 谁有独立钱包」用它。★ 顺序 = 席位顺序（房主第 1 个、客机第 2 个） |
 | ★★ **本机在操作的席位** | `logic/world.gd` 的 `player_factions`（= `player_seats` 里 `ai_kind_of == "none"` 的那些） | 「**谁的家算玩家的家 / 目标归谁**」用它。★★ 它与 `player_seats` 在「选边关」里**不一样**：roster 是 `[我选的那一方, 敌人那一方]`（两边的家都要建出来），但敌人那一方**本机不操作** ⇒ 它交给 AI、也不算玩家的家。判「同方」与判「席位」是两件事，混用会静默改玩法（route.md 37.18） |
-| ★★ **将领性 AI 的巡逻路线** | `logic/general_ai.gd`：`unit.patrol_points` / `patrol_index` / `patrol_dir` / `patrol_zone_id`（**存在单位自己身上**） | 每位驻防守将一条自己的路线：**按 `zone_count` 切扇区**（第几段由 `_sector_of` 按 id 稳定派生）+ 段内用**由 id 派生的固定种子**随机取点 ⇒ 看起来杂乱、但逐点可复现（**不许用引擎随机数**，见 route.md 37.19）。★ 参数 `ai.general.patrol_points` / `patrol_spread_tiles`，可按阵营覆盖 |
-| ★★ **这一方的 AI 指派** | `logic/world.gd` 的 `ai_kind_of(fid)`（关卡点名优先，其余退回 `config.ai.factions`） | 「**谁该被 AI 接管**」用它 —— ★ 注意这是**组装期**口径：`my_faction`（本机在操作的那一方）不算 AI，**其余每一方**都按自己的指派算。`_is_ai_piloted()` 是**开局后**口径（把 `my_faction` 排除），只用来建 AI 状态表 |
+| ★★ **阵地性 AI 的巡逻路线** | `logic/garrison_ai.gd`：`unit.patrol_points` / `patrol_index` / `patrol_dir` / `patrol_zone_id`（**存在单位自己身上**） | 每位驻防守将一条自己的路线：**按 `zone_count` 切扇区**（第几段由 `_sector_of` 按 id 稳定派生）+ 段内用**由 id 派生的固定种子**随机取点 ⇒ 看起来杂乱、但逐点可复现（**不许用引擎随机数**，见 route.md 37.19）。★ 参数 `ai.garrison.patrol_points` / `patrol_spread_tiles`，可按阵营覆盖 |
+| ★★ **这一方的 AI 指派** | `logic/world.gd` 的 `ai_kind_of(fid)`（关卡点名优先，其余退回 `config.ai.factions`）→ `"garrison"` / `"reddot"` / `"none"` | 「**谁该被 AI 接管**」用它 —— ★ 注意这是**组装期**口径：`my_faction`（本机在操作的那一方）不算 AI，**其余每一方**都按自己的指派算。`_is_ai_piloted()` 是**开局后**口径（把 `my_faction` 排除），判据是 `!= "none"` |
 | ★★ **每个玩家席位的资源池** | `logic/world.gd` 的 `player_resources`（"faction" → `{food, gold}`）+ `resource_pool_for(faction)` | ★ 本机席位那一份**就是** `world.resources` 这个对象本身（不是副本）—— HUD 读它、扣费走 `resource_pool_for()`、快照发它，三者天然同一份数。合作模式下两人各花各的（route.md 第三十七节 / dev_plan_7 3.7） |
 | ★★ **选边关的目标** | `logic/level.gd` 的 `objectives[].for` + `objective_for(fid)`；目标种类 `hold_zone` / `capture_zone` | 一关两个可玩阵营各打各的时，**每个阵营一条目标**（`for` 点名给谁）。运行时由 `objective.setup(..., seat_arg = my_faction)` 取**本机席位**那条；`capture_zone` = 归属翻成自己那一帧**立刻判胜**（route.md 37.18） |
 | ★★ **目标与胜负** | `logic/world.gd` 的 `objective_state`（`{kind, zone, sec, held, state, reason, defend, fail, seat}`），规则在 `logic/objective.gd` | ★ 它是**世界状态**：`reset()` 末尾由 `ObjectiveRes.setup()` 建好（HUD 第一帧就读得到），`tick()` **末尾**推进（目标最后判 ⇒ 「这一帧刚守满」立刻结算）。★ `level == null` 时是一份空状态（`kind == ""`），一个玩法行为都不受影响 |

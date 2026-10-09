@@ -35,9 +35,8 @@ const RESCUE_ARRIVE_RADIUS := 1.2
 const TechRes = preload("res://logic/tech.gd")
 const UpgradeRes = preload("res://logic/upgrade.gd")
 const CombatRes = preload("res://logic/combat.gd")
-const EnemyAiRes = preload("res://logic/enemy_ai.gd")
-const FactionAiRes = preload("res://logic/faction_ai.gd")
-const GeneralAiRes = preload("res://logic/general_ai.gd")
+const GarrisonAiRes = preload("res://logic/garrison_ai.gd")
+const RedDotAiRes = preload("res://logic/red_dot_ai.gd")
 const CollisionRes = preload("res://logic/collision.gd")
 const CrowdBridgeRes = preload("res://logic/crowd/crowd_bridge.gd")
 const FogRes = preload("res://logic/fog.gd")
@@ -73,8 +72,7 @@ var enemy_faction: String = FactionRes.NPC_FACTION
 
 ## 经济
 ## ★★ `resources` 是**本地玩家那一方**的资源池（HUD 读它、招募扣它）。
-##    NPC / AI 阵营各有**自己的一份**，存在 `ai_resources` 里 ——
-##    见 `resource_pool_for(faction)`。两边绝不互相挪用。
+##    NPC / AI 阵营**没有资源池**（本轮口径）= 资源无限，见 `resource_pool_for(faction)`。
 var resources: Dictionary = {"food": 0.0, "gold": 0.0}
 ## ★★ **每个玩家席位各一份**资源池："faction" → {"food": float, "gold": float}（本轮新增）。
 ##
@@ -93,22 +91,14 @@ var player_seats: Array[String] = []
 ## ⚠️ 它与 `player_seats` 在「一关两个可玩阵营、选一个来玩」时**不一样**：
 ##   没被选中的那一方虽然也在本地席位名单里（它的基地要建出来），
 ##   但**本机不操作它** ⇒ 它照样可以被阵营 AI 接管（关卡写了 `ai` 的话）。
-## ★ 判据：「**谁的 AI 要摘掉**」看这一份（`_setup_ai_factions` / `faction_ai.setup`）；
+## ★ 判据：「**谁的 AI 要摘掉**」看这一份（`_setup_ai_factions`）；
 ##   「谁的大本营 / 钱包算本地的」看 `player_seats`。
 var player_factions: Array[String] = []
-## ★★ 各 NPC / AI 阵营自己的资源池："faction" → {"food": float, "gold": float}。
-##
-## 为什么必须分开（这是「阵营 AI 有自己的资源库」那条需求的落点）：
-##   招募与升级的**扣费代码只有一处**（`start_recruit` / `start_zone_recruit` 里的
-##   `EconomyRes.spend`），它们原本写死了 `resources` —— 于是「AI 招一个兵」
-##   会从**玩家**兜里掏钱，而「玩家招一个兵」在 AI 的循环里又会去掏 AI 的。
-##   现在两处都走 `resource_pool_for(faction)`：谁下单就扣谁的钱。
-## ★ 玩家阵营**不在**这张表里（它走 `resources`）—— `resource_pool_for` 里那条分支
-##   是唯一判据，别在别处再判一次「是不是玩家」。
-var ai_resources: Dictionary = {}
-## 阵营 AI 的状态表（见 logic/faction_ai.gd 的 setup）：
-## 每项 {faction, mult, general_index, recruit_timer, upgrade_timer, attack_timer}。
-var ai_factions: Array = []
+## ★★ 各阵营**没有资源库**（本轮口径）：`resource_pool_for()` 对非本机席位一律返回 null
+## （= 资源无限），AI 的招募 / 再起 / 刷兵都不花钱。玩家席位走 `player_resources`。
+## ★★ 红点性 AI 的状态表（见 logic/red_dot_ai.gd 的 setup）：
+## 每项 {faction, params, spawn_region, timer, waves_left, serial}。
+var reddot_states: Array = []
 ## ★★ 这一局挂的关卡（`logic/level.gd` 的 Level；**null = 不做战役**）。
 ##
 ## ★ 它只有一个用途：让 AI / 目标在运行时能问「关卡数据里写了什么」
@@ -120,10 +110,9 @@ var level = null
 ## ★ 它只是一份**缓存**：`reset()` 单独被调用（老路径）时它是空的，那时现算一次。
 var _merged: Dictionary = {}
 ## ★★ 合并之后的 AI 名单（关卡优先 + 全局 config 兜底）：
-## 每项 {id, ai, base, resource_mult, start_food, start_gold, attack_target,
-##       faction_ai, general_ai, from_level}。
-## ★ `ai == "general"` 的那些**只挂将领性 AI**（靠单位上的 `garrison_zone_id` 驱动），
-##   不进 `ai_factions` 状态表；`ai == "none"` 的整条不进这份名单。
+## 每项 {id, ai, base, attack_target, garrison_ai, reddot_ai, spawn_region, from_level, source}。
+## ★ `ai` 取值 `garrison` / `reddot` / `none`；`ai == "none"` 的整条不进这份名单。
+##   `base` 只是**出生锚点**（AI 不建大本营）。
 var ai_roster_cfg: Array = []
 ## ★★ 关卡摆放的**附属兵归属表**（本轮口径的唯一落点）：
 ## `"<faction>|<将领序号 0 起>"` → 该方在关卡 `start_units[]` 里摆给这一位将领的
@@ -212,7 +201,7 @@ var debug_auto_spawn: bool = false
 ##   任何「数一数场上有几个将领 / 几个单位 / 谁站在哪一格」的断言都会跟着变。
 ##   而单机游戏当然要开着它；测试与基准却常常要一个「只有玩家 + 地图摆设」的干净世界
 ##   （它们验的是移动 / 碰撞 / 迷雾，不是 AI）。
-## ★ 传 false 时，世界与「加 AI 之前」**逐位一致**（`ai_factions` 为空、
+## ★ 传 false 时，世界与「加 AI 之前」**逐位一致**（`reddot_states` 为空、
 ##   `reset()` 里那段 AI 设置整段跳过）。这也是加这个开关的唯一目的 ——
 ##   让「不开 AI」是一条真的什么都没发生的路，而不是「开了但没跑」。
 static func create(p_cfg: ConfigRes, map_path: String = MapLibraryRes.FALLBACK_MAP_PATH,
@@ -421,8 +410,7 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	fog.reset_cache()
 
 	_reset_player_pools()
-	ai_resources = {}
-	ai_factions = []
+	reddot_states = []
 	faction_bases = {}
 	faction_spawns = {}
 
@@ -441,17 +429,23 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	#    （见 zone.gd 的 apply_initial_ownership）。
 	zones.apply_initial_ownership(map, factions)
 
+	# ★★ 只有**本机在操作的玩家方**才建大本营（本轮口径：AI 没有大本营）。
+	#    AI 阵营照旧算出生点（faction_spawns / faction_bases 点位，将领站位要用），
+	#    但**不建任何建筑**（apply_faction_layout 的 with_base=false）。
 	var primary: String = factions[0] if factions.size() > 0 else my_faction
-	apply_faction_layout(my_faction, primary)
-	# 单机名单只有我这一方；联机时这里要为名单里每一方都建出基地与部队
 	for f in factions:
-		if f != my_faction:
-			apply_faction_layout(f, primary)
+		apply_faction_layout(String(f), primary, player_factions.has(String(f)))
 	# 地图上**预置**的建筑（对家据点这类固定摆设，坐标写在 `data/maps/<id>/map.json`
 	# 的 "buildings" 里）。
 	# 放在各阵营出生点之后：它们的坐标是手写的，不与出生点抢格；被占住的格子 add_building 会自己拒。
 	for p in map.prefab_buildings:
-		add_building(String(p["type"]), int(p["x"]), int(p["y"]), String(p["owner"]), true, true)
+		var btype := String(p["type"])
+		var bowner := String(p["owner"])
+		# ★★ 本轮口径：**只有玩家拥有大本营** —— 地图里预置的 AI 大本营一律不建
+		#    （只保留玩家席位的那一座）。其余预置建筑（箭塔 / 城墙 / 区划中心）照旧。
+		if btype == BuildingRes.TYPE_BASE and not player_factions.has(bowner):
+			continue
+		add_building(btype, int(p["x"]), int(p["y"]), bowner, true, true)
 	# ★★ 区划中心（地图编辑器给每个区块指定的那一格）：**中立障碍建筑**。
 	#    ⚠️⚠️ 必须在**任何单位出生之前**建好（顺序踩过一次，实测）：
 	#       单位出生找站位时会避开建筑（`_ring_tile` 里那条 `building_at() != null`），
@@ -520,12 +514,10 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	#    与上面那句 fog 收口一起，构成「reset 结束时一切都是热的」这条契约
 	#    （第一帧 tick 之前 HUD / 测试读到的东西都是对的）。
 	#
-	# ⚠️ **必须看 `with_ai`**：不开 AI 的世界里 `ai_resources` 是空的，
-	#    状态表要是建了出来，`faction_ai.update()` 就会去要一个不存在的资源池
-	#    （实测症状：`_income` 里 "Trying to assign value of type 'Nil' to a
-	#    variable of type 'Dictionary'"，而它只在 tick 里才炸）。
+	# ⚠️ **必须看 `with_ai`**：不开 AI 的世界里不该建红点状态表
+	#    （建了它就会去刷兵、改世界）。
 	#    这一句与 `_setup_ai_factions()` 开头那个 `if not with_ai: return` 是**一对**。
-	ai_factions = [] if not with_ai else FactionAiRes.setup(self, cfg)
+	reddot_states = [] if not with_ai else RedDotAiRes.setup(self, cfg)
 
 	# ★★ 目标与胜负（本轮新增）：与上面那两句**同一处收口** ——
 	#    「reset 结束 = 一切是热的」这条契约要继续成立：HUD 在第一帧 tick 之前
@@ -592,7 +584,9 @@ static func _map_declares_owner(map, fid: String) -> bool:
 ##      ⚠️ 必须在 `apply_faction_layout()` 之前（否则会先按兜底点位建一座、再重建）；
 ##   2. 把这些阵营**插进名单**（`factions`）—— 它们要被建基地、要能被单位占领区划、
 ##      要能当索敌对象；没有名单就没有这一切；
-##   3. 给每一方开一个**自己的资源池**（`ai_resources`）并放进初始资金。
+##   3. ★ 本轮**不开资源池、不建大本营**（AI 没有这两样）。
+##
+## ⚠️ `config.ai.factions[].base` 现在只是**出生锚点**（将领站位要用），不是大本营。
 ##
 ## ★ 为什么资源池在 reset 里开、而不是在 faction_ai 里懒建：
 ##   它是**权威状态**（与 `resources` 同一层），要有确定的初值 ——
@@ -607,58 +601,28 @@ static func _map_declares_owner(map, fid: String) -> bool:
 ##   而那条信息（开没开 AI）只有调用方知道，所以开关必须一路传到这里，
 ##   由它决定「这一局要不要把 AI 插进来」。
 func _setup_ai_factions() -> void:
-	# ★★ 合并后的 AI 名单（本轮新增）：**关卡显式写了 `ai` 的阵营优先**，
-	#    其余照旧吃 `config.json` 的 `ai.factions` —— 一个入口，见 `_apply_level()`。
-	#    ⚠️ 必须在 `_register_config_bases()` 之前算：它要用来回答「哪几方该进这一局」。
+	# ★★ 合并后的 AI 名单（**关卡显式写了 `ai` 的阵营优先** + `config.json` 的
+	#    `ai.factions` 兜底）—— 一个入口，见 `_apply_level()` / `_merged_ai_roster()`。
 	ai_roster_cfg = _merged_ai_roster()
-	# ★★ 大本营点位**先登记**，而且**不看 with_ai**（见 `_register_config_bases` 的说明）：
+	# ★★ 出生锚点**先登记**，而且**不看 with_ai**（见 `_register_config_bases`）：
 	#    「这一方从哪开局」是布局数据，与「它有没有 AI 脑子」是两件事。
-	# ★ 登记的是**合并后**那份名单：关卡给了点位就用关卡的（`level.merge_over_map` 已经
-	#   把它们写进 `map.faction_bases` 了），这里只兜底 `config.ai.factions[].base`。
+	#    ⚠️ 它不是大本营建筑 —— AI 阵营本轮**不建大本营**（见 reset 里那段说明）。
 	_register_config_bases()
 	if not with_ai:
 		return
+	# ★★ 本轮 AI 阵营**没有资源库、没有大本营**：
+	#    · 不开任何 AI 资源池（`resource_pool_for()` 对它们返回 null = 无限，
+	#      于是招募 / 再起 / 红点刷兵都不花钱）；
+	#    · 这里只把「本局由 AI 接管的那几方」插进名单（它们要被单位占领区划、要被索敌）。
 	for e in ai_roster_cfg:
 		var entry: Dictionary = e
 		var fid := String(entry["id"])
-		if fid == "":
+		if fid == "" or fid == my_faction:
 			continue
-		# ⚠️ **本机在操作的那一方**不在这里管：它的钱走 `player_resources`
-		#    （`_reset_player_pools` 已经开好了）。
-		if fid == my_faction:
+		if String(entry.get("ai", LevelRes.AI_NONE)) == LevelRes.AI_NONE:
 			continue
-		# ★★ **只有「本局真的有 AI 在管」的那几方才开 AI 池**。两种：
-		#    · 阵营性 AI（`_is_ai_piloted`）—— 招将 / 招兵 / 出兵都从这里扣钱；
-		#    · 将领性（守家）AI（`_is_garrison_ai`）—— 它的「脱战无消耗招兵」也走
-		#      `resource_pool_for()`，池子是 null 的话招募会被判「付不起」而静默失败
-		#      （实测：蓝方 15 个单位卡在原地不动）。
-		#    ⚠️ 这两条之外**不开池**：玩家自己那一方的池子必须留给 `player_resources`
-		#      （「谁的订单扣谁的钱」这条判据的唯一性就靠它）。
-		#    ⚠️⚠️ **本机在操作的那一方是例外**：它可能因为「另一半时间由 AI 接管」
-		#      而在这份名单里（选边关两边都写着 `ai`），但本局它是**玩家** ——
-		#      绝不能给它开 AI 池（实测：选了红方之后 `resource_pool_for(F2)` 返回的是
-		#      AI 池而不是 `world.resources`，HUD / 扣费两边就分家了）。
-		if fid != my_faction and (ai_kind_of(fid) != LevelRes.AI_NONE):
-			ai_resources[fid] = {
-				"food": float(entry.get("start_food", 0.0)),
-				"gold": float(entry.get("start_gold", 0.0)),
-			}
-		# 只有**阵营性 AI** 才建状态表（`ai: "general"` / `"none"` 跳过）
-		if fid == my_faction or not _is_ai_piloted(fid):
-			continue
-		if String(entry.get("ai", LevelRes.AI_FACTION)) != LevelRes.AI_FACTION:
-			continue
-		# ★★ 走到这里的就是「**本局要挂阵营 AI 的那一方**」。两种来源：
-		#    ① 本机没在操作的参展阵营（NPC / 敌人）；
-		#    ② ★ **本机席位里、但玩家没选中的那一方**（一关两个可玩阵营时）——
-		#       它的基地照样要建出来（席位该有的都有），但脑子交给 AI。
-		#    两种情况都要：进名单 + 开 AI 资源池。
 		if not factions.has(fid):
 			factions.append(fid)
-
-	# ★ 状态表在**所有单位就位之后**才建（见 reset 末尾的收口那一句）：
-	#   这里只把名单与钱准备好。
-	ai_factions = []
 
 
 ## ★★ 合并后的 AI 名单：关卡写了 `ai` 的阵营优先，其余照旧吃 `config.json`。
@@ -685,21 +649,16 @@ func _merged_ai_roster() -> Array:
 		return _keep_level_sourced(cached)
 	if level != null:
 		return _keep_level_sourced(level.merged_ai_factions(cfg.ai_factions()))
-	var config_ai: Array = cfg.ai_factions()
 	var out: Array = []
-	for item in config_ai:
+	for item in cfg.ai_factions():
 		var e: Dictionary = item
 		out.append({
 			"id": String(e.get("id", "")),
-			"ai": LevelRes.AI_FACTION,
+			"ai": String(e.get("ai", LevelRes.AI_GARRISON)),
 			"base": e.get("base", Vector2i(-1, -1)),
-			"resource_mult": float(e.get("resource_mult", 1.0)),
-			"start_food": float(e.get("start_food", 0.0)),
-			"start_gold": float(e.get("start_gold", 0.0)),
-			"attack_target": null,
-			"faction_ai": null,
-			"general_ai": null,
+			"attack_target": null, "garrison_ai": null, "reddot_ai": null, "spawn_region": null,
 			"from_level": false,
+			"source": "config",
 		})
 	return out
 
@@ -997,7 +956,7 @@ func _place_faction_units(fid: String, placed: Array) -> void:
 		if gz >= 0:
 			pu.garrison_zone_id = gz
 			pu.hold_position = true
-		if String(ud.get("ai", LevelRes.AI_NONE)) == LevelRes.AI_GENERAL:
+		if String(ud.get("ai", LevelRes.AI_NONE)) == LevelRes.AI_GARRISON:
 			# ★ `ai: "general"` **必须**同时给 `zone`（校验第 12 条会拦）。
 			#   这里再兜一次：真漏写了也不让它变成「有 AI 脑子但没有归属」的怪物。
 			if pu.garrison_zone_id < 0:
@@ -1108,7 +1067,7 @@ func escort_target_of(fid: String, index: int) -> int:
 		var n: Variant = placed_escorts.get("%s|%d" % [fid, index], 0)
 		return int(n)
 	# 这一方没摆过附属部队 → 用这一方的 min_retinue 当目标（0 / 负数 = 不要求补员）
-	return maxi(0, int(faction_ai_cfg(fid).get("min_retinue", 0)))
+	return maxi(0, int(garrison_ai_cfg(fid).get("min_retinue", 0)))
 
 
 ## ★★ **这一关（整份关卡数据）里有没有摆过任何附属部队**（`escort_of`）。
@@ -1178,17 +1137,23 @@ func create_generals(faction: String) -> Array:
 ## 只由 `escort_target_of()` 回答（= 关卡里摆了几个），AI 的补员目标读的也是它。
 
 
-## ★★ 某一方的阵营 AI 参数（**关卡按阵营覆盖**的唯一入口）。
+## ★★ 某一方的**阵地性 AI** 参数（**关卡按阵营覆盖**的唯一入口）。
 ##
-## = `config.json` 的 `ai.faction` 打底，关卡那一方的 `faction_ai` **逐键覆盖**。
-##
-## ★ 为什么要按阵营分开：难度旋钮 = 资源倍率 + **该方自己的** AI 参数
-##   （dev_plan_7 1.3.4）—— 一只 AI 一个节奏，而不是全局一套。
-## ★ 白名单式的读取：只认 config 里**定义过**的那些键，关卡写多出来的键**不进结果** ——
-##   免得一个拼错的键静默地什么都不做（那是「配了但没生效」这类最难查的问题）。
-func faction_ai_cfg(faction: String) -> Dictionary:
-	var out := cfg.ai_faction_cfg().duplicate(true)
-	var ov: Variant = _ai_override_of(faction)
+## = `config.json` 的 `ai.garrison` 打底，关卡那一方的 `garrison_ai` **逐键覆盖**。
+## 白名单式读取：只认 config 里定义过的键，关卡写多出来的键**不进结果**。
+func garrison_ai_cfg(faction: String) -> Dictionary:
+	return _ai_cfg_with_override(cfg.ai_garrison_cfg(), faction, "garrison_ai")
+
+
+## ★★ 某一方的**红点性 AI** 参数（= `config.json` 的 `ai.reddot` + 关卡 `reddot_ai` 覆盖）。
+func reddot_ai_cfg(faction: String) -> Dictionary:
+	return _ai_cfg_with_override(cfg.ai_reddot_cfg(), faction, "reddot_ai")
+
+
+## 通用：把某一方在名单里的 `key` 覆盖字典逐键盖到 `base` 上。
+func _ai_cfg_with_override(base: Dictionary, faction: String, key: String) -> Dictionary:
+	var out := base.duplicate(true)
+	var ov: Variant = _ai_override_of(faction, key)
 	if typeof(ov) != TYPE_DICTIONARY:
 		return out
 	var src: Dictionary = ov
@@ -1198,30 +1163,12 @@ func faction_ai_cfg(faction: String) -> Dictionary:
 	return out
 
 
-## 这一方的**将领性 AI** 参数（关卡覆盖 → 全局 `ai.general`）。
-func general_ai_cfg(faction: String) -> Dictionary:
-	var out := cfg.ai_general_cfg().duplicate(true)
-	for e in ai_roster_cfg:
-		var it: Dictionary = e
-		if String(it.get("id", "")) != faction:
-			continue
-		var ov: Variant = it.get("general_ai", null)
-		if typeof(ov) != TYPE_DICTIONARY:
-			return out
-		var src: Dictionary = ov
-		for k in out.keys():
-			if src.has(k):
-				out[k] = src[k]
-		return out
-	return out
-
-
-## 这一方在关卡数据里的 `faction_ai` 覆盖（没有 → null）。
-func _ai_override_of(faction: String) -> Variant:
+## 这一方在关卡数据里的某个 AI 覆盖字典（没有 → null）。
+func _ai_override_of(faction: String, key: String) -> Variant:
 	for e in ai_roster_cfg:
 		var it: Dictionary = e
 		if String(it.get("id", "")) == faction:
-			return it.get("faction_ai", null)
+			return it.get(key, null)
 	return null
 
 
@@ -1232,14 +1179,6 @@ func ai_entry_for(faction: String) -> Variant:
 		if String(it.get("id", "")) == faction:
 			return it
 	return null
-
-
-## 这一方的难度倍数（`resource_mult`；没有 → 1.0）。
-func resource_mult_of(faction: String) -> float:
-	var e: Variant = ai_entry_for(faction)
-	if e == null:
-		return 1.0
-	return float((e as Dictionary).get("resource_mult", 1.0))
 
 
 ## ★★ 这一方的**行军攻击目标**（关卡写了才有；没写 → null，由 AI 退回现状挑选逻辑）。
@@ -1342,45 +1281,29 @@ func _register_config_bases() -> void:
 			map.set_faction_base(fid, base)
 
 
-## ★★ 某一方的资源池：**玩家那一方**走 `resources`，其余（NPC / AI）走 `ai_resources`。
+## ★★ 某一方的资源池：**本机负责的玩家席位**走 `resources` / `player_resources`；
+##    其余每一方（NPC / AI）都返回 **null = 没有资源池 = 资源无限**。
 ##
-## ★ 这是「谁下单、扣谁的钱」的**唯一判据** ——
-##   招募（将领 / 区划）与退款、以及 AI 的升级扣费全部问它，
-##   所以「AI 招兵花玩家的钱」这类串味在结构上就不可能发生。
+## ★ 这是「谁下单、扣谁的钱」的**唯一判据** —— 招募 / 再起 / 刷兵都问它。
 ## ★ 为什么返回的是**可变字典**而不是副本：调用方（EconomyRes.spend / tick）就是要就地扣钱。
 ##   返回副本会让扣费静默失效（一个最难发现的错）。
 ##
-## ★★ 返回 **null = 「这一方没有资源池」= 资源无限**（不是「没钱」）。
-##
-## 这条语义来自需求里将领性（防御性）AI 那句：「其没有资源库，没有大本营……
-## 会无资源消耗地招募单位（**或者可以认定该类 AI 资源无限**）」。
-## 于是：
-##   · `EconomyRes.can_afford(null, cost)` 这类查询在调用方要**当作通过**
-##     （见 `can_afford_recruit` / `can_afford_zone_recruit` 里的判空）；
-##   · `EconomyRes.spend(null, cost)` 是空操作 —— 它先过 `can_afford`（null 上取不到键
-##     ⇒ 有消耗就判不过 ⇒ 直接返回 false），所以根本不扣任何东西。
-## ⚠️ 玩家那一方**永远有池子**（`resources`），所以「null = 无限」不会被玩家走到；
-##    而 NPC 阵营本来就不该有预算 —— 漏建池子不该表现为「这个 AI 一动也不动」。
+## ★★ 返回 **null = 「这一方没有资源池」= 资源无限**（不是「没钱」）—— 本轮起
+##    **所有 AI 阵营**都走这一条（AI 没有资源库）。于是：
+##   · `EconomyRes.can_afford(null, cost)` 在调用方要**当作通过**；
+##   · `EconomyRes.spend(null, cost)` 是空操作 —— 有消耗的 cost 也扣不动、空 cost 直接过。
+## ⚠️ 玩家席位**永远有池子**（`resources`），所以「null = 无限」不会被玩家走到。
 func resource_pool_for(faction: String) -> Variant:
-	# ★★ **被 AI 接管的本地席位**（一关两个可玩阵营、玩家选了另一个）：
-	#    它的钱走 **AI 池**（`ai_resources`），不是玩家池 ——
-	#    否则「AI 下单扣谁的钱」就说不清了（它会在玩家钱包与 AI 池之间来回切）。
-	#    ⚠️ 判定顺序不能反：这一段必须排在下面那条 `player_factions` 之前，
-	#       否则未选中的那一方会先被当成玩家、拿到一个由本地输入在写的钱包。
-	if _is_ai_piloted(faction) and not player_factions.has(faction):
-		return ai_resources.get(faction, null)
 	# ★★ 本地席位（本机负责的那几个）：**每个席位各一份**（合作模式每人一个钱包）。
-	#    ⚠️ 判据用 `player_seats`（本机的 roster）而不是 `is_player_faction`：
-	#       后者认的是 p1…p8 这一整张常量表 —— 单机时如果一个测试把 enemy 当成
-	#       「本地席位」跑，那条判据会给它一个不存在的池子。
-	#    ⚠️ 本机席位那一份与 `resources` 是**同一个字典对象**（见 reset 的说明），
-	#       所以这里直接返回它就等于「HUD 看到的钱」。
+	#    ⚠️ 判据用 `player_seats`（本机的 roster）而不是 `is_player_faction`。
+	#    ⚠️ 本机席位那一份与 `resources` 是**同一个字典对象**（见 reset 的说明）。
 	if player_seats.has(faction):
 		var mine: Variant = player_resources.get(faction, null)
 		if typeof(mine) == TYPE_DICTIONARY:
 			return mine
 		return resources
-	return ai_resources.get(faction, null)
+	# ★★ 其余每一方（NPC / AI）→ null = 资源无限（本轮口径：AI 没有资源库）。
+	return null
 
 
 ## 建立 / 重建「某一方」的基地与部队。
@@ -1391,7 +1314,7 @@ func resource_pool_for(faction: String) -> Variant:
 ##   3. 建新的大本营（+ 防御阵地），并把坐标记进 faction_bases
 ##   4. 建这一方的将领（多阵营时**追加**，不整体替换 —— 否则房主为 p2 建基地时
 ##      会把 p1 的部队全顶掉，变成「双方基地都在、但地图上只有一方的兵」）
-func apply_faction_layout(faction: String, primary: String = "") -> void:
+func apply_faction_layout(faction: String, primary: String = "", with_base: bool = true) -> void:
 	if map == null:
 		return
 	var prim: String = primary if primary != "" else (factions[0] if factions.size() > 0 else faction)
@@ -1422,9 +1345,12 @@ func apply_faction_layout(faction: String, primary: String = "") -> void:
 	# 3) 大本营 + 防御阵地（silent：不写日志、不逐个重算区块归属；
 	#    ★ instant：**开局自带的东西一律直接完工** —— 建造读条只属于玩家下达的建造命令，
 	#      否则开局的大本营要先傻站几秒（而 config 里 build_sec 默认就是 0，两者不冲突）
-	add_building(BuildingRes.TYPE_BASE, base_tile.x, base_tile.y, faction, true, true)
-	for d in (layout["defenses"] as Array):
-		add_building(String(d["type"]), int(d["x"]), int(d["y"]), faction, true, true)
+	#    ★★ 本轮口径：**只有玩家方建大本营**（`with_base`）。AI 阵营照旧算出
+	#       `faction_spawns` / `faction_bases` 点位（将领站位要用），但不落地任何建筑。
+	if with_base:
+		add_building(BuildingRes.TYPE_BASE, base_tile.x, base_tile.y, faction, true, true)
+		for d in (layout["defenses"] as Array):
+			add_building(String(d["type"]), int(d["x"]), int(d["y"]), faction, true, true)
 	building_revision += 1
 
 	# 4) 将领（多阵营时追加本阵营的，保留其他阵营的）
@@ -1482,6 +1408,10 @@ func spawn_faction_units(faction: String) -> void:
 	#    `create_generals` 的那个参数**整个删掉了**。
 	if level != null and level.faction_has_placed_escorts(faction):
 		return
+	# ★★ 红点阵营**不自动生成将领**（它的兵全部由红点 AI 按冷却刷出来）。
+	#    否则它会额外白得 3 位站着不动的将领（与「刷一波」的语义冲突）。
+	if _is_reddot_ai(faction):
+		return
 	# ★ 记下「本函数造出来的那一段是从哪开始的」：下面兜底归属区划时只许扫这一段，
 	#   不许回头扫前面 `reset()` 已经放好的单位（理由见 `_assign_garrison_zones` 的 `from`）。
 	var created_from: int = units.size()
@@ -1489,7 +1419,7 @@ func spawn_faction_units(faction: String) -> void:
 		units.append(u)
 	# ★★ 挂**将领性（守家）AI** 的那一方：给每位将领一个**归属区划**。
 	#
-	# 为什么需要这一步（实测）：`logic/general_ai.gd` 的一切行为都以
+	# 为什么需要这一步（实测）：`logic/garrison_ai.gd` 的一切行为都以
 	#   `garrison_zone_id >= 0` 为前提 —— 巡逻、警戒、脱战招兵全在「自己的区划里」。
 	#   而它平时只由**关卡的摆放**（`start_units[].zone`）赋值，于是「一整个阵营
 	#   挂 `ai: "general"`」这种配置下，它的将领一个归属区划都没有
@@ -1509,7 +1439,7 @@ func spawn_faction_units(faction: String) -> void:
 
 ## ★★ 给「挂将领性 AI 的那一方」中**还没有归属区划的带队单位**兜底一个归属（本轮收口）。
 ##
-## 为什么要这一步（实测）：`logic/general_ai.gd` 的一切行为都以 `garrison_zone_id >= 0`
+## 为什么要这一步（实测）：`logic/garrison_ai.gd` 的一切行为都以 `garrison_zone_id >= 0`
 ##   为前提 —— 巡逻、警戒、脱战招兵全在「自己的区划里」。而它平时只由**关卡的
 ##   摆放**（`start_units[].zone`）赋值，于是「一整个阵营挂 `ai: "general"`」这种配置下，
 ##   它的将领一个归属区划都没有 ⇒ 那一方**从头到尾一动不动**。
@@ -1596,14 +1526,21 @@ func _is_player_piloted(faction: String) -> bool:
 ##
 ## ⚠️ 两层都要有：只查 (1) 会让 `config.ai.factions` 的阵营漏判；
 ##   只查 (2) 就是原来那个 bug（关卡点名的阵营查不到）。
-## 这一方的 AI 指派是 `ai: "general"`（将领性 / 守家 AI）吗？
+## 这一方的 AI 指派是 `garrison`（阵地性 / 守家 AI）吗？
 ##
 ## ★ 用途：给这一方的将领兜底一个**归属区划**（见 `spawn_faction_units` 的收尾）——
-##   `logic/general_ai.gd` 的行为全部以 `garrison_zone_id >= 0` 为前提。
+##   `logic/garrison_ai.gd` 的行为全部以 `garrison_zone_id >= 0` 为前提。
 func _is_garrison_ai(faction: String) -> bool:
 	if faction == "" or faction == my_faction:
 		return false
-	return ai_kind_of(faction) == LevelRes.AI_GENERAL
+	return ai_kind_of(faction) == LevelRes.AI_GARRISON
+
+
+## 这一方的 AI 指派是 `reddot`（红点性 AI）吗？
+func _is_reddot_ai(faction: String) -> bool:
+	if faction == "" or faction == my_faction:
+		return false
+	return ai_kind_of(faction) == LevelRes.AI_REDDOT
 
 
 ## (x, y) 这一格属于哪个区划（不属于任何区划 / 地图外 → -1）。
@@ -1651,12 +1588,13 @@ func _is_ai_piloted(faction: String) -> bool:
 	#     （实测：F1 全程 3 个单位，26 秒就被 E1 推平）。
 	if faction != "" and faction == my_faction:
 		return false
-	return ai_kind_of(faction) == LevelRes.AI_FACTION
+	var k := ai_kind_of(faction)
+	return k != LevelRes.AI_NONE
 
 
 ## 这一方在这一局的 AI 指派（关卡点名优先，其余退回全局 config）。
 ##
-## @return "faction" / "general" / "none"
+## @return "garrison" / "reddot" / "none"
 ##
 ## ★★ 为什么要按**组装期**的口径回答（实测踩到）：`my_faction` = 本机在操作的那一方。
 ##    「谁该被 AI 接管」在组装期与开局后**不一样**：
@@ -1675,13 +1613,13 @@ func ai_kind_of(faction: String) -> String:
 		if String(it.get("id", "")) != faction:
 			continue
 		if it.has("ai"):
-			# 关卡点名过：`"faction"` / `"general"` / `"none"` 照写读
+			# 关卡点名过：`"garrison"` / `"reddot"` / `"none"` 照写读
 			return String(it.get("ai", ""))
-		# 名单里有、但没写 `ai`（config / 地图来的）⇒ 就是阵营性 AI
-		return LevelRes.AI_FACTION
+		# 名单里有、但没写 `ai`（config / 地图来的）⇒ 阵地性 AI
+		return LevelRes.AI_GARRISON
 	# 不在名单里：退回全局 config（向后兼容那一条）
 	if cfg != null and cfg.is_ai_faction(faction):
-		return LevelRes.AI_FACTION
+		return LevelRes.AI_GARRISON
 	return LevelRes.AI_NONE
 
 
@@ -3668,7 +3606,7 @@ func tick(dt: float) -> Array:
 	# ★★ 其余**本地席位**各加各的（合作模式：每人一个钱包，用户已拍板）。
 	#    ⚠️ 判据是 `player_seats`（本机负责的那几个），不是 `player_factions`：
 	#       一关两个可玩阵营时，没被选中的那一方**在本机席位里、但不本机操作** ——
-	#       它的钱走 AI 池（`faction_ai._income` + `ai_resources`），不能在这里加。
+	#       它的钱走 AI 池（本轮已删除 —— AI 阵营不再有资源池，见 resource_pool_for）。
 	#    ⚠️ 用 `player_seats` 也保证了单机逐位不变：
 	#       老路径 roster 为空 ⇒ `player_seats == [my_faction]` ⇒ 这一段一次都不跑。
 	for f in player_seats:
@@ -3778,26 +3716,18 @@ func tick(dt: float) -> Array:
 			spawn_enemy()
 			enemy_spawn_timer = cfg.num("debug.spawn_interval_sec", 3.0)
 
-	# 7) 敌人 AI（朝玩家据点推进；被城墙挡住时锁定城墙来拆）
-	var _t_ai := _prof()
-	EnemyAiRes.update(self, cfg)
-	_prof_done("enemy_ai", _t_ai)
-
-	# 7.5) ★★ 两种新 AI（本轮新增，见 logic/faction_ai.gd 与 logic/general_ai.gd）：
-	#   · 阵营 AI —— 自己的资源库（占领区划产出）× resource_mult，
-	#     按「招将 → 招兵 → 升级 → 出兵」的优先级花钱；
-	#   · 将领性（防御性）AI —— 归属区划内巡逻 / 不追出一个区划 / 脱战无消耗招兵。
+	# 7) ★★ 两种 AI（本轮重做：见 logic/garrison_ai.gd 与 logic/red_dot_ai.gd）：
+	#   · 阵地性 AI —— 附属区划内巡逻 / 不追出一个区划 / 脱战无消耗招兵 / 濒死无消耗再起；
+	#   · 红点性 AI —— 长冷却在指定区域刷一波满编将领，带整队行军到目标点。
 	#
-	# ★ 为什么排在 enemy_ai **之后**、碰撞消解**之前**：
-	#   它们都会调 `order_move` / `order_attack_move` / `move_to`（要寻路），
-	#   而寻路要读本帧的 crowd 缓存 —— 位置这一步在下面第 8.5 步才落定，
-	#   所以这里下命令、下面那一帧就按新路径走，顺序与玩家命令完全一致。
-	# ★ 与 enemy_ai 的判据互斥：驻防将领被 enemy_ai 跳过（它只认 hold_position=false
-	#   且不在 garrison 里的 NPC 单位），所以不会出现「两边同时指挥同一个单位」。
-	var _t_ai2 := _prof()
-	FactionAiRes.update(self, cfg, dt)
-	GeneralAiRes.update(self, cfg, dt)
-	_prof_done("ai", _t_ai2)
+	# ★ 为什么排在收尸 / 碰撞消解**之前**：
+	#   它们都会调 `order_attack_move` / `move_to`（要寻路），而寻路读本帧的 crowd 缓存 ——
+	#   位置这一步在下面第 8.5 步才落定，所以这里下命令、下面那一帧就按新路径走，
+	#   顺序与玩家命令完全一致。
+	var _t_ai := _prof()
+	GarrisonAiRes.update(self, cfg, dt)
+	RedDotAiRes.update(self, cfg, dt)
+	_prof_done("ai", _t_ai)
 
 	# 8) 收尸：被打光的建筑从地图上摘掉。
 	#    放在末尾做，是为了让「本帧已经发生的战斗」都读到同一个世界快照。
