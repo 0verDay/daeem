@@ -471,6 +471,22 @@ def t_generals() -> None:
        "★ 配置里原本没有 stats 段 → 自动补出来，并且下标对齐")
     eq(m3.general(0).type_id, model.general(0).type_id, "补出来的段不影响 types")
 
+    # ★★ 编制上限（本轮新增）：`unit.general.caps[i]`，与 types 同序。
+    eq(model.general(0).cap, 11, "编制上限默认 11")
+    model.set_general(1, "cap", 7)
+    eq(model.general(1).cap, 7, "set_general(cap) 生效")
+    eq(model.doc.value(["unit", "general", "caps", 1]), 7, "写在 unit.general.caps[1]")
+    model.set_general(1, "cap", 0)
+    eq(model.general(1).cap, 1, "★ 编制上限被夹到 ≥ 1")
+    # 老配置里没有 caps 整段时也要能读能写
+    old2 = parse(model.text)
+    del old2["unit"]["general"]["caps"]
+    m4 = ConfigModel.from_text(json.dumps(old2, ensure_ascii=False, indent=2))
+    eq(m4.general(0).cap, 11, "没有 caps 段 → 退到默认 11")
+    m4.set_general(2, "cap", 6)
+    eq(m4.general(2).cap, 6, "补出来的 caps 段能写")
+    eq(m4.general(0).cap, 11, "补出来的段不影响别的将领")
+
 
 # ======================================================================
 # [4] 建筑：造价 / 建造时间 / 血量 / 攻击 / 每一级

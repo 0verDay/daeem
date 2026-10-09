@@ -43,6 +43,7 @@
 extends RefCounted
 
 const ConfigRes = preload("res://logic/config.gd")
+const ExprRes = preload("res://logic/expr.gd")
 const MapDataRes = preload("res://logic/map_data.gd")
 const MapLibraryRes = preload("res://logic/map_library.gd")
 const FactionRes = preload("res://logic/faction.gd")
@@ -320,39 +321,33 @@ func faction_config(fid: String) -> Dictionary:
 ##   · 这里再减 1 → **0 起**的将领序号，与 `unit.general_index` / `Unit.general_index`
 ##     同一套下标（于是「第 2 位将领」= `escort_of: 2` = 下标 1）。
 ##
-## ⚠️ 它**只**回答「归哪位将领」，不回答「那一位在场吗」——
-##    「这一方摆了附属部队 ⇒ 整方由关卡接管」的判据是 `faction_has_placed_escorts()`。
+## ⚠️ 本轮「附属单位改由规格随机生成」之后，逐兵摆放的 `escort_of` **不再产出**；
+##    这里保留读取只为「旧数据不炸」（读不出来的项按普通单位处理）。
+##    「这一方摆了将领 ⇒ 整方由关卡接管」的判据是 `faction_has_placed_generals()`。
 static func escort_leader_index(u: Dictionary) -> int:
 	var v := int(u.get("escort_of", -1))
 	return v - 1 if v >= 1 else -1
 
 
-## ★★ 这一方**自己带了部队**吗（= 在 `start_units[]` 里摆了附属兵，或**摆了将领**）。
+## ★★ 这一方**在关卡里摆了将领**吗。
 ##
 ## ★★ 这是「**整方由关卡接管**」的判据（本轮口径第 5 条）：
-##    自己带了部队的那一方，运行时**连 3 位将领都不自动生成** ——
-##    将领与附属兵全部由作者自己摆（`start_units[]`）。
-##    没摆的任何一方 → 保持今天的自动生成（造 3 位将领，且**不带**附属兵）。
+##    摆了将领的那一方，运行时**连 3 位将领都不自动生成** ——
+##    将领（与它按规格生成的附属兵）全部由作者自己摆（`start_units[]`）。
+##    没摆的任何一方 → 自动生成 3 位将领，且**不带**附属兵。
 ##
-## ★ 判据的两半，缺一不可：
-##   · **带 `escort_of` 的附属兵** —— 口径第 5 条的原话；
-##   · **摆出来的将领**（`kind: general*`）—— 这一半是**实测补上来的**：
-##     作者把 3 位将领摆在 `start_units[]` 里、兵准备另（下一关 / 下一轮）再摆时，
-##     自动生成的那 3 位会**与作者摆的 3 位重名**（id 都是 `general-<fid>-N`），
-##     场上直接出现 6 位将领、其中 3 组同 id（实测：样例战役 F2 摆了 3 位将领
-##     ⇒ 世界里 F2 有 6 个将领）。
-##     ⚠️ 「只摆了一个守将」**不算**接管：那种单位 `general_index` 由 kind 推出来但
-##        `kind` 不是 `general*`（例如 `enemy`），本文的判据只看**将领类 kind**
-##        —— 驻防将领可以放心继续只摆一个（老行为一字不变）。
-func faction_has_placed_escorts(fid: String) -> bool:
+## ★ 判据只看**将领类 kind**（`general` / `general_N`）：
+##   · 作者把 3 位将领摆在 `start_units[]` 里时，自动生成的那 3 位会与作者摆的
+##     3 位**重名**（id 都是 `general-<fid>-N`），场上出现 6 位（实测样例战役 F2）。
+##   · ⚠️ 「只摆了一个普通单位」**不算**接管：那种单位的 `kind` 不是将领类
+##     （例如守军的 `enemy`）—— 驻防守军可以继续只摆一个（老行为一字不变）。
+func faction_has_placed_generals(fid: String) -> bool:
 	if fid == "":
 		return false
 	for u in start_units:
 		var ud: Dictionary = u
 		if String(ud.get("faction", "")) != fid:
 			continue
-		if escort_leader_index(ud) >= 0:
-			return true
 		if ConfigRes.general_index_of(String(ud.get("kind", ""))) >= 0:
 			return true
 	return false
@@ -370,25 +365,6 @@ func placed_units_for(fid: String) -> Array:
 		if String(ud.get("faction", "")) == fid:
 			out.append(ud)
 	return out
-
-
-## 这一方在关卡里给**第 `index` 位将领**（0 起）摆了几个附属兵。
-##
-## ★★ 这是 AI 补员目标的**唯一来源**（见 `faction_ai._decide`）：
-##    「关卡里给这位将领摆了几个，就补到几个」——
-##    config 里那份全局编制（`unit.general.escort`）本轮已经删除，没有缺省可退。
-## ★ 运行时自己招出来的将领（关卡没给它摆过）自然得到 **0**：不要求补员。
-func placed_escort_count_for(fid: String, index: int) -> int:
-	if index < 0:
-		return 0
-	var n := 0
-	for u in start_units:
-		var ud: Dictionary = u
-		if String(ud.get("faction", "")) != fid:
-			continue
-		if escort_leader_index(ud) == index:
-			n += 1
-	return n
 
 
 ## 这一方的 `attack_target` 原始配置（没写 → null；写了 `kind` 不认识 → null）。
@@ -708,6 +684,7 @@ func check(config_ai: Array = []) -> Array:
 	_ck_objectives()
 	_ck_ai_assign(config_ai)
 	_ck_start_units()
+	_ck_reddot()
 	_ck_level_factions()
 	return issues
 
@@ -1101,16 +1078,12 @@ func _ck_ai_assign(config_ai: Array) -> void:
 				_add(SEV_WARN, "ally_unknown", "盟友表里有未定义的阵营「%s」" % String(x))
 
 
-## 12) `start_units[]` 里 `ai: "general"` 的项**都必须有** zone；
-##     ★ 附属兵（`escort_of >= 1`）**必须**有对应的将领。
+## 12) `start_units[]` 里挂了阵地性 AI 的项**都必须有** zone；
+##     ★★ 将领条目的**附属单位规格**（`escort_count` / `escort_types`）必须合法。
 ##
-## ★★ 「对应的将领」= **同一方**在 `start_units[]` 里摆着第 `escort_of` 位将领。
-##    判据只有这一条（与 `world._apply_level_placement` 的建将规则**同一份口径**）：
-##    运行时不会再替摆了附属部队的一方自动补将领（那一方整方由关卡接管），
-##    所以「摆了兵、忘了摆将」的后果是**这个兵挂不上队长**（它自己当队长）。
-##    那种静默行为比拦下来难查得多，所以在**导出前**就拦。
-## ⚠️ 这一条对**整方**要求「同方有对应的将领」而不是「全局有」：
-##    不同阵营的将领序号各算各的（p1 的第 2 位与 E1 的第 2 位不是同一个人）。
+## ★★ 附属单位规格的判据见 `_ck_escort_spec()`（数量 ≤ 编制上限 / 权重和 = 1 /
+##    兵种都在 config 里）。本轮的 code 与编辑器 `tools/campaign_editor/model.py`
+##    逐字一致（编辑器、测试、运行时三边对暗号）。
 func _ck_start_units() -> void:
 	for u in start_units:
 		var ud: Dictionary = u
@@ -1121,27 +1094,118 @@ func _ck_start_units() -> void:
 		var fid := String(ud.get("faction", ""))
 		if fid == "":
 			_add(SEV_BLOCK, "unit_no_faction", "摆放单位 (%d,%d) 没写 faction" % [int(ud["x"]), int(ud["y"])])
-		var ei := escort_leader_index(ud)
-		if ei >= 0 and not _placed_general_for(fid, ei):
-			_add(SEV_BLOCK, "escort_of_no_general",
-				"摆放的附属兵 (%d,%d) 写的是 escort_of = %d，但 %s 没有摆第 %d 位将领"
-				% [int(ud["x"]), int(ud["y"]), ei + 1, fid, ei + 1])
+		# ★★ 将领条目的**附属单位规格**（本轮新增）。
+		if ConfigRes.general_index_of(String(ud.get("kind", ""))) >= 0:
+			var idx := ConfigRes.general_index_of(String(ud.get("kind", "")))
+			_ck_escort_spec(ud, "(%d,%d)" % [int(ud["x"]), int(ud["y"])], "将领", idx)
 
 
-## `fid` 这一方在 `start_units[]` 里摆过**第 `index` 位将领**（0 起）吗。
+## ★★ 校验一份「附属单位规格」（`escort_count` / `escort_types`）。
 ##
-## ★ 这类单位是 `general_index == index + 1` 的**将领类** kind
-##   （`kind: "general"` / `"general_2"`；`general_index` 由 `_read_start_units` 补齐）。
-func _placed_general_for(fid: String, index: int) -> bool:
-	for u in start_units:
-		var ud: Dictionary = u
-		if String(ud.get("faction", "")) != fid:
+## 报的 code 与编辑器（`tools/campaign_editor/model.py`）**逐字一致**：
+##   · `escort_count_negative` —— 数量是负数；
+##   · `escort_count_over_cap` —— 数量超过这位将领的编制上限；
+##   · `escort_types_missing` —— 设了数量却没给类型权重表；
+##   · `escort_weights_sum`    —— 权重和不是 1；
+##   · `escort_type_unknown`   —— 引用了 config 里没有的兵种。
+##
+## @param where     报错里点名「是谁」（将领坐标 / 红点阵营 id）
+## @param who       报错里点名类别（"将领" / "红点阵营"）
+## @param cap_index 用哪一位将领的编制上限（-1 = 不查上限，红点共享规格用它）
+func _ck_escort_spec(ud: Dictionary, where: String, who: String, cap_index: int = -1) -> void:
+	var count := int(ud.get("escort_count", -1))
+	var types: Array = ud.get("escort_types", [])
+	if count < -1:
+		_add(SEV_BLOCK, "escort_count_negative",
+			"%s %s 的附属单位数量是负数（%d）" % [who, where, count])
+	if count > 0:
+		if cap_index >= 0 and cfg != null and count > cfg.general_cap_at(cap_index):
+			_add(SEV_BLOCK, "escort_count_over_cap",
+				"%s %s 的附属单位数量 %d 超过编制上限 %d"
+				% [who, where, count, cfg.general_cap_at(cap_index)])
+		if types.is_empty():
+			_add(SEV_BLOCK, "escort_types_missing",
+				"%s %s 设了附属单位数量却没有类型权重表" % [who, where])
+	for e in types:
+		if typeof(e) != TYPE_DICTIONARY:
 			continue
-		if ConfigRes.general_index_of(String(ud.get("kind", ""))) < 0:
+		var tid := String((e as Dictionary).get("type", ""))
+		if cfg != null and not cfg.has_unit_type(tid):
+			_add(SEV_BLOCK, "escort_type_unknown",
+				"%s %s 的附属单位类型「%s」不在 config 的单位表里" % [who, where, tid])
+	if not types.is_empty():
+		var total := ConfigRes.weight_total(types)
+		if absf(total - 1.0) > 0.001:
+			_add(SEV_BLOCK, "escort_weights_sum",
+				"%s %s 的附属单位权重和不是 1（是 %.4f）" % [who, where, total])
+
+
+## ★★ 红点阵营的生成配置（本轮新增）：生成地块 / 两个函数表达式 / 将领类型权重 / 共享规格。
+##
+## 只在关卡 `reddot_ai` **真的覆盖了**某个键时才校验它 —— 不写就吃 config 的默认
+## （默认一定是好的），没必要对着一份没写的配置报错。
+func _ck_reddot() -> void:
+	for e in faction_meta:
+		var ed: Dictionary = e
+		if String(ed.get("ai", AI_NONE)) != AI_REDDOT:
 			continue
-		if int(ud.get("general_index", 1)) - 1 == index:
-			return true
-	return false
+		var fid := String(ed.get("id", ""))
+		var ra: Variant = ed.get("reddot_ai", null)
+		if typeof(ra) != TYPE_DICTIONARY:
+			continue
+		var rd: Dictionary = ra
+		if rd.has("wave_time_expr") and not ExprRes.is_valid(String(rd["wave_time_expr"])):
+			_add(SEV_BLOCK, "reddot_expr_invalid",
+				"红点阵营「%s」的生成频率表达式「%s」无法解析（只支持 y=ax+b）"
+				% [fid, str(rd["wave_time_expr"])])
+		if rd.has("general_count_expr") and not ExprRes.is_valid(String(rd["general_count_expr"])):
+			_add(SEV_BLOCK, "reddot_expr_invalid",
+				"红点阵营「%s」的将领数表达式「%s」无法解析（只支持 y=ax+b）"
+				% [fid, str(rd["general_count_expr"])])
+		if rd.has("general_weights"):
+			var gw: Array = ConfigRes.normalize_weight_list(rd["general_weights"])
+			if not gw.is_empty() and absf(ConfigRes.weight_total(gw) - 1.0) > 0.001:
+				_add(SEV_BLOCK, "reddot_general_weights_sum",
+					"红点阵营「%s」的将领类型权重和不是 1" % fid)
+		if rd.has("spawn_tiles") and map != null and typeof(rd["spawn_tiles"]) == TYPE_ARRAY:
+			for t in (rd["spawn_tiles"] as Array):
+				var tp := _tile_of(t)
+				if tp.x >= 0 and not map.tile_exists(tp.x, tp.y):
+					_add(SEV_BLOCK, "reddot_spawn_tile_invalid",
+						"红点阵营「%s」的生成地块 (%d,%d) 在地图外" % [fid, tp.x, tp.y])
+		# 共享附属单位规格：用**所有将领里最大的编制上限**当上界（宽松）。
+		var spec := {
+			"escort_count": _int_or(rd.get("escort_count", null), -1),
+			"escort_types": ConfigRes.normalize_weight_list(rd.get("escort_types", null)),
+		}
+		_ck_escort_spec(spec, "「%s」" % fid, "红点阵营", _max_general_cap_index())
+
+
+## 所有将领里编制上限最大的那一位的下标（红点共享规格的宽松上界用；没有配置 → -1）。
+func _max_general_cap_index() -> int:
+	if cfg == null:
+		return -1
+	var best := -1
+	var best_cap := -1
+	var n: int = cfg.general_types().size()
+	for i in n:
+		var c: int = cfg.general_cap_at(i)
+		if c > best_cap:
+			best_cap = c
+			best = i
+	return best
+
+
+## 把 `[x,y]` / 字典归一成 Vector2i（读不出来的 → (-1,-1)）。
+static func _tile_of(t: Variant) -> Vector2i:
+	if typeof(t) == TYPE_VECTOR2I:
+		return t
+	if typeof(t) == TYPE_ARRAY and (t as Array).size() >= 2:
+		return Vector2i(int((t as Array)[0]), int((t as Array)[1]))
+	if typeof(t) == TYPE_DICTIONARY:
+		var d: Dictionary = t
+		return Vector2i(int(d.get("x", -1)), int(d.get("y", -1)))
+	return Vector2i(-1, -1)
 
 
 ## 13) 关卡**摆放**里用到的 faction 都必须有定义。
@@ -1486,9 +1550,15 @@ static func _read_start_units(v: Variant) -> Array:
 			"faction": String(d.get("faction", "")).strip_edges(),
 			"kind": kind,
 			"general_index": maxi(1, gi),
-			# ★★ 附属兵归属（1 起；-1 = 不是附属兵）。只认**正整数**。
+			# ⚠️ 旧「逐兵摆放」的 `escort_of`（本轮不再产出，保留读取只为旧数据不炸）。
 			"escort_of": _escort_of_int(d.get("escort_of", null)),
 			"unit_type": String(d.get("unit_type", "")).strip_edges(),
+			# ★★ 将领的附属单位规格（本轮新增）：生成数量 + 兵种权重表。
+			#   · 只有**将领**条目会用到（普通单位忽略）；
+			#   · `escort_count < 0` = 没设过（运行时退回 `ai.garrison.min_retinue`）；
+			#   · `escort_types` = `[{type, weight}]`，权重和由编辑器要求为 1。
+			"escort_count": _int_or(d.get("escort_count", null), -1),
+			"escort_types": ConfigRes.normalize_weight_list(d.get("escort_types", null)),
 			"x": int(d.get("x", -1)),
 			"y": int(d.get("y", -1)),
 			# ⚠️ 缺省是 "none"（不挂将领性 AI）：挂了却忘了写 zone 的后果是「原地发呆」，
@@ -1611,6 +1681,17 @@ static func _num(v: Variant, fallback: float) -> float:
 		return float(v)
 	if typeof(v) == TYPE_STRING and String(v).is_valid_float():
 		return float(v)
+	return fallback
+
+
+## 读一个整数（缺省 / 非数字 → fallback）。整数值的 float（`4.0`）照收。
+static func _int_or(v: Variant, fallback: int) -> int:
+	if typeof(v) == TYPE_INT:
+		return int(v)
+	if typeof(v) == TYPE_FLOAT:
+		return int(round(v))
+	if typeof(v) == TYPE_STRING and String(v).is_valid_int():
+		return int(String(v))
 	return fallback
 
 

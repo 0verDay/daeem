@@ -4473,4 +4473,78 @@ F2 `#FFD166` 金 / E1 `#FF6B6B` 红）+ 关卡 `factions[].color`（关卡可以
 **断言**：`test_ai` 的驻防 AI 那一节加了「返程只下一道命令」的 5 条（`returning_home` 置位 / 路径只减不增 / 到家清标志 / 新命令清标志）—— **216 → 223 项**；`test_downed` 新增 `_test_recruit_queue_cleared`（进濒死 ⇒ 队列清空 + 粮食/黄金/人口全额退回 + 拒因 `downed` + 等 12 秒也不出新兵 + 打光部队之后当场死亡）—— **168 → 183 项**。合计 **36 套 / 5170 项 / 全过**。
 
 
+## 四十二、AI 将领的附属单位（规格化）+ 三个编辑器（本轮）
+
+**需求**：① 红点性 AI 生成将领后**立刻**生成满编随机附属单位；② 阵地性 AI 脱战后**无消耗补员**（兵种随机）；
+③ 附属单位改成「**规格**」（类型 + 权重 + 数量），取代逐兵摆放；④ 红点改**函数式时间表**；
+⑤ 重做**战役编辑器**（建筑所见即所得 / 单位规格 / 区划归属 / 红点配置单独页签）；⑥ 单位编辑器**加编制上限**；
+⑦ 地图编辑器**保留原功能**。
+
+### 42.1 一条统一规则：将领的「附属单位规格」
+
+规格存**在将领单位自己身上**（`logic/unit.gd`）：`retinue_target`（数量）+ `retinue_types`（`[{type, weight}]`）。
+来源是关卡 `start_units[].escort_count` / `escort_types`（摆放的将领）或红点阵营共享的那一份。
+生成走**同一条路** `world.fill_general_retinue()`；红点 / 摆放 / 阵地补员三处共用。
+
+* **摆放的将领**：开局当场生成到 `escort_count`（`_place_faction_units` 里写规格 + 生成）。
+* **红点将领**：每位当场带 `escort_count` 个（红点页的共享规格）。
+* **阵地补员**：`garrison_ai._try_recruit` 按 `u.retinue_types` 权重抽兵种，补到 `retinue_target`。
+* ★ 权重抽样的随机是**确定性伪随机**（种子由 `(将领 id, 序号)` 派生，`world.unit_rand`）——
+  同一局重跑结果一致（测试能断言）、不同将领 / 不同序号又各不相同（与巡逻路线的「派生固定种子」同一套）。
+* ⚠️ **id 前缀**：生成的附属兵用 `<队长>-e<k>`，招募出来的用 `<队长>-r<serial>` —— 两者**不能撞名**
+  （实测踩到：开局生成的 `general-1-r1` 与后来招的第一个兵同 id，`unit_by_id` 只能查到其中一个）。
+
+### 42.2 编制上限（`unit.general.caps`）
+
+**每位将领一个值**（与 `types` 同序，默认 11），在**单位编辑器**的「将领」页改。
+读它的只有一处：`logic/config.gd` 的 `general_cap_at()`。摆放 / 红点的「生成数量」以它封顶
+（`escort_count_over_cap`）。⚠️ 界面右栏那个「x/11」仍是 `view/ui_layout.gd` 的常量 `UNIT_CAP`，
+**本版没把它接过来**（避免牵连一大批 UI 断言）。
+
+### 42.3 红点：从「固定冷却」改成「函数式时间表」
+
+`ai.reddot` 新增：`wave_time_expr`（第 x 波的生成时间，分钟，`y=ax+b`）、`general_count_expr`（将领数）、
+`general_weights`、`spawn_tiles`、`escort_count` / `escort_types`。旧的 `cooldown_sec` / `generals` / `retinue`
+**废弃**（运行时不再读）。表达式解析在 `logic/expr.gd`（GDScript）与 `tools/campaign_editor/model.py`（Python）
+**各一份、语法逐字一致**。默认都是 `x`：第 1 波 1min、第 2 波 2min……
+例：`x+1` → 第 1 波 2min；`2x+1` → 第 1 波 3min。生成地点优先 `spawn_tiles`（编辑器里选的空地格），
+否则 `spawn_region` / 出生点。
+
+### 42.4 三个编辑器
+
+* **战役编辑器**：重做为**七个页签**（战役 / 关卡 / 阵营与AI / 摆放 / 区划 / 红点 / 校验与导出）。
+  - 摆放页：画笔三档（将领 / 单位 / 建筑）；**建筑所见即所得**（城墙=线、箭塔=圆、大本营=方块）；
+    **去掉「附属兵」画笔**；选中将领 → 侧栏出现「附属单位规格」编辑器。
+  - **区划页**（新）：开局每一块地归哪方（覆盖 `zone_list[].owner`；「用地图的」与「清空=无主」是两件事）。
+  - **红点页**（新，独立页签）：画布上选生成地块 + 两个表达式 + 将领类型权重 + 共享附属单位规格。
+  - 校验新增 8 条 code；**旧 `escort_of` 模型仍读得进、校验得了**（老数据不炸）。
+* **单位编辑器**：恢复入口 + 「将领」页新增**编制上限**（`unit.general.caps[i]`）。~~弃用~~ → 按用户更正：**继续维护**。
+* **地图编辑器**：只**恢复入口**（`__main__.py` / `__init__.py`），功能与数据格式一个字没改。
+
+### 42.5 阻塞项：三个编辑器的入口被误删
+
+提交 `a984b05`（2D→3D 升级那次）删掉了三个编辑器的 `__main__.py` 与 `__init__.py`，之后 5 个提交都没恢复 ——
+`python dev_gd_a/tools/<编辑器>` 与三个 `.bat` **都跑不起来**，`map_editor/test_model.py` 也会因
+`from map_editor.__main__ import resolve_map_arg` 直接报错。本轮从 `a984b05~1` 恢复。
+★ 恢复后修掉两个**自检脚本自身**的陈旧假设：unit_editor 自检把 `build_sec` **写死回 0**（应回原值）、
+campaign_editor 自检读已删除的 `FactionEntry.resource_mult`。
+
+### 42.6 迁移
+
+`data/campaigns/demo` 的两关从「逐兵 `escort_of`」迁成「将领规格」（F1 三位将领 4 / 5 / 6 个对应兵种；
+F2 的将领原本就没带兵 ⇒ 保持不带，由阵地 AI 按 `min_retinue` 自己招）。`ferry` 没有将领 / 附属兵，不动。
+演示数据、`test_ai` / `test_ai_target` / `test_campaign_ai` / `test_case`（探针关卡）/ `test_retinue` /
+`test_recruit_queue` / `test_unit_editor` / `test_unit_types` 等断言一起跟着改。
+
+### 42.7 验证
+
+* 引擎：`tools/check-syntax.ps1` 120 文件全过；`tools/run-tests.ps1` **43 套 / 5211 项**，除
+  `test_view3d` 的 2 条（**本轮之前就红**、与本次改动无关）全过。
+* 编辑器：`campaign_editor` test_model **258** / test_app **141**；`unit_editor` test_model **475** / test_app **199**；
+  三个 `--selftest` 全过。
+* ⚠️ **map_editor/test_model 有 10 条**（`zone_kind` 预设产能）**本轮之前就红**：`config.json` 里
+  三种区划预设被**有意识地减半**（`line` 文案同步改了：粮食 0.5 + 0.05 人口…），而那个测试的期望值还是半数之前的老数。
+  与本次改动无关，未动。
+
+
 

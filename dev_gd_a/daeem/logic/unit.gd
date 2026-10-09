@@ -113,6 +113,20 @@ var hotkey: String = ""
 ## 单位总数只有几十个，代价可以忽略。
 var leader_id: String = ""
 
+## ★★ 这位将领的**附属单位规格**（本轮新增；只对「自己是队长」的单位有意义）。
+##
+## 需求原文：「生成满编的随机单位，附属到其旗下……种类和数量由配置决定」。
+##   · `retinue_target` = 目标编队规模（≤ 这位将领的编制上限 `cfg.general_cap_at`）；
+##     摆放的将领开局就生成到它，阵地 AI 脱战后补到它。
+##   · `retinue_types` = `[{ "type": <兵种 id>, "weight": <float> }]`，生成 / 补员时
+##     按权重抽兵种（权重的和在编辑器里必须为 1，运行时会按和归一化兜底）。
+##     ⚠️ 空表 = 没规格 → 补员退回「与该将领同兵种的兵」（旧行为）。
+##   · `-1` / 空 = 没设过：`world.escort_target_of()` 退回这一方的 `min_retinue`。
+## ★ 为什么挂在单位上：它天然属于某位将领（将领没了规格也没了），
+##   与 `train_*` / `garrison_*` 同一个理由（见文件里那几段说明）。
+var retinue_target: int = -1
+var retinue_types: Array = []
+
 ## 连续位置（格）
 var pos: Vector2 = Vector2.ZERO
 ## 所在地块缓存：只用于占区块 / 资源 / 箭塔 / 警戒判定

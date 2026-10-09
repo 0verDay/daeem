@@ -129,16 +129,17 @@ func _test_spawn_near_leader(cfg) -> void:
 	if g == null:
 		return
 	var ret = w.retinue_of(g.id)
-	eq(ret.size(), PER, "general-1 名下有 %d 个附属兵（关卡摆的）" % PER)
-	# 探针把 general-1 的兵摆到它的**出生格四周**（见 test_case.require_world_with_escorts）：
-	# 内圈就是 `ESCORT_RING` 的前三个方向（右 / 下 / 左）。
-	var want_off: Array = [Vector2i(1, 0), Vector2i(0, 1), Vector2i(-1, 0)]
+	eq(ret.size(), PER, "general-1 名下有 %d 个附属兵（按规格生成的）" % PER)
+	# 附属兵由 `fill_general_retinue` 生成在**队长附近**（`_ring_tile`：先正交、再斜角）——
+	# 新口径下作者不摆兵的坐标，只写「生成几个 + 兵种权重」。
+	var seen_tiles := {}
 	for i in ret.size():
 		var s = ret[i]
 		eq(String(s.leader_id), "general-1", "★ 每个兵都挂在 general-1 名下（%s）" % s.id)
-		var want_tile := Vector2i(g.tx + (want_off[i] as Vector2i).x, g.ty + (want_off[i] as Vector2i).y)
-		v2i_eq(Vector2i(s.tx, s.ty), want_tile,
-			"★ 附属兵就站在作者摆的那一格上（%s）" % s.id)
+		var d: int = maxi(absi(s.tx - g.tx), absi(s.ty - g.ty))
+		ok(d >= 1 and d <= 2, "★ 附属兵生成在队长附近（%s 距队长 %d 格）" % [s.id, d])
+		ok(not seen_tiles.has(Vector2i(s.tx, s.ty)), "附属兵各占一格（%s）" % s.id)
+		seen_tiles[Vector2i(s.tx, s.ty)] = true
 
 	# 附属兵不能站在山上 / 卡在不能站的建筑里
 	for s in ret:

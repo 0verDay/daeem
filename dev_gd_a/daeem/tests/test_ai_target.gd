@@ -79,7 +79,8 @@ func _group_reddot_march(cfg) -> void:
 	var target := Vector2i(7, 2)
 	var w = _reddot_world(cfg, "march", {
 		"attack_target": {"kind": "point", "x": target.x, "y": target.y},
-		"reddot_ai": {"cooldown_sec": 5, "generals": 1, "retinue": 2, "spawn_radius": 3},
+		"reddot_ai": {"wave_time_expr": "x", "general_count_expr": "1",
+			"escort_count": 2, "spawn_radius": 3},
 	}, 999.0)
 	ok(w != null, "能造出「红点向指定目标行军」的世界")
 	if w == null:
@@ -87,8 +88,8 @@ func _group_reddot_march(cfg) -> void:
 	ok(w.reddot_states.size() == 1, "有一条红点状态（E1）")
 	if w.reddot_states.is_empty():
 		return
-	# 推进冷却 → 刷一波。
-	RedDotAiRes.update(w, cfg, 6.0)
+	# 推进到第 1 波（wave_time_expr = "x" ⇒ 1min = 60s）。
+	RedDotAiRes.update(w, cfg, 61.0)
 	var gens := _generals_of(w, "E1")
 	ok(gens.size() == 1, "刷出 1 位将领")
 	# 单位数 = 1 将领 ×（1 + 2 满编）= 3。

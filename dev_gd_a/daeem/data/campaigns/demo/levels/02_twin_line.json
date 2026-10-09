@@ -1,7 +1,9 @@
 {
   "_comment": [
     "第二关 · 双子防线。双人合作样例：两个玩家各有大本营（b1 / a1 相邻），共享视野。",
-    "目标仍是守住 c1 120 秒；额外失败条件：外圈 f1 失守。"
+    "目标仍是守住 c1 120 秒；额外失败条件：外圈 f1 失守。",
+    "★★ 开局部队改由**规格随机生成**：将领用 start_units[].escort_count / escort_types",
+    "   描述附属单位（数量 + 兵种权重），运行时当场生成满编随机附属兵。"
   ],
   "name": "第二关·双子防线",
   "mode": "coop",
@@ -73,39 +75,14 @@
       "unit_type": "spearman",
       "x": 4,
       "y": 5,
-      "name": "左翼主将"
-    },
-    {
-      "faction": "F1",
-      "kind": "spearman",
-      "x": 3,
-      "y": 4,
-      "name": "长枪兵 1",
-      "escort_of": 1
-    },
-    {
-      "faction": "F1",
-      "kind": "spearman",
-      "x": 4,
-      "y": 4,
-      "name": "长枪兵 2",
-      "escort_of": 1
-    },
-    {
-      "faction": "F1",
-      "kind": "spearman",
-      "x": 3,
-      "y": 5,
-      "name": "长枪兵 3",
-      "escort_of": 1
-    },
-    {
-      "faction": "F1",
-      "kind": "spearman",
-      "x": 5,
-      "y": 5,
-      "name": "长枪兵 4",
-      "escort_of": 1
+      "name": "左翼主将",
+      "escort_count": 4,
+      "escort_types": [
+        {
+          "type": "spearman",
+          "weight": 1
+        }
+      ]
     },
     {
       "faction": "F1",
@@ -114,47 +91,14 @@
       "unit_type": "longbowman",
       "x": 3,
       "y": 6,
-      "name": "左翼副将"
-    },
-    {
-      "faction": "F1",
-      "kind": "longbowman",
-      "x": 4,
-      "y": 6,
-      "name": "长弓兵 1",
-      "escort_of": 2
-    },
-    {
-      "faction": "F1",
-      "kind": "longbowman",
-      "x": 5,
-      "y": 6,
-      "name": "长弓兵 2",
-      "escort_of": 2
-    },
-    {
-      "faction": "F1",
-      "kind": "longbowman",
-      "x": 2,
-      "y": 3,
-      "name": "长弓兵 3",
-      "escort_of": 2
-    },
-    {
-      "faction": "F1",
-      "kind": "longbowman",
-      "x": 3,
-      "y": 3,
-      "name": "长弓兵 4",
-      "escort_of": 2
-    },
-    {
-      "faction": "F1",
-      "kind": "longbowman",
-      "x": 4,
-      "y": 3,
-      "name": "长弓兵 5",
-      "escort_of": 2
+      "name": "左翼副将",
+      "escort_count": 5,
+      "escort_types": [
+        {
+          "type": "longbowman",
+          "weight": 1
+        }
+      ]
     },
     {
       "faction": "F1",
@@ -163,55 +107,14 @@
       "unit_type": "rider",
       "x": 5,
       "y": 3,
-      "name": "左翼游骑"
-    },
-    {
-      "faction": "F1",
-      "kind": "rider",
-      "x": 6,
-      "y": 3,
-      "name": "骑手 1",
-      "escort_of": 3
-    },
-    {
-      "faction": "F1",
-      "kind": "rider",
-      "x": 2,
-      "y": 4,
-      "name": "骑手 2",
-      "escort_of": 3
-    },
-    {
-      "faction": "F1",
-      "kind": "rider",
-      "x": 6,
-      "y": 4,
-      "name": "骑手 3",
-      "escort_of": 3
-    },
-    {
-      "faction": "F1",
-      "kind": "rider",
-      "x": 2,
-      "y": 5,
-      "name": "骑手 4",
-      "escort_of": 3
-    },
-    {
-      "faction": "F1",
-      "kind": "rider",
-      "x": 6,
-      "y": 5,
-      "name": "骑手 5",
-      "escort_of": 3
-    },
-    {
-      "faction": "F1",
-      "kind": "rider",
-      "x": 2,
-      "y": 6,
-      "name": "骑手 6",
-      "escort_of": 3
+      "name": "左翼游骑",
+      "escort_count": 6,
+      "escort_types": [
+        {
+          "type": "rider",
+          "weight": 1
+        }
+      ]
     },
     {
       "faction": "F2",
@@ -219,39 +122,14 @@
       "unit_type": "spearman",
       "x": 20,
       "y": 1,
-      "name": "右翼主将"
-    },
-    {
-      "faction": "F2",
-      "kind": "spearman",
-      "x": 19,
-      "y": 0,
-      "name": "长枪兵 1",
-      "escort_of": 1
-    },
-    {
-      "faction": "F2",
-      "kind": "spearman",
-      "x": 20,
-      "y": 0,
-      "name": "长枪兵 2",
-      "escort_of": 1
-    },
-    {
-      "faction": "F2",
-      "kind": "spearman",
-      "x": 21,
-      "y": 0,
-      "name": "长枪兵 3",
-      "escort_of": 1
-    },
-    {
-      "faction": "F2",
-      "kind": "spearman",
-      "x": 19,
-      "y": 1,
-      "name": "长枪兵 4",
-      "escort_of": 1
+      "name": "右翼主将",
+      "escort_count": 4,
+      "escort_types": [
+        {
+          "type": "spearman",
+          "weight": 1
+        }
+      ]
     },
     {
       "faction": "F2",
@@ -260,47 +138,14 @@
       "unit_type": "longbowman",
       "x": 21,
       "y": 1,
-      "name": "右翼副将"
-    },
-    {
-      "faction": "F2",
-      "kind": "longbowman",
-      "x": 19,
-      "y": 2,
-      "name": "长弓兵 1",
-      "escort_of": 2
-    },
-    {
-      "faction": "F2",
-      "kind": "longbowman",
-      "x": 20,
-      "y": 2,
-      "name": "长弓兵 2",
-      "escort_of": 2
-    },
-    {
-      "faction": "F2",
-      "kind": "longbowman",
-      "x": 21,
-      "y": 2,
-      "name": "长弓兵 3",
-      "escort_of": 2
-    },
-    {
-      "faction": "F2",
-      "kind": "longbowman",
-      "x": 18,
-      "y": 0,
-      "name": "长弓兵 4",
-      "escort_of": 2
-    },
-    {
-      "faction": "F2",
-      "kind": "longbowman",
-      "x": 18,
-      "y": 1,
-      "name": "长弓兵 5",
-      "escort_of": 2
+      "name": "右翼副将",
+      "escort_count": 5,
+      "escort_types": [
+        {
+          "type": "longbowman",
+          "weight": 1
+        }
+      ]
     },
     {
       "faction": "F2",
@@ -309,55 +154,14 @@
       "unit_type": "rider",
       "x": 22,
       "y": 1,
-      "name": "右翼游骑"
-    },
-    {
-      "faction": "F2",
-      "kind": "rider",
-      "x": 18,
-      "y": 2,
-      "name": "骑手 1",
-      "escort_of": 3
-    },
-    {
-      "faction": "F2",
-      "kind": "rider",
-      "x": 22,
-      "y": 2,
-      "name": "骑手 2",
-      "escort_of": 3
-    },
-    {
-      "faction": "F2",
-      "kind": "rider",
-      "x": 18,
-      "y": 3,
-      "name": "骑手 3",
-      "escort_of": 3
-    },
-    {
-      "faction": "F2",
-      "kind": "rider",
-      "x": 19,
-      "y": 3,
-      "name": "骑手 4",
-      "escort_of": 3
-    },
-    {
-      "faction": "F2",
-      "kind": "rider",
-      "x": 20,
-      "y": 3,
-      "name": "骑手 5",
-      "escort_of": 3
-    },
-    {
-      "faction": "F2",
-      "kind": "rider",
-      "x": 21,
-      "y": 3,
-      "name": "骑手 6",
-      "escort_of": 3
+      "name": "右翼游骑",
+      "escort_count": 6,
+      "escort_types": [
+        {
+          "type": "rider",
+          "weight": 1
+        }
+      ]
     }
   ],
   "start_buildings": [],

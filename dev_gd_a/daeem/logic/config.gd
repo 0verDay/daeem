@@ -168,6 +168,11 @@ var _general_types: Array = []
 var _general_stats: Array = []
 var _general_names: Array = []
 var _general_combat: Array = []
+## ★★ 每位将领的**编制上限**（config.json 的 `unit.general.caps`，与 types 同序）。
+##   它是「目标编队规模」：摆放的将领开局生成到它、阵地 AI 脱战补到它、
+##   红点将领的附属兵数也以它封顶（见 logic/expr.gd 与 tools/unit_editor）。
+##   ★ 缺省 / 越界一律 11（与界面那个常量 UNIT_CAP 同值，但两者暂时各自独立）。
+var _general_caps: Array = []
 ## 单位类型 id → 地图上显示的那**一个字**（config 的 `unit.types.<id>.icon`）。
 ## ★ 空串 = 配置里没写（`unit_icon_of` 退成名字的第一个字）。
 ## ★★ 它是**数据**而不是美术：设计师在单位编辑器里给每个兵种挑一个字，
@@ -595,6 +600,16 @@ func _cache_unit_types() -> void:
 				_general_types.append(sid)
 	if _general_types.is_empty() and _unit_types.has(UNIT_TYPE_SPEARMAN):
 		_general_types.append(UNIT_TYPE_SPEARMAN)
+
+	# 3.2) ★★ 每位将领的**编制上限**（config.json 的 `unit.general.caps`，本轮新增）。
+	#   与 types 同序；缺省 / 越界在 `general_cap_at()` 里统一退到 11。
+	_general_caps = []
+	var caps_raw: Variant = get_path_value("unit.general.caps")
+	if typeof(caps_raw) == TYPE_ARRAY:
+		for item in (caps_raw as Array):
+			if typeof(item) == TYPE_INT or typeof(item) == TYPE_FLOAT:
+				_general_caps.append(maxi(0, int(item)))
+
 	# ⚠️ 这里**不再读** `unit.general.escort`：本轮把「全局开局编制」整个删掉了
 	#    （开局有几个附属兵 = 关卡 `start_units[].escort_of` 摆了几个，
 	#     见本文件上面那段说明与 `Level.escort_leader_index()`）。
@@ -693,6 +708,40 @@ func is_general_kind(kind: String) -> bool:
 	return general_index_of(kind) >= 0
 
 
+## ★★ 宽松读一份「权重条目表」：每项保留它自己的标识键（附属单位用 `type`、
+##   将领类型用 `general`），并把 `weight` 归一成**非负 float**；坏项直接丢掉。
+##
+## ★ 为什么放在这里当**静态**工具：config 的 `ai.reddot.general_weights` /
+##   `ai.reddot.escort_types` 与关卡 `start_units[].escort_types` 是**同一种形状**，
+##   读法必须只有一份（否则「权重怎么算合法」会在两处慢慢漂开）。
+##
+## @return Array，每项 `{<原标识键>: ..., "weight": float}`（`weight` 一定存在）
+static func normalize_weight_list(v: Variant) -> Array:
+	var out: Array = []
+	if typeof(v) != TYPE_ARRAY:
+		return out
+	for item in (v as Array):
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		var d: Dictionary = item
+		var w: Variant = d.get("weight", null)
+		if typeof(w) != TYPE_INT and typeof(w) != TYPE_FLOAT:
+			continue
+		var e: Dictionary = d.duplicate(true)
+		e["weight"] = maxf(0.0, float(w))
+		out.append(e)
+	return out
+
+
+## ★★ 权重表里各项 `weight` 的和（编辑器校验「必须为 1」用；运行时用它做归一化分母）。
+static func weight_total(entries: Array) -> float:
+	var total := 0.0
+	for e in entries:
+		if typeof(e) == TYPE_DICTIONARY:
+			total += float((e as Dictionary).get("weight", 0.0))
+	return total
+
+
 ## 表里有没有这个单位类型
 func has_unit_type(id: String) -> bool:
 	return _unit_types.has(id)
@@ -721,6 +770,17 @@ func general_type_at(i: int) -> String:
 	if i < 0 or i >= _general_types.size():
 		return String(_general_types[0])
 	return String(_general_types[i])
+
+
+## ★★ 第 i 位将领（0 起）的**编制上限**（config.json 的 `unit.general.caps`）。
+##   缺省 / 越界一律 **11**（与界面常量 UNIT_CAP 同值）。
+##   ★ 累积 11 这个数是手玩定的：见 view/ui_layout.gd 的 UNIT_CAP 注释。
+const GENERAL_CAP_DEFAULT := 11
+
+func general_cap_at(i: int) -> int:
+	if i < 0 or i >= _general_caps.size():
+		return GENERAL_CAP_DEFAULT
+	return int(_general_caps[i])
 
 
 ## ⚠️ 这里原先还有两个「开局编制」的读法（本轮**整个删掉**）：
@@ -1705,17 +1765,35 @@ func _cache_ai() -> void:
 		# ★★ 巡逻**带兵**：附属兵离带队将领超过这么多格就会被重新叫上。
 		"patrol_retinue_leash_tiles": maxf(1.0, num("ai.garrison.patrol_retinue_leash_tiles", 3.0)),
 	}
+	# ★★ 红点 AI 的函数式时间表与随机规格（本轮新增）。全部**宽容读取**：
+	#   读不出来一律退回默认（'x' / 空表），决不让一份坏数据把这一局卡死。
+	var rd_wave: Variant = get_path_value("ai.reddot.wave_time_expr")
+	if typeof(rd_wave) != TYPE_STRING or String(rd_wave).strip_edges() == "":
+		rd_wave = "x"
+	var rd_count: Variant = get_path_value("ai.reddot.general_count_expr")
+	if typeof(rd_count) != TYPE_STRING or String(rd_count).strip_edges() == "":
+		rd_count = "x"
+	# spawn_tiles：config 缺省是空表（关卡才填）。兼容 `[x,y]` 数组 / 字典两种写法。
+	var rd_tiles: Array = []
+	var rd_tiles_raw: Variant = get_path_value("ai.reddot.spawn_tiles")
+	if typeof(rd_tiles_raw) == TYPE_ARRAY:
+		for t in (rd_tiles_raw as Array):
+			if typeof(t) == TYPE_ARRAY and (t as Array).size() >= 2:
+				rd_tiles.append(Vector2i(int((t as Array)[0]), int((t as Array)[1])))
 	_ai_reddot_cfg = {
-		# 「冷却时间较长」：两波之间的间隔（秒）。
-		"cooldown_sec": maxf(0.1, num("ai.reddot.cooldown_sec", 120.0)),
-		# 每波刷几位将领。
-		"generals": maxi(1, int(num("ai.reddot.generals", 3.0))),
-		# 每位将领自带几个附属兵（「满编」）。
-		"retinue": maxi(0, int(num("ai.reddot.retinue", 4.0))),
 		# 生成区域缺省半径（格）。
 		"spawn_radius": maxf(0.0, num("ai.reddot.spawn_radius", 4.0)),
 		# 波数：0 = 无限（默认）；> 0 = 只刷这么多波。
 		"waves": maxi(0, int(num("ai.reddot.waves", 0.0))),
+		# ★★ 函数式时间表：第 x 波的生成时间（分钟）/ 将领数（y = a·x + b）。
+		"wave_time_expr": String(rd_wave),
+		"general_count_expr": String(rd_count),
+		# ★★ 关卡选中的「红点生成地块」（config 里默认空 → 退回 spawn_region / 出生点）。
+		"spawn_tiles": rd_tiles,
+		# ★★ 将领类型权重（`[{general, weight}]`）与共享附属单位规格（`[{type, weight}]`）。
+		"general_weights": normalize_weight_list(get_path_value("ai.reddot.general_weights")),
+		"escort_count": maxi(0, int(num("ai.reddot.escort_count", 4.0))),
+		"escort_types": normalize_weight_list(get_path_value("ai.reddot.escort_types")),
 	}
 
 

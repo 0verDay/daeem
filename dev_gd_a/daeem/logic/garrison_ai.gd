@@ -204,21 +204,17 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 			continue
 
 		# ---- 4) 脱战：先看看要不要无消耗招兵，再巡逻 ----
-		# ★★ 编制上限的口径（本轮修的一个实测 bug）：
-		#   · **有关卡** ⇒ 听**关卡数据**（`world.escort_target_of`：谁摆了附属兵就按摆的算，
-		#     没摆的那一方退到它自己在关卡 `factions[].faction_ai` 里写的 `min_retinue`）；
-		#   · **没有关卡**（自由对战、纯单位测试的世界）⇒ 听全局配置的
-		#     `ai.general.min_retinue`（老行为，`tests/test_ai.gd` 那一批靠它）。
-		#   ⚠️ 判据必须是「有没有关卡」，不能是「这一关有没有人摆过附属兵」：
-		#     后者在「有关卡、但谁都没摆」时也是 false，那就会去读全局配置，
-		#     把关卡作者写的 `min_retinue`（比如守军的 **0 = 别给我补兵**）整个无视掉。
-		#   ⚠️ 这里原来**直接吃** config 的 `min_retinue`（默认 3）⇒ 关卡里的编制被完全无视：
-		#     实测「守军 `min_retinue: 0`」照样一路白嫖到 24 个单位，而它招兵是
-		#     **无消耗**的 ⇒ 攻方的兵要付人口、被打得抬不起头，
-		#     「攻占目标区划」那条目标**永远拿不下来**。
+		# ★★ 目标编队规模（本轮口径变更）：直接读**这个将领自己的规格**
+		#   （`u.retinue_target`，由关卡摆放时按 `escort_count` 写入）。
+		#   · 设过（有关卡、且这位将领有规格）⇒ 以关卡为准 —— 作者「设 0 个」就是
+		#     明确的「别给我补兵」（守军就靠它，见下面那句实测）；
+		#   · 没设过（自由对战 / 自动生成的将领）⇒ 退回 `ai.garrison.min_retinue`。
+		#   ⚠️ 读单位字段而不是 `world.escort_target_of(fid, index)`：后者要按 id 找将领
+		#      （`unit_by_id` 是线性扫描），而这里是**每帧每位守将**都要问一次 ——
+		#      直接读字段是 O(1)，且 `retinue_target` 的语义与它完全一致。
 		var want: int = min_retinue
-		if world.level != null:
-			want = int(world.escort_target_of(String(u.faction), int(u.general_index)))
+		if int(u.retinue_target) >= 0:
+			want = int(u.retinue_target)
 		if u.combat_idle_timer >= idle_sec and want > 0:
 			u.garrison_recruit_timer -= dt
 			if u.garrison_recruit_timer <= 0.0:
@@ -722,24 +718,39 @@ static func _patrol_fallback_tile(world, u, z) -> Vector2i:
 ## ★★ `free = true`：这就是需求里那句「无资源消耗地招募单位（或者可以认定该类 AI 资源无限）」。
 ##   `world.start_recruit` 会因此**跳过全部计价**（粮食 / 黄金 / 人口都不扣），
 ##   但保留读条、队列上限、出生点那一整套规则 —— 「资源无限」不等于「瞬间出人」。
-static func _try_recruit(world, u, min_retinue: int) -> bool:
-	if u.retinue_size(world) >= min_retinue:
+static func _try_recruit(world, u, want: int) -> bool:
+	if u.retinue_size(world) >= want:
 		return false
 	if u.train_queue_size() >= world.recruit_queue_max():
 		return false
-	# 招什么兵：与这个守将自己同类型的兵（需求没指定兵种，跟随自己是唯一不武断的选法）。
-	# ⚠️ 必须是**招募表里真的有的** kind，否则会被 world 以拒因 "kind" 挡掉并刷一条事件。
-	var kind := String(u.unit_type)
+	var kind := _pick_recruit_kind(world, u)
+	if kind == "":
+		return false
+	return world.start_recruit(kind, u.id, u.faction, true)
+
+
+## ★★ 补员**招什么兵**：按这位将领自己的**附属单位规格**（`u.retinue_types`）权重随机。
+##
+##   · 有规格（关卡摆放时写进去的 `escort_types`）⇒ 按权重抽兵种 ——
+##     这就是需求里「阵地性 AI 的附属单位是随机生成的，种类和数量由配置决定」；
+##   · 没有规格（自由对战 / 自动生成的将领）⇒ 退回「与该将领同兵种」（旧行为）。
+##
+## ⚠️ 抽到的 kind 必须是**招募表里真的有的**，否则会被 world 以拒因 "kind" 挡掉并刷事件。
+##   不在表里 → 退回表里第一条，免得「地图上摆的守将因为兵种没进招募表而永远补不了员」。
+static func _pick_recruit_kind(world, u) -> String:
+	var kind := ""
+	var types: Array = u.retinue_types
+	if not types.is_empty():
+		# 用「当前编队人数」当抽取序号：每补一个兵都换一个序号 ⇒ 兵种会轮换着来。
+		kind = String(world.pick_weighted_type(u, types, u.retinue_size(world)))
+	if kind == "" or not world.is_unit_recruitable(kind):
+		kind = String(u.unit_type)
 	if not world.is_unit_recruitable(kind):
-		# 守将的兵种不在招募表里（比如 "enemy"）→ 退回表里的第一条，
-		# 免得「地图上摆的守将因为兵种没进招募表而永远补不了员」。
 		var lst: Array = world.recruit_list()
 		if lst.is_empty():
-			return false
+			return ""
 		kind = String((lst[0] as Dictionary).get("kind", ""))
-		if kind == "":
-			return false
-	return world.start_recruit(kind, u.id, u.faction, true)
+	return kind
 
 
 ## ★★ 让 **AI 阵营**的濒死将领「一够条件就再起」（本轮口径）。

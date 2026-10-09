@@ -346,6 +346,17 @@
     "general": {
       "types": ["spearman", "longbowman", "rider"],
 
+      "_caps_comment": [
+        "★★ 编制上限（本轮新增）：**每位将领一个值**，与 types 同序。",
+        "  · 语义 = 「这位将领的目标编队规模」：摆放的将领开局就生成到它，",
+        "    阵地上 AI 脱战后也补到它；红点将领的附属兵数同样以它封顶。",
+        "  · 单位编辑器（tools/unit_editor）的「将领」页可改这三个数。",
+        "  · 读的地方只有一处：logic/config.gd 的 general_cap_at()（缺省 11）。",
+        "  ⚠️ 界面右栏那个「x/11」目前仍是 view/ui_layout.gd 的常量 UNIT_CAP，",
+        "     与这里的数**暂时**各自独立（本版没改界面显示）。"
+      ],
+      "caps": [11, 11, 11],
+
       "_stats_comment": [
         "★★ 将领的**数值覆盖**（本轮新增；editor：tools/unit_editor 的「单位」页 → 将领）。",
         "  下标 = 第几个将领（0 起，与 types 同序）。**没写的键 = 跟随所属兵种** ——",
@@ -1305,9 +1316,12 @@
       "  · 将领濒死后血量回到门槛就**立刻无消耗再起**（garrison_ai._tick_revive）。",
       "  · 巡逻路线由单位 id 派生的固定种子算出（确定性伪随机）。",
       "",
-      "二、红点性 AI（red_dot_ai.gd）—— 按**长冷却**在地图某区域刷一波满编将领：",
-      "  · 每 cooldown_sec 秒刷 generals 位将领，每位自带 retinue 个附属兵（满编）；",
-      "  · 生成区域来自关卡 factions[].spawn_region（point+radius / zone 二选一，缺省用出生点）；",
+      "二、红点性 AI（red_dot_ai.gd）—— 按**函数式**时间表刷满编将领：",
+      "  · 第 x 波的生成时间（分钟）由 wave_time_expr 给出（y = a·x + b，默认 'x'）；",
+      "    每波将领数由 general_count_expr 给出（默认 'x'）；",
+      "  · 每位将领**类型按 general_weights 抽**，并**当场**生成 escort_count 个附属兵",
+      "    （兵种按 escort_types 抽）—— 这就是「满编的随机单位」；",
+      "  · 生成地点优先关卡选的 spawn_tiles，否则 spawn_region / 出生点；",
       "  · 刷出来的将领带整队向 attack_target 行军（缺省 = 最近的敌方区划中心 / 大本营）；",
       "  · waves：0 = 无限波（默认），> 0 = 只刷这么多波。",
       "  ⚠️ 红点阵营要在**关卡** factions 里点名 ai:\"reddot\"（一般不在下面 factions 里写）。",
@@ -1332,11 +1346,39 @@
       "patrol_retinue_leash_tiles": 3
     },
     "reddot": {
+      "_comment": [
+        "★★ 红点性 AI 的默认参数（本轮重做：从「固定冷却 + 固定将领数」改成**函数式**）。",
+        "  · wave_time_expr：第 x 波的**生成时间（分钟）** = y = a·x + b（x 从 1 起）。",
+        "      例：'x' → 第 1 波 1min、第 2 波 2min；'x+1' → 第 1 波 2min、第 2 波 3min；",
+        "      '2x+1' → 第 1 波 3min、第 2 波 5min。默认 'x'。",
+        "  · general_count_expr：第 x 波刷几个将领 = y = a·x + b（默认 'x'）。",
+        "    ★ 解析失败 / 空 → 退回上面的默认（'x'），并各刷至少 1 位。",
+        "  · general_weights：每位将领**类型**的权重（目前 3 位占位将领）。",
+        "      运行时会按权重和归一后再抽；编辑器要求权重和**恰好为 1**。",
+        "  · escort_count / escort_types：红点将领的**共享附属单位规格** ——",
+        "      每位红点将领生成 escort_count 个附属兵，兵种按 escort_types 的权重抽。",
+        "  · spawn_tiles：关卡里选中的「红点生成地块」（[[x,y],...]）；空 = 退回",
+        "      spawn_region / 出生点。这是**关卡数据**，config 里默认空。",
+        "  · steps 之外的旧键（cooldown_sec / generals / retinue）**已废弃**，运行时不再读；",
+        "    保留只是为了「旧数据不炸」与迁移期间对照。spawn_radius / waves 仍然生效。"
+      ],
+      "spawn_radius": 4,
+      "waves": 0,
+      "spawn_tiles": [],
+      "wave_time_expr": "x",
+      "general_count_expr": "x",
+      "general_weights": [
+        { "general": 1, "weight": 1 },
+        { "general": 2, "weight": 1 },
+        { "general": 3, "weight": 1 }
+      ],
+      "escort_count": 4,
+      "escort_types": [
+        { "type": "spearman", "weight": 1 }
+      ],
       "cooldown_sec": 120.0,
       "generals": 3,
-      "retinue": 4,
-      "spawn_radius": 4,
-      "waves": 0
+      "retinue": 4
     }
   },
 

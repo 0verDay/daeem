@@ -262,8 +262,9 @@ def level(app):
 def t_window(app, model) -> None:
     print("\n[1] 窗口 / 页签 / 列表")
     eq(app.page, "campaign", "默认停在「战役」页")
-    eq(list(app.tab_buttons.keys()), ["campaign", "level", "factions", "place", "check"],
-       "五个页签")
+    eq(list(app.tab_buttons.keys()),
+       ["campaign", "level", "factions", "place", "zone", "reddot", "check"],
+       "七个页签")
     eq(app.tab_buttons["campaign"].cget("fg"), app_module.UI["accent"], "当前页签是强调色")
     eq(app.tab_buttons["place"].cget("fg"), app_module.UI["text_dim"], "其它页签是暗色")
     eq(len(app.level_tree.get_children()), len(model.levels), "战役页列出全部关卡")
@@ -338,8 +339,11 @@ def t_canvas(app, model) -> None:
     type_into(app, entry, "%d,%d" % (f["spot"][0] + 1, f["spot"][1] + 1))
     eq((level(app).start_units[-1].x, level(app).start_units[-1].y),
        (f["spot"][0] + 1, f["spot"][1] + 1), "★ 右栏改坐标写进了关卡数据")
-    type_into(app, row(app, "选中的单位", "zone"), "3")
-    eq(level(app).start_units[-1].zone, 3, "右栏改 zone")
+    # ★ zone 改成**下拉**（列出地图里的区划）：选一个 → 写进单位的 zone（区划编号）
+    zone_combo = row(app, "选中的单位", "combo:区划")
+    zid = sorted(app.map_info().zone_ids)[0]
+    pick_combo(app, zone_combo, app.map_info().zone_label(zid))
+    eq(level(app).start_units[-1].zone, int(zid), "右栏用下拉选「区划」→ 写进 zone 编号")
     ai_combo = row(app, "选中的单位", "combo:ai")
     pick_combo(app, ai_combo, "阵地性")
     eq(level(app).start_units[-1].ai, M.AI_GARRISON, "右栏把 AI 改成阵地性")
@@ -690,7 +694,7 @@ def t_same_field(app, model) -> None:
 # ======================================================================
 
 def t_escort_placement(app, model) -> None:
-    print("\n[4b] ★★ 摆放页：摆将领 → 摆附属兵 → 指定归属（escort_of）")
+    print("\n[4b] ★★ 摆放页：摆将领 → 配「附属单位规格」（数量 + 兵种权重）")
     f = _facts(app)
     lv = level(app)
     lv.start_units = []
@@ -700,77 +704,65 @@ def t_escort_placement(app, model) -> None:
     app.set_page("place")
     app.root.update()
 
-    # ---- 1) 画笔选「将领」，在玩家大本营旁边放一位 ----
+    # ---- 1) 画笔选「将领」，在玩家大本营上放一位 ----
     pick_combo(app, row(app, "画笔", "combo:放什么"), "将领")
     app.root.update()
     pick_combo(app, row(app, "画笔", "combo:归属"), f["player"])
-    cell = f["player_base"]
     app.brush_faction = f["player"]
-    app.place_at(cell)
+    app.place_at(f["player_base"])
     eq(len(level(app).start_units), 1, "★ 画布上放过了一个单位")
     gen = level(app).start_units[0]
     ok(gen.is_general(), "★ 它是将领")
     eq(int(gen.general_index or 1), 1, "★★ 第一位将领的序号自动是 1")
-    eq(gen.escort_of, -1, "★ 将领自己不是附属兵")
+    eq(int(gen.escort_count), 0, "★ 新摆的将领默认生成数量 0（光杆）")
 
-    # ---- 2) 画笔换「附属兵」：下拉里能选到刚摆的那位将领 ----
-    pick_combo(app, row(app, "画笔", "combo:放什么"), "附属兵")
-    app.root.update()
-    choices = row(app, "画笔", "combo:属于将领").cget("values")
-    ok(len(choices) == 2, "★★ 「属于将领」下拉 = （不是附属兵）+ 这一方的将领，实际 %r" % (choices,))
-    ok(any("将领 1" in str(c) for c in choices), "★ 里面有刚摆的那位将领（%r）" % (choices,))
-    pick_combo(app, row(app, "画笔", "combo:属于将领"), str(choices[1]))
+    # ---- 2) 画笔里**没有**「附属兵」这一档（逐兵摆放已被规格取代）----
+    brush = row(app, "画笔", "combo:放什么").cget("values")
+    ok("附属兵" not in list(brush), "★★ 画笔不再有「附属兵」，实际 %r" % (brush,))
 
-    # ---- 3) 放两个兵：它们都应当挂到那位将领名下 ----
-    spots = [p for p in sorted(app.map_info().walkable) if p != cell][:2]
-    for s in spots:
-        app.place_at(s)
-    app.root.update()
-    units = level(app).start_units
-    eq(len(units), 3, "★ 一共摆了 3 个（1 将 + 2 兵）")
-    escorts = [u for u in units if u.is_escort()]
-    eq(len(escorts), 2, "★★ 两个兵都算附属部队")
-    eq([int(u.escort_of) for u in escorts], [1, 1], "★★ 它们的归属将领都是 1")
-    eq(len(M.escorts_of(level(app), f["player"], 1)), 2,
-       "★★ 模型数得出「第 1 位将领名下 2 个兵」")
-    ok(M.faction_has_placed_escorts(level(app), f["player"]),
-       "★★ 这一方被判定为「摆了附属部队」（运行时会整个接管这一方）")
-
-    # ---- 4) 导出：附属兵带 escort_of，将领排在兵前面 ----
-    out = level(app).to_dict()["start_units"]
-    eq([u.get("escort_of") for u in out if u.get("escort_of")], [1, 1],
-       "★★ 导出时两个兵都写了 escort_of=1")
-    eq(out[0].get("kind"), "general",
-       "★★ 导出顺序把将领排在它自己的兵前面（world.units 的硬约定）")
-
-    # ---- 5) 右侧选中项里也能改归属：改成「不是附属兵」 ----
-    app.set_page("place")
-    app.root.update()
-    app.selection = ("unit", 1)                       # 第 1 个兵
+    # ---- 3) 侧栏出现「附属单位规格」编辑器 ----
+    app.selection = ("unit", 0)
     app.refresh_all()
     app.root.update()
-    sec = "选中的单位"
-    pick_combo(app, row(app, sec, "combo:属于将领"), ESCORT_NONE_LABEL)
-    eq(level(app).start_units[1].escort_of, -1, "★★ 选「不是附属兵」→ escort_of 回到 -1")
-    ok("escort_of" not in [k for k in level(app).to_dict()["start_units"][1]],
-       "★ 导出时也不再写这个键")
+    ok(("附属单位规格", "生成数量") in sectioned(app),
+       "★★ 侧栏出现「附属单位规格」编辑器（生成数量）")
 
-    # ---- 6) 校验：把归属改回 1，再删掉那位将领 → 应当被拦 ----
-    app.set_page("place")
-    app.selection = ("unit", 1)
-    app.refresh_all()
-    app.root.update()
-    pick_combo(app, row(app, sec, "combo:属于将领"),
-               [c for c in row(app, sec, "combo:属于将领").cget("values")
-                if "将领 1" in str(c)][0])
-    eq(level(app).start_units[1].escort_of, 1, "★ 又指回了第 1 位将领")
-    app.delete_entry(("unit", 0))                     # 把将领删掉
-    app.root.update()
+    # ---- 4) 配规格：数量 4、两行权重 0.5 + 0.5 ----
+    app._set_escort_count(gen, "4")
+    eq(int(gen.escort_count), 4, "★★ 生成数量写进去了")
+    app._set_escort_weight(gen, 0, "0.5")
+    app._add_escort_row(gen)
+    app._set_escort_weight(gen, 1, "0.5")
+    eq(len(gen.escort_types), 2, "加了一行 → 两行权重")
+    ok(abs(gen.spec_weight_sum() - 1.0) < 1e-9, "★★ 权重和 = 1")
+
+    # ---- 5) 导出：将领带 escort_count / escort_types ----
+    out = level(app).to_dict()["start_units"][0]
+    eq(out.get("escort_count"), 4, "★★ 导出带 escort_count")
+    eq(len(out.get("escort_types", [])), 2, "★★ 导出带 escort_types")
+
+    # ---- 6) 校验：权重和 ≠1 → escort_weights_sum ----
+    app._set_escort_weight(gen, 1, "0.9")
     codes = [i.code for i in app.run_checks()]
-    ok("escort_no_general" in codes,
-       "★★ 删掉将领之后校验拦住它（escort_no_general），实际：%s" % codes)
-    ok("escort_faction_no_general" in codes,
-       "★★ 并警告「这一方被整个接管、却一个将领都没有」")
+    ok("escort_weights_sum" in codes,
+       "★★ 权重和 ≠1 被拦（escort_weights_sum），实际：%s" % codes)
+    app._set_escort_weight(gen, 1, "0.5")
+
+    # ---- 7) 校验：数量 > 编制上限 → escort_count_over_cap ----
+    cap = app.config.general_cap(1)
+    app._set_escort_count(gen, str(cap + 1))
+    codes = [i.code for i in app.run_checks()]
+    ok("escort_count_over_cap" in codes,
+       "★★ 数量超过编制上限被拦（escort_count_over_cap），实际：%s" % codes)
+    app._set_escort_count(gen, "4")
+
+    # ---- 8) 新页：区划 / 红点都能进，红点页复用画布 ----
+    app.set_page("zone")
+    app.root.update()
+    ok(app.page == "zone", "区划页能进")
+    app.set_page("reddot")
+    app.root.update()
+    ok(hasattr(app, "canvas") and app.canvas.winfo_exists(), "★ 红点页复用了画布")
 
 def faction_section_frame(app, fid: str):
     """按标题取「某方那一节」的 Frame 本体（`faction_section` 只给标题）。"""
@@ -941,11 +933,14 @@ def t_sidebar_scroll(app, model) -> None:
        % (app.sidebar.winfo_reqheight(), app.sidebar_overflow()))
     app.sidebar_yview("scroll", 3, "units")
     ok(offset() > 0.0, "★ 装不下时向下滚**能动**（偏移 %.0f）" % offset())
-    app.sidebar_yview("scroll", 50, "units")  # 滚过头
+    # ★★ 「滚过头」必须**真的一路滚过头**：`units` 的步长 = 视口 / 10，
+    #   所以固定写 50 在一张很长的表单上**根本滚不到底**（那样这条断言就白测了）。
+    #   用一个远大于任何内容的高度（100000 units）——它必然越过两端、只剩夹值在起作用。
+    app.sidebar_yview("scroll", 100000, "units")  # 滚过头
     ok(offset() <= float(app.sidebar_overflow()) + 1.0,
        "★★ 滚过头被夹在「内容底部」（偏移 %.0f ≤ 溢出 %d）"
        % (offset(), app.sidebar_overflow()))
-    app.sidebar_yview("scroll", -50, "units")  # 往回滚过头
+    app.sidebar_yview("scroll", -100000, "units")  # 往回滚过头
     eq(offset(), 0.0, "★★ 往回滚过头夹在顶部（偏移不为负 = 上方不留空白）")
 
     # ---- C. 把画布内容强行拉长，再造一次溢出（不依赖窗口大小）----

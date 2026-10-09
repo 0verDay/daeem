@@ -60,14 +60,14 @@ func _test_reddot_cfg(cfg) -> void:
 		"id": "E1", "ai": "reddot", "base": [18, 18],
 		"spawn_region": {"kind": "point", "x": 18, "y": 18, "radius": 2},
 		"attack_target": {"kind": "point", "x": 2, "y": 11},
-		"reddot_ai": {"cooldown_sec": 42, "generals": 3, "retinue": 5},
+		"reddot_ai": {"wave_time_expr": "2x+1", "general_count_expr": "x+2", "escort_count": 5},
 	}]})
 	ok(w != null, "能造出 reddot 关卡世界")
 	if w == null:
 		return
 	eq(w.ai_kind_of("E1"), LevelRes.AI_REDDOT, "E1 是红点性 AI")
-	eq(int(w.reddot_ai_cfg("E1").get("cooldown_sec", -1)), 42, "★ 关卡 reddot_ai 覆盖生效")
-	eq(int(w.reddot_ai_cfg("E1").get("retinue", -1)), 5, "★ 每位满编数按关卡覆盖")
+	eq(String(w.reddot_ai_cfg("E1").get("wave_time_expr", "")), "2x+1", "★ 关卡 reddot_ai 覆盖生效")
+	eq(int(w.reddot_ai_cfg("E1").get("escort_count", -1)), 5, "★ 共享附属单位数量按关卡覆盖")
 	ok(w.reddot_states.size() == 1, "红点状态表建了一条（E1）")
 	if w.reddot_states.size() == 1:
 		eq(String((w.reddot_states[0] as Dictionary).get("faction", "")), "E1", "那一方是 E1")

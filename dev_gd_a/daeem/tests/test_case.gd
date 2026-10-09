@@ -245,26 +245,22 @@ func require_world(cfg, world_path: String = "res://logic/world.gd",
 
 ## ★★ 建一个**开局就带附属兵**的干净世界（不带阵营 AI）—— 本轮口径的测试入口。
 ##
-## 为什么需要它（本轮口径变更）：`config.json` 的 `unit.general.escort` 全局缺省
-## **已经删除**，开局有几个附属兵**完全等于关卡 `start_units[]` 里摆出来的那些**
-## （`escort_of` 指向同阵营第几位将领）。于是「开局就有附属兵」这类老用例
-## 不能再靠 config —— 必须像关卡作者那样**在探针关卡里把兵摆出来**。
+## 为什么需要它（本轮口径变更）：开局有几个附属兵**完全由将领自己的规格决定**
+## （`start_units[].escort_count` / `escort_types`），运行时**当场随机生成满编附属兵**
+## （见 `world.fill_general_retinue`）。于是「开局就有附属兵」这类老用例要像关卡作者
+## 那样：**摆 3 位将领 + 给每位写规格**，附属兵由运行时生成。
 ##
-## ★★ 摆在哪：**围着各自的将领一圈**（`ESCORT_RING`，与老 `create_escort` 的
-##    「出生在队长旁边」同一个手感）。为什么不能摆到地图角落去：
-##      · 本文件的好几个用例验的是**拥挤**（一整队人点到同一点），
-##        兵要是从地图另一头出发，那条路会把「拥挤收敛」验成「长途寻路」；
-##      · 关卡作者摆兵也是摆在将领身边的（样例战役就是这么摆的）。
-##    ⇒ 先在**没有摆放**的情况下造一次世界，取到这一方将领的真实出生格，
-##      再把附属兵摆到它周围那些格子上（那些格子由 `spawn_layout_for` 保证可通行）。
+## ★★ 将领摆在哪：取这一方将领的**真实出生格**（先在「没有摆放」的世界里问出来，
+##   那些格子由 `spawn_layout_for` 保证可通行）。为什么不能摆到地图角落：
+##   本文件的好几个用例验的是**拥挤**（一整队人点到同一点），兵要是从地图另一头出发，
+##   那条路会把「拥挤收敛」验成「长途寻路」。
 ##
 ## 于是对这一局而言：
-##   · `general-1` 名下有 `per_general` 个兵（`retinue_of` 数得出来）；
-##   · p1 **不再自动生成将领**，但 `escort_of` 点名的 1/2/3 位会被补出来，
-##     id 正好是 `general-1` / `general-2` / `general-3`（与自动生成的那套一致）；
-##   · `world.units` 里**每位将领都排在它自己的兵前面**（见 world 的分批规则）。
+##   · `general-1` 名下有 `per_general` 个兵（`retinue_of` 数得出来，兵种 = 该将领的类型）；
+##   · p1 **不再自动生成将领**（摆了将领 ⇒ 整方由关卡接管）；
+##   · `world.units` 里**每位将领都排在它自己的兵前面**（见 `_place_faction_units`）。
 ##
-## @param per_general 每位将领摆几个（≤ 0 = 一个都不摆 ⇒ 与 `require_world()` 等价：
+## @param per_general 每位将领生成几个（≤ 0 = 不设规格 ⇒ 与 `require_world()` 等价：
 ##        将领光杆，但**不会**触发「整方由关卡接管」那条路）。
 ## @param faction     摆给哪一方（默认 `p1`；`p1` 是默认阵营，所以 id 不带后缀）。
 ## @return World（`level != null`，可当普通世界用）；失败时返回 null 并记一条断言。
@@ -278,35 +274,32 @@ func require_world_with_escorts(cfg, per_general: int = 3, faction: String = "p1
 	var lcls := script_at(level_path)
 	if wcls == null or lcls == null:
 		return null
-	# ① 先造一次「没有任何摆放」的世界：只为拿到这一方将领的真实出生格
-	#    （`spawn_layout_for` 已经把它们落在可通行格上了）。
+	# ① 先造一次「没有任何摆放」的世界：只为拿到这一方将领的真实出生格。
 	var probe = wcls.create(cfg, map_path, false)
 	if probe == null:
 		ok(false, "探针世界能建出来（%s）" % map_path)
 		return null
 	var spawns: Array = probe.faction_spawns.get(faction, [])
-	# ② 把附属兵摆到那些出生格的四周（绕圈取格子；不够就换外圈）。
+	# ② 摆 3 位将领，每位带「生成 `per_general` 个、兵种 = 自己这一档」的规格。
 	var ccls := script_at(PATH_CONFIG)
 	var c = ccls.load_default() if ccls != null else null
 	var units: Array = []
 	for gi in 3:
 		var gt: String = String(c.general_type_at(gi)) if c != null else "spearman"
-		var anchor := Vector2i(-1, -1)
+		var tile := Vector2i(-1, -1)
 		if gi < spawns.size():
-			anchor = spawns[gi]
-		if anchor.x < 0:
-			anchor = Vector2i(int(probe.map.base.x), int(probe.map.base.y))
-		for i in per_general:
-			var off: Vector2i = ESCORT_RING[i % ESCORT_RING.size()]
-			var ring := i / ESCORT_RING.size()          # 第几圈（整数除法：0 = 内圈）
-			units.append({
-				"faction": faction, "kind": gt, "unit_type": gt,
-				# ★ 附属兵的**类型 = 队长的类型**（口径：长枪兵将领带长枪兵）。
-				#   显式写 `unit_type` 更贴近编辑器导出的样子。
-				"x": anchor.x + off.x * (ring + 1),
-				"y": anchor.y + off.y * (ring + 1),
-				"hold": true, "escort_of": gi + 1,
-			})
+			tile = spawns[gi]
+		if tile.x < 0:
+			tile = Vector2i(int(probe.map.base.x), int(probe.map.base.y))
+		units.append({
+			"faction": faction,
+			"kind": "general" if gi == 0 else "general_%d" % (gi + 1),
+			"unit_type": gt,
+			"general_index": gi + 1,
+			"x": tile.x, "y": tile.y,
+			"escort_count": per_general,
+			"escort_types": [{"type": gt, "weight": 1}],
+		})
 	# ③ 写探针关卡 → 用它造真正的世界
 	var text := JSON.stringify({
 		"map": "frontier",
@@ -330,15 +323,6 @@ func require_world_with_escorts(cfg, per_general: int = 3, faction: String = "p1
 	var w = wcls.create_from_level(cfg, lv, faction, [faction], false)
 	ok(w != null, "世界能建出来（带关卡摆放的附属兵）")
 	return w
-
-
-## 附属兵围着将领摆的那一圈方向（与 `world.ring_offsets()` 同一套手感：
-## 先正交、再斜角 —— 正交邻格比斜角更不容易被墙 / 山挤掉）。
-## ★ 只用于**测试探针**的摆放，所以留在测试侧（玩法逻辑里那一份仍是权威）。
-const ESCORT_RING: Array = [
-	Vector2i(1, 0), Vector2i(0, 1), Vector2i(-1, 0), Vector2i(0, -1),
-	Vector2i(1, 1), Vector2i(-1, 1), Vector2i(-1, -1), Vector2i(1, -1),
-]
 
 
 ## 删掉上面那个探针关卡留下的临时文件（测试末尾调一次；工程内不能留垃圾）。

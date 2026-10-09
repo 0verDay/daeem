@@ -38,6 +38,7 @@ from . import model as model_mod
 from .configfile import JsonError, parse_number
 from .model import (
     BUILDING_FIELDS,
+    GENERAL_CAP_FIELD,
     GENERAL_STAT_FIELDS,
     ICON_HINT,
     LEVEL_ATTACK_FIELDS,
@@ -937,6 +938,10 @@ class EditorApp:
         self._entry_row(sec, Field("name", "名字", "text"), gen.name,
                         lambda v, g=gen: self.model.set_general(g.index, "name", v))
 
+        # ★★ 编制上限（本轮新增）：这位将领的目标编队规模。
+        self._entry_row(sec, GENERAL_CAP_FIELD, gen.cap,
+                        lambda v, g=gen: self.model.set_general(g.index, "cap", v))
+
         # ---- 数值（跟随兵种 / 自己填）
         nsec = self._section("数值", "没改过的项跟着上面的类型走")
         for field in GENERAL_STAT_FIELDS:
@@ -948,13 +953,14 @@ class EditorApp:
                 clear=lambda g=gen, f=field: self.model.set_general_stat(g.index, f.key, None),
                 inherited_text=("　跟随类型：%s（%s）" % (fmt(inherited), gen.type_id)
                                 if inheriting else "　自己填的值（按「跟随」回到类型数值）"))
-        # ★★ 「开局护卫数」这个输入框**已经删掉**（产品决策）：开局带几个附属兵不再由
-        #    `config.json` 给一个全局缺省，只能在**战役编辑器的摆放页**里一个一个摆出来。
+        # ★★ 「开局护卫数」这个输入框**已经删掉**（产品决策）：开局带几个附属单位不再由
+        #    `config.json` 给一个全局缺省，而是由**战役编辑器**给每位将领 / 红点配一份
+        #    「附属单位规格」（类型 + 权重 + 生成数量），运行时**当场随机生成**。
         #    ⚠️ 附属兵这个**玩法机制本身一个字没改**（将领带兵 / 点一个兵选整队 /
         #       招募 / 濒死集结 / 队伍列表都在），去掉的只是「开局白送几个」这个配置项。
         #    ★ 这行灰字是**有意留的**：用户就是被「在两个编辑器里改同一件事」坑过的。
-        self._hint(nsec, "开局附属兵改在**战役编辑器的摆放页**里摆"
-                         "（每个兵一个坐标、可指定属于哪个将领）—— 这里不再提供这个全局缺省。")
+        self._hint(nsec, "生成的附属兵数量**不能超过上面的「编制上限」**；"
+                         "规格（类型 + 权重 + 生成数量）在**战役编辑器的摆放页 / 红点页**里配。")
 
         # ---- 造价与招募（recruit.zone.list）
         rsec = self._section("造价与招募", "recruit.zone.list")

@@ -57,9 +57,11 @@ func _cases() -> void:
 func _test_config(cfg) -> void:
 	ok(cfg.ai_garrison_cfg().has("patrol_interval_sec"), "ai.garrison 有巡逻间隔")
 	ok(cfg.ai_garrison_cfg().has("min_retinue"), "ai.garrison 有满编门槛")
-	ok(cfg.ai_reddot_cfg().has("cooldown_sec"), "ai.reddot 有冷却")
-	ok(cfg.ai_reddot_cfg().has("generals"), "ai.reddot 有每波将领数")
-	ok(cfg.ai_reddot_cfg().has("retinue"), "ai.reddot 有每位满编数")
+	ok(cfg.ai_reddot_cfg().has("wave_time_expr"), "ai.reddot 有生成时间表达式")
+	ok(cfg.ai_reddot_cfg().has("general_count_expr"), "ai.reddot 有将领数表达式")
+	ok(cfg.ai_reddot_cfg().has("general_weights"), "ai.reddot 有将领类型权重")
+	ok(cfg.ai_reddot_cfg().has("escort_count"), "ai.reddot 有共享附属单位数量")
+	ok(cfg.ai_reddot_cfg().has("spawn_tiles"), "ai.reddot 有生成地块表")
 	ok(cfg.ai_reddot_cfg().has("spawn_radius"), "ai.reddot 有生成半径")
 	ok(cfg.ai_reddot_cfg().has("waves"), "ai.reddot 有波数")
 
@@ -166,19 +168,19 @@ func _test_reddot_spawn(cfg) -> void:
 	var st: Dictionary = w.reddot_states[0]
 	eq(String(st.get("faction", "")), "E1", "红点阵营是 E1")
 	var params: Dictionary = st["params"]
-	near(float(params["cooldown_sec"]), 10.0, 1e-6, "关卡覆盖的冷却生效")
-	eq(int(params["generals"]), 2, "关卡覆盖的每波将领数生效")
-	eq(int(params["retinue"]), 3, "关卡覆盖的每位满编数生效")
+	eq(String(params["wave_time_expr"]), "x+1", "关卡覆盖的生成时间表达式生效")
+	eq(String(params["general_count_expr"]), "x+1", "关卡覆盖的将领数表达式生效")
+	eq(int(params["escort_count"]), 3, "关卡覆盖的共享附属单位数量生效")
 	# E1 没有大本营 / 资源池（红点也不需要）。
 	ok(w.find_base_of("E1") == null, "★ 红点阵营没有大本营")
 	ok(w.resource_pool_for("E1") == null, "★ 红点阵营没有资源池")
 	# 初始没有 E1 的单位（红点不预置将领）。
 	eq(_units_of(w, "E1").size(), 0, "红点阵营开局没有单位")
-	# 推进冷却 → 刷一波。
-	RedDotAiRes.update(w, cfg, 11.0)
+	# 推进到第 1 波的到点时间：wave_time_expr = "x+1" ⇒ 第 1 波在 2min = 120s。
+	RedDotAiRes.update(w, cfg, 121.0)
 	var units := _units_of(w, "E1")
-	# 2 位将领 ×（1 自己 + 3 满编）= 8 个单位。
-	eq(units.size(), 8, "★ 一波刷出 2 位满编将领（2×4 = 8 个单位）")
+	# general_count_expr = "x+1" ⇒ 第 1 波 2 位将领；每位 escort_count=3 ⇒ 1+3=4 个单位。
+	eq(units.size(), 8, "★ 一波刷出 2 位满编将领（2×(1+3) = 8 个单位）")
 	var gens := _generals_of(w, "E1")
 	eq(gens.size(), 2, "★ 其中 2 位是将领")
 	# 将领带着整队向目标点行军（下过命令：有路径或已移动）。
@@ -217,7 +219,9 @@ func _reddot_world(cfg) -> RefCounted:
 			"id": "E1", "ai": "reddot", "base": [18, 18],
 			"spawn_region": {"kind": "point", "x": 18, "y": 18, "radius": 3},
 			"attack_target": {"kind": "point", "x": 7, "y": 2},
-			"reddot_ai": {"cooldown_sec": 10, "generals": 2, "retinue": 3, "spawn_radius": 3},
+			"reddot_ai": {"wave_time_expr": "x+1", "general_count_expr": "x+1",
+				"escort_count": 3, "spawn_radius": 3,
+				"general_weights": [{"general": 1, "weight": 1}]},
 		}],
 		"start_units": [],
 	}

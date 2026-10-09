@@ -91,6 +91,16 @@ from .model import (
 #: 「属于将领」下拉里表示「不是附属兵」的那一项（普通摆放单位）。
 ESCORT_NONE_LABEL = "（不是附属兵）"
 
+
+def _fmt_num(v: Any) -> str:
+    """数字写成好看的字符串（整数不带 `.0`）—— 输入框初值用。"""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return str(v)
+    return str(int(f)) if f == int(f) else str(f)
+
+
 #: 界面配色（与另两个编辑器同一套 —— 三个工具看起来是一家的）。
 UI = {
     "bg": "#1e1f22",
@@ -106,18 +116,24 @@ UI = {
     "canvas_bg": "#17181a",
 }
 
-#: 五个页签：key → （按钮文字，状态栏提示）。
+#: 七个页签：key → （按钮文字，状态栏提示）。
 PAGES: Tuple[Tuple[str, str, str], ...] = (
     ("campaign", "战役", "战役页：名字 / 简介 / 默认模式 / 关卡顺序（上下箭头排、增删关卡）"),
     ("level", "关卡", "关卡页：当前关的名字 / 模式 / 地图 / 目标 / 额外失败条件"),
-    ("factions", "阵营与AI", "阵营页：每一方的 AI 指派 / 资源 / 大本营 / 进攻目标；玩家席位单独一栏"),
-    ("place", "摆放", "摆放页：画布上点一下放东西；右键删；滚轮缩放；中键或空格+左键拖动；「设进攻目标」模式"),
-    ("check", "校验与导出", "校验页：跑 16 条硬拦截 + 4 条警告；有拦截时不许写文件"),
+    ("factions", "阵营与AI", "阵营页：每一方的 AI 指派 / 大本营 / 进攻目标；玩家席位单独一栏"),
+    ("place", "摆放", "摆放页：画布上点一下放将领/单位/建筑；右键删；滚轮缩放；中键或空格+左键拖动；「设进攻目标」模式"),
+    ("zone", "区划", "区划页：开局每一块地归哪个阵营（关卡覆盖地图的 zone_list[].owner）"),
+    ("reddot", "红点", "红点页：选生成地块 / 生成频率与将领数（函数表达式）/ 将领类型权重 / 共享附属单位规格"),
+    ("check", "校验与导出", "校验页：跑全部硬拦截 + 警告；有拦截时不许写文件"),
 )
 
 #: ★★ 分工说明（印在摆放页的画布上方，**不能只写在 README 里**）。
 CANVAS_HINT = ("地形 / 区划 / 中心是从地图读出来画成**背景**的；要改地形、区划或中心，"
                "请点本页的『打开地图编辑器』。")
+
+#: 红点页画布上方那句话（红点页复用同一块画布，但手势含义不同）。
+REDDOT_CANVAS_HINT = ("左键点一个**空地格** = 把它加进 / 移出「红点生成地块」"
+                      "（游戏里这些格子的外观**不会有任何区别**）；右键点 = 移出。")
 
 #: 按住空格时印在状态栏上的话（`on_space_down` 用；测试也读它，别在测试里再拼一遍）。
 PAN_MODE_HINT = ("平移模式：按住空格 + 左键拖动 = 移动视野（松开空格回到「放东西 / 选中」；"
@@ -196,6 +212,8 @@ class EditorApp:
         self.selection: Optional[Tuple[str, int]] = None
         #: 「设进攻目标」模式：选中的阵营 id（None = 不在这个模式里）。
         self.target_mode_faction: Optional[str] = None
+        #: ★★ 红点页当前编辑的阵营（红点生成配置挂在它的 `reddot_ai` 上）。
+        self.reddot_faction: str = ""
         #: 画布视口（与 map_editor 同一套：zoom + ox/oy 像素偏移）。
         self.zoom = 1.0
         self.ox = 0.0
@@ -598,7 +616,7 @@ class EditorApp:
         for key, btn in self.tab_buttons.items():
             btn.configure(fg=(UI["accent"] if key == self.page else UI["text_dim"]),
                           bg=(UI["panel_alt"] if key == self.page else UI["panel"]))
-        if self.page in ("place",):
+        if self.page in ("place", "reddot"):
             self._build_canvas_page()
         elif self.page == "check":
             self._build_check_page()
@@ -617,6 +635,8 @@ class EditorApp:
             child.destroy()
         if self.page == "campaign":
             self._build_campaign_page()
+        elif self.page == "zone":
+            self._build_zone_page()
         else:
             self._build_level_page()
 
@@ -802,7 +822,8 @@ class EditorApp:
 
         head = tk.Frame(self.canvas_host, bg=UI["bg"])
         head.pack(side="top", fill="x", padx=10, pady=(6, 2))
-        tk.Label(head, text=CANVAS_HINT, bg=UI["bg"], fg=UI["warn"], justify="left",
+        hint = CANVAS_HINT if self.page == "place" else REDDOT_CANVAS_HINT
+        tk.Label(head, text=hint, bg=UI["bg"], fg=UI["warn"], justify="left",
                  font=("Microsoft YaHei UI", 9)).pack(side="left")
         self._button(head, "打开地图编辑器", self.open_map_editor,
                      padx=10).pack(side="right")
@@ -831,11 +852,16 @@ class EditorApp:
         self._button(bar, "－", lambda: self.zoom_by(1 / ZOOM_STEP)).pack(side="left", padx=2)
         self._button(bar, "＋", lambda: self.zoom_by(ZOOM_STEP)).pack(side="left", padx=2)
         self._button(bar, "适应视图", self.fit_view).pack(side="left", padx=6)
-        self.target_button = self._button(bar, "设进攻目标…", self.do_target_mode,
-                                          bg="#3a3220", fg=UI["warn"])
-        self.target_button.pack(side="left", padx=10)
-        tk.Label(bar, text="左键放 / 选　右键删（大本营不在这里删）　中键或空格+左键拖动平移　滚轮缩放　Esc 退出目标模式",
-                 bg=UI["bg"], fg=UI["text_dim"],
+        if self.page == "place":
+            self.target_button = self._button(bar, "设进攻目标…", self.do_target_mode,
+                                              bg="#3a3220", fg=UI["warn"])
+            self.target_button.pack(side="left", padx=10)
+            bar_hint = ("左键放 / 选　右键删（大本营不在这里删）　"
+                        "中键或空格+左键拖动平移　滚轮缩放　Esc 退出目标模式")
+        else:
+            bar_hint = ("左键点空地 = 加/移出红点生成地块　右键 = 移出　"
+                        "中键或空格+左键拖动平移　滚轮缩放")
+        tk.Label(bar, text=bar_hint, bg=UI["bg"], fg=UI["text_dim"],
                  font=("Microsoft YaHei UI", 8)).pack(side="left", padx=10)
 
         self.canvas.update_idletasks()
@@ -912,7 +938,7 @@ class EditorApp:
 
     def redraw(self) -> None:
         self._redraw_job = None
-        if not hasattr(self, "canvas") or self.page != "place":
+        if not hasattr(self, "canvas") or self.page not in ("place", "reddot"):
             return
         try:
             self.canvas.delete("all")
@@ -1011,8 +1037,9 @@ class EditorApp:
         # ---- 摆放的建筑 / 单位 ----
         if lv is not None:
             for i, b in enumerate(lv.start_buildings):
-                self._draw_cell_marker(b.point(), "建", self.faction_color(b.owner),
-                                       ("building", i))
+                # ★★ 建筑**所见即所得**：按类型画不同的形状（城墙 = 线段、箭塔 = 圆点、
+                #    大本营 = 方块），不再是统一的「建」字 —— 一眼认出摆的是什么。
+                self._draw_building_marker(b, self.faction_color(b.owner), ("building", i))
             # ★★ 附属部队先画「它属于哪位将领」的连线（画在方块下面）——
             #    这是「所见即所得」那条要求在本页的落点：一眼能看出哪个兵跟着谁。
             for i, u in enumerate(lv.start_units):
@@ -1049,6 +1076,15 @@ class EditorApp:
                 self.canvas.create_line(sx, sy, tx, ty, fill=C["arrow"], width=2,
                                         arrow="last", dash=(4, 3))
 
+        # ---- 红点生成地块（只红点页画；游戏里这些格子外观**没有任何区别**）----
+        if self.page == "reddot":
+            for (tx, ty) in self.reddot_spawn_tiles():
+                sx, sy = self.cell_origin(tx, ty)
+                self.canvas.create_rectangle(sx + 3, sy + 3, sx + size - 3, sy + size - 3,
+                                             outline=C["arrow"], width=2, dash=(3, 2))
+                self.canvas.create_text(sx + size / 2, sy + size / 2, text="点",
+                                        fill=C["arrow"], font=("Microsoft YaHei UI", 8))
+
         # ---- 悬停格 ----
         if self.hover is not None:
             hx, hy = self.hover
@@ -1076,6 +1112,36 @@ class EditorApp:
             self.canvas.create_text(sx + size - pad * 0.9, sy + pad * 0.9, text=corner,
                                     fill="#101010", anchor="ne",
                                     font=("Microsoft YaHei UI", max(7, int(size * 0.22))))
+        if self.selection == tag:
+            self.canvas.create_rectangle(sx + 1, sy + 1, sx + size - 1, sy + size - 1,
+                                         outline=C["select"], width=2)
+
+    def _draw_building_marker(self, b: BuildingEntry, color: str,
+                              tag: Tuple[str, int]) -> None:
+        """★ 建筑的**所见即所得**画法：按类型画不同形状 + 归属色。
+
+        · 城墙 = 一条横贯整格的**粗线**（本体就是整格）；
+        · 箭塔 = 居中的**实心圆**（本体比一格小一圈）；
+        · 大本营 = 居中的**方块**（本体比一格小一圈）；
+        · 其它类型（自定义建筑）→ 退回「圆盘 + 类型首字」（与单位同一种画法）。
+        """
+        size = self.tile_px()
+        sx, sy = self.cell_origin(b.x, b.y)
+        t = str(b.type)
+        if t == "wall":
+            self.canvas.create_line(sx + 2, sy + size / 2, sx + size - 2, sy + size / 2,
+                                    fill=color, width=max(3, int(size * 0.14)))
+        elif t == "tower":
+            pad = size * 0.28
+            self.canvas.create_oval(sx + pad, sy + pad, sx + size - pad, sy + size - pad,
+                                    fill=color, outline="#101010")
+        elif t == "base":
+            pad = size * 0.22
+            self.canvas.create_rectangle(sx + pad, sy + pad, sx + size - pad, sy + size - pad,
+                                         fill=color, outline="#101010")
+        else:
+            self._draw_cell_marker((b.x, b.y), (t[:1] or "建"), color, tag)
+            return
         if self.selection == tag:
             self.canvas.create_rectangle(sx + 1, sy + 1, sx + size - 1, sy + size - 1,
                                          outline=C["select"], width=2)
@@ -1160,7 +1226,7 @@ class EditorApp:
 
     def on_left_down(self, event) -> None:
         """左键按下：空格按住 → 武装一次平移；否则记下起点，等松手时再决定「点 / 拖」。"""
-        if self.page != "place":
+        if self.page not in ("place", "reddot"):
             return
         self._left_down_at = (event.x, event.y)
         try:
@@ -1261,9 +1327,12 @@ class EditorApp:
         ⚠️ `on_left_down` 里已经拦掉了「空格 + 拖动」：走到这里的都已经不是平移，
            所以这里只看「目标模式 / 选中 / 放东西」三件事。
         """
-        if self.page != "place":
+        if self.page not in ("place", "reddot"):
             return
         cell = self.screen_to_cell(event.x, event.y)
+        if self.page == "reddot":
+            self._toggle_reddot_tile(cell)
+            return
         if self.target_mode_faction is not None:
             self._click_target(cell)
             return
@@ -1284,9 +1353,13 @@ class EditorApp:
         self.place_at(cell)
 
     def on_right_click(self, event) -> None:
-        if self.page != "place":
+        if self.page not in ("place", "reddot"):
             return
         cell = self.screen_to_cell(event.x, event.y)
+        if self.page == "reddot":
+            self._toggle_reddot_tile(cell, force_remove=True)
+            self._focus_canvas()
+            return
         hit = self._hit_test(cell)
         if hit is None:
             self.status("(%d,%d) 上没有可删的东西（大本营在「阵营与AI」页里改）" % cell)
@@ -1393,27 +1466,23 @@ class EditorApp:
             entry = UnitEntry(faction, kind, cell[0], cell[1])
             if self.brush_kind == "general":
                 # ★★ 新摆的将领序号 = 这一方已有将领的**最大序号 + 1**（1 起）——
-                #    与运行时「第 i 位将领」的编号必须同一套（`escort_of` 指的就是它）。
-                #    ⚠️ 不能用「已有几位 + 1」：作者可能把序号改成 1/3 之后再摆一位，
-                #       那样会撞成 3（校验的 `general_index_dup` 会拦，但没必要先撞上）。
+                #    与运行时「第 i 位将领」的编号必须同一套。
+                #    ⚠️ 不能用「已有几位 + 1」：作者可能把序号改成 1/3 之后再摆一位。
                 used = [int(g.general_index or 1) for g in
                         model_mod.placed_generals(lv, faction)]
                 entry.general_index = (max(used) + 1) if used else 1
                 gtypes = self.config.general_types or [""]
                 entry.unit_type = gtypes[min(entry.general_index - 1, len(gtypes) - 1)]
-            elif self.brush_kind == "escort":
-                # ★★ 附属兵：必须挂到一个**真的摆了**的将领上（校验会拦没得挂的）。
-                entry.escort_of = int(self.brush_escort_of)
+                # ★★ 附属单位规格的初始值：数量 0（光杆 —— 作者自己去侧栏填），
+                #    类型 = 自己这一档（一条权重 1 的行，改起来最省事）。
+                entry.escort_count = 0
+                entry.escort_types = ([{"type": entry.unit_type, "weight": 1}]
+                                      if entry.unit_type else [])
             lv.start_units.append(entry)
             lv.mark_declared("start_units")
             self.selection = ("unit", len(lv.start_units) - 1)
-            if self.brush_kind == "escort":
-                self.status("放了附属兵「%s」在 (%d,%d)：属于「%s」（归属 %s）"
-                            % (kind, cell[0], cell[1], self._escort_label(entry),
-                               faction or "？"))
-            else:
-                self.status("放了单位「%s」在 (%d,%d)（归属 %s）"
-                            % (kind, cell[0], cell[1], faction or "？"))
+            self.status("放了单位「%s」在 (%d,%d)（归属 %s）"
+                        % (kind, cell[0], cell[1], faction or "？"))
         self.refresh_all()
 
     def delete_entry(self, tag: Tuple[str, int]) -> None:
@@ -1857,6 +1926,10 @@ class EditorApp:
                 self._sidebar_factions()
             elif self.page == "place":
                 self._sidebar_place()
+            elif self.page == "zone":
+                self._sidebar_zone()
+            elif self.page == "reddot":
+                self._sidebar_reddot()
             else:
                 self._sidebar_check()
         finally:
@@ -2379,27 +2452,15 @@ class EditorApp:
             return
         section = self._section("画笔", "左键点空格 = 放一个；右键点它 = 删；点已有的 = 选中")
         self._combo_cell(section, "放什么", self._brush_label(),
-                         ("单位", "附属兵", "将领", "建筑"), self._set_brush_kind)
-        values = (self.config.unit_types if self.brush_kind in ("unit", "escort")
+                         ("单位", "将领", "建筑"), self._set_brush_kind)
+        values = (self.config.unit_types if self.brush_kind == "unit"
                   else self.config.building_types if self.brush_kind == "building"
                   else ["general"])
-        # ★ 附属兵先选兵种（选完再选「属于哪个将领」），所以「种类」这一行对它同样有意义。
         self._combo_cell(section, "种类", self.brush_value,
                          tuple(values) or ("（config 里没有）",), self._set_brush_value)
         factions = self.all_faction_ids()
         self._combo_cell(section, "归属", self.brush_faction or (factions[0] if factions else ""),
                          tuple(factions) or ("（没有阵营）",), self._set_brush_faction)
-        # ★★ 附属兵画笔：放下去的时候就把「属于哪个将领」写进 `escort_of`。
-        #    下拉只列**这一方真的摆了**的将领 —— 运行时不会为「摆过附属部队的那一方」
-        #    再补 3 位将领（见 README 的接管规则），所以列一个不存在的将领必然报错。
-        if self.brush_kind == "escort":
-            self._combo_cell(section, "属于将领", self._escort_choice_label(self.brush_faction),
-                             self._escort_choices(self.brush_faction),
-                             lambda text: self._set_brush_escort(text))
-            self._hint(section, "★ 附属兵会被绑到那个将领名下：游戏里点它跟点将领是**同一支部队**"
-                                "（点一个选中整队、将领濒死时它去集结）。"
-                                "「属于将领」的下拉里只有**这一方已经摆好的**将领 —— "
-                                "先把将领摆下来，再来摆它的兵。")
 
         if self.target_mode_faction is not None:
             self._hint(section, "★ 正在「设进攻目标」模式：「%s」—— 点区划 / 空格改它的目标，Esc 退出"
@@ -2452,6 +2513,8 @@ class EditorApp:
                                  str(unit.general_index or 1),
                                  tuple(str(i) for i in self.config.general_indices()),
                                  lambda text: self._set_unit_field("general_index", int(text)))
+                # ★★ 附属单位规格（本轮新增）：生成数量 + 兵种权重表。
+                self._spec_editor(sec, unit)
             else:
                 # ★★ 附属部队：这个兵属于哪位将领（`escort_of`）。
                 #    只列**这一方真的摆了**的将领 —— 运行时按「同阵营 + 序号」找队长。
@@ -2462,8 +2525,13 @@ class EditorApp:
                                 "将领濒死时它去集结）；选「（不是附属兵）」= 它就是普通摆放单位。")
             self._entry_cell(sec, "x,y", "%d,%d" % (unit.x, unit.y),
                              lambda text: self._set_unit_point(text))
-            self._entry_cell(sec, "zone", str(unit.zone),
-                             lambda text: self._set_unit_field("zone", _as_int(text, -1)))
+            # ★★ 阵地性 AI 的**归属区划**：改成**下拉**（列出当前地图里的每一个区划），
+            #    值就是区划**编号**。以前是一个裸数字输入框 —— 用户填 `c1` 这种名字会被
+            #    解析成 -1（「怎么改都变 -1」），而地图上区划显示的正是那种名字。
+            self._combo_cell(sec, "区划", self._zone_label(unit.zone),
+                             self._zone_choices(),
+                             lambda text: self._set_unit_field(
+                                 "zone", self._zone_id_from_label(text)))
             self._combo_cell(sec, "ai", self._ai_label(unit.ai),
                              tuple(self._ai_label(k) for k in AI_KINDS),
                              lambda text: self._set_unit_field("ai", self._ai_value(text)))
@@ -2491,13 +2559,13 @@ class EditorApp:
             self._section("选中的东西", "在画布上点一个已有的单位 / 建筑，这里就会出现它的全部字段")
 
     def _brush_label(self) -> str:
-        return {"unit": "单位", "escort": "附属兵", "general": "将领",
+        return {"unit": "单位", "general": "将领",
                 "building": "建筑"}.get(self.brush_kind, "单位")
 
     def _set_brush_kind(self, label: str) -> None:
-        self.brush_kind = {"单位": "unit", "附属兵": "escort", "将领": "general",
+        self.brush_kind = {"单位": "unit", "将领": "general",
                            "建筑": "building"}.get(label, "unit")
-        if self.brush_kind in ("unit", "escort"):
+        if self.brush_kind == "unit":
             self.brush_value = self.config.unit_types[0] if self.config.unit_types else "enemy"
         elif self.brush_kind == "building":
             self.brush_value = (self.config.building_types[0]
@@ -2513,12 +2581,446 @@ class EditorApp:
 
     def _set_brush_faction(self, text: str) -> None:
         self.brush_faction = str(text)
-        # ★ 换了阵营 → 「属于将领」那个下拉的内容也全变了（只列这一方摆过的将领）。
-        self.brush_escort_of = 1
         self.status("画笔归属：%s" % self.brush_faction)
         self.refresh_all()
 
-    # ---- ★★ 附属部队（`start_units[].escort_of`）----
+    # ==================================================================
+    # ★★ 附属单位规格编辑器（将领：生成数量 + 兵种权重表）
+    # ==================================================================
+
+    def _spec_editor(self, parent, unit: UnitEntry) -> None:
+        """给选中的**将领**编辑它的附属单位规格（`escort_count` / `escort_types`）。
+
+        · 数量：一个数字输入框（≤ 这位将领的编制上限，实时红字提示）；
+        · 权重表：可变长度行（每行 = 兵种下拉 + 权重输入 + 「－」），下面一个「＋」；
+        · 实时显示权重和（≠1 时红字提示 —— 校验会拦，这里先给眼睛看到）。
+        """
+        box = self._section("附属单位规格",
+                            "运行时**当场随机生成**满编附属兵（类型按权重抽、数量 ≤ 编制上限）")
+        cap = self.config.general_cap(int(unit.general_index or 1))
+        self._entry_cell(box, "生成数量", str(int(unit.escort_count)),
+                         lambda text: self._set_escort_count(unit, text))
+        self._hint(box, "编制上限 = %d（在单位编辑器的「将领」页改）；"
+                        "阵地 AI 脱战后也按这份规格补员。" % cap)
+
+        tk.Label(box, text="兵种 / 权重", bg=UI["panel"], fg=UI["text_dim"],
+                 font=("Microsoft YaHei UI", 8)).pack(side="top", anchor="w", pady=(4, 0))
+        for i, row in enumerate(unit.escort_types):
+            r = tk.Frame(box, bg=UI["panel"])
+            r.pack(side="top", fill="x", pady=1)
+            types = tuple(self.config.unit_types) or ("—",)
+            var = tk.StringVar(value=str(row.get("type", "")))
+            combo = ttk.Combobox(r, textvariable=var, state="readonly", values=types, width=12)
+            combo.pack(side="left")
+            combo.bind("<<ComboboxSelected>>",
+                       lambda _e, idx=i, v=var, u=unit: self._set_escort_type(u, idx, v.get()))
+            wvar = tk.StringVar(value=_fmt_num(row.get("weight", 0.0)))
+            w = ttk.Entry(r, textvariable=wvar, width=6)
+            w.pack(side="left", padx=(4, 0))
+            w.bind("<Return>", lambda _e, idx=i, v=wvar, u=unit: self._set_escort_weight(u, idx, v.get()))
+            w.bind("<FocusOut>", lambda _e, idx=i, v=wvar, u=unit: self._set_escort_weight(u, idx, v.get()))
+            self._button(r, "－", lambda idx=i, u=unit: self._remove_escort_row(u, idx),
+                         padx=4).pack(side="left", padx=(4, 0))
+        self._button(box, "＋ 加一行", lambda u=unit: self._add_escort_row(u)).pack(
+            anchor="w", pady=(4, 0))
+        total = unit.spec_weight_sum()
+        ok = bool(unit.escort_types) and abs(total - 1.0) <= 1e-3
+        if not unit.escort_types and int(unit.escort_count) > 0:
+            self._hint(box, "★ 设了数量却没有类型权重表 —— 校验会拦（`escort_types_missing`）")
+        elif not ok:
+            self._hint(box, "★ 权重和 = %.4f（**必须恰好为 1**）—— 校验会拦"
+                            "（`escort_weights_sum`）" % total)
+        else:
+            self._hint(box, "权重和 = 1 ✓")
+
+    def _spec_changed(self, unit: UnitEntry, what: str) -> None:
+        unit.declared.add(model_mod.ESCORT_TYPES_KEY)
+        lv = self.level()
+        if lv is not None:
+            lv.mark_declared("start_units")
+        self.status(what)
+        self.refresh_all()
+
+    def _set_escort_count(self, unit: UnitEntry, text: str) -> None:
+        unit.escort_count = max(0, model_mod._as_int(text, 0))
+        unit.declared.add(model_mod.ESCORT_COUNT_KEY)
+        lv = self.level()
+        if lv is not None:
+            lv.mark_declared("start_units")
+        self.status("附属单位数量 = %d" % unit.escort_count)
+        self.refresh_all()
+
+    def _set_escort_type(self, unit: UnitEntry, row: int, type_id: str) -> None:
+        if 0 <= row < len(unit.escort_types):
+            unit.escort_types[row]["type"] = str(type_id)
+            self._spec_changed(unit, "附属单位类型 → %s" % type_id)
+
+    def _set_escort_weight(self, unit: UnitEntry, row: int, text: str) -> None:
+        if 0 <= row < len(unit.escort_types):
+            unit.escort_types[row]["weight"] = max(0.0, model_mod._as_float(text, 0.0))
+            self._spec_changed(unit, "附属单位权重 = %s"
+                               % _fmt_num(unit.escort_types[row]["weight"]))
+
+    def _add_escort_row(self, unit: UnitEntry) -> None:
+        default = self.config.unit_types[0] if self.config.unit_types else ""
+        unit.escort_types.append({"type": default, "weight": 0})
+        self._spec_changed(unit, "加了一行附属单位类型")
+
+    def _remove_escort_row(self, unit: UnitEntry, row: int) -> None:
+        if 0 <= row < len(unit.escort_types):
+            del unit.escort_types[row]
+            self._spec_changed(unit, "删了一行附属单位类型")
+
+    # ==================================================================
+    # ★★ 区划页：开局归属
+    # ==================================================================
+
+    def _owner_choices(self) -> Tuple[str, ...]:
+        """区划页的「归属」下拉：用地图的 / 各阵营 / 清空。
+
+        ⚠️ 名字**不能**叫 `_zone_choices`：那个是「列出地图里的各区划」（目标 / 失败条件 /
+        单位 `zone` 三处用它），两个同名方法在 Python 里**后一个会盖掉前一个**（实测踩到）。
+        """
+        return tuple(["（用地图的）"] + [str(f) for f in self.all_faction_ids()]
+                     + ["（清空 = 无主）"])
+
+    def _zone_choice_label(self, lv: LevelModel, zid: int) -> str:
+        cur = lv.zone_owner(zid)
+        if cur is None:
+            return "（用地图的）"
+        return "（清空 = 无主）" if cur == "" else str(cur)
+
+    def _build_zone_page(self) -> None:
+        """区划页：一张表 —— 每一块地开局归哪个阵营（写 `zones[].owner`）。
+
+        ★ 「不选」= 用地图自带的归属（不写这个键）与「清空 = 无主」（写空串）是两件事。
+        """
+        for child in self.action_bar.winfo_children():
+            child.destroy()
+        host = self.list_host
+        for child in host.winfo_children():
+            child.destroy()
+        info = self.map_info()
+        lv = self.level()
+        if info is None or lv is None:
+            tk.Label(host, text="这一关还没有地图（或地图不存在）：去「关卡」页选一张",
+                     bg=UI["bg"], fg=UI["warn"]).pack(anchor="w", padx=10, pady=10)
+            return
+        head = tk.Frame(host, bg=UI["bg"])
+        head.pack(side="top", fill="x", padx=10, pady=(8, 2))
+        tk.Label(head, text="开局区划归属", bg=UI["bg"], fg=UI["accent"],
+                 font=("Microsoft YaHei UI", 10, "bold")).pack(side="left")
+        tk.Label(head, text="　（不选 = 用地图自带的；「清空 = 无主」写空串）",
+                 bg=UI["bg"], fg=UI["text_dim"],
+                 font=("Microsoft YaHei UI", 8)).pack(side="left")
+
+        rows = tk.Frame(host, bg=UI["bg"])
+        rows.pack(side="top", fill="both", expand=True, padx=10, pady=4)
+        canvas = tk.Canvas(rows, bg=UI["bg"], highlightthickness=0, bd=0)
+        sb = ttk.Scrollbar(rows, orient="vertical", command=canvas.yview)
+        inner = tk.Frame(canvas, bg=UI["bg"])
+        inner.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.configure(yscrollcommand=sb.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+
+        choices = self._owner_choices()
+        for zid in info.zone_ids:
+            r = tk.Frame(inner, bg=UI["bg"])
+            r.pack(side="top", fill="x", pady=1)
+            name = info.zone_name(zid)
+            tk.Label(r, text="%s　%s" % (info.zone_label(zid), name), width=24, anchor="w",
+                     bg=UI["bg"], fg=UI["text"]).pack(side="left")
+            var = tk.StringVar(value=self._zone_choice_label(lv, zid))
+            combo = ttk.Combobox(r, textvariable=var, values=list(choices), width=18,
+                                 state="readonly")
+            combo.pack(side="left")
+            combo.bind("<<ComboboxSelected>>",
+                       lambda _e, z=int(zid), v=var: self._set_zone_choice(z, v.get()))
+
+    def _set_zone_choice(self, zid: int, label: str) -> None:
+        lv = self.level()
+        if lv is None:
+            return
+        if label == "（用地图的）":
+            lv.clear_zone_owner(zid)
+            self.status("区划 c%d：改回「用地图自带的」" % zid)
+        elif label == "（清空 = 无主）":
+            lv.set_zone_owner(zid, "")
+            self.status("区划 c%d：开局无主" % zid)
+        else:
+            lv.set_zone_owner(zid, str(label))
+            self.status("区划 c%d 开局归「%s」" % (zid, label))
+        self.refresh_all()
+
+    def _sidebar_zone(self) -> None:
+        lv = self.level()
+        info = self.map_info()
+        sec = self._section("区划归属", "左边那一列就是本关的全部区划；在右边选归属")
+        if lv is None or info is None:
+            self._hint(sec, "这一关还没有地图：先到「关卡」页选一张。")
+            return
+        self._hint(sec, "★ 归属属于**关卡层**（覆盖地图的 `zone_list[].owner`）："
+                        "「用地图的」= 不写这个键；「清空 = 无主」= 显式写空串。"
+                        "地形 / 区划形状要改请点摆放页的『打开地图编辑器』。")
+        count_override = len(lv.zone_owners)
+        self._hint(sec, "本关覆盖了 %d 块地的归属。" % count_override)
+
+    # ==================================================================
+    # ★★ 红点页：生成配置（挂在当前红点阵营的 `reddot_ai` 上）
+    # ==================================================================
+
+    def reddot_faction_id(self) -> str:
+        """红点页当前编辑的阵营：优先记着的那个，否则本关第一个红点阵营。"""
+        lv = self.level()
+        if lv is None:
+            return ""
+        reddots = [e.fid for e in lv.factions if e.ai == AI_REDDOT]
+        if self.reddot_faction in reddots:
+            return self.reddot_faction
+        return reddots[0] if reddots else ""
+
+    def reddot_params(self, create: bool = False) -> Optional[dict]:
+        """当前红点阵营的 `reddot_ai` 覆盖字典（`create=True` 时没有就建一个）。"""
+        fid = self.reddot_faction_id()
+        lv = self.level()
+        if lv is None or not fid:
+            return None
+        e = lv.faction(fid)
+        if e is None:
+            return None
+        if not isinstance(e.reddot_ai, dict):
+            if not create:
+                return {}
+            e.reddot_ai = {}
+            lv.mark_declared("factions")
+        return e.reddot_ai
+
+    def reddot_spawn_tiles(self) -> List[Tuple[int, int]]:
+        rd = self.reddot_params(False) or {}
+        out: List[Tuple[int, int]] = []
+        for t in model_mod._as_list(rd.get(model_mod.REDDOT_SPAWN_TILES_KEY)):
+            tp = model_mod._tile_of(t)
+            if tp is not None:
+                out.append(tp)
+        return out
+
+    def _toggle_reddot_tile(self, cell: Tuple[int, int], force_remove: bool = False) -> None:
+        info = self.map_info()
+        if info is not None and (not info.tile_exists(cell[0], cell[1])
+                                 or not info.walkable_at(cell[0], cell[1])):
+            self.status("(%d,%d) 不能当生成地块：地图外或山地" % cell)
+            return
+        rd = self.reddot_params(True)
+        if rd is None:
+            self.status("没有红点阵营：先在「阵营与AI」页给某一方选 ai = 红点性")
+            return
+        tiles = self.reddot_spawn_tiles()
+        if cell in tiles:
+            tiles = [t for t in tiles if t != cell]
+            action = "移出"
+        elif force_remove:
+            return
+        else:
+            tiles.append(cell)
+            action = "加入"
+        rd[model_mod.REDDOT_SPAWN_TILES_KEY] = [[int(x), int(y)] for x, y in tiles]
+        lv = self.level()
+        if lv is not None:
+            lv.mark_declared("factions")
+        self.status("%s红点生成地块 (%d,%d)：现在共 %d 个"
+                    % (action, cell[0], cell[1], len(tiles)))
+        self.refresh_all()
+
+    def _set_reddot_expr(self, key: str, text: str) -> None:
+        rd = self.reddot_params(True)
+        if rd is None:
+            return
+        s = str(text).strip()
+        if s == "":
+            rd.pop(key, None)
+        else:
+            rd[key] = s
+        lv = self.level()
+        if lv is not None:
+            lv.mark_declared("factions")
+        ok = model_mod.is_valid_expr(s) if s else True
+        self.status("红点 %s = %s%s" % (key, s or "（默认）", "" if ok else "　（解析不了）"))
+        self.refresh_all()
+
+    def _reddot_general_weights(self) -> List[float]:
+        """3 位将领的权重（缺省 0）；长度 = max(3, 将领类型数)。"""
+        rd = self.reddot_params(False) or {}
+        by: Dict[int, float] = {}
+        for e in model_mod.normalize_weight_list(rd.get(model_mod.REDDOT_GENERAL_WEIGHTS_KEY)):
+            by[int(e.get("general", 0))] = float(e.get("weight", 0.0))
+        n = max(3, len(self.config.general_indices()))
+        return [by.get(i, 0.0) for i in range(1, n + 1)]
+
+    def _set_reddot_general_weight(self, index: int, text: str) -> None:
+        rd = self.reddot_params(True)
+        if rd is None:
+            return
+        weights = self._reddot_general_weights()
+        if 1 <= index <= len(weights):
+            weights[index - 1] = max(0.0, model_mod._as_float(text, 0.0))
+        rd[model_mod.REDDOT_GENERAL_WEIGHTS_KEY] = [
+            {"general": i + 1, "weight": w} for i, w in enumerate(weights)]
+        lv = self.level()
+        if lv is not None:
+            lv.mark_declared("factions")
+        self.status("将领 %d 权重 = %s" % (index, _fmt_num(weights[index - 1])))
+        self.refresh_all()
+
+    def _reddot_escort_count(self) -> int:
+        rd = self.reddot_params(False) or {}
+        return model_mod._as_int(rd.get(model_mod.ESCORT_COUNT_KEY), -1)
+
+    def _reddot_escort_types(self) -> List[dict]:
+        rd = self.reddot_params(False) or {}
+        return model_mod.normalize_weight_list(rd.get(model_mod.ESCORT_TYPES_KEY))
+
+    def _set_reddot_escort_count(self, text: str) -> None:
+        rd = self.reddot_params(True)
+        if rd is None:
+            return
+        rd[model_mod.ESCORT_COUNT_KEY] = max(0, model_mod._as_int(text, 0))
+        lv = self.level()
+        if lv is not None:
+            lv.mark_declared("factions")
+        self.status("红点共享附属单位数量 = %d" % int(rd[model_mod.ESCORT_COUNT_KEY]))
+        self.refresh_all()
+
+    def _set_reddot_escort_row(self, row: int, type_id=None, weight=None) -> None:
+        rd = self.reddot_params(True)
+        if rd is None:
+            return
+        types = self._reddot_escort_types()
+        if not (0 <= row < len(types)):
+            return
+        if type_id is not None:
+            types[row]["type"] = str(type_id)
+        if weight is not None:
+            types[row]["weight"] = max(0.0, model_mod._as_float(weight, 0.0))
+        rd[model_mod.ESCORT_TYPES_KEY] = types
+        lv = self.level()
+        if lv is not None:
+            lv.mark_declared("factions")
+        self.refresh_all()
+
+    def _add_reddot_escort_row(self) -> None:
+        rd = self.reddot_params(True)
+        if rd is None:
+            return
+        types = self._reddot_escort_types()
+        default = self.config.unit_types[0] if self.config.unit_types else ""
+        types.append({"type": default, "weight": 0})
+        rd[model_mod.ESCORT_TYPES_KEY] = types
+        self.refresh_all()
+
+    def _remove_reddot_escort_row(self, row: int) -> None:
+        rd = self.reddot_params(True)
+        if rd is None:
+            return
+        types = self._reddot_escort_types()
+        if 0 <= row < len(types):
+            del types[row]
+            rd[model_mod.ESCORT_TYPES_KEY] = types
+            self.refresh_all()
+
+    def _sidebar_reddot(self) -> None:
+        lv = self.level()
+        if lv is None:
+            return
+        reddots = [e.fid for e in lv.factions if e.ai == AI_REDDOT]
+        sec = self._section("红点阵营", "红点生成配置挂在它的 `reddot_ai` 上")
+        if not reddots:
+            self._hint(sec, "本关没有挂「红点性」AI 的阵营：先到「阵营与AI」页给某一方"
+                            "把 AI 类型选成「红点性」。")
+            return
+        cur = self.reddot_faction_id()
+        self._combo_cell(sec, "编辑哪一方", cur, tuple(reddots), self._set_reddot_faction)
+        rd = self.reddot_params(False) or {}
+
+        # ---- 生成地块 ----
+        tiles = self.reddot_spawn_tiles()
+        tsec = self._section("生成地块", "在画布上左键点空地 = 加/移出；右键 = 移出")
+        self._hint(tsec, "已选 %d 个地块（游戏里这些格子的外观**没有区别**）。" % len(tiles))
+        self._button(tsec, "清空生成地块", self._clear_reddot_tiles, bg="#3a2b2b").pack(anchor="w")
+
+        # ---- 时间表 ----
+        isec = self._section("生成时间表", "y = a·x + b（x = 波次，y 的单位分别是「分钟」/「个」）")
+        self._entry_cell(isec, "生成频率（x）",
+                         str(rd.get(model_mod.REDDOT_WAVE_EXPR_KEY, "x")),
+                         lambda text: self._set_reddot_expr(model_mod.REDDOT_WAVE_EXPR_KEY, text))
+        self._entry_cell(isec, "将领数（x）",
+                         str(rd.get(model_mod.REDDOT_COUNT_EXPR_KEY, "x")),
+                         lambda text: self._set_reddot_expr(model_mod.REDDOT_COUNT_EXPR_KEY, text))
+        self._hint(isec, "例：`x` → 第 1 波 1min；`x+1` → 第 1 波 2min、第 2 波 3min；"
+                         "`2x+1` → 第 1 波 3min。空着 = 用 config 的默认（x）。")
+
+        # ---- 将领类型权重 ----
+        wsec = self._section("将领类型和权重", "目前只支持占位的三位将领；权重和必须为 1")
+        weights = self._reddot_general_weights()
+        for i, w in enumerate(weights):
+            label = self.config.general_label(i + 1)
+            self._entry_cell(wsec, "权重", _fmt_num(w),
+                             lambda text, idx=i + 1: self._set_reddot_general_weight(idx, text))
+            # ⚠️ 「权重」这个标签对每一行都一样，靠上面的将领名区分：把名字写进 hint
+            #    （_entry_cell 的行标签宽度固定，写长名字会挤；这里用一行灰字代替）。
+            self._hint(wsec, "第 %d 行 = %s" % (i + 1, label))
+        total = sum(weights)
+        self._hint(wsec, "权重和 = %.4f%s" % (total, "" if abs(total - 1.0) <= 1e-3
+                                              else "　★ 必须恰好为 1（校验会拦）"))
+
+        # ---- 共享附属单位规格 ----
+        ssec = self._section("附属单位规格（共享）",
+                             "所有红点将领共用：生成数量 + 兵种权重（运行时当场随机生成）")
+        self._entry_cell(ssec, "生成数量", str(self._reddot_escort_count()),
+                         self._set_reddot_escort_count)
+        types = self._reddot_escort_types()
+        for i, row in enumerate(types):
+            r = tk.Frame(ssec, bg=UI["panel"])
+            r.pack(side="top", fill="x", pady=1)
+            tv = tk.StringVar(value=str(row.get("type", "")))
+            combo = ttk.Combobox(r, textvariable=tv, state="readonly",
+                                 values=tuple(self.config.unit_types) or ("—",), width=12)
+            combo.pack(side="left")
+            combo.bind("<<ComboboxSelected>>",
+                       lambda _e, idx=i, v=tv: self._set_reddot_escort_row(idx, type_id=v.get()))
+            wv = tk.StringVar(value=_fmt_num(row.get("weight", 0.0)))
+            we = ttk.Entry(r, textvariable=wv, width=6)
+            we.pack(side="left", padx=(4, 0))
+            we.bind("<Return>", lambda _e, idx=i, v=wv: self._set_reddot_escort_row(idx, weight=v.get()))
+            we.bind("<FocusOut>", lambda _e, idx=i, v=wv: self._set_reddot_escort_row(idx, weight=v.get()))
+            self._button(r, "－", lambda idx=i: self._remove_reddot_escort_row(idx),
+                         padx=4).pack(side="left", padx=(4, 0))
+        self._button(ssec, "＋ 加一行", self._add_reddot_escort_row).pack(anchor="w", pady=(4, 0))
+        st = model_mod.weight_sum(types)
+        if not types and self._reddot_escort_count() > 0:
+            self._hint(ssec, "★ 设了数量却没有类型权重表 —— 校验会拦（`escort_types_missing`）")
+        elif types and abs(st - 1.0) > 1e-3:
+            self._hint(ssec, "★ 权重和 = %.4f（必须恰好为 1）" % st)
+        elif types:
+            self._hint(ssec, "权重和 = 1 ✓")
+
+    def _set_reddot_faction(self, text: str) -> None:
+        self.reddot_faction = str(text)
+        self.refresh_all()
+
+    def _clear_reddot_tiles(self) -> None:
+        rd = self.reddot_params(True)
+        if rd is None:
+            return
+        rd[model_mod.REDDOT_SPAWN_TILES_KEY] = []
+        lv = self.level()
+        if lv is not None:
+            lv.mark_declared("factions")
+        self.status("清空了红点生成地块")
+        self.refresh_all()
+
+    # ---- ★★ 附属部队（`start_units[].escort_of`；旧模型，只读兼容）----
     #
     # 这一组是「所见即所得」那一轮的落点：开局附属兵不再由 config 的全局缺省决定，
     # 而是**在这里一个兵一个兵摆出来**，并明确它属于哪位将领。
