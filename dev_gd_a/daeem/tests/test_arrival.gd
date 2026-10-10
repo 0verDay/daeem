@@ -45,6 +45,7 @@ func _cases() -> void:
 	if cfg == null:
 		return
 	_test_solo_still_exact(cfg)
+	_test_pair_settles(cfg)
 	_test_crowd_settles(cfg)
 	_test_crowd_stays_still(cfg)
 	_test_speed_budget_in_crowd(cfg)
@@ -79,6 +80,80 @@ func _test_solo_still_exact(cfg) -> void:
 	ok(not u.moving, "单人到达后 moving = false")
 	# 朝向应当指向最后的移动方向（向右），而不是被落位逻辑污染
 	ok(u.facing.x > 0.9, "★ 单人到达后朝向仍然朝右（%.2f, %.2f）" % [u.facing.x, u.facing.y])
+
+
+## ★★ 只有**两个**单位的场景：两个将领点到同一点，不该互相挤压很久才停。
+##
+## 与 12 人那套的区别：这里人少，「人多才挤」的借口不成立 —— 挤的根源是
+##   **落点相同 + 碰撞推挤 + 回位（reclaim）三者互斗**。用户报的就是这个场景：
+##   「两个将领到目标点附近后会相互挤压很久才停下」。
+##
+## ⚠️ 第三位将领**挪远、不从 `w.units` 摘掉**（摘掉会让碰撞世界与单位列表不一致，
+##   见下面 `CROWD_N` 那段警告）。
+func _test_pair_settles(cfg) -> void:
+	cfg.combat_enabled = false
+	var w = require_world(cfg)
+	_clear_zone_centers(w)
+	_keep_player_units(w)
+	ok(w.units.size() >= 3, "世界上至少 3 个己方单位（实际 %d）" % w.units.size())
+	if w.units.size() < 3:
+		return
+	var a = w.units[0]
+	var b = w.units[1]
+	var extra = w.units[2]
+	_place(extra, Vector2i(2, 2), w)            # 第三位挪到角落，别掺和
+	_place(a, Vector2i(8, 15), w)
+	_place(b, Vector2i(9, 15), w)
+	var target: Vector2 = GridRes.center_of(Vector2i(13, 15))
+	a.order_move(w, cfg, target)
+	b.order_move(w, cfg, target)
+
+	var settled := -1
+	var moving_frames := 0
+	var first_stop := -1
+	var n := 0
+	var cap: int = frames_at_baseline(cfg, 3000)
+	while n < cap:
+		w.tick(DT)
+		n += 1
+		for u in [a, b]:
+			if u.moving:
+				moving_frames += 1
+		if first_stop < 0 and (not a.moving or not b.moving):
+			first_stop = n
+		if settled < 0 and not a.moving and not b.moving:
+			settled = n
+	print("   [pair] 先停于 %d，都停于 %d，移动单位·帧=%d，间距 %.3f 格"
+		% [first_stop, settled, moving_frames, a.pos.distance_to(b.pos)])
+
+	ok(settled > 0, "★★ 两个将领点到同一点后**都停下了**（第 %d 帧）" % settled)
+	# ★★ 核心判据（用户报的就是这个）：停下所需的时间 ≈ **纯走路的时间**，
+	#    而不是「走完之后又互相挤很久」。路程 5 格 / 速度 → 实测 505 帧；
+	#    给 200 个基线帧的余量（≈ 2.5 倍），一旦再退化成立即红。
+	ok(settled > 0 and settled < frames_at_baseline(cfg, 200),
+		"★★ 停下所需时间 ≈ 纯走路的时间，没有「到点后互相挤很久」（%d 帧 < %d）"
+		% [settled, frames_at_baseline(cfg, 200)])
+	# ★★ 两个单位停下的时刻**几乎同时**（< 60 个基线帧）—— 这正是「不再来回挤」的判据：
+	#    修之前是「B 停于 437 → B 又动 @503 → A 停 540 → A 又动 569 → … → 747」。
+	ok(first_stop > 0 and settled - first_stop < frames_at_baseline(cfg, 60),
+		"★★ 两个单位几乎同时停下（相隔 %d 帧 < %d），没有来回挤"
+		% [settled - first_stop, frames_at_baseline(cfg, 60)])
+
+	# 停下之后再跑 300 帧：不该继续互相推（那正是用户看到的「挤压很久」）
+	var pa: Vector2 = a.pos
+	var pb: Vector2 = b.pos
+	for i in 300:
+		w.tick(DT)
+	ok(a.pos.distance_to(pa) < 0.6 and b.pos.distance_to(pb) < 0.6,
+		"★★ 停下之后不再互相挤（漂移 %.3f / %.3f 格）"
+		% [a.pos.distance_to(pa), b.pos.distance_to(pb)])
+
+
+## 把单位挪到某格中心（并同步缓存地块）—— 本文件内部的小工具。
+func _place(u, tile: Vector2i, w) -> void:
+	u.stop()
+	u.pos = GridRes.center_of(tile)
+	u.sync_tile(w.map)
 
 
 ## 拥挤：整队点到同一点，必须在合理时间内全部停下

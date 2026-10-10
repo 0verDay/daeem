@@ -18,13 +18,9 @@ extends "res://tests/test_case.gd"
 const ConfigRes = preload("res://logic/config.gd")
 const WorldRes = preload("res://logic/world.gd")
 const UnitRes = preload("res://logic/unit.gd")
-## ★★ 两套 palette 各司其职（见 `view/palette2d.gd` 的文件头）：
-##   · `PaletteRes`（3D 实例类）：**投影**类断言走它 —— 用 `make_test_palette()`
-##     造一个实例，方法是 `pal.tile_poly(tx, ty)`（**不再收 cfg**）；
-##   · `Palette2DRes`（2D 遗留换算）：只有「2D 里本来就成立」的那几条走它
-##     （建筑本体的矩形 / 外接框这类与透视无关的几何）。
+## ★ `PaletteRes`（3D 投影实例类）：**投影**类断言走它 —— 用 `make_test_palette()`
+##   造一个实例，方法是 `pal.tile_poly(tx, ty)` / `pal.building_poly(b)`（**不再收 cfg**）。
 const PaletteRes = preload("res://view/palette.gd")
-const Palette2DRes = preload("res://view/palette2d.gd")
 const FontLoaderRes = preload("res://view/font_loader.gd")
 const CommandRes = preload("res://logic/command_processor.gd")
 
@@ -54,7 +50,6 @@ func _run() -> void:
 
 	_test_palette(cfg)
 	_test_font(cfg)
-	_test_zone_outline(cfg)
 
 	await _test_scene_tree(cfg)
 	await _test_frames_and_input(cfg)
@@ -200,31 +195,27 @@ func _test_palette(cfg) -> void:
 	ok(span_near.y > 0.0 and span_far.y > 0.0, "★ 单位所在的两格都能投到屏幕上（跨度非零）")
 	ok(r_near > r_far, "★★ 单位半径也随透视缩放（近 %.2f px > 远 %.2f px）" % [r_near, r_far])
 
-	# ★★ 透视档下这三个是**恒等**（字 / 血条天然 1:1，不需要反向补偿）
-	near(Palette2DRes.screen_metric(cfg, 10.0), 10.0, 1e-9, "screen_metric 是恒等（世界像素 == 屏幕像素）")
-	near(Palette2DRes.comp_scale(cfg), 1.0, 1e-9, "comp_scale = 1（不需要补偿）")
-	v2_near(Palette2DRes.comp_extent(cfg, Vector2(12.0, 5.0)), Vector2(12.0, 5.0), 1e-9,
-		"comp_extent 是恒等")
-
-	# 建筑块：城墙填满整格，其它内缩；内缩比例只有一处来源（body_scale）
+	# 建筑块：城墙填满整格，其它内缩；内缩比例只有一处来源（body_scale）。
+	# ★ 走 3D `palette` 实例：透视下建筑本体是**梯形四边形**（不是矩形），
+	#   所以「同心 / 宽度」这类判据一律用**外接框**（`_aabb_of`）比。
 	var w0 = require_world(cfg)
 	var base_b = w0.find_base_of("p1")
 	ok(base_b != null, "取得到大本营建筑")
 	if base_b != null:
-		var base_poly := Palette2DRes.building_poly(base_b, cfg)
+		var base_poly: PackedVector2Array = pal.building_poly(base_b)
 		ok(base_poly.size() == 4, "建筑本体是一个四边形")
-		var base_mid := Palette2DRes.rect_of(base_poly).get_center()
-		v2_near(base_mid, Palette2DRes.to_px(base_b.center(), cfg), 2.0,
+		var base_mid := _aabb_of(base_poly).get_center()
+		v2_near(base_mid, pal.to_px(base_b.center()), 2.0,
 			"★ 建筑块与格心同心（外接框中心 = 投影后的格心）")
 		# 大本营的块必须比整格**小**（body_scale 0.6）
-		var tile_r := Palette2DRes.tile_rect(base_b.tx, base_b.ty, cfg)
-		var base_r := Palette2DRes.rect_of(base_poly)
+		var tile_r := _aabb_of(pal.tile_poly(base_b.tx, base_b.ty))
+		var base_r := _aabb_of(base_poly)
 		ok(base_r.size.x < tile_r.size.x + 1e-3, "大本营比整格窄（内缩留出地面）")
 		var wall = w0.add_building("wall", base_b.tx + 1, base_b.ty, "p1")
 		if wall != null:
-			var wp := Palette2DRes.building_poly(wall, cfg)
-			var wq := Palette2DRes.tile_poly(wall.tx, wall.ty, cfg)
-			near(Palette2DRes.rect_of(wp).size.x, Palette2DRes.rect_of(wq).size.x, 0.5,
+			var wp: PackedVector2Array = pal.building_poly(wall)
+			var wq: PackedVector2Array = pal.tile_poly(wall.tx, wall.ty)
+			near(_aabb_of(wp).size.x, _aabb_of(wq).size.x, 0.5,
 				"★ 城墙填满整格（宽度与地块一致）")
 
 
@@ -401,14 +392,6 @@ func _test_scene_tree(cfg) -> void:
 	game.unit_view.set_selection([game.world.units[0].id])
 	_assert_unit_multimesh(game)
 
-	# ★ 遗留 2D 栈里补偿是**恒等**（世界像素 == 屏幕像素，字 / 血条天然 1:1）——
-	#   这一条量的是 `palette2d.gd` 那套换算本身，与当前入口是 2D 还是 3D **无关**
-	#   （它只吃 cfg），所以照留。
-	near(Palette2DRes.comp_scale(game.cfg), 1.0, 1e-9,
-		"★ 遗留 2D 栈：comp_scale 恒为 1（不需要反向补偿）")
-	near(Palette2DRes.screen_metric(game.cfg, 7.0), 7.0, 1e-9,
-		"★ 遗留 2D 栈：screen_metric 恒等")
-
 	main.queue_free()
 	await process_frame
 
@@ -502,6 +485,7 @@ func _test_frames_and_input(cfg) -> void:
 
 	_test_zoom_direction(cfg, game)
 	_test_fixed_view_range(cfg, game)
+	_test_middle_drag_pan(cfg, game)
 	_test_fullscreen_hotkey(main)
 
 	main.queue_free()
@@ -573,19 +557,19 @@ func _test_zoom_direction(cfg, game) -> void:
 	ok(game.zoom > z1, "★ 向下滚 = 拉远（相机距离倍率变大）")
 
 	# 上下限必须被夹住（不能无限拉近 / 拉远）
-	# ★ 数值钉住 `game_scene3d.ZOOM_MIN` / `ZOOM_MAX`（需求：视野缩到原来的一半 ⇒ 0.35/3.0 各 ×0.5）。
+	# ★ 数值钉住 `game_scene3d.ZOOM_MIN` / `ZOOM_MAX`（当前取值 0.1 / 0.3）。
 	for i in 60:
 		input_ctrl.handle_mouse_button(up)
-	ok(game.zoom >= 0.175 - 1e-6, "★ 一直往上滚 = 夹在距离下限（最紧视野）")
+	ok(game.zoom >= 0.1 - 1e-6, "★ 一直往上滚 = 夹在距离下限（最紧视野）")
 	for i in 120:
 		input_ctrl.handle_mouse_button(down)
-	ok(game.zoom <= 1.5 + 1e-6, "★ 一直往下滚 = 夹在距离上限（最远视野）")
+	ok(game.zoom <= 0.3 + 1e-6, "★ 一直往下滚 = 夹在距离上限（最远视野）")
 
 
 ## 视野固定：最远视野确实比最紧视野看到更多（需求：给玩家一个缩放上限 + 下限）。
 ##
 ## ★ 判据用**相机距离的比值**（与窗口大小 / 格宽无关，换窗口、改 cell_px 都不用重算）。
-##   3D 版不读 `camera_rig.zoom_limits()`（那是 2D 的 `CameraRig` 节点，3D 场景里没有）。
+##   缩放的上下限只有一处取值（`game_scene3d.ZOOM_MIN` / `ZOOM_MAX`）。
 func _test_fixed_view_range(cfg, game) -> void:
 	var input_ctrl = game.input_ctrl
 	var center := Vector2(400.0, 300.0)
@@ -610,94 +594,54 @@ func _test_fixed_view_range(cfg, game) -> void:
 	# 需求那条：两端之间要拉开足够差距（否则「缩放」形同虚设）
 	ok(z_wide / maxf(1e-6, z_tight) >= 2.0,
 		"★ 缩放区间足够宽（最远 / 最紧 = %.2f ≥ 2.0）" % (z_wide / maxf(1e-6, z_tight)))
-func _test_zone_outline(cfg) -> void:
-	var w = require_world(cfg)
-	if w == null:
-		return
-	var zv = script_at("res://view/zone_view.gd").new()
-	# ⚠️ 不挂到 root 上：这里在 `_initialize()` 阶段，「挂节点必须等一帧」那条坑
-	#    （见文件头 + pitfalls 1.2）会让 add_child 静默失效。视图的几何与取色
-	#    都不依赖场景树，所以直接建出来用（同 test_fog.gd 的 InputController 写法）。
-	zv.setup(cfg, w, null, 12)
 
-	# 1) 参数从 config 来（config.json 的 colors.zone_*）
-	var stroke_w: float = cfg.num("colors.zone_stroke_width", 3.0)
-	var owned_w: float = cfg.num("colors.zone_stroke_width_owned", 2.5)
-	var halo_delta: float = cfg.num("colors.zone_halo_delta", 2.0)
-	near(zv._w_stroke, stroke_w, 1e-6, "描边线宽来自 config（colors.zone_stroke_width）")
-	near(zv._w_stroke_owned, owned_w, 1e-6, "有主区划线宽来自 config")
-	near(zv._halo_delta, halo_delta, 1e-6, "光晕宽度来自 config")
-	ok(stroke_w >= 2.5, "★ 主线线宽 >= 2.5px（「加粗」：原来的固定 1px 太细）")
-	ok(halo_delta > 0.0, "光晕比主线更宽（否则「外圈光晕」根本不外扩）")
-	eq(zv._c_stroke, Color(1, 1, 1, 1), "★ 无主区划的描边是**纯白不透明**（不是 10% 白）")
-	near(zv._c_stroke.a, 1.0, 1e-6, "主线的 alpha = 1（「清晰」的一半在这里）")
-	ok(zv._c_halo.a > 0.0 and zv._c_halo.a < 1.0, "光晕是半透明白（叠在主线下面，不是又一条实心线）")
 
-	# 2) 轮廓几何：每块区划都有自己的边（没有地块明细的老地图走包围盒）
-	#
-	# ★★ 菱形档的口径变化：这里**不再有几何缓存**（老版本缓存 `_edges_by_zone`）。
-	#    原因写在 zone_view.gd 文件头：线段坐标现在由投影决定（`tile_poly`），
-	#    换角度就得全部作废，且斜线没法像矩形那样合并 —— 于是改成每帧现算，
-	#    成本靠「只遍历区块自己的地块 + 同格只处理一次」压住。
-	#    所以这一节改成直接验**分组后的结果**（那正是真正被画出去的东西）。
-	var zones: Array = w.zones.zones
-	ok(zones.size() > 0, "世界上有区划")
-	var groups_pre: Dictionary = zv._outline_groups()
-	ok((groups_pre["neutral"] as PackedVector2Array).size() >= 8,
-		"★ 无主区划的轮廓算得出来（至少两块地共边 = 8 个端点）")
-	var pre_neutral: PackedVector2Array = groups_pre["neutral"]
-	ok(pre_neutral.size() % 2 == 0,
-		"线段数组是成对的端点（%d 个点 = %d 段）" % [pre_neutral.size(), int(pre_neutral.size() / 2)])
+## ★★ 鼠标中键拖拽平移（本轮新增）：按住中键拖动 = **抓着地图拖**（内容跟着光标走）。
+##
+## 判据用**相机世界位置的变化方向**，不写死「移动了多少格」——
+## 一格占多少屏幕像素随 zoom 变，钉死数值会跟着 config 漂。
+func _test_middle_drag_pan(cfg, game) -> void:
+	var input_ctrl = game.input_ctrl
+	# 先把镜头放到地图中心，四周留出余量（否则夹取会把位移吃掉；本用例只验方向）
+	game.center_on_tile(Vector2(float(game.world.map.cols) * 0.5, float(game.world.map.rows) * 0.5))
+	game.cam.force_update_transform()
+	var before: Vector3 = game.cam.global_position
 
-	# ★★ 轮廓点必须落在**这一块区划的地块**上：抽第一块区划，把它所有地块的菱形
-	#    收成一个包围盒，断言它的轮廓点都在盒内（错投影 / 错地块的 bug 会当场红）。
-	var probe_zone: Dictionary = zones[0]
-	var zr: Rect2 = zv._zone_rect(probe_zone)
-	ok(zr.size.x > 0.0 and zr.size.y > 0.0, "区块在屏幕上有一个非退化的外接框")
-	var q_first := Palette2DRes.tile_poly(int(probe_zone["x0"]), int(probe_zone["y0"]), cfg)
-	ok(zr.grow(4.0).has_point(q_first[0]),
-		"★ 外接框真的套住了这一区块的地块（菱形顶点落在框内）")
+	var press := InputEventMouseButton.new()
+	press.button_index = MOUSE_BUTTON_MIDDLE
+	press.pressed = true
+	press.position = Vector2(900.0, 540.0)
+	ok(input_ctrl.handle_mouse_button(press), "中键按下被消费")
+	ok(input_ctrl.is_panning(), "★ 中键按下 → 进入平移态")
 
-	# 3) 有主区划的颜色 = **该阵营自己的**主色（分工合作时不能串色）
-	var p1_color: Color = cfg.faction_color("p1", "main")
-	var p2_color: Color = cfg.faction_color("p2", "main")
-	eq(zv._stroke_color_owned("p1"), p1_color, "★ 有主区划用 p1 的阵营主色描边")
-	eq(zv._stroke_color_owned("p2"), p2_color, "★★ 第二个玩家阵营用它自己的颜色（不是「谁先占谁定色」）")
-	ok(p1_color != p2_color, "两个阵营的主色确实不同（否则上一条测了个寂寞）")
+	# 光标右移 120 → 「抓着地图拖」⇒ 相机往左走（世界 −x）
+	var move := InputEventMouseMotion.new()
+	move.position = press.position + Vector2(120.0, 0.0)
+	ok(input_ctrl.handle_mouse_motion(move), "★ 中键拖拽期间，鼠标移动被消费（不落进框选）")
+	game.cam.force_update_transform()
+	var after: Vector3 = game.cam.global_position
+	ok(after.x < before.x - 1.0,
+		"★ 光标右移 → 相机左移（世界 x：%.1f → %.1f）" % [before.x, after.x])
+	ok(absf(after.z - before.z) < 1.0,
+		"★ 只水平平移（相机 z 基本不动；屏幕 x 方向 = 世界 +X）")
 
-	# 4) 画一遍不炸（draw_multiline / draw_polygon 的参数用错会直接报错）
-	#
-	# ★ 为什么这仍然是必要的：`_draw()` 里的错误**不会让测试失败**（只打红字），
-	#   所以「跑得通」这件事只有显式调一次才能变成断言。
-	# ⚠️ 但**不能在 `_draw()` 之外调 `_draw()`**：Godot 会报
-	#   「Drawing is only allowed inside this node's `_draw()`」并且什么都不画
-	#   （实测）。所以这里只调 `draw_shapes(ci)` —— 它接受一个 CanvasItem 参数，
-	#   本来就设计成「由子节点在自己的 _draw 里调」，是合法的绘制入口。
-	zv.draw_shapes(zv)
-	ok(zv.draw_count >= 0, "draw_shapes 跑得通（%d 次绘制命令）" % zv.draw_count)
+	var release := InputEventMouseButton.new()
+	release.button_index = MOUSE_BUTTON_MIDDLE
+	release.pressed = false
+	ok(input_ctrl.handle_mouse_button(release), "中键抬起被消费")
+	ok(not input_ctrl.is_panning(), "★ 中键抬起 → 退出平移态")
 
-	# 5) ★★ 分组：按**阵营 id** 分，而不是「有主 / 无主」两档
-	#    （单机下把两个阵营合成一组也看不出来，合作模式里就会串色）
-	(zones[0] as Dictionary)["owner"] = "p1"
-	if zones.size() >= 2:
-		(zones[1] as Dictionary)["owner"] = "p2"
-	var groups: Dictionary = zv._outline_groups()
-	var owned: Dictionary = groups["owned"]
-	ok(owned.has("p1"), "★ p1 的区划进了 p1 这一组")
-	ok(owned.has("p2"), "★★ p2 的区划进了 p2 这一组（不是和 p1 合成一组）")
-	ok((groups["neutral"] as PackedVector2Array).size() > 0, "还有无主区划走纯白那一组")
-	var p1_segs: PackedVector2Array = owned.get("p1", PackedVector2Array())
-	var p2_segs: PackedVector2Array = owned.get("p2", PackedVector2Array())
-	ok(p1_segs.size() > 0 and p2_segs.size() > 0, "两组各自都有自己的线段")
-	# 恢复成「全部无主」，免得影响后面 / 别的用例看到的场面
-	(zones[0] as Dictionary)["owner"] = ""
-	if zones.size() >= 2:
-		(zones[1] as Dictionary)["owner"] = ""
+	# 退出之后鼠标移动**不再**动相机（不残留状态）
+	var p2: Vector3 = game.cam.global_position
+	var move2 := InputEventMouseMotion.new()
+	move2.position = press.position + Vector2(240.0, 0.0)
+	ok(not input_ctrl.handle_mouse_motion(move2), "★ 抬起后鼠标移动不再被平移消费")
+	ok(game.cam.global_position.distance_to(p2) < 1e-3, "★ 抬起后相机不再动（无残留）")
 
-	# 收尾：这个节点**没挂进场景树**（见上面那条注释），所以用 free() 立刻释放 ——
-	# queue_free() 对不在树上的节点不会生效，会留到退出时由引擎报「还在泄漏」。
-	zv.free()
-	zv = null
+
+## ★★ 原来的 `_test_zone_outline`（针对 2D `zone_view.gd`）已随 2D 栈删除。
+##   3D 版的区划绘制是 `ground_view`（底色烘进贴图）+ `overlay_view_3d`（屏幕空间轮廓），
+##   已由 `tests/test_view3d.gd` 的 `_test_ground_bake` 覆盖（轮廓几何 / 颜色 / 计数）。
 
 
 

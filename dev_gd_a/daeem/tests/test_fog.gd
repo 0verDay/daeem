@@ -25,8 +25,7 @@ const FactionRes = preload("res://logic/faction.gd")
 const FogRes = preload("res://logic/fog.gd")
 const UnitRes = preload("res://logic/unit.gd")
 const BuildingRes = preload("res://logic/building.gd")
-const FogViewRes = preload("res://view/fog_view.gd")
-## ★ 3D 外壳的迷雾层在 `ground_view` 里（一块独立平面 + 一张贴图）——
+## ★ 迷雾层在 `ground_view` 里（一块独立平面 + 一张贴图）——
 ##   本文件用它的常量算「贴图应当多大」。
 const GroundRes = preload("res://view/ground_view.gd")
 const InputControllerRes = preload("res://view/input_controller.gd")
@@ -56,7 +55,6 @@ func _run() -> void:
 	_test_unit_no_memory(cfg)
 	_test_sighted_forgotten_when_destroyed(cfg)
 	_test_refresh_throttle(cfg)
-	_test_fog_view_mask(cfg)
 	_test_pick_blocked_by_fog(cfg)
 	# ★ 最后一条要真的挂节点（`_initialize()` 阶段 add_child 静默失效）→ 先等一帧
 	await process_frame
@@ -108,11 +106,9 @@ func _make_map(cfg, rows: Array) -> RefCounted:
 ## 造一个「只有 fog 需要的那几个字段」的最小世界（不碰 world.gd，避免被无关逻辑干扰）。
 ##
 ## ★★ 为什么是一个**真 Object**（内层类）而不是 Dictionary：
-##   `view/fog_view.gd` 的 `mask_for()` 收的是 world，`view/unit_view.gd` 的同名判据也一样 ——
-##   它们读 `world.map` / `world.fog`。喂一个 Dictionary 进去会当场报
-##   「Invalid access to property or key」，而**渲染代码里的报错不会让测试失败**
-##   （只打红字），于是那几条断言会变成「永远失败或永远静默」。
-##   用一个只有字段、没有方法的小对象替身，两边就都成立。
+##   消费它的代码（`logic/fog.gd` 等）读 `world.map` / `world.fog` —— 喂一个 Dictionary
+##   进去会当场报「Invalid access to property or key」。
+##   用一个只有字段、没有方法的小对象替身最省事，也与真 world 的读法一致。
 ##
 ## ★ `world` 这个名字是 test_case 的保留成员（SceneTree.world_2d 的别名）——
 ##   所以局部变量一律叫 `fake`，绝不能写 `world`。
@@ -632,45 +628,6 @@ func _test_refresh_throttle(cfg) -> void:
 
 
 # ------------------------------------------------------------------
-# 11) 灰色遮罩的掩码（view/fog_view.gd）
-# ------------------------------------------------------------------
-
-func _test_fog_view_mask(cfg) -> void:
-	# 10 格宽：单位在 (5,2)、视野 3 —— (0,0) 在半径外（距离 5.39 > 3）
-	var row := ".........."
-	var map = _make_map(cfg, [row, row, row, row, row])
-	var fog = FogRes.create()
-	var fake = _make_fake(cfg, map, ["p1", "enemy"])
-	var u = _add_unit(fake, cfg, "u1", 5, 2, "p1")
-	u.vision = 3.0
-	fog.update(fake)
-	fake.fog = fog
-
-	var mask: PackedByteArray = FogViewRes.mask_for(cfg, fake, "p1")
-	eq(mask.size(), map.cols * map.rows, "掩码长度 = 地图格数")
-	eq(int(mask[map.terrain.idx(5, 2)]), 1, "有视野的格子在掩码里是 1")
-	eq(int(mask[map.terrain.idx(0, 0)]), 0, "没视野的格子在掩码里是 0")
-
-	# 烘出来的贴图：有视野 = 全透明、没视野 = 不透明（颜色由 modulate 给）
-	var img: Image = FogViewRes._bake(mask, map, map.cols, map.rows).get_image()
-	eq(img.get_width(), map.cols, "贴图宽 = 地图列数（1 像素 = 1 格）")
-	eq(img.get_height(), map.rows, "贴图高 = 地图行数")
-	near(img.get_pixel(5, 2).a, 0.0, 0.001, "★ 有视野的格子烘成全透明（不盖灰）")
-	near(img.get_pixel(0, 0).a, 1.0, 0.001, "★ 没视野的格子烘成不透明（盖灰）")
-
-	# ★ 地图外的格子（exists = false）不该被盖：那里本来什么都没有
-	map.exists.set_cell(0, 0, false)
-	var img2: Image = FogViewRes._bake(mask, map, map.cols, map.rows).get_image()
-	near(img2.get_pixel(0, 0).a, 0.0, 0.001, "★ 地图外的格子烘成透明（不在地图上盖灰）")
-
-	# 拿不到掩码时（fog 还没算过）返回全 0 = 全图盖灰（宁可盖住也不要「全图点亮」）
-	var empty_fake := _make_fake(cfg, map, ["p1", "enemy"])
-	var empty: PackedByteArray = FogViewRes.mask_for(cfg, empty_fake, "p1")
-	eq(empty.size(), map.cols * map.rows, "没有 fog 时也返回正确长度的掩码")
-	eq(int(empty[map.terrain.idx(5, 2)]), 0, "★ 没有 fog 时掩码全 0（整屏盖灰，而不是全亮）")
-
-
-# ------------------------------------------------------------------
 # 12) ★ 被迷雾盖住的敌人不能被选中 / 不能被点名攻击
 # ------------------------------------------------------------------
 
@@ -803,13 +760,8 @@ func _test_game_scene_wires_fog() -> void:
 
 	# ---- 场景里真的有一层迷雾，而且**压在地面之上、覆盖层之下** ----
 	#
-	# ★★ 这一段原来断言的是 2D 场景树的 `z_index` 堆叠序
-	#   （`fog_view` / `terrain_view` / `unit_view` 都是 `Node2D`，靠 z_index 排序）。
-	#   **3D 入口下这一段整段不执行**（`game.fog_view` 在 3D 外壳上不存在 ⇒
-	#   `Invalid access to property` ⇒ 这个用例函数的后续断言**一条都不跑**，
-	#   而 `test_fog` 的断言数会从 141 掉到 128 —— 却**报不出失败**）。
-	#   ⇒ 改成**两条外壳都有**的判据（`ground` 那一层 + `overlay`）：
-	#     2D 与 3D 都会建出「地面层」和「覆盖层」，缺一个就该红。
+	# ★★ 判据（早先断的是 2D 场景树的 `z_index` 堆叠序，那套已随 2D 栈删除）：
+	#   地面层与覆盖层都必须建出来，迷雾是地面层的一部分。缺一个就该红。
 	ok(game.ground != null, "★★ 场景里建出了地面层（迷雾是它的一部分）")
 	ok(game.overlay != null, "★★ 场景里建出了覆盖层（标记 / 拖框在它上面）")
 	var fog_layer = game.ground._fog_mesh if game.ground != null else null

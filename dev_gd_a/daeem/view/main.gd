@@ -22,65 +22,24 @@
 ##
 ## ★ 职责边界（三层各管一段，谁都不越界）：
 ##   view/start_screen.gd  开场两页：只认输入、地图选择与自己的两个信号，不认识 world
-##   view/game_scene.gd    游戏内场景：装配 world + view + hud，跑主循环
+##   view/game_scene3d.gd  游戏内场景（3D 唯一实现）：装配 world + view + hud，跑主循环
 ##   view/hud.gd           游戏内 UI：设置菜单只**发信号**，不切窗口也不拆场景
 ##   本文件                只做连接：把「按钮被按了 + 选了哪张图」翻译成「进哪个游戏」，
 ##                         把「设置里点了全屏 / 回菜单」翻译成窗口模式与流程切换
 ##   没有任何一层把玩法规则写进来 —— 规则全在 logic/。
 ##
-## 调试句柄：控制台里 `RTS`（等价于 HTML 版的 window.RTS）。★ 现在它指向游戏内场景
-## （view/game_scene.gd），所以**进游戏之前是 null** —— 那是刻意的，没世界可调。
+## 调试句柄：控制台里 `RTS`（等价于 HTML 版的 window.RTS）。★ 它指向游戏内场景
+## （view/game_scene3d.gd），所以**进游戏之前是 null** —— 那是刻意的，没世界可调。
 extends Node2D
 
 const ConfigRes = preload("res://logic/config.gd")
 const FontLoaderRes = preload("res://view/font_loader.gd")
 const StartScreenRes = preload("res://view/start_screen.gd")
-## ★★ 入口**暂时仍是 2D**（`game_scene.gd`）—— 这一轮试过切到 3D，**切完回退了**。
-##
-## ⚠️⚠️ 回退的原因与证据（改这行之前必读）：
-##   把这一行改成 `res://view/game_scene3d.gd` 之后，全套从「38 文件 / 5524 项全绿」
-##   掉到「**85 项失败**」，失败集中在 4 个集成测试，而且**不是节点名对不上那么简单**：
-##     · `test_ui`（原 1074 项全绿）→ 75 项失败：科技格点击不生效、招募队列不排、
-##       悬停提示不更新 —— 这些交互链**依赖 2D 场景暴露的一整套视图层接口**
-##       （`game.level_playing`、`hud` 信号接线、各面板 → 命令那条路），
-##       而 `game_scene3d` 目前**只重写了渲染**，还没把这些接回去；
-##     · `test_view` 8 项 / `test_campaign_test` 1 项 / `test_settings_menu` 1 项：
-##       同类原因（老路径的字段与信号）。
-##
-## ★★ 两次试切的实测曲线（本节最该看的东西）：
-##   ① 第一次（只切 preload，3D 场景还没补任何交互接口）
-##      ⇒ `38 文件 / 5249 项 / 5164 通过 / **85 失败**`
-##        （test_ui 75、test_view 8、test_campaign_test 1、test_settings_menu 1）
-##   ② 第二次（补了主循环的**暂停门** + 把事件提示委托给 `game_interaction.gd`）
-##      ⇒ `test_ui **929 通过 / 54 失败**`（第一次是 75 失败）
-##
-## ★ 第二次才看出来的关键事实：那 85 条**几乎全不是「缺成员」** ——
-##   运行期只有 1 条 `Nonexistent function '_selected_buildings'`，其余都是**行为差异**，
-##   其中最大的一类来自**主循环漏了暂停门**：
-##   2D 版把 `world.tick()` 夹在 `if _running:` 里
-##   （`_running = not input_ctrl.paused`）⇒ **暂停时逻辑冻结、但渲染与相机照旧**。
-##   3D 主循环一开始没有这个门，表现是「暂停之后世界还在跑」；在测试里的样子则是
-##   「同一条操作被记了两次」（`entries=["zone_specialize", "zone_specialize"]`）。
-##   补上之后 test_ui 直接从 75 失败降到 54。
-##
-## ★ 还差什么（下一轮从这里接着做）：剩下的 54 条集中在
-##   `_selected_buildings`（缺这个成员）、区划特化的读条/取消/汇总文案、
-##   以及悬停提示的刷新时机 ⇒ **交互接口还剩一小半没补**。
-##
-## ⚠️ 为什么两次都回退而不是留着红：**基线保持全绿**是本项目所有后续验证的前提
-##   （见 route.md 的验收口径）。留着 54 条红，后面任何一次改动都无法判断
-##   「是我弄坏的还是本来就红的」。3D 栈本身由 `tests/test_view3d.gd`（41 项）
-##   与 `tests/bench_fps_3d.gd` 独立验证，不受入口影响。
-#### ★ 所以「3D 渲染栈已完成」与「3D 场景可以当主入口」是**两件事**：
-##   前者已完成并在 `tests/test_view3d.gd`（41 项）与 `tests/bench_fps_3d.gd` 下验证；
-##   后者还差「把视图层的交互接口补齐」那一步，那是**独立的一项工作**。
-##   ⇒ 在补齐之前，入口保持 2D，基线保持全绿；3D 栈由测试与基准驱动。
-##
-## ⚠️ 回退过程中实测到的另一个坑（已随回退修掉，留作记录）：
-##   切 3D 时 `main.gd` 的 `var game: Node2D` 会直接 Parse Error
-##   （`Node3D` 与 `Node2D` 是平级的两个分支）⇒ **整个 main.gd 载不进来** ⇒
-##   主界面起不来、`test_map_select` 从 73 项掉到 25 项。症状看着像「界面坏了」，
-##   根因只是那一行的类型标注。所以那个字段现在写成 `Node`（见下面 `var game`）。
+## ★★ 入口 = 3D 场景（`view/game_scene3d.gd`）—— **唯一**的游戏内实现。
+##   2D 视图栈（`game_scene.gd` / `palette2d.gd` / `terrain_view.gd` 等九个文件）
+##   已整体删除；本文件是**流程层**，对「视角怎么画」一无所知。
+##   ⚠️ `var game` 必须写成类型 `Node`：`Node3D` 与 `Node2D` 是平级分支，
+##      写成 `Node2D` 会让本文件直接 Parse Error（见下面 `var game` 那段）。
 const GameSceneRes = preload("res://view/game_scene3d.gd")
 ## ★ 单人战役的**占位界面**（主界面第二颗按钮 `campaign_test` 点进来的那一页）。
 const CampaignTestRes = preload("res://view/campaign_test.gd")

@@ -272,6 +272,30 @@ func seat_count() -> int:
 	return players.size()
 
 
+## ★★ 战役「席位名单」：这一局要建哪些阵营，且**我在操作的那一方排在第一位**。
+##
+## ★ 从 `view/game_scene.gd` 搬来（2D 视图栈废弃后，这条玩法规则不该再住在 view/ 里）：
+##   它是纯逻辑（只用本文件的 `seats()` / `merged_ai_factions()` / `is_playable()`
+##   与 `cfg.ai_factions()`），与渲染无关。
+## ★ 为什么「我在操作的那一方必须排第一」：`objective.setup()` 拿**第一个席位**决定打哪条目标。
+## ★ 只在「关卡一个可玩席位都没有」时兜底成 `my_faction`（老图 / 手写图）。
+func build_roster(cfg, my_faction: String) -> Array:
+	var roster: Array = seats()
+	for e in merged_ai_factions(cfg.ai_factions()):
+		var fid := String((e as Dictionary).get("id", ""))
+		if fid == "" or roster.has(fid):
+			continue
+		if is_playable(fid):
+			roster.append(fid)
+	if roster.is_empty():
+		roster.append(my_faction)
+	var idx: int = roster.find(my_faction)
+	if idx > 0:
+		roster.remove_at(idx)
+		roster.push_front(my_faction)
+	return roster
+
+
 ## ★★ 运行时的**出场名单**：到底哪几方在这一局里。
 ##
 ## = 玩家席位 + 参展阵营里写了 `ai != none` 的那些（**顺序稳定、去重**）。

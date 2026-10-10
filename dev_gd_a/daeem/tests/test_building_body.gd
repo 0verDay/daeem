@@ -20,7 +20,6 @@ const WorldRes = preload("res://logic/world.gd")
 const PathfinderRes = preload("res://logic/pathfinder.gd")
 const CollisionRes = preload("res://logic/collision.gd")
 const BuildingRes = preload("res://logic/building.gd")
-const Palette2DRes = preload("res://view/palette2d.gd")
 const FactionRes = preload("res://logic/faction.gd")
 
 const DT := 1.0 / 60.0
@@ -78,59 +77,10 @@ func _test_geometry(cfg) -> void:
 		ok(r.position.x >= float(b.tx) - 1e-6 and r.end.x <= float(b.tx) + 1.0 + 1e-6,
 			"%s 的本体没有越出自己的格子" % b.display_name())
 
-	# ★ 渲染矩形 = 碰撞矩形（同一个来源；各写一套内缩量迟早错位）
-	#
-	# ⚠️ 容差用 1e-4 而不是 1e-6：这两边是**两条不同的算式**
-	#    （一边 `cell_px*0.6`、一边 `cell_px - 2*cell_px*(1-0.6)*0.5`），
-	#    而 0.6 在二进制里是无限循环小数 —— 差额在 1e-6 量级。
-	#    断言的本意是「两者等价」，不是「逐位相同」（实测 38.400002 vs 38.400000）。
-	# ★★ 渲染菱形 = 碰撞本体（同一个来源 `body_scale`；各写一套内缩量迟早错位）
-	#
-	# ⚠️ 菱形档下不能再比「宽 / 高」——斜着的形状没有轴对齐的宽高。
-	#    改成比**两条对角线**：横对角线（右尖−左尖）与纵对角线（下尖−上尖）。
-	#    它们与地块的两条对角线之比都应当等于 `body_scale`（内缩只有一处来源）。
-	var base_poly := Palette2DRes.building_poly(base_b, cfg)
-	var base_tile := Palette2DRes.tile_poly(base_b.tx, base_b.ty, cfg)
-	ok(base_poly.size() == 4, "大本营的本体是一个四边形（菱形）")
-	var base_dx := (base_poly[0] - base_poly[2]).length()
-	var base_dy := (base_poly[1] - base_poly[3]).length()
-	near(base_dx, (base_tile[0] - base_tile[2]).length() * base_b.body_scale(cfg), 0.2,
-		"★ 大本营横对角线 = 格横对角线 × body_scale")
-	near(base_dy, (base_tile[1] - base_tile[3]).length() * base_b.body_scale(cfg), 0.2,
-		"★ 大本营纵对角线 = 格纵对角线 × body_scale")
-	# 本体菱形与格**同心**（四个顶点的重心 = 格心）
-	var base_c := Palette2DRes.to_px(base_b.center(), cfg)
-	var base_mid := Vector2.ZERO
-	for p in base_poly:
-		base_mid += p
-	base_mid /= 4.0
-	v2_near(base_mid, base_c, 0.5, "★ 本体块与格心同心（重心 = 格心）")
-
-	# ★★ 真正被画出来的是**局部坐标**的四边形（节点原点 = 建筑所在格的**格心**）。
-	#    老版本这里是错的：只取了绝对矩形的 size、从 (0,0) 开始画
-	#    （大本营 / 箭塔于是贴到了格子左上角）。所以这条必须按**局部**写。
-	# ★★ 透视档：局部四边形不必轴对齐（竖边不再是竖直的），
-	#    但**重心必须落在节点原点**（节点原点 = 建筑所在格的格心）。
-	#    ⚠️ 容差 0.35 px：透视是非线性的，「四角投影的中心」与「中心的投影」本来就差
-	#       一个二阶小量（实测 0.10 px）。这不是 bug，是投影的固有性质。
-	for b in [base_b, tower]:
-		var lp := Palette2DRes.building_local_poly(b, cfg)
-		ok(lp.size() == 4, "%s 的局部四边形有 4 个顶点" % b.display_name())
-		var mid := Vector2.ZERO
-		for p in lp:
-			mid += p
-		mid /= 4.0
-		v2_near(mid, Vector2.ZERO, 0.35,
-			"★★ %s 的局部四边形以**原点**为中心（节点原点就是格心）" % b.display_name())
-	var near_wall: Vector2i = _free_tile_near(w, base_b.tx - 3, base_b.ty)
-	var wall = w.add_building("wall", near_wall.x, near_wall.y, FactionRes.DEFAULT_FACTION)
-	if wall != null:
-		var wp := Palette2DRes.building_poly(wall, cfg)
-		var wq := Palette2DRes.tile_poly(wall.tx, wall.ty, cfg)
-		near((wp[0] - wp[2]).length(), (wq[0] - wq[2]).length(), 1e-4,
-			"★ 城墙菱形填满整格（横对角线相等）")
-		near((wp[1] - wp[3]).length(), (wq[1] - wq[3]).length(), 1e-4,
-			"★ 城墙菱形填满整格（纵对角线相等）")
+	# ★★ 原来这里还有一段「渲染四边形 = 碰撞本体（同一个 `body_scale`）」的断言 ——
+	#    它针对的是旧的 2D 菱形投影（`palette2d.building_poly` / `building_local_poly`），
+	#    已随 2D 栈删除。3D 下建筑是 BoxMesh、大小同样来自 `body_scale`，
+	#    由 `tests/test_view3d.gd` 的 `_test_buildings_multimesh` 覆盖。
 
 	# 线段判定：横穿本体 → 命中；擦着本体外面过 → 不命中
 	var r2: Rect2 = tower.body_rect(cfg)

@@ -778,21 +778,16 @@ func _test_zones_and_economy(world, cfg) -> void:
 	var u = w.units[0]
 	# 只留这一个：附属兵也会占区块进度，混在一起就分不清是「将领站在那里」还是「附属兵站在那里」
 	_isolate(w, [u])
-	# 找一个无主区块，把将领放进去（避开大本营所在的那个区块）
-	var z = null
-	for zz in w.zones.zones:
-		if zz["owner"] == "":
-			z = zz
-			break
-	ok(z != null, "存在无主区块")
-	if z == null:
+	# 找一个无主区块，把将领放进它的**中心邻域**里
+	# ★★ 本轮改版：只有离区划中心 ≤ capture_radius_tiles 格的单位才算「在场」⇒
+	#    落点必须落在中心邻域内。⚠️ 不能用 `_find_free_tile`：它特意**排除**了中心附近
+	#    （那样是为了别的用例的直线 / 离体判定干净），在这里正好把唯一能站的格子排掉。
+	var spot_d := _find_capture_spot(w, cfg)
+	ok(not spot_d.is_empty(), "存在「中心邻域里有空地」的无主区块")
+	if spot_d.is_empty():
 		return
-	var cx: int = (int(z["x0"]) + int(z["x1"])) / 2
-	var cy: int = (int(z["y0"]) + int(z["y1"])) / 2
-	var spot = _find_free_tile(w, cfg, Vector2i(cx, cy))
-	ok(spot != null, "无主区块里有可站立的格子")
-	if spot == null:
-		return
+	var z: Dictionary = spot_d["zone"]
+	var spot: Vector2i = spot_d["tile"]
 	u.pos = GridRes.center_of(spot)
 	u.sync_tile(w.map)
 	u.stop()
@@ -1324,6 +1319,36 @@ func _find_tower_and_target(world, cfg, hint: Vector2i) -> Variant:
 					if PathfinderRes.passable(world.map, world.buildings, cfg, t.x, t.y, FactionRes.NPC_FACTION):
 						return {"tower": tower, "enemy": t}
 	return null
+
+
+## 找一个「在某个**无主区块的中心邻域内**、且站得住」的格子。
+##
+## ★★ 本轮占领改版（离中心 ≤ capture_radius_tiles 格才算「在场」）之后，
+##    占领用例的落点必须从这里找 —— `_find_free_tile` 特意避开了中心附近，用不了。
+## @return `{zone, tile}`；找不到返回 `{}`。
+func _find_capture_spot(w, cfg) -> Dictionary:
+	var r: int = maxi(0, int(cfg.zone_capture_radius_tiles))
+	for z in w.zones.zones:
+		if String(z["owner"]) != "":
+			continue
+		var c: Variant = z["center"]
+		if c == null:
+			continue
+		var center: Vector2i = c
+		for dy in range(-r, r + 1):
+			for dx in range(-r, r + 1):
+				var x: int = center.x + dx
+				var y: int = center.y + dy
+				if not w.map.terrain.has(x, y):
+					continue
+				if not w.map.terrain_walkable(x, y):
+					continue
+				if PathfinderRes.occupied(w.buildings, x, y):
+					continue
+				if w.zone_center_zone_at(x, y) != null:
+					continue          # 中心格本身（中立障碍建筑）
+				return {"zone": z, "tile": Vector2i(x, y)}
+	return {}
 
 
 ## 找一格里附近没有建筑、可通行的空地（从 hint 往外扩圈）

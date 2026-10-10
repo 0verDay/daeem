@@ -172,6 +172,15 @@ var settling: bool = false
 ## ★ 它只在一次 order_move_via_field 内部有效 —— 是**调用期的临时提示**，不是持久状态。
 var _field_tile: Vector2i = Vector2i(-1, -1)
 
+## 队形：本次命令的落点相对「点击点（= _field_tile）」的偏移（格）。
+##
+## ★★ 用途（本轮新增）：让整队**行进中也保持阵型**。路线取「到点击格的那条」，
+##   再把折线整体平移这个偏移 → 每个单位走一条平行路线，而不是所有人先汇聚到
+##   点击点再散开（那样行进中阵型就没了）。
+## ★ 与 `_field_tile` 同一个生命周期：调用期临时提示，不是持久状态。
+##   （ZERO = 不启用平移，路线仍按 `tile_path_via` 的「汇聚 + 散开」走 —— 行军攻击就是这样。）
+var _field_offset: Vector2 = Vector2.ZERO
+
 ## jam_timer：想走到终点、但每帧都被挤回来（进度被抵消）的累计时间。
 ##
 ## ★ 它解决的是「推挤能把单位推走的距离（一帧最多 ~0.25 格）远大于它自己的
@@ -410,6 +419,14 @@ var chase_alert_range: float = 0.0
 var chase_stuck_timer: float = 0.0
 ## 上一帧的位置（只给 `chase_stuck_timer` 判「这一帧动没动」用）。
 var chase_last_pos: Vector2 = Vector2.ZERO
+## ★★ 「我正在赶去守**自己区划的中心**」（本轮新增的阵地 AI 状态）。
+##
+## 触发：自己所属区划的中心**正被敌对势力占领**（进度条属于敌对一方且还没退）。
+## 作用：立刻向中心下一道**行军攻击**命令，并跳过招募 / 巡逻 —— 命令只在
+##   **状态翻转的那一帧**下（每帧重下会把路径一帧一帧重置，人永远走不到）；
+##   威胁解除（敌人被杀光 / 走开、进度开始回落）才清掉、恢复巡逻。
+## ⚠️ 与巡逻状态一样**不进快照**：客机不跑 AI（与 patrol_* / chasing 同一口径）。
+var defending_center: bool = false
 ## 下一次检查「要不要无消耗招兵」还有几秒（把 O(附庸兵数) 的统计摊到几秒一次）。
 var garrison_recruit_timer: float = 0.0
 
@@ -698,7 +715,16 @@ func move_to(world, cfg: ConfigRes, world_pt: Vector2, settle: bool = true) -> b
 			dest_tile = alt
 			dest_pt = GridRes.center_of(alt)
 
-	var tile_path = _tile_path(world, cfg, from, dest_tile)
+	# ★★ 阵型平移：`_field_offset != 0` 时，路线取「到点击格 _field_tile」的那条，
+	#    再把折线（除首点）整体平移这个偏移 —— 每个单位走一条平行路线，于是**行进中
+	#    保持阵型**，而不是先汇聚到点击点再散开（`tile_path_via` 的旧口径）。
+	#    ⚠️ 只有走 C# 共享距离场时才有意义：没有共享场时 `_tile_path` 本来就直连落点。
+	var formation_shift: bool = _field_offset != Vector2.ZERO and world.crowd != null
+	var tile_path = null
+	if formation_shift:
+		tile_path = world.crowd.tile_path(world, cfg, from, _field_tile, faction)
+	else:
+		tile_path = _tile_path(world, cfg, from, dest_tile)
 	if tile_path == null:
 		return false
 
@@ -706,6 +732,27 @@ func move_to(world, cfg: ConfigRes, world_pt: Vector2, settle: bool = true) -> b
 	var raw: Array[Vector2] = [pos]
 	for n in tile_path:
 		raw.append(GridRes.center_of(n))
+	if formation_shift and raw.size() > 1:
+		# 平移内部路点（首点 = 当前位置，不动）
+		for k in range(1, raw.size()):
+			raw[k] += _field_offset
+		# ★ 平移可能把路点推进山 / 墙 / 敌方建筑：逐点校验，一旦有点不可通行就整条
+		#   退回普通的「汇聚 + 散开」路线，保证不会把单位指进障碍。
+		var shifted_ok := true
+		for k in range(1, raw.size()):
+			if not PathfinderRes.passable(world.map, world.buildings, cfg,
+					floori(raw[k].x), floori(raw[k].y), faction):
+				shifted_ok = false
+				break
+		if not shifted_ok:
+			formation_shift = false
+			tile_path = world.crowd.tile_path_via(world, cfg, from, dest_tile, _field_tile, faction)
+			if tile_path == null:
+				return false
+			raw.clear()
+			raw.append(pos)
+			for n in tile_path:
+				raw.append(GridRes.center_of(n))
 	if tile_path.size() > 0:
 		raw[raw.size() - 1] = dest_pt
 	elif pos.distance_to(dest_pt) > EPS:
@@ -821,10 +868,16 @@ func _tile_path(world, cfg: ConfigRes, from: Vector2i, to: Vector2i) -> Variant:
 ##
 ## 为什么要有单独的入口而不是改 move_to 的签名：那个「借哪张场」只是**这一次调用**的
 ## 临时提示，不该变成单位上的持久状态（下一轮命令就作废了）。放在这里一进一出，最不容易忘。
-func order_move_via_field(world, cfg: ConfigRes, dest_pt: Vector2, field_tile: Vector2i) -> bool:
+##
+## ★ `offset`（本轮新增）：落点相对点击点 field_tile 的偏移。非零时 → move_to 走
+##   「平移路线」（保持阵型）；为零时 → 走旧的「汇聚 + 散开」（行军攻击用）。
+func order_move_via_field(world, cfg: ConfigRes, dest_pt: Vector2, field_tile: Vector2i,
+		offset: Vector2 = Vector2.ZERO) -> bool:
 	_field_tile = field_tile
+	_field_offset = offset
 	var ok := order_move(world, cfg, dest_pt)
 	_field_tile = Vector2i(-1, -1)
+	_field_offset = Vector2.ZERO
 	return ok
 
 
@@ -998,7 +1051,14 @@ func _find_arrival_slot(world, cfg: ConfigRes, want: Vector2, faction: String, f
 
 	# 收集候选，然后挑「离目标最近」的那个。加 horizon 是为了不把远处的空位也算进来。
 	var cands: Array[Vector2] = []
-	var horizon: float = maxf(step * 1.5, reach * 2.0)
+	# ★★ 搜索半径**至少够得着「离被占落点 need 格」的位置**（本轮修的真 bug）：
+	#    原来只有 `step * 1.5`（≈0.23 格），而最小间距 `need` 是 0.252 格 ——
+	#    于是「离占位者够远」的候选**全都落在 horizon 之外**、一个都收不进候选表，
+	#    函数返回 null、调用方只好仍用**原目标点** ⇒ 两个单位叠在同一点上，
+	#    被碰撞推开又走回来，来回挤很久才停（用户报的就是这个：两个将领点同一个点）。
+	#    `need + step` 保证「占位者站在 want 上」时，至少有一圈够远的候选可选；
+	#    选的时候仍然挑**离目标最近**的那个，所以手感不变（只是能真的让开）。
+	var horizon: float = maxf(need + step, maxf(step * 1.5, reach * 2.0))
 	var toward_self := pos - want
 	if toward_self.length() > 1e-6:
 		var back := toward_self.normalized()

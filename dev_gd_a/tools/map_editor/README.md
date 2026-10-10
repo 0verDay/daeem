@@ -539,11 +539,11 @@ Linux 上要装 `python3-tk`）。
 | `logic/command_processor.gd` | 拆除命令对 `invulnerable` 的建筑直接拒绝 |
 | `logic/economy.gd` | `tick()` 的入参从「己方地块数」改成「每秒产出 rates」，产出由 `zone.production_of()` 聚合 |
 | `logic/unit.gd` | **回到**「到终点的直线距离」判进度（试过改成路径长度，会让拥挤的人群永远停不下来，见注释） |
-| `view/building_view.gd` | 画区划中心（品红菱形 + 中心点，与编辑器里同一个形状）；无主建筑不套阵营色描边 |
+| `view/building_view_3d.gd` | 画区划中心（与编辑器里同一个形状）；无主建筑不套阵营色描边 |
 | `view/input_controller.gd` | 左键**先判区划中心**（点它 = 选中该区划）；新增 `select_zone()`；选中状态三种互斥 |
 | `view/hud.gd` | 左栏新增 `_zone_text()`：区划名 / **区划种类** / 大小 / 三档产能（每地块 + 合计）/ **人口（整数，向下取整）+ 上限**；右栏资源行加上 `+n/秒` |
 | `logic/snapshot.gd` | 区块快照带上 `pop`（人口），缺字段时保持本地现状 |
-| `view/zone_view.gd` | 区块**按地块画**（底色逐格、轮廓沿地块边界）—— 不然非矩形区块会被画成它的包围盒；老地图的均分区块画出来与从前逐像素一致 |
+| `view/ground_view.gd` + `view/overlay_view_3d.gd` | 区块**按地块画**：底色逐格烘进地面贴图（非矩形区块不会被画成包围盒），轮廓沿地块边界走屏幕空间矢量 |
 | `logic/unit.gd` | `STEP_GUARD := 512`（一帧最多推进几段路径）改成按地图对角线算的 `step_guard()` —— 地图尺寸不再写死，大图上一帧能走完该走的路 |
 | `tests/test_map_editor.gd` | 131 项断言：老地图不变、地图外不可通行、`zones` 网格、空区块、`exists` 三种写法、编辑器导出的地图能真的开一局、**阵营大本营**（指定 / 只指定一方 / 落在山上 / 越界）、**区划中心不会凭空立起障碍**（老图没有中心字段）、**区划种类**（`zone_list[].kind` 读得进来 / 认不出的按默认 / 写了种类但没写 production → 产量 0 / 白名单按种类挡） |
 | `tests/test_logic.gd` | 新增两节：`_test_zone_centers`（不可进入 / 无敌 / 不可拆 / 不被索敌 / 点得出区块）与 `_test_zone_population_and_production`（人口累积、产能聚合、无主不产出） |
@@ -553,8 +553,8 @@ Linux 上要装 `python3-tk`）。
 > ★ 本轮（区块**人口上限** + 框选）还动了这些地方，细节见 [`../../docs/route.md`](../../docs/route.md) 第十六节：
 > `mapfile.py`（读写 `population_cap`）、`app.py`（区块页的「人口上限」输入框 + 撤销栈）、
 > `logic/map_data.gd` + `logic/zone.gd`（读上限、涨到上限就停、`population_floor()`）、
-> `view/hud.gd`（人口显示整数 + 上限）、`view/input_controller.gd` + `view/game_scene.gd` +
-> `view/overlay.gd`（左键框选）、`view/unit_roster.gd`（详细信息里「一行一支 + 方块头像」）。
+> `view/hud.gd`（人口显示整数 + 上限）、`view/input_controller.gd` + `view/game_scene3d.gd`
+> （左键框选）、`view/unit_roster.gd`（详细信息里「一行一支 + 方块头像」）。
 >
 > ★★ **最近一轮（区划种类 + 特化改版）** 也动了 Godot 侧，细节见
 > [`../../docs/route.md`](../../docs/route.md) 第二十五节：
@@ -679,6 +679,15 @@ dev_gd_a/tools/map_editor/
 20. **★ 「默认值」别取表里的第一个**：`zone_kind.list` 的第一项是 `food`，
     兜底写成 `next(iter(...))` 会让「地图没写 kind」变成粮食区划。
     默认值必须是**常量或配置项**（见 `docs/pitfalls.md` 5.47）。
+21. **★★ 界面主题 / 圆角按钮 / 不闪白**（本轮，与另两个编辑器同一套做法）：
+    * **下拉框选中后不能变白**：clam 主题在 `readonly` 状态下会把下拉框的底落回浅灰
+      （实测 `#dcdad5`），光 `style.configure` 压不住 —— 必须 `style.map` 把 `readonly` /
+      `active` / `disabled` 那几个状态一起按下去（见 `_apply_theme`）。
+    * **按钮是圆角的**（`RButton`）：本体仍然是 `tk.Button`（`invoke` / `cget` /
+      `configure` / 测试都不受影响），上面盖一层 Canvas 把方角画成圆角。
+    * **重建侧边栏时不闪白**：`refresh_sidebar` 里用 `LockWindowUpdate` 把绘制锁住、
+      建完再一次性解开（`_NoRepaint`）。⚠️ **别改成 `WM_SETREDRAW`** —— 那会把窗口的
+      激活状态一起搞乱（实测：跑完一个用例之后，下一个新建的窗口拿不到键盘焦点）。
 
 ---
 

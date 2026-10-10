@@ -137,6 +137,14 @@ var _drag_press_screen: Vector2 = Vector2.ZERO
 ##    相机一动它就会在屏幕上漂 —— 那就是「右上角起点自己跑」的根因。
 var _drag_freeze_cam: bool = false
 
+## ★★ 鼠标**中键拖拽平移**视角（按住中键拖动 = 抓着地图拖）。
+##   · 与框选那条状态机**互斥**（不同按键），优先级见 `handle_mouse_motion`；
+##   · 拖拽期间要压住**边缘滚屏**，否则鼠标拖到屏幕边缘时两者会抢同一台相机
+##     —— 游戏场景每帧读 `is_panning()` 并进 `_ui_dragging_camera`（与 `is_dragging_box()` 并列）。
+var _pan_pending: bool = false
+## 上一次鼠标屏幕坐标（算这一下的位移用；只在中键拖拽期间有意义）。
+var _pan_last_screen: Vector2 = Vector2.ZERO
+
 ## 暂停 / 区块名显示（纯本地开关）
 var paused: bool = false
 var show_zone_names: bool = true
@@ -163,6 +171,7 @@ func setup(p_cfg: ConfigRes, p_world, p_camera_rig, p_palette = null) -> void:
 	_drag_pending = false
 	drag_active = false
 	_drag_freeze_cam = false
+	_pan_pending = false
 
 
 ## 每帧更新一次「鼠标在哪、指向哪个地块」——渲染要用，且**只有这里**读鼠标位置
@@ -262,6 +271,13 @@ func handle_mouse_button(event: InputEventMouseButton) -> bool:
 		else:
 			_finish_drag()
 		return true
+	# ★★ 中键：按住拖动 = 平移视角（`handle_mouse_motion` 里算位移）。
+	#   按下的那一刻只记状态，松开就结束 —— 与左键那条框选状态机完全无关。
+	if event.button_index == MOUSE_BUTTON_MIDDLE:
+		_pan_pending = event.pressed
+		if event.pressed:
+			_pan_last_screen = event.position
+		return true
 	if not event.pressed:
 		return false
 	# 缩放方向（已按实测钉住，别凭直觉改）：
@@ -300,6 +316,15 @@ func handle_mouse_button(event: InputEventMouseButton) -> bool:
 ##    表现就是用户报的「**右上角的起点自己跑了**」。
 ##    ⇒ 拖框一开始就冻住相机，直到松手（见 `_drag_freeze_cam` 与 `_end_drag`）。
 func handle_mouse_motion(event: InputEventMouseMotion) -> bool:
+	# ★★ 中键拖拽优先于框选：按住中键时的鼠标移动 = 平移视角。
+	#   位移用**事件自己的屏幕坐标**差分（`event.relative` 在无头测试里造不出来），
+	#   与框选那条一样，不依赖全局鼠标状态。
+	if _pan_pending:
+		var pan_delta: Vector2 = event.position - _pan_last_screen
+		_pan_last_screen = event.position
+		# ★ 取负号 = 「抓着地图拖」：光标右移 → 地图跟着右移（相机往左走）。
+		camera_rig.pan_screen(-pan_delta)
+		return true
 	if not _drag_pending:
 		return false
 	var moved: float = _drag_press_screen.distance_to(event.position)
@@ -317,46 +342,24 @@ func handle_mouse_motion(event: InputEventMouseMotion) -> bool:
 
 ## 视口（屏幕）坐标 → 世界坐标（格）。
 ##
-## ★ 走的是**引擎给的画布变换**，与 `get_global_mouse_position()` 内部是同一条路
-##   （`viewport.get_canvas_transform().affine_inverse() * 屏幕坐标`），
-##   只是把「视口记录的鼠标位置」换成**这个事件自己带的坐标**。为什么要这样：
-##     · 拖拽时事件坐标才是「这一下鼠标真的在哪」，比全局鼠标状态更准；
-##     · 框选因此不依赖全局鼠标状态 —— 无头测试能真的把一条拖拽走完并断言结果
-##       （造不出真实鼠标移动的场合，`get_global_mouse_position()` 永远是 (0,0)）。
-##   ⚠️ 这**不是**自己手算相机数学（那是 pitfalls 3.1 的错位根因），用的是同一个变换。
-## 视口（屏幕）坐标 → 世界坐标（格）。
-##
-## ★★ 两条路**入参语义不同**，所以画布变换只能在其中一条上做（本轮实测踩到）：
-##   · **3D 版**（`palette != null`）：`palette.to_logic()` 是「从 Camera3D 往地面
-##     打射线求交」，**它要的就是屏幕像素** —— 这里**不能**再过一次画布变换，
-##     否则等于把坐标先逆变换一次再拿去打射线，往返换算直接不闭合
-##     （实测表现：`test_ui` 里「世界 → 视口 → 世界」那三条断言失败）。
-##   · **2D / 无头回退**：`_to_logic` 收的是**画布逆变换之后**的相机坐标，
-##     所以要在这里先做那一步（与 `get_global_mouse_position()` 内部同一条路）。
-##
+## ★ 用**事件自己带的坐标**（而不是 `get_global_mouse_position()`）：拖拽时它更准，
+##   而且框选因此不依赖全局鼠标状态 —— 无头测试能真的把一条拖拽走完并断言结果
+##   （造不出真实鼠标移动的场合，`get_global_mouse_position()` 永远是 (0,0)）。
+## ⚠️ `palette.to_logic()` 要的就是**屏幕像素**，所以这里**不能**再过一次画布变换 ——
+##   否则等于把坐标先逆变换一次再拿去打射线，往返换算直接不闭合
+##   （实测表现：`test_ui` 里「世界 → 视口 → 世界」那三条断言失败）。
 ## ⚠️ 这**不是**自己手算相机数学（那是 pitfalls 3.1 的错位根因）：
-##    3D 那条把全部数学交给了引擎的 `project_ray_normal`。
+##    全部数学交给引擎的 `project_ray_normal`。
 func _screen_to_logic(screen_pos: Vector2) -> Vector2:
-	if palette != null:
-		return _to_logic(screen_pos)
-	return _to_logic(get_viewport().get_canvas_transform().affine_inverse() * screen_pos)
+	return _to_logic(screen_pos)
 
 
-## ★★ 「像素 → 格」的**唯一**出口（本轮从静态函数改成走实例）。
-##
-## 两种口径并存是刻意的：
-##   · **3D 版**：`palette` 持有 `Camera3D`，`to_logic` = 「从相机往地面打射线求交」——
-##     这一条**必须**走它（手算就是上一版那一堆错位的来源）；
-##   · **2D / 无头回退**：没有 palette 时，入参已经是「画布逆变换之后的相机坐标」，
-##     除以格宽即可（老口径，在正俯视下仍然正确）。
-##
-## ⚠️ 两边的**入参语义不同**（有 palette：屏幕像素；没有：相机坐标），
-##    调用点已经按这个约定分好，别把两条路混起来用。
+## ★★ 「像素 → 格」的**唯一**出口：`palette.to_logic()`（从 Camera3D 往地面打射线求交）。
+## ⚠️ 手算坐标是上一版那一堆错位的来源（pitfalls 3.1）—— 全部数学交给引擎。
+## ⚠️ 射线打不到地面时（相机贴地平线）返回 `null` → 这里兜成 (0,0)，与旧口径一致。
 func _to_logic(v: Vector2) -> Vector2:
-	if palette != null:
-		var r = palette.to_logic(v)
-		return r if r != null else Vector2.ZERO
-	return Vector2(v.x / maxf(1e-6, cfg.cell_px), v.y / maxf(1e-6, cfg.cell_px))
+	var r = palette.to_logic(v)
+	return r if r != null else Vector2.ZERO
 
 
 ## 「拖多远才算框选」的像素阈值（config 的 `ui.drag_select_min_px`）。
@@ -507,6 +510,12 @@ func _cancel_drag() -> void:
 ##     （`camera_rig.set_ui_dragging`），两处并列即可。
 func is_dragging_box() -> bool:
 	return _drag_freeze_cam
+
+
+## ★★ 中键拖拽是否正在进行（game_scene 每帧读它，压住边缘滚屏）。
+##   与 `is_dragging_box()` 并列：两者都是「此刻相机由输入直接驱动 ⇒ 别的自动行为让路」。
+func is_panning() -> bool:
+	return _pan_pending
 
 
 

@@ -25,7 +25,6 @@ const RecruitQueueRes = preload("res://view/recruit_queue.gd")
 const TroopGridRes = preload("res://view/troop_grid.gd")
 const HoverTipRes = preload("res://view/hover_tip.gd")
 const FontLoaderRes = preload("res://view/font_loader.gd")
-const Palette2DRes = preload("res://view/palette2d.gd")
 const UnitRes = preload("res://logic/unit.gd")
 const FactionRes = preload("res://logic/faction.gd")
 const BuildingRes = preload("res://logic/building.gd")
@@ -770,23 +769,14 @@ static func res_bar_label_name(short: String) -> String:
 #   真正容易写错的正是「谁先问谁」（见 `_unhandled_input` 里那段注释）。
 func _test_wheel_zoom_block(main) -> void:
 	var vp: Vector2 = main.hud.view_size()
-	# ★★ 缩放值的来源**按外壳分流**（这一段原来是 `var cam: Camera2D = main.cam`，
-	#   而 `main` 就是**游戏场景本身**、`main.cam` 在 3D 外壳上是 `Camera3D`
-	#   ⇒ 那一行抛 `Trying to assign value of type 'Camera3D' to a variable of type 'Camera2D'`，
-	#   把 `_test_wheel_zoom_block` 整段**静默中断**（`test_ui` 因此少跑 5 条断言、
-	#   却不报失败）。见 pitfalls 10.7 与 route.md 41.9 那条「test_view 也这样藏过 3 段」。
-	#   · **3D 外壳**：缩放在**场景**上（`game.zoom` = 相机距离倍率，越大越远）
-	#   · **2D 外壳**：缩放在**相机**上（`camera_rig.cam.zoom`，越大画面越大）
-	var is_3d: bool = main.cam is Camera3D
+	# ★ 缩放在**场景**上（`game.zoom` = 相机距离倍率，越大越远）—— 3D 是唯一外壳。
+	#   ⚠️ 判据必须读 `main.zoom`：`main` 就是游戏场景本身，而 `main.cam` 是 `Camera3D`
+	#     （**没有** `.zoom`）。历史上误写成 `var cam: Camera2D = main.cam` 会把整段
+	#     静默中断（见 pitfalls 10.7）。
 	var zoom_before_fn := func() -> float:
-		if is_3d:
-			return float(main.zoom)
-		return float(main.camera_rig.cam.zoom.x)
+		return float(main.zoom)
 	var reset_zoom_fn := func() -> void:
-		if is_3d:
-			main.zoom = 1.0
-		else:
-			main.camera_rig.cam.zoom = Vector2.ONE * 1.0
+		main.zoom = 1.0
 	reset_zoom_fn.call()
 	var on_bar: Vector2 = UiLayoutRes.panel_content_pos() + Vector2(8.0, 8.0)
 	var on_map := Vector2(vp.x * 0.5, vp.y * 0.4)
@@ -832,22 +822,15 @@ func _send_wheel(main, button: int, pos: Vector2) -> void:
 	main._unhandled_input(_wheel_event(button, pos))
 
 
-## 「相机现在看向地面上的哪一个点」（**两条外壳通用**的判据）。
+## 「相机现在看向地面上的哪一个点」。
 ##
-## ★★ 为什么需要这么一个helper：`main` 就是**游戏场景本身**（`root_node.game`），
-##   而 `main.cam` 在 2D 外壳上是 `Camera2D`（`position` 是 `Vector2`）、
-##   在 3D 外壳上是 `Camera3D`（`position` 是 `Vector3`）。
-##   原来那句 `var cam_before: Vector2 = main.cam.position` 在 3D 入口下直接抛类型错误，
-##   把整段断言静默中断（见 pitfalls 10.7）。
-##   ⇒ 判据改成「看向的地面点」：2D 就是 `cam.position`；3D 是「屏幕中心对着的那个地面点」
-##     （`_ground_under_screen(_view_center())`，与产品代码同一条链路）。
+## ★ 判据 = 「屏幕中心对着的那个地面点」（`_ground_under_screen(_view_center())`，
+##   与产品代码同一条链路）。不要读 `main.cam.position` —— 那是 `Camera3D` 的世界坐标，
+##   与「画面中心对着哪一格」差一个偏移。
 func _camera_look_point(main) -> Vector3:
-	if main.cam is Camera3D:
-		# ⚠️ 必须走**产品那一条**换算，不要自己算 —— 「屏幕中心对着哪一格」
-		#    在 3D 下是「打一条射线求交」，见 game_scene3d._ground_under_screen 的说明。
-		return main._ground_under_screen(main._view_center())
-	var c2: Camera2D = main.camera_rig.cam
-	return Vector3(c2.position.x, c2.position.y, 0.0)
+	# ⚠️ 必须走**产品那一条**换算，不要自己算 —— 它是「打一条射线求交」，
+	#    见 game_scene3d._ground_under_screen 的说明。
+	return main._ground_under_screen(main._view_center())
 
 
 # ---- 提示行（红字）：住在右栏数值框下面那条 20px 里，出现时不改任何一块的几何 ----
@@ -3503,20 +3486,12 @@ func _place_unit(world, u, at: Vector2) -> void:
 	u.sync_tile(world.map)
 
 
-## 世界坐标（格）→ 视口坐标（给假鼠标事件用）
-## 世界坐标（格）→ 视口像素。
+## 世界坐标（格）→ 视口像素（给假鼠标事件用）。
 ##
-## ★★ 必须按**当前跑的是哪一套场景**分流（本轮实测踩到）：
-##   · **3D 场景**（`game.palette` 存在）：正变换是 `Camera3D.unproject_position`
-##     —— **入参已经是屏幕像素，不再过画布变换**；
-##   · **2D 遗留栈**：`palette2d.to_px` 之后再过一次画布变换。
-##   ⚠️ 写死走 2D 那套的后果，是「世界 → 视口 → 世界」这条**前提**断言直接失败，
-##      连带「框的起点是按下那一刻的世界坐标」一起红 —— 看着像框选坏了，
-##      其实只是这个**测试辅助函数**与场景那一侧的口径不一致。
+## ★ 3D 唯一路线：`palette.to_px`（`Camera3D.unproject_position`）——**不再是**「世界像素
+##   再过一次画布变换」那套（随 2D 栈删除）。
 func _world_to_screen(main, w: Vector2) -> Vector2:
-	if main != null and main.get("palette") != null:
-		return main.palette.to_px(w)
-	return main.input_ctrl.get_viewport().get_canvas_transform() * Palette2DRes.to_px(w, main.cfg)
+	return main.palette.to_px(w)
 
 
 func _sorted_ids(units: Array) -> Array:

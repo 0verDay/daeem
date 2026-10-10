@@ -33,9 +33,10 @@
 extends Control
 
 const ConfigRes = preload("res://logic/config.gd")
-const Palette2DRes = preload("res://view/palette2d.gd")
 
-## ★★ 3D 投影助手（iew/palette.gd 的实例）。为 null = 2D 遗留路线（见 _view_corners_logic）。
+## ★★ 3D 投影助手（`view/palette.gd` 的实例，持有 `Camera3D`）。
+##   小地图的「视野框 / 点击跳转」全靠它把屏幕像素换成格 —— 这是**唯一**的路线
+##   （2D 遗留路线已随 2D 栈删除；`setup` 时必须给）。
 var palette = null
 const BuildingRes = preload("res://logic/building.gd")
 
@@ -101,12 +102,12 @@ var _c_mountain: Color
 var _color_cache: Dictionary = {}
 
 
-func setup(p_cfg: ConfigRes, p_world, p_camera_rig, p_palette = null) -> void:
+func setup(p_cfg: ConfigRes, p_world, p_camera_rig, p_palette) -> void:
 	cfg = p_cfg
 	world = p_world
 	camera_rig = p_camera_rig
-	# ★★ 3D 版的投影助手（持有 Camera3D）。给了它就说明本局跑在 3D 栈上：
-	#    「视野框」与「点击跳转」都改走它，不再依赖 Camera2D 与画布变换。
+	# ★★ 3D 投影助手（`view/palette.gd` 的实例，持有 Camera3D）—— **必需**：
+	#    「视野框」与「点击跳转」全靠它把屏幕像素换成格（2D 回退已随 2D 栈删除）。
 	palette = p_palette
 	mouse_filter = Control.MOUSE_FILTER_STOP      # 点在小地图上 = 移动镜头，不许穿到地图上
 	focus_mode = Control.FOCUS_NONE
@@ -175,7 +176,7 @@ func _map_diamond() -> PackedVector2Array:
 		Vector2(0.0, float(m.rows)), Vector2.ZERO]
 	var out := PackedVector2Array()
 	for c in corners:
-		out.append(to_minimap(Palette2DRes.to_logic(Palette2DRes.to_px(c, cfg), cfg)))
+		out.append(to_minimap(c))
 	return out
 
 
@@ -191,47 +192,25 @@ static func _aabb_of(poly: PackedVector2Array) -> Rect2:
 	return Rect2(mn, mx - mn)
 
 
-## ★ 玩家当前的视野框（世界坐标，格）。
+## ★ 玩家当前的视野框（**世界像素**口径）。
 ##
-## ★★ 为什么读 `cam.position` 而不是 `cam.get_screen_center_position()`（实测踩过）：
-##   后者返回的是**上一帧渲染时**记下的屏幕中心 —— 刚改完 `cam.position` 的那一帧里，
-##     `cam.position` = (864, 704) 而 `get_screen_center_position()` = (772.5, 260.5)（旧值），
-##     于是视野框要等下一帧才挪。本控件与点击都要求「本帧就一致」，
-##     所以这里读 `cam.position`（相机是锚点居中，屏幕中心就是它）。
-##   ⚠️ 这也意味着：**别**给相机开 `position_smoothing` ——
-##     一开，`cam.position` 就变成「目标点」而不是「屏幕中心」，两者会差一段平滑距离，
-##     这个框会跑到画面之外（真要开平滑，这里得跟着改成读平滑后的值）。
-##
-## 视野大小 = 视口像素 / zoom（zoom 是放大倍数：越大看到的越少）。
-## ⚠️ 相机现在允许跑到地图边界上（clamp 到 [0, 地图宽]），所以这个框**会超出地图**，
-##    在小地图上就是压在留边上 —— 那是真实情况，照画。
+## ★★ 做法：把**视口四角**投到地面上，取它们的轴对齐包围盒。
+##    为什么不用「视口 / zoom」那套式子：那假设世界轴对齐，而 3D 相机是斜看的
+##    ⇒ 屏幕矩形映射回地面是个**梯形**，只能靠四角求包围盒（略大于真实可见区，
+##    这是刻意选的口径：宁可框大，也不能出现「屏幕上看得见、框里没框到」）。
+## ⚠️ 相机允许贴到地图边界，所以这个框**会超出地图**（在小地图上就是压在留边上）
+##    —— 那是真实情况，照画（裁剪在 `view_rect_local` 那一层做）。
 func view_rect_world() -> Rect2:
-	# ★★ 3D 版：直接把视口四角投到地面上，取它们的轴对齐包围盒。
-	#    为什么不用「视口 / zoom」那套式子：那假设世界轴对齐，而 3D 相机是斜看的
-	#    ⇒ 屏幕矩形映射回地面是个**梯形**，只能靠四角求包围盒（略大于真实可见区，
-	#    这是刻意选的口径：宁可框大，也不能出现「屏幕上看得见、框里没框到」）。
-	if palette != null:
-		var corners3 := _view_corners_logic()
-		if corners3.is_empty() or cfg == null:
-			return Rect2()
-		var c0: Vector2 = corners3[0]
-		var mn3 := c0
-		var mx3 := c0
-		for c in corners3:
-			mn3 = mn3.min(c)
-			mx3 = mx3.max(c)
-		var cell: float = cfg.cell_px
-		return Rect2(mn3 * cell, (mx3 - mn3) * cell)
-	if camera_rig == null or camera_rig.cam == null:
+	var corners3 := _view_corners_logic()
+	if corners3.is_empty() or cfg == null:
 		return Rect2()
-	var cam: Camera2D = camera_rig.cam
-	var vp: Vector2 = camera_rig.get_viewport_rect().size
-	var zoom: Vector2 = cam.zoom
-	if zoom.x <= 0.0 or zoom.y <= 0.0:
-		return Rect2()
-	var half: Vector2 = Vector2(vp.x / zoom.x, vp.y / zoom.y) * 0.5
-	var center: Vector2 = cam.position
-	return Rect2(center - half, half * 2.0)
+	var mn3: Vector2 = corners3[0]
+	var mx3: Vector2 = corners3[0]
+	for c in corners3:
+		mn3 = mn3.min(c)
+		mx3 = mx3.max(c)
+	var cell: float = cfg.cell_px
+	return Rect2(mn3 * cell, (mx3 - mn3) * cell)
 
 
 ## 视野框在小地图控件里的矩形。
@@ -250,12 +229,7 @@ func view_rect_world() -> Rect2:
 ##      对「我现在看的是哪一块」这个问题，宁可框大一点。
 ##    ★ 小地图的**地形**仍然正俯视等比（更好读），只有这个框按真实投影算。
 func view_rect_local() -> Rect2:
-	# ★ 3D 路不依赖 camera_rig.cam（那是 Camera2D 的属性）⇒ 判据要分岔
-	if palette == null and (camera_rig == null or camera_rig.cam == null):
-		return Rect2()
-	if palette != null and camera_rig == null:
-		return Rect2()
-	if cfg == null:
+	if camera_rig == null or cfg == null:
 		return Rect2()
 	var corners := _view_corners_logic()
 	if corners.is_empty():
@@ -269,32 +243,23 @@ func view_rect_local() -> Rect2:
 	return Rect2(mn, mx - mn)
 
 
-## 视口四角在**格空间**里的位置（`view_rect_local` 与它的裁剪都用这一份）。
+## 视口四角在**格空间**里的位置（`view_rect_local` / `view_rect_world` 都用这一份）。
 ##
-## ★ 两条路，按有没有 3D 投影助手分流：
-##   · **3D 版**（`palette != null`，本版主线）：屏幕像素 → `palette.to_logic()`
-##     —— 那是「从 Camera3D 往地面打射线求交」，**入参就是屏幕像素**，
-##     所以**不能**再过一次画布变换。
-##   · **2D 遗留**：屏幕角 →（`get_canvas_transform().affine_inverse()`，与
-##     `input_controller._screen_to_logic` 完全同一条路）→ 世界像素 → 格。
+## ★ 屏幕像素 → `palette.to_logic()`：那是「从 Camera3D 往地面打射线求交」，
+##   **入参就是屏幕像素**，所以**不能**再过一次画布变换。
 ##   ⚠️ 不许自己按「视口宽 / zoom / 格宽」推 —— 那是**正放**世界才成立的式子。
 func _view_corners_logic() -> Array:
-	if camera_rig == null:
+	if camera_rig == null or palette == null:
 		return []
 	var vp: Vector2 = camera_rig.get_viewport_rect().size
 	var out: Array = []
 	var corners: Array = [Vector2.ZERO, Vector2(vp.x, 0.0), vp, Vector2(0.0, vp.y)]
-	if palette != null:
-		for sp: Vector2 in corners:
-			var lg = palette.to_logic(sp)
-			# ⚠️ 射线打不到地面时（相机贴地平线）跳过这一角，而不是塞一个 (0,0)：
-			#    塞零会让包围盒里凭空多出地图左上角，视野框整个错位。
-			if lg != null:
-				out.append(lg)
-		return out
-	var inv: Transform2D = camera_rig.get_viewport().get_canvas_transform().affine_inverse()
-	for sp2: Vector2 in corners:
-		out.append(Palette2DRes.to_logic(inv * sp2, cfg))
+	for sp: Vector2 in corners:
+		var lg = palette.to_logic(sp)
+		# ⚠️ 射线打不到地面时（相机贴地平线）跳过这一角，而不是塞一个 (0,0)：
+		#    塞零会让包围盒里凭空多出地图左上角，视野框整个错位。
+		if lg != null:
+			out.append(lg)
 	return out
 
 
@@ -638,17 +603,12 @@ func _follow_cursor() -> void:
 
 ## 小地图局部坐标 → 镜头位置。
 ##
-## ★★ 两条路，按相机替身**有没有** `center_on_tile` 分流（本轮实测抓到真 bug 的那一处）：
-##   · **3D 替身**（`CameraFacade`，有 `center_on_tile`）：直接把**格坐标**交给它。
-##     为什么必须这样：原来那条 `center_on_px(Palette2DRes.to_px(格))` 把
-##     **世界像素**当成**屏幕像素**喂了进去 —— 2D 里这两个坐标系恰好重合所以能用，
-##     3D 里不重合 ⇒ 点小地图会落到别的一格（实测最大误差 **15.06 格**）。
-##   · **2D 遗留**（`camera_rig.gd`）：保持原样。那里世界像素 == 屏幕像素是**事实**，
-##     而且 `center_on_px` 走的是它自己的 `clamp_position()` 口径。
-##     ⚠️ 不许顺手把 2D 那条也改成格：那会动到 `camera_rig` 的公开接口，
-##       而它背后挂着 1000+ 项断言（`test_view` 等），收益为零。
+## ★★ 把**格坐标**交给相机替身的 `center_on_tile`（`CameraFacade` 有它）。
+##   为什么必须这样（实测抓到过真 bug）：原来那条 `center_on_px(格 × cell_px)`
+##   把**世界像素**当成了**屏幕像素** —— 在旧的正放 2D 世界里这两个坐标系恰好重合
+##   所以「能用」，换成 3D 相机之后不重合 ⇒ 点小地图会落到别的一格（实测最大误差 **15.06 格**）。
 ##
-## ★ 判据：**「格 → 屏幕」这条换算只能由知道 3D 相机的那一层做**。
+## ★ 判据：**「格 → 屏幕」这条换算只能由知道相机的那一层做**。
 ##   小地图手里是格，就该把格交出去；不要在一个不知道相机的地方自己乘 cell_px。
 func _jump_to(local_pos: Vector2) -> void:
 	if camera_rig == null:
@@ -659,8 +619,6 @@ func _jump_to(local_pos: Vector2) -> void:
 	#    「Nonexistent function」并把整个文件拖成 Compilation failed（实测踩过）。
 	if camera_rig.has_method("center_on_tile"):
 		camera_rig.center_on_tile(tile)
-		return
-	camera_rig.center_on_px(Palette2DRes.to_px(tile, cfg))
 
 
 # ------------------------------------------------------------------

@@ -11,9 +11,8 @@ extends SceneTree
 
 const MainScene := preload("res://view/main.tscn")
 const FactionRes = preload("res://logic/faction.gd")
-## ★ 2.5D：相机位置是**压扁后的世界像素**，不许手写 `pos * cell_px`
-##   （纵向要乘 cell_h）—— 与游戏内所有换算走同一个入口。
-const Palette2DRes = preload("res://view/palette2d.gd")
+## ★ 缩放档位的**唯一取值处**（`game_scene3d.ZOOM_MIN/MAX`）——别在这里另写 0.1 / 0.3。
+const Game3DRes = preload("res://view/game_scene3d.gd")
 
 const OUT_DIR := "res://shots"
 const SETTLE_FRAMES := 20
@@ -40,12 +39,12 @@ func _run() -> void:
 	var world = game.world
 	var ic = game.input_ctrl
 
-	# 0) ★★ 2.5D 全景（第一眼看观感的图）：把镜头拉到最远，看整片压扁后的地形与地物
-	game.cam.zoom = Vector2.ONE * game.cfg.num("camera.min_scale", 0.8)
-	game.camera_rig.center_on_px(Palette2DRes.to_px(
-		Vector2(float(world.map.cols) * 0.5, float(world.map.rows) * 0.5), game.cfg))
+	# 0) ★★ 全景（第一眼看观感的图）：把镜头拉到**最远**一档，看整片地形与地物
+	game.zoom = Game3DRes.ZOOM_MAX
+	game.camera_rig.center_on_tile(
+		Vector2(float(world.map.cols) * 0.5, float(world.map.rows) * 0.5))
 	await _wait(SETTLE_FRAMES)
-	await _shoot("00_squash_wide")
+	await _shoot("00_wide")
 
 	# 1) 己方部队：右下角是「操作 / 单位」两页 + 命令卡有内容（对照组）
 	var mine = null
@@ -65,8 +64,7 @@ func _run() -> void:
 	if foe != null:
 		ic.select_enemy(foe)
 		# 顺手把镜头挪过去（不然它在屏幕外，看不出选中圈）
-		# ★ 相机位置 = 压扁后的世界像素：走 palette，别自己乘
-		game.cam.position = Palette2DRes.to_px(foe.pos, game.cfg)
+		game.camera_rig.center_on_tile(foe.pos)
 		await _wait(SETTLE_FRAMES)
 		await _shoot("11_enemy_unit_selected")
 
@@ -96,19 +94,17 @@ func _run() -> void:
 				foe_b = cand
 	if foe_b != null:
 		ic.select_enemy(foe_b)
-		game.cam.position = Palette2DRes.to_px(
-			Vector2(float(foe_b.tx) + 0.5, float(foe_b.ty) + 0.5), game.cfg)
+		game.camera_rig.center_on_tile(Vector2(float(foe_b.tx) + 0.5, float(foe_b.ty) + 0.5))
 		await _wait(SETTLE_FRAMES)
 		await _shoot("12_enemy_building_selected")
 
-	# 4) ★★ 建筑近景（第二张「看压扁」的图）：拉到最近，把镜头放到大本营上 ——
-	#    要能一眼看出「地物前后关系」与「字/血条有没有被压扁」。
-	game.cam.zoom = Vector2.ONE * game.cfg.num("camera.max_scale", 1.6)
+	# 4) ★★ 建筑近景（第二张「看立体感 / 遮挡」的图）：拉到**最紧**一档，把镜头放到大本营上 ——
+	#    要能一眼看出「地物前后关系」与「字 / 血条有没有被盖住」。
+	game.zoom = Game3DRes.ZOOM_MIN
 	var home: Vector2i = world.home_base_of(world.my_faction)
-	game.camera_rig.center_on_px(Palette2DRes.to_px(
-		Vector2(float(home.x) + 0.5, float(home.y) + 0.5), game.cfg))
+	game.camera_rig.center_on_tile(Vector2(float(home.x) + 0.5, float(home.y) + 0.5))
 	await _wait(SETTLE_FRAMES)
-	await _shoot("13_squash_closeup")
+	await _shoot("13_closeup")
 
 	print("[SHOT] done")
 	quit(0)

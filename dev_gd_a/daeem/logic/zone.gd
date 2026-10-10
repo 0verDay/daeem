@@ -80,6 +80,9 @@ static func build_from_map(map, cfg: ConfigRes, factions: Array) -> RefCounted:
 		zs._build_even(cfg, flist)
 	# ★ 中心与产能（地图给的，老地图没有 → 保持 0 / 无中心）
 	zs._apply_map_centers(map)
+	# ★★ 给**没有中心**的区块补一个中心：占领判定看的是「离中心 3×3 内」，
+	#    老图 / 手写图 / 均分区块都没有中心 ⇒ 不补的话它们永远占不了（见 `_ensure_centers`）。
+	zs._ensure_centers(map)
 	zs._apply_map_production(map)
 	# ★ 人口上限（地图给的；缺字段的区块保持默认 1）
 	zs._apply_map_population_caps(map)
@@ -200,6 +203,63 @@ func _apply_map_centers(map) -> void:
 			continue                    # 那一格不归这个区块（地图被手改过）
 		z["center"] = p
 		center_lookup[map.terrain.idx(p.x, p.y)] = zid
+
+
+## ★★ 给**还没有中心**的区块补一个中心（需求：「没有区划中心的区划由你配一个」）。
+##
+## 为什么需要：占领判定 = 「单位离**区划中心** ≤ N 格才算在场」。没有中心的区块
+##   会**永远占不了** —— 而老地图 / 手写图 / 均分区块（`_build_even`）都没有中心字段。
+##   ⇒ 在装配时给它们补一个，行为与地图里写死的中心**完全等价**
+##   （`world._spawn_zone_centers()` 照样会在它上面立那栋中立障碍，点选也照认）。
+##
+## ★ 选点规则（确定、尽量能站）：
+##   在该区块自己的地块里挑「**可通行**优先 → 离包围盒中心近优先 → (y, x) 小优先」的那一格。
+##   ⚠️ 可通行只影响「优先」：整块都是山时也照样选一格 —— 那一格站不上人没关系，
+##      它的邻域（3×3）仍然可站 ⇒ 占领照常能进行。
+func _ensure_centers(map) -> void:
+	for z in zones:
+		if z["center"] != null:
+			continue
+		var tiles: Array = z["tiles"]
+		if tiles.is_empty():
+			continue
+		var pick: Variant = _pick_center_tile(map, z)
+		if pick == null:
+			continue
+		z["center"] = pick
+		center_lookup[map.terrain.idx(pick.x, pick.y)] = int(z["id"])
+
+
+## 给一个没有中心的区块选一个中心格（见 `_ensure_centers`）。地块为空 → null。
+func _pick_center_tile(map, z: Dictionary) -> Variant:
+	var tiles: Array = z["tiles"]
+	if tiles.is_empty():
+		return null
+	var cx := (float(int(z["x0"])) + float(int(z["x1"]))) * 0.5
+	var cy := (float(int(z["y0"])) + float(int(z["y1"]))) * 0.5
+	var can_walk: bool = map != null and map.has_method("terrain_walkable")
+	var best: Variant = null
+	var best_walk := false
+	var best_d := 0.0
+	for t in tiles:
+		var tile: Vector2i = t
+		var walk: bool = can_walk and bool(map.terrain_walkable(tile.x, tile.y))
+		var d: float = absf(float(tile.x) - cx) + absf(float(tile.y) - cy)
+		var take := false
+		if best == null:
+			take = true
+		elif walk != best_walk:
+			take = walk                  # 可通行的优先
+		elif absf(d - best_d) > 1e-6:
+			take = d < best_d
+		else:
+			var b: Vector2i = best
+			take = (tile.y < b.y) or (tile.y == b.y and tile.x < b.x)
+		if take:
+			best = tile
+			best_walk = walk
+			best_d = d
+	return best
 
 
 ## ★ 把地图里各区块的「产能」读进来（每地块每秒）。
@@ -591,41 +651,36 @@ func refresh_building_ownership(cfg: ConfigRes, building_list: Array, factions: 
 ##
 ## ★★ 规则（手玩定的完整版 —— 与「逐阵营各涨各的」完全不同，改之前先读完）：
 ##
-##   1. 区块里**只有一个阵营**的活单位、且它不是这块地的主人 → **只有它**读条
+##   ★★★ 「在场」的定义（本轮改版）：单位必须站在**区划中心的邻域**里才算「在场」——
+##      切比雪夫距离 ≤ `cfg.zone_capture_radius_tiles`（= 1 ⇒ **3×3**，需求原话
+##      「单位必须在区划中心附近 3x3 格子内才能开始占领」）。
+##        · **纯距离**：那一格属不属于本区块**不看**（跨到邻区 / 地图外照样算）；
+##        · 下面三条里的「在场」**全是这一个口径**（谁读条 / 主人挡人 / 人走回落），
+##          所以人走出 3×3 就等于「离场」、进度开始回落；
+##        · 没有中心的区块由 `_ensure_centers()` 在装配时补一个中心（老图也能用）。
+##
+##   1. 邻域里**只有一个阵营**的活单位、且它不是这块地的主人 → **只有它**读条
 ##      （每秒 +1/capture_time_sec × `speed_multiplier(在场人数)`），读满 → 归属翻给它、
 ##      其余阵营进度清零。
-##   2. 区块里有**两个及以上**阵营的活单位 → **谁都不涨**：
+##   2. 邻域里有**两个及以上**阵营的活单位 → **谁都不涨**：
 ##      正在读的那条**冻住**（不涨、不降、不清零）—— UI 会给它加一圈白描边。
-##   3. 有进度、但那一方**不在场**（全移出区块 / 被打光）→ 按 decay_per_sec **缓慢回落**。
+##   3. 有进度、但那一方**不在场**（全移出邻域 / 被打光）→ 按 decay_per_sec **缓慢回落**。
 ##      「A 正在占、B 进来把 A 杀光 → A 的条慢慢退回 0」就走这一条。
-##   4. ★ **严格阻塞**：区块里只要还有别人没归零的进度，新来的这一方**不开读**
+##   4. ★ **严格阻塞**：只要还有别人没归零的进度，新来的这一方**不开读**
 ##      —— 也就是「A 归零之后才轮到读 B 的条」。这条保证了**同一时刻最多只有一条进度条**，
 ##      也是 UI 只画一条的前提（手玩明确要求）。
 ##   5. 主人在自己的地里什么都不读（它只负责「挡住别人」）。
 ##
-## ★★ 阵营归属（盟友）怎么进来（本轮新增，只改了**一处**）：
-##   下面清点「站着哪些阵营」时，把每个单位折算成它那一**方**的代表
-##   （`FactionRes.side_of`：没有盟友时就是它自己）。于是：
-##     · 两个**盟友**的兵站在同一块地上算**一方**（人数合并）——
-##       既不互相抵消读条，也不会因为「两边同场」而谁都读不了；
-##     · 站在**盟友的地**上时，`same_side_for_attack(owner, reader)` 成立 → 不会被判成外来者
-##       （不会去抢盟友的区划，这正是需求要的「不争夺同一区划」）。
-##   合作愉快这条改动**只落在这一处**：下面 `_advance_zone` 的规则一个字没动 ——
-##   它本来就是按「一方」写的，只是以前「一方 == 一个阵营」。
+## ★★ 阵营归属（盟友）：下面清点「站着哪些阵营」时，把每个单位折算成它那一**方**
+##   的代表（`FactionRes.side_of`）。于是两个盟友的兵算**一方**（人数合并、不互相抵消），
+##   而且站在盟友的地上不会被判成外来者。
 ##
-## ⚠️⚠️ **修正（实测踩到，改之前先读）**：上面那句「`same_side(owner, reader)` 成立」
-##   曾经是**假的** —— `FactionRes.same_side()` 按设计只回答「同一个阵营」
-##   （它同时管着城墙通行，见 `logic/faction.gd` 第 77 行那一整段，**不许**把它改宽）。
-##   于是「主人的地」这一路全靠 `update()` 里那段 `owner_present` 补丁兜着，而那个补丁
-##   **只在主人自己有兵站在那块地里时才成立** ⇒ 主人不在场（地是它名下、兵却不在）
-##   的时候，盟友就被当成外来者开始读条抢地。
-##   实测：`data/maps/frontier/map.json` 的 6 个 enemy 守军一被删掉（地图预置单位废弃），
-##   `tests/test_alliance.gd` 的「AI 的兵站在盟友的地里不读条」当场变红。
-##   ⇒ `_advance_zone` 里那三处「算不算自己人」的判定现在统一走
-##   `same_side_for_attack()`（同阵营**或**盟友），与 `_ALLY` 表的语义一致。
+## ⚠️⚠️ 「算不算自己人」在 `_advance_zone` 里统一走 `same_side_for_attack()`（同阵营**或**盟友）
+##   ——**不许**用严格的 `FactionRes.same_side()`（它只回答「同一个阵营」，还管着城墙通行）。
+##   实测过：用严格版会把盟友当成外来者 ⇒ 盟友的兵去抢盟友的地
+##   （`tests/test_alliance.gd` 的「AI 的兵站在盟友的地里不读条」当场变红）。
 ##
-## ★★ 人数加成（本轮需求，改掉了原来「同阵营多单位不叠加」那条）：
-##   同一个区块里**同一方**的单位越多，读条越快；曲线与上限见 `speed_multiplier()`。
+## ★★ 人数加成：同一个邻域里**同一方**的单位越多，读条越快（曲线见 `speed_multiplier()`）。
 ##   只有 1 个单位时倍率正好是 1.0 —— 所以「占领速度缩小为 1/8」那条需求
 ##   说的是**单兵基准速度**，两条需求互不冲突。
 ##
@@ -639,69 +694,86 @@ func update(cfg: ConfigRes, dt: float, units: Array, factions: Array) -> void:
 	var curve_k: float = maxf(0.0, cfg.zone_speed_curve_k)
 	var curve_p: float = maxf(0.01, cfg.zone_speed_curve_power)
 	var flist := _capture_factions(factions)
+	var radius: int = maxi(0, int(cfg.zone_capture_radius_tiles))
 
-	# 1) 逐区块清点「站着哪些**阵营**、各几个活单位」，同时算出「有几个**方**」。
+	# ★★ 单位先按格分桶：逐区块只看它中心那 (2r+1)² 格，而不是「区块 × 全部单位」
+	#   （1000 单位 × 24 区块那样扫是每帧几万次；分桶后是 O(单位数) + O(区块数 × 9)）。
+	var by_tile: Dictionary = {}
+	for u in units:
+		if not u.alive:
+			continue
+		var key: int = u.ty * cols + u.tx
+		var bucket: Array = by_tile.get(key, [])
+		bucket.append(u)
+		by_tile[key] = bucket
+
+	# 1) 逐区块清点「**中心邻域**里站着哪些阵营、各几个活单位」，同时算出「有几个**方**」。
 	#
-	# ★★ 阵营归属（盟友）在这里落地，而且**两份数据都要**（这是这一节最要紧的设计）：
-	#   · `present_by`：**键 = 真实阵营 id**，值 = 活单位数。
+	# ★★ 两份数据都要（这是这一节最要紧的设计）：
+	#   · `present_by`：**键 = 真实阵营 id**，值 = 活单位数
 	#     → 人数加成按真实阵营数（一个 AI 的兵不该替盟友算人头）；
-	#     → `progress_by` 仍然按真实阵营铺键，UI 取色 / `capture_faction` 拿到的还是
-	#       「enemy / ai / p1」这些**真名字**（拿代表 id 去画会把颜色画错）。
-	#   · `present_sides`：这个区块里站着**几方**（联盟折叠后）。
+	#     → `progress_by` 仍按真实阵营铺键，UI 取色拿到的还是「enemy / ai / p1」这些**真名字**。
+	#   · `present_sides`：这个区块里站着**几方**（联盟折叠后）
 	#     → 只有「恰好一方」才有人能读条；两个盟友的兵同处一区算**一方**（不互相抵消）。
-	#
-	# ⚠️ 两者必须一起给 `_advance_zone`：只给「方」会让归属写成代表 id（实测：
-	#    区块归属变成 `ai`，test_zone_capture 11 条断言红了）；只给「阵营」则
-	#    两个盟友会被当成两方对峙（谁都读不了 —— 正是需求要避免的那件事）。
 	var present_by: Dictionary = {}
 	var present_sides: Dictionary = {}
 	for z in zones:
-		present_by[int(z["id"])] = {}
-		present_sides[int(z["id"])] = {}
-	for u in units:
-		if not u.alive:
-			continue
-		var z = zone_at(u.tx, u.ty)
-		if z == null:
-			continue
 		var zid := int(z["id"])
-		var fid := String(u.faction)
-		var counts: Dictionary = present_by[zid]
-		counts[fid] = int(counts.get(fid, 0)) + 1
-		var sides: Dictionary = present_sides[zid]
-		sides[FactionRes.side_of(fid)] = true
-
-	# ★★ 还要知道「**主人自己**在不在场」—— 折叠成「一方」时最容易漏掉的一条。
-	#
-	# 为什么：`_advance_zone` 判「谁有资格读条」时问的是「区块里是不是只有一方人」，
-	#   而主人那一方的兵**不是外来者**，不该算进去。
-	#   没有盟友时这不成问题（主人的兵在 `present` 里的键就是主人自己，正好等于 owner，
-	#   `same_side(owner, only)` 直接拦掉）；但**结成盟友之后**，盟友（ai）的兵那一方
-	#   的代表是 `ai`，而这一格的 owner 是 `enemy` —— `same_side("enemy", "ai")` 为 false
-	#   ⇒ 被当成外来者 ⇒ 盟友的兵会去抢盟友的地（实测：进度真的在涨）。
-	#
-	# 做法：主人那一方**只要有人在场**，就把 owner 也登记成「一方」。
-	#    ⚠️ 它**不进** `present_by`：人数加成不该把主人的兵算进读条那一方的人头里。
-	var owner_present: Dictionary = {}
-	for u in units:
-		if not u.alive:
-			continue
-		var z2 = zone_at(u.tx, u.ty)
-		if z2 == null:
-			continue
-		var own := String((z2 as Dictionary)["owner"])
-		if own == "":
-			continue
-		if FactionRes.same_side(own, String(u.faction)):
-			owner_present[int((z2 as Dictionary)["id"])] = FactionRes.side_of(own)
-	for zid2 in owner_present.keys():
-		(present_sides[zid2] as Dictionary)[owner_present[zid2]] = true
+		var here: Array = _units_in_capture_area(z, by_tile, units, radius)
+		var counts: Dictionary = {}
+		var sides: Dictionary = {}
+		for u in here:
+			var fid := String(u.faction)
+			counts[fid] = int(counts.get(fid, 0)) + 1
+			sides[FactionRes.side_of(fid)] = true
+		# ★ 主人那一方**只要有人在场**，就把 owner 也登记成「一方」：这样「邻域里只有
+		#   主人那一方的人」不会被当成本区块里还有外来者（结成盟友时靠它兜住）。
+		#   ⚠️ 它**不进** `counts`：人数加成不该把主人的兵算进读条那一方的人头里。
+		var own := String(z["owner"])
+		if own != "":
+			for u2 in here:
+				if FactionRes.same_side(own, String(u2.faction)):
+					sides[FactionRes.side_of(own)] = true
+					break
+		present_by[zid] = counts
+		present_sides[zid] = sides
 
 	# 2) 逐区块推进
 	for z in zones:
 		var zi := int(z["id"])
 		_advance_zone(z, present_by[zi], present_sides[zi], flist,
 			capture_time, decay, max_mult, curve_k, curve_p, dt)
+
+
+## 「落在某区块**中心邻域**里的活单位」——占领判定的「在场」口径（见 `update()` 的说明）。
+##
+## ★ 纯距离：离中心 `radius` 格（切比雪夫）以内就算，**不看那一格归谁** ——
+##   跨到邻区 / 地图外的格子照样算。
+## ★ 没有中心的区块退回「整块地」（防御分支）：正常装配时 `_ensure_centers()` 已给它补了中心，
+##   走到这里只可能是那张图里这个区块一个格都没有。
+func _units_in_capture_area(z: Dictionary, by_tile: Dictionary, all_units: Array,
+		radius: int) -> Array:
+	var c: Variant = z["center"]
+	if c == null:
+		var out: Array = []
+		for u in all_units:
+			if u.alive and zone_at(u.tx, u.ty) == z:
+				out.append(u)
+		return out
+	var center: Vector2i = c
+	var out2: Array = []
+	for dy in range(-radius, radius + 1):
+		var ty: int = center.y + dy
+		if ty < 0 or ty >= rows:
+			continue
+		for dx in range(-radius, radius + 1):
+			var tx: int = center.x + dx
+			if tx < 0 or tx >= cols:
+				continue
+			var bucket: Variant = by_tile.get(ty * cols + tx, null)
+			if bucket != null:
+				out2.append_array(bucket as Array)
+	return out2
 
 
 ## ★ 人数加成曲线：n 个同阵营单位在场时的读条倍率。

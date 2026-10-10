@@ -442,32 +442,13 @@ func _group_ai_ally_acts(cfg) -> void:
 
 ## 按「玩家选 `seat`」造一个第一关的世界。
 ##
-## ★★ roster 的拼法与顺序与 `view/game_scene.gd` 的 `build_roster()` **逐句对应**
-##    （那边要建场景树，无头测试里跑不了）：
-##      关卡 `players[]` 的席位 + 「可玩、且关卡点名要挂 AI」的那几个，
-##      最后把**我选的那一方提到第一位**（第一位决定「打哪条目标」）。
-##    ⚠️ 两处漂开就会变成「测试绿、进游戏不对」。
+## ★★ 席位名单**直接走 `logic/level.gd:build_roster()`** —— 与游戏内**同一份实现**
+##    （原先这里抄了一份逐句对应的逻辑，已删除：抄一份迟早与产品漂开，
+##     而那种漂开只会表现为「测试绿、进游戏不对」）。
+##    `build_roster` 负责：关卡 `players[]` 的席位 + 「可玩、且关卡点名要挂 AI」的那几个，
+##    最后把**我选的那一方提到第一位**（第一位决定「打哪条目标」）。
 func _world(cfg, lv, seat: String):
-	var roster: Array = _roster_for(cfg, lv)
-	var idx: int = roster.find(seat)
-	if idx > 0:
-		roster.remove_at(idx)
-		roster.push_front(seat)
-	if roster.is_empty():
-		roster.append(seat)
-	return WorldRes.create_from_level(cfg, lv, seat, roster, true)
-
-
-## 与 `view/game_scene.gd` 的 `build_roster()` 里那段拼装同一个口径（不含「提到第一位」）。
-func _roster_for(cfg, lv) -> Array:
-	var roster: Array = lv.seats()
-	for e in lv.merged_ai_factions(cfg.ai_factions()):
-		var fid := String((e as Dictionary).get("id", ""))
-		if fid == "" or roster.has(fid):
-			continue
-		if lv.is_playable(fid):
-			roster.append(fid)
-	return roster
+	return WorldRes.create_from_level(cfg, lv, seat, lv.build_roster(cfg, seat), true)
 
 
 ## 这一局**被 AI 接管**的阵营 id（= 非本机操作、且 ai_kind 不是 none 的那些）。

@@ -59,13 +59,14 @@ func _draw() -> void:
 	if cfg == null or world == null or palette == null:
 		return
 	# ★★ 顺序即层次（后画的在上面），这一串是刻意排的：
-	#   ① 地面上的"线"（网格 / 区划轮廓）—— 在地面之上、单位之下
+	#   ① 地面上的"线"（网格 / 区划轮廓 / 占领触发区描边）—— 在地面之上、单位之下
 	#      ⚠️ 它们必须**先于**单位画：否则网格线会盖在兵人身上（看起来像网格穿透了部队）。
 	#   ② 占领进度条 —— 也是地面上的东西，同样在单位之下
 	#      （2D 版里它属于 `zone_view`，与地块同层）。
 	#   ③ 单位头上的 UI（血条）—— 最上面
 	_draw_grid()
 	_draw_zone_outlines()
+	_draw_capture_areas()
 	_draw_zone_capture()
 	_draw_units_ui()
 	# ★ 移动 / 行军目标点不再在这里画圈 —— 改成 3D 旗子（view/order_flag_view_3d.gd）
@@ -115,6 +116,19 @@ const CAPTURE_FILL_ALPHA := 0.45
 const CAPTURE_FRONT_WIDTH := 2.0
 const CAPTURE_FRONT_ALPHA := 0.95
 
+## ★★ **占领触发区**（区划中心邻域，默认 3×3）的**内向渐变描边**（本轮新增）。
+##   · `CAPTURE_AREA_GRAD_TILES` = 渐变长度（**格**）——需求「向内有渐变，长度不超过半格」；
+##   · `CAPTURE_AREA_ALPHA` = 最外圈的强度，往里线性降到 0；
+##   · 颜色见 `_capture_area_color()`：**中立 = 白灰**、有主 = 该阵营主色。
+## ⚠️ 这几个是**屏幕空间画法**的参数（与 GRID_* / ZONE_* 同一条口径）：
+##    渐变长度按「格」量，但每个角都逐个投影 ⇒ 透视下它贴着地面、宽度也对。
+const CAPTURE_AREA_GRAD_TILES := 0.5
+const CAPTURE_AREA_ALPHA := 0.6
+const CAPTURE_AREA_NEUTRAL := Color(0.85, 0.85, 0.88)
+## 可见性剔除的**宽松量**（屏幕像素）：外框外接框往外放这么多再判「在不在屏内」，
+## 免得「刚好压在屏幕边缘」的那一块在滑动时忽隐忽现。
+const CAPTURE_AREA_CULL_MARGIN_PX := 16.0
+
 ## 网格线顶点缓存（只在地图尺寸变化时重建；相机移动不影响它 —— 顶点是**格坐标**）
 var _grid_segs: Array = []
 var _grid_cols: int = -1
@@ -126,6 +140,8 @@ var _zone_seg_sig: String = ""
 var grid_draw_count: int = 0
 var zone_outline_draw_count: int = 0
 var capture_draw_count: int = 0
+## ★ 最近一次 `_draw()` 里画了几个「占领触发区」描边（= 有中心的区块数；测试读它）
+var capture_area_count: int = 0
 
 
 ## 网格线：**整张图**的横竖格线（顶点是格坐标，缓存一次即可）。
@@ -194,16 +210,72 @@ func _grid_segs_for(cols: int, rows: int) -> Array:
 ##   而逐个 `append` 到 Packed 数组比 `Array` + 转换省一次拷贝。
 ## ★★ 一次 `draw_multiline` 画**所有**线段 ⇒ 94 条线 = 1 次 draw 调用
 ##   （与 2D 版 `zone_view` 的「按阵营分组合并」同一条思路）。
+##
+## ★★ **近平面裁剪**（本轮修「近视角下地图顶端拉出很多竖线」的 bug）：
+##   相机拉得越近，地图靠近相机的那半张就越会落到**相机平面之后**；
+##   而 `unproject_position()` 对相机后方的点**不裁剪**，除以负的 w ⇒ 坐标镜像/炸开
+##   （实测：某竖线的近端本该投到屏幕 y=+3695，`zoom=0.1` 时变成 **y=−17191**）。
+##   不裁的话，一条格线会从地图顶端的可见端点一路划到天外 ——
+##   56 个端点里 28 个在相机后 ⇒ 屏幕上就是「**很多根竖直线从地图上端拉出去**」。
+##   修法：把每条线段对近平面裁一刀（见 `_project_segments`）。
 func _draw_logic_segments(segs: Array, color: Color, width: float) -> void:
-	if segs.is_empty():
+	var pts: PackedVector2Array = _project_segments(segs)
+	if pts.is_empty():
 		return
-	var pts := PackedVector2Array()
-	pts.resize(segs.size())
-	for i in segs.size():
-		var p: Vector2 = segs[i]
-		var sp: Vector2 = palette.to_px(p)
-		pts[i] = Vector2(roundf(sp.x - 0.5) + 0.5, roundf(sp.y - 0.5) + 0.5)
 	draw_multiline(pts, color, width)
+
+
+## 把一串「格坐标线段」投影成屏幕顶点（**纯计算**：近平面裁剪 + 像素中心吸附）。
+##
+## @return 成对存放的屏幕顶点（起点、终点）；整段在相机后方的不出现，
+##         跨过相机平面的只留可见的那一段。空数组 = 一条都画不了。
+##
+## ★★ 为什么必须裁（见 `_draw_logic_segments` 的说明）：相机后方的点投影会炸开。
+## ★ 判据在**相机空间**里做：`z ≤ -near` 才算在近平面之前（Godot 相机朝 −Z 看）。
+## ★ 参数 `t` 在**逻辑坐标**里插值就够 —— `logic → world` 是线性缩放，
+##   所以交点不必再回世界空间转一次，投影仍只经 `palette.to_px` 一处。
+## ★ 与 `_count_*()` 同一个理由拆成纯函数：测试能在无头下量它，
+##   而不触发 `Drawing is only allowed inside this node's _draw()`。
+func _project_segments(segs: Array) -> PackedVector2Array:
+	var pts := PackedVector2Array()
+	if palette == null or segs.size() < 2:
+		return pts
+	var cam: Camera3D = palette.cam
+	if cam == null:
+		return pts
+	var inv: Transform3D = cam.global_transform.affine_inverse()
+	var zn: float = -cam.near
+	var i := 0
+	var last: int = segs.size() - 1
+	while i < last:
+		var la: Vector2 = segs[i]
+		var lb: Vector2 = segs[i + 1]
+		i += 2
+		var za: float = (inv * palette.to_world(la)).z
+		var zb: float = (inv * palette.to_world(lb)).z
+		var a_front: bool = za <= zn
+		var b_front: bool = zb <= zn
+		if a_front and b_front:
+			pts.append(_proj_snap(la))
+			pts.append(_proj_snap(lb))
+		elif a_front or b_front:
+			# 一端在近平面之后：求交点，只投可见的那一段
+			var t: float = (zn - za) / (zb - za)
+			var lc: Vector2 = la.lerp(lb, t)
+			if a_front:
+				pts.append(_proj_snap(la))
+				pts.append(_proj_snap(lc))
+			else:
+				pts.append(_proj_snap(lc))
+				pts.append(_proj_snap(lb))
+	return pts
+
+
+## 把一个**格坐标**投到屏幕像素并吸附到像素中心。
+## ★ 吸附到 `.5` 不是锦上添花：见 `_draw_logic_segments` 上面那段说明。
+func _proj_snap(logic_pos: Vector2) -> Vector2:
+	var sp: Vector2 = palette.to_px(logic_pos)
+	return Vector2(roundf(sp.x - 0.5) + 0.5, roundf(sp.y - 0.5) + 0.5)
 
 
 ## 网格线（整张图）
@@ -300,6 +372,124 @@ func _build_zone_segments() -> Array:
 	return out
 
 
+# ------------------------------------------------------------------
+# ★★ 占领触发区（区划中心邻域）的**内向渐变描边**（本轮新增）
+# ------------------------------------------------------------------
+##
+## 需求原话：「为区划中心的占领触发区域添加提示，在这个 3x3 范围内的格子设置一个整体描边，
+##   该描边需要向内有渐变色效果，渐变长度不超过一个格子长度的一半，
+##   该描边需要根据其所属势力颜色发生改变，中立时显白灰色，被占领后显示其所属势力的颜色」。
+##
+## 做法：把邻域外框与「内缩 `CAPTURE_AREA_GRAD_TILES` 格」的内框之间那一圈画成
+##   **4 个梯形**（画框那样拼，角上不重不漏），每个梯形给**逐顶点颜色**：
+##   外圈 = 势力色、内圈 = 全透明 ⇒ 引擎插值出来就是「向内渐隐」。
+## ★ 四角逐个投影（`palette.to_px`）⇒ 透视正确，与区划轮廓 / 进度条同一条链路。
+## ★ 颜色判据是**区块归属**（`owner`），不是「谁正在读条」：中立白灰、有主用主人色。
+## ★★ **可见性剔除**（本轮补）：只画**屏幕内**的触发区（见 `_visible_capture_areas()`）——
+##    屏幕外的一律不投影、不绘制，于是开销随「屏幕里有几块」走，而不是随全图区块数走。
+func _draw_capture_areas() -> void:
+	var items: Array = _visible_capture_areas()
+	capture_area_count = items.size()
+	for it in items:
+		var o: PackedVector2Array = it["outer"]     # 顺序：左上, 右上, 右下, 左下
+		var i: PackedVector2Array = it["inner"]     # 同上
+		var oc: Color = it["outer_c"]
+		var ic: Color = it["inner_c"]
+		# 四条边各一个梯形：外沿 = 邻域边框，内沿 = 整体内缩 g 格（「画框」拼法）
+		_draw_grad_quad(PackedVector2Array([o[0], o[1], i[1], i[0]]), oc, ic)   # 上
+		_draw_grad_quad(PackedVector2Array([o[1], o[2], i[2], i[1]]), oc, ic)   # 右
+		_draw_grad_quad(PackedVector2Array([o[2], o[3], i[3], i[2]]), oc, ic)   # 下
+		_draw_grad_quad(PackedVector2Array([o[3], o[0], i[0], i[3]]), oc, ic)   # 左
+
+
+## ★★ 这一帧**真正要画**的占领触发区（**纯计算**，不做绘制调用）——剔除两件事：
+##   ① 外框四角**有任一在相机近平面之后** ⇒ 整块不画
+##      （半块在相机后方的四边形投影会炸开、拉出乱线 —— 与网格线那条同一个坑，
+##       见 `_project_segments` 的说明）；
+##   ② 外框的屏幕外接框**与视口不相交** ⇒ 整块不画（这就是可见性剔除：
+##      屏幕外的区块不再投 8 个点、也不再发 4 次 `draw_polygon`）。
+##
+## ★ 与 `_count_grid_lines()` / `_count_zone_captures()` 同一个理由拆成纯函数：
+##   在 `_draw()` 之外调 `draw_*` 会报 `Drawing is only allowed inside this node's _draw()`，
+##   拆开之后测试也能直接量「这一帧画了几块」。
+##
+## @return Array，每项 `{outer, inner, outer_c, inner_c}`；`outer` / `inner` 都是
+##         **屏幕像素**的四点数组（顺序：左上 → 右上 → 右下 → 左下）。
+func _visible_capture_areas() -> Array:
+	var out: Array = []
+	if cfg == null or world == null or world.zones == null or palette == null:
+		return out
+	var cam: Camera3D = palette.cam
+	if cam == null:
+		return out
+	var inv: Transform3D = cam.global_transform.affine_inverse()
+	var zn: float = -cam.near
+	var vp: Rect2 = Rect2(Vector2.ZERO, get_viewport_rect().size) \
+		.grow(CAPTURE_AREA_CULL_MARGIN_PX)
+	var r: int = maxi(0, int(cfg.zone_capture_radius_tiles))
+	var g: float = CAPTURE_AREA_GRAD_TILES
+	for z in world.zones.zones:
+		var c: Variant = (z as Dictionary).get("center", null)
+		if c == null:
+			continue
+		var center: Vector2i = c
+		var x0 := float(center.x - r)
+		var y0 := float(center.y - r)
+		var x1 := float(center.x + r + 1)
+		var y1 := float(center.y + r + 1)
+		var outer: PackedVector2Array = _project_culled(inv, zn, vp, [
+			Vector2(x0, y0), Vector2(x1, y0), Vector2(x1, y1), Vector2(x0, y1)])
+		if outer.is_empty():
+			continue
+		var inner := PackedVector2Array()
+		for p in [Vector2(x0 + g, y0 + g), Vector2(x1 - g, y0 + g),
+				Vector2(x1 - g, y1 - g), Vector2(x0 + g, y1 - g)]:
+			inner.append(palette.to_px(p))
+		var base: Color = _capture_area_color(String((z as Dictionary).get("owner", "")))
+		out.append({
+			"outer": outer, "inner": inner,
+			"outer_c": Color(base.r, base.g, base.b, CAPTURE_AREA_ALPHA),
+			"inner_c": Color(base.r, base.g, base.b, 0.0),
+		})
+	return out
+
+
+## 把 4 个**格角**投到屏幕，并做「可见性剔除」（判据见 `_visible_capture_areas()`）。
+## @return 屏幕四点（顺序同入参）；被剔除时返回**空数组**。
+func _project_culled(inv: Transform3D, zn: float, vp: Rect2, logic: Array) -> PackedVector2Array:
+	# ① 近平面：任一角在相机后方 → 投影会镜像 / 炸开，整块不画
+	for p in logic:
+		if (inv * palette.to_world(p)).z > zn:
+			return PackedVector2Array()
+	# ② 屏幕外接框与视口不相交 → 整块在屏幕外
+	var sps := PackedVector2Array()
+	var mn := Vector2(INF, INF)
+	var mx := Vector2(-INF, -INF)
+	for p2 in logic:
+		var sp: Vector2 = palette.to_px(p2)
+		sps.append(sp)
+		mn = mn.min(sp)
+		mx = mx.max(sp)
+	if not Rect2(mn, mx - mn).intersects(vp):
+		return PackedVector2Array()
+	return sps
+
+
+## 一个「外实内透」的梯形（**屏幕坐标**，已经投好）：`pts` = [外 a, 外 b, 内 b, 内 a]。
+## 外两点给 `outer`、内两点给 `inner`（一般是全透明）⇒ 画出来就是一条向内渐隐的边。
+func _draw_grad_quad(pts: PackedVector2Array, outer: Color, inner: Color) -> void:
+	if pts.size() != 4:
+		return
+	draw_polygon(pts, PackedColorArray([outer, outer, inner, inner]))
+
+
+## 占领触发区描边的颜色：**中立 = 白灰**、有主 = 该阵营主色（需求原话见上）。
+func _capture_area_color(owner: String) -> Color:
+	if owner == "":
+		return CAPTURE_AREA_NEUTRAL
+	return cfg.faction_color(owner, "main")
+
+
 ## 占领进度条：**由下往上升起**的一块填充 + 前沿一条亮线（全部屏幕空间矢量）。
 ##
 ## ★★ 口径（用户原话）：「当开始占领时，区划由下往上升起一个进度条，
@@ -351,16 +541,29 @@ func _count_zone_captures() -> int:
 ##     （所以一格之内是**连续**的填充，不是一个整格的跳变）；
 ##   · 每格一个四边形，格角逐个投影 ⇒ 透视正确、边缘逐像素清晰。
 ##
+## ★★ 判据是 `capture_state`，**不是** `value`：已经归属某方的区划 `progress` 是 **1.0**
+##   （`refresh_building_ownership` / 开局归属都这么填），只按「value > 0」判会给自己
+##   的地也画一条满进度条（实测：开局那一帧 a1 + c2 共 74 块）。`capture_bar()` 的契约
+##   写明 `state == ""` = 不用画（只有 reading / frozen / decaying 三种才画）。
+##
+## ★★ 填充四边形同样要**近平面裁剪**（见 `_draw_logic_segments` 那段说明）：相机后方的
+##   角会投影炸开、拉出乱线。裁剪在**格坐标**里做（见 `_clip_poly_near`）。
+##
 ## @return `[{quads: Array[PackedVector2Array], front: PackedVector2Array,
 ##           fill: Color, front_color: Color}, ...]`（每个正在读条的区划一项）
 func _capture_items() -> Array:
 	var out: Array = []
 	if world == null or world.zones == null or palette == null or cfg == null:
 		return out
+	var cam: Camera3D = palette.cam
+	if cam == null:
+		return out
+	var inv: Transform3D = cam.global_transform.affine_inverse()
+	var zn: float = -cam.near
 	for z in world.zones.zones:
 		var bar: Dictionary = world.zones.capture_bar(z)
 		var v := clampf(float(bar.get("value", 0.0)), 0.0, 1.0)
-		if v <= 0.001:
+		if String(bar.get("state", "")) == "" or v <= 0.001:
 			continue
 		var cells: Array = (z as Dictionary).get("tiles", [])
 		if cells.is_empty():
@@ -384,7 +587,7 @@ func _capture_items() -> Array:
 			CAPTURE_FRONT_ALPHA)
 		# ③ 逐格：整格在水面下就整格填；水面穿过就只填水面以下那一块
 		var quads: Array = []
-		var front_pts := PackedVector2Array()
+		var front_logic: Array = []
 		for t2 in cells:
 			var tile2: Vector2i = t2
 			var top: float = float(tile2.y)
@@ -394,17 +597,47 @@ func _capture_items() -> Array:
 			var cut: float = maxf(top, water)   # 这一格被水面切到哪
 			var x0 := float(tile2.x)
 			var x1 := x0 + 1.0
-			quads.append(PackedVector2Array([
-				palette.to_px(Vector2(x0, cut)),
-				palette.to_px(Vector2(x1, cut)),
-				palette.to_px(Vector2(x1, bottom)),
-				palette.to_px(Vector2(x0, bottom)),
-			]))
-			# ④ 水面正好穿过这一格 ⇒ 它的顶边是「前沿」的一段
+			# ★ 先在**格坐标**里对近平面裁一刀（相机后方的角投影会炸开），再逐个投影。
+			var poly: PackedVector2Array = _clip_poly_near(
+				[Vector2(x0, cut), Vector2(x1, cut), Vector2(x1, bottom), Vector2(x0, bottom)],
+				inv, zn)
+			if poly.size() >= 3:
+				var screen := PackedVector2Array()
+				for lp in poly:
+					screen.append(palette.to_px(lp))
+				quads.append(screen)
+			# ④ 水面正好穿过这一格 ⇒ 它的顶边是「前沿」的一段（同样要裁，交给 _project_segments）
 			if top < water and water < bottom:
-				front_pts.append(palette.to_px(Vector2(x0, water)))
-				front_pts.append(palette.to_px(Vector2(x1, water)))
-		out.append({"quads": quads, "front": front_pts, "fill": fill, "front_color": front})
+				front_logic.append(Vector2(x0, water))
+				front_logic.append(Vector2(x1, water))
+		out.append({"quads": quads, "front": _project_segments(front_logic),
+			"fill": fill, "front_color": front})
+	return out
+
+
+## 把一个**凸多边形**（格坐标）对相机近平面裁一刀（Sutherland–Hodgman，单平面）。
+##
+## ★ 与 `_project_segments` 同一个理由：相机后方的点投影会镜像/炸开，
+##   占领进度条的填充四边形同样会因此拉出乱线。
+## ★ `inv` / `zn` 由调用方每帧算一次（避免每条边都求一次逆矩阵）。
+##
+## @return 裁剪后的多边形（格坐标）；整块都在近平面之后 → 空数组。
+func _clip_poly_near(poly: Array, inv: Transform3D, zn: float) -> PackedVector2Array:
+	var out := PackedVector2Array()
+	var n: int = poly.size()
+	if n < 3:
+		return out
+	for i in n:
+		var a: Vector2 = poly[i]
+		var b: Vector2 = poly[(i + 1) % n]
+		var za: float = (inv * palette.to_world(a)).z
+		var zb: float = (inv * palette.to_world(b)).z
+		var a_in: bool = za <= zn
+		var b_in: bool = zb <= zn
+		if a_in:
+			out.append(a)
+		if a_in != b_in:
+			out.append(a.lerp(b, (zn - za) / (zb - za)))
 	return out
 
 

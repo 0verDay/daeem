@@ -141,6 +141,11 @@ var formation_spacing_scale: float = 1.15
 var formation_aspect: float = 1.6
 var formation_max_slots: int = 400
 
+## ---- 阵型分层：兵种「由前往后」的层次序（见 config.json 的 _tier_comment）----
+## 值越小越靠前。没登记的兵种取 formation_tier_default（默认 = 中间层）。
+var formation_tier_order: Dictionary = {}
+var formation_tier_default: int = 1
+
 ## ---- 寻路（A* 每个节点 / 每条线段都在读）----
 var path_diagonal: bool = true
 var path_diagonal_corner_cut: bool = false
@@ -257,6 +262,11 @@ var capture_time_sec: float = 32.0
 ## 历史：0.125 → 0.03125（需求「自然占领进度降低速度缩小为原来的 1/4」）。
 ## ⚠️ 与 capture_time_sec 的缩放倍数不同（1/4 vs 1/8），别顺手改成一样。
 var decay_per_sec: float = 0.03125
+## ★★ 占领半径（格）：**单位必须离区划中心的切比雪夫距离 ≤ 它**才算「在场」。
+##   1 ⇒ 3×3（中心格 + 周围 8 格，即需求里的「3x3」）；0 ⇒ 只有中心格本身。
+##   ⚠️ 中心格上通常立着「区划中心」那栋中立障碍 ⇒ 实际能站的是周围那 8 格。
+##   它同时管**读条方是谁 / 主人是否在场挡人 / 人走后进度回落**三处判定（同一口径）。
+var zone_capture_radius_tiles: int = 1
 ## ★★ 人数加成曲线的三个参数（见 zone.speed_multiplier / data/config.json 的 _capture_comment）：
 ##   · zone_speed_max_mult  —— 满编时趋近的倍率上限（x2）。
 ##   · zone_speed_curve_k   —— 归一化分母的常数：**越大越平缓**（要更多人才能接近上限）。
@@ -408,13 +418,17 @@ func _cache_scalars() -> void:
 	unit_push_idle_weight = num("unit.push_idle_weight", 0.2)
 
 	unit_jam_giveup_sec = num("unit.jam_giveup_sec", 2.4)
-	unit_settle_return_dist = num("unit.settle_return_dist", 0.22)
+	# ★★ 必须**明显大于碰撞一次能推开多少**（平衡时约 0.22~0.23 格），否则每帧都触发回位、
+	#    两个单位点同一个点时来回挤很久（见 config.json 的 _settle_comment）。
+	unit_settle_return_dist = num("unit.settle_return_dist", 0.5)
 	unit_settle_max_attempts = int_val("unit.settle_max_attempts", 3)
 
 	formation_min_units = int_val("unit.formation.min_units", 4)
 	formation_spacing_scale = num("unit.formation.spacing_scale", 1.15)
 	formation_aspect = maxf(1.0, num("unit.formation.aspect", 1.6))
 	formation_max_slots = int_val("unit.formation.max_slots", 400)
+	formation_tier_order = _load_tier_order()
+	formation_tier_default = int_val("unit.formation.tier_default", 1)
 
 	path_diagonal = bool_val("path.diagonal", true)
 	path_diagonal_corner_cut = bool_val("path.diagonal_corner_cut", false)
@@ -446,6 +460,8 @@ func _cache_scalars() -> void:
 	zone_rows = int_val("zone.zone_rows", 4)
 	capture_time_sec = num("zone.capture_time_sec", 32.0)
 	decay_per_sec = num("zone.decay_per_sec", 0.03125)
+	# ★ 占领半径（格）：负数当 0（只认中心格），保证 `update()` 里的邻域循环合法。
+	zone_capture_radius_tiles = maxi(0, int_val("zone.capture_radius_tiles", 1))
 	zone_speed_max_mult = num("zone.speed_max_mult", 2.0)
 	zone_speed_curve_k = num("zone.speed_curve_k", 2.5)
 	zone_speed_curve_power = num("zone.speed_curve_power", 1.7)
@@ -1022,6 +1038,19 @@ func _read_cost(path: String) -> Dictionary:
 	if typeof(v) == TYPE_DICTIONARY:
 		return v
 	return {}
+
+
+## 读阵型分层表 `{"spearman":0,"longbowman":1,"rider":2}` → Dictionary[String,int]。
+## ★ 缺字段 / 类型不对 → 空字典（谁都没登记 ⇒ 全体走 formation_tier_default）。
+func _load_tier_order() -> Dictionary:
+	var v: Variant = get_path_value("unit.formation.tier_order")
+	var out: Dictionary = {}
+	if typeof(v) == TYPE_DICTIONARY:
+		for k in (v as Dictionary).keys():
+			var val = (v as Dictionary)[k]
+			if typeof(val) == TYPE_INT or typeof(val) == TYPE_FLOAT:
+				out[String(k)] = int(val)
+	return out
 
 
 # ------------------------------------------------------------------

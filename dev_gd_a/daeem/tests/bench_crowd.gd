@@ -102,7 +102,6 @@ const CommandRes = preload("res://logic/command_processor.gd")
 const UnitRes = preload("res://logic/unit.gd")
 const GridRes = preload("res://logic/grid.gd")
 const PathfinderRes = preload("res://logic/pathfinder.gd")
-const UnitViewRes = preload("res://view/unit_view.gd")
 const CombatRes = preload("res://logic/combat.gd")
 
 const DT := 1.0 / 60.0
@@ -180,7 +179,6 @@ func _initialize() -> void:
 		_bench_command(w, cfg, n_units, goal)
 		_bench_frames(w, n_frames)
 		_bench_idle(w, n_frames)
-	_bench_view(w, n_units)
 
 	# 参考负载（第二遍）：和第一遍比 —— 差得多说明环境变慢了，别把锅扣在游戏上
 	var ref1 := _calibrate()
@@ -346,23 +344,13 @@ func _bench_idle(w, n_frames: int) -> void:
 
 
 # ------------------------------------------------------------------
-# 渲染：这里**量不到**真实绘制（Godot 不允许在 _draw() 之外调 draw_*，
-# 而无头模式也没有 GPU），所以只陈述结构事实 + 排出重画的次数。
+# 渲染：**不在这里量**。
 #
-# ★ 真正的差别在结构上：旧实现是「每单位一个 Node2D + 每帧每单位一次 queue_redraw」，
-#   1000 单位 = 1000 个画布节点、1000 次 _draw 回调；现在是**一个** CanvasItem
-#   一次 _draw，外加屏幕外剔除。实机帧率要在游戏里看。
+# ★ 原实现挂的是 2D `unit_view.gd`（一个 CanvasItem 画全部单位）——
+#   它已随 2D 视图栈删除。3D 的单位层是 `unit_view_3d.gd`（MultiMesh 实例），
+#   渲染基准在 `tests/bench_fps_3d.gd`（分项计时 + draw call），
+#   本文件只管 `logic/` 的每帧成本。
 # ------------------------------------------------------------------
-
-func _bench_view(w, n_units: int) -> void:
-	var view = UnitViewRes.new()
-	view.setup(w.cfg, w)
-	view.sync(0.0)
-	print("[BENCH] -- view --")
-	print("[BENCH]   canvas nodes for %d units: %d   (旧实现：每单位一个 Node2D)"
-		% [n_units, view.get_child_count()])
-	print("[BENCH]   alive units: %d" % w.units.size())
-	view.free()
 
 
 # ------------------------------------------------------------------

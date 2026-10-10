@@ -22,8 +22,6 @@ const ConfigRes = preload("res://logic/config.gd")
 const WorldRes = preload("res://logic/world.gd")
 const UnitRes = preload("res://logic/unit.gd")
 const UnitIconRes = preload("res://view/unit_icon.gd")
-const UnitViewRes = preload("res://view/unit_view.gd")
-const FontLoaderRes = preload("res://view/font_loader.gd")
 const SnapshotRes = preload("res://logic/snapshot.gd")
 
 const DT := 1.0 / 60.0
@@ -48,9 +46,7 @@ func _run() -> void:
 	_test_general_types(cfg)
 	_test_recruit_all_three(cfg)
 	_test_icons(cfg)
-	# ★ 关键：先等一帧，root.add_child() 才会真的生效（见 pitfalls 1.2）
-	await process_frame
-	await _test_view_uses_icons(cfg)
+	_test_icon_chars(cfg)
 	cleanup_escort_scaffold()
 
 	print("[CASE] %s -> 通过 %d 项，失败 %d 项" % [_case_name, _pass, _fail])
@@ -356,102 +352,24 @@ func _reload_cfg(src) -> RefCounted:
 
 
 # ------------------------------------------------------------------
-# 五、渲染真的把这个字画了出去
+# 五、图标字：真的按类型取到了那个字（渲染层接线）
 # ------------------------------------------------------------------
-## ★ 只验「接线」：UnitView 在这些类型上跑得通、字确实随类型走 ——
+## ★ 只验「接线」：单位类型 → 那个字，取得到、且随类型走 ——
 ##   至于画出来什么样，是手玩验收的事（与 test_view.gd 的分工一致）。
-func _test_view_uses_icons(cfg) -> void:
+##
+## ★★ 这一节原来还钉了 2D `unit_view.gd` 的**分桶 / `_draw()` 计数**（圆盘张数、字数）——
+##   那些 API（`_bucket_by_size` / `_bucket_by_tex` / `icon_disc_count` / `icon_draw_count`）
+##   已随 2D 栈删除。3D 版的等价覆盖是 `tests/test_view3d.gd` 的
+##   `instance_count`（实例数 = 可见单位数）与 `mesh_batch_count`（批次数）。
+func _test_icon_chars(cfg) -> void:
 	# ★ 要有**附属兵**才能拿一个普通单位当样本（本轮：附属兵来自关卡摆放）
 	var w = require_world_with_escorts(cfg, ESCORTS_PER_GENERAL)
-	# ★ 同 `_test_general_types`：这里只数「画了几笔」，不算屏幕坐标 ——
-	#   原来那行 `setup_projection(...)` 已经随 2D 投影脚手架一起删掉了。
-	var view = UnitViewRes.new()
-	# ★ 用**真字体**建 view：无头下引擎兜底字体没有中文字形，但断言只看「画了几笔」，
-	#   所以两者都能过；这里传真字体是为了走与游戏完全一致的那条路。
-	view.setup(cfg, w, FontLoaderRes.load_font(cfg))
-	root.add_child(view)
-	await process_frame
-
-	view._draw()                     # 真跑一遍：字取不到 / 字段拼错都会在这里炸
-	ok(true, "UnitView._draw() 跑通了")
-
-	# ★★ 回归（上一轮真踩过）：**图标那两遍到底画了没有**。
-	#    症状是「所有单位在地图上只剩一根朝向线」—— 不报错、也不改任何状态，
-	#    根因是分桶用了值语义的 `PackedInt32Array`（`(bucket as PackedInt32Array).append()`
-	#    写不进字典），于是每个桶都是空的、一次绘制都没发出去。
-	#    所以这里既钉**两个分桶函数**（纯函数），也钉**_draw 真的画了几个圆盘 / 几个字**。
-	var probe := PackedFloat32Array([12.0, 12.0, 9.0, 15.0, 12.0])
-	var buckets: Dictionary = UnitViewRes._bucket_by_size(probe, probe.size())
-	eq(buckets.size(), 3, "★ 同一字号的合成一个桶（12/12/9/15/12 → 12、9、15 三桶）")
-	var total := 0
-	var all_arrays := true
-	for k in buckets.keys():
-		if not (buckets[k] is Array):
-			all_arrays = false
-		total += (buckets[k] as Array).size()
-	ok(all_arrays, "★ 桶是 Array（引用语义）—— 换成 PackedInt32Array 会静默变成空桶")
-	eq(total, probe.size(), "★ 5 个单位一个不漏地分进桶里（空桶 = 地图上一个字都看不到）")
-
-	var tex_a: ImageTexture = UnitIconRes.bake(false)
-	var tex_b: ImageTexture = UnitIconRes.bake(true)
-	var tex_buckets: Dictionary = UnitViewRes._bucket_by_tex([tex_a, tex_a, tex_b, tex_b, tex_a], 5)
-	eq(tex_buckets.size(), 2, "★ 圆盘按贴图分桶：普通 / 将领两桶")
-	eq((tex_buckets[tex_a] as Array).size(), 3, "普通那一桶 3 个")
-	eq((tex_buckets[tex_b] as Array).size(), 2, "将领那一桶 2 个")
-
-	# 先挑一个**普通兵**（附属兵）出来备用：它要用来验「普通兵用普通那张圆盘」
-	var plain = null
-	for u in w.units:
-		if not u.is_general() and String(u.unit_type) == UnitRes.UNIT_TYPE_SPEARMAN:
-			plain = u
-			break
-	ok(plain != null, "队里有一个长枪兵附属兵（拿它当普通单位的样本）")
-
-	# 让世界只剩两个**挪到镜头里**的单位：骑手将领 + 长枪兵将领
 	var g1 = w.unit_by_id("general-1")
 	var g3 = w.unit_by_id("general-3")      # 骑手将领
 	ok(g1 != null and g3 != null, "有长枪兵将领 general-1 与骑手将领 general-3")
 	if g1 != null and g3 != null:
-		# ★★ 2D 仿射投影的落点口径（**与上面那条 3D 注释相反，别照抄**）：
-		#    现在 `view/palette.gd` 是实例类、而这条无头用例走的是遗留 2D 换算，
-		#    屏幕像素 = 格 × cell_px（`cell_px` = 128）。所以「挪到镜头里」
-		#    就是「落在视口（1920×1080）加剔除余量（CULL_PAD_PX = 48）之内」：
-		#      · g1 (12.5, 8.5) → (1600, 1088)   ✓
-		#      · g3 (14.5, 8.5) → (1856, 1088)   ✓（右沿 1856 + 半径仍在 1968 内）
-		#      · 普通兵摆 (15.0, 8.5) → (1920, 1088)  ✓
-		#    ⚠️ 我第一版照抄了旧注释里的 (16.5, 8.5)：那是**真 3D 相机**在
-		#       某组参数下的落点，2D 下它等于 x = 2112 > 1968，会被
-		#       `_visible_rect()` 的剔除**正确地**剔掉 —— 表现就是
-		#       「将领 + 普通兵：两个圆盘都画了（实际 1，期望 2）」，
-		#       看着像画崩了，其实只是那个兵站在屏幕右边外面。
-		g1.pos = Vector2(12.5, 8.5)
-		g1.sync_tile(w.map)
-		g3.pos = Vector2(14.5, 8.5)
-		g3.sync_tile(w.map)
-		w.units = [g1, g3]
-		view._draw()
-		eq(view.icon_disc_count, 2, "★ _draw() 真的把这两个单位的**圆盘底**画了出去（实际 %d 张）"
-			% view.icon_disc_count)
-		eq(view.icon_draw_count, 2, "★ 同时把两个字也画了出去（实际 %d 个）"
-			% view.icon_draw_count)
 		eq(UnitIconRes.char_of(cfg, String(g3.unit_type)), "骑", "★ general-3 画的是「骑」")
 		eq(UnitIconRes.char_of(cfg, String(g1.unit_type)), "枪", "★ general-1 画的是「枪」")
-
-		# 普通兵：同一个字、同一套画法，只是**圆盘那张贴图不同**（描边细）
-		if plain != null:
-			plain.pos = Vector2(15.0, 8.5)
-			plain.sync_tile(w.map)
-			w.units = [g1, plain]
-			view._draw()
-			eq(view.icon_disc_count, 2, "将领 + 普通兵：两个圆盘都画了")
-			eq(view.icon_draw_count, 2, "将领 + 普通兵：两个字都画了")
-			eq(UnitIconRes.char_of(cfg, String(plain.unit_type)), "枪",
-				"★ 附属兵与它的将领画同一个字（靠圆盘描边区分）")
-		# ⚠️ 还原成原来那两个单位：下面那一节要拿 w 做快照往返，
-		#    少一个单位会让「快照重建出了 general-3」假失败（实测踩到）。
-		w.units = [g1, g3]
-
-	view.queue_free()
 
 	# 快照往返之后，类型仍然对（客机画图标靠它）
 	var snap = SnapshotRes.to_snapshot(w)

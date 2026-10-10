@@ -1,6 +1,6 @@
 ## game_scene3d.gd —— 3D 游戏内场景（本版重建）：装配 world + 3D 视图 + HUD
 ##
-## ★★ 与旧的 2D `game_scene.gd` 的分工完全一样（见 architecture.md 第一节）：
+## ★★ 分工（见 architecture.md 第一节）：
 ##   逻辑是纯数据（`logic/world.gd`），渲染是场景节点，两者只通过「读状态 + 收命令」相连。
 ##   **本文件只做三件事**：建世界、建 3D 视图并每帧同步、把输入 → 命令 → 逻辑。
 ##
@@ -28,18 +28,17 @@ const HudRes = preload("res://view/hud.gd")
 const FontLoaderRes = preload("res://view/font_loader.gd")
 const InteractionRes = preload("res://view/game_interaction.gd")
 const CommandRes = preload("res://logic/command_processor.gd")
-## ★ 只为复用 uild_roster()（战役席位规则，见 start_level 的说明）——**不实例化它**
-const Game2DRes = preload("res://view/game_scene.gd")
 
 const MAP_PATH := MapLibraryRes.FALLBACK_MAP_PATH
 
 ## 相机距离倍率的上下限（= 视野的两端）—— **唯一**的取值处（`fit_to_map` / `zoom_at` 都读它）。
-## `zoom` 是「**相机距离倍率**」：值越大 = 相机越远 = 看到越多（与 `Camera2D.zoom` 语义相反）。
+## `zoom` 是「**相机距离倍率**」：相机距离 = `cfg.cam_height × zoom`，
+##   所以 `zoom` 越大 = 相机越远 = 看到越多（与 `Camera2D.zoom` 的语义相反）。
 ##   · ZOOM_MIN = 距离下限 = **最紧视野**（相机最近，看到最少）；
 ##   · ZOOM_MAX = 距离上限 = **最远视野**（相机最远，看到最多）。
-## ★ 需求「摄像头拉近、视野缩到原来的一半，且最大/最小同步缩」⇒ 原来 0.35 / 3.0 整体 ×0.5。
-const ZOOM_MIN := 0.175
-const ZOOM_MAX := 1.5
+## ★ 当前取值：最紧 0.1、最远 0.3（最远那一档的可见范围是最紧的 3 倍）。
+const ZOOM_MIN := 0.1
+const ZOOM_MAX := 0.3
 
 ## ★ 与 2D 版同名的两条流程信号：main.gd 原样接得上（不需要为 3D 改上层）。
 signal fullscreen_toggled
@@ -71,14 +70,15 @@ var level_campaign = null
 ## start_level() 在 _assemble() **之前**记下的关卡，装配时再交给交互核心
 var interaction_pending_campaign = null
 var interaction_pending_level = null
-## 缩放倍率（1.0 = config 里的默认距离；越大 = 相机越远 = 看到越多）
-var zoom: float = 1.0
+## 缩放倍率（相机距离 = `cfg.cam_height × zoom`；越大 = 相机越远 = 看到越多）。
+## ★ 开局值 = ZOOM_MAX（0.3）：一进游戏就停在**最远**视野，之后只能往近处缩。
+##   它必须落在 [ZOOM_MIN, ZOOM_MAX] 内，否则滚轮一滚就会被夹到区间边上。
+var zoom: float = 0.3
 
-## ---- 相机输入状态（这三样原本住 2D 的 `camera_rig` 里，3D 场景没有那个节点）----
-## 为什么必须**整块**移植：漏掉它们的症状是「滚不动 / 拖到地图外」，
-## 而那三样正是用户报回来的三个问题（详见 `_camera_update` 的注释）。
-## ⚠️ 判据：`camera_rig.gd` 里被 2D 主循环调用的每一个方法，
-##    3D 场景都必须有等价物 —— 漏一个是「功能静默缺失」，不报错。
+## ---- 相机输入状态（边缘滚屏 / Space 加速 / 夹取都要这几样）----
+## 缺一个的症状是「滚不动 / 拖到地图外」——正是用户报回来过的问题
+## （详见 `_camera_update` 的注释）。这三样都属于**功能静默缺失**：
+## 不报错、测试也不红，只有玩的人会发现。
 var _mouse_inside: bool = false
 var _mouse_pos: Vector2 = Vector2.ZERO
 var _space_held: bool = false
@@ -119,11 +119,10 @@ func start(map_path: String = MAP_PATH) -> bool:
 	return true
 
 
-## 战役关卡入口（签名与 2D 版**逐字相同** ⇒ `main.gd` 一行不用改）。
+## 战役关卡入口（`main.gd` 按这份签名驱动，本场景是唯一的游戏内实现）。
 ##
-## ★★ 为什么签名必须一致：`main.gd` 是「流程层」，它同时要能驱动 2D 与 3D 两种场景。
-##   本版的做法是**让 3D 场景满足同一份接口**（`start` / `start_level` /
-##   两条流程信号 / `_unhandled_input`），而不是去改上层 —— 上层不该知道视角怎么画。
+## ★★ 为什么签名要稳定：`main.gd` 是「流程层」，它不该知道视角怎么画 ——
+##   它只认 `start` / `start_level` / 两条流程信号 / `_unhandled_input` 这套接口。
 func start_level(campaign, level, my_faction: String) -> bool:
 	cfg = ConfigRes.load_default()
 	if cfg == null:
@@ -136,13 +135,11 @@ func start_level(campaign, level, my_faction: String) -> bool:
 		float(ProjectSettings.get_setting("display/window/size/viewport_width", 1920)),
 		float(ProjectSettings.get_setting("display/window/size/viewport_height", 1080)))
 
-	# ★★ `roster` 的拼法**复用 2D 版的 `build_roster()`**，不在这里重写一份。
-	#    为什么：那段逻辑里藏着好几条踩出来的契约（「两个可玩阵营都要有家」
+	# ★★ `roster` 的拼法走 `logic/level.gd:build_roster()` —— 战役席位规则**只有这一份实现**。
+	#    那段逻辑里藏着好几条踩出来的契约（「两个可玩阵营都要有家」
 	#    「我选的那一方必须排第一 —— `objective.setup()` 拿第一个席位决定打哪条目标」
-	#    「真正的 NPC 敌人不进 roster」）。复制一份出来，迟早会与 2D 版不一致，
-	#    而那种不一致**只会表现为「某一关莫名判负」**，极难查。
-	#    ⇒ 3D 版只负责「把视角画成 3D」，战役席位的规则仍然只有一份实现。
-	var roster: Array = Game2DRes.build_roster(level, cfg, my_faction)
+	#    「真正的 NPC 敌人不进 roster」），所以它属于逻辑层，不属于任何视图。
+	var roster: Array = level.build_roster(cfg, my_faction)
 	world = WorldRes.create_from_level(cfg, level, my_faction, roster, true)
 	if world == null:
 		push_error("关卡装配失败（地图 = %s）" % String(level.map_id))
@@ -276,16 +273,21 @@ class CameraFacade:
 			return
 		scene.center_on_screen_precise(screen_px)
 
+	## ★★ 鼠标**中键拖拽平移**：`input_controller` 按**屏幕像素增量**喂进来
+	##   （负号已在输入层取过 —— 那是「抓着地图拖」的手感）。
+	##   与 `center_on_px` 同一条路：只动相机位置，姿态 / 高度 / fov 一个都不变。
+	func pan_screen(screen_delta: Vector2) -> void:
+		if scene != null:
+			scene.pan_screen(screen_delta)
+
 	## ★★ 「把镜头对准这一格」——**小地图点击 / 拖动走的就是它**。
 	##
 	## ⚠️⚠️ 为什么必须有这一个方法（本轮实测抓到的**真 bug**，症状与用户的
 	##   「点小地图转移视角不准」完全一致）：
-	##   `minimap._jump_to()` 原来写的是
-	##       `camera_rig.center_on_px(Palette2DRes.to_px(格))`
-	##   —— 它把**世界像素**当成**屏幕像素**喂进了 `center_on_px`。
-	##   · 2D 遗留栈里这两个坐标系**恰好重合**（世界像素 == 屏幕像素），所以那条写法「能用」；
-	##   · 3D 里**根本不重合**：`center_on_px` 拿这个数当屏幕点去打射线求交，
-	##     于是「点小地图上的某一格」会落到地图上完全不同的一格。
+	##   `minimap._jump_to()` 原来写的是「格 × cell_px 之后喂给 `center_on_px`」——
+	##   它把**世界像素**当成了**屏幕像素**。旧的正放 2D 世界里这两个坐标系**恰好重合**，
+	##   所以那条写法「能用」；换成 3D 相机之后**根本不重合**：`center_on_px` 拿这个数
+	##   当屏幕点去打射线求交，于是「点小地图上的某一格」会落到地图上完全不同的一格。
 	##   ⇒ 实测误差（27×22 图、1920×1080 视口）：**最大 15.06 格**，最小 0.71 格。
 	##
 	## ⚠️ 顺带纠正这篇 dev_plan 里的一条**误判**：那里记的「残留误差 ~1.5 格」是
@@ -334,9 +336,9 @@ class CameraFacade:
 			return Rect2()
 		return Rect2(Vector2.ZERO, vp.get_visible_rect().size)
 
-	## ★★ `minimap.gd` 里的 `camera_rig.cam` 在 2D 版是 `Camera2D`，3D 版给 `Camera3D`。
-	##    安全的原因：`minimap.view_rect_world()` 只在**没有 palette** 时才去读它的
-	##    `zoom` / `position`（见那里的分流），3D 路上根本不碰这两个属性。
+	## ★★ `minimap.gd` 里的 `camera_rig.cam` 就是这台 `Camera3D`。
+	##    `minimap` 只在**没有 palette** 的旧路线上才去读它的 `zoom` / `position`——
+	##    那条路线已随 2D 栈删除，这里只为接口对齐而保留。
 	var cam: Camera3D:
 		get:
 			return scene.cam if scene != null else null
@@ -477,8 +479,11 @@ func _camera_update(dt: float) -> void:
 	_mouse_inside = in_window and (hud == null or not hud.blocks_edge_scroll(mouse_screen))
 	_mouse_pos = mouse_screen
 	_space_held = Input.is_key_pressed(KEY_SPACE)
+	# ★★ 三种「相机正被输入直接驱动」的情形都要压住边缘滚屏：小地图拖动、框选、
+	#    以及**鼠标中键拖拽平移**。少一个的症状：拖到屏幕边缘时两者抢相机，画面发抖。
 	_ui_dragging_camera = (hud != null and hud.minimap != null and hud.minimap.is_dragging()) \
-		or (input_ctrl != null and input_ctrl.is_dragging_box())
+		or (input_ctrl != null and input_ctrl.is_dragging_box()) \
+		or (input_ctrl != null and input_ctrl.is_panning())
 
 	# ② 方向键平移（W/A/S/D **不**参与：它们归右下命令卡，见 2D 版的注释）
 	var dir := Vector2.ZERO
@@ -697,21 +702,17 @@ func pan_screen(screen_delta: Vector2) -> void:
 
 ## 把 HUD 挂进 3D 场景。
 ##
-## ★★ 为什么能直接复用 2D 那版的 `hud.gd`（本版最省的一条路）：
-##   HUD 是 `CanvasLayer` 上的 `Control`，**本来就不吃任何 Node2D/Node3D 变换** ——
-##   它对世界的唯一依赖是「通过 `camera_rig` 知道我现在看的是哪一块」。
-##   于是只要把 `camera_rig` 换成 3D 的替身、并把 `palette` 交给小地图，
-##   整个 HUD（编队面板 / 指令卡 / 科技树 / 详情面板 / 小地图）**一行都不用改**。
-##   ★ 这正是本版「只重写 view 的渲染层、不重写界面」能成立的原因。
+## ★★ `hud.gd` 与视角无关：它是 `CanvasLayer` 上的 `Control`，**不吃任何 Node3D 变换**，
+##   对世界的唯一依赖是「通过相机替身知道我现在看的是哪一块」。
+##   所以 3D 场景只给它两样东西：相机替身（`CameraFacade`）与投影助手（`palette`）——
+##   整个 HUD（编队面板 / 指令卡 / 科技树 / 详情面板 / 小地图）不用为视角改一行。
 func _build_hud() -> void:
 	var theme := FontLoaderRes.build_theme(cfg, 15)
 	hud = HudRes.new()
 	hud.name = "Hud"
 	add_child(hud)
-	hud.setup(cfg, world, input_ctrl, theme, _camera_rig_for_hud())
-	# ★ 小地图的「视野框 / 点击跳转」改走 3D 投影（见 minimap.gd 的 `_view_corners_logic`）
-	if hud.minimap != null:
-		hud.minimap.setup(cfg, world, _camera_rig_for_hud(), palette)
+	# ★ 把投影助手一并交给 HUD（它转交给小地图：视野框 / 点击跳转都走 3D 投影）
+	hud.setup(cfg, world, input_ctrl, theme, _camera_rig_for_hud(), palette)
 	# ★ 用**具名方法**而不是 lambda：`test_settings_menu` 的接线断言是
 	#   `hud.fullscreen_toggled.is_connected(Callable(game, "_on_fullscreen_toggled"))`
 	#   —— 匿名 lambda 接上去会让这条断言失败（看着像「信号没接」）。

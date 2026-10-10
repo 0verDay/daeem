@@ -25,6 +25,8 @@ const SpriteRes = preload("res://view/unit_sprite_3d.gd")
 const UnitRes = preload("res://logic/unit.gd")
 const BuildingShaderRes = preload("res://view/building_flash.gdshader")
 const UnitDownedShaderRes = preload("res://view/unit_downed.gdshader")
+## 占领触发区描边（本轮新增）：验颜色规则与「有中心就画一个」的计数。
+const Overlay3DRes = preload("res://view/overlay_view_3d.gd")
 
 
 func _initialize() -> void:
@@ -54,6 +56,8 @@ func _run() -> void:
 	await _test_camera_aim(cfg)
 	await _test_order_flags(cfg)
 	await _test_selection_ring(cfg)
+	await _test_grid_near_clip(cfg)
+	await _test_capture_area(cfg)
 
 	print("[CASE] %s -> 通过 %d 项，失败 %d 项" % [_case_name, _pass, _fail])
 	if _fail > 0:
@@ -567,6 +571,14 @@ func _test_ground_bake(cfg) -> void:
 	if not game.start():
 		game.queue_free()
 		return
+	# ★★ 先冻住世界再断言：下面「没有区划在占领时进度条一块都不画」要的是**干净的初始状态**，
+	#   而 AI 的开局单位就站在无主区划里、第一帧就开始读条
+	#   （实测：2 帧后 e2 的 progress ≈ 0.004，`_count_zone_captures()` 因此得 5）。
+	#   本用例验的是地面烘图 / overlay 计数这些**视图口径**，不是 AI 行为 ⇒ 不让它 tick。
+	#   ★ 顺带钉住另一半：开局归属把 `progress` 写成 **1.0** 的那些区划**不该**画满进度条
+	#     —— `_capture_items()` 按 `capture_state` 判（见那里的说明），
+	#     所以这里 `_count_zone_captures() == 0` 同时证明了两件事。
+	game.set_process(false)
 	await process_frame
 	await process_frame
 
@@ -1084,6 +1096,129 @@ func _test_selection_ring(cfg) -> void:
 	for _i3 in 30:
 		game.units.sync(1.0 / 60.0)
 	eq(game.units.selection_ring_count, 0, "★ 反向收完、下标消失")
+
+	game.queue_free()
+	await process_frame
+
+
+# ------------------------------------------------------------------
+# 十、近平面裁剪：近视角下网格线端点落到相机后方会被「镜像炸开」
+#     （用户报「视角缩到很近时，地图上端拉出很多根竖直线」）
+# ------------------------------------------------------------------
+##
+## ★★ 为什么必须钉这条：相机距离 = `cam_height × zoom`，`zoom` 最小那档（0.1）相机很低，
+##   地图靠近它的那半张会落到**相机平面之后**；而 `unproject_position()` 对相机后方的点
+##   **不裁剪**、除以负的 w ⇒ 坐标镜像（实测某竖线近端本该投到屏幕下方 y=+3695，
+##   却变成 **y=−17191**）⇒ 一条格线从地图顶端一路划到天外。
+##   `overlay_view_3d._project_segments()` 就是为此做的近平面裁剪。
+func _test_grid_near_clip(cfg) -> void:
+	var game = Game3DRes.new()
+	root.add_child(game)
+	await process_frame
+	if not game.start():
+		ok(false, "3D 场景起不来，裁剪断言无从谈起")
+		game.queue_free()
+		return
+	await process_frame
+	await process_frame
+	game.set_process(false)
+	var ov = game.overlay
+	var cols: int = int(game.world.map.cols)
+	var rows: int = int(game.world.map.rows)
+
+	# 前提：近视角（最远档 0.1）确实让一部分网格局点落到相机后方
+	game.zoom = 0.1
+	game.center_on_tile(Vector2(float(cols) * 0.5, float(rows) * 0.5))
+	game.cam.force_update_transform()
+	var behind := 0
+	for x in range(0, cols + 1):
+		for yy: float in [0.0, float(rows)]:
+			var wp := Vector3(float(x) * cfg.cell_px, 0.0, yy * cfg.cell_px)
+			if game.cam.is_position_behind(wp):
+				behind += 1
+	ok(behind > 0, "（前提）近视角下确有 %d 个网格局点在相机后方" % behind)
+
+	# ★ 修复的核心：那条「x=13、从 y=0 跨到 y=rows」的竖线，近端在相机后方 ——
+	#   裁完之后仍投出 2 个点，且**近端落在屏幕下方**（修前是镜像到上方 −17191）。
+	ok(rows > 14, "（前提）地图够高（%d 行），近端才会越到相机后方" % rows)
+	var pair: PackedVector2Array = ov._project_segments([Vector2(13.0, 0.0), Vector2(13.0, float(rows))])
+	eq(pair.size(), 2, "★ 跨相机平面的竖线仍投出 2 个点（保留可见段、丢掉不可见段）")
+	if pair.size() == 2:
+		ok(pair[0].y < 0.0, "★ 远端（地图上缘）在屏幕上方（y=%.0f）" % pair[0].y)
+		ok(pair[1].y > 0.0, "★★ 近端被裁后投在屏幕**下方**（y=%.0f；修前是镜像到上方的 −17191）"
+			% pair[1].y)
+		ok(not is_nan(pair[0].x) and not is_nan(pair[1].x), "★ 裁出来的点不是 NaN")
+
+	# 整段都在相机后方的横线（最靠近相机那一行）必须被整段丢掉
+	var near_row: PackedVector2Array = ov._project_segments(
+		[Vector2(0.0, float(rows)), Vector2(float(cols), float(rows))])
+	ok(near_row.is_empty(), "★ 整段在相机后方的线被丢掉（不画）")
+
+	# 回归：远视角（最远档 0.3）没有端点在相机后方 ⇒ 一条都不裁（端点原样全在）
+	game.zoom = 0.3
+	game.center_on_tile(Vector2(float(cols) * 0.5, float(rows) * 0.5))
+	game.cam.force_update_transform()
+	var all_pts: PackedVector2Array = ov._project_segments(ov._grid_segs_for(cols, rows))
+	eq(all_pts.size(), (cols + 1 + rows + 1) * 2,
+		"★ 远视角下网格线一条都不裁（%d 个端点）" % all_pts.size())
+
+	game.queue_free()
+	await process_frame
+
+
+## ★★ 占领触发区（区划中心邻域）的**内向渐变描边**（本轮新增）。
+##
+## 只钉两件**可数 / 可复算**的事（观感由手玩验收）：
+##   ① 颜色规则：中立 = 白灰、有主 = 该阵营主色；
+##   ② 可见性剔除：只画**屏幕内**的（`_visible_capture_areas()`）——拉近 + 贴角时明显变少。
+func _test_capture_area(cfg) -> void:
+	var game = Game3DRes.new()
+	root.add_child(game)
+	await process_frame
+	if not game.start():
+		ok(false, "3D 场景起不来，占领触发区断言无从谈起")
+		game.queue_free()
+		return
+	await process_frame
+	await process_frame
+	game.set_process(false)
+	var ov = game.overlay
+
+	# ① 颜色：中立白灰 / 有主用阵营主色
+	eq(ov._capture_area_color(""), Overlay3DRes.CAPTURE_AREA_NEUTRAL,
+		"★ 中立区块的触发区描边 = 白灰")
+	eq(ov._capture_area_color("p1"), cfg.faction_color("p1", "main"),
+		"★ 有主区块的描边 = 该阵营主色")
+	ok(ov._capture_area_color("p1") != ov._capture_area_color(""),
+		"中立与有主的颜色不同（需求要的「随势力变色」）")
+
+	# ② 可见性剔除：只画**屏幕内**的触发区
+	var with_center := 0
+	for z in game.world.zones.zones:
+		if (z as Dictionary).get("center", null) != null:
+			with_center += 1
+	eq(with_center, game.world.zones.zones.size(),
+		"★ 每个区块都有中心（没有的由 zone._ensure_centers() 装配时补）")
+	ok(with_center > 1, "有中心的区块不止一个（否则下面的剔除断言没意义）")
+
+	# 对准某个区块中心（它必然在屏内）⇒ 至少画它一个、且不超过总数
+	var z0: Dictionary = game.world.zones.zones[0]
+	var c0: Vector2i = z0["center"]
+	game.zoom = Game3DRes.ZOOM_MAX
+	game.center_on_tile(Vector2(c0) + Vector2(0.5, 0.5))
+	game.cam.force_update_transform()
+	var on_center: int = ov._visible_capture_areas().size()
+	ok(on_center >= 1 and on_center <= with_center,
+		"★ 只画屏幕内的触发区（对准某中心时 %d 块 ≤ 有中心的 %d 块）" % [on_center, with_center])
+
+	# 拉到最紧 + 贴地图角 ⇒ 屏幕外的一律被剔除
+	game.zoom = Game3DRes.ZOOM_MIN
+	game.center_on_tile(Vector2(0.5, 0.5))
+	game.cam.force_update_transform()
+	var zoomed: int = ov._visible_capture_areas().size()
+	ok(zoomed < with_center,
+		"★★ 拉近到最紧 + 贴角 → 屏幕外的触发区被剔除（%d < %d）" % [zoomed, with_center])
+	game.zoom = Game3DRes.ZOOM_MAX
 
 	game.queue_free()
 	await process_frame

@@ -93,6 +93,9 @@ dev_gd_a/daeem/
 │   │                             #     combat_idle_timer / retarget_cd）+ retinue_size()
 │   ├── building.gd               #   建筑定义与实例：blocks(faction) / 血量
 │   ├── zone.gd                   #   区块占领（每阵营独立进度）+ 区划中心 / 人口 / 产能；
+│   │                             #   ★★ **占领须在区划中心附近**：单位离中心的切比雪夫距离
+│   │                             #      ≤ `zone.capture_radius_tiles`（= 1 ⇒ 3×3）才算「在场」；
+│   │                             #      没有中心的区块由 `_ensure_centers()` 装配时补一个
 │   │                             #   ★ 区划**种类**（kind：粮食 / 黄金 / 人口）只决定能做哪些特化，
 │   │                             #     产量永远以地图 zone_list[].production 的数字为准
 │   │                             #   区块划分读地图的 zones 网格，老地图退回 6×4 均分占位
@@ -153,12 +156,9 @@ dev_gd_a/daeem/
 │   ├── map_select.gd             #   ★ 地图选择条本体（**自己画的按钮 + 自己的 PopupMenu**）：
 │   │                             #   不用引擎 OptionButton —— 点开列表后按钮上那行字会变空白
 │   │                             #   （实测，见 route.md 34.9）；对外 API 与 OptionButton 同名同义
-│   ├── game_scene.gd             #   **2D 遗留栈**的游戏内场景：装配 world + view + hud，跑主循环
-│   │                             #   （★ 真机入口**已经是 3D** 的 `game_scene3d.gd`，见下一行）
-│   ├── game_scene3d.gd           #   ★★ **真 3D 游戏内场景**：装配 world + 3D 视图 + HUD，
-│   │                             #      跑主循环（`Camera3D` 固定俯角，只平移 / 缩放）
-│   ├── game_interaction.gd       #   ★ 与渲染无关的交互核心（事件提示 / 命令卡派发）：**已抽出**，
-│   │                             #      并且**已被 3D 场景委派使用**；2D 那份仍是自己的实现（遗留项）
+│   ├── game_scene3d.gd           #   ★★ **游戏内场景（唯一实现）**：装配 world + 3D 视图 + HUD，
+│   │                             #      跑主循环（`Camera3D` 固定俯角：平移 / 缩放 / 中键拖拽）
+│   ├── game_interaction.gd       #   ★ 与渲染无关的交互核心（事件提示 / 命令卡派发）
 │   ├── ground_view.gd            #   3D 地面：一整块 `PlaneMesh` + 一张烘出来的地形贴图；
 │   │                             #      **迷雾是另一块平面**（两层各 1 次 draw call）
 │   ├── unit_view_3d.gd           #   3D 单位：`MultiMesh` 按「阵营 × 是否将领」分桶 + billboard
@@ -168,20 +168,8 @@ dev_gd_a/daeem/
 │   ├── palette.gd                #   ★★ 坐标换算的**唯一**出处（3D 版）：**实例类**，持有 `Camera3D`；
 │   │                             #      `to_px` = `unproject_position`、`to_logic` = 地面射线求交
 │   │                             #      ⇒「格 ↔ 屏幕」的正反两面由**同一台相机**导出
-│   ├── palette2d.gd              #   ⚠️ **只服务 2D 遗留栈**的老静态签名；新 3D 代码不许 preload 它
-│   ├── terrain_view.gd           #   地形（TileMapLayer）
-│   ├── fog_view.gd               #   ★ 战争迷雾的**灰色遮罩**（本版新增）：把 logic/fog.gd
-│   │                             #     算出来的视野掩码烘成「1 像素 = 1 格」的贴图，
-│   │                             #     一次 draw_texture_rect 铺满地图（与格数无关）
-│   │                             #     ⚠️ 它只管「盖灰」；「谁不该被画出来」由各视图自己
-│   │                             #       问 fog.unit_visible / building_visible
-│   ├── building_view.gd          #   建筑（Node2D + 血条 + 受击闪光）
-│   ├── unit_view.gd              #   单位（Node2D + 血条 + 交战标记）
-│   ├── unit_icon.gd              #   ★ 单位在地图上的 2D 图标（线条「预制体」+ 烘成贴图）
-│   │                             #     按（单位类型 × 是否将领）一张图；将领的描边更粗
-│   ├── zone_view.gd              #   区块轮廓 + 占领进度
-│   ├── overlay.gd                #   攻击线 / 建造预览 / 移动标记（**不画**选中范围圈）
-│   ├── camera_rig.gd             #   相机：方向键平移 / 边缘滚屏 / 光标锚点缩放
+│   ├── unit_icon.gd              #   ★ 单位在地图上显示的那个**字**（`unit.types.<id>.icon`）
+│   │                             #     + 按（单位类型 × 是否将领）烘成的贴图
 │   ├── input_controller.gd       #   ★ 输入 → 命令（唯一允许读鼠标的地方）
 │   │                             #     + 左侧键**框选**那条状态机（按下 → 移动 → 松开，见 route.md 16.3）
 │   ├── ui_layout.gd              #   ★ UI 的全部几何常量（照参考图的像素稿）+ 贴边规则
@@ -312,31 +300,30 @@ func apply(world: World, cmd: Dictionary) -> bool:
 
 ### 3.2 逻辑 → 渲染（每帧读状态）
 
-`view/` 每帧从 `world` 读状态并同步到节点。两种做法，按对象数量选：
+`view/` 每帧从 `world` 读状态并同步到节点。3D 栈按「对象数量 / 有没有边」分三档：
 
-- **数量少且需要交互**（单位、建筑）：为每个逻辑对象持有一个 `Node2D`，`_process` 里同步位置/血量
-- **数量多且不需要交互**（区块、地形）：一个节点画全部，例如 `zone_view.gd` 用 `_draw()` 画 24 个矩形
+- **数量多**（单位 / 建筑 / 投掷物）：**一个 `MultiMeshInstance3D` 画全部**，按
+  「阵营 × 是否将领」这类**变体分桶**（每种变体一个批次）—— 1000 个单位也只是十几次 draw call。
+- **大块平坦色**（地形底色 / 区划归属 / 迷雾）：**烘进贴图**再铺一块平面（`ground_view.gd`），
+  每层 **1 次 draw call**、放大也不糊。
+- **有「边」的东西**（网格线 / 区划轮廓 / 占领进度条 / 选中圈）：走**屏幕空间矢量**
+  （`overlay_view_3d.gd`）—— 烘进低分辨率贴图会被放大成软边，屏幕空间画才逐像素清晰。
 
 ```gdscript
-# view/unit_view.gd（示意：只读 + 只画，不改逻辑）
-func _process(_dt: float) -> void:
-    for u in _world.units:
-        var node: Node2D = _nodes.get(u.id)
-        if node == null:
+# view/unit_view_3d.gd（示意：只读 + 只写 MultiMesh，不改逻辑）
+func sync(_dt: float) -> void:
+    for u in world.units:
+        if not u.alive or not _visible_to_me(u):
             continue
-        node.position = u.world_pos * CELL      # 逻辑坐标(格) → 屏幕像素
-        node.visible = u.alive
+        # 逐实例写变换（MultiMesh.set_instance_transform）—— 不是每单位一个节点
 ```
 
-**对象增删**：`world.units` 是权威列表；`view/` 只在**数量或 id 集合变化时**重建节点映射，
-不要每帧 `queue_free()` 重建（HTML 版每次整表替换建筑的做法在 Godot 里会造成明显卡顿）。
+**对象增删**：`world.units` 是权威列表；`view/` 只在**数量或 id 集合变化时**重建批次，
+不要每帧重建节点（HTML 版每次整表替换建筑的做法在 Godot 里会造成明显卡顿）。
 
-> ★★ **1000 单位那档已经把上面第一条改掉了**：`unit_view.gd` 现在是「一个 CanvasItem 画全部」，
-> 而且单位本体走**贴图**而不是 `draw_circle / draw_arc` —— 实测那两个 API **完全不参与 2D 合批**
-> （`draw_circle ×1000 → 997 个 draw call、18.4 ms`），换成同一张贴图之后 1000 个单位合成一个批次；
-> 绘制命令还要**按图元类型 / 按贴图分组**（同一类连着画才合得了批）。
-> 单位图标（`unit_icon.gd`）也是按这条走的：线条画的「预制体」**烘成十来张贴图**，
-> 而不是每个单位一个节点 / 一个场景 —— 理由见 [`route.md`](route.md) 26.4。
+> ★★ **1000 单位那档的实测**（`tests/bench_fps_3d.gd`）：分桶正确的 MultiMesh 让
+> 1000 个单位压到 **11 draw call / 23 个节点 / 78.5 MB 显存**。
+> ⚠️ 分桶键写错 = 合批失效（**画面是对的、性能悄悄退化**），所以 `test_view3d` 钉住了批次数上限。
 
 ### 3.3 快照（本轮：调试用；第 1 轮：网络包体）
 
@@ -430,23 +417,22 @@ Godot 里 DPR 由引擎处理，**但下面三条要原样继承**：
 - ★ **视觉高度 ≠ 逻辑高度**：建筑的 3D 高度是**纯表现**常量（`render.building_height.<type>`），
   寻路 / 碰撞 / 攻击一律读 `logic/building.gd` 的 `body_scale`（一格里的**平面块**）。
   `logic/` 里没有、也不会加「高度」字段；单位也**不投阴影**（材质 `SHADING_MODE_UNSHADED`）。
-- ★ **HUD 整个复用 2D 那版**：它是 `CanvasLayer` 上的 `Control`，本来就不吃 3D 变换；
-  它对世界的唯一依赖是「通过 `camera_rig` 知道我现在看的是哪一块」⇒
-  把 `camera_rig` 换成一个 3D **替身**（`center_on_px` / `get_viewport_rect` / `cam`）就够了。
-- ★★ **入口现状**：`view/main.tscn` → `view/main.gd` **已经切到 3D**
-  （`GameSceneRes = res://view/game_scene3d.gd`），全套 **38 文件 / 5338 项 / fail 0**。
-  ⚠️ 这一步**不是「改一行 `preload`」**：从「只切 preload」（85 项失败）到全绿一共走了 **8 步**，
+- ★ **HUD 与视角无关**：它是 `CanvasLayer` 上的 `Control`，本来就不吃 3D 变换；
+  它对世界的唯一依赖是「通过相机替身知道我现在看的是哪一块」⇒ 3D 场景给它一个
+  `CameraFacade`（`center_on_px` / `center_on_tile` / `pan_screen` / `get_viewport_rect` / `cam`）
+  外加 `view/palette.gd` 的投影实例就够了。
+- ★★ **入口 = 3D（唯一实现）**：`view/main.tscn` → `view/main.gd`
+  （`GameSceneRes = res://view/game_scene3d.gd`）。
+  ⚠️ 这一步**不是「改一行 `preload`」**：从「只切 preload」（85 项失败）走到全绿，
   每一步都在补一个**视图层交互接口** —— 主循环的暂停门、`_unhandled_input` 的「先问 HUD」、
   `_consume_events` 命名对齐、`level_playing` / `level_campaign`、开局自动选中……
   完整曲线记在 route.md 四十一节与 [`../dev_plan_9.md`](../dev_plan_9.md) 6.1。
-  ★ 另外 `main.gd` 那个字段必须退到 `Node`（原本标 `Node2D`，装不下 `Node3D` ⇒
+  ★ `main.gd` 那个字段必须退到 `Node`（原本标 `Node2D`，装不下 `Node3D` ⇒
   整个 `main.gd` 载不进来、主界面起不来，见 pitfalls 10.8）。
-  ★ `view/game_interaction.gd`（与渲染无关的交互核心）**已抽出、已被 3D 使用**；
-  2D 那份仍是自己的实现 ⇒ 「两边共用一份」是遗留项。
-- ⚠️ **2D 遗留栈还在仓库里**（`game_scene.gd` / `camera_rig.gd` / `terrain_view.gd` / `zone_view.gd` /
-  `fog_view.gd` / `overlay.gd` / `unit_view.gd` / `building_view.gd` / `minimap.gd`），
-  它们仍用自己那套 2D 换算，出处是 **`view/palette2d.gd`**（老静态签名）。
-  ★ 新写的 3D 代码一律不许 `preload` 它 —— 要用投影就走 `view/palette.gd` 的实例 API。
+- ★★ **2D 视图栈已整体删除**（`game_scene.gd` / `camera_rig.gd` / `palette2d.gd` /
+  `terrain_view.gd` / `zone_view.gd` / `fog_view.gd` / `overlay.gd` / `unit_view.gd` /
+  `building_view.gd`）。投影只走 `view/palette.gd` 的实例 API；战役席位规则搬到了
+  `logic/level.gd:build_roster()`。
 - 取舍、里程碑与真踩到的坑：见 [`../dev_plan_9.md`](../dev_plan_9.md) 与 [`route.md`](route.md) 四十一节。
 
 ---
@@ -487,9 +473,9 @@ Godot 里 DPR 由引擎处理，**但下面三条要原样继承**：
 | ★ 结算播报去重 | `logic/world.gd` 的 `_objective_reported` | 结算之后 world **继续 tick**（不做 UI 冻结）—— 不记一笔就会每帧发一条 `level_end` |
 | ★★ **迷雾按哪一方算** | `logic/fog.gd` 的分桶键 = `FactionRes.side_of(阵营)` | 合作模式两人**共享视野**（用户拍板）；单机时 `side_of(p1) == "p1"` ⇒ 与从前逐位一致。★ 三类查询（`tile_visible` / `unit_visible` / `building_visible`）必须**一起**走同一个键（route.md 第三十七节） |
 | ★ 地图目录里的「战役专用图」 | `data/maps/<id>/map.json` 的 `hidden: true` → `logic/map_library.gd` 的 `is_hidden()` | ★ 它**不进自由对战的选择条**，也不当默认图（加一张战役图不该改变「不选就按 test」进的那一局）。关卡照样按 id 直接引用它；占位图（`placeholder`）**照样列出**、只是不当默认 —— 两种标记含义不同，别合并 |
-| ★★ **「这一局从哪一关开的」** | `view/game_scene.gd` 的 `level_playing` / `level_campaign`（**老路径上都是 null**） | ★ 它们是**界面层**的记账（`world` 自己持有 `level` 才是权威）：给「返回关卡列表 / 结算面板」这类以后的界面用。入口两条：`start(map_path)`（老路）与 `start_level(campaign, level, faction)`（战役路）——**只差「世界怎么造出来」**，之后完全同一条尾 |
+| ★★ **「这一局从哪一关开的」** | `view/game_scene3d.gd` 的 `level_playing` / `level_campaign` | ★ 它们是**界面层**的记账（`world` 自己持有 `level` 才是权威）：给「返回关卡列表 / 结算面板」这类以后的界面用。入口两条：`start(map_path)`（老路）与 `start_level(campaign, level, faction)`（战役路）——**只差「世界怎么造出来」**，之后完全同一条尾 |
 | ★ 单人战役的**占位**入口 | 主界面 `campaign_test` 按钮 → `view/campaign_test.gd`（列单人关 + 选阵营 + 开始）→ `view/main.gd` 接 `level_chosen` → `game.start_level()` | ★ 它**只是占位**（正式入口那一套是规划书 5.1~5.4）：界面不认识 `world` / `game_scene`，扫战役目录与建世界都在 `main`；关卡列表**只列单人关**（合作要两个席位，那条路给不了）。见 route.md 37.11 |
-| 相机 / 缩放 | `view/camera_rig.gd` | 纯表现，不进快照。★ 它的 `camera.edge_size` 与 HUD 的「屏幕最外圈不拦滚屏」是**同一个数**（`cfg.camera_edge_size`） |
+| 相机 / 缩放 | `view/game_scene3d.gd`（`Camera3D` 相机部分） | 纯表现，不进快照。★ 它的 `camera.edge_size` 与 HUD 的「屏幕最外圈不拦滚屏」是**同一个数**（`cfg.camera_edge_size`） |
 | 选中列表 | `view/input_controller.gd` | 纯本地，**不进命令流**（第 1 轮也一样）。★ 左键**点选**与左键**框选**（拖出矩形，见 route.md 16.3）走的是同一个入口 `select_units()` —— 它会用 `world.expand_to_groups()` 把「一个单位」展开成「它所属的整支部队」 |
 | 玩家下达的攻击命令 | `logic/unit.gd` 的 `ordered_target` / `ordered_building` / `has_attack_move` | 与「这一帧在打谁」（`target` / `target_building`）**分开存**，见 route.md 12.3 |
 | UI 几何（面板位置与尺寸） | `view/ui_layout.gd` | 纯常量，照参考图的像素稿；其它 view 文件不写坐标字面量 |
@@ -502,16 +488,37 @@ Godot 里 DPR 由引擎处理，**但下面三条要原样继承**：
 | 科技的三类效果（每地块加产量 / 血量上限倍率 / 区划人口增长倍率） | `logic/tech.gd` 的 `effects_of()` → `world.tech_effects` | 每帧在 `tick()` 开头重算；启用 / 弃用时 `_apply_tech_effects()` **立即**落到对象上（血量按比例缩放、上限从 `base_hp_max` 重算） |
 | **战争迷雾（谁能看见哪一格 + 已知的敌方建筑）** | `logic/fog.gd`（由 `logic/world.gd` 持有并暴露成 `world.fog`） | ★ 它是**派生数据**：只读 `map.terrain` + 各单位 / 建筑的位置算出来，**不进快照**（联机时各端各算一遍）。`world.tick()` 末尾按需重算（`fog.refresh_needed()`）；`reset()` 末尾也算一次，于是进游戏第一帧之前就有正确的迷雾。★ 单位 / 建筑各自的视野半径在 `unit.vision` 字段上（出生时从 config 抄进对象） |
 | 视野半径的数值 | `data/config.json` 的 `fog.vision_default` / `fog.vision_building` / `unit.types.<id>.vision` / `unit.general.stats[i].vision` / **`building.<type>.vision`** | ★ **单位与建筑各有一张「每类型一个值」的表**，两处完全对称。游戏侧只读 `cfg.unit_vision_of()` / `cfg.general_vision_at()` / `cfg.building_vision_of()`（后两个的兜底分别是 `fog.vision_default` 与 `fog.vision_building`）；编辑器（tools/unit_editor）改的是同一批键 |
-| 灰色遮罩的颜色与不透明度 | `data/config.json` 的 `fog.mask_color` / `fog.mask_alpha` → `cfg.fog_mask_color` | 纯显示；`view/fog_view.gd` 烘的贴图只存「看得见 / 看不见」，颜色靠 `draw_texture_rect` 的 modulate —— 换颜色不必重烘贴图 |
+| 灰色遮罩的颜色与不透明度 | `data/config.json` 的 `fog.mask_color` / `fog.mask_alpha` → `cfg.fog_mask_color` | 纯显示；`view/ground_view.gd` 烘的迷雾贴图只存「看得见 / 看不见」，颜色靠材质的 modulate —— 换颜色不必重烘贴图 |
 | 操作页的「命令模式」（点了移动 / 攻击 / 行军之后等左键点地图） | `view/input_controller.gd` 的 `order_mode` | 纯本地输入状态，与 `build_type` 同源、互斥；命令照旧只走 `command_issued` |
 | 招募队列的实现细节（进度、五个格子的几何） | `logic/unit.gd` 的 `train_*` 字段 / `logic/zone.gd` 的 `train_*` 字段（**区划招募**）+ `view/recruit_queue.gd` | 进度由 `unit.train_progress()` / `world.zone_train_progress()` 算好，视图只取色与填格子（不让视图自己发明判定，见 pitfalls 5.20）；同一个控件显示「将领的队列」或「区划的队列」（`set_queue(holder, is_zone)`） |
-| 事件（击杀 / 建筑被拆 / 招募…） | `logic/world.gd` 收集 → `world.tick()` 返回 | **逻辑层不写 UI 文案**；目前只翻译三条：`recruit_rejected` / `order_rejected` → 左栏那行红字、`unit_recruited` → 把新兵选上（`view/game_scene.gd` → `hud` / `input_controller`） |
+| 事件（击杀 / 建筑被拆 / 招募…） | `logic/world.gd` 收集 → `world.tick()` 返回 | **逻辑层不写 UI 文案**；目前只翻译三条：`recruit_rejected` / `order_rejected` → 左栏那行红字、`unit_recruited` → 把新兵选上（`view/game_scene3d.gd` → `hud` / `input_controller`） |
 | 谁是房主 / 我的阵营 | 第 1 轮再加 | 本轮固定为单机阵营 |
 
 > **建筑为什么不用 `TileMapLayer` 当权威**：一个地块只能有一个建筑，
 > 用 `Vector2i → Building` 字典查询更快、更明确，也不会和地形的图块数据纠缠。
 > 地形可以用 `TileMapLayer`（只读），但**通行性判定读 `map_data`，不读 TileMap** ——
 > 否则图块换一张图就可能改变玩法。
+
+### 5.1 阵型（单位移动落点的分层）
+
+**阵型是「派生落点」，不是持久状态**：`logic/command_processor.gd` 的 `formation_slots()`
+在下令那一刻算出一组与队伍**一一对应**的槽位，各单位走向自己的槽位。它**不进快照**，
+联机时各端从同一条命令各自重算（与路径同一条约定）。
+
+- **布局 = 按兵种由前往后堆叠的带（band）**：「前」= 行进方向（队伍重心 → 点击点）；
+  最前的带 = 层号最小的兵种。层序在 `data/config.json` 的
+  `unit.formation.tier_order`（默认 长枪兵 → 长弓兵 → 骑手），
+  `tier_default` 给没登记的兵种（默认中间层）。**代码里没有写死的层次**。
+- **同一部队相邻**：同一部队 = `world.leader_of(u)` 相同的单位。同一带内它们连续相邻，
+  各带用**同一个部队顺序** ⇒ 同一部队跨带的单位横向对齐（位置接近）。
+- **多部队共用一个阵型**：玩家一次选中多支部队时，`view` 的选区已被
+  `world.expand_to_groups()` 展开成一整队、作为**一个 group** 进 `formation_slots`，
+  于是多支部队落在同一个阵型里（见 §3.1）。
+- **移动中保持**：移动命令时，`unit.move_to()` 走 `formation_shift` 分支 —— 取「到点击格」
+  的距离场路线，再把它**整体平移**该单位的槽位偏移（`unit._field_offset`），全队走出平行
+  路线；平移撞障碍逐点校验后回退到「汇聚 + 散开」。**行军攻击只保证到达时成型**
+  （不传偏移，走旧的 `crowd_bridge.tile_path_via`），途中一交火由 `combat` 接管。
+- 相关测试：`tests/test_formation.gd`（分层 / 同部队聚簇 / 多部队共用 / 到达成型）。
 
 ---
 

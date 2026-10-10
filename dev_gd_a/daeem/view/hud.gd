@@ -63,6 +63,9 @@ var cfg: ConfigRes = null
 var world = null
 var input_ctrl = null
 var camera_rig = null
+## ★★ 3D 投影助手（`view/palette.gd` 的实例）：小地图的「视野框 / 点击跳转」要用它
+##    （2D 回退已随 2D 栈删除）。由 `setup()` 传进来、再原样转交给小地图。
+var palette = null
 
 var squad_panel: Control = null
 var detail_panel: PanelContainer = null
@@ -150,11 +153,15 @@ var _tab_key: String = ""
 var _page_memory: Dictionary = {}
 
 
-func setup(p_cfg: ConfigRes, p_world, p_input, theme: Theme, p_camera_rig = null) -> void:
+func setup(p_cfg: ConfigRes, p_world, p_input, theme: Theme, p_camera_rig = null,
+		p_palette = null) -> void:
 	cfg = p_cfg
 	world = p_world
 	input_ctrl = p_input
 	camera_rig = p_camera_rig
+	# ★★ 投影助手一并收下并转交给小地图（见 `_build_minimap`）：这样小地图一建出来
+	#    就拿着完整的 3D 口径，不必等调用方事后再 setup 一次。
+	palette = p_palette
 	_font = theme.default_font if theme != null else null
 
 	_root = Control.new()
@@ -218,7 +225,7 @@ func _build_minimap() -> void:
 	minimap.name = "Minimap"
 	minimap.set_anchors_preset(Control.PRESET_FULL_RECT)
 	map_placeholder.add_child(minimap)
-	minimap.setup(cfg, world, camera_rig)
+	minimap.setup(cfg, world, camera_rig, palette)
 
 
 ## 阵营 / 盾徽 / 旗帜：**本轮不做**，只按参考图把位置与占位文字放上

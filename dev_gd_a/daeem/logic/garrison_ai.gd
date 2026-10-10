@@ -43,6 +43,8 @@ const PathfinderRes = preload("res://logic/pathfinder.gd")
 ## ★★ 巡逻的**整队命令**走它（`order_group_attack_move`）—— 与玩家 / 阵营 AI 同一条路径，
 ##    队形落点与通行判定都在里面，见 `_patrol_group`。
 const CommandProcessorRes = preload("res://logic/command_processor.gd")
+## ★ 判「来占我地的是不是敌对势力」要用它（`same_side`：同阵营**或**盟友都算自己人）。
+const FactionRes = preload("res://logic/faction.gd")
 
 
 ## 每帧推进所有「驻防将领」。
@@ -203,6 +205,28 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 		if in_combat:
 			continue
 
+		# ---- 3.5) ★★ 「自己的区划中心正被敌对势力占领」→ 立刻行军攻击到中心（本轮新增）----
+		#
+		# 需求原话：「当自己所属的区划中心开始被敌对势力占领时，立刻行军攻击至区划中心」。
+		#   · **立刻**：不等 `patrol_interval` —— 威胁一出现就下一道命令；
+		#   · **只在状态翻转的那一帧下**：每帧重下会把路径一帧一帧重置、人反而永远走不到
+		#     （与巡逻 / 返程同一条教训，见 `_abandon_chase` 的注释）；
+		#   · **整队一起走**（`_patrol_group` 会把附属兵带上），走的是**行军攻击**：
+		#     路上遇到敌人会打 —— 正是「去把占我地的人赶走」要的。
+		#   · 我的兵一到场，那条进度条会变成 **frozen**（双方同场、谁都涨不了）——
+		#     那**仍然算威胁还在**（敌人还在场上），所以 frozen 也继续守着；
+		#     等敌人被杀光 / 走开（进度转 decaying 或清空）才解除、恢复正常巡逻。
+		#   · 这一支**优先级高于招兵与巡逻**（守家比扩编要紧），所以放在第 4 步之前，
+		#     处理完直接 `continue`。
+		if _center_under_attack(world, u, z):
+			if not u.defending_center:
+				u.defending_center = true
+				var c: Variant = (z as Dictionary).get("center", null)
+				if c != null:
+					_patrol_group(world, cfg, u, GridRes.center_of(c))
+			continue
+		u.defending_center = false
+
 		# ---- 4) 脱战：先看看要不要无消耗招兵，再巡逻 ----
 		# ★★ 目标编队规模（本轮口径变更）：直接读**这个将领自己的规格**
 		#   （`u.retinue_target`，由关卡摆放时按 `escort_count` 写入）。
@@ -338,6 +362,33 @@ static func _garrison_zone(world, u) -> Variant:
 	if u.garrison_zone_id < 0 or world.zones == null:
 		return null
 	return world.zone_by_id(u.garrison_zone_id)
+
+
+## 这个区划的中心是不是**正被敌对势力占领**（见 `update()` 第 3.5 步）。
+##
+## 三条都要成立才算威胁：
+##   1. 进度条处于 `reading` / `frozen` —— **`decaying` 不算**（占我地的人已经走了，
+##      进度自己在退；这时不该把人再拽去中心）；
+##   2. 进度 > 0（有条才有威胁）；
+##   3. 那条条**不是我方**的（`same_side`：同阵营**或**盟友都算自己人 —— 盟友来占
+##      不可能发生，但口径与占领那几处保持一致）。
+## ⚠️ 没有中心的区划直接返回 false：正常装配时 `_ensure_centers()` 已给每个区块补了中心，
+##    这里只是防御（真没有中心就无处可守，别把人派去一个不存在的坐标）。
+static func _center_under_attack(world, u, z) -> bool:
+	if z == null or world == null or world.zones == null:
+		return false
+	if (z as Dictionary).get("center", null) == null:
+		return false
+	var bar: Dictionary = world.zones.capture_bar(z)
+	var st := String(bar.get("state", ""))
+	if st != "reading" and st != "frozen":
+		return false
+	if float(bar.get("value", 0.0)) <= 0.0:
+		return false
+	var f := String(bar.get("faction", ""))
+	if f == "":
+		return false
+	return not FactionRes.same_side(String(u.faction), f)
 
 
 ## 它现在是不是**站在自己负责的那个区划里**（区划级归属的唯一判据，本轮新增）。

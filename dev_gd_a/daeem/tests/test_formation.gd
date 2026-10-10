@@ -37,6 +37,11 @@ func _cases() -> void:
 	_test_small_group_lands_exactly(w, cfg)
 	_test_group_spreads_out(w, cfg)
 	_test_no_rank_when_click_is_blocked(w, cfg)
+	# ★★ 本轮阵型大改：分层（兵种前后）+ 同部队聚簇 + 多部队共用一个阵型 + 到达后成型
+	_test_tier_layering(w, cfg)
+	_test_troop_clustered(w, cfg)
+	_test_all_troops_participate(w, cfg)
+	_test_arrival_layered(cfg)
 
 
 ## 槽位本身：一一对应、互不重合、都可通行、都紧挨着点击点
@@ -169,6 +174,173 @@ func _test_no_rank_when_click_is_blocked(w, cfg) -> void:
 		"x": float(blocked.x) + 0.5, "y": float(blocked.y) + 0.5}), "点到障碍：命令仍然被接受")
 	for u in group:
 		ok(u.has_goal or not u.moving, "%s 的落点被换成了别处（没有对着障碍硬走）" % u.id)
+
+
+# ------------------------------------------------------------------
+
+## ★★ 分层：阵型「由前往后」依次是长枪兵（spearman）→ 长弓兵（longbowman）→ 骑手（rider）。
+## 判据：把每个槽位相对点击点的偏移投影到「行进方向」上，各兵种的纵深区间**不重叠且有序**。
+func _test_tier_layering(w, cfg) -> void:
+	var group := _p1_units(w)
+	ok(group.size() >= cfg.formation_min_units, "分层：测试队伍 ≥ min_units")
+	var click := _open_spot(w)
+	ok(click.x > 0.0, "分层：找得到一块开阔地当点击点")
+	if click.x <= 0.0:
+		return
+	var slots: Array[Vector2] = CommandRes.formation_slots(w, cfg, group, click)
+
+	var fwd := _fwd_of(group, click)
+	var mn: Dictionary = {}
+	var mx: Dictionary = {}
+	for i in group.size():
+		var t: String = String(group[i].unit_type)
+		var d: float = (slots[i] - click).dot(fwd)
+		if not mn.has(t) or d < float(mn[t]):
+			mn[t] = d
+		if not mx.has(t) or d > float(mx[t]):
+			mx[t] = d
+	ok(mn.has("spearman") and mn.has("longbowman") and mn.has("rider"),
+		"分层：队伍里三个兵种都有人（长枪兵 / 长弓兵 / 骑手）")
+	if mn.has("spearman") and mn.has("longbowman"):
+		ok(float(mn["spearman"]) > float(mx["longbowman"]),
+			"★ 长枪兵整体排在长弓兵之前（前 = 行进方向）")
+	if mn.has("longbowman") and mn.has("rider"):
+		ok(float(mn["longbowman"]) > float(mx["rider"]),
+			"★ 长弓兵整体排在骑手之前")
+
+
+## ★★ 同部队相邻：在**同一个层**里，同一支部队（leader_of 相同）的单位横向连续成一段，
+## 中间不会被别的部队插开。
+func _test_troop_clustered(w, cfg) -> void:
+	var group := _p1_units(w)
+	var click := _open_spot(w)
+	if click.x <= 0.0:
+		return
+	var slots: Array[Vector2] = CommandRes.formation_slots(w, cfg, group, click)
+	var fwd := _fwd_of(group, click)
+	var side := Vector2(-fwd.y, fwd.x)
+
+	var by_tier: Dictionary = {}
+	for i in group.size():
+		var t: int = CommandRes._formation_tier(cfg, group[i])
+		if not by_tier.has(t):
+			by_tier[t] = []
+		by_tier[t].append(i)
+
+	var checked := 0
+	for t in by_tier.keys():
+		var members: Array = by_tier[t]
+		members.sort_custom(func(a, b) -> bool:
+			return (slots[a] - click).dot(side) < (slots[b] - click).dot(side))
+		var seq: Array = []
+		for i in members:
+			seq.append(String(w.leader_of(group[i])))
+		var done: Dictionary = {}
+		var contiguous := true
+		for k in seq.size():
+			if k > 0 and seq[k] != seq[k - 1]:
+				done[seq[k - 1]] = true
+			if done.has(seq[k]):
+				contiguous = false
+		ok(contiguous, "★ 层 %d：同一部队的单位在阵型里连续相邻（不被打散）" % t)
+		checked += 1
+	ok(checked >= 1, "聚簇：至少检查了一个层")
+
+
+## ★★ 多部队共用一个阵型：整队（含多支部队）排出的槽位互不重合，且每支部队都参与了。
+func _test_all_troops_participate(w, cfg) -> void:
+	var group := _p1_units(w)
+	var click := _open_spot(w)
+	if click.x <= 0.0:
+		return
+	var slots: Array[Vector2] = CommandRes.formation_slots(w, cfg, group, click)
+
+	var troops: Dictionary = {}
+	for u in group:
+		troops[String(w.leader_of(u))] = true
+	ok(troops.size() >= 2, "参与：测试队伍里至少有 2 支部队（否则验不到「多部队」）")
+
+	var seen: Dictionary = {}
+	var dup := 0
+	for s in slots:
+		var k := "%d,%d" % [roundi(s.x * 100.0), roundi(s.y * 100.0)]
+		if seen.has(k):
+			dup += 1
+		seen[k] = true
+	eq(dup, 0, "参与：多支部队共用一个阵型，槽位互不重合")
+
+	var per_troop: Dictionary = {}
+	for u in group:
+		per_troop[String(w.leader_of(u))] = true
+	eq(per_troop.size(), troops.size(), "参与：每支部队都进入同一个阵型")
+
+
+## ★★ 到达后成型（整链路）：下达移动命令、跑到停下，最前的是长枪兵、最后的是骑手。
+func _test_arrival_layered(cfg) -> void:
+	cfg.combat_enabled = false
+	var w2 = require_world_with_escorts(cfg, 2)
+	if w2 == null:
+		return
+	var group := _p1_units(w2)
+	var click := _open_spot(w2)
+	if click.x <= 0.0:
+		return
+	var fwd := _fwd_of(group, click)
+
+	var ids: Array = []
+	for u in group:
+		ids.append(u.id)
+	ok(CommandRes.apply(w2, cfg, {"kind": "move", "ids": ids,
+		"faction": w2.my_faction, "x": click.x, "y": click.y}), "到达分层：整队移动命令被接受")
+
+	var n := 0
+	while n < 4000:
+		w2.tick(DT)
+		n += 1
+		var any := false
+		for u in group:
+			if u.moving:
+				any = true
+		if not any:
+			break
+
+	var front = group[0]
+	var back = group[0]
+	var fbest := -1e12
+	var bbest := 1e12
+	for u in group:
+		var d: float = (u.pos - click).dot(fwd)
+		if d > fbest:
+			fbest = d
+			front = u
+		if d < bbest:
+			bbest = d
+			back = u
+	eq(String(front.unit_type), "spearman", "★ 到达后最前的单位是长枪兵")
+	eq(String(back.unit_type), "rider", "★ 到达后最后的单位是骑手")
+
+
+# ------------------------------------------------------------------
+
+## 队伍重心 → 点击点的单位方向向量（阵型的「前」）。退化时退回 Vector2.RIGHT。
+func _fwd_of(group: Array, click: Vector2) -> Vector2:
+	var centroid := Vector2.ZERO
+	for u in group:
+		centroid += u.pos
+	centroid /= float(group.size())
+	var fwd: Vector2 = click - centroid
+	if fwd.length() < 1e-3:
+		return Vector2.RIGHT
+	return fwd.normalized()
+
+
+## 自己这一方的全部存活单位（测试里当「一整队」用）。
+func _p1_units(w) -> Array:
+	var out: Array = []
+	for u in w.units:
+		if FactionRes.same_side(u.faction, w.my_faction):
+			out.append(u)
+	return out
 
 
 # ------------------------------------------------------------------

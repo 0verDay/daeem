@@ -14,7 +14,7 @@
     [2] 画布：放置 / 选中 / 删除（大本营不许在这里删）/ 缩放（以光标为锚点）/ 适应视图
     [2b] ★ 摆放手势：空格 + 左键拖动平移（放东西 / 选中都不许发生）；中键那条在 [2] 里
     [3] 「设进攻目标」模式：点区划 → zone / 点空格 → point / Esc 退出
-    [4] ★ ③ 与 ④ 改的是**同一个字段**（最容易写成不一致的地方）
+    [4] ★ ④ 画布点选改「进攻目标」：箭头终点 = 区划中心（③ 不再提供 AI 编辑）
     [5] 导出：有拦截项时**禁止写文件**并弹框说清楚；没有拦截时才真写
     [6] 一键打开地图编辑器（**假 subprocess**，不真起地图编辑器）
     [7] 侧边栏「装得下就不许滚」（用户报过的 bug；判据是 canvasy(0)，不是 yview）
@@ -637,29 +637,18 @@ def t_target_mode(app, model) -> None:
 
 
 # ======================================================================
-# [4] ★ ③ 与 ④ 改的是同一个字段
+# [4] ④ 画布点选改「进攻目标」（③ 已不再提供 AI 编辑）
 # ======================================================================
 
 def t_same_field(app, model) -> None:
-    print("\n[4] ★ ③（阵营页下拉）与 ④（画布点选）改的是同一个字段")
+    print("\n[4] ★ ④ 画布点选改「进攻目标」+ 箭头终点 = 区划中心")
     f = _facts(app)
     lv = level(app)
     info = app.map_info()
     lv.ensure_faction(f["player"]).ai = M.AI_GARRISON
+    lv.ensure_faction(f["player"]).attack_target = {"kind": M.TARGET_ZONE,
+                                                    "zone": int(f["obj_zone"])}
     app.refresh_all()
-
-    # ---- ③ 改：下拉选「指定区划」，再挑一个区划 ----
-    app.set_page("factions")
-    app.root.update()
-    section = faction_section(app, f["player"])
-    pick_combo(app, row(app, section, "combo:进攻目标"), "指定区划")
-    target = level(app).faction(f["player"]).attack_target
-    eq(target.get("kind"), M.TARGET_ZONE, "③ 下拉选「指定区划」→ 落了 zone 型目标")
-    zid = next(z for z in info.zone_ids if z != int(target.get("zone", -1)))
-    pick_combo(app, row(app, faction_section(app, f["player"]), "combo:　目标区划"),
-               info.zone_label(zid))
-    eq(level(app).faction(f["player"]).attack_target, {"kind": M.TARGET_ZONE, "zone": int(zid)},
-       "③ 选好区划之后目标就是它")
 
     # ---- ④ 看：画布上画出来的箭头终点 = 那个区划的中心 ----
     app.set_page("place")
@@ -667,23 +656,18 @@ def t_same_field(app, model) -> None:
     app.fit_view()
     app.root.update()
     spec = level(app).faction(f["player"]).attack_target
-    eq(app._target_point(level(app), app.map_info(), spec), info.zone_centers[int(zid)],
-       "★ ④ 读到的目标点 = ③ 设的那个区划的中心（同一份数据）")
+    eq(app._target_point(level(app), app.map_info(), spec),
+       info.zone_centers[int(f["obj_zone"])],
+       "★ ④ 读到的目标点 = 目标的区划中心")
 
     # ---- ④ 改：画布点另一个区划 ----
-    other = next(z for z in info.zone_ids if z != zid)
+    other = next(z for z in info.zone_ids if z != int(f["obj_zone"]))
     app.target_mode_faction = f["player"]
     click_canvas(app, info.zone_centers[other])
     eq(level(app).faction(f["player"]).attack_target,
        {"kind": M.TARGET_ZONE, "zone": int(other)}, "④ 点画布改掉了目标")
+    app.target_mode_faction = None
 
-    # ---- ③ 再看：下拉显示的就是 ④ 刚设的那个 ----
-    app.set_page("factions")
-    app.root.update()
-    detail = sectioned(app).get((faction_section(app, f["player"]), "combo:　目标区划"))
-    ok(detail is not None, "③ 那一栏还有「目标区划」下拉（因为 kind 是 zone）")
-    if detail is not None:
-        eq(detail.get(), info.zone_label(other), "★★ ④ 改完之后 ③ 的下拉显示新值")
     eq(M.target_label(level(app).faction(f["player"]).attack_target),
        "指定区划 %s" % M.zone_label(other),
        "★ 目标的一行人话也跟着变（`target_label` 不查地图，所以只用 c<id> 记法）")

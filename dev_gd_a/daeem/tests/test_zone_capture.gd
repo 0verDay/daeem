@@ -89,22 +89,39 @@ func _cases() -> void:
 	_test_strict_blocking(cfg)
 	_test_no_two_bars(cfg)
 	_test_speed_curve(cfg)
+	_test_requires_center_proximity(cfg)
+	_test_auto_centers(cfg)
 
 
-## 找一个无主区块里的空地
+## 找一个无主区块里、且**位于「中心 3×3」之内**的空地。
+##
+## ★★ 本轮改版：占领只看「单位离**区划中心** ≤ `capture_radius_tiles` 格」——
+##    所以用例的落点也必须落在这个邻域里（旧版找的是包围盒中心，可能离真中心很远 ⇒ 点不着）。
+## ★ 返回 `{zone, tile, tile2}`：`tile` 给第一方，`tile2` 给第二方（争抢类用例要两个不同的格）。
 func _neutral_spot(w, cfg) -> Dictionary:
 	for z in w.zones.zones:
 		if String(z["owner"]) != "":
 			continue
-		var cx: int = (int(z["x0"]) + int(z["x1"])) / 2
-		var cy: int = (int(z["y0"]) + int(z["y1"])) / 2
-		for r in range(0, 6):
-			for dy in range(-r, r + 1):
-				for dx in range(-r, r + 1):
-					var t := Vector2i(cx + dx, cy + dy)
-					if w.can_build_at(t.x, t.y):
-						return {"zone": z, "tile": t}
+		var tiles := _ring_tiles(w, z, cfg)
+		if tiles.size() >= 2:
+			return {"zone": z, "tile": tiles[0], "tile2": tiles[1]}
 	return {}
+
+
+## 一个区块「中心邻域」里所有能站的空地（占领判定看的就是这个邻域）。
+func _ring_tiles(w, z: Dictionary, cfg) -> Array:
+	var r: int = maxi(0, int(cfg.zone_capture_radius_tiles))
+	var c: Variant = z["center"]
+	var out: Array = []
+	if c == null:
+		return out
+	var center: Vector2i = c
+	for dy in range(-r, r + 1):
+		for dx in range(-r, r + 1):
+			var t := Vector2i(center.x + dx, center.y + dy)
+			if w.can_build_at(t.x, t.y):
+				out.append(t)
+	return out
 
 
 ## 把单位挪到某个地块中心（并同步 tx/ty）
@@ -178,9 +195,9 @@ func _test_contested_freezes(cfg) -> void:
 	var frozen_at := _run_to(w, z, "p1", 0.5)
 	near(frozen_at, 0.5, 0.02, "先让玩家读到一半（%.1f 秒）" % half_sec(cfg))
 
-	# 敌人进入同一区块
-	var e = w.spawn_enemy(spot["tile"].x + 1, spot["tile"].y)
-	ok(e != null, "敌人进入同一区块")
+	# 敌人进入同一个「中心邻域」
+	var e = w.spawn_enemy(spot["tile2"].x, spot["tile2"].y)
+	ok(e != null, "敌人进入同一个中心邻域")
 	if e == null:
 		return
 	e.hold_position = true               # 别让它跑掉
@@ -217,7 +234,7 @@ func _test_enemy_enters_then_wiped(cfg) -> void:
 	near(before, 0.5, 0.02, "玩家先读到一半（%.1f 秒）" % half_sec(cfg))
 
 	# 敌人的兵进来，然后把玩家清光（模拟击杀）
-	var e = w.spawn_enemy(spot["tile"].x + 1, spot["tile"].y)
+	var e = w.spawn_enemy(spot["tile2"].x, spot["tile2"].y)
 	if e == null:
 		return
 	e.hold_position = true
@@ -495,12 +512,12 @@ func _test_speed_curve(cfg) -> void:
 	if spot3.is_empty():
 		return
 	var g3 = w3.unit_by_id("general-1")
-	var e3 = w3.spawn_enemy(spot3["tile"].x + 1, spot3["tile"].y)
+	var e3 = w3.spawn_enemy(spot3["tile2"].x, spot3["tile2"].y)
 	if e3 == null:
 		return
 	e3.hold_position = true
 	_put(g3, spot3["tile"], w3)
-	_put(e3, Vector2i(spot3["tile"].x + 1, spot3["tile"].y), w3)
+	_put(e3, spot3["tile2"], w3)
 	w3.units = [g3, e3]
 	w3.tick(1.0)
 	near(_progress(spot3["zone"], "p1"), 0.0, 1e-6,
@@ -518,15 +535,15 @@ func _test_no_two_bars(cfg) -> void:
 		return
 	var z: Dictionary = spot["zone"]
 	var g = w.unit_by_id("general-1")
-	var e = w.spawn_enemy(spot["tile"].x + 1, spot["tile"].y)
+	var e = w.spawn_enemy(spot["tile2"].x, spot["tile2"].y)
 	if e == null:
 		return
 	e.hold_position = true
 
-	# 把场景摆成「双方都在区块里、双方都想占」并跑一段时间，逐帧检查
+	# 把场景摆成「双方都在邻域里、双方都想占」并跑一段时间，逐帧检查
 	w.units = [g, e]
 	_put(g, spot["tile"], w)
-	_put(e, Vector2i(spot["tile"].x + 1, spot["tile"].y), w)
+	_put(e, spot["tile2"], w)
 	var both := 0
 	for i in 240:
 		w.tick(DT)
@@ -542,3 +559,104 @@ func _test_no_two_bars(cfg) -> void:
 		"capture_bar 给出的值就是那个阵营的进度")
 	ok(["", "reading", "frozen", "decaying"].has(String(bar["state"])),
 		"状态取值只有这四种")
+
+
+# ------------------------------------------------------------------
+# 9. ★★ 新规则：单位必须在**区划中心的 3×3 内**才算「在场」
+# ------------------------------------------------------------------
+## 需求原话：「单位必须在区划中心附近 3x3 格子内才能开始占领」。
+##
+## 判据分两半，缺一不可：
+##   ① 站在**邻域内** → 正常读条（其它用例已经覆盖，这里再钉一条）；
+##   ② 站在**同一区块里、但邻域外** → 完全不算在场（进度**不涨**、而且从有到无会回落）。
+func _test_requires_center_proximity(cfg) -> void:
+	var w = require_world(cfg)
+	var g = w.unit_by_id("general-1")
+	w.units = [g]
+
+	# 找一个「邻域内外都有空地」的无主区块（两半判据都要用同一个区块）
+	var found: Dictionary = {}
+	for z in w.zones.zones:
+		if String(z["owner"]) != "":
+			continue
+		var ins := _ring_tiles(w, z, cfg)
+		var outs: Variant = _outside_ring_tile(w, z, cfg)
+		if not ins.is_empty() and outs != null:
+			found = {"zone": z, "inside": ins[0], "outside": outs}
+			break
+	ok(not found.is_empty(), "★ 找得到一个「中心邻域内外都有空地」的无主区块")
+	if found.is_empty():
+		return
+	var z: Dictionary = found["zone"]
+
+	# ① 站邻域内 → 正常读条
+	_put(g, found["inside"], w)
+	w.tick(1.0)
+	ok(_progress(z, "p1") > 0.0, "★ 站在中心 3×3 内 → 正常读条")
+	eq(_state(z), "reading", "状态在读")
+
+	# ② 挪到**本区块里、但邻域外**的一格 → 不算在场（不涨，反而回落）
+	#
+	# ★ 先读到一半再挪：从 0 挪走的话，一帧回落就把那点值抹平，
+	#   状态会变成 ""（恰好退完）而不是 "decaying"，看着像功能坏了。
+	_run_to(w, z, "p1", 0.5)
+	var before := _progress(z, "p1")
+	_put(g, found["outside"], w)
+	# 前提自检：这一格确实**还在本区块里**（否则这条测的就只是「走出了区块」）
+	var stayed: bool = w.zones.zone_at(int(found["outside"].x), int(found["outside"].y)) == z
+	ok(stayed, "（前提）挪到的那一格仍在**本区块**里、但离中心更远")
+	w.tick(1.0)
+	ok(_progress(z, "p1") < before,
+		"★★ 同区块但邻域外 → 不算在场（进度 %.4f → %.4f 开始回落）" % [before, _progress(z, "p1")])
+	eq(_state(z), "decaying", "状态是「回落」")
+	eq(String(z["owner"]), "", "★★ 离中心太远 ⇒ 占不下来（区块仍无主）")
+
+
+## 区块里「离中心 **> capture_radius_tiles**」、且能站的**最近**一格（验邻域外）。
+func _outside_ring_tile(w, z: Dictionary, cfg) -> Variant:
+	var r: int = maxi(0, int(cfg.zone_capture_radius_tiles))
+	var c: Variant = z["center"]
+	if c == null:
+		return null
+	var center: Vector2i = c
+	var best: Variant = null
+	var best_d := 1 << 30
+	for t in z["tiles"]:
+		var tile: Vector2i = t
+		var d: int = maxi(absi(tile.x - center.x), absi(tile.y - center.y))
+		if d <= r or d >= best_d:
+			continue
+		if not w.can_build_at(tile.x, tile.y):
+			continue
+		best = tile
+		best_d = d
+	return best
+
+
+# ------------------------------------------------------------------
+# 10. ★★ 没有中心的区块会被**自动补一个中心**（老图 / 手写图 / 均分区块的兜底）
+# ------------------------------------------------------------------
+## 需求：新规则要求「离中心 ≤ N 格」⇒ 没有中心的区块会**永远占不了**。
+##   `zone._ensure_centers()` 在装配时给它们补一个（行为与地图里写死的中心等价）。
+## 这里把地图的中心抹掉再建一次区块，直接验这条兜底。
+func _test_auto_centers(cfg) -> void:
+	var map = require_map(cfg)
+	if map == null:
+		return
+	# 抹掉地图里的中心，模拟「老地图 / 手写地图」（它们没有 zone_list[].center）
+	map.zones_centers = {}
+	var zs = ZoneRes.build_from_map(map, cfg, ["p1", "enemy"])
+	ok(zs != null and zs.zones.size() > 0, "抹掉中心之后仍然建得出区块")
+	if zs == null:
+		return
+	var missing := 0
+	var outside := 0
+	for z in zs.zones:
+		if z["center"] == null:
+			missing += 1
+			continue
+		var c: Vector2i = z["center"]
+		if zs.lookup[c.y * zs.cols + c.x] != int(z["id"]):
+			outside += 1
+	eq(missing, 0, "★★ 每个区块都被补上了中心（不补的话它们永远占不了）")
+	eq(outside, 0, "★ 补出来的中心落在**它自己的地块**上")

@@ -35,6 +35,7 @@
 from __future__ import annotations
 
 import copy
+import sys
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -63,20 +64,32 @@ from .model import (
     zone_kind_table,
 )
 
-#: 编辑器自己的界面配色（与游戏里的画面无关）
+#: 编辑器自己的界面配色（与游戏里的画面无关）。与另两个编辑器同一套。
+#:
+#: ★ 「浅色（白）+ 极简」：`bg` = 页面底 / 顶栏，`panel` = 卡片 / 侧栏面（白），
+#:   `panel_alt` = 输入框 / 按钮 / 列表行，`line` = 发丝分隔线；
+#:   `canvas_bg` 是画布那一片的底色（比页面底再灰一档，让地图跳出来）。
 UI = {
-    "bg": "#1e1f22",
-    "panel": "#26282c",
-    "panel_alt": "#2b2d31",
-    "line": "#3a3d42",
-    "text": "#dcdcdc",
-    "text_dim": "#8b8f96",
-    "accent": "#5ac8ff",
-    "canvas_bg": "#141517",
-    "empty": "#222427",
-    "empty_line": "#4a4d52",
-    "base": "#ffd166",          # 阵营大本营标记（黄，与默认的 p1 阵营色一致）
-    "center": "#ff8adf",        # 区划中心标记（品红：与阵营色、地形、区块底色都拉得开）
+    "bg": "#f3f4f6",
+    "panel": "#ffffff",
+    "panel_alt": "#eef0f3",
+    "line": "#d9dce1",
+    "text": "#1f2329",
+    "text_dim": "#6b7280",
+    "accent": "#2f7fe0",
+    "accent_btn": "#2f7fe0",
+    "accent_btn_hover": "#4a91e6",
+    "accent_fg": "#ffffff",
+    "danger_btn": "#d9534f",
+    "danger_btn_hover": "#e26864",
+    "danger_fg": "#ffffff",
+    "hover": "#e6e9ee",
+    "pressed": "#d9dde3",
+    "canvas_bg": "#e9ebee",
+    "empty": "#f1f2f4",
+    "empty_line": "#c3c8d0",
+    "base": "#e0a800",          # 阵营大本营标记（琥珀：浅色画布上要压得住）
+    "center": "#c026a3",        # 区划中心标记（品红：与阵营色、地形、区块底色都拉得开）
 }
 
 UNDO_LIMIT = 200
@@ -139,11 +152,321 @@ SHIFT_MASK = 0x0001
 BUTTON1_MASK = 0x0100
 
 #: 框选矩形的预览色（拖动中）与落定色（松开之后）
-SELECT_FILL = "#5ac8ff"
-SELECT_OUTLINE = "#c9ecff"
+SELECT_FILL = "#4a91e6"
+SELECT_OUTLINE = "#2f7fe0"
 
 #: 批量面板里「选中的格子值不一致」时的占位文案（地形与归属共用）
 MULTI_VALUE = "（多个值）"
+
+
+# ======================================================================
+# 主题：深色极简 + 圆角按钮 + 重建不闪白
+#
+# 三个编辑器（本工具 / unit_editor / campaign_editor）用**同一套**做法，
+# 改这里请顺手把另两个也改了（它们刻意各留一份：互不依赖、双击就能跑）。
+# ======================================================================
+
+
+def _shade(color: str, amount: float) -> str:
+    """把 `#rrggbb` 调亮（amount > 0）或调暗（amount < 0）；认不出来就原样返回。"""
+    try:
+        r, g, b = int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
+    except (ValueError, IndexError):
+        return color
+
+    def adj(v: int) -> int:
+        if amount >= 0:
+            return max(0, min(255, int(v + (255 - v) * amount)))
+        return max(0, min(255, int(v * (1.0 + amount))))
+
+    return "#%02x%02x%02x" % (adj(r), adj(g), adj(b))
+
+
+def _rounded_rect(canvas, x1: float, y1: float, x2: float, y2: float, r: float, **kw):
+    """在画布上画一个圆角矩形（平滑多边形近似），返回图元 id。"""
+    r = max(1.0, min(r, (x2 - x1) / 2.0, (y2 - y1) / 2.0))
+    pts = [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r,
+           x2, y2 - r, x2, y2, x2 - r, y2, x1 + r, y2,
+           x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
+    return canvas.create_polygon(pts, smooth=True, splinesteps=12, **kw)
+
+
+class RButton(tk.Button):
+    """**圆角按钮**：本体还是 `tk.Button`，上面盖一层 Canvas 把方角画成圆角。
+
+    ★ 为什么这么做：`invoke` / `cget` / `configure` / `pack` 全是**原生**语义，
+      调用方与测试一行都不用改；盖层只负责画面，本体负责量尺寸与「点击 → invoke()」。
+      四角填成父容器底色，于是看起来就是一枚圆角按钮。
+    """
+
+    RADIUS = 8.0
+
+    def __init__(self, master=None, **kw):
+        kw.setdefault("relief", "flat")
+        kw.setdefault("bd", 0)
+        kw.setdefault("highlightthickness", 0)
+        kw.setdefault("takefocus", 0)
+        kw.setdefault("activebackground", UI["panel_alt"])
+        kw.setdefault("activeforeground", UI["text"])
+        super().__init__(master, **kw)
+        try:
+            surround = str(self.master.cget("bg"))
+        except (tk.TclError, AttributeError):
+            surround = ""
+        self._surround = surround or UI["panel"]
+        self._hover = False
+        self._active = False
+        self._overlay = tk.Canvas(self, highlightthickness=0, bd=0, takefocus=0,
+                                  bg=self._surround)
+        self._overlay.place(x=0, y=0, relwidth=1, relheight=1)
+        for seq, fn in (("<Enter>", self._on_enter), ("<Leave>", self._on_leave),
+                        ("<ButtonPress-1>", self._on_press),
+                        ("<ButtonRelease-1>", self._on_release)):
+            self._overlay.bind(seq, fn)
+        self.bind("<Configure>", lambda _e: self._redraw())
+        self._redraw()
+
+    def configure(self, cnf=None, **kw):
+        if isinstance(cnf, str):
+            return super().configure(cnf)
+        result = super().configure(cnf, **kw)
+        self._redraw()
+        return result
+
+    config = configure
+
+    def _disabled(self) -> bool:
+        try:
+            return str(self.cget("state")) == "disabled"
+        except tk.TclError:
+            return False
+
+    def _on_enter(self, _e=None):
+        self._hover = True
+        self._redraw()
+
+    def _on_leave(self, _e=None):
+        self._hover = False
+        self._active = False
+        self._redraw()
+
+    def _on_press(self, _e=None):
+        if not self._disabled():
+            self._active = True
+            self._redraw()
+
+    def _on_release(self, _e=None):
+        fire = self._active and not self._disabled()
+        self._active = False
+        self._hover = True
+        self._redraw()
+        if fire:
+            try:
+                self.invoke()
+            except tk.TclError:
+                pass
+
+    def _fill(self) -> str:
+        base = str(self.cget("bg"))
+        if self._disabled():
+            return base
+        if self._active:
+            return _shade(base, -0.12)
+        if self._hover:
+            return _shade(base, -0.06)
+        return base
+
+    def _text_color(self) -> str:
+        if self._disabled():
+            return UI["text_dim"]
+        return str(self.cget("fg"))
+
+    def _redraw(self):
+        overlay = getattr(self, "_overlay", None)
+        if overlay is None:
+            return
+        try:
+            overlay.delete("all")
+            w = max(1, self.winfo_width())
+            h = max(1, self.winfo_height())
+            if w <= 1 or h <= 1:
+                return
+            fill = self._fill()
+            _rounded_rect(overlay, 0, 0, w, h, min(self.RADIUS, h / 2.0),
+                          fill=fill, outline=fill)
+            text = str(self.cget("text"))
+            if not text:
+                return
+            try:
+                padx = max(0, int(self.cget("padx")))
+            except (tk.TclError, ValueError):
+                padx = 6
+            anchor = str(self.cget("anchor"))
+            font = self.cget("font")
+            color = self._text_color()
+            if anchor in ("w", "e"):
+                x = padx + 2 if anchor == "w" else w - padx - 2
+                overlay.create_text(x, h / 2, text=text, fill=color, font=font,
+                                    anchor=anchor)
+            else:
+                overlay.create_text(w / 2, h / 2, text=text, fill=color, font=font)
+        except tk.TclError:
+            pass
+
+
+def _apply_theme(root: tk.Tk) -> ttk.Style:
+    """把 clam 主题里**所有会漏出浅色**的地方都压回深色（下拉 readonly / 勾选框 / 悬停…）。
+
+    ★ 这是「下拉框选中后变全白」「勾选框一块白」「划过变白」的根因修法：clam 默认在
+      `readonly` / `active` / `disabled` 这些状态下会落到浅灰，光 `configure` 压不住状态色。
+    """
+    style = ttk.Style(root)
+    try:
+        style.theme_use("clam")
+    except tk.TclError:
+        pass
+    panel, alt, bg = UI["panel"], UI["panel_alt"], UI["bg"]
+    line, text, dim, accent = UI["line"], UI["text"], UI["text_dim"], UI["accent"]
+    hover, pressed = UI["hover"], UI["pressed"]
+    sel_bg, sel_fg = "#cfe3ff", text
+
+    style.configure(".", background=panel, foreground=text, fieldbackground=alt,
+                    bordercolor=line, lightcolor=panel, darkcolor=panel, focuscolor=accent)
+    style.configure("TFrame", background=panel)
+    style.configure("Bar.TFrame", background=bg)
+    style.configure("TLabel", background=panel, foreground=text)
+    style.configure("Bar.TLabel", background=bg, foreground=text)
+    style.configure("Dim.TLabel", background=panel, foreground=dim)
+    style.configure("Title.TLabel", background=panel, foreground=accent,
+                    font=("Microsoft YaHei UI", 10, "bold"))
+    style.configure("Hint.TLabel", background=panel, foreground=dim,
+                    font=("Microsoft YaHei UI", 8))
+
+    style.configure("TEntry", fieldbackground=alt, foreground=text, insertcolor=text,
+                    bordercolor=line, lightcolor=alt, darkcolor=alt, padding=(6, 4))
+    style.map("TEntry",
+              fieldbackground=[("readonly", alt), ("disabled", panel)],
+              foreground=[("disabled", dim)],
+              selectbackground=[("!disabled", sel_bg)],
+              selectforeground=[("!disabled", sel_fg)],
+              bordercolor=[("focus", accent)], lightcolor=[("focus", accent)],
+              darkcolor=[("focus", accent)])
+
+    style.configure("TCombobox", fieldbackground=alt, background=alt, foreground=text,
+                    arrowcolor=dim, bordercolor=line, lightcolor=alt, darkcolor=alt,
+                    padding=(6, 4))
+    style.map("TCombobox",
+              fieldbackground=[("readonly", alt), ("disabled", panel)],
+              background=[("readonly", alt), ("active", alt), ("disabled", panel)],
+              foreground=[("readonly", text), ("disabled", dim)],
+              arrowcolor=[("readonly", dim), ("active", text)],
+              selectbackground=[("readonly", alt), ("!disabled", sel_bg)],
+              selectforeground=[("readonly", text), ("!disabled", sel_fg)],
+              bordercolor=[("focus", accent)], lightcolor=[("focus", accent)],
+              darkcolor=[("focus", accent)])
+    for pattern, value in (("*TCombobox*Listbox.background", alt),
+                           ("*TCombobox*Listbox.foreground", text),
+                           ("*TCombobox*Listbox.selectBackground", sel_bg),
+                           ("*TCombobox*Listbox.selectForeground", sel_fg),
+                           ("*TCombobox*Listbox.borderWidth", "0"),
+                           ("*TCombobox*Listbox.highlightThickness", "0")):
+        root.option_add(pattern, value, "interactive")
+
+    style.configure("Treeview", background=alt, fieldbackground=alt, foreground=text,
+                    bordercolor=line, lightcolor=panel, darkcolor=panel, rowheight=26,
+                    borderwidth=0)
+    style.map("Treeview",
+              background=[("selected", sel_bg), ("disabled", alt)],
+              foreground=[("selected", sel_fg), ("disabled", dim)])
+    style.configure("Treeview.Heading", background=panel, foreground=dim, relief="flat",
+                    borderwidth=0, padding=(6, 5))
+    style.map("Treeview.Heading",
+              background=[("active", hover), ("pressed", pressed)],
+              foreground=[("active", text)])
+
+    style.configure("TScrollbar", background=line, troughcolor=panel, bordercolor=panel,
+                    arrowcolor=dim, relief="flat", borderwidth=0)
+    style.map("TScrollbar",
+              background=[("active", "#b9bfc9"), ("pressed", "#a6adba")],
+              arrowcolor=[("active", text)])
+
+    for name in ("TCheckbutton", "TRadiobutton"):
+        style.configure(name, background=panel, foreground=text, focuscolor=panel,
+                        indicatorbackground=alt, indicatorforeground=accent,
+                        upperbordercolor=line, lowerbordercolor=line)
+        style.map(name,
+                  background=[("active", panel)],
+                  foreground=[("disabled", dim)],
+                  indicatorbackground=[("selected", accent), ("active", hover),
+                                       ("disabled", panel)],
+                  indicatorforeground=[("selected", "#ffffff")])
+
+    style.configure("TButton", background=alt, foreground=text, bordercolor=line,
+                    focuscolor=alt, padding=(10, 5), borderwidth=0)
+    style.map("TButton",
+              background=[("active", hover), ("pressed", pressed), ("disabled", panel)],
+              foreground=[("disabled", dim)])
+    style.configure("Accent.TButton", background=UI["accent_btn"],
+                    foreground=UI["accent_fg"])
+    style.map("Accent.TButton", background=[("active", UI["accent_btn_hover"])])
+
+    style.configure("TNotebook", background=bg, borderwidth=0)
+    style.configure("TNotebook.Tab", background=panel, foreground=dim, padding=(16, 7),
+                    borderwidth=0)
+    style.map("TNotebook.Tab",
+              background=[("selected", alt), ("active", hover)],
+              foreground=[("selected", accent)])
+    style.configure("TSeparator", background=line)
+    style.configure("TScale", background=panel, troughcolor=alt)
+    return style
+
+
+class _NoRepaint:
+    """整块重建控件时先把窗口的绘制锁住，建完再一次性解开 —— 消掉「闪白」。
+
+    ★ 用 `LockWindowUpdate`（Windows 上专治「批量改控件时闪烁」的 API），**不是**
+      `WM_SETREDRAW` —— 后者会把窗口的激活状态一起搅乱（实测：跑完一个用例之后，
+      下一个新建的窗口拿不到键盘焦点）。`LockWindowUpdate` 只锁绘制，不动焦点。
+    ★ 只在 Windows 上生效，且**任何异常都退化成空操作** —— 绝不连累别的东西。
+    """
+
+    _GA_ROOT = 2
+
+    def __init__(self, root: tk.Tk) -> None:
+        self.root = root
+        self._user32 = None
+        self._top = None
+
+    def __enter__(self):
+        if sys.platform != "win32":
+            return self
+        try:
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+            user32.GetAncestor.restype = wintypes.HWND
+            user32.LockWindowUpdate.argtypes = [wintypes.HWND]
+            user32.LockWindowUpdate.restype = wintypes.BOOL
+            top = user32.GetAncestor(self.root.winfo_id(), self._GA_ROOT)
+            if top:
+                user32.LockWindowUpdate(top)
+                self._user32 = user32
+                self._top = top
+        except Exception:                                   # noqa: BLE001
+            self._user32 = None
+            self._top = None
+        return self
+
+    def __exit__(self, *exc):
+        user32, self._user32 = self._user32, None
+        self._top = None
+        if user32 is not None:
+            try:
+                user32.LockWindowUpdate(None)               # NULL = 解锁
+            except Exception:                               # noqa: BLE001
+                pass
+        return False
 
 
 class EditorApp:
@@ -269,45 +592,7 @@ class EditorApp:
         self.root.configure(bg=UI["bg"])
         self.root.geometry("1280x820")
         self.root.minsize(900, 600)
-
-        style = ttk.Style(self.root)
-        try:
-            style.theme_use("clam")
-        except tk.TclError:
-            pass
-        style.configure(".", background=UI["panel"], foreground=UI["text"],
-                        fieldbackground=UI["panel_alt"], bordercolor=UI["line"],
-                        lightcolor=UI["panel"], darkcolor=UI["panel"])
-        style.configure("TFrame", background=UI["panel"])
-        style.configure("Bar.TFrame", background=UI["bg"])
-        style.configure("TLabel", background=UI["panel"], foreground=UI["text"])
-        style.configure("Bar.TLabel", background=UI["bg"], foreground=UI["text"])
-        style.configure("Dim.TLabel", background=UI["panel"], foreground=UI["text_dim"])
-        style.configure("Title.TLabel", background=UI["panel"], foreground=UI["accent"],
-                        font=("Microsoft YaHei UI", 10, "bold"))
-        style.configure("TButton", background=UI["panel_alt"], foreground=UI["text"],
-                        bordercolor=UI["line"], focuscolor=UI["panel_alt"], padding=(8, 4))
-        style.map("TButton",
-                  background=[("active", "#3a3d42"), ("pressed", "#45484f")],
-                  foreground=[("disabled", UI["text_dim"])])
-        style.configure("Accent.TButton", background="#2f5f7a", foreground="#eaf6ff")
-        style.map("Accent.TButton", background=[("active", "#3a7699")])
-        style.configure("TCheckbutton", background=UI["panel"], foreground=UI["text"],
-                        focuscolor=UI["panel"])
-        style.map("TCheckbutton", background=[("active", UI["panel"])])
-        style.configure("TEntry", fieldbackground=UI["panel_alt"], foreground=UI["text"],
-                        insertcolor=UI["text"])
-        style.configure("Treeview", background=UI["panel_alt"], fieldbackground=UI["panel_alt"],
-                        foreground=UI["text"], bordercolor=UI["line"], rowheight=24)
-        style.configure("Treeview.Heading", background=UI["panel"], foreground=UI["text_dim"])
-        style.map("Treeview", background=[("selected", "#2f5f7a")],
-                  foreground=[("selected", "#ffffff")])
-        style.configure("TNotebook", background=UI["bg"], borderwidth=0)
-        style.configure("TNotebook.Tab", background=UI["panel"], foreground=UI["text_dim"],
-                        padding=(14, 6))
-        style.map("TNotebook.Tab", background=[("selected", UI["panel_alt"])],
-                  foreground=[("selected", UI["accent"])])
-        style.configure("TScale", background=UI["panel"])
+        _apply_theme(self.root)
 
     def _build_widgets(self) -> None:
         # ---- 顶部页签栏
@@ -346,13 +631,13 @@ class EditorApp:
                 ("new", "新建地图…", self.do_new, "重开一张空白画布（Ctrl+N）")):
             btn = self._button(right, text, cmd, padx=12, pady=5,
                                bg=UI["panel_alt"], fg=UI["text"],
-                               activebackground="#3a3d42", activeforeground=UI["accent"],
+                               activebackground=UI["hover"], activeforeground=UI["accent"],
                                font=("Microsoft YaHei UI", 9))
             btn.pack(side="left", padx=3)
             self.file_buttons[key] = btn
         # 「导出」用强调色：多数时候打开编辑器就是为了导出一张图
-        self.file_buttons["export"].configure(bg="#2f5f7a", fg="#eaf6ff",
-                                             activebackground="#3a7699")
+        self.file_buttons["export"].configure(bg=UI["accent_btn"], fg=UI["accent_fg"],
+                                              activebackground=UI["accent_btn_hover"])
 
         # ---- 主体：画布 + 侧边栏
         body = tk.Frame(self.root, bg=UI["bg"])
@@ -559,8 +844,8 @@ class EditorApp:
         bsec = self._section(self.sidebar, "地块")
         self.delete_btn = self._button(bsec, "删除这个地块（变回虚线格）",
                                        lambda bx=x, by=y: self.delete_tile(bx, by),
-                                       padx=8, pady=4, bg="#5a2f2f", fg="#ffdede",
-                                       activebackground="#7a3d3d")
+                                       padx=8, pady=4, bg=UI["danger_btn"], fg=UI["danger_fg"],
+                                       activebackground=UI["danger_btn_hover"])
         self.delete_btn.pack(fill="x", pady=2)
 
         self._tile_widgets = {
@@ -605,7 +890,7 @@ class EditorApp:
                      justify="left", wraplength=280).pack(fill="x")
             self._button(sec, "取消框选", self.clear_selection, padx=8, pady=4,
                          bg=UI["panel_alt"], fg=UI["text"],
-                         activebackground="#3a3d42").pack(fill="x", pady=(6, 0))
+                         activebackground=UI["hover"]).pack(fill="x", pady=(6, 0))
             return
 
         # ---- 地形（混合状态不打勾）
@@ -646,11 +931,11 @@ class EditorApp:
         bsec = self._section(self.sidebar, "批量操作")
         self._button(bsec, "删除选中的 %d 个地块" % len(tiles),
                      self.batch_delete_tiles, padx=8, pady=4,
-                     bg="#5a2f2f", fg="#ffdede",
-                     activebackground="#7a3d3d").pack(fill="x", pady=2)
+                     bg=UI["danger_btn"], fg=UI["danger_fg"],
+                     activebackground=UI["danger_btn_hover"]).pack(fill="x", pady=2)
         self._button(bsec, "取消框选（Esc）", self.clear_selection, padx=8, pady=4,
                      bg=UI["panel_alt"], fg=UI["text"],
-                     activebackground="#3a3d42").pack(fill="x", pady=2)
+                     activebackground=UI["hover"]).pack(fill="x", pady=2)
 
     def clear_selection(self) -> None:
         """取消框选（Esc / 空白处点一下 / 点「取消框选」都走这里）。"""
@@ -812,11 +1097,11 @@ class EditorApp:
         btn_row.pack(fill="x", pady=(6, 0))
         self._button(btn_row, "新建阵营", self.add_faction, padx=8, pady=4,
                      bg=UI["panel_alt"], fg=UI["text"],
-                     activebackground="#3a3d42").pack(side="left", expand=True, fill="x",
+                     activebackground=UI["hover"]).pack(side="left", expand=True, fill="x",
                                                        padx=(0, 3))
         self._button(btn_row, "删除", self.delete_selected_faction, padx=8, pady=4,
-                     bg="#5a2f2f", fg="#ffdede",
-                     activebackground="#7a3d3d").pack(side="left", expand=True, fill="x",
+                     bg=UI["danger_btn"], fg=UI["danger_fg"],
+                     activebackground=UI["danger_btn_hover"]).pack(side="left", expand=True, fill="x",
                                                        padx=(3, 0))
 
         # ---- 选中阵营的属性
@@ -832,7 +1117,7 @@ class EditorApp:
         self.faction_base_btn = self._button(bsec, "", self.toggle_faction_base,
                                              padx=8, pady=4,
                                              bg=UI["panel_alt"], fg=UI["text"],
-                                             activebackground="#3a3d42")
+                                             activebackground=UI["hover"])
         self.faction_base_btn.pack(fill="x", pady=2)
         tk.Label(bsec, text="在「地块」页签左键点一格来选中它，再回来按上面的按钮 ——\n"
                             "大本营就设在那格（再按一次 = 取消）。",
@@ -899,7 +1184,7 @@ class EditorApp:
             entry.bind("<FocusOut>", lambda e: self.apply_faction_name())
             self._button(name_row, "✓", self.apply_faction_name, padx=6,
                          bg=UI["panel_alt"], fg=UI["text"],
-                         activebackground="#3a3d42").pack(side="left")
+                         activebackground=UI["hover"]).pack(side="left")
             color_row = tk.Frame(row, bg=UI["panel"])
             color_row.pack(fill="x", pady=2)
             tk.Label(color_row, text="颜色", bg=UI["panel"], fg=UI["text_dim"]).pack(side="left")
@@ -907,7 +1192,7 @@ class EditorApp:
                          lambda: self.pick_faction_color(faction.faction_id),
                          padx=6, pady=2,
                          bg=UI["panel_alt"], fg=UI["text"],
-                         activebackground="#3a3d42").pack(side="left", padx=(6, 0))
+                         activebackground=UI["hover"]).pack(side="left", padx=(6, 0))
 
         # 大本营那一栏
         if faction is None:
@@ -1152,11 +1437,11 @@ class EditorApp:
         btn_row.pack(fill="x", pady=(6, 0))
         self._button(btn_row, "新建区块", self.add_zone, padx=8, pady=4,
                   bg=UI["panel_alt"], fg=UI["text"],
-                  activebackground="#3a3d42").pack(side="left", expand=True, fill="x",
+                  activebackground=UI["hover"]).pack(side="left", expand=True, fill="x",
                                                     padx=(0, 3))
         self._button(btn_row, "删除", self.delete_selected_zone, padx=8, pady=4,
-                  bg="#5a2f2f", fg="#ffdede",
-                  activebackground="#7a3d3d").pack(side="left", expand=True, fill="x",
+                  bg=UI["danger_btn"], fg=UI["danger_fg"],
+                  activebackground=UI["danger_btn_hover"]).pack(side="left", expand=True, fill="x",
                                                    padx=(3, 0))
 
         # ---- 选中区块的详情
@@ -1172,7 +1457,7 @@ class EditorApp:
         self.zone_center_btn = self._button(csec, "", self.toggle_zone_center,
                                             padx=8, pady=4,
                                             bg=UI["panel_alt"], fg=UI["center"],
-                                            activebackground="#3a3d42")
+                                            activebackground=UI["hover"])
         self.zone_center_btn.pack(fill="x", pady=2)
         tk.Label(csec, text="先在列表里选中区划 → 左键点它自己的一个地块 → 按上面的按钮。\n"
                             "再按一次（或按在别处）＝ 把中心挪过去。中心必须是该区划自己的地块。",
@@ -1258,10 +1543,10 @@ class EditorApp:
 
         self._button(zsec, "清空这个区块的地块", self.clear_selected_zone_tiles,
                      padx=8, pady=4, bg=UI["panel_alt"], fg=UI["text"],
-                     activebackground="#3a3d42").pack(fill="x", pady=(8, 2))
+                     activebackground=UI["hover"]).pack(fill="x", pady=(8, 2))
         self._button(zsec, "把清空后的地块变回虚线格", self.delete_selected_zone_tiles,
-                     padx=8, pady=4, bg="#3a3d42", fg="#ffdede",
-                     activebackground="#5a2f2f").pack(fill="x", pady=2)
+                     padx=8, pady=4, bg=UI["panel_alt"], fg=UI["danger_fg"],
+                     activebackground=UI["danger_btn"]).pack(fill="x", pady=2)
 
         # ---- 图例（哪个颜色是哪个区块 / 正在划分哪一个）
         self.zone_legend = self._section(self.sidebar, "图例")
@@ -1322,7 +1607,7 @@ class EditorApp:
             entry.bind("<FocusOut>", lambda e: self.apply_zone_name())
             self._button(row, "✓", self.apply_zone_name, padx=6,
                          bg=UI["panel_alt"], fg=UI["text"],
-                         activebackground="#3a3d42").pack(side="left")
+                         activebackground=UI["hover"]).pack(side="left")
             tk.Label(row, text="　地块数：%d" % zone.tile_count, bg=UI["panel"],
                      fg=UI["text"], anchor="w").pack(side="left")
             if had_focus:
@@ -1497,8 +1782,8 @@ class EditorApp:
         tk.Frame(self.sidebar, bg=UI["line"], height=1).pack(fill="x", pady=(10, 0))
         sec = self._section(self.sidebar, "整张地图")
         self._button(sec, "全部清空（地块都变回虚线格）", self.clear_all_tiles,
-                     padx=6, pady=3, bg="#5a2f2f", fg="#ffdede",
-                     activebackground="#7a3d3d").pack(fill="x")
+                     padx=6, pady=3, bg=UI["danger_btn"], fg=UI["danger_fg"],
+                     activebackground=UI["danger_btn_hover"]).pack(fill="x")
         tk.Label(sec, text="导出范围 = 已画地块的包围盒（自动算），不用手工填尺寸；\n"
                            "地图可以是不规则形状（内部不会缺格）。\n"
                            "画布四个方向都能画（往左上画就是负坐标），\n"
@@ -1524,7 +1809,8 @@ class EditorApp:
             return
         self._rebuilding = True
         try:
-            self._build_sidebar()
+            with _NoRepaint(self.root):        # 重建期间关掉重绘，消掉闪白
+                self._build_sidebar()
         finally:
             self._rebuilding = False
 
@@ -1855,7 +2141,7 @@ class EditorApp:
             ix, iy = self.inspect
             x0, y0 = self.tile_to_screen(ix, iy)
             c.create_rectangle(x0 + 1, y0 + 1, x0 + size - 1, y0 + size - 1,
-                               outline="#ffffff", width=2)
+                               outline=UI["text"], width=2)
 
         # 6) 框选：拖动中画预览（虚线），松手后画落定的矩形（实线 + 淡填充）
         rect = self.selection
@@ -2271,8 +2557,8 @@ class EditorApp:
         except tk.TclError:
             pass
 
-    def _button(self, parent, text: str, command, **kwargs) -> tk.Button:
-        """建一颗按钮，并顺手把两件麻烦事处理掉：
+    def _button(self, parent, text: str, command, **kwargs) -> RButton:
+        """建一颗**圆角按钮**（见 `RButton`），并顺手把两件麻烦事处理掉：
 
         1. `takefocus=0`：Tab 键遍历不落到按钮上；
         2. 点完把键盘焦点交还画布 —— 否则按钮会一直拿住焦点，
@@ -2282,12 +2568,19 @@ class EditorApp:
         kwargs.setdefault("takefocus", 0)
         kwargs.setdefault("bd", 0)
         kwargs.setdefault("relief", "flat")
+        kwargs.setdefault("bg", UI["panel_alt"])
+        kwargs.setdefault("fg", UI["text"])
+        kwargs.setdefault("activebackground", UI["hover"])
+        kwargs.setdefault("activeforeground", UI["accent"])
+        kwargs.setdefault("padx", 10)
+        kwargs.setdefault("pady", 5)
+        kwargs.setdefault("font", ("Microsoft YaHei UI", 9))
 
         def wrapped() -> None:
             self._focus_canvas()
             command()
 
-        return tk.Button(parent, text=text, command=wrapped, **kwargs)
+        return RButton(parent, text=text, command=wrapped, **kwargs)
 
     def _focus_canvas(self) -> None:
         """把键盘焦点交还给画布。
@@ -3134,11 +3427,12 @@ def _ask_string(master, title: str, prompt: str, initial: str) -> Optional[str]:
 
     row = tk.Frame(dlg, bg=UI["panel"])
     row.pack(padx=14, pady=12, anchor="e")
-    tk.Button(row, text="取消", bd=0, relief="flat", padx=10, pady=4, bg=UI["panel_alt"],
-              fg=UI["text"], activebackground="#3a3d42", command=dlg.destroy).pack(side="right",
-                                                                                 padx=(6, 0))
-    tk.Button(row, text="确定", bd=0, relief="flat", padx=10, pady=4, bg="#2f5f7a",
-              fg="#eaf6ff", activebackground="#3a7699", command=ok).pack(side="right")
+    RButton(row, text="取消", bd=0, relief="flat", padx=10, pady=5, bg=UI["panel_alt"],
+            fg=UI["text"], activebackground=UI["hover"], command=dlg.destroy).pack(side="right",
+                                                                                  padx=(6, 0))
+    RButton(row, text="确定", bd=0, relief="flat", padx=10, pady=5, bg=UI["accent_btn"],
+            fg=UI["accent_fg"], activebackground=UI["accent_btn_hover"],
+            command=ok).pack(side="right")
     dlg.bind("<Return>", lambda e: ok())
     dlg.bind("<Escape>", lambda e: dlg.destroy())
     dlg.grab_set()

@@ -3,7 +3,7 @@
 布局（照 `unit_editor` / `map_editor` 那一套，用熟了就不用重新学）：
 
     ┌────────────────────────────────────────────────────────────┬──────────────┐
-    │ [战役] [关卡] [阵营与AI] [摆放] [校验与导出]    保存 重新载入 │              │
+    │ [战役] [关卡] [阵营] [摆放] [校验与导出]    保存 重新载入 │              │
     ├────────────────────────────────────────────────────────────┤   侧边栏      │
     │                                                            │  （可滚）     │
     │   画布 / 列表（随页签变）                                    │              │
@@ -16,8 +16,9 @@
 
     ① 战役    战役名 / 简介 / 默认模式 / 关卡顺序（上下箭头 + 增删关卡）
     ② 关卡    当前关的名字 / 模式 / 地图下拉 / 目标（区划 + 秒数）/ 额外失败条件
-    ③ 阵营与AI 每一方一行：可玩 / 颜色 / 大本营 / AI 类型 / 资源倍率 / 开局资源 /
-               **开局编制（逐将带几个兵）** / 进攻目标 / 「高级」AI 参数；玩家席位单独一栏
+    ③ 阵营    玩家席位 + 每一方一行：大本营（开局部队去 ④ 摆放）。
+               ★ AI（类型 / 进攻目标 / 生成区域 / 参数）**不在编辑器里改**（用户要求）——
+                 字段原样保留（读进来 / 写回去都不丢），要改 AI 就手改关卡 JSON
     ④ 摆放    画布（点一下放东西、右键删、滚轮缩放、中键或**空格 + 左键拖动**平移、
                【设进攻目标】模式）
     ⑤ 校验与导出 16+4 条逐条显示；有拦截就不许写文件；一键打开地图编辑器
@@ -33,9 +34,9 @@
     「地形 / 区划 / 中心从地图读出来画成背景；要改地形请点『打开地图编辑器』」
     —— 见 `CANVAS_HINT`，它印在 ④ 摆放页的画布上方。
 
-★ 「进攻目标」在 ③（下拉）与 ④（点画布）两处都能改，**底层是同一个字段**
-  （`LevelModel.factions[i].attack_target`）——所以两边都走 `set_attack_target()`，
-  改完统一 `_after_change()` 重建界面；这是最容易写出不一致的地方。
+★ AI 相关字段（`ai` / `attack_target` / `spawn_region` / `garrison_ai` / `reddot_ai`）
+  **编辑器不再提供编辑入口**（用户要求：不在编辑器里改 AI）：它们仍然原样读、原样写
+  （不会丢），要改就手改关卡 JSON。④ 摆放页的「设进攻目标…」仍能改 `attack_target`。
 
 ★ 画布手势照 `map_editor/app.py`：滚轮以光标为锚点缩放、中键拖动（或**空格 + 左键拖动**）
   平移、右键删除。唯一的有意差异是 **左键单击**：那边是「涂地形」，这边是「放东西 / 选中」。
@@ -76,7 +77,6 @@ from .model import (
     BuildingEntry,
     CampaignModel,
     ConfigInfo,
-    FactionEntry,
     Issue,
     LevelModel,
     MapInfo,
@@ -84,8 +84,6 @@ from .model import (
     UnitEntry,
     clean_number,
     fmt_sec,
-    point_label,
-    target_label,
 )
 
 #: 「属于将领」下拉里表示「不是附属兵」的那一项（普通摆放单位）。
@@ -102,25 +100,36 @@ def _fmt_num(v: Any) -> str:
 
 
 #: 界面配色（与另两个编辑器同一套 —— 三个工具看起来是一家的）。
+#:
+#: ★ 「浅色（白）+ 极简」：`bg` = 页面底（顶栏 / 画布外圈），`panel` = 卡片 / 侧栏面（白），
+#:   `panel_alt` = 输入框 / 按钮 / 列表行，`line` = 发丝分隔线。
 UI = {
-    "bg": "#1e1f22",
-    "panel": "#26282c",
-    "panel_alt": "#2b2d31",
-    "line": "#3a3d42",
-    "text": "#dcdcdc",
-    "text_dim": "#8b8f96",
-    "accent": "#5ac8ff",
-    "ok": "#8fd694",
-    "warn": "#ffd166",
-    "bad": "#e07a7a",
-    "canvas_bg": "#17181a",
+    "bg": "#f3f4f6",
+    "panel": "#ffffff",
+    "panel_alt": "#eef0f3",
+    "line": "#d9dce1",
+    "text": "#1f2329",
+    "text_dim": "#6b7280",
+    "accent": "#2f7fe0",
+    "accent_btn": "#2f7fe0",
+    "accent_btn_hover": "#4a91e6",
+    "accent_fg": "#ffffff",
+    "danger_btn": "#d9534f",
+    "danger_btn_hover": "#e26864",
+    "danger_fg": "#ffffff",
+    "hover": "#e6e9ee",
+    "pressed": "#d9dde3",
+    "ok": "#1f9d55",
+    "warn": "#b7791f",
+    "bad": "#d64545",
+    "canvas_bg": "#e7eaee",
 }
 
 #: 七个页签：key → （按钮文字，状态栏提示）。
 PAGES: Tuple[Tuple[str, str, str], ...] = (
     ("campaign", "战役", "战役页：名字 / 简介 / 默认模式 / 关卡顺序（上下箭头排、增删关卡）"),
     ("level", "关卡", "关卡页：当前关的名字 / 模式 / 地图 / 目标 / 额外失败条件"),
-    ("factions", "阵营与AI", "阵营页：每一方的 AI 指派 / 大本营 / 进攻目标；玩家席位单独一栏"),
+    ("factions", "阵营", "阵营页：玩家席位 + 每一方的大本营（AI 不在编辑器里改，见 README）"),
     ("place", "摆放", "摆放页：画布上点一下放将领/单位/建筑；右键删；滚轮缩放；中键或空格+左键拖动；「设进攻目标」模式"),
     ("zone", "区划", "区划页：开局每一块地归哪个阵营（关卡覆盖地图的 zone_list[].owner）"),
     ("reddot", "红点", "红点页：选生成地块 / 生成频率与将领数（函数表达式）/ 将领类型权重 / 共享附属单位规格"),
@@ -185,6 +194,316 @@ FALLBACK_COLORS: Tuple[str, ...] = (
 
 #: 画布上「这一方」用什么颜色（阵营 id → 固定色，保证同一次会话里稳定）。
 _EPOCH_COLORS: Dict[str, str] = {}
+
+
+# ======================================================================
+# 主题：深色极简 + 圆角按钮 + 重建不闪白
+#
+# 三个编辑器（本工具 / unit_editor / map_editor）用**同一套**做法，
+# 改这里请顺手把另两个也改了（它们刻意各留一份：互不依赖、双击就能跑）。
+# ======================================================================
+
+
+def _shade(color: str, amount: float) -> str:
+    """把 `#rrggbb` 调亮（amount > 0）或调暗（amount < 0）；认不出来就原样返回。"""
+    try:
+        r, g, b = int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
+    except (ValueError, IndexError):
+        return color
+
+    def adj(v: int) -> int:
+        if amount >= 0:
+            return max(0, min(255, int(v + (255 - v) * amount)))
+        return max(0, min(255, int(v * (1.0 + amount))))
+
+    return "#%02x%02x%02x" % (adj(r), adj(g), adj(b))
+
+
+def _rounded_rect(canvas, x1: float, y1: float, x2: float, y2: float, r: float, **kw):
+    """在画布上画一个圆角矩形（平滑多边形近似），返回图元 id。"""
+    r = max(1.0, min(r, (x2 - x1) / 2.0, (y2 - y1) / 2.0))
+    pts = [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r,
+           x2, y2 - r, x2, y2, x2 - r, y2, x1 + r, y2,
+           x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
+    return canvas.create_polygon(pts, smooth=True, splinesteps=12, **kw)
+
+
+class RButton(tk.Button):
+    """**圆角按钮**：本体还是 `tk.Button`，上面盖一层 Canvas 把方角画成圆角。
+
+    ★ 为什么这么做：`invoke` / `cget` / `configure` / `pack` 全是**原生**语义，
+      调用方与测试一行都不用改；盖层只负责画面，本体负责量尺寸与「点击 → invoke()」。
+      四角填成父容器底色，于是看起来就是一枚圆角按钮。
+    """
+
+    RADIUS = 8.0
+
+    def __init__(self, master=None, **kw):
+        kw.setdefault("relief", "flat")
+        kw.setdefault("bd", 0)
+        kw.setdefault("highlightthickness", 0)
+        kw.setdefault("takefocus", 0)
+        kw.setdefault("activebackground", UI["panel_alt"])
+        kw.setdefault("activeforeground", UI["text"])
+        super().__init__(master, **kw)
+        try:
+            surround = str(self.master.cget("bg"))
+        except (tk.TclError, AttributeError):
+            surround = ""
+        self._surround = surround or UI["panel"]
+        self._hover = False
+        self._active = False
+        self._overlay = tk.Canvas(self, highlightthickness=0, bd=0, takefocus=0,
+                                  bg=self._surround)
+        self._overlay.place(x=0, y=0, relwidth=1, relheight=1)
+        for seq, fn in (("<Enter>", self._on_enter), ("<Leave>", self._on_leave),
+                        ("<ButtonPress-1>", self._on_press),
+                        ("<ButtonRelease-1>", self._on_release)):
+            self._overlay.bind(seq, fn)
+        self.bind("<Configure>", lambda _e: self._redraw())
+        self._redraw()
+
+    def configure(self, cnf=None, **kw):
+        if isinstance(cnf, str):
+            return super().configure(cnf)
+        result = super().configure(cnf, **kw)
+        self._redraw()
+        return result
+
+    config = configure
+
+    def _disabled(self) -> bool:
+        try:
+            return str(self.cget("state")) == "disabled"
+        except tk.TclError:
+            return False
+
+    def _on_enter(self, _e=None):
+        self._hover = True
+        self._redraw()
+
+    def _on_leave(self, _e=None):
+        self._hover = False
+        self._active = False
+        self._redraw()
+
+    def _on_press(self, _e=None):
+        if not self._disabled():
+            self._active = True
+            self._redraw()
+
+    def _on_release(self, _e=None):
+        fire = self._active and not self._disabled()
+        self._active = False
+        self._hover = True
+        self._redraw()
+        if fire:
+            try:
+                self.invoke()
+            except tk.TclError:
+                pass
+
+    def _fill(self) -> str:
+        base = str(self.cget("bg"))
+        if self._disabled():
+            return base
+        if self._active:
+            return _shade(base, -0.12)
+        if self._hover:
+            return _shade(base, -0.06)
+        return base
+
+    def _text_color(self) -> str:
+        if self._disabled():
+            return UI["text_dim"]
+        return str(self.cget("fg"))
+
+    def _redraw(self):
+        overlay = getattr(self, "_overlay", None)
+        if overlay is None:
+            return
+        try:
+            overlay.delete("all")
+            w = max(1, self.winfo_width())
+            h = max(1, self.winfo_height())
+            if w <= 1 or h <= 1:
+                return
+            fill = self._fill()
+            _rounded_rect(overlay, 0, 0, w, h, min(self.RADIUS, h / 2.0),
+                          fill=fill, outline=fill)
+            text = str(self.cget("text"))
+            if not text:
+                return
+            try:
+                padx = max(0, int(self.cget("padx")))
+            except (tk.TclError, ValueError):
+                padx = 6
+            anchor = str(self.cget("anchor"))
+            font = self.cget("font")
+            color = self._text_color()
+            if anchor in ("w", "e"):
+                x = padx + 2 if anchor == "w" else w - padx - 2
+                overlay.create_text(x, h / 2, text=text, fill=color, font=font,
+                                    anchor=anchor)
+            else:
+                overlay.create_text(w / 2, h / 2, text=text, fill=color, font=font)
+        except tk.TclError:
+            pass
+
+
+def _apply_theme(root: tk.Tk) -> ttk.Style:
+    """把 clam 主题里**所有会漏出浅色**的地方都压回深色（下拉 readonly / 勾选框 / 悬停…）。
+
+    ★ 这是「下拉框选中后变全白」「勾选框一块白」「划过变白」的根因修法：clam 默认在
+      `readonly` / `active` / `disabled` 这些状态下会落到浅灰，光 `configure` 压不住状态色。
+    """
+    style = ttk.Style(root)
+    try:
+        style.theme_use("clam")
+    except tk.TclError:
+        pass
+    panel, alt, bg = UI["panel"], UI["panel_alt"], UI["bg"]
+    line, text, dim, accent = UI["line"], UI["text"], UI["text_dim"], UI["accent"]
+    hover, pressed = UI["hover"], UI["pressed"]
+    sel_bg, sel_fg = "#cfe3ff", text
+
+    style.configure(".", background=panel, foreground=text, fieldbackground=alt,
+                    bordercolor=line, lightcolor=panel, darkcolor=panel, focuscolor=accent)
+    style.configure("TFrame", background=panel)
+    style.configure("Bar.TFrame", background=bg)
+    style.configure("TLabel", background=panel, foreground=text)
+    style.configure("Bar.TLabel", background=bg, foreground=text)
+    style.configure("Dim.TLabel", background=panel, foreground=dim)
+    style.configure("Title.TLabel", background=panel, foreground=accent,
+                    font=("Microsoft YaHei UI", 10, "bold"))
+    style.configure("Hint.TLabel", background=panel, foreground=dim,
+                    font=("Microsoft YaHei UI", 8))
+
+    style.configure("TEntry", fieldbackground=alt, foreground=text, insertcolor=text,
+                    bordercolor=line, lightcolor=alt, darkcolor=alt, padding=(6, 4))
+    style.map("TEntry",
+              fieldbackground=[("readonly", alt), ("disabled", panel)],
+              foreground=[("disabled", dim)],
+              selectbackground=[("!disabled", sel_bg)],
+              selectforeground=[("!disabled", sel_fg)],
+              bordercolor=[("focus", accent)], lightcolor=[("focus", accent)],
+              darkcolor=[("focus", accent)])
+
+    style.configure("TCombobox", fieldbackground=alt, background=alt, foreground=text,
+                    arrowcolor=dim, bordercolor=line, lightcolor=alt, darkcolor=alt,
+                    padding=(6, 4))
+    style.map("TCombobox",
+              fieldbackground=[("readonly", alt), ("disabled", panel)],
+              background=[("readonly", alt), ("active", alt), ("disabled", panel)],
+              foreground=[("readonly", text), ("disabled", dim)],
+              arrowcolor=[("readonly", dim), ("active", text)],
+              selectbackground=[("readonly", alt), ("!disabled", sel_bg)],
+              selectforeground=[("readonly", text), ("!disabled", sel_fg)],
+              bordercolor=[("focus", accent)], lightcolor=[("focus", accent)],
+              darkcolor=[("focus", accent)])
+    for pattern, value in (("*TCombobox*Listbox.background", alt),
+                           ("*TCombobox*Listbox.foreground", text),
+                           ("*TCombobox*Listbox.selectBackground", sel_bg),
+                           ("*TCombobox*Listbox.selectForeground", sel_fg),
+                           ("*TCombobox*Listbox.borderWidth", "0"),
+                           ("*TCombobox*Listbox.highlightThickness", "0")):
+        root.option_add(pattern, value, "interactive")
+
+    style.configure("Treeview", background=alt, fieldbackground=alt, foreground=text,
+                    bordercolor=line, lightcolor=panel, darkcolor=panel, rowheight=26,
+                    borderwidth=0)
+    style.map("Treeview",
+              background=[("selected", sel_bg), ("disabled", alt)],
+              foreground=[("selected", sel_fg), ("disabled", dim)])
+    style.configure("Treeview.Heading", background=panel, foreground=dim, relief="flat",
+                    borderwidth=0, padding=(6, 5))
+    style.map("Treeview.Heading",
+              background=[("active", hover), ("pressed", pressed)],
+              foreground=[("active", text)])
+
+    style.configure("TScrollbar", background=line, troughcolor=panel, bordercolor=panel,
+                    arrowcolor=dim, relief="flat", borderwidth=0)
+    style.map("TScrollbar",
+              background=[("active", "#b9bfc9"), ("pressed", "#a6adba")],
+              arrowcolor=[("active", text)])
+
+    for name in ("TCheckbutton", "TRadiobutton"):
+        style.configure(name, background=panel, foreground=text, focuscolor=panel,
+                        indicatorbackground=alt, indicatorforeground=accent,
+                        upperbordercolor=line, lowerbordercolor=line)
+        style.map(name,
+                  background=[("active", panel)],
+                  foreground=[("disabled", dim)],
+                  indicatorbackground=[("selected", accent), ("active", hover),
+                                       ("disabled", panel)],
+                  indicatorforeground=[("selected", "#ffffff")])
+
+    style.configure("TButton", background=alt, foreground=text, bordercolor=line,
+                    focuscolor=alt, padding=(10, 5), borderwidth=0)
+    style.map("TButton",
+              background=[("active", hover), ("pressed", pressed), ("disabled", panel)],
+              foreground=[("disabled", dim)])
+    style.configure("Accent.TButton", background=UI["accent_btn"],
+                    foreground=UI["accent_fg"])
+    style.map("Accent.TButton", background=[("active", UI["accent_btn_hover"])])
+
+    style.configure("TNotebook", background=bg, borderwidth=0)
+    style.configure("TNotebook.Tab", background=panel, foreground=dim, padding=(16, 7),
+                    borderwidth=0)
+    style.map("TNotebook.Tab",
+              background=[("selected", alt), ("active", hover)],
+              foreground=[("selected", accent)])
+    style.configure("TSeparator", background=line)
+    style.configure("TScale", background=panel, troughcolor=alt)
+    return style
+
+
+class _NoRepaint:
+    """整块重建控件时先把窗口的绘制锁住，建完再一次性解开 —— 消掉「闪白」。
+
+    ★ 用 `LockWindowUpdate`（Windows 上专治「批量改控件时闪烁」的 API），**不是**
+      `WM_SETREDRAW` —— 后者会把窗口的激活状态一起搅乱（实测：跑完一个用例之后，
+      下一个新建的窗口拿不到键盘焦点）。`LockWindowUpdate` 只锁绘制，不动焦点。
+    ★ 只在 Windows 上生效，且**任何异常都退化成空操作** —— 绝不连累别的东西。
+    """
+
+    _GA_ROOT = 2
+
+    def __init__(self, root: tk.Tk) -> None:
+        self.root = root
+        self._user32 = None
+        self._top = None
+
+    def __enter__(self):
+        if sys.platform != "win32":
+            return self
+        try:
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+            user32.GetAncestor.restype = wintypes.HWND
+            user32.LockWindowUpdate.argtypes = [wintypes.HWND]
+            user32.LockWindowUpdate.restype = wintypes.BOOL
+            top = user32.GetAncestor(self.root.winfo_id(), self._GA_ROOT)
+            if top:
+                user32.LockWindowUpdate(top)
+                self._user32 = user32
+                self._top = top
+        except Exception:                                   # noqa: BLE001
+            self._user32 = None
+            self._top = None
+        return self
+
+    def __exit__(self, *exc):
+        user32, self._user32 = self._user32, None
+        self._top = None
+        if user32 is not None:
+            try:
+                user32.LockWindowUpdate(None)               # NULL = 解锁
+            except Exception:                               # noqa: BLE001
+                pass
+        return False
 
 
 class EditorApp:
@@ -262,51 +581,22 @@ class EditorApp:
         self.root.configure(bg=UI["bg"])
         self.root.geometry("1340x860")
         self.root.minsize(1060, 660)
-        style = ttk.Style(self.root)
-        try:
-            style.theme_use("clam")
-        except tk.TclError:
-            pass
-        style.configure(".", background=UI["panel"], foreground=UI["text"],
-                        fieldbackground=UI["panel_alt"], bordercolor=UI["line"],
-                        lightcolor=UI["panel"], darkcolor=UI["panel"])
-        style.configure("TFrame", background=UI["panel"])
-        style.configure("TLabel", background=UI["panel"], foreground=UI["text"])
-        style.configure("Dim.TLabel", background=UI["panel"], foreground=UI["text_dim"])
-        style.configure("Hint.TLabel", background=UI["panel"], foreground=UI["text_dim"],
-                        font=("Microsoft YaHei UI", 8))
-        style.configure("TButton", background=UI["panel_alt"], foreground=UI["text"],
-                        bordercolor=UI["line"], focuscolor=UI["panel_alt"], padding=(8, 4))
-        style.map("TButton", background=[("active", "#3a3d42"), ("pressed", "#45484f")],
-                  foreground=[("disabled", UI["text_dim"])])
-        style.configure("TEntry", fieldbackground=UI["panel_alt"], foreground=UI["text"],
-                        insertcolor=UI["text"])
-        style.configure("TCombobox", fieldbackground=UI["panel_alt"], background=UI["panel_alt"],
-                        foreground=UI["text"], arrowcolor=UI["text"])
-        style.configure("Treeview", background=UI["panel_alt"], fieldbackground=UI["panel_alt"],
-                        foreground=UI["text"], bordercolor=UI["line"], rowheight=24)
-        style.configure("Treeview.Heading", background=UI["panel"], foreground=UI["text_dim"])
-        style.map("Treeview", background=[("selected", "#2f5f7a")],
-                  foreground=[("selected", "#ffffff")])
-        style.configure("TCheckbutton", background=UI["panel"], foreground=UI["text"],
-                        focuscolor=UI["panel"])
-        style.map("TCheckbutton", background=[("active", UI["panel"])])
+        _apply_theme(self.root)
 
-    def _button(self, parent, text: str, command: Callable[[], None], **kw) -> tk.Button:
-        """统一造按钮：一律 `takefocus=0`（否则空格会去「按」最后点过的按钮），
+    def _button(self, parent, text: str, command: Callable[[], None], **kw) -> RButton:
+        """统一造按钮：一律 `takefocus=0`，并且是一枚**圆角按钮**（见 `RButton`），
         并在点完之后把键盘焦点交还画布。
 
         ★★ 为什么要交还焦点：tk 的按钮**点过之后会拿住键盘焦点**（`takefocus=0` 只影响
            Tab 键遍历，不影响鼠标点击），而**空格在 tk 里是「激活当前焦点控件」** ——
            于是「按住空格拖画面」会变成「反复点最后按过的那颗按钮」（页签乱跳）。
-           与 `map_editor/app.py` 里那颗按钮是同一套做法。
         """
         kw.setdefault("bg", UI["panel_alt"])
         kw.setdefault("fg", UI["text"])
-        kw.setdefault("activebackground", "#3a3d42")
+        kw.setdefault("activebackground", UI["hover"])
         kw.setdefault("activeforeground", UI["accent"])
-        kw.setdefault("padx", 8)
-        kw.setdefault("pady", 4)
+        kw.setdefault("padx", 10)
+        kw.setdefault("pady", 5)
         kw.setdefault("font", ("Microsoft YaHei UI", 9))
         kw["takefocus"] = 0
         kw["relief"] = "flat"
@@ -315,7 +605,7 @@ class EditorApp:
             self._focus_canvas()
             command()
 
-        return tk.Button(parent, text=text, command=wrapped, **kw)
+        return RButton(parent, text=text, command=wrapped, **kw)
 
     def _focus_canvas(self) -> None:
         """把键盘焦点交还给摆放页的画布（别的页签上没有画布 → 什么都不做）。
@@ -366,8 +656,8 @@ class EditorApp:
             btn = self._button(right, text, cmd, padx=12, pady=5)
             btn.pack(side="left", padx=3)
             self.file_buttons[key] = btn
-        self.file_buttons["save"].configure(bg="#2f5f7a", fg="#eaf6ff",
-                                            activebackground="#3a7699")
+        self.file_buttons["save"].configure(bg=UI["accent_btn"], fg=UI["accent_fg"],
+                                            activebackground=UI["accent_btn_hover"])
 
         # ---- 主体：左工作区 + 右侧边栏 ----
         body = tk.Frame(self.root, bg=UI["bg"])
@@ -601,9 +891,10 @@ class EditorApp:
         """
         self._suppress = True
         try:
-            self._rebuild_body()
-            self._rebuild_sidebar()
-            self.update_title()
+            with _NoRepaint(self.root):        # 整块重建期间关掉重绘，消掉闪白
+                self._rebuild_body()
+                self._rebuild_sidebar()
+                self.update_title()
         finally:
             self._suppress = False
 
@@ -676,7 +967,7 @@ class EditorApp:
         self._button(bar, "▼ 下移", lambda: self.move_level(1)).pack(side="left", padx=4)
         self._button(bar, "＋ 新建关卡", self.do_new_level).pack(side="left", padx=(12, 4))
         self._button(bar, "－ 删除关卡", self.do_delete_level,
-                     bg="#3a2b2b").pack(side="left", padx=4)
+                     bg=UI["danger_btn"], fg=UI["danger_fg"]).pack(side="left", padx=4)
         tk.Label(bar, text="关卡顺序就是这里的顺序（上下箭头排）；levels[] 里的 file 相对战役目录",
                  bg=UI["bg"], fg=UI["text_dim"],
                  font=("Microsoft YaHei UI", 8)).pack(side="left", padx=12)
@@ -734,7 +1025,7 @@ class EditorApp:
         self._button(form, "＋ 加一条「指定区划失守」", self.do_add_fail).pack(anchor="w",
                                                                           pady=(6, 2))
         self._button(form, "－ 删掉选中的一条", self.do_remove_fail,
-                     bg="#3a2b2b").pack(anchor="w", pady=2)
+                     bg=UI["danger_btn"], fg=UI["danger_fg"]).pack(anchor="w", pady=2)
         tk.Label(form, text="大本营被拆那条失败条件是**常开的**，不写在这里", bg=UI["panel"],
                  fg=UI["text_dim"], font=("Microsoft YaHei UI", 8)).pack(anchor="w", pady=(6, 0))
 
@@ -854,7 +1145,7 @@ class EditorApp:
         self._button(bar, "适应视图", self.fit_view).pack(side="left", padx=6)
         if self.page == "place":
             self.target_button = self._button(bar, "设进攻目标…", self.do_target_mode,
-                                              bg="#3a3220", fg=UI["warn"])
+                                              bg=UI["panel_alt"], fg=UI["warn"])
             self.target_button.pack(side="left", padx=10)
             bar_hint = ("左键放 / 选　右键删（大本营不在这里删）　"
                         "中键或空格+左键拖动平移　滚轮缩放　Esc 退出目标模式")
@@ -1313,7 +1604,7 @@ class EditorApp:
             return
         candidates = [e.fid for e in lv.factions] or self.all_faction_ids()
         if not candidates:
-            self.status("没有可选的阵营：先到「阵营与AI」页加一方")
+            self.status("没有可选的阵营：先到「阵营」页加一方")
             return
         pick = self.brush_faction if self.brush_faction in candidates else candidates[0]
         self.target_mode_faction = pick
@@ -1362,7 +1653,7 @@ class EditorApp:
             return
         hit = self._hit_test(cell)
         if hit is None:
-            self.status("(%d,%d) 上没有可删的东西（大本营在「阵营与AI」页里改）" % cell)
+            self.status("(%d,%d) 上没有可删的东西（大本营在「阵营」页里改）" % cell)
             return
         self.delete_entry(hit)
         self._focus_canvas()            # 同上：重建之后把键盘焦点交回新画布
@@ -1552,7 +1843,7 @@ class EditorApp:
 
         bar = self.action_bar
         self._button(bar, "写文件（有拦截时禁止）", self.do_save, padx=14,
-                     bg="#2f5f7a", fg="#eaf6ff").pack(side="left")
+                     bg=UI["accent_btn"], fg=UI["accent_fg"]).pack(side="left")
         self._button(bar, "打开地图编辑器", self.open_map_editor).pack(side="left", padx=8)
         self.run_checks()
 
@@ -2216,10 +2507,6 @@ class EditorApp:
             entry.bind("<FocusOut>", lambda e, en=entry: en.commit_action())
         self._hint(seats, "大本营留空 = 用地图的 `faction_bases`；填 `x,y` 就覆盖它")
 
-        # ---- 玩家席位也能配 AI（允许，运行时按选中的席位摘掉）----
-        self._hint(seats, "★ 给「可玩」阵营配 AI 是允许的：运行时按选中的席位摘掉"
-                          "（本局谁在被玩，谁就不动）；不是错误，所以校验不会拦它。")
-
         # ---- 每一方一行 ----
         for fid in self.all_faction_ids():
             e = lv.faction(fid)
@@ -2231,152 +2518,20 @@ class EditorApp:
                 self._button(section, "在这关点名这一方",
                              lambda f=fid: self._point_faction(f)).pack(anchor="w")
                 continue
-            self._combo_cell(section, "AI 类型", self._ai_label(e.ai),
-                             tuple(self._ai_label(k) for k in AI_KINDS),
-                             lambda text, f=fid: self.set_faction_field(f, "ai",
-                                                                        self._ai_value(text)))
             self._entry_cell(section, "大本营", e.base_label(),
                              lambda text, f=fid: self._set_base_text(f, text))
-            # ---- ★★ 开局附属兵在这里摆（不在「阵营与AI」页，也不再由 config 决定）----
+            # ---- ★★ 开局附属兵在这里摆（不在「阵营」页，也不再由 config 决定）----
             self._hint(section, "★ 开局带几个附属兵：**去「摆放」页一个一个摆**（画笔选「附属兵」，"
                                 "放到地上并选它属于哪位将领）。没摆 = 这一关这一方开局没有附属兵；"
                                 "摆了任何附属兵 = 运行时**整个接管这一方**（连 3 位将领也得你自己摆）。")
-            self._target_rows(section, fid, e)
-            if e.ai == AI_REDDOT:
-                self._spawn_rows(section, fid, e)
-
-            # ---- 「高级」AI 参数（缺省 = 继承 config）----
-            adv = tk.Frame(section, bg=UI["panel"])
-            adv.pack(side="top", fill="x", pady=(4, 0))
-            toggle = self._button(adv, "高级 AI 参数 ▾", lambda a=adv: self._toggle_advanced(a))
-            toggle.pack(anchor="w")
-            body = tk.Frame(section, bg=UI["panel"])
-            body.pack(side="top", fill="x")
-            body.visible = False                      # type: ignore[attr-defined]
-            gdefaults = ", ".join("%s=%s" % (k, v) for k, v in
-                                  sorted(self.config.ai_garrison_cfg.items()))
-            self._hint(body, "阵地性 AI 推荐区间（缺省 = 继承 config）：%s" % (gdefaults or "（config 里没写）"))
-            ga = e.garrison_ai or {}
-            for key in ("patrol_interval_sec", "patrol_leash_tiles", "combat_idle_sec",
-                        "retarget_cooldown_sec", "recruit_check_sec", "min_retinue"):
-                inherit = self.config.ai_garrison_cfg.get(key, "")
-                self._entry_cell(body, key, "" if key not in ga else "%g" % ga[key],
-                                 lambda text, f=fid, k=key: self._set_ai_param(f, "garrison_ai",
-                                                                               k, text))
-                self._hint(body, "　缺省 = %s" % (inherit if inherit != "" else "（config 里没写）"))
-            rdefaults = ", ".join("%s=%s" % (k, v) for k, v in
-                                  sorted(self.config.ai_reddot_cfg.items()))
-            self._hint(body, "红点性 AI 推荐区间（缺省 = 继承 config）：%s" % (rdefaults or "（config 里没写）"))
-            ra = e.reddot_ai or {}
-            for key in ("cooldown_sec", "generals", "retinue", "spawn_radius", "waves"):
-                inherit = self.config.ai_reddot_cfg.get(key, "")
-                self._entry_cell(body, "红点·%s" % key,
-                                 "" if key not in ra else "%g" % ra[key],
-                                 lambda text, f=fid, k=key: self._set_ai_param(f, "reddot_ai",
-                                                                               k, text))
-                self._hint(body, "　缺省 = %s" % (inherit if inherit != "" else "（config 里没写）"))
+            # ★ AI 相关（类型 / 进攻目标 / 生成区域 / 高级参数）**不在编辑器里改**（用户要求）。
+            #   ⚠️ 字段本身一个字没动：编辑器仍然原样读、原样写（不会丢），
+            #      要改 AI 就直接手改关卡 JSON。
+            self._hint(section, "★ 这一方的 AI（类型 / 进攻目标 / 生成区域 / 参数）不在编辑器里改 —— "
+                                "直接手改关卡 JSON（编辑器会原样保留这些字段）。")
             self._button(section, "从这一关移除这一方",
                          lambda f=fid: self.remove_faction_entry(f),
-                         bg="#3a2b2b").pack(anchor="w", pady=(6, 0))
-
-    def _target_rows(self, parent, fid: str, e: FactionEntry) -> None:
-        """进攻目标：一个下拉 + 一个「载荷」输入（③ 与 ④ 共用的同一个字段）。"""
-        spec = e.attack_target
-        kind = str(spec.get("kind", "")) if spec else ""
-        label = {"": "最近敌方区划（缺省）", TARGET_ZONE: "指定区划", TARGET_POINT: "指定格",
-                 TARGET_BUILDING: "指定建筑", TARGET_BASE: "某方的家"}.get(kind, "不认识")
-        combo = self._combo_cell(parent, "进攻目标", label,
-                                 tuple(self._target_labels()),
-                                 lambda text, f=fid: self._set_target_kind(f, text))
-        del combo
-        if kind == TARGET_ZONE:
-            self._combo_cell(parent, "　目标区划", self._zone_label(int(spec.get("zone", -1))),
-                             self._zone_choices(),
-                             lambda text, f=fid: self.set_attack_target(
-                                 f, {"kind": TARGET_ZONE, "zone": self._zone_id_from_label(text)}))
-        elif kind in (TARGET_POINT, TARGET_BUILDING):
-            self._entry_cell(parent, "　坐标 x,y",
-                             "%d,%d" % (int(spec.get("x", -1)), int(spec.get("y", -1))),
-                             lambda text, f=fid, k=kind: self._set_target_point(f, k, text))
-        elif kind == TARGET_BASE:
-            self._combo_cell(parent, "　哪一方", str(spec.get("faction", "")),
-                             tuple(self.all_faction_ids()),
-                             lambda text, f=fid: self.set_attack_target(
-                                 f, {"kind": TARGET_BASE, "faction": str(text)}))
-        self._hint(parent, "当前：%s（在「摆放」页点画布也能改同一个字段）"
-                   % target_label(spec))
-
-    def _target_labels(self) -> List[str]:
-        return ["最近敌方区划（缺省）", "指定区划", "指定格", "指定建筑", "某方的家"]
-
-    def _set_target_kind(self, fid: str, label: str) -> None:
-        if label.startswith("最近"):
-            self.set_attack_target(fid, None)
-        elif label == "指定区划":
-            info = self.map_info()
-            zid = info.zone_ids[0] if info is not None and info.zone_ids else -1
-            self.set_attack_target(fid, {"kind": TARGET_ZONE, "zone": int(zid)})
-        elif label == "指定格":
-            self.set_attack_target(fid, {"kind": TARGET_POINT, "x": 0, "y": 0})
-        elif label == "指定建筑":
-            self.set_attack_target(fid, {"kind": TARGET_BUILDING, "x": 0, "y": 0})
-        else:
-            self.set_attack_target(fid, {"kind": TARGET_BASE, "faction": fid})
-
-    def _set_target_point(self, fid: str, kind: str, text: str) -> None:
-        point = _parse_point(text)
-        if point is None:
-            self.status("坐标要写成 `x,y`")
-            self.refresh_all()
-            return
-        self.set_attack_target(fid, {"kind": kind, "x": point[0], "y": point[1]})
-
-    def _spawn_rows(self, parent, fid: str, e: FactionEntry) -> None:
-        """红点生成区域：一个下拉 + 载荷（出生点缺省 / 指定区划 / 指定格）。"""
-        spec = e.spawn_region
-        kind = str(spec.get("kind", "")) if spec else ""
-        label = {"": "出生点（缺省）", TARGET_ZONE: "指定区划",
-                 TARGET_POINT: "指定格"}.get(kind, "不认识")
-        self._combo_cell(parent, "生成区域", label,
-                         ("出生点（缺省）", "指定区划", "指定格"),
-                         lambda text, f=fid: self._set_spawn_kind(f, text))
-        if kind == TARGET_ZONE:
-            self._combo_cell(parent, "　生成区划", self._zone_label(int(spec.get("zone", -1))),
-                             self._zone_choices(),
-                             lambda text, f=fid: self.set_spawn_region(
-                                 f, {"kind": TARGET_ZONE, "zone": self._zone_id_from_label(text)}))
-        elif kind == TARGET_POINT:
-            self._entry_cell(parent, "　中心 x,y",
-                             "%d,%d" % (int(spec.get("x", -1)), int(spec.get("y", -1))),
-                             lambda text, f=fid: self._set_spawn_point(f, text))
-        self._hint(parent, "留空 = 用这一方的出生点 + config 半径；红点每波在这里刷将领")
-
-    def _set_spawn_kind(self, fid: str, label: str) -> None:
-        if label.startswith("出生点"):
-            self.set_spawn_region(fid, None)
-        elif label == "指定区划":
-            info = self.map_info()
-            zid = info.zone_ids[0] if info is not None and info.zone_ids else -1
-            self.set_spawn_region(fid, {"kind": TARGET_ZONE, "zone": int(zid)})
-        else:
-            self.set_spawn_region(fid, {"kind": TARGET_POINT, "x": 0, "y": 0})
-
-    def _set_spawn_point(self, fid: str, text: str) -> None:
-        point = _parse_point(text)
-        if point is None:
-            self.status("坐标要写成 `x,y`")
-            self.refresh_all()
-            return
-        self.set_spawn_region(fid, {"kind": TARGET_POINT, "x": point[0], "y": point[1]})
-
-    def set_spawn_region(self, fid: str, spec: Optional[dict]) -> None:
-        """红点生成区域的唯一入口（与进攻目标同构的字段）。"""
-        lv = self.level()
-        if lv is None:
-            return
-        entry = lv.ensure_faction(fid)
-        entry.spawn_region = spec
-        self._after_change()
+                         bg=UI["danger_btn"], fg=UI["danger_fg"]).pack(anchor="w", pady=(6, 0))
 
     def _ai_label(self, ai: str) -> str:
         return {AI_NONE: "无", AI_GARRISON: "阵地性", AI_REDDOT: "红点性"}.get(ai, "无")
@@ -2412,38 +2567,6 @@ class EditorApp:
             return
         self.set_faction_field(fid, field, value)
 
-    def _set_ai_param(self, fid: str, block: str, key: str, text: str) -> None:
-        lv = self.level()
-        if lv is None:
-            return
-        e = lv.ensure_faction(fid)
-        current = dict(getattr(e, block) or {})
-        text = str(text).strip()
-        if not text:
-            current.pop(key, None)                  # 清空 = 删掉这个键 = 继承 config
-        else:
-            try:
-                value = float(text)
-            except ValueError:
-                self.status("AI 参数要填数字")
-                self.refresh_all()
-                return
-            current[key] = value
-        self.set_faction_field(fid, block, current or None)
-
-    def _toggle_advanced(self, body: tk.Frame) -> None:
-        visible = not getattr(body, "visible", False)
-        body.visible = visible                        # type: ignore[attr-defined]
-        if visible:
-            body.pack(side="top", fill="x")
-        else:
-            body.pack_forget()
-        try:
-            self.sidebar.update_idletasks()
-            self._on_sidebar_configure()
-        except tk.TclError:
-            pass
-
     # ---- ④ 摆放页侧栏 ----
 
     def _sidebar_place(self) -> None:
@@ -2468,7 +2591,7 @@ class EditorApp:
 
         # ---- 地图上已有的东西 ----
         section2 = self._section("地图上已有的（关卡层）",
-                                 "大本营不在这里 —— 它在「阵营与AI」页里改，免得删出「没有大本营」的关卡")
+                                 "大本营不在这里 —— 它在「阵营」页里改，免得删出「没有大本营」的关卡")
         self.entry_tree = ttk.Treeview(section2, columns=("what", "who", "pos"),
                                        show="headings", height=10, selectmode="browse")
         for key, header, width in (("what", "什么", 110), ("who", "归属/种类", 130),
@@ -2541,7 +2664,7 @@ class EditorApp:
                              lambda text: self._set_unit_field("name", str(text)))
             self._button(sec, "删掉它", lambda: self.delete_entry(("unit",
                                                                   self.selection[1])),
-                         bg="#3a2b2b").pack(anchor="w", pady=(6, 0))
+                         bg=UI["danger_btn"], fg=UI["danger_fg"]).pack(anchor="w", pady=(6, 0))
         elif building is not None:
             sec = self._section("选中的建筑", "建筑的**类型与数值**归 unit_editor / map_editor；这里只管开局摆在哪、归谁")
             factions = self.all_faction_ids()
@@ -2554,7 +2677,7 @@ class EditorApp:
                              lambda text: self._set_building_point(text))
             self._button(sec, "删掉它", lambda: self.delete_entry(("building",
                                                                   self.selection[1])),
-                         bg="#3a2b2b").pack(anchor="w", pady=(6, 0))
+                         bg=UI["danger_btn"], fg=UI["danger_fg"]).pack(anchor="w", pady=(6, 0))
         else:
             self._section("选中的东西", "在画布上点一个已有的单位 / 建筑，这里就会出现它的全部字段")
 
@@ -2814,7 +2937,8 @@ class EditorApp:
             return
         rd = self.reddot_params(True)
         if rd is None:
-            self.status("没有红点阵营：先在「阵营与AI」页给某一方选 ai = 红点性")
+            self.status('没有红点阵营：本关没有 `ai: "reddot"` 的阵营'
+                        '（AI 类型不在编辑器里改 —— 手改关卡 JSON）')
             return
         tiles = self.reddot_spawn_tiles()
         if cell in tiles:
@@ -2936,8 +3060,8 @@ class EditorApp:
         reddots = [e.fid for e in lv.factions if e.ai == AI_REDDOT]
         sec = self._section("红点阵营", "红点生成配置挂在它的 `reddot_ai` 上")
         if not reddots:
-            self._hint(sec, "本关没有挂「红点性」AI 的阵营：先到「阵营与AI」页给某一方"
-                            "把 AI 类型选成「红点性」。")
+            self._hint(sec, '本关没有挂「红点性」AI 的阵营（`ai: "reddot"`）。'
+                            'AI 类型不在编辑器里改 —— 手改关卡 JSON。')
             return
         cur = self.reddot_faction_id()
         self._combo_cell(sec, "编辑哪一方", cur, tuple(reddots), self._set_reddot_faction)
@@ -2947,7 +3071,7 @@ class EditorApp:
         tiles = self.reddot_spawn_tiles()
         tsec = self._section("生成地块", "在画布上左键点空地 = 加/移出；右键 = 移出")
         self._hint(tsec, "已选 %d 个地块（游戏里这些格子的外观**没有区别**）。" % len(tiles))
-        self._button(tsec, "清空生成地块", self._clear_reddot_tiles, bg="#3a2b2b").pack(anchor="w")
+        self._button(tsec, "清空生成地块", self._clear_reddot_tiles, bg=UI["danger_btn"], fg=UI["danger_fg"]).pack(anchor="w")
 
         # ---- 时间表 ----
         isec = self._section("生成时间表", "y = a·x + b（x = 波次，y 的单位分别是「分钟」/「个」）")
@@ -3159,7 +3283,7 @@ class EditorApp:
         section = self._section("导出", "有拦截项时**禁止写文件**（这是硬要求，不是提示）")
         self._button(section, "跑一遍校验", self.run_checks, padx=12).pack(anchor="w")
         self._button(section, "写文件", self.do_save, padx=12,
-                     bg="#2f5f7a", fg="#eaf6ff").pack(anchor="w", pady=4)
+                     bg=UI["accent_btn"], fg=UI["accent_fg"]).pack(anchor="w", pady=4)
         self._button(section, "打开地图编辑器", self.open_map_editor).pack(anchor="w")
         if self.last_written:
             self._hint(section, "上一次写了 %d 个文件：\n%s"
