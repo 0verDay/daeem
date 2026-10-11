@@ -110,11 +110,20 @@ func reset_cache() -> void:
 	_contrib = {}
 	_last_contrib = {}
 	_last_faction_count = -1
+	_fresh = false
 
 
 # ------------------------------------------------------------------
 # 每帧入口
 # ------------------------------------------------------------------
+
+## ★★ 「本帧刚采集过」的一次性标记：`refresh_needed` 采集贡献格之后置位，
+##    紧随其后的 `update` 直接复用它那一次采集 —— 免得**同一帧把贡献格采集两遍**
+##    （`_collect_contributors` 是 O(单位数 + 建筑数)，1000 单位下这是实打实的一半）。
+##    ⚠️ 只在「refresh_needed → update」这条相邻调用上成立：`update` 被**单独调用**时
+##    （测试里到处是）标记为假 ⇒ 照旧自己采集，语义与从前**逐位一致**。
+##    ⚠️ `reset_cache()` 会把标记清掉（换地图 / 重开一局必须重新采集）。
+var _fresh: bool = false
 
 ## 这一帧需不需要重算视野？
 ##
@@ -124,14 +133,16 @@ func reset_cache() -> void:
 ##      · 有没有「有视野的单位 / 建筑」挪到了新格（或者死了 / 刚出生 / 刚建好）；
 ##      · 阵营数变了（联机时有人进场）；
 ##      · 某一方从「一个视野来源都没有」变成有了。
-##    `_collect_contributors()` 是 O(单位数 + 建筑数) 的一次遍历 —— 与 `update()` 里那次
-##    同量级，所以「先问一次再算」总共两次遍历，可以忽略。
+##    `_collect_contributors()` 是 O(单位数 + 建筑数) 的一次遍历 —— `update()` 紧随其后时
+##    直接复用它（靠 `_fresh`），于是这一帧总共只采集一次。
 func refresh_needed(world) -> bool:
 	if world == null or world.cfg == null or not world.cfg.fog_enabled:
 		return false
 	if world.map == null:
 		return false
 	_collect_contributors(world)
+	# ★ 标记「本帧已采集」：紧随的 update() 会复用它，不再重复采集（见 `_fresh`）。
+	_fresh = true
 	if _last_faction_count < 0 or world.factions.size() != _last_faction_count:
 		return true
 	if _contrib.size() != _last_contrib.size():
@@ -151,17 +162,23 @@ func refresh_needed(world) -> bool:
 
 ## 重建所有阵营的视野（每一方**只**并入自己那些来源的扇区，见 `_contrib` 的说明）。
 ##
-## ★★ 每次进来都**重新收集**贡献格（不是「上一步 refresh_needed 收集过了就复用」）：
+## ★★ 贡献格的采集：**只有 `refresh_needed` 刚刚采过（同一帧的相邻调用）才复用它**，
+##    其余任何情况都**重新收集**（见 `_fresh` 与下面那句）。
 ##    这一条踩过坑 —— 曾经的写法是「阵营数没变就沿用 `_contrib`」，而 `_contrib`
 ##    装的是**上一帧**的格子：单位走到新位置后调 `update()`，掩码却还是按旧格子填的
 ##    （症状 = 「走进视野了，敌人建筑还是不显示」，而且只在**没先问 refresh_needed**
 ##    的调用路径上出现 —— 游戏主循环先问了，所以手玩看不出来，测试一眼就红）。
-##    收集是 O(单位数 + 建筑数) 的一次遍历（每帧本来也要空转这么多），不值得为省它引入
-##    一条「必须按某种顺序调用」的隐式契约。
+##    ★ 所以复用**只允许**发生在「紧邻的一次 refresh_needed 之后」：那一次的 `_contrib`
+##      装的就是**当前**世界（不是上一帧），语义与「重新收集」等价。
 func update(world) -> void:
 	if world == null or world.cfg == null or world.map == null:
 		return
-	_collect_contributors(world)
+	# ★★ 若 `refresh_needed` **刚刚**采集过（同一帧的相邻调用），就用它那一次 ——
+	#    否则自己采集。见 `_fresh` 的说明：单独调用 `update` 的路径语义不变。
+	if _fresh:
+		_fresh = false
+	else:
+		_collect_contributors(world)
 	var cells: int = world.map.cols * world.map.rows
 	_cols = world.map.cols
 

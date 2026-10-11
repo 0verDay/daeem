@@ -22,20 +22,25 @@
 ##
 ## ★ 职责边界（三层各管一段，谁都不越界）：
 ##   view/start_screen.gd  开场两页：只认输入、地图选择与自己的两个信号，不认识 world
-##   view/game_scene.gd    游戏内场景：装配 world + view + hud，跑主循环
+##   view/game_scene3d.gd  游戏内场景（3D 唯一实现）：装配 world + view + hud，跑主循环
 ##   view/hud.gd           游戏内 UI：设置菜单只**发信号**，不切窗口也不拆场景
 ##   本文件                只做连接：把「按钮被按了 + 选了哪张图」翻译成「进哪个游戏」，
 ##                         把「设置里点了全屏 / 回菜单」翻译成窗口模式与流程切换
 ##   没有任何一层把玩法规则写进来 —— 规则全在 logic/。
 ##
-## 调试句柄：控制台里 `RTS`（等价于 HTML 版的 window.RTS）。★ 现在它指向游戏内场景
-## （view/game_scene.gd），所以**进游戏之前是 null** —— 那是刻意的，没世界可调。
+## 调试句柄：控制台里 `RTS`（等价于 HTML 版的 window.RTS）。★ 它指向游戏内场景
+## （view/game_scene3d.gd），所以**进游戏之前是 null** —— 那是刻意的，没世界可调。
 extends Node2D
 
 const ConfigRes = preload("res://logic/config.gd")
 const FontLoaderRes = preload("res://view/font_loader.gd")
 const StartScreenRes = preload("res://view/start_screen.gd")
-const GameSceneRes = preload("res://view/game_scene.gd")
+## ★★ 入口 = 3D 场景（`view/game_scene3d.gd`）—— **唯一**的游戏内实现。
+##   2D 视图栈（`game_scene.gd` / `palette2d.gd` / `terrain_view.gd` 等九个文件）
+##   已整体删除；本文件是**流程层**，对「视角怎么画」一无所知。
+##   ⚠️ `var game` 必须写成类型 `Node`：`Node3D` 与 `Node2D` 是平级分支，
+##      写成 `Node2D` 会让本文件直接 Parse Error（见下面 `var game` 那段）。
+const GameSceneRes = preload("res://view/game_scene3d.gd")
 ## ★ 单人战役的**占位界面**（主界面第二颗按钮 `campaign_test` 点进来的那一页）。
 const CampaignTestRes = preload("res://view/campaign_test.gd")
 ## 扫 `data/campaigns/` 给那一页出选项（★ 扫目录这件事只做在 main 这一处：
@@ -49,7 +54,16 @@ var cfg: ConfigRes = null
 var start_screen: CanvasLayer = null
 ## ★ 单人战役的占位界面（`view/campaign_test.gd`；没打开时是 null）。
 var campaign_screen: CanvasLayer = null
-var game: Node2D = null
+## ★★ 类型必须是 `Node`，不能是 `Node2D`（本轮实测踩到）：
+##    入口切到 3D 之后 `game_scene3d.gd` 是 **`Node3D`**，而 `Node3D` 与 `Node2D` 是
+##    **平级的两个分支** —— 写 `var game: Node2D` 会让这一行直接
+##      `Parse Error: Value of type "game_scene3d.gd" cannot be assigned to a variable of type "Node2D"`
+##    ⇒ **整个 `main.gd` 载不进来** ⇒ 主界面起不来、集成测试大面积掉断言
+##    （实测：`test_map_select` 从 73 项掉到 25 项，`test_start_flow` 报「主界面能起来」失败，
+##      而且症状看着像「界面坏了」，其实只是这一行的类型标注）。
+##    ★ 判据：`main.gd` 是**流程层**，它只该知道「游戏内场景是个节点」，
+##      **不该知道**视角是 2D 还是 3D —— 所以类型标注就该停在 `Node`。
+var game: Node = null
 
 ## 进全屏之前是哪种窗口模式（退出全屏时还原，见 _handle_window_hotkey）
 var _windowed_mode: int = DisplayServer.WINDOW_MODE_WINDOWED

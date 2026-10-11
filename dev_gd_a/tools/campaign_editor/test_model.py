@@ -299,7 +299,7 @@ def base_level(**over) -> dict:
         "map": f.map_id,
         "players": [{"faction": f.player, "base": list(f.player_base)}],
         "factions": [
-            {"id": f.enemy, "ai": "faction", "base": list(f.enemy_base),
+            {"id": f.enemy, "ai": "garrison", "base": list(f.enemy_base),
              "attack_target": {"kind": "zone", "zone": f.attack_zone}},
         ],
         "start_units": [],
@@ -496,11 +496,10 @@ def t_override_rules() -> None:
     lv2 = M.LevelModel("over", "dongzheng")
     lv2.name = "over"
     e = lv2.ensure_faction("E1")
-    e.ai = M.AI_FACTION
+    e.ai = M.AI_GARRISON
     e.base = (20, 13)
-    e.resource_mult = 1.5
     eq(M._base_of(lv2, info, "E1"), (20, 13), "★★ 关卡写了大本营 → 覆盖地图的")
-    eq(lv2.faction("E1").faction_ai, None, "★ 只改了大本营：别的字段还留在**默认值**上")
+    eq(lv2.faction("E1").garrison_ai, None, "★ 只改了大本营：别的字段还留在**默认值**上")
     eq(M._base_of(lv2, info, "F1"), map_base_f1, "★ 没点名的 F1 照样用地图的大本营")
 
     # 地图里有、关卡里没点名的一方：base 从地图来（校验第 4 条不管它）
@@ -510,7 +509,7 @@ def t_override_rules() -> None:
 def t_config_and_maps() -> None:
     print("\n[1b] 地图列表 / config 只读快照")
     info = levelfile.load_config(TMP_PROJECT)
-    eq(info.unit_types, ["spearman", "longbowman", "rider", "enemy"], "config：四个兵种")
+    eq(info.unit_types, ["spearman", "longbowman", "rider"], "config：三个兵种（enemy 类型已删除）")
     eq(info.general_types, ["spearman", "longbowman", "rider"], "config：三位将领的类型")
     # ★★ 开局附属兵**没有全局缺省**了：`config.json` 的 `unit.general.escort` 已被删掉，
     #    每个兵都在摆放页里摆出来（`start_units[].escort_of`）。
@@ -521,13 +520,15 @@ def t_config_and_maps() -> None:
        "★ 只读快照也不再提供「开局编制」那种字段")
     eq(info.building_types, ["base", "tower", "wall"], "config：三种建筑")
     eq(info.zone_kinds, ["food", "gold", "population"], "config：三种区划")
-    ok("attack_repeat_sec" in info.ai_faction_cfg, "config：阵营 AI 的默认参数拿到了")
+    ok("patrol_interval_sec" in info.ai_garrison_cfg, "config：阵地性 AI 的默认参数拿到了")
+    ok("cooldown_sec" in info.ai_reddot_cfg, "config：红点性 AI 的默认参数拿到了")
     ok(info.faction_color("p1").lower() == "#ffd166", "config：阵营配色表")
     eq(info.general_label(1), "将领 1（长枪兵）", "将领下拉的写法")
 
     ms = maps(real=True)
     info = ms["dongzheng"]
-    eq(sorted(ms), ["arena", "dongzheng", "frontier"], "★ 三张地图全在（含 hidden 与 占位）")
+    eq(sorted(ms), ["arena", "crossing", "dongzheng", "frontier"],
+       "★ 四张地图全在（含 hidden 与 占位）")
     ok(info.hidden, "★ dongzheng 带 hidden 标记（照样列出来）")
     ok(ms["arena"].placeholder, "★ arena 带 placeholder 标记（照样列出来）")
     ok(not ms["frontier"].hidden and not ms["frontier"].placeholder, "frontier 两个标记都没有")
@@ -594,11 +595,11 @@ def t_validation_players() -> None:
     issues = M.validate_campaign(model, maps())
     ok(has(issues, "player_no_faction"), "★ 席位没写 faction → player_no_faction")
     # 关卡点名了一方、那一方在关卡与地图上都没有大本营
-    issues = check(base_level(factions=[{"id": "幽灵军", "ai": "faction"}],
+    issues = check(base_level(factions=[{"id": "幽灵军", "ai": "garrison"}],
                               start_buildings=[]))
     ok(has(issues, "faction_no_base"), "★ 点名的阵营没有大本营 → faction_no_base（拦）")
     # ★ 反面：关卡没写 base，但**地图**有 → 不拦
-    issues = check(base_level(factions=[{"id": f.enemy, "ai": "faction"}]))
+    issues = check(base_level(factions=[{"id": f.enemy, "ai": "garrison"}]))
     eq(block_codes(issues), [], "★★ 关卡没写大本营、但地图有 → 不拦（覆盖规则）")
     # ★ ai: none 的阵营「不动」不等于「不存在」，照样要有大本营
     issues = check(base_level(factions=[{"id": f.enemy, "ai": "none"}]))
@@ -623,7 +624,7 @@ def t_validation_points() -> None:
     issues = check(base_level(players=[{"faction": f.player, "base": list(center)}],
                               start_buildings=[]))
     ok(has(issues, "point_on_zone_center"), "★ 大本营压在中心格 → point_on_zone_center")
-    issues = check(base_level(factions=[{"id": f.enemy, "ai": "faction",
+    issues = check(base_level(factions=[{"id": f.enemy, "ai": "garrison",
                                          "base": list(f.mountain)}]))
     ok(has(issues, "point_on_mountain"), "★ 大本营在山地 → point_on_mountain")
     issues = check(base_level(players=[{"faction": f.player, "base": [99, 99]}]))
@@ -639,7 +640,7 @@ def t_validation_points() -> None:
     ok(has(issues, "point_outside"), "★ 摆放单位在地图外 → point_outside")
     # ⚠️ 负坐标不是「地图外」，而是「没写」的哨兵值（逻辑层用 Vector2i(-1,-1) 表达它），
     #    所以它**不该**在这里报 —— 那一档归「必须有大本营」管。这条断言把口径钉住。
-    issues = check(base_level(factions=[{"id": f.enemy, "ai": "faction", "base": [-3, 4]}]))
+    issues = check(base_level(factions=[{"id": f.enemy, "ai": "garrison", "base": [-3, 4]}]))
     ok(not has(issues, "point_outside"), "★ 负坐标 = 「没写」的哨兵值，不报 point_outside")
 
 
@@ -700,7 +701,7 @@ def t_validation_sides() -> None:
        "★ 没声明盟友时同一份数据照旧拦（区别就在 allies 那一行上）")
     issues = check(base_level(objectives=[{"kind": "hold_zone", "zone": f.attack_zone,
                                           "hold_sec": 60}],
-                              factions=[{"id": f.enemy, "ai": "faction"}],
+                              factions=[{"id": f.enemy, "ai": "garrison"}],
                               start_buildings=[]))
     ok(has(issues, "objective_unowned"),
        "★ 目标区划在地图上就没有归属（且关卡没覆盖）→ 也拦")
@@ -788,7 +789,7 @@ def t_validation_attack_target() -> None:
     with_faction = lambda entry: base_level(factions=[entry], start_buildings=[])   # noqa: E731
 
     def enemy_entry(**over) -> dict:
-        data = {"id": f.enemy, "ai": "faction", "base": list(f.enemy_base)}
+        data = {"id": f.enemy, "ai": "reddot", "base": list(f.enemy_base)}
         data.update(over)
         return data
 
@@ -851,23 +852,19 @@ def t_validation_units_and_factions() -> None:
 
 
 def t_validation_overload() -> None:
-    print("\n[2.8] 校验 17（9.1 风险 4）：AI 参数过载提示")
+    print("\n[2.8] 红点 AI：缺省行军目标 → 警告（旧的 overload_hint 已随阵营 AI 删除）")
     f = FACTS
-    entry = {"id": f.enemy, "ai": "faction", "base": list(f.enemy_base), "resource_mult": 3.0,
-             "attack_target": {"kind": "zone", "zone": f.attack_zone},
-             "faction_ai": {"generals": 2, "attack_repeat_sec": 2.0}}
+    entry = {"id": f.enemy, "ai": "reddot", "base": list(f.enemy_base)}
     issues = check(base_level(factions=[entry], start_buildings=[]))
-    ok(has(issues, "overload_hint", M.SEV_WARN),
-       "★★ 出兵间隔 2s 且资源 3.0× → 警告 overload_hint")
-    eq(block_codes(issues), [],
-       "★★ 它是**警告不是拦截**（这是设计者的自由）—— 0 条拦截")
-    ok("压不住" in "".join(i.msg for i in M.warnings(issues)), "警告文案说明了原因")
-    entry2 = dict(entry, resource_mult=1.5)
+    ok(has(issues, "no_attack_target", M.SEV_WARN),
+       "★ 红点 AI 没写行军目标 → 警告 no_attack_target")
+    ok(not has(issues, "overload_hint", M.SEV_WARN),
+       "★ 旧的 overload_hint 已随阵营 AI 删除（不再出现）")
+    entry2 = {"id": f.enemy, "ai": "reddot", "base": list(f.enemy_base),
+              "attack_target": {"kind": "zone", "zone": f.attack_zone}}
     issues = check(base_level(factions=[entry2], start_buildings=[]))
-    ok(not has(issues, "overload_hint", M.SEV_WARN), "★ 资源倍率降下来 → 不警告")
-    entry3 = dict(entry, faction_ai={"generals": 2, "attack_repeat_sec": 30.0})
-    issues = check(base_level(factions=[entry3], start_buildings=[]))
-    ok(not has(issues, "overload_hint", M.SEV_WARN), "★ 出兵间隔拉长 → 不警告")
+    ok(not has(issues, "no_attack_target", M.SEV_WARN),
+       "★ 红点 AI 写了行军目标 → 不再警告")
 
 
 def t_validation_faction_color() -> None:
@@ -890,7 +887,7 @@ def t_validation_faction_color() -> None:
     # ---- 不写 color 的自定义阵营 → 警告 ----
     # ⚠️ 必须用一个**战役里没有的**新 id：`campaign_with()` 给战役层的 A1/B1 都写了颜色，
     #    拿 B1 来测的话颜色是**战役层**提供的（那正是另一条合法路径），测不出这一条。
-    entry = {"id": "Z9", "ai": "faction", "base": list(f.enemy_base)}
+    entry = {"id": "Z9", "ai": "garrison", "base": list(f.enemy_base)}
     issues = check(base_level(factions=[entry], start_buildings=[]))
     ok(has(issues, "faction_no_color", M.SEV_WARN),
        "★★ 自定义阵营没写颜色 → 警告 faction_no_color")
@@ -921,9 +918,9 @@ def t_validation_faction_color() -> None:
 # ======================================================================
 
 def t_ai_assignment_roundtrip() -> None:
-    print("\n[3] AI 指派：faction / general / none 三种能存能读；玩家席位也能配 AI")
+    print("\n[3] AI 指派：garrison / reddot / none 能存能读；旧值归一；玩家席位也能配 AI")
     f = FACTS
-    for ai in ("faction", "general", "none"):
+    for ai in ("garrison", "reddot", "none"):
         data = base_level(factions=[{"id": f.enemy, "ai": ai, "base": list(f.enemy_base),
                                      "attack_target": {"kind": "zone", "zone": f.attack_zone}}])
         model = campaign_with(data)
@@ -932,16 +929,23 @@ def t_ai_assignment_roundtrip() -> None:
         same, diffs = levelfile.roundtrip_ok(model, TMP_ROOT / ("rt_%s" % ai), TMP_PROJECT)
         ok(same, "★ ai=%s 往返一致%s" % (ai, "" if same else "：%s" % diffs[:3]))
 
+    # ★ 旧值 faction / general 归一成 garrison（兼容老关卡数据）
+    for legacy in ("faction", "general"):
+        model = campaign_with(base_level(factions=[{"id": f.enemy, "ai": legacy,
+                                                    "base": list(f.enemy_base)}]))
+        eq(model.levels[0].faction(f.enemy).ai, "garrison",
+           "★ 旧值 ai=%s → 归一成 garrison" % legacy)
+
     # ★ 玩家席位也能配 AI（允许，运行时按选中的席位摘掉）—— 校验不拦
-    data = base_level(factions=[{"id": f.player, "ai": "faction", "base": list(f.player_base),
+    data = base_level(factions=[{"id": f.player, "ai": "garrison", "base": list(f.player_base),
                                  "attack_target": {"kind": "zone", "zone": f.attack_zone}},
-                                {"id": f.enemy, "ai": "faction", "base": list(f.enemy_base),
+                                {"id": f.enemy, "ai": "reddot", "base": list(f.enemy_base),
                                  "attack_target": {"kind": "zone", "zone": f.attack_zone}}],
                       players=[{"faction": f.player, "base": list(f.player_base)}])
     issues = check(data)
-    eq(block_codes(issues), [], "★★ 给可玩阵营配阵营 AI → 不拦（运行时按席位摘掉）")
+    eq(block_codes(issues), [], "★★ 给可玩阵营配 AI → 不拦（运行时按席位摘掉）")
     model = campaign_with(data)
-    eq(model.levels[0].faction(f.player).ai, "faction", "★ 玩家席位那一方的 ai 也存得住")
+    eq(model.levels[0].faction(f.player).ai, "garrison", "★ 玩家席位那一方的 ai 也存得住")
 
     # ★ 「关卡没写 ai」与「写了 ai:none」在数据里是两件事
     model = campaign_with(base_level(factions=[{"id": f.enemy, "ai": "none"}]))
@@ -964,7 +968,7 @@ def t_attack_target_roundtrip() -> None:
         {"kind": "base", "faction": f.player},
     ]
     for spec in specs:
-        data = base_level(factions=[{"id": f.enemy, "ai": "faction", "base": list(f.enemy_base),
+        data = base_level(factions=[{"id": f.enemy, "ai": "garrison", "base": list(f.enemy_base),
                                      "attack_target": spec}])
         model = campaign_with(data)
         got = model.levels[0].faction(f.enemy).attack_target
@@ -975,13 +979,13 @@ def t_attack_target_roundtrip() -> None:
                                             TMP_PROJECT)
         ok(same, "★ kind=%s 往返一致%s" % (spec["kind"], "" if same else "：%s" % diffs[:3]))
 
-    model = campaign_with(base_level(factions=[{"id": f.enemy, "ai": "faction",
+    model = campaign_with(base_level(factions=[{"id": f.enemy, "ai": "garrison",
                                                 "base": list(f.enemy_base)}]))
     eq(model.levels[0].faction(f.enemy).attack_target, None, "★ 缺省 = None")
     ok("attack_target" not in model.levels[0].to_dict()["factions"][0],
        "★★ 缺省时**一个字段都不落**（运行时退回「打最近的敌方区划」）")
 
-    issues = check(base_level(factions=[{"id": f.enemy, "ai": "faction",
+    issues = check(base_level(factions=[{"id": f.enemy, "ai": "garrison",
                                          "base": list(f.enemy_base),
                                          "attack_target": {"kind": "zone", "zone": 42}}]))
     ok(has(issues, "attack_target_zone"), "★ 引用不存在的区划被拦")
@@ -1134,9 +1138,9 @@ def t_preserved_unknown_fields() -> None:
     eq(out.get("another"), "原样带回", "★ 未知字段（字符串）也写回")
 
     # 坏项被丢掉，而不是让整关读不出来
-    data = base_level(factions=[{"id": FACTS.enemy, "ai": "faction",
+    data = base_level(factions=[{"id": FACTS.enemy, "ai": "garrison",
                                  "base": list(FACTS.enemy_base)},
-                                {"ai": "faction"},                 # 没有 id → 丢
+                                {"ai": "garrison"},                 # 没有 id → 丢
                                 "不是对象"],                        # 不是对象 → 丢
                       players=[{"faction": FACTS.player, "base": list(FACTS.player_base)},
                                {"base": [1, 1]},                   # 没有 faction → 丢

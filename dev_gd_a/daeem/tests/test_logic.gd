@@ -643,31 +643,32 @@ func _test_wall_and_enemy_ai(world, cfg) -> void:
 	var direct = PathfinderRes.find_path(w.map, w.buildings, cfg, Vector2i(e.tx, e.ty), Vector2i(bx, by), "enemy")
 	ok(direct == null, "城墙拦住后敌人到不了大本营那一格（大本营本身也占格）")
 
-	# 跑一段时间：敌人应当锁定某段城墙并把第一下砸下去
-	var wall_lost := false
+	# ★★ 本轮**删除了 enemy_ai**（「测试敌人的推进 AI」）—— 敌人不再自己朝玩家据点推进 / 拆墙。
+	#    这里改成**手工驱动**同一条「建筑被拆」链路（`combat` 的 building target + tick），
+	#    于是城墙的受击 / 倒塌 / 缺口可通行这几条规则仍然被覆盖，只是不再依赖那条已删的 AI。
 	var target_wall = null
-	var ticks = 0
-	while ticks < 60 * 60 and not wall_lost:
-		w.tick(DT)
-		ticks += 1
-		var tb = e.target_building
-		if tb != null:
-			if target_wall == null:
-				target_wall = tb
-			if tb.hp < 300.0:
-				wall_lost = true
-	ok(target_wall != null, "敌人锁定了挡路的城墙（%d 帧内）")
-	ok(wall_lost, "敌人真的开始拆墙了（城墙掉血）")
-
+	var best_d := INF
+	for wl in walls:
+		var d: float = Vector2(e.tx - wl.tx, e.ty - wl.ty).length_squared()
+		if d < best_d:
+			best_d = d
+			target_wall = wl
+	ok(target_wall != null, "拆墙用例：取到一段城墙")
 	if target_wall != null:
-		ok(walls.has(target_wall), "锁定的确实是大本营周围的城墙")
+		var hp0: float = target_wall.hp
+		# 让敌人锁定这段城墙（走 combat 的公开入口），然后 tick 到它掉血。
+		CombatRes.set_building_target(e, target_wall)
+		var ticks := 0
+		while ticks < 60 * 60 and target_wall.hp >= hp0:
+			w.tick(DT)
+			ticks += 1
+		ok(target_wall.hp < hp0, "★ 敌人锁定并开始拆墙（城墙掉血，%d 帧内）" % ticks)
 		# 掉血必须是单次伤害（combat.building_damage = 40）的整数倍
-		var lost: float = 300.0 - target_wall.hp
+		var lost: float = hp0 - target_wall.hp
 		var steps: float = lost / cfg.building_damage
 		ok(absf(steps - roundf(steps)) < 1e-6, "掉血量是单次伤害 40 的整数倍（掉了 %.0f）" % lost)
-
 		# 拆穿：一直跑到它塌
-		var guard = 0
+		var guard := 0
 		while target_wall.alive and guard < 60 * 120:
 			w.tick(DT)
 			guard += 1
@@ -677,17 +678,6 @@ func _test_wall_and_enemy_ai(world, cfg) -> void:
 		ok(not w.building_list.has(target_wall), "拆毁的城墙也从建筑表里移除")
 		ok(PathfinderRes.passable(w.map, w.buildings, cfg, target_wall.tx, target_wall.ty, "enemy"),
 			"拆毁的城墙那一格立刻对敌方变成可通行")
-
-		# 敌人从缺口走进来：最终能贴到大本营旁边
-		# （将领死后不再有单位拦截它 —— 单机不复活，这正是「死了就没了」的行为）
-		var reached := false
-		var guard2 := 0
-		while guard2 < 60 * 180 and not reached:
-			w.tick(DT)
-			guard2 += 1
-			if absi(e.tx - bx) + absi(e.ty - by) <= 1:
-				reached = true
-		ok(reached, "敌人拆穿城墙后走进来并停在大本营旁")
 
 
 # ------------------------------------------------------------------
@@ -734,13 +724,22 @@ func _test_tower(world, cfg) -> void:
 
 	var hp0: float = e.hp
 	w.tick(DT)
-	ok(e.hp == hp0 - 12.0, "箭塔第一帧就打掉 12 点（首次开火无冷却）")
+	# ★ 本轮改口径：箭塔开火 = 发一枚投掷物，**伤害在命中那一刻才结算**（用户要求）。
+	ok(w.projectiles.size() >= 1, "★ 箭塔第一帧就开火：生成了一枚投掷物（首次开火无冷却）")
+	ok(e.hp == hp0, "★ 命中之前目标不掉血（伤害延迟到命中）")
 
-	# 冷却 0.8 秒：接下来 0.5 秒内不再掉血
+	# 让投掷物飞完 → 打掉 12 点
+	var drain := 0
+	while not w.projectiles.is_empty() and drain < 600:
+		w.tick(DT)
+		drain += 1
+	ok(absf(e.hp - (hp0 - 12.0)) < 1e-6, "★ 投掷物命中后打掉 12 点")
+
+	# 冷却 0.8 秒：命中之后 0.5 秒内**不再开火**（不生成新投掷物、不掉血）
 	var hp1: float = e.hp
 	for i in 30:
 		w.tick(DT)
-	ok(absf(e.hp - hp1) < 1e-6, "箭塔 0.8 秒冷却内不再开火")
+	ok(w.projectiles.is_empty() and absf(e.hp - hp1) < 1e-6, "箭塔 0.8 秒冷却内不再开火")
 
 	# 不误伤己方：**单独建一个世界来测**。
 	#
@@ -779,21 +778,16 @@ func _test_zones_and_economy(world, cfg) -> void:
 	var u = w.units[0]
 	# 只留这一个：附属兵也会占区块进度，混在一起就分不清是「将领站在那里」还是「附属兵站在那里」
 	_isolate(w, [u])
-	# 找一个无主区块，把将领放进去（避开大本营所在的那个区块）
-	var z = null
-	for zz in w.zones.zones:
-		if zz["owner"] == "":
-			z = zz
-			break
-	ok(z != null, "存在无主区块")
-	if z == null:
+	# 找一个无主区块，把将领放进它的**中心邻域**里
+	# ★★ 本轮改版：只有离区划中心 ≤ capture_radius_tiles 格的单位才算「在场」⇒
+	#    落点必须落在中心邻域内。⚠️ 不能用 `_find_free_tile`：它特意**排除**了中心附近
+	#    （那样是为了别的用例的直线 / 离体判定干净），在这里正好把唯一能站的格子排掉。
+	var spot_d := _find_capture_spot(w, cfg)
+	ok(not spot_d.is_empty(), "存在「中心邻域里有空地」的无主区块")
+	if spot_d.is_empty():
 		return
-	var cx: int = (int(z["x0"]) + int(z["x1"])) / 2
-	var cy: int = (int(z["y0"]) + int(z["y1"])) / 2
-	var spot = _find_free_tile(w, cfg, Vector2i(cx, cy))
-	ok(spot != null, "无主区块里有可站立的格子")
-	if spot == null:
-		return
+	var z: Dictionary = spot_d["zone"]
+	var spot: Vector2i = spot_d["tile"]
 	u.pos = GridRes.center_of(spot)
 	u.sync_tile(w.map)
 	u.stop()
@@ -1325,6 +1319,36 @@ func _find_tower_and_target(world, cfg, hint: Vector2i) -> Variant:
 					if PathfinderRes.passable(world.map, world.buildings, cfg, t.x, t.y, FactionRes.NPC_FACTION):
 						return {"tower": tower, "enemy": t}
 	return null
+
+
+## 找一个「在某个**无主区块的中心邻域内**、且站得住」的格子。
+##
+## ★★ 本轮占领改版（离中心 ≤ capture_radius_tiles 格才算「在场」）之后，
+##    占领用例的落点必须从这里找 —— `_find_free_tile` 特意避开了中心附近，用不了。
+## @return `{zone, tile}`；找不到返回 `{}`。
+func _find_capture_spot(w, cfg) -> Dictionary:
+	var r: int = maxi(0, int(cfg.zone_capture_radius_tiles))
+	for z in w.zones.zones:
+		if String(z["owner"]) != "":
+			continue
+		var c: Variant = z["center"]
+		if c == null:
+			continue
+		var center: Vector2i = c
+		for dy in range(-r, r + 1):
+			for dx in range(-r, r + 1):
+				var x: int = center.x + dx
+				var y: int = center.y + dy
+				if not w.map.terrain.has(x, y):
+					continue
+				if not w.map.terrain_walkable(x, y):
+					continue
+				if PathfinderRes.occupied(w.buildings, x, y):
+					continue
+				if w.zone_center_zone_at(x, y) != null:
+					continue          # 中心格本身（中立障碍建筑）
+				return {"zone": z, "tile": Vector2i(x, y)}
+	return {}
 
 
 ## 找一格里附近没有建筑、可通行的空地（从 hint 往外扩圈）

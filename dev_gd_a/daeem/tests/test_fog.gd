@@ -25,7 +25,9 @@ const FactionRes = preload("res://logic/faction.gd")
 const FogRes = preload("res://logic/fog.gd")
 const UnitRes = preload("res://logic/unit.gd")
 const BuildingRes = preload("res://logic/building.gd")
-const FogViewRes = preload("res://view/fog_view.gd")
+## ★ 迷雾层在 `ground_view` 里（一块独立平面 + 一张贴图）——
+##   本文件用它的常量算「贴图应当多大」。
+const GroundRes = preload("res://view/ground_view.gd")
 const InputControllerRes = preload("res://view/input_controller.gd")
 
 
@@ -53,7 +55,6 @@ func _run() -> void:
 	_test_unit_no_memory(cfg)
 	_test_sighted_forgotten_when_destroyed(cfg)
 	_test_refresh_throttle(cfg)
-	_test_fog_view_mask(cfg)
 	_test_pick_blocked_by_fog(cfg)
 	# ★ 最后一条要真的挂节点（`_initialize()` 阶段 add_child 静默失效）→ 先等一帧
 	await process_frame
@@ -105,11 +106,9 @@ func _make_map(cfg, rows: Array) -> RefCounted:
 ## 造一个「只有 fog 需要的那几个字段」的最小世界（不碰 world.gd，避免被无关逻辑干扰）。
 ##
 ## ★★ 为什么是一个**真 Object**（内层类）而不是 Dictionary：
-##   `view/fog_view.gd` 的 `mask_for()` 收的是 world，`view/unit_view.gd` 的同名判据也一样 ——
-##   它们读 `world.map` / `world.fog`。喂一个 Dictionary 进去会当场报
-##   「Invalid access to property or key」，而**渲染代码里的报错不会让测试失败**
-##   （只打红字），于是那几条断言会变成「永远失败或永远静默」。
-##   用一个只有字段、没有方法的小对象替身，两边就都成立。
+##   消费它的代码（`logic/fog.gd` 等）读 `world.map` / `world.fog` —— 喂一个 Dictionary
+##   进去会当场报「Invalid access to property or key」。
+##   用一个只有字段、没有方法的小对象替身最省事，也与真 world 的读法一致。
 ##
 ## ★ `world` 这个名字是 test_case 的保留成员（SceneTree.world_2d 的别名）——
 ##   所以局部变量一律叫 `fake`，绝不能写 `world`。
@@ -629,45 +628,6 @@ func _test_refresh_throttle(cfg) -> void:
 
 
 # ------------------------------------------------------------------
-# 11) 灰色遮罩的掩码（view/fog_view.gd）
-# ------------------------------------------------------------------
-
-func _test_fog_view_mask(cfg) -> void:
-	# 10 格宽：单位在 (5,2)、视野 3 —— (0,0) 在半径外（距离 5.39 > 3）
-	var row := ".........."
-	var map = _make_map(cfg, [row, row, row, row, row])
-	var fog = FogRes.create()
-	var fake = _make_fake(cfg, map, ["p1", "enemy"])
-	var u = _add_unit(fake, cfg, "u1", 5, 2, "p1")
-	u.vision = 3.0
-	fog.update(fake)
-	fake.fog = fog
-
-	var mask: PackedByteArray = FogViewRes.mask_for(cfg, fake, "p1")
-	eq(mask.size(), map.cols * map.rows, "掩码长度 = 地图格数")
-	eq(int(mask[map.terrain.idx(5, 2)]), 1, "有视野的格子在掩码里是 1")
-	eq(int(mask[map.terrain.idx(0, 0)]), 0, "没视野的格子在掩码里是 0")
-
-	# 烘出来的贴图：有视野 = 全透明、没视野 = 不透明（颜色由 modulate 给）
-	var img: Image = FogViewRes._bake(mask, map, map.cols, map.rows).get_image()
-	eq(img.get_width(), map.cols, "贴图宽 = 地图列数（1 像素 = 1 格）")
-	eq(img.get_height(), map.rows, "贴图高 = 地图行数")
-	near(img.get_pixel(5, 2).a, 0.0, 0.001, "★ 有视野的格子烘成全透明（不盖灰）")
-	near(img.get_pixel(0, 0).a, 1.0, 0.001, "★ 没视野的格子烘成不透明（盖灰）")
-
-	# ★ 地图外的格子（exists = false）不该被盖：那里本来什么都没有
-	map.exists.set_cell(0, 0, false)
-	var img2: Image = FogViewRes._bake(mask, map, map.cols, map.rows).get_image()
-	near(img2.get_pixel(0, 0).a, 0.0, 0.001, "★ 地图外的格子烘成透明（不在地图上盖灰）")
-
-	# 拿不到掩码时（fog 还没算过）返回全 0 = 全图盖灰（宁可盖住也不要「全图点亮」）
-	var empty_fake := _make_fake(cfg, map, ["p1", "enemy"])
-	var empty: PackedByteArray = FogViewRes.mask_for(cfg, empty_fake, "p1")
-	eq(empty.size(), map.cols * map.rows, "没有 fog 时也返回正确长度的掩码")
-	eq(int(empty[map.terrain.idx(5, 2)]), 0, "★ 没有 fog 时掩码全 0（整屏盖灰，而不是全亮）")
-
-
-# ------------------------------------------------------------------
 # 12) ★ 被迷雾盖住的敌人不能被选中 / 不能被点名攻击
 # ------------------------------------------------------------------
 
@@ -798,15 +758,20 @@ func _test_game_scene_wires_fog() -> void:
 		main.queue_free()
 		return
 
-	# ---- 场景里真的有一个迷雾节点，而且排在地形之上、单位之上、覆盖层之下 ----
-	ok(game.fog_view != null, "★★ GameScene 里建出了 FogView（灰色遮罩那一层）")
-	ok(game.fog_view.z_index > game.terrain_view.z_index,
-		"★ 遮罩盖在地形之上（z_index %d > %d）"
-		% [game.fog_view.z_index, game.terrain_view.z_index])
-	ok(game.fog_view.z_index > game.unit_view.z_index,
-		"★ 遮罩盖在单位之上（看不见的敌人本来也不画，但灰要压在看得见的东西上）")
-	ok(game.fog_view.z_index < game.overlay.z_index,
-		"★★ 遮罩在覆盖层之下 —— 自己的移动标记 / 框选矩形不被雾吃掉")
+	# ---- 场景里真的有一层迷雾，而且**压在地面之上、覆盖层之下** ----
+	#
+	# ★★ 判据（早先断的是 2D 场景树的 `z_index` 堆叠序，那套已随 2D 栈删除）：
+	#   地面层与覆盖层都必须建出来，迷雾是地面层的一部分。缺一个就该红。
+	ok(game.ground != null, "★★ 场景里建出了地面层（迷雾是它的一部分）")
+	ok(game.overlay != null, "★★ 场景里建出了覆盖层（标记 / 拖框在它上面）")
+	var fog_layer = game.ground._fog_mesh if game.ground != null else null
+	ok(fog_layer != null, "★★ 地面层里有独立的迷雾层（灰色遮罩那一层）")
+	if fog_layer != null:
+		# 迷雾层与地面层必须**各自一块平面**（烘在同一张图里就得每帧重烘地形，见 ground_view 的说明）
+		ok(fog_layer != game.ground._mesh, "★ 迷雾是独立的一块平面（不与地面共用 mesh）")
+		ok(fog_layer.position.y > game.ground._mesh.position.y,
+			"★ 迷雾抬在地面之上（抬高 %.1f，避免 z-fighting）"
+			% (fog_layer.position.y - game.ground._mesh.position.y))
 
 	# ---- 世界有迷雾，而且**进游戏第一帧之前**就算过了 ----
 	var w = game.world
@@ -818,9 +783,18 @@ func _test_game_scene_wires_fog() -> void:
 			ok(w.fog.tile_visible(w.my_faction, base_b.tx, base_b.ty),
 				"★ 家里那一块有视野（开局屏上不是一整片灰）")
 
-	# ---- 遮罩真的发出了绘制指令（可数的痕迹）----
-	game.fog_view._draw()
-	eq(game.fog_view.draw_count, 1, "★★ 迷雾层发出一张铺满地图的遮罩（一次 draw_texture_rect）")
+	# ---- 迷雾贴图真的烘出来了（可数的痕迹）----
+	# ★ 判据从「2D 的 draw_count == 1」换成「贴图尺寸与一个可数的烘图次数」：
+	#   3D 那层是「每格 FOG_PX_PER_TILE 像素」的贴图 + 一块平面，不是每次 draw 一次矩形。
+	if game.ground != null and game.ground._fog_tex != null:
+		var fsz: Vector2i = game.ground._fog_tex.get_size()
+		eq(fsz.x, int(w.map.cols) * GroundRes.FOG_PX_PER_TILE,
+			"★★ 迷雾贴图铺满整张地图（宽 = 格数 × 每格像素）")
+		eq(fsz.y, int(w.map.rows) * GroundRes.FOG_PX_PER_TILE,
+			"★★ 迷雾贴图铺满整张地图（高 = 格数 × 每格像素）")
+		ok(game.ground.fog_bake_count > 0, "★ 迷雾贴图真的烘过（烘图次数 > 0）")
+	else:
+		ok(false, "拿不到迷雾贴图（`ground._fog_tex` 是 null —— 迷雾层没建出来）")
 
 	# ---- 单位视图真的按迷雾剔除：把敌人的位置搬到「没视野」的角落再看 ----
 	var uv = game.unit_view

@@ -33,7 +33,11 @@
 extends Control
 
 const ConfigRes = preload("res://logic/config.gd")
-const PaletteRes = preload("res://view/palette.gd")
+
+## ★★ 3D 投影助手（`view/palette.gd` 的实例，持有 `Camera3D`）。
+##   小地图的「视野框 / 点击跳转」全靠它把屏幕像素换成格 —— 这是**唯一**的路线
+##   （2D 遗留路线已随 2D 栈删除；`setup` 时必须给）。
+var palette = null
 const BuildingRes = preload("res://logic/building.gd")
 
 ## 视野框：里面叠一层很淡的白（让「我现在看的是这一块」一眼可见），外面描一圈亮白边。
@@ -98,10 +102,13 @@ var _c_mountain: Color
 var _color_cache: Dictionary = {}
 
 
-func setup(p_cfg: ConfigRes, p_world, p_camera_rig) -> void:
+func setup(p_cfg: ConfigRes, p_world, p_camera_rig, p_palette) -> void:
 	cfg = p_cfg
 	world = p_world
 	camera_rig = p_camera_rig
+	# ★★ 3D 投影助手（`view/palette.gd` 的实例，持有 Camera3D）—— **必需**：
+	#    「视野框」与「点击跳转」全靠它把屏幕像素换成格（2D 回退已随 2D 栈删除）。
+	palette = p_palette
 	mouse_filter = Control.MOUSE_FILTER_STOP      # 点在小地图上 = 移动镜头，不许穿到地图上
 	focus_mode = Control.FOCUS_NONE
 	_c_grass = cfg.color("grass")
@@ -147,52 +154,113 @@ func to_world(local_pos: Vector2) -> Vector2:
 	return (local_pos - origin()) / s
 
 
-## 整张地图在小地图控件里的矩形（画地形时按格铺，这里只用来画外框）
+## 整张地图在小地图控件里的**外接框**（留边计算与用例的 bounds 用它）。
 func map_rect() -> Rect2:
 	if world == null or world.map == null:
 		return Rect2()
-	var s := scale()
-	return Rect2(origin(), Vector2(float(world.map.cols), float(world.map.rows)) * s)
+	return _aabb_of(_map_diamond())
 
 
-## ★ 玩家当前的视野框（世界坐标，格）。
+## ★★ 地图的**菱形**在小地图控件里的四个顶点（顺序：右 → 下 → 左 → 上）。
 ##
-## ★★ 为什么读 `cam.position` 而不是 `cam.get_screen_center_position()`（实测踩过）：
-##   后者返回的是**上一帧渲染时**记下的屏幕中心 —— 刚改完 `cam.position` 的那一帧里，
-##     `cam.position` = (864, 704) 而 `get_screen_center_position()` = (772.5, 260.5)（旧值），
-##     于是视野框要等下一帧才挪。本控件与点击都要求「本帧就一致」，
-##     所以这里读 `cam.position`（相机是锚点居中，屏幕中心就是它）。
-##   ⚠️ 这也意味着：**别**给相机开 `position_smoothing` ——
-##     一开，`cam.position` 就变成「目标点」而不是「屏幕中心」，两者会差一段平滑距离，
-##     这个框会跑到画面之外（真要开平滑，这里得跟着改成读平滑后的值）。
+## 为什么需要它：主视图现在把地图画成一个斜放的大菱形，小地图若还画成矩形，
+## 就会出现「点小地图的角 → 镜头跳到一个不属于地图的点」这种错位
+## （实测：点 AABB 左上角，相机夹取把它拉回 (0,0)，与点击意图不符）。
+## ★ 小地图的**格子仍然是正放的小方块**（更好读），只有地图的**整体外沿**是菱形 ——
+##   这与「一个格子在屏幕上是什么形状」是两件事：前者是地图轮廓，后者才是投影。
+func _map_diamond() -> PackedVector2Array:
+	if world == null or world.map == null:
+		return PackedVector2Array()
+	var m = world.map
+	var corners: Array = [Vector2(float(m.cols), 0.0), Vector2(float(m.cols), float(m.rows)),
+		Vector2(0.0, float(m.rows)), Vector2.ZERO]
+	var out := PackedVector2Array()
+	for c in corners:
+		out.append(to_minimap(c))
+	return out
+
+
+## 一个多边形的轴对齐包围盒
+static func _aabb_of(poly: PackedVector2Array) -> Rect2:
+	if poly.is_empty():
+		return Rect2()
+	var mn := poly[0]
+	var mx := poly[0]
+	for p in poly:
+		mn = mn.min(p)
+		mx = mx.max(p)
+	return Rect2(mn, mx - mn)
+
+
+## ★ 玩家当前的视野框（**世界像素**口径）。
 ##
-## 视野大小 = 视口像素 / zoom（zoom 是放大倍数：越大看到的越少）。
-## ⚠️ 相机现在允许跑到地图边界上（clamp 到 [0, 地图宽]），所以这个框**会超出地图**，
-##    在小地图上就是压在留边上 —— 那是真实情况，照画。
+## ★★ 做法：把**视口四角**投到地面上，取它们的轴对齐包围盒。
+##    为什么不用「视口 / zoom」那套式子：那假设世界轴对齐，而 3D 相机是斜看的
+##    ⇒ 屏幕矩形映射回地面是个**梯形**，只能靠四角求包围盒（略大于真实可见区，
+##    这是刻意选的口径：宁可框大，也不能出现「屏幕上看得见、框里没框到」）。
+## ⚠️ 相机允许贴到地图边界，所以这个框**会超出地图**（在小地图上就是压在留边上）
+##    —— 那是真实情况，照画（裁剪在 `view_rect_local` 那一层做）。
 func view_rect_world() -> Rect2:
-	if camera_rig == null or camera_rig.cam == null:
+	var corners3 := _view_corners_logic()
+	if corners3.is_empty() or cfg == null:
 		return Rect2()
-	var cam: Camera2D = camera_rig.cam
-	var vp: Vector2 = camera_rig.get_viewport_rect().size
-	var zoom: Vector2 = cam.zoom
-	if zoom.x <= 0.0 or zoom.y <= 0.0:
-		return Rect2()
-	var half: Vector2 = Vector2(vp.x / zoom.x, vp.y / zoom.y) * 0.5
-	var center: Vector2 = cam.position
-	return Rect2(center - half, half * 2.0)
+	var mn3: Vector2 = corners3[0]
+	var mx3: Vector2 = corners3[0]
+	for c in corners3:
+		mn3 = mn3.min(c)
+		mx3 = mx3.max(c)
+	var cell: float = cfg.cell_px
+	return Rect2(mn3 * cell, (mx3 - mn3) * cell)
 
 
 ## 视野框在小地图控件里的矩形。
 ##
 ## ⚠️ 单位陷阱（本文件真踩过）：`view_rect_world()` 给的是**世界像素**，而
-##    `to_minimap()` 收的是**格** —— 直接喂进去会白乘一个 cell_px²，
-##    框虽然还在（两处都放大了同样的倍数），但数值完全不对、稍微一改动就会跑飞。
-##    所以这里先除 cell_px 换成格，再交给 to_minimap，最后把**格的尺寸**乘 scale。
+##    `to_minimap()` 收的是**格** —— 直接喂进去会白乘一个 cell_px²。
+##    所以换算链永远是：世界像素 →（`palette.to_logic`）→ 格 →（`to_minimap`）→ 小地图像素。
+##
+## ★★ 菱形档的口径（与正放矩形那版**根本不同**，改之前先读）：
+##    世界是斜的 ⇒ 屏幕上那个**矩形视口**映射回世界是个**斜四边形**，
+##    而且它既不是轴对齐矩形、也不等于「视口宽 / 格宽」。
+##    所以这里**老老实实把视口四角投回格空间**，再取它们的轴对齐包围盒：
+##       屏幕四角 --(画布变换的逆)--> 世界像素 --(palette.to_logic)--> 格 --(取 AABB)
+##    ★ 包围盒是**略大于**真实可见区域（斜四边形的外接框），这是刻意选的口径：
+##      它保证「框里有的，屏幕上不一定看得见」而**不会**出现「屏幕上看得见、框里没框到」——
+##      对「我现在看的是哪一块」这个问题，宁可框大一点。
+##    ★ 小地图的**地形**仍然正俯视等比（更好读），只有这个框按真实投影算。
 func view_rect_local() -> Rect2:
-	var w := view_rect_world()
-	var cell: float = maxf(1e-6, cfg.cell_px)
-	var p := to_minimap(w.position / cell)          # 世界像素 → 格 → 小地图像素
-	return Rect2(p, (w.size / cell) * scale())
+	if camera_rig == null or cfg == null:
+		return Rect2()
+	var corners := _view_corners_logic()
+	if corners.is_empty():
+		return Rect2()
+	var mn := to_minimap(corners[0])
+	var mx := mn
+	for p in corners:
+		var q := to_minimap(p)
+		mn = mn.min(q)
+		mx = mx.max(q)
+	return Rect2(mn, mx - mn)
+
+
+## 视口四角在**格空间**里的位置（`view_rect_local` / `view_rect_world` 都用这一份）。
+##
+## ★ 屏幕像素 → `palette.to_logic()`：那是「从 Camera3D 往地面打射线求交」，
+##   **入参就是屏幕像素**，所以**不能**再过一次画布变换。
+##   ⚠️ 不许自己按「视口宽 / zoom / 格宽」推 —— 那是**正放**世界才成立的式子。
+func _view_corners_logic() -> Array:
+	if camera_rig == null or palette == null:
+		return []
+	var vp: Vector2 = camera_rig.get_viewport_rect().size
+	var out: Array = []
+	var corners: Array = [Vector2.ZERO, Vector2(vp.x, 0.0), vp, Vector2(0.0, vp.y)]
+	for sp: Vector2 in corners:
+		var lg = palette.to_logic(sp)
+		# ⚠️ 射线打不到地面时（相机贴地平线）跳过这一角，而不是塞一个 (0,0)：
+		#    塞零会让包围盒里凭空多出地图左上角，视野框整个错位。
+		if lg != null:
+			out.append(lg)
+	return out
 
 
 ## ★★ 真正被画出来的那个视野框：`view_rect_local()` 裁到地图矩形里。
@@ -533,12 +601,24 @@ func _follow_cursor() -> void:
 	_jump_to(_mouse_local)
 
 
-## 小地图局部坐标 → 镜头位置。★ 世界（格）→ 世界（像素）走 palette
-## （**唯一**的换算入口，本文件不自己乘 cell_px），点击与拖动共用这一条。
+## 小地图局部坐标 → 镜头位置。
+##
+## ★★ 把**格坐标**交给相机替身的 `center_on_tile`（`CameraFacade` 有它）。
+##   为什么必须这样（实测抓到过真 bug）：原来那条 `center_on_px(格 × cell_px)`
+##   把**世界像素**当成了**屏幕像素** —— 在旧的正放 2D 世界里这两个坐标系恰好重合
+##   所以「能用」，换成 3D 相机之后不重合 ⇒ 点小地图会落到别的一格（实测最大误差 **15.06 格**）。
+##
+## ★ 判据：**「格 → 屏幕」这条换算只能由知道相机的那一层做**。
+##   小地图手里是格，就该把格交出去；不要在一个不知道相机的地方自己乘 cell_px。
 func _jump_to(local_pos: Vector2) -> void:
 	if camera_rig == null:
 		return
-	camera_rig.center_on_px(PaletteRes.to_px(to_world(local_pos), cfg))
+	var tile: Vector2 = to_world(local_pos)
+	# ⚠️ `camera_rig` 是无类型引用 ⇒ 只能走 `has_method` 运行时判据：
+	#    直接写 `camera_rig.center_on_tile(...)` 会**编译期**报
+	#    「Nonexistent function」并把整个文件拖成 Compilation failed（实测踩过）。
+	if camera_rig.has_method("center_on_tile"):
+		camera_rig.center_on_tile(tile)
 
 
 # ------------------------------------------------------------------

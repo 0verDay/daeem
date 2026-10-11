@@ -315,74 +315,62 @@ func _group_merge(cfg) -> void:
 
 	# AI 名单：关卡写了 ai 的优先；没写的照旧吃 config（**向后兼容**）
 	var stub: Array = [
-		{"id": "E1", "base": Vector2i(1, 1), "resource_mult": 9.0, "start_food": 7.0, "start_gold": 7.0},
-		{"id": "CONF", "base": Vector2i(2, 2), "resource_mult": 2.0, "start_food": 1.0, "start_gold": 1.0},
+		{"id": "CONF", "base": Vector2i(2, 2)},
 	]
 	var lv4 = _load_level(cfg, "merge_ai", {})
 	var roster: Array = lv4.merged_ai_factions(stub)
 	var ids: Array = []
 	for e in roster:
 		ids.append(String((e as Dictionary)["id"]))
-	ok(ids.has("E1"), "关卡写了 ai 的 E1 在名单里")
+	ok(ids.has("F2"), "关卡点名过的 F2 在名单里")
 	ok(ids.has("CONF"), "关卡没写的阵营照旧吃 config（向后兼容）")
 	for e in roster:
 		var it: Dictionary = e
+		# ★ 本轮：名单条目**不再有** resource_mult / start_food / start_gold（AI 没有资源库）。
+		ok(not it.has("resource_mult"), "★ 名单条目不再带 resource_mult（%s）" % String(it["id"]))
+		ok(not it.has("start_food"), "★ 不再带 start_food")
+		ok(it.has("garrison_ai"), "有 garrison_ai 覆盖位")
+		ok(it.has("reddot_ai"), "有 reddot_ai 覆盖位")
+		ok(it.has("spawn_region"), "有 spawn_region（红点生成区域）")
 		if String(it["id"]) == "F2":
-			# ★ 断言的是**关系**，不是调平衡用的那几个数字：
-			#   「关卡写了的就用关卡那一份」= 与关卡数据里的值一致，且**不等于** config 的 9.0。
-			#   ⚠️ 原来这里写死 1.6 / 700：那种断言会在**改关卡难度**时假红，
-			#   而它想钉的其实是「覆盖规则走的是关卡那一份」（实测踩到）。
-			var f2_meta: Dictionary = lv4.faction_config("F2")
-			near(float(it["resource_mult"]), float(f2_meta["resource_mult"]), 0.001,
-				"★ 关卡写了 ai 的用关卡的倍率（随关卡数据）")
-			near(float(it["start_food"]), float(f2_meta["start_food"]), 0.001,
-				"关卡的开局资源（随关卡数据）")
-			ok(not is_equal_approx(float(it["resource_mult"]), 9.0),
-				"★★ 用的**不是** config 那一份（9.0）—— 这才是「关卡覆盖生效」的判据")
 			ok(bool(it["from_level"]), "关卡来的条目 from_level = true")
 		if String(it["id"]) == "CONF":
-			near(float(it["resource_mult"]), 2.0, 0.001, "config 的阵营用 config 的倍率")
 			ok(not bool(it["from_level"]), "config 来的条目 from_level = false")
 
 	# 关卡显式写 ai: none ⇒ **不进** AI 名单（明确关掉）
-	var lv5 = _load_level(cfg, "merge_ai_none", {"factions": [{"id": "E1", "ai": "none"}, {"id": "F1"}]})
+	var lv5 = _load_level(cfg, "merge_ai_none", {"factions": [{"id": "F2", "ai": "none"}, {"id": "F1"}]})
 	var ids5: Array = []
 	for e in lv5.merged_ai_factions(stub):
 		ids5.append(String((e as Dictionary)["id"]))
-	ok(not ids5.has("E1"), "★ 关卡写 ai: none ⇒ E1 不进 AI 名单（哪怕 config 里有它）")
+	ok(not ids5.has("F2"), "★ 关卡写 ai: none ⇒ F2 不进 AI 名单（哪怕 config 里有它）")
 	ok(ids5.has("CONF"), "其余 config 阵营照旧")
 
-	# 关卡写 ai: general ⇒ 进名单但**不是**阵营 AI（靠单位上的将领性 AI）
+	# 关卡旧值 ai: general / faction ⇒ 归一成 garrison（本轮重命名）
 	var lv6 = _load_level(cfg, "merge_ai_general", {
-		"factions": [{"id": "E1", "ai": "general", "base": [18, 10]}]})
+		"factions": [{"id": "F2", "ai": "general", "base": [18, 10]}]})
 	var mode6 := ""
 	for e in lv6.merged_ai_factions(stub):
-		if String((e as Dictionary)["id"]) == "E1":
+		if String((e as Dictionary)["id"]) == "F2":
 			mode6 = String((e as Dictionary)["ai"])
-	eq(mode6, "general", "关卡写 ai: general ⇒ 名单里 ai = general")
-	ok(not lv6.faction_ai_ids(stub).has("E1"), "★ ai: general 的不进「阵营 AI」那一份")
-	ok(lv4.faction_ai_ids(stub).has("E1"), "ai: faction 的进「阵营 AI」那一份")
+	eq(mode6, "garrison", "★ 旧值 ai: general ⇒ 名单里归一成 garrison")
 
-	# 关卡自己按阵营覆盖 AI 参数（波次节奏与规模在这里）
+	# 关卡写 ai: reddot ⇒ 进「红点 AI」那一份
+	var lv7 = _load_level(cfg, "merge_ai_reddot", {
+		"factions": [{"id": "F2", "ai": "reddot", "base": [18, 10]}]})
+	ok(lv7.reddot_ai_ids(stub).has("F2"), "★ ai: reddot 的进「红点 AI」那一份")
+	ok(not lv4.reddot_ai_ids(stub).has("F2"), "ai: garrison 的不进「红点 AI」那一份")
+
+	# 关卡 faction_config 带新的覆盖位（本轮：garrison_ai / reddot_ai / spawn_region）
 	var f2c: Dictionary = lv.faction_config("F2")
-	var fa: Variant = f2c["faction_ai"]
-	ok(typeof(fa) == TYPE_DICTIONARY, "关卡给 F2（红方攻方）配了 faction_ai")
-	if typeof(fa) == TYPE_DICTIONARY:
-		ok(float((fa as Dictionary)["attack_repeat_sec"]) > 0.0,
-			"出兵间隔是正数（实际 %s）" % str((fa as Dictionary)["attack_repeat_sec"]))
-		# ★★ `generals` 必须与「世界初始化给这一方建的将领数」一致
-		#   （`world.create_generals` 一次建 3 位）。写小了不会少建、写大了会无限增兵，
-		#   所以这条断言钉的是**两者对得上**，而不是某个具体数字。
-		eq(int((fa as Dictionary)["generals"]), 3,
-			"★ 这一方的将领数 = 世界初始化建的那 3 位（写别的值会让 AI 超额招将）")
-		ok(int((fa as Dictionary)["min_ready"]) >= 1,
-			"一波至少派 1 位（实际 %d）" % int((fa as Dictionary)["min_ready"]))
+	ok(f2c.has("garrison_ai"), "关卡 faction_config 带 garrison_ai 覆盖位")
+	ok(f2c.has("reddot_ai"), "关卡 faction_config 带 reddot_ai 覆盖位")
+	ok(f2c.has("spawn_region"), "关卡 faction_config 带 spawn_region")
 
 	# 派生入口
-	eq(String((lv.faction_config("F2") as Dictionary)["ai"]), "faction",
-		"faction_config 能读到 ai（红方是阵营性 AI）")
-	eq(String(lv.faction_config("F1")["ai"]), "general",
-		"★ 蓝方挂的是将领性（守家）AI —— 只守 c1 周边、不反推")
+	eq(String((lv.faction_config("F2") as Dictionary)["ai"]), "garrison",
+		"faction_config 能读到 ai（红方归一成阵地性 AI）")
+	eq(String(lv.faction_config("F1")["ai"]), "garrison",
+		"★ 蓝方也是阵地性（守家）AI —— 只守 c1 周边、不反推")
 	eq(String(lv.attack_target_of("F2").get("kind")), "zone",
 		"attack_target_of 读到红方的进攻目标（指向 c1）")
 	ok(lv.attack_target_of("F1") == null, "没写的阵营 → attack_target 是 null")
@@ -533,7 +521,7 @@ func _group_check(cfg) -> void:
 	var warn_cases: Array = [
 		# 14) 进攻目标指向自己的地（把 c1 划给 AI 那一方，它再打 c1 就是打自己的地）
 		[{"zones": [{"id": 4, "owner": "F2"}],
-			"factions": [{"id": "F2", "ai": "faction", "base": [10, 1],
+			"factions": [{"id": "F2", "ai": "reddot", "base": [10, 1],
 				"attack_target": {"kind": "zone", "zone": 4}}]}, "attack_target_own_land"],
 		# 16) 盟友表里有未定义的阵营
 		[{"allies": [["F1", "ZZ"]]}, "ally_unknown"],
@@ -560,7 +548,7 @@ func _group_check(cfg) -> void:
 	#    那些摆放单位指向的阵营就「没有定义」了 ⇒ 校验第 13 条会**正确地**报
 	#    `faction_unknown`（拦截），于是这条断言验的就不再是「进攻目标」那件事。
 	var lv3 = _load_level(cfg, "warn_no_target", {
-		"factions": [{"id": "E1", "ai": "faction", "base": [18, 10]}],
+		"factions": [{"id": "E1", "ai": "reddot", "base": [18, 10]}],
 		"start_units": [{"faction": "E1", "kind": "enemy", "x": 18, "y": 10}]})
 	var issues3: Array = lv3.check(cfg.ai_factions())
 	var found3 := ""

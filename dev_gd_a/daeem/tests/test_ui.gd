@@ -25,7 +25,6 @@ const RecruitQueueRes = preload("res://view/recruit_queue.gd")
 const TroopGridRes = preload("res://view/troop_grid.gd")
 const HoverTipRes = preload("res://view/hover_tip.gd")
 const FontLoaderRes = preload("res://view/font_loader.gd")
-const PaletteRes = preload("res://view/palette.gd")
 const UnitRes = preload("res://logic/unit.gd")
 const FactionRes = preload("res://logic/faction.gd")
 const BuildingRes = preload("res://logic/building.gd")
@@ -770,7 +769,15 @@ static func res_bar_label_name(short: String) -> String:
 #   真正容易写错的正是「谁先问谁」（见 `_unhandled_input` 里那段注释）。
 func _test_wheel_zoom_block(main) -> void:
 	var vp: Vector2 = main.hud.view_size()
-	var cam: Camera2D = main.cam
+	# ★ 缩放在**场景**上（`game.zoom` = 相机距离倍率，越大越远）—— 3D 是唯一外壳。
+	#   ⚠️ 判据必须读 `main.zoom`：`main` 就是游戏场景本身，而 `main.cam` 是 `Camera3D`
+	#     （**没有** `.zoom`）。历史上误写成 `var cam: Camera2D = main.cam` 会把整段
+	#     静默中断（见 pitfalls 10.7）。
+	var zoom_before_fn := func() -> float:
+		return float(main.zoom)
+	var reset_zoom_fn := func() -> void:
+		main.zoom = 1.0
+	reset_zoom_fn.call()
 	var on_bar: Vector2 = UiLayoutRes.panel_content_pos() + Vector2(8.0, 8.0)
 	var on_map := Vector2(vp.x * 0.5, vp.y * 0.4)
 
@@ -780,27 +787,27 @@ func _test_wheel_zoom_block(main) -> void:
 	ok(not main.hud.blocks_wheel_zoom(UiLayoutRes.MAP_RECT.get_center()),
 		"★ 小地图上照旧缩放（需求：除地图外）")
 
-	# ② 走一遍输入：底栏上滚 → zoom 不变；移出底栏再滚 → 恢复；再移回 → 又不缩放
-	cam.zoom = Vector2.ONE * 1.0
-	var z0: float = cam.zoom.x
+	# ② 走一遍输入：底栏上滚 → 缩放不变；移出底栏再滚 → 恢复；再移回 → 又不缩放
+	var z0: float = zoom_before_fn.call()
 	_send_wheel(main, MOUSE_BUTTON_WHEEL_UP, on_bar)
-	near(cam.zoom.x, z0, 1e-6, "★ 鼠标在底栏上滚轮 → 被吃掉，地图不缩放")
+	near(zoom_before_fn.call(), z0, 1e-6, "★ 鼠标在底栏上滚轮 → 被吃掉，地图不缩放")
 	_send_wheel(main, MOUSE_BUTTON_WHEEL_UP, on_map)
-	ok(cam.zoom.x > z0, "★ 鼠标移出底栏（回到地图上）→ 滚轮恢复缩放（不是一次性开关）")
-	z0 = cam.zoom.x
+	ok(absf(zoom_before_fn.call() - z0) > 1e-6,
+		"★ 鼠标移出底栏（回到地图上）→ 滚轮恢复缩放（不是一次性开关）")
+	z0 = zoom_before_fn.call()
 	_send_wheel(main, MOUSE_BUTTON_WHEEL_UP, UiLayoutRes.card_cell_rect(0).get_center())
-	near(cam.zoom.x, z0, 1e-6, "★ 再移回底栏（命令卡）→ 又不缩放")
+	near(zoom_before_fn.call(), z0, 1e-6, "★ 再移回底栏（命令卡）→ 又不缩放")
 	# 向下滚同样被吃（两个方向都拦）
-	z0 = cam.zoom.x
+	z0 = zoom_before_fn.call()
 	_send_wheel(main, MOUSE_BUTTON_WHEEL_DOWN, on_bar)
-	near(cam.zoom.x, z0, 1e-6, "★ 向下滚在底栏上也不缩放")
+	near(zoom_before_fn.call(), z0, 1e-6, "★ 向下滚在底栏上也不缩放")
 	# 左键照旧是「选中 / 放置」，没有被这条规则连带吃掉
 	var left := InputEventMouseButton.new()
 	left.button_index = MOUSE_BUTTON_LEFT
 	ok(not main._is_wheel(left), "★ 这条规则只认滚轮：左键不会被它吞掉")
 	ok(main._is_wheel(_wheel_event(MOUSE_BUTTON_WHEEL_DOWN)),
 		"滚轮向下也被认出来（两个方向都拦）")
-	cam.zoom = Vector2.ONE * 1.0
+	reset_zoom_fn.call()
 
 
 func _wheel_event(button: int, pos: Vector2 = Vector2.ZERO) -> InputEventMouseButton:
@@ -813,6 +820,17 @@ func _wheel_event(button: int, pos: Vector2 = Vector2.ZERO) -> InputEventMouseBu
 
 func _send_wheel(main, button: int, pos: Vector2) -> void:
 	main._unhandled_input(_wheel_event(button, pos))
+
+
+## 「相机现在看向地面上的哪一个点」。
+##
+## ★ 判据 = 「屏幕中心对着的那个地面点」（`_ground_under_screen(_view_center())`，
+##   与产品代码同一条链路）。不要读 `main.cam.position` —— 那是 `Camera3D` 的世界坐标，
+##   与「画面中心对着哪一格」差一个偏移。
+func _camera_look_point(main) -> Vector3:
+	# ⚠️ 必须走**产品那一条**换算，不要自己算 —— 它是「打一条射线求交」，
+	#    见 game_scene3d._ground_under_screen 的说明。
+	return main._ground_under_screen(main._view_center())
 
 
 # ---- 提示行（红字）：住在右栏数值框下面那条 20px 里，出现时不改任何一块的几何 ----
@@ -1000,12 +1018,18 @@ func _test_squad_rows(main) -> void:
 	# 点第 3 槽 = 选中将领 3 的整队；★ 镜头不动
 	var g3 = world.unit_by_id("general-3")
 	ok(g3 != null, "有 general-3")
-	var cam_before: Vector2 = main.cam.position
+	# ★★ 「镜头不动」的判据也按外壳分流：3D 的相机是 `Camera3D`，它的 `position` 是
+	#   **`Vector3`** —— 原来写 `var cam_before: Vector2 = main.cam.position` 会抛
+	#   `Trying to assign value of type 'Vector3' to a variable of type 'Vector2'`
+	#   并静默中断这一段。而且 `main.cam` 本身是 2D 外壳的字段（3D 外壳没有）。
+	#   ⇒ 比的是「相机看向的地面点」，两条外壳都成立（3D 走 `_ground_under_screen`）。
+	var cam_before: Vector3 = _camera_look_point(main)
 	panel.slot_button(2).emit_signal("pressed")
 	eq(main.input_ctrl.selected_units.size(), world.group_of(g3).size(),
 		"点部队行 = 选中整队（%d 个）" % world.group_of(g3).size())
 	eq(main.input_ctrl.selected_units[0].id, g3.id, "整队的队长排在第一个")
-	eq(main.cam.position, cam_before, "★ 点部队行只选中，镜头不动（需求原话）")
+	ok(_camera_look_point(main).is_equal_approx(cam_before),
+		"★ 点部队行只选中，镜头不动（需求原话）")
 	ok(panel.slot_active(2), "当前选中的队伍在列表里高亮")
 
 	# 空槽点了什么也不做
@@ -3462,9 +3486,12 @@ func _place_unit(world, u, at: Vector2) -> void:
 	u.sync_tile(world.map)
 
 
-## 世界坐标（格）→ 视口坐标（给假鼠标事件用）
+## 世界坐标（格）→ 视口像素（给假鼠标事件用）。
+##
+## ★ 3D 唯一路线：`palette.to_px`（`Camera3D.unproject_position`）——**不再是**「世界像素
+##   再过一次画布变换」那套（随 2D 栈删除）。
 func _world_to_screen(main, w: Vector2) -> Vector2:
-	return main.input_ctrl.get_viewport().get_canvas_transform() * PaletteRes.to_px(w, main.cfg)
+	return main.palette.to_px(w)
 
 
 func _sorted_ids(units: Array) -> Array:

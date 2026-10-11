@@ -508,7 +508,7 @@ func _read_buildings(v: Variant) -> Array[Dictionary]:
 ##   · faction 缺省 "enemy"；name 缺省 "测试敌人"
 ##   · hold = true → 不执行推进 AI（原地驻守）
 ##   · ★ zone = 归属的**区划 id**（本轮新增，给「将领性 / 防御性 AI」用）：
-##     写了它 → 这个单位由 logic/general_ai.gd 接管（在自己区划里巡逻，
+##     写了它 → 这个单位由 logic/garrison_ai.gd 接管（在自己区划里巡逻，
 ##     不追出区划，脱战满 10 秒无消耗招兵），**不再跑推进 AI**（与 hold 同一条效果）。
 ##     没写（-1）→ 行为与从前一字不差（守军靠 hold、巡逻兵照旧推进）。
 ## 坐标越界 / 落在山上的项在这里就丢掉（world 那边建不出来）。

@@ -102,7 +102,6 @@ const CommandRes = preload("res://logic/command_processor.gd")
 const UnitRes = preload("res://logic/unit.gd")
 const GridRes = preload("res://logic/grid.gd")
 const PathfinderRes = preload("res://logic/pathfinder.gd")
-const UnitViewRes = preload("res://view/unit_view.gd")
 const CombatRes = preload("res://logic/combat.gd")
 
 const DT := 1.0 / 60.0
@@ -180,7 +179,6 @@ func _initialize() -> void:
 		_bench_command(w, cfg, n_units, goal)
 		_bench_frames(w, n_frames)
 		_bench_idle(w, n_frames)
-	_bench_view(w, n_units)
 
 	# 参考负载（第二遍）：和第一遍比 —— 差得多说明环境变慢了，别把锅扣在游戏上
 	var ref1 := _calibrate()
@@ -254,7 +252,7 @@ func _bench_attack_move(w, cfg, n_units: int, n_frames: int) -> void:
 	for _i in n_frames:
 		w.tick(dt_step)
 	w.profile_on = false
-	for key in ["units", "units/combat", "units/step", "collision", "zones", "enemy_ai", "towers"]:
+	for key in ["units", "units/combat", "units/step", "collision", "zones", "ai", "towers"]:
 		print("[BENCH]   %-14s %8.3f ms/frame"
 			% [key, float(int(w.profile_us.get(key, 0))) / 1000.0 / float(n_frames)])
 	var engaged := 0
@@ -337,7 +335,7 @@ func _bench_idle(w, n_frames: int) -> void:
 	w.profile_on = false
 
 	var order := ["units", "units/combat", "units/reclaim", "units/step",
-		"collision", "zones", "enemy_ai", "towers"]
+		"collision", "zones", "ai", "towers"]
 	for key in order:
 		print("[BENCH]   %-14s %8.3f ms/frame"
 			% [key, float(int(w.profile_us.get(key, 0))) / 1000.0 / float(n_frames)])
@@ -346,23 +344,13 @@ func _bench_idle(w, n_frames: int) -> void:
 
 
 # ------------------------------------------------------------------
-# 渲染：这里**量不到**真实绘制（Godot 不允许在 _draw() 之外调 draw_*，
-# 而无头模式也没有 GPU），所以只陈述结构事实 + 排出重画的次数。
+# 渲染：**不在这里量**。
 #
-# ★ 真正的差别在结构上：旧实现是「每单位一个 Node2D + 每帧每单位一次 queue_redraw」，
-#   1000 单位 = 1000 个画布节点、1000 次 _draw 回调；现在是**一个** CanvasItem
-#   一次 _draw，外加屏幕外剔除。实机帧率要在游戏里看。
+# ★ 原实现挂的是 2D `unit_view.gd`（一个 CanvasItem 画全部单位）——
+#   它已随 2D 视图栈删除。3D 的单位层是 `unit_view_3d.gd`（MultiMesh 实例），
+#   渲染基准在 `tests/bench_fps_3d.gd`（分项计时 + draw call），
+#   本文件只管 `logic/` 的每帧成本。
 # ------------------------------------------------------------------
-
-func _bench_view(w, n_units: int) -> void:
-	var view = UnitViewRes.new()
-	view.setup(w.cfg, w)
-	view.sync(0.0)
-	print("[BENCH] -- view --")
-	print("[BENCH]   canvas nodes for %d units: %d   (旧实现：每单位一个 Node2D)"
-		% [n_units, view.get_child_count()])
-	print("[BENCH]   alive units: %d" % w.units.size())
-	view.free()
 
 
 # ------------------------------------------------------------------
@@ -580,8 +568,8 @@ func _bench_frames(w, n_frames: int) -> void:
 	# 阶段名 → 每帧平均毫秒。顺序按 tick() 里执行的先后排
 	# （"units/*" 是 units 的细分，算 total 差额时不能重复计入）
 	var order := ["zones", "economy", "recruit", "units", "units/combat", "units/reclaim", "units/step",
-		"towers", "enemy_ai", "collect", "collision"]
-	var top_level := ["zones", "economy", "recruit", "units", "towers", "enemy_ai", "collect", "collision"]
+		"towers", "ai", "collect", "collision"]
+	var top_level := ["zones", "economy", "recruit", "units", "towers", "ai", "collect", "collision"]
 	var accounted := 0.0
 	for key in order:
 		var ms := float(int(w.profile_us.get(key, 0))) / 1000.0 / float(n_frames)

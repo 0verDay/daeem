@@ -20,7 +20,6 @@ const WorldRes = preload("res://logic/world.gd")
 const PathfinderRes = preload("res://logic/pathfinder.gd")
 const CollisionRes = preload("res://logic/collision.gd")
 const BuildingRes = preload("res://logic/building.gd")
-const PaletteRes = preload("res://view/palette.gd")
 const FactionRes = preload("res://logic/faction.gd")
 
 const DT := 1.0 / 60.0
@@ -78,34 +77,10 @@ func _test_geometry(cfg) -> void:
 		ok(r.position.x >= float(b.tx) - 1e-6 and r.end.x <= float(b.tx) + 1.0 + 1e-6,
 			"%s 的本体没有越出自己的格子" % b.display_name())
 
-	# ★ 渲染矩形 = 碰撞矩形（同一个来源；各写一套内缩量迟早错位）
-	#
-	# ⚠️ 容差用 1e-4 而不是 1e-6：这两边是**两条不同的算式**
-	#    （一边 `cell_px*0.6`、一边 `cell_px - 2*cell_px*(1-0.6)*0.5`），
-	#    而 0.6 在二进制里是无限循环小数 —— 差额在 1e-6 量级。
-	#    断言的本意是「两者等价」，不是「逐位相同」（实测 38.400002 vs 38.400000）。
-	var px: Rect2 = PaletteRes.building_rect(base_b, cfg)
-	near(px.size.x, base_b.body_scale(cfg) * cfg.cell_px, 1e-4, "★ 大本营的渲染宽度 = 本体宽度（像素）")
-	near(px.size.y, base_b.body_scale(cfg) * cfg.cell_px, 1e-4, "★ 大本营的渲染高度 = 本体高度（像素）")
-	v2_near(px.get_center(), PaletteRes.to_px(base_b.center(), cfg), 1e-4, "★ 渲染矩形与本体同心")
-
-	# ★★ 真正被画出来的那个矩形是**节点局部坐标**的（节点原点 = 自己那一格的左上角）。
-	#    第一版就是这里错的：只取了绝对矩形的 size、从 (0,0) 开始画 →
-	#    城墙（1.0 格）看不出来，大本营 / 箭塔却贴到了格子左上角。
-	#    所以这条断言必须按**局部**矩形写，光验绝对矩形是不够的（吃过一次亏）。
-	var half: float = cfg.cell_px * 0.5
-	for b in [base_b, tower]:
-		var lr: Rect2 = PaletteRes.building_local_rect(b, cfg)
-		v2_near(lr.get_center(), Vector2(half, half), 1e-4,
-			"★★ %s 在格子里居中（渲染用的局部矩形，中心 = 格心）" % b.display_name())
-		near(lr.position.x, (cfg.cell_px - lr.size.x) * 0.5, 1e-4,
-			"%s 的左边距 = 右边距（留白对称）" % b.display_name())
-	var near_wall: Vector2i = _free_tile_near(w, base_b.tx - 3, base_b.ty)
-	var wall = w.add_building("wall", near_wall.x, near_wall.y, FactionRes.DEFAULT_FACTION)
-	if wall != null:
-		near(PaletteRes.building_rect(wall, cfg).size.x, cfg.cell_px, 1e-6, "城墙仍然填满整格")
-		v2_near(PaletteRes.building_local_rect(wall, cfg).get_center(), Vector2(half, half), 1e-6,
-			"城墙的局部矩形也居中（整格时中心同样是格心）")
+	# ★★ 原来这里还有一段「渲染四边形 = 碰撞本体（同一个 `body_scale`）」的断言 ——
+	#    它针对的是旧的 2D 菱形投影（`palette2d.building_poly` / `building_local_poly`），
+	#    已随 2D 栈删除。3D 下建筑是 BoxMesh、大小同样来自 `body_scale`，
+	#    由 `tests/test_view3d.gd` 的 `_test_buildings_multimesh` 覆盖。
 
 	# 线段判定：横穿本体 → 命中；擦着本体外面过 → 不命中
 	var r2: Rect2 = tower.body_rect(cfg)
@@ -367,9 +342,16 @@ func _test_map_outpost(cfg) -> void:
 		if b.owner == String(p["owner"]):
 			owner_ok += 1
 
-	eq(placed, prefab.size(), "★ 每一条预置建筑都真的建出来了（占格 / 山上会被静默跳过）")
+	# ★★ 本轮口径：地图里预置的 **AI 大本营不建**（只有玩家拥有大本营）——
+	#    期望的「建出来几条」要**扣掉**那些被跳过的 AI 大本营。
+	var expected := 0
+	for p in prefab:
+		if String(p["type"]) == "base" and not w.player_factions.has(String(p["owner"])):
+			continue
+		expected += 1
+	eq(placed, expected, "★ 每一条预置建筑都真的建出来了（AI 大本营除外，占格 / 山上会被静默跳过）")
 	eq(owner_ok, placed, "预置建筑的归属与地图里写的一致")
-	ok(kinds.has("base"), "预置据点里有大本营")
+	ok(not kinds.has("base"), "★ 预置据点里**没有**大本营（AI 的大本营已按本轮口径去掉）")
 	ok(kinds.has("tower"), "预置据点里有箭塔")
 	ok(kinds.has("wall"), "预置据点里有城墙")
 	ok(min_dist >= 6, "★ 预置据点离玩家大本营足够远（最近的一条 %d 格）" % min_dist)

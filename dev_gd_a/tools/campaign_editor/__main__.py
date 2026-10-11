@@ -132,9 +132,9 @@ def selftest(project_dir: Path, campaign_dir: Optional[str] = None) -> int:
              "、".join(config.general_label(i) for i in config.general_indices())))
     print("[config] 建筑：%s　区划种类：%s"
           % ("、".join(config.building_types), "、".join(config.zone_kinds)))
-    # ★★ 开局附属兵**没有**全局缺省了（`config.json` 的 `unit.general.escort` 已删）：
-    #    每个兵都在战役编辑器的摆放页里摆出来。自检下面会逐关把「摆了几个」数给你看。
-    print("[config] 开局附属兵：没有全局缺省 —— 在摆放页一个一个摆（`start_units[].escort_of`）")
+    # ★★ 开局附属单位**按将领的规格随机生成**（`start_units[].escort_count` / `escort_types`）：
+    #    自检下面会逐关把「摆了哪位将领、规格合计几个」数给你看。
+    print("[config] 开局附属单位：按将领的规格随机生成（`start_units[].escort_count` / `escort_types`）")
 
     maps = levelfile.maps_by_id(project_dir)
     if not maps:
@@ -178,23 +178,19 @@ def selftest(project_dir: Path, campaign_dir: Optional[str] = None) -> int:
                      model_mod.fmt_sec(float(obj.get("hold_sec", 0.0))),
                      len(lv.fail_conditions)))
             for e in lv.factions:
-                print("        · 阵营 %-8s ai=%-8s 大本营 %-8s 资源 ×%-4g 进攻目标 %s"
-                      % (e.fid, e.ai, e.base_label(), e.resource_mult,
+                print("        · 阵营 %-8s ai=%-8s 大本营 %-8s 进攻目标 %s"
+                      % (e.fid, e.ai, e.base_label(),
                          model_mod.target_label(e.attack_target)))
-            # ★★ 开局部队**就是摆出来的那些**（所见即所得）：把每方摆了几位将领 /
-            #    几个附属兵数出来，并说清楚「没摆的那一方运行时会自动补 3 位光杆将领」。
+            # ★★ 开局部队**按规格随机生成**（不再逐兵摆放）：把每方摆了几位将领、
+            #    它们的附属单位规格合计多少个兵数出来，并说清「没摆将领的一方运行时自动补 3 位」。
             for fid in lv.present_ids():
                 generals = model_mod.placed_generals(lv, fid)
-                escorts = [u for u in lv.start_units
-                           if str(u.faction) == fid and u.is_escort()]
-                if not generals and not escorts:
+                if not generals:
                     continue
-                if model_mod.faction_has_placed_escorts(lv, fid):
-                    rule = "运行时整个接管这一方（不再自动生成将领）"
-                else:
-                    rule = "运行时照样自动生成 3 位将领（这一方没摆附属部队）"
-                print("          开局部队：摆了 %d 位将领 + %d 个附属兵 —— %s"
-                      % (len(generals), len(escorts), rule))
+                specs = sum(max(0, int(g.escort_count)) for g in generals)
+                print("          开局将领：摆了 %d 位（附属单位规格合计 %d 个）"
+                      " —— 运行时整个接管这一方（不再自动生成将领）"
+                      % (len(generals), specs))
         issues = model_mod.validate_campaign(model, maps)
         blocks = model_mod.blockers(issues)
         warns = model_mod.warnings(issues)

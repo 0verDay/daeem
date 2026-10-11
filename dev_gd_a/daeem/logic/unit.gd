@@ -113,6 +113,20 @@ var hotkey: String = ""
 ## 单位总数只有几十个，代价可以忽略。
 var leader_id: String = ""
 
+## ★★ 这位将领的**附属单位规格**（本轮新增；只对「自己是队长」的单位有意义）。
+##
+## 需求原文：「生成满编的随机单位，附属到其旗下……种类和数量由配置决定」。
+##   · `retinue_target` = 目标编队规模（≤ 这位将领的编制上限 `cfg.general_cap_at`）；
+##     摆放的将领开局就生成到它，阵地 AI 脱战后补到它。
+##   · `retinue_types` = `[{ "type": <兵种 id>, "weight": <float> }]`，生成 / 补员时
+##     按权重抽兵种（权重的和在编辑器里必须为 1，运行时会按和归一化兜底）。
+##     ⚠️ 空表 = 没规格 → 补员退回「与该将领同兵种的兵」（旧行为）。
+##   · `-1` / 空 = 没设过：`world.escort_target_of()` 退回这一方的 `min_retinue`。
+## ★ 为什么挂在单位上：它天然属于某位将领（将领没了规格也没了），
+##   与 `train_*` / `garrison_*` 同一个理由（见文件里那几段说明）。
+var retinue_target: int = -1
+var retinue_types: Array = []
+
 ## 连续位置（格）
 var pos: Vector2 = Vector2.ZERO
 ## 所在地块缓存：只用于占区块 / 资源 / 箭塔 / 警戒判定
@@ -158,6 +172,15 @@ var settling: bool = false
 ## ★ 它只在一次 order_move_via_field 内部有效 —— 是**调用期的临时提示**，不是持久状态。
 var _field_tile: Vector2i = Vector2i(-1, -1)
 
+## 队形：本次命令的落点相对「点击点（= _field_tile）」的偏移（格）。
+##
+## ★★ 用途（本轮新增）：让整队**行进中也保持阵型**。路线取「到点击格的那条」，
+##   再把折线整体平移这个偏移 → 每个单位走一条平行路线，而不是所有人先汇聚到
+##   点击点再散开（那样行进中阵型就没了）。
+## ★ 与 `_field_tile` 同一个生命周期：调用期临时提示，不是持久状态。
+##   （ZERO = 不启用平移，路线仍按 `tile_path_via` 的「汇聚 + 散开」走 —— 行军攻击就是这样。）
+var _field_offset: Vector2 = Vector2.ZERO
+
 ## jam_timer：想走到终点、但每帧都被挤回来（进度被抵消）的累计时间。
 ##
 ## ★ 它解决的是「推挤能把单位推走的距离（一帧最多 ~0.25 格）远大于它自己的
@@ -201,6 +224,9 @@ var attack_cd: float = 0.0
 ##    `tick_near_death()` 里也要衰减一次（否则倒下那一刻的 1.0 会永远留着，
 ##    画面上就是「濒死的将领一直和某个单位连着一条线」，实测报回来的 bug）。
 var attack_flash: float = 0.0
+## ★★ 受击反应（本轮新增）：被打中时置 1，按 `combat.hit_flash_sec` 衰减回 0。
+## ★ 纯表现（视图拿它画「闪白 + 左右振动」），不进快照 —— 与 `attack_flash` 同一档。
+var hit_flash: float = 0.0
 var last_target = null        # 最近一次开火的目标单位（渲染攻击线用）
 var last_building = null      # 最近一次攻击的建筑（渲染攻击线用）
 var repath_timer: float = 0.0
@@ -326,7 +352,7 @@ var downed_anchor: Vector2 = Vector2.ZERO
 ## 用处：地图上摆几个「测试用守军」时，不希望它们开局就朝玩家据点行军。
 var hold_position: bool = false
 
-## ---- ★★ 将领性（防御性）AI 的归属（本轮新增，见 logic/general_ai.gd）----
+## ---- ★★ 将领性（防御性）AI 的归属（本轮新增，见 logic/garrison_ai.gd）----
 ##
 ## `garrison_zone_id` = 这个将领**负责的区划 id**（-1 = 不归任何将领性 AI 管）。
 ##
@@ -363,7 +389,7 @@ var combat_idle_timer: float = 0.0
 ##      原来只靠这个冷却挡抖动，而冷却是**按时钟**的 —— 冷却一结束，如果敌人还在
 ##      警戒半径里，它又追出去、又被叫回来，几分钟内来回抽。
 var retarget_cd: float = 0.0
-## ★★ 「我正在回家的路上」（见 logic/general_ai.gd 的返程那一段）。
+## ★★ 「我正在回家的路上」（见 logic/garrison_ai.gd 的返程那一段）。
 ##   它保证返程**只下一道命令**（不是每帧重下 —— 那会把路径一帧一帧重置、
 ##   人永远走不回家，看着就是在区划边缘原地抽）。走到家或来了新命令才清。
 var returning_home: bool = false
@@ -393,6 +419,14 @@ var chase_alert_range: float = 0.0
 var chase_stuck_timer: float = 0.0
 ## 上一帧的位置（只给 `chase_stuck_timer` 判「这一帧动没动」用）。
 var chase_last_pos: Vector2 = Vector2.ZERO
+## ★★ 「我正在赶去守**自己区划的中心**」（本轮新增的阵地 AI 状态）。
+##
+## 触发：自己所属区划的中心**正被敌对势力占领**（进度条属于敌对一方且还没退）。
+## 作用：立刻向中心下一道**行军攻击**命令，并跳过招募 / 巡逻 —— 命令只在
+##   **状态翻转的那一帧**下（每帧重下会把路径一帧一帧重置，人永远走不到）；
+##   威胁解除（敌人被杀光 / 走开、进度开始回落）才清掉、恢复巡逻。
+## ⚠️ 与巡逻状态一样**不进快照**：客机不跑 AI（与 patrol_* / chasing 同一口径）。
+var defending_center: bool = false
 ## 下一次检查「要不要无消耗招兵」还有几秒（把 O(附庸兵数) 的统计摊到几秒一次）。
 var garrison_recruit_timer: float = 0.0
 
@@ -557,7 +591,7 @@ func train_queue_size() -> int:
 
 ## 这个将领现在有**几个兵账**（= 队列里排着的 + 已经生成出来的附属兵）。
 ##
-## ★★ 「满员」的唯一判据就是它 —— 见 logic/general_ai.gd 与 faction_ai.gd：
+## ★★ 「满员」的唯一判据就是它 —— 见 logic/garrison_ai.gd 与 red_dot_ai.gd：
 ##   两边都用 `retinue_size() >= min_retinue` 判「补够了没有」，
 ##   各写一套「算不算满」迟早会漂开（一个看队列、一个不看，AI 就会永远补不满）。
 ## ★ 为什么两个都要算：「已经排上队、还在读条」的那几个**迟早会出来**，
@@ -569,7 +603,7 @@ func retinue_size(world) -> int:
 	return world.retinue_of(id, false).size() + train_queue_size()
 
 
-## 这个单位是不是「将领性（防御性）AI」管的驻防将领（见 logic/general_ai.gd）。
+## 这个单位是不是「将领性（防御性）AI」管的驻防将领（见 logic/garrison_ai.gd）。
 ## ★ 判据只有 garrison_zone_id 一处：地图写了 zone、或出生在某个区划里。
 func is_garrison() -> bool:
 	return garrison_zone_id >= 0
@@ -681,7 +715,16 @@ func move_to(world, cfg: ConfigRes, world_pt: Vector2, settle: bool = true) -> b
 			dest_tile = alt
 			dest_pt = GridRes.center_of(alt)
 
-	var tile_path = _tile_path(world, cfg, from, dest_tile)
+	# ★★ 阵型平移：`_field_offset != 0` 时，路线取「到点击格 _field_tile」的那条，
+	#    再把折线（除首点）整体平移这个偏移 —— 每个单位走一条平行路线，于是**行进中
+	#    保持阵型**，而不是先汇聚到点击点再散开（`tile_path_via` 的旧口径）。
+	#    ⚠️ 只有走 C# 共享距离场时才有意义：没有共享场时 `_tile_path` 本来就直连落点。
+	var formation_shift: bool = _field_offset != Vector2.ZERO and world.crowd != null
+	var tile_path = null
+	if formation_shift:
+		tile_path = world.crowd.tile_path(world, cfg, from, _field_tile, faction)
+	else:
+		tile_path = _tile_path(world, cfg, from, dest_tile)
 	if tile_path == null:
 		return false
 
@@ -689,6 +732,27 @@ func move_to(world, cfg: ConfigRes, world_pt: Vector2, settle: bool = true) -> b
 	var raw: Array[Vector2] = [pos]
 	for n in tile_path:
 		raw.append(GridRes.center_of(n))
+	if formation_shift and raw.size() > 1:
+		# 平移内部路点（首点 = 当前位置，不动）
+		for k in range(1, raw.size()):
+			raw[k] += _field_offset
+		# ★ 平移可能把路点推进山 / 墙 / 敌方建筑：逐点校验，一旦有点不可通行就整条
+		#   退回普通的「汇聚 + 散开」路线，保证不会把单位指进障碍。
+		var shifted_ok := true
+		for k in range(1, raw.size()):
+			if not PathfinderRes.passable(world.map, world.buildings, cfg,
+					floori(raw[k].x), floori(raw[k].y), faction):
+				shifted_ok = false
+				break
+		if not shifted_ok:
+			formation_shift = false
+			tile_path = world.crowd.tile_path_via(world, cfg, from, dest_tile, _field_tile, faction)
+			if tile_path == null:
+				return false
+			raw.clear()
+			raw.append(pos)
+			for n in tile_path:
+				raw.append(GridRes.center_of(n))
 	if tile_path.size() > 0:
 		raw[raw.size() - 1] = dest_pt
 	elif pos.distance_to(dest_pt) > EPS:
@@ -804,10 +868,16 @@ func _tile_path(world, cfg: ConfigRes, from: Vector2i, to: Vector2i) -> Variant:
 ##
 ## 为什么要有单独的入口而不是改 move_to 的签名：那个「借哪张场」只是**这一次调用**的
 ## 临时提示，不该变成单位上的持久状态（下一轮命令就作废了）。放在这里一进一出，最不容易忘。
-func order_move_via_field(world, cfg: ConfigRes, dest_pt: Vector2, field_tile: Vector2i) -> bool:
+##
+## ★ `offset`（本轮新增）：落点相对点击点 field_tile 的偏移。非零时 → move_to 走
+##   「平移路线」（保持阵型）；为零时 → 走旧的「汇聚 + 散开」（行军攻击用）。
+func order_move_via_field(world, cfg: ConfigRes, dest_pt: Vector2, field_tile: Vector2i,
+		offset: Vector2 = Vector2.ZERO) -> bool:
 	_field_tile = field_tile
+	_field_offset = offset
 	var ok := order_move(world, cfg, dest_pt)
 	_field_tile = Vector2i(-1, -1)
+	_field_offset = Vector2.ZERO
 	return ok
 
 
@@ -981,7 +1051,14 @@ func _find_arrival_slot(world, cfg: ConfigRes, want: Vector2, faction: String, f
 
 	# 收集候选，然后挑「离目标最近」的那个。加 horizon 是为了不把远处的空位也算进来。
 	var cands: Array[Vector2] = []
-	var horizon: float = maxf(step * 1.5, reach * 2.0)
+	# ★★ 搜索半径**至少够得着「离被占落点 need 格」的位置**（本轮修的真 bug）：
+	#    原来只有 `step * 1.5`（≈0.23 格），而最小间距 `need` 是 0.252 格 ——
+	#    于是「离占位者够远」的候选**全都落在 horizon 之外**、一个都收不进候选表，
+	#    函数返回 null、调用方只好仍用**原目标点** ⇒ 两个单位叠在同一点上，
+	#    被碰撞推开又走回来，来回挤很久才停（用户报的就是这个：两个将领点同一个点）。
+	#    `need + step` 保证「占位者站在 want 上」时，至少有一圈够远的候选可选；
+	#    选的时候仍然挑**离目标最近**的那个，所以手感不变（只是能真的让开）。
+	var horizon: float = maxf(need + step, maxf(step * 1.5, reach * 2.0))
 	var toward_self := pos - want
 	if toward_self.length() > 1e-6:
 		var back := toward_self.normalized()
@@ -1050,6 +1127,8 @@ func halt() -> void:
 ## ⇒ 凡是「要把它从『正常单位』切出去」的地方，都调一下这个函数。
 func clear_attack_fx() -> void:
 	attack_flash = 0.0
+	# 受击反应也是「一次性残留」：切出正常单位逻辑时一起清掉，免得冻在非零值上
+	hit_flash = 0.0
 	last_target = null
 	last_building = null
 
@@ -1323,6 +1402,7 @@ func take_damage(cfg: ConfigRes, world, amount: float, _source = null) -> bool:
 	#   ⚠️ 这一句同时兜住了「读条中被打断」：读条期间仍然免疫（用户拍板）。
 	if downed:
 		return true
+	hit_flash = 1.0          # ★ 受击反应：闪白 + 左右振动（视图读它，逻辑不用）
 	hp = maxf(0.0, hp - amount)
 	if hp <= 0.0 and alive:
 		# ★★ 将领先走「濒死」这条路：world 决定它到底是倒下去还是当场阵亡
@@ -1395,6 +1475,9 @@ func tick_near_death(cfg: ConfigRes, world, dt: float) -> void:
 	#    渲染就会一直画那条攻击线（见 `attack_flash` 的字段说明）。
 	if attack_flash > 0.0:
 		attack_flash = maxf(0.0, attack_flash - dt / cfg.flash_sec_safe)
+	# 受击反应同理（濒死这一支不跑 combat.update_unit，所以在这里衰减）
+	if hit_flash > 0.0:
+		hit_flash = maxf(0.0, hit_flash - dt / cfg.hit_flash_sec_safe)
 	# ★★ 顺序不能反：**先推进再起读条**（这一帧读完就站起来），
 	#    **再**跑全灭判定（有开关就跳过）。
 	#    ⚠️ 反过来（先判全灭）会让「正在读条的最后一帧」被全灭判定抢先生效 ——

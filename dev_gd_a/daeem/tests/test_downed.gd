@@ -752,9 +752,13 @@ func _test_ai(cfg) -> void:
 	ok(w != null, "（前提）带 AI 的世界能建出来")
 	if w == null:
 		return
-	ok(not w.ai_factions.is_empty(), "（前提）这一局确实有阵营 AI")
-
-	var ai_f: String = String((w.ai_factions[0] as Dictionary)["faction"])
+	# 找一个由 **AI 接管**的阵营（阵地性 / 红点性）—— 它的将领走同一套濒死 / 再起规则。
+	var ai_f := ""
+	for f in w.factions:
+		if w.ai_kind_of(String(f)) != "none":
+			ai_f = String(f)
+			break
+	ok(ai_f != "", "（前提）这一局确实有 AI 阵营")
 	var g = null
 	for u in w.units:
 		if u.alive and String(u.faction) == ai_f and u.is_general():
@@ -783,27 +787,18 @@ func _test_ai(cfg) -> void:
 			found = true
 	ok(found and listed > 0, "★★ 濒死的将领仍在世界单位表里、仍被算作这一方的将领（占槽位）")
 
-	# ---- ② 血量不到 10%：AI 不会下单（会白花钱）----
-	# ★★ 必须先把**所有**区划的产能清零：AI 的钱是「占领区划的产能」每帧加进去的
-	#    （见 faction_ai._income），不清的话下面那条「扣了多少」的断言会被收入淹没。
+	# ---- ② 血量不到 10%：AI 不会下单 ----
 	_no_income(w)
-	var pool: Dictionary = w.resource_pool_for(ai_f)
-	pool["food"] = 2000.0
-	pool["gold"] = 2000.0
 	var evts_early: Array = w.tick(DT)
 	ok(not g.is_reviving(), "★★ 血量不到 10% 时 AI 不会再起（与玩家同一个门槛）")
 	ok(_count_events(evts_early, "revive_started") == 0, "★ 这一帧没有下再起单")
 	# ⚠️ 这里**不**断言「AI 的钱一动没动」：AI 同时也在干别的事（招兵 / 升级），
 	#    那是它的正常经营，与本节无关。要钉的是「它没有下这一单」。
 
-	# ---- ③ 顶到 10%：AI 在下一帧自己花资源再起 ----
+	# ---- ③ 顶到 10%：AI 在下一帧自己再起（**无消耗** —— AI 没有资源库）----
 	_set_downed_hp(g, w.revive_ready_ratio())
-	var food_before: float = float(pool["food"])
 	var evts: Array = w.tick(DT)
-	ok(g.is_reviving(), "★★★ AI 在符合条件时自己花了资源让将领再起")
-	near(float(pool["food"]), food_before - float(w.revive_cost().get("food", 0.0)), 1e-3,
-		"★★ AI 花的是**它自己池子**里的钱（不是玩家的）")
-	near(w.resources["food"], 0.0, 1e-6, "★★ 玩家的钱一分没动")
+	ok(g.is_reviving(), "★★★ AI 在符合条件时自己让将领再起（无消耗）")
 	ok(_count_events(evts, "revive_started") >= 1, "★ 发了一条 revive_started")
 
 	# ---- ④ 跑完读条：AI 的将领重新可用 ----

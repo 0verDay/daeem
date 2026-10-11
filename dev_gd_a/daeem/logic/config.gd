@@ -37,6 +37,48 @@ var data: Dictionary = {}
 ##    （palette.to_px / tile_rect / unit_radius_px）。logic/ 里出现它 = 坐标单位混用的信号。
 ##    它放在这里而不是 view/，只是为了让所有可调数值集中在同一个 JSON 里。
 var cell_px: float = 128.0
+
+## ---- ★★ 斜俯视真透视（见 config.json 的 render._comment）----
+## ★★ 世界空间：逻辑格 (x, y) → 地面点 (x·cell_px, **0**, y·cell_px)。
+##    也就是「世界是一块水平地面，格是地面上的方格」，镜头在斜上方俯视。
+##    投影 = 视图矩阵 + 透视除法 ⇒ **近大远小**（参考图里墙呈梯形的唯一来源）。
+##    logic/ 依然完全不知道这件事：单位位置、半径、射程、寻路全都还是「格」。
+## ⚠️ 这些是**渲染常量**（与 cell_px 同性质），而且出现在每格每帧的内层循环里，
+##    必须走 _cache_scalars() 算好，不许用 cfg.num("render.camera_pitch_deg")。
+var cam_pitch: float = 0.0        # 俯角（弧度）
+var cam_height: float = 4000.0    # 镜头离地面高度（世界像素）
+var cam_fov: float = 0.0          # 竖直视场角（弧度）
+## 投影因子（`to_px` 内层循环直接用）：
+##   u = x / (A + y·B)   v = y / (A + y·B)     —— A、B 只跟 pitch / height / fov / 视口高有关
+##   推导：相机在 (0, H·cosθ, −H·sinθ) 朝原点俯视 θ；地面点 (x, 0, y) 经视图矩阵后
+##         z_cam = (A + y·B)，透视除法后 ndc_x = x / (z_cam·aspect·tan(fov/2))，ndc_y = −(v−1)
+##   于是屏幕像素 = (u·vp_w, v·vp_h)，其中视口比已并入 A。
+var proj_a: float = 1.0
+var proj_b: float = 0.0
+## 视口尺寸（投影的 ndc → 像素这一步用它；由 view 层在 setup 时喂进来）
+var proj_vp_w: float = 1920.0
+var proj_vp_h: float = 1080.0
+## 并入量（palette 做乘加时读它们，见 `_recompute_projection`）
+var proj_tan_half: float = 1.0
+var proj_aspect: float = 1.0
+var proj_vp_half: Vector2 = Vector2(960.0, 540.0)
+## 「相机在地面上的那一点」对应的竖直像素量（= H·cosθ）——
+## ★ 它决定**格 y = 0 那条线落在屏幕哪里**：为了让地面中心落在视口中心，
+##   palette.to_px 里减掉它（否则整张地图会整体偏上或偏下）。
+var proj_zero_y: float = 0.0
+## ★★ 投影后的**整体平移**（屏幕像素）——「让地图居中」用它。
+##
+## 为什么需要它：上面的推导把「格 y = 0」放在**视口中心**，于是整张地图
+##   （格 y ∈ [0, rows]）会整体落在屏幕**下半部分**（实测：22 行的图落在 y ≈ 1500~2400，
+##   而视口只有 1080 高 ⇒ 地图整个在屏幕外面，单位全被剔除）。
+##   修法不是改投影公式，而是**平移投影结果**：`proj_offset = 视口中心 − 地图中心`。
+##   game_scene 在开局算一次；测试要自己设（见 tests/test_case.gd 的 setup_projection）。
+var proj_offset: Vector2 = Vector2.ZERO
+## 建筑与单位按「脚下 Y」排前后（关掉 = 平铺层级，用来二分定位问题）
+var depth_sort: bool = true
+## 字 / 血条 / 选中光晕 / 地面标记**不被投影压扁**（屏幕 1:1）
+var ui_compensate: bool = true
+
 var cols: int = 24
 var rows: int = 16
 
@@ -99,6 +141,11 @@ var formation_spacing_scale: float = 1.15
 var formation_aspect: float = 1.6
 var formation_max_slots: int = 400
 
+## ---- 阵型分层：兵种「由前往后」的层次序（见 config.json 的 _tier_comment）----
+## 值越小越靠前。没登记的兵种取 formation_tier_default（默认 = 中间层）。
+var formation_tier_order: Dictionary = {}
+var formation_tier_default: int = 1
+
 ## ---- 寻路（A* 每个节点 / 每条线段都在读）----
 var path_diagonal: bool = true
 var path_diagonal_corner_cut: bool = false
@@ -126,11 +173,20 @@ var _general_types: Array = []
 var _general_stats: Array = []
 var _general_names: Array = []
 var _general_combat: Array = []
+## ★★ 每位将领的**编制上限**（config.json 的 `unit.general.caps`，与 types 同序）。
+##   它是「目标编队规模」：摆放的将领开局生成到它、阵地 AI 脱战补到它、
+##   红点将领的附属兵数也以它封顶（见 logic/expr.gd 与 tools/unit_editor）。
+##   ★ 缺省 / 越界一律 11（与界面那个常量 UNIT_CAP 同值，但两者暂时各自独立）。
+var _general_caps: Array = []
 ## 单位类型 id → 地图上显示的那**一个字**（config 的 `unit.types.<id>.icon`）。
 ## ★ 空串 = 配置里没写（`unit_icon_of` 退成名字的第一个字）。
 ## ★★ 它是**数据**而不是美术：设计师在单位编辑器里给每个兵种挑一个字，
 ##    新加的兵种也就有了自己的样子（见 view/unit_icon.gd 的文件头）。
 var _unit_icons: Dictionary = {}
+## ★★ 单位类型 id → 3D 立牌的**素材路径**（config 的 `unit.types.<id>.sprite`）。
+## ★ 空串 = 配置里没写 → 渲染层退回程序化剪影（见 view/unit_sprite_3d.gd 的 bake）。
+## ★ 与 `_unit_icons` 同一口径：**数据**而不是代码里的字面量，加兵种只改 JSON。
+var _unit_sprites: Dictionary = {}
 ## ★★ 开局**没有**任何「每位将领带几个兵」的全局缺省（本轮口径变更）。
 ##
 ## 原先是 `unit.general.escort`（一个数或一个数组）+ `general_escort_count()` /
@@ -180,7 +236,16 @@ var flash_sec: float = 0.22
 ## ★ 预计算：闪光衰减那句在**每单位每帧**的路径上，而 `maxf(0.01, cfg.flash_sec)`
 ##   每次都要算一遍常数。
 var flash_sec_safe: float = 0.22
+## ★★ 受击动效（闪白 + 左右振动）的时长（秒）——见 combat.hit_flash_sec。
+var hit_flash_sec: float = 0.18
+## 预计算：受击衰减那句在「每单位每帧」的路径上，别每次算 maxf(0.01, ...)。
+var hit_flash_sec_safe: float = 0.18
 var building_damage: float = 40.0
+## ★★ 射箭投掷物（远程单位 / 可攻击建筑）的飞行速度与时长夹取（见 logic/projectile.gd）。
+## ★ 预计算进字段：它们在「每枚投掷物每帧」的路径上，不许用 `cfg.num("combat....")`。
+var projectile_speed: float = 12.0
+var projectile_min_sec: float = 0.08
+var projectile_max_sec: float = 0.6
 ## ★★ 「测试敌人」的那几个数值字段（enemy_damage / enemy_range / enemy_cooldown /
 ##    enemy_speed / enemy_hp）**本次随单位类型一起删除**（用户口径：「把所有的『敌』
 ##    这个具体单位变成『长枪兵』」）。
@@ -197,6 +262,11 @@ var capture_time_sec: float = 32.0
 ## 历史：0.125 → 0.03125（需求「自然占领进度降低速度缩小为原来的 1/4」）。
 ## ⚠️ 与 capture_time_sec 的缩放倍数不同（1/4 vs 1/8），别顺手改成一样。
 var decay_per_sec: float = 0.03125
+## ★★ 占领半径（格）：**单位必须离区划中心的切比雪夫距离 ≤ 它**才算「在场」。
+##   1 ⇒ 3×3（中心格 + 周围 8 格，即需求里的「3x3」）；0 ⇒ 只有中心格本身。
+##   ⚠️ 中心格上通常立着「区划中心」那栋中立障碍 ⇒ 实际能站的是周围那 8 格。
+##   它同时管**读条方是谁 / 主人是否在场挡人 / 人走后进度回落**三处判定（同一口径）。
+var zone_capture_radius_tiles: int = 1
 ## ★★ 人数加成曲线的三个参数（见 zone.speed_multiplier / data/config.json 的 _capture_comment）：
 ##   · zone_speed_max_mult  —— 满编时趋近的倍率上限（x2）。
 ##   · zone_speed_curve_k   —— 归一化分母的常数：**越大越平缓**（要更多人才能接近上限）。
@@ -306,6 +376,21 @@ func _cache_scalars() -> void:
 	rows = int_val("grid.rows", 16)
 	cell_px = num("render.cell_px", 128.0)
 
+	# ★★ 斜俯视真透视（见字段声明处的注释）：
+	#   · pitch 夹在 [5°, 90°]：90 = 正俯视（proj_b 趋 0 ⇒ 退化成仿射），太小则地平线进画面；
+	#   · height / fov 只影响「一格占屏幕多大」，不影响逻辑。
+	cam_pitch = deg_to_rad(clampf(num("render.camera_pitch_deg", 55.0), 5.0, 89.0))
+	cam_height = maxf(1.0, num("render.camera_distance", 3600.0))
+	cam_fov = deg_to_rad(clampf(num("render.camera_fov_deg", 40.0), 5.0, 120.0))
+	_recompute_projection()
+	depth_sort = bool_val("render.depth_sort", true)
+	ui_compensate = bool_val("render.ui_compensate", true)
+
+	# ---- ⚠️ 以下这一段原本就在 `_cache_scalars()` 里 ----
+	#   ★ 一次大段替换曾把它与函数头切断，症状是
+	#     `Parse Error: Could not preload resource script "res://logic/config.gd"`
+	#     —— 它是全工程的依赖，一旦解析失败**所有**测试文件都变成 "Compilation failed"。
+	#     教训：改动长函数时，替换块的两端要落在**函数边界**上，别停在函数体中间。
 	camera_edge_size = num("camera.edge_size", 44.0)
 	drag_select_min_px = num("ui.drag_select_min_px", 6.0)
 	minimap_drag_min_px = num("minimap.drag_min_px", 4.0)
@@ -333,13 +418,17 @@ func _cache_scalars() -> void:
 	unit_push_idle_weight = num("unit.push_idle_weight", 0.2)
 
 	unit_jam_giveup_sec = num("unit.jam_giveup_sec", 2.4)
-	unit_settle_return_dist = num("unit.settle_return_dist", 0.22)
+	# ★★ 必须**明显大于碰撞一次能推开多少**（平衡时约 0.22~0.23 格），否则每帧都触发回位、
+	#    两个单位点同一个点时来回挤很久（见 config.json 的 _settle_comment）。
+	unit_settle_return_dist = num("unit.settle_return_dist", 0.5)
 	unit_settle_max_attempts = int_val("unit.settle_max_attempts", 3)
 
 	formation_min_units = int_val("unit.formation.min_units", 4)
 	formation_spacing_scale = num("unit.formation.spacing_scale", 1.15)
 	formation_aspect = maxf(1.0, num("unit.formation.aspect", 1.6))
 	formation_max_slots = int_val("unit.formation.max_slots", 400)
+	formation_tier_order = _load_tier_order()
+	formation_tier_default = int_val("unit.formation.tier_default", 1)
 
 	path_diagonal = bool_val("path.diagonal", true)
 	path_diagonal_corner_cut = bool_val("path.diagonal_corner_cut", false)
@@ -358,12 +447,21 @@ func _cache_scalars() -> void:
 	chase_direct_range = num("combat.chase_direct_range", 8.0)
 	flash_sec = num("combat.flash_sec", 0.22)
 	flash_sec_safe = maxf(0.01, flash_sec)
+	hit_flash_sec = maxf(0.01, num("combat.hit_flash_sec", 0.18))
+	hit_flash_sec_safe = maxf(0.01, hit_flash_sec)
 	building_damage = num("combat.building_damage", 40.0)
+	# ★★ 投掷物飞行（见 logic/projectile.gd）。速度必须 > 0，否则时长会除零；
+	#   时长的上下夹取保证「贴脸也看得见飞一下」且「远距离不飞太久」。
+	projectile_speed = maxf(0.1, num("combat.projectile_speed", 12.0))
+	projectile_min_sec = maxf(0.0, num("combat.projectile_min_sec", 0.08))
+	projectile_max_sec = maxf(projectile_min_sec + 0.001, num("combat.projectile_max_sec", 0.6))
 
 	zone_cols = int_val("zone.zone_cols", 6)
 	zone_rows = int_val("zone.zone_rows", 4)
 	capture_time_sec = num("zone.capture_time_sec", 32.0)
 	decay_per_sec = num("zone.decay_per_sec", 0.03125)
+	# ★ 占领半径（格）：负数当 0（只认中心格），保证 `update()` 里的邻域循环合法。
+	zone_capture_radius_tiles = maxi(0, int_val("zone.capture_radius_tiles", 1))
 	zone_speed_max_mult = num("zone.speed_max_mult", 2.0)
 	zone_speed_curve_k = num("zone.speed_curve_k", 2.5)
 	zone_speed_curve_power = num("zone.speed_curve_power", 1.7)
@@ -403,6 +501,41 @@ func _cache_scalars() -> void:
 	_cache_unit_types()
 
 
+## 视口尺寸变了就重算投影常数（view 层在 setup 时喂一次；窗口拉伸时再喂一次）。
+func set_viewport_size(w: float, h: float) -> void:
+	proj_vp_w = maxf(1.0, w)
+	proj_vp_h = maxf(1.0, h)
+	_recompute_projection()
+
+
+## 重算投影常数 —— **透视投影的唯一出处**（palette 只读这几个数）。
+##
+## 推导（相机在 (0, H·cosθ, +H·sinθ) 朝 −z 方向俯视 θ，地面是 y = 0）：
+##   地面点 P = (x, 0, y) 经视图矩阵（先平移 −cam，再绕 X 轴转）后：
+##       x_cam = x
+##       z_cam = H·sinθ − y·cosθ        （相机前方为正；格 y 越大离镜头**越近**）
+##   透视除法（竖直视场角 + 宽高比）：
+##       ndc_x = x_cam / (z_cam · aspect · tan(fov/2))
+##       ndc_y = (H·cosθ + y·sinθ) / (z_cam · tan(fov/2))
+##   屏幕像素：屏幕.x = vp_w/2·(1 + ndc_x)、屏幕.y = vp_h/2·(1 + ndc_y)
+##
+## ⚠️ 这一处是全项目「近大远小」的**唯一**来源：改 pitch / height / fov 只改这里，
+##    palette 的 to_px / to_logic 只是把它写成乘加与它的逆。
+func _recompute_projection() -> void:
+	proj_tan_half = tan(cam_fov * 0.5)
+	proj_aspect = proj_vp_w / maxf(1.0, proj_vp_h)
+	proj_vp_half = Vector2(proj_vp_w * 0.5, proj_vp_h * 0.5)
+	# A、B：深度 d = A + y_px·B（y_px = 格 y × cell_px）。
+	# ★★ 符号是**这一档最容易搞反的地方**（实测反过一次：近处格子反而更小）：
+	#    镜头在「地面 +z 那一侧」朝 −z 看 ⇒ 格 y 越大（越靠屏幕下方）离镜头**越近**，
+	#    所以深度里那一项必须是 **− y·cosθ**。
+	proj_a = cam_height * sin(cam_pitch)
+	proj_b = -cos(cam_pitch)
+	# 「相机看向地面上哪一点」的竖直量：格 y = 0 那条线要在视口中心
+	#   ⇒ 屏幕 y 的分子里保留 + y_px·sinθ（与 proj_b 的符号配套，见 palette.to_px）
+	proj_zero_y = cam_height * cos(cam_pitch)
+
+
 # ------------------------------------------------------------------
 # 单位类型（config.json 的 unit.types / unit.classes / unit.general）
 #
@@ -425,6 +558,7 @@ func _cache_unit_types() -> void:
 	_unit_types = {}
 	_unit_classes = {}
 	_general_types = []
+	_unit_sprites = {}
 
 	# 1) 兵种大类（unit.classes）：id → 显示名（带 / 不带远近两种说法）
 	var raw_classes: Variant = get_path_value("unit.classes")
@@ -470,6 +604,8 @@ func _cache_unit_types() -> void:
 			}
 			# 地图上那个字：没写这个键就是空串（`unit_icon_of` 会退成名字的第一个字）
 			_unit_icons[id] = String(td.get("icon", ""))
+			# 3D 立牌素材路径：没写就是空串（渲染层退回程序化剪影）
+			_unit_sprites[id] = String(td.get("sprite", ""))
 
 	# 3) 开局将领（general_N 同序）各自的类型
 	var types: Variant = get_path_value("unit.general.types")
@@ -480,6 +616,16 @@ func _cache_unit_types() -> void:
 				_general_types.append(sid)
 	if _general_types.is_empty() and _unit_types.has(UNIT_TYPE_SPEARMAN):
 		_general_types.append(UNIT_TYPE_SPEARMAN)
+
+	# 3.2) ★★ 每位将领的**编制上限**（config.json 的 `unit.general.caps`，本轮新增）。
+	#   与 types 同序；缺省 / 越界在 `general_cap_at()` 里统一退到 11。
+	_general_caps = []
+	var caps_raw: Variant = get_path_value("unit.general.caps")
+	if typeof(caps_raw) == TYPE_ARRAY:
+		for item in (caps_raw as Array):
+			if typeof(item) == TYPE_INT or typeof(item) == TYPE_FLOAT:
+				_general_caps.append(maxi(0, int(item)))
+
 	# ⚠️ 这里**不再读** `unit.general.escort`：本轮把「全局开局编制」整个删掉了
 	#    （开局有几个附属兵 = 关卡 `start_units[].escort_of` 摆了几个，
 	#     见本文件上面那段说明与 `Level.escort_leader_index()`）。
@@ -578,6 +724,40 @@ func is_general_kind(kind: String) -> bool:
 	return general_index_of(kind) >= 0
 
 
+## ★★ 宽松读一份「权重条目表」：每项保留它自己的标识键（附属单位用 `type`、
+##   将领类型用 `general`），并把 `weight` 归一成**非负 float**；坏项直接丢掉。
+##
+## ★ 为什么放在这里当**静态**工具：config 的 `ai.reddot.general_weights` /
+##   `ai.reddot.escort_types` 与关卡 `start_units[].escort_types` 是**同一种形状**，
+##   读法必须只有一份（否则「权重怎么算合法」会在两处慢慢漂开）。
+##
+## @return Array，每项 `{<原标识键>: ..., "weight": float}`（`weight` 一定存在）
+static func normalize_weight_list(v: Variant) -> Array:
+	var out: Array = []
+	if typeof(v) != TYPE_ARRAY:
+		return out
+	for item in (v as Array):
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		var d: Dictionary = item
+		var w: Variant = d.get("weight", null)
+		if typeof(w) != TYPE_INT and typeof(w) != TYPE_FLOAT:
+			continue
+		var e: Dictionary = d.duplicate(true)
+		e["weight"] = maxf(0.0, float(w))
+		out.append(e)
+	return out
+
+
+## ★★ 权重表里各项 `weight` 的和（编辑器校验「必须为 1」用；运行时用它做归一化分母）。
+static func weight_total(entries: Array) -> float:
+	var total := 0.0
+	for e in entries:
+		if typeof(e) == TYPE_DICTIONARY:
+			total += float((e as Dictionary).get("weight", 0.0))
+	return total
+
+
 ## 表里有没有这个单位类型
 func has_unit_type(id: String) -> bool:
 	return _unit_types.has(id)
@@ -606,6 +786,17 @@ func general_type_at(i: int) -> String:
 	if i < 0 or i >= _general_types.size():
 		return String(_general_types[0])
 	return String(_general_types[i])
+
+
+## ★★ 第 i 位将领（0 起）的**编制上限**（config.json 的 `unit.general.caps`）。
+##   缺省 / 越界一律 **11**（与界面常量 UNIT_CAP 同值）。
+##   ★ 累积 11 这个数是手玩定的：见 view/ui_layout.gd 的 UNIT_CAP 注释。
+const GENERAL_CAP_DEFAULT := 11
+
+func general_cap_at(i: int) -> int:
+	if i < 0 or i >= _general_caps.size():
+		return GENERAL_CAP_DEFAULT
+	return int(_general_caps[i])
 
 
 ## ⚠️ 这里原先还有两个「开局编制」的读法（本轮**整个删掉**）：
@@ -742,6 +933,18 @@ func unit_icon_of(id: String) -> String:
 	return "?"
 
 
+## ★★ 单位类型 id → **3D 立牌素材路径**（config 的 `unit.types.<id>.sprite`）。
+##
+## ★ 与 `unit_icon_of` 完全同一条口径：
+##   · 参数可以是**单位类型 id**，也可以是 kind（将领类会被换算成它所属的类型）；
+##   · 空串 = 没配 / 查不到类型 → 渲染层退回程序化剪影（见 view/unit_sprite_3d.gd 的 bake_asset）。
+##   ⇒ 这一层只回答「用哪个文件」，**不去加载资源**（config 是依赖图最底层，不碰 Texture）。
+func unit_sprite_of(id: String) -> String:
+	var tid := unit_type_of(id)
+	var v: Variant = _unit_sprites.get(tid, "")
+	return String(v) if typeof(v) == TYPE_STRING else ""
+
+
 ## 兵种大类：infantry（步兵）/ cavalry（骑兵）—— 「后续额外伤害」的主键
 func unit_class_of(id: String) -> String:
 	var e := unit_type_entry(id)
@@ -835,6 +1038,19 @@ func _read_cost(path: String) -> Dictionary:
 	if typeof(v) == TYPE_DICTIONARY:
 		return v
 	return {}
+
+
+## 读阵型分层表 `{"spearman":0,"longbowman":1,"rider":2}` → Dictionary[String,int]。
+## ★ 缺字段 / 类型不对 → 空字典（谁都没登记 ⇒ 全体走 formation_tier_default）。
+func _load_tier_order() -> Dictionary:
+	var v: Variant = get_path_value("unit.formation.tier_order")
+	var out: Dictionary = {}
+	if typeof(v) == TYPE_DICTIONARY:
+		for k in (v as Dictionary).keys():
+			var val = (v as Dictionary)[k]
+			if typeof(val) == TYPE_INT or typeof(val) == TYPE_FLOAT:
+				out[String(k)] = int(val)
+	return out
 
 
 # ------------------------------------------------------------------
@@ -1513,35 +1729,32 @@ func spec_time_sec(id: String) -> float:
 
 
 # ------------------------------------------------------------------
-# AI（config.json 的 ai 段）—— 本轮新增的两种 AI
+# AI（config.json 的 ai 段）—— 两种 AI：阵地性 / 红点性
 #
 # ★ 与科技 / 升级 / 区划那几张表同一条规矩：**载入时整理好、之后只读**。
-#   原因一样 —— 这几个数在「每帧每 AI / 每帧每驻防将领」的路径上，
-#   不该每次都 split(".") 下潜一遍 JSON。
 #
-# ★★ 分工（两套 AI 的规则分别在 logic/faction_ai.gd 与 logic/general_ai.gd）：
-#   · `ai.factions[]` —— **阵营 AI**：附属在哪个阵营（id）、大本营摆哪（base）、
-#     资源倍率（resource_mult，难度旋钮）、开局资源（start_food / start_gold）。
-#     它是一张**列表**：一张图上可以挂好几个阵营 AI，各带各的资源库。
-#   · `ai.faction`    —— 阵营 AI 的**行为参数**（招几个将领 / 补到几个人 / 多久试一次
-#                        招兵与升级 / 派兵门槛）。所有阵营 AI 共用这一份（要各自不同
-#                        就改这里、让它按 id 分流 —— 现在没有必要）。
-#   · `ai.general`    —— **将领性（防御性）AI** 的行为参数（巡逻间隔 / 巡逻半径 /
-#                        脱战多久算闲 / 多久查一次招兵 / 满员门槛）。
+# ★★ 分工（规则分别在 logic/garrison_ai.gd 与 logic/red_dot_ai.gd）：
+#   · `ai.factions[]` —— 全局兜底名单：一张图上可以点名几个 AI 阵营（id + 出生锚点）。
+#     它们默认是**阵地性 AI**（缺省 `ai` 字段 = "garrison"）。
+#   · `ai.garrison`  —— 阵地性 AI 的行为参数（巡逻间隔 / 半径 / 脱战多久算闲 /
+#                        多久查一次招兵 / 满员门槛）。
+#   · `ai.reddot`    —— 红点性 AI 的行为参数（冷却 / 每波将领数 / 每位满编数 / 生成半径 / 波数）。
 # ⚠️ 表是空的（老配置 / 手改删掉这一节）时**两种 AI 都不跑** —— 行为与加它们之前一致。
+# ⚠️ AI 阵营**没有资源库、没有大本营**（本轮口径）：`ai.factions[].base` 只是
+#    「将领出生锚点」，不建任何建筑；红点阵营靠关卡 `spawn_region` 刷兵。
 # ------------------------------------------------------------------
 
 ## 「每帧每 AI」的读取口：AI 的阵营表（只读，别改返回的数组）
 var _ai_factions: Array = []
 ## AI 的行为参数（整理成同一层字典，省得每帧下潜 JSON）。
-var _ai_faction_cfg: Dictionary = {}
-var _ai_general_cfg: Dictionary = {}
+var _ai_garrison_cfg: Dictionary = {}
+var _ai_reddot_cfg: Dictionary = {}
 
 
 func _cache_ai() -> void:
 	_ai_factions = []
-	_ai_faction_cfg = {}
-	_ai_general_cfg = {}
+	_ai_garrison_cfg = {}
+	_ai_reddot_cfg = {}
 
 	var raw: Variant = get_path_value("ai.factions")
 	if typeof(raw) == TYPE_ARRAY:
@@ -1552,74 +1765,80 @@ func _cache_ai() -> void:
 			var id := String(src.get("id", ""))
 			if id == "":
 				continue
-			# ⚠️ 玩家席位（p1…p8）**不许**出现在这里：那会变成「AI 接管玩家的资源池」，
-			#    玩家自己的招募就会开始花 AI 的钱（两边其实是同一个池子）。
+			# ⚠️ 玩家席位（p1…p8）**不许**出现在这里：那会变成「AI 接管玩家的阵营」。
 			var base := Vector2i(-1, -1)
 			var b: Variant = src.get("base", null)
 			if typeof(b) == TYPE_ARRAY and (b as Array).size() >= 2:
 				base = Vector2i(int((b as Array)[0]), int((b as Array)[1]))
 			_ai_factions.append({
 				"id": id,
+				# 出生锚点（不是大本营建筑）：用来算将领站位，见 map.spawn_layout_for。
 				"base": base,
-				# ★ 难度旋钮：1.0 = 与玩家同速；2.0 = 两倍产出
-				"resource_mult": maxf(0.0, float(src.get("resource_mult", 1.0))),
-				"start_food": maxf(0.0, float(src.get("start_food", 0.0))),
-				"start_gold": maxf(0.0, float(src.get("start_gold", 0.0))),
+				# 缺省是阵地性 AI；允许在这里点名 reddot（一般由关卡点名，不写这里）。
+				"ai": String(src.get("ai", "garrison")),
 			})
 
-	_ai_faction_cfg = {
-		"generals": maxi(0, int(num("ai.faction.generals", 3.0))),
-		"min_retinue": maxi(0, int(num("ai.faction.min_retinue", 3.0))),
-		"recruit_cooldown_sec": maxf(0.0, num("ai.faction.recruit_cooldown_sec", 1.0)),
-		"upgrade_cooldown_sec": maxf(0.0, num("ai.faction.upgrade_cooldown_sec", 5.0)),
-		"upgrade_reserve_food": maxf(0.0, num("ai.faction.upgrade_reserve_food", 0.0)),
-		"upgrade_reserve_gold": maxf(0.0, num("ai.faction.upgrade_reserve_gold", 0.0)),
-		"ready_mult": num("ai.faction.ready_mult", 0.5),
-		"min_ready": maxi(1, int(num("ai.faction.min_ready", 2.0))),
-		"attack_repeat_sec": maxf(0.1, num("ai.faction.attack_repeat_sec", 6.0)),
-		# ★★ 再起预留（本轮新增）：AI 判断「付得起再起」时，除了 revive.cost
-		#    还要多留这么多钱 —— 0 = 只要付得起就再起（见 faction_ai._try_revive）。
-		#    与 upgrade_reserve_* 同一条思路：调大 = 更愿意保住将领而不是乱花钱。
-		"revive_reserve_food": maxf(0.0, num("ai.faction.revive_reserve_food", 0.0)),
-		"revive_reserve_gold": maxf(0.0, num("ai.faction.revive_reserve_gold", 0.0)),
-	}
-	_ai_general_cfg = {
-		"patrol_interval_sec": maxf(0.1, num("ai.general.patrol_interval_sec", 4.0)),
-		"patrol_leash_tiles": maxf(1.0, num("ai.general.patrol_leash_tiles", 1.0)),
-		"combat_idle_sec": maxf(0.0, num("ai.general.combat_idle_sec", 10.0)),
-		"retarget_cooldown_sec": maxf(0.0, num("ai.general.retarget_cooldown_sec", 5.0)),
-		"recruit_check_sec": maxf(0.1, num("ai.general.recruit_check_sec", 2.0)),
-		"min_retinue": maxi(0, int(num("ai.general.min_retinue", 3.0))),
+	_ai_garrison_cfg = {
+		"patrol_interval_sec": maxf(0.1, num("ai.garrison.patrol_interval_sec", 4.0)),
+		"patrol_leash_tiles": maxf(1.0, num("ai.garrison.patrol_leash_tiles", 1.0)),
+		"combat_idle_sec": maxf(0.0, num("ai.garrison.combat_idle_sec", 10.0)),
+		"retarget_cooldown_sec": maxf(0.0, num("ai.garrison.retarget_cooldown_sec", 5.0)),
+		"recruit_check_sec": maxf(0.1, num("ai.garrison.recruit_check_sec", 2.0)),
+		"min_retinue": maxi(0, int(num("ai.garrison.min_retinue", 3.0))),
 		# ★★ 巡逻路线（让同一个区划里的几位守将**不要挤在同一点**）：
 		#   · `patrol_points`：每位守将分到几个巡逻点（1 = 老行为：只去一个点）；
-		#   · `patrol_spread_tiles`：巡逻点之间最多相隔几格（限住巡逻范围，免得
-		#     一个将领的路线横跨整个区块、与别人的路线搅在一起）。
-		#   ★ 路线本身是**由单位 id 派生的固定种子**算出来的（确定性伪随机，见
-		#     logic/general_ai.gd 的 `_route_seed`）—— 看起来杂乱，但同一局每次
-		#     跑出来完全一样，存档 / 回放不会漂（dev_plan_7 3.10 那条硬要求）。
-		"patrol_points": maxi(1, int(num("ai.general.patrol_points", 3.0))),
-		"patrol_spread_tiles": maxf(1.0, num("ai.general.patrol_spread_tiles", 3.0)),
-		# ★★ 巡逻**带兵**（本轮新增，手玩报的 bug「将领巡逻、招出来的兵站着不动」）：
-		#   附属兵离带队将领超过这么多格就会被重新叫上（巡逻每一步都会检查一次）。
-		#   ⚠️ 不能太小：队形落点本身就有一格的间距（formation.spacing_scale），
-		#      卡到 1 格会让它们每一步都被重下一遍命令、永远在挤。
-		"patrol_retinue_leash_tiles": maxf(1.0, num("ai.general.patrol_retinue_leash_tiles", 3.0)),
+		#   · `patrol_spread_tiles`：巡逻点之间最多相隔几格。
+		#   ★ 路线本身是**由单位 id 派生的固定种子**算出来的（确定性伪随机）。
+		"patrol_points": maxi(1, int(num("ai.garrison.patrol_points", 3.0))),
+		"patrol_spread_tiles": maxf(1.0, num("ai.garrison.patrol_spread_tiles", 3.0)),
+		# ★★ 巡逻**带兵**：附属兵离带队将领超过这么多格就会被重新叫上。
+		"patrol_retinue_leash_tiles": maxf(1.0, num("ai.garrison.patrol_retinue_leash_tiles", 3.0)),
+	}
+	# ★★ 红点 AI 的函数式时间表与随机规格（本轮新增）。全部**宽容读取**：
+	#   读不出来一律退回默认（'x' / 空表），决不让一份坏数据把这一局卡死。
+	var rd_wave: Variant = get_path_value("ai.reddot.wave_time_expr")
+	if typeof(rd_wave) != TYPE_STRING or String(rd_wave).strip_edges() == "":
+		rd_wave = "x"
+	var rd_count: Variant = get_path_value("ai.reddot.general_count_expr")
+	if typeof(rd_count) != TYPE_STRING or String(rd_count).strip_edges() == "":
+		rd_count = "x"
+	# spawn_tiles：config 缺省是空表（关卡才填）。兼容 `[x,y]` 数组 / 字典两种写法。
+	var rd_tiles: Array = []
+	var rd_tiles_raw: Variant = get_path_value("ai.reddot.spawn_tiles")
+	if typeof(rd_tiles_raw) == TYPE_ARRAY:
+		for t in (rd_tiles_raw as Array):
+			if typeof(t) == TYPE_ARRAY and (t as Array).size() >= 2:
+				rd_tiles.append(Vector2i(int((t as Array)[0]), int((t as Array)[1])))
+	_ai_reddot_cfg = {
+		# 生成区域缺省半径（格）。
+		"spawn_radius": maxf(0.0, num("ai.reddot.spawn_radius", 4.0)),
+		# 波数：0 = 无限（默认）；> 0 = 只刷这么多波。
+		"waves": maxi(0, int(num("ai.reddot.waves", 0.0))),
+		# ★★ 函数式时间表：第 x 波的生成时间（分钟）/ 将领数（y = a·x + b）。
+		"wave_time_expr": String(rd_wave),
+		"general_count_expr": String(rd_count),
+		# ★★ 关卡选中的「红点生成地块」（config 里默认空 → 退回 spawn_region / 出生点）。
+		"spawn_tiles": rd_tiles,
+		# ★★ 将领类型权重（`[{general, weight}]`）与共享附属单位规格（`[{type, weight}]`）。
+		"general_weights": normalize_weight_list(get_path_value("ai.reddot.general_weights")),
+		"escort_count": maxi(0, int(num("ai.reddot.escort_count", 4.0))),
+		"escort_types": normalize_weight_list(get_path_value("ai.reddot.escort_types")),
 	}
 
 
-## 全部「阵营 AI」条目（每项 {id, base, resource_mult, start_food, start_gold}；只读）
+## 全部「AI 阵营」条目（每项 {id, base, ai}；只读）
 func ai_factions() -> Array:
 	return _ai_factions
 
 
-## 阵营 AI 的行为参数（只读；键见 `_cache_ai()`）
-func ai_faction_cfg() -> Dictionary:
-	return _ai_faction_cfg
+## 阵地性 AI 的行为参数（只读；键见 `_cache_ai()`）
+func ai_garrison_cfg() -> Dictionary:
+	return _ai_garrison_cfg
 
 
-## 将领性（防御性）AI 的行为参数（只读）
-func ai_general_cfg() -> Dictionary:
-	return _ai_general_cfg
+## 红点性 AI 的行为参数（只读；键见 `_cache_ai()`）
+func ai_reddot_cfg() -> Dictionary:
+	return _ai_reddot_cfg
 
 
 ## 这个阵营是不是「由 AI 接管」的（单机 / 联机都能问：AI 只跑在权威侧）

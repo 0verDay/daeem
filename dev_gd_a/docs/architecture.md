@@ -93,6 +93,9 @@ dev_gd_a/daeem/
 │   │                             #     combat_idle_timer / retarget_cd）+ retinue_size()
 │   ├── building.gd               #   建筑定义与实例：blocks(faction) / 血量
 │   ├── zone.gd                   #   区块占领（每阵营独立进度）+ 区划中心 / 人口 / 产能；
+│   │                             #   ★★ **占领须在区划中心附近**：单位离中心的切比雪夫距离
+│   │                             #      ≤ `zone.capture_radius_tiles`（= 1 ⇒ 3×3）才算「在场」；
+│   │                             #      没有中心的区块由 `_ensure_centers()` 装配时补一个
 │   │                             #   ★ 区划**种类**（kind：粮食 / 黄金 / 人口）只决定能做哪些特化，
 │   │                             #     产量永远以地图 zone_list[].production 的数字为准
 │   │                             #   区块划分读地图的 zones 网格，老地图退回 6×4 均分占位
@@ -121,15 +124,19 @@ dev_gd_a/daeem/
 │   │                             #     能做哪几档由**区划种类**（config.zone_kind.list[].specs）决定
 │   │                             #     两者都是**读条**（复用招募那块面板）、入队即扣费、可取消退款
 │   ├── combat.gd                 #   战斗结算与事件（索敌 / 开火 / 拆建筑）
-│   ├── enemy_ai.gd               #   调试用「测试敌人」的推进 AI（朝玩家据点走、拆挡路的墙）
-│   ├── faction_ai.gd             #   ★★ **阵营性 AI**（本轮新增）：附属在某个阵营下，
-│   │                             #     有**自己的资源库**（world.ai_resources，与玩家分开），
-│   │                             #     资源 = 占领区划产能 × resource_mult；四段资源规划
-│   │                             #     （招将 → 招兵 → 升级 → 出兵），满员后行军攻击敌方区划中心
-│   ├── general_ai.gd             #   ★★ **将领性（防御性）AI**（本轮新增）：附属在某个将领下，
-│   │                             #     **没有资源库、没有大本营**；在**归属区划**里按间隔巡逻，
-│   │                             #     不追出一个区划（追出去当场脱战 + 再战冷却），
-│   │                             #     脱战 10 秒且不满员时**无消耗**招兵（free = true）
+│   ├── garrison_ai.gd            #   ★★ **阵地性 AI**（本轮重做；原 general_ai.gd）：
+│   │                             #     附属在一个**区划**下（state 挂在单位身上），
+│   │                             #     在归属区划里按间隔巡逻、不追出一个区划（追出去当场脱战 + 再战冷却），
+│   │                             #     脱战满 combat_idle_sec 且不满员时**无消耗**招兵（free = true）
+│   │                             #     —— ★ 补员**兵种按将领自己的规格权重**抽（_pick_recruit_kind）；
+│   │                             #     将领濒死且血量回门槛 → **无消耗立刻再起**（_tick_revive）
+│   ├── red_dot_ai.gd             #   ★★ **红点性 AI**（本轮重做为**函数式时间表**）：
+│   │                             #     第 x 波的生成时间由 wave_time_expr（y=ax+b，分钟）给出、
+│   │                             #     将领数由 general_count_expr 给出；将领类型按 general_weights 抽；
+│   │                             #     每位将领**当场**生成 escort_count 个随机附属兵；生成地点优先
+│   │                             #     spawn_tiles（关卡选中的地块）→ spawn_region → 出生点；
+│   │                             #     再带整队向 attack_target 行军（order_group_attack_move）
+│   ├── expr.gd                   #   ★★ **线性表达式** `y = a·x + b` 的解析 / 求值（红点时间表用）
 │   ├── command_processor.gd      #   ★ 命令的唯一入口（move / build / demolish）
 │   ├── snapshot.gd               #   ★ to_snapshot / apply_snapshot（本轮用于调试，将来是网络包体）
 │   ├── crowd/                    #   ★ 群体碰撞的 C# 内核（1000 单位群编的性能前提）
@@ -138,7 +145,7 @@ dev_gd_a/daeem/
 │   │   └── crowd_bridge.gd       #     ★ logic ↔ 内核的**唯一**接口：建表 + 批量编解码 + 回退
 │   └── world.gd                  #   世界容器：持有 units / buildings / zones / tech / upgrade，
 │                                 #   推进 tick()；★ 也持有 AI 的权威状态
-│                                 #   （`ai_resources` / `ai_factions` / `with_ai`）
+│                                 #   （`ai_roster_cfg` / `reddot_states` / `with_ai`）
 ├── daeem.csproj                  # C# 工程（Godot.NET.Sdk）。★ 引擎必须用 mono(.NET) 版
 ├── NuGet.config                  # 本地包源（引擎自带 nupkgs；本机没有外网到 nuget.org）
 ├── view/                         # 渲染：Node2D / Control，禁止改逻辑状态
@@ -149,20 +156,20 @@ dev_gd_a/daeem/
 │   ├── map_select.gd             #   ★ 地图选择条本体（**自己画的按钮 + 自己的 PopupMenu**）：
 │   │                             #   不用引擎 OptionButton —— 点开列表后按钮上那行字会变空白
 │   │                             #   （实测，见 route.md 34.9）；对外 API 与 OptionButton 同名同义
-│   ├── game_scene.gd             #   游戏内场景：装配 world + view + hud，跑主循环
-│   ├── terrain_view.gd           #   地形（TileMapLayer）
-│   ├── fog_view.gd               #   ★ 战争迷雾的**灰色遮罩**（本版新增）：把 logic/fog.gd
-│   │                             #     算出来的视野掩码烘成「1 像素 = 1 格」的贴图，
-│   │                             #     一次 draw_texture_rect 铺满地图（与格数无关）
-│   │                             #     ⚠️ 它只管「盖灰」；「谁不该被画出来」由各视图自己
-│   │                             #       问 fog.unit_visible / building_visible
-│   ├── building_view.gd          #   建筑（Node2D + 血条 + 受击闪光）
-│   ├── unit_view.gd              #   单位（Node2D + 血条 + 交战标记）
-│   ├── unit_icon.gd              #   ★ 单位在地图上的 2D 图标（线条「预制体」+ 烘成贴图）
-│   │                             #     按（单位类型 × 是否将领）一张图；将领的描边更粗
-│   ├── zone_view.gd              #   区块轮廓 + 占领进度
-│   ├── overlay.gd                #   攻击线 / 建造预览 / 移动标记（**不画**选中范围圈）
-│   ├── camera_rig.gd             #   相机：方向键平移 / 边缘滚屏 / 光标锚点缩放
+│   ├── game_scene3d.gd           #   ★★ **游戏内场景（唯一实现）**：装配 world + 3D 视图 + HUD，
+│   │                             #      跑主循环（`Camera3D` 固定俯角：平移 / 缩放 / 中键拖拽）
+│   ├── game_interaction.gd       #   ★ 与渲染无关的交互核心（事件提示 / 命令卡派发）
+│   ├── ground_view.gd            #   3D 地面：一整块 `PlaneMesh` + 一张烘出来的地形贴图；
+│   │                             #      **迷雾是另一块平面**（两层各 1 次 draw call）
+│   ├── unit_view_3d.gd           #   3D 单位：`MultiMesh` 按「阵营 × 是否将领」分桶 + billboard
+│   ├── unit_sprite_3d.gd         #   程序化兵人立牌贴图（SDF 光栅化，按变体缓存）
+│   ├── building_view_3d.gd       #   3D 建筑：`MultiMesh` + `BoxMesh`（★ 视觉高度 ≠ 逻辑高度）
+│   ├── overlay_view_3d.gd        #   3D 版的覆盖层（屏幕空间：选中圈 / 标记 / 拖框 / 建造预览）
+│   ├── palette.gd                #   ★★ 坐标换算的**唯一**出处（3D 版）：**实例类**，持有 `Camera3D`；
+│   │                             #      `to_px` = `unproject_position`、`to_logic` = 地面射线求交
+│   │                             #      ⇒「格 ↔ 屏幕」的正反两面由**同一台相机**导出
+│   ├── unit_icon.gd              #   ★ 单位在地图上显示的那个**字**（`unit.types.<id>.icon`）
+│   │                             #     + 按（单位类型 × 是否将领）烘成的贴图
 │   ├── input_controller.gd       #   ★ 输入 → 命令（唯一允许读鼠标的地方）
 │   │                             #     + 左侧键**框选**那条状态机（按下 → 移动 → 松开，见 route.md 16.3）
 │   ├── ui_layout.gd              #   ★ UI 的全部几何常量（照参考图的像素稿）+ 贴边规则
@@ -241,7 +248,8 @@ dev_gd_a/daeem/
 只是往 `data/` 里写 JSON）：见 [`../tools/map_editor/README.md`](../tools/map_editor/README.md)。
 
 **单位编辑器**在 `dev_gd_a/tools/unit_editor/`（同样是 Python + tkinter、同样不在游戏包里）：
-它写的是 `data/config.json`（单位 / 将领 / 建筑 / 科技的全部数值）。
+它写的是 `data/config.json`（单位 / 将领 / 建筑 / 科技的全部数值，含本轮新增的**将领编制上限**
+`unit.general.caps` —— 战役编辑器里配的附属单位生成数量以它封顶）。
 两个工具的分工：地图编辑器管**地形与区划**（`data/maps/<id>/map.json`），
 单位编辑器管**数值**（`config.json`）。
 见 [`../tools/unit_editor/README.md`](../tools/unit_editor/README.md)。
@@ -292,31 +300,30 @@ func apply(world: World, cmd: Dictionary) -> bool:
 
 ### 3.2 逻辑 → 渲染（每帧读状态）
 
-`view/` 每帧从 `world` 读状态并同步到节点。两种做法，按对象数量选：
+`view/` 每帧从 `world` 读状态并同步到节点。3D 栈按「对象数量 / 有没有边」分三档：
 
-- **数量少且需要交互**（单位、建筑）：为每个逻辑对象持有一个 `Node2D`，`_process` 里同步位置/血量
-- **数量多且不需要交互**（区块、地形）：一个节点画全部，例如 `zone_view.gd` 用 `_draw()` 画 24 个矩形
+- **数量多**（单位 / 建筑 / 投掷物）：**一个 `MultiMeshInstance3D` 画全部**，按
+  「阵营 × 是否将领」这类**变体分桶**（每种变体一个批次）—— 1000 个单位也只是十几次 draw call。
+- **大块平坦色**（地形底色 / 区划归属 / 迷雾）：**烘进贴图**再铺一块平面（`ground_view.gd`），
+  每层 **1 次 draw call**、放大也不糊。
+- **有「边」的东西**（网格线 / 区划轮廓 / 占领进度条 / 选中圈）：走**屏幕空间矢量**
+  （`overlay_view_3d.gd`）—— 烘进低分辨率贴图会被放大成软边，屏幕空间画才逐像素清晰。
 
 ```gdscript
-# view/unit_view.gd（示意：只读 + 只画，不改逻辑）
-func _process(_dt: float) -> void:
-    for u in _world.units:
-        var node: Node2D = _nodes.get(u.id)
-        if node == null:
+# view/unit_view_3d.gd（示意：只读 + 只写 MultiMesh，不改逻辑）
+func sync(_dt: float) -> void:
+    for u in world.units:
+        if not u.alive or not _visible_to_me(u):
             continue
-        node.position = u.world_pos * CELL      # 逻辑坐标(格) → 屏幕像素
-        node.visible = u.alive
+        # 逐实例写变换（MultiMesh.set_instance_transform）—— 不是每单位一个节点
 ```
 
-**对象增删**：`world.units` 是权威列表；`view/` 只在**数量或 id 集合变化时**重建节点映射，
-不要每帧 `queue_free()` 重建（HTML 版每次整表替换建筑的做法在 Godot 里会造成明显卡顿）。
+**对象增删**：`world.units` 是权威列表；`view/` 只在**数量或 id 集合变化时**重建批次，
+不要每帧重建节点（HTML 版每次整表替换建筑的做法在 Godot 里会造成明显卡顿）。
 
-> ★★ **1000 单位那档已经把上面第一条改掉了**：`unit_view.gd` 现在是「一个 CanvasItem 画全部」，
-> 而且单位本体走**贴图**而不是 `draw_circle / draw_arc` —— 实测那两个 API **完全不参与 2D 合批**
-> （`draw_circle ×1000 → 997 个 draw call、18.4 ms`），换成同一张贴图之后 1000 个单位合成一个批次；
-> 绘制命令还要**按图元类型 / 按贴图分组**（同一类连着画才合得了批）。
-> 单位图标（`unit_icon.gd`）也是按这条走的：线条画的「预制体」**烘成十来张贴图**，
-> 而不是每个单位一个节点 / 一个场景 —— 理由见 [`route.md`](route.md) 26.4。
+> ★★ **1000 单位那档的实测**（`tests/bench_fps_3d.gd`）：分桶正确的 MultiMesh 让
+> 1000 个单位压到 **11 draw call / 23 个节点 / 78.5 MB 显存**。
+> ⚠️ 分桶键写错 = 合批失效（**画面是对的、性能悄悄退化**），所以 `test_view3d` 钉住了批次数上限。
 
 ### 3.3 快照（本轮：调试用；第 1 轮：网络包体）
 
@@ -368,6 +375,66 @@ Godot 里 DPR 由引擎处理，**但下面三条要原样继承**：
 3. **点到哪走到哪**：右键目标是鼠标所指的世界坐标，不是格心；
    点到山/城墙/建筑时自动改走**最近的可达格**（且必须过滤「从起点真走得到」）
 
+### 4.3 ★★ 真 3D 场景：第三套坐标（世界是 `y = 0` 的平面，投影交给引擎）
+
+**逻辑格一个都没变**，变的是「格 → 屏幕」这一步：它现在由一台**真实的 `Camera3D`** 给出。
+
+> ⚠️ 本节原先写的是那一版 **2.5D 纵向压扁**（`ContentRoot.scale = (1, squash)`）。
+> 它后来被**连续推翻两次**（菱形等距 → 手算真透视），最终落到真 3D ——
+> 每次「为什么当初那么做、后来为什么推翻」记在 [`route.md`](route.md) 四十一节，
+> 设计与实测记在 [`../dev_plan_9.md`](../dev_plan_9.md)。
+
+| 名字 | 定义 | 谁用 |
+|---|---|---|
+| 逻辑坐标（格） | 一格 = `1.0`，`(0,0)` = 左上角 | `logic/` 全部、`data/maps/*.json`、**所有单位位置 / 半径 / 射程** |
+| 世界坐标（3D） | 逻辑格 `(x, y)` → 世界点 `(x · cell_px, 0, y · cell_px)`：地面是 `y = 0` 的水平面 | `Node3D` 节点的摆放（地面 / 单位 / 建筑） |
+| 屏幕像素 | 相机把世界点投到视口上（左上角为原点） | `CanvasLayer` 上的覆盖层与 HUD（用 `palette.to_px` 定位） |
+
+- ★★ 换算**只有** `view/palette.gd` 一处，而且它是个**实例类**（`PaletteRes.create(cfg, cam)`）：
+  `to_px` = `cam.unproject_position(世界点)`；`to_logic` = `cam.project_ray_normal()` 与地面求交。
+  **正向与逆向由同一台相机导出** ⇒ 不存在「画用一套、鼠标换算用另一套」（pitfalls 3.1）。
+- ★★ **为什么投影交给引擎**：手算那版要自己维护四个投影量（`proj_a / proj_b / proj_zero_y / proj_offset`），
+  改任何一处都得重推公式，而且出过两个真问题 ——
+  「向下滑动时地块越来越大」与「拖框起点在相机移动时自己漂」。
+  交给引擎之后，投影 / 求交 / 相机数学**只有一份实现**。
+  ⚠️ 这条的代价是：**相机必须先真的进场景树**（否则没有视口，投影 API 全部退化成零值，见 pitfalls 10.3）；
+  `far` 也必须跟着相机距离走（默认 4000，见 pitfalls 10.1）。
+- ★ 相机**不俯仰旋转**（俯角由相机位置表达），平移只沿世界 X / Z
+  ⇒ 同一个格在任何位置看到的**屏幕尺寸完全相同**。
+  ★ 透视仍然在（近大远小：同一格在画面下方更大，实测 y=2 行 → y=20 行是 **1.28 倍**），
+  但「尺寸随相机移动而变」这件事从根上不存在。
+- ★★ **覆盖层与「字 / 血条」留在屏幕空间**（`CanvasLayer` 上的 `Control`），用 `to_px` 定位：
+  天然 1:1、不受透视影响、也不必为每个标记建 3D 节点。
+  ⚠️ **透视下一个格在屏幕上不是矩形而是梯形** ⇒ 必须**逐个角投**；
+  `tile_poly` / `quad_poly` / `building_poly` 返回的是**四个点**，不是 `Rect2`
+  ——「只投中心再套一个矩形」在 3D 下四角都是错的。
+- ★ **地面是一整块 `PlaneMesh` + 一张烘出来的贴图**（网格线与区块归属是**贴图上的像素**
+  ⇒ 天然连续，不可能出现「斜着的区块线互相穿插」）；
+  **迷雾是另一块平面 + 另一张贴图**（它每帧都在变，而地形图只在归属变化时重烘），两层各 1 次 draw call。
+- ★ 单位与建筑各自用 `MultiMesh` 合批：单位按「**阵营 × 是否将领**」分桶
+  （`MultiMesh` 不支持逐实例贴图 ⇒ 变体数 = 阵营数 × 2，本项目是个位数），立牌用材质自带的 billboard；
+  建筑是一个单位 `BoxMesh` 靠**逐实例非等比缩放**表达尺寸差异。
+- ★ **视觉高度 ≠ 逻辑高度**：建筑的 3D 高度是**纯表现**常量（`render.building_height.<type>`），
+  寻路 / 碰撞 / 攻击一律读 `logic/building.gd` 的 `body_scale`（一格里的**平面块**）。
+  `logic/` 里没有、也不会加「高度」字段；单位也**不投阴影**（材质 `SHADING_MODE_UNSHADED`）。
+- ★ **HUD 与视角无关**：它是 `CanvasLayer` 上的 `Control`，本来就不吃 3D 变换；
+  它对世界的唯一依赖是「通过相机替身知道我现在看的是哪一块」⇒ 3D 场景给它一个
+  `CameraFacade`（`center_on_px` / `center_on_tile` / `pan_screen` / `get_viewport_rect` / `cam`）
+  外加 `view/palette.gd` 的投影实例就够了。
+- ★★ **入口 = 3D（唯一实现）**：`view/main.tscn` → `view/main.gd`
+  （`GameSceneRes = res://view/game_scene3d.gd`）。
+  ⚠️ 这一步**不是「改一行 `preload`」**：从「只切 preload」（85 项失败）走到全绿，
+  每一步都在补一个**视图层交互接口** —— 主循环的暂停门、`_unhandled_input` 的「先问 HUD」、
+  `_consume_events` 命名对齐、`level_playing` / `level_campaign`、开局自动选中……
+  完整曲线记在 route.md 四十一节与 [`../dev_plan_9.md`](../dev_plan_9.md) 6.1。
+  ★ `main.gd` 那个字段必须退到 `Node`（原本标 `Node2D`，装不下 `Node3D` ⇒
+  整个 `main.gd` 载不进来、主界面起不来，见 pitfalls 10.8）。
+- ★★ **2D 视图栈已整体删除**（`game_scene.gd` / `camera_rig.gd` / `palette2d.gd` /
+  `terrain_view.gd` / `zone_view.gd` / `fog_view.gd` / `overlay.gd` / `unit_view.gd` /
+  `building_view.gd`）。投影只走 `view/palette.gd` 的实例 API；战役席位规则搬到了
+  `logic/level.gd:build_roster()`。
+- 取舍、里程碑与真踩到的坑：见 [`../dev_plan_9.md`](../dev_plan_9.md) 与 [`route.md`](route.md) 四十一节。
+
 ---
 
 ## 五、状态放哪（权威归属表）
@@ -386,28 +453,29 @@ Godot 里 DPR 由引擎处理，**但下面三条要原样继承**：
 | 区块（`owner` / `progress_by`） | `logic/zone.gd` | **每阵营独立进度**，不要退回单一 `progress` |
 | 区划**中心** / 产能 / 人口 / **人口上限** | `logic/zone.gd`（区块字典的 `center` / `production` / `population` / `population_cap`）；中心那一格上另有一栋 `TYPE_ZONE_CENTER` 建筑 | 中心、产能与**人口上限**都来自地图 JSON（上限缺字段 = 1，见 route.md 16.1）；人口是**运行时累积**的，每区划各算各的，**涨到上限就停**（见 route.md 14.5 / 16.1）；目前**唯一的消耗**是招募（每个单位扣将领所在区划 1 人口） |
 | 资源、己方地块数 | `logic/economy.gd` | 招募的扣费**不受** `economy.enabled` 影响（那个开关只管建造免费） |
-| ★★ **NPC / AI 阵营的资源库** | `logic/world.gd` 的 `ai_resources`（"faction" → `{food, gold}`）+ `resource_pool_for(faction)` | 与玩家的 `resources` **两个字典**。招募（将领 / 区划）、升级、特化的**扣费与退款**全部问 `resource_pool_for()` —— 这就是「谁下单、扣谁的钱」的唯一判据（见 route.md 33.4）。★ 返回 **null = 这一方没有资源库 = 资源无限**（将领性 AI 走这条） |
-| ★★ **阵营 AI 的状态** | `logic/world.gd` 的 `ai_factions[]`（每项 `{faction, mult, general_index, recruit_timer, upgrade_timer, attack_timer}`），规则在 `logic/faction_ai.gd` | 它是**世界状态**（与 `tech.active_by_faction` 同源），不是界面状态。`setup()` 在 `world.reset()` 末尾建；每帧 `faction_ai.update()` 推进 |
-| ★★ **将领性 AI 的状态** | `logic/unit.gd` 的 `garrison_zone_id` / `patrol_timer` / `combat_idle_timer` / `retarget_cd` / `garrison_recruit_timer`，规则在 `logic/general_ai.gd` | ★ 挂在**单位自己**身上（与 `train_*` 同一个理由：它天然属于某个将领，单位没了状态就该没）。它**不**在 world 上另开一张表，也**不**进 `ai_resources` |
-| ★ AI 阵营的名单与基地 | `data/config.json` 的 `ai.factions[]`（id / base / resource_mult / start_*） | 名单决定「谁由 AI 驱动 + 谁有自己的资源池」；**base 与 AI 无关**（`_register_config_bases()` 不看 `with_ai`）—— 名单里的一方若没有基地点位会落到 (0,0) 顶掉区块 11 的中心（route.md 33.5 坑①） |
+| ★★ **各阵营的资源库** | `logic/world.gd` 的 `resource_pool_for(faction)` | ★ 本轮口径：**AI 阵营没有资源库**（旧的 `ai_resources` 已删）—— 非本机席位一律返回 **null = 资源无限**（招募 / 再起 / 红点刷兵都不花钱）。只有玩家席位走 `resources` / `player_resources`（「谁下单、扣谁的钱」的唯一判据，见 route.md 33.4） |
+| ★★ **红点 AI 的状态** | `logic/world.gd` 的 `reddot_states[]`（每项 `{faction, params, spawn_region, elapsed, wave_index, waves_cap, serial}`），规则在 `logic/red_dot_ai.gd` | 它是**世界状态**（与 `tech.active_by_faction` 同源），不是界面状态。`setup()` 在 `world.reset()` 末尾建；每帧 `red_dot_ai.update()` 推进（累计时间 ≥ `wave_time_expr(第 n 波)` 就发一波，一帧可补发多波） |
+| ★★ **将领的附属单位规格（本轮新增）** | `logic/unit.gd` 的 `retinue_target`（目标编队规模）+ `retinue_types`（`[{type, weight}]`），规则在 `logic/world.gd` 的 `fill_general_retinue()` / `pick_weighted_type()` | ★ 挂在**将领单位自己**身上：摆放时按关卡 `escort_count` / `escort_types` 写入并**当场生成满编随机附属兵**；阵地补员按同一份权重抽兵种；`world.escort_target_of(fid, index)` 读它（没设过才退回 `ai.garrison.min_retinue`）。权重抽样的随机种子由 `(将领 id, 序号)` 派生（确定性，可复现） |
+| ★★ **阵地性 AI 的状态** | `logic/unit.gd` 的 `garrison_zone_id` / `patrol_timer` / `combat_idle_timer` / `retarget_cd` / `garrison_recruit_timer`，规则在 `logic/garrison_ai.gd` | ★ 挂在**单位自己**身上（与 `train_*` 同一个理由：它天然属于某个将领，单位没了状态就该没）。它**不**在 world 上另开一张表，也**不**进任何资源库 |
+| ★ AI 阵营的名单与出生锚点 | `data/config.json` 的 `ai.factions[]`（`{id, ai, base}`，ai 缺省 = `garrison`） | 名单决定「谁由 AI 驱动」；★ 本轮 AI **没有大本营、没有资源库** —— `base` 只是**出生锚点**（`_register_config_bases()` 不看 `with_ai`），将来算将领站位用；名单里的一方若没有点位会落到 (0,0) 顶掉区块 11 的中心（route.md 33.5 坑①） |
 | ★ 地图里 NPC 阵营的开局归属 | `data/maps/frontier/map.json` 的 `zone_list[].owner` → `logic/map_data.gd` 的 `zones_owners` → `logic/zone.gd` 的 `apply_initial_ownership()` | 玩家那一方的地靠出生点大本营自动收归（`refresh_building_ownership`），那条**只认玩家阵营** —— 所以 NPC 的地必须能在地图里直接写出来 |
-| ★ 这一局开不开 AI | `logic/world.gd` 的 `with_ai`（`World.create(cfg, map, with_ai)`，默认 true） | 开了就多一整个阵营（三个将领 + 大本营 + 资源池）。测试 / 基准走 `tests/test_case.require_world()`（= `with_ai = false`），要验 AI 的用例才用默认那条（route.md 33.4） |
+| ★ 这一局开不开 AI | `logic/world.gd` 的 `with_ai`（`World.create(cfg, map, with_ai)`，默认 true） | 开了就多一整个 AI 阵营（阵地性的将领 / 红点刷兵）。★ 本轮 AI **没有大本营、没有资源池**（只有玩家席位才有大本营）。测试 / 基准走 `tests/test_case.require_world()`（= `with_ai = false`），要验 AI 的用例才用默认那条（route.md 33.4） |
 | ★★ **战役与关卡数据** | `data/campaigns/<id>/campaign.json` + `levels/*.json` → `logic/campaign.gd`、`logic/level.gd`、`logic/campaign_library.gd` | ★ **只读**：`Campaign` 管元信息与关卡顺序，`Level` 管一关的全部字段与**唯一的覆盖实现**（`merge_over_map`）。**它不改地图**：关卡是「地图 id + 覆盖层」，没写的字段一律用地图的（route.md 第三十七节、dev_plan_7 1.3.3） |
 | ★★ **这一局用哪张图 / 哪一关** | `logic/world.gd` 的 `level`（**null = 不做战役**）与 `_merged`（合并后的地图 + AI 名单缓存） | 入口是 `World.create_from_level()`；`create()` 是「按一张图直接开一局」的老路径。★ `level == null` 时新代码**一个字段都不动**（向后兼容那一条） |
-| ★★ **合并后的 AI 名单** | `logic/world.gd` 的 `ai_roster_cfg`（每项 `{id, ai, base, resource_mult, start_food, start_gold, attack_target, faction_ai, general_ai, from_level, source}`） | 由 `logic/level.gd` 的 `merged_ai_factions()` **一处**合并出来（关卡显式写了 `ai` 的优先，其余照旧吃 `config.ai.factions`）。★ 有 `level` 时 `source == "config"` 的那些**不进这一局** —— 「这一关有哪些阵营」由关卡数据说了算 |
+| ★★ **合并后的 AI 名单** | `logic/world.gd` 的 `ai_roster_cfg`（每项 `{id, ai, base, attack_target, garrison_ai, reddot_ai, spawn_region, from_level, source}`；★ `reddot_ai` 里含 `wave_time_expr` / `general_count_expr` / `general_weights` / `spawn_tiles` / `escort_count` / `escort_types`） | 由 `logic/level.gd` 的 `merged_ai_factions()` **一处**合并出来（关卡显式写了 `ai` 的优先，其余照旧吃 `config.ai.factions`）。★ 有 `level` 时 `source == "config"` 的那些**不进这一局** —— 「这一关有哪些阵营」由关卡数据说了算。`ai` 取值 `garrison` / `reddot` / `none`（旧值 `faction` / `general` 读入时归一成 `garrison`） |
 | ★★ **本机负责的席位** | `logic/world.gd` 的 `player_seats`（= `reset()` 的 `roster`） | 「谁的大本营要建 / 谁有独立钱包」用它。★ 顺序 = 席位顺序（房主第 1 个、客机第 2 个） |
 | ★★ **本机在操作的席位** | `logic/world.gd` 的 `player_factions`（= `player_seats` 里 `ai_kind_of == "none"` 的那些） | 「**谁的家算玩家的家 / 目标归谁**」用它。★★ 它与 `player_seats` 在「选边关」里**不一样**：roster 是 `[我选的那一方, 敌人那一方]`（两边的家都要建出来），但敌人那一方**本机不操作** ⇒ 它交给 AI、也不算玩家的家。判「同方」与判「席位」是两件事，混用会静默改玩法（route.md 37.18） |
-| ★★ **将领性 AI 的巡逻路线** | `logic/general_ai.gd`：`unit.patrol_points` / `patrol_index` / `patrol_dir` / `patrol_zone_id`（**存在单位自己身上**） | 每位驻防守将一条自己的路线：**按 `zone_count` 切扇区**（第几段由 `_sector_of` 按 id 稳定派生）+ 段内用**由 id 派生的固定种子**随机取点 ⇒ 看起来杂乱、但逐点可复现（**不许用引擎随机数**，见 route.md 37.19）。★ 参数 `ai.general.patrol_points` / `patrol_spread_tiles`，可按阵营覆盖 |
-| ★★ **这一方的 AI 指派** | `logic/world.gd` 的 `ai_kind_of(fid)`（关卡点名优先，其余退回 `config.ai.factions`） | 「**谁该被 AI 接管**」用它 —— ★ 注意这是**组装期**口径：`my_faction`（本机在操作的那一方）不算 AI，**其余每一方**都按自己的指派算。`_is_ai_piloted()` 是**开局后**口径（把 `my_faction` 排除），只用来建 AI 状态表 |
+| ★★ **阵地性 AI 的巡逻路线** | `logic/garrison_ai.gd`：`unit.patrol_points` / `patrol_index` / `patrol_dir` / `patrol_zone_id`（**存在单位自己身上**） | 每位驻防守将一条自己的路线：**按 `zone_count` 切扇区**（第几段由 `_sector_of` 按 id 稳定派生）+ 段内用**由 id 派生的固定种子**随机取点 ⇒ 看起来杂乱、但逐点可复现（**不许用引擎随机数**，见 route.md 37.19）。★ 参数 `ai.garrison.patrol_points` / `patrol_spread_tiles`，可按阵营覆盖 |
+| ★★ **这一方的 AI 指派** | `logic/world.gd` 的 `ai_kind_of(fid)`（关卡点名优先，其余退回 `config.ai.factions`）→ `"garrison"` / `"reddot"` / `"none"` | 「**谁该被 AI 接管**」用它 —— ★ 注意这是**组装期**口径：`my_faction`（本机在操作的那一方）不算 AI，**其余每一方**都按自己的指派算。`_is_ai_piloted()` 是**开局后**口径（把 `my_faction` 排除），判据是 `!= "none"` |
 | ★★ **每个玩家席位的资源池** | `logic/world.gd` 的 `player_resources`（"faction" → `{food, gold}`）+ `resource_pool_for(faction)` | ★ 本机席位那一份**就是** `world.resources` 这个对象本身（不是副本）—— HUD 读它、扣费走 `resource_pool_for()`、快照发它，三者天然同一份数。合作模式下两人各花各的（route.md 第三十七节 / dev_plan_7 3.7） |
 | ★★ **选边关的目标** | `logic/level.gd` 的 `objectives[].for` + `objective_for(fid)`；目标种类 `hold_zone` / `capture_zone` | 一关两个可玩阵营各打各的时，**每个阵营一条目标**（`for` 点名给谁）。运行时由 `objective.setup(..., seat_arg = my_faction)` 取**本机席位**那条；`capture_zone` = 归属翻成自己那一帧**立刻判胜**（route.md 37.18） |
 | ★★ **目标与胜负** | `logic/world.gd` 的 `objective_state`（`{kind, zone, sec, held, state, reason, defend, fail, seat}`），规则在 `logic/objective.gd` | ★ 它是**世界状态**：`reset()` 末尾由 `ObjectiveRes.setup()` 建好（HUD 第一帧就读得到），`tick()` **末尾**推进（目标最后判 ⇒ 「这一帧刚守满」立刻结算）。★ `level == null` 时是一份空状态（`kind == ""`），一个玩法行为都不受影响 |
 | ★ 结算播报去重 | `logic/world.gd` 的 `_objective_reported` | 结算之后 world **继续 tick**（不做 UI 冻结）—— 不记一笔就会每帧发一条 `level_end` |
 | ★★ **迷雾按哪一方算** | `logic/fog.gd` 的分桶键 = `FactionRes.side_of(阵营)` | 合作模式两人**共享视野**（用户拍板）；单机时 `side_of(p1) == "p1"` ⇒ 与从前逐位一致。★ 三类查询（`tile_visible` / `unit_visible` / `building_visible`）必须**一起**走同一个键（route.md 第三十七节） |
 | ★ 地图目录里的「战役专用图」 | `data/maps/<id>/map.json` 的 `hidden: true` → `logic/map_library.gd` 的 `is_hidden()` | ★ 它**不进自由对战的选择条**，也不当默认图（加一张战役图不该改变「不选就按 test」进的那一局）。关卡照样按 id 直接引用它；占位图（`placeholder`）**照样列出**、只是不当默认 —— 两种标记含义不同，别合并 |
-| ★★ **「这一局从哪一关开的」** | `view/game_scene.gd` 的 `level_playing` / `level_campaign`（**老路径上都是 null**） | ★ 它们是**界面层**的记账（`world` 自己持有 `level` 才是权威）：给「返回关卡列表 / 结算面板」这类以后的界面用。入口两条：`start(map_path)`（老路）与 `start_level(campaign, level, faction)`（战役路）——**只差「世界怎么造出来」**，之后完全同一条尾 |
+| ★★ **「这一局从哪一关开的」** | `view/game_scene3d.gd` 的 `level_playing` / `level_campaign` | ★ 它们是**界面层**的记账（`world` 自己持有 `level` 才是权威）：给「返回关卡列表 / 结算面板」这类以后的界面用。入口两条：`start(map_path)`（老路）与 `start_level(campaign, level, faction)`（战役路）——**只差「世界怎么造出来」**，之后完全同一条尾 |
 | ★ 单人战役的**占位**入口 | 主界面 `campaign_test` 按钮 → `view/campaign_test.gd`（列单人关 + 选阵营 + 开始）→ `view/main.gd` 接 `level_chosen` → `game.start_level()` | ★ 它**只是占位**（正式入口那一套是规划书 5.1~5.4）：界面不认识 `world` / `game_scene`，扫战役目录与建世界都在 `main`；关卡列表**只列单人关**（合作要两个席位，那条路给不了）。见 route.md 37.11 |
-| 相机 / 缩放 | `view/camera_rig.gd` | 纯表现，不进快照。★ 它的 `camera.edge_size` 与 HUD 的「屏幕最外圈不拦滚屏」是**同一个数**（`cfg.camera_edge_size`） |
+| 相机 / 缩放 | `view/game_scene3d.gd`（`Camera3D` 相机部分） | 纯表现，不进快照。★ 它的 `camera.edge_size` 与 HUD 的「屏幕最外圈不拦滚屏」是**同一个数**（`cfg.camera_edge_size`） |
 | 选中列表 | `view/input_controller.gd` | 纯本地，**不进命令流**（第 1 轮也一样）。★ 左键**点选**与左键**框选**（拖出矩形，见 route.md 16.3）走的是同一个入口 `select_units()` —— 它会用 `world.expand_to_groups()` 把「一个单位」展开成「它所属的整支部队」 |
 | 玩家下达的攻击命令 | `logic/unit.gd` 的 `ordered_target` / `ordered_building` / `has_attack_move` | 与「这一帧在打谁」（`target` / `target_building`）**分开存**，见 route.md 12.3 |
 | UI 几何（面板位置与尺寸） | `view/ui_layout.gd` | 纯常量，照参考图的像素稿；其它 view 文件不写坐标字面量 |
@@ -420,16 +488,37 @@ Godot 里 DPR 由引擎处理，**但下面三条要原样继承**：
 | 科技的三类效果（每地块加产量 / 血量上限倍率 / 区划人口增长倍率） | `logic/tech.gd` 的 `effects_of()` → `world.tech_effects` | 每帧在 `tick()` 开头重算；启用 / 弃用时 `_apply_tech_effects()` **立即**落到对象上（血量按比例缩放、上限从 `base_hp_max` 重算） |
 | **战争迷雾（谁能看见哪一格 + 已知的敌方建筑）** | `logic/fog.gd`（由 `logic/world.gd` 持有并暴露成 `world.fog`） | ★ 它是**派生数据**：只读 `map.terrain` + 各单位 / 建筑的位置算出来，**不进快照**（联机时各端各算一遍）。`world.tick()` 末尾按需重算（`fog.refresh_needed()`）；`reset()` 末尾也算一次，于是进游戏第一帧之前就有正确的迷雾。★ 单位 / 建筑各自的视野半径在 `unit.vision` 字段上（出生时从 config 抄进对象） |
 | 视野半径的数值 | `data/config.json` 的 `fog.vision_default` / `fog.vision_building` / `unit.types.<id>.vision` / `unit.general.stats[i].vision` / **`building.<type>.vision`** | ★ **单位与建筑各有一张「每类型一个值」的表**，两处完全对称。游戏侧只读 `cfg.unit_vision_of()` / `cfg.general_vision_at()` / `cfg.building_vision_of()`（后两个的兜底分别是 `fog.vision_default` 与 `fog.vision_building`）；编辑器（tools/unit_editor）改的是同一批键 |
-| 灰色遮罩的颜色与不透明度 | `data/config.json` 的 `fog.mask_color` / `fog.mask_alpha` → `cfg.fog_mask_color` | 纯显示；`view/fog_view.gd` 烘的贴图只存「看得见 / 看不见」，颜色靠 `draw_texture_rect` 的 modulate —— 换颜色不必重烘贴图 |
+| 灰色遮罩的颜色与不透明度 | `data/config.json` 的 `fog.mask_color` / `fog.mask_alpha` → `cfg.fog_mask_color` | 纯显示；`view/ground_view.gd` 烘的迷雾贴图只存「看得见 / 看不见」，颜色靠材质的 modulate —— 换颜色不必重烘贴图 |
 | 操作页的「命令模式」（点了移动 / 攻击 / 行军之后等左键点地图） | `view/input_controller.gd` 的 `order_mode` | 纯本地输入状态，与 `build_type` 同源、互斥；命令照旧只走 `command_issued` |
 | 招募队列的实现细节（进度、五个格子的几何） | `logic/unit.gd` 的 `train_*` 字段 / `logic/zone.gd` 的 `train_*` 字段（**区划招募**）+ `view/recruit_queue.gd` | 进度由 `unit.train_progress()` / `world.zone_train_progress()` 算好，视图只取色与填格子（不让视图自己发明判定，见 pitfalls 5.20）；同一个控件显示「将领的队列」或「区划的队列」（`set_queue(holder, is_zone)`） |
-| 事件（击杀 / 建筑被拆 / 招募…） | `logic/world.gd` 收集 → `world.tick()` 返回 | **逻辑层不写 UI 文案**；目前只翻译三条：`recruit_rejected` / `order_rejected` → 左栏那行红字、`unit_recruited` → 把新兵选上（`view/game_scene.gd` → `hud` / `input_controller`） |
+| 事件（击杀 / 建筑被拆 / 招募…） | `logic/world.gd` 收集 → `world.tick()` 返回 | **逻辑层不写 UI 文案**；目前只翻译三条：`recruit_rejected` / `order_rejected` → 左栏那行红字、`unit_recruited` → 把新兵选上（`view/game_scene3d.gd` → `hud` / `input_controller`） |
 | 谁是房主 / 我的阵营 | 第 1 轮再加 | 本轮固定为单机阵营 |
 
 > **建筑为什么不用 `TileMapLayer` 当权威**：一个地块只能有一个建筑，
 > 用 `Vector2i → Building` 字典查询更快、更明确，也不会和地形的图块数据纠缠。
 > 地形可以用 `TileMapLayer`（只读），但**通行性判定读 `map_data`，不读 TileMap** ——
 > 否则图块换一张图就可能改变玩法。
+
+### 5.1 阵型（单位移动落点的分层）
+
+**阵型是「派生落点」，不是持久状态**：`logic/command_processor.gd` 的 `formation_slots()`
+在下令那一刻算出一组与队伍**一一对应**的槽位，各单位走向自己的槽位。它**不进快照**，
+联机时各端从同一条命令各自重算（与路径同一条约定）。
+
+- **布局 = 按兵种由前往后堆叠的带（band）**：「前」= 行进方向（队伍重心 → 点击点）；
+  最前的带 = 层号最小的兵种。层序在 `data/config.json` 的
+  `unit.formation.tier_order`（默认 长枪兵 → 长弓兵 → 骑手），
+  `tier_default` 给没登记的兵种（默认中间层）。**代码里没有写死的层次**。
+- **同一部队相邻**：同一部队 = `world.leader_of(u)` 相同的单位。同一带内它们连续相邻，
+  各带用**同一个部队顺序** ⇒ 同一部队跨带的单位横向对齐（位置接近）。
+- **多部队共用一个阵型**：玩家一次选中多支部队时，`view` 的选区已被
+  `world.expand_to_groups()` 展开成一整队、作为**一个 group** 进 `formation_slots`，
+  于是多支部队落在同一个阵型里（见 §3.1）。
+- **移动中保持**：移动命令时，`unit.move_to()` 走 `formation_shift` 分支 —— 取「到点击格」
+  的距离场路线，再把它**整体平移**该单位的槽位偏移（`unit._field_offset`），全队走出平行
+  路线；平移撞障碍逐点校验后回退到「汇聚 + 散开」。**行军攻击只保证到达时成型**
+  （不传偏移，走旧的 `crowd_bridge.tile_path_via`），途中一交火由 `combat` 接管。
+- 相关测试：`tests/test_formation.gd`（分层 / 同部队聚簇 / 多部队共用 / 到达成型）。
 
 ---
 

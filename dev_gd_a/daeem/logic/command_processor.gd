@@ -196,8 +196,10 @@ static func _collect_units(world, ids: Array, owner_faction: String,
 ##   2. 性能：拥挤判定是 O(n²) 的（每个单位都要看一遍全部单位谁占着落点）。
 ##      各走各的槽位之后，这条几乎不会被触发。
 ##
-## 寻路仍然只算**一次**：整队共用一张「到点击格」的距离场，
-## 每个单位的路线 = 顺场下降到点击格 + 从点击格走出去到自己的槽位（见 crowd_bridge.tile_path_via）。
+## 寻路仍然只算**一次**：整队共用一张「到点击格」的距离场。每个单位的路线 =
+## 顺场下降到点击格 + **整体平移自己的槽位偏移**（见 unit.move_to 的 formation_shift），
+## 所以全队走出平行路线、**行进中也保持阵型**（行军攻击不传偏移，走旧的「汇聚 + 散开」，
+## 到达时才成型 —— 见 order_attack_move_at）。
 ##
 ## @return 是否至少有一个单位接受了命令
 static func order_group_formation(world, cfg: ConfigRes, group: Array, click: Vector2) -> bool:
@@ -225,16 +227,21 @@ static func order_group_formation(world, cfg: ConfigRes, group: Array, click: Ve
 	var any := false
 	for i in group.size():
 		var u = group[i]
-		if u.order_move_via_field(world, cfg, slots[i], anchor):
+		# ★ 把槽位相对点击点的偏移也传下去：unit 会用它把「到点击格的路线」整体平移，
+		#   于是全队走出平行的路线、**行进中也保持阵型**（不再先汇聚到点击点再散开）。
+		if u.order_move_via_field(world, cfg, slots[i], anchor, slots[i] - click):
 			any = true
 	return any
 
 
 ## 给一群单位排槽位：返回与 group **一一对应**的落点数组（格坐标点）。
 ##
-## 做法：以点击点为中心、按「前进方向」为轴铺一层方格，然后
-## **按同一个键把单位和槽位各自排序**再配对 —— 这样编队左边的单位拿左边的槽位，
-## 整队不会互相穿过（否则队形会自己打结，看着比不排阵还乱）。
+## ★★ 阵型（本轮大改）：不再是「一个方阵」，而是**按兵种由前往后堆叠的带（band）**：
+##   · 「前」= 行进方向（队伍重心 → 点击点）；最前的带 = 层号最小的兵种（长枪兵），
+##     依次向后是长弓兵、骑手（层号由 config 的 unit.formation.tier_order 决定）。
+##   · 同一部队（`world.leader_of` 相同）的单位在同一带内连续相邻；各带用**同一个
+##     部队顺序**，于是同一部队跨带的单位横向对齐 —— 位置接近。
+##   · 部队顺序按各部队的横向质心升序，层内再按单位横向位置排序 —— 尽量不互相穿过。
 ##
 ## ⚠️ 槽位必须落在可通行格上：落在山/墙里的会被往旁边挪一格（找不到就退回点击点）。
 static func formation_slots(world, cfg: ConfigRes, group: Array, click: Vector2) -> Array[Vector2]:
@@ -261,42 +268,103 @@ static func formation_slots(world, cfg: ConfigRes, group: Array, click: Vector2)
 		slot_count = mini(n, cfg.formation_max_slots)
 
 	var cols: int = maxi(1, int(ceil(sqrt(float(slot_count) * cfg.formation_aspect))))
-	var rows: int = int(ceil(float(slot_count) / float(cols)))
-	var half_c := (float(cols) - 1.0) * 0.5
-	var half_r := (float(rows) - 1.0) * 0.5
 
-	# 槽位偏移（相对点击点），行优先
-	var offs: Array[Vector2] = []
-	for r in rows:
-		for c in cols:
-			if offs.size() >= slot_count:
-				break
-			offs.append(side * ((float(c) - half_c) * spacing) + fwd * ((float(r) - half_r) * spacing))
-
-	# 排序键：先横向、再纵深（单位与槽位用同一个键，保证配对不交叉）
-	var slots_sorted := offs.duplicate()
-	slots_sorted.sort_custom(func(a: Vector2, b: Vector2) -> bool:
-		var ka: float = a.dot(side) * 1000.0 + a.dot(fwd)
-		var kb: float = b.dot(side) * 1000.0 + b.dot(fwd)
-		return ka < kb)
-
-	var order: Array = []
+	# 部队顺序：各部队按「成员横向质心」升序（tiebreak 用部队 id，保证确定性）。
+	var troop_members: Dictionary = {}
 	for i in n:
-		order.append(i)
-	var unit_keys := PackedFloat64Array()
-	for u in group:
-		var rel: Vector2 = (u.pos as Vector2) - click
-		unit_keys.append(rel.dot(side) * 1000.0 + rel.dot(fwd))
-	var keys := unit_keys
-	order.sort_custom(func(a: int, b: int) -> bool: return keys[a] < keys[b])
+		var tid := _troop_id(world, group[i])
+		if not troop_members.has(tid):
+			troop_members[tid] = []
+		(troop_members[tid] as Array).append(i)
+	var troop_order: Array = troop_members.keys()
+	troop_order.sort_custom(func(a, b) -> bool:
+		var sa := _troop_side_avg(troop_members[a], group, side)
+		var sb := _troop_side_avg(troop_members[b], group, side)
+		if absf(sa - sb) > 1e-6:
+			return sa < sb
+		return String(a) < String(b))
+	var troop_rank: Dictionary = {}
+	for k in troop_order.size():
+		troop_rank[troop_order[k]] = k
 
-	# 配对：第 k 个「队伍里的位置顺序」拿第 k 个槽位
+	# 按层分桶（层号 → 该层单位下标）
+	var tiers: Dictionary = {}
+	for i in n:
+		var t: int = _formation_tier(cfg, group[i])
+		if not tiers.has(t):
+			tiers[t] = []
+		(tiers[t] as Array).append(i)
+	var tier_keys: Array = tiers.keys()
+	tier_keys.sort()
+
+	# 各带行数之和（用于把整块阵型居中在点击点上）
+	var total_rows := 0
+	for t in tier_keys:
+		total_rows += int(ceil(float((tiers[t] as Array).size()) / float(cols)))
+	total_rows = maxi(1, total_rows)
+
+	# 偏移表（相对点击点）：默认零 = 点击点
+	var offs: Array[Vector2] = []
+	offs.resize(n)
+	for i in n:
+		offs[i] = Vector2.ZERO
+
+	# 从最前（层号最小）开始逐带摆放：「前」= fwd 投影最大 = 行号最大。
+	var row_top := total_rows           # 已分配行区间的上界（不含）
+	var placed := 0
+	for t in tier_keys:
+		var members: Array = (tiers[t] as Array).duplicate()
+		members.sort_custom(func(a, b) -> bool:
+			var ta: int = troop_rank[_troop_id(world, group[a])]
+			var tb: int = troop_rank[_troop_id(world, group[b])]
+			if ta != tb:
+				return ta < tb
+			var pa: float = (group[a].pos as Vector2).dot(side)
+			var pb: float = (group[b].pos as Vector2).dot(side)
+			if absf(pa - pb) > 1e-6:
+				return pa < pb
+			return String(group[a].id) < String(group[b].id))
+		var rows_t: int = int(ceil(float(members.size()) / float(cols)))
+		var row_start: int = row_top - rows_t
+		row_top = row_start
+		for k in members.size():
+			if placed >= slot_count:
+				break                       # 溢出：留在点击点（沿用旧行为）
+			var r_local: int = k / cols
+			var c_local: int = k % cols
+			var depth: float = float(row_start + r_local) - (float(total_rows) - 1.0) * 0.5
+			var lat: float = float(c_local) - (float(cols) - 1.0) * 0.5
+			offs[members[k]] = side * (lat * spacing) + fwd * (depth * spacing)
+			placed += 1
+
 	var result: Array[Vector2] = []
 	result.resize(n)
-	for k in n:
-		var slot: Vector2 = click + slots_sorted[k] if k < slots_sorted.size() else click
-		result[order[k]] = _snap_slot(world, cfg, slot, group[0].faction, click)
+	for i in n:
+		result[i] = _snap_slot(world, cfg, click + offs[i], group[0].faction, click)
 	return result
+
+
+## 单位在阵型中的层次号（越小越靠前）。没登记的兵种取 unit.formation.tier_default。
+static func _formation_tier(cfg: ConfigRes, u) -> int:
+	var t: String = String(u.unit_type)
+	return int(cfg.formation_tier_order.get(t, cfg.formation_tier_default))
+
+
+## 单位所属部队的 id（队长的 id；自己就是队长时 = 它自己）。
+static func _troop_id(world, u) -> String:
+	if world != null and world.has_method("leader_of"):
+		return String(world.leader_of(u))
+	return String(u.leader_id) if u.leader_id != "" else String(u.id)
+
+
+## 一组单位（下标数组）在当前横向轴上的平均投影。
+static func _troop_side_avg(indices: Array, group: Array, side: Vector2) -> float:
+	if indices.is_empty():
+		return 0.0
+	var s := 0.0
+	for i in indices:
+		s += (group[i].pos as Vector2).dot(side)
+	return s / float(indices.size())
 
 
 ## 槽位落点微调：那一格不可通行时，往周围挪到最近的可通行格；实在没有就退回点击点。

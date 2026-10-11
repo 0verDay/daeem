@@ -36,10 +36,15 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 MODE_SOLO = "solo"
 MODE_COOP = "coop"
 
-#: `factions[].ai` 的取值。
+#: `factions[].ai` 的取值（本轮口径，与 `logic/level.gd` 一致）。
 AI_NONE = "none"
-AI_FACTION = "faction"
-AI_GENERAL = "general"
+#: 阵地性 AI：附属一个区划（巡逻 / 无消耗招兵 / 濒死再起）。
+AI_GARRISON = "garrison"
+#: 红点性 AI：长冷却在指定区域刷一波满编将领、行军攻击目标点。
+AI_REDDOT = "reddot"
+#: 旧值（**只用于兼容读入**）：'faction' / 'general' 现在都归一成 'garrison'。
+AI_LEGACY_FACTION = "faction"
+AI_LEGACY_GENERAL = "general"
 
 #: `attack_target.kind` 的取值（不写这个键 = `None` = 「打离自己最近的敌方区划」）。
 TARGET_ZONE = "zone"
@@ -64,7 +69,7 @@ SEV_WARN = "warn"
 TARGET_KINDS: Tuple[str, ...] = (TARGET_ZONE, TARGET_POINT, TARGET_BUILDING, TARGET_BASE)
 
 #: `ai` 的三种取值（界面下拉用）。
-AI_KINDS: Tuple[str, ...] = (AI_NONE, AI_FACTION, AI_GENERAL)
+AI_KINDS: Tuple[str, ...] = (AI_NONE, AI_GARRISON, AI_REDDOT)
 
 #: `mode` 的两种取值。
 MODES: Tuple[str, ...] = (MODE_SOLO, MODE_COOP)
@@ -103,6 +108,34 @@ COMMENT_KEY = "_comment"
 #:    没摆就是 0 个兵（将领光杆）。这一条是用户明确要的「所见即所得」。
 ESCORT_OF_KEY = "escort_of"
 
+#: ★★ 将领的**附属单位规格**（本轮新增，取代逐兵摆放）：生成数量 + 兵种权重表。
+#:
+#:   · `escort_count` = 这位将领开局生成的附属单位数量（≤ 该将领的编制上限）；
+#:   · `escort_types` = `[{"type": <兵种 id>, "weight": <float>}]`：按权重随机抽兵种
+#:     （权重和必须为 1，校验会拦）。
+#:
+#: 运行时靠它**当场随机生成满编附属兵**（`world.fill_general_retinue`）；阵地 AI 脱战后
+#: 也按同一份权重补员。只有**将领**条目会带这两个键。
+ESCORT_COUNT_KEY = "escort_count"
+ESCORT_TYPES_KEY = "escort_types"
+
+#: ★★ 红点性 AI 的**函数式生成配置**（挂在 `factions[].reddot_ai` 上，本轮新增）：
+#:   · `wave_time_expr`  第 x 波的生成时间（分钟）= y = a·x + b（默认 "x"）；
+#:   · `general_count_expr` 第 x 波的将领数（默认 "x"）；
+#:   · `general_weights` = `[{"general": 1..3, "weight": f}]`（将领类型权重，和为 1）；
+#:   · `spawn_tiles` = `[[x,y], ...]`：红点生成地块（可空）；
+#:   · `escort_count` / `escort_types`：红点将领的**共享附属单位规格**（同上）。
+REDDOT_WAVE_EXPR_KEY = "wave_time_expr"
+REDDOT_COUNT_EXPR_KEY = "general_count_expr"
+REDDOT_GENERAL_WEIGHTS_KEY = "general_weights"
+REDDOT_SPAWN_TILES_KEY = "spawn_tiles"
+
+#: 编制上限的默认值（与 `logic/config.gd` 的 `GENERAL_CAP_DEFAULT` / UI 的 UNIT_CAP 同值）。
+GENERAL_CAP_DEFAULT = 11
+
+#: 权重和的允许误差（浮点）；|sum - 1| 超过它就判「权重和不是 1」。
+WEIGHT_TOL = 1e-3
+
 #: 运行时开局会为每一方自动生成几位将领（`logic/world.gd` 的 `create_generals`）。
 #: ⚠️ 只在「这一方**没有**摆附属部队」时才自动生成 —— 摆了就整方交给作者（见 README）。
 #:    ⚠️ 目前**只是文档**（没有代码读它）：真要按它做检查时，记得与运行时的
@@ -122,34 +155,37 @@ class FactionEntry:
     """关卡 `factions[]` 的一行 —— 「这一方在这一关里怎么打」。
 
     字段与 `logic/level.gd` 的 `_read_level_factions()` **逐字段对齐**：
-    `id / ai / base / color / resource_mult / start_food / start_gold /
-     attack_target / faction_ai / general_ai`。
+    `id / ai / base / color / attack_target / garrison_ai / reddot_ai / spawn_region`。
 
     ★ 多出来的 `name` / `color` 是 `merge_over_map()` 会读的两个字段
       （关卡新点名的阵营要靠它出现在阵营表里），不是运行时 AI 参数。
+
+    ⚠️ 本轮删掉了 `resource_mult` / `start_food` / `start_gold`（AI 不再有资源库）
+       与 `faction_ai` / `general_ai`（旧的两套 AI 参数）—— 换成 `garrison_ai` /
+       `reddot_ai`（按阵营覆盖）与 `spawn_region`（红点生成区域）。
     """
 
-    __slots__ = ("fid", "ai", "base", "resource_mult", "start_food", "start_gold",
-                 "attack_target", "faction_ai", "general_ai", "name", "color",
-                 "declared", "attack_target_raw")
+    __slots__ = ("fid", "ai", "base", "attack_target", "attack_target_raw",
+                 "garrison_ai", "reddot_ai", "spawn_region", "spawn_region_raw",
+                 "name", "color", "declared")
 
     def __init__(self, fid: str) -> None:
         self.fid = fid
         self.ai = AI_NONE
         self.base: Optional[Tuple[int, int]] = None
-        self.resource_mult = 1.0
-        self.start_food = 0.0
-        self.start_gold = 0.0
         #: 形状 {"kind": ..., ...}；None = 没写（运行时退回「打最近的敌方区划」）。
         self.attack_target: Optional[dict] = None
         #: `attack_target` 在源 JSON 里的**原样值**（`True` 表示「这个键出现过」）。
         #: ★ 为什么留着它：`attack_target: "4"` 这种**形状错**（不是对象）是校验第 10 条
         #:   要拦的一档，而规范化之后它就变成一个「kind 空」的字典、与「种类不认识」分不开了。
-        #:   留着原值，`attack_target_shape` 才报得准。
         self.attack_target_raw: Any = None
-        #: 覆盖 `config.ai.faction` / `config.ai.general` 的那几个键；None = 全部继承。
-        self.faction_ai: Optional[dict] = None
-        self.general_ai: Optional[dict] = None
+        #: 覆盖 `config.ai.garrison` / `config.ai.reddot` 的那几个键；None = 全部继承。
+        self.garrison_ai: Optional[dict] = None
+        self.reddot_ai: Optional[dict] = None
+        #: 红点 AI 的生成区域（形状与 `attack_target` 同构：kind = zone / point）；
+        #: None = 用这一方的出生点 + config 的默认半径。
+        self.spawn_region: Optional[dict] = None
+        self.spawn_region_raw: Any = None
         self.name = ""
         self.color = ""
         #: 「这一方在**这一关的 JSON 里**被点名了」—— 与「只是地图上划过」是两件事：
@@ -173,7 +209,8 @@ class UnitEntry:
     """
 
     __slots__ = ("faction", "kind", "general_index", "unit_type", "x", "y",
-                 "ai", "zone", "hold", "name", "escort_of", "declared")
+                 "ai", "zone", "hold", "name", "escort_of",
+                 "escort_count", "escort_types", "declared")
 
     def __init__(self, faction: str = "", kind: str = "", x: int = 0, y: int = 0) -> None:
         self.faction = faction
@@ -193,6 +230,10 @@ class UnitEntry:
         #:   运行时靠它填 `unit.leader_id` —— 于是它在游戏里真的是那位将领的**部队**
         #:   （点一个兵选中整队 / 将领濒死时它去集结 / 将领死了它算「部队没了」）。
         self.escort_of = -1
+        #: ★★ 附属单位规格（本轮新增，见 `ESCORT_COUNT_KEY`）：生成数量（-1 = 没设过）
+        #:   与权重表 `[{"type": ..., "weight": ...}]`。只有将领条目会用到它们。
+        self.escort_count = -1
+        self.escort_types: List[dict] = []
         #: 源 JSON 里**出现过**的键（`{"general_index": 1}` 与「没写」是两件事：
         #: 前者要原样写回去，后者不该被凭空补一个键）。
         #: ★ 这是 `_declared` 那一套在**每一项**上的落点 —— 关卡层的 `_declared` 只管
@@ -212,6 +253,14 @@ class UnitEntry:
     def is_escort(self) -> bool:
         """这个兵是不是「附属部队」（挂了归属将领）。"""
         return int(self.escort_of) >= 1
+
+    def has_spec(self) -> bool:
+        """这位将领设了附属单位规格没有（`escort_count > 0` 才算）。"""
+        return int(self.escort_count) > 0
+
+    def spec_weight_sum(self) -> float:
+        """附属单位权重表的和（校验「必须为 1」用）。"""
+        return weight_sum(self.escort_types)
 
     def __repr__(self) -> str:                          # pragma: no cover - 调试用
         return "<UnitEntry %s %s (%d,%d)>" % (self.faction, self.kind, self.x, self.y)
@@ -754,19 +803,22 @@ class ConfigInfo:
     """
 
     __slots__ = ("unit_types", "unit_names", "general_types",
-                 "general_names", "building_types", "zone_kinds", "ai_faction_cfg",
-                 "ai_general_cfg", "colors", "raw")
+                 "general_names", "general_caps", "building_types", "zone_kinds",
+                 "ai_garrison_cfg", "ai_reddot_cfg", "colors", "raw")
 
     def __init__(self) -> None:
         self.unit_types: List[str] = []
         self.unit_names: Dict[str, str] = {}
         self.general_types: List[str] = []
         self.general_names: List[str] = []
+        #: ★★ 每位将领的编制上限（`unit.general.caps`，与 types 同序）。
+        #: 缺省 / 越界 → `GENERAL_CAP_DEFAULT`（见 `general_cap`）。
+        self.general_caps: List[int] = []
         self.building_types: List[str] = []
         self.zone_kinds: List[str] = []
-        #: `config.ai.faction` / `config.ai.general` —— 关卡「高级」区的**推荐值**。
-        self.ai_faction_cfg: Dict[str, Any] = {}
-        self.ai_general_cfg: Dict[str, Any] = {}
+        #: `config.ai.garrison` / `config.ai.reddot` —— 关卡「高级」区的**推荐值**。
+        self.ai_garrison_cfg: Dict[str, Any] = {}
+        self.ai_reddot_cfg: Dict[str, Any] = {}
         self.colors: Dict[str, Any] = {}
         self.raw: dict = {}
 
@@ -785,6 +837,13 @@ class ConfigInfo:
     def general_indices(self) -> List[int]:
         n = max(1, len(self.general_types) or 3)
         return list(range(1, n + 1))
+
+    def general_cap(self, index: int) -> int:
+        """第 `index` 位将领（**1 起**）的编制上限；缺省 / 越界 → `GENERAL_CAP_DEFAULT`。"""
+        i = int(index) - 1
+        if 0 <= i < len(self.general_caps):
+            return max(0, int(self.general_caps[i]))
+        return GENERAL_CAP_DEFAULT
 
     def faction_color(self, fid: str) -> str:
         """阵营配色：`colors.faction.<id>.main` → 兜底空串（界面自己挑一个）。"""
@@ -859,6 +918,106 @@ def _as_str(value: Any, fallback: str = "") -> str:
     return fallback
 
 
+def normalize_weight_list(raw: Any) -> List[dict]:
+    """把 `[{"type"/"general": X, "weight": w}]` 归一成权重为 float 的条目表。
+
+    ★ 与 `logic/config.gd` 的 `normalize_weight_list` 同一口径：没有 `weight` 的项丢掉、
+      负权重夹成 0（数据写错不该让校验 / 运行时崩）。运行时与编辑器共用同一套「怎么算合法」。
+    """
+    out: List[dict] = []
+    for item in _as_list(raw):
+        if not isinstance(item, dict):
+            continue
+        w = item.get("weight")
+        if isinstance(w, bool) or not isinstance(w, (int, float)):
+            continue
+        entry = dict(item)
+        entry["weight"] = max(0.0, float(w))
+        out.append(entry)
+    return out
+
+
+def weight_sum(entries: Any) -> float:
+    """权重表里各项 `weight` 的和（校验「必须为 1」用）。"""
+    total = 0.0
+    for e in _as_list(entries):
+        if isinstance(e, dict):
+            w = e.get("weight")
+            if not isinstance(w, bool) and isinstance(w, (int, float)):
+                total += float(w)
+    return total
+
+
+def _signed_number(s: str) -> Optional[float]:
+    if s in ("", "+", "-"):
+        return None
+    sign = 1.0
+    body = s
+    if s[0] == "+":
+        body = s[1:]
+    elif s[0] == "-":
+        sign = -1.0
+        body = s[1:]
+    if not body:
+        return None
+    try:
+        return sign * float(body)
+    except ValueError:
+        return None
+
+
+def expr_coefficients(expr: Any) -> Optional[Tuple[float, float]]:
+    """解析 `y = a·x + b`（语法与 `logic/expr.gd` **逐字一致**；两边必须一起改）。
+
+    支持：`x` / `-x` / `2x` / `x+1` / `2x-1` / `3` / 小数 / `y=` 前缀可省 / 空白随意。
+    @return `(a, b)`；非法 → `None`。
+    """
+    s = _as_str(expr, "").lower().replace(" ", "").replace("\t", "")
+    if s.startswith("y"):
+        s = s[1:]
+    if s.startswith("="):
+        s = s[1:]
+    if s == "":
+        return None
+    xi = s.find("x")
+    if xi >= 0:
+        if s.rfind("x") != xi:            # 只允许一个 x
+            return None
+        coef = s[:xi]
+        rest = s[xi + 1:]
+        if coef in ("", "+"):
+            a = 1.0
+        elif coef == "-":
+            a = -1.0
+        else:
+            a = _signed_number(coef)
+            if a is None:
+                return None
+        if rest == "":
+            b = 0.0
+        elif rest[0] in "+-":              # x 后面的常数必须带符号（"x1" 判非法）
+            b = _signed_number(rest)
+            if b is None:
+                return None
+        else:
+            return None
+    else:
+        a = 0.0
+        b = _signed_number(s)              # 没有 x：整串就是常数（可无符号）
+        if b is None:
+            return None
+    return (a, b)
+
+
+def is_valid_expr(expr: Any) -> bool:
+    return expr_coefficients(expr) is not None
+
+
+def eval_expr(expr: Any, x: float) -> Optional[float]:
+    c = expr_coefficients(expr)
+    return None if c is None else c[0] * x + c[1]
+
+
 def _as_point(value: Any) -> Optional[Tuple[int, int]]:
     """`[x, y]` → `(x, y)`；没写 / 格式不认识 → `None`（= 「没写」）。"""
     if isinstance(value, (list, tuple)) and len(value) >= 2:
@@ -906,8 +1065,11 @@ def load_config(project_dir: Any) -> ConfigInfo:
                        for k, v in types.items() if isinstance(v, dict)}
     general = unit.get("general", {}) if isinstance(unit.get("general"), dict) else {}
     info.general_types = [str(x) for x in _as_list(general.get("types"))]
+    # ★★ 每位将领的编制上限（`unit.general.caps`）：缺省 / 越界 → GENERAL_CAP_DEFAULT。
+    info.general_caps = [max(0, _as_int(x, GENERAL_CAP_DEFAULT))
+                         for x in _as_list(general.get("caps"))]
     # ⚠️ 这里**没有**「开局附属兵个数」了：`config.json` 的 `unit.general.escort` 已被删掉，
-    #    开局附属兵改由**本编辑器的摆放页**一个一个摆出来（`start_units[].escort_of`）。
+    #    开局附属单位改由**本编辑器**给每位将领 / 红点配一份「规格」（类型 + 权重 + 数量）。
     stats = _as_list(general.get("stats"))
     names: List[str] = []
     for item in stats:
@@ -922,8 +1084,8 @@ def load_config(project_dir: Any) -> ConfigInfo:
     info.zone_kinds = [str((z or {}).get("id", "")) for z in _as_list(zone_kind.get("list"))
                        if isinstance(z, dict)]
     ai = data.get("ai", {}) if isinstance(data.get("ai"), dict) else {}
-    info.ai_faction_cfg = dict(ai.get("faction", {})) if isinstance(ai.get("faction"), dict) else {}
-    info.ai_general_cfg = dict(ai.get("general", {})) if isinstance(ai.get("general"), dict) else {}
+    info.ai_garrison_cfg = dict(ai.get("garrison", {})) if isinstance(ai.get("garrison"), dict) else {}
+    info.ai_reddot_cfg = dict(ai.get("reddot", {})) if isinstance(ai.get("reddot"), dict) else {}
     info.colors = dict(data.get("colors", {})) if isinstance(data.get("colors"), dict) else {}
     return info
 
@@ -1156,9 +1318,6 @@ def _load_level_factions(raw: Any, lv: LevelModel) -> None:
         e = FactionEntry(fid)
         e.ai = normalize_ai(item.get("ai"))
         e.base = _as_point(item.get("base"))
-        e.resource_mult = _as_float(item.get("resource_mult"), 1.0)
-        e.start_food = _as_float(item.get("start_food"), 0.0)
-        e.start_gold = _as_float(item.get("start_gold"), 0.0)
         spec = item.get("attack_target")
         if isinstance(spec, dict) and spec:
             e.attack_target = normalize_target(spec)
@@ -1167,8 +1326,15 @@ def _load_level_factions(raw: Any, lv: LevelModel) -> None:
             # ★ 形状错（不是对象 / 是空对象）：留个痕迹给校验第 10 条，别静默吞掉
             e.attack_target = normalize_target(spec) if isinstance(spec, dict) else {"kind": ""}
             e.attack_target_raw = spec
-        e.faction_ai = _as_dict(item.get("faction_ai"))
-        e.general_ai = _as_dict(item.get("general_ai"))
+        e.garrison_ai = _as_dict(item.get("garrison_ai"))
+        e.reddot_ai = _as_dict(item.get("reddot_ai"))
+        region = item.get("spawn_region")
+        if isinstance(region, dict) and region:
+            e.spawn_region = normalize_target(region)
+            e.spawn_region_raw = region
+        elif "spawn_region" in item and region is not None:
+            e.spawn_region = normalize_target(region) if isinstance(region, dict) else {"kind": ""}
+            e.spawn_region_raw = region
         e.name = _as_str(item.get("name", ""), "")
         e.color = _as_str(item.get("color", ""), "")
         lv.factions.append(e)
@@ -1217,6 +1383,10 @@ def _load_start_units(raw: Any, lv: LevelModel) -> None:
         u.escort_of = _as_int(item.get(ESCORT_OF_KEY), -1)
         if u.escort_of < 1:
             u.escort_of = -1
+        # ★★ 附属单位规格（本轮新增）：生成数量 + 兵种权重表。
+        #   宽容读取：数量缺省 / 坏值 → -1（= 没设过）；权重表走统一的归一化。
+        u.escort_count = _as_int(item.get(ESCORT_COUNT_KEY), -1)
+        u.escort_types = normalize_weight_list(item.get(ESCORT_TYPES_KEY, None))
         # 记下源里出现过的键（导出时按它决定写不写，见 `_unit_to_dict`）
         u.declared = set(item.keys())
         lv.start_units.append(u)
@@ -1419,9 +1589,14 @@ _TERRAIN_BY_NAME = {"grass": ".", "forest": "^", "mountain": "#",
 
 
 def normalize_ai(value: Any) -> str:
-    """`ai` 字段：只认 `faction` / `general` / `none`；别的（含缺字段）→ `none`。"""
+    """`ai` 字段：认 `garrison` / `reddot` / `none`；旧值 `faction` / `general` 归一成
+    `garrison`；别的（含缺字段）→ `none`。"""
     s = _as_str(value, "").lower()
-    return s if s in AI_KINDS else AI_NONE
+    if s in AI_KINDS:
+        return s
+    if s in (AI_LEGACY_FACTION, AI_LEGACY_GENERAL):
+        return AI_GARRISON
+    return AI_NONE
 
 
 def normalize_mode(value: Any, fallback: str = MODE_SOLO) -> str:
@@ -1525,18 +1700,14 @@ def _faction_to_dict(e: FactionEntry) -> dict:
     out["ai"] = e.ai if e.ai in AI_KINDS else AI_NONE
     if e.base is not None:
         out["base"] = [int(e.base[0]), int(e.base[1])]
-    if abs(float(e.resource_mult) - 1.0) > 1e-9:
-        out["resource_mult"] = clean_number(e.resource_mult)
-    if abs(float(e.start_food)) > 1e-9:
-        out["start_food"] = clean_number(e.start_food)
-    if abs(float(e.start_gold)) > 1e-9:
-        out["start_gold"] = clean_number(e.start_gold)
     if e.attack_target:
         out["attack_target"] = _target_to_dict(e.attack_target)
-    if e.faction_ai:
-        out["faction_ai"] = _param_dict(e.faction_ai)
-    if e.general_ai:
-        out["general_ai"] = _param_dict(e.general_ai)
+    if e.garrison_ai:
+        out["garrison_ai"] = _param_dict(e.garrison_ai)
+    if e.reddot_ai:
+        out["reddot_ai"] = _param_dict(e.reddot_ai)
+    if e.spawn_region:
+        out["spawn_region"] = _target_to_dict(e.spawn_region)
     if e.name:
         out["name"] = e.name
     if e.color:
@@ -1593,6 +1764,23 @@ def _unit_to_dict(u: UnitEntry) -> dict:
     # ★★ 归属将领：只有真的是附属部队时才写（-1 = 普通摆放单位，不写这个键）。
     if u.is_escort():
         out[ESCORT_OF_KEY] = int(u.escort_of)
+    # ★★ 附属单位规格（本轮新增）：数量 ≥ 0 就写（含 0 = 明确的「别补兵」）；
+    #    权重表非空 / 源里出现过才写（免得凭空多一个空数组）。
+    if int(u.escort_count) >= 0:
+        out[ESCORT_COUNT_KEY] = int(u.escort_count)
+    if u.escort_types or u.has(ESCORT_TYPES_KEY):
+        out[ESCORT_TYPES_KEY] = [_weight_to_dict(t) for t in u.escort_types]
+    return out
+
+
+def _weight_to_dict(entry: dict) -> dict:
+    """权重表的一项：数字清理成好看的写法，别的键原样带过去。"""
+    out: Dict[str, Any] = {}
+    for key, value in entry.items():
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            out[key] = clean_number(value)
+        else:
+            out[key] = value
     return out
 
 
@@ -1780,8 +1968,14 @@ def validate_level(model: CampaignModel, lv: LevelModel, maps: Dict[str, MapInfo
     # ---- ★ 17) 自定义阵营必须有配色（否则游戏里整场一片紫）----
     _ck_colors(add, model, lv, info)
 
-    # ---- ★ 18) 附属部队的归属（start_units[].escort_of）----
+    # ---- ★ 18) 附属部队的归属（`start_units[].escort_of`；旧模型，兼容读入）----
     _ck_escort_links(add, lv)
+
+    # ---- ★ 19) 将领的附属单位规格（类型 + 权重 + 数量）----
+    _ck_escort_specs(add, lv, config)
+
+    # ---- ★ 20) 红点阵营的生成配置（函数表达式 / 权重 / 生成地块 / 共享规格）----
+    _ck_reddot(add, lv, info, config)
 
     return out
 
@@ -2107,8 +2301,8 @@ def _ck_objectives(add, lv: LevelModel, info: Optional[MapInfo]) -> None:
 
 def _ck_attack_targets(add, model: CampaignModel, lv: LevelModel,
                        info: Optional[MapInfo]) -> None:
-    """10/14/15/16 + overload_hint：进攻目标、自己人警告、缺省警告、AI 参数过载。"""
-    faction_ais = [e for e in lv.factions if e.ai == AI_FACTION]
+    """10/14/15：进攻目标（红点 AI 的行军目标）、自己人警告、缺省警告。"""
+    faction_ais = [e for e in lv.factions if e.ai == AI_REDDOT]
 
     # 10) 引用的区划 / 格 / 建筑 / 大本营必须存在且可通行
     for e in lv.factions:
@@ -2137,19 +2331,6 @@ def _ck_attack_targets(add, model: CampaignModel, lv: LevelModel,
             add(SEV_WARN, "attack_target_own_land",
                 "%s 的进攻目标 %s 是自己占的区划，确认是有意的吗"
                 % (e.fid, info.zone_label(zid) if info else zone_label(zid)))
-
-    # ★ 9.1 风险 4：出兵间隔很小 **且** 资源倍率很高 → 警告（**警告不是拦截**，
-    #   这是设计者的自由；编辑器只是把那个已知的坑指出来）。
-    #   阈值与文案取自 dev_plan_7 9.1：「这一方的出兵间隔 2s 且资源 3.0×，可能压不住」。
-    for e in faction_ais:
-        params = e.faction_ai or {}
-        repeat = params.get("attack_repeat_sec")
-        if not isinstance(repeat, (int, float)) or isinstance(repeat, bool):
-            continue
-        if float(repeat) <= 3.0 and float(e.resource_mult) >= 2.0:
-            add(SEV_WARN, "overload_hint",
-                "「%s」的出兵间隔 %s 秒且资源 %.1f×，可能压不住（一波接一波）"
-                % (e.fid, fmt_sec(float(repeat)), float(e.resource_mult)))
 
 
 def _ck_colors(add, model: CampaignModel, lv: LevelModel, info: Optional[MapInfo]) -> None:
@@ -2234,6 +2415,102 @@ def _ck_escort_links(add, lv: LevelModel) -> None:
                 "**不再自动生成那 3 位将领**，于是这些兵开局群龙无首" % fid)
 
 
+def _tile_of(value: Any) -> Optional[Tuple[int, int]]:
+    """把 `[x,y]` / `{"x":..,"y":..}` 归一成 `(x, y)`；认不出来 → None。"""
+    if isinstance(value, (list, tuple)) and len(value) >= 2:
+        return (_as_int(value[0], -1), _as_int(value[1], -1))
+    if isinstance(value, dict) and "x" in value and "y" in value:
+        return (_as_int(value.get("x"), -1), _as_int(value.get("y"), -1))
+    return None
+
+
+def _ck_escort_specs(add, lv: LevelModel, config: Optional[ConfigInfo]) -> None:
+    """★ 19) **将领条目的附属单位规格**：数量 ≤ 编制上限、权重和 = 1、兵种存在。
+
+    code 与 `logic/level.gd` 的 `_ck_escort_spec` **逐字一致**（编辑器 / 测试 / 运行时对暗号）。
+    """
+    for u in lv.start_units:
+        if not u.is_general():
+            continue
+        cap = config.general_cap(u.general_index) if config is not None else -1
+        _ck_one_escort_spec(add, u.escort_count, u.escort_types,
+                            "将领 (%d,%d)" % (int(u.x), int(u.y)), cap, config)
+
+
+def _ck_one_escort_spec(add, count: Any, types: Any, where: str, cap: int,
+                        config: Optional[ConfigInfo]) -> None:
+    """一份「附属单位规格」的通用校验（将领用 / 红点共享用都走它）。
+
+    @param cap 数量上界（-1 = 不查，缺配置时用）
+    """
+    n = _as_int(count, -1)
+    entries = normalize_weight_list(types)
+    if n < -1:
+        add(SEV_BLOCK, "escort_count_negative", "%s 的附属单位数量是负数（%d）" % (where, n))
+    if n > 0:
+        if cap >= 0 and n > cap:
+            add(SEV_BLOCK, "escort_count_over_cap",
+                "%s 的附属单位数量 %d 超过编制上限 %d" % (where, n, cap))
+        if not entries:
+            add(SEV_BLOCK, "escort_types_missing", "%s 设了附属单位数量却没有类型权重表" % where)
+    for e in entries:
+        tid = _as_str(e.get("type", ""), "")
+        if config is not None and config.unit_types and tid not in config.unit_types:
+            add(SEV_BLOCK, "escort_type_unknown",
+                "%s 的附属单位类型「%s」不在 config 的单位表里" % (where, tid))
+    if entries:
+        total = weight_sum(entries)
+        if abs(total - 1.0) > WEIGHT_TOL:
+            add(SEV_BLOCK, "escort_weights_sum",
+                "%s 的附属单位权重和不是 1（是 %.4f）" % (where, total))
+
+
+def _ck_reddot(add, lv: LevelModel, info: Optional[MapInfo],
+               config: Optional[ConfigInfo]) -> None:
+    """★ 20) **红点阵营的生成配置**：函数表达式 / 将领权重 / 生成地块 / 共享附属规格。
+
+    只在关卡 `reddot_ai` **真的覆盖了**某个键时才校验 —— 不写就吃 config 的默认，一定是好的。
+    """
+    for fe in lv.factions:
+        if fe.ai != AI_REDDOT:
+            continue
+        rd = fe.reddot_ai if isinstance(fe.reddot_ai, dict) else {}
+        fid = fe.fid or "（空）"
+        if REDDOT_WAVE_EXPR_KEY in rd and not is_valid_expr(rd.get(REDDOT_WAVE_EXPR_KEY)):
+            add(SEV_BLOCK, "reddot_expr_invalid",
+                "红点阵营「%s」的生成频率表达式「%s」无法解析（只支持 y=ax+b）"
+                % (fid, rd.get(REDDOT_WAVE_EXPR_KEY)))
+        if REDDOT_COUNT_EXPR_KEY in rd and not is_valid_expr(rd.get(REDDOT_COUNT_EXPR_KEY)):
+            add(SEV_BLOCK, "reddot_expr_invalid",
+                "红点阵营「%s」的将领数表达式「%s」无法解析（只支持 y=ax+b）"
+                % (fid, rd.get(REDDOT_COUNT_EXPR_KEY)))
+        if REDDOT_GENERAL_WEIGHTS_KEY in rd:
+            gw = normalize_weight_list(rd.get(REDDOT_GENERAL_WEIGHTS_KEY))
+            if gw and abs(weight_sum(gw) - 1.0) > WEIGHT_TOL:
+                add(SEV_BLOCK, "reddot_general_weights_sum",
+                    "红点阵营「%s」的将领类型权重和不是 1（是 %.4f）" % (fid, weight_sum(gw)))
+        if REDDOT_SPAWN_TILES_KEY in rd and info is not None:
+            for t in _as_list(rd.get(REDDOT_SPAWN_TILES_KEY)):
+                tp = _tile_of(t)
+                if tp is None:
+                    continue
+                x, y = tp
+                if not info.tile_exists(x, y):
+                    add(SEV_BLOCK, "reddot_spawn_tile_invalid",
+                        "红点阵营「%s」的生成地块 (%d,%d) 在地图外" % (fid, x, y))
+                elif not info.walkable_at(x, y):
+                    add(SEV_BLOCK, "reddot_spawn_tile_invalid",
+                        "红点阵营「%s」的生成地块 (%d,%d) 在山上（站不了人）" % (fid, x, y))
+        # 共享附属单位规格：用**所有将领里最大的编制上限**当上界（宽松）。
+        cap = -1
+        if config is not None:
+            caps = [config.general_cap(i) for i in config.general_indices()]
+            cap = max(caps) if caps else GENERAL_CAP_DEFAULT
+        _ck_one_escort_spec(add, rd.get(ESCORT_COUNT_KEY, -1),
+                            rd.get(ESCORT_TYPES_KEY, None),
+                            "红点阵营「%s」" % fid, cap, config)
+
+
 def _ck_attack_target(add, lv: LevelModel, info: Optional[MapInfo], fid: str,
                       spec: dict, raw: Any = None) -> None:
     # 10) ★ 形状：`attack_target` 必须是一个对象（`"4"` / `4` / `[...]` 都是数据错）
@@ -2279,11 +2556,11 @@ def _ck_attack_target(add, lv: LevelModel, info: Optional[MapInfo], fid: str,
 
 
 def _ck_start_units(add, lv: LevelModel) -> None:
-    """12) 摆放里 `ai: "general"` 的项都必须有 zone。"""
+    """12) 摆放里 `ai: "garrison"` 的项都必须有 zone。"""
     for u in lv.start_units:
-        if u.ai == AI_GENERAL and int(u.zone) < 0:
+        if u.ai == AI_GARRISON and int(u.zone) < 0:
             add(SEV_BLOCK, "unit_general_no_zone",
-                "摆放的将领 (%d,%d) 挂了将领性 AI 却没有归属区划（它会原地发呆）"
+                "摆放的将领 (%d,%d) 挂了阵地性 AI 却没有归属区划（它会原地发呆）"
                 % (u.x, u.y))
         if not u.faction:
             add(SEV_BLOCK, "unit_no_faction", "摆放单位 (%d,%d) 没写 faction" % (u.x, u.y))

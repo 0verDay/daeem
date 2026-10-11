@@ -19,7 +19,90 @@
   },
 
   "render": {
-    "cell_px": 128
+    "_comment": [
+      "★★ 3D 场景（真实 Camera3D）：地面是 y = 0 的水平平面，逻辑格 (x,y) → 世界 (x·cell, 0, y·cell)。",
+      "   投影 / 求交 / 相机数学**全部交给引擎**，不存在「画用一套、点用另一套」。",
+      "   · camera_pitch_deg = 固定俯角（固定角度：只能平移与缩放，不改俯角）。",
+      "   · camera_distance = 镜头离地面高度（世界单位 = 格宽 128 的尺度）。",
+      "   · camera_fov_deg = 竖直视场角。",
+      "   ★★ 关键：相机**不俯仰旋转**（rotation 恒为 0），沿自身坐标轴平移 ⇒",
+      "      同一个格在任何高度看到的屏幕位置**完全相同** ⇒ 「下滑时地块变大」这类问题",
+      "      从根上不存在（伸缩只由缩放决定，与相机位置无关）。",
+      "   ★★ 三类东西各走各的路（**这一条改过两次，别照旧印象改**）：",
+      "      · **大块平坦色**（地形底色 / 区划归属）→ **烘进地形贴图**（1 次 draw call，放大不糊）；",
+      "      · **有「边」的东西**（网格线 / 区划轮廓 / 占领进度条）→ **屏幕空间矢量画**",
+      "        （与 2D 版同一套 `draw_multiline` / `draw_colored_polygon` 画法）——",
+      "        烘进贴图会被放大成软边：1 像素的线在 16 像素/格的图上放大 1.9 倍就是 2 像素宽的糊带，",
+      "        而 1 像素 = 1 格的进度贴图更糟（一个纹素铺满整格 ≈ 30 屏幕像素的渐变带）；",
+      "      · **迷雾** → 独立的一块平面 + 贴图（4 像素/格），只做浓淡、不做边界。",
+      "      ★ 判据：**「这块内容有没有边」**决定走哪条路。",
+      "        完整实测与口径见 docs/pitfalls.md 第 11.9 / 11.10 节。",
+      "   ★ 单位：MultiMeshInstance3D + billboard shader（立起来、始终面向相机）；本版不投影阴影。"
+    ],
+    "cell_px": 128,
+    "camera_pitch_deg": 55.0,
+    "camera_distance": 6400.0,
+    "camera_fov_deg": 40.0,
+    "ground_subdiv": 1,
+    "depth_sort": true,
+    "ui_compensate": true,
+    "_projectile_comment": [
+      "★★ 射箭投掷物（远程单位 / 可攻击建筑）的**纯表现**参数（见 view/projectile_view_3d.gd）。",
+      "   伤害结算不在这里 —— 它在逻辑层（logic/projectile.gd，用 combat.projectile_speed）。",
+      "   · projectile_size = 小方块边长（相对格宽；0.10 ≈ 1/10 格）——用户口径是「先用一个小方块代替」。",
+      "   · projectile_arc_ratio = 抛物线拱高 = 起点↔终点距离 × 这个比例（它由视图施加，逻辑只走地面直线）。",
+      "   · projectile_trail_len = 拖尾保留的历史点数（一段短线跟在方块后方，随抛物线弯曲）。"
+    ],
+    "projectile_size": 0.10,
+    "projectile_arc_ratio": 0.18,
+    "projectile_trail_len": 6,
+    "_hit_fx_comment": [
+      "★★ 受击动效（本轮新增，见 view/hit_fx.gd 与 overlay_view_3d.gd）：",
+      "   被打中的单位 / 建筑**闪白 + 左右振动一小段**。",
+      "   · hit_shake_cells = 左右振动的幅度（格）——很小，只是「顿一下」的体感。",
+      "   · hit_shake_freq = 振动相位频率（越大抖得越快）；相位 = (1 - flash) × freq，",
+      "     所以它不是随机数、可复现（存档 / 回放不受影响）。",
+      "   · hit_flash_alpha = 闪白的峰值强度（1 = 打到纯白，0 = 不闪）。",
+      "   ★ 闪白是**逐像素的 shader 效果**（view/unit_flash.gdshader 与 view/building_flash.gdshader，",
+      "     走 MultiMesh 的每实例自定义数据 INSTANCE_CUSTOM.r）—— 不是盖一层白块。",
+      "   时长由 combat.hit_flash_sec 决定。"
+    ],
+    "hit_shake_cells": 0.06,
+    "hit_shake_freq": 26.0,
+    "hit_flash_alpha": 0.8,
+    "_building_fade_comment": [
+      "★★ 建筑「被单位挡住时淡出」的不透明度（见 view/building_flash.gdshader +",
+      "   view/building_view_3d.gd）：以建筑所在格为中心的 **3x3 内有可见单位**时，",
+      "   整栋建筑淡到这么透明（0 = 全透明，1 = 不淡出）—— 这样单位不会被建筑挡住。",
+      "   · 触发口径：**所有单位**（敌我都算），但**只看当前可见的**（迷雾里的敌人不会泄露）。",
+      "   · 它是**纯表现**（只改 alpha，不进逻辑 / 快照）。",
+      "   ⚠️ 该 shader 写了 ALPHA ⇒ 引擎按**透明管线**画建筑；靠 `depth_draw_always`",
+      "      强制写深度，建筑之间的前后遮挡才不会按「谁后画谁在上」乱掉（用户报的 bug）。"
+    ],
+    "building_fade_alpha": 0.3,
+    "_units_fx_comment": [
+      "★★ 单位表现（本轮新增；见 view/unit_view_3d.gd / unit_downed.gdshader / order_flag_view_3d.gd）：",
+      "   · downed_alpha —— **濒死将领立牌**的透明度（0 = 全透明，1 = 不淡）；濒死那档走透明管线。",
+      "   · general_decal_size —— 将领脚下**占位贴花**的边长（格）；一张程序化贴花复用到任意将领。",
+      "   · general_decal_alpha —— 将领脚下贴花的整体不透明度（0 = 全透明，1 = 不透明）。",
+      "   · flag_move_color / flag_attack_color —— 右键指令插的 **3D 旗子**颜色（移动 = 绿 / 行军 = 黄）。",
+      "   · flag_height —— 旗杆高度（格）。",
+      "   ★★ 选中下标（本轮新增，见 view/selection_ring.gdshader）：单位被选中时脚下出现一个",
+      "      **绿色空心圆**贴花，出现动效 = 由 `selection_ring_scale_from`（150%）缩到 100%",
+      "      （= 将领黄色底面贴花那个大小）、不透明度由 0 升到 `selection_ring_alpha`（80%）；",
+      "      取消选中时**反向播放**。`selection_ring_sec` = 单程时长（秒）。",
+      "   全是**纯表现**（只读 world，不进快照、不改逻辑、无碰撞）。"
+    ],
+    "downed_alpha": 0.4,
+    "general_decal_size": 0.6,
+    "general_decal_alpha": 0.5,
+    "flag_move_color": "#4cd964",
+    "flag_attack_color": "#e6c200",
+    "flag_height": 0.5,
+    "selection_ring_color": "#3ddc5a",
+    "selection_ring_alpha": 0.8,
+    "selection_ring_sec": 0.18,
+    "selection_ring_scale_from": 1.5
   },
 
   "camera": {
@@ -35,7 +118,10 @@
       "     分开写就会出现「F 键看得见全图、滚轮看不见」这种自相矛盾的状态。",
       "  ⚠️ 后果：视野固定之后 F 键**不再能看全图**（地图 24×16 格，18.8 格宽装不下），",
       "     它现在等价于「拉到最远」。这是需求要的；哪天要让 F 恢复看全图，",
-      "     把 min_scale 降到 fit 需要的约 0.52 以下即可。"
+      "     把 min_scale 降到 fit 需要的约 0.52 以下即可。",
+      "  ★★ 2.5D（render.screen_squash = 0.7）对这里的影响：**横向一概不变**（zoom 是等比的），",
+      "     纵向可见格数变成原来的 1/0.7 = 1.43 倍 —— 所以这三个 scale 一个都不用改，",
+      "     要改的只有 camera_rig.map_size() 的纵向（它已经跟着 cell_h 走了）。"
     ],
     "min_scale": 0.8,
     "max_scale": 1.6,
@@ -77,13 +163,22 @@
       "  两个键都**没写**时各自退回下面的 vision_default / vision_building（老图行为不变）。",
       "  参考：这张 27×22 的测试图上，p1 大本营在 (7,2)、对家据点在 (14,14)，",
       "  直线距离约 14 格 —— 视野 8~9 的单位从家里看不到对家，要往前推进才会发现它。",
-      "★ mask_color / mask_alpha：灰色遮罩的颜色与不透明度（纯显示，随便调）。"
+      "★ mask_color / mask_alpha：灰色遮罩的颜色与不透明度（纯显示，随便调）。",
+      "★★ mask_alpha 的实测口径（本轮调的，别再靠感觉）：",
+      "  在 1920×1080 视口下，用「关掉迷雾」与「开着迷雾」两张截图逐格比亮度，",
+      "  被迷雾盖住的格**相对亮度下降**是（27×22 图 / 相机 default 高度）：",
+      "    alpha=0.45 → 10.6%     alpha=0.70 → 17.2%",
+      "    alpha=0.85 → 21.6%     alpha=1.00 → 26.1%",
+      "  ⇒ 原来的 0.45 只有 10% 左右，用户报「看不出来」是对的。",
+      "  ⇒ 现在用 0.80（约 20%，是原来的两倍）。**上限就是 26%**：",
+      "    因为 alpha=1 时遮罩已经是纯黑全不透明，再深只能换 mask_color，",
+      "    而纯黑已经是最深的了 —— 想更明显就得改成三档迷雾（另一个需求）。"
     ],
     "enabled": true,
     "vision_default": 8,
     "vision_building": 9,
     "mask_color": "#000000",
-    "mask_alpha": 0.45
+    "mask_alpha": 0.8
   },
 
   "ui": {
@@ -172,6 +267,12 @@
       "     · 不写这个键 → 退成**名字的第一个字**（见 config.gd 的 unit_icon_of）。",
       "     · 将领用它所属兵种的那一个字（三位的 kind 都是 general，还靠描边更粗区分）。",
       "     · 编辑器：tools/unit_editor 的「单位」页 →「地图上的字」那一栏。",
+      "  ★★ sprite = **3D 立牌的素材路径**（本轮新增，占位素材）。",
+      "     · 取素材的**形状**（alpha 当剪影遮罩），运行时填充**阵营色** ⇒ 敌我仍分得清；",
+      "       **将领那一档的描边更粗**（与 icon 那条「靠描边区分将领」同一口径）。",
+      "     · 不写这个键 / 路径载不到 → 渲染层退回**程序化剪影**（view/unit_sprite_3d.gd 的 bake）。",
+      "     · 将领用它**所属兵种**的素材（unit_sprite_of 走 unit_type_of，与 icon 同口径）。",
+      "     · ⚠️ 只在 **3D 立牌**上生效；2D 遗留栈的「圆盘 + 一个字」不看这个键。",
       "  ★ 将领的数值 = 它所属类型的数值（用户确认「完全按对应兵种数值」）：",
       "    所以这里没有单独的将领数值块。想单独强化将领就在 unit.general 里加倍率，",
       "    并在 logic/config.gd 的 unit_hp_of / unit_combat_of 里乘上去。",
@@ -190,6 +291,7 @@
       "spearman": {
         "name": "长枪兵",
         "icon": "枪",
+        "sprite": "res://assets/test_units/SpearMan/s.png",
         "class": "infantry",
         "ranged": false,
         "hp_max": 140,
@@ -203,6 +305,7 @@
       "longbowman": {
         "name": "长弓兵",
         "icon": "弓",
+        "sprite": "res://assets/test_units/LongbowMan/l.png",
         "class": "infantry",
         "ranged": true,
         "hp_max": 80,
@@ -216,6 +319,7 @@
       "rider": {
         "name": "骑手",
         "icon": "骑",
+        "sprite": "res://assets/test_units/Rider/r.png",
         "class": "cavalry",
         "ranged": false,
         "hp_max": 110,
@@ -241,6 +345,17 @@
     ],
     "general": {
       "types": ["spearman", "longbowman", "rider"],
+
+      "_caps_comment": [
+        "★★ 编制上限（本轮新增）：**每位将领一个值**，与 types 同序。",
+        "  · 语义 = 「这位将领的目标编队规模」：摆放的将领开局就生成到它，",
+        "    阵地上 AI 脱战后也补到它；红点将领的附属兵数同样以它封顶。",
+        "  · 单位编辑器（tools/unit_editor）的「将领」页可改这三个数。",
+        "  · 读的地方只有一处：logic/config.gd 的 general_cap_at()（缺省 11）。",
+        "  ⚠️ 界面右栏那个「x/11」目前仍是 view/ui_layout.gd 的常量 UNIT_CAP，",
+        "     与这里的数**暂时**各自独立（本版没改界面显示）。"
+      ],
+      "caps": [11, 11, 11],
 
       "_stats_comment": [
         "★★ 将领的**数值覆盖**（本轮新增；editor：tools/unit_editor 的「单位」页 → 将领）。",
@@ -321,12 +436,14 @@
       "  于是被推走的单位**没有任何机制走回去**，只能一直被推着漂",
       "  （实测将领就这样漂了 2000 帧、总行程 83 格，本该 8 格）。",
       "settle_return_dist：被推离落点超过这个距离（格）就自己走回去。",
-      "settle_max_attempts：最多回位几次。**必须有上限** —— 人群里回位可能永远失败",
-      "  （一帧被推走 0.25 格、自己只能走 0.04 格，1/4 速度下是 0.01 格），无上限就会退化成",
-      "  「永远挤着转」，",
-      "  那正是这条逻辑要修的病。挤不进去就算了，就地待着。"
+      "  ⚠️⚠️ 它必须**明显大于「碰撞一次能把人推开多少」**（实测推到平衡时约 0.22~0.23 格），",
+      "     否则每帧都被判定成「被推走了」⇒ 每帧回位一次 ⇒ 两个单位点同一个点时",
+      "     **来回挤很久才停**（用户报的就是这个：两个将领到点后互相挤压很久）。",
+      "     ★ 原来写的是 0.22（正好压在噪声上）→ 实测每帧触发回位；现在给到 0.5（半格）：",
+      "       「被挤开半格以上才值得走回去」，噪声不再触发它。",
+      "settle_max_attempts：最多回位几次（**每次到达后重置**）。挤不进去就算了，就地待着。"
     ],
-    "settle_return_dist": 0.22,
+    "settle_return_dist": 0.5,
     "settle_max_attempts": 3,
 
     "_formation_comment": [
@@ -335,6 +452,12 @@
       "为什么需要它：所有人抢同一个点时，谁先到谁占住，后面的人被挤开、",
       "  再由「拥挤认账」逻辑在附近乱找空位 —— 结果是到达后互相挤着转，",
       "  而且每一步都要对全部单位做一次拥挤判定（群编时是 O(n²)）。",
+      "★★ 阵型（本轮大改）：槽位不再是「一个方阵」，而是**按兵种由前往后堆叠的带**：",
+      "   · 前 = 行进方向（部队重心 → 目标点）；最前的带 = 长枪兵，中间 = 长弓兵，最后 = 骑手；",
+      "   · 同一部队（leader_id 相同的单位）在同一带内连续相邻、跨带横向对齐（位置接近）；",
+      "   · 多支部队被一次命令点到同一点时，全部参与**同一个**阵型（由 view 的选区展开保证）。",
+      "   ★ 移动命令时**行进中也保持**这个阵型（每个单位沿各自路线平移自己的槽位偏移，不再先汇聚到点击点）；",
+      "     行军攻击只在**到达时**排好，途中一交火就不再要求阵型。",
       "min_units：少于这么多单位就**不排阵**（1~3 个单位点击时保持原来的精确落点，",
       "  那是玩家最在意的精确操作，不该被阵型改坏）。",
       "spacing_scale：槽位间距 = 最小圆心距 × 这个系数。1.0 = 刚好不重叠（会挤），",
@@ -342,11 +465,19 @@
       "aspect：阵型的宽/高比。1.6 ≈ 横向更宽的方阵（看起来更像一支部队而不是一列）。",
       "max_slots：阵型最多排多少个槽位（0 = 不限制）。超出的人退回「点击点旁边最近的可站格」。"
     ],
+    "_tier_comment": [
+      "★★ 阵型分层（本轮新增）：兵种「由前往后」的层次序，**值越小越靠前**。",
+      "   · 键 = 单位类型 id（unit.types 的键）；将领按它所属兵种归层。",
+      "   · 没登记的兵种 → tier_default（默认 1 = 中间层）。",
+      "   · 想让某个兵种站最前 / 最后，只改这张表（代码里没有写死的层次）。"
+    ],
     "formation": {
       "min_units": 4,
       "spacing_scale": 1.15,
       "aspect": 1.6,
-      "max_slots": 400
+      "max_slots": 400,
+      "tier_order": { "spearman": 0, "longbowman": 1, "rider": 2 },
+      "tier_default": 1
     }
   },
 
@@ -413,6 +544,23 @@
     "chase_direct_range": 8.0,
     "flash_sec": 0.22,
     "building_damage": 40,
+    "_projectile_comment": [
+      "★★ 射箭投掷物的飞行参数（本轮新增，见 logic/projectile.gd）。",
+      "   · projectile_speed = 飞行速度（格/秒）—— 飞行时长 = 距离 / 速度。",
+      "   · projectile_min_sec / projectile_max_sec = 飞行时长的上下夹取",
+      "     （贴脸也要看得见飞一下；远距离也别飞太久）。",
+      "   ★ 远程单位（长弓兵 / 远程将领）与**所有可攻击建筑**开火时生成投掷物；",
+      "     伤害在投掷物**命中那一刻**结算（用户口径）——近战仍是即时结算。",
+      "   ★ 必中：投掷物一定到达目标；目标中途死亡则飞完自然消失、不造成伤害。"
+    ],
+    "projectile_speed": 12.0,
+    "projectile_min_sec": 0.08,
+    "projectile_max_sec": 0.6,
+    "_hit_flash_comment": [
+      "★ 受击动效（闪白 + 左右振动）的**时长**（秒）——1 → 0 的衰减时间。",
+      "  与 combat.flash_sec（旧的开火 / 受击闪光）是两件事，别混。"
+    ],
+    "hit_flash_sec": 0.18,
     "_per_type_comment": [
       "★ 单位的攻击数值（damage / range / cooldown_sec）不在这一节里 ——",
       "  它们跟着**单位类型**走，全在 unit.types.<类型 id> 那张表里（见那里的说明）。",
@@ -488,6 +636,14 @@
       "   一起决定的结果 —— 前期压得越低，10 个人时能到的位置就越低。",
       "   想要 10 人更接近 x2，把 speed_curve_k 调小（归一化更快到 1），代价是前期不那么慢。"
     ],
+    "_capture_radius_comment": [
+      "★★ 占领半径（格）：单位必须离**区划中心**的切比雪夫距离 ≤ 它，才算「在场」。",
+      "  1 ⇒ 3×3（中心格 + 周围 8 格）——即需求里的「单位必须在区划中心附近 3x3 格子内才能开始占领」。",
+      "  它同时管三处判定（同一口径，别只改一处）：谁在读条 / 主人是否在场挡人 / 人走后进度回落。",
+      "  ⚠️ 中心格上通常立着「区划中心」那栋中立障碍 ⇒ 实际能站的是周围那 8 格。",
+      "  ★ 越界的格子（跨到邻区 / 地图外）**照样算**：只看离中心的距离，不看那一格归谁。"
+    ],
+    "capture_radius_tiles": 1,
     "capture_time_sec": 32,
     "decay_per_sec": 0.03125,
     "speed_max_mult": 2.0,
@@ -1173,83 +1329,36 @@
 
   "ai": {
     "_comment": [
-      "★★ 两种 AI（本轮新增，规则实现在 logic/faction_ai.gd 与 logic/general_ai.gd）。",
+      "★★ 两种 AI（规则实现在 logic/garrison_ai.gd 与 logic/red_dot_ai.gd）。",
+      "AI 阵营**都没有资源库、没有大本营**（本轮口径）：招募 / 再起都不花钱。",
       "",
-      "一、阵营 AI（faction_ai.gd）—— 附属在某个阵营下，有**自己的资源库**：",
-      "  · 资源只来自它**占领的区划**（产能 × 地块数 × 秒数 × resource_mult，",
-      "    见 zone.production_of）—— 与玩家的资源池分开存",
-      "    （world.resource_pool_for(faction)），两边互不干扰；",
-      "  · 花钱三件事：招自己的将领 / 升级自己的建筑 / 让将领招兵（复用招募那一整套：",
-      "    入队即扣、读条 train_sec、队列上限 queue_max，只有钱从它自己的池子里出）；",
-      "  · 将领招满 generals 位、且每个将领的附属兵都补到 min_retinue 之后，",
-      "    才按（将领数 × ready_mult）派出一批将领行军攻击一个目标区划中心；",
-      "  · resource_mult 是**难度旋钮**：1.0 = 与玩家同速，2.0 = 两倍产出（更难）。",
+      "一、阵地性 AI（garrison_ai.gd）—— 附属在一个**区划**下：",
+      "  · 归属区划写在**单位**的 garrison_zone_id 上（关卡 start_units[].zone，",
+      "    或出生格所在区划兜底）；在自己区划里按 patrol_interval_sec 巡逻；",
+      "  · 警戒到敌人就开打，但不会追出自己那个区划；",
+      "  · 脱战 combat_idle_sec 秒且不满员时**无消耗**招兵（start_recruit free=true）；",
+      "  · 将领濒死后血量回到门槛就**立刻无消耗再起**（garrison_ai._tick_revive）。",
+      "  · 巡逻路线由单位 id 派生的固定种子算出（确定性伪随机）。",
       "",
-      "二、将领性（防御性）AI（general_ai.gd）—— 附属在某个将领下：",
-      "  · **没有资源库、没有大本营**：它不生产、不建造，也不进 world 的资源表；",
-      "  · 招兵**无资源消耗**（world.start_recruit(..., free = true)），所以人口也不扣；",
-      "  · 归属区划写在**单位**的 garrison_zone_id 上（地图 units[].zone，或开局就地归属）；",
-      "  · 在自己区划里按 patrol_interval_sec 的间隔巡逻；警戒到敌人就开打，",
-      "    但**不会追出自己那个区划**（追出去了就主动脱战走回来）；",
-      "    ⚠️ retarget_cooldown_sec 是这条约束的**必要配套**：它一脱战，combat.gd",
-      "       下一帧就可能把同一个敌人再锁一次（索敌是「静止 + 射程内」就触发），",
-      "       于是「追出去 → 被叫回来 → 又追出去」原地抖。冷却期内它**不再接战**、只巡逻。",
-      "  · 脱战 combat_idle_sec 秒且不满员（< min_retinue）时才无消耗招兵。",
-      "  · ★★ 巡逻路线：patrol_points 是**每位守将分到几个点**（1 = 老行为：只去区划中心），",
-      "    patrol_spread_tiles 限住这些点之间最多隔几格（免得一个将领的路线横跨整个区块、",
-      "    与别人的路线搅在一起）。同一个区划里的几位守将**各走各的**、不会挤在同一点。",
-      "    ⚠️ 路线是**由单位 id 派生的固定种子**算出来的（确定性伪随机）：看起来杂乱，",
-      "       但同一局每次跑出来完全一样 —— 存档 / 回放不漂（见 docs/route.md 37.19）。",
+      "二、红点性 AI（red_dot_ai.gd）—— 按**函数式**时间表刷满编将领：",
+      "  · 第 x 波的生成时间（分钟）由 wave_time_expr 给出（y = a·x + b，默认 'x'）；",
+      "    每波将领数由 general_count_expr 给出（默认 'x'）；",
+      "  · 每位将领**类型按 general_weights 抽**，并**当场**生成 escort_count 个附属兵",
+      "    （兵种按 escort_types 抽）—— 这就是「满编的随机单位」；",
+      "  · 生成地点优先关卡选的 spawn_tiles，否则 spawn_region / 出生点；",
+      "  · 刷出来的将领带整队向 attack_target 行军（缺省 = 最近的敌方区划中心 / 大本营）；",
+      "  · waves：0 = 无限波（默认），> 0 = 只刷这么多波。",
+      "  ⚠️ 红点阵营要在**关卡** factions 里点名 ai:\"reddot\"（一般不在下面 factions 里写）。",
       "",
-      "★ 选哪一个阵营归「阵营 AI」管：factions[].id。默认的 'ai' 不是玩家方，",
-      "  所以它不会被玩家指挥 —— 它要靠单位站上去占领（或大本营把无主区块收归自己），",
-      "  这正是「占领区划产出资源」那条需求的起点。",
-      "  ⚠️ 名字就是**阵营 id**（'p1'…'p8' 与 'enemy' 已被占用），不要写成中文。",
-      "",
-      "★★ base 是**阵营布局**，与「这一方有没有 AI 脑子」是两件事（所以它不看 with_ai）：",
-      "  名单里的一方若在地图上没有大本营点位，`map.spawn_layout_for` 会走",
-      "  `pvp_points` 兜底 —— 那张表为空时大本营落到 **(0,0)**，而 (0,0) 正好是",
-      "  区块 11 的中心格，于是那栋中立障碍建筑**建不出来**（只有一条 push_warning 的痕迹）。",
-      "  所以「只要这一方会进名单，就必须给它一个 base」。",
-      "  反过来：**不在名单里的阵营，这里写了也没用**（登记了但没人用它建基地）。",
-      "     想让某个 NPC 阵营在开局就有一块地，要把它的 id 写进**地图**的",
-      "     `zone_list[].owner` —— 那时 `world.reset()` 会自动把它加进名单。",
-      "  ⚠️ start_food / start_gold 是**资源池**的初值：给 0 就是「有脑子但没钱」。",
-      "",
-      "★★ 阵营 AI 的 base 该摆哪（这张图上的实测口径，两条都不能违反）：",
-      "  ① 它必须在**一个当前无主、而且在它进场之前没被别人占走**的区块里 ——",
-      "     大本营会把所在的区块瞬间收归自己（zone.refresh_building_ownership），",
-      "     而那条规则是「只在区块无主时收」：地图上预置的对家据点会先把那一块吃掉。",
-      "     把 AI 的大本营摆进对家据点所在的区块 ⇒ 它开局一块地都没有：",
-      "     收入 0（没钱）、区划里也没有中心格（招不了将），表现就是「AI 站着不动」。",
-      "  ② 大本营那一格本身也不能是区块的**中心格**（中心要立一栋中立障碍建筑，撞上就建不出来），",
-      "     而且它周围要有空位站三个将领（`spawn_layout_for` 围着大本营摆一圈）。",
-      "  · (18,18) 满足这两条：它在区块 9（e2，中心在 (17,17) 不与它叠格），",
-      "    四周 (18,19)/(19,18)/(17,18) 都是空地；而且它离玩家的出生区**足够远** ——",
-      "    实测摆在 (13,11) 那版会被玩家开局那三支部队一路平推：AI 的将领刚招出来就被打死，",
-      "    永远凑不满「招满 3 个 + 每个 3 个兵」那条出兵条件（AI 本身没坏，是开局位置太靠前）。",
-      "  ·★ start_food / start_gold 给 150（比 100 多）：这张图上的区块 9 是**人口区块**，",
-      "    它**不产粮食也不产黄金**（产能全是 population）—— 所以 AI 的日常收入是 0，",
-      "    全靠开局这点钱 + 人口增长来运转。给 100 只够招一个将，给 150 能滚起来。",
-      "    真实地图上把 AI 摆在有产能的区块里时，这两个数就不重要了（收入会盖过它）。"
+      "★★ ai.factions[] 是**全局兜底名单**（不做战役直接按 test 开一局时用）：",
+      "  每项 { id, ai, base }。id 是**阵营 id**（'p1'…'p8' 与 'enemy' 已被占用）；",
+      "  ai 缺省 'garrison'；base 只是**出生锚点**（用来算将领站位，不建大本营）。",
+      "  ⚠️ 名字不要写成中文。"
     ],
     "factions": [
-      { "id": "ai", "base": [18, 18], "resource_mult": 1.0, "start_food": 150, "start_gold": 150 }
+      { "id": "ai", "ai": "garrison", "base": [18, 18] }
     ],
-    "faction": {
-      "generals": 3,
-      "min_retinue": 3,
-      "recruit_cooldown_sec": 1.0,
-      "upgrade_cooldown_sec": 5.0,
-      "upgrade_reserve_food": 0,
-      "upgrade_reserve_gold": 0,
-      "ready_mult": 0.5,
-      "min_ready": 2,
-      "attack_repeat_sec": 6.0,
-      "revive_reserve_food": 0,
-      "revive_reserve_gold": 0
-    },
-    "general": {
+    "garrison": {
       "patrol_interval_sec": 4.0,
       "patrol_leash_tiles": 1,
       "combat_idle_sec": 10.0,
@@ -1259,11 +1368,45 @@
       "patrol_points": 3,
       "patrol_spread_tiles": 3,
       "patrol_retinue_leash_tiles": 3
+    },
+    "reddot": {
+      "_comment": [
+        "★★ 红点性 AI 的默认参数（本轮重做：从「固定冷却 + 固定将领数」改成**函数式**）。",
+        "  · wave_time_expr：第 x 波的**生成时间（分钟）** = y = a·x + b（x 从 1 起）。",
+        "      例：'x' → 第 1 波 1min、第 2 波 2min；'x+1' → 第 1 波 2min、第 2 波 3min；",
+        "      '2x+1' → 第 1 波 3min、第 2 波 5min。默认 'x'。",
+        "  · general_count_expr：第 x 波刷几个将领 = y = a·x + b（默认 'x'）。",
+        "    ★ 解析失败 / 空 → 退回上面的默认（'x'），并各刷至少 1 位。",
+        "  · general_weights：每位将领**类型**的权重（目前 3 位占位将领）。",
+        "      运行时会按权重和归一后再抽；编辑器要求权重和**恰好为 1**。",
+        "  · escort_count / escort_types：红点将领的**共享附属单位规格** ——",
+        "      每位红点将领生成 escort_count 个附属兵，兵种按 escort_types 的权重抽。",
+        "  · spawn_tiles：关卡里选中的「红点生成地块」（[[x,y],...]）；空 = 退回",
+        "      spawn_region / 出生点。这是**关卡数据**，config 里默认空。",
+        "  · steps 之外的旧键（cooldown_sec / generals / retinue）**已废弃**，运行时不再读；",
+        "    保留只是为了「旧数据不炸」与迁移期间对照。spawn_radius / waves 仍然生效。"
+      ],
+      "spawn_radius": 4,
+      "waves": 0,
+      "spawn_tiles": [],
+      "wave_time_expr": "x",
+      "general_count_expr": "x",
+      "general_weights": [
+        { "general": 1, "weight": 1 },
+        { "general": 2, "weight": 1 },
+        { "general": 3, "weight": 1 }
+      ],
+      "escort_count": 4,
+      "escort_types": [
+        { "type": "spearman", "weight": 1 }
+      ],
+      "cooldown_sec": 120.0,
+      "generals": 3,
+      "retinue": 4
     }
   },
 
-  "colors": {
-    "grass": "#33422f",
+  "colors": {    "grass": "#33422f",
     "grass_alt": "#2f3d2c",
     "forest": "#24402a",
     "mountain": "#4c4a45",
@@ -1289,6 +1432,20 @@
     "zone_stroke_width": 3.0,
     "zone_stroke_width_owned": 2.5,
     "zone_halo_delta": 2.0,
+    "_zone_bake_comment": [
+      "★★ 3D 的区划轮廓**曾经**烘进地面贴图，现在**不在这里**了。",
+      "  为什么搬走（第二次玩家反馈「占领的进度条还是太糊了」之后的结论）：",
+      "  **烘到低分辨率贴图上、再放大，永远不可能像 2D 那样清晰** ——",
+      "  1 像素的线画在 16 像素/格的图上、再放大 1.9 倍，就是一条 2 像素的软边。",
+      "★ 现在它在**屏幕空间**画（与 2D 版 `zone_view` 同一套矢量画法）：",
+      "  · 几何与颜色：`view/ground_view.gd` 的 `zone_edge_mask()` / `zone_outline_color()`",
+      "  · 实际绘制：`view/overlay_view_3d.gd` 的 `_draw_zone_outlines()`",
+      "  · 线宽是**屏幕像素**，写在 `overlay_view_3d.ZONE_OUTLINE_WIDTH`（= 2.5，",
+      "    与 2D 版 `zone_stroke_width_owned` 同一档）—— 缩放时不该跟着变粗变细。",
+      "★ 原来这里有三个键（`zone_stroke_bake` / `zone_outline_px` / `zone_outline_lighten`），",
+      "  **已删除**：改成屏幕空间之后没有任何代码读它们（实测 0 次引用），",
+      "  留着会让人以为调它们有用（那正是本项目最怕的「静默失效」）。"
+    ],
     "zone_neutral": "rgba(230,190,80,0.05)",
     "zone_player": "rgba(90,200,255,0.13)",
     "zone_progress": "rgba(230,190,80,0.45)",

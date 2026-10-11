@@ -118,10 +118,16 @@ def selftest(project_dir: Path) -> int:
     print("[tech] 同一时间最多启用 %d 条" % model.max_active())
 
     # ---- 改一处再改回来：确认「原地最小改动」成立（文本必须逐字节回到原样）
+    #
+    # ⚠️ 「改回来」必须回到**它原本的值**（这里读一次），不能写死一个数：
+    #    当初写死的 `0` 是「箭塔建造时间本来就是 0」那个年代的假设，
+    #    而 config 里它后来变成了别的值 ⇒ 自检会假红（实测踩到）。
     before = model.text
-    model.set_building("tower", "build_sec", 7)
+    path = ["building", "tower", "build_sec"]
+    orig = model.doc.value(path, 0)          # 源 JSON 里的**原值**（类型也原样）
+    model.set_building("tower", "build_sec", float(orig) + 7)
     changed = model.text != before
-    model.set_building("tower", "build_sec", 0)
+    model.doc.set(path, orig)                # 写回原值（按原类型，文本才逐字节回得去）
     print("[roundtrip] 改一处写回：%s；改回来与原文一致：%s"
           % ("OK" if changed else "FAILED", "OK" if model.text == before else "FAILED"))
     return 0 if (changed and model.text == before) else 1

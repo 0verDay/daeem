@@ -137,6 +137,17 @@ RECRUIT_FIELDS: Tuple[Field, ...] = (
     Field("desc", "命令卡说明", "text", "悬停详情里的一句话"),
 )
 
+#: ★★ 编制上限的默认值（`config.json` 的 `unit.general.caps` 缺省 / 越界都用它）。
+#: 与 view/ui_layout.gd 的 UNIT_CAP 同值（11）—— 但两者**暂时各自独立**（界面那
+#: 一处本版没接过来，见 config.json 的 `_caps_comment`）。
+GENERAL_CAP_DEFAULT = 11
+
+#: ★★ 编制上限（`unit.general.caps[index]`）：这位将领的**目标编队规模**。
+#: 摆放 / 红点 / 阵地补员都以它封顶（见 logic/config.gd 的 general_cap_at）。
+GENERAL_CAP_FIELD = Field("cap", "编制上限", "int",
+                          "这位将领的目标编队规模：摆放时开局生成到它、阵地 AI 脱战补到它、"
+                          "红点将领的附属兵也以它封顶（生成数量 ≤ 它）", minimum=1)
+
 #: 将领的数值覆盖（`unit.general.stats[i]`；没写的键 = 跟随所属兵种）
 GENERAL_STAT_FIELDS: Tuple[Field, ...] = (
     Field("hp_max", "血量", "float", minimum=1),
@@ -329,11 +340,15 @@ class General:
     """一位将领：类型（决定兵种数值）+ 可选的数值覆盖 + 招募那一项。"""
 
     def __init__(self, index: int, kind: str, type_id: str, override: Dict[str, Any],
-                 recruit: Optional[Dict[str, Any]], defaults: Dict[str, Any]) -> None:
+                 recruit: Optional[Dict[str, Any]], defaults: Dict[str, Any],
+                 cap: int = GENERAL_CAP_DEFAULT) -> None:
         self.index = index
         self.kind = kind
         self.type_id = type_id
         self.override = dict(override)
+        #: ★★ 编制上限（`unit.general.caps[index]`）：这位将领的目标编队规模。
+        #: 摆放 / 红点 / 阵地补员都以它封顶（见 logic/config.gd 的 general_cap_at）。
+        self.cap = int(cap)
         rec = recruit or {}
         cost = rec.get("cost") if isinstance(rec.get("cost"), dict) else {}
         self.has_recruit = recruit is not None
@@ -801,7 +816,13 @@ class ConfigModel:
                         # ★ 视野跟随所属兵种（含「兵种没写 → fog.vision_default」那一层，
                         #   见 Unit.vision_effective）—— 将领的覆盖就是在这个数上覆盖。
                         "vision": u.vision_effective}
-        return General(index, kind, type_id, override, recruit, defaults)
+        # ★★ 编制上限：读 `unit.general.caps[index]`（缺省 / 越界 → GENERAL_CAP_DEFAULT）。
+        cap = GENERAL_CAP_DEFAULT
+        caps = self.doc.value(["unit", "general", "caps"], [])
+        if isinstance(caps, list) and index < len(caps) \
+                and isinstance(caps[index], (int, float)):
+            cap = max(0, int(caps[index]))
+        return General(index, kind, type_id, override, recruit, defaults, cap)
 
     def generals(self) -> List[General]:
         return [self.general(i) for i in range(self.general_count())]
@@ -834,6 +855,11 @@ class ConfigModel:
                 if isinstance(row, dict) and _s(row.get("kind")) == kind:
                     ridx = i
                     break
+        if field == "cap":
+            # ★★ 编制上限：写 `unit.general.caps[index]`（≥ 1）。
+            self._ensure_caps_slot(index)
+            self.doc.set(["unit", "general", "caps", index], max(1, int(value)))
+            return
         if field == "name":
             self.doc.set(["unit", "general", "stats", index, "name"], value)
             if ridx >= 0:
@@ -877,6 +903,18 @@ class ConfigModel:
                          [{} for _ in range(self.general_count())])
         while self.doc.size(["unit", "general", "stats"]) <= index:
             self.doc.append(["unit", "general", "stats"], {})
+
+    def _ensure_caps_slot(self, index: int) -> None:
+        """保证 `unit.general.caps` 存在、且补到**将领个数**（老配置里可能整段都没有）。
+
+        ★ 缺省值用 `GENERAL_CAP_DEFAULT`（= 引擎 `general_cap_at` 的兜底），
+          这样补出来的那几位与「没写」在游戏里完全等价。
+        """
+        if not self.doc.has(["unit", "general", "caps"]):
+            self.doc.set(["unit", "general", "caps"],
+                         [GENERAL_CAP_DEFAULT for _ in range(self.general_count())])
+        while self.doc.size(["unit", "general", "caps"]) <= index:
+            self.doc.append(["unit", "general", "caps"], GENERAL_CAP_DEFAULT)
 
     # ------------------------------------------------------------------
     # 建筑
