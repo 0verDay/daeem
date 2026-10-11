@@ -19,6 +19,7 @@ const ConfigRes = preload("res://logic/config.gd")
 const WorldRes = preload("res://logic/world.gd")
 const GarrisonAiRes = preload("res://logic/garrison_ai.gd")
 const RedDotAiRes = preload("res://logic/red_dot_ai.gd")
+const PathfinderRes = preload("res://logic/pathfinder.gd")
 const LevelRes = preload("res://logic/level.gd")
 
 const TMP_ROOT := "res://.tmp_ai_tests"
@@ -50,6 +51,7 @@ func _cases() -> void:
 	_test_garrison_free_recruit(cfg)
 	_test_garrison_revive(cfg)
 	_test_reddot_spawn(cfg)
+	_test_reddot_spawn_tiles(cfg)
 
 
 # ---- A. 配置 / 名单 ----
@@ -191,7 +193,67 @@ func _test_reddot_spawn(cfg) -> void:
 	ok(marching, "★ 刷出来的将领向目标点行军（已下 command）")
 
 
+## ★ 多生成地块的刷新口径（本轮）：
+##   · 全部已选地块参与，将领随机落一格（允许叠兵）；
+##   · 落点上的**敌对建筑**（非区划中心）→ 立刻拆除再出生。
+func _test_reddot_spawn_tiles(cfg) -> void:
+	var w = _reddot_world(cfg)
+	if w == null or w.reddot_states.is_empty():
+		return
+	var tiles := _passable_tiles(w, cfg, "E1", 3)
+	ok(tiles.size() >= 2, "（前提）地图上能找到至少 2 个可通行空地")
+	if tiles.size() < 2:
+		return
+	# ① 单地块 + 落点上摆一栋敌对建筑：应被立刻拆除，将领照常刷出。
+	var cell: Vector2i = tiles[0]
+	w.add_building("wall", cell.x, cell.y, "p1", true, true)
+	ok(w.building_at(cell.x, cell.y) != null, "（前提）敌对城墙已摆在生成地块上")
+	(w.reddot_states[0] as Dictionary)["params"]["spawn_tiles"] = [[cell.x, cell.y]]
+	RedDotAiRes.update(w, cfg, 121.0)
+	ok(w.building_at(cell.x, cell.y) == null, "★ 生成地块上的敌对建筑被立刻拆除")
+	var gens := _generals_of(w, "E1")
+	eq(gens.size(), 2, "★ 拆除挡路建筑后，第 1 波 2 位将领照常刷出")
+	var all_on := true
+	for g in gens:
+		if g.tx != cell.x or g.ty != cell.y:
+			all_on = false
+	ok(all_on, "★ 将领落在配置的生成地块上（允许叠兵同一格）")
+
+	# ② 两个地块：将领只落在配置过的格子之一。
+	var w2 = _reddot_world(cfg)
+	if w2 == null or w2.reddot_states.is_empty():
+		return
+	var t2 := _passable_tiles(w2, cfg, "E1", 3)
+	if t2.size() < 2:
+		return
+	var a: Vector2i = t2[0]
+	var b: Vector2i = t2[1]
+	(w2.reddot_states[0] as Dictionary)["params"]["spawn_tiles"] = [[a.x, a.y], [b.x, b.y]]
+	RedDotAiRes.update(w2, cfg, 121.0)
+	var gens2 := _generals_of(w2, "E1")
+	eq(gens2.size(), 2, "★ 配置 2 个生成地块，第 1 波将领照常刷出")
+	var all_in := true
+	for g in gens2:
+		if not ((g.tx == a.x and g.ty == a.y) or (g.tx == b.x and g.ty == b.y)):
+			all_in = false
+	ok(all_in, "★ 将领只落在配置的生成地块上（随机落点）")
+
+
 # ---- 工具 ----
+
+## 地图上找前 `need` 个可通行、无建筑的空地（红点生成地块的候选）。
+func _passable_tiles(w, cfg, faction: String, need: int) -> Array:
+	var out: Array = []
+	for y in w.map.rows:
+		for x in w.map.cols:
+			if out.size() >= need:
+				return out
+			if w.building_at(x, y) != null:
+				continue
+			if PathfinderRes.passable(w.map, w.buildings, cfg, x, y, faction):
+				out.append(Vector2i(x, y))
+	return out
+
 
 func _generals_of(w, faction: String) -> Array:
 	var out: Array = []

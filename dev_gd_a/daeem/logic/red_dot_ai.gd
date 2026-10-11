@@ -10,7 +10,9 @@
 ##        例：`x` → 第 1 波 1min、第 2 波 2min；`x+1` → 第 1 波 2min、第 2 波 3min。
 ##   3. 「生成的将领数 = 函数表达式」—— → `general_count_expr`（默认 `x`）。
 ##   4. 「将领类型和权重」—— → `general_weights`（每项 `{general, weight}`）。
-##   5. 「选中地图地块作为红点生成地块」—— → `spawn_tiles`（优先于 `spawn_region` / 出生点）。
+##   5. 「选中地图地块作为红点生成地块」—— → `spawn_tiles`（优先于 `spawn_region` / 出生点）：
+##      **所有已选地块都参与**，这一波每位将领在其中**随机落一格**（允许几位挤同一格）；
+##      落点若立着**敌对建筑**（非盟友、且不是区划中心这类无敌建筑）→ **立刻拆除**再出生。
 ##
 ## ★★ 与阵地性 AI（`logic/garrison_ai.gd`）的分工：
 ##   · 阵地性 —— 附属于区划、原地巡逻、无消耗招兵（守卫）；
@@ -119,7 +121,7 @@ static func _launch_wave(world, cfg: ConfigRes, st: Dictionary, wave: int, count
 	var serial: int = int(st.get("serial", 0))
 	var sent := 0
 	for n in count:
-		var tile := _pick_spawn_tile(world, cfg, faction, region, spawn_tiles, n)
+		var tile := _pick_spawn_tile(world, cfg, faction, region, spawn_tiles, serial, n)
 		if tile.x < 0:
 			continue                        # 这一波这一位没地方站 —— 跳过它
 		var gi := _pick_general_index(world, general_weights, serial, n)
@@ -194,15 +196,36 @@ static func _spawn_general(world, cfg: ConfigRes, faction: String, gi: int,
 ## 挑一个生成格：优先关卡选的**红点生成地块**（`spawn_tiles`），
 ## 否则退回 `spawn_region`（point+radius / zone），再否则用这一方的出生点。
 ##
-## ★ 只挑**能站人**的格（可通行 + 无建筑 + 没被这一波已生成的单位占住）。
+## ★★ `spawn_tiles` 分支（多地块随机刷新）：
+##   · **所有已选地块都参与**，每位将领从**随机起点**在这些地块里找一格
+##     （起点由 `阵营|serial|n` 派生，可复现）；
+##   · 那格若立着**敌对建筑**（非盟友、且非无敌的区划中心）→ **立刻拆除**再出生；
+##     友方建筑 / 区划中心不拆，换下一格（都找不到可站人的格 → 退回 `spawn_region`）；
+##   · **允许与已有单位重叠**（不再判 `_tile_taken`）。
 static func _pick_spawn_tile(world, cfg: ConfigRes, faction: String,
-		region: Variant, spawn_tiles: Array, n: int) -> Vector2i:
-	# 1) 关卡选中的红点生成地块（从第 n 个开始轮着挑，避免几个将领挤同一格）。
+		region: Variant, spawn_tiles: Array, serial: int, n: int) -> Vector2i:
+	# 1) 关卡选中的红点生成地块：全部参与，每位将领随机落一格。
 	if not spawn_tiles.is_empty():
 		var sz := spawn_tiles.size()
+		var start := 0
+		if sz > 1:
+			start = int(floor(float(world.unit_rand(
+				"reddot-spawn|%s|%d" % [faction, serial], n)) * float(sz))) % sz
 		for k in sz:
-			var tt := _tile_of_any(spawn_tiles[(n + k) % sz])
-			if _can_stand(world, cfg, faction, tt):
+			var tt := _tile_of_any(spawn_tiles[(start + k) % sz])
+			if not world.map.tile_exists(tt.x, tt.y):
+				continue
+			var b = world.building_at(tt.x, tt.y)
+			if b != null:
+				if b.is_invulnerable():
+					continue                              # 区划中心：不拆，换下一格
+				if not FactionRes.same_side_for_attack(String(b.owner), faction):
+					world.remove_building(b, true)        # 敌对建筑挡路 → 立刻拆除
+					world.push_event({"type": "building_down", "building": b, "source": null})
+					world.refresh_ownership()
+				else:
+					continue                              # 友方建筑：不拆，换下一格
+			if PathfinderRes.passable(world.map, world.buildings, cfg, tt.x, tt.y, faction):
 				return tt
 	# 2) 退回 spawn_region / 出生点。
 	var radius: float = float(world.reddot_ai_cfg(faction).get("spawn_radius", 4.0))

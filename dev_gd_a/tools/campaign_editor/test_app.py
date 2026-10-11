@@ -16,6 +16,7 @@
     [3] 「设进攻目标」模式：点区划 → zone / 点空格 → point / Esc 退出
     [4] ★ ④ 画布点选改「进攻目标」：箭头终点 = 区划中心（③ 不再提供 AI 编辑）
     [4c] ★ 敌友（边）：面板列每条边 + 「＋ 新建一条边」按钮；同边友好、异边敌对
+    [4d] ★ 红点页新建阵营：自动红点性 AI + 给它设一条边
     [5] 导出：有拦截项时**禁止写文件**并弹框说清楚；没有拦截时才真写
     [6] 一键打开地图编辑器（**假 subprocess**，不真起地图编辑器）
     [7] 侧边栏「装得下就不许滚」（用户报过的 bug；判据是 canvasy(0)，不是 yview）
@@ -746,6 +747,59 @@ def t_ally_sides(app, model) -> None:
 
 
 # ======================================================================
+# [4d] ★★ 红点页新建阵营：自动红点性 AI + 给它设一条边
+# ======================================================================
+
+def t_new_reddot_faction(app, model) -> None:
+    print("\n[4d] ★ 红点页：新建阵营（自动红点性）+ 给它设一条边")
+    lv = level(app)
+    added = "red_probe"
+    orig_pairs = [list(p) for p in lv.allies]
+    orig_declared = lv.allies_declared
+
+    app.set_page("reddot")
+    app.root.update()
+    btn = buttons(app).get(app_module.REDDOT_NEW_FACTION)
+    ok(btn is not None, "★ 红点页有「＋ 新建红点阵营」按钮")
+
+    real_ask = app_module._ask_new_faction
+    app_module._ask_new_faction = lambda root, taken: (added, "红点探针")
+    try:
+        if btn is not None:
+            btn.invoke()
+        app.root.update()
+    finally:
+        app_module._ask_new_faction = real_ask
+
+    ok(any(str(e.get("id", "")) == added for e in model.factions),
+       "★ 新阵营进了 campaign 阵营表（全战役可用）")
+    e = lv.faction(added)
+    ok(e is not None, "★ 新阵营在本关被点名（factions[]）")
+    if e is not None:
+        eq(e.ai, M.AI_REDDOT, "★★ 自动设成红点性 AI")
+    reddots = [x.fid for x in lv.factions if x.ai == M.AI_REDDOT]
+    ok(added in reddots, "★ 出现在红点阵营列表里")
+    eq(app.reddot_faction_id(), added, "★ 建完就是红点页当前编辑的那一方")
+
+    # ---- 给它设一条边 ----
+    app._new_side()
+    app.root.update()
+    label = "边 %d" % len(app._level_sides())
+    app._set_faction_side(added, label)
+    eq(app._side_label_of(added), label, "★ 给这个红点阵营设了一条边（写进 allies）")
+
+    # ---- 复原（别把样例改坏）----
+    lv.remove_faction(added)
+    model.remove_faction(added)
+    lv.allies = orig_pairs
+    lv.allies_declared = orig_declared
+    app.reddot_faction = ""
+    app._reset_sides()
+    app.refresh_all()
+    app.root.update()
+
+
+# ======================================================================
 # [4b] ★★ 附属部队：在摆放页摆兵 + 指定它属于哪位将领（所见即所得）
 # ======================================================================
 
@@ -1112,6 +1166,7 @@ def main() -> int:
         t_target_mode(app, model)
         t_same_field(app, model)
         t_ally_sides(app, model)
+        t_new_reddot_faction(app, model)
         t_escort_placement(app, model)
         t_export_blocked(app, model)
         t_open_map_editor(app, model)

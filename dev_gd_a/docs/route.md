@@ -4507,8 +4507,9 @@ F2 `#FFD166` 金 / E1 `#FF6B6B` 红）+ 关卡 `factions[].color`（关卡可以
 `general_weights`、`spawn_tiles`、`escort_count` / `escort_types`。旧的 `cooldown_sec` / `generals` / `retinue`
 **废弃**（运行时不再读）。表达式解析在 `logic/expr.gd`（GDScript）与 `tools/campaign_editor/model.py`（Python）
 **各一份、语法逐字一致**。默认都是 `x`：第 1 波 1min、第 2 波 2min……
-例：`x+1` → 第 1 波 2min；`2x+1` → 第 1 波 3min。生成地点优先 `spawn_tiles`（编辑器里选的空地格），
-否则 `spawn_region` / 出生点。
+例：`x+1` → 第 1 波 2min；`2x+1` → 第 1 波 3min。生成地点优先 `spawn_tiles`（编辑器里选的空地格）：
+**全部已选地块都参与**，这一波每位将领在其中**随机落一格**（允许叠兵）；落点若立着**敌对建筑**
+（非盟友、且非无敌的区划中心）则**立刻拆除**再出生；否则退回 `spawn_region` / 出生点。
 
 ### 42.4 三个编辑器
 

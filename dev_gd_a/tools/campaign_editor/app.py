@@ -94,6 +94,8 @@ ESCORT_NONE_LABEL = "（不是附属兵）"
 #: `ALLY_NEW_SIDE` = 为这一方**开一条新边**。
 ALLY_UNSIDED = "（未分边 · 与所有人为敌）"
 ALLY_NEW_SIDE = "＋ 新建一条边"
+#: 「红点」页上那颗「新建阵营（自动红点性）」按钮的文字（测试按它找按钮）。
+REDDOT_NEW_FACTION = "＋ 新建红点阵营…"
 
 
 def _fmt_num(v: Any) -> str:
@@ -3083,6 +3085,30 @@ class EditorApp:
     # ★★ 红点页：生成配置（挂在当前红点阵营的 `reddot_ai` 上）
     # ==================================================================
 
+    def do_new_reddot_faction(self) -> None:
+        """新建一个阵营，并**自动把它的 AI 设成红点性**（红点页专用）。
+
+        ★ 落在两处：
+          · `campaign.json` 的阵营表（全战役都能用；名字 / 颜色之后能在 ① 战役页改）；
+          · 本关的 `factions[]`（`ensure_faction` 会标「声明过」，导出才会写），`ai = reddot`。
+        建完把它设成红点页当前编辑的那一方 —— 接着就能配生成地块 / 时间表，也能给它设「边」。
+        """
+        lv = self.level()
+        if lv is None:
+            return
+        answer = _ask_new_faction(self.root, self.all_faction_ids())
+        if not answer:
+            return
+        fid, name = answer
+        self.model.ensure_faction(fid, name or fid, self.faction_color(fid))
+        entry = lv.ensure_faction(fid)
+        entry.ai = AI_REDDOT
+        lv.mark_declared("factions")
+        self.reddot_faction = fid
+        self._after_change()
+        self.status("新建红点阵营「%s」（AI 自动 = 红点性）—— 在上面给它设一条边"
+                    % fid)
+
     def reddot_faction_id(self) -> str:
         """红点页当前编辑的阵营：优先记着的那个，否则本关第一个红点阵营。"""
         lv = self.level()
@@ -3248,12 +3274,26 @@ class EditorApp:
             return
         reddots = [e.fid for e in lv.factions if e.ai == AI_REDDOT]
         sec = self._section("红点阵营", "红点生成配置挂在它的 `reddot_ai` 上")
+        self._button(sec, REDDOT_NEW_FACTION, self.do_new_reddot_faction).pack(
+            anchor="w", pady=(0, 4))
         if not reddots:
-            self._hint(sec, '本关没有挂「红点性」AI 的阵营（`ai: "reddot"`）。'
-                            'AI 类型不在编辑器里改 —— 手改关卡 JSON。')
+            self._hint(sec, "本关还没有红点阵营 —— 点上面的按钮建一个（会自动设成红点性 AI）。")
             return
         cur = self.reddot_faction_id()
         self._combo_cell(sec, "编辑哪一方", cur, tuple(reddots), self._set_reddot_faction)
+        # ---- 这个红点阵营的「边」（敌友）----
+        srow = tk.Frame(sec, bg=UI["panel"])
+        srow.pack(side="top", fill="x", pady=2)
+        tk.Label(srow, text="边", width=12, anchor="w", bg=UI["panel"],
+                 fg=UI["text"]).pack(side="left")
+        side_combo = ttk.Combobox(srow, values=self._side_choices(), width=18,
+                                  state="readonly")
+        side_combo.set(self._side_label_of(cur))
+        side_combo.pack(side="left")
+        side_combo.bind("<<ComboboxSelected>>",
+                        lambda e, f=cur, c=side_combo: self._set_faction_side(f, c.get()))
+        self._hint(sec, "边 = 敌友分组：同一条边里的阵营互为友军；不同的边 / 未分边的互相敌对。"
+                        "（每条边都有谁，在「阵营」页看。）")
         rd = self.reddot_params(False) or {}
 
         # ---- 生成地块 ----
@@ -3525,6 +3565,27 @@ def _ask_new_level(root: tk.Tk, map_ids: Sequence[str],
     if not map_id or map_id not in map_ids:
         map_id = default_map
     return (str(level_id).strip(), str(map_id).strip())
+
+
+def _ask_new_faction(root: tk.Tk, taken: Sequence[str]) -> Optional[Tuple[str, str]]:
+    """问「新建阵营的 id + 显示名」。
+
+    ★ 与 `_ask_new_level` 同一套写法：抽成模块级函数，测试把它换成「直接给答案」，
+      不去驱动真对话框。
+    """
+    fid = simpledialog.askstring("新建红点阵营", "阵营 id（如 red1；别和现有的撞）",
+                                 parent=root)
+    if not fid:
+        return None
+    fid = str(fid).strip()
+    if not fid:
+        return None
+    if fid in set(str(x) for x in taken):
+        messagebox.showwarning("id 撞了", "已经有阵营叫「%s」了 —— 换一个 id。" % fid,
+                               parent=root)
+        return None
+    name = simpledialog.askstring("新建红点阵营", "显示名（可空 = 用 id）", parent=root)
+    return fid, str(name or "").strip()
 
 
 def run(campaign_dir: Any, project_dir: Any, config: Optional[ConfigInfo] = None,

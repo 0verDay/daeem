@@ -134,7 +134,8 @@ dev_gd_a/daeem/
 │   │                             #     第 x 波的生成时间由 wave_time_expr（y=ax+b，分钟）给出、
 │   │                             #     将领数由 general_count_expr 给出；将领类型按 general_weights 抽；
 │   │                             #     每位将领**当场**生成 escort_count 个随机附属兵；生成地点优先
-│   │                             #     spawn_tiles（关卡选中的地块）→ spawn_region → 出生点；
+│   │                             #     spawn_tiles（关卡选中的地块，**全部参与**、每位将领随机落一格、
+│   │                             #     允许叠兵；落点上的敌对建筑除区划中心外**立刻拆除**）→ spawn_region → 出生点；
 │   │                             #     再带整队向 attack_target 行军（order_group_attack_move）
 │   ├── expr.gd                   #   ★★ **线性表达式** `y = a·x + b` 的解析 / 求值（红点时间表用）
 │   ├── command_processor.gd      #   ★ 命令的唯一入口（move / build / demolish）
