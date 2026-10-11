@@ -89,6 +89,12 @@ from .model import (
 #: 「属于将领」下拉里表示「不是附属兵」的那一项（普通摆放单位）。
 ESCORT_NONE_LABEL = "（不是附属兵）"
 
+#: ★ 「敌友（边）」下拉里的两项特殊文字（其余选项是「边 1」「边 2」…）。
+#: `ALLY_UNSIDED` = 不属于任何一条边（与所有人都敌对，这也是默认）；
+#: `ALLY_NEW_SIDE` = 为这一方**开一条新边**。
+ALLY_UNSIDED = "（未分边 · 与所有人为敌）"
+ALLY_NEW_SIDE = "＋ 新建一条边"
+
 
 def _fmt_num(v: Any) -> str:
     """数字写成好看的字符串（整数不带 `.0`）—— 输入框初值用。"""
@@ -531,6 +537,11 @@ class EditorApp:
         self.selection: Optional[Tuple[str, int]] = None
         #: 「设进攻目标」模式：选中的阵营 id（None = 不在这个模式里）。
         self.target_mode_faction: Optional[str] = None
+        #: ★★ 敌友「边」的**编辑期缓存**（一条边一个阵营列表）。None = 还没从数据里读。
+        #:   为什么要有它：`allies` 是成对关系，一条只有一个成员的边写进去等于没有
+        #:   （推不出来）—— 缓存让「刚新建的边」在 refresh 之间活得下去。
+        #:   只在**换关卡 / 重新载入**时重置（见 `_reset_sides`）。
+        self._sides: Optional[List[List[str]]] = None
         #: ★★ 红点页当前编辑的阵营（红点生成配置挂在它的 `reddot_ai` 上）。
         self.reddot_faction: str = ""
         #: 画布视口（与 map_editor 同一套：zoom + ox/oy 像素偏移）。
@@ -809,6 +820,7 @@ class EditorApp:
         self.current_level_id = level_id
         self.selection = None
         self.target_mode_faction = None
+        self._reset_sides()                         # 换关卡 → 敌友边重新从数据里读
         self.refresh_all()
         self.fit_view()
 
@@ -1922,6 +1934,7 @@ class EditorApp:
         self.config = levelfile.load_config(self.project_dir)
         self.current_level_id = (fresh.levels[0].level_id if fresh.levels else "")
         self.selection = None
+        self._reset_sides()                         # 重新载入 → 敌友边重新从数据里读
         self.refresh_all()
         self.status("重新载入了 %s" % fresh.campaign_id)
 
@@ -2507,6 +2520,12 @@ class EditorApp:
             entry.bind("<FocusOut>", lambda e, en=entry: en.commit_action())
         self._hint(seats, "大本营留空 = 用地图的 `faction_bases`；填 `x,y` 就覆盖它")
 
+        # ---- 敌友（边）：同一条边互为友军；不同边 / 没分边的互相敌对 ----
+        asec = self._section("敌友（边）",
+                             "同一条边里的阵营互为友军；不同边的、以及没分边的阵营互相敌对"
+                             "（默认就是敌对）。导出时写进关卡 allies（两两一对）。")
+        self._refresh_ally_rows(asec)
+
         # ---- 每一方一行 ----
         for fid in self.all_faction_ids():
             e = lv.faction(fid)
@@ -2532,6 +2551,176 @@ class EditorApp:
             self._button(section, "从这一关移除这一方",
                          lambda f=fid: self.remove_faction_entry(f),
                          bg=UI["danger_btn"], fg=UI["danger_fg"]).pack(anchor="w", pady=(6, 0))
+
+    # ==================================================================
+    # 敌友（边）—— 每关一套，写进关卡 JSON 的 `allies`（两两一对）
+    #
+    # ★ 语义（与游戏侧 `logic/faction.gd` 的 `set_allies` 完全一致）：`allies` 是**成对**
+    #   关系，运行时取它的连通分量 —— 同一条边里的阵营互为友军；不同边的、以及没分边的
+    #   阵营互相敌对（**默认就是敌对**：什么都不写 = 全部互相敌对）。
+    #   所以「边」不需要新字段：把每条边展开成两两一对就是 `allies`。
+    # ==================================================================
+
+    def _effective_pairs(self) -> List[List[str]]:
+        """这一关**生效**的 allies：关卡写了就用关卡的，一个字都没写才用地图的。"""
+        lv = self.level()
+        if lv is None:
+            return []
+        return [list(p) for p in model_mod._effective_allies(lv, self.map_info())]
+
+    def _reset_sides(self) -> None:
+        """丢掉「边」的编辑期缓存（换关卡 / 重新载入之后调）。"""
+        self._sides = None
+
+    @staticmethod
+    def _components(pairs: List[List[str]]) -> List[List[str]]:
+        """把成对关系并成连通分量（边）。顺序按「第一次出现」，稳定可比。"""
+        parent: Dict[str, str] = {}
+
+        def find(a: str) -> str:
+            parent.setdefault(a, a)
+            while parent[a] != a:
+                parent[a] = parent[parent[a]]
+                a = parent[a]
+            return a
+
+        for pair in pairs:
+            if len(pair) < 2:
+                continue
+            ra, rb = find(str(pair[0])), find(str(pair[1]))
+            if ra != rb:
+                parent[rb] = ra
+        groups: Dict[str, List[str]] = {}
+        order: List[str] = []
+        for fid in list(parent.keys()):
+            root = find(fid)
+            if root not in groups:
+                groups[root] = []
+                order.append(root)
+            groups[root].append(fid)
+        return [groups[r] for r in order]
+
+    def _level_sides(self) -> List[List[str]]:
+        """当前编辑中的「边」（缓存见 `self._sides` 的说明）。"""
+        if self._sides is None:
+            self._sides = self._components(self._effective_pairs())
+        return self._sides
+
+    def _side_label_of(self, fid: str) -> str:
+        for i, group in enumerate(self._level_sides()):
+            if fid in group:
+                return "边 %d" % (i + 1)
+        return ALLY_UNSIDED
+
+    def _side_choices(self) -> Tuple[str, ...]:
+        return tuple([ALLY_UNSIDED]
+                     + ["边 %d" % (i + 1) for i in range(len(self._level_sides()))])
+
+    def _new_side(self) -> None:
+        """新建一条边（先是一条**空边**，把阵营选进去它才算数）。
+
+        ★ 空边只活在**编辑期缓存**里（`allies` 是成对关系，空边写不进去）——
+          但**必须让它看得见**：以前那种「点一下只在暗处挪一挪」的写法，
+          表现就是用户报的「点新建一条边没反应」。
+        """
+        self._level_sides().append([])
+        self.refresh_all()
+        self.status("新建了一条空边 —— 在下面给每一方选它「在哪条边」")
+
+    def _delete_side(self, index: int) -> None:
+        """删掉一条边（里面的阵营回到「未分边」）。删空边不动文件。"""
+        sides = self._level_sides()
+        if not (0 <= index < len(sides)):
+            return
+        had_members = bool(sides[index])
+        del sides[index]
+        if had_members:
+            self._commit_sides()
+        else:
+            self.refresh_all()
+        self.status("删了一条边")
+
+    def _set_faction_side(self, fid: str, label: str) -> None:
+        """把某一方放进 / 移出一条边（「未分边」= 移出来）。"""
+        label = str(label)
+        if label == self._side_label_of(fid):
+            return
+        sides = [list(g) for g in self._level_sides()]
+        if label == ALLY_UNSIDED:
+            for g in sides:
+                if fid in g:
+                    g.remove(fid)
+        elif label.startswith("边 "):
+            try:
+                k = int(label.split()[-1]) - 1
+            except ValueError:
+                return
+            if not (0 <= k < len(sides)):
+                return
+            for g in sides:
+                if fid in g:
+                    g.remove(fid)
+            sides[k].append(fid)
+        else:
+            return
+        # ★ 空边**留着**（看得见才好删）—— 不再静默丢掉，否则「刚建的边」会当场消失。
+        self._sides = sides
+        self._commit_sides()
+        self.status("「%s」的边 → %s" % (fid, label))
+
+    def _commit_sides(self) -> None:
+        """把「边」写回关卡：每条边展开成两两一对的 `allies`，并标记成「声明过」。"""
+        lv = self.level()
+        if lv is None:
+            return
+        pairs: List[List[str]] = []
+        for group in self._level_sides():
+            for i in range(len(group)):
+                for j in range(i + 1, len(group)):
+                    pairs.append([group[i], group[j]])
+        lv.allies = pairs
+        lv.allies_declared = True
+        self._after_change()
+
+    def _refresh_ally_rows(self, parent: tk.Frame) -> None:
+        """「敌友（边）」那一节：先列**每条边与它的阵营**，再是「每一方在哪条边」。"""
+        sides = self._level_sides()
+        if not sides:
+            tk.Label(parent, text="还没有边 —— 点下面的「＋ 新建一条边」开一条。",
+                     bg=UI["panel"], fg=UI["text_dim"], anchor="w", justify="left",
+                     wraplength=260).pack(fill="x")
+        for i, group in enumerate(sides):
+            row = tk.Frame(parent, bg=UI["panel"])
+            row.pack(side="top", fill="x", pady=1)
+            tk.Label(row, text="边 %d" % (i + 1), width=6, anchor="w",
+                     bg=UI["panel"], fg=UI["text"]).pack(side="left")
+            text = ("、".join("%s %s" % (f, self.model.faction_name(f)) for f in group)
+                    if group else "（空）")
+            tk.Label(row, text=text, anchor="w", justify="left", wraplength=210,
+                     bg=UI["panel"],
+                     fg=(UI["text"] if group else UI["text_dim"])).pack(
+                         side="left", fill="x", expand=True)
+            self._button(row, "删", lambda i=i: self._delete_side(i),
+                         padx=4, pady=1,
+                         font=("Microsoft YaHei UI", 8)).pack(side="right")
+        self._button(parent, ALLY_NEW_SIDE, self._new_side,
+                     padx=8, pady=3).pack(anchor="w", pady=(4, 0))
+
+        # ---- 每一方选边（赋值入口）----
+        self._hint(parent, "　下面给每一方选一条边：同一条边里的阵营互为友军；"
+                           "不同边 / 未分边的互相敌对（默认就是敌对）。")
+        for fid in self.all_faction_ids():
+            row = tk.Frame(parent, bg=UI["panel"])
+            row.pack(side="top", fill="x", pady=1)
+            tk.Label(row, text="%s %s" % (fid, self.model.faction_name(fid)),
+                     width=14, anchor="w", bg=UI["panel"],
+                     fg=UI["text"]).pack(side="left")
+            combo = ttk.Combobox(row, values=self._side_choices(), width=18,
+                                 state="readonly")
+            combo.set(self._side_label_of(fid))
+            combo.pack(side="left")
+            combo.bind("<<ComboboxSelected>>",
+                       lambda e, f=fid, c=combo: self._set_faction_side(f, c.get()))
 
     def _ai_label(self, ai: str) -> str:
         return {AI_NONE: "无", AI_GARRISON: "阵地性", AI_REDDOT: "红点性"}.get(ai, "无")

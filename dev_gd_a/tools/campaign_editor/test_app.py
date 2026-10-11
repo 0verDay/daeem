@@ -15,6 +15,7 @@
     [2b] ★ 摆放手势：空格 + 左键拖动平移（放东西 / 选中都不许发生）；中键那条在 [2] 里
     [3] 「设进攻目标」模式：点区划 → zone / 点空格 → point / Esc 退出
     [4] ★ ④ 画布点选改「进攻目标」：箭头终点 = 区划中心（③ 不再提供 AI 编辑）
+    [4c] ★ 敌友（边）：面板列每条边 + 「＋ 新建一条边」按钮；同边友好、异边敌对
     [5] 导出：有拦截项时**禁止写文件**并弹框说清楚；没有拦截时才真写
     [6] 一键打开地图编辑器（**假 subprocess**，不真起地图编辑器）
     [7] 侧边栏「装得下就不许滚」（用户报过的 bug；判据是 canvasy(0)，不是 yview）
@@ -674,6 +675,77 @@ def t_same_field(app, model) -> None:
 
 
 # ======================================================================
+# [4c] ★★ 敌友（边）：同边友好、异边敌对 —— 写进关卡 allies
+# ======================================================================
+
+def t_ally_sides(app, model) -> None:
+    print("\n[4c] ★ 敌友（边）：同边友好、异边敌对（写进关卡 allies）")
+    app.set_page("factions")
+    app.root.update()
+    lv = level(app)
+    orig_pairs = [list(p) for p in lv.allies]
+    orig_declared = lv.allies_declared
+
+    ok("敌友（边）" in [getattr(s, "section_title", "") for s in app.sidebar.winfo_children()],
+       "★ 阵营页出现「敌友（边）」那一节")
+
+    ids = list(app.all_faction_ids())
+    if len(ids) < 3:
+        ok(False, "至少要有三个阵营才能测敌友（用例前提）")
+        return
+    a, b, c = ids[0], ids[1], ids[2]
+
+    # ---- 清干净（直接改缓存再提交，保证从「一条边都没有」开始）----
+    app._sides = []
+    app._commit_sides()
+    app.root.update()
+    eq(lv.allies, [], "★ 全部「未分边」→ allies 为空（全部互相敌对）")
+    ok(lv.allies_declared, "★ 动过敌友之后 allies 就是「声明过」的（不再用地图的）")
+
+    # ---- 点「＋ 新建一条边」→ 多出一条**看得见的空边**（用户报的「点了没反应」）----
+    btn = buttons(app).get(app_module.ALLY_NEW_SIDE)
+    ok(btn is not None, "★ 敌友那一节里有「＋ 新建一条边」按钮")
+    if btn is not None:
+        btn.invoke()
+    app.root.update()
+    eq(len(app._level_sides()), 1, "★★ 点按钮 → 多出一条边（看得见，不再像没反应）")
+    ok(app._level_sides()[-1] == [], "★ 新建的边一开始是空的（在面板里显示「（空）」）")
+
+    # ---- 把 a 放进这条新边（走下拉）----
+    new_label = "边 %d" % len(app._level_sides())
+    combo = sectioned(app).get(("敌友（边）", "combo:%s %s" % (a, app.model.faction_name(a))))
+    ok(combo is not None, "★ 每个阵营都有一个「在哪条边」的下拉")
+    if combo is not None:
+        pick_combo(app, combo, new_label)
+    eq(app._side_label_of(a), new_label, "★★ a 进了新建的那条边")
+
+    # ---- b 也进同一条边 ----
+    app._set_faction_side(b, new_label)
+    eq(app._side_label_of(b), new_label, "★★ b 被放进同一条边")
+    eq(lv.allies, [[a, b]], "★★ 同一条边 → allies 里是 [a, b]（两两一对）")
+
+    # ---- c 另开一条边 → 与 a/b 敌对 ----
+    app._new_side()
+    app.root.update()
+    label_c = "边 %d" % len(app._level_sides())
+    app._set_faction_side(c, label_c)
+    ok(app._side_label_of(c) != new_label, "★★ c 在另一条边上")
+    eq(lv.allies, [[a, b]], "★★ 不同边之间**不写** allies（= 互相敌对）")
+
+    # ---- 把 b 移出 → a 单独一条边（单成员边不写 allies）----
+    app._set_faction_side(b, app_module.ALLY_UNSIDED)
+    eq(lv.allies, [], "★ 只剩单成员边 → allies 为空（单个成员等于没分边）")
+    eq(app._side_label_of(b), app_module.ALLY_UNSIDED, "★ b 回到「未分边」")
+
+    # ---- 复原（别把样例的敌友改坏了，后面的用例还要用）----
+    lv.allies = orig_pairs
+    lv.allies_declared = orig_declared
+    app._sides = None
+    app.refresh_all()
+    app.root.update()
+
+
+# ======================================================================
 # [4b] ★★ 附属部队：在摆放页摆兵 + 指定它属于哪位将领（所见即所得）
 # ======================================================================
 
@@ -1039,6 +1111,7 @@ def main() -> int:
         t_space_drag_pan(app, model)
         t_target_mode(app, model)
         t_same_field(app, model)
+        t_ally_sides(app, model)
         t_escort_placement(app, model)
         t_export_blocked(app, model)
         t_open_map_editor(app, model)
