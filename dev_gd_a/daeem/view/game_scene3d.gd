@@ -88,6 +88,31 @@ var _edge_scroll_on: bool = true
 const REBAKE_INTERVAL_FRAMES := 15
 var _rebake_tick: int = 0
 
+## ★★ 逐节剖析（默认关闭）：打开后 `_process` 各段累计微秒，供 `tests/bench_fps_3d.gd` 读。
+##    与 `logic/world.gd` 的 `profile_on` 同一模式 —— 关闭时每段只多一次 `if`，可忽略。
+##    ⚠️ 它只读时钟、不参与任何判定（不影响确定性；正式游戏里永远是 false）。
+##    ★ 为什么需要它：光有一个「整帧 ms」定位不了瓶颈。逻辑层已由 world.profile_us 拆开，
+##      而 `_process` 里「视图同步」那几段（单位 / 建筑 / 覆盖层 / 重烘 / 相机）此前没有任何量尺。
+var profile_on: bool = false
+var profile_us: Dictionary = {}
+
+
+func profile_reset() -> void:
+	profile_us = {}
+
+
+## 取一个起始时间戳：关闭时返回 0（`_prof_done` 见到 0 直接返回，与 world.gd 同款）
+func _prof() -> int:
+	if profile_on:
+		return Time.get_ticks_usec()
+	return 0
+
+
+func _prof_done(key: String, t0: int) -> void:
+	if t0 == 0:
+		return
+	profile_us[key] = int(profile_us.get(key, 0)) + (Time.get_ticks_usec() - t0)
+
 
 ## 建相机（拆出来是为了让「先建相机、再造投影助手」这条顺序显式可见）
 func _build_camera() -> void:
@@ -397,7 +422,9 @@ func _process(dt: float) -> void:
 	if world == null or input_ctrl == null:
 		return
 	# ① 输入：轮询鼠标（只有 input_controller 允许读鼠标）
+	var _t_input := _prof()
 	input_ctrl.poll_mouse()
+	_prof_done("input", _t_input)
 	# ② 暂停门：★★ **推进逻辑必须夹在这个门后面**（本轮实测踩到）。
 	#    2D 版的口径是「暂停时**逻辑冻结，但渲染与相机照旧**」，暂停键在
 	#    `input_ctrl.paused`（不是 world 的字段 —— 逻辑层不知道什么叫暂停）。
@@ -410,17 +437,29 @@ func _process(dt: float) -> void:
 		#   这就是经典的「死亡螺旋」：实测 1000 单位时单帧从 86 ms 滚到 666 ms，
 		#   夹住之后稳定在十几毫秒（2D 版为此专门写过注释，同一条教训）。
 		var logic_dt: float = minf(dt, cfg.sim_max_dt)
+		var _t_tick := _prof()
 		events = world.tick(logic_dt)
+		_prof_done("tick", _t_tick)
 		input_ctrl.drop_dead_selection()
 	_consume_events(events)
 	# ③ 视图：单位 MultiMesh 每帧重填（位置会变）
 	#    ★ 选中集合先喂给单位层：它据此画脚下的「绿色空心圆」选中下标（见 unit_view_3d）
+	var _t_units := _prof()
 	units.set_selection(_selected_ids())
 	units.sync(dt)
+	_prof_done("view/units", _t_units)
+	var _t_build := _prof()
+	# ★★ 建筑层复用单位层同一次遍历算好的「可见单位 3×3 邻格」——
+	#    否则它要自己再对全部单位扫一遍 + 再做一遍迷雾查询（1000 单位下约 2 ms/帧）。
+	buildings.set_fade_marked(units.fade_marked())
 	buildings.sync()
+	_prof_done("view/buildings", _t_build)
+	var _t_other := _prof()
 	projectiles.sync()
 	order_flags.sync()
+	_prof_done("view/other", _t_other)
 	# ④ 覆盖层：纯本地 UI 状态塞进去，它只画
+	var _t_overlay := _prof()
 	overlay.hover_tile = input_ctrl.hover_tile
 	overlay.hover_valid = input_ctrl.hover_valid
 	overlay.build_type = input_ctrl.build_type
@@ -431,6 +470,7 @@ func _process(dt: float) -> void:
 	overlay.mouse_world = input_ctrl.mouse_world
 	overlay.set_selection(_selected_ids())
 	overlay.sync()
+	_prof_done("view/overlay", _t_overlay)
 	# ⑤ 地面归属 / 迷雾变了就重烘贴图 —— **必须节流**
 	#
 	# ★★ 为什么（本轮实测的帧率瓶颈之一）：
@@ -442,9 +482,13 @@ func _process(dt: float) -> void:
 	_rebake_tick += 1
 	if _rebake_tick >= REBAKE_INTERVAL_FRAMES:
 		_rebake_tick = 0
+		var _t_rebake := _prof()
 		ground.rebake()
+		_prof_done("ground.rebake", _t_rebake)
 	# ⑥ 相机输入（方向键 / 边缘滚屏 / Space 加速 / 夹取）——**整块**在这里
+	var _t_cam := _prof()
 	_camera_update(dt)
+	_prof_done("camera", _t_cam)
 
 
 ## 该被点亮选中圈的单位 id（本机选中 + 选中的敌方单位）

@@ -414,12 +414,28 @@ func _visible_to_me(b) -> bool:
 # ★★ 有单位靠近 ⇒ 建筑淡出（本轮新增；口径见 config.json 的 _building_fade_comment）
 # ------------------------------------------------------------------
 
-## 「哪些格附近有可见单位」——以每个可见单位所在格为中心，连同它 8 个邻格一起标出。
-##
-## ★ 建筑只要落在这些格之一就淡出 ⇒ 「以建筑为中心的 3x3 内有单位」= 一次字典查找。
+## 「哪些格上有可见单位」——每格记 1 次（不再连 8 邻格一起标）。
+## ★ 建筑只落在这些格之一就淡出 ⇒ 「以建筑为中心的 3x3 内有单位」= **查建筑自己的 9 格**。
 ##   比「逐建筑扫全部单位」便宜（建筑逐帧重画；单位可能有几十个）。
 ## ★ 只算**当前可见**的单位：迷雾里的敌人不该让建筑淡出 —— 那会把它的位置漏出去。
+## ★★ 由 `game_scene3d` 每帧喂进来（来自 `unit_view_3d` 同一次遍历算好的「可见单位所在格」）。
+##    它是**一次性**的：被 `_fade_marked_tiles()` 消费一次就清空 —— 所以「单独调用 sync()」
+##    （测试）与「game_scene3d 每帧喂」两条路都不会读到上一帧的旧值。
+##    null = 没人喂 ⇒ 退回自算（测试 / 独立使用时不破）。
+var _provided_marked = null
+
+
+## 外部喂入「可见单位所在格」（见上一行注释）。下一帧没人再喂就恢复自算。
+func set_fade_marked(m: Variant) -> void:
+	_provided_marked = m
+
+
 func _fade_marked_tiles() -> Dictionary:
+	# ★ 喂进来的那一份**只消费一次**（见 `_provided_marked` 的注释）。
+	if _provided_marked != null:
+		var provided: Variant = _provided_marked
+		_provided_marked = null
+		return provided
 	var marked: Dictionary = {}
 	if world == null:
 		return marked
@@ -428,15 +444,17 @@ func _fade_marked_tiles() -> Dictionary:
 			continue
 		if not _unit_visible(u):
 			continue
-		for dy in range(-1, 2):
-			for dx in range(-1, 2):
-				marked[Vector2i(u.tx + dx, u.ty + dy)] = true
+		marked[Vector2i(u.tx, u.ty)] = true
 	return marked
 
 
-## 这栋建筑要不要淡出（它所在格在 `marked` 里 = 以它为中心的 3x3 内有可见单位）。
+## 这栋建筑要不要淡出（它**自己的 3×3** 里有没有可见单位 = 查 `marked` 9 格）。
 func should_fade(b, marked: Dictionary) -> bool:
-	return marked.has(Vector2i(b.tx, b.ty))
+	for dy in range(-1, 2):
+		for dx in range(-1, 2):
+			if marked.has(Vector2i(b.tx + dx, b.ty + dy)):
+				return true
+	return false
 
 
 ## 单位对「我这边」可不可见（与 unit_view_3d 同一条判据：迷雾的唯一出处是 logic/fog.gd）。

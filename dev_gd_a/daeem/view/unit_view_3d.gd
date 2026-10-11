@@ -95,6 +95,18 @@ var _cell: float = 128.0
 var _hit_amp: float = 0.06
 var _hit_freq: float = 26.0
 
+## ★★ 本帧「可见单位的 3×3 邻格」集合 —— 在 sync() 的**单次遍历**里顺带标出，
+##    供 `building_view_3d` 算「哪些建筑该淡出」（它原先自己再扫一遍全部单位 + 迷雾）。
+var _fade_marked: Dictionary = {}
+## ★★ 单次遍历时顺带收集的两张小表（都很少），避免 decal / 选中圈各再扫一遍 `world.units`。
+var _vis_generals: Array = []      # 本帧可见的将领（贴花用）
+var _vis_sel: Array = []           # 本帧可见且「被选中 / 正在做选中动效」的单位（脚圈用）
+
+
+## 本帧可见单位的 3×3 邻格（`building_view_3d` / `game_scene3d` 取用；见 `_fade_marked`）。
+func fade_marked() -> Dictionary:
+	return _fade_marked
+
 
 func setup(p_cfg: ConfigRes, p_world, p_palette) -> void:
 	cfg = p_cfg
@@ -236,23 +248,58 @@ func _batch_for(key: String, faction: String, leader: bool, unit_type: String,
 var _last_pos: Array = []          # 下标 → 上一次写的世界位置（Vector3）
 var _last_slot_key: Array = []     # 下标 → 上一次写的「桶键」（变了就必须重写）
 func sync(dt: float = 1.0 / 60.0) -> void:
+	# ★★ 三张小表在**这一次遍历**里一起产出（见下面循环里的三条注释）。
+	#    ⚠️ 必须在早退之前清空：否则早退那一帧会留下上一帧的旧值。
+	_fade_marked.clear()
+	_vis_generals.clear()
+	_vis_sel.clear()
 	if world == null or palette == null or _quad == null:
 		return
 	shake_applied_last_frame = 0
 	flash_written_last_frame = 0
 	downed_count = 0
 	var buckets: Dictionary = {}
+	# ★★ 有没有「选中 / 正在做动效」的单位？没有就整段跳过每单位的 `String(id)` 与两次字典查询
+	#    （1000 单位常态下选中为空 —— 这是每帧 1000 次字符串转换 + 2000 次查表）。
+	var track_sel: bool = not (_selection_set.is_empty() and _sel_anim.is_empty())
+	# ★★ 变体键的记忆：同一支队伍里绝大多数相邻单位的「阵营/兵种/是否将领/是否濒死」都相同，
+	#    记忆上一把键、不同才重新拼 —— 省掉每单位一次的 `%` 格式化（1000 单位常态下几乎全省）。
+	var last_fac: String = ""
+	var last_type: String = ""
+	var last_leader: bool = false
+	var last_downed: bool = false
+	var last_key: String = ""
 	for u in world.units:
 		if not u.alive:
 			continue
 		# ★★ 战争迷雾：看不见的敌方单位**一个实例都不占**（判据只在 logic/fog.gd）
 		if not _visible_to_me(u):
 			continue
+		# ★★ 单次遍历的副产品①：本帧可见单位的**所在格**（建筑层淡出用它）。
+		#    ⚠️ 这里只写 1 格（每单位 1 次字典写）——「3×3 内有没有单位」由建筑层
+		#       对**建筑自己的 3×3** 查表得出（建筑很少，比每单位写 9 格便宜得多）。
+		_fade_marked[Vector2i(u.tx, u.ty)] = true
 		var leader: bool = u.is_general()
+		# ★★ 副产品②③：将领（贴花）与「选中 / 正在做选中动效」的单位（脚圈）。
+		#    这两类都很少 —— 后面只遍历这两张小表，不再各扫一遍 `world.units` + 迷雾。
+		if leader:
+			_vis_generals.append(u)
+		if track_sel and (_selection_set.has(String(u.id)) or _sel_anim.has(String(u.id))):
+			_vis_sel.append(u)
 		var downed: bool = u.is_downed()
 		# ★★ 变体键 = 阵营 | 是否将领 | 兵种 | 是否濒死：都会变，各自决定用哪张图 / 哪个材质。
-		var key := "%s|%d|%s|%d" % [String(u.faction), 1 if leader else 0,
-			String(u.unit_type), 1 if downed else 0]
+		var key: String
+		if u.faction == last_fac and u.unit_type == last_type \
+				and leader == last_leader and downed == last_downed and last_key != "":
+			key = last_key
+		else:
+			key = "%s|%d|%s|%d" % [String(u.faction), 1 if leader else 0,
+				String(u.unit_type), 1 if downed else 0]
+			last_fac = u.faction
+			last_type = u.unit_type
+			last_leader = leader
+			last_downed = downed
+			last_key = key
 		var arr: Array = buckets.get(key, [])
 		arr.append(u)
 		buckets[key] = arr
@@ -320,27 +367,24 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 	visible_count = total
 	mesh_batch_count = used
 	instance_writes_last_frame = wrote
-	_sync_decals()
-	_sync_selection_rings(dt)
+	_sync_decals(_vis_generals)
+	_sync_selection_rings(_vis_sel, dt)
 
 
 ## 将领脚下的贴花：把每个**可见将领**摆一块平放的小面片（逐实例色 = 阵营色）。
 ##
 ## ★ 将领很少（个位数）⇒ 直接每帧重填，不需要脏检查。
 ## ★ 面片是 `PlaneMesh.FACE_Y`：本来就躺在 XZ 平面上 ⇒ **变换用单位基**（不旋转）。
-func _sync_decals() -> void:
+## ★★ 入参 `units_list` 由 `sync()` 的单次遍历顺带收集（只含「活着 + 可见 + 是将领」），
+##    这里不再对 `world.units` 扫一遍、也不再做迷雾查询。
+func _sync_decals(units_list: Array) -> void:
 	decal_count = 0
 	if _decal_node == null or _decal_mm == null or world == null or palette == null:
 		return
-	var n_generals: int = world.units.size()
-	if _decal_mm.instance_count < n_generals:
-		_decal_mm.instance_count = maxi(n_generals, _decal_mm.instance_count * 2)
+	if _decal_mm.instance_count < units_list.size():
+		_decal_mm.instance_count = maxi(units_list.size(), _decal_mm.instance_count * 2)
 	var i: int = 0
-	for u in world.units:
-		if not u.alive or not u.is_general():
-			continue
-		if not _visible_to_me(u):
-			continue
+	for u in units_list:
 		var w: Vector3 = palette.to_world(u.pos)
 		w.y = 1.0                       # 贴在地面上方一点点（避免与地面 z-fighting）
 		_decal_mm.set_instance_transform(i, Transform3D(Basis(), w))
@@ -357,7 +401,10 @@ func _sync_decals() -> void:
 ##   · 尺寸 = `lerp(scale_from, 1.0, p)` —— 由 150% 收到 100%（= 将领黄色贴花那个大小）；
 ##   · 不透明度 = `_sel_alpha * p` —— 由 0 升到 80%。
 ## 取消选中时目标变 0，同一段插值就往回放（**反向动效**）；收到 0 就把这一项清掉。
-func _sync_selection_rings(dt: float) -> void:
+##
+## ★★ 入参 `units_list` 由 `sync()` 的单次遍历顺带收集（只含「活着 + 可见 + 被选中/正在做动效」），
+##    这里不再对 `world.units` 扫一遍、也不再做迷雾查询。
+func _sync_selection_rings(units_list: Array, dt: float) -> void:
 	selection_ring_count = 0
 	selection_scale_last = 0.0
 	selection_alpha_last = 0.0
@@ -372,13 +419,10 @@ func _sync_selection_rings(dt: float) -> void:
 	for id in stale:
 		_sel_anim.erase(id)
 
-	var n: int = world.units.size()
-	if _sel_mm.instance_count < n:
-		_sel_mm.instance_count = maxi(n, _sel_mm.instance_count * 2)
+	if _sel_mm.instance_count < units_list.size():
+		_sel_mm.instance_count = maxi(units_list.size(), _sel_mm.instance_count * 2)
 	var i: int = 0
-	for u in world.units:
-		if not u.alive or not _visible_to_me(u):
-			continue
+	for u in units_list:
 		var id := String(u.id)
 		var want: float = 1.0 if _selection_set.has(id) else 0.0
 		var p: float = float(_sel_anim.get(id, 0.0))

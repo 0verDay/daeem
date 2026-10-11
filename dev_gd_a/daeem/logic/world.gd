@@ -52,6 +52,12 @@ var _building_at: Dictionary = {}
 ## 建造 / 拆除时 +1，用于「按需重算区块归属」而不是每帧算
 var building_revision: int = 0
 var last_ownership_revision: int = -1
+## ★★ 建筑空间索引（粗网格：一格 8×8 逻辑格 → 建筑数组）—— 给「最近敌建筑」索敌用。
+##    只按 `building_revision` 重建（建筑增删才变），使 `combat.nearest_enemy_building`
+##    不必对每个空闲单位扫一遍整张 `building_list`（1000 单位下实测 ~2.9 ms/帧）。
+##    由 `world.tick()` 每帧调 `CombatRes.rebuild_building_grid(self)` 按需重建。
+var _bgrid: Dictionary = {}
+var _bgrid_revision: int = -1
 
 var zones: ZoneRes = null
 var units: Array = []
@@ -273,6 +279,8 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	_building_at = {}
 	building_revision = 0
 	last_ownership_revision = -1
+	_bgrid = {}
+	_bgrid_revision = -1
 	units = []
 	projectiles = []
 	_events = []
@@ -3568,13 +3576,16 @@ func tick(dt: float) -> Array:
 	_prof_done("recruit", _t_recruit)
 
 	# 4) 单位：移动 + 战斗 / 警戒
+	#    ★ 先按需重建建筑空间索引（只在 building_revision 变了才真的重建）：
+	#      本帧要给上千个空闲单位做「最近敌建筑」查询，见 combat.nearest_enemy_building。
+	CombatRes.rebuild_building_grid(self)
 	var _t_units := _prof()
 	# 单位循环再拆三段的计时（只在 profile_on 时累加）
 	var t_combat := 0
 	var t_reclaim := 0
 	var t_step := 0
 	for ui in units.size():
-		var u = units[ui]
+		var u: UnitRes = units[ui]
 		if not u.alive:
 			# 阵亡中的单位只跑复活倒计时；复活后本帧就正常参与逻辑
 			u.tick_respawn(cfg, self, dt)

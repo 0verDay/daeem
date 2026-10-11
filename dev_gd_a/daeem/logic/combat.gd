@@ -364,34 +364,76 @@ static func acquire_target(world, cfg: ConfigRes, u: UnitRes, idx: int = -1) -> 
 	return true
 
 
-## 警戒半径内最近的敌方建筑（距离按「到本体表面」算，与单位同口径）。
+## ★★ 建筑空间索引的格子边长（逻辑格）：一格 8×8。
+##    `aggro_range` 默认 4 ⇒ `reach = ceil(4)+2 = 6 ≤ 8` ⇒ 每个单位最多查 3×3 个格子即可覆盖。
+const BGRID_SHIFT := 3
+## 网格键 = `cell_y * BGRID_KEY + cell_x`（地图 ≤ 几百格，够用）
+const BGRID_KEY := 4096
+
+
+## 按需重建建筑空间索引 `world._bgrid`。
 ##
-## ★★ 两类别索敌都跳过：
-##   · **无主建筑**（owner == ""，例如区划中心）：它不是「敌方」，而是中立障碍 ——
-##     不跳过的后果实测过：将军会自动跑去「拆」区划中心，指着它一路走（因为
-##     拆不动、也打不掉，就永远停在那儿），玩家的移动命令看起来像失灵。
-##   · **无敌建筑**（`is_invulnerable()`，同上那类）：打不掉的东西不该进目标列表。
-static func nearest_enemy_building(world, cfg: ConfigRes, u: UnitRes, aggro: float) -> Variant:
-	var best = null
-	var best_d := INF
-	# ★ 先用**格差**把远处的建筑挡掉：警戒半径只有几格，格差超过它就不可能命中。
-	#   下面那几个判定（String(owner) / is_invulnerable() / center() / body_half()）
-	#   每一个都比两次整数比较贵得多，而这是「每单位每建筑」都要跑一遍的循环
-	#   （1000 单位待命时就是每帧几万次）。
-	var reach := int(ceilf(aggro)) + 2
+## ★ 只在 `building_revision` 变了（建筑增 / 删）才真的重建 —— 由 `world.tick()` 每帧调一次。
+##   单独调用索敌、没有先经 tick 的路径（测试）会让新鲜度判断失败 ⇒ 走整表回退，语义不变。
+static func rebuild_building_grid(world) -> void:
+	if world._bgrid_revision == world.building_revision:
+		return
+	world._bgrid.clear()
 	for b in world.building_list:
 		if not b.alive:
 			continue
-		if absi(b.tx - u.tx) > reach or absi(b.ty - u.ty) > reach:
-			continue
+		# ★★ 只把「可打的建筑」放进网格：中立（owner == ""，例如区划中心）与无敌建筑
+		#    对**任何**进攻方都不是目标 ⇒ 建表时就剔掉（它们在真实地图上往往还是多数，
+		#    剔掉之后每个单位要看的候选从「几十栋」降到「个位数」）。
 		if String(b.owner) == "" or b.is_invulnerable():
-			continue                      # 中立 / 无敌：不是可打的目标
-		if FactionRes.same_side_for_attack(b.owner, u.faction):
 			continue
-		var d: float = u.pos.distance_to(b.center()) - b.body_half(cfg)
-		if d <= aggro and d < best_d:
-			best_d = d
-			best = b
+		var key: int = (int(b.ty) >> BGRID_SHIFT) * BGRID_KEY + (int(b.tx) >> BGRID_SHIFT)
+		var arr: Variant = world._bgrid.get(key, null)
+		if arr == null:
+			arr = []
+			world._bgrid[key] = arr
+		(arr as Array).append(b)
+	world._bgrid_revision = world.building_revision
+
+
+## 警戒半径内最近的敌方建筑（距离按「到本体表面」算，与单位同口径）。
+##
+## ★★ 性能（本轮）：原来是「每个空闲单位扫一遍整张 `building_list`」——
+##    1000 单位待命时实测 **~2.9 ms/帧**（单是这一个函数）。现在改成查**粗网格**
+##    （见 `rebuild_building_grid` / `world._bgrid`）：网格**只装「可打的建筑」**
+##    （中立 / 无敌在建表时就剔掉了，它们在真实地图上往往是大头），单位只遍历
+##    自己附近 3×3 格里的建筑。
+##    ⚠️ 网格不新鲜（没经 `world.tick`、直接调索敌的测试路径）就先补建一次 —— 结果**逐位一致**
+##      （下面的格差 / 距离判定与原实现完全相同）。
+static func nearest_enemy_building(world, cfg: ConfigRes, u: UnitRes, aggro: float) -> Variant:
+	# ★ 网格不新鲜就补建（正常路径由 world.tick 每帧建好；这里兜「直接调用」那条）。
+	if world._bgrid_revision != world.building_revision:
+		rebuild_building_grid(world)
+	var reach := int(ceilf(aggro)) + 2
+	# 只查单位附近 3×3 个格子（aggro_range 默认 4 ⇒ reach 6 ≤ 8，够覆盖）
+	var c0x: int = (int(u.tx) - reach) >> BGRID_SHIFT
+	var c1x: int = (int(u.tx) + reach) >> BGRID_SHIFT
+	var c0y: int = (int(u.ty) - reach) >> BGRID_SHIFT
+	var c1y: int = (int(u.ty) + reach) >> BGRID_SHIFT
+	var best = null
+	var best_d := INF
+	for cy in range(c0y, c1y + 1):
+		for cx in range(c0x, c1x + 1):
+			var arr: Variant = world._bgrid.get(cy * BGRID_KEY + cx, null)
+			if arr == null:
+				continue
+			for b in (arr as Array):
+				if not b.alive:
+					continue
+				# ★ 格差预筛（网格里已只剩可打建筑，这里只挡远处）：半径只有几格。
+				if absi(int(b.tx) - int(u.tx)) > reach or absi(int(b.ty) - int(u.ty)) > reach:
+					continue
+				if FactionRes.same_side_for_attack(b.owner, u.faction):
+					continue
+				var d: float = u.pos.distance_to(b.center()) - b.body_half(cfg)
+				if d <= aggro and d < best_d:
+					best_d = d
+					best = b
 	return best
 
 

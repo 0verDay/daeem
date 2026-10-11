@@ -252,7 +252,7 @@ func _bench_attack_move(w, cfg, n_units: int, n_frames: int) -> void:
 	for _i in n_frames:
 		w.tick(dt_step)
 	w.profile_on = false
-	for key in ["units", "units/combat", "units/step", "collision", "zones", "enemy_ai", "towers"]:
+	for key in ["units", "units/combat", "units/step", "collision", "zones", "ai", "towers"]:
 		print("[BENCH]   %-14s %8.3f ms/frame"
 			% [key, float(int(w.profile_us.get(key, 0))) / 1000.0 / float(n_frames)])
 	var engaged := 0
@@ -335,7 +335,7 @@ func _bench_idle(w, n_frames: int) -> void:
 	w.profile_on = false
 
 	var order := ["units", "units/combat", "units/reclaim", "units/step",
-		"collision", "zones", "enemy_ai", "towers"]
+		"collision", "zones", "ai", "towers"]
 	for key in order:
 		print("[BENCH]   %-14s %8.3f ms/frame"
 			% [key, float(int(w.profile_us.get(key, 0))) / 1000.0 / float(n_frames)])
@@ -568,8 +568,8 @@ func _bench_frames(w, n_frames: int) -> void:
 	# 阶段名 → 每帧平均毫秒。顺序按 tick() 里执行的先后排
 	# （"units/*" 是 units 的细分，算 total 差额时不能重复计入）
 	var order := ["zones", "economy", "recruit", "units", "units/combat", "units/reclaim", "units/step",
-		"towers", "enemy_ai", "collect", "collision"]
-	var top_level := ["zones", "economy", "recruit", "units", "towers", "enemy_ai", "collect", "collision"]
+		"towers", "ai", "collect", "collision"]
+	var top_level := ["zones", "economy", "recruit", "units", "towers", "ai", "collect", "collision"]
 	var accounted := 0.0
 	for key in order:
 		var ms := float(int(w.profile_us.get(key, 0))) / 1000.0 / float(n_frames)
