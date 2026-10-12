@@ -152,7 +152,7 @@ def build_editor(cols: int = 0, rows: int = 0, size: str = "1000x700"):
 def stub_dialogs():
     """把 tk 的弹窗全部存根掉，返回一个「恢复原样」的函数。
 
-    ⚠️ 必须做这件事：`do_export()` 在地图有毛病（没大本营 / 空区块）时会先弹一个
+    ⚠️ 必须做这件事：`do_export()` 在地图有毛病（空区块 / 没中心）时会先弹一个
     `askyesno` 问「仍然导出吗」，而模态弹窗会**一直等人点**——
     无头测试就卡死在那里（第一次写这个测试时真卡了 3 分钟，靠 faulthandler 打出栈才看见）。
     """
@@ -277,10 +277,9 @@ def t_step2_right_click_deletes() -> None:
         editor.undo()
         ok(editor.model.exists(3, 2), "★ Ctrl+Z 能把右键删掉的地块撤销回来")
 
-        # ★ 「大本营」按钮**已经不在地块页签里了**（老式大本营彻底删掉）——
-        #   现在只有「每个阵营的大本营」，它在阵营页签里设（见 [17]）。
+        # ★ 地图不再管阵营 / 大本营，地块面板里当然也没有「大本营」按钮。
         ok(not hasattr(editor, "base_btn"),
-           "★ 地块面板里没有大本营按钮了（老式大本营已删除）")
+           "★ 地块面板里没有大本营按钮（地图不再管阵营）")
         # 面板上的控件确实换成了「地块」那一节 + 删除按钮
         click_at(editor, 4, 4)          # 让面板切到一格上（没格子时它不建这些控件）
         ok("delete" in editor._tile_widgets and "base" not in editor._tile_widgets,
@@ -415,11 +414,7 @@ def t_step4_export_import() -> None:
         editor.set_tile_terrain("mountain")
         click_at(editor, 1, 1)
         editor.set_tile_terrain("forest")
-        # ★ 导出有硬规则了：每个阵营必须有大本营、每个区划必须有中心。
-        #   所以先摆一个阵营 + 它的基地，再把地块划给区块并给它设中心。
-        #   （阵营 id 直接用游戏那套 'p1'，与 [17] 阵营页签测试里那套等价。）
-        editor.model.add_faction("p1", "p1")
-        editor.model.set_faction_base("p1", 0, 0)
+        # ★ 导出的硬规则只剩「每个区划必须有中心」：把地块划给区块并给它设中心。
         editor.set_page("zone")
         editor.add_zone()
         zone = editor.model.zones[0]
@@ -442,7 +437,6 @@ def t_step4_export_import() -> None:
         eq(editor.model.existing_count(), 4, "★ 重新打开：地块数一致")
         eq(editor.model.terrain_at(2, 2), "mountain", "地形一致（山地）")
         eq(editor.model.terrain_at(1, 1), "forest", "地形一致（森林）")
-        eq(editor.model.faction_base_of("p1"), (0, 0), "大本营一致")
         eq(len(editor.model.zones), 1, "区块数量一致")
         eq(editor.model.zone(editor.model.zones[0].zone_id).name, zone.name, "区块名一致")
         eq(editor.model.zone(editor.model.zones[0].zone_id).tile_count, 2, "区块的地块一致")
@@ -1317,7 +1311,7 @@ def t_file_buttons_wired() -> None:
 def t_zone_center_and_production_ui() -> None:
     """区块页签的「区划中心」按钮与「产能」三档（需求：中心在区划页签里设、产能也在那里配）。
 
-    交互与阵营页的「把大本营设在这里」同源：
+    与地块页的「删除这个地块」是两条不同的动线：
       列表里选中区划 → 左键点它自己的一个地块（区块页签左键 = 划给它 + 把面板切到这一格）
       → 按「把中心设在这一格」；再按一次 = 取消。
 
@@ -1392,19 +1386,21 @@ def t_zone_center_and_production_ui() -> None:
         editor.redo()
         eq(editor.model.zone_center_of(b.zone_id), (2, 0), "★ 重做又回来")
 
-        # ---- 产能：三档输入框都在，填完写进模型
+        # ---- 产能：输入框是「**资源/秒**」绝对值（本轮改单位）；写回模型时按地块数换算成「每地块」
         keys = [k for k in editor._zone_prod_vars.keys()]
         eq(keys, ["food", "gold", "population"], "三档产能输入框都在（粮食/黄金/人口）")
         select_zone(b)
+        eq(b.tile_count, 1, "（前提）b 只有 1 格")
         editor._zone_prod_vars["food"].set("2")
         editor.apply_zone_production("food")
-        eq(editor.model.zone_production(b.zone_id, "food"), 2.0, "★ 粮食产能写进模型")
+        eq(editor.model.zone_production(b.zone_id, "food"), 2.0,
+           "★ 填「2/秒」、1 格 → 模型里存 2/地块/秒")
         editor._zone_prod_vars["population"].set("0.5")
         editor.apply_zone_production("population")
         eq(editor.model.zone_production(b.zone_id, "population"), 0.5, "★ 人口产能写进模型")
         ok(editor.dirty, "改产能会把地图标记成「有未导出的改动」")
 
-        # ---- 乱打字：不改原值，并把输入框刷回模型里的值
+        # ---- 乱打字：不改原值，并把输入框刷回模型里的值（绝对值）
         editor._zone_prod_vars["food"].set("abc")
         editor.apply_zone_production("food")
         eq(editor.model.zone_production(b.zone_id, "food"), 2.0, "★ 乱打字不会把产能弄坏")
@@ -1413,6 +1409,14 @@ def t_zone_center_and_production_ui() -> None:
         # ---- 换区划：输入框跟着换成那一个区划的产能
         select_zone(a)
         eq(editor._zone_prod_vars["food"].get(), "0", "★ 换区划后显示的是它自己的产能")
+        # ★★ 换算（本轮改单位）：a 有 2 格 → 填「4/秒」= 2/地块/秒；显示回来仍是 4
+        eq(a.tile_count, 2, "（前提）a 有 2 格")
+        editor._zone_prod_vars["food"].set("4")
+        editor.apply_zone_production("food")
+        eq(editor.model.zone_production(a.zone_id, "food"), 2.0,
+           "★★ 「4/秒」÷ 2 格 = 2/地块/秒 存进模型")
+        eq(editor._zone_prod_vars["food"].get(), "4", "★★ 输入框显示回绝对值 4/秒")
+        ok("／秒" in editor.status_var.get(), "状态栏按「／秒 / ／地块／秒 × 格数」报")
 
         # ---- 人口上限：一个输入框，作用于列表里选中的那个区块
         eq(editor.zone_cap_var.get(), "1",
@@ -1463,8 +1467,8 @@ def t_zone_kind_ui() -> None:
     数字输入框中的产量为准」。
 
     所以这条测试钉住三件事：
-      ① 单选钮 = 种类（新建的区划默认停在人口区划上，输入框显示的是它的预设数字）；
-      ② 点一颗单选钮 → 种类变了 **且** 三个输入框同步成那一档的预设值；
+      ① 单选钮 = 种类（新建的区划默认停在人口区划上，输入框显示的是它的预设值换算后的 ／秒）；
+      ② 点一颗单选钮 → 种类变了 **且** 三个输入框同步成那一档的预设值（× 地块数）；
       ③ 之后手改数字 → 种类不动、导出写的是**数字**（不是预设）。
     另外撤销要把「种类 + 数字」一起退回去（与产能 / 人口上限同一套）。
     """
@@ -1479,13 +1483,19 @@ def t_zone_kind_ui() -> None:
         editor.zone_tree.selection_set(str(zone.zone_id))
         editor.on_zone_select(None)
         editor.refresh_zone_panel()
+        # ★ 给它划 2 格（区块页左键点地块 = 划给当前选中的区块）——
+        #   产能是「资源/秒」绝对值，没有地块就没有绝对产值可谈（输入框会禁用），所以先划格。
+        click_at(editor, 0, 0)
+        click_at(editor, 1, 0)
+        eq(zone.tile_count, 2, "（前提）zone 划了 2 格 —— 产能是绝对值，要先有地块")
 
         # ---- ① 新建的区划默认是人口区划，输入框显示的就是它的预设数字
         eq(editor.model.zone_kind(zone.zone_id), "population",
            "★ 新建的区划默认是人口区划（用户确认：没有默认区划了）")
         eq(editor.zone_kind_var.get(), "population", "单选钮停在「人口区划」上")
-        eq(editor._zone_prod_vars["population"].get(), "0.15",
-           "★ 输入框里是人口区划的预设值（0.15）")
+        # ★ 输入框是「资源/秒」绝对值：预设 0.015/地块 × 2 格 = 0.03/秒
+        eq(editor._zone_prod_vars["population"].get(), "0.03",
+           "★ 输入框里是人口区划的预设值换算成本区块的 ／秒（0.015 × 2 格）")
         eq(editor._zone_prod_vars["food"].get(), "0", "粮食那一档是 0")
         eq(editor.zone_kind_hint.cget("text"), "", "新建的区划与预设一致 → 不提示「已手改」")
         # ---- 几何：三颗单选钮都在侧边栏宽度之内、从上到下排列（新控件不许溢出/叠住）
@@ -1503,31 +1513,35 @@ def t_zone_kind_ui() -> None:
         editor._zone_kind_buttons["food"].invoke()
         eq(editor.model.zone_kind(zone.zone_id), "food", "★ 点单选钮 = 换种类")
         eq([editor.model.zone_production(zone.zone_id, k)
-            for k in ("food", "gold", "population")], [1.0, 0.0, 0.1],
-           "★ 选粮食区划 → 产能数字同步成 1 粮食 + 0.1 人口（所有区划都有 0.1 人口基础产能）")
-        eq(editor._zone_prod_vars["food"].get(), "1", "输入框显示同步后的粮食产能")
-        eq(editor._zone_prod_vars["population"].get(), "0.1", "输入框显示同步后的 0.1 人口")
+            for k in ("food", "gold", "population")], [0.12, 0.0, 0.012],
+           "★ 选粮食区划 → 产能数字同步成 0.12 粮食 + 0.012 人口（所有区划都带一份人口基础产能）")
+        eq(editor._zone_prod_vars["food"].get(), "0.24",
+           "输入框显示同步后的粮食产能（0.12/地块 × 2 格 = 0.24/秒）")
+        eq(editor._zone_prod_vars["population"].get(), "0.024",
+           "输入框显示同步后的 0.012/地块 × 2 格 = 0.024/秒")
         eq(editor.zone_kind_hint.cget("text"), "", "刚同步过 → 仍然与预设一致")
 
-        # ---- ③ 手改数字：种类不动，导出以数字为准
+        # ---- ③ 手改数字（输入框是绝对值）：种类不动，导出写的是「每地块」数字
+        #      填「2.5/秒」、本区块 2 格 → 模型里 1.25/地块/秒
         editor._zone_prod_vars["gold"].set("2.5")
         editor.apply_zone_production("gold")
-        eq(editor.model.zone_production(zone.zone_id, "gold"), 2.5, "★ 手改的黄金产能生效")
+        eq(editor.model.zone_production(zone.zone_id, "gold"), 1.25,
+           "★ 手改的黄金产能生效（2.5/秒 ÷ 2 格 = 1.25/地块/秒）")
         eq(editor.model.zone_kind(zone.zone_id), "food", "★ 手改数字**不会**改种类")
         ok("手改" in editor.zone_kind_hint.cget("text"),
            "★ 数字与预设不一致时种类那一栏给提示（%s）" % editor.zone_kind_hint.cget("text"))
         data = mapfile.model_to_dict(editor.model)
         entry = {z["id"]: z for z in data["zone_list"]}[zone.zone_id]
         eq(entry["kind"], "food", "导出写种类")
-        eq(entry["production"], {"food": 1, "gold": 2.5, "population": 0.1},
-           "★ 导出的是数字输入框里的产量（不是预设）")
+        eq(entry["production"], {"food": 0.12, "gold": 1.25, "population": 0.012},
+           "★ 导出的是「每地块」数字（输入框 2.5/秒 ÷ 2 格 = 1.25）")
 
         # ---- 撤销：手改数字一步、换种类一步，两步都能退
         editor.undo()
         eq(editor.model.zone_production(zone.zone_id, "gold"), 0.0, "★ Ctrl+Z 退掉手改的数字")
         editor.undo()
         eq(editor.model.zone_kind(zone.zone_id), "population", "★ 再退一步：种类回到人口区划")
-        eq(editor.model.zone_production(zone.zone_id, "population"), 0.15,
+        eq(editor.model.zone_production(zone.zone_id, "population"), 0.015,
            "★ 数字也跟着回到人口区划的预设")
         eq(editor.zone_kind_var.get(), "population", "单选钮跟着退回去")
         editor.redo()
@@ -1544,6 +1558,62 @@ def t_zone_kind_ui() -> None:
         eq(str(editor._zone_kind_buttons["food"].cget("state")), "disabled",
            "没选中区划 → 单选钮禁用")
         eq(editor.zone_kind_var.get(), "", "没选中区划 → 不显示任何种类")
+    finally:
+        root.destroy()
+
+
+def t_zone_page_box_select() -> None:
+    """★★ 用户需求：「区划也需要支持框选设置区划」—— 区块页签上 Shift 框选，
+    把矩形里的**已有地块**整体划给某个区块（批量版的「点一格划一格」）。
+
+    与地块页的框选（[18]/[18b]，批量刷地形 / 归属）是**两套面板**：
+    区块页这套只有「划给哪个区块」，没有地形；虚线格也不参与。
+    """
+    print("\n[20b] 区块页签：Shift 框选 → 整体划给区块")
+    root, editor = build_editor()
+    try:
+        for y in range(2):
+            for x in range(3):
+                click_at(editor, x, y)
+        eq(editor.model.existing_count(), 6, "先画好 6 格")
+
+        editor.set_page("zone")
+        editor.add_zone()
+        a = editor.model.zones[0]
+        editor.zone_tree.selection_set(str(a.zone_id))
+        editor.on_zone_select(None)
+        editor.refresh_zone_panel()
+        eq(a.tile_count, 0, "（前提）a 还没有地块")
+
+        # ---- 区块页签上 Shift + 拖拽也能框选
+        box_select(editor, (0, 0), (1, 1))
+        eq(editor.selection, (0, 0, 1, 1), "★ 区块页签也能 Shift 框选")
+        eq(len(editor.batch_tiles()), 4, "矩形里的 4 个已有地块被选中")
+
+        # ---- 批量面板：默认划给「列表里选中的那个区块」
+        eq(editor.batch_zone_choice.get(), a.name, "★ 下拉框默认 = 列表里选中的区块")
+        editor.batch_set_zone()
+        eq({editor.model.zone_at(*t).zone_id for t in ((0, 0), (1, 0), (0, 1), (1, 1))},
+           {a.zone_id}, "★ 矩形里的 4 格一次划给了 a")
+        eq(a.tile_count, 4, "a 现在有 4 格")
+        eq(editor.selection, (0, 0, 1, 1), "划完框选还在（可以接着操作）")
+
+        # ---- 一次操作 = 一步撤销（撤销会换掉 model，要按 id 重新取）
+        editor.undo()
+        eq(editor.model.zone(a.zone_id).tile_count, 0, "★ 撤销一次整批退回")
+        editor.redo()
+        eq(editor.model.zone(a.zone_id).tile_count, 4, "重做又回来")
+
+        # ---- 选「（不属于任何区块）」= 把它们摘出来
+        editor.batch_zone_choice.set("（不属于任何区块）")
+        editor.batch_set_zone()
+        eq(editor.model.zone(a.zone_id).tile_count, 0, "★ 一次全部摘出来")
+
+        # ---- 框选之后点地图 = 退出框选，回到普通区块面板
+        editor.on_left_click(fake_mouse(editor, 2, 1))
+        eq(editor.selection, None, "★ 区块页签上点一下 = 退出框选")
+        ok(editor.zone_tree.winfo_exists(), "退出框选后回到普通区块面板（区块列表还在）")
+        eq(editor.inspect, (2, 1), "并把这一格记成「面板正在看的那一格」")
     finally:
         root.destroy()
 
@@ -1601,13 +1671,13 @@ def t_sidebar_scrolls() -> None:
         root.destroy()
 
 
-def t_export_blocked_without_center_or_base() -> None:
-    """★ 硬规则：缺大本营 / 缺区划中心时**导出被拦住**（用户要的「保证」）。
+def t_export_blocked_without_center() -> None:
+    """★ 硬规则：缺区划中心时**导出被拦住**（用户要的「保证」）。
 
     `problems()` 是「提醒，可继续」，`blockers()` 是「拦住，不给继续」——
     这条测试钉住的是后者，以及「拦住时一个文件都不写」。
     """
-    print("\n[20] 导出硬拦截：缺大本营 / 缺区划中心")
+    print("\n[20] 导出硬拦截：缺区划中心")
     root, editor = build_editor()
     original_save = filedialog.asksaveasfilename
     original_show = messagebox.showerror
@@ -1632,27 +1702,20 @@ def t_export_blocked_without_center_or_base() -> None:
         for tile in ((0, 0), (1, 0)):
             click_at(editor, *tile)
 
-        # ① 建了阵营却没设大本营、区划也没中心 → 两条都点名，且不写文件
-        editor.model.add_faction("p2", "p2")
+        # ① 有区块、但还没设中心 → 拦住、不写文件
         editor.do_export()
-        ok(not target.exists(), "★ 缺大本营 / 缺中心时没有写出任何文件")
-        ok(errors and "大本营" in errors[-1][1], "★ 弹窗点名了「大本营」（%s）"
+        ok(not target.exists(), "★ 缺中心时没有写出任何文件")
+        ok(errors and "中心" in errors[-1][1], "★ 弹窗点名了「区划中心」（%s）"
            % (errors[-1][1] if errors else None))
-        ok(errors and "中心" in errors[-1][1], "★ 也点名了「区划中心」")
 
-        # ② 只补大本营、还不设中心 → 仍然拦住
-        editor.model.set_faction_base("p2", 1, 1)
-        editor.do_export()
-        ok(not target.exists(), "★ 只补了大本营：还是不写文件")
-        ok(errors and "中心" in errors[-1][1] and "大本营" not in errors[-1][1],
-           "★ 这次只差中心（%s）" % errors[-1][1])
-
-        # ③ 补上中心 → 放行（提醒层也可能是空的 → 直接写）
+        # ② 补上中心 → 放行
         editor.model.set_zone_center(zone.zone_id, 1, 0)
         editor.do_export()
         ok(target.exists(), "★ 补齐之后导出成功")
         data = json.loads(target.read_text(encoding="utf-8"))
-        ok("base" not in data, "★ 导出的 JSON 里没有老式 base 字段")
+        ok("base" not in data, "★ 导出的 JSON 里没有 base 字段")
+        ok("factions" not in data and "faction_bases" not in data,
+           "★ 导出的 JSON 里没有 factions / faction_bases")
         entry = next(z for z in data["zone_list"] if z["id"] == zone.zone_id)
         eq(entry["center"], [1, 0], "★ 中心写进了 zone_list")
     finally:
@@ -1663,122 +1726,12 @@ def t_export_blocked_without_center_or_base() -> None:
         root.destroy()
 
 
-def t_faction_page() -> None:
-    """★ 需求：上边栏加一个「阵营」页签，在里面建阵营、给阵营配大本营。
-
-    钉住的几条：
-      · 阵营 id 直接就是游戏那套字符串（player / p1 / enemy）—— 导出的
-        `faction_bases` 以它为键，Godot 侧不需要任何翻译表；
-      · 一个阵营一个大本营；同一格被别的阵营抢走时，原来那方**失去**它；
-      · 设大本营走「先在面板里选格，再点按钮」；再点一次 = 取消；
-      · 阵营大本营会进撤销栈（Ctrl+Z 能退）；
-      · 地图上画得出阵营标记（这是「哪个大本营是哪一方」的唯一线索）。
-    """
-    print("\n[17] 阵营页签：建阵营 + 配大本营")
-    root, editor = build_editor()
-    try:
-        # ---- 页签本身
-        editor.tab_buttons["faction"].invoke()
-        eq(editor.page, "faction", "★ 上边栏有「阵营」页签，点了能切过去")
-        eq(editor.selected_faction, None, "还没有阵营时没有选中项")
-        eq(editor.faction_tree.get_children(), (), "阵营列表一开始是空的（需求：全部手动加）")
-
-        # ---- 建阵营（直接走模型 + 面板刷新，绕开输入框弹窗）
-        f1 = editor.model.add_faction("p1", "玩家")
-        editor.model.add_faction("p2", "小明")
-        editor.selected_faction = "p1"
-        editor.refresh_sidebar()
-        ok(f1 is not None, "加了阵营 p1")
-        eq([editor.faction_tree.item(i, "text") for i in editor.faction_tree.get_children()],
-           ["玩家（p1）", "小明（p2）"], "★ 列表里显示「名字（id）」——两边都看得见")
-        eq([editor.faction_tree.item(i, "values")[0]
-            for i in editor.faction_tree.get_children()], ["—", "—"], "还没设大本营 → 显示「—」")
-
-        # ---- 建几格，选中一格，设大本营
-        editor.set_page("tile")
-        for tile in ((3, 3), (4, 3), (3, 4)):
-            click_at(editor, *tile)
-        editor.set_page("faction")
-        eq(editor.faction_base_btn.cget("state"), "normal", "选了阵营 → 按钮可点")
-
-        # 还没选格子时按钮要拦住
-        editor.inspect = None
-        editor.toggle_faction_base()
-        ok("先在地图上点一格" in editor.status_var.get(),
-           "★ 没选格子时不猜、不设（提示先去选一格）")
-
-        editor.inspect = (3, 3)
-        editor.refresh_faction_panel()
-        editor.toggle_faction_base()
-        eq(editor.model.faction_base_of("p1"), (3, 3), "★ 一键把大本营设在面板看的那一格")
-        eq(editor.faction_tree.item("p1", "values")[0], "(3, 3)", "★ 列表里那一行跟着更新")
-        ok("(3, 3)" in editor.faction_base_label.cget("text"), "面板上显示大本营位置")
-
-        # ---- 抢格：一格只能是一方的大本营
-        editor.selected_faction = "p2"
-        editor.refresh_faction_panel()
-        editor.inspect = (3, 3)
-        editor.toggle_faction_base()
-        eq(editor.model.faction_base_of("p2"), (3, 3), "★ p2 把那一格抢过去了")
-        eq(editor.model.faction_base_of("p1"), None, "★ player 同时失去它（不能两方共用一格）")
-        ok("原来属于" in editor.status_var.get(), "状态栏说明了是从谁手里拿走的")
-
-        # ---- 再点一次 = 取消
-        editor.toggle_faction_base()
-        eq(editor.model.faction_base_of("p2"), None, "★ 对同一个大本营再点一次 = 取消")
-
-        # ---- 虚线格不能当大本营
-        editor.inspect = (9, 9)
-        editor.toggle_faction_base()
-        eq(editor.model.faction_base_of("p2"), None, "★ 虚线格设不了大本营")
-        ok("虚线格" in editor.status_var.get(), "状态栏说清了原因")
-
-        # ---- 撤销能退回去
-        editor.inspect = (4, 3)
-        editor.toggle_faction_base()
-        eq(editor.model.faction_base_of("p2"), (4, 3), "设上")
-        editor.undo()
-        eq(editor.model.faction_base_of("p2"), None, "★ Ctrl+Z 能撤销「设大本营」")
-
-        # ---- 地图上画得出阵营标记
-        editor.inspect = (3, 4)
-        editor.toggle_faction_base()
-        editor.redraw()
-        marker_color = editor.faction_color(editor.model.faction("p2"))
-        marks = [i for i in editor.canvas.find_all()
-                 if editor.canvas.type(i) == "rectangle"
-                 and editor.canvas.itemcget(i, "fill") == marker_color]
-        eq(len(marks), 1, "★ 地图上给这个阵营画了一个标记方块（哪个大本营是哪一方一眼看得出）")
-
-        # ---- 删阵营：它的大本营一起忘掉
-        editor.selected_faction = "p2"
-        editor.refresh_faction_panel()
-        saved_ask = app_module.messagebox.askyesno
-        app_module.messagebox.askyesno = lambda *a, **k: True
-        try:
-            editor.delete_selected_faction()
-        finally:
-            app_module.messagebox.askyesno = saved_ask
-        eq([f.faction_id for f in editor.model.factions], ["p1"], "★ 删掉了阵营")
-        eq(editor.model.faction_base_of("p2"), None, "★ 它的大本营也一起没了")
-
-        # ---- 切页签 / 导入导出之后，阵营状态不残留
-        editor.set_page("tile")
-        click_at(editor, 7, 7)
-        editor.set_page("faction")
-        editor.inspect = (7, 7)
-        editor.refresh_faction_panel()
-        editor.toggle_faction_base()
-        eq(editor.model.faction_base_of("p1"), (7, 7), "player 的大本营挪到 (7,7)")
-    finally:
-        root.destroy()
-
-
 def t_box_selection_batch_edit() -> None:
     """★ 需求：Shift + 拖拽框选出矩形，批量改地形 / 区划归属，并支持批量删除。
 
     钉住的几条：
-      · 只有**已有地块**被选中（虚线格不参与，也不会被批量创建）；
+      · `batch_tiles()` 只含**已有地块**（矩形里的虚线格不计入）；
+        ★ 虚线格由**地形**那一栏按需建出来 —— 见 [18b] `t_box_fill_blank_terrain`；
       · Shift + 拖拽走的是真实鼠标事件链（state 里的 Shift 位），不是直接调函数；
       · 一次批量操作 = **一步撤销**；
       · 框选之后点地图 = 退出框选、回到单格；切页签 / Esc 也会清掉框选。
@@ -1856,7 +1809,7 @@ def t_box_selection_batch_edit() -> None:
         ok(editor.selection is not None, "又框了一次")
         editor.on_escape()
         eq(editor.selection, None, "★ Esc 先取消框选")
-        editor.set_page("faction")
+        editor.set_page("zone")
         editor.on_escape()
         eq(editor.page, "tile", "★ 再按一次 Esc 才回到地块页签")
 
@@ -1881,6 +1834,48 @@ def t_box_selection_batch_edit() -> None:
         texts = [editor.canvas.itemcget(i, "text") for i in editor.canvas.find_all()
                  if editor.canvas.type(i) == "text"]
         ok(any("格" in t for t in texts), "★ 落定之后画面上标了「N 格」（不用自己数）")
+    finally:
+        root.destroy()
+
+
+def t_box_fill_blank_terrain() -> None:
+    """★★ 用户需求：框选**空白区域**，点右侧的地形按钮，把那些空白格变成该地形。
+
+    这是 [18] 的姊妹用例：[18] 框的是**已有地块**（改地形），这里框的是**虚线格**
+    （点一下就建出来）。所以批量面板在「一片空白」时也**必须**给出那三个地形按钮 ——
+    以前那条路会 early-return（「这个矩形里没有已建的地块」），设计师根本点不到，
+    这正是这个需求要修的地方。
+    """
+    print("\n[18b] 框选空白区域 → 点地形 → 空白格被建出来")
+    root, editor = build_editor()
+    try:
+        eq(editor.model.existing_count(), 0, "（前提）开局是一张空白图")
+
+        # Shift 拖拽框出一片 3×2 = 6 格的空白
+        box_select(editor, (0, 0), (2, 1))
+        eq(editor.selection, (0, 0, 2, 1), "★ Shift 框出了一片空白区域")
+        eq(len(editor.batch_tiles()), 0, "矩形里一个已有地块都没有")
+
+        # ★★ 关键：一片空白时，批量面板里仍然有那三个地形按钮
+        eq(sorted(editor._batch_terrain_buttons), ["forest", "grass", "mountain"],
+           "★ 空白框选时批量面板也有三种地形按钮（以前这里没有）")
+
+        # 点「森林」→ 6 个空白格被建出来，且都是森林
+        editor._batch_terrain_buttons["forest"].invoke()
+        eq(editor.model.existing_count(), 6, "★ 框选的 6 个空白格被建成了地块")
+        eq({editor.model.terrain_at(*t) for t in editor.model.rect_tiles(0, 0, 2, 1)},
+           {"forest"}, "★ 建出来的格子就是森林")
+        ok("新建 6 格" in editor.status_var.get(), "状态栏报了新建了几格")
+
+        # 同一片、同一种地形再刷 = 空操作（不留一步空撤销）
+        undo_before = len(editor._undo)
+        editor._batch_terrain_buttons["forest"].invoke()
+        eq(len(editor._undo), undo_before, "★ 再刷同一种地形不留空撤销")
+        ok("本来就是森林" in editor.status_var.get(), "状态栏说明没变化")
+
+        # 一次操作 = 一步撤销：整片退回空白图
+        editor.undo()
+        eq(editor.model.existing_count(), 0, "★ 撤销一次就整片退回（又是空白图）")
     finally:
         root.destroy()
 
@@ -2140,12 +2135,13 @@ def main() -> int:
     t_smooth_no_wasted_work()
     t_no_map_size_ui()
     t_draw_up_left_no_invisible_wall()
-    t_faction_page()
     t_zone_center_and_production_ui()
     t_zone_kind_ui()
+    t_zone_page_box_select()
     t_sidebar_scrolls()
-    t_export_blocked_without_center_or_base()
+    t_export_blocked_without_center()
     t_box_selection_batch_edit()
+    t_box_fill_blank_terrain()
     t_shift_drag_survives_missing_state_bit()
     t_shift_drag_after_sidebar_click()
     t_zone_name_labels()

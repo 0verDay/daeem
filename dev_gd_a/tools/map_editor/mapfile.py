@@ -18,10 +18,13 @@
       ],
       "zone_centers": [[-1,-1,0,-1], ...],  // ★ 地块 → 它是不是某个区划的中心（是就写那个区划 id）
 
-      "faction_bases": {"p1": [2, 2], "p2": [14, 19]},
       ...（导入时文件里有、而编辑器不管的字段原样带过去：general_spawns / buildings /
             pvp_points / _comment …）
     }
+
+★★ `factions` / `faction_bases`（阵营表 + 各方大本营）**整个移除**：地图不再管阵营 ——
+   阵营与大本营现在只在**战役编辑器**里按关卡设置（写进 `levels/*.json` 的
+   `factions[].base`）。编辑器读到时**直接丢掉**（见 DROPPED_KEYS），导出也绝不写。
 
 ★★ `units`（地图预置单位）**整个废弃**：运行时不再读它，编辑器也不再保留 ——
    导入时读到就丢掉，导出时绝不写这个键。⚠️ 副作用：**用编辑器打开一张老图再导出，
@@ -34,7 +37,7 @@
   名字是 A1 / A2 …（行在前、列在后），并**自动给每个区块挑一个中心**
   （该区块按行优先的第一个地块）—— 用户要求「每个区划都必须有中心」，
   自动挑一个是为了让「打开旧图 → 导出」这条路不会卡在「还差 24 个中心没设」上，
-  设计者再按需要挪。旧格式里的单数 `base` 会被**迁移**成 p1 的大本营（见 `_migrate_legacy_base`）。
+  设计者再按需要挪。
   （仓库里已经没有老图样本了：随游戏发布的只剩 `test_map.json`，
    `test_model.py` 里的老格式用例现在自己拼一张。）
 """
@@ -58,12 +61,6 @@ from .model import (
     zone_kind_default,
     zone_kind_table,
 )
-
-#: 旧格式的单数 `base` 迁移给哪个阵营（见 `_migrate_legacy_base`）。
-#:
-#: ★ 用 'p1' 而不是编辑器里那些自编 id：`logic/faction.gd` 的 DEFAULT_FACTION 就是 'p1'，
-#:   单机 / 房主都是它 —— 那个老点位本来就是「主阵营的出生点」。
-MIGRATED_BASE_FACTION = "p1"
 
 #: 编辑器不负责编辑、但要原样带过去的字段（Godot 用它们生成据点 / 守军 / 多人起点）
 #:
@@ -110,10 +107,15 @@ PRESERVED_KEYS: Tuple[str, ...] = (
 #:
 #: ★ 为什么要在读的时候也丢一次，而不是只靠「不在 PRESERVED_KEYS 里 ⇒ 导出时自然不写」：
 #:   `model.extra` 是**模型的公开状态**（撤销快照会整份 deepcopy 它、测试也会读它）。
-#:   要是读进来还留着 `units`，就会出现「模型里明明有一份预置单位、导出却没有」的
-#:   表里不一 —— 以后任何读着 `extra` 做判断的代码都会把废弃字段当成活的。
-#:   在入口丢干净，语义只有一条：「编辑器从头到尾不认识 `units`」。
-DROPPED_KEYS: Tuple[str, ...] = ("units",)
+#:   要是读进来还留着废弃字段，就会出现「模型里明明有一份、导出却没有」的表里不一 ——
+#:   以后任何读着 `extra` 做判断的代码都会把废弃字段当成活的。在入口丢干净，语义只有一条：
+#:   「编辑器从头到尾不认识这些字段」。
+#:
+#: · `units`         ：地图预置单位（整个废弃，见文件头）。
+#: · `factions`      ：阵营表 —— 阵营现在归**战役编辑器**按关卡管，地图不再存。
+#: · `faction_bases` ：各方大本营 —— 同上；关卡用 `factions[].base`。
+#: · `base`          ：老格式的单数大本营点位（一并丢掉）。
+DROPPED_KEYS: Tuple[str, ...] = ("units", "factions", "faction_bases", "base")
 
 #: 导出时写在 _comment 里的说明（Godot 读不读都行，是给手改 JSON 的人看的）
 EDITOR_COMMENT: Tuple[str, ...] = (
@@ -126,7 +128,6 @@ EDITOR_COMMENT: Tuple[str, ...] = (
     "zone_list[].production：该区块的产能（每地块每秒）：food / gold / population —— 游戏以此为准。",
     "zone_list[].population_cap：该区块的人口上限；不写 = 默认 1（涨到上限就不再涨）。",
     "zone_centers：地块 → 中心所属的区块 id（-1 = 不是任何区块的中心），由 center 推出来。",
-    "factions / faction_bases：阵营表与每个阵营的大本营（每个阵营必须有且只有一个）。",
     "id / name：这张图的标识与显示名；开场主界面的地图选择条按 name 显示（不写就用目录名）。",
     "placeholder：true = 占位图（只为测试选择条的选项生成）；选项照样列出，但默认进的那张会跳过它。",
     "allies：阵营归属（盟友），形如 [[\"enemy\",\"ai\"]] —— 这两方不互相攻击、不争夺同一区划。",
@@ -224,14 +225,6 @@ def dict_to_model(data: dict, cfg: Optional[dict] = None,
             model.existing = flags
     model.recount()          # ⚠️ 直接赋过 existing，必须重算缓存（见 MapModel.recount）
 
-    # ★ 顺序有讲究：**大本营先读、区划中心后补**。
-    #   补中心时要跳过「已经是某个阵营大本营」的格子（两者都会落成占格建筑，
-    #   叠在一格会互相挡掉），所以必须先知道大本营在哪。
-    # ---- 阵营与大本营（地图编辑器加的：老地图没有这两个字段）
-    _read_factions(model, data.get("factions"))
-    _read_faction_bases(model, data.get("faction_bases"))
-    _migrate_legacy_base(model, data.get("base"))
-
     # ---- 区块
     zones_raw = data.get("zones")
     if zones_raw is None:
@@ -248,7 +241,7 @@ def dict_to_model(data: dict, cfg: Optional[dict] = None,
     # ★ 人口上限（编辑器加的字段；老地图 / 没填过 → 保持 None = 游戏侧默认 1）
     _read_zone_population_caps(model, data.get("zone_list"))
     # ★ 每个区块都必须有中心：从文件里读不到（老地图 / 手写图）的，
-    #   在这里**自动挑一个**（该区块按行优先的第一个非大本营地块），最后由 `blockers()`
+    #   在这里**自动挑一个**（该区块按行优先的第一个地块），最后由 `blockers()`
     #   在导出前确保「一个都不少」。自动挑而不是留空，是为了让「打开旧图」这条路
     #   不会一上来就报 24 个「还没设区划中心」。
     fill_missing_centers(model)
@@ -264,71 +257,6 @@ def dict_to_model(data: dict, cfg: Optional[dict] = None,
             continue
         model.extra[key] = value
     return model
-
-
-## 旧格式的单数 `base`（地图中心 / 默认点位）→ 迁移成主阵营的大本营。
-##
-## ★ 为什么要迁移而不是丢掉：老格式的地图**只有**这个单数点位，
-##   而「每个阵营都必须有大本营」现在是硬规则 —— 直接把 base 删掉会让老地图
-##   一打开就导出不了，而那个点位其实是设计师认真选过的（p1 的出生点）。
-## ★ 只在这一方**还没有**自己大本营、而且地图上登记了阵营时才迁移：
-##   手写图里 base 与 faction_bases 同时存在时，faction_bases 说了算。
-def _migrate_legacy_base(model: MapModel, raw) -> None:
-    if model.faction_bases:
-        return
-    if not isinstance(raw, (list, tuple)) or len(raw) < 2:
-        return
-    x, y = _as_int(raw[0], -1), _as_int(raw[1], -1)
-    if not model.in_bounds(x, y):
-        return
-    fid = MIGRATED_BASE_FACTION
-    if model.faction(fid) is None:
-        model.add_faction(fid)
-    model.faction_bases[fid] = (x, y)
-
-
-## 读阵营表：`factions: [{"id": "p1", "name": "玩家", "color": "#ffd166"}]`。
-##
-## ⚠️ id 就是游戏里的阵营字符串，编辑器**不做合法性校验**（不认识也照读）：
-##    导一张别人手写的图时把其中的阵营悄悄吃掉，比留着它更糟；
-##    「游戏认不认识」只在导出前提醒（见 MapModel.problems）。
-def _read_factions(model: MapModel, raw) -> None:
-    if not isinstance(raw, list):
-        return
-    for item in raw:
-        if isinstance(item, str):               # 也认 ["p1", "p2"] 这种极简写法
-            model.add_faction(item)
-            continue
-        if not isinstance(item, dict):
-            continue
-        fid = str(item.get("id", "")).strip()
-        if not fid:
-            continue
-        model.add_faction(fid, str(item.get("name", "")), str(item.get("color", "")))
-
-
-## 读各方大本营：`faction_bases: {"p1": [12, 8], "p2": [4, 4]}`。
-##
-## ⚠️ 两个宽容点（都是「手写地图」的常态）：
-##   · 坐标可以是 `[x, y]` 也可以是 `{"x":…, "y":…}`；
-##   · 越界的坐标静默丢掉（留着一个图外的点位，Godot 侧会去找不存在的格子）。
-## ⚠️ 阵营 id 在 factions 里没登记也不管：先记下来，导出时仍然写回去。
-##    （大本营比阵营表更「硬」—— 它直接决定游戏里基地盖在哪。）
-def _read_faction_bases(model: MapModel, raw) -> None:
-    if not isinstance(raw, dict):
-        return
-    for fid, point in raw.items():
-        key = str(fid).strip()
-        if not key:
-            continue
-        x = y = None
-        if isinstance(point, (list, tuple)) and len(point) >= 2:
-            x, y = _as_int(point[0], -1), _as_int(point[1], -1)
-        elif isinstance(point, dict):
-            x, y = _as_int(point.get("x"), -1), _as_int(point.get("y"), -1)
-        if x is None or y is None or not model.in_bounds(x, y):
-            continue
-        model.faction_bases[key] = (x, y)
 
 
 ## 读区划中心网格：`zone_centers: [[-1,-1,0,-1], ...]` —— 值是「这一格是谁的中心」。
@@ -424,16 +352,12 @@ def _read_zone_kinds(model: MapModel, zone_list) -> None:
 ## 给「还没有中心的区块」自动挑一个：该区块按行优先的第一个地块。
 ##
 ## ★ 只补空的，不动已经设过的 —— 设计者挪过的中心不能被导入流程改掉。
-## ★ 跳过「已经是某个阵营大本营」的格子：游戏里大本营与区划中心都会落成占格建筑，
-##   叠在同一格会互相挡掉（`set_zone_center()` 本来就拒绝，这里顺着它往下试下一格）。
 ## ★ 一个地块都还没有的空区块补不了（没有地方放），留给 `blockers()` 在导出前拦住。
 def fill_missing_centers(model: MapModel) -> None:
     for zone in model.zones:
         if zone.center is not None:
             continue
         for (tx, ty) in sorted(zone.tiles, key=lambda t: (t[1], t[0])):
-            if model.faction_base_owner(tx, ty) is not None:
-                continue
             if model.set_zone_center(zone.zone_id, tx, ty):
                 break
 
@@ -675,8 +599,6 @@ def model_to_dict(model: MapModel) -> dict:
     out["zones"] = zone_rows
     out["zone_list"] = zone_list
     out["zone_centers"] = center_rows
-    _write_factions(out, model)
-    _write_faction_bases(out, model, (x0, y0))
     return out
 
 
@@ -690,37 +612,6 @@ def _clean_number(value) -> object:
     if abs(number - round(number)) < 1e-9:
         return int(round(number))
     return round(number, 4)
-
-
-## 写阵营表与各方大本营。
-##
-## ★ 两个字段都**只在真的有阵营时才写**：没有阵营的地图导出后与从前逐字节一致 ——
-##   这条对「打开旧图什么都不改再导出」很重要（tests/test_model.py 里钉着）。
-## ★ 阵营大本营的坐标要**搬到导出坐标系**（和 zone_list 的 tiles、base 同样的处理）：
-##   编辑器的画布可以往左上画，导出后地图左上角必须是 (0,0)。
-def _write_factions(out: Dict[str, object], model: MapModel) -> None:
-    if not model.factions:
-        return
-    out["factions"] = [
-        {"id": f.faction_id, "name": f.name, "color": f.color} for f in model.factions
-    ]
-
-
-def _write_faction_bases(out: Dict[str, object], model: MapModel, origin: Tuple[int, int]) -> None:
-    if not model.factions and not model.faction_bases:
-        return
-    ox, oy = origin
-    bases: Dict[str, List[int]] = {}
-    for faction in model.factions:                  # 按 factions 的顺序写，方便人读
-        tile = model.faction_bases.get(faction.faction_id)
-        if tile is not None:
-            bases[faction.faction_id] = [tile[0] - ox, tile[1] - oy]
-    # 大本营比阵营表更硬：只登记了大本营、没登记阵营的（手写地图）也要写出去
-    for fid, tile in model.faction_bases.items():
-        if fid not in bases:
-            bases[fid] = [tile[0] - ox, tile[1] - oy]
-    if bases:
-        out["faction_bases"] = bases
 
 
 ## 空地图（一个地块都没有）导出成 0×0 + 空网格 —— Godot 读进来是一张空地图。
@@ -738,9 +629,6 @@ def _empty_dict(model: MapModel) -> dict:
     out["zones"] = []
     out["zone_list"] = []
     out["zone_centers"] = []
-    # 空地图也可能已经有阵营（先建阵营、还没画地）—— 阵营表照写，
-    # 但大本营一律不写（一个地块都没有，坐标无从谈起）。
-    _write_factions(out, model)
     return out
 
 

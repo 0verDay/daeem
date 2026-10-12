@@ -2431,9 +2431,10 @@ func _unit_text(shown, troops: Array) -> String:
 ## ★ 本版按需求**精简**：
 ##   · **去掉「归属」那一行**（点开区划详情的玩家早就知道这块地是谁的；
 ##     归属在整个底栏里也不再出现）；
-##   · 产能**不写单位**（原来写的是「／地块／秒」）——左边那个数是地图编辑器里填的
-##     **每地块**产能，括号里的「合计」才是这个区划实际的产出（每地块 × 地块数）。
-##     两个数都不带单位（用户原话：「区划产能不需要写单位」）；
+##   · ★★ 产能**直接给「资源每秒」的绝对值**（本次改版）：不再显示「每地块产能（合计 …）」
+##     那两个数 —— 每地块那个数来自地图编辑器的输入，对玩家没有意义。
+##     现在粮 / 金 / 人口三行报的都是**该区划每秒的实际产出**（每地块 × 地块数），
+##     与 `zone.production_of` 的收入口径一致；数字**不带单位**（用户口径）；
 ##   · ★★ **去掉开头那行「区划「xx」」**（用户原话：「选中区划中心时去掉『区划[xx]』文本」）——
 ##     区划名只在上方那一行（detail_panel.set_unit_name ← `_zone_title`，见 hud.refresh）
 ##     里出现一次，详情正文里不再重复；
@@ -2442,8 +2443,8 @@ func _unit_text(shown, troops: Array) -> String:
 ##     ⚠️ 那句文案来自 `config.json` 的 `zone_kind.list[].line`：**数据一个字没动**
 ##     （它是地图编辑器那边的说明），只是不再往详情栏里画；
 ##   · ★★ **「人口产能」与「人口」两行合并成一行**（用户原话：「人口产能和人口两个信息
-##     合并，变成『人口：x（产能x）』」）：括号里是**每地块**的人口产能（与粮食 / 黄金
-##     那两行的口径一致，特化加成也算进去了），括号外是区划现在的人口（向下取整）。
+##     合并，变成『人口：x（产能x）』」）：括号里是**每秒**的人口产能（与粮食 / 黄金
+##     那两行现在是同一个口径，特化加成也算进去了），括号外是区划现在的人口（向下取整）。
 ##
 ## ⚠️ 行的顺序（本版调过一次，别随手挪回去）：
 ##     大小 → 种类 → **特化状态** → 粮食 → 黄金 → 人口 → 人口上限
@@ -2476,24 +2477,24 @@ func _zone_text(z: Dictionary, show_population: bool = true) -> String:
 		lines.append(spec_line)
 	var prod: Dictionary = z["production"]
 	var n := float(z["tile_count"])
-	# ★★ 本轮：产能按**特化效果**显示（特化是两种形状，见 UpgradeRes.zone_spec_effect）：
-	#   · 粮食 / 黄金特化 = 每地块每秒 +0.5 ⇒ 这里直接加进「每地块产能」那一档；
-	#   · 人口特化 = 人口产量 ×1.25 ⇒ 乘在人口产能上。
-	#   不这么做的话，玩家做完特化看到的数字纹丝不动，会以为特化没生效。
+	# ★★ 产能显示口径（本次改版）：**直接给「资源每秒」的绝对值**，不再显示「每地块每秒」
+	#   那个中间数（原来写的是「粮食产能：0.075（合计 9.9）」）。
+	#   每地块产能 × 地块数 = 该区划每秒的实际产出 —— 与 `zone.production_of` 的收入口径一致。
+	#   ★ 特化效果先按**每地块**叠进基础产能（见 UpgradeRes.zone_spec_effect：
+	#     粮 / 金特化 = 每地块 +n、人口特化 = 人口产量 ×倍率），然后一起 × 地块数。
+	#     不这么做的话，玩家做完特化看到的数字纹丝不动，会以为特化没生效。
 	var eff: Dictionary = world.zone_spec_effect(z)
-	var food := float(prod["food"]) + float(eff["food_per_tile"])
-	var gold := float(prod["gold"]) + float(eff["gold_per_tile"])
-	var pop := float(prod["population"]) * float(eff["population_mult"])
+	var food := (float(prod["food"]) + float(eff["food_per_tile"])) * n
+	var gold := (float(prod["gold"]) + float(eff["gold_per_tile"])) * n
+	var pop := float(prod["population"]) * float(eff["population_mult"]) * n
 	var pop_cap := float(world.zones.population_cap_of(z))
-	lines.append("粮食产能：%s（合计 %s）" % [
-		_fmt_num(food), _fmt_num(food * n)])
-	lines.append("黄金产能：%s（合计 %s）" % [
-		_fmt_num(gold), _fmt_num(gold * n)])
+	lines.append("粮食产能：%s" % _fmt_num(food))
+	lines.append("黄金产能：%s" % _fmt_num(gold))
 	# ★ 人口那一行（本版合并了「人口产能」与「人口」两行）：
-	#   括号里 = 每地块人口产能（特化后的），括号外 = 当前人口。
+	#   括号里 = 每秒人口产能（特化后的绝对值），括号外 = 当前人口。
 	#   ⚠️ 人口显示**永远是整数**（向下取整，用户需求）—— 权威值是浮点（按秒累积），
 	#      直接印出小数点会让玩家看到「1.9999998」这种数。
-	# ★★ 本次：当前人口只给「自己 / 友军」看；敌占 / 无主区划只报产能（见函数头）。
+	# ★★ 当前人口只给「自己 / 友军」看；敌占 / 无主区划只报产能（见函数头）。
 	if show_population:
 		lines.append("人口：%d（产能%s）" % [world.zones.population_floor(z), _fmt_num(pop)])
 	else:

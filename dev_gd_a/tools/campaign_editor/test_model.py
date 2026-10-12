@@ -325,12 +325,13 @@ def write_level(data: dict, name: str = "case", root: Path = None) -> Path:
     return path
 
 
-def campaign_with(data: dict) -> M.CampaignModel:
+def campaign_with(data: dict, campaign_factions: list = None) -> M.CampaignModel:
     """建一个**只含这一关**的临时战役，返回载入好的模型（每次全新）。
 
     ⚠️ 用 `demo/_cases` 而不是 `demo` 本身：`demo` 是「往返 / 覆盖规则」那几组
       断言的**基准数据**，被这里覆盖掉的话，后跑的测试会在一份被改过的数据上断言
       （踩过：`zones[]` 里多出几条、地图大本营变成别的坐标）。
+    @param campaign_factions 覆盖战役级的 `factions[]`（测「可玩阵营」那几条要用）。
     """
     root = tmp_campaign_dir() / "_cases"
     shutil.rmtree(root, ignore_errors=True)
@@ -341,17 +342,18 @@ def campaign_with(data: dict) -> M.CampaignModel:
         "name": "测试战役",
         "description": "",
         "default_mode": data.get("mode", "solo"),
-        "factions": [{"id": FACTS.player, "name": "甲", "color": "#5AC8FF", "playable": True},
-                     {"id": FACTS.enemy, "name": "乙", "color": "#FF6B6B", "playable": False}],
+        "factions": campaign_factions if campaign_factions is not None else [
+            {"id": FACTS.player, "name": "甲", "color": "#5AC8FF", "playable": True},
+            {"id": FACTS.enemy, "name": "乙", "color": "#FF6B6B", "playable": False}],
         "levels": [{"id": "case", "file": "levels/case.json", "name": "用例"}],
         "unlock": "in_order",
     }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
     return levelfile.load_campaign(root, TMP_PROJECT)
 
 
-def check(data: dict, maps_override=None) -> list:
+def check(data: dict, maps_override=None, campaign_factions=None) -> list:
     """造一个战役 → 跑校验 → 返回 issue 列表。"""
-    model = campaign_with(data)
+    model = campaign_with(data, campaign_factions)
     return M.validate_campaign(model, maps_override if maps_override is not None else maps())
 
 
@@ -575,21 +577,34 @@ def t_validation_map() -> None:
 
 
 def t_validation_players() -> None:
-    print("\n[2.2] 校验 2/3/4/5：席位、同一阵营、没有大本营")
+    print("\n[2.2] 校验 2/3/4/5：可玩阵营数、同一阵营、没有大本营")
     f = FACTS
-    issues = check(base_level(players=[]))
-    ok(has(issues, "players_empty"), "★ 一个席位都没有 → players_empty")
-    issues = check(base_level(players=[{"faction": f.player}, {"faction": f.enemy}]))
-    ok(has(issues, "players_count_solo"), "★ 单人关两个席位 → players_count_solo")
-    issues = check(base_level(mode="coop",
-                              players=[{"faction": f.player, "base": list(f.player_base)}]))
-    ok(has(issues, "players_count_coop"), "★ 合作关一个席位 → players_count_coop")
-    issues = check(base_level(mode="coop",
-                              players=[{"faction": f.player, "base": list(f.player_base)},
-                                       {"faction": f.player, "base": list(f.enemy_base)}]))
+    # ★★ 判据是「可玩阵营」而不是「席位」：一个可玩阵营都没有 → players_empty
+    issues = check(base_level(), campaign_factions=[
+        {"id": f.player, "name": "甲", "playable": False},
+        {"id": f.enemy, "name": "乙", "playable": False}])
+    ok(has(issues, "players_empty"), "★ 一个可玩阵营都没有 → players_empty")
+    # ★ 单人关**两个**可玩阵营 → 合法（选边关）—— 不再有 players_count_solo
+    issues = check(base_level(), campaign_factions=[
+        {"id": f.player, "name": "甲", "playable": True},
+        {"id": f.enemy, "name": "乙", "playable": True}])
+    ok(not has(issues, "players_count_solo"), "★ 单人关两个可玩阵营 → 合法（选边关）")
+    # ★ 合作关必须恰好两个可玩阵营
+    issues = check(base_level(mode="coop"), campaign_factions=[
+        {"id": f.player, "name": "甲", "playable": True},
+        {"id": f.enemy, "name": "乙", "playable": False}])
+    ok(has(issues, "players_count_coop"), "★ 合作关一个可玩阵营 → players_count_coop")
+    issues = check(base_level(mode="coop"), campaign_factions=[
+        {"id": f.player, "name": "甲", "playable": True},
+        {"id": f.enemy, "name": "乙", "playable": True},
+        {"id": "丙", "name": "丙", "playable": True}])
+    ok(has(issues, "players_count_coop"), "★ 合作关三个可玩阵营 → players_count_coop")
+    # ★ 「席位重复 / 没写 faction」是**防守性**检查：`players[]` 由可玩阵营派生
+    #   （不会重复、也不会缺 faction），所以只能直接构造模型来验。
+    model = campaign_with(base_level())
+    model.levels[0].players.append({"faction": f.player, "base": None})
+    issues = M.validate_campaign(model, maps())
     ok(has(issues, "players_same_faction"), "★ 两个席位同一阵营 → players_same_faction")
-    # ★ 「席位没写 faction」这一档：解析层会**丢掉**没有 faction 的席位项
-    #   （不然席位顺序会串，见 `_load_players`），所以只能直接构造模型来验。
     model = campaign_with(base_level())
     model.levels[0].players.insert(0, {"faction": "", "base": None})
     issues = M.validate_campaign(model, maps())

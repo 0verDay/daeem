@@ -966,12 +966,12 @@ func _test_zone_population_and_production(world, cfg) -> void:
 	# ---- 人口：开局 0，按人口产能累积
 	eq(float(z0["population"]), 0.0, "★ 区划人口开局是 0")
 	# ★ 随游戏发布的地图必须给非 0 的人口产能 —— 否则实机里人口根本不涨
-	#   （`data/maps/frontier/map.json` 里每个区划都是人口区划：0 粮食 / 0 黄金 / 0.15 人口）。
+	#   （`data/maps/frontier/map.json` 里每块地都带一份人口产能）。
 	ok(float(z0["production"]["population"]) > 0.0,
 		"★ 发布地图的区划配了人口产能（%s）" % z0["production"]["population"])
-	# ★★ 发布地图**没填人口上限** → 默认 1（用户需求：没填就是 1）。
-	#    上限的完整语义在 `_test_zone_population_cap` 那一节，这里只钉「缺字段 = 1」。
-	near(w.zones.population_cap_of(z0), 1.0, 1e-9, "★ 发布地图没填上限 → 默认 1")
+	# ★★ 发布地图这一轮给每块地都配了人口上限（2~3）。「缺字段 → 默认 1」那条判据
+	#    在 `_test_zone_population_cap` 那一节用合成区划验，这里只钉发布图的真实值。
+	near(w.zones.population_cap_of(z0), 2.0, 1e-9, "★ 发布地图的区块配了人口上限（2）")
 	var pop_rate: float = float(z0["production"]["population"])
 	var tiles0: float = float(z0["tile_count"])
 	# 量「每秒涨多少」之前先把上限抬到很大 —— 否则这一帧就涨到上限（1）、量不到速率
@@ -1033,6 +1033,8 @@ func _test_zone_population_cap(world, cfg) -> void:
 	z["production"] = {"food": 0.0, "gold": 0.0, "population": 10.0}
 	z["population"] = 0.0
 
+	# 缺字段 → 默认 1（发布地图这一轮每块地都填了上限，所以先把键删掉再判这条语义）
+	z.erase("population_cap")
 	near(w.zones.population_cap_of(z), 1.0, 1e-9, "★ 地图没填上限 → 默认 1")
 	w.tick(1.0)
 	near(w.zones.population_of(z), 1.0, 1e-6, "★ 人口涨到上限（1）就停住")
@@ -1065,11 +1067,11 @@ func _test_zone_population_cap(world, cfg) -> void:
 	eq(w.zones.population_floor(z), 12, "整数照原样")
 
 	# ---- 上限来自地图（编辑器只在「不等于 1」时才写这个字段）
-	#      发布地图上一个填过的都没有 → 全部走默认 1
+	#      发布地图这一轮给每块地都填了上限（2~3）→ 都读得进来
 	var m = require_map(cfg)
 	if m != null:
-		ok(m.zones_population_caps.is_empty(),
-			"★ 发布地图里没有任何区块填过上限（缺字段 → 全部默认 1）")
+		ok(not m.zones_population_caps.is_empty(),
+			"★ 发布地图里配了区块上限（本版每块地都填了）")
 	# 「地图里写了 population_cap」这条路在 test_map_editor.gd 里验
 	# （那边有写临时地图的脚手架，这里不重复造一份）。
 

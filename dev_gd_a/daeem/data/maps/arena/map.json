@@ -481,8 +481,9 @@
       "production": {
         "food": 0,
         "gold": 0,
-        "population": 0.15
+        "population": 0.012
       },
+      "population_cap": 3,
       "x0": 0,
       "y0": 0,
       "x1": 7,
@@ -693,9 +694,10 @@
       ],
       "production": {
         "food": 0,
-        "gold": 1,
-        "population": 0.1
+        "gold": 0.075,
+        "population": 0.01
       },
+      "population_cap": 3,
       "x0": 8,
       "y0": 0,
       "x1": 15,
@@ -905,10 +907,11 @@
         7
       ],
       "production": {
-        "food": 1,
+        "food": 0.075,
         "gold": 0,
-        "population": 0.1
+        "population": 0.01
       },
+      "population_cap": 3,
       "x0": 0,
       "y0": 6,
       "x1": 7,
@@ -1120,8 +1123,9 @@
       "production": {
         "food": 0,
         "gold": 0,
-        "population": 0.15
+        "population": 0.012
       },
+      "population_cap": 3,
       "x0": 8,
       "y0": 6,
       "x1": 15,

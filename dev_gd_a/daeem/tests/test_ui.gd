@@ -1321,7 +1321,7 @@ func _eq_tech_page(main, where: String) -> void:
 	eq(g.entries().size(), 9, "%s：★ 九格铺满（9 条占位科技）" % where)
 	eq(card.entries().size(), 0, "%s：命令卡在科技页是空的（内容由科技那一层画）" % where)
 	eq(g.cell_name(0), "粮食产量 I", "%s：第 1 格 = 粮食产量 I" % where)
-	eq(g.cell_line(0), "粮食 +1", "%s：第 1 格第二行写效果" % where)
+	eq(g.cell_line(0), "粮食 +0.05", "%s：第 1 格第二行写效果" % where)
 	ok(String((g.entry_at(0) as Dictionary).get("desc", "")).contains("地块"),
 		"%s：entries 里带着完整效果说明（悬停详情面板写它）" % where)
 	eq(g.cell_name(6), "建筑加固", "%s：第 7 格 = 建筑加固" % where)
@@ -1982,8 +1982,8 @@ func _test_upgrade_via_card(main) -> void:
 	main.hud.refresh()
 	main.hud.rebuild_card()      # 真实游戏里由每帧 refresh 的页签比较兜底；测试里显式刷一次
 	eq(String(zone.get("spec_done", "")), "food", "★ 读完特化生效")
-	near(UpgradeRes.zone_spec_effect(zone, world.cfg)["food_per_tile"], 0.25, 1e-6,
-		"★ 粮食特化 = 每地块每秒 +0.25 粮食")
+	near(UpgradeRes.zone_spec_effect(zone, world.cfg)["food_per_tile"], 0.05, 1e-6,
+		"★ 粮食特化 = 每地块每秒 +0.05 粮食")
 	eq(card.entries().size(), 1, "★ 特化后操作页只剩一格（不能再特化）")
 	eq(String(card.entry_at(0).get("type", "")), "zone_spec_cancel",
 		"★ 那一格是「取消特化」")
@@ -3150,9 +3150,10 @@ func _test_box_select_buildings(main) -> void:
 		eq(kind_line, "区划种类：%s" % world.zones.kind_entry_of(zones[0]).get("name", ""),
 			"★ 种类那一行只有种类名，没有括号里的说明")
 		# ★★ 本版按需求：「人口产能」与「人口」两行合并成「人口：x（产能x）」。
+		# ★ 产能显示 = **每秒绝对值**（每地块 × 地块数）—— 与 hud._zone_text 同一口径。
 		var z0prod: Dictionary = zones[0]["production"]
 		var z0eff: Dictionary = UpgradeRes.zone_spec_effect(zones[0], world.cfg)
-		var z0pop: float = float(z0prod["population"]) * float(z0eff["population_mult"])
+		var z0pop: float = float(z0prod["population"]) * float(z0eff["population_mult"]) * float(zones[0]["tile_count"])
 		var pop_line := ""
 		for row in ztext.split("\n"):
 			if String(row).begins_with("人口："):

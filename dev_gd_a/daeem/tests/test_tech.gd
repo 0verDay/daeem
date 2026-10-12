@@ -179,14 +179,14 @@ func _test_food_and_gold_bonus(cfg) -> void:
 
 	ok(w.set_tech_active(T_FOOD, true), "启用「粮食产量 I」")
 	# 状态一变就要立刻反映在产量上（不等到下一帧）
-	near(w.production_food, f0 + 1.0 * float(tiles), 1e-6,
-		"★ 粮食 +1/地块/秒（%d 地块 → +%d/秒）" % [tiles, tiles])
+	near(w.production_food, f0 + 0.05 * float(tiles), 1e-6,
+		"★ 粮食 +0.05/地块/秒（%d 地块 → +%s/秒）" % [tiles, 0.05 * tiles])
 	near(w.production_gold, g0, 1e-6, "黄金不受影响")
 
-	# 再叠一条 +2：加产量是**求和**（+1 +2 = +3）
+	# 再叠一条 +0.1：加产量是**求和**（0.05 + 0.1 = 0.15）
 	ok(w.set_tech_active(T_FOOD2, true), "再启用「粮食产量 II」")
-	near(w.production_food, f0 + 3.0 * float(tiles), 1e-6,
-		"★ 两条叠加 = +3/地块/秒（加产量求和）")
+	near(w.production_food, f0 + 0.15 * float(tiles), 1e-6,
+		"★ 两条叠加 = +0.15/地块/秒（加产量求和）")
 
 	# 真跑一帧：资源按这个速率涨
 	var before: float = float(w.resources["food"])
@@ -197,8 +197,8 @@ func _test_food_and_gold_bonus(cfg) -> void:
 	# 黄金那条
 	w.resources["gold"] = 0.0
 	ok(w.set_tech_active(T_GOLD, true), "启用「黄金产量 I」")
-	near(w.production_gold, g0 + 1.0 * float(tiles), 1e-6,
-		"★ 黄金 +1/地块/秒")
+	near(w.production_gold, g0 + 0.05 * float(tiles), 1e-6,
+		"★ 黄金 +0.05/地块/秒")
 
 	# 弃用之后回到原样
 	w.set_tech_active(T_FOOD, false)

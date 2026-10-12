@@ -384,6 +384,37 @@ class LevelModel:
         o = self.objective()
         return float(o.get("hold_sec", 0.0)) if o else 0.0
 
+    def objective_for(self, fid: str) -> Optional[dict]:
+        """属于 `fid` 的那一条目标（`for == fid`）；没有 → None。"""
+        for o in self.objectives:
+            if str(o.get("for", "")) == fid:
+                return o
+        return None
+
+    def set_objective_for(self, fid: str, kind: str, zone: int,
+                          hold_sec: float = 0.0) -> dict:
+        """写 / 改属于 `fid` 的那一条目标。
+
+        守 = `hold_zone`（带秒数）；攻 = `capture_zone`（不带秒数 —— 写出去时
+        `_objective_to_dict` 也不会写 `hold_sec`，与「占即赢」那条语义一致）。
+        """
+        o = self.objective_for(fid)
+        if o is None:
+            o = {"for": fid, "kind": kind, "zone": int(zone), "hold_sec": float(hold_sec)}
+            self.objectives.append(o)
+            self.mark_declared("objectives")
+        else:
+            o["for"] = fid
+            o["kind"] = kind
+            o["zone"] = int(zone)
+            o["hold_sec"] = float(hold_sec)
+        return o
+
+    def remove_objective_for(self, fid: str) -> None:
+        """删掉属于 `fid` 的那一条目标（没有就是 no-op）。"""
+        self.objectives = [o for o in self.objectives
+                           if str(o.get("for", "")) != fid]
+
     def faction(self, fid: str) -> Optional[FactionEntry]:
         for e in self.factions:
             if e.fid == fid:
@@ -422,6 +453,25 @@ class LevelModel:
     def remove_player(self, index: int) -> None:
         if 0 <= index < len(self.players):
             del self.players[index]
+
+    def sync_players_from_playable(self) -> None:
+        """玩家席位 = **每个可玩阵营一份**（不再手填）。
+
+        ★ 「谁可玩」是战役级属性（`campaign.json` 的 `factions[].playable`），由
+          `CampaignModel._sync_level_context()` 抄进 `self.campaign_playable`；本方法据此
+          重建 `players[]`（顺序 = 可玩阵营顺序）。已写过的同名 `base` 保留（兼容老数据）。
+
+        ★★ 单人关允许两个可玩阵营（选边关）—— 所以这里不再按模式限制 1 / 2 个席位。
+        """
+        old_base = {str(p.get("faction", "")): p.get("base")
+                    for p in self.players if p.get("base") is not None}
+        players: List[dict] = []
+        for fid in self.campaign_playable:
+            item: Dict[str, Any] = {"faction": fid}
+            if fid in old_base:
+                item["base"] = old_base[fid]
+            players.append(item)
+        self.players = players
 
     def set_zone_owner(self, zid: int, owner: str) -> None:
         """写某区的开局归属；`owner == ""` = **显式清空**（与「没提这一区」是两件事）。"""
@@ -652,13 +702,17 @@ class CampaignModel:
         return False
 
     def _sync_level_context(self, lv: LevelModel) -> None:
-        """把关卡用得着的「战役级」信息塞进它（校验第 7 条与界面下拉要用）。
+        """把关卡用得着的「战役级」信息塞进它（校验第 7 条与界面下拉要用），
+        并按「可玩阵营」重建玩家席位（`players[]` 不再手填）。
 
-        ⚠️ 这些不算关卡数据、不进 JSON，只是**上下文** —— 所以它们不参与往返断言。
+        ⚠️ `campaign_id` / `campaign_factions` / `campaign_playable` 只是**上下文**、
+          不进 JSON；但 `sync_players_from_playable()` 会**改写 `players[]`**（那是关卡数据，
+          由可玩阵营派生 —— 见那条注释）。
         """
         lv.campaign_id = self.campaign_id
         lv.campaign_factions = [str(e.get("id", "")) for e in self.factions if e.get("id")]
         lv.campaign_playable = self.playable_ids()
+        lv.sync_players_from_playable()
 
     def sync_context(self) -> None:
         for lv in self.levels:
@@ -2066,15 +2120,17 @@ def _base_of(lv: LevelModel, info: Optional[MapInfo], fid: str) -> Optional[Tupl
 
 def _ck_players(add, model: CampaignModel, lv: LevelModel,
                 info: Optional[MapInfo]) -> None:
-    """2/3/4：席位数、玩家不能占同一阵营、每个参展方都要有大本营。"""
+    """2/3/4：席位数、玩家不能占同一阵营、每个参展方都要有大本营。
+
+    ★★ 席位由「可玩阵营」派生（`CampaignModel._sync_level_context`），所以这里
+      按**席位**数判就够了：单人关**不限个数**（两个对立的可玩阵营 = 选边关），
+      合作关要恰好两个 —— 不再有 `players_count_solo` 这条。
+    """
     if not lv.players:
         add(SEV_BLOCK, "players_empty", "一关至少要有一个玩家席位")
-    if lv.mode == MODE_SOLO and len(lv.players) != 1:
-        add(SEV_BLOCK, "players_count_solo",
-            "单人关只能有一个玩家席位（现在是 %d 个）" % len(lv.players))
     if lv.mode == MODE_COOP and len(lv.players) != 2:
         add(SEV_BLOCK, "players_count_coop",
-            "合作关必须有恰好两个玩家席位（现在是 %d 个）" % len(lv.players))
+            "合作关必须恰好两个玩家席位（现在是 %d 个）" % len(lv.players))
 
     seats: Dict[str, int] = {}
     for i, p in enumerate(lv.players):
@@ -2095,13 +2151,11 @@ def _ck_players(add, model: CampaignModel, lv: LevelModel,
     #   · 地图 `factions_meta` 只划过的阵营**不要求**：地图不一定给每一方都划基地
     #     （见逻辑层那段说明），它进不了这一局的名单。
     #
-    # ⚠️ 玩家席位（`players[].faction`）**不在这里拦**：
-    #    逻辑层那一份只遍历「参展阵营 ∪ 地图阵营 ∪ config 阵营」，球员席位不在里面；
-    #    这里跟着它的口径走，不多拦一条（否则 demo 那种「阵营清单在战役层、席位在关卡层」
-    #    的写法会被我们自己的编辑器拒掉，而游戏其实是能跑的）。
+    # ⚠️ 玩家席位（`players[].faction`）**不在这里拦**（老口径）：逻辑层那一份只遍历
+    #    「参展阵营 ∪ 地图阵营 ∪ config 阵营」，席位不在里面 —— 跟着它的口径走。
     for fid in _declared_faction_ids(lv):
         if fid in seats:
-            continue                    # 玩家席位不要求大本营（从 players[].base 来）
+            continue
         if _base_of(lv, info, fid) is None:
             add(SEV_BLOCK, "faction_no_base",
                 "阵营「%s」没有大本营：会落到 (0,0) 顶掉区块中心" % fid)
@@ -2146,44 +2200,41 @@ def _ck_point(add, info: MapInfo, point: Tuple[int, int], what: str) -> None:
 
 
 def _ck_sides(add, model: CampaignModel, lv: LevelModel, info: MapInfo) -> None:
-    """7) 可玩阵营必须互为同方；8) 目标区划开局必须归玩家同方。"""
+    """7) 可玩阵营的目标；8) 目标区划开局必须归玩家同方。
+
+    ★★ 7) 按**模式**分支（与 `logic/level.gd` 的 `_ck_allies` 逐字一致）：
+      · **合作关**（两个真人）：两个可玩阵营必须**互为同方**（盟友）；
+      · **单人关**：玩家可以选**不同边**的阵营（选边关）→ 改拦「每个可玩阵营
+        都要有属于自己的目标」（`for=<阵营>`），不再要求同方。
+    """
     sides = _Sides()
     for pair in _effective_allies(lv, info):
         if len(pair) >= 2:
             sides.union(str(pair[0]), str(pair[1]))
 
     # 7) ★ 判据用「战役可玩 ∩ 本关在场」：一个**不在这一关出场**的可玩阵营
-    #    （比如战役第二方的席位只在合作关出现）不该把单机关卡拦下来。
-    #    逻辑层走的是 `Level.playable_ids()`（按战役的 playable），
-    #    它多一步 `present` 过滤 —— 这里跟着它，别放宽成「全部可玩阵营」。
-    present = set(lv.present_ids())
-    if info is not None:
-        present |= {str(f.get("id", "")) for f in info.factions}
-    # ★★ 7) 两个口径（**与游戏侧 `logic/level.gd` 的 `_ck_allies` 分支条件一致**）：
-    #    (a) **普通关卡**（目标没有 `for`）：≥2 个可玩阵营必须**互为同方**
-    #        —— 目标只有一份，判定走「玩家同方」；可玩阵营各占一边的话，
-    #        「选谁」就变成两场不同的仗，而数据只描述了一场。
-    #    (b) ★ **选边关**（有带 `for` 的目标）：两个可玩阵营**本来就是对立的**
-    #        （蓝方守 / 红方攻），所以改拦「每个可玩阵营都要有属于它的目标」。
+    #    （比如战役第二方的席位只在合作关出现）不该把关卡拦下来。
     present = set(lv.present_ids())
     if info is not None:
         present |= {str(f.get("id", "")) for f in info.factions}
     playable = [f for f in model.playable_ids() if f in present]
     has_for = any(str(o.get("for", "")) for o in lv.objectives)
-    if has_for:
+    if lv.mode == MODE_COOP:
+        if len(playable) >= 2:
+            rep = sides.side_of(playable[0])
+            for fid in playable:
+                if sides.side_of(fid) != rep:
+                    add(SEV_BLOCK, "playable_not_same_side",
+                        "%s 与 %s 是敌对关系，不能同时可玩（合作关的可玩阵营必须互为盟友）"
+                        % (playable[0], fid))
+                    break
+    elif len(playable) >= 2 or has_for:
+        # 单人（选边关）：每个可玩阵营都要有**属于自己的目标**，否则选了没得打
         for fid in playable:
             if not _objective_for(lv, fid):
                 add(SEV_BLOCK, "playable_no_objective",
                     "可玩阵营「%s」没有属于自己的目标：它选了也没得打"
                     "（objectives[] 里补一条 for=%s 的）" % (fid, fid))
-    elif len(playable) >= 2:
-        rep = sides.side_of(playable[0])
-        for fid in playable:
-            if sides.side_of(fid) != rep:
-                add(SEV_BLOCK, "playable_not_same_side",
-                    "%s 与 %s 是敌对关系，不能同时可玩（可玩阵营必须互为盟友）"
-                    % (playable[0], fid))
-                break
 
     # 8) ★★ 目标区划的开局归属 —— **逐条目标**判，判据按目标种类分
     #    （与游戏侧同一套口径）：

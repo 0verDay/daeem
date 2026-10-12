@@ -291,20 +291,8 @@ def create_campaign(project_dir: Any, campaign_id: str, name: str = "",
     if map_id:
         lv = model.new_level("01_%s" % campaign_id, map_id)
         lv.name = "%s · 第一关" % (name or campaign_id)
-        _fill_new_level(lv, map_id)
     written = new_campaign_files(model)
     return model, written
-
-
-def _fill_new_level(lv: LevelModel, map_id: str) -> None:
-    """给新关卡一份**能通过校验**的起手数据（不写的话作者一打开就是一片红）。
-
-    ★ 只放「最小可用」的那几样：一个玩家席位（用战役第一个可玩阵营）+
-      一张占位目标（第一个区划、90 秒）—— 目标区划的归属与阵营大本营
-      留空，让作者按自己的图去填（校验会把缺的那些一条条列出来）。
-    """
-    lv.players.append({"faction": "", "base": None})
-    lv.mark_declared("players")
 
 
 # ======================================================================

@@ -751,16 +751,17 @@ func _ck_map_exists() -> void:
 	_ck_base_walkable()
 
 
-## 2/3/4) 席位数、玩家不能占同一阵营、每个非玩家方都要有大本营
+## 2/3/4) 席位数、玩家不能占同一阵营、每个出场方都要有大本营
+##
+## ★★ 席位由「可玩阵营」派生（战役编辑器的 `sync_players_from_playable`），所以这里
+##    按**席位**数判就够了：单人关**不限个数**（两个对立的可玩阵营 = 选边关），
+##    合作关要恰好两个 —— 不再有 `players_count_solo` 这条。
 func _ck_players(config_ai: Array = []) -> void:
 	if players.is_empty():
 		_add(SEV_BLOCK, "players_empty", "一关至少要有一个玩家席位")
-	if mode == MODE_SOLO and players.size() != 1:
-		_add(SEV_BLOCK, "players_count_solo",
-			"单人关只能有一个玩家席位（现在是 %d 个）" % players.size())
 	if mode == MODE_COOP and players.size() != 2:
 		_add(SEV_BLOCK, "players_count_coop",
-			"合作关必须有恰好两个玩家席位（现在是 %d 个）" % players.size())
+			"合作关必须恰好两个玩家席位（现在是 %d 个）" % players.size())
 	var seen: Dictionary = {}
 	var seat_ids: Dictionary = {}
 	for p in players:
@@ -895,31 +896,28 @@ func _ck_allies() -> void:
 	FactionRes.set_allies(pairs)
 
 	var playable := playable_ids()
-	# 7) ★★ 两个口径（**按是否有「点名目标」自动切换**）：
+	# 7) ★★ 按**模式**分支（与编辑器 `tools/campaign_editor/model.py` 的 `_ck_sides` 一致）：
 	#
-	#    (a) **普通关卡**（目标没有 `for` 字段 / 只有一个可玩阵营）：
-	#        沿用老口径 —— ≥2 个可玩阵营必须**互为同方**。
-	#        理由：目标只有**一份**，判定走「玩家同方」；可玩阵营如果各占一边，
-	#        「选谁」就变成了两场不同的仗，而数据只描述了一场。
-	#
-	#    (b) ★ **选边关卡**（`objectives[]` 里有带 `for` 的目标）：
-	#        两个可玩阵营**本来就是对立的**（蓝方守、红方攻），所以「互为同方」不成立、
-	#        也不该成立。这时改拦**另一条**：★ **每一个可玩阵营都要有属于它的目标** ——
-	#        否则玩家选了它就没目标可打（那是最难查的一类：列表上有它，点进去无事发生）。
-	if has_per_faction_objectives():
+	#    · **合作关**（两个真人）：两个可玩阵营必须**互为同方**（盟友）——
+	#      目标只有一份，判定走「玩家同方」；可玩阵营各占一边的话，
+	#      「选谁」就变成两场不同的仗，而数据只描述了一场。
+	#    · **单人关**：玩家可以选**不同边**的阵营（选边关）→ 改拦
+	#      「每个可玩阵营都要有属于自己的目标」（`for=<阵营>`），不再要求同方。
+	if mode == MODE_COOP:
+		if playable.size() >= 2:
+			var rep := FactionRes.side_of(String(playable[0]))
+			for fid in playable:
+				if FactionRes.side_of(String(fid)) != rep:
+					_add(SEV_BLOCK, "playable_not_same_side",
+						"%s 与 %s 是敌对关系，不能同时可玩（合作关的可玩阵营必须互为盟友）"
+						% [String(playable[0]), String(fid)])
+					break
+	elif playable.size() >= 2 or has_per_faction_objectives():
 		for fid in playable:
 			if objective_for(String(fid)) == null:
 				_add(SEV_BLOCK, "playable_no_objective",
 					"可玩阵营「%s」没有属于自己的目标：它选了也没得打（objectives[] 里补一条 for=%s 的）"
 					% [String(fid), String(fid)])
-	elif playable.size() >= 2:
-		var rep := FactionRes.side_of(String(playable[0]))
-		for fid in playable:
-			if FactionRes.side_of(String(fid)) != rep:
-				_add(SEV_BLOCK, "playable_not_same_side",
-					"%s 与 %s 是敌对关系，不能同时可玩（可玩阵营必须互为盟友）"
-					% [String(playable[0]), String(fid)])
-				break
 
 	# 8) ★★ 目标区划的开局归属 —— **逐条目标**判，判据按目标种类分：
 	#

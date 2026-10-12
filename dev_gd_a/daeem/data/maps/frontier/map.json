@@ -1387,8 +1387,9 @@
       "production": {
         "food": 0,
         "gold": 0,
-        "population": 0.15
+        "population": 0.015
       },
+      "population_cap": 2,
       "x0": 5,
       "y0": 0,
       "x1": 9,
@@ -1506,10 +1507,11 @@
         5
       ],
       "production": {
-        "food": 1,
+        "food": 0.14,
         "gold": 0,
-        "population": 0.1
+        "population": 0.012
       },
+      "population_cap": 2,
       "x0": 5,
       "y0": 5,
       "x1": 9,
@@ -1629,8 +1631,9 @@
       "production": {
         "food": 0,
         "gold": 0,
-        "population": 0.15
+        "population": 0.015
       },
+      "population_cap": 2,
       "x0": 17,
       "y0": 0,
       "x1": 21,
@@ -1750,8 +1753,9 @@
       "production": {
         "food": 0,
         "gold": 0,
-        "population": 0.15
+        "population": 0.015
       },
+      "population_cap": 2,
       "x0": 17,
       "y0": 5,
       "x1": 21,
@@ -1869,10 +1873,11 @@
         4
       ],
       "production": {
-        "food": 1,
-        "gold": 1,
-        "population": 0.15
+        "food": 0.06,
+        "gold": 0.06,
+        "population": 0.01
       },
+      "population_cap": 3,
       "x0": 10,
       "y0": 4,
       "x1": 16,
@@ -2088,8 +2093,9 @@
       "production": {
         "food": 0,
         "gold": 0,
-        "population": 0.15
+        "population": 0.012
       },
+      "population_cap": 3,
       "x0": 10,
       "y0": 11,
       "x1": 16,
@@ -2305,8 +2311,9 @@
       "production": {
         "food": 0,
         "gold": 0,
-        "population": 0.15
+        "population": 0.015
       },
+      "population_cap": 2,
       "x0": 5,
       "y0": 12,
       "x1": 9,
@@ -2426,8 +2433,9 @@
       "production": {
         "food": 0,
         "gold": 0,
-        "population": 0.15
+        "population": 0.015
       },
+      "population_cap": 2,
       "x0": 5,
       "y0": 17,
       "x1": 9,
@@ -2547,8 +2555,9 @@
       "production": {
         "food": 0,
         "gold": 0,
-        "population": 0.15
+        "population": 0.015
       },
+      "population_cap": 2,
       "x0": 17,
       "y0": 12,
       "x1": 21,
@@ -2668,8 +2677,9 @@
       "production": {
         "food": 0,
         "gold": 0,
-        "population": 0.15
+        "population": 0.015
       },
+      "population_cap": 2,
       "x0": 17,
       "y0": 17,
       "x1": 21,
@@ -2789,8 +2799,9 @@
       "production": {
         "food": 0,
         "gold": 0,
-        "population": 0.15
+        "population": 0.015
       },
+      "population_cap": 2,
       "x0": 0,
       "y0": 9,
       "x1": 4,
@@ -2909,9 +2920,10 @@
       ],
       "production": {
         "food": 0,
-        "gold": 1,
-        "population": 0.1
+        "gold": 0.08,
+        "population": 0.007
       },
+      "population_cap": 3,
       "x0": 0,
       "y0": 0,
       "x1": 4,
@@ -3111,8 +3123,9 @@
       "production": {
         "food": 0,
         "gold": 0,
-        "population": 0.15
+        "population": 0.015
       },
+      "population_cap": 2,
       "x0": 22,
       "y0": 8,
       "x1": 26,
@@ -3232,8 +3245,9 @@
       "production": {
         "food": 0,
         "gold": 0,
-        "population": 0.15
+        "population": 0.012
       },
+      "population_cap": 3,
       "x0": 22,
       "y0": 13,
       "x1": 26,

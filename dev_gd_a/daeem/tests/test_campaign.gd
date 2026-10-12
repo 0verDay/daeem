@@ -175,8 +175,8 @@ func _group_load(cfg) -> void:
 	eq(String(lv.map_id), "dongzheng", "关卡引用的地图 id")
 	ok(lv.map != null, "关卡的地图载入成功")
 	eq(String(lv.mode), "solo", "单人关")
-	eq(lv.seat_count(), 1, "单人关 1 个席位")
-	eq(String(lv.seats()[0]), "F1", "席位是 F1")
+	eq(lv.seat_count(), 2, "单人关（选边关）2 个席位 —— 席位由两个可玩阵营派生")
+	eq(String(lv.seats()[0]), "F1", "第一个席位是 F1")
 	eq(lv.objective_zone(), 4, "目标区划是 c1")
 	# ★ 断言的是**关系**（`objective_label()` 由同一份 hold_sec 拼出来），不是那一版数值。
 	#   ⚠️ 原来这里写死 `90.0` / `"守住 c1 90 秒"`：那种断言会在**调平衡**（改关卡时长）时
@@ -194,8 +194,8 @@ func _group_load(cfg) -> void:
 	#    ★★ 样例第一关本轮多了一方：渡口守军从「挂在 F1 名下」改成**独立阵营 GD1**
 	#       （`allies: ["F1","GD1"]`）—— 挂在 F1 名下时它们是**玩家自己的部队**
 	#       （能选中、能下令），手玩报回来的正是这条。判定与这个名单是**同一份数据**。
-	eq(lv.rosters(), ["F1", "GD1", "F2"],
-		"出场名单 = 席位 + 参展阵营（蓝方 F1 / 守军 GD1 / 红方 F2）")
+	eq(lv.rosters(), ["F1", "F2", "GD1"],
+		"出场名单 = 席位（两个可玩阵营）+ 参展阵营（渡口守军 GD1）")
 	ok(lv.summary().contains("单人"), "summary() 里有模式")
 
 	# ★ 缺字段默认值：只写最少的字段，看它怎么补
@@ -416,9 +416,10 @@ func _group_check(cfg) -> void:
 		# 1) 地图不存在 / 没写
 		[{"map": "no_such_map"}, "map_not_found"],
 		[{"map": ""}, "map_missing_field"],
-		# 2) 席位数
-		[{"mode": "solo", "players": [{"faction": "F1"}, {"faction": "F2"}]}, "players_count_solo"],
+		# 2) 席位数（★ 单人关不限个数；合作关要恰好两个）
 		[{"mode": "coop", "players": [{"faction": "F1"}]}, "players_count_coop"],
+		[{"mode": "coop", "players": [{"faction": "F1"}, {"faction": "E1"},
+			{"faction": "E2"}]}, "players_count_coop"],
 		[{"players": []}, "players_empty"],
 		# 3) 两个玩家占同一阵营
 		[{"mode": "coop", "players": [{"faction": "F1"}, {"faction": "F1"}]}, "players_same_faction"],
@@ -432,11 +433,11 @@ func _group_check(cfg) -> void:
 		[{"players": [{"faction": "F1", "base": [0, 9]}]}, "point_on_mountain"],
 		[{"players": [{"faction": "F1", "base": [99, 99]}]}, "point_outside"],
 		[{"start_units": [{"faction": "E1", "kind": "enemy", "x": 0, "y": 9}]}, "point_on_mountain"],
-		# 7) ★ 可玩阵营必须互为同方（**普通关卡**：目标只有一份、走同一方判定）
-		#    ★★ 样例第一关现在是「选边关」（**每个可玩阵营都有带 `for` 的目标**），
-		#    走的是另一条口径（7b）—— 所以这里要用一份**没有 per-faction 目标**的关卡
-		#    来造「两个可玩阵营各占一边」：清掉 `objectives[].for`，让目标变成通用的。
-		[{"allies": [], "_playable": ["F1", "F2"],
+		# 7) ★ 合作关：两个可玩阵营必须互为同方；单人关允许跨边（选边关）。
+		#    ★★ 样例第一关是「选边关」（**每个可玩阵营都有带 `for` 的目标**）——
+		#    所以这里要用一份**没有 per-faction 目标**的**合作关**来造
+		#    「两个可玩阵营各占一边」：清掉 `objectives[].for`，让目标变成通用的。
+		[{"mode": "coop", "allies": [], "_playable": ["F1", "F2"],
 			"objectives": [{"kind": "hold_zone", "zone": 4, "hold_sec": 10}]},
 			"playable_not_same_side"],
 		# 7b) ★★ 选边关：每个可玩阵营都要有属于它的目标（漏一个 = 选了没得打）

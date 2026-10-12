@@ -44,8 +44,6 @@ from typing import Dict, List, Optional, Tuple
 from . import mapfile
 from .model import (
     DEFAULT_COLORS,
-    FACTION_DEFAULT,
-    FACTION_ROSTER,
     MAX_COORD,
     MAX_GRID_BYTES,
     PRODUCTION_KEYS,
@@ -88,8 +86,7 @@ UI = {
     "canvas_bg": "#e9ebee",
     "empty": "#f1f2f4",
     "empty_line": "#c3c8d0",
-    "base": "#e0a800",          # 阵营大本营标记（琥珀：浅色画布上要压得住）
-    "center": "#c026a3",        # 区划中心标记（品红：与阵营色、地形、区块底色都拉得开）
+    "center": "#c026a3",        # 区划中心标记（品红：与地形、区块底色都拉得开）
 }
 
 UNDO_LIMIT = 200
@@ -494,9 +491,8 @@ class EditorApp:
         self._pending_undo: Optional[dict] = None
 
         # ---- 界面状态
-        self.page = "tile"                 # "tile" 地块页 / "zone" 区块页 / "faction" 阵营页
+        self.page = "tile"                 # "tile" 地块页 / "zone" 区块页
         self.selected_zone: Optional[int] = None   # 区块页选中的区块 id
-        self.selected_faction: Optional[str] = None   # 阵营页选中的阵营 id
         self.inspect: Optional[Tuple[int, int]] = None   # 属性面板正在看的格子
         self.hover: Optional[Tuple[int, int]] = None
         #: 框选出来的矩形 `(x0, y0, x1, y1)`（世界坐标，已规范化）；None = 没选。
@@ -519,8 +515,6 @@ class EditorApp:
         self._pan_anchor: Optional[Tuple[float, float]] = None
         self._hover_job: Optional[str] = None
         self._suppress_zone_event = False
-        #: 正在重建阵营页的 Treeview（与区块页同一套理由，见 refresh_sidebar 的注释）
-        self._suppress_faction_event = False
         #: 正在重建侧边栏（防止「重建 → 选区事件 → 又重建」的死循环，见 refresh_sidebar）
         self._rebuilding = False
         #: 是否按住空格（按住 = 进入平移模式，左键拖动移视野）
@@ -603,8 +597,7 @@ class EditorApp:
 
         self.tab_buttons: Dict[str, tk.Button] = {}
         for key, label, hint in (("tile", "地块", "左键建地块 / 看属性，Shift+拖拽框选批量改"),
-                                 ("zone", "区块", "选中区块后左键点地块来划分"),
-                                 ("faction", "阵营", "选中阵营后左键点地块 = 设它的大本营")):
+                                 ("zone", "区块", "选中区块后左键点地块来划分")):
             # ⚠️ 一律走 _button()：它保证 takefocus=0 且点完把键盘焦点交还画布 ——
             #    否则按钮会拿住焦点，而**空格在 tk 里是「激活焦点按钮」**，
             #    于是「按住空格拖画面」会变成「反复点最后按过的那个页签」
@@ -760,6 +753,8 @@ class EditorApp:
 
     def _build_sidebar(self) -> None:
         self._tile_widgets = {}
+        #: 批量面板里的三个地形按钮（按地形 id 存）—— 只在框选时有，供测试与刷新取用。
+        self._batch_terrain_buttons: Dict[str, tk.Button] = {}
         #: 这条侧边栏是**照着哪一页**建的：`set_page` 靠它跳过「点同一个页签」的白重建。
         self._sidebar_page: Optional[str] = None
         for child in self.sidebar.winfo_children():
@@ -767,8 +762,6 @@ class EditorApp:
 
         if self.page == "tile":
             self._build_tile_sidebar()
-        elif self.page == "faction":
-            self._build_faction_sidebar()
         else:
             self._build_zone_sidebar()
         self._build_map_section()
@@ -792,7 +785,7 @@ class EditorApp:
     def _build_tile_sidebar(self) -> None:
         """地块页的侧边栏（**只在需要时**才走到这里，见 refresh_tile_panel）。
 
-        面板里的地形按钮 / 大本营按钮 / 删除按钮在「换到另一格」时会被**就地改值**复用，
+        面板里的地形按钮 / 删除按钮在「换到另一格」时会被**就地改值**复用，
         所以它们的回调必须把坐标用**默认参数**钉住（`lambda bx=x, by=y: ...`）——
         读 `self.inspect` 的话，换格子的那一瞬间它们会指向「当时」那一格。
 
@@ -808,7 +801,7 @@ class EditorApp:
         if self.inspect is None:
             tk.Label(sec, text="左键点一个地块，这里会显示它的属性。\n"
                                "（点虚线格 = 先把地块建出来，再在这里选地形）\n"
-                               "Shift + 拖拽 = 框选一批地块，批量改地形 / 归属",
+                               "Shift + 拖拽 = 框选一片，批量刷地形（空白格会一并建出来）/ 归属",
                      bg=UI["panel"], fg=UI["text_dim"], anchor="w",
                      justify="left", wraplength=280).pack(fill="x")
             return
@@ -839,8 +832,6 @@ class EditorApp:
         self.zone_row.pack(fill="x")
 
         # ---- 删除地块
-        # ★ 这里**没有**「大本营」按钮：老式大本营（JSON 里的单数 base）已经彻底删掉，
-        #   现在只有「每个阵营的大本营」——它在「阵营」页签里设（见 _build_faction_sidebar）。
         bsec = self._section(self.sidebar, "地块")
         self.delete_btn = self._button(bsec, "删除这个地块（变回虚线格）",
                                        lambda bx=x, by=y: self.delete_tile(bx, by),
@@ -872,68 +863,84 @@ class EditorApp:
         return self.model.rect_tiles(*self.selection)
 
     def _build_batch_sidebar(self) -> None:
-        """框选之后的面板：对**选中的一批格子**生效。
+        """框选之后的面板：对**选中的那一整片矩形**生效。
 
         ★ 与单格面板的差别（别把两边混起来）：
-          · 这里没有「大本营」—— 大本营是一个点位，批量设没有意义；
-          · 地形按钮显示**混合状态**（选中的格子地形不一致时不打勾，标「多个值」）；
+          · 这里没有「大本营」—— 地图不再管阵营 / 大本营（归战役编辑器），也没有单格点位；
+          · 地形按钮显示**混合状态**（选中的已有地块地形不一致时不打勾，标「多个值」）；
+          · ★★ **地形会把矩形里的虚线格也建出来**（用户需求：「框选空白区域，点地形
+            就把那些空白格变成该地形」）—— 所以这一栏**总是显示**，哪怕一片空白；
+          · 归属 / 批量删除**只对已有地块**有意义 → 只有矩形里确实有地时才出现那一栏；
           · 操作是「一次改一整批」，撤销栈里只压**一次**快照（一次操作 = 一步撤销）。
         """
-        tiles = self.batch_tiles()
         x0, y0, x1, y1 = self.selection  # type: ignore[misc]
-        sec = self._section(self.sidebar, "已框选 %d 个地块" % len(tiles))
+        tiles = self.batch_tiles()                     # 只含**已有**地块
+        total = (abs(x1 - x0) + 1) * (abs(y1 - y0) + 1)
+        blank = total - len(tiles)
+        sec = self._section(self.sidebar, "已框选 %d 个已有地块" % len(tiles))
         tk.Label(sec, text="范围 (%d, %d) – (%d, %d)" % (x0, y0, x1, y1),
-                 bg=UI["panel"], fg=UI["text"], anchor="w").pack(fill="x", pady=(0, 4))
-        if not tiles:
-            tk.Label(sec, text="这个矩形里没有已建的地块（虚线格不参与批量操作）。",
-                     bg=UI["panel"], fg=UI["text_dim"], anchor="w",
-                     justify="left", wraplength=280).pack(fill="x")
-            self._button(sec, "取消框选", self.clear_selection, padx=8, pady=4,
-                         bg=UI["panel_alt"], fg=UI["text"],
-                         activebackground=UI["hover"]).pack(fill="x", pady=(6, 0))
-            return
+                 bg=UI["panel"], fg=UI["text"], anchor="w").pack(fill="x", pady=(0, 2))
+        tk.Label(sec, text="矩形共 %d 格：已有 %d，空白 %d" % (total, len(tiles), blank),
+                 bg=UI["panel"], fg=UI["text_dim"], anchor="w").pack(fill="x", pady=(0, 4))
 
-        # ---- 地形（混合状态不打勾）
+        # ---- 地形（**总是显示**：空白格会被建出来）
         terrains = {self.model.terrain_at(*t) for t in tiles}
         mixed_terrain = len(terrains) > 1
-        tk.Label(sec, text="地形（改选中的 %d 格）" % len(tiles), bg=UI["panel"],
+        tk.Label(sec, text="地形（把这一片改成 / 建出）", bg=UI["panel"],
                  fg=UI["text_dim"], anchor="w").pack(fill="x")
+        self._batch_terrain_buttons = {}
         for terrain in TERRAIN_ORDER:
             color = self.terrain_color(terrain)
-            mark = "○" if mixed_terrain else ("●" if terrains == {terrain} else "○")
-            self._button(sec, mark + " " + TERRAIN_LABELS[terrain],
-                         lambda t=terrain: self.batch_set_terrain(t),
-                         bg=color, fg=self.text_on(color),
-                         activebackground=color, activeforeground=self.text_on(color),
-                         anchor="w", padx=8, pady=3,
-                         font=("Microsoft YaHei UI", 9)).pack(fill="x", pady=1)
+            mark = "○" if (mixed_terrain or not tiles) \
+                else ("●" if terrains == {terrain} else "○")
+            btn = self._button(sec, mark + " " + TERRAIN_LABELS[terrain],
+                               lambda t=terrain: self.batch_set_terrain(t),
+                               bg=color, fg=self.text_on(color),
+                               activebackground=color, activeforeground=self.text_on(color),
+                               anchor="w", padx=8, pady=3,
+                               font=("Microsoft YaHei UI", 9))
+            btn.pack(fill="x", pady=1)
+            self._batch_terrain_buttons[terrain] = btn
         if mixed_terrain:
             tk.Label(sec, text="选中的地块地形不一致（未打勾）", bg=UI["panel"],
                      fg=UI["text_dim"], anchor="w").pack(fill="x")
+        if blank:
+            tk.Label(sec, text="★ 会把这 %d 个空白格也建出来" % blank, bg=UI["panel"],
+                     fg=UI["text_dim"], anchor="w", justify="left",
+                     wraplength=280).pack(fill="x")
 
-        # ---- 归属区块（同样按「是不是同一个值」显示）
-        zsec = self._section(self.sidebar, "归属区块（改选中的 %d 格）" % len(tiles))
-        names = ["（不属于任何区块）"] + [z.name for z in
-                                          sorted(self.model.zones, key=lambda z: z.zone_id)]
-        owners = {self.model.zone_at(*t) for t in tiles}
-        if len(owners) == 1:
-            only = owners.pop()
-            current = only.name if only is not None else names[0]
+        if tiles:
+            # ---- 归属区块（同样按「是不是同一个值」显示）
+            zsec = self._section(self.sidebar, "归属区块（改选中的 %d 格）" % len(tiles))
+            names = ["（不属于任何区块）"] + [z.name for z in
+                                              sorted(self.model.zones, key=lambda z: z.zone_id)]
+            owners = {self.model.zone_at(*t) for t in tiles}
+            if len(owners) == 1:
+                only = owners.pop()
+                current = only.name if only is not None else names[0]
+            else:
+                current = MULTI_VALUE           # 选中的格子归属不一致
+            self.batch_zone_choice = tk.StringVar(value=current)
+            combo = ttk.Combobox(zsec, textvariable=self.batch_zone_choice,
+                                 values=[MULTI_VALUE] + names, state="readonly")
+            combo.pack(fill="x")
+            combo.bind("<<ComboboxSelected>>", lambda e: self.batch_set_zone())
+
+            # ---- 批量删除（只删已有地块）
+            bsec = self._section(self.sidebar, "批量操作")
+            self._button(bsec, "删除选中的 %d 个地块" % len(tiles),
+                         self.batch_delete_tiles, padx=8, pady=4,
+                         bg=UI["danger_btn"], fg=UI["danger_fg"],
+                         activebackground=UI["danger_btn_hover"]).pack(fill="x", pady=2)
         else:
-            current = MULTI_VALUE           # 选中的格子归属不一致
-        self.batch_zone_choice = tk.StringVar(value=current)
-        combo = ttk.Combobox(zsec, textvariable=self.batch_zone_choice,
-                             values=[MULTI_VALUE] + names, state="readonly")
-        combo.pack(fill="x")
-        combo.bind("<<ComboboxSelected>>", lambda e: self.batch_set_zone())
+            tk.Label(self.sidebar,
+                     text="这一片还没有地块 —— 点上面的地形就能把空白格建出来。",
+                     bg=UI["panel"], fg=UI["text_dim"], anchor="w",
+                     justify="left", wraplength=280).pack(fill="x", padx=10, pady=(6, 0))
 
-        # ---- 批量删除
-        bsec = self._section(self.sidebar, "批量操作")
-        self._button(bsec, "删除选中的 %d 个地块" % len(tiles),
-                     self.batch_delete_tiles, padx=8, pady=4,
-                     bg=UI["danger_btn"], fg=UI["danger_fg"],
-                     activebackground=UI["danger_btn_hover"]).pack(fill="x", pady=2)
-        self._button(bsec, "取消框选（Esc）", self.clear_selection, padx=8, pady=4,
+        # ---- 取消框选（两种情况下都有）
+        csec = self._section(self.sidebar, "框选")
+        self._button(csec, "取消框选（Esc）", self.clear_selection, padx=8, pady=4,
                      bg=UI["panel_alt"], fg=UI["text"],
                      activebackground=UI["hover"]).pack(fill="x", pady=2)
 
@@ -948,20 +955,30 @@ class EditorApp:
         self.update_status(self.hover)
 
     def batch_set_terrain(self, terrain: str) -> None:
-        """把选中的地块全改成某种地形（一次操作 = 一步撤销）。"""
-        tiles = self.batch_tiles()
-        if not tiles:
+        """把选中矩形里的**每一格**都刷成某种地形：**虚线格先建出来**。
+
+        ★★ 本轮新增（用户需求）：「设计师可以框选空白区域，点击右侧栏位中的地形
+           （平地 / 森林 / 山地）以将这些空白区域都变为该类地形」—— 所以这里不只是
+           「改已有的地」，还会**建格**（走 `model.fill_rect_terrain`）。
+           一次操作 = **一步撤销**（与其它批量操作同一条约定）。
+        """
+        if self.selection is None:
             return
-        changed = [t for t in tiles if self.model.terrain_at(*t) != terrain]
-        if not changed:
-            self.status("选中的 %d 格本来就是%s" % (len(tiles), TERRAIN_LABELS[terrain]))
+        x0, y0, x1, y1 = self.selection
+        total = (abs(x1 - x0) + 1) * (abs(y1 - y0) + 1)
+        before = (self.model.origin_x, self.model.origin_y)
+        self.prepare_undo()
+        created, changed = self.model.fill_rect_terrain(x0, y0, x1, y1, terrain)
+        if not created and not changed:
+            # 一片空白都没有 / 本来就是这种地形 —— 不留一步空撤销（也不清空重做历史）
+            self.drop_undo()
+            self.status("选中的这一片本来就是%s（也没有空白格要建）" % TERRAIN_LABELS[terrain])
             return
-        self.push_undo()
-        for tile in changed:
-            self.model.set_terrain(tile[0], tile[1], terrain)
+        self.commit_undo()
+        self._follow_origin_shift(before)       # 往左上刷时 origin 会动，画面不能跟着跳
         self.mark_dirty()
-        self.status("把选中的 %d 格改成了%s（其中 %d 格真的变了）"
-                    % (len(tiles), TERRAIN_LABELS[terrain], len(changed)))
+        self.status("把选中的 %d 格刷成%s（新建 %d 格，改 %d 格）"
+                    % (total, TERRAIN_LABELS[terrain], created, changed))
         self.refresh_sidebar()
         self.redraw()
 
@@ -1010,7 +1027,7 @@ class EditorApp:
     def refresh_tile_panel(self) -> None:
         """刷新「地块属性」面板：**能就地改值就就地改，结构变了才整条重建**。
 
-        面板的**结构**由「这一格存不存在」决定（虚线格没有地形/归属/大本营/删除可改），
+        面板的**结构**由「这一格存不存在」决定（虚线格没有地形/归属/删除可改），
         所以：
           · 结构没变 → 只改标签文字 / 按钮颜色与选中标记（~3 ms，点一下就走的动线靠它）；
           · 结构变了 → 交给 `refresh_sidebar()` 重画整条（~20 ms，只发生在
@@ -1066,356 +1083,70 @@ class EditorApp:
         if exists:
             combo.bind("<<ComboboxSelected>>", lambda e: self.on_zone_choice(x, y))
 
-    # ------------------------------------------------------------------
-    # 阵营页签
-    # ------------------------------------------------------------------
 
-    def _build_faction_sidebar(self) -> None:
-        """阵营页：列表 + 选中阵营的属性 + 「大本营」操作。
+    def _build_zone_batch_sidebar(self) -> None:
+        """区块页签的框选面板：把矩形里的**已有地块**整体划给某个区块。
 
-        ★ 阵营 id 用游戏那套字符串（p1…p8 / enemy），因为这正是
-          Godot 侧 `faction_bases` 的键 —— 导出的地图不需要任何翻译表。
-        ★ 一个阵营只有一个大本营（对齐 Godot 的 TYPE_BASE：一方一座基地），
-          所以这里是一颗「设为它的大本营 / 取消」的按钮，不是一套网格。
+        ★ 本轮新增（用户需求：「区划也需要支持框选设置区划」）：Shift + 拖拽在
+          **区块页签**上也能用 —— 矩形里的已有地块一次划给选中的区块
+          （相当于批量版的「点一格划一格」）。虚线格不参与（要连空白一起弄，
+          切到「地块」页签用「框选刷地形」）。
+        ★ 与「地块」页签的批量面板的区别：这里**没有地形**那一栏 ——
+          区块页签的语义是「这块地归谁」，不是「什么地形」。
+        ★ 下拉框复用 `batch_zone_choice` + `batch_set_zone()`（与地块页同一套逻辑），
+          只是默认值优先取「列表里当前选中的那个区块」。
         """
-        sec = self._section(self.sidebar, "阵营列表")
-        wrap = tk.Frame(sec, bg=UI["panel"])
-        wrap.pack(fill="both", expand=True)
-        self.faction_tree = ttk.Treeview(wrap, columns=("base",), show="tree headings",
-                                         height=8, selectmode="browse")
-        self.faction_tree.heading("#0", text="阵营")
-        self.faction_tree.heading("base", text="大本营")
-        self.faction_tree.column("#0", width=180, anchor="w")
-        self.faction_tree.column("base", width=80, anchor="e")
-        scroll = ttk.Scrollbar(wrap, orient="vertical", command=self.faction_tree.yview)
-        self.faction_tree.configure(yscrollcommand=scroll.set)
-        self.faction_tree.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
-        self.faction_tree.bind("<<TreeviewSelect>>", self.on_faction_select)
+        x0, y0, x1, y1 = self.selection  # type: ignore[misc]
+        tiles = self.batch_tiles()                     # 只含**已有**地块
+        total = (abs(x1 - x0) + 1) * (abs(y1 - y0) + 1)
+        blank = total - len(tiles)
+        sec = self._section(self.sidebar, "已框选 %d 个已有地块" % len(tiles))
+        tk.Label(sec, text="范围 (%d, %d) – (%d, %d)" % (x0, y0, x1, y1),
+                 bg=UI["panel"], fg=UI["text"], anchor="w").pack(fill="x", pady=(0, 2))
+        tk.Label(sec, text="矩形共 %d 格：已有 %d，空白 %d" % (total, len(tiles), blank),
+                 bg=UI["panel"], fg=UI["text_dim"], anchor="w").pack(fill="x", pady=(0, 4))
 
-        btn_row = tk.Frame(sec, bg=UI["panel"])
-        btn_row.pack(fill="x", pady=(6, 0))
-        self._button(btn_row, "新建阵营", self.add_faction, padx=8, pady=4,
+        if not tiles:
+            tk.Label(sec, text="矩形里没有已建的地块（虚线格不参与）。\n"
+                               "要连空白一起弄，切到「地块」页签用「框选刷地形 / 建出来」。",
+                     bg=UI["panel"], fg=UI["text_dim"], anchor="w", justify="left",
+                     wraplength=280).pack(fill="x")
+        else:
+            zsec = self._section(self.sidebar, "划给区块（改选中的 %d 格）" % len(tiles))
+            names = ["（不属于任何区块）"] + [z.name for z in
+                                              sorted(self.model.zones, key=lambda z: z.zone_id)]
+            # 默认值：优先「列表里选中的那个区块」，其次看这些地块当前是不是同一个归属
+            sel = self.model.zone(self.selected_zone) if self.selected_zone is not None else None
+            if sel is not None:
+                current = sel.name
+            else:
+                owners = {self.model.zone_at(*t) for t in tiles}
+                if len(owners) == 1:
+                    only = owners.pop()
+                    current = only.name if only is not None else names[0]
+                else:
+                    current = MULTI_VALUE
+            self.batch_zone_choice = tk.StringVar(value=current)
+            combo = ttk.Combobox(zsec, textvariable=self.batch_zone_choice,
+                                 values=[MULTI_VALUE] + names, state="readonly")
+            combo.pack(fill="x")
+            combo.bind("<<ComboboxSelected>>", lambda e: self.batch_set_zone())
+            tk.Label(zsec, text="下拉框默认是列表里选中的那个区块；选「（不属于任何区块）」\n"
+                                "＝ 把这些地块从各自的区块里摘出来。",
+                     bg=UI["panel"], fg=UI["text_dim"], anchor="w", justify="left",
+                     wraplength=280).pack(fill="x", pady=(4, 0))
+
+        csec = self._section(self.sidebar, "框选")
+        self._button(csec, "取消框选（Esc）", self.clear_selection, padx=8, pady=4,
                      bg=UI["panel_alt"], fg=UI["text"],
-                     activebackground=UI["hover"]).pack(side="left", expand=True, fill="x",
-                                                       padx=(0, 3))
-        self._button(btn_row, "删除", self.delete_selected_faction, padx=8, pady=4,
-                     bg=UI["danger_btn"], fg=UI["danger_fg"],
-                     activebackground=UI["danger_btn_hover"]).pack(side="left", expand=True, fill="x",
-                                                       padx=(3, 0))
-
-        # ---- 选中阵营的属性
-        fsec = self._section(self.sidebar, "选中的阵营")
-        self.faction_detail_row = tk.Frame(fsec, bg=UI["panel"])
-        self.faction_detail_row.pack(fill="x")
-
-        # ---- 大本营
-        bsec = self._section(self.sidebar, "大本营")
-        self.faction_base_label = tk.Label(fsec, text="", bg=UI["panel"], fg=UI["text"],
-                                           anchor="w", justify="left", wraplength=290)
-        self.faction_base_label.pack(fill="x", pady=(4, 0))
-        self.faction_base_btn = self._button(bsec, "", self.toggle_faction_base,
-                                             padx=8, pady=4,
-                                             bg=UI["panel_alt"], fg=UI["text"],
-                                             activebackground=UI["hover"])
-        self.faction_base_btn.pack(fill="x", pady=2)
-        tk.Label(bsec, text="在「地块」页签左键点一格来选中它，再回来按上面的按钮 ——\n"
-                            "大本营就设在那格（再按一次 = 取消）。",
-                 bg=UI["panel"], fg=UI["text_dim"], anchor="w", justify="left",
-                 wraplength=290).pack(fill="x", pady=(4, 0))
-
-        # ---- 这一格（面板正在看的那格）现在是谁的大本营：可以直接改归属
-        self.faction_tile_section = self._section(self.sidebar, "选中那一格的大本营")
-
-        # 列表、详情、按钮都填一次（就地改值，见 refresh_faction_panel）
-        self.refresh_faction_panel()
-
-    def refresh_faction_panel(self) -> None:
-        """就地刷新区块…阵营页那几栏（列表 + 选中阵营的属性 + 大本营按钮）。
-
-        ★ 只有「加 / 删阵营」会改变**行数**，那种情况才整条重建（`refresh_sidebar`）；
-          改名 / 改色 / 设大本营都走这里就地改值 —— 与区块页同一套理由与做法。
-        """
-        if self.page != "faction":
-            return
-        rows = list(self.model.factions)
-        iids = [f.faction_id for f in rows]
-        if list(self.faction_tree.get_children()) != iids:
-            self._suppress_faction_event = True
-            try:
-                self.faction_tree.delete(*self.faction_tree.get_children())
-                for faction in rows:
-                    base = self.model.faction_base_of(faction.faction_id)
-                    self.faction_tree.insert(
-                        "", "end", iid=faction.faction_id, text=faction.label(),
-                        values=("(%d, %d)" % base if base else "—",))
-            finally:
-                self._suppress_faction_event = False
-        else:
-            for faction in rows:
-                base = self.model.faction_base_of(faction.faction_id)
-                self.faction_tree.item(faction.faction_id, text=faction.label(),
-                                       values=("(%d, %d)" % base if base else "—",))
-        if self.selected_faction is not None and self.faction_tree.exists(self.selected_faction):
-            self.faction_tree.selection_set(self.selected_faction)
-
-        # 选中阵营的详情（名字 / 颜色）
-        row = self.faction_detail_row
-        for child in row.winfo_children():
-            child.destroy()
-        faction = self.model.faction(self.selected_faction) if self.selected_faction else None
-        if faction is None:
-            tk.Label(row, text="在列表里选一个阵营（没有就新建一个）。",
-                     bg=UI["panel"], fg=UI["text_dim"], anchor="w",
-                     justify="left").pack(fill="x")
-        else:
-            line = tk.Frame(row, bg=UI["panel"])
-            line.pack(fill="x", pady=(0, 2))
-            tk.Label(line, text="　", bg=faction.color, width=2).pack(side="left")
-            tk.Label(line, text=" " + faction.faction_id, bg=UI["panel"],
-                     fg=UI["text_dim"], anchor="w").pack(side="left")
-            name_row = tk.Frame(row, bg=UI["panel"])
-            name_row.pack(fill="x", pady=2)
-            tk.Label(name_row, text="名字", bg=UI["panel"], fg=UI["text_dim"]).pack(side="left")
-            self.faction_name_var = tk.StringVar(value=faction.name)
-            entry = ttk.Entry(name_row, textvariable=self.faction_name_var)
-            entry.pack(side="left", fill="x", expand=True, padx=(6, 4))
-            entry.bind("<Return>", lambda e: self.apply_faction_name())
-            entry.bind("<FocusOut>", lambda e: self.apply_faction_name())
-            self._button(name_row, "✓", self.apply_faction_name, padx=6,
-                         bg=UI["panel_alt"], fg=UI["text"],
-                         activebackground=UI["hover"]).pack(side="left")
-            color_row = tk.Frame(row, bg=UI["panel"])
-            color_row.pack(fill="x", pady=2)
-            tk.Label(color_row, text="颜色", bg=UI["panel"], fg=UI["text_dim"]).pack(side="left")
-            self._button(color_row, faction.color + " 换个颜色…",
-                         lambda: self.pick_faction_color(faction.faction_id),
-                         padx=6, pady=2,
-                         bg=UI["panel_alt"], fg=UI["text"],
-                         activebackground=UI["hover"]).pack(side="left", padx=(6, 0))
-
-        # 大本营那一栏
-        if faction is None:
-            self.faction_base_label.configure(text="先选一个阵营。")
-            self.faction_base_btn.configure(state="disabled", text="把大本营设在这里")
-        else:
-            base = self.model.faction_base_of(faction.faction_id)
-            self.faction_base_label.configure(
-                text=("大本营：(%d, %d)" % base) if base else "大本营：还没设")
-            self.faction_base_btn.configure(
-                state="normal",
-                text=("取消「%s」的大本营" % faction.label()) if base
-                     else "把大本营设在这里",
-                fg=(UI["text"] if base else UI["accent"]))
-
-        # 「选中那一格」现在归谁 —— 可以直接在下拉框里改（等于把大本营挪过去）
-        row = self.faction_tile_section
-        for child in row.winfo_children():
-            child.destroy()
-        if self.inspect is None or not self.model.exists(*self.inspect):
-            tk.Label(row, text="还没选格子：在「地块」页签左键点一格。",
-                     bg=UI["panel"], fg=UI["text_dim"], anchor="w",
-                     justify="left", wraplength=280).pack(fill="x")
-        else:
-            x, y = self.inspect
-            owner = self.model.faction_base_owner(x, y)
-            tk.Label(row, text="(%d, %d) 现在：%s" % (x, y,
-                     ("「%s」的大本营" % owner) if owner else "不是任何阵营的大本营"),
-                     bg=UI["panel"], fg=UI["text"], anchor="w",
-                     justify="left", wraplength=280).pack(fill="x")
-            if self.model.factions:
-                names = [f.label() for f in self.model.factions]
-                self.faction_tile_choice = tk.StringVar(
-                    value=next((f.label() for f in self.model.factions
-                                if f.faction_id == owner), names[0]))
-                combo = ttk.Combobox(row, textvariable=self.faction_tile_choice,
-                                     values=names, state="readonly")
-                combo.pack(fill="x", pady=(4, 0))
-                combo.bind("<<ComboboxSelected>>", lambda e: self.assign_base_by_label())
-            else:
-                tk.Label(row, text="还没有阵营：先在上面新建一个。", bg=UI["panel"],
-                         fg=UI["text_dim"], anchor="w").pack(fill="x")
-
-    def assign_base_by_label(self) -> None:
-        """把「选中那一格」的大本营改成下拉框里选的那个阵营。"""
-        if self.inspect is None or not self.model.exists(*self.inspect):
-            return
-        label = self.faction_tile_choice.get()
-        faction = next((f for f in self.model.factions if f.label() == label), None)
-        if faction is None:
-            return
-        x, y = self.inspect
-        if self.model.faction_base_of(faction.faction_id) == (x, y):
-            return
-        stolen = self.model.faction_base_owner(x, y)
-        self.prepare_undo()
-        if not self.model.set_faction_base(faction.faction_id, x, y):
-            self.drop_undo()
-            return
-        self.commit_undo()
-        self.mark_dirty()
-        if stolen is not None:
-            self.status("(%d, %d) 改成「%s」的大本营（原来属于「%s」）"
-                        % (x, y, faction.faction_id, stolen))
-        else:
-            self.status("(%d, %d) 设成「%s」的大本营" % (x, y, faction.faction_id))
-        self.refresh_faction_panel()
-        self.redraw()
-
-    # ---- 阵营页的编辑动作 ----
-
-    def add_faction(self) -> None:
-        """新建阵营：弹一个输入框问 id（默认给下一个没被占用的 p 号）。
-
-        ★ 建议值从 **p1** 开始（p1 = 单机 / 房主），所以第一次新建按回车就是玩家那一方。
-        """
-        suggestion = next((fid for fid in FACTION_ROSTER
-                           if self.model.faction(fid) is None), FACTION_DEFAULT)
-        fid = _ask_string(self.root, "新建阵营",
-                          "阵营 id（游戏里的名字，如 p1 / p2 / enemy）：", suggestion)
-        if fid is None:
-            return
-        fid = fid.strip()
-        if not fid:
-            self.status("阵营 id 不能为空")
-            return
-        self.prepare_undo()
-        faction = self.model.add_faction(fid)
-        if faction is None:
-            self.drop_undo()
-            self.status("阵营「%s」已经存在了" % fid)
-            return
-        self.commit_undo()
-        self.selected_faction = faction.faction_id
-        self.mark_dirty()
-        self.status("新建了阵营「%s」——在地图上点一格，再回来按「把大本营设在这里」"
-                    % faction.faction_id)
-        self.refresh_sidebar()
-        self.redraw()
-
-    def delete_selected_faction(self) -> None:
-        faction = self.model.faction(self.selected_faction) if self.selected_faction else None
-        if faction is None:
-            self.status("先在列表里选一个阵营")
-            return
-        base = self.model.faction_base_of(faction.faction_id)
-        extra = "（它的大本营 (%d, %d) 也会一起忘掉）" % base if base else ""
-        if not messagebox.askyesno("删除阵营", "删掉阵营「%s」？%s" % (faction.label(), extra)):
-            return
-        self.push_undo()
-        self.model.remove_faction(faction.faction_id)
-        self.selected_faction = (self.model.factions[0].faction_id
-                                 if self.model.factions else None)
-        self.mark_dirty()
-        self.status("删掉了阵营「%s」" % faction.label())
-        self.refresh_sidebar()
-        self.redraw()
-
-    def apply_faction_name(self) -> None:
-        faction = self.model.faction(self.selected_faction) if self.selected_faction else None
-        if faction is None or not hasattr(self, "faction_name_var"):
-            return
-        new_name = self.faction_name_var.get().strip()
-        if not new_name or new_name == faction.name:
-            return
-        self.push_undo()
-        self.model.rename_faction(faction.faction_id, new_name)
-        self.mark_dirty()
-        self.refresh_faction_panel()
-
-    def pick_faction_color(self, faction_id: str) -> None:
-        """换阵营颜色（编辑器里的标识色，游戏不读它）。"""
-        faction = self.model.faction(faction_id)
-        if faction is None:
-            return
-        try:
-            from tkinter import colorchooser
-            _, hex_color = colorchooser.askcolor(color=faction.color,
-                                                 title="阵营颜色（只影响编辑器显示）",
-                                                 parent=self.root)
-        except Exception:                       # noqa: BLE001 - 无头环境下没有取色器
-            hex_color = None
-        if not hex_color:
-            return
-        self.push_undo()
-        self.model.set_faction_color(faction_id, hex_color)
-        self.mark_dirty()
-        self.refresh_faction_panel()
-
-    def toggle_faction_base(self) -> None:
-        """把「属性面板正在看的那一格」设成 / 取消选中阵营的大本营。
-
-        ★ 用 `self.inspect`（面板正在看的格子）而不是鼠标位置：需求要的是
-          「先在面板里选格，再点按钮」—— 这样松手时鼠标在哪都不影响，也不会手一抖设错格。
-        """
-        faction = self.model.faction(self.selected_faction) if self.selected_faction else None
-        if faction is None:
-            self.status("先在列表里选一个阵营")
-            return
-        if self.inspect is None:
-            self.status("先在地图上点一格（左键点地块 = 选中它），再来设大本营")
-            return
-        x, y = self.inspect
-        if not self.model.exists(x, y):
-            self.status("(%d, %d) 还是虚线格：先把这格建出来" % (x, y))
-            return
-        self.prepare_undo()
-        if self.model.faction_base_of(faction.faction_id) == (x, y):
-            changed = self.model.clear_faction_base(faction.faction_id)
-            if changed:
-                self.commit_undo()
-                self.status("取消了「%s」的大本营" % faction.faction_id)
-            else:
-                self.drop_undo()
-        else:
-            stolen = self.model.faction_base_owner(x, y)
-            if not self.model.set_faction_base(faction.faction_id, x, y):
-                self.drop_undo()
-                return
-            self.commit_undo()
-            if stolen is not None:
-                self.status("(%d, %d) 改成「%s」的大本营了（原来属于「%s」）"
-                            % (x, y, faction.faction_id, stolen))
-            else:
-                self.status("(%d, %d) 设成「%s」的大本营" % (x, y, faction.faction_id))
-        self.mark_dirty()
-        self.refresh_faction_panel()
-        self.redraw()
-
-    def on_faction_select(self, event) -> None:
-        if self._rebuilding or self._suppress_faction_event:
-            return
-        selection = self.faction_tree.selection()
-        if not selection:
-            return
-        new_id = selection[0]
-        if new_id == self.selected_faction:
-            return
-        self.selected_faction = new_id
-        self._focus_canvas()
-        self.refresh_faction_panel()
-
-    def _click_faction_page(self, x: int, y: int) -> None:
-        """阵营页签的左键：选中这一格为「属性面板的当前格」，并显示它属于谁的大本营。
-
-        ★ 与区块页不同，这里**不改任何数据** —— 设大本营走面板里那颗按钮
-          （需求要的是「先在面板里选格，再点按钮」），免得鼠标一抖就把某一方的基地挪走。
-        """
-        self.inspect = (x, y)
-        owner = self.model.faction_base_owner(x, y)
-        if owner is not None:
-            self.status("(%d, %d) 是「%s」的大本营 —— 在右侧可以改成别的阵营" % (x, y, owner))
-        elif self.model.faction(self.selected_faction) is not None:
-            self.status("(%d, %d) 已选中 —— 在右侧按「把大本营设在这里」"
-                        % (x, y))
-        else:
-            self.status("先在右侧列表里新建 / 选中一个阵营")
-        # 这一格只是「被选中」，不是批量框选：把框选清掉，免得两边状态打架
-        self.selection = None
-        self.refresh_faction_panel()
-        self.redraw()
+                     activebackground=UI["hover"]).pack(fill="x", pady=2)
 
     def _build_zone_sidebar(self) -> None:
+        # ★ 区块页签也有框选（本轮新增）：框选期间走**另一个面板**
+        #   （把矩形里的已有地块整体划给某个区块，见 `_build_zone_batch_sidebar`）。
+        if self.selection is not None:
+            self._build_zone_batch_sidebar()
+            return
         sec = self._section(self.sidebar, "区块列表")
         wrap = tk.Frame(sec, bg=UI["panel"])
         wrap.pack(fill="both", expand=True)
@@ -1500,10 +1231,16 @@ class EditorApp:
                                        anchor="w", justify="left", wraplength=290)
         self.zone_kind_hint.pack(fill="x", pady=(2, 0))
 
-        # ---- 产能（每地块每秒；单位就是「n 资源 / 地块 / 秒」）
+        # ---- 产能（**资源 / 秒**：区块整体的每秒产出；导出时按地块数换算回「每地块」）
+        #
+        # ★★ 本轮改单位（用户需求：「同步更改地图编辑器中的区划资源设置，单位要改」）：
+        #    输入框显示 / 接受的数 = **该区块每秒的实际产出**（与游戏 HUD 一致），
+        #    写回模型时按「区块地块数」换算成「每地块每秒」——`production` 字段的语义**没变**，
+        #    游戏侧与地图 JSON 都**不用动**。
+        #    ⚠️ 所以同一个「每地块」数字，区块越大、这里显示的值越大（成正比）。
         psec = self._section(self.sidebar, "产能")
-        tk.Label(psec, text="该区划每地块每秒的产出（0 = 没有产出）：", bg=UI["panel"],
-                 fg=UI["text_dim"], anchor="w", justify="left",
+        tk.Label(psec, text="该区划每秒的产出（绝对值；导出时按地块数换算回每地块）：",
+                 bg=UI["panel"], fg=UI["text_dim"], anchor="w", justify="left",
                  wraplength=290).pack(fill="x", pady=(0, 4))
         self._zone_prod_vars: Dict[str, tk.StringVar] = {}
         self._zone_prod_entries: Dict[str, ttk.Entry] = {}
@@ -1517,7 +1254,7 @@ class EditorApp:
             entry.pack(side="left", padx=(4, 4))
             entry.bind("<Return>", lambda e, k=key: self.apply_zone_production(k))
             entry.bind("<FocusOut>", lambda e, k=key: self.apply_zone_production(k))
-            tk.Label(row, text="／地块／秒", bg=UI["panel"], fg=UI["text_dim"],
+            tk.Label(row, text="／秒", bg=UI["panel"], fg=UI["text_dim"],
                      anchor="w").pack(side="left")
             self._zone_prod_vars[key] = var
             self._zone_prod_entries[key] = entry
@@ -1647,7 +1384,7 @@ class EditorApp:
         """刷新「区划中心」那一栏：现在设在哪 / 按钮该叫什么、能不能按。
 
         ★ 按钮的动作对象是「属性面板正在看的那一格」（`self.inspect`）——
-          与阵营页的「把大本营设在这里」完全同一套交互。
+          先在列表里选区划，再左键点它的一个地块，最后按这颗按钮。
         """
         if getattr(self, "zone_center_btn", None) is None:
             return
@@ -1727,7 +1464,14 @@ class EditorApp:
                 var.set("—")
                 entry.configure(state="disabled")
                 continue
-            value = self.model.zone_production(zone.zone_id, key)
+            tiles = int(zone.tile_count)
+            if tiles <= 0:
+                # 没有地块就没有「每秒产出」可言（绝对值的分母是 0）→ 禁用，等划了地块再设
+                var.set("—")
+                entry.configure(state="disabled")
+                continue
+            # ★ 显示的是**绝对值** = 每地块产能 × 地块数（本轮改单位，见 `_build_zone_sidebar` 那段）
+            value = self.model.zone_production(zone.zone_id, key) * tiles
             # 整数不显示小数点（1 而不是 1.0）—— 与导出的 JSON 保持同一种写法
             var.set(("%d" % value) if abs(value - round(value)) < 1e-9 else ("%g" % value))
             entry.configure(state="normal")
@@ -1844,20 +1588,6 @@ class EditorApp:
         """
         return to_hex(blend(parse_color(UI["canvas_bg"]), parse_color(color_hex),
                             max(0.0, min(1.0, k))))
-
-    def faction_color(self, faction) -> str:
-        """阵营的标识色（编辑器里用来画大本营标记；游戏不读这个颜色）。
-
-        ★ 优先取 `config.json` 的 `colors.faction.<id>.main` —— 这样编辑器里看到的
-        「玩家是黄的、p2 是蓝的」与游戏里完全一致；config 里没有的 id 才用阵营自己存的颜色
-        （新建阵营时按 FACTION_PALETTE 分了一个）。
-        """
-        faction_cfg = self.color_cfg.get("faction")
-        if isinstance(faction_cfg, dict):
-            entry = faction_cfg.get(faction.faction_id)
-            if isinstance(entry, dict) and isinstance(entry.get("main"), str):
-                return to_hex(parse_color(entry["main"]))
-        return faction.color
 
     def blend_to_hex(self, bottom: Tuple[int, int, int, float], top_text, k: float) -> str:
         return to_hex(blend(bottom, parse_color(top_text), k))
@@ -2064,27 +1794,8 @@ class EditorApp:
                     else:
                         c.create_line(x1, y0, x1, y1, fill=line_color, width=2)
 
-        # 4) 各阵营的大本营：用**阵营色**画一个方块 + 阵营 id（哪个据点是谁的一眼看出）
-        for faction in self.model.factions:
-            base = self.model.faction_base_of(faction.faction_id)
-            if base is None or not self.model.in_bounds(*base):
-                continue
-            x0, y0 = self.tile_to_screen(*base)
-            if not (vx0 - 1 <= self.model.view_of(*base)[0] <= vx1 + 1
-                    and vy0 - 1 <= self.model.view_of(*base)[1] <= vy1 + 1):
-                continue                      # 不在视野里就别画（省图元）
-            color = self.faction_color(faction)
-            pad = max(2.0, size * 0.16)
-            c.create_rectangle(x0 + pad, y0 + pad, x0 + size - pad, y0 + size - pad,
-                               fill=color, outline="#101010", width=1)
-            label = faction.faction_id
-            if size >= 26:
-                c.create_text(x0 + size / 2, y0 + size / 2, text=label,
-                              fill=self.text_on(color),
-                              font=("Microsoft YaHei UI", max(7, int(size * 0.26)), "bold"))
-
         # 4c) 区划中心：每个区块一个，画成「品红菱形 + 中心点」——
-        #     与大本营的彩色方块、地块的方块形状都拉得开，一眼能认出这是中心。
+        #     与地块的方块形状拉得开，一眼能认出这是中心。
         #     ⚠️ 中心存的是**世界坐标**，所以先换数组下标再和视野比对（与区块那段同理）。
         for zone in self.model.zones:
             if zone.center is None:
@@ -2205,10 +1916,12 @@ class EditorApp:
         if self.space_held:
             self._pan_anchor = (event.x, event.y)
             return
-        # ★ Shift + 拖拽 = 框选（只在地块页签；别的页签上点格子各有各的意思）。
+        # ★ Shift + 拖拽 = 框选（**地块页 / 区块页**都能用）。
+        #   · 地块页：批量刷地形（空白格会被建出来）/ 改归属 / 删除；
+        #   · 区块页：把矩形里的已有地块整体划给某个区块（本轮新增）。
         #   按下时先「武装」这次拖动，拖动中画预览矩形，松手才落地 ——
         #   这样「拖到一半反悔」只要把鼠标拖回起点（下面按 DRAG_TOLERANCE 判定）。
-        if self.shift_is_held(event) and self.page == "tile":
+        if self.shift_is_held(event) and self.page in ("tile", "zone"):
             tile = self.screen_to_tile(event.x, event.y)
             if tile is not None and self._within_limit(*tile):
                 self._select_drag = (tile, tile)
@@ -2273,8 +1986,12 @@ class EditorApp:
                 return
             self.setup_selection(anchor, current)
             self.redraw()
-            self.status("已框选 %d 个地块（范围 %s）——在右侧批量改地形 / 归属，或批量删除"
-                        % (len(self.batch_tiles()), self._selection_text()))
+            tiles_n = len(self.batch_tiles())
+            bx0, by0, bx1, by1 = self.selection
+            blank = (abs(bx1 - bx0) + 1) * (abs(by1 - by0) + 1) - tiles_n
+            self.status("已框选 %d 个地块（范围 %s，另有 %d 个空白格）——"
+                        "右侧可批量刷地形（空白会建出来）/ 归属，或批量删除"
+                        % (tiles_n, self._selection_text(), blank))
             return
         was_panning = self._pan_anchor is not None
         self._pan_anchor = None
@@ -2312,21 +2029,24 @@ class EditorApp:
         x, y = tile
         if not self._within_limit(x, y):
             return
-        if self.page == "zone":
-            self._click_zone_page(x, y)
-            return
-        if self.page == "faction":
-            self._click_faction_page(x, y)
-            return
 
-        # ★ 正在框选时，左键点击 = 「结束框选、回到单格模式」：
-        #   设计师框一片地改完地形之后，下一步多半是点某一格看它的属性 ——
-        #   如果他点的是**选中区域里**的格子，就顺手把那一格开进面板（更符合直觉）。
+        # ★ 正在框选时，左键点击 = 「结束框选、回到单格模式」（**任何页签**都一样）：
+        #   地块页：顺手把这一格开进属性面板（设计师框完多半想点一格看属性）；
+        #   区块页：切回普通面板，并把这一格记成「面板正在看的那一格」（设中心用它）。
         if self.selection is not None:
             self.selection = None
-            self.show_tile_panel(x, y)
+            if self.page == "tile":
+                self.show_tile_panel(x, y)
+                self.status("(%d, %d)：已取消框选，右侧是这一格的属性" % (x, y))
+            else:
+                self.inspect = (x, y)
+                self.refresh_sidebar()
+                self.status("(%d, %d)：已取消框选" % (x, y))
             self.redraw()
-            self.status("(%d, %d)：已取消框选，右侧是这一格的属性" % (x, y))
+            return
+
+        if self.page == "zone":
+            self._click_zone_page(x, y)
             return
 
         if not self.model.exists(x, y):
@@ -2350,7 +2070,7 @@ class EditorApp:
             self.status("在 (%d, %d) 建了一个空白地块 —— 在右侧面板里选它的地形"
                         % (x, y))
         else:
-            self.status("(%d, %d)：右侧面板里可以改地形 / 归属 / 大本营，或删掉它"
+            self.status("(%d, %d)：右侧面板里可以改地形 / 归属，或删掉它"
                         % (x, y))
         self.show_tile_panel(x, y)
         self.redraw()
@@ -2393,8 +2113,8 @@ class EditorApp:
         ★ 只有「刷新侧边栏」这一步从整条重建换成了就地改值（地块数 + 图例）——
         行数没变，没必要重建那个 24 行的 Treeview。
         ★ 顺带把「面板正在看的那一格」设成这里（`self.inspect`）：区块页的
-          「把中心设在这一格」用的就是它 —— 与阵营页「选一格再设大本营」同一套交互。
-          所以划区块与选中心格是**同一个点击**，不用来回切页签。
+           「把中心设在这一格」用的就是它 —— 所以划区块与选中心格是**同一个点击**，
+           不用来回切页签。
         """
         if self.selected_zone is None:
             self.status("先在侧边栏的区块列表里选一个区块（没有就新建一个）")
@@ -2631,7 +2351,7 @@ class EditorApp:
             r.bind("<KeyPress-%s>" % key,
                    lambda e, k=key: self._shortcut(lambda: self.pan_arrow(k)))
         r.bind("<KeyPress-f>", lambda e: self._shortcut(lambda: (self.fit_view(), self.redraw())))
-        r.bind("<KeyPress-g>", lambda e: self._shortcut(self.goto_base))
+        r.bind("<KeyPress-g>", lambda e: self._shortcut(self.goto_zone_center))
 
         # ---- 空格：按住 = 暂时进入「拖画面」模式（左键拖动平移视野）----
         # ⚠️ 只绑在 canvas 上，**不**绑 root：tk 里按钮一旦拿到键盘焦点，
@@ -2709,25 +2429,15 @@ class EditorApp:
         self.inspect = None                 # 批量模式下不看单格属性
         self.refresh_sidebar()
 
-    def goto_base(self) -> None:
-        """`G`：镜头跳到**第一个阵营的大本营**（没有就退到第一个区划中心）。
-
-        ★ 老式大本营（JSON 里那个单数 base）已经删掉了，所以这里的目标只剩
-          「阵营大本营」与「区划中心」两种点位。
-        """
+    def goto_zone_center(self) -> None:
+        """`G`：镜头跳到**第一个设了中心的区划**（没有就什么都不做）。"""
         target = None
-        for faction in self.model.factions:
-            base = self.model.faction_base_of(faction.faction_id)
-            if base is not None:
-                target = base
+        for zone in self.model.zones:
+            if zone.center is not None:
+                target = zone.center
                 break
         if target is None:
-            for zone in self.model.zones:
-                if zone.center is not None:
-                    target = zone.center
-                    break
-        if target is None:
-            self.status("还没有设大本营 / 区划中心：在「阵营」或「区块」页签里选一格再按对应的按钮")
+            self.status("还没有设区划中心：在「区块」页签里选一格再按「把中心设在这一格」")
             return
         size = self.tile_px()
         cw, ch = self.canvas.winfo_width(), self.canvas.winfo_height()
@@ -2746,8 +2456,7 @@ class EditorApp:
         #    「点了必须有反应 / 不能卡」这条需求就靠这个提前返回。
         if page == self.page and self._sidebar_page == page:
             return
-        # ★ 换页签时把框选清掉：框选面板只属于「地块」页，带到别的页上只会两边打架
-        #   （区块页点一下会去划区块，阵营页点一下是选大本营的格子）。
+        # ★ 换页签时把框选清掉：框选面板只属于「地块」页，带到区块页上只会两边打架。
         self.selection = None
         self._select_drag = None
         self.page = page
@@ -2756,9 +2465,6 @@ class EditorApp:
         if page == "zone" and self.selected_zone is None and self.model.zones:
             self.selected_zone = self.model.zones[0].zone_id
             self.refresh_zone_panel()
-        if page == "faction" and self.selected_faction is None and self.model.factions:
-            self.selected_faction = self.model.factions[0].faction_id
-            self.refresh_faction_panel()
         self.redraw()
 
     def sync_tabs(self) -> None:
@@ -2796,7 +2502,7 @@ class EditorApp:
     def delete_tile(self, x: int, y: int) -> None:
         if not self.model.exists(x, y):
             return
-        # ★ 删一格会连带影响三件挂在它上面的东西：区块归属 / 阵营大本营 / 区划中心。
+        # ★ 删一格会连带影响两件挂在它上面的东西：区块归属 / 区划中心。
         #   所以先把「删之前它是谁的中心」记下来 —— 删完就查不到了。
         was_center_of = self.model.zone_center_owner(x, y)
         self.push_undo()
@@ -2813,9 +2519,6 @@ class EditorApp:
         #    否则面板上会一直写着旧的中心坐标，而它其实已经没了（实测踩过）。
         if was_center_of is not None and self.page == "zone":
             self.refresh_zone_panel()
-        # 阵营页签同理：删掉的是某个阵营的大本营那一格时，「大本营：还没设」要立刻反映出来
-        if self.page == "faction":
-            self.refresh_faction_panel()
         self.redraw()
 
     def on_zone_choice(self, x: int, y: int) -> None:
@@ -2912,8 +2615,7 @@ class EditorApp:
     def toggle_zone_center(self) -> None:
         """把「面板正在看的那一格」设成 / 取消**选中区划**的区划中心。
 
-        与阵营页的 `toggle_faction_base()` 同一套交互（先在列表里选区划，
-        再左键点它自己的一个地块，最后按这颗按钮；再按一次 = 取消）。
+        先在列表里选区划，再左键点它自己的一个地块，最后按这颗按钮；再按一次 = 取消。
 
         ⚠️ 一律**先改模型、成功了才压撤销栈**：反过来的话，一次失败的点击会往撤销栈里
            留一个空操作（按 Ctrl+Z 看起来「没反应」），而且 `push_undo()` 会顺手清空重做栈。
@@ -2951,11 +2653,8 @@ class EditorApp:
                     self.status("(%d, %d) 设为「%s」的区划中心" % (x, y, zone.name))
             else:
                 self.drop_undo()
-                if self.model.faction_base_owner(x, y) is not None:
-                    self.status("(%d, %d) 已经是某个阵营的大本营了 —— 换个格子" % (x, y))
-                else:
-                    self.status("(%d, %d) 不是「%s」的地块 —— 先把这一格划给它"
-                                % (x, y, zone.name))
+                self.status("(%d, %d) 不是「%s」的地块 —— 先把这一格划给它"
+                            % (x, y, zone.name))
         self.refresh_zone_panel()
         self.redraw()
 
@@ -2987,7 +2686,8 @@ class EditorApp:
             self.commit_undo()
             self.mark_dirty()
             preset = self.model.zone_kind_production(kind)
-            self.status("「%s」改成%s，产能同步为 粮食 %g / 黄金 %g / 人口 %g（每地块每秒）"
+            self.status("「%s」改成%s，产能同步为该种类的预设值（每地块 %g / %g / %g；"
+                        "输入框里已按地块数换算成 ／秒）"
                         % (zone.name, self.model.zone_kind_name(kind),
                            preset["food"], preset["gold"], preset["population"]))
         else:
@@ -2999,6 +2699,9 @@ class EditorApp:
 
     def apply_zone_production(self, key: str) -> None:
         """把输入框里的产能写回模型（Enter 或失焦触发）。
+
+        ★★ 输入框里是「**资源 / 秒**」绝对值（本轮改单位）；这里按地块数换算成
+           「每地块每秒」再写进模型 —— `production` 字段的语义没变（见 `_build_zone_sidebar`）。
 
         ★ 输入非法（空 / 乱打字）时**不改动原值**，只提示一句并把输入框恢复成存储值 ——
           否则「手滑打错一个字就把产能清零」。
@@ -3016,19 +2719,28 @@ class EditorApp:
             invalid = float(text) != float(text)          # NaN
         except (TypeError, ValueError):
             invalid = True
+        tiles = int(zone.tile_count)
         if invalid:
             self.status("%s填的不是数字，保持原值 %g"
-                        % (PRODUCTION_LABELS[key], self.model.zone_production(zone.zone_id, key)))
+                        % (PRODUCTION_LABELS[key],
+                           self.model.zone_production(zone.zone_id, key) * tiles))
             self._refresh_zone_production_row(zone)
             return
-        # 与 `toggle_zone_center` 同一套：快照取在改动之前，改了才压栈
+        if tiles <= 0:
+            # 绝对值除以 0 格没有意义 —— 先有地块才能谈「每秒产出」
+            self.status("「%s」还没有地块 —— 先在区块页签把地块划给它，再设产能" % zone.name)
+            self._refresh_zone_production_row(zone)
+            return
+        # ★ 绝对值 → 每地块：除以地块数
+        per_tile = float(text) / float(tiles)
         self.prepare_undo()
-        if self.model.set_zone_production(zone.zone_id, key, text):
+        if self.model.set_zone_production(zone.zone_id, key, per_tile):
             self.commit_undo()
             self.mark_dirty()
-            self.status("「%s」的%s = %g（每地块每秒）"
+            self.status("「%s」的%s = %g／秒（%g／地块／秒 × %d 格）"
                         % (zone.name, PRODUCTION_LABELS[key],
-                           self.model.zone_production(zone.zone_id, key)))
+                           self.model.zone_production(zone.zone_id, key) * tiles,
+                           self.model.zone_production(zone.zone_id, key), tiles))
         else:
             self.drop_undo()
         # 无论成败都把输入框刷成「模型里现在是什么」（夹过范围 / 非法输入都能看出来）
@@ -3137,7 +2849,6 @@ class EditorApp:
         self.current_path = None
         self.inspect = None
         self.selected_zone = None
-        self.selected_faction = None
         self.selection = None
         self._select_drag = None
         self._undo.clear()
@@ -3168,7 +2879,6 @@ class EditorApp:
         self.current_path = Path(path)
         self.inspect = None
         self.selected_zone = self.model.zones[0].zone_id if self.model.zones else None
-        self.selected_faction = self.model.factions[0].faction_id if self.model.factions else None
         self.selection = None
         self._select_drag = None
         self._undo.clear()
@@ -3178,14 +2888,13 @@ class EditorApp:
         self.fit_view()
         self.refresh_sidebar()
         self.redraw()
-        self.status("打开了 %s：%d×%d，%d 个地块，%d 个区块，%d 个阵营"
+        self.status("打开了 %s：%d×%d，%d 个地块，%d 个区块"
                     % (self.current_path.name, model.cols, model.rows,
-                       model.existing_count(), len(model.zones), len(model.factions)))
+                       model.existing_count(), len(model.zones)))
 
     def do_export(self) -> None:
-        # ★★ 先过硬规则（`blockers()`）：每个阵营必须有大本营、每个区划必须有中心。
-        #    这一层**不给「仍然导出」的选项** —— 用户要的是「保证」，
-        #    而一份缺大本营的地图在游戏里会直接建不出基地。
+        # ★★ 先过硬规则（`blockers()`）：每个区划必须有中心。
+        #    这一层**不给「仍然导出」的选项** —— 用户要的是「保证」。
         blockers = self.model.blockers()
         if blockers:
             messagebox.showerror("还不能导出", "先把这些补上：\n\n· " + "\n· ".join(blockers))
@@ -3234,14 +2943,11 @@ class EditorApp:
             "terrain": list(m.terrain),
             # 区块也要把「区划中心 + 产能 + 人口上限 + **区划种类**」一起存：否则
             # 「设了中心 / 改了产能 / 改了人口上限 / 换了种类 → Ctrl+Z」只会退掉地块，
-            # 那几项留在原地（与「设了大本营按 Ctrl+Z」同一类漏洞）。
+            # 那几项留在原地（同一类漏洞）。
             "zones": [(z.zone_id, z.name, set(z.tiles), z.center, dict(z.production),
                        z.population_cap, z.kind)
                       for z in m.zones],
             "zone_of": dict(m.zone_of),
-            # 阵营表与大本营也要进撤销栈（否则「设了大本营 → Ctrl+Z」会把它们漏掉）
-            "factions": [(f.faction_id, f.name, f.color) for f in m.factions],
-            "faction_bases": dict(m.faction_bases),
             # ⚠️ origin 必须一起存：撤销要能把「网格平移过」这件事也退回去，
             #    否则撤销之后同一格的世界坐标会整体偏移（区块 tiles 都是世界坐标，
             #    它们跟着快照一起回去，只有 origin 不回去就会全错位）。
@@ -3257,7 +2963,7 @@ class EditorApp:
         m.origin_x, m.origin_y = snap.get("origin", (0, 0))
         m.extra = copy.deepcopy(snap["extra"])
         m.zones = []
-        from .model import Faction, Zone
+        from .model import Zone
         for entry in snap["zones"]:
             # ⚠️ 老快照（本次改动之前压进栈的）只有 5~6 项：缺 population_cap / kind 时
             #    按默认处理，免得「撤销一份旧快照」直接抛异常。它只在同一个会话里存在，
@@ -3271,9 +2977,6 @@ class EditorApp:
             kind = entry[6] if len(entry) > 6 else self.zone_kind_default
             zone.kind = kind if kind in self.zone_kinds else self.zone_kind_default
             m.zones.append(zone)
-        for fid, name, color in snap.get("factions", []):
-            m.factions.append(Faction(fid, name, color))
-        m.faction_bases = dict(snap.get("faction_bases", {}))
         m._rebuild_center_index()     # ⚠️ center_of 是 center 的索引，换过 zone 必须重建
         m.recount()          # ⚠️ 绕过 set_existing 直接赋了 existing（见 MapModel.recount）
         self.model = m
@@ -3370,15 +3073,9 @@ class EditorApp:
             hint = self._limit_hint(x, y)
             if hint:
                 parts.append(hint)
-        # 统计：地块 / 区块 / 大本营（每个阵营一个）/ 区划中心（每个区块一个）
+        # 统计：地块 / 区块 / 区划中心（每个区块一个）
         parts.append("地块 %d" % model.existing_count())
         parts.append("区块 %d" % len(model.zones))
-        if model.factions:
-            set_bases = sum(1 for f in model.factions
-                            if model.faction_base_of(f.faction_id) is not None)
-            parts.append("大本营 %d/%d" % (set_bases, len(model.factions)))
-        else:
-            parts.append("大本营 0/0")
         parts.append("区划中心 %d/%d" % (len(model.center_of), len(model.zones)))
         if self.page == "zone" and self.selected_zone is not None:
             parts.append("正在划分：%s" % model.zone_display_name(self.selected_zone))

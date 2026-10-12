@@ -124,9 +124,9 @@ def selftest(project_dir: Path) -> int:
         print("[map] 找不到样例地图：%s" % sample)
         return 1
     model = mapfile.load_map(sample, cfg)
-    print("[load] %s -> %dx%d, tiles=%d, zones=%d, centers=%d, factions=%d" % (
+    print("[load] %s -> %dx%d, tiles=%d, zones=%d, centers=%d" % (
         sample.name, model.cols, model.rows, model.existing_count(),
-        len(model.zones), len(model.center_of), len(model.factions)))
+        len(model.zones), len(model.center_of)))
     print("[centers] %s" % ", ".join(
         "%s=(%d,%d)" % (z.name, z.center[0], z.center[1])
         for z in model.zones[:4] if z.center is not None))
@@ -140,7 +140,6 @@ def selftest(project_dir: Path) -> int:
     again = mapfile.dict_to_model(json.loads(text), cfg)
     same = (again.existing == model.existing and again.terrain == model.terrain
             and again.cols == model.cols and again.rows == model.rows
-            and again.faction_bases == model.faction_bases
             and sorted((z.zone_id, z.name, z.kind, sorted(z.tiles), z.center,
                         tuple(sorted(z.production.items()))) for z in again.zones)
             == sorted((z.zone_id, z.name, z.kind, sorted(z.tiles), z.center,
@@ -151,7 +150,7 @@ def selftest(project_dir: Path) -> int:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
-        prog="map_editor", description="DAEEM 地图编辑器（地块 / 区块 / 大本营）")
+        prog="map_editor", description="DAEEM 地图编辑器（地块 / 区块）")
     parser.add_argument("map", nargs="?", help="要打开的地图 JSON（可省）")
     parser.add_argument("--map", dest="map_opt", default="",
                         help="要打开的地图：地图 id（目录名）或 map.json 的路径（可省）")

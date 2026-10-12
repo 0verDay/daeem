@@ -285,8 +285,8 @@ def t_window(app, model) -> None:
 
     app.set_page("factions")
     app.root.update()
-    ok("玩家席位" in [getattr(s, "section_title", "") for s in app.sidebar.winfo_children()],
-       "阵营页有「玩家席位」那一栏")
+    titles = [getattr(s, "section_title", "") for s in app.sidebar.winfo_children()]
+    ok("敌友（边）" in titles, "阵营页有「敌友（边）」那一栏")
 
     app.set_page("place")
     app.root.update()
@@ -368,13 +368,17 @@ def t_canvas(app, model) -> None:
     right_click_canvas(app, f["spot"])
     eq(len(level(app).start_buildings), 1, "右键删掉建筑")
 
-    # ★ 大本营不算「已有」：在摆放页上删不掉（它只在阵营页里改）
-    base = f["player_base"]
+    # ★ 大本营改用「大本营」画笔在摆放页摆 / 右键删
     app.selection = None
-    right_click_canvas(app, base)
-    ok(any(e.fid == f["player"] or p.get("base") == base
-           for e in level(app).factions for p in level(app).players),
-       "★★ 大本营在摆放页上删不掉（右键点它什么都不发生）")
+    app.brush_kind = "base"
+    app.brush_faction = f["player"]
+    app.root.update()
+    app.place_at(f["spot"])
+    eq(level(app).ensure_faction(f["player"]).base, f["spot"],
+       "★ 「大本营」画笔把家写进 factions[].base")
+    right_click_canvas(app, f["spot"])
+    ok(level(app).ensure_faction(f["player"]).base is None,
+       "★★ 右键点大本营 → 在摆放页直接删掉")
 
     # ---- 缩放：以光标为锚点 ----
     app.set_page("place")

@@ -9,9 +9,10 @@
 
     python dev_gd_a/tools/map_editor/gen_arena_map.py
 
-生成的地图刻意做得和 frontier 明显不同（16×12、两个大本营都在北侧、
-区划是 2×2 而不是 6×4），这样「选择条上选了第二张图」在游戏里一眼就能看出
-真的换了地图，而不只是换了个名字。
+生成的地图刻意做得和 frontier 明显不同（16×12、区划是 2×2 而不是 6×4）——
+这样「选择条上选了第二张图」在游戏里一眼就能看出真的换了地图，而不只是换了个名字。
+
+★ 地图不再管阵营 / 大本营（那归战役编辑器按关卡管），所以这张图里没有它们。
 """
 
 from __future__ import annotations
@@ -61,13 +62,6 @@ LAYOUT = [
     "................",
 ]
 
-#: 两个阵营：玩家在西北、对家在东北（frontier 是西北 / 东南，容易一眼分辨）
-FACTIONS = [
-    ("p1", "p1", "#5AC8FF"),
-    ("p2", "p2", "#FFD166"),
-]
-BASES = {"p1": (2, 8), "p2": (13, 3)}
-
 #: 区划：2×2 均分（每块 8×6）—— frontier 用的是 6×4，所以两张图的区块结构也不同
 ZONE_NAMES = {(0, 0): "西北", (1, 0): "东北", (0, 1): "西南", (1, 1): "东南"}
 ZONE_KINDS = {
@@ -75,14 +69,14 @@ ZONE_KINDS = {
     (0, 1): "food", (1, 1): "population",
 }
 ZONE_PRODUCTION = {
-    "population": {"food": 0.0, "gold": 0.0, "population": 0.15},
-    "food": {"food": 1.0, "gold": 0.0, "population": 0.1},
-    "gold": {"food": 0.0, "gold": 1.0, "population": 0.1},
+    "population": {"food": 0.0, "gold": 0.0, "population": 0.012},
+    "food": {"food": 0.075, "gold": 0.0, "population": 0.01},
+    "gold": {"food": 0.0, "gold": 0.075, "population": 0.01},
 }
 
 
 def build_model(cfg: dict) -> MapModel:
-    """拼出占位地图的模型（地形 / 阵营 / 大本营 / 2×2 区划与中心）。"""
+    """拼出占位地图的模型（地形 / 2×2 区划与中心）。"""
     kinds = zone_kind_table(cfg)
     model = MapModel(COLS, ROWS, kinds, zone_kind_default(cfg, kinds))
 
@@ -98,14 +92,7 @@ def build_model(cfg: dict) -> MapModel:
         for x, ch in enumerate(row[:COLS]):
             model.set_terrain(x, y, legend.get(ch, "grass"))
 
-    # ---- 阵营与大本营
-    for fid, name, color in FACTIONS:
-        model.add_faction(fid, name, color)
-    for fid, tile in BASES.items():
-        if not model.set_faction_base(fid, tile[0], tile[1]):
-            raise SystemExit("大本营设不上：%s %s" % (fid, tile))
-
-    # ---- 区块：2×2 均分，每块按行优先挑一个中心（不与大本营同格）
+    # ---- 区块：2×2 均分，每块按行优先挑一个中心
     half_x, half_y = COLS // 2, ROWS // 2
     zone_ids: dict = {}
     for (cx, cy), name in ZONE_NAMES.items():
@@ -145,9 +132,9 @@ def main() -> int:
     model.extra["placeholder"] = True
 
     mapfile.save_map(OUT_PATH, model)
-    print("[ok] %s -> %d×%d, tiles=%d, zones=%d, factions=%d"
+    print("[ok] %s -> %d×%d, tiles=%d, zones=%d"
           % (OUT_PATH, model.cols, model.rows, model.existing_count(),
-             len(model.zones), len(model.factions)))
+             len(model.zones)))
 
     # 回读一遍：确认导出的文件真能被编辑器读回来（格式自洽）
     again = mapfile.load_map(OUT_PATH, cfg)

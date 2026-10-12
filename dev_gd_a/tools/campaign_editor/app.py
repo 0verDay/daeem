@@ -16,7 +16,7 @@
 
     ① 战役    战役名 / 简介 / 默认模式 / 关卡顺序（上下箭头 + 增删关卡）
     ② 关卡    当前关的名字 / 模式 / 地图下拉 / 目标（区划 + 秒数）/ 额外失败条件
-    ③ 阵营    玩家席位 + 每一方一行：大本营（开局部队去 ④ 摆放）。
+    ③ 阵营    敌友（边）+ 每一方一行（★可玩徽标）；大本营去 ④ 摆放页摆（开局部队也去 ④）。
                ★ AI（类型 / 进攻目标 / 生成区域 / 参数）**不在编辑器里改**（用户要求）——
                  字段原样保留（读进来 / 写回去都不丢），要改 AI 就手改关卡 JSON
     ④ 摆放    画布（点一下放东西、右键删、滚轮缩放、中键或**空格 + 左键拖动**平移、
@@ -67,6 +67,7 @@ from .model import (
     FAIL_ZONE_LOST,
     MODE_COOP,
     MODE_SOLO,
+    OBJ_CAPTURE_ZONE,
     OBJ_HOLD_ZONE,
     SEV_BLOCK,
     SEV_WARN,
@@ -137,7 +138,7 @@ UI = {
 PAGES: Tuple[Tuple[str, str, str], ...] = (
     ("campaign", "战役", "战役页：名字 / 简介 / 默认模式 / 关卡顺序（上下箭头排、增删关卡）"),
     ("level", "关卡", "关卡页：当前关的名字 / 模式 / 地图 / 目标 / 额外失败条件"),
-    ("factions", "阵营", "阵营页：玩家席位 + 每一方的大本营（AI 不在编辑器里改，见 README）"),
+    ("factions", "阵营", "阵营页：敌友（边）+ 每一方一行；大本营去 ④ 摆放页摆（AI 不在编辑器里改，见 README）"),
     ("place", "摆放", "摆放页：画布上点一下放将领/单位/建筑；右键删；滚轮缩放；中键或空格+左键拖动；「设进攻目标」模式"),
     ("zone", "区划", "区划页：开局每一块地归哪个阵营（关卡覆盖地图的 zone_list[].owner）"),
     ("reddot", "红点", "红点页：选生成地块 / 生成频率与将领数（函数表达式）/ 将领类型权重 / 共享附属单位规格"),
@@ -1017,12 +1018,10 @@ class EditorApp:
                         tuple(self._map_label(m) for m in sorted(self.maps)),
                         self._commit_level_map)
 
-        obj = lv.objective() or {}
-        self.lv_obj_zone_var = tk.StringVar(value=self._zone_label(int(obj.get("zone", -1))))
-        self._combo_row(form, "目标区划", self.lv_obj_zone_var, self._zone_choices(),
-                        self._commit_objective_zone)
-        self.lv_obj_sec_var = tk.StringVar(value=fmt_sec(float(obj.get("hold_sec", 0.0))))
-        self._form_row(form, "守住秒数", self.lv_obj_sec_var, self._commit_objective_sec)
+        tk.Label(form, text="玩家目标（每个可玩阵营一条；可玩阵营在①战役页勾选）",
+                 bg=UI["panel"], fg=UI["text_dim"],
+                 font=("Microsoft YaHei UI", 9)).pack(anchor="w", pady=(6, 2))
+        self._objective_rows(form)
 
         tk.Label(form, text="额外失败条件（第一批只支持「指定区划失守」）", bg=UI["panel"],
                  fg=UI["text_dim"], font=("Microsoft YaHei UI", 9)).pack(anchor="w", pady=(12, 4))
@@ -1161,7 +1160,7 @@ class EditorApp:
             self.target_button = self._button(bar, "设进攻目标…", self.do_target_mode,
                                               bg=UI["panel_alt"], fg=UI["warn"])
             self.target_button.pack(side="left", padx=10)
-            bar_hint = ("左键放 / 选　右键删（大本营不在这里删）　"
+            bar_hint = ("左键放 / 选　右键删（大本营也能右键删）　"
                         "中键或空格+左键拖动平移　滚轮缩放　Esc 退出目标模式")
         else:
             bar_hint = ("左键点空地 = 加/移出红点生成地块　右键 = 移出　"
@@ -1665,12 +1664,29 @@ class EditorApp:
             self._toggle_reddot_tile(cell, force_remove=True)
             self._focus_canvas()
             return
+        # ★ 大本营先在关卡层找 —— 它不在 start_units / start_buildings 里。
+        base_fid = self._level_base_faction_at(cell)
+        if base_fid is not None:
+            self.set_faction_field(base_fid, "base", None)
+            self.status("清掉了「%s」的大本营（(%d,%d)）" % (base_fid, cell[0], cell[1]))
+            self._focus_canvas()
+            return
         hit = self._hit_test(cell)
         if hit is None:
-            self.status("(%d,%d) 上没有可删的东西（大本营在「阵营」页里改）" % cell)
+            self.status("(%d,%d) 上没有可删的东西" % cell)
             return
         self.delete_entry(hit)
         self._focus_canvas()            # 同上：重建之后把键盘焦点交回新画布
+
+    def _level_base_faction_at(self, cell: Tuple[int, int]) -> Optional[str]:
+        """关卡层（`factions[].base`）在这一格设过大本营的那一方；没有 → None。"""
+        lv = self.level()
+        if lv is None:
+            return None
+        for e in lv.factions:
+            if e.base == cell:
+                return e.fid
+        return None
 
     def _hit_test(self, cell: Tuple[int, int]) -> Optional[Tuple[str, int]]:
         lv = self.level()
@@ -1756,7 +1772,14 @@ class EditorApp:
             return
         faction = self.brush_faction or (self.all_faction_ids()[0]
                                         if self.all_faction_ids() else "")
-        if self.brush_kind == "building":
+        if self.brush_kind == "base":
+            if not faction:
+                self.status("先选「归属」阵营，再摆大本营")
+                return
+            lv.ensure_faction(faction).base = (cell[0], cell[1])
+            self.selection = None
+            self.status("设了「%s」的大本营在 (%d,%d)" % (faction, cell[0], cell[1]))
+        elif self.brush_kind == "building":
             entry = BuildingEntry(self.brush_value or "tower", cell[0], cell[1], faction)
             lv.start_buildings.append(entry)
             lv.mark_declared("start_buildings")
@@ -1791,7 +1814,7 @@ class EditorApp:
         self.refresh_all()
 
     def delete_entry(self, tag: Tuple[str, int]) -> None:
-        """右键删；★ **大本营不算「已有」**，所以不在这里删（见 6.3）。"""
+        """右键删单位 / 建筑；大本营走 `on_right_click` 里那条单独的分支（`factions[].base`）。"""
         lv = self.level()
         if lv is None:
             return
@@ -2017,7 +2040,7 @@ class EditorApp:
         lv.name = level_id
         self.current_level_id = lv.level_id
         self.refresh_all()
-        self.status("新建了关卡「%s」（地图 %s）—— 记得填席位 / 目标 / 大本营"
+        self.status("新建了关卡「%s」（地图 %s）—— 记得配目标（每个可玩阵营一条）+ 摆大本营"
                     % (lv.level_id, map_id))
 
     def do_delete_level(self) -> None:
@@ -2063,13 +2086,8 @@ class EditorApp:
         if new_mode == lv.mode:
             return
         lv.mode = new_mode
-        # ★ 「模式一改，玩家席位数跟着变」（6.2）：合作补到 2 个席位、单人裁到 1 个。
-        want = 2 if new_mode == MODE_COOP else 1
-        while len(lv.players) < want:
-            lv.add_player("")
-        while len(lv.players) > want:
-            lv.remove_player(len(lv.players) - 1)
-        self.status("模式改成「%s」：席位现在是 %d 个" % (self.lv_mode_var.get(), len(lv.players)))
+        # ★ 玩家席位不再手填：由「可玩阵营」自动派生（见 `sync_players_from_playable`）。
+        self.status("模式改成「%s」" % self.lv_mode_var.get())
         self._after_change()
 
     def _commit_level_map(self) -> None:
@@ -2086,33 +2104,90 @@ class EditorApp:
         if self.page == "place":
             self.fit_view()
 
-    def _commit_objective_zone(self) -> None:
+    # ---- ★ 玩家目标（可变长度：每个可玩阵营一行）----
+
+    def _objective_rows(self, parent) -> None:
+        """② 关卡页的「玩家目标」列表：**每个可玩阵营一行**（守 / 攻 + 区划 + 秒数）。
+
+        ★ 一关可以有两个对立的可玩阵营（蓝方守 c1 / 红方攻 c1）—— 本列表就是
+          给每个可玩阵营各配一条 `for=<阵营>` 的目标，写进 `objectives[]`。
+        """
         lv = self.level()
         if lv is None:
             return
-        zid = self._zone_id_from_label(self.lv_obj_zone_var.get())
-        if not lv.objectives:
-            lv.objectives.append({"kind": OBJ_HOLD_ZONE, "zone": zid, "hold_sec": 90.0})
-        else:
-            lv.objectives[0]["kind"] = OBJ_HOLD_ZONE
-            lv.objectives[0]["zone"] = zid
-        self.status("目标区划 = %s" % self._zone_label(zid))
+        playable = self.model.playable_ids()
+        if not playable:
+            self._hint(parent, "★ 还没有「可玩阵营」—— 去①战役页给阵营勾上「可玩」，"
+                               "这里就会为每一方各出现一行目标")
+            return
+        for fid in playable:
+            o = lv.objective_for(fid) or {}
+            row = tk.Frame(parent, bg=UI["panel"])
+            row.pack(side="top", fill="x", pady=2)
+            tk.Label(row, text="%s %s" % (fid, self.model.faction_name(fid)),
+                     width=14, anchor="w", bg=UI["panel"],
+                     fg=self.faction_color(fid)).pack(side="left")
+            kind = str(o.get("kind", "")) or OBJ_HOLD_ZONE
+            kcombo = ttk.Combobox(row, values=("守住", "攻占"), width=6, state="readonly")
+            kcombo.set("守住" if kind == OBJ_HOLD_ZONE else "攻占")
+            kcombo.pack(side="left")
+            kcombo.bind("<<ComboboxSelected>>",
+                        lambda e, f=fid, c=kcombo: self._set_objective_kind(f, c.get()))
+            zcombo = ttk.Combobox(row, values=self._zone_choices(), width=16, state="readonly")
+            zcombo.set(self._zone_label(int(o.get("zone", -1))))
+            zcombo.pack(side="left", padx=4)
+            zcombo.bind("<<ComboboxSelected>>",
+                        lambda e, f=fid, c=zcombo: self._set_objective_zone_for(f, c.get()))
+            entry = ttk.Entry(row, width=8)
+            entry.insert(0, fmt_sec(float(o.get("hold_sec", 0.0))))
+            entry.pack(side="left")
+            entry.commit_action = (lambda f=fid, en=entry:      # type: ignore[attr-defined]
+                                   self._set_objective_sec_for(f, en.get()))
+            entry.bind("<Return>", lambda e, en=entry: en.commit_action())
+            entry.bind("<FocusOut>", lambda e, en=entry: en.commit_action())
+            if kind != OBJ_HOLD_ZONE:
+                entry.configure(state="disabled")   # 「攻占」不需要秒数
+
+    def _set_objective_kind(self, fid: str, label: str) -> None:
+        lv = self.level()
+        if lv is None:
+            return
+        o = lv.objective_for(fid) or {}
+        kind = OBJ_CAPTURE_ZONE if label == "攻占" else OBJ_HOLD_ZONE
+        sec = float(o.get("hold_sec", 0.0))
+        if kind == OBJ_HOLD_ZONE and sec <= 0.0:
+            sec = 90.0
+        lv.set_objective_for(fid, kind, int(o.get("zone", -1)), sec)
+        self.status("「%s」的目标 = %s" % (fid, label))
         self._after_change()
 
-    def _commit_objective_sec(self) -> None:
+    def _set_objective_zone_for(self, fid: str, label: str) -> None:
         lv = self.level()
         if lv is None:
             return
-        text = self.lv_obj_sec_var.get().strip()
-        try:
-            sec = float(text)
-        except ValueError:
-            self.status("守住秒数要填数字（现在写的是「%s」）" % text)
+        o = lv.objective_for(fid) or {}
+        kind = str(o.get("kind", "")) or OBJ_HOLD_ZONE
+        lv.set_objective_for(fid, kind, self._zone_id_from_label(label),
+                             float(o.get("hold_sec", 0.0)))
+        self._after_change()
+
+    def _set_objective_sec_for(self, fid: str, text: str) -> None:
+        lv = self.level()
+        if lv is None:
             return
-        if not lv.objectives:
-            lv.objectives.append({"kind": OBJ_HOLD_ZONE, "zone": -1, "hold_sec": sec})
-        else:
-            lv.objectives[0]["hold_sec"] = sec
+        try:
+            sec = float(str(text).strip())
+        except ValueError:
+            self.status("守住秒数要填数字")
+            self.refresh_all()
+            return
+        o = lv.objective_for(fid) or {}
+        kind = str(o.get("kind", "")) or OBJ_HOLD_ZONE
+        if kind != OBJ_HOLD_ZONE:
+            self.status("「攻占」不需要秒数")
+            self.refresh_all()
+            return
+        lv.set_objective_for(fid, kind, int(o.get("zone", -1)), sec)
         self._after_change()
 
     def do_add_fail(self) -> None:
@@ -2150,35 +2225,6 @@ class EditorApp:
     # ==================================================================
     # ③ 阵营与 AI 页的动作
     # ==================================================================
-
-    def set_player_faction(self, index: int, fid: str) -> None:
-        lv = self.level()
-        if lv is None:
-            return
-        while len(lv.players) <= index:
-            lv.add_player("")
-        lv.players[index]["faction"] = fid
-        self._after_change()
-
-    def set_player_base(self, index: int, point: Optional[Tuple[int, int]]) -> None:
-        lv = self.level()
-        if lv is None:
-            return
-        while len(lv.players) <= index:
-            lv.add_player("")
-        lv.players[index]["base"] = point
-        self._after_change()
-
-    def toggle_playable(self, fid: str) -> None:
-        entry = None
-        for e in self.model.factions:
-            if str(e.get("id", "")) == fid:
-                entry = e
-                break
-        if entry is None:
-            entry = self.model.ensure_faction(fid, fid, self.faction_color(fid))
-        entry["playable"] = not bool(entry.get("playable", False))
-        self._after_change()
 
     def set_faction_field(self, fid: str, field: str, value: Any) -> None:
         lv = self.level()
@@ -2314,11 +2360,17 @@ class EditorApp:
         self._hint(section, "默认模式 = 「新建关卡」时新关卡的初始模式（关卡自己还能改）")
 
         section2 = self._section("阵营表（campaign.json 的 factions[]）",
-                                 "playable = 玩家能选谁；不选的那些由 AI 驱动")
+                                 "★「可玩」= 玩家能选谁（单人关可跨边选）；"
+                                 "不勾的那些由 AI 驱动")
         for e in self.model.factions:
             fid = str(e.get("id", ""))
+            is_playable = bool(e.get("playable", False))
             row = tk.Frame(section2, bg=UI["panel"])
             row.pack(side="top", fill="x", pady=2)
+            tk.Label(row, text=("★可玩" if is_playable else "　"),
+                     width=6, anchor="w", bg=UI["panel"],
+                     fg=(UI["accent"] if is_playable else UI["text_dim"]),
+                     font=("Microsoft YaHei UI", 9, "bold")).pack(side="left")
             tk.Label(row, text=fid, width=8, anchor="w", bg=UI["panel"],
                      fg=self.faction_color(fid)).pack(side="left")
             self._entry_cell(row, "名字", str(e.get("name", "")),
@@ -2327,15 +2379,10 @@ class EditorApp:
             self._entry_cell(row, "颜色", str(e.get("color", "")),
                              lambda text, f=fid: self._set_campaign_faction(f, "color", text),
                              width=10).pack(side="left")
-            self._check_cell(row, "可玩", bool(e.get("playable", False)),
+            self._check_cell(row, "可玩", is_playable,
                              lambda on, f=fid: self._set_campaign_faction(f, "playable", on))
         self._entry_cell(section2, "加一方 id", "", self._add_campaign_faction)
         self._hint(section2, "加一方的 id 会同时出现在这一关的阵营页里（点「可玩」决定谁能被选）")
-
-        section3 = self._section("关卡")
-        self._entry_cell(section3, "新关卡 id", "",
-                         lambda text: self._new_level_quick(text))
-        self._hint(section3, "新关卡用当前关的地图；排顺序、删关卡在左边的列表上做")
 
     def _commit_campaign_name(self, text: str) -> None:
         text = str(text).strip()
@@ -2369,18 +2416,6 @@ class EditorApp:
         self._after_change()
         self.status("加了阵营 %s" % fid)
 
-    def _new_level_quick(self, text: str) -> None:
-        lid = str(text).strip()
-        if not lid:
-            return
-        map_id = self.level().map_id if self.level() else (sorted(self.maps)[0]
-                                                           if self.maps else "")
-        lv = self.model.new_level(lid, map_id)
-        lv.name = lv.level_id
-        self.current_level_id = lv.level_id
-        self._after_change()
-        self.status("新建了关卡 %s" % lv.level_id)
-
     # ---- ② 关卡页侧栏 ----
 
     def _sidebar_level(self) -> None:
@@ -2388,7 +2423,7 @@ class EditorApp:
         if lv is None:
             self._section("关卡").pack_forget()
             return
-        section = self._section("当前关", "目标第一版**只有**一种：「守住某个区划 N 秒」")
+        section = self._section("当前关", "目标按可玩阵营逐条配：「守住某区划 N 秒」/「攻占某区划」")
         self._entry_cell(section, "名字", lv.name,
                          lambda text: self._set_level_name(text))
         self._combo_cell(section, "模式",
@@ -2398,12 +2433,11 @@ class EditorApp:
                          tuple(self._map_label(m) for m in sorted(self.maps)),
                          self._set_level_map)
 
-        section2 = self._section("目标与失败条件")
-        obj = lv.objective() or {}
-        self._combo_cell(section2, "目标区划", self._zone_label(int(obj.get("zone", -1))),
-                         self._zone_choices(), self._set_objective_zone)
-        self._entry_cell(section2, "守住秒数", fmt_sec(float(obj.get("hold_sec", 0.0))),
-                         self._set_objective_sec)
+        section2 = self._section("玩家目标",
+                                 "每个可玩阵营一条（守住 / 攻占 + 区划 + 秒数）；"
+                                 "可玩阵营在①战役页勾选")
+        self._objective_rows(section2)
+        self._hint(section2, "额外失败条件（「大本营被拆」那条常开）：")
         for i, f in enumerate(lv.fail_conditions):
             row = tk.Frame(section2, bg=UI["panel"])
             row.pack(side="top", fill="x", pady=1)
@@ -2433,11 +2467,7 @@ class EditorApp:
         if lv is None:
             return
         lv.mode = MODE_COOP if str(text).strip() == "双人合作" else MODE_SOLO
-        want = 2 if lv.mode == MODE_COOP else 1
-        while len(lv.players) < want:
-            lv.add_player("")
-        while len(lv.players) > want:
-            lv.remove_player(len(lv.players) - 1)
+        # ★ 玩家席位不再手填：由「可玩阵营」自动派生。
         self._after_change()
 
     def _set_level_map(self, text: str) -> None:
@@ -2446,34 +2476,6 @@ class EditorApp:
             return
         lv.map_id = self._map_id_from_label(text)
         lv.mark_declared("map")
-        self._after_change()
-
-    def _set_objective_zone(self, text: str) -> None:
-        lv = self.level()
-        if lv is None:
-            return
-        zid = self._zone_id_from_label(text)
-        if not lv.objectives:
-            lv.objectives.append({"kind": OBJ_HOLD_ZONE, "zone": zid, "hold_sec": 90.0})
-        else:
-            lv.objectives[0]["kind"] = OBJ_HOLD_ZONE
-            lv.objectives[0]["zone"] = zid
-        self._after_change()
-
-    def _set_objective_sec(self, text: str) -> None:
-        lv = self.level()
-        if lv is None:
-            return
-        try:
-            sec = float(str(text).strip())
-        except ValueError:
-            self.status("守住秒数要填数字")
-            self.refresh_all()
-            return
-        if not lv.objectives:
-            lv.objectives.append({"kind": OBJ_HOLD_ZONE, "zone": -1, "hold_sec": sec})
-        else:
-            lv.objectives[0]["hold_sec"] = sec
         self._after_change()
 
     def _set_fail_zone(self, index: int, text: str) -> None:
@@ -2497,31 +2499,6 @@ class EditorApp:
         lv = self.level()
         if lv is None:
             return
-        # ---- 玩家席位（1 或 2 个）----
-        seats = self._section("玩家席位",
-                              "顺序 = 席位顺序（房主第 1 个、客机第 2 个）；"
-                              "合作关必须是恰好 2 个，且两方要互为盟友")
-        choices = self.all_faction_ids()
-        for i, p in enumerate(lv.players):
-            row = tk.Frame(seats, bg=UI["panel"])
-            row.pack(side="top", fill="x", pady=2)
-            tk.Label(row, text="席位 %d" % (i + 1), width=12, anchor="w", bg=UI["panel"],
-                     fg=UI["text"]).pack(side="left")
-            combo = ttk.Combobox(row, values=choices, width=12, state="readonly")
-            combo.set(str(p.get("faction", "")))
-            combo.pack(side="left")
-            combo.bind("<<ComboboxSelected>>",
-                       lambda e, idx=i, c=combo: self.set_player_faction(idx, c.get()))
-            base = p.get("base")
-            entry = ttk.Entry(row, width=12)
-            entry.insert(0, "" if base is None else "%d,%d" % (base[0], base[1]))
-            entry.pack(side="left", padx=4)
-            entry.commit_action = (lambda idx=i, en=entry:            # type: ignore[attr-defined]
-                                   self._commit_player_base(idx, en.get()))
-            entry.bind("<Return>", lambda e, en=entry: en.commit_action())
-            entry.bind("<FocusOut>", lambda e, en=entry: en.commit_action())
-        self._hint(seats, "大本营留空 = 用地图的 `faction_bases`；填 `x,y` 就覆盖它")
-
         # ---- 敌友（边）：同一条边互为友军；不同边 / 没分边的互相敌对 ----
         asec = self._section("敌友（边）",
                              "同一条边里的阵营互为友军；不同边的、以及没分边的阵营互相敌对"
@@ -2529,9 +2506,11 @@ class EditorApp:
         self._refresh_ally_rows(asec)
 
         # ---- 每一方一行 ----
+        playable = set(self.model.playable_ids())
         for fid in self.all_faction_ids():
             e = lv.faction(fid)
-            title = "%s %s" % (fid, self.model.faction_name(fid))
+            title = "%s %s%s" % (fid, self.model.faction_name(fid),
+                                 "　★可玩" if fid in playable else "")
             section = self._section(title,
                                     "关卡 factions[] 里写了这一方 = 这一关它被点名" if e
                                     else "这一关没点名它（导出时不会为它写一份）")
@@ -2539,8 +2518,9 @@ class EditorApp:
                 self._button(section, "在这关点名这一方",
                              lambda f=fid: self._point_faction(f)).pack(anchor="w")
                 continue
-            self._entry_cell(section, "大本营", e.base_label(),
-                             lambda text, f=fid: self._set_base_text(f, text))
+            # ★ 大本营已统一到「摆放」页画布摆放 —— 这里只显示当前值。
+            self._hint(section, "★ 大本营在「摆放」页摆（画笔选「大本营」，归属选这一方）；"
+                                "现在：%s" % e.base_label())
             # ---- ★★ 开局附属兵在这里摆（不在「阵营」页，也不再由 config 决定）----
             self._hint(section, "★ 开局带几个附属兵：**去「摆放」页一个一个摆**（画笔选「附属兵」，"
                                 "放到地上并选它属于哪位将领）。没摆 = 这一关这一方开局没有附属兵；"
@@ -2737,18 +2717,6 @@ class EditorApp:
         lv.ensure_faction(fid)
         self._after_change()
 
-    def _set_base_text(self, fid: str, text: str) -> None:
-        text = str(text).strip()
-        if not text or text == "—":
-            self.set_faction_field(fid, "base", None)
-            return
-        point = _parse_point(text)
-        if point is None:
-            self.status("大本营要写成 `x,y`（清空 = 用地图的）")
-            self.refresh_all()
-            return
-        self.set_faction_field(fid, "base", point)
-
     def _set_float(self, fid: str, field: str, text: str) -> None:
         try:
             value = float(str(text).strip())
@@ -2766,15 +2734,19 @@ class EditorApp:
             return
         section = self._section("画笔", "左键点空格 = 放一个；右键点它 = 删；点已有的 = 选中")
         self._combo_cell(section, "放什么", self._brush_label(),
-                         ("单位", "将领", "建筑"), self._set_brush_kind)
-        values = (self.config.unit_types if self.brush_kind == "unit"
-                  else self.config.building_types if self.brush_kind == "building"
-                  else ["general"])
-        self._combo_cell(section, "种类", self.brush_value,
-                         tuple(values) or ("（config 里没有）",), self._set_brush_value)
+                         ("单位", "将领", "建筑", "大本营"), self._set_brush_kind)
+        if self.brush_kind != "base":
+            values = (self.config.unit_types if self.brush_kind == "unit"
+                      else self._brush_building_types() if self.brush_kind == "building"
+                      else ["general"])
+            self._combo_cell(section, "种类", self.brush_value,
+                             tuple(values) or ("（config 里没有）",), self._set_brush_value)
         factions = self.all_faction_ids()
         self._combo_cell(section, "归属", self.brush_faction or (factions[0] if factions else ""),
                          tuple(factions) or ("（没有阵营）",), self._set_brush_faction)
+        if self.brush_kind == "base":
+            self._hint(section, "★ 「大本营」画笔：左键点格 = 给「归属」那一方设大本营；"
+                                "右键点已有的大本营 = 清掉")
 
         if self.target_mode_faction is not None:
             self._hint(section, "★ 正在「设进攻目标」模式：「%s」—— 点区划 / 空格改它的目标，Esc 退出"
@@ -2782,7 +2754,7 @@ class EditorApp:
 
         # ---- 地图上已有的东西 ----
         section2 = self._section("地图上已有的（关卡层）",
-                                 "大本营不在这里 —— 它在「阵营」页里改，免得删出「没有大本营」的关卡")
+                                 "这里列开局摆的单位 / 建筑；大本营用「大本营」画笔在画布上摆 / 右键删")
         self.entry_tree = ttk.Treeview(section2, columns=("what", "who", "pos"),
                                        show="headings", height=10, selectmode="browse")
         for key, header, width in (("what", "什么", 110), ("who", "归属/种类", 130),
@@ -2874,16 +2846,22 @@ class EditorApp:
 
     def _brush_label(self) -> str:
         return {"unit": "单位", "general": "将领",
-                "building": "建筑"}.get(self.brush_kind, "单位")
+                "building": "建筑", "base": "大本营"}.get(self.brush_kind, "单位")
+
+    def _brush_building_types(self) -> List[str]:
+        """「建筑」画笔能放的种类：**剔除 `base`**（大本营走专门的「大本营」画笔）。"""
+        return [t for t in self.config.building_types if t != "base"]
 
     def _set_brush_kind(self, label: str) -> None:
         self.brush_kind = {"单位": "unit", "将领": "general",
-                           "建筑": "building"}.get(label, "unit")
+                           "建筑": "building", "大本营": "base"}.get(label, "unit")
         if self.brush_kind == "unit":
             self.brush_value = self.config.unit_types[0] if self.config.unit_types else "enemy"
         elif self.brush_kind == "building":
-            self.brush_value = (self.config.building_types[0]
-                                if self.config.building_types else "tower")
+            bt = self._brush_building_types()
+            self.brush_value = bt[0] if bt else "tower"
+        elif self.brush_kind == "base":
+            self.brush_value = "base"
         else:
             self.brush_value = "general"
         self.refresh_all()
@@ -3521,7 +3499,7 @@ class EditorApp:
         for line in ("不做撤销 / 重做（数据都在 JSON 里，改坏了重新载入）",
                      "不做剧本预览（要预览就进游戏跑一关）",
                      "摆放不做自动避让（允许压在中心格上，但导出会拦）",
-                     "不做「每方一份目标」（可玩阵营必须同方）",
+                     "单人关可跨边选阵营；合作关要求两个可玩阵营同方",
                      "不做「这一关大概多久成形」的估算提示（用户明确不要）",
                      "地形 / 区划 / 中心归地图编辑器；兵种 / 建筑数值归单位编辑器"):
             self._hint(section2, "· " + line)

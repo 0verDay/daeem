@@ -74,14 +74,17 @@ def eq(actual, expected, label: str) -> None:
 #   随游戏发布的那张老图**已经被删掉了**（用户要求只留 test_map.json），
 #   而这一节要钉的是「**老格式**（没有 exists / zones / 区划中心）读进来行为一字不变」，
 #   所以样本必须在测试里自给自足。
-#   形状照抄老图的定义：24×16 全草地，(4,4) 森林、(15,3) 山地，单数 `base`。
+#   形状照抄老图的定义：24×16 全草地，(4,4) 森林、(15,3) 山地，单数 `base`（已废弃）。
 LEGACY_COLS = 24
 LEGACY_ROWS = 16
 LEGACY_BASE = (12, 8)
 
 
 def legacy_field() -> dict:
-    """一张 24×16 的老格式地图（只有 cols/rows/layout + 已废弃的单数 base）。
+    """一张 24×16 的老格式地图（只有 cols/rows/layout）。
+
+    老图上还带着 `base`（单数大本营）/ `factions` / `faction_bases` —— 这三个字段现在
+    **整个废弃**（阵营与大本营归战役编辑器），编辑器读到时当场丢掉、导出绝不写。
 
     ★ 还带上「编辑器不管、但要原样带过去」的那几个字段
       （`general_spawns` / `buildings`）—— 老图里本来就有它们，
@@ -99,6 +102,9 @@ def legacy_field() -> dict:
         "rows": LEGACY_ROWS,
         "layout": layout,
         "base": list(LEGACY_BASE),
+        # ★★ 废弃字段：阵营表与各方大本营（现在归战役编辑器）—— 导入丢、导出不写
+        "factions": [{"id": "p1", "name": "玩家", "color": "#ffd166"}],
+        "faction_bases": {"p1": list(LEGACY_BASE)},
         "general_spawns": [[1, 3], [3, 3], [3, 1]],
         "buildings": [
             {"type": "tower", "x": 14, "y": 12, "owner": "enemy"},
@@ -155,9 +161,10 @@ def t_legacy_import() -> None:
     eq(model.terrain_at(4, 4), "forest", "(4,4) 是森林（layout 第 5 行 '....^'）")
     eq(model.terrain_at(15, 3), "mountain", "(15,3) 是山地")
     eq(len(model.zones), 24, "老地图的区块按 6×4 均分 = 24 块")
-    # ★ 老格式的单数 base 被迁移成 p1 的大本营（老式大本营已经彻底删掉）
-    eq(model.faction_base_of("p1"), LEGACY_BASE, "★ 旧 base 迁移成 p1 的大本营")
-    eq(model.faction("p1") is not None, True, "★ 迁移同时补出了 p1 阵营")
+    # ★★ 阵营与大本营已整个移除：老图里的 base / factions / faction_bases 读进来就丢掉。
+    ok("base" not in model.extra and "factions" not in model.extra
+       and "faction_bases" not in model.extra,
+       "★★ 老图的 base / factions / faction_bases 连 extra 都不进（导入当场丢掉）")
     # ★ 每个区块都自动补上了中心（用户要求「每个区划都必须有中心」）
     eq(len(model.center_of), 24, "★ 24 个区块都自动有了中心")
     eq(model.zones_without_center(), [], "★ 一个都不缺")
@@ -212,10 +219,10 @@ def t_legacy_roundtrip_is_byte_stable() -> None:
     #    （用户明确要求「别顺手删了它」）。上面那个循环已经比过内容，这里再钉个存在性。
     ok("buildings" in out, "★ 预置建筑照旧保留（别扩大打击面）")
 
-    # ★ 导出里**不再有**老式大本营的 base 字段（用户要求彻底删掉）
+    # ★★ 阵营 / 大本营整个移除：导出的 JSON 里 base / factions / faction_bases 一个都没有
     ok("base" not in out, "★ 导出的 JSON 里没有 base 字段了")
-    # ★ 旧 base 迁移成了 p1 的大本营，导出时写成 faction_bases
-    eq(out["faction_bases"], {"p1": list(LEGACY_BASE)}, "★ 旧 base 变成 p1 的 faction_bases")
+    ok("factions" not in out and "faction_bases" not in out,
+       "★★ 导出的 JSON 里没有 factions / faction_bases（阵营归战役编辑器）")
     # ★ 每个区块都带了中心（zone_list[].center），并且 zone_centers 网格与之对应
     eq(len(out["zone_centers"]), out["rows"], "zone_centers 的行数与地图一致")
     no_center = [z["id"] for z in out["zone_list"] if "center" not in z]
@@ -426,18 +433,12 @@ def t_validation() -> None:
     ok(any("中心" in b for b in model.blockers()), "★ 有地块但还没设中心 → 仍然拦住")
     model.set_zone_center(zone.zone_id, 0, 0)
     eq([b for b in model.blockers() if "中心" in b], [], "★ 设了中心 → 这一条不再拦")
-    # 落在山上 / 与大本营叠格 → problems 提醒（前者游戏里看不出区别，后者是真冲突）
+    # 中心落在山上 → problems 提醒（游戏里单位本来就进不去）
     model.set_terrain(0, 0, "mountain")
     ok(any("山" in p for p in model.problems()), "中心落在山上会被提醒")
     model.set_terrain(0, 0, "grass")
-    model.add_faction("p1", "p1")
-    model.set_zone_center(zone.zone_id, 1, 0)   # 先把中心设在 (1,0)（那是它自己的地块）
-    eq(model.zone_center_of(zone.zone_id), (1, 0), "中心先在 (1,0)")
-    model.set_faction_base("p1", 1, 0)          # 大本营占了同一格
-    # ★ 大本营优先：中心被顶掉（面板上会显示「还没设」），而不是留一个叠格的中心
-    eq(model.zone_center_of(zone.zone_id), None, "★ 大本营占了那一格 → 中心被清掉")
-    eq([p for p in model.problems() if "叠在同一格" in p], [],
-       "★ 清掉之后就没有「叠格」这种互相矛盾的提醒了")
+    model.set_zone_center(zone.zone_id, 1, 0)   # 把中心挪到 (1,0)（也是它自己的地块）
+    eq(model.zone_center_of(zone.zone_id), (1, 0), "中心挪到 (1,0)")
     model.set_zone_center(zone.zone_id, 0, 0)
     eq(model.problems(), [], "都齐了就没有提醒")
     eq(model.blockers(), [], "★ 都齐了就能导出")
@@ -500,7 +501,6 @@ def t_zone_center_and_production() -> None:
       · 每个区块**恰好一个**中心；中心必须在它自己的地块上；
       · 一格只能是一个区块的中心（后者抢走，前者失去）；
       · 删地块 / 删区块时中心一起忘掉（留着一个指向虚线格的中心，导出后是图外坐标）；
-      · 与大本营不共享格子；
       · 产能按 n 资源/地块/秒 存，负数夹到 0、非法输入不改原值；
       · 导出只在有非零产能时才写 production。
     """
@@ -538,17 +538,6 @@ def t_zone_center_and_production() -> None:
     eq(m.zone_center_of(a.zone_id), None, "★ 东关失去中心（不能两个区块共用一个格）")
     eq(m.zones_without_center(), [a], "现在缺中心的是东关")
 
-    # ---- 大本营与中心不共享格子（大本营优先：它占了那一格，中心被清掉）
-    eq(m.zone_center_of(b.zone_id), (1, 0), "抢格之后：江陵的中心在 (1,0)")
-    m.add_faction("p1", "p1")
-    m.set_faction_base("p1", 1, 0)
-    eq(m.zone_center_of(b.zone_id), None, "★ 大本营占了那一格 → 江陵的中心被清掉")
-    ok(not m.set_zone_center(b.zone_id, 1, 0), "★ 大本营那一格设不了中心")
-    eq(m.zone_center_of(b.zone_id), None, "失败的设置没有副作用")
-    m.clear_faction_base("p1")
-    ok(m.set_zone_center(b.zone_id, 1, 0), "把大本营取消后，那一格就能当中心了")
-    eq(m.zone_center_owner(1, 0), b.zone_id, "江陵的中心又回到 (1,0)")
-
     # ---- 删地块 → 中心一起忘掉
     m.delete_tile(1, 0)
     eq(m.zone_center_of(b.zone_id), None, "★ 删掉那一格 → 中心也忘掉")
@@ -575,19 +564,19 @@ def t_zone_center_and_production() -> None:
     c = m.add_zone("襄阳")
     m.assign_tile(1, 1, c.zone_id)
     # ★★ 本轮：新建的区划**自带默认种类的预设产能**（用户确认：所有区划默认值都改为
-    #    人口区划）—— 所以 n 不再是 0，而是 0 粮食 / 0 黄金 / 0.15 人口。
+    #    人口区划）—— 所以 n 不再是 0，而是 0 粮食 / 0 黄金 / 0.015 人口。
     eq(m.zone_kind(c.zone_id), "population", "新区块的默认种类是人口区划")
     eq(m.zone_production(c.zone_id, "food"), 0.0, "人口区划的预设粮食产能是 0")
-    eq(m.zone_production(c.zone_id, "population"), 0.15,
-       "★ 新区块默认带人口区划的预设（每地块每秒 0.15 人口）")
+    eq(m.zone_production(c.zone_id, "population"), 0.015,
+       "★ 新区块默认带人口区划的预设（每地块每秒 0.015 人口）")
     # ⚠️ `set_zone_production` 的返回值是「**有没有变化**」，不是「成没成功」——
-    #    与 `set_zone_center` / `set_faction_base` 一致（调用方靠它决定推不推撤销栈）。
+    #    与 `set_zone_center` 一致（调用方靠它决定推不推撤销栈）。
     ok(m.set_zone_production(c.zone_id, "food", "1.5"), "填粮食产能（字符串也认）")
     ok(m.set_zone_production(c.zone_id, "gold", 2), "填黄金产能")
     ok(not m.set_zone_production(c.zone_id, "food", 1.5), "填同一个值 → 没变化（返回 False）")
     eq(m.zone_production(c.zone_id, "food"), 1.5, "粮食 1.5")
     eq(m.zone_production(c.zone_id, "gold"), 2.0, "黄金 2")
-    eq(m.zone_production(c.zone_id, "population"), 0.15, "人口那一档没被碰 → 还是预设值")
+    eq(m.zone_production(c.zone_id, "population"), 0.015, "人口那一档没被碰 → 还是预设值")
     ok(m.zone_has_production(c.zone_id), "★ 有非零产能 → 导出时要写 production")
     # ★ 负数夹到 0（产能不是消耗）；这算「有变化」，所以返回 True 且值真的变了
     eq(m.set_zone_production(c.zone_id, "food", -3), True, "负数照样写进去（夹到 0）")
@@ -610,11 +599,11 @@ def t_zone_center_and_production() -> None:
     d = mapfile.model_to_dict(m)
     entries = {z["id"]: z for z in d["zone_list"]}
     eq(entries[c.zone_id]["center"], [1, 1], "襄阳的中心写对了（导出坐标系）")
-    eq(entries[c.zone_id]["production"], {"food": 1.5, "gold": 999, "population": 0.15},
+    eq(entries[c.zone_id]["production"], {"food": 1.5, "gold": 999, "population": 0.015},
        "★ 产能是整对象写出去（缺的档补 0；小数照原样）")
     # ★ 其余区块写的是它们**自己的默认预设**（新建时就带上了，不是「没配过就不写」）
     others = [z for z in d["zone_list"] if z["id"] != c.zone_id]
-    ok(all(z.get("production") == {"food": 0, "gold": 0, "population": 0.15} for z in others),
+    ok(all(z.get("production") == {"food": 0, "gold": 0, "population": 0.015} for z in others),
        "★ 其它区块写的是默认人口区划的预设产能（新建即带上）")
     # 出口那一层还要求「一个都不缺中心」——正常是在 do_export 前由 blockers() 保证，
     # 这里把剩下的补上（本用例中途删过一个区块，所以有一个区划缺中心）
@@ -712,65 +701,6 @@ def t_zone_population_cap() -> None:
     eq(w2.zone_population_cap(1), 6.0, "同一个文件里合法的那个照读")
 
 
-def t_base_warning_with_factions() -> None:
-    """阵营大本营：**提醒**（problems）与**硬拦截**（blockers）各管一段。
-
-    ★ 这一节原来是在钉「默认点位（那个单数的 base）」的四种组合；
-      用户要求把老式大本营彻底删掉之后，默认点位没有了 ——
-      现在的规则只剩一条：**每个阵营都必须恰好有一个大本营**，
-      少了就在 `blockers()` 里拦住导出（`problems()` 里同时给一句人话提醒）。
-    """
-    print("\n[15] 阵营大本营：提醒与拦截")
-
-    def fresh():
-        m = MapModel(0, 0)
-        for t in ((0, 0), (1, 0), (0, 1), (1, 1), (8, 6), (9, 6)):
-            m.ensure_tile(*t)
-            m.create_tile(*t)
-        return m
-
-    # ① 两方都设了 → 不提醒、不拦
-    m = fresh()
-    m.add_faction("p1", "p1")
-    m.add_faction("p2", "p2")
-    m.set_faction_base("p1", 0, 0)
-    m.set_faction_base("p2", 8, 6)
-    eq([p for p in m.problems() if "大本营" in p], [], "★ 所有阵营都设了大本营 → 没有提醒")
-    eq([b for b in m.blockers() if "大本营" in b], [], "★ 也不拦")
-
-    # ② 没有阵营 → 没有「每个阵营都要有」这回事（不报大本营）
-    m2 = fresh()
-    eq([p for p in m2.problems() if "大本营" in p], [],
-       "★ 一个阵营都没建 → 不提大本营（没有「每一方」可言）")
-
-    # ③ 有阵营、但某一方没设 → 提醒 + 拦住，而且要**点名是谁**
-    m3 = fresh()
-    m3.add_faction("p1", "p1")
-    problems = m3.problems()
-    ok(any("大本营" in p for p in problems), "★ 有一方没设 → 提醒")
-    ok(any("p1" in p for p in problems), "★ 提醒里点名了是哪一方（%s）" % problems)
-    blockers = m3.blockers()
-    ok(any("大本营" in b and "p1" in b for b in blockers),
-       "★ 同一件事也进了硬拦截（%s）" % blockers)
-
-    # ④ 设了又取消 → 回到「缺」的状态（clear_faction_base 之后必须重新被拦）
-    m4 = fresh()
-    m4.add_faction("p1", "p1")
-    m4.set_faction_base("p1", 0, 0)
-    eq([b for b in m4.blockers() if "大本营" in b], [], "设上了 → 不拦")
-    m4.clear_faction_base("p1")
-    ok(any("大本营" in b for b in m4.blockers()), "★ 取消之后又被拦住")
-
-    # ⑤ 阵营大本营自己落在山上 / 虚线格上 → 提醒那一条
-    m6 = fresh()
-    m6.add_faction("p1", "p1")
-    m6.set_faction_base("p1", 1, 1)
-    m6.set_terrain(1, 1, "mountain")
-    # ⚠️ 断言里搜「山地」不是「山上」：提示原文是「落在山地上」，
-    #    「山上」在这句话里**不是**连续子串（中间隔着「地」）—— 写测试时栽过这一次。
-    ok(any("山地" in p for p in m6.problems()), "★ 阵营大本营落在山地上会被提醒")
-
-
 def t_terrain_order() -> None:
     print("\n[9] 地形表")
     eq(TERRAIN_ORDER, ("grass", "forest", "mountain"), "三种地形（与 map_data.gd 一致）")
@@ -800,7 +730,6 @@ def t_bom_file() -> None:
             "exists": [[1, 1, 1, 1], [1, 1, 1, 1], [1, 1, 1, 1]],
             "zones": [[0, 0, 1, 1], [0, 1, 1, 1], [1, 1, 1, 1]],
             "zone_list": [{"id": 0, "name": "东关"}, {"id": 1, "name": "江陵"}],
-            "base": [1, 1],
         }
         path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8-sig")
         ok(path.read_bytes()[:3] == b"\xef\xbb\xbf", "测试文件确实带 UTF-8 BOM")
@@ -810,7 +739,8 @@ def t_bom_file() -> None:
         eq((model.cols, model.rows), (4, 3), "★ 带 BOM 的地图能读进来")
         eq(model.terrain_at(1, 1), "forest", "地形读对了")
         eq([z.name for z in model.zones], ["东关", "江陵"], "区块名读对了")
-        eq(model.faction_base_of("p1"), (1, 1), "★ 旧 base 迁移成了 p1 的大本营")
+        ok("base" not in model.extra and "factions" not in model.extra,
+           "★ 阵营 / 大本营字段读进来就丢掉")
 
         # 再存一次：写出去的是不带 BOM 的 UTF-8（Godot 读起来最省事）
         out = tmp / "no_bom.json"
@@ -828,7 +758,7 @@ def t_negative_coords_and_growth() -> None:
     这里两条都是实测踩出来的坑，值得钉死：
 
       1. `origin` 平移：数组下标不能是负的，所以模型靠「整体挪一格」把负坐标装下来。
-         挪的时候地块、区块、`zone_of`、大本营必须一起搬，且**世界坐标含义不变**。
+         挪的时候地块、区块、`zone_of` 必须一起搬，且**世界坐标含义不变**。
       2. `zone_of` 的键是 `y * cols + x`：重建它时必须用**旧** cols 拆、**新** cols 拼。
          原来两处都用了新的 `self.cols` —— 于是网格一变大（16→32、128→256…）
          归属就被整张丢掉，而且只在「先划区块、再往新方向画」这个顺序下才出现。
@@ -914,84 +844,6 @@ def t_memory_guard() -> None:
     ok(m.ensure_tile(200, 200), "把上限放回去之后，同一格又能画了")
 
 
-def t_faction_bases() -> None:
-    """阵营与它们的大本营（数据层）。
-
-    钉住的几条（都是「改了会静默出错」的地方）：
-      · 一个阵营一个大本营；同一格被两个阵营抢时，后者**拿走**（不能两个阵营同一格）；
-      · 删格子 / 缩小网格时，指向它的那个大本营要一起忘掉（否则导出后是图外坐标）；
-      · 大本营写进 JSON 时坐标要搬到导出坐标系（往左上画过之后尤其容易错）。
-    """
-    print("\n[13] 阵营大本营（数据层）")
-    m = MapModel(0, 0)
-    for t in ((3, 3), (4, 3), (3, 4), (4, 4), (-1, -1)):
-        m.ensure_tile(*t)
-        m.create_tile(*t)
-
-    ok(m.add_faction("p1", "玩家") is not None, "加阵营 player")
-    ok(m.add_faction("p2") is not None, "加阵营 p2（名字缺省 = id）")
-    ok(m.add_faction("p1") is None, "★ 同一个 id 加两次 → 拒绝（返回 None）")
-    ok(m.add_faction("") is None, "空 id 也拒绝")
-    eq([f.faction_id for f in m.factions], ["p1", "p2"], "阵营表按加入顺序")
-    eq(m.faction("p2").name, "p2", "名字缺省时用 id")
-    ok(m.faction("p1").color != m.faction("p2").color, "★ 两个阵营的默认颜色不同（地图上分得清）")
-
-    # 设大本营
-    ok(not m.set_faction_base("nobody", 3, 3), "没这个阵营 → 设不了")
-    ok(not m.set_faction_base("p1", 99, 99), "★ 不存在的格子设不了")
-    ok(m.set_faction_base("p1", 3, 3), "★ player 的大本营设在 (3,3)")
-    eq(m.faction_base_of("p1"), (3, 3), "查得到")
-    eq(m.faction_base_owner(3, 3), "p1", "反向查得到")
-    ok(not m.set_faction_base("p1", 3, 3), "同一格再设一次 → 没变化")
-
-    # 抢格：一格只能是一方的大本营
-    ok(m.set_faction_base("p2", 3, 3), "p2 把 (3,3) 抢过去")
-    eq(m.faction_base_owner(3, 3), "p2", "★ 那一格现在属于 p2")
-    eq(m.faction_base_of("p1"), None, "★ player 的大本营被拿走了（不能两方共用一格）")
-
-    # 删格子 → 大本营一起忘掉
-    m.delete_tile(3, 3)
-    eq(m.faction_base_of("p2"), None, "★ 删掉那一格 → 大本营也忘掉")
-
-    # 取消
-    m.set_faction_base("p1", 4, 4)
-    ok(m.clear_faction_base("p1"), "能取消大本营")
-    eq(m.faction_base_of("p1"), None, "取消之后查不到")
-    ok(not m.clear_faction_base("p1"), "再取消一次 → 没变化")
-
-    # 删阵营 → 大本营一起没
-    m.set_faction_base("p1", 3, 4)
-    ok(m.remove_faction("p1"), "删阵营")
-    eq(m.faction_base_of("p1"), None, "★ 阵营没了，它的大本营也没了")
-    eq(m.faction_base_owner(3, 4), None, "反向也查不到")
-
-    # 往左上画过之后导出的坐标（要搬到导出坐标系）
-    m2 = MapModel(0, 0)
-    for t in ((0, 0), (-1, -1), (-2, -2)):
-        m2.ensure_tile(*t)
-        m2.create_tile(*t)
-    m2.add_faction("p1")
-    m2.set_faction_base("p1", -2, -2)
-    data = mapfile.model_to_dict(m2)
-    eq(data["faction_bases"], {"p1": [0, 0]},
-       "★ 大本营坐标搬到了导出坐标系（(-2,-2) 是包围盒左上角 → (0,0)）")
-    eq(data["factions"], [{"id": "p1", "name": "p1", "color": m2.factions[0].color}],
-       "阵营表写进 JSON")
-
-    # 往返：读回来还是同一个大本营
-    again = mapfile.dict_to_model(data, {})
-    eq(again.faction_base_of("p1"), (0, 0), "★ 读回来之后大本营一致")
-    eq([f.faction_id for f in again.factions], ["p1"], "读回来之后阵营表一致")
-
-    # ★ 没有阵营的地图不该多出这两个字段（旧图往返逐字节一致靠这条）
-    plain = MapModel(0, 0)
-    plain.ensure_tile(0, 0)
-    plain.create_tile(0, 0)
-    plain_data = mapfile.model_to_dict(plain)
-    ok("factions" not in plain_data and "faction_bases" not in plain_data,
-       "★ 没有阵营时 JSON 里不出现 factions / faction_bases")
-
-
 def t_rect_selection() -> None:
     """矩形框选的内容（只有已有地块参与）。"""
     print("\n[14] 矩形框选")
@@ -1006,6 +858,35 @@ def t_rect_selection() -> None:
     eq(m.rect_tiles(9, 9, 10, 10), [], "空白区域 → 空列表")
     eq(m.count_in_rect(0, 0, 1, 1), 3, "count_in_rect 只数已有地块")
     ok((5, 5) not in m.rect_tiles(0, 0, 2, 1), "框外的不算")
+
+
+def t_fill_rect_terrain() -> None:
+    """批量刷地形：矩形里的**虚线格会被建出来**（用户需求：框选空白 → 点地形 → 变成该地形）。"""
+    print("\n[14b] 批量刷地形（空白格被建出来）")
+    m = MapModel(0, 0)
+    # 先有一片 2×2 草地，右边是虚线
+    for t in ((0, 0), (1, 0), (0, 1), (1, 1)):
+        m.ensure_tile(*t)
+        m.create_tile(*t)
+
+    # 刷一片 3×2：左 4 格已有（草地 → 森林），右 2 格是空白（建出来）
+    eq(m.fill_rect_terrain(0, 0, 2, 1, "forest"), (2, 4),
+       "★ 新建 2 格空白 + 改 4 格已有草地")
+    eq(m.existing_count(), 6, "建完之后共有 6 格")
+    eq({m.terrain_at(*t) for t in m.rect_tiles(0, 0, 2, 1)}, {"forest"},
+       "★ 整片矩形都是森林")
+
+    # 同一片、同一种地形再刷 → 什么都不变
+    eq(m.fill_rect_terrain(0, 0, 2, 1, "forest"), (0, 0), "★ 再刷一遍没有变化")
+
+    # 一片纯空白：只建（新格直接落到目标地形，不计入 changed）
+    eq(m.fill_rect_terrain(5, 5, 6, 5, "mountain"), (2, 0),
+       "★ 一片空白 → 建 2 格山地（changed 只数已有地块，这里是 0）")
+    eq({m.terrain_at(5, 5), m.terrain_at(6, 5)}, {"mountain"}, "空白格建成了山地")
+
+    # 认不出的地形 → 不建也不改
+    eq(m.fill_rect_terrain(9, 9, 9, 9, "water"), (0, 0), "★ 认不出的地形 → 什么都不做")
+    ok(not m.exists(9, 9), "认不出的地形不会凭空建格")
 
 
 def t_zone_kind() -> None:
@@ -1041,28 +922,29 @@ def t_zone_kind() -> None:
     eq(m.zone_kind_name("food"), "粮食区划", "种类名字来自 config")
     # ★ 新建即带上默认种类的预设数字（用户确认：所有区划默认值都改为人口区划）
     eq([m.zone_production(a.zone_id, k) for k in ("food", "gold", "population")],
-       [0.0, 0.0, 0.15], "★ 新建的区划直接带人口区划的预设产能")
+       [0.0, 0.0, 0.015], "★ 新建的区划直接带人口区划的预设产能")
     ok(m.zone_kind_is_preset(a.zone_id), "新建的区划与预设一致（界面不提示「已手改」）")
 
-    # ★★ 用户补充需求：「所有区划至少会有 0.1 人口每地块每秒的基础产能」
-    #    —— 三种区划的**预设**里都要给足 0.1 人口（粮食 / 黄金各自还带自己的 1 点）。
+    # ★★ 三种区划的**预设**里都带一份人口产能（人口是通用资源）——
+    #    这一轮「统一到战役低经济」把每地块的数一起降下来了（粮食 / 黄金 0.12、人口 0.015）。
+    #    这里只钉「都 > 0」，不再钉「≥ 0.1」（那个下限已作废，见 config.json 的 zone_kind 注释）。
     for kind_id in ("food", "gold", "population"):
-        ok(m.zone_kind_production(kind_id)["population"] >= 0.1 - 1e-9,
-           "★ %s 的预设人口产能 ≥ 0.1（实际 %g）"
+        ok(m.zone_kind_production(kind_id)["population"] > 0.0,
+           "★ %s 的预设人口产能 > 0（实际 %g）"
            % (kind_id, m.zone_kind_production(kind_id)["population"]))
-    eq(m.zone_kind_production("food")["food"], 1.0, "粮食区划仍然产 1 粮食")
-    eq(m.zone_kind_production("gold")["gold"], 1.0, "黄金区划仍然产 1 黄金")
+    eq(m.zone_kind_production("food")["food"], 0.12, "粮食区划预设粮食产能 0.12")
+    eq(m.zone_kind_production("gold")["gold"], 0.12, "黄金区划预设黄金产能 0.12")
 
     # ---- 选种类：同时把数字同步成预设值（需求原文那一条）
     ok(m.set_zone_kind(a.zone_id, "food"), "改成粮食区划（数字也跟着变）")
     eq(m.zone_kind(a.zone_id), "food", "种类变了")
     eq([m.zone_production(a.zone_id, k) for k in ("food", "gold", "population")],
-       [1.0, 0.0, 0.1],
-       "★ 粮食区划 → 每地块每秒 1 粮食 + 0.1 人口（所有区划都带 0.1 人口基础产能）")
+       [0.12, 0.0, 0.012],
+       "★ 粮食区划 → 每地块每秒 0.12 粮食 + 0.012 人口（所有区划都带一份人口基础产能）")
     ok(not m.set_zone_kind(a.zone_id, "food"), "点已经选中的那个种类 → 没变化（返回 False）")
     ok(m.set_zone_kind(a.zone_id, "population"), "改成人口区划")
     eq([m.zone_production(a.zone_id, k) for k in ("food", "gold", "population")],
-       [0.0, 0.0, 0.15], "★ 人口区划 → 每地块每秒 0.15 人口")
+       [0.0, 0.0, 0.015], "★ 人口区划 → 每地块每秒 0.015 人口")
     ok(m.zone_kind_is_preset(a.zone_id), "数字与预设一致")
 
     # ---- 手改数字：种类不变，数字说了算（需求原文：游戏以数字为准）
@@ -1093,9 +975,9 @@ def t_zone_kind() -> None:
     entries = {z["id"]: z for z in d["zone_list"]}
     eq(entries[a.zone_id]["kind"], "gold", "★ 种类写进 zone_list[].kind")
     eq(entries[b.zone_id]["kind"], "population", "★ 没特意改过的新区块也写（默认人口区划）")
-    eq(entries[a.zone_id]["production"], {"food": 3, "gold": 0, "population": 0.15},
+    eq(entries[a.zone_id]["production"], {"food": 3, "gold": 0, "population": 0.015},
        "★ 产能按**数字**导出（手改过的 3 也在）")
-    eq(entries[b.zone_id]["production"], {"food": 0, "gold": 0, "population": 0.15},
+    eq(entries[b.zone_id]["production"], {"food": 0, "gold": 0, "population": 0.015},
        "★ 新建的区块带默认预设，导出时照写")
     # 把 b 的三档都改成 0 → 「这个区块就是不产出」→ 不写 production
     #   （游戏侧缺字段就是 0，**不**按种类预设兜底 —— 数字说了算）
@@ -1187,15 +1069,14 @@ def main() -> int:
     t_shape_ops()
     t_validation()
     t_zone_must_be_contiguous()
-    t_base_warning_with_factions()
     t_zone_center_and_production()
     t_zone_population_cap()
     t_terrain_order()
     t_bom_file()
     t_negative_coords_and_growth()
     t_memory_guard()
-    t_faction_bases()
     t_rect_selection()
+    t_fill_rect_terrain()
     t_zone_kind()
     t_cli_map_option()
     print("\n[CASE] test_model -> passed %d / failed %d" % (_PASSED, _FAILED))

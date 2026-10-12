@@ -8,7 +8,7 @@
     Godot 侧读它：exists=0 的地块一律不可通行（见 map_data.gd 的 exists 字段）。
   · 区块是**逐格分配**的：每张地图给出一张 ``zones`` 网格（地块 → 区块 id，-1 = 不属任何区块）。
     zone.gd 的注释里一直写着「等地图编辑器给出真正的区块网格」，这里就是那张网格。
-  · 颜色与大本营默认值都从 ``data/config.json`` 读，编辑器里不写死配色。
+  · 颜色从 ``data/config.json`` 读，编辑器里不写死配色。
 
 坐标一律是「格」（整数 tx, ty），原点在左上角，与逻辑层一致。
 """
@@ -35,29 +35,6 @@ CHAR_TERRAINS["B"] = "grass"
 
 #: 编辑器里能选的地形（顺序 = 界面上按钮的顺序）
 TERRAIN_ORDER: Tuple[str, ...] = ("grass", "forest", "mountain")
-
-#: 阵营 id 的规矩：就是**游戏里那套字符串**（logic/faction.gd 的 DEFAULT_FACTION /
-#: FACTION_ROSTER / NPC_FACTION）。编辑器不自己编号，也不做翻译表 ——
-#: 这样导出的 `faction_bases` 里可以直接写 `{"p2": [3, 4]}`，Godot 按 id 就查得到。
-#:
-#: ★ 没有 'player' 这个别名了（改过一版）：单机 / 房主就是 **p1**。
-#:   以前单机引擎找 'player'、地图里划的却是 p1/p2，两边对不上 ——
-#:   症状是「地图里明明给 p1 划了大本营，单机跑起来却用默认点位」。
-FACTION_ENEMY = "enemy"
-FACTION_ROSTER: Tuple[str, ...] = ("p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8")
-#: 单机 / 房主的阵营 id（与 logic/faction.gd 的 DEFAULT_FACTION 一致）
-FACTION_DEFAULT = "p1"
-
-#: 「这是不是游戏认识的阵营 id」——只用来在导出前提醒，**不阻止**设计师写别的。
-#: （导出一个游戏不认识的阵营名不会崩：Godot 那边按 id 查不到大本营就走旧行为。）
-KNOWN_FACTIONS: Tuple[str, ...] = (FACTION_ENEMY,) + FACTION_ROSTER
-
-#: 新增阵营时的兜底配色（取 config.json 的 colors.faction 里那几档，读不到就用这些）。
-#: ⚠️ 它只是**编辑器里标识哪个阵营**用的颜色，游戏不读它（游戏的颜色在 config.json）。
-FACTION_PALETTE: Tuple[str, ...] = (
-    "#ffd166", "#5ac8ff", "#8ce08c", "#c9a0ff",
-    "#ffb0b0", "#ffd9a0", "#a0e8e0", "#d0a0ff", "#e05a5a",
-)
 
 TERRAIN_LABELS: Dict[str, str] = {
     "grass": "草地",
@@ -120,13 +97,13 @@ PRODUCTION_MAX = 999.0
 #: 每条：id / 名字 / 一行说明 / **预设产能**（选种类时同步进数字输入框的那三个数）/
 #: 允许做的特化 id。
 #:
-#: ★★ 三种区划的预设产能里**都带 0.1 人口**（用户补充需求：「所有区划至少会有 0.1 人口
-#:   每地块每秒的基础产能」）：
-#:     粮食区划 = 1 粮食 + 0.1 人口／地块／秒；
-#:     黄金区划 = 1 黄金 + 0.1 人口／地块／秒；
-#:     人口区划 = 0.15 人口／地块／秒（0.15 本身就 ≥ 0.1）。
-#:   ⚠️ 这是**预设值**（「至少」的下限口径），不是游戏里的硬编码：数字仍然是权威的，
-#:      设计师把某一档手改成 0 就是 0。
+#: ★★ 三种区划的预设产能（每地块每秒）—— 与 `data/config.json` 的 `zone_kind.list` 同一套
+#:   数值，也是「统一到战役低经济」之后的档位：每块粮食 / 黄金区划约 3~4／秒。
+#:     粮食区划 = 0.12 粮食 + 0.012 人口／地块／秒；
+#:     黄金区划 = 0.12 黄金 + 0.012 人口／地块／秒；
+#:     人口区划 = 0.015 人口／地块／秒。
+#:   ⚠️ 这里只是**配置读不到时的兜底**：正常运行走 `zone_kind_table(cfg)` 读 config.json，
+#:      所以两份必须一起改（旧值 1 / 1 / 0.15 会把经济重新顶起来）。
 #: ★ 只有这三种 —— **没有「默认区划」那一档**（用户确认：「没有默认区划了，
 #:   所有区划默认值都改为人口区划」）：`ZONE_KIND_DEFAULT` 只是「老图 / 没写 kind 时
 #:   算哪一种」，不是第四种区划。
@@ -137,22 +114,22 @@ FALLBACK_ZONE_KINDS: Tuple[Dict[str, object], ...] = (
     {
         "id": "food",
         "name": "粮食区划",
-        "line": "每地块每秒 1 粮食 + 0.1 人口",
-        "production": {"food": 1.0, "gold": 0.0, "population": 0.1},
+        "line": "每地块每秒 0.12 粮食 + 0.012 人口",
+        "production": {"food": 0.12, "gold": 0.0, "population": 0.012},
         "specs": ("gold", "population"),
     },
     {
         "id": "gold",
         "name": "黄金区划",
-        "line": "每地块每秒 1 黄金 + 0.1 人口",
-        "production": {"food": 0.0, "gold": 1.0, "population": 0.1},
+        "line": "每地块每秒 0.12 黄金 + 0.012 人口",
+        "production": {"food": 0.0, "gold": 0.12, "population": 0.012},
         "specs": ("food", "population"),
     },
     {
         "id": "population",
         "name": "人口区划",
-        "line": "每地块每秒 0.15 人口",
-        "production": {"food": 0.0, "gold": 0.0, "population": 0.15},
+        "line": "每地块每秒 0.015 人口",
+        "production": {"food": 0.0, "gold": 0.0, "population": 0.015},
         "specs": ("food", "gold"),
     },
 )
@@ -398,30 +375,6 @@ def zone_kind_default(cfg: Optional[dict] = None, kinds: Optional[Dict[str, Dict
 # 地图模型
 # ----------------------------------------------------------------------
 
-class Faction:
-    """一个阵营：游戏认识的 id + 显示名 + 颜色（颜色只给编辑器看）。
-
-    ★ id 就是游戏里的阵营字符串（'p1'…'p8' / 'enemy'），
-      不做数字映射 —— 导出的 ``faction_bases`` 直接以它为键，Godot 拿去就能用。
-    """
-
-    __slots__ = ("faction_id", "name", "color")
-
-    def __init__(self, faction_id: str, name: str = "", color: str = "") -> None:
-        self.faction_id = str(faction_id).strip()
-        self.name = (name or self.faction_id).strip() or self.faction_id
-        self.color = (color or FACTION_PALETTE[0]).strip().upper()
-
-    def __repr__(self) -> str:  # pragma: no cover - 调试用
-        return "Faction(%r, %r, %r)" % (self.faction_id, self.name, self.color)
-
-    def label(self) -> str:
-        """列表里显示成什么样：名字（id）—— 两边都看得见，免得改错了人。"""
-        if self.name and self.name != self.faction_id:
-            return "%s（%s）" % (self.name, self.faction_id)
-        return self.faction_id
-
-
 class Zone:
     """一个区块（= 区划）：一个名字 + 一组地块 + 一个区划中心 + 三档产能 + 人口上限 + 种类。
 
@@ -531,15 +484,6 @@ class MapModel:
         #:   留一张表是因为画布每帧要按格问「这一格是不是某个区划的中心」，
         #:   遍历区块表在几百格的重绘里会很浪费。
         self.center_of: Dict[Tile, int] = {}
-        #: 阵营表（id / 名字 / 颜色）与「每个阵营的大本营点位」——世界坐标。
-        #:
-        #: ★ 阵营 id 用的是**游戏那套字符串**（'p1'…'p8' / 'enemy'，
-        #:   见 logic/faction.gd），不是编辑器自己编的号：这样导出后 Godot 直接按 id
-        #:   就能找到「这一方的大本营在哪」，不需要任何翻译表。
-        #: ★ 一个阵营只有一个大本营（对齐 Godot 的 TYPE_BASE：一方一座基地），
-        #:   而且**每一方都必须有** —— 导出前由 `blockers()` 强制（见那里的说明）。
-        self.factions: List[Faction] = []
-        self.faction_bases: Dict[str, Tile] = {}
         #: 从原文件里读到的、编辑器不管的字段（general_spawns / buildings / pvp_points /
         #: _comment …）——导出时原样写回，免得编辑器把 Godot 会用的东西吃掉。
         #:
@@ -630,10 +574,8 @@ class MapModel:
     def set_existing(self, x: int, y: int, value: bool) -> bool:
         """把一个格子设成存在 / 不存在。返回是否真的变了。
 
-        删除一个格子会连带处理三件「挂在格子上的东西」：
+        删除一个格子会连带处理两件「挂在格子上的东西」：
           · 把它从所属区块里摘掉（否则区块会留下一块「地图外的领地」）；
-          · 如果它是某个阵营的大本营，就把那个大本营**忘掉**
-            （留着一个指向虚线格的大本营，导出后 Godot 会找不到格子）；
           · 如果它是某个区划的中心，同样把中心忘掉（中心必须在自己的地块上）。
         """
         if not self.in_bounds(x, y):
@@ -646,15 +588,8 @@ class MapModel:
         self._exists_count += 1 if value else -1
         if not value:
             self.clear_zone(x, y)
-            self._drop_faction_base_at(x, y)
             self.clear_zone_center_of_tile(x, y)
         return True
-
-    def _drop_faction_base_at(self, x: int, y: int) -> None:
-        """这一格没了 → 把以它为家的阵营大本营也清掉。"""
-        owner = self.faction_base_owner(x, y)
-        if owner is not None:
-            self.faction_bases.pop(owner, None)
 
     def create_tile(self, x: int, y: int) -> bool:
         return self.set_existing(x, y, True)
@@ -800,14 +735,12 @@ class MapModel:
                 vx, vy = self.view_of(tile[0], tile[1])
                 kept[self.idx(vx, vy)] = zone.zone_id
         self.zone_of = kept
-        # 区划中心 / 阵营大本营：格子出界了就把它忘掉
+        # 区划中心：格子出界了就把它忘掉
         # （留着一个指向图外的点，导出后 Godot 读到的坐标会在网格外）。
         for zone in self.zones:
             if zone.center is not None and not self.in_bounds(zone.center[0], zone.center[1]):
                 zone.center = None
         self._rebuild_center_index()
-        for fid in [f for f, t in self.faction_bases.items() if not self.in_bounds(t[0], t[1])]:
-            self.faction_bases.pop(fid, None)
 
     ## 把网格朝需要的方向长到能装下世界坐标 (x, y)；返回 False = 超出上限。
     ##
@@ -950,11 +883,9 @@ class MapModel:
     # ★ 语义（与 Godot 侧对齐，见 logic/zone.gd / map_data.gd）：
     #   · **每个区划恰好一个中心**，它必须落在**本区划自己的地块**上（导出前由
     #     `blockers()` 强制）；
-    #   · 一格最多是一个区划的中心 —— 从别的区划手里**拿走**（与大本营同一套抢格规则）；
+    #   · 一格最多是一个区划的中心 —— 从别的区划手里**拿走**；
     #   · 一个区划换中心 = 旧中心作废、只剩新的这一个（`zone.center` 只有一个值，
-    #     所以「多了」在数据层就不可能发生）；
-    #   · 大本营与区划中心**也不共享格子**（游戏里两者都会落成占格建筑，
-    #     叠在一格会互相挡掉）—— 由 `set_zone_center` 拒绝并让调用方提示。
+    #     所以「多了」在数据层就不可能发生）。
 
     def _rebuild_center_index(self) -> None:
         """按 `Zone.center` 重建反查表（改过 center 之后必须调一次）。"""
@@ -976,16 +907,13 @@ class MapModel:
         """把区划 (zone_id) 的中心设在 (x, y)。返回是否真的变了。
 
         拒绝的三种情况（返回 False，调用方负责提示）：
-          · 没有这个区划；这一格不存在（虚线格）；这一格不属于这个区划；
-          · 这一格已经是某个阵营的大本营（两者会叠在同一格建筑上）。
-        被别的区划占着时**拿走**（与大本营的抢格规则一致）。
+          · 没有这个区划；这一格不存在（虚线格）；这一格不属于这个区划。
+        被别的区划占着时**拿走**。
         """
         zone = self.zone(zone_id)
         if zone is None or not self.exists(x, y):
             return False
         if self.zone_of.get(self.idx(*self.view_of(x, y)), -1) != zone_id:
-            return False
-        if self.faction_base_owner(x, y) is not None:
             return False
         if zone.center == (x, y):
             return False
@@ -1255,106 +1183,14 @@ class MapModel:
             zone.name = candidate
             kept.add(candidate)
 
-    # ---------------- 阵营与大本营 ----------------
-    #
-    # ★ 语义（与 Godot 侧对齐，见 logic/faction.gd / map_data.gd / world.gd）：
-    #   · 阵营 id = 游戏那套字符串；一个阵营**一个**大本营（一方一座 TYPE_BASE）。
-    #   · 大本营存在 faction_bases 里，值是**世界坐标**。
-    #   · **每一方都必须有**：缺了导出前会被 `blockers()` 拦住
-    #     （不再有「默认点位 / 地图中心」那种兜底 —— 用户要求「保证每个阵营都有且只有一个」）。
-
-    def faction(self, faction_id: str) -> Optional[Faction]:
-        for f in self.factions:
-            if f.faction_id == faction_id:
-                return f
-        return None
-
-    def add_faction(self, faction_id: str, name: str = "", color: str = "") -> Optional[Faction]:
-        """加一个阵营。id 为空或已存在 → 返回 None（调用方据此提示）。
-
-        颜色留空时按 FACTION_PALETTE 依次取一个还没被用过的 —— 地图上要能一眼分清
-        「哪个大本营是哪一方的」。
-        """
-        fid = str(faction_id).strip()
-        if not fid or self.faction(fid) is not None:
-            return None
-        if not color:
-            used = {f.color for f in self.factions}
-            color = next((c for c in FACTION_PALETTE if c.upper() not in used),
-                         FACTION_PALETTE[len(self.factions) % len(FACTION_PALETTE)])
-        faction = Faction(fid, name, color)
-        self.factions.append(faction)
-        return faction
-
-    def remove_faction(self, faction_id: str) -> bool:
-        """删阵营（它的大本营点位一并忘掉）。"""
-        faction = self.faction(faction_id)
-        if faction is None:
-            return False
-        self.factions.remove(faction)
-        self.faction_bases.pop(faction_id, None)
-        return True
-
-    def rename_faction(self, faction_id: str, name: str) -> bool:
-        faction = self.faction(faction_id)
-        if faction is None:
-            return False
-        faction.name = name.strip() or faction_id
-        return True
-
-    def set_faction_color(self, faction_id: str, color: str) -> bool:
-        faction = self.faction(faction_id)
-        if faction is None or not color.strip():
-            return False
-        faction.color = color.strip().upper()
-        return True
-
-    def set_faction_base(self, faction_id: str, x: int, y: int) -> bool:
-        """把某个阵营的大本营设在 (x, y)。返回是否真的变了。
-
-        ★ 一格只能是一个阵营的大本营：设给新阵营时会从原来那个阵营手里**拿走**
-        （否则导出两个阵营抢同一格，Godot 里两座基地叠在一起）。
-        ★ 大本营与区划中心**不共享格子**，而且方向是**大本营优先**：
-          这一格原来是某个区块的中心 → 那个区块失去中心（面板上会显示「还没设」）。
-          为什么不反过来拒绝：`set_zone_center()` 已经在设中心时避开了大本营，
-          而大本营是设计师先定的东西；这里安静地把中心清掉，
-          比让「设大本营」凭空失败（用户完全不知道为什么）要好得多。
-        """
-        if self.faction(faction_id) is None:
-            return False
-        if not self.exists(x, y):
-            return False
-        current = self.faction_base_owner(x, y)
-        if current == faction_id:
-            return False
-        if current is not None:
-            self.faction_bases.pop(current, None)
-        # 与「大本营不共享格子」保持一致：中心被顶掉（见上面那段为什么是中心让路）
-        self.clear_zone_center_of_tile(x, y)
-        self.faction_bases[faction_id] = (x, y)
-        return True
-
-    def clear_faction_base(self, faction_id: str) -> bool:
-        """取消某个阵营的大本营（它之后在游戏里退回默认点位）。"""
-        return self.faction_bases.pop(faction_id, None) is not None
-
-    def faction_base_of(self, faction_id: str) -> Optional[Tile]:
-        return self.faction_bases.get(faction_id)
-
-    def faction_base_owner(self, x: int, y: int) -> Optional[str]:
-        """这一格是谁的大本营（不是任何阵营的大本营 → None）。"""
-        for fid, tile in self.faction_bases.items():
-            if tile == (x, y):
-                return fid
-        return None
-
     # ---------------- 矩形框选（批量改地形 / 归属的基础） ----------------
 
     def rect_tiles(self, x0: int, y0: int, x1: int, y1: int) -> List[Tile]:
         """矩形范围内**已存在**的地块（世界坐标，按行优先排序）。
 
-        ★ 只返回真实地块：虚线格不参与批量操作 —— 框选是「改已有的地」，
-          不是「批量创建」（需求原话：被矩形框选到的地块会被选中）。
+        ★ 只返回真实地块：虚线格不参与**计数与归属 / 删除**（那些只对已有的地有意义）。
+          ⚠️ 但**地形**那一栏会用矩形坐标调 `fill_rect_terrain()` 把虚线格建出来 ——
+          所以「框选批量创建」现在走的是地形那条路，**不**经过这里。
         ★ 矩形可能很大（拖满一屏是几百格），所以按行扫、碰到不存在的就跳过，
           不做「先枚举全部格子再过滤」。
         """
@@ -1366,6 +1202,40 @@ class MapModel:
                 if self.exists(x, y):
                     out.append((x, y))
         return out
+
+    def fill_rect_terrain(self, x0: int, y0: int, x1: int, y1: int,
+                          terrain: str) -> Tuple[int, int]:
+        """把矩形内每一格都刷成 `terrain`：**虚线格先建出来**（批量刷地形）。
+
+        需求原话：「设计师可以框选空白区域，点击右侧栏位中的地形（平地/森林/山地）
+        以将这些空白区域都变为该类地形」。
+
+        @return `(新建的格数, 改动了地形的格数)`。
+          · `changed` **只数已有地块**里真正改了地形的那些 —— 新建出来的格子不算
+            （它本来就没有地形可改，界面上也分开报「新建 N 格 / 改 M 格」）；
+          · 已经存在、地形又一样的格子两边都不计（不算改动）；
+          · 越界 / 装不下的格子**跳过**（与单格建格同一条内存安全网，见 `ensure_tile`）。
+
+        ⚠️ 建格可能改动 `origin`（往左上刷时给负坐标让位），调用方要记得
+           `_follow_origin_shift`（与单格 `on_left_click` 同一条约定）。
+        """
+        if terrain not in TERRAIN_CHARS:
+            return (0, 0)
+        lo_x, hi_x = (x0, x1) if x0 <= x1 else (x1, x0)
+        lo_y, hi_y = (y0, y1) if y0 <= y1 else (y1, y0)
+        created = 0
+        changed = 0
+        for y in range(lo_y, hi_y + 1):
+            for x in range(lo_x, hi_x + 1):
+                if not self.ensure_tile(x, y):
+                    continue
+                if not self.exists(x, y):
+                    self.create_tile(x, y)
+                    self.set_terrain(x, y, terrain)     # 新格直接落到目标地形（不计入 changed）
+                    created += 1
+                elif self.set_terrain(x, y, terrain):
+                    changed += 1
+        return (created, changed)
 
     def count_in_rect(self, x0: int, y0: int, x1: int, y1: int) -> int:
         return len(self.rect_tiles(x0, y0, x1, y1))
@@ -1381,7 +1251,6 @@ class MapModel:
             if zone.tile_count == 0:
                 out.append("区块「%s」还没有地块（导出后它在游戏里是空区块）" % zone.name)
         out.extend(self._zone_center_problems())
-        out.extend(self._faction_problems())
         out.extend(self._size_problems())
         return out
 
@@ -1391,21 +1260,14 @@ class MapModel:
     ##   · `problems()`  = 「你这样导出去游戏里会怪怪的」——**提醒**，用户确认后照导；
     ##   · `blockers()`  = 「这份地图不合法，游戏读不了 / 规则不成立」——**拦住**。
     ##
-    ## 目前三条（都是用户明确要求的「保证」）：
-    ##   1. 每个阵营**恰好一个**大本营（「多了」在数据层不可能，所以这里只查「少了」）；
-    ##   2. 每个区划**恰好一个**中心（同上）；
-    ##   3. ★★ 每个区划的地块必须**连成一片**（用户明确要求：「同一区划下的区块必须是连续的」）。
+    ## 目前两条（都是用户明确要求的「保证」）：
+    ##   1. 每个区划**恰好一个**中心（「多了」在数据层不可能，所以这里只查「少了」）；
+    ##   2. ★★ 每个区划的地块必须**连成一片**（用户明确要求：「同一区划下的区块必须是连续的」）。
     def blockers(self) -> List[str]:
         out: List[str] = []
         if self.existing_count() == 0:
             out.append("地图上一个地块都没有 —— 先在「地块」页签画出土地。")
             return out
-
-        missing_bases = [f.label() for f in self.factions
-                         if self.faction_base_of(f.faction_id) is None]
-        if missing_bases:
-            out.append("这些阵营还没设大本营：%s —— 每个阵营都必须有且只有一个大本营"
-                       "（在「阵营」页签里选一格再点「设为大本营」）。" % "、".join(missing_bases))
 
         missing_centers = [z.name for z in self.zones_without_center()]
         if missing_centers:
@@ -1467,38 +1329,9 @@ class MapModel:
             if self.zone_of.get(self.idx(*self.view_of(cx, cy)), -1) != zone.zone_id:
                 out.append("区块「%s」的中心不在它自己的地块上（那一格现在归别的区块）"
                            % zone.name)
-            if self.faction_base_owner(cx, cy) is not None:
-                out.append("区块「%s」的中心与某个阵营的大本营叠在同一格" % zone.name)
             if self.terrain_at(cx, cy) == "mountain":
                 out.append("区块「%s」的中心落在山地上（游戏里单位本来就进不去，"
                            "但那一格会看不出区别）" % zone.name)
-        return out
-
-    def _faction_problems(self) -> List[str]:
-        """阵营大本营的提醒（同样只提醒、不阻止；硬拦截在 `blockers()`）。
-
-        三种情况值得说一句：
-          · 阵营一个都没建（这里不猜，只在有阵营时检查）；
-          · 设了阵营却没设大本营（导出会被 `blockers()` 拦住，这里也说一句）；
-          · 大本营落在山地上（游戏会就近换格，位置会跑）。
-        """
-        if not self.factions:
-            return []
-        out: List[str] = []
-        for faction in self.factions:
-            base = self.faction_bases.get(faction.faction_id)
-            if base is None:
-                out.append("阵营「%s」还没设大本营（导出前必须设上）" % faction.label())
-                continue
-            if not self.exists(*base):
-                out.append("阵营「%s」的大本营落在一个「不存在」的格子上" % faction.label())
-            elif self.terrain_at(*base) == "mountain":
-                out.append("阵营「%s」的大本营落在山地上（游戏里会就近找一个能站的格子）"
-                           % faction.label())
-        unknown = [f.faction_id for f in self.factions if f.faction_id not in KNOWN_FACTIONS]
-        if unknown:
-            out.append("这些阵营 id 游戏不认识（联机名单里没有）：%s —— "
-                       "它们的大本营在游戏里不会生效" % "、".join(unknown))
         return out
 
     def _size_problems(self) -> List[str]:
