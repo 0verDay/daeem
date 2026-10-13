@@ -41,6 +41,10 @@ python dev_gd_a/tools/map_editor data/maps/frontier/map.json
 
 # 不开窗口，只跑一遍数据层自检（读 config / 读地图 / 导出再导入）
 python dev_gd_a/tools/map_editor --selftest
+
+# ★★ 战役专用图：导出时给地图写 hidden: true（不进自由对战选择条）。
+#   从战役编辑器点「打开地图编辑器」会自动带上这个参数。
+python dev_gd_a/tools/map_editor --map main_test --campaign-map
 ```
 
 要求：Python 3.8+（实测 3.14 通过），tkinter 可用（Windows 官方 Python 自带；
@@ -401,6 +405,21 @@ Linux 上要装 `python3-tk`）。
 
 ⚠️ **`factions` / `faction_bases` 不在那张表里** —— 阵营与大本营归**战役编辑器**（见第四节第 4 小节）。
 ⚠️ **`units`（地图预置单位）也不在** —— 它整个废弃了。见第五节末尾那条 ★★。
+
+### ★★ 战役专用图（`hidden`）
+
+**为战役做的地图不该出现在主菜单那条「自由对战」选择条上** —— 那个由地图自己的
+`"hidden": true` 决定（`logic/map_library.gd` 的 `list_maps()` 会跳过它；关卡照样能按 id 引用它）。
+
+编辑器里有两处入口：
+
+* 侧栏「整张地图」下的勾选框 **「★ 战役专用图（不进自由对战选择条）」** —— 勾上 = 导出写
+  `hidden: true`，取消 = 导出不带这个键（这张图就会出现在自由对战选择条上）。
+* 命令行 **`--campaign-map`**：**从战役编辑器点「打开地图编辑器」时自动带上** ——
+  进来时勾选框就是勾上的，作者在一处把「建战役图 → 引用它」串起来。
+
+⚠️ 不带 `--campaign-map` 打开时**不碰**地图已有的 `hidden`：打开一张本来就 `hidden` 的图
+再导出，它还是 `hidden`（不会被悄悄取消）。
 
 几条约定：
 

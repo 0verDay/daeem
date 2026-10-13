@@ -1,0 +1,295 @@
+{
+  "name": "mt",
+  "mode": "solo",
+  "map": "main_test",
+  "players": [
+    {
+      "faction": "F1"
+    },
+    {
+      "faction": "F2"
+    }
+  ],
+  "factions": [
+    {
+      "id": "F1",
+      "ai": "none",
+      "base": [
+        27,
+        17
+      ]
+    },
+    {
+      "id": "F2",
+      "ai": "none",
+      "base": [
+        1,
+        4
+      ]
+    },
+    {
+      "id": "sj",
+      "ai": "none"
+    },
+    {
+      "id": "dgj",
+      "ai": "none"
+    },
+    {
+      "id": "red1",
+      "ai": "reddot",
+      "reddot_ai": {
+        "spawn_tiles": [
+          [
+            23,
+            0
+          ],
+          [
+            24,
+            0
+          ],
+          [
+            25,
+            0
+          ],
+          [
+            26,
+            0
+          ],
+          [
+            27,
+            0
+          ],
+          [
+            28,
+            0
+          ],
+          [
+            0,
+            8
+          ],
+          [
+            0,
+            9
+          ],
+          [
+            0,
+            10
+          ],
+          [
+            0,
+            11
+          ]
+        ],
+        "march_tiles": [
+          [
+            21,
+            16
+          ],
+          [
+            21,
+            17
+          ],
+          [
+            20,
+            17
+          ],
+          [
+            20,
+            16
+          ],
+          [
+            20,
+            15
+          ],
+          [
+            21,
+            15
+          ],
+          [
+            22,
+            15
+          ],
+          [
+            22,
+            16
+          ],
+          [
+            22,
+            17
+          ],
+          [
+            26,
+            20
+          ],
+          [
+            26,
+            21
+          ],
+          [
+            27,
+            21
+          ],
+          [
+            28,
+            21
+          ],
+          [
+            28,
+            20
+          ],
+          [
+            28,
+            19
+          ],
+          [
+            27,
+            19
+          ],
+          [
+            26,
+            19
+          ],
+          [
+            27,
+            20
+          ]
+        ],
+        "general_weights": [
+          {
+            "general": 1,
+            "weight": 0.5
+          },
+          {
+            "general": 2,
+            "weight": 0.3
+          },
+          {
+            "general": 3,
+            "weight": 0.2
+          }
+        ],
+        "escort_types": [
+          {
+            "type": "spearman",
+            "weight": 0.5
+          },
+          {
+            "type": "longbowman",
+            "weight": 0.5
+          }
+        ],
+        "escort_count": 3
+      }
+    }
+  ],
+  "allies": [
+    [
+      "F1",
+      "sj"
+    ],
+    [
+      "F2",
+      "dgj"
+    ],
+    [
+      "F2",
+      "red1"
+    ],
+    [
+      "dgj",
+      "red1"
+    ]
+  ],
+  "zones": [
+    {
+      "id": 0,
+      "owner": "F2"
+    },
+    {
+      "id": 1,
+      "owner": "F2"
+    },
+    {
+      "id": 2,
+      "owner": ""
+    },
+    {
+      "id": 3,
+      "owner": "dgj"
+    },
+    {
+      "id": 4,
+      "owner": "dgj"
+    },
+    {
+      "id": 5,
+      "owner": "sj"
+    },
+    {
+      "id": 6,
+      "owner": "sj"
+    },
+    {
+      "id": 7,
+      "owner": "sj"
+    },
+    {
+      "id": 8,
+      "owner": "sj"
+    },
+    {
+      "id": 13,
+      "owner": "F1"
+    }
+  ],
+  "start_units": [
+    {
+      "faction": "sj",
+      "kind": "general",
+      "unit_type": "spearman",
+      "x": 21,
+      "y": 18,
+      "ai": "garrison",
+      "zone": 8,
+      "escort_count": 0,
+      "escort_types": [
+        {
+          "type": "spearman",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "faction": "dgj",
+      "kind": "general",
+      "unit_type": "spearman",
+      "x": 1,
+      "y": 15,
+      "ai": "garrison",
+      "zone": 3,
+      "escort_count": 0,
+      "escort_types": [
+        {
+          "type": "spearman",
+          "weight": 1
+        }
+      ]
+    }
+  ],
+  "start_buildings": [],
+  "objectives": [
+    {
+      "for": "F2",
+      "kind": "capture_zone",
+      "zone": 8
+    },
+    {
+      "for": "F1",
+      "kind": "hold_zone",
+      "zone": 8,
+      "hold_sec": 300
+    }
+  ],
+  "fail_conditions": []
+}

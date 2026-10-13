@@ -117,6 +117,11 @@ PRESERVED_KEYS: Tuple[str, ...] = (
 #: · `base`          ：老格式的单数大本营点位（一并丢掉）。
 DROPPED_KEYS: Tuple[str, ...] = ("units", "factions", "faction_bases", "base")
 
+#: ★★ 「只给战役关卡用」的标记：`hidden: true`（在 `PRESERVED_KEYS` 里）——
+#:    主菜单那条自由对战选择条与默认图都**跳过**带它的图；关卡照样能按 id 引用它。
+#:    地图编辑器的「战役专用图」勾选框 / `--campaign-map` 写的就是这个键。
+KEY_HIDDEN = "hidden"
+
 #: 导出时写在 _comment 里的说明（Godot 读不读都行，是给手改 JSON 的人看的）
 EDITOR_COMMENT: Tuple[str, ...] = (
     "DAEEM · 地图编辑器导出。",

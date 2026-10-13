@@ -12,16 +12,15 @@
     │ 状态栏：当前战役 · 关卡 · 上一次操作的结果                                │
     └──────────────────────────────────────────────────────────────────────────┘
 
-五个页签（dev_plan_7 6.2）：
+七个页签：
 
     ① 战役    战役名 / 简介 / 默认模式 / 关卡顺序（上下箭头 + 增删关卡）
-    ② 关卡    当前关的名字 / 模式 / 地图下拉 / 目标（区划 + 秒数）/ 额外失败条件
-    ③ 阵营    敌友（边）+ 每一方一行（★可玩徽标）；大本营去 ④ 摆放页摆（开局部队也去 ④）。
-               ★ AI（类型 / 进攻目标 / 生成区域 / 参数）**不在编辑器里改**（用户要求）——
-                 字段原样保留（读进来 / 写回去都不丢），要改 AI 就手改关卡 JSON
-    ④ 摆放    画布（点一下放东西、右键删、滚轮缩放、中键或**空格 + 左键拖动**平移、
-               【设进攻目标】模式）
-    ⑤ 校验与导出 16+4 条逐条显示；有拦截就不许写文件；一键打开地图编辑器
+    ② 关卡    名字 / 模式 / 地图下拉 / 玩家目标（每个可玩阵营一条）/ 额外失败条件
+    ③ 阵营    敌友（边）+ 每一方一行（★可玩徽标）；大本营去 ④ 摆放页摆
+    ④ 摆放    画布（点一下放东西、右键删、滚轮缩放、中键或**空格 + 左键拖动**平移）
+    ⑤ 区划    开局每一块地归哪个阵营
+    ⑥ 红点    画布点击模式：**生成地块 / 行军目标**；时间表 / 将领权重 / 共享附属规格
+    ⑦ 校验与导出 逐条显示拦截与警告；有拦截就不许写文件；一键打开地图编辑器
 
 ★★ 摆放页**就是**开局部队的全部真相：地图上摆了什么，进游戏就有什么。
    那 3 位将领与它们的附属兵都**在这里摆**（画笔选「将领」/「附属兵」，
@@ -35,8 +34,10 @@
     —— 见 `CANVAS_HINT`，它印在 ④ 摆放页的画布上方。
 
 ★ AI 相关字段（`ai` / `attack_target` / `spawn_region` / `garrison_ai` / `reddot_ai`）
-  **编辑器不再提供编辑入口**（用户要求：不在编辑器里改 AI）：它们仍然原样读、原样写
-  （不会丢），要改就手改关卡 JSON。④ 摆放页的「设进攻目标…」仍能改 `attack_target`。
+  **编辑器基本不提供编辑入口**（用户要求：不在编辑器里改 AI）：它们仍然原样读、原样写
+  （不会丢），要改就手改关卡 JSON。
+  ★★ 唯一例外：**红点的行军目标**在 ⑥ 红点页编辑（`reddot_ai.march_tiles`：多个格子，
+  每位将领随机挑一个）—— 它取代了 ④ 摆放页原来那颗「设进攻目标…」按钮。
 
 ★ 画布手势照 `map_editor/app.py`：滚轮以光标为锚点缩放、中键拖动（或**空格 + 左键拖动**）
   平移、右键删除。唯一的有意差异是 **左键单击**：那边是「涂地形」，这边是「放东西 / 选中」。
@@ -139,9 +140,9 @@ PAGES: Tuple[Tuple[str, str, str], ...] = (
     ("campaign", "战役", "战役页：名字 / 简介 / 默认模式 / 关卡顺序（上下箭头排、增删关卡）"),
     ("level", "关卡", "关卡页：当前关的名字 / 模式 / 地图 / 目标 / 额外失败条件"),
     ("factions", "阵营", "阵营页：敌友（边）+ 每一方一行；大本营去 ④ 摆放页摆（AI 不在编辑器里改，见 README）"),
-    ("place", "摆放", "摆放页：画布上点一下放将领/单位/建筑；右键删；滚轮缩放；中键或空格+左键拖动；「设进攻目标」模式"),
+    ("place", "摆放", "摆放页：画布上点一下放将领/单位/建筑；右键删；滚轮缩放；中键或空格+左键拖动"),
     ("zone", "区划", "区划页：开局每一块地归哪个阵营（关卡覆盖地图的 zone_list[].owner）"),
-    ("reddot", "红点", "红点页：选生成地块 / 生成频率与将领数（函数表达式）/ 将领类型权重 / 共享附属单位规格"),
+    ("reddot", "红点", "红点页：画布点击模式（生成地块 / 行军目标）/ 生成频率与将领数（函数表达式）/ 将领类型权重 / 共享附属单位规格"),
     ("check", "校验与导出", "校验页：跑全部硬拦截 + 警告；有拦截时不许写文件"),
 )
 
@@ -538,8 +539,6 @@ class EditorApp:
         self.brush_escort_of = 1
         #: 摆放页选中的东西：("unit"|"building", 下标)。
         self.selection: Optional[Tuple[str, int]] = None
-        #: 「设进攻目标」模式：选中的阵营 id（None = 不在这个模式里）。
-        self.target_mode_faction: Optional[str] = None
         #: ★★ 敌友「边」的**编辑期缓存**（一条边一个阵营列表）。None = 还没从数据里读。
         #:   为什么要有它：`allies` 是成对关系，一条只有一个成员的边写进去等于没有
         #:   （推不出来）—— 缓存让「刚新建的边」在 refresh 之间活得下去。
@@ -547,6 +546,8 @@ class EditorApp:
         self._sides: Optional[List[List[str]]] = None
         #: ★★ 红点页当前编辑的阵营（红点生成配置挂在它的 `reddot_ai` 上）。
         self.reddot_faction: str = ""
+        #: ★★ 红点页的画布点击模式：`"spawn"` = 编辑生成地块 / `"march"` = 编辑行军目标。
+        self.reddot_click_mode: str = "spawn"
         #: 画布视口（与 map_editor 同一套：zoom + ox/oy 像素偏移）。
         self.zoom = 1.0
         self.ox = 0.0
@@ -822,7 +823,6 @@ class EditorApp:
             return
         self.current_level_id = level_id
         self.selection = None
-        self.target_mode_faction = None
         self._reset_sides()                         # 换关卡 → 敌友边重新从数据里读
         self.refresh_all()
         self.fit_view()
@@ -1157,13 +1157,10 @@ class EditorApp:
         self._button(bar, "＋", lambda: self.zoom_by(ZOOM_STEP)).pack(side="left", padx=2)
         self._button(bar, "适应视图", self.fit_view).pack(side="left", padx=6)
         if self.page == "place":
-            self.target_button = self._button(bar, "设进攻目标…", self.do_target_mode,
-                                              bg=UI["panel_alt"], fg=UI["warn"])
-            self.target_button.pack(side="left", padx=10)
             bar_hint = ("左键放 / 选　右键删（大本营也能右键删）　"
-                        "中键或空格+左键拖动平移　滚轮缩放　Esc 退出目标模式")
+                        "中键或空格+左键拖动平移　滚轮缩放　Esc 取消选中")
         else:
-            bar_hint = ("左键点空地 = 加/移出红点生成地块　右键 = 移出　"
+            bar_hint = ("左键点格 = 加/移出「生成地块 / 行军目标」（右侧切换）　右键 = 移出　"
                         "中键或空格+左键拖动平移　滚轮缩放")
         tk.Label(bar, text=bar_hint, bg=UI["bg"], fg=UI["text_dim"],
                  font=("Microsoft YaHei UI", 8)).pack(side="left", padx=10)
@@ -1380,7 +1377,7 @@ class EditorApp:
                 self.canvas.create_line(sx, sy, tx, ty, fill=C["arrow"], width=2,
                                         arrow="last", dash=(4, 3))
 
-        # ---- 红点生成地块（只红点页画；游戏里这些格子外观**没有任何区别**）----
+        # ---- 红点生成地块 / 行军目标地块（只红点页画；游戏里这些格子外观**没有任何区别**）----
         if self.page == "reddot":
             for (tx, ty) in self.reddot_spawn_tiles():
                 sx, sy = self.cell_origin(tx, ty)
@@ -1388,6 +1385,13 @@ class EditorApp:
                                              outline=C["arrow"], width=2, dash=(3, 2))
                 self.canvas.create_text(sx + size / 2, sy + size / 2, text="点",
                                         fill=C["arrow"], font=("Microsoft YaHei UI", 8))
+            # ★ 行军目标地块：换一种颜色 + 「目」，与「点」（生成地块）区分开
+            for (tx, ty) in self.reddot_march_tiles():
+                sx, sy = self.cell_origin(tx, ty)
+                self.canvas.create_rectangle(sx + 3, sy + 3, sx + size - 3, sy + size - 3,
+                                             outline=C["objective"], width=2, dash=(2, 2))
+                self.canvas.create_text(sx + size / 2, sy + size / 2, text="目",
+                                        fill=C["objective"], font=("Microsoft YaHei UI", 8))
 
         # ---- 悬停格 ----
         if self.hover is not None:
@@ -1600,30 +1604,9 @@ class EditorApp:
         return isinstance(focus, (tk.Entry, tk.Text, ttk.Entry, ttk.Combobox))
 
     def on_escape(self) -> None:
-        if self.target_mode_faction is not None:
-            self.target_mode_faction = None
-            self.status("已退出「设进攻目标」模式")
-            self.refresh_all()
-        elif self.selection is not None:
+        if self.selection is not None:
             self.selection = None
             self.refresh_all()
-
-    def do_target_mode(self) -> None:
-        """进入「设进攻目标」模式：先选一方（取当前摆放归属那一方）。"""
-        if self.page != "place":
-            self.set_page("place")
-        lv = self.level()
-        if lv is None:
-            return
-        candidates = [e.fid for e in lv.factions] or self.all_faction_ids()
-        if not candidates:
-            self.status("没有可选的阵营：先到「阵营」页加一方")
-            return
-        pick = self.brush_faction if self.brush_faction in candidates else candidates[0]
-        self.target_mode_faction = pick
-        self.status("「设进攻目标」模式：选中「%s」—— 点区划 = zone 目标，点空格 = point 目标，Esc 退出"
-                    % pick)
-        self.refresh_all()
 
     def on_left_click(self, event) -> None:
         """左键**点一下**（按下与松开之间没怎么动，由 `on_left_up` 判定后才走到这里）。
@@ -1636,9 +1619,6 @@ class EditorApp:
         cell = self.screen_to_cell(event.x, event.y)
         if self.page == "reddot":
             self._toggle_reddot_tile(cell)
-            return
-        if self.target_mode_faction is not None:
-            self._click_target(cell)
             return
         info = self.map_info()
         lv = self.level()
@@ -1712,24 +1692,6 @@ class EditorApp:
             b = lv.start_buildings[index]
             return "建筑 %s/%s (%d,%d)" % (b.owner, b.type, b.x, b.y)
         return "（选中已失效）"
-
-    def _click_target(self, cell: Tuple[int, int]) -> None:
-        """「设进攻目标」：点区划 → zone；点空格 → point。"""
-        lv = self.level()
-        info = self.map_info()
-        fid = self.target_mode_faction
-        if lv is None or info is None or fid is None:
-            return
-        zid = info.zone_of(cell[0], cell[1])
-        if zid >= 0 and (cell == info.zone_centers.get(zid)
-                         or info.terrain_at(*cell) != "#"):
-            # ★ 有区划的格子按「指定区划」处理；这正是 6.3 那条手势
-            #   （点区划 → zone 目标 / 点空格 → point 目标）。
-            self.set_attack_target(fid, {"kind": TARGET_ZONE, "zone": int(zid)})
-            self.status("「%s」的进攻目标 = 指定区划 %s" % (fid, info.zone_label(zid)))
-        else:
-            self.set_attack_target(fid, {"kind": TARGET_POINT, "x": cell[0], "y": cell[1]})
-            self.status("「%s」的进攻目标 = 指定格 (%d,%d)" % (fid, cell[0], cell[1]))
 
     def update_status(self, cell: Optional[Tuple[int, int]]) -> None:
         if cell is None:
@@ -1980,7 +1942,10 @@ class EditorApp:
         if not map_id:
             messagebox.showwarning("没有地图", "这一关还没有写 map，先到「关卡」页选一张。")
             return
-        cmd = [sys.executable, str(self.map_editor_dir()), "--map", str(map_id)]
+        # ★ `--campaign-map`：告诉地图编辑器「这张图是给战役用的」——
+        #   它导出时会写 `hidden: true`，于是**不进自由对战选择条**（关卡仍按 id 引用它）。
+        cmd = [sys.executable, str(self.map_editor_dir()), "--map", str(map_id),
+               "--campaign-map"]
         try:
             self.subprocess_mod.Popen(cmd)
         except OSError as exc:
@@ -2244,15 +2209,6 @@ class EditorApp:
         elif field == "color":
             entry.color = str(value)
             self.model.ensure_faction(fid, fid, str(value))["color"] = str(value)
-        self._after_change()
-
-    def set_attack_target(self, fid: str, spec: Optional[dict]) -> None:
-        """③ 的下拉与 ④ 的画布点选**共用的唯一入口**（保证两处看到的是同一个值）。"""
-        lv = self.level()
-        if lv is None:
-            return
-        entry = lv.ensure_faction(fid)
-        entry.attack_target = spec
         self._after_change()
 
     def remove_faction_entry(self, fid: str) -> None:
@@ -2748,10 +2704,6 @@ class EditorApp:
             self._hint(section, "★ 「大本营」画笔：左键点格 = 给「归属」那一方设大本营；"
                                 "右键点已有的大本营 = 清掉")
 
-        if self.target_mode_faction is not None:
-            self._hint(section, "★ 正在「设进攻目标」模式：「%s」—— 点区划 / 空格改它的目标，Esc 退出"
-                       % self.target_mode_faction)
-
         # ---- 地图上已有的东西 ----
         section2 = self._section("地图上已有的（关卡层）",
                                  "这里列开局摆的单位 / 建筑；大本营用「大本营」画笔在画布上摆 / 右键删")
@@ -3113,27 +3065,53 @@ class EditorApp:
             lv.mark_declared("factions")
         return e.reddot_ai
 
-    def reddot_spawn_tiles(self) -> List[Tuple[int, int]]:
+    def _reddot_tiles(self, key: str) -> List[Tuple[int, int]]:
         rd = self.reddot_params(False) or {}
         out: List[Tuple[int, int]] = []
-        for t in model_mod._as_list(rd.get(model_mod.REDDOT_SPAWN_TILES_KEY)):
+        for t in model_mod._as_list(rd.get(key)):
             tp = model_mod._tile_of(t)
             if tp is not None:
                 out.append(tp)
         return out
 
+    def reddot_spawn_tiles(self) -> List[Tuple[int, int]]:
+        return self._reddot_tiles(model_mod.REDDOT_SPAWN_TILES_KEY)
+
+    def reddot_march_tiles(self) -> List[Tuple[int, int]]:
+        """当前红点阵营的**行军目标地块**（`reddot_ai.march_tiles`）。"""
+        return self._reddot_tiles(model_mod.REDDOT_MARCH_TILES_KEY)
+
+    def reddot_tile_key(self) -> str:
+        """红点页现在编的是哪一种格子（由 `reddot_click_mode` 决定）。"""
+        return (model_mod.REDDOT_MARCH_TILES_KEY if self.reddot_click_mode == "march"
+                else model_mod.REDDOT_SPAWN_TILES_KEY)
+
+    def set_reddot_click_mode(self, mode: str) -> None:
+        """切换画布点击模式：生成地块 / 行军目标。"""
+        self.reddot_click_mode = "march" if mode == "march" else "spawn"
+        where = "行军目标" if self.reddot_click_mode == "march" else "生成地块"
+        n = len(self.reddot_march_tiles() if self.reddot_click_mode == "march"
+                else self.reddot_spawn_tiles())
+        self.status("红点页：左键点画布 = 编辑「%s」（现在 %d 个）" % (where, n))
+        self.refresh_all()
+
     def _toggle_reddot_tile(self, cell: Tuple[int, int], force_remove: bool = False) -> None:
+        """左/右键点画布：往**当前模式那一种**格子里加入 / 移出（生成地块 / 行军目标同一条路）。"""
+        self._toggle_reddot_tiles(self.reddot_tile_key(), cell, force_remove)
+
+    def _toggle_reddot_tiles(self, key: str, cell: Tuple[int, int],
+                             force_remove: bool = False) -> None:
         info = self.map_info()
         if info is not None and (not info.tile_exists(cell[0], cell[1])
                                  or not info.walkable_at(cell[0], cell[1])):
-            self.status("(%d,%d) 不能当生成地块：地图外或山地" % cell)
+            self.status("(%d,%d) 不能选：地图外或山地" % cell)
             return
         rd = self.reddot_params(True)
         if rd is None:
             self.status('没有红点阵营：本关没有 `ai: "reddot"` 的阵营'
                         '（AI 类型不在编辑器里改 —— 手改关卡 JSON）')
             return
-        tiles = self.reddot_spawn_tiles()
+        tiles = self._reddot_tiles(key)
         if cell in tiles:
             tiles = [t for t in tiles if t != cell]
             action = "移出"
@@ -3142,12 +3120,13 @@ class EditorApp:
         else:
             tiles.append(cell)
             action = "加入"
-        rd[model_mod.REDDOT_SPAWN_TILES_KEY] = [[int(x), int(y)] for x, y in tiles]
+        rd[key] = [[int(x), int(y)] for x, y in tiles]
         lv = self.level()
         if lv is not None:
             lv.mark_declared("factions")
-        self.status("%s红点生成地块 (%d,%d)：现在共 %d 个"
-                    % (action, cell[0], cell[1], len(tiles)))
+        what = "行军目标" if key == model_mod.REDDOT_MARCH_TILES_KEY else "生成地块"
+        self.status("%s红点%s (%d,%d)：现在共 %d 个"
+                    % (action, what, cell[0], cell[1], len(tiles)))
         self.refresh_all()
 
     def _set_reddot_expr(self, key: str, text: str) -> None:
@@ -3274,11 +3253,30 @@ class EditorApp:
                         "（每条边都有谁，在「阵营」页看。）")
         rd = self.reddot_params(False) or {}
 
-        # ---- 生成地块 ----
-        tiles = self.reddot_spawn_tiles()
-        tsec = self._section("生成地块", "在画布上左键点空地 = 加/移出；右键 = 移出")
-        self._hint(tsec, "已选 %d 个地块（游戏里这些格子的外观**没有区别**）。" % len(tiles))
-        self._button(tsec, "清空生成地块", self._clear_reddot_tiles, bg=UI["danger_btn"], fg=UI["danger_fg"]).pack(anchor="w")
+        # ---- 生成地块 / 行军目标（两种画布点击模式）----
+        spawn_tiles = self.reddot_spawn_tiles()
+        march_tiles = self.reddot_march_tiles()
+        mode = self.reddot_click_mode
+        tsec = self._section("画布点击：生成地块 / 行军目标",
+                             "选一种，然后在画布上**左键点格** = 加/移出；右键 = 移出")
+        row = tk.Frame(tsec, bg=UI["panel"])
+        row.pack(side="top", fill="x", pady=2)
+        for key, label in (("spawn", "生成地块"), ("march", "行军目标")):
+            active = (mode == key)
+            self._button(row, ("● " if active else "○ ") + label,
+                         lambda k=key: self.set_reddot_click_mode(k),
+                         padx=6, pady=3,
+                         bg=UI["accent_btn"] if active else UI["panel_alt"],
+                         fg=UI["accent_fg"] if active else UI["text"],
+                         activebackground=UI["hover"]).pack(side="left", padx=(0, 4))
+        self._hint(tsec, "已选：生成地块 %d 个；行军目标 %d 个。现在左键点画布 = 编辑「%s」。"
+                         % (len(spawn_tiles), len(march_tiles),
+                            "行军目标" if mode == "march" else "生成地块"))
+        if mode == "march":
+            self._hint(tsec, "★ 行军目标：每一波里**每位将领**从这些格子里随机挑一个行军"
+                             "（非空时优先于单点 `attack_target`）。")
+        self._button(tsec, "清空当前这一种", self._clear_reddot_tiles,
+                     bg=UI["danger_btn"], fg=UI["danger_fg"]).pack(anchor="w", pady=(4, 0))
 
         # ---- 时间表 ----
         isec = self._section("生成时间表", "y = a·x + b（x = 波次，y 的单位分别是「分钟」/「个」）")
@@ -3341,14 +3339,17 @@ class EditorApp:
         self.refresh_all()
 
     def _clear_reddot_tiles(self) -> None:
+        """清空**当前模式**那一栏的所有格子（生成地块 / 行军目标）。"""
         rd = self.reddot_params(True)
         if rd is None:
             return
-        rd[model_mod.REDDOT_SPAWN_TILES_KEY] = []
+        key = self.reddot_tile_key()
+        rd[key] = []
         lv = self.level()
         if lv is not None:
             lv.mark_declared("factions")
-        self.status("清空了红点生成地块")
+        what = "行军目标" if key == model_mod.REDDOT_MARCH_TILES_KEY else "生成地块"
+        self.status("清空了红点%s" % what)
         self.refresh_all()
 
     # ---- ★★ 附属部队（`start_units[].escort_of`；旧模型，只读兼容）----

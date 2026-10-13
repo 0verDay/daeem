@@ -156,6 +156,9 @@ def main(argv=None) -> int:
                         help="要打开的地图：地图 id（目录名）或 map.json 的路径（可省）")
     parser.add_argument("--project", default=str(DEFAULT_PROJECT_DIR),
                         help="Godot 工程目录（读它的 data/config.json）")
+    parser.add_argument("--campaign-map", dest="campaign_map", action="store_true",
+                        help="战役专用图：给地图写 hidden: true（不进自由对战选择条）。"
+                             "从战役编辑器点「打开地图编辑器」时会自动带上。")
     parser.add_argument("--selftest", action="store_true", help="不开窗口，跑一遍自检")
     args = parser.parse_args(argv)
 
@@ -191,7 +194,7 @@ def main(argv=None) -> int:
             print("[error] %s" % exc)
             return 2
 
-    return app_module.run(project_dir, model, current)
+    return app_module.run(project_dir, model, current, campaign_map=args.campaign_map)
 
 
 if __name__ == "__main__":

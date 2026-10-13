@@ -124,11 +124,15 @@ ESCORT_TYPES_KEY = "escort_types"
 #:   · `general_count_expr` 第 x 波的将领数（默认 "x"）；
 #:   · `general_weights` = `[{"general": 1..3, "weight": f}]`（将领类型权重，和为 1）；
 #:   · `spawn_tiles` = `[[x,y], ...]`：红点生成地块（可空）；
+#:   · ★★ `march_tiles` = `[[x,y], ...]`：**行军目标地块**（可空）—— 每一波里**每位将领**
+#:     从里面**随机挑一格**行军（比单点 `attack_target` 更适合「到处骚扰」的红点）；
+#:     非空时**优先于** `attack_target`。
 #:   · `escort_count` / `escort_types`：红点将领的**共享附属单位规格**（同上）。
 REDDOT_WAVE_EXPR_KEY = "wave_time_expr"
 REDDOT_COUNT_EXPR_KEY = "general_count_expr"
 REDDOT_GENERAL_WEIGHTS_KEY = "general_weights"
 REDDOT_SPAWN_TILES_KEY = "spawn_tiles"
+REDDOT_MARCH_TILES_KEY = "march_tiles"
 
 #: 编制上限的默认值（与 `logic/config.gd` 的 `GENERAL_CAP_DEFAULT` / UI 的 UNIT_CAP 同值）。
 GENERAL_CAP_DEFAULT = 11
@@ -2099,10 +2103,6 @@ def _initial_zone_owner(lv: LevelModel, info: Optional[MapInfo], zid: int) -> st
     return ""
 
 
-def _declared_faction_ids(lv: LevelModel) -> List[str]:
-    return [e.fid for e in lv.factions if e.fid]
-
-
 def _level_base(lv: LevelModel, fid: str) -> Optional[Tuple[int, int]]:
     e = lv.faction(fid)
     return e.base if e is not None else None
@@ -2116,6 +2116,15 @@ def _base_of(lv: LevelModel, info: Optional[MapInfo], fid: str) -> Optional[Tupl
     if info is not None:
         return info.faction_base(fid)
     return None
+
+
+def _playable_base(lv: LevelModel, info: Optional[MapInfo],
+                   fid: str) -> Optional[Tuple[int, int]]:
+    """**可玩阵营**的大本营：席位 `players[].base` → 关卡 `factions[].base` → 地图。"""
+    for p in lv.players:
+        if str(p.get("faction", "")) == fid and p.get("base") is not None:
+            return p["base"]
+    return _base_of(lv, info, fid)
 
 
 def _ck_players(add, model: CampaignModel, lv: LevelModel,
@@ -2142,23 +2151,22 @@ def _ck_players(add, model: CampaignModel, lv: LevelModel,
             add(SEV_BLOCK, "players_same_faction", "两个玩家不能占同一阵营（%s）" % fid)
         seats[fid] = i
 
-    # ★★ 4) 每个**会出场的非玩家方**都要有大本营。
+    # ★★ 4) **可玩阵营**必须有大本营（AI 不要求）。
     #
-    # 判据（与 `logic/level.gd` 的 `_effective_ai_list` 同一套，但只取我们看得见的两档）：
-    #   · 关卡 `factions[]` 点名的每一方 —— **一律要求**有点位（关卡写了 ai:none 也要，
-    #     因为「不动」不等于「不存在」，它照样会被建出一座大本营）；
-    #     大本营可以是关卡自己给的，也可以是地图 `faction_bases` 里给的。
-    #   · 地图 `factions_meta` 只划过的阵营**不要求**：地图不一定给每一方都划基地
-    #     （见逻辑层那段说明），它进不了这一局的名单。
+    # ★ 用户口径：**只有可玩阵营才必须配置大本营**，也**仅在这里**对大本营做导出校验。
+    #   非可玩的一方（阵地性 / 红点性 AI、NPC）**不要求**点位 —— 它们的兵由
+    #   `start_units[]` 摆放，运行时也不会给它们建大本营
+    #   （`world.apply_faction_layout` 只给玩家方建；AI 那点只当出生锚点，可有可无）。
     #
-    # ⚠️ 玩家席位（`players[].faction`）**不在这里拦**（老口径）：逻辑层那一份只遍历
-    #    「参展阵营 ∪ 地图阵营 ∪ config 阵营」，席位不在里面 —— 跟着它的口径走。
-    for fid in _declared_faction_ids(lv):
-        if fid in seats:
-            continue
-        if _base_of(lv, info, fid) is None:
+    # 判据 = 「战役可玩 ∩ 本关在场」：一个**不在这一关出场**的可玩阵营不该把关卡拦下来。
+    playable = model.playable_ids()
+    present = set(lv.present_ids())
+    if info is not None:
+        present |= {str(f.get("id", "")) for f in info.factions}
+    for fid in playable:
+        if fid and fid in present and _playable_base(lv, info, fid) is None:
             add(SEV_BLOCK, "faction_no_base",
-                "阵营「%s」没有大本营：会落到 (0,0) 顶掉区块中心" % fid)
+                "可玩阵营「%s」没有大本营 —— 去「摆放」页给它摆一个" % fid)
 
 
 def _ck_points(add, lv: LevelModel, info: MapInfo) -> None:
@@ -2360,10 +2368,17 @@ def _ck_attack_targets(add, model: CampaignModel, lv: LevelModel,
         if e.attack_target is not None:
             _ck_attack_target(add, lv, info, e.fid, e.attack_target, e.attack_target_raw)
 
-    # 15) 挂着阵营 AI 的阵营**一个都没写** attack_target → 警告
-    if faction_ais and not any(e.attack_target is not None for e in faction_ais):
+    # 15) 挂着阵营 AI 的阵营**一个都没写**行军目标 → 警告
+    #     （目标 = 单点 `attack_target` **或**红点的多格 `march_tiles`）
+    def _has_target(e: "FactionEntry") -> bool:
+        if e.attack_target is not None:
+            return True
+        rd = e.reddot_ai if isinstance(e.reddot_ai, dict) else {}
+        return bool(_as_list(rd.get(REDDOT_MARCH_TILES_KEY)))
+
+    if faction_ais and not any(_has_target(e) for e in faction_ais):
         add(SEV_WARN, "no_attack_target",
-            "挂着阵营 AI 的阵营一个都没写进攻目标：它们会各自去打「离自己最近的敌方区划」")
+            "挂着阵营 AI 的阵营一个都没写行军目标：它们会各自去打「离自己最近的敌方区划」")
 
     # 14) 某个 AI 阵营的进攻目标指向自己的地 → 警告
     for e in faction_ais:
@@ -2552,6 +2567,18 @@ def _ck_reddot(add, lv: LevelModel, info: Optional[MapInfo],
                 elif not info.walkable_at(x, y):
                     add(SEV_BLOCK, "reddot_spawn_tile_invalid",
                         "红点阵营「%s」的生成地块 (%d,%d) 在山上（站不了人）" % (fid, x, y))
+        if REDDOT_MARCH_TILES_KEY in rd and info is not None:
+            for t in _as_list(rd.get(REDDOT_MARCH_TILES_KEY)):
+                tp = _tile_of(t)
+                if tp is None:
+                    continue
+                x, y = tp
+                if not info.tile_exists(x, y):
+                    add(SEV_BLOCK, "reddot_march_tile_invalid",
+                        "红点阵营「%s」的行军目标 (%d,%d) 在地图外" % (fid, x, y))
+                elif not info.walkable_at(x, y):
+                    add(SEV_BLOCK, "reddot_march_tile_invalid",
+                        "红点阵营「%s」的行军目标 (%d,%d) 在山上（走不到）" % (fid, x, y))
         # 共享附属单位规格：用**所有将领里最大的编制上限**当上界（宽松）。
         cap = -1
         if config is not None:

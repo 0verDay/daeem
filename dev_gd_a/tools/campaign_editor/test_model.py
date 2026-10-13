@@ -368,8 +368,10 @@ def t_load_and_roundtrip() -> None:
     eq(model.name, "东征·第一章", "战役显示名")
     eq(model.default_mode, M.MODE_SOLO, "默认模式")
     eq(model.unlock, "in_order", "解锁方式")
-    eq([lv.level_id for lv in model.levels], ["01_beachhead", "02_twin_line"],
-       "关卡顺序 = levels[] 的顺序（不是文件名字典序）")
+    # ⚠️ 样例战役**随时会加关**（作者在编辑器里新建一关就多一个）—— 只钉前两关的顺序，
+    #    别写死「一共几关」（写死了的话加一关就假红）。
+    eq([lv.level_id for lv in model.levels][:2], ["01_beachhead", "02_twin_line"],
+       "关卡顺序 = levels[] 的顺序（前两关固定）")
     # ★★ 样例战役有**两个**可玩阵营（F1 赤军 / F2 金军）—— 用户在关卡里挑一个来玩，
     #    没被选中的那一个由阵营 AI 接管（见 docs/route.md 37.18）。
     eq(model.playable_ids(), ["F1", "F2"],
@@ -504,8 +506,8 @@ def t_override_rules() -> None:
     eq(lv2.faction("E1").garrison_ai, None, "★ 只改了大本营：别的字段还留在**默认值**上")
     eq(M._base_of(lv2, info, "F1"), map_base_f1, "★ 没点名的 F1 照样用地图的大本营")
 
-    # 地图里有、关卡里没点名的一方：base 从地图来（校验第 4 条不管它）
-    eq(M._declared_faction_ids(lv2), ["E1"], "关卡点名的阵营只有 E1")
+    # 地图里有、关卡里没点名的一方：base 从地图来
+    eq([f.fid for f in lv2.factions], ["E1"], "关卡点名的阵营只有 E1")
 
 
 def t_config_and_maps() -> None:
@@ -529,8 +531,9 @@ def t_config_and_maps() -> None:
 
     ms = maps(real=True)
     info = ms["dongzheng"]
-    eq(sorted(ms), ["arena", "crossing", "dongzheng", "frontier"],
-       "★ 四张地图全在（含 hidden 与 占位）")
+    # ⚠️ 只要求「这几张在」—— 作者随时会往 data/maps/ 加新图，写死全集会假红。
+    ok(set(["arena", "crossing", "dongzheng", "frontier"]) <= set(ms),
+       "★ 四张地图全在（含 hidden 与 占位），实际：%s" % sorted(ms))
     ok(info.hidden, "★ dongzheng 带 hidden 标记（照样列出来）")
     ok(ms["arena"].placeholder, "★ arena 带 placeholder 标记（照样列出来）")
     ok(not ms["frontier"].hidden and not ms["frontier"].placeholder, "frontier 两个标记都没有")
@@ -609,25 +612,27 @@ def t_validation_players() -> None:
     model.levels[0].players.insert(0, {"faction": "", "base": None})
     issues = M.validate_campaign(model, maps())
     ok(has(issues, "player_no_faction"), "★ 席位没写 faction → player_no_faction")
-    # 关卡点名了一方、那一方在关卡与地图上都没有大本营
+    # ★★ 大本营只对**可玩阵营**要求（AI / NPC 不要求 —— 用户口径）。
+    #   ① 可玩阵营（本关所属战役里 playable 的玩家方）在席位 / 关卡 / 地图上都没有大本营 → 拦
+    issues = check(base_level(players=[{"faction": f.player}], factions=[]),
+                   maps_override=maps_without_base(f.player))
+    ok(has(issues, "faction_no_base"),
+       "★ 可玩阵营没有大本营 → faction_no_base（拦）")
+    #   ② 非可玩的一方（AI / NPC）没有大本营 → **不拦**
     issues = check(base_level(factions=[{"id": "幽灵军", "ai": "garrison"}],
                               start_buildings=[]))
-    ok(has(issues, "faction_no_base"), "★ 点名的阵营没有大本营 → faction_no_base（拦）")
-    # ★ 反面：关卡没写 base，但**地图**有 → 不拦
-    issues = check(base_level(factions=[{"id": f.enemy, "ai": "garrison"}]))
-    eq(block_codes(issues), [], "★★ 关卡没写大本营、但地图有 → 不拦（覆盖规则）")
-    # ★ ai: none 的阵营「不动」不等于「不存在」，照样要有大本营
-    issues = check(base_level(factions=[{"id": f.enemy, "ai": "none"}]))
-    eq(block_codes(issues), [], "（ai:none 的敌方地图上有大本营 → 不拦）")
-    issues = check(base_level(factions=[{"id": f.enemy, "ai": "none"}]), maps_without_base())
-    ok(has(issues, "faction_no_base"), "★★ 连地图都没给它大本营 → 拦（ai:none 也要点位）")
+    eq(block_codes(issues), [],
+       "★★ AI 阵营没有大本营 → 不拦（只有可玩阵营必须配大本营）")
+    #   ★ 反面：可玩阵营的大本营从**地图**来也认（关卡没写不拦）
+    issues = check(base_level(players=[{"faction": f.player}], factions=[]))
+    eq(block_codes(issues), [], "★★ 可玩阵营的 base 从地图来 → 不拦（覆盖规则）")
 
 
-def maps_without_base() -> dict:
-    """一份把**敌方**大本营抹掉的（内存里的）地图表 —— 不碰真文件。"""
+def maps_without_base(fid: str = None) -> dict:
+    """一份把某个阵营的大本营抹掉的（内存里的）地图表 —— 不碰真文件。"""
     ms = maps()
     info = copy.deepcopy(ms[FACTS.map_id])
-    info.faction_bases.pop(FACTS.enemy, None)
+    info.faction_bases.pop(fid or FACTS.enemy, None)
     ms[FACTS.map_id] = info
     return ms
 
@@ -881,6 +886,30 @@ def t_validation_overload() -> None:
     ok(not has(issues, "no_attack_target", M.SEV_WARN),
        "★ 红点 AI 写了行军目标 → 不再警告")
 
+    # ★★ `reddot_ai.march_tiles`（多格行军目标，运行时每位将领随机挑一格）
+    entry3 = {"id": f.enemy, "ai": "reddot", "base": list(f.enemy_base),
+              "reddot_ai": {"march_tiles": [[f.spot[0], f.spot[1]]]}}
+    issues = check(base_level(factions=[entry3], start_buildings=[]))
+    ok(not has(issues, "no_attack_target", M.SEV_WARN),
+       "★ 红点写了 `march_tiles` → 也算写了目标（不再警告）")
+    ok(not has(issues, "reddot_march_tile_invalid"), "★ 合法的行军目标格 → 不拦")
+    issues = check(base_level(factions=[{"id": f.enemy, "ai": "reddot",
+                                         "base": list(f.enemy_base),
+                                         "reddot_ai": {"march_tiles": [[99, 99]]}}],
+                              start_buildings=[]))
+    ok(has(issues, "reddot_march_tile_invalid"),
+       "★ 行军目标在地图外 → reddot_march_tile_invalid（拦）")
+    issues = check(base_level(factions=[{"id": f.enemy, "ai": "reddot",
+                                         "base": list(f.enemy_base),
+                                         "reddot_ai": {"march_tiles": [list(f.mountain)]}}],
+                              start_buildings=[]))
+    ok(has(issues, "reddot_march_tile_invalid"),
+       "★ 行军目标在山上 → reddot_march_tile_invalid（拦）")
+    model = campaign_with(base_level(factions=[entry3], start_buildings=[]))
+    out = model.levels[0].to_dict()["factions"][0]
+    eq(out.get("reddot_ai", {}).get("march_tiles"), [[f.spot[0], f.spot[1]]],
+       "★ `march_tiles` 原样写进 JSON（往返保留）")
+
 
 def t_validation_faction_color() -> None:
     """★★ 校验 18：**自定义阵营必须有配色**（否则游戏里整场一片紫）。
@@ -1115,6 +1144,7 @@ def t_ordering() -> None:
     ids = [lv.level_id for lv in model.levels]
     ok(len(ids) >= 2, "（前提）样例战役至少两关")
     first, second = ids[0], ids[1]
+    last_orig = ids[-1]                 # 原有关卡里最后一个（99 会被追加在它后面）
     lv = model.new_level("99_last_stand", FACTS.map_id)
     eq([x.level_id for x in model.levels], ids + ["99_last_stand"], "★ new_level 追加到末尾")
     eq(lv.map_id, FACTS.map_id, "★ 新关卡记住了地图")
@@ -1126,19 +1156,19 @@ def t_ordering() -> None:
     model.remove_level(dup.level_id)
 
     ok(model.move_level("99_last_stand", -1), "★ 上移成功")
-    eq([x.level_id for x in model.levels][-1], second, "★ 上移之后它在原来那一关前面")
+    eq([x.level_id for x in model.levels][-1], last_orig, "★ 上移之后它在原来那一关前面")
     ok(model.move_level("99_last_stand", 1), "★ 下移成功")
     eq([x.level_id for x in model.levels][-1], "99_last_stand", "★ 下移回到末尾")
     ok(not model.move_level(first, -1), "★ 第一关再上移 → 不动（返回 False）")
     ok(not model.move_level("不存在的关", 1), "★ 不存在的关卡 → False")
     ok(model.remove_level("99_last_stand"), "★ 删除成功")
     ok(not model.remove_level("99_last_stand"), "★ 再删一次 → False")
-    eq([x.level_id for x in model.levels], ids, "★ 删完回到原来的两关")
+    eq([x.level_id for x in model.levels], ids, "★ 删完回到原来的关卡")
 
-    # 顺序会写进 campaign.json
+    # 顺序会写进 campaign.json（只钉前两关的先后，后面可能还有别的关）
     model.move_level(second, -1)
     eq([str(e["id"]) for e in model.to_dict()["levels"]],
-       [second, first], "★★ 关卡顺序写进 campaign.json 的 levels[]")
+       [second, first] + ids[2:], "★★ 关卡顺序写进 campaign.json 的 levels[]")
 
 
 def t_preserved_unknown_fields() -> None:

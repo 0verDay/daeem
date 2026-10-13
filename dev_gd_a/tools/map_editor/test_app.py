@@ -126,7 +126,8 @@ def box_select(editor, from_tile, to_tile) -> None:
     editor.redraw()
 
 
-def build_editor(cols: int = 0, rows: int = 0, size: str = "1000x700"):
+def build_editor(cols: int = 0, rows: int = 0, size: str = "1000x700",
+                 campaign_map: bool = False):
     """建一个编辑器窗口（不显示，但**有真实尺寸**）。
 
     默认 (0, 0) = **全新的无限虚线画布**（初始地图的内存网格就是 0×0）。
@@ -142,7 +143,7 @@ def build_editor(cols: int = 0, rows: int = 0, size: str = "1000x700"):
     root.deiconify()          # 先映射出来，让 canvas 拿到真实尺寸
     root.update()
     model = mapfile.empty_map(cols, rows, None)
-    editor = app_module.EditorApp(root, PROJECT_DIR, model, None)
+    editor = app_module.EditorApp(root, PROJECT_DIR, model, None, campaign_map)
     root.update()
     editor.apply_initial_view()
     root.withdraw()           # 摆好之后立刻藏起来（测试不打扰人）
@@ -2105,6 +2106,40 @@ def t_zone_name_labels() -> None:
         root.destroy()
 
 
+def t_campaign_map_hidden() -> None:
+    """★★ 「战役专用图」：从战役编辑器进来自动带 `hidden: true`（不进自由对战选择条）。
+
+    钉住的：
+      · `campaign_map=True` → 模型 extra 里立刻有 `hidden`、侧栏勾选框自动勾上；
+      · 勾选框可去可回（导出时它就决定写不写 `hidden`）；
+      · **普通打开**（没带 `--campaign-map`）不会凭空给地图加 `hidden`。
+    """
+    print("\n[21] 战役专用图（hidden）")
+    root, editor = build_editor(4, 4, campaign_map=True)
+    try:
+        ok(bool(editor.model.extra.get("hidden")), "★ 从战役编辑器进来 → extra 里有 hidden")
+        ok(editor.map_hidden_var.get(), "★ 侧栏勾选框自动勾上")
+        ok(mapfile.model_to_dict(editor.model).get("hidden") is True,
+           "★ 导出会写 hidden: true")
+        editor.map_hidden_var.set(False)
+        editor.apply_map_hidden()
+        ok("hidden" not in mapfile.model_to_dict(editor.model),
+           "取消勾选 → 导出不带 hidden（这张图会出现在自由对战选择条上）")
+        editor.map_hidden_var.set(True)
+        editor.apply_map_hidden()
+        ok(mapfile.model_to_dict(editor.model).get("hidden") is True, "再勾上 → 又带上")
+    finally:
+        root.destroy()
+
+    # ★ 普通打开（命令行没带 --campaign-map）：不凭空加 hidden
+    root2, editor2 = build_editor(4, 4)
+    try:
+        ok("hidden" not in editor2.model.extra, "★ 普通打开的新图不会带 hidden")
+        ok("hidden" not in mapfile.model_to_dict(editor2.model), "导出也不写 hidden")
+    finally:
+        root2.destroy()
+
+
 def main() -> int:
     global _SKIPPED
     print("DAEEM 地图编辑器 · 界面动作测试（无头，不截图）")
@@ -2134,6 +2169,7 @@ def main() -> int:
     t_canvas_only_has_dashed_cells()
     t_smooth_no_wasted_work()
     t_no_map_size_ui()
+    t_campaign_map_hidden()
     t_draw_up_left_no_invisible_wall()
     t_zone_center_and_production_ui()
     t_zone_kind_ui()

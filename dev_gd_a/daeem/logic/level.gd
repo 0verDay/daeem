@@ -703,7 +703,7 @@ func effective_allies() -> Array:
 func check(config_ai: Array = []) -> Array:
 	issues = []
 	_ck_map_exists()
-	_ck_players(config_ai)
+	_ck_players()
 	_ck_allies()
 	_ck_objectives()
 	_ck_ai_assign(config_ai)
@@ -756,13 +756,12 @@ func _ck_map_exists() -> void:
 ## ★★ 席位由「可玩阵营」派生（战役编辑器的 `sync_players_from_playable`），所以这里
 ##    按**席位**数判就够了：单人关**不限个数**（两个对立的可玩阵营 = 选边关），
 ##    合作关要恰好两个 —— 不再有 `players_count_solo` 这条。
-func _ck_players(config_ai: Array = []) -> void:
+func _ck_players() -> void:
 	if players.is_empty():
 		_add(SEV_BLOCK, "players_empty", "一关至少要有一个玩家席位")
 	if mode == MODE_COOP and players.size() != 2:
 		_add(SEV_BLOCK, "players_count_coop",
 			"合作关必须恰好两个玩家席位（现在是 %d 个）" % players.size())
-	var seen: Dictionary = {}
 	var seat_ids: Dictionary = {}
 	for p in players:
 		var fid := String((p as Dictionary)["faction"])
@@ -772,84 +771,38 @@ func _ck_players(config_ai: Array = []) -> void:
 		if seat_ids.has(fid):
 			_add(SEV_BLOCK, "players_same_faction", "两个玩家不能占同一阵营（%s）" % fid)
 		seat_ids[fid] = true
-		seen[fid] = true
 
-	# ★★ 4) 每个**会出场的非玩家方**都要有大本营。
+	# ★★ 4) **可玩阵营**必须有大本营（AI 不要求）。
 	#
-	# ⚠️ 这里判的是「这一关会出场的每一方」，所以名单是**三处的并集**：
-	#    · 关卡 `factions[]`（关卡点名的）；
-	#    · 地图 `factions_meta`（地图上划过的阵营，它也会有基地）；
-	#    · 全局 `config.ai.factions`（关卡没写 ai 的照旧吃它 —— 向后兼容那一条）。
-	#    少算任何一处都会漏掉一类「没有大本营 → 落到 (0,0) 顶掉区块中心」的坑
-	#    （route.md 33.5 坑①，已实测）。
+	# ★ 用户口径：**只有可玩阵营才必须配置大本营**，也**仅在这里**对大本营做导出校验。
+	#   非可玩的一方（阵地性 / 红点性 AI、NPC）**不要求**点位 —— 它们的兵由
+	#   `start_units[]` 摆放，运行时也不会给它们建大本营（`world.apply_faction_layout`
+	#   只给玩家方建；AI 那点只当出生锚点，可有可无）。
 	#
-	# ⚠️⚠️ **`ai: "none"` 也要大本营**（这一条是实测补上的）：
-	#    `ai: none` 的语义是「这一方这一局**不动**」，不是「这一方不存在」——
-	#    它照样会被建出大本营（`world` 会给名单里每一方建一座）。
-	#    漏拦它的后果与「非玩家方没有大本营」完全一样：点位落到 (0,0)，
-	#    把区块中心那栋中立建筑顶掉（route.md 33.5 坑①）。
-	#    ★ 关卡用 `ai: none` 关掉一个**全局 config 阵营**时，随便给它一个空地
-	#      （或者干脆把它从 config 里删掉）—— 校验会挡住「只写 id 不给点位」。
-	var ai_list := _effective_ai_list(config_ai)
-	for item in ai_list:
-		var it: Dictionary = item
-		var fid2 := String(it.get("id", ""))
-		if fid2 == "" or seen.has(fid2):
-			continue                        # 玩家席位不要求大本营（它从 players[].base 来）
-		if bool(it.get("exempt_base", false)):
-			continue                        # 地图划过、但**这一局不会给它建基地**的阵营
-		var base: Vector2i = it.get("base", Vector2i(-1, -1))
-		if base.x < 0 or base.y < 0:
-			_add(SEV_BLOCK, "faction_no_base",
-				"阵营「%s」没有大本营：会落到 (0,0) 顶掉区块中心" % fid2)
+	# 判据 = 「战役可玩 ∩ 本关在场」（`playable_ids()` 已经做了这个过滤）。
+	for fid2 in playable_ids():
+		var pfid := String(fid2)
+		if pfid == "" or _has_base_for(pfid):
+			continue
+		_add(SEV_BLOCK, "faction_no_base",
+			"可玩阵营「%s」没有大本营 —— 在「摆放」页给它摆一个" % pfid)
 
 
-## 这一关**会出场的每一方** + 它的大本营（三处并集，见 `_ck_players` 的说明）。
-## 每项 {id: String, ai: String, base: Vector2i, exempt_base: bool}。
-func _effective_ai_list(config_ai: Array = []) -> Array:
-	var out: Array = []
-	var seen: Dictionary = {}
-	# 1) 关卡 `factions[]`（关卡点名的：**一律要求大本营**，见 `_ck_players`）
+## 这一方在这一关有没有大本营（席位 `players[].base` → 关卡 `factions[].base` → 地图）。
+func _has_base_for(fid: String) -> bool:
+	for p in players:
+		if String((p as Dictionary)["faction"]) == fid:
+			var pb: Vector2i = (p as Dictionary).get("base", Vector2i(-1, -1))
+			if pb.x >= 0 and pb.y >= 0:
+				return true
 	for e in faction_meta:
-		var fid := String((e as Dictionary)["id"])
-		if fid == "" or seen.has(fid):
-			continue
-		seen[fid] = true
-		var b: Vector2i = (e as Dictionary)["base"]
-		if b.x < 0 or b.y < 0:
-			b = _map_base(fid)
-		out.append({"id": fid, "ai": String((e as Dictionary).get("ai", AI_NONE)),
-			"base": b, "exempt_base": false})
-	# 2) 地图 factions_meta（地图划过的阵营）
-	#
-	# ⚠️ 这一档**不强制**要求大本营：地图上的阵营表是**元信息**（给选择条 / 颜色看的），
-	#    地图不一定会给每一方都划基地（比如样例地图只划了 F1 / E1）。
-	#    而「没有大本营 → 落到 (0,0)」这条坑只在**这一局真的会给它建基地**时才发生 ——
-	#    也就是「它进了 `world.factions`」的时候（关卡点名的、或 config 里的 AI 阵营）。
-	#    所以这里只把它们**列出来**（供校验第 13 条用），不当作必须有点位的那一档。
-	if map != null:
-		for m in map.factions_meta:
-			if typeof(m) != TYPE_DICTIONARY:
-				continue
-			var fid2 := String((m as Dictionary).get("id", ""))
-			if fid2 == "" or seen.has(fid2):
-				continue
-			seen[fid2] = true
-			out.append({"id": fid2, "ai": AI_NONE, "base": _map_base(fid2), "exempt_base": true})
-	# 3) 全局 config.ai.factions（关卡没写 ai 的照旧吃它 —— 它们在**老路径**上会被建基地）
-	for item in config_ai:
-		if typeof(item) != TYPE_DICTIONARY:
-			continue
-		var it: Dictionary = item
-		var fid3 := String(it.get("id", ""))
-		if fid3 == "" or seen.has(fid3):
-			continue
-		seen[fid3] = true
-		var b3: Vector2i = _map_base(fid3)
-		if b3.x < 0:
-			b3 = it.get("base", Vector2i(-1, -1))
-		out.append({"id": fid3, "ai": AI_GARRISON, "base": b3, "exempt_base": false})
-	return out
+		if String((e as Dictionary)["id"]) == fid:
+			var b: Vector2i = (e as Dictionary)["base"]
+			if b.x >= 0 and b.y >= 0:
+				return true
+			break
+	var mb: Vector2i = _map_base(fid)
+	return mb.x >= 0 and mb.y >= 0
 
 
 ## 6) 大本营 / 起点不能在不可通行处（山地 / 地图外）
@@ -1067,12 +1020,21 @@ func _ck_ai_assign(config_ai: Array) -> void:
 	if faction_ais.size() > 0:
 		var any_target := false
 		for item in faction_ais:
-			if (item as Dictionary).get("attack_target", null) != null:
+			var it4: Dictionary = item
+			if it4.get("attack_target", null) != null:
 				any_target = true
 				break
+			# ★★ 红点的**多格行军目标**（`reddot_ai.march_tiles`）也算「写了目标」
+			var rd: Variant = it4.get("reddot_ai", null)
+			if typeof(rd) == TYPE_DICTIONARY:
+				var tiles: Variant = (rd as Dictionary).get("march_tiles", null)
+				if typeof(tiles) == TYPE_ARRAY and not (tiles as Array).is_empty():
+					any_target = true
+					break
 		if not any_target:
 			_add(SEV_WARN, "no_attack_target",
-				"挂着红点 AI 的阵营一个都没写行军目标：它们会各自去打「离自己最近的敌方区划」")
+				"挂着红点 AI 的阵营一个都没写行军目标（`attack_target` 或红点的 `march_tiles`）："
+				+ "它们会各自去打「离自己最近的敌方区划」")
 
 	# 14) 某个 AI 阵营的进攻目标指向自己的地 → 警告（可能是笔误，也可能是故意的）
 	for item in faction_ais:

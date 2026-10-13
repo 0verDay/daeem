@@ -468,7 +468,7 @@ class _NoRepaint:
 
 class EditorApp:
     def __init__(self, root: tk.Tk, project_dir: Path, model: Optional[MapModel] = None,
-                 current_path: Optional[Path] = None) -> None:
+                 current_path: Optional[Path] = None, campaign_map: bool = False) -> None:
         self.root = root
         self.project_dir = Path(project_dir)
         self.cfg = load_config(self.project_dir)
@@ -489,6 +489,14 @@ class EditorApp:
         self._redo: List[dict] = []
         #: 「改动之前」的快照，等操作成功才压栈（见 prepare_undo / commit_undo）
         self._pending_undo: Optional[dict] = None
+
+        # ★★ 「战役专用图」：从**战役编辑器**点「打开地图编辑器」进来时带上
+        #    （命令行 `--campaign-map`）—— 给地图写 `hidden: true`，它就不进
+        #    自由对战的选择条（战役关卡照样按 id 引用它）。
+        #    侧栏「整张地图」里那颗勾选框就是这个状态（可见、可取消）。
+        self.campaign_map = bool(campaign_map)
+        if self.campaign_map:
+            self.model.extra["hidden"] = True
 
         # ---- 界面状态
         self.page = "tile"                 # "tile" 地块页 / "zone" 区块页
@@ -1535,6 +1543,29 @@ class EditorApp:
                            % MAX_COORD,
                  bg=UI["panel"], fg=UI["text_dim"], anchor="w", justify="left",
                  wraplength=290).pack(fill="x", pady=(4, 0))
+
+        # ---- ★★ 战役专用图（`hidden: true`）：不进自由对战的选择条
+        tk.Frame(sec, bg=UI["line"], height=1).pack(fill="x", pady=(8, 0))
+        self.map_hidden_var = tk.BooleanVar(
+            value=bool(self.model.extra.get(mapfile.KEY_HIDDEN, False)))
+        ttk.Checkbutton(sec, text="★ 战役专用图（不进自由对战选择条）",
+                        variable=self.map_hidden_var,
+                        command=self.apply_map_hidden).pack(anchor="w", pady=(6, 0))
+        tk.Label(sec, text="勾上 = 导出时写 \"hidden\": true —— 主菜单那条地图选择条\n"
+                           "**不再列出它**、也不拿它当默认图；战役关卡照样按 id 引用它。\n"
+                           "（从战役编辑器点「打开地图编辑器」进来的会自动勾上。）",
+                 bg=UI["panel"], fg=UI["text_dim"], anchor="w", justify="left",
+                 wraplength=290).pack(fill="x", pady=(2, 0))
+
+    def apply_map_hidden(self) -> None:
+        """勾选框：给地图写 / 去掉 `hidden`（导出时它决定「进不进自由对战选择条」）。"""
+        if self.map_hidden_var.get():
+            self.model.extra[mapfile.KEY_HIDDEN] = True
+            self.status("★ 这张图现在是「战役专用」—— 导出会写 hidden: true，不进自由对战选择条")
+        else:
+            self.model.extra.pop(mapfile.KEY_HIDDEN, None)
+            self.status("这张图会出现在自由对战选择条上（hidden 已去掉）")
+        self.mark_dirty()
 
     def refresh_sidebar(self) -> None:
         """重建侧边栏（**换格子 / 切页签 / 改区块**才用；同一格改属性请用 refresh_tile_panel）。
@@ -2922,8 +2953,10 @@ class EditorApp:
         self.current_path = saved
         self.dirty = False
         self.update_title()
-        self.status("已导出到 %s（%d 个地块 / %d 个区块）"
-                    % (saved, self.model.existing_count(), len(self.model.zones)))
+        self.status("已导出到 %s（%d 个地块 / %d 个区块）%s"
+                    % (saved, self.model.existing_count(), len(self.model.zones),
+                       "　★ 战役专用（hidden）" if self.model.extra.get(mapfile.KEY_HIDDEN)
+                       else ""))
 
     def _confirm_discard(self) -> bool:
         if not self.dirty:
@@ -3087,10 +3120,10 @@ class EditorApp:
 # ----------------------------------------------------------------------
 
 def run(project_dir: Path, model: Optional[MapModel] = None,
-        current_path: Optional[Path] = None) -> int:
+        current_path: Optional[Path] = None, campaign_map: bool = False) -> int:
     """打开编辑器窗口（阻塞到窗口关闭）。"""
     root = tk.Tk()
-    EditorApp(root, project_dir, model, current_path)
+    EditorApp(root, project_dir, model, current_path, campaign_map)
     try:
         root.lift()
         root.attributes("-topmost", True)

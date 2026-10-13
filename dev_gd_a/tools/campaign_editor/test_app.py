@@ -13,8 +13,8 @@
     [1] 页签切换（五个页签 + 当前页签高亮 + 换页清选中）
     [2] 画布：放置 / 选中 / 删除（大本营不许在这里删）/ 缩放（以光标为锚点）/ 适应视图
     [2b] ★ 摆放手势：空格 + 左键拖动平移（放东西 / 选中都不许发生）；中键那条在 [2] 里
-    [3] 「设进攻目标」模式：点区划 → zone / 点空格 → point / Esc 退出
-    [4] ★ ④ 画布点选改「进攻目标」：箭头终点 = 区划中心（③ 不再提供 AI 编辑）
+    [3] ★★ 红点页「行军目标」：画布点击模式（生成地块 / 行军目标）+ 左键加/移出
+    [4] ★ 进攻目标箭头：终点 = 目标的区划中心；`target_label` 的人话
     [4c] ★ 敌友（边）：面板列每条边 + 「＋ 新建一条边」按钮；同边友好、异边敌对
     [4d] ★ 红点页新建阵营：自动红点性 AI + 给它设一条边
     [5] 导出：有拦截项时**禁止写文件**并弹框说清楚；没有拦截时才真写
@@ -581,73 +581,58 @@ def _facts(app) -> dict:
 
 
 # ======================================================================
-# [3] 「设进攻目标」模式
+# [3] ★★ 红点页：画布点击模式（生成地块 / 行军目标）
 # ======================================================================
 
-def t_target_mode(app, model) -> None:
-    print("\n[3] 「设进攻目标」模式：点区划 / 点空格 / Esc 退出")
+def t_reddot_march_tiles(app, model) -> None:
+    """★★ 红点页的行军目标：切到「行军目标」模式后**左键点格** = 加/移出，
+    写进 `reddot_ai.march_tiles`（运行时每位将领随机挑一格）；切回「生成地块」不动它。"""
+    print("\n[3] ★★ 红点页：生成地块 / 行军目标 两种画布点击模式")
     f = _facts(app)
     lv = level(app)
-    info = app.map_info()
-    app.set_page("place")
+    app.set_page("reddot")
     app.root.update()
     app.fit_view()
     app.root.update()
+    # 建一个红点阵营来编辑（`do_new_reddot_faction` 会弹输入框 → 存根掉）
+    real_ask = app_module._ask_new_faction
+    app_module._ask_new_faction = lambda root, taken: ("march_probe", "行军探针")
+    try:
+        app.do_new_reddot_faction()
+        app.root.update()
+    finally:
+        app_module._ask_new_faction = real_ask
+    fid = app.reddot_faction_id()
+    eq(fid, "march_probe", "★ 建了一个红点阵营并成为当前编辑方")
+    eq(app.reddot_click_mode, "spawn", "默认左键 = 编辑「生成地块」")
+    eq(app.reddot_march_tiles(), [], "（前提）一开始没有行军目标")
 
-    # 先清掉样例那一方的进攻目标，便于观察
-    entry = lv.ensure_faction(f["player"])
-    entry.ai = M.AI_GARRISON
-    entry.attack_target = None
-    app.refresh_all()
-    app.root.update()
+    app.set_reddot_click_mode("march")
+    eq(app.reddot_click_mode, "march", "★ 切到「行军目标」模式")
+    click_canvas(app, f["spot"])                 # 左键点一格 = 加入
+    ok(f["spot"] in app.reddot_march_tiles(), "★ 左键点格 → 加进行军目标")
+    ok(f["spot"] not in app.reddot_spawn_tiles(), "★ 没有动「生成地块」那一栏")
+    click_canvas(app, f["spot"])                 # 再点一次 = 移出
+    ok(f["spot"] not in app.reddot_march_tiles(), "★ 再点一次 → 移出")
+    click_canvas(app, f["spot"])
+    rd = lv.faction(fid).reddot_ai or {}
+    eq(rd.get(M.REDDOT_MARCH_TILES_KEY), [[int(f["spot"][0]), int(f["spot"][1])]],
+       "★ 落进 `reddot_ai.march_tiles`")
 
-    app.brush_faction = f["player"]
-    app.do_target_mode()
-    eq(app.target_mode_faction, f["player"], "进入目标模式并选中了画笔那一方")
-
-    # 点一个**区划** → zone 目标
-    zid = next(z for z in info.zone_ids if z != f["obj_zone"])
-    cell = info.zone_centers[zid]
-    click_canvas(app, cell)
-    eq(level(app).faction(f["player"]).attack_target,
-       {"kind": M.TARGET_ZONE, "zone": int(zid)}, "★ 点区划 → zone 目标")
-
-    # 点**地图外**的空格 → point 目标（zone_of = -1 的那一格）
-    free = None
-    for y in range(info.rows):
-        for x in range(info.cols):
-            if info.zone_of(x, y) < 0 and info.tile_exists(x, y):
-                free = (x, y)
-                break
-        if free:
-            break
-    if free is None:                        # 这张图每格都属于某个区划 → 用一个格外的坐标
-        free = (info.cols + 1, info.rows + 1)
-    click_canvas(app, free)
-    got = level(app).faction(f["player"]).attack_target
-    eq(got, {"kind": M.TARGET_POINT, "x": free[0], "y": free[1]},
-       "★ 点空格 → point 目标")
-
-    # Esc 退出
-    app.on_escape()
-    app.root.update()
-    eq(app.target_mode_faction, None, "★ Esc 退出目标模式")
-    # 退出之后再点画布 = 正常放置，不再改目标
-    before = dict(level(app).faction(f["player"]).attack_target)
-    app.selection = None
-    app.brush_kind = "unit"
-    app.brush_value = app.config.unit_types[-1] if app.config.unit_types else "enemy"
-    app.root.update()
-    app.place_at(f["spot"])
-    eq(level(app).faction(f["player"]).attack_target, before, "★ 退出之后点画布不再改目标")
+    # 切回「生成地块」：左键现在编生成地块，行军目标那一栏原封不动
+    app.set_reddot_click_mode("spawn")
+    click_canvas(app, f["spot"])
+    ok(f["spot"] in app.reddot_spawn_tiles(), "★ 切回生成地块 → 左键编的是它")
+    eq(rd.get(M.REDDOT_MARCH_TILES_KEY), [[int(f["spot"][0]), int(f["spot"][1])]],
+       "★ 行军目标没有被顺带改掉")
 
 
 # ======================================================================
-# [4] ④ 画布点选改「进攻目标」（③ 已不再提供 AI 编辑）
+# [4] 进攻目标箭头（目标只在 JSON / ⑥ 红点页设）
 # ======================================================================
 
 def t_same_field(app, model) -> None:
-    print("\n[4] ★ ④ 画布点选改「进攻目标」+ 箭头终点 = 区划中心")
+    print("\n[4] ★ 进攻目标箭头：终点 = 目标的区划中心；人话标签")
     f = _facts(app)
     lv = level(app)
     info = app.map_info()
@@ -656,7 +641,6 @@ def t_same_field(app, model) -> None:
                                                     "zone": int(f["obj_zone"])}
     app.refresh_all()
 
-    # ---- ④ 看：画布上画出来的箭头终点 = 那个区划的中心 ----
     app.set_page("place")
     app.root.update()
     app.fit_view()
@@ -665,18 +649,9 @@ def t_same_field(app, model) -> None:
     eq(app._target_point(level(app), app.map_info(), spec),
        info.zone_centers[int(f["obj_zone"])],
        "★ ④ 读到的目标点 = 目标的区划中心")
-
-    # ---- ④ 改：画布点另一个区划 ----
-    other = next(z for z in info.zone_ids if z != int(f["obj_zone"]))
-    app.target_mode_faction = f["player"]
-    click_canvas(app, info.zone_centers[other])
-    eq(level(app).faction(f["player"]).attack_target,
-       {"kind": M.TARGET_ZONE, "zone": int(other)}, "④ 点画布改掉了目标")
-    app.target_mode_faction = None
-
     eq(M.target_label(level(app).faction(f["player"]).attack_target),
-       "指定区划 %s" % M.zone_label(other),
-       "★ 目标的一行人话也跟着变（`target_label` 不查地图，所以只用 c<id> 记法）")
+       "指定区划 %s" % M.zone_label(int(f["obj_zone"])),
+       "★ 目标的一行人话（`target_label` 不查地图，所以只用 c<id> 记法）")
 
 
 # ======================================================================
@@ -965,6 +940,8 @@ def t_open_map_editor(app, model) -> None:
     eq(cmd[1], str(app.map_editor_dir()), "命令里的编辑器目录 = tools/map_editor")
     eq(cmd[2], "--map", "★ 传了 --map 参数")
     eq(cmd[3], level(app).map_id, "★ 传的地图 id = 当前关的地图")
+    ok("--campaign-map" in cmd,
+       "★ 带上 --campaign-map —— 地图导出会自动写 hidden: true（不进自由对战选择条）")
     ok(cmd[0].lower().endswith(("python.exe", "pythonw.exe", "python3.exe")) or "python" in
        Path(cmd[0]).name.lower(), "第一个参数是当前解释器：%s" % cmd[0])
     ok(("--map" in app.status_var.get()) or ("地图编辑器" in app.status_var.get()),
@@ -1167,7 +1144,7 @@ def main() -> int:
         t_window(app, model)
         t_canvas(app, model)
         t_space_drag_pan(app, model)
-        t_target_mode(app, model)
+        t_reddot_march_tiles(app, model)
         t_same_field(app, model)
         t_ally_sides(app, model)
         t_new_reddot_faction(app, model)

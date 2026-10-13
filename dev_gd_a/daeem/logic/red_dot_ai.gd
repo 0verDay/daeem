@@ -104,10 +104,17 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 static func _launch_wave(world, cfg: ConfigRes, st: Dictionary, wave: int, count_expr: String) -> void:
 	var faction := String(st["faction"])
 	var params: Dictionary = st["params"]
-	var goal = _resolve_target(world, faction)
-	if goal == null:
-		return
-	var goal_pt: Vector2 = GridRes.center_of(goal)
+	# ★★ 行军目标：`reddot_ai.march_tiles` **非空** → 每一位将领从里面**随机挑一格**
+	#    （比单点 `attack_target` 更适合「到处骚扰」的红点）。
+	#    空表 → 退回单点 `attack_target` → 再退回「离这一方最近的敌方区划 / 敌方大本营」。
+	var march_pts: Array = _march_points(params.get("march_tiles", []))
+	var goal = null
+	var goal_pt := Vector2.ZERO
+	if march_pts.is_empty():
+		goal = _resolve_target(world, faction)
+		if goal == null:
+			return
+		goal_pt = GridRes.center_of(goal)
 	# 将领数：y = general_count_expr(wave)，四舍五入；解析失败 → 1 位。
 	var raw := ExprRes.eval_linear(count_expr, float(wave))
 	var count: int = 1
@@ -120,6 +127,7 @@ static func _launch_wave(world, cfg: ConfigRes, st: Dictionary, wave: int, count
 	var spawn_tiles: Array = params.get("spawn_tiles", [])
 	var serial: int = int(st.get("serial", 0))
 	var sent := 0
+	var ev_pt: Vector2 = goal_pt          # 事件里记**第一个发出去的将领**的目标（信息用）
 	for n in count:
 		var tile := _pick_spawn_tile(world, cfg, faction, region, spawn_tiles, serial, n)
 		if tile.x < 0:
@@ -134,7 +142,14 @@ static func _launch_wave(world, cfg: ConfigRes, st: Dictionary, wave: int, count
 			g.retinue_types = escort_types
 			world.fill_general_retinue(g, escort_count, escort_types)
 		# 整队行军攻击（与玩家 / 阵地 AI 同一条命令路径）。
-		if CommandProcessorRes.order_group_attack_move(world, cfg, world.group_of(g), goal_pt):
+		# ★ 目标：配了 `march_tiles` 就**每位将领各自随机挑一格**；否则用上面那个统一目标点。
+		var pt: Vector2 = goal_pt
+		if not march_pts.is_empty():
+			var k: int = int(world.unit_rand("reddot-march|%d" % serial, n) * march_pts.size())
+			pt = march_pts[clampi(k, 0, march_pts.size() - 1)]
+		if CommandProcessorRes.order_group_attack_move(world, cfg, world.group_of(g), pt):
+			if sent == 0:
+				ev_pt = pt
 			sent += 1
 	st["serial"] = serial + 1
 	if sent > 0:
@@ -143,8 +158,8 @@ static func _launch_wave(world, cfg: ConfigRes, st: Dictionary, wave: int, count
 			"faction": faction,
 			"wave": wave,
 			"leaders": sent,
-			"x": int(goal.x),
-			"y": int(goal.y),
+			"x": int(ev_pt.x),
+			"y": int(ev_pt.y),
 		})
 
 
@@ -249,7 +264,7 @@ static func _pick_spawn_tile(world, cfg: ConfigRes, faction: String,
 	return _ring_walkable(world, cfg, faction, anchor, maxi(0, int(radius)))
 
 
-## 把 `spawn_tiles` / `spawn_region` 里的一个坐标项归一成 Vector2i（认 `[x,y]` / 字典 / Vector2i）。
+## `spawn_tiles` / `spawn_region` 里的一个坐标项归一成 Vector2i（认 `[x,y]` / 字典 / Vector2i）。
 static func _tile_of_any(t: Variant) -> Vector2i:
 	if typeof(t) == TYPE_VECTOR2I:
 		return t
@@ -259,6 +274,20 @@ static func _tile_of_any(t: Variant) -> Vector2i:
 		var d: Dictionary = t
 		return Vector2i(int(d.get("x", -1)), int(d.get("y", -1)))
 	return Vector2i(-1, -1)
+
+
+## ★★ `reddot_ai.march_tiles: [[x,y], ...]` → 每一格的**中心点**（Vector2）。
+##    空表 / 形状不对 → 空数组（调用方据此退回单点 `attack_target`）。
+static func _march_points(raw: Variant) -> Array:
+	var out: Array = []
+	if typeof(raw) != TYPE_ARRAY:
+		return out
+	for t in raw:
+		var tp := _tile_of_any(t)
+		if tp.x < 0 or tp.y < 0:
+			continue
+		out.append(GridRes.center_of(tp))
+	return out
 
 
 ## 以 `anchor` 为心、`radius` 格为半径，由近到远找第一个能站人的格（找不到 → (-1,-1)）。

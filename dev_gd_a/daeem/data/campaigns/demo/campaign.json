@@ -20,6 +20,24 @@
       "name": "红方",
       "color": "#E05A5A",
       "playable": true
+    },
+    {
+      "id": "sj",
+      "name": "sj",
+      "color": "#ffd166",
+      "playable": false
+    },
+    {
+      "id": "dgj",
+      "name": "dgj",
+      "color": "#5ac8ff",
+      "playable": false
+    },
+    {
+      "id": "red1",
+      "name": "red1",
+      "color": "#8ce08c",
+      "playable": false
     }
   ],
   "levels": [
@@ -32,6 +50,11 @@
       "id": "02_twin_line",
       "file": "levels/02_twin_line.json",
       "name": "第二关·双子防线"
+    },
+    {
+      "id": "mt",
+      "file": "levels/mt.json",
+      "name": "mt"
     }
   ],
   "unlock": "in_order"

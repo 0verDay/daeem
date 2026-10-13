@@ -14,6 +14,8 @@ const LevelRes = preload("res://logic/level.gd")
 ## ★ 本轮新增：验「守将去守自己区划中心」这条阵地 AI 逻辑（判据是纯函数 + update 的行为）。
 const GarrisonAiRes = preload("res://logic/garrison_ai.gd")
 const GridRes = preload("res://logic/grid.gd")
+## ★★ 本轮新增：验红点的「多格行军目标」（`reddot_ai.march_tiles`）—— 每位将领随机挑一格。
+const RedDotAiRes = preload("res://logic/red_dot_ai.gd")
 
 const TMP_ROOT := "res://.tmp_campaign_ai_tests"
 const MAP_ID := "frontier"
@@ -37,6 +39,7 @@ func _cases() -> void:
 	_test_garrison(cfg)
 	_test_garrison_defends_center(cfg)
 	_test_reddot_cfg(cfg)
+	_test_reddot_march_tiles(cfg)
 	_test_none_and_player(cfg)
 
 
@@ -138,6 +141,68 @@ func _test_reddot_cfg(cfg) -> void:
 	ok(w.reddot_states.size() == 1, "红点状态表建了一条（E1）")
 	if w.reddot_states.size() == 1:
 		eq(String((w.reddot_states[0] as Dictionary).get("faction", "")), "E1", "那一方是 E1")
+
+
+## ★★ `reddot_ai.march_tiles`：每一位将领从这些格子里**随机挑一格**行军
+##    （非空时**优先于**单点 `attack_target`）。
+func _test_reddot_march_tiles(cfg) -> void:
+	var w = _world(cfg, "reddot_march", {"factions": [{
+		"id": "E1", "ai": "reddot", "base": [18, 18],
+		"spawn_region": {"kind": "point", "x": 18, "y": 18, "radius": 2},
+		# ★ 故意也写一个单点 attack_target：`march_tiles` 非空时应当优先。
+		"attack_target": {"kind": "point", "x": 1, "y": 1},
+		"reddot_ai": {"general_count_expr": "2"},
+	}]})
+	ok(w != null, "能造出 reddot 关卡世界（march_tiles 用例）")
+	if w == null or w.reddot_states.is_empty():
+		ok(false, "红点状态表建起来了")
+		return
+
+	# ① 纯函数：`[x,y]` → 那一格的**中心点**
+	var t1 := Vector2i(18, 18)
+	var t2 := Vector2i(19, 18)
+	var pts: Array = RedDotAiRes._march_points([[t1.x, t1.y], [t2.x, t2.y]])
+	eq(pts.size(), 2, "★ `_march_points` 解析出 2 个目标点")
+	eq(pts[0], GridRes.center_of(t1), "★ 目标点 = 那一格的中心")
+
+	# ② 行为：就地塞进红点状态，开第 1 波（默认 wave_time_expr = "x" → 第 1 分钟）
+	#    ⚠️ 目标格取「出生点附近、可站人」的格子（写死坐标一撞上山 / 建筑就假红）。
+	var near: Array = []
+	for r in range(0, 6):
+		for dy in range(-r, r + 1):
+			for dx in range(-r, r + 1):
+				if near.size() >= 2:
+					break
+				var t := Vector2i(18 + dx, 18 + dy)
+				if near.has(t):
+					continue
+				if not w.map.tile_exists(t.x, t.y) or not w.map.terrain_walkable(t.x, t.y):
+					continue
+				if w.building_at(t.x, t.y) != null:
+					continue
+				near.append(t)
+	ok(near.size() >= 2, "找到两个可站人的格子当行军目标")
+	if near.size() < 2:
+		return
+	var raw: Array = []
+	for t in near:
+		raw.append([t.x, t.y])
+	w.reddot_states[0]["params"]["march_tiles"] = raw
+	RedDotAiRes.update(w, cfg, 61.0)
+	var goals: Array = []
+	for u in w.units:
+		if u.alive and String(u.faction) == "E1" and u.is_general():
+			goals.append(u.goal)
+	ok(goals.size() >= 1, "★ 第 1 波刷出了将领（%d 位）" % goals.size())
+	var allowed: Array = []
+	for t in near:
+		allowed.append(GridRes.center_of(t))
+	for g in goals:
+		var hit := false
+		for c in allowed:
+			if (g as Vector2).distance_to(c) < 3.0:
+				hit = true
+		ok(hit, "★★ 每一位将领的行军目标都落在 march_tiles 里（%s）" % str(g))
 
 
 func _test_none_and_player(cfg) -> void:

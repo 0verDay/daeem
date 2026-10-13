@@ -77,7 +77,9 @@ func _group_scan(cfg) -> void:
 	ok(demo != null, "样例战役 demo 被扫出来")
 	if demo != null:
 		eq(String((demo as Dictionary)["name"]), "东征·第一章", "显示名取 campaign.json 的 name")
-		eq(int((demo as Dictionary)["levels"]), 2, "样例战役有 2 关")
+		# ⚠️ 只要求「至少 2 关」—— 作者随时会在编辑器里往 demo 加关，写死数量会假红。
+		var n_levels := int((demo as Dictionary)["levels"])
+		ok(n_levels >= 2, "样例战役至少 2 关（实际 %d）" % n_levels)
 		eq(String((demo as Dictionary)["default_mode"]), "solo", "样例战役默认单人")
 		eq(String((demo as Dictionary)["dir"]), DEMO_DIR, "战役目录就是 res://data/campaigns/demo")
 
@@ -160,7 +162,8 @@ func _group_load(cfg) -> void:
 	ok(c != null, "样例战役能载入（含全部关卡）")
 	if c == null:
 		return
-	eq(int(c.level_count()), 2, "样例战役载入 2 关")
+	# ⚠️ 同上：只要求「至少 2 关」（作者随时会加关）。
+	ok(int(c.level_count()) >= 2, "样例战役载入 ≥2 关（实际 %d）" % c.level_count())
 	eq(String(c.level_at(0).id), "01_beachhead", "第一关 id 来自 levels[]")
 	eq(String(c.level_at(0).name), "第一关·渡口", "第一关显示名来自 levels[]")
 	eq(String(c.level_at(1).mode), "coop", "第二关是合作关（关卡文件里的 mode）")
@@ -400,8 +403,11 @@ func _group_merge(cfg) -> void:
 # 四、2.5 那 16 条校验（**每条各造一个坏样例**）
 # ------------------------------------------------------------------
 func _group_check(cfg) -> void:
-	# 先验：样例战役的两关都通过（一个 block 都没有）
+	# 先验：样例战役的关卡**都不许有拦截项**；**随游戏发布的那两关**还要求连警告都没有。
+	# ⚠️ 作者随时会往 demo 再加一关（比如还没配完的红点关）—— 那一关带警告是正常的，
+	#    不该让这一节假红（样例数据是「别人也在改的东西」）。
 	var c = CampaignRes.load_campaign(DEMO_DIR, cfg)
+	var shipped := ["01_beachhead", "02_twin_line"]
 	for lv in c.levels:
 		var issues: Array = lv.check(cfg.ai_factions())
 		var blocks: Array = lv.blockers()
@@ -409,7 +415,8 @@ func _group_check(cfg) -> void:
 		for b in blocks:
 			detail += " / %s" % String((b as Dictionary)["msg"])
 		ok(blocks.is_empty(), "样例关卡「%s」没有拦截项%s" % [String(lv.name), detail])
-		ok(issues.size() == 0, "样例关卡「%s」连警告都没有" % String(lv.name))
+		if shipped.has(String((lv as RefCounted).id)):
+			ok(issues.size() == 0, "样例关卡「%s」连警告都没有" % String(lv.name))
 
 	# 每条规则一个坏样例：patch = 改哪几个字段，code = 期望命中的校验码
 	var cases: Array = [
@@ -423,10 +430,8 @@ func _group_check(cfg) -> void:
 		[{"players": []}, "players_empty"],
 		# 3) 两个玩家占同一阵营
 		[{"mode": "coop", "players": [{"faction": "F1"}, {"faction": "F1"}]}, "players_same_faction"],
-		# 4) 非玩家方没有大本营：★ 用一个「config 里有、地图与关卡都没有」的阵营来造
-		#    （地图上划过的阵营天然有基地，拿它测不出这一条）
-		[{"factions": [{"id": "F1"}, {"id": "CONF2", "ai": "faction"}]}, "faction_no_base",
-			[{"id": "CONF2"}]],
+		# 4) ★★ 大本营只对**可玩阵营**要求：让一个「地图与关卡都没有基地」的阵营**可玩** → 拦
+		[{"_playable": ["ZZ"], "factions": [{"id": "ZZ"}]}, "faction_no_base"],
 		# 5) 大本营压在区划中心上（c1 的中心是 (5,12)）
 		[{"players": [{"faction": "F1", "base": [5, 12]}]}, "point_on_zone_center"],
 		# 6) 大本营落在山里 / 地图外
@@ -491,8 +496,6 @@ func _group_check(cfg) -> void:
 		# 13) 关卡摆放里用到的 faction 没有定义
 		[{"start_units": [{"faction": "NOPE", "kind": "enemy", "x": 10, "y": 4}]}, "faction_unknown"],
 		[{"start_buildings": [{"type": "tower", "x": 11, "y": 11, "owner": "NOPE"}]}, "faction_unknown"],
-		# 4) 关卡点名了一个**地图上完全没有**的阵营、又不给大本营 —— 必须拦
-		[{"factions": [{"id": "ZZ", "ai": "faction"}]}, "faction_no_base"],
 	]
 	var _case_seq := 0
 	for entry in cases:
@@ -517,6 +520,18 @@ func _group_check(cfg) -> void:
 		ok(lv.has_blocker(), "有拦截项时 has_blocker() = true（%s）" % code)
 		for i in lv.blockers():
 			eq(String((i as Dictionary)["sev"]), "block", "blockers() 里全是 block")
+
+	# 4b) ★★ 反过来：**不可玩**的一方（AI / NPC）没有大本营 → **不报** faction_no_base
+	#     （用户口径：只有可玩阵营必须配大本营。F1 可玩、有地图基地；ZZ 是 AI、没基地。）
+	var lv_ai = _load_level(cfg, "ck_ai_no_base", {
+		"_playable": ["F1"],
+		"factions": [{"id": "F1"}, {"id": "ZZ", "ai": "garrison"}]})
+	ok(lv_ai != null, "AI 无基地的样例能载入")
+	var ai_base_block := false
+	for i in lv_ai.blockers():
+		if String((i as Dictionary)["code"]) == "faction_no_base":
+			ai_base_block = true
+	ok(not ai_base_block, "★★ AI 阵营没有大本营 → 不报 faction_no_base（只有可玩阵营要求）")
 
 	# 14/15/16) 三条**警告**（不是拦截）
 	var warn_cases: Array = [
