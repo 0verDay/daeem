@@ -146,6 +146,27 @@ WEIGHT_TOL = 1e-3
 #:    `for i in 3` 一起改。
 GENERAL_SLOTS = 3
 
+#: ★★ 「将领序号」的上限：名册号 1..10（用户需求：「限制不应只有 3 个，而应该有 10 个」）。
+#:    它是**名册号**（运行时 id / 附属兵归属），与「哪个将领」（兵种档位）相互独立。
+GENERAL_ROSTER_MAX = 10
+
+
+def general_kind_slot(kind: str) -> int:
+    """`kind`（`general` / `general_N`）对应的将领档位（**0 起**）；否则 -1。
+
+    与运行时 `ConfigRes.general_index_of()` 同一判据 —— 只在将领没写 `unit_type` 时
+    用来兜底取编制上限（新旧数据都要能读）。
+    """
+    k = str(kind)
+    if k == "general":
+        return 0
+    if k.startswith("general_"):
+        try:
+            return max(0, int(k[8:]) - 1)
+        except ValueError:
+            return -1
+    return -1
+
 
 class ModelError(Exception):
     """数据层说不行的原因（界面直接显示这句话，测试也断言它）。"""
@@ -895,6 +916,25 @@ class ConfigInfo:
     def general_indices(self) -> List[int]:
         n = max(1, len(self.general_types) or 3)
         return list(range(1, n + 1))
+
+    def general_roster_indices(self) -> List[int]:
+        """「将领序号」下拉的选项：名册号 1..10（与「哪个将领」相互独立）。
+
+        ★★ 与 `general_indices()`（= 将领**档位**，1..将领类型数）不是一回事：
+           档位（由「哪个将领」选择决定）决定兵种 / 数值 / 编制上限 / 名字；
+           名册号只决定运行时 id（`general-<fid>-N`）与附属兵归属（`escort_of`）。
+        """
+        return list(range(1, GENERAL_ROSTER_MAX + 1))
+
+    def general_profile_of(self, type_id: str) -> int:
+        """某个兵种 `type_id` 是第几位将领（**0 起**）；不属于任何档 → -1。
+
+        与运行时 `config.general_slot_of_type()` 同一判据。
+        """
+        try:
+            return self.general_types.index(str(type_id))
+        except (ValueError, AttributeError):
+            return -1
 
     def general_cap(self, index: int) -> int:
         """第 `index` 位将领（**1 起**）的编制上限；缺省 / 越界 → `GENERAL_CAP_DEFAULT`。"""
@@ -2477,8 +2517,8 @@ def _ck_escort_links(add, lv: LevelModel) -> None:
     for fid in {str(u.faction) for u in lv.start_units if u.is_escort()}:
         if not placed_generals(lv, fid):
             add(SEV_WARN, "escort_faction_no_general",
-                "阵营「%s」摆了附属部队却一个将领都没摆：运行时看到这一方有附属部队就"
-                "**不再自动生成那 3 位将领**，于是这些兵开局群龙无首" % fid)
+                "阵营「%s」摆了附属部队却一个将领都没摆：这些兵进游戏会群龙无首"
+                "（战役关卡**一律不再自动补将领**，将领必须自己摆）" % fid)
 
 
 def _tile_of(value: Any) -> Optional[Tuple[int, int]]:
@@ -2498,7 +2538,14 @@ def _ck_escort_specs(add, lv: LevelModel, config: Optional[ConfigInfo]) -> None:
     for u in lv.start_units:
         if not u.is_general():
             continue
-        cap = config.general_cap(u.general_index) if config is not None else -1
+        # ★★ 编制上限按**将领档**取（由该将领的兵种 `unit_type` 查出来），**不是**将领序号
+        #    —— 与运行时 `logic/level.gd` 的 `_ck_start_units` 同一口径。
+        profile = -1
+        if config is not None:
+            profile = config.general_profile_of(u.unit_type)
+        if profile < 0:
+            profile = general_kind_slot(u.kind)
+        cap = config.general_cap(profile + 1) if (config is not None and profile >= 0) else -1
         _ck_one_escort_spec(add, u.escort_count, u.escort_types,
                             "将领 (%d,%d)" % (int(u.x), int(u.y)), cap, config)
 

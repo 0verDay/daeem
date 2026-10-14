@@ -41,6 +41,9 @@ static func to_snapshot(world) -> Dictionary:
 			"x": round2(u.pos.x),
 			"y": round2(u.pos.y),
 			"h": int(round(u.hp)),
+			# ★★ 士气（本轮新增）：整支部队共享的权威状态，客机不发详情栏就画不出背景板颜色。
+			#    沿用「缺字段 = 保持本地现状」的规矩（见 apply 那一段）。
+			"mo": int(round(u.morale)),
 			"m": 1 if u.moving else 0,
 			# 朝向是**向量**（八方向之后 ±1 不够用了）。
 			# ⚠️ 字段名仍是最短的 "fa"，但类型从 int 变成了 [x, y] 两元数组 ——
@@ -163,6 +166,9 @@ static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void:
 		#    都是创建时按类型算好的 —— 单独改 unit_type 会让它与血量上限对不上。
 		#    （快照里带 ut 是为了**新单位**能被正确地建出来，见上面那段。）
 		u.hp = float(su.get("h", u.hp))
+		# ★ 士气：缺字段（老快照）就保持本地现状；有就夹到本地上限里写回。
+		if su.has("mo"):
+			u.morale = clampf(float(su["mo"]), 0.0, u.morale_max)
 		u.moving = bool(su.get("m", 0))
 		# 队长 id：缺字段就保持本地现状（同上，别把「没有队长」当成默认值覆盖掉）
 		var ld: Variant = su.get("ld", null)

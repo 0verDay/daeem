@@ -137,6 +137,13 @@ var hp: float = 200.0
 var hp_max: float = 200.0
 var alive: bool = true
 
+## ---- ★★ 士气（整支部队共享一个值；见 logic/morale.gd）----
+## ★ 「部队共享」的落地方式：**锚**（队长；没有存活队长时自己当锚）持有权威值，
+##   队员每帧 `morale = 锚.morale`（镜像）—— 所以同一支部队里每个单位读到的都一样。
+## ★ 它是玩法值：影响回血 / 掉血与受到的伤害（`take_damage`）；只在详细信息栏显示。
+var morale: float = 90.0
+var morale_max: float = 100.0
+
 ## 上一次施加的**科技血量倍率**（1.0 = 没加成）。
 ## ★ 它只服务于 `apply_hp_bonus()` 的「粘性」：倍率没变就什么都不做 ——
 ##   没有它的话，反复施加会把当前血量反复放大（见那个函数的注释）。
@@ -467,6 +474,9 @@ static func create(cfg: ConfigRes, p_id: String, p_name: String, tile: Vector2i,
 	u.hp_max = float(u.stat_overrides.get("hp_max", cfg.unit_hp_of(u.unit_type)))
 	u.base_hp_max = u.hp_max
 	u.hp = u.hp_max
+	# ★ 士气：整支部队共享，初始值 / 上限取自 config（见 logic/morale.gd）。
+	u.morale_max = cfg.morale_max
+	u.morale = clampf(cfg.morale_start, 0.0, u.morale_max)
 	# ★ 视野半径同样在出生那一刻定下来（战争迷雾只读它，见上面 `vision` 的说明）。
 	#   将领走 general_vision_at（覆盖 ⊕ 所属兵种），普通单位走 unit_vision_of。
 	if p_general_index >= 0:
@@ -1403,6 +1413,12 @@ func take_damage(cfg: ConfigRes, world, amount: float, _source = null) -> bool:
 	if downed:
 		return true
 	hit_flash = 1.0          # ★ 受击反应：闪白 + 左右振动（视图读它，逻辑不用）
+	# ★★ 士气档位影响**受到的伤害**：近战（combat）与远程（projectile）两条路都走这个收口，
+	#    所以一处生效即「远近通吃」。高士气 ≥ high_tier = 免伤；低士气 ≤ vuln_tier（含 25/0 各档）= 易伤。
+	if morale >= cfg.morale_high_tier:
+		amount *= 1.0 - cfg.morale_damage_reduction
+	elif morale <= cfg.morale_vuln_tier:
+		amount *= 1.0 + cfg.morale_vulnerability
 	hp = maxf(0.0, hp - amount)
 	if hp <= 0.0 and alive:
 		# ★★ 将领先走「濒死」这条路：world 决定它到底是倒下去还是当场阵亡
@@ -1696,6 +1712,13 @@ func hp_ratio() -> float:
 	if hp_max <= 0.0:
 		return 0.0
 	return clampf(hp / hp_max, 0.0, 1.0)
+
+
+## 士气比例（0..1）—— 详细信息栏图标的背景板按它由绿变红（见 view/ui_style.gd）。
+func morale_ratio() -> float:
+	if morale_max <= 0.0:
+		return 0.0
+	return clampf(morale / morale_max, 0.0, 1.0)
 
 
 # ------------------------------------------------------------------

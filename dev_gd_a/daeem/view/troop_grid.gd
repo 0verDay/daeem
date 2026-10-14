@@ -27,6 +27,7 @@ extends Control
 
 const UiLayoutRes = preload("res://view/ui_layout.gd")
 const UiStyleRes = preload("res://view/ui_style.gd")
+const HpBarRes = preload("res://view/hp_bar.gd")
 
 ## 点了某一格里的**将领**（带部队编号，1 起；拿不到编号时是 0）
 signal troop_activated(number: int)
@@ -58,6 +59,8 @@ var _shorts: Array = []
 var _hover: int = -1
 ## 画过几帧（给测试用：无头下 `_draw` 里的错误不会让测试失败，所以盯一下它真的跑了）
 var draw_count: int = 0
+## 画过多少条**血量条**（同上：`_draw` 里的问题不会报错，只有留下一个可数的痕迹才钉得住）
+var bar_draw_count: int = 0
 
 
 func setup(p_font: Font = null) -> void:
@@ -375,7 +378,13 @@ func _draw() -> void:
 func _draw_cell(i: int, f: Font) -> void:
 	var av := UiLayoutRes.troop_avatar_rect(i)
 	var leader_cell := cell_is_leader(i)
-	draw_rect(av, UiStyleRes.bg_pressed() if leader_cell else UiStyleRes.bg_empty(), true)
+	# ★★ 背景板 = 士气色（绿 → 红，见 ui_style.morale_plate）：越绿士气越高。
+	#    队长格用较实的 alpha（strong）、普通格较淡 —— 保留「队长 vs 普通」的既有区分。
+	#    建筑格没有士气 → 保持原来的素色（bg_pressed / bg_empty）。
+	var plate: Color = UiStyleRes.bg_pressed() if leader_cell else UiStyleRes.bg_empty()
+	if not cell_is_building(i):
+		plate = UiStyleRes.morale_plate(_morale_ratio_at(i), leader_cell)
+	draw_rect(av, plate, true)
 	# 描边：交战中的点亮成红，鼠标悬停的点亮成强调色，其余普通线色
 	var edge: Color = UiStyleRes.line()
 	if _in_combat(unit_at(i)):
@@ -400,6 +409,32 @@ func _draw_cell(i: int, f: Font) -> void:
 		draw_string(f, Vector2(tp.x, tp.y + UiLayoutRes.TROOP_NAME2_Y),
 			_clip_text(f, line2, tw, UiStyleRes.FS_SMALL),
 			HORIZONTAL_ALIGNMENT_LEFT, tw, UiStyleRes.FS_SMALL, UiStyleRes.text_dim())
+	# ★ 图标底部的血量条（需求：所有单位 / 建筑图标底部都加一条，长度 = 图标）。
+	#   三种模式（单位 / 将领 / 建筑）都走这一格绘制，所以都自动带上了。
+	HpBarRes.draw(self, av, _hp_ratio_at(i))
+	bar_draw_count += 1
+
+
+## 第 i 格图标的血量比例（0..1）——血条按它填充。
+## ref 是单位或建筑（两者都有 `hp_ratio()`）；空格子 / 拿不到对象 → 1.0（不画成空条）。
+func _hp_ratio_at(i: int) -> float:
+	if not cell_filled(i):
+		return 1.0
+	var r = _cells[i].get("ref", null)
+	if r == null:
+		return 1.0
+	return float(r.hp_ratio())
+
+
+## 第 i 格图标的**士气**比例（0..1）——背景板按它由绿变红。
+## 只有单位 / 将领有士气；建筑格 / 拿不到对象 → 1.0（满士气 = 绿）。
+func _morale_ratio_at(i: int) -> float:
+	if not cell_filled(i):
+		return 1.0
+	var r = _cells[i].get("ref", null)
+	if r == null or not r.has_method("morale_ratio"):
+		return 1.0
+	return float(r.morale_ratio())
 
 
 ## 第二行小字：将领格写「x/y」（现有单位数/编制上限，手玩定的 y=11）；

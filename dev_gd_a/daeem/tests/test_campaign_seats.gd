@@ -1,21 +1,4 @@
 ## test_campaign_seats.gd —— **「选边关」**（一关两个可玩阵营，选一个来打）的断言。
-##
-## 样例第一关就是这种关卡：
-##   · 蓝方（F1）**守住 c1 150 秒**；红方（F2）**占领 c1**（归属翻过来那一帧就赢）；
-##   · 两边**是对立的**（不是盟友）—— 所以校验第 7 条的「互为同方」在这里**不适用**，
-##     改拦「每个可玩阵营都要有属于它的目标」（见 logic/level.gd 的 `_ck_allies`）；
-##   · 玩家选中哪一方，运行时那一方由本机操作、另一方交给 AI。
-##
-## 盯的是「不写就会静默错」的那一类（每一条都是实测踩出来的）：
-##   · 两条目标按 `for` 分开，选谁取谁那条（取错了 = 红方拿着「守住 c1」进关）；
-##   · ★ **守方席位名单只含本机操作的那一方**（把敌人也算进去的话：①「占领 c1」的判据
-##     会变成「归我或归敌人」⇒ 开局第一帧就判胜；②敌人的家被拆会连累玩家判负）；
-##   · ★ **没被选中的那一方真的挂着 AI**（两边都没有 AI 的话，你选红方就是一路平推）；
-##   · ★ **只有玩家自己那一方有开局附属兵**（AI 那一边要自己招 —— 否则一局只出一波，
-##     「招将 → 招满 → 出征」那个波次节奏根本不存在）；
-##   · ★ 每个区划的中心建筑都建得出来（大本营的自动防御阵地不许压在中心格上）。
-##
-## ⚠️ 语言约定见 tests/test_case.gd（`--script` 下全局 class_name 不可用；只用 preload 常量）。
 extends "res://tests/test_case.gd"
 
 const CampaignRes = preload("res://logic/campaign.gd")
@@ -23,19 +6,14 @@ const WorldRes = preload("res://logic/world.gd")
 const ObjectiveRes = preload("res://logic/objective.gd")
 const BuildingRes = preload("res://logic/building.gd")
 const FactionRes = preload("res://logic/faction.gd")
-## ★ 本轮新增：`_group_escort` 要用 `LevelRes.escort_leader_index()` 读关卡摆放数据
-## （判据只有那一处，别再自己写一份 `escort_of - 1`）。
 const LevelRes = preload("res://logic/level.gd")
 
 const DEMO_DIR := "res://data/campaigns/demo"
 const LEVEL_ID := "01_beachhead"
-## 目标区划 c1（蓝方守、红方攻的都是它）
 const OBJ_ZONE := 4
-
 
 func _initialize() -> void:
 	run_all(Callable(self, "_run"))
-
 
 func _run() -> void:
 	var cfg = require_config()
@@ -51,22 +29,6 @@ func _run() -> void:
 	_group_ai_ally_acts(cfg)
 	_group_player_units_have_no_ai(cfg)
 
-
-# ------------------------------------------------------------------
-# ★★ 九、基本原则：**玩家能操控的单位绝不附加 AI**
-#
-# 用户点出来的 bug（原话：「玩家可操控的单位/部队/建筑绝不附加阵营性 ai/将领性 ai，
-# 目前我看到新的战役中我自己的单位有自我的 ai 逻辑」）。
-# 机制：`unit.is_garrison()` 的判据就是 `garrison_zone_id >= 0`，而将领性 AI
-# （`logic/garrison_ai.gd`）**遍历全世界**的驻防单位 —— 不管那一方是不是玩家在操作。
-# 于是「关卡把守军写在玩家阵营名下 + 给了 `zone`」时，玩家自己的部队就被 AI 接管了。
-#
-# 这一节钉**机制**而不是钉某一关的数据：
-#   · 造一份「把带 `ai: general` + `zone` 的单位写在**本机席位**名下」的关卡
-#     （这正是那个 bug 的写法），断言它们**拿不到** `garrison_zone_id`、也不 `hold`；
-#   · 对照组：同一份数据、那个阵营这一局由 **AI 接管**时，装备照旧生效
-#     （不能修 bug 修成「AI 也不会守了」）。
-# ------------------------------------------------------------------
 func _group_player_units_have_no_ai(cfg) -> void:
 	var camp = CampaignRes.load_campaign(DEMO_DIR, cfg)
 	var base_level = camp.level(LEVEL_ID)
@@ -75,15 +37,13 @@ func _group_player_units_have_no_ai(cfg) -> void:
 		return
 	var obj_zone := int(base_level.objective_zone())
 
-	# 造一份合成关卡：**玩家席位那一方**（F1）摆 3 个带 zone 的单位
-	# —— 这就是那个 bug 的写法（「我自己的单位带着自己的 AI」）。
 	var units: Array = []
-	for i in 3:
-		units.append({"faction": "F1", "kind": "enemy", "x": 4 + i, "y": 10,
-			"ai": "general", "zone": obj_zone, "name": "越权守军"})
+	var y_off := {"F1": 10, "F2": 12}
+	for fid in ["F1", "F2"]:
+		for i in 3:
+			units.append({"faction": fid, "kind": "enemy", "x": 4 + i, "y": int(y_off[fid]),
+				"ai": "general", "zone": obj_zone, "name": "越权守军"})
 	base_level.start_units = units
-	# 目的就是把「玩家单位 + AI」这个组合造出来，所以这里**刻意**保留 `zone`：
-	# 校验层会照旧认这份数据（它不认识「运行时谁在操作」），引擎层必须兜住。
 
 	for seat in ["F1", "F2"]:
 		var w = _world(cfg, base_level, String(seat))
@@ -101,12 +61,10 @@ func _group_player_units_have_no_ai(cfg) -> void:
 			var is_garrison: bool = int(u.garrison_zone_id) >= 0
 			if fid == mine:
 				checked += 1
-				# ★★ 这一条就是用户报的那件事：玩家的单位不许带 AI 状态。
 				if is_garrison or bool(u.hold_position):
 					leaked.append("%s(gz=%d hold=%s)" % [String(u.id),
 						int(u.garrison_zone_id), str(u.hold_position)])
 			elif fid == "F1":
-				# 对照组：这一局 F1 由 AI 接管 ⇒ 装备**照旧**生效（别修过头）。
 				if is_garrison:
 					ai_side_ok += 1
 		ok(checked > 0, "[%s] 场上真有本机那一方的单位（否则这段白测）" % seat)
@@ -117,21 +75,14 @@ func _group_player_units_have_no_ai(cfg) -> void:
 			ok(ai_side_ok > 0,
 				"★ [%s] 对照组：由 AI 接管的 F1 照样拿到归属（%d 个，别修过头）"
 				% [seat, ai_side_ok])
-		# 再补一条机制断言：这些单位**不在**将领性 AI 的处理范围内
 		for u in w.units:
 			if String(u.faction) == mine:
 				ok(not u.is_garrison(), "★ [%s] %s 不是「驻防单位」" % [seat, String(u.id)])
 				break
 
-
-## 本机在操作的那一方（= 世界里的 `my_faction` 落在玩家席位上）。
 func _player_seat(w) -> String:
 	return String(w.my_faction)
 
-
-# ------------------------------------------------------------------
-# 一、数据：两个都可玩、互为敌对、各有一条目标
-# ------------------------------------------------------------------
 func _group_data(cfg) -> void:
 	var camp = CampaignRes.load_campaign(DEMO_DIR, cfg)
 	ok(camp != null, "样例战役能载入")
@@ -146,13 +97,10 @@ func _group_data(cfg) -> void:
 	eq(lv.playable_ids(), ["F1", "F2"], "★ 第一关可选的两个阵营")
 	ok(lv.has_per_faction_objectives(), "★ 这一关是「选边关」（目标按阵营分开）")
 
-	# ★★ 两个可玩阵营**是对立的**（这一关就是「选边打」）——
-	#    「必须互为同方」那条规则只对**普通关卡**（目标只有一份）成立。
 	FactionRes.set_allies(lv.effective_allies())
 	ok(not FactionRes.same_side_for_attack("F1", "F2"),
 		"★ 蓝方与红方是敌对关系（选边关的设计前提）")
 
-	# ★ 这一关**必须**一个拦截项、一个警告都没有
 	var blocks: Array = lv.blockers()
 	var detail := ""
 	for b in blocks:
@@ -160,10 +108,6 @@ func _group_data(cfg) -> void:
 	ok(blocks.is_empty(), "样例第一关没有拦截项%s" % detail)
 	eq(lv.check(cfg.ai_factions()).size(), 0, "样例第一关连警告都没有")
 
-
-# ------------------------------------------------------------------
-# 二、★ 目标按阵营取：选谁就打谁那条
-# ------------------------------------------------------------------
 func _group_objective_pick(cfg) -> void:
 	var camp = CampaignRes.load_campaign(DEMO_DIR, cfg)
 	var lv = camp.level(LEVEL_ID)
@@ -175,11 +119,9 @@ func _group_objective_pick(cfg) -> void:
 	ok(lv.objective_for("ZZ") == null,
 		"★ 没点名给某一方、也没有通用那一条时 → null（**不退回第一条**）")
 
-	# 两条目标的人话
 	ok(lv.objective_label("F1").contains("守"), "蓝方那句话是「守住…」")
 	ok(lv.objective_label("F2").contains("占领"), "红方那句话是「占领…」")
 
-	# ★★ 运行时：选谁，`objective_state` 里就是谁那条
 	var w1 = _world(cfg, lv, "F1")
 	if w1 != null:
 		eq(String(w1.objective_state["kind"]), "hold_zone", "★ 选蓝方 → 打的是「守住」那条")
@@ -191,10 +133,6 @@ func _group_objective_pick(cfg) -> void:
 			"★ 红方开局**不判负也不判胜**（c1 在蓝方手里，得自己打下来）")
 		eq(w2.objective_state["defend"], ["F2"], "★ 守方席位只有本机操作的 F2")
 
-
-# ------------------------------------------------------------------
-# 三、★ 选谁就摘谁的 AI，另一方真的在动
-# ------------------------------------------------------------------
 func _group_ai_swap(cfg) -> void:
 	var camp = CampaignRes.load_campaign(DEMO_DIR, cfg)
 	var lv = camp.level(LEVEL_ID)
@@ -212,16 +150,12 @@ func _group_ai_swap(cfg) -> void:
 	var w2 = _world(cfg, lv, "F2")
 	ok(w2 != null, "选红方能建出世界")
 	if w2 != null:
-		# ★ 蓝方挂的是**将领性（守家）AI** —— 它**不进** `ai_factions` 状态表
-		#   （那条路是「阵营性 AI」专用的，两者判据必须互斥，见 route.md 33.3）。
-		#   它的行为走**单位上的 `garrison_zone_id`**，所以这里要验的是那个。
 		ok(_piloted(w2).has("F1") and not _piloted(w2).has("F2"),
 			"★ 选红方 → 蓝方 F1 由 AI 接管、本机 F2 **不在** AI 名单里")
 		eq(w2.player_factions, ["F2"], "★ 本机操作的是 F2")
 		ok(w2.player_seats.has("F1") and w2.player_seats.has("F2"),
 			"席位名单里两边都在（两个家都要建出来；顺序 = 我选的那一方在前）")
 		ok(w2.faction_bases.has("F1"), "没被选中的蓝方照样有大本营")
-		# ★★ 守家 AI 的落点：它的将领必须有**归属区划**（否则它一动不动）
 		var garrisoned := 0
 		var generals := 0
 		for u in w2.units:
@@ -235,40 +169,19 @@ func _group_ai_swap(cfg) -> void:
 		ok(generals > 0 and garrisoned == generals,
 			"★ 蓝方（守家 AI）的将领都拿到了归属区划（%d/%d）" % [garrisoned, generals])
 
-	# ★★ 两边的 AI 名单**正好互换** —— 这就是「选谁有实际差别」的判据
 	if w1 != null and w2 != null:
 		ok(_piloted(w1) != _piloted(w2), "★ 选蓝方与选红方的 AI 名单不一样")
 		ok(not _piloted(w1).has("F1") and not _piloted(w2).has("F2"),
 			"★ 选中哪一方，那一方就**不在** AI 名单里（运行时摘掉）")
 
-	# 资源池：选中那一方走玩家钱包，另一方走它自己的池子
 	if w2 != null:
 		var mine: Variant = w2.resource_pool_for("F2")
 		var foe: Variant = w2.resource_pool_for("F1")
 		ok(mine != null and foe != null, "两方都有资源池")
-		# ⚠️ 比「不是同一个对象」要用 `is_same`：两个池子**内容**可能一样
-		#    （都还是开局那点钱），而 `Dictionary` 的 `==` 是**逐字段比较**，
-		#    拿 `!=` 判会得出「它们是同一个」（假红）。
 		ok(not is_same(mine, foe), "★ 本机钱包与对手的池子**不是同一个对象**")
 		ok(is_same(mine, w2.resources),
 			"★★ 本机席位的池子就是 `world.resources`（HUD 与扣费必须是同一份数）")
 
-
-# ------------------------------------------------------------------
-# 四、★★ 关卡摆放：**谁摆了就给谁**（本轮口径推翻重写）
-#
-# 旧口径（已废弃）：「只有本机操作的那一方有开局附属兵」
-#   ⇒ 对手**永远**是 3 位光杆将领 + 0 个附属兵。
-# 新口径（本轮）：「所见即所得」—— 开局场上有多少兵，完全等于**关卡摆出来的那些**；
-#   谁摆了就给谁（AI 摆的也照样出现），关卡没摆的那一方照旧自动生成 3 位光杆将领。
-#
-# ⚠️ 这一节**按关卡数据本身**断言，不写死「两边都摆了 15 个」：
-#    `data/campaigns/` 归另一路 agent 在改（样例关卡还在填），写死数字会把
-#    「数据还没填完」误报成「摆放逻辑坏了」。要钉的是**机制**：
-#      · 关卡摆的每一个单位都在场上；
-#      · 带 `escort_of` 的兵都挂在**同阵营、同序号**的将领上；
-#      · 同一方不会既有关卡摆的将领、又冒出自动生成的重名将领。
-# ------------------------------------------------------------------
 func _group_escort(cfg) -> void:
 	var camp = CampaignRes.load_campaign(DEMO_DIR, cfg)
 	var lv = camp.level(LEVEL_ID)
@@ -279,7 +192,6 @@ func _group_escort(cfg) -> void:
 			continue
 		ok(w.units.size() > 0, "[%s] 世界里有单位" % seat)
 		var foe := "F2" if String(seat) == "F1" else "F1"
-		# ---- 关卡给「对手」摆的每一个单位都必须在场（不再被 with_escort 挡掉）----
 		var placed: Array = lv.placed_units_for(foe)
 		for u in placed:
 			var ud: Dictionary = u
@@ -291,7 +203,6 @@ func _group_escort(cfg) -> void:
 					break
 			ok(found, "★★ [%s] 关卡给对手摆的单位 (%d,%d) 真的出现在场上（AI 摆的也算）"
 				% [seat, at.x, at.y])
-		# ---- 带 escort_of 的兵：挂同阵营同序号的将领，而且那位将领真的在场 ----
 		var checked := 0
 		for u in placed:
 			var ud2: Dictionary = u
@@ -314,7 +225,6 @@ func _group_escort(cfg) -> void:
 			var ld = w.unit_by_id(want_ld)
 			ok(ld != null, "★★ [%s] 那位将领真的在场（%s）" % [seat, want_ld])
 		ok(checked >= 0, "[%s] 对手摆了 %d 个附属兵（逐条验过）" % [seat, checked])
-		# ---- 不重名：同一方不会同时有「关卡摆的将领」与「自动生成的重名将领」----
 		var seen_ids: Dictionary = {}
 		var dup := 0
 		for wu3 in w.units:
@@ -326,19 +236,12 @@ func _group_escort(cfg) -> void:
 		eq(dup, 0,
 			"★★ [%s] 对手的单位 id 不重复（摆了将领就不该再自动生成一批同 id 的）" % seat)
 
-
-# ------------------------------------------------------------------
-# 五、★ 每个区划的中心建筑都建得出来
-# ------------------------------------------------------------------
 func _group_centers(cfg) -> void:
 	var camp = CampaignRes.load_campaign(DEMO_DIR, cfg)
 	var lv = camp.level(LEVEL_ID)
 	var w = _world(cfg, lv, "F1")
 	if w == null:
 		return
-	# ⚠️ 大本营的自动防御阵地是「城墙 = 基地正上方」「箭塔 = 基地 + (2,0)」。
-	#    基地点位没挑好时，那道箭塔正好压在区划中心格上 ⇒ 中立中心建筑**静默**建不出来
-	#    （引擎只 push 一条 warning）。实测：红方的家放在 (4,1) 时 b1 的中心就没了。
 	var missing: Array = []
 	for z in w.zones.zones:
 		var zd: Dictionary = z
@@ -354,30 +257,21 @@ func _group_centers(cfg) -> void:
 			missing.append("c%d(%d,%d)=%s" % [int(zd["id"]), t.x, t.y, what])
 	ok(missing.is_empty(), "★ 每个区划中心都建出来了（缺：%s）" % str(missing))
 
-
-# ------------------------------------------------------------------
-# 六、★ 大本营被拆：判**自己的席位**，不判「同方」
-# ------------------------------------------------------------------
 func _group_base_loss(cfg) -> void:
 	var camp = CampaignRes.load_campaign(DEMO_DIR, cfg)
 	var lv = camp.level(LEVEL_ID)
 
-	# 选蓝方：守方席位只有 F1
 	var w = _world(cfg, lv, "F1")
 	if w == null:
 		return
 	var st: Dictionary = w.objective_state
 	eq(st["defend"], ["F1"], "★ 守方席位只有本机操作的那一方")
 
-	# 拆掉自己的家 ⇒ 判负（哪怕对手的家还在）
 	_kill_base(w, "F1")
 	ObjectiveRes.update(w, cfg, st, 0.5)
 	eq(String(st["state"]), "lost", "★ 拆掉自己席位的家 → 判负")
 	eq(String(st["reason"]), ObjectiveRes.R_BASE_DESTROYED, "原因是 base_destroyed")
 
-	# ★ 只拆**对手**的家 ⇒ **不**判负（它不是玩家的家）。
-	#   ⚠️ 本轮起被 AI 接管的对手**没有大本营**（只有玩家席位才有），
-	#      所以先确认它没有家可拆 —— 判据（只看玩家席位）不变。
 	var w2 = _world(cfg, lv, "F1")
 	if w2 == null:
 		return
@@ -387,10 +281,6 @@ func _group_base_loss(cfg) -> void:
 	eq(String(st2["state"]), "running",
 		"★ 对手的家不在守方席位里 → 不判负")
 
-
-# ------------------------------------------------------------------
-# 七、★ 红方站进 c1 ⇒ 归属翻过来 ⇒ 立刻判胜
-# ------------------------------------------------------------------
 func _group_capture(cfg) -> void:
 	var camp = CampaignRes.load_campaign(DEMO_DIR, cfg)
 	var lv = camp.level(LEVEL_ID)
@@ -402,13 +292,11 @@ func _group_capture(cfg) -> void:
 	var before := _owner(w, OBJ_ZONE)
 	ok(before != "F2", "（前提）c1 开局不归红方（实际 %s）" % before)
 
-	# 直接把 c1 的归属翻成红方（等价于「红方打下来了」那一帧）
 	_set_owner(w, OBJ_ZONE, "F2")
 	ObjectiveRes.update(w, cfg, st, 0.1)
 	eq(String(st["state"]), "won", "★ 归属一翻过来就**立刻判胜**")
 	eq(String(st["reason"]), "", "胜局没有原因")
 
-	# ★ 反过来：红方一开始没打下来时**不能**判胜（否则一进关就赢）
 	var w2 = _world(cfg, lv, "F2")
 	if w2 == null:
 		return
@@ -416,42 +304,22 @@ func _group_capture(cfg) -> void:
 	ObjectiveRes.update(w2, cfg, st2, 0.5)
 	eq(String(st2["state"]), "running", "★ 没打下来之前一直进行中")
 
-
-# ------------------------------------------------------------------
-# 八、★ 没被选中的那一方真的会动
-# ------------------------------------------------------------------
 func _group_ai_ally_acts(cfg) -> void:
 	var camp = CampaignRes.load_campaign(DEMO_DIR, cfg)
 	var lv = camp.level(LEVEL_ID)
-	# ★ 本轮：没被选中的那一方由**阵地性 AI** 接管（附属于区划：巡逻 + 无消耗招兵）。
 	var w = _world(cfg, lv, "F1")
 	if w == null:
 		return
 	ok(_piloted(w).has("F2"), "★ 选蓝方时红方 F2 由 AI 接管")
-	# 它有将领（阵地性 AI 靠将领巡逻 / 招兵）。
 	var g2 := 0
 	for u in w.units:
 		if u.alive and String(u.faction) == "F2" and u.is_general():
 			g2 += 1
 	ok(g2 > 0, "红方有将领（%d 位）—— 阵地性 AI 靠它巡逻 / 招兵" % g2)
 
-
-# ------------------------------------------------------------------
-# 工具
-# ------------------------------------------------------------------
-
-## 按「玩家选 `seat`」造一个第一关的世界。
-##
-## ★★ 席位名单**直接走 `logic/level.gd:build_roster()`** —— 与游戏内**同一份实现**
-##    （原先这里抄了一份逐句对应的逻辑，已删除：抄一份迟早与产品漂开，
-##     而那种漂开只会表现为「测试绿、进游戏不对」）。
-##    `build_roster` 负责：关卡 `players[]` 的席位 + 「可玩、且关卡点名要挂 AI」的那几个，
-##    最后把**我选的那一方提到第一位**（第一位决定「打哪条目标」）。
 func _world(cfg, lv, seat: String):
 	return WorldRes.create_from_level(cfg, lv, seat, lv.build_roster(cfg, seat), true)
 
-
-## 这一局**被 AI 接管**的阵营 id（= 非本机操作、且 ai_kind 不是 none 的那些）。
 func _piloted(w) -> Array:
 	var out: Array = []
 	for f in w.factions:
@@ -461,8 +329,6 @@ func _piloted(w) -> Array:
 			out.append(String(f))
 	return out
 
-
-## 场上活着的、属于 `fid` 的单位数。
 func _unit_count(w, fid: String) -> int:
 	var n := 0
 	for u in w.units:
@@ -470,8 +336,6 @@ func _unit_count(w, fid: String) -> int:
 			n += 1
 	return n
 
-
-## 场上活着的、属于 `fid` 的**将领**数（不含附属兵）。
 func _general_count(w, fid: String) -> int:
 	var n := 0
 	for u in w.units:
@@ -482,8 +346,6 @@ func _general_count(w, fid: String) -> int:
 			n += 1
 	return n
 
-
-## 场上活着的、属于 `fid` 的**附属兵**数（= 跟着将领的那些）。
 func _escort_count(w, fid: String) -> int:
 	var n := 0
 	for u in w.units:
@@ -493,8 +355,6 @@ func _escort_count(w, fid: String) -> int:
 			n += 1
 	return n
 
-
-## 把某一方的大本营从世界上摘掉（= 战斗结算那一刻；大本营本身不可被 `take_damage` 打死）。
 func _kill_base(w, fid: String) -> void:
 	var b = w.find_base_of(fid)
 	if b == null:
@@ -504,15 +364,12 @@ func _kill_base(w, fid: String) -> void:
 	b.hp = 0.0
 	w.remove_building(b, true)
 
-
 func _owner(w, zid: int) -> String:
 	var z = w.zone_by_id(zid)
 	if z == null:
 		return ""
 	return String((z as Dictionary)["owner"])
 
-
-## 直接把某一区的归属写成 `owner`（模拟「打下来了」那一帧）。
 func _set_owner(w, zid: int, owner: String) -> void:
 	var z = w.zone_by_id(zid)
 	if z == null:

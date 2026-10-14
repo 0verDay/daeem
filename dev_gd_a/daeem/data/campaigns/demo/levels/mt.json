@@ -66,19 +66,43 @@
           ],
           [
             0,
-            8
+            12
           ],
           [
             0,
-            9
+            13
           ],
           [
             0,
-            10
+            14
           ],
           [
             0,
-            11
+            15
+          ],
+          [
+            0,
+            16
+          ],
+          [
+            0,
+            17
+          ],
+          [
+            0,
+            18
+          ],
+          [
+            0,
+            19
+          ],
+          [
+            0,
+            20
+          ],
+          [
+            0,
+            21
           ]
         ],
         "march_tiles": [
@@ -239,24 +263,140 @@
       "owner": "sj"
     },
     {
+      "id": 9,
+      "owner": ""
+    },
+    {
+      "id": 10,
+      "owner": ""
+    },
+    {
+      "id": 11,
+      "owner": ""
+    },
+    {
+      "id": 12,
+      "owner": ""
+    },
+    {
       "id": 13,
       "owner": "F1"
+    },
+    {
+      "id": 14,
+      "owner": ""
+    },
+    {
+      "id": 15,
+      "owner": ""
+    },
+    {
+      "id": 16,
+      "owner": ""
     }
   ],
   "start_units": [
     {
       "faction": "sj",
       "kind": "general",
-      "unit_type": "spearman",
+      "unit_type": "rider",
       "x": 21,
       "y": 18,
       "ai": "garrison",
       "zone": 8,
-      "escort_count": 0,
+      "escort_count": 11,
       "escort_types": [
         {
           "type": "spearman",
+          "weight": 0.4
+        },
+        {
+          "type": "longbowman",
+          "weight": 0.4
+        },
+        {
+          "type": "rider",
+          "weight": 0.2
+        }
+      ]
+    },
+    {
+      "faction": "sj",
+      "kind": "general",
+      "general_index": 2,
+      "unit_type": "longbowman",
+      "x": 15,
+      "y": 13,
+      "ai": "garrison",
+      "zone": 6,
+      "escort_count": 8,
+      "escort_types": [
+        {
+          "type": "longbowman",
+          "weight": 0.6
+        },
+        {
+          "type": "spearman",
+          "weight": 0.4
+        }
+      ]
+    },
+    {
+      "faction": "sj",
+      "kind": "general",
+      "general_index": 3,
+      "unit_type": "rider",
+      "x": 15,
+      "y": 20,
+      "ai": "garrison",
+      "zone": 7,
+      "escort_count": 8,
+      "escort_types": [
+        {
+          "type": "rider",
+          "weight": 0.8
+        },
+        {
+          "type": "longbowman",
+          "weight": 0.2
+        }
+      ]
+    },
+    {
+      "faction": "sj",
+      "kind": "general",
+      "general_index": 4,
+      "unit_type": "rider",
+      "x": 10,
+      "y": 15,
+      "ai": "garrison",
+      "zone": 5,
+      "escort_count": 8,
+      "escort_types": [
+        {
+          "type": "longbowman",
           "weight": 1
+        }
+      ]
+    },
+    {
+      "faction": "sj",
+      "kind": "general",
+      "general_index": 5,
+      "unit_type": "rider",
+      "x": 10,
+      "y": 19,
+      "ai": "garrison",
+      "zone": 5,
+      "escort_count": 8,
+      "escort_types": [
+        {
+          "type": "longbowman",
+          "weight": 0.8
+        },
+        {
+          "type": "spearman",
+          "weight": 0.2
         }
       ]
     },
@@ -268,7 +408,64 @@
       "y": 15,
       "ai": "garrison",
       "zone": 3,
-      "escort_count": 0,
+      "escort_count": 5,
+      "escort_types": [
+        {
+          "type": "spearman",
+          "weight": 0.5
+        },
+        {
+          "type": "longbowman",
+          "weight": 0.5
+        }
+      ]
+    },
+    {
+      "faction": "dgj",
+      "kind": "general",
+      "general_index": 2,
+      "unit_type": "longbowman",
+      "x": 1,
+      "y": 20,
+      "ai": "garrison",
+      "zone": 4,
+      "escort_count": 5,
+      "escort_types": [
+        {
+          "type": "longbowman",
+          "weight": 0.5
+        },
+        {
+          "type": "spearman",
+          "weight": 0.5
+        }
+      ]
+    },
+    {
+      "faction": "F1",
+      "kind": "general",
+      "unit_type": "rider",
+      "x": 27,
+      "y": 15,
+      "ai": "garrison",
+      "zone": 13,
+      "escort_count": 2,
+      "escort_types": [
+        {
+          "type": "spearman",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "faction": "F2",
+      "kind": "general",
+      "unit_type": "rider",
+      "x": 3,
+      "y": 4,
+      "ai": "garrison",
+      "zone": 0,
+      "escort_count": 2,
       "escort_types": [
         {
           "type": "spearman",
@@ -277,7 +474,248 @@
       ]
     }
   ],
-  "start_buildings": [],
+  "start_buildings": [
+    {
+      "type": "tower",
+      "x": 13,
+      "y": 15,
+      "owner": "sj"
+    },
+    {
+      "type": "tower",
+      "x": 13,
+      "y": 13,
+      "owner": "sj"
+    },
+    {
+      "type": "tower",
+      "x": 13,
+      "y": 18,
+      "owner": "sj"
+    },
+    {
+      "type": "tower",
+      "x": 13,
+      "y": 20,
+      "owner": "sj"
+    },
+    {
+      "type": "tower",
+      "x": 21,
+      "y": 13,
+      "owner": "sj"
+    },
+    {
+      "type": "tower",
+      "x": 20,
+      "y": 13,
+      "owner": "sj"
+    },
+    {
+      "type": "tower",
+      "x": 21,
+      "y": 14,
+      "owner": "sj"
+    },
+    {
+      "type": "tower",
+      "x": 20,
+      "y": 14,
+      "owner": "sj"
+    },
+    {
+      "type": "wall",
+      "x": 16,
+      "y": 12,
+      "owner": "sj"
+    },
+    {
+      "type": "wall",
+      "x": 16,
+      "y": 13,
+      "owner": "sj"
+    },
+    {
+      "type": "wall",
+      "x": 16,
+      "y": 14,
+      "owner": "sj"
+    },
+    {
+      "type": "wall",
+      "x": 16,
+      "y": 21,
+      "owner": "sj"
+    },
+    {
+      "type": "wall",
+      "x": 16,
+      "y": 20,
+      "owner": "sj"
+    },
+    {
+      "type": "wall",
+      "x": 16,
+      "y": 19,
+      "owner": "sj"
+    },
+    {
+      "type": "wall",
+      "x": 12,
+      "y": 14,
+      "owner": "sj"
+    },
+    {
+      "type": "wall",
+      "x": 12,
+      "y": 13,
+      "owner": "sj"
+    },
+    {
+      "type": "wall",
+      "x": 12,
+      "y": 12,
+      "owner": "sj"
+    },
+    {
+      "type": "wall",
+      "x": 12,
+      "y": 15,
+      "owner": "sj"
+    },
+    {
+      "type": "wall",
+      "x": 12,
+      "y": 16,
+      "owner": "sj"
+    },
+    {
+      "type": "wall",
+      "x": 12,
+      "y": 17,
+      "owner": "sj"
+    },
+    {
+      "type": "wall",
+      "x": 12,
+      "y": 18,
+      "owner": "sj"
+    },
+    {
+      "type": "wall",
+      "x": 12,
+      "y": 19,
+      "owner": "sj"
+    },
+    {
+      "type": "wall",
+      "x": 12,
+      "y": 20,
+      "owner": "sj"
+    },
+    {
+      "type": "wall",
+      "x": 12,
+      "y": 21,
+      "owner": "sj"
+    },
+    {
+      "type": "tower",
+      "x": 9,
+      "y": 16,
+      "owner": "sj"
+    },
+    {
+      "type": "tower",
+      "x": 9,
+      "y": 17,
+      "owner": "sj"
+    },
+    {
+      "type": "wall",
+      "x": 9,
+      "y": 15,
+      "owner": "sj"
+    },
+    {
+      "type": "wall",
+      "x": 9,
+      "y": 14,
+      "owner": "sj"
+    },
+    {
+      "type": "wall",
+      "x": 9,
+      "y": 13,
+      "owner": "sj"
+    },
+    {
+      "type": "wall",
+      "x": 9,
+      "y": 18,
+      "owner": "sj"
+    },
+    {
+      "type": "wall",
+      "x": 9,
+      "y": 19,
+      "owner": "sj"
+    },
+    {
+      "type": "wall",
+      "x": 9,
+      "y": 20,
+      "owner": "sj"
+    },
+    {
+      "type": "wall",
+      "x": 8,
+      "y": 18,
+      "owner": "sj"
+    },
+    {
+      "type": "wall",
+      "x": 8,
+      "y": 17,
+      "owner": "sj"
+    },
+    {
+      "type": "wall",
+      "x": 8,
+      "y": 16,
+      "owner": "sj"
+    },
+    {
+      "type": "wall",
+      "x": 8,
+      "y": 15,
+      "owner": "sj"
+    },
+    {
+      "type": "wall",
+      "x": 9,
+      "y": 12,
+      "owner": "sj"
+    },
+    {
+      "type": "wall",
+      "x": 9,
+      "y": 21,
+      "owner": "sj"
+    },
+    {
+      "type": "tower",
+      "x": 16,
+      "y": 15,
+      "owner": "sj"
+    },
+    {
+      "type": "tower",
+      "x": 16,
+      "y": 18,
+      "owner": "sj"
+    }
+  ],
   "objectives": [
     {
       "for": "F2",

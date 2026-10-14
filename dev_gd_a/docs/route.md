@@ -4504,12 +4504,18 @@ F2 `#FFD166` 金 / E1 `#FF6B6B` 红）+ 关卡 `factions[].color`（关卡可以
 ### 42.3 红点：从「固定冷却」改成「函数式时间表」
 
 `ai.reddot` 新增：`wave_time_expr`（第 x 波的生成时间，分钟，`y=ax+b`）、`general_count_expr`（将领数）、
-`general_weights`、`spawn_tiles`、`escort_count` / `escort_types`。旧的 `cooldown_sec` / `generals` / `retinue`
+`general_weights`、`spawn_tiles`、`march_tiles`、`escort_count` / `escort_types`。旧的 `cooldown_sec` / `generals` / `retinue`
 **废弃**（运行时不再读）。表达式解析在 `logic/expr.gd`（GDScript）与 `tools/campaign_editor/model.py`（Python）
 **各一份、语法逐字一致**。默认都是 `x`：第 1 波 1min、第 2 波 2min……
 例：`x+1` → 第 1 波 2min；`2x+1` → 第 1 波 3min。生成地点优先 `spawn_tiles`（编辑器里选的空地格）：
 **全部已选地块都参与**，这一波每位将领在其中**随机落一格**（允许叠兵）；落点若立着**敌对建筑**
 （非盟友、且非无敌的区划中心）则**立刻拆除**再出生；否则退回 `spawn_region` / 出生点。
+
+★ 行军目标同理：`march_tiles`（红点页选的格子）**非空 → 每一位将领从里面随机挑一格**；
+空 → 退回单点 `attack_target` → 再退回「离这一方最近的敌方区划中心 / 敌方大本营」。
+⚠️ `spawn_tiles` / `march_tiles` 都必须在 `logic/config.gd` 的 `_cache_ai()` 里**声明**过 ——
+`world._ai_cfg_with_override()` 是**白名单式**合并，config 没声明的键，关卡写了也进不来
+（`march_tiles` 曾漏声明，导致红点永远走单点回退、不按随机目标行军）。
 
 ### 42.4 三个编辑器
 

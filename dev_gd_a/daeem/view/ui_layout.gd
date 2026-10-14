@@ -487,6 +487,24 @@ static func roster_cell_avatar_rect() -> Rect2:
 	return Rect2(0.0, 0.0, ROSTER_CELL_AVATAR, ROSTER_CELL_AVATAR)
 
 
+# ------------------------------------------------------------------
+## 图标底部的**血量条**（详细信息面板里的单位 / 建筑图标，画法见 view/hp_bar.gd）
+##
+## ★ 需求原话：「所有单位图标底部都需要增加一个水平长度等于单位图标、竖直长度很小的
+##   血量条，该血量条需要绑定该单位的血量」。
+## ★ 宽度 = 图标宽度、贴在图标**内部底边** —— 这样套用同一个函数就能覆盖两种尺寸
+##   （40×40 的网格方块 / 72×72 的右栏头像），且**不动任何现有版式常量**。
+## ★ 高度 5px 是「竖直长度很小」那一档：它不参与布局，只是压在图标下缘的一条带。
+## ------------------------------------------------------------------
+const HP_BAR_H := 5.0
+
+
+## 一个图标矩形 → 它底部那条血量条的矩形（宽度 = 图标宽度，贴图标内部底边）。
+static func hp_bar_rect(icon: Rect2) -> Rect2:
+	return Rect2(icon.position.x, icon.position.y + icon.size.y - HP_BAR_H,
+		icon.size.x, HP_BAR_H)
+
+
 ## 设计空间里的「详细信息面板内容区」左上角（面板本身在 DETAIL_RECT，内有 DETAIL_PAD 的边距）
 static func panel_content_pos() -> Vector2:
 	return DETAIL_RECT.position + Vector2(DETAIL_PAD, DETAIL_PAD)

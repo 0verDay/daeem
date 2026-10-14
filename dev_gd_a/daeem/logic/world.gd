@@ -27,6 +27,8 @@ const BuildingRes = preload("res://logic/building.gd")
 const UnitRes = preload("res://logic/unit.gd")
 const ZoneRes = preload("res://logic/zone.gd")
 const EconomyRes = preload("res://logic/economy.gd")
+## ★★ 士气（整支部队共享，见 logic/morale.gd）。morale.gd 只 preload faction.gd，无循环依赖。
+const MoraleRes = preload("res://logic/morale.gd")
 
 ## ★★ 救援到位半径（格）：附属兵离倒下点这么近就算「已经护住了」，结束救援意图。
 ## 与 `unit.order_attack_move` 的「到点了就算完成」（0.5 格）同源，稍放大一点 ——
@@ -60,6 +62,14 @@ var _bgrid: Dictionary = {}
 var _bgrid_revision: int = -1
 
 var zones: ZoneRes = null
+## ★★ 士气联动的区划图（见 logic/morale.gd 与下面的 `_build_zone_adjacency` /
+##    `refresh_zone_connectivity` / `_tick_zone_morale`）：
+##   · `_zone_adj`        —— 区划 id → 邻接区划 id 数组（地块 4 邻域相接即相邻，构建一次）；
+##   · `_surrounded`      —— 被包围的区划 id 集合（对该区划的 owner 而言，不与大本营区划连通）；
+##   · `_zone_owner_prev` —— 上一帧各区划的 owner（diff 出「掠地」的归属变化）。
+var _zone_adj: Dictionary = {}
+var _surrounded: Dictionary = {}
+var _zone_owner_prev: Dictionary = {}
 var units: Array = []
 ## ★★ 在飞的射箭投掷物（本轮新增，见 logic/projectile.gd）。
 ##    它们是**权威状态**（伤害在命中那一刻才结算），所以和 units / building_list 一样
@@ -535,6 +545,13 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 		defend = [my_faction]
 	objective_state = ObjectiveRes.setup(self, level, defend, my_faction)
 
+	# ★★ 士气联动的区划图收口（与上面 fog / objective 同一处「reset 结束 = 一切是热的」）：
+	#    邻接图构建一次；连通性（被包围）先算一次；owner 快照一次 ——
+	#    于是第一帧 tick 不会把「开局就有的归属」误判成「掠地」。
+	_build_zone_adjacency()
+	refresh_zone_connectivity()
+	_snapshot_zone_owners()
+
 
 ## 把地图里每个区块的「区划中心」落成一栋中立障碍建筑（无血量 / 无敌 / 无攻击）。
 ##
@@ -853,29 +870,38 @@ func _place_faction_units(fid: String, placed: Array) -> void:
 		var kind := String(ud["kind"])
 		var tile := Vector2i(int(ud["x"]), int(ud["y"]))
 		var is_placed_general := ConfigRes.general_index_of(kind) >= 0
-		# ★ 名字：作者写了就用作者的；没写时 —— 将领退回 config 的名字（`将领 N`，
-		#   与自动生成的将领同一口径），普通单位退回 kind。
+		# ★★ 将领的两套编号（本轮解耦）：
+		#   · `roster` = **将领序号**（JSON `general_index`，1 起 → 这里 0 起）—— 只决定
+		#     **运行时 id**（`general-<fid>-<roster+1>`）与附属兵归属；
+		#   · `profile` = 「这位将领是**哪个将领**」—— 由它的**兵种** `unit_type` 查出来，
+		#     决定数值 / 兵种 / 编制上限 / 默认名字（查 unit.general.*）。
+		#   ⚠️ 旧口径里这两者由同一个 `general_index` 兼任；现在作者可以「序号 1 用将领 3」。
+		var roster := maxi(1, int(ud.get("general_index", 1))) - 1
+		var utype_g := String(ud.get("unit_type", ""))
+		var profile := cfg.general_slot_of_type(utype_g)
+		if profile < 0:
+			# 没写兵种 / 兵种不在将领档里 → 退回 kind 那一档（旧数据 `general_N`）。
+			profile = maxi(0, ConfigRes.general_index_of(kind))
+		# ★ 名字：作者写了就用作者的；没写时 —— 将领退回 config 的名字（按**将领档**取，
+		#   没配 → 「将领 <将领序号>」）；普通单位退回 kind。
 		var uname := String(ud.get("name", ""))
 		if uname == "":
 			if is_placed_general:
-				var gi_name := int(ud.get("general_index", 1)) - 1
-				uname = cfg.general_name_at(gi_name)
+				uname = cfg.general_name_at(profile)
 				if uname == "":
-					uname = "将领 %d" % (gi_name + 1)
+					uname = "将领 %d" % (roster + 1)
 			else:
 				uname = kind
 		var pu = null
 		if is_placed_general:
-			# ★ 作者自己摆的将领：canonical id + 那个 id 对应的将领槽位。
-			var gi_g := int(ud.get("general_index", 1)) - 1
-			var utype_g := String(ud.get("unit_type", ""))
-			var pg = create_general(fid, gi_g)
+			# ★ 作者自己摆的将领：canonical id（用**将领序号**）+ 它选的**将领档**。
+			var pg = create_general(fid, profile, roster)
 			if pg != null:
 				# ⚠️ 只有「没写 `unit_type`」时才用 config 那一档的类型（写了就以作者为准，
-				#    否则 id 与槽位对得上、兵种却被换掉，读的人会以为数据没生效）。
+				#    否则 id 与档位对得上、兵种却被换掉，读的人会以为数据没生效）。
 				if utype_g != "" and utype_g != String(pg.unit_type):
 					pg = UnitRes.create(cfg, pg.id, uname, tile, fid, kind,
-						str(gi_g + 1), "", utype_g, gi_g)
+						str(roster + 1), "", utype_g, profile)
 				else:
 					pg.name = uname
 					pg.pos = GridRes.center_of(tile)
@@ -1034,40 +1060,50 @@ func pick_weighted_type(g, weighted_types: Array, k: int) -> String:
 ##
 ## ★ 刻意**不用引擎全局随机数**（RNG 会随调用次序漂，测试没法断言）：
 ##   与巡逻路线的「由 id 派生固定种子」是同一个套路（见 garrison_ai 的 `_route_seed`）。
-## ★ GDScript 的 `hash()` 对字符串是**确定性**的（同一条 key 每次跑出的值一样）。
+##
+## ★★ 为什么不直接 `hash("%s|%d" % [key, k])` 取低位（本轮修的 bug）：
+##    Godot 的字符串哈希是 djb2 那一路 —— 只差末位字符的两条串（`…|0` / `…|1` …）
+##    哈希只差 1，于是**连续的 k 取到的低位几乎不动** ⇒ 同一个将领的十来个附属兵
+##    会被抽成**同一个兵种**（用户报的「三个兵种都填了却只出一种」）。
+##    ⇒ 先把 key 的哈希与 k 混一下，再走一步 murmur 收尾，连续的 k 才真正散开。
 ## ★ 摆放 / 阵地 / 红点三处共用（`pick_weighted_type` 与 `red_dot_ai._pick_general_index`）。
 func unit_rand(key: String, k: int) -> float:
-	var h: int = hash("%s|%d" % [key, k])
-	var v: int = h & 0xFFFFFF
-	return float(v) / float(0x1000000)
+	var h: int = (hash(key) ^ (k * 0x9E3779B1)) & 0xFFFFFFFF
+	h = ((h ^ (h >> 16)) * 0x85EBCA6B) & 0xFFFFFFFF
+	h = ((h ^ (h >> 13)) * 0xC2B2AE35) & 0xFFFFFFFF
+	h = (h ^ (h >> 16)) & 0xFFFFFFFF
+	return float(h) / 4294967296.0
 
 
-## ★ 建出**一位**将领（第 `index` 位，0 起）——`create_generals` 的单件版。
+## ★ 建出**一位**将领 ——`create_generals`（自动生成）与关卡摆放共用这一个。
 ##
-## ★★ 关卡摆放的将领（`_place_faction_units`）与自动生成的将领（`create_generals`）
-##    **共用这一个函数**：名字 / 类型 / 数值覆盖 / id 规则只有一份。
-func create_general(faction: String, index: int):
+## ★★ 两个编号各管各的（本轮解耦，别再合并）：
+##   · `roster` = **将领序号**（0 起）：只决定运行时 id（`general-<fid>-<roster+1>`）；
+##   · `profile` = **将领档**（0 起）：决定数值 / 兵种 / 默认名字（查 unit.general.*）。
+##   ⚠️ 旧签名只有一个 `index`，两件事由它兼任；现在摆放页允许「序号 1 用将领 3」。
+func create_general(faction: String, profile: int, roster: int):
 	var spawns: Array = faction_spawns.get(faction, [])
-	# ★★ 名字与类型都走 config：
-	#   · `cfg.general_name_at(i)` = 编辑器里给这位将领起的名字（没写 → 原来的「将领 N」）；
-	#   · `cfg.general_type_at(i)` = unit.general.types[i]。
+	# ★★ 名字与类型都走 config 的**将领档**：
+	#   · `cfg.general_name_at(profile)` = 编辑器里给这一档起的名字（没写 → 「将领 <序号>」）；
+	#   · `cfg.general_type_at(profile)` = unit.general.types[profile]。
 	#   ⚠️ 名字在这里读一次**存进单位**（`unit.name`）—— 部队列表、右栏都读它。
-	var gname: String = cfg.general_name_at(index)
+	var gname: String = cfg.general_name_at(profile)
 	if gname == "":
-		gname = "将领 %d" % (index + 1)
+		gname = "将领 %d" % (roster + 1)
 	var tile: Vector2i = map.base
-	if index < spawns.size():
-		tile = spawns[index]
-	elif index < map.general_spawns.size():
-		tile = map.general_spawns[index]
-	var unit_type: String = cfg.general_type_at(index)
-	# ★ 最后那个参数 = **第几位将领**：它决定套不套 unit.general.stats 里那份数值覆盖
-	return UnitRes.create(cfg, "%s-%d" % [general_id_prefix(faction), index + 1], gname, tile,
-		faction, UnitRes.KIND_GENERAL, str(index + 1), "", unit_type, index)
+	if profile < spawns.size():
+		tile = spawns[profile]
+	elif profile < map.general_spawns.size():
+		tile = map.general_spawns[profile]
+	var unit_type: String = cfg.general_type_at(profile)
+	# ★ 最后那个参数 = **将领档**：它决定套不套 unit.general.stats 里那份数值覆盖
+	#   （id 里的数字则用 `roster`）。
+	return UnitRes.create(cfg, "%s-%d" % [general_id_prefix(faction), roster + 1], gname, tile,
+		faction, UnitRes.KIND_GENERAL, str(roster + 1), "", unit_type, profile)
 
 
-## 建立某一阵营的**开局 3 位将领**。站位取该阵营自己的出生点，退回地图默认站位，
-## 最后退回大本营。
+## 建立某一阵营的**开局 3 位将领**（**非战役**：`level == null` 的地图试玩 / 测试）。
+## 站位取该阵营自己的出生点，退回地图默认站位，最后退回大本营。
 ##
 ## ★★ 将领 = **带单位类型的队长**（不是一种兵种，见 config.json 的 unit._general_comment）：
 ##   · 第 i 个将领的类型取 `cfg.general_type_at(i)` —— 于是「将领 1 = 长枪兵、
@@ -1076,13 +1112,14 @@ func create_general(faction: String, index: int):
 ##   · ★★ **自动生成的将领开局不带附属兵**：只有**关卡摆放的将领**才带规格与满编
 ##     附属兵（见 `_place_faction_units` 的 `fill_general_retinue()`）。自动生成的这些
 ##     由阵地 AI 按 `min_retinue` 自己招（`escort_target_of()` 的兜底那一条）。
+##   ⚠️ 这里序号与档位相同（第 i 位就是 i 档）——只有关卡摆放才可能两者不同。
 ## ⚠️ 顺序有讲究：**将领先全部入列，附属兵跟在后面**。
 ##    这样 world.units 里前几个永远是将领（快捷键 1/2/3 与按序号取将领的代码都靠它），
 ##    而关卡摆的将领也照样「先将自己再带兵」（见 `_place_faction_units`）。
 func create_generals(faction: String) -> Array:
 	var out: Array = []
 	for i in 3:
-		var g = create_general(faction, i)
+		var g = create_general(faction, i, i)
 		if g != null:
 			out.append(g)
 	return out
@@ -1328,18 +1365,16 @@ func apply_faction_layout(faction: String, primary: String = "", with_base: bool
 ##
 ## ★ 必须**在所有建筑都就位之后**调用（见 reset() 的顺序说明）。
 ##
-## ★★ 这里**不再有开局附属兵**（本轮口径变更：`create_escort()` / 逐兵摆放整个删掉）：
+## ★★ 这里**不再有开局附属兵**（口径变更：`create_escort()` / 逐兵摆放整个删掉）：
 ##    附属兵完全由**将领自己的规格**决定（`escort_count` / `escort_types`），
 ##    在关卡摆放时由 `fill_general_retinue()` 当场生成（见 `_place_faction_units`）。
-##      · 关卡**摆了将领** ⇒ 那一方**整个跳过**本函数（连这一方的将领都归作者摆）；
-##      · 关卡没摆 ⇒ 本函数照旧造 3 位将领，而他们**光杆**（0 个附属兵），
-##        之后由阵地 AI 按 `min_retinue` 自己招。
 ##
-## ★★ 判据是 `level.faction_has_placed_generals(faction)`（= 这一方在关卡
-##    `start_units[]` 里**摆了将领**）：摆了就整方由关卡接管。
-##    ⚠️ 用它而不是「这一方有没有摆单位」：「摆了一个普通单位」是既有的、
-##       与将领无关的用法（驻防守军就靠它），拿它当接管判据会连带删掉三位将领。
-##    ⚠️ `level == null`（不做战役 / 绝大多数测试）⇒ 照旧自动生成 3 位。
+## ★★ 本轮口径变更（用户需求）：**战役关卡里一个将领都不自动生成** ——
+##    将领（以及它按规格生成的附属兵）**完全**由作者在 `start_units[]` 里摆。
+##      · `level != null`（战役）⇒ 本函数当场返回，一个将领都不造；
+##      · `level == null`（地图试玩 / 大多数测试）⇒ 照旧造 3 位光杆将领。
+##    ⚠️ 旧口径的「这一方摆了将领才整方跳过」判据（`faction_has_placed_generals`）
+##       已随旧行为一起删除 —— 新口径下战役里根本不再自动生成将领。
 ##
 ## ★★ 还有一条**与 AI 无关**的历史约束（保留）：不开 AI 的那一局
 ##    （`with_ai = false`：测试 / 基准）里，NPC 阵营**一个将领都不建**。
@@ -1350,15 +1385,13 @@ func apply_faction_layout(faction: String, primary: String = "", with_base: bool
 ##    ⚠️ 注意这里跳掉的只是**将领**：NPC 的**地**（zone_list[].owner）与**大本营**
 ##       照旧成立（那两样是「这一局的布局」，与 AI 开关无关）。
 ##    于是「把 enemy 写进名单」在两种世界里只差「它有没有军队」，
-##    而两支军队的有无正好由 with_ai 决定 —— 这就是那个开关的定义。
+##    而两支军队的无有正好由 with_ai 决定 —— 这就是那个开关的定义。
 func spawn_faction_units(faction: String) -> void:
 	if not with_ai and not FactionRes.is_player_faction(faction):
 		return
-	# ★★ 这一方在关卡里摆了将领 ⇒ **整方由关卡接管**：这里什么都不造。
+	# ★★ 战役关卡：将领完全由关卡摆放决定（作者摆谁就是谁），这里**不再自动生成**。
 	#    （将领由 `_apply_level_placement()` 建出来，其附属兵按规格当场生成。）
-	#    ⚠️ 判据与「谁在操作这一方」「是不是 AI 驱动」**全都无关**：
-	#      谁摆了将领就给谁（AI 摆的也照样出现）。
-	if level != null and level.faction_has_placed_generals(faction):
+	if level != null:
 		return
 	# ★★ 红点阵营**不自动生成将领**（它的兵全部由红点 AI 按冷却刷出来）。
 	#    否则它会额外白得 3 位站着不动的将领（与「刷一波」的语义冲突）。
@@ -3532,6 +3565,11 @@ func tick(dt: float) -> Array:
 	refresh_ownership()
 	_prof_done("zones", _t_zones)
 
+	# 2.5) ★★ 士气联动的区划变化：归属变化（掠地）+ 连通性（包围）刷新。
+	#      ⚠️ 必须在单位循环（第 4 步）**之前** —— 那一步里 morale.tick_unit 要用最新的
+	#         「被包围」集合来判断「疲惫」。
+	_tick_zone_morale(cfg)
+
 	# 3) 资源：★ 按**占领方拥有的各区划**聚合（产能 × 该区划地块数）。
 	#    旧实现是「全局按占领地块数 × 1/秒」—— 现在产能由地图数据（地图编辑器）说了算，
 	#    所以「抢区块 = 抢产能」。
@@ -3584,6 +3622,8 @@ func tick(dt: float) -> Array:
 	var t_combat := 0
 	var t_reclaim := 0
 	var t_step := 0
+	# ★★ 本帧击杀事件从哪个下标开始 —— 循环后据此扫出「破敌 / 斩将」的士气加成。
+	var morale_ev_start := _events.size()
 	for ui in units.size():
 		var u: UnitRes = units[ui]
 		if not u.alive:
@@ -3615,6 +3655,13 @@ func tick(dt: float) -> Array:
 		var c0 := _prof()
 		CombatRes.tick_frame(self, cfg, u, dt, ui)
 		var _c1 := _prof()
+	# ★★ 破敌 / 斩将：本帧的击杀事件 → 击杀者所在部队士气上升（死的是将领则加得更多）。
+	#    ⚠️ 在这一处统一扫，而不是塞进 unit._die —— 那里在 unit.gd 里，改它会把
+	#       「谁击杀谁」的语义散到两个文件（事件本身已经是唯一收口了）。
+	for ei in range(morale_ev_start, _events.size()):
+		var evt = _events[ei]
+		if typeof(evt) == TYPE_DICTIONARY and String(evt.get("type", "")) == "kill":
+			MoraleRes.boost_kill(self, cfg, evt.get("unit", null), evt.get("source", null))
 	# ★★ 4.5) 濒死救援的收口（本次修 bug）：清掉失效的救援意图、把还没到位的
 	#   附属兵重新叫回倒下点。必须在**单位循环之后**跑 —— 它判「在不在赶路」用的
 	#   是这一帧刚更新完的状态（`u.moving` / `u.path`）。
@@ -3820,6 +3867,126 @@ func home_base_of(faction: String) -> Vector2i:
 	if faction_bases.has(my_faction):
 		return faction_bases[my_faction]
 	return map.base
+
+
+# ------------------------------------------------------------------
+# ★★ 士气联动的区划图（见 logic/morale.gd）
+#
+#   需求：「包围」= 己方区划不连续（不与大本营所在区划连通）时，区内己方单位陷疲惫；
+#         「掠地」= 单位所处区划由敌方 / 中立转为己方 / 友方时，士气立即上升。
+#   做法：
+#     ① 区划**邻接图**（地块 4 邻域相接即相邻）—— 区划重建后构建一次；
+#     ② 从大本营所在区划沿「己方（含盟友）且相邻」的区划做**可达性洪泛**，
+#        不可达的己方区划 = 被包围（无大本营的阵营跳过）；
+#     ③ 每帧 diff 区划 owner，抓「归属变化」触发掠地。
+#   ⚠️ 单位只有几十~百个、区划只有十几个，代价可忽略；不节流。
+# ------------------------------------------------------------------
+
+## 构建区划邻接图 `_zone_adj`（区划重建后调用一次）。
+func _build_zone_adjacency() -> void:
+	_zone_adj = {}
+	if zones == null:
+		return
+	var cols: int = zones.cols
+	var rows: int = zones.rows
+	# 先用 Dictionary 当 set（去重），最后再转成数组（读口保持数组）。
+	for z in zones.zones:
+		_zone_adj[int(z["id"])] = {}
+	# ★★ 只朝**右 / 下**扫一次就够（每条相邻边会被两端各看到一次），但必须**两个方向都记**
+	#    —— 这是**无向**图。⚠️ 只记「当前区划 → 邻居」的话，总处在共享边**右下侧**的那个
+	#    区划一条边都记不到、邻接表为空（实测：地图右下角的基地区划邻接表 = []）。
+	#    后果：从基地出发的洪泛谁也到不了 ⇒ 占领任何中立区划后它都算「被包围」、士气一直掉。
+	for z in zones.zones:
+		var zid: int = int(z["id"])
+		for t in z["tiles"]:
+			var tv: Vector2i = t
+			for d in [Vector2i(1, 0), Vector2i(0, 1)]:
+				var n: Vector2i = tv + d
+				if n.x < 0 or n.y < 0 or n.x >= cols or n.y >= rows:
+					continue
+				var oid: int = int(zones.lookup[n.y * cols + n.x])
+				if oid < 0 or oid == zid:
+					continue
+				(_zone_adj[zid] as Dictionary)[oid] = true
+				(_zone_adj[oid] as Dictionary)[zid] = true
+	for zid in _zone_adj.keys():
+		_zone_adj[zid] = (_zone_adj[zid] as Dictionary).keys()
+
+
+## 重算 `_surrounded`（被包围的区划 id 集合，对该区划的 owner 而言）。归属变化后调用。
+func refresh_zone_connectivity() -> void:
+	_surrounded = {}
+	if zones == null:
+		return
+	for f in spawned_factions():
+		var ff := String(f)
+		# ★★ 「无大本营的阵营无视该效果」：判据是**真的有大本营建筑**（find_base_of），
+		#    **不是** `faction_bases` —— 后者对 AI / NPC 阵营也有一份**默认占位坐标**（0,0），
+		#    拿它当锚会把盟友（同一边）的己方区划误判成「被包围」
+		#    （实测：玩家 F1 唯一那块含大本营的区划，因为盟友 sj 的占位大本营而被标成被包围
+		#     → 站在自己地盘里士气也一直掉）。
+		if find_base_of(ff) == null:
+			continue
+		var base: Vector2i = home_base_of(ff)
+		var start: Variant = zones.zone_at(base.x, base.y)
+		if start == null:
+			continue
+		var reachable: Dictionary = {}
+		var queue: Array = [int(start["id"])]
+		reachable[int(start["id"])] = true
+		while not queue.is_empty():
+			var zid: int = queue.pop_back()
+			for nb in _zone_adj.get(zid, []):
+				var nid: int = int(nb)
+				if reachable.has(nid):
+					continue
+				var nz: Variant = zone_by_id(nid)
+				# 只沿「同一阵营（含盟友）」的区划走：中立 / 敌方会把己方区划切断。
+				if nz != null and FactionRes.same_side_for_attack(ff, String(nz.get("owner", ""))):
+					reachable[nid] = true
+					queue.append(nid)
+		# 只标**该阵营自己**的、不可达的区划 = 被包围。
+		# ⚠️ 不标盟友的区划：盟友的连通性由盟友自己那一轮算，否则 A 的洪泛会把 B 的区划误标。
+		for z in zones.zones:
+			var zid2: int = int(z["id"])
+			if String(z.get("owner", "")) != ff:
+				continue
+			if not reachable.has(zid2):
+				_surrounded[zid2] = true
+
+
+## 某区划现在是不是「被包围」（对该区划的 owner 而言）。morale.gd 读它判「疲惫」。
+func zone_is_surrounded(zid: int) -> bool:
+	return _surrounded.has(zid)
+
+
+## 快照一次各区划 owner（reset 里调，避免第一帧把开局归属误判成掠地）。
+func _snapshot_zone_owners() -> void:
+	_zone_owner_prev = {}
+	if zones == null:
+		return
+	for z in zones.zones:
+		_zone_owner_prev[int(z["id"])] = String(z.get("owner", ""))
+
+
+## 每帧的「掠地」检测 + 连通性刷新（在 zones.update / refresh_ownership 之后调）。
+func _tick_zone_morale(cfg) -> void:
+	if zones == null:
+		return
+	var changed := false
+	for z in zones.zones:
+		var zid: int = int(z["id"])
+		var owner := String(z.get("owner", ""))
+		if owner == String(_zone_owner_prev.get(zid, "")):
+			continue
+		changed = true
+		_zone_owner_prev[zid] = owner
+		# 由敌方 / 中立 → 现在有人占了：对**站在该区划里**、与新区主同一边的单位加士气
+		# （「敌方→己方」与「中立→己方」两类转换都会触发，按需求两者可叠加）。
+		if owner != "":
+			MoraleRes.boost_capture(self, cfg, z)
+	if changed:
+		refresh_zone_connectivity()
 
 
 # ------------------------------------------------------------------

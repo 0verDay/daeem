@@ -2026,6 +2026,10 @@ func refresh() -> void:
 	if input_ctrl.selected_zone != null:
 		detail_panel.set_troops(null, [])
 		detail_panel.set_unit_avatar_text("区")
+		# ★ 区划没有血量 → 头像底部那条血条不画。
+		detail_panel.set_unit_avatar_hp(0.0, false)
+		# ★ 区划没有士气 → 头像背景板不上士气色。
+		detail_panel.set_unit_avatar_morale(0.0, false)
 		detail_panel.set_unit_name(_zone_title(input_ctrl.selected_zone))
 		# ★★ 本次：当前人口只给**自己 / 友军**的区划看（用户原话：「如果是友军/己方区划，
 		#   额外显示其当前人口数量」）—— 敌方与中立区划的「现在有多少人」属于对手的情报。
@@ -2042,6 +2046,10 @@ func refresh() -> void:
 		var b = _primary_building()
 		detail_panel.set_buildings(_building_entries(input_ctrl.selected_buildings), b)
 		detail_panel.set_unit_avatar_text(_building_short(b))
+		# ★ 建筑也有血量 → 头像底部画它的血条。
+		detail_panel.set_unit_avatar_hp(b.hp_ratio(), true)
+		# ★ 建筑没有士气 → 头像背景板不上士气色。
+		detail_panel.set_unit_avatar_morale(0.0, false)
 		detail_panel.set_unit_name(b.display_name())
 		detail_panel.set_detail(_building_text(b))
 		# 右栏那块面板：升级 / 特化读条 > 区划中心的招募队列 > 收起来
@@ -2067,6 +2075,10 @@ func refresh() -> void:
 	#            该选中的单位为玩家点击的那个单位」）。
 	var shown = _right_unit(troop)
 	detail_panel.set_unit_avatar_text("" if shown == null else _unit_short(shown))
+	# ★ 头像底部血条：没选中单位 → 不画；否则按它的血量比例画。
+	detail_panel.set_unit_avatar_hp(1.0 if shown == null else shown.hp_ratio(), shown != null)
+	# ★ 头像背景板按士气上色（绿→红）：没选中单位 → 不上色。
+	detail_panel.set_unit_avatar_morale(1.0 if shown == null else shown.morale_ratio(), shown != null)
 	detail_panel.set_unit_name("" if shown == null else String(shown.name))
 	detail_panel.set_detail(_unit_text(shown, troops))
 	# ★ 招募队列：显示**当前选中的第一个将领**的（选中整队时队长排在最前，
@@ -2230,10 +2242,14 @@ func _refresh_enemy_detail() -> void:
 	match _selected_enemy_kind():
 		"unit":
 			detail_panel.set_unit_avatar_text(_unit_short(e))
+			detail_panel.set_unit_avatar_hp(e.hp_ratio(), true)
+			detail_panel.set_unit_avatar_morale(e.morale_ratio(), true)
 			detail_panel.set_unit_name(String(e.name))
 			detail_panel.set_detail(_enemy_unit_text(e))
 		"building":
 			detail_panel.set_unit_avatar_text(_building_short(e))
+			detail_panel.set_unit_avatar_hp(e.hp_ratio(), true)
+			detail_panel.set_unit_avatar_morale(0.0, false)
 			detail_panel.set_unit_name(e.display_name())
 			detail_panel.set_detail(_enemy_building_text(e))
 
@@ -2249,6 +2265,7 @@ func _enemy_unit_text(u) -> String:
 		return "未选中"
 	var lines: Array[String] = []
 	lines.append("血量 %d / %d" % [int(round(u.hp)), int(round(u.hp_max))])
+	lines.append("士气 %d" % int(round(u.morale)))
 	# ★ 兵种那一行（「长枪兵 · 近战步兵」这种）——走 `cfg.unit_class_line`，
 	#   与单位编辑器 / 其它界面同一处口径（界面不自己拼「步兵 / 骑兵」）。
 	var klass := cfg.unit_class_line(String(u.unit_type))
@@ -2401,6 +2418,8 @@ func _unit_text(shown, troops: Array) -> String:
 		return "未选中"
 	var lines: Array[String] = []
 	lines.append("血量 %d / %d" % [int(round(shown.hp)), int(round(shown.hp_max))])
+	# ★★ 士气（本轮新增）：整支部队共享的一个值 —— 详情栏里唯一的读法（地图上不显示）。
+	lines.append("士气 %d" % int(round(shown.morale)))
 	# ★★ 濒死的将领（本轮新增）：右栏这块数值区是玩家唯一能读到「还要等多久」的地方，
 	#    所以把状态 / 回复进度 / 再起门槛都写出来（需求要玩家能判断什么时候能再起）。
 	if shown.is_downed():

@@ -137,6 +137,9 @@ const DEFAULT_WARNING := Color(0.878, 0.541, 0.416, 1.0)     # #e08a6a
 const DEFAULT_HP_HIGH := Color(0.478, 0.690, 0.416, 1.0)     # #7ab06a
 const DEFAULT_HP_MID := Color(0.847, 0.698, 0.373, 1.0)      # #d8b25f
 const DEFAULT_HP_LOW := Color(0.788, 0.349, 0.247, 1.0)      # #c9593f
+## ★★ 士气背景板的两个端点色（详细信息栏图标：绿 = 士气高、红 = 士气低）。
+const DEFAULT_MORALE_HIGH := Color(0.478, 0.690, 0.416, 1.0)  # #7ab06a
+const DEFAULT_MORALE_LOW := Color(0.788, 0.349, 0.247, 1.0)   # #c9593f
 
 ## 「面板是半透明」这一档的 alpha（★ 不是配色，是**可读性约束**）：
 ##   HUD 底栏占屏幕下方 400px、命令卡与页签直接立在地图上，
@@ -330,6 +333,15 @@ static func hp_mid() -> Color:
 
 static func hp_low() -> Color:
 	return color("hp_low", DEFAULT_HP_LOW)
+
+
+## ★★ 士气背景板的两个端点色（详细信息栏图标用，见 ui_style.morale_plate）。
+static func morale_high() -> Color:
+	return color("morale_high", DEFAULT_MORALE_HIGH)
+
+
+static func morale_low() -> Color:
+	return color("morale_low", DEFAULT_MORALE_LOW)
 
 
 ## 中心辉光（入场页 / 主界面背景那团光）。alpha 单独一个键，便于「有颜色但几乎看不见」。

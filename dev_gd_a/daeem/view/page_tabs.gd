@@ -65,6 +65,17 @@ var _page: String = ""
 var _chars: Array[String] = []
 ## 每颗页签当前的逐字 Label（重建时先清掉这一批）。
 var _char_labels: Array = []
+## ★★ 每颗页签的逐字 Label 是**按哪个按钮高度**建出来的（0 = 还没建）。
+##
+## 为什么必须单独记它：逐字 Label 的高度是 `attach_char_text()` 建的**那一刻**从按钮的
+##   `size.y` 取的，建完就再没人动它 —— 而**页数一变，按钮高度就变**（240 ÷ 页数）。
+##   ⇒ 重建判据只看「文案变没变」的话，文案没变的那一颗会跳过重建、留着上一次的高度，
+##     字按旧高度竖直居中，就沉到按钮底边去。
+##   ★ 实测（手玩报的「刚进游戏时右下角『建筑』按钮错位」）：进游戏那一刻 hud 建的是
+##     **1 颗**页签（铺满整列 240 高，「建筑」这两个字就是按 240 建的），第一帧 refresh
+##     才换成「建筑 + 科技」**两颗**（各 120 高）—— 文案一个字没变，变的只是按钮高度，
+##     于是「建筑」的字留在 240 的高度里居中，正好压在按钮下缘 / 与「科技」的交界处。
+var _char_h: Array[float] = []
 ## 上一轮「是不是当前页」：变了要重排逐字标签的颜色（当前页用近黑底字）。
 var _was_active: Array[bool] = []
 
@@ -91,6 +102,7 @@ func setup() -> void:
 		_buttons.append(b)
 		_chars.append("")
 		_char_labels.append([])
+		_char_h.append(0.0)
 		_was_active.append(false)
 
 	set_pages([PAGE_BUILD])
@@ -164,7 +176,11 @@ func _layout(clean: Array[String]) -> void:
 		b.visible = true
 		var want := String(LABELS.get(clean[i], clean[i]))
 		UiLayoutRes.apply_rect(b, UiLayoutRes.tab_button_local(i, clean.size()))
-		if _chars[i] != want:
+		# ★★ 判据是「文案变了 **或** 按钮高度变了」——
+		#   `apply_rect` 在上面刚把高度改成 240 / 页数，而逐字 Label 的高度是**建它那一刻**
+		#   从按钮取的（见 `_char_h` 那段说明）。只比文案的话，文案没变的那一颗会留着
+		#   上一次的高度，字就沉到按钮底边（手玩报的「刚进游戏时『建筑』按钮错位」）。
+		if _chars[i] != want or _char_h[i] != b.size.y:
 			_chars[i] = want
 			_rebuild_chars(i, want)
 
@@ -172,6 +188,9 @@ func _layout(clean: Array[String]) -> void:
 ## 把第 i 颗页签的文字重建成逐字 Label。
 func _rebuild_chars(i: int, text: String) -> void:
 	var b := _buttons[i]
+	# ★ 记下「这次是按**哪个按钮高度**建的」：`_layout` 靠它判断高度变了要不要重建
+	#   （高度一变，旧 Label 的竖直居中就不对了）。
+	_char_h[i] = b.size.y
 	# 先清掉上一轮的逐字 Label（换页时文案会变长变短）
 	for l in _char_labels[i]:
 		var n := l as Node

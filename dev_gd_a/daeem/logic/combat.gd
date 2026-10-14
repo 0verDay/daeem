@@ -36,6 +36,8 @@ const UnitRes = preload("res://logic/unit.gd")
 const CrowdBridgeRes = preload("res://logic/crowd/crowd_bridge.gd")
 ## ★ 射箭投掷物（远程单位 / 可攻击建筑）。projectile.gd 只 preload config，无循环依赖。
 const ProjectileRes = preload("res://logic/projectile.gd")
+## ★★ 士气（整支部队共享，见 logic/morale.gd）。morale.gd 不 preload unit.gd / combat.gd，无循环依赖。
+const MoraleRes = preload("res://logic/morale.gd")
 
 ## ★ 诊断计数器：本帧真正算了多少次「追击寻路」。只在基准里读，逻辑不依赖它。
 ##   用途：把「重寻路次数太多」和「单次寻路太贵」这两种可能分开 —— 实测实机行军攻击
@@ -113,16 +115,12 @@ static func update_unit(world, cfg: ConfigRes, u: UnitRes, dt: float, idx: int =
 	if u.leash_cd > 0.0:
 		u.leash_cd = maxf(0.0, u.leash_cd - dt)
 
-	# 己方单位站在**己方**领地内缓慢回血（便于肉眼确认领地归属是否生效）
-	# ★ 用 u.faction 比对，而不是写死 'player' —— 联机下「己方领地」= 自己那一方的区块
-	#
-	# ⚠️ 判定顺序有讲究：**先看血量**再看领地。满血的单位占绝大多数（1000 单位常态下
-	#    就是全部），先查血就整个跳过 zone_at 的区块查表与阵营判定 ——
-	#    实测这一条把每帧的 combat 段从 1.5 ms 压到不足一半。
-	if u.hp < u.hp_max and FactionRes.is_player_faction(u.faction):
-		var z = world.zones.zone_at(u.tx, u.ty)
-		if z != null and z.owner == u.faction:
-			u.hp = minf(u.hp_max, u.hp + 4.0 * dt)
+	# ★★ 士气（本轮新增，**取代**旧的「玩家阵营站己方区划每秒回 4 血」）：
+	#    整支部队共享一个值，按所在区划缓慢升降（己方↑ / 敌方或包围区↓），
+	#    并按它的档位回血 / 掉血（免伤 / 易伤在 unit.take_damage 里）。
+	#    ★ 作用范围从「玩家阵营」扩大到**所有单位**（需求：含 AI / 敌方）。
+	#    ⚠️ 这里不再有「先看血量再看领地」的短路 —— 满血单位也要涨士气。
+	MoraleRes.tick_unit(world, cfg, u, dt)
 
 	if not cfg.combat_enabled:
 		# 关掉战斗时不保留旧目标，否则表现上像「还在交战」

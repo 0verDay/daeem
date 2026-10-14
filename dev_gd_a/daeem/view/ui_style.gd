@@ -104,7 +104,7 @@ static func fill_bottom_latched() -> Color:
 	return ThemeRes.fill_bottom_latched()
 
 
-## 单位方块里那根血量条的三档颜色（见 view/unit_roster.gd）：
+## 血量条的三档颜色（画法见 view/hp_bar.gd —— 详细信息面板图标底部那条）：
 ## 一眼看出哪个兵快死了 —— 只写「兵」字的话，满血与残血长得一模一样。
 ## ⚠️ 这三档**刻意不跟着金色走**：全做成金色就等于把「快死了」这条信息抹掉。
 static func hp_high() -> Color:
@@ -117,6 +117,48 @@ static func hp_mid() -> Color:
 
 static func hp_low() -> Color:
 	return ThemeRes.hp_low()
+
+
+## ★★ 士气背景板的两个端点色（见 morale_plate）。
+static func morale_high() -> Color:
+	return ThemeRes.morale_high()
+
+
+static func morale_low() -> Color:
+	return ThemeRes.morale_low()
+
+
+## 血量比例 → 血条填充色（≥50% 绿 / ≥25% 黄 / 其余红）。
+const HP_BAR_HIGH_MIN := 0.5
+const HP_BAR_MID_MIN := 0.25
+
+
+static func hp_bar_color(ratio: float) -> Color:
+	if ratio >= HP_BAR_HIGH_MIN:
+		return hp_high()
+	if ratio >= HP_BAR_MID_MIN:
+		return hp_mid()
+	return hp_low()
+
+
+## 血量条的深底（与地图血条的 `HP_BACK_COLOR` 同款：黑，半透明）。
+static func hp_bar_bg() -> Color:
+	return Color(0.0, 0.0, 0.0, 0.55)
+
+
+## ★★ 士气背景板色（详细信息栏里的单位图标用）：士气比例 → 绿(高) … 红(低)。
+##
+## ★ 只换**色相**、沿用现有面板 alpha：`strong`（队长档）= 0.95、普通档 = 0.55 ——
+##   与 bg_pressed / bg_empty 同一档 alpha，于是「队长格比普通格更实」的既有区分不丢；
+##   浅色正文压在暗化的绿 / 红上仍然读得清。地图上的单位**不**画士气（需求原话）。
+const MORALE_ALPHA_STRONG := 0.95
+const MORALE_ALPHA_NORMAL := 0.55
+
+
+static func morale_plate(ratio: float, strong: bool = false) -> Color:
+	var c: Color = morale_high().lerp(morale_low(), 1.0 - clampf(ratio, 0.0, 1.0))
+	c.a = MORALE_ALPHA_STRONG if strong else MORALE_ALPHA_NORMAL
+	return c
 
 
 ## 字号（旧参考图是 1920×1080 的稿子，这里的字号按那个尺度定）

@@ -65,6 +65,7 @@ extends PanelContainer
 
 const UiLayoutRes = preload("res://view/ui_layout.gd")
 const UiStyleRes = preload("res://view/ui_style.gd")
+const HpBarRes = preload("res://view/hp_bar.gd")
 const RecruitQueueRes = preload("res://view/recruit_queue.gd")
 const UnitRosterRes = preload("res://view/unit_roster.gd")
 const TroopGridRes = preload("res://view/troop_grid.gd")
@@ -575,17 +576,31 @@ func _on_building_activated(index: int) -> void:
 var _avatar_text: String = ""
 ## 头像那一块画过几帧（给测试用：无头下 `_draw` 里的错误不会让测试失败，所以盯一下它真的跑了）
 var _avatar_draws: int = 0
+## 头像底部那条**血量条**：比例 0..1 + 要不要画（区划 / 未选中 → 不画）。
+var _avatar_hp_ratio: float = 1.0
+var _avatar_hp_visible: bool = false
+## ★★ 头像**背景板**的士气：比例 0..1 + 要不要按士气上色（区划 / 建筑 / 未选中 → 不上色）。
+var _avatar_morale_ratio: float = 1.0
+var _avatar_morale_visible: bool = false
+## 头像血条画过几帧（测试读它，理由同 `_avatar_draws`）
+var _avatar_bar_draws: int = 0
 
 
 func _draw_unit_avatar() -> void:
 	_avatar_draws += 1
 	var side := UiLayoutRes.UNIT_AVATAR
 	var r := Rect2(Vector2.ZERO, Vector2(side, side))
-	_unit_avatar.draw_rect(r, UiStyleRes.bg_empty(), true)
+	# ★★ 背景板：单位 / 将领按士气绿→红（见 ui_style.morale_plate）；区划 / 建筑 / 未选中 → 素色。
+	_unit_avatar.draw_rect(r, UiStyleRes.morale_plate(_avatar_morale_ratio, true) \
+		if _avatar_morale_visible else UiStyleRes.bg_empty(), true)
 	_unit_avatar.draw_rect(r, UiStyleRes.line(), false, 1.0)
 	var f: Font = _unit_avatar.get_theme_default_font()
 	if _avatar_text != "" and f != null:
 		_draw_centered(f, _avatar_text, r, UiStyleRes.text(), _avatar_font_size(f))
+	# ★ 图标底部的血量条（需求：图标底部加一条，长度 = 图标）。区划 / 未选中不画。
+	if _avatar_hp_visible:
+		HpBarRes.draw(_unit_avatar, r, _avatar_hp_ratio)
+		_avatar_bar_draws += 1
 
 
 ## 头像方框里那个字该用多大：**按方框量出来的**，不是写死的字号。
@@ -628,9 +643,30 @@ func set_unit_avatar_text(text: String) -> void:
 		_unit_avatar.queue_redraw()
 
 
+## 右栏头像底下那条**血量条**：`show=false`（区划 / 没选中）→ 不画。
+func set_unit_avatar_hp(ratio: float, show: bool) -> void:
+	_avatar_hp_ratio = clampf(ratio, 0.0, 1.0)
+	_avatar_hp_visible = show
+	if _unit_avatar != null:
+		_unit_avatar.queue_redraw()
+
+
+## 右栏头像**背景板**的士气：`show=false`（区划 / 建筑 / 没选中）→ 用素色。
+func set_unit_avatar_morale(ratio: float, show: bool) -> void:
+	_avatar_morale_ratio = clampf(ratio, 0.0, 1.0)
+	_avatar_morale_visible = show
+	if _unit_avatar != null:
+		_unit_avatar.queue_redraw()
+
+
 ## 头像那一块画过几帧（测试读它：确认 `_draw` 真的跑过）
 func avatar_draw_count() -> int:
 	return _avatar_draws
+
+
+## 头像血条画过几帧（测试读它）
+func avatar_bar_draw_count() -> int:
+	return _avatar_bar_draws
 
 
 func _draw_buff_box(b: Label) -> void:

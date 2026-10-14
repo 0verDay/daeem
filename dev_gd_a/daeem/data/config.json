@@ -1120,6 +1120,44 @@
     ]
   },
 
+  "morale": {
+    "_comment": [
+      "★★ 士气（玩法见 docs/architecture.md）：**整支部队共享一个值**（队长 + 附属兵同一个 morale）。",
+      "  作用范围 = 场上所有单位（含 AI / 敌方）；初始上限 max、初始值 start。",
+      "  档位是**并列判定**，不是互斥挡：0 士气同时吃「≤vuln_tier 易伤」与「==0 快速掉血」。",
+      "  · ≥high_tier：生命 +hp_regen_high /s，受到伤害 ×(1-damage_reduction)（近距离与远程都走 take_damage）；",
+      "  · ≥mid_tier ：生命 +hp_regen_mid /s；",
+      "  · ≤vuln_tier：受到伤害 ×(1+vulnerability)（50 以下的各档继续保留）；",
+      "  · ≤low_tier ：生命 -hp_decay_low /s，止于 hp_floor（不致死）；",
+      "  · ==0       ：生命 -hp_decay_zero /s，止于 hp_floor（不致死）。",
+      "  区划联动：站己方/友方区划 → +regen_ally /s；站敌方区划（疲惫）→ -decay_enemy /s；",
+      "  站被包围的己方区划（疲惫）→ -decay_surrounded /s；中立区划**也算疲惫**（同 decay_enemy）。",
+      "  ★ 下降速度本轮调慢到原先的 1/5（2.0 → 0.4 /s）：decay_enemy / decay_surrounded 都是 0.4。",
+      "  ★ 低士气的**掉血**速度本轮调慢到原先的 1/4（hp_decay_low 3.0→0.75、hp_decay_zero 8.0→2.0 /s）。",
+      "  瞬间加成：破敌（杀敌单位）boost_kill、斩将（杀敌将领）boost_leader、",
+      "  掠地（所在区划转己方/友方）boost_capture —— 都加到击杀者 / 区内单位所在部队的士气上。"
+    ],
+    "max": 100,
+    "start": 90,
+    "regen_ally": 2.0,
+    "decay_enemy": 0.4,
+    "decay_surrounded": 0.4,
+    "high_tier": 100,
+    "mid_tier": 90,
+    "vuln_tier": 50,
+    "low_tier": 25,
+    "hp_regen_high": 8.0,
+    "hp_regen_mid": 2.0,
+    "hp_decay_low": 0.75,
+    "hp_decay_zero": 2.0,
+    "hp_floor": 1.0,
+    "damage_reduction": 0.5,
+    "vulnerability": 0.5,
+    "boost_kill": 5.0,
+    "boost_leader": 10.0,
+    "boost_capture": 10.0
+  },
+
   "theme": {
     "_comment": [
       "★★ 全局主题色板（本轮 UI 改版新增）：暗色渐变底 + 金色细线边框 + 纯几何形状。",
@@ -1156,7 +1194,9 @@
       "warning": "#e08a6a",
       "hp_high": "#7ab06a",
       "hp_mid": "#d8b25f",
-      "hp_low": "#c9593f"
+      "hp_low": "#c9593f",
+      "morale_high": "#7ab06a",
+      "morale_low": "#c9593f"
     }
   },
 
@@ -1383,12 +1423,17 @@
         "  · spawn_tiles：关卡里选中的「红点生成地块」（[[x,y],...]）；**全部参与**，每位将领",
         "      随机落一格（允许叠兵）；落点上的**敌对建筑（除区划中心）会被立刻拆除**。",
         "      空 = 退回 spawn_region / 出生点。这是**关卡数据**，config 里默认空。",
+        "  · march_tiles：关卡里选中的「红点**行军目标**地块」（[[x,y],...]）；每一波里**每一位将领**",
+        "      从里面**随机挑一格**去行军（比单点 attack_target 更适合到处骚扰的红点）。",
+        "      空 = 退回单点 attack_target → 再退回「离这一方最近的敌方区划中心 / 敌方大本营」。",
+        "      这也是**关卡数据**，config 里默认空。",
         "  · steps 之外的旧键（cooldown_sec / generals / retinue）**已废弃**，运行时不再读；",
         "    保留只是为了「旧数据不炸」与迁移期间对照。spawn_radius / waves 仍然生效。"
       ],
       "spawn_radius": 4,
       "waves": 0,
       "spawn_tiles": [],
+      "march_tiles": [],
       "wave_time_expr": "x",
       "general_count_expr": "x",
       "general_weights": [

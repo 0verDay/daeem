@@ -136,7 +136,8 @@ dev_gd_a/daeem/
 │   │                             #     每位将领**当场**生成 escort_count 个随机附属兵；生成地点优先
 │   │                             #     spawn_tiles（关卡选中的地块，**全部参与**、每位将领随机落一格、
 │   │                             #     允许叠兵；落点上的敌对建筑除区划中心外**立刻拆除**）→ spawn_region → 出生点；
-│   │                             #     再带整队向 attack_target 行军（order_group_attack_move）
+│   │                             #     再带整队行军（order_group_attack_move）：目标优先**多格 march_tiles**
+│   │                             #     （每一位将领随机挑一格）→ 单点 attack_target → 最近的敌方区划 / 大本营
 │   ├── expr.gd                   #   ★★ **线性表达式** `y = a·x + b` 的解析 / 求值（红点时间表用）
 │   ├── command_processor.gd      #   ★ 命令的唯一入口（move / build / demolish）
 │   ├── snapshot.gd               #   ★ to_snapshot / apply_snapshot（本轮用于调试，将来是网络包体）

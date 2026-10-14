@@ -1,18 +1,4 @@
 ## test_ai.gd —— ★ 本轮的两种 AI：**阵地性 AI**（garrison）+ **红点性 AI**（reddot）。
-##
-## 覆盖（每条对着需求口径写）：
-##   A. 配置与名单
-##      · `ai.factions` 条目形状（{id, ai, base}）、`ai.garrison` / `ai.reddot` 参数表；
-##      · 关卡 `ai` 取值归一：旧值 faction / general → **garrison**；新值 reddot / none；
-##      · 合并名单**不再带** resource_mult / start_food / start_gold（AI 没有资源库）。
-##   B. 阵地性 AI（garrison_ai.gd）
-##      · 附属区划落到单位（`garrison_zone_id`）、脱战无消耗招兵；
-##      · **没有资源池 / 没有大本营**（resource_pool_for 返回 null、find_base_of 返回 null）；
-##      · 濒死将领血量回到门槛 → **立刻无消耗再起**（本轮口径）。
-##   C. 红点性 AI（red_dot_ai.gd）
-##      · 按长冷却在 `spawn_region` 刷一波**满编**将领；刷出来的将领向目标点行军。
-##
-## ⚠️ `--script` 跑的：跨文件引用只用自己的 preload 常量。
 extends "res://tests/test_case.gd"
 
 const ConfigRes = preload("res://logic/config.gd")
@@ -25,12 +11,10 @@ const LevelRes = preload("res://logic/level.gd")
 const TMP_ROOT := "res://.tmp_ai_tests"
 const MAP_PATH := "res://data/maps/frontier/map.json"
 
-
 func _initialize() -> void:
 	_case_name = "test_ai"
 	run_all(_cases)
 	_clean_tmp()
-
 
 func _clean_tmp() -> void:
 	if not DirAccess.dir_exists_absolute(TMP_ROOT):
@@ -38,7 +22,6 @@ func _clean_tmp() -> void:
 	for f in DirAccess.get_files_at(TMP_ROOT):
 		DirAccess.remove_absolute("%s/%s" % [TMP_ROOT, f])
 	DirAccess.remove_absolute(TMP_ROOT)
-
 
 func _cases() -> void:
 	var cfg = require_config()
@@ -52,9 +35,6 @@ func _cases() -> void:
 	_test_garrison_revive(cfg)
 	_test_reddot_spawn(cfg)
 	_test_reddot_spawn_tiles(cfg)
-
-
-# ---- A. 配置 / 名单 ----
 
 func _test_config(cfg) -> void:
 	ok(cfg.ai_garrison_cfg().has("patrol_interval_sec"), "ai.garrison 有巡逻间隔")
@@ -77,7 +57,6 @@ func _test_config(cfg) -> void:
 	ok(not first.has("start_food"), "★ 不再带 start_food")
 	ok(cfg.is_ai_faction("ai"), "is_ai_faction('ai')")
 
-
 func _test_legacy_kinds(cfg) -> void:
 	eq(LevelRes._ai_kind("faction"), LevelRes.AI_GARRISON, "旧值 faction → garrison")
 	eq(LevelRes._ai_kind("general"), LevelRes.AI_GARRISON, "旧值 general → garrison")
@@ -86,35 +65,26 @@ func _test_legacy_kinds(cfg) -> void:
 	eq(LevelRes._ai_kind("none"), LevelRes.AI_NONE, "none 原样")
 	eq(LevelRes._ai_kind("乱写"), LevelRes.AI_NONE, "认不出的 → none")
 
-
-# ---- B. 阵地性 AI ----
-
 func _test_garrison_presence(cfg) -> void:
 	var w = WorldRes.create(cfg, MAP_PATH, true)
 	ok(w != null, "带 AI 的世界能建出来")
 	if w == null:
 		return
 	eq(w.ai_kind_of("ai"), LevelRes.AI_GARRISON, "'ai' 是阵地性 AI")
-	# ★ AI 没有大本营（本轮口径：只有玩家有大本营）。
 	ok(w.find_base_of("ai") == null, "★ AI 阵营没有大本营建筑")
-	# ★ AI 没有资源库 → null = 资源无限。
 	ok(w.resource_pool_for("ai") == null, "★ AI 阵营没有资源池（null = 无限）")
-	# 但它有将领（阵地性 AI 靠将领巡逻 / 招兵）。
 	var gens := _generals_of(w, "ai")
 	ok(gens.size() >= 1, "AI 阵营有将领（%d 位）" % gens.size())
-
 
 func _test_garrison_zone_assignment(cfg) -> void:
 	var w = WorldRes.create(cfg, MAP_PATH, true)
 	if w == null:
 		return
-	# 阵地性 AI 的将领都该有归属区划（出生格所在区划兜底）。
 	var n_zoned := 0
 	for g in _generals_of(w, "ai"):
 		if int(g.garrison_zone_id) >= 0:
 			n_zoned += 1
 	ok(n_zoned >= 1, "★ 阵地性 AI 的将领有归属区划（%d 位）" % n_zoned)
-
 
 func _test_garrison_free_recruit(cfg) -> void:
 	var w = WorldRes.create(cfg, MAP_PATH, true)
@@ -129,16 +99,13 @@ func _test_garrison_free_recruit(cfg) -> void:
 	if z == null:
 		ok(false, "（前提）将领脚下要有区划")
 		return
-	# 让这块地归 AI（本轮 AI 没有大本营，不会自动占地）—— 招募要求「在己方区划内」。
 	(z as Dictionary)["owner"] = "ai"
-	# 备好条件：脱战够久 + 检查计时器到点 + 未满员。
 	g.combat_idle_timer = float(cfg.ai_garrison_cfg()["combat_idle_sec"]) + 1.0
 	g.garrison_recruit_timer = 0.0
 	var before_pop := float(z.get("population", 0.0))
 	GarrisonAiRes.update(w, cfg, 0.05)
 	ok(g.is_training() or g.train_queue_size() > 0, "★ 脱战满员不足 → 无消耗招兵（进入读条）")
 	near(float(z.get("population", 0.0)), before_pop, 1e-6, "★ 免费招兵不动人口")
-
 
 func _test_garrison_revive(cfg) -> void:
 	var w = WorldRes.create(cfg, MAP_PATH, true)
@@ -149,16 +116,12 @@ func _test_garrison_revive(cfg) -> void:
 		ok(false, "（前提）AI 要有将领才能验再起")
 		return
 	var g = gens[0]
-	# 让它濒死且血量到门槛之上。
 	g.downed = true
 	g.hp = g.hp_max
 	g.revive_remaining = 0.0
 	ok(g.is_downed(), "（前提）将领处于濒死")
 	GarrisonAiRes.update(w, cfg, 0.05)
 	ok(g.revive_remaining > 0.0, "★ 濒死将领够条件 → 立刻无消耗再起（进入读条）")
-
-
-# ---- C. 红点性 AI ----
 
 func _test_reddot_spawn(cfg) -> void:
 	var w = _reddot_world(cfg)
@@ -173,29 +136,20 @@ func _test_reddot_spawn(cfg) -> void:
 	eq(String(params["wave_time_expr"]), "x+1", "关卡覆盖的生成时间表达式生效")
 	eq(String(params["general_count_expr"]), "x+1", "关卡覆盖的将领数表达式生效")
 	eq(int(params["escort_count"]), 3, "关卡覆盖的共享附属单位数量生效")
-	# E1 没有大本营 / 资源池（红点也不需要）。
 	ok(w.find_base_of("E1") == null, "★ 红点阵营没有大本营")
 	ok(w.resource_pool_for("E1") == null, "★ 红点阵营没有资源池")
-	# 初始没有 E1 的单位（红点不预置将领）。
 	eq(_units_of(w, "E1").size(), 0, "红点阵营开局没有单位")
-	# 推进到第 1 波的到点时间：wave_time_expr = "x+1" ⇒ 第 1 波在 2min = 120s。
 	RedDotAiRes.update(w, cfg, 121.0)
 	var units := _units_of(w, "E1")
-	# general_count_expr = "x+1" ⇒ 第 1 波 2 位将领；每位 escort_count=3 ⇒ 1+3=4 个单位。
 	eq(units.size(), 8, "★ 一波刷出 2 位满编将领（2×(1+3) = 8 个单位）")
 	var gens := _generals_of(w, "E1")
 	eq(gens.size(), 2, "★ 其中 2 位是将领")
-	# 将领带着整队向目标点行军（下过命令：有路径或已移动）。
 	var marching := false
 	for g in gens:
 		if g.moving or not g.path.is_empty():
 			marching = true
 	ok(marching, "★ 刷出来的将领向目标点行军（已下 command）")
 
-
-## ★ 多生成地块的刷新口径（本轮）：
-##   · 全部已选地块参与，将领随机落一格（允许叠兵）；
-##   · 落点上的**敌对建筑**（非区划中心）→ 立刻拆除再出生。
 func _test_reddot_spawn_tiles(cfg) -> void:
 	var w = _reddot_world(cfg)
 	if w == null or w.reddot_states.is_empty():
@@ -204,7 +158,6 @@ func _test_reddot_spawn_tiles(cfg) -> void:
 	ok(tiles.size() >= 2, "（前提）地图上能找到至少 2 个可通行空地")
 	if tiles.size() < 2:
 		return
-	# ① 单地块 + 落点上摆一栋敌对建筑：应被立刻拆除，将领照常刷出。
 	var cell: Vector2i = tiles[0]
 	w.add_building("wall", cell.x, cell.y, "p1", true, true)
 	ok(w.building_at(cell.x, cell.y) != null, "（前提）敌对城墙已摆在生成地块上")
@@ -219,7 +172,6 @@ func _test_reddot_spawn_tiles(cfg) -> void:
 			all_on = false
 	ok(all_on, "★ 将领落在配置的生成地块上（允许叠兵同一格）")
 
-	# ② 两个地块：将领只落在配置过的格子之一。
 	var w2 = _reddot_world(cfg)
 	if w2 == null or w2.reddot_states.is_empty():
 		return
@@ -238,10 +190,6 @@ func _test_reddot_spawn_tiles(cfg) -> void:
 			all_in = false
 	ok(all_in, "★ 将领只落在配置的生成地块上（随机落点）")
 
-
-# ---- 工具 ----
-
-## 地图上找前 `need` 个可通行、无建筑的空地（红点生成地块的候选）。
 func _passable_tiles(w, cfg, faction: String, need: int) -> Array:
 	var out: Array = []
 	for y in w.map.rows:
@@ -254,14 +202,12 @@ func _passable_tiles(w, cfg, faction: String, need: int) -> Array:
 				out.append(Vector2i(x, y))
 	return out
 
-
 func _generals_of(w, faction: String) -> Array:
 	var out: Array = []
 	for u in w.units:
 		if u.alive and String(u.faction) == faction and u.is_general():
 			out.append(u)
 	return out
-
 
 func _units_of(w, faction: String) -> Array:
 	var out: Array = []
@@ -270,8 +216,6 @@ func _units_of(w, faction: String) -> Array:
 			out.append(u)
 	return out
 
-
-## 造一个「只有 p1 玩家 + 一个红点阵营 E1」的世界（探针关卡）。
 func _reddot_world(cfg) -> RefCounted:
 	var level_json := {
 		"map": "frontier",

@@ -805,6 +805,23 @@ def t_escort_placement(app, model) -> None:
     eq(int(gen.general_index or 1), 1, "★★ 第一位将领的序号自动是 1")
     eq(int(gen.escort_count), 0, "★ 新摆的将领默认生成数量 0（光杆）")
 
+    # ---- 1b) ★★ 「将领」（哪个将领 = 兵种/数值档）与「将领序号」（名册号 1..10）解耦 ----
+    eq(gen.unit_type, app.config.general_types[0], "★ 新摆的将领默认是第 1 档兵种")
+    pick_combo(app, row(app, "选中的单位", "combo:将领"),
+               app.config.general_label(3))
+    eq(gen.unit_type, app.config.general_types[2], "★★ 选「将领 3」→ 兵种变成第 3 档")
+    # 将领序号 = 名册号：允许 10，且改它不影响「哪个将领」
+    app._set_unit_field("general_index", 10)
+    eq(int(gen.general_index), 10, "★★ 将领序号可以是 10（不再限于 1..3）")
+    eq(gen.unit_type, app.config.general_types[2], "★ 改将领序号不影响「哪个将领」")
+    out1 = level(app).to_dict()["start_units"][0]
+    eq(out1.get("general_index"), 10, "★★ 名册号 10 写进 JSON")
+    eq(out1.get("unit_type"), app.config.general_types[2], "★★ 将领档（兵种）也写进 JSON")
+    # 复原，不影响后面的用例
+    app._set_unit_field("general_index", 1)
+    pick_combo(app, row(app, "选中的单位", "combo:将领"), app.config.general_label(1))
+    eq(gen.unit_type, app.config.general_types[0], "★ 复原成将领 1")
+
     # ---- 2) 画笔里**没有**「附属兵」这一档（逐兵摆放已被规格取代）----
     brush = row(app, "画笔", "combo:放什么").cget("values")
     ok("附属兵" not in list(brush), "★★ 画笔不再有「附属兵」，实际 %r" % (brush,))

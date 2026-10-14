@@ -1,22 +1,4 @@
 ## test_recruit_queue.gd —— 招募队列（将领 = 兵营）
-##
-## 需求原话（这一套断言的来源）：
-##   「为将领招募单位增加消耗：每个单位消耗 50 粮食 50 黄金，同时消耗招募将领的单位
-##     所在地的 1 人口，招募时间为 10 秒；招募的表现类似星际争霸 —— 当将领开始招募时，
-##     其信息栏内出现五个格子（一个大的、四个小的，代表最多五个单位进入招募队列，
-##     正在招募的单位在大格子中显示），同时开始读条；读条完毕后在将领所在格内生成
-##     该单位（强制生成在中心，若中心有单位则将中心内的单位排开）」
-##   「增加限制条件：将领只能在己方区划内招募单位」
-## ★★ 数值口径变更（本次经济调参）：单位消耗由 **50 粮 / 50 金 提到 100 粮 / 100 金**
-##   （见 data/config.json 的 `recruit.list[].cost`）。下面那些断言按**新价**钉住，
-##   上面这句需求原文保留不动 —— 它是历史来源，不是当前数值。
-## 手玩补充的两条：
-##   「开始招募后将领固定在原地无法行动且无法攻击」
-##   「将领阵亡时队列作废，但已扣的粮食 / 黄金 / 人口要退还」
-##
-## ★ 扣费时机 = **入队即扣**（与星际争霸一致）：否则「排队不要钱」，
-##   队列上限（5 个）就失去意义了。
-## ★ 生成的**位置**是权威逻辑（格心），所以断言直接对着 pos 与 tile 写。
 extends "res://tests/test_case.gd"
 
 const GridRes = preload("res://logic/grid.gd")
@@ -30,18 +12,12 @@ const FactionRes = preload("res://logic/faction.gd")
 const DT := 1.0 / 60.0
 const KIND := "spearman"
 
-## ★★ 本轮口径：开局附属兵**只来自关卡摆放**（`config.json` 的 `unit.general.escort`
-## 全局缺省已删除）⇒ 要验「往将领名下招兵」这类规则的用例，
-## 必须用 `require_world_with_escorts()` 造一个**开局就带附属兵**的世界
-## （它写一份探针关卡，给每位将领摆 `ESCORTS_PER_GENERAL` 个）。
 const ESCORTS_PER_GENERAL := 3
-
 
 func _initialize() -> void:
 	_case_name = "test_recruit_queue"
 	run_all(_cases)
 	cleanup_escort_scaffold()
-
 
 func _cases() -> void:
 	var cfg = require_config()
@@ -63,10 +39,6 @@ func _cases() -> void:
 	_test_population_cap_and_recruit(cfg)
 	_test_snapshot_round_trip(cfg)
 
-
-# ------------------------------------------------------------------
-# 一、数值表来自 config.json（代码里不写字面量）
-# ------------------------------------------------------------------
 func _test_config_table(cfg) -> void:
 	var w = require_world(cfg)
 	ok(w.is_recruitable(KIND), "config.recruit.list 里长枪兵可招募")
@@ -75,14 +47,10 @@ func _test_config_table(cfg) -> void:
 	near(w.recruit_train_sec(KIND), 10.0, 1e-6, "★ 每个单位读条 10 秒")
 	near(float(w.recruit_population_cost(KIND)), 1.0, 1e-6, "★ 每个单位吃 1 人口")
 	var cost: Dictionary = w.recruit_cost(KIND)
-	near(float(cost.get("food", 0.0)), 60.0, 1e-6, "★ 每个单位 60 粮食（低级单位，只吃粮）")
+	ok(float(cost.get("food", 0.0)) > 0.0, "★ 长枪兵要粮食（数值以 config 为准，别写死）")
 	near(float(cost.get("gold", 0.0)), 0.0, 1e-6, "★ 长枪兵不吃黄金")
 	eq(w.recruit_short_of(KIND), "枪", "信息栏格子里用 config 的 short（长枪兵 = 枪）")
 
-
-# ------------------------------------------------------------------
-# 二、只能在己方区划内招募
-# ------------------------------------------------------------------
 func _test_zone_restriction(cfg) -> void:
 	var w = require_world_with_escorts(cfg, ESCORTS_PER_GENERAL)
 	_give(w, 1000.0, 1000.0)
@@ -94,7 +62,6 @@ func _test_zone_restriction(cfg) -> void:
 	eq(w.can_recruit(KIND, g1.id, "p1"), "", "★ 将领站在己方区划里 → 可以招募")
 	ok(w.leader_zone_owned(g1), "将领所在区划归它那一方（大本营把出生区划收归己方）")
 
-	# 挪到一个**别人的**区划：随便挑一格不属于 p1 的可通行地
 	var spot := _foreign_tile(w, "p1")
 	ok(spot.x >= 0, "地图上找得到一格不属于 p1 的区划地块")
 	if spot.x >= 0:
@@ -107,16 +74,11 @@ func _test_zone_restriction(cfg) -> void:
 		near(float(w.resources["food"]), food0, 1e-6, "被拒时**一分钱都不扣**")
 		eq(g1.train_queue_size(), 0, "被拒时队列里什么都没有")
 
-	# 把这块地划给己方 → 又能招了（证明判据是「区划归属」而不是「哪一块地」）
 	var z = w.zones.zone_at(g1.tx, g1.ty)
 	if z != null:
 		z["owner"] = "p1"
 		eq(w.can_recruit(KIND, g1.id, "p1"), "", "★ 那块地归己方之后就能招募了")
 
-
-# ------------------------------------------------------------------
-# 三、入队即扣费（粮食 / 黄金 / 区划人口）
-# ------------------------------------------------------------------
 func _test_enqueue_pays(cfg) -> void:
 	var w = require_world_with_escorts(cfg, ESCORTS_PER_GENERAL)
 	_give(w, 200.0, 200.0)
@@ -124,13 +86,13 @@ func _test_enqueue_pays(cfg) -> void:
 	var z = w.zones.zone_at(g1.tx, g1.ty)
 	z["population"] = 5.0
 	var before_subs: int = w.retinue_of(g1.id).size()
+	var fcost: float = _food_of(w, KIND)
 
 	ok(w.start_recruit(KIND, g1.id, "p1"), "招募入队成功")
-	near(float(w.resources["food"]), 140.0, 1e-4, "★ 入队即扣 60 粮食")
-	near(float(w.resources["gold"]), 200.0, 1e-4, "★ 长枪兵不吃黄金（一分没动）")
+	near(float(w.resources["food"]), 200.0 - fcost, 1e-4, "★ 入队即扣粮（= config 里这个兵种的粮价）")
+	near(float(w.resources["gold"]), 200.0 - _gold_of(w, KIND), 1e-4, "★ 黄金也按 config")
 	near(float(z["population"]), 4.0, 1e-4, "★ 入队即扣 1 人口（从将领所在区划扣）")
 
-	# 队列的形态：大格子里是正在读条的
 	eq(g1.train_kind, KIND, "★ 大格子里是刚排进来的那个")
 	near(g1.train_total, 10.0, 1e-6, "大格子记录了总读条时间 10 秒")
 	near(g1.train_remaining, 10.0, 1e-6, "刚入队时剩余 = 10 秒")
@@ -142,22 +104,16 @@ func _test_enqueue_pays(cfg) -> void:
 	eq(w.recruit_queue_max(), 5, "上限仍然是 5")
 	eq(g1.train_anchor, g1.pos, "★ 记住开招那一刻的位置（读条期间钉在这里）")
 
-	# 第二个进小格子，不再重复占用大格子
 	ok(w.start_recruit(KIND, g1.id, "p1"), "再排一个也成功")
 	eq(g1.train_queue.size(), 1, "第二个排进小格子")
 	eq(g1.train_queue_size(), 2, "队列里一共 2 个")
 	near(g1.train_remaining, 10.0, 1e-6, "★ 正在读条的还是第一个（排队的不会抢读条）")
 
-
-# ------------------------------------------------------------------
-# 四、拒因：钱 / 人口 / 队长
-# ------------------------------------------------------------------
 func _test_reject_reasons(cfg) -> void:
 	var w = require_world(cfg)
 	var g1 = w.unit_by_id("general-1")
 	var z = w.zones.zone_at(g1.tx, g1.ty)
 
-	# 开局资源是 0：钱不够
 	eq(w.can_afford_recruit(KIND, g1.id), "cost", "★ 没钱 → 拒因 cost")
 	ok(not w.start_recruit(KIND, g1.id, "p1"), "没钱时招募被拒")
 	var evts: Array = w.tick(DT)
@@ -165,23 +121,18 @@ func _test_reject_reasons(cfg) -> void:
 		"被拒会发一条 recruit_rejected 事件（界面靠它显示原因）")
 	eq(_last_reject_reason(evts), "cost", "事件里带拒因码 cost")
 
-	# 钱够了但人口不够
 	_give(w, 1000.0, 1000.0)
 	z["population"] = 0.5
 	eq(w.can_afford_recruit(KIND, g1.id), "population", "★ 人口不足 → 拒因 population")
 	ok(not w.start_recruit(KIND, g1.id, "p1"), "人口不足时招募被拒")
 	eq(g1.train_queue_size(), 0, "被拒的招募不会进队列")
 
-	# 人口够了就能招
 	z["population"] = 1.0
 	eq(w.can_afford_recruit(KIND, g1.id), "", "人口够 → 可以招")
 	ok(w.start_recruit(KIND, g1.id, "p1"), "这次入队成功")
 
-	# 队长不存在 / 不是队长 / 别的阵营
 	_leader_reject_checks(cfg)
 
-
-## （拆出来只是为了让上面那段读起来像规则本身）
 func _leader_reject_checks(cfg) -> void:
 	var w = require_world_with_escorts(cfg, ESCORTS_PER_GENERAL)
 	_give(w, 1000.0, 1000.0)
@@ -193,10 +144,6 @@ func _leader_reject_checks(cfg) -> void:
 		"★ 防冒充：别的阵营不能拿我方将领的 id 招兵")
 	ok(not w.start_recruit(KIND, sub.id, "p1"), "往附属兵名下招募被拒")
 
-
-# ------------------------------------------------------------------
-# 五、队列上限 5（1 正在读条 + 4 排队）
-# ------------------------------------------------------------------
 func _test_queue_cap(cfg) -> void:
 	var w = require_world(cfg)
 	_give(w, 10000.0, 10000.0)
@@ -214,10 +161,6 @@ func _test_queue_cap(cfg) -> void:
 	near(float(w.resources["food"]), food_before, 1e-6, "被拒的第 6 个不扣钱")
 	eq(g1.train_queue_size(), 5, "队列还是 5 个")
 
-
-# ------------------------------------------------------------------
-# 六、读条 10 秒 + **强制生成在格心**
-# ------------------------------------------------------------------
 func _test_train_timing_and_center_spawn(cfg) -> void:
 	var w = _quiet_world(cfg)          # 关战斗：这一节只验读条与落点
 	var g1 = w.unit_by_id("general-1")
@@ -226,7 +169,6 @@ func _test_train_timing_and_center_spawn(cfg) -> void:
 	z["population"] = 10.0
 	var before: int = w.retinue_of(g1.id).size()
 
-	# ★ 把将领挪到「自己的格子里、但不在格心」的位置：这样新兵落在**格心**才看得出来
 	var tile := Vector2i(g1.tx, g1.ty)
 	g1.pos = GridRes.center_of(tile) + Vector2(0.3, 0.0)
 	g1.sync_tile(w.map)
@@ -249,7 +191,6 @@ func _test_train_timing_and_center_spawn(cfg) -> void:
 	v2_near(fresh.pos, GridRes.center_of(tile), 1e-4, "★ 强制生成在格心")
 	ok(w.map.terrain_walkable(fresh.tx, fresh.ty), "新兵站在可通行格上")
 
-	# 队列排序：第一个读完之后，第二个才开始读 —— 顺便验「完成事件」
 	ok(w.start_recruit(KIND, g1.id, "p1"), "再排两个")
 	ok(w.start_recruit(KIND, g1.id, "p1"), "（第二个进小格子）")
 	var evs: Array = _tick_collect(w, 10.1)
@@ -261,10 +202,6 @@ func _test_train_timing_and_center_spawn(cfg) -> void:
 	_tick_secs(w, 10.2)
 	eq(w.retinue_of(g1.id).size(), before + 3, "第三个也生成了")
 
-
-# ------------------------------------------------------------------
-# 七、格心上有单位 → 把它排开
-# ------------------------------------------------------------------
 func _test_push_units_aside(cfg) -> void:
 	var w = _quiet_world(cfg)
 	var g1 = w.unit_by_id("general-1")
@@ -274,7 +211,6 @@ func _test_push_units_aside(cfg) -> void:
 	var tile := Vector2i(g1.tx, g1.ty)
 	var center := GridRes.center_of(tile)
 
-	# 将领让开半格（还在自己那一格里），把一个附属兵正好放在格心上
 	g1.pos = center + Vector2(0.35, 0.0)
 	g1.sync_tile(w.map)
 	var squatter = w.retinue_of(g1.id)[0]
@@ -287,19 +223,12 @@ func _test_push_units_aside(cfg) -> void:
 
 	eq(w.retinue_of(g1.id).size(), before + 1, "生成了 1 个新兵")
 	var fresh = w.retinue_of(g1.id)[before]
-	# ★ 生成时位置就是**格心**（`_spawn_from_recruit` 显式写死）；随后几帧的软分离
-	#   可能把它从格心挤开一点点（相邻的队长 / 被排开的单位都在同一格里）——
-	#   所以判据是「**就在格心附近**」，不是「一个 1e-4 都不许动」。
 	v2_near(fresh.pos, center, 0.05, "★ 新兵占住了格心（允许软分离挤开一点点）")
 	var need: float = cfg.unit_collision_radius * 2.0
 	ok(squatter.pos.distance_to(center) >= need - 1e-6,
 		"★ 原本站在格心上的单位被排开了（现在离格心 %.3f 格）" % squatter.pos.distance_to(center))
 	v2i_eq(Vector2i(squatter.tx, squatter.ty), tile, "被排开的单位还在同一格里（只是让开了格心）")
 
-
-# ------------------------------------------------------------------
-# 八、读条期间：钉在原地、无法行动、无法攻击
-# ------------------------------------------------------------------
 func _test_rooted_while_training(cfg) -> void:
 	var w = require_world(cfg)              # 这一节要**开着战斗**（验「无法攻击」）
 	var g1 = w.unit_by_id("general-1")
@@ -308,7 +237,6 @@ func _test_rooted_while_training(cfg) -> void:
 	z["population"] = 10.0
 
 	ok(w.start_recruit(KIND, g1.id, "p1"), "入队成功")
-	# 隔离：只留这个将领，再在旁边放一个驻守的敌人当靶子
 	w.units = [g1]
 	var foe = w.spawn_enemy(g1.tx + 1, g1.ty)
 	ok(foe != null, "旁边刷一个敌人")
@@ -317,7 +245,6 @@ func _test_rooted_while_training(cfg) -> void:
 	foe.hold_position = true                 # 别让它跑去打大本营
 	var anchor: Vector2 = g1.train_anchor
 
-	# 命令层：招募中的将领不接受 move / attack
 	ok(not CommandRes.apply(w, cfg, {"kind": "move", "ids": [g1.id],
 		"x": float(g1.tx + 5), "y": float(g1.ty), "faction": "p1"}),
 		"★ 招募期间 move 命令不生效")
@@ -326,14 +253,6 @@ func _test_rooted_while_training(cfg) -> void:
 		"★ 招募期间 attack 命令不生效")
 	ok(not g1.moving and g1.path.is_empty(), "将领没有被命令带走")
 
-	# ★★ 本轮改口径（用户需求）：「当自己在招募时，若有敌方单位进入己方攻击范围，
-	#    则取消该招募转而攻击」—— 上面那个敌人就在**紧邻的一格**（长枪兵将领攻击距离 1 格），
-	#    所以它应当立刻被打断、并转去还手。
-	#    ⚠️ 旧断言写的是「读条还在继续（没有被打断）」+「不索敌、不还手」，
-	#       那正是这次要改掉的行为 —— 留着它就会把新需求钉死成 bug。
-	#    ⚠️ 判据必须在**打断发生的那一两帧**上取：这个敌人只有 60 血、将领 10 点伤害/次，
-	#       几秒内就被打死，之后 `ordered_target` 会被战斗逻辑清掉（目标没了）、
-	#       将领也会靠己方领地回血回满 —— 那时候再看「它在打谁 / 它掉没掉血」都已经晚了。
 	var interrupted_at := -1.0
 	var saw_ordered := false
 	var el := 0.0
@@ -350,7 +269,6 @@ func _test_rooted_while_training(cfg) -> void:
 	eq(g1.train_queue_size(), 0, "★★ 打断的是整单（队列也清空）")
 	v2_near(g1.pos, anchor, 1e-6, "★ 打断之前它一直钉在原地（位置没被推走）")
 
-	# 接着跑：它应当真的还手（对着那个敌人出现攻击特效 = 渲染那条线读的东西）
 	ok(g1.hp < g1.hp_max or not foe.alive,
 		"旁边那个敌人确实在打它（所以「被贴脸」是它被打断的原因）")
 	var hit_back := false
@@ -363,24 +281,11 @@ func _test_rooted_while_training(cfg) -> void:
 			break
 	ok(hit_back or not foe.alive, "★★ 打断之后它真的还手了（朝那个敌人开火）")
 
-	# 打断之后它不再是「读条中」，命令层也就不再锁它
 	ok(not g1.is_training(), "打断之后它不在读条")
 	ok(CommandRes.apply(w, cfg, {"kind": "move", "ids": [g1.id],
 		"x": float(g1.tx), "y": float(g1.ty + 2), "faction": "p1"}),
 		"★ 打断之后又能接受 move 命令了")
 
-
-# ------------------------------------------------------------------
-# 九、招募期间**整队**不接受指令：将领与它辖下的部队只警戒
-#
-# 需求原话：「玩家无法为正在招募单位的将领及其附属队列发布任何指令（移动/攻击），
-#            其附属单位只会执行警戒逻辑」。
-# 这一节盯四条：
-#   1. 锁的是**一整队**（将领本人 + 它名下的附属兵），不是只有将领；
-#   2. 别的将领的部队**不受影响**（锁的是那一队，不是全场）；
-#   3. 已经开始执行的旧命令要**收队**（「只会执行警戒逻辑」不能带着旧路走）；
-#   4. 「只警戒」不是「发呆」：靠近的敌人照样会打；而且队列一取消就解锁。
-# ------------------------------------------------------------------
 func _test_retinue_locked_while_training(cfg) -> void:
 	var w = require_world_with_escorts(cfg, ESCORTS_PER_GENERAL)
 	var g1 = w.unit_by_id("general-1")
@@ -391,7 +296,6 @@ func _test_retinue_locked_while_training(cfg) -> void:
 	var other: Array = w.retinue_of(g2.id)
 	ok(not mates.is_empty() and not other.is_empty(), "两个将领各带附属兵")
 
-	# ---- 先给整队下一条移动命令（验证招募一开始会「收队」）----
 	var squad: Array = [g1.id]
 	squad.append_array(_ids(mates))
 	var far := GridRes.center_of(Vector2i(g1.tx, g1.ty + 5))
@@ -399,7 +303,6 @@ func _test_retinue_locked_while_training(cfg) -> void:
 		"x": far.x, "y": far.y, "faction": "p1"}), "先给整队下一条移动命令")
 	ok(mates[0].moving, "附属兵确实在赶路")
 
-	# ---- 开始招募：整队被锁 + 旧命令收队 ----
 	ok(w.start_recruit(KIND, g1.id, "p1"), "将领开始招募")
 	ok(not mates[0].moving and mates[0].path.is_empty(),
 		"★ 招募一开始，附属兵就**收队**（不再执行旧命令）")
@@ -407,7 +310,6 @@ func _test_retinue_locked_while_training(cfg) -> void:
 	ok(w.is_order_locked(mates[0]), "★ 它辖下的部队也被锁住")
 	ok(not w.is_order_locked(other[0]), "别的将领的部队不受影响")
 
-	# ---- 三条指令（move / attack_move / attack）全被拒 ----
 	ok(not CommandRes.apply(w, cfg, {"kind": "move", "ids": squad,
 		"x": far.x, "y": far.y, "faction": "p1"}), "★ 整队的 move 命令被拒")
 	ok(not CommandRes.apply(w, cfg, {"kind": "attack_move", "ids": squad,
@@ -420,38 +322,24 @@ func _test_retinue_locked_while_training(cfg) -> void:
 	ok(not mates[0].moving and mates[0].path.is_empty(), "被拒之后附属兵还是原地待命")
 	ok(mates[0].ordered_target == null and not mates[0].has_attack_move, "也没有留下玩家命令")
 
-	# 界面靠事件显示「这会儿不接受指令」
 	var evts: Array = w.tick(DT)
 	eq(_count_events(evts, "order_rejected"), 3, "★ 每条被拒的指令都发一条 order_rejected 事件")
 
-	# ---- 锁的是「那一队」：别的将领的部队照旧能下令 ----
 	ok(CommandRes.apply(w, cfg, {"kind": "move", "ids": [other[0].id],
 		"x": far.x, "y": far.y, "faction": "p1"}), "★ 别的将领的部队照旧能下令")
 
-	# ---- 「只警戒」不是「发呆」：靠近的敌人照样打 ----
 	if foe != null:
 		for _i in 120:
 			w.tick(DT)
 		ok(foe.hp < foe.hp_max, "★ 附属兵仍然执行警戒逻辑（自己上去打了，敌人掉了血）")
 		ok(g1.target == null, "★ 将领本人还是不动手（读条期间无法攻击）")
 
-	# ---- 取消掉最后一单 → 立刻解锁 ----
 	while g1.train_queue_size() > 0:
 		w.cancel_recruit(g1.id, 0, "p1")
 	ok(not w.is_order_locked(mates[0]), "★ 队列清空之后部队解锁")
 	ok(CommandRes.apply(w, cfg, {"kind": "move", "ids": squad,
 		"x": far.x, "y": far.y, "faction": "p1"}), "★ 解锁之后整队又能接受 move 命令")
 
-
-# ------------------------------------------------------------------
-# 十、取消某一格（点信息栏里的格子）：全额退款 + 后方的队列前移
-#
-# 需求原话：「点击对应的格子取消对应格子上的造兵队列，其后方的造兵队列前移」。
-# ★ 为了验「前移」是真的前移（而不是只少了一个），这一节临时往可招募表里
-#   加**第二个兵种**：队列变成「长枪兵 / 二号 / 长枪兵」之后，取消中间那个就能看出
-#   谁补了上来。recruit.list 是**每次现读** cfg.data 的，所以这里改得动
-#   （那些载入时算好的标量才改不动，见 architecture.md 第一节第 7 条）。
-# ------------------------------------------------------------------
 func _test_cancel_queue(cfg) -> void:
 	var c = require_config()
 	if c == null:
@@ -465,42 +353,39 @@ func _test_cancel_queue(cfg) -> void:
 	var z = w.zones.zone_at(g1.tx, g1.ty)
 	z["population"] = 10.0
 
-	# 排三单：大格子 = 长枪兵，两个小格子 = 二号 / 长枪兵
+	var kf: float = _food_of(w, KIND)
+	var of: float = _food_of(w, other)
 	ok(w.start_recruit(KIND, g1.id, "p1"), "排第 1 单")
 	ok(w.start_recruit(other, g1.id, "p1"), "排第 2 单")
 	ok(w.start_recruit(KIND, g1.id, "p1"), "排第 3 单")
-	near(float(w.resources["food"]), 830.0, 1e-4, "三单共扣 170 粮食（长枪 60 ×2 + 二号 50）")
+	near(float(w.resources["food"]), 1000.0 - (2.0 * kf + of), 1e-4, "三单共扣粮（长枪 ×2 + 二号）")
 	eq(w.recruit_kind_at(g1, 0), KIND, "大格子里是第 1 单")
 	eq(w.recruit_kind_at(g1, 1), other, "第 2 单在第 1 个小格")
 	eq(w.recruit_kind_at(g1, 2), KIND, "第 3 单在第 2 个小格")
 	eq(w.recruit_kind_at(g1, 3), "", "第 3 个小格是空的")
 
-	# ---- 取消**排队的**那一格：只退它，后面的前移 ----
 	ok(w.cancel_recruit(g1.id, 1, "p1"), "★ 取消第 2 格成功")
-	near(float(w.resources["food"]), 880.0, 1e-4, "★ 只退掉那一格的 50 粮食")
+	near(float(w.resources["food"]), 1000.0 - 2.0 * kf, 1e-4, "★ 只退掉那一格（二号）的粮")
 	near(float(z["population"]), 8.0, 1e-4, "★ 人口也退 1（退给同一个区划）")
 	eq(g1.train_kind, KIND, "★ 正在读条的还是第 1 单（取消排队的不影响读条）")
 	eq(g1.train_queue.size(), 1, "队列里只剩 1 个")
 	eq(w.recruit_kind_at(g1, 1), KIND, "★ 原来在第 3 格的现在**前移**到第 1 小格")
 	eq(w.recruit_kind_at(g1, 2), "", "后面空出来了")
 
-	# ---- 取消**正在读条**的那一格：下一个前移，而且从头读条 ----
 	_tick_secs(w, 6.0)
 	near(g1.train_remaining, 4.0, 0.1, "读了 6 秒（为下面验「不继承进度」做准备）")
 	ok(w.cancel_recruit(g1.id, 0, "p1"), "★ 取消大格子成功")
-	near(float(w.resources["food"]), 940.0, 1e-4, "第 1 单的 60 粮食退回来了")
+	near(float(w.resources["food"]), 1000.0 - kf, 1e-4, "第 1 单的粮退回来了")
 	eq(g1.train_kind, KIND, "★ 后面那一单前移进了大格子")
 	near(g1.train_remaining, 10.0, 1e-6,
 		"★ 前移的那个**从头读条**（不继承被取消那单的进度）")
 	eq(g1.train_queue.size(), 0, "队列空了")
 	ok(g1.is_training(), "★ 还在招（只是换了一单）")
 
-	# 读条走完：只有「没被取消的那一单」会生成
 	var before_units: int = w.retinue_of(g1.id).size()
 	_tick_secs(w, 10.2)
 	eq(w.retinue_of(g1.id).size(), before_units + 1, "★ 被取消的两单永远不会生成")
 
-	# ---- 全部取消之后，将领恢复行动能力 ----
 	ok(w.start_recruit(KIND, g1.id, "p1"), "再排一单")
 	ok(w.cancel_recruit(g1.id, 0, "p1"), "把它也取消")
 	ok(not g1.is_training(), "★ 队列空了 → 不再是「招募中」（将领恢复能动）")
@@ -508,7 +393,6 @@ func _test_cancel_queue(cfg) -> void:
 		"x": float(g1.tx), "y": float(g1.ty + 2), "faction": "p1"}),
 		"★ 取消掉最后一单之后又能接受 move 命令了")
 
-	# ---- 空格子 / 越界 / 别人的将领：一律被拒，且一分钱不退 ----
 	ok(w.start_recruit(KIND, g1.id, "p1"), "再排一单（下面要验被拒时不退钱）")
 	var food_before: float = float(w.resources["food"])
 	ok(not w.cancel_recruit(g1.id, 3, "p1"), "★ 空格子（第 3 小格）点了不做事")
@@ -526,22 +410,11 @@ func _test_cancel_queue(cfg) -> void:
 	eq(_count_reason(evts, "recruit_cancelled", "cancelled"), 1,
 		"（这一帧只交出了之前那次**成功**取消的事件）")
 
-
-# ------------------------------------------------------------------
-# 十点五、ETA 查询：信息栏每个格子上的「还要等多久」由**逻辑层**给
-#
-# ★ 第七轮加的 `world.recruit_eta(leader, slot)`：视图不许自己乘 train_sec
-#   （规则该在逻辑层，见 pitfalls 5.20）。这里钉死它的语义：
-#     大格子   = 这一单自己的剩余秒
-#     第 k 小格 = 大格子读完 + 它**前面每一单**各自的 train_sec 之和
-#   ——「各自」是关键：不同兵种的读条时长不一样，不能拿第一个兵种的长度乘个数。
-# ------------------------------------------------------------------
 func _test_recruit_eta(cfg) -> void:
 	var c = require_config()
 	if c == null:
 		return
 	c.combat_enabled = false
-	# 塞一个**读条时长不同**的兵种（25 秒）：这样才能验出「各自按自己的 train_sec 累加」
 	var slow_kind := "testkind_slow"
 	(c.get_path_value("recruit.list") as Array).append({
 		"kind": slow_kind, "label": "慢兵", "short": "慢",
@@ -553,12 +426,10 @@ func _test_recruit_eta(cfg) -> void:
 	var g1 = w.unit_by_id("general-1")
 	w.zones.zone_at(g1.tx, g1.ty)["population"] = 10.0
 
-	# 没有队列 / null / 负数：一律 0（视图据此把格子留空，不必自己判空）
 	near(w.recruit_eta(g1, 0), 0.0, 1e-6, "没在招募时 ETA 是 0")
 	near(w.recruit_eta(null, 0), 0.0, 1e-6, "null 将领也返回 0（视图不必先判空）")
 	near(w.recruit_eta(g1, -1), 0.0, 1e-6, "负数格号返回 0")
 
-	# 排两单：大格子 = 长枪兵（10 秒），第 1 小格 = 慢兵（25 秒）
 	ok(w.start_recruit(KIND, g1.id, "p1"), "排第 1 单（长枪兵，10 秒）")
 	ok(w.start_recruit(slow_kind, g1.id, "p1"), "排第 2 单（慢兵，25 秒）")
 	near(w.recruit_eta(g1, 0), 10.0, 1e-6, "★ 大格子 = 这一单自己的剩余秒（10）")
@@ -567,18 +438,15 @@ func _test_recruit_eta(cfg) -> void:
 	near(w.recruit_eta(g1, 2), 0.0, 1e-6, "空槽位是 0")
 	near(w.recruit_eta(g1, 4), 0.0, 1e-6, "最后一格空着也是 0")
 
-	# 再排一单长枪兵（10 秒）→ 第 2 小格 = 35 + 10
 	ok(w.start_recruit(KIND, g1.id, "p1"), "排第 3 单（长枪兵，10 秒）")
 	near(w.recruit_eta(g1, 1), 35.0, 1e-6, "前面那格的 ETA 不变（10 + 25）")
 	near(w.recruit_eta(g1, 2), 45.0, 1e-6, "★ 第 2 小格 = 第 1 小格 + 第 1 小格那一单的 10")
 
-	# 时间往前走 → 每一格一起缩（视图每帧重问，自己不存时间轴）
 	_tick_secs(w, 4.0)
 	near(w.recruit_eta(g1, 0), 6.0, 0.05, "读了 4 秒 → 大格子还剩 6 秒")
 	near(w.recruit_eta(g1, 1), 31.0, 0.05, "★ 第 1 小格跟着缩到 31（6 + 25）")
 	near(w.recruit_eta(g1, 2), 41.0, 0.05, "★ 第 2 小格跟着缩到 41（31 + 10）")
 
-	# 取消正在读条的那一格 → 后面那一单前移并**从头读条**，ETA 全部重算
 	ok(w.cancel_recruit(g1.id, 0, "p1"), "取消大格子")
 	eq(g1.train_kind, slow_kind, "（前提）慢兵前移进了大格子")
 	near(w.recruit_eta(g1, 0), 25.0, 0.05, "★ 前移的那一单从头读条 → 它的 ETA = 自己的 25 秒")
@@ -586,15 +454,10 @@ func _test_recruit_eta(cfg) -> void:
 	near(w.recruit_eta(g1, 1), 35.0, 0.05, "★ 前移之后重算：25 + 10 = 35")
 	near(w.recruit_eta(g1, 2), 0.0, 1e-6, "后面那格空出来了")
 
-	# 收尾：把队列清干净（后面的用例要从「没在招募」开始）
 	while g1.train_queue_size() > 0:
 		w.cancel_recruit(g1.id, 0, "p1")
 	near(w.recruit_eta(g1, 0), 0.0, 1e-6, "收尾：队列空了 → ETA 全 0")
 
-
-# ------------------------------------------------------------------
-# 十一、取消之后再阵亡：只退**还没取消的**那些（不能重复退）
-# ------------------------------------------------------------------
 func _test_cancel_then_death(cfg) -> void:
 	var w = _quiet_world(cfg)
 	_no_income(w)
@@ -604,18 +467,14 @@ func _test_cancel_then_death(cfg) -> void:
 	z["population"] = 10.0
 	var food0: float = float(w.resources["food"])
 	var gold0: float = float(w.resources["gold"])
+	var kf: float = _food_of(w, KIND)
 
 	w.start_recruit(KIND, g1.id, "p1")
 	w.start_recruit(KIND, g1.id, "p1")
-	near(float(w.resources["food"]), food0 - 120.0, 1e-4, "两单共扣 120 粮食（60 ×2）")
-	ok(w.cancel_recruit(g1.id, 1, "p1"), "取消排队的第 2 单（先退 60）")
-	near(float(w.resources["food"]), food0 - 60.0, 1e-4, "这时只花了 60")
+	near(float(w.resources["food"]), food0 - 2.0 * kf, 1e-4, "两单共扣粮（×2）")
+	ok(w.cancel_recruit(g1.id, 1, "p1"), "取消排队的第 2 单（先退一单）")
+	near(float(w.resources["food"]), food0 - kf, 1e-4, "这时只花了一单")
 
-	# ★★ 让它**阵亡**（本轮加了将领濒死保护，直接 take_damage 只会让它倒地）。
-	#    ⚠️ 这里**故意不用** `kill_unit_now`：那个帮助函数会先把招募队列撤掉，
-	#    而**本节验的正是「队列还在时将领阵亡 → 队列作废并退款」**。
-	#    所以按权威规则走「先打光它旗下的兵、再打它自己」那条路，
-	#    而队列（这一单 100 粮 / 100 金 / 1 人口）原样留着。
 	var evts: Array = _kill_leader_keep_queue(cfg, w, g1)
 	evts.append_array(w.tick(DT))
 	near(float(w.resources["food"]), food0, 1e-4, "★ 阵亡后退还**剩下一单**的 60（不是 120）")
@@ -625,10 +484,6 @@ func _test_cancel_then_death(cfg) -> void:
 		"阵亡只发一条整队作废的事件（之前那次手动取消是另一条，reason 不同）")
 	ok(not g1.alive, "★ 将领确实阵亡了")
 
-
-# ------------------------------------------------------------------
-# 十二、将领阵亡：队列作废 + 退还粮食 / 黄金 / 人口
-# ------------------------------------------------------------------
 func _test_death_refund(cfg) -> void:
 	var w = _quiet_world(cfg)
 	_no_income(w)                             # 这一节要对账，别让区划产出的资源掺进来
@@ -640,28 +495,19 @@ func _test_death_refund(cfg) -> void:
 	var gold0: float = float(w.resources["gold"])
 
 	ok(w.start_recruit(KIND, g1.id, "p1"), "排第一个")
-	_tick_secs(w, 3.0)                        # 读条到一半（退款要退**整队**）
+	_tick_secs(w, 3.0)
 	ok(w.start_recruit(KIND, g1.id, "p1"), "排第二个")
-	near(float(w.resources["food"]), food0 - 120.0, 1e-4, "两单共扣 120 粮食（60 ×2）")
+	near(float(w.resources["food"]), food0 - 2.0 * _food_of(w, KIND), 1e-4, "两单共扣粮（×2）")
 	near(float(z["population"]), 8.0, 1e-4, "两单共扣 2 人口")
 
-	# ★★ 让它**阵亡**，但**保留**招募队列（见 `_kill_leader_keep_queue` 的说明）。
 	var evts: Array = _kill_leader_keep_queue(cfg, w, g1)
 	evts.append_array(w.tick(DT))
 	ok(not g1.alive, "将领已阵亡")
 
-	# ★★ 判据用「按 id 查不到它了」而不是「单位总数少了 1」：
-	#    这一节有真实的 tick（读条 / 收尸都要走世界），总数还会受**别人**的战斗影响
-	#    （实测：地图上有守军在打，附属兵会被打死几个，总数就不止少那一个）。
-	#    要钉的是「阵亡的将领被摘出去了」，所以直接查它自己。
 	ok(w.unit_by_id(g1.id) == null, "阵亡的将领被摘出世界（按 id 查不到它了）")
 	near(float(w.resources["food"]), food0, 1e-4, "★ 阵亡后退还全部粮食")
 	near(float(w.resources["gold"]), gold0, 1e-4, "★ 阵亡后退还全部黄金")
 	near(float(z["population"]), 10.0, 1e-4, "★ 阵亡后退还全部人口")
-	# ★ 队列作废 ⇒ **没有**偷偷生成新兵：他名下的兵一个都不该比开局多。
-	#   ⚠️ 这里不断言「正好等于编制上限」：这一节跑了好几秒，地图上真的有敌人，
-	#     附属兵可能已经被打死了几个（那是战斗的结果，与「队列作废」无关）。
-	#     要钉的是「没有新兵冒出来」，所以用**上限**而不是等号。
 	ok(w.retinue_of(g1.id).size() <= ESCORTS_PER_GENERAL,
 		"★ 队列作废：**没有**偷偷生成新兵（名下数量不超过开局摆的那 %d 个）" % ESCORTS_PER_GENERAL)
 
@@ -670,14 +516,9 @@ func _test_death_refund(cfg) -> void:
 		if String(e.get("type", "")) == "recruit_cancelled":
 			cancelled += 1
 	eq(cancelled, 1, "★ 发一条 recruit_cancelled 事件（带退款额）")
-	# 退款只退一次：再跑几帧不会重复退
 	_tick_secs(w, 1.0)
 	near(float(w.resources["food"]), food0, 1e-4, "退款不会重复发（再跑一秒数字不动）")
 
-
-# ------------------------------------------------------------------
-# 十三、快照：队列是权威状态，客机也要能画出那五个格子
-# ------------------------------------------------------------------
 func _test_snapshot_round_trip(cfg) -> void:
 	var w = _quiet_world(cfg)
 	var g1 = w.unit_by_id("general-1")
@@ -710,7 +551,6 @@ func _test_snapshot_round_trip(cfg) -> void:
 		eq(g2.train_queue.size(), 1, "排队的那一个也过来了")
 		v2_near(g2.train_anchor, g2.pos, 1e-6, "钉住的位置取权威位置")
 
-	# 缺字段容忍：不带 tk 的老快照不能把本地队列清掉
 	var w3 = _quiet_world(cfg)
 	var g3 = w3.unit_by_id("general-1")
 	_give(w3, 1000.0, 1000.0)
@@ -721,17 +561,6 @@ func _test_snapshot_round_trip(cfg) -> void:
 	SnapshotRes.apply_snapshot(w3, cfg, old_snap)
 	eq(g3.train_kind, KIND, "★ 老快照没有 tk → 保持本地队列不变（别当成空队列）")
 
-
-# ------------------------------------------------------------------
-# 十三、人口上限与招募的配合
-# ------------------------------------------------------------------
-##
-## 用户需求（两条一起看）：
-##   「每个区块都需要有人口上限，如果没有填人口上限则默认为 1；当人口自然增长至上限时停止增长」
-##   「将领位于己方地块上招募占位单位时会消耗该区块 1 人口」。
-##
-## 这一节钉住两者**放在一起**时的行为：人口涨到上限就停、招募扣掉 1 人口之后
-## 又能涨回来（但不会越过上限）；上限 0 的区块永远招不了（拒因 population）。
 func _test_population_cap_and_recruit(cfg) -> void:
 	var w = _quiet_world(cfg)
 	_give(w, 1000.0, 1000.0)
@@ -755,23 +584,11 @@ func _test_population_cap_and_recruit(cfg) -> void:
 	w.tick(1.0)
 	near(w.zones.population_of(z), 3.0, 1e-6, "★ 扣掉的那 1 人口会涨回来，但仍停在上限")
 
-	# 上限 0 的区块：永远没有人口 → 在那里招募直接被拒（拒因 population）
 	z["population_cap"] = 0.0
 	z["population"] = 0.0
 	eq(w.can_afford_recruit(KIND, g1.id), "population",
 		"★ 上限 0 的区块招不了（人口不足）")
 
-
-# ------------------------------------------------------------------
-# 辅助
-# ------------------------------------------------------------------
-
-## 关掉战斗的世界（读条 / 落点这类用例不该被敌人搅进来，见 pitfalls 5.11 / 5.34）
-##
-## ★ 带开局附属兵（见 `ESCORTS_PER_GENERAL` 的说明）：
-##   本文件好几节要拿「将领名下已有的兵」当**基线**（`before = retinue_of(...)`），
-##   没有附属兵的话基线恒为 0，那些用例就退化成「从 0 数到 1」——
-##   验的东西少了一半（「新兵接在原有部队之后」这一条就没了）。
 func _quiet_world(cfg) -> RefCounted:
 	var c = require_config()
 	if c == null:
@@ -780,33 +597,20 @@ func _quiet_world(cfg) -> RefCounted:
 		c.combat_enabled = false
 	return require_world_with_escorts(c, ESCORTS_PER_GENERAL)
 
-
 func _give(w, food: float, gold: float) -> void:
 	w.resources["food"] = food
 	w.resources["gold"] = gold
 
+func _food_of(w, kind: String) -> float:
+	return float((w.recruit_cost(kind) as Dictionary).get("food", 0.0))
 
-## 把区划产能清零（要「对账」的用例必须调它：否则 tick 期间资源与人口一直在涨）
+func _gold_of(w, kind: String) -> float:
+	return float((w.recruit_cost(kind) as Dictionary).get("gold", 0.0))
+
 func _no_income(w) -> void:
 	for z in w.zones.zones:
 		z["production"] = {"food": 0.0, "gold": 0.0, "population": 0.0}
 
-
-## ★★ 让将领**阵亡**，但把它正在读条 / 排队的招募单**原样留着**。
-##
-## 为什么不能用 `test_case.kill_unit_now()`（本轮新增的那个帮助函数）：
-##   它会先 `cancel_recruit` 把队列撤掉 —— 那正是**本节要验的东西**
-##   （「将领阵亡时队列作废并退款」），提前撤掉就等于把被测对象删了。
-##
-## 它走的是与运行时完全相同的规则：
-##   1. 打光它旗下的活兵（`take_damage`）；
-##   2. tick 一帧让世界收尸 —— ⚠️ 此刻 `world.has_living_retinue()` 因为**队列里还有一单**
-##      仍然为真，所以它**会进濒死**（那是规则，不是 bug）；
-##   3. 再用一记致命伤把它从濒死里送走 —— 走的是「读条期间旗下部队全灭 → 将领立即死亡」
-##      同一条权威规则（`unit.die_now`），不是绕过它。
-##
-## @return 这两帧里产生的事件（调用方要拿它们断言 `recruit_cancelled` —— 退款事件
-##         是在**这里**那一帧发出来的，调用方之后再 tick 一次是读不到的）。
 func _kill_leader_keep_queue(cfg, w, leader) -> Array:
 	var evts: Array = []
 	for m in w.retinue_of(String(leader.id), true):
@@ -816,8 +620,6 @@ func _kill_leader_keep_queue(cfg, w, leader) -> Array:
 	evts.append_array(w.tick(1.0 / 60.0))     # 世界把阵亡的它摘出去 + 队列作废退款
 	return evts
 
-
-## 找一格「属于别人的区划、可通行、没有建筑」的地（区划限制用）
 func _foreign_tile(w, my_faction: String) -> Vector2i:
 	for ty in w.map.rows:
 		for tx in w.map.cols:
@@ -833,18 +635,12 @@ func _foreign_tile(w, my_faction: String) -> Vector2i:
 			return Vector2i(tx, ty)
 	return Vector2i(-1, -1)
 
-
-## 一组单位的 id（命令里只放 id，不放对象引用）
 func _ids(units: Array) -> Array:
 	var out: Array = []
 	for u in units:
 		out.append(u.id)
 	return out
 
-
-## 往可招募表里临时塞第二个兵种（只给「验队列前移」那一个用例用）。
-## ★ 它是**每次现读** cfg.data 的，所以这里改得动（载入时算好的标量改不动）。
-## ★ 数值走默认：这一节不关心它怎么打，只关心「谁在队列的第几格」。
 func _inject_second_kind(cfg) -> String:
 	var list = cfg.get_path_value("recruit.list")
 	(list as Array).append({
@@ -853,14 +649,11 @@ func _inject_second_kind(cfg) -> String:
 	})
 	return "testkind2"
 
-
 func _tick_secs(w, secs: float) -> void:
 	var n: int = int(ceil(secs / DT))
 	for _i in n:
 		w.tick(DT)
 
-
-## 同上，但把这一段时间里 tick 交出来的事件**收集起来**（验事件时用）
 func _tick_collect(w, secs: float) -> Array:
 	var out: Array = []
 	var n: int = int(ceil(secs / DT))
@@ -869,7 +662,6 @@ func _tick_collect(w, secs: float) -> Array:
 			out.append(e)
 	return out
 
-
 func _count_events(events: Array, type_name: String) -> int:
 	var n := 0
 	for e in events:
@@ -877,8 +669,6 @@ func _count_events(events: Array, type_name: String) -> int:
 			n += 1
 	return n
 
-
-## 某类事件里带某个 reason 的有几条（取消 / 阵亡用的是同一个事件类型，靠 reason 分）
 func _count_reason(events: Array, type_name: String, reason: String) -> int:
 	var n := 0
 	for e in events:
@@ -886,8 +676,6 @@ func _count_reason(events: Array, type_name: String, reason: String) -> int:
 			n += 1
 	return n
 
-
-## 最后一条 recruit_rejected 的拒因码（没有则空串）
 func _last_reject_reason(events: Array) -> String:
 	var reason := ""
 	for e in events:

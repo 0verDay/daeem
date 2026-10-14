@@ -41,7 +41,7 @@ func _run() -> void:
 
 	# 0) ★★ 全景（第一眼看观感的图）：把镜头拉到**最远**一档，看整片地形与地物
 	game.zoom = Game3DRes.ZOOM_MAX
-	game.camera_rig.center_on_tile(
+	game.center_on_tile(
 		Vector2(float(world.map.cols) * 0.5, float(world.map.rows) * 0.5))
 	await _wait(SETTLE_FRAMES)
 	await _shoot("00_wide")
@@ -64,7 +64,7 @@ func _run() -> void:
 	if foe != null:
 		ic.select_enemy(foe)
 		# 顺手把镜头挪过去（不然它在屏幕外，看不出选中圈）
-		game.camera_rig.center_on_tile(foe.pos)
+		game.center_on_tile(foe.pos)
 		await _wait(SETTLE_FRAMES)
 		await _shoot("11_enemy_unit_selected")
 
@@ -94,7 +94,7 @@ func _run() -> void:
 				foe_b = cand
 	if foe_b != null:
 		ic.select_enemy(foe_b)
-		game.camera_rig.center_on_tile(Vector2(float(foe_b.tx) + 0.5, float(foe_b.ty) + 0.5))
+		game.center_on_tile(Vector2(float(foe_b.tx) + 0.5, float(foe_b.ty) + 0.5))
 		await _wait(SETTLE_FRAMES)
 		await _shoot("12_enemy_building_selected")
 
@@ -102,7 +102,7 @@ func _run() -> void:
 	#    要能一眼看出「地物前后关系」与「字 / 血条有没有被盖住」。
 	game.zoom = Game3DRes.ZOOM_MIN
 	var home: Vector2i = world.home_base_of(world.my_faction)
-	game.camera_rig.center_on_tile(Vector2(float(home.x) + 0.5, float(home.y) + 0.5))
+	game.center_on_tile(Vector2(float(home.x) + 0.5, float(home.y) + 0.5))
 	await _wait(SETTLE_FRAMES)
 	await _shoot("13_closeup")
 

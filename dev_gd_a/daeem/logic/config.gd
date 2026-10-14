@@ -335,6 +335,29 @@ var revive_regen_sec: float = 3.0
 var revive_regen_ratio: float = 0.01
 var revive_regen_cap_ratio: float = 0.2
 
+## ---- ★★ 士气（见 config.json 的 morale 段、logic/morale.gd）----
+## 整支部队共享一个值；作用范围 = 场上所有单位（含 AI / 敌方）。
+## 档位是**并列判定**（0 士气同时吃「易伤」与「快速掉血」）。载入时算好（每帧每单位都要读）。
+var morale_max: float = 100.0
+var morale_start: float = 90.0
+var morale_regen_ally: float = 2.0
+var morale_decay_enemy: float = 0.4
+var morale_decay_surrounded: float = 0.4
+var morale_high_tier: float = 100.0
+var morale_mid_tier: float = 90.0
+var morale_vuln_tier: float = 50.0
+var morale_low_tier: float = 25.0
+var morale_hp_regen_high: float = 8.0
+var morale_hp_regen_mid: float = 2.0
+var morale_hp_decay_low: float = 0.75
+var morale_hp_decay_zero: float = 2.0
+var morale_hp_floor: float = 1.0
+var morale_damage_reduction: float = 0.5
+var morale_vulnerability: float = 0.5
+var morale_boost_kill: float = 5.0
+var morale_boost_leader: float = 10.0
+var morale_boost_capture: float = 10.0
+
 ## 一帧最多按多少秒推进逻辑（防止「帧慢→dt 大→活更多→更慢」的死亡螺旋）
 var sim_max_dt: float = 0.05
 
@@ -489,6 +512,28 @@ func _cache_scalars() -> void:
 	# 取两者的较大值，而不是让玩家面对一颗永远灰着的格子）。
 	revive_regen_cap_ratio = clampf(
 		maxf(num("revive.regen_cap_ratio", 0.2), revive_ready_ratio), 0.0, 1.0)
+
+	# ★★ 士气（logic/morale.gd 读这几个字段；整支部队共享一个值）。
+	#   夹取：血量下限 ≥0；减免夹到 [0, 1) —— 写成 1 会让「免伤 100% = 无敌」。
+	morale_max = maxf(1.0, num("morale.max", 100.0))
+	morale_start = clampf(num("morale.start", 90.0), 0.0, morale_max)
+	morale_regen_ally = maxf(0.0, num("morale.regen_ally", 2.0))
+	morale_decay_enemy = maxf(0.0, num("morale.decay_enemy", 0.4))
+	morale_decay_surrounded = maxf(0.0, num("morale.decay_surrounded", 0.4))
+	morale_high_tier = num("morale.high_tier", 100.0)
+	morale_mid_tier = num("morale.mid_tier", 90.0)
+	morale_vuln_tier = num("morale.vuln_tier", 50.0)
+	morale_low_tier = num("morale.low_tier", 25.0)
+	morale_hp_regen_high = maxf(0.0, num("morale.hp_regen_high", 8.0))
+	morale_hp_regen_mid = maxf(0.0, num("morale.hp_regen_mid", 2.0))
+	morale_hp_decay_low = maxf(0.0, num("morale.hp_decay_low", 0.75))
+	morale_hp_decay_zero = maxf(0.0, num("morale.hp_decay_zero", 2.0))
+	morale_hp_floor = maxf(0.0, num("morale.hp_floor", 1.0))
+	morale_damage_reduction = clampf(num("morale.damage_reduction", 0.5), 0.0, 0.999)
+	morale_vulnerability = maxf(0.0, num("morale.vulnerability", 0.5))
+	morale_boost_kill = maxf(0.0, num("morale.boost_kill", 5.0))
+	morale_boost_leader = maxf(0.0, num("morale.boost_leader", 10.0))
+	morale_boost_capture = maxf(0.0, num("morale.boost_capture", 10.0))
 
 	_cache_techs()
 	_cache_upgrades()
@@ -786,6 +831,15 @@ func general_type_at(i: int) -> String:
 	if i < 0 or i >= _general_types.size():
 		return String(_general_types[0])
 	return String(_general_types[i])
+
+
+## ★★ 某个**单位类型**是第几位将领（0 起）；不属于任何将领档 → -1。
+##
+## ★ 用在「摆放的将领按它选的兵种决定数值档」上：将领序号（`general_index`，名册号 1..10）
+##   只决定 id 与附属兵归属，**不再**决定数值 / 兵种 / 编制上限 —— 那三样改由
+##   「这位将领是哪个将领（unit_type）」查 `unit.general.types/stats/caps/names`。
+func general_slot_of_type(type_id: String) -> int:
+	return _general_types.find(type_id)
 
 
 ## ★★ 第 i 位将领（0 起）的**编制上限**（config.json 的 `unit.general.caps`）。
@@ -1809,6 +1863,16 @@ func _cache_ai() -> void:
 		for t in (rd_tiles_raw as Array):
 			if typeof(t) == TYPE_ARRAY and (t as Array).size() >= 2:
 				rd_tiles.append(Vector2i(int((t as Array)[0]), int((t as Array)[1])))
+	# ★★ march_tiles：行军**目标**地块（config 缺省是空表，关卡才填），解析口径与 spawn_tiles 相同。
+	#    ⚠️ 这个键必须在这里声明：`world._ai_cfg_with_override()` 是**白名单式**合并
+	#    （只覆盖 config 默认里已有的键）—— 漏了它，关卡写的 march_tiles 就到不了运行时，
+	#    红点将领也就永远走「单点目标」那条回退路。
+	var rd_march: Array = []
+	var rd_march_raw: Variant = get_path_value("ai.reddot.march_tiles")
+	if typeof(rd_march_raw) == TYPE_ARRAY:
+		for t in (rd_march_raw as Array):
+			if typeof(t) == TYPE_ARRAY and (t as Array).size() >= 2:
+				rd_march.append(Vector2i(int((t as Array)[0]), int((t as Array)[1])))
 	_ai_reddot_cfg = {
 		# 生成区域缺省半径（格）。
 		"spawn_radius": maxf(0.0, num("ai.reddot.spawn_radius", 4.0)),
@@ -1819,6 +1883,9 @@ func _cache_ai() -> void:
 		"general_count_expr": String(rd_count),
 		# ★★ 关卡选中的「红点生成地块」（config 里默认空 → 退回 spawn_region / 出生点）。
 		"spawn_tiles": rd_tiles,
+		# ★★ 关卡选中的「红点行军目标地块」（config 里默认空 → 退回单点 attack_target /
+		#    最近敌方区划中心 / 敌方大本营）：每一位将领从里面**随机挑一格**去行军。
+		"march_tiles": rd_march,
 		# ★★ 将领类型权重（`[{general, weight}]`）与共享附属单位规格（`[{type, weight}]`）。
 		"general_weights": normalize_weight_list(get_path_value("ai.reddot.general_weights")),
 		"escort_count": maxi(0, int(num("ai.reddot.escort_count", 4.0))),

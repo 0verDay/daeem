@@ -151,7 +151,14 @@ func _draw_leader_cell(f: Font) -> void:
 	if _entry.is_empty():
 		return
 	var av := UiLayoutRes.roster_cell_avatar_rect()
-	draw_rect(av, UiStyleRes.bg_pressed(), true)
+	# ★★ 背景板 = 士气色（绿 → 红）；左上这一格是**将领格**，所以走较实的 alpha（strong）。
+	#    建筑那一路（set_entry）没有士气 → 保持原来的素色。
+	#    （顶边 / 高亮描边那两行不动：士气只改**底**，不改边框语义。）
+	var l = leader()
+	if l != null and l.has_method("morale_ratio"):
+		draw_rect(av, UiStyleRes.morale_plate(float(l.morale_ratio()), true), true)
+	else:
+		draw_rect(av, UiStyleRes.bg_pressed(), true)
 	draw_rect(av, UiStyleRes.accent() if bool(_entry.get("highlight", false)) else UiStyleRes.line(),
 		false, 1.0)
 	_draw_centered(f, leader_short(), av, UiStyleRes.text(), UiStyleRes.FS_BODY)

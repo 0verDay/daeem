@@ -1,18 +1,4 @@
 ## test_map_editor.gd —— 地图编辑器导出的地图（exists / zones 网格）
-##
-## 地图编辑器（dev_gd_a/tools/map_editor，Python）导出的是「老板地图 + 两张网格」：
-##   · exists —— 1 = 这个地块存在，0 = 地图外（虚线格）→ **一律不可通行**
-##   · zones  —— 每格一个区块 id（-1 = 不属于任何区块）→ zone 直接读它，不再均分
-##
-## 这个文件测的是**游戏侧**读这两张网格的行为（Python 侧自己有一套无头测试）：
-##   1. 老地图（没有这两个字段）行为一字不变 —— 存在 = 全部、区块 = 6×4 均分
-##   2. 地图外的格子：不可通行、不会被连通性修正塞成山、寻路绕开它
-##   3. zones 网格：区块按网格划分（可非矩形）、名字从 zone_list 来、空区块也保留
-##   4. exists 的几种写法（二维数组 / 字符串行 / 扁平数组）都认
-##   5. ★ 区划种类（`zone_list[].kind`）：读得进来、认不出的按默认人口区划、
-##      「写了种类但没写 production」的区划产量一律 0（不按种类预设兜底）
-##
-## ⚠️ 测试地图写在 user:// 下（无头模式下也能写），不往 res:// 里塞临时文件。
 extends "res://tests/test_case.gd"
 
 const GridRes = preload("res://logic/grid.gd")
@@ -22,15 +8,11 @@ const ZoneRes = preload("res://logic/zone.gd")
 const WorldRes = preload("res://logic/world.gd")
 const UpgradeRes = preload("res://logic/upgrade.gd")
 
-## ⚠️ 测试地图写在工程里的一个临时目录下（跑完就删）。不用 user://：
-##    某些沙箱 / CI 环境下 user:// 不可写，会变成「测试自己写不出文件」的假失败。
 const TMP_DIR := "res://.tmp_test_map_editor"
-
 
 func _initialize() -> void:
 	_case_name = "test_map_editor"
 	run_all(_cases)
-
 
 func _cases() -> void:
 	var cfg = require_config()
@@ -51,16 +33,6 @@ func _cases() -> void:
 
 	_cleanup()
 
-
-# ------------------------------------------------------------------
-# 8. 仓库里那张真地图（data/maps/frontier/map.json）能开一局
-# ------------------------------------------------------------------
-##
-## 前面那些用例都在 `user://` 里现场写小地图；这一条专门盯**盘上那张真图** ——
-## 它是手画 + 编辑器反复编辑出来的，最容易带上「字段齐了但组合起来不能用」的问题
-## （比如大本营落在山里、阵营 id 打错、区块网格和 exists 对不上）。
-##
-## 顺带一提：这里只**读**它，不改也不写回（测试不该动仓库里的文件）。
 func _test_real_test_map(cfg) -> void:
 	var path: String = DEFAULT_MAP_PATH
 	if not FileAccess.file_exists(path):
@@ -73,15 +45,11 @@ func _test_real_test_map(cfg) -> void:
 	ok(m.cols > 0 and m.rows > 0, "它有尺寸：%d×%d" % [m.cols, m.rows])
 	ok(m.faction_bases.size() >= 1, "它带 faction_bases（%d 个阵营）" % m.faction_bases.size())
 
-	# 每个阵营的大本营都得落在地图里、而且站得住
 	for fid in m.faction_bases.keys():
 		var b: Vector2i = m.faction_bases[fid]
 		ok(m.tile_exists(b.x, b.y), "「%s」的大本营落在存在的格子上 %s" % [fid, str(b)])
 		ok(m.terrain_walkable(b.x, b.y), "「%s」的大本营站得住（不是山/城墙）" % fid)
 
-	# 真的开一局。⚠️ World.create() 走的是**单机名单**（只有 "p1"），
-	#    所以这一局只该立起 player 一方的基地 —— p1/p2 的大本营这时用不到
-	#    （它们在联机名单里才生效，下面单独验）。
 	var w = require_world(cfg, "res://logic/world.gd", path)
 	ok(w != null, "★ 用仓库里的 data/maps/frontier/map.json 能开出完整一局")
 	if w == null:
@@ -93,7 +61,6 @@ func _test_real_test_map(cfg) -> void:
 		% [str(want_player), str(got_player)])
 	ok(w.find_base_of("p1") != null, "player 的基地真的立起来了（TYPE_BASE 建筑在）")
 	ok(w.unit_by_id("general-1") != null, "将领正常生成了")
-	# 区块数**以地图自己说的为准**（别写死：设计师往图里加一个区就会让这条假失败）
 	eq(w.zones.zones.size(), m.zones_names.size(),
 		"地图里声明的 %d 个区块都进了世界" % m.zones_names.size())
 	ok(w.zones.zones.size() >= 10, "这张图至少有 10 个区块（实际 %d）" % w.zones.zones.size())
@@ -102,7 +69,6 @@ func _test_real_test_map(cfg) -> void:
 		names.append(String(z["name"]))
 	ok("a1" in names and "c1" in names, "区块名（a1 / c1）读对了")
 
-	# 联机名单里 p1 / p2 都在 → 两方各按地图指定的那一格建基地
 	var w2 = WorldRes.new()
 	w2.cfg = cfg
 	w2.map = m
@@ -116,17 +82,7 @@ func _test_real_test_map(cfg) -> void:
 	ok(w2.find_base_of("p1") != null and w2.find_base_of("p2") != null,
 		"★ 两方的基地都真的立起来了（不是只有一方）")
 
-
-# ------------------------------------------------------------------
-# 阵营大本营（地图编辑器「阵营」页签划出来的 faction_bases）
-# ------------------------------------------------------------------
-##
-## 这一条要钉住的就一件事：**老地图（没有 faction_bases）的行为一字不变**，
-## 而带 faction_bases 的地图按它建房 —— 两边都不能错。
 func _test_faction_bases(cfg) -> void:
-	# ---- 1. 老地图（**自己拼一张**：只有 layout + 旧格式的 base）：
-	#         空 faction_bases → 走原来的兜底规则
-	# ★ 不读 map_01.json：它已经搬到新格式了（有 faction_bases），当不了「老地图」样本。
 	var legacy = MapDataRes.load_from(_write_map("legacy_for_factions.json", {
 		"cols": 24, "rows": 16,
 		"layout": _flat_layout(24, 16),
@@ -144,7 +100,6 @@ func _test_faction_bases(cfg) -> void:
 	ok(legacy_p2["base"] != Vector2i(12, 8),
 		"★ 没有 faction_bases 时，p2 仍然从 pvp_points 取点（老行为，不会跟玩家重合）")
 
-	# ---- 2. 编辑器导出的地图：每一方按自己那一格建房
 	var path := _write_map("faction_bases.json", {
 		"cols": 12, "rows": 8,
 		"layout": [
@@ -172,7 +127,6 @@ func _test_faction_bases(cfg) -> void:
 	ok((m.spawn_layout_for("p2", "p1")["defenses"] as Array).size() > 0,
 		"指定大本营的那一方自带防御阵地（与 pvp_points 那条路一致）")
 
-	# 只给了 player 的大本营时：p2 仍然退回老规则（互不影响）
 	var path2 := _write_map("faction_bases_partial.json", {
 		"cols": 12, "rows": 8,
 		"layout": [
@@ -191,7 +145,6 @@ func _test_faction_bases(cfg) -> void:
 	v2i_eq(m2.spawn_layout_for("p2", "p1")["base"], Vector2i(9, 1),
 		"★ 没指定的那一方仍然走 pvp_points（一条一条独立）")
 
-	# ---- 3. 大本营落在山地上 → 就近换一个能站的格子（不崩、不塞进山里）
 	var path3 := _write_map("faction_bases_mountain.json", {
 		"cols": 12, "rows": 8,
 		"layout": [
@@ -208,7 +161,6 @@ func _test_faction_bases(cfg) -> void:
 	ok(m3.terrain_walkable(b3.x, b3.y),
 		"★ 大本营被放在山上时会就近换到可通行的格子（%s）" % str(b3))
 
-	# ---- 4. 越界的大本营：丢掉，不崩
 	var path4 := _write_map("faction_bases_oob.json", {
 		"cols": 12, "rows": 8,
 		"layout": [
@@ -225,16 +177,7 @@ func _test_faction_bases(cfg) -> void:
 	v2i_eq(m4.spawn_layout_for("p1", "p1")["base"], Vector2i(6, 4),
 		"★ 丢掉之后退回地图中心的 base")
 
-
-# ------------------------------------------------------------------
-# 1. 老地图：没有 exists / zones 时行为一字不变
-# ------------------------------------------------------------------
 func _test_legacy_unchanged(cfg) -> void:
-	# ★★ 这里**故意自己拼一张「老地图」**（而不是读 map_01.json）：
-	#    随游戏发布的那张图已经被搬到新格式了（有 zones / zone_centers / faction_bases），
-	#    而这一节要钉的恰恰是「**没有**那些字段时行为一字不变」。
-	#    老地图长什么样：只有 cols/rows/layout（+ 那个已废弃的 base），没有 exists /
-	#    zones / zone_list / zone_centers / factions / faction_bases。
 	var path := _write_map("legacy_plain.json", {
 		"cols": 24, "rows": 16,
 		"layout": _flat_layout(24, 16),
@@ -264,18 +207,12 @@ func _test_legacy_unchanged(cfg) -> void:
 	eq(int(zs.zones[0]["tile_count"]), 16, "老地图每块仍然 16 格")
 	eq(zs.lookup[m.terrain.idx(5, 4)], 7, "老地图的 lookup 与老实现一致（(5,4) → 行块 1、列块 1 → id 7）")
 
-
-## 生成一整片草地的 layout（24×16 的老地图形状）
 func _flat_layout(cols: int, rows: int) -> Array:
 	var out: Array = []
 	for i in rows:
 		out.append(".".repeat(cols))
 	return out
 
-
-# ------------------------------------------------------------------
-# 2. 没有 exists 字段 = 全部存在
-# ------------------------------------------------------------------
 func _test_exists_defaults(cfg) -> void:
 	var path := _write_map("no_exists.json", {
 		"cols": 4, "rows": 3,
@@ -292,12 +229,7 @@ func _test_exists_defaults(cfg) -> void:
 	ok(not m.terrain_walkable(1, 0), "山不可通行")
 	ok(m.terrain_walkable(2, 1), "森林可通行（只有山与地图外不可通行）")
 
-
-# ------------------------------------------------------------------
-# 3. exists 的几种写法
-# ------------------------------------------------------------------
 func _test_exists_forms(cfg) -> void:
-	# 二维数组（编辑器导出的形式）
 	var a := _write_map("exists_2d.json", {
 		"cols": 3, "rows": 2,
 		"layout": ["...", "..."],
@@ -312,7 +244,6 @@ func _test_exists_forms(cfg) -> void:
 		ok(not ma.tile_exists(0, 1), "二维数组：第二行第一个是地图外")
 		ok(ma.tile_exists(2, 1), "二维数组：第二行最后一个是存在")
 
-	# 字符串行
 	var b := _write_map("exists_str.json", {
 		"cols": 3, "rows": 2,
 		"layout": ["...", "..."],
@@ -325,7 +256,6 @@ func _test_exists_forms(cfg) -> void:
 		ok(not mb.tile_exists(2, 0), "字符串行：'0' = 地图外")
 		ok(mb.tile_exists(2, 1), "字符串行：'1' = 存在")
 
-	# 扁平数组 [1,1,0, 0,1,1] → 第 0 行 ("110")、第 1 行 ("011")
 	var c := _write_map("exists_flat.json", {
 		"cols": 3, "rows": 2,
 		"layout": ["...", "..."],
@@ -340,12 +270,7 @@ func _test_exists_forms(cfg) -> void:
 		ok(not mc.tile_exists(0, 1), "扁平数组：下标 3 = (0,1) 是地图外")
 		ok(mc.tile_exists(2, 1), "扁平数组：下标 5 = (2,1) 存在")
 
-
-# ------------------------------------------------------------------
-# 4. 地图外的格子：不可通行、不被连通性修正动过、寻路绕开
-# ------------------------------------------------------------------
 func _test_missing_tile_blocks(cfg) -> void:
-	# 3×3 里挖掉中间左边一格：地图外
 	var path := _write_map("hole.json", {
 		"cols": 3, "rows": 3,
 		"layout": ["...", "...", "..."],
@@ -363,7 +288,6 @@ func _test_missing_tile_blocks(cfg) -> void:
 	ok(m.terrain_walkable(0, 0), "挨着洞的格子照样能走")
 	ok(m.terrain_walkable(0, 2), "洞下面那格也能走")
 
-	# 被地图外包住的孤岛：全部格子都存在，但左上角那格被山围死 → 应当被塞成山
 	var path2 := _write_map("island.json", {
 		"cols": 5, "rows": 5,
 		"layout": [".....",
@@ -379,12 +303,7 @@ func _test_missing_tile_blocks(cfg) -> void:
 			"被山围死的孤岛格会被连通性修正封成山（老行为仍在）")
 		ok(m2.sealed_islands > 0, "孤岛计数 > 0")
 
-
-# ------------------------------------------------------------------
-# 5. zones 网格
-# ------------------------------------------------------------------
 func _test_zones_grid(cfg) -> void:
-	# 4×3，两块地：左上是 0 号（非矩形：L 形），剩下的是 1 号
 	var path := _write_map("zones.json", {
 		"cols": 4, "rows": 3,
 		"layout": ["....", "....", "...."],
@@ -419,10 +338,6 @@ func _test_zones_grid(cfg) -> void:
 	ok(zs.zone_at(2, 0) != null and int(zs.zone_at(2, 0)["id"]) == 1, "(2,0) 属于江陵")
 	ok(zs.zone_at(0, 2) != null and int(zs.zone_at(0, 2)["id"]) == 1, "(0,2) 属于江陵")
 
-
-# ------------------------------------------------------------------
-# 6. -1 的地块不属于任何区块；空区块也要保留
-# ------------------------------------------------------------------
 func _test_empty_zone_kept(cfg) -> void:
 	var path := _write_map("zones_empty.json", {
 		"cols": 3, "rows": 2,
@@ -446,19 +361,8 @@ func _test_empty_zone_kept(cfg) -> void:
 	eq(int(zs.zones[1]["tile_count"]), 0, "空区块的 tile_count = 0（不会抢资源）")
 	ok(zs.zone_at(1, 0) != null, "划了地的那块正常")
 
-	# 地块不属于任何区块时，区块系统不会把它算进任何一方
 	eq(zs.owned_tile_count("p1"), 0, "开局谁的地块数都是 0")
 
-
-# ------------------------------------------------------------------
-# 6.5 ★ 区划种类（zone_list[].kind）—— 本轮新增
-# ------------------------------------------------------------------
-##
-## 用户需求：「设计师可以在区划页签的详情页中选择该区划的种类……最终游戏中的区划产量
-## 以下方数字输入框中的产量为准」；「粮食区划仅能进行黄金和人口特化，黄金区划仅能进行
-## 粮食和人口特化，人口区划仅能进行粮食和黄金特化」。
-## 另外确认：「没有默认区划了，所有区划默认值都改为人口区划」+「地图没写 production
-## 的区划一律算 0，保持老图行为（不按种类预设兜底）」。
 func _test_zone_kinds(cfg) -> void:
 	var path := _write_map("zone_kinds.json", {
 		"cols": 4, "rows": 2,
@@ -470,10 +374,7 @@ func _test_zone_kinds(cfg) -> void:
 			 "production": {"food": 1, "gold": 0, "population": 0}},
 			{"id": 1, "name": "金区", "kind": "gold",
 			 "production": {"food": 0, "gold": 1, "population": 0}},
-			# ★ 写了 kind、**故意不写 production**：游戏侧一律算 0（用户确认保持老图行为，
-			#   不按种类预设的 0.15 兜底）——「数字输入框里的产量说了算」。
 			{"id": 2, "name": "人区", "kind": "population"},
-			# ★ 不认识的 kind：按默认（人口区划）处理，不崩、也不吞掉它的产量数字
 			{"id": 3, "name": "怪区", "kind": "banana",
 			 "production": {"food": 2, "gold": 0, "population": 0}},
 		],
@@ -496,13 +397,11 @@ func _test_zone_kinds(cfg) -> void:
 	near(float((zs.zones[3]["production"] as Dictionary)["food"]), 2.0, 1e-9,
 		"★ 种类认不出来也不影响它的产量数字")
 
-	# ---- 特化白名单按种类挡（逻辑层；界面那一侧在 test_ui.gd 里验）
 	var w = require_world(cfg, "res://logic/world.gd", path)
 	ok(w != null, "带种类的地图能开出世界")
 	if w == null:
 		return
 	var f: String = String(w.my_faction)
-	# 给足资源：这一段验的是**种类白名单**（拒因 `kind`），别让它落到 `cost` 上
 	w.resources["food"] = 1000.0
 	w.resources["gold"] = 1000.0
 	var zf: Dictionary = w.zones.zones[0]
@@ -518,10 +417,6 @@ func _test_zone_kinds(cfg) -> void:
 	eq(UpgradeRes.can_specialize(w, zg, "food", f), "", "黄金区划能做粮食特化")
 	eq(UpgradeRes.can_specialize(w, zg, "gold", f), "kind", "★ 黄金区划做不了黄金特化")
 
-
-# ------------------------------------------------------------------
-# 7. 编辑器导出的地图能真的开局（world 能起来）
-# ------------------------------------------------------------------
 func _test_world_with_editor_map(cfg) -> void:
 	var path := _write_map("playable.json", {
 		"cols": 12, "rows": 8,
@@ -556,8 +451,6 @@ func _test_world_with_editor_map(cfg) -> void:
 			[-1, -1, -1, 0, 0, 0, 0, 1, 1, -1, -1, -1],
 		],
 		"zone_list": [
-			# ★ 人口上限（编辑器导出 zone_list[].population_cap）：西境填了 7，
-			#   东境**没填** → 游戏侧按默认 1 处理（用户需求：没填就是 1）
 			{"id": 0, "name": "西境", "population_cap": 7},
 			{"id": 1, "name": "东境"},
 		],
@@ -583,28 +476,18 @@ func _test_world_with_editor_map(cfg) -> void:
 	ok(m.tile_exists(b.x, b.y), "大本营落在存在的格子上（不会被塞进地图外）")
 	ok(m.terrain_walkable(b.x, b.y), "大本营站得住（可通行）")
 
-	# 地图外的格子不该被当成区块：它既不属于西境也不属于东境
 	ok(w.zones.zone_at(0, 0) == null, "地图外的角落不属于任何区块")
 	eq(w.zones.lookup[m.terrain.idx(0, 0)], -1, "lookup 对地图外是 -1")
 
-	# ---- ★ 人口上限（用户需求：每个区块都要有，没填 = 1）
 	var zw: Dictionary = w.zones.zones[0]
 	var ze: Dictionary = w.zones.zones[1]
 	eq(String(zw["name"]), "西境", "第 0 个区块是西境")
 	near(w.zones.population_cap_of(zw), 7.0, 1e-9, "★ 地图里填的上限被读进世界（7）")
 	near(w.zones.population_cap_of(ze), 1.0, 1e-9, "★ 没填的那一块按默认 1")
-	# 世界真的按上限停涨：西境速率设成很大，跑一秒也只能到 7
 	zw["production"] = {"food": 0.0, "gold": 0.0, "population": 100.0}
 	w.tick(1.0)
 	near(w.zones.population_of(zw), 7.0, 1e-6, "★ 人口涨到地图给的上限就停住")
 
-
-# ------------------------------------------------------------------
-# 工具
-# ------------------------------------------------------------------
-
-## 写一张测试地图到 user:// 下，返回 res:// 风格的路径（MapData 用 FileAccess 读，
-## user:// 与 res:// 都认）。
 func _write_map(file_name: String, data: Dictionary) -> String:
 	var path := "%s/%s" % [TMP_DIR, file_name]
 	var f := FileAccess.open(path, FileAccess.WRITE)
@@ -614,7 +497,6 @@ func _write_map(file_name: String, data: Dictionary) -> String:
 	f.store_string(JSON.stringify(data, "  "))
 	f.close()
 	return path
-
 
 func _cleanup() -> void:
 	var dir := DirAccess.open(TMP_DIR)

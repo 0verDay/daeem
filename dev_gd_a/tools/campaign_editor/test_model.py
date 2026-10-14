@@ -528,6 +528,13 @@ def t_config_and_maps() -> None:
     ok("cooldown_sec" in info.ai_reddot_cfg, "config：红点性 AI 的默认参数拿到了")
     ok(info.faction_color("p1").lower() == "#ffd166", "config：阵营配色表")
     eq(info.general_label(1), "将领 1（长枪兵）", "将领下拉的写法")
+    # ★★ 名册号与档位解耦：档位选项仍 1..3（= 将领类型数），名册号放宽到 1..10。
+    eq(list(info.general_indices()), [1, 2, 3], "将领**档位**选项仍是 1..3（= 将领类型数）")
+    eq(list(info.general_roster_indices()), list(range(1, 11)),
+       "★★ 将领序号（名册号）放宽到 1..10（用户需求）")
+    eq(info.general_profile_of("rider"), 2, "★ 兵种 rider = 第 3 档（0 起 2）")
+    eq(info.general_profile_of("nope"), -1, "★ 不在将领档里的兵种 → -1")
+    eq(M.general_kind_slot("general_5"), 4, "★ kind general_5 → 档位 4（旧数据兜底用）")
 
     ms = maps(real=True)
     info = ms["dongzheng"]

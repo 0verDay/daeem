@@ -259,17 +259,15 @@ func _assemble() -> void:
 	#   「战场在哪」，具体到自己的家有一键（Home）可去。
 	center_on_tile(Vector2(float(world.map.cols) * 0.5, float(world.map.rows) * 0.5))
 
-	# ★★ 开局把第一个单位选上（与 2D 版两条入口**同一条收尾**）。
+	# ★★ 开局**不选中任何东西**（用户需求）。
 	#
-	# 为什么要有这一步（本轮实测踩到）：没有它，玩家进游戏时**什么都没选中**，
-	#   右下命令卡是空的、底栏写着「未选中」—— 而 2D 版一直是选着一个的。
-	#   ⚠️ 它的表现形式是**偶发**的：`test_campaign_test` 那条
-	#   「开局就选中了一个单位」时红时绿（实测同一命令两次结果不同），
-	#   因为选中是纯本地 UI 状态、会被先前跑过的用例影响。
-	#   ★ 判据：开局自动选中是**入口的收尾动作**，不是可选项 ——
-	#     两个外壳都必须做，否则「进游戏第一眼看到什么」两套不一致。
-	if input_ctrl != null and world.units.size() > 0:
-		input_ctrl.select_units([world.units[0]])
+	# 旧口径是「开局把第一个单位选上」，但 `world.units[0]` 不保证是**本机那一方**的部队
+	#   （AI / 红点的将领也排在列表里）—— 于是玩家一进游戏就被替选中一支不是自己的部队，
+	#   右下命令卡显示它、右键还可能给它下命令。
+	# 现在什么都不选：`input_controller.setup()` 已经把 `selected_units` 清空，这里再显式
+	#   清一次，让「进游戏第一眼 = 未选中」这条契约不依赖 setup 的副作用。
+	if input_ctrl != null:
+		input_ctrl.select_units([])
 
 
 ## 相机替身：`input_controller` 只用到 `center_on_px` 这一个方法。

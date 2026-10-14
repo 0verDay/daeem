@@ -1761,8 +1761,10 @@ class EditorApp:
                 used = [int(g.general_index or 1) for g in
                         model_mod.placed_generals(lv, faction)]
                 entry.general_index = (max(used) + 1) if used else 1
+                # ★★ 新将领默认用**将领 1** 那一档兵种（`unit_type` = 第一档）；
+                #    要换成别的档，用侧栏的「将领」下拉（它决定数值 / 编制上限 / 默认名字）。
                 gtypes = self.config.general_types or [""]
-                entry.unit_type = gtypes[min(entry.general_index - 1, len(gtypes) - 1)]
+                entry.unit_type = gtypes[0]
                 # ★★ 附属单位规格的初始值：数量 0（光杆 —— 作者自己去侧栏填），
                 #    类型 = 自己这一档（一条权重 1 的行，改起来最省事）。
                 entry.escort_count = 0
@@ -2747,9 +2749,15 @@ class EditorApp:
             self._combo_cell(sec, "兵种", unit.kind, tuple(kinds), 
                              lambda text: self._set_unit_field("kind", str(text)))
             if unit.is_general():
+                # ★★ 「这位将领是**哪个将领**」（本轮新增）：决定它的兵种 / 数值档 /
+                #    编制上限 / 默认名字（= config 的 unit.general.types/stats/caps/names）。
+                #    ⚠️ 与下一行的「将领序号」相互独立：序号只是名册号（运行时 id + 附属兵归属）。
+                self._combo_cell(sec, "将领", self._general_label_of_unit(unit),
+                                 self._general_choices(), self._set_unit_general)
+                # ★★ 将领序号（名册号）：选项 1..10（用户需求：不只 3 个）。
                 self._combo_cell(sec, "将领序号",
                                  str(unit.general_index or 1),
-                                 tuple(str(i) for i in self.config.general_indices()),
+                                 tuple(str(i) for i in self.config.general_roster_indices()),
                                  lambda text: self._set_unit_field("general_index", int(text)))
                 # ★★ 附属单位规格（本轮新增）：生成数量 + 兵种权重表。
                 self._spec_editor(sec, unit)
@@ -2829,6 +2837,42 @@ class EditorApp:
         self.refresh_all()
 
     # ==================================================================
+    # ★★ 「这位将领是哪个将领」（兵种 / 数值档）
+    # ==================================================================
+
+    def _general_choices(self) -> Tuple[str, ...]:
+        """「将领」下拉的选项：config 的三位将领（`unit.general.types`）。"""
+        n = len(self.config.general_types)
+        if n == 0:
+            return ("（config 里没有将领）",)
+        return tuple(self.config.general_label(i + 1) for i in range(n))
+
+    def _general_label_of_unit(self, unit: UnitEntry) -> str:
+        """选中将领的「将领」显示值（按它的兵种查出是第几档）。"""
+        if not self.config.general_types:
+            return "（config 里没有将领）"
+        profile = self.config.general_profile_of(unit.unit_type)
+        if profile < 0:
+            profile = 0
+        return self.config.general_label(profile + 1)
+
+    def _set_unit_general(self, label: str) -> None:
+        """「将领」下拉提交：把选中将领的兵种改成所选那一档（数值 / 名字随之改变）。
+
+        ⚠️ 只改 `unit_type`：数值档、编制上限、默认名字都由运行时的**将领档**查表得到，
+           「将领序号」（名册号）不动 —— 两者相互独立。
+        """
+        u = self.selected_unit()
+        if u is None:
+            return
+        n = self._escort_index_from_label(label)      # 「将领 N（…）」→ N
+        types = self.config.general_types
+        if 1 <= n <= len(types):
+            u.unit_type = types[n - 1]
+        self.status("将领 → %s" % label)
+        self.refresh_all()
+
+    # ==================================================================
     # ★★ 附属单位规格编辑器（将领：生成数量 + 兵种权重表）
     # ==================================================================
 
@@ -2841,7 +2885,8 @@ class EditorApp:
         """
         box = self._section("附属单位规格",
                             "运行时**当场随机生成**满编附属兵（类型按权重抽、数量 ≤ 编制上限）")
-        cap = self.config.general_cap(int(unit.general_index or 1))
+        # ★★ 编制上限按**将领档**取（由这位将领的兵种 `unit_type` 查出来），不是将领序号。
+        cap = self.config.general_cap(self.config.general_profile_of(unit.unit_type) + 1)
         self._entry_cell(box, "生成数量", str(int(unit.escort_count)),
                          lambda text: self._set_escort_count(unit, text))
         self._hint(box, "编制上限 = %d（在单位编辑器的「将领」页改）；"

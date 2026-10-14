@@ -347,34 +347,9 @@ func faction_config(fid: String) -> Dictionary:
 ##
 ## ⚠️ 本轮「附属单位改由规格随机生成」之后，逐兵摆放的 `escort_of` **不再产出**；
 ##    这里保留读取只为「旧数据不炸」（读不出来的项按普通单位处理）。
-##    「这一方摆了将领 ⇒ 整方由关卡接管」的判据是 `faction_has_placed_generals()`。
 static func escort_leader_index(u: Dictionary) -> int:
 	var v := int(u.get("escort_of", -1))
 	return v - 1 if v >= 1 else -1
-
-
-## ★★ 这一方**在关卡里摆了将领**吗。
-##
-## ★★ 这是「**整方由关卡接管**」的判据（本轮口径第 5 条）：
-##    摆了将领的那一方，运行时**连 3 位将领都不自动生成** ——
-##    将领（与它按规格生成的附属兵）全部由作者自己摆（`start_units[]`）。
-##    没摆的任何一方 → 自动生成 3 位将领，且**不带**附属兵。
-##
-## ★ 判据只看**将领类 kind**（`general` / `general_N`）：
-##   · 作者把 3 位将领摆在 `start_units[]` 里时，自动生成的那 3 位会与作者摆的
-##     3 位**重名**（id 都是 `general-<fid>-N`），场上出现 6 位（实测样例战役 F2）。
-##   · ⚠️ 「只摆了一个普通单位」**不算**接管：那种单位的 `kind` 不是将领类
-##     （例如守军的 `enemy`）—— 驻防守军可以继续只摆一个（老行为一字不变）。
-func faction_has_placed_generals(fid: String) -> bool:
-	if fid == "":
-		return false
-	for u in start_units:
-		var ud: Dictionary = u
-		if String(ud.get("faction", "")) != fid:
-			continue
-		if ConfigRes.general_index_of(String(ud.get("kind", ""))) >= 0:
-			return true
-	return false
 
 
 ## 这一方在关卡 `start_units[]` 里摆的单位（**只读**；不做任何过滤）。
@@ -1080,8 +1055,14 @@ func _ck_start_units() -> void:
 			_add(SEV_BLOCK, "unit_no_faction", "摆放单位 (%d,%d) 没写 faction" % [int(ud["x"]), int(ud["y"])])
 		# ★★ 将领条目的**附属单位规格**（本轮新增）。
 		if ConfigRes.general_index_of(String(ud.get("kind", ""))) >= 0:
-			var idx := ConfigRes.general_index_of(String(ud.get("kind", "")))
-			_ck_escort_spec(ud, "(%d,%d)" % [int(ud["x"]), int(ud["y"])], "将领", idx)
+			# ★★ 编制上限按**将领档**取（由该将领的兵种 `unit_type` 查出来），
+			#    **不是**将领序号（序号只是名册号）——与 `world._place_faction_units` 同一口径。
+			var slot := -1
+			if cfg != null:
+				slot = cfg.general_slot_of_type(String(ud.get("unit_type", "")))
+			if slot < 0:
+				slot = ConfigRes.general_index_of(String(ud.get("kind", "")))
+			_ck_escort_spec(ud, "(%d,%d)" % [int(ud["x"]), int(ud["y"])], "将领", slot)
 
 
 ## ★★ 校验一份「附属单位规格」（`escort_count` / `escort_types`）。

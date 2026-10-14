@@ -1,11 +1,4 @@
 ## test_zone_recruit.gd —— 区划招募（点区划中心 → 右下「招募」页签 → 招将领）
-##
-## 需求原话：「当玩家选中区划中心时，右下角显示招募页签（显示三个占位将领，
-##            玩家可以点击以将招募将领加入区划的招募队列中，招募逻辑同招募单位）」。
-##
-## ★ 这里只钉**逻辑层**这条链：配置表 → 校验（只能自己区划）→ 入队即扣费 →
-##   读条 10 秒 → 在**区划中心旁边**生成 → 取消退款 / 前移 → 命令层。
-##   「页签怎么切、命令卡里是哪几格」在 tests/test_ui.gd 里验。
 extends "res://tests/test_case.gd"
 
 const WorldRes = preload("res://logic/world.gd")
@@ -16,11 +9,9 @@ const DT := 1.0 / 60.0
 const KIND := "general_1"
 const KIND2 := "general_2"
 
-
 func _initialize() -> void:
 	_case_name = "test_zone_recruit"
 	run_all(_cases)
-
 
 func _cases() -> void:
 	var cfg = require_config()
@@ -34,10 +25,6 @@ func _cases() -> void:
 	_test_commands(cfg)
 	_test_stop_command(cfg)
 
-
-# ------------------------------------------------------------------
-# 一、数值表来自 config.json（代码里不写字面量）
-# ------------------------------------------------------------------
 func _test_config_table(cfg) -> void:
 	var w = _quiet(cfg)
 	eq(w.zone_recruit_list().size(), 3, "★ 区划招募表里有三个占位将领")
@@ -55,10 +42,6 @@ func _test_config_table(cfg) -> void:
 	near(float(cost.get("gold", 0.0)), 100.0, 1e-6, "★ 每个将领 100 黄金")
 	eq(w.recruit_label_of(KIND), "将领 1", "显示名来自 label")
 
-
-# ------------------------------------------------------------------
-# 二、只能在**属于自己的**区划里招
-# ------------------------------------------------------------------
 func _test_only_own_zone(cfg) -> void:
 	var w = _quiet(cfg)
 	_give(w, 1000.0, 1000.0)
@@ -69,7 +52,6 @@ func _test_only_own_zone(cfg) -> void:
 	var zid := int(z["id"])
 	eq(w.can_recruit_zone(KIND, zid, "p1"), "", "★ 己方区划 → 可以招")
 
-	# 无主 / 别人的区划：拒因是 zone_owner
 	var foreign = _foreign_zone(w)
 	ok(foreign != null, "地图上找得到一块不属于 p1 的区划")
 	if foreign != null:
@@ -84,15 +66,10 @@ func _test_only_own_zone(cfg) -> void:
 	eq(w.can_recruit_zone(UnitRes.UNIT_TYPE_SPEARMAN, zid, "p1"), "kind",
 		"单位页那张表里的兵种不能在区划里招（拒因 kind）")
 
-	# 把无主那块划给己方 → 又能招了（判据是区划归属，不是「哪一块地」）
 	if foreign != null:
 		foreign["owner"] = "p1"
 		eq(w.can_recruit_zone(KIND, int(foreign["id"]), "p1"), "", "划给己方之后就能招了")
 
-
-# ------------------------------------------------------------------
-# 三、入队即扣费（粮食 / 黄金 / 区划人口）+ 队列形态
-# ------------------------------------------------------------------
 func _test_enqueue_pays(cfg) -> void:
 	var w = _quiet(cfg)
 	_no_income(w)
@@ -104,7 +81,6 @@ func _test_enqueue_pays(cfg) -> void:
 
 	var events: Array = []
 	ok(w.start_zone_recruit(KIND, zid, "p1"), "区划招募入队成功")
-	# ⚠️ 「刚入队」的那几条断言必须在 tick **之前**做：一 tick 就会扣掉一帧的读条时间。
 	near(float(z["train_remaining"]), 10.0, 1e-6, "刚入队时剩余 = 10 秒")
 	near(w.zone_train_progress(z), 0.0, 1e-6, "刚入队时进度是 0")
 	for e in (w.tick(DT) as Array):
@@ -121,7 +97,6 @@ func _test_enqueue_pays(cfg) -> void:
 	eq(w.units.size(), before_units, "★ 入队不会立刻生成单位（要读条 10 秒）")
 	eq(String(z["train_faction"]), "p1", "记下了招募方（读完按它出兵）")
 
-	# 第二个排进小格子，不抢读条
 	var remaining_before := float(z["train_remaining"])
 	ok(w.start_zone_recruit(KIND2, zid, "p1"), "再排一个也成功")
 	eq((z["train_queue"] as Array).size(), 1, "第二个排进小格子")
@@ -133,10 +108,6 @@ func _test_enqueue_pays(cfg) -> void:
 	near(w.zone_recruit_eta(z, 1), remaining_before + 10.0, 1e-4,
 		"★ ETA：轮到第二个还差「大格子剩余 + 它自己的 10 秒」")
 
-
-# ------------------------------------------------------------------
-# 四、读条 10 秒 → 在**区划中心旁边**生成，而且招出来的是**队长**
-# ------------------------------------------------------------------
 func _test_train_and_spawn_near_center(cfg) -> void:
 	var w = _quiet(cfg)
 	_no_income(w)
@@ -170,17 +141,12 @@ func _test_train_and_spawn_near_center(cfg) -> void:
 	eq(w.retinue_of(fresh.id).size(), 0, "刚招出来的将领名下还没有附属兵")
 	ok(String(fresh.id).begins_with("zone-%d-" % zid), "id 里带着区划号（%s）" % fresh.id)
 
-	# 位置：不在中心那一格（那是障碍建筑），但在它旁边一圈内、且是空地
 	ok(not (fresh.tx == center.x and fresh.ty == center.y),
 		"★ 不生成在区划中心那一格（那里是中立障碍建筑）")
 	var cheb: int = maxi(absi(fresh.tx - center.x), absi(fresh.ty - center.y))
 	ok(cheb <= 2, "★ 生成在中心**旁边**（切比雪夫距离 %d ≤ 2）" % cheb)
 	ok(w.building_at(fresh.tx, fresh.ty) == null, "生成的那一格上没有建筑")
 
-
-# ------------------------------------------------------------------
-# 五、队列上限 5 / 取消某一格（全额退款 + 后方前移 + 从头读条）
-# ------------------------------------------------------------------
 func _test_queue_cap_and_cancel(cfg) -> void:
 	var w = _quiet(cfg)
 	_no_income(w)
@@ -202,14 +168,12 @@ func _test_queue_cap_and_cancel(cfg) -> void:
 	eq(String(full_evt.get("reason", "")), "queue_full", "拒因码是 queue_full")
 	eq(int(full_evt.get("max", 0)), 5, "★ 事件里带着队列上限（界面文案用它）")
 
-	# 取消第 1 个小格子：全额退款 + 后方前移
 	var pop0: float = float(z["population"])
 	ok(w.cancel_zone_recruit(zid, 1, "p1"), "★ 取消第 1 个小格子")
 	near(float(w.resources["food"]), food0 + 100.0, 1e-4, "★ 取消退 100 粮食")
 	near(float(z["population"]), pop0 + 1.0, 1e-4, "★ 人口也退还给**这个区划**")
 	eq(w.zone_recruit_queue_size(z), 4, "队列少了一个（后方的自动前移）")
 
-	# 取消大格子：队列里的下一个顶上，并且**从头读条**
 	var remaining_before := float(z["train_remaining"])
 	eq(w.zone_recruit_kind_at(z, 0), KIND, "（前提）大格子里有东西")
 	ok(w.cancel_zone_recruit(zid, 0, "p1"), "★ 取消大格子")
@@ -219,7 +183,6 @@ func _test_queue_cap_and_cancel(cfg) -> void:
 		"★ 前移的那一单从头读条（不继承已读掉的时间）")
 	ok(remaining_before <= 10.0, "（前提）取消前它确实在读条")
 
-	# 空格子 / 别人的区划：取消被拒
 	ok(not w.cancel_zone_recruit(zid, 4, "p1"), "★ 空格子取消被拒（什么都不做）")
 	eq(w.zone_recruit_queue_size(z), 3, "空格子取消不改队列")
 	var foreign = _foreign_zone(w)
@@ -227,10 +190,6 @@ func _test_queue_cap_and_cancel(cfg) -> void:
 		ok(not w.cancel_zone_recruit(int(foreign["id"]), 0, "p1"),
 			"★ 别人的区划里的队列取消不了")
 
-
-# ------------------------------------------------------------------
-# 六、命令层（右下「招募」页的格子 → zone_recruit 命令；队列格子 → zone_recruit_cancel）
-# ------------------------------------------------------------------
 func _test_commands(cfg) -> void:
 	var w = _quiet(cfg)
 	_no_income(w)
@@ -246,14 +205,9 @@ func _test_commands(cfg) -> void:
 		"slot": 0, "faction": "p1"}), "zone_recruit_cancel 命令被接受")
 	ok(not w.zone_is_training(z), "取消之后队列空了")
 
-	# 防冒充：不能拿别人的阵营来给自己区划招（owner 与 faction 不同侧 → 拒）
 	ok(not CommandRes.apply(w, cfg, {"kind": "zone_recruit", "unit_kind": KIND,
 		"zone_id": zid, "faction": "p2"}), "★ 别的阵营不能在这个区划里招")
 
-
-# ------------------------------------------------------------------
-# 七、操作页的「停止」命令（逻辑层这一半）
-# ------------------------------------------------------------------
 func _test_stop_command(cfg) -> void:
 	var w = _quiet(cfg)
 	var g1 = w.unit_by_id("general-1")
@@ -275,12 +229,6 @@ func _test_stop_command(cfg) -> void:
 	ok(not CommandRes.apply(w, cfg, {"kind": "stop", "ids": [g1.id], "faction": "p2"}),
 		"★ 防冒充：别的阵营停不了我的单位")
 
-
-# ------------------------------------------------------------------
-# 辅助
-# ------------------------------------------------------------------
-
-## 关掉战斗的世界（读条 / 落点这类用例不该被敌人搅进来，见 pitfalls 5.11 / 5.34）
 func _quiet(cfg) -> RefCounted:
 	var c = require_config()
 	if c == null:
@@ -289,19 +237,14 @@ func _quiet(cfg) -> RefCounted:
 		c.combat_enabled = false
 	return require_world(c)
 
-
 func _give(w, food: float, gold: float) -> void:
 	w.resources["food"] = food
 	w.resources["gold"] = gold
 
-
-## 把区划产能清零（要「对账」的用例必须调它：否则 tick 期间资源与人口一直在涨）
 func _no_income(w) -> void:
 	for z in w.zones.zones:
 		z["production"] = {"food": 0.0, "gold": 0.0, "population": 0.0}
 
-
-## 一块**己方**（p1）且有中心的区划（大本营所在的出生区划）
 func _own_zone(w):
 	for z in w.zones.zones:
 		if String(z["owner"]) != "p1":
@@ -311,8 +254,6 @@ func _own_zone(w):
 		return z
 	return null
 
-
-## 一块不属于 p1 的区划（中心可有可无）
 func _foreign_zone(w):
 	for z in w.zones.zones:
 		if String(z["owner"]) == "p1":
@@ -320,8 +261,6 @@ func _foreign_zone(w):
 		return z
 	return null
 
-
-## 一格可通行的空地（没有建筑、没有区划中心）
 func _free_tile(w) -> Vector2i:
 	for ty in w.map.rows:
 		for tx in w.map.cols:
@@ -332,14 +271,11 @@ func _free_tile(w) -> Vector2i:
 			return Vector2i(tx, ty)
 	return Vector2i(-1, -1)
 
-
 func _tick_secs(w, secs: float) -> void:
 	var n: int = int(ceil(secs / DT))
 	for _i in n:
 		w.tick(DT)
 
-
-## 同上，但把这一段时间里 tick 交出来的事件**收集起来**（验事件时用）
 func _tick_collect(w, secs: float) -> Array:
 	var out: Array = []
 	var n: int = int(ceil(secs / DT))
@@ -348,7 +284,6 @@ func _tick_collect(w, secs: float) -> Array:
 			out.append(e)
 	return out
 
-
 func _count_events(events: Array, type_name: String) -> int:
 	var n := 0
 	for e in events:
@@ -356,8 +291,6 @@ func _count_events(events: Array, type_name: String) -> int:
 			n += 1
 	return n
 
-
-## 某类事件里的第一条（没有则空字典）
 func _first_event(events: Array, type_name: String) -> Dictionary:
 	for e in events:
 		if String(e.get("type", "")) == type_name:

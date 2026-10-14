@@ -29,16 +29,16 @@ const TYPE_WALL := "wall"
 const TYPE_TOWER := "tower"
 ## 区划中心：地图编辑器在「区块」页签里给每个区划指定的那一格。
 ##
-## ★ 它是**中立障碍**（用户原话：「任何单位均不可进入」「本身无血量且无敌，
-##   没有攻击手段」）：
-##     · owner = ""（不属于任何阵营）→ `same_side(任何人, "")` 恒为 false，
-##       于是格级与本体级**对谁都阻挡**，而且不会被索敌 / 被箭塔锁定 / 被拆；
-##     · 没有血量（`take_damage` 对它无效）、没有攻击手段（不进 update_towers）。
+## ★ 它是**中立物**（用户需求：无血量、无敌、没有攻击手段，且**不阻挡任何单位**）：
+##     · owner = ""（不属于任何阵营）→ 一切 `same_side*` 判据恒为 false，
+##       但本轮的 `blocks_*` / `body_blocks_*` 四个标志**都是 false** ⇒ 谁都能进、谁都能站；
+##     · 没有血量（`take_damage` 对它无效）、没有攻击手段（不进 update_towers）；
+##     · 不会被索敌 / 被箭塔锁定 / 被拆（`invulnerable`）。
 ## ★ 点它 = 看它所属区划的详情（`world.zone_center_at()` → HUD / 详情面板）。
 const TYPE_ZONE_CENTER := "zone_center"
 
 ## 建筑定义表。blocks_* 是**格级**、body_blocks_* 是**本体级** —— 别按阵营写死，
-## 两侧都走 same_side()，见下面 blocks() / body_blocks() 的注释。
+## 两侧都走 same_side_for_attack()，见下面 blocks() / body_blocks() 的注释。
 ##
 ## ★★ 可建造的建筑（大本营 / 城墙 / 箭塔）的定义在 config.json 的 `building` 段**
 ##    （editor：tools/unit_editor 的「建筑」页），这里是**内置兜底** ——
@@ -73,9 +73,10 @@ const DEFS := {
 	},
 	"zone_center": {
 		"id": "zone_center", "name": "区划中心", "buildable": false,
-		# ★ 两侧都 true：对**任何**阵营都封死整格（"任何单位均不可进入"）
-		"blocks_player": true, "blocks_enemy": true,
-		"body_blocks_player": true, "body_blocks_enemy": true,
+		# ★ 两侧都 false：**不阻挡任何单位**（本格可通行、本体也不挡移动）。
+		#   它仍然是无血量 / 无敌的中立物（见 take_damage），只是不再挡路。
+		"blocks_player": false, "blocks_enemy": false,
+		"body_blocks_player": false, "body_blocks_enemy": false,
 		# 无血量 / 无敌（见 take_damage）；也没有攻击手段
 		"invulnerable": true,
 	},
@@ -275,24 +276,26 @@ func finish_construction() -> void:
 
 ## 该建筑**整格**是否阻挡某个阵营的单位（只给 A* 用）。
 ##
-## ★★ 判定基准必须是 `same_side(faction, owner)`（「是不是我自己人」），
-##    **不是** `faction == 'player'`。
-##    原来只有两个阵营时这两种写法等价（城墙的 blocks_player=false / blocks_enemy=true
-##    恰好就是「自己人不挡、外人挡」），所以单机行为逐位不变；
-##    但联机下 p2 的城墙对 p1 必须阻挡，旧写法会错误地放行 —— 见 docs/pitfalls.md 3.7。
+## ★★ 判定基准是 `same_side_for_attack(faction, owner)`（「是不是自己人**或盟友**」），
+##    **不是** `faction == 'player'`，也**不再是**严格的 `same_side`。
+##    · 同阵营：城墙 `blocks_player=false` ⇒ 放行（与从前一致）；
+##    · 盟友：现在也走 `blocks_player` ⇒ 放行（「同边的单位可以跨越同边的建筑」）；
+##    · 其它（敌对 / 中立）：走 `blocks_enemy` ⇒ 挡死。
+##    ⚠️ 旧写法用 `same_side`（严格 a==b）时盟友互相阻挡；本轮按需求改成盟友也放行。
 ##
 ## ⚠️ 大本营 / 箭塔在这里**对谁都返回 false**：它们本体小于一格，整格不封，
 ##    真正的阻挡交给 body_blocks() + 移动碰撞（见文件头）。
 func blocks(faction: String) -> bool:
-	if FactionRes.same_side(faction, owner):
+	if FactionRes.same_side_for_attack(faction, owner):
 		return bool(def().get("blocks_player", true))
 	return bool(def().get("blocks_enemy", true))
 
 
 ## 该建筑的**本体**是否阻挡某个阵营（只给移动碰撞用）。
 ## 城墙 body_scale = 1.0，所以它这里与 blocks() 等价；大本营 / 箭塔只挡敌方。
+## ★ 判据与 `blocks()` 逐字一致：`same_side_for_attack`（同阵营**或盟友**放行）。
 func body_blocks(faction: String) -> bool:
-	if FactionRes.same_side(faction, owner):
+	if FactionRes.same_side_for_attack(faction, owner):
 		return bool(def().get("body_blocks_player", false))
 	return bool(def().get("body_blocks_enemy", true))
 
