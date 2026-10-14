@@ -271,12 +271,8 @@ func _test_vision() -> void:
 		"★★ 没写 / 删掉 vision → 退回 fog.vision_building（编辑器里「清空」那一下）")
 
 	var w3 = require_world(cfg3)
-	var t3 = null
-	for bb in w3.building_list:
-		if bb.type == "tower" and bb.owner == FactionRes.DEFAULT_FACTION:
-			t3 = bb
-			break
-	ok(t3 != null, "（前提）开局有己方箭塔")
+	var t3 = _own_building(w3, "tower")
+	ok(t3 != null, "（前提）拿得到己方箭塔")
 	if t3 != null:
 		near(t3.vision, 12.0, 1e-6,
 			"★★ 箭塔身上带着自己那个视野（出生时从 config 抄到建筑身上）")
@@ -293,6 +289,21 @@ func _test_vision() -> void:
 			var u = own_units[0]
 			ok(w2.fog.tile_visible(FactionRes.DEFAULT_FACTION, u.tx, u.ty),
 				"★ 自己人站的那一格一定有视野")
+
+## 找一栋己方的某类建筑；没有就现造一栋（开局不再自动生成防御阵地）。
+func _own_building(w, t: String):
+	for b in w.building_list:
+		if b != null and b.alive and b.type == t and String(b.owner) == w.my_faction:
+			return b
+	for y in w.map.rows:
+		for x in w.map.cols:
+			if not w.can_build_at(x, y):
+				continue
+			var nb = w.add_building(t, x, y, w.my_faction, true, true)
+			if nb != null:
+				return nb
+	return null
+
 
 func _test_new_building() -> void:
 	var cfg = require_config()

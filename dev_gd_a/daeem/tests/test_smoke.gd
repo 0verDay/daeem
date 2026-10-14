@@ -198,9 +198,8 @@ func _cases() -> void:
 	var layout = m.spawn_layout_for("p1", "p1")
 	v2i_eq(layout["base"], declared_p1, "p1 大本营就在地图指定的那一格")
 	eq(layout["spawns"].size(), 3, "p1 有 3 个将领站位")
-	ok((layout["defenses"] as Array).size() > 0,
-		"★ 带 faction_bases 的地图：出生点自带防御阵地（%d 个）"
-		% (layout["defenses"] as Array).size())
+	ok(not layout.has("defenses"),
+		"★ 出生点**不再**自动生成防御阵地（城墙 / 箭塔）")
 
 	ok(not m.has_declared_base(), "★ 发布图里没有老式 base 字段")
 	eq(m.faction_bases.size(), 2, "★ 发布图带 faction_bases（p1 / p2 两个）")
@@ -212,6 +211,4 @@ func _cases() -> void:
 	var p2_layout = m.spawn_layout_for("p2", "p1")
 	ok(p2_layout["base"] != p1_layout["base"], "p2 的大本营与 p1 不重合")
 	eq(p2_layout["spawns"].size(), 3, "p2 也是 3 个将领站位")
-	ok((p2_layout["defenses"] as Array).size() > 0, "p2 自带防御阵地")
-	for d in (p2_layout["defenses"] as Array):
-		ok(m.terrain_walkable(int(d["x"]), int(d["y"])), "p2 的防御建筑落在可通行格上")
+	ok(not p2_layout.has("defenses"), "p2 也不再自带防御阵地")

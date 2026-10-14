@@ -293,7 +293,7 @@ func _player_wall(w):
 		if b.alive and b.type == BuildingRes.TYPE_WALL \
 				and String(b.owner) == w.my_faction:
 			return b
-	return null
+	return _build_wall_near(w)      # 开局不再自动生成防御阵地 → 没有就现造一栋
 
 func _first_retinue(w):
 	for u in w.units:
@@ -306,7 +306,7 @@ func _build_wall_near(w):
 		for x in w.map.cols:
 			if not w.can_build_at(x, y):
 				continue
-			var b = w.add_building(BuildingRes.TYPE_WALL, x, y, w.my_faction, true)
+			var b = w.add_building(BuildingRes.TYPE_WALL, x, y, w.my_faction, true, true)
 			if b != null:
 				return b
 	return null

@@ -973,8 +973,9 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 	main.hud.remove_child(fresh)
 	fresh.queue_free()
 
-	var plain_b = _plain_building(world)
-	ok(plain_b != null, "地图上找得到一栋普通建筑（城墙 / 箭塔）")
+	# 开局不再自动生成防御阵地 → 需要一栋己方普通建筑时现造一栋
+	var plain_b = _ensure_own_building(world, "wall")
+	ok(plain_b != null, "拿得到一栋己方普通建筑（城墙 / 箭塔）")
 	if plain_b != null:
 		main.input_ctrl.select_building(plain_b)
 		main.hud.refresh()
@@ -995,9 +996,9 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 		eq(card.cell_label(0), "升级%s" % plain_b.display_name(),
 			"★ 格子上写着「升级%s」" % plain_b.display_name())
 
-	var wall_b = _building_of_type(world, "wall")
-	var tower_b = _building_of_type(world, "tower")
-	ok(wall_b != null and tower_b != null, "（前提）地图上同时有城墙与箭塔")
+	var wall_b = _ensure_own_building(world, "wall")
+	var tower_b = _ensure_own_building(world, "tower")
+	ok(wall_b != null and tower_b != null, "（前提）拿得到己方的城墙与箭塔")
 	if wall_b != null and tower_b != null:
 		eq(wall_b.type, "wall", "（前提）第 1 栋是城墙")
 		eq(tower_b.type, "tower", "（前提）第 2 栋是箭塔")
@@ -1163,18 +1164,19 @@ func _eq_tech_page(main, where: String) -> void:
 	v2_near(g_rect.position, c0.position, 1.0,
 		"%s：★ 科技九格的左上角与命令卡重合" % where)
 
-func _plain_building(world):
+## 找一栋**己方**的普通建筑（城墙 / 箭塔）；没有就现造一栋 —— 开局不再自动在大本营旁
+## 生成防御阵地了，所以「地图上有一栋己方城墙 / 箭塔」这件事得自己保证。
+func _ensure_own_building(world, t: String):
 	for b in world.building_list:
-		if b == null or not b.alive:
-			continue
-		if b.type == "wall" or b.type == "tower":
+		if b != null and b.alive and b.type == t and String(b.owner) == world.my_faction:
 			return b
-	return null
-
-func _building_of_type(world, t: String):
-	for b in world.building_list:
-		if b != null and b.alive and b.type == t:
-			return b
+	for y in world.map.rows:
+		for x in world.map.cols:
+			if not world.can_build_at(x, y):
+				continue
+			var nb = world.add_building(t, x, y, world.my_faction, true, true)
+			if nb != null:
+				return nb
 	return null
 
 func _zone_with_center_of_other_kind(world, zone):
@@ -1608,11 +1610,7 @@ func _test_upgrade_via_card(main) -> void:
 	world.resources["food"] = 5000.0
 	world.resources["gold"] = 5000.0
 
-	var wall = null
-	for b in world.building_list:
-		if b.alive and b.type == BuildingRes.TYPE_WALL and String(b.owner) == world.my_faction:
-			wall = b
-			break
+	var wall = _ensure_own_building(world, "wall")
 	ok(wall != null, "有一栋己方城墙")
 	if wall == null:
 		return

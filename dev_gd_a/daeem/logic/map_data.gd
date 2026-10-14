@@ -706,7 +706,7 @@ func _walkable_or_negative(x: int, y: int) -> bool:
 	return terrain.has(x, y) and terrain_walkable(x, y)
 
 
-## 某一方的出生点：大本营 + 3 个将领站位 + 防御阵地（城墙 + 箭塔）。
+## 某一方的出生点：大本营 + 3 个将领站位。
 ##
 ## ★ 判定顺序（**这张地图说了算**）：
 ##   1. 地图在 `faction_bases` 里给这一方指定过大本营 → 就用它（编辑器保证每一方都有）；
@@ -736,7 +736,7 @@ func spawn_layout_for(faction: String, primary: String) -> Dictionary:
 		for s in general_spawns:
 			var w := nearest_walkable(s.x, s.y)
 			spawns.append(w if w.x >= 0 else b)
-		return {"base": b, "spawns": spawns, "defenses": []}
+		return {"base": b, "spawns": spawns}
 
 	# 其他玩家：按阵营序号从 pvp_points 稳定取点（不依赖 base，避免双方重合）
 	var n := 2
@@ -752,7 +752,7 @@ func spawn_layout_for(faction: String, primary: String) -> Dictionary:
 	return _ring_layout(bb)
 
 
-## 大本营 + 围着它站一圈的将领站位 + 防御阵地。
+## 大本营 + 围着它站一圈的将领站位。
 ##
 ## 抽出来是因为「地图指定的阵营大本营」与「pvp_points 兜底的那种」用的是同一套摆法 ——
 ## 两份实现迟早会漂移，而这是**双方开局站位**，漂了就是「一边三个将领挤在一格」。
@@ -768,14 +768,4 @@ func _ring_layout(bb: Vector2i) -> Dictionary:
 		var w2 := nearest_walkable(bb.x + o.x, bb.y + o.y)
 		ring_spawns.append(w2 if w2.x >= 0 else bb)
 
-	# 防御阵地：大本营正上方一段城墙 + 旁边一座箭塔。
-	# 让开局有点「阵地感」，也顺带验证「城墙/箭塔按阵营归属」在多玩家下成立。
-	var defenses: Array[Dictionary] = []
-	var wall_at := Vector2i(bb.x, bb.y - 1)
-	if _walkable_or_negative(wall_at.x, wall_at.y):
-		defenses.append({"type": "wall", "x": wall_at.x, "y": wall_at.y})
-	var tower_at := Vector2i(bb.x + 2, bb.y)
-	if _walkable_or_negative(tower_at.x, tower_at.y):
-		defenses.append({"type": "tower", "x": tower_at.x, "y": tower_at.y})
-
-	return {"base": bb, "spawns": ring_spawns, "defenses": defenses}
+	return {"base": bb, "spawns": ring_spawns}

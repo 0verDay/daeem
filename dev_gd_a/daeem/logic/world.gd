@@ -1304,9 +1304,9 @@ func resource_pool_for(faction: String) -> Variant:
 ## 建立 / 重建「某一方」的基地与部队。
 ##
 ## 做四件事（顺序有讲究）：
-##   1. 算这一方的出生点（大本营 + 将领站位 + 防御阵地）—— map.spawn_layout_for
+##   1. 算这一方的出生点（大本营 + 将领站位）—— map.spawn_layout_for
 ##   2. 拆掉**这一方旧的**大本营（重建时会走这里，不能留下孤儿建筑，见 pitfalls 3.10）
-##   3. 建新的大本营（+ 防御阵地），并把坐标记进 faction_bases
+##   3. 建新的大本营，并把坐标记进 faction_bases
 ##   4. 建这一方的将领（多阵营时**追加**，不整体替换 —— 否则房主为 p2 建基地时
 ##      会把 p1 的部队全顶掉，变成「双方基地都在、但地图上只有一方的兵」）
 func apply_faction_layout(faction: String, primary: String = "", with_base: bool = true) -> void:
@@ -1337,15 +1337,15 @@ func apply_faction_layout(faction: String, primary: String = "", with_base: bool
 		if stale:
 			remove_building(b, true)
 
-	# 3) 大本营 + 防御阵地（silent：不写日志、不逐个重算区块归属；
+	# 3) 大本营（silent：不写日志、不逐个重算区块归属；
 	#    ★ instant：**开局自带的东西一律直接完工** —— 建造读条只属于玩家下达的建造命令，
 	#      否则开局的大本营要先傻站几秒（而 config 里 build_sec 默认就是 0，两者不冲突）
 	#    ★★ 本轮口径：**只有玩家方建大本营**（`with_base`）。AI 阵营照旧算出
 	#       `faction_spawns` / `faction_bases` 点位（将领站位要用），但不落地任何建筑。
+	#    ⚠️ 出生点**不再自动**在大本营旁生成城墙 / 箭塔（需求：去掉该逻辑）——
+	#      要防御工事就在地图 / 关卡的 `start_buildings` 里自己摆。
 	if with_base:
 		add_building(BuildingRes.TYPE_BASE, base_tile.x, base_tile.y, faction, true, true)
-		for d in (layout["defenses"] as Array):
-			add_building(String(d["type"]), int(d["x"]), int(d["y"]), faction, true, true)
 	building_revision += 1
 
 	# 4) 将领（多阵营时追加本阵营的，保留其他阵营的）

@@ -124,8 +124,8 @@ func _test_faction_bases(cfg) -> void:
 	v2i_eq(m.spawn_layout_for("p2", "p1")["base"], Vector2i(10, 6),
 		"★ p2 也用地图指定的那一格（不再走 pvp_points）")
 	eq(m.spawn_layout_for("p2", "p1")["spawns"].size(), 3, "指定大本营的那一方也有 3 个将领站位")
-	ok((m.spawn_layout_for("p2", "p1")["defenses"] as Array).size() > 0,
-		"指定大本营的那一方自带防御阵地（与 pvp_points 那条路一致）")
+	ok(not m.spawn_layout_for("p2", "p1").has("defenses"),
+		"指定大本营的那一方也**不再**自动生成防御阵地")
 
 	var path2 := _write_map("faction_bases_partial.json", {
 		"cols": 12, "rows": 8,
