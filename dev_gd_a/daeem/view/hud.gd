@@ -2450,10 +2450,11 @@ func _unit_text(shown, troops: Array) -> String:
 ## ★ 本版按需求**精简**：
 ##   · **去掉「归属」那一行**（点开区划详情的玩家早就知道这块地是谁的；
 ##     归属在整个底栏里也不再出现）；
-##   · ★★ 产能**直接给「资源每秒」的绝对值**（本次改版）：不再显示「每地块产能（合计 …）」
+##   · ★★ 产能**直接给「资源每秒」的绝对值**：不再显示「每地块产能（合计 …）」
 ##     那两个数 —— 每地块那个数来自地图编辑器的输入，对玩家没有意义。
-##     现在粮 / 金 / 人口三行报的都是**该区划每秒的实际产出**（每地块 × 地块数），
-##     与 `zone.production_of` 的收入口径一致；数字**不带单位**（用户口径）；
+##     现在粮 / 金 / 人口三行报的都是**该区划每秒的实际产出**（基础产能是固定值、
+##     特化每地块 × 地块数，本轮口径变更），与 `zone.production_of` 的收入口径一致；
+##     数字**不带单位**（用户口径）；
 ##   · ★★ **去掉开头那行「区划「xx」」**（用户原话：「选中区划中心时去掉『区划[xx]』文本」）——
 ##     区划名只在上方那一行（detail_panel.set_unit_name ← `_zone_title`，见 hud.refresh）
 ##     里出现一次，详情正文里不再重复；
@@ -2496,16 +2497,15 @@ func _zone_text(z: Dictionary, show_population: bool = true) -> String:
 		lines.append(spec_line)
 	var prod: Dictionary = z["production"]
 	var n := float(z["tile_count"])
-	# ★★ 产能显示口径（本次改版）：**直接给「资源每秒」的绝对值**，不再显示「每地块每秒」
-	#   那个中间数（原来写的是「粮食产能：0.075（合计 9.9）」）。
-	#   每地块产能 × 地块数 = 该区划每秒的实际产出 —— 与 `zone.production_of` 的收入口径一致。
-	#   ★ 特化效果先按**每地块**叠进基础产能（见 UpgradeRes.zone_spec_effect：
-	#     粮 / 金特化 = 每地块 +n、人口特化 = 人口产量 ×倍率），然后一起 × 地块数。
+	# ★★ 产能显示口径（本轮口径变更）：**基础产能是「该区划每秒的绝对值」**（不乘地块数）——
+	#   与 `zone.production_of` / `update_population` 的收入口径一致。
+	#   ★ 特化效果仍按**每地块**叠进（见 UpgradeRes.zone_spec_effect：
+	#     粮 / 金特化 = 每地块 +n ⇒ 要 × 地块数；人口特化 = 人口产量 × 倍率 ⇒ 不乘地块数）。
 	#     不这么做的话，玩家做完特化看到的数字纹丝不动，会以为特化没生效。
 	var eff: Dictionary = world.zone_spec_effect(z)
-	var food := (float(prod["food"]) + float(eff["food_per_tile"])) * n
-	var gold := (float(prod["gold"]) + float(eff["gold_per_tile"])) * n
-	var pop := float(prod["population"]) * float(eff["population_mult"]) * n
+	var food := float(prod["food"]) + float(eff["food_per_tile"]) * n
+	var gold := float(prod["gold"]) + float(eff["gold_per_tile"]) * n
+	var pop := float(prod["population"]) * float(eff["population_mult"])
 	var pop_cap := float(world.zones.population_cap_of(z))
 	lines.append("粮食产能：%s" % _fmt_num(food))
 	lines.append("黄金产能：%s" % _fmt_num(gold))

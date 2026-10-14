@@ -63,7 +63,7 @@ dev_gd_a/daeem/
 │   └── maps/                     #   ★ 地图：**一个地图一个目录**，目录名就是地图的 id
 │       ├── frontier/map.json     #     随游戏发布的默认地图（地形 / 区划网格 zones /
 │       │                         #     区划中心 zone_centers / 区划种类 zone_list[].kind /
-│       │                         #     区划产能 zone_list[].production（游戏以它为准）/
+│       │                         #     区划产能 zone_list[].production（**每秒绝对值，不乘地块数**；游戏以它为准）/
 │       │                         #     人口上限 zone_list[].population_cap（没填 = 1）/
 │       │                         #     各阵营大本营 faction_bases / name = 选择条上的显示名）
 │       └── arena/map.json        #     占位图（只为证明「多一个目录 = 多一个选项」）
@@ -97,7 +97,8 @@ dev_gd_a/daeem/
 │   │                             #      ≤ `zone.capture_radius_tiles`（= 1 ⇒ 3×3）才算「在场」；
 │   │                             #      没有中心的区块由 `_ensure_centers()` 装配时补一个
 │   │                             #   ★ 区划**种类**（kind：粮食 / 黄金 / 人口）只决定能做哪些特化，
-│   │                             #     产量永远以地图 zone_list[].production 的数字为准
+│   │                             #     产量以地图 zone_list[].production 的数字为准（**该区划每秒的
+│   │                             #     绝对值**，不乘地块数；只有特化 / 科技按每地块，见 route.md 44）
 │   │                             #   区块划分读地图的 zones 网格，老地图退回 6×4 均分占位
 │   │                             #   + ★ apply_initial_ownership()（地图写的开局归属）
 │   ├── economy.gd                #   资源产出 + 扣费（can_afford / spend / try_spend）
@@ -139,7 +140,8 @@ dev_gd_a/daeem/
 │   │                             #     再带整队行军（order_group_attack_move）：目标优先**多格 march_tiles**
 │   │                             #     （每一位将领随机挑一格）→ 单点 attack_target → 最近的敌方区划 / 大本营
 │   ├── expr.gd                   #   ★★ **线性表达式** `y = a·x + b` 的解析 / 求值（红点时间表用）
-│   ├── command_processor.gd      #   ★ 命令的唯一入口（move / build / demolish）
+│   ├── command_processor.gd      #   ★ 命令的唯一入口（move / build / demolish）；
+│   │                             #     build **只能建在自己的区划里**（route.md 第四十六节）
 │   ├── snapshot.gd               #   ★ to_snapshot / apply_snapshot（本轮用于调试，将来是网络包体）
 │   ├── crowd/                    #   ★ 群体碰撞的 C# 内核（1000 单位群编的性能前提）
 │   │   ├── CrowdKernel.cs        #     空间哈希 + 软分离 + 本体推出（语义与 collision.gd 一致）
@@ -453,7 +455,7 @@ Godot 里 DPR 由引擎处理，**但下面三条要原样继承**：
 | 建筑本体的尺寸（占一格的比例） | `data/config.json` → `building.<type>.body_scale` | 渲染与碰撞**共用**这一个数（`building.body_rect()` / `palette.building_rect()`） |
 | 地图上预置的建筑 | `data/maps/frontier/map.json` 的 `buildings` → `logic/map_data.gd` 的 `prefab_buildings` → `world.reset()` 放置 | 坐标与归属全在 JSON 里，代码不写死；不影响区块归属（zone 只认玩家阵营） |
 | 区块（`owner` / `progress_by`） | `logic/zone.gd` | **每阵营独立进度**，不要退回单一 `progress` |
-| 区划**中心** / 产能 / 人口 / **人口上限** | `logic/zone.gd`（区块字典的 `center` / `production` / `population` / `population_cap`）；中心那一格上另有一栋 `TYPE_ZONE_CENTER` 建筑 | 中心、产能与**人口上限**都来自地图 JSON（上限缺字段 = 1，见 route.md 16.1）；人口是**运行时累积**的，每区划各算各的，**涨到上限就停**（见 route.md 14.5 / 16.1）；目前**唯一的消耗**是招募（每个单位扣将领所在区划 1 人口） |
+| 区划**中心** / 产能 / 人口 / **人口上限** | `logic/zone.gd`（区块字典的 `center` / `production` / `population` / `population_cap`）；中心那一格上另有一栋 `TYPE_ZONE_CENTER` 建筑 | 中心、产能与**人口上限**都来自地图 JSON（上限缺字段 = 1，见 route.md 16.1）；★ 产能是**该区划每秒的绝对值**（不乘地块数；只有特化 / 科技按每地块，见 route.md 44）；人口是**运行时累积**的，每区划各算各的，**涨到上限就停**（见 route.md 14.5 / 16.1）；目前**唯一的消耗**是招募（每个单位扣将领所在区划 1 人口） |
 | 资源、己方地块数 | `logic/economy.gd` | 招募的扣费**不受** `economy.enabled` 影响（那个开关只管建造免费） |
 | ★★ **各阵营的资源库** | `logic/world.gd` 的 `resource_pool_for(faction)` | ★ 本轮口径：**AI 阵营没有资源库**（旧的 `ai_resources` 已删）—— 非本机席位一律返回 **null = 资源无限**（招募 / 再起 / 红点刷兵都不花钱）。只有玩家席位走 `resources` / `player_resources`（「谁下单、扣谁的钱」的唯一判据，见 route.md 33.4） |
 | ★★ **红点 AI 的状态** | `logic/world.gd` 的 `reddot_states[]`（每项 `{faction, params, spawn_region, elapsed, wave_index, waves_cap, serial}`），规则在 `logic/red_dot_ai.gd` | 它是**世界状态**（与 `tech.active_by_faction` 同源），不是界面状态。`setup()` 在 `world.reset()` 末尾建；每帧 `red_dot_ai.update()` 推进（累计时间 ≥ `wave_time_expr(第 n 波)` 就发一波，一帧可补发多波） |

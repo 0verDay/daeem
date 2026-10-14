@@ -1239,15 +1239,14 @@ class EditorApp:
                                        anchor="w", justify="left", wraplength=290)
         self.zone_kind_hint.pack(fill="x", pady=(2, 0))
 
-        # ---- 产能（**资源 / 秒**：区块整体的每秒产出；导出时按地块数换算回「每地块」）
+        # ---- 产能（**资源 / 秒**：该区划整体的每秒产出；**绝对值，不乘地块数**）
         #
-        # ★★ 本轮改单位（用户需求：「同步更改地图编辑器中的区划资源设置，单位要改」）：
-        #    输入框显示 / 接受的数 = **该区块每秒的实际产出**（与游戏 HUD 一致），
-        #    写回模型时按「区块地块数」换算成「每地块每秒」——`production` 字段的语义**没变**，
-        #    游戏侧与地图 JSON 都**不用动**。
-        #    ⚠️ 所以同一个「每地块」数字，区块越大、这里显示的值越大（成正比）。
+        # ★★ 本轮口径变更（用户需求）：基础产能不再按地块数计算 ——
+        #    输入框显示 / 接受的数 = **该区划每秒的实际产出**（绝对值），写回模型时**直接写**，
+        #    不再除以地块数。只有**特化**与**科技**仍按「每地块」算（在地图之外）。
+        #    ⚠️ 于是同一个数字不管区块多大都一样 —— 与游戏里 `zone.production_of` 的口径一致。
         psec = self._section(self.sidebar, "产能")
-        tk.Label(psec, text="该区划每秒的产出（绝对值；导出时按地块数换算回每地块）：",
+        tk.Label(psec, text="该区划每秒的产出（绝对值；不随地块数变化）：",
                  bg=UI["panel"], fg=UI["text_dim"], anchor="w", justify="left",
                  wraplength=290).pack(fill="x", pady=(0, 4))
         self._zone_prod_vars: Dict[str, tk.StringVar] = {}
@@ -1462,6 +1461,9 @@ class EditorApp:
         ⚠️ 显示的是**模型里的数字**（不是种类预设）——「设计师手改过的数字」必须一眼看见，
         因为需求写死了「最终游戏中的区划产量以下方数字输入框中的产量为准」。
         与预设不一致时会由 `_refresh_zone_kind_row()` 在种类那一栏补一句提示。
+
+        ★★ 单位是**该区划每秒的绝对值**（不乘地块数）—— 所以显示的就是模型里那个数，
+           **没有「先有地块才能设」这回事**（绝对值没有分母）。
         """
         for key in PRODUCTION_KEYS:
             var = getattr(self, "_zone_prod_vars", {}).get(key)
@@ -1472,14 +1474,8 @@ class EditorApp:
                 var.set("—")
                 entry.configure(state="disabled")
                 continue
-            tiles = int(zone.tile_count)
-            if tiles <= 0:
-                # 没有地块就没有「每秒产出」可言（绝对值的分母是 0）→ 禁用，等划了地块再设
-                var.set("—")
-                entry.configure(state="disabled")
-                continue
-            # ★ 显示的是**绝对值** = 每地块产能 × 地块数（本轮改单位，见 `_build_zone_sidebar` 那段）
-            value = self.model.zone_production(zone.zone_id, key) * tiles
+            # ★ 显示的就是**模型里的绝对值**（本轮口径变更，见 `_build_zone_sidebar` 那段）
+            value = self.model.zone_production(zone.zone_id, key)
             # 整数不显示小数点（1 而不是 1.0）—— 与导出的 JSON 保持同一种写法
             var.set(("%d" % value) if abs(value - round(value)) < 1e-9 else ("%g" % value))
             entry.configure(state="normal")
@@ -2717,8 +2713,7 @@ class EditorApp:
             self.commit_undo()
             self.mark_dirty()
             preset = self.model.zone_kind_production(kind)
-            self.status("「%s」改成%s，产能同步为该种类的预设值（每地块 %g / %g / %g；"
-                        "输入框里已按地块数换算成 ／秒）"
+            self.status("「%s」改成%s，产能同步为该种类的预设值（每秒 %g / %g / %g）"
                         % (zone.name, self.model.zone_kind_name(kind),
                            preset["food"], preset["gold"], preset["population"]))
         else:
@@ -2731,8 +2726,8 @@ class EditorApp:
     def apply_zone_production(self, key: str) -> None:
         """把输入框里的产能写回模型（Enter 或失焦触发）。
 
-        ★★ 输入框里是「**资源 / 秒**」绝对值（本轮改单位）；这里按地块数换算成
-           「每地块每秒」再写进模型 —— `production` 字段的语义没变（见 `_build_zone_sidebar`）。
+        ★★ 输入框里是「**该区划每秒的绝对值**」（本轮口径变更）—— 直接写进模型，
+           不再按地块数换算（`production` 字段存的就是这个绝对值）。
 
         ★ 输入非法（空 / 乱打字）时**不改动原值**，只提示一句并把输入框恢复成存储值 ——
           否则「手滑打错一个字就把产能清零」。
@@ -2750,28 +2745,19 @@ class EditorApp:
             invalid = float(text) != float(text)          # NaN
         except (TypeError, ValueError):
             invalid = True
-        tiles = int(zone.tile_count)
         if invalid:
             self.status("%s填的不是数字，保持原值 %g"
                         % (PRODUCTION_LABELS[key],
-                           self.model.zone_production(zone.zone_id, key) * tiles))
+                           self.model.zone_production(zone.zone_id, key)))
             self._refresh_zone_production_row(zone)
             return
-        if tiles <= 0:
-            # 绝对值除以 0 格没有意义 —— 先有地块才能谈「每秒产出」
-            self.status("「%s」还没有地块 —— 先在区块页签把地块划给它，再设产能" % zone.name)
-            self._refresh_zone_production_row(zone)
-            return
-        # ★ 绝对值 → 每地块：除以地块数
-        per_tile = float(text) / float(tiles)
         self.prepare_undo()
-        if self.model.set_zone_production(zone.zone_id, key, per_tile):
+        if self.model.set_zone_production(zone.zone_id, key, float(text)):
             self.commit_undo()
             self.mark_dirty()
-            self.status("「%s」的%s = %g／秒（%g／地块／秒 × %d 格）"
+            self.status("「%s」的%s = %g／秒"
                         % (zone.name, PRODUCTION_LABELS[key],
-                           self.model.zone_production(zone.zone_id, key) * tiles,
-                           self.model.zone_production(zone.zone_id, key), tiles))
+                           self.model.zone_production(zone.zone_id, key)))
         else:
             self.drop_undo()
         # 无论成败都把输入框刷成「模型里现在是什么」（夹过范围 / 非法输入都能看出来）

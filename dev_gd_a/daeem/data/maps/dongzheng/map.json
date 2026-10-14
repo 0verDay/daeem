@@ -974,9 +974,9 @@
         1
       ],
       "production": {
-        "food": 0.1,
-        "gold": 0.0,
-        "population": 0.0125
+        "food": 4,
+        "gold": 0,
+        "population": 0.4
       },
       "population_cap": 2,
       "x0": 0,
@@ -1117,9 +1117,9 @@
         1
       ],
       "production": {
-        "food": 0.0,
-        "gold": 0.1,
-        "population": 0.0125
+        "food": 0,
+        "gold": 4,
+        "population": 0.4
       },
       "population_cap": 2,
       "x0": 12,
@@ -1259,9 +1259,9 @@
         4
       ],
       "production": {
-        "food": 0.075,
-        "gold": 0.0,
-        "population": 0.01125
+        "food": 4,
+        "gold": 0,
+        "population": 0.4
       },
       "population_cap": 3,
       "x0": 0,
@@ -1474,9 +1474,9 @@
         4
       ],
       "production": {
-        "food": 0.0,
-        "gold": 0.075,
-        "population": 0.01125
+        "food": 0,
+        "gold": 4,
+        "population": 0.4
       },
       "population_cap": 3,
       "x0": 12,
@@ -1688,9 +1688,9 @@
         12
       ],
       "production": {
-        "food": 0.0,
-        "gold": 0.0,
-        "population": 0.0075
+        "food": 2,
+        "gold": 0,
+        "population": 1
       },
       "population_cap": 6,
       "x0": 0,
@@ -2239,9 +2239,9 @@
         12
       ],
       "production": {
-        "food": 0.04375,
-        "gold": 0.0,
-        "population": 0.00625
+        "food": 4,
+        "gold": 0,
+        "population": 0.4
       },
       "population_cap": 6,
       "x0": 12,
@@ -2789,9 +2789,9 @@
         0
       ],
       "production": {
-        "food": 0.0,
-        "gold": 0.0,
-        "population": 0.0175
+        "food": 2,
+        "gold": 0,
+        "population": 1
       },
       "population_cap": 2,
       "x0": 0,
@@ -2835,9 +2835,9 @@
         0
       ],
       "production": {
-        "food": 0.0,
-        "gold": 0.1125,
-        "population": 0.01125
+        "food": 0,
+        "gold": 4,
+        "population": 0.4
       },
       "population_cap": 2,
       "x0": 21,

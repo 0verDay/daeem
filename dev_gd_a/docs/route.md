@@ -4642,4 +4642,127 @@ F2 的将领原本就没带兵 ⇒ 保持不带，由阵地 AI 按 `min_retinue`
 ★ 都要保持：**玩法行为逐位不变**、`logic/` 纯 `RefCounted`、结果**确定性**（不许用随机数决定结果）。
 
 
+## 四十四、区划基础产能改为「固定值」+ 三档种类预设重定（这一轮）
 
+**需求**：① 人口区划也要有默认粮食产能（三档各产两份资源）；② **基础产能不再按地块数计算**
+（只有特化与科技还按每地块），改成一个**固定值**（预设固定，设计师也可以手改）。
+
+### 44.1 新口径（一句话 + 公式）
+
+`zone_list[].production` 的语义变了：它是「**该区划每秒的绝对值**」，**不乘地块数** ——
+一个区划不管是 3 格还是 130 格，基础产出都**一样**。
+
+| 量 | 公式 |
+|---|---|
+| 某方每秒粮食 | `Σ(己方各区划)[ base_food + 特化.food_per_tile × 地块数 ] + 科技.food_per_tile × 己方占领地块数` |
+| 某方每秒黄金 | 同上，gold |
+| 某区划人口增速 | `base_population × 特化.population_mult`（**不再 × 地块数**）；科技人口倍率仍只作用于己方占领区划 |
+| `zone_list[].production` | 三个绝对值（food/gold/population，单位「/秒」）；缺字段仍 = 0 |
+
+⇒ 只有**特化**（`food_per_tile` / `gold_per_tile` × 地块数；`population_mult` 倍率）
+与**科技**（每地块 × 己方占领地块数）仍与地块数有关。`production_of()` 里 **base 项不再乘
+`tile_count`**，只有特化项乘；`update_population()` 里**不再乘 `tile_count`**。
+
+### 44.2 三档预设（本轮初值，后续按玩法再调）
+
+| 种类 | 粮食 | 黄金 | 人口 |
+|---|---|---|---|
+| 粮食区划 | **4** /秒 | 0 | 0.4 /秒 |
+| 黄金区划 | 0 | **4** /秒 | 0.4 /秒 |
+| 人口区划 | 2 /秒 | 0 | **1** /秒 |
+
+（`data/config.json` 的 `zone_kind.list`；`tools/map_editor/model.py` 的 `FALLBACK_ZONE_KINDS` 同值。）
+
+### 44.3 落点
+
+| 文件 | 改动 |
+|---|---|
+| `data/config.json` | `zone_kind.list` 三条的 `production` / `line` / `_comment` 改成固定值口径 |
+| `logic/zone.gd` | `production_of()`：base 不再 × n、只有特化 × n；`update_population()`：去掉 `× tile_count` |
+| `logic/world.gd` | **代码不变**（科技那一份仍 × 己方占领地块数）；`_accumulate_production` / `_refresh_production` 注释同步 |
+| `logic/config.gd` / `economy.gd` / `upgrade.gd` | 注释同步（特化仍按每地块，写法不变） |
+| `view/hud.gd` | `_zone_text()`：`food = base + 特化.food_per_tile × n`、`gold` 同理、`pop = base × mult`（不再 × n） |
+| `tools/map_editor/{model,mapfile,app}.py` | 输入框就是「每秒绝对值」；`apply_zone_production` **直接写**（去掉 ÷ 地块数）；**去掉「0 地块禁用输入框」**；文案同步 |
+| `data/maps/*/*.json`（5 张） | 每个区划的 `production` **重置成其种类的预设**（见 44.4） |
+
+### 44.4 迁移方式（一条坑）
+
+⚠️ **不要用地图编辑器「打开 → 导出」做这一步**：编辑器会丢弃 `factions` / `faction_bases`
+（frontier 的自由对战出生点靠它），那会静默改变玩法。
+本轮用**一次性脚本**（`json.load` → 按每个区划的 `kind` 写入新预设 → `json.dump(indent=2,
+ensure_ascii=False)` + 结尾换行，**以 LF 写**）重写 `production`，只动这一处与 `_comment` 那一行。
+迁移后 `git diff --numstat` 只出现 `production` 数字与注释行的改动（无整文件换行churn）。
+改到的 5 张图：`frontier` / `dongzheng` / `crossing` / `arena` / `main_test`（共 51 个区划）。
+
+### 44.5 断言
+
+* 引擎：`tools/run-tests.ps1` **44 套 / 5303 项 / ALL PASS**
+  （随本轮改：`test_upgrade` 221、`test_logic` 276、`test_tech` 116、`test_ui` 1108、
+  `test_map_editor` 134；`test_downed` 加了一句 `_no_income` 对账 —— 它原来默认区划只产人口、
+  不产粮，本轮起人口区划也产固定粮食，跑几秒就会把这几个「只扣了 200」的对账断言顶掉）。
+* 编辑器：`python tools/map_editor/test_model.py` **312**、`test_app.py` **403** 全绿
+  （顺带把历史上一直红着的 zone_kind 预设期望一起对齐）。
+
+### 44.6 这一轮**不做**的
+
+| 不做 | 为什么 |
+|---|---|
+| 不改特化（`food_per_tile` / `gold_per_tile` / `population_mult`）与科技的每地块口径 | 需求只改「基础产能」这一档；特化 / 科技仍是「每地块」 |
+| 不改占领规则、人口上限、科技效果形状 | 与本次口径变更无关 |
+| 不新增 / 改名 JSON 字段 | `production` 名字保留，只改「它代表什么」 |
+| 不提前配平具体数值 | 本轮只落机制 + 预设初值（4/0.4/2/1），数值后续单独调 |
+
+
+## 四十五、修 bug：框选划到下方 UI 栏时「卡住 / 突变」（这一轮）
+
+**需求**：用户报「鼠标划到下方的 UI 栏内时，选框不会移动到 UI 栏内，但移过 UI 栏后，
+选框又会突变」。
+
+**根因**：底栏（详细信息 UI）那一块是 `Control.MOUSE_FILTER_STOP` —— 鼠标停在它上面时，
+移动事件被 GUI **吃掉**，`_unhandled_input` 根本收不到 ⇒ 框选那条状态机的终点停在原地；
+鼠标离开底栏、下一个移动事件到达时才一次性跳到新位置（看起来就是「突变」）。
+同一个坑对**中键拖拽平移**也成立。
+
+**修法**（只动视图层两处，`logic/` 一行没碰）：
+
+| 文件 | 改动 |
+|---|---|
+| `view/input_controller.gd` | 新增 `has_active_gesture()`（框选待定 / 正在拖框 / 中键平移中）—— 判据只在这一处维护 |
+| `view/game_scene3d.gd` | 新增 `_input()`：手势进行中把移动 / 抬起补一遍（`_input` 先于 GUI 派发）；只补「已经**在进行中**」的手势，且**不** `set_input_as_handled()` |
+
+**判据（写下来免得重踩）**：**拖动型交互不能假设自己一直收得到 `_unhandled_input` 的移动事件** ——
+鼠标一旦划过任何 `MOUSE_FILTER_STOP` 的控件（底栏 / 命令卡 / 小地图 / 左侧部队栏…），事件链就断。
+坑记在 [`pitfalls.md`](pitfalls.md) 5.62。
+
+**断言**：`tests/test_ui.gd` 新增 `_test_drag_over_ui`（7 项）：划到底栏上仍能越过阈值起框、
+终点跟着鼠标走（不再停在原地）、在底栏上松手照样结束、没有手势时 `_input` 不会自己起框。
+全量 `tools/run-tests.ps1` **44 套 / 5310 项 / ALL PASS**；`check-syntax.ps1` 全过。
+
+
+## 四十六、修 bug：不能在自己的区划之外建造（这一轮）
+
+**需求**：用户报「玩家可以在自己的区划外建造建筑，并让其区划立即转为己方区划 ——
+改为玩家不可在自己的区划外建造建筑」。
+
+**根因**：`world.can_build_at()` 只看地形 / 是否被占，**不看区划归属**；
+而 `add_building()`（非 silent）会调 `zones.refresh_building_ownership()` ——
+那一句对**无主**区块是「谁有建筑就归谁」。于是「在中立地上随手立一栋楼」= 把那一整块地
+**立即变自己的**（既成事实扩张）。
+
+**修法**：
+
+| 文件 | 改动 |
+|---|---|
+| `logic/world.gd` | `can_build_at(tx, ty, faction := "")` 新增**可选** faction：非空时要求那一格所属区块归它（新判据 `zone_allows_build`，同阵营口径，与 `leader_zone_owned` / `can_recruit_zone` 一致）。空串 = 不检查（世界装配 / 预置建筑 / 测试找空地） |
+| `logic/command_processor.gd` | `apply_build` 增加一条：`zone_allows_build(tx, ty, owner)` 不过 → `build_rejected`（reason `not_in_zone`） |
+| `view/input_controller.gd` + `view/overlay_view_3d.gd` | 建造预览也按 faction 判：划到中立 / 敌方区划上时预览当场显示为**无效（红）**，而不是点下去才静默失败 |
+
+★ 只挡**玩家建造命令**这一条路：`add_building(instant)` 的装配路径（大本营 / 防御阵地 /
+区划中心 / 测试布置）不经过 `apply_build`，不受影响；AI 也不走这条路。
+★ 「自己的区划」用**同阵营**（`same_side` = 完全同名）口径 —— 与「将领只能在己方区划里招募」
+（`leader_zone_owned`）同一条，不把盟友的地算成自己的。
+
+**断言**：`test_logic` 的建造用例改成「在自己区划里建」并新增两条
+（**不能在自己区划之外建造** / 那一格什么都没建出来）；`test_view` / `test_unit_editor` /
+`test_ui` 找空地时也改成按 faction 口径。全量 `tools/run-tests.ps1`
+**44 套 / 5314 项 / ALL PASS**；`check-syntax.ps1` 全过。

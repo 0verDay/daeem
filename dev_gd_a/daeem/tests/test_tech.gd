@@ -220,27 +220,26 @@ func _test_population_bonus(cfg) -> void:
 		(z["production"] as Dictionary)["population"] = 2.0
 		z["population"] = 0.0
 		z["population_cap"] = 1000.0
-	var n_mine := float(mine["tile_count"])
-	var n_theirs := float(theirs["tile_count"])
 
 	w.zones.update_population(1.0, w.my_faction, w.tech_population_mult())
-	near(float(mine["population"]), 2.0 * n_mine, 1e-6, "没科技时己方区划按基础速度涨")
-	near(float(theirs["population"]), 2.0 * n_theirs, 1e-6, "没科技时别人区划按基础速度涨")
+	near(float(mine["population"]), 2.0, 1e-6,
+		"没科技时己方区划按基础速度涨（固定 2/秒，不乘地块数）")
+	near(float(theirs["population"]), 2.0, 1e-6, "没科技时别人区划按基础速度涨")
 
 	for z in [mine, theirs]:
 		z["population"] = 0.0
 	ok(w.set_tech_active(T_POP, true), "启用「区划人口」")
 	near(w.tech_population_mult(), 1.1, 1e-6, "★ 人口增长倍率变成 1.1")
 	w.zones.update_population(1.0, w.my_faction, w.tech_population_mult())
-	near(float(mine["population"]), 2.0 * n_mine * 1.1, 1e-6,
+	near(float(mine["population"]), 2.0 * 1.1, 1e-6,
 		"★ 己方区划人口涨得快 10%")
-	near(float(theirs["population"]), 2.0 * n_theirs, 1e-6,
+	near(float(theirs["population"]), 2.0, 1e-6,
 		"★ 别人（无主 / 敌方）的区划**不受**加成")
 
 	for z in [mine]:
 		z["population"] = 0.0
 	w.tick(1.0)
-	near(float(mine["population"]), 2.0 * n_mine * 1.1, 1e-3, "★ world.tick 里同样生效")
+	near(float(mine["population"]), 2.0 * 1.1, 1e-3, "★ world.tick 里同样生效")
 
 	mine["population"] = float(mine["population_cap"]) - 0.001
 	w.zones.update_population(1.0, w.my_faction, w.tech_population_mult())
@@ -251,7 +250,7 @@ func _test_population_bonus(cfg) -> void:
 	ok(w.set_tech_active(T_POP, false), "弃用「区划人口」")
 	near(w.tech_population_mult(), 1.0, 1e-6, "倍率回到 1.0")
 	w.zones.update_population(1.0, w.my_faction, w.tech_population_mult())
-	near(float(mine["population"]), 2.0 * n_mine, 1e-6, "★ 弃用之后回到基础速度")
+	near(float(mine["population"]), 2.0, 1e-6, "★ 弃用之后回到基础速度")
 
 func _test_commands(cfg) -> void:
 	var w = _quiet(cfg)

@@ -1,7 +1,12 @@
 {
   "id": "frontier",
   "name": "边关",
-  "allies": [["enemy", "ai"]],
+  "allies": [
+    [
+      "enemy",
+      "ai"
+    ]
+  ],
   "general_spawns": [
     [
       1,
@@ -1385,9 +1390,9 @@
         0
       ],
       "production": {
-        "food": 0,
+        "food": 2,
         "gold": 0,
-        "population": 0.015
+        "population": 1
       },
       "population_cap": 2,
       "x0": 5,
@@ -1507,9 +1512,9 @@
         5
       ],
       "production": {
-        "food": 0.14,
+        "food": 4,
         "gold": 0,
-        "population": 0.012
+        "population": 0.4
       },
       "population_cap": 2,
       "x0": 5,
@@ -1629,9 +1634,9 @@
         0
       ],
       "production": {
-        "food": 0,
+        "food": 2,
         "gold": 0,
-        "population": 0.015
+        "population": 1
       },
       "population_cap": 2,
       "x0": 17,
@@ -1751,9 +1756,9 @@
         5
       ],
       "production": {
-        "food": 0,
+        "food": 2,
         "gold": 0,
-        "population": 0.015
+        "population": 1
       },
       "population_cap": 2,
       "x0": 17,
@@ -1873,9 +1878,9 @@
         4
       ],
       "production": {
-        "food": 0.06,
-        "gold": 0.06,
-        "population": 0.01
+        "food": 2,
+        "gold": 0,
+        "population": 1
       },
       "population_cap": 3,
       "x0": 10,
@@ -2091,9 +2096,9 @@
         11
       ],
       "production": {
-        "food": 0,
+        "food": 2,
         "gold": 0,
-        "population": 0.012
+        "population": 1
       },
       "population_cap": 3,
       "x0": 10,
@@ -2309,9 +2314,9 @@
         12
       ],
       "production": {
-        "food": 0,
+        "food": 2,
         "gold": 0,
-        "population": 0.015
+        "population": 1
       },
       "population_cap": 2,
       "x0": 5,
@@ -2431,9 +2436,9 @@
         17
       ],
       "production": {
-        "food": 0,
+        "food": 2,
         "gold": 0,
-        "population": 0.015
+        "population": 1
       },
       "population_cap": 2,
       "x0": 5,
@@ -2553,9 +2558,9 @@
         12
       ],
       "production": {
-        "food": 0,
+        "food": 2,
         "gold": 0,
-        "population": 0.015
+        "population": 1
       },
       "population_cap": 2,
       "x0": 17,
@@ -2675,9 +2680,9 @@
         17
       ],
       "production": {
-        "food": 0,
+        "food": 2,
         "gold": 0,
-        "population": 0.015
+        "population": 1
       },
       "population_cap": 2,
       "x0": 17,
@@ -2797,9 +2802,9 @@
         9
       ],
       "production": {
-        "food": 0,
+        "food": 2,
         "gold": 0,
-        "population": 0.015
+        "population": 1
       },
       "population_cap": 2,
       "x0": 0,
@@ -2920,8 +2925,8 @@
       ],
       "production": {
         "food": 0,
-        "gold": 0.08,
-        "population": 0.007
+        "gold": 4,
+        "population": 0.4
       },
       "population_cap": 3,
       "x0": 0,
@@ -3121,9 +3126,9 @@
         8
       ],
       "production": {
-        "food": 0,
+        "food": 2,
         "gold": 0,
-        "population": 0.015
+        "population": 1
       },
       "population_cap": 2,
       "x0": 22,
@@ -3243,9 +3248,9 @@
         13
       ],
       "production": {
-        "food": 0,
+        "food": 2,
         "gold": 0,
-        "population": 0.012
+        "population": 1
       },
       "population_cap": 3,
       "x0": 22,

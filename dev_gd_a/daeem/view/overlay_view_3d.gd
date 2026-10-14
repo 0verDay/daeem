@@ -708,7 +708,7 @@ func _draw_move_marks() -> void:
 func _draw_build_preview() -> void:
 	if build_type == "" or hover_tile.x < 0:
 		return
-	var ok: bool = world.can_build_at(hover_tile.x, hover_tile.y)
+	var ok: bool = world.can_build_at(hover_tile.x, hover_tile.y, world.my_faction)
 	var c := Color(0.45, 1.0, 0.5, 0.55) if ok else Color(1.0, 0.4, 0.4, 0.55)
 	var quad := _tile_screen_quad(hover_tile)
 	if quad.size() < 4:

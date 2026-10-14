@@ -1387,15 +1387,15 @@ def t_zone_center_and_production_ui() -> None:
         editor.redo()
         eq(editor.model.zone_center_of(b.zone_id), (2, 0), "★ 重做又回来")
 
-        # ---- 产能：输入框是「**资源/秒**」绝对值（本轮改单位）；写回模型时按地块数换算成「每地块」
+        # ---- 产能：输入框是「**资源/秒**」的**绝对值**；写回模型时**直接写**（不乘地块数）
         keys = [k for k in editor._zone_prod_vars.keys()]
         eq(keys, ["food", "gold", "population"], "三档产能输入框都在（粮食/黄金/人口）")
         select_zone(b)
         eq(b.tile_count, 1, "（前提）b 只有 1 格")
-        editor._zone_prod_vars["food"].set("2")
+        editor._zone_prod_vars["food"].set("3")
         editor.apply_zone_production("food")
-        eq(editor.model.zone_production(b.zone_id, "food"), 2.0,
-           "★ 填「2/秒」、1 格 → 模型里存 2/地块/秒")
+        eq(editor.model.zone_production(b.zone_id, "food"), 3.0,
+           "★ 填「3/秒」→ 模型里就存 3/秒（绝对值，与地块数无关）")
         editor._zone_prod_vars["population"].set("0.5")
         editor.apply_zone_production("population")
         eq(editor.model.zone_production(b.zone_id, "population"), 0.5, "★ 人口产能写进模型")
@@ -1404,20 +1404,21 @@ def t_zone_center_and_production_ui() -> None:
         # ---- 乱打字：不改原值，并把输入框刷回模型里的值（绝对值）
         editor._zone_prod_vars["food"].set("abc")
         editor.apply_zone_production("food")
-        eq(editor.model.zone_production(b.zone_id, "food"), 2.0, "★ 乱打字不会把产能弄坏")
-        eq(editor._zone_prod_vars["food"].get(), "2", "★ 输入框被刷回模型里的值")
+        eq(editor.model.zone_production(b.zone_id, "food"), 3.0, "★ 乱打字不会把产能弄坏")
+        eq(editor._zone_prod_vars["food"].get(), "3", "★ 输入框被刷回模型里的值")
 
         # ---- 换区划：输入框跟着换成那一个区划的产能
         select_zone(a)
-        eq(editor._zone_prod_vars["food"].get(), "0", "★ 换区划后显示的是它自己的产能")
-        # ★★ 换算（本轮改单位）：a 有 2 格 → 填「4/秒」= 2/地块/秒；显示回来仍是 4
+        eq(editor._zone_prod_vars["food"].get(), "2",
+           "★ 换区划后显示的是它自己的产能（默认人口区划预设：2/秒 粮食）")
+        # ★★ 本轮口径：输入框里就是绝对值，写回**不再按地块数换算**
         eq(a.tile_count, 2, "（前提）a 有 2 格")
         editor._zone_prod_vars["food"].set("4")
         editor.apply_zone_production("food")
-        eq(editor.model.zone_production(a.zone_id, "food"), 2.0,
-           "★★ 「4/秒」÷ 2 格 = 2/地块/秒 存进模型")
-        eq(editor._zone_prod_vars["food"].get(), "4", "★★ 输入框显示回绝对值 4/秒")
-        ok("／秒" in editor.status_var.get(), "状态栏按「／秒 / ／地块／秒 × 格数」报")
+        eq(editor.model.zone_production(a.zone_id, "food"), 4.0,
+           "★ 「4/秒」直接存进模型（绝对值，不除以地块数）")
+        eq(editor._zone_prod_vars["food"].get(), "4", "★ 输入框显示 4/秒")
+        ok("／秒" in editor.status_var.get(), "状态栏按「／秒」报")
 
         # ---- 人口上限：一个输入框，作用于列表里选中的那个区块
         eq(editor.zone_cap_var.get(), "1",
@@ -1468,8 +1469,8 @@ def t_zone_kind_ui() -> None:
     数字输入框中的产量为准」。
 
     所以这条测试钉住三件事：
-      ① 单选钮 = 种类（新建的区划默认停在人口区划上，输入框显示的是它的预设值换算后的 ／秒）；
-      ② 点一颗单选钮 → 种类变了 **且** 三个输入框同步成那一档的预设值（× 地块数）；
+      ① 单选钮 = 种类（新建的区划默认停在人口区划上，输入框显示的就是它的预设绝对值）；
+      ② 点一颗单选钮 → 种类变了 **且** 三个输入框同步成那一档的预设绝对值；
       ③ 之后手改数字 → 种类不动、导出写的是**数字**（不是预设）。
     另外撤销要把「种类 + 数字」一起退回去（与产能 / 人口上限同一套）。
     """
@@ -1484,20 +1485,19 @@ def t_zone_kind_ui() -> None:
         editor.zone_tree.selection_set(str(zone.zone_id))
         editor.on_zone_select(None)
         editor.refresh_zone_panel()
-        # ★ 给它划 2 格（区块页左键点地块 = 划给当前选中的区块）——
-        #   产能是「资源/秒」绝对值，没有地块就没有绝对产值可谈（输入框会禁用），所以先划格。
+        # ★ 给它划 2 格（区块页左键点地块 = 划给当前选中的区块）
         click_at(editor, 0, 0)
         click_at(editor, 1, 0)
-        eq(zone.tile_count, 2, "（前提）zone 划了 2 格 —— 产能是绝对值，要先有地块")
+        eq(zone.tile_count, 2, "（前提）zone 划了 2 格")
 
         # ---- ① 新建的区划默认是人口区划，输入框显示的就是它的预设数字
         eq(editor.model.zone_kind(zone.zone_id), "population",
            "★ 新建的区划默认是人口区划（用户确认：没有默认区划了）")
         eq(editor.zone_kind_var.get(), "population", "单选钮停在「人口区划」上")
-        # ★ 输入框是「资源/秒」绝对值：预设 0.015/地块 × 2 格 = 0.03/秒
-        eq(editor._zone_prod_vars["population"].get(), "0.03",
-           "★ 输入框里是人口区划的预设值换算成本区块的 ／秒（0.015 × 2 格）")
-        eq(editor._zone_prod_vars["food"].get(), "0", "粮食那一档是 0")
+        # ★ 输入框是「资源/秒」绝对值：人口区划预设 = 每秒 2 粮 + 1 人口
+        eq(editor._zone_prod_vars["population"].get(), "1",
+           "★ 输入框里就是人口区划的预设（每秒 1 人口，绝对值，与地块数无关）")
+        eq(editor._zone_prod_vars["food"].get(), "2", "粮食那一档是 2（人口区划也产粮）")
         eq(editor.zone_kind_hint.cget("text"), "", "新建的区划与预设一致 → 不提示「已手改」")
         # ---- 几何：三颗单选钮都在侧边栏宽度之内、从上到下排列（新控件不许溢出/叠住）
         kinds = [k for k in ("food", "gold", "population") if k in editor._zone_kind_buttons]
@@ -1514,35 +1514,34 @@ def t_zone_kind_ui() -> None:
         editor._zone_kind_buttons["food"].invoke()
         eq(editor.model.zone_kind(zone.zone_id), "food", "★ 点单选钮 = 换种类")
         eq([editor.model.zone_production(zone.zone_id, k)
-            for k in ("food", "gold", "population")], [0.12, 0.0, 0.012],
-           "★ 选粮食区划 → 产能数字同步成 0.12 粮食 + 0.012 人口（所有区划都带一份人口基础产能）")
-        eq(editor._zone_prod_vars["food"].get(), "0.24",
-           "输入框显示同步后的粮食产能（0.12/地块 × 2 格 = 0.24/秒）")
-        eq(editor._zone_prod_vars["population"].get(), "0.024",
-           "输入框显示同步后的 0.012/地块 × 2 格 = 0.024/秒")
+            for k in ("food", "gold", "population")], [4.0, 0.0, 0.4],
+           "★ 选粮食区划 → 产能数字同步成 每秒 4 粮食 + 0.4 人口（所有区划都带一份人口基础产能）")
+        eq(editor._zone_prod_vars["food"].get(), "4",
+           "输入框显示同步后的粮食产能 4/秒（绝对值，不乘地块数）")
+        eq(editor._zone_prod_vars["population"].get(), "0.4",
+           "输入框显示同步后的 0.4 人口/秒")
         eq(editor.zone_kind_hint.cget("text"), "", "刚同步过 → 仍然与预设一致")
 
-        # ---- ③ 手改数字（输入框是绝对值）：种类不动，导出写的是「每地块」数字
-        #      填「2.5/秒」、本区块 2 格 → 模型里 1.25/地块/秒
+        # ---- ③ 手改数字（输入框就是绝对值）：种类不动，导出写的就是那个绝对值
         editor._zone_prod_vars["gold"].set("2.5")
         editor.apply_zone_production("gold")
-        eq(editor.model.zone_production(zone.zone_id, "gold"), 1.25,
-           "★ 手改的黄金产能生效（2.5/秒 ÷ 2 格 = 1.25/地块/秒）")
+        eq(editor.model.zone_production(zone.zone_id, "gold"), 2.5,
+           "★ 手改的黄金产能生效（2.5/秒，不除以地块数）")
         eq(editor.model.zone_kind(zone.zone_id), "food", "★ 手改数字**不会**改种类")
         ok("手改" in editor.zone_kind_hint.cget("text"),
            "★ 数字与预设不一致时种类那一栏给提示（%s）" % editor.zone_kind_hint.cget("text"))
         data = mapfile.model_to_dict(editor.model)
         entry = {z["id"]: z for z in data["zone_list"]}[zone.zone_id]
         eq(entry["kind"], "food", "导出写种类")
-        eq(entry["production"], {"food": 0.12, "gold": 1.25, "population": 0.012},
-           "★ 导出的是「每地块」数字（输入框 2.5/秒 ÷ 2 格 = 1.25）")
+        eq(entry["production"], {"food": 4, "gold": 2.5, "population": 0.4},
+           "★ 导出写的就是输入框里的绝对值（粮食 4 / 黄金 2.5 / 人口 0.4）")
 
         # ---- 撤销：手改数字一步、换种类一步，两步都能退
         editor.undo()
         eq(editor.model.zone_production(zone.zone_id, "gold"), 0.0, "★ Ctrl+Z 退掉手改的数字")
         editor.undo()
         eq(editor.model.zone_kind(zone.zone_id), "population", "★ 再退一步：种类回到人口区划")
-        eq(editor.model.zone_production(zone.zone_id, "population"), 0.015,
+        eq(editor.model.zone_production(zone.zone_id, "population"), 1.0,
            "★ 数字也跟着回到人口区划的预设")
         eq(editor.zone_kind_var.get(), "population", "单选钮跟着退回去")
         editor.redo()

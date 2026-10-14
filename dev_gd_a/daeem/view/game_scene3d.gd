@@ -798,6 +798,29 @@ func _unhandled_input(event: InputEvent) -> void:
 		input_ctrl.handle_mouse_motion(event)
 
 
+## ★★ 手勢（框选 / 中键平移）**进行中**时，把移动与抬起在**更早的 `_input` 阶段**补一遍。
+##
+## 为什么需要它（用户报的 bug：「鼠标划到底栏上时框选不动，划过去之后又突变」）：
+##   底栏（详细信息 UI）那一块是 `MOUSE_FILTER_STOP` —— 鼠标移到它上面时，移动事件被 GUI
+##   **吃掉**，`_unhandled_input` 根本收不到 ⇒ 框停在原地；鼠标离开底栏、下一个移动事件到达时
+##   才一次性跳到新位置（看起来就是「突变」）。`_input` 在 GUI **之前**派发，能拿到那些事件。
+##
+## ⚠️ 只补「**已经在进行中**」的手势：按下那一下仍然走 `_unhandled_input` ——
+##    点在 UI 上就该是点 UI，不能变成「从 UI 上起一个框 / 一次平移」。
+## ⚠️ **不** `set_input_as_handled()`：事件照旧继续交给 GUI（手势只是「顺带更新一下自己的
+##    终点」），所以 UI 的悬停 / 点击行为一个字都没变。重复派发也安全 ——
+##    `handle_mouse_motion` 与 `handle_mouse_button` 都是幂等的（见 `is_panning()` 那条差分）。
+func _input(event: InputEvent) -> void:
+	if input_ctrl == null or not input_ctrl.has_active_gesture():
+		return
+	if event is InputEventMouseMotion:
+		input_ctrl.handle_mouse_motion(event)
+	elif event is InputEventMouseButton:
+		var mb := event as InputEventMouseButton
+		if mb.button_index == MOUSE_BUTTON_LEFT or mb.button_index == MOUSE_BUTTON_MIDDLE:
+			input_ctrl.handle_mouse_button(event)
+
+
 ## 这个鼠标按键是不是**滚轮**（只有滚轮会缩放地图；其它按键照旧交给 input_controller）
 func _is_wheel(event: InputEventMouseButton) -> bool:
 	match event.button_index:

@@ -73,15 +73,17 @@ func _test_zone_kind_table(cfg) -> void:
 	ok(not cfg.has_zone_kind("none"), "★ 没有「默认区划」这一档了")
 	eq(cfg.zone_kind_name("food"), "粮食区划", "种类名字来自 config")
 	var pf: Dictionary = cfg.zone_kind_production("food")
-	near(float(pf["food"]), 0.12, 1e-6, "★ 粮食区划预设 = 每地块每秒 0.12 粮食")
+	near(float(pf["food"]), 4.0, 1e-6, "★ 粮食区划预设 = 每秒 4 粮食（绝对值，不乘地块数）")
 	near(float(pf["gold"]), 0.0, 1e-6, "粮食区划不产黄金")
-	near(float(pf["population"]), 0.012, 1e-6,
-		"★ 粮食区划也带 0.012 人口（所有区划都带一份人口产能）")
+	near(float(pf["population"]), 0.4, 1e-6,
+		"★ 粮食区划也带 0.4 人口（所有区划都带一份人口产能）")
 	var pg: Dictionary = cfg.zone_kind_production("gold")
-	near(float(pg["gold"]), 0.12, 1e-6, "★ 黄金区划预设 = 每地块每秒 0.12 黄金")
-	near(float(pg["population"]), 0.012, 1e-6, "★ 黄金区划也带 0.012 人口")
+	near(float(pg["gold"]), 4.0, 1e-6, "★ 黄金区划预设 = 每秒 4 黄金")
+	near(float(pg["population"]), 0.4, 1e-6, "★ 黄金区划也带 0.4 人口")
 	var pp: Dictionary = cfg.zone_kind_production("population")
-	near(float(pp["population"]), 0.015, 1e-6, "★ 人口区划预设 = 每地块每秒 0.015 人口")
+	near(float(pp["population"]), 1.0, 1e-6, "★ 人口区划预设 = 每秒 1 人口")
+	near(float(pp["food"]), 2.0, 1e-6, "★ 人口区划也产粮（每秒 2 粮食，本轮新口径）")
+	near(float(pp["gold"]), 0.0, 1e-6, "人口区划不产黄金")
 	for kind_id in ["food", "gold", "population"]:
 		ok(float(cfg.zone_kind_production(kind_id)["population"]) > 0.0,
 			"★ %s 的预设人口产能 > 0（实际 %s）"
@@ -96,7 +98,7 @@ func _test_zone_kind_table(cfg) -> void:
 	ok(cfg.zone_kind_allows_spec("population", "gold"), "人口区划能做黄金特化")
 	ok(not cfg.zone_kind_allows_spec("population", "population"), "★ 人口区划**不能**做人口特化")
 	eq(cfg.zone_kind_name("banana"), "人口区划", "认不出的种类 → 默认那一档")
-	near(float(cfg.zone_kind_production("banana")["population"]), 0.015, 1e-9,
+	near(float(cfg.zone_kind_production("banana")["population"]), 1.0, 1e-9,
 		"认不出的种类 → 拿默认那一档的预设值")
 
 	var w = _quiet(cfg)
@@ -268,7 +270,6 @@ func _test_specialize_flow(cfg) -> void:
 	for z in [mine, other]:
 		z["production"] = {"food": 2.0, "gold": 3.0, "population": 1.0}
 	var n_mine := float(mine["tile_count"])
-	var n_other := float(other["tile_count"])
 	var f: String = String(w.my_faction)
 	var zid := int(mine["id"])
 
@@ -312,9 +313,9 @@ func _test_specialize_flow(cfg) -> void:
 		"人口倍率不受粮食特化影响")
 
 	var rates: Dictionary = w.zones.production_of(f)
-	near(float(rates["food"]), (2.0 + 0.05) * n_mine + 2.0 * n_other, 1e-3,
-		"★ 粮食产出 = 本区块（2 + 0.05）× 地块 + 别的区块不变")
-	near(float(rates["gold"]), 3.0 * n_mine + 3.0 * n_other, 1e-3, "黄金产出不变")
+	near(float(rates["food"]), (2.0 + 0.05 * n_mine) + 2.0, 1e-3,
+		"★ 粮食产出 = 本区块（固定基础 2 + 特化 0.05×地块）+ 别的区块固定 2")
+	near(float(rates["gold"]), 3.0 + 3.0, 1e-3, "★ 黄金产出不变（两块各固定 3，无特化）")
 
 	eq(UpgradeRes.can_specialize(w, mine, "gold", f), "spec_done",
 		"★ 特化过的区块无法再次特化（spec_done）")
@@ -355,10 +356,9 @@ func _test_specialize_flow(cfg) -> void:
 	z2["population"] = 0.0
 	z3["population"] = 0.0
 	w2.zones.update_population(1.0, w2.my_faction, w2.tech_population_mult())
-	near(float(z2["population"]), 2.0 * float(z2["tile_count"]) * 1.125, 1e-3,
-		"★ 本区块人口涨快 12.5%")
-	near(float(z3["population"]), 2.0 * float(z3["tile_count"]), 1e-3,
-		"★ 别的区块不受影响")
+	near(float(z2["population"]), 2.0 * 1.125, 1e-3,
+		"★ 本区块人口涨快 12.5%（基础产能固定，不乘地块数）")
+	near(float(z3["population"]), 2.0, 1e-3, "★ 别的区块不受影响")
 
 	mine["owner"] = "p2"
 	near(UpgradeRes.zone_spec_effect(mine, cfg)["food_per_tile"], 0.05, 1e-6,
@@ -375,15 +375,15 @@ func _test_spec_stacks_with_tech(cfg) -> void:
 	mine["production"] = {"food": 1.0, "gold": 0.0, "population": 0.0}
 	var base: float = float(w.zones.production_of(w.my_faction)["food"])
 	var tiles_n := float(mine["tile_count"])
-	near(base, 1.0 * tiles_n, 1e-3, "（前提）只有本区块的产能")
+	near(base, 1.0, 1e-3, "（前提）本区块固定产能 1（绝对值，不乘地块数）")
 	w.start_zone_specialize(int(mine["id"]), "food")
 	w.tick(BIG_STEP)
 	near(w.production_food, base + 0.05 * tiles_n, 1e-3,
-		"★ 只有特化时：本区块每地块 +0.05 粮食")
+		"★ 只有特化时：固定基础 1 + 本区块每地块 +0.05")
 	ok(w.set_tech_active("food_1", true), "再启用科技「粮食 +0.05/地块/秒」")
 	var tiles: int = int(w.owned_tiles)
 	near(w.production_food, base + 0.05 * tiles_n + 0.05 * float(tiles), 1e-3,
-		"★ 特化（每地块 +0.05）与科技（每地块 +0.05）相加，都乘在占领地块数上")
+		"★ 特化（本区块每地块 +0.05）与科技（每地块 +0.05，乘己方占领地块数）相加")
 
 func _test_cancel_spec(cfg) -> void:
 	var w = _quiet(cfg)

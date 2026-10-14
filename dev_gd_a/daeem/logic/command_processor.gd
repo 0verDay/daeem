@@ -544,16 +544,24 @@ static func apply_build(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 		return false
 	if not bool(cfg.building_def(type).get("buildable", false)):
 		return false
-	if not world.can_build_at(int(cmd.get("tx", -1)), int(cmd.get("ty", -1))):
-		world.push_event({"type": "build_rejected", "tile": Vector2i(int(cmd.get("tx", -1)), int(cmd.get("ty", -1))), "reason": "occupied_or_terrain"})
+	var tx := int(cmd.get("tx", -1))
+	var ty := int(cmd.get("ty", -1))
+	if not world.can_build_at(tx, ty):
+		world.push_event({"type": "build_rejected", "tile": Vector2i(tx, ty), "reason": "occupied_or_terrain"})
+		return false
+	# ★★ 只能在自己的区划里建造（本轮新增）：中立 / 敌方区划一律拒绝。
+	#    否则玩家能在中立地上立一栋楼，让那一整块地**立即归己**（既成事实扩张）——
+	#    那正是本次要修的 bug。判据只有 `world.zone_allows_build` 一处。
+	if not world.zone_allows_build(tx, ty, owner):
+		world.push_event({"type": "build_rejected", "tile": Vector2i(tx, ty), "reason": "not_in_zone"})
 		return false
 	var def_v = cfg.get_path_value("building.%s" % type)
 	var def: Dictionary = def_v if typeof(def_v) == TYPE_DICTIONARY else {}
 	var cost: Dictionary = def.get("cost", {})
 	if not EconomyRes.try_spend(cfg, world.resources, cost):
-		world.push_event({"type": "build_rejected", "tile": Vector2i(int(cmd.get("tx", -1)), int(cmd.get("ty", -1))), "reason": "cost"})
+		world.push_event({"type": "build_rejected", "tile": Vector2i(tx, ty), "reason": "cost"})
 		return false
-	return world.add_building(type, int(cmd.get("tx", -1)), int(cmd.get("ty", -1)), owner) != null
+	return world.add_building(type, tx, ty, owner) != null
 
 
 ## 拆除命令：按**地块**定位，而不是传对象引用。

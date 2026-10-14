@@ -3903,3 +3903,31 @@ GDScript 的静态推断会把「可能返回错误字符串的 API」算进类�
 本项目的 `theme.palette` 那套是**用字符串拼接**读的
 （`get_path_value("colors.faction.%s.%s")`），字面量搜不到但它是活的。
 ⇒ 判据是「**读它那条路径找不找得到**」，不是「名字出现过没有」。
+
+---
+
+## 5.62 ★★ 手势进行中鼠标划过 `MOUSE_FILTER_STOP` 的 UI ⇒ 事件被吃掉，手势「卡住 / 突变」
+
+**现象**（用户报的）：「鼠标划到下方的 UI 栏内时，选框不会移动到 UI 栏内，但移过 UI 栏后，
+选框又会**突变**」。
+
+**根因**：底栏（详细信息 UI）那一块是 `Control.MOUSE_FILTER_STOP`。
+鼠标移动事件在派发给 `_unhandled_input` **之前**会先经过 GUI —— 鼠标停在 STOP 控件上时，
+**GUI 把它吃掉**，`_unhandled_input` 根本收不到 ⇒ 框选的 `drag_current_world` 停在原地；
+鼠标离开底栏、下一个移动事件到达时，才一次性跳到新位置（看起来就是「突变」）。
+同一个坑对**中键拖拽平移**也成立（平移在 UI 上会停住）。
+
+**修法**：在**更早的 `_input` 阶段**把「正在进行中的手势」的移动 / 抬起补一遍：
+`view/game_scene3d.gd` 的 `_input()` 判 `input_ctrl.has_active_gesture()`，是就转发
+`handle_mouse_motion` / `handle_mouse_button`。
+
+* `_input` 在 GUI **之前**派发，所以拿得到那些被吃掉的事件；
+* ★ **只补「已经在进行中」的手势**：按下那一下仍走 `_unhandled_input` —— 点在 UI 上就该是
+  点 UI，不能变成「从 UI 上起一个框 / 一次平移」；
+* ★ **不** `set_input_as_handled()`：事件照旧交给 GUI（手势只是「顺带更新一下自己的终点」），
+  所以 UI 的悬停 / 点击行为一个字没变；重复派发也安全（`handle_mouse_motion` 是幂等的）。
+
+**判据（可复用）**：**凡是「拖动型」交互，都不能假设自己一直收得到 `_unhandled_input` 的
+移动事件** —— 鼠标一旦划过任何 `MOUSE_FILTER_STOP` 的控件，事件链就断了。
+要么在 `_input` 里补（本项目选了这条：不动 UI 的鼠标语义），要么在手势期间把该控件切成
+`MOUSE_FILTER_IGNORE`（会改变 UI 自己的点击语义，慎用）。

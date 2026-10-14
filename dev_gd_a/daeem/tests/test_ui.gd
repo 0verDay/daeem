@@ -452,6 +452,7 @@ func _test_panels(cfg) -> void:
 	_test_foreign_reject_notice_filter(main)
 	_test_right_click_orders(main)
 	await _test_box_select(main)
+	_test_drag_over_ui(main)
 	_test_detail_basic_stats(main)
 	_test_detail_two_columns(main)
 	_test_detail_vertical_fit(main)
@@ -2490,6 +2491,63 @@ func _test_box_select(main) -> void:
 	main.input_ctrl.select_units([g1])
 	main.hud.refresh()
 
+## ★★ 鼠标拖框划到**底栏（详细信息 UI）**上时，框必须继续跟着走。
+##
+## 复现的 bug（用户报的）：「鼠标划到底栏内时选框不动，划过去之后又突变」。
+##   底栏那一块是 `MOUSE_FILTER_STOP` —— 鼠标移到它上面时移动事件被 GUI **吃掉**，
+##   `_unhandled_input` 收不到 ⇒ 框停在原地；离开底栏后下一个移动事件才让它跳到新位置。
+## 修法：`game_scene3d._input()` 在手势进行中把移动 / 抬起补一遍（`_input` 先于 GUI 派发）。
+## 这里直接喂 `main._input(...)` —— 就是「GUI 会吃掉的那些事件」在真实运行里走的那条路。
+func _test_drag_over_ui(main) -> void:
+	var world = main.world
+	var vp: Vector2 = main.get_viewport().get_visible_rect().size
+	# 底栏那一片里的两个屏幕点（屏幕下方 24px 处就在底栏上）
+	var ui_a := Vector2(vp.x * 0.45, maxf(1.0, vp.y - 24.0))
+	var ui_b := Vector2(vp.x * 0.65, maxf(1.0, vp.y - 24.0))
+
+	# 按下仍然走 `_unhandled_input` 那条路（点在地图上；点在 UI 上不该起框，见最后一节）
+	var down := InputEventMouseButton.new()
+	down.button_index = MOUSE_BUTTON_LEFT
+	down.pressed = true
+	down.position = _world_to_screen(main, Vector2(world.map.cols * 0.5, world.map.rows * 0.5))
+	main.input_ctrl.handle_mouse_button(down)
+	ok(main.input_ctrl._drag_pending, "（前提）在地图上按下 → 进入拖框待定")
+
+	# ★ 划到底栏上：真实运行里这个移动事件会被 GUI 吃掉，只有 `_input` 拿得到
+	var move_a := InputEventMouseMotion.new()
+	move_a.position = ui_a
+	main._input(move_a)
+	ok(main.input_ctrl.drag_active,
+		"★ 划到底栏上也能越过阈值、开始拖框（不再被底栏 UI 吃掉）")
+	near(main.input_ctrl.drag_current_world.x,
+		main.input_ctrl._screen_to_logic(ui_a).x, 0.02,
+		"★ 框的终点跟着鼠标走到 UI 那一片（不再停在原地）")
+	ok(main.input_ctrl.drag_current_world != main.input_ctrl.drag_start_world,
+		"★ 框确实离开了起点（不是被冻在按下那一刻）")
+
+	# 继续在底栏上移动 → 终点继续跟着走（原来就是这一下「突变」）
+	var move_b := InputEventMouseMotion.new()
+	move_b.position = ui_b
+	main._input(move_b)
+	near(main.input_ctrl.drag_current_world.x,
+		main.input_ctrl._screen_to_logic(ui_b).x, 0.02, "框继续跟着鼠标走")
+
+	# ★ 在底栏上松手 → 框照样结束（否则框会一直挂着，下一次点击才被清掉）
+	var up := InputEventMouseButton.new()
+	up.button_index = MOUSE_BUTTON_LEFT
+	up.pressed = false
+	up.position = ui_b
+	main._input(up)
+	ok(not main.input_ctrl.drag_active and not main.input_ctrl._drag_pending,
+		"★ 在底栏上松手，框照样结束")
+
+	# 没有手势时，`_input` 不许自己起框（点在 UI 上就该是点 UI）
+	var idle := InputEventMouseMotion.new()
+	idle.position = ui_a
+	main._input(idle)
+	ok(not main.input_ctrl.drag_active and not main.input_ctrl._drag_pending,
+		"★ 没有进行中的手势时，_input 不会自己起框")
+
 func _test_box_select_buildings(main) -> void:
 	var world = main.world
 	var moved := 0
@@ -2643,7 +2701,7 @@ func _test_box_select_buildings(main) -> void:
 			"★ 种类那一行只有种类名，没有括号里的说明")
 		var z0prod: Dictionary = zones[0]["production"]
 		var z0eff: Dictionary = UpgradeRes.zone_spec_effect(zones[0], world.cfg)
-		var z0pop: float = float(z0prod["population"]) * float(z0eff["population_mult"]) * float(zones[0]["tile_count"])
+		var z0pop: float = float(z0prod["population"]) * float(z0eff["population_mult"])
 		var pop_line := ""
 		for row in ztext.split("\n"):
 			if String(row).begins_with("人口："):
@@ -3146,7 +3204,8 @@ func _test_command_events_reach_consumer(main) -> void:
 	var free := Vector2i(-1, -1)
 	for ty in main.world.map.rows:
 		for tx in main.world.map.cols:
-			if main.world.can_build_at(tx, ty):
+			# ★ 建造新规则：只能在自己区划里建 —— 找空地时也按这个口径
+			if main.world.can_build_at(tx, ty, "p1"):
 				free = Vector2i(tx, ty)
 				break
 		if free.x >= 0:

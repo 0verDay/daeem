@@ -384,6 +384,7 @@ func _test_revive_channel_and_cancel(cfg) -> void:
 	var w = require_world_with_escorts(cfg, 3)
 	var g = w.unit_by_id("general-1")
 	_give(w, 1000.0, 1000.0)
+	_no_income(w)                            # 对账：别让区划产出掺进来（本轮起区划基础产能是固定值）
 	_smash(cfg, w, g)
 	_set_downed_hp(g, 0.1)
 	ok(w.start_revive(g.id, MY), "（前提）再起入队")

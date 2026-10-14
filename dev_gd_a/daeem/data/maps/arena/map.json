@@ -9,7 +9,7 @@
     "zones：地块 → 区块 id（-1 = 不属于任何区块）；zone_list 里是区块的名字与种类。",
     "zone_list[].center：该区块的「区划中心」地块坐标；每个区块必须有且只有一个。",
     "zone_list[].kind：区划种类（food / gold / population），决定这个区划能做哪些特化。",
-    "zone_list[].production：该区块的产能（每地块每秒）：food / gold / population —— 游戏以此为准。",
+    "zone_list[].production：该区块的产能（每秒，绝对值；不乘地块数）：food / gold / population —— 游戏以此为准。",
     "zone_list[].population_cap：该区块的人口上限；不写 = 默认 1（涨到上限就不再涨）。",
     "zone_centers：地块 → 中心所属的区块 id（-1 = 不是任何区块的中心），由 center 推出来。",
     "factions / faction_bases：阵营表与每个阵营的大本营（每个阵营必须有且只有一个）。",
@@ -479,9 +479,9 @@
         1
       ],
       "production": {
-        "food": 0,
+        "food": 2,
         "gold": 0,
-        "population": 0.012
+        "population": 1
       },
       "population_cap": 3,
       "x0": 0,
@@ -694,8 +694,8 @@
       ],
       "production": {
         "food": 0,
-        "gold": 0.075,
-        "population": 0.01
+        "gold": 4,
+        "population": 0.4
       },
       "population_cap": 3,
       "x0": 8,
@@ -907,9 +907,9 @@
         7
       ],
       "production": {
-        "food": 0.075,
+        "food": 4,
         "gold": 0,
-        "population": 0.01
+        "population": 0.4
       },
       "population_cap": 3,
       "x0": 0,
@@ -1121,9 +1121,9 @@
         7
       ],
       "production": {
-        "food": 0,
+        "food": 2,
         "gold": 0,
-        "population": 0.012
+        "population": 1
       },
       "population_cap": 3,
       "x0": 8,

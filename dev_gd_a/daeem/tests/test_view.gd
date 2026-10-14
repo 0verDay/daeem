@@ -285,7 +285,8 @@ func _test_frames_and_input(cfg) -> void:
 	var free = Vector2i(-1, -1)
 	for ty in world.map.rows:
 		for tx in world.map.cols:
-			if world.can_build_at(tx, ty):
+			# ★ 建造新规则：只能在自己区划里建 —— 找空地时也按这个口径（否则建造命令会被拒）
+			if world.can_build_at(tx, ty, String(world.my_faction)):
 				free = Vector2i(tx, ty)
 				break
 		if free.x >= 0:

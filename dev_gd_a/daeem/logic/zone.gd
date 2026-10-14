@@ -109,7 +109,8 @@ func _new_zone(zid: int, name: String, flist: Array) -> Dictionary:
 		"tiles": [],            # ★ 地块明细（渲染画底色用；均分那条路在建的时候一起填）
 		# ★★ 区划中心与产能（地图编辑器给的；老地图没有 → null / 0）
 		#   · center 是**地块坐标**（Vector2i），也是「这一格上要落一栋中立障碍建筑」的位置；
-		#   · production 是**每地块每秒**的产能（food / gold / population）。
+		#   · production 是**该区划每秒的产能绝对值**（food / gold / population，不乘地块数，
+		#     见 docs/route.md 第四十四节）—— 只有特化与科技仍按每地块。
 		"center": null,
 		"production": {"food": 0.0, "gold": 0.0, "population": 0.0},
 		# ★★ 区划**种类**（本轮新增，见 data/config.json 的 zone_kind 段与
@@ -262,7 +263,7 @@ func _pick_center_tile(map, z: Dictionary) -> Variant:
 	return best
 
 
-## ★ 把地图里各区块的「产能」读进来（每地块每秒）。
+## ★ 把地图里各区块的「产能」读进来（**该区划每秒的绝对值**，不乘地块数）。
 ## 缺字段的档算 0 —— 与编辑器侧的容错一致（缺的档不写进 JSON）。
 func _apply_map_production(map) -> void:
 	var raw: Variant = map.get("zones_production")
@@ -362,7 +363,7 @@ func center_zone_at_id(x: int, y: int) -> int:
 ## 每帧推进各区块的人口（自然增长，涨到**上限**就停）。
 ##
 ## ★ 与占领**无关**：每个区块都按自己的人口产能涨（用户明确「不计入占领方的经济」）。
-##   速率 = population 产能 × 该区块的地块数（「n 资源/地块/秒」的口径）。
+##   速率 = population 产能（**该区划每秒的绝对值**，不乘地块数，见 docs/route.md 第四十四节）。
 ## ★★ 上限（用户需求：「当人口自然增长至上限时停止增长」）：
 ##   涨到 `population_cap` 就**不再涨**；上限由地图编辑器给，没填则默认 1。
 ## ★ 上限**不会把已经超过它的现值拉回来**：这里只夹「这一帧的增长」。
@@ -374,13 +375,13 @@ func center_zone_at_id(x: int, y: int) -> int:
 ##
 ## ★★ 科技「区划人口产量 +10%」（本轮新增）：
 ##   加的是**增长速度**，只对 `owner` 这一方**占领的**区划生效（需求原文
-##   「玩家占领的区划人口产量 +10%」，用户确认口径 = production.population × 地块数）。
+##   「玩家占领的区划人口产量 +10%」，用户确认口径 = production.population）。
 ##   ⚠️ 上限 `population_cap` **不受科技影响** —— 加的是「涨得多快」，不是「能涨多高」。
 ##   ⚠️ 阵营比较走 `FactionRes.same_side`（与占领 / 资源那几处的口径一致）：
 ##      无主区划的 owner 是空串，`same_side(任何, "")` 恒为 false ⇒ 不加成。
 ##
-## ★★ 人口特化（本轮改版）：本区划人口产量 **+25%**（倍率 1.25，见 `_spec_effect()`）——
-##   与上面的科技倍率**相乘叠加**（两者是不同作用域的加成）。
+## ★★ 人口特化（本轮改版）：本区划人口产量 **+12.5%**（倍率 1.125，配置写 0.125，
+##   见 `_spec_effect()`）—— 与上面的科技倍率**相乘叠加**（两者是不同作用域的加成）。
 ##
 ## @param owner  享受加成的那一方（"" = 谁都不加成；单机 = world.my_faction）
 ## @param owner_mult 该方占领区划的增长倍率（1.0 = 没加成）
@@ -399,7 +400,9 @@ func update_population(dt: float, owner: String = "", owner_mult: float = 1.0) -
 		var pop := float(z["population"])
 		if pop >= cap:
 			continue
-		z["population"] = minf(cap, pop + rate * float(z["tile_count"]) * dt)
+		# ★★ 只乘本帧时长：`rate` 已经是「该区划每秒的人口」——基础产能是绝对值（不乘地块数），
+		#    人口特化是倍率（也不引入地块数）。见 docs/route.md 第四十四节。
+		z["population"] = minf(cap, pop + rate * dt)
 
 
 ## 这个区划的人口上限（缺字段 / 老地图 → 默认 1；负数当 0，不让它变成「负增长」）。
@@ -419,13 +422,15 @@ func population_floor(z: Dictionary) -> int:
 	return floori(population_of(z))
 
 
-## 某方每秒的粮食 / 黄金产出 = 它拥有的各区划的（产能 × 该区划地块数）之和。
+## 某方每秒的粮食 / 黄金产出 = 它拥有的各区划的**固定基础产能之和** + 特化的每地块加成。
 ##
 ## ★ 这是经济从「全局按占领地块数 × 固定值」改成「按区划聚合」的落点：
 ##   抢区块 = 抢产能（见 docs/route.md 第十五节）。
-## ★★ 区划**特化**（本轮改版）在这里生效，两种形状（见 `UpgradeRes.zone_spec_effect`）：
-##   · 粮食 / 黄金特化 = **每地块每秒加产量**（+0.5）—— 与地图给的基础产能**相加**，
-##     再乘地块数；与科技那套「全局每地块加产量」是同一口径（两者也相加，见 world）。
+## ★★ 口径（本轮变更，见 docs/route.md 第四十四节）：
+##   · **基础产能 `z["production"]` 是该区划每秒的绝对值**（不乘地块数）——
+##     一个区划不管几格，基础产出都一样；
+##   · **特化**（见 `UpgradeRes.zone_spec_effect`）仍按每地块：
+##     粮食 / 黄金特化 = **每地块每秒加产量**（+0.05），所以特化项要 × 地块数；
 ##   · 人口特化 = 倍率，但它加的是**人口**（在 update_population 里生效），不进这两个数。
 ## @return {"food": float, "gold": float}
 func production_of(owner: String) -> Dictionary:
@@ -439,8 +444,10 @@ func production_of(owner: String) -> Dictionary:
 		var p: Dictionary = z["production"]
 		var n := float(z["tile_count"])
 		var eff := _spec_effect(z)
-		food += (float(p.get("food", 0.0)) + float(eff["food_per_tile"])) * n
-		gold += (float(p.get("gold", 0.0)) + float(eff["gold_per_tile"])) * n
+		# ★★ 基础产能是**该区划每秒的绝对值**（不乘地块数，见 docs/route.md 第四十四节）；
+		#    只有**特化**仍按「每地块」× 地块数（科技那一份在 world._accumulate_production 里加）。
+		food += float(p.get("food", 0.0)) + float(eff["food_per_tile"]) * n
+		gold += float(p.get("gold", 0.0)) + float(eff["gold_per_tile"]) * n
 	return {"food": food, "gold": gold}
 
 

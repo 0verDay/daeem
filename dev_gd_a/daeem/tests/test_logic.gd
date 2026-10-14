@@ -649,8 +649,8 @@ func _test_zones_and_economy(world, cfg) -> void:
 	var rate0: float = w.production_food
 	(zone_now["production"] as Dictionary)["food"] = 0.4
 	w.refresh_zone_production()
-	near(w.production_food - rate0, 0.4 * float(zone_now["tile_count"]), 1e-6,
-		"★ 给占下来的区划配 0.4 粮食／地块／秒 → 每秒产出多出 0.4 × 地块数")
+	near(w.production_food - rate0, 0.4, 1e-6,
+		"★ 给占下来的区划配 0.4 粮食／秒（固定绝对值）→ 每秒产出多出 0.4（不乘地块数）")
 	var food1: float = float(w.resources["food"])
 	w.tick(1.0)
 	near(float(w.resources["food"]) - food1, w.production_food, 1e-3,
@@ -734,13 +734,12 @@ func _test_zone_population_and_production(world, cfg) -> void:
 		"★ 发布地图的区划配了人口产能（%s）" % z0["production"]["population"])
 	near(w.zones.population_cap_of(z0), 2.0, 1e-9, "★ 发布地图的区块配了人口上限（2）")
 	var pop_rate: float = float(z0["production"]["population"])
-	var tiles0: float = float(z0["tile_count"])
 	z0["population_cap"] = 1.0e9
 	var before: float = float(z0["population"])
 	w.tick(1.0)
 	var gained: float = float(z0["population"]) - before
-	near(gained, pop_rate * tiles0, 1e-3,
-		"★ 人口每秒增长 = 人口产能 × 该区划地块数（每地块每秒的口径）")
+	near(gained, pop_rate, 1e-3,
+		"★ 人口每秒增长 = 人口产能（固定绝对值，不乘地块数）")
 	ok(float(z1["population"]) > 0.0, "★ 每个区划各涨各的（第二个区划也在涨）")
 	var p0: float = float(z0["population"])
 	w.tick(2.0)
@@ -754,15 +753,14 @@ func _test_zone_population_and_production(world, cfg) -> void:
 	zc["owner"] = ""
 	var base_food: float = float(w.zones.production_of("p1")["food"])
 	var base_gold: float = float(w.zones.production_of("p1")["gold"])
-	var tiles_c: float = float(zc["tile_count"])
 	zc["owner"] = "p1"
 	zc["production"]["food"] = 2.0
 	zc["production"]["gold"] = 3.0
 	var rates: Dictionary = w.zones.production_of("p1")
-	near(float(rates["food"]) - base_food, 2.0 * tiles_c, 1e-6,
-		"★ 产量按「产能 × 地块数」聚合（粮食：多了这个区划那一份）")
-	near(float(rates["gold"]) - base_gold, 3.0 * tiles_c, 1e-6,
-		"★ 产量按「产能 × 地块数」聚合（黄金：多了这个区划那一份）")
+	near(float(rates["food"]) - base_food, 2.0, 1e-6,
+		"★ 产量按「固定基础产能」聚合（粮食：多了这个区划那一份 2.0）")
+	near(float(rates["gold"]) - base_gold, 3.0, 1e-6,
+		"★ 产量按「固定基础产能」聚合（黄金：多了这个区划那一份 3.0）")
 
 	near(float(w.zones.production_of("")["food"]), 0.0, 1e-9,
 		"★ 无主（owner == ''）不产生任何产量")
@@ -809,8 +807,12 @@ func _test_build_commands(world, cfg) -> void:
 	var w = require_world(cfg)
 	w.resources["food"] = 1000.0
 	w.resources["gold"] = 1000.0
-	var free = _find_free_tile(w, cfg, Vector2i(3, 3))
-	ok(free != null, "建造用例：找得到空地")
+	var base_b = w.find_base_of("p1")
+	ok(base_b != null, "（前提）有己方大本营（它的区块开局就归 p1）")
+	# ★★ 本轮新规则：**只能在自己区划里建造** —— 所以这里限定「p1 自己区划里的空地」
+	var hint: Vector2i = Vector2i(3, 3) if base_b == null else Vector2i(base_b.tx + 1, base_b.ty + 1)
+	var free = _find_free_tile(w, cfg, hint, "p1")
+	ok(free != null, "建造用例：在自己区划里找得到空地")
 	if free == null:
 		return
 
@@ -824,12 +826,28 @@ func _test_build_commands(world, cfg) -> void:
 
 	ok(not CommandRes.apply(w, cfg, cmd), "同一格重复建造被拒绝")
 
+	# ★★ 本轮新增规则：**不能在自己的区划之外建造** —— 否则玩家能在中立地上立一栋楼，
+	#    让那一整块地「立即归己」（既成事实扩张，就是本次要修的 bug）。
+	var outside := Vector2i(-1, -1)
+	for ty in w.map.rows:
+		for tx in w.map.cols:
+			if w.can_build_at(tx, ty) and not w.zone_allows_build(tx, ty, "p1"):
+				outside = Vector2i(tx, ty)
+				break
+		if outside.x >= 0:
+			break
+	ok(outside.x >= 0, "（前提）地图上有一格可建造、但不属于 p1 的空地")
+	if outside.x >= 0:
+		ok(not CommandRes.apply(w, cfg, {"kind": "build", "build_type": "wall",
+			"tx": outside.x, "ty": outside.y, "faction": "p1"}),
+			"★★ 不能在自己的区划之外建造（既成事实扩张被挡住）")
+		ok(w.building_at(outside.x, outside.y) == null, "那一格上什么都没建出来")
+
 	var del = {"kind": "demolish", "tx": free.x, "ty": free.y, "faction": "p1"}
 	ok(CommandRes.apply(w, cfg, del), "拆除命令被接受")
 	ok(w.building_at(free.x, free.y) == null, "拆除后格子空了")
 
 	ok(not CommandRes.apply(w, cfg, del), "拆不存在的建筑被拒绝")
-	var base_b = w.find_base_of("p1")
 	if base_b != null:
 		ok(not CommandRes.apply(w, cfg, {"kind": "demolish", "tx": base_b.tx, "ty": base_b.ty, "faction": "p1"}),
 			"大本营不可拆除")
@@ -1007,7 +1025,7 @@ func _find_capture_spot(w, cfg) -> Dictionary:
 				return {"zone": z, "tile": Vector2i(x, y)}
 	return {}
 
-func _find_free_tile(world, cfg, hint: Vector2i) -> Variant:
+func _find_free_tile(world, cfg, hint: Vector2i, faction: String = "") -> Variant:
 	for r in 12:
 		for dy in range(-r, r + 1):
 			for dx in range(-r, r + 1):
@@ -1025,6 +1043,9 @@ func _find_free_tile(world, cfg, hint: Vector2i) -> Variant:
 					continue          # 区划中心占着这一格（它是中立障碍建筑，站不上去、也走不过）
 				if _near_zone_center(world, x, y, 1):
 					continue          # 别紧挨着区划中心（会把直线 / 离体判定弄复杂）
+				# ★ 给了 faction 就只找**它自己区划里**的空地（建造新规则：只能在自己区划里建）
+				if faction != "" and not world.zone_allows_build(x, y, faction):
+					continue
 				return Vector2i(x, y)
 	return null
 

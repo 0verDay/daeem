@@ -1,4 +1,5 @@
 {
+  "hidden": true,
   "_comment": [
     "DAEEM · 地图编辑器导出。",
     "exists：1 = 这个格子存在，0 = 地图外（Godot 里一律不可通行）。",
@@ -6,7 +7,7 @@
     "zones：地块 → 区块 id（-1 = 不属于任何区块）；zone_list 里是区块的名字与种类。",
     "zone_list[].center：该区块的「区划中心」地块坐标；每个区块必须有且只有一个。",
     "zone_list[].kind：区划种类（food / gold / population），决定这个区划能做哪些特化。",
-    "zone_list[].production：该区块的产能（每地块每秒）：food / gold / population —— 游戏以此为准。",
+    "zone_list[].production：该区块的产能（每秒，绝对值；不乘地块数）：food / gold / population —— 游戏以此为准。",
     "zone_list[].population_cap：该区块的人口上限；不写 = 默认 1（涨到上限就不再涨）。",
     "zone_centers：地块 → 中心所属的区块 id（-1 = 不是任何区块的中心），由 center 推出来。",
     "factions / faction_bases：阵营表与每个阵营的大本营（每个阵营必须有且只有一个）。",
@@ -17,7 +18,6 @@
     "★ units（地图预置单位）**已废弃**：运行时不再读它，这个编辑器也不再保留 ——",
     "   打开一张带 units 的老图再导出，那些预置单位会被**丢掉**（需求要求的行为，不是 bug）。"
   ],
-  "hidden": true,
   "cols": 29,
   "rows": 22,
   "exists": [
@@ -1422,10 +1422,11 @@
         1
       ],
       "production": {
-        "food": 0,
+        "food": 2,
         "gold": 0,
-        "population": 0.015
+        "population": 1
       },
+      "population_cap": 10,
       "x0": 0,
       "y0": 0,
       "x1": 7,
@@ -1693,16 +1694,17 @@
     {
       "id": 1,
       "name": "西北营地南",
-      "kind": "population",
+      "kind": "gold",
       "center": [
         2,
         9
       ],
       "production": {
         "food": 0,
-        "gold": 0,
-        "population": 0.015
+        "gold": 4,
+        "population": 0.4
       },
+      "population_cap": 6,
       "x0": 0,
       "y0": 8,
       "x1": 7,
@@ -1848,10 +1850,11 @@
         13
       ],
       "production": {
-        "food": 0,
+        "food": 2,
         "gold": 0,
-        "population": 0.015
+        "population": 1
       },
+      "population_cap": 10,
       "x0": 3,
       "y0": 12,
       "x1": 7,
@@ -2063,16 +2066,17 @@
     {
       "id": 3,
       "name": "西南营地西1",
-      "kind": "population",
+      "kind": "food",
       "center": [
         1,
         13
       ],
       "production": {
-        "food": 0,
+        "food": 4,
         "gold": 0,
-        "population": 0.015
+        "population": 0.4
       },
+      "population_cap": 6,
       "x0": 0,
       "y0": 12,
       "x1": 2,
@@ -2144,16 +2148,17 @@
     {
       "id": 4,
       "name": "西南营地西2",
-      "kind": "population",
+      "kind": "gold",
       "center": [
         1,
         18
       ],
       "production": {
         "food": 0,
-        "gold": 0,
-        "population": 0.015
+        "gold": 4,
+        "population": 0.4
       },
+      "population_cap": 6,
       "x0": 0,
       "y0": 17,
       "x1": 2,
@@ -2231,10 +2236,11 @@
         17
       ],
       "production": {
-        "food": 0,
+        "food": 2,
         "gold": 0,
-        "population": 0.015
+        "population": 1
       },
+      "population_cap": 10,
       "x0": 8,
       "y0": 12,
       "x1": 11,
@@ -2406,16 +2412,17 @@
     {
       "id": 6,
       "name": "囊关北区",
-      "kind": "population",
+      "kind": "gold",
       "center": [
         17,
         13
       ],
       "production": {
         "food": 0,
-        "gold": 0,
-        "population": 0.015
+        "gold": 4,
+        "population": 0.4
       },
+      "population_cap": 8,
       "x0": 12,
       "y0": 12,
       "x1": 18,
@@ -2567,16 +2574,17 @@
     {
       "id": 7,
       "name": "囊关南区",
-      "kind": "population",
+      "kind": "food",
       "center": [
         17,
         20
       ],
       "production": {
-        "food": 0,
+        "food": 4,
         "gold": 0,
-        "population": 0.015
+        "population": 0.4
       },
+      "population_cap": 8,
       "x0": 12,
       "y0": 17,
       "x1": 18,
@@ -2728,16 +2736,17 @@
     {
       "id": 8,
       "name": "囊关东门",
-      "kind": "population",
+      "kind": "gold",
       "center": [
         21,
         16
       ],
       "production": {
         "food": 0,
-        "gold": 0,
-        "population": 0.015
+        "gold": 4,
+        "population": 0.4
       },
+      "population_cap": 12,
       "x0": 19,
       "y0": 12,
       "x1": 22,
@@ -2909,16 +2918,17 @@
     {
       "id": 9,
       "name": "囊关北1",
-      "kind": "population",
+      "kind": "food",
       "center": [
         9,
         1
       ],
       "production": {
-        "food": 0,
+        "food": 4,
         "gold": 0,
-        "population": 0.015
+        "population": 0.4
       },
+      "population_cap": 8,
       "x0": 8,
       "y0": 0,
       "x1": 17,
@@ -3090,16 +3100,17 @@
     {
       "id": 10,
       "name": "囊关北2",
-      "kind": "population",
+      "kind": "gold",
       "center": [
         16,
         6
       ],
       "production": {
         "food": 0,
-        "gold": 0,
-        "population": 0.015
+        "gold": 4,
+        "population": 0.4
       },
+      "population_cap": 8,
       "x0": 8,
       "y0": 4,
       "x1": 17,
@@ -3277,10 +3288,11 @@
         1
       ],
       "production": {
-        "food": 0,
+        "food": 2,
         "gold": 0,
-        "population": 0.015
+        "population": 1
       },
+      "population_cap": 10,
       "x0": 18,
       "y0": 0,
       "x1": 22,
@@ -3452,16 +3464,17 @@
     {
       "id": 12,
       "name": "囊山西",
-      "kind": "population",
+      "kind": "gold",
       "center": [
         24,
         9
       ],
       "production": {
         "food": 0,
-        "gold": 0,
-        "population": 0.015
+        "gold": 4,
+        "population": 0.4
       },
+      "population_cap": 12,
       "x0": 23,
       "y0": 8,
       "x1": 28,
@@ -3569,16 +3582,17 @@
     {
       "id": 13,
       "name": "王朝营地",
-      "kind": "population",
+      "kind": "food",
       "center": [
         27,
         20
       ],
       "production": {
-        "food": 0,
+        "food": 4,
         "gold": 0,
-        "population": 0.015
+        "population": 0.4
       },
+      "population_cap": 15,
       "x0": 23,
       "y0": 12,
       "x1": 28,
@@ -3829,17 +3843,18 @@
     },
     {
       "id": 14,
-      "name": "囊关西北1",
-      "kind": "population",
+      "name": "囊关东北1",
+      "kind": "food",
       "center": [
         24,
         1
       ],
       "production": {
-        "food": 0,
+        "food": 4,
         "gold": 0,
-        "population": 0.015
+        "population": 0.4
       },
+      "population_cap": 8,
       "x0": 23,
       "y0": 0,
       "x1": 25,
@@ -3898,17 +3913,18 @@
     },
     {
       "id": 15,
-      "name": "囊关西北2",
-      "kind": "population",
+      "name": "囊关东北2",
+      "kind": "gold",
       "center": [
         27,
         1
       ],
       "production": {
         "food": 0,
-        "gold": 0,
-        "population": 0.015
+        "gold": 4,
+        "population": 0.4
       },
+      "population_cap": 8,
       "x0": 26,
       "y0": 0,
       "x1": 28,
@@ -3967,17 +3983,18 @@
     },
     {
       "id": 16,
-      "name": "囊关西北3",
+      "name": "囊关东北3",
       "kind": "population",
       "center": [
         27,
         5
       ],
       "production": {
-        "food": 0,
+        "food": 2,
         "gold": 0,
-        "population": 0.015
+        "population": 1
       },
+      "population_cap": 10,
       "x0": 23,
       "y0": 4,
       "x1": 28,

@@ -12,7 +12,7 @@
       "zone_list": [                     // ★ 区块表（名字 / 种类 / 区划中心 / 产能 / 人口上限）
         { "id": 0, "name": "A1", "kind": "population",   // ★ 区划种类（food / gold / population）
           "center": [2, 1],
-          "production": {"food": 1.0, "gold": 1.0, "population": 0.5},   // 游戏以此为准
+          "production": {"food": 4, "gold": 0, "population": 0.4},   // 每秒绝对值（不乘地块数），游戏以此为准
           "population_cap": 10,          // 没填就不写 → 游戏侧默认 1
           "x0": 0, "y0": 0, "x1": 3, "y1": 3, "tiles": [[0,0], ...] }
       ],
@@ -130,7 +130,7 @@ EDITOR_COMMENT: Tuple[str, ...] = (
     "zones：地块 → 区块 id（-1 = 不属于任何区块）；zone_list 里是区块的名字与种类。",
     "zone_list[].center：该区块的「区划中心」地块坐标；每个区块必须有且只有一个。",
     "zone_list[].kind：区划种类（food / gold / population），决定这个区划能做哪些特化。",
-    "zone_list[].production：该区块的产能（每地块每秒）：food / gold / population —— 游戏以此为准。",
+    "zone_list[].production：该区块的产能（每秒，绝对值；不乘地块数）：food / gold / population —— 游戏以此为准。",
     "zone_list[].population_cap：该区块的人口上限；不写 = 默认 1（涨到上限就不再涨）。",
     "zone_centers：地块 → 中心所属的区块 id（-1 = 不是任何区块的中心），由 center 推出来。",
     "id / name：这张图的标识与显示名；开场主界面的地图选择条按 name 显示（不写就用目录名）。",
@@ -289,7 +289,9 @@ def _read_zone_centers(model: MapModel, raw) -> None:
             model.set_zone_center(zid, x - ox, y - oy)
 
 
-## 读每个区块的产能：`zone_list[].production = {"food": 1, "gold": 1, "population": 0.5}`。
+## 读每个区块的产能：`zone_list[].production = {"food": 4, "gold": 0, "population": 0.4}`。
+##
+## ★ 单位是「**该区划每秒的绝对值**」（不乘地块数）—— 只有特化与科技仍按每地块。
 ##
 ## 宽容点（与别处一致）：
 ##   · 缺 production / 缺某一档 → 那一档算 0（不是报错）；
@@ -558,7 +560,8 @@ def model_to_dict(model: MapModel) -> dict:
             entry["center"] = [int(zone.center[0]) - x0, int(zone.center[1]) - y0]
         # 产能：只在真的有非零产能时才写 —— 没配产能的区块导出后与从前逐字节一致
         # ⚠️ **游戏侧不按种类兜底**（用户确认保持老图行为）：没写 production 就是 0 产量，
-        #    所以「数字全填 0」与「种类预设是 0.15」不会打架 —— 以数字为准。
+        #    所以「数字全填 0」与「种类预设（如人口区划每秒 2 粮食 + 1 人口）」不会打架 —— 以数字为准。
+        # ★ 写出的数字是「该区划每秒的绝对值」（不乘地块数）。
         if model.zone_has_production(zone.zone_id):
             entry["production"] = {
                 key: _clean_number(zone.production.get(key, 0.0)) for key in PRODUCTION_KEYS

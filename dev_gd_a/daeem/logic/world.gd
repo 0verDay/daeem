@@ -3098,15 +3098,38 @@ func remove_building(b, force: bool = false) -> bool:
 	return true
 
 
-## 该地块能不能建造
-func can_build_at(tx: int, ty: int) -> bool:
+## 该地块能不能建造。
+##
+## ★★ 本轮新增：**只能在自己的区划里建造** —— `faction` 传空串时**不做**这条检查
+##    （世界装配 / 预置建筑 / 测试内部找空地用；那条路走 `add_building`，不经过这里）。
+##   「自己的区划」= 那一格所属区块的 owner 与 `faction` 同阵营
+##   （`FactionRes.same_side`，与 `leader_zone_owned` / `can_recruit_zone` 同一口径）；
+##   无主区划 / 不属于任何区划的格子（地图外沿）都**不算** —— 否则玩家能在中立地上
+##   随手立一栋楼、把那一整块地「立即变成自己的」，也就是本次要修的 bug。
+func can_build_at(tx: int, ty: int, faction: String = "") -> bool:
 	if not map.terrain.has(tx, ty):
 		return false
 	if not map.terrain_walkable(tx, ty):
 		return false
 	if PathfinderRes.occupied(buildings, tx, ty):
 		return false
+	if faction != "" and not zone_allows_build(tx, ty, faction):
+		return false
 	return true
+
+
+## ★★ 这一格所在的区划归 `faction` 吗 —— 「只能在自己区划里建造」的唯一判据
+##    （`can_build_at` 与 `command_processor.apply_build` 都读它，别在别处再写一份）。
+##    无主区划 / 不属于任何区划 / 地图外 → false。
+func zone_allows_build(tx: int, ty: int, faction: String) -> bool:
+	if zones == null or map == null:
+		return false
+	if not map.tile_exists(tx, ty):
+		return false
+	var z = zones.zone_at(tx, ty)
+	if z == null:
+		return false
+	return FactionRes.same_side(String(z.get("owner", "")), faction)
 
 
 ## 建筑归属变了就重算区块归属（不每帧算）
@@ -3418,8 +3441,10 @@ func _tech_hp_mult_for(u) -> float:
 ## ★★ 重算「每秒产出」这两个展示数（tick 与科技状态变化都会调）。
 ##
 ## 口径（与 economy.gd 的文件头一致）：
-##   产出 = 己方各区划的（产能 × 该区划地块数）之和  +  科技加成
+##   产出 = 己方各区划的**固定基础产能之和** + 特化的每地块加成 × 地块数  +  科技加成
 ## 科技加成 = 启用中的「每地块每秒」加成之和 × **己方占领地块数**。
+## ★★ 基础产能是「该区划每秒的绝对值」（不乘地块数），只有特化 / 科技按每地块 ——
+##    见 docs/route.md 第四十四节（`zones.production_of` 已经按这个口径算好）。
 ##
 ## ⚠️ 加成只进 `production_*`（资源累加与 HUD 那个「+n/秒」），
 ##   **不改区划自己的 production** —— 区划产能是地图给的静态数据，

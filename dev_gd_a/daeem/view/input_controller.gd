@@ -184,7 +184,10 @@ func poll_mouse() -> void:
 	var changed: bool = (t != hover_tile) or (inside != hover_valid)
 	hover_tile = t if inside else Vector2i(-1, -1)
 	if build_type != "":
-		hover_valid = inside and world.can_build_at(t.x, t.y)
+		# ★★ 建造预览也认「只能在自己的区划里建」（与 `apply_build` 同一判据
+		#    `world.zone_allows_build`）：划到中立 / 敌方区划上时预览当场显示为无效（红），
+		#    而不是点下去才静默失败。
+		hover_valid = inside and world.can_build_at(t.x, t.y, world.my_faction)
 	else:
 		hover_valid = inside
 
@@ -516,6 +519,17 @@ func is_dragging_box() -> bool:
 ##   与 `is_dragging_box()` 并列：两者都是「此刻相机由输入直接驱动 ⇒ 别的自动行为让路」。
 func is_panning() -> bool:
 	return _pan_pending
+
+
+## ★★ 有没有一条**正在进行中**的鼠标手势（框选待定 / 正在拖框 / 中键平移中）。
+##
+## ★ 给 `view/game_scene3d.gd` 的 `_input` 用：手势期间要把移动 / 抬起**补一遍** ——
+##   鼠标划到底栏（详细信息 UI）等 `MOUSE_FILTER_STOP` 的控件上时，移动事件会被 GUI 吃掉、
+##   `_unhandled_input` 根本收不到，框就会**停在原地**（离开 UI 时才一次性跳到新位置 = 突变）。
+##   见 `game_scene3d._input` 的说明。
+##   ⚠️ 判据只在这里维护一处：`_input` 不许自己读 `_drag_pending`（那是私有状态）。
+func has_active_gesture() -> bool:
+	return _drag_pending or drag_active or _pan_pending
 
 
 

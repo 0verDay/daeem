@@ -358,7 +358,7 @@ func _test_new_building() -> void:
 	_settle_projectiles(w, cfg)
 	near(e.hp, hp0 - 20.0, 1e-6, "★★ 投掷物命中，伤害 = config 的 20")
 
-	var tile2: Vector2i = _free_tile_near(w, base_b.tx - 4, base_b.ty + 2)
+	var tile2: Vector2i = _free_tile_near(w, base_b.tx + 1, base_b.ty + 1, FactionRes.DEFAULT_FACTION)
 	if tile2.x >= 0:
 		var cmd := {"kind": "build", "build_type": "outpost", "tx": tile2.x, "ty": tile2.y,
 			"faction": FactionRes.DEFAULT_FACTION}
@@ -372,14 +372,14 @@ func _test_new_building() -> void:
 			"★ 不可建造的类型（大本营）拒绝建造命令")
 		ok(w.building_at(tile3.x, tile3.y) == null, "那一格上什么都没建出来")
 
-func _free_tile_near(w, cx: int, cy: int) -> Vector2i:
+func _free_tile_near(w, cx: int, cy: int, faction: String = "") -> Vector2i:
 	for r in range(0, 9):
 		for dx in range(-r, r + 1):
 			for dy in range(-r, r + 1):
 				if absi(dx) != r and absi(dy) != r:
 					continue                     # 只看这一圈的边长
 				var t := Vector2i(cx + dx, cy + dy)
-				if w.can_build_at(t.x, t.y):
+				if w.can_build_at(t.x, t.y, faction):
 					return t
 	return Vector2i(-1, -1)
 
