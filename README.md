@@ -14,6 +14,9 @@ Dynasty And Empire : Eastern March
 
 本版本为在godot引擎内的原型开发，仅展示完整的局内玩法
 
+### 2026.10.15 GameLinkAgent更新
+1. 简单来说，本项目今天没有任何更新，但负责本项目的联机开发agent更新了，详情见 https://github.com/yuyi-yutie/GameLinkAgent
+
 ### 2026.10.14 士气系统更新
 1. 修复了红点性ai的行军bug，修复了游戏开始时选中单位的bug，修复了可以建造建筑并占领其他区划的bug，修复了详细信息栏阻挡框选的bug
 2. 去除了游戏开始时生成初始将领和建筑的逻辑，确保所见即所得
