@@ -32,6 +32,18 @@ func _run() -> void:
 	else:
 		quit(0)
 
+
+## 等页面真的就位。
+## ★ 现在「点击被受理」与「切页」之间还有一段**落位动画**（徽标 / 标题 / 金线缓动到主界面，
+##   见 view/start_screen.gd 的 `_play_intro_morph()`），所以点完不能当场读 `page()`。
+##   ⚠️ 这里**不**再等外壳的滑入动画：那一段不影响本文件的断言（它们量的是主界面那一列，
+##      它是 `dir = 0` 的目标、位置不动，只是淡入）。
+func _wait_page(menu, want: int) -> void:
+	var deadline: int = Time.get_ticks_msec() + 8000
+	while Time.get_ticks_msec() < deadline and int(menu.page()) != want:
+		await process_frame
+	await process_frame
+
 func _test_theme_tokens() -> void:
 	var accent := ThemeRes.accent()
 	ok(accent.r > accent.g and accent.g > accent.b and accent.r > 0.5,
@@ -206,6 +218,9 @@ func _test_page_switching() -> void:
 		left.pressed = true
 		left.position = CLICK_CENTER
 		menu._on_page_gui_input(left)
+		# ★ 「受理点击」与「切页」之间现在还有一段落位动画（见 start_screen.dismiss_intro），
+		#   所以要等页面真的就位，不能再当场读 page()。
+		await _wait_page(menu, PAGE_MENU)
 		eq(int(menu.page()), PAGE_MENU, "直接喂给处理器一个左键：切到主界面")
 		ok(not menu.get_node("StartRoot/Intro").visible, "切到主界面后入场页收起")
 
@@ -223,6 +238,7 @@ func _test_intro_click_wiring() -> void:
 			return
 		eq(int(menu.page()), PAGE_INTRO, "点之前停在第 0 页（%s）" % str(pos))
 		await _click_at(pos)
+		await _wait_page(menu, PAGE_MENU)
 		eq(int(menu.page()), PAGE_MENU,
 			"★ 在 %s 点一下就进入主界面（点击真的被那一层收到了）" % str(pos))
 		ok(not menu.get_node("StartRoot/Intro").visible, "入场页收起（%s）" % str(pos))
@@ -259,12 +275,21 @@ func _test_entry_flow() -> void:
 	eq(main.game, null, "★ 启动时没有游戏场景（世界不会在菜单背后偷偷跑）")
 
 	await _click_at(CLICK_CENTER)
+	await _wait_page(menu, PAGE_MENU)
 	eq(int(menu.page()), PAGE_MENU, "已经进到主界面")
 
 	await process_frame
 
-	var button: Button = menu.test_button()
-	ok(button is Button, "主界面有一个按钮")
+	# ★★ 地图选择条 + test + campaign_test 现在住在**「战役」按钮撑开的那块面板**里
+	#    （view/battle_entries.gd，从主界面正中那一列整块搬过去的）—— 先把面板撑开。
+	var entries = await open_battle_panel(menu)
+	ok(entries != null, "（前提）「战役」面板里有那三个测试入口")
+	if entries == null:
+		main.queue_free()
+		return
+
+	var button: Button = entries.test_button()
+	ok(button is Button, "面板里有一个按钮")
 	if button is Button:
 		eq((button as Button).text, "test", "按钮文案是 test")
 		var area_owner: Control = (button as Control).get_parent().get_parent()
@@ -272,15 +297,15 @@ func _test_entry_flow() -> void:
 		var center: Vector2 = (button as Control).get_global_rect().get_center()
 		ok(absf(center.x - area.get_center().x) < 2.0, "test 按钮水平居中")
 		ok(area.size.x >= 100.0 and area.size.y >= 100.0, "按钮所在的那一层铺满了可用的窗口（不是缩成一团）")
-		var select: Button = menu.map_select_button()
+		var select: Button = entries.map_select_button()
 		ok(select is Button, "★ test 按钮上方有一条地图选择条")
 		if select is Button:
 			ok((select as Control).get_global_rect().end.y
 					<= (button as Control).get_global_rect().position.y + 1.0,
 				"★ 选择条在 test 按钮上方（需求原文「在其上方」）")
 
-		var camp_btn: Button = menu.campaign_test_button()
-		ok(camp_btn is Button, "★ 主界面上有 campaign_test 按钮（战役占位入口）")
+		var camp_btn: Button = entries.campaign_test_button()
+		ok(camp_btn is Button, "★ 面板里有 campaign_test 按钮（战役占位入口）")
 		if camp_btn is Button:
 			eq(camp_btn.text, "campaign_test", "★ 按钮上那行字就是 campaign_test")
 			ok(camp_btn.get_global_rect().position.y
@@ -291,7 +316,7 @@ func _test_entry_flow() -> void:
 			ok(gap_px >= 8.0 and gap_px <= 80.0,
 				"★ 两颗按钮挨得比较近（实测间距 %.1f px，期望 8~80）" % gap_px)
 			ok(camp_btn.get_parent() == (button as Control).get_parent(),
-				"campaign_test 按钮就在 MenuColumn 里（与 test 同一个容器）")
+				"campaign_test 按钮就在同一块内容里（与 test 同一个容器）")
 
 		var orn: Control = menu.menu_ornaments()
 		ok(orn != null, "主界面上有标题条那一层（MenuOrnaments）")
@@ -311,22 +336,13 @@ func _test_entry_flow() -> void:
 				"★ 细线不吃鼠标")
 			var outer: Control = orn.get_parent()
 			ok(outer != null and String(outer.name) == "MenuOuter",
-				"★ 标题条住在 MenuOuter 里（与按钮列同一个竖向列）")
-			ok(outer != null and (button as Control).get_parent().get_parent() == outer,
-				"★ 按钮列也在同一个 MenuOuter 里（两者是排版上的上下关系）")
-			if outer != null:
-				ok(orn.get_index() < (button as Control).get_parent().get_index(),
-					"★ 标题条在按钮列**之前**（VBox 按顺序从上往下排 ⇒ 它在上方）")
-			var lowest: float = 0.0
-			for n in [emblem, word, m_rule]:
-				if n != null:
-					lowest = maxf(lowest, (n as Control).get_global_rect().end.y)
-			ok(lowest <= (select as Control).get_global_rect().position.y + 1.0,
-				"★ 标题条整体在选择条**上方**（标题底 %.0f ≤ 选择条顶 %.0f）"
-				% [lowest, (select as Control).get_global_rect().position.y])
-			var gap: float = (select as Control).get_global_rect().position.y - lowest
-			ok(gap >= 8.0,
-				"★ 标题条与选择条之间留了空隙（%.0f px）——贴在一起会被看成同一块内容" % gap)
+				"★ 标题条住在 MenuOuter 里")
+			# ★★ 按钮列**已经不在这一列里了**（搬进「战役」面板了）—— 所以这里不再断言
+			#   「标题条在按钮列上方」那条排版关系，改断言「那一列只剩标题条」+「按钮在面板里」。
+			ok(menu.get_node_or_null("StartRoot/MainMenu/MenuPad/MenuOuter/MenuColumn") == null,
+				"★★ MenuOuter 里已经没有 MenuColumn（那三个测试控件整列搬走了）")
+			ok(entries.is_ancestor_of(button),
+				"★★ 而 test 按钮现在挂在「战役」面板的那块内容里")
 
 		var sb: StyleBox = (select as Control).get_theme_stylebox("normal")
 		ok(sb is StyleBoxFlat, "选择条有一个 StyleBoxFlat 底纹")

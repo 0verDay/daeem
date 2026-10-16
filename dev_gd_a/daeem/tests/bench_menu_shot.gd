@@ -43,7 +43,10 @@ func _run() -> void:
 	await _shoot("01_intro")
 
 	# 2) 主界面：点掉入场页
+	# ★ 现在「点一下」与「切到主界面」之间还有两段动画（logo 落位 → 面板滑入，
+	#   见 view/start_screen.gd），所以要等它们跑完再拍，否则拍到的是动画中途。
 	main.start_screen.dismiss_intro()
+	await _wait_menu(main.start_screen)
 	await _wait(SETTLE_FRAMES)
 	await _shoot("02_menu")
 
@@ -135,6 +138,17 @@ func _probe_text_on_fill(b: Button, tag: String) -> void:
 
 func _wait(frames: int) -> void:
 	for i in frames:
+		await process_frame
+
+
+## 等入场那两段动画跑完：① logo 落位 → 切页 ② 外壳各面板滑入。
+func _wait_menu(menu) -> void:
+	var deadline: int = Time.get_ticks_msec() + 8000
+	while Time.get_ticks_msec() < deadline and int(menu.page()) != 1:
+		await process_frame
+	var settle: int = Time.get_ticks_msec() \
+		+ int((menu.cfg.num("menu.chrome.intro_sec", 0.55) + 0.3) * 1000.0)
+	while Time.get_ticks_msec() < settle:
 		await process_frame
 
 

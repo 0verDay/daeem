@@ -1,5 +1,8 @@
 ## test_settings_menu.gd —— ★ 游戏内「设置」二级菜单：全屏 / 返回主菜单
 extends "res://tests/test_case.gd"
+## ★ 这些用例只需要「一张能开局的图」：地图选择条已经搬进「战役」面板（见
+##   view/battle_entries.gd），所以直接问逻辑层要默认地图（与面板默认选中的是同一张）。
+const MapLibraryRes = preload("res://logic/map_library.gd")
 
 const UiLayoutRes = preload("res://view/ui_layout.gd")
 
@@ -139,8 +142,6 @@ func _test_return_to_menu() -> void:
 	await process_frame
 	ok(hud.settings_panel.visible, "（前提）设置面板开着")
 
-	var picked := String(screen.selected_map_path())
-
 	await _click_settings_item(main, "ReturnMenuButton")
 
 	eq(main.game, null, "★ 点「返回主菜单」→ main 的游戏句柄清空")
@@ -157,17 +158,23 @@ func _test_return_to_menu() -> void:
 	ok(screen.get_node("StartRoot/Background").visible,
 		"背景那一层回来了（菜单不是浮在游戏画面上）")
 
-	eq(screen.selected_map_path(), picked,
-		"★ 回到菜单后地图选择条还留着上次选的那张（不是被重置成默认图）")
-	eq(screen.map_select_item_count(), screen.map_options().size(),
-		"选择条的选项也还在")
+	# ★★ 地图选择条 / test 现在住在**「战役」面板**里（view/battle_entries.gd）——
+	#   回到菜单之后要先把那块面板撑开，才能拿到它们（面板开时建、关时销毁）。
+	var entries = await open_battle_panel(screen)
+	ok(entries != null, "★★ 回到菜单后能撑开「战役」面板，里面有地图选择条与 test")
+	if entries == null:
+		main.queue_free()
+		return
+	ok(entries.map_select_item_count() > 0
+			and entries.map_select_item_count() == entries.map_options().size(),
+		"★ 选择条的选项来自目录扫描（%d 条）" % entries.map_select_item_count())
 
-	var sel_node: Button = screen.map_select_button()
+	var sel_node: Button = entries.map_select_button()
 	await _hover_at((sel_node as Control).get_global_rect().get_center())
 	ok(root.gui_get_hovered_control() != null,
 		"★ 回到菜单后鼠标停在选择条上有控件接住（背景那一层活着，不是「看着在、点不动」）")
 
-	var tb: Button = screen.test_button()
+	var tb: Button = entries.test_button()
 	ok(tb is Button and tb.get_global_rect().size.y > 1.0, "（前提）test 按钮排过版了")
 	await _click_at(tb.get_global_rect().get_center())
 	var second = main.game
@@ -198,7 +205,7 @@ func _enter_game() -> Node:
 	await process_frame
 	main.start_screen.dismiss_intro()
 	await process_frame
-	main._on_test_pressed(main.start_screen.selected_map_path())
+	main._on_test_pressed(String(MapLibraryRes.default_map_path()))
 	await process_frame
 	if main.game == null:
 		ok(false, "进游戏失败（后面那些断言就都测不到东西了）")

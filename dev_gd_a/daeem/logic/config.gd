@@ -91,6 +91,22 @@ var camera_edge_size: float = 44.0
 ## ---- 框选：左键移动超过多少像素才算「拖框」（见 config.json 的 ui._comment）----
 var drag_select_min_px: float = 6.0
 
+## ---- ★★ 通用滚动容器 / 入场淡入的手感（见 config.json 的 ui._comment）----
+## 前四个里除 `scroll_resistance` 之外都是**屏幕像素**（与 drag_select_min_px 同一种判据，
+## 不该跟着相机缩放漂移）；`scroll_resistance` 是阻尼系数（无量纲）：
+##   · `scroll_resistance`   —— 橡皮筋的阻尼强度（view/elastic_scroll_list.gd 的 `_rubber`）；
+##   · `scroll_settle_sec`   —— 松手回弹多久（0 = 立即到位，不播过渡）；
+##   · `scroll_drag_min_px`  —— 滚动列表里「算滚动还是算点一下」的阈值；
+##   · `scroll_wheel_step_px`—— 滚轮单步像素；
+##   · `drag_scroll_min_px`  —— 原生 ScrollContainer 那条拖动阈值（view/drag_scroll_helper.gd）；
+##   · `fade_in_sec`         —— 入场淡入时长（view/fade_in.gd）。
+var scroll_resistance: float = 0.55
+var scroll_settle_sec: float = 0.28
+var scroll_drag_min_px: float = 18.0
+var scroll_wheel_step_px: float = 60.0
+var drag_scroll_min_px: float = 8.0
+var fade_in_sec: float = 0.4
+
 ## ---- 小地图拖动视角（见 config.json 的 minimap._comment）----
 ## ★ 与 drag_select_min_px 同一种单位（**屏幕像素**）：判据不该跟着相机缩放漂移。
 ##   两个数长得像但用途不同：上面那个决定「拖框选单位」，这两个决定「拖小地图移视角」。
@@ -417,6 +433,16 @@ func _cache_scalars() -> void:
 	#     教训：改动长函数时，替换块的两端要落在**函数边界**上，别停在函数体中间。
 	camera_edge_size = num("camera.edge_size", 44.0)
 	drag_select_min_px = num("ui.drag_select_min_px", 6.0)
+	# ★★ 滚动 / 淡入（见字段声明处的注释）。夹取的理由：
+	#   · resistance 写成 0 会让阻尼公式的分子恒为 0 ⇒ 列表**永远拉不动**（看着像坏了），
+	#     上限 2.0 只是拦住「写了一个数量级都不对」的笔误；
+	#   · 时长 / 像素阈值写成负数没有意义，而 0 会让「按下即算拖动」这种抖动判定生效。
+	scroll_resistance = clampf(num("ui.scroll_resistance", 0.55), 0.05, 2.0)
+	scroll_settle_sec = maxf(0.0, num("ui.scroll_settle_sec", 0.28))
+	scroll_drag_min_px = maxf(1.0, num("ui.scroll_drag_min_px", 18.0))
+	scroll_wheel_step_px = maxf(1.0, num("ui.scroll_wheel_step_px", 60.0))
+	drag_scroll_min_px = maxf(1.0, num("ui.drag_scroll_min_px", 8.0))
+	fade_in_sec = maxf(0.0, num("ui.fade_in_sec", 0.4))
 	minimap_drag_min_px = num("minimap.drag_min_px", 4.0)
 	minimap_drag_hold_sec = num("minimap.drag_hold_sec", 0.18)
 

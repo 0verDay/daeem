@@ -1,5 +1,8 @@
 ## test_fog.gd —— 战争迷雾：视野 / 山脉遮挡 / 敌方建筑的「见过就记住」
 extends "res://tests/test_case.gd"
+## ★ 这些用例只需要「一张能开局的图」：地图选择条已经搬进「战役」面板（见
+##   view/battle_entries.gd），所以直接问逻辑层要默认地图（与面板默认选中的是同一张）。
+const MapLibraryRes = preload("res://logic/map_library.gd")
 
 const ConfigRes = preload("res://logic/config.gd")
 const GridRes = preload("res://logic/grid.gd")
@@ -523,7 +526,7 @@ func _test_game_scene_wires_fog() -> void:
 	var main = (packed as PackedScene).instantiate()
 	root.add_child(main)
 	await process_frame
-	main._on_test_pressed(main.start_screen.selected_map_path())
+	main._on_test_pressed(String(MapLibraryRes.default_map_path()))
 	await process_frame
 	await process_frame
 

@@ -1,5 +1,8 @@
 ## test_campaign_test.gd —— ★ **单人战役的占位界面**（主界面 `campaign_test` 按钮 → 进战役）。
 extends "res://tests/test_case.gd"
+## ★ 这些用例只需要「一张能开局的图」：地图选择条已经搬进「战役」面板（见
+##   view/battle_entries.gd），所以直接问逻辑层要默认地图（与面板默认选中的是同一张）。
+const MapLibraryRes = preload("res://logic/map_library.gd")
 
 const MainScene := preload("res://view/main.tscn")
 const CampaignLibraryRes = preload("res://logic/campaign_library.gd")
@@ -74,10 +77,18 @@ func _test_button_on_menu() -> void:
 		return
 	var menu = main.start_screen
 
-	var test_btn: Button = menu.test_button()
-	var camp_btn: Button = menu.campaign_test_button()
-	ok(test_btn is Button, "（前提）主界面上有 test 按钮")
-	ok(camp_btn is Button, "★ 主界面上有 campaign_test 按钮（战役占位入口）")
+	# ★★ 这两个入口现在住在**「战役」按钮撑开的那块面板**里（见 view/battle_entries.gd），
+	#    它们已经从主界面正中那一列搬走了 —— 先把面板撑开再找它们。
+	var entries = await open_battle_panel(menu)
+	ok(entries != null, "（前提）「战役」面板里有测试入口")
+	if entries == null:
+		main.queue_free()
+		return
+
+	var test_btn: Button = entries.test_button()
+	var camp_btn: Button = entries.campaign_test_button()
+	ok(test_btn is Button, "（前提）面板里有 test 按钮")
+	ok(camp_btn is Button, "★ 面板里有 campaign_test 按钮（战役占位入口）")
 	if camp_btn is Button:
 		eq(camp_btn.text, "campaign_test", "★ 按钮文案是 campaign_test（用户指定的字）")
 		ok(not camp_btn.disabled, "它一开始就是可点的（不依赖选了哪张地图）")
@@ -86,7 +97,7 @@ func _test_button_on_menu() -> void:
 					>= (test_btn as Control).get_global_rect().end.y - 1.0,
 				"★ 它在 test 按钮**下面**（用户原话「就在 test 下面」）")
 			ok(camp_btn.get_parent() == (test_btn as Control).get_parent(),
-				"它与 test 按钮住在同一个容器里（同一列的相邻两项）")
+				"它与 test 按钮住在同一个容器里（同一个 VBox 的相邻两项）")
 
 	main.queue_free()
 	await process_frame
@@ -97,7 +108,13 @@ func _test_open_and_back() -> void:
 		return
 	eq(main.campaign_screen, null, "（前提）一开始没有战役页")
 
-	main.start_screen.campaign_test_button().pressed.emit()
+	# ★★ campaign_test 按钮现在住在**「战役」按钮撑开的那块面板**里（view/battle_entries.gd）——
+	#   先把面板撑开，再按它（它照样打开战役占位页）。
+	var entries = await open_battle_panel(main.start_screen)
+	ok(entries != null and entries.campaign_test_button() is Button,
+		"（前提）「战役」面板里有 campaign_test 按钮")
+	if entries != null:
+		entries.campaign_test_button().pressed.emit()
 	await process_frame
 	var screen = main.campaign_screen
 	ok(screen != null, "★ 按了 campaign_test 之后出现了战役页")
@@ -468,7 +485,7 @@ func _test_old_path_untouched() -> void:
 	var main = await _spawn_main()
 	if main == null:
 		return
-	main._on_test_pressed(main.start_screen.selected_map_path())
+	main._on_test_pressed(String(MapLibraryRes.default_map_path()))
 	await process_frame
 	ok(main.game != null, "★ 老路径（按 test）照样能进游戏")
 	ok(main.campaign_screen == null, "★ 老路径不会挂出战役页")

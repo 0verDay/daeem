@@ -230,6 +230,9 @@ class FillAnimator extends Control:
 	var _available: bool = true
 	## ★ 这一帧用的是**灰档**（按钮被禁用 ⇒ 填灰，见 `_goal()`）。
 	var _grey: bool = false
+	## ★★ 「上一帧这颗按钮吃不到鼠标（`mouse_filter == IGNORE`）」——
+	##   用来在**过滤器被还原的那一帧**按真实鼠标位置重算悬停态，见 `_sync_hover_filter()`。
+	var _filter_was_blocked: bool = false
 	## 上一帧是不是灰档（换档时要重取渐变颜色，见 `_process`）。
 	var _was_grey: bool = false
 	## 与文件顶部的 `FLIP_LO / FLIP_HI` **同值**（内层类读不到外层的常量，只能再写一份）。
@@ -352,6 +355,8 @@ class FillAnimator extends Control:
 		if _button == null or not is_instance_valid(_button):
 			set_process(false)
 			return
+		# ★★ 悬停态自愈（见 `_sync_hover_filter()`）——必须在算目标之前做
+		_sync_hover_filter()
 		# ★ 禁用态变了（可点 ⇄ 不可点）要**换档取色**：金 ⇄ 灰。
 		if is_grey() != _was_grey:
 			_was_grey = is_grey()
@@ -431,6 +436,47 @@ class FillAnimator extends Control:
 
 	func _on_button_up() -> void:
 		_hovered = true
+
+
+	## ★★ 悬停态自愈 —— 修的是「点过按钮再返回主菜单，那片金还留在按钮上」（实测的 bug）。
+	##
+	## 起因：转场期间外壳会把按钮的 `mouse_filter` 压成 IGNORE（让路 + 防止在撑开的面板上
+	##   留一片可点的洞，见 view/panel_expand.gd）。**吃不到鼠标就收不到 `mouse_exited`**
+	##   ⇒ `_hovered` 永远停在 true；而转场结束把过滤器还原成 STOP 时**没有人补发 enter/exit**，
+	##   于是那片金一直填着 —— 哪怕鼠标早就挪到右上角去点「返回」了。
+	##   （`_goal()` 里那句 `mouse_filter != IGNORE` 只保证「压着的时候退回去」，
+	##     还原之后它会照着那个**过期的** `_hovered` 又填回来。）
+	##
+	## 修法：把「吃不到鼠标」当成悬停态的**失效信号**：
+	##   · 压着的时候直接清掉（吃不到鼠标，不可能处于悬停态）；
+	##   · 过滤器还原的那一帧按**真实鼠标位置**重算一次 —— 两个方向都自愈
+	##     （鼠标已经挪开 ⇒ 不填；鼠标正好停在上面 ⇒ 照旧填）。
+	##
+	## ⚠️ 只在「过滤器被压过」这条路上按坐标重算，**不是每帧都拿坐标覆盖 `_hovered`**：
+	##   否则 `mouse_entered.emit()` 这类**人工信号**（tests/test_fill_button.gd 整套都在用）
+	##   会被真实鼠标位置当场推翻，那批用例会全部失效。
+	func _sync_hover_filter() -> void:
+		if _button.mouse_filter == Control.MOUSE_FILTER_IGNORE:
+			_hovered = false
+			_filter_was_blocked = true
+		elif _filter_was_blocked:
+			_filter_was_blocked = false
+			_hovered = _mouse_is_over()
+
+
+	## 鼠标现在真的停在这颗按钮上吗（屏幕矩形命中）。
+	## ★ 用 `get_global_rect()` 对 `viewport.get_mouse_position()`：本项目的界面层
+	##   （CanvasLayer + 铺满的 Control）都没有额外变换，两者是同一个坐标系。
+	func _mouse_is_over() -> bool:
+		var b := _button
+		if b == null or not is_instance_valid(b) or not b.is_inside_tree():
+			return false
+		if not b.is_visible_in_tree():
+			return false
+		var vp := b.get_viewport()
+		if vp == null:
+			return false
+		return b.get_global_rect().has_point(vp.get_mouse_position())
 
 
 	# ---------------- 对外状态 ----------------

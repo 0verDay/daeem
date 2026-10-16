@@ -109,6 +109,21 @@ static func button_primary() -> StyleBoxFlat:
 	return s
 
 
+## ★★ 主界面那些**版式外壳**面板（左上资料 / 左侧导航 / 右下入口）的底板。
+##
+## 与按钮同一套画法（透明底 + 1px 金线），只多一层**很淡的暗底**（0.30）：
+##   这三块是「画框」，得能在渐变页面上看出边界 ——
+##   纯透明的话只剩一圈线，看着像没落住（页面本身就是暗的，线是唯一的边界信息）。
+## ⚠️ 不铺阴影（这套皮肤没有阴影那一档），圆角 2px（与清单底板 `popup_panel()` 同档）。
+static func chrome_panel() -> StyleBoxFlat:
+	var s := StyleBoxFlat.new()
+	s.bg_color = ThemeRes.with_alpha(ThemeRes.bg_bottom(), 0.30)
+	s.border_color = ThemeRes.line()
+	s.set_border_width_all(1)
+	s.set_corner_radius_all(2)
+	return s
+
+
 # ------------------------------------------------------------------
 # 下拉列表（PopupMenu）
 #

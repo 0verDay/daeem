@@ -1,5 +1,8 @@
 ## test_ui.gd —— 新 UI（参考图那套）的接线与几何测试
 extends "res://tests/test_case.gd"
+## ★ 这些用例只需要「一张能开局的图」：地图选择条已经搬进「战役」面板（见
+##   view/battle_entries.gd），所以直接问逻辑层要默认地图（与面板默认选中的是同一张）。
+const MapLibraryRes = preload("res://logic/map_library.gd")
 
 const UiLayoutRes = preload("res://view/ui_layout.gd")
 const UiStyleRes = preload("res://view/ui_style.gd")
@@ -376,7 +379,7 @@ func _test_panels(cfg) -> void:
 	var root_node = (packed as PackedScene).instantiate()
 	root.add_child(root_node)
 	await process_frame
-	root_node._on_test_pressed(root_node.start_screen.selected_map_path())          # 与玩家点一下 test 按钮完全同一条路
+	root_node._on_test_pressed(String(MapLibraryRes.default_map_path()))          # 与玩家点一下 test 按钮完全同一条路
 	await process_frame
 	await process_frame
 

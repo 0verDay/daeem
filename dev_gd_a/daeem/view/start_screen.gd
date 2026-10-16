@@ -2,9 +2,20 @@
 ##
 ##   入场页：上方**几何徽记 + 带字距的标题 DAEEM + 金色分隔线**；
 ##           屏幕下方「————点击任意处进入游戏————」，淡入之后呼吸式渐显渐隐
-##   主界面：屏幕正中一条**地图选择条** + 它下面两颗按钮（test / campaign_test）
+##   主界面：**标题条（徽记 + 字标 + 金线）+ 版式外壳**（左上资料 / 左侧导航 / 右下入口，
+##           见 view/menu_chrome.gd）
 ##
-## ★★ 配色与风格（本轮改版：参考图的「暗色渐变底 + 金色细线边框 + 纯几何形状」）：
+## ★★ 「点击任意处」是**两段动画**（见 `_play_intro_morph()` 与 view/panel_expand.gd 的
+##   `play_intro()`）：① 徽记 / 标题 / 金线**落位**到主界面标题条里各自的位置
+##   （字号字距一起过渡，落位后切页看不出接缝）；② 切页 + 外壳那三块面板**滑入**。
+##   动效总开关关掉时两段都跳过、当场到位。
+##
+## ★★ 真正的**进游戏入口**（地图选择条 + test + campaign_test）**不在本文件里**：
+##   它们住在「战役」那颗按钮撑开的面板中（`view/battle_entries.gd`）。本文件只把
+##   内容区发上来的两个信号转成自己的 `test_pressed` / `campaign_test_pressed` ——
+##   ⇒ `view/main.gd` 那侧只认这两个信号，一行都不用改。
+##
+## ★★ 配色与风格（参考图的「暗色渐变底 + 金色细线边框 + 纯几何形状」）：
 ##   · 底：`view/menu_background.gd`（竖直渐变 + 中心辉光 + 上下金线），**不再有白底**；
 ##   · 控件：`view/menu_theme.gd`（透明底 + 1px 金线；选定态才是实心金）；
 ##   · 图形：`view/menu_emblem.gd`（纯 `_draw()` 的几何徽记，零贴图）；
@@ -12,16 +23,10 @@
 ##   ★ 配色一个都不在本文件里写死：全部来自 `data/config.json` 的 `theme.palette`
 ##     （经 view/theme.gd）。文案 / 字号 / 位置仍然全部来自 `menu` 段 —— 代码里不写文案字面量。
 ##
-## ★★ 地图选择条的选项**不是配出来的、也不是代码里写死的清单**：
-##    `logic/map_library.gd` 扫描 `data/maps/` 下每个目录里的地图 JSON，
-##    有几张图就有几个选项（地图 json 里的 `name` 当显示名，没写就用目录名；
-##    写了 `placeholder: true` 的占位图照样列出，但不会被选成默认图）。
-##    所以「以后加一张新图」= 往 data/maps/ 下放个新目录 —— 这个文件一个字都不用动。
-##
 ## ★ 为什么单开一个文件而不是塞进 main.gd：
 ##   这两页在游戏**开始之前**，生命周期与游戏内场景完全不同（那时 world 还是 null），
 ##   混在一起会让 main.gd 里到处都是 `if 还在菜单里` 的分支 —— 那正是最容易长出陈年 bug 的写法。
-##   ★ 但主循环仍然只有一处：这里没有 _process，只有输入、信号与两条 Tween。
+##   ★ 但主循环仍然只有一处：这里没有 _process，只有输入、信号与几条 Tween。
 ##
 ## ★ 全部用代码搭 Control 树、不建 .tscn（与 hud.gd 同一个理由）：
 ##   纯文本、可 diff、无头测试能直接实例化检查；代价是不能在编辑器里可视化调布局。
@@ -34,24 +39,20 @@
 ##      事件到它那里就停了，父节点的 gui_input 永远不会被调用（父节点不是「上一层」）。
 ##      所以：收事件的那一个节点，必须就是鼠标下最上层的那一个。
 ##   标题与提示 Label 一律 IGNORE，否则点在字上会被文字吃掉、点不进游戏。
-##   ★★ 于是本轮新加的东西也必须守这条：自绘控件（标题 / 徽记 / 金线 / 扫光）
+##   ★★ 于是新加的东西也必须守这条：自绘控件（标题 / 徽记 / 金线 / 扫光）
 ##      全部 `mouse_filter = IGNORE`（在各自的文件里设死），
-##      否则「点击任意处」会在那些**看不见的矩形**上失效 —— 这是本轮最容易踩的坑。
+##      否则「点击任意处」会在那些**看不见的矩形**上失效 —— 这是最容易踩的坑。
 ##   CanvasLayer 用 layer = 100，只是保证它画在游戏画面（Hud 那层用的是默认的 1）之上。
-##
-## ⚠️ 地图选择条（`view/map_select.gd`）自己**要**吃鼠标（STOP 是它的默认值）：
-##   它是主界面上唯一需要「点开、选一项」的控件 —— 一建好就默认选中
-##   `logic/map_library.gd` 给的默认地图，所以「不选就按 test」进的那张与按钮上显示的一致。
 extends CanvasLayer
 
 const ConfigRes = preload("res://logic/config.gd")
-const MapLibraryRes = preload("res://logic/map_library.gd")
-const MapSelectRes = preload("res://view/map_select.gd")
 const ThemeRes = preload("res://view/theme.gd")
-const MenuThemeRes = preload("res://view/menu_theme.gd")
 const MenuBackgroundRes = preload("res://view/menu_background.gd")
 const MenuEmblemRes = preload("res://view/menu_emblem.gd")
 const TextMarksRes = preload("res://view/text_marks.gd")
+## ★★ 主界面的**新版式外壳**（左上资料 / 左侧导航 / 右下入口，仿 nsoc 的主菜单）——
+##    它自带「点按钮撑开面板 + 其他 UI 让路」的机制（view/menu_chrome.gd + view/panel_expand.gd）。
+const MenuChromeRes = preload("res://view/menu_chrome.gd")
 ## ★★ 悬停时「金色自下而上填进来」的那套动效（见 view/fill_button.gd）。
 const FillButtonRes = preload("res://view/fill_button.gd")
 
@@ -96,27 +97,27 @@ var _root: Control = null
 var _bg: Control = null
 var _intro: Control = null
 var _menu: Control = null
+## ★ 新版式外壳（左上资料 / 左侧导航 / 右下入口）—— `view/menu_chrome.gd`。
+## 它只跟着主界面一起显隐；**不含**任何进入游戏的逻辑（那是 `_menu` 那一列的事）。
+var _chrome: Control = null
 ## ★ 带字距的标题（`view/text_marks.gd` 的 SpacedLabel，**不是** Label）——
 ##   节点名仍是 "Title"，测试与排查照旧走 `StartRoot/Intro/Title`。
 var _title: Control = null
+## ★ 入场页的**徽记**与**标题下面那条金线** —— 与 `_title` 一起参与
+##   「入场页 → 主界面」的落位动画（`_play_intro_morph()`）。
+##   ⚠️ 这是**入场页那一份**；主界面标题条里另有三块对应的东西（见 `menu_ornaments()`）。
+var _emblem: Control = null
+var _title_rule: Control = null
+## 入场落位动画的 Tween 与「正在跑」标记：
+## ★ 标记是必须的 —— 动画期间页面**还是入场页**（`_page` 拦不住第二次点击）。
+var _morph_tween: Tween = null
+var _intro_morphing: bool = false
 var _click_hint: Label = null
-## ★ 选择条左边那个「地图」标签（测试按 `.../MapRowWrap/MapRow/MapLabel` 找它）
-var _map_label: Label = null
 ## 扫光那一条（盖在标题上的同级兄弟；见 `_build_intro` 末尾）
 var _shine: Control = null
-## ★ 地图选择条（`view/map_select.gd`：自己画的按钮 + 自己的列表，**不是** OptionButton）
-var _map_select = null
-var _test_button: Button = null
-## ★ 主界面第二颗按钮（**单人战役的占位入口**，用它进战役里手玩）。
-## 它在 `_test_button` **下面**，间距是 `menu.campaign_test_button_gap`（比 map_gap 小）。
-var _campaign_button: Button = null
 var _blink_tween: Tween = null
 var _shine_tween: Tween = null
 
-## 选择条当前的选项表（`logic/map_library.gd` 扫出来的），与控件上的顺序一一对应。
-## ★ 留一份是为了让 `selected_map_path()` 有**唯一的真相**：选项下标 → 地图路径
-##   只在这张表里查，不去反解 OptionButton 上的文字（文字是显示名，可能重复）。
-var _maps: Array = []
 
 
 
@@ -135,11 +136,18 @@ func setup(p_cfg: ConfigRes, p_font: Font) -> void:
 
 	_build_background()
 	_build_intro()
-	# ★ 先扫地图目录、再搭主界面：选择条的选项就是在 _build_menu 里建出来的。
-	#   顺序反过来的话，主界面会先长成「一个选项都没有」的样子，
-	#   而那张空列表一旦被建出来就得再刷一次 —— 不如一开始就有数据。
-	_maps = MapLibraryRes.list_maps()
+	_build_chrome()
 	_build_menu()
+	# ★ 主界面那一列（现在只有标题条）登记为「撑开时要让路」的目标
+	#   （dir = 0 = 只淡出不移位）：外壳上的按钮撑开面板时它必须让开。
+	if _chrome != null and _menu != null:
+		_chrome.add_avoid_target(_menu, 0)
+	# ★★ 真正的 test / campaign_test 入口现在住在「战役」面板里（`view/battle_entries.gd`）：
+	#   外壳把内容区那两个信号往上传一层，这里再转成自己的两个信号发出去 ——
+	#   ⇒ **view/main.gd 那侧一行都不用改**（它只认 start_screen 的这两个信号）。
+	if _chrome != null:
+		_chrome.test_pressed.connect(func(path: String): test_pressed.emit(path))
+		_chrome.campaign_test_pressed.connect(func(): campaign_test_pressed.emit())
 
 	show_page(PAGE_INTRO)
 
@@ -156,6 +164,9 @@ func show_page(page: int) -> void:
 	_page = page
 	_intro.visible = (page == PAGE_INTRO)
 	_menu.visible = (page == PAGE_MENU)
+	# ★ 外壳只在**主界面**上有意义（入场页上不该出现资料 / 侧边栏 / 入口），所以跟着 _menu 一起切。
+	if _chrome != null:
+		_chrome.visible = (page == PAGE_MENU)
 	if page == PAGE_INTRO:
 		start_click_blink()
 		start_title_shine()
@@ -185,6 +196,9 @@ func page() -> int:
 func close() -> void:
 	_stop_click_blink()
 	_stop_title_shine()
+	# ★ 把没跑完的入场落位动画一起取消：否则它的收尾回调会在游戏画面上
+	#   把这一层 `show()` 回来（见 `_cancel_intro_morph()`）。
+	_cancel_intro_morph()
 	hide()
 
 
@@ -227,16 +241,16 @@ func _build_intro() -> void:
 	_root.add_child(_intro)
 
 	# ---- 徽记：贴着标题上方，水平居中（纯几何自绘，见 menu_emblem.gd）----
-	var emblem := MenuEmblemRes.new()
-	emblem.name = "Emblem"
+	_emblem = MenuEmblemRes.new()
+	_emblem.name = "Emblem"
 	var e_size := cfg.num("menu.emblem_size", 150.0)
-	emblem.anchor_left = 0.0
-	emblem.anchor_right = 1.0
-	emblem.offset_left = 0.0
-	emblem.offset_right = 0.0
-	emblem.offset_top = cfg.num("menu.emblem_top", 66.0)
-	emblem.offset_bottom = emblem.offset_top + e_size
-	_intro.add_child(emblem)
+	_emblem.anchor_left = 0.0
+	_emblem.anchor_right = 1.0
+	_emblem.offset_left = 0.0
+	_emblem.offset_right = 0.0
+	_emblem.offset_top = cfg.num("menu.emblem_top", 66.0)
+	_emblem.offset_bottom = _emblem.offset_top + e_size
+	_intro.add_child(_emblem)
 
 	# ---- 标题：带字距 + 横向渐变（参考图那种「左白右金」的一排字）----
 	# ★ 它是**自绘控件**（SpacedLabel）而不是 Label：Label 没有 letter-spacing。
@@ -260,7 +274,7 @@ func _build_intro() -> void:
 	_intro.add_child(_title)
 
 	# ---- 标题下面那条金色分隔线（参考图里标题上下的细线）----
-	_build_rule(_intro, "TitleRule",
+	_title_rule = _build_rule(_intro, "TitleRule",
 		cfg.num("menu.title_top", 200.0) + cfg.num("menu.title_height", 170.0)
 			+ cfg.num("menu.title_rule_gap", 44.0))
 
@@ -306,6 +320,23 @@ func _build_intro() -> void:
 	_shine.offset_bottom = _title.offset_bottom + 24.0
 	_shine.draw.connect(_on_shine_draw)
 	_intro.add_child(_shine)
+
+
+## 主界面的**新版式外壳**（仿 nsoc）：左上资料 / 左侧导航 / 右下三个入口。
+##
+## ★★ 它与 `_menu`（正中那一列）的分工：
+##   · 本函数建的这个外壳 = **版式**：资料、五个侧边栏入口、右下战役 / 演义 / 合作模式；
+##     点它们会撑开一块**空面板**（机制在 view/panel_expand.gd）。
+##   · `_build_menu()` 建的那一列 = **真正的入口**（地图选择条 / test / campaign_test），
+##     按用户要求「叠在外壳上层，暂时不动」。
+##
+## ⚠️ 顺序：先在 `_root` 上 `add_child` 外壳、再建那一列 —— `add_child` 的先后就是叠放顺序。
+## ⚠️ `setup()` 必须在 `add_child` **之后**调：外壳内部的转场引擎要 `await get_tree().process_frame`
+##    才能抄到稳定的布局（见 view/panel_expand.gd 的 `attach()`）——不在树上时 `get_tree()` 是 null。
+func _build_chrome() -> void:
+	_chrome = MenuChromeRes.new()
+	_root.add_child(_chrome)
+	_chrome.setup(cfg, _font)
 
 
 func _build_menu() -> void:
@@ -397,229 +428,17 @@ func _build_menu() -> void:
 	rule.custom_minimum_size = Vector2(cfg.num("menu.menu_rule_width", 220.0), 1.0)
 	rule_wrap.add_child(rule)
 
-	# ★ 用 VBoxContainer 而不是自己算 y 偏移：需求是「选择条在 test 按钮**上方**」——
-	#   这是一条**相对**关系，自己写死两个绝对 y 的话，以后改按钮高度就会让它俩叠在一起。
-	#
-	# ★★ 间距的口径（两处，别再合并成一个）：
-	#   · 列的 `separation` = **两颗按钮之间**的间距
-	#     （`menu.campaign_test_button_gap`，48 —— 它们是一类入口，挨近一点才像一组）；
-	#   · 「选择条 → test」那一格要更宽（`menu.map_gap`，112 —— 下拉列表弹出来
-	#     不能压住按钮），所以**给它单独包一层 MarginContainer 加下边距**，
-	#     差值算在 `_build_map_row` 里。
-	#   ⚠️ 别再想「往列里插一个垫片 Control 来撑大/缩小某一段」：`separation` 作用于
-	#      **每一对**相邻子节点，插进去只会让那一段变成「separation + 垫片 + separation」
-	#     （实测：想要 48，量出来 268）。
-	# ★ 对齐方式（实测出来的，改布局前先读这三行）：
-	#   VBoxContainer 里的控件默认横向**撑满容器宽度** —— 而容器的宽度由最宽的那个
-	#   子控件决定（下拉框 `menu.map_select_width` = 320），所以 test 按钮会被拉到
-	#   和选择条一样宽，两个方块看起来才是一组（按钮自己设的 240 只是**最小**宽度）。
-	#   ALIGNMENT_CENTER 管的是**竖直**方向（整列在 CenterContainer 里居中）。
-	var button_gap := cfg.int_val("menu.campaign_test_button_gap", 48)
-	var column := VBoxContainer.new()
-	column.name = "MenuColumn"
-	column.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	column.add_theme_constant_override("separation", button_gap)
-	column.alignment = BoxContainer.ALIGNMENT_CENTER
-	outer.add_child(column)
-
-	_build_map_row(column)
-	_build_test_button(column)
-	_build_campaign_button(column)
-
-
-## 地图选择条：一行「地图」标签 + 一个下拉选择框。
-##
-## ⚠️ 选项来自 `logic/map_library.gd` 扫描 `data/maps/` 的结果，**不写在这里**：
-##    清单写进 view 层就等于「加一张图要改代码」，而那正是需求要避免的。
-## ⚠️ 一张地图都扫不到时：把选择条禁用、显示 `menu.map_select_empty_text`。
-##    这时 test 按钮仍然可用（`selected_map_path()` 会给兜底路径）——
-##    菜单不该因为「地图目录空了」而整个点不动，至少还能进游戏看到报错。
-##
-## ★★ 选择条本身是 `view/map_select.gd`（**自己画的按钮 + 自己的列表**），
-##    不是引擎的 `OptionButton` —— 换掉的理由写在那份文件头上（一句话：
-##    点开列表之后按钮上那行字会变空白，那是 OptionButton 内部 / 原生列表窗口的毛病）。
-## ★ 它的样式全部来自 `view/menu_theme.gd`（暗底 + 金线），**包括下拉列表那块底板**：
-##   引擎默认的列表是浅色 HUD 皮，在这个暗金界面上弹出来会是一块刺眼的白。
-func _build_map_row(column: VBoxContainer) -> void:
-	# ★★ 「选择条 → test」要比「test → campaign_test」宽（112 vs 48，见 `_build_menu`
-	#    里那段间距口径）。列的 separation 只能是一个值，所以这里**把选择条那一格
-	#    包进一层 MarginContainer 补上差值** —— 于是这一格的「占位高度」=
-	#    选择条 + (map_gap - separation)，与 test 之间的净间距就正好是 map_gap。
-	var wrap := MarginContainer.new()
-	wrap.name = "MapRowWrap"
-	wrap.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var extra := maxi(0, cfg.int_val("menu.map_gap", 112)
-		- cfg.int_val("menu.campaign_test_button_gap", 48))
-	wrap.add_theme_constant_override("margin_bottom", extra)
-	column.add_child(wrap)
-
-	var row := HBoxContainer.new()
-	row.name = "MapRow"
-	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	row.add_theme_constant_override("separation", 16)
-	wrap.add_child(row)
-
-	_map_label = _make_label(
-		cfg.str_val("menu.map_select_label", "地图"),
-		cfg.int_val("menu.map_select_label_size", 28),
-		_menu_color("menu.map_select_label_color", ThemeRes.text_dim())
-	)
-	_map_label.name = "MapLabel"
-	row.add_child(_map_label)
-
-	# ★ 四个态 + 列表底板都走 menu_theme：暗底 + 金线，
-	#   字色是暖白（`text_normal`）—— 旧白底那版的深灰字在这个底上会看不见。
-	#   ⚠️ 下拉列表那块底板（`popup_panel`）**必须不透明**：PopupMenu 是独立窗口，
-	#      底下没有渐变背景可透（理由写在 menu_theme.popup_panel 那里）。
-	_map_select = MapSelectRes.new()
-	_map_select.build(row, _font, cfg.int_val("menu.map_select_size", 26),
-		MenuThemeRes.text_normal(),
-		MenuThemeRes.button_normal(),
-		# ★ 悬停底纹用「透明底」那一档：那片金由自绘填充层给
-		#   （0.08 的淡金叠在填充上会把金压暗，观感变成「悬停只亮了一点点」）
-		MenuThemeRes.button_hover_clear(),
-		MenuThemeRes.button_selected(),
-		MenuThemeRes.button_normal(),
-		MenuThemeRes.popup_panel(),
-		MenuThemeRes.popup_row_hover(),
-		Vector2(cfg.num("menu.map_select_width", 320.0),
-			cfg.num("menu.map_select_height", 56.0)))
-	_map_select.item_selected.connect(_on_map_selected)
-
-	_refresh_map_options()
-
-
-## 把 `_maps` 铺进选择条。
-##
-## ★ 抽成一个函数（而不是在 _build_map_row 里就地铺）：这样「重新扫一遍目录」只需要
-##   调它一次 —— 测试与以后可能的「刷新」按钮都走同一条路，不会漂成两份实现。
-func _refresh_map_options() -> void:
-	if _map_select == null:
-		return
-	if _maps.is_empty():
-		_map_select.set_items([cfg.str_val("menu.map_select_empty_text", "没有可用地图")])
-		_map_select.select(0)
-		_map_select.set_disabled(true)
-		return
-	_map_select.set_disabled(false)
-	var names: Array = []
-	for item in _maps:
-		names.append(String((item as Dictionary)["name"]))
-	_map_select.set_items(names)
-	# ★ 默认选中**默认地图**那一项（`default_map_path()`：跳过占位图的第一张正式图）。
-	#   为什么要跟它对齐、而不是无脑选第 0 项：需求只要求「可以选」，但
-	#   「什么都不选直接按 test」必须有一个**与按钮上显示的一致**的结果 ——
-	#   选择条上高亮着 arena、按下去却进了 frontier 的话，玩家会说「选择条没用」。
-	#   找不到（理论上不会）→ 退回第 0 项。
-	var default_path := String(MapLibraryRes.default_map_path())
-	var index := 0
-	for i in _maps.size():
-		if String((_maps[i] as Dictionary)["path"]) == default_path:
-			index = i
-			break
-	_map_select.select(index)
-
-
-func _build_test_button(column: VBoxContainer) -> void:
-	_test_button = Button.new()
-	_test_button.name = "TestButton"
-	_test_button.text = cfg.str_val("menu.test_button_text", "test")
-	_test_button.focus_mode = Control.FOCUS_NONE
-	_test_button.custom_minimum_size = Vector2(
-		cfg.num("menu.test_button_width", 240.0),
-		cfg.num("menu.test_button_height", 80.0)
-	)
-	if _font != null:
-		_test_button.add_theme_font_override("font", _font)
-	_test_button.add_theme_font_size_override("font_size", cfg.int_val("menu.test_button_size", 28))
-	# ★★ 悬停填充（在挂样式之前挂上：样式那一步就要往它身上写「原字色」）
-	FillButtonRes.attach_text(_test_button)
-	_apply_button_styles(_test_button, false)
-	_test_button.pressed.connect(_on_test_pressed)
-	column.add_child(_test_button)
-
-
-## ★ 单人战役的**占位入口**（`campaign_test`）：一颗与 test 同款的按钮，摆在它**下面**。
-##
-## 为什么要有它：战役的数据与逻辑（M7.0~M7.2）已经能跑，但**正式入口还没做**
-## （dev_plan_7 5.1 的战役选择条 / 关卡列表 / 简报是后面几轮的事）——
-## 没有入口就只能靠无头脚本开局，手玩验不了。所以先放这颗按钮进
-## `view/campaign_test.gd` 那一页（列关卡 + 选阵营 + 开始）。
-##
-## ★ 两处刻意与 test 按钮不同：
-##   1. 它在 test **下面**，两颗之间的间距是 `menu.campaign_test_button_gap`（48，
-##      也就是整列的 `separation`）—— 见 `_build_menu` 里那段间距口径；
-##   2. 它**不参与**「选了哪张地图」这件事：战役进哪张图由关卡数据说了算
-##      （`level.map_id`），与选择条无关。
-func _build_campaign_button(column: VBoxContainer) -> void:
-	_campaign_button = Button.new()
-	_campaign_button.name = "CampaignTestButton"
-	_campaign_button.text = cfg.str_val("menu.campaign_test_button_text", "campaign_test")
-	_campaign_button.focus_mode = Control.FOCUS_NONE
-	_campaign_button.custom_minimum_size = Vector2(
-		cfg.num("menu.test_button_width", 240.0),
-		cfg.num("menu.test_button_height", 80.0)
-	)
-	if _font != null:
-		_campaign_button.add_theme_font_override("font", _font)
-	_campaign_button.add_theme_font_size_override("font_size",
-		cfg.int_val("menu.test_button_size", 28))
-	# ★★ 悬停填充（同上：必须在 `_apply_button_styles` 之前）
-	FillButtonRes.attach_text(_campaign_button)
-	_apply_button_styles(_campaign_button, false)
-	_campaign_button.pressed.connect(_on_campaign_test_pressed)
-	column.add_child(_campaign_button)
-
-
-## 把「线框 / 选定」那一套样式挂到一颗 Button 上。
-##
-## ★ 抽成一个函数（而不是两处各挂一遍）：test 与 campaign_test 必须**长得一模一样**
-##   （它们是一组入口），抄成两份的话早晚会漂 —— 而那种漂在界面上是看得出「这两颗不是一套」。
-## ★ `filled` = 实心金那档（游戏内页签 / 战役页当前选中的行用它）；
-##   主界面这两颗按钮都是线框（false）—— 主界面上没有「当前选中」这个概念。
-## ⚠️ 字色有三档（暖白 / 近黑 / 暗金灰）：实心金底上必须换成近黑，
-##   否则「暖白字压金底」几乎读不出来。
-func _apply_button_styles(b: Button, filled: bool) -> void:
-	var font_normal := MenuThemeRes.text_on_fill() if filled else MenuThemeRes.text_normal()
-	# ★★ 字色走「登记原色」的接口（不是 add_theme_color_override）：
-	#   填充动效每帧按「原色 + 当前填充进度」重算这四条，直接写 override 会被盖掉。
-	FillButtonRes.set_base_font_color(b, font_normal)
-	# ★★ 这两颗按钮的底是**主界面的深色渐变页**（不是实心金块）：
-	#   显式告诉填充层，别让它去猜底纹 ——
-	#   实测它会扫到 `pressed` 那格的实心金，于是「空鼠标」时也按金字底算，
-	#   把白字整块换成近黑（用户报的「test / campaign_test 的字变成黑色了」）。
-	#   ★ 字色口径：**白字起步、金扫上来时由白变黑**（与页签栏同一条规则，
-	#     见 view/fill_button.gd 的 `_sync_text()`）。
-	#     ⚠️ 下面那行 `set_prefer_light` 是**历史遗留**（那个开关已作废）：
-	#        它当年代表「压金也保持白字」，而白字压金读不出来 ——
-	#        那正是用户报的「test / campaign_test 的字被金色填充遮挡」。
-	FillButtonRes.set_panel_color(b, ThemeRes.bg_top())
-	FillButtonRes.set_prefer_light(b, not filled)
-	b.add_theme_color_override("font_disabled_color", MenuThemeRes.text_disabled())
-	if filled:
-		# ★ 实心金那一档：悬停时**再亮一档**（填充层的 done 态）
-		b.add_theme_stylebox_override("hover", MenuThemeRes.button_selected_hover())
-		b.add_theme_stylebox_override("normal", MenuThemeRes.button_selected())
-		b.add_theme_stylebox_override("pressed", MenuThemeRes.button_selected())
-		b.add_theme_stylebox_override("focus", MenuThemeRes.button_selected())
-		b.add_theme_stylebox_override("disabled", MenuThemeRes.button_disabled())
-		FillButtonRes.set_latched(b, true)
-		return
-	b.add_theme_stylebox_override("normal", MenuThemeRes.button_normal())
-	# ★ 悬停底纹用「透明底」那一档：那片金由自绘填充给（0.08 的淡金会把填充压暗）
-	b.add_theme_stylebox_override("hover", MenuThemeRes.button_hover_clear())
-	# ★ 按下态仍用**实心金**：这一下要看得出来「按到了」（暗底上只换线色反馈太弱）。
-	b.add_theme_stylebox_override("pressed", MenuThemeRes.button_selected())
-	b.add_theme_stylebox_override("focus", MenuThemeRes.button_normal())
-	b.add_theme_stylebox_override("disabled", MenuThemeRes.button_disabled())
-	FillButtonRes.set_latched(b, false)
+	# ★★ 这里原来还有一列「地图选择条 + test + campaign_test」（`MenuColumn`）——
+	#   它们现在整块搬进了**「战役」按钮撑开的那块面板**（`view/battle_entries.gd`），
+	#   由面板自己拥有（面板开时建、关时销毁）。
+	#   ⇒ 主界面从此只剩标题条 + 外壳；`_menu` 仍然存在（外壳撑开时它要淡出让路）。
 
 
 ## 标题下面那条金色分隔线（参考图里标题上下的细线）。
 ##
 ## ★ 位置是**算出来的**（标题底 + title_rule_gap），不是又一个绝对坐标 ——
 ##   改标题字号 / 高度时这条线自己跟着走，不会漂到字上去。
-func _build_rule(parent: Control, node_name: String, y: float) -> void:
+func _build_rule(parent: Control, node_name: String, y: float) -> Control:
 	var rule := TextMarksRes.Rule.new()
 	rule.name = node_name
 	rule.line_color = ThemeRes.with_alpha(ThemeRes.line(), 0.9)
@@ -634,6 +453,7 @@ func _build_rule(parent: Control, node_name: String, y: float) -> void:
 	rule.offset_top = y
 	rule.offset_bottom = y + 1.0
 	parent.add_child(rule)
+	return rule
 
 
 func _make_label(text: String, size: int, color: Color) -> Label:
@@ -797,125 +617,213 @@ func _on_page_gui_input(event: InputEvent) -> void:
 ## ⚠️ 但这**不能**代替「点击真的能到达处理器」那条验证：
 ##   第一版就是处理器接错了节点，而这个函数单独调照样通过，
 ##   于是测试全绿、游戏里点不动。接线本身必须另外测（见 tests/test_start_flow.gd）。
-## @return bool 这一次点击是否真的生效（已经在主界面 / 非左键时为 false）
+## @return bool 这一次点击是否真的生效（已经在主界面 / 动画正在跑时为 false）
+##
+## ★★ 现在这里是**两段动画**（见 `_play_intro_morph()` 与 `view/panel_expand.gd` 的 `play_intro()`）：
+##   ① 徽记 / 标题 / 金线缓动到主界面标题条里各自的位置（此时主界面还藏着）；
+##   ② 落位之后才切页，并让主菜单的三块面板从屏幕外滑入。
+##
+## ★★ 所以本函数**同步返回** true（= "这次点击被受理了"），而**切页发生在动画之后**：
+##   调用方若需要「已经到主界面了」，得等 `intro_dismissed` 信号或轮询 `page()` ——
+##   别指望这一行之后就已经切好了（tests/test_menu_chrome.gd 就是这么等的）。
+##   这个形状是刻意的：把 `await` 写在**本函数里**会让它的返回值变成协程对象，
+##   而调用点（含测试）用的都是 `if dismiss_intro():` 这种布尔用法。
 func dismiss_intro() -> bool:
-	if _page != PAGE_INTRO:
+	if _page != PAGE_INTRO or _intro_morphing:
 		return false
-	show_page(PAGE_MENU)
-	intro_dismissed.emit()
+	_stop_click_blink()
+	# ★ 扫光也要现在停掉：它是**入场页专属**的一次性装饰，而落位动画只搬标题、不带它 ——
+	#   不先停的话，那条斜的亮带会**留在原地**（标题缩走了、它还在），像一块灰色斜方块
+	#   （实测截图抓到的）。
+	_stop_title_shine()
+	if not ThemeRes.animations_enabled() or _intro_morph_sec() <= 0.0:
+		# 动效总开关关掉 ⇒ 两段都跳过，当场到位（与 fill_button / 徽记同一条口径）
+		_finish_intro()
+		return true
+	_intro_morphing = true
+	_play_intro_morph()
 	return true
 
 
-func _on_test_pressed() -> void:
-	# ★ 按钮只该生效一次：进了游戏之后这一层就隐藏了，正常路径上按不到第二次；
-	#   这里再挡一道，是为了让「连点两下」永远不会造出第二个世界。
-	if not visible:
+## 真正切到主界面（并让外壳的面板滑入）。★ 只在落位动画跑完、或被跳过时走一次。
+func _finish_intro() -> void:
+	if _page != PAGE_INTRO:
 		return
-	test_pressed.emit(selected_map_path())
+	_intro_morphing = false
+	# ★ 落位动画期间主界面是「显示但 alpha 0」（理由见 `_play_intro_morph()`）——这里把它放出来。
+	#   面板自己的滑入由 `play_intro()` 负责（那时外壳才第一次显示）。
+	if _menu != null:
+		_menu.modulate.a = 1.0
+	show_page(PAGE_MENU)
+	if _chrome != null:
+		_chrome.play_intro()
+	intro_dismissed.emit()
 
 
-## ★ 按下了 campaign_test：把「该开战役页了」这件事交给 `view/main.gd`。
+## ★★ 入场页的**落位动画**：徽记 / 标题 / 金线缓动到主界面标题条里各自的位置。
 ##
-## ⚠️ 与 `_on_test_pressed` 同一条守卫（`not visible` ⇒ 不生效）：
-##    进了游戏之后开场页整层是隐藏的，正常路径上按不到第二次；
-##    留着这一道是为了「连点两下」永远不会挂出两页来。
-func _on_campaign_test_pressed() -> void:
-	if not visible:
+## 做法：把入场页那三块**拍平锚点**（位置与尺寸从此由 Tween 说了算），终点取主界面标题条里
+## 对应三块的**屏幕矩形**，然后并行 Tween `position` / `size`；标题还要把**字号与字距**
+## 一起走过去（不然只有外框在缩、字是「跳」的），金线要把**两端的渐隐长度**过渡过去。
+## 三块落位的那一瞬间才切页 —— 主界面那三块本来就在同一位置，于是看不出接缝。
+##
+## ⚠️⚠️ **必须先让主界面「显示但 alpha 0」并等排版落定**，再量终点：
+##   容器只在自己**显示**的时候才把子节点排到位 —— 实测量到的是 (0,0)（那行字的宽度甚至是 0），
+##   于是徽记会缩到屏幕**左上角**去、字和线干脆一动不动（用户报的正是这个）。
+##   落定要等几帧（父容器 sort → 子控件尺寸变化 → 子容器再 sort，一跳一帧），所以走
+##   `_wait_targets_ready()` 轮询；等不到就**不做这段动画**（宁可少一段动画，也不能把 logo 搬去角落）。
+##
+## ★ 收尾用 `tween_callback` 而不是 `await finished`：动画被 `_cancel_intro_morph()` 杀掉时
+##   回调不会来（正是我们要的：不再切页），也不会留下一个永远等不到恢复的协程。
+func _play_intro_morph() -> void:
+	# ① 先让主界面「出场」：`visible = true` 但 alpha 0 —— 排版要它显示才算得出来，而 alpha 0 看不见。
+	#   ⚠️ **外壳这时仍然藏着**：它整块都在屏幕边上（资料 / 侧边栏 / 右下入口），
+	#      提前显示就会在落位动画期间露出一堆按钮；而且它里面有能点的东西 ——
+	#      显示在 alpha 0 上等于给玩家一片「看不见但点得到」的按钮。
+	if _menu != null:
+		_menu.visible = true
+		_menu.modulate.a = 0.0
+
+	var ready: bool = await _wait_targets_ready()
+	if not is_instance_valid(self) or not _intro_morphing:
 		return
-	campaign_test_pressed.emit()
+	if not ready:
+		push_warning("入场落位动画：主界面的排版没能在若干帧内落定，改为直接切页（不做落位）。")
+		_finish_intro()
+		return
+
+	var targets: Array = _morph_targets()
+	var sec: float = _intro_morph_sec()
+	_morph_tween = create_tween()
+	_morph_tween.set_parallel(true)
+	_morph_tween.set_trans(Tween.TRANS_CUBIC)
+	_morph_tween.set_ease(Tween.EASE_IN_OUT)
+	_morph_slide(_morph_tween, _emblem, targets[0][1], sec)
+	_morph_slide(_morph_tween, _title, targets[1][1], sec)
+	_morph_slide(_morph_tween, _title_rule, targets[2][1], sec)
+	# 标题的字号与字距、金线的渐隐长度 —— 一起走过去
+	var dst_word: Control = targets[1][1]
+	var dst_rule: Control = targets[2][1]
+	if _title != null and dst_word != null:
+		var t = _title
+		var w = dst_word
+		_morph_tween.tween_method(_set_title_font_size, float(t.font_size), float(w.font_size), sec)
+		_morph_tween.tween_method(_set_title_tracking, float(t.tracking), float(w.tracking), sec)
+	if _title_rule != null and dst_rule != null:
+		var r = _title_rule
+		var d = dst_rule
+		_morph_tween.tween_method(_set_rule_fade, float(r.fade), float(d.fade), sec)
+	# 提示文字淡出（主界面上没有它）
+	if _click_hint != null:
+		_morph_tween.tween_property(_click_hint, "modulate:a", 0.0, sec * 0.5)
+	_morph_tween.tween_callback(_on_morph_done).set_delay(sec)
 
 
-## 选择条换了一项。★ 不预载地图、也不建世界：
-##   选一张图只是「待会儿按 test 时进哪张」，现在载入等于把一张没人玩的地图读进内存。
-## ★ 按钮上那行字**不用在这里管**：`view/map_select.gd` 在它自己那边每次选中都会
-##   把文字重新写进按钮（那正是那个类存在的理由 —— 见它的文件头）。
-func _on_map_selected(_index: int) -> void:
-	pass
+## 落位动画的三对「入场页 → 主界面标题条里那一块」。
+func _morph_targets() -> Array:
+	var orn := menu_ornaments()
+	if orn == null:
+		return []
+	return [
+		[_emblem, orn.get_node_or_null("MenuEmblemWrap/MenuEmblem")],
+		[_title, orn.get_node_or_null("MenuWordmark")],
+		[_title_rule, orn.get_node_or_null("MenuRuleWrap/MenuRule")],
+	]
 
 
-# ------------------------------------------------------------------
-# 对外状态：选中的地图
-# ------------------------------------------------------------------
-
-## 玩家当前选中的地图路径 —— ★ `test_pressed` 带出去的就是它，也是**选择条唯一的作用**。
+## 等主界面的排版真的算出来。@return false = 等不到（调用方应放弃动画、直接切页）。
 ##
-## ★ 兜底规则（两种都不该让主界面点不动）：
-##   · 选择条还没选过 / 选中项越界 → `MapLibraryRes.default_map_path()`
-##     （正常路径上选不中这种情况不会发生：`_refresh_map_options` 一建好就选中了它）；
-##   · 一张图都扫不到（`_maps` 为空）→ 同上，而它自己还会退到 `FALLBACK_MAP_PATH`
-##     —— 与选择条上显示的「没有可用地图」一致：按下去会进那张兜底图，
-##     载入失败的话 main.gd 会把半成品撤掉、留在菜单上。
-func selected_map_path() -> String:
-	var index := 0
-	if _map_select != null and _map_select.selected >= 0:
-		index = _map_select.selected
-	if index >= 0 and index < _maps.size():
-		return String((_maps[index] as Dictionary)["path"])
-	return String(MapLibraryRes.default_map_path())
-
-
-## 地图选项表（`logic/map_library.gd` 扫出来的那份）。
-## ★ 给测试看一眼「选项是不是真的来自目录扫描」，而不是主界面自己编的清单。
-func map_options() -> Array:
-	return _maps
-
-
-## 地图选择条那行控件本身（`view/map_select.gd` 造的按钮）—— 给测试量几何 / 点它用。
+## ★ 判据是「三块目标都排过版」，而不是「等一帧」：容器排版的落定要经过
+##   「父容器 sort → 子控件尺寸变化 → 子容器再 sort」好几跳，一跳可能就是一帧 ——
+##   只等固定帧数是**赌**出来的，赌输的表现就是「徽记飞到屏幕左上角」。
 ##
-## ⚠️ 它**不能**再用节点路径找（`.../MapRow/MapSelect`）：选择条不是一个 Control 节点了，
-##    按钮是 `view/map_select.gd` 内部持有的东西（它自己管文字与列表）。
-##    要拿它就问这里 —— 这也是这套拆分的代价与好处：层次变清楚了，路径不再稳定。
-func map_select_button() -> Button:
-	return _map_select.button if _map_select != null else null
+## ⚠️⚠️ 判据里**不能**用「尺寸 > 1」：金线本来就只有 1px 高（`custom_minimum_size.y = 1`），
+##   那样写会把一条**排得好好的**金线判成「没排过版」而整条跳过 —— 实测踩到：线一动不动。
+##   所以这里判的是**位置不为零**：这三块都住在整页居中的那一列里，真排过版就绝不可能在 (0,0)。
+func _wait_targets_ready(max_frames: int = 8) -> bool:
+	var targets: Array = _morph_targets()
+	if targets.size() < 3:
+		return false
+	for i in max_frames:
+		var ready := true
+		for pair in targets:
+			var dst: Control = pair[1]
+			if dst == null:
+				return false
+			var r: Rect2 = dst.get_global_rect()
+			if r.position == Vector2.ZERO or r.size.x < 0.5:
+				ready = false
+				break
+		if ready:
+			return true
+		await get_tree().process_frame
+	return false
 
 
-## 选择条上有几项 / 第 i 项叫什么 / 现在选的是第几项 —— **只给测试与排查用**。
-## ★ 选择条内部是什么实现（`view/map_select.gd`）不该泄漏出去，所以这里转一层，
-##   而不是把 `_map_select` 直接公开出去。
-func map_select_item_count() -> int:
-	return _map_select.item_count() if _map_select != null else 0
+
+func _on_morph_done() -> void:
+	_morph_tween = null
+	if not _intro_morphing:
+		return                      # 中途被取消（例如进了游戏）—— 不要把菜单 show() 出来
+	# ★ 两枚徽记的**转速对齐**：入场页那枚从入场起就一直在转，主界面那枚还停在 0 ——
+	#   不接过去的话，切页那一瞬间图形会「跳」一个角度（最多能差几十度）。
+	var orn := menu_ornaments()
+	var dst_emblem: Control = orn.get_node_or_null("MenuEmblemWrap/MenuEmblem") if orn != null else null
+	if dst_emblem != null and _emblem != null and dst_emblem.has_method("set_spin_angle"):
+		dst_emblem.set_spin_angle(_emblem.arc_angle())
+	_finish_intro()
 
 
-func map_select_item_text(index: int) -> String:
-	return _map_select.get_item_text(index) if _map_select != null else ""
-
-
-func map_select_selected() -> int:
-	return _map_select.selected if _map_select != null else -1
-
-
-## 让选择条选中第 index 项（等价于玩家选了它，但**不发** item_selected ——
-## 与 OptionButton.select() 的语义一致）。
-func map_select_select(index: int) -> void:
-	if _map_select != null:
-		_map_select.select(index)
-
-
-## ★★ 列表底板当前的**不透明度**（0 = 全透明，1 = 完全不透明）。
-##   ★ 给测试看「渐入 / 渐出确实在淡」：`PopupMenu` 是 `Window`，没有 `modulate`
-##     可用，所以淡入淡出改的是底板 StyleBox 的 alpha（见 view/map_select.gd）。
-func map_select_panel_alpha() -> float:
-	return _map_select.panel_alpha() if _map_select != null else 1.0
-
-
-## ★ 主界面上那颗 **test 按钮** —— 给测试量几何 / 点它用。
+## 把 `src` 从「它此刻的屏幕矩形」缓动到 `dst` 此刻的屏幕矩形。
 ##
-## ⚠️ 本轮它在树上的**路径变了**（标题条与按钮列现在连成一条 VBox，
-##    见 `_build_menu` 的结构图 ⇒ 实际路径是 `StartRoot/MainMenu/MenuPad/MenuOuter/MenuColumn`）。
-##    与其让测试去记这条越来越长的路径，不如像 `campaign_test_button()` 那样问这里 ——
-##    以后这一列再调整，测试不用跟着改。
-func test_button() -> Button:
-	return _test_button
+## ★ 两端都用**屏幕矩形**：两边挂在不同的父节点 / 容器里，只有屏幕坐标是同一个坐标系。
+## ★ 拍平锚点：之后 `position/size` 完全由 Tween 写（锚点还挂着的话，容器会在动画中途把它们拽回去）。
+## ⚠️ 这里**不**做「尺寸太小就跳过」的判断：金线本来就只有 1px 高，那种守卫会把一条
+##   排得好好的线整条判掉（实测踩到过：线一动不动）。目标可不可信由 `_wait_targets_ready()`
+##   统一把关，那之后再量到的矩形就是可信的。
+func _morph_slide(tw: Tween, src: Control, dst: Control, sec: float) -> void:
+	if src == null or dst == null:
+		return
+	var to: Rect2 = dst.get_global_rect()
+	var from: Rect2 = src.get_global_rect()
+	var origin: Vector2 = _intro.global_position if _intro != null else Vector2.ZERO
+	src.set_anchors_and_offsets_preset(Control.PRESET_TOP_LEFT)
+	src.position = from.position - origin
+	src.size = from.size
+	tw.tween_property(src, "position", to.position - origin, sec)
+	tw.tween_property(src, "size", to.size, sec)
 
 
-## ★ 主界面第二颗按钮（`campaign_test`）本身 —— 给测试量几何 / 点它用。
-##
-## ⚠️ 它**可以**走节点路径找（`.../MenuColumn/CampaignTestButton`，因为它就是一个
-##    `Button` 节点、不在别的类内部）；这个方法留着是为了让测试与
-##   `map_select_button()` 的用法对称 —— 也为了以后这一列再改动时，
-##   测试不用跟着改路径。
-func campaign_test_button() -> Button:
-	return _campaign_button
+func _intro_morph_sec() -> float:
+	return cfg.num("menu.intro_morph_sec", 0.5) if cfg != null else 0.5
+
+
+func _set_title_font_size(v: float) -> void:
+	var t = _title
+	if t != null:
+		t.font_size = int(round(v))
+
+
+func _set_title_tracking(v: float) -> void:
+	var t = _title
+	if t != null:
+		t.tracking = v
+
+
+func _set_rule_fade(v: float) -> void:
+	var r = _title_rule
+	if r != null:
+		r.fade = v
+
+
+## 取消还没跑完的落位动画（进游戏 / 被别的路径切走时）。
+## ★ 杀掉 Tween 之后那个收尾回调就不会来，于是**不会再切页** ——
+##   否则它会在游戏画面上把菜单 `show()` 出来。
+func _cancel_intro_morph() -> void:
+	if _morph_tween != null and _morph_tween.is_valid():
+		_morph_tween.kill()
+	_morph_tween = null
+	_intro_morphing = false
 
 
 ## 主界面标题条那几块（徽记 / 字标 / 金线）—— **只给测试与排查用**。
@@ -926,6 +834,21 @@ func campaign_test_button() -> Button:
 ##   光靠节点路径要写一长串，所以这里转一层。
 func menu_ornaments() -> Control:
 	return _menu.get_node_or_null("MenuPad/MenuOuter/MenuOrnaments") if _menu != null else null
+
+
+## ★ 主界面的**版式外壳**（左上资料 / 左侧导航 / 右下入口）—— 只给测试与排查用。
+## ★ 它自带撑开 / 让路的机制：测试走 `menu_chrome().expand_engine()` 看展开状态与那块空面板。
+func menu_chrome() -> Control:
+	return _chrome
+
+
+## ★ 当前撑开面板里那块「战斗测试入口」（`view/battle_entries.gd`）—— 只给测试与排查用。
+##
+## ★ 地图选择条 / test / campaign_test 现在住在**「战役」那颗按钮撑开的面板**里：
+##   要拿它们得先把那块面板展开（点「战役」，或 `menu_chrome().expand_engine().expand(...)`），
+##   再问这里。没展开 / 展开的是别的块时返回 null。
+func battle_entries():
+	return _chrome.battle_entries() if _chrome != null else null
 
 
 ## 入场页标题（`view/text_marks.gd` 的 SpacedLabel，**不是** Label）。

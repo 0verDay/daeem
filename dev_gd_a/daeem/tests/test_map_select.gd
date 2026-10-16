@@ -91,27 +91,38 @@ func _test_menu_selector() -> void:
 		return
 
 	await _click_at(CLICK_CENTER)
+	# ★ 现在「点击被受理」与「切页」之间还有一段落位动画（见 view/start_screen.gd 的
+	#   `_play_intro_morph()`），所以点完要等页面真的就位，不能当场读 `page()`。
+	await _wait_page(menu, PAGE_MENU)
 	eq(int(menu.page()), PAGE_MENU, "已经进到主界面")
 	await process_frame
 
-	var select: Button = menu.map_select_button()
-	ok(select is Button, "主界面上有一条地图选择条（自己画的按钮）")
+	# ★★ 地图选择条 + test 现在住在**「战役」按钮撑开的那块面板**里
+	#    （view/battle_entries.gd，从主界面正中那一列搬过去的）—— 先把面板撑开。
+	var entries = await open_battle_panel(menu)
+	ok(entries != null, "（前提）「战役」面板里有地图选择条与 test")
+	if entries == null:
+		main.queue_free()
+		return
+
+	var select: Button = entries.map_select_button()
+	ok(select is Button, "面板里有一条地图选择条（自己画的按钮）")
 	ok(select.get_node_or_null("MapSelectPopup") is PopupMenu,
 		"★ 选择条自己带一个下拉列表（PopupMenu），不依赖引擎的 OptionButton")
-	var button = menu.test_button()
-	ok(button is Button, "主界面上还有那个 test 按钮")
-	var column: Control = menu.test_button().get_parent()
+	var button = entries.test_button()
+	ok(button is Button, "面板里还有那个 test 按钮")
+	var column: Control = entries.test_button().get_parent()
 	var label = column.find_child("MapLabel", true, false)
 	ok(label is Label, "选择条左边有一个「地图」标签")
 
 	if select is Button and button is Button:
 		var maps: Array = MapLibraryRes.list_maps()
-		eq(menu.map_select_item_count(), maps.size(),
+		eq(entries.map_select_item_count(), maps.size(),
 			"★ 选项条数 = 目录里扫出来的地图数（%d）" % maps.size())
 		for i in maps.size():
-			eq(menu.map_select_item_text(i), String((maps[i] as Dictionary)["name"]),
+			eq(entries.map_select_item_text(i), String((maps[i] as Dictionary)["name"]),
 				"第 %d 项的显示名与扫描结果一致" % i)
-		ok(menu.map_select_selected() >= 0,
+		ok(entries.map_select_selected() >= 0,
 			"★ 默认选中一项（不然「不选就按 test」进哪张图没定义）")
 		var want_default := String(MapLibraryRes.default_map_path())
 		var want_index := 0
@@ -119,12 +130,12 @@ func _test_menu_selector() -> void:
 			if String((maps[i] as Dictionary)["path"]) == want_default:
 				want_index = i
 				break
-		eq(menu.map_select_selected(), want_index,
+		eq(entries.map_select_selected(), want_index,
 			"★ 默认选中「默认地图」那一项（下标 %d，%s）" % [want_index, want_default])
-		eq(menu.selected_map_path(), want_default,
+		eq(entries.selected_map_path(), want_default,
 			"★ 不选就按 test 时带出去的就是默认地图")
 		ok(not select.disabled, "有地图时选择条是可用的")
-		eq(select.text, menu.map_select_item_text(menu.map_select_selected()),
+		eq(select.text, entries.map_select_item_text(entries.map_select_selected()),
 			"★ 选择条上那行字 = 当前选中项（不是空的）")
 
 		var sel_rect: Rect2 = select.get_global_rect()
@@ -145,31 +156,31 @@ func _test_menu_selector() -> void:
 			await _click_at(sel_rect.get_center())
 			var popup: PopupMenu = select.get_node_or_null("MapSelectPopup")
 			ok(popup != null and popup.visible, "★ 点一下选择条 → 列表弹出来")
-			eq(select.text, menu.map_select_item_text(want_index),
+			eq(select.text, entries.map_select_item_text(want_index),
 				"★★ 列表弹出来时，按钮上那行字**仍然是当前选中项**（不许变空白）")
 			popup.id_pressed.emit(other)
 			await process_frame
-			eq(menu.map_select_selected(), other, "★ 换一项之后选中项跟着变")
-			eq(select.text, menu.map_select_item_text(other),
+			eq(entries.map_select_selected(), other, "★ 换一项之后选中项跟着变")
+			eq(select.text, entries.map_select_item_text(other),
 				"★★ 换完之后按钮上写的就是**新那一项**（不是空白、也不是旧的）")
-			eq(menu.selected_map_path(), String((maps[other] as Dictionary)["path"]),
+			eq(entries.selected_map_path(), String((maps[other] as Dictionary)["path"]),
 				"★ selected_map_path() 返回的正是那一项对应的地图文件")
 			if popup.visible:
 				popup.hide()
 			await process_frame
-			eq(select.text, menu.map_select_item_text(other),
+			eq(select.text, entries.map_select_item_text(other),
 				"★★ 列表关掉之后，按钮上那行字照样在（修的就是这一步）")
-		await _test_popup_easing(menu, select)
+		await _test_popup_easing(menu, entries, select)
 
-		menu.map_select_select(want_index)
+		entries.map_select_select(want_index)
 		await process_frame
-		eq(menu.selected_map_path(), want_default,
+		eq(entries.selected_map_path(), want_default,
 			"选回默认那一项 → 选中的地图跟着回去")
 
 	main.queue_free()
 	await process_frame
 
-func _test_popup_easing(menu, select: Button) -> void:
+func _test_popup_easing(menu, entries, select: Button) -> void:
 	var popup: PopupMenu = select.get_node_or_null("MapSelectPopup")
 	ok(popup != null, "（前提）下拉列表还在")
 	if popup == null:
@@ -185,11 +196,11 @@ func _test_popup_easing(menu, select: Button) -> void:
 
 	await _click_at(rect.get_center())
 	var p_open := popup.position.y
-	var a_open: float = menu.map_select_panel_alpha()
+	var a_open: float = entries.map_select_panel_alpha()
 	await process_frame
 	await process_frame
 	var p_2 := popup.position.y
-	var a_2: float = menu.map_select_panel_alpha()
+	var a_2: float = entries.map_select_panel_alpha()
 	ok(popup.visible, "★ 点一下选择条 → 列表弹出来")
 	ok(p_open < target_y and p_2 > p_open,
 		"★★ 展开时从选项条下沿**往下滑**（起点 %d → %d，终点 %d）"
@@ -201,13 +212,13 @@ func _test_popup_easing(menu, select: Button) -> void:
 		await process_frame
 	ok(absf(float(popup.position.y - target_y)) <= 2.0,
 		"★★ 缓动结束时停在按钮下沿（%d ≈ %d）" % [popup.position.y, target_y])
-	ok(menu.map_select_panel_alpha() > 0.99, "★ 结束时完全不透明")
+	ok(entries.map_select_panel_alpha() > 0.99, "★ 结束时完全不透明")
 
 	await _click_at(rect.get_center())
-	var c_a1: float = menu.map_select_panel_alpha()
+	var c_a1: float = entries.map_select_panel_alpha()
 	await process_frame
 	await process_frame
-	var c_a2: float = menu.map_select_panel_alpha()
+	var c_a2: float = entries.map_select_panel_alpha()
 	ok(c_a2 < c_a1, "★★ 再点一下 → 底板**逐渐淡出**（alpha %.2f → %.2f）" % [c_a1, c_a2])
 	for i in 30:
 		await process_frame
@@ -239,14 +250,20 @@ func _test_selected_map_reaches_game() -> void:
 		return
 
 	await _click_at(CLICK_CENTER)
-	await process_frame
+	# ★ 等页面真的就位（切页在落位动画之后），再打开「战役」面板拿那三个入口
+	await _wait_page(menu, PAGE_MENU)
+	var entries = await open_battle_panel(menu)
+	ok(entries != null, "（前提）「战役」面板里有地图选择条与 test")
+	if entries == null:
+		main.queue_free()
+		return
 
 	var maps: Array = MapLibraryRes.list_maps()
 	if maps.size() < 2:
 		ok(false, "需要至少两张地图才能验「选中的那张真的被带进游戏」")
 		main.queue_free()
 		return
-	var default_map = default_map_meta(menu)
+	var default_map = default_map_meta(entries)
 	var picked: Dictionary = {}
 	for item in maps:
 		var m: Dictionary = item
@@ -258,16 +275,16 @@ func _test_selected_map_reaches_game() -> void:
 		picked = maps[1] as Dictionary
 	ok(not picked.is_empty(), "挑到一张用于验证的地图：%s" % str(picked.get("name", "")))
 
-	var select: Button = menu.map_select_button()
+	var select: Button = entries.map_select_button()
 	if select != null and not picked.is_empty():
 		var index := maps.find(picked)
-		menu.map_select_select(index)
+		entries.map_select_select(index)
 		await process_frame
-		eq(menu.selected_map_path(), String(picked["path"]), "（前提）选择条选中了目标那张图")
+		eq(entries.selected_map_path(), String(picked["path"]), "（前提）选择条选中了目标那张图")
 		eq(select.text, String(picked["name"]),
 			"（前提）选择条上那行字也是那一张的名字")
 
-	var tb: Button = menu.test_button()
+	var tb: Button = entries.test_button()
 	ok(tb is Button and tb.get_global_rect().size.y > 1.0, "（前提）test 按钮已经排过版")
 	await _click_at(tb.get_global_rect().get_center())
 
@@ -297,6 +314,14 @@ func _spawn_main() -> Node:
 	await process_frame
 	return main
 
+
+## 等页面真的就位（「点击被受理」与「切页」之间现在隔着一段落位动画，见 start_screen.gd）。
+func _wait_page(menu, want: int) -> void:
+	var deadline: int = Time.get_ticks_msec() + 8000
+	while Time.get_ticks_msec() < deadline and int(menu.page()) != want:
+		await process_frame
+	await process_frame
+
 func _click_at(pos: Vector2) -> void:
 	var down := InputEventMouseButton.new()
 	down.button_index = MOUSE_BUTTON_LEFT
@@ -318,5 +343,6 @@ func map_meta(path: String) -> Variant:
 	var d: Dictionary = data
 	return {"cols": int(d.get("cols", 0)), "rows": int(d.get("rows", 0))}
 
-func default_map_meta(menu) -> Variant:
-	return map_meta(String(menu.selected_map_path()))
+## 当前选中那项地图的元数据（列数 / 行数）—— 参数是**面板里那块入口**（view/battle_entries.gd）。
+func default_map_meta(entries) -> Variant:
+	return map_meta(String(entries.selected_map_path()))

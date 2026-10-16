@@ -153,10 +153,20 @@ dev_gd_a/daeem/
 ├── daeem.csproj                  # C# 工程（Godot.NET.Sdk）。★ 引擎必须用 mono(.NET) 版
 ├── NuGet.config                  # 本地包源（引擎自带 nupkgs；本机没有外网到 nuget.org）
 ├── view/                         # 渲染：Node2D / Control，禁止改逻辑状态
-│   ├── main.tscn / main.gd       #   入口场景：白屏入场页 → 主界面（地图选择条 + test）→ 游戏内场景；
+│   ├── main.tscn / main.gd       #   入口场景：入场页 → 主界面（标题条 + 版式外壳）→ 游戏内场景；
 │   │                             #   ★ 只做连接：把「按下 test + 选了哪张地图」翻译成 game_scene.start(那张图)
-│   ├── start_screen.gd           #   ★ 开场两页（白底，不走 ui_style）：入场页的呼吸提示 +
-│   │                             #   主界面那条**地图选择条**（选项来自 logic/map_library.gd 扫目录）
+│   ├── start_screen.gd           #   ★ 开场两页（暗金渐变页，不走 ui_style）：
+│   │                             #   入场页 = 徽记 + 带字距的标题 + 金线 + 呼吸提示；
+│   │                             #   ★★ 「点一下」是**两段动画**：① 徽记/标题/金线缓动到主界面标题条
+│   │                             #     里各自的位置（字号字距一起过渡，落位后切页看不出接缝）
+│   │                             #     ② 切页 + 主菜单那三块面板滑入（见 panel_expand.play_intro()）
+│   │                             #   ★ 主界面只剩**标题条 + 版式外壳**：进游戏的入口（地图选择条 /
+│   │                             #     test / campaign_test）搬进了「战役」面板（见 battle_entries.gd）；
+│   │                             #     本文件只把内容区的两个信号转成自己的 test_pressed /
+│   │                             #     campaign_test_pressed ⇒ view/main.gd 那侧一行不改
+│   ├── battle_entries.gd         #   ★★ 战斗测试入口那一块：**地图选择条 + test + campaign_test**
+│   │                             #     （原来长在主界面正中那一列，现在只由「战役」面板拥有：
+│   │                             #      面板开时建、关时销毁；`selected_map_path()` 之类的读法也在它身上）
 │   ├── map_select.gd             #   ★ 地图选择条本体（**自己画的按钮 + 自己的 PopupMenu**）：
 │   │                             #   不用引擎 OptionButton —— 点开列表后按钮上那行字会变空白
 │   │                             #   （实测，见 route.md 34.9）；对外 API 与 OptionButton 同名同义
@@ -178,6 +188,23 @@ dev_gd_a/daeem/
 │   │                             #     + 左侧键**框选**那条状态机（按下 → 移动 → 松开，见 route.md 16.3）
 │   ├── ui_layout.gd              #   ★ UI 的全部几何常量（照参考图的像素稿）+ 贴边规则
 │   ├── ui_style.gd               #   UI 配色与 StyleBox 工厂
+│   ├── ui_widgets.gd             #   ★ 通用部件工厂：**产出节点**的那一层（文字徽章 / 数字角标 /
+│   │                             #     一次挂好按钮四态底纹）—— ui_style / menu_theme 只产 StyleBox
+│   ├── elastic_scroll_list.gd    #   ★ 任意长列表：自己管 clip + 偏移，拉过头有阻尼、松手回弹
+│   │                             #     （daeem 的其它列表都是定长的；手感数值在 config 的 ui.scroll_*）
+│   ├── drag_scroll_helper.gd     #   给原生 ScrollContainer 加「按住拖动滚动」（上面那个的姊妹件）
+│   ├── fade_in.gd                #   入场淡入：挂在页面根 Control 上，_ready 自动 0→1
+│   │                             #     （时长在 config 的 ui.fade_in_sec；动效总开关关掉 = 直接就位）
+│   ├── menu_chrome.gd            #   ★★ 主界面新版式外壳（仿 nsoc）：左上资料（Godot 图标当头像）
+│   │                             #     / 左侧竖排五键（成长 备战 好友 藏品 自定义）/ 右下 2+1
+│   │                             #     （战役 演义 / 合作模式）—— 点任一块撑开一块面板；
+│   │                             #      只有「战役」那块的内容区里装着 battle_entries.gd
+│   ├── panel_expand.gd           #   ★★ 「撑开 + 让路」引擎：拍平锚点 → 钉住原点面板的子控件 →
+│   │                             #     其余面板滑出屏外 + 禁输入 → 原点面板用 size/position 扩到全屏
+│   │                             #     （`dir = 0` 的目标只淡出 —— 标题条那一条走这条）；
+│   │                             #     另有 `play_intro()`：首次进主界面时各面板从屏幕外**滑入**
+│   ├── menu_secondary_panel.gd   #   ★ 撑开出来的那块面板：一颗「返回」+ **可选的内容区**
+│   │                             #     （`with_battle_entries` 时放 battle_entries.gd）
 │   ├── hud.gd                    #   UI 装配：左部队列表 / 左下地图占位 / 底栏 / 右上设置
 │   │                             #   ★ 右上设置点开是**二级菜单**（全屏 / 返回主菜单）：
 │   │                             #     面板只发两个信号，执行在 view/main.gd
@@ -221,6 +248,15 @@ dev_gd_a/daeem/
     │                             #     **悬停详情面板**（命令卡 + 页签列那一段的宽 + 下缘 + 按文本长高 + 折行不被裁 + 换页收起）
     │                             #     ⚠️ 它必须在 **GameScene**（按下 test 之后那个）上断言 ——
     │                             #     在 main.tscn 的根上取 hud 会报错并静默跳过整节（pitfalls 5.35）
+    ├── test_ui_kit.gd            #   ★★ 通用 UI 工具件（滚动列表 / 拖动滚动 / 入场淡入 / 徽章部件）：
+    │                             #     橡皮筋真的被阻尼（拖 100px 只走 43px）、手感数值真的来自
+    │                             #     config.json、关掉动效总开关时「立刻就位」、徽章配色跟着主题
+    ├── test_menu_chrome.gd       #   ★★ 主界面新版式外壳：三块面板的位置 / 侧边栏五键的顺序与竖排 /
+    │                             #     右下「上排 2 + 下排 1」/ 头像是不是 Godot 图标 / 点一下撑开
+    │                             #     （尺寸=屏幕−2×24、其余块滑出屏外、标题条淡出）/ 按返回全部归位 /
+    │                             #     关掉动效一帧到位 / **「战役」面板里装着战斗测试入口**（其余块是空的）
+    ├── test_menu_emblem.gd       #   ★★ 徽记（外圈四段弧 + 内圈带四个凹口）：缺口在正方向、端面是
+    │                             #     平行线直切（不是径向切）、两圈反向同速旋转、配置写坏也能画
     ├── test_attack_orders.gd     #   ★ 攻击命令：点名打单位 / 建筑、行军攻击、索敌建筑
     ├── test_zone_capture.gd      #   ★ 占领进度显示：无主 / 我的地 / 别人的地 三种情况
     ├── test_recruit_queue.gd     #   ★ 招募队列：消耗 / 人口 / 队列上限 5 / 读条 10 秒 /
