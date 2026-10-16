@@ -14,6 +14,9 @@ Dynasty And Empire : Eastern March
 
 本版本为在godot引擎内的原型开发，仅展示完整的局内玩法
 
+### 2026.10.16 ui/ux更新
+1. 复用了前面项目nsoc的主界面ui/ux改造了当前游戏的主界面ui/ux（当然有一点点更改）
+
 ### 2026.10.15 GameLinkAgent更新
 1. 简单来说，本项目今天没有任何更新，但负责本项目的联机开发agent更新了，详情见
 ```
