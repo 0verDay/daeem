@@ -481,6 +481,14 @@ func quad_screen_height(u) -> float:
 	return quad_screen_width(u) * QUAD_H_RATIO
 
 
+## ★★ 立牌在屏幕上的**宽与高**，一次算完：宽要 2 次投影，高只是按比例。
+##   覆盖层画血条用它 —— 先调 width 再调 height 的话，height 会把 width 再投一遍
+##   （每单位多 2 次 `to_px`，1000 单位就是每帧多 2000 次）。
+func quad_screen_size(u) -> Vector2:
+	var w: float = quad_screen_width(u)
+	return Vector2(w, w * QUAD_H_RATIO)
+
+
 ## 立牌**头顶**在屏幕上的位置（覆盖层放血条 / 字用）
 func head_screen_pos(u) -> Vector2:
 	if palette == null or palette.cam == null:

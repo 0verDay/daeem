@@ -155,6 +155,22 @@ static func animator_of(b: Button) -> FillAnimator:
 	return a if is_instance_valid(a) else null
 
 
+## ★★ 递归清掉一棵子树里所有「挂了填充动效」的按钮的悬停态。
+##
+## 给流程层用（`view/start_screen.gd` 的 `close()` / `open_menu()`）：页面隐藏 / 显示时
+##   **显式**作废悬停 —— 不依赖可见性信号是否传播，也不依赖鼠标坐标
+##   （手机端手指抬起后模拟鼠标停在原地，按坐标算会算成「还在悬停」）。
+static func clear_hover_in(node: Node) -> void:
+	if node == null:
+		return
+	if node is Button:
+		var a := animator_of(node as Button)
+		if a != null:
+			a.clear_hover()
+	for c in node.get_children():
+		clear_hover_in(c)
+
+
 # ------------------------------------------------------------------
 # 对比度（选字色用，也把「读不读得出来」这件事交给一个可断言的函数）
 #
@@ -256,9 +272,29 @@ class FillAnimator extends Control:
 	var _panel_override: Color = Color(-1.0, -1.0, -1.0, -1.0)
 	## 每一条按钮上文字 / 子 Label 的**原色**（`_sync_text()` 每次都从它算，可重入）。
 	var _text: Dictionary = {}
+	## ★★ 已经真正写进控件的「节点 → {槽位: 颜色}」。
+	##   **只在颜色变化时才 `add_theme_color_override`**：每帧无条件写会让 Control 每次都
+	##   收到 THEME_CHANGED、触发**文字重新排版**；界面里几十个按钮 × 每帧 = 手机上几十毫秒
+	##   （这是「66 个单位却 45ms CPU」的头号嫌疑）。
+	var _applied: Dictionary = {}
 	var _dirty: Array[Node] = []
 	## 「有字色要重算，但当时还没法算」（纹理还没建好）——`_sync_text()` 会置这个标。
 	var _text_dirty: bool = false
+	## ★★ 上一次真正同步时的**填充进度**与「颜色 / 文字状态变了」标记。
+	##
+	## 静息按钮每帧仍会走 `_process` 的 `_sync_text()`（那句**必须**保留：它兜的是
+	## 「最后一帧没同步上」）。但同步本身要遍历每条字、调 `_panel_color()`（theme 查表）、
+	## 算两次亮度比较 —— 界面上几十颗按钮 × 每帧，手机上就是实打实的毫秒。
+	## 现在：进度没动、没有待处理项、状态没变 ⇒ 直接返回。
+	##   · 进度一变（悬停动画的每一帧）⇒ 同步；
+	##   · 换档 / 改原色 / 改底色 ⇒ `_force_sync_text()` 把它们标脏。
+	var _synced_fill: float = -1.0
+	var _sync_state_dirty: bool = true
+
+	## 强制同步一次（用于「进度没变但颜色状态变了」的那些入口）。
+	func _force_sync_text() -> void:
+		_sync_state_dirty = true
+		_sync_text()
 
 	func _attach(b: Button) -> void:
 		_button = b
@@ -283,6 +319,9 @@ class FillAnimator extends Control:
 		_ramp.repeat = GradientTexture2D.REPEAT_NONE
 		set_colors(ThemeRes.fill_top(), ThemeRes.fill_bottom())
 		b.resized.connect(queue_redraw)
+		# ★★ 不可见了就把悬停清掉（见 `_on_visibility_changed`）——
+		#    修「点按钮进游戏、再返回主菜单，那片金还留在按钮上」。
+		b.visibility_changed.connect(_on_visibility_changed)
 		# ★ 记得「初始是哪个档」（可点 = 金档），否则第一帧会误判成换档、白刷一次。
 		_was_grey = is_grey()
 		_refresh_colors()
@@ -420,7 +459,7 @@ class FillAnimator extends Control:
 		if _prefer_light == v:
 			return
 		_prefer_light = v
-		_sync_text()
+		_force_sync_text()
 		queue_redraw()
 
 	func _on_mouse_entered() -> void:
@@ -436,6 +475,31 @@ class FillAnimator extends Control:
 
 	func _on_button_up() -> void:
 		_hovered = true
+
+
+	## ★★ 按钮变得**不可见于树**（页面隐藏 / CanvasLayer 收起 / 面板让路）时，悬停作废。
+	##
+	## 修的是「点了 test 进游戏、再返回主菜单，那片金还留在按钮上」：`start_screen.close()`
+	##   只 `hide()`、**不发 `mouse_exited`**，于是 `_hovered` 一直停在 true
+	##   （`_sync_hover_filter` 那条自愈只在 `mouse_filter == IGNORE` 时才动手，这条路没压过它）。
+	## ★ 清掉之后**不会**在重新可见时自己填回来（要真实 `mouse_entered` 才会）——
+	##   这正是要的：手机端手指抬起后模拟鼠标仍停在原地，按坐标重算会算成 true
+	##   （见 `_mouse_is_over()`）。
+	func _on_visibility_changed() -> void:
+		if _button == null or not is_instance_valid(_button):
+			return
+		var shown: bool = _button.is_visible_in_tree()
+		# ★★ 隐藏的按钮（进游戏后整个主菜单都在树里但不可见）不必每帧跑 `_process`：
+		#    它们不画、不收鼠标，唯一会变的只有「进度」和「字色」。几十颗菜单按钮
+		#    每帧空转在手机上也是实打实的开销。重新可见时恢复即可（状态原样保留）。
+		set_process(shown)
+		if not shown:
+			_hovered = false
+
+
+	## 外部显式作废悬停（`view/start_screen.gd` 的 `close()` / `open_menu()` 兜底用）。
+	func clear_hover() -> void:
+		_hovered = false
 
 
 	## ★★ 悬停态自愈 —— 修的是「点过按钮再返回主菜单，那片金还留在按钮上」（实测的 bug）。
@@ -561,11 +625,11 @@ class FillAnimator extends Control:
 			#   因为「登记的原色已经==暖白」而提前返回 ⇒ **一次都没写进 Label**
 			#   ⇒ 屏幕上一直是灰的（用户报的「3×3 里的字是灰的」）。
 			#   所以这里必须照样同步一次（`_sync_text` 幂等，重复调不会越压越黑）。
-			_sync_text()
+			_force_sync_text()
 			return
 		_text[n] = base
 		_front(n)
-		_sync_text()
+		_force_sync_text()
 
 
 	## 按钮自己的字：★ 一律用这个接口，**不要**再 `add_theme_color_override("font_color", …)`。
@@ -594,7 +658,7 @@ class FillAnimator extends Control:
 				continue
 			_text[lb] = base
 			_front(lb)
-		_sync_text()
+		_force_sync_text()
 
 
 	func base_font_color(default_color: Color = ThemeRes.text()) -> Color:
@@ -622,7 +686,8 @@ class FillAnimator extends Control:
 			_bottom = ThemeRes.fill_bottom()
 			_top = ThemeRes.fill_top()
 		set_colors(_top, _bottom)
-		_sync_text()
+		# 颜色档位变了（普通 ⇄ 锁定 ⇄ 禁用）：进度可能没变，但字色必须重算
+		_force_sync_text()
 
 
 	## 把每一条登记过的字按**当前进度**定成「在那块底上读得出来」的颜色。
@@ -643,19 +708,28 @@ class FillAnimator extends Control:
 	## ⚠️ 加 `_ramp` 那道闸是为了「还没 `_attach()` 就被调」时不出错
 	##   （挂载顺序见 `attach()`：先 `_attach()` 再 `add_child()`）。
 	func _sync_text() -> void:
+		# ★★ 静息快路径（见 `_synced_fill` 那段）：进度没动、没有待处理项、状态没变
+		#    ⇒ 一个颜色都不用算。⚠️ 必须在 `_dirty.clear()` **之前**判：
+		#    有待处理项时不能提前返回。
+		if not _sync_state_dirty and not _text_dirty and _dirty.is_empty() \
+				and is_equal_approx(_fill, _synced_fill):
+			return
 		_dirty.clear()
 		if _ramp == null:
 			_text_dirty = true
 			return
 		_text_dirty = false
-		var panel := _panel_color()
+		# ⚠️ 这里**不再**调 `_panel_color()`：它原来只是给下面那个 `under` 用的，
+		#   而 `under` 在「比对比度选色」那条路删掉之后就没有读者了。
+		#   留着的话，每次同步都要对 4 个底纹槽做 `get_theme_stylebox()` ——
+		#   界面上几十颗按钮 × 每帧，是纯浪费（本轮手机端优化顺手拆掉的）。
 		for key in _text.keys():
 			var n = key
 			if not is_instance_valid(n):
 				_text.erase(key)
+				_applied.erase(key)
 				continue
 			var base: Color = _text[key]
-			var under := panel.lerp(_bottom, _coverage(n))
 			var on_fill := ThemeRes.text_on_fill(_latched, base)
 			# ★★ 一条**统一**规则，不再需要调用点传「要不要白字」的开关：
 			#
@@ -691,9 +765,24 @@ class FillAnimator extends Control:
 				# 宿主按钮：四个态一起给（引擎按当前态挑一个，暖白 → 暖黑不会跳变）
 				for slot in ["font_color", "font_hover_color", "font_pressed_color",
 						"font_disabled_color"]:
-					n.add_theme_color_override(slot, c)
+					_apply_color(n, slot, c)
 			else:
-				n.add_theme_color_override("font_color", c)
+				_apply_color(n, "font_color", c)
+		# ★ 这一次真的同步完了 ⇒ 记住进度、清掉「状态变了」标记（静息快路径靠它）
+		_synced_fill = _fill
+		_sync_state_dirty = false
+
+
+	## ★★ 只在**颜色真的变了**时才写主题覆盖（见 `_applied` 的注释）。
+	##   这是本文件每帧最热的路径：界面里几十个按钮，每个按钮 1~3 条字、每条 1~4 个槽位。
+	func _apply_color(n, slot: String, c: Color) -> void:
+		var raw: Variant = _applied.get(n, null)
+		var d: Dictionary = raw if typeof(raw) == TYPE_DICTIONARY else {}
+		if d.has(slot) and d[slot] == c:
+			return
+		d[slot] = c
+		_applied[n] = d
+		n.add_theme_color_override(slot, c)
 
 
 	## 这颗按钮**底纹的底色**（填充画在它**下面**）。
@@ -733,7 +822,7 @@ class FillAnimator extends Control:
 		if c.a >= 0.0:
 			_panel_override = ThemeRes.with_alpha(ThemeRes.bg_bottom(), 1.0).lerp(c, c.a) \
 				if c.a < 0.999 else c
-		_sync_text()
+		_force_sync_text()
 		queue_redraw()
 
 

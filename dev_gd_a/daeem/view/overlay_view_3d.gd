@@ -48,16 +48,110 @@ func setup(p_cfg: ConfigRes, p_world, p_palette, p_units, p_ground = null) -> vo
 	# 铺满屏幕、但不吃鼠标（输入走 input_controller 那条路）
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	set_anchors_preset(Control.PRESET_FULL_RECT)
+	# ★ 新场景 / 新地图 ⇒ 静态投影缓存一律作废（相机对象也换了）
+	_static_ready = false
+	_grid_screen = PackedVector2Array()
+	_zone_screen = []
+	_capture_screen = []
 
 
 func sync() -> void:
 	queue_redraw()
 
 
+# ------------------------------------------------------------------
+# 静态投影缓存（网格 / 区划轮廓 / 占领触发区）
+# ------------------------------------------------------------------
+
+## 相机 / 视口 / 区划归属变了吗？（只读，不改缓存）
+##
+## ★ 判据用**值比较**（Transform3D / Projection / Vector2），不是哈希：
+##   每帧只比 12 + 16 + 2 个浮点数，比「拼一个字符串当键」便宜得多。
+## ★ 相机只平移不旋转（见 architecture.md 4.3），但这里不假设这一点：
+##   整个变换都参与比较，将来加旋转也不会漏失效。
+## ★ 区划签名每帧都算一次（几十个区块、纯字符串拼接），但它是**唯一**能发现
+##   「归属变了、轮廓颜色要换」的判据；相机静止时这点开销可以忽略。
+func _static_key_changed() -> bool:
+	if not _static_ready or palette == null or palette.cam == null:
+		return true
+	var cam: Camera3D = palette.cam
+	return cam.global_transform != _static_key_xform \
+		or cam.get_camera_projection() != _static_key_proj \
+		or get_viewport_rect().size != _static_key_vp \
+		or _zone_edge_signature() != _static_key_zone_sig
+
+
+func _remember_static_key() -> void:
+	var cam: Camera3D = palette.cam
+	_static_key_xform = cam.global_transform
+	_static_key_proj = cam.get_camera_projection()
+	_static_key_vp = get_viewport_rect().size
+	_static_key_zone_sig = _zone_edge_signature()
+	_static_ready = true
+
+
+## 重建静态层缓存。只有 `_static_key_changed()` 为真时才真的干活。
+##
+## ★ 顺序：先更新**格坐标**几何（`_count_zone_outlines()` 按签名重建 `_zone_segs`），
+##   再逐组投影 —— 反过来会拿到上一版几何。
+func _refresh_static_projection() -> void:
+	if not _static_key_changed():
+		return
+	_remember_static_key()
+	static_rebuild_count += 1
+	if world == null or world.map == null:
+		_grid_screen = PackedVector2Array()
+		_zone_screen = []
+		_capture_screen = []
+		return
+
+	_grid_screen = _project_segments(
+		_grid_segs_for(int(world.map.cols), int(world.map.rows)))
+
+	# 区划轮廓：按组投影一次，之后每帧只重新 `draw_multiline`。
+	# ★ 屏幕外接框与视口不相交的整组丢掉 —— 拉近视角时地图上大部分轮廓都在屏幕外，
+	#   丢掉之后既省 draw 调用，也省 GPU 的裁剪工作（判据只在相机变化时算一次）。
+	_count_zone_outlines()
+	_zone_screen = []
+	var vp: Rect2 = Rect2(Vector2.ZERO, get_viewport_rect().size).grow(64.0)
+	for entry in _zone_segs:
+		var segs: PackedVector2Array = _project_segments(entry["segs"])
+		if segs.is_empty() or not _pts_bbox_intersects(segs, vp):
+			continue
+		_zone_screen.append({"segs": segs, "color": entry["color"]})
+
+	_capture_screen = _compute_visible_capture_areas()
+
+
+## 一串屏幕顶点（成对存放）的轴对齐包围盒与 `rect` 相交吗？
+static func _pts_bbox_intersects(pts: PackedVector2Array, rect: Rect2) -> bool:
+	if pts.is_empty():
+		return false
+	var mn := pts[0]
+	var mx := pts[0]
+	for p in pts:
+		mn = mn.min(p)
+		mx = mx.max(p)
+	return rect.intersects(Rect2(mn, mx - mn))
+
+
 func _draw() -> void:
+	# ★★ 只统计**真正的 `_draw` 命令录制**（手机读数开 `profile_on` 时才付两次时钟调用）。
+	#    它不在 `game_scene3d._process` 的分段里，是 `rest` 的主要候选之一。
+	var t0: int = Time.get_ticks_usec() if (world != null and world.profile_on) else 0
+	_draw_impl()
+	if t0 != 0:
+		world.profile_us["draw/overlay"] = int(world.profile_us.get("draw/overlay", 0)) \
+			+ (Time.get_ticks_usec() - t0)
+
+
+func _draw_impl() -> void:
 	draw_count = 0
 	if cfg == null or world == null or palette == null:
 		return
+	# ★★ 静态层：相机 / 视口 / 区划归属没变就复用上一帧投影好的屏幕坐标
+	#    （见 `_static_ready` 那段说明）。必须放在所有 `_draw_*` 之前。
+	_refresh_static_projection()
 	# ★★ 顺序即层次（后画的在上面），这一串是刻意排的：
 	#   ① 地面上的"线"（网格 / 区划轮廓 / 占领触发区描边）—— 在地面之上、单位之下
 	#      ⚠️ 它们必须**先于**单位画：否则网格线会盖在兵人身上（看起来像网格穿透了部队）。
@@ -136,6 +230,32 @@ var _grid_rows: int = -1
 ## 区划轮廓缓存：`{signature, segs}` —— 只有归属 / 地块划分变了才重算
 var _zone_segs: Array = []
 var _zone_seg_sig: String = ""
+
+## ★★ **屏幕坐标缓存**（本轮手机端帧率优化）。
+##
+## 网格 / 区划轮廓 / 占领触发区只依赖「相机 + 视口 + 区划几何与归属」，
+## 而相机在绝大多数帧里是**静止**的（玩家没平移、没缩放）。原来 `_draw()` 每帧都把
+## 它们重新投影一遍：29×22 的图约 1000+ 次 `Camera3D.unproject_position` + 逐点吸附，
+## 手机上是几毫秒到十几毫秒的量级。
+## 现在把投影结果存下来，键没变就直接复用（只重新提交 `draw_*`，不再算投影）：
+##   · `_static_key_xform` —— 相机变换（平移 / 缩放都会改它）；
+##   · `_static_key_proj`  —— 相机投影矩阵（改 fov / near 时才会变）；
+##   · `_static_key_vp`    —— 视口尺寸（unproject 依赖它）；
+##   · `_static_key_zone_sig` —— 区划几何 / 归属签名（轮廓与触发区颜色靠它）。
+## ★ 动态部分（单位血条、占领进度条、建造预览、拖框）**不缓存**，仍然每帧更新。
+var _static_ready: bool = false
+var _static_key_xform: Transform3D = Transform3D.IDENTITY
+var _static_key_proj: Projection = Projection()
+var _static_key_vp: Vector2 = Vector2.ZERO
+var _static_key_zone_sig: String = ""
+## 网格线的屏幕顶点（成对存放：起点、终点）
+var _grid_screen: PackedVector2Array = PackedVector2Array()
+## 区划轮廓的屏幕顶点：每项 `{segs: PackedVector2Array, color: Color}`
+var _zone_screen: Array = []
+## 占领触发区的屏幕几何（= `_compute_visible_capture_areas()` 的结果）
+var _capture_screen: Array = []
+## 缓存重建次数（纯诊断：测试 / 排查用）
+var static_rebuild_count: int = 0
 ## 诊断（测试读它）：最近一次 `_draw()` 里网格线 / 区划轮廓 / 占领填充各画了几条
 var grid_draw_count: int = 0
 var zone_outline_draw_count: int = 0
@@ -149,8 +269,11 @@ var capture_area_count: int = 0
 ## ★ 计数与绘制**分开**（下一段说明为什么）。
 func _draw_grid() -> void:
 	grid_draw_count = _count_grid_lines()
-	_draw_logic_segments(_grid_segs_for(int(world.map.cols), int(world.map.rows)),
-		GRID_COLOR, GRID_WIDTH)
+	# ★★ 顶点是**上一帧缓存的屏幕坐标**（见 `_refresh_static_projection()`）：
+	#    相机不动时这里一次投影都不做，只重新提交 draw 调用。
+	if _grid_screen.is_empty():
+		return
+	draw_multiline(_grid_screen, GRID_COLOR, GRID_WIDTH)
 
 
 ## 网格线这一帧**画几条**（纯计数，不碰绘制 API）。
@@ -194,7 +317,10 @@ func _grid_segs_for(cols: int, rows: int) -> Array:
 	return _grid_segs
 
 
-## 把一串「格坐标线段」投影到屏幕并画出来。
+## 把一串「格坐标线段」投影成屏幕顶点（**纯计算**：近平面裁剪 + 像素中心吸附）。
+##
+## @return 成对存放的屏幕顶点（起点、终点）；整段在相机后方的不出现，
+##         跨过相机平面的只留可见的那一段。空数组 = 一条都画不了。
 ##
 ## ★★ **必须把端点吸附到像素中心**（这一步不是锦上添花，是清晰度的关键）：
 ##   格线在世界里落在格边界上，投影之后往往正好落在**屏幕像素的边界**（x.0）上 ⇒
@@ -202,38 +328,20 @@ func _grid_segs_for(cols: int, rows: int) -> Array:
 ##   （不吸的话，一条「1 像素实线」看起来是「2 像素的半透明软线」）。
 ##   吸附到 `.5` 之后线落在像素中心，1 px 就是 1 px —— 与 2D 版 `draw_line`
 ##   在整数坐标上的观感一致。
-##
 ##   ⚠️ 吸附的代价是线**偏离真实格边最多半个像素**（肉眼不可辨）；
 ##      换来的是「像 2D 一样清晰」。用户的口径就是这个，所以这个取舍是明确的。
 ##
-## ★ `PackedVector2Array` 而不是 `Array`：`draw_multiline` 要的是 Packed 数组，
-##   而逐个 `append` 到 Packed 数组比 `Array` + 转换省一次拷贝。
-## ★★ 一次 `draw_multiline` 画**所有**线段 ⇒ 94 条线 = 1 次 draw 调用
-##   （与 2D 版 `zone_view` 的「按阵营分组合并」同一条思路）。
-##
-## ★★ **近平面裁剪**（本轮修「近视角下地图顶端拉出很多竖线」的 bug）：
+## ★★ **近平面裁剪**（修「近视角下地图顶端拉出很多竖线」的 bug）：
 ##   相机拉得越近，地图靠近相机的那半张就越会落到**相机平面之后**；
 ##   而 `unproject_position()` 对相机后方的点**不裁剪**，除以负的 w ⇒ 坐标镜像/炸开
 ##   （实测：某竖线的近端本该投到屏幕 y=+3695，`zoom=0.1` 时变成 **y=−17191**）。
 ##   不裁的话，一条格线会从地图顶端的可见端点一路划到天外 ——
 ##   56 个端点里 28 个在相机后 ⇒ 屏幕上就是「**很多根竖直线从地图上端拉出去**」。
-##   修法：把每条线段对近平面裁一刀（见 `_project_segments`）。
-func _draw_logic_segments(segs: Array, color: Color, width: float) -> void:
-	var pts: PackedVector2Array = _project_segments(segs)
-	if pts.is_empty():
-		return
-	draw_multiline(pts, color, width)
-
-
-## 把一串「格坐标线段」投影成屏幕顶点（**纯计算**：近平面裁剪 + 像素中心吸附）。
 ##
-## @return 成对存放的屏幕顶点（起点、终点）；整段在相机后方的不出现，
-##         跨过相机平面的只留可见的那一段。空数组 = 一条都画不了。
-##
-## ★★ 为什么必须裁（见 `_draw_logic_segments` 的说明）：相机后方的点投影会炸开。
 ## ★ 判据在**相机空间**里做：`z ≤ -near` 才算在近平面之前（Godot 相机朝 −Z 看）。
 ## ★ 参数 `t` 在**逻辑坐标**里插值就够 —— `logic → world` 是线性缩放，
 ##   所以交点不必再回世界空间转一次，投影仍只经 `palette.to_px` 一处。
+## ★ 结果由 `_refresh_static_projection()` 缓存，`_draw` 里只重新提交 `draw_multiline`。
 ## ★ 与 `_count_*()` 同一个理由拆成纯函数：测试能在无头下量它，
 ##   而不触发 `Drawing is only allowed inside this node's _draw()`。
 func _project_segments(segs: Array) -> PackedVector2Array:
@@ -272,7 +380,7 @@ func _project_segments(segs: Array) -> PackedVector2Array:
 
 
 ## 把一个**格坐标**投到屏幕像素并吸附到像素中心。
-## ★ 吸附到 `.5` 不是锦上添花：见 `_draw_logic_segments` 上面那段说明。
+## ★ 吸附到 `.5` 不是锦上添花：见 `_project_segments` 上面那段说明。
 func _proj_snap(logic_pos: Vector2) -> Vector2:
 	var sp: Vector2 = palette.to_px(logic_pos)
 	return Vector2(roundf(sp.x - 0.5) + 0.5, roundf(sp.y - 0.5) + 0.5)
@@ -288,9 +396,12 @@ func _proj_snap(logic_pos: Vector2) -> Vector2:
 ##   —— 相机每帧移动不该让它重算（`palette.to_px` 才是每帧要做的投影）。
 func _draw_zone_outlines() -> void:
 	zone_outline_draw_count = _count_zone_outlines()
-	for entry in _zone_segs:
-		var segs: Array = entry["segs"]
-		_draw_logic_segments(segs, (entry["color"] as Color), ZONE_OUTLINE_WIDTH)
+	# ★★ 直接画缓存的**屏幕顶点**（已按相机键失效、并做过屏幕外剔除）。
+	for entry in _zone_screen:
+		var segs: PackedVector2Array = entry["segs"]
+		if segs.is_empty():
+			continue
+		draw_multiline(segs, (entry["color"] as Color), ZONE_OUTLINE_WIDTH)
 
 
 ## 区划轮廓这一帧**画几组**（纯计数，不碰绘制 API）——同时保证几何缓存是新的。
@@ -313,6 +424,8 @@ func _count_zone_outlines() -> int:
 
 ## 边界几何的签名：地块划分（每块的 id + 地块数 + 归属）变了就要重算几何
 func _zone_edge_signature() -> String:
+	if world == null or world.zones == null:
+		return ""
 	var parts: Array = []
 	for z in world.zones.zones:
 		parts.append("%d:%d:%s" % [
@@ -416,6 +529,18 @@ func _draw_capture_areas() -> void:
 ## @return Array，每项 `{outer, inner, outer_c, inner_c}`；`outer` / `inner` 都是
 ##         **屏幕像素**的四点数组（顺序：左上 → 右上 → 右下 → 左下）。
 func _visible_capture_areas() -> Array:
+	# ★★ 这一层同样**只依赖相机 + 区划归属**（不依赖单位位置 / 占领进度），
+	#    所以跟着静态层一起缓存：相机不动时不投影、不重建。
+	#    `_draw()` 里已经先调过 `_refresh_static_projection()`，这里是给
+	#    测试（以及别的直接调用点）兜底 —— 键变了就当场重建。
+	if _static_key_changed():
+		_refresh_static_projection()
+	return _capture_screen
+
+
+## `_visible_capture_areas()` 的**纯计算**实现（每次调用都真算，不读缓存）。
+## @return 见 `_visible_capture_areas()` 的契约。
+func _compute_visible_capture_areas() -> Array:
 	var out: Array = []
 	if cfg == null or world == null or world.zones == null or palette == null:
 		return out
@@ -546,7 +671,7 @@ func _count_zone_captures() -> int:
 ##   的地也画一条满进度条（实测：开局那一帧 a1 + c2 共 74 块）。`capture_bar()` 的契约
 ##   写明 `state == ""` = 不用画（只有 reading / frozen / decaying 三种才画）。
 ##
-## ★★ 填充四边形同样要**近平面裁剪**（见 `_draw_logic_segments` 那段说明）：相机后方的
+## ★★ 填充四边形同样要**近平面裁剪**（见 `_project_segments` 那段说明）：相机后方的
 ##   角会投影炸开、拉出乱线。裁剪在**格坐标**里做（见 `_clip_poly_near`）。
 ##
 ## @return `[{quads: Array[PackedVector2Array], front: PackedVector2Array,
@@ -642,14 +767,27 @@ func _clip_poly_near(poly: Array, inv: Transform3D, zn: float) -> PackedVector2A
 
 
 ## 单位头上的东西（血条）——屏幕空间的条
+##
+## ★★ 两处优化（每帧都跑，单位越多越贵）：
+##   ① **屏幕外剔除**：投影不落在视口附近（留 64px）的单位直接跳过 —— 血条都画在屏幕外了，
+##      白算一次投影 + 两次血条投影；
+##   ② 宽/高**一次算完**（`units.quad_screen_size`）：原来 width + height 各调一次，
+##      height 会把 width 的那 2 次 `to_px` 再投一遍（每单位多 2 次）。
 func _draw_units_ui() -> void:
 	if units == null:
 		return
+	var vp_size: Vector2 = get_viewport_rect().size
+	if vp_size.x <= 0.0 or vp_size.y <= 0.0:
+		vp_size = size
+	var keep: Rect2 = Rect2(Vector2.ZERO, vp_size).grow(64.0)
 	for u in world.units:
 		if not u.alive or not _unit_visible(u):
 			continue
 		var p: Vector2 = palette.to_px(u.pos)
-		var r: float = units.quad_screen_width(u) * 0.5
+		if not keep.has_point(p):
+			continue
+		var us: Vector2 = units.quad_screen_size(u)
+		var r: float = us.x * 0.5
 		if r <= 0.0:
 			continue
 		# ★ 选中下标不再在这里画圈 —— 改成单位层脚下的「绿色空心圆」贴花
@@ -657,7 +795,7 @@ func _draw_units_ui() -> void:
 		# 血条：不满血才画（满血不画，避免刷屏）
 		if u.hp < u.hp_max - 1e-6:
 			var w: float = maxf(r * 2.2, 10.0)
-			var top: Vector2 = p - Vector2(0.0, units.quad_screen_height(u) * 0.5 + 4.0)
+			var top: Vector2 = p - Vector2(0.0, us.y * 0.5 + 4.0)
 			draw_rect(Rect2(Vector2(top.x - w * 0.5, top.y), Vector2(w, 3.0)), HP_BACK_COLOR, true)
 			draw_rect(Rect2(Vector2(top.x - w * 0.5, top.y), Vector2(w * u.hp_ratio(), 3.0)),
 				cfg.faction_color(String(u.faction), "bar"), true)

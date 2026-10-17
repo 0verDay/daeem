@@ -43,9 +43,47 @@
     "camera_pitch_deg": 55.0,
     "camera_distance": 6400.0,
     "camera_fov_deg": 40.0,
+    "_camera_clamp_comment": [
+      "★★ 相机夹取的「地图外允许多少」：**可见区域**最远的一边不得超出地图边界这么多格。",
+      "   · 口径：把视口四角投到地面得到当前可见区域（透视下是梯形，取它的包围盒），",
+      "     再按它相对「镜头中心」的外扩量限死中心能待的位置 —— 于是画面上能看到的",
+      "     地图外部分，四个方向都不超过这个数。",
+      "   · 它与「镜头中心必须留在地图矩形内」**相与**（那条是下限，口径见",
+      "     view/game_scene3d.gd 的 clamp_look_point）。",
+      "   ⚠️ 视野大小随 zoom 变 ⇒ 同一个 margin 在**最远视野**下限制最强：",
+      "     27×22 的图、1920×1080 视口、默认视野（zoom 0.3）下中心只能平移约",
+      "     x ∈ [8.0, 19.0]、y ∈ [4.0, 21.7]；拉到最近视野（zoom 0.1）时限制≈旧口径",
+      "     （中心仍只能到图边，此时地图外实际露出 4.3 格 ≤ 本值）。",
+      "   ⚠️ 可见区域比地图还大（该方向怎么放都会越界）时，那个方向**不平移**，",
+      "     镜头钉在地图中心。",
+      "   ★ 纯表现：只管相机能停在哪，不进快照、不改逻辑。"
+    ],
+    "camera_view_margin_tiles": 5.0,
     "ground_subdiv": 1,
     "depth_sort": true,
     "ui_compensate": true,
+    "_mobile_comment": [
+      "★★ 手机端 3D 渲染分辨率缩放（只在 OS.has_feature(\"mobile\") 时生效；桌面恒为 1.0）。",
+      "  Godot 的 Viewport.scaling_3d_scale：3D 按「视口 × 这个比例」渲染再放大回全屏。",
+      "  手机上 GPU 多半卡在**分辨率 / 填充率**上，降到 0.75 常能救回一大截帧率；",
+      "  代价是 3D 略微变糊（UI 在 CanvasLayer 上，**不受影响**，仍然逐像素清晰）。",
+      "  取值 [0.5, 1.0]；1.0 = 关掉（与桌面一致）。"
+    ],
+    "mobile_3d_scale": 0.75,
+    "_mobile_frame_comment": [
+      "★★ 手机端帧率诊断（只在 OS.has_feature(\"mobile\") 时生效；桌面 / 无头不读）。",
+      "  【为什么要这两个开关】垂直同步会把帧率**量化到刷新率的整数分之一**：",
+      "    · 90Hz 屏：跑不到 11.1ms ⇒ 掉到 45fps（22.2ms）；",
+      "    · 120Hz 屏：跑不到 8.3ms ⇒ 掉到 40fps（25ms）；",
+      "  所以「47 / 43 帧」很可能不是帧时间 21ms，而是**每帧都差一点点、被 vsync 卡到下一档**。",
+      "  【当前默认】mobile_vsync = false：**手机端默认关掉 vsync**，按原始帧时间跑。",
+      "    · 好处：不会被刷新率量化到 45/40/30 档，能直接看到真实帧率；",
+      "    · 代价：可能有撕裂；高帧率下发热 / 耗电增加。看到撕裂就把这里改回 true。",
+      "  【排查时】保持 false 看原始帧率；切回 true 对比 vsync 卡档的影响。",
+      "  mobile_max_fps：0 = 不限制；> 0 = 引擎帧率上限（保持 0）。"
+    ],
+    "mobile_vsync": false,
+    "mobile_max_fps": 0,
     "_projectile_comment": [
       "★★ 射箭投掷物（远程单位 / 可攻击建筑）的**纯表现**参数（见 view/projectile_view_3d.gd）。",
       "   伤害结算不在这里 —— 它在逻辑层（logic/projectile.gd，用 combat.projectile_speed）。",
@@ -102,7 +140,37 @@
     "selection_ring_color": "#3ddc5a",
     "selection_ring_alpha": 0.8,
     "selection_ring_sec": 0.18,
-    "selection_ring_scale_from": 1.5
+    "selection_ring_scale_from": 1.5,
+    "_map_border_comment": [
+      "★★ 地图边界的金线（见 view/map_border_view.gd）：在**可玩矩形之外**画一圈金色细带，",
+      "   让玩家一眼看出「地图到哪儿为止」。只挂在游戏内场景，两个编辑器都不画。",
+      "   · map_border_color  —— 线的颜色。默认与 p1 的黄色（faction.p1.main = #ffd166）同色；",
+      "     不直接读阵营色，是因为战役可以用同名 id 覆盖 p1，而这条线不属于任何阵营。",
+      "   · map_border_offset —— 线在地图矩形**之外**几格（向外偏移，默认 2）。",
+      "   · map_border_width  —— 线宽，**世界单位**（不是屏幕像素！）⇒ 镜头缩放时跟着变粗变细。",
+      "     cell_px = 128 ⇒ 6 ≈ 1/21 格，在开局视野下约 5 屏幕像素（一档细线）。",
+      "   · map_border_fade_tiles —— 从线的**内缘**朝地图内侧拉出的渐变长度（格，默认 0.5）：",
+      "     透明度 1 → 0。★ 它**不会越过地图边界**爬到地形上（几何里把终点夹在边界以上）：",
+      "     想让渐变正好接到地图边缘，就调小 offset 或调大本值。给 0 = 关掉渐变。",
+      "   ★★ 扫描（**由上往下**一遍，扫完立刻从顶部重来）—— 线平时压暗、被扫到时拉高：",
+      "   · map_border_dim_alpha  —— 没被扫到时的不透明度（默认 0.45，即「比原来暗一些」）；",
+      "   · map_border_scan_alpha —— 被扫到（扫掠带**正中**）时的不透明度（默认 1.0）；",
+      "   · map_border_scan_sec   —— 扫一遍多少秒（默认 7.0，越大越慢），两端各多走半个带宽；",
+      "   · map_border_scan_tiles —— 扫掠带的**全长**（格，默认 4.0）：带外 = dim、带心 = scan，",
+      "     中间是平滑过渡（smoothstep）。给 0 = 关掉扫描（整条线都按 scan_alpha 画）。",
+      "     ★ 方向 = 从地图**上沿**（世界 −z 那一侧，屏幕上方）移向下沿。",
+      "   ★ 线的抬高（1.5 世界单位）**不在 config 里**：那是「与地面错开、别共面」的实现",
+      "     细节，写在 view/map_border_view.gd 的 BORDER_Y。",
+      "   ★ 它是**纯表现**：只读 world.map.cols / rows，不进快照、不改逻辑、无碰撞。"
+    ],
+    "map_border_color": "#ffd166",
+    "map_border_offset": 2.0,
+    "map_border_width": 6.0,
+    "map_border_fade_tiles": 0.5,
+    "map_border_dim_alpha": 0.45,
+    "map_border_scan_alpha": 1.0,
+    "map_border_scan_sec": 7.0,
+    "map_border_scan_tiles": 4.0
   },
 
   "camera": {
@@ -175,6 +243,13 @@
       "    而纯黑已经是最深的了 —— 想更明显就得改成三档迷雾（另一个需求）。"
     ],
     "enabled": true,
+    "_backend_comment": [
+      "★★ 视野计算用哪套实现：`csharp`（logic/FogKernel.cs）或 `gdscript`（logic/fog.gd）。",
+      "  两者语义逐条一致（扇区 / 山脉挡视线 / 半径规则），`csharp` 只是把数字循环下沉；",
+      "  普通版 Godot（没有 .NET）会自动退回 `gdscript`，不需要改这里。",
+      "  排查时切回 `gdscript` 可以 A/B 对比帧率与显示结果。"
+    ],
+    "backend": "csharp",
     "vision_default": 8,
     "vision_building": 9,
     "mask_color": "#000000",
@@ -209,7 +284,40 @@
     "scroll_drag_min_px": 18.0,
     "scroll_wheel_step_px": 60.0,
     "drag_scroll_min_px": 8.0,
-    "fade_in_sec": 0.4
+    "fade_in_sec": 0.4,
+    "_mobile_refresh_comment": [
+      "★ 手机端 HUD 的**调度节拍**（只在 OS.has_feature(\"mobile\") 时生效；桌面 / 测试仍每帧全刷）。",
+      "  20Hz = 每 50ms 做一小块，而不是把「资源条 + 页签 + 命令卡 + 科技格 + 详细信息」",
+      "  一次性全做完（那会在个别帧叠出几毫秒的尖峰）。",
+      "  mobile_ui_stagger=true 时的 4 槽轮转（节拍 20Hz）：",
+      "    · 槽 0：资源条 / 页签 / 命令卡 / 科技九格           → 10Hz",
+      "    · 槽 1：详细信息面板（左栏 + 右栏）                 → 10Hz",
+      "    · 槽 2：资源条那一组 + 左侧部队列表                 → 10Hz / 5Hz",
+      "    · 槽 3：详细信息面板                               → 10Hz",
+      "  选中变化（点选 / 框选 / 取消）会**立即全刷一次**，不等下一个槽位。",
+      "  0 = 不节流（每帧全刷，与桌面一致）。"
+    ],
+    "mobile_hud_refresh_hz": 20.0,
+    "_stagger_comment": [
+      "★ 手机端 UI 刷新是否摊到 4 个槽位（见上一条注释）。",
+      "  true  = 每帧只做一小块，削掉 HUD 的周期性尖峰（默认）；",
+      "  false = 回退到旧行为：按 mobile_hud_refresh_hz 的频率一次性全刷。",
+      "  桌面 / 无头 / 测试不受影响（它们走每帧全刷）。"
+    ],
+    "mobile_ui_stagger": true,
+    "_minimap_hz_comment": [
+      "★ 手机端小地图的重画频率上限（桌面 / 无头每帧）。小地图每帧要画地形 + 迷雾 + 单位，",
+      "  手机上没必要 60Hz；迷雾已烘成贴图后 10Hz 足够。0 = 不节流。",
+      "  HUD 会在建好小地图后把它第一次重画**错开半个节拍**，避免和 HUD 槽位同帧叠加。"
+    ],
+    "mobile_minimap_hz": 10.0,
+    "_perf_comment": [
+      "★ 手机端顶部偏右的性能读数（FPS · 群编内核 · 单位数），约 2Hz 刷新。",
+      "  它只为**真机排查帧率**存在（无头 / 桌面默认也不会显示，除非把 show_perf 打开）。",
+      "  「内核」那一栏是 crowd_bridge.available()：为 GDScript 时说明 C# 群编内核",
+      "  **没打进导出包**，索敌/碰撞已退化成 O(N²) —— 那会是帧率噩梦的首要原因。"
+    ],
+    "show_perf": true
   },
 
   "minimap": {
@@ -231,6 +339,34 @@
     ],
     "drag_min_px": 4.0,
     "drag_hold_sec": 0.18
+  },
+
+  "touch": {
+    "_comment": [
+      "★ 手机端触摸手势的阈值（实现见 view/touch_controller.gd，识别在游戏内场景）。",
+      "★★ 单击 vs 拖动视野：只有「时间短 **且** 移动小」才算单击（选中 / 下命令）；",
+      "  移动够远（pan_min_px）**或**按住够久（pan_hold_sec）就进拖动视野；两条路互斥，",
+      "  拖动路径绝不碰选中。",
+      "  · tap_max_sec：一次单击从按下到抬起最多允许多久。",
+      "  · tap_max_move_px：单击允许的最大移动（**屏幕像素**，手指微动的容差）。",
+      "  · pan_min_px：移动超过这么多像素 = 拖动视野（快速滑动也能拖；调大防手抖）。",
+      "  · pan_hold_sec：按住超过这么多秒 = 进拖动视野（★「长按拖动」；0 = 只按距离判）。",
+      "  · box_min_px：双指按下后，两指矩形对角线超过这么多像素才真的进入框选",
+      "    （防止一次两指轻点被当成框选）。",
+      "  · double_tap_sec / double_tap_px：两次单击之间的时间 / 落点距离在阈值内 = 双击（行军）。",
+      "  · long_press_sec：按住 UI 格多少秒算「长按」（显示悬停详情，松手不触发该格）。",
+      "  · mouse_suppress_sec：触摸之后多久内丢弃模拟鼠标事件（手指会同时产生 touch 与",
+      "    emulate_mouse_from_touch 模拟的 mouse，丢弃后者避免一次点击被处理两遍）。"
+    ],
+    "pan_min_px": 24.0,
+    "pan_hold_sec": 0.18,
+    "tap_max_sec": 0.3,
+    "tap_max_move_px": 18.0,
+    "box_min_px": 24.0,
+    "double_tap_sec": 0.32,
+    "double_tap_px": 64.0,
+    "long_press_sec": 0.4,
+    "mouse_suppress_sec": 0.35
   },
 
   "unit": {

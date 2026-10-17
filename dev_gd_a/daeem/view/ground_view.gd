@@ -57,6 +57,10 @@ var _mat: StandardMaterial3D = null
 var _tex: ImageTexture = null
 var _tex_cols: int = 0
 var _tex_rows: int = 0
+## ★★ 烘图缓冲复用（见 `_bake`）：每次重烘都 `Image.create` + `ImageTexture.create_from_image`
+##   会在手机上造成**周期性尖峰**（新建 Image + 显存上传，每 15 帧一次）。
+##   尺寸不变就原地 `ImageTexture.update()`，不再分配。
+var _bake_img: Image = null
 
 ## ★★ 迷雾层：**另一块平面 + 另一张贴图**，压在地面之上一点点
 ##
@@ -67,6 +71,8 @@ var _tex_rows: int = 0
 var _fog_mesh: MeshInstance3D = null
 var _fog_mat: StandardMaterial3D = null
 var _fog_tex: ImageTexture = null
+## 迷雾烘图缓冲复用（同 `_bake_img`）
+var _fog_img: Image = null
 var _fog_sig: String = ""
 
 ## 归属签名：区块归属没变就不重烘（重烘要写一张图，相对贵）
@@ -235,7 +241,13 @@ func _bake_fog(cols: int, rows: int) -> ImageTexture:
 	var k: int = FOG_PX_PER_TILE
 	while (cols * k > MAX_TEX_PX or rows * k > MAX_TEX_PX) and k > 1:
 		k -= 1
-	var img := Image.create(cols * k, rows * k, false, Image.FORMAT_RGBA8)
+	var w: int = cols * k
+	var h: int = rows * k
+	# ★★ 缓冲复用：尺寸不变就原地更新（见 `_bake_img` 的注释）。
+	if _fog_img == null or _fog_img.get_width() != w or _fog_img.get_height() != h:
+		_fog_img = Image.create(w, h, false, Image.FORMAT_RGBA8)
+		_fog_tex = ImageTexture.create_from_image(_fog_img)
+	var img: Image = _fog_img
 	var c: Color = cfg.fog_mask_color
 	var clear := Color(c.r, c.g, c.b, 0.0)
 	var solid := Color(c.r, c.g, c.b, c.a)
@@ -245,7 +257,10 @@ func _bake_fog(cols: int, rows: int) -> ImageTexture:
 			if not world.map.tile_exists(tx, ty):
 				seen = true
 			img.fill_rect(Rect2i(tx * k, ty * k, k, k), clear if seen else solid)
-	return ImageTexture.create_from_image(img)
+	if _fog_tex == null:
+		_fog_tex = ImageTexture.create_from_image(img)
+	_fog_tex.update(img)
+	return _fog_tex
 
 
 ## 把地形 + 区划归属烘成一张 `cols × rows` 的贴图（每格 `PX_PER_TILE` 像素）。
@@ -262,7 +277,13 @@ func _bake(cols: int, rows: int) -> ImageTexture:
 	var k: int = PX_PER_TILE
 	while (cols * k > MAX_TEX_PX or rows * k > MAX_TEX_PX) and k > 1:
 		k -= 1
-	var img := Image.create(cols * k, rows * k, false, Image.FORMAT_RGBA8)
+	var w: int = cols * k
+	var h: int = rows * k
+	# ★★ 缓冲复用：尺寸不变就原地更新（见 `_bake_img` 的注释）。
+	if _bake_img == null or _bake_img.get_width() != w or _bake_img.get_height() != h:
+		_bake_img = Image.create(w, h, false, Image.FORMAT_RGBA8)
+		_tex = ImageTexture.create_from_image(_bake_img)
+	var img: Image = _bake_img
 	var c_grass: Color = cfg.color("grass")
 	var c_grass_alt: Color = cfg.color("grass_alt")
 	var c_forest: Color = cfg.color("forest")
@@ -295,7 +316,10 @@ func _bake(cols: int, rows: int) -> ImageTexture:
 			var exists: bool = world.map.tile_exists(tx, ty)
 			img.fill_rect(Rect2i(tx * k, ty * k, k, k), c if exists else Color(0, 0, 0, 0))
 			baked_tiles += 1
-	return ImageTexture.create_from_image(img)
+	if _tex == null:
+		_tex = ImageTexture.create_from_image(img)
+	_tex.update(img)
+	return _tex
 
 
 ## 归属签名：区块归属（或地块划分）没变就不重烘地面贴图。

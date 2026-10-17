@@ -79,6 +79,18 @@ var depth_sort: bool = true
 ## 字 / 血条 / 选中光晕 / 地面标记**不被投影压扁**（屏幕 1:1）
 var ui_compensate: bool = true
 
+## ★★ 手机端 3D 渲染分辨率缩放（见 config.json 的 render._mobile_comment）。
+## 只在 `OS.has_feature("mobile")` 时由 view/game_scene3d.gd 应用；桌面 / 无头恒为 1.0 不使用。
+var mobile_3d_scale: float = 0.75
+
+## ★★ 手机端帧率诊断（见 config.json 的 render._mobile_frame_comment）。
+##   · mobile_vsync    —— 垂直同步。**默认 false**（手机端按原始帧时间跑，避免被
+##     刷新率量化到 45/40/30 档）；看到撕裂就改回 true。
+##   · mobile_max_fps  —— 0 = 不限制；> 0 = 引擎帧率上限。
+## 只在移动平台应用；桌面 / 无头 / 测试完全不受影响（不改变任何现有断言）。
+var mobile_vsync: bool = false
+var mobile_max_fps: int = 0
+
 var cols: int = 24
 var rows: int = 16
 
@@ -106,6 +118,16 @@ var scroll_drag_min_px: float = 18.0
 var scroll_wheel_step_px: float = 60.0
 var drag_scroll_min_px: float = 8.0
 var fade_in_sec: float = 0.4
+## ★ 手机端 HUD **调度节拍**（0 = 每帧；见 config.json 的 ui._mobile_refresh_comment）。
+##   `mobile_ui_stagger = true` 时，每个节拍只做 1/4 的工作（资源条 / 详细信息 / 部队列表轮转）。
+var mobile_hud_refresh_hz: float = 20.0
+## ★ 手机端小地图重画频率上限（0 = 每帧；见 config.json 的 ui._minimap_hz_comment）
+var mobile_minimap_hz: float = 10.0
+## ★ 手机端 UI 刷新是否摊到 4 个槽位（见 config.json 的 ui._stagger_comment）。
+##   false = 回退到旧的「每个节拍一次性全刷」。
+var mobile_ui_stagger: bool = true
+## ★ 手机端左上角性能读数（FPS / 内核 / 单位数；见 config.json 的 ui._perf_comment）
+var show_perf: bool = true
 
 ## ---- 小地图拖动视角（见 config.json 的 minimap._comment）----
 ## ★ 与 drag_select_min_px 同一种单位（**屏幕像素**）：判据不该跟着相机缩放漂移。
@@ -114,6 +136,28 @@ var minimap_drag_min_px: float = 4.0
 ## ★ 按住多少秒算「长按」（0 = 只按像素阈值判定）。
 ##   ⚠️ 它只影响「多快进入拖动态」，不影响按下那一刻的跳转 —— 见 view/minimap.gd 的状态机。
 var minimap_drag_hold_sec: float = 0.18
+
+## ---- ★★ 手机端触摸手势阈值（见 config.json 的 touch._comment / view/touch_controller.gd）----
+## ★ 它们出现在**每个触摸事件**的判定里，所以按同一条规矩在载入时算好（别在事件里切字符串）。
+##   单位口径：pan_min_px / tap_max_move_px / box_min_px / double_tap_px 是**屏幕像素**；其余是**秒**。
+##   识别在 view/touch_controller.gd，指挥（选中 / 下令 / 框选）仍走 input_controller。
+##
+## ★★ 单击 vs 拖动视野（本轮新增的判据）：只有「时间短 **且** 移动小」才算单击；
+##   「移动够远」或「按住够久」都进拖动视野 —— 两条路互斥。
+var touch_pan_min_px: float = 24.0
+## 按住多少秒算「长按拖动」（0 = 只按距离判）
+var touch_pan_hold_sec: float = 0.18
+var touch_tap_max_sec: float = 0.3
+## 单击允许的最大移动（手指微动的容差；超过它就不是单击）
+var touch_tap_max_move_px: float = 18.0
+var touch_box_min_px: float = 24.0
+var touch_double_tap_sec: float = 0.32
+var touch_double_tap_px: float = 64.0
+## 按住 UI 格多久算「长按」（显示悬停详情，见 view/hud.gd 的长按监视）
+var touch_long_press_sec: float = 0.4
+## 触摸之后多久内丢弃模拟鼠标事件（emulate_mouse_from_touch 会把手指变成 mouse，
+## 两条路都会处理一次点击 —— 丢弃后者，见 view/game_scene3d.gd 的 _unhandled_input）
+var touch_mouse_suppress_sec: float = 0.35
 
 var unit_speed: float = 0.6
 var unit_forest_mult: float = 0.5
@@ -132,6 +176,9 @@ var unit_radius_factor: float = 0.1
 ##       类型表里那个键（`cfg.unit_vision_of()` / `cfg.building_vision_of()`）。
 ##   · fog_mask_color / fog_mask_alpha —— 灰色遮罩的样子（纯显示）。
 var fog_enabled: bool = true
+## ★★ 视野计算后端：`csharp`（logic/FogKernel.cs）/ `gdscript`（logic/fog.gd）。
+## 两者语义一致；C# 内核加载不到时（普通版 Godot）自动退回 GDScript，不需要改这里。
+var fog_backend: String = "csharp"
 var fog_vision_default: float = 8.0
 var fog_vision_building: float = 9.0
 var fog_mask_color: Color = Color(0.0, 0.0, 0.0, 0.45)
@@ -425,6 +472,11 @@ func _cache_scalars() -> void:
 	_recompute_projection()
 	depth_sort = bool_val("render.depth_sort", true)
 	ui_compensate = bool_val("render.ui_compensate", true)
+	# 手机端 3D 分辨率缩放（桌面/无头不使用；见字段声明处注释）
+	mobile_3d_scale = clampf(num("render.mobile_3d_scale", 0.75), 0.5, 1.0)
+	# 手机端帧率诊断：vsync 开关与帧率上限（0 = 不限；负数按 0 处理）
+	mobile_vsync = bool_val("render.mobile_vsync", false)
+	mobile_max_fps = maxi(0, int_val("render.mobile_max_fps", 0))
 
 	# ---- ⚠️ 以下这一段原本就在 `_cache_scalars()` 里 ----
 	#   ★ 一次大段替换曾把它与函数头切断，症状是
@@ -443,8 +495,25 @@ func _cache_scalars() -> void:
 	scroll_wheel_step_px = maxf(1.0, num("ui.scroll_wheel_step_px", 60.0))
 	drag_scroll_min_px = maxf(1.0, num("ui.drag_scroll_min_px", 8.0))
 	fade_in_sec = maxf(0.0, num("ui.fade_in_sec", 0.4))
+	mobile_hud_refresh_hz = maxf(0.0, num("ui.mobile_hud_refresh_hz", 20.0))
+	mobile_minimap_hz = maxf(0.0, num("ui.mobile_minimap_hz", 10.0))
+	mobile_ui_stagger = bool_val("ui.mobile_ui_stagger", true)
+	show_perf = bool_val("ui.show_perf", true)
 	minimap_drag_min_px = num("minimap.drag_min_px", 4.0)
 	minimap_drag_hold_sec = num("minimap.drag_hold_sec", 0.18)
+
+	# ---- 手机端触摸手势（见 config.json 的 touch._comment）----
+	# ★ 像素阈值 / 时长写成负数没有意义；0 会让「按下即算拖动 / 两次事件必双击」这类抖动判定生效，
+	#   所以像素阈值夹到 ≥1、时长夹到 ≥0。
+	touch_pan_min_px = maxf(1.0, num("touch.pan_min_px", 24.0))
+	touch_pan_hold_sec = maxf(0.0, num("touch.pan_hold_sec", 0.18))
+	touch_box_min_px = maxf(1.0, num("touch.box_min_px", 24.0))
+	touch_tap_max_sec = maxf(0.0, num("touch.tap_max_sec", 0.3))
+	touch_tap_max_move_px = maxf(0.0, num("touch.tap_max_move_px", 18.0))
+	touch_double_tap_sec = maxf(0.0, num("touch.double_tap_sec", 0.32))
+	touch_double_tap_px = maxf(0.0, num("touch.double_tap_px", 64.0))
+	touch_long_press_sec = maxf(0.0, num("touch.long_press_sec", 0.4))
+	touch_mouse_suppress_sec = maxf(0.0, num("touch.mouse_suppress_sec", 0.35))
 
 	unit_speed = num("unit.speed", 0.6)
 	unit_forest_mult = num("unit.forest_mult", 0.5)
@@ -453,6 +522,9 @@ func _cache_scalars() -> void:
 
 	# ★ 迷雾：开关 / 兜底视野 / 遮罩颜色（颜色走 parse_color，与 colors.* 同一套写法）
 	fog_enabled = bool_val("fog.enabled", true)
+	fog_backend = str_val("fog.backend", "csharp").strip_edges().to_lower()
+	if fog_backend == "":
+		fog_backend = "csharp"
 	fog_vision_default = maxf(0.0, num("fog.vision_default", 8.0))
 	fog_vision_building = maxf(0.0, num("fog.vision_building", 9.0))
 	fog_mask_color = parse_color(str_val("fog.mask_color", "#000000"))

@@ -45,6 +45,11 @@ var _cells: Array[Button] = []
 var _key_labels: Array[Label] = []
 var _name_labels: Array[Label] = []
 
+## ★★ 手机端：按住某一格期间由 hud 置 true —— 「按下」产生的模拟鼠标会让这一格**立刻**
+##    收到 mouse_entered，那是「悬停」，而需求是「长按才悬停」⇒ 按住期间忽略鼠标进入。
+##    `hover()`（长按到点之后由 hud 调）**不受**它影响，直接发信号。
+var touch_suppress_hover: bool = false
+
 
 func setup() -> void:
 	name = "CommandCard"
@@ -187,6 +192,8 @@ func _on_cell_pressed(i: int) -> void:
 
 ## 鼠标进入 / 离开第 i 格 —— **只转发序号**（内容由 hud 现取，见上面那两个信号的说明）
 func _on_cell_mouse_entered(i: int) -> void:
+	if touch_suppress_hover:
+		return                       # 手机端按住期间不弹（长按到点后由 hud 调 hover()）
 	cell_hovered.emit(i)
 
 
@@ -196,12 +203,13 @@ func _on_cell_mouse_exited(i: int) -> void:
 
 ## 模拟悬停第 i 格 / 离开它（等价于玩家的鼠标停上去 / 移开）。
 ## ★ 与 `press()` 那条同一条约定：测试走**和引擎同一条信号**，不另开一条捷径。
+## ★★ 手机端的长按也走这里 —— 所以它**绕开** `touch_suppress_hover` 直接发信号。
 func hover(i: int) -> void:
-	_on_cell_mouse_entered(i)
+	cell_hovered.emit(i)
 
 
 func unhover(i: int) -> void:
-	_on_cell_mouse_exited(i)
+	cell_unhovered.emit(i)
 
 
 ## 激活第 i 格。@return true = 这一格有内容、动作已发出

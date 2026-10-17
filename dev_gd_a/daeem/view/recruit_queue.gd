@@ -216,8 +216,18 @@ func _remaining() -> float:
 
 func refresh() -> void:
 	var show_now := showing()
-	visible = show_now
 	if not show_now:
+		# ★★ 已经收起、内容也已经是空的时候直接返回：
+		#    HUD 的详细信息槽位每 100ms 会调一次，无条件 `queue_redraw()` 是白花的。
+		if not visible and _hover_slot < 0 and _title.text == "" and _total.text == "":
+			var any_text := false
+			for l in _labels:
+				if l.text != "":
+					any_text = true
+					break
+			if not any_text:
+				return
+		visible = false
 		_hover_slot = -1
 		_title.text = ""
 		_total.text = ""
@@ -225,6 +235,7 @@ func refresh() -> void:
 			l.text = ""
 		queue_redraw()
 		return
+	visible = true
 
 	if _bar_active:
 		_refresh_bar()

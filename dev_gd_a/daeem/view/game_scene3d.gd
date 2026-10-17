@@ -8,6 +8,7 @@
 ##     GameScene3D (Node3D)
 ##       ├── Camera3D            ← 固定俯角：沿自身坐标轴平移 + 缩放，**不俯仰旋转**
 ##       ├── GroundView3D        ← 一块 PlaneMesh + 一张烘出来的地形贴图（1 次 draw call）
+##       ├── MapBorderView3D     ← 可玩矩形**之外**的一圈金线（纯表现，只读 map 尺寸）
 ##       ├── UnitView3D          ← MultiMeshInstance3D + billboard（1000 单位一个批次）
 ##       └── Overlay2D (CanvasLayer) ← 选中圈 / 标记 / 拖框（屏幕空间，用 palette.to_px 定位）
 extends Node3D
@@ -17,6 +18,8 @@ const WorldRes = preload("res://logic/world.gd")
 const MapLibraryRes = preload("res://logic/map_library.gd")
 const PaletteRes = preload("res://view/palette.gd")
 const GroundViewRes = preload("res://view/ground_view.gd")
+## ★ 地图边界的金线（见 view/map_border_view.gd）：纯表现，只读 world.map 的尺寸
+const MapBorderViewRes = preload("res://view/map_border_view.gd")
 const UnitViewRes = preload("res://view/unit_view_3d.gd")
 const BuildingViewRes = preload("res://view/building_view_3d.gd")
 const ProjectileViewRes = preload("res://view/projectile_view_3d.gd")
@@ -28,6 +31,8 @@ const HudRes = preload("res://view/hud.gd")
 const FontLoaderRes = preload("res://view/font_loader.gd")
 const InteractionRes = preload("res://view/game_interaction.gd")
 const CommandRes = preload("res://logic/command_processor.gd")
+## ★★ 手机端触摸手势识别（单指拖视野 / 单击 / 双击 / 双指框选）—— 见那个文件的文件头
+const TouchControllerRes = preload("res://view/touch_controller.gd")
 
 const MAP_PATH := MapLibraryRes.FALLBACK_MAP_PATH
 
@@ -50,6 +55,8 @@ var cam: Camera3D = null
 ## ★ 投影助手（`view/palette.gd` 的实例）：所有「格 ↔ 屏幕」的换算都问它
 var palette = null
 var ground = null
+## ★ 地图边界的金线（只在对战场景画一层；读 border_tiles 看它画在哪一格）
+var map_border = null
 var units = null
 ## ★ unit_view 是**别名**：2D 版叫这个名字，界面/测试按它读「单位那一层」。
 ##    3D 版内部叫 units（一个 MultiMesh 层）—— 两个名字都给，省得调用方各记一套。
@@ -62,6 +69,13 @@ var order_flags = null
 var overlay = null
 var input_ctrl = null
 var hud: CanvasLayer = null
+## ★★ 手机端触摸手势识别（见 view/touch_controller.gd）：由本场景在 `_input` 里喂事件
+var touch_ctrl = null
+## ★★ 触摸设备（手机 / 平板）：地图这一侧**完全不认鼠标** —— 连 `emulate_mouse_from_touch`
+##    造出来的模拟鼠标也不要（它到达 `_input` / `_unhandled_input` 的顺序**不保证**，
+##    会与触摸手势抢，症状就是「点一下地图把选中清空了」）。
+##    测试可在无头下把它设成 true 来验证。见 `_input` / `_unhandled_input`。
+var touch_device: bool = false
 ## ★★ 与渲染无关的交互核心（game_interaction.gd）：输入路由 / 命令转发 / 事件提示
 var interaction = null
 ## ★ 这一局是从哪一关开的（与 game_interaction.gd 里那份同一个来源；start() 开的局两者为 null）
@@ -99,6 +113,16 @@ var profile_us: Dictionary = {}
 
 func profile_reset() -> void:
 	profile_us = {}
+
+
+## 给 HUD 的性能读数用：打开分段计时（只在手机端排查时开；见 view/hud.gd 的 `_build_perf_readout`）。
+func perf_enable() -> void:
+	profile_on = true
+
+
+## 给 HUD 读分段计时快照（只读）。
+func profile_snapshot() -> Dictionary:
+	return profile_us
 
 
 ## 取一个起始时间戳：关闭时返回 0（`_prof_done` 见到 0 直接返回，与 world.gd 同款）
@@ -188,10 +212,43 @@ func _assemble() -> void:
 	_build_camera()
 	palette = PaletteRes.create(cfg, cam)
 
+	# ★★ 手机端：把 3D 渲染分辨率按比例降下来（把 GPU 从「分辨率 / 填充率」里救出来）。
+	#    `Viewport.scaling_3d_scale` 让 3D 按「视口 × 比例」渲染再放大回全屏；
+	#    UI 在 CanvasLayer 上，**不受影响**（仍然逐像素清晰）。桌面 / 无头不进这个分支。
+	#    见 config.json 的 render._mobile_comment。
+	if OS.has_feature("mobile"):
+		var vp: Viewport = get_viewport()
+		if vp != null:
+			vp.scaling_3d_scale = cfg.mobile_3d_scale
+		# ★★ 帧率诊断（见 config.json 的 render._mobile_frame_comment）：
+		#   vsync 会把帧率量化到刷新率的整数分之一 —— 90Hz 屏上「差一点点到 11.1ms」
+		#   会直接掉到 45fps，看起来像「帧时间 22ms」，其实可能只差 1ms。
+		#   关掉它才能看到**原始帧时间**，从而分清是「vsync 卡档」还是「真的算不完」。
+		DisplayServer.window_set_vsync_mode(
+			DisplayServer.VSYNC_ENABLED if cfg.mobile_vsync else DisplayServer.VSYNC_DISABLED)
+		# 0 = 不限制（默认）；> 0 才设上限。桌面 / 测试不走这里，行为不变。
+		Engine.max_fps = cfg.mobile_max_fps
+
+	# ★★ 是不是触摸设备：**只看移动平台**（Android / iOS）。
+	#    ⚠️ 不要用 `DisplayServer.is_touchscreen_available()`：带触摸屏的桌面笔记本会命中，
+	#       那样开发机上鼠标就没法操作地图了。是的话：
+	#    · 地图侧不认鼠标（见 `_input` / `_unhandled_input`）；
+	#    · 关掉边缘滚屏（否则在屏幕边缘抬起手指时，镜头会被模拟鼠标的位置推着滚）。
+	touch_device = OS.has_feature("mobile")
+	if touch_device:
+		_edge_scroll_on = false
+
 	ground = GroundViewRes.new()
 	ground.name = "GroundView3D"
 	add_child(ground)
 	ground.setup(cfg, world, palette)
+
+	# 地图边界的金线：在可玩矩形**之外** offset 格画一圈细带
+	#   ★ 只在游戏内挂（两个编辑器与预览都不画）；它不参与任何玩法判定
+	map_border = MapBorderViewRes.new()
+	map_border.name = "MapBorderView3D"
+	add_child(map_border)
+	map_border.setup(cfg, world, palette)
 
 	units = UnitViewRes.new()
 	units.name = "UnitView3D"
@@ -240,6 +297,10 @@ func _assemble() -> void:
 	input_ctrl.local_ui_changed.connect(_on_local_ui_changed)
 
 	_build_hud()
+	# ★★ 手机端触摸识别：HUD 建好之后才能判「起点是不是在 UI 上」（`hud.point_hits_ui`）。
+	#    相机替身与 HUD 用的是同一个 —— 它只用到 `pan_screen`。
+	touch_ctrl = TouchControllerRes.new()
+	touch_ctrl.setup(cfg, palette, input_ctrl, _camera_rig_for_hud(), hud)
 	# 交互核心：宿主（本场景）把已建好的东西交给它，之后每帧由它派发事件
 	interaction = InteractionRes.new()
 	interaction.setup(self)
@@ -455,6 +516,8 @@ func _process(dt: float) -> void:
 	var _t_other := _prof()
 	projectiles.sync()
 	order_flags.sync()
+	# 地图边界金线的**扫描**（纯表现：只推一个 shader uniform）；暂停时照旧走
+	map_border.sync(dt)
 	_prof_done("view/other", _t_other)
 	# ④ 覆盖层：纯本地 UI 状态塞进去，它只画
 	var _t_overlay := _prof()
@@ -518,14 +581,19 @@ func _camera_update(dt: float) -> void:
 	var in_window: bool = Rect2(Vector2.ZERO, get_viewport().get_visible_rect().size).has_point(mouse_screen)
 	# ★ 判据必须是「可点控件」而不是「所有 HUD 面板」：底栏把屏幕下沿整个盖住了，
 	#   若连详细信息面板也让路，鼠标就永远滚不到地图下方（2D 版为此写过注释）。
-	_mouse_inside = in_window and (hud == null or not hud.blocks_edge_scroll(mouse_screen))
+	# ★★ 边缘滚屏关掉时（触摸设备）连这一问都省了：`blocks_edge_scroll` 每帧要新建一份控件矩形数组。
+	if _edge_scroll_on:
+		_mouse_inside = in_window and (hud == null or not hud.blocks_edge_scroll(mouse_screen))
+	else:
+		_mouse_inside = false
 	_mouse_pos = mouse_screen
 	_space_held = Input.is_key_pressed(KEY_SPACE)
 	# ★★ 三种「相机正被输入直接驱动」的情形都要压住边缘滚屏：小地图拖动、框选、
 	#    以及**鼠标中键拖拽平移**。少一个的症状：拖到屏幕边缘时两者抢相机，画面发抖。
 	_ui_dragging_camera = (hud != null and hud.minimap != null and hud.minimap.is_dragging()) \
 		or (input_ctrl != null and input_ctrl.is_dragging_box()) \
-		or (input_ctrl != null and input_ctrl.is_panning())
+		or (input_ctrl != null and input_ctrl.is_panning()) \
+		or (touch_ctrl != null and touch_ctrl.is_active())
 
 	# ② 方向键平移（W/A/S/D **不**参与：它们归右下命令卡，见 2D 版的注释）
 	var dir := Vector2.ZERO
@@ -558,7 +626,8 @@ func _camera_update(dt: float) -> void:
 		if e.length_squared() > 0.0:
 			pan_screen(e * max_speed * dt)
 
-	# ④ 夹取：镜头看向的地面点必须留在地图矩形内
+	# ④ 夹取：镜头看向的地面点必须落在**允许区间**里（可见区域不越出「地图 + margin 格」，
+	#    且中心仍留在图内 —— 两条的完整口径见 clamp_look_point）。
 	#    ★ 这是「小地图长按能把镜头拖到地图外」的直接修复。
 	clamp_look_point()
 
@@ -568,24 +637,89 @@ func _edge_power(depth: float, margin: float) -> float:
 	return tt * tt
 
 
-## 把「镜头看向的地面点」夹进地图矩形（外接框口径，与 2D 一致）。
+## 把「镜头看向的地面点」夹进**允许区间**（两条约束相与）：
+##
+##   ① **可见区域不越出「地图 + margin 格」**（margin = `render.camera_view_margin_tiles`，默认 5）：
+##      画面上能看到的地图**外**的部分，四个方向都不超过 margin 格；
+##   ② **镜头中心始终留在地图矩形内**（旧口径，保留为下限）。
 ##
 ## ★ 为什么夹的是**看向的点**而不是相机位置：3D 里相机在斜上方，
 ##   它的 x/z 与「画面中心对着哪一格」差一个偏移；要保证「画面中心不跑出地图」，
 ##   夹的必须是后者。夹相机位置会让画面中心在贴边时偏出去半屏。
+##
+## ★★ 为什么量一次可见区域就够（不需要迭代）：这台相机**只平移、不旋转**，距离由 `zoom` 定
+##   ⇒ 可见区域的**形状是固定的**，中心平移多少它就跟着平移多少。于是「当前的外扩量」与
+##   「夹取之后的外扩量」是同一个数，反推出来的区间一次就准。
+##   （`center_on_tile_precise` 那个牛顿迭代是另一件事：它要的是**对准某一格**。）
+##
+## ⚠️ ②不是多余的：拉近之后视野变小，①允许中心跑到地图**之外**去 ——
+##   例如 27×22 的图在最近视野下，① 给出 x ∈ [-0.7, 27.7]、y ∈ [-2.0, 23.8]，
+##   而「画面中心在图外」看起来就是地图被推到屏幕一侧。② 把它按回图内；
+##   那一档实际看到的地图外是 4.3 格（仍然 ≤ margin，① 照样成立）。
+##
+## ★ 区间**空了**（可见区域比地图还大 ⇒ 那个方向怎么放都会越界）：该方向**不平移**，
+##   把镜头钉在地图中心（见 `_clamp_axis`）—— 这是唯一不会「偏到一侧」的落点。
 func clamp_look_point() -> void:
-	if world == null or palette == null:
+	if world == null or palette == null or cam == null:
 		return
 	var cell: float = palette.cell_size()
 	var cols: float = float(world.map.cols)
 	var rows: float = float(world.map.rows)
-	var look: Vector3 = _ground_under_screen(_view_center())
-	var lp: Vector2 = palette.world_to_logic(look)
-	var cx: float = clampf(lp.x, 0.0, cols)
-	var cy: float = clampf(lp.y, 0.0, rows)
+	# ★ 先量可见区域：它内部会 force_update_transform()，于是下面那次回读也是**本帧**的相机
+	var ext: Rect2 = visible_extent()
+	var lp: Vector2 = palette.world_to_logic(_ground_under_screen(_view_center()))
+
+	var lo := Vector2.ZERO                          # ② 的下界：地图左上角
+	var hi := Vector2(cols, rows)                   # ② 的上界：地图右下角
+	if ext.size.x > 0.0 and ext.size.y > 0.0:
+		var margin: float = maxf(0.0, cfg.num("render.camera_view_margin_tiles", 5.0))
+		lo.x = maxf(lo.x, -margin - ext.position.x)     # 左：可见区最左边 ≥ -margin
+		hi.x = minf(hi.x, cols + margin - ext.end.x)    # 右：可见区最右边 ≤ cols+margin
+		lo.y = maxf(lo.y, -margin - ext.position.y)
+		hi.y = minf(hi.y, rows + margin - ext.end.y)
+
+	var cx: float = _clamp_axis(lp.x, lo.x, hi.x, cols)
+	var cy: float = _clamp_axis(lp.y, lo.y, hi.y, rows)
 	if absf(cx - lp.x) < 1e-4 and absf(cy - lp.y) < 1e-4:
 		return                      # 没越界，别白摆一次相机（摆相机要重算投影）
 	_place_camera_looking_at(Vector3(cx * cell, 0.0, cy * cell))
+
+
+## 单轴夹取：区间里还有地方就普通夹取；**区间空了**（可见区域比地图还大）
+## 就把这一轴钉在地图中心 —— 那里既无法平移，也不会偏向任何一侧。
+func _clamp_axis(v: float, lo: float, hi: float, span: float) -> float:
+	if lo > hi:
+		return span * 0.5
+	return clampf(v, lo, hi)
+
+
+## 当前**可见区域**相对「镜头看向的那一点」的外扩量（格）：
+## 结果 = `Rect2(dx_min, dy_min, 宽, 高)` ⇒ 可见区域贴到的那一块 = 镜头中心 + 它。
+##
+## ★ 它是**视口四角**投到地面的结果（透视下可见地面是梯形，取它的包围盒）。
+## ★ 全程走 `palette.to_logic()`（「换算只有一处」那条铁律）—— 这里绝不自算一份投影公式。
+## ⚠️ 先 `force_update_transform()`：Godot 的节点变换是**惰性更新**的，不强制刷新就会读到
+##    **上一帧**的相机（本文件 `center_on_tile_precise` 那段为这件事返工过一次）。
+## ⚠️ 四角**一个都没落到地面**（相机贴近地平线时才会）⇒ 返回退化矩形，
+##    调用方据此**不施加**①那条约束（只留②）。
+func visible_extent() -> Rect2:
+	if palette == null or cam == null:
+		return Rect2()
+	cam.force_update_transform()
+	var vp: Vector2 = get_viewport().get_visible_rect().size
+	var look: Vector2 = palette.world_to_logic(_ground_under_screen(_view_center()))
+	var lo := Vector2(INF, INF)
+	var hi := Vector2(-INF, -INF)
+	for corner: Vector2 in [Vector2.ZERO, Vector2(vp.x, 0.0), vp, Vector2(0.0, vp.y)]:
+		var g = palette.to_logic(corner)
+		if g == null:
+			continue
+		var t: Vector2 = g - look
+		lo = Vector2(minf(lo.x, t.x), minf(lo.y, t.y))
+		hi = Vector2(maxf(hi.x, t.x), maxf(hi.y, t.y))
+	if hi.x < lo.x or hi.y < lo.y:
+		return Rect2()
+	return Rect2(lo, hi - lo)
 
 
 ## F 键：把镜头拉到「最远视野」并居中整张地图（与 2D 的 `fit_to_map()` 同一意图）
@@ -777,6 +911,16 @@ func _camera_rig_for_hud() -> Object:
 func _unhandled_input(event: InputEvent) -> void:
 	if input_ctrl == null:
 		return
+	# ★★ 手机端：手指会同时产生 `InputEventScreenTouch` 与「模拟鼠标」（emulate_mouse_from_touch）。
+	#    模拟鼠标必须在这里丢弃 —— 否则同一次触摸被「触摸手势 + 输入层」各处理一遍。
+	#    ⚠️ HUD / 菜单按钮由 GUI 在更早的 GUI 阶段处理，**不受这条影响**。
+	#    ★★ 触摸设备上**一律**丢弃（`touch_device`）：模拟鼠标到达的先后顺序不保证，
+	#       单靠 `suppresses_mouse()` 的时间窗兜不住（会漏掉「先到的鼠标按下」→ 点空地清空选中）。
+	if touch_device and (event is InputEventMouseButton or event is InputEventMouseMotion):
+		return
+	if touch_ctrl != null and (event is InputEventMouseButton or event is InputEventMouseMotion) \
+			and touch_ctrl.suppresses_mouse():
+		return
 	if event is InputEventKey:
 		var used: bool = false
 		if hud != null:
@@ -811,6 +955,26 @@ func _unhandled_input(event: InputEvent) -> void:
 ##    终点」），所以 UI 的悬停 / 点击行为一个字都没变。重复派发也安全 ——
 ##    `handle_mouse_motion` 与 `handle_mouse_button` 都是幂等的（见 `is_panning()` 那条差分）。
 func _input(event: InputEvent) -> void:
+	# ★★ 手机端触摸：在 **GUI 之前**拿到全过程 —— 手指可能从地图滑到 UI 控件（`MOUSE_FILTER_STOP`）
+	#    上，那时触摸事件会被 GUI 吃掉，`_unhandled_input` 收不到，拖视野 / 框选会「卡住再突变」。
+	#    ⚠️ 这里**不** set_input_as_handled：让模拟鼠标照旧交给 GUI（菜单 / 按钮靠它工作）。
+	if touch_ctrl != null and event is InputEventScreenTouch:
+		touch_ctrl.handle_touch(event)
+		if hud != null:
+			hud.handle_touch(event)      # 长按 UI 格 = 显示悬停详情，由 HUD 管
+		return
+	if touch_ctrl != null and event is InputEventScreenDrag:
+		touch_ctrl.handle_drag(event)
+		if hud != null:
+			hud.handle_touch_drag(event)   # 长按期间手指动了 → 取消长按
+		return
+	# ★ 触摸产生的「模拟鼠标」也不许从这里进输入层（与 `_unhandled_input` 同一条）。
+	#   ★★ 触摸设备上一律丢弃（顺序不保证，见 `_unhandled_input` 的说明）。
+	if touch_device and (event is InputEventMouseButton or event is InputEventMouseMotion):
+		return
+	if touch_ctrl != null and (event is InputEventMouseButton or event is InputEventMouseMotion) \
+			and touch_ctrl.suppresses_mouse():
+		return
 	if input_ctrl == null or not input_ctrl.has_active_gesture():
 		return
 	if event is InputEventMouseMotion:

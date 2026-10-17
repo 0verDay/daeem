@@ -423,6 +423,53 @@ const UNIT_CONTENT_RIGHT := DETAIL_RIGHT_W - QUEUE_MARGIN
 
 
 # ------------------------------------------------------------------
+# ★★ 手机端自适应：详细信息面板拉伸填满底栏
+#
+# 起因（用户原话）：手机上「详细信息栏」与右侧「阵营 / 盾徽 / 旗帜」离得很远。
+# 根因：详细信息面板贴**左**（apply_rect(..., false, true)），阵营 / 命令卡 / 页签贴**右**
+#   （apply_rect(..., true, true)）—— 视口宽于 16:9（横屏手机都是）时设计空间横向变长，
+#   左边那几块不动、右边那几块右滑 ⇒ 中间裂开一条缝。
+#
+# 做法：面板改成「左缘钉 400、右缘钉到阵营列左缘」；多出来的宽**全部给右栏**
+#   （左栏那 3×3 是按参考图逐像素量死的，不跟着长）。下面这几个函数算的是
+#   **右栏宽度变化之后**各块的宽度 / 位置。
+# ⚠️ 在 `DETAIL_RIGHT_W`（= 645，1920 基准）处，这几个函数的结果必须与上面那些
+#   写死的常量**逐位相等**（tests/test_ui.gd 钉着这条）。
+# ------------------------------------------------------------------
+
+## 详细信息面板拉伸后的矩形：宽 = 1030 + 视口比 1920 多出来的宽（横向 expand）。
+static func stretched_detail_rect(view_size: Vector2) -> Rect2:
+	var extra: float = maxf(0.0, view_size.x - DESIGN_W)
+	return Rect2(DETAIL_RECT.position.x, DETAIL_RECT.position.y,
+		DETAIL_RECT.size.x + extra, DETAIL_RECT.size.y)
+
+
+## 右栏宽度（= DETAIL_RIGHT_W + 视口多出来的宽）。
+static func detail_right_w(view_size: Vector2) -> float:
+	return DETAIL_RIGHT_W + maxf(0.0, view_size.x - DESIGN_W)
+
+
+## 数值框（正文背景板）的宽：与招募队列共用同一条右缘（`right_w − QUEUE_MARGIN`）。
+static func detail_body_w(right_w: float) -> float:
+	return right_w - QUEUE_MARGIN
+
+
+## 招募队列控件的 x（右缘钉在 `right_w − QUEUE_MARGIN`）。
+static func detail_queue_x(right_w: float) -> float:
+	return right_w - QUEUE_MARGIN - QUEUE_W
+
+
+## 单位名称可写宽：右缘让开招募队列（留 8px 缝）。
+static func detail_name_w(right_w: float) -> float:
+	return detail_queue_x(right_w) - UNIT_NAME_X - 8.0
+
+
+## 正文**右栏** Label 的宽。
+static func detail_body_col2_w(right_w: float) -> float:
+	return detail_body_w(right_w) - DETAIL_BODY_COL2_X - DETAIL_BODY_PAD
+
+
+# ------------------------------------------------------------------
 # 局部矩形（面板内的相对坐标，给子控件用）
 # ------------------------------------------------------------------
 
@@ -687,6 +734,22 @@ static func apply_rect(c: Control, r: Rect2, anchor_right: bool = false, anchor_
 		c.offset_bottom = r.position.y + r.size.y
 
 
+## ★★ 详细信息面板专用：**左缘钉 400、右缘钉到阵营列左缘**（窗口变宽时自己填满中间那条缝）。
+##
+## ★ 阵营列（`FACTION_RECT`）的右缘偏移是 `1430 − 1920 = −490`（贴右）；
+##   这里把详细信息的右缘也定成 −490 ⇒ 两者**永远相邻**（1920 宽时右缘回到 1430，与原先逐像素一致）。
+## ★ 高度不变（贴底、高 260）：窗口变高时底栏仍贴屏幕下沿。
+static func apply_stretched_detail(c: Control) -> void:
+	c.anchor_left = 0.0
+	c.anchor_right = 1.0
+	c.offset_left = DETAIL_RECT.position.x                                    # 400：贴左
+	c.offset_right = DETAIL_RECT.position.x + DETAIL_RECT.size.x - DESIGN_W   # 1430−1920 = −490：贴到阵营列左缘
+	c.anchor_top = 1.0
+	c.anchor_bottom = 1.0
+	c.offset_top = DETAIL_RECT.position.y - DESIGN_H
+	c.offset_bottom = DETAIL_RECT.position.y + DETAIL_RECT.size.y - DESIGN_H  # 贴底、高 260 不变
+
+
 # ------------------------------------------------------------------
 # 鼠标：哪些地方要「让路」
 # ------------------------------------------------------------------
@@ -757,7 +820,7 @@ static func interactive_rects(view_size: Vector2) -> Array[Rect2]:
 static func bottom_bar_rects(view_size: Vector2) -> Array[Rect2]:
 	var shift := Vector2(maxf(0.0, view_size.x - DESIGN_W), maxf(0.0, view_size.y - DESIGN_H))
 	var out: Array[Rect2] = []
-	var d := DETAIL_RECT                    # 贴左边：只跟着下边修正
+	var d := stretched_detail_rect(view_size)   # 贴左边：宽度跟着视口横向长，只跟着下边修正
 	d.position.y += shift.y
 	out.append(d)
 	for r in [FACTION_RECT, CARD_RECT, TABS_RECT]:   # 贴右下：右下都修正

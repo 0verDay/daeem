@@ -39,6 +39,9 @@ const ConfigRes = preload("res://logic/config.gd")
 ##   （2D 遗留路线已随 2D 栈删除；`setup` 时必须给）。
 var palette = null
 const BuildingRes = preload("res://logic/building.gd")
+## ★ 迷雾掩码按「同方」存（合作模式共享视野），与 `fog.tile_visible()` 同一个键。
+##   烘图直接读掩码数组，所以需要这个换算（只用来取 key，不重算任何视野）。
+const FactionRes = preload("res://logic/faction.gd")
 
 ## 视野框：里面叠一层很淡的白（让「我现在看的是这一块」一眼可见），外面描一圈亮白边。
 const VIEW_FILL := Color(1.0, 1.0, 1.0, 0.13)
@@ -101,6 +104,32 @@ var _c_mountain: Color
 ## 阵营 → 主体色。每帧每单位查一次的东西，缓存成一次查表（同 unit_view.gd）
 var _color_cache: Dictionary = {}
 
+## ★★ 地形层的烘图（1 像素 / 格）：地形**永不变化**（只有换地图才变），
+##   每帧逐格 `draw_rect`（27×22 图 = 594 个矩形）是纯浪费 —— 烘成一张贴图，
+##   `_draw` 里一次 `draw_texture_rect` 铺开。⚠️ 地图外的格子烘成**透明**（露出面板底色）。
+var _terrain_tex: ImageTexture = null
+## 烘图对应的地图签名（列|行|地图对象 id）——变了就重烘（换图 / 重开一局）
+var _terrain_sig: String = ""
+
+## ★★ 迷雾层的烘图（1 像素 / 格）：与地形同一条思路。
+##   原来每帧逐格 `tile_visible` + `draw_rect`（27×22 = 594 次查询 + 594 个矩形），
+##   手机上即使节流到 15Hz 仍是一笔可观的 CPU / draw call。
+##   现在只在**掩码真的变了**时重烘一次，`_draw` 里一次 `draw_texture_rect`。
+## ★ 掩码（`world.fog.sight`）整块比较：PackedByteArray 的 `==` 是逐字节比较，
+##   594 字节（100×100 图也只有 1 万字节）的开销可以忽略；
+##   而且它是**精确**的 —— 不像按抽样判据那样可能漏掉局部变化。
+## ★ `fog_bake_count` 是纯诊断（排查时看「迷雾有没有被频繁重烘」）。
+var _fog_tex: ImageTexture = null
+var _fog_img: Image = null
+var _fog_mask: PackedByteArray = PackedByteArray()
+var _fog_cols: int = -1
+var _fog_rows: int = -1
+var fog_bake_count: int = 0
+
+## ★★ 手机端：小地图重画节流（桌面 / 无头恒为 0 = 每帧；见 config 的 ui._minimap_hz_comment）
+var _refresh_interval: float = 0.0
+var _refresh_accum: float = 0.0
+
 
 func setup(p_cfg: ConfigRes, p_world, p_camera_rig, p_palette) -> void:
 	cfg = p_cfg
@@ -116,6 +145,19 @@ func setup(p_cfg: ConfigRes, p_world, p_camera_rig, p_palette) -> void:
 	_c_forest = cfg.color("forest")
 	_c_mountain = cfg.color("mountain")
 	_color_cache = {}
+	# 新一局 / 新地图 ⇒ 迷雾烘图作废（贴图缓冲可以复用，尺寸对不上时会重建）
+	_fog_mask = PackedByteArray()
+	_fog_cols = -1
+	_fog_rows = -1
+	# ★ 地形烘图按 NEAREST 采样：1 像素/格 的贴图缩放到小地图尺寸后仍是硬边小方块。
+	texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	# ★★ 手机端：小地图每帧重画（地形 + 迷雾 + 单位）没必要 60Hz，按上限节流。
+	_refresh_interval = 0.0
+	if OS.has_feature("mobile") and cfg.mobile_minimap_hz > 0.0:
+		_refresh_interval = 1.0 / cfg.mobile_minimap_hz
+		# ★ 默认把第一次重画错开一点：HUD 的槽位也在 20Hz 上轮转，
+		#   两边同时落在同一帧会把两个重活叠起来（见 `stagger_redraw`）。
+		stagger_redraw(0.37)
 
 
 # ------------------------------------------------------------------
@@ -295,6 +337,17 @@ func view_rect_clipped() -> Rect2:
 	return r
 
 
+## 让下一次重画错开一个节拍（0..1 的比例）。
+##
+## ★ 用途：HUD 在手机上按 4 槽轮转刷新，小地图如果也从 0 开始累计，
+##   它的第一次重画会和 HUD 的第一个槽位落在同一帧 —— 两个重活叠加就是尖峰。
+##   把它推到 0.37 个周期的位置，之后两边就自然错开了。
+func stagger_redraw(ratio: float) -> void:
+	if _refresh_interval <= 0.0:
+		return
+	_refresh_accum = _refresh_interval * clampf(ratio, 0.0, 0.99)
+
+
 # ------------------------------------------------------------------
 # 每帧重画
 # ------------------------------------------------------------------
@@ -322,7 +375,14 @@ func view_rect_clipped() -> Rect2:
 ##   鼠标停在原地不动时事件就没了，而「按住算长按」的那条计时必须照样走。
 func _process(dt: float) -> void:
 	_tick_drag(dt)
-	queue_redraw()
+	# ★★ 手机端：按上限节流（桌面 / 无头 _refresh_interval == 0 ⇒ 每帧，行为不变）。
+	if _refresh_interval <= 0.0:
+		queue_redraw()
+		return
+	_refresh_accum += dt
+	if _refresh_accum >= _refresh_interval:
+		_refresh_accum = 0.0
+		queue_redraw()
 
 
 # ------------------------------------------------------------------
@@ -330,6 +390,15 @@ func _process(dt: float) -> void:
 # ------------------------------------------------------------------
 
 func _draw() -> void:
+	# ★★ 与 overlay 一样：只统计真正的 `_draw` 命令录制（`profile_on` 时才计时）。
+	var t0: int = Time.get_ticks_usec() if (world != null and world.profile_on) else 0
+	_draw_impl()
+	if t0 != 0:
+		world.profile_us["draw/minimap"] = int(world.profile_us.get("draw/minimap", 0)) \
+			+ (Time.get_ticks_usec() - t0)
+
+
+func _draw_impl() -> void:
 	if cfg == null or world == null or world.map == null:
 		return
 	_draw_terrain()
@@ -343,15 +412,31 @@ func _draw() -> void:
 	_draw_view_rect()
 
 
-## 地形：一格一个小方块。地图外的格子（exists = false）**不画** ——
-## 露出来的是面板自己的底色，与「地图界外是默认背景」同一条语义。
+## 地形：整层**一次画完** —— 烘成 1 像素/格 的贴图铺到地图矩形上。
+## ★★ 为什么不逐格 `draw_rect`：地形**永不变化**（只有换地图才变），而 27×22 图就是
+##   594 个 `draw_rect`/帧 —— 见过 `_terrain_texture()` 的注释。
+## ★ 地图外的格子（exists = false）在烘图里是**透明**的，露出来的是面板自己的底色，
+##   与「地图界外是默认背景」同一条语义。
 func _draw_terrain() -> void:
-	var s := scale()
-	var o := origin()
 	var m = world.map
-	for ty in m.rows:
-		for tx in m.cols:
+	var r := Rect2(origin(), Vector2(float(m.cols), float(m.rows)) * scale())
+	draw_texture_rect(_terrain_texture(), r, false)
+
+
+## 把地形烘成一张 1 像素/格 的 `ImageTexture`（**换地图才重烘**，按签名缓存）。
+## ⚠️ 用 NEAREST 过滤（见 `setup`）——扩到小地图尺寸后仍是硬边小方块，不是一团糊。
+func _terrain_texture() -> ImageTexture:
+	var m = world.map
+	var cols: int = int(m.cols)
+	var rows: int = int(m.rows)
+	var sig := "%d|%d|%d" % [cols, rows, m.get_instance_id()]
+	if _terrain_tex != null and sig == _terrain_sig:
+		return _terrain_tex
+	var img := Image.create(cols, rows, false, Image.FORMAT_RGBA8)
+	for ty in rows:
+		for tx in cols:
 			if not m.tile_exists(tx, ty):
+				img.set_pixel(tx, ty, Color(0.0, 0.0, 0.0, 0.0))     # 地图外 = 透明
 				continue
 			var t := String(m.terrain.get_cell(tx, ty))
 			var c: Color = _c_grass if (tx + ty) % 2 == 0 else _c_grass_alt
@@ -359,7 +444,10 @@ func _draw_terrain() -> void:
 				c = _c_mountain
 			elif t == "forest":
 				c = _c_forest
-			draw_rect(Rect2(o + Vector2(float(tx), float(ty)) * s, Vector2(s, s)), c, true)
+			img.set_pixel(tx, ty, c)
+	_terrain_tex = ImageTexture.create_from_image(img)
+	_terrain_sig = sig
+	return _terrain_tex
 
 
 ## 建筑：按各自本体的**占地比例**画（城墙填满一格、大本营 / 箭塔内缩），
@@ -411,24 +499,62 @@ func _draw_units() -> void:
 
 ## ★★ 迷雾：没视野的格子盖一层灰（与大地图同一份掩码、同一个颜色）。
 ##
-## ★ 逐格画小方块而不是像 fog_view 那样烘一张贴图：小地图的格子只有 3~15 px，
-##   594 格里绝大多数帧只需要画「视野外」的那些，而且这里本来每帧就在画地形
-##   （同一个循环结构），多一条分支比多一张贴图 + 一次等比缩放简单得多。
-## ★ 地图外的格子（exists = false）不画 —— 与 `_draw_terrain()` 同一条规则。
+## ★ 现在是**烘成一张 1 像素/格 的贴图**再一次铺开（本轮手机端优化）：
+##   原来是每帧 `rows×cols` 次 `tile_visible` + `draw_rect`（594 次查询 + 594 个图元）。
+##   迷雾掩码只在实际视野变化时才变，而小地图本身还有 15Hz 节流 ——
+##   于是绝大多数重画都是一次 `draw_texture_rect`，CPU 与 draw call 都接近 0。
+## ★ 地图外的格子（exists = false）烘成**透明** —— 与 `_draw_terrain()` 同一条规则。
 func _draw_fog() -> void:
 	if not cfg.fog_enabled or world.fog == null:
 		return
-	var s := scale()
-	var o := origin()
 	var m = world.map
-	for ty in m.rows:
-		for tx in m.cols:
+	var r := Rect2(origin(), Vector2(float(m.cols), float(m.rows)) * scale())
+	draw_texture_rect(_fog_texture(), r, false)
+
+
+## 把迷雾掩码烘成 `cols × rows` 的 RGBA 贴图；掩码没变就复用上一张。
+##
+## ★ 掩码直接读 `world.fog.sight`（与 `fog.tile_visible()` 是**同一份**数据，
+##   键都是 `FactionRes.side_of()`）—— 不经过 `tile_visible()` 的逐格函数调用，
+##   烘一次 = 594 次数组下标访问，而不是 594 次跨对象调用。
+## ★ 颜色用 `cfg.fog_mask_color`（与大地图的迷雾层同一份）；alpha = 0 表示看得见。
+## ★ `ImageTexture.update()` 原地更新，尺寸不变时不重新分配显存（与 ground_view 同一条经验）。
+func _fog_texture() -> ImageTexture:
+	var m = world.map
+	var cols: int = int(m.cols)
+	var rows: int = int(m.rows)
+	var mask := PackedByteArray()
+	var raw: Variant = world.fog.sight.get(FactionRes.side_of(world.my_faction), null)
+	if typeof(raw) == TYPE_PACKED_BYTE_ARRAY:
+		mask = raw
+	# 掩码、尺寸都没变 ⇒ 直接复用（逐字节比较，见字段说明）
+	if _fog_tex != null and _fog_cols == cols and _fog_rows == rows and mask == _fog_mask:
+		return _fog_tex
+	_fog_cols = cols
+	_fog_rows = rows
+	# ★★ 必须存**独立副本**：`sight` 里的 PackedByteArray 可能与这里共享底层缓冲，
+	#    而 `fog.update()` / 测试会对数组做原地写 —— 直接存引用会让「上一份掩码」
+	#    跟着变成「当前掩码」，比较永远相等、贴图再也不更新（渲染层最怕的静默失败）。
+	_fog_mask = mask.duplicate()
+	fog_bake_count += 1
+	if _fog_img == null or _fog_img.get_width() != cols or _fog_img.get_height() != rows:
+		_fog_img = Image.create(cols, rows, false, Image.FORMAT_RGBA8)
+		_fog_tex = ImageTexture.create_from_image(_fog_img)
+	var c: Color = cfg.fog_mask_color
+	var seen_c := Color(c.r, c.g, c.b, 0.0)
+	for ty in rows:
+		var base := ty * cols
+		for tx in cols:
 			if not m.tile_exists(tx, ty):
+				_fog_img.set_pixel(tx, ty, seen_c)
 				continue
-			if world.fog.tile_visible(world.my_faction, tx, ty):
-				continue
-			draw_rect(Rect2(o + Vector2(float(tx), float(ty)) * s, Vector2(s, s)),
-				cfg.fog_mask_color, true)
+			var idx := base + tx
+			var seen: bool = idx < mask.size() and mask[idx] != 0
+			_fog_img.set_pixel(tx, ty, seen_c if seen else c)
+	if _fog_tex == null:
+		_fog_tex = ImageTexture.create_from_image(_fog_img)
+	_fog_tex.update(_fog_img)
+	return _fog_tex
 
 
 ## 视野框：先铺一层淡白，再描一圈亮白边。

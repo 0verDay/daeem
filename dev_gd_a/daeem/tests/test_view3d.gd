@@ -532,10 +532,13 @@ func _test_ground_bake(cfg) -> void:
 		var col_b: Color = g.zone_outline_color(z1)
 		ok(col_a != col_b,
 			"★ 归属一变、轮廓颜色跟着变（%s → %s）" % [str(col_a), str(col_b)])
-		var oimg_a: Image = g._tex.get_image()
+		# ★ 内容有没有真的变：比**烘图缓冲**的字节快照。
+		#   缓冲复用之后 `_tex` 是同一个对象，`get_image()` 也不一定跟着刷新
+		#   （旧写法其实是在比「有没有新建一个贴图对象」，不是比内容）。
+		var data_a: PackedByteArray = g._bake_img.get_data().duplicate()
 		g.rebake(true)
-		var oimg_b: Image = g._tex.get_image()
-		ok(oimg_a != null and oimg_b != null and oimg_a.get_data() != oimg_b.get_data(),
+		var data_b: PackedByteArray = g._bake_img.get_data().duplicate()
+		ok(not data_a.is_empty() and not data_b.is_empty() and data_a != data_b,
 			"★ 归属一变、地面底色跟着重烘（贴图内容不同）")
 		z1["owner"] = owner_before
 		game.overlay._zone_seg_sig = ""
@@ -676,39 +679,89 @@ func _test_camera_aim(cfg) -> void:
 	game._edge_scroll_on = false
 	game.set_process(false)
 
+	var cols: float = float(game.world.map.cols)
+	var rows: float = float(game.world.map.rows)
 	var targets: Array = [
 		Vector2(13.5, 11.0), Vector2(13.5, 2.0), Vector2(3.5, 3.5),
 		Vector2(24.0, 19.0), Vector2(0.5, 0.5),
-		Vector2(float(game.world.map.cols) - 0.5, float(game.world.map.rows) - 0.5),
+		Vector2(cols - 0.5, rows - 0.5),
 	]
+	# ① `_place_camera_looking_at` 是**不夹取**的原始摆位：任何格都必须精确落到画面中心
 	var worst_place := 0.0
-	var worst_precise := 0.0
-	var worst_screen := 0.0
 	for t: Vector2 in targets:
 		game._place_camera_looking_at(game.palette.to_world(t))
 		game.cam.force_update_transform()
 		worst_place = maxf(worst_place, t.distance_to(_aim_readback(game)))
+	ok(worst_place < 0.05,
+		"★ `_place_camera_looking_at` 把目标点摆到画面中心（最大误差 %.4f 格 < 0.05）" % worst_place)
+
+	# ② ★★ 相机夹取的口径：**可见区域不越出「地图 + margin 格」，且镜头中心留在图内**。
+	#    断言的是**性质**（越界量 ≤ margin）而不是某一档的具体区间 —— 区间随视口长宽比变，
+	#    写死数值会变成一碰就红的脆弱断言。
+	#    ★ 目标点里特意放一个地图外的 (-40,-40)：夹取必须把它拉回来。
+	var margin: float = cfg.num("render.camera_view_margin_tiles", 5.0)
+	var worst_out := -INF
+	var worst_in := -INF
+	for z: float in [Game3DRes.ZOOM_MIN, 0.2, Game3DRes.ZOOM_MAX]:
+		game.zoom = z
+		for t4: Vector2 in [Vector2(0.5, 0.5), Vector2(cols - 0.5, 0.5),
+				Vector2(0.5, rows - 0.5), Vector2(cols - 0.5, rows - 0.5),
+				Vector2(cols * 0.5, rows * 0.5), Vector2(-40.0, -40.0)]:
+			game.center_on_tile_precise(t4)
+			game.cam.force_update_transform()
+			var ext: Rect2 = game.visible_extent()
+			var look: Vector2 = _aim_readback(game)
+			worst_out = maxf(worst_out, -look.x - ext.position.x)    # 越过左边界
+			worst_out = maxf(worst_out, look.x + ext.end.x - cols)   # 越过右边界
+			worst_out = maxf(worst_out, -look.y - ext.position.y)    # 越过上边界
+			worst_out = maxf(worst_out, look.y + ext.end.y - rows)   # 越过下边界
+			worst_in = maxf(worst_in, maxf(-look.x, look.x - cols))
+			worst_in = maxf(worst_in, maxf(-look.y, look.y - rows))
+	ok(worst_out <= margin + 0.05,
+		"★★ 可见区域越出地图最多 %.2f 格 ≤ margin %.1f（夹取生效）" % [worst_out, margin])
+	ok(worst_in <= 0.05,
+		"★ 镜头中心始终留在地图矩形内（最大越界 %.2f 格）" % worst_in)
+	game.zoom = Game3DRes.ZOOM_MAX
+
+	# ③ 两个「对准」入口都会**经过夹取** ⇒ 先在一档「夹取退化成旧口径」的视野下量**精度**：
+	#    ★ 最近视野下可见区域的半宽/半高都小于 margin ⇒ ①那条约束一格都用不上，
+	#      夹取只剩「中心留在地图矩形内」⇒ 六格全部可达。
+	game.zoom = Game3DRes.ZOOM_MIN
+	var worst_precise := 0.0
+	for t: Vector2 in targets:
 		game.center_on_tile_precise(t)
 		game.cam.force_update_transform()
 		worst_precise = maxf(worst_precise, t.distance_to(_aim_readback(game)))
-		game.center_on_tile(Vector2(float(game.world.map.cols) * 0.5,
-			float(game.world.map.rows) * 0.5))
+	ok(worst_precise < 0.05,
+		"★★ `center_on_tile_precise` 对准某格（最大误差 %.4f 格 < 0.05）" % worst_precise)
+
+	# ④ `center_on_screen_precise` 走的是「屏幕点 → 格 → 对准」这条路 ⇒ 在最远视野下
+	#    它与 `center_on_tile_precise` 对**同一个目标点**必须落在同一处（含被夹取到
+	#    区间边界的那些角）—— 量的是这条路的换算，夹取已经被 ② 量过，不再重量一遍。
+	#    ⚠️ 必须在最远视野下测：最近视野里相机贴着地图中心，南边的角会跑到**相机背后**，
+	#       而「点在相机背后」时 `to_px` 给的是不可用的坐标（引擎口径）。
+	game.zoom = Game3DRes.ZOOM_MAX
+	var worst_screen := 0.0
+	for t: Vector2 in targets:
+		game.center_on_tile_precise(t)
+		game.cam.force_update_transform()
+		var want: Vector2 = _aim_readback(game)
+		game.center_on_tile(Vector2(cols * 0.5, rows * 0.5))
 		game.cam.force_update_transform()
 		game.center_on_screen_precise(game.palette.to_px(t))
 		game.cam.force_update_transform()
-		worst_screen = maxf(worst_screen, t.distance_to(_aim_readback(game)))
-	ok(worst_place < 0.05,
-		"★ `_place_camera_looking_at` 把目标点摆到画面中心（最大误差 %.4f 格 < 0.05）" % worst_place)
-	ok(worst_precise < 0.05,
-		"★★ `center_on_tile_precise` 对准某格（最大误差 %.4f 格 < 0.05）" % worst_precise)
+		worst_screen = maxf(worst_screen, want.distance_to(_aim_readback(game)))
 	ok(worst_screen < 0.05,
-		"★★ `center_on_screen_precise` 对准屏幕点（最大误差 %.4f 格 < 0.05）" % worst_screen)
+		"★★ `center_on_screen_precise` 与 `center_on_tile_precise` 同一落点（最大差 %.4f 格 < 0.05）" % worst_screen)
 
 	var mm = game.hud.minimap
 	if mm == null:
 		ok(false, "小地图不在，跳转断言无从谈起")
 		game.queue_free()
 		return
+	# ★ 同样在最近视野下量「点哪去哪」：那一档的夹取 = 旧的「中心留在地图矩形内」，
+	#   角落附近那几个目标点才可达 —— 在最远视野下它们会被夹取挪开（那是需求，不是 bug）。
+	game.zoom = Game3DRes.ZOOM_MIN
 	var worst_jump := 0.0
 	for t2: Vector2 in [Vector2(4.5, 16.5), Vector2(1.5, 1.5), Vector2(25.5, 20.5)]:
 		mm._jump_to(mm.to_minimap(t2))
@@ -716,6 +769,7 @@ func _test_camera_aim(cfg) -> void:
 		worst_jump = maxf(worst_jump, t2.distance_to(_aim_readback(game)))
 	ok(worst_jump < 0.05,
 		"★★ 小地图「点哪去哪」：落点误差 %.4f 格 < 0.05（老写法实测最大 15.06 格）" % worst_jump)
+	game.zoom = Game3DRes.ZOOM_MAX
 
 	var fake := Vector2(13.5, 11.0)
 	game.center_on_screen_precise(game.cfg.cell_px * fake)
@@ -943,6 +997,23 @@ func _test_capture_area(cfg) -> void:
 	ok(zoomed < with_center,
 		"★★ 拉近到最紧 + 贴角 → 屏幕外的触发区被剔除（%d < %d）" % [zoomed, with_center])
 	game.zoom = Game3DRes.ZOOM_MAX
+
+	# ★★ 静态层缓存（本轮手机端优化）：相机不动 ⇒ 一次投影都不该重做。
+	#   ⚠️ 无头下 Control 的 `_draw()` 不会跑，所以直接调缓存重建入口。
+	game.cam.force_update_transform()
+	ov._refresh_static_projection()
+	var rebuilds: int = ov.static_rebuild_count
+	ov._refresh_static_projection()
+	eq(ov.static_rebuild_count, rebuilds,
+		"★★ 相机静止时静态层缓存不重建（%d 次）" % rebuilds)
+	game.center_on_tile(Vector2(float(game.world.map.cols) * 0.5,
+		float(game.world.map.rows) * 0.5))
+	game.cam.force_update_transform()
+	ov._refresh_static_projection()
+	ok(ov.static_rebuild_count > rebuilds,
+		"★ 相机移动后静态层缓存重建（%d → %d）" % [rebuilds, ov.static_rebuild_count])
+	ok(not ov._grid_screen.is_empty(), "静态层缓存里有网格线顶点")
+	ok(not ov._zone_screen.is_empty(), "静态层缓存里有区划轮廓顶点")
 
 	game.queue_free()
 	await process_frame

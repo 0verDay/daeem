@@ -371,8 +371,30 @@ func _test_hit_test() -> void:
 	card_wide.position.x += wide.x - UiLayoutRes.DESIGN_W
 	ok(UiLayoutRes.point_hits_any(bar_wide, card_wide.get_center()),
 		"★ 超宽窗口：命令卡的新位置仍然拦滚轮（判定跟着贴边走）")
-	ok(not UiLayoutRes.point_hits_any(bar_wide, UiLayoutRes.card_cell_rect(0).get_center()),
-		"超宽窗口：命令卡原来的位置不再算底栏")
+	# ★★ 手机端自适应：详细信息面板拉伸填满「原来那条缝」——
+	#    于是旧命令卡位置现在落在**详细信息面板**里（底栏连续、无空洞）。
+	ok(UiLayoutRes.point_hits_any(bar_wide, UiLayoutRes.card_cell_rect(0).get_center()),
+		"★ 超宽窗口：详细信息面板拉伸后填满了那条缝 ⇒ 旧命令卡位置也在底栏里（连续无空洞）")
+
+	# 拉伸后的详细信息面板右缘必须正好接上阵营列左缘（这就是「不要固定大小、填满下方栏位」）。
+	var sd := UiLayoutRes.stretched_detail_rect(wide)
+	var faction_left_wide: float = UiLayoutRes.FACTION_RECT.position.x + (wide.x - UiLayoutRes.DESIGN_W)
+	near(sd.position.x + sd.size.x, faction_left_wide, 0.01,
+		"★ 详细信息面板拉伸后右缘 == 阵营列左缘（中间不再有缝）")
+	eq(UiLayoutRes.stretched_detail_rect(vp).size.x, UiLayoutRes.DETAIL_RECT.size.x,
+		"1920 基准下详细信息面板宽度仍是 1030（老几何不变）")
+
+	# 右栏动态宽度函数在基准宽度处必须与写死的常量逐位一致（否则 1920 下会走样）。
+	var rw: float = UiLayoutRes.DETAIL_RIGHT_W
+	eq(UiLayoutRes.detail_body_w(rw), UiLayoutRes.DETAIL_BODY_W,
+		"detail_body_w(基准) == DETAIL_BODY_W")
+	eq(UiLayoutRes.detail_queue_x(rw), UiLayoutRes.QUEUE_X, "detail_queue_x(基准) == QUEUE_X")
+	eq(UiLayoutRes.detail_name_w(rw), UiLayoutRes.UNIT_NAME_W,
+		"detail_name_w(基准) == UNIT_NAME_W")
+	eq(UiLayoutRes.detail_body_col2_w(rw), UiLayoutRes.DETAIL_BODY_COL2_W,
+		"detail_body_col2_w(基准) == DETAIL_BODY_COL2_W")
+	eq(UiLayoutRes.detail_right_w(wide), UiLayoutRes.DETAIL_RIGHT_W + (wide.x - UiLayoutRes.DESIGN_W),
+		"超宽窗口右栏宽度 = 645 + 多出来的宽")
 
 func _test_panels(cfg) -> void:
 	var packed = load("res://view/main.tscn")
@@ -395,6 +417,21 @@ func _test_panels(cfg) -> void:
 		return
 
 	_seed_player_escorts(main, 5)
+
+	# ★★ 触摸设备：地图侧**完全不认鼠标**（连 emulate_mouse_from_touch 造的模拟鼠标也不要）。
+	#    判据用「左键按下会不会进入拖框待定」—— 它不依赖光标底下有什么，最干净。
+	var mouse_ev := InputEventMouseButton.new()
+	mouse_ev.button_index = MOUSE_BUTTON_LEFT
+	mouse_ev.pressed = true
+	mouse_ev.position = Vector2(960.0, 540.0)
+	main.touch_device = true
+	main.input_ctrl._drag_pending = false
+	main._unhandled_input(mouse_ev)
+	ok(not main.input_ctrl._drag_pending,
+		"★★ 触摸设备上模拟鼠标左键不进输入层（不会起框 / 清空选中）")
+	main.touch_device = false
+	main.input_ctrl._drag_pending = false
+	main.input_ctrl.select_units([])
 
 	for path in ["HudRoot/SquadPanel", "HudRoot/MapPlaceholder", "HudRoot/DetailPanel",
 			"HudRoot/FactionPlaceholder", "HudRoot/CommandCard", "HudRoot/PageTabs",
@@ -711,6 +748,14 @@ func _test_anchors(main) -> void:
 		"超宽窗口：页签列仍贴右下角")
 	v2_near(main.hud.detail_panel.position, UiLayoutRes.DETAIL_RECT.position, 1.0,
 		"超宽窗口：详细信息仍贴左边（x = 400）")
+	# ★★ 手机端自适应：多出来的 640px 全部进右栏 —— 面板右缘正好接上阵营列左缘。
+	near(main.hud.detail_panel.size.x, UiLayoutRes.DETAIL_RECT.size.x + 640.0, 1.0,
+		"★ 超宽窗口：详细信息面板横向拉伸 640（填满到阵营列左缘）")
+	near(main.hud.detail_panel.right_column_width(), UiLayoutRes.DETAIL_RIGHT_W + 640.0, 1.0,
+		"★ 超宽窗口：多出来的宽度全进了右栏（左栏仍 350）")
+	near(main.hud.detail_panel.queue_position_x(),
+		UiLayoutRes.detail_queue_x(UiLayoutRes.DETAIL_RIGHT_W + 640.0), 1.0,
+		"★ 超宽窗口：招募队列右缘仍钉在右栏右缘（位置跟着变）")
 	v2_near(main.hud.squad_panel.position, UiLayoutRes.SQUAD_RECT.position, 1.0,
 		"超宽窗口：部队列表仍在左上")
 	v2_near(main.hud.settings_button.position, Vector2(1840.0 + 640.0, 0.0), 1.0,
@@ -718,9 +763,79 @@ func _test_anchors(main) -> void:
 	ok(main.hud.blocks_edge_scroll(Vector2(1580.0 + 640.0 + 40.0, 880.0)),
 		"超宽窗口：命令卡的新位置仍然拦边缘滚屏（判定跟着贴边走）")
 
+	_test_mobile_ui_scheduler(main)
+
 	root.size = Vector2i(int(UiLayoutRes.DESIGN_W), int(UiLayoutRes.DESIGN_H))
 	await process_frame
 	await process_frame
+
+
+## ★★ 手机端 UI 调度器（本轮）：
+##   · 一次 refresh 只扫一遍 `world.units`（页签与详情共用缓存）；
+##   · 同一段详情文本重喂不重排；
+##   · 4 槽轮转（shell / detail / shell+squad / detail）；
+##   · 选中变化强制全刷。
+func _test_mobile_ui_scheduler(main) -> void:
+	var hud = main.hud
+	var dp = hud.detail_panel
+	var squad = hud.squad_panel
+	ok(hud != null and dp != null and squad != null, "（前提）HUD / 详情 / 部队列表都在")
+	if hud == null or dp == null or squad == null:
+		return
+
+	# ① 一次全量 refresh 只扫一遍单位
+	var s0: int = hud.troops_scans
+	hud.refresh()
+	eq(hud.troops_scans - s0, 1,
+		"★★ 一次 refresh 只扫一遍 world.units（页签与详情共用 tick 缓存）")
+
+	# ② 同一段详情文本重喂不重排
+	var text := "第一行\n第二行"
+	dp.set_detail(text)
+	var f0: int = dp.fit_calls
+	dp.set_detail(text)
+	eq(dp.fit_calls, f0,
+		"★★ 同一段详情文本重喂不重排（不重复写字号 / 行距主题覆盖）")
+
+	# ③ 4 槽轮转
+	var old_interval: float = hud._refresh_interval
+	var old_stagger: bool = hud._mobile_ui_stagger
+	var old_phase: int = hud._mobile_phase
+	var old_force: bool = hud._mobile_force_full
+	hud._refresh_interval = 0.05
+	hud._mobile_ui_stagger = true
+	hud._mobile_phase = 0
+	hud._mobile_force_full = false
+	var sq0: int = squad.refresh_count
+	var scans0: int = hud.troops_scans
+
+	hud._mobile_tick()                       # 槽 0：shell
+	eq(hud._mobile_phase, 1, "槽 0 之后轮到槽 1")
+	eq(squad.refresh_count, sq0, "槽 0 不刷部队列表")
+	hud._mobile_tick()                       # 槽 1：detail
+	eq(hud._mobile_phase, 2, "槽 1 之后轮到槽 2")
+	eq(squad.refresh_count, sq0, "槽 1 不刷部队列表")
+	hud._mobile_tick()                       # 槽 2：shell + squad
+	eq(hud._mobile_phase, 3, "槽 2 之后轮到槽 3")
+	eq(squad.refresh_count - sq0, 1, "★ 槽 2 刷新部队列表一次")
+	hud._mobile_tick()                       # 槽 3：detail
+	eq(hud._mobile_phase, 0, "槽 3 之后回到槽 0")
+	eq(hud.troops_scans - scans0, 4, "★ 每个调度节拍只扫一次单位（4 拍 = 4 次）")
+
+	# ④ 选中变化强制全刷（一次 refresh + 一次 squad）
+	hud._mobile_force_full = true
+	var sq1: int = squad.refresh_count
+	var scans1: int = hud.troops_scans
+	hud._mobile_tick()
+	eq(hud._mobile_force_full, false, "★ 强制全刷标记被消费")
+	eq(hud.troops_scans - scans1, 1, "强制全刷只扫一次单位")
+	eq(squad.refresh_count - sq1, 1, "强制全刷也刷新部队列表")
+
+	hud._refresh_interval = old_interval
+	hud._mobile_ui_stagger = old_stagger
+	hud._mobile_phase = old_phase
+	hud._mobile_force_full = old_force
+
 
 func _test_avatar_text_fit(cfg) -> void:
 	var panel = DetailPanelRes.new()
@@ -818,6 +933,13 @@ func _test_hp_bars(cfg) -> void:
 	eq(grid.cell_count(), 1, "（前提）网格里有 1 格")
 	near(grid._hp_ratio_at(0), 0.5, 0.001, "★ 血条比例绑定单位血量（50/100 = 0.5）")
 	ok(grid.bar_draw_count >= 1, "★ 网格格子底部真的画了血条")
+	# ★★ 同一批格子重喂不重画；血量变化必须重画（否则血条会停在旧值）
+	var ar0: int = grid.apply_redraws
+	grid.set_units([u], ["兵"])
+	eq(grid.apply_redraws, ar0, "★★ 内容没变时 3×3 网格不重画（HUD 10Hz 重喂也不刷）")
+	u.hp = 40.0
+	grid.set_units([u], ["兵"])
+	eq(grid.apply_redraws, ar0 + 1, "★ 血量变化后网格重画一次")
 	var before: int = grid.bar_draw_count
 	grid.queue_redraw()
 	await process_frame

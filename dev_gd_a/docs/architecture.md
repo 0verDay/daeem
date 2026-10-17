@@ -33,11 +33,14 @@
 2. `logic/` 里**不许读输入**（`Input`、`InputEvent`、鼠标位置）—— 输入只产出命令
 3. `view/` 里**不许改逻辑状态**（不写 `unit.hp = ...`）—— 只能读 + 发命令
 4. 所有可调数值来自 `config.json`，代码里不写字面量
-5. **C# 内核（`logic/crowd/*.cs`）与 `logic/` 同规矩**：不碰场景树、不读输入、不存游戏数值。
-   它是「同一层逻辑换了个语言」，不是表现层。另外两条引擎硬要求：
+5. **C# 内核（`logic/crowd/*.cs`、`logic/FogKernel.cs`）与 `logic/` 同规矩**：
+   不碰场景树、不读输入、不存游戏数值。它是「同一层逻辑换了个语言」，不是表现层。
+   另外两条引擎硬要求：
    · **文件名必须等于类名**（PascalCase），所以那一层的文件名与 GDScript 的 snake_case 不同；
    · 跨语言调用**必须按批**：实测 1000 次小调用 = 518 µs/帧，1 次批量 = 4.8 µs/帧（差 108 倍），
-     所以 `logic/crowd/` 的接口一律收发整条 Packed 数组，不做「每个单位调一次」。
+     所以内核接口一律收发整条 Packed 数组，不做「每个单位调一次」。
+   · 每块 C# 内核都必须有**GDScript 回退**与 **A/B 配置键**（`unit.collision_backend` /
+     `fog.backend`），普通版 Godot / 内核没打进包时自动退回，游戏照常能跑。
 6. **`view/` 每帧只允许发命令，不允许逐单位写逻辑状态**；单位数量到 1000 之后，
    「每个逻辑对象配一个 Node2D」这条老做法不再成立（见 3.2）
 7. **`config.json` 的可调数值读 `Config` 上「载入时算好」的字段，不要用 `cfg.num("a.b.c")`**。
@@ -71,6 +74,10 @@ dev_gd_a/daeem/
 │                                 #     表示这两方是**同方**（不互相攻击 / 不争夺同一区划）。
 │                                 #     是**地图数据**，所以只有写了它的那张图生效。
 ├── logic/                        # ★ 纯逻辑：extends RefCounted，禁止碰场景树
+│   ├── FogKernel.cs              #   ★★ 战争迷雾的 C# 数字内核（扇区 / 山脉视线 / 掩码合并）。
+│   │                             #      `fog.gd` 负责采集贡献格并做对象记忆，这里只算数；
+│   │                             #      接口按批（一次返回所有方的扁平掩码），
+│   │                             #      `fog.backend = "csharp" | "gdscript"` 可 A/B。
 │   ├── grid.gd                   #   网格工具 + 索引换算 + 方向集（DIRS4/DIRS8/octile）
 │   ├── pathfinder.gd             #   A*（四连通或八方向）+ segment_clear（超覆盖 DDA）
 │   │                             #   + smooth_path（拉直）+ round_corners（拐角圆化）
@@ -186,7 +193,15 @@ dev_gd_a/daeem/
 │   │                             #     + 按（单位类型 × 是否将领）烘成的贴图
 │   ├── input_controller.gd       #   ★ 输入 → 命令（唯一允许读鼠标的地方）
 │   │                             #     + 左侧键**框选**那条状态机（按下 → 移动 → 松开，见 route.md 16.3）
+│   │                             #     ★★ 手机端策略也住在这里（`touch_tap` / `touch_double_tap` /
+│   │                             #     `touch_box_*`）：手势→动作的分派与桌面共用同一个大脑
+│   ├── touch_controller.gd       #   ★★ 手机端触摸**识别**（Rusted Warfare 风格）：单指拖视野 /
+│   │                             #     单击（选中或下令）/ 双击（行军）/ 双指框选（选框两角 = 两指）；
+│   │                             #     阈值在 config 的 `touch.*`；由 game_scene3d 在 `_input` 喂事件，
+│   │                             #     ⚠️ 同时产生的「模拟鼠标」在 `_unhandled_input` 里被丢弃
 │   ├── ui_layout.gd              #   ★ UI 的全部几何常量（照参考图的像素稿）+ 贴边规则
+│   │                             #     ★★ 详细信息面板**自适应**：`apply_stretched_detail` 让它的
+│   │                             #     右缘钉到阵营列左缘（多出来的宽全进右栏）—— 手机横屏不再裂缝
 │   ├── ui_style.gd               #   UI 配色与 StyleBox 工厂
 │   ├── ui_widgets.gd             #   ★ 通用部件工厂：**产出节点**的那一层（文字徽章 / 数字角标 /
 │   │                             #     一次挂好按钮四态底纹）—— ui_style / menu_theme 只产 StyleBox
@@ -221,6 +236,8 @@ dev_gd_a/daeem/
 │   ├── detail_panel.gd           #   ★ 底栏「详细信息」：**左右两栏**（第四轮改版）
 │   │                             #     左 = view/unit_roster.gd（上）+ view/troop_grid.gd（下）
 │   │                             #     右 = 选中单位头像 / 名称 / buff 占位 / 数值 + 招募五格
+│   │                             #     ★★ 面板**横向自适应**（手机横屏）：左缘钉 400、右缘钉阵营列
+│   │                             #     左缘；多余的宽全进右栏 —— `_layout_right()` 随右栏宽重摆「钉右」那几块
 │   ├── unit_roster.gd            #   ★ 左栏上半：**当前展开 / 唯一选中那支部队的将领格**
 │   │                             #     （40×40 方框 + 右边一行「将领名称 x/y」；只有这一格）
 │   ├── troop_grid.gd             #   ★ 左栏下半：**3×3 = 9 格的网格**，两种语义共用
@@ -515,7 +532,7 @@ Godot 里 DPR 由引擎处理，**但下面三条要原样继承**：
 | ★ 地图目录里的「战役专用图」 | `data/maps/<id>/map.json` 的 `hidden: true` → `logic/map_library.gd` 的 `is_hidden()` | ★ 它**不进自由对战的选择条**，也不当默认图（加一张战役图不该改变「不选就按 test」进的那一局）。关卡照样按 id 直接引用它；占位图（`placeholder`）**照样列出**、只是不当默认 —— 两种标记含义不同，别合并 |
 | ★★ **「这一局从哪一关开的」** | `view/game_scene3d.gd` 的 `level_playing` / `level_campaign` | ★ 它们是**界面层**的记账（`world` 自己持有 `level` 才是权威）：给「返回关卡列表 / 结算面板」这类以后的界面用。入口两条：`start(map_path)`（老路）与 `start_level(campaign, level, faction)`（战役路）——**只差「世界怎么造出来」**，之后完全同一条尾 |
 | ★ 单人战役的**占位**入口 | 主界面 `campaign_test` 按钮 → `view/campaign_test.gd`（列单人关 + 选阵营 + 开始）→ `view/main.gd` 接 `level_chosen` → `game.start_level()` | ★ 它**只是占位**（正式入口那一套是规划书 5.1~5.4）：界面不认识 `world` / `game_scene`，扫战役目录与建世界都在 `main`；关卡列表**只列单人关**（合作要两个席位，那条路给不了）。见 route.md 37.11 |
-| 相机 / 缩放 | `view/game_scene3d.gd`（`Camera3D` 相机部分） | 纯表现，不进快照。★ 它的 `camera.edge_size` 与 HUD 的「屏幕最外圈不拦滚屏」是**同一个数**（`cfg.camera_edge_size`） |
+| 相机 / 缩放 | `view/game_scene3d.gd`（`Camera3D` 相机部分） | 纯表现，不进快照。★ 它的 `camera.edge_size` 与 HUD 的「屏幕最外圈不拦滚屏」是**同一个数**（`cfg.camera_edge_size`）。★★ **相机夹取**（`clamp_look_point`）：**可见区域不越出「地图 + `render.camera_view_margin_tiles` 格」，且镜头中心留在地图矩形内**（两条相与）——「可见区域」= 视口四角投到地面的包围盒，量一次即可（相机只平移不旋转 ⇒ 可见区域形状固定）；区间为空的方向（视野比地图还大）**不平移**，镜头钉在地图中心 |
 | 选中列表 | `view/input_controller.gd` | 纯本地，**不进命令流**（第 1 轮也一样）。★ 左键**点选**与左键**框选**（拖出矩形，见 route.md 16.3）走的是同一个入口 `select_units()` —— 它会用 `world.expand_to_groups()` 把「一个单位」展开成「它所属的整支部队」 |
 | 玩家下达的攻击命令 | `logic/unit.gd` 的 `ordered_target` / `ordered_building` / `has_attack_move` | 与「这一帧在打谁」（`target` / `target_building`）**分开存**，见 route.md 12.3 |
 | UI 几何（面板位置与尺寸） | `view/ui_layout.gd` | 纯常量，照参考图的像素稿；其它 view 文件不写坐标字面量 |
@@ -529,6 +546,7 @@ Godot 里 DPR 由引擎处理，**但下面三条要原样继承**：
 | **战争迷雾（谁能看见哪一格 + 已知的敌方建筑）** | `logic/fog.gd`（由 `logic/world.gd` 持有并暴露成 `world.fog`） | ★ 它是**派生数据**：只读 `map.terrain` + 各单位 / 建筑的位置算出来，**不进快照**（联机时各端各算一遍）。`world.tick()` 末尾按需重算（`fog.refresh_needed()`）；`reset()` 末尾也算一次，于是进游戏第一帧之前就有正确的迷雾。★ 单位 / 建筑各自的视野半径在 `unit.vision` 字段上（出生时从 config 抄进对象） |
 | 视野半径的数值 | `data/config.json` 的 `fog.vision_default` / `fog.vision_building` / `unit.types.<id>.vision` / `unit.general.stats[i].vision` / **`building.<type>.vision`** | ★ **单位与建筑各有一张「每类型一个值」的表**，两处完全对称。游戏侧只读 `cfg.unit_vision_of()` / `cfg.general_vision_at()` / `cfg.building_vision_of()`（后两个的兜底分别是 `fog.vision_default` 与 `fog.vision_building`）；编辑器（tools/unit_editor）改的是同一批键 |
 | 灰色遮罩的颜色与不透明度 | `data/config.json` 的 `fog.mask_color` / `fog.mask_alpha` → `cfg.fog_mask_color` | 纯显示；`view/ground_view.gd` 烘的迷雾贴图只存「看得见 / 看不见」，颜色靠材质的 modulate —— 换颜色不必重烘贴图 |
+| 地图边界金线的位置 / 颜色 / 线宽 / 渐变与扫描 | `data/config.json` 的 `render.map_border_*`（offset / color / width / fade_tiles / dim_alpha / scan_alpha / scan_sec / scan_tiles）→ `view/map_border_view.gd` + `view/map_border.gdshader`（`game_scene3d` 建的 `MapBorderView3D`） | 纯表现：只读 `world.map.cols` / `rows`，线画在可玩矩形**之外** offset 格（默认 2），**不进快照**、不改逻辑、无碰撞。线宽是**世界单位**（缩放时跟着变粗变细）；渐变（默认 0.5 格，朝向地图内侧）由**几何**给形状、扫描（一遍 7 秒、由上往下循环）由 **shader** 按世界 z 算；它只挂在游戏内场景，两个编辑器都不画 |
 | 操作页的「命令模式」（点了移动 / 攻击 / 行军之后等左键点地图） | `view/input_controller.gd` 的 `order_mode` | 纯本地输入状态，与 `build_type` 同源、互斥；命令照旧只走 `command_issued` |
 | 招募队列的实现细节（进度、五个格子的几何） | `logic/unit.gd` 的 `train_*` 字段 / `logic/zone.gd` 的 `train_*` 字段（**区划招募**）+ `view/recruit_queue.gd` | 进度由 `unit.train_progress()` / `world.zone_train_progress()` 算好，视图只取色与填格子（不让视图自己发明判定，见 pitfalls 5.20）；同一个控件显示「将领的队列」或「区划的队列」（`set_queue(holder, is_zone)`） |
 | 事件（击杀 / 建筑被拆 / 招募…） | `logic/world.gd` 收集 → `world.tick()` 返回 | **逻辑层不写 UI 文案**；目前只翻译三条：`recruit_rejected` / `order_rejected` → 左栏那行红字、`unit_recruited` → 把新兵选上（`view/game_scene3d.gd` → `hud` / `input_controller`） |

@@ -61,6 +61,12 @@ var _hover: int = -1
 var draw_count: int = 0
 ## 画过多少条**血量条**（同上：`_draw` 里的问题不会报错，只有留下一个可数的痕迹才钉得住）
 var bar_draw_count: int = 0
+## 因内容变化而真正 `queue_redraw()` 的次数（诊断：HUD 以 10Hz 喂同一批格子时不该增长）
+var apply_redraws: int = 0
+## 上一次真正应用时的**内容快照**（见 `_cells_signature`）。
+## ⚠️ 不能直接比较 `ref.hp`：同一个对象被喂两次时两边读到的是同一个实时值，
+##   掉血后仍然「相等」——必须存一份应用当时的快照。
+var _cells_sig: String = "\u0000"
 
 
 func setup(p_font: Font = null) -> void:
@@ -172,11 +178,58 @@ func _rebuild() -> void:
 
 
 func _apply(next: Array) -> void:
+	# ★★ 内容没变就不重画：HUD 的详细信息槽位每 100ms 会把同一批格子重新喂进来，
+	#    无条件 `queue_redraw()` 会让这 9 格每 100ms 重排/重画一次（手机上就是尖峰）。
+	#    ⚠️ 血量 / 士气不在字典里（绘制时从 `ref` 现读），所以也必须参与比较，
+	#       否则掉血后血条会停在旧值上。
+	var sig := _cells_signature(next)
+	if sig == _cells_sig:
+		# ⚠️ 可见性仍要纠正：首次 `clear()` 时 `_cells` 本来就是空的，
+		#    若直接 return，`visible` 会停在默认的 true（一个看不见内容的控件抢鼠标）。
+		visible = not next.is_empty()
+		if _hover >= _cells.size():
+			_hover = -1
+		return
+	_cells_sig = sig
 	_cells = next
 	visible = not next.is_empty()
 	if _hover >= _cells.size():
 		_hover = -1
+	apply_redraws += 1
 	queue_redraw()
+
+
+## 这一批格子「画出来会是什么样」的快照。
+##
+## ★ 必须把**实时读出来的血量 / 士气 / 编制数**也拼进去：它们不在字典里，
+##   而是绘制时从 `ref` 现读。只比字典字段的话，掉血后同一个 `ref` 前后「相等」，
+##   血条就会停在旧值上（实测被 test_ui 抓到）。
+func _cells_signature(next: Array) -> String:
+	var parts: PackedStringArray = []
+	parts.resize(next.size())
+	for i in next.size():
+		var a: Dictionary = next[i]
+		var ref = a.get("ref", null)
+		var hp := -1.0
+		var hp_max := -1.0
+		var morale := -1.0
+		if ref != null:
+			var v = ref.get("hp")
+			if v != null:
+				hp = float(v)
+			var vm = ref.get("hp_max")
+			if vm != null:
+				hp_max = float(vm)
+			if ref.has_method("morale_ratio"):
+				morale = float(ref.morale_ratio())
+		parts[i] = "%s|%d|%s|%s|%s|%d|%d|%.4f|%.4f|%.4f" % [
+			String(a.get("kind", "")),
+			ref.get_instance_id() if ref != null else 0,
+			String(a.get("name", "")), String(a.get("short", "")),
+			String(a.get("sub", "")), int(a.get("number", 0)),
+			(a.get("units", []) as Array).size(),
+			hp, hp_max, morale]
+	return "\n".join(parts)
 
 
 # ------------------------------------------------------------------

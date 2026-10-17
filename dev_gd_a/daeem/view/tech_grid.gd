@@ -47,6 +47,10 @@ var _line_labels: Array[Label] = []
 ## 上一次喂进来的条目（测试与调试读它；也是点击回调的 id 来源）
 var _entries: Array = []
 
+## ★★ 手机端：按住某一格期间由 hud 置 true —— 忽略「按下」带来的模拟 mouse_entered，
+##    悬停详情只在长按够久之后由 hud 调 `hover()` 弹出（与 view/command_card.gd 同一条）。
+var touch_suppress_hover: bool = false
+
 
 func setup() -> void:
 	name = "TechGrid"
@@ -223,6 +227,8 @@ func _on_cell_pressed(i: int) -> void:
 
 ## 鼠标进入 / 离开第 i 格 —— 只转发序号（内容由 hud 现取，与命令卡同一条约定）
 func _on_cell_mouse_entered(i: int) -> void:
+	if touch_suppress_hover:
+		return                       # 手机端按住期间不弹（长按到点后由 hud 调 hover()）
 	cell_hovered.emit(i)
 
 
@@ -230,13 +236,14 @@ func _on_cell_mouse_exited(i: int) -> void:
 	cell_unhovered.emit(i)
 
 
-## 模拟悬停第 i 格 / 离开它（测试用；与 `press()` 一样走引擎同一条信号）
+## 模拟悬停第 i 格 / 离开它（测试用；与 `press()` 一样走引擎同一条信号）。
+## ★★ 手机端的长按也走这里 —— 所以它**绕开** `touch_suppress_hover` 直接发信号。
 func hover(i: int) -> void:
-	_on_cell_mouse_entered(i)
+	cell_hovered.emit(i)
 
 
 func unhover(i: int) -> void:
-	_on_cell_mouse_exited(i)
+	cell_unhovered.emit(i)
 
 
 # ------------------------------------------------------------------

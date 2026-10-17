@@ -54,6 +54,24 @@ const MAX_VISION := 160.0
 ## DDA 的步数护栏（防止病态数值把一帧卡死；正常一条视线只有几十步）。
 const LOS_GUARD := 4096
 
+## ★★ C# 视野内核（logic/FogKernel.cs）。加载不到（普通版 Godot）时为 null，
+##    自动退回本文件的 GDScript 实现 —— 与 crowd_bridge 的回退是同一条约定。
+const KERNEL_PATH := "res://logic/FogKernel.cs"
+var kernel = null
+## 内核当前按哪张地图建的表（map 对象 identity）；换了就重建
+var _kernel_map_ref = null
+
+
+func _init() -> void:
+	var s = load(KERNEL_PATH)
+	if s != null:
+		kernel = s.new()
+
+
+## 走 C# 还是 GDScript（config 的 `fog.backend`；内核不可用时一律回退）
+func _use_csharp(cfg: ConfigRes) -> bool:
+	return kernel != null and cfg != null and String(cfg.fog_backend) == "csharp"
+
 ## ---- 权威状态 ----
 ## ★★ 本帧各**方**的视野掩码："同方代表 id"（`FactionRes.side_of`）→ PackedByteArray
 ## （长度 = cols × rows，非 0 = 有视野）。
@@ -111,6 +129,10 @@ func reset_cache() -> void:
 	_last_contrib = {}
 	_last_faction_count = -1
 	_fresh = false
+	# ★ 内核的扇区缓存按**地形**存：换图 / 地形变了必须一起清（见 `_ensure_kernel_map`）
+	_kernel_map_ref = null
+	if kernel != null:
+		kernel.ResetCache()
 
 
 # ------------------------------------------------------------------
@@ -182,6 +204,20 @@ func update(world) -> void:
 	var cells: int = world.map.cols * world.map.rows
 	_cols = world.map.cols
 
+	# ★★ 数字循环走 C# 内核（`fog.backend = "csharp"`）；加载不到 / 显式配成 gdscript
+	#    时走下面那条老路。两条路的输出**逐位一致**（test_fog 全量断言盯着）。
+	if _use_csharp(world.cfg):
+		_build_sight_csharp(world, cells)
+	else:
+		_build_sight_gdscript(world, cells)
+
+	_prune_sighted(world)
+	_last_contrib = _contrib.duplicate(true)
+	_last_faction_count = world.factions.size()
+
+
+## GDScript 版的掩码构建（与迁移前逐行相同）—— 内核不可用 / 配成 gdscript 时走这里。
+func _build_sight_gdscript(world, cells: int) -> void:
 	for f in world.factions:
 		var fid := String(f)
 		# ★★ 掩码按**同一方**存（键 = `side_of`）—— 合作的两个玩家落进同一份，
@@ -205,9 +241,68 @@ func update(world) -> void:
 						mask[i] = 1
 		sight[side] = mask
 
-	_prune_sighted(world)
-	_last_contrib = _contrib.duplicate(true)
-	_last_faction_count = world.factions.size()
+
+## C# 版的掩码构建：**一次调用**算完所有方（接口按批，不做「每格一次跨语言调用」）。
+##
+## ★ 输入是三条 Packed 数组（方下标 / 格下标 / 半径），输出是
+##   `sideCount × cols × rows` 的扁平掩码，这里再按方切片。
+## ★ 扇区缓存与山脉视线都在内核里；本文件只负责「谁是贡献格」。
+func _build_sight_csharp(world, cells: int) -> void:
+	_ensure_kernel_map(world)
+	# 输出的「方」与旧实现完全同序：遍历 world.factions，按 side_of 去重。
+	var sides_list: Array = []
+	var seen_sides: Dictionary = {}
+	for f in world.factions:
+		var side := FactionRes.side_of(String(f))
+		if seen_sides.has(side):
+			continue
+		seen_sides[side] = true
+		sides_list.append(side)
+	if sides_list.is_empty():
+		return
+
+	# 压成三条数组（只统计这些方的贡献格）
+	var total := 0
+	for side in sides_list:
+		var table: Variant = _contrib.get(side, null)
+		if typeof(table) == TYPE_DICTIONARY:
+			total += (table as Dictionary).size()
+	var sides := PackedInt32Array()
+	var tiles := PackedInt32Array()
+	var radii := PackedFloat64Array()
+	sides.resize(total)
+	tiles.resize(total)
+	radii.resize(total)
+	var k := 0
+	for si in sides_list.size():
+		var table2: Variant = _contrib.get(sides_list[si], null)
+		if typeof(table2) != TYPE_DICTIONARY:
+			continue
+		for idx in (table2 as Dictionary).keys():
+			sides[k] = si
+			tiles[k] = int(idx)
+			radii[k] = float((table2 as Dictionary)[idx])
+			k += 1
+
+	var flat: PackedByteArray = kernel.BuildSight(sides_list.size(), sides, tiles, radii, total)
+	for si2 in sides_list.size():
+		sight[String(sides_list[si2])] = flat.slice(si2 * cells, (si2 + 1) * cells)
+
+
+## 内核按哪张地图建表（换图 / `reset_cache()` 之后重建一次）。
+func _ensure_kernel_map(world) -> void:
+	if _kernel_map_ref == world.map:
+		return
+	_kernel_map_ref = world.map
+	var cols: int = int(world.map.cols)
+	var rows: int = int(world.map.rows)
+	var mountain := PackedByteArray()
+	mountain.resize(cols * rows)
+	for ty in rows:
+		for tx in cols:
+			if world.map.is_mountain(tx, ty):
+				mountain[ty * cols + tx] = 1
+	kernel.SetupMap(cols, rows, mountain)
 
 
 ## 收集「每一方从哪几格产生视野」：单位 + 建筑各占一格。

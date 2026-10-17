@@ -97,6 +97,44 @@ var _root: Control = null
 ## ★ 它不是被删掉的日志栏：只显示**最近一次**被拒的一句话，不保留历史。
 var _notice_timer: float = 0.0
 
+## ★★ 手机端 HUD 刷新节流（桌面 / 无头恒为 0 = 每帧；见 config 的 ui._mobile_refresh_comment）。
+##   `refresh()` 每帧要全表扫一遍单位 + 重拼详情文案，手机上不必 60Hz。
+var _refresh_interval: float = 0.0
+var _refresh_accum: float = 0.0
+## ★★ 手机端 4 槽轮转（见 `_mobile_tick()`）：把「资源条 / 详细信息 / 部队列表」
+##   拆到不同节拍上，避免同一帧叠出几毫秒的尖峰。
+var _mobile_phase: int = 0
+var _mobile_force_full: bool = false
+var _mobile_ui_stagger: bool = false
+## 本次刷新内的「选中部队」缓存：`_tab_plan()` 与详情分支共用一次扫描。
+var _tick_troops: Array = []
+var _tick_cache_on: bool = false
+## 诊断计数：`_compute_selected_troops()` 被调了几次（测试断言「一次刷新只扫一次」）。
+var troops_scans: int = 0
+
+## ★ 手机端性能读数（见 `_build_perf_readout`）：Label + 刷新计时
+var _perf_label: Label = null
+var _perf_accum: float = 0.0
+## 0.5 秒窗口内的 `_process` 耗时（秒）：和 / 峰值 / 帧数 —— 用来把「浮动很大」量化成平均/峰值
+var _perf_cpu_sum: float = 0.0
+var _perf_cpu_max: float = 0.0
+var _perf_cpu_n: int = 0
+## ★★ 同一窗口内的**真实帧间隔**（`dt` 的和）。与 `Performance.TIME_PROCESS` 不同，
+##   它包含 vsync 等待 —— 是玩家实际感受到的「每帧多少毫秒」。
+##   判读：`fr` ≈ `CPU` ⇒ CPU/GPU 真的算不完；`fr` ≫ `CPU` ⇒ 在等 vsync / 显示。
+var _perf_dt_sum: float = 0.0
+## ★★ 同一窗口内 `dt` 的**最小 / 最大**。平均值会把「周期性的重活」抹平：
+##   如果 max 远大于 min（例如 10ms ~ 33ms），说明不是每帧都慢，而是某些帧被
+##   HUD 刷新 / 小地图 / 迷雾重算 / 地面重烘这类周期性任务顶爆了。
+var _perf_fr_min: float = INF
+var _perf_fr_max: float = 0.0
+## 窗口内 HUD 刷新总耗时（微秒）与三个分项：shell / detail / squad。
+## 它们不在 `_process` 的分段里，是 `rest` 的主要候选之一。
+var _perf_hud_sum: float = 0.0
+var _perf_shell_sum: float = 0.0
+var _perf_detail_sum: float = 0.0
+var _perf_squad_sum: float = 0.0
+
 ## 中文字体（HUD 的 theme 里那一份）——转给需要自己 draw_string 的子控件
 ## （详细信息左栏的「部队方块 / 将领头像网格」）。主题里没字体时是 null，那边会退回引擎默认字体。
 var _font: Font = null
@@ -140,6 +178,21 @@ var _tab_kind: String = ""
 ## 所以 exit 只在**它确实是当前这一格**时才收（见 `_on_hover_out`）。
 var _hover_src: String = ""
 var _hover_index: int = -1
+
+## ★★ 手机端「长按 UI 格 = 悬停详情」的监视状态（见 `handle_touch` / `_tick_long_press`）。
+##   手机上没有鼠标悬停：手指按在命令卡 / 科技格上时**不要**立刻弹详情（那会每点一下闪一下），
+##   而是**按住 `touch.long_press_sec` 秒**之后才弹。松手时收起，并吞掉这一次「激活」
+##   （长按只是为了看说明，不该顺手把那一格点下去）。
+##   · `_lp_src` / `_lp_index`：长按的是哪一格（"card" / "tech"）；
+##   · `_lp_active`：正在按住；`_lp_press_ms` / `_lp_press_pos`：按下时间 / 落点；
+##   · `_lp_shown`：详情已经弹出（松手据此收起）；`_lp_swallow`：下一次激活要丢掉。
+var _lp_src: String = ""
+var _lp_index: int = -1
+var _lp_active: bool = false
+var _lp_press_ms: int = 0
+var _lp_press_pos: Vector2 = Vector2.ZERO
+var _lp_shown: bool = false
+var _lp_swallow: bool = false
 ## ★★ 上一次画命令卡时算出来的**内容签名**（见 `_card_sig()`）。
 ## `refresh()` 每帧比一次：签名变了就重建 —— 页签组合没变、但「选中的东西」或
 ## 「选中对象的权威状态」变了，靠的就是这一条（手玩报的「改选箭塔还写着升级城墙」）。
@@ -164,6 +217,13 @@ func setup(p_cfg: ConfigRes, p_world, p_input, theme: Theme, p_camera_rig = null
 	palette = p_palette
 	_font = theme.default_font if theme != null else null
 
+	# ★★ 手机端：HUD 文本刷新上限（桌面 / 无头恒为 0 = 每帧，行为与原来一致）。
+	_refresh_interval = 0.0
+	_mobile_ui_stagger = false
+	if OS.has_feature("mobile") and cfg != null and cfg.mobile_hud_refresh_hz > 0.0:
+		_refresh_interval = 1.0 / cfg.mobile_hud_refresh_hz
+		_mobile_ui_stagger = bool(cfg.mobile_ui_stagger)
+
 	_root = Control.new()
 	_root.name = "HudRoot"
 	_root.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -173,6 +233,9 @@ func setup(p_cfg: ConfigRes, p_world, p_input, theme: Theme, p_camera_rig = null
 	add_child(_root)
 
 	_build_minimap()
+	# ★ 让小地图的第一次重画错开 HUD 槽位（手机端避免同一帧叠加重活）
+	if minimap != null:
+		minimap.stagger_redraw(0.37)
 	_build_faction_placeholder()
 	# ★ 资源条要在详细信息面板**之前**建：两块在屏幕上上下紧贴，
 	#   先建的那块在下层 —— 万一以后谁把资源条调高了，它压住的是面板上沿而不是反过来。
@@ -189,13 +252,214 @@ func setup(p_cfg: ConfigRes, p_world, p_input, theme: Theme, p_camera_rig = null
 	#   比设置按钮还晚挂上树 —— 顺序即层次，省得以后再调 z_index。
 	_build_settings_menu()
 
+	# ★★ 最后建（压在最上层）：手机端性能读数（FPS · 内核 · 单位数）。
+	_build_perf_readout()
+
 	_rebuild_card()
 	refresh()
 
+	# ★★ 手机端：部队列表改由 HUD 的 4 槽调度器驱动，关掉它自己的 `_process`
+	#   （否则它和 HUD 是各自独立的计时器，很容易叠在同一帧）。
+	#   桌面 / 测试保持它自己的每帧刷新。
+	if _refresh_interval > 0.0:
+		if _mobile_ui_stagger and squad_panel != null:
+			squad_panel.set_process(false)
+		# 选中变化（点选 / 框选 / 取消）→ 下一个节拍立即全刷，不等槽位轮转
+		if input_ctrl != null and not input_ctrl.local_ui_changed.is_connected(_on_mobile_ui_changed):
+			input_ctrl.local_ui_changed.connect(_on_mobile_ui_changed)
+
+
+## 选中 / 本地 UI 变化：下个节拍走一次完整刷新（shell + detail + squad）。
+func _on_mobile_ui_changed() -> void:
+	_mobile_force_full = true
+
 
 func _process(dt: float) -> void:
-	refresh()
+	# ★★ 手机端：HUD 文本按上限频率刷（桌面 / 测试每帧；见 config 的 ui._mobile_refresh_comment）。
+	var do_refresh := false
+	if _refresh_interval <= 0.0:
+		do_refresh = true
+	else:
+		_refresh_accum += dt
+		if _refresh_accum >= _refresh_interval:
+			_refresh_accum = 0.0
+			do_refresh = true
+	if do_refresh:
+		# ★★ 手机端 4 槽轮转；桌面 / 测试 / 回退开关都走一次全刷。
+		#   计时在 `refresh()` / `_timed_*()` 内部做（只在读数开着时付时钟调用）。
+		if _refresh_interval > 0.0 and _mobile_ui_stagger:
+			_mobile_tick()
+		else:
+			refresh()
 	_tick_notice(dt)
+	_tick_long_press()
+	# ★ 手机端性能读数：约 2Hz 刷新（见 `_build_perf_readout`）。
+	if _perf_label != null:
+		_perf_accum += dt
+		# ★ 每帧采样 `_process` 耗时，攒 0.5 秒再算平均/峰值 —— 「浮动很大」要看这两个数。
+		var cpu_sec: float = Performance.get_monitor(Performance.TIME_PROCESS)
+		_perf_cpu_sum += cpu_sec
+		_perf_cpu_max = maxf(_perf_cpu_max, cpu_sec)
+		_perf_dt_sum += dt
+		_perf_fr_min = minf(_perf_fr_min, dt)
+		_perf_fr_max = maxf(_perf_fr_max, dt)
+		_perf_cpu_n += 1
+		if _perf_accum >= 0.5:
+			_perf_accum = 0.0
+			_update_perf_readout()
+			_reset_profiles()
+			_perf_cpu_sum = 0.0
+			_perf_cpu_max = 0.0
+			_perf_dt_sum = 0.0
+			_perf_fr_min = INF
+			_perf_fr_max = 0.0
+			_perf_hud_sum = 0.0
+			_perf_shell_sum = 0.0
+			_perf_detail_sum = 0.0
+			_perf_squad_sum = 0.0
+			_perf_cpu_n = 0
+
+
+## ★★ 手机端性能读数：左上角一行小字 `FPS 32 · C# · 单位 214`。
+##
+## 存在理由：**真机帧率无头测不出来**，靠这一行把「到底多少 FPS」「C# 群编内核有没有
+## 打进导出包（没有就会退化成 GDScript O(N²)）」直接暴露出来，下一轮不用再猜。
+## ⚠️ 只在手机显示（`OS.has_feature("mobile")`）且 `ui.show_perf` 为真；
+##    桌面 / 无头 / 测试都不会创建它（不改变任何现有几何与断言）。
+func _build_perf_readout() -> void:
+	if cfg == null or not cfg.show_perf:
+		return
+	if not OS.has_feature("mobile"):
+		return
+	_perf_label = Label.new()
+	_perf_label.name = "PerfReadout"
+	_perf_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# ★ 放在**偏右**的顶部：左上角被左侧部队列表 / 将领 UI 挡住，读数会看不清
+	_perf_label.position = Vector2(620.0, 2.0)
+	# ★ 第 2 行要放「分辨率 / 刷新率 / vsync / 真实帧间隔 / CPU / DC」，第 4 行是逻辑分段
+	_perf_label.size = Vector2(1240.0, 84.0)
+	_perf_label.add_theme_font_size_override("font_size", UiStyleRes.FS_SMALL)
+	_perf_label.add_theme_color_override("font_color", UiStyleRes.text())
+	_perf_label.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0, 0.9))
+	_perf_label.add_theme_constant_override("outline_size", 3)
+	_root.add_child(_perf_label)
+	# ★★ 打开分段计时（逻辑层与场景层各有一套 `profile_us`）——手机上才开，桌面/无头不付这个开销。
+	if world != null:
+		world.profile_on = true
+	var gs := get_parent()
+	if gs != null and gs.has_method("perf_enable"):
+		gs.perf_enable()
+	_update_perf_readout()
+
+
+## 把两套分段计时（逻辑 `world.profile_us` + 场景 `game.profile_us`）清零，准备下一个 0.5 秒窗口。
+func _reset_profiles() -> void:
+	if world != null:
+		world.profile_reset()
+	var gs := get_parent()
+	if gs != null and gs.has_method("profile_reset"):
+		gs.profile_reset()
+
+
+## 三行读数（真机排查用）：
+##   `FPS 25 · mobile · release · C# · 66u · map 27x22`
+##   `2560x1080 · CPU 45.0/48.0ms · DC 150`
+##   `tk 30.0 (u 20.0 fg 6.0 z 2.0) | vu 0.8 vb 0.2 | rest 12.0`
+##
+## ★ 怎么读：
+##   · 第 2 行 CPU 平均 ≈ `1000/FPS` ⇒ **CPU 卡**；CPU 很小而 FPS 低 ⇒ **渲染 / GPU 卡**；
+##     平均小、峰值大 ⇒ 周期性尖峰。
+##   · 第 3 行把 CPU 拆开（全部是 **ms/帧**）：`tk` = `world.tick` 总耗时；
+##     括号里是它的子项：`u` 单位循环 / `fg` 迷雾 / `z` 区划；
+##     `vu` / `vb` = 单位 / 建筑视图同步；`rest` = CPU 减去场景各段后剩下的部分
+##     （HUD、部队列表、小地图、按钮动效都在这一栏）。**哪项接近 CPU 总量，就是它在吃时间。**
+func _update_perf_readout() -> void:
+	if _perf_label == null or world == null:
+		return
+	# ★★ 这一栏只说**群编内核**（碰撞 / 索敌 / 距离场）用的是哪种实现，
+	#   不代表整个工程的语言 —— 工程主体是 GDScript（logic/ + view/），
+	#   C# 只有 logic/crowd/ 那两个文件。写成 `crowd C#` 免得被误读成「项目是 C#」。
+	var kernel := "crowd C#"
+	var bad := false
+	if world.crowd != null and not world.crowd.available():
+		kernel = "crowd GD(O(N^2))"
+		bad = true
+	# 配置里的渲染方式（本工程主设置 = mobile）。
+	var method := String(ProjectSettings.get_setting("rendering/renderer/rendering_method", "?"))
+	if method != "mobile":
+		bad = true
+	var n: float = float(maxi(1, _perf_cpu_n))
+	var cpu_avg: float = (_perf_cpu_sum / n) * 1000.0
+	var cpu_max: float = _perf_cpu_max * 1000.0
+	# ★★ 真实帧间隔（含 vsync 等待）。它才是「玩家感受到的每帧毫秒数」。
+	var frame_ms: float = (_perf_dt_sum / n) * 1000.0
+	var dc: int = int(Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME))
+	var win: Vector2i = DisplayServer.window_get_size()
+	# 屏幕刷新率（拿不到就是 0）。判 vsync 卡档时看它：90Hz → 45/30，120Hz → 60/40。
+	var hz: float = DisplayServer.screen_get_refresh_rate()
+	var vs := "on" if cfg != null and cfg.mobile_vsync else "off"
+	var build := "debug" if OS.is_debug_build() else "release"
+	var cols: int = 0
+	var rows: int = 0
+	if world.map != null:
+		cols = int(world.map.cols)
+		rows = int(world.map.rows)
+	# 逻辑层（`world.tick` 内部的分段）
+	var lp: Dictionary = world.profile_us
+	var ms_u: float = float(lp.get("units", 0)) / 1000.0 / n
+	var ms_fog: float = float(lp.get("fog", 0)) / 1000.0 / n
+	var ms_z: float = float(lp.get("zones", 0)) / 1000.0 / n
+	# 场景层（`game_scene3d._process` 的分段；HUD 的父节点就是它）
+	var sp: Dictionary = {}
+	var gs := get_parent()
+	if gs != null and gs.has_method("profile_snapshot"):
+		sp = gs.profile_snapshot()
+	var ms_in: float = float(sp.get("input", 0)) / 1000.0 / n
+	var ms_tick: float = float(sp.get("tick", 0)) / 1000.0 / n
+	var ms_vu: float = float(sp.get("view/units", 0)) / 1000.0 / n
+	var ms_vb: float = float(sp.get("view/buildings", 0)) / 1000.0 / n
+	var ms_vo: float = float(sp.get("view/other", 0)) / 1000.0 / n
+	var ms_ov: float = float(sp.get("view/overlay", 0)) / 1000.0 / n
+	var ms_gb: float = float(sp.get("ground.rebake", 0)) / 1000.0 / n
+	var ms_cam: float = float(sp.get("camera", 0)) / 1000.0 / n
+	# ★★ `tk` 之外还有这些（都在 world.tick 里，但不在上面那三个子项里）
+	var ms_ec: float = float(lp.get("economy", 0)) / 1000.0 / n
+	var ms_rc: float = float(lp.get("recruit", 0)) / 1000.0 / n
+	var ms_tw: float = float(lp.get("towers", 0)) / 1000.0 / n
+	var ms_ai: float = float(lp.get("ai", 0)) / 1000.0 / n
+	var ms_col: float = float(lp.get("collision", 0)) / 1000.0 / n
+	var ms_co: float = float(lp.get("collect", 0)) / 1000.0 / n
+	var ms_ob: float = float(lp.get("objective", 0)) / 1000.0 / n
+	# ★★ HUD 刷新与两个自绘层的**实际 `_draw` 时间**（它们不在 `_process` 的分段里，
+	#    正是 `rest` 的主要候选）。`draw/*` 是 overlay / minimap 在 `_draw` 里自己累加的。
+	var ms_hud: float = _perf_hud_sum / 1000.0 / n
+	var ms_hs: float = _perf_shell_sum / 1000.0 / n
+	var ms_hd: float = _perf_detail_sum / 1000.0 / n
+	var ms_sq: float = _perf_squad_sum / 1000.0 / n
+	var ms_dov: float = float(lp.get("draw/overlay", 0)) / 1000.0 / n
+	var ms_dmm: float = float(lp.get("draw/minimap", 0)) / 1000.0 / n
+	var scene_total: float = ms_in + ms_tick + ms_vu + ms_vb + ms_vo + ms_ov + ms_gb + ms_cam
+	# ★★ `rest` 必须按**真实帧间隔**算，不能按 `proc`：
+	#    `Performance.TIME_PROCESS` 在手机上会包含 vsync 等待，实测 `proc 45ms / fr 24.4ms`，
+	#    拿它减分段会得出一笔根本不存在的 30ms。用 `fr` 才是「这一帧还剩多少没被分段覆盖」。
+	# ★ 再把 hud / 两个自绘层的 `_draw` 也扣掉 —— 剩下的才是**引擎 / GPU / 其它 UI**。
+	var rest: float = maxf(0.0, frame_ms - scene_total - ms_hud - ms_dov - ms_dmm)
+	# 刚建好还没采过样时 `_perf_fr_min` 是 INF —— 别把 "inf" 打到屏幕上
+	var fr_min_ms: float = _perf_fr_min * 1000.0 if _perf_fr_min != INF else 0.0
+	var fr_max_ms: float = _perf_fr_max * 1000.0
+	_perf_label.text = (
+		"FPS %d · %s · %s · %s · %du · map %dx%d\n" +
+		"%dx%d · %dHz · vs %s · fr %.1f (%.1f~%.1f)ms · proc %.1f/%.1fms · DC %d\n" +
+		"tk %.1f (u %.1f fg %.1f z %.1f) | vu %.1f vb %.1f | rest %.1f\n" +
+		"ec %.1f rc %.1f tw %.1f ai %.1f | col %.1f co %.1f ob %.1f | hs %.1f hd %.1f sq %.1f dov %.1f dmm %.1f | cm %.1f rb %.1f") % [
+		int(Engine.get_frames_per_second()), method, build, kernel, world.units.size(), cols, rows,
+		win.x, win.y, int(round(hz)), vs, frame_ms, fr_min_ms, fr_max_ms,
+		cpu_avg, cpu_max, dc,
+		ms_tick, ms_u, ms_fog, ms_z, ms_vu, ms_vb, rest,
+		ms_ec, ms_rc, ms_tw, ms_ai, ms_col, ms_co, ms_ob,
+		ms_hs, ms_hd, ms_sq, ms_dov, ms_dmm, ms_cam, ms_gb]
+	_perf_label.add_theme_color_override("font_color",
+		UiStyleRes.warn() if bad else UiStyleRes.text())
 
 
 # ------------------------------------------------------------------
@@ -870,6 +1134,111 @@ func _dismiss_hover() -> void:
 		hover_tip.clear()
 
 
+# ------------------------------------------------------------------
+# ★★ 手机端：长按 UI 格 = 显示悬停详情（见 `_lp_*` 那组字段）
+#
+#   手机没有「悬停」，所以要一个替身：按住某一格够久就弹详情，松手收起。
+#   短按仍然是正常的激活（点下去 / 下命令）——两条路靠时间分开。
+#   ⚠️ 手指按下的那一刻，emulate_mouse_from_touch 会让这一格**立刻**收到 mouse_entered；
+#      所以这里在按下时给 command_card / tech_grid 打一个 `touch_suppress_hover`，
+#      把「立刻弹」挡掉，等长按计时到了再自己调 `hover()`。
+# ------------------------------------------------------------------
+
+## ★★ 屏幕某点是不是落在 HUD 的可交互控件上（给 touch_controller 判「手势起点在不在 UI 上」）。
+##
+## ★ 与 `blocks_edge_scroll` 的区别：这里**不带**「屏幕最外圈永远放行」那条例外 ——
+##   手势起点落在贴边的命令卡 / 部队列表上就该算 UI（不能从控件上起一次拖视野 / 框选）。
+func point_hits_ui(global_pos: Vector2) -> bool:
+	var vp := view_size()
+	if UiLayoutRes.point_hits_any(UiLayoutRes.interactive_rects(vp), global_pos):
+		return true
+	return UiLayoutRes.point_hits_any(UiLayoutRes.bottom_bar_rects(vp), global_pos)
+
+
+## 接收一个触摸事件（由 game_scene3d 在 `_input` 里转发）。
+func handle_touch(event: InputEventScreenTouch) -> void:
+	if event.pressed:
+		# 新的一次触摸：清掉上一轮遗留的「吞掉激活」，并重置长按监视。
+		_lp_swallow = false
+		_lp_active = false
+		_lp_shown = false
+		_lp_src = ""
+		_lp_index = -1
+		var hit := _cell_at_screen(event.position)
+		if hit.is_empty():
+			return
+		_lp_src = String(hit.get("src", ""))
+		_lp_index = int(hit.get("index", -1))
+		_lp_active = true
+		_lp_press_ms = Time.get_ticks_msec()
+		_lp_press_pos = event.position
+		# 挡住「按下的模拟鼠标立刻弹详情」，并在按住期间先把上一块的详情收掉。
+		_set_touch_suppress(true)
+		_dismiss_hover()
+		return
+	# 抬起
+	var was_shown: bool = _lp_shown
+	_set_touch_suppress(false)
+	_lp_active = false
+	_lp_shown = false
+	if was_shown:
+		_dismiss_hover()
+		# ★ 长按只是看说明 —— 松手时随之而来的那次「激活」要丢掉（下一次按下会清掉这个记号）。
+		_lp_swallow = true
+
+
+## 手指在 UI 上滑动：动得够远就取消这次长按（那是想拖动 / 划走，不是想看详情）。
+func handle_touch_drag(event: InputEventScreenDrag) -> void:
+	if not _lp_active or _lp_shown:
+		return
+	if event.position.distance_to(_lp_press_pos) > cfg.touch_pan_min_px:
+		_lp_active = false
+		_set_touch_suppress(false)
+
+
+## 每帧推进长按计时（在 `_process` 里调）。
+func _tick_long_press() -> void:
+	if not _lp_active or _lp_shown or cfg == null:
+		return
+	if Time.get_ticks_msec() - _lp_press_ms < int(cfg.touch_long_press_sec * 1000.0):
+		return
+	_lp_shown = true
+	if _lp_src == "tech" and tech_grid != null:
+		tech_grid.hover(_lp_index)
+	elif command_card != null:
+		command_card.hover(_lp_index)
+
+
+## 让命令卡 / 科技格「暂时忽略鼠标进入」——手机端按下的那一刻先别弹详情。
+func _set_touch_suppress(on: bool) -> void:
+	if command_card != null:
+		command_card.touch_suppress_hover = on
+	if tech_grid != null:
+		tech_grid.touch_suppress_hover = on
+
+
+## 屏幕点落在哪一格上：`{"src": "card"/"tech", "index": i}`；不在任何格上时返回空字典。
+## ★ 科技页盖在命令卡上，所以在显示时优先判它（与它 `mouse_filter` 的优先级一致）。
+func _cell_at_screen(pos: Vector2) -> Dictionary:
+	if tech_grid != null and tech_grid.visible:
+		var ti := _cell_index_at(tech_grid, pos)
+		if ti >= 0:
+			return {"src": "tech", "index": ti}
+	if command_card != null:
+		var ci := _cell_index_at(command_card, pos)
+		if ci >= 0:
+			return {"src": "card", "index": ci}
+	return {}
+
+
+func _cell_index_at(grid: Control, pos: Vector2) -> int:
+	for i in UiLayoutRes.CARD_SLOTS:
+		var cell: Control = grid.cell_at(i)
+		if cell != null and cell.get_global_rect().has_point(pos):
+			return i
+	return -1
+
+
 ## 悬停到的那一格数据。命令卡与科技九格是**两份不同形状**的 entries，所以按来源取。
 func _hover_entry(src: String, index: int) -> Dictionary:
 	if src == "tech":
@@ -1373,6 +1742,10 @@ func _order_hint(mode: String) -> String:
 ##   而逻辑层那条才是权威 —— 万一以后加上「科技有前置条件」，
 ##   本地那句猜错了也只会多一句提示，不会挡住命令。
 func _on_tech_cell_activated(id: String) -> void:
+	# ★ 手机端「长按看详情」松手带来的那一下激活要丢掉（见 `_lp_swallow` 的说明）。
+	if _lp_swallow:
+		_lp_swallow = false
+		return
 	if input_ctrl == null or world == null or id == "":
 		return
 	var on: bool = not world.is_tech_active(id)
@@ -1408,6 +1781,10 @@ func _refresh_hover() -> void:
 
 ## 命令卡 → 动作。★ 这里只调输入层的接口，自己绝不碰逻辑状态。
 func _on_card_entry(entry: Dictionary) -> void:
+	# ★ 手机端「长按看详情」松手带来的那一下激活要丢掉（见 `_lp_swallow` 的说明）。
+	if _lp_swallow:
+		_lp_swallow = false
+		return
 	if input_ctrl == null:
 		return
 	match String(entry.get("type", "")):
@@ -1994,24 +2371,124 @@ func view_size() -> Vector2:
 # 每帧刷新文本
 # ------------------------------------------------------------------
 
+## 全量刷新（桌面 / 无头 / 测试的路径；手机端回退开关也走它）。
+##
+## ★★ 手机端正常走 `_mobile_tick()` 的 4 槽轮转，不在这里一次做完。
+##   但无论哪条路，**桌面 / 测试的 `refresh()` 语义完全不变**：
+##   资源条 + 页签 + 命令卡 + 科技格 + 详细信息，一次全刷。
 func refresh() -> void:
 	if world == null or input_ctrl == null or detail_panel == null:
 		return
-	# ★ 资源条先刷（它只读 `world.resources`，与选中了什么无关；每帧一次）
+	_begin_tick_cache()
+	_timed_shell()
+	_timed_detail()
+	_end_tick_cache()
+
+
+## ★★ 手机端 4 槽轮转（节拍 = `ui.mobile_hud_refresh_hz`，默认 20Hz）：
+##   槽 0 shell → 槽 1 detail → 槽 2 shell + squad → 槽 3 detail。
+##   ⇒ shell / detail 各 10Hz，squad 5Hz；每个节拍只承担一块重活，
+##   避免「HUD + 部队列表」在同一帧叠出几毫秒的尖峰。
+##
+## ★ 选中变化（`input_ctrl.local_ui_changed`）会把 `_mobile_force_full` 置真，
+##   下一个节拍直接走完整 `refresh()` + squad，忽略槽位。
+func _mobile_tick() -> void:
+	if _mobile_force_full:
+		_mobile_force_full = false
+		refresh()
+		_timed_squad()
+		return
+	_begin_tick_cache()
+	match _mobile_phase:
+		0:
+			_timed_shell()
+		1:
+			_timed_detail()
+		2:
+			_timed_shell()
+			_timed_squad()
+		_:
+			_timed_detail()
+	_end_tick_cache()
+	_mobile_phase = (_mobile_phase + 1) % 4
+
+
+# --- 计时包装：只在手机读数开着时付时钟调用 ---------------------------------
+
+func _timed_shell() -> void:
+	if _perf_label == null:
+		_refresh_shell()
+		return
+	var t0: int = Time.get_ticks_usec()
+	_refresh_shell()
+	_add_perf_usec("shell", Time.get_ticks_usec() - t0)
+
+
+func _timed_detail() -> void:
+	if _perf_label == null:
+		_refresh_detail()
+		return
+	var t0: int = Time.get_ticks_usec()
+	_refresh_detail()
+	_add_perf_usec("detail", Time.get_ticks_usec() - t0)
+
+
+func _timed_squad() -> void:
+	if squad_panel == null:
+		return
+	if _perf_label == null:
+		squad_panel.refresh()
+		return
+	var t0: int = Time.get_ticks_usec()
+	squad_panel.refresh()
+	_add_perf_usec("squad", Time.get_ticks_usec() - t0)
+
+
+func _add_perf_usec(part: String, usec: int) -> void:
+	if usec <= 0:
+		return
+	_perf_hud_sum += float(usec)
+	match part:
+		"shell":
+			_perf_shell_sum += float(usec)
+		"detail":
+			_perf_detail_sum += float(usec)
+		"squad":
+			_perf_squad_sum += float(usec)
+
+
+# --- 一次刷新内共享的「选中部队」扫描（去掉重复的 O(单位数)） ----------------
+
+func _begin_tick_cache() -> void:
+	_tick_troops = _compute_selected_troops(input_ctrl.selected_units)
+	_tick_cache_on = true
+
+
+func _end_tick_cache() -> void:
+	_tick_cache_on = false
+
+
+## 资源条 / 页签 / 命令卡 / 科技九格 —— 与「选中了什么」无关或只按签名比。
+func _refresh_shell() -> void:
+	# ★ 资源条先刷（它只读 `world.resources`，与选中了什么无关）
 	_refresh_resource_bar()
 	# ★★ 页签先按「现在选中了什么」推上去（选中部队 = 操作/单位；选中区划中心 = 招募；
 	#    选中大本营 = 科技；选中普通建筑 = 一颗都没有；什么都没选中 = 建筑 + 科技）。
 	#    命令卡的内容跟着页签走（page_tabs 发 page_changed → _rebuild_card）。
 	_sync_tabs()
-	# ★★ 命令卡的内容**每帧按签名比一次**（见 `_card_sig()`）：页签组合没变、但
+	# ★★ 命令卡的内容按签名比一次（见 `_card_sig()`）：页签组合没变、但
 	#   「选中的东西换了」（城墙 → 箭塔）或者「选中对象的权威状态变了」（开始升级 /
 	#   取消升级 / 区划特化到哪一步）时，那一格必须跟着重画 ——
 	#   这是手玩报的「改选箭塔，右下角还写着升级城墙」那个 bug 的修法。
 	_refresh_card_if_changed()
-	# ★ 科技九格每帧刷一次（内容 / 高亮都取决于权威的启用状态，见 _refresh_tech_grid）：
+	# ★ 科技九格（内容 / 高亮都取决于权威的启用状态）：
 	#   命令卡那条路只在「签名变了」时跑（`_refresh_card_if_changed`），跟不上
 	#   「玩家点了一格科技」这种变化。
 	_refresh_tech_grid(page_tabs != null and String(page_tabs.page()) == PageTabsRes.PAGE_TECH)
+
+
+## 详细信息面板：敌人 → 区划 → 建筑 → 部队 四种互斥选中，一次只走一支。
+func _refresh_detail() -> void:
 	# ★ 详细信息是**左右两栏**（第三轮改版，见 view/detail_panel.gd 的文件头）：
 	#   左栏 = 当前展开的那支部队（上半）+ 选中部队的将领头像网格（下半）
 	#   右栏 = 选中单位的头像 / 名称 / buff / 基础数值（★ 数值那块的「详细信息」标题已删）
@@ -2092,6 +2569,15 @@ func refresh() -> void:
 ##   己方在场、`is_team_leader`、按 `world.units` 的顺序、最多 SQUAD_SLOTS 支。
 ##   不一致的话网格上写着「部队2」、左边高亮的却是第 3 行 —— 玩家没法把两边对上。
 func _selected_troops(units: Array) -> Array:
+	# ★ 一次刷新内只扫一遍：`_tab_plan()` 与详情分支共用 `_begin_tick_cache()` 的结果。
+	if _tick_cache_on:
+		return _tick_troops
+	return _compute_selected_troops(units)
+
+
+## `_selected_troops()` 的实际实现（每次调用都会扫一遍 `world.units`）。
+func _compute_selected_troops(units: Array) -> Array:
+	troops_scans += 1
 	var out: Array = []
 	if world == null:
 		return out

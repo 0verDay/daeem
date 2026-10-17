@@ -95,6 +95,8 @@ var _roster: Control
 var _grid: Control
 var _notice: Label
 var _queue: Control
+## 右栏整块（手机端自适应：它的实时宽度决定内部几块怎么摆，见 `_layout_right`）
+var _right: Control
 
 # 右栏
 var _unit_avatar: Control
@@ -104,6 +106,13 @@ var _detail_box: Panel
 ## 正文**左栏**（单栏文本也用它）与**右栏**（只有两栏文本才显示）
 var _body: Label
 var _body_right: Label
+## ★★ 上一次 `set_detail()` 的文本与正文高度。手机端 HUD 以 10Hz 重复喂同一段文案，
+##   文本和可用高度都没变时直接返回 —— 不 split、不 `_fit_body_text()`（字体度量 + 主题写入）。
+var _last_detail_valid: bool = false
+var _last_detail_text: String = ""
+var _last_detail_size: Vector2 = Vector2.ZERO
+## 诊断计数（测试读）：`_fit_body_text()` 真正执行的次数。
+var fit_calls: int = 0
 
 # 左栏上半「未选中」时的兜底文字
 var _empty_label: Label
@@ -116,7 +125,9 @@ func setup(world = null, font: Font = null) -> void:
 	var s := UiStyleRes.panel_style()
 	s.set_content_margin_all(UiLayoutRes.DETAIL_PAD)
 	add_theme_stylebox_override("panel", s)
-	UiLayoutRes.apply_rect(self, UiLayoutRes.DETAIL_RECT, false, true)
+	# ★★ 手机端自适应：左缘钉 400、右缘钉到阵营列左缘 —— 窗口宽于 16:9 时自己填满中间那条缝
+	#    （原来 `apply_rect(self, DETAIL_RECT, false, true)` 把右缘写死在 1430，与贴右的阵营列之间会裂开）。
+	UiLayoutRes.apply_stretched_detail(self)
 
 	# 整块面板的根：两行 —— 上面是左右两栏，下面是提示行（红字，出现时才占位）
 	var root_box := VBoxContainer.new()
@@ -186,8 +197,11 @@ func _build_left(cols: HBoxContainer, world, font: Font) -> void:
 func _build_right(cols: HBoxContainer, world) -> void:
 	var right := Control.new()
 	right.name = "DetailRight"
+	_right = right
 	right.custom_minimum_size = Vector2(UiLayoutRes.DETAIL_RIGHT_W, 0.0)
-	right.size_flags_horizontal = Control.SIZE_FILL
+	# ★★ 手机端自适应：右栏接住**多出来的全部宽度**（左栏那 3×3 是按参考图量死的、不跟着长）。
+	#    容器里左栏 SIZE_FILL（= 350 固定）、右栏 SIZE_EXPAND_FILL ⇒ 拉伸后的加宽都进右栏。
+	right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	right.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	right.clip_contents = true
 	right.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -292,6 +306,38 @@ func _build_right(cols: HBoxContainer, world) -> void:
 	_queue.cell_activated.connect(_on_queue_cell_activated)
 
 	_build_notice(right)
+
+	# ★★ 手机端自适应：按当前右栏宽度摆好「钉右 / 跟宽」的那几块，
+	#    并在容器布局之后（窗口变宽 → 右栏变宽）再摆一次。
+	_layout_right(UiLayoutRes.DETAIL_RIGHT_W)
+	right.resized.connect(_on_right_resized.bind(right))
+
+
+## ★★ 右栏里「钉右 / 跟宽」的子控件按**当前右栏宽度**重摆：
+##   · 数值框 / 提示行：宽 = 右栏宽 − QUEUE_MARGIN；
+##   · 招募队列：x = 右栏宽 − QUEUE_MARGIN − QUEUE_W（右缘不动）；
+##   · 单位名称：可写宽缩到招募队列左缘之前（留 8px）；
+##   · 正文**右栏** Label：宽跟着数值框。
+## ★ 头像 / buff / 名称起点都是左对齐的，不随宽度动 —— 所以不在这一函数里。
+## ⚠️ `right_w == DETAIL_RIGHT_W`（1920 基准）时，结果与原来的写死常量逐位一致。
+func _layout_right(right_w: float) -> void:
+	# ★ 兜底：容器布局途中可能给一个 0 / 很小的宽度（此时算出来是负数）。
+	#   夹到基准宽（645）—— 比「负尺寸」稳，也不会让某一块突然翻到左边去。
+	right_w = maxf(right_w, UiLayoutRes.DETAIL_RIGHT_W)
+	if _detail_box != null:
+		_detail_box.size.x = UiLayoutRes.detail_body_w(right_w)
+	if _body_right != null:
+		_body_right.size.x = UiLayoutRes.detail_body_col2_w(right_w)
+	if _queue != null:
+		_queue.position.x = UiLayoutRes.detail_queue_x(right_w)
+	if _unit_name != null:
+		_unit_name.size.x = UiLayoutRes.detail_name_w(right_w)
+	if _notice != null:
+		_notice.size.x = UiLayoutRes.detail_body_w(right_w)
+
+
+func _on_right_resized(right: Control) -> void:
+	_layout_right(right.size.x)
 
 
 ## 造一个正文 Label（左栏 / 右栏共用同一套版式），并按矩形摆好。
@@ -401,7 +447,7 @@ func grid_mode() -> String:
 
 ## 右栏：选中单位的**名称**（空串 = 没有选中单位 → 数值框里只剩「未选中」/空）
 func set_unit_name(text: String) -> void:
-	if _unit_name != null:
+	if _unit_name != null and _unit_name.text != text:
 		_unit_name.text = text
 
 
@@ -422,6 +468,14 @@ func set_unit_name(text: String) -> void:
 func set_detail(text: String) -> void:
 	if _body == null:
 		return
+	# ★★ 同一段文案 + 同样的可用高度 ⇒ 什么都不用做。
+	#    HUD 每 100ms 会重复喂同一段文本；不拦的话每次都要 split + 反复写字号/行距主题覆盖，
+	#    而 `add_theme_*_override` 会让 Label 重新排版 —— 手机上这是实打实的尖峰。
+	if _last_detail_valid and text == _last_detail_text and _body.size == _last_detail_size:
+		return
+	_last_detail_valid = true
+	_last_detail_text = text
+	_last_detail_size = _body.size
 	var rows: PackedStringArray = text.split("\n")
 	var has_columns := text.contains("\t")
 	if not has_columns:
@@ -474,6 +528,7 @@ const BODY_LS_MIN := -6.0
 func _fit_body_text(l: Label) -> void:
 	if l == null or l.text == "":
 		return
+	fit_calls += 1
 	var f: Font = l.get_theme_default_font()
 	if f == null:
 		return
@@ -638,6 +693,8 @@ func _draw_centered(f: Font, text: String, r: Rect2, color: Color, size: int) ->
 
 
 func set_unit_avatar_text(text: String) -> void:
+	if _avatar_text == text:
+		return
 	_avatar_text = text
 	if _unit_avatar != null:
 		_unit_avatar.queue_redraw()
@@ -645,7 +702,10 @@ func set_unit_avatar_text(text: String) -> void:
 
 ## 右栏头像底下那条**血量条**：`show=false`（区划 / 没选中）→ 不画。
 func set_unit_avatar_hp(ratio: float, show: bool) -> void:
-	_avatar_hp_ratio = clampf(ratio, 0.0, 1.0)
+	var r := clampf(ratio, 0.0, 1.0)
+	if _avatar_hp_visible == show and is_equal_approx(_avatar_hp_ratio, r):
+		return
+	_avatar_hp_ratio = r
 	_avatar_hp_visible = show
 	if _unit_avatar != null:
 		_unit_avatar.queue_redraw()
@@ -653,7 +713,10 @@ func set_unit_avatar_hp(ratio: float, show: bool) -> void:
 
 ## 右栏头像**背景板**的士气：`show=false`（区划 / 建筑 / 没选中）→ 用素色。
 func set_unit_avatar_morale(ratio: float, show: bool) -> void:
-	_avatar_morale_ratio = clampf(ratio, 0.0, 1.0)
+	var r := clampf(ratio, 0.0, 1.0)
+	if _avatar_morale_visible == show and is_equal_approx(_avatar_morale_ratio, r):
+		return
+	_avatar_morale_ratio = r
 	_avatar_morale_visible = show
 	if _unit_avatar != null:
 		_unit_avatar.queue_redraw()
@@ -733,6 +796,35 @@ func notice_text() -> String:
 
 func buff_count() -> int:
 	return _buffs.size()
+
+
+# ------------------------------------------------------------------
+# 手机端自适应：给测试读「右栏当前摆成什么样」
+# ------------------------------------------------------------------
+
+## 右栏控件（它的实时宽度是自适应的输入）
+func right_column_control() -> Control:
+	return _right
+
+
+## 右栏当前宽度（无头下未布局时是 `custom_minimum_size.x`）
+func right_column_width() -> float:
+	return _right.size.x if _right != null else 0.0
+
+
+## 数值框（正文背景板）当前尺寸
+func detail_box_size() -> Vector2:
+	return _detail_box.size if _detail_box != null else Vector2.ZERO
+
+
+## 招募队列控件当前的 x（右缘 = 面板右缘 − QUEUE_MARGIN）
+func queue_position_x() -> float:
+	return _queue.position.x if _queue != null else 0.0
+
+
+## 单位名称 Label 当前可写宽
+func unit_name_width() -> float:
+	return _unit_name.size.x if _unit_name != null else 0.0
 
 
 ## 日志栏是否还在（按需求它必须**不在**：这条断言防止有人顺手加回来）

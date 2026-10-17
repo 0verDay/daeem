@@ -32,6 +32,8 @@ func _cases() -> void:
 	_test_prefer_light()
 	_test_char_text()
 	_test_available_off()
+	_test_hide_clears_hover()
+	_test_clear_hover_in()
 
 func _test_attach() -> void:
 	var b := _new_button()
@@ -521,6 +523,37 @@ func _test_available_off() -> void:
 		"★★ `disabled = true` 的按钮照样能填（用来做灰色悬停反馈）")
 
 	b.queue_free()
+
+## ★★ 宿主不可见时悬停作废 —— 修「点按钮进游戏、再返回主菜单，那片金还留着」。
+func _test_hide_clears_hover() -> void:
+	var b := _new_button()
+	var anim := FillButtonRes.attach_text(b)
+	b.mouse_entered.emit()
+	anim.set_fill(1.0)
+	ok(anim._hovered, "（前提）悬停中是「hovered」")
+	# 宿主不可见 = 页面隐藏 / CanvasLayer 收起 → 悬停必须作废
+	b.visible = false
+	ok(not anim._hovered,
+		"★★ 宿主不可见时悬停作废（修「点按钮进游戏、返回主菜单后那片金还留着」）")
+	b.visible = true
+	ok(not anim._hovered,
+		"★★ 重新可见**不会**自己恢复悬停（只有真实 mouse_entered 才会）")
+	b.queue_free()
+
+
+## ★★ 流程层的兜底：递归清掉一棵子树里所有按钮的悬停。
+func _test_clear_hover_in() -> void:
+	var holder := Control.new()
+	root.add_child(holder)
+	var b := Button.new()
+	holder.add_child(b)
+	var anim := FillButtonRes.attach_text(b)
+	b.mouse_entered.emit()
+	ok(anim._hovered, "（前提）悬停中是「hovered」")
+	FillButtonRes.clear_hover_in(holder)
+	ok(not anim._hovered, "★★ clear_hover_in() 递归清掉子树里按钮的悬停（流程层兜底用）")
+	holder.queue_free()
+
 
 func _new_button() -> Button:
 	var b := Button.new()

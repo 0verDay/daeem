@@ -200,6 +200,12 @@ func close() -> void:
 	#   把这一层 `show()` 回来（见 `_cancel_intro_morph()`）。
 	_cancel_intro_morph()
 	hide()
+	# ★★ 进游戏时把本层所有按钮的「悬停（金色填充）」作废。
+	#   为什么必须显式清：`hide()` 只是把 CanvasLayer 收起来，**不会**补发 `mouse_exited`，
+	#   于是被点过的 `test` 那颗按钮的 `_hovered` 会一直停在 true —— 返回主菜单时
+	#   那片金还留在按钮上（手机端尤其明显：手指抬起后模拟鼠标停在原地）。
+	#   见 view/fill_button.gd 的 `_on_visibility_changed` / `clear_hover_in`。
+	FillButtonRes.clear_hover_in(self)
 
 
 ## ★★ 回到**主界面**（游戏内「设置 → 返回主菜单」走这里）。
@@ -216,6 +222,9 @@ func close() -> void:
 func open_menu() -> void:
 	show()
 	show_page(PAGE_MENU)
+	# ★★ 返回主菜单时再清一次悬停（兜底）：清掉之后不会自己填回来，
+	#   只有真实 `mouse_entered` 才会 —— 所以「按过的东西」不会一回来就亮着。
+	FillButtonRes.clear_hover_in(self)
 
 
 # ------------------------------------------------------------------

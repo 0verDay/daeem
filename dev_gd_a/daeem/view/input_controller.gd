@@ -145,6 +145,10 @@ var _pan_pending: bool = false
 ## 上一次鼠标屏幕坐标（算这一下的位移用；只在中键拖拽期间有意义）。
 var _pan_last_screen: Vector2 = Vector2.ZERO
 
+## ★★ 手机端：单指拖动视野是否正在进行（由 view/touch_controller.gd 置位）。
+##   与 `_pan_pending` 并列进 `is_panning()` —— game_scene 每帧读它压住边缘滚屏。
+var _touch_panning: bool = false
+
 ## 暂停 / 区块名显示（纯本地开关）
 var paused: bool = false
 var show_zone_names: bool = true
@@ -172,6 +176,7 @@ func setup(p_cfg: ConfigRes, p_world, p_camera_rig, p_palette = null) -> void:
 	drag_active = false
 	_drag_freeze_cam = false
 	_pan_pending = false
+	_touch_panning = false
 
 
 ## 每帧更新一次「鼠标在哪、指向哪个地块」——渲染要用，且**只有这里**读鼠标位置
@@ -518,7 +523,7 @@ func is_dragging_box() -> bool:
 ## ★★ 中键拖拽是否正在进行（game_scene 每帧读它，压住边缘滚屏）。
 ##   与 `is_dragging_box()` 并列：两者都是「此刻相机由输入直接驱动 ⇒ 别的自动行为让路」。
 func is_panning() -> bool:
-	return _pan_pending
+	return _pan_pending or _touch_panning
 
 
 ## ★★ 有没有一条**正在进行中**的鼠标手势（框选待定 / 正在拖框 / 中键平移中）。
@@ -529,7 +534,79 @@ func is_panning() -> bool:
 ##   见 `game_scene3d._input` 的说明。
 ##   ⚠️ 判据只在这里维护一处：`_input` 不许自己读 `_drag_pending`（那是私有状态）。
 func has_active_gesture() -> bool:
-	return _drag_pending or drag_active or _pan_pending
+	return _drag_pending or drag_active or _pan_pending or _touch_panning
+
+
+# ------------------------------------------------------------------
+# ★★ 手机端触摸：把「手势 → 动作」的策略写在这里（与桌面鼠标共用同一个大脑）
+#
+#   view/touch_controller.gd 只负责**识别**（单指点击 / 拖动 / 双指框选），
+#   真正的选中 / 下令仍落到这一层下面那几个既有函数上（`_on_left_click` /
+#   `_on_right_click` / `box_select`）—— 于是「框选展开整队」「攻击优先于移动」
+#   这些规则一条都不用重写。
+# ------------------------------------------------------------------
+
+## 手机端单击：**没有选中 → 选中**；**已有选中 → 一律下命令**（敌人 / 敌方建筑 = 攻击，其余 = 移动）。
+##
+## ★ 与桌面右键那条路的分派完全一致（`_on_right_click(false)` 自己就会「敌人→攻击、空地→移动」）。
+## ★★ 已有选中时**绝不改选**（需求原话：「选中单位后点击的逻辑应当一直是移动 / 行军，
+##    直到玩家选中其他部队 / 取消选中部队为止」）。改选 / 取消选中走别的入口：
+##    双指框选（框到别的部队 / 空框取消）、左侧部队列表、Esc。
+func touch_tap(world_pos: Vector2) -> void:
+	mouse_world = world_pos
+	_sync_hover_from_mouse()
+	if hover_tile.x < 0:
+		return
+	# 建造 / 命令模式：这一下就是「放置建筑 / 下达指令」，与桌面左键同一路。
+	if build_type != "" or order_mode != "":
+		_on_left_click(false)
+		return
+	# 没选中任何部队：单击 = 选中手指下的单位 / 建筑 / 区划中心。
+	if selected_units.is_empty():
+		_on_left_click(false)
+		return
+	# ★★ 已有选中：单击**只下命令**，绝不改选（敌人 / 敌方建筑 = 攻击，其余 = 移动）。
+	_on_right_click(false)
+
+
+## 手机端双击：**行军攻击**（`attack_move`，路上遇敌就打）。
+## 不满足条件（建造 / 命令模式 / 没有选中）时退化成一次普通单击。
+func touch_double_tap(world_pos: Vector2) -> void:
+	if build_type != "" or order_mode != "" or selected_units.is_empty():
+		touch_tap(world_pos)
+		return
+	mouse_world = world_pos
+	_sync_hover_from_mouse()
+	_on_right_click(true)
+
+
+## 手机端双指框选：驱动**桌面那台一模一样**的框选状态机 ——
+## 于是 overlay 会画出选框、相机会在拖框期间冻住（`is_dragging_box()`），松手走同一条 `box_select`。
+##
+## ★★ 用**两指当前的世界坐标**同时设选框的两个对角：两指一动就重设一次 ⇒ 矩形实时跟随
+##    （需求原话：「选框的两个角由两根手指决定，另两个角实时求出」）。
+## @param corner_a / corner_b 世界坐标（格），顺序无关（`drag_box()` 取绝对值）
+func touch_box_set(corner_a: Vector2, corner_b: Vector2) -> void:
+	drag_start_world = corner_a
+	drag_current_world = corner_b
+	drag_active = true
+	_drag_freeze_cam = true
+	local_ui_changed.emit()
+
+
+func touch_box_end() -> void:
+	var start := drag_start_world
+	var end_pos := drag_current_world
+	drag_active = false
+	_drag_freeze_cam = false
+	if start.distance_to(end_pos) > 0.0:
+		box_select(start, end_pos, false)
+	local_ui_changed.emit()
+
+
+## 手机端单指拖动视野中（由 view/touch_controller.gd 置位）——并进 `is_panning()`。
+func set_touch_panning(on: bool) -> void:
+	_touch_panning = on
 
 
 

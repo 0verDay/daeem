@@ -27,6 +27,7 @@ func _run() -> void:
 		quit(1)
 		return
 	_test_sector_basics(cfg)
+	_test_backend_equivalence(cfg)
 	_test_mountain_blocks(cfg)
 	_test_other_terrain_does_not_block(cfg)
 	_test_radius(cfg)
@@ -118,6 +119,17 @@ func _mask_count(mask: PackedByteArray) -> int:
 func _dont_see(fog, fid: String, tx: int, ty: int, what: String) -> void:
 	ok(not fog.tile_visible(fid, tx, ty), what)
 
+
+## 两份掩码逐字节比较；失败时只报**首个差异下标**（不要把 594 个字节全打出来）。
+func _assert_mask_equal(a: PackedByteArray, b: PackedByteArray, what: String) -> void:
+	eq(a.size(), b.size(), what + "（长度）")
+	var first := -1
+	for i in mini(a.size(), b.size()):
+		if a[i] != b[i]:
+			first = i
+			break
+	eq(first, -1, what if first < 0 else "%s（首个差异下标 %d）" % [what, first])
+
 func _assert_config(cfg) -> bool:
 	ok(cfg.fog_enabled, "config 的 fog.enabled = true（迷雾默认开着）")
 	ok(cfg.fog_vision_default > 0.0, "fog.vision_default > 0（%s）" % str(cfg.fog_vision_default))
@@ -147,6 +159,62 @@ func _test_sector_basics(cfg) -> void:
 	_see(fog, "p1", 2, 3, "半径内的相邻格有视野")
 	_see(fog, "p1", 4, 2, "半径边缘（正好 2 格）也有视野")
 	_dont_see(fog, "p1", 0, 0, "半径之外没有视野（到 (0,0) 是 2.83 格 > 2）")
+
+## ★★ C# 视野内核 vs GDScript 实现：**同一份世界、逐位一样的掩码**。
+##
+## 为什么必须有这一条（而不是只跑 test_fog 的语义断言）：
+##   语义断言只能覆盖「某几格看得见 / 看不见」。内核与 GDScript 版本一旦在某条
+##   边界规则上分叉（穿格点、山自己那格、半径边界），测试可能仍然全绿，
+##   而玩家会看到一圈「多出来 / 少掉」的视野。这里直接拿两份掩码逐字节比。
+func _test_backend_equivalence(cfg) -> void:
+	var map = _make_map(cfg, [
+		"............",
+		"....#.......",
+		"...###......",
+		"....#...^...",
+		".........#..",
+		"..^^.....#..",
+		".........#..",
+		"............",
+	])
+	var fake = _make_fake(cfg, map, ["p1", "p2", "enemy"])
+	var u1 = _add_unit(fake, cfg, "a", 2, 2, "p1")
+	u1.vision = 6.0
+	var u2 = _add_unit(fake, cfg, "b", 3, 5, "p1", "longbowman")
+	u2.vision = 10.0
+	var u3 = _add_unit(fake, cfg, "c", 9, 2, "p2")
+	u3.vision = 5.0
+	var u4 = _add_unit(fake, cfg, "d", 10, 6, "enemy")
+	u4.vision = 7.0
+	_add_building(fake, cfg, "t", 6, 6, "p1", "tower")
+	_add_building(fake, cfg, "t2", 1, 6, "enemy", "tower")
+
+	var f_cs = FogRes.create()
+	ok(f_cs.kernel != null, "★ C# 视野内核加载成功（logic/FogKernel.cs）")
+	ok(f_cs._use_csharp(cfg), "★ config 的 fog.backend = csharp 时真的走内核")
+	var f_gd = FogRes.create()
+	f_gd.kernel = null                           # 强制退回 GDScript 实现
+	ok(not f_gd._use_csharp(cfg), "（前提）第二份强制走 GDScript")
+
+	f_cs.update(fake)
+	f_gd.update(fake)
+
+	eq(f_cs.sight.size(), f_gd.sight.size(), "★ 两套实现产生的「方」数量一致")
+	for side in f_gd.sight.keys():
+		ok(f_cs.sight.has(side), "★ C# 版也有这一方的掩码（%s）" % side)
+		if f_cs.sight.has(side):
+			_assert_mask_equal(f_cs.sight[side], f_gd.sight[side],
+				"★★ %s 的视野掩码逐字节一致" % side)
+
+	# 再来一帧：把单位挪到新格，覆盖「扇区缓存命中 / 半径变化」两条路
+	_move_unit(u1, 7, 4)
+	_move_unit(u3, 2, 1)
+	f_cs.update(fake)
+	f_gd.update(fake)
+	for side2 in f_gd.sight.keys():
+		_assert_mask_equal(f_cs.sight[side2], f_gd.sight[side2],
+			"★★ 单位移动后 %s 的掩码仍然逐字节一致" % side2)
+
 
 func _test_mountain_blocks(cfg) -> void:
 	var map = _make_map(cfg, [
@@ -588,6 +656,24 @@ func _test_game_scene_wires_fog() -> void:
 			if mm != null:
 				ok(not mm._unit_visible(enemy),
 					"★★ 小地图也读同一份判据（两边不会各显示一套）")
+
+	# ★★ 小地图迷雾烘图（本轮手机端优化）：掩码没变 ⇒ 复用；变了 ⇒ 重烘。
+	#   ⚠️ 这一条防的是「PackedByteArray 的 == 其实是同一性比较」这类静默失败：
+	#      那样迷雾图会永远停在第一帧，而画面上只是看起来「有点旧」。
+	var mmp = game.hud.minimap if game.hud != null else null
+	if mmp != null:
+		mmp._fog_texture()
+		var bakes: int = mmp.fog_bake_count
+		mmp._fog_texture()
+		eq(mmp.fog_bake_count, bakes, "★★ 小地图迷雾：掩码没变时不重烘")
+		var side := FactionRes.side_of(w.my_faction)
+		var mask: PackedByteArray = w.fog.sight.get(side, PackedByteArray())
+		if not mask.is_empty():
+			mask[0] = 1 if mask[0] == 0 else 0
+			w.fog.sight[side] = mask
+			mmp._fog_texture()
+			ok(mmp.fog_bake_count > bakes,
+				"★★ 小地图迷雾：掩码变化后重烘（%d → %d）" % [bakes, mmp.fog_bake_count])
 
 	main.queue_free()
 

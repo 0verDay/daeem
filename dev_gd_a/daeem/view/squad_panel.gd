@@ -28,11 +28,22 @@ var _rows: Array[Button] = []
 ## 每一槽当前对应的队伍（空槽 = 空数组）：刷新时算好，点击时直接用
 var _teams: Array = []
 
+## ★★ 手机端刷新节流（桌面 / 无头恒为 0 = 每帧；见 config 的 ui._mobile_refresh_comment）。
+##   `refresh()` 每帧要全表扫 `world.units` + 每队 `world.group_of()`，手机上不必 60Hz。
+var _refresh_interval: float = 0.0
+var _refresh_accum: float = 0.0
+## 刷新过多少次（诊断；测试用它确认手机调度器的槽 2 真的调了部队列表）
+var refresh_count: int = 0
+
 
 func setup(p_cfg, p_world, p_input) -> void:
 	cfg = p_cfg
 	world = p_world
 	input_ctrl = p_input
+	# ★★ 手机端：刷新节流（桌面 / 无头 _refresh_interval = 0 ⇒ 每帧，行为不变）。
+	_refresh_interval = 0.0
+	if OS.has_feature("mobile") and cfg != null and cfg.mobile_hud_refresh_hz > 0.0:
+		_refresh_interval = 1.0 / cfg.mobile_hud_refresh_hz
 
 	name = "SquadPanel"
 	mouse_filter = Control.MOUSE_FILTER_STOP          # 面板底下的地图不吃这一片的点击
@@ -67,8 +78,15 @@ func setup(p_cfg, p_world, p_input) -> void:
 	refresh()
 
 
-func _process(_dt: float) -> void:
-	refresh()
+func _process(dt: float) -> void:
+	# ★★ 手机端节流（桌面 / 测试每帧；见 config 的 ui._mobile_refresh_comment）。
+	if _refresh_interval <= 0.0:
+		refresh()
+		return
+	_refresh_accum += dt
+	if _refresh_accum >= _refresh_interval:
+		_refresh_accum = 0.0
+		refresh()
 
 
 # ------------------------------------------------------------------
@@ -88,6 +106,8 @@ func _process(_dt: float) -> void:
 ##      91px（余量 17px），15 号下是 105px（只剩 3px 余量，队名一长就又被裁）。
 ##      tests/test_ui.gd 里有一条按**真实字体**量的断言盯着这件事（别改回一行 / 大字）。
 func refresh() -> void:
+	# 诊断计数（测试读）：手机端由 HUD 的槽位驱动，桌面由自己的 `_process` 驱动。
+	refresh_count += 1
 	if world == null or input_ctrl == null:
 		return
 	var teams := _collect_teams()

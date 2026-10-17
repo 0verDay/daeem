@@ -5,6 +5,7 @@ extends "res://tests/test_case.gd"
 const MapLibraryRes = preload("res://logic/map_library.gd")
 
 const UiLayoutRes = preload("res://view/ui_layout.gd")
+const FillButtonRes = preload("res://view/fill_button.gd")
 
 const PAGE_MENU := 1
 
@@ -192,6 +193,17 @@ func _test_return_to_menu() -> void:
 		ok(screen.visible, "★ 第二次回来主界面同样可见")
 		await _hover_at((sel_node as Control).get_global_rect().get_center())
 		ok(root.gui_get_hovered_control() != null, "★ 第二次回来照样点得动")
+
+		# ★★ 悬停残留回归（用户报的「返回主菜单后按钮一直亮着」）：
+		#   test 按钮是**真实点击**进去的（`_click_at`）⇒ 进游戏时 `close()` 清了悬停；
+		#   返回后那片金必须退干净，而不是停在满格。
+		for _i in 20:
+			await process_frame
+		var tb_anim = FillButtonRes.animator_of(tb)
+		ok(tb_anim != null, "（前提）test 按钮挂了填充动效")
+		if tb_anim != null:
+			ok(tb_anim.fill() < 0.05,
+				"★★ 返回主菜单后 test 按钮的悬停金已经退掉（不再残留）")
 
 	await _dispose(main)
 

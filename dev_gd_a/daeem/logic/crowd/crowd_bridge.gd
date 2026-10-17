@@ -116,6 +116,11 @@ func _init() -> void:
 	var s = load(KERNEL_PATH)
 	if s != null:
 		kernel = s.new()
+	# ★★ 内核不可用 = 索敌 / 碰撞**退化成 GDScript O(N²)**（实测 283 ms/帧）。
+	#   这在手机上是最容易被忽略的帧率杀手：画面照跑、只是越来越卡。
+	#   所以启动时明确报一句，HUD 的 `PerfReadout` 也会把内核状态显示出来。
+	if kernel == null:
+		push_warning("[daeem] C# 群编内核不可用（%s）：索敌/碰撞已退化为 GDScript O(N²)，手机上会严重掉帧。" % KERNEL_PATH)
 
 
 ## 内核可用吗（测试与 bench 用它区分「跑的是哪一套」）
