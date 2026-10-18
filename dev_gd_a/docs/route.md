@@ -3840,6 +3840,13 @@ test_1，test_2，test_3 按钮中」。
 | `data/config.json` | `menu.test_entries[]` + `menu.campaign_menu.*`（字号 / 圆点 / 长按秒数 / 底部提示）；删掉 `campaign_test_*` / `campaign_select_*` |
 | `view/battle_entries.gd`、`view/campaign_test.gd` | **删除**（旧三件套 / 占位页） |
 
+★ **关卡圆点均匀摊开**（2026.10.18 玩家实测报「圆点看着是左上对齐的」→ 再调成「水平均匀排布、左右留白」）：
+`ChapterBox` 是 `HBoxContainer`，每颗点装在一个 `CenterContainer` 槽位里 ——
+槽位**水平等宽（EXPAND_FILL）**、竖直撑满顶条、`separation = 0` ⇒ 整条按点数均分成 n 格，
+每颗点在格心 ⇒ **相邻点等距、左右各留半格空白、每颗垂直居中**（只有一颗关卡时就在正中）。
+⚠️ 槽位不能用普通 `Control`：它**不给孩子排版**，点会贴在槽位左上角（这就是原症状）。
+`tests/test_campaign_menu.gd` 量了三种关卡数（1 / 4 / 5 颗）的圆点矩形（间距 = 条宽 ÷ 点数，左右留白 = 半格）。
+
 ★ **几条刻意为之的口径**：
 
 1. **配色不照搬**：nsoc 是白卡片 + 浅蓝圆点；这里全部走 `theme.gd` / `menu_theme.gd`
@@ -3856,11 +3863,11 @@ test_1，test_2，test_3 按钮中」。
    `return_to_menu()` 在 `open_menu()` 之前调 `start_screen.reset_panels()`
    （= `panel_expand.collapse_instant()`），否则「返回主菜单」会看到一块开着的战役面板。
 
-★ 断言：`tests/test_campaign_menu.gd`（97 项：数据源 / test_1/2/3 配置 / 版式几何 / 圆点与描述 /
+★ 断言：`tests/test_campaign_menu.gd`（116 项：数据源 / test_1/2/3 配置 / 版式几何 / 圆点与描述 /
 占位关不触发 / main_test 长按进关与默认阵营 / 回菜单面板已收回）；`tests/test_start_flow.gd` 与
 `tests/test_menu_chrome.gd` 改成新入口；`tests/test_map_select.gd` 改成**单独装部件**验
 （地图选择条不再挂在界面上，但部件与直连地图那条底层路径保留）。
-全量 `49 套 / 5867 项 / ALL PASS`。
+全量 `49 套 / 5886 项 / ALL PASS`。
 
 **✅ 本轮完成清单**（对上需求原话，逐条可勾）：
 

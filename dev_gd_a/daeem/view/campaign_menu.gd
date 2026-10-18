@@ -45,7 +45,6 @@ const DESC_RIGHT_INSET: float = 20.0
 const DESC_BOTTOM_INSET: float = 20.0
 
 const CHAPTER_DOT_SIZE: float = 16.0
-const CHAPTER_DOT_GAP: int = 12
 const CHAPTER_PAD_X: float = 16.0
 const CHAPTER_PAD_Y: float = 12.0
 
@@ -349,7 +348,8 @@ func _build_chapter_box() -> void:
 	box.offset_right = -CHAPTER_PAD_X
 	box.offset_top = CHAPTER_PAD_Y
 	box.offset_bottom = -CHAPTER_PAD_Y
-	box.add_theme_constant_override("separation", CHAPTER_DOT_GAP)
+	# ★ 不用固定的「点间隙」：整条按点数**均分**，每颗点占一格（见 _make_chapter_dot）。
+	box.add_theme_constant_override("separation", 0)
 	box.alignment = BoxContainer.ALIGNMENT_CENTER
 	_chapter_pnl.add_child(box)
 	_chapter_box = box
@@ -477,16 +477,21 @@ func _refresh_desc_text() -> void:
 
 
 func _make_chapter_dot(active: bool) -> Control:
-	var wrapper := Control.new()
+	# ★★ 圆点**沿整条宽度均匀摊开**：每颗点占**等宽的一格**、在自己的格心，
+	#    于是相邻点等距、左右留白各半格。
+	#    ⚠️ 槽位必须是**容器**：普通的 `Control` 不给孩子排版（旧实现就是因此
+	#    把圆点贴在槽位左上角 —— 玩家看到的是「整排点左上对齐」）。
+	var wrapper := CenterContainer.new()
 	wrapper.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# 水平 EXPAND ⇒ 每格等宽（HBox 把整条平分成 n 格）。
 	wrapper.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	# 竖直撑满整条高度 ⇒ CenterContainer 把点放在这一格的正中。
 	wrapper.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	wrapper.custom_minimum_size = Vector2(_dot_size, _dot_size)
 
 	var dot := Panel.new()
 	dot.name = "Dot"
 	dot.custom_minimum_size = Vector2(_dot_size, _dot_size)
-	dot.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	dot.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	dot.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	dot.add_theme_stylebox_override("panel", MenuThemeRes.campaign_dot(active))
 	wrapper.add_child(dot)

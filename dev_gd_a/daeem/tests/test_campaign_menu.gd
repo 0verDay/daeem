@@ -172,6 +172,14 @@ func _test_panel_layout() -> void:
 			"★ 左侧轮播占左边约 1/4（%.0f px）" % left_w)
 		ok(chapter_pnl.get_global_rect().end.y <= desc_pnl.get_global_rect().position.y + 1.0,
 			"★ 关卡圆点那一条在描述面板**上方**")
+		# ★★ 圆点**居中**（用户报的「看着是左上对齐」）：
+		#    c1 只有一关 ⇒ 这一颗点必须正好落在关卡条的**正中心**（水平 + 垂直）。
+		await process_frame
+		var only: Array = _dot_global_rects(cm)
+		eq(only.size(), 1, "（前提）c1 只有一颗关卡圆点可以量")
+		if only.size() == 1:
+			v2_near((only[0] as Rect2).get_center(), chapter_pnl.get_global_rect().get_center(),
+				1.0, "★★ 唯一一颗关卡圆点在关卡条正中（水平 + 垂直居中，不是左上）")
 		ok(desc_pnl.get_global_rect().size.x > left_w,
 			"★ 描述面板占了右侧的大块面积")
 		# 面板自带的「返回」不能被内容盖住（内容根是 IGNORE，三块面板的矩形也不与它相交）。
@@ -212,6 +220,62 @@ func _test_panel_layout() -> void:
 	await process_frame
 
 
+## 关卡圆点（`Dot`）的全局矩形，顺序 = ChapterBox 里的顺序。
+func _dot_global_rects(cm) -> Array:
+	var out: Array = []
+	var box := _chapter_box_of(cm)
+	if box == null:
+		return out
+	for child in box.get_children():
+		var dot := (child as Control).get_node_or_null("Dot") as Control
+		if dot != null:
+			out.append(dot.get_global_rect())
+	return out
+
+
+func _chapter_box_of(cm) -> Control:
+	var pnl := cm.get_node_or_null("ChapterPnl") as Control
+	if pnl == null:
+		return null
+	return pnl.get_node_or_null("ChapterBox") as Control
+
+
+## ★★ 一排圆点：沿**整条宽度均匀摊开**（相邻点等距、左右留白相等）+ **每颗垂直居中**。
+##   用户口径：不是挤在中间，要「水平方向均匀排布开，左右也留空白」。
+func _assert_dot_row_spread(cm, want: int, what: String) -> void:
+	var rects: Array = _dot_global_rects(cm)
+	eq(rects.size(), want, "（前提）%s 有 %d 颗圆点可以量" % [what, want])
+	if rects.size() != want or rects.is_empty():
+		return
+	await process_frame
+	rects = _dot_global_rects(cm)
+	var box := _chapter_box_of(cm)
+	var box_rect: Rect2 = box.get_global_rect()
+	var pnl := cm.get_node("ChapterPnl") as Control
+	var center: Vector2 = pnl.get_global_rect().get_center()
+	var first: Rect2 = rects[0]
+	var last: Rect2 = rects[rects.size() - 1]
+	var y_ok := true
+	for r in rects:
+		if absf((r as Rect2).get_center().y - center.y) > 1.0:
+			y_ok = false
+	ok(y_ok, "★★ %s 的每颗圆点都垂直居中（不是贴顶）" % what)
+	# 整条按圆点个数均分：每颗点占一格、在自己的格心 ⇒ 相邻间距 = 条宽 ÷ 点数。
+	# ★ 容差 1px：容器的格子宽度按整数像素分配，除不尽时相邻两档会差不到 1px。
+	var want_spacing: float = box_rect.size.x / float(rects.size())
+	for i in range(1, rects.size()):
+		near((rects[i] as Rect2).get_center().x - (rects[i - 1] as Rect2).get_center().x,
+			want_spacing, 1.0, "★★ %s：第 %d / %d 颗之间均匀摊开（间距 = 条宽 ÷ %d）"
+			% [what, i, i + 1, rects.size()])
+	# 左右留白：第一颗离左缘、最后一颗离右缘都应当是半格，且两边一样宽。
+	near(first.get_center().x - box_rect.position.x, want_spacing * 0.5, 1.0,
+		"★★ %s 左边留白 = 半格（不贴左缘）" % what)
+	near(box_rect.end.x - last.get_center().x, want_spacing * 0.5, 1.0,
+		"★★ %s 右边留白 = 半格（不贴右缘）" % what)
+	ok(box_rect.size.x > first.size.x * float(rects.size()),
+		"（前提）%s 的条宽足够把 %d 颗点摊开" % [what, rects.size()])
+
+
 func cfg_str(menu, path: String, fallback: String) -> String:
 	if menu == null or menu.cfg == null:
 		return fallback
@@ -236,12 +300,16 @@ func _test_carousel_switches_chapters() -> void:
 	eq(cm.current_campaign_name(), "战役#2", "★ 切到战役#2")
 	eq(cm.chapter_count(), 4, "★ 关卡数跟着换成 4")
 	eq(cm.chapter_dot_count(), 4, "★ 顶部圆点也换成 4 个")
+	await process_frame
+	await _assert_dot_row_spread(cm, 4, "战役#2")
 	eq(cm.desc_title_text(), "关卡#1", "描述标题换成战役#2 的第一关")
 	ok(cm.is_current_placeholder(), "★ 战役#2 的第一关是占位关")
 
 	cm.carousel().select_campaign(2)
 	eq(cm.current_campaign_name(), "战役#3", "切到战役#3")
 	eq(cm.chapter_dot_count(), 5, "战役#3 有 5 个圆点")
+	await process_frame
+	await _assert_dot_row_spread(cm, 5, "战役#3")
 	eq(cm.desc_title_text(), "关卡#1", "仍然是第一关")
 
 	cm.select_chapter(3)
