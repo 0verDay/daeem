@@ -125,6 +125,39 @@ static func chrome_panel() -> StyleBoxFlat:
 
 
 # ------------------------------------------------------------------
+# 战役菜单（左侧轮播卡片 / 顶部关卡条 / 右侧描述面板）
+#
+# ★ 与主界面外壳同一套画法（暗底 + 金线 + 2px 圆角），只是**底更实一点**：
+#   轮播卡片与描述面板里都要压中文正文，靠 chrome_panel 那 0.30 的底会透出后面的页面。
+# ------------------------------------------------------------------
+
+## 战役菜单里那几块大面板（顶部关卡条 / 右侧描述面板）。
+static func campaign_panel() -> StyleBoxFlat:
+	var s := chrome_panel()
+	s.bg_color = ThemeRes.with_alpha(ThemeRes.bg_bottom(), 0.55)
+	return s
+
+
+## 左侧轮播的一张战役卡：比面板再实一点，边界靠金线给。
+static func campaign_card() -> StyleBoxFlat:
+	var s := StyleBoxFlat.new()
+	s.bg_color = ThemeRes.with_alpha(ThemeRes.bg_top(), 0.90)
+	s.border_color = ThemeRes.line()
+	s.set_border_width_all(1)
+	s.set_corner_radius_all(2)
+	return s
+
+
+## 顶部那一排关卡圆点：纯色胶囊（16px 的圆 = 圆角半径 8）。
+## @param active 当前那一关 = 亮金；其余 = 暗金线色（不是灰：这一套皮肤里没有中性灰那档）
+static func campaign_dot(active: bool) -> StyleBoxFlat:
+	var s := StyleBoxFlat.new()
+	s.bg_color = ThemeRes.accent_bright() if active else ThemeRes.line_soft()
+	s.set_corner_radius_all(8)
+	return s
+
+
+# ------------------------------------------------------------------
 # 下拉列表（PopupMenu）
 #
 # ★★ 需求（本版）：「下拉列表也搞相同的风格化」—— 意思是列表要与

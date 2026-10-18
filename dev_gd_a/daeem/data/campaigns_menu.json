@@ -1,0 +1,47 @@
+{
+  "_comment": [
+    "★★ 战役菜单的数据源（样式照 nsoc 的 data/campaigns.json）。",
+    "  它只描述**菜单上怎么摆**：战役名 / 战役简介 / 关卡名 / 关卡简介 / 这一关指向哪份战役的哪一关。",
+    "  真正的关卡数据仍在 data/campaigns/<战役>/levels/*.json（被战役页与测试钉着，别混）。",
+    "  ★ 章节的 campaign_id + level_id 都填上 ⇒ 长按进入那一关；留空 ⇒ 占位关（长按什么都不发生）。",
+    "  ★ 战役的键序就是左侧轮播的顺序；关卡的数组顺序就是顶部圆点 / 描述面板的顺序。",
+    "  ★ 目前只有 c1 的第一关（main_test）是真的，其余都是占位：",
+    "    以后接真内容时，把对应章节的 campaign_id / level_id 填上即可，界面一行都不用改。"
+  ],
+  "version": 1,
+  "campaigns": {
+    "c1": {
+      "display_name": "测试战役",
+      "description": "当前唯一的可玩战役：只放了一关 main_test。",
+      "chapters": [
+        {
+          "name": "main_test",
+          "description": "主测试关卡：地图 main_test。蓝方（F1）守，红方（F2）攻，\n另有红点阵营从边缘增援。长按进入。",
+          "campaign_id": "demo",
+          "level_id": "mt"
+        }
+      ]
+    },
+    "c2": {
+      "display_name": "战役#2",
+      "description": "占位战役。",
+      "chapters": [
+        {"name": "关卡#1"},
+        {"name": "关卡#2"},
+        {"name": "关卡#3"},
+        {"name": "关卡#4"}
+      ]
+    },
+    "c3": {
+      "display_name": "战役#3",
+      "description": "占位战役。",
+      "chapters": [
+        {"name": "关卡#1"},
+        {"name": "关卡#2"},
+        {"name": "关卡#3"},
+        {"name": "关卡#4"},
+        {"name": "关卡#5"}
+      ]
+    }
+  }
+}

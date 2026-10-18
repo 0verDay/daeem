@@ -245,6 +245,17 @@ static func row_active() -> StyleBoxFlat:
 	return s
 
 
+## 按下：**透明底 + 更亮的左线 / 底线**（底色交给填充层，见 view/press_fx.gd）。
+## 与其它按钮的「2px 亮边」统一；不铺实底，否则会把自绘填充压暗。
+static func row_pressed() -> StyleBoxFlat:
+	var s := row_normal()
+	s.bg_color = Color(0.0, 0.0, 0.0, 0.0)
+	s.border_color = ThemeRes.accent_bright()
+	s.border_width_left = 3
+	s.border_width_bottom = 2
+	return s
+
+
 ## 空槽：底纹与其它行一样，只有文字变淡（置灰靠字色，不靠色块）
 static func row_empty() -> StyleBoxFlat:
 	var s := StyleBoxFlat.new()
@@ -388,7 +399,7 @@ static func accent_button_hover() -> StyleBoxFlat:
 	return s
 
 
-## ★★ 挂了填充层的实心金按钮（设置菜单那两颗）在悬停时用的底纹：**底透明 + 亮线**。
+## ★★ 挂了填充层的实心金按钮（选项页那两颗）在悬停时用的底纹：**底透明 + 亮线**。
 ##   为什么不能照旧用 `accent_button_hover()`：填充层画在底纹**下面**，
 ##   那 0.10 的提亮色等于把填充金压暗一点点 —— 屏幕上就成了「悬停反而更闷」。
 ##   底透明之后，那片金完全由填充层给（它能给到**更亮**的一档，见 fill_*_latched）。

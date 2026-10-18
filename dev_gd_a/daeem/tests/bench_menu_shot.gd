@@ -50,51 +50,52 @@ func _run() -> void:
 	await _wait(SETTLE_FRAMES)
 	await _shoot("02_menu")
 
-	# 3) 单人战役占位页
-	main._on_campaign_test_pressed()
-	await _wait(SETTLE_FRAMES)
+	# 3) 战役菜单（左侧轮播 / 顶部关卡圆点 / 右侧描述 / 底部「长按进入关卡」）
+	var chrome = main.start_screen.menu_chrome()
+	var engine = chrome.expand_engine()
+	# ★ 入场那一下的「面板滑入」也走这个引擎：它忙的时候 expand() 会被直接忽略 ——
+	#   先等它闲下来，再按「战役」。
+	var deadline := Time.get_ticks_msec() + 4000
+	while Time.get_ticks_msec() < deadline and engine.is_busy():
+		await process_frame
+	(chrome.side_buttons()[0] as Button).pressed.emit()
+	deadline = Time.get_ticks_msec() + 4000
+	while Time.get_ticks_msec() < deadline and not engine.is_expanded():
+		await process_frame
+	# ★ 展开完成之后**二级面板还要淡入**（`menu_secondary_panel.attach()`，0.45s）——
+	#   `--script` 下帧率不锁 60，按帧数等会拍到「刚开始淡入」的黑画面。
+	await _wait_sec(0.7)
 	await _shoot("03_campaign")
 
-	# 4) ★ 对着一张**选定态**按钮也拍一张：战役页里「选中的那一关 / 那一方」是实心金底，
-	#    它上面的字必须换成近黑 —— 这条只有看图才验得出（无头断言只能验颜色值）。
-	var camp = main.campaign_screen
-	if camp != null:
-		var col = camp.get_node_or_null("CampaignRoot/CampaignCenter/CampaignColumn")
-		if col != null:
-			var fb = col.get_node_or_null("FactionBox/FactionButton0")
-			if fb != null:
-				print("[SHOT] faction0 font=", (fb as Button).get_theme_color("font_color"),
-					" bg=", ((fb as Button).get_theme_stylebox("normal") as StyleBoxFlat).bg_color)
-				# ★ 直接在**视口里**量那行字的像素：这是「看到的」而不是「设进去的」。
-				await _wait(2)
-				var li: Image = root.get_texture().get_image()
-				var r: Rect2 = (fb as Control).get_global_rect()
-				var darkest := Color(1, 1, 1)
-				var brightest := Color(0, 0, 0)
-				for dy in range(int(r.position.y), int(r.end.y), 2):
-					for dx in range(int(r.position.x), int(r.end.x), 2):
-						var p: Color = li.get_pixel(dx, dy)
-						if p.get_luminance() < darkest.get_luminance():
-							darkest = p
-						if p.get_luminance() > brightest.get_luminance():
-							brightest = p
-				print("[SHOT] faction0 rect=", r, " darkest=", darkest, " brightest=", brightest)
-			# ★★ 「金有没有把那行字糊掉」——**这张图最该看的一件事**（用户报过的那条 bug）。
-			#    金上的字必须数得出「中性近黑」像素；只数暗像素是不够的
-			#    （深色面板底也是暗的，见 pitfalls 5.59）。
-			await _probe_text_on_fill(fb, "faction0_latched")
-		await _shoot("04_campaign_selected")
+	# 4) ★ 翻到占位战役（战役#2）：关卡圆点变 4 个、描述换成「关卡#1」——
+	#    这张图用来看「占位战役在界面上长什么样」。
+	var cm = main.start_screen.campaign_menu()
+	if cm != null:
+		cm.carousel().select_campaign(1)
+		await _wait_sec(0.3)
+		await _shoot("04_campaign_placeholder")
+	else:
+		print("[SHOT] 战役菜单拿不到（面板没撑开？）—— 04 跳过")
 
-	# 5) ★★ 回主界面，把鼠标「停」在 test 按钮上：那颗按钮会被金填满，
+	# 5) ★★ 回主界面，把鼠标「停」在 test_1 按钮上：那颗按钮会被金填满，
 	#    而它上面那行字必须**还在**。⚠️ 这一步是无头测试**验不出来**的那一半
 	#    （断言只能验「字色算得对不对」，验不了「谁盖谁」）—— 见 pitfalls 5.59。
-	main._on_campaign_back()
-	await _wait(SETTLE_FRAMES)
-	var tb: Button = main.start_screen.find_child("TestButton", true, false)
+	if engine.secondary_panel() != null:
+		engine.secondary_panel().back_button().pressed.emit()
+	# ★ 收回也是时间驱动的 Tween（`--script` 下帧率不锁 60，按帧数等会等不够）
+	var close_deadline := Time.get_ticks_msec() + 4000
+	while Time.get_ticks_msec() < close_deadline and engine.is_busy():
+		await process_frame
+	await _wait(3)
+	var buttons: Array = main.start_screen.test_buttons()
+	var tb: Button = buttons[0] if not buttons.is_empty() else null
 	if tb != null:
 		# 走引擎自己的信号（与玩家把鼠标停上去同一条路）
 		tb.mouse_entered.emit()
-		await _wait(40)                      # 填充 0.18s：40 帧足够走到满格
+		# 填充 0.18s —— 同样按**时间**等，不按帧数
+		var fill_deadline := Time.get_ticks_msec() + 600
+		while Time.get_ticks_msec() < fill_deadline:
+			await process_frame
 		await _probe_text_on_fill(tb, "menu_test_hover")
 		await _shoot("05_menu_hover")
 		tb.mouse_exited.emit()
@@ -138,6 +139,13 @@ func _probe_text_on_fill(b: Button, tag: String) -> void:
 
 func _wait(frames: int) -> void:
 	for i in frames:
+		await process_frame
+
+
+## 按**时间**等（秒）：`--script` 下帧率不锁 60，Tween 是时间驱动的，按帧数等不够。
+func _wait_sec(seconds: float) -> void:
+	var deadline: int = Time.get_ticks_msec() + int(seconds * 1000.0)
+	while Time.get_ticks_msec() < deadline:
 		await process_frame
 
 

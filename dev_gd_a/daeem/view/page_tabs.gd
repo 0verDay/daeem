@@ -256,7 +256,8 @@ func _apply_styles() -> void:
 		else:
 			b.add_theme_stylebox_override("normal", UiStyleRes.tab_plain())
 			b.add_theme_stylebox_override("hover", UiStyleRes.tab_plain_hover())
-			b.add_theme_stylebox_override("pressed", UiStyleRes.tab_plain_hover())
+			# ★ 按下统一成 2px 亮边（与菜单 / 命令卡同一档）；松手后再切到当前页的 latched
+			b.add_theme_stylebox_override("pressed", UiStyleRes.tab_latched())
 		b.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
 		# ★ 当前页 ⇄ 非当前页切换时，逐字 Label 要按新的档重新登记
 		#   （`set_base_font_color` 只认宿主按钮那一块；逐字是各自登记的）。

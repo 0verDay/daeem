@@ -31,13 +31,14 @@ C:\D\GodotEngine\gd4.7.2mono\Godot_v4.7.2-stable_mono_win64.exe --headless ...
 顺便：项目 `project.godot` 声明的是 `4.7`，本机装的是 **4.7.2 stable**（`official.ed1daf0bf`）。
 
 ### 1.1b ★★ 必须用 **mono(.NET) 版**引擎，普通版跑不了 C# 内核
-工程根下有 `daeem.csproj` 和 `logic/crowd/*.cs`（1000 单位群编的性能前提）。
+工程根下有 `daeem.csproj`、`logic/crowd/*.cs`（1000 单位群编的性能前提）和
+`logic/FogKernel.cs`（战争迷雾的视野计算）。
 **普通版 Godot 只加载 `project.godot`，不会加载 C# 程序集**，于是：
 
 | | 表现 |
 |---|---|
-| 游戏 | 不崩：`crowd_bridge.gd` 发现自己拿不到内核 → **自动退回 `logic/collision.gd`**，只是慢约 200 倍 |
-| `test_csharp_bridge.gd` | **直接红**（它有一条断言专门钉「内核可用」，就是防这种静默降级） |
+| 游戏 | 不崩：`crowd_bridge.gd` / `fog.gd` 发现自己拿不到内核 → **自动退回 GDScript**（碰撞 / 视野），只是慢很多 |
+| `test_csharp_bridge.gd` / `test_fog.gd` | 前者的「内核可用」断言直接红；后者会用 GDScript 回退继续跑（结果仍正确） |
 
 - mono 版位置：`C:\D\GodotEngine\gd4.7.2mono\Godot_v4.7.2-stable_mono_win64_console.exe`
   （同一个 commit `ed1daf0bf`，只是带了 .NET）
@@ -45,8 +46,8 @@ C:\D\GodotEngine\gd4.7.2mono\Godot_v4.7.2-stable_mono_win64.exe --headless ...
   `dotnet build daeem.csproj -c Debug`（产物落在 `.godot/mono/temp/bin/Debug/daeem.dll`）
 - 首次构建会用到 `NuGet.config` 里那个**本机路径**的本地包源（引擎自带 `GodotSharp/Tools/nupkgs`）；
   本机没有外网到 nuget.org，所以不能删那个源
-- C# 文件名必须 == 类名（PascalCase），所以 `logic/crowd/` 下的文件名与项目里
-  GDScript 的 snake_case 约定不同 —— 那是引擎硬要求，不是笔误
+- C# 文件名必须 == 类名（PascalCase），所以 `logic/crowd/CrowdKernel.cs`、
+  `logic/FogKernel.cs` 与项目里 GDScript 的 snake_case 约定不同 —— 那是引擎硬要求，不是笔误
 
 ### 1.6 ★★ 基准必须带「环境漂移」参照——沙箱持续负载后 CPU 会限频
 
@@ -3212,6 +3213,135 @@ keep.ty = 8
 **不要用「我摆过它了」当证据**。
 ★ 同一条也适用于帧率基准：`tests/bench_fps.gd` 的文件头早就写了「先看 machine drift 再下结论」，
 这里是它在**观感验收**上的同构版本。
+
+---
+
+### 5.62 ★★ GDScript 字符串里的 `\u0000` 会让整个脚本报 Unicode 解析错误
+
+**症状（手机端性能调优那一轮）**：导出后控制台出现
+
+```
+ERROR: Unicode parsing error, some characters were replaced with � (U+FFFD): Unexpected NUL character
+```
+
+同一个脚本被解析几次就报几次（实测 3 条），看起来像文件编码坏了，但文件本身没有坏。
+
+**根因**：用 `"\u0000"` 当「未初始化哨兵」。Godot 的词法解析会先把 `\u0000`
+解成一个真正的 NUL 字符，然后拒绝它 —— NUL 不是合法的字符串内容。
+
+**正确做法**：哨兵用普通、不可能与真实内容相同的字符串（例如 `"#none#"`），
+或者另开一个 `bool _valid` 字段。**任何 `.gd` 源码里都不要写 `\u0000`。**
+
+**判据**：看到 `Unicode parsing error` 先在整个工程里搜 `\u0000` / 裸 NUL 字节，
+不要去改导出设置或文件编码。
+
+---
+
+### 5.63 ★★★ 框选的三件事必须一致：**画的**、**坐标系的**、**判的那个物体**
+
+这一条是两批手玩连着踩出来的，两个错误长得很像，但根因不同 —— 一起记。
+
+#### ① 画的（屏幕矩形）与判的（世界矩形）不是同一个区域
+
+**症状**：一根手指在**右上**、另一根在**左下**时，选框的右上角与左下角跟手指**差一截**；
+换成另一条对角线（左上 / 右下）就正常。
+
+**根因**：
+1. **喂错了点**：`touch_controller` 传的是屏幕矩形的 `rr.position` / `rr.end`
+   （= x 最小/y 最小 与 x 最大/y 最大 那两个**组合点**）。只有「一根在左上、一根在右下」时
+   它们才等于手指；另一条对角线时，真正属于那两根手指的两个角**从来没被采集过**；
+2. **存成了世界矩形**：选框按世界轴对齐 `Rect2` 存、由 overlay 投影四个角。透视下
+   「屏幕矩形 ⇄ 世界矩形」**不是**逆变换，两者形状对不上。
+
+**正确做法**：喂**两指自己的坐标**；**显示**用 `drag_screen_box`（屏幕矩形）；
+**判定**也用同一份屏幕矩形（`box_select_screen()`），不要投回世界。
+
+#### ② 判的是**脚底锚点**，而玩家框的是**立牌**
+
+**症状（第二批）**：「框到了单个单位，有概率不会选中它（连带整支部队）」——
+概率取决于框画在单位的**哪个高度**上。
+
+**根因**：单位在画面上一张**立牌**（从脚底 `u.pos` 向上 `QUAD_W × QUAD_H_RATIO` 格，
+见 `view/unit_view_3d.gd`），而判定只问「脚底那个点」在不在框里。
+把框画在牌的上半部分 ⇒ 锚点在框外 ⇒ 漏选（`expand_to_groups` 也就没有这一队可展开）。
+
+**正确做法**：判定对象改成**图标的屏幕矩形**（`_unit_icon_screen_rect(u)`）：
+底边 = 脚底锚点、宽从投影算（`QUAD_W` 格）、高 = 宽 × `QUAD_H_RATIO`，按 `intersects` 判。
+⇒ 框到图标任何一部分都算框到。
+⚠️ 宽高比**不要在本文件里再写一份**：`input_controller` preload `unit_view_3d` 读
+`QUAD_W` / `QUAD_H_RATIO`（同一个来源）。
+
+★★ **两端同一条路**（用户后来要求「PC 也统一」）：`handle_mouse_motion` 也记
+`drag_screen_box`，`_finish_drag()` 与 `touch_box_end()` 都走 `box_select_screen()`。
+于是 PC 画出来的框也变成屏幕矩形（不再是世界四边形的投影）。
+`box_select()`（世界矩形 + 脚底锚点）只剩「**没有投影**（无头 / 2D 老路径）」的兜底 ——
+**别把它当成 PC 的主路径**，那会把这一条坑重新踩回来。
+
+#### 判据
+
+- 画出来的区域与判定的区域**必须是同一份数据**；
+- 判定的**物体**必须是玩家看见的那个（图标 / 立牌），不是它的锚点；
+- 任何「按世界轴对齐矩形描边、再投影回屏幕」的东西（选框 / 建造预览 / 区划高亮）
+  在透视相机下都**不是**屏幕矩形 —— 要跟手就按屏幕坐标画。
+- 想验证「是不是这个 bug」：把框画在单位的**上半身**（脚底在框外）再松手。
+  选中了 = 对；没选中 = 还在判锚点。
+
+---
+
+### 5.64 ★★ 触摸抬起后模拟鼠标**停在原地** —— 任何「按坐标自愈悬停」都会把悬停算回来
+
+**症状（手机端，两批手玩都报过）**：长按一颗按钮再抬起手指，金色填充**一直留着**；
+主菜单出现过，**局内的设置 / 命令卡 / 页签也出现过**（同一根因，两层各修了一次）。
+清掉之后（例如进游戏再回菜单）它又自己亮起来。
+
+**根因**：`emulate_mouse_from_touch` 只在按下时把模拟鼠标放到手指位置，
+**抬起时既不补发 `mouse_exited`、也不把鼠标挪走**。于是：
+
+- `fill_button` 在 `button_down` / `button_up` 里「钉住」的 `_hovered` 没人复位；
+- 转场把 `mouse_filter` 压成 `IGNORE` 再还原时，`_sync_hover_filter()` 按
+  `viewport.get_mouse_position()` 重算 —— 那个坐标正是**残留的模拟鼠标**，算出来还是 true。
+
+**正确做法**：
+
+- `start_screen._input()`（主菜单 / 战役页）与 `hud.handle_touch()`（局内 HUD）都收到
+  `InputEventScreenTouch.pressed == false` 就 `call_deferred` 清整层悬停
+  （**必须延迟**：Button 的 `button_up` 在 `_input` **之后**才跑，同步清会被同一帧钉回去）；
+- ★ 注意是**两层各清各的**：`start_screen` 的子树覆盖不到 HUD，反之亦然 ——
+  上一轮只修了主菜单，手玩立刻在局内报同一个症状；
+- 凡「转场结束按坐标重算悬停」的路径，转场收尾时**显式清一次**悬停
+  （`menu_chrome._on_panel_reversed()` 就是这么做的）。
+
+**判据**：手机端**没有 hover**。「指针停在哪」在触摸下没有意义 ——
+所有靠坐标推断悬停的地方都要先问一句「这个坐标是不是上一根手指留下的」。
+
+---
+
+### 5.65 ★★★ 铺满面板的内容根**默认 STOP**，会把面板自己的「返回」吃掉
+
+**症状（本轮实装战役菜单时）**：战役面板撑开后，右上角那颗「返回」**点不动** ——
+既不触发收回，也没有任何视觉反馈；面板里其它控件（轮播 / 描述）都正常。
+
+**根因**：`view/menu_secondary_panel.gd` 的挂载顺序是「先建「返回」，再把内容区
+`add_child` 上去」⇒ 内容区在**上面**。而 `Control.mouse_filter` 默认是
+`MOUSE_FILTER_STOP`：铺满整块面板的内容根会先接住所有点击，`gui_input` 里又没人处理，
+于是事件到此为止，下面的「返回」永远收不到。
+
+★ 这条**不会报错**，也不会在无头测试里因为「点了没反应」而红 —— 除非测试真的去点「返回」。
+
+**正确做法**：
+
+- 内容**根节点**一律 `MOUSE_FILTER_IGNORE`（`campaign_menu.gd` 的根就是）；
+  真正要吃事件的子面板（描述 / 关卡条 / 轮播）各自 `STOP`；
+- 子面板的矩形**不要盖到右上角**：关卡条右侧留出 `返回宽 + 边距 + 呼吸`（本作 200px），
+  描述面板从 `y=120` 才开始 —— 这样即使某个子控件是 `STOP`，也压不到返回键；
+- 测试要**同时**钉两条：`campaign_menu.mouse_filter == IGNORE`，且返回键矩形与关卡条
+  **不相交**（`tests/test_campaign_menu.gd`）。
+
+**同一轮的第二件事**：从菜单长按**进游戏**时，整层只是 `hide()`，撑开的面板**还开着**。
+若不在回菜单前收好，玩家点「返回主菜单」会看到一块开着的战役面板。
+⇒ `return_to_menu()` 在 `open_menu()` 之前调 `start_screen.reset_panels()`
+（= `panel_expand.collapse_instant()`，**即时**收回，不播动画：游戏期间这一层是隐藏的，
+播动画既没人看见、又可能停在半路）。
 
 ---
 

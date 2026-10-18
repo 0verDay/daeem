@@ -12,6 +12,7 @@ const UnitRes = preload("res://logic/unit.gd")
 const BuildingShaderRes = preload("res://view/building_flash.gdshader")
 const UnitDownedShaderRes = preload("res://view/unit_downed.gdshader")
 const Overlay3DRes = preload("res://view/overlay_view_3d.gd")
+const OrderFlagRes = preload("res://view/order_flag_view_3d.gd")
 
 func _initialize() -> void:
 	_case_name = "test_view3d"
@@ -809,27 +810,118 @@ func _test_order_flags(cfg) -> void:
 		return
 	game.set_process(false)
 
-	of.plant("move", u.pos, [u.id])
-	ok(of.active, "★ 移动命令插上了旗子")
+	var cell: float = cfg.cell_px
+	var fall_h: float = cell * cfg.num("render.order_flag_fall_height", 0.15)
+	var fall_sec: float = maxf(0.001, cfg.num("render.order_flag_fall_sec", 0.22))
+	var impact_sec: float = maxf(0.001, cfg.num("render.order_flag_impact_sec", 0.55))
+	var fade_sec: float = maxf(0.001, cfg.num("render.order_flag_fade_sec", 1.0))
+	var icon_in: float = maxf(0.001, cfg.num("render.order_flag_icon_fade_in_sec", 0.6))
+	var color_sec: float = maxf(0.001, cfg.num("render.order_flag_attack_color_sec", 0.6))
+	var move_c: Color = ConfigRes.parse_color(cfg.str_val("render.flag_move_color", "#4cd964"))
+	var attack_c: Color = ConfigRes.parse_color(cfg.str_val("render.flag_attack_color", "#e6c200"))
+
+	# ---- 移动：离地一点点生成 → 下落 → 落地 ----
+	of.plant("move", u.pos)
+	ok(of.active and of.phase == "fall", "★ 移动命令插旗（下落阶段）")
+	ok(of.fall_offset_last > 0.0 and of.fall_offset_last < cell * 0.3,
+		"★ 旗帜只在落点上方一点点生成（%.1f 世界单位，< 0.3 格）" % of.fall_offset_last)
+	near(of.fall_offset_last, fall_h, 0.001, "★ 生成高度来自 config（%.2f 格）" % cfg.num("render.order_flag_fall_height", 0.15))
+	var y0: float = of.fall_offset_last
+	of.sync(fall_sec * 0.5)
+	ok(of.fall_offset_last < y0 and of.fall_offset_last > 0.0,
+		"★ 旗帜正在下落（%.1f → %.1f）" % [y0, of.fall_offset_last])
+	ok(not of.icon_visible_last, "★ 移动命令没有红色交叉图标")
+	ok(of.cloth_color_last.is_equal_approx(move_c), "★ 移动命令旗色是绿色")
+
+	of.sync(fall_sec * 0.5)
+	eq(of.phase, "settle", "★ 落地后进入压缩/渐隐阶段")
+	ok(of.ripple_alpha_last > 0.0, "★ 落地点生成波纹")
+	var r0: float = of.ripple_radius_last
+	var a0: float = of.ripple_alpha_last
+	of.sync(0.05)
+	ok(of.ripple_radius_last > r0, "★ 波纹向外扩散")
+	ok(of.ripple_alpha_last < a0, "★ 波纹同时渐隐")
+	ok(of.scale_y_last < 1.0, "★ 落地后旗帜先压缩（%.3f）" % of.scale_y_last)
+
+	of.sync(impact_sec * 0.5)
+	ok(of.scale_y_last > 1.0, "★ 压缩后回弹过冲（%.3f）" % of.scale_y_last)
+	of.sync(impact_sec * 0.5)
+	near(of.scale_y_last, 1.0, 0.001, "★ 回弹后复位到 100%")
+	ok(of.alpha_last < 1.0, "★ 落地后开始渐隐")
+	of.sync(fade_sec + 0.1)
+	ok(not of.active, "★ 渐隐结束自动收旗")
+	ok(not of.icon_visible_last, "★ 动画结束后图标也收起")
+
+	# ---- 行军：不重播插下动画，只做变黄 + 红图标渐入 + 黄色波纹；图标完全出现后才渐隐 ----
+	of.plant("attack_move", u.pos)
+	eq(of.phase, "settle", "★ 行军命令直接出现在落点（不再播放下落）")
+	near(of.fall_offset_last, 0.0, 1e-6, "★ 行军旗帜不从上方落下")
+	near(of.scale_y_last, 1.0, 1e-6, "★ 行军旗帜不做压缩/回弹")
+	ok(of.ripple_alpha_last > 0.0, "★ 行军命令立刻出现波纹")
+	ok(of.ripple_color_last.is_equal_approx(attack_c),
+		"★ 行军波纹是黄色（不是绿旗色）")
+	ok(not of.icon_visible_last and of.icon_alpha_last == 0.0,
+		"★ 行军图标从透明开始渐入")
+	ok(of.icon_y_last > cell * 0.5, "★ 图标在杆顶正上方")
+	# 先在「颜色渐变中段 / 图标渐入中段」取一个两边都还没到终点的时刻
+	var t_mid: float = minf(color_sec, icon_in) * 0.5
+	of.sync(t_mid)
+	ok(of.icon_visible_last and of.icon_alpha_last > 0.0 and of.icon_alpha_last < 1.0,
+		"★ 行军图标正在渐入（%.3f）" % of.icon_alpha_last)
+	ok(of.cloth_color_last.r > move_c.r + 0.05 and of.cloth_color_last.b < move_c.b - 0.05,
+		"★ 行军旗色由绿向黄渐变")
+	ok(absf(of.alpha_last - 1.0) < 1e-6,
+		"★ 图标没完全出现前旗帜保持不透明")
+	near(of.scale_y_last, 1.0, 1e-6, "★ 行军全程不做压缩/回弹（%.3f）" % of.scale_y_last)
+	of.sync(maxf(0.0, icon_in - of.elapsed_last))
+	near(of.icon_alpha_last, 1.0, 0.001, "★ 图标完全出现")
+	ok(absf(of.alpha_last - 1.0) < 1e-6, "★ 图标刚完全出现时旗帜还没开始渐隐")
+	# 渐变与渐入时长可能不同：再推进到两者都完成的时刻
+	of.sync(maxf(0.0, maxf(color_sec, icon_in) - of.elapsed_last))
+	ok(of.cloth_color_last.is_equal_approx(attack_c), "★ 旗色已渐变到黄色")
+	var fade_start: float = icon_in
+	of.sync(maxf(0.0, fade_start + 0.05 - of.elapsed_last))
+	ok(of.alpha_last < 1.0, "★ 图标完全出现之后旗帜才开始渐隐")
+	ok(of.icon_alpha_last < 1.0, "★ 图标与旗帜一起渐出")
+	of.sync(fade_sec + 0.1)
+	ok(not of.active, "★ 行军插旗动效走完也自动收旗")
+
+	# ---- 新规则：部队是否到达 / 停下不再决定收旗 ----
+	of.plant("move", u.pos)
 	u.moving = false
 	u.has_attack_move = false
-	of.sync()
-	ok(not of.active, "★ 单位到达后移动旗自动收掉")
-
-	of.plant("attack_move", u.pos, [u.id])
-	u.moving = true
-	u.has_attack_move = true
-	of.sync()
-	ok(of.active, "★ 行军攻击进行中旗子仍在")
-	u.moving = false
-	u.has_attack_move = false
-	of.sync()
-	ok(not of.active, "★ 行军攻击完成后旗子收掉")
-
-	of.plant("move", u.pos, [u.id])
+	of.sync(0.0)
+	ok(of.active, "★ 部队停下不再立即收旗（动效自己走完）")
 	of.clear()
-	ok(not of.active, "★ clear() 收旗")
-	ok(of.flags_planted >= 3, "★ 至少插过 3 次旗（诊断 %d）" % of.flags_planted)
+	ok(not of.active, "★ clear() 立即收旗")
+
+	# ---- 替换：每道新命令只留最新一面 ----
+	var planted_before: int = of.flags_planted
+	of.plant("move", u.pos)
+	of.plant("attack_move", u.pos)
+	eq(of.flags_planted, planted_before + 2, "★ 新命令替换旧旗（诊断计数 +2）")
+	ok(of.active and of.kind == "attack_move", "★ 当前旗子是最新的行军命令")
+	of.clear()
+
+	# ---- 程序化图标 / 波纹贴图 ----
+	var tex: ImageTexture = OrderFlagRes.icon_texture(0.05)
+	ok(tex != null and tex.get_image() != null, "★ 红色交叉图标（程序化矢量）烘得出来")
+	if tex != null and tex.get_image() != null:
+		var img: Image = tex.get_image()
+		var n: int = img.get_width()
+		ok(_count_opaque(img) > 1000,
+			"★ 图标有实体像素（不透明 %d）" % _count_opaque(img))
+		ok(img.get_pixel(n / 2, n / 2).a > 0.5, "★ 图标中心是两个长对角线的交叉点")
+		ok(img.get_pixel(n / 2, n / 8).a < 0.1, "★ 图标顶部中央是空的（X 形，不是方块）")
+		ok(img.get_pixel(int(n * 0.135), int(n * 0.815)).a > 0.5,
+			"★ 左下那条短斜线画出来了")
+		ok(img.get_pixel(int(n * 0.865), int(n * 0.815)).a > 0.5,
+			"★ 右下那条短斜线画出来了")
+	var rt: ImageTexture = OrderFlagRes.ripple_texture()
+	ok(rt != null and _count_opaque(rt.get_image()) > 100,
+		"★ 落地波纹（程序化圆环）烘得出来")
+
+	ok(of.flags_planted >= 5, "★ 至少插过 5 次旗（诊断 %d）" % of.flags_planted)
 
 	game.queue_free()
 	await process_frame

@@ -1,30 +1,31 @@
 ## main.gd —— ★ 入口 / 唯一的流程调度者：开场页 → 主界面 → 游戏内场景
 ##
-## 流程（需求原文）：
+## 流程（需求原文 + 本轮改版的入口）：
 ##   1. 启动 = 暗色渐变入场页：上方徽记 + 标题 DAEEM；屏幕下方「————点击任意处进入游戏————」，
 ##      呼吸式渐显渐隐
-##   2. 点击任意处 → 主界面（屏幕正中的一条**地图选择条** + 它下面的 test 按钮）
-##   3. 按下 test → 用**选中的那张地图**建逻辑世界并进入游戏内场景
+##   2. 点击任意处 → 主界面（正中：标题条 + **test_1 / test_2 / test_3**；
+##      右侧「战役」按钮撑开的是**战役菜单**：轮播 + 关卡圆点 + 描述 + 长按进入）
+##   3. 按下任一颗 test_N，或在战役菜单里长按某一关 → 载入那一关并进入游戏内场景
 ##   4. ★ 游戏内的「设置 → 返回主菜单」→ 拆掉游戏场景、把主界面放回**第 2 步**那个状态
 ##
-## ★ 为什么把「建世界」从 _ready 挪到按下 test 那一刻（而不是先建好再拿白屏盖住）：
+## ★ 为什么把「建世界」从 _ready 挪到按下入口那一刻（而不是先建好再拿白屏盖住）：
 ##   进游戏之前 world / 相机 / HUD 都不该存在 —— 否则世界会在菜单背后偷偷 tick，
-##   而「地图载入失败」这种错也会在玩家还没进游戏时就弹出来。
+##   而「关卡载入失败」这种错也会在玩家还没进游戏时就弹出来。
 ##   代价是按下按钮那一帧要跑一次装配（载地图 + 字体 + 搭 HUD），原型阶段这点开销无所谓。
-## ★ 地图是**按那一刻选中的那张**建的：选择条的意义就在这里 ——
-##   建世界的调用只在本文件一处，所以「选了第二张图却进了第一张」这种错没有第二个入口。
+## ★ 关卡是**按玩家按下的那一项**建的：入口只带 `campaign_id + level_id`，
+##   「载入哪一份战役、取哪一关」只有本文件一处，所以「按了第二关却进了第一关」没有第二个入口。
 ##
-## ★★ 窗口模式与「回菜单」这两件事**只在本文件实现**（本轮新增的设置菜单是第二条入口）：
-##   · `toggle_fullscreen()` —— Ctrl+Q 与设置菜单里的「全屏」都走它，
+## ★★ 窗口模式与「回菜单」这两件事**只在本文件实现**（本轮新增的选项页是第二条入口）：
+##   · `toggle_fullscreen()` —— Ctrl+Q 与选项页里的「全屏」都走它，
 ##     否则两份实现迟早会漂（一份记得还原进入全屏前的窗口模式、另一份忘了）。
 ##   · `return_to_menu()` —— 拆游戏场景、放回开场页。★ 不重启进程、不新建开场页：
-##     玩家上一次选的地图还留在那条选择条上（见那里的注释）。
+##     玩家上一次选的那一关还留在菜单上（见那里的注释）。
 ##
 ## ★ 职责边界（三层各管一段，谁都不越界）：
-##   view/start_screen.gd  开场两页：只认输入、地图选择与自己的两个信号，不认识 world
+##   view/start_screen.gd  开场两页：只认输入、test_1/2/3 与自己的信号，不认识 world
 ##   view/game_scene3d.gd  游戏内场景（3D 唯一实现）：装配 world + view + hud，跑主循环
-##   view/hud.gd           游戏内 UI：设置菜单只**发信号**，不切窗口也不拆场景
-##   本文件                只做连接：把「按钮被按了 + 选了哪张图」翻译成「进哪个游戏」，
+##   view/hud.gd           游戏内 UI：选项页只**发信号**，不切窗口也不拆场景
+##   本文件                只做连接：把「按了哪一关」翻译成「进哪个游戏」，
 ##                         把「设置里点了全屏 / 回菜单」翻译成窗口模式与流程切换
 ##   没有任何一层把玩法规则写进来 —— 规则全在 logic/。
 ##
@@ -41,10 +42,14 @@ const StartScreenRes = preload("res://view/start_screen.gd")
 ##   ⚠️ `var game` 必须写成类型 `Node`：`Node3D` 与 `Node2D` 是平级分支，
 ##      写成 `Node2D` 会让本文件直接 Parse Error（见下面 `var game` 那段）。
 const GameSceneRes = preload("res://view/game_scene3d.gd")
-## ★ 单人战役的**占位界面**（主界面第二颗按钮 `campaign_test` 点进来的那一页）。
-const CampaignTestRes = preload("res://view/campaign_test.gd")
-## 扫 `data/campaigns/` 给那一页出选项（★ 扫目录这件事只做在 main 这一处：
-## 界面不认识「战役数据从哪来」，与地图选择条同一个口径）。
+## ★★ 战斗入口（本轮改版）：
+##   · 主界面正中三颗 `test_1 / test_2 / test_3` —— 各自直连一关（见 config 的 `menu.test_entries`）；
+##   · 「战役」按钮撑开的面板里是**战役菜单**（轮播 + 关卡圆点 + 描述 + 长按进入）。
+##   两条路都只发 `level_entry_pressed(campaign_id, level_id)`，本文件负责：
+##   载入战役 → 取那一关 → 取第一个可玩阵营 → `game.start_level()`。
+##
+## ★ 单人战役的占位页（`view/campaign_test.gd`）与「地图选择条 + test」那一套已经删掉：
+##   它们的功能被上面两条入口取代（用户要求：旧三件套从「战役」面板移除）。
 const CampaignLibraryRes = preload("res://logic/campaign_library.gd")
 
 ## 开场页用的字体基准字号（标题 / 提示 / 按钮各自另有字号，见 config.json 的 menu 段）
@@ -52,8 +57,6 @@ const MENU_FONT_SIZE := 32
 
 var cfg: ConfigRes = null
 var start_screen: CanvasLayer = null
-## ★ 单人战役的占位界面（`view/campaign_test.gd`；没打开时是 null）。
-var campaign_screen: CanvasLayer = null
 ## ★★ 类型必须是 `Node`，不能是 `Node2D`（本轮实测踩到）：
 ##    入口切到 3D 之后 `game_scene3d.gd` 是 **`Node3D`**，而 `Node3D` 与 `Node2D` 是
 ##    **平级的两个分支** —— 写 `var game: Node2D` 会让这一行直接
@@ -91,8 +94,16 @@ func _build_start_screen() -> void:
 	start_screen.setup(cfg, font)
 
 	start_screen.intro_dismissed.connect(_on_intro_dismissed)
-	start_screen.test_pressed.connect(_on_test_pressed)
-	start_screen.campaign_test_pressed.connect(_on_campaign_test_pressed)
+	start_screen.level_entry_pressed.connect(_on_level_entry_pressed)
+	# ★★ 主菜单「选项 → 设置 → 全屏」与游戏内走同一个 toggle_fullscreen（唯一实现）。
+	start_screen.fullscreen_toggled.connect(toggle_fullscreen)
+	start_screen.quit_requested.connect(_on_quit_requested)
+
+
+## 主菜单「选项 → 退出游戏」：关掉整个游戏。
+## ★ 真正 quit 放在 main.gd（流程层）；StartScreen 只发信号，不认识窗口生命周期。
+func _on_quit_requested() -> void:
+	get_tree().quit()
 
 
 # ------------------------------------------------------------------
@@ -105,11 +116,14 @@ func _on_intro_dismissed() -> void:
 	pass
 
 
-## 主界面按下 test：用**选中的那张地图**建世界并进游戏。
+## ★ 直连一张地图开局（**不再有任何界面按钮走这条路**）。
 ##
-## ★ 参数由 start_screen 带出来（它才知道玩家在下拉框里选了哪一项）；
-##   这里不读任何默认值 —— 「默认进哪张图」这件事只该有一个决定点，
-##   否则以后改默认地图就会出现「按钮显示的是一张、进去的是另一张」。
+## ★★ 保留它是因为「随便开一张图」仍然是测试 / 截图脚本的入口
+##   （`tests/test_*.gd`、`tests/bench_*.gd` 几十处 `main._on_test_pressed(...)`）：
+##   它绕开「战役 / 关卡」的全部概念，建的是**没有关卡目标**的纯地图局。
+##   正式入口（test_1/2/3 与战役菜单）走的是 `_on_level_entry_pressed()`。
+##
+## ★ 参数是**地图路径**：这里不读任何默认值 —— 「默认进哪张图」只该有一个决定点。
 func _on_test_pressed(map_path: String) -> void:
 	if game != null:
 		return          # 已经进过游戏了（按钮只该生效一次）
@@ -126,49 +140,70 @@ func _on_test_pressed(map_path: String) -> void:
 	# 进游戏之后开场页整层下线：背景与「点击任意处」的处理器一起停掉
 	start_screen.close()
 
-	# ★★ 设置菜单里那两条请求（全屏 / 返回主菜单）——见本文件头部「职责边界」。
+	# ★★ 选项页里那两条请求（全屏 / 返回主菜单）——见本文件头部「职责边界」。
 	game.fullscreen_toggled.connect(toggle_fullscreen)
 	game.return_to_menu_requested.connect(return_to_menu)
 
 
 # ------------------------------------------------------------------
-# 单人战役的占位入口（主界面 campaign_test 按钮）
+# 战斗入口（test_1/2/3 与战役菜单长按）—— 统一在这里载入关卡
 # ------------------------------------------------------------------
 
-## ★ 按下 `campaign_test`：挂出 `view/campaign_test.gd` 那一页（列关卡 + 选阵营 + 开始）。
+## ★★ 玩家选定了「哪一份战役的哪一关」→ 载入 → 取第一个可玩阵营 → 进游戏。
 ##
-## ★★ 三件事刻意放在这里而不是那一页里（见 `view/campaign_test.gd` 的文件头）：
-##   1. **扫战役目录**（`campaign_library.list_campaigns(cfg)`）—— 数据只有一个来源，
-##      那一页只管显示；扫出来的选项与「点进去真的能载入」是同一条路。
-##   2. 那一页是 `CanvasLayer`（layer 与开场页同一层），挂在 main 下。
-##   3. 「选了哪一关就进游戏」这条接线（`level_chosen` → `_on_campaign_level_chosen`）——
-##      那一页不认识 `game_scene`，也不认识 `world`。
+## ★ 两条入口共用（主界面正中三颗 test_N / 战役菜单里长按的那一关）：
+##   参数是**数据**（campaign_id + level_id），载入与建世界都在这里，
+##   界面那侧不认识 `campaign` / `world`（与「战役目录扫描只有一处」同一个口径）。
 ##
-## ⚠️ 幂等：已经开着就不再挂第二页（连点两下按钮不会挂出两层背景）。
-func _on_campaign_test_pressed() -> void:
-	if campaign_screen != null or game != null:
+## ★ 阵营为什么取第一个可玩方：nsoc 那套战役菜单里没有「选阵营」这一步，
+##   本作按用户确认的口径「默认第一个可玩阵营（F1），直接进」。
+##   以后要加选阵营，只需要在这里换掉 `playable[0]` 那一个值。
+##
+## ★ 占位战役 / 占位关（`campaigns_menu.json` 里没填 campaign_id / level_id 的）：
+##   根本不会走到这里（`view/campaign_menu.gd` 的 activate_chapter 会直接不发信号）。
+##   但数据写坏（战役 / 关卡读不出来）也必须**安静地不动**：宁可不进游戏，
+##   也不要进到一个空 World 里（那样报错会离真正的数据问题很远）。
+func _on_level_entry_pressed(campaign_id: String, level_id: String) -> void:
+	if game != null:
 		return
-	var font := FontLoaderRes.load_font(cfg)
-	campaign_screen = CampaignTestRes.new()
-	campaign_screen.name = "CampaignTestScreen"
-	add_child(campaign_screen)
-	campaign_screen.setup(CampaignLibraryRes.list_campaigns(cfg), cfg, font)
-	campaign_screen.level_chosen.connect(_on_campaign_level_chosen)
-	campaign_screen.back_pressed.connect(_on_campaign_back)
+	var option := _find_campaign_option(campaign_id)
+	if option.is_empty():
+		push_warning("战役不存在：%s" % campaign_id)
+		return
+	var campaign = CampaignLibraryRes.load_campaign_by_option(option, cfg)
+	if campaign == null:
+		push_warning("战役载入失败：%s" % campaign_id)
+		return
+	var level = campaign.level(level_id) if campaign.has_method("level") else null
+	if level == null:
+		push_warning("关卡不存在：%s / %s" % [campaign_id, level_id])
+		return
+	var playable: Array = level.playable_ids()
+	if playable.is_empty():
+		push_warning("关卡没有可玩阵营：%s / %s" % [campaign_id, level_id])
+		return
+	_on_campaign_level_chosen(campaign, level, String(playable[0]))
 
 
-## ★★ 在战役页里选好了「哪一关 + 用哪一方」→ 用**关卡装配**那条路进游戏。
+## 在扫出来的战役表里按 id 找那一项（找不到 → 空字典）。
+func _find_campaign_option(campaign_id: String) -> Dictionary:
+	for item in CampaignLibraryRes.list_campaigns(cfg):
+		if String((item as Dictionary).get("id", "")) == campaign_id:
+			return item
+	return {}
+
+
+## ★★ 把「一份已载入的战役 + 那一关 + 用哪一方」装配进游戏。
 ##
 ## 与 `_on_test_pressed()` 的差别只有「怎么建世界」那一处（`game.start()` vs
 ## `game.start_level()`），其余完全同一条尾：失败就把半成品撤掉、留在菜单上。
 ##
-## ⚠️ 顺序：**先把战役页收掉**再建世界。反过来（先建再收）在无头测试里会看到
-##    `_unhandled_input` 一条帧内同时发给两页；而且玩家会看到「载入那一帧」上面
-##    还压着一层背景。
+## ⚠️ 进游戏之前**不**手动收面板：`start_screen.close()` 会把整层菜单隐藏，
+##   撑开的面板跟着一起看不见；「返回主菜单」时由 `start_screen.reset_panels()`
+##   一步收回到初始态（见 `return_to_menu()`）。
 func _on_campaign_level_chosen(campaign, level, faction: String) -> void:
 	if game != null:
 		return                          # 已经在游戏里了（按钮只该生效一次）
-	_close_campaign_screen()
 
 	game = GameSceneRes.new()
 	game.name = "GameScene"
@@ -176,9 +211,7 @@ func _on_campaign_level_chosen(campaign, level, faction: String) -> void:
 	if not game.start_level(campaign, level, faction):
 		game.queue_free()
 		game = null
-		# 装配失败：把战役页放回来，玩家还能换一关/换一方再试 —— 而不是被丢回主界面
-		# （「菜单上有个进不去的入口」比「这一页还开着、能改选」难查得多）。
-		_on_campaign_test_pressed()
+		# 装配失败：人留在主界面（战役菜单还在面板里，可以换一关再试）。
 		return
 
 	# 进游戏之后开场页整层下线（与老路径同一个理由：背景与点击处理器一起停掉）
@@ -188,25 +221,7 @@ func _on_campaign_level_chosen(campaign, level, faction: String) -> void:
 	game.return_to_menu_requested.connect(return_to_menu)
 
 
-## 战役页里点了「返回」：收掉那一页，回主界面（开场页本来就还在，只要别关它）。
-func _on_campaign_back() -> void:
-	_close_campaign_screen()
-
-
-## 收掉战役占位页（幂等：没开时什么都不做）。
-func _close_campaign_screen() -> void:
-	if campaign_screen == null:
-		return
-	var leaving := campaign_screen
-	campaign_screen = null
-	# ⚠️ 与 return_to_menu() 里那两处同一个理由：这一帧里它可能已经被裁决销毁过，
-	#    判空要用 is_instance_valid()，不能写 `!= null`。
-	if is_instance_valid(leaving):
-		remove_child(leaving)
-		leaving.queue_free()
-
-
-## ★ 设置菜单里点了「返回主菜单」：拆掉游戏场景，把开场页放回**主界面那一页**。
+## ★ 选项页里点了「返回主菜单」：拆掉游戏场景，把开场页放回**主界面那一页**。
 ##
 ## ★★ 为什么不重启进程 / 不新建开场页：
 ##   · 不重启：玩家只是想换张图（甚至只是误点），重启等于把窗口、全屏状态、字体
@@ -228,17 +243,14 @@ func _close_campaign_screen() -> void:
 ##         `close()` 那次 hide() 之后整层是隐藏的，只切页内两层的话主界面看着在、
 ##         实际点不动（坑写在 start_screen.gd 那个函数的注释里）。
 ##
-## ★ 幂等：不在游戏里（game 为 null）时什么都不做 —— 设置菜单的按钮可能被连点，
+## ★ 幂等：不在游戏里（game 为 null）时什么都不做 —— 选项页的按钮可能被连点，
 ##   而那一下不该造出第二个开场页。
 func return_to_menu() -> void:
 	if game == null:
 		return
-	# ★ 顺手收掉战役占位页：它是「进游戏之前」的一层，回到主界面时不该还开着
-	#   （正常路径上它进游戏之前就收了；这一句挡的是「装配失败又放回来」那条路）。
-	_close_campaign_screen()
 	var leaving := game
 	game = null
-	# ★ 顺手把设置菜单收起来：那个面板活在这一局里，而回到菜单之后开场页的
+	# ★ 顺手把选项页收起来：那个面板活在这一局里，而回到菜单之后开场页的
 	#   背景会盖在它下面（CanvasLayer layer=100 对 HUD 的默认 1）——
 	#   不收的话，等下次进游戏它会**还开着**（HUD 是新建的，但同一帧的旧 HUD
 	#   会带着开着的面板一起被销毁，看着像闪了一下）。
@@ -256,6 +268,9 @@ func return_to_menu() -> void:
 		remove_child(leaving)
 		leaving.queue_free()
 	if start_screen != null:
+		# ★★ 先把可能开着的战役面板一步收回初始态，再显示主界面 ——
+		#   从战役菜单长按进游戏时那一层只是 hide() 了，面板还停在撑开态。
+		start_screen.reset_panels()
 		start_screen.open_menu()
 
 
@@ -307,7 +322,7 @@ func _handle_window_hotkey(event: InputEvent) -> bool:
 ## 游戏内「设置 → 全屏 / 窗口化」（`game.fullscreen_toggled` 连到这里）。
 ## ★ 为什么必须只有一份：它记着「进全屏之前是哪种窗口模式」（见下面那条注释），
 ##   抄成两份的话，其中一份早晚会忘了还原 —— 表现是「按 Ctrl+Q 退出全屏之后
-##   窗口变成 1280×720」，而用设置菜单退就不会。
+##   窗口变成 1280×720」，而用选项页退就不会。
 ##
 ## ⚠️ 无头（`--headless`）下 DisplayServer 是空实现：这个函数**什么都不会发生**
 ##   （也不会报错）。所以测试只验「请求真的走到了这里」，不去断言真实窗口模式。

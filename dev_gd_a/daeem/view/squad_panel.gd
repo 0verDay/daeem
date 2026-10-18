@@ -155,7 +155,7 @@ func _collect_teams() -> Array:
 func _row_style(b: Button, normal: StyleBoxFlat) -> void:
 	b.add_theme_stylebox_override("normal", normal)
 	b.add_theme_stylebox_override("hover", UiStyleRes.row_hover())
-	b.add_theme_stylebox_override("pressed", UiStyleRes.row_hover())
+	b.add_theme_stylebox_override("pressed", UiStyleRes.row_pressed())
 	b.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
 
 

@@ -20,7 +20,7 @@
 | 项目 | 结论 |
 |---|---|
 | 引擎 | Godot **4.7.2 stable · mono(.NET) 版**（`C:\D\GodotEngine\gd4.7.2mono\Godot_v4.7.2-stable_mono_win64.exe`，**未加入 PATH**）。★ 后来加 C# 群体内核时从普通版换成了 mono 版，见 pitfalls 1.1b |
-| 项目路径 | `dev_gd_a/daeem/`（`project.godot` 已就绪：Forward Plus / D3D12 / canvas_items 拉伸） |
+| 项目路径 | `dev_gd_a/daeem/`（`project.godot` 已就绪：Forward Plus / D3D12 / canvas_items 拉伸）。★ 后续已改为 **Mobile 渲染器 + `window/stretch/mode="viewport"`**，以 `project.godot` 与 `docs/mobile.md` 为准 |
 | 渲染 | **纯 2D 俯视**，一格一格画。逻辑坐标用「格」，渲染时才乘格宽 |
 | 本轮范围 | **只做单机**：地图 + 移动/A* + 战斗警戒 + 城墙血量 + 箭塔 + 区块占领 + 资源 + 建造 |
 | 本轮不做 | 联机、正式敌人、地图编辑器、战争迷雾、存档、打包发布 |
@@ -3386,7 +3386,7 @@ SubViewport 探针（1920×1080 + `gui_embed_subwindows = true`），把主界�
 
 ---
 
-## 三十五、游戏内**设置二级菜单**：全屏 / 返回主菜单（这一轮）
+## 三十五、游戏内**设置二级菜单**：全屏 / 返回主菜单（这一轮；已被第四十七节的选项页取代）
 
 **需求原文**：
 
@@ -3781,6 +3781,10 @@ HUD 读它、扣费走 `resource_pool_for()`、快照发它，三者天然同一
 
 ### 37.11 单人战役的**占位图形入口**（`campaign_test`）
 
+> ⚠️ **本节已被 37.12 取代**：`view/campaign_test.gd` 与「地图选择条 + test + campaign_test」
+> 三件套已经删除，入口改成 test_1/2/3 + nsoc 版式的战役菜单。下面保留的是当时的落点与理由
+> （数据层的 `campaign_library` / `game.start_level` 仍然有效）。
+
 需求原文：「为单人战役加一个占位界面吧，我要通过这个界面进入战役里面测试，
 就在 test 下面单独放一个 `campaign_test` 按钮」。
 
@@ -3813,6 +3817,64 @@ HUD 读它、扣费走 `resource_pool_for()`、快照发它，三者天然同一
 关卡只列单人、阵营跟着关卡走、**按开始真的进了那一关**（id / 席位 / 目标 / 选中单位对得上）、
 合作关不出现、以及老路径（按 test）不受影响。`tests/test_start_flow.gd` 另加了按钮几何断言，
 并把原来那条**写死坐标**的点击改成点「按钮自己的中心」（布局一改就得改坐标那种脆弱写法去掉了）。
+
+### 37.12 ★★ 战役菜单改成 nsoc 的版式；入口收成 test_1/2/3 + 长按进关
+
+需求原文：「将 nsoc 中的战役菜单样式移植到当前 daeem 中的战役菜单中，只需要向其中加入
+main_test 关卡即可（其余战役用战役# 和 关卡#替代），daeem 中其余的三个关卡放到主菜单的
+test_1，test_2，test_3 按钮中」。
+
+★★ **上一节的 `campaign_test` 占位页与「地图选择条 + test」三件套已经整体删除** ——
+它们的功能被下面两条入口取代。改之前先读这一节，别按 37.11 的落点去找代码。
+
+| 落点 | 做什么 |
+|---|---|
+| `view/campaign_menu.gd`（新） | 战役菜单：左 1/4 **战役轮播** + 顶部**关卡圆点** + 右侧**关卡标题 / 正文** + 左右拖动切关 + **长按 3 秒**（前 1 秒不显环，可拖动取消）进入。版式照 nsoc 的 `CampaignPanel.tscn` / `campaign_panel.gd` |
+| `view/campaign_carousel.gd`（新） | 战役竖向轮播：3 个等高占位页循环、拖动 + 吸附、卡片底部渐变遮罩压「战役名 + 简介」（照 nsoc 的 `campaign_carousel.gd`） |
+| `logic/campaign_menu_db.gd`（新） | 读 `data/campaigns_menu.json`：`{key, name, description, chapters:[{name, description, campaign_id, level_id}]}`。★ **与 `data/campaigns/` 分开**：占位战役不该为了摆个名字造一份假关卡 |
+| `data/campaigns_menu.json`（新） | `c1` = 测试战役（**只有一关 main_test**，指向 `demo` 战役的 `mt`）；`c2/c3` = 战役#2/3 + 关卡#1..（占位） |
+| `view/menu_secondary_panel.gd` | `with_battle_entries` → `with_campaign_menu`：内容区放战役菜单，信号 `level_activated(campaign_id, level_id)` |
+| `view/menu_chrome.gd` | 「战役」那颗撑开的仍是同一块面板，内容换成战役菜单；新增 `reset_secondary_panel()`（回菜单时一步收回） |
+| `view/start_screen.gd` | 正中 `MenuColumn` 变成 **test_1 / test_2 / test_3**（数据在 `menu.test_entries`）；新信号 `level_entry_pressed(campaign_id, level_id)` |
+| `view/main.gd` | `_on_level_entry_pressed()`：找战役 → 取关卡 → **第一个可玩阵营** → `start_level()`。`_on_test_pressed(map_path)` 保留给测试 / 截图脚本 |
+| `data/config.json` | `menu.test_entries[]` + `menu.campaign_menu.*`（字号 / 圆点 / 长按秒数 / 底部提示）；删掉 `campaign_test_*` / `campaign_select_*` |
+| `view/battle_entries.gd`、`view/campaign_test.gd` | **删除**（旧三件套 / 占位页） |
+
+★ **几条刻意为之的口径**：
+
+1. **配色不照搬**：nsoc 是白卡片 + 浅蓝圆点；这里全部走 `theme.gd` / `menu_theme.gd`
+   的暗金线框（新增 `campaign_panel()` / `campaign_card()` / `campaign_dot()`）。
+   在暗金主界面里塞一块白面板会裂开 —— 移植的是**版式与交互**，不是那一套颜色。
+2. **占位关长按什么都不发生**：`activate_chapter()` 检查 `campaign_id` / `level_id`，
+   缺一个就返回 false、不发信号（用户原话「占位战役触发进入逻辑后没有任何逻辑」）。
+3. **没有选阵营那一步**：nsoc 的菜单是「长按直接进」，所以两边都默认取
+   `playable_ids()[0]`（F1）。要加选择只改 `main.gd` 里那一个值。
+4. **左上「返回」还是面板提供的**：战役菜单自己不建返回键（nsoc 那份是整页，
+   daeem 的这块是二级面板的内容区）。内容根节点必须 `MOUSE_FILTER_IGNORE`，
+   否则会把右上的「返回」吃掉。
+5. **离开菜单要收面板**：从战役菜单进游戏时整层只是 `hide()`，面板还停在撑开态。
+   `return_to_menu()` 在 `open_menu()` 之前调 `start_screen.reset_panels()`
+   （= `panel_expand.collapse_instant()`），否则「返回主菜单」会看到一块开着的战役面板。
+
+★ 断言：`tests/test_campaign_menu.gd`（97 项：数据源 / test_1/2/3 配置 / 版式几何 / 圆点与描述 /
+占位关不触发 / main_test 长按进关与默认阵营 / 回菜单面板已收回）；`tests/test_start_flow.gd` 与
+`tests/test_menu_chrome.gd` 改成新入口；`tests/test_map_select.gd` 改成**单独装部件**验
+（地图选择条不再挂在界面上，但部件与直连地图那条底层路径保留）。
+全量 `49 套 / 5867 项 / ALL PASS`。
+
+**✅ 本轮完成清单**（对上需求原话，逐条可勾）：
+
+- [x] 战役菜单移植 nsoc 的版式：左侧战役竖向轮播（拖动 + 吸附）、顶部关卡圆点、
+      右侧关卡标题 / 正文、左右拖动切关、长按 3 秒进入（环形进度，前 1 秒不显环）；
+- [x] 菜单里只放 **main_test** 一关（指向 demo 的 mt）；
+- [x] 其余战役 / 关卡用 **战役#2/3 + 关卡#1..** 占位，长按**什么都不发生**；
+- [x] 原三关改成主界面正中的 **test_1 / test_2 / test_3**（渡口 / 双子防线 / 渡口争夺）；
+- [x] 旧「地图选择条 + test + campaign_test」三件套从「战役」面板移除（文件已删）；
+- [x] 两条入口统一到 `level_entry_pressed(campaign_id, level_id)`，建世界仍只在 `main.gd`；
+- [x] 回主菜单时撑开的面板一步收回（不残留开着的面板）；
+- [x] 文档同步：`architecture.md` / `README.md`（状态表 + 手玩清单）/ `mobile.md` / 根目录变更日志；
+- [x] 验收：全量测试 49 套 / 5867 项 ALL PASS；截图 `shots/02_menu.png`、
+      `shots/03_campaign.png`、`shots/04_campaign_placeholder.png`。
 
 ### 37.13 ★★ 阵营 AI 的「招将 → 满员 → 出兵」：三个实测 bug 与「编制上限逐将不同」
 
@@ -4766,3 +4828,33 @@ ensure_ascii=False)` + 结尾换行，**以 LF 写**）重写 `production`，只
 （**不能在自己区划之外建造** / 那一格什么都没建出来）；`test_view` / `test_unit_editor` /
 `test_ui` 找空地时也改成按 faction 口径。全量 `tools/run-tests.ps1`
 **44 套 / 5314 项 / ALL PASS**；`check-syntax.ps1` 全过。
+
+## 四十七、选项页菜单（HUD + 主菜单共用，仿 nsoc）
+
+**需求**：游戏内右上角「设置」改为「选项」；主菜单右上角同位置也加「选项」；菜单交互仿
+`../nsoc/dev_gd/nsoc/scripts/ui/settings_panel_controller.gd`，但配色/字体换成本作的暗底金线。
+
+**结构**（`view/options_panel.gd`）：
+
+- 全屏 `ColorRect` overlay（0.55 暗度，`z_index = 200`）+ 居中 `Panel`（640×440，暗底金边）；
+- 一级：继续 / 设置 / 返回主菜单（主菜单为 返回 / 设置 / 退出游戏）；
+- 二级「设置」：全屏 / 窗口化（按当前模式显示）+ 返回；
+- 打开 / 关闭 0.2s `TRANS_QUAD`：overlay 淡入 + 面板 0.85→1；子页 0.15s 横滑 + 淡入淡出；
+- 点 overlay 空白处 / 「继续」关闭；`ThemeRes.animations_enabled() == false` 时直接呈现终态。
+
+**接线**：
+
+| 文件 | 改动 |
+|---|---|
+| `view/options_panel.gd` | 新增共用控制器；只发 `fullscreen_action` / `exit_action` / `resume_action` |
+| `view/hud.gd` | 右上按钮文案改为「选项」；旧下拉菜单换成 `_build_options_panel()`；`settings_panel` 兼容字段指向 overlay；`set_settings_menu_open()` 改为 open/close；`opened`/`closed` 同步按钮常驻满格 |
+| `view/start_screen.gd` | 右上 160×80「选项」按钮；同控制器（`style = "menu"`）；信号 `fullscreen_toggled` / `quit_requested` 上抛；选项按钮登记为 panel_expand 的滑出目标，并在 `reversed` 后恢复右上锚点 |
+| `view/main.gd` | 连接主菜单的全屏 / 退出信号；`toggle_fullscreen()` 与游戏内共用 |
+| `view/ui_layout.gd` | 删掉旧下拉菜单的 `SETTINGS_MENU_*`（选项页是居中 overlay） |
+| `data/config.json` | `settings.title` 改为「选项」；新增 panel_title / continue_text / back_text / exit_game_text；新增 `options` 段的尺寸 / 暗度 / 时长 |
+
+**测试**：`tests/test_settings_menu.gd` 重写为 63 项（HUD 结构 / 居中 / 一级⇄二级 / 空白关闭 /
+继续关闭 / 按钮解除常驻 / 全屏信号链 / 触摸悬停清理 / 返回主菜单 / 主菜单选项按钮）；
+`test_ui` 同步按钮文案。`test_ui` 1148、`test_menu_chrome` 156、`test_start_flow` 130、
+`test_ui_kit` 97、`test_view3d` 203、`test_press_fx` 35、`test_fill_button` 140、
+`test_touch` 54 全绿。

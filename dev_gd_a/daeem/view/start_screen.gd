@@ -10,10 +10,11 @@
 ##   （字号字距一起过渡，落位后切页看不出接缝）；② 切页 + 外壳那三块面板**滑入**。
 ##   动效总开关关掉时两段都跳过、当场到位。
 ##
-## ★★ 真正的**进游戏入口**（地图选择条 + test + campaign_test）**不在本文件里**：
-##   它们住在「战役」那颗按钮撑开的面板中（`view/battle_entries.gd`）。本文件只把
-##   内容区发上来的两个信号转成自己的 `test_pressed` / `campaign_test_pressed` ——
-##   ⇒ `view/main.gd` 那侧只认这两个信号，一行都不用改。
+## ★★ 主界面上的**进游戏入口**有两处：
+##   · 正中那一列 `MenuColumn`：**test_1 / test_2 / test_3**（各自直连一关，见 `_build_menu`）；
+##   · 右下「战役」按钮撑开的面板：**战役菜单**（`view/campaign_menu.gd`，长按进入某一关）。
+##   两路都归到本文件的同一个信号 `level_entry_pressed(campaign_id, level_id)` ——
+##   ⇒ `view/main.gd` 那侧只认这一个信号（载入战役 / 建世界都在它那儿）。
 ##
 ## ★★ 配色与风格（参考图的「暗色渐变底 + 金色细线边框 + 纯几何形状」）：
 ##   · 底：`view/menu_background.gd`（竖直渐变 + 中心辉光 + 上下金线），**不再有白底**；
@@ -55,20 +56,23 @@ const TextMarksRes = preload("res://view/text_marks.gd")
 const MenuChromeRes = preload("res://view/menu_chrome.gd")
 ## ★★ 悬停时「金色自下而上填进来」的那套动效（见 view/fill_button.gd）。
 const FillButtonRes = preload("res://view/fill_button.gd")
+## ★ 正中那三颗 test_1/2/3 的线框样式（与外壳上的按钮同一套）。
+const MenuThemeRes = preload("res://view/menu_theme.gd")
+## ★★ 选项页菜单（仿 nsoc）：与 HUD 右上角「选项」共用 view/options_panel.gd。
+const OptionsPanelRes = preload("res://view/options_panel.gd")
 
 ## 入场页被点掉了（main.gd 只需知道这件事，不必知道点的哪个像素）
 signal intro_dismissed
-## 主界面上的 test 按钮被按了 —— 该进游戏了
-## ★ 参数是**玩家选中的地图**：谁建世界（main.gd）谁就该知道建哪一张，
-##   而不是自己去猜一个默认值 —— 否则选择条选了第二张图，进去的还是第一张。
-signal test_pressed(map_path: String)
-
-## ★ 玩家按下了 **campaign_test**（单人战役的占位界面，见 `view/campaign_test.gd`）。
+## ★★ 玩家选定了「从哪一关进游戏」（主界面正中的 test_1/2/3，或「战役」面板里长按的那一关）。
 ##
-## ★ 它**不带载荷**：这一页不认识战役数据 —— 谁去扫 `data/campaigns/`、谁去建世界，
-##   都由 `view/main.gd` 决定。这正是它与 `test_pressed(map_path)` 的差别：
-##   地图是**这一页自己选的**（选择条就住在这里），而战役不是。
-signal campaign_test_pressed()
+## ★ 参数是**数据**（战役 id + 关卡 id），不是已经载入的对象：
+##   本页不认识 `data/campaigns/`、也不认识 `world` —— 载入战役、挑阵营、建世界
+##   全在 `view/main.gd` 那一处（与战役目录扫描同一个口径：数据只有一个来源）。
+signal level_entry_pressed(campaign_id: String, level_id: String)
+## ★★ 主菜单「选项 → 设置 → 全屏 / 窗口化」：与游戏内同一条信号链，窗口模式由 main.gd 改。
+signal fullscreen_toggled
+## ★★ 主菜单「选项 → 退出游戏」：真正 quit 仍是 main.gd 的事。
+signal quit_requested
 
 const PAGE_INTRO := 0
 const PAGE_MENU := 1
@@ -100,6 +104,9 @@ var _menu: Control = null
 ## ★ 新版式外壳（左上资料 / 左侧导航 / 右下入口）—— `view/menu_chrome.gd`。
 ## 它只跟着主界面一起显隐；**不含**任何进入游戏的逻辑（那是 `_menu` 那一列的事）。
 var _chrome: Control = null
+## ★★ 主菜单右上角「选项」按钮 + 选项页控制器（overlay + 居中面板）。
+var _options_btn: Button = null
+var _options_panel = null
 ## ★ 带字距的标题（`view/text_marks.gd` 的 SpacedLabel，**不是** Label）——
 ##   节点名仍是 "Title"，测试与排查照旧走 `StartRoot/Intro/Title`。
 var _title: Control = null
@@ -137,17 +144,22 @@ func setup(p_cfg: ConfigRes, p_font: Font) -> void:
 	_build_background()
 	_build_intro()
 	_build_chrome()
+	# ★ 选项按钮要在外壳 attach() 抄初始状态之前挂上并登记为「撑开时滑出」的目标；
+	#   它必须在 chrome 之后 add，才能在同一个 _root 里画在外壳之上。
+	_build_options_button()
 	_build_menu()
+	_build_options_panel()
 	# ★ 主界面那一列（现在只有标题条）登记为「撑开时要让路」的目标
 	#   （dir = 0 = 只淡出不移位）：外壳上的按钮撑开面板时它必须让开。
 	if _chrome != null and _menu != null:
 		_chrome.add_avoid_target(_menu, 0)
-	# ★★ 真正的 test / campaign_test 入口现在住在「战役」面板里（`view/battle_entries.gd`）：
-	#   外壳把内容区那两个信号往上传一层，这里再转成自己的两个信号发出去 ——
-	#   ⇒ **view/main.gd 那侧一行都不用改**（它只认 start_screen 的这两个信号）。
+	# ★★ 真正的「进哪一关」入口现在有两处：正中那三颗 test_1/2/3，以及「战役」面板里
+	#   长按选中的关卡。外壳把面板那一路往上传一层，这里再转成自己的 level_entry_pressed ——
+	#   ⇒ **view/main.gd 那侧只认一个信号**（它只管「载入哪一关」，不关心从哪按的）。
 	if _chrome != null:
-		_chrome.test_pressed.connect(func(path: String): test_pressed.emit(path))
-		_chrome.campaign_test_pressed.connect(func(): campaign_test_pressed.emit())
+		_chrome.level_activated.connect(
+			func(campaign_id: String, level_id: String):
+				level_entry_pressed.emit(campaign_id, level_id))
 
 	show_page(PAGE_INTRO)
 
@@ -167,6 +179,10 @@ func show_page(page: int) -> void:
 	# ★ 外壳只在**主界面**上有意义（入场页上不该出现资料 / 侧边栏 / 入口），所以跟着 _menu 一起切。
 	if _chrome != null:
 		_chrome.visible = (page == PAGE_MENU)
+	if _options_btn != null:
+		_options_btn.visible = (page == PAGE_MENU)
+	if page != PAGE_MENU and _options_panel != null and _options_panel.is_open():
+		_options_panel.close()
 	if page == PAGE_INTRO:
 		start_click_blink()
 		start_title_shine()
@@ -205,6 +221,8 @@ func close() -> void:
 	#   于是被点过的 `test` 那颗按钮的 `_hovered` 会一直停在 true —— 返回主菜单时
 	#   那片金还留在按钮上（手机端尤其明显：手指抬起后模拟鼠标停在原地）。
 	#   见 view/fill_button.gd 的 `_on_visibility_changed` / `clear_hover_in`。
+	if _options_panel != null and _options_panel.is_open():
+		_options_panel.close()
 	FillButtonRes.clear_hover_in(self)
 
 
@@ -222,8 +240,45 @@ func close() -> void:
 func open_menu() -> void:
 	show()
 	show_page(PAGE_MENU)
+	# ★ 回来时选项页必须是关的（可能在上一次菜单里开着就进了游戏 / 切了页）
+	if _options_panel != null and _options_panel.is_open():
+		_options_panel.close()
 	# ★★ 返回主菜单时再清一次悬停（兜底）：清掉之后不会自己填回来，
 	#   只有真实 `mouse_entered` 才会 —— 所以「按过的东西」不会一回来就亮着。
+	FillButtonRes.clear_hover_in(self)
+	# ★★ 同时**解除常驻满格**：进游戏前点开的那块面板（以及它那颗入口按钮）在
+	#   游戏期间是隐藏的、金停在满格；回到菜单这一下解除 ⇒ 玩家看到的是「反向渐出」，
+	#   而不是「一回来就亮着 / 一回来就没了」。
+	FillButtonRes.clear_latched_in(self)
+
+
+# ------------------------------------------------------------------
+# 触摸：手指抬起就作废悬停
+# ------------------------------------------------------------------
+
+## ★★ 手机端：**每一次触摸抬起**都立刻作废悬停（本轮修用户报的 bug）。
+##
+## 症状：长按主菜单某颗按钮再抬起手指，那颗按钮的金色填充**一直留着**。
+## 成因：`fill_button` 在 `button_down` / `button_up` 里把 `_hovered` **钉住**（某些平台
+##   按下时模拟鼠标会先「离开」，不钉的话按下去金反而退回去）；而触摸抬起后
+##   `emulate_mouse_from_touch` 的模拟鼠标**停在原地**、不会补发 `mouse_exited`
+##   ⇒ 没有任何一条路会把 `_hovered` 复位。
+## 为什么 `call_deferred`：`_input` 早于 Button 的 `button_up`；同步清会被那句「钉住」
+##   在同一帧里又置回 true。延到本帧末尾（Button 处理完之后）才清，才真的生效。
+## ★ 只认**触摸**抬起：桌面鼠标仍然靠真实的 `mouse_entered` / `mouse_exited`，不受影响。
+## ★ 与「常驻满格（latched）」互不干扰：面板开着的那颗按钮是 latched，清 hover 不会让它暗下去。
+func _input(event: InputEvent) -> void:
+	# 进游戏后这一层是 hide() 的：那时没有任何按钮需要复位，别为每次触摸付一次递归
+	if not visible:
+		return
+	if not (event is InputEventScreenTouch):
+		return
+	if (event as InputEventScreenTouch).pressed:
+		return
+	call_deferred("_clear_menu_hover")
+
+
+func _clear_menu_hover() -> void:
 	FillButtonRes.clear_hover_in(self)
 
 
@@ -335,9 +390,8 @@ func _build_intro() -> void:
 ##
 ## ★★ 它与 `_menu`（正中那一列）的分工：
 ##   · 本函数建的这个外壳 = **版式**：资料、五个侧边栏入口、右下战役 / 演义 / 合作模式；
-##     点它们会撑开一块**空面板**（机制在 view/panel_expand.gd）。
-##   · `_build_menu()` 建的那一列 = **真正的入口**（地图选择条 / test / campaign_test），
-##     按用户要求「叠在外壳上层，暂时不动」。
+##     点它们会撑开一块面板（机制在 view/panel_expand.gd）；「战役」那块里是战役菜单。
+##   · `_build_menu()` 建的那一列 = **test_1 / test_2 / test_3**（直连关卡）。
 ##
 ## ⚠️ 顺序：先在 `_root` 上 `add_child` 外壳、再建那一列 —— `add_child` 的先后就是叠放顺序。
 ## ⚠️ `setup()` 必须在 `add_child` **之后**调：外壳内部的转场引擎要 `await get_tree().process_frame`
@@ -348,17 +402,126 @@ func _build_chrome() -> void:
 	_chrome.setup(cfg, _font)
 
 
+## ★★ 主菜单右上角「选项」：位置 / 尺寸照 nsoc（160×80，右上角留 20px）。
+## ★ 它同时登记到 panel_expand 的「撑开时滑出」名单里（dir=1 = 向右），
+##   否则外壳面板撑满全屏后它还会浮在最上面。
+func _build_options_button() -> void:
+	_options_btn = Button.new()
+	_options_btn.name = "OptionsButton"
+	_options_btn.text = cfg.str_val("settings.title", "选项")
+	_options_btn.focus_mode = Control.FOCUS_NONE
+	_options_btn.add_theme_font_size_override("font_size",
+		cfg.int_val("menu.chrome.options_font_size", 28))
+	if _font != null:
+		_options_btn.add_theme_font_override("font", _font)
+	var w: float = cfg.num("menu.chrome.options_w", 160.0)
+	var h: float = cfg.num("menu.chrome.options_h", 80.0)
+	var m: float = cfg.num("menu.chrome.options_margin", 20.0)
+	_options_btn.set_anchors_preset(Control.PRESET_TOP_RIGHT, false)
+	_options_btn.offset_left = -m - w
+	_options_btn.offset_top = m
+	_options_btn.offset_right = -m
+	_options_btn.offset_bottom = m + h
+	FillButtonRes.attach_text(_options_btn)
+	FillButtonRes.set_base_font_color(_options_btn, MenuThemeRes.text_normal())
+	FillButtonRes.set_panel_color(_options_btn, ThemeRes.bg_top())
+	_options_btn.add_theme_stylebox_override("normal", MenuThemeRes.button_normal())
+	_options_btn.add_theme_stylebox_override("hover", MenuThemeRes.button_hover_clear())
+	_options_btn.add_theme_stylebox_override("pressed", MenuThemeRes.button_fill_latched())
+	_options_btn.add_theme_stylebox_override("focus", MenuThemeRes.button_normal())
+	_options_btn.add_theme_stylebox_override("disabled", MenuThemeRes.button_disabled())
+	_options_btn.add_theme_color_override("font_disabled_color", MenuThemeRes.text_disabled())
+	_root.add_child(_options_btn)
+	if _chrome != null:
+		var eng = _chrome.expand_engine()
+		if eng != null:
+			eng.add_target(_options_btn, 1)
+			# ★ panel_expand 会把这些目标拍平成 TOP_LEFT（为了 Tween position/size）；
+			#   收回之后把「选项」按钮的右上锚点补回来，否则窗口一变宽它就不贴右上了。
+			eng.reversed.connect(_restore_options_button_anchor)
+
+
+func _restore_options_button_anchor() -> void:
+	if _options_btn == null:
+		return
+	var w: float = cfg.num("menu.chrome.options_w", 160.0)
+	var h: float = cfg.num("menu.chrome.options_h", 80.0)
+	var m: float = cfg.num("menu.chrome.options_margin", 20.0)
+	_options_btn.set_anchors_preset(Control.PRESET_TOP_RIGHT, false)
+	_options_btn.offset_left = -m - w
+	_options_btn.offset_top = m
+	_options_btn.offset_right = -m
+	_options_btn.offset_bottom = m + h
+
+
+## ★★ 选项页（overlay + 居中面板）—— 与 HUD 共用 view/options_panel.gd。
+func _build_options_panel() -> void:
+	if _options_btn == null:
+		return
+	_options_panel = OptionsPanelRes.new()
+	_options_panel.name = "OptionsPanel"
+	_root.add_child(_options_panel)
+	_options_panel.setup(_root, _font, cfg, {
+		"style": "menu",
+		"resume_label": cfg.str_val("settings.back_text", "返回"),
+		"settings_label": cfg.str_val("settings.panel_title", "设置"),
+		"back_label": cfg.str_val("settings.back_text", "返回"),
+		"panel_title": cfg.str_val("settings.panel_title", "设置"),
+		"exit_label": cfg.str_val("settings.exit_game_text", "退出游戏"),
+		"fullscreen_on_text": cfg.str_val("settings.fullscreen_on_text", "窗口化"),
+		"fullscreen_off_text": cfg.str_val("settings.fullscreen_off_text", "全屏"),
+		"fullscreen_action": Callable(self, "_on_options_fullscreen"),
+		"exit_action": Callable(self, "_on_options_quit"),
+		"can_open": Callable(self, "_can_open_options"),
+	})
+	_options_btn.pressed.connect(_on_options_pressed)
+
+
+func _on_options_pressed() -> void:
+	if _options_panel != null:
+		_options_panel.open()
+
+
+func _on_options_fullscreen() -> void:
+	fullscreen_toggled.emit()
+
+
+func _on_options_quit() -> void:
+	quit_requested.emit()
+
+
+## 外壳在撑开面板 / 转场时，选项按钮不该再弹出另一块浮层。
+func _can_open_options() -> bool:
+	if _page != PAGE_MENU or _intro_morphing:
+		return false
+	if _chrome == null:
+		return true
+	var eng = _chrome.expand_engine()
+	if eng == null:
+		return true
+	return not eng.is_busy() and not eng.is_expanded()
+
+
+## ★ 主菜单右上角「选项」按钮 / 选项页 —— 只给测试与排查用。
+func options_button() -> Button:
+	return _options_btn
+
+
+func options_panel():
+	return _options_panel
+
+
 func _build_menu() -> void:
 	# ★★ 结构（从外到内，测试按节点路径找控件，别随手改名字）：
 	#   `MainMenu`（CenterContainer，整页铺满、负责居中）
 	#     └ `MenuOuter`（VBox，**把标题条与按钮列竖着连起来**）
 	#         ├ `MenuOrnaments`（标题条：徽记 + DAEEM + 金线，自己也是一个 VBox）
 	#         ├ 一个下边距（`menu_rule_gap`，标题条与那一列之间的呼吸）
-	#         └ `MenuColumn`（VBox：地图选择条 + test + campaign_test）
+	#         └ `MenuColumn`（VBox：test_1 / test_2 / test_3）
 	#
 	# ★★ 为什么标题条与按钮列要放进**同一个 VBox**（而不是各摆各的）：
 	#   第一版把标题条锚在屏幕下边、按钮列整页居中，两者互不知情 ——
-	#   结果在 1920×1080 上（实测截图）标题条正好落在 campaign_test 底下、贴着字标，
+	#   结果在 1920×1080 上（实测截图）标题条正好落在按钮列底下、贴着字标，
 	#   而且窗口比例一变就可能直接压到按钮上（无头 1920×1920 的视口里就是撞上的）。
 	#   连成一列之后，「标题在按钮上方」是**排版保证**的，不是靠两个坐标碰巧错开。
 	#
@@ -437,10 +600,80 @@ func _build_menu() -> void:
 	rule.custom_minimum_size = Vector2(cfg.num("menu.menu_rule_width", 220.0), 1.0)
 	rule_wrap.add_child(rule)
 
-	# ★★ 这里原来还有一列「地图选择条 + test + campaign_test」（`MenuColumn`）——
-	#   它们现在整块搬进了**「战役」按钮撑开的那块面板**（`view/battle_entries.gd`），
-	#   由面板自己拥有（面板开时建、关时销毁）。
-	#   ⇒ 主界面从此只剩标题条 + 外壳；`_menu` 仍然存在（外壳撑开时它要淡出让路）。
+	# ★★ 正中那一列按钮（`MenuColumn`）：**test_1 / test_2 / test_3**，各自直连一关。
+	#
+	#   为什么又回到 MenuOuter 里：这三颗是「进游戏」的快捷入口，与标题条同属主界面正中那一块；
+	#   放进同一个 VBox 才有「标题在上、按钮在下」的排版保证（旧版把两者各摆各的，窗口比例一变
+	#   就会撞上 —— 见本函数开头那段注释）。
+	#
+	#   数据来自 `menu.test_entries[]`（label / campaign / level）：加一颗按钮只改 JSON，
+	#   不必碰代码；「点进去进哪一关」也由数据说了算（载入与建世界在 view/main.gd）。
+	var column := VBoxContainer.new()
+	column.name = "MenuColumn"
+	column.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	column.alignment = BoxContainer.ALIGNMENT_CENTER
+	column.add_theme_constant_override("separation",
+		cfg.int_val("menu.test_button_gap", 48))
+	outer.add_child(column)
+	for entry in _test_entries():
+		column.add_child(_make_test_button(entry))
+
+
+## `menu.test_entries` 那一张表（每项 `{label, campaign, level}`）。
+## ★ 读不到 / 写坏 → 返回空表（界面是「只有标题条」，不崩）；不在这里编默认关卡：
+##   默认值写死在代码里会让「数据没了」表现成「按钮还在、进的是别的一关」。
+func _test_entries() -> Array:
+	var v: Variant = cfg.get_path_value("menu.test_entries") if cfg != null else null
+	var out: Array = []
+	if typeof(v) != TYPE_ARRAY:
+		return out
+	for item in (v as Array):
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		var d: Dictionary = item
+		var label := String(d.get("label", "")).strip_edges()
+		var campaign := String(d.get("campaign", "")).strip_edges()
+		var level := String(d.get("level", "")).strip_edges()
+		if label == "" or campaign == "" or level == "":
+			continue
+		out.append({"label": label, "campaign": campaign, "level": level})
+	return out
+
+
+## 一颗 test_N 按钮：与主界面其它按钮同一套线框 + 悬停金（见 view/fill_button.gd）。
+func _make_test_button(entry: Dictionary) -> Button:
+	var b := Button.new()
+	b.name = "TestLevelButton"
+	b.text = String(entry["label"])
+	b.focus_mode = Control.FOCUS_NONE
+	b.custom_minimum_size = Vector2(
+		cfg.num("menu.test_button_width", 240.0),
+		cfg.num("menu.test_button_height", 80.0)
+	)
+	if _font != null:
+		b.add_theme_font_override("font", _font)
+	b.add_theme_font_size_override("font_size", cfg.int_val("menu.test_button_size", 28))
+	# ★ 顺序不能换：attach_text() 必须在挂样式之前（挂样式那一步会写「原字色」）。
+	FillButtonRes.attach_text(b)
+	FillButtonRes.set_base_font_color(b, MenuThemeRes.text_normal())
+	# 底是**面板的深色底**：显式告诉填充层，别去扫 pressed 那格的实心金（见 menu_chrome 同一段注释）
+	FillButtonRes.set_panel_color(b, ThemeRes.bg_top())
+	FillButtonRes.set_prefer_light(b, true)
+	b.add_theme_stylebox_override("normal", MenuThemeRes.button_normal())
+	b.add_theme_stylebox_override("hover", MenuThemeRes.button_hover_clear())
+	b.add_theme_stylebox_override("pressed", MenuThemeRes.button_fill_latched())
+	b.add_theme_stylebox_override("focus", MenuThemeRes.button_normal())
+	b.add_theme_stylebox_override("disabled", MenuThemeRes.button_disabled())
+	b.add_theme_color_override("font_disabled_color", MenuThemeRes.text_disabled())
+	FillButtonRes.set_latched(b, false)
+	var campaign_id := String(entry["campaign"])
+	var level_id := String(entry["level"])
+	b.pressed.connect(func():
+		# ⚠️ 本文件是 CanvasLayer（不是 Control）：可见性用 `visible`，没有 is_visible_in_tree()。
+		if not visible:
+			return
+		level_entry_pressed.emit(campaign_id, level_id))
+	return b
 
 
 ## 标题下面那条金色分隔线（参考图里标题上下的细线）。
@@ -851,13 +1084,40 @@ func menu_chrome() -> Control:
 	return _chrome
 
 
-## ★ 当前撑开面板里那块「战斗测试入口」（`view/battle_entries.gd`）—— 只给测试与排查用。
+## ★ 主界面正中那三颗 `test_1/2/3` —— 只给测试与排查用。
+## ★ 顺序 = `menu.test_entries` 里的顺序（左列从上到下）。
+func test_buttons() -> Array:
+	if _menu == null:
+		return []
+	var column := _menu.get_node_or_null("MenuPad/MenuOuter/MenuColumn")
+	if column == null:
+		return []
+	var out: Array = []
+	for c in column.get_children():
+		if c is Button:
+			out.append(c)
+	return out
+
+
+## ★ 当前撑开面板里那块战役菜单（`view/campaign_menu.gd`）—— 只给测试与排查用。
 ##
-## ★ 地图选择条 / test / campaign_test 现在住在**「战役」那颗按钮撑开的面板**里：
-##   要拿它们得先把那块面板展开（点「战役」，或 `menu_chrome().expand_engine().expand(...)`），
-##   再问这里。没展开 / 展开的是别的块时返回 null。
-func battle_entries():
-	return _chrome.battle_entries() if _chrome != null else null
+## ★ 战役菜单住在**「战役」那颗按钮撑开的面板**里：要拿它得先把那块面板展开
+##   （点「战役」，或 `menu_chrome().expand_engine().expand(...)`），再问这里。
+##   没展开 / 展开的是别的块时返回 null。
+func campaign_menu():
+	return _chrome.campaign_menu() if _chrome != null else null
+
+
+## ★★ 把撑开的面板立刻收回初始态（不播动画）—— 回主菜单时用。
+##
+## 为什么需要：从战役菜单长按进入游戏时，整层菜单只是被 `hide()` 了，面板还停在撑开态；
+##   不收回的话「返回主菜单」之后玩家看到的是那块开着的面板，而不是主界面。
+##   ★ 用**即时**收回：游戏期间这一层是隐藏的，播放收回动画既没人看见、又可能跑一半。
+func reset_panels() -> void:
+	if _options_panel != null and _options_panel.is_open():
+		_options_panel.close()
+	if _chrome != null:
+		_chrome.reset_secondary_panel()
 
 
 ## 入场页标题（`view/text_marks.gd` 的 SpacedLabel，**不是** Label）。

@@ -197,13 +197,36 @@ func _update_box() -> void:
 		if rr.size.length() < cfg.touch_box_min_px:
 			return
 		_box_started = true
-	# ★★ 每次都用**两指当前的位置**同时刷新选框的两个对角 —— 矩形随两指实时变化
-	#    （不再是「起点只定一次、之后只动一个角」）。另两个角就是矩形的其余两边。
-	var wa = _to_world(rr.position)
-	var wb = _to_world(rr.end)
+	# ★★ 两个角必须取**两根手指自己的位置**，不能取 `rr.position` / `rr.end`
+	#   （= 屏幕矩形的左上 / 右下角）。用户报的 bug：「右手在上、左手在下时，
+	#   选框的右上角和左下角不跟手，和手指差一截」。
+	#
+	#   原因：屏幕矩形的左上 / 右下是「x 最小、y 最小」与「x 最大、y 最大」这两个**组合点**，
+	#   它们只有在「一根手指在左上、另一根在右下」时才等于手指；一旦是**另一条对角线**
+	#   （右上一根、左下一根，x 方向相反），rr.position 落在**左手**、rr.end 落在**右手**，
+	#   而屏幕矩形真正属于那两根手指的两个角（右上 / 左下）**从来没有被采集过** ——
+	#   把这两点投回地面再投影回来，自然就离手指一截。
+	#   ⇒ 直接喂两指本身：`drag_box()` 自己做 `abs()`，于是那两个角正好落在手指上；
+	#     另两个角由世界矩形透视投影得到（是个四边形，这是对的，不是 bug）。
+	var ps: Array = _first_two_points()
+	if ps.size() < 2:
+		return
+	var wa = _to_world(ps[0])
+	var wb = _to_world(ps[1])
 	if wa == null or wb == null:
 		return
-	input_ctrl.touch_box_set(wa, wb)
+	# ★ 世界矩形负责「框到谁」，屏幕矩形负责「画出来的框」——后者逐像素跟手（见下面注释）。
+	input_ctrl.touch_box_set(wa, wb, ps[0], ps[1])
+
+
+## 前两根手指的屏幕坐标（按按下顺序，最多两个）。
+func _first_two_points() -> Array:
+	var out: Array = []
+	for k in _points.keys():
+		out.append(_points[k])
+		if out.size() >= 2:
+			break
+	return out
 
 
 ## 前两个手指在当前屏幕上的外接矩形（选框的两个角 = 两指当前位置）。

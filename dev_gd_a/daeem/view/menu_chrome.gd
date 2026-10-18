@@ -7,22 +7,21 @@
 ##
 ## ★★ 点任意一块 → 那一块**撑满全屏**、其余两块滑出屏幕外（机制在 `view/panel_expand.gd`），
 ##   撑开后挂上一块面板（见 `view/menu_secondary_panel.gd`）：
-##     · 「战役」那颗 → 面板内容区里是**地图选择条 + test + campaign_test**
-##       （`view/battle_entries.gd`，从主界面正中那一列搬过来的）；
+##     · 「战役」那颗 → 面板内容区里是**战役菜单**（`view/campaign_menu.gd`：
+##       左侧战役轮播 + 顶部关卡圆点 + 右侧关卡描述 + 长按进入，版式移植自 nsoc）；
 ##     · 其余各块 → 面板是空的（只有一颗「返回」）。
 ##
-## ★ 本文件只管**版式与点击**：不认识玩法、也不建世界 —— 内容区发上来的两个信号
-##   只往上传一层（start_screen → main.gd），谁建世界仍然只有 main.gd 知道。
+## ★ 本文件只管**版式与点击**：不认识玩法、也不建世界 —— 内容区发上来的
+##   `level_activated(campaign_id, level_id)` 只往上传一层（start_screen → main.gd），
+##   谁载入战役、谁建世界仍然只有 main.gd 知道。
 ##
 ## ★ 按钮的四态与悬停填充都复用现成的工厂（`menu_theme` 出样式、`fill_button` 出那片金），
 ##   与正中那一列按钮是同一套观感。这里没有把它抽成公共函数，是因为那一列按用户要求
 ##   「暂时不动」—— 为了共用去改它不划算，等它要改的时候再合并。
 extends Control
 
-## 内容区里那颗 test 被按了（面板 → 外壳 → start_screen → main.gd，见下）
-signal test_pressed(map_path: String)
-## 内容区里那颗 campaign_test 被按了
-signal campaign_test_pressed()
+## 战役菜单里长按满了某一关（面板 → 外壳 → start_screen → main.gd，见下）
+signal level_activated(campaign_id: String, level_id: String)
 
 const ConfigRes = preload("res://logic/config.gd")
 const ThemeRes = preload("res://view/theme.gd")
@@ -66,6 +65,14 @@ var _profile_tween: Tween = null
 var _battle_btn: Button = null
 ## 这一轮是哪颗控件触发的撑开（决定面板里放不放内容）。
 var _pending_btn: Control = null
+## ★★ 当前**锁在满格**的那颗入口按钮（本轮新增）。
+##
+## 口径（用户报的「点一下立刻满、随后自己退回去」）：
+##   · 按下 → 锁住（`set_latched(true)`）⇒ 那片金按 `FILL_TIME` **正向**填满后**停住**；
+##   · 面板收起（`view/panel_expand.gd` 的 `reversed`）→ 解除 ⇒ 按 `DRAIN_TIME` **反向**渐出。
+## 为什么必须锁：面板一撑开，外壳会把按钮的 `mouse_filter` 压成 IGNORE（让路 / 防留洞），
+##   于是 `_hovered` 被自愈清掉 —— 不锁的话金会**在面板还开着的时候就退回去**。
+var _latch_btn: Button = null
 
 
 func setup(p_cfg: ConfigRes, p_font: Font) -> void:
@@ -95,6 +102,10 @@ func setup(p_cfg: ConfigRes, p_font: Font) -> void:
 	_expand.intro_sec = cfg.num("menu.chrome.intro_sec", 0.55)
 	# ★ 面板挂上来的那一刻把它内容区的信号接过来（面板是每次撑开新建、收起销毁的）
 	_expand.expanded.connect(_on_panel_expanded)
+	# ★★ 收起（点「返回」/ 反向转场跑完）= 「返回」发生了 ⇒ 解除入口按钮的那个常驻满格，
+	#   让那片金走反向渐出。接在 `reversed` 上而不是 `reverse()` 的入口：反向要**看得见**，
+	#   等转场结束、按钮重新可见时再解除，动画才不会被藏在转场里。
+	_expand.reversed.connect(_on_panel_reversed)
 	# 让路方向照 nsoc：左上与左侧向左滑出、右下向右滑出
 	_expand.add_target(_profile, -1)
 	_expand.add_target(_nav, -1)
@@ -292,9 +303,38 @@ func _build_left_nav() -> void:
 
 
 func _on_nav_pressed(btn: Button) -> void:
-	if _expand != null:
-		_pending_btn = btn
-		_expand.expand(_nav, btn)
+	if _expand == null or _expand.is_busy():
+		return
+	_latch_origin(btn)
+	_pending_btn = btn
+	_expand.expand(_nav, btn)
+
+
+## ★★ 把「谁被点开了」锁成常驻满格（同一时刻只有一颗）。
+##
+## 为什么要在这里做而不是交给 `fill_button` 自己：只有外壳知道「这一下是**打开一个面板**、
+##   而不是一次普通的按下」。面板开着期间按钮要一直亮着；面板收起由 `_on_panel_reversed` 解除。
+func _latch_origin(btn: Button) -> void:
+	_latch_btn = btn
+	for b in _nav_buttons:
+		FillButtonRes.set_latched(b, b == btn)
+	for b in _side_buttons:
+		FillButtonRes.set_latched(b, b == btn)
+
+
+## 面板收起 = 「返回」：解除常驻 ⇒ 那片金按 `DRAIN_TIME` 反向渐出（用户要的第二段动画）。
+##
+## ★ 顺带**清一次悬停**：转场期间外壳把 `mouse_filter` 压成 IGNORE 又还原，
+##   `fill_button._sync_hover_filter()` 会按**鼠标坐标**把悬停算回来 —— 手机端那个坐标是
+##   `emulate_mouse_from_touch` 留下的模拟鼠标（还停在当初点的那颗按钮上）⇒ 不清理的话
+##   「返回之后那颗按钮又自己亮起来」。桌面不受影响（真实的鼠标早就不在那儿了）。
+func _on_panel_reversed() -> void:
+	FillButtonRes.clear_hover_in(self)
+	_latch_btn = null
+	for b in _nav_buttons:
+		FillButtonRes.set_latched(b, false)
+	for b in _side_buttons:
+		FillButtonRes.set_latched(b, false)
 
 
 # ------------------------------------------------------------------
@@ -354,9 +394,11 @@ func _build_right_side() -> void:
 
 
 func _on_side_pressed(btn: Button) -> void:
-	if _expand != null:
-		_pending_btn = btn
-		_expand.expand(_side, btn)
+	if _expand == null or _expand.is_busy():
+		return
+	_latch_origin(btn)
+	_pending_btn = btn
+	_expand.expand(_side, btn)
 
 
 # ------------------------------------------------------------------
@@ -401,7 +443,11 @@ func _make_menu_button(node_name: String, text: String, font_size: int) -> Butto
 	UiWidgetsRes.apply_button_styles(b, {
 		"normal": MenuThemeRes.button_normal(),
 		"hover": MenuThemeRes.button_hover_clear(),
-		"pressed": MenuThemeRes.button_selected(),
+		# ★★ 按下态**不能**用实心金（`button_selected()`）：那是「一按就整块亮金」的来历
+		#   ——底纹是瞬时的、那片自绘金还在按 FILL_TIME 慢慢涨，两者叠在一起就是
+		#   用户报的「点一下立刻满填充，随后又自己退回去」。按下只加亮描边，
+		#   填充**全部**交给填充层（正向填满 → 面板开着期间锁住 → 收起时反向渐出）。
+		"pressed": MenuThemeRes.button_fill_latched(),
 		"disabled": MenuThemeRes.button_disabled(),
 	})
 	FillButtonRes.set_base_font_color(b, MenuThemeRes.text_normal())
@@ -450,33 +496,43 @@ func _string_list(path: String, fallback: Array) -> Array:
 
 ## 造那块面板（引擎撑开之后调它）。
 ##
-## ★ 内容只在**「战役」那颗**撑开时有（地图选择条 + test + campaign_test）；
+## ★ 内容只在**「战役」那颗**撑开时有（战役菜单：轮播 / 关卡圆点 / 描述 / 长按进入）；
 ##   其余各块（资料 / 侧边栏五键 / 演义 / 合作模式）撑开的都是空面板。
 func _make_secondary_panel():
-	var with_entries: bool = _pending_btn != null and _pending_btn == _battle_btn
+	var with_campaign_menu: bool = _pending_btn != null and _pending_btn == _battle_btn
 	var p = MenuSecondaryPanelRes.new()
-	p.setup(cfg, _font, _expand.transition_sec, _expand.margin, with_entries)
+	p.setup(cfg, _font, _expand.transition_sec, _expand.margin, with_campaign_menu)
 	return p
 
 
-## 面板挂上来了：把它内容区的两个信号往上接一层。
+## 面板挂上来了：把它内容区的信号往上接一层。
 ## ★ 面板每次撑开都是新的、收起就销毁 ⇒ 连接跟着它一起消失，不会越连越多。
 func _on_panel_expanded() -> void:
 	var p = _expand.secondary_panel()
 	if p == null:
 		return
-	if p.has_signal("test_pressed"):
-		p.test_pressed.connect(func(path: String): test_pressed.emit(path))
-	if p.has_signal("campaign_test_pressed"):
-		p.campaign_test_pressed.connect(func(): campaign_test_pressed.emit())
+	if p.has_signal("level_activated"):
+		p.level_activated.connect(
+			func(campaign_id: String, level_id: String):
+				level_activated.emit(campaign_id, level_id))
 
 
-## 当前撑开面板里那块「战斗测试入口」（`view/battle_entries.gd`）—— 没展开 / 空面板时是 null。
-## ★ 给测试用：地图选择条 / test / campaign_test 现在住在面板里，测试要先展开「战役」再问这里。
-func battle_entries():
+## 当前撑开面板里那块战役菜单（`view/campaign_menu.gd`）—— 没展开 / 空面板时是 null。
+## ★ 给测试用：轮播 / 关卡圆点 / 描述面板现在住在「战役」面板里，测试要先展开「战役」再问这里。
+func campaign_menu():
 	if _expand == null:
 		return null
 	var p = _expand.secondary_panel()
-	if p == null or not p.has_method("entries"):
+	if p == null or not p.has_method("campaign_menu"):
 		return null
-	return p.entries()
+	return p.campaign_menu()
+
+
+## ★★ 把撑开的面板**立刻**收回初始态（不播动画）。
+##
+## 为什么需要：从战役菜单长按进入游戏时，整层菜单只是 `hide()` 了，面板还停在撑开态；
+##   而「返回主菜单」之后玩家该看到的是**主界面**，不是一块开着的面板。
+##   收回动画在隐藏层里没人看得见，所以直接一步到位（也避免 Tween 在隐藏期间跑一半）。
+func reset_secondary_panel() -> void:
+	if _expand != null:
+		_expand.collapse_instant()

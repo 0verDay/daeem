@@ -280,100 +280,87 @@ func _test_entry_flow() -> void:
 
 	await process_frame
 
-	# ★★ 地图选择条 + test + campaign_test 现在住在**「战役」按钮撑开的那块面板**里
-	#    （view/battle_entries.gd，从主界面正中那一列整块搬过去的）—— 先把面板撑开。
-	var entries = await open_battle_panel(menu)
-	ok(entries != null, "（前提）「战役」面板里有那三个测试入口")
-	if entries == null:
+	# ★★ 主界面正中现在是**三颗 test_1 / test_2 / test_3**（各自直连一关）；
+	#    旧的「地图选择条 + test + campaign_test」三件套已经从界面上移除。
+	var buttons: Array = menu.test_buttons()
+	ok(buttons.size() == 3, "★ 主界面正中正好有三颗 test 按钮（实际 %d）" % buttons.size())
+	if buttons.size() != 3:
 		main.queue_free()
 		return
 
-	var button: Button = entries.test_button()
-	ok(button is Button, "面板里有一个按钮")
-	if button is Button:
-		eq((button as Button).text, "test", "按钮文案是 test")
-		var area_owner: Control = (button as Control).get_parent().get_parent()
-		var area: Rect2 = area_owner.get_global_rect()
-		var center: Vector2 = (button as Control).get_global_rect().get_center()
-		ok(absf(center.x - area.get_center().x) < 2.0, "test 按钮水平居中")
-		ok(area.size.x >= 100.0 and area.size.y >= 100.0, "按钮所在的那一层铺满了可用的窗口（不是缩成一团）")
-		var select: Button = entries.map_select_button()
-		ok(select is Button, "★ test 按钮上方有一条地图选择条")
-		if select is Button:
-			ok((select as Control).get_global_rect().end.y
-					<= (button as Control).get_global_rect().position.y + 1.0,
-				"★ 选择条在 test 按钮上方（需求原文「在其上方」）")
-
-		var camp_btn: Button = entries.campaign_test_button()
-		ok(camp_btn is Button, "★ 面板里有 campaign_test 按钮（战役占位入口）")
-		if camp_btn is Button:
-			eq(camp_btn.text, "campaign_test", "★ 按钮上那行字就是 campaign_test")
-			ok(camp_btn.get_global_rect().position.y
-					>= (button as Control).get_global_rect().end.y - 1.0,
-				"★ campaign_test 在 test 按钮**下面**（用户原话「就在 test 下面」）")
-			var gap_px: float = camp_btn.get_global_rect().position.y \
-				- (button as Control).get_global_rect().end.y
+	for i in buttons.size():
+		var b: Button = buttons[i]
+		ok(b is Button, "第 %d 颗是 Button" % i)
+		eq(b.text, "test_%d" % (i + 1), "★ 第 %d 颗的文案是 test_%d" % [i + 1, i + 1])
+		ok(b.get_parent() != null and b.get_parent().name == "MenuColumn",
+			"它住在 MenuColumn 里（主界面正中那一列）")
+		ok(absf(b.get_global_rect().get_center().x
+				- b.get_parent().get_global_rect().get_center().x) < 2.0,
+			"★ 第 %d 颗水平居中" % (i + 1))
+		if i > 0:
+			var prev: Button = buttons[i - 1]
+			var gap_px: float = b.get_global_rect().position.y - prev.get_global_rect().end.y
 			ok(gap_px >= 8.0 and gap_px <= 80.0,
-				"★ 两颗按钮挨得比较近（实测间距 %.1f px，期望 8~80）" % gap_px)
-			ok(camp_btn.get_parent() == (button as Control).get_parent(),
-				"campaign_test 按钮就在同一块内容里（与 test 同一个容器）")
+				"★ 第 %d 颗紧挨着上一颗（间距 %.1f px）" % [i + 1, gap_px])
 
-		var orn: Control = menu.menu_ornaments()
-		ok(orn != null, "主界面上有标题条那一层（MenuOrnaments）")
-		if orn != null:
-			var emblem: Control = orn.find_child("MenuEmblem", true, false)
-			ok(emblem is Control, "标题条里有徽记")
-			ok(emblem != null and emblem.mouse_filter == Control.MOUSE_FILTER_IGNORE,
-				"★ 徽记不吃鼠标")
-			var word: Control = orn.find_child("MenuWordmark", true, false)
-			ok(word != null and String(word.text) == menu.cfg.str_val("menu.title", "DAEEM"),
-				"标题条里有 DAEEM 字标")
-			ok(word != null and word.mouse_filter == Control.MOUSE_FILTER_IGNORE,
-				"★ 字标不吃鼠标")
-			var m_rule: Control = orn.find_child("MenuRule", true, false)
-			ok(m_rule is Control, "标题条下面有一条金色细线")
-			ok(m_rule != null and m_rule.mouse_filter == Control.MOUSE_FILTER_IGNORE,
-				"★ 细线不吃鼠标")
-			var outer: Control = orn.get_parent()
-			ok(outer != null and String(outer.name) == "MenuOuter",
-				"★ 标题条住在 MenuOuter 里")
-			# ★★ 按钮列**已经不在这一列里了**（搬进「战役」面板了）—— 所以这里不再断言
-			#   「标题条在按钮列上方」那条排版关系，改断言「那一列只剩标题条」+「按钮在面板里」。
-			ok(menu.get_node_or_null("StartRoot/MainMenu/MenuPad/MenuOuter/MenuColumn") == null,
-				"★★ MenuOuter 里已经没有 MenuColumn（那三个测试控件整列搬走了）")
-			ok(entries.is_ancestor_of(button),
-				"★★ 而 test 按钮现在挂在「战役」面板的那块内容里")
+	var button: Button = buttons[0]
+	var orn: Control = menu.menu_ornaments()
+	ok(orn != null, "主界面上有标题条那一层（MenuOrnaments）")
+	if orn != null:
+		var emblem: Control = orn.find_child("MenuEmblem", true, false)
+		ok(emblem is Control, "标题条里有徽记")
+		ok(emblem != null and emblem.mouse_filter == Control.MOUSE_FILTER_IGNORE,
+			"★ 徽记不吃鼠标")
+		var word: Control = orn.find_child("MenuWordmark", true, false)
+		ok(word != null and String(word.text) == menu.cfg.str_val("menu.title", "DAEEM"),
+			"标题条里有 DAEEM 字标")
+		ok(word != null and word.mouse_filter == Control.MOUSE_FILTER_IGNORE,
+			"★ 字标不吃鼠标")
+		var m_rule: Control = orn.find_child("MenuRule", true, false)
+		ok(m_rule is Control, "标题条下面有一条金色细线")
+		ok(m_rule != null and m_rule.mouse_filter == Control.MOUSE_FILTER_IGNORE,
+			"★ 细线不吃鼠标")
+		var outer: Control = orn.get_parent()
+		ok(outer != null and String(outer.name) == "MenuOuter",
+			"★ 标题条住在 MenuOuter 里")
+		ok(button.get_parent() != null and button.get_parent().get_parent() == outer,
+			"★★ 按钮列与标题条在同一个 MenuOuter 里（「标题在上、按钮在下」是排版保证的）")
+		ok(orn.get_global_rect().end.y <= button.get_global_rect().position.y + 1.0,
+			"★ 标题条在按钮列**上方**")
 
-		var sb: StyleBox = (select as Control).get_theme_stylebox("normal")
-		ok(sb is StyleBoxFlat, "选择条有一个 StyleBoxFlat 底纹")
-		if sb is StyleBoxFlat:
-			var flat: StyleBoxFlat = sb
-			ok(flat.bg_color.a < 0.25,
-				"★ 线框按钮是**透明底**（alpha %.2f）——暗底上实心浅底会是一块白斑" % flat.bg_color.a)
-			ok(flat.border_color.r > flat.border_color.b, "★ 边框是**金色**（R > B）")
-			ok(flat.get_border_width(SIDE_LEFT) >= 1 and flat.get_border_width(SIDE_LEFT) <= 2,
-				"★ 边框是**细线**（%d px）——参考图里没有粗线" % flat.get_border_width(SIDE_LEFT))
-		var test_sb: StyleBox = (button as Control).get_theme_stylebox("normal")
-		if test_sb is StyleBoxFlat:
-			ok((test_sb as StyleBoxFlat).bg_color.a < 0.25, "★ test 按钮同样是透明底 + 金线")
-		var hover_sb: StyleBox = (button as Control).get_theme_stylebox("hover")
-		if hover_sb is StyleBoxFlat:
-			ok((hover_sb as StyleBoxFlat).bg_color.a <= 0.001,
-				"★ 悬停底纹是**透明底**（那片金交给填充层，叠两层会把金压暗）")
-			var hb := hover_sb as StyleBoxFlat
-			ok(hb.border_color.r > hb.border_color.b and hb.border_width_left >= 1,
-				"★ 但悬停时**线亮着**（鼠标在哪儿要看得出来）")
-		ok((button as Control).has_meta(FillButtonRes.META),
-			"★ 而且按钮挂着「金色填充层」—— 悬停时金自下而上填进来")
+	var sb: StyleBox = (button as Control).get_theme_stylebox("normal")
+	ok(sb is StyleBoxFlat, "test 按钮有一个 StyleBoxFlat 底纹")
+	if sb is StyleBoxFlat:
+		var flat: StyleBoxFlat = sb
+		ok(flat.bg_color.a < 0.25,
+			"★ 线框按钮是**透明底**（alpha %.2f）——暗底上实心浅底会是一块白斑" % flat.bg_color.a)
+		ok(flat.border_color.r > flat.border_color.b, "★ 边框是**金色**（R > B）")
+		ok(flat.get_border_width(SIDE_LEFT) >= 1 and flat.get_border_width(SIDE_LEFT) <= 2,
+			"★ 边框是**细线**（%d px）——参考图里没有粗线" % flat.get_border_width(SIDE_LEFT))
+	var hover_sb: StyleBox = (button as Control).get_theme_stylebox("hover")
+	if hover_sb is StyleBoxFlat:
+		ok((hover_sb as StyleBoxFlat).bg_color.a <= 0.001,
+			"★ 悬停底纹是**透明底**（那片金交给填充层，叠两层会把金压暗）")
+		var hb := hover_sb as StyleBoxFlat
+		ok(hb.border_color.r > hb.border_color.b and hb.border_width_left >= 1,
+			"★ 但悬停时**线亮着**（鼠标在哪儿要看得出来）")
+	ok((button as Control).has_meta(FillButtonRes.META),
+		"★ 而且按钮挂着「金色填充层」—— 悬停时金自下而上填进来")
 
 	var test_rect: Rect2 = (button as Control).get_global_rect()
 	ok(test_rect.size.x > 1.0 and test_rect.size.y > 1.0, "test 按钮已经排过版（量得到尺寸）")
 	await _click_at(test_rect.get_center())
 
 	var game = main.game
-	ok(game != null, "按下 test 之后出现了游戏内场景")
+	ok(game != null, "按下 test_1 之后出现了游戏内场景")
 	ok(main.get_node_or_null("GameScene") == game, "游戏内场景挂在 main 下的 GameScene 节点上")
 	if game != null:
+		# ★★ test_1 直连 demo / 01_beachhead：按下去就该真的进那一关（不是随便开一张图）。
+		ok(game.level_playing != null, "★ 这一局是从**关卡**开的（不是裸地图）")
+		if game.level_playing != null:
+			eq(String(game.level_playing.id), "01_beachhead",
+				"★★ test_1 进的就是它配的那一关（01_beachhead）")
+		eq(game.world.my_faction, "F1", "★ 默认用第一个可玩阵营（F1）")
 		for node_name in ["Camera3D", "GroundView3D", "UnitView3D", "BuildingView3D",
 				"OverlayLayer", "InputController", "Hud"]:
 			ok(game.get_node_or_null(node_name) != null, "进游戏后节点树里有 %s" % node_name)
@@ -400,7 +387,7 @@ func _test_entry_flow() -> void:
 			await process_frame
 		ok(game.world.time > t0, "进游戏后主循环在推进逻辑（world.time 前进）")
 
-	menu.test_pressed.emit()
+	menu.level_entry_pressed.emit("demo", "01_beachhead")
 	await process_frame
 	ok(main.game == game, "★ 再按一次 test 不会建出第二个世界（按钮只生效一次）")
 

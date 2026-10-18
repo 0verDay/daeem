@@ -66,6 +66,8 @@ func _run() -> void:
 	_test_tap_move_tolerance(cfg, world, palette)
 	await _test_long_press_pan(cfg, world, palette)
 	_test_two_finger_box(cfg, world, palette)
+	_test_two_finger_box_screen_rect(cfg, world, palette)
+	_test_box_select_screen_and_group(cfg, world, palette)
 	_test_two_finger_switches_from_pan(cfg, world, palette)
 	_test_starts_on_ui_ignored(cfg, world, palette)
 
@@ -315,8 +317,14 @@ func _test_long_press_pan(cfg, world, palette) -> void:
 	var fake = ic.camera_rig
 	var start: Vector2 = palette.to_px(Vector2(float(world.map.cols) * 0.5, float(world.map.rows) * 0.5))
 	_down(t, 0, start)
-	# 按住超过「长按拖动」阈值（用真时间，让 touch_controller 自己按时间判定）
-	await create_timer(cfg.touch_pan_hold_sec + 0.08).timeout
+	# 按住超过「长按拖动」阈值（用**墙钟**等，让 touch_controller 自己按时间判定）。
+	# ⚠️ 不要用 `create_timer(秒)`：它记的是**引擎帧时间**，而 `_press_ms` /
+	#    `held_ms` 记的是 `Time.get_ticks_msec()`（墙钟）。--script 模式下第一帧的
+	#    delta 可能很大（装载），两者会错开，于是这条用例**约一半概率变红**（实测）。
+	var press_ms: int = Time.get_ticks_msec()
+	var hold_ms: int = int((cfg.touch_pan_hold_sec + 0.08) * 1000.0)
+	while Time.get_ticks_msec() - press_ms < hold_ms:
+		await process_frame
 	# 小幅移动（远小于 pan_min_px）——因为已经长按，应判定为拖动（问题 5 的「长按拖动」）
 	_drag(t, 0, start + Vector2(6.0, 0.0))
 	ok(ic.is_panning(), "★★ 长按后小幅移动 = 进入拖动视野")
@@ -324,6 +332,41 @@ func _test_long_press_pan(cfg, world, palette) -> void:
 	ok(fake.pans.size() > 0, "★ 长按拖动 → 相机平移")
 	_up(t, 0, start + Vector2(12.0, 0.0))
 	ok(not ic.is_panning(), "松手后结束拖动视野")
+
+
+## ★★ 反斜对角线（右手在上、左手在下）：选框必须按**屏幕矩形**画，两个角 = 两指本身。
+##
+## 这是用户报的那个 bug 的回归：
+##   旧实现只存世界坐标、由 overlay 投影四个角。相机是**透视**的，世界轴对齐矩形的远端边
+##   投影回来会缩进 ⇒ 右上 / 左下这两个角离手指一截。
+##   现在触摸框选额外记一份屏幕矩形（`drag_screen_box`），overlay 优先按它画。
+func _test_two_finger_box_screen_rect(cfg, world, palette) -> void:
+	var ic = _new_ic(cfg, world, palette)
+	var t = _new_touch(cfg, palette, ic)
+	ic.select_units([])
+	# 两指取「屏幕上」的右上 / 左下（故意跨过另一条对角线）
+	var s0: Vector2 = palette.to_px(Vector2(4.0, 4.0))
+	var s1: Vector2 = palette.to_px(Vector2(9.0, 9.0))
+	var a := Vector2(s1.x, s0.y)                     # 右、上
+	var b := Vector2(s0.x, s1.y)                     # 左、下
+	_down(t, 0, a)
+	_down(t, 1, b)
+	_drag(t, 1, b)
+	ok(ic.drag_active, "（前提）反斜对角双指 → 进入框选")
+	ok(ic.drag_screen_valid, "★★ 触摸框选记下了屏幕矩形（overlay 按它画，不再投影世界四边形）")
+	var r: Rect2 = ic.drag_screen_box
+	near(r.position.x, minf(a.x, b.x), 0.01, "屏幕矩形左缘 = 两指里靠左那只（不是屏幕盒子的左上角）")
+	near(r.position.y, minf(a.y, b.y), 0.01, "屏幕矩形上缘 = 两指里靠上那只")
+	near(r.end.x, maxf(a.x, b.x), 0.01, "屏幕矩形右缘 = 两指里靠右那只")
+	near(r.end.y, maxf(a.y, b.y), 0.01, "屏幕矩形下缘 = 两指里靠下那只")
+	# 也就是说：右上角 = a、左下角 = b —— 两个角**逐像素**在手指上
+	ok((Vector2(r.end.x, r.position.y) - a).length() < 0.01,
+		"★★ 选框右上角就是右上那只手指")
+	ok((Vector2(r.position.x, r.end.y) - b).length() < 0.01,
+		"★★ 选框左下角就是左下那只手指")
+	_up(t, 1, b)
+	ok(not ic.drag_screen_valid, "★ 松手之后屏幕矩形作废（下一帧起按普通框选画）")
+	_up(t, 0, a)
 
 
 ## 双指滑动 = 框选（选框两个角 = 两指当前位置）。
@@ -352,6 +395,106 @@ func _test_two_finger_box(cfg, world, palette) -> void:
 	_up(t, 1, f1)
 	ok(ic.selected_units.size() > 0, "★ 双指框选 → 选中的己方单位 = 框内那些")
 	_up(t, 0, f0)
+
+
+## ★★ 框选：判定按**图标的屏幕矩形**（不是脚底那个点），并且框到一个兵 = 整支部队。
+##
+## 用户报的 bug：「框到了单个单位，有概率不会选中这个单位所在的整个部队」。
+## 根因：单位是**立牌**（从脚底锚点 `u.pos` 向上约 `QUAD_W×QUAD_H_RATIO` 格），而旧判定只问
+##   「脚底那个点」在不在框里 —— 玩家框住的是**看见的牌**，锚点在框外时就被漏掉；
+##   「有概率」取决于框画得多高。漏了单位，自然连带它的整支部队都没选中。
+## 修法：`box_select_screen()` 按 `_unit_icon_screen_rect(u)`（立牌的屏幕矩形）判相交。
+func _test_box_select_screen_and_group(cfg, world, palette) -> void:
+	var ic = _new_ic(cfg, world, palette)
+	var t = _new_touch(cfg, palette, ic)
+	var mine := _my_units(world)
+	if mine.is_empty():
+		ok(true, "（没有己方单位，跳过框选判定）")
+		return
+	ic.select_units([])
+
+	# 挑一个「有部下」的单位当目标（没有就随便挑一个）
+	var target = mine[0]
+	for u in mine:
+		if world.group_of(u).size() > 1:
+			target = u
+			break
+	var s: Vector2 = palette.to_px(target.pos)
+
+	# ---- ① 小框套住脚底（20×20，反斜对角 = 右手在上、左手在下）----
+	var a := s + Vector2(10.0, -10.0)     # 手指 0：右、上
+	var b := s + Vector2(-10.0, 10.0)     # 手指 1：左、下
+	_drag_box(t, ic, a, b)
+	ok(ic.selected_units.has(target), "★★ 框住脚底 → 选中")
+
+	# 画框里**每一个**己方单位（按其图标的屏幕矩形判）都必须被选中
+	var inside: Array = []
+	var missing := 0
+	for u in world.units:
+		if not u.alive:
+			continue
+		if not FactionRes.same_side(u.faction, world.my_faction):
+			continue
+		if ic.drag_screen_box.intersects(ic._unit_icon_screen_rect(u)):
+			inside.append(u)
+			if not ic.selected_units.has(u):
+				missing += 1
+	ok(inside.size() > 0, "（前提）这个框里至少框到一个己方单位（%d 个）" % inside.size())
+	ok(missing == 0, "★★ 框里看到的己方单位全被选中（漏 %d 个）" % missing)
+	ok(absf(ic._unit_icon_screen_rect(target).end.y - s.y) < 0.5,
+		"★ 立牌的屏幕矩形**下边 = 脚底锚点**（牌是从脚底往上长的）")
+
+	# 整支部队
+	var group: Array = world.group_of(target)
+	var miss_group := 0
+	for m in group:
+		if not ic.selected_units.has(m):
+			miss_group += 1
+	ok(group.size() >= 1, "（前提）查得到它所在的队伍（%d 个）" % group.size())
+	ok(miss_group == 0,
+		"★★ 框到一个兵 = 整支部队（%d 个）都被选中（漏 %d 个）" % [group.size(), miss_group])
+
+	# 反向：选中集合里**不该有**「框外、又不属于框内任何部队」的单位
+	var allowed: Dictionary = {}
+	for u in inside:
+		for m in world.group_of(u):
+			allowed[m.id] = true
+	var extra := 0
+	for u in ic.selected_units:
+		if not allowed.has(u.id):
+			extra += 1
+	ok(extra == 0, "★★ 没有「框外且不属于框内部队」的单位被选中（多 %d 个）" % extra)
+
+	# ---- ② 只框住「立牌上半部分」（脚底在框外）----
+	#   这是旧口径（判脚底锚点）必漏、而新口径（判图标矩形）必中的形态。
+	#   框往上多留 40px，保证两指矩形够大（> box_min_px）且明显不含脚底。
+	var ir: Rect2 = ic._unit_icon_screen_rect(target)
+	var pad := 2.0
+	var a2 := Vector2(ir.position.x + pad, ir.position.y - 40.0)
+	var b2 := Vector2(ir.end.x - pad, ir.position.y + ir.size.y * 0.45)
+	var body_box := Rect2(a2, b2 - a2).abs()
+	ic.select_units([])
+	ok(not body_box.has_point(s), "（前提）这个框**不含**脚底锚点（只框住立牌上半部分）")
+	ok(body_box.size.length() >= cfg.touch_box_min_px, "（前提）框够大，会真的开始框选")
+	_drag_box(t, ic, a2, b2)
+	ok(ic.selected_units.has(target),
+		"★★ 框到**立牌上半部分**（脚底在框外）也选中 —— 修「框住了却没选中」")
+	var miss2 := 0
+	for m in world.group_of(target):
+		if not ic.selected_units.has(m):
+			miss2 += 1
+	ok(miss2 == 0, "★★ 这一下同样展开成整支部队（漏 %d 个）" % miss2)
+
+
+## 走一遍「双指按下 → 滑一下 → 松手」的完整手势，返回这次画出来的屏幕框。
+func _drag_box(t, ic, a: Vector2, b: Vector2) -> Rect2:
+	_down(t, 0, a)
+	_down(t, 1, b)
+	_drag(t, 1, b)
+	var r: Rect2 = ic.drag_screen_box
+	_up(t, 1, b)
+	_up(t, 0, a)
+	return r
 
 
 ## ★★ 第一根手指已经开始拖视野后，第二根手指落下 = 立刻切成框选（问题 3 的回归）。

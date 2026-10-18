@@ -66,7 +66,7 @@ var apply_redraws: int = 0
 ## 上一次真正应用时的**内容快照**（见 `_cells_signature`）。
 ## ⚠️ 不能直接比较 `ref.hp`：同一个对象被喂两次时两边读到的是同一个实时值，
 ##   掉血后仍然「相等」——必须存一份应用当时的快照。
-var _cells_sig: String = "\u0000"
+var _cells_sig: String = "#none#"
 
 
 func setup(p_font: Font = null) -> void:

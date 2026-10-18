@@ -161,22 +161,31 @@ dev_gd_a/daeem/
 ├── NuGet.config                  # 本地包源（引擎自带 nupkgs；本机没有外网到 nuget.org）
 ├── view/                         # 渲染：Node2D / Control，禁止改逻辑状态
 │   ├── main.tscn / main.gd       #   入口场景：入场页 → 主界面（标题条 + 版式外壳）→ 游戏内场景；
-│   │                             #   ★ 只做连接：把「按下 test + 选了哪张地图」翻译成 game_scene.start(那张图)
+│   │                             #   ★ 只做连接：把「按了哪一关（campaign_id + level_id）」翻译成
+│   │                             #     `game_scene.start_level()`（`_on_test_pressed` 直连地图，
+│   │                             #      只留给测试 / 截图脚本）
 │   ├── start_screen.gd           #   ★ 开场两页（暗金渐变页，不走 ui_style）：
 │   │                             #   入场页 = 徽记 + 带字距的标题 + 金线 + 呼吸提示；
 │   │                             #   ★★ 「点一下」是**两段动画**：① 徽记/标题/金线缓动到主界面标题条
 │   │                             #     里各自的位置（字号字距一起过渡，落位后切页看不出接缝）
 │   │                             #     ② 切页 + 主菜单那三块面板滑入（见 panel_expand.play_intro()）
-│   │                             #   ★ 主界面只剩**标题条 + 版式外壳**：进游戏的入口（地图选择条 /
-│   │                             #     test / campaign_test）搬进了「战役」面板（见 battle_entries.gd）；
-│   │                             #     本文件只把内容区的两个信号转成自己的 test_pressed /
-│   │                             #     campaign_test_pressed ⇒ view/main.gd 那侧一行不改
-│   ├── battle_entries.gd         #   ★★ 战斗测试入口那一块：**地图选择条 + test + campaign_test**
-│   │                             #     （原来长在主界面正中那一列，现在只由「战役」面板拥有：
-│   │                             #      面板开时建、关时销毁；`selected_map_path()` 之类的读法也在它身上）
+│   │                             #   ★★ 主界面正中：标题条 + `MenuColumn`（**test_1 / test_2 / test_3**，
+│   │                             #     各自直连一关，数据在 config 的 `menu.test_entries`）；
+│   │                             #     右下「战役」按钮撑开的是战役菜单（见 campaign_menu.gd）；
+│   │                             #     两路都归到 `level_entry_pressed(campaign_id, level_id)`
+│   ├── campaign_menu.gd          #   ★★ **战役菜单**（版式移植自 nsoc 的 CampaignPanel）：
+│   │                             #     左 1/4 战役轮播 + 顶部关卡圆点 + 右侧关卡描述 +
+│   │                             #     左右拖动切关卡 + **长按 3 秒**（环形进度）进入；
+│   │                             #     ★ 配色换成本作暗金（不搬 nsoc 的白卡片 / 蓝点）；
+│   │                             #     ★ 只发 `chapter_activated(campaign_id, level_id)`，
+│   │                             #       占位关卡（数据里没填 id）长按**什么都不发生**
+│   ├── campaign_carousel.gd      #   ★ 战役竖向轮播本体（3 个占位页循环 / 拖动 + 吸附 /
+│   │                             #     卡片底部渐变遮罩压「战役名 + 简介」）
 │   ├── map_select.gd             #   ★ 地图选择条本体（**自己画的按钮 + 自己的 PopupMenu**）：
 │   │                             #   不用引擎 OptionButton —— 点开列表后按钮上那行字会变空白
 │   │                             #   （实测，见 route.md 34.9）；对外 API 与 OptionButton 同名同义
+│   │                             #   ⚠️ 本轮起**界面上没有它了**（入口改为 test_1/2/3 + 战役菜单），
+│   │                             #      部件与 `tests/test_map_select.gd` 仍保留（可单独复用）
 │   ├── game_scene3d.gd           #   ★★ **游戏内场景（唯一实现）**：装配 world + 3D 视图 + HUD，
 │   │                             #      跑主循环（`Camera3D` 固定俯角：平移 / 缩放 / 中键拖拽）
 │   ├── game_interaction.gd       #   ★ 与渲染无关的交互核心（事件提示 / 命令卡派发）
@@ -186,6 +195,8 @@ dev_gd_a/daeem/
 │   ├── unit_sprite_3d.gd         #   程序化兵人立牌贴图（SDF 光栅化，按变体缓存）
 │   ├── building_view_3d.gd       #   3D 建筑：`MultiMesh` + `BoxMesh`（★ 视觉高度 ≠ 逻辑高度）
 │   ├── overlay_view_3d.gd        #   3D 版的覆盖层（屏幕空间：选中圈 / 标记 / 拖框 / 建造预览）
+│   │                             #   ★ 网格 / 区划轮廓 / 占领触发区按「相机 + 区划签名」缓存
+│   │                             #     屏幕坐标；相机静止时不重投影，只重提 draw 命令
 │   ├── palette.gd                #   ★★ 坐标换算的**唯一**出处（3D 版）：**实例类**，持有 `Camera3D`；
 │   │                             #      `to_px` = `unproject_position`、`to_logic` = 地面射线求交
 │   │                             #      ⇒「格 ↔ 屏幕」的正反两面由**同一台相机**导出
@@ -213,18 +224,29 @@ dev_gd_a/daeem/
 │   ├── menu_chrome.gd            #   ★★ 主界面新版式外壳（仿 nsoc）：左上资料（Godot 图标当头像）
 │   │                             #     / 左侧竖排五键（成长 备战 好友 藏品 自定义）/ 右下 2+1
 │   │                             #     （战役 演义 / 合作模式）—— 点任一块撑开一块面板；
-│   │                             #      只有「战役」那块的内容区里装着 battle_entries.gd
+│   │                             #      只有「战役」那块的内容区里装着 campaign_menu.gd
 │   ├── panel_expand.gd           #   ★★ 「撑开 + 让路」引擎：拍平锚点 → 钉住原点面板的子控件 →
 │   │                             #     其余面板滑出屏外 + 禁输入 → 原点面板用 size/position 扩到全屏
 │   │                             #     （`dir = 0` 的目标只淡出 —— 标题条那一条走这条）；
-│   │                             #     另有 `play_intro()`：首次进主界面时各面板从屏幕外**滑入**
+│   │                             #     另有 `play_intro()`：首次进主界面时各面板从屏幕外**滑入**；
+│   │                             #     `collapse_instant()`：离开菜单时一步收回（不播动画）
 │   ├── menu_secondary_panel.gd   #   ★ 撑开出来的那块面板：一颗「返回」+ **可选的内容区**
-│   │                             #     （`with_battle_entries` 时放 battle_entries.gd）
-│   ├── hud.gd                    #   UI 装配：左部队列表 / 左下地图占位 / 底栏 / 右上设置
-│   │                             #   ★ 右上设置点开是**二级菜单**（全屏 / 返回主菜单）：
-│   │                             #     面板只发两个信号，执行在 view/main.gd
+│   │                             #     （`with_campaign_menu` 时放 campaign_menu.gd）
+│   ├── hud.gd                    #   UI 装配：左部队列表 / 左下地图占位 / 底栏 / 右上选项
+│   │                             #   ★ 右上「选项」点开是**居中 overlay**（仿 nsoc）：
+│   │                             #     一级继续 / 设置 / 返回主菜单，设置页里是全屏；
+│   │                             #     选项页只发两个信号，执行在 view/main.gd
 │   │                             #     （窗口模式与整个流程都归它管）
+│   ├── options_panel.gd           #   ★★ HUD + 主菜单共用的选项页（overlay + 居中面板 /
+│   │                             #     一级 ↔ 二级横滑 / 全屏文案；按钮也走 fill_button）
 │   │                             #     ★ 也是**界面词**的唯一出处（拒因码 → 中文、悬停详情文案）
+│   │                             #   ★★ 手机端 UI 刷新调度（本轮）：4 槽轮转，
+│   │                             #     20Hz 节拍里 shell / 详细信息 / 部队列表各占一块；
+│   │                             #     桌面 / 测试仍走 `refresh()` 全量刷新；
+│   │                             #     选中变化（local_ui_changed）立即全刷
+│   ├── minimap.gd                #   ★ 左下角小地图：地形 / 迷雾烘成 1px/格 贴图，
+│   │                             #     视野框由 3D 相机四角反算；手机端 10Hz 重画，
+│   │                             #     并把第一次重画错开 HUD 槽位（stagger_redraw）
 │   ├── hover_tip.gd              #   ★ 悬停详情面板（本版新增）：住在**命令卡正上方**，
 │   │                             #     水平范围 = 命令卡 + 右边那一列页签那一整段
 │   │                             #     （**左缘对命令卡左缘、右缘对页签列右缘**，宽 340），
@@ -233,17 +255,20 @@ dev_gd_a/daeem/
 │   │                             #     不许拿 Font.get_multiline_string_size 顶替（见 pitfalls 5.52）
 │   │                             #     文案由 hud 喂（`_hover_detail`），本控件只排版与画
 │   ├── squad_panel.gd            #   左侧「部队 1~10」（动态生成，点了只选中）
+│   │                             #   ★ 手机端由 hud 的 4 槽调度器驱动（关掉自己的 _process）
 │   ├── detail_panel.gd           #   ★ 底栏「详细信息」：**左右两栏**（第四轮改版）
 │   │                             #     左 = view/unit_roster.gd（上）+ view/troop_grid.gd（下）
 │   │                             #     右 = 选中单位头像 / 名称 / buff 占位 / 数值 + 招募五格
 │   │                             #     ★★ 面板**横向自适应**（手机横屏）：左缘钉 400、右缘钉阵营列
 │   │                             #     左缘；多余的宽全进右栏 —— `_layout_right()` 随右栏宽重摆「钉右」那几块
+│   │                             #   ★ 同一段正文 / 头像数值没变 → 不重排、不 queue_redraw
 │   ├── unit_roster.gd            #   ★ 左栏上半：**当前展开 / 唯一选中那支部队的将领格**
 │   │                             #     （40×40 方框 + 右边一行「将领名称 x/y」；只有这一格）
 │   ├── troop_grid.gd             #   ★ 左栏下半：**3×3 = 9 格的网格**，两种语义共用
 │   │                             #     多选 → 其余部队的将领（点一格 = 换展开哪一支）
 │   │                             #     单选 → 这支部队的单位（点一格 = 右栏切到那个单位；
 │   │                             #             超过 9 个用滚轮翻页，一次一页）
+│   │                             #   ★ 内容快照没变就不重画（含 hp/hp_max/士气/编制数）
 │   ├── recruit_queue.gd          #   ★ 右栏右上角那块面板：招募队列（1 大 + 4 小 + 读条）
 │   │                             #     可点：点某一格 = 取消那一格（发 *_cancel 命令）
 │   │                             #     ★ 也用来显示**单条读条**（建筑升级 / 区划特化，
@@ -531,7 +556,8 @@ Godot 里 DPR 由引擎处理，**但下面三条要原样继承**：
 | ★★ **迷雾按哪一方算** | `logic/fog.gd` 的分桶键 = `FactionRes.side_of(阵营)` | 合作模式两人**共享视野**（用户拍板）；单机时 `side_of(p1) == "p1"` ⇒ 与从前逐位一致。★ 三类查询（`tile_visible` / `unit_visible` / `building_visible`）必须**一起**走同一个键（route.md 第三十七节） |
 | ★ 地图目录里的「战役专用图」 | `data/maps/<id>/map.json` 的 `hidden: true` → `logic/map_library.gd` 的 `is_hidden()` | ★ 它**不进自由对战的选择条**，也不当默认图（加一张战役图不该改变「不选就按 test」进的那一局）。关卡照样按 id 直接引用它；占位图（`placeholder`）**照样列出**、只是不当默认 —— 两种标记含义不同，别合并 |
 | ★★ **「这一局从哪一关开的」** | `view/game_scene3d.gd` 的 `level_playing` / `level_campaign` | ★ 它们是**界面层**的记账（`world` 自己持有 `level` 才是权威）：给「返回关卡列表 / 结算面板」这类以后的界面用。入口两条：`start(map_path)`（老路）与 `start_level(campaign, level, faction)`（战役路）——**只差「世界怎么造出来」**，之后完全同一条尾 |
-| ★ 单人战役的**占位**入口 | 主界面 `campaign_test` 按钮 → `view/campaign_test.gd`（列单人关 + 选阵营 + 开始）→ `view/main.gd` 接 `level_chosen` → `game.start_level()` | ★ 它**只是占位**（正式入口那一套是规划书 5.1~5.4）：界面不认识 `world` / `game_scene`，扫战役目录与建世界都在 `main`；关卡列表**只列单人关**（合作要两个席位，那条路给不了）。见 route.md 37.11 |
+| ★★ **战斗入口（本轮改版）** | 主界面正中 `test_1 / test_2 / test_3`（数据在 `config.json` 的 `menu.test_entries`）与「战役」面板里的 `view/campaign_menu.gd` | 两路都只发 `level_entry_pressed(campaign_id, level_id)` → `view/main.gd` 的 `_on_level_entry_pressed()`：扫 `data/campaigns/` 找战役 → 取那一关 → 取**第一个可玩阵营** → `game.start_level()`。★ 界面不认识 `world` / `game_scene`；阵营默认取第一个是 nsoc 式菜单「没有选阵营那一步」的直接后果（要加选择只改 main 里那一个值）。`_on_test_pressed(map_path)` 保留给测试 / 截图脚本直连地图。见 route.md 37.11 |
+| ★ 战役菜单的**显示数据** | `data/campaigns_menu.json` → `logic/campaign_menu_db.gd` | ★ 与 `data/campaigns/` **分开**：那一份是能真的进游戏的关卡数据（被测试钉着），这一份只描述「菜单上摆什么」——战役名 / 简介 / 关卡名 / 指向哪份战役的哪一关。章节的 `campaign_id` + `level_id` 留空 = 占位关（长按什么都不发生）。加战役 / 关卡只改这一份 JSON |
 | 相机 / 缩放 | `view/game_scene3d.gd`（`Camera3D` 相机部分） | 纯表现，不进快照。★ 它的 `camera.edge_size` 与 HUD 的「屏幕最外圈不拦滚屏」是**同一个数**（`cfg.camera_edge_size`）。★★ **相机夹取**（`clamp_look_point`）：**可见区域不越出「地图 + `render.camera_view_margin_tiles` 格」，且镜头中心留在地图矩形内**（两条相与）——「可见区域」= 视口四角投到地面的包围盒，量一次即可（相机只平移不旋转 ⇒ 可见区域形状固定）；区间为空的方向（视野比地图还大）**不平移**，镜头钉在地图中心 |
 | 选中列表 | `view/input_controller.gd` | 纯本地，**不进命令流**（第 1 轮也一样）。★ 左键**点选**与左键**框选**（拖出矩形，见 route.md 16.3）走的是同一个入口 `select_units()` —— 它会用 `world.expand_to_groups()` 把「一个单位」展开成「它所属的整支部队」 |
 | 玩家下达的攻击命令 | `logic/unit.gd` 的 `ordered_target` / `ordered_building` / `has_attack_move` | 与「这一帧在打谁」（`target` / `target_building`）**分开存**，见 route.md 12.3 |

@@ -223,6 +223,32 @@ func reverse() -> void:
 	reversed.emit()
 
 
+## ★★ 立刻收回初始态（不播动画、不等转场）。
+##
+## 与 `reverse()` 的区别只有「有没有过程」：这里杀掉在跑的 Tween、直接销毁二级面板、
+## 把各面板按初值摆回去。给**离开菜单**那条路用（进游戏时整层已 `hide()`，
+## 收回动画没人看得见；而「返回主菜单」时必须已经是收好的状态）。
+## ★ 即使正处在撑开动画中途（`_busy`）也能调用 —— 那一下的终点同样该是「收好」。
+func collapse_instant() -> void:
+	if not _busy and not _is_expanded:
+		return
+	_kill_tween()
+	if _panel != null and is_instance_valid(_panel):
+		# ★ 立刻摘下来再销毁：`queue_free` 要到帧末才真的走，而「回主菜单」在同一帧就会
+		#   把菜单显示出来 —— 不摘的话会闪一帧「面板还盖在上面」。
+		var parent: Node = _panel.get_parent()
+		if parent != null:
+			parent.remove_child(_panel)
+		_panel.queue_free()
+	_panel = null
+	_unfreeze_all()
+	_restore_blocked()
+	_apply_initial_instant()
+	_busy = false
+	_is_expanded = false
+	reversed.emit()
+
+
 # ------------------------------------------------------------------
 # 首次进入：整体滑入
 # ------------------------------------------------------------------

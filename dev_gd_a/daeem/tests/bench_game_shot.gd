@@ -8,8 +8,8 @@
 ## ⚠️ 必须用 _console.exe 跑（GUI 版会 detach，拿不到输出）。
 ## ⚠️ `--script` 模式下入口是 SceneTree 的 `_initialize()`（没有 _ready）。
 extends SceneTree
-## ★ 这些用例只需要「一张能开局的图」：地图选择条已经搬进「战役」面板（见
-##   view/battle_entries.gd），所以直接问逻辑层要默认地图（与面板默认选中的是同一张）。
+## ★ 这些用例只需要「一张能开局的图」：走 `main._on_test_pressed()` 直连默认地图
+##   （界面入口已改为 test_1/2/3 与战役菜单，那两条走的是关卡路径）。
 const MapLibraryRes = preload("res://logic/map_library.gd")
 
 const MainScene := preload("res://view/main.tscn")

@@ -214,7 +214,8 @@ func _style_cell(cell: Button, filled: bool, active: bool) -> void:
 	else:
 		cell.add_theme_stylebox_override("normal", UiStyleRes.tech_fill())
 		cell.add_theme_stylebox_override("hover", UiStyleRes.tech_fill_hover())
-		cell.add_theme_stylebox_override("pressed", UiStyleRes.tech_fill_hover())
+		# ★ 按下统一成 2px 亮边（与菜单 / 命令卡同一档）；松手后再切到启用态
+		cell.add_theme_stylebox_override("pressed", UiStyleRes.tech_latched())
 		cell.add_theme_stylebox_override("disabled", UiStyleRes.tech_fill())
 	cell.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
 

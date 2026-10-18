@@ -20,6 +20,7 @@ func _cases() -> void:
 	_test_hover_fill()
 	_test_drain_is_gradual()
 	_test_press_holds_hover()
+	_test_pressed_snaps_full()
 	_test_latched()
 	_test_gradient()
 	_test_text_on_fill()
@@ -34,6 +35,7 @@ func _cases() -> void:
 	_test_available_off()
 	_test_hide_clears_hover()
 	_test_clear_hover_in()
+	_test_clear_latched_in()
 
 func _test_attach() -> void:
 	var b := _new_button()
@@ -151,6 +153,33 @@ func _test_press_holds_hover() -> void:
 	ok(FillButtonRes.fill_progress(b) > 0.4,
 		"★ 按下的一瞬间不会把悬停抖掉（进度继续往上）")
 
+	b.queue_free()
+
+
+## ★★ 兜底（用户要求）：**确认按下**（`pressed` 信号）的那一下，背景必须补到满格。
+##
+## 为什么要这条：正向填充是 FILL_TIME（0.18s）。快速点按 / 触摸时可能刚填到一半就抬手，
+##   玩家「明明按了」却看不到满格反馈。这一下把当前值补到 1.0，保证「按了就有反馈」；
+##   之后该锁的锁、该渐出的渐出（由 `_goal()` 决定，本函数不改目标）。
+## ★ 本版不再一帧硬跳：走 `ui.press_snap_sec`（默认 0.07s）快速补满，
+##   再保持 `ui.press_snap_hold_sec`（默认 0.06s）后才按目标回落。
+func _test_pressed_snaps_full() -> void:
+	var b := _new_button()
+	var anim := FillButtonRes.attach_text(b)
+	# 先让它停在「按下去、动画只跑了一半」的位置
+	anim.set_fill(0.35)
+	b.pressed.emit()
+	ok(FillButtonRes.fill_progress(b) < 0.999,
+		"★★ 确认按下不再一帧硬跳（当前 %.2f）" % FillButtonRes.fill_progress(b))
+	anim._process(0.03)
+	var mid := FillButtonRes.fill_progress(b)
+	ok(mid > 0.35 and mid < 1.0,
+		"★ 正在快速补满（%.2f）" % mid)
+	anim._process(0.1)
+	ok(FillButtonRes.fill_progress(b) >= 0.999,
+		"★★ 极短时间内补到满格（当前 %.2f）" % FillButtonRes.fill_progress(b))
+	# 兜底不改目标：没有悬停 / 没有 latched ⇒ 之后开始反向渐出
+	ok(anim._goal() == 0.0, "★ 兜底只补当前值，不改目标（该渐出还是会渐出）")
 	b.queue_free()
 
 func _test_latched() -> void:
@@ -424,6 +453,7 @@ func _test_fill_underlay_is_transparent() -> void:
 		"命令卡-悬停": UiStyleRes.card_hover(),
 		"命令卡-按下": UiStyleRes.card_pressed(),
 		"部队行-悬停": UiStyleRes.row_hover(),
+		"部队行-按下": UiStyleRes.row_pressed(),
 		"线框按钮-悬停": MenuThemeRes.button_hover_clear(),
 		"菜单行-选中": MenuThemeRes.button_fill_latched(),
 	}
@@ -552,6 +582,32 @@ func _test_clear_hover_in() -> void:
 	ok(anim._hovered, "（前提）悬停中是「hovered」")
 	FillButtonRes.clear_hover_in(holder)
 	ok(not anim._hovered, "★★ clear_hover_in() 递归清掉子树里按钮的悬停（流程层兜底用）")
+	holder.queue_free()
+
+
+## ★★ 流程层的另一条兜底：递归解除整棵子树的「常驻满格（latched）」。
+##
+## 与 `clear_hover_in` 刻意分开：
+##   · 悬停 = 「鼠标 / 手指还在上面」；
+##   · 常驻 = 「这块面板现在被打开 / 被选中」。
+## 主界面点开面板时入口按钮要**锁住**（不然面板还开着金就退了），收起时才解除 ——
+## 这里验「解除会递归生效」，而且解除之后目标是 0（下一次 `_process` 走反向渐出）。
+func _test_clear_latched_in() -> void:
+	var holder := Control.new()
+	root.add_child(holder)
+	var a := Button.new()
+	var b := Button.new()
+	holder.add_child(a)
+	holder.add_child(b)
+	var aa := FillButtonRes.attach_text(a)
+	FillButtonRes.attach_text(b)
+	aa.set_latched(true)
+	FillButtonRes.set_latched(b, true)
+	ok(FillButtonRes.is_latched(a) and FillButtonRes.is_latched(b), "（前提）两颗都是常驻满格")
+	FillButtonRes.clear_latched_in(holder)
+	ok(not FillButtonRes.is_latched(a), "★★ clear_latched_in() 递归解除常驻（左）")
+	ok(not FillButtonRes.is_latched(b), "★★ clear_latched_in() 递归解除常驻（右）")
+	ok(aa._goal() == 0.0, "★ 解除之后目标为空（走 DRAIN_TIME 那条反向渐出，不是瞬间清零）")
 	holder.queue_free()
 
 

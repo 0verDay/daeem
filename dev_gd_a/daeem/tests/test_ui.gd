@@ -1,7 +1,7 @@
 ## test_ui.gd —— 新 UI（参考图那套）的接线与几何测试
 extends "res://tests/test_case.gd"
-## ★ 这些用例只需要「一张能开局的图」：地图选择条已经搬进「战役」面板（见
-##   view/battle_entries.gd），所以直接问逻辑层要默认地图（与面板默认选中的是同一张）。
+## ★ 这些用例只需要「一张能开局的图」：走 `main._on_test_pressed()` 直连默认地图
+##   （界面入口已改为 test_1/2/3 与战役菜单，那两条走的是关卡路径）。
 const MapLibraryRes = preload("res://logic/map_library.gd")
 
 const UiLayoutRes = preload("res://view/ui_layout.gd")
@@ -492,6 +492,7 @@ func _test_panels(cfg) -> void:
 	_test_foreign_reject_notice_filter(main)
 	_test_right_click_orders(main)
 	await _test_box_select(main)
+	await _test_box_select_icon_body(main)
 	_test_drag_over_ui(main)
 	_test_detail_basic_stats(main)
 	_test_detail_two_columns(main)
@@ -2616,6 +2617,56 @@ func _test_box_select(main) -> void:
 	main.input_ctrl.select_units([g1])
 	main.hud.refresh()
 
+
+## ★★ PC 端框选：判定也按**立牌图标的屏幕矩形**（与手机端同一条口径）。
+##
+## 用户要求「PC 端的也改成统一的」：以前 PC 走「世界矩形 + 脚底锚点」，
+## 于是「框住立牌上半身、脚底在框外」同样会漏（与手机端那个 bug 同源）。
+## 现在 `_finish_drag()` 走 `box_select_screen()`，画出来的框也是屏幕矩形。
+func _test_box_select_icon_body(main) -> void:
+	var world = main.world
+	var ic = main.input_ctrl
+	var target = null
+	for u in world.units:
+		if u.alive and FactionRes.same_side(u.faction, world.my_faction) \
+				and world.group_of(u).size() > 1:
+			target = u
+			break
+	if target == null:
+		ok(true, "（没有带部下的己方队伍，跳过 PC 框选判定）")
+		return
+	_place_unit(world, target, Vector2(8.0, 8.0))
+	var s: Vector2 = _world_to_screen(main, target.pos)
+	var ir: Rect2 = ic._unit_icon_screen_rect(target)
+	# 只框住立牌**上半部分**（脚底在框外），往上多留 40px 让框足够大
+	var a := Vector2(ir.position.x + 2.0, ir.position.y - 40.0)
+	var b := Vector2(ir.end.x - 2.0, ir.position.y + ir.size.y * 0.45)
+	ok(not Rect2(a, b - a).abs().has_point(s), "（前提）PC 这个框也不含脚底锚点")
+
+	ic.select_units([])
+	var down := InputEventMouseButton.new()
+	down.button_index = MOUSE_BUTTON_LEFT
+	down.pressed = true
+	down.position = a
+	ok(ic.handle_mouse_button(down), "（前提）左键按下被处理")
+	var move := InputEventMouseMotion.new()
+	move.position = b
+	ic.handle_mouse_motion(move)
+	ok(ic.drag_active, "（前提）越过阈值 → 开始拖框")
+	ok(ic.drag_screen_valid, "★★ PC 拖框也记下**屏幕矩形**（两端同一份数据）")
+	var up := InputEventMouseButton.new()
+	up.button_index = MOUSE_BUTTON_LEFT
+	up.pressed = false
+	up.position = b
+	ic.handle_mouse_button(up)
+	ok(ic.selected_units.has(target),
+		"★★ PC 框到立牌上半身（脚底在框外）也选中 —— 与手机端统一")
+	var miss := 0
+	for m in world.group_of(target):
+		if not ic.selected_units.has(m):
+			miss += 1
+	ok(miss == 0, "★★ 同样展开成整支部队（漏 %d 个）" % miss)
+
 ## ★★ 鼠标拖框划到**底栏（详细信息 UI）**上时，框必须继续跟着走。
 ##
 ## 复现的 bug（用户报的）：「鼠标划到底栏内时选框不动，划过去之后又突变」。
@@ -3321,8 +3372,8 @@ func _test_enemy_selection(main) -> void:
 func _test_settings_inert(main) -> void:
 	var page_before := String(main.hud.page_tabs.page())
 	main.hud.settings_button.emit_signal("pressed")
-	eq(main.hud.page_tabs.page(), page_before, "点设置不会顺手切页")
-	ok(main.hud.settings_button.text == "设置", "设置按钮上写着「设置」")
+	eq(main.hud.page_tabs.page(), page_before, "点选项不会顺手切页")
+	ok(main.hud.settings_button.text == "选项", "选项按钮上写着「选项」")
 	main.hud.set_settings_menu_open(false)
 
 func _test_command_events_reach_consumer(main) -> void:

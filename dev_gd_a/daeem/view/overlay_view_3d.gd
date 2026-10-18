@@ -32,6 +32,10 @@ var move_marks: Array[Vector2] = []
 var attack_marks: Array[Vector2] = []
 var drag_active: bool = false
 var drag_rect: Rect2 = Rect2()
+## ★ 触摸设备的选框：两指的**屏幕矩形**（`drag_screen_valid` 为真时优先按它画）。
+##   见 `_draw_drag_box()` 的说明 —— 这是「框跟手」那条口径的落点。
+var drag_screen_box: Rect2 = Rect2()
+var drag_screen_valid: bool = false
 var mouse_world: Vector2 = Vector2.ZERO
 var debug_aim: bool = false
 
@@ -872,8 +876,32 @@ func _tile_screen_quad(tile: Vector2i) -> PackedVector2Array:
 
 
 ## 框选矩形：世界坐标（格）→ 屏幕多边形（透视下也是一个四边形）
+##
+## ★★ 触摸设备另有一条路（`drag_screen_valid`）：直接按**两指的屏幕矩形**画。
+##   原因（用户报的「右手在上、左手在下时，右上 / 左下不跟手」）：世界轴对齐的矩形在
+##   透视下投影回来是四边形，远端那条边会缩进 —— 越远的角离手指越远。屏幕矩形没有这个问题，
+##   两个角逐像素落在手指上。判定仍然用世界矩形（`box_select`），两根手指的**画面**与
+##   **选中结果**只在透视的远端有一点点差，这是这套相机本身的取舍（PC 那条路同源）。
 func _draw_drag_box() -> void:
 	if not drag_active:
+		return
+	if drag_screen_valid:
+		var r := drag_screen_box
+		# 退化（两根手指几乎在同一点）时不画：一个 0×0 的框没有意义
+		if r.size.x <= 0.5 and r.size.y <= 0.5:
+			return
+		var sq := PackedVector2Array([
+			r.position,
+			Vector2(r.end.x, r.position.y),
+			r.end,
+			Vector2(r.position.x, r.end.y),
+		])
+		var sc := Color(0.75, 0.95, 1.0, 0.9)
+		draw_colored_polygon(sq, Color(sc.r, sc.g, sc.b, 0.12))
+		var sclosed := sq.duplicate()
+		sclosed.append(sq[0])
+		draw_polyline(sclosed, sc, 2.0)
+		draw_count += 1
 		return
 	if drag_rect.size.x <= 0.0 and drag_rect.size.y <= 0.0:
 		return

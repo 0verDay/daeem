@@ -1,7 +1,7 @@
 ## test_unit_editor.gd —— 「单位编辑器」改的那些数值，游戏侧**真的会读**
 extends "res://tests/test_case.gd"
-## ★ 这些用例只需要「一张能开局的图」：地图选择条已经搬进「战役」面板（见
-##   view/battle_entries.gd），所以直接问逻辑层要默认地图（与面板默认选中的是同一张）。
+## ★ 这些用例只需要「一张能开局的图」：走 `main._on_test_pressed()` 直连默认地图
+##   （界面入口已改为 test_1/2/3 与战役菜单，那两条走的是关卡路径）。
 const MapLibraryRes = preload("res://logic/map_library.gd")
 
 const WorldRes = preload("res://logic/world.gd")

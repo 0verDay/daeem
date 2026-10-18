@@ -267,11 +267,11 @@ func _assemble() -> void:
 	add_child(projectiles)
 	projectiles.setup(cfg, world, palette)
 
-	# 右键指令的 3D 旗子（移动 = 绿 / 行军 = 黄）：在**目标点**立一面，命令完成自动收
+	# 右键指令的 3D 旗子（移动 = 绿 / 行军 = 黄）：在**目标点**插旗，动效播完自行渐隐
 	order_flags = OrderFlagRes.new()
 	order_flags.name = "OrderFlags3D"
 	add_child(order_flags)
-	order_flags.setup(cfg, world, palette)
+	order_flags.setup(cfg, palette)
 
 	# 覆盖层（选中圈 / 移动与攻击标记 / 建造预览 / 拖框）：屏幕空间，用 palette 定位
 	var layer := CanvasLayer.new()
@@ -515,7 +515,8 @@ func _process(dt: float) -> void:
 	_prof_done("view/buildings", _t_build)
 	var _t_other := _prof()
 	projectiles.sync()
-	order_flags.sync()
+	# ★ 插旗动效由这里推进：暂停时传 0 ⇒ 动效跟着冻结（不会在暂停里偷偷播完）
+	order_flags.sync(dt if running else 0.0)
 	# 地图边界金线的**扫描**（纯表现：只推一个 shader uniform）；暂停时照旧走
 	map_border.sync(dt)
 	_prof_done("view/other", _t_other)
@@ -528,6 +529,9 @@ func _process(dt: float) -> void:
 	overlay.attack_marks = input_ctrl.attack_marks
 	overlay.drag_active = input_ctrl.drag_active
 	overlay.drag_rect = input_ctrl.drag_box()
+	# ★ 触摸框选：两指的屏幕矩形（画出来的框逐像素跟手，见 overlay 的 `_draw_drag_box`）
+	overlay.drag_screen_box = input_ctrl.drag_screen_box
+	overlay.drag_screen_valid = input_ctrl.drag_screen_valid
 	overlay.mouse_world = input_ctrl.mouse_world
 	overlay.set_selection(_selected_ids())
 	overlay.sync()
@@ -1007,15 +1011,15 @@ func _on_command(cmd: Dictionary) -> void:
 ##    `attack`（点名打某个目标）/ `stop` 不是「到点」指令 ⇒ 收掉旗子。
 ##
 ## ★ 只认「本机发出去的命令」（`command_issued` 只来自 input_controller），所以不会
-##   因为 AI / 事件的命令而插旗。旗子的**消失**由 `order_flags.sync()` 按命令完成判定。
+##   因为 AI / 事件的命令而插旗。旗子是**一次性插旗动效**（下落 / 波纹 / 缩放 / 渐隐），
+##   播完自己消失 —— **不**再按「部队是否到达」决定收旗。
 func _update_order_flag(cmd: Dictionary) -> void:
 	if order_flags == null:
 		return
 	var kind := String(cmd.get("kind", ""))
 	if kind == "move" or kind == "attack_move":
 		order_flags.plant(kind,
-			Vector2(float(cmd.get("x", 0.0)), float(cmd.get("y", 0.0))),
-			cmd.get("ids", []))
+			Vector2(float(cmd.get("x", 0.0)), float(cmd.get("y", 0.0))))
 	elif kind == "attack" or kind == "stop":
 		order_flags.clear()
 
@@ -1041,13 +1045,13 @@ func _selected_buildings() -> Array:
 		out.append(input_ctrl.selected_enemy)
 	return out
 
-## 设置菜单里点了「全屏 / 窗口化」——原样往上抛给 `main.gd`（它管窗口模式）。
+## 选项页里点了「全屏 / 窗口化」——原样往上抛给 `main.gd`（它管窗口模式）。
 ##
 ## ★ 保持与 2D 版**同名**：`main.gd` 连的就是这两个名字，而它不该知道视角是 2D 还是 3D。
 func _on_fullscreen_toggled() -> void:
 	fullscreen_toggled.emit()
 
 
-## 设置菜单里点了「返回主菜单」——同样原样上抛（这属于**流程**，不经过逻辑层）。
+## 选项页里点了「返回主菜单」——同样原样上抛（这属于**流程**，不经过逻辑层）。
 func _on_return_to_menu_requested() -> void:
 	return_to_menu_requested.emit()

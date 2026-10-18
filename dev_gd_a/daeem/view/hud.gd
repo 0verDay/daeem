@@ -2,7 +2,7 @@
 ##
 ## 布局逐像素照参考图（1920×1080），几何全部写在 view/ui_layout.gd 里：
 ##
-##   右上 设置（80×160）★ 点它弹出**设置二级菜单**（全屏 / 返回主菜单，见 `_build_settings_menu`）
+##   右上 选项（80×160）★ 点它弹出**选项页菜单**（继续 / 设置 / 返回主菜单，见 `_build_options_panel`）
 ##   左侧 部队 1~10（10 槽 × 60 高，内容动态生成）
 ##   左下 小地图（400×400：整张地图 + 视野框，左键点击移动镜头、按住拖动跟手，见 view/minimap.gd）
 ##   底栏 y 820..1080（★ 详细信息面板本版加高到 260，所以从 820 起）：
@@ -24,16 +24,16 @@
 ##   代价是不能在编辑器里可视化调布局 —— 原型阶段这个取舍仍然划算。
 ## ★ 事件翻译（逻辑事件 → 中文一行）**只在这里**做：逻辑层不写 UI 文案。
 ##
-## ★★ 设置二级菜单的两个动作**不由本文件执行**（本轮新增）：
+## ★★ 选项页菜单的两个动作**不由本文件执行**（本轮改）：
 ##    「全屏」与「返回主菜单」一个动的是窗口模式、一个动的是整个流程（要销毁本场景），
 ##    两件都是 view/main.gd 的地盘。所以这里只**发信号**，谁执行见
 ##    `fullscreen_toggled` / `return_to_menu_requested` 的注释。
 extends CanvasLayer
 
-## 设置菜单里点了「全屏 / 窗口化」—— ★ 只是一个请求，真正切窗口模式的是 view/main.gd
+## 选项页里点了「全屏 / 窗口化」—— ★ 只是一个请求，真正切窗口模式的是 view/main.gd
 ## （它同时管着 Ctrl+Q 那条快捷键，两处必须是同一份实现）。
 signal fullscreen_toggled
-## 设置菜单里点了「返回主菜单」—— ★ 同上：真正拆场景、把开场页放回来的是 view/main.gd。
+## 选项页里点了「返回主菜单」—— ★ 同上：真正拆场景、把开场页放回来的是 view/main.gd。
 signal return_to_menu_requested
 
 const ConfigRes = preload("res://logic/config.gd")
@@ -51,13 +51,10 @@ const PageTabsRes = preload("res://view/page_tabs.gd")
 const TechGridRes = preload("res://view/tech_grid.gd")
 const HoverTipRes = preload("res://view/hover_tip.gd")
 const MinimapRes = preload("res://view/minimap.gd")
+## ★★ 选项页菜单（仿 nsoc）：HUD 右上角「选项」与主菜单右上角「选项」共用同一套。
+const OptionsPanelRes = preload("res://view/options_panel.gd")
 ## ★★ 悬停时「金色自下而上填进来」的那套动效（见 view/fill_button.gd）。
 const FillButtonRes = preload("res://view/fill_button.gd")
-
-## 设置二级菜单里有几格（全屏 + 返回主菜单）。
-## ★ 与 view/ui_layout.gd 的 `SETTINGS_MENU_SLOTS` 是**同一个数**：那边用它算面板高度
-##   （给交互名单与测试用），这边用它算实际高度 —— 两处必须一起改。
-const SETTINGS_MENU_SLOTS := 2
 
 var cfg: ConfigRes = null
 var world = null
@@ -78,8 +75,9 @@ var tech_grid: Control = null
 ##    高度按悬停到的文本动态缩放（向上长）。见 view/hover_tip.gd 的文件头。
 var hover_tip: Control = null
 var settings_button: Button = null
-## ★★ 设置二级菜单（点设置按钮弹出来的那一块）：一个竖排容器，里面是
-##    「全屏 / 窗口化」与「返回主菜单」两颗按钮。见 `_build_settings_menu`。
+## ★★ 选项页控制器（overlay + 居中面板；见 view/options_panel.gd）。
+##   `settings_panel` 只是它的 overlay 别名（兼容 main.gd / 旧测试）。
+var options_panel = null
 var settings_panel: Control = null
 var fullscreen_button: Button = null
 var return_menu_button: Button = null
@@ -248,9 +246,8 @@ func setup(p_cfg: ConfigRes, p_world, p_input, theme: Theme, p_camera_rig = null
 	_build_hover_tip()
 	_build_settings_button()
 	_build_squad_panel()
-	# ★★ 设置二级菜单**最后建**：它是「浮在别的 UI 之上」的临时面板，
-	#   比设置按钮还晚挂上树 —— 顺序即层次，省得以后再调 z_index。
-	_build_settings_menu()
+	# ★★ 选项页**最后建**：它是浮在别的 UI 之上的模态 overlay（z_index=200）
+	_build_options_panel()
 
 	# ★★ 最后建（压在最上层）：手机端性能读数（FPS · 内核 · 单位数）。
 	_build_perf_readout()
@@ -296,18 +293,24 @@ func _process(dt: float) -> void:
 	# ★ 手机端性能读数：约 2Hz 刷新（见 `_build_perf_readout`）。
 	if _perf_label != null:
 		_perf_accum += dt
-		# ★ 每帧采样 `_process` 耗时，攒 0.5 秒再算平均/峰值 —— 「浮动很大」要看这两个数。
-		var cpu_sec: float = Performance.get_monitor(Performance.TIME_PROCESS)
-		_perf_cpu_sum += cpu_sec
-		_perf_cpu_max = maxf(_perf_cpu_max, cpu_sec)
-		_perf_dt_sum += dt
-		_perf_fr_min = minf(_perf_fr_min, dt)
-		_perf_fr_max = maxf(_perf_fr_max, dt)
-		_perf_cpu_n += 1
+		# ★★ 分段采样只在「完整读数」开着时才做：默认只显示 FPS 的那一档
+		#   （`ui.show_perf_detail = false`）不必要每帧问一次 `Performance.get_monitor`，
+		#   也不该把 `world.profile_on` 打开（那是真机排查才付的开销）。
+		if cfg != null and cfg.show_perf_detail:
+			# ★ 每帧采样 `_process` 耗时，攒 0.5 秒再算平均/峰值 —— 「浮动很大」要看这两个数。
+			var cpu_sec: float = Performance.get_monitor(Performance.TIME_PROCESS)
+			_perf_cpu_sum += cpu_sec
+			_perf_cpu_max = maxf(_perf_cpu_max, cpu_sec)
+			_perf_dt_sum += dt
+			_perf_fr_min = minf(_perf_fr_min, dt)
+			_perf_fr_max = maxf(_perf_fr_max, dt)
+			_perf_cpu_n += 1
 		if _perf_accum >= 0.5:
 			_perf_accum = 0.0
 			_update_perf_readout()
-			_reset_profiles()
+			# ★ 分段计时只在「完整读数」那一档才清：默认档根本没开过 profile_on
+			if cfg != null and cfg.show_perf_detail:
+				_reset_profiles()
 			_perf_cpu_sum = 0.0
 			_perf_cpu_max = 0.0
 			_perf_dt_sum = 0.0
@@ -320,10 +323,15 @@ func _process(dt: float) -> void:
 			_perf_cpu_n = 0
 
 
-## ★★ 手机端性能读数：左上角一行小字 `FPS 32 · C# · 单位 214`。
+## ★★ 手机端性能读数（默认**只有 FPS**，左上角）。
 ##
-## 存在理由：**真机帧率无头测不出来**，靠这一行把「到底多少 FPS」「C# 群编内核有没有
-## 打进导出包（没有就会退化成 GDScript O(N²)）」直接暴露出来，下一轮不用再猜。
+## 口径（本轮用户要求）：「把顶上显示性能的信息去掉了，只需要保留 FPS 即可，
+##   且把 FPS 显示移动到最左上」。
+##   · 默认（`ui.show_perf_detail = false`）＝ 左上一行 `FPS 60`；
+##     不打开 `world.profile_on`、也不打开场景层的 `perf_enable` —— 那些是真机排查
+##     才付的开销，日常玩不该有。
+##   · 把 `ui.show_perf_detail` 改 true ⇒ 回到原来那块 4 行完整读数
+##     （帧时间 / CPU / draw call / 逻辑与场景分段），排查时照旧能用。
 ## ⚠️ 只在手机显示（`OS.has_feature("mobile")`）且 `ui.show_perf` 为真；
 ##    桌面 / 无头 / 测试都不会创建它（不改变任何现有几何与断言）。
 func _build_perf_readout() -> void:
@@ -334,21 +342,24 @@ func _build_perf_readout() -> void:
 	_perf_label = Label.new()
 	_perf_label.name = "PerfReadout"
 	_perf_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	# ★ 放在**偏右**的顶部：左上角被左侧部队列表 / 将领 UI 挡住，读数会看不清
-	_perf_label.position = Vector2(620.0, 2.0)
-	# ★ 第 2 行要放「分辨率 / 刷新率 / vsync / 真实帧间隔 / CPU / DC」，第 4 行是逻辑分段
-	_perf_label.size = Vector2(1240.0, 84.0)
+	# ★★ 贴**最左上角**（本轮口径）。左侧部队列表从 y=40 才开始，这里只占顶部那一小条，
+	#   不会压住将领 / 部队行；描边保证压在地图亮色上也读得出。
+	_perf_label.position = Vector2(6.0, 2.0)
+	# ★ 完整读数要 4 行（`show_perf_detail = true` 时）；只显示 FPS 时这两行字装得下。
+	_perf_label.size = Vector2(1240.0, 84.0) if cfg.show_perf_detail else Vector2(320.0, 34.0)
 	_perf_label.add_theme_font_size_override("font_size", UiStyleRes.FS_SMALL)
 	_perf_label.add_theme_color_override("font_color", UiStyleRes.text())
 	_perf_label.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0, 0.9))
 	_perf_label.add_theme_constant_override("outline_size", 3)
 	_root.add_child(_perf_label)
-	# ★★ 打开分段计时（逻辑层与场景层各有一套 `profile_us`）——手机上才开，桌面/无头不付这个开销。
-	if world != null:
-		world.profile_on = true
-	var gs := get_parent()
-	if gs != null and gs.has_method("perf_enable"):
-		gs.perf_enable()
+	# ★★ 打开分段计时（逻辑层与场景层各有一套 `profile_us`）——只有「完整读数」才需要；
+	#   手机上本来才开，桌面/无头永远不付这个开销。
+	if cfg.show_perf_detail:
+		if world != null:
+			world.profile_on = true
+		var gs := get_parent()
+		if gs != null and gs.has_method("perf_enable"):
+			gs.perf_enable()
 	_update_perf_readout()
 
 
@@ -374,7 +385,16 @@ func _reset_profiles() -> void:
 ##     `vu` / `vb` = 单位 / 建筑视图同步；`rest` = CPU 减去场景各段后剩下的部分
 ##     （HUD、部队列表、小地图、按钮动效都在这一栏）。**哪项接近 CPU 总量，就是它在吃时间。**
 func _update_perf_readout() -> void:
-	if _perf_label == null or world == null:
+	if _perf_label == null:
+		return
+	# ★★ 默认档（本轮口径）：**只显示 FPS**，一行、左上角。
+	#   完整那 4 行（帧时间 / CPU / DC / 分段）要靠 `ui.show_perf_detail = true` 才出现；
+	#   那一档同时会打开 `world.profile_on` / 场景层 profiling（见 `_build_perf_readout`）。
+	if cfg == null or not cfg.show_perf_detail:
+		_perf_label.text = "FPS %d" % int(Engine.get_frames_per_second())
+		_perf_label.add_theme_color_override("font_color", UiStyleRes.text())
+		return
+	if world == null:
 		return
 	# ★★ 这一栏只说**群编内核**（碰撞 / 索敌 / 距离场）用的是哪种实现，
 	#   不代表整个工程的语言 —— 工程主体是 GDScript（logic/ + view/），
@@ -658,16 +678,16 @@ func _build_hover_tip() -> void:
 	tech_grid.cell_unhovered.connect(_on_hover_out.bind("tech"))
 
 
-## 设置：参考图里它是右上角一条实心的强调色（现在是金，见 view/theme.gd）。
+## 选项：右上角一颗细长按钮（几何见 UiLayoutRes.SETTINGS_RECT）。
 ##
-## ★★ 本轮起它**能点了**（原需求是「点不动」，现改为点开二级菜单）：
-##    按下 = 弹出 / 收起 `_build_settings_menu()` 那一块（见 `toggle_settings_menu`）。
+## ★★ 点它弹出**选项页菜单**（overlay + 居中面板，见 view/options_panel.gd）：
+##    一级继续 / 设置 / 返回主菜单；设置子页里是 全屏 / 窗口化。
 ## ⚠️ `focus_mode = NONE` 保留：这一按之后焦点别停在按钮上（否则后面按空格 / 回车
-##    会再触发一次设置，玩家会以为界面卡了）。
+##    会再触发一次选项页，玩家会以为界面卡了）。
 func _build_settings_button() -> void:
 	settings_button = Button.new()
 	settings_button.name = "SettingsButton"
-	settings_button.text = cfg.str_val("settings.title", "设置")
+	settings_button.text = cfg.str_val("settings.title", "选项")
 	settings_button.focus_mode = Control.FOCUS_NONE
 	settings_button.add_theme_font_size_override("font_size", UiStyleRes.FS_TITLE)
 	# ★★ 初始**没有填充**（需求）：四档底纹都用「透明底 + 金线」那一档，
@@ -676,7 +696,8 @@ func _build_settings_button() -> void:
 	#      观感就是「填充层在文字之上」（用户报的）。
 	settings_button.add_theme_stylebox_override("normal", UiStyleRes.accent_button_clear())
 	settings_button.add_theme_stylebox_override("hover", UiStyleRes.accent_button_clear())
-	settings_button.add_theme_stylebox_override("pressed", UiStyleRes.accent_button_clear())
+	# ★ 按下统一成 2px 亮边；松手后由 set_settings_menu_open() 切常态 / 展开态
+	settings_button.add_theme_stylebox_override("pressed", UiStyleRes.accent_button_latched())
 	settings_button.add_theme_stylebox_override("disabled", UiStyleRes.accent_button_clear())
 	settings_button.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
 	UiLayoutRes.apply_rect(settings_button, UiLayoutRes.SETTINGS_RECT, true, false)
@@ -691,120 +712,77 @@ func _build_settings_button() -> void:
 	_root.add_child(settings_button)
 
 
-## ★★ 设置二级菜单：设定按钮**正下方**那一块，两颗按钮 ——
-##    「全屏 / 窗口化」（开关）与「返回主菜单」。
+## ★★ 选项页菜单（仿 nsoc）：overlay + 居中面板，一级「继续 / 设置 / 返回主菜单」，
+##    二级「设置」里是「全屏 / 窗口化」+「返回」。见 view/options_panel.gd。
 ##
-## ★ 位置由 `UiLayoutRes.SETTINGS_MENU_RECT` 决定（贴着设置按钮下方、靠屏幕右边），
-##   高度 = 菜单里几格 × 每格高 + 间距（见 `_settings_menu_height()`）——
-##   以后再加一项，改那个函数（或者干脆让它按内容自适应）即可，不必手调坐标。
-## ★ 结构：外层 `PanelContainer`（提供与其它面板一致的底板 / 描边）+ 内层
-##   `VBoxContainer`（排版两颗按钮）。⚠️ 外层**必须是 STOP**：这块浮在地图上，
-##   点在它身上不该穿到地图去（点穿了就会顺手给单位下一条移动命令）。
-## ★ 默认隐藏：进游戏时它不该占着屏幕（`_refresh_fullscreen_label()` 会把文案设对，
-##   所以第一次打开时显示的就是当前窗口状态）。
-func _build_settings_menu() -> void:
-	settings_panel = PanelContainer.new()
-	settings_panel.name = "SettingsMenu"
-	settings_panel.mouse_filter = Control.MOUSE_FILTER_STOP
-	settings_panel.add_theme_stylebox_override("panel",
-		UiStyleRes.panel_style(UiStyleRes.bg(), UiStyleRes.line()))
-	var menu_rect := UiLayoutRes.SETTINGS_MENU_RECT
-	menu_rect.size.y = _settings_menu_height(SETTINGS_MENU_SLOTS)
-	UiLayoutRes.apply_rect(settings_panel, menu_rect, true, false)
-	_root.add_child(settings_panel)
-
-	var column := VBoxContainer.new()
-	column.name = "SettingsMenuColumn"
-	column.add_theme_constant_override("separation",
-		int(UiLayoutRes.SETTINGS_MENU_GAP))
-	settings_panel.add_child(column)
-
-	fullscreen_button = _make_settings_item(
-		"FullscreenButton", _fullscreen_label(), _on_fullscreen_pressed)
-	column.add_child(fullscreen_button)
-	return_menu_button = _make_settings_item(
-		"ReturnMenuButton", cfg.str_val("settings.menu_text", "返回主菜单"),
-		_on_return_menu_pressed)
-	column.add_child(return_menu_button)
-
-	_refresh_fullscreen_label()
-	settings_panel.hide()
+## ★ 旧版那个贴在按钮下方的两格下拉已经删掉：现在整块是**模态 overlay**，
+##   点空白处 / 「继续」都会关；它自己不改窗口、不拆场景，只发 HUD 的信号
+##   （`fullscreen_toggled` / `return_to_menu_requested`）。
+## ★ 兼容字段：`settings_panel` 仍指向 overlay（旧测试 / main.gd 的
+##   `set_settings_menu_open(false)` 不用改）。
+func _build_options_panel() -> void:
+	options_panel = OptionsPanelRes.new()
+	options_panel.name = "OptionsPanel"
+	_root.add_child(options_panel)
+	options_panel.setup(_root, _font, cfg, {
+		"style": "hud",
+		"resume_label": cfg.str_val("settings.continue_text", "继续"),
+		"settings_label": cfg.str_val("settings.panel_title", "设置"),
+		"back_label": cfg.str_val("settings.back_text", "返回"),
+		"panel_title": cfg.str_val("settings.panel_title", "设置"),
+		"exit_label": cfg.str_val("settings.menu_text", "返回主菜单"),
+		"fullscreen_on_text": cfg.str_val("settings.fullscreen_on_text", "窗口化"),
+		"fullscreen_off_text": cfg.str_val("settings.fullscreen_off_text", "全屏"),
+		"fullscreen_action": Callable(self, "_on_fullscreen_pressed"),
+		"exit_action": Callable(self, "_on_return_menu_pressed"),
+	})
+	options_panel.opened.connect(_on_options_opened)
+	options_panel.closed.connect(_on_options_closed)
+	settings_panel = options_panel.overlay
+	fullscreen_button = options_panel.fullscreen_button
+	return_menu_button = options_panel.exit_button
 
 
-## 菜单里的一颗按钮：字号 / 配色 / 三态底纹都走 ui_style（与页签同一档观感）。
-func _make_settings_item(node_name: String, text: String, handler: Callable) -> Button:
-	var b := Button.new()
-	b.name = node_name
-	b.text = text
-	b.focus_mode = Control.FOCUS_NONE
-	b.custom_minimum_size = Vector2(
-		UiLayoutRes.SETTINGS_MENU_RECT.size.x, UiLayoutRes.SETTINGS_MENU_ITEM_H)
-	b.add_theme_font_size_override("font_size", cfg.int_val("settings.button_size", 14))
-	# ★★ 初始**没有填充**（需求）：四档都是「透明底 + 金线」，那片金交给填充层。
-	#   ⚠️ 挂 `accent_button()`（实心金）会把填充盖住 —— 那就是「填充层压在文字上」的观感。
-	#   按下态也用同一档：这一下由填充自己给反馈（按下时悬停被钉住，金是满的）。
-	b.add_theme_stylebox_override("normal", UiStyleRes.accent_button_clear())
-	b.add_theme_stylebox_override("hover", UiStyleRes.accent_button_clear())
-	b.add_theme_stylebox_override("pressed", UiStyleRes.accent_button_clear())
-	b.add_theme_stylebox_override("disabled", UiStyleRes.accent_button_clear())
-	b.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
-	b.pressed.connect(handler)
-	# ★★ 悬停填充（一行挂上，见 view/fill_button.gd）。
-	#   禁用时它自动换档填**灰** —— 菜单里那两颗在某些状态下不可点，
-	#   鼠标停上去也该有「这里暂时不行」的反馈，而不是一点反应都没有。
-	#   ★ 字色从暖白起步、金扫上来时由白变黑（与页签栏同一条规则；
-	#     `set_prefer_light` 是作废的历史开关，见 view/fill_button.gd）。
-	FillButtonRes.attach_text(b)
-	FillButtonRes.set_prefer_light(b, true)
-	FillButtonRes.set_base_font_color(b, UiStyleRes.text())
-	return b
+func _on_options_opened() -> void:
+	if settings_button == null:
+		return
+	FillButtonRes.set_latched(settings_button, true)
+	settings_button.add_theme_stylebox_override("normal", UiStyleRes.accent_button_latched())
 
 
-## 设置菜单的高度：N 格 × 每格高 + (N−1) 条格间距。
-##
-## ★ 为什么要算而不是写死一个数：格数一改（加一项 / 去掉一项），写死的高度就会
-##   让最后一项被裁掉一半 —— 那是「界面看着还好、按钮点不到」的经典成因。
-func _settings_menu_height(slots: int) -> float:
-	var n := maxi(1, slots)
-	return float(n) * UiLayoutRes.SETTINGS_MENU_ITEM_H \
-		+ float(n - 1) * UiLayoutRes.SETTINGS_MENU_GAP
+func _on_options_closed() -> void:
+	if settings_button == null:
+		return
+	FillButtonRes.set_latched(settings_button, false)
+	settings_button.add_theme_stylebox_override("normal", UiStyleRes.accent_button_clear())
 
 
-## 设置按钮被按下：菜单开着就收起来，关着就弹出来。
-##
-## ★ 做成**开关**而不是「只弹不收」：设置菜单盖着地图右侧，玩家点完设置最常见
-##   的下一件事就是「继续玩」—— 再点一下设置就能收掉，比「必须点到别处」直觉。
+## 设置按钮被按下：选项页开着就收起来，关着就弹出来。
 func toggle_settings_menu() -> void:
-	set_settings_menu_open(settings_panel != null and not settings_panel.visible)
+	set_settings_menu_open(options_panel != null and not options_panel.is_open())
 
 
-## 直接指定设置菜单开 / 关（按钮之外只有测试与「返回主菜单」会用到）。
+## 直接指定选项页开 / 关（按钮之外只有测试与「返回主菜单」会用到）。
 ##
-## ★★ 菜单开着 = 那颗按钮处于「**已启用**」那一档（常驻满格 + 更亮一档，
-##    见 view/fill_button.gd 与 ui_style.accent_button_latched()）——
-##    玩家一眼能看出「设置现在是展开的」，而不必回头看菜单在不在。
+## ★ 选项页开着 = 右上角按钮常驻满格（与旧下拉菜单同一条可见反馈）。
 func set_settings_menu_open(open: bool) -> void:
-	if settings_panel == null:
+	if options_panel == null:
 		return
 	if open:
-		_refresh_fullscreen_label()
-	settings_panel.visible = open
+		options_panel.open()
+	else:
+		options_panel.close()
 	if settings_button != null:
-		FillButtonRes.set_latched(settings_button, open)
-		# ★ 两档都是**透明底 + 金线**（那片金由填充层给）：收起 = 空，展开 = 满格。
+		var is_open: bool = options_panel.is_open()
+		FillButtonRes.set_latched(settings_button, is_open)
 		settings_button.add_theme_stylebox_override("normal",
-			UiStyleRes.accent_button_latched() if open else UiStyleRes.accent_button_clear())
+			UiStyleRes.accent_button_latched() if is_open else UiStyleRes.accent_button_clear())
 
 
-## 「全屏 / 窗口化」这颗按钮现在该写什么 —— 它显示的是**按下去的后果**：
-## 现在是窗口 → 写「全屏」；已经是全屏 → 写「窗口化」。
-##
-## ⚠️ 必须每次打开菜单都刷新（`set_settings_menu_open` 里调）：玩家可能用 Ctrl+Q
-##    切过全屏，那时菜单上的字就过期了 —— 而「写着全屏、按下去却是窗口化」是最容易
-##    被当成 bug 报上来的那种错。
+## 「全屏 / 窗口化」文案刷新（选项页每次打开时会自己刷；这里留一个给测试 / 兼容用的入口）。
 func _refresh_fullscreen_label() -> void:
-	if fullscreen_button != null:
-		fullscreen_button.text = _fullscreen_label()
+	if options_panel != null:
+		options_panel.refresh_fullscreen()
 
 
 func _fullscreen_label() -> String:
@@ -1181,10 +1159,23 @@ func handle_touch(event: InputEventScreenTouch) -> void:
 	_set_touch_suppress(false)
 	_lp_active = false
 	_lp_shown = false
+	# ★★ 手机端「没有悬停」：手指一抬起，就把整个 HUD 的悬停**作废**（本轮修用户报的 bug）。
+	#
+	#   症状：手指移开后，游戏内某颗按钮（命令卡 / 页签 / 设置…）的金色填充还留着。
+	#   成因与主菜单同一条：`emulate_mouse_from_touch` 的模拟鼠标**停在原地、不补发
+	#   `mouse_exited`**，而 `fill_button` 在按下 / 抬起时把 `_hovered` 钉住 ⇒ 没人复位。
+	#   ⚠️ 必须**延迟一帧**：Button 的 `button_up` 在 `_input` 之后才跑，同步清会被钉回去。
+	#   与「常驻满格（latched）」互不干扰：选项页开着时那颗按钮是 latched，不会因此暗掉。
+	call_deferred("_clear_hud_hover")
 	if was_shown:
 		_dismiss_hover()
 		# ★ 长按只是看说明 —— 松手时随之而来的那次「激活」要丢掉（下一次按下会清掉这个记号）。
 		_lp_swallow = true
+
+
+## 触摸抬起之后清整棵 HUD 的悬停（延迟一帧调用）。
+func _clear_hud_hover() -> void:
+	FillButtonRes.clear_hover_in(self)
 
 
 ## 手指在 UI 上滑动：动得够远就取消这次长按（那是想拖动 / 划走，不是想看详情）。
@@ -2280,6 +2271,9 @@ func handle_key(event: InputEventKey) -> bool:
 ##   凡贴边的控件都有这个毛病（命令卡压下边缘、设置压上边缘），所以判据写成
 ##   「先看在不在最外圈」，与 camera_rig 的滚屏触发区同源。
 func blocks_edge_scroll(global_pos: Vector2) -> bool:
+	# ★ 选项页是模态 overlay：开着的时候鼠标在哪个边缘都不该滚地图
+	if options_panel != null and options_panel.is_open():
+		return true
 	var vp := view_size()
 	var margin: float = cfg.camera_edge_size if cfg != null else 0.0
 	if UiLayoutRes.in_edge_band(vp, global_pos, margin):
@@ -2299,6 +2293,8 @@ func blocks_edge_scroll(global_pos: Vector2) -> bool:
 ## ★ 判据由调用方**每次事件**传进来（game_scene 用的是那一下滚轮自己的坐标）：
 ##   鼠标一移出底栏，下一下滚动就恢复缩放 —— 没有「记得复位」的状态。
 func blocks_wheel_zoom(global_pos: Vector2) -> bool:
+	if options_panel != null and options_panel.is_open():
+		return true
 	return UiLayoutRes.point_hits_any(UiLayoutRes.bottom_bar_rects(view_size()), global_pos)
 
 

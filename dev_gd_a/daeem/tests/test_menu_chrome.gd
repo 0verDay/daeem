@@ -41,11 +41,13 @@ func _run() -> void:
 
 	_test_config(menu)
 	_test_layout(menu, chrome)
+	_test_pressed_style_not_solid(chrome)
 	_test_profile(menu, chrome)
 	await _test_expand(menu, chrome)
 	await _test_reverse(menu, chrome)
 	await _test_fill_cleared_after_reverse(menu, chrome)
-	await _test_battle_entries_in_panel(menu, chrome)
+	await _test_touch_release_clears_hover(menu, chrome)
+	await _test_campaign_menu_in_panel(menu, chrome)
 	await _test_instant_when_animations_off(menu, chrome)
 
 	main.queue_free()
@@ -194,6 +196,13 @@ func _test_expand(menu, chrome) -> void:
 
 	await _click_at(first.get_global_rect().get_center())
 	ok(engine.is_busy() or engine.is_expanded(), "★ 点侧边栏按钮触发了撑开")
+	ok(FillButtonRes.is_latched(first),
+		"★★ 被点开的那颗按钮**锁在满格**（正向填充播完就停住，不会自己退回去）")
+	for i in nav_btns.size():
+		if i == 0:
+			continue
+		ok(not FillButtonRes.is_latched(nav_btns[i]),
+			"★ 同一时刻只有被点开的那颗是常驻满格（第 %d 颗不是）" % i)
 
 	await _wait_sec(sec + SETTLE_PAD_SEC)
 	ok(engine.is_expanded(), "★★ 转场跑完 → 进入展开态")
@@ -268,6 +277,11 @@ func _test_reverse(menu, chrome) -> void:
 	ok(not engine.is_expanded(), "★★ 按「返回」之后回到未展开态")
 	ok(engine.secondary_panel() == null, "★ 二级面板已被销毁")
 	ok(not engine.is_busy(), "★ 也不在转场中途")
+	# ★★ 返回 = 解除常驻：那颗按钮该开始反向渐出（而不是一直亮着 / 一下子没了）
+	var nav_btns: Array = chrome.nav_buttons()
+	if not nav_btns.is_empty():
+		ok(not FillButtonRes.is_latched(nav_btns[0]),
+			"★★ 返回之后那颗入口按钮**解除常驻满格**（那片金开始反向渐出）")
 
 	# 三块面板都回到初值
 	for pair in [[chrome.profile_panel(), "资料"], [nav, "左导航"], [chrome.right_side_panel(), "右下入口"]]:
@@ -319,6 +333,46 @@ func _test_instant_when_animations_off(menu, chrome) -> void:
 	ok(side.modulate.a > 0.98, "★ 右下那一块也立刻回来了")
 
 	ThemeRes.set_animations_enabled(true)
+
+
+## ★★ 按下态**不许是实心金**：那正是「点一下立刻满填充、随后又自己退回去」的来源。
+##   实心底纹是**瞬时**的，而那片自绘金还在按 `FILL_TIME` 慢慢涨 —— 两者叠起来就是假反馈。
+##   口径：所有挂了填充动效的菜单按钮，`pressed` 底纹必须是**透明底**（只换描边）。
+func _test_pressed_style_not_solid(chrome) -> void:
+	var all: Array = []
+	all.append_array(chrome.nav_buttons())
+	all.append_array(chrome.side_buttons())
+	ok(all.size() >= 5, "（前提）外壳上有导航 / 入口按钮")
+	for b in all:
+		var flat := (b as Button).get_theme_stylebox("pressed") as StyleBoxFlat
+		ok(flat != null and flat.bg_color.a <= 0.001,
+			"★★ 按下态是透明底（那片金交给填充层）：%s" % (b as Button).name)
+
+
+## ★★ 手机端：触摸一颗按钮、手指抬起之后，悬停态必须**立刻作废**。
+##
+## 用户报的：「长时间悬停主菜单某个按钮后再移开手指，该按钮会保持悬停状态」。
+## 成因：`fill_button` 在按下 / 抬起时把 `_hovered` 钉住，而触摸抬起后
+##   `emulate_mouse_from_touch` 的模拟鼠标停在原地、不会补发 `mouse_exited`。
+## 修法：`start_screen._input` 在**触摸抬起**时延迟一帧把整层悬停清掉
+##   （延迟是必须的：Button 的 `button_up` 在我们之后才跑，它会再把悬停钉回 true）。
+func _test_touch_release_clears_hover(menu, chrome) -> void:
+	var btns: Array = chrome.side_buttons()
+	if btns.is_empty():
+		ok(false, "（前提）外壳上应该有三颗入口按钮")
+		return
+	var b: Button = btns[0]
+	await _move_mouse(b.get_global_rect().get_center())
+	await _wait_sec(0.35)
+	ok(FillButtonRes.fill_progress(b) > 0.9, "（前提）鼠标停上去之后它填满了")
+	var ev := InputEventScreenTouch.new()
+	ev.index = 0
+	ev.pressed = false
+	ev.position = b.get_global_rect().get_center()
+	menu._input(ev)
+	await _wait_sec(0.45)
+	ok(FillButtonRes.fill_progress(b) < 0.05,
+		"★★ 手指抬起 → 悬停作废、那片金退回去（当前 %.2f）" % FillButtonRes.fill_progress(b))
 
 
 ## ★★ 入场 → 主界面的**两段动画**：
@@ -463,17 +517,18 @@ func _test_fill_cleared_after_reverse(menu, chrome) -> void:
 	eq(FillButtonRes.fill_progress(b), 0.0, "★ 而且最终是完全空的（不是残留一点点）")
 
 
-## ★★ 「战役」那颗按钮撑开的面板里，装的是**从主界面正中那一列搬过来的三个测试入口**
-##   （地图选择条 + test + campaign_test，见 view/battle_entries.gd）；
+## ★★ 「战役」那颗按钮撑开的面板里，装的是**战役菜单**（`view/campaign_menu.gd`：
+##   左侧轮播 + 顶部关卡圆点 + 右侧描述 + 长按进入；版式移植自 nsoc）；
 ##   其余各块（资料 / 侧边栏五键 / 演义 / 合作模式）撑开的仍然是**空面板**。
-func _test_battle_entries_in_panel(menu, chrome) -> void:
+func _test_campaign_menu_in_panel(menu, chrome) -> void:
 	var engine = chrome.expand_engine()
 	var sec: float = menu.cfg.num("menu.chrome.transition_sec", 0.45)
 
-	# ① 没展开时：主界面上**没有**这些控件了（它们已经不在那一列里）
-	ok(menu.battle_entries() == null, "（前提）没展开面板时拿不到那些入口")
-	ok(menu.get_node_or_null("StartRoot/MainMenu/MenuPad/MenuOuter/MenuColumn") == null,
-		"★★ 主界面那一列里**不再有** MenuColumn（地图选择条与那两颗按钮已搬走）")
+	# ① 没展开时：主界面上**没有**战役菜单；正中那三颗 test_1/2/3 则一直在。
+	ok(menu.campaign_menu() == null, "（前提）没展开面板时拿不到战役菜单")
+	ok(menu.get_node_or_null("StartRoot/MainMenu/MenuPad/MenuOuter/MenuColumn") != null,
+		"★ 主界面正中那一列又有了 MenuColumn（test_1/2/3）")
+	eq(menu.test_buttons().size(), 3, "★ 里面正好三颗 test 按钮")
 
 	# ② 展开「战役」（右下上排第一颗）
 	var side: Array = chrome.side_buttons()
@@ -481,25 +536,26 @@ func _test_battle_entries_in_panel(menu, chrome) -> void:
 		return
 	await _click_at((side[0] as Control).get_global_rect().get_center())
 	await _wait_sec(sec + SETTLE_PAD_SEC)
-	var entries = menu.battle_entries()
-	ok(entries != null, "★★ 「战役」面板里挂上了那三个测试入口（view/battle_entries.gd）")
-	if entries == null:
+	var cm = menu.campaign_menu()
+	ok(cm != null, "★★ 「战役」面板里挂上了战役菜单（view/campaign_menu.gd）")
+	if cm == null:
 		return
-	ok(entries.test_button() != null, "★ 里面有 test 按钮")
-	ok(entries.campaign_test_button() != null, "★ 里面有 campaign_test 按钮")
-	ok(entries.map_select_button() != null, "★ 里面有地图选择条")
-	ok(entries.map_options().size() > 0,
-		"★ 选择条的选项还是**扫目录**扫出来的（%d 张）" % entries.map_options().size())
-	ok(engine.expanded_panel() != null and engine.expanded_panel().is_ancestor_of(entries),
+	ok(cm.campaign_count() >= 1, "★ 菜单里有战役（%d 个）" % cm.campaign_count())
+	ok(cm.chapter_dot_count() >= 1, "★ 顶部建出了关卡圆点")
+	ok(cm.desc_title_text() != "", "★ 右侧描述面板有当前关卡的名字")
+	ok(engine.expanded_panel() != null and engine.expanded_panel().is_ancestor_of(cm),
 		"★★ 它确实挂在**撑开的那块面板**里（不是浮在别处）")
-	ok(entries.test_pressed.get_connections().size() >= 1,
-		"★ test 的信号接上了（面板 → 外壳 → 开场页 → main.gd）")
-	ok(entries.campaign_test_pressed.get_connections().size() >= 1, "★ campaign_test 的信号也接上了")
+	ok(cm.chapter_activated.get_connections().size() >= 1,
+		"★ 长按进关的信号接上了（面板 → 外壳 → 开场页 → main.gd）")
+	# 轮播真的排过版（不是缩成一团）
+	ok(cm.carousel() != null and cm.carousel().size.x > 10.0 and cm.carousel().size.y > 10.0,
+		"★ 左侧轮播拿到了面板的尺寸（%.0f×%.0f）"
+		% [cm.carousel().size.x, cm.carousel().size.y])
 
 	# ③ 收起 → 拿不到了；再展开一颗侧边栏按钮 → 那块是空面板
 	await _click_at(engine.secondary_panel().back_button().get_global_rect().get_center())
 	await _wait_sec(sec + SETTLE_PAD_SEC)
-	ok(menu.battle_entries() == null, "★ 收起之后拿不到了（面板连同内容一起销毁）")
+	ok(menu.campaign_menu() == null, "★ 收起之后拿不到了（面板连同内容一起销毁）")
 	var nav: Array = chrome.nav_buttons()
 	if nav.is_empty():
 		return
@@ -508,10 +564,10 @@ func _test_battle_entries_in_panel(menu, chrome) -> void:
 	var p = engine.secondary_panel()
 	ok(p != null, "（前提）侧边栏那一次也撑开了面板")
 	if p != null:
-		ok(p.entries() == null, "★★ 侧边栏那几块撑开的仍然是**空面板**（只有一颗「返回」）")
+		ok(menu.campaign_menu() == null, "★★ 侧边栏那几块撑开的仍然是**空面板**（没有战役菜单）")
 		await _click_at(p.back_button().get_global_rect().get_center())
 		await _wait_sec(sec + SETTLE_PAD_SEC)
-	ok(menu.battle_entries() == null, "★ 再收起，仍然没有入口（它们只属于「战役」那一块）")
+	ok(menu.campaign_menu() == null, "★ 再收起，仍然没有战役菜单（它只属于「战役」那一块）")
 
 
 # ------------------------------------------------------------------

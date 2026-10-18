@@ -86,10 +86,11 @@ var mobile_3d_scale: float = 0.75
 ## ★★ 手机端帧率诊断（见 config.json 的 render._mobile_frame_comment）。
 ##   · mobile_vsync    —— 垂直同步。**默认 false**（手机端按原始帧时间跑，避免被
 ##     刷新率量化到 45/40/30 档）；看到撕裂就改回 true。
-##   · mobile_max_fps  —— 0 = 不限制；> 0 = 引擎帧率上限。
+##   · mobile_max_fps  —— **默认 60（锁 60 帧）**；0 = 不限制；90 = 放开到 90。
+##     锁帧能避免偶尔跑到 90/100 帧带来的发热与帧时间抖动。
 ## 只在移动平台应用；桌面 / 无头 / 测试完全不受影响（不改变任何现有断言）。
 var mobile_vsync: bool = false
-var mobile_max_fps: int = 0
+var mobile_max_fps: int = 60
 
 var cols: int = 24
 var rows: int = 16
@@ -128,6 +129,10 @@ var mobile_minimap_hz: float = 10.0
 var mobile_ui_stagger: bool = true
 ## ★ 手机端左上角性能读数（FPS / 内核 / 单位数；见 config.json 的 ui._perf_comment）
 var show_perf: bool = true
+## ★★ 完整分段读数（帧时间 / CPU / DC / 逻辑与场景分段）的开关。
+##   **默认 false** ⇒ 只显示一行 `FPS 60`（用户口径：只要 FPS，且放最左上）。
+##   true ⇒ 回到原来那 4 行，并打开 `world.profile_on` / 场景层 `perf_enable()`。
+var show_perf_detail: bool = false
 
 ## ---- 小地图拖动视角（见 config.json 的 minimap._comment）----
 ## ★ 与 drag_select_min_px 同一种单位（**屏幕像素**）：判据不该跟着相机缩放漂移。
@@ -476,7 +481,7 @@ func _cache_scalars() -> void:
 	mobile_3d_scale = clampf(num("render.mobile_3d_scale", 0.75), 0.5, 1.0)
 	# 手机端帧率诊断：vsync 开关与帧率上限（0 = 不限；负数按 0 处理）
 	mobile_vsync = bool_val("render.mobile_vsync", false)
-	mobile_max_fps = maxi(0, int_val("render.mobile_max_fps", 0))
+	mobile_max_fps = maxi(0, int_val("render.mobile_max_fps", 60))
 
 	# ---- ⚠️ 以下这一段原本就在 `_cache_scalars()` 里 ----
 	#   ★ 一次大段替换曾把它与函数头切断，症状是
@@ -499,6 +504,7 @@ func _cache_scalars() -> void:
 	mobile_minimap_hz = maxf(0.0, num("ui.mobile_minimap_hz", 10.0))
 	mobile_ui_stagger = bool_val("ui.mobile_ui_stagger", true)
 	show_perf = bool_val("ui.show_perf", true)
+	show_perf_detail = bool_val("ui.show_perf_detail", false)
 	minimap_drag_min_px = num("minimap.drag_min_px", 4.0)
 	minimap_drag_hold_sec = num("minimap.drag_hold_sec", 0.18)
 

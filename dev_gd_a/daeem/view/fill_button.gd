@@ -1,5 +1,8 @@
 ## fill_button.gd —— ★★ 按钮的「金色自下而上填充」动效（悬停填充 / 反向渐出 / 启用常驻）
 ##
+## ★★ 按下动效（压缩 / 回弹 / 亮边）**不在这里**：由 view/press_fx.gd 统一处理；
+##   `attach()` 会自动把它挂到每颗 Button 上，所有按钮共用同一份按下逻辑。
+##
 ## 需求原话：
 ##   「当玩家鼠标悬停在任何按钮上时，按钮背景都会由空到由下往上填充金色背景，
 ##     需要做渐变效果和悬停结束时的反向渐出效果」；
@@ -71,6 +74,8 @@
 extends Control
 
 const ThemeRes = preload("res://view/theme.gd")
+## ★★ 所有 Button 统一的「按下压缩 / 回弹 / 亮边」由它负责（见 view/press_fx.gd）。
+const PressFxRes = preload("res://view/press_fx.gd")
 
 ## 进度存在按钮身上的元数据键（`attach()` 写、`draw()` 读）。
 ## ★ 用元数据而不是「给 Button 加个字段」：调用点建的是**真 Button**，
@@ -123,6 +128,8 @@ static func attach(b: Button) -> FillAnimator:
 	#   （"The object does not have any 'meta' values with the key …"）。
 	#   于是「给个默认值就不会吵」这件事是假的 —— 缺键时只能根本不去读它。
 	var old: Variant = b.get_meta(META) if b.has_meta(META) else null
+	# ★★ 按下动效也在这里统一挂上：调用点不需要第二行 attach。
+	PressFxRes.attach(b)
 	if old != null and is_instance_valid(old):
 		return old
 	var anim := FillAnimator.new()
@@ -169,6 +176,25 @@ static func clear_hover_in(node: Node) -> void:
 			a.clear_hover()
 	for c in node.get_children():
 		clear_hover_in(c)
+
+
+## ★★ 整棵树里所有按钮的「常驻满格（latched）」一起解除 —— 给流程层用。
+##
+## 用途（本轮）：主界面那些「点开一个面板」的按钮在面板开着时锁在满格（正向填充播完就停住），
+##   **收起面板 / 回到主菜单**时才解除 ⇒ 走 `DRAIN_TIME` 那条反向渐出。
+##   与 `clear_hover_in` 分开是必须的：悬停是「鼠标在不在上面」，常驻是「这块现在是不是
+##   被选中 / 被打开」—— 一起清会把「面板还开着、按钮却先暗下去」做成 bug。
+## ⚠️ 解除之后**不会**自己填回来（与 `clear_hover_in` 同一条口径）：
+##   下一次真实 `mouse_entered` / `set_latched(true)` 才会。
+static func clear_latched_in(node: Node) -> void:
+	if node == null:
+		return
+	if node is Button:
+		var a := animator_of(node as Button)
+		if a != null:
+			a.set_latched(false)
+	for c in node.get_children():
+		clear_latched_in(c)
 
 
 # ------------------------------------------------------------------
@@ -234,6 +260,9 @@ static func draw_fill(b: Button) -> void:
 class FillAnimator extends Control:
 	## 已经填了多少（0 = 空，1 = 满）。★ 只读用途请走 `host` 上的静态接口。
 	var _fill: float = 0.0
+	## ★ 确认按下后的「快速补满」剩余时间 / 满格保持时间（见 `_on_pressed_snap`）。
+	var _snap_left: float = 0.0
+	var _snap_hold: float = 0.0
 	## 目标：0（鼠标不在）/ 1（鼠标在）/ 1（已启用 —— 锁定态不会退回 0）。
 	var _latched: bool = false
 	## 鼠标是否停在这颗按钮上（按下时也算「在」，否则一按下背景就退回去）。
@@ -388,7 +417,57 @@ class FillAnimator extends Control:
 			b.mouse_exited.connect(_on_mouse_exited)
 			b.button_down.connect(_on_button_down)
 			b.button_up.connect(_on_button_up)
+			# ★★ 兜底：**确认按下**（`pressed` 信号）的那一下，背景瞬间填满。
+			b.pressed.connect(_on_pressed_snap)
 		_refresh_colors()
+
+
+	## ★★ 「确认按下了」的兜底（用户要求）：这一下背景必须**在极短时间内**补到满格，
+	## 不等正向悬停动画慢慢跑完。★ 但不再是一帧硬跳：由 `_advance_snap()` 在
+	## `ui.press_snap_sec`（默认 0.07s）内补满，再保持 `ui.press_snap_hold_sec`
+	## （默认 0.06s）后才按正常目标回落 —— 这样「按了有反馈」和「不闪一下」同时成立。
+	##
+	## 为什么需要：正向填充是 `FILL_TIME`（0.18s）。快速点按 / 触摸时手指可能刚填到
+	##   一半就抬起 —— 玩家「明明按了」却看不到满格。确认按下这一下补成满格，
+	##   保证「按了就有反馈」；之后该锁的锁（菜单面板）、该渐出的渐出（一次性按钮）。
+	## ⚠️ 只在**可点**的按钮上做（`_available = false` 的空槽 / 占位格不参与）。
+	## ⚠️ 它不改变 `_goal()`：不改变「按完之后该停在满格还是退回空」的判断。
+	func _on_pressed_snap() -> void:
+		if not _available:
+			return
+		if not ThemeRes.animations_enabled():
+			# 关掉动效 = 立刻到位（与 hover 动画同一条口径）
+			_fill = 1.0
+			_snap_left = 0.0
+			_snap_hold = 0.0
+			_sync_text()
+			queue_redraw()
+			return
+		if _fill >= 0.999:
+			_fill = 1.0
+			_snap_hold = maxf(_snap_hold, PressFxRes.snap_hold_sec())
+		else:
+			_snap_left = maxf(_snap_left, PressFxRes.snap_sec())
+		_sync_text()
+		queue_redraw()
+
+
+	## 推进「确认按下」的补满 / 保持。
+	func _advance_snap(dt: float) -> void:
+		if _snap_left > 0.0:
+			_fill = move_toward(_fill, 1.0, dt / PressFxRes.snap_sec())
+			_snap_left -= dt
+			if _fill >= 0.999:
+				_fill = 1.0
+				_snap_left = 0.0
+				_snap_hold = PressFxRes.snap_hold_sec()
+			elif _snap_left <= 0.0:
+				# 时间到了还没到 1（大 dt / 低帧率）：直接落到满格，别停在 0.99
+				_fill = 1.0
+				_snap_hold = PressFxRes.snap_hold_sec()
+		elif _snap_hold > 0.0:
+			_fill = 1.0
+			_snap_hold -= dt
 
 	func _process(dt: float) -> void:
 		if _button == null or not is_instance_valid(_button):
@@ -403,6 +482,13 @@ class FillAnimator extends Control:
 		# ★ `_text_dirty` 是「登记过字色、但还没同步过」那一档（见 `_sync_text()`）。
 		if _text_dirty or not _dirty.is_empty():
 			_sync_text()
+		# ★ 确认按下后的快速补满优先于普通目标；补满/保持期间不做回落。
+		if _snap_left > 0.0 or _snap_hold > 0.0:
+			_advance_snap(dt)
+			_sync_text()
+			queue_redraw()
+			if _snap_left > 0.0 or _snap_hold > 0.0:
+				return
 		var goal := _goal()
 		if is_equal_approx(_fill, goal):
 			# ★★ 已经到目标：仍然把字色同步一遍。
@@ -563,6 +649,9 @@ class FillAnimator extends Control:
 	## 立刻把进度设成一个值（动画会从那里继续）。测试与「不必动画」的场合用它。
 	func set_fill(v: float) -> void:
 		_fill = clampf(v, 0.0, 1.0)
+		# ★ 外部显式设值 = 取消「确认按下」的补满 / 保持，避免测试或调用点被顶回去
+		_snap_left = 0.0
+		_snap_hold = 0.0
 		_sync_text()
 		queue_redraw()
 

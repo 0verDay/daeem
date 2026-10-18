@@ -4,9 +4,9 @@
 ##
 ## ★★ 两种用法：
 ##   · **空面板**（默认）：除了「返回」什么都没有；
-##   · **战斗测试面板**（`with_battle_entries = true`，给「战役」那颗按钮用）：
-##     内容区里放 `view/battle_entries.gd` —— 地图选择条 + test + campaign_test。
-##     这三样原来长在主界面正中那一列里，现在整块搬到这里（只由本面板拥有）。
+##   · **战役菜单**（`with_campaign_menu = true`，给「战役」那颗按钮用）：
+##     内容区里放 `view/campaign_menu.gd` —— 左侧战役轮播 + 顶部关卡圆点 +
+##     右侧关卡描述 + 长按进入（版式移植自 nsoc 的 CampaignPanel）。
 ##
 ## 生命周期（由 `view/panel_expand.gd` 驱动）：
 ##   · `setup()`     —— 造出「返回」与内容（由工厂在实例化之后、挂上树之前调用）；
@@ -19,17 +19,17 @@
 extends Control
 
 signal back_pressed
-## 内容区里那颗 test 被按了（只在 `with_battle_entries` 时会有）—— 见 view/battle_entries.gd
-signal test_pressed(map_path: String)
-## 内容区里那颗 campaign_test 被按了
-signal campaign_test_pressed()
+## 战役菜单里长按满了某一关（只在 `with_campaign_menu` 时会有）——
+## 参数是**数据**（战役 id + 关卡 id），见 view/campaign_menu.gd。
+signal level_activated(campaign_id: String, level_id: String)
 
 const ConfigRes = preload("res://logic/config.gd")
 const ThemeRes = preload("res://view/theme.gd")
 const MenuThemeRes = preload("res://view/menu_theme.gd")
 const FillButtonRes = preload("res://view/fill_button.gd")
 const UiWidgetsRes = preload("res://view/ui_widgets.gd")
-const BattleEntriesRes = preload("res://view/battle_entries.gd")
+const CampaignMenuRes = preload("res://view/campaign_menu.gd")
+const CampaignMenuDbRes = preload("res://logic/campaign_menu_db.gd")
 
 ## 兜底淡入淡出时长（与 config.json 的 menu.chrome.transition_sec 一致）
 const DEFAULT_FADE_SEC := 0.45
@@ -40,23 +40,23 @@ var cfg: ConfigRes = null
 var _font: Font = null
 var _fade_sec: float = DEFAULT_FADE_SEC
 var _margin: float = DEFAULT_MARGIN
-var _with_battle_entries: bool = false
+var _with_campaign_menu: bool = false
 var _built: bool = false
 var _back_btn: Button = null
-## 内容区那块（`with_battle_entries` 时才有）
-var _entries = null
+## 内容区那块（`with_campaign_menu` 时才有）
+var _campaign_menu = null
 
 
 ## @param p_fade_sec 淡入 / 淡出时长（一般传引擎的 `transition_sec`，两边同步）
 ## @param p_margin  返回按钮离面板上边 / 右边的距离
-## @param p_with_battle_entries 内容区里要不要放「地图选择条 + test + campaign_test」
+## @param p_with_campaign_menu 内容区里要不要放战役菜单（左侧轮播 + 关卡圆点 + 描述）
 func setup(p_cfg: ConfigRes, p_font: Font, p_fade_sec: float, p_margin: float,
-		p_with_battle_entries: bool = false) -> void:
+		p_with_campaign_menu: bool = false) -> void:
 	cfg = p_cfg
 	_font = p_font
 	_fade_sec = maxf(0.0, p_fade_sec)
 	_margin = maxf(0.0, p_margin)
-	_with_battle_entries = p_with_battle_entries
+	_with_campaign_menu = p_with_campaign_menu
 	_build()
 
 
@@ -65,9 +65,9 @@ func back_button() -> Button:
 	return _back_btn
 
 
-## 内容区那块（`view/battle_entries.gd`）；空面板时是 null。
-func entries():
-	return _entries
+## 内容区那块战役菜单（`view/campaign_menu.gd`）；空面板时是 null。
+func campaign_menu():
+	return _campaign_menu
 
 
 func _build() -> void:
@@ -106,7 +106,8 @@ func _build() -> void:
 	UiWidgetsRes.apply_button_styles(_back_btn, {
 		"normal": MenuThemeRes.button_normal(),
 		"hover": MenuThemeRes.button_hover_clear(),
-		"pressed": MenuThemeRes.button_selected(),
+		# ★ 按下态只加亮描边：实心金会把自绘填充盖住（「一按就整块亮金」那种假反馈）
+		"pressed": MenuThemeRes.button_fill_latched(),
 		"disabled": MenuThemeRes.button_disabled(),
 	})
 	FillButtonRes.set_base_font_color(_back_btn, MenuThemeRes.text_normal())
@@ -157,25 +158,20 @@ func detach_with_fade(duration: float) -> void:
 
 ## 往面板里填内容：只有「战役」那颗按钮撑开的那块才有内容。
 ##
-## ★ 位置：把内容放进一个铺满面板的 `CenterContainer` ⇒ 它在整块面板里居中
-##   （搬迁前它是长在主界面正中的，观感一致）。
-## ★ 内容自己发信号（`view/battle_entries.gd` 的 `test_pressed` / `campaign_test_pressed`），
+## ★ 位置：整块铺满撑开面板（版式是「左 1/4 轮播 / 顶部关卡条 / 右侧描述」，
+##   不是居中一列 —— 见 view/campaign_menu.gd）。
+## ★ 内容自己发信号（`view/campaign_menu.gd` 的 `chapter_activated`），
 ##   这里**只往上传一层**：面板 → 外壳 → view/start_screen.gd → view/main.gd。
 ##   ⇒ 谁建世界这件事仍然只有一个地方知道（main.gd），本文件不认识任何玩法概念。
 func _build_content() -> void:
-	if not _with_battle_entries:
+	if not _with_campaign_menu:
 		return
-	var wrap := CenterContainer.new()
-	wrap.name = "ContentCenter"
-	wrap.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	wrap.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	add_child(wrap)
-
-	_entries = BattleEntriesRes.new()
-	wrap.add_child(_entries)
-	_entries.setup(cfg, _font)
-	_entries.test_pressed.connect(func(path: String): test_pressed.emit(path))
-	_entries.campaign_test_pressed.connect(func(): campaign_test_pressed.emit())
+	_campaign_menu = CampaignMenuRes.new()
+	add_child(_campaign_menu)
+	_campaign_menu.setup(cfg, _font, CampaignMenuDbRes.load_campaigns())
+	_campaign_menu.chapter_activated.connect(
+		func(campaign_id: String, level_id: String):
+			level_activated.emit(campaign_id, level_id))
 
 
 func _sync_size(origin_panel: Control) -> void:

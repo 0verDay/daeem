@@ -19,6 +19,9 @@ const ConfigRes = preload("res://logic/config.gd")
 const PaletteRes = preload("res://view/palette.gd")
 const CommandRes = preload("res://logic/command_processor.gd")
 const FactionRes = preload("res://logic/faction.gd")
+## ★ 只为「单位立牌的宽高比」这两个常量（`QUAD_W` / `QUAD_H_RATIO`）——
+##   框选要按**图标**判命中，不能在两个文件里各写一份尺寸（见 `_unit_icon_screen_rect`）。
+const UnitViewRes = preload("res://view/unit_view_3d.gd")
 
 ## 产出命令（由 view/main.gd 消费并执行）
 signal command_issued(cmd: Dictionary)
@@ -127,6 +130,16 @@ var debug_aim: bool = false
 var drag_active: bool = false
 var drag_start_world: Vector2 = Vector2.ZERO
 var drag_current_world: Vector2 = Vector2.ZERO
+## ★★ 手机端选框在**屏幕上**的矩形（两指就是它的两个角）。
+##
+## 为什么单独记一份（用户报的「右手在上、左手在下时，右上 / 左下不跟手」）：
+##   3D 相机是**透视**的，而选框一直按「世界轴对齐的矩形」存 —— 把它的四个角投影回屏幕
+##   是一个**四边形**，远端那条边会横向缩进 ⇒ 越靠远的两个角离手指越远（实测就是「一截」）。
+##   手机端改成直接用两指定义的**屏幕矩形**画框：两个角逐像素落在手指上。
+##   ⚠️ 世界矩形（`drag_start_world` / `drag_current_world`）**照旧保留** ——
+##      它只负责「框到哪些单位」（`box_select` 的判定），显示与判定各用各的口径。
+var drag_screen_box: Rect2 = Rect2()
+var drag_screen_valid: bool = false
 ## 左键按下之后、还没判定成「点击还是拖框」的那一段
 var _drag_pending: bool = false
 ## 这次拖框是不是追加（Shift + 左键拖）
@@ -174,6 +187,7 @@ func setup(p_cfg: ConfigRes, p_world, p_camera_rig, p_palette = null) -> void:
 	# 框选那条状态机也归零（重开一局时别留着上一局的半个框）
 	_drag_pending = false
 	drag_active = false
+	drag_screen_valid = false
 	_drag_freeze_cam = false
 	_pan_pending = false
 	_touch_panning = false
@@ -344,6 +358,11 @@ func handle_mouse_motion(event: InputEventMouseMotion) -> bool:
 		#   单击（没越过阈值）不该影响边缘滚屏的老手感。
 		_drag_freeze_cam = true
 	drag_current_world = _screen_to_logic(event.position)
+	# ★★ 屏幕矩形也一起记：判定与绘制都用它（与手机端同一条口径，见 box_select_screen）。
+	#   鼠标框选的画面从此也是**屏幕矩形**，不再是「世界矩形的投影四边形」——
+	#   这样「画出来的框」与「判定的区域」是同一份数据。
+	drag_screen_box = Rect2(_drag_press_screen, event.position - _drag_press_screen).abs()
+	drag_screen_valid = true
 	local_ui_changed.emit()
 	return true
 
@@ -400,6 +419,9 @@ func _begin_drag(event: InputEventMouseButton) -> void:
 	_drag_press_screen = event.position
 	drag_current_world = drag_start_world
 	drag_active = false
+	# 还没越过阈值：屏幕矩形先清空（越过阈值那一刻才在 `handle_mouse_motion` 里建）
+	drag_screen_box = Rect2(event.position, Vector2.ZERO)
+	drag_screen_valid = false
 
 
 ## 按当前 `mouse_world` 重算 `hover_tile`（口径与 `poll_mouse()` 里那两行**完全一致**：
@@ -419,13 +441,23 @@ func _finish_drag() -> void:
 	var active := drag_active
 	var start := drag_start_world
 	var end := drag_current_world
+	var screen_rect := drag_screen_box
+	var had_screen := drag_screen_valid
 	var additive := _drag_additive
 	_drag_pending = false
 	drag_active = false
+	drag_screen_valid = false
 	_drag_freeze_cam = false
 	if not active:
 		return
-	box_select(start, end, additive)
+	# ★★ 与手机端**同一条口径**：判定走屏幕矩形（`box_select_screen`），
+	#   判的是「立牌图标的屏幕矩形」而不是脚底锚点。PC 以前用世界矩形 + 锚点，
+	#   于是「框住了牌的上半身」同样会漏 —— 这一轮两端统一。
+	#   没有屏幕矩形（老路径 / 无头造不出视口）才退回世界矩形。
+	if had_screen and (screen_rect.size.x > 0.0 or screen_rect.size.y > 0.0):
+		box_select_screen(screen_rect, additive)
+	else:
+		box_select(start, end, additive)
 	local_ui_changed.emit()
 
 
@@ -474,6 +506,91 @@ func box_select(start: Vector2, end_pos: Vector2, additive: bool = false) -> int
 	return picked.size()
 
 
+## ★★ 手机端框选：按**屏幕矩形**判定 —— 与画出来的框逐像素一致（本轮修用户报的「有概率漏」）。
+##
+## 两个必须一起改的点：
+##   ① **判定坐标系**：画出来的是两指定义的屏幕矩形，判定就在屏幕空间做；
+##      不要再投回世界矩形（透视下那不是逆变换，框的形状/大小都对不上）。
+##   ② **判定对象是图标，不是脚底锚点**：单位是「立牌」（从脚底 `u.pos` 向上约
+##      `QUAD_W×QUAD_H_RATIO` 格）。玩家框的是**看见的那个立牌**，而旧判定只问
+##      「脚底那个点」在不在框里 ⇒ 框住图标、锚点却在框外时**漏选**（用户报的
+##      「框到了单个单位，有概率不会选中」就是它：概率取决于框画得多高）。
+##      现在按**图标的屏幕矩形**判相交：框到图标任何一部分都算框到。
+##
+## ⚠️ PC 那条路（`box_select`）**不改**：它画的就是世界四边形的投影，与判定本来就一致。
+##
+## @param screen_rect 屏幕像素矩形（两指的包围盒）
+## @return 这次框到的单位个数（建筑在同一条口径里兜底）
+func box_select_screen(screen_rect: Rect2, additive: bool = false) -> int:
+	if world == null:
+		return 0
+	# 没有投影（无头 / 2D 老路径）就退回世界矩形：宁可口径差一点，也不能选不中
+	if palette == null:
+		var a := _screen_to_logic(screen_rect.position)
+		var b := _screen_to_logic(screen_rect.end)
+		return box_select(a, b, additive)
+	var picked: Array = []
+	for u in world.units:
+		if not u.alive:
+			continue
+		if not FactionRes.same_side(u.faction, world.my_faction):
+			continue
+		if screen_rect.intersects(_unit_icon_screen_rect(u)):
+			picked.append(u)
+	if picked.is_empty():
+		var buildings := _buildings_in_screen_rect(screen_rect)
+		if not buildings.is_empty():
+			var next_b: Array = selected_buildings.duplicate() if additive else []
+			for b in buildings:
+				if not next_b.has(b):
+					next_b.append(b)
+			select_buildings(next_b)
+			return buildings.size()
+	var next: Array = selected_units.duplicate() if additive else []
+	for u in picked:
+		if not next.has(u):
+			next.append(u)
+	select_units(next)
+	return picked.size()
+
+
+## 屏幕矩形里的**己方建筑**（与 `_buildings_in_rect` 同一条口径，只是命中改判屏幕位置）。
+func _buildings_in_screen_rect(screen_rect: Rect2) -> Array:
+	var out: Array = []
+	if world == null or palette == null:
+		return out
+	for b in world.building_list:
+		if b == null or not b.alive:
+			continue
+		if b.is_invulnerable():
+			continue
+		if not FactionRes.same_side(b.owner, world.my_faction):
+			continue
+		if screen_rect.has_point(palette.to_px(b.center())):
+			out.append(b)
+	return out
+
+
+## 单位「立牌」在**屏幕上**的矩形（底边 = 脚底锚点，向上 `QUAD_H_RATIO` 倍宽）。
+##
+## ★★ 为什么框选要按这个矩形判，而不是判 `u.pos` 那个点：
+##   单位在画面上是从脚底立起来的一张牌（宽 `QUAD_W` 格、高 `QUAD_W×QUAD_H_RATIO` 格）。
+##   玩家框的是**看见的牌**；只判脚底那个点的话，把框画在牌的上半部分就会「框到了却不选中」
+##   —— 这正是用户报的「框到了单个单位，有概率不会选中（连带整支部队）」。
+##
+## ⚠️ 宽度必须**从投影算**，不能写死像素：相机拉近 / 拉远时牌会跟着变大变小。
+##   横向半宽 = `to_px(pos + (QUAD_W/2, 0))` 与 `to_px(pos)` 的距离（透视下左右也不对称，
+##   取同一侧即可，误差远小于牌的宽度）。
+func _unit_icon_screen_rect(u) -> Rect2:
+	var feet: Vector2 = palette.to_px(u.pos)
+	var side: Vector2 = palette.to_px(u.pos + Vector2(UnitViewRes.QUAD_W * 0.5, 0.0))
+	var half_w: float = absf(side.x - feet.x)
+	if half_w < 1.0:
+		half_w = 1.0
+	var h: float = half_w * 2.0 * UnitViewRes.QUAD_H_RATIO
+	return Rect2(feet.x - half_w, feet.y - h, half_w * 2.0, h)
+
+
 ## 矩形（世界坐标，格）里的**己方建筑**（大本营 / 城墙 / 箭塔…）。
 ##
 ## ★ 只认自己这一方（与框选单位同一条口径）。
@@ -505,6 +622,7 @@ func drag_box() -> Rect2:
 func _cancel_drag() -> void:
 	_drag_pending = false
 	drag_active = false
+	drag_screen_valid = false
 	_drag_freeze_cam = false
 	local_ui_changed.emit()
 
@@ -586,9 +704,18 @@ func touch_double_tap(world_pos: Vector2) -> void:
 ## ★★ 用**两指当前的世界坐标**同时设选框的两个对角：两指一动就重设一次 ⇒ 矩形实时跟随
 ##    （需求原话：「选框的两个角由两根手指决定，另两个角实时求出」）。
 ## @param corner_a / corner_b 世界坐标（格），顺序无关（`drag_box()` 取绝对值）
-func touch_box_set(corner_a: Vector2, corner_b: Vector2) -> void:
+## @param screen_a / screen_b 两指**屏幕坐标**（可选）：给了就按屏幕矩形画框。
+##   ★★ 为什么显示要用屏幕坐标：透视投影下「世界轴对齐矩形」的四条边投影回来是四边形，
+##     远端会缩进 —— 于是那两个角离手指一截（用户报的 bug）。屏幕矩形没有这个问题。
+func touch_box_set(corner_a: Vector2, corner_b: Vector2,
+		screen_a: Variant = null, screen_b: Variant = null) -> void:
 	drag_start_world = corner_a
 	drag_current_world = corner_b
+	if screen_a != null and screen_b != null:
+		var sa: Vector2 = screen_a
+		var sb: Vector2 = screen_b
+		drag_screen_box = Rect2(sa, sb - sa).abs()
+		drag_screen_valid = true
 	drag_active = true
 	_drag_freeze_cam = true
 	local_ui_changed.emit()
@@ -597,9 +724,16 @@ func touch_box_set(corner_a: Vector2, corner_b: Vector2) -> void:
 func touch_box_end() -> void:
 	var start := drag_start_world
 	var end_pos := drag_current_world
+	var screen_rect := drag_screen_box
+	var had_screen := drag_screen_valid
 	drag_active = false
+	drag_screen_valid = false
 	_drag_freeze_cam = false
-	if start.distance_to(end_pos) > 0.0:
+	# ★★ 判定走**屏幕矩形** —— 与画出来的框同一条口径（否则透视下会「看着框住了却没选中」）。
+	#   `touch_box_set()` 没带屏幕点时才退回旧的世界矩形。
+	if had_screen and (screen_rect.size.x > 0.0 or screen_rect.size.y > 0.0):
+		box_select_screen(screen_rect, false)
+	elif start.distance_to(end_pos) > 0.0:
 		box_select(start, end_pos, false)
 	local_ui_changed.emit()
 
