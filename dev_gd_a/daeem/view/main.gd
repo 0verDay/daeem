@@ -51,12 +51,33 @@ const GameSceneRes = preload("res://view/game_scene3d.gd")
 ## ★ 单人战役的占位页（`view/campaign_test.gd`）与「地图选择条 + test」那一套已经删掉：
 ##   它们的功能被上面两条入口取代（用户要求：旧三件套从「战役」面板移除）。
 const CampaignLibraryRes = preload("res://logic/campaign_library.gd")
+## ★★ 战役过渡画面（view/level_transition.gd）：缩略图 + 简报 + 多阵营选择 + 进度 + 点击进入。
+##   只有单人关走它；合作关仍直接进（合作大厅那一路有自己的流程）。
+const LevelTransitionRes = preload("res://view/level_transition.gd")
+## ★★ 退出确认浮层（`view/quit_confirm.gd`；版式移植自 nsoc 的 quit_confirm.gd）。
+##   它只发 `confirmed` / `cancelled`，**自己不 quit** —— 「谁退出」仍然只在本文件。
+const QuitConfirmRes = preload("res://view/quit_confirm.gd")
+## ★★ 黑屏转场要读动效总开关（`theme.gd` 的 `animations_enabled()`）。
+const ThemeRes = preload("res://view/theme.gd")
 
 ## 开场页用的字体基准字号（标题 / 提示 / 按钮各自另有字号，见 config.json 的 menu 段）
 const MENU_FONT_SIZE := 32
 
+## ★★ 进入游戏的黑屏转场（只用于战役过渡画面点「进入」；见 `_on_level_transition_enter`）：
+##   `enter_fade_sec`    = 画面推成全黑的时长；
+##   `enter_fade_in_sec` = 游戏场景首帧就绪后，从全黑里淡出来的时长。
+##   兜底值必须与 data/config.json 的 `menu.transition.enter_fade_*` 一致。
+const DEFAULT_ENTER_FADE_SEC := 0.35
+const DEFAULT_ENTER_FADE_IN_SEC := 0.40
+## 黑屏层要盖在过渡画面（150）/ 退出确认（200）之上。
+const ENTER_FADE_LAYER := 300
+
 var cfg: ConfigRes = null
 var start_screen: CanvasLayer = null
+## 菜单用的中文字体（开场页建好后留一份：退出确认浮层也要挂同一套字体）。
+var _ui_font: Font = null
+## ★ 退出确认浮层（第一次点「退出游戏」/ 按安卓返回时才建；之后复用同一个实例）。
+var _quit_confirm = null
 ## ★★ 类型必须是 `Node`，不能是 `Node2D`（本轮实测踩到）：
 ##    入口切到 3D 之后 `game_scene3d.gd` 是 **`Node3D`**，而 `Node3D` 与 `Node2D` 是
 ##    **平级的两个分支** —— 写 `var game: Node2D` 会让这一行直接
@@ -67,6 +88,14 @@ var start_screen: CanvasLayer = null
 ##    ★ 判据：`main.gd` 是**流程层**，它只该知道「游戏内场景是个节点」，
 ##      **不该知道**视角是 2D 还是 3D —— 所以类型标注就该停在 `Node`。
 var game: Node = null
+## ★ 当前的战役过渡画面（没有则是 null；见 `_show_level_transition()`）。
+var _level_transition = null
+
+## ★★ 进入游戏时的黑屏转场（CanvasLayer + 全屏 ColorRect）。
+##   它必须活在 main 上：过渡画面在转场中途就被收掉了，黑屏层不能跟着一起没。
+var _enter_fade: CanvasLayer = null
+var _enter_fade_rect: ColorRect = null
+var _enter_fade_tween: Tween = null
 
 ## 进全屏之前是哪种窗口模式（退出全屏时还原，见 _handle_window_hotkey）
 var _windowed_mode: int = DisplayServer.WINDOW_MODE_WINDOWED
@@ -87,6 +116,7 @@ func _build_start_screen() -> void:
 	# 中文字体在这里就载入：菜单上「点击任意处进入游戏」是中文，
 	# 不挂字体的话 Godot 默认字体会把它画成一排方框。
 	var font := FontLoaderRes.load_font(cfg)
+	_ui_font = font
 
 	start_screen = StartScreenRes.new()
 	start_screen.name = "StartScreen"
@@ -95,15 +125,58 @@ func _build_start_screen() -> void:
 
 	start_screen.intro_dismissed.connect(_on_intro_dismissed)
 	start_screen.level_entry_pressed.connect(_on_level_entry_pressed)
+	start_screen.coop_host_started.connect(_on_coop_host_started)
+	start_screen.coop_guest_started.connect(_on_coop_guest_started)
 	# ★★ 主菜单「选项 → 设置 → 全屏」与游戏内走同一个 toggle_fullscreen（唯一实现）。
 	start_screen.fullscreen_toggled.connect(toggle_fullscreen)
 	start_screen.quit_requested.connect(_on_quit_requested)
 
 
-## 主菜单「选项 → 退出游戏」：关掉整个游戏。
+## 主菜单「选项 → 退出游戏」：先弹**退出确认浮层**，不直接关游戏。
 ## ★ 真正 quit 放在 main.gd（流程层）；StartScreen 只发信号，不认识窗口生命周期。
 func _on_quit_requested() -> void:
+	_show_quit_confirm()
+
+
+## ★★ 挂出 / 复用退出确认浮层。
+##
+## ★ 为什么第一次才建：大多数会话根本不会点退出 —— 不在启动路径上多建一层 CanvasLayer。
+## ★ 复用同一个实例：关掉只是把它的子树销毁（`quit_confirm._destroy()`），
+##   下次 `request()` 会重建；不重复 add_child，也不重复接信号。
+func _show_quit_confirm() -> void:
+	if _quit_confirm == null or not is_instance_valid(_quit_confirm):
+		_quit_confirm = QuitConfirmRes.new()
+		add_child(_quit_confirm)
+		_quit_confirm.setup(cfg, _ui_font)
+		_quit_confirm.confirmed.connect(_on_quit_confirmed)
+	if _quit_confirm.is_open():
+		return
+	_quit_confirm.request()
+
+
+## 浮层里点面板确认：遮罩已经渐黑过了（`quit_fade_sec`），这里才真的退出。
+func _on_quit_confirmed() -> void:
 	get_tree().quit()
+
+
+## ★★ 安卓返回键（`project.godot` 已把 `config/quit_on_go_back` 关掉，引擎不会先撤）。
+##
+## 三档（用户拍板的口径）：
+##   1. 退出确认已经开着 → 再按返回 = **取消**它；
+##   2. 局内选项页开着 → 先关选项页（返回键的第一层语义是「退出当前浮层」）；
+##   3. 其余（主菜单 / 入场页 / 局内无浮层）→ 弹退出确认。
+func _on_android_back() -> void:
+	if _quit_confirm != null and is_instance_valid(_quit_confirm) and _quit_confirm.is_open():
+		_quit_confirm.cancel()
+		return
+	if game != null and is_instance_valid(game):
+		var hud = game.hud
+		if hud != null and is_instance_valid(hud) \
+				and hud.options_panel != null and is_instance_valid(hud.options_panel) \
+				and hud.options_panel.is_open():
+			hud.options_panel.close()
+			return
+	_show_quit_confirm()
 
 
 # ------------------------------------------------------------------
@@ -155,9 +228,9 @@ func _on_test_pressed(map_path: String) -> void:
 ##   参数是**数据**（campaign_id + level_id），载入与建世界都在这里，
 ##   界面那侧不认识 `campaign` / `world`（与「战役目录扫描只有一处」同一个口径）。
 ##
-## ★ 阵营为什么取第一个可玩方：nsoc 那套战役菜单里没有「选阵营」这一步，
-##   本作按用户确认的口径「默认第一个可玩阵营（F1），直接进」。
-##   以后要加选阵营，只需要在这里换掉 `playable[0]` 那一个值。
+## ★ 单人关不再直接建世界：先挂**战役过渡画面**（`view/level_transition.gd`），
+##   玩家在里面看缩略图 / 简报、多可玩阵营时选一方、点「进入」才走建世界那条尾。
+##   合作关仍直接开局（`level.mode == "coop"`），因为合作大厅有自己的流程。
 ##
 ## ★ 占位战役 / 占位关（`campaigns_menu.json` 里没填 campaign_id / level_id 的）：
 ##   根本不会走到这里（`view/campaign_menu.gd` 的 activate_chapter 会直接不发信号）。
@@ -182,7 +255,11 @@ func _on_level_entry_pressed(campaign_id: String, level_id: String) -> void:
 	if playable.is_empty():
 		push_warning("关卡没有可玩阵营：%s / %s" % [campaign_id, level_id])
 		return
-	_on_campaign_level_chosen(campaign, level, String(playable[0]))
+	# ★★ 合作关跳过过渡与阵营选择（用户口径：仍走合作大厅 / 直接开局那一路）。
+	if String(level.mode) == "coop":
+		_on_campaign_level_chosen(campaign, level, String(playable[0]))
+		return
+	_show_level_transition(campaign, level)
 
 
 ## 在扫出来的战役表里按 id 找那一项（找不到 → 空字典）。
@@ -221,6 +298,214 @@ func _on_campaign_level_chosen(campaign, level, faction: String) -> void:
 	game.return_to_menu_requested.connect(return_to_menu)
 
 
+# ------------------------------------------------------------------
+# 战役过渡画面（缩略图 + 简报 + 多阵营选择 + 进度 + 点击进入）
+# ------------------------------------------------------------------
+
+## ★★ 单人关卡：先进过渡画面，再由玩家点「进入」才建世界。
+## 合作关不走这里（`_on_level_entry_pressed` 里直接开局）。
+func _show_level_transition(campaign, level) -> void:
+	if _level_transition != null and is_instance_valid(_level_transition):
+		return
+	_level_transition = LevelTransitionRes.new()
+	_level_transition.name = "LevelTransition"
+	add_child(_level_transition)
+	_level_transition.setup(cfg, _ui_font, campaign, level)
+	_level_transition.enter_requested.connect(
+		_on_level_transition_enter.bind(campaign, level))
+	_level_transition.cancelled.connect(_on_level_transition_cancelled)
+
+
+## 过渡画面里点「进入」：先黑屏，再收画面 + 建世界，等游戏首帧就绪后才从黑里淡出。
+##
+## ★★ 为什么黑屏层在本文件而不在过渡画面里（用户口径：进入游戏要有黑屏淡入淡出）：
+##   转场的中间一步是「收掉过渡画面 → 建游戏场景」，这一瞬间背后是主菜单 / 空画面；
+##   黑屏层如果挂在过渡画面上，会跟着 `queue_free()` 一起没掉，正好露出那一帧。
+##   挂在 main 上才能从「点进入」一直盖到「游戏首帧画出来」，把接缝完全藏住。
+##
+## ★ 顺序不能反：
+##   1. 先在过渡页上推成全黑（这 0.35s 里玩家看到的是过渡页渐暗，不是菜单）；
+##   2. 全黑之后才收过渡页、建世界 —— 建世界是同步的，慢也发生在黑屏底下；
+##   3. 等两帧再淡出黑（第一帧是游戏场景 `_ready` / 首帧绘制落地的时间）。
+func _on_level_transition_enter(faction: String, campaign, level) -> void:
+	# 信号只该发一次；万一连发，第二次直接忽略（黑屏层已经在跑了）。
+	if _enter_fade != null and is_instance_valid(_enter_fade):
+		return
+	# 动效总开关关掉 = 立刻到位（与全项目同一条口径）：不建黑屏层，直接走老路径。
+	if not ThemeRes.animations_enabled() or _enter_fade_sec() <= 0.0:
+		_close_level_transition()
+		_on_campaign_level_chosen(campaign, level, faction)
+		return
+	await _fade_to_black(_enter_fade_sec())
+	if not is_instance_valid(self):
+		return
+	_close_level_transition()
+	_on_campaign_level_chosen(campaign, level, faction)
+	# ★ 建世界失败（game 仍是 null）也照样把黑幕淡掉：玩家回到菜单，
+	#   而不是永远卡在一片全黑里（失败提示由 `_on_campaign_level_chosen` 负责）。
+	await get_tree().process_frame
+	await get_tree().process_frame
+	if not is_instance_valid(self):
+		return
+	await _fade_from_black(_enter_fade_in_sec())
+
+
+## 把屏幕推成全黑（0 → 1）。
+func _fade_to_black(sec: float) -> void:
+	_ensure_enter_fade()
+	if _enter_fade_rect == null or not is_instance_valid(_enter_fade_rect):
+		return
+	_enter_fade_rect.modulate.a = 0.0
+	_enter_fade_tween = create_tween()
+	_enter_fade_tween.tween_property(_enter_fade_rect, "modulate:a", 1.0, sec) \
+		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	await _enter_fade_tween.finished
+	_enter_fade_tween = null
+
+
+## 从全黑里淡出来（1 → 0），完了把黑屏层整个拆掉（不常驻一条全屏 ColorRect）。
+func _fade_from_black(sec: float) -> void:
+	if _enter_fade_rect == null or not is_instance_valid(_enter_fade_rect):
+		_clear_enter_fade()
+		return
+	_enter_fade_rect.modulate.a = 1.0
+	_enter_fade_tween = create_tween()
+	_enter_fade_tween.tween_property(_enter_fade_rect, "modulate:a", 0.0, sec) \
+		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	await _enter_fade_tween.finished
+	_enter_fade_tween = null
+	_clear_enter_fade()
+
+
+## 懒建黑屏层：第一次进入时才建（不在启动路径上多挂一层 CanvasLayer）。
+func _ensure_enter_fade() -> void:
+	if _enter_fade != null and is_instance_valid(_enter_fade) \
+			and _enter_fade_rect != null and is_instance_valid(_enter_fade_rect):
+		return
+	if _enter_fade != null and is_instance_valid(_enter_fade):
+		_enter_fade.queue_free()
+	_enter_fade = CanvasLayer.new()
+	_enter_fade.name = "EnterFade"
+	_enter_fade.layer = ENTER_FADE_LAYER
+	add_child(_enter_fade)
+	_enter_fade_rect = ColorRect.new()
+	_enter_fade_rect.name = "Black"
+	var c: Color = _enter_fade_color()
+	c.a = 1.0
+	_enter_fade_rect.color = c
+	_enter_fade_rect.modulate.a = 0.0
+	_enter_fade_rect.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	# ★ 转场期间连点无效：黑幕既要盖住画面，也要挡住鼠标。
+	_enter_fade_rect.mouse_filter = Control.MOUSE_FILTER_STOP
+	_enter_fade.add_child(_enter_fade_rect)
+
+
+## 拆掉黑屏层（幂等；`return_to_menu()` 也会兜一次，避免残留一层黑幕）。
+func _clear_enter_fade() -> void:
+	if _enter_fade_tween != null and _enter_fade_tween.is_valid():
+		_enter_fade_tween.kill()
+	_enter_fade_tween = null
+	if _enter_fade != null and is_instance_valid(_enter_fade):
+		_enter_fade.queue_free()
+	_enter_fade = null
+	_enter_fade_rect = null
+
+
+func _enter_fade_sec() -> float:
+	if cfg == null:
+		return DEFAULT_ENTER_FADE_SEC
+	return maxf(0.0, cfg.num("menu.transition.enter_fade_sec", DEFAULT_ENTER_FADE_SEC))
+
+
+func _enter_fade_in_sec() -> float:
+	if cfg == null:
+		return DEFAULT_ENTER_FADE_IN_SEC
+	return maxf(0.0, cfg.num("menu.transition.enter_fade_in_sec", DEFAULT_ENTER_FADE_IN_SEC))
+
+
+func _enter_fade_color() -> Color:
+	if cfg == null:
+		return Color.BLACK
+	return ConfigRes.parse_color(
+		cfg.str_val("menu.transition.enter_fade_color", "#000000"), Color.BLACK)
+
+
+## 当前黑屏转场层（只给测试 / 排查用；没有则是 null）。
+func enter_fade():
+	return _enter_fade_rect if _enter_fade_rect != null and is_instance_valid(_enter_fade_rect) else null
+
+
+## Esc 取消：收掉过渡画面，留在主界面（不建世界）。
+func _on_level_transition_cancelled() -> void:
+	_close_level_transition()
+
+
+func _close_level_transition() -> void:
+	if _level_transition != null and is_instance_valid(_level_transition):
+		_level_transition.queue_free()
+	_level_transition = null
+
+
+## 当前过渡画面（只给测试 / 排查用；没有则是 null）。
+func level_transition():
+	return _level_transition if _level_transition != null and is_instance_valid(_level_transition) else null
+
+
+## ★★ 合作大厅：房主点了开始。transport 已经由大厅交出来。
+## 关卡载入与单人入口共用 `_find_campaign_option` / `CampaignLibrary`（数据只有一个来源）；
+## 真正的世界与网络接线在 `game_scene3d.start_coop_host()`。
+func _on_coop_host_started(campaign_id: String, level_id: String, transport) -> void:
+	if game != null:
+		if transport != null:
+			transport.close()
+		return
+	var option := _find_campaign_option(campaign_id)
+	if option.is_empty():
+		push_warning("合作战役不存在：%s" % campaign_id)
+		if transport != null:
+			transport.close()
+		return
+	var campaign = CampaignLibraryRes.load_campaign_by_option(option, cfg)
+	var level = campaign.level(level_id) if campaign != null and campaign.has_method("level") else null
+	if level == null or String(level.mode) != "coop":
+		push_warning("合作关卡不存在或不是 coop：%s / %s" % [campaign_id, level_id])
+		if transport != null:
+			transport.close()
+		return
+	game = GameSceneRes.new()
+	game.name = "GameScene"
+	add_child(game)
+	if not game.start_coop_host(campaign, level, transport):
+		if transport != null:
+			transport.close()
+		game.queue_free()
+		game = null
+		return
+	start_screen.close()
+	game.fullscreen_toggled.connect(toggle_fullscreen)
+	game.return_to_menu_requested.connect(return_to_menu)
+
+
+## ★★ 合作大厅：客机收到房主的 `start`（lobby 已把 transport 交出来）。
+func _on_coop_guest_started(payload: Dictionary, transport) -> void:
+	if game != null:
+		if transport != null:
+			transport.close()
+		return
+	game = GameSceneRes.new()
+	game.name = "GameScene"
+	add_child(game)
+	if not game.start_coop_guest(payload, transport):
+		if transport != null:
+			transport.close()
+		game.queue_free()
+		game = null
+		return
+	start_screen.close()
+	game.fullscreen_toggled.connect(toggle_fullscreen)
+	game.return_to_menu_requested.connect(return_to_menu)
+
+
 ## ★ 选项页里点了「返回主菜单」：拆掉游戏场景，把开场页放回**主界面那一页**。
 ##
 ## ★★ 为什么不重启进程 / 不新建开场页：
@@ -246,6 +531,10 @@ func _on_campaign_level_chosen(campaign, level, faction: String) -> void:
 ## ★ 幂等：不在游戏里（game 为 null）时什么都不做 —— 选项页的按钮可能被连点，
 ##   而那一下不该造出第二个开场页。
 func return_to_menu() -> void:
+	_close_level_transition()
+	# ★ 刚进游戏就马上回菜单时，黑屏淡出可能还没跑完；这里先把它收掉，
+	#   否则主界面上会残留一层（最多 0.4s 的）黑幕，期间点哪里都点不动。
+	_clear_enter_fade()
 	if game == null:
 		return
 	var leaving := game
@@ -261,6 +550,9 @@ func return_to_menu() -> void:
 	#    「Invalid call. Nonexistent function '...' in base 'previously freed'」。
 	if is_instance_valid(leaving) and is_instance_valid(leaving.hud):
 		leaving.hud.set_settings_menu_open(false)
+	# 合作局：主菜单路径也要先把 bye / transport 收干净（幂等；已收过就是空操作）。
+	if is_instance_valid(leaving) and leaving.has_method("_shutdown_coop"):
+		leaving._shutdown_coop()
 	# ⚠️ 拆之前再确认一次：上面那几行（尤其 `is_instance_valid(leaving.hud)`）在
 	#   「本场景正在被销毁」那条路上可能刚好跨过一帧，`leaving` 那时已经没了。
 	#   `remove_child` 一个已释放的对象会直接报错，所以两道判断都留着。
@@ -338,4 +630,9 @@ func toggle_fullscreen() -> void:
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
+		# ★ 桌面窗口 X **不拦**（nsoc 原样）：直接退出，不弹确认浮层。
 		get_tree().quit()
+	elif what == NOTIFICATION_WM_GO_BACK_REQUEST:
+		# ★ 安卓返回：引擎那边已由 project.godot 的 config/quit_on_go_back=false 放行，
+		#   这里按「取消浮层 → 关选项页 → 弹退出确认」三档处理。
+		_on_android_back()

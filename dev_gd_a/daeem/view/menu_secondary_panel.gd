@@ -22,6 +22,9 @@ signal back_pressed
 ## 战役菜单里长按满了某一关（只在 `with_campaign_menu` 时会有）——
 ## 参数是**数据**（战役 id + 关卡 id），见 view/campaign_menu.gd。
 signal level_activated(campaign_id: String, level_id: String)
+## 合作大厅：房主点开始 / 客机收到 start（transport 已从 lobby 交出来）。
+signal coop_host_started(campaign_id: String, level_id: String, transport)
+signal coop_guest_started(payload: Dictionary, transport)
 
 const ConfigRes = preload("res://logic/config.gd")
 const ThemeRes = preload("res://view/theme.gd")
@@ -30,6 +33,7 @@ const FillButtonRes = preload("res://view/fill_button.gd")
 const UiWidgetsRes = preload("res://view/ui_widgets.gd")
 const CampaignMenuRes = preload("res://view/campaign_menu.gd")
 const CampaignMenuDbRes = preload("res://logic/campaign_menu_db.gd")
+const CoopLobbyRes = preload("res://view/coop_lobby.gd")
 
 ## 兜底淡入淡出时长（与 config.json 的 menu.chrome.transition_sec 一致）
 const DEFAULT_FADE_SEC := 0.45
@@ -41,22 +45,26 @@ var _font: Font = null
 var _fade_sec: float = DEFAULT_FADE_SEC
 var _margin: float = DEFAULT_MARGIN
 var _with_campaign_menu: bool = false
+var _with_coop_lobby: bool = false
 var _built: bool = false
 var _back_btn: Button = null
 ## 内容区那块（`with_campaign_menu` 时才有）
 var _campaign_menu = null
+## 内容区那块（`with_coop_lobby` 时才有）
+var _coop_lobby = null
 
 
 ## @param p_fade_sec 淡入 / 淡出时长（一般传引擎的 `transition_sec`，两边同步）
 ## @param p_margin  返回按钮离面板上边 / 右边的距离
 ## @param p_with_campaign_menu 内容区里要不要放战役菜单（左侧轮播 + 关卡圆点 + 描述）
 func setup(p_cfg: ConfigRes, p_font: Font, p_fade_sec: float, p_margin: float,
-		p_with_campaign_menu: bool = false) -> void:
+		p_with_campaign_menu: bool = false, p_with_coop_lobby: bool = false) -> void:
 	cfg = p_cfg
 	_font = p_font
 	_fade_sec = maxf(0.0, p_fade_sec)
 	_margin = maxf(0.0, p_margin)
 	_with_campaign_menu = p_with_campaign_menu
+	_with_coop_lobby = p_with_coop_lobby
 	_build()
 
 
@@ -68,6 +76,11 @@ func back_button() -> Button:
 ## 内容区那块战役菜单（`view/campaign_menu.gd`）；空面板时是 null。
 func campaign_menu():
 	return _campaign_menu
+
+
+## 内容区那块合作大厅（`with_coop_lobby` 时才有）；给测试与 start_screen 用。
+func coop_lobby():
+	return _coop_lobby
 
 
 func _build() -> void:
@@ -164,14 +177,24 @@ func detach_with_fade(duration: float) -> void:
 ##   这里**只往上传一层**：面板 → 外壳 → view/start_screen.gd → view/main.gd。
 ##   ⇒ 谁建世界这件事仍然只有一个地方知道（main.gd），本文件不认识任何玩法概念。
 func _build_content() -> void:
-	if not _with_campaign_menu:
+	if _with_campaign_menu:
+		_campaign_menu = CampaignMenuRes.new()
+		add_child(_campaign_menu)
+		_campaign_menu.setup(cfg, _font, CampaignMenuDbRes.load_campaigns())
+		_campaign_menu.chapter_activated.connect(
+			func(campaign_id: String, level_id: String):
+				level_activated.emit(campaign_id, level_id))
 		return
-	_campaign_menu = CampaignMenuRes.new()
-	add_child(_campaign_menu)
-	_campaign_menu.setup(cfg, _font, CampaignMenuDbRes.load_campaigns())
-	_campaign_menu.chapter_activated.connect(
-		func(campaign_id: String, level_id: String):
-			level_activated.emit(campaign_id, level_id))
+	if _with_coop_lobby:
+		_coop_lobby = CoopLobbyRes.new()
+		add_child(_coop_lobby)
+		_coop_lobby.setup(cfg, _font)
+		_coop_lobby.host_started.connect(
+			func(campaign_id: String, level_id: String, transport):
+				coop_host_started.emit(campaign_id, level_id, transport))
+		_coop_lobby.guest_started.connect(
+			func(payload: Dictionary, transport):
+				coop_guest_started.emit(payload, transport))
 
 
 func _sync_size(origin_panel: Control) -> void:

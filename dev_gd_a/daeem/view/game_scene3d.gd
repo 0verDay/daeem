@@ -31,6 +31,9 @@ const HudRes = preload("res://view/hud.gd")
 const FontLoaderRes = preload("res://view/font_loader.gd")
 const InteractionRes = preload("res://view/game_interaction.gd")
 const CommandRes = preload("res://logic/command_processor.gd")
+const LevelRes = preload("res://logic/level.gd")
+const HostSessionRes = preload("res://net/host_session.gd")
+const ClientSessionRes = preload("res://net/client_session.gd")
 ## ★★ 手机端触摸手势识别（单指拖视野 / 单击 / 双击 / 双指框选）—— 见那个文件的文件头
 const TouchControllerRes = preload("res://view/touch_controller.gd")
 
@@ -81,6 +84,15 @@ var interaction = null
 ## ★ 这一局是从哪一关开的（与 game_interaction.gd 里那份同一个来源；start() 开的局两者为 null）
 var level_playing = null
 var level_campaign = null
+## ★★ M12.4 合作局："" = 单机 / 战役；"host" / "guest" = 联机。
+var coop_role: String = ""
+var coop_transport = null
+var coop_host_session = null
+var coop_client_session = null
+var coop_campaign = null
+var coop_level = null
+var coop_guest_seat: String = ""
+var game_over_coop: bool = false
 ## start_level() 在 _assemble() **之前**记下的关卡，装配时再交给交互核心
 var interaction_pending_campaign = null
 var interaction_pending_level = null
@@ -98,7 +110,9 @@ var _mouse_pos: Vector2 = Vector2.ZERO
 var _space_held: bool = false
 var _ui_dragging_camera: bool = false
 var _edge_scroll_on: bool = true
-## ★★ 地面/迷雾重烘的**节流**（见 _process 里的说明）：每 N 帧查一次
+## ★★ 地面**区划**重烘的节流（见 `_process` 里的 ⑤b）：每 N 帧查一次。
+##    迷雾**不在这里**：它每帧做一次整块掩码比较（`ground.rebake_fog()`，O(格数) 的
+##    memcmp），重烘频率由 `cfg.fog_rebake_min_sec`（默认 0.1s）合并 —— 见 ⑤a。
 const REBAKE_INTERVAL_FRAMES := 15
 var _rebake_tick: int = 0
 
@@ -202,6 +216,118 @@ func start_level(campaign, level, my_faction: String) -> bool:
 
 	_assemble()
 	return true
+
+
+## ★★ 合作房主：房主跑唯一权威世界；`transport` 已由大厅交出来。
+func start_coop_host(campaign, level, transport) -> bool:
+	if not _coop_load_cfg(level, transport):
+		return false
+	if String(level.mode) != "coop":
+		push_error("start_coop_host：关卡不是 coop")
+		return false
+	var seats: Array = level.coop_roster()
+	if seats.size() < 2:
+		push_error("start_coop_host：合作关需要两个席位")
+		return false
+	var host_seat := String(seats[0])
+	var guest_seat := String(seats[1])
+	world = WorldRes.create_from_level(cfg, level, host_seat, seats, true)
+	if world == null:
+		push_error("合作关装配失败（地图 = %s）" % String(level.map_id))
+		return false
+	interaction_pending_campaign = campaign
+	interaction_pending_level = level
+	_assemble()
+	coop_role = "host"
+	coop_campaign = campaign
+	coop_level = level
+	coop_guest_seat = guest_seat
+	coop_transport = transport
+	_disable_coop_pause()
+	coop_host_session = HostSessionRes.new()
+	coop_host_session.name = "HostSession"
+	add_child(coop_host_session)
+	coop_host_session.setup(world, cfg, transport, host_seat, guest_seat)
+	coop_host_session.closed.connect(_on_host_session_closed)
+	transport.closed.connect(_on_coop_transport_closed)
+	coop_host_session.start_game(String(campaign.id), String(level.id))
+	return true
+
+
+## ★★ 合作客机：用房主发来的 `level_data` 建**同一个**世界壳，不 tick、不跑 AI。
+func start_coop_guest(payload: Dictionary, transport) -> bool:
+	if transport == null:
+		push_error("start_coop_guest：transport 是 null")
+		return false
+	var data: Variant = payload.get("level_data", null)
+	if typeof(data) != TYPE_DICTIONARY or (data as Dictionary).is_empty():
+		push_error("start_coop_guest：start 里没有 level_data")
+		return false
+	cfg = ConfigRes.load_default()
+	if cfg == null:
+		push_error("配置载入失败：%s" % ConfigRes.last_error)
+		return false
+	cfg.set_viewport_size(
+		float(ProjectSettings.get_setting("display/window/size/viewport_width", 1920)),
+		float(ProjectSettings.get_setting("display/window/size/viewport_height", 1080)))
+	var level = LevelRes.from_data(data, cfg, null, String(payload.get("level_id", "")))
+	if level == null:
+		push_error("客机关卡装配失败")
+		return false
+	var seats: Array = payload.get("seats", [])
+	if seats.is_empty():
+		seats = level.coop_roster()
+	if seats.size() < 2:
+		push_error("start_coop_guest：席位不足两个")
+		return false
+	var my_seat := String(payload.get("guest_seat", ""))
+	if my_seat == "":
+		my_seat = String(seats[1])
+	world = WorldRes.create_from_level(cfg, level, my_seat, seats, false)
+	if world == null:
+		push_error("客机世界装配失败（地图 = %s）" % String(level.map_id))
+		return false
+	interaction_pending_campaign = null
+	interaction_pending_level = level
+	_assemble()
+	coop_role = "guest"
+	coop_campaign = null
+	coop_level = level
+	coop_transport = transport
+	_disable_coop_pause()
+	coop_client_session = ClientSessionRes.new()
+	coop_client_session.name = "ClientSession"
+	add_child(coop_client_session)
+	coop_client_session.setup(world, cfg, transport, my_seat)
+	coop_client_session.snapshot_applied.connect(_on_coop_snapshot)
+	coop_client_session.events_received.connect(_on_coop_events)
+	coop_client_session.closed.connect(_on_coop_transport_closed)
+	transport.closed.connect(_on_coop_transport_closed)
+	return true
+
+
+func _coop_load_cfg(level, transport) -> bool:
+	if transport == null:
+		push_error("合作局没有 transport")
+		return false
+	if level == null:
+		push_error("合作局关卡是 null")
+		return false
+	cfg = ConfigRes.load_default()
+	if cfg == null:
+		push_error("配置载入失败：%s" % ConfigRes.last_error)
+		return false
+	cfg.set_viewport_size(
+		float(ProjectSettings.get_setting("display/window/size/viewport_width", 1920)),
+		float(ProjectSettings.get_setting("display/window/size/viewport_height", 1080)))
+	return true
+
+
+## 合作模式不允许暂停：P 键由 input_controller 直接吃掉，世界不会冻结。
+func _disable_coop_pause() -> void:
+	if input_ctrl != null:
+		input_ctrl.pause_allowed = false
+		input_ctrl.paused = false
 
 
 ## 把世界接到 3D 视图上（`start` / `start_level` 共用这一段）。
@@ -484,22 +610,32 @@ func _process(dt: float) -> void:
 	var _t_input := _prof()
 	input_ctrl.poll_mouse()
 	_prof_done("input", _t_input)
+	# ①.5 联机收包：房主 / 客机都要在推进逻辑之前把 transport 里的消息收掉。
+	if coop_host_session != null:
+		coop_host_session.poll()
+	elif coop_client_session != null:
+		coop_client_session.poll()
 	# ② 暂停门：★★ **推进逻辑必须夹在这个门后面**（本轮实测踩到）。
 	#    2D 版的口径是「暂停时**逻辑冻结，但渲染与相机照旧**」，暂停键在
 	#    `input_ctrl.paused`（不是 world 的字段 —— 逻辑层不知道什么叫暂停）。
 	#    ⚠️ 漏了这个门的表现：暂停之后世界还在跑；在测试里则是
 	#      「同一条操作被记了两次」（实测 test_ui 报 entries 里两个 zone_specialize）。
+	#    ★ 合作局 `pause_allowed=false`，所以 running 恒为 true；客机也不 tick。
 	var running: bool = not bool(input_ctrl.paused)
 	var events: Array = []
 	if running:
 		# ★ 必须夹住 dt：帧一慢 dt 就变大，而 dt 越大这一帧做的活越多 ⇒ 帧更慢。
 		#   这就是经典的「死亡螺旋」：实测 1000 单位时单帧从 86 ms 滚到 666 ms，
 		#   夹住之后稳定在十几毫秒（2D 版为此专门写过注释，同一条教训）。
-		var logic_dt: float = minf(dt, cfg.sim_max_dt)
-		var _t_tick := _prof()
-		events = world.tick(logic_dt)
-		_prof_done("tick", _t_tick)
-		input_ctrl.drop_dead_selection()
+		if coop_role != "guest":
+			var logic_dt: float = minf(dt, cfg.sim_max_dt)
+			var _t_tick := _prof()
+			events = world.tick(logic_dt)
+			_prof_done("tick", _t_tick)
+			input_ctrl.drop_dead_selection()
+		if coop_host_session != null:
+			coop_host_session.tick(dt)
+			coop_host_session.send_events(events)
 	_consume_events(events)
 	# ③ 视图：单位 MultiMesh 每帧重填（位置会变）
 	#    ★ 选中集合先喂给单位层：它据此画脚下的「绿色空心圆」选中下标（见 unit_view_3d）
@@ -536,14 +672,18 @@ func _process(dt: float) -> void:
 	overlay.set_selection(_selected_ids())
 	overlay.sync()
 	_prof_done("view/overlay", _t_overlay)
-	# ⑤ 地面归属 / 迷雾变了就重烘贴图 —— **必须节流**
+	# ⑤a ★★ 迷雾：**每帧**检查一次掩码变没变（整块 memcmp，O(格数)，可忽略）。
 	#
-	# ★★ 为什么（本轮实测的帧率瓶颈之一）：
-	#   「变了才重烘」的函数内部虽然会短路（不真的重画那张图），但**判断本身**不便宜：
-	#     `ground._zone_signature()` 要遍历全部区块并拼字符串；
-	#     `ground._fog_signature()` 要做 18 次 `tile_visible` + 拼字符串。
-	#   而这两个数据**一秒钟也变不了几次** ⇒ 每帧判一次就是每帧几百次字符串操作。
-	#   ⇒ 每 15 帧（约 0.25 秒）查一次：归属与迷雾的观感延迟在 0.25 秒内，玩家察觉不到。
+	#   旧版把迷雾和区划一起塞进 15 帧节流，而且用 18 个固定格抽样当签名 ——
+	#   大地图上单位跨一格只改边界十几格，命中抽样格的概率不到 4%，
+	#   于是灰雾可能几秒~几十秒不刷新（用户报的「大地图迷雾延迟高」）。
+	#   现在：检测每帧做，重烘由 `cfg.fog_rebake_min_sec`（默认 0.1s）合并，
+	#   所以灰雾与逻辑变化最多差 100ms，而不是「等一个 15 帧窗口 + 抽样命中」。
+	var _t_fog := _prof()
+	ground.rebake_fog()
+	_prof_done("ground.fog", _t_fog)
+	# ⑤b 地面归属 / 区划：变化很少，但**判断本身**不便宜
+	#   （`ground._zone_signature()` 要遍历全部区块并拼字符串）⇒ 仍然按帧数节流。
 	_rebake_tick += 1
 	if _rebake_tick >= REBAKE_INTERVAL_FRAMES:
 		_rebake_tick = 0
@@ -782,9 +922,41 @@ func center_on_tile_precise(logic_pos: Vector2) -> void:
 	clamp_look_point()
 
 func _consume_events(events: Array) -> void:
-	if interaction == null or events.is_empty():
+	if events.is_empty():
+		return
+	# ★★ 红点刷兵 → 小地图的「生成动效」（事件里带 `spawns`：本波每位将领的出生格）。
+	#    先于 `interaction.pump` 也可以：这里只往小地图记一笔，不改任何玩法状态。
+	_feed_red_dot_spawn_fx(events)
+	if interaction == null:
 		return
 	interaction.pump(events)
+
+
+## 把 `red_dot_wave` 事件的出生格交给小地图（用户需求：红点生成时原地播菱形动效）。
+##
+## ★ 只做**搬运**：事件里的坐标是逻辑格（`logic/red_dot_ai.gd` 产出），
+##   本函数不换算、不猜、不扫单位。小地图自己按 `to_minimap()` 投影。
+## ★ 合作局两个外壳都会经过 `_consume_events()`（房主 tick 的事件 / 客机收到的事件），
+##   所以两端都会播，不需要各自再写一份。
+func _feed_red_dot_spawn_fx(events: Array) -> void:
+	if hud == null or hud.minimap == null:
+		return
+	var mm = hud.minimap
+	if not mm.has_method("note_red_dot_spawns"):
+		return
+	for evt in events:
+		var e: Dictionary = evt
+		if String(e.get("type", "")) != "red_dot_wave":
+			continue
+		var spawns: Variant = e.get("spawns", null)
+		if typeof(spawns) != TYPE_ARRAY or (spawns as Array).is_empty():
+			continue
+		var pts: Array = []
+		for s in (spawns as Array):
+			var d: Dictionary = s
+			pts.append(Vector2(float(d.get("x", -1)) + 0.5, float(d.get("y", -1)) + 0.5))
+		if not pts.is_empty():
+			mm.note_red_dot_spawns(pts)
 
 
 
@@ -1003,7 +1175,11 @@ func _is_wheel(event: InputEventMouseButton) -> bool:
 func _on_command(cmd: Dictionary) -> void:
 	if world == null:
 		return
-	CommandRes.apply(world, cfg, cmd)
+	if coop_role == "guest":
+		if coop_client_session != null:
+			coop_client_session.send_command(cmd)
+	else:
+		CommandRes.apply(world, cfg, cmd)
 	_update_order_flag(cmd)
 
 
@@ -1045,6 +1221,50 @@ func _selected_buildings() -> Array:
 		out.append(input_ctrl.selected_enemy)
 	return out
 
+## 客机收到快照：视图已经由 client_session 写进 world，这里只清掉本地选中里已死的单位。
+func _on_coop_snapshot() -> void:
+	if input_ctrl != null:
+		input_ctrl.drop_dead_selection()
+
+
+## 客机收到事件：交给与房主同一个消费函数（`game_interaction`）。
+func _on_coop_events(events: Array) -> void:
+	_consume_events(events)
+
+
+## 房主侧：客机 `bye` / 掉线。房主继续打，只提示。
+func _on_host_session_closed(reason: String) -> void:
+	if hud != null:
+		hud.show_notice("队友已离开" if reason == "guest_left" or reason == "guest_bye" else "队友断开")
+
+
+## 传输层断开：房主 / 客机都回主菜单（不做重连）。
+func _on_coop_transport_closed(_reason: String) -> void:
+	if coop_role == "" or game_over_coop:
+		return
+	game_over_coop = true
+	if hud != null:
+		hud.show_notice("与服务器断开")
+	return_to_menu_requested.emit()
+
+
+## 房主 / 客机主动退出前先把网络收干净。
+func _shutdown_coop() -> void:
+	if coop_host_session != null:
+		coop_host_session.send_bye("host_left")
+		coop_host_session.queue_free()
+		coop_host_session = null
+	if coop_client_session != null:
+		coop_client_session.send_bye("guest_left")
+		coop_client_session.queue_free()
+		coop_client_session = null
+	if coop_transport != null:
+		coop_transport.close()
+		coop_transport = null
+	coop_role = ""
+	game_over_coop = true
+
+
 ## 选项页里点了「全屏 / 窗口化」——原样往上抛给 `main.gd`（它管窗口模式）。
 ##
 ## ★ 保持与 2D 版**同名**：`main.gd` 连的就是这两个名字，而它不该知道视角是 2D 还是 3D。
@@ -1054,4 +1274,5 @@ func _on_fullscreen_toggled() -> void:
 
 ## 选项页里点了「返回主菜单」——同样原样上抛（这属于**流程**，不经过逻辑层）。
 func _on_return_to_menu_requested() -> void:
+	_shutdown_coop()
 	return_to_menu_requested.emit()

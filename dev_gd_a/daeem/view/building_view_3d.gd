@@ -31,6 +31,8 @@ extends Node3D
 const ConfigRes = preload("res://logic/config.gd")
 const PaletteRes = preload("res://view/palette.gd")
 const HitFxRes = preload("res://view/hit_fx.gd")
+## ★★ 局内「敌 / 友 / 己」三色（本轮新增；判据只在 view/side_color.gd）
+const SideColorRes = preload("res://view/side_color.gd")
 ## ★ 建筑材质：逐像素受击闪白（自定义 shader，见文件）
 const BUILDING_FLASH_SHADER = preload("res://view/building_flash.gdshader")
 
@@ -279,12 +281,12 @@ func zone_flag_state(b) -> Dictionary:
 		return {"progress": 0.0, "color": fallback}
 	var owner := String(z["owner"])
 	if owner != "":
-		return {"progress": 1.0, "color": cfg.faction_color(owner, "main")}
+		return {"progress": 1.0, "color": SideColorRes.color(cfg, world, owner, "main")}
 	var who := String(z.get("capture_faction", ""))
 	var state := String(z.get("capture_state", ""))
 	var prog: float = clampf(float(z.get("progress", 0.0)), 0.0, 1.0)
 	if state != "" and prog > 0.0 and who != "":
-		return {"progress": prog, "color": cfg.faction_color(who, "main")}
+		return {"progress": prog, "color": SideColorRes.color(cfg, world, who, "main")}
 	return {"progress": 0.0, "color": fallback}
 
 
@@ -388,16 +390,18 @@ func _faction_or_type_color(b, owner: String) -> Color:
 	var hit: Variant = _color_cache.get(key, null)
 	if hit != null:
 		return hit
+	# ★★ 本轮起**所有有主建筑**都按「本机视角的己 / 友 / 敌」三色着色
+	#   （用户口径：所有敌人都显示红色）。墙 / 塔用同色的明度差区分类型 ——
+	#   否则红墙和红塔在密集城墙里糊成一片。
+	var side: Color = SideColorRes.color(cfg, world, owner, "main")
 	var c: Color
 	match String(b.type):
 		"wall":
-			c = cfg.color("wall")
+			c = side.darkened(0.35)
 		"tower":
-			c = cfg.color("tower")
-		"base":
-			c = cfg.faction_color(owner, "main")
+			c = side.darkened(0.12)
 		_:
-			c = cfg.faction_color(owner, "main")
+			c = side
 	_color_cache[key] = c
 	return c
 

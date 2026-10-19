@@ -45,7 +45,8 @@ const R_ZONE_LOST := "zone_lost"
 ##
 ## @param world 世界
 ## @param level `logic/level.gd` 的 Level（**可以是 null**：不做战役的老路径 / 测试）
-## @param seats 本局的**本地席位**（合作模式两个；判定「谁的家算玩家的家」用它）
+## @param seats 本局的**本地席位**（合作模式两个；判定「谁的家算玩家的家」用它）。
+##        ★ 其中**与 `seat_arg` 不同方**的会被丢掉（选边关里那一方是敌人，见 setup 里那段）。
 ## @param seat_arg ★ **本机在操作的那一方**（决定「打哪条目标」）。
 ##        缺省 = `seats[0]`（老调用不受影响）。
 ##
@@ -75,6 +76,28 @@ static func setup(world, level, seats: Array, seat_arg: String = "") -> Dictiona
 			mine.append(String(s))
 	elif seat != "":
 		mine.append(seat)
+
+	# ★★ 只留**与本机席位同方**的那些席位（本轮修：mt 选 F2 时目标一开局就「已占领」）。
+	#
+	# 为什么需要这一条（实测）：`seats` 是「本机负责建基地 / 开钱包的那几个席位」，
+	# 在「选边关」里它是 `[我选的那一方, 敌人那一方]`——敌人那一边只是为了把它的家建出来，
+	# **本机并不操作它**。`world.reset()` 用 `player_factions`（= 减去被 AI 接管的那几个）
+	# 做过一次过滤，但那只在**数据把「没被选中的可玩阵营」写成非 none 的 AI** 时才成立。
+	# mt 原来把两边都写成 `ai: none`（选边关的口径见 `logic/level.gd` 的 `_ck_allies`），于是敌人
+	# F1 仍留在 `defend` 里；而 F2 的目标「占领囊关东门」那块地开局归 `sj`，`sj` 正是
+	# F1 的盟友 ⇒ `_mine_side()` 判成「我方」⇒ 第一帧就判胜，界面显示「已占领」。
+	#
+	# 判据为什么是「与 `seat` 同方」而不是「与任何席位同方」：目标本身是
+	# `objective_for(seat)` 取出来的**这个席位的那一条**，所以「我方」也只能是这个席位
+	# 所在的那一方 —— 合作关两人互为盟友（校验第 7 条）⇒ 两个都留下；选边关另一方是
+	# 敌人 ⇒ 被丢掉。**不改** `world.player_factions`（它还要管建基地 / 开钱包）。
+	if seat != "":
+		var same_side: Array = []
+		for s2 in mine:
+			if String(s2) == seat or FactionRes.same_side_for_attack(String(s2), seat):
+				same_side.append(String(s2))
+		if not same_side.is_empty():
+			mine = same_side
 
 	st["defend"] = mine
 	st["seat"] = seat
@@ -200,6 +223,7 @@ static func to_snapshot(st: Dictionary) -> Dictionary:
 	if st.is_empty():
 		return {}
 	return {
+		"kind": String(st.get("kind", "")),
 		"zone": int(st.get("zone", -1)),
 		"held": float(st.get("held", 0.0)),
 		"sec": float(st.get("sec", 0.0)),
@@ -212,6 +236,8 @@ static func to_snapshot(st: Dictionary) -> Dictionary:
 static func apply_snapshot(st: Dictionary, snap: Dictionary) -> void:
 	if st.is_empty() or snap.is_empty():
 		return
+	if snap.has("kind"):
+		st["kind"] = String(snap["kind"])
 	if snap.has("zone"):
 		st["zone"] = int(snap["zone"])
 	if snap.has("held"):

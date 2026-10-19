@@ -3343,6 +3343,307 @@ ERROR: Unicode parsing error, some characters were replaced with � (U+FFFD): U
 （= `panel_expand.collapse_instant()`，**即时**收回，不播动画：游戏期间这一层是隐藏的，
 播动画既没人看见、又可能停在半路）。
 
+### 5.66 ★★ 合作快照缺 `pres` 时**不能**回落到旧的单份 `res`
+
+**症状（M12.2 实测）**：客机本来有 333 食物；应用一个「没有 `pres`、但有旧 `res`」的快照后，
+客机的食物变成房主的 111。
+
+**根因**：`res` 是单机时代的单份池；合作快照始终发 `pres`。缺 `pres` 说明快照坏了 /
+版本不对，此时若回落到 `res`，就会把房主那份写到客机头上。
+
+**正确做法**：`snapshot.apply_snapshot()` 里 `pres` 缺失时，**只有单席位**
+（`world.player_seats.size() <= 1`）才回落到 `res`；两个席位时按「缺字段 = 保持现状」处理。
+`test_snapshot_coop.gd` 专门造这个反例。
+
+### 5.67 ★★ `rebuild_building_index()` **不会**涨 `building_revision`
+
+**症状**：客机应用整表替换的建筑快照后，`refresh_ownership()` 认为「建筑没变」，
+区块归属缓存停在旧值（界面上的区划颜色 / 归属错一截）。
+
+**根因**：`rebuild_building_index()` 只重建格子查询表；`building_revision` 是「建筑集合变了」
+的版本号，由增删建筑的函数各自 `+= 1`。整表替换绕过了那些函数。
+
+**正确做法**：`_world_sync_buildings()` 在 `rebuild_building_index()` 之后手动
+`world.building_revision += 1`，再让 `refresh_after_snapshot()` 刷新归属。
+
+### 5.68 ★★ 按席位调 `zones.update_population()` 会把**基础人口增长算两遍**
+
+**症状**：合作模式两人各启用「区划人口 +10%」时，人口涨得比预期快很多；
+即使都没启用，每个区划也比单机涨得快。
+
+**根因**：`update_population()` 会遍历**所有**区划做基础增长。为了给两个席位各乘各的科技倍率
+而对每个席位各调一次，等于基础增长跑了两遍。
+
+**正确做法**：`zones.update_population_multi(dt, owner_mults)` —— 一个循环里
+「基础增长一次 + 按 `z.owner` 取倍率」。旧的 `update_population(dt, owner, mult)` 保留为
+单席位包装，老测试不用改。
+
+### 5.69 ★★ `JSON.parse_string()` 遇到坏包会往 stderr 打 **ERROR**，即使你只想要失败返回
+
+**症状**：协议测试里故意喂 `"not json"`，测试是通过了，但 stderr 多一行
+`ERROR: Parse JSON failed...`；CI / 日志看起来像出错。
+
+**根因**：`JSON.parse_string()` 是「解析失败就 push_error」的便捷函数。
+
+**正确做法**：协议层用 `var j := JSON.new(); if j.parse(text) != OK: return {ok:false,...};
+var data = j.data`。坏包只走自己的错误码，不污染引擎日志。
+
+### 5.70 ★★ Godot 4.7 的 `WebSocketPeer.poll()` 返回 **void**，不是 Error
+
+**症状（M12.3 写 `relay_transport.gd`）**：照其它 `poll()` 的习惯写
+`var err := _ws.poll(); if err != OK:`，直接 Parse Error：
+`Cannot get return value of call to "poll()" because it returns "void"`。
+
+**根因**：`WebSocketPeer.poll()` 只推进状态，不返回错误码；连接结果看
+`get_ready_state()`（`STATE_OPEN` / `STATE_CLOSED` …）。
+
+**正确做法**：
+
+```gdscript
+_ws.poll()
+match _ws.get_ready_state():
+    WebSocketPeer.STATE_OPEN: ...
+    WebSocketPeer.STATE_CLOSED: ...
+```
+
+### 5.71 ★★ Windows PowerShell 5.1：`Start-Process -PassThru` 的重定向子进程
+可能给出 `$null` 的 `ExitCode`
+
+**症状（M12.3 `run-local.ps1`）**：host / guest 探针日志都打印了 `PROBE ... OK`，
+但 `$guestP.ExitCode` 是 `$null`，`if ($guestP.ExitCode -ne 0)` 成立 ⇒ 脚本误报失败。
+
+**根因**：PowerShell 5.1 + `Start-Process -RedirectStandardOutput` 时，
+`Process.ExitCode` 不一定会被填上（即使 `WaitForExit()` / `Refresh()` 过）。
+
+**正确做法**：不要靠这个 `ExitCode` 判成功。让探针打印明确的成功行
+（`PROBE host OK` / `PROBE guest OK`），脚本用 `Select-String -Quiet` 检查；
+`WaitForExit(timeout)` 只用来防挂死。
+
+### 5.72 ★★ 无头测试里 `StartScreen.setup()` 之前必须先进树并等一帧
+
+**症状（M12.4 `test_coop_entry`）**：直接 `new()` + `root.add_child()` 后立刻调
+`screen.setup()`，`panel_expand.attach()` 里 `get_tree()` 是 `null`，报
+`Parameter "data.tree" is null`；接着 `coop_lobby()` 是 null，测试如果直接
+`.find_child()` 会抛运行期错误、`quit()` 永远走不到，测试进程挂住。
+
+**根因**：`StartScreen` 是 `CanvasLayer`，`MenuChrome` / `PanelExpand` 的 setup 里
+有 `await get_tree().process_frame`。在 `_initialize` 那一帧，节点刚 add 进去，
+`get_tree()` 在 `attach()` 时还没准备好（或 `PanelExpand` 还没完成它自己的首帧）。
+
+**正确做法**：
+
+```gdscript
+root.add_child(screen)
+await process_frame          # ★ 先让树就绪
+screen.setup(cfg, font)
+screen.show_page(PAGE_MENU)
+await _wait(10)              # 等外壳的入场 / attach
+```
+
+测试里问面板内容时**不要链式调用** `screen._chrome.coop_lobby().find_child(...)`：
+先判 null，再取；否则一次运行期错误就会让 `quit()` 走不到、需要手工 kill。
+
+### 5.73 ★★★ nssm 的 `set` 参数顺序是 `nssm set <服务> <参数> <值>`
+
+**症状（M12.5 首次公网部署）**：`deploy.ps1` 执行到
+`nssm DAEEMRelay set AppParameters ...` 时，nssm 只打印 Usage 并以 1 退出；
+服务已经 `install` 成功，但 `AppParameters` / `AppDirectory` / 日志路径一个都没写进去，
+启动后当然没有中继。
+
+**根因**：nssm 的子命令顺序是固定的：
+
+```text
+nssm install <服务名> <应用> [参数...]
+nssm set     <服务名> <参数> [<子参数>] <值>
+nssm get     <服务名> <参数>
+nssm start   <服务名>
+```
+
+`set` 必须**紧跟 nssm**，不是 `nssm <服务> set ...`。
+
+**正确做法**：脚本里统一写成
+`Invoke-Nssm @("set", $ServiceName, "AppParameters", $value)`；
+`install` 则保持 `@("install", $ServiceName, $Python)`。
+首次失败后服务可能已经半装好：先 `nssm remove DAEEMRelay confirm` 再重跑，
+或者让修好的脚本走“已存在 → 只更新参数”的分支。
+
+### 5.74 ★★ 部署脚本的源目录 = 目标目录时，复制会“自己复制自己”
+
+**症状**：把 `server/` 直接放到 `C:\daeem\server`，再运行同目录里的 `deploy.ps1`；
+`Copy-Item` 的源和目标变成同一个文件，部署失败。
+
+**根因**：脚本按“从暂存目录复制到服务目录”设计；当 `$PSScriptRoot` 恰好等于
+`C:\daeem\server` 时，`source == target`。
+
+**正确做法**：推荐用暂存目录（`C:\daeem_stage\server` → `C:\daeem\server`）。
+脚本同时做了同路径检测：`Resolve-Path` 与 `GetFullPath` 比较，相同就跳过复制并只校验哈希。
+
+### 5.75 ★★★ 导出 PCK 不会自动带上 `data/*.json`
+
+**症状**：导出的包能进主界面，但地图选择 / 合作关卡是空的，或者 `config.json` 读不到；
+编辑器里一切正常。
+
+**根因**：`export_presets.cfg` 的 `export_filter="all_resources"` 只带**被 Godot 导入的资源**；
+`.json` 是非资源文件，必须由 `include_filter` 显式收进去。地图 / 战役 / 配置全在
+`data/` 下，漏了它们游戏就“有壳没数据”。
+
+**正确做法**：Windows 与 Android 预设都写 `include_filter="*.json"`。
+改完后先在本机跑包体，确认：
+① 合作大厅的关卡下拉有 `02_twin_line`；② 中继地址是 `net.relay_url` 的值。
+
+### 5.76 ★★ Android 导出预设默认 `permissions/internet=false`
+
+**症状**：同一个中继，PC 能连，手机端大厅一直“连接已断开”；手机浏览器打开
+`http://<公网IP>:8770/health` 却是通的。
+
+**根因**：`export_presets.cfg` 的 Android 预设默认没有 `INTERNET` 权限；
+`WebSocketPeer` 建不起连接。
+
+**正确做法**：把 `permissions/internet` 改成 `true` 后重导 APK。
+另外两点一起看：
+
+- `daeem.csproj` 的 Android 目标是 **net9.0**，需要 .NET 9 targeting pack；
+- 明文 `ws://` 若被 Android 的明文流量策略拦截，需要自定义 manifest 的
+  `android:usesCleartextTraffic="true"`（或改 `wss://`）。
+
+### 5.77 ★★ 退出浮层两个真坑：`CanvasLayer` 没有 `accept_event()`；`quit_on_go_back` 默认 true 会抢在通知前退出
+
+**症状（本轮移植 nsoc 的 `quit_confirm` 时）**：
+
+1. 点遮罩想「取消」时脚本报 `Invalid call. Nonexistent function 'accept_event'
+   in base 'CanvasLayer'` —— 事件照常冒泡，取消逻辑也不执行；
+2. 安卓真机上按返回键，**游戏直接退了**，退出确认浮层根本没出现（桌面看不出来）。
+
+**根因**：
+
+1. `accept_event()` 是 **`Control`** 的方法，不是 `Node` 的。本作的退出浮层是
+   `CanvasLayer`（要盖在开场页 layer 100 / HUD 1 之上），在脚本里直接写
+   `accept_event()` 就是调了个不存在的方法；
+2. `application/config/quit_on_go_back` **默认是 `true`**：引擎收到
+   `NOTIFICATION_WM_GO_BACK_REQUEST` 之后会立刻 `quit()`，而项目里没人改过这一项 ——
+   我们自己的 `_notification()` 还没跑完，进程已经没了。
+
+**正确做法**：
+
+- `accept_event()` 只往**真正吃事件的那个 Control** 上调：
+  `_overlay.accept_event()` / `_panel.accept_event()`（本作 `view/quit_confirm.gd`）；
+- `project.godot` 的 `[application]` 里显式写 `config/quit_on_go_back=false`，
+  再在 `view/main.gd` 的 `_notification()` 里接 `NOTIFICATION_WM_GO_BACK_REQUEST`；
+- 桌面窗口 X 是 `NOTIFICATION_WM_CLOSE_REQUEST`，**不受这一项影响** —— 本作按用户口径
+  仍然让它直接退（不弹确认）。
+
+**判据**：凡是「浮层 / overlay 脚本」里要 `accept_event()`，先问一句
+「我这个类到底是 `Control` 还是 `CanvasLayer`」；凡是「要拦系统级返回 / 关闭」，
+先去项目设置里把引擎的默认动作关掉，不能只在 `_notification` 里等。
+
+---
+
+### 5.78 ★★★ 退出前的全屏渐黑：**别在 quit 之前把遮罩 hide / queue_free**
+
+**症状（用户实测报的）**：点「退出」确认之后虽然有一段渐黑，但真正关闭前**又露出界面**
+（菜单 / 游戏画面），看起来像「渐黑只盖住了退出面板、没盖住全局」。
+
+**根因**：`confirm()` 里是「渐黑 Tween 完成 → `_finish_close()` 立刻 `hide()` + `queue_free()`
+→ 才发 `confirmed` → main `quit()`」。`queue_free` 要到帧末、`quit()` 也要等这一帧结束，
+而遮罩已经在同一帧被置为不可见 ⇒ **最后一帧画的是底下的界面**。
+
+**正确做法**（`view/quit_confirm.gd`）：
+
+- confirmed 分支**不销毁 UI**：把遮罩颜色 alpha 钉成 1.0、面板 `modulate.a = 0`，保持
+  `CanvasLayer.visible = true`，只把 `_open` 置 false；等 main `quit()` 随进程一起销毁；
+- 渐黑 Tween 结束后**再保持 `quit_hold_sec`（默认 0.1s）**才发 confirmed ——
+  `await tween.finished` 的恢复点可能早于该帧渲染，不留这一小段「全黑」可能一帧都没画出来；
+- 如果真的没退出（测试 / 将来取消 quit），下一次 `request()` 先 `_destroy()` 再 `_build()`，
+  并把 `overlay.color.a` 重置回半透 —— 否则会拿一块全黑当新浮层。
+
+**判据**：凡是「退出 / 切场景前的最后一层遮罩」，它的生命周期必须**长于 quit 请求**；
+「先隐藏再退出」永远会把最后一帧让给底下的界面。
+
+---
+
+### 5.79 ★★★ `modulate.a = 0` 的 Button **照样吃鼠标**：快速连点会点中「看不见的按钮」
+
+**症状（用户实测报的）**：开始界面点得足够快时，有概率「图标移动到对应位置后消失，
+三个 test 按钮也消失」；之后回菜单也没有 logo / 按钮。
+
+**根因**：入场落位动画为了让容器把目标矩形算出来，把主界面设成
+`visible = true` + `modulate.a = 0`（见 `_play_intro_morph()`）。**alpha 0 不改变命中测试**：
+那三颗 test 按钮仍然能被点到。快速连点里只要有一下落在 `test_1` 的位置，就直接开一局 ⇒
+`close()` 把落位动画掐断 ⇒ `_menu.modulate.a` **永远停在 0**；回菜单时 `show_page()`
+只改 `visible`、不还原 alpha ⇒ 整列「消失」。
+
+★ 同一个窗口还有第二段：切页之后外壳 `play_intro()` 会把正中那列的控件**先清零再淡入**
+（约 0.2s），这段时间按钮同样看不见、却同样能点。
+
+**正确做法**（`view/start_screen.gd` + `view/menu_chrome.gd`）：
+
+- 用一个显式闸门 `_menu_blocked`：从落位动画开始，到外壳 `play_intro()` 的滑入 + 淡入
+  **全部结束**为止，`test` 按钮的 `pressed` 直接 return；
+- 外壳新增 `signal intro_finished`，`play_intro()` 改成 `await` 面板动画后再发 ——
+  不要用「等固定 0.5s」猜，动效开关 / 配置改时长都会猜错；
+- `show_page(PAGE_MENU)` 兜底 `_menu.modulate.a = 1.0`，并区分「是否在等外壳淡入」：
+  动画中途被 `close()` 打断后 `open_menu()` 也不会停在一层空界面；
+- 反过来，**不要**用「把按钮 `disabled = true`」代替闸门：那会换一套 disabled 底纹 / 字色，
+  在淡入过程中看得出「灰一下再亮」。
+
+**判据**：`alpha` / `modulate` 只管**看不看得见**，**不管点不点得到**。凡是「先透明、后淡入」的
+可交互控件，都必须有一个**显式的可交互闸门**；并且这个闸门要在**真正可见**之后才打开。
+
+---
+
+### 5.80 ★★ 带 `autowrap` 的 `Label` 在 VBox 里会报一个**一两千像素高的最小尺寸**
+
+**症状（本轮做战役过渡画面时）**：右栏的简报正文放进 `VBoxContainer` 后，
+下面那两张阵营卡被顶到面板外（1080 高的窗口里几乎看不见），而正文本身看起来只有三四行。
+实测（1920×1920 无头）`Label.size` 被排成 **1463px 高**（104 个汉字 / 21px / 711px 宽）。
+
+**根因**：`Label.get_minimum_size()` 在 `autowrap` 打开时，如果被问的时候还拿不到可用宽度，
+会按「很窄的一列」估算行数 ⇒ 报一个巨大的高度。`VBoxContainer` 又尊重这个最小高度，
+于是把后面的兄弟全顶下去。这不是配置问题，换字号 / 换文案都会再犯。
+
+**正确做法**（`view/level_transition.gd`）：
+
+- 正文用 **`RichTextLabel`**：`bbcode_enabled = false`、**`fit_content = true`**、
+  `scroll_active = false`、`autowrap_mode = WORD_SMART`；
+  `fit_content` 的最小高度只按内容算，不会谎报；
+- 或者给 `Label` 一个**明确的 `custom_minimum_size.y`** 并把它从「按最小尺寸撑」里摘出来；
+- 卡片用 `size_flags_vertical = EXPAND_FILL` 平分剩余高度，两行字放在
+  `VBoxContainer(alignment = CENTER)` 里**垂直居中** —— 卡片变高时不会只剩顶部一行字。
+
+**判据**：容器里的多行中文，**不要相信 `Label` 报的最小高度**。要么用
+`RichTextLabel(fit_content)`，要么自己给高度；排完必须**量一次兄弟节点的
+`global_position/size`**（或截图数像素），确认没有被顶出面板。
+
+### 5.81 ★★★ 快照应用里的 `world.unit_by_id()` 是线性扫描：500 单位就是 O(n²)
+
+**症状（M12.7 用 `tests/bench_snapshot.gd` 量出来的）**：536 单位时客机
+`apply_snapshot()` 要 **10.9 ms**；30Hz 下光 apply 就吃掉约三分之一 CPU 核心。
+
+**根因**：`apply_snapshot()` 对快照里的每个单位调一次 `world.unit_by_id(uid)`，
+而它是 `for u in units` 的线性查找 ⇒ n 个单位就是 n² 次比较。
+
+**正确做法**：进入循环前建一次 `id -> unit` 字典；新建单位时补进索引；
+本帧阵亡的单位在 `world.units = keep` 之后重建索引（投掷物解析目标 / 来源复用同一份）。
+实测 536 单位 apply **10.9 ms → 3.0 ms**。
+★ 可复用判据：**任何「按 id 找对象」的批量循环，先问一句「这个查找是不是 O(n)」**。
+
+### 5.82 ★★ 30Hz 全量快照：带宽 / 序列化 / 客机 apply 都按频率线性涨
+
+**背景（M12.7）**：把 20Hz 提到 30Hz 后，536 单位快照约 **124 KB/帧**，
+30Hz ≈ **3.54 MB/s**；房主每帧 `to_snapshot + encode` 约 **10.6 ms**，
+客机 `apply + fog` 约 **7.2 ms**。WebSocket 只有可靠通道：网络一慢，
+旧快照会在出站缓冲里排队，延迟越拖越大。
+
+**正确做法（本轮已做）**：
+- 发送端：`get_current_outbound_buffered_amount()` > 1 MiB 时**跳过这一帧快照**；
+  下一帧直接发最新状态（全量快照不需要补旧帧）。
+- 客机：一轮 `poll()` 只应用**最后一条**快照；中间帧跳过（全量 ⇒ 安全）。
+- 频率：`net.snapshot_hz` 默认 30，夹 10~60；500+ 单位若真机掉帧，可回 20
+  或做增量 / 压缩。
+
+**判据**：**提高快照频率不是免费的** —— 带宽、序列化、客机 apply 三条成本都随频率
+线性增长；先量再调，并且必须配背压 / 合并，否则慢网络下反而更差。
+
 ---
 
 ## 十、真 3D 场景（第四十一节那一轮）实测记录
@@ -3814,14 +4115,23 @@ GDScript 的静态推断会把「可能返回错误字符串的 API」算进类�
 （≈0.25 秒）。占领进度条是**连续上升**的动画，走那条节流就会一格一格地跳。
 
 **正确做法**：把节流**按层分开** ——
-归属 / 迷雾（那些数据一秒变不了几次）走 15 帧节流；
-**占领进度单独每帧查**（`ground.rebake_capture()`），并靠**签名短路**保证不白烘：
+- 区划 / 地面归属（一秒变不了几次，而判断要遍历全部区块）：每 15 帧查一次；
+- **迷雾：每帧查**，但用**整块掩码 memcmp**（不是抽样字符串）+ `fog.rebake_min_sec`
+  合并重烘（默认 0.1s）；
+- **占领进度单独每帧查**（`ground.rebake_capture()`），并靠**签名短路**保证不白烘：
+  - 没区划在读条时签名是**空串**，一次贴图都不重烘；
+  - 真在烘的时候是「594 个像素的写入」，比整块迷雾掩码的 memcmp（594 字节）还便宜。
 
-- 没区划在读条时签名是**空串**，一次贴图都不重烘；
-- 真在烘的时候是「594 个像素的写入」，比 `_fog_signature()` 的 18 次 `tile_visible()` 还便宜。
+★★ 迷雾这一条是后来**真踩到用户投诉**才改的（本节最早写的是「迷雾也走 15 帧节流 +
+18 格抽样签名」）：迷雾是**逐格**变化的，单位跨一格只改视野边界十几格；
+100×100 图上 18 个抽样格只占 0.18%，命中率约 3.5% ⇒ 平均要跨 ~28 格才刷新一次，
+观感就是「大地图灰雾延迟几秒~几十秒」。
+⇒ **对逐格状态不要用抽样签名**；整块比较是 memcmp，100×100 的 10KB 每帧也不到一微秒。
 
 ★ **判据（可复用的那条）**：给「每帧做」的东西加节流之前，先问
 **「它是离散的状态，还是连续的动画？」** —— 状态可以慢，动画不能慢。
+★ 再加一条：**离散状态也要分清是不是「逐格状态」** —— 抽样只适合大块低频数据；
+逐格变化的数据（迷雾 / 视野 / 占领格）必须整块比。
 
 ### 11.7 ★★ 进度 / 生长方向类的绘制：**先写死判据，再写代码**
 

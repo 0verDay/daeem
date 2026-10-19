@@ -12,6 +12,7 @@ config_version=5
 
 config/name="DAEEM"
 run/main_scene="res://view/main.tscn"
+config/quit_on_go_back=false
 config/features=PackedStringArray("4.7", "C#", "Mobile")
 config/icon="res://icon.svg"
 

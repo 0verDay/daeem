@@ -156,6 +156,10 @@ var tech: TechRes = null
 ## 本帧「加产量」那一份（启用中的每地块加成 / 血量倍率 / 人口增长倍率）。
 ## 每帧在 tick() 里按 `tech.effects_of()` 重算；**每次都是新字典**，别留着当缓存。
 var tech_effects: Dictionary = {}
+## ★★ 每个**玩家席位**的科技效果："faction" → `tech.effects_of(faction)`（合作模式）。
+##   `tech_effects` 是本机席位那一份的别名，HUD / 旧调用照旧。
+##   ⚠️ 不能用一套全局 `tech_effects` 给两个人用：客机启用的科技会加到房主头上（反之亦然）。
+var seat_tech_effects: Dictionary = {}
 ## 科技启用状态每变一次 +1（`set_tech_active` 里加）。
 ## ★ 血量倍率靠它决定「要不要重刷一遍所有建筑与单位」——**不是每帧刷**：
 ##   那一步要遍历全部对象，而启用状态几秒才变一次（见 tick 第 0 步）。
@@ -167,6 +171,16 @@ var faction_bases: Dictionary = {}
 var faction_spawns: Dictionary = {}
 
 var time: float = 0.0
+
+## ★★ 本局的**随机盐**：`unit_rand()` 把它混进哈希，于是同一张地图 / 同一关
+##   「每次开局」的红点波次、附属兵构成都会不同（用户报的「每局红点都一样」）。
+##
+## ★ 为什么不是直接用引擎全局 RNG：`unit_rand` 的契约是**纯函数**
+##   `(key, k) → [0,1)` —— 同一局内同一个 key 必须给同一个数（否则重算会漂），
+##   而不同局之间要不同 ⇒ 用「每局一个盐」正好两全。
+## ★ 联机：红点 AI 只在房主侧跑，客机收的是单位 / 事件，不需要这个盐；
+##   将来做存档 / 回放时把它写进快照即可（当前没有存档）。
+var rand_salt: int = 0
 ## 帧序号：每 tick +1。给「每帧预算一次、当帧有效」的缓存做对齐用
 ## （例如 crowd_bridge 的警戒索敌结果 —— 在 tick 之外读到上一帧的结果就是 bug）。
 var frame_serial: int = 0
@@ -299,6 +313,8 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	enemy_spawn_timer = 0.0
 	debug_auto_spawn = false
 	time = 0.0
+	# ★★ 每局换一个随机盐（见 `rand_salt` 的说明）。测试要可复现就直接赋值。
+	rand_salt = int(randi()) & 0x7FFFFFFF
 	owned_tiles = 0
 	production_food = 0.0
 	production_gold = 0.0
@@ -473,7 +489,7 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	# ★ 科技的收口：开局还没启用任何科技，这一句把「有没有加成」在任何对象
 	#   （含预置建筑）上都对齐一次，并把每秒产出先算出来 ——
 	#   于是 HUD 在第一次 tick 之前读到的是正确的「+n/秒」而不是 0。
-	tech_effects = tech.effects_of(my_faction)
+	_refresh_seat_tech_effects()
 	_tech_hp_revision = tech_revision
 	_apply_tech_effects()
 	# ⚠️ 上面那句会顺手刷新 `owned_tiles`（它是「+n/秒」的乘数），
@@ -1056,10 +1072,13 @@ func pick_weighted_type(g, weighted_types: Array, k: int) -> String:
 	return last
 
 
-## ★★ 确定性伪随机：由 `(key, k)` 派生一个 `[0, 1)` 的数。
+## ★★ 确定性伪随机：由 `(key, k, rand_salt)` 派生一个 `[0, 1)` 的数。
 ##
 ## ★ 刻意**不用引擎全局随机数**（RNG 会随调用次序漂，测试没法断言）：
 ##   与巡逻路线的「由 id 派生固定种子」是同一个套路（见 garrison_ai 的 `_route_seed`）。
+## ★★ `rand_salt`（每局 `reset()` 现抽一个）解决的是**跨局**的问题：
+##   只用 `(key, k)` 时，红点的 key 里只有「第几波」⇒ 每局刷出来的将领 / 落点完全一样
+##   （用户报的「测试很多次，每波敌人都一样」）。盐一混，同局仍可复现、换局就不同。
 ##
 ## ★★ 为什么不直接 `hash("%s|%d" % [key, k])` 取低位（本轮修的 bug）：
 ##    Godot 的字符串哈希是 djb2 那一路 —— 只差末位字符的两条串（`…|0` / `…|1` …）
@@ -1068,11 +1087,17 @@ func pick_weighted_type(g, weighted_types: Array, k: int) -> String:
 ##    ⇒ 先把 key 的哈希与 k 混一下，再走一步 murmur 收尾，连续的 k 才真正散开。
 ## ★ 摆放 / 阵地 / 红点三处共用（`pick_weighted_type` 与 `red_dot_ai._pick_general_index`）。
 func unit_rand(key: String, k: int) -> float:
-	var h: int = (hash(key) ^ (k * 0x9E3779B1)) & 0xFFFFFFFF
+	var h: int = (hash(key) ^ rand_salt ^ (k * 0x9E3779B1)) & 0xFFFFFFFF
 	h = ((h ^ (h >> 16)) * 0x85EBCA6B) & 0xFFFFFFFF
 	h = ((h ^ (h >> 13)) * 0xC2B2AE35) & 0xFFFFFFFF
 	h = (h ^ (h >> 16)) & 0xFFFFFFFF
 	return float(h) / 4294967296.0
+
+
+## 固定本局的随机盐（测试 / 回放用；不调就是 `reset()` 里现抽的那个）。
+## ★ 只影响**之后**的随机：已经生成的附属兵 / 已落地的波次不会变。
+func set_rand_salt(v: int) -> void:
+	rand_salt = int(v) & 0x7FFFFFFF
 
 
 ## ★ 建出**一位**将领 ——`create_generals`（自动生成）与关卡摆放共用这一个。
@@ -1274,6 +1299,38 @@ func _register_config_bases() -> void:
 		var base: Vector2i = entry.get("base", Vector2i(-1, -1))
 		if base.x >= 0 and base.y >= 0:
 			map.set_faction_base(fid, base)
+
+
+## ★★ 「这一方的东西归不归本机操作」的唯一判据。
+##
+## ⚠️ 读代码时先记住这条（实测核对过）：`FactionRes.same_side()` **本来就是严格同阵营**
+##    （`a == b`），不是「同方盟友」；盟友那一套在 `same_side_for_attack()` 里。
+##    所以合作模式**不需要**再发明一个 `strict_seat_owner` 开关 —— 客机用 F2 的命令
+##    碰 F1 的单位 / 建筑 / 区划，本来就会被 `same_side` 挡掉。
+##
+## 那为什么还要这个函数：把「谁能操作谁」收成一个**有名字的判据**，
+##   输入层、命令层、升级层、world 的规则检查都读它；以后若真要把「盟友可指挥」
+##   作为某张图的可选项，只改这一处，不用去追 20 个 `same_side` 调用点。
+##
+## ★ 合作模式真正要做的是：**每个客户端的 `my_faction` 是自己的席位**、
+##   两端 `roster` 同序（见 `level.coop_roster()`）—— 这两件事在装配层做。
+## ⚠️ 不要用 `is_player_faction()` 代替：合作两人都是玩家，它分不出「我」和「队友」。
+func is_own_seat(faction: String) -> bool:
+	return accepts_owner(faction, my_faction)
+
+
+## ★★ 命令层 / 规则层用的「归属」判据：`actual` 这一方的东西，能不能被 `cmd_faction` 操作。
+##
+## @param actual      东西的实际归属（单位 faction / 建筑 owner / 区划 owner）
+## @param cmd_faction 下单方（房主的世界里可能是客机席位）
+##
+## ★ 严格同阵营（`same_side`）—— 合作两人是盟友，但**不是同一个阵营**，
+##   所以客机命令 `F2` 碰不到 `F1` 的兵 / 建筑 / 区划（与「各指挥自己的阵营」一致）。
+## ★ `actual == ""`（无主区划 / 中立建筑）一律 false —— 谁都不能「操作中立物」。
+func accepts_owner(actual: String, cmd_faction: String) -> bool:
+	if actual == "" or cmd_faction == "":
+		return false
+	return FactionRes.same_side(actual, cmd_faction)
 
 
 ## ★★ 某一方的资源池：**本机负责的玩家席位**走 `resources` / `player_resources`；
@@ -1853,7 +1910,7 @@ func leader_reject_reason(leader, faction: String) -> String:
 		return "leader"
 	if not is_team_leader(leader):
 		return "leader"
-	if not FactionRes.same_side(leader.faction, faction):
+	if not accepts_owner(String(leader.faction), faction):
 		return "faction"
 	# ★★ 濒死的将领**不能再招募**（本轮修 bug）。
 	#
@@ -1873,7 +1930,7 @@ func leader_reject_reason(leader, faction: String) -> String:
 ## ★ 无主区划、以及不属于任何区划的格子（地图外沿的 -1）都不算 —— 见 route.md 第十四节。
 func leader_zone_owned(leader) -> bool:
 	var z = zones.zone_at(leader.tx, leader.ty)
-	return z != null and FactionRes.same_side(String(z["owner"]), leader.faction)
+	return z != null and accepts_owner(String(z["owner"]), String(leader.faction))
 
 
 ## 这个单位现在**不接受玩家指令**吗？
@@ -2103,7 +2160,7 @@ func revive_ready_ratio() -> float:
 func revive_reject_reason(leader, faction: String = "") -> String:
 	if leader == null or not leader.alive:
 		return "leader"
-	if faction != "" and not FactionRes.same_side(String(leader.faction), faction):
+	if faction != "" and not accepts_owner(String(leader.faction), faction):
 		return "faction"
 	if not leader.is_general():
 		return "not_downed"
@@ -2156,7 +2213,7 @@ func cancel_revive(leader_id: String, faction: String = "") -> bool:
 	var leader = unit_by_id(leader_id)
 	if leader == null or not leader.alive or not leader.is_reviving():
 		return false
-	if faction != "" and not FactionRes.same_side(String(leader.faction), faction):
+	if faction != "" and not accepts_owner(String(leader.faction), faction):
 		return false
 	var cost := revive_cost()
 	leader.cancel_revive()
@@ -2603,7 +2660,7 @@ func can_recruit_zone(kind: String, zone_id: int, faction: String) -> String:
 	var z = _zone_by_id(zone_id)
 	if z == null:
 		return "zone_not_found"
-	if not FactionRes.same_side(String(z["owner"]), faction):
+	if not accepts_owner(String(z["owner"]), faction):
 		return "zone_owner"
 	if zone_recruit_queue_size(z) >= zone_recruit_queue_max():
 		return "queue_full"
@@ -2787,7 +2844,7 @@ func cancel_zone_recruit(zone_id: int, slot: int, faction: String) -> bool:
 	if z == null:
 		push_event({"type": "recruit_cancel_rejected", "reason": "zone", "slot": slot})
 		return false
-	if not FactionRes.same_side(String(z["owner"]), faction):
+	if not accepts_owner(String(z["owner"]), faction):
 		push_event({"type": "recruit_cancel_rejected", "reason": "zone_owner", "slot": slot})
 		return false
 	var kind := zone_recruit_kind_at(z, slot)
@@ -3030,8 +3087,11 @@ func add_building(type: String, tx: int, ty: int, owner: String, silent: bool = 
 	# ★ 科技的「建筑血量 +10%」在这里就地补上（**粘性**：倍率没变时是空操作）。
 	#   为什么落在这里而不是每帧刷：新建的建筑必须当场带上加成，
 	#   否则「刚造好的墙比开局那座脆」——那是玩家一眼就看得出的不一致。
-	if FactionRes.same_side(owner, my_faction):
-		b.apply_hp_bonus(float(tech_effects.get("building_hp_mult", 1.0)))
+	# ★ 按**这栋楼的 owner**取科技血量倍率（合作时不能把房主的加成贴到客机的楼上）。
+	var owner_eff: Variant = seat_tech_effects.get(String(owner), null)
+	if typeof(owner_eff) != TYPE_DICTIONARY:
+		owner_eff = tech.effects_of(String(owner)) if tech != null else {}
+	b.apply_hp_bonus(float((owner_eff as Dictionary).get("building_hp_mult", 1.0)))
 	# ★ 新建建筑一律是 1 级：等级倍率显式落一次（`apply_level_mult` 是粘性的，
 	#   不落的话它会停在默认的 1.0，与配置里 1 级的倍率不一致时就错了）。
 	b.apply_level_mult(b.level_mult_from(cfg))
@@ -3129,7 +3189,7 @@ func zone_allows_build(tx: int, ty: int, faction: String) -> bool:
 	var z = zones.zone_at(tx, ty)
 	if z == null:
 		return false
-	return FactionRes.same_side(String(z.get("owner", "")), faction)
+	return accepts_owner(String(z.get("owner", "")), faction)
 
 
 ## 建筑归属变了就重算区块归属（不每帧算）
@@ -3138,6 +3198,24 @@ func refresh_ownership() -> void:
 		return
 	last_ownership_revision = building_revision
 	zones.refresh_building_ownership(cfg, building_list, factions)
+
+
+## ★★ 客机：应用完快照之后，把「只在 tick 里算」的派生数据补一遍。
+##
+## 客机**不 tick**（房主权威），所以下面这些不会自己更新：
+##   · 迷雾（单位 / 建筑位置变了）；
+##   · 建筑 → 区块归属缓存；
+##   · 科技加成（HUD 的「+n/秒」与科技页高亮要读它）。
+##
+## ⚠️ 不要在这里调 `tick()`：那会把客机变成第二个权威，目标 / 资源 / 战斗会双算。
+## ⚠️ 也不要在这里 `drop_dead_selection()`：那是 view 的本地选中状态，归 game_scene 管。
+func refresh_after_snapshot() -> void:
+	if fog != null:
+		fog.reset_cache()
+		fog.update(self)
+	refresh_ownership()
+	if tech != null:
+		_refresh_seat_tech_effects()
 
 
 # ------------------------------------------------------------------
@@ -3390,9 +3468,33 @@ func tech_bonus() -> Dictionary:
 	return tech_effects
 
 
-## 己方区划「人口自然增长速度」的科技倍率（1.0 = 没加成）——传给 zones.update_population
-func tech_population_mult() -> float:
-	return float(tech_effects.get("zone_population_mult", 1.0))
+## 某一方区划「人口自然增长速度」的科技倍率（1.0 = 没加成）。
+## @param faction 空 = 本机席位（旧调用不变）；合作时传另一个席位
+func tech_population_mult(faction: String = "") -> float:
+	var fid := _tech_faction(faction)
+	var eff: Variant = seat_tech_effects.get(fid, null)
+	if typeof(eff) != TYPE_DICTIONARY:
+		eff = tech_effects
+	return float((eff as Dictionary).get("zone_population_mult", 1.0))
+
+
+## ★★ 重算「每个玩家席位各自的科技效果」。
+##
+## 合作模式下两个人各点各的科技：一套全局 `tech_effects` 会把客机的加成算到房主头上。
+## 这里按 `player_factions`（本机操作的席位）各取一份；`tech_effects` 仍指向本机那一份，
+## 于是 HUD / 旧调用不用改。
+func _refresh_seat_tech_effects() -> void:
+	seat_tech_effects = {}
+	if tech == null:
+		tech_effects = {}
+		return
+	var seats: Array = player_factions.duplicate()
+	if my_faction != "" and not seats.has(my_faction):
+		seats.push_front(my_faction)
+	for f in seats:
+		seat_tech_effects[String(f)] = tech.effects_of(String(f))
+	var mine: Variant = seat_tech_effects.get(my_faction, null)
+	tech_effects = mine if typeof(mine) == TYPE_DICTIONARY else tech.effects_of(my_faction)
 
 
 ## 阵营口径统一走这里：空串 = 本地玩家那一方。
@@ -3414,15 +3516,21 @@ func _tech_faction(faction: String) -> String:
 func _apply_tech_effects() -> void:
 	if tech == null:
 		return
-	tech_effects = tech.effects_of(my_faction)
-	var b_mult: float = float(tech_effects.get("building_hp_mult", 1.0))
-	for b in building_list:
-		if b.alive and FactionRes.same_side(b.owner, my_faction):
-			b.apply_hp_bonus(b_mult)
-	for u in units:
-		if not u.alive or not FactionRes.same_side(u.faction, my_faction):
-			continue
-		u.apply_hp_bonus(_tech_hp_mult_for(u))
+	_refresh_seat_tech_effects()
+	# ★ 按席位各加各的：合作两人是盟友，但**同一个单位不能被加两次**。
+	#   判据必须是 `owner == 这一方`，不是 `same_side`（`same_side` 在这里恰好也是严格相等，
+	#   但语义上要写清楚：科技是「谁启用的，谁吃」）。
+	for f in seat_tech_effects.keys():
+		var fid := String(f)
+		var eff: Dictionary = seat_tech_effects[fid]
+		var b_mult: float = float(eff.get("building_hp_mult", 1.0))
+		for b in building_list:
+			if b.alive and String(b.owner) == fid:
+				b.apply_hp_bonus(b_mult)
+		for u in units:
+			if not u.alive or String(u.faction) != fid:
+				continue
+			u.apply_hp_bonus(_tech_hp_mult_for(u))
 	# ★ 产量那一份也要当场重算：玩家点一下「粮食 +3」就该在图上的「+n/秒」里看见，
 	#   而不是等下一帧 tick（人口是每帧读倍率的，不用在这里动）。
 	_refresh_production()
@@ -3435,7 +3543,11 @@ func _apply_tech_effects() -> void:
 func _tech_hp_mult_for(u) -> float:
 	if u == null or u.leader_id != "":
 		return 1.0
-	return float(tech_effects.get("leader_hp_mult", 1.0))
+	var fid := String(u.faction)
+	var eff: Variant = seat_tech_effects.get(fid, null)
+	if typeof(eff) != TYPE_DICTIONARY:
+		eff = tech.effects_of(fid) if tech != null else tech_effects
+	return float((eff as Dictionary).get("leader_hp_mult", 1.0))
 
 
 ## ★★ 重算「每秒产出」这两个展示数（tick 与科技状态变化都会调）。
@@ -3458,16 +3570,17 @@ func _tech_hp_mult_for(u) -> float:
 func _refresh_production() -> void:
 	if zones == null:
 		return
-	# ★★ 本机席位那一份（HUD 读的就是它；`owned_tiles` / `production_*` 都是它的量）。
-	_accumulate_production(my_faction, true)
-	# ★★ 其余玩家席位**各算各的**（合作模式：p1、p2 各自的钱，用户已拍板）。
-	#    ⚠️ 不含本机席位那一份（上面刚算过）；也不含 AI —— AI 的收入走
-	#       `faction_ai._income()`，它有自己的 `resource_mult` 旋钮（难度）。
-	for f in player_factions:
+	_refresh_seat_tech_effects()
+	# ★★ 每个玩家席位各算各的（合作模式：p1、p2 各自的钱 + 各自的科技加成）。
+	#    ⚠️ 不含 AI —— AI 的收入走 `faction_ai._income()`，它有自己的 `resource_mult` 旋钮。
+	var seats: Array = player_factions.duplicate()
+	if my_faction != "" and not seats.has(my_faction):
+		seats.push_front(my_faction)
+	for f in seats:
 		var fid := String(f)
-		if fid == my_faction:
-			continue
-		_accumulate_production(fid, false)
+		var eff: Variant = seat_tech_effects.get(fid, {})
+		_accumulate_production(fid, fid == my_faction,
+			eff if typeof(eff) == TYPE_DICTIONARY else {})
 
 
 ## 给某一方算一帧的**产出速率**（玩家席位专用；AI 的收入在 `faction_ai._income()` 里）。
@@ -3479,15 +3592,16 @@ func _refresh_production() -> void:
 ## ⚠️ 本函数**只算速率、不加钱**：加钱是 `tick()` 里那一次 `EconomyRes.tick(cfg, dt, …)`
 ##   （玩家席位每个各加一次）—— 与单机那条路**同一个函数**，所以「每秒加多少」
 ##   的口径只有一处实现，不会出现两份算法慢慢漂开。
-func _accumulate_production(faction: String, local: bool) -> Dictionary:
+func _accumulate_production(faction: String, local: bool, eff: Dictionary = {}) -> Dictionary:
 	var rates: Dictionary = zones.production_of(faction)
 	var tiles: int = zones.owned_tile_count(faction)
 	var food := float(rates["food"])
 	var gold := float(rates["gold"])
+	# ★ 科技加成按**这一方自己启用的**那几条，不按全局 `tech_effects`。
+	food += float(eff.get("food_per_tile_per_sec", 0.0)) * float(tiles)
+	gold += float(eff.get("gold_per_tile_per_sec", 0.0)) * float(tiles)
 	if local:
 		owned_tiles = tiles
-		food += float(tech_effects.get("food_per_tile_per_sec", 0.0)) * float(tiles)
-		gold += float(tech_effects.get("gold_per_tile_per_sec", 0.0)) * float(tiles)
 		production_food = food
 		production_gold = gold
 	return {"food": food, "gold": gold}
@@ -3568,8 +3682,10 @@ func tick(dt: float) -> Array:
 	if crowd != null and cfg.combat_enabled:
 		crowd.refresh_targets(self, cfg)
 
-	# 0) ★ 科技加成：每帧重算一次聚合值（九条各查一次表、几条加法），产量 / 人口读它。
-	tech_effects = tech.effects_of(my_faction)	#    ⚠️ 血量那一步是**按版本号**触发的，不是每帧跑：它要遍历所有建筑与单位，
+	# 0) ★ 科技加成：每帧重算一次**每个玩家席位**的聚合值（九条各查一次表、几条加法），
+	#    产量 / 人口按各自席位读它。
+	_refresh_seat_tech_effects()
+	#    ⚠️ 血量那一步是**按版本号**触发的，不是每帧跑：它要遍历所有建筑与单位，
 	#       而且「新对象补一次加成」已经落在各出生点（见 apply_hp_bonus 的注释）。
 	if tech_revision != _tech_hp_revision:
 		_tech_hp_revision = tech_revision
@@ -3584,7 +3700,10 @@ func tick(dt: float) -> Array:
 	#      ★ 科技「区划人口产量 +10%」加的是**己方占领区划**的自然增长速度
 	#        （用户确认的口径：production.population × 地块数），只影响涨得多快，
 	#        上限 population_cap 不变。
-	zones.update_population(dt, my_faction, tech_population_mult())
+	var pop_mults: Dictionary = {}
+	for f in seat_tech_effects.keys():
+		pop_mults[String(f)] = tech_population_mult(String(f))
+	zones.update_population_multi(dt, pop_mults)
 
 	# 2) 建筑归属变化时才重算
 	refresh_ownership()
@@ -3621,7 +3740,9 @@ func tick(dt: float) -> Array:
 		var ppos: Variant = player_resources.get(pfid, null)
 		if typeof(ppos) != TYPE_DICTIONARY:
 			continue
-		var prate: Dictionary = _accumulate_production(pfid, false)
+		var peff: Variant = seat_tech_effects.get(pfid, {})
+		var prate: Dictionary = _accumulate_production(pfid, false,
+			peff if typeof(peff) == TYPE_DICTIONARY else {})
 		EconomyRes.tick(cfg, dt, prate, ppos)
 	_prof_done("economy", _t_econ)
 

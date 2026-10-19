@@ -386,7 +386,20 @@ func center_zone_at_id(x: int, y: int) -> int:
 ## @param owner  享受加成的那一方（"" = 谁都不加成；单机 = world.my_faction）
 ## @param owner_mult 该方占领区划的增长倍率（1.0 = 没加成）
 func update_population(dt: float, owner: String = "", owner_mult: float = 1.0) -> void:
-	var boost: float = maxf(0.0, owner_mult)
+	var mults: Dictionary = {}
+	if owner != "":
+		mults[owner] = owner_mult
+	update_population_multi(dt, mults)
+
+
+## ★★ 合作版：**每个区划只长一次**，按它自己的 owner 取科技倍率。
+##
+## 为什么不能「对每个玩家席位各调一次 update_population」：那个函数会遍历**所有**
+##   区划做基础增长 —— 调两次就把所有人的基础人口涨了两遍。这里把「基础增长一次 +
+##   按 owner 乘倍率」放在同一个循环里。
+##
+## @param owner_mults "faction" → 人口增长倍率（1.0 = 没加成；缺省 1.0）
+func update_population_multi(dt: float, owner_mults: Dictionary) -> void:
 	for z in zones:
 		var rate := float((z["production"] as Dictionary).get("population", 0.0))
 		# ★ 区划特化（本区块自己的倍率）先乘进来，再看科技的全局倍率 ——
@@ -394,8 +407,9 @@ func update_population(dt: float, owner: String = "", owner_mult: float = 1.0) -
 		rate *= float(_spec_effect(z)["population_mult"])
 		if rate <= 0.0:
 			continue
-		if owner != "" and boost != 1.0 and FactionRes.same_side(String(z["owner"]), owner):
-			rate *= boost
+		var own := String(z["owner"])
+		if owner_mults.has(own):
+			rate *= maxf(0.0, float(owner_mults[own]))
 		var cap := population_cap_of(z)
 		var pop := float(z["population"])
 		if pop >= cap:

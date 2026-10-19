@@ -25,6 +25,19 @@ extends RefCounted
 const DESIGN_W := 1920.0
 const DESIGN_H := 1080.0
 
+## ------------------------------------------------------------------
+## 目标条（战役 / 合作）：屏幕**顶部居中**，不压战场中心。
+##
+## ★ 需求原话（2026.10.19）：「顶部居中，带进度条」。
+## ★ 只有「这一局有目标」时才显示（老路径 / 自由对战没有 objective_state ⇒ 整块隐藏）。
+## ★ 它**不**进 `interactive_rects`：整块只有字和进度条、点不动，鼠标停上去照样允许边缘滚屏。
+## ------------------------------------------------------------------
+const OBJECTIVE_RECT := Rect2(780.0, 16.0, 360.0, 74.0)
+const OBJECTIVE_PAD := 12.0
+## 进度条：贴面板底部，左右各留 OBJECTIVE_PAD；高 8
+const OBJECTIVE_BAR_Y := 54.0
+const OBJECTIVE_BAR_H := 8.0
+
 
 # ------------------------------------------------------------------
 # 几何常量
@@ -717,6 +730,20 @@ static func apply_rect(c: Control, r: Rect2, anchor_right: bool = false, anchor_
 		c.anchor_bottom = 0.0
 		c.offset_top = r.position.y
 		c.offset_bottom = r.position.y + r.size.y
+
+
+## 顶部居中（目标条）：左右锚点都钉在 50%，只按设计矩形相对**屏幕中心**算偏移。
+## ★ 与 apply_rect 的区别：apply_rect 只支持「贴左 / 贴右」，居中要用这一条；
+##   否则窗口变宽时目标条会停在 1920 设计空间的中心、而不是真实屏幕中心。
+static func apply_top_center(c: Control, r: Rect2) -> void:
+	c.anchor_left = 0.5
+	c.anchor_right = 0.5
+	c.offset_left = r.position.x - DESIGN_W * 0.5
+	c.offset_right = c.offset_left + r.size.x
+	c.anchor_top = 0.0
+	c.anchor_bottom = 0.0
+	c.offset_top = r.position.y
+	c.offset_bottom = r.position.y + r.size.y
 
 
 ## ★★ 详细信息面板专用：**左缘钉 400、右缘钉到阵营列左缘**（窗口变宽时自己填满中间那条缝）。

@@ -69,6 +69,9 @@ signal intro_dismissed
 ##   本页不认识 `data/campaigns/`、也不认识 `world` —— 载入战役、挑阵营、建世界
 ##   全在 `view/main.gd` 那一处（与战役目录扫描同一个口径：数据只有一个来源）。
 signal level_entry_pressed(campaign_id: String, level_id: String)
+## 合作大厅的开局（transport 已从 lobby 交出来）。
+signal coop_host_started(campaign_id: String, level_id: String, transport)
+signal coop_guest_started(payload: Dictionary, transport)
 ## ★★ 主菜单「选项 → 设置 → 全屏 / 窗口化」：与游戏内同一条信号链，窗口模式由 main.gd 改。
 signal fullscreen_toggled
 ## ★★ 主菜单「选项 → 退出游戏」：真正 quit 仍是 main.gd 的事。
@@ -124,6 +127,18 @@ var _click_hint: Label = null
 var _shine: Control = null
 var _blink_tween: Tween = null
 var _shine_tween: Tween = null
+## ★★ 开局「从全黑淡入」那一层（盖在整页最上面、鼠标穿透；见 `_build_boot_fade()`）。
+var _boot_fade: ColorRect = null
+var _boot_tween: Tween = null
+## ★★ 主界面正中那一列的按钮**还不能点**：
+##   · 落位动画的 0.5s 里，`_menu` 是「显示但 alpha 0」（为了量目标矩形）；
+##   · 切页之后外壳的 `play_intro()` 又把这些按钮从 alpha 0 淡入。
+##   这两段里 Button 仍然吃鼠标 —— 不挡的话，快速点击会点到看不见的 `test_1` 直接开局，
+##   而 `close()` 会把落位动画掐断、`_menu.modulate.a` 停在 0 ⇒ 回菜单时 logo 与三颗 test 全没了。
+var _menu_blocked: bool = true
+## ★ 正在等外壳把「首次进主界面」的滑入 + 淡入跑完（只有这条路径该保持封锁）。
+##   直接 `show_page(PAGE_MENU)`（回菜单 / 测试 / 别的入口）不该被封 —— 那些路径没有淡入。
+var _awaiting_chrome_intro: bool = false
 
 
 
@@ -160,8 +175,19 @@ func setup(p_cfg: ConfigRes, p_font: Font) -> void:
 		_chrome.level_activated.connect(
 			func(campaign_id: String, level_id: String):
 				level_entry_pressed.emit(campaign_id, level_id))
+		_chrome.coop_host_started.connect(
+			func(campaign_id: String, level_id: String, transport):
+				coop_host_started.emit(campaign_id, level_id, transport))
+		_chrome.coop_guest_started.connect(
+			func(payload: Dictionary, transport):
+				coop_guest_started.emit(payload, transport))
+		# ★ 首次进主界面：三块面板 + 子控件淡入全部走完，正中的按钮才允许点。
+		_chrome.intro_finished.connect(_on_chrome_intro_finished)
 
+	# ★★ 最后才挂「开局从全黑淡入」那层：它要盖在入场页所有元素之上。
+	_build_boot_fade()
 	show_page(PAGE_INTRO)
+	_play_boot_fade_in()
 
 
 # ------------------------------------------------------------------
@@ -176,6 +202,15 @@ func show_page(page: int) -> void:
 	_page = page
 	_intro.visible = (page == PAGE_INTRO)
 	_menu.visible = (page == PAGE_MENU)
+	# ★★ 主界面整列在「入场落位」期间是 alpha 0（为了量目标矩形）；如果动画中途被
+	#   `close()` 掐断（快速点击误开局那条），它就会停在 0。这里按页兜底：
+	#   只要是主界面，它就必须是不透明的 —— 否则回菜单时 logo 与三颗 test 全看不见。
+	if page == PAGE_MENU and _menu != null:
+		_menu.modulate.a = 1.0
+		# ★ 只有「入场落位刚结束、等外壳淡入」这一条路径要继续封锁；
+		#   其它直接切到主界面的路径（回菜单 / 测试）没有淡入，按钮应当立刻可用。
+		if not _awaiting_chrome_intro:
+			_menu_blocked = false
 	# ★ 外壳只在**主界面**上有意义（入场页上不该出现资料 / 侧边栏 / 入口），所以跟着 _menu 一起切。
 	if _chrome != null:
 		_chrome.visible = (page == PAGE_MENU)
@@ -215,6 +250,7 @@ func close() -> void:
 	# ★ 把没跑完的入场落位动画一起取消：否则它的收尾回调会在游戏画面上
 	#   把这一层 `show()` 回来（见 `_cancel_intro_morph()`）。
 	_cancel_intro_morph()
+	_finish_boot_fade()
 	hide()
 	# ★★ 进游戏时把本层所有按钮的「悬停（金色填充）」作废。
 	#   为什么必须显式清：`hide()` 只是把 CanvasLayer 收起来，**不会**补发 `mouse_exited`，
@@ -239,7 +275,13 @@ func close() -> void:
 ##    凡是「从游戏里回到菜单」都必须走它，@see view/main.gd 的 return_to_menu()。
 func open_menu() -> void:
 	show()
+	_awaiting_chrome_intro = false
 	show_page(PAGE_MENU)
+	# ★★ 回来时把「开局淡入」与「入场按钮锁」都收干净：
+	#   这两样都只属于**第一次**进主界面；从游戏里回来时不该再看到一层黑幕，
+	#   也不该出现「按钮看得见却点不动」。
+	_finish_boot_fade()
+	_menu_blocked = false
 	# ★ 回来时选项页必须是关的（可能在上一次菜单里开着就进了游戏 / 切了页）
 	if _options_panel != null and _options_panel.is_open():
 		_options_panel.close()
@@ -634,9 +676,10 @@ func _test_entries() -> Array:
 		var label := String(d.get("label", "")).strip_edges()
 		var campaign := String(d.get("campaign", "")).strip_edges()
 		var level := String(d.get("level", "")).strip_edges()
+		var coop := bool(d.get("coop", false))
 		if label == "" or campaign == "" or level == "":
 			continue
-		out.append({"label": label, "campaign": campaign, "level": level})
+		out.append({"label": label, "campaign": campaign, "level": level, "coop": coop})
 	return out
 
 
@@ -668,9 +711,16 @@ func _make_test_button(entry: Dictionary) -> Button:
 	FillButtonRes.set_latched(b, false)
 	var campaign_id := String(entry["campaign"])
 	var level_id := String(entry["level"])
+	var is_coop := bool(entry.get("coop", false))
 	b.pressed.connect(func():
 		# ⚠️ 本文件是 CanvasLayer（不是 Control）：可见性用 `visible`，没有 is_visible_in_tree()。
 		if not visible:
+			return
+		# ★★ 入场落位 + 外壳首次淡入期间，这一列是 alpha 0 / 半透明 —— 看得见之前不许点。
+		if _menu_blocked:
+			return
+		if is_coop and _chrome != null:
+			_chrome.open_coop_panel()
 			return
 		level_entry_pressed.emit(campaign_id, level_id))
 	return b
@@ -719,6 +769,66 @@ func _menu_color(path: String, fallback: Color) -> Color:
 	if typeof(v) == TYPE_STRING:
 		return ConfigRes.parse_color(String(v), fallback)
 	return fallback
+
+
+# ------------------------------------------------------------------
+# 开局从全黑淡入（盖在入场页最上面的一层，鼠标穿透）
+# ------------------------------------------------------------------
+
+## 只在「动效开着且时长 > 0」时建这一层；否则整个动画跳过（与全项目同一条口径）。
+## ★ 一定要在 `_build_menu` / `_build_options_panel` 之后 add：它得盖住入场页所有元素，
+##   也要盖住（此时还隐藏着的）主界面。
+func _build_boot_fade() -> void:
+	if not ThemeRes.animations_enabled():
+		return
+	if cfg.num("menu.intro_fade_in_sec", 0.8) <= 0.0:
+		return
+	_boot_fade = ColorRect.new()
+	_boot_fade.name = "BootFade"
+	var c: Color = _menu_color("menu.intro_fade_in_color", Color(0.0, 0.0, 0.0))
+	c.a = 1.0
+	_boot_fade.color = c
+	_boot_fade.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	# ★ 只负责「看」，不负责「挡」：淡入期间玩家照样可以点一下跳过入场页。
+	_boot_fade.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_root.add_child(_boot_fade)
+
+
+func _play_boot_fade_in() -> void:
+	if _boot_fade == null:
+		return
+	var sec: float = cfg.num("menu.intro_fade_in_sec", 0.8)
+	if not ThemeRes.animations_enabled() or sec <= 0.0:
+		_finish_boot_fade()
+		return
+	_boot_fade.modulate.a = 1.0
+	_boot_tween = create_tween()
+	_boot_tween.tween_property(_boot_fade, "modulate:a", 0.0, sec) \
+		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	_boot_tween.tween_callback(_finish_boot_fade)
+
+
+func _finish_boot_fade() -> void:
+	if _boot_tween != null and _boot_tween.is_valid():
+		_boot_tween.kill()
+	_boot_tween = null
+	if _boot_fade != null and is_instance_valid(_boot_fade):
+		_boot_fade.queue_free()
+	_boot_fade = null
+
+
+## 开局淡入那一层（只给测试用；淡入结束后是 null）。
+func boot_fade() -> ColorRect:
+	return _boot_fade if _boot_fade != null and is_instance_valid(_boot_fade) else null
+
+
+func boot_fade_sec() -> float:
+	return cfg.num("menu.intro_fade_in_sec", 0.8) if cfg != null else 0.0
+
+
+## ★ 正中那一列现在是否被「看得见之前不许点」挡着（只给测试用）。
+func menu_blocked() -> bool:
+	return _menu_blocked
 
 
 # ------------------------------------------------------------------
@@ -896,10 +1006,21 @@ func _finish_intro() -> void:
 	#   面板自己的滑入由 `play_intro()` 负责（那时外壳才第一次显示）。
 	if _menu != null:
 		_menu.modulate.a = 1.0
+	# ★ 必须在 show_page 之前立起「等外壳淡入」：show_page 会按它决定要不要解除封锁。
+	_awaiting_chrome_intro = (_chrome != null)
 	show_page(PAGE_MENU)
 	if _chrome != null:
+		# ★ 外壳滑入 + 子控件淡入**全部**完成后才会发 intro_finished（`_menu_blocked` 到那时才解除）。
 		_chrome.play_intro()
+	else:
+		_menu_blocked = false
 	intro_dismissed.emit()
+
+
+## ★ 外壳把「首次进主界面」的滑入 + 淡入全部跑完了：正中那一列现在真的看得见，可以点了。
+func _on_chrome_intro_finished() -> void:
+	_awaiting_chrome_intro = false
+	_menu_blocked = false
 
 
 ## ★★ 入场页的**落位动画**：徽记 / 标题 / 金线缓动到主界面标题条里各自的位置。
@@ -918,6 +1039,10 @@ func _finish_intro() -> void:
 ## ★ 收尾用 `tween_callback` 而不是 `await finished`：动画被 `_cancel_intro_morph()` 杀掉时
 ##   回调不会来（正是我们要的：不再切页），也不会留下一个永远等不到恢复的协程。
 func _play_intro_morph() -> void:
+	# ★★ 从这里开始到「外壳首次滑入淡入结束」，正中那列的按钮**一律不响应**。
+	#   它们马上会以 alpha 0 显示（为了量目标矩形）——不挡就是「看不见却点得到」，
+	#   快速点击会直接开一局，把落位动画掐断（用户实测报的 bug）。
+	_menu_blocked = true
 	# ① 先让主界面「出场」：`visible = true` 但 alpha 0 —— 排版要它显示才算得出来，而 alpha 0 看不见。
 	#   ⚠️ **外壳这时仍然藏着**：它整块都在屏幕边上（资料 / 侧边栏 / 右下入口），
 	#      提前显示就会在落位动画期间露出一堆按钮；而且它里面有能点的东西 ——
@@ -1086,6 +1211,12 @@ func menu_chrome() -> Control:
 
 ## ★ 主界面正中那三颗 `test_1/2/3` —— 只给测试与排查用。
 ## ★ 顺序 = `menu.test_entries` 里的顺序（左列从上到下）。
+## 打开合作面板（test_2 与测试用；不模拟鼠标）。
+func open_coop_panel() -> void:
+	if _chrome != null:
+		_chrome.open_coop_panel()
+
+
 func test_buttons() -> Array:
 	if _menu == null:
 		return []

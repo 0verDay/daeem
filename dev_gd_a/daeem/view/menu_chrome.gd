@@ -22,6 +22,13 @@ extends Control
 
 ## 战役菜单里长按满了某一关（面板 → 外壳 → start_screen → main.gd，见下）
 signal level_activated(campaign_id: String, level_id: String)
+## 合作大厅的两条开局路径（transport 已从 lobby 交出来）。
+signal coop_host_started(campaign_id: String, level_id: String, transport)
+signal coop_guest_started(payload: Dictionary, transport)
+## ★ 首次进主界面的「三块面板滑入 + 子控件淡入」全部走完。
+## 入口页落位刚切页时，正中那一列的按钮**还在 alpha 0**（面板展开层统一先清零再淡入），
+## 但 Button 是吃鼠标的 —— 不等这一段结束就放行，快速点击会点到看不见的 test_1 直接开局。
+signal intro_finished
 
 const ConfigRes = preload("res://logic/config.gd")
 const ThemeRes = preload("res://view/theme.gd")
@@ -63,6 +70,8 @@ var _profile_tween: Tween = null
 ## ★ 「战役」那颗按钮（内容区里放战斗测试入口的就是它）——
 ##   见 `_make_secondary_panel()`：只有它撑开的面板带内容。
 var _battle_btn: Button = null
+## 「合作模式」那颗按钮（M12.4：内容区里放大厅）。
+var _coop_btn: Button = null
 ## 这一轮是哪颗控件触发的撑开（决定面板里放不放内容）。
 var _pending_btn: Control = null
 ## ★★ 当前**锁在满格**的那颗入口按钮（本轮新增）。
@@ -128,9 +137,13 @@ func add_avoid_target(node: Control, dir: int = 0) -> void:
 
 ## ★ 首次进入主界面：三块面板从屏幕外滑入（见 `view/panel_expand.gd` 的 `play_intro()`）。
 ## 由 `view/start_screen.gd` 在「入场页的 logo 缓动落位之后」调一次。
+## ★ 滑入 + 子控件淡入全部跑完才发 `intro_finished`（那一列按钮到这时才真的看得见）。
 func play_intro() -> void:
-	if _expand != null:
-		_expand.play_intro()
+	if _expand == null:
+		intro_finished.emit()
+		return
+	await _expand.play_intro()
+	intro_finished.emit()
 
 
 func profile_panel() -> Control:
@@ -391,6 +404,7 @@ func _build_right_side() -> void:
 	b2.pressed.connect(_on_side_pressed.bind(b2))
 	box.add_child(b2)
 	_side_buttons.append(b2)
+	_coop_btn = b2
 
 
 func _on_side_pressed(btn: Button) -> void:
@@ -500,8 +514,10 @@ func _string_list(path: String, fallback: Array) -> Array:
 ##   其余各块（资料 / 侧边栏五键 / 演义 / 合作模式）撑开的都是空面板。
 func _make_secondary_panel():
 	var with_campaign_menu: bool = _pending_btn != null and _pending_btn == _battle_btn
+	var with_coop_lobby: bool = _pending_btn != null and _pending_btn == _coop_btn
 	var p = MenuSecondaryPanelRes.new()
-	p.setup(cfg, _font, _expand.transition_sec, _expand.margin, with_campaign_menu)
+	p.setup(cfg, _font, _expand.transition_sec, _expand.margin,
+		with_campaign_menu, with_coop_lobby)
 	return p
 
 
@@ -515,6 +531,30 @@ func _on_panel_expanded() -> void:
 		p.level_activated.connect(
 			func(campaign_id: String, level_id: String):
 				level_activated.emit(campaign_id, level_id))
+	if p.has_signal("coop_host_started"):
+		p.coop_host_started.connect(
+			func(campaign_id: String, level_id: String, transport):
+				coop_host_started.emit(campaign_id, level_id, transport))
+	if p.has_signal("coop_guest_started"):
+		p.coop_guest_started.connect(
+			func(payload: Dictionary, transport):
+				coop_guest_started.emit(payload, transport))
+
+
+## 打开「合作模式」面板（test_2 按钮用；等价于点右下角那颗）。
+func open_coop_panel() -> void:
+	if _coop_btn != null:
+		_on_side_pressed(_coop_btn)
+
+
+## 当前撑开面板里那块合作大厅（`view/coop_lobby.gd`）—— 没展开 / 不是合作面板时是 null。
+func coop_lobby():
+	if _expand == null:
+		return null
+	var p = _expand.secondary_panel()
+	if p == null or not p.has_method("coop_lobby"):
+		return null
+	return p.coop_lobby()
 
 
 ## 当前撑开面板里那块战役菜单（`view/campaign_menu.gd`）—— 没展开 / 空面板时是 null。

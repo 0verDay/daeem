@@ -147,7 +147,7 @@ static func note_order_rejected(world, ids: Array, owner_faction: String) -> voi
 		var u = world.unit_by_id(String(id))
 		if u == null or not u.alive:
 			continue
-		if not FactionRes.same_side(u.faction, owner_faction):
+		if not world.accepts_owner(String(u.faction), owner_faction):
 			continue
 		# ★ 拒因码走 `world.order_lock_reason()`（它区分「正在招募」与「已倒地」）：
 		#   ⚠️ 这里**不能**用 `:=` —— 那个函数的返回值在动态调用下没有确定类型，
@@ -182,7 +182,7 @@ static func _collect_units(world, ids: Array, owner_faction: String,
 			continue
 		if not force and world.is_order_locked(u):
 			continue
-		if not FactionRes.same_side(u.faction, owner_faction):
+		if not world.accepts_owner(String(u.faction), owner_faction):
 			continue                      # ★ 防冒充：只能命令自己这一方的单位
 		out.append(u)
 	return out
@@ -420,7 +420,7 @@ static func apply_attack(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 			continue
 		if world.is_order_locked(u):
 			continue                      # ★ 招募中：将领与它辖下的部队都不接指令
-		if not FactionRes.same_side(u.faction, owner_faction):
+		if not world.accepts_owner(String(u.faction), owner_faction):
 			continue                      # ★ 防冒充
 		var accepted: bool
 		if target_unit != null:
@@ -558,7 +558,9 @@ static func apply_build(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 	var def_v = cfg.get_path_value("building.%s" % type)
 	var def: Dictionary = def_v if typeof(def_v) == TYPE_DICTIONARY else {}
 	var cost: Dictionary = def.get("cost", {})
-	if not EconomyRes.try_spend(cfg, world.resources, cost):
+	# ★ 钱从**下单那一方**的池子里出（合作模式：客机花的不是房主的钱）。
+	#   池子为 null = 这一方没有资源库 = 资源无限（见 world.resource_pool_for）。
+	if not EconomyRes.try_spend(cfg, world.resource_pool_for(owner), cost):
 		world.push_event({"type": "build_rejected", "tile": Vector2i(tx, ty), "reason": "cost"})
 		return false
 	return world.add_building(type, tx, ty, owner) != null
@@ -571,7 +573,7 @@ static func apply_demolish(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 	var b = world.building_at(int(cmd.get("tx", -1)), int(cmd.get("ty", -1)))
 	if b == null or not b.alive:
 		return false
-	if not FactionRes.same_side(b.owner, owner):
+	if not world.accepts_owner(String(b.owner), owner):
 		return false                      # 只能拆自己这一方的
 	if b.type == BuildingRes.TYPE_BASE:
 		return false                      # 大本营不可拆除（只能被打掉）
@@ -629,7 +631,7 @@ static func apply_stop(world, _cfg: ConfigRes, cmd: Dictionary) -> bool:
 			continue
 		if world.is_order_locked(u):
 			continue
-		if not FactionRes.same_side(u.faction, owner_faction):
+		if not world.accepts_owner(String(u.faction), owner_faction):
 			continue                      # ★ 防冒充：只能命令自己这一方的单位
 		u.stop()
 		any = true

@@ -158,6 +158,27 @@ static func campaign_dot(active: bool) -> StyleBoxFlat:
 
 
 # ------------------------------------------------------------------
+# 退出确认浮层（view/quit_confirm.gd）
+# ------------------------------------------------------------------
+
+## ★★ 退出确认那块居中面板。
+##
+## 与 `campaign_panel()` 的区别是**更实**（0.94 vs 0.55）：它压在一层 55% 的黑遮罩上，
+## 太透的话底下菜单的线条会透上来，中间那行大字读不干净。
+## 圆角保持本作的 2px（nsoc 那份是 24px 大白卡 —— 那是另一套皮肤，别照搬）。
+static func quit_panel() -> StyleBoxFlat:
+	var s := StyleBoxFlat.new()
+	s.bg_color = ThemeRes.with_alpha(ThemeRes.bg_bottom(), 0.94)
+	s.border_color = ThemeRes.line()
+	s.set_border_width_all(1)
+	s.set_corner_radius_all(2)
+	s.shadow_color = Color(0.0, 0.0, 0.0, 0.55)
+	s.shadow_size = 18
+	s.shadow_offset = Vector2(0.0, 6.0)
+	return s
+
+
+# ------------------------------------------------------------------
 # 下拉列表（PopupMenu）
 #
 # ★★ 需求（本版）：「下拉列表也搞相同的风格化」—— 意思是列表要与

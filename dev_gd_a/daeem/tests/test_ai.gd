@@ -35,6 +35,7 @@ func _cases() -> void:
 	_test_garrison_revive(cfg)
 	_test_reddot_spawn(cfg)
 	_test_reddot_spawn_tiles(cfg)
+	_test_reddot_random(cfg)
 
 func _test_config(cfg) -> void:
 	ok(cfg.ai_garrison_cfg().has("patrol_interval_sec"), "ai.garrison 有巡逻间隔")
@@ -190,6 +191,45 @@ func _test_reddot_spawn_tiles(cfg) -> void:
 			all_in = false
 	ok(all_in, "★ 将领只落在配置的生成地块上（随机落点）")
 
+## ★★ 回归：红点必须**每局不同**（用户报「测试很多次，每波敌人都是同一批」）。
+##
+## 根因：`unit_rand(key, k)` 只用 `(key, k)`，而红点的 key 里只有 `serial`（每局都从 0 开始）
+##   ⇒ 同一张图 / 同一关，每局刷出来的将领与落点完全一致。
+## 修法：`world.rand_salt` 每局现抽一个，混进 `unit_rand()`；同盐仍可复现（测试 / 回放）。
+func _test_reddot_random(cfg) -> void:
+	var w1 = _reddot_world(cfg)
+	var w2 = _reddot_world(cfg)
+	var w3 = _reddot_world(cfg)
+	if w1 == null or w2 == null or w3 == null:
+		return
+	w1.set_rand_salt(1234)
+	w2.set_rand_salt(1234)
+	w3.set_rand_salt(9999)
+
+	eq(w1.unit_rand("reddot-spawn|E1|0", 0), w2.unit_rand("reddot-spawn|E1|0", 0),
+		"★ 同一个盐 ⇒ 同一个随机数（可复现）")
+	ok(w1.unit_rand("reddot-spawn|E1|0", 0) != w3.unit_rand("reddot-spawn|E1|0", 0),
+		"★★ 不同盐 ⇒ 不同随机数（不再每局一样）")
+
+	var sig1 := _wave_signature(w1, cfg)
+	var sig2 := _wave_signature(w2, cfg)
+	var sig3 := _wave_signature(w3, cfg)
+	eq(sig1, sig2, "★ 同盐的两局：三波红点完全一致（测试可复现）")
+	ok(sig1 != sig3, "★★ 不同盐的两局：三波红点不同（%s vs %s）" % [sig1, sig3])
+
+
+## 连刷三波，把「将领类型 + 落点」拼成签名。
+func _wave_signature(w, cfg) -> String:
+	var parts: Array = []
+	for t in [61.0, 121.0, 181.0]:
+		var st: Dictionary = w.reddot_states[0]
+		RedDotAiRes.update(w, cfg, t - float(st.get("elapsed", 0.0)))
+		for u in w.units:
+			if u.alive and String(u.faction) == "E1" and u.is_general():
+				parts.append("%s@%d,%d" % [String(u.unit_type), u.tx, u.ty])
+	return "|".join(parts)
+
+
 func _passable_tiles(w, cfg, faction: String, need: int) -> Array:
 	var out: Array = []
 	for y in w.map.rows:
@@ -227,7 +267,12 @@ func _reddot_world(cfg) -> RefCounted:
 			"attack_target": {"kind": "point", "x": 7, "y": 2},
 			"reddot_ai": {"wave_time_expr": "x+1", "general_count_expr": "x+1",
 				"escort_count": 3, "spawn_radius": 3,
-				"general_weights": [{"general": 1, "weight": 1}]},
+				# ★ 给随机测试用：多个生成地块 + 三种将领权重（否则落点/类型恒定，
+				#   连「不同随机盐」都验不出来 —— 第一版就是这么假绿的）。
+				"spawn_tiles": [[16, 16], [17, 17], [18, 18], [19, 19],
+					[20, 20], [21, 21], [15, 18], [18, 15]],
+				"general_weights": [{"general": 1, "weight": 0.34},
+					{"general": 2, "weight": 0.33}, {"general": 3, "weight": 0.33}]},
 		}],
 		"start_units": [],
 	}

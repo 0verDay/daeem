@@ -13,6 +13,8 @@ extends Control
 
 const ConfigRes = preload("res://logic/config.gd")
 const PaletteRes = preload("res://view/palette.gd")
+## ★★ 局内「敌 / 友 / 己」三色（本轮新增）：占领条 / 占领触发区 / 血条都走它
+const SideColorRes = preload("res://view/side_color.gd")
 
 const HP_BACK_COLOR := Color(0, 0, 0, 0.55)
 
@@ -616,7 +618,7 @@ func _draw_grad_quad(pts: PackedVector2Array, outer: Color, inner: Color) -> voi
 func _capture_area_color(owner: String) -> Color:
 	if owner == "":
 		return CAPTURE_AREA_NEUTRAL
-	return cfg.faction_color(owner, "main")
+	return SideColorRes.color(cfg, world, owner, "main")
 
 
 ## 占领进度条：**由下往上升起**的一块填充 + 前沿一条亮线（全部屏幕空间矢量）。
@@ -708,8 +710,11 @@ func _capture_items() -> Array:
 			continue
 		var span: float = float(y1 - y0 + 1)
 		var water: float = float(y1 + 1) - span * v
-		# ② 颜色：填充 = 阵营色半透明；前沿 = 同色提亮一档（与地面的对比度更高）
-		var fc: Color = cfg.zone_capture_color(String(bar.get("faction", "")))
+		# ② 颜色：填充 = 本机视角的己 / 友 / 敌色半透明；前沿 = 同色提亮一档
+		var bar_faction := String(bar.get("faction", ""))
+		var fc: Color = cfg.color("zone_player")
+		if bar_faction != "":
+			fc = SideColorRes.color(cfg, world, bar_faction, "main")
 		var fill := Color(fc.r, fc.g, fc.b, CAPTURE_FILL_ALPHA)
 		var front := Color(
 			lerpf(fc.r, 1.0, 0.35), lerpf(fc.g, 1.0, 0.35), lerpf(fc.b, 1.0, 0.35),
@@ -802,7 +807,7 @@ func _draw_units_ui() -> void:
 			var top: Vector2 = p - Vector2(0.0, us.y * 0.5 + 4.0)
 			draw_rect(Rect2(Vector2(top.x - w * 0.5, top.y), Vector2(w, 3.0)), HP_BACK_COLOR, true)
 			draw_rect(Rect2(Vector2(top.x - w * 0.5, top.y), Vector2(w * u.hp_ratio(), 3.0)),
-				cfg.faction_color(String(u.faction), "bar"), true)
+				SideColorRes.color(cfg, world, String(u.faction), "bar"), true)
 			draw_count += 1
 
 

@@ -4197,6 +4197,151 @@ f1 的**对立面**（红方）进行游戏，而不是选择 f1 的友军……
 
 ★ 全量门槛：**35 套 / 4931 项全绿**。
 
+### 37.20 ★★ 退出确认浮层（移植 nsoc 的 `quit_confirm`）
+
+需求原文：「我还想把 nsoc 中的退出游戏的缓冲界面给移植到 daeem 中」。
+
+nsoc 那边是一个 **autoload 单例** `QuitConfirm`：全屏半透遮罩 + 居中大白面板
+（屏宽 70% × 屏高 50%），面板上写「点击该面板以退出游戏」；**点面板 = 退出、点空白 = 取消**，
+打开是淡入 + 0.9→1 缩放；主菜单「退出游戏」与安卓返回键触发，**桌面窗口 X 故意不拦**。
+
+★ 本作落成了同样的交互，但**没有照搬 autoload**（本工程一个 autoload 都没有，
+且「谁退出」一直只归 `view/main.gd`）：
+
+| 落点 | 做什么 |
+|---|---|
+| `view/quit_confirm.gd`（新） | `CanvasLayer`（layer 200）：遮罩 / 面板 / 两行字 / 开合动画 / Esc 取消；只发 `confirmed` / `cancelled`，**自己不 quit** |
+| `view/menu_theme.gd` | 新增 `quit_panel()`：暗底 0.94 + 金线 + 2px 圆角 + 阴影（不搬 nsoc 的白卡） |
+| `view/main.gd` | `_on_quit_requested()` → `_show_quit_confirm()`；浮层 `confirmed` → `get_tree().quit()`；`_on_android_back()` 三档；`NOTIFICATION_WM_GO_BACK_REQUEST` 接进来 |
+| `project.godot` | `application/config/quit_on_go_back=false`（否则引擎在通知到手前就退了） |
+| `data/config.json` | `menu.quit_confirm.*`：两行字 / 面板比例 / 淡入秒数 / 渐黑秒数 / 全黑保持秒数 / 遮罩 alpha |
+| `tests/test_quit_confirm.gd`（新） | 70 项：结构 / 尺寸比例 / 居中 / 点空白 / 点面板 / Esc / 幂等 / 渐黑路径（含「全黑保留」回归）/ main 三档返回 |
+
+★ **五条刻意为之的口径**：
+
+1. **触发范围**（用户选）：只拦**主菜单「退出游戏」+ 安卓返回**；**桌面窗口 X 仍然直接退**
+   （与 nsoc 一致 —— 开发时点 X 不该还要再点一下）。
+2. **配色**：暗底金线（用户选），不搬 nsoc 的白色圆角大卡；尺寸仍是 70% × 50%。
+3. **缓冲（修过一版）**：确认之后遮罩**先推成全黑 0.2s**，**再保持全黑 0.1s** 才发 `confirmed`
+   → main 才 `quit()`。★★ 而且 confirmed 之后**不销毁遮罩**：它保持 `visible` + alpha 1，
+   直到进程真的退出 —— 否则最后一帧会露出底下的界面（用户实测报的
+   「退出时我看到的还是有界面的」）。动效总开关关掉时直接发 confirmed，但仍保留全黑遮罩。
+4. **安卓返回三档**：① 确认浮层开着 → 再按返回 = **取消**；
+   ② 局内选项页开着 → 先关选项页；③ 其余 → 弹退出确认。
+5. **不是 autoload**：组件不认识「退出」这件事，只发信号；quit 永远只在 `main.gd` 一处。
+   好处是测试可以单独造一个浮层、点确认也**不会真的结束测试进程**。
+
+★ 断言：`tests/test_quit_confirm.gd` 70 项（面板尺寸 = 屏 70%×50%、居中、
+遮罩铺满且半透黑、点空白 cancelled、点面板 confirmed、Esc cancelled、重复 request 幂等、
+渐黑期间 confirmed 还没发、**渐黑时遮罩 color alpha 真的在涨**、
+**confirmed 之后遮罩仍是纯黑且不销毁**、再次 request 会重置回半透、
+main 的「菜单退出 / 返回取消 / 返回重开 / 局内先关选项页」）。
+全量：**60 套 / 6175 项 / ALL PASS**。
+
+### 37.21 ★★ 开局从全黑淡入 + 「快速点击导致 logo 与 test 消失」的修复
+
+需求原文（两件）：「给游戏的开始界面也添加一个渐入动画」；
+「当我在电脑端的开始界面点的足够快时，有概率会触发图标移动到对应位置后消失的情况
+（此情况下三个 test 按钮也会消失），修复这个 bug」。
+
+**① 开局淡入**：`view/start_screen.gd` 在 `_root` 最上层挂一张 `BootFade`（`ColorRect`，
+铺满视口、**不吃鼠标**），启动时 alpha 1 → 0（`menu.intro_fade_in_sec`，默认 0.8s），
+结束后整层移除。`close()` / `open_menu()` 都会把没跑完的那层收掉 —— 否则从游戏回菜单
+会看到一层残留黑幕。`ThemeRes.animations_enabled()` 关掉时不建这层（与其他动效同口径）。
+
+**② 快速点击 bug**（实测复现：点下去之后 `game != null`、`page` 还停在 0、
+`_menu.modulate.a == 0`）：
+
+- **根因**：入场落位动画为了让排版算出终点，把主界面设成「`visible = true` 但 alpha 0」；
+  而那三颗 `test` 按钮**仍然吃鼠标**。快速连点在落位动画期间点中了看不见的 `test_1`
+  ⇒ 直接开局 ⇒ `start_screen.close()` 把落位动画掐断 ⇒ `_menu.modulate.a` 永远停在 0。
+  回菜单时 `show_page(PAGE_MENU)` 又只改 `visible`、不还原 alpha —— 于是 logo 与三颗 test
+  一起「消失」。
+- **修法**（三道）：
+  1. `_menu_blocked` 闸门：从落位动画开始，到外壳 `play_intro()` 的「滑入 + 子控件淡入」
+     全部结束为止，`test` 按钮的 `pressed` 直接 return；
+  2. `menu_chrome` 新增 `signal intro_finished`，`play_intro()` 改成 `await` 面板滑入后再发；
+     `start_screen` 收到后解除闸门（动画关掉时同一帧发出）；
+  3. `show_page(PAGE_MENU)` 兜底把 `_menu.modulate.a = 1.0`，并按「是否在等外壳淡入」
+     决定解不解闸 —— 动画中途被 `close()` 打断后再 `open_menu()` 也不会停在 alpha 0。
+
+★ 断言：`tests/test_start_flow.gd` 本轮扩到 **161 项**（+31；过渡画面那一轮又加到 165，见 37.22）：
+- 淡入层存在 / 纯黑 / 铺满 / 不吃鼠标 / 0.15s 时正在变淡 / 结束后移除；
+  `close()` 收掉未跑完的淡入层；动效关掉时不建；
+- 落位动画期间 `menu_blocked()` 为真；在 `test_1` 的屏幕位置点一下 **不会开局**；
+  等外壳淡入结束后解闸、主界面整列与 `test_1` 都是 alpha 1；
+- 落位中途 `close()` → `open_menu()`：整列被兜回不透明、按钮可用、没有残留黑幕。
+
+全量：**60 套 / 6206 项 / ALL PASS**。
+
+### 37.22 ★★ 战役过渡画面 + 多阵营选择（仿 nsoc 的章节入口 / 街亭）
+
+需求原文（两件，连着提的）：
+① 「仿照上级目录下的 nsoc 文件夹的战役过渡画面……过渡画面中需要显示文本和本场战役的
+战场缩略图，其中战场缩略图在左，显示文本在右，两个面板+加载进度条+点击进入游戏提示」；
+② 「当选择的战役有多个阵营可选择时，仿照 nsoc 的『街亭』关卡做出选择界面」。
+
+**版式**（上=左缩略图 / 右文本；下=进度条 → 提示）：
+
+| 位置 | 内容 | 落点 |
+|---|---|---|
+| 左面板 | **战场缩略图**：地形烘图 + 区划边界 + 目标区（金框/淡金底）+ 双方大本营 + 开局出生点 | `view/map_preview.gd`（纯 `_draw`，零图片资源） |
+| 右面板 | 「战役名 · 单人/合作」+ 关卡名 + 金线 + 简报正文；**多可玩阵营时**下方 N 张阵营卡 | `view/level_transition.gd` |
+| 底部 | 进度条（真实预加载）→ **完全落画** → 「请选择阵营 / 作为X进入游戏」淡入 + 呼吸 | 同上 |
+| 数据 | 简报 / 可玩阵营 / 各自目标 / 目标区 id | `logic/level_brief.gd`（纯函数，测试直接调） |
+
+★ **多阵营选择**（仿街亭，但换成本作暗金）：
+- 默认**不预选**；未选时底部提示「————请选择阵营————」且**不可点**；
+- 点整张阵营卡选中（卡片任意位置，`Panel.gui_input`；子 Label 全 IGNORE），
+  选中 = **金边 2px + 本阵营色淡底**，未选 = 1px 暗金边；
+- 选完提示变「————作为蓝方进入游戏————」，点提示才发 `enter_requested(faction)`；
+- 单可玩阵营自动选中、不出卡；0 个可玩阵营（数据坏）不可进入。
+
+★ **缩略图**：`Level.map` 已经随关卡载入，直接把 `terrain` 烘成 1 像素/格 的贴图
+（NEAREST），再按 `zones_grid` 画区划线、按 `objectives[].zone` 画目标区、
+按 `players/factions/faction_bases` 画大本营、按 `start_units/general_spawns` 画出生点。
+**没有做 3D 预渲染截图**：进游戏前没有世界与相机，而地图数据已经在手，实时画更快、比例也不会糊。
+
+★ **加载进度**（用户选「预加载地图/场景资源」）：
+`ResourceLoader.load_threaded_request("res://view/game_scene3d.gd")`，`_process` 轮询真实进度；
+**不设最短展示时长**，进度条直接显示真实值。进度条先从屏幕下方升到位（0.35s），
+满后下滑出画（0.35s），**完全出画后才可点**；提示文字的淡入**从落画那一刻才开始**（0.25s），
+淡完再进呼吸。
+⚠️ 别写成「提示与下滑同时淡入」：EASE_OUT 的淡入前 1/3 就亮到九成，条还在画面里时
+字已经能看见了（用户实测报回来的正是这一条）。
+
+★ **进入游戏的黑屏转场**（用户口径）：点提示后先把整屏推成全黑（0.35s）→
+**在黑屏底下**收过渡页 / 建世界 → 等游戏首帧就绪 → 从全黑淡出（0.40s）。
+黑屏层（`main.gd` 的 `EnterFade`，CanvasLayer 300）必须挂在 `main` 上，不能挂过渡页：
+后者在转场中途就 `queue_free()` 了，黑幕跟着没掉会把「收页 → 建世界」的接缝露出来。
+动效总开关关掉 / 时长 ≤ 0 时不建这层，直接走老路径。
+
+★ **流程**（仍然只在 `main.gd`）：
+```
+test_N / 战役菜单长按 → _on_level_entry_pressed
+  ├─ level.mode == "coop" → 直接 _on_campaign_level_chosen（合作大厅那一路不变）
+  └─ 单人 → _show_level_transition（缩略图/简报/选阵营/进度）
+        → enter_requested(faction)
+        → 黑屏推全黑 → _close_level_transition → _on_campaign_level_chosen
+        → 首帧就绪 → 黑屏淡出
+        → Esc / cancelled → 收回过渡画面，留在菜单（不建世界）
+```
+
+★ **断言**：`tests/test_level_transition.gd` **83 项**：
+- 简报数据：标题 / `briefing[]` / 自动兜底 / 两个可玩阵营的名字·颜色·目标 / 目标区 id（c1=4、b1=0）；
+- 缩略图：有地图、铺开、目标区、大本营 ≥2、出生点 >0；
+- 画面：两张阵营卡、默认不选、未选点提示不进、点卡选中（金边 2px）、
+  提示文案随选择变化、点提示发 `enter_requested` 且带对阵营；单阵营自动选中；
+- 时序：**条还在落画时提示 alpha 恒为 0**、落画后才开始淡入、淡完才呼吸；
+- main：单人关先过渡再建世界（选 F2 就进 F2）、**点进入先出现黑幕并推成全黑、
+  建世界时仍在全黑、首帧就绪后淡出拆掉**、Esc 取消不建世界、合作关跳过过渡。
+
+已有用例同步改：`test_start_flow.gd` 161→165（点 test_1 后走过渡画面再进）、
+`test_campaign_menu.gd` 116→119（长按后选阵营再进）、`test_settings_menu.gd` 63→64
+（回菜单再进一局也要过过渡画面）。
+
+全量：**64 套 / 6451 项 / ALL PASS**。
+
 ### 37.12 阵营配色：战役用自己的 id，就得自己带颜色（★ 玩家实测报的 bug）
 
 需求原文（玩家实测）：「我进入战役后，发现全场都是紫色的，是什么意思，
@@ -4865,3 +5010,483 @@ ensure_ascii=False)` + 结尾换行，**以 LF 写**）重写 `production`，只
 `test_ui` 同步按钮文案。`test_ui` 1148、`test_menu_chrome` 156、`test_start_flow` 130、
 `test_ui_kit` 97、`test_view3d` 203、`test_press_fx` 35、`test_fill_button` 140、
 `test_touch` 54 全绿。
+
+---
+
+## 四十八、双人合作 M12.1：席位判据收口 + 顶部目标条（这一轮）
+
+**需求**：开始做双人合作模式，第一步只做「席位严格归属 + 目标条」，做完停下；
+用户拍板「顶部居中、带进度条」「合作局禁用暂停」「test_2 以后改成合作入口」。
+完整方案见 [`dev_plan_12.md`](dev_plan_12.md)。
+
+### 48.1 ★★ 先纠正一个假设：`same_side` 本来就是严格同阵营
+
+初稿（`dev_plan_12` 4.2）以为 `FactionRes.same_side()` 会把盟友算成「可指挥」，
+于是打算加一个 `strict_seat_owner` 开关。落地时读 `logic/faction.gd` 核对：
+
+- `same_side(a, b)` = **`a == b`**（严格同阵营）；
+- 盟友 / 敌对那一套在 `same_side_for_attack(a, b)`（同阵营 **或**盟友）；
+- 所以 `input_controller` / `command_processor` 现有的 `same_side` **已经**把队友挡在命令之外。
+
+⇒ **不添加开关**。改成把「谁能操作谁」收成一个有名字的判据：
+
+```gdscript
+# logic/world.gd
+func is_own_seat(faction: String) -> bool:
+    return accepts_owner(faction, my_faction)
+
+func accepts_owner(actual: String, cmd_faction: String) -> bool:
+    if actual == "" or cmd_faction == "":
+        return false
+    return FactionRes.same_side(actual, cmd_faction)   # 严格同阵营，不是盟友
+```
+
+调用点：`command_processor` 的 `_collect_units` / 攻击 / 拆除 / 停止；
+`world.leader_reject_reason` / `leader_zone_owned` / `can_recruit_zone` / `zone_allows_build` /
+`cancel_zone_recruit` / `cancel_revive`；`upgrade.gd` 的升级 / 特化 / 取消（`world` 参数可选，
+老测试不传仍走 `same_side`）；`input_controller` 的停止 / 命令模式 / 招募 / 区划招募。
+
+### 48.2 其他逻辑改动
+
+| 文件 | 改动 |
+|---|---|
+| `logic/level.gd` | 新增 `coop_roster()`（按 `players[]` 原序）与 `zone_label(zid)`（目标条写「守住 c1」用） |
+| `logic/command_processor.gd` | 建造扣费从 `world.resources` 改成 `world.resource_pool_for(owner)`（客机建造不该花房主的钱） |
+| `logic/economy.gd` | `try_spend()` 的 `resources` 参数改成 `Variant`（null = 无资源库 = 无限，与 `spend` 同一条语义） |
+| `logic/world.gd` | `add_building` / `_apply_tech_effects` 的血量科技加成改走 `is_own_seat()`（合作时只加自己那方，不把房主的科技加到客机建筑上） |
+
+> ★ 单机 / 单人战役的 `same_side` 行为**逐位不变**；这些改动只是把判据收口 + 修建造扣费口径。
+
+### 48.3 顶部目标条
+
+| 落点 | 内容 |
+|---|---|
+| `view/objective_panel.gd`（新） | 只读 `world.objective_state`：标题「守住 c1 / 占领 c1」、进度「已守 92 / 120 秒」+ 进度条、胜利「本关守住！」、失败「本关失守：目标区划失守」。没有目标（自由对战 / 老路径）整块隐藏。 |
+| `view/ui_layout.gd` | `OBJECTIVE_RECT = (780, 16, 360, 74)`、`OBJECTIVE_PAD`、`OBJECTIVE_BAR_Y/H`；新增 `apply_top_center()`（左右锚 0.5，窗口变宽仍居中）。 |
+| `view/hud.gd` | `_build_objective_panel()` 建一次；`_refresh_shell()` 里 `sync()`（手机端 10Hz 那一档也够）。 |
+| `view/ui_style.gd` | 补 `accent_bright()`（胜利 / 达成那一档金）。 |
+| `data/config.json` | 新增 `coop.objective` 段：`hold_prefix` / `capture_prefix` / `held_text` / `capture_pending` / `capture_done` / `won_text` / `lost_text` / `reason_sep`。 |
+| `view/input_controller.gd` | `_commandable_selected()`：发命令前按 `is_own_seat()` 滤一遍；`first_selected_leader` 也改用 `is_own_seat`。 |
+
+### 48.4 断言与收口
+
+| 套件 | 项数 | 盯什么 |
+|---|---|---|
+| `tests/test_coop_seats.gd`（新） | **41** | 两端 `factions` 同序 / `my_faction` 正确 / `is_own_seat` 只认自己 / 客机命令碰房主的兵被拒且兵没动 / 两份钱包不是同一对象 / 共享视野 / 目标 defend 两个席位 / 旧路径仍严格 |
+| `tests/test_coop_objective.gd`（新） | **26** | 目标条位置 780,16 / 尺寸 360×74 / 标题与进度 / 60/120 → 0.5 / 胜利与失败文案 / 真的画过一帧 / 无目标隐藏 / HUD 节点树接线 |
+
+回归：`test_ui` 1148、`test_upgrade` 221、`test_logic` 280、`test_campaign_seats` 72、
+`test_outcome` 71、`test_attack_orders` 108 全绿。
+
+### 48.5 这一轮**没做**
+
+- M12.1 这一轮**不碰网络**；M12.2（快照 / 协议 / 假连接会话）已在下一节完成；
+  M12.3 / M12.4 / M12.5 / M12.6 均已在后续章节完成。
+- `test_2` **仍是「同机一人控两方」**，没有改成合作入口 —— 大厅还没做，现在切过去会让
+  `02_twin_line` 无法手测；到 M12.4 一起改。
+- 合作暂停键（M12.4 接线时禁用）；断线重连（不做）。
+
+---
+
+## 四十九、双人合作 M12.2：快照补全 + 协议 + 假连接会话（这一轮）
+
+**需求**：继续 M12.2，只做「快照补全 / 协议 / 假连接会话」，不碰真实 WebSocket 中继
+（M12.3）与合作大厅 UI（M12.4）。方案见 [`dev_plan_12.md`](dev_plan_12.md)。
+
+### 49.1 快照补了什么
+
+`logic/snapshot.gd` 新增：
+
+| 字段 | 内容 |
+|---|---|
+| `pres` | 按玩家席位 `{fid: [food, gold]}`；AI 的资源不下发 |
+| `obj` | 目标状态 `{kind, zone, held, sec, state, reason}`（`ObjectiveRes.to_snapshot` 补了 `kind`） |
+| `tech` | 按席位 `{fid: [科技 id]}` |
+| `units[].mh` | 单位血量上限（含科技 / 等级加成） |
+| `buildings[].lv/mh/uk/ur/ut` | 等级 / 血量上限 / 是否升级中 / 升级剩余 / 升级总时长 |
+| `zones[].sk/sr/st/sd/sx` | 特化读条种类 / 剩余 / 总时长 / 已完成特化 / 是否取消特化 |
+
+⚠️ **`res` 的回落条件**：只有单席位（`player_seats.size() <= 1`）才用旧 `res`；
+合作局（两个席位）缺 `pres` 时按「坏快照」保持本地现状 —— 否则客机会把房主的钱当自己的
+（`test_snapshot_coop` 专门钉住这一条）。
+
+⚠️ **`_world_sync_buildings()` 不涨 `building_revision`**：整表替换后要手动 `+= 1`，
+否则 `refresh_ownership()` 认为「建筑没变」，客机的归属缓存停在旧状态（本轮的实测坑）。
+
+### 49.2 按席位科技（配套修正）
+
+只补快照状态还不够：原来 `world.tech_effects` 只有 `my_faction` 一份，
+客机启用的科技会加到房主的单位 / 建筑上。本轮改成：
+
+- `world.seat_tech_effects`：每个玩家席位一份 `tech.effects_of(fid)`；
+- `_refresh_production()` / `tick()` 的经济循环按席位取效果；
+- `zones.update_population_multi(dt, owner_mults)`：**每个区划只长一次**，按 owner 乘倍率
+  （不能对每个席位各调一次 `update_population`，那会把基础增长算两遍）；
+- `_apply_tech_effects()` 按 `owner == 席位` 遍历建筑 / 单位，合作两人是盟友也不会加两次；
+- `world.tech_effects` 仍是本机席位那一份的别名，旧 HUD 调用不变。
+
+### 49.3 协议 / 会话
+
+| 文件 | 内容 |
+|---|---|
+| `net/protocol.gd` | 信封 `{v,t,seq,ts,body}`；`make/encode/decode`；版本 / body / 类型校验；房间码规则 |
+| `net/transport.gd` | 可靠 / 不可靠发送、`message/connected/closed/error` 信号；Steam P2P 以后只换这一层 |
+| `net/event_codec.gd` | 把事件里的 `unit/leader/building/target/source` 换成 id / 建筑 key，客机再查回来 |
+| `net/host_session.gd` | 收客机 `cmd`（校验 `by` / `faction` / 信封 `seq`）→ `command_processor`；20Hz `snap`；`event` |
+| `net/client_session.gd` | `send_command()` 上行；`snap` → `apply_snapshot` + `refresh_after_snapshot`；`event` 解回对象 |
+| `tests/fake_transport.gd` | 两条端点互发字符串的假连接（M12.3 换真 WebSocket 时会话代码不改） |
+
+★ 命令序号用**信封 `seq`**，不在 body 里再放一份（避免两套序号漂开）。
+★ `JSON.parse_string` 遇到坏 JSON 会往 stderr 打 ERROR；`decode()` 改用 `JSON.new().parse()`，
+坏包只返回 `{ok:false,error:"json"}`，测试输出干净。
+
+### 49.4 断言与收口
+
+| 套件 | 项数 | 盯什么 |
+|---|---|---|
+| `tests/test_snapshot_coop.gd`（新） | **29** | pres/obj/tech/建筑升级/区划特化往返；缺字段保持现状；合作局缺 pres 不回落到房主的 `res` |
+| `tests/test_protocol.gd`（新） | **19** | 信封往返；坏 JSON / 版本 / 类型 / body 拒绝；房间码 |
+| `tests/test_session.gd`（新） | **25** | start 带关卡数据 / 两个席位；20Hz snap；合法命令执行；faction / by / seq 冒充被拒；事件（含对象引用）到达；房主 bye |
+| `tests/test_coop_tech.gd`（新） | **13** | 两个席位各吃各的科技：房主的粮食 / 人口 / 建筑血量不被客机科技污染 |
+
+回归：`test_logic` 280、`test_tech` 116、`test_ui` 1148、`test_campaign_seats` 72、
+`test_outcome` 71、`test_upgrade` 221、`test_ai` 54 全绿；`check-syntax.ps1` 147 个文件 ALL OK
+（`tools/check-syntax.ps1` 的默认扫描目录已补 `net`）。
+
+### 49.5 这一轮**没做**
+
+- M12.3 已在下一节完成。
+- M12.4：合作大厅 UI、`game_scene3d` 的房主 / 客机分支、客机位置插值、暂停键禁用。
+- `test_2` 仍是「同机一人控两方」，到 M12.4 改成合作入口。
+
+---
+
+## 五十、双人合作 M12.3：零依赖中继 + Godot 传输 + 本机双进程（这一轮）
+
+**需求**：按已定稿的「公网 IPv4 + 明文 `ws://` + Windows/nssm」把真实链路跑通；
+不写大厅 UI（M12.4）。
+
+### 50.1 中继（`server/daeem_relay.py`）
+
+- **单文件、标准库、零第三方依赖**：自己实现 RFC6455 服务端最小子集。
+- 路由：`GET /health`、`GET /rooms`、`WS /ws`。
+- 房间：6 位码（去掉 `0/O/1/I`）、1 房主 + 1 客机、`ready` / `start` / `bye`。
+- 只转发 `cmd` / `snap` / `event` 等游戏消息；不解析正文。
+- 心跳：20 秒 ping，60 秒无 pong 断开；一条连接一行日志，不打内容。
+- `--port 0` 时打印 `LISTEN 127.0.0.1:<port>`，测试据此拿随机端口。
+
+**实测踩到并修掉的三条**：
+
+1. `read_text_message()` 最初把 ping 当作协议错误抛出，而控制帧可以插在分片中间。
+   改成 `Peer._recv_text()` 自己读帧：ping 直接回 pong，pong 刷新 `last_pong`，不打断分片。
+2. 房间码字母表去掉 `O`，所以 `COOP23` / `FORW23` / `LONG23` **都是非法码**；
+   测试里改成 `CAMP23` / `FRWD23` / `LNGH23`。
+3. Windows PowerShell 5.1 的 `Start-Process -PassThru` 对重定向子进程可能给出
+   `$null` 的 `ExitCode`；`run-local.ps1` 改成检查探针输出的 `PROBE ... OK`，不靠 exit code。
+
+### 50.2 Godot 传输（`net/relay_transport.gd`）
+
+- 实现 `net/transport.gd`：`connect_to` / `poll` / `send_text` / `send_unreliable` / `close`。
+- 用 `WebSocketPeer`；`poll()` 负责握手推进、收包、发 `connected` / `closed`。
+- 入站 / 出站缓冲调到 **8 MiB**：默认 64 KiB 装不下全量快照。
+- Godot 4.7 的 `WebSocketPeer.poll()` 返回 **void**（不是 Error），不能 `var err := poll()`；
+  状态看 `get_ready_state()`。
+- `send_unreliable()` 退回可靠发送：WebSocket 没有不可靠通道；快照丢了等下一帧。
+
+### 50.3 本机双进程
+
+```powershell
+powershell -ExecutionPolicy Bypass -File server/run-local.ps1
+```
+
+它起三个进程：
+
+```text
+relay (127.0.0.1:8770)
+  + probe_relay.py --role host  --room CAMP23
+  + probe_relay.py --role guest --room CAMP23
+```
+
+日志在 `server/logs/`，能直接看到：
+
+```text
+hello -> create_room -> ready -> both-ready -> start
+      -> cmd(guest->host) -> snap(host->guest) -> bye
+```
+
+成功输出 `RUN LOCAL OK`，失败退出 1 并 tail 三份日志。
+
+### 50.4 部署定稿（记录进 `server/README.md`）
+
+用户 2026.10.19 拍板：**怎么方便怎么来，直接用公网 IPv4**。
+
+| 项 | 定稿 |
+|---|---|
+| 地址 | `ws://<公网IPv4>:8770/ws` |
+| 传输 | 明文 WebSocket；不占域名 / 443 / IIS |
+| 监听 | `0.0.0.0:8770` |
+| 安全组 | 只放行 TCP 8770 |
+| 托管 | Windows + nssm `DAEEMRelay` |
+| 健康 | `http://<公网IPv4>:8770/health` |
+| 以后 | 有需要再加域名 + 反代 + `wss://`，只改 `relay_url` |
+
+明文风险已知悉：只适合朋友内测；不做 TLS / 鉴权 / 反作弊 / 断线重连。
+
+### 50.5 断言与收口
+
+| 套件 | 项数 | 盯什么 |
+|---|---|---|
+| `server/test_relay.py` | **6** | 握手 / 分片 / 掩码 / 长度 126/127 / close 五条 + 房间转发 |
+| `server/run-local.ps1` | — | 一条命令 `RUN LOCAL OK`；日志能看出建房 / 加入 / 开局 / 命令 / 快照 / 断开 |
+| `tests/test_relay_transport.gd` | **13** | Godot `WebSocketPeer` ↔ Python 中继：连接 / 建房 / 加入 / start / cmd / snap / close |
+
+`check-syntax.ps1` **147 个文件 ALL OK**（`net/relay_transport.gd` 已纳入扫描）。
+
+### 50.6 这一轮**没做**
+
+- M12.4 已在下一节完成（客机视觉插值仍未做，见 51.6）。
+- 云上部署脚本 `server/deploy.ps1`（M12.5）与真实公网对局已在 **第五十二节** 完成；
+  M12.3 当时只证明本机链路。
+
+---
+
+## 五十一、双人合作 M12.4：大厅 + 房主/客机接线（这一轮）
+
+**需求**：把 M12.3 的链路接到主界面与游戏内：主界面「合作模式」建房 / 加入 / 准备 / 开始；
+游戏里房主跑世界、客机只发命令收快照；合作局禁用暂停；`test_2` 改成合作入口。
+
+### 51.1 大厅会话（`net/lobby.gd`）
+
+- 只认 `transport` + `protocol` 信封；不画 UI、不认识 `world`。
+- `hello` 成功后发 `create_room` / `join_room`；`room_state` 更新；
+- 客机收到 `start`：**先 `take_transport()` 把通道交出来**，再发 `guest_started(payload, transport)`；
+- 房主按「开始」：`take_transport()`，由 `game_scene3d` 建 HostSession 并发送 `start`；
+- `take_transport()` 会断开 lobby 自己的 `message` 处理器，避免大厅与游戏会话同时收包。
+
+### 51.2 大厅 UI（`view/coop_lobby.gd`）
+
+- 中继地址（默认 `config.net.relay_url`，IPv4 `ws://...:8770/ws`）。
+- 合作关卡下拉：只列 `mode == "coop"` 的关（当前 `demo / 02_twin_line`）。
+- 房间码 / 创建 / 加入 / 准备 / 开始；状态行显示「等待队友 / 队友已加入 / 双方已准备」。
+- 节点名（测试用）：`CreateBtn` / `JoinBtn` / `ReadyBtn` / `StartBtn` / `RoomCode` / `RelayUrl`。
+
+### 51.3 菜单接线
+
+| 文件 | 改动 |
+|---|---|
+| `menu_secondary_panel.gd` | `with_coop_lobby`；`coop_lobby()`；`coop_host_started` / `coop_guest_started` 两层信号 |
+| `menu_chrome.gd` | 记住 `CoopBtn`；`open_coop_panel()`；面板信号上抛 |
+| `start_screen.gd` | 两个合作信号；`test_2` 数据带 `coop`，按下 `open_coop_panel()` |
+| `main.gd` | 载入合作战役 / 关卡；`start_coop_host` / `start_coop_guest`；失败时关 transport |
+| `config.json` | `net.relay_url` / `net.build`；`coop.lobby.*`；`test_2.coop = true` |
+
+★ `test_2` 不再直接进 `02_twin_line`，而是打开合作大厅；`_on_level_entry_pressed()` 保留，
+测试/旧入口仍能直接开那一关。
+
+### 51.4 游戏内接线（`game_scene3d.gd`）
+
+- `Level.from_data()`：客机用房主 `start` 里的 `level_data` 建同一个 Level，不读本地战役目录。
+- 房主：`start_coop_host(campaign, level, transport)`：
+  - `seats = level.coop_roster()`；`my_faction = seats[0]`；`with_ai=true`；
+  - `HostSession` + `start_game(campaign.id, level.id)`；世界 tick + 20Hz 快照 + 事件。
+- 客机：`start_coop_guest(payload, transport)`：
+  - `Level.from_data(payload.level_data, ...)`；`my_faction = payload.guest_seat`；
+  - `with_ai=false`；`ClientSession`；**不 tick**，只 poll / 应用快照 / 收事件。
+- 命令：`_on_command` 在客机走 `client_session.send_command()`，房主仍直接 `command_processor`；
+- 客机快照：`snapshot_applied` → `drop_dead_selection()`；事件交给同一个 `game_interaction`；
+- 暂停：`input_ctrl.pause_allowed = false`；P 键只提示「合作模式不能暂停」；
+- 退出：`_shutdown_coop()` 先发 `bye` 再关 transport；房主收到客机 bye 只提示「队友已离开」，
+  客机收到房主 bye / 传输断开回主菜单；不重连、不接管。
+
+### 51.5 断言与收口
+
+| 套件 | 项数 | 盯什么 |
+|---|---|---|
+| `tests/test_coop_lobby.gd` | **12** | 真实中继：建房 / 加入 / 准备 / 开始按钮 / transport 交接 / start 带 level_data |
+| `tests/test_coop_entry.gd` | **8** | `test_2` 带 coop 标记，按下打开合作大厅 |
+| `tests/test_coop_game_scene.gd` | **18** | 房主/客机两个 GameScene3D：客机不 tick、快照写回、客机命令经 host_session、暂停禁用、两边目标条 |
+
+回归：`test_start_flow` 130、`test_campaign_menu` 116、`test_ui` 1148、
+`test_coop_objective` 26 全绿；`check-syntax.ps1` 152 个文件 ALL OK。
+
+### 51.6 这一轮**没做 / 已知限制**
+
+- **客机视觉插值没做**：快照 20Hz 直接写 `unit.pos`，客机单位会按 20Hz 跳；
+  先把「状态一致 / 命令正确」跑通，插值放后续优化（不是 M12.4 的验收条件）。
+- 云上部署脚本 `server/deploy.ps1`（M12.5）与真实公网对局已在 **第五十二节** 完成；
+  M12.4 当时只在本机两个 GameScene3D / 假连接上验证。
+- 合作暂停键已禁用；断线重连、客机接管、观战仍不做。
+
+---
+
+## 五十二、双人合作 M12.5 / M12.6：公网部署 + 导出配置 + 文档收口（这一轮）
+
+**需求**：把 M12 的链路真正部署到公网服务器，并用两台机器完成首次对局；然后做文档收口。
+用户 2026.10.19 确认联机成功。
+
+### 52.1 部署实测（2026.10.19）
+
+| 项 | 值 |
+|---|---|
+| 服务器 | 腾讯云 Windows（构建 10.0.20348） |
+| 公网地址 | `ws://159.75.154.122:8770/ws` |
+| 健康检查 | `http://159.75.154.122:8770/health` |
+| 服务 | nssm `DAEEMRelay`（Automatic，崩溃重启） |
+| 监听 | `0.0.0.0:8770` |
+| build | `coop-m12.2` |
+| Python | `C:\Program Files\python\python.exe` |
+| nssm | `C:\tools\nssm.exe` |
+| 暂存目录 | `C:\daeem_stage\server` |
+| 服务目录 | `C:\daeem\server` |
+| 日志 | `C:\daeem\logs\relay.{out,err}.log` |
+| 备份 | `C:\daeem\backup\server-<时间戳>` |
+
+部署命令（服务器管理员 PowerShell）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\daeem_stage\server\deploy.ps1 `
+    -ServerRoot C:\daeem `
+    -Python "C:\Program Files\python\python.exe" `
+    -Nssm C:\tools\nssm.exe `
+    -PublicIp 159.75.154.122 `
+    -OpenFirewall
+```
+
+成功输出：`DEPLOY OK http://159.75.154.122:8770/health`。
+公网 `/health`：`{"ok":true,"rooms":0,"players":0,"uptime":...,"build":"coop-m12.2"}`。
+公网 host/guest 探针完成 `hello → create_room → join → ready → start → cmd → snap → bye`，
+两端均打印 `PROBE ... OK`；退出后 `/rooms` 为空。
+
+### 52.2 `server/deploy.ps1`
+
+- 幂等：服务已存在时只更新参数；不重复加防火墙规则。
+- 前置检查：管理员 / Python / nssm / `daeem_relay.py` / 8770 是否被**服务树之外**的进程占用。
+- **先备份再停服务**：备份到 `C:\daeem\backup\server-<时间戳>` 并校验 relay 哈希；
+  备份失败不覆盖旧版本。
+- 只复制 `daeem_relay.py` 与 `README.md`；不复制 `logs/`、`__pycache__/`、探针。
+- nssm：`Application` / `AppParameters` / `AppDirectory` / `AppStdout` / `AppStderr` /
+  `AppRotateFiles` / `AppExit Default Restart` / `AppRestartDelay 5000` /
+  `Start SERVICE_AUTO_START` / `Description`。
+- 启动后轮询 `/health`；失败打印服务状态 + `relay.err.log` 最后 50 行，恢复备份并重启旧版本。
+- `-OpenFirewall` 幂等添加 Windows 防火墙入站规则；`-DryRun` 只打印计划。
+- 脚本 ASCII-only（PowerShell 5.1 读无 BOM `.ps1` 按 GBK）。
+
+本轮踩到并修掉的两个脚本坑（详见 `pitfalls.md` 5.73 / 5.74）：
+
+1. nssm 的 `set` 顺序是 `nssm set <服务> <参数> <值>`，不是 `nssm <服务> set ...`；
+2. 若把 `server/` 直接放到 `C:\daeem\server` 再运行，源目录 = 目标目录会导致「自己复制自己」；
+   现在检测到同路径会跳过复制，推荐仍用暂存目录。
+
+### 52.3 客户端地址
+
+`data/config.json` 的 `net.relay_url` 已改为 `ws://159.75.154.122:8770/ws`，`build` 仍是
+`coop-m12.2`。大厅的「中继地址」仍可手改；公网 IP 变了不必重导包。
+
+### 52.4 导出 / 打包配置
+
+| 文件 | 改动 | 为什么 |
+|---|---|---|
+| `export_presets.cfg` | `include_filter="*.json"`（Windows + Android） | 地图 / 战役 / `config.json` 是**非资源 JSON**，`all_resources` 不会自动带上；不加会在包里读不到地图和合作关 |
+| `export_presets.cfg` | `permissions/internet=true`（Android） | `WebSocketPeer` 需要 Android `INTERNET` 权限；默认是 `false`，手机端会连不上 |
+| `daeem.csproj` | Android 目标 `net9.0` | mono Android 构建需要 .NET 9 targeting pack |
+| `assets/fonts/simhei.ttf` | 已导入 | 包内中文字体；没有时退回系统字体 |
+
+Windows 导出：mono 版 Godot + mono 导出模板；先 `dotnet build daeem.csproj -c Release`，
+再 `--export-release "Windows Desktop" exports\DAEEM.exe`。当前预设 `embed_pck=false`，
+分发时必须带上 `DAEEM.exe` + `DAEEM.pck`（以及可能出现的 `data_*` 目录）。
+
+Android：mono 模板已装；需要 Android SDK / JDK 17 / .NET 9；首次真机用 debug 导出 +
+debug keystore。明文 `ws://` 若被 Android 明文流量策略拦截，需要自定义 manifest 的
+`android:usesCleartextTraffic="true"` 或改 `wss://`。
+
+### 52.5 本轮复核
+
+| 套件 | 项数 |
+|---|---|
+| `test_coop_seats` | 41 |
+| `test_coop_objective` | 26 |
+| `test_snapshot_coop` | 29 |
+| `test_protocol` | 19 |
+| `test_session` | 33 |
+| `test_coop_tech` | 13 |
+| `test_coop_lobby` | 12 |
+| `test_coop_entry` | 8 |
+| `test_coop_game_scene` | 18 |
+| `test_relay_transport` | 14 |
+| `server/test_relay.py` | 6 |
+| `check-syntax.ps1` | 159 个文件 ALL OK |
+
+合计 M12 套件 **213 项**，全绿（M12.7 的 30Hz / 优化后复核；见第五十三节）。
+
+### 52.6 已知限制 / 未做
+
+- **客机视觉插值仍未做**：30Hz 快照直接写 `unit.pos`，客机单位仍会按 30Hz 跳；状态与命令是对的。
+- Android 联机是**首次用户确认成功**，没有留下逐项验收记录；正式验收清单仍未跑全。
+- 断线重连、客机接管、合作暂停、3 人、观战、匹配、TLS / `wss://`、反作弊仍不做。
+- 根目录 `README.md` **未改**（需要用户明确同意）。
+- 本轮仍未 commit / push；所有改动都在工作区。
+
+---
+
+## 五十三、M12.7：快照 30Hz + 联机优化（这一轮）
+
+**需求**：用户要求「先测量，预期做到 30Hz，同时尽可能优化网络联机部分」。
+这一轮先把 20Hz 提到 30Hz，再针对实测瓶颈做三处低风险优化。
+
+### 53.1 测量（`tests/bench_snapshot.gd`）
+
+无头基准，`02_twin_line`（10 建筑 / 8 区划），额外塞入合成兵；20 轮平均。
+**优化后**的单帧数字：
+
+| 额外兵 | 总单位 | 字节/帧 | to_snapshot | encode | apply | fog | ownership | tech | 30Hz 带宽 |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 36 | 10,265 | 0.25 ms | 0.68 ms | 0.30 ms | 0.81 ms | 0.02 ms | 0.01 ms | 0.29 MB/s |
+| 100 | 136 | 32,865 | 0.73 ms | 2.03 ms | 1.23 ms | 1.85 ms | 0.02 ms | 0.01 ms | 0.94 MB/s |
+| 300 | 336 | 78,285 | 1.90 ms | 5.06 ms | 1.96 ms | 2.75 ms | 0.01 ms | 0.01 ms | 2.24 MB/s |
+| 500 | 536 | 123,846 | 2.91 ms | 7.70 ms | 3.00 ms | 4.18 ms | 0.02 ms | 0.01 ms | 3.54 MB/s |
+
+- **优化前** 536 单位的 `apply` 是 **10.9 ms**；优化后 **3.0 ms**。
+- 30Hz 下**每次快照**的房主 `to_snapshot + encode`：0.9 / 2.8 / 7.0 / 10.6 ms；
+  客机 `apply + fog + ownership + tech`：1.1 / 3.1 / 4.7 / 7.2 ms。
+- 结论：**30Hz 在 100~300 单位这档完全可行**；500+ 单位时房主每两帧有一次
+  10 ms 级序列化尖峰，客机也有 7 ms 级应用尖峰，接近 60fps 的帧预算。
+
+### 53.2 改动
+
+| 文件 | 改动 |
+|---|---|
+| `data/config.json` | `net.snapshot_hz = 30`（代码夹在 10~60）；`net.snapshot_buffer_limit_kb = 1024`（0 = 关背压） |
+| `net/host_session.gd` | `setup()` 读配置；默认 `snap_interval = 1/30`；快照前检查 `transport.buffered_amount()`，超过 1 MiB 时**跳过这一帧**并记 `snapshots_skipped` |
+| `net/transport.gd` | 新增 `buffered_amount()`（默认 0 = 不支持背压） |
+| `net/relay_transport.gd` | 用 `WebSocketPeer.get_current_outbound_buffered_amount()` 实现背压读数 |
+| `net/client_session.gd` | 快照**合并**：同一轮 `poll()` 只保留最后一条，`snapshots_coalesced` / `snapshots_applied` 计数；`bye` 时清掉未应用的快照 |
+| `logic/snapshot.gd` | `apply_snapshot()` 一次性建 id→unit 索引（修 O(n²)）；没挪动时不 `sync_tile()`；投掷物解析复用同一索引 |
+| `tests/fake_transport.gd` | `buffered` 字段 + `buffered_amount()` |
+| `tests/test_session.gd` | 断言默认 30Hz、快照合并、背压跳过 / 恢复（33 项） |
+| `tests/test_relay_transport.gd` | 断言真实 WebSocket 的 `buffered_amount()` 可用（14 项） |
+| `tests/bench_snapshot.gd`（新） | 快照体积 / 序列化 / apply / fog 的测量基准（不进 run-tests） |
+
+### 53.3 为什么是这四处
+
+1. **30Hz**：20Hz 的 50ms 间隔在客机上仍能看出台阶；30Hz 是带宽/CPU 的第一档折中。
+2. **背压**：WebSocket 只有可靠通道，`send_unreliable()` 实际走可靠发送；网络一慢，
+   旧快照会在出站缓冲里排队。超过 1 MiB 就跳过快照，让「最新状态」优先。
+3. **客机合并**：一帧可能收到多条快照；全量快照只应用最后一条，避免在客机上
+   连续做多次 apply + 迷雾/归属重算。掉帧时客机会自然跳过中间帧。
+4. **O(n²) 修复**：`world.unit_by_id()` 是线性扫描，原来每个快照单位都调一次；
+   500 单位时这是最贵的一笔（10.9ms → 3.0ms）。
+
+### 53.4 回归
+
+- M12 套件 **213 项**全绿（`test_session` 33、`test_relay_transport` 14、其余不变）。
+- `server/test_relay.py` **6 项** OK；`check-syntax.ps1` **159 个文件 ALL OK**（含并行新增的过渡 / 退出确认文件）。
+- `test_coop_game_scene` 18 项通过：30Hz + 合并后，客机仍能正确应用快照、命令仍走 host_session。
+
+### 53.5 还没做 / 下一档优化
+
+- **还没做增量 / 压缩快照**：现在仍是全量 JSON。536 单位 30Hz ≈ **3.54 MB/s**
+  （约 28 Mbps），移动网络下偏高；如果以后常见 500+ 单位，下一步应做
+  「静态字段只在关键帧发 / 动态字段增量」或 zstd+base64。
+- **还没做自适应频率**：500+ 单位时房主每两帧有 10 ms 级序列化尖峰；可以先保留
+  30Hz，若真机出现掉帧，再按单位数降到 20Hz（或把序列化拆帧）。
+- **客机插值仍未做**：30Hz 减少了台阶，但视觉平滑仍不如 20Hz + 插值；插值仍是可选优化。

@@ -63,6 +63,18 @@ func _run() -> void:
 			"★ 相机移动后视野框跟着挪（%.1f,%.1f → %.1f,%.1f）"
 			% [r0.position.x, r0.position.y, r1.position.x, r1.position.y])
 
+		# ★★ 红点生成事件 → 小地图动效（场景层的唯一接线，见 game_scene3d._feed_red_dot_spawn_fx）。
+		#    默认地图上没有红点 AI，所以这里直接喂一条事件形状，验「搬运」这一段。
+		game._feed_red_dot_spawn_fx([{
+			"type": "red_dot_wave",
+			"faction": "red1",
+			"wave": 1,
+			"spawns": [{"x": 3, "y": 4}, {"x": 5, "y": 6}],
+		}])
+		eq(mm.red_dot_fx_count(), 2, "★★ 场景把红点出生格交给了小地图（每个出生格一条动效）")
+		game._feed_red_dot_spawn_fx([{"type": "unit_recruited"}])
+		eq(mm.red_dot_fx_count(), 2, "★ 别的事件不会误触发红点动效")
+
 	main.queue_free()
 	await process_frame
 

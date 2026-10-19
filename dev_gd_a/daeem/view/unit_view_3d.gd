@@ -25,6 +25,8 @@ const ConfigRes = preload("res://logic/config.gd")
 const PaletteRes = preload("res://view/palette.gd")
 const SpriteRes = preload("res://view/unit_sprite_3d.gd")
 const HitFxRes = preload("res://view/hit_fx.gd")
+## ★★ 局内「敌 / 友 / 己」三色（本轮新增；判据与配色只在那一处，见文件头）
+const SideColorRes = preload("res://view/side_color.gd")
 ## ★ 立牌材质：billboard + 逐像素受击闪白（自定义 shader，见文件头）
 const UNIT_FLASH_SHADER = preload("res://view/unit_flash.gdshader")
 ## ★ 濒死将领的立牌材质：billboard + **整体半透明**（走透明管线；见 unit_downed.gdshader）
@@ -52,10 +54,12 @@ var _decal_quad: PlaneMesh = null
 var _decal_mm: MultiMesh = null
 var _decal_node: MultiMeshInstance3D = null
 
-## ★★ 选中下标：被选中单位脚下的**绿色空心圆**贴花（逐实例透明度动画）。
+## ★★ 选中下标：被选中单位脚下的**空心圆**贴花（逐实例透明度动画）。
+## ★ 本轮起按「己 / 友 / 敌」分三层：每层一个 MultiMesh + 自己的圈色
+##   （蓝 / 黄 / 红），于是「选中的敌人」也能一眼看出是敌人。
 var _sel_quad: PlaneMesh = null
-var _sel_mm: MultiMesh = null
-var _sel_node: MultiMeshInstance3D = null
+## 三档 → {mm, node}（见 view/side_color.gd 的 SELF / ALLY / ENEMY）
+var _sel_layers: Dictionary = {}
 ## id → 出现进度（0 = 完全收起，1 = 完全出现）；`sync(dt)` 每帧朝目标推进
 var _sel_anim: Dictionary = {}
 ## 当前选中的 id 集合（由 `set_selection(ids)` 喂进来）
@@ -165,22 +169,40 @@ func _build_selection_layer() -> void:
 	_sel_quad = PlaneMesh.new()
 	_sel_quad.size = Vector2(cell, cell)
 	_sel_quad.orientation = PlaneMesh.FACE_Y
-	var smat := ShaderMaterial.new()
-	smat.shader = SELECTION_RING_SHADER
-	smat.set_shader_parameter("albedo_tex", SpriteRes.selection_ring_texture())
-	smat.set_shader_parameter("ring_color",
-		ConfigRes.parse_color(cfg.str_val("render.selection_ring_color", "#3ddc5a")))
-	_sel_mm = MultiMesh.new()
-	_sel_mm.transform_format = MultiMesh.TRANSFORM_3D
-	# ⚠️ `use_custom_data` 必须在 `instance_count` **之前**设（同 unit_flash 那条约束）
-	_sel_mm.use_custom_data = true
-	_sel_mm.mesh = _sel_quad
-	_sel_mm.instance_count = 256
-	_sel_node = MultiMeshInstance3D.new()
-	_sel_node.name = "SelectionRings"
-	_sel_node.multimesh = _sel_mm
-	_sel_node.material_override = smat
-	add_child(_sel_node)
+	_sel_layers = {}
+	# ★ 三档各一层：圈色 = 本机视角下的己 / 友 / 敌（见 view/side_color.gd）。
+	for rel in [SideColorRes.SELF, SideColorRes.ALLY, SideColorRes.ENEMY]:
+		var smat := ShaderMaterial.new()
+		smat.shader = SELECTION_RING_SHADER
+		smat.set_shader_parameter("albedo_tex", SpriteRes.selection_ring_texture())
+		smat.set_shader_parameter("ring_color", _selection_ring_color(String(rel)))
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		# ⚠️ `use_custom_data` 必须在 `instance_count` **之前**设（同 unit_flash 那条约束）
+		mm.use_custom_data = true
+		mm.mesh = _sel_quad
+		mm.instance_count = 256
+		var node := MultiMeshInstance3D.new()
+		node.name = "SelectionRings_" + String(rel)
+		node.multimesh = mm
+		node.material_override = smat
+		add_child(node)
+		_sel_layers[String(rel)] = {"mm": mm, "node": node}
+
+
+## 选中圈的颜色：己方 / 友军 / 敌人三档。
+## ★ 配置写坏 / 没配时退回旧的单色（`render.selection_ring_color`），不会画出品红。
+func _selection_ring_color(rel: String) -> Color:
+	if cfg == null:
+		return Color(0.24, 0.86, 0.35)
+	match rel:
+		SideColorRes.SELF:
+			return cfg.side_color_self
+		SideColorRes.ALLY:
+			return cfg.side_color_ally
+		SideColorRes.ENEMY:
+			return cfg.side_color_enemy
+	return ConfigRes.parse_color(cfg.str_val("render.selection_ring_color", "#3ddc5a"))
 
 
 ## 取（或创建）一个变体的批次。
@@ -191,7 +213,7 @@ func _batch_for(key: String, faction: String, leader: bool, unit_type: String,
 	var hit: Variant = _batches.get(key, null)
 	if hit != null:
 		return hit
-	var col: Color = cfg.faction_color(faction, "main")
+	var col: Color = SideColorRes.color(cfg, world, faction, "main")
 	var outline: Color = Color(0.05, 0.05, 0.07, 1.0)
 	# ★ 兵种素材（`unit.types.<id>.sprite`）+ 阵营色剪影；将领的描边更粗。
 	#   素材缺失 / 没配 → `bake_asset` 内部退回程序化剪影（见 unit_sprite_3d.gd 的说明）。
@@ -388,7 +410,7 @@ func _sync_decals(units_list: Array) -> void:
 		var w: Vector3 = palette.to_world(u.pos)
 		w.y = 1.0                       # 贴在地面上方一点点（避免与地面 z-fighting）
 		_decal_mm.set_instance_transform(i, Transform3D(Basis(), w))
-		_decal_mm.set_instance_color(i, cfg.faction_color(String(u.faction), "main"))
+		_decal_mm.set_instance_color(i, SideColorRes.color(cfg, world, String(u.faction), "main"))
 		i += 1
 	decal_count = i
 	_decal_mm.visible_instance_count = i
@@ -408,7 +430,7 @@ func _sync_selection_rings(units_list: Array, dt: float) -> void:
 	selection_ring_count = 0
 	selection_scale_last = 0.0
 	selection_alpha_last = 0.0
-	if _sel_node == null or _sel_mm == null or world == null or palette == null:
+	if _sel_layers.is_empty() or world == null or palette == null:
 		return
 	var rate: float = 1.0 / _sel_sec
 	# 先清掉已经不在世界里的单位（阵亡 / 换局），免得进度表无限长大
@@ -419,9 +441,10 @@ func _sync_selection_rings(units_list: Array, dt: float) -> void:
 	for id in stale:
 		_sel_anim.erase(id)
 
-	if _sel_mm.instance_count < units_list.size():
-		_sel_mm.instance_count = maxi(units_list.size(), _sel_mm.instance_count * 2)
-	var i: int = 0
+	# 每一帧把三层的写入下标各自清零（最后统一写 visible_instance_count）
+	var counts: Dictionary = {}
+	for rel in _sel_layers.keys():
+		counts[String(rel)] = 0
 	for u in units_list:
 		var id := String(u.id)
 		var want: float = 1.0 if _selection_set.has(id) else 0.0
@@ -434,18 +457,30 @@ func _sync_selection_rings(units_list: Array, dt: float) -> void:
 			_sel_anim.erase(id)
 			continue
 		_sel_anim[id] = p
+		# ★ 按「本机视角」分桶：己方 / 友军 / 敌人各一层（圈色不同）
+		var rel := SideColorRes.relation(world, String(u.faction))
+		if rel == SideColorRes.NEUTRAL or not _sel_layers.has(rel):
+			rel = SideColorRes.ENEMY
+		var layer: Dictionary = _sel_layers[rel]
+		var mm: MultiMesh = layer["mm"]
+		var i: int = int(counts[rel])
+		if mm.instance_count <= i:
+			mm.instance_count = maxi(i + 1, mm.instance_count * 2)
 		var w: Vector3 = palette.to_world(u.pos)
 		w.y = 1.0
 		var s: float = lerpf(_sel_scale_from, 1.0, p)
-		_sel_mm.set_instance_transform(i, Transform3D(Basis().scaled(Vector3(s, 1.0, s)), w))
-		_sel_mm.set_instance_custom_data(i, Color(_sel_alpha * p, 0.0, 0.0, 0.0))
-		if i == 0:
+		mm.set_instance_transform(i, Transform3D(Basis().scaled(Vector3(s, 1.0, s)), w))
+		mm.set_instance_custom_data(i, Color(_sel_alpha * p, 0.0, 0.0, 0.0))
+		if selection_ring_count == 0:
 			selection_scale_last = s
 			selection_alpha_last = _sel_alpha * p
-		i += 1
-	selection_ring_count = i
-	_sel_mm.visible_instance_count = i
-	_sel_node.visible = i > 0
+		counts[rel] = i + 1
+		selection_ring_count += 1
+	for rel2 in _sel_layers.keys():
+		var layer2: Dictionary = _sel_layers[rel2]
+		var n: int = int(counts.get(String(rel2), 0))
+		(layer2["mm"] as MultiMesh).visible_instance_count = n
+		(layer2["node"] as MultiMeshInstance3D).visible = n > 0
 
 
 ## 写一槽的缓存（下标越界时按需扩容）

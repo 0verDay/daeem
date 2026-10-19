@@ -16,6 +16,7 @@ const FactionRes = preload("res://logic/faction.gd")
 const BuildingRes = preload("res://logic/building.gd")
 const UnitRes = preload("res://logic/unit.gd")
 const ProjectileRes = preload("res://logic/projectile.gd")
+const ObjectiveRes = preload("res://logic/objective.gd")
 
 
 static func round2(v: float) -> float:
@@ -41,6 +42,9 @@ static func to_snapshot(world) -> Dictionary:
 			"x": round2(u.pos.x),
 			"y": round2(u.pos.y),
 			"h": int(round(u.hp)),
+			# ★ 血量上限（科技 / 等级加成之后的值）：客机画血条比例要用；
+			#   缺字段 = 保持本地现状（老快照没有这一项）。
+			"mh": int(round(u.hp_max)),
 			# ★★ 士气（本轮新增）：整支部队共享的权威状态，客机不发详情栏就画不出背景板颜色。
 			#    沿用「缺字段 = 保持本地现状」的规矩（见 apply 那一段）。
 			"mo": int(round(u.morale)),
@@ -79,6 +83,13 @@ static func to_snapshot(world) -> Dictionary:
 			continue
 		buildings_out.append({
 			"t": b.type, "x": b.tx, "y": b.ty, "o": b.owner, "h": int(round(b.hp)),
+			# ★ 本轮补：等级 / 血量上限 / 升级读条（客机要画等级、血条比例与读条）。
+			#   字段短名沿用既有口径；缺字段 = 保持本地现状（见 apply 那一段）。
+			"lv": int(b.level),
+			"mh": int(round(b.hp_max)),
+			"uk": 1 if b.is_upgrading() else 0,
+			"ur": round2(b.upgrade_remaining),
+			"ut": round2(b.upgrade_total),
 		})
 
 	var zones_out: Array = []
@@ -92,6 +103,13 @@ static func to_snapshot(world) -> Dictionary:
 			"cf": String(z.get("capture_faction", "")),
 			"cs": String(z.get("capture_state", "")),
 			"pop": round2(float(z.get("population", 0.0))),
+			# ★ 本轮补：区划特化（正在读哪一单 / 读条进度 / 已经生效的那一档）。
+			#   客机点开区划中心时「操作」页要画这些；缺字段 = 保持本地现状。
+			"sk": String(z.get("spec_kind", "")),
+			"sr": round2(float(z.get("spec_remaining", 0.0))),
+			"st": round2(float(z.get("spec_total", 0.0))),
+			"sd": String(z.get("spec_done", "")),
+			"sx": 1 if bool(z.get("spec_cancel", false)) else 0,
 		})
 
 	# ★★ 射箭投掷物（本轮新增）：在飞的投掷物也是**权威状态**（伤害在命中那一刻结算），
@@ -111,11 +129,36 @@ static func to_snapshot(world) -> Dictionary:
 			"su": _unit_id_of(p.source), "sk": _building_key_of(p.source),
 		})
 
+	# ★★ 按席位资源（合作）：`res` 只够单机；客机必须能分清「我这一份」与「队友那一份」。
+	#    只发**玩家席位**，AI 的资源池不下发（AI 没有资源库，见 resource_pool_for）。
+	var pres_out: Dictionary = {}
+	for f in world.player_seats:
+		var pool: Variant = world.player_resources.get(String(f), null)
+		if typeof(pool) == TYPE_DICTIONARY:
+			pres_out[String(f)] = [
+				round(float((pool as Dictionary).get("food", 0.0)) * 10.0) / 10.0,
+				round(float((pool as Dictionary).get("gold", 0.0)) * 10.0) / 10.0,
+			]
+	# 兜底：老路径 / 测试手工建的 world 可能 player_seats 为空，至少把本机席位发出去。
+	if pres_out.is_empty() and String(world.my_faction) != "":
+		pres_out[String(world.my_faction)] = [
+			round(float(world.resources.get("food", 0.0)) * 10.0) / 10.0,
+			round(float(world.resources.get("gold", 0.0)) * 10.0) / 10.0,
+		]
+
+	# ★★ 按席位科技：客机要画科技九格高亮（真正的启用状态仍在房主那一份里）。
+	var tech_out: Dictionary = {}
+	for f in world.player_seats:
+		tech_out[String(f)] = world.active_tech_ids(String(f)).duplicate()
+
 	return {
 		"units": units_out,
 		"buildings": buildings_out,
 		"zones": zones_out,
 		"projectiles": proj_out,
+		"pres": pres_out,
+		"obj": ObjectiveRes.to_snapshot(world.objective_state),
+		"tech": tech_out,
 		"res": [round(float(world.resources["food"]) * 10.0) / 10.0, round(float(world.resources["gold"]) * 10.0) / 10.0],
 		"owned": world.owned_tiles,
 		"time": round2(world.time),
@@ -131,13 +174,19 @@ static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void:
 	if snap.is_empty():
 		return
 
+	# ★★ 一次性建 id → unit 索引：`world.unit_by_id()` 是线性扫描，
+	#    对每个快照单位都调一次就是 O(n²)（500 单位实测是客机侧最大的一笔开销）。
+	var unit_index: Dictionary = {}
+	for u in world.units:
+		unit_index[String(u.id)] = u
+
 	var seen: Dictionary = {}
 	for su in snap.get("units", []):
 		var uid := String(su.get("i", ""))
 		if uid == "":
 			continue
 		seen[uid] = true
-		var u = world.unit_by_id(uid)
+		var u = unit_index.get(uid, null)
 		if u == null:
 			var kind := String(su.get("k", UnitRes.KIND_GENERAL))
 			var fac := String(su.get("f", FactionRes.DEFAULT_FACTION))
@@ -159,13 +208,18 @@ static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void:
 				ConfigRes.general_index_of(kind)
 			)
 			world.units.append(u)
+			unit_index[uid] = u
 		u.alive = true
 		u.faction = String(su.get("f", u.faction))
 		# ⚠️ 单位类型（ut）**只在新建时读**，不在这里覆盖已有单位：
 		#    一个单位的类型当局内不会变，而 hp_max / base_hp_max / unit_class
 		#    都是创建时按类型算好的 —— 单独改 unit_type 会让它与血量上限对不上。
 		#    （快照里带 ut 是为了**新单位**能被正确地建出来，见上面那段。）
+		if su.has("mh"):
+			u.hp_max = maxf(1.0, float(su["mh"]))
 		u.hp = float(su.get("h", u.hp))
+		if u.hp_max > 0.0:
+			u.hp = clampf(u.hp, 0.0, u.hp_max)
 		# ★ 士气：缺字段（老快照）就保持本地现状；有就夹到本地上限里写回。
 		if su.has("mo"):
 			u.morale = clampf(float(su["mo"]), 0.0, u.morale_max)
@@ -187,8 +241,12 @@ static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void:
 		# ★ 权威位置：必须同时写回 pos 与 tx/ty。
 		#   只写插值用的临时字段是不够的 —— 渲染看起来正常，但逻辑里的
 		#   pos / tx / ty 会一直是旧值，于是点选判定、射程判定、HUD 全都是错的。
-		u.pos = Vector2(float(su.get("x", u.pos.x)), float(su.get("y", u.pos.y)))
-		u.sync_tile(world.map)
+		# ★ 没挪动就不重算 tile：30Hz 下大量单位是站定的，sync_tile 是白花的。
+		var nx := float(su.get("x", u.pos.x))
+		var ny := float(su.get("y", u.pos.y))
+		if nx != u.pos.x or ny != u.pos.y:
+			u.pos = Vector2(nx, ny)
+			u.sync_tile(world.map)
 		# ★ 招募队列：一整组字段，按 **tk 在不在** 判断新旧格式（与 ld / fa 同一条约定：
 		#   老快照没有 tk → 整组保持本地现状，不要把队列清空）。
 		#   train_anchor 取权威位置 —— 客机侧「招募期间钉在原地」靠它。
@@ -230,6 +288,10 @@ static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void:
 		if seen.has(u.id):
 			keep.append(u)
 	world.units = keep
+	# 重建索引（去掉本帧阵亡的），投掷物解析目标 / 来源时复用同一份。
+	unit_index.clear()
+	for u in world.units:
+		unit_index[String(u.id)] = u
 
 	# 建筑：整表替换（数量少、结构简单，比按 id 对齐更不容易出错）
 	_world_sync_buildings(world, cfg, snap.get("buildings", []))
@@ -249,12 +311,58 @@ static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void:
 		# 区划人口：老快照没有 pop → 保持本地现状（同上，别用 0 覆盖）
 		if sz.has("pop"):
 			z["population"] = float(sz["pop"])
+		# ★ 区划特化：整组按字段存在与否写，缺字段保持本地现状（与 pop 同一条约定）。
+		if sz.has("sk"):
+			z["spec_kind"] = String(sz["sk"])
+		if sz.has("sr"):
+			z["spec_remaining"] = float(sz["sr"])
+		if sz.has("st"):
+			z["spec_total"] = float(sz["st"])
+		if sz.has("sd"):
+			z["spec_done"] = String(sz["sd"])
+		if sz.has("sx"):
+			z["spec_cancel"] = bool(sz["sx"])
 
-	if snap.has("res"):
+	# ★★ 目标状态：客机只读，不自己 tick（见 world.refresh_after_snapshot / client_session）。
+	if snap.has("obj"):
+		var obj: Variant = snap["obj"]
+		if typeof(obj) == TYPE_DICTIONARY:
+			ObjectiveRes.apply_snapshot(world.objective_state, obj)
+
+	# ★★ 按席位资源：有 pres 就按席位写；没有才回落到旧的单份 res。
+	#    ⚠️ 不要用 `res` 覆盖 `pres` —— 合作时 `res` 只是房主自己那一份。
+	if snap.has("pres"):
+		var pres: Variant = snap["pres"]
+		if typeof(pres) == TYPE_DICTIONARY:
+			for f in (pres as Dictionary).keys():
+				var arr: Variant = (pres as Dictionary)[f]
+				if typeof(arr) != TYPE_ARRAY or (arr as Array).size() < 2:
+					continue
+				var target: Variant = world.player_resources.get(String(f), null)
+				if typeof(target) != TYPE_DICTIONARY:
+					continue          # 不是本局玩家席位（AI 的资源不下发）
+				(target as Dictionary)["food"] = float((arr as Array)[0])
+				(target as Dictionary)["gold"] = float((arr as Array)[1])
+	elif snap.has("res") and world.player_seats.size() <= 1:
+		# ★ 只有单席位（单机 / 老快照）才回落到单份 `res`。
+		#   合作局（两个席位）的 pres 缺失属于「坏快照」—— 按缺字段铁律保持本地现状，
+		#   否则客机会把房主的那份钱覆盖到自己头上（实测踩到：F2 变成 F1 的 111）。
 		var res: Array = snap["res"]
 		if res.size() >= 2:
 			world.resources["food"] = float(res[0])
 			world.resources["gold"] = float(res[1])
+
+	# ★★ 按席位科技：客机只读，用来画九格高亮。
+	if snap.has("tech"):
+		var tech_in: Variant = snap["tech"]
+		if typeof(tech_in) == TYPE_DICTIONARY and world.tech != null:
+			for f in (tech_in as Dictionary).keys():
+				var ids: Variant = (tech_in as Dictionary)[f]
+				if typeof(ids) != TYPE_ARRAY:
+					continue
+				world.tech.active_by_faction[String(f)] = (ids as Array).duplicate()
+			world.tech_effects = world.tech.effects_of(world.my_faction)
+
 	if snap.has("owned"):
 		world.owned_tiles = int(snap["owned"])
 	if snap.has("time"):
@@ -262,7 +370,7 @@ static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void:
 	# ★★ 投掷物（本轮新增）：整表重建。
 	#    ⚠️ 缺字段（老快照）→ **保持本地现状**（与 res / owned / time 同一条约定）。
 	if snap.has("projectiles"):
-		_sync_projectiles(world, snap["projectiles"])
+		_sync_projectiles(world, snap["projectiles"], unit_index)
 
 
 ## 客机：让本地建筑表与快照一致（按 (type,tx,ty,owner) 对齐，保留现有对象以减少闪烁）
@@ -277,7 +385,7 @@ static func _world_sync_buildings(world, cfg: ConfigRes, list: Array) -> void:
 		var b = existing.get(key, null)
 		if b != null:
 			existing.erase(key)
-			b.hp = float(sb.get("h", b.hp))
+			_apply_building_state(b, sb)
 			b.alive = true
 			out.append(b)
 		else:
@@ -286,10 +394,28 @@ static func _world_sync_buildings(world, cfg: ConfigRes, list: Array) -> void:
 				cfg, String(sb.get("t", "wall")), int(sb.get("x", -1)), int(sb.get("y", -1)),
 				String(sb.get("o", FactionRes.DEFAULT_FACTION)), int(z["id"]) if z != null else -1
 			)
-			nb.hp = float(sb.get("h", nb.hp))
+			_apply_building_state(nb, sb)
 			out.append(nb)
 	world.building_list = out
 	world.rebuild_building_index()
+	# ★ 归属缓存 / 迷雾靠这个版本号知道「建筑表换过了」；`rebuild_building_index()` 不涨版本。
+	world.building_revision += 1
+
+
+## 把快照里的一栋建筑状态写进本地对象（**缺字段 = 保持本地现状**）。
+static func _apply_building_state(b, sb: Dictionary) -> void:
+	var mh: Variant = sb.get("mh", null)
+	if mh != null:
+		b.hp_max = maxf(1.0, float(mh))
+	if sb.has("lv"):
+		b.level = int(sb["lv"])
+	b.hp = float(sb.get("h", b.hp))
+	if b.hp_max > 0.0:
+		b.hp = clampf(b.hp, 0.0, b.hp_max)
+	if sb.has("ur"):
+		b.upgrade_remaining = float(sb["ur"])
+	if sb.has("ut"):
+		b.upgrade_total = float(sb["ut"])
 
 
 # ------------------------------------------------------------------
@@ -319,7 +445,7 @@ static func _building_by_key(world, key: String):
 
 ## 客机 / 读档：按快照重建在飞的投掷物（整表替换）。
 ## ⚠️ 目标 / 来源解析不到就置空 —— 投掷物照飞、飞完自然消失、不造成伤害（不崩）。
-static func _sync_projectiles(world, list: Array) -> void:
+static func _sync_projectiles(world, list: Array, unit_index: Dictionary) -> void:
 	var out: Array = []
 	for sp in list:
 		var p = ProjectileRes.new()
@@ -334,7 +460,7 @@ static func _sync_projectiles(world, list: Array) -> void:
 		var tu := String(sp.get("tu", ""))
 		var tk := String(sp.get("tk", ""))
 		if tu != "":
-			p.target = world.unit_by_id(tu)
+			p.target = unit_index.get(tu, null)
 			p.target_is_building = false
 		elif tk != "":
 			p.target = _building_by_key(world, tk)
@@ -342,7 +468,7 @@ static func _sync_projectiles(world, list: Array) -> void:
 		var su := String(sp.get("su", ""))
 		var sk := String(sp.get("sk", ""))
 		if su != "":
-			p.source = world.unit_by_id(su)
+			p.source = unit_index.get(su, null)
 		elif sk != "":
 			p.source = _building_by_key(world, sk)
 		p.alive = true

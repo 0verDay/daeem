@@ -51,6 +51,8 @@ const PageTabsRes = preload("res://view/page_tabs.gd")
 const TechGridRes = preload("res://view/tech_grid.gd")
 const HoverTipRes = preload("res://view/hover_tip.gd")
 const MinimapRes = preload("res://view/minimap.gd")
+## ★★ 顶部居中目标条（战役 / 合作；M12.1 新增）。见 view/objective_panel.gd。
+const ObjectivePanelRes = preload("res://view/objective_panel.gd")
 ## ★★ 选项页菜单（仿 nsoc）：HUD 右上角「选项」与主菜单右上角「选项」共用同一套。
 const OptionsPanelRes = preload("res://view/options_panel.gd")
 ## ★★ 悬停时「金色自下而上填进来」的那套动效（见 view/fill_button.gd）。
@@ -74,6 +76,8 @@ var tech_grid: Control = null
 ##    那一整段（左缘对命令卡左缘、右缘对页签列右缘，宽 340），
 ##    高度按悬停到的文本动态缩放（向上长）。见 view/hover_tip.gd 的文件头。
 var hover_tip: Control = null
+## ★★ 顶部居中目标条：有目标才显示（老路径 / 自由对战整块隐藏）。
+var objective_panel: Control = null
 var settings_button: Button = null
 ## ★★ 选项页控制器（overlay + 居中面板；见 view/options_panel.gd）。
 ##   `settings_panel` 只是它的 overlay 别名（兼容 main.gd / 旧测试）。
@@ -238,6 +242,8 @@ func setup(p_cfg: ConfigRes, p_world, p_input, theme: Theme, p_camera_rig = null
 	# ★ 资源条要在详细信息面板**之前**建：两块在屏幕上上下紧贴，
 	#   先建的那块在下层 —— 万一以后谁把资源条调高了，它压住的是面板上沿而不是反过来。
 	_build_resource_bar()
+	# ★ 目标条在资源条之后、详细信息之前：它只影响屏幕上沿，与底栏无关。
+	_build_objective_panel()
 	_build_detail_panel()
 	_build_command_card()
 	_build_page_tabs()
@@ -599,6 +605,15 @@ func _build_resource_bar() -> void:
 		value.size = Vector2(UiLayoutRes.RES_TEXT_W, UiLayoutRes.RES_ICON)
 
 	_refresh_resource_bar()
+
+
+## ★★ 顶部居中目标条（战役 / 合作；M12.1）。
+## 它自己读 `world.objective_state`，HUD 只负责建一次 + 每帧 `sync()`。
+func _build_objective_panel() -> void:
+	objective_panel = ObjectivePanelRes.new()
+	# ⚠️ 先 add_child、再 setup：与资源条 / 选项页同一条坑（进树前拿不到主题字体）。
+	_root.add_child(objective_panel)
+	objective_panel.setup(cfg, world, _font)
 
 
 ## 资源条上的两个数字：**每帧**从权威值（`world.resources`）重新格式化。
@@ -2468,6 +2483,10 @@ func _end_tick_cache() -> void:
 func _refresh_shell() -> void:
 	# ★ 资源条先刷（它只读 `world.resources`，与选中了什么无关）
 	_refresh_resource_bar()
+	# ★★ 目标条也只读世界状态（`world.objective_state`），与选中无关；
+	#    放在 shell 这一档刷（手机端 10Hz 足够，进度条不需要 60Hz）。
+	if objective_panel != null:
+		objective_panel.sync()
 	# ★★ 页签先按「现在选中了什么」推上去（选中部队 = 操作/单位；选中区划中心 = 招募；
 	#    选中大本营 = 科技；选中普通建筑 = 一颗都没有；什么都没选中 = 建筑 + 科技）。
 	#    命令卡的内容跟着页签走（page_tabs 发 page_changed → _rebuild_card）。

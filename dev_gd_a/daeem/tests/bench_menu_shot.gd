@@ -15,6 +15,8 @@
 extends SceneTree
 
 const MainScene := preload("res://view/main.tscn")
+const QuitConfirmRes := preload("res://view/quit_confirm.gd")
+const FontLoaderRes := preload("res://view/font_loader.gd")
 
 ## 存哪儿：`res://shots/`（看完随手删；不要提交）
 const OUT_DIR := "res://shots"
@@ -38,7 +40,10 @@ func _run() -> void:
 	root.add_child(main)
 	await _wait(SETTLE_FRAMES)
 
-	# 1) 入场页：等淡入与扫光跑完（这两个都是 Tween，太快截会拍到中间态）
+	# 1) 入场页：等「开局从全黑淡入」与扫光跑完（都是 Tween，太快截会拍到中间态）
+	var boot_deadline: int = Time.get_ticks_msec() + 3000
+	while Time.get_ticks_msec() < boot_deadline and main.start_screen.boot_fade() != null:
+		await process_frame
 	await _wait(80)
 	await _shoot("01_intro")
 
@@ -100,6 +105,51 @@ func _run() -> void:
 		await _shoot("05_menu_hover")
 		tb.mouse_exited.emit()
 		await _wait(10)
+
+	# 6) 战役过渡画面（左缩略图 + 右简报 + 两张阵营卡 + 底部进度/提示）
+	main._on_level_entry_pressed("demo", "01_beachhead")
+	var tr_deadline: int = Time.get_ticks_msec() + 4000
+	while Time.get_ticks_msec() < tr_deadline and main.level_transition() == null:
+		await process_frame
+	var tr = main.level_transition()
+	if tr != null:
+		var ready_deadline: int = Time.get_ticks_msec() + 9000
+		while Time.get_ticks_msec() < ready_deadline and not tr.ready_to_enter():
+			await process_frame
+		# ★ ready 只代表条已落画；提示还要再淡入 hint_fade_sec（0.25）才看得见。
+		#   等 0.30s：淡入刚跑完、呼吸还没把它压暗，截图里提示是接近全亮的。
+		await _wait_sec(0.30)
+		await _shoot("08_level_transition")
+		tr.select_faction("F1")
+		await _wait_sec(0.25)
+		await _shoot("09_level_transition_selected")
+		tr.cancel()
+		await _wait_sec(0.6)
+	else:
+		print("[SHOT] 战役过渡画面没挂出来 —— 08/09 跳过")
+
+	# 7) 退出确认浮层（暗底金线 + 「点面板退出 / 点空白或 Esc 取消」）
+	#    ★ 拍完必须 **cancel**，绝不能点确认 —— 那会真的把截图进程退掉。
+	main._on_quit_requested()
+	await _wait_sec(0.5)
+	await _shoot("06_quit_confirm")
+	var qc = main.get_node_or_null("QuitConfirm")
+	if qc != null and qc.is_open():
+		qc.cancel()
+		await _wait_sec(0.4)
+
+	# 8) 确认后的**全屏渐黑**那一拍：独立造一个浮层（**不接 main**，confirmed 不会退出进程），
+	#    点确认后 0.12s 抓一帧 —— 用来看「黑是不是盖住了整屏」，而不是只盖住面板。
+	var qc2 = QuitConfirmRes.new()
+	root.add_child(qc2)
+	qc2.setup(main.cfg, FontLoaderRes.load_font(main.cfg))
+	qc2.request()
+	await _wait_sec(0.35)
+	qc2.confirm()
+	await _wait_sec(0.12)
+	await _shoot("07_quit_fading")
+	qc2.queue_free()
+	await _wait_sec(0.05)
 
 	print("[SHOT] done")
 	quit(0)

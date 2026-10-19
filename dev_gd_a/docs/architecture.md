@@ -94,6 +94,10 @@ dev_gd_a/daeem/
 │   ├── map_library.gd            #   ★ 扫 data/maps/ 列出所有地图（开场主界面那条**地图选择条**的
 │   │                             #     唯一数据源）：目录名 = id，地图 json 的 name = 显示名
 │   │                             #     → 加一张图 = 加一个目录，不改代码、不改配置
+│   ├── level_brief.gd            #   ★ 关卡简报的**唯一整理处**（过渡画面/阵营卡/测试共用）：
+│   │                             #     标题、`briefing[]`（缺失自动生成「名字：目标」）、
+│   │                             #     可玩阵营 {id,name,color,goal}、目标区 id；
+│   │                             #     纯字符串整理，不碰节点、不解析颜色
 │   ├── unit.gd                   #   单位：移动 + 战斗 + 警戒 + 复活（本轮不做复活）
 │   │                             #   + ★ 招募队列（将领自己就是兵营：train_* 字段）
 │   │                             #   + ★ 驻防 AI 的字段（garrison_zone_id / patrol_timer /
@@ -166,13 +170,31 @@ dev_gd_a/daeem/
 │   │                             #      只留给测试 / 截图脚本）
 │   ├── start_screen.gd           #   ★ 开场两页（暗金渐变页，不走 ui_style）：
 │   │                             #   入场页 = 徽记 + 带字距的标题 + 金线 + 呼吸提示；
+│   │                             #   ★★ 启动时最上层有一张 `BootFade`（铺满、鼠标穿透）从全黑淡入
+│   │                             #     （`menu.intro_fade_in_sec`，默认 0.8s）；close/回菜单会收掉；
 │   │                             #   ★★ 「点一下」是**两段动画**：① 徽记/标题/金线缓动到主界面标题条
 │   │                             #     里各自的位置（字号字距一起过渡，落位后切页看不出接缝）
 │   │                             #     ② 切页 + 主菜单那三块面板滑入（见 panel_expand.play_intro()）
+│   │                             #   ★★ 两段期间主界面是「显示但 alpha 0」⇒ `_menu_blocked` 挡住
+│   │                             #     test 按钮，直到 menu_chrome.intro_finished；否则快速连点会
+│   │                             #     点中看不见的按钮直接开局，回菜单时 logo/test 停在 alpha 0
 │   │                             #   ★★ 主界面正中：标题条 + `MenuColumn`（**test_1 / test_2 / test_3**，
 │   │                             #     各自直连一关，数据在 config 的 `menu.test_entries`）；
 │   │                             #     右下「战役」按钮撑开的是战役菜单（见 campaign_menu.gd）；
 │   │                             #     两路都归到 `level_entry_pressed(campaign_id, level_id)`
+│   ├── level_transition.gd      #   ★★ **战役过渡画面**（仿 nsoc 章节入口 + 街亭）：
+│   │                             #     左=战场缩略图（map_preview）+ 右=标题/简报/阵营卡 +
+│   │                             #     底部**实时**预加载进度条：从下方升起 → 真实进度 → 满后
+│   │                             #     下滑出画 → **完全出画才允许进入** → 提示**从落画那一刻**
+│   │                             #     才淡入并呼吸（「请选择阵营 / 作为X进入游戏」）；
+│   │                             #     ★ 无最短展示时长；只发 enter_requested(faction)/cancelled，
+│   │                             #     建世界仍在 main；多可玩阵营默认不选，未选时提示不可点；
+│   │                             #     ★★ 点进入的黑屏转场在 main（EnterFade，黑屏跨收页/建世界）
+│   ├── map_preview.gd           #   ★ 过渡画面的战场缩略图（纯 _draw，零图片资源）：
+│   │                             #     地形烘 1px/格 贴图 + **区划归属淡底** + 区划边界 +
+│   │                             #     目标区金框 + 大本营 + 出生点；
+│   │                             #     ★★ 归属 / 标识按「敌 / 友 / 己」三色（view/side_color.gd）；
+│   │                             #        还没选可玩阵营时统一灰色，选中阵营后实时换色。
 │   ├── campaign_menu.gd          #   ★★ **战役菜单**（版式移植自 nsoc 的 CampaignPanel）：
 │   │                             #     左 1/4 战役轮播 + 顶部关卡圆点 + 右侧关卡描述 +
 │   │                             #     左右拖动切关卡 + **长按 3 秒**（环形进度）进入；
@@ -200,6 +222,12 @@ dev_gd_a/daeem/
 │   ├── palette.gd                #   ★★ 坐标换算的**唯一**出处（3D 版）：**实例类**，持有 `Camera3D`；
 │   │                             #      `to_px` = `unproject_position`、`to_logic` = 地面射线求交
 │   │                             #      ⇒「格 ↔ 屏幕」的正反两面由**同一台相机**导出
+│   ├── side_color.gd             #   ★★ **局内「敌 / 友 / 己」统一配色**（本轮新增）：
+│   │                             #      `relation()` = 本机视角下的 self / ally / enemy / neutral
+│   │                             #      （同方走 FactionRes 盟友表）；`color()` 取
+│   │                             #      `colors.side.self/ally/enemy`（蓝/黄/红）。
+│   │                             #      ★ 单位 / 建筑 / 投掷物 / 小地图 / 区划 / 血条 / 选中圈 /
+│   │                             #        过渡缩略图都读它；菜单与「选谁」的阵营卡仍用身份色
 │   ├── unit_icon.gd              #   ★ 单位在地图上显示的那个**字**（`unit.types.<id>.icon`）
 │   │                             #     + 按（单位类型 × 是否将领）烘成的贴图
 │   ├── input_controller.gd       #   ★ 输入 → 命令（唯一允许读鼠标的地方）
@@ -244,9 +272,19 @@ dev_gd_a/daeem/
 │   │                             #     20Hz 节拍里 shell / 详细信息 / 部队列表各占一块；
 │   │                             #     桌面 / 测试仍走 `refresh()` 全量刷新；
 │   │                             #     选中变化（local_ui_changed）立即全刷
+│   ├── quit_confirm.gd           #   ★★ **退出确认浮层**（版式移植自 nsoc 的 quit_confirm）：
+│   │                             #     layer 200：55% 黑遮罩 + 居中面板（屏 70%×50%）+
+│   │                             #     「点击面板退出 / 点空白或 Esc 取消」；确认后遮罩先推全黑
+│   │                             #     0.2s、再保持全黑 0.1s 才发 `confirmed`（= 缓冲那一拍）；
+│   │                             #     ★★ confirmed 之后**不销毁遮罩**：留着全黑直到进程退出
+│   │                             #     （否则最后一帧会露出底下的界面，见 pitfalls 5.78）；
+│   │                             #     ★ 不是 autoload：只发信号，**quit 只在 main.gd**；
+│   │                             #     桌面窗口 X 不拦（nsoc 原样），安卓返回由 main 接
 │   ├── minimap.gd                #   ★ 左下角小地图：地形 / 迷雾烘成 1px/格 贴图，
 │   │                             #     视野框由 3D 相机四角反算；手机端 10Hz 重画，
 │   │                             #     并把第一次重画错开 HUD 槽位（stagger_redraw）
+│   │                             #   ★★ 红点性 AI：将领画小红菱形（**只在没被观测到 / 还在迷雾里**时；
+│   │                             #     常驻菱形带呼吸）+ 刷兵时在出生格播「由大变小的菱形」动效（每次都播）
 │   ├── hover_tip.gd              #   ★ 悬停详情面板（本版新增）：住在**命令卡正上方**，
 │   │                             #     水平范围 = 命令卡 + 右边那一列页签那一整段
 │   │                             #     （**左缘对命令卡左缘、右缘对页签列右缘**，宽 340），
@@ -411,8 +449,8 @@ func sync(_dt: float) -> void:
 
 ```gdscript
 # logic/snapshot.gd
-static func to_snapshot(world: World) -> Dictionary: ...
-static func apply_snapshot(world: World, snap: Dictionary, now_ms: int) -> void: ...
+static func to_snapshot(world) -> Dictionary: ...
+static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void: ...
 ```
 
 本轮就写、就测（往返一致、缺字段不炸），但**只用于调试与以后的存档/回放**。
@@ -420,6 +458,39 @@ static func apply_snapshot(world: World, snap: Dictionary, now_ms: int) -> void:
 
 **快照里不放的**：路径（`path`）、地形、相机、UI、日志。
 理由见 [`route.md`](route.md) 第四节 —— 只发结果，不发过程。
+
+**M12.2 起补上的合作字段**（详见 `route.md` 第四十九节）：
+`pres`（按席位资源）、`obj`（目标状态）、`tech`（按席位科技）、
+单位 / 建筑的 `mh`（血量上限）、建筑升级读条、区划特化读条。
+⚠️ 合作局（两个席位）缺 `pres` 时**不**回落到旧的单份 `res`；只有单席位才回落。
+⚠️ 客机不 tick：应用快照后必须调 `world.refresh_after_snapshot()`（迷雾 / 归属 / 科技加成）。
+
+**联机会话**（`net/`，M12.2 起）：`transport`（可靠 / 不可靠文本通道）→
+`host_session`（校验客机命令 + 30Hz 快照，M12.7 起）→ `client_session`（上行命令 + 应用快照）。
+中继 / Steam P2P 只是 transport 的不同实现，协议与会话不变。
+
+**M12.3 的 WebSocket 实现**：`net/relay_transport.gd` 用 `WebSocketPeer`；
+`server/daeem_relay.py` 是零依赖 RFC6455 中继（房间 + 转发 + `/health`）。
+部署定稿：**Windows + 公网 IPv4 + `ws://:8770` + nssm**，不占 IIS / 443；
+以后要 `wss://` 只改 `relay_url`。详见 `server/README.md` 与 `route.md` 第五十节。
+
+**M12.4 的大厅 / 游戏接线**：`net/lobby.gd`（建房 / 加入 / 准备）→ `view/coop_lobby.gd`；
+开局时大厅把 transport 交出去，`game_scene3d.start_coop_host()` / `start_coop_guest()` 接管。
+客机用房主 `start` 里的 `level_data` 经 `Level.from_data()` 建同一个世界壳，**不 tick**；
+房主继续 tick + 30Hz 快照（`net.snapshot_hz`，M12.7 起；原 20Hz）。合作局
+`input_ctrl.pause_allowed = false`。
+
+**M12.5 的实机部署（2026.10.19）**：腾讯云 Windows + nssm 服务 `DAEEMRelay`，
+监听 `0.0.0.0:8770`，公网 `ws://159.75.154.122:8770/ws`；部署脚本
+`server/deploy.ps1`（备份 / 健康检查 / 回滚 / `-DryRun`）。服务端状态只在主机上
+（`C:\daeem\server`、`C:\daeem\logs`、`C:\daeem\backup`），不进游戏逻辑。
+详见 `server/README.md` 与 `route.md` 第五十二节。
+
+**M12.7 的快照率与联机优化（2026.10.19）**：默认 **30Hz**（`net.snapshot_hz`，代码夹 10~60）；
+房主在出站缓冲 > `net.snapshot_buffer_limit_kb`（默认 1 MiB）时**跳过这一帧快照**（背压，
+避免旧帧越积越多）；客机每轮 `poll()` **只应用最后一条**全量快照（合并）；`apply_snapshot`
+用一次性 id→unit 索引，避免 `unit_by_id()` 的 O(n²)。测量脚本 `tests/bench_snapshot.gd`，
+数字见 `route.md` 第五十三节。
 
 ---
 
@@ -493,6 +564,9 @@ Godot 里 DPR 由引擎处理，**但下面三条要原样继承**：
 - ★ **地面是一整块 `PlaneMesh` + 一张烘出来的贴图**（网格线与区块归属是**贴图上的像素**
   ⇒ 天然连续，不可能出现「斜着的区块线互相穿插」）；
   **迷雾是另一块平面 + 另一张贴图**（它每帧都在变，而地形图只在归属变化时重烘），两层各 1 次 draw call。
+  ★★ 迷雾的变更检测是**每帧整块掩码 memcmp**（`ground.rebake_fog()`），重烘由
+  `cfg.fog_rebake_min_sec`（默认 0.1s）合并；**不是**抽样签名、也不跟区划一起走 15 帧节流
+  （旧写法在大图上漏检率 >96%，见 pitfalls 11.6）。
 - ★ 单位与建筑各自用 `MultiMesh` 合批：单位按「**阵营 × 是否将领**」分桶
   （`MultiMesh` 不支持逐实例贴图 ⇒ 变体数 = 阵营数 × 2，本项目是个位数），立牌用材质自带的 billboard；
   建筑是一个单位 `BoxMesh` 靠**逐实例非等比缩放**表达尺寸差异。
@@ -564,19 +638,26 @@ Godot 里 DPR 由引擎处理，**但下面三条要原样继承**：
 | UI 几何（面板位置与尺寸） | `view/ui_layout.gd` | 纯常量，照参考图的像素稿；其它 view 文件不写坐标字面量 |
 | 当前页签（操作 / 单位 / 招募 / 科技 / 建筑） | `view/page_tabs.gd` + `hud._tab_plan()` | 纯本地显示状态，只决定命令卡里有什么；**显示哪几颗由当前选中对象决定**（route.md 二十二节），每一类选中各记「上次停在哪一页」（`hud._page_memory`）。★ 科技页在**选中大本营**与**什么都没选中**两处都出现，是同一颗页签、同一套九格 |
 | **悬停到哪一格 / 悬停面板写什么** | 序号由 `view/command_card.gd` · `view/tech_grid.gd` 报（`cell_hovered` / `cell_unhovered`）；**文案**由 `hud._hover_detail()` 现取；面板本身是 `view/hover_tip.gd` | 纯本地显示状态，**不进命令、不进快照**。★ 与点击同一条划分：格子控件只报「第几格」，**界面词只在 hud 一处**（`_hover_detail` 那一段）；对应关系见 route.md 第二十七节 |
-| 科技的启用状态（谁启用了哪几条） | `logic/tech.gd` 的 `active_by_faction`（由 `logic/world.gd` 持有并暴露查询） | ★ 它是**世界状态**（影响产量 / 血量 / 人口），不是界面状态：界面每帧读 `world.tech_entries()` 画高亮，命令只有 `tech_toggle` 一条。效果数值全在 `data/config.json` 的 `tech.list` |
+| 科技的启用状态（谁启用了哪几条） | `logic/tech.gd` 的 `active_by_faction`（由 `logic/world.gd` 持有并暴露查询） | ★ 它是**世界状态**（影响产量 / 血量 / 人口），不是界面状态：界面每帧读 `world.tech_entries()` 画高亮，命令只有 `tech_toggle` 一条。效果数值全在 `data/config.json` 的 `tech.list`。★ 合作时 `world.seat_tech_effects` 每个玩家席位一份（`tech_effects` 是本机那份的别名） |
 | 建筑升级的读条（等级 / 进度 / 已扣的钱） | `logic/building.gd` 的 `level` / `upgrade_*` 字段；规则在 `logic/upgrade.gd` | ★ 与「招募队列挂在将领 / 区划上」同一个理由：「这栋楼正在干嘛」属于这栋楼。命令只有 `building_upgrade` / `building_upgrade_cancel` 两条（按**地块**定位） |
 | 区划特化（已选哪一种 / 读条 / 已扣的钱） | `logic/zone.gd` 的 `spec_*` 字段；规则在 `logic/upgrade.gd` | `spec_done` = 已经生效的特化（**跟着地块走**，区划易主保留）；`spec_kind` = 正在读条的那一单。命令 `zone_specialize` / `zone_spec_cancel` / `zone_spec_bar_cancel` |
 | 建筑血量上限的**两个倍率**（等级 × 科技） | `logic/building.gd` 的 `base_hp_max` / `level_hp_mult` / `tech_hp_mult` → `refresh_hp_max()` | ★ 上限只有这一个算法：**基础值 × 等级倍率 × 科技倍率**；当前血量按比例缩放。升级读完由 `world.apply_building_level_hp()` 落一次 |
-| 科技的三类效果（每地块加产量 / 血量上限倍率 / 区划人口增长倍率） | `logic/tech.gd` 的 `effects_of()` → `world.tech_effects` | 每帧在 `tick()` 开头重算；启用 / 弃用时 `_apply_tech_effects()` **立即**落到对象上（血量按比例缩放、上限从 `base_hp_max` 重算） |
+| 科技的三类效果（每地块加产量 / 血量上限倍率 / 区划人口增长倍率） | `logic/tech.gd` 的 `effects_of()` → `world.seat_tech_effects`（每玩家席位一份）+ `world.tech_effects`（本机别名） | 每帧在 `tick()` 开头按席位重算；启用 / 弃用时 `_apply_tech_effects()` **立即**落到对象上（只加 `owner == 该席位` 的对象；合作两人是盟友也不会加两次）；人口增长走 `zone.update_population_multi()`，每个区划只长一次 |
 | **战争迷雾（谁能看见哪一格 + 已知的敌方建筑）** | `logic/fog.gd`（由 `logic/world.gd` 持有并暴露成 `world.fog`） | ★ 它是**派生数据**：只读 `map.terrain` + 各单位 / 建筑的位置算出来，**不进快照**（联机时各端各算一遍）。`world.tick()` 末尾按需重算（`fog.refresh_needed()`）；`reset()` 末尾也算一次，于是进游戏第一帧之前就有正确的迷雾。★ 单位 / 建筑各自的视野半径在 `unit.vision` 字段上（出生时从 config 抄进对象） |
 | 视野半径的数值 | `data/config.json` 的 `fog.vision_default` / `fog.vision_building` / `unit.types.<id>.vision` / `unit.general.stats[i].vision` / **`building.<type>.vision`** | ★ **单位与建筑各有一张「每类型一个值」的表**，两处完全对称。游戏侧只读 `cfg.unit_vision_of()` / `cfg.general_vision_at()` / `cfg.building_vision_of()`（后两个的兜底分别是 `fog.vision_default` 与 `fog.vision_building`）；编辑器（tools/unit_editor）改的是同一批键 |
 | 灰色遮罩的颜色与不透明度 | `data/config.json` 的 `fog.mask_color` / `fog.mask_alpha` → `cfg.fog_mask_color` | 纯显示；`view/ground_view.gd` 烘的迷雾贴图只存「看得见 / 看不见」，颜色靠材质的 modulate —— 换颜色不必重烘贴图 |
 | 地图边界金线的位置 / 颜色 / 线宽 / 渐变与扫描 | `data/config.json` 的 `render.map_border_*`（offset / color / width / fade_tiles / dim_alpha / scan_alpha / scan_sec / scan_tiles）→ `view/map_border_view.gd` + `view/map_border.gdshader`（`game_scene3d` 建的 `MapBorderView3D`） | 纯表现：只读 `world.map.cols` / `rows`，线画在可玩矩形**之外** offset 格（默认 2），**不进快照**、不改逻辑、无碰撞。线宽是**世界单位**（缩放时跟着变粗变细）；渐变（默认 0.5 格，朝向地图内侧）由**几何**给形状、扫描（一遍 7 秒、由上往下循环）由 **shader** 按世界 z 算；它只挂在游戏内场景，两个编辑器都不画 |
 | 操作页的「命令模式」（点了移动 / 攻击 / 行军之后等左键点地图） | `view/input_controller.gd` 的 `order_mode` | 纯本地输入状态，与 `build_type` 同源、互斥；命令照旧只走 `command_issued` |
 | 招募队列的实现细节（进度、五个格子的几何） | `logic/unit.gd` 的 `train_*` 字段 / `logic/zone.gd` 的 `train_*` 字段（**区划招募**）+ `view/recruit_queue.gd` | 进度由 `unit.train_progress()` / `world.zone_train_progress()` 算好，视图只取色与填格子（不让视图自己发明判定，见 pitfalls 5.20）；同一个控件显示「将领的队列」或「区划的队列」（`set_queue(holder, is_zone)`） |
-| 事件（击杀 / 建筑被拆 / 招募…） | `logic/world.gd` 收集 → `world.tick()` 返回 | **逻辑层不写 UI 文案**；目前只翻译三条：`recruit_rejected` / `order_rejected` → 左栏那行红字、`unit_recruited` → 把新兵选上（`view/game_scene3d.gd` → `hud` / `input_controller`） |
-| 谁是房主 / 我的阵营 | 第 1 轮再加 | 本轮固定为单机阵营 |
+| 事件（击杀 / 建筑被拆 / 招募…） | `logic/world.gd` 收集 → `world.tick()` 返回；客机走 `net/event_codec.gd` | **逻辑层不写 UI 文案**；目前只翻译三条：`recruit_rejected` / `order_rejected` → 左栏那行红字、`unit_recruited` → 把新兵选上（`view/game_scene3d.gd` → `hud` / `input_controller`）。★ 联机时事件里的对象引用换成 id / 建筑 key，客机再查回本地对象 |
+| 谁是房主 / 我的阵营 / 房间 | `net/host_session.gd` / `net/client_session.gd`；`transport` 是通道 | 房主 = `players[0]`、客机 = `players[1]`；两端 `roster` 同序（`level.coop_roster()`）。命令 / 快照 / 事件都只经会话层，`logic/` 不认房间 |
+| 联机快照 / 命令序号 | `net/host_session.gd` 的 `_seq` / `_last_cmd_seq`；快照内容仍是 `logic/snapshot.gd` | 快照是**结果**，命令是**意图**；`seq` 只在连接内单调递增，重放 / 冒充在会话层丢弃 |
+| 快照频率 / 背压 / 合并 | `net/host_session.gd` 的 `snap_interval` / `snap_buffer_limit` / `snapshots_skipped`；`net/client_session.gd` 的 `_pending_snap` / `snapshots_coalesced`；`data/config.json` 的 `net.snapshot_hz` | 默认 30Hz（夹 10~60）；房主出站缓冲 > 1 MiB 时跳过这一帧；客机每轮只应用最后一条全量快照（全量 ⇒ 跳过中间帧安全）；`apply_snapshot` 用 id→unit 索引避免 O(n²) |
+| 合作房间 / 准备状态 | `net/lobby.gd` 的 `room`；界面在 `view/coop_lobby.gd` | 纯会话状态，不进 `world`；开局后大厅交出 transport，房间状态不再影响游戏 |
+| 房主 / 客机角色 | `game_scene3d.gd` 的 `coop_role` / `coop_*_session` | `host` 跑 `world.tick()`；`guest` 只 poll + 应用快照；客机 `pause_allowed=false` |
+| 中继部署 / 服务状态 | 主机上的 nssm 服务 `DAEEMRelay`；部署脚本 `server/deploy.ps1`；目录 `C:\daeem\server` / `logs` / `backup` | 服务端只在主机上，不进游戏包、不进 `logic/`；脚本负责备份 / 健康检查 / 回滚，`-DryRun` 只预览 |
+| 客户端连接地址 / build | `data/config.json` 的 `net.relay_url` / `net.build`；导包时烘进 PCK；大厅 `view/coop_lobby.gd` 可手改 URL | 两端 `build` 必须与中继 `--build` 一致；改公网 IP 可直接在大厅改 URL，不必重导 |
+| 导出 / 打包配置 | `export_presets.cfg`（Windows / Android）+ `daeem.csproj` | ★ 地图 / 战役 / 配置是**非资源 JSON**，必须 `include_filter="*.json"`；Android 另需 `permissions/internet=true`；Windows 预设 `embed_pck=false` 时要连 `DAEEM.pck` 一起分发 |
 
 > **建筑为什么不用 `TileMapLayer` 当权威**：一个地块只能有一个建筑，
 > 用 `Vector2i → Building` 字典查询更快、更明确，也不会和地形的图块数据纠缠。

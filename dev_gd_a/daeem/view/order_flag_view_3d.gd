@@ -4,7 +4,8 @@
 ##   1. 移动命令 `plant()` 在**落点上方一点点**（`render.order_flag_fall_height`，默认 0.15 格）
 ##      生成旗帜，快速落向落点；
 ##   2. 落地瞬间在旗下贴地扩散**一道旗色波纹**（`order_flag_ripple_*`）；
-##   3. 整面旗（旗杆 + 旗面，以落点为轴）先压缩再回弹（`order_flag_impact_sec`，比下落慢）；
+##   3. 整面旗（旗杆 + 旗面，以落点为轴）先压缩再回弹（`order_flag_impact_sec`）；
+##      ★ 下落 + 回弹合计 ≈ 0.2s（用户口径：插旗动画要快），渐隐仍是下面那个独立时长。
 ##   4. 落地后 `order_flag_fade_sec` 内渐隐并消失 —— **不再**按「部队是否到达」决定收旗。
 ##   ★ 行军命令（`attack_move`）**不重播插下动画**：旗帜直接出现在落点，只做三件事 ——
 ##     旗色由绿渐变到黄（`order_flag_attack_color_sec`）、杆顶上方渐入**程序化红色交叉图标**、
@@ -84,8 +85,8 @@ var ripple_color_last: Color = Color.WHITE
 var cloth_color_last: Color = Color.WHITE
 
 ## 时间轴（秒）
-var _fall_sec: float = 0.22
-var _impact_sec: float = 0.55
+var _fall_sec: float = 0.12
+var _impact_sec: float = 0.08
 var _fade_sec: float = 1.0
 var _icon_fade_in_sec: float = 0.6
 var _attack_color_sec: float = 0.6
@@ -126,8 +127,8 @@ func setup(p_cfg: ConfigRes, p_palette) -> void:
 	_attack_color = ConfigRes.parse_color(cfg.str_val("render.flag_attack_color", "#e6c200"))
 	_icon_color = ConfigRes.parse_color(cfg.str_val("render.order_flag_icon_color", "#e5383b"))
 	_fall_height = maxf(0.0, cell * cfg.num("render.order_flag_fall_height", 0.15))
-	_fall_sec = maxf(0.001, cfg.num("render.order_flag_fall_sec", 0.22))
-	_impact_sec = maxf(0.001, cfg.num("render.order_flag_impact_sec", 0.55))
+	_fall_sec = maxf(0.001, cfg.num("render.order_flag_fall_sec", 0.12))
+	_impact_sec = maxf(0.001, cfg.num("render.order_flag_impact_sec", 0.08))
 	_fade_sec = maxf(0.001, cfg.num("render.order_flag_fade_sec", 1.0))
 	_attack_color_sec = maxf(0.001, cfg.num("render.order_flag_attack_color_sec", 0.6))
 	_icon_fade_in_sec = maxf(0.001, cfg.num("render.order_flag_icon_fade_in_sec", 0.6))

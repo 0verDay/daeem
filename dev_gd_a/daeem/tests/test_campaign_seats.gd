@@ -28,6 +28,7 @@ func _run() -> void:
 	_group_capture(cfg)
 	_group_ai_ally_acts(cfg)
 	_group_player_units_have_no_ai(cfg)
+	_group_mt_level(cfg)
 
 func _group_player_units_have_no_ai(cfg) -> void:
 	var camp = CampaignRes.load_campaign(DEMO_DIR, cfg)
@@ -79,6 +80,81 @@ func _group_player_units_have_no_ai(cfg) -> void:
 			if String(u.faction) == mine:
 				ok(not u.is_garrison(), "★ [%s] %s 不是「驻防单位」" % [seat, String(u.id)])
 				break
+
+## ★★ 回归：**main_test（demo 的 mt）选 F2 时目标一开局就「已占领」**（用户报的 bug）。
+##
+## 根因：mt 的两个可玩阵营原来都写着 `ai: none` ⇒ 没被选中的 F1 仍被算成「本机操作的席位」，
+##   于是 `defend` 里带着 F1；而 F2 的目标「占领囊关东门」（c8）开局归 `sj` —— 它正是 F1 的
+##   盟友 ⇒ 第一帧就把「敌人盟友的地」判成我方 → `state = won`、界面显示「已占领」。
+##
+## 修法两层（都要钉住）：
+##   1. 数据：选边关里**每个可玩阵营都要挂 AI**（不然没被选中的那一方既不动、
+##      又会被当成玩家）——与 01_beachhead / ferry 的数据口径一致；
+##   2. 运行时：`objective.setup()` 只把**与本机席位同方**的席位算进 `defend`
+##      —— 数据再写错也不会「一进关就判胜」。
+func _group_mt_level(cfg) -> void:
+	var camp = CampaignRes.load_campaign(DEMO_DIR, cfg)
+	var lv = camp.level("mt") if camp != null else null
+	ok(lv != null, "（前提）mt 关卡能载入")
+	if lv == null:
+		return
+	eq(lv.playable_ids(), ["F1", "F2"], "（前提）mt 是可玩的选边关")
+	eq(String(lv.objective_of("F2")["kind"]), "capture_zone", "mt 红方的目标是**攻占**")
+	eq(int(lv.objective_of("F2")["zone"]), 8, "mt 红方要攻的是 c8（囊关东门）")
+
+	# ---- 1) 数据：两个可玩阵营都必须挂 AI（没被选中的那一方才有人操作）----
+	var no_ai: Array = []
+	for fid in lv.playable_ids():
+		if String(lv.faction_config(String(fid)).get("ai", "none")) == "none":
+			no_ai.append(String(fid))
+	eq(no_ai, [], "★★ mt 的每个可玩阵营都挂了 AI（不挂 ⇒ 没被选中的一方会站桩、还会被当成玩家）")
+
+	# ---- 2) 选 F2：目标开局必须是「进行中」----
+	var w = _world(cfg, lv, "F2")
+	ok(w != null, "选 F2 能建出世界")
+	if w != null:
+		eq(w.player_factions, ["F2"], "★ 本机只操作 F2（F1 归 AI 接管）")
+		ok(_piloted(w).has("F1"), "★ 没被选中的 F1 由 AI 接管（它会自己动）")
+		var st: Dictionary = w.objective_state
+		eq(String(st["kind"]), "capture_zone", "F2 打的是「占领」那条目标")
+		eq(st["defend"], ["F2"], "★★ 守方席位只有 F2（F1 是敌人，不算「我方」）")
+		ok(_owner(w, 8) != "F2", "（前提）c8 开局不归 F2（实际 %s）" % _owner(w, 8))
+		eq(String(st["state"]), "running", "★★ 选 F2 进 mt：目标开局**不是「已占领」**")
+		ObjectiveRes.update(w, cfg, st, 0.1)
+		eq(String(st["state"]), "running",
+			"★★ 第一帧之后仍然进行中（原 bug：这里就是 won /「已占领」）")
+
+	# ---- 3) 反向：选 F1 时 F2 也不能留在守方席位里 ----
+	var w1 = _world(cfg, lv, "F1")
+	ok(w1 != null, "选 F1 能建出世界")
+	if w1 != null:
+		eq(w1.player_factions, ["F1"], "★ 选 F1 时本机只操作 F1")
+		eq(w1.objective_state["defend"], ["F1"], "★ 守方席位只有 F1")
+		eq(String(w1.objective_state["kind"]), "hold_zone", "F1 打的是「守住」那条目标")
+		eq(String(w1.objective_state["state"]), "running", "选 F1 进 mt：守区划（c8 归盟友 sj）")
+
+	# ---- 4) 运行时兜底：就算数据把两边都写成 ai:none，也不能「一进关就判胜」----
+	#       （`objective.setup()` 只认**与本机席位同方**的席位，见该处注释。）
+	var raw: Dictionary = lv.raw.duplicate(true)
+	for item in (raw.get("factions", []) as Array):
+		var fd: Dictionary = item
+		if String(fd.get("id", "")) == "F1" or String(fd.get("id", "")) == "F2":
+			fd["ai"] = "none"
+	var broken = LevelRes.from_data(raw, cfg, null, "mt_no_ai", "")
+	ok(broken != null, "（前提）「两边都没挂 AI」的 mt 副本能载入")
+	if broken != null:
+		var wb = _world(cfg, broken, "F2")
+		ok(wb != null, "（前提）数据写坏时也能建出世界")
+		if wb != null:
+			eq(wb.player_factions, ["F2", "F1"],
+				"（前提）数据写坏时 F1 会被误算成玩家（复现老数据的形状）")
+			eq(wb.objective_state["defend"], ["F2"],
+				"★★ 数据写坏也不把敌人 F1 算成我方（defend 只留与席位同方的）")
+			var stb: Dictionary = wb.objective_state
+			ObjectiveRes.update(wb, cfg, stb, 0.1)
+			eq(String(stb["state"]), "running",
+				"★★ 数据写坏也不会「一进关就判胜」（原 bug 的第二道防线）")
+
 
 func _player_seat(w) -> String:
 	return String(w.my_faction)

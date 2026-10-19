@@ -164,6 +164,8 @@ var _touch_panning: bool = false
 
 ## 暂停 / 区块名显示（纯本地开关）
 var paused: bool = false
+## ★ 合作局禁用暂停（M12.4）：P 键直接提示，不改 paused。
+var pause_allowed: bool = true
 var show_zone_names: bool = true
 
 
@@ -257,6 +259,9 @@ func handle_key(event: InputEventKey) -> bool:
 			local_ui_changed.emit()
 			return true
 		KEY_P:
+			if not pause_allowed:
+				toast.emit("合作模式不能暂停")
+				return true
 			paused = not paused
 			toast.emit("已暂停" if paused else "继续")
 			return true
@@ -872,9 +877,12 @@ func _on_right_click(double_click: bool = false) -> void:
 	# 单击：鼠标底下是敌对建筑 → 点名拆它（命令里只带地块，不带对象引用）
 	# ⚠️ 无敌建筑（区划中心）不算「敌对建筑」：它是中立障碍，右点点它应该走「普通移动」
 	#    （单位走到旁边站住），而不是发一条会被逻辑层拒掉的攻击命令。
+	# ★★ 判据必须是 `same_side_for_attack`（同阵营 **或盟友**），不能是严格的 `same_side`：
+	#    友军的建筑不是敌人 —— 用 `same_side` 会发出一条 `attack`，而逻辑层按
+	#    `same_side_for_attack` 又会拒掉它 ⇒ 表现就是「右键友军建筑完全没反应」。
 	var foe_b = world.building_at(hover_tile.x, hover_tile.y)
 	if foe_b != null and foe_b.alive and not foe_b.is_invulnerable() \
-			and not FactionRes.same_side(foe_b.owner, world.my_faction) \
+			and not FactionRes.same_side_for_attack(foe_b.owner, world.my_faction) \
 			and _foe_building_visible(foe_b):
 		command_issued.emit({
 			"kind": "attack", "ids": ids, "tx": hover_tile.x, "ty": hover_tile.y,
@@ -1043,7 +1051,7 @@ func selected_enemy_kind() -> String:
 
 func select_general_by_hotkey(key: String) -> void:
 	for u in world.units:
-		if u.alive and FactionRes.same_side(u.faction, world.my_faction) and u.hotkey == key:
+		if u.alive and world.is_own_seat(String(u.faction)) and u.hotkey == key:
 			select_units([u])
 			camera_rig.center_on_px(palette.to_px(u.pos))
 			return
@@ -1075,15 +1083,33 @@ func set_order_mode(m: String) -> bool:
 	return order_mode != ""
 
 
+## 选中列表里**本机真的能下令**的那些单位。
+##
+## ★ 合作模式：队友的兵**看得见但选不中**（`same_side` 严格同阵营）；
+##   这里再滤一次是第二道 —— 防止程序化塞进选中集合，或者以后有人放宽了选中层。
+## ★ 单机 / 单人战役：`is_own_seat` 等价于 `same_side`，所以旧行为逐位不变。
+## ★ 为什么在**发命令之前**再滤一次：命令里就不该混进不属于本机席位的 id，
+##   房主那一层（`command_processor._collect_units`）也更好校验。
+func _commandable_selected() -> Array:
+	var out: Array = []
+	if world == null:
+		return out
+	for u in selected_units:
+		if u.alive and world.is_own_seat(String(u.faction)):
+			out.append(u)
+	return out
+
+
 ## 「停止」：**立刻**对当前选中的部队下达 `stop`（它不需要点地图选目标）。
 ## @return true = 命令已发出（选中里有活着的单位）
 func request_stop() -> bool:
 	var ids: Array = []
-	for u in selected_units:
+	for u in _commandable_selected():
 		if u.alive:
 			ids.append(u.id)
 	if ids.is_empty():
-		toast.emit("先选中一支部队，才能下达指令")
+		toast.emit("这不是你的部队，不能下令" if not selected_units.is_empty()
+			else "先选中一支部队，才能下达指令")
 		return false
 	command_issued.emit({"kind": "stop", "ids": ids, "faction": world.my_faction})
 	clear_marks()
@@ -1099,11 +1125,12 @@ func request_stop() -> bool:
 ##   不必重新回命令卡点一次（Esc / 右键随时退出）。
 func _issue_order_click() -> void:
 	var ids: Array = []
-	for u in selected_units:
+	for u in _commandable_selected():
 		if u.alive:
 			ids.append(u.id)
 	if ids.is_empty():
-		toast.emit("先选中一支部队，才能下达指令")
+		toast.emit("这不是你的部队，不能下令" if not selected_units.is_empty()
+			else "先选中一支部队，才能下达指令")
 		set_order_mode("")
 		return
 
@@ -1140,7 +1167,7 @@ func _issue_order_click() -> void:
 				return
 			var foe_b = world.building_at(hover_tile.x, hover_tile.y)
 			if foe_b != null and foe_b.alive and not foe_b.is_invulnerable() \
-					and not FactionRes.same_side(foe_b.owner, world.my_faction) \
+					and not FactionRes.same_side_for_attack(foe_b.owner, world.my_faction) \
 					and _foe_building_visible(foe_b):
 				command_issued.emit({
 					"kind": "attack", "ids": ids,
@@ -1171,7 +1198,7 @@ func first_selected_leader() -> Variant:
 	for u in selected_units:
 		if not u.alive:
 			continue
-		if not FactionRes.same_side(u.faction, world.my_faction):
+		if not world.is_own_seat(String(u.faction)):
 			continue
 		if world.is_team_leader(u):
 			return u
@@ -1226,6 +1253,9 @@ func request_zone_recruit(kind: String) -> bool:
 	if z == null:
 		toast.emit("先点一个区划中心，才能在这个区划里招募")
 		return false
+	if not world.is_own_seat(String((z as Dictionary).get("owner", ""))):
+		toast.emit("这不是你的区划，不能在这里招募")
+		return false
 	command_issued.emit({
 		"kind": "zone_recruit", "unit_kind": kind, "zone_id": int(z["id"]),
 		"faction": world.my_faction,
@@ -1240,6 +1270,9 @@ func request_zone_recruit_cancel(slot: int) -> bool:
 	var z = selected_zone
 	if z == null or world == null:
 		toast.emit("先点一个区划中心，才能取消它的招募队列")
+		return false
+	if not world.is_own_seat(String((z as Dictionary).get("owner", ""))):
+		toast.emit("这不是你的区划，不能取消这里的招募")
 		return false
 	if not world.zone_is_training(z):
 		return false
@@ -1517,7 +1550,7 @@ func _pick_foe_unit_at(world_pos: Vector2) -> Variant:
 		#      本地那一份，权威侧才是最终判据（联机时客机的输入不可信）。
 		if not u.is_attackable():
 			continue
-		if FactionRes.same_side(u.faction, world.my_faction):
+		if FactionRes.same_side_for_attack(u.faction, world.my_faction):
 			continue
 		if not _foe_unit_visible(u):
 			continue

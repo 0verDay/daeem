@@ -24,6 +24,10 @@ extends Node3D
 
 const ConfigRes = preload("res://logic/config.gd")
 const PaletteRes = preload("res://view/palette.gd")
+## ★★ 局内「敌 / 友 / 己」三色（本轮新增）：区划归属的底纹 / 轮廓都走它
+const SideColorRes = preload("res://view/side_color.gd")
+## 迷雾掩码按「同方」存（合作共享视野），与 `fog.tile_visible()` 同一个键。
+const FactionRes = preload("res://logic/faction.gd")
 
 ## 地面**底色**贴图的像素/格。
 ##
@@ -36,7 +40,8 @@ const PaletteRes = preload("res://view/palette.gd")
 ## ★ 代价（实测过，可接受）：
 ##   · 内存：27×22 的图 = **432×352**；100×100 的图 = 1600×1600（`MAX_TEX_PX` 内）；
 ##   · 烘图 CPU：27×22 图约 15 万个像素。它只在**归属签名变化**时跑
-##     （`game_scene3d` 每 15 帧查一次签名），比 `_fog_signature()` 仍然便宜。
+##     （`game_scene3d` 每 15 帧查一次签名）；迷雾贴图比它便宜得多，
+##     而且现在**每帧**做一次整块 memcmp、变化才重烘（见 `rebake_fog`）。
 const PX_PER_TILE := 16
 ## 贴图最长边的上限（防止极大的地图把内存吃满）
 const MAX_TEX_PX := 4096
@@ -73,7 +78,22 @@ var _fog_mat: StandardMaterial3D = null
 var _fog_tex: ImageTexture = null
 ## 迷雾烘图缓冲复用（同 `_bake_img`）
 var _fog_img: Image = null
-var _fog_sig: String = ""
+
+## ★★ 最近一次**真的烘进贴图**的掩码快照（按「同方」取；见 `rebake_fog`）。
+##   旧实现是「抽 18 个固定格拼字符串」当签名 —— 大地图上单位跨一格只改边界十几格，
+##   命中抽样格的概率不到 4%，于是灰雾可能**几秒到几十秒**都不刷新
+##   （用户报的「大地图迷雾延迟高」就是这一条；29×22 图反而只偶尔露出来）。
+##   现在改成整块比较：`PackedByteArray ==` 是逐字节 memcmp（小地图同一条口径，
+##   见 tests/test_fog.gd 的断言），100×100 图 10KB 每帧也不到一微秒。
+var _fog_mask: PackedByteArray = PackedByteArray()
+## 上面那份快照属于哪一方（换方 / 合作换座时不能拿旧数据比）。
+var _fog_side: String = ""
+## ★ 上一次**真正画进贴图**的逐格可见状态（1 = 透明/看得见；脏格重绘用）。
+##   ⚠️ 存的是「有效可见」（地图外的格子按看得见处理），不是原始掩码 ——
+##      否则地图外沿那一圈会在每次重绘时被反复刷。
+var _fog_painted: PackedByteArray = PackedByteArray()
+## 上一次烘图的时刻（毫秒）：用于合并短时间内的连续变化（`cfg.fog_rebake_min_sec`）。
+var _fog_last_bake_msec: int = -1000000
 
 ## 归属签名：区块归属没变就不重烘（重烘要写一张图，相对贵）
 var _zone_sig: String = ""
@@ -82,12 +102,19 @@ var baked_tiles: int = 0
 var bake_count: int = 0
 ## 最近一次烘迷雾贴图的次数（纯诊断）
 var fog_bake_count: int = 0
+## 最近一次迷雾烘图**真正刷了多少格**（纯诊断 / 测试用：脏格重绘的判据）
+var fog_painted_tiles: int = 0
 
 
 func setup(p_cfg: ConfigRes, p_world, p_palette) -> void:
 	cfg = p_cfg
 	world = p_world
 	palette = p_palette
+	# ★ 新一局 / 新地图：迷雾快照与脏格表都作废（贴图缓冲尺寸对不上时 `_bake_fog` 会重建）
+	_fog_mask = PackedByteArray()
+	_fog_side = ""
+	_fog_painted = PackedByteArray()
+	_fog_last_bake_msec = -1000000
 	_build_mesh()
 	rebake(true)
 
@@ -190,15 +217,16 @@ func rebake(force: bool = false) -> void:
 	rebake_fog(force)
 
 
-## 重烘迷雾贴图（比地形图便宜得多，但仍然只在掩码真的变了时做）。
+## 重烘迷雾贴图（比地形图便宜，但仍然只在掩码**真的变了**时做）。
 ##
-## ★★ 签名怎么取（这是本函数最容易做错的地方）：掩码是 `cols×rows` 的
-##   `PackedByteArray`，逐格比对一次是 O(格数)（594~10000）—— 每帧做一次
-##   就是每帧几万次数组访问。所以**抽样**：取 16 个固定格 + 首尾两格，
-##   把它们的有视野位拼成一个字符串当签名。
-##   ⚠️ 代价是「只在被抽样的那些格上变化」可能漏检（下一次别的格变化会补上）。
-##      对「迷雾」这种**大块连续变化**的数据，抽样足够灵敏；
-##      真要严格，就得走 `fog.gd` 的版本号（那是 logic 的事，本版不动）。
+## ★★ 变更检测（本轮重写，解决「大地图迷雾延迟高」）：
+##   旧版抽 18 个固定格拼字符串当签名，漏检率在大图上超过 96%（见 `_fog_mask` 的说明）。
+##   现在每帧把**整块掩码**与上一次真正烘进贴图的快照比一次（memcmp）：
+##     · 没变 → 立刻返回，什么都不做；
+##     · 变了 → 受 `cfg.fog_rebake_min_sec` 限频（默认 0.1s）后重烘。
+##   限频只延后重烘，**不会丢掉变化**：快照直到真的烘图时才更新，所以下一帧还会看到差异。
+##
+## ★ `force = true`（开局 / 换图 / 迷雾开关切换）跳过两个短路，直接重烘。
 func rebake_fog(force: bool = false) -> void:
 	if world == null or world.map == null or _fog_mat == null:
 		return
@@ -206,29 +234,35 @@ func rebake_fog(force: bool = false) -> void:
 		# 没迷雾 / 总开关关掉 ⇒ 整层不可见（与 2D 版的行为一致）
 		if _fog_mesh != null:
 			_fog_mesh.visible = false
-		_fog_sig = ""
+		# ★ 把快照与脏格表一起作废：重新打开迷雾时必须重烘，而不是拿上一局的贴图。
+		_fog_mask = PackedByteArray()
+		_fog_side = ""
+		_fog_painted = PackedByteArray()
 		return
 	var m = world.map
-	var sig := _fog_signature(m.cols, m.rows)
-	if not force and sig == _fog_sig:
+	var side := FactionRes.side_of(String(world.my_faction))
+	var mask: PackedByteArray = world.fog.sight.get(side, PackedByteArray())
+	# ★ 精确检测：整块掩码比较（这一步每帧都跑，是 O(格数) 的 memcmp）
+	if not force and side == _fog_side and mask == _fog_mask:
 		return
-	_fog_sig = sig
-	_fog_tex = _bake_fog(m.cols, m.rows)
+	# ★ 合并短时间内的连续变化：大图 + 千单位时「每帧都变」是常态，
+	#   每次都重烘 + 上传 400×400 贴图会变成周期性尖峰；上限 0.1s 玩家看不出来。
+	var now: int = Time.get_ticks_msec()
+	var min_sec: float = cfg.fog_rebake_min_sec if cfg != null else 0.0
+	# 快照还是空的（第一份视野数据刚算出来）⇒ 不合并，立刻出图，避免开局 0.1s 全灰。
+	var first_mask: bool = _fog_mask.is_empty()
+	if not force and side == _fog_side and not first_mask and min_sec > 0.0 \
+			and now - _fog_last_bake_msec < int(min_sec * 1000.0):
+		return
+	_fog_side = side
+	# ★ 快照必须在**真的烘图时**才更新：被限频推迟的那一帧不能把变化「吃掉」。
+	_fog_mask = mask.duplicate()
+	_fog_last_bake_msec = now
+	_fog_tex = _bake_fog(m.cols, m.rows, force)
 	_fog_mat.albedo_texture = _fog_tex
 	if _fog_mesh != null:
 		_fog_mesh.visible = true
 	fog_bake_count += 1
-
-
-func _fog_signature(cols: int, rows: int) -> String:
-	var parts: Array = []
-	for i in 16:
-		var tx: int = (i * 7) % maxi(1, cols)
-		var ty: int = (i * 3) % maxi(1, rows)
-		parts.append("1" if world.fog.tile_visible(world.my_faction, tx, ty) else "0")
-	parts.append("1" if world.fog.tile_visible(world.my_faction, 0, 0) else "0")
-	parts.append("1" if world.fog.tile_visible(world.my_faction, cols - 1, rows - 1) else "0")
-	return "".join(parts)
 
 
 ## 烘迷雾贴图：**每格 FOG_PX_PER_TILE 像素**，透明 = 看得见。
@@ -237,26 +271,45 @@ func _fog_signature(cols: int, rows: int) -> String:
 ##   盖上去只会在屏幕外沿多出一圈方块（2D 版为这条专门写过注释）。
 ## ★ 用 `fill_rect` 按格刷（而不是逐像素 `set_pixel`）：一格 = 4×4 像素，
 ##   逐像素写是 16 次调用，`fill_rect` 是 1 次 —— 而且它本来就是**按格**的语义。
-func _bake_fog(cols: int, rows: int) -> ImageTexture:
+## ★★ 脏格重绘（本轮新增）：只在 `force` / 尺寸重建 / 首帧时全图刷一遍，
+##   其余情况只刷「有效可见状态真的翻了」的格（通常十几~几十格）。
+##   贴图上传仍然是整张（`ImageTexture.update` 没有区域接口），但 CPU 的
+##   `tile_visible + fill_rect` 从 O(全部格) 降到 O(变化格)。
+func _bake_fog(cols: int, rows: int, force: bool = false) -> ImageTexture:
 	var k: int = FOG_PX_PER_TILE
 	while (cols * k > MAX_TEX_PX or rows * k > MAX_TEX_PX) and k > 1:
 		k -= 1
 	var w: int = cols * k
 	var h: int = rows * k
 	# ★★ 缓冲复用：尺寸不变就原地更新（见 `_bake_img` 的注释）。
+	var recreated := false
 	if _fog_img == null or _fog_img.get_width() != w or _fog_img.get_height() != h:
 		_fog_img = Image.create(w, h, false, Image.FORMAT_RGBA8)
 		_fog_tex = ImageTexture.create_from_image(_fog_img)
+		recreated = true
 	var img: Image = _fog_img
 	var c: Color = cfg.fog_mask_color
 	var clear := Color(c.r, c.g, c.b, 0.0)
 	var solid := Color(c.r, c.g, c.b, c.a)
+	var cells: int = cols * rows
+	# 首帧 / 强制 / 尺寸变了 ⇒ 整图刷；否则按脏格刷。
+	var diff: bool = not force and not recreated and _fog_painted.size() == cells
+	if not diff:
+		_fog_painted.resize(cells)
+		_fog_painted.fill(0)
+	fog_painted_tiles = 0
+	var m = world.map
 	for ty in rows:
 		for tx in cols:
 			var seen: bool = world.fog.tile_visible(world.my_faction, tx, ty)
-			if not world.map.tile_exists(tx, ty):
+			if not m.tile_exists(tx, ty):
 				seen = true
+			var idx: int = ty * cols + tx
+			if diff and (_fog_painted[idx] != 0) == seen:
+				continue                    # 这一格没变：不重画
 			img.fill_rect(Rect2i(tx * k, ty * k, k, k), clear if seen else solid)
+			_fog_painted[idx] = 1 if seen else 0
+			fog_painted_tiles += 1
 	if _fog_tex == null:
 		_fog_tex = ImageTexture.create_from_image(img)
 	_fog_tex.update(img)
@@ -308,7 +361,7 @@ func _bake(cols: int, rows: int) -> ImageTexture:
 			if z != null:
 				var owner := String((z as Dictionary).get("owner", ""))
 				if owner != "":
-					var oc: Color = cfg.faction_color(owner, "main")
+					var oc: Color = SideColorRes.color(cfg, world, owner, "main")
 					c = c_lerp(c, oc, 0.22)
 				else:
 					c = c_lerp(c, c_neutral, 0.18)
@@ -401,7 +454,7 @@ func zone_outline_color(z) -> Color:
 	var owner := String((z as Dictionary).get("owner", ""))
 	if owner == "":
 		return cfg.color("zone_stroke")
-	return cfg.faction_color(owner, "main")
+	return SideColorRes.color(cfg, world, owner, "main")
 
 
 ## 地形种类的颜色（屏幕空间的网格线不需要它，但 overlay 画底色时可能要用）

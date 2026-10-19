@@ -6,6 +6,8 @@ const UiStyleRes = preload("res://view/ui_style.gd")
 const MenuThemeRes = preload("res://view/menu_theme.gd")
 const FillButtonRes = preload("res://view/fill_button.gd")
 const MapLibraryRes = preload("res://logic/map_library.gd")
+const StartScreenRes = preload("res://view/start_screen.gd")
+const FontLoaderRes = preload("res://view/font_loader.gd")
 
 const PAGE_INTRO := 0
 const PAGE_MENU := 1
@@ -22,6 +24,10 @@ func _run() -> void:
 	_test_theme_tokens()
 	await _test_page_switching()
 	await _test_intro_click_wiring()
+	await _test_boot_fade()
+	await _test_fast_click_during_intro()
+	await _test_intro_record_race()
+	await _test_mid_morph_return()
 	await _test_entry_flow()
 
 	print("[CASE] %s -> 通过 %d 项，失败 %d 项" % [_case_name, _pass, _fail])
@@ -43,6 +49,21 @@ func _wait_page(menu, want: int) -> void:
 	while Time.get_ticks_msec() < deadline and int(menu.page()) != want:
 		await process_frame
 	await process_frame
+
+
+## 等战役过渡画面挂出来。
+func _wait_transition(main):
+	var deadline: int = Time.get_ticks_msec() + 4000
+	while Time.get_ticks_msec() < deadline and main.level_transition() == null:
+		await process_frame
+	return main.level_transition()
+
+
+## 等过渡画面加载完 + 提示可点。
+func _wait_transition_ready(tr) -> void:
+	var deadline: int = Time.get_ticks_msec() + 8000
+	while Time.get_ticks_msec() < deadline and not tr.ready_to_enter():
+		await process_frame
 
 func _test_theme_tokens() -> void:
 	var accent := ThemeRes.accent()
@@ -99,6 +120,13 @@ func _click_at(pos: Vector2) -> void:
 	root.push_input(up, true)
 	await process_frame
 	await process_frame
+
+
+## 按**时间**等（Tween 是时间驱动的；`--script` 下帧率不锁 60）。
+func _wait_sec(seconds: float) -> void:
+	var deadline: int = Time.get_ticks_msec() + int(seconds * 1000.0)
+	while Time.get_ticks_msec() < deadline:
+		await process_frame
 
 func _test_page_switching() -> void:
 	var main = await _spawn_main()
@@ -263,6 +291,186 @@ func _test_intro_click_wiring() -> void:
 	main2.queue_free()
 	await process_frame
 
+
+## ★★ 开局「从全黑淡入」那一层（用户要求：开始界面也要有渐入动画）。
+func _test_boot_fade() -> void:
+	var main = await _spawn_main()
+	if main == null:
+		return
+	var menu = main.start_screen
+	if menu == null:
+		main.queue_free()
+		return
+	var bf = menu.boot_fade()
+	ok(bf != null, "★ 启动时有一层「从全黑淡入」的遮罩")
+	if bf != null:
+		near(bf.color.a, 1.0, 0.001, "遮罩起始是全不透明（alpha %.2f）" % bf.color.a)
+		ok(bf.color.get_luminance() < 0.02, "遮罩是黑色（不是白闪）")
+		eq(bf.mouse_filter, Control.MOUSE_FILTER_IGNORE,
+			"淡入期间不挡点击（玩家可以直接点掉入场页）")
+		var vp: Vector2 = root.get_visible_rect().size
+		ok(bf.size.x >= vp.x - 1.0 and bf.size.y >= vp.y - 1.0,
+			"遮罩铺满整个视口（%.0f×%.0f）" % [vp.x, vp.y])
+		# 淡入中途：透明度应该已经小于 1。
+		await _wait_sec(0.15)
+		var bf_mid = menu.boot_fade()
+		ok(bf_mid != null and bf_mid.modulate.a < 1.0,
+			"★ 0.15s 时遮罩正在淡出（modulate %.2f）"
+			% (bf_mid.modulate.a if bf_mid != null else -1.0))
+	# 等它彻底消失。
+	var deadline: int = Time.get_ticks_msec() + int(menu.boot_fade_sec() * 1000.0) + 2000
+	while Time.get_ticks_msec() < deadline and menu.boot_fade() != null:
+		await process_frame
+	ok(menu.boot_fade() == null, "★ 淡入结束后遮罩被移除（不会一直压着一层黑）")
+
+	# 没跑完就 close()：必须一起收掉，否则从游戏回菜单会看到一层残留黑幕。
+	var ss = StartScreenRes.new()
+	root.add_child(ss)
+	ss.setup(menu.cfg, FontLoaderRes.load_font(menu.cfg))
+	ok(ss.boot_fade() != null, "（前提）新开一页时淡入层在")
+	ss.close()
+	ok(ss.boot_fade() == null, "★★ close() 会把没跑完的淡入层收掉")
+	ss.queue_free()
+	await process_frame
+
+	# 动效总开关关掉 ⇒ 不建这一层（与其他动效同一条口径）。
+	ThemeRes.set_animations_enabled(false)
+	var ss2 = StartScreenRes.new()
+	root.add_child(ss2)
+	ss2.setup(menu.cfg, FontLoaderRes.load_font(menu.cfg))
+	ok(ss2.boot_fade() == null, "★ 动效关掉时不建淡入层（瞬间显示）")
+	ss2.queue_free()
+	ThemeRes.set_animations_enabled(true)
+
+	main.queue_free()
+	await process_frame
+
+
+## ★★ 快速点击不能点到「还没显示出来的 test 按钮」。
+## 未修复时：落位动画期间 `_menu` 是「显示但 alpha 0」，按钮仍然吃鼠标 ⇒
+## 一点就直接开局，`close()` 把动画掐断，回菜单时 logo 与三颗 test 全停在 alpha 0。
+func _test_fast_click_during_intro() -> void:
+	var main = await _spawn_main()
+	if main == null:
+		return
+	var menu = main.start_screen
+	if menu == null:
+		main.queue_free()
+		return
+
+	menu.dismiss_intro()
+	await process_frame
+	ok(menu.menu_blocked(), "★ 落位动画期间，正中的按钮被明确挡住")
+	var buttons: Array = menu.test_buttons()
+	ok(not buttons.is_empty(), "（前提）有 test 按钮")
+	if buttons.is_empty():
+		main.queue_free()
+		return
+	var tb: Button = buttons[0]
+	var center: Vector2 = tb.get_global_rect().get_center()
+	ok(center != Vector2.ZERO, "（前提）按钮已经有排版位置（%.0f,%.0f）" % [center.x, center.y])
+	# 在按钮所在位置点一下 —— 此时它还看不见。
+	await _click_at(center)
+	eq(main.game, null, "★★ 落位/淡入期间点 test **不会**开局")
+
+	await _wait_page(menu, PAGE_MENU)
+	var deadline: int = Time.get_ticks_msec() + 4000
+	while Time.get_ticks_msec() < deadline and menu.menu_blocked():
+		await process_frame
+	ok(not menu.menu_blocked(), "★ 外壳首次淡入结束后，按钮解除封锁")
+	eq(main.game, null, "★★ 整段动画走完仍然没有误开局")
+	var mm = menu.get_node_or_null("StartRoot/MainMenu")
+	ok(mm != null, "主界面还在")
+	if mm != null:
+		near(mm.modulate.a, 1.0, 0.001, "★★ 主界面整列是不透明的（logo 与按钮都在）")
+	var tb2: Button = menu.test_buttons()[0]
+	near(tb2.modulate.a, 1.0, 0.001, "★★ test_1 也回到不透明（不会落位后消失）")
+
+	main.queue_free()
+	await process_frame
+
+
+## ★★ 回归（本轮）：入场落位期间 `panel_expand.attach()` 抄到的 `MainMenu` 初值
+##   不能是 alpha 0。用户报的「点得太快 → 图标移动到目标后消失，三颗 test 也没了」：
+##   `attach()` 等一帧才抄初值，而这一帧里落位动画已经为了量矩形把主菜单压成 alpha 0；
+##   `play_intro()` 又把 dir=0 的目标「还原」成那个 0 ⇒ 永久不可见。
+func _test_intro_record_race() -> void:
+	var main = await _spawn_main()
+	if main == null:
+		return
+	var menu = main.start_screen
+	if menu == null:
+		main.queue_free()
+		return
+	var eng = menu.menu_chrome().expand_engine()
+	# 构造竞态：alpha 已经是 0，而 attach 这会才抄初值。
+	menu._menu.modulate.a = 0.0
+	eng._initial.clear()
+	eng._record_all()
+	var rec: Variant = eng._initial.get(menu._menu, null)
+	ok(rec != null, "（前提）MainMenu 被登记为「让路」目标")
+	if typeof(rec) == TYPE_DICTIONARY:
+		near(((rec as Dictionary)["modulate"] as Color).a, 1.0, 1e-4,
+			"★★ dir=0 目标的初值透明度被钉成 1（不会被瞬态 0 污染）")
+
+	# 走一遍真实流程：点一下、等落位 + 外壳淡入全部结束。
+	menu._menu.modulate.a = 1.0
+	ok(menu.dismiss_intro(), "点击受理")
+	await _wait_page(menu, PAGE_MENU)
+	var deadline: int = Time.get_ticks_msec() + 4000
+	while Time.get_ticks_msec() < deadline and menu.menu_blocked():
+		await process_frame
+	await process_frame
+	near(menu._menu.modulate.a, 1.0, 1e-4, "★★ 落位结束后主菜单没有停在 alpha 0")
+	var tb: Array = menu.test_buttons()
+	ok(not tb.is_empty(), "（前提）test 按钮还在")
+	if not tb.is_empty():
+		near((tb[0] as Button).modulate.a, 1.0, 1e-4, "★★ test_1 没有消失")
+
+	# ★ 再验一次「滑入被强行打断」的兜底：`_kill_tween()` 必须补终态，不能停在 alpha 0。
+	eng.play_intro()
+	await process_frame
+	ok(eng._intro_running, "（前提）第二次滑入动画正在跑")
+	eng._kill_tween()
+	var tb2: Array = menu.test_buttons()
+	ok(not tb2.is_empty(), "（前提）test 按钮还在")
+	if not tb2.is_empty():
+		near((tb2[0] as Button).modulate.a, 1.0, 1e-4,
+			"★★ 滑入被打断时，子控件被补回不透明（不会永久消失）")
+
+	main.queue_free()
+	await process_frame
+
+
+## ★★ 落位动画中途被 close()/open_menu() 打断（例如误开局后返回菜单）：
+## 主界面整列必须被 show_page(PAGE_MENU) 兜回不透明，否则回来是一块空界面。
+func _test_mid_morph_return() -> void:
+	var main = await _spawn_main()
+	if main == null:
+		return
+	var menu = main.start_screen
+	if menu == null:
+		main.queue_free()
+		return
+	menu.dismiss_intro()
+	await process_frame
+	menu.close()
+	await process_frame
+	menu.open_menu()
+	await process_frame
+	eq(int(menu.page()), PAGE_MENU, "回菜单后停在第 1 页")
+	var mm = menu.get_node_or_null("StartRoot/MainMenu")
+	ok(mm != null, "主界面节点还在")
+	if mm != null:
+		near(mm.modulate.a, 1.0, 0.001, "★★ 整列被兜回不透明（不会停在 alpha 0）")
+	ok(not menu.menu_blocked(), "★ 回菜单后按钮可用")
+	for b in menu.test_buttons():
+		near((b as Button).modulate.a, 1.0, 0.001, "test 按钮 %s 也是不透明的" % (b as Button).name)
+	ok(menu.boot_fade() == null, "回菜单时没有残留的开局黑幕")
+	main.queue_free()
+	await process_frame
+
+
 func _test_entry_flow() -> void:
 	var main = await _spawn_main()
 	if main == null:
@@ -349,10 +557,33 @@ func _test_entry_flow() -> void:
 
 	var test_rect: Rect2 = (button as Control).get_global_rect()
 	ok(test_rect.size.x > 1.0 and test_rect.size.y > 1.0, "test 按钮已经排过版（量得到尺寸）")
+	# ★★ 首次进主界面时，正中那一列要等外壳的滑入 + 淡入跑完才允许点
+	#   （否则会点到 alpha 0 的按钮 —— 用户报的「快速点击后图标与 test 全消失」）。
+	var ready_deadline: int = Time.get_ticks_msec() + 4000
+	while Time.get_ticks_msec() < ready_deadline and menu.menu_blocked():
+		await process_frame
+	ok(not menu.menu_blocked(), "（前提）按钮已经解除封锁，可以点了")
 	await _click_at(test_rect.get_center())
 
+	# ★★ 点 test_1 之后先进**战役过渡画面**（缩略图 + 简报 + 阵营选择 + 进度 + 点击进入）。
+	var tr = await _wait_transition(main)
+	ok(tr != null, "★★ 点 test_1 之后先出现战役过渡画面（不再直接开局）")
+	eq(main.game, null, "★ 过渡画面阶段还没有建世界")
+	if tr == null:
+		main.queue_free()
+		return
+	ok(tr.faction_card_count() == 2, "★ 第一关有两个可玩阵营 → 两张阵营卡")
+	tr.select_faction("F1")
+	await _wait_transition_ready(tr)
+	ok(tr.ready_to_enter(), "（前提）过渡画面加载完、阵营已选")
+	await _click_at(tr.hint_rect().get_center())
+	var enter_deadline: int = Time.get_ticks_msec() + 4000
+	while Time.get_ticks_msec() < enter_deadline and main.game == null:
+		await process_frame
+	await process_frame
+
 	var game = main.game
-	ok(game != null, "按下 test_1 之后出现了游戏内场景")
+	ok(game != null, "按下 test_1、在过渡画面点「进入」之后出现了游戏内场景")
 	ok(main.get_node_or_null("GameScene") == game, "游戏内场景挂在 main 下的 GameScene 节点上")
 	if game != null:
 		# ★★ test_1 直连 demo / 01_beachhead：按下去就该真的进那一关（不是随便开一张图）。

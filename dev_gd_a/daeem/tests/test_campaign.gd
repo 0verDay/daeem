@@ -289,7 +289,14 @@ func _group_merge(cfg) -> void:
 	eq(String(lv.attack_target_of("F2").get("kind")), "zone",
 		"attack_target_of 读到红方的进攻目标（指向 c1）")
 	ok(lv.attack_target_of("F1") == null, "没写的阵营 → attack_target 是 null")
-	ok(not lv.is_playable("F1"), "没挂战役时谁也谈不上「可玩」（可玩是战役级属性）")
+	# ★ 2026.10.19 口径变化：`Level.load_level(campaign = null, ...)` 是**客机路径**
+	#   （联机 `start` 里只带 level_data），此时 `playable` 从 `players[]` 补 ——
+	#   否则客机的 `is_playable` / 界面会空。所以这里不再断言「没挂战役就都不可玩」，
+	#   改为钉住「来源是 players[]，且 campaign_id 仍然为空」。
+	ok(lv.is_playable("F1") and lv.is_playable("F2"),
+		"★ 没挂战役时 playable 由 players[] 补齐（客机联机路径）")
+	eq(String(lv.campaign_id), "",
+		"★ 但 campaign_id 仍然为空（可玩的来源换成了 players[]，不是战役表）")
 	var c_demo = CampaignRes.load_campaign(DEMO_DIR, cfg)
 	var lv_demo = c_demo.level("01_beachhead")
 	ok(lv_demo.is_playable("F1"), "样例战役里 F1 可玩")

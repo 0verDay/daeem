@@ -20,6 +20,7 @@
   - **周期性尖峰已消失**（`fr` 最大值不再到 25/33ms），`rest` 从 7.8ms 降到 **3.4ms**；
   - `tk 7.5`（u 1.9 / fg 1.5 / z 1.0）、`vu 1.0 vb 1.1`、`dov 1.7`、`sq 0.2`。
 - **已落的性能改造**：overlay 静态投影缓存、小地图迷雾烘图、
+  **大地图迷雾「精确检测 + 脏格重绘 + 0.1s 合并」**（见 2.2 第 4 条）、
   **C# `FogKernel.cs`**（视野）与 `CrowdKernel.cs`（碰撞/索敌/寻路）、
   HUD 4 槽调度 + 内容没变不重排、按钮主题查表缓存的静息快路径。
 - **下一步重点**：真机确认锁 60 后的稳定性；若要更多余量，先压
@@ -113,6 +114,13 @@ ec 0.1 rc 0.1 tw 1.4 ai 0.8 col 0.3 co 0.0 ob 0.0 | hs 0.0 hd 0.0 sq 0.2 dov 1.7
 4. **地面 / 迷雾重烘**
    - 原来每 15 帧重烘时都 `Image.create` + `ImageTexture.create_from_image`（新建 + 显存上传）。
    - 现在**复用 Image / 贴图缓冲**，尺寸不变时 `ImageTexture.update()` 原地更新。
+   - ★★ 本轮再修**大地图迷雾延迟**：变更检测从「18 格抽样签名 + 每 15 帧查一次」
+     改成 **每帧整块掩码 memcmp**（`ground.rebake_fog()`），重烘由
+     `cfg.fog_rebake_min_sec`（默认 0.1s）合并；并且只重画**状态翻了的格**
+     （诊断字段 `ground.fog_painted_tiles`）。
+     旧写法在 100×100 图上漏检率 >96%，灰雾会几秒~几十秒不刷新；现在是「当帧发现、
+     ≤100ms 内出图」。代价是每帧多一次 10KB 级 memcmp（可忽略），
+     单次重绘从 O(全部格) 降到 O(变化格)。
 
 5. **HUD / 部队列表 / 科技格**
    - 手机端 HUD 以 **20Hz 节拍**跑，但**每个节拍只做一块**（4 槽轮转，见第 16 节）：
@@ -997,3 +1005,39 @@ ec 0.1 rc 0.1 tw 1.4 ai 0.8 col 0.3 co 0.0 ob 0.0 | hs 0.0 hd 0.0 sq 0.2 dov 1.7
 | `view/hud.gd` | 触摸抬起 → 延迟一帧清整层悬停（`_clear_hud_hover`） |
 | `view/fill_button.gd` | `pressed` → `_on_pressed_snap()`（瞬间满格兜底） |
 | `tests/test_touch.gd`（+4）/ `test_fill_button.gd`（+2）/ `test_settings_menu.gd`（+3） | 回归断言 |
+
+---
+
+## 20. Android 联机（实验性，2026.10.19）
+
+M12 的联机层是 Godot `WebSocketPeer`，与平台无关；手机可以作为客户端连公网中继
+`ws://159.75.154.122:8770/ws`，与 PC 同房。推荐 **PC 做房主、手机做客机**（房主跑完整
+世界 / AI / 30Hz 快照，客机只发命令收快照）。
+
+### 20.1 导出前必须改的两处
+
+1. `export_presets.cfg` 的 `include_filter="*.json"`（Windows + Android）：
+   地图 / 战役 / `config.json` 是**非资源 JSON**，不加进不了 PCK。
+2. Android 的 `permissions/internet=true`：默认 `false`，手机端会连不上中继。
+
+### 20.2 Android 构建
+
+- 用 mono 版 Godot 与 mono Android 导出模板（本机已装 `4.7.2.stable.mono`）。
+- `daeem.csproj` 的 Android 目标是 **net9.0**；需要 .NET 9 SDK / targeting pack。
+- 需要 Android SDK + JDK 17；首次真机用 debug 导出（debug keystore）。
+- 明文 `ws://` 若被 Android 明文流量策略拦截：自定义 manifest 打开
+  `android:usesCleartextTraffic="true"`，或把中继换成 `wss://`。
+
+### 20.3 大厅 / 输入
+
+- 中继地址与房间码是 `LineEdit`，点进去用系统虚拟键盘；大厅版式是桌面 760px 宽，
+  手机上只做过首次联机确认，没有逐像素验收。
+- 手机作为客机时，触屏选中 / 框选 / 命令走既有的 `view/touch_controller.gd`。
+
+### 20.4 已知限制
+
+- 快照默认 **30Hz**（M12.7），没有插值，客机单位仍会按 30Hz 跳（与 PC 客机一致）。
+- 30Hz 的客机 `apply + fog` 实测约 1.1 / 3.1 / 4.7 / 7.2 ms（36 / 136 / 336 / 536 单位）；
+  手机做客机时建议 PC 做房主；若 500+ 单位掉帧，可把 `net.snapshot_hz` 回 20。
+- 手机端只保证“能连、能玩”；性能与布局没有正式验收。
+- 断线重连、客机接管、合作暂停、TLS 都不做。

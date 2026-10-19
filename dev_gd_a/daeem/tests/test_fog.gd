@@ -633,6 +633,43 @@ func _test_game_scene_wires_fog() -> void:
 	else:
 		ok(false, "拿不到迷雾贴图（`ground._fog_tex` 是 null —— 迷雾层没建出来）")
 
+	# ★★ 大地图迷雾：变更检测必须**每帧**做（旧版是 15 帧节流 + 18 格抽样，
+	#   大图上漏检率 >96%，灰雾可能几秒~几十秒不刷新）。
+	#   这里手动跑一帧 `_process(0)`（暂停 + dt=0：不推进逻辑，掩码不会被重算覆盖），
+	#   断言「掩码一变，同一帧就重烘」。
+	if game.ground != null and w.fog != null:
+		var side2 := FactionRes.side_of(String(w.my_faction))
+		var mask_a: PackedByteArray = w.fog.sight.get(side2, PackedByteArray())
+		var cols2: int = int(w.map.cols)
+		var flip2 := -1
+		for i in cols2 * int(w.map.rows):
+			var tx2: int = i % cols2
+			var ty2: int = i / cols2
+			if w.map.tile_exists(tx2, ty2):
+				flip2 = i
+				break
+		if flip2 >= 0 and mask_a.size() > flip2:
+			var gcfg2 = game.cfg
+			var old_min2: float = gcfg2.fog_rebake_min_sec
+			gcfg2.fog_rebake_min_sec = 0.0
+			var was_processing: bool = game.is_processing()
+			var was_paused: bool = bool(game.input_ctrl.paused)
+			game.set_process(false)
+			game.input_ctrl.paused = true
+			var bakes2: int = game.ground.fog_bake_count
+			var mask_b: PackedByteArray = mask_a.duplicate()
+			mask_b[flip2] = 1 if mask_b[flip2] == 0 else 0
+			w.fog.sight[side2] = mask_b
+			game._process(0.0)
+			ok(game.ground.fog_bake_count > bakes2,
+				"★★ 大地图迷雾：掩码一变，同一帧就重烘（不再等 15 帧 / 抽样命中）")
+			# 还原（`cfg` / 掩码 / 进程状态都是共享的，后续断言还要用）。
+			game.input_ctrl.paused = was_paused
+			gcfg2.fog_rebake_min_sec = old_min2
+			w.fog.sight[side2] = mask_a
+			game.ground.rebake_fog(true)
+			game.set_process(was_processing)
+
 	var uv = game.unit_view
 	var my_units: Array = w.alive_units_of(w.my_faction)
 	ok(my_units.size() > 0, "己方有单位")

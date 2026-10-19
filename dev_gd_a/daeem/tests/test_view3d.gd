@@ -9,10 +9,13 @@ const UnitViewRes = preload("res://view/unit_view_3d.gd")
 const BuildingViewRes = preload("res://view/building_view_3d.gd")
 const SpriteRes = preload("res://view/unit_sprite_3d.gd")
 const UnitRes = preload("res://logic/unit.gd")
+const FactionRes = preload("res://logic/faction.gd")
 const BuildingShaderRes = preload("res://view/building_flash.gdshader")
 const UnitDownedShaderRes = preload("res://view/unit_downed.gdshader")
 const Overlay3DRes = preload("res://view/overlay_view_3d.gd")
 const OrderFlagRes = preload("res://view/order_flag_view_3d.gd")
+## ★★ 局内敌/友/己三色（本轮新增）
+const SideColorRes = preload("res://view/side_color.gd")
 
 func _initialize() -> void:
 	_case_name = "test_view3d"
@@ -480,6 +483,68 @@ func _test_ground_bake(cfg) -> void:
 	if g._fog_mesh != null:
 		ok(true, "迷雾层节点存在")
 
+	# ★★ 迷雾：精确检测 / 脏格重绘 / 限频（本轮修「大地图迷雾延迟高」）
+	#   旧实现抽 18 个固定格当签名；这里专门翻一个**旧抽样序列之外**的格，
+	#   证明「非抽样格变化」也会立刻触发重烘（旧版在 100×100 图上漏检率 >96%）。
+	if w.fog != null and g._fog_tex != null \
+			and w.fog.sight.has(FactionRes.side_of(String(w.my_faction))):
+		var cols_i: int = int(w.map.cols)
+		var rows_i: int = int(w.map.rows)
+		var cells_i: int = cols_i * rows_i
+		var side := FactionRes.side_of(String(w.my_faction))
+		var mask0: PackedByteArray = w.fog.sight[side]
+		var sampled := {}
+		for si in 16:
+			sampled[Vector2i((si * 7) % cols_i, (si * 3) % rows_i)] = true
+		sampled[Vector2i(0, 0)] = true
+		sampled[Vector2i(cols_i - 1, rows_i - 1)] = true
+		var flip := -1
+		for i in cells_i:
+			var tx: int = i % cols_i
+			var ty: int = i / cols_i
+			if not w.map.tile_exists(tx, ty):
+				continue
+			if sampled.has(Vector2i(tx, ty)):
+				continue
+			flip = i
+			break
+		ok(flip >= 0, "（前提）找到一格「旧抽样序列之外」的迷雾格")
+
+		# 强制全量烘：脏格表清空 ⇒ 全图刷一遍。
+		g.rebake_fog(true)
+		eq(g.fog_painted_tiles, cells_i, "★★ 强制重烘 = 全图刷一遍（%d 格）" % cells_i)
+
+		var gcfg = g.cfg
+		var old_min: float = gcfg.fog_rebake_min_sec
+		gcfg.fog_rebake_min_sec = 0.0
+		var bakes: int = g.fog_bake_count
+		var mask1: PackedByteArray = mask0.duplicate()
+		mask1[flip] = 1 if mask1[flip] == 0 else 0
+		w.fog.sight[side] = mask1
+		g.rebake_fog()
+		ok(g.fog_bake_count == bakes + 1,
+			"★★ 非抽样格变了也会立刻重烘（旧版在大图上 ≥96%% 会漏检）")
+		eq(g.fog_painted_tiles, 1, "★★ 脏格重绘：只重画变化的那 1 格")
+		g.rebake_fog()
+		eq(g.fog_bake_count, bakes + 1, "★★ 掩码没变 ⇒ 不重烘")
+
+		# 限频：窗口内先不烘，窗口过了必须补上（变化不能被吃掉）。
+		gcfg.fog_rebake_min_sec = 0.1
+		g._fog_last_bake_msec = Time.get_ticks_msec()
+		var mask2: PackedByteArray = mask1.duplicate()
+		mask2[flip] = 1 if mask2[flip] == 0 else 0
+		w.fog.sight[side] = mask2
+		g.rebake_fog()
+		eq(g.fog_bake_count, bakes + 1, "★ 0.1s 限频窗口内先不重烘")
+		g._fog_last_bake_msec = Time.get_ticks_msec() - 200
+		g.rebake_fog()
+		eq(g.fog_bake_count, bakes + 2, "★★ 窗口过了补上（变化没被吃掉）")
+
+		# 还原（后续用例还要用这张贴图 / 这份掩码）。
+		gcfg.fog_rebake_min_sec = old_min
+		w.fog.sight[side] = mask0
+		g.rebake_fog(true)
+
 	eq(g._mat.uv1_scale, Vector3(1, 1, 1), "★★ 地面层 UV 不翻转（scale 恒等 —— 翻转就是上下反）")
 	eq(g._mat.uv1_offset, Vector3(0, 0, 0), "★★ 地面层 UV 不偏移（offset 恒等）")
 	eq(g._fog_mat.uv1_scale, Vector3(1, 1, 1), "★★ 迷雾层 UV 与地面层一致（不翻转）")
@@ -528,15 +593,24 @@ func _test_ground_bake(cfg) -> void:
 	if w.zones != null and w.zones.zones.size() > 0:
 		var z1: Dictionary = w.zones.zones[0]
 		var owner_before := String(z1.get("owner", ""))
+		# ★★ 本轮起区划颜色是「敌 / 友 / 己」三色（见 view/side_color.gd）——
+		#    所以这里必须翻到**不同的一方**才看得出变化（两个敌对阵营收到的红是同一个色）。
+		var self_fid := String(w.my_faction)
+		var enemy_fid := "enemy" if self_fid != "enemy" else "p2"
+		z1["owner"] = self_fid
 		var col_a: Color = g.zone_outline_color(z1)
-		z1["owner"] = "p3" if owner_before != "p3" else "p1"
+		z1["owner"] = enemy_fid
 		var col_b: Color = g.zone_outline_color(z1)
 		ok(col_a != col_b,
-			"★ 归属一变、轮廓颜色跟着变（%s → %s）" % [str(col_a), str(col_b)])
+			"★ 归属一变（己方 → 敌方）、轮廓颜色跟着变（%s → %s）" % [str(col_a), str(col_b)])
 		# ★ 内容有没有真的变：比**烘图缓冲**的字节快照。
 		#   缓冲复用之后 `_tex` 是同一个对象，`get_image()` 也不一定跟着刷新
 		#   （旧写法其实是在比「有没有新建一个贴图对象」，不是比内容）。
+		#   ★ 本轮起颜色只有「己/友/敌」三档 ⇒ 两次快照必须取在**不同的一方**上。
+		z1["owner"] = self_fid
+		g.rebake(true)
 		var data_a: PackedByteArray = g._bake_img.get_data().duplicate()
+		z1["owner"] = enemy_fid
 		g.rebake(true)
 		var data_b: PackedByteArray = g._bake_img.get_data().duplicate()
 		ok(not data_a.is_empty() and not data_b.is_empty() and data_a != data_b,
@@ -838,14 +912,16 @@ func _test_order_flags(cfg) -> void:
 	ok(of.ripple_alpha_last > 0.0, "★ 落地点生成波纹")
 	var r0: float = of.ripple_radius_last
 	var a0: float = of.ripple_alpha_last
-	of.sync(0.05)
+	# ★ 回弹现在只有 0.08s（与下落合计 0.2s）⇒ 取样点必须按 impact_sec 的比例走，
+	#   不能再写死 0.05s（0.05/0.08 已经进回弹段，断言「压缩」会假红）。
+	of.sync(impact_sec * 0.15)
 	ok(of.ripple_radius_last > r0, "★ 波纹向外扩散")
 	ok(of.ripple_alpha_last < a0, "★ 波纹同时渐隐")
 	ok(of.scale_y_last < 1.0, "★ 落地后旗帜先压缩（%.3f）" % of.scale_y_last)
 
-	of.sync(impact_sec * 0.5)
+	of.sync(impact_sec * 0.35)
 	ok(of.scale_y_last > 1.0, "★ 压缩后回弹过冲（%.3f）" % of.scale_y_last)
-	of.sync(impact_sec * 0.5)
+	of.sync(impact_sec * 0.6)
 	near(of.scale_y_last, 1.0, 0.001, "★ 回弹后复位到 100%")
 	ok(of.alpha_last < 1.0, "★ 落地后开始渐隐")
 	of.sync(fade_sec + 0.1)
@@ -1060,8 +1136,10 @@ func _test_capture_area(cfg) -> void:
 
 	eq(ov._capture_area_color(""), Overlay3DRes.CAPTURE_AREA_NEUTRAL,
 		"★ 中立区块的触发区描边 = 白灰")
-	eq(ov._capture_area_color("p1"), cfg.faction_color("p1", "main"),
-		"★ 有主区块的描边 = 该阵营主色")
+	eq(ov._capture_area_color("p1"), SideColorRes.color(cfg, game.world, "p1"),
+		"★ 己方区块的描边 = 本机视角的「己方」色（蓝；本轮统一配色）")
+	eq(ov._capture_area_color("p2"), cfg.side_color_enemy,
+		"★ 敌方区块的描边 = 红（默认图里 p2 与 p1 不同方）")
 	ok(ov._capture_area_color("p1") != ov._capture_area_color(""),
 		"中立与有主的颜色不同（需求要的「随势力变色」）")
 

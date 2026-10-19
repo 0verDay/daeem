@@ -23,6 +23,11 @@ static func accent() -> Color:
 	return ThemeRes.accent()
 
 
+## 亮一档的金：目标达成 / 「本关守住」这类**正向强调**用它。
+static func accent_bright() -> Color:
+	return ThemeRes.accent_bright()
+
+
 static func accent_dim() -> Color:
 	## 描边的「淡强调色」：同一支金，只是压到 45% —— 浮在地图上的临时面板用它，
 	## 免得亮线在暗底上看着像一块脏斑。

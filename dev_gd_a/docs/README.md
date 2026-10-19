@@ -10,6 +10,7 @@
 | 你想知道 | 读 |
 |---|---|
 | **要做几轮、每轮做什么、本轮验收标准** | [`route.md`](route.md) ← **从这里开始** |
+| **双人合作（联机）怎么做**（方案与已落地记录；M12.1~M12.7 已完成） | [`dev_plan_12.md`](dev_plan_12.md) |
 | 代码放哪、谁依赖谁、状态存在哪、测试怎么写 | [`architecture.md`](architecture.md) |
 | HTML 版的哪个文件搬到 Godot 的哪里 | [`porting.md`](porting.md) |
 | 已经踩过/一定会踩的坑（含**本轮实测**的第五节） | [`pitfalls.md`](pitfalls.md) |
@@ -21,6 +22,8 @@
 | Godot 项目 | 已初始化（`dev_gd_a/daeem/`，Godot 4.7.2 / Forward Plus / D3D12） |
 | 开发计划 | ✅ 已定稿（本目录四篇） |
 | **第 0 轮（M0~M5）** | ✅ **已完成** —— 单机可玩，逻辑 / 渲染分离，命令 / 快照边界就位 |
+| **双人合作 M12.1 ~ M12.7** | ✅ **已完成**：① **席位 + 目标条**：`world.accepts_owner()`（严格同阵营，不是盟友；初稿以为要加开关，读代码后纠正）；`level.coop_roster()` 固定两端同序；建造扣费走 `resource_pool_for(owner)`；顶部居中目标条（`view/objective_panel.gd`）。② **快照 / 协议 / 会话**：快照补 `pres/obj/tech/单位与建筑血量上限/建筑升级/区划特化`；`world.seat_tech_effects` 两个席位各吃各的科技；`net/protocol.gd` / `transport.gd` / `event_codec.gd` / `host_session.gd` / `client_session.gd`。③ **真实中继 + 本机双进程**：零依赖 `server/daeem_relay.py`（RFC6455）、`net/relay_transport.gd`、`server/run-local.ps1` 一条命令 `RUN LOCAL OK`；部署定稿 **Windows + 公网 IPv4 + `ws://:8770` + nssm**，不占 IIS/443。④ **合作大厅 + 游戏内接线**：`net/lobby.gd` / `view/coop_lobby.gd`；`test_2` 改为打开大厅；`game_scene3d` 房主 tick / 客机只收快照、客机命令走 host_session、合作局禁用暂停。断言 `test_coop_seats` 41 + `test_coop_objective` 26 + `test_snapshot_coop` 29 + `test_protocol` 19 + `test_session` 33 + `test_coop_tech` 13 + `test_relay_transport` 14 + `test_coop_lobby` 12 + `test_coop_entry` 8 + `test_coop_game_scene` 18；`server/test_relay.py` 6；`test_ui` 1148 / `test_start_flow` 130 / `test_campaign_menu` 116 等回归全绿。⑤ **公网部署 + 收口**：`server/deploy.ps1`（备份 / 健康检查 / 回滚 / `-DryRun`）已部署到腾讯云 Windows，公网 `ws://159.75.154.122:8770/ws`，nssm 服务 `DAEEMRelay`；`/health` + 公网 host/guest 探针通过；首次 PC+Android 联机由用户确认成功（未逐项记录）。⑥ **30Hz + 联机优化**：`net.snapshot_hz = 30`、发送端 1 MiB 背压、客机每帧只应用最后一条快照、`apply_snapshot` 的 id 索引修掉 O(n²)；30Hz 在 136/336/536 单位下约 0.94 / 2.24 / 3.54 MB/s，客机 apply+fog 约 3.1 / 4.7 / 7.2 ms。见 [`route.md`](route.md) 第四十八~五十三节；方案见 [`dev_plan_12.md`](dev_plan_12.md)。本次 M12 套件复核 **213 项** + `server/test_relay.py` 6 + `check-syntax` 159 文件全绿。**M12 已完成；客机插值是可选手感项，见 [`handoff_12.md`](handoff_12.md) 第 7 节**。 |
+| **Windows / Android 导出（本轮配置）** | ✅ `export_presets.cfg` 补 `include_filter="*.json"`（地图 / 战役 / `config.json` 是**非资源 JSON**，不加进不了 PCK）；Android 补 `permissions/internet=true`。Windows 包体为 `exports/DAEEM.exe` + `DAEEM.pck`（`embed_pck=false`，需整目录分发）；Android 需 mono 模板 / .NET 9 / Android SDK + JDK 17；`ws://` 若被明文策略拦截需自定义 manifest 或 `wss://`。详见 [`route.md`](route.md) 52.4。 |
 | **选项页菜单（最新一轮）** | ✅ 游戏内右上角「设置」改为「选项」；HUD 与主菜单右上角共用 `view/options_panel.gd`：居中 overlay（0.2s 缩放 + 淡入）→ 一级「继续 / 设置 / 返回主菜单」（主菜单为「返回 / 设置 / 退出游戏」）→ 二级「设置」= 全屏 / 窗口化 + 返回；点空白处 / 继续关闭。全屏与返回菜单仍只由 `view/main.gd` 执行。见 `tests/test_settings_menu.gd`。 |
 | **手机端操作手感修复（最新一轮，两批）** | ✅ **本轮新增**（详见 [`mobile.md`](mobile.md) 第 18、19 节）：① **长按按钮后抬起手指，金色填充不再残留** —— `start_screen._input()` 在**触摸抬起**时延迟一帧清整层悬停（必须延迟：Button 的 `button_up` 会把悬停钉回去）；② **点按钮不再「立刻满格、随后自己退回去」** —— 按下态不用实心金（只加亮描边），点开面板的入口按钮 `set_latched(true)` **锁在满格**，面板收起（`panel_expand.reversed`）才解除 ⇒ 正向填充 / 反向渐出两段；③ **双指框选跟手** —— 选框改成按**两指定义的屏幕矩形**画（透视下世界矩形的远端边会缩进，原来那正是「右上 / 左下差一截」的根因）；④ **框选判定改成屏幕矩形 + 按「立牌图标」判**（不是脚底锚点）—— 修「看着框住了却有概率没选中（连带整支部队）」；**PC 与手机端已统一**（PC 的框也改画屏幕矩形、`_finish_drag` 同走 `box_select_screen`）；⑤ **局内按钮的悬停同样在触摸抬起时作废**（`hud.handle_touch`）；⑥ **按下兜底**：确认按下（`pressed`）瞬间把背景顶到满格（只顶当前值、不改目标）；⑦ **性能读数只留 FPS、移回最左上角**，完整 4 行分段收进 `ui.show_perf_detail`（默认关）。断言 5776 → **5828** |
 | **AI 将领的附属单位（本轮重做）** | ✅ **按「规格」随机生成**：每位将领（或红点共享）配一份 `escort_count`（数量，≤ 编制上限 `unit.general.caps`）+ `escort_types`（`[{type, weight}]`，权重和 = 1）。**摆放的将领开局当场生成满编**（`world.fill_general_retinue`）；**红点性 AI 将领各带满编随机附属兵**；**阵地性 AI 脱战后按同一份规格无消耗补员**。旧「逐兵摆放（`escort_of`）」只在读旧数据时兼容。见 [`../tools/campaign_editor/README.md`](../tools/campaign_editor/README.md) |
@@ -59,9 +62,12 @@
 | **将领濒死保护（最新一轮）** | ✅ **本轮新增**：将领被打到 0 血不再直接死 —— 旗下**还有部队**时进入**濒死**（钉在倒下点、**免疫一切伤害**、不能动也不能打，血量从 1 点开始**每 3 秒回上限的 1%**、封顶 **20%**，期间**只增不减**）；**旗下部队全灭**（含队列里还在读条的兵）则立即死亡；进濒死那一刻，附属兵会**解除全部现有命令、行军攻击到倒下点**集结。玩家选中濒死将领时，操作页**第一格**是「再起」：血量 ≥10% 才可点，花 `revive.cost`（默认 200 粮 / 200 金）**读条 5 秒**后脱离濒死（**血量保持点下去时那个数**，不是满血复活），读条期间仍免疫、**暂停全灭判定**、可取消并**全额退款**。★ AI 同样适配：濒死将领**仍然占着将领槽位**（所以不会去补招一位新的），阵营 AI 在「招将 / 招兵」之后、「升级 / 出兵」之前用自己池子里的钱让它再起。★ 进濒死会**把它正在招募的队列整个作废并全额退款**（否则「一直在造兵」会让它永远不满足「旗下部队全灭」，靠招募队列续命）。见 [`route.md`](route.md) 第四十节（40.3 是实测踩到的四个坑、40.7 / 40.8 是修完的四个手玩 bug） |
 | **金色填充糊住按钮文字（最新一轮修复）** | ✅ **本轮修复**（玩家实测报的）：主界面两颗 `test`、主界面 / 战役页那两条选择条、战役页的关卡 / 阵营行、游戏内右上角「设置」与它二级菜单里的「全屏 / 返回主菜单」——鼠标一停上去**整块变成一片金、字全没了**（而右下角页签栏那几颗却是好的）。根因：那层金原来接在宿主 `Button` 的 **`draw` 信号**上，而 Godot 4 的 `draw` 信号排在 `NOTIFICATION_DRAW`（底纹 + 文字）**之后** ⇒ 金压在字上；页签栏「看着对」纯粹因为它的字是**子 Label**（子节点画在父节点之后）。修法：填充层改成一颗 **`show_behind_parent = true` 的子节点**自己 `_draw()`，层次回到「面板 → 金 → 底纹 → 文字 → 子 Label」——于是**所有**挂了填充的按钮一次修好（命令卡 / 部队列表那几处以前同样被糊住，只是没人报）。连带口径：既然金在底纹下面，「悬停 / 选中时要看见金」的底纹就**必须透明**（新增 `card_hover` / `card_pressed` / `row_hover` 三档 + 原有 8 档，`test_fill_button` 全钉住）。★ 同轮修掉第二条真 bug：字色按 `n.position.y` 算「金扫到字没有」——对**子 Label** 是对的（按钮内坐标），对**宿主自己**是错的（那是父容器坐标；按钮被 VBox 排到下面时覆盖度恒为 1 ⇒ **悬停第一帧字就翻黑**，金还没上来）。★ 于是「战役页点阵营 / 关卡」现在与**局内选中科技**长得一模一样（常驻满格更亮的金 + 近黑字 + 2px 亮描边）。断言 `test_fill_button.gd` 108 → **125 项**；像素级验证进了 `tests/bench_menu_shot.gd`（新增 `05_menu_hover` 那张图 + 「金 / 字 / 面板底」三类像素计数 —— 无头断言验不了「谁盖谁」）。见 [`pitfalls.md`](pitfalls.md) 5.59 |
 | **战役菜单移植自 nsoc（最新一轮）** | ✅ **本轮新增**：「战役」按钮撑开的面板里不再是「地图选择条 + test + campaign_test」，而是**nsoc 版式的战役菜单** —— 左侧 **战役竖向轮播**（拖动翻页 + 吸附）、顶部**关卡圆点**、右侧**关卡标题 / 简介**（左右拖动切关）、底部「长按进入关卡」（**长按 3 秒**，前 1 秒不显环、可拖动取消）。★ 只移植了**版式与交互**，配色仍走本作暗金线框（nsoc 的白卡片 + 蓝点在暗金页上会裂）。★ 战役数据另开一份 `data/campaigns_menu.json`（与 `data/campaigns/` 的关卡数据分开）：`c1` 只有一关 **main_test**（指向 demo 的 mt），`c2/c3` 是「战役#2/3 + 关卡#1..」占位 —— **占位关长按什么都不发生**。★ 原来那三关（渡口 / 双子防线 / 渡口争夺）改成主界面正中的 **test_1 / test_2 / test_3**（数据在 `menu.test_entries`，加一颗按钮只改 JSON）。★ 两条入口都只发 `level_entry_pressed(campaign_id, level_id)`，载入战役、挑**第一个可玩阵营**、建世界仍然只在 `view/main.gd`。★ **顶部关卡圆点沿整条宽度均匀摊开**（相邻等距、左右各留半格空白、每颗垂直居中；槽位是等宽的 `CenterContainer` + `separation = 0`）。⚠️ 槽位不能用普通 `Control`（它不给孩子排版，点会贴在左上角 —— 2026.10.18 玩家实测报的就是这个）。见 [`route.md`](route.md) 37.12 |
-| 测试 | **49 个套件 / 5886 项断言 / 全过**（`tools/run-tests.ps1`）。本轮：删掉 `test_campaign_test.gd`（旧占位页），新增 `test_campaign_menu.gd`（**116 项**：数据源 / test_1/2/3 配置 / 版式几何 / 圆点与描述 / **圆点均匀摊开与留白** / 占位关不触发 / main_test 长按进关与默认阵营 / 回菜单面板已收回）；`test_start_flow.gd` 130 项（改成三颗 test 按钮）、`test_menu_chrome.gd` 156 项、`test_settings_menu.gd` 63 项、`test_map_select.gd` 62 项（改成单独装部件）。⚠️ 早先文档里那行写着「34 套 / 4807 项」、后来又写过「36 套 / 5170 项」「37 套 / 5413 项」「48 套 / 5828 项」、再早一轮是「49 套 / 5850 项」，与代码里实际能跑到的数**本来就对不上** —— 这行现在按**实际跑出来的结果**记（`ALL PASS` 的 `assertions` 数）；**地图编辑器另有 715 项**（`test_model.py` 312 + `test_app.py` 403）；**单位编辑器另有 668 项**（470 + 198，⚠️ **当前有 6 条陈旧断言红着**：测试把伤害写死 16 / 造价 60 / 科技 +1，而 `config.json` 在 2026-10-13 那轮已调成 14 / 40 / 0.05）；**战役编辑器另有 439 项**（268 + 171）—— 三个编辑器的测试都是**手动跑**（`python tools/<编辑器>/test_*.py`），靠退出码判定成败 |
+| **战役过渡画面 + 多阵营选择（最新一轮）** | ✅ **本轮新增**：单人关不再点完直接建世界，先挂**战役过渡画面**（`view/level_transition.gd`）—— 左面板是**战场缩略图**（`view/map_preview.gd` 纯 `_draw`：地形烘图 + 区划边界 + 目标区金框 + 双方大本营 + 开局出生点，零图片资源），右面板是「战役名 · 模式 / 关卡名 / 简报」，底部**真实预加载**进度条；满后进度条下滑、原位浮现会呼吸的「进入游戏」提示，**点它才建世界**。★ 多可玩阵营（渡口 / 渡口争夺 / main_test）仿 nsoc 街亭：右下方 N 张**阵营卡**，默认不选，点整张卡选中（金边 2px + 本阵营色淡底），未选时提示是「请选择阵营」且不可点；选完提示变「作为蓝方进入游戏」。★ 简报用关卡 JSON 本来就有的 `briefing[]`（4 关各写一段；缺失自动生成「目标+可玩阵营」兜底），整理在 `logic/level_brief.gd`。★ 合作关**跳过**过渡与选择，仍走合作大厅；Esc 取消回菜单。见 [`route.md`](route.md) 37.22 |
+| **开始界面淡入 + 快速点击修复** | ✅ **本轮新增**：① 开始界面启动时从**全黑淡入** —— 最上层一张铺满视口、**鼠标穿透**的 `BootFade` 在 `menu.intro_fade_in_sec`（默认 0.8s）内淡出后移除；`close()` / `open_menu()` 会收掉没跑完的那层，动效总开关关掉时不建。② 修复「开始界面点得太快 → 图标落位后消失、三颗 test 也消失」：根因是落位动画把主界面设成「显示但 alpha 0」、而 test 按钮仍然吃鼠标 ⇒ 快速连点会点中看不见的 `test_1` 直接开局，`close()` 掐断动画后 `_menu.modulate.a` 永远停在 0。现在从落位开始到外壳首次滑入淡入结束（`menu_chrome.intro_finished`）test 按钮一律不响应；`show_page(PAGE_MENU)` 另外兜底把 alpha 拨回 1。见 [`route.md`](route.md) 37.21 |
+| **退出确认浮层** | ✅ **本轮新增**：主菜单「选项 → 退出游戏」不再直接关游戏 —— 先弹一块**退出确认浮层**（版式移植自 nsoc 的 `quit_confirm`）：55% 半透黑遮罩 + 居中面板（屏宽 **70%** × 屏高 **50%**），面板上「点击面板退出游戏 / 点击空白处或 Esc 取消」。**点面板 = 确认、点空白 = 取消**，打开是淡入 + 0.92→1 缩放；确认后遮罩**先推成全黑 0.2s、再保持全黑 0.1s** 才发信号退出（「缓冲」那一拍），且**遮罩保留到进程真的退出**（不会在最后一帧露出界面 —— 用户实测报过）。★ 触发范围按用户口径：**主菜单按钮 + 安卓返回键**；**桌面窗口 X 仍然直接退**（nsoc 原样）。★ 安卓返回三档：① 浮层开着 → 取消它；② 局内选项页开着 → 先关选项页；③ 其余 → 弹退出确认（`project.godot` 已设 `config/quit_on_go_back=false`，否则引擎会抢在通知前退出）。★ **不是 autoload**：组件只发 `confirmed` / `cancelled`，quit 仍然只在 `view/main.gd` 一处。见 [`route.md`](route.md) 37.20 |
+| 测试 | **64 个套件 / 6459 项断言 / 全过**（`tools/run-tests.ps1`，2026.10.19）。近两轮：删掉 `test_campaign_test.gd`（旧占位页），新增 `test_campaign_menu.gd`（**116 项**：数据源 / test_1/2/3 配置 / 版式几何 / 圆点与描述 / **圆点均匀摊开与留白** / 占位关不触发 / main_test 长按进关与默认阵营 / 回菜单面板已收回）；`test_start_flow.gd` **175 项**（三颗 test 按钮 + **开局淡入 + 快速点击不误开局 + 中途打断回菜单兜底 + 过渡画面进关**）、`test_menu_chrome.gd` 156 项、`test_settings_menu.gd` **64 项**、`test_map_select.gd` 62 项（改成单独装部件）；2026.10.19 新增 `test_quit_confirm.gd` **70 项**（退出确认浮层）与 `test_level_transition.gd` **83 项**（简报 / 缩略图 / 多阵营选择 / 真实进度 / **落画后提示才淡入** / 点提示才进入 / **进入黑屏转场** / cooperative 跳过 / Esc 取消），`test_campaign_menu.gd` **119 项**。⚠️ 早先文档里那行写着「34 套 / 4807 项」、后来又写过「36 套 / 5170 项」「37 套 / 5413 项」「48 套 / 5828 项」、再早一轮是「49 套 / 5850 项」，与代码里实际能跑到的数**本来就对不上** —— 这行现在按**实际跑出来的结果**记（`ALL PASS` 的 `assertions` 数）；**地图编辑器另有 715 项**（`test_model.py` 312 + `test_app.py` 403）；**单位编辑器另有 668 项**（470 + 198，⚠️ **当前有 6 条陈旧断言红着**：测试把伤害写死 16 / 造价 60 / 科技 +1，而 `config.json` 在 2026-10-13 那轮已调成 14 / 40 / 0.05）；**战役编辑器另有 439 项**（268 + 171）—— 三个编辑器的测试都是**手动跑**（`python tools/<编辑器>/test_*.py`），靠退出码判定成败 |
 | 引擎位置 | ★ **必须用 mono(.NET) 版**：`C:\D\GodotEngine\gd4.7.2mono\Godot_v4.7.2-stable_mono_win64_console.exe`（**未加入 PATH**，命令行必须用 `_console.exe`；可用 `$env:GODOT_EXE` 覆盖）。工程里有 C# 群体内核（`logic/crowd/*.cs`），普通版引擎加载不了它，见 [`pitfalls.md`](pitfalls.md) 1.1b |
-| 性能基准 | **两个**：`tests/bench_crowd.gd`（无头，量**逻辑**耗时，`DAEEM_ONLY=move/idle/am` 一个进程只跑一个场景）；`tests/bench_fps.gd`（**开窗**，量**实机帧率**，含渲染与 draw call；`DAEEM_FPS_MODE=am` 切到行军攻击）。用法见文件头；环境变量 `DAEEM_BENCH_*` / `DAEEM_FPS_*` 可改规模。⚠️ 两个基准都会打印**机器漂移倍率**，>1.3 时数字不可比；`DAEEM_FPS_PROFILE=0` 关剖析量**真实**帧时间（见 [`pitfalls.md`](pitfalls.md) 1.6 / 1.8） |
+| 性能基准 | **三个**：`tests/bench_crowd.gd`（无头，量**逻辑**耗时，`DAEEM_ONLY=move/idle/am` 一个进程只跑一个场景）；`tests/bench_fps.gd`（**开窗**，量**实机帧率**，含渲染与 draw call；`DAEEM_FPS_MODE=am` 切到行军攻击）；`tests/bench_snapshot.gd`（无头，量**合作快照**的体积 / `to_snapshot` / `encode` / `apply` / `fog`，`DAEEM_SNAP_COUNTS` 改兵数、`DAEEM_SNAP_ROUNDS` 改轮数）。用法见文件头；环境变量 `DAEEM_BENCH_*` / `DAEEM_FPS_*` 可改规模。⚠️ 基准会受机器漂移影响，>1.3 时数字不可比；`DAEEM_FPS_PROFILE=0` 关剖析量**真实**帧时间（见 [`pitfalls.md`](pitfalls.md) 1.6 / 1.8） |
 
 ## 怎么跑
 
@@ -71,6 +77,12 @@ powershell -ExecutionPolicy Bypass -File tools/run-tests.ps1
 
 # 只做语法 / 编译检查（比跑测试更早、更准地报行号）
 powershell -ExecutionPolicy Bypass -File tools/check-syntax.ps1
+
+# 本机联机冒烟：零依赖中继 + host/guest 探针
+powershell -ExecutionPolicy Bypass -File server/run-local.ps1
+
+# 云端部署（在服务器上以管理员运行；先 DryRun 看计划）
+powershell -ExecutionPolicy Bypass -File server/deploy.ps1 -DryRun
 
 # 装中文字体（每台机器跑一次；不装则 HUD 里中文显示成方框）
 powershell -ExecutionPolicy Bypass -File tools/setup-font.ps1
@@ -120,10 +132,14 @@ dev_gd_a/daeem/
 │                   unit_roster（左栏上半：展开那支部队的将领格，就一格）/ troop_grid（左栏下半：3×3 = 9 格）/
 │                   recruit_queue（招募五格 + 读条）/ command_card / tech_grid / page_tabs /
 │                   hover_tip（右下角按钮的悬停详情面板：命令卡正上方、横跨命令卡 + 页签列、按文本长高）
+├── net/        联机会话（M12）：protocol / transport / relay_transport / host_session /
+│               client_session / lobby
+├── server/     零依赖 Python 中继（RFC6455）+ deploy.ps1 + 探针；不进游戏包
 ├── tests/      无头断言（smoke / logic / view / ui / attack_orders / zone_capture / building_body /
 │                   path_feel / diagonal / collision / retinue / recruit_queue / arrival / map_editor / fog /
 │                   ★ 本轮新增 campaign / outcome / campaign_ai / ai_target）
-└── tools/      run-tests.ps1 · check-syntax.ps1 · setup-font.ps1（+ README-tools.md）
+├── tools/      run-tests.ps1 · check-syntax.ps1 · setup-font.ps1（+ README-tools.md）
+└── export_presets.cfg  Windows / Android 导出预设（*.json 包含过滤；Android INTERNET）
 ```
 
 地图编辑器**不在** `daeem/` 里（它是给开发者用的 Python 工具，不进游戏包）：
@@ -449,16 +465,60 @@ dev_gd_a/daeem/
       —— 无头断言在 `tests/test_campaign_seats.gd`（56 项）
 - [ ] `1/2/3`、招募、科技、升级、小地图、迷雾全都照旧
 
+## 手玩验收清单 · 战役过渡画面（本轮）
+
+> 自动化 `test_level_transition.gd` 管数据 / 版式 / 选择 / 信号 / 进入与取消；
+> 下面这些是观感，只能手玩看（尤其缩略图与中文排版）。
+
+- [ ] 点 test_1 / test_3 / 战役菜单里的 main_test：先出现**过渡画面**，不是直接进游戏
+- [ ] 左面板能认出战场：地形色块、区划细线、目标区金框、双方大本营、出生点
+- [ ] 右面板：战役名 · 单人 / 关卡名 / 简报正文；正文不挤出面板、不压到卡片
+- [ ] 两阵营关：右下方两张卡；未选时底部是「请选择阵营」且点了没反应
+- [ ] 点整张阵营卡任意位置都能选中（金边 + 本阵营色淡底），提示变成「作为 X 进入游戏」
+- [ ] 进度条走满 → 完全落画（**条还在画面里时看不到提示**）→ 提示淡入并开始呼吸
+- [ ] 点提示进游戏：整屏先淡成全黑，黑屏底下建世界，游戏首帧亮起后再从全黑淡出
+- [ ] 单阵营关（如果数据里只有一方）：没有阵营卡，提示直接可点
+- [ ] Esc：收掉过渡画面回菜单，不建世界
+- [ ] 合作关（test_2 / 合作大厅）：**不出现**过渡画面，仍走原来的流程
+
+## 手玩验收清单 · 开始界面淡入 + 快速点击（本轮）
+
+> 自动化 `test_start_flow.gd` 管「淡入层存在/移除」「落位期间点 test 不会开局」
+> 「中途打断回菜单仍是 alpha 1」；下面这些是观感，只能手玩看。
+
+- [ ] 启动瞬间是**全黑**，约 0.8s 内淡出入场页（不是直接「啪」地出现）
+- [ ] 淡入过程中点一下也能进主界面（遮罩鼠标穿透）
+- [ ] 在入场页**快速连点**（尤其落位那 0.5s，鼠标停在将来 test_1 的位置）：
+      不应直接进游戏；最终主界面 logo 与三颗 test 都完整可见
+- [ ] 从游戏里「返回主菜单」：没有任何残留黑幕，logo 与三颗 test 都在
+- [ ] 动效总开关关掉（`ThemeRes.set_animations_enabled(false)` / 调 `animations` 配置）：
+      启动不黑屏、直接显示入场页
+
+## 手玩验收清单 · 退出确认浮层（本轮）
+
+> 自动化 `tests/test_quit_confirm.gd` 管结构 / 尺寸 / 信号 / 三档返回；
+> 下面这些只能手玩看（尤其**安卓真机**的返回键，桌面模拟不出来）。
+
+- [ ] 主菜单「选项 → 退出游戏」→ 弹出浮层，**游戏没有立刻退出**
+- [ ] 点面板 → 遮罩在 0.2s 内推成全黑 → 进程退出（那一拍就是「缓冲」）
+- [ ] 点面板外的空白 → 浮层淡出、回到菜单（不退出）
+- [ ] 按 Esc → 取消
+- [ ] 浮层开着时再点一次「退出游戏」→ 不会叠第二层
+- [ ] 安卓真机：主菜单按返回 → 弹浮层；浮层开着时返回 = 取消
+- [ ] 安卓真机：局内先点开右上「选项」→ 返回键只关选项页、**不**弹退出浮层；
+      再按一次才弹
+- [ ] 桌面窗口右上 X：仍然**直接退出**（不弹浮层，nsoc 原样）
+
 ## 本轮已知限制（有意不做）
 
 | 限制 | 说明 |
 |---|---|
-| **没有联机** | 第 1 轮做。但命令 / 快照边界已就位，`logic/` 到时候不用改 |
+| **联机已做（M12）** | 双人合作已落地：公网中继 `ws://159.75.154.122:8770/ws`、房主权威、30Hz 快照（M12.7；带背压 / 客机合并）、合作大厅；断线重连 / 客机接管 / 3 人 / 观战仍不做 |
 | **没有正式敌人** | 只有调试面板刷出来的测试敌人 + 地图预置的守军；AI 只做「推进 → 拆挡路的墙」（箭塔不在它的目标列表里，会绕开） |
 | **NPC 不会主动索敌建筑** | 刻意与玩家不对称：玩家单位会主动打敌方建筑，NPC 拆建筑仍由 AI 指定（否则推进节奏会被改掉） |
 | **没有胜负条件** | ⚠️ **本轮起这句话要收窄**：单机的**老路径**（按 test 直接开一局）照旧不判胜负（大本营血量保底 1，打不掉，`pvp` 那套开关仍等联机打开）；而**战役路径**（`World.create_from_level`）有完整的**目标与胜负**（守住指定区划 N 秒 / 丢掉即负 / 大本营被拆常开判负 / `zone_lost`），见 [`route.md`](route.md) 37.6 |
-| **战役入口已经有图形界面，但内容仍是占位** | 本轮之后：主界面正中 **test_1/2/3** 直连三关；右下「战役」里是 **nsoc 版式的战役菜单**（轮播 / 关卡圆点 / 描述 / 长按进入），走的正是 `World.create_from_level`。★ **只有 main_test 一关是真的**（其余战役 / 关卡是占位，长按无反应）。**仍然没有**的是：关卡**进度 / 解锁标记**、**简报 / 结算面板**、**关卡内的目标面板**、**合作大厅**（合作关在这条路上进不去），以及**选阵营**（现在一律取第一个可玩阵营）—— 那些是规划书 5.1~5.4。见 [`route.md`](route.md) 37.11 / 37.12 |
-| **没有合作网络层** | 本轮只把**规则**做到「两个玩家在同一个世界里」（各自资源、共享视野、同方判定），网络（哑中继 + 房主权威）在下一轮。所以现在双人合作只能在**同机同进程**里跑（`create_from_level` 传两个席位的 `roster`） |
+| **战役入口已经有图形界面，但内容仍是占位** | 本轮之后：主界面正中 **test_1/2/3** 直连三关；右下「战役」里是 **nsoc 版式的战役菜单**（轮播 / 关卡圆点 / 描述 / 长按进入），走的正是 `World.create_from_level`。★ **只有 main_test 一关是真的**（其余战役 / 关卡是占位，长按无反应）。**仍然没有**的是：关卡**进度 / 解锁标记**、**简报 / 结算面板**、**关卡内的目标面板**，以及**选阵营**（现在一律取第一个可玩阵营；合作大厅已由 `test_2` 单独入口提供，战役菜单这条路上仍不进合作大厅）—— 那些是规划书 5.1~5.4。见 [`route.md`](route.md) 37.11 / 37.12 |
+| **合作网络层已做（M12）** | 哑中继 + 房主权威 + 30Hz 快照（M12.7）+ 合作大厅均已落地；双人合作不再依赖同机同进程。客户端用 `ws://159.75.154.122:8770/ws`，服务器只跑零依赖 Python 中继 |
 | **不做触发器 / 剧本 / 时间轴波次** | 用户明确不要（规划书 1.3.5）：「波次」= 关卡给某一方指定 `attack_target`，它自己的「招将 → 招兵 → 满员 → 行军攻击」循环就是一波又一波。要在其上叠调度时**数据格式不用改**（`attack_target` 与那些 AI 参数仍然是那一层的输入） |
 | **关卡简报 / 结算面板 / 存读档 / 战役进度存档** | 用户说「以后扩展 / 目前不考虑」。`briefing` 字段已经留在关卡数据里（运行时**一个字都不读**）；进度的口子留成 `campaign_library.unlocked_levels(campaign, progress)` 这个**纯函数** —— 将来把 `progress` 换成「读文件」，界面一行不用改 |
 | **只有一种目标、一种额外失败条件** | 目标只有「守住指定区划 N 秒」（「占领即胜」不做，因为开局必须就是自己的）；额外失败条件第一批只有 `zone_lost`。加新的那几类时它们是**同一张表里的新 `kind`**（`fail_conditions[]` 已经是数组） |
@@ -489,4 +549,3 @@ dev_gd_a/daeem/
 | **占位美术（已经是程序化 3D）** | 单位 = **立起来的兵人立牌**（程序化烘的 SDF 贴图 + 材质自带 billboard）、建筑 = **`BoxMesh` 方块**（宽深仍与碰撞本体一致）、区划中心 = 地面上的标记；全部**没有任何美术资源**。★ 游戏内已经是**真 3D 场景**（`view/game_scene3d.gd`：真透视 `Camera3D` + 一整块 `PlaneMesh` 地面 + `MultiMesh` 合批），设计与实测见 [`../dev_plan_9.md`](../dev_plan_9.md)。★★ **入口已切到 3D**（`view/main.gd` → `view/game_scene3d.gd`；全套 38 文件 / 5338 项全绿，接入曲线与收尾见 [`route.md`](route.md) 第四十一节）—— 换正式美术仍然只动 `view/` |
 | **没有地形高低差 / 存档** | 战争迷雾**本轮已做**（见上面那一行与 [`route.md`](route.md) 第三十二节） |
 | **大本营会让整个区块瞬间归己方** | 照搬 HTML 版的行为（开关在 `config.zone.zone_owned_by_building`，副作用见那里的注释） |
-

@@ -142,6 +142,25 @@ var minimap_drag_min_px: float = 4.0
 ##   ⚠️ 它只影响「多快进入拖动态」，不影响按下那一刻的跳转 —— 见 view/minimap.gd 的状态机。
 var minimap_drag_hold_sec: float = 0.18
 
+## ---- 小地图上的**红点性 AI 将领**标记（见 config.json 的 minimap._red_dot_comment）----
+## ★★ 需求：「红点将领在小地图上用小红菱形标出；红点刷出来时，在原地播一个
+##   菱形由大变小的动效」。全部是**纯显示**参数，不影响任何玩法（不进逻辑判定）。
+##   · `red_dot_r`           —— 常驻小红菱形的**半对角线**（小图像素）；
+##   · `red_dot_spawn_from_r`—— 生成动效的**起始**半对角线（由这么大缩到 `red_dot_r`）；
+##   · `red_dot_spawn_sec`   —— 生成动效时长（秒，0 = 不播动效，只留下常驻标记）。
+var minimap_red_dot_r: float = 3.4
+var minimap_red_dot_spawn_from_r: float = 18.0
+var minimap_red_dot_spawn_sec: float = 0.75
+## ★★ 常驻小红菱形的**呼吸**（本轮新增）：尺寸在 `r × (1 ± amp)` 之间按正弦起伏。
+##   · `red_dot_breath_sec` = 一个完整周期（秒）；≤0 视为关闭呼吸；
+##   · `red_dot_breath_amp` = 振幅（0.2 = ±20%；0 = 不呼吸）。
+var minimap_red_dot_breath_sec: float = 1.1
+var minimap_red_dot_breath_amp: float = 0.2
+## 颜色两项都来自 `colors.red_dot` / `colors.red_dot_outline`（暗色描边垫底，
+## 保证菱形压在雪地 / 迷雾上都读得出来）。
+var minimap_red_dot_color: Color = Color(1.0, 0.231, 0.188, 1.0)
+var minimap_red_dot_outline: Color = Color(0.0, 0.0, 0.0, 0.55)
+
 ## ---- ★★ 手机端触摸手势阈值（见 config.json 的 touch._comment / view/touch_controller.gd）----
 ## ★ 它们出现在**每个触摸事件**的判定里，所以按同一条规矩在载入时算好（别在事件里切字符串）。
 ##   单位口径：pan_min_px / tap_max_move_px / box_min_px / double_tap_px 是**屏幕像素**；其余是**秒**。
@@ -187,6 +206,27 @@ var fog_backend: String = "csharp"
 var fog_vision_default: float = 8.0
 var fog_vision_building: float = 9.0
 var fog_mask_color: Color = Color(0.0, 0.0, 0.0, 0.45)
+## ★★ 迷雾贴图的**最短重烘间隔**（秒；0 = 掩码一变就立刻烘）。
+##   变更检测本身每帧都做（见 view/ground_view.gd 的 `rebake_fog`），这里限制的是
+##   「重画贴图 + 上传显存」的频率：大图（100×100）+ 千单位时掩码几乎每帧都在变，
+##   不合并就会变成周期性尖峰。0.1 = 观感延迟上限 100ms，玩家看不出来。
+var fog_rebake_min_sec: float = 0.1
+
+## ---- ★★ 局内「敌 / 友 / 己」的统一配色（见 config.json 的 colors.side._comment）----
+##
+## 需求：「敌人在我视角下红、友军黄、己方蓝」。判定关系的一处在 `view/side_color.gd`
+## （`self` / `ally` / `enemy` / `neutral`），这里只管**三个颜色值**。
+##   · 它们是**纯显示**，不影响任何玩法；夜战底 / 迷雾上都按这三色画；
+##   · `neutral`（无主）**不套三色** —— 区划中心 / 无主区划保留自己的中性色，
+##     否则「没有主人」会被画成某一方。
+## ⚠️ 与 `colors.faction.*` 的分工：那一份是**阵营身份色**（菜单 / 战役选择 / 过渡画面
+##    仍然用它），这一份只给**局内战场**用。
+var side_color_self: Color = Color(0.353, 0.784, 1.0, 1.0)     # #5ac8ff 蓝
+var side_color_ally: Color = Color(1.0, 0.820, 0.400, 1.0)     # #ffd166 黄
+var side_color_enemy: Color = Color(0.878, 0.353, 0.353, 1.0)  # #e05a5a 红
+## ★ 中立 / 「还没选阵营」的灰（过渡画面在没选中可玩阵营时用它给标识上色；
+##   局内无主区划仍走各自的中性色，不用这里）。
+var side_color_neutral: Color = Color(0.620, 0.650, 0.690, 1.0) # #9ea6b0 灰
 
 ## ---- 碰撞（★ 每帧每单位都会读；原先走 num() 每次都要 split(".") + 逐层下潜）----
 var unit_collision_enabled: bool = true
@@ -507,6 +547,14 @@ func _cache_scalars() -> void:
 	show_perf_detail = bool_val("ui.show_perf_detail", false)
 	minimap_drag_min_px = num("minimap.drag_min_px", 4.0)
 	minimap_drag_hold_sec = num("minimap.drag_hold_sec", 0.18)
+	# ★ 红点将领标记：尺寸不给负、时长不给负（0 = 不播动效）。
+	minimap_red_dot_r = maxf(0.0, num("minimap.red_dot_r", 3.4))
+	minimap_red_dot_spawn_from_r = maxf(0.0, num("minimap.red_dot_spawn_from_r", 18.0))
+	minimap_red_dot_spawn_sec = maxf(0.0, num("minimap.red_dot_spawn_sec", 0.75))
+	minimap_red_dot_breath_sec = maxf(0.0, num("minimap.red_dot_breath_sec", 1.1))
+	minimap_red_dot_breath_amp = clampf(num("minimap.red_dot_breath_amp", 0.2), 0.0, 1.0)
+	minimap_red_dot_color = parse_color(str_val("colors.red_dot", "#FF3B30"))
+	minimap_red_dot_outline = parse_color(str_val("colors.red_dot_outline", "rgba(0,0,0,0.55)"))
 
 	# ---- 手机端触摸手势（见 config.json 的 touch._comment）----
 	# ★ 像素阈值 / 时长写成负数没有意义；0 会让「按下即算拖动 / 两次事件必双击」这类抖动判定生效，
@@ -535,6 +583,14 @@ func _cache_scalars() -> void:
 	fog_vision_building = maxf(0.0, num("fog.vision_building", 9.0))
 	fog_mask_color = parse_color(str_val("fog.mask_color", "#000000"))
 	fog_mask_color.a = clampf(num("fog.mask_alpha", 0.45), 0.0, 1.0)
+	fog_rebake_min_sec = maxf(0.0, num("fog.rebake_min_sec", 0.1))
+
+	# ★ 局内敌/友/己三色（见 config.json 的 colors.side._comment）。
+	#   颜色走 parse_color，与 colors.* 同一套写法；写坏了退回下面这几个默认值。
+	side_color_self = parse_color(str_val("colors.side.self", "#5ac8ff"))
+	side_color_ally = parse_color(str_val("colors.side.ally", "#ffd166"))
+	side_color_enemy = parse_color(str_val("colors.side.enemy", "#e05a5a"))
+	side_color_neutral = parse_color(str_val("colors.side.neutral", "#9ea6b0"))
 
 	unit_collision_enabled = bool_val("unit.collision_enabled", true)
 	unit_collision_backend = str_val("unit.collision_backend", "csharp")

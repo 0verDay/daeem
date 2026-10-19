@@ -19,6 +19,8 @@ extends Node3D
 
 const ConfigRes = preload("res://logic/config.gd")
 const FactionRes = preload("res://logic/faction.gd")
+## ★★ 局内「敌 / 友 / 己」三色（本轮新增）
+const SideColorRes = preload("res://view/side_color.gd")
 
 var cfg: ConfigRes = null
 var world = null
@@ -72,7 +74,7 @@ func _mat_for(faction: String) -> StandardMaterial3D:
 	if hit != null:
 		return hit
 	# 提亮一档：小方块要在地面/单位上看得清
-	var col: Color = cfg.faction_color(faction, "main")
+	var col: Color = SideColorRes.color(cfg, world, faction, "main")
 	var bright := Color(lerpf(col.r, 1.0, 0.35), lerpf(col.g, 1.0, 0.35), lerpf(col.b, 1.0, 0.35), 1.0)
 	var m := StandardMaterial3D.new()
 	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
@@ -162,7 +164,7 @@ func _update_trail(slot: Dictionary, w: Vector3, faction: String) -> void:
 		(slot["trail"] as MeshInstance3D).visible = false
 		return
 	(slot["trail"] as MeshInstance3D).visible = true
-	var base: Color = cfg.faction_color(faction, "main")
+	var base: Color = SideColorRes.color(cfg, world, faction, "main")
 	# 越靠头（最新）越亮：拖尾从「淡淡的一段」收到方块身上
 	im.surface_begin(Mesh.PRIMITIVE_LINE_STRIP)
 	for i in hist.size():

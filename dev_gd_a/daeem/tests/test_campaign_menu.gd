@@ -391,8 +391,24 @@ func _test_main_test_enters_game() -> void:
 	await process_frame
 	await process_frame
 
+	# ★★ 长按之后先进**战役过渡画面**（不再直接建世界），由玩家选阵营 + 点进入。
+	var tr = await _wait_transition(main)
+	ok(tr != null, "★★ 长按 main_test 之后出现了战役过渡画面")
+	if tr == null:
+		main.queue_free()
+		return
+	ok(not tr.ready_to_enter() or tr.loading_done(), "过渡画面先加载（进度条阶段）")
+	tr.select_faction(want_faction)
+	await _wait_transition_ready(tr)
+	ok(tr.ready_to_enter(), "（前提）过渡画面加载完、阵营已选")
+	tr._enter()
+	var enter_deadline: int = Time.get_ticks_msec() + 4000
+	while Time.get_ticks_msec() < enter_deadline and main.game == null:
+		await process_frame
+	await process_frame
+
 	var game = main.game
-	ok(game != null, "★★ 长按 main_test 之后出现了游戏内场景")
+	ok(game != null, "★★ 点「进入」之后出现了游戏内场景")
 	if game == null:
 		main.queue_free()
 		return
@@ -404,7 +420,7 @@ func _test_main_test_enters_game() -> void:
 		eq(String(game.level_campaign.id), MAIN_CAMPAIGN_ID, "战役就是 demo")
 	eq(String(game.world.level.id), MAIN_LEVEL_ID, "★ world 挂的关卡就是它")
 	eq(game.world.my_faction, want_faction,
-		"★★ 阵营 = 第一个可玩阵营（%s；nsoc 样式里没有选阵营这一步）" % want_faction)
+		"★★ 阵营 = 玩家在过渡画面里选的那一个（%s）" % want_faction)
 	ok(not main.start_screen.visible, "开场页整层下线了")
 
 	# 回主菜单：面板必须已经收回（不能还停在撑开态）。
@@ -418,3 +434,18 @@ func _test_main_test_enters_game() -> void:
 
 	main.queue_free()
 	await process_frame
+
+
+## 等战役过渡画面挂出来。
+func _wait_transition(main):
+	var deadline: int = Time.get_ticks_msec() + 4000
+	while Time.get_ticks_msec() < deadline and main.level_transition() == null:
+		await process_frame
+	return main.level_transition()
+
+
+## 等过渡画面加载完 + 提示可点。
+func _wait_transition_ready(tr) -> void:
+	var deadline: int = Time.get_ticks_msec() + 8000
+	while Time.get_ticks_msec() < deadline and not tr.ready_to_enter():
+		await process_frame

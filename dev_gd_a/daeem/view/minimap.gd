@@ -39,6 +39,10 @@ const ConfigRes = preload("res://logic/config.gd")
 ##   （2D 遗留路线已随 2D 栈删除；`setup` 时必须给）。
 var palette = null
 const BuildingRes = preload("res://logic/building.gd")
+## ★ 红点性 AI 的「AI 类型」字符串（`reddot`）从这个常量取，不在本文件里再写一遍字面量。
+const LevelRes = preload("res://logic/level.gd")
+## ★★ 局内「敌 / 友 / 己」三色（本轮新增）：小地图上的单位点 / 建筑块 / 区划都走它
+const SideColorRes = preload("res://view/side_color.gd")
 ## ★ 迷雾掩码按「同方」存（合作模式共享视野），与 `fog.tile_visible()` 同一个键。
 ##   烘图直接读掩码数组，所以需要这个换算（只用来取 key，不重算任何视野）。
 const FactionRes = preload("res://logic/faction.gd")
@@ -130,6 +134,25 @@ var fog_bake_count: int = 0
 var _refresh_interval: float = 0.0
 var _refresh_accum: float = 0.0
 
+## ★★ 红点性 AI 将领的标记 + 生成动效（本轮新增；需求见 config 的 minimap._red_dot_comment）。
+##
+## 两件事共用一份「红点」判据（`is_red_dot_faction()`）：
+##   · **常驻标记**：场上每位红点将领在小地图上画一个红色小菱形（只标将领，不标附属兵）；
+##   · **生成动效**：红点 AI 刷出一波时，在**每个出生格**播一个「菱形由大变小 + 淡出」。
+##     —— 位置来自 `red_dot_wave` 事件的 `spawns`（logic/red_dot_ai.gd），本文件不猜。
+##
+## ★★ 显示口径（本轮定稿）：
+##   · **常驻标记**只在红点将领**没被观测到**（还在迷雾里）时画 —— 它一旦被
+##     我方 / 友方看见，屏幕上就有一个真实的单位了，菱形反而多余；
+##   · **生成动效**照旧每次都播（红点刷出来的那一下要能看见“它来了”），与迷雾无关。
+##   ⚠️ 两样都**不**参与玩法判定；只影响小地图这一层（大地图照旧走 `fog.*`）。
+var _red_dot_fx: Array = []              # 每项 `{pos: Vector2(格), age: float}`
+## 常驻菱形的**呼吸**时钟（秒；只由 `_process` 推进，测试可以直接写它）。
+var _breath_clock: float = 0.0
+## 诊断（测试读它；与 overlay 的 `*_draw_count` 同一个用途）：最近一次 `_draw` 画了几个。
+var red_dot_mark_count: int = 0
+var red_dot_fx_draw_count: int = 0
+
 
 func setup(p_cfg: ConfigRes, p_world, p_camera_rig, p_palette) -> void:
 	cfg = p_cfg
@@ -149,6 +172,11 @@ func setup(p_cfg: ConfigRes, p_world, p_camera_rig, p_palette) -> void:
 	_fog_mask = PackedByteArray()
 	_fog_cols = -1
 	_fog_rows = -1
+	# 新一局 ⇒ 上一局残留的「红点生成」动效也不能留着（否则一开局就在播上一局的）
+	_red_dot_fx = []
+	_breath_clock = 0.0
+	red_dot_mark_count = 0
+	red_dot_fx_draw_count = 0
 	# ★ 地形烘图按 NEAREST 采样：1 像素/格 的贴图缩放到小地图尺寸后仍是硬边小方块。
 	texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 	# ★★ 手机端：小地图每帧重画（地形 + 迷雾 + 单位）没必要 60Hz，按上限节流。
@@ -375,8 +403,11 @@ func stagger_redraw(ratio: float) -> void:
 ##   鼠标停在原地不动时事件就没了，而「按住算长按」的那条计时必须照样走。
 func _process(dt: float) -> void:
 	_tick_drag(dt)
-	# ★★ 手机端：按上限节流（桌面 / 无头 _refresh_interval == 0 ⇒ 每帧，行为不变）。
-	if _refresh_interval <= 0.0:
+	# ★ 常驻红点菱形的呼吸（纯显示；暂停时不推进 —— 场景暂停时 `_process` 本来也不跑）。
+	_breath_clock += maxf(0.0, dt)
+	# ★ 红点生成动效：每帧推进；有动效在播时**绕过手机端节流**（否则 10Hz 会一顿一顿的）。
+	advance_red_dot_fx(dt)
+	if _refresh_interval <= 0.0 or not _red_dot_fx.is_empty():
 		queue_redraw()
 		return
 	_refresh_accum += dt
@@ -409,6 +440,8 @@ func _draw_impl() -> void:
 	#    fog_view 同一个口径（地形照旧看得见，敌人先被剔除再盖灰）。
 	#    顺序也在这一行里：盖在最后 = 盖在那些图元之上。
 	_draw_fog()
+	# ★★ 红点将领标记 / 生成动效：画在迷雾**之上**（口径：这两样永远可见，见字段说明）。
+	_draw_red_dots()
 	_draw_view_rect()
 
 
@@ -473,10 +506,11 @@ func _draw_buildings() -> void:
 		var col: Color
 		if b.type == BuildingRes.TYPE_ZONE_CENTER:
 			col = cfg.color("zone_center")
-		elif b.type == BuildingRes.TYPE_WALL:
-			col = cfg.color("wall")
+		elif String(b.owner) == "":
+			col = cfg.color("wall") if b.type == BuildingRes.TYPE_WALL else cfg.color("tower")
 		else:
-			col = cfg.faction_color(b.owner, "main")
+			# ★★ 有主建筑：按本机视角的己 / 友 / 敌三色（本轮新增）
+			col = SideColorRes.color(cfg, world, String(b.owner), "main")
 		draw_rect(Rect2(center - Vector2(side, side) * 0.5, Vector2(side, side)), col, true)
 
 
@@ -557,6 +591,224 @@ func _fog_texture() -> ImageTexture:
 	return _fog_tex
 
 
+# ------------------------------------------------------------------
+# ★★ 红点性 AI 将领：小地图标记 + 生成动效（本轮新增）
+# ------------------------------------------------------------------
+#
+# 需求原文（两条）：
+#   1. 「当游戏中存在红点性 ai 将领时，在小地图上用小的红色菱形标识该红点将领位置」；
+#   2. 「当红点性 ai 生成时，在其生成位置播放一个红点菱形由大变小的动效」。
+#
+# ★ 判据（这一块唯一需要理解的东西）：
+#   · 「红点将领」= 它是**将领** + 它属于一个 **AI 类型为 reddot** 的阵营
+#     （`world.ai_kind_of()`，与 logic/red_dot_ai.gd 的 setup 同一份数据）；
+#     本机操作的席位永远不算（数据把可玩阵营写成 reddot 时也不能把它标成敌人）。
+#   · 位置**不在这里猜**：常驻标记读单位的逻辑坐标；生成动效的位置来自
+#     `red_dot_wave` 事件的 `spawns`，由 game_scene3d 喂进 `note_red_dot_spawns()`。
+#     视图不去扫「新出现的单位」—— 那会把开局就摆好的红点将领也当成刚生成。
+
+## 这一方是不是「红点性 AI」阵营（标记 / 动效的唯一判据）。
+func is_red_dot_faction(fid: String) -> bool:
+	if fid == "" or world == null:
+		return false
+	# ★ 本机在操作的席位永远不是「红点」：数据里把可玩阵营写成 `ai: reddot` 时，
+	#   运行时会摘掉它的 AI，但 `ai_kind_of()` 仍会回答 reddot
+	#   ⇒ 不拦这一下，玩家自己的将领也会被标成红点。
+	if String(world.my_faction) == fid:
+		return false
+	var mine: Variant = world.player_factions
+	if typeof(mine) == TYPE_ARRAY and (mine as Array).has(fid):
+		return false
+	if not world.has_method("ai_kind_of"):
+		return false
+	return String(world.ai_kind_of(fid)) == LevelRes.AI_REDDOT
+
+
+## 这一帧该画的**红点将领位置**（逻辑坐标 = 格）。
+##
+## ★ 纯读、纯计算（不碰绘制 API）⇒ 无头测试可以直接断言它，不需要真的渲染一帧。
+## ★★ **只画「还没被观测到」的那些**（本轮口径）：红点将领一旦离开战争迷雾、
+##   被我方 / 友方单位看见，它本身就是屏幕上的一个单位了，小地图上不必再给菱形提示；
+##   等它重新走进迷雾，菱形自动回来。判据只问 `logic/fog.gd`（盟友共享视野）。
+func red_dot_marks() -> Array:
+	var out: Array = []
+	if world == null:
+		return out
+	for u in world.units:
+		if not u.alive or not u.is_general():
+			continue
+		if not is_red_dot_faction(String(u.faction)):
+			continue
+		if _unit_observed(u):
+			continue
+		out.append(u.pos)
+	return out
+
+
+## 这个单位现在被**我方 / 友方**观测到了吗？
+##
+## ★ 判据与大地图的单位显示**同源**（`fog.unit_visible`）：迷雾按「同一方」存，
+##   盟友的视野也算，正好对应需求里的「被**我方/友方**单位观测到」。
+## ★ 没有迷雾（总开关关掉 / 没建 fog）⇒ 一切可见 ⇒ 返回 true（此时不画菱形）。
+func _unit_observed(u) -> bool:
+	if cfg == null or world == null:
+		return false
+	if world.fog == null or not cfg.fog_enabled:
+		return true
+	return world.fog.unit_visible(world.my_faction, u)
+
+
+## 记一次「红点生成」：`points` 是这一波每位将领的**出生格**（格坐标）。
+##
+## 由 `game_scene3d._consume_events()` 从 `red_dot_wave` 事件的 `spawns` 喂进来 ——
+## 本文件既不监听逻辑事件、也不自己扫「新单位」。
+func note_red_dot_spawns(points: Array) -> void:
+	if points.is_empty():
+		return
+	for p in points:
+		var v := _as_logic_point(p)
+		if v.x < 0.0 or v.y < 0.0:
+			continue
+		_red_dot_fx.append({"pos": v, "age": 0.0})
+	queue_redraw()
+
+
+## 推进一步生成动效（由 `_process` 每帧调）；播完的记录直接摘掉。
+func advance_red_dot_fx(dt: float) -> void:
+	if _red_dot_fx.is_empty():
+		return
+	var sec: float = maxf(0.0, float(cfg.minimap_red_dot_spawn_sec)) if cfg != null else 0.0
+	if sec <= 0.0:
+		_red_dot_fx = []
+		return
+	if dt <= 0.0:
+		return
+	var keep: Array = []
+	for e in _red_dot_fx:
+		var d: Dictionary = e
+		d["age"] = float(d.get("age", 0.0)) + dt
+		if float(d["age"]) < sec:
+			keep.append(d)
+	_red_dot_fx = keep
+
+
+## 还有几个生成动效在播（测试 / 诊断用）。
+func red_dot_fx_count() -> int:
+	return _red_dot_fx.size()
+
+
+## 正在播的生成动效**位置**（格坐标；测试 / 诊断用）。
+func red_dot_fx_points() -> Array:
+	var out: Array = []
+	for e in _red_dot_fx:
+		out.append((e as Dictionary)["pos"])
+	return out
+
+
+## 生成动效在 `age` 时刻的**半对角线**（由 config 的起始尺寸收到常驻尺寸）。
+##
+## ★ 曲线是二次 ease-out（前段收得快、尾段贴着常态大小）—— 线性收缩看起来像
+##   「匀速缩小」，而需求要的是「砸下来收住」的动效。
+func red_dot_fx_radius(age: float) -> float:
+	if cfg == null:
+		return 0.0
+	var sec: float = maxf(1e-6, float(cfg.minimap_red_dot_spawn_sec))
+	var t: float = clampf(age / sec, 0.0, 1.0)
+	var from: float = maxf(0.0, float(cfg.minimap_red_dot_spawn_from_r))
+	var to: float = maxf(0.0, float(cfg.minimap_red_dot_r))
+	var k: float = 1.0 - (1.0 - t) * (1.0 - t)
+	return lerpf(from, to, k)
+
+
+## 生成动效在 `age` 时刻的透明度：最后 35% 淡出（收小之后消失，不会「啪」一下不见）。
+func red_dot_fx_alpha(age: float) -> float:
+	if cfg == null:
+		return 0.0
+	var sec: float = maxf(1e-6, float(cfg.minimap_red_dot_spawn_sec))
+	var t: float = clampf(age / sec, 0.0, 1.0)
+	return 1.0 - clampf((t - 0.65) / 0.35, 0.0, 1.0)
+
+
+## 常驻小红菱形**当前**的半对角线（带呼吸）。
+##
+## ★ 呼吸是**纯显示**：`r × (1 + amp × sin(2π t / period))`。周期 / 振幅都来自 config；
+##   `period <= 0` 或 `amp = 0` 时就是常量 —— 测试与「关掉呼吸」都走这一条。
+## ★ 只有**常驻标记**呼吸；生成时的「由大变小」动效保持原样（否则两条缩放曲线打架）。
+func red_dot_mark_radius() -> float:
+	if cfg == null:
+		return 0.0
+	var base: float = maxf(0.6, float(cfg.minimap_red_dot_r))
+	var period: float = float(cfg.minimap_red_dot_breath_sec)
+	var amp: float = clampf(float(cfg.minimap_red_dot_breath_amp), 0.0, 1.0)
+	if period <= 0.0 or amp <= 0.0:
+		return base
+	var phase: float = TAU * _breath_clock / period
+	return base * (1.0 + amp * sin(phase))
+
+
+## 画：先常驻标记，再画生成动效（后画的在上）。
+func _draw_red_dots() -> void:
+	red_dot_mark_count = 0
+	red_dot_fx_draw_count = 0
+	if cfg == null or world == null:
+		return
+	var r: float = red_dot_mark_radius()
+	for p in red_dot_marks():
+		_draw_diamond(to_minimap(p), r, cfg.minimap_red_dot_color)
+		red_dot_mark_count += 1
+	for e in _red_dot_fx:
+		var d: Dictionary = e
+		var age: float = float(d.get("age", 0.0))
+		var c: Color = cfg.minimap_red_dot_color
+		c.a *= red_dot_fx_alpha(age)
+		if c.a <= 0.01:
+			continue
+		_draw_diamond(to_minimap(d["pos"]), red_dot_fx_radius(age), c)
+		red_dot_fx_draw_count += 1
+
+
+## 一个小菱形（中心 + 半对角线）。
+##
+## ★ 用 `draw_colored_polygon` 而不是旋转后的 `draw_rect`：4 个点一次画完，
+##   也不必为了「菱形」去改画布变换。
+## ★ 暗色描边是**另画一个大一圈的菱形垫底**：小地图底色 / 迷雾都很暗，纯红边不够清楚。
+func _draw_diamond(center: Vector2, r: float, col: Color) -> void:
+	if r <= 0.0:
+		return
+	var out: Color = cfg.minimap_red_dot_outline if cfg != null else Color(0, 0, 0, 0.55)
+	if out.a > 0.0:
+		draw_colored_polygon(_diamond_points(center, r + maxf(1.0, r * 0.35)), out)
+	draw_colored_polygon(_diamond_points(center, r), col)
+
+
+## 菱形四个顶点（上 → 右 → 下 → 左）。
+func _diamond_points(center: Vector2, r: float) -> PackedVector2Array:
+	return PackedVector2Array([
+		center + Vector2(0.0, -r),
+		center + Vector2(r, 0.0),
+		center + Vector2(0.0, r),
+		center + Vector2(-r, 0.0),
+	])
+
+
+## 把一个「点」归一成格坐标的 `Vector2`（认 `Vector2` / `Vector2i` / `[x,y]` / `{x,y}`）。
+## 认不出来 → `(-1,-1)`（调用方据此跳过，不会在 (0,0) 播一个假动效）。
+static func _as_logic_point(p: Variant) -> Vector2:
+	var t: int = typeof(p)
+	if t == TYPE_VECTOR2:
+		return p
+	if t == TYPE_VECTOR2I:
+		var v2i: Vector2i = p
+		return Vector2(float(v2i.x) + 0.5, float(v2i.y) + 0.5)
+	if t == TYPE_ARRAY and (p as Array).size() >= 2:
+		var a: Array = p
+		return Vector2(float(a[0]) + 0.5, float(a[1]) + 0.5)
+	if t == TYPE_DICTIONARY:
+		var d: Dictionary = p
+		return Vector2(float(d.get("x", -1)) + 0.5, float(d.get("y", -1)) + 0.5)
+	return Vector2(-1.0, -1.0)
+
+
 ## 视野框：先铺一层淡白，再描一圈亮白边。
 ## ★★ 画的是 `view_rect_clipped()`（裁到地图矩形里）而不是 `view_rect_local()`：
 ##   镜头的视野允许越出地图（屏幕能看到界外），但小地图的留边代表「这里没有地图」，
@@ -580,7 +832,7 @@ func _draw_view_rect() -> void:
 func _faction_color(faction: String) -> Color:
 	if _color_cache.has(faction):
 		return _color_cache[faction]
-	var c: Color = cfg.faction_color(faction, "main")
+	var c: Color = SideColorRes.color(cfg, world, faction, "main")
 	_color_cache[faction] = c
 	return c
 

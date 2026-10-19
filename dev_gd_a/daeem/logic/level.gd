@@ -103,11 +103,24 @@ static func load_level(campaign, file: String, cfg: ConfigRes = null) -> RefCoun
 	if typeof(data) != TYPE_DICTIONARY:
 		push_error("关卡 JSON 不是合法对象：%s" % p)
 		return null
+	return from_data(data, cfg, campaign, p.get_file().get_basename(), p)
 
+
+## ★★ 从**已经读出来的 JSON 对象**建 Level（客机用；联机 `start` 里带的是 `level_data`）。
+##
+## @param campaign 房主那一侧的 Campaign 可以传 null：客机没有战役对象，靠关卡自己的
+##         `players[]` / `factions[]` 就能建出同一关；`playable` 缺失时从席位补。
+## @param level_id 客机拿不到文件名时由 `start` 带过来；空串 = 从 `source_path` 取。
+## @param source_path 只用于显示 / 排查，不参与载入（地图仍按 `map_id` 在本机读）。
+##
+## ★ 这是 `load_level()` 的**唯一解析实现**：文件入口读完 JSON 也走这里，
+##   避免「房主从文件读、客机从数据读」两份解析慢慢漂开。
+static func from_data(data: Dictionary, cfg: ConfigRes = null, campaign = null,
+		level_id: String = "", source_path: String = "") -> RefCounted:
 	var lv = new()
 	lv.cfg = cfg
-	lv.path = p
-	lv.id = p.get_file().get_basename()
+	lv.path = source_path
+	lv.id = level_id if level_id != "" else source_path.get_file().get_basename()
 	# ★★ 关卡**不持有战役对象**（见 `playable` 那段注释）：只把要用的东西**抄两份**
 	#    —— 战役 id（给人看的）与「哪些阵营可玩」（判定要用的）。
 	lv.campaign_id = String(campaign.id) if campaign != null else ""
@@ -129,15 +142,21 @@ static func load_level(campaign, file: String, cfg: ConfigRes = null) -> RefCoun
 			if cid != "" and cname != "":
 				lv.faction_names[cid] = cname
 	lv.raw = data
-	lv.map_id = String((data as Dictionary).get("map", "")).strip_edges()
-	lv.name = _text((data as Dictionary).get("name", ""), lv.id)
+	lv.map_id = String(data.get("map", "")).strip_edges()
+	lv.name = _text(data.get("name", ""), lv.id)
 	# 模式：缺省 = 战役的 default_mode（再缺省 solo）
 	var fallback_mode := MODE_SOLO
 	if campaign != null:
 		fallback_mode = String(campaign.default_mode)
-	lv.mode = _mode((data as Dictionary).get("mode", ""), fallback_mode)
-	lv.players = _read_players((data as Dictionary).get("players", null))
-	lv.faction_meta = _read_level_factions((data as Dictionary).get("factions", null))
+	lv.mode = _mode(data.get("mode", ""), fallback_mode)
+	lv.players = _read_players(data.get("players", null))
+	# 客机没有 Campaign：playable 至少要有本关席位，否则 is_playable / 界面会空。
+	if campaign == null:
+		for p in lv.players:
+			var pf := String((p as Dictionary).get("faction", ""))
+			if pf != "" and not lv.playable.has(pf):
+				lv.playable.append(pf)
+	lv.faction_meta = _read_level_factions(data.get("factions", null))
 	# ★ 关卡自己的 `factions[].color` / `.name` 覆盖战役那一份（与其它字段「关卡优先」一致）
 	for e_l in lv.faction_meta:
 		var lid := String((e_l as Dictionary).get("id", ""))
@@ -147,14 +166,14 @@ static func load_level(campaign, file: String, cfg: ConfigRes = null) -> RefCoun
 		var lname := String((e_l as Dictionary).get("name", "")).strip_edges()
 		if lid != "" and lname != "":
 			lv.faction_names[lid] = lname
-	lv.allies_declared = (data as Dictionary).has("allies")
-	lv.allies = _read_allies((data as Dictionary).get("allies", null))
-	lv.zone_owners = _read_zone_owners((data as Dictionary).get("zones", null))
-	lv.start_units = _read_start_units((data as Dictionary).get("start_units", null))
-	lv.start_buildings = _read_start_buildings((data as Dictionary).get("start_buildings", null))
-	lv.objectives = _read_objectives((data as Dictionary).get("objectives", null))
-	lv.fail_conditions = _read_fail_conditions((data as Dictionary).get("fail_conditions", null))
-	lv.briefing = _read_strings((data as Dictionary).get("briefing", null))
+	lv.allies_declared = data.has("allies")
+	lv.allies = _read_allies(data.get("allies", null))
+	lv.zone_owners = _read_zone_owners(data.get("zones", null))
+	lv.start_units = _read_start_units(data.get("start_units", null))
+	lv.start_buildings = _read_start_buildings(data.get("start_buildings", null))
+	lv.objectives = _read_objectives(data.get("objectives", null))
+	lv.fail_conditions = _read_fail_conditions(data.get("fail_conditions", null))
+	lv.briefing = _read_strings(data.get("briefing", null))
 	lv.issues = []
 
 	# ---- 地图 ----
@@ -265,6 +284,16 @@ func seats() -> Array:
 	for p in players:
 		out.append(String((p as Dictionary)["faction"]))
 	return out
+
+
+## ★★ 合作模式的席位名单：**原序**返回 `players[]`（房主第 1、客机第 2）。
+##
+## ⚠️ 不要用 `build_roster(cfg, my_faction)` 代替：那个函数把本机席位排到第一
+##   （单人 / 选边关要靠它决定目标），两端会拿到不同顺序；而 `world.reset()` 会拿
+##   `factions[0]` 当 `primary` 传给 `map.spawn_layout_for()`，顺序不同可能让开局出生点不同。
+##   合作关两个席位同方、目标共享，不需要「本机排第一」；`my_faction` 由调用方单独传。
+func coop_roster() -> Array:
+	return seats()
 
 
 ## 席位数量。
@@ -1334,6 +1363,12 @@ func _initial_zone_owner(zid: int) -> String:
 	if map != null and map.zones_owners.has(zid):
 		return String(map.zones_owners[zid])
 	return ""
+
+
+## 区划的显示名（地图里有名字就用名字，否则 c<id>）。
+## ★ 对视图公开：目标条 / 提示文案要写「守住 c1」，不该自己拼 `"c%d"`。
+func zone_label(zid: int) -> String:
+	return _zone_label(zid)
 
 
 ## 区划的显示名（地图里有名字就用名字，否则 c<id>）。

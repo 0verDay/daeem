@@ -64,7 +64,7 @@ static func can_upgrade(world, b, faction: String) -> String:
 		return "type"
 	if not world.cfg.has_upgrade(b.type):
 		return "type"
-	if not FactionRes.same_side(b.owner, faction):
+	if not world.accepts_owner(String(b.owner), faction):
 		return "owner"
 	if b.is_upgrading():
 		return "busy"
@@ -95,7 +95,7 @@ static func can_upgrade(world, b, faction: String) -> String:
 static func can_specialize(world, zone, spec_id: String, faction: String) -> String:
 	if not world.cfg.has_spec(spec_id):
 		return "spec"
-	var reason := _zone_reject(zone, faction)
+	var reason := _zone_reject(zone, faction, world)
 	if reason != "":
 		return reason
 	if not world.cfg.zone_kind_allows_spec(zone_kind_of(zone, world.cfg), spec_id):
@@ -148,10 +148,13 @@ static func spec_choices(zone, cfg: ConfigRes) -> Array:
 
 ## 能不能取消**读条中的**那次升级。@return "" / "owner" / "idle"
 ##   "idle" = 现在没有在读条（界面上那一格根本不该出现）
-static func can_cancel_upgrade(b, faction: String) -> String:
+## @param world 可选：合作模式下用它做**严格归属**判断；老调用不传 → 沿用 same_side。
+static func can_cancel_upgrade(b, faction: String, world = null) -> String:
 	if b == null or not b.alive:
 		return "idle"
-	if not FactionRes.same_side(b.owner, faction):
+	var owner_ok: bool = (world.accepts_owner(String(b.owner), faction)
+		if world != null else FactionRes.same_side(String(b.owner), faction))
+	if not owner_ok:
 		return "owner"
 	if not b.is_upgrading():
 		return "idle"
@@ -169,8 +172,8 @@ static func can_cancel_upgrade(b, faction: String) -> String:
 ## ⚠️ 判据是 `spec_done`（**已经生效的那个特化**）而**不是** `spec_kind`
 ##   （`spec_kind` 只在读条期间非空）—— 第一版写成了后者，于是「特化做完了却永远
 ##   取消不掉」（实测：can_cancel_spec 恒返回 idle，界面那一格点了没反应）。
-static func can_cancel_spec(zone, faction: String) -> String:
-	var reason := _zone_reject(zone, faction)
+static func can_cancel_spec(zone, faction: String, world = null) -> String:
+	var reason := _zone_reject(zone, faction, world)
 	if reason != "":
 		return reason
 	if zone_is_busy(zone):
@@ -185,8 +188,8 @@ static func can_cancel_spec(zone, faction: String) -> String:
 ##   · 现在没有特化读条（`idle`）；
 ##   · 正在读的那条**本身就是「取消特化」**（也是 `idle`）—— 需求只说了
 ##     「取消特化要读条」，没有「取消取消」这一说；界面上那种状态下也只画这一格。
-static func can_cancel_spec_bar(zone, faction: String) -> String:
-	var reason := _zone_reject(zone, faction)
+static func can_cancel_spec_bar(zone, faction: String, world = null) -> String:
+	var reason := _zone_reject(zone, faction, world)
 	if reason != "":
 		return reason
 	if not zone_is_busy(zone):
@@ -197,10 +200,13 @@ static func can_cancel_spec_bar(zone, faction: String) -> String:
 
 
 ## 区划归属这条判据（两处取消 + 特化共用）
-static func _zone_reject(zone, faction: String) -> String:
+static func _zone_reject(zone, faction: String, world = null) -> String:
 	if typeof(zone) != TYPE_DICTIONARY:
 		return "zone"
-	if not FactionRes.same_side(String((zone as Dictionary).get("owner", "")), faction):
+	var owner := String((zone as Dictionary).get("owner", ""))
+	var owner_ok: bool = (world.accepts_owner(owner, faction)
+		if world != null else FactionRes.same_side(owner, faction))
+	if not owner_ok:
 		return "zone"
 	return ""
 
@@ -317,7 +323,7 @@ static func start_upgrade(world, b, faction: String) -> bool:
 
 ## 取消**读条中的**升级（全额退款）。@return true = 真的取消了
 static func cancel_upgrade(world, b, faction: String) -> bool:
-	var reason := can_cancel_upgrade(b, faction)
+	var reason := can_cancel_upgrade(b, faction, world)
 	if reason != "":
 		# ⚠️ 与 start_upgrade 同一条：`b` 可能是 null（命令指到空格），别去读 `b.owner`
 		var ev := {"type": "upgrade_cancel_rejected", "reason": reason,
@@ -370,7 +376,7 @@ static func start_specialize(world, zone, spec_id: String, faction: String) -> b
 ## ★ 它读完要退的是**当初特化扣掉的**资源，所以那两个数必须活到读完 ——
 ##   它们记在 `spec_cost_food / spec_cost_gold` 上，特化完成时**不清零**。
 static func cancel_spec(world, zone, faction: String) -> bool:
-	var reason := can_cancel_spec(zone, faction)
+	var reason := can_cancel_spec(zone, faction, world)
 	if reason != "":
 		world.push_event({"type": "upgrade_rejected", "reason": reason,
 			"kind": "zone_spec_cancel", "zone_id": _zone_id(zone),
@@ -388,7 +394,7 @@ static func cancel_spec(world, zone, faction: String) -> bool:
 
 ## 撤掉**读条中的那条特化**（= 放弃这一单 + 退款）。
 static func cancel_spec_bar(world, zone, faction: String) -> bool:
-	var reason := can_cancel_spec_bar(zone, faction)
+	var reason := can_cancel_spec_bar(zone, faction, world)
 	if reason != "":
 		world.push_event({"type": "upgrade_cancel_rejected", "reason": reason,
 			"kind": "zone_specialize", "zone_id": _zone_id(zone),

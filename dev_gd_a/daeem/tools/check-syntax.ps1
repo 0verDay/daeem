@@ -21,7 +21,7 @@
 param(
     [string]$Godot = "",
     # Which subdirectories to scan, relative to the project root.
-    [string[]]$Dirs = @('logic', 'view', 'tests'),
+    [string[]]$Dirs = @('logic', 'view', 'tests', 'net'),
     [int]$TimeoutSec = 45
 )
 

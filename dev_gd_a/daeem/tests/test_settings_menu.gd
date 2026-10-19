@@ -202,6 +202,17 @@ func _test_return_to_menu() -> void:
 		return
 	var tb: Button = buttons[0]
 	await _click_at(tb.get_global_rect().get_center())
+	# ★ 现在点 test_1 先进战役过渡画面：选 F1 再点进入，才建第二局。
+	var tr = await _wait_transition(main)
+	ok(tr != null, "★ 回到菜单之后再按 test_1 会先出现战役过渡画面")
+	if tr != null:
+		tr.select_faction("F1")
+		await _wait_transition_ready(tr)
+		tr._enter()
+		var d: int = Time.get_ticks_msec() + 6000
+		while Time.get_ticks_msec() < d and main.game == null:
+			await process_frame
+		await process_frame
 	var second = main.game
 	ok(second != null, "★ 回到菜单之后再按 test_1 能开出一局新的")
 	ok(second != game, "★ 新一局是**新的** game_scene")
@@ -328,4 +339,19 @@ func _click_at(pos: Vector2) -> void:
 func _wait_sec(sec: float) -> void:
 	var deadline: int = Time.get_ticks_msec() + int(maxf(0.0, sec) * 1000.0)
 	while Time.get_ticks_msec() < deadline:
+		await process_frame
+
+
+## 等战役过渡画面挂出来。
+func _wait_transition(main):
+	var deadline: int = Time.get_ticks_msec() + 4000
+	while Time.get_ticks_msec() < deadline and main.level_transition() == null:
+		await process_frame
+	return main.level_transition()
+
+
+## 等过渡画面加载完 + 提示可点。
+func _wait_transition_ready(tr) -> void:
+	var deadline: int = Time.get_ticks_msec() + 8000
+	while Time.get_ticks_msec() < deadline and not tr.ready_to_enter():
 		await process_frame

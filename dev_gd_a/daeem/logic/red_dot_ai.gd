@@ -128,6 +128,10 @@ static func _launch_wave(world, cfg: ConfigRes, st: Dictionary, wave: int, count
 	var serial: int = int(st.get("serial", 0))
 	var sent := 0
 	var ev_pt: Vector2 = goal_pt          # 事件里记**第一个发出去的将领**的目标（信息用）
+	var ev_has_target := false
+	# ★★ 本波每位将领的**出生格**（给视图播「红点生成」动效用，见 view/minimap.gd）。
+	#    事件里只放**真的生成了的**那几位（被跳过的没有位置可播）。
+	var spawns: Array = []
 	for n in count:
 		var tile := _pick_spawn_tile(world, cfg, faction, region, spawn_tiles, serial, n)
 		if tile.x < 0:
@@ -136,6 +140,7 @@ static func _launch_wave(world, cfg: ConfigRes, st: Dictionary, wave: int, count
 		var g = _spawn_general(world, cfg, faction, gi, serial, n, tile)
 		if g == null:
 			continue
+		spawns.append({"x": tile.x, "y": tile.y})
 		# ★★ 满编的随机附属单位：规格写进单位，并**当场生成**。
 		if escort_count > 0:
 			g.retinue_target = escort_count
@@ -148,11 +153,18 @@ static func _launch_wave(world, cfg: ConfigRes, st: Dictionary, wave: int, count
 			var k: int = int(world.unit_rand("reddot-march|%d" % serial, n) * march_pts.size())
 			pt = march_pts[clampi(k, 0, march_pts.size() - 1)]
 		if CommandProcessorRes.order_group_attack_move(world, cfg, world.group_of(g), pt):
-			if sent == 0:
+			if not ev_has_target:
 				ev_pt = pt
+				ev_has_target = true
 			sent += 1
 	st["serial"] = serial + 1
-	if sent > 0:
+	# ★★ 事件在「有将领真的出生」时就发（不再要求「至少一位下到了行军命令」）：
+	#    视图要靠它播生成动效，而单位已经站在场上了。`x/y` 保持老语义（第一位发出去的
+	#    将领的行军目标）；一位命令都没下成时退回**第一个出生格**，不留 (0,0)。
+	if not spawns.is_empty():
+		if not ev_has_target:
+			var s0: Dictionary = spawns[0]
+			ev_pt = GridRes.center_of(Vector2i(int(s0.get("x", 0)), int(s0.get("y", 0))))
 		world.push_event({
 			"type": "red_dot_wave",
 			"faction": faction,
@@ -160,6 +172,7 @@ static func _launch_wave(world, cfg: ConfigRes, st: Dictionary, wave: int, count
 			"leaders": sent,
 			"x": int(ev_pt.x),
 			"y": int(ev_pt.y),
+			"spawns": spawns,
 		})
 
 

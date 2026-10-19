@@ -13,7 +13,7 @@
   "factions": [
     {
       "id": "F1",
-      "ai": "none",
+      "ai": "garrison",
       "base": [
         27,
         17
@@ -21,7 +21,7 @@
     },
     {
       "id": "F2",
-      "ai": "none",
+      "ai": "garrison",
       "base": [
         1,
         4
@@ -729,5 +729,9 @@
       "hold_sec": 300
     }
   ],
-  "fail_conditions": []
+  "fail_conditions": [],
+  "briefing": [
+    "主测试关卡：一块开阔的战场，用来试兵种、阵型与 AI。",
+    "蓝方守住 c1 三百秒；红方可以从任一方向压上。"
+  ]
 }

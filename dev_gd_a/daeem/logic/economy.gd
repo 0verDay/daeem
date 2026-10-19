@@ -30,7 +30,9 @@ static func tick(cfg: ConfigRes, dt: float, rates: Dictionary, resources: Dictio
 
 ## 建造消耗校验（economy.enabled = false 时永远通过 —— 本版建造免费）。
 ## 返回 true = 可以建造（并已扣费）。
-static func try_spend(cfg: ConfigRes, resources: Dictionary, cost: Dictionary) -> bool:
+## @param resources 可以是 `Dictionary`，也可以是 `null`（这一方没有资源库 = 资源无限）。
+## 合作模式按**下单方**取池子，所以这里必须是 Variant（与 can_afford / spend 同一条语义）。
+static func try_spend(cfg: ConfigRes, resources: Variant, cost: Dictionary) -> bool:
 	if not cfg.bool_val("economy.enabled", false):
 		return true
 	return spend(resources, cost)

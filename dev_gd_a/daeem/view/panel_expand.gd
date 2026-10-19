@@ -67,6 +67,10 @@ var _blocked: Dictionary = {}
 var _tween: Tween = null
 var _busy: bool = false
 var _is_expanded: bool = false
+## 当前正在跑的是不是「首次进入主界面的滑入」（`play_intro()`）。
+## ★ 它只用于**被打断时补终态**：入场动画会把所有子控件压到 alpha 0 再淡回，
+##   一旦被别的转场 kill 掉，不补终态就会永久停在 0（用户报的「落位后消失」）。
+var _intro_running: bool = false
 var _panel = null
 var _origin: Control = null
 
@@ -268,6 +272,7 @@ func play_intro() -> void:
 		return
 	_kill_tween()
 	_busy = true
+	_intro_running = true
 
 	var screen_w: float = _screen_size().x
 	for node in _initial.keys():
@@ -297,6 +302,7 @@ func play_intro() -> void:
 		for w in widgets:
 			w.modulate.a = 1.0
 		_busy = false
+		_intro_running = false
 		reversed.emit()
 		return
 
@@ -321,6 +327,7 @@ func play_intro() -> void:
 	if not is_instance_valid(self):
 		return
 	_busy = false
+	_intro_running = false
 	reversed.emit()
 
 
@@ -352,11 +359,20 @@ func _record_initial(ctrl: Control) -> void:
 	ctrl.position = pos
 	ctrl.size = sz
 	ctrl.pivot_offset = sz * 0.5
+	var mod: Color = ctrl.modulate
+	# ★★ `dir = 0` 的目标（主界面正中那一列）**永远应该是不透明的** ——
+	#   它在入场落位期间会被临时压到 alpha 0（为了量目标矩形），而 `attach()` 是
+	#   **等一帧**才抄初值的。用户点得够快时，这一帧里 alpha 已经被压成 0 ⇒
+	#   初值记成 0 ⇒ 后面 `play_intro()` 又把它「还原」成 0 ⇒ logo 与三颗 test 永久消失
+	#   （2026.10.19 用户报的「点的过快，图标落位后消失」）。所以这里把 dir=0 的
+	#   初值透明度**钉成 1**：它本来就不参与滑入淡入（见 `play_intro()` 里那段 ★★）。
+	if _target_dir(ctrl) == 0:
+		mod.a = 1.0
 	_initial[ctrl] = {
 		"position": pos,
 		"size": sz,
 		"scale": ctrl.scale,
-		"modulate": ctrl.modulate,
+		"modulate": mod,
 		"pivot": ctrl.pivot_offset,
 	}
 
@@ -522,3 +538,26 @@ func _kill_tween() -> void:
 	if _tween != null and _tween.is_valid():
 		_tween.kill()
 	_tween = null
+	if _intro_running:
+		# ★★ 入场滑入被别的转场打断：**立刻补终态**，别把子控件留在 alpha 0。
+		#   （正常情况下中断不该发生；这一手是兜底 —— 用户点得极快时曾出现
+		#    「logo 移到目标后消失、三颗 test 也消失」，根因就是这里停在 0。）
+		_intro_running = false
+		_busy = false
+		_snap_intro_end()
+
+
+## 把「首次滑入」的终态直接写上：面板回初值、所有子控件不透明。
+func _snap_intro_end() -> void:
+	for node in _initial.keys():
+		if not is_instance_valid(node):
+			continue
+		var init: Dictionary = _initial[node]
+		var c: Control = node
+		c.position = init["position"]
+		c.size = init["size"]
+		c.scale = init["scale"]
+		c.pivot_offset = init["pivot"]
+		c.modulate = init["modulate"]
+	for c in _collect_visuals_all():
+		c.modulate.a = 1.0
