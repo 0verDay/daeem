@@ -121,16 +121,15 @@ static func from_data(data: Dictionary, cfg: ConfigRes = null, campaign = null,
 	lv.cfg = cfg
 	lv.path = source_path
 	lv.id = level_id if level_id != "" else source_path.get_file().get_basename()
-	# ★★ 关卡**不持有战役对象**（见 `playable` 那段注释）：只把要用的东西**抄两份**
-	#    —— 战役 id（给人看的）与「哪些阵营可玩」（判定要用的）。
+	# ★★ 关卡**不持有战役对象**（见 `playable` 那段注释）：只把要用的东西**抄几份**
+	#    —— 战役 id（给人看的）、战役级的名字 / 颜色（旧格式兜底）。
 	lv.campaign_id = String(campaign.id) if campaign != null else ""
 	lv.playable = []
 	lv.faction_colors = {}
 	lv.faction_names = {}
 	if campaign != null:
-		for fid_p in campaign.playable_ids():
-			lv.playable.append(String(fid_p))
-		# ★★ 阵营**颜色**与**显示名**也在这里各抄一份（顺序：先战役、后关卡 ⇒ 关卡覆盖战役）。
+		# ★★ 阵营**颜色**与**显示名**：旧格式（`campaign.json` 有 `factions[]`）在这里
+		#    抄一份兜底；新格式没有那一份，关卡自己的 `factions[]` 就是唯一来源。
 		#    为什么不运行时再去问那个 Campaign 对象：`Level` 不持有它（引用环，
 		#    见 `playable` 那段注释）。运行时要用的东西一律在载入时抄下来。
 		for e_c in campaign.faction_meta:
@@ -150,12 +149,6 @@ static func from_data(data: Dictionary, cfg: ConfigRes = null, campaign = null,
 		fallback_mode = String(campaign.default_mode)
 	lv.mode = _mode(data.get("mode", ""), fallback_mode)
 	lv.players = _read_players(data.get("players", null))
-	# 客机没有 Campaign：playable 至少要有本关席位，否则 is_playable / 界面会空。
-	if campaign == null:
-		for p in lv.players:
-			var pf := String((p as Dictionary).get("faction", ""))
-			if pf != "" and not lv.playable.has(pf):
-				lv.playable.append(pf)
 	lv.faction_meta = _read_level_factions(data.get("factions", null))
 	# ★ 关卡自己的 `factions[].color` / `.name` 覆盖战役那一份（与其它字段「关卡优先」一致）
 	for e_l in lv.faction_meta:
@@ -166,6 +159,26 @@ static func from_data(data: Dictionary, cfg: ConfigRes = null, campaign = null,
 		var lname := String((e_l as Dictionary).get("name", "")).strip_edges()
 		if lid != "" and lname != "":
 			lv.faction_names[lid] = lname
+	# ★★ 可玩阵营：**本关自己的** `factions[].playable` 优先。
+	#    旧格式（关卡没写 playable）才回退到 `campaign.json` 的那一份；
+	#    客机没有 Campaign 时退回本关席位（联机 `start` 里只带 level_data）。
+	var declares_playable := false
+	for e_p in lv.faction_meta:
+		var pid := String((e_p as Dictionary).get("id", ""))
+		if bool((e_p as Dictionary).get("playable_declared", false)):
+			declares_playable = true
+		if bool((e_p as Dictionary).get("playable", false)) and pid != "" \
+				and not lv.playable.has(pid):
+			lv.playable.append(pid)
+	if not declares_playable and campaign != null:
+		for fid_p in campaign.playable_ids():
+			if not lv.playable.has(String(fid_p)):
+				lv.playable.append(String(fid_p))
+	if not declares_playable and campaign == null:
+		for p in lv.players:
+			var pf := String((p as Dictionary).get("faction", ""))
+			if pf != "" and not lv.playable.has(pf):
+				lv.playable.append(pf)
 	lv.allies_declared = data.has("allies")
 	lv.allies = _read_allies(data.get("allies", null))
 	lv.zone_owners = _read_zone_owners(data.get("zones", null))
@@ -250,7 +263,10 @@ var issues: Array = []
 ## ★ 「可玩」的显式覆盖（空 = 走下面那份 `playable`）。
 ## 给测试与工具用：伪造一份「这一战有两个可玩阵营」来验校验第 7 条。
 var playable_override: Array = []
-## ★★ 这一战里**可玩**的阵营 id（从 `campaign.json` 的 `factions[].playable` 抄来的）。
+## ★★ 这一战里**可玩**的阵营 id（**本关** `factions[].playable`，按声明顺序抄下来）。
+##
+## ⚠️ 旧格式（关卡没写 `playable`）在载入时回退到 `campaign.json` 的 `factions[].playable`；
+##   新格式里阵营表跟着关卡走，`campaign.json` 不再有那一份。
 ##
 ## ⚠️⚠️ 为什么是**抄一份**而不是持有那个 `Campaign` 对象（这一条是实测踩出来的）：
 ##   `Campaign` 里有 `levels[]`、`Level` 又指回 `Campaign` —— 那是一个**引用环**，
@@ -262,7 +278,8 @@ var playable: Array = []
 var campaign_id: String = ""
 ## ★★ 这一关各阵营的颜色："faction" → "#rrggbb"（**载入时抄下来的**）。
 ##
-## 来源两处、关卡优先：`campaign.json` 的 `factions[].color` → 关卡 `factions[].color`。
+## 来源两处、关卡优先：旧格式 `campaign.json` 的 `factions[].color` → 关卡
+## `factions[].color`（新格式只有关卡那一份）。
 ##
 ## ⚠️ 为什么值得单独存一份：配色表 `colors.faction.*` 里只有**内置** id（p1~p8/enemy/ai），
 ##   而战役用的是自己的 id —— 颜色没登记的话渲染层会退到**品红**
@@ -271,7 +288,8 @@ var campaign_id: String = ""
 var faction_colors: Dictionary = {}
 ## ★★ 这一关各阵营的**显示名**："faction" → "蓝方"（**载入时抄下来的**，理由同颜色）。
 ##
-## 来源两处、关卡优先：`campaign.json` 的 `factions[].name` → 关卡 `factions[].name`。
+## 来源两处、关卡优先：旧格式 `campaign.json` 的 `factions[].name` → 关卡
+## `factions[].name`（新格式只有关卡那一份）。
 ## ⚠️ 为什么也要抄一份：`Level` **不持有 `Campaign` 对象**（避引用环，见上面那段），
 ##   而关卡页要在按钮上写「蓝方 / 红方」而不是 `F1` / `F2` —— 运行时要用的东西
 ##   一律在载入时抄下来（与 `playable` / `faction_colors` 同一条规矩）。
@@ -403,18 +421,19 @@ func attack_target_of(fid: String) -> Variant:
 	return null
 
 
-## 这一方在这一关的数据里是不是「可玩」的（= 在 `campaign.json` 的 `playable: true` 里）。
+## 这一方在这一关里是不是「可玩」的（= 本关 `factions[].playable: true`）。
 ##
-## ★ 可玩是**战役级**的属性（「这一战你可以选谁」），不是关卡级的 ——
-##   载入时已经把那份列表抄进 `playable`（见那个字段的注释：不持有战役对象是为了断引用环）。
+## ★★ 可玩是**关卡级**属性（用户口径：每一关就是一个独立战役）；载入时已经把那份
+##   列表抄进 `playable`（不持有战役对象是为了断引用环）。旧格式才会回退到
+##   `campaign.json` 的那一份。
 func is_playable(fid: String) -> bool:
 	return playable.has(fid)
 
 
 ## 这一关**可以选来玩**的阵营（= 可玩 ∩ 本关真的在场）。
 ##
-## ★ 「可玩」是**战役级**属性（`campaign.json` 的 `factions[].playable`）；
-##   `playable_override` 是给测试 / 工具用的显式覆盖（空 = 走战役那一份）。
+## ★★ 可玩是**关卡级**属性（本关 `factions[].playable`；旧格式回退 `campaign.json`）；
+##   `playable_override` 是给测试 / 工具用的显式覆盖（空 = 走本关那一份）。
 func playable_ids() -> Array:
 	var out: Array = []
 	var present := present_ids()
@@ -424,8 +443,8 @@ func playable_ids() -> Array:
 				out.append(String(fid))
 		return out
 	# ★ 扫的是**本关在场的全部阵营**（席位 + 关卡 factions[] + 地图 factions），
-	#   而不是只扫关卡自己声明过的那几个 —— 可玩是**战役级**属性，
-	#   一个只在地图里划过、关卡一个字都没提的阵营照样可以是可玩的。
+	#   而不是只扫关卡自己声明过的那几个 —— 一个只在地图里划过、关卡一个字都没提的
+	#   阵营照样可以被本关标成可玩（测试 / 手写数据会这么用）。
 	for fid2 in present:
 		if is_playable(String(fid2)):
 			out.append(String(fid2))
@@ -519,6 +538,26 @@ func objective_label(fid: String = "") -> String:
 	if kind == OBJ_CAPTURE_ZONE:
 		return "占领 %s" % _zone_label(z)
 	return "守住 %s %s 秒" % [_zone_label(z), _fmt_sec(float(o.get("hold_sec", 0.0)))]
+
+
+## 这一关目标的**自由描述**（`objectives[].desc`）；没写返回空串。
+## ★ 视图层拿到空串时退回 `objective_label()` + 运行时进度（见 view/objective_panel.gd）。
+func objective_desc(fid: String = "") -> String:
+	var o: Dictionary = objective_of(fid) if fid != "" else (
+		objectives[0] if not objectives.is_empty() else {})
+	if o.is_empty():
+		return ""
+	return String(o.get("desc", "")).strip_edges()
+
+
+## 这一关目标的**简称**（`objectives[].short`）；没写返回空串。
+## ★ 左上目标栏第一行 = `※` + 这个简称；空串时由视图按 kind 退到「坚守 / 攻占」。
+func objective_short(fid: String = "") -> String:
+	var o: Dictionary = objective_of(fid) if fid != "" else (
+		objectives[0] if not objectives.is_empty() else {})
+	if o.is_empty():
+		return ""
+	return String(o.get("short", "")).strip_edges()
 
 
 ## 关卡列表上那一行：模式 + 目标
@@ -1451,9 +1490,15 @@ static func _read_level_factions(v: Variant) -> Array:
 			"id": fid,
 			"ai": _ai_kind(d.get("ai", null)),
 			"base": _read_point(d.get("base", null)),
-			# ★ 阵营颜色（`#rrggbb` / `rgba(...)`）：关卡可以给**这一关**的某一方换个颜色。
-			#   缺省是空串 = 「这一关没提」，于是用 `campaign.json` 里那一份。
+			# ★ 阵营颜色 / 显示名（`#rrggbb` / 文本）：**这一关自己的阵营表**。
+			#   缺省是空串 = 「这一关没写」，于是旧格式回退到 `campaign.json` 那一份。
 			"color": String(d.get("color", "")).strip_edges(),
+			"name": String(d.get("name", "")).strip_edges(),
+			# ★★ 这一方在这一关里可不可玩（玩家能选谁）。缺省 false = 不可玩。
+			#   `playable_declared` 用来区分「关卡里没写这个键」（旧格式，回退战役）
+			#   与「关卡里明确写了 false」（新格式，就是不可玩）。
+			"playable": bool(d.get("playable", false)),
+			"playable_declared": d.has("playable"),
 			# ⚠️ 本轮删掉了 `resource_mult` / `start_food` / `start_gold`（AI 不再有资源库）
 			#    与 `faction_ai` / `general_ai`（旧的两套 AI 参数）—— 改成
 			#    `garrison_ai`（阵地性按阵营覆盖）/ `reddot_ai`（红点性按阵营覆盖）/
@@ -1504,11 +1549,14 @@ static func _read_attack_target(d: Dictionary) -> Dictionary:
 	return out
 
 
-## `zones[]`：开局的区块归属覆盖（每项 {id, owner}）。
+## `zones[]`：开局的区块归属（每项 {id, owner}）。
 ##
-## ★ **空串也记**（不是「跳过」）：`{"id": 4, "owner": ""}` 的语义是
-##   「把这一区的开局归属**显式清空**」—— 与「没提这一区」（保持地图的）是两件事。
-##   校验第 8 条要能把后者判成「目标区划无主」，所以这里不能把空串吞掉。
+## ★★ 战役编辑器现在**写全地图里的每一块地**（`owner` = 阵营 id 或空串 = 无主）：
+##   地图编辑器不编辑区块归属，所以「（用地图的）」那一档已经删掉；
+##   地图的 `zone_list[].owner` 只当新建 / 换图 / 旧数据迁移时的初始化来源。
+##
+## ★ **空串也记**（不是「跳过」）：`{"id": 4, "owner": ""}` 的语义是「这一区开局无主」。
+##   没提到的区划（旧数据 / 手写）才继续用地图的；校验第 8 条也按这个口径判。
 static func _read_zone_owners(v: Variant) -> Dictionary:
 	var out: Dictionary = {}
 	if typeof(v) != TYPE_ARRAY:
@@ -1621,6 +1669,12 @@ static func _read_objectives(v: Variant) -> Array:
 			"kind": String(d.get("kind", "")).strip_edges().to_lower(),
 			"zone": int(d.get("zone", -1)),
 			"hold_sec": _num(d.get("hold_sec", null), 0.0),
+			# ★★ 自由描述（2026.10.20）：左上目标栏第二行的正文。空 = 用
+			#    `objective_label()` + 运行时进度兜底；有就原样显示，可含
+			#    `{held}` / `{sec}` / `{zone}` / `{state}` 占位符（见 objective_panel）。
+			"desc": String(d.get("desc", "")).strip_edges(),
+			# ★ 目标简称（左上角 `※坚守` 的「坚守」）；空 = 视图按 kind 兜底。
+			"short": String(d.get("short", "")).strip_edges(),
 			# ★★ 这一条目标是**给哪个阵营的**（空串 = 对任何玩家都成立）。
 			#    一关可以有**两项**目标：一项给蓝方（守住）、一项给红方（攻占）——
 			#    玩家选谁，运行时由 `objective_for()` 取对应的那一条。

@@ -966,7 +966,7 @@ class EditorApp:
         """把选中矩形里的**每一格**都刷成某种地形：**虚线格先建出来**。
 
         ★★ 本轮新增（用户需求）：「设计师可以框选空白区域，点击右侧栏位中的地形
-           （平地 / 森林 / 山地）以将这些空白区域都变为该类地形」—— 所以这里不只是
+           （平地 / 森林 / 山地 / 水域）以将这些空白区域都变为该类地形」—— 所以这里不只是
            「改已有的地」，还会**建格**（走 `model.fill_rect_terrain`）。
            一次操作 = **一步撤销**（与其它批量操作同一条约定）。
         """
@@ -1732,6 +1732,7 @@ class EditorApp:
         grass_alt_rgb = parse_color(self.color_cfg.get("grass_alt", DEFAULT_COLORS["grass_alt"]))
         forest_rgb = parse_color(self.color_cfg.get("forest", DEFAULT_COLORS["forest"]))
         mountain_rgb = parse_color(self.color_cfg.get("mountain", DEFAULT_COLORS["mountain"]))
+        water_rgb = parse_color(self.color_cfg.get("water", DEFAULT_COLORS["water"]))
 
         # 0) 底色：整块画布一个色，**不做棋盘格**（背景上不该有任何线条/花纹）
         c.create_rectangle(0, 0, cw, ch, fill=UI["canvas_bg"], outline="")
@@ -1786,6 +1787,8 @@ class EditorApp:
                     rgb = forest_rgb
                 elif terrain == "mountain":
                     rgb = mountain_rgb
+                elif terrain == "water":
+                    rgb = water_rgb
                 else:
                     rgb = grass_rgb if (tx + ty) % 2 == 0 else grass_alt_rgb
                 c.create_rectangle(x0, y0, x0 + size, y0 + size, fill=to_hex(rgb), outline="")

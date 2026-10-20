@@ -43,8 +43,24 @@ func _run() -> void:
 	ok(screen._chrome != null, "（前提）主界面外壳在")
 	ok(lobby != null, "★★ test_2 打开的是合作大厅，不是单人关")
 	if lobby != null:
-		ok(lobby.find_child("CreateBtn", true, false) != null, "大厅里有「创建房间」")
-		ok(lobby.find_child("JoinBtn", true, false) != null, "大厅里有「加入房间」")
+		ok(lobby.find_child("RoomList", true, false) != null, "大厅里有房间列表")
+		ok(lobby.find_child("CodeEdit", true, false) != null, "大厅里有房间码输入框")
+		ok(lobby.find_child("ActionBtn", true, false) != null, "大厅里有进入 / 创建按钮")
+		ok(lobby.find_child("RoomPanel", true, false) != null, "大厅里有房间配置面板")
+		ok(lobby.find_child("MapPanel", true, false) != null, "大厅里有地图选择面板")
+		var lp = lobby.find_child("LobbyPanel", true, false)
+		ok(lp != null, "大厅面板在")
+		if lp != null:
+			v2_near((lp as Control).global_position, Vector2(1300, 140), 2.0,
+				"★ 大厅面板落在屏幕 (1300,140)，宽度缩到 500")
+		var back = lobby.get_parent().find_child("BackBtn", true, false)
+		ok(back != null, "大厅返回按钮在")
+		if back != null:
+			await _wait(5)
+			near((back as Control).global_position.x, 1712.0, 2.0,
+				"★ 大厅返回按钮与战役面板同一距离（不贴屏幕边）")
+			near((back as Control).global_position.y, 48.0, 2.0,
+				"★ 返回按钮上方也留出战菜单同样的边距")
 
 	screen.queue_free()
 	await process_frame

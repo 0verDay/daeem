@@ -34,7 +34,8 @@
         5
       ],
       "name": "蓝方",
-      "color": "#5ac8ff"
+      "color": "#5ac8ff",
+      "playable": true
     },
     {
       "id": "GD1",
@@ -58,7 +59,8 @@
         "zone": 4
       },
       "name": "红方",
-      "color": "#e05a5a"
+      "color": "#e05a5a",
+      "playable": true
     }
   ],
   "allies": [
@@ -73,12 +75,28 @@
       "owner": "F2"
     },
     {
+      "id": 1,
+      "owner": ""
+    },
+    {
+      "id": 2,
+      "owner": "F1"
+    },
+    {
+      "id": 3,
+      "owner": ""
+    },
+    {
       "id": 4,
       "owner": "GD1"
     },
     {
       "id": 5,
       "owner": "F1"
+    },
+    {
+      "id": 6,
+      "owner": ""
     },
     {
       "id": 7,

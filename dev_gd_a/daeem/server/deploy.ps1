@@ -36,7 +36,7 @@
 
 .PARAMETER Build
     Protocol build string. Empty = read data/config.json net.build, else
-    coop-m12.2.
+    coop-m13.1.
 
 .PARAMETER PublicIp
     Optional public IPv4 used in the final DEPLOY OK line.
@@ -411,7 +411,7 @@ if (-not $Build) {
     }
 }
 if (-not $Build) {
-    $Build = "coop-m12.2"
+    $Build = "coop-m13.1"
 }
 
 $isAdmin = Test-Administrator

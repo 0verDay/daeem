@@ -3,16 +3,17 @@
 ## 布局逐像素照参考图（1920×1080），几何全部写在 view/ui_layout.gd 里：
 ##
 ##   右上 选项（80×160）★ 点它弹出**选项页菜单**（继续 / 设置 / 返回主菜单，见 `_build_options_panel`）
-##   左侧 部队 1~10（10 槽 × 60 高，内容动态生成）
+##   右侧 部队 1~10（10 槽 × 56 高，数字 1..9/0 + 名字 + 当前/上限，见 view/troop_row.gd）
+##   左上 目标栏（`※目标` / `- 描述`，有目标才显示，见 view/objective_panel.gd）
 ##   左下 小地图（400×400：整张地图 + 视野框，左键点击移动镜头、按住拖动跟手，见 view/minimap.gd）
-##   底栏 y 820..1080（★ 详细信息面板本版加高到 260，所以从 820 起）：
+##   底栏 y 820..1080（★ 右下整组按 13/12 放大到 260，详细信息保持 260）：
 ##     资源面板 200×56（**本版新增**：粮食 / 黄金**竖着排**两行；下缘压在详细信息面板顶边
 ##                       y=820 上、左缘与面板对齐 x=400，数值每帧读 `world.resources`，
 ##                       见 `_build_resource_bar()`）
-##     详细信息 1030×260（左栏 = 1 + 3×3 共 10 格；右栏 = 选中单位的头像 / 名称 / 基础数值）
+##     详细信息 988×260（左栏 = 1 + 3×3 共 10 格；右栏 = 选中单位的头像 / 名称 / 基础数值）
 ##       ★ 数值那一块现在**只有正文**：顶上那行「详细信息」标题按需求去掉了
-##     阵营 / 盾徽 / 旗帜（150 宽，**本轮不做**，只留位置）
-##     命令卡 3×3（每格 80，内容随页签实时切换）
+##     阵营 / 盾徽 / 旗帜（162.5 宽，**本轮不做**，只留位置）
+##     命令卡 3×3（每格 86.67，内容随页签实时切换）
 ##     页签（**按选中对象动态显示**：选中部队 = 操作 / 单位两页；选中区划中心 = 招募；
 ##           选中大本营 = 科技；选中普通建筑 = **一颗空页签**；什么都没选中 = 建筑 + 科技）
 ##     ★ 科技页的九格**不是命令卡的内容**：它由 view/tech_grid.gd 画在最上层
@@ -51,7 +52,7 @@ const PageTabsRes = preload("res://view/page_tabs.gd")
 const TechGridRes = preload("res://view/tech_grid.gd")
 const HoverTipRes = preload("res://view/hover_tip.gd")
 const MinimapRes = preload("res://view/minimap.gd")
-## ★★ 顶部居中目标条（战役 / 合作；M12.1 新增）。见 view/objective_panel.gd。
+## ★★ 左上角目标栏（战役 / 合作；M12.1 新增，2026.10.20 改为左上两行）。见 view/objective_panel.gd。
 const ObjectivePanelRes = preload("res://view/objective_panel.gd")
 ## ★★ 选项页菜单（仿 nsoc）：HUD 右上角「选项」与主菜单右上角「选项」共用同一套。
 const OptionsPanelRes = preload("res://view/options_panel.gd")
@@ -73,10 +74,10 @@ var page_tabs: Control = null
 ## ★ 科技九格（盖在命令卡上，只有「科技」页才显示）。见 view/tech_grid.gd。
 var tech_grid: Control = null
 ## ★★ 悬停详情面板（本版新增）：住在**命令卡正上方**，水平范围 = **命令卡 + 右边那一列页签**
-##    那一整段（左缘对命令卡左缘、右缘对页签列右缘，宽 340），
+##    那一整段（左缘对命令卡左缘、右缘对页签列右缘，宽 368.333），
 ##    高度按悬停到的文本动态缩放（向上长）。见 view/hover_tip.gd 的文件头。
 var hover_tip: Control = null
-## ★★ 顶部居中目标条：有目标才显示（老路径 / 自由对战整块隐藏）。
+## ★★ 左上角目标栏：有目标才显示（老路径 / 自由对战整块隐藏）。
 var objective_panel: Control = null
 var settings_button: Button = null
 ## ★★ 选项页控制器（overlay + 居中面板；见 view/options_panel.gd）。
@@ -348,8 +349,8 @@ func _build_perf_readout() -> void:
 	_perf_label = Label.new()
 	_perf_label.name = "PerfReadout"
 	_perf_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	# ★★ 贴**最左上角**（本轮口径）。左侧部队列表从 y=40 才开始，这里只占顶部那一小条，
-	#   不会压住将领 / 部队行；描边保证压在地图亮色上也读得出。
+	# ★★ 贴**最左上角**（本轮口径）。部队列表已经移到右侧，这里不会压住将领行；
+	#   目标栏可见时 `_refresh_shell()` 会把读数挪到目标栏下方。描边保证压在地图亮色上也读得出。
 	_perf_label.position = Vector2(6.0, 2.0)
 	# ★ 完整读数要 4 行（`show_perf_detail = true` 时）；只显示 FPS 时这两行字装得下。
 	_perf_label.size = Vector2(1240.0, 84.0) if cfg.show_perf_detail else Vector2(320.0, 34.0)
@@ -607,7 +608,7 @@ func _build_resource_bar() -> void:
 	_refresh_resource_bar()
 
 
-## ★★ 顶部居中目标条（战役 / 合作；M12.1）。
+## ★★ 左上角目标栏（战役 / 合作；M12.1，2026.10.20 改为两行）。
 ## 它自己读 `world.objective_state`，HUD 只负责建一次 + 每帧 `sync()`。
 func _build_objective_panel() -> void:
 	objective_panel = ObjectivePanelRes.new()
@@ -828,7 +829,7 @@ func _on_return_menu_pressed() -> void:
 func _build_squad_panel() -> void:
 	squad_panel = SquadPanelRes.new()
 	_root.add_child(squad_panel)
-	squad_panel.setup(cfg, world, input_ctrl)
+	squad_panel.setup(cfg, world, input_ctrl, _font)
 
 
 # ------------------------------------------------------------------
@@ -2487,6 +2488,13 @@ func _refresh_shell() -> void:
 	#    放在 shell 这一档刷（手机端 10Hz 足够，进度条不需要 60Hz）。
 	if objective_panel != null:
 		objective_panel.sync()
+		# ★ 手机端 FPS 读数原本在左上 (6,2)，会与新的左上目标栏重叠：
+		#   目标栏可见时把它挪到目标栏下方，不可见时回原位。
+		if _perf_label != null:
+			var perf_y := 2.0
+			if objective_panel.visible:
+				perf_y = objective_panel.position.y + objective_panel.size.y + 6.0
+			_perf_label.position = Vector2(6.0, perf_y)
 	# ★★ 页签先按「现在选中了什么」推上去（选中部队 = 操作/单位；选中区划中心 = 招募；
 	#    选中大本营 = 科技；选中普通建筑 = 一颗都没有；什么都没选中 = 建筑 + 科技）。
 	#    命令卡的内容跟着页签走（page_tabs 发 page_changed → _rebuild_card）。

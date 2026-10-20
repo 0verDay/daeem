@@ -164,7 +164,8 @@ func _group_data(cfg) -> void:
 	ok(camp != null, "样例战役能载入")
 	if camp == null:
 		return
-	eq(camp.playable_ids(), ["F1", "F2"], "★ 战役里可玩的是两个阵营（蓝方 F1 / 红方 F2）")
+	ok(camp.faction_meta.is_empty(),
+		"★★ campaign.json 不再有阵营表（阵营表在每一关的 factions[] 里）")
 
 	var lv = camp.level(LEVEL_ID)
 	ok(lv != null, "第一关能载入")

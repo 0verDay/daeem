@@ -14,8 +14,8 @@ extends RefCounted
 
 ## 协议版本。字段形状一变就要 +1（两端版本不一致时中继会拒绝）。
 const VERSION := 1
-## 客户端构建标识：M12.2 先用常量；接入真实构建号时只改这一处。
-const BUILD := "coop-m12.2"
+## 客户端构建标识：协议一改就升（两端不一致时中继会拒绝）。
+const BUILD := "coop-m13.1"
 const GAME := "daeem"
 
 ## 常用消息类型（只是常量，session 仍然按字符串 match）。
@@ -24,6 +24,7 @@ const T_CREATE_ROOM := "create_room"
 const T_JOIN_ROOM := "join_room"
 const T_ROOM_STATE := "room_state"
 const T_READY := "ready"
+const T_ROOM_CFG := "room_cfg"
 const T_START := "start"
 const T_CMD := "cmd"
 const T_SNAP := "snap"
@@ -73,14 +74,15 @@ static func decode(text: String) -> Dictionary:
 	return {"ok": true, "msg": msg}
 
 
-## 房间码：6 位大写字母数字，去掉易混的 0/O/1/I（见 dev_plan_12 1.2）。
+## 房间码：**6 位数字 0-9**（2026.10.20 大厅键盘只有 1~0 十个数字键）。
+## ★ 与 `server/daeem_relay.py` 的 ROOM_ALPHABET 必须一致；旧字母码不再有效。
 static func valid_room_code(code: String) -> bool:
 	var s := code.strip_edges().to_upper()
 	if s.length() != 6:
 		return false
 	for i in s.length():
 		var c := s.substr(i, 1)
-		if not "23456789ABCDEFGHJKLMNPQRSTUVWXYZ".contains(c):
+		if c < "0" or c > "9":
 			return false
 	return true
 

@@ -18,7 +18,7 @@
 | 健康 | `http://159.75.154.122:8770/health` |
 | 服务 | nssm `DAEEMRelay`（Automatic） |
 | 监听 | `0.0.0.0:8770` |
-| build | `coop-m12.2` |
+| build | `coop-m13.1` |
 | Python | `C:\Program Files\python\python.exe` |
 | nssm | `C:\tools\nssm.exe` |
 | 暂存 | `C:\daeem_stage\server` |
@@ -38,11 +38,11 @@ powershell -ExecutionPolicy Bypass -File C:\daeem_stage\server\deploy.ps1 `
 ```
 
 结果：`DEPLOY OK http://159.75.154.122:8770/health`；
-`/health` 返回 `{"ok":true,"rooms":0,"players":0,"uptime":...,"build":"coop-m12.2"}`。
-公网 host/guest 探针跑完 `hello → create_room → join → ready → start → cmd → snap → bye`，
+`/health` 返回 `{"ok":true,"rooms":0,"players":0,"uptime":...,"build":"coop-m13.1"}`。
+公网 host/guest 探针跑完 `hello → create_room → join → ready(guest) → start → cmd → snap → bye`，
 两端 `PROBE ... OK`，退出后 `/rooms` 为空。
 
-客户端 `data/config.json` 的 `net.relay_url` 已指向该地址；大厅仍可手改。
+客户端 `data/config.json` 的 `net.relay_url` 已指向该地址；大厅不再提供手改输入框（地址以配置为准）。
 首次部署踩到的 nssm `set` 顺序坑见 `docs/pitfalls.md` 5.73。
 
 > 客户端快照默认 **30Hz**（M12.7）。按 `tests/bench_snapshot.gd` 的测量，
@@ -61,7 +61,7 @@ powershell -ExecutionPolicy Bypass -File server/run-local.ps1
 它会跑：
 
 ```text
-hello -> create_room(CAMP23) -> join -> ready -> start
+hello -> create_room(123456) -> join -> ready(guest) -> start
       -> cmd(guest->host) -> snap(host->guest) -> bye
 ```
 
@@ -75,8 +75,8 @@ hello -> create_room(CAMP23) -> join -> ready -> start
 
 ```powershell
 python server/daeem_relay.py --host 127.0.0.1 --port 8770
-python server/probe_relay.py --role host  --url ws://127.0.0.1:8770/ws --room CAMP23
-python server/probe_relay.py --role guest --url ws://127.0.0.1:8770/ws --room CAMP23
+python server/probe_relay.py --role host  --url ws://127.0.0.1:8770/ws --room 123456
+python server/probe_relay.py --role guest --url ws://127.0.0.1:8770/ws --room 123456
 ```
 
 ### 中继测试
@@ -145,7 +145,7 @@ powershell -ExecutionPolicy Bypass -File C:\daeem_stage\server\deploy.ps1 `
 | `-Port` | `8770` | 改端口后客户端 `relay_url` 要同步 |
 | `-ServiceName` | `DAEEMRelay` | Windows 服务名 |
 | `-MaxRooms` | `64` | 中继房间上限 |
-| `-Build` | 读 `data/config.json` | 缺省回落 `coop-m12.2`，必须与客户端一致 |
+| `-Build` | 读 `data/config.json` | 缺省回落 `coop-m13.1`，必须与客户端一致 |
 | `-PublicIp` | 空 | 仅用于最后的 `DEPLOY OK` 提示 |
 | `-OpenFirewall` | 关 | 幂等添加 Windows 防火墙入站规则；云安全组仍需在控制台放行 |
 | `-DryRun` | 关 | 只打印计划并校验输入，不改服务 / 文件 / 防火墙 |
@@ -161,7 +161,7 @@ powershell -ExecutionPolicy Bypass -File C:\daeem_stage\server\deploy.ps1 `
 4. nssm 注册服务：
 
 ```powershell
-nssm install DAEEMRelay "C:\Python312\python.exe" "C:\daeem\server\daeem_relay.py --host 0.0.0.0 --port 8770 --max-rooms 64"
+nssm install DAEEMRelay "C:\Python312\python.exe" "C:\daeem\server\daeem_relay.py --host 0.0.0.0 --port 8770 --max-rooms 64 --build coop-m13.1"
 nssm set DAEEMRelay AppDirectory  C:\daeem\server
 nssm set DAEEMRelay AppStdout     C:\daeem\logs\relay.out.log
 nssm set DAEEMRelay AppStderr     C:\daeem\logs\relay.err.log
@@ -174,7 +174,7 @@ nssm start DAEEMRelay
 
 ```powershell
 curl http://<公网IPv4>:8770/health
-# {"ok":true,"rooms":0,"players":0,"uptime":1.2,"build":"coop-m12.2"}
+# {"ok":true,"rooms":0,"players":0,"uptime":1.2,"build":"coop-m13.1"}
 ```
 
 6. 客户端：
@@ -182,7 +182,7 @@ curl http://<公网IPv4>:8770/health
 ```json
 "net": {
   "relay_url": "ws://<公网IPv4>:8770/ws",
-  "build": "coop-m12.2"
+  "build": "coop-m13.1"
 }
 ```
 
@@ -199,9 +199,10 @@ curl http://<公网IPv4>:8770/health
 ## 中继行为
 
 - `GET /health`：进程存活、房间数、连接数、uptime、build。
-- `GET /rooms`：房间码 / 人数 / 状态（不暴露 IP）。
+- `GET /rooms`：房间码 / 人数 / 状态（不暴露 IP）；大厅的「房间列表」直接读它。
 - `WS /ws`：游戏连接。
-- 房间码 6 位，字母表去掉 `0/O/1/I`。
+- 房间码 **6 位数字 0-9**（与大厅键盘一致；旧字母码不再有效）。
 - 一条连接一行日志；不打印消息正文。
+- 客机 `ready` 是**开关**（`body.ready`），可取消准备；房主点「开始」只要求客机已准备。
 - 客机 `bye`：房主收到 `bye` + `room_state`，房间保留；房主 `bye`：双方收摊。
 - 心跳：20 秒 ping，60 秒无 pong 断开。

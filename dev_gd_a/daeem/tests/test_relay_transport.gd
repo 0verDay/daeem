@@ -7,8 +7,8 @@ extends "res://tests/test_case.gd"
 const RelayTransportRes = preload("res://net/relay_transport.gd")
 
 const PORT := 8773
-const BUILD := "coop-m12.2"
-const ROOM := "GDTX23"
+const BUILD := "coop-m13.1"
+const ROOM := "123456"
 
 var _host_msgs: Array = []
 var _guest_msgs: Array = []

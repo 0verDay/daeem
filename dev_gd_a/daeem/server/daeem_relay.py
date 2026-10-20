@@ -10,11 +10,11 @@ Routes:
   WS  /ws     -> game connection
 
 Wire protocol (client -> relay first):
-  {"v":1, "t":"hello", "seq":0, "ts":0, "body":{"build":"coop-m12.2"}}
-  {"v":1, "t":"create_room", "body":{"code":"ABC234"}}
-  {"v":1, "t":"join_room", "body":{"code":"ABC234"}}
-  {"v":1, "t":"ready"}
-  {"v":1, "t":"start", ...}       host only, after both ready
+  {"v":1, "t":"hello", "seq":0, "ts":0, "body":{"build":"coop-m13.1"}}
+  {"v":1, "t":"create_room", "body":{"code":"123456"}}
+  {"v":1, "t":"join_room", "body":{"code":"123456"}}
+  {"v":1, "t":"ready", "body":{"ready":true}}
+  {"v":1, "t":"start", ...}       host only, after the guest is ready
   any other type                  forwarded to the other player
 """
 from __future__ import annotations
@@ -34,11 +34,11 @@ from urllib.parse import urlsplit
 
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 PROTOCOL_VERSION = 1
-ROOM_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+ROOM_ALPHABET = "0123456789"
 MAX_HTTP_HEADER = 16 * 1024
 MAX_MESSAGE = 16 * 1024 * 1024
 MAX_ROOM_CODE_TRIES = 64
-DEFAULT_BUILD = "coop-m12.2"
+DEFAULT_BUILD = "coop-m13.1"
 PING_SEC = 20.0
 PONG_TIMEOUT_SEC = 60.0
 
@@ -404,7 +404,7 @@ class Relay:
         elif t == "join_room":
             await self._join_room(peer, body, msg)
         elif t == "ready":
-            await self._ready(peer)
+            await self._ready(peer, body)
         elif t == "start":
             await self._start(peer, msg)
         elif t == "bye":
@@ -467,18 +467,26 @@ class Relay:
         log(f"room join code={code} guest={id(peer) & 0xFFFF:04x}")
         await self._send_state(room)
 
-    async def _ready(self, peer: Peer) -> None:
+    async def _ready(self, peer: Peer, body: dict) -> None:
         room = peer.room
         if room is None:
             await peer.send_json(make("err", {"code": "no_room", "msg": "no room"}))
             return
+        # 2026.10.20：ready 变成**开关**（客机可以取消准备）。旧客户端不传 body，
+        # 默认 True，行为与原来一致。
+        value = bool(body.get("ready", True))
         if peer.role == "host":
-            room.ready_host = True
+            room.ready_host = value
         elif peer.role == "guest":
-            room.ready_guest = True
-        if room.host is not None and room.guest is not None and room.ready_host and room.ready_guest:
+            room.ready_guest = value
+        if room.guest is not None and room.ready_guest:
             room.status = "ready"
-        log(f"ready code={room.code} role={peer.role} both={room.ready_host and room.ready_guest}")
+        elif room.guest is not None:
+            room.status = "full"
+        else:
+            room.status = "lobby"
+        log(f"ready code={room.code} role={peer.role} value={value} "
+            f"guest_ready={room.ready_guest}")
         await self._send_state(room)
 
     async def _start(self, peer: Peer, msg: dict) -> None:
@@ -486,8 +494,10 @@ class Relay:
         if room is None or peer.role != "host" or room.guest is None:
             await peer.send_json(make("err", {"code": "start", "msg": "not ready"}))
             return
-        if not (room.ready_host and room.ready_guest):
-            await peer.send_json(make("err", {"code": "start", "msg": "players not ready"}))
+        # 2026.10.20：主机按钮本身就是「开始」，主机不需要再点一次准备；
+        # 只要求**客机已准备**。
+        if not room.ready_guest:
+            await peer.send_json(make("err", {"code": "start", "msg": "guest not ready"}))
             return
         room.status = "playing"
         log(f"room start code={room.code}")

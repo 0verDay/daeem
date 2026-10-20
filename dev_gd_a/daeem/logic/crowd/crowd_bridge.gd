@@ -454,7 +454,10 @@ func _build_terrain(world) -> void:
 	var exists: Array = world.map.exists.data
 	var n: int = mini(cells.size(), exists.size())
 	for i in n:
-		var walkable: bool = bool(exists[i]) and String(cells[i]) != "mountain"
+		var t := String(cells[i])
+		# ★★ 水与山都挡路（水不挡视线，但人群寻路只看“能不能走”）。
+		#   这里直接读原始数组，别改成逐格调 terrain_walkable() —— 原因见上一段。
+		var walkable: bool = bool(exists[i]) and t != "mountain" and t != "water"
 		blocked[i] = 0 if walkable else 1
 	kernel.SetupTerrain(cols, rows, blocked)
 

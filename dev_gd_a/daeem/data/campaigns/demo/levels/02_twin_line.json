@@ -32,7 +32,9 @@
         20,
         1
       ],
-      "color": "#ffd166"
+      "name": "红方",
+      "color": "#ffd166",
+      "playable": true
     },
     {
       "id": "F1",
@@ -41,7 +43,9 @@
         2,
         2
       ],
-      "color": "#5ac8ff"
+      "name": "蓝方",
+      "color": "#5ac8ff",
+      "playable": true
     }
   ],
   "allies": [
@@ -56,8 +60,24 @@
       "owner": "F2"
     },
     {
+      "id": 1,
+      "owner": ""
+    },
+    {
+      "id": 2,
+      "owner": "F1"
+    },
+    {
+      "id": 3,
+      "owner": ""
+    },
+    {
       "id": 4,
       "owner": "F1"
+    },
+    {
+      "id": 5,
+      "owner": ""
     },
     {
       "id": 6,

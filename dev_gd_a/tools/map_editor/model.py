@@ -2,7 +2,8 @@
 
 设计来源（与项目里已有的约定对齐，改之前先看这几处）：
 
-  · 地形只有三种：grass / forest / mountain（dev_gd_a/daeem/logic/map_data.gd 的 TERRAIN_*）。
+  · 地形有四种：grass / forest / mountain / water（dev_gd_a/daeem/logic/map_data.gd 的 TERRAIN_*）。
+    ★ water 与 mountain 都**阻挡移动**，但 water **不阻挡视线**（只有山地挡迷雾视线）。
   · 「地块存在与否」是**独立于地形**的一件事：JSON 里多一张 ``exists`` 网格。
     地图可以不是规则矩形（拖出一个 L 形），但内部不会缺格。
     Godot 侧读它：exists=0 的地块一律不可通行（见 map_data.gd 的 exists 字段）。
@@ -28,18 +29,20 @@ TERRAIN_CHARS: Dict[str, str] = {
     "grass": ".",
     "forest": "^",
     "mountain": "#",
+    "water": "~",
 }
 CHAR_TERRAINS: Dict[str, str] = {v: k for k, v in TERRAIN_CHARS.items()}
 #: 旧文件里的 'B' 是注释性质的遗留字符，读进来当草地（map_data.gd 也这么干）
 CHAR_TERRAINS["B"] = "grass"
 
 #: 编辑器里能选的地形（顺序 = 界面上按钮的顺序）
-TERRAIN_ORDER: Tuple[str, ...] = ("grass", "forest", "mountain")
+TERRAIN_ORDER: Tuple[str, ...] = ("grass", "forest", "mountain", "water")
 
 TERRAIN_LABELS: Dict[str, str] = {
     "grass": "草地",
     "forest": "森林",
     "mountain": "山地",
+    "water": "水域",
 }
 
 #: 兜底配色（config.json 读不到时用；正常情况下都从 config 读）
@@ -49,6 +52,7 @@ DEFAULT_COLORS: Dict[str, object] = {
     "forest": "#24402a",
     "mountain": "#4c4a45",
     "mountain_edge": "#5f5c55",
+    "water": "#2e4f66",
     "grid": "rgba(255,255,255,0.055)",
     "grid_strong": "rgba(255,255,255,0.12)",
     "zone_line": "rgba(255,255,255,0.10)",
@@ -1215,7 +1219,7 @@ class MapModel:
                           terrain: str) -> Tuple[int, int]:
         """把矩形内每一格都刷成 `terrain`：**虚线格先建出来**（批量刷地形）。
 
-        需求原话：「设计师可以框选空白区域，点击右侧栏位中的地形（平地/森林/山地）
+        需求原话：「设计师可以框选空白区域，点击右侧栏位中的地形（平地/森林/山地/水域）
         以将这些空白区域都变为该类地形」。
 
         @return `(新建的格数, 改动了地形的格数)`。
@@ -1337,9 +1341,10 @@ class MapModel:
             if self.zone_of.get(self.idx(*self.view_of(cx, cy)), -1) != zone.zone_id:
                 out.append("区块「%s」的中心不在它自己的地块上（那一格现在归别的区块）"
                            % zone.name)
-            if self.terrain_at(cx, cy) == "mountain":
-                out.append("区块「%s」的中心落在山地上（游戏里单位本来就进不去，"
-                           "但那一格会看不出区别）" % zone.name)
+            if self.terrain_at(cx, cy) in ("mountain", "water"):
+                out.append("区块「%s」的中心落在%s上（游戏里单位本来就进不去，"
+                           "但那一格会看不出区别）"
+                           % (zone.name, TERRAIN_LABELS[self.terrain_at(cx, cy)]))
         return out
 
     def _size_problems(self) -> List[str]:

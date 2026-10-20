@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     Starts the Python relay on 127.0.0.1:8770, waits for /health, then starts
-    two independent probe processes. The host creates room CAMP23, the guest
+    two independent probe processes. The host creates room 123456, the guest
     joins, both ready, host starts, guest sends one command, host sends one
     snapshot, host says bye. Exit 0 only when both probes exit 0.
 
@@ -68,7 +68,7 @@ try {
     }
 
     $url = "ws://127.0.0.1:$Port/ws"
-    $room = "CAMP23"
+    $room = "123456"
     $hostP = Start-Process -FilePath $Python `
         -ArgumentList @((Join-Path $serverDir "probe_relay.py"), "--role", "host", "--url", $url, "--room", $room) `
         -WorkingDirectory $serverDir `

@@ -341,6 +341,7 @@ func _bake(cols: int, rows: int) -> ImageTexture:
 	var c_grass_alt: Color = cfg.color("grass_alt")
 	var c_forest: Color = cfg.color("forest")
 	var c_mountain: Color = cfg.color("mountain")
+	var c_water: Color = cfg.color("water")
 	var c_neutral: Color = cfg.color("zone_neutral")
 	baked_tiles = 0
 	for ty in rows:
@@ -352,6 +353,8 @@ func _bake(cols: int, rows: int) -> ImageTexture:
 			match kind:
 				"mountain":
 					c = c_mountain
+				"water":
+					c = c_water
 				"forest":
 					c = c_forest
 				_:
@@ -466,6 +469,8 @@ func terrain_color_at(tx: int, ty: int) -> Color:
 	match kind:
 		"mountain":
 			return cfg.color("mountain")
+		"water":
+			return cfg.color("water")
 		"forest":
 			return cfg.color("forest")
 		_:

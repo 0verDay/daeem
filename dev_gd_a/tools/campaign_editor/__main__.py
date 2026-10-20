@@ -168,7 +168,13 @@ def selftest(project_dir: Path, campaign_dir: Optional[str] = None) -> int:
         print("\n[战役] %s（%s，%d 关，默认%s）"
               % (model.campaign_id, model.name, len(model.levels),
                  "双人合作" if model.default_mode == model_mod.MODE_COOP else "单人"))
-        print("      可玩阵营：%s" % ("、".join(model.playable_ids()) or "（一个都没有）"))
+        all_playable = []
+        for lv in model.levels:
+            for fid in lv.playable_ids():
+                if fid not in all_playable:
+                    all_playable.append(fid)
+        print("      可玩阵营（各关并集）：%s"
+              % ("、".join(all_playable) or "（一个都没有）"))
         for i, lv in enumerate(model.levels):
             obj = lv.objective() or {}
             print("  [%d] %-14s %-10s %s　席位 %s　目标区划 %s / %s 秒　额外失败 %d 条"

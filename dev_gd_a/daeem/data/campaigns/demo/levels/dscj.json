@@ -1,0 +1,311 @@
+{
+  "name": "dscj",
+  "mode": "coop",
+  "map": "dscj",
+  "players": [
+    {
+      "faction": "F1"
+    },
+    {
+      "faction": "F2"
+    }
+  ],
+  "factions": [
+    {
+      "id": "F1",
+      "ai": "none",
+      "base": [
+        6,
+        40
+      ],
+      "name": "F1",
+      "color": "#ffd166",
+      "playable": true
+    },
+    {
+      "id": "F2",
+      "ai": "none",
+      "base": [
+        16,
+        40
+      ],
+      "name": "F2",
+      "color": "#5ac8ff",
+      "playable": true
+    },
+    {
+      "id": "df",
+      "ai": "none",
+      "name": "df",
+      "color": "#8ce08c"
+    },
+    {
+      "id": "red1",
+      "ai": "reddot",
+      "reddot_ai": {
+        "spawn_tiles": [
+          [
+            0,
+            0
+          ],
+          [
+            1,
+            0
+          ],
+          [
+            1,
+            1
+          ],
+          [
+            0,
+            1
+          ],
+          [
+            25,
+            2
+          ],
+          [
+            26,
+            2
+          ],
+          [
+            26,
+            3
+          ],
+          [
+            25,
+            3
+          ]
+        ],
+        "march_tiles": [
+          [
+            7,
+            39
+          ],
+          [
+            8,
+            39
+          ],
+          [
+            9,
+            39
+          ],
+          [
+            9,
+            40
+          ],
+          [
+            8,
+            40
+          ],
+          [
+            7,
+            40
+          ],
+          [
+            7,
+            41
+          ],
+          [
+            8,
+            41
+          ],
+          [
+            9,
+            41
+          ],
+          [
+            13,
+            39
+          ],
+          [
+            14,
+            39
+          ],
+          [
+            15,
+            39
+          ],
+          [
+            15,
+            40
+          ],
+          [
+            14,
+            40
+          ],
+          [
+            13,
+            40
+          ],
+          [
+            13,
+            41
+          ],
+          [
+            14,
+            41
+          ],
+          [
+            15,
+            41
+          ]
+        ],
+        "general_weights": [
+          {
+            "general": 1,
+            "weight": 1.0
+          },
+          {
+            "general": 2,
+            "weight": 0.0
+          },
+          {
+            "general": 3,
+            "weight": 0.0
+          }
+        ],
+        "escort_count": 2,
+        "escort_types": [
+          {
+            "type": "spearman",
+            "weight": 1.0
+          }
+        ]
+      },
+      "name": "red1",
+      "color": "#c9a0ff"
+    }
+  ],
+  "allies": [
+    [
+      "F1",
+      "F2"
+    ],
+    [
+      "df",
+      "red1"
+    ]
+  ],
+  "zones": [
+    {
+      "id": 0,
+      "owner": "F1"
+    },
+    {
+      "id": 1,
+      "owner": "F2"
+    },
+    {
+      "id": 2,
+      "owner": ""
+    },
+    {
+      "id": 3,
+      "owner": ""
+    },
+    {
+      "id": 4,
+      "owner": ""
+    },
+    {
+      "id": 5,
+      "owner": ""
+    },
+    {
+      "id": 6,
+      "owner": ""
+    },
+    {
+      "id": 7,
+      "owner": ""
+    },
+    {
+      "id": 8,
+      "owner": ""
+    },
+    {
+      "id": 9,
+      "owner": ""
+    },
+    {
+      "id": 10,
+      "owner": ""
+    },
+    {
+      "id": 11,
+      "owner": ""
+    },
+    {
+      "id": 12,
+      "owner": ""
+    },
+    {
+      "id": 13,
+      "owner": ""
+    },
+    {
+      "id": 14,
+      "owner": ""
+    },
+    {
+      "id": 15,
+      "owner": ""
+    },
+    {
+      "id": 16,
+      "owner": ""
+    },
+    {
+      "id": 17,
+      "owner": ""
+    },
+    {
+      "id": 18,
+      "owner": ""
+    },
+    {
+      "id": 19,
+      "owner": ""
+    },
+    {
+      "id": 20,
+      "owner": ""
+    },
+    {
+      "id": 21,
+      "owner": ""
+    },
+    {
+      "id": 22,
+      "owner": ""
+    },
+    {
+      "id": 23,
+      "owner": ""
+    },
+    {
+      "id": 25,
+      "owner": ""
+    },
+    {
+      "id": 26,
+      "owner": "df"
+    }
+  ],
+  "start_units": [],
+  "start_buildings": [],
+  "objectives": [
+    {
+      "for": "F1",
+      "kind": "capture_zone",
+      "zone": 26
+    },
+    {
+      "for": "F2",
+      "kind": "capture_zone",
+      "zone": 26
+    }
+  ],
+  "fail_conditions": []
+}

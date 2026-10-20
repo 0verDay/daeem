@@ -294,8 +294,9 @@ dev_gd_a/daeem/
 │   │                             #     ⚠️ 高度**只问 Label 自己**（get_minimum_size），
 │   │                             #     不许拿 Font.get_multiline_string_size 顶替（见 pitfalls 5.52）
 │   │                             #     文案由 hud 喂（`_hover_detail`），本控件只排版与画
-│   ├── squad_panel.gd            #   左侧「部队 1~10」（动态生成，点了只选中）
-│   │                             #   ★ 手机端由 hud 的 4 槽调度器驱动（关掉自己的 _process）
+│   ├── squad_panel.gd            #   右侧「部队 1~10」（动态生成，点了只选中）
+│   │                             #   ★ 每行是 view/troop_row.gd：数字 1..9/0 + 名字 + 当前/上限
+│   │                             #     右缘竖线是金色泛光起点（向左推进）
 │   ├── detail_panel.gd           #   ★ 底栏「详细信息」：**左右两栏**（第四轮改版）
 │   │                             #     左 = view/unit_roster.gd（上）+ view/troop_grid.gd（下）
 │   │                             #     右 = 选中单位头像 / 名称 / buff 占位 / 数值 + 招募五格

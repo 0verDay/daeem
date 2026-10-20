@@ -177,13 +177,16 @@ class ModelError(Exception):
 # ======================================================================
 
 class FactionEntry:
-    """关卡 `factions[]` 的一行 —— 「这一方在这一关里怎么打」。
+    """关卡 `factions[]` 的一行 —— **这一关的阵营表**（定义 + 怎么打）。
 
     字段与 `logic/level.gd` 的 `_read_level_factions()` **逐字段对齐**：
-    `id / ai / base / color / attack_target / garrison_ai / reddot_ai / spawn_region`。
+    `id / ai / base / color / attack_target / garrison_ai / reddot_ai / spawn_region`，
+    加上本编辑器写入 / 运行时读取的 `name` 与 `playable`。
 
-    ★ 多出来的 `name` / `color` 是 `merge_over_map()` 会读的两个字段
-      （关卡新点名的阵营要靠它出现在阵营表里），不是运行时 AI 参数。
+    ★★ 阵营表**跟着关卡走**（用户口径：每一关就是一个独立战役）：
+      · `name` / `color` / `playable` 都是**这一关**自己的；
+      · `playable: true` = 玩家能选这一方（玩家席位由它派生）；
+      · 不会再有「战役级阵营表」——A 关卡写的阵营不会出现在 B 关卡里。
 
     ⚠️ 本轮删掉了 `resource_mult` / `start_food` / `start_gold`（AI 不再有资源库）
        与 `faction_ai` / `general_ai`（旧的两套 AI 参数）—— 换成 `garrison_ai` /
@@ -192,7 +195,7 @@ class FactionEntry:
 
     __slots__ = ("fid", "ai", "base", "attack_target", "attack_target_raw",
                  "garrison_ai", "reddot_ai", "spawn_region", "spawn_region_raw",
-                 "name", "color", "declared")
+                 "name", "color", "playable", "playable_declared", "declared")
 
     def __init__(self, fid: str) -> None:
         self.fid = fid
@@ -213,6 +216,11 @@ class FactionEntry:
         self.spawn_region_raw: Any = None
         self.name = ""
         self.color = ""
+        #: ★★ 这一方在**这一关**里可不可玩（玩家能选谁）。玩家席位由它派生。
+        self.playable = False
+        #: 源 JSON 里写过 `playable` 没有 —— 决定导出时写不写 `false`
+        #: （写了 `false` 与「没写」在运行时同义，但往返契约要求原样带回）。
+        self.playable_declared = False
         #: 「这一方在**这一关的 JSON 里**被点名了」—— 与「只是地图上划过」是两件事：
         #: 点名的阵营一律要求大本营（校验第 4 条），地图划过的不用。
         self.declared = True
@@ -356,8 +364,7 @@ class LevelModel:
     __slots__ = ("level_id", "name", "mode", "map_id", "players", "factions", "allies",
                  "allies_declared", "zone_owners", "start_units", "start_buildings",
                  "objectives", "fail_conditions", "briefing", "preserved",
-                 "file", "briefing_declared", "_declared", "campaign_id",
-                 "campaign_factions", "campaign_playable")
+                 "file", "briefing_declared", "_declared", "campaign_id")
 
     def __init__(self, level_id: str = "", map_id: str = "") -> None:
         self.level_id = level_id
@@ -366,7 +373,7 @@ class LevelModel:
         self.map_id = map_id
         #: 每项 {"faction": str, "base": Optional[Tuple[int,int]]}；**顺序 = 席位顺序**。
         self.players: List[dict] = []
-        #: 参展阵营（`FactionEntry`）。
+        #: ★★ 这一关的**阵营表**（`FactionEntry`，含 id / 名字 / 颜色 / 可玩 / AI）。
         self.factions: List[FactionEntry] = []
         #: 盟友关系（两两一对）；只有 `allies_declared` 为真时才覆盖地图的。
         self.allies: List[List[str]] = []
@@ -385,11 +392,8 @@ class LevelModel:
         #: 这几个键在源 JSON 里出现过没有 —— 决定导出时写不写（见 `to_dict`）。
         self.briefing_declared = False
         self._declared: Set[str] = set()
-        #: 只用来定位（不参与导出）：所属战役 id / 该战役 `factions[]` 的 id 列表。
+        #: 只用来定位（不参与导出）：所属战役 id。
         self.campaign_id = ""
-        self.campaign_factions: List[str] = []
-        #: 该战役里 `playable: true` 的那些 id（校验第 7 条与「玩家能选谁」下拉用）。
-        self.campaign_playable: List[str] = []
 
     # ---- 便捷读 ----
 
@@ -446,18 +450,45 @@ class LevelModel:
                 return e
         return None
 
-    def ensure_faction(self, fid: str) -> FactionEntry:
-        """取这一方的条目；没有就**新建**一行并返回（界面「加一方」走它）。"""
+    def ensure_faction(self, fid: str, name: str = "", color: str = "",
+                       playable: bool = False) -> FactionEntry:
+        """取这一方的条目；没有就**新建**一行并返回（界面「加一方」走它）。
+
+        ★★ 新阵营只落在**这一关**的 `factions[]` 里（不再写 `campaign.json`）——
+          这是「A 关卡的阵营列表不会污染 B 关卡」的落点。
+        """
         got = self.faction(fid)
         if got is not None:
+            if name and not got.name:
+                got.name = name
+            if color and not got.color:
+                got.color = color
             return got
         entry = FactionEntry(fid)
+        entry.name = str(name)
+        entry.color = str(color)
+        entry.playable = bool(playable)
+        entry.playable_declared = bool(playable)
         self.factions.append(entry)
         self._declared.add("factions")
         return entry
 
     def remove_faction(self, fid: str) -> None:
+        """从这一关移除一方（席位跟着重建；不会碰别的关卡）。"""
+        before = len(self.factions)
         self.factions = [e for e in self.factions if e.fid != fid]
+        if len(self.factions) != before:
+            self.sync_players_from_playable()
+
+    def faction_name(self, fid: str) -> str:
+        """这一方在**这一关**的显示名（没写 → 退回 id）。"""
+        e = self.faction(str(fid))
+        return (e.name or e.fid) if e is not None else str(fid)
+
+    def faction_color(self, fid: str) -> str:
+        """这一方在**这一关**的颜色（没写 → 空串，由界面退回 config / 兜底）。"""
+        e = self.faction(str(fid))
+        return e.color if e is not None else ""
 
     def player_base(self, index: int) -> Optional[Tuple[int, int]]:
         if 0 <= index < len(self.players):
@@ -480,51 +511,120 @@ class LevelModel:
             del self.players[index]
 
     def sync_players_from_playable(self) -> None:
-        """玩家席位 = **每个可玩阵营一份**（不再手填）。
+        """玩家席位 = **本关每个可玩阵营一份**（不再手填、也不再问战役）。
 
-        ★ 「谁可玩」是战役级属性（`campaign.json` 的 `factions[].playable`），由
-          `CampaignModel._sync_level_context()` 抄进 `self.campaign_playable`；本方法据此
-          重建 `players[]`（顺序 = 可玩阵营顺序）。已写过的同名 `base` 保留（兼容老数据）。
+        ★★ 席位顺序：**保留 `players[]` 里原来的先后**（合作关的房主 / 客机顺序
+          写在 `players[]` 里，不能因为阵营表的顺序变了就互换）；新出现的可玩阵营
+          追加在末尾。已写过的同名 `base` 保留（兼容老数据）。
 
-        ★★ 单人关允许两个可玩阵营（选边关）—— 所以这里不再按模式限制 1 / 2 个席位。
+        ★ 单人关允许两个可玩阵营（选边关）—— 所以这里不按模式限制 1 / 2 个席位。
         """
         old_base = {str(p.get("faction", "")): p.get("base")
                     for p in self.players if p.get("base") is not None}
+        playable = set(self.playable_ids())
         players: List[dict] = []
-        for fid in self.campaign_playable:
-            item: Dict[str, Any] = {"faction": fid}
+        for p in self.players:
+            fid = str(p.get("faction", ""))
+            if fid and fid in playable:
+                item: Dict[str, Any] = {"faction": fid}
+                if fid in old_base:
+                    item["base"] = old_base[fid]
+                players.append(item)
+        seen = {str(p.get("faction", "")) for p in players}
+        for fid in self.playable_ids():
+            if fid in seen:
+                continue
+            item = {"faction": fid}
             if fid in old_base:
                 item["base"] = old_base[fid]
             players.append(item)
         self.players = players
 
     def set_zone_owner(self, zid: int, owner: str) -> None:
-        """写某区的开局归属；`owner == ""` = **显式清空**（与「没提这一区」是两件事）。"""
+        """写某区的开局归属；`owner == ""` = **无主**（显式写空串）。"""
         self.zone_owners[int(zid)] = str(owner)
         self._declared.add("zones")
 
-    def clear_zone_owner(self, zid: int) -> None:
-        """撤掉这一区的覆盖（回到地图自带的归属）。"""
-        self.zone_owners.pop(int(zid), None)
-
     def zone_owner(self, zid: int) -> Optional[str]:
-        """关卡写的归属（没写 → None = 用地图的）。"""
+        """关卡写的归属（正常载入后**每一块地都有**；None 只可能出现在旧/外部数据里）。"""
         return self.zone_owners.get(int(zid))
 
+    def ensure_zone_owners(self, info: Optional["MapInfo"], force: bool = False) -> bool:
+        """把地图的 `zone_list[].owner` 落成**本关显式**的 `zones[]`。
+
+        ★★ 用户口径：地图编辑器不编辑区块归属，所以战役编辑器**不再有「（用地图的）」**
+          这个选项 —— 每一块地都要在关卡里写清楚（阵营 id 或空串 = 无主）。
+          地图的 owner 只当**初始化来源**用一次：
+
+          · `force=False`（载入旧数据 / 普通补齐）：只补**还没写**的区划、清掉地图里
+            已经不存在的区划号，保留作者已经写过的显式归属；
+          · `force=True`（新建关卡 / 换地图）：整张表按地图重建 —— 旧地图的区划号对
+            新地图没有意义，留着只会变成脏数据。
+
+        @return 有没有改动 `zone_owners`（调用方据此决定要不要重画）。
+        """
+        if info is None:
+            return False
+        if force:
+            filled = {int(z): str(info.zone_owners.get(int(z), "")) for z in info.zone_ids}
+            changed = filled != self.zone_owners
+            self.zone_owners = filled
+        else:
+            known = {int(z) for z in info.zone_ids}
+            # 地图里已经不存在的区划号：留着只会变成脏数据（换图 / 地图改区划之后）
+            stale = [z for z in self.zone_owners if int(z) not in known]
+            for z in stale:
+                del self.zone_owners[z]
+            changed = bool(stale)
+            for z in info.zone_ids:
+                zid = int(z)
+                if zid in self.zone_owners:
+                    continue
+                self.zone_owners[zid] = str(info.zone_owners.get(zid, ""))
+                changed = True
+        if changed:
+            self.mark_declared("zones")
+        return changed
+
+    def playable_ids(self) -> List[str]:
+        """本关**可玩**阵营（`factions[].playable == true`）。
+
+        ★ 顺序：**先按 `players[]` 的席位顺序**，再把还没进席位的可玩阵营追加在后面。
+          这样「选边关默认取第一个」与老数据（战役表顺序 = 席位顺序）一致 ——
+          阵营表在文件里的排列顺序不携带这个语义。
+        """
+        seat_order = [f for f in self.seats() if self.is_playable(f)]
+        return seat_order + [e.fid for e in self.factions
+                             if e.playable and e.fid not in seat_order]
+
     def is_playable(self, fid: str) -> bool:
-        """这一方在**所属战役**里是不是可玩的（关卡自己不带这个标记，见 2.2）。"""
-        return str(fid) in self.playable_ids_for_level()
+        """这一方在**这一关**里是不是可玩的。"""
+        e = self.faction(str(fid))
+        return bool(e.playable) if e is not None else False
 
     def playable_ids_for_level(self) -> List[str]:
-        """本关能选来玩的阵营 = **战役可玩** ∩ 本关在场（界面下拉与校验第 7 条用）。
+        """兼容旧名字：本关可玩阵营（= `playable_ids()`）。"""
+        return self.playable_ids()
 
-        ⚠️ 是「战役可玩」而不是「战役全部阵营」：一个只在战役里登记过、
-          `playable: false` 的敌方阵营不该出现在「玩家能选谁」里。
+    def derive_playable_from_seats(self) -> bool:
+        """老关卡没有 `playable` 字段时的兜底：**把席位当作可玩阵营**。
+
+        @return 有没有真的补出可玩阵营（一个席位都没有 → False）。
         """
-        return [f for f in self.campaign_playable if f in self.present_ids()]
+        if any(e.playable or e.playable_declared for e in self.factions):
+            return False
+        out = False
+        for fid in [str(p.get("faction", "")) for p in self.players]:
+            if not fid:
+                continue
+            e = self.ensure_faction(fid)
+            e.playable = True
+            e.playable_declared = True
+            out = True
+        return out
 
     def present_ids(self) -> List[str]:
-        """本关**在场**的阵营（席位 + 关卡 factions + 战役 factions，顺序稳定、去重）。
+        """本关**在场**的阵营（席位 + 关卡 factions，顺序稳定、去重）。
 
         ★ 与 `logic/level.gd` 的 `present_ids()` 对齐：那边再加地图的 `factions_meta`
           （这里没有地图对象，所以由校验层把地图那一份并进来）。
@@ -536,9 +636,6 @@ class LevelModel:
         for e in self.factions:
             if e.fid and e.fid not in out:
                 out.append(e.fid)
-        for f in self.campaign_factions:
-            if f and f not in out:
-                out.append(f)
         return out
 
     def summary(self) -> str:
@@ -622,10 +719,15 @@ class LevelModel:
 # ======================================================================
 
 class CampaignModel:
-    """一个战役：`campaign.json` + 它下面那一串关卡（**顺序 = 关卡顺序**）。"""
+    """一个战役：`campaign.json` + 它下面那一串关卡（**顺序 = 关卡顺序**）。
+
+    ★★ **阵营表不在这一层**（用户口径：每一关就是一个独立战役）：
+      每关的 `factions[]` 自带 id / 名字 / 颜色 / 可玩，关卡之间互不影响。
+      `campaign.json` 只留战役元信息 + 关卡顺序，**不再写 `factions[]`**。
+    """
 
     __slots__ = ("campaign_id", "dir_path", "name", "description", "default_mode",
-                 "factions", "levels", "unlock", "preserved", "campaign_factions")
+                 "levels", "unlock", "preserved", "legacy_factions", "default_factions")
 
     def __init__(self, campaign_id: str = "", dir_path: Any = None) -> None:
         self.campaign_id = campaign_id
@@ -634,13 +736,14 @@ class CampaignModel:
         self.name = campaign_id
         self.description = ""
         self.default_mode = MODE_SOLO
-        #: 每项 {"id","name","color","playable"}。
-        self.factions: List[dict] = []
         self.levels: List[LevelModel] = []
         self.unlock = "in_order"
         self.preserved: Dict[str, Any] = {}
-        #: 阵营 id 列表的**快照**（给关卡的下拉与校验用；不参与导出，见 `sync_context`）。
-        self.campaign_factions: List[str] = []
+        #: ★ 旧格式（`campaign.json` 里还有 `factions[]`）读进来的阵营表。
+        #:   只用于**迁移**：载入时抄进每一关的 `factions[]`，之后不再写回。
+        self.legacy_factions: List[dict] = []
+        #: 新建关卡时用的初始阵营表（不参与导出；见 `new_campaign`）。
+        self.default_factions: List[dict] = []
 
     # ---- 关卡管理 ----
 
@@ -657,7 +760,10 @@ class CampaignModel:
         return -1
 
     def new_level(self, level_id: str, map_id: str) -> LevelModel:
-        """追加一关并返回它（id 撞车时自动加后缀，文件名同 id）。"""
+        """追加一关并返回它（id 撞车时自动加后缀，文件名同 id）。
+
+        ★ 新关卡拿到一份**自己的**初始阵营表（`default_factions`），之后各关独立。
+        """
         wanted = str(level_id).strip() or "level"
         unique = wanted
         n = 2
@@ -671,8 +777,12 @@ class CampaignModel:
         lv.file = "%s/%s.json" % (LEVELS_SUBDIR, unique)
         lv.mark_declared("name", "mode", "map", "players", "factions", "objectives",
                          "start_units", "start_buildings", "fail_conditions")
+        for item in self.default_factions:
+            lv.ensure_faction(str(item.get("id", "")), str(item.get("name", "")),
+                              str(item.get("color", "")),
+                              bool(item.get("playable", False)))
+        lv.sync_players_from_playable()
         self.levels.append(lv)
-        self._sync_level_context(lv)
         return lv
 
     def remove_level(self, level_id: str) -> bool:
@@ -693,55 +803,58 @@ class CampaignModel:
         self.levels.insert(j, self.levels.pop(i))
         return True
 
-    # ---- 便捷读 ----
-
-    def playable_ids(self) -> List[str]:
-        """可玩阵营（`campaign.json` 的 `playable: true`，按声明顺序）。"""
-        return [str(e["id"]) for e in self.factions if bool(e.get("playable", False))]
-
-    def faction_name(self, fid: str) -> str:
-        for e in self.factions:
-            if str(e.get("id", "")) == fid:
-                return str(e.get("name", "")) or fid
-        return fid
-
-    def faction_color(self, fid: str) -> str:
-        for e in self.factions:
-            if str(e.get("id", "")) == fid:
-                return str(e.get("color", ""))
-        return ""
-
-    def ensure_faction(self, fid: str, name: str = "", color: str = "") -> dict:
-        for e in self.factions:
-            if str(e.get("id", "")) == fid:
-                return e
-        item = {"id": fid, "name": name or fid, "color": color, "playable": False}
-        self.factions.append(item)
-        return item
-
-    def remove_faction(self, fid: str) -> bool:
-        for i, e in enumerate(self.factions):
-            if str(e.get("id", "")) == fid:
-                del self.factions[i]
-                return True
-        return False
+    # ---- 门面：关卡上下文 ----
 
     def _sync_level_context(self, lv: LevelModel) -> None:
-        """把关卡用得着的「战役级」信息塞进它（校验第 7 条与界面下拉要用），
-        并按「可玩阵营」重建玩家席位（`players[]` 不再手填）。
+        """只补「所属战役 id」这一项上下文；**不再**改 `players[]` / 阵营表。
 
-        ⚠️ `campaign_id` / `campaign_factions` / `campaign_playable` 只是**上下文**、
-          不进 JSON；但 `sync_players_from_playable()` 会**改写 `players[]`**（那是关卡数据，
-          由可玩阵营派生 —— 见那条注释）。
+        ★ 旧实现会按战役可玩阵营重建**每一关**的席位 —— 那正是「改一关动全战役」
+          的来源。现在席位只由**本关**的可玩阵营派生（`LevelModel.sync_players_from_playable`）。
         """
         lv.campaign_id = self.campaign_id
-        lv.campaign_factions = [str(e.get("id", "")) for e in self.factions if e.get("id")]
-        lv.campaign_playable = self.playable_ids()
-        lv.sync_players_from_playable()
 
     def sync_context(self) -> None:
         for lv in self.levels:
             self._sync_level_context(lv)
+
+    def adopt_legacy_factions(self) -> None:
+        """把旧格式 `campaign.json` 的 `factions[]` **抄进每一关**（一次性迁移）。
+
+        ★ 规则（保住老数据的行为）：
+          · 关卡里已经写了的一方：只补空着的 name / color；旧表说 `playable: true`
+            就把它标成可玩；关卡自己的 `playable` 优先。
+          · 关卡里没写、但旧表说 `playable: true` 的一方：**加进这一关**（它本来
+            就是这一关的玩家席位）。
+          · 关卡里没写、旧表也不是可玩的一方：**不加** —— 这正是「不污染」：
+            `mt` 的红点阵营不会再跑进别的关卡。
+          · 旧表整个是空的、关卡里也没有任何 `playable`：把 `players[]` 的席位当作
+            可玩（老关卡 / 手写关卡）。
+        """
+        legacy = [e for e in self.legacy_factions if str(e.get("id", ""))]
+        for lv in self.levels:
+            by_id = {e.fid: e for e in lv.factions}
+            for item in legacy:
+                fid = str(item.get("id", ""))
+                playable = bool(item.get("playable", False))
+                name = str(item.get("name", ""))
+                color = str(item.get("color", ""))
+                e = by_id.get(fid)
+                if e is None:
+                    if not playable:
+                        continue
+                    e = lv.ensure_faction(fid, name, color, True)
+                    by_id[fid] = e
+                else:
+                    if name and not e.name:
+                        e.name = name
+                    if color and not e.color:
+                        e.color = color
+                    if playable:
+                        e.playable = True
+                        e.playable_declared = True
+            if not legacy:
+                lv.derive_playable_from_seats()
+            lv.sync_players_from_playable()
 
     # ---- 写盘用的字典 ----
 
@@ -750,11 +863,7 @@ class CampaignModel:
         out["name"] = self.name or self.campaign_id
         out["description"] = self.description
         out["default_mode"] = self.default_mode if self.default_mode in MODES else MODE_SOLO
-        out["factions"] = [{"id": str(e.get("id", "")),
-                            "name": str(e.get("name", "")) or str(e.get("id", "")),
-                            "color": str(e.get("color", "")),
-                            "playable": bool(e.get("playable", False))}
-                           for e in self.factions if str(e.get("id", ""))]
+        # ★★ `factions[]` **不写**：阵营表跟着关卡走（`levels/*.json` 的 `factions[]`）。
         out["levels"] = [{"id": lv.level_id,
                           "file": level_file_of(lv),
                           "name": lv.name} for lv in self.levels]
@@ -1228,7 +1337,7 @@ def _fill_map(info: MapInfo, data: dict) -> None:
                 ch = _TERRAIN_BY_NAME.get(str(terrain_grid[y][x]).strip().lower(), ".")
             info.terrain[(x, y)] = ch
             info.exists.add((x, y))
-            if ch != "#":
+            if ch not in ("#", "~"):
                 info.walkable.add((x, y))
 
     # ---- 存在网格：0 = 地图外（不可通行）----
@@ -1376,7 +1485,11 @@ def _default_color_for(index: int) -> str:
 
 
 def new_campaign(project_dir: Any, campaign_id: str, name: str = "") -> CampaignModel:
-    """在 `data/campaigns/<campaign_id>/` 建一个新战役（**不写盘**；写盘走 `save_campaign`）。"""
+    """在 `data/campaigns/<campaign_id>/` 建一个新战役（**不写盘**；写盘走 `save_campaign`）。
+
+    ★★ `campaign.json` **不带阵营表**：下面这份 `default_factions` 只是「新建关卡时
+      先塞进这一关的初始阵营」，之后每关各改各的（互不影响）。
+    """
     cid = str(campaign_id).strip()
     if not cid:
         raise ModelError("战役 id 不能为空（它就是目录名）")
@@ -1389,19 +1502,19 @@ def new_campaign(project_dir: Any, campaign_id: str, name: str = "") -> Campaign
     model.default_mode = MODE_SOLO
     model.unlock = "in_order"
     model.preserved = {COMMENT_KEY: list(EDITOR_CAMPAIGN_COMMENT)}
-    # 头两个可玩阵营：与 config.json 的配色表前两档对得上（改起来更顺眼）。
-    for i, fid in enumerate(("F1", "E1")):
-        model.factions.append({"id": fid,
-                               "name": "赤军" if i == 0 else "边军",
-                               "color": _default_color_for(i),
-                               "playable": i == 0})
+    # 头两个阵营：与 config.json 的配色表前两档对得上（改起来更顺眼）。
+    model.default_factions = [
+        {"id": "F1", "name": "赤军", "color": _default_color_for(0), "playable": True},
+        {"id": "E1", "name": "边军", "color": _default_color_for(1), "playable": False},
+    ]
     return model
 
 
 #: 新建战役时写进 `campaign.json` 的说明（给人看的）。
 EDITOR_CAMPAIGN_COMMENT: Tuple[str, ...] = (
     "战役元信息。关卡顺序以 levels[] 为准（不是文件名的字典序）。",
-    "factions[].playable = 玩家能选谁；没被选中的参展阵营由 AI 驱动。",
+    "★ 阵营表不在 campaign.json 里：每关的 levels/*.json 的 factions[] 自带"
+    " id / 名字 / 颜色 / playable，关卡之间互不影响。",
 )
 
 
@@ -1435,6 +1548,9 @@ def _load_level_factions(raw: Any, lv: LevelModel) -> None:
             e.spawn_region_raw = region
         e.name = _as_str(item.get("name", ""), "")
         e.color = _as_str(item.get("color", ""), "")
+        # ★★ 这一方在这一关可不可玩（玩家能选谁）。缺省 false —— 与运行时同一条默认值。
+        e.playable = bool(item.get("playable", False))
+        e.playable_declared = "playable" in item
         lv.factions.append(e)
 
 
@@ -1512,7 +1628,11 @@ def _load_objectives(raw: Any, lv: LevelModel) -> None:
         lv.objectives.append({"kind": _as_str(item.get("kind", ""), "").lower(),
                               "for": _as_str(item.get("for", ""), ""),
                               "zone": _as_int(item.get("zone"), -1),
-                              "hold_sec": _as_float(item.get("hold_sec"), 0.0)})
+                              "hold_sec": _as_float(item.get("hold_sec"), 0.0),
+                              # ★ 2026.10.20：局内左上目标栏的自由描述；本编辑器不开输入框，
+                              #   但必须原样带回（导入 → 导出不许掉字段）。
+                              "desc": _as_str(item.get("desc", ""), ""),
+                              "short": _as_str(item.get("short", ""), "")})
 
 
 def _load_fails(raw: Any, lv: LevelModel) -> None:
@@ -1613,16 +1733,21 @@ def load_campaign(dir_path: Any, project_dir: Any) -> CampaignModel:
     # ★ `unlock` 缺省与「写成别的值」都落到 `in_order`（第一版只有这一种，
     #   与 `logic/campaign.gd` 的 `_text(..., UNLOCK_IN_ORDER)` 同一条）。
     model.unlock = _as_str(data.get("unlock", ""), "") or "in_order"
+    # ★★ 旧格式：`campaign.json` 里可能还有 `factions[]`。**只读进 `legacy_factions`**，
+    #    载入后由 `adopt_legacy_factions()` 抄进每一关（之后不再写回）。
+    #    新格式的 `campaign.json` 没有这个键（`_read_json` 缺省 → 空表）。
+    legacy: List[dict] = []
     for item in _as_list(data.get("factions")):
         if not isinstance(item, dict):
             continue
         fid = _as_str(item.get("id", ""), "")
         if not fid:
             continue
-        model.factions.append({"id": fid,
-                               "name": _as_str(item.get("name", ""), fid),
-                               "color": _as_str(item.get("color", ""), ""),
-                               "playable": bool(item.get("playable", False))})
+        legacy.append({"id": fid,
+                       "name": _as_str(item.get("name", ""), fid),
+                       "color": _as_str(item.get("color", ""), ""),
+                       "playable": bool(item.get("playable", False))})
+    model.legacy_factions = legacy
     model.preserved = {k: v for k, v in data.items() if k not in CAMPAIGN_KNOWN_KEYS}
 
     # ---- 关卡：`levels[]` 的顺序就是关卡顺序；缺省时退化成「levels/ 下按文件名排」----
@@ -1643,8 +1768,6 @@ def load_campaign(dir_path: Any, project_dir: Any) -> CampaignModel:
     if not entries:
         entries = _scan_level_files(dir_path)
 
-    sync = [str(e.get("id", "")) for e in model.factions if e.get("id")]
-    model.campaign_factions = sync
     skipped: List[str] = []
     for entry in entries:
         target = dir_path / str(entry["file"])
@@ -1660,6 +1783,17 @@ def load_campaign(dir_path: Any, project_dir: Any) -> CampaignModel:
     if not model.levels:
         raise ModelError("战役「%s」一关都没有（levels[] 是空的，或者每一关都读不出来%s）"
                          % (cid, "：%s" % "、".join(skipped) if skipped else ""))
+    # ★★ 区划归属：**关卡里必须写全**（地图编辑器不提供区块归属编辑，所以关卡不再
+    #    「用地图的」）。这里把地图的 `zone_list[].owner` 抄成每一关显式的 `zones[]`：
+    #    已有显式值的保留，缺的补成「地图 owner / 空串（无主）」。
+    #    同一张地图只读一次（一个战役几关而已，但没必要读 N 遍）。
+    map_cache: Dict[str, Optional[MapInfo]] = {}
+    for lv in model.levels:
+        mid = str(lv.map_id)
+        if mid and mid not in map_cache:
+            map_cache[mid] = load_map(project_dir, mid)
+        lv.ensure_zone_owners(map_cache.get(mid))
+    model.adopt_legacy_factions()
     model.sync_context()
     return model
 
@@ -1682,8 +1816,8 @@ def _scan_level_files(dir_path: Path) -> List[dict]:
 # ======================================================================
 
 #: 地形字符 → 名字（只用于读「terrain 名字网格」那一种老写法）。
-_TERRAIN_BY_NAME = {"grass": ".", "forest": "^", "mountain": "#",
-                    ".": ".", "^": "^", "#": "#", "": "."}
+_TERRAIN_BY_NAME = {"grass": ".", "forest": "^", "mountain": "#", "water": "~",
+                    ".": ".", "^": "^", "#": "#", "~": "~", "": "."}
 
 
 def normalize_ai(value: Any) -> str:
@@ -1810,6 +1944,10 @@ def _faction_to_dict(e: FactionEntry) -> dict:
         out["name"] = e.name
     if e.color:
         out["color"] = e.color
+    # ★★ `playable`：true 一律写；false **只在源里写过时**写（往返契约：
+    #    `"playable": false` 与「没写」在运行时同义，但不能凭空丢字段）。
+    if e.playable or e.playable_declared:
+        out["playable"] = bool(e.playable)
     return out
 
 
@@ -1898,6 +2036,13 @@ def _objective_to_dict(o: dict) -> dict:
         out["for"] = who
     out["kind"] = str(o.get("kind", ""))
     out["zone"] = int(o.get("zone", -1))
+    # ★ 自由描述：空串不写（老数据往返不多字段）。
+    desc = str(o.get("desc", ""))
+    if desc:
+        out["desc"] = desc
+    short = str(o.get("short", ""))
+    if short:
+        out["short"] = short
     # ★★ `hold_sec` **只对「守住」类有意义**：
     #    · `hold_zone` → 写出来（必须 > 0，校验会拦）；
     #    · `capture_zone`（占领即赢）→ **一个字都不写** —— 写了 `0` 也能读，
@@ -2135,7 +2280,11 @@ def _effective_allies(lv: LevelModel, info: Optional[MapInfo]) -> List[List[str]
 
 
 def _initial_zone_owner(lv: LevelModel, info: Optional[MapInfo], zid: int) -> str:
-    """某区的**开局归属**：关卡覆盖 → 地图；无主 / 不认识 → `""`。"""
+    """某区的**开局归属**：关卡显式值 → 地图（只对旧数据）→ `""`。
+
+    ★★ 正常载入后 `lv.zone_owners` 里已有地图的每一块地（`ensure_zone_owners`），
+      所以这里的「回退地图」只服务旧/外部数据；战役编辑器不再产出「用地图的」。
+    """
     if int(zid) in lv.zone_owners:
         return str(lv.zone_owners[int(zid)])
     if info is not None and int(zid) in info.zone_owners:
@@ -2169,10 +2318,10 @@ def _playable_base(lv: LevelModel, info: Optional[MapInfo],
 
 def _ck_players(add, model: CampaignModel, lv: LevelModel,
                 info: Optional[MapInfo]) -> None:
-    """2/3/4：席位数、玩家不能占同一阵营、每个参展方都要有大本营。
+    """2/3/4：席位数、玩家不能占同一阵营、每个可玩阵营都要有大本营。
 
-    ★★ 席位由「可玩阵营」派生（`CampaignModel._sync_level_context`），所以这里
-      按**席位**数判就够了：单人关**不限个数**（两个对立的可玩阵营 = 选边关），
+    ★★ 席位由**本关**的「可玩阵营」派生（`LevelModel.sync_players_from_playable`），
+      所以这里按**席位**数判就够了：单人关**不限个数**（两个对立的可玩阵营 = 选边关），
       合作关要恰好两个 —— 不再有 `players_count_solo` 这条。
     """
     if not lv.players:
@@ -2198,8 +2347,8 @@ def _ck_players(add, model: CampaignModel, lv: LevelModel,
     #   `start_units[]` 摆放，运行时也不会给它们建大本营
     #   （`world.apply_faction_layout` 只给玩家方建；AI 那点只当出生锚点，可有可无）。
     #
-    # 判据 = 「战役可玩 ∩ 本关在场」：一个**不在这一关出场**的可玩阵营不该把关卡拦下来。
-    playable = model.playable_ids()
+    # 判据 = 「**本关**可玩 ∩ 本关在场」：阵营表跟着关卡走，不再看战役。
+    playable = lv.playable_ids()
     present = set(lv.present_ids())
     if info is not None:
         present |= {str(f.get("id", "")) for f in info.factions}
@@ -2238,7 +2387,7 @@ def _ck_point(add, info: MapInfo, point: Tuple[int, int], what: str) -> None:
         add(SEV_BLOCK, "point_outside", "%s (%d,%d) 在地图外" % (what, x, y))
         return
     if not info.walkable_at(x, y):
-        add(SEV_BLOCK, "point_on_mountain", "%s (%d,%d) 是山地" % (what, x, y))
+        add(SEV_BLOCK, "point_on_mountain", "%s (%d,%d) 是山地 / 水域（不可通行）" % (what, x, y))
         return
     for zid, center in sorted(info.zone_centers.items()):
         if (int(center[0]), int(center[1])) == (x, y):
@@ -2260,12 +2409,11 @@ def _ck_sides(add, model: CampaignModel, lv: LevelModel, info: MapInfo) -> None:
         if len(pair) >= 2:
             sides.union(str(pair[0]), str(pair[1]))
 
-    # 7) ★ 判据用「战役可玩 ∩ 本关在场」：一个**不在这一关出场**的可玩阵营
-    #    （比如战役第二方的席位只在合作关出现）不该把关卡拦下来。
+    # 7) ★ 判据用「**本关**可玩」：每关自己勾可玩，不再从战役表派生。
     present = set(lv.present_ids())
     if info is not None:
         present |= {str(f.get("id", "")) for f in info.factions}
-    playable = [f for f in model.playable_ids() if f in present]
+    playable = [f for f in lv.playable_ids() if f in present]
     has_for = any(str(o.get("for", "")) for o in lv.objectives)
     if lv.mode == MODE_COOP:
         if len(playable) >= 2:
@@ -2443,33 +2591,28 @@ def _ck_colors(add, model: CampaignModel, lv: LevelModel, info: Optional[MapInfo
     """★★ 阵营配色：**自定义阵营 id 必须在某处写了颜色** → 否则警告。
 
     ★ 为什么要有这一条（实测踩过）：配色表 `colors.faction.*` 里只有**内置**阵营 id
-      （p1~p8 / enemy / ai），而战役可以用自己的 id。一个 id 在
-      `campaign.json` 与关卡 `factions[]` 里都**没写 color** 时，渲染层会退到
-      **品红** —— 症状是「整个战场一片紫、敌我分不清」，而且**游戏不报错**，
+      （p1~p8 / enemy / ai），而战役可以用自己的 id。一个 id 在本关
+      `factions[]` 里**没写 color** 时，渲染层会退到**品红** —— 症状是
+      「整个战场一片紫、敌我分不清」，而且**游戏不报错**，
       设计者只会看到玩家来抱怨。这一条警告就是让它在**导出时就现形**。
 
     ⚠️ 只对「不在内置配色表里的 id」报警告：`p1` / `enemy` / `ai` 这些
       本来就有颜色，不写完全正常（样例战役三个阵营都写了，所以它是 0 条）。
+    ★★ 颜色现在只认**本关** `factions[].color`（不再有 `campaign.json` 那一份）。
     """
     builtin = getattr(info, "builtin_factions", set()) if info is not None else set()
 
-    # 战役元信息里的颜色（`campaign.json` 的 `factions[].color`）
-    campaign_colors = set()
-    for e in getattr(model, "factions", []) or []:
-        if isinstance(e, dict) and _as_str(e.get("color", ""), ""):
-            campaign_colors.add(str(e.get("id", "")))
-
     for fid in lv.present_ids():
         fid = str(fid)
-        if not fid or fid in builtin or fid in campaign_colors:
+        if not fid or fid in builtin:
             continue
         fe = lv.faction(fid)
         if fe is not None and _as_str(getattr(fe, "color", ""), ""):
             continue
         add(SEV_WARN, "faction_no_color",
             "阵营「%s」没有写颜色，而且它不在内置配色表里 —— 运行时会退成品红"
-            "（整个战场一片紫、敌我分不清）。请在 `campaign.json` 的 factions[] "
-            "或本关的 factions[] 里给它一个 color（如 \"#5AC8FF\"）" % fid)
+            "（整个战场一片紫、敌我分不清）。请在**本关** factions[] 里给它一个 "
+            "color（如 \"#5AC8FF\"）" % fid)
 
 
 def _ck_escort_links(add, lv: LevelModel) -> None:
@@ -2613,7 +2756,7 @@ def _ck_reddot(add, lv: LevelModel, info: Optional[MapInfo],
                         "红点阵营「%s」的生成地块 (%d,%d) 在地图外" % (fid, x, y))
                 elif not info.walkable_at(x, y):
                     add(SEV_BLOCK, "reddot_spawn_tile_invalid",
-                        "红点阵营「%s」的生成地块 (%d,%d) 在山上（站不了人）" % (fid, x, y))
+                        "红点阵营「%s」的生成地块 (%d,%d) 在山地 / 水域上（站不了人）" % (fid, x, y))
         if REDDOT_MARCH_TILES_KEY in rd and info is not None:
             for t in _as_list(rd.get(REDDOT_MARCH_TILES_KEY)):
                 tp = _tile_of(t)
@@ -2663,7 +2806,7 @@ def _ck_attack_target(add, lv: LevelModel, info: Optional[MapInfo], fid: str,
             return
         if not info.walkable_at(x, y):
             add(SEV_BLOCK, "attack_target_mountain",
-                "%s指向 (%d,%d)：山地走不到" % (what, x, y))
+                "%s指向 (%d,%d)：山地 / 水域走不到" % (what, x, y))
         return
     if kind == TARGET_BASE:
         target = str(spec.get("faction", ""))

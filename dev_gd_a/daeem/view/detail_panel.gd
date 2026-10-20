@@ -1,4 +1,4 @@
-## detail_panel.gd —— 底栏「详细信息」面板（1030×**260**）
+## detail_panel.gd —— 底栏「详细信息」面板（988×**260**）
 ##
 ## ★★ 面板高度：参考图标的是 240，**本版按需求加高到 260**（用户原话：「也可以适当
 ##    扩大详细信息面板的竖直方向长度」）。底栏贴着屏幕下沿 ⇒ 它是**向上长**的，
@@ -21,7 +21,7 @@
 ##                 建筑（框选可以选中一整批，见 input_controller.box_select）；
 ##                 点一格 = 把右栏详情切到那个建筑；超过 9 个同样是滚轮翻页。
 ##
-##   右栏（645 宽，第六轮排成「三条带 + 一条提示带」，几何见 ui_layout 那段注释）
+##   右栏（603 宽，第六轮排成「三条带 + 一条提示带」，几何见 ui_layout 那段注释）
 ##     y   8.. 96  顶带：选中单位的**头像**（72×72）+「单位名称」+ 一行 **buff 图标**（占位，无效果）
 ##                 右上角还有招募队列（view/recruit_queue.gd，只有正在招募时才出现）：
 ##                 左边汇总带（「招募队列 3/5」+「共 22s」）+ 1 大 4 小五个格子
@@ -31,7 +31,7 @@
 ##
 ## ★★ 第六轮那三处对齐（起因：右栏几块的对齐边各走各的，看着像四块补丁）：
 ##   · 头像 / 名称上移到 y=0，与左栏第一块方块齐平；
-##   · 数值框宽度 606 → 645（右缘与招募队列的右缘对齐，不再是锯齿）；
+##   · 数值框宽度 606 → 645（第六轮）→ **603**（2026.10.20 底栏缩放后），右缘与队列右缘对齐；
 ##   · 提示行从面板 VBox 搬进右栏底下那条 20px，**出现时不再压扁两栏**。
 ##   ⚠️ 前两条改了 ui_layout 里的 UNIT_AVATAR_Y / UNIT_NAME_Y / BUFF_X / DETAIL_BODY_*，
 ##      被 tests/test_ui.gd 的几何断言盯着（改了要一起改）。
@@ -322,7 +322,7 @@ func _build_right(cols: HBoxContainer, world) -> void:
 ## ⚠️ `right_w == DETAIL_RIGHT_W`（1920 基准）时，结果与原来的写死常量逐位一致。
 func _layout_right(right_w: float) -> void:
 	# ★ 兜底：容器布局途中可能给一个 0 / 很小的宽度（此时算出来是负数）。
-	#   夹到基准宽（645）—— 比「负尺寸」稳，也不会让某一块突然翻到左边去。
+	#   夹到基准宽（603）—— 比「负尺寸」稳，也不会让某一块突然翻到左边去。
 	right_w = maxf(right_w, UiLayoutRes.DETAIL_RIGHT_W)
 	if _detail_box != null:
 		_detail_box.size.x = UiLayoutRes.detail_body_w(right_w)
@@ -363,7 +363,7 @@ func _new_body_label(node_name: String, pos: Vector2, size_v: Vector2) -> Label:
 ##    现在它住进数值框下面**本来就空着**的那条带（NOTICE_Y..NOTICE_Y+NOTICE_H），
 ##    出现 / 消失都不动任何一块的几何。
 ## ★ `clip_text = true`：文案再长也只在这条带里被裁，不会横着顶出面板
-##   （最长的两句实测 405px / 360px ≤ 右栏 645，正常情况根本碰不到裁剪）。
+##   （最长的两句实测 405px / 360px ≤ 右栏 603，正常情况根本碰不到裁剪）。
 func _build_notice(right: Control) -> void:
 	_notice = Label.new()
 	_notice.name = "NoticeLine"

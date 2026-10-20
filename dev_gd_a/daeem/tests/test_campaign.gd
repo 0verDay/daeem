@@ -121,7 +121,10 @@ func _group_load(cfg) -> void:
 	eq(String(c.level_at(0).id), "01_beachhead", "第一关 id 来自 levels[]")
 	eq(String(c.level_at(0).name), "第一关·渡口", "第一关显示名来自 levels[]")
 	eq(String(c.level_at(1).mode), "coop", "第二关是合作关（关卡文件里的 mode）")
-	eq(c.playable_ids(), ["F1", "F2"], "战役里可玩的是 F1 与 F2")
+	eq(c.level_at(0).playable_ids(), ["F1", "F2"],
+		"★ 第一关自带可玩阵营 F1 / F2（阵营表跟着关卡走）")
+	ok(c.faction_meta.is_empty(),
+		"★★ campaign.json 不再有阵营表（旧格式才会读到 factions[]）")
 
 	var lv = c.level("01_beachhead")
 	ok(lv != null, "按 id 取关卡")

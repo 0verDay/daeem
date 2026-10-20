@@ -124,7 +124,8 @@
 - **选**：地图文件（`map.json`）继续拥有**地形 / 区划网格 / 区划中心 / 产能 / 阵营大本营**；
   关卡文件拥有**这一关专属的东西**：玩家里有谁、每个参展阵营挂什么 AI 与往哪打、
   开局摆放、目标与额外失败条件。**覆盖规则**：同一个字段**关卡写了就用关卡的，没写就用地图的**
-  （逐字段覆盖，不是整块替换）。
+  （逐字段覆盖，不是整块替换）。★ 例外：`zones[]` 现在**写全地图里的每一块地**（`owner` = 阵营 id
+  或空串 = 无主）—— 地图编辑器不编辑区块归属，所以战役编辑器不再有「用地图的」。
 - **放弃**：把 `map.json` 的 `buildings` / `units` / `faction_bases` 全部搬进关卡（单一来源，但会
   让现有「自由对战 / 试炼场」这条路径失去数据、把 30+ 个测试全搅动）。
 - **为什么**：现在 `data/maps/frontier/map.json` 里那套对家据点与守军**是给手玩测试用的**，
@@ -290,15 +291,12 @@ data/campaigns/<campaign_id>/           ← 目录名 = 战役 id（与地图同
 
 ```json
 {
-  "_comment": ["战役元信息。关卡顺序以 levels[] 为准（不是文件名的字典序）。"],
+  "_comment": ["战役元信息。关卡顺序以 levels[] 为准（不是文件名的字典序）。",
+               "★ 阵营表不在 campaign.json：每关的 levels/*.json 的 factions[] 自带",
+               "   id / name / color / playable，关卡之间互不影响。"],
   "name": "东征·第一章",
   "description": "一句话简介（可空）",
   "default_mode": "solo",
-  "factions": [
-    {"id": "p1",    "name": "赤军", "color": "#5AC8FF", "playable": true},
-    {"id": "p2",    "name": "青军", "color": "#FFD166", "playable": true},
-    {"id": "enemy", "name": "边军", "color": "#FF6B6B", "playable": false}
-  ],
   "levels": [
     {"id": "beachhead", "file": "levels/01_beachhead.json", "name": "第一关·渡口"},
     {"id": "river",     "file": "levels/02_river.json",     "name": "第二关·河防"}
@@ -312,7 +310,7 @@ data/campaigns/<campaign_id>/           ← 目录名 = 战役 id（与地图同
 | `name` | string | 目录名 | `campaign_library` → 主界面的战役选择条 |
 | `description` | string | `""` | 战役选择条（显示一行说明） |
 | `default_mode` | `"solo"` / `"coop"` | `"solo"` | 编辑器「新建关卡」时的默认值 |
-| `factions[]` | 数组 | `[]` | 编辑器 + 运行时（**追加 / 覆盖**地图的 `factions`；`playable` 决定「玩家能选谁」） |
+| `factions[]` | 数组 | `[]` | ★ **旧格式**（已废弃，不再写）：阵营表下放到每一关的 `levels/*.json`；关卡没写 `playable` 时才回退读这一份 |
 | `levels[]` | 数组（**有序**） | 必填 | 关卡列表；`file` 相对战役目录；`name` 缺省用关卡文件里的 `name` |
 | `unlock` | `"in_order"` | `"in_order"` | 第一版只有这一种（顺序解锁） |
 
@@ -331,14 +329,16 @@ data/campaigns/<campaign_id>/           ← 目录名 = 战役 id（与地图同
   ],
 
   "factions": [
-    {"id": "enemy", "ai": "faction", "base": [14, 14],
+    {"id": "enemy", "name": "边军", "color": "#FF6B6B", "playable": true,
+     "ai": "faction", "base": [14, 14],
      "resource_mult": 1.3, "start_food": 200, "start_gold": 200,
      "attack_target": {"kind": "zone", "zone": 4},
      "faction_ai": {"generals": 3, "min_retinue": 3, "min_ready": 2,
                     "ready_mult": 0.5, "attack_repeat_sec": 25.0},
      "general_ai": null},
 
-    {"id": "ai", "ai": "general", "base": [22, 4],
+    {"id": "ai", "name": "AI", "color": "#8CE08C", "playable": false,
+     "ai": "general", "base": [22, 4],
      "general_ai": {"patrol_interval_sec": 3.0, "patrol_leash_tiles": 2}}
   ],
 
@@ -371,7 +371,8 @@ data/campaigns/<campaign_id>/           ← 目录名 = 战役 id（与地图同
 | `mode` | `"solo"` / `"coop"` | 战役的 `default_mode` | 决定 `players[]` 允许几个席位、以及界面走哪条入口 |
 | `map` | string | **必填** | `data/maps/<map>/` 的目录名（= 地图 id，与 `map_library` 同一套） |
 | `players[]` | 数组，1~2 项 | 必填 | 玩家席位；**顺序 = 席位顺序**（房主第 1 个、客机第 2 个）；`base` 覆盖地图的 `faction_bases[faction]` |
-| `factions[]` | 数组 | `[]` | 参展阵营的 **AI 指派 + 难度 + 开局资源 + 大本营 + 进攻目标**；见 2.4 与 3.6 |
+| `zones[]` | 数组 | 必填（地图里每块地一条） | 开局归属：`{id, owner}`；`owner` = 阵营 id 或 `""`（无主）。★ 战役编辑器**写全每一块地**（不再有「不写 = 用地图的」）；旧数据缺的载入时按地图的 `zone_list[].owner` 补齐。 |
+| `factions[]` | 数组 | `[]` | ★★ **这一关的阵营表**：每项 `id / name / color / playable` + **AI 指派 / 大本营 / 进攻目标**；`playable: true` = 玩家能选谁（席位由它派生）。关卡之间互不影响；见 2.4 与 3.6 |
 | `allies` | 数组 | 地图的 `allies` | 覆盖地图的盟友关系（对齐 `FactionRes.set_allies`）。★ 合作模式下两个玩家席位**必须**同方（编辑器自动写 / 校验） |
 | `start_units[]` | 数组 | `[]` | 开局就在场的单位 / 将领（**追加**在地图 `units` 之后） |
 | `start_buildings[]` | 数组 | `[]` | 开局就在场的建筑（**追加**在地图 `buildings` 之后） |

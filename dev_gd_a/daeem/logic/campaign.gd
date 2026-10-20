@@ -12,7 +12,10 @@
 ##     name          显示名；缺省 = 目录名
 ##     description   一句话简介；缺省 ""
 ##     default_mode  "solo" / "coop"；缺省 "solo"（编辑器「新建关卡」时的默认值）
-##     factions[]    这一战的**参展阵营**追加 / 覆盖表（id / name / color / playable）
+##     factions[]    ★ **旧格式**的参展阵营表（id / name / color / playable）。
+##                   新格式**不再写**这一份：阵营表跟着关卡走（`levels/*.json` 的
+##                   `factions[]`，含 name / color / playable）。读它只为兼容老数据，
+##                   `Level.from_data()` 会在关卡没写 `playable` 时回退到这一份。
 ##     levels[]      **有序**关卡表：{id, file, name}；file 相对战役目录
 ##     unlock        "in_order"；第一版只有这一种
 ##
@@ -126,8 +129,9 @@ var dir_path: String = ""
 var path: String = ""
 ## `unlock`（第一版恒为 "in_order"）
 var unlock: String = UNLOCK_IN_ORDER
-## 参展阵营元信息（**追加 / 覆盖**地图的 `factions`；`playable` 决定「玩家能选谁」）：
-## 每项 {id: String, name: String, color: String, playable: bool}
+## ★ **旧格式**的参展阵营元信息（`campaign.json` 的 `factions[]`；新格式为空表）：
+## 每项 {id: String, name: String, color: String, playable: bool}。
+## 关卡在 `playable` 缺失时回退到它；名字 / 颜色也用于老数据兜底。
 var faction_meta: Array = []
 ## 有序关卡表（**以 campaign.json 的 levels[] 为准**，不是文件名字典序）：每项 Level
 var levels: Array = []
@@ -152,7 +156,10 @@ func level_at(index: int) -> Variant:
 	return levels[index]
 
 
-## 这一战里**可玩**的阵营 id（campaign.json 的 `playable: true` 那些，按声明顺序）。
+## 这一战里**可玩**的阵营 id（**旧格式** `campaign.json` 的 `playable: true` 那些）。
+##
+## ⚠️ 新格式里阵营表在每一关自己的 `factions[]`（`Level.playable_ids()` 才是运行时
+##   真正用的那一份）；这里只作为「老数据回退」保留。
 func playable_ids() -> Array:
 	var out: Array = []
 	for e in faction_meta:

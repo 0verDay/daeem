@@ -105,6 +105,7 @@ var _c_grass: Color
 var _c_grass_alt: Color
 var _c_forest: Color
 var _c_mountain: Color
+var _c_water: Color
 ## 阵营 → 主体色。每帧每单位查一次的东西，缓存成一次查表（同 unit_view.gd）
 var _color_cache: Dictionary = {}
 
@@ -167,6 +168,7 @@ func setup(p_cfg: ConfigRes, p_world, p_camera_rig, p_palette) -> void:
 	_c_grass_alt = cfg.color("grass_alt")
 	_c_forest = cfg.color("forest")
 	_c_mountain = cfg.color("mountain")
+	_c_water = cfg.color("water")
 	_color_cache = {}
 	# 新一局 / 新地图 ⇒ 迷雾烘图作废（贴图缓冲可以复用，尺寸对不上时会重建）
 	_fog_mask = PackedByteArray()
@@ -475,6 +477,8 @@ func _terrain_texture() -> ImageTexture:
 			var c: Color = _c_grass if (tx + ty) % 2 == 0 else _c_grass_alt
 			if t == "mountain":
 				c = _c_mountain
+			elif t == "water":
+				c = _c_water
 			elif t == "forest":
 				c = _c_forest
 			img.set_pixel(tx, ty, c)
