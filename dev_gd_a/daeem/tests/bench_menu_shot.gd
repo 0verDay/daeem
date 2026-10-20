@@ -106,7 +106,7 @@ func _run() -> void:
 		tb.mouse_exited.emit()
 		await _wait(10)
 
-	# 6) 战役过渡画面（左缩略图 + 右简报 + 两张阵营卡 + 底部进度/提示）
+	# 6) 战役过渡画面（左缩略图 + 右上简报 + 右下两块阵营面板 + 底部进度/提示）
 	main._on_level_entry_pressed("demo", "01_beachhead")
 	var tr_deadline: int = Time.get_ticks_msec() + 4000
 	while Time.get_ticks_msec() < tr_deadline and main.level_transition() == null:

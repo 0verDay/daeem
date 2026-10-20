@@ -102,9 +102,9 @@ func _test_badge_style_follows_theme() -> void:
 	ok(sb != null, "badge_style() 产出一个 StyleBoxFlat")
 	if sb == null:
 		return
-	eq(sb.border_color, ThemeRes.line(), "★★ 描边色就是主题的 line()（金线）")
-	ok(sb.border_color.r > sb.border_color.b, "★ 描边是金（R > B）—— 不是别处那套蓝")
-	eq(sb.border_width_left, 1, "1px 描边（这套皮肤只有「1px 金线」这一种线）")
+	eq(sb.border_color, ThemeRes.line(), "★★ 描边色就是主题的 line()（暗金细线）")
+	ok(sb.border_color.r > sb.border_color.b, "★ 描边是暗金（R > B）—— 不是别处那套蓝")
+	eq(sb.border_width_left, 1, "1px 描边（这套皮肤只有「1px 细线」这一种线）")
 	eq(sb.border_width_top, 1, "四条边都是 1px")
 	eq(sb.bg_color, ThemeRes.panel_alpha_color(ThemeRes.PANEL_PRESSED_ALPHA, true),
 		"★★ 底色来自主题的面板档（半透明暗底，与整套皮肤同源）")

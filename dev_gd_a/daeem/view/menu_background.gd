@@ -1,10 +1,12 @@
-## menu_background.gd —— ★ 进入界面的整页背景：**暗色渐变底 + 金色细线**
+## menu_background.gd —— ★ 进入界面的整页背景：**暗色渐变底 + 中心辉光**
 ##
 ## 需求（参考图）第一件事就是「暗色色渐变底」。这里把它做成一个 Control：
 ##   · 竖直渐变（theme.palette 的 bg_top → bg_bottom）—— 上浅下深，像参考图那样；
-##   · 正中一团**很淡的金色辉光**（主题的 glow 色），把视线收到标题与徽记上；
-##   · 上下各两条**金色细线**（只在中间约 2/3 宽的一条带上），
-##     与参考图里标题上下的那两条分隔线是同一种装饰。
+##   · 正中一团**很淡的辉光**（主题的 glow 色），把视线收到标题与徽记上。
+##   ⚠️ 顶部那条金色细线**已删掉**（用户口径：「把始终在顶部的那根金色细线去掉」）：
+##      它在入场页 / 主界面 / 战役页 / 过渡页**每一页**的顶部都横着一根，
+##      看着像固定在画面上的一道杂线。想加回装饰线时别放回这个公共背景 ——
+##      它会跟着所有页面一起出现，应该画在**那一页自己的**控件里。
 ##
 ## ★★ 它同时是**收点击的那一层**（mouse_filter = STOP）—— 这是有意合并的：
 ##   原实现是一个只会填色的 `ColorRect` 负责收点击，而进入界面的点击必须落在
@@ -34,13 +36,6 @@ const GLOW_TEX := 256
 ## ★ 高度给得比宽度小：参考图的辉光是横向铺开的，不是一团圆斑。
 const GLOW_W_RATIO := 0.78
 const GLOW_H_RATIO := 0.62
-## 上装饰线离屏幕上边的比例（线在**中间这条带**里，两端不到边）。
-## ★ 它必须留在入场页徽记的**上方**：徽记顶端在 1920×1080 设计空间里约 y = 67
-##   （menu.emblem_top 66 + 它自己的外半径），线压下来就会横穿那枚图形。
-##   0.045 ⇒ y ≈ 49，在徽记上方约 18px —— 改徽记位置 / 尺寸时这条要跟着看一眼。
-const RULE_TOP_Y := 0.045
-const RULE_INSET := 0.30      # 左右各留 30% 的空白
-const RULE_W := 1.0
 
 var _gradient: GradientTexture2D = null
 var _glow: ImageTexture = null
@@ -57,10 +52,10 @@ func _ready() -> void:
 ##   引擎的渐变本来就在线性空间里插值，省掉「手算 sRGB 插值偏亮」这类毛病。
 func _build_gradient() -> void:
 	var g := Gradient.new()
-	# ★ 下端就是 `menu.bg`（页面自己的「整页有多暗」那一档），上端由它向 bg_top 提亮：
-	#   这样「底色的深度」只有一个旋钮（menu.bg），theme.palette 那边只管**色相**。
+	# ★ 下端就是 `menu.bg`（用户给的三层配色里「背景层 = #0B1016」），上端只向 bg_top
+	#   借 **25%** 的亮度：借太多就不是「背景层」，而是把面板色铺满整页了。
 	var base := ThemeRes.menu_bg()
-	var lit := ThemeRes.mix(base, ThemeRes.bg_top(), 0.45)
+	var lit := ThemeRes.mix(base, ThemeRes.bg_top(), 0.25)
 	g.set_color(0, lit)
 	g.set_color(1, base)
 	# ★ 中间插一个稍暗的停靠点：纯两点线性的渐变在 1080 高上会显得「上半太亮」，
@@ -102,13 +97,4 @@ func _draw() -> void:
 		var gh: float = size.y * GLOW_H_RATIO
 		draw_texture_rect(_glow,
 			Rect2(Vector2((size.x - gw) * 0.5, (size.y - gh) * 0.5), Vector2(gw, gh)), false)
-	# 3) 装饰细线：**只有顶部那一条**。
-	#   ⚠️ 底部那条删掉了（第一版画了两条）：入场页的「点击任意处」提示住在屏幕下方，
-	#      一条金线正好横穿那排字 —— 实测截图里两样东西叠在一起，像画坏了。
-	#      参考图也只有上边一条横线 + 下边一条**贴着内容宽度**的短线（那是页脚），
-	#      而本页的页脚位置被提示文字占了，所以这里只保留顶部那条做「画框」。
-	var line_col := ThemeRes.with_alpha(ThemeRes.line(), 0.55)
-	var x0: float = size.x * RULE_INSET
-	var x1: float = size.x * (1.0 - RULE_INSET)
-	draw_line(Vector2(x0, size.y * RULE_TOP_Y), Vector2(x1, size.y * RULE_TOP_Y),
-		line_col, RULE_W)
+	# ★ 没有装饰线：顶部那条金线按用户口径删掉了（见文件头）。

@@ -781,71 +781,45 @@ func _edge_power(depth: float, margin: float) -> float:
 	return tt * tt
 
 
-## 把「镜头看向的地面点」夹进**允许区间**（两条约束相与）：
+## 把「镜头看向的地面点」夹进**允许区间**：镜头中心可以到达**地图矩形内的任意一点**，
+## 包括四个角。
 ##
-##   ① **可见区域不越出「地图 + margin 格」**（margin = `render.camera_view_margin_tiles`，默认 5）：
-##      画面上能看到的地图**外**的部分，四个方向都不超过 margin 格；
-##   ② **镜头中心始终留在地图矩形内**（旧口径，保留为下限）。
+## ★★ 2026.10.20 用户口径：左右要能一直推到「地图的左 / 右边界落在屏幕正中间」。
+##   要做到这一点，就**不能**再限制「可见区域越出地图多少格」—— 边界停在屏幕中心时，
+##   画面另一半必然是地图外（fog），这是这条口径的**必然代价**，不是漏算。
+##   旧口径（可见区域越出 ≤ `render.camera_view_margin_tiles` 格 = 5）在最远视野下
+##   把中心限制在 x ∈ [8, 19]、y ∈ [4, 22]（27×22 的图），角根本到不了屏幕中心。
 ##
 ## ★ 为什么夹的是**看向的点**而不是相机位置：3D 里相机在斜上方，
 ##   它的 x/z 与「画面中心对着哪一格」差一个偏移；要保证「画面中心不跑出地图」，
 ##   夹的必须是后者。夹相机位置会让画面中心在贴边时偏出去半屏。
 ##
-## ★★ 为什么量一次可见区域就够（不需要迭代）：这台相机**只平移、不旋转**，距离由 `zoom` 定
-##   ⇒ 可见区域的**形状是固定的**，中心平移多少它就跟着平移多少。于是「当前的外扩量」与
-##   「夹取之后的外扩量」是同一个数，反推出来的区间一次就准。
-##   （`center_on_tile_precise` 那个牛顿迭代是另一件事：它要的是**对准某一格**。）
-##
-## ⚠️ ②不是多余的：拉近之后视野变小，①允许中心跑到地图**之外**去 ——
-##   例如 27×22 的图在最近视野下，① 给出 x ∈ [-0.7, 27.7]、y ∈ [-2.0, 23.8]，
-##   而「画面中心在图外」看起来就是地图被推到屏幕一侧。② 把它按回图内；
-##   那一档实际看到的地图外是 4.3 格（仍然 ≤ margin，① 照样成立）。
-##
-## ★ 区间**空了**（可见区域比地图还大 ⇒ 那个方向怎么放都会越界）：该方向**不平移**，
-##   把镜头钉在地图中心（见 `_clamp_axis`）—— 这是唯一不会「偏到一侧」的落点。
+## ★ 区间**空了**才不平移（地图比视野还小时 `clampf` 自己会退回边界值，不需要特判）。
 func clamp_look_point() -> void:
 	if world == null or palette == null or cam == null:
 		return
 	var cell: float = palette.cell_size()
 	var cols: float = float(world.map.cols)
 	var rows: float = float(world.map.rows)
-	# ★ 先量可见区域：它内部会 force_update_transform()，于是下面那次回读也是**本帧**的相机
-	var ext: Rect2 = visible_extent()
 	var lp: Vector2 = palette.world_to_logic(_ground_under_screen(_view_center()))
-
-	var lo := Vector2.ZERO                          # ② 的下界：地图左上角
-	var hi := Vector2(cols, rows)                   # ② 的上界：地图右下角
-	if ext.size.x > 0.0 and ext.size.y > 0.0:
-		var margin: float = maxf(0.0, cfg.num("render.camera_view_margin_tiles", 5.0))
-		lo.x = maxf(lo.x, -margin - ext.position.x)     # 左：可见区最左边 ≥ -margin
-		hi.x = minf(hi.x, cols + margin - ext.end.x)    # 右：可见区最右边 ≤ cols+margin
-		lo.y = maxf(lo.y, -margin - ext.position.y)
-		hi.y = minf(hi.y, rows + margin - ext.end.y)
-
-	var cx: float = _clamp_axis(lp.x, lo.x, hi.x, cols)
-	var cy: float = _clamp_axis(lp.y, lo.y, hi.y, rows)
+	var cx: float = clampf(lp.x, 0.0, cols)
+	var cy: float = clampf(lp.y, 0.0, rows)
 	if absf(cx - lp.x) < 1e-4 and absf(cy - lp.y) < 1e-4:
 		return                      # 没越界，别白摆一次相机（摆相机要重算投影）
 	_place_camera_looking_at(Vector3(cx * cell, 0.0, cy * cell))
 
 
-## 单轴夹取：区间里还有地方就普通夹取；**区间空了**（可见区域比地图还大）
-## 就把这一轴钉在地图中心 —— 那里既无法平移，也不会偏向任何一侧。
-func _clamp_axis(v: float, lo: float, hi: float, span: float) -> float:
-	if lo > hi:
-		return span * 0.5
-	return clampf(v, lo, hi)
-
-
 ## 当前**可见区域**相对「镜头看向的那一点」的外扩量（格）：
 ## 结果 = `Rect2(dx_min, dy_min, 宽, 高)` ⇒ 可见区域贴到的那一块 = 镜头中心 + 它。
+##
+## ★ 现在已经**不参与夹取**了（2026.10.20 口径：夹取只看「中心在不在图内」，
+##   见 `clamp_look_point` 的注释）。保留它是给测试 / 排查量「这一刻能看到多远」用。
 ##
 ## ★ 它是**视口四角**投到地面的结果（透视下可见地面是梯形，取它的包围盒）。
 ## ★ 全程走 `palette.to_logic()`（「换算只有一处」那条铁律）—— 这里绝不自算一份投影公式。
 ## ⚠️ 先 `force_update_transform()`：Godot 的节点变换是**惰性更新**的，不强制刷新就会读到
 ##    **上一帧**的相机（本文件 `center_on_tile_precise` 那段为这件事返工过一次）。
-## ⚠️ 四角**一个都没落到地面**（相机贴近地平线时才会）⇒ 返回退化矩形，
-##    调用方据此**不施加**①那条约束（只留②）。
+## ⚠️ 四角**一个都没落到地面**（相机贴近地平线时才会）⇒ 返回退化矩形。
 func visible_extent() -> Rect2:
 	if palette == null or cam == null:
 		return Rect2()

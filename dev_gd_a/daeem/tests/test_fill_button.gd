@@ -1,4 +1,4 @@
-## test_fill_button.gd —— ★★ 「按钮悬停：金色自下而上填充 + 渐出 + 启用常驻增亮」的用例
+## test_fill_button.gd —— ★★ 「按钮悬停：琥珀自下而上填充 + 渐出 + 启用常驻增亮」的用例
 extends "res://tests/test_case.gd"
 
 const FillButtonRes = preload("res://view/fill_button.gd")
@@ -64,7 +64,7 @@ func _test_fill_layer_is_behind_host() -> void:
 	eq(anim.get_parent(), b, "★ 填充层是宿主按钮的**子节点**（子节点才有自己的绘制期）")
 	ok(anim.show_behind_parent,
 		"★★ 填充层 `show_behind_parent` —— 画在宿主底纹 / 文字**之前**，"
-		+ "否则那片金会把底纹和文字一起糊掉（用户报的那个 bug）")
+		+ "否则那片琥珀会把底纹和文字一起糊掉（用户报的那个 bug）")
 	eq(b.draw.get_connections().size(), 0,
 		"★★ 宿主**没有**接 `draw` 信号（接那里 = 画在文字之后 = 旧的那条 bug）")
 	ok(b.has_meta("fill_draw"), "★ 仍然记着「这颗按钮挂了填充层」")
@@ -86,14 +86,14 @@ func _test_host_text_flip_ignores_container_position() -> void:
 	near(FillButtonRes.FillAnimator.coverage_of(b, b, 0.2), 0.4, 0.001,
 		"★★ 宿主那行字的覆盖度按**本地中心**算（不再受 `position.y` 影响）")
 	near(FillButtonRes.FillAnimator.coverage_of(b, b, 0.5), 1.0, 0.001,
-		"★ 金盖到字心时覆盖度 = 1.0")
+		"★ 琥珀盖到字心时覆盖度 = 1.0")
 
 	anim.set_fill(0.2)
 	eq(b.get_theme_color("font_color"), BASE_TEXT,
-		"★★ 金只填到 20% 时字仍是原色（不会「金还没扫到、字先变黑」）")
+		"★★ 蓝只填到 20% 时字仍是原色（不会「蓝还没扫到、字先变黑」）")
 	anim.set_fill(0.5)
 	ok(b.get_theme_color("font_color") != BASE_TEXT,
-		"★ 金盖过字心之后才翻到填充档（白 → 黑，与页签栏同一条口径）")
+		"★ 琥珀盖过字心之后才翻到填充档（白 → 黑，与页签栏同一条口径）")
 
 	b.position = Vector2.ZERO
 	near(FillButtonRes.FillAnimator.coverage_of(b, b, 0.5), 1.0, 0.001,
@@ -227,7 +227,7 @@ func _test_gradient() -> void:
 			ok(top != bottom,
 				"★ 两端颜色**不同**（顶 %s / 底 %s）" % [str(top), str(bottom)])
 			ok(bottom.get_luminance() > top.get_luminance(),
-				"★ 底下那一端更亮（金自下而上填进来，底边最实）")
+				"★ 底下那一端更亮（琥珀自下而上填进来，底边最实）")
 		ok(gt.fill_from.y > gt.fill_to.y,
 			"★ 渐变方向是**竖直**的（fill_from 在下、fill_to 在上）")
 
@@ -253,7 +253,7 @@ func _test_text_on_fill() -> void:
 
 	var fill := ThemeRes.fill_bottom()
 	var naked := _contrast(BASE_TEXT, fill)
-	ok(naked < 2.5, "（前提）暖白字直接压在那片金上读不出来（对比度 %.2f）" % naked)
+	ok(naked < 2.5, "（前提）暖白字直接压在那片琥珀上读不出来（对比度 %.2f）" % naked)
 
 	anim.set_fill(1.0)
 	var on_fill := b.get_theme_color("font_color")
@@ -286,13 +286,13 @@ func _test_text_on_fill() -> void:
 	var dark_a := ThemeRes.text_on_fill(false, ThemeRes.accent())
 	var dark_b := ThemeRes.text_on_fill(false, ThemeRes.text())
 	near(dark_a.get_luminance(), dark_b.get_luminance(), 0.01,
-		"★ 不同原色压完**一样深**（暗金键位字母 0x%s vs 暖白名字）"
+		"★ 不同原色压完**一样深**（琥珀键位字母 0x%s vs 暖白名字）"
 		% ThemeRes.accent().to_html(false))
 
 	var latched_fill := ThemeRes.fill_bottom_latched()
 	var latched_text := ThemeRes.text_on_fill(true, BASE_TEXT)
 	ok(_contrast(latched_text, latched_fill) >= 3.0,
-		"★★ 启用（更亮的金）那一档的字也够对比（%.2f）"
+		"★★ 启用（更亮的蓝）那一档的字也够对比（%.2f）"
 		% _contrast(latched_text, latched_fill))
 
 	var child := Label.new()
@@ -330,7 +330,7 @@ func _test_legible_across_animation() -> void:
 
 	anim.set_fill(1.0)
 	var full := _contrast(b.get_theme_color("font_color"), ThemeRes.fill_bottom())
-	ok(full >= 4.5, "★★ 满格时字与金有 %.2f:1（正文级）" % full)
+	ok(full >= 4.5, "★★ 满格时字与琥珀有 %.2f:1（正文级）" % full)
 
 	anim.set_fill(0.0)
 	eq(b.get_theme_color("font_color"), ThemeRes.text(),
@@ -346,7 +346,7 @@ func _test_disabled_fills_grey() -> void:
 	b.mouse_entered.emit()
 	_pump(anim, 40)
 	var gold: Color = anim.ramp_texture().gradient.sample(0.0)
-	ok(gold.r > gold.b, "（前提）可点的时候填的是**金**（R > B，0x%s）" % gold.to_html(false))
+	ok(gold.r > gold.b, "（前提）可点的时候填的是**琥珀金**（R > B，0x%s）" % gold.to_html(false))
 
 	b.mouse_exited.emit()
 	_pump(anim, 40)
@@ -357,7 +357,7 @@ func _test_disabled_fills_grey() -> void:
 		"★★ 禁用按钮也有悬停反馈（停上去照样填起来）")
 	var grey: Color = anim.ramp_texture().gradient.sample(0.0)
 	ok(absf(grey.r - grey.b) < 0.06,
-		"★★ 但填的是**灰**（R≈B，0x%s）—— 一眼看出不是「能点」的金" % grey.to_html(false))
+		"★★ 但填的是**灰**（R≈B，0x%s）—— 一眼看出不是「能点」的蓝" % grey.to_html(false))
 	ok(grey.r >= 0.25 and grey.r <= 0.65,
 		"★ 灰要够亮：与深色面板分得开（L=%.2f）" % grey.get_luminance())
 
@@ -462,12 +462,18 @@ func _test_fill_underlay_is_transparent() -> void:
 		ok(sb.bg_color.a <= 0.001,
 			"★★ %s 的底纹是**全透明**（实底会把填充盖住 → 看起来像「填充在文字上」）"
 			% tag)
-		ok(sb.border_color.r > sb.border_color.b, "★ %s 的描边仍是金色（R > B）" % tag)
+		# ★★ 三层配色之后：**状态边**（悬停 / 选中 / 启用）走琥珀强调色，
+		#   常态边是暗金细线 —— 两者同色系、但亮度差一大截，主行动才跳出来。
+		#   （有的档是从主题色再派生一档亮度，所以断言「明显带色相」而不是精确相等。）
+		var bc := sb.border_color
+		ok(absf(bc.r - bc.b) >= 0.04,
+			"★ %s 的描边仍有颜色（暗金 / 琥珀，不是被填充盖住的灰）x=0x%s"
+			% [tag, bc.to_html(false)])
 
 	ok(UiStyleRes.tab_normal().bg_color.a > 0.2,
 		"★ 没有填充层的那一档（tab_normal）仍要有底色")
 	ok(UiStyleRes.accent_button().bg_color.a > 0.9,
-		"★ accent_button（实心金那一档）仍是实底 —— 它给没挂填充的按钮用")
+		"★ accent_button（实心蓝那一档）仍是实底 —— 它给没挂填充的按钮用")
 
 func _test_prefer_light() -> void:
 	var b := _new_button()
@@ -491,7 +497,7 @@ func _test_prefer_light() -> void:
 		"★ 而且不会比填充档更暗")
 	anim.set_fill(1.0)
 	ok(b.get_theme_color("font_color") != BASE_TEXT,
-		"★ 满格时到填充档（金盖满，白字必须让位）")
+		"★ 满格时到填充档（琥珀盖满，白字必须让位）")
 
 	b.queue_free()
 
@@ -516,7 +522,7 @@ func _test_char_text() -> void:
 	eq(l0.get_theme_color("font_color"), BASE_TEXT, "★ 没填充时是原色")
 	anim.set_fill(1.0)
 	ok(l0.get_theme_color("font_color") != BASE_TEXT,
-		"★ 填满时变成填充档（金盖过之后才变）")
+		"★ 填满时变成填充档（琥珀盖过之后才变）")
 
 	anim.set_fill(0.5)
 	ok(absf(l0.get_theme_color("font_color").get_luminance()
@@ -554,7 +560,7 @@ func _test_available_off() -> void:
 
 	b.queue_free()
 
-## ★★ 宿主不可见时悬停作废 —— 修「点按钮进游戏、再返回主菜单，那片金还留着」。
+## ★★ 宿主不可见时悬停作废 —— 修「点按钮进游戏、再返回主菜单，那片琥珀还留着」。
 func _test_hide_clears_hover() -> void:
 	var b := _new_button()
 	var anim := FillButtonRes.attach_text(b)
@@ -564,7 +570,7 @@ func _test_hide_clears_hover() -> void:
 	# 宿主不可见 = 页面隐藏 / CanvasLayer 收起 → 悬停必须作废
 	b.visible = false
 	ok(not anim._hovered,
-		"★★ 宿主不可见时悬停作废（修「点按钮进游戏、返回主菜单后那片金还留着」）")
+		"★★ 宿主不可见时悬停作废（修「点按钮进游戏、返回主菜单后那片琥珀还留着」）")
 	b.visible = true
 	ok(not anim._hovered,
 		"★★ 重新可见**不会**自己恢复悬停（只有真实 mouse_entered 才会）")
@@ -590,7 +596,7 @@ func _test_clear_hover_in() -> void:
 ## 与 `clear_hover_in` 刻意分开：
 ##   · 悬停 = 「鼠标 / 手指还在上面」；
 ##   · 常驻 = 「这块面板现在被打开 / 被选中」。
-## 主界面点开面板时入口按钮要**锁住**（不然面板还开着金就退了），收起时才解除 ——
+## 主界面点开面板时入口按钮要**锁住**（不然面板还开着琥珀就退了），收起时才解除 ——
 ## 这里验「解除会递归生效」，而且解除之后目标是 0（下一次 `_process` 走反向渐出）。
 func _test_clear_latched_in() -> void:
 	var holder := Control.new()

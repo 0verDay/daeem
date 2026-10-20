@@ -101,9 +101,10 @@ func _test_structure_and_geometry() -> void:
 	if sb is StyleBoxFlat:
 		var flat := sb as StyleBoxFlat
 		ok(flat.bg_color.get_luminance() < 0.35,
-			"★ 面板是**暗底**（移植的是版式，配色留在本作暗金皮肤）")
-		ok(flat.border_color.r > flat.border_color.b, "★ 边框是金色（R > B）")
-		ok(flat.get_border_width(SIDE_LEFT) >= 1, "有金线描边")
+			"★ 面板是**暗底**（移植的是版式，配色留在本作暗蓝灰皮肤）")
+		ok(flat.border_color.r > flat.border_color.b,
+			"★ 边框是**暗金细线**（R > B）")
+		ok(flat.get_border_width(SIDE_LEFT) >= 1, "有 1px 细线描边")
 		ok(flat.shadow_size > 0, "面板带阴影（浮在遮罩上）")
 
 	# 两行字：主句 + 提示，且提示更暗。

@@ -66,9 +66,12 @@ func _wait_transition_ready(tr) -> void:
 		await process_frame
 
 func _test_theme_tokens() -> void:
+	# ★★ 2026.10.20 用户口径（三层配色 60/30/10）：
+	#   背景层深蓝黑 / 面板层蓝灰 / **强调层琥珀金**（只给主行动与当前选中）。
+	#   按钮 / 面板的描边是**暗金细线**（用户要求「还是需要金色描边」），但比 accent 暗。
 	var accent := ThemeRes.accent()
-	ok(accent.r > accent.g and accent.g > accent.b and accent.r > 0.5,
-		"★ 强调色是**金色**（R>G>B，实测 %.2f,%.2f,%.2f）—— 蓝（#1E98D7）已经退场"
+	ok(accent.r > accent.g and accent.g > accent.b and accent.r > 0.85,
+		"★ 强调色是**琥珀金**（R>G>B 且很亮，实测 %.2f,%.2f,%.2f）"
 		% [accent.r, accent.g, accent.b])
 
 	eq(UiStyleRes.accent(), accent, "★ 游戏内 HUD 的强调色 = 主题强调色（不是各写一份）")
@@ -77,25 +80,29 @@ func _test_theme_tokens() -> void:
 	var top := ThemeRes.bg_top()
 	var bottom := ThemeRes.bg_bottom()
 	ok(top.get_luminance() < 0.35 and bottom.get_luminance() < 0.35,
-		"★ 渐变底两端都是暗色（%.2f / %.2f）" % [top.get_luminance(), bottom.get_luminance()])
+		"★ 面板层的两档都是暗色（%.2f / %.2f）" % [top.get_luminance(), bottom.get_luminance()])
 	ok(top.get_luminance() > bottom.get_luminance(),
-		"★ 上端比下端亮（渐变是「上浅下深」，反了就成了倒过来的天光）")
+		"★ 上档比下档亮（面板层的「浮起 / 压底」两档）")
 
 	var ln := ThemeRes.line()
-	ok(ln.r > ln.b, "边框线是金色系（R > B）")
+	ok(ln.r > ln.b, "按钮 / 面板的描边是**暗金细线**（R > B）")
+	ok(ln.get_luminance() < accent.get_luminance(),
+		"★ 但描边比强调色暗（亮琥珀的预算留给「主行动 / 当前选中」）")
 	ok(ln.get_luminance() < ThemeRes.text().get_luminance(),
-		"★ 线比字暗（参考图里线只是「勾一个边」，抢了字的亮度就脏了）")
+		"★ 线比字暗（线只是「勾一个边」，抢了字的亮度就脏了）")
 
 	var hp_high := UiStyleRes.hp_high()
 	var hp_low := UiStyleRes.hp_low()
 	ok(hp_high.g > hp_high.r and hp_low.r > hp_low.g,
-		"★ 血量条仍是「绿 → 红」两档可分（全做成金色等于把「快死了」这条信息抹掉）")
-	ok(UiStyleRes.warn().r > UiStyleRes.warn().b, "警告色偏红（提示 / 拒绝用）")
+		"★ 血量条仍是「绿 → 红」两档可分（全做成一种颜色等于把「快死了」这条信息抹掉）")
+	ok(UiStyleRes.warn().r > UiStyleRes.warn().b, "危险色偏红（退出 / 删除 / 拒绝用）")
 
 	var panel := UiStyleRes.bg()
 	ok(panel.a > 0.5 and panel.a < 1.0,
 		"★ HUD 面板仍然半透明（alpha = %.2f）——做成 1.0 会把地图遮死" % panel.a)
-	eq(panel.r, ThemeRes.bg_top().r, "面板底色由主题的 bg_top 派生（不是另写一个深灰）")
+	# ★ 面板底 = 面板层上档（bg_top）原样 + alpha；断言与主题同值（不是另写一个深灰）。
+	near(panel.r, ThemeRes.bg_top().r, 0.001, "★ 面板底 = 面板层的 #1A2530（来自主题）")
+	ok(panel.b > panel.r, "★ 面板底是**蓝灰**（B > R，不是暖黑）")
 
 func _spawn_main() -> Node:
 	var packed = load("res://view/main.tscn")
@@ -223,8 +230,11 @@ func _test_page_switching() -> void:
 				var last: Color = grad.sample(1.0)
 				ok(first != last, "★ 渐变**两端不同色**（上 %.2f,%.2f,%.2f → 下 %.2f,%.2f,%.2f）"
 					% [first.r, first.g, first.b, last.r, last.g, last.b])
-				ok(first.r < 0.30 and first.g < 0.30 and first.b < 0.30,
-					"★ 底色是**暗色**（上端 %.2f,%.2f,%.2f）" % [first.r, first.g, first.b])
+				# ★ 判「暗」用**亮度**而不是逐通道上限：主色改成亮蓝之后，
+				#   蓝通道本来就比红/绿高一截（#1d4270 的 B=0.31），逐通道卡 0.30 会误杀。
+				ok(first.get_luminance() < 0.25,
+					"★ 底色是**暗色**（上端亮度 %.3f，三通道 %.2f,%.2f,%.2f）"
+					% [first.get_luminance(), first.r, first.g, first.b])
 				ok(first.get_luminance() > last.get_luminance(),
 					"★ 上端比下端亮（%.3f > %.3f）——渐变是「上浅下深」"
 					% [first.get_luminance(), last.get_luminance()])
@@ -542,18 +552,19 @@ func _test_entry_flow() -> void:
 		var flat: StyleBoxFlat = sb
 		ok(flat.bg_color.a < 0.25,
 			"★ 线框按钮是**透明底**（alpha %.2f）——暗底上实心浅底会是一块白斑" % flat.bg_color.a)
-		ok(flat.border_color.r > flat.border_color.b, "★ 边框是**金色**（R > B）")
+		ok(flat.border_color.r > flat.border_color.b,
+			"★ 边框是**暗金细线**（R > B）—— 不抢琥珀强调色的亮度")
 		ok(flat.get_border_width(SIDE_LEFT) >= 1 and flat.get_border_width(SIDE_LEFT) <= 2,
 			"★ 边框是**细线**（%d px）——参考图里没有粗线" % flat.get_border_width(SIDE_LEFT))
 	var hover_sb: StyleBox = (button as Control).get_theme_stylebox("hover")
 	if hover_sb is StyleBoxFlat:
 		ok((hover_sb as StyleBoxFlat).bg_color.a <= 0.001,
-			"★ 悬停底纹是**透明底**（那片金交给填充层，叠两层会把金压暗）")
+			"★ 悬停底纹是**透明底**（那片琥珀交给填充层，叠两层会把琥珀压暗）")
 		var hb := hover_sb as StyleBoxFlat
 		ok(hb.border_color.r > hb.border_color.b and hb.border_width_left >= 1,
-			"★ 但悬停时**线亮着**（鼠标在哪儿要看得出来）")
+			"★ 但悬停时**边亮成琥珀**（鼠标在哪儿要看得出来）")
 	ok((button as Control).has_meta(FillButtonRes.META),
-		"★ 而且按钮挂着「金色填充层」—— 悬停时金自下而上填进来")
+		"★ 而且按钮挂着「琥珀填充层」—— 悬停时琥珀自下而上填进来")
 
 	var test_rect: Rect2 = (button as Control).get_global_rect()
 	ok(test_rect.size.x > 1.0 and test_rect.size.y > 1.0, "test 按钮已经排过版（量得到尺寸）")
@@ -572,7 +583,7 @@ func _test_entry_flow() -> void:
 	if tr == null:
 		main.queue_free()
 		return
-	ok(tr.faction_card_count() == 2, "★ 第一关有两个可玩阵营 → 两张阵营卡")
+	ok(tr.faction_panel_count() == 2, "★ 第一关有两个可玩阵营 → 两块阵营面板")
 	tr.select_faction("F1")
 	await _wait_transition_ready(tr)
 	ok(tr.ready_to_enter(), "（前提）过渡画面加载完、阵营已选")

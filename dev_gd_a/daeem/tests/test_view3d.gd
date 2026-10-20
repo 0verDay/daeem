@@ -770,37 +770,46 @@ func _test_camera_aim(cfg) -> void:
 	ok(worst_place < 0.05,
 		"★ `_place_camera_looking_at` 把目标点摆到画面中心（最大误差 %.4f 格 < 0.05）" % worst_place)
 
-	# ② ★★ 相机夹取的口径：**可见区域不越出「地图 + margin 格」，且镜头中心留在图内**。
-	#    断言的是**性质**（越界量 ≤ margin）而不是某一档的具体区间 —— 区间随视口长宽比变，
-	#    写死数值会变成一碰就红的脆弱断言。
+	# ② ★★ 相机夹取的口径（2026.10.20 用户口径）：**镜头中心可以到达地图矩形内任意一点**，
+	#    包括四个角 —— 左右能一直推到「地图的左 / 右边界落在屏幕正中间」。
+	#    ★ 旧口径是「可见区域越出地图 ≤ margin 格」，最远视野下角根本到不了屏幕中心；
+	#      现在只夹「中心在不在图内」（见 game_scene3d.clamp_look_point）。
 	#    ★ 目标点里特意放一个地图外的 (-40,-40)：夹取必须把它拉回来。
-	var margin: float = cfg.num("render.camera_view_margin_tiles", 5.0)
-	var worst_out := -INF
 	var worst_in := -INF
+	var worst_reach := 0.0
 	for z: float in [Game3DRes.ZOOM_MIN, 0.2, Game3DRes.ZOOM_MAX]:
 		game.zoom = z
-		for t4: Vector2 in [Vector2(0.5, 0.5), Vector2(cols - 0.5, 0.5),
-				Vector2(0.5, rows - 0.5), Vector2(cols - 0.5, rows - 0.5),
+		for t4: Vector2 in [Vector2(0.0, 0.0), Vector2(cols, 0.0),
+				Vector2(0.0, rows), Vector2(cols, rows),
 				Vector2(cols * 0.5, rows * 0.5), Vector2(-40.0, -40.0)]:
 			game.center_on_tile_precise(t4)
 			game.cam.force_update_transform()
-			var ext: Rect2 = game.visible_extent()
 			var look: Vector2 = _aim_readback(game)
-			worst_out = maxf(worst_out, -look.x - ext.position.x)    # 越过左边界
-			worst_out = maxf(worst_out, look.x + ext.end.x - cols)   # 越过右边界
-			worst_out = maxf(worst_out, -look.y - ext.position.y)    # 越过上边界
-			worst_out = maxf(worst_out, look.y + ext.end.y - rows)   # 越过下边界
 			worst_in = maxf(worst_in, maxf(-look.x, look.x - cols))
 			worst_in = maxf(worst_in, maxf(-look.y, look.y - rows))
-	ok(worst_out <= margin + 0.05,
-		"★★ 可见区域越出地图最多 %.2f 格 ≤ margin %.1f（夹取生效）" % [worst_out, margin])
+			var want := Vector2(clampf(t4.x, 0.0, cols), clampf(t4.y, 0.0, rows))
+			worst_reach = maxf(worst_reach, want.distance_to(look))
 	ok(worst_in <= 0.05,
-		"★ 镜头中心始终留在地图矩形内（最大越界 %.2f 格）" % worst_in)
+		"★★ 镜头中心始终留在地图矩形内（最大越界 %.2f 格）" % worst_in)
+	ok(worst_reach < 0.05,
+		"★★ 四个角都能被对准（最大误差 %.3f 格）—— 旧口径最远视野下差 8 格" % worst_reach)
+	# ★ 用户口径的**直接**验证：最远视野下把中心推到地图左 / 右边界，边界必须落在屏幕正中。
+	game.zoom = Game3DRes.ZOOM_MAX
+	var vp_size: Vector2 = game.get_viewport().get_visible_rect().size
+	game.center_on_tile_precise(Vector2(0.0, rows * 0.5))
+	game.cam.force_update_transform()
+	var edge_left: Vector2 = game.palette.to_px(Vector2(0.0, rows * 0.5))
+	ok(absf(edge_left.x - vp_size.x * 0.5) < 2.0,
+		"★★ 地图左边界能停在屏幕正中（偏 %.1f px）" % (edge_left.x - vp_size.x * 0.5))
+	game.center_on_tile_precise(Vector2(cols, rows * 0.5))
+	game.cam.force_update_transform()
+	var edge_right: Vector2 = game.palette.to_px(Vector2(cols, rows * 0.5))
+	ok(absf(edge_right.x - vp_size.x * 0.5) < 2.0,
+		"★★ 地图右边界也能停在屏幕正中（偏 %.1f px）" % (edge_right.x - vp_size.x * 0.5))
 	game.zoom = Game3DRes.ZOOM_MAX
 
-	# ③ 两个「对准」入口都会**经过夹取** ⇒ 先在一档「夹取退化成旧口径」的视野下量**精度**：
-	#    ★ 最近视野下可见区域的半宽/半高都小于 margin ⇒ ①那条约束一格都用不上，
-	#      夹取只剩「中心留在地图矩形内」⇒ 六格全部可达。
+	# ③ 两个「对准」入口都会**经过夹取** ⇒ 先在最近视野下量**精度**：
+	#    ★ 目标都在地图内，夹取不会挪动它们（新口径下最远视野也一样可达）。
 	game.zoom = Game3DRes.ZOOM_MIN
 	var worst_precise := 0.0
 	for t: Vector2 in targets:

@@ -195,7 +195,7 @@ func _test_panel_layout() -> void:
 			ok(cm.mouse_filter == Control.MOUSE_FILTER_IGNORE,
 				"★ 战役菜单根节点不吃鼠标（否则点「返回」会被它吃掉）")
 
-	# 样式：卡片 / 面板是暗底金线（不是 nsoc 的白卡片）。
+	# 样式：卡片 / 面板是暗底 + 暗金细线（不是 nsoc 的白卡片）。
 	var card_sb: StyleBox = null
 	var track: Node = cm.carousel().get_child(0)
 	if track != null and track.get_child_count() > 0:
@@ -206,8 +206,9 @@ func _test_panel_layout() -> void:
 	if card_sb is StyleBoxFlat:
 		var cs := card_sb as StyleBoxFlat
 		ok(cs.bg_color.get_luminance() < 0.35,
-			"★ 卡片是**暗底**（移植的是版式，配色留在本作暗金皮肤）")
-		ok(cs.border_color.r > cs.border_color.b, "★ 卡片边框是金色（R > B）")
+			"★ 卡片是**暗底**（移植的是版式，配色留在本作暗蓝灰皮肤）")
+		ok(cs.border_color.r > cs.border_color.b,
+			"★ 卡片边框是**暗金细线**（R > B）")
 	ok(ThemeRes.bg_top().get_luminance() < 0.35, "主题底色仍然是暗的")
 	ok(MenuThemeRes.campaign_dot(true).bg_color != MenuThemeRes.campaign_dot(false).bg_color,
 		"★ 选中 / 未选中的关卡圆点是两种颜色")

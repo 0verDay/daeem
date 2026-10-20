@@ -69,6 +69,13 @@ const MENU_FONT_SIZE := 32
 ##   兜底值必须与 data/config.json 的 `menu.transition.enter_fade_*` 一致。
 const DEFAULT_ENTER_FADE_SEC := 0.35
 const DEFAULT_ENTER_FADE_IN_SEC := 0.40
+## ★★ **打开**过渡画面时的黑幕（用户口径：长按进入战役时，战役界面先渐隐、
+##   再让战役过渡画面渐显）：
+##   `open_fade_sec`    = 战役界面推成全黑的时长（此时过渡画面还没建）；
+##   `open_fade_in_sec` = 过渡画面建好之后，从全黑里淡出来（= 它渐显）的时长。
+##   兜底值必须与 data/config.json 的 `menu.transition.open_fade_*` 一致。
+const DEFAULT_OPEN_FADE_SEC := 0.22
+const DEFAULT_OPEN_FADE_IN_SEC := 0.34
 ## 黑屏层要盖在过渡画面（150）/ 退出确认（200）之上。
 const ENTER_FADE_LAYER := 300
 
@@ -90,6 +97,10 @@ var _quit_confirm = null
 var game: Node = null
 ## ★ 当前的战役过渡画面（没有则是 null；见 `_show_level_transition()`）。
 var _level_transition = null
+## ★★ 「正在把过渡画面推出来」的闸：`_show_level_transition()` 现在先淡黑再建页
+##    （约 0.2s），那段时间 `_level_transition` 还是 null —— 没有这个闸，玩家连点两下
+##   会长出两个过渡页（第二个把第一个盖住，收的时候只收掉一个）。
+var _transition_opening: bool = false
 
 ## ★★ 进入游戏时的黑屏转场（CanvasLayer + 全屏 ColorRect）。
 ##   它必须活在 main 上：过渡画面在转场中途就被收掉了，黑屏层不能跟着一起没。
@@ -304,9 +315,30 @@ func _on_campaign_level_chosen(campaign, level, faction: String) -> void:
 
 ## ★★ 单人关卡：先进过渡画面，再由玩家点「进入」才建世界。
 ## 合作关不走这里（`_on_level_entry_pressed` 里直接开局）。
+##
+## ★★ 打开时是一段**先隐后显**的转场（用户口径：长按战役进入时，战役界面渐隐，
+##   随后再让过渡画面渐显）：
+##     ① 先推黑幕（`open_fade_sec`，默认 0.22s）—— 战役界面连同撑开的面板一起渐隐；
+##     ② 在黑幕底下建过渡页（它自己的面板滑入同时开始，于是渐显那一段能看到滑入）；
+##     ③ 黑幕淡出（`open_fade_in_sec`，默认 0.34s）—— 过渡画面渐显。
+##   ★ 复用 `_enter_fade` 那套黑幕：露出一块全屏纯色，顺带把这两拍里的点击挡掉
+##     （否则玩家能在这 0.2s 里再点一次，长出第二个过渡页）。
+##   ★ 动效总开关关掉 / 时长为 0 ⇒ 两拍都跳过，行为与以前完全一样（同步建页）。
 func _show_level_transition(campaign, level) -> void:
+	if _transition_opening:
+		return
 	if _level_transition != null and is_instance_valid(_level_transition):
 		return
+	var fade_out: float = _open_fade_sec()
+	var fade_in: float = _open_fade_in_sec()
+	var use_fade: bool = ThemeRes.animations_enabled() and fade_out > 0.0
+	_transition_opening = true
+	if use_fade:
+		await _fade_to_black(fade_out)
+	if not is_instance_valid(self):
+		return
+	# ★ 建页放在「黑幕最黑」这一刻：玩家看到的是「战役界面没了 → 过渡画面从黑里出来」，
+	#   中间不会露出主菜单或清屏色。
 	_level_transition = LevelTransitionRes.new()
 	_level_transition.name = "LevelTransition"
 	add_child(_level_transition)
@@ -314,6 +346,12 @@ func _show_level_transition(campaign, level) -> void:
 	_level_transition.enter_requested.connect(
 		_on_level_transition_enter.bind(campaign, level))
 	_level_transition.cancelled.connect(_on_level_transition_cancelled)
+	_transition_opening = false
+	if use_fade and fade_in > 0.0:
+		await _fade_from_black(fade_in)
+	elif use_fade:
+		# 渐显时长配成 0：黑幕直接拆掉（不淡），页面立刻可见。
+		_clear_enter_fade()
 
 
 ## 过渡画面里点「进入」：先黑屏，再收画面 + 建世界，等游戏首帧就绪后才从黑里淡出。
@@ -428,6 +466,19 @@ func _enter_fade_color() -> Color:
 		return Color.BLACK
 	return ConfigRes.parse_color(
 		cfg.str_val("menu.transition.enter_fade_color", "#000000"), Color.BLACK)
+
+
+## 「把过渡画面推出来」的两拍时长（见 `_show_level_transition` 的说明）。
+func _open_fade_sec() -> float:
+	if cfg == null:
+		return DEFAULT_OPEN_FADE_SEC
+	return maxf(0.0, cfg.num("menu.transition.open_fade_sec", DEFAULT_OPEN_FADE_SEC))
+
+
+func _open_fade_in_sec() -> float:
+	if cfg == null:
+		return DEFAULT_OPEN_FADE_IN_SEC
+	return maxf(0.0, cfg.num("menu.transition.open_fade_in_sec", DEFAULT_OPEN_FADE_IN_SEC))
 
 
 ## 当前黑屏转场层（只给测试 / 排查用；没有则是 null）。

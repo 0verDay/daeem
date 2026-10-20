@@ -3,8 +3,10 @@
 ## 覆盖：
 ##   1. `logic/level_brief.gd`：标题 / 简报 / 可玩阵营 / 各自目标 / 目标区；
 ##   2. `view/map_preview.gd`：有地图、目标区高亮、大本营与出生点数量；
-##   3. `view/level_transition.gd`：两块面板 / 两张阵营卡 / 进度条 / 提示；
-##      未选不可进、点卡选中（金边）、点提示才发 enter_requested；
+##   3. `view/level_transition.gd`：三块面板（缩略图 / 描述 / 阵营行）/ 阵营面板 / 进度条 / 提示；
+##      **阵营选项是描述面板下方的独立面板（左右并排、边界与上面两块对齐）**；
+##      **所有面板都有滑入动效**（左从左边 / 描述从右边 / 阵营自下而上）；
+##      未选不可进、点面板选中（琥珀金边）、点提示才发 enter_requested；
 ##      单阵营自动选中；
 ##   4. main 接线：单人关先进过渡、选阵营后进入；Esc 取消回菜单；合作关直接开局。
 extends "res://tests/test_case.gd"
@@ -37,6 +39,7 @@ func _run() -> void:
 		_font = FontLoaderRes.load_font(_cfg)
 		_test_brief_data()
 		await _test_widget()
+		await _test_panel_slide()
 		await _test_bar_sequence()
 		await _test_main_flow()
 		await _test_coop_skips()
@@ -119,6 +122,8 @@ func _test_widget() -> void:
 	root.add_child(tr)
 	tr.setup(_cfg, _font, c, lv)
 	await _wait_ready(tr)
+	await _test_panel_layout(tr)
+	ok(not tr.panel_slide_active(), "★ 动效总开关关掉时不播滑入（面板直接在终点）")
 
 	# 缩略图：左面板里有地图、目标区高亮、大本营与出生点。
 	var pv = tr.preview()
@@ -137,8 +142,8 @@ func _test_widget() -> void:
 		eq(pv.zone_owner_color("GD1"), _cfg.side_color_neutral,
 			"★★ 未选阵营：盟友标识也是灰的（还不知道谁是我）")
 
-	# 右侧文本 + 两张阵营卡。
-	ok(tr.faction_card_count() == 2, "★ 多阵营时右边有两张阵营卡")
+	# 两块大面板 + 描述面板下方的阵营面板行。
+	ok(tr.faction_panel_count() == 2, "★ 多阵营时有两块阵营面板")
 	eq(tr.selected_faction(), "", "★ 默认不预选（必须自己选）")
 	eq(tr.hint_text(), "————请选择阵营————", "★ 未选时提示「请选择阵营」")
 	ok(tr.ready_to_enter(), "（前提）动效关掉时加载立即完成")
@@ -150,12 +155,12 @@ func _test_widget() -> void:
 	await _click_at(tr.hint_rect().get_center())
 	eq(entered.size(), 0, "★★ 没选阵营时点提示不会进入")
 
-	# 点第一张卡 → 选中 + 金边。
-	var card: Panel = tr.faction_card(0)
-	ok(card != null, "（前提）第一张卡在")
+	# 点第一块阵营面板 → 选中 + 琥珀金边。
+	var card: Panel = tr.faction_panel(0)
+	ok(card != null, "（前提）第一块阵营面板在")
 	if card != null:
 		await _click_at(card.get_global_rect().get_center())
-	eq(tr.selected_faction(), "F1", "★★ 点阵营卡选中了 F1")
+	eq(tr.selected_faction(), "F1", "★★ 点阵营面板选中了 F1")
 	ok(tr.hint_text().contains("蓝方"), "★ 提示变成「作为蓝方进入游戏」（%s）" % tr.hint_text())
 	# ★★ 选中后缩略图立刻切到 F1 视角：己方蓝 / 盟友黄 / 敌人红。
 	if pv != null:
@@ -166,7 +171,7 @@ func _test_widget() -> void:
 	if card != null:
 		var sb = card.get_theme_stylebox("panel")
 		if sb is StyleBoxFlat:
-			eq((sb as StyleBoxFlat).border_width_left, 2, "★ 选中的卡是加粗金边（2px）")
+			eq((sb as StyleBoxFlat).border_width_left, 2, "★ 选中的阵营面板是加粗琥珀金边（2px）")
 
 	# 点提示 → 发信号，带上选中的阵营。
 	await _click_at(tr.hint_rect().get_center())
@@ -176,13 +181,20 @@ func _test_widget() -> void:
 	tr.queue_free()
 	await process_frame
 
-	# 单阵营：自动选中，不需要卡。
+	# 单阵营：自动选中，不需要阵营面板。
 	lv.playable_override = ["F1"]
 	var tr2 = LevelTransitionRes.new()
 	root.add_child(tr2)
 	tr2.setup(_cfg, _font, c, lv)
 	await _wait_ready(tr2)
-	eq(tr2.faction_card_count(), 0, "★ 单阵营不出现阵营卡")
+	await process_frame
+	eq(tr2.faction_panel_count(), 0, "★ 单阵营不出现阵营面板")
+	ok(tr2.faction_row() == null, "★ 单阵营连阵营面板行都不建")
+	ok(tr2.info_panel() != null and tr2.map_panel() != null, "（前提）两块面板都在")
+	if tr2.info_panel() != null and tr2.map_panel() != null:
+		# ★ 没有阵营面板行时，描述面板仍然吃满整列（与左面板同高）。
+		near(tr2.info_panel().size.y, tr2.map_panel().size.y, 0.5,
+			"★ 单阵营：描述面板与缩略图等高（整列都是它的）")
 	eq(tr2.selected_faction(), "F1", "★ 单阵营自动选中 F1")
 	ok(tr2.hint_text().contains("蓝方"), "★ 提示直接是「作为蓝方进入游戏」")
 	eq(tr2.preview().view_faction, "F1", "★ 单阵营自动选中 ⇒ 缩略图直接按 F1 视角上色")
@@ -192,6 +204,132 @@ func _test_widget() -> void:
 	eq(entered2.size(), 1, "★ 单阵营点提示直接进入")
 	tr2.queue_free()
 	lv.playable_override = []
+	await process_frame
+	ThemeRes.set_animations_enabled(true)
+
+
+# ------------------------------------------------------------------
+# 版式：阵营选项是描述面板下方的两块独立面板
+# ------------------------------------------------------------------
+
+## ★★ 用户口径（本轮）：「将选择阵营的两个选项抽出作为单独的两个面板（目前按钮是附属
+##   在描述面板中）。这两个面板将放在描述面板下方，水平排列，边界要与其他面板对齐。」
+##   这里不看像素长相，只钉住**结构**：谁是谁的父节点、谁在谁下方、边对得上不对得上。
+func _test_panel_layout(tr) -> void:
+	# 排版是 deferred 的（首帧才量得到 root 尺寸），多等两帧再量。
+	await process_frame
+	await process_frame
+	var info_panel: Panel = tr.info_panel()
+	var map_panel: Panel = tr.map_panel()
+	var row: Control = tr.faction_row()
+	ok(info_panel != null and map_panel != null, "（前提）缩略图 / 描述两块面板都在")
+	ok(row != null, "★★ 多阵营时建了阵营面板行")
+	var p0: Panel = tr.faction_panel(0)
+	var p1: Panel = tr.faction_panel(1)
+	ok(p0 != null and p1 != null, "（前提）两块阵营面板都在")
+	if info_panel == null or map_panel == null or row == null or p0 == null or p1 == null:
+		return
+
+	var ir := info_panel.get_global_rect()
+	var mr := map_panel.get_global_rect()
+	var rr := row.get_global_rect()
+	var r0 := p0.get_global_rect()
+	var r1 := p1.get_global_rect()
+
+	# 1) 从描述面板里抽出来了。
+	ok(p0.get_parent() == row, "★★ 阵营面板挂在独立的面板行上")
+	ok(not info_panel.is_ancestor_of(row), "★★ 阵营行不再是描述面板的子节点")
+
+	# 2) 在描述面板下方、水平并排。
+	ok(r0.position.y >= ir.end.y - 0.5,
+		"★★ 阵营面板在描述面板下方（%.1f ≥ %.1f）" % [r0.position.y, ir.end.y])
+	near(r0.position.y - ir.end.y, tr.gap(), 0.5, "★ 与描述面板的竖向间距 = gap")
+	near(r0.position.y, r1.position.y, 0.5, "★★ 两块面板水平并排（同一个 y）")
+	near(r0.size.x, r1.size.x, 0.5, "★ 两块等宽（平分整行）")
+	near(r0.size.y, r1.size.y, 0.5, "★ 两块等高")
+	near(r1.position.x - r0.end.x, tr.gap(), 0.5, "★ 两块之间的间距 = gap")
+
+	# 3) 边界与上面两块面板逐边对齐。
+	near(rr.position.x, ir.position.x, 0.5, "★★ 行左边界 = 描述面板左边界")
+	near(rr.end.x, ir.end.x, 0.5, "★★ 行右边界 = 描述面板右边界")
+	near(r0.position.x, mr.end.x + tr.gap(), 0.5, "★ 左边界 = 缩略图右边 + gap（与描述面板同一条竖线）")
+	near(r1.end.x, ir.end.x, 0.5, "★★ 最后一块的右边界 = 描述面板右边界")
+	near(r1.end.x, tr._root.size.x - tr.margin(), 0.5, "★ 最右边离屏幕右边缘 = 外留白 margin")
+	near(r0.end.y, mr.end.y, 0.5, "★★ 底边 = 缩略图面板底边")
+	near(r1.end.y, mr.end.y, 0.5, "★★ 底边（第二块）同样齐平")
+
+	# 4) 描述面板：让出了一截高度，但仍然装得下自己的标题 + 简报（不许压字）。
+	ok(ir.size.y < mr.size.y - 1.0, "★★ 描述面板比缩略图矮（下方让给了阵营面板）")
+	ok(ir.size.y >= tr.desc_natural_height() - 0.5,
+		"★★ 描述面板高度 ≥ 内容自然高度（%.1f ≥ %.1f）"
+		% [ir.size.y, tr.desc_natural_height()])
+
+	# 5) 三块加起来正好铺满内容区（没有谁悬空、也没有谁超出）。
+	near(rr.position.y, ir.end.y + tr.gap(), 0.5, "★ 行顶 = 描述面板底 + gap")
+	near(rr.end.y, mr.end.y, 0.5, "★★ 行底 = 缩略图底（右下角严丝合缝）")
+
+
+# ------------------------------------------------------------------
+# 面板滑入：过渡界面的所有面板都有滑入动效
+# ------------------------------------------------------------------
+
+## ★★ 用户口径：所有面板**同时**滑入，并且阵营选项到位时**尺寸不许变**（不许上跳/变大）。
+##   断言：① 三块面板都从画面外起跑（同一帧 —— 没有错开）；
+##        ② 起跑时阵营面板的尺寸 = 落位后的尺寸（尺寸只在排版定稿时定一次）；
+##        ③ 跑完回到排版位置、完全不透明。
+func _test_panel_slide() -> void:
+	var c = CampaignRes.load_campaign(DEMO_DIR, _cfg)
+	var lv = c.level("01_beachhead") if c != null else null
+	if lv == null:
+		return
+	ThemeRes.set_animations_enabled(true)
+	var tr = LevelTransitionRes.new()
+	root.add_child(tr)
+	tr.setup(_cfg, _font, c, lv)
+	# 排版要**两遍**才定稿（首帧量到的简报高度不可信），所以滑入会比画面出现晚 1~2 帧。
+	var wait_start: int = Time.get_ticks_msec() + 3000
+	while Time.get_ticks_msec() < wait_start and not tr.panel_slide_started():
+		await process_frame
+	ok(tr.panel_slide_started(), "★★ 排版定稿之后开始播滑入")
+	# ★ 轮询到「正在跑」就立刻量：起跑点是 `_play_panel_slide()` 在**同一帧**写下的，
+	#   这里不能再多等一帧 —— 首帧加载慢的时候会拍到动画中段（实测 x 已经滑进来 200px）。
+	while Time.get_ticks_msec() < wait_start and not tr.panel_slide_active():
+		await process_frame
+	ok(tr.panel_slide_active(), "★★ 滑入正在跑")
+	var mp: Panel = tr.map_panel()
+	var ip: Panel = tr.info_panel()
+	var f0: Panel = tr.faction_panel(0)
+	if mp == null or ip == null or f0 == null:
+		ok(false, "（前提）三块面板都在")
+		return
+	var final_left_x: float = tr.margin()
+	var final_right_x: float = tr._root.size.x - tr.margin() - ip.size.x
+	ok(mp.position.x < final_left_x - 1.0,
+		"★★ 缩略图面板在最终位置**左侧**起跑（x=%.1f）" % mp.position.x)
+	ok(ip.position.x > final_right_x + 1.0,
+		"★★ 描述面板在最终位置**右侧**起跑（x=%.1f）" % ip.position.x)
+	ok(f0.position.y > 1.0, "★★ 阵营面板在行内位置**下方**起跑（y=%.1f）" % f0.position.y)
+	# ★ 三块同一帧都还是偏移的 = 同时起跑（没有一个在等前一个先走完）。
+	ok(mp.position.x < final_left_x and ip.position.x > final_right_x
+			and f0.position.y > 1.0,
+		"★★ 三块面板**同时**起跑（没有错开）")
+	var f0_size_before: Vector2 = f0.size
+
+	var deadline: int = Time.get_ticks_msec() + 5000
+	while Time.get_ticks_msec() < deadline and tr.panel_slide_active():
+		await process_frame
+	ok(not tr.panel_slide_active(), "★ 滑入会自己结束")
+	near(mp.position.x, tr.margin(), 0.5, "★★ 落位后缩略图面板贴回 margin")
+	near(ip.position.x + ip.size.x, tr._root.size.x - tr.margin(), 0.5,
+		"★★ 落位后描述面板右边界贴回屏幕右边")
+	near(f0.position.y, 0.0, 0.5, "★★ 落位后阵营面板回到行内位置")
+	near(f0.modulate.a, 1.0, 0.01, "★ 滑入同时淡入（结束时完全不透明）")
+	# ★★ 尺寸不变：起跑时与落位后必须一模一样（以前这里会突然长高 ~1/2，看着像向上吸附）。
+	near(f0.size.x, f0_size_before.x, 0.001,
+		"★★ 阵营面板宽度在滑入前后不变（%.1f）" % f0.size.x)
+	near(f0.size.y, f0_size_before.y, 0.001,
+		"★★ 阵营面板高度在滑入前后不变（%.1f）—— 不再「到位时上跳/变大」" % f0.size.y)
+	tr.queue_free()
 	await process_frame
 	ThemeRes.set_animations_enabled(true)
 
@@ -269,10 +407,18 @@ func _test_main_flow() -> void:
 	var main = await _spawn_main()
 	if main == null:
 		return
+	ThemeRes.set_animations_enabled(true)
 	main._on_level_entry_pressed("demo", "01_beachhead")
+	# ★★ 打开转场（用户口径：战役界面先渐隐，随后过渡画面再渐显）：
+	#    先出现一张全屏黑幕（推黑），过渡页在黑幕最黑时才建出来，最后黑幕淡出。
+	ok(main.enter_fade() != null, "★★ 打开过渡画面时先推黑幕（战役界面渐隐）")
 	await process_frame
 	var tr = await _wait_transition(main)
 	ok(tr != null, "★★ 单人关先挂出战役过渡画面")
+	# 过渡页刚建出来时黑幕还在（渐显用的就是它）—— 页面不是「啪」地出现的。
+	if tr != null and main.enter_fade() != null:
+		ok(main.enter_fade().modulate.a > 0.3,
+			"★★ 过渡画面是在黑幕底下建出来的（黑幕 alpha=%.2f）" % main.enter_fade().modulate.a)
 	eq(main.game, null, "★ 过渡画面阶段还没有建世界")
 	if tr == null:
 		main.queue_free()
@@ -281,6 +427,7 @@ func _test_main_flow() -> void:
 	ok(tr.select_faction("F2"), "选 F2")
 	await _wait_ready(tr)
 	ok(tr.ready_to_enter(), "（前提）过渡画面已经可以进入")
+	ok(main.enter_fade() == null, "★★ 渐显结束后黑幕被拆掉（过渡画面完全可见）")
 	await _click_at(tr.hint_rect().get_center())
 	# ★★ 用户口径：点「进入」先黑屏淡入，再建游戏，最后从黑里淡出。
 	var fade = main.enter_fade()

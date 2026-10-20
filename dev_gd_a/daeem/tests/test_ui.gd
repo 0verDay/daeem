@@ -3257,7 +3257,7 @@ func _test_enemy_selection(main) -> void:
 			ok(f0.border_color.r > f0.border_color.b and f0.border_width_left >= 1,
 				"★ 但**金线还在**（立在地图上看得见它是个框）")
 		ok(tab0.has_meta(FillButtonRes.META),
-			"★ 页签挂着「金色填充层」（悬停自下而上填金 / 当前页常驻满格）")
+			"★ 页签挂着「琥珀填充层」（悬停自下而上填琥珀 / 当前页常驻满格）")
 	ok(not tabs.is_active(0), "★ 空页签不算「当前页」（不高亮）")
 	eq(hud.command_card.entries().size(), 0,
 		"★★ 命令卡是**空的**（一颗格子内容都没有）—— 绝不能落到「操作」页")
