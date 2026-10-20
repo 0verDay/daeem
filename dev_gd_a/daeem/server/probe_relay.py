@@ -1,12 +1,12 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Local host/guest probes for the relay.
 
 Usage:
-  python probe_relay.py --role host  --url ws://127.0.0.1:8770/ws --room CAMP23
-  python probe_relay.py --role guest --url ws://127.0.0.1:8770/ws --room CAMP23
+  python probe_relay.py --role host  --url ws://127.0.0.1:8770/ws --room 123456
+  python probe_relay.py --role guest --url ws://127.0.0.1:8770/ws --room 123456
 
 The probes exercise the same envelope/room flow the game will use:
-hello -> create/join -> ready -> start -> cmd -> snap -> bye.
+hello -> create/join -> ready(guest) -> start -> cmd -> snap -> bye.
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ import time
 
 from relay_client import WSClient, WSClosed
 
-BUILD = "coop-m12.2"
+BUILD = "coop-m13.1"
 
 
 def make(t: str, seq: int, body: dict | None = None) -> dict:
@@ -46,17 +46,13 @@ def run_host(url: str, room: str) -> None:
     state = recv_until(c, "room_state")
     print(f"PROBE host room={state['body'].get('code')}", flush=True)
 
-    c.send_json(make("ready", 3))
-    recv_until(c, "room_state")
-    print("PROBE host ready", flush=True)
-
-    # Wait until the guest has also pressed ready.
+    # 2026.10.20：主机按钮本身就是「开始」，主机不需要准备；只等客机准备。
     state = c.recv_until(
         lambda m: m.get("t") == "room_state" and bool(m.get("body", {}).get("ready_guest")),
         15.0,
     )
     check(state)
-    print("PROBE host both-ready", flush=True)
+    print("PROBE host guest-ready", flush=True)
 
     c.send_json(make("start", 4, {
         "campaign": "demo",
@@ -109,7 +105,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--role", choices=["host", "guest"], required=True)
     parser.add_argument("--url", default="ws://127.0.0.1:8770/ws")
-    parser.add_argument("--room", default="CAMP23")
+    parser.add_argument("--room", default="123456")
     args = parser.parse_args()
     try:
         if args.role == "host":

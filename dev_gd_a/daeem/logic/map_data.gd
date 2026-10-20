@@ -2,7 +2,7 @@ extends RefCounted
 ##
 ## 载入地图 JSON（`data/maps/<id>/map.json`）+ 连通性修正（对应 HTML 版 js/map.js）。
 ##
-## 地形用字符串网格存（'grass' / 'forest' / 'mountain'），**不是** TileMapLayer 的属性。
+## 地形用字符串网格存（'grass' / 'forest' / 'mountain' / 'water'），**不是** TileMapLayer 的属性。
 ## 理由见 docs/pitfalls.md 2.2：换一张图集/改一个图块属性不该悄悄改变玩法。
 ## TileMapLayer 只负责“画”。
 ##
@@ -10,7 +10,8 @@ extends RefCounted
 ##   · exists  —— 这个地块**存不存在**。0 = 地图外（虚线格），一律不可通行。
 ##                地图编辑器（tools/map_editor）拖出来的非矩形地图就靠它表示形状；
 ##                手写的老地图里没有这个字段 → 默认**全部存在**（行为一字不变）。
-##   · terrain —— 存在的地块是什么地形（草地 / 森林 / 山地）。
+##   · terrain —— 存在的地块是什么地形（草地 / 森林 / 山地 / 水域）。
+##                水域与山地都**阻挡移动**，但只有山地**阻挡视线**（见 is_mountain）。
 ##   判定通行性的唯一入口是 terrain_walkable()：不存在 → 不可通行。
 ##
 ## 生成顺序（有讲究，别调换）：
@@ -23,6 +24,7 @@ extends RefCounted
 const TERRAIN_GRASS := "grass"
 const TERRAIN_FOREST := "forest"
 const TERRAIN_MOUNTAIN := "mountain"
+const TERRAIN_WATER := "water"
 
 ## ⚠️ 跨文件引用只用**自己文件里的 preload 常量**：命令行 `--script` 下全局 class_name
 ##    表不可用，写 `GridRes` / `Config` 作类型会直接 Parse Error（见 docs/pitfalls.md 第五节）。
@@ -30,11 +32,12 @@ const GridRes = preload("res://logic/grid.gd")
 const ConfigRes = preload("res://logic/config.gd")
 const FactionRes = preload("res://logic/faction.gd")
 
-## 图例：'.' 草地　'^' 森林　'#' 山地（'B' 兼容旧文件，本轮的图不用它）
+## 图例：'.' 草地　'^' 森林　'#' 山地　'~' 水域（'B' 兼容旧文件，本轮的图不用它）
 const LAYOUT_LEGEND := {
 	".": TERRAIN_GRASS,
 	"^": TERRAIN_FOREST,
 	"#": TERRAIN_MOUNTAIN,
+	"~": TERRAIN_WATER,
 	"B": TERRAIN_GRASS,
 }
 
@@ -549,6 +552,8 @@ func _read_units(v: Variant) -> Array[Dictionary]:
 ##
 ## ★ 不存在的格子（地图外）本来就走不了，也不该被改成山：
 ##   “不存在”与“山”是两件事，前者由 exists 管，后者由 terrain 管（见文件头）。
+## ★★ 水域**必须跳过**：它本来就不可通行，BFS 走不到它；如果这里把它改成山，
+##   就会顺手把“水不挡视线”改成“水挡视线”（见 is_mountain），是一个很安静的错。
 func _seal_unreachable() -> int:
 	var reachable := flood_fill_terrain(base)
 	var sealed := 0
@@ -556,7 +561,8 @@ func _seal_unreachable() -> int:
 		for x in cols:
 			if not tile_exists(x, y):
 				continue
-			if String(terrain.get_cell(x, y)) == TERRAIN_MOUNTAIN:
+			var t := String(terrain.get_cell(x, y))
+			if t == TERRAIN_MOUNTAIN or t == TERRAIN_WATER:
 				continue
 			if not reachable.has(terrain.idx(x, y)):
 				terrain.set_cell(x, y, TERRAIN_MOUNTAIN)
@@ -607,13 +613,16 @@ func tile_exists(x: int, y: int) -> bool:
 	return bool(exists.get_cell(x, y))
 
 
-## ★ 通行性的唯一入口：地图外的格子与山一样不可通行。
+## ★ 通行性的唯一入口：地图外的格子、山、水都不可通行。
+##   ⚠️ 水域与山地同为“挡路”，但**只有山地挡视线**（见 is_mountain）——
+##   不要在别处用“不可通行”来推断“挡视线”。
 func terrain_walkable(x: int, y: int) -> bool:
 	if not terrain.has(x, y):
 		return false
 	if not tile_exists(x, y):
 		return false
-	return String(terrain.get_cell(x, y)) != TERRAIN_MOUNTAIN
+	var t := String(terrain.get_cell(x, y))
+	return t != TERRAIN_MOUNTAIN and t != TERRAIN_WATER
 
 
 ## 移动消耗倍率：森林更「贵」（A* 的代价用）
@@ -653,17 +662,27 @@ var _forest_mask := PackedByteArray()
 ##   否则迷雾的视线还按旧地形算（改完之后连视野都是错的，而且**不报任何错**）。
 var _mountain_mask := PackedByteArray()
 
+## 水域掩码：1 = 水。
+##
+## ★ 与森林 / 山地同一条规矩：载入末尾建一次，手改 `terrain` 后必须重建。
+## ★ 它**不参与视线判定**（视线只看 `_mountain_mask`）；目前给渲染 / 诊断与
+##    `is_water()` 用，避免每帧再走字符串比较。
+var _water_mask := PackedByteArray()
+
 
 func rebuild_terrain_masks() -> void:
 	_forest_mask = PackedByteArray()
 	_forest_mask.resize(cols * rows)
 	_mountain_mask = PackedByteArray()
 	_mountain_mask.resize(cols * rows)
+	_water_mask = PackedByteArray()
+	_water_mask.resize(cols * rows)
 	var cells: Array = terrain.data
 	for i in cells.size():
 		var t := String(cells[i])
 		_forest_mask[i] = 1 if t == TERRAIN_FOREST else 0
 		_mountain_mask[i] = 1 if t == TERRAIN_MOUNTAIN else 0
+		_water_mask[i] = 1 if t == TERRAIN_WATER else 0
 
 
 func is_forest(x: int, y: int) -> bool:
@@ -679,6 +698,14 @@ func is_mountain(x: int, y: int) -> bool:
 	if x < 0 or y < 0 or x >= cols or y >= rows:
 		return false
 	return _mountain_mask[y * cols + x] != 0
+
+
+## 这一格是不是水（挡路但不挡视线；渲染 / 诊断用）。
+## ⚠️ 它**不是**通行性判据：通行性仍然只认 `terrain_walkable()`。
+func is_water(x: int, y: int) -> bool:
+	if x < 0 or y < 0 or x >= cols or y >= rows:
+		return false
+	return _water_mask[y * cols + x] != 0
 
 
 # ------------------------------------------------------------------

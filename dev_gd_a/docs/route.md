@@ -3615,7 +3615,7 @@ data/campaigns/<id>/
 | 字段 | 覆盖还是追加 |
 |---|---|
 | `players[].base` / `factions[].base` | **覆盖**地图的 `faction_bases[那一方]` |
-| `zones[].owner` | **覆盖**地图 `zone_list[].owner` 的开局归属 |
+| `zones[].owner` | ★★ **关卡显式写全每一块地**（战役编辑器不再有「用地图的」）：campaign 关卡里 `owner` = 阵营 id 或 `""`（无主）。旧数据缺的区划载入时按地图 `zone_list[].owner` 补齐（已有显式值保留）。 |
 | `allies` | 写了就用关卡的；**一个字都没写**才用地图的 |
 | `start_units` / `start_buildings` | **追加**在地图的 `units` / `buildings` 之后（⚠️ 地图的 `units` 已废弃 ⇒ `start_units` 实际上就是**唯一**的一份；`buildings` 照旧追加在地图的 `buildings` 之后） |
 | `factions[].ai` / `resource_mult` / `start_*` / `attack_target` / `faction_ai` / `general_ai` | 关卡显式写了就用关卡的；没写照旧吃 `config.json` |
@@ -4613,12 +4613,13 @@ RichTextLabel，宽度 0 时它按「逐字换行」报一个天文数字。于�
 | 层 | 落点 |
 |---|---|
 | 游戏登记 | `logic/config.gd` 的 `register_faction_color()` / `_faction_color_override`（查找顺序：**先登记的、后配色表**）；`world._register_level_colors()` 在 `reset()` 里按数据登记 |
-| 数据来源 | 载入关卡时把颜色抄进 `level.faction_colors`（先 `campaign.json`、后关卡 `factions[]`，关卡优先）—— 运行时不回头问 `Campaign` 对象（那是 37.10 那个引用环） |
+| 数据来源 | 载入关卡时把颜色抄进 `level.faction_colors`（**新格式只有关卡 `factions[]`**；旧格式 `campaign.json` 的 `factions[]` 只作兜底，关卡优先）—— 运行时不回头问 `Campaign` 对象（那是 37.10 那个引用环） |
 | 兜底 | 还没颜色的阵营按**内置配色顺序**（p1/p2/…）补一个，并 `push_warning` 留痕迹 |
 | 编辑器 | `campaign_editor` 新增警告 `faction_no_color`（自定义 id 在哪一层都没写 color ⇒ 导出前就提示） |
 
-★ 样例数据现在两处都写了颜色：`campaign.json` 的 `factions[].color`（F1 `#5AC8FF` 青蓝 /
-F2 `#FFD166` 金 / E1 `#FF6B6B` 红）+ 关卡 `factions[].color`（关卡可以给**这一关**换色）。
+★ 样例数据的颜色现在只写在**关卡**里：`levels/*.json` 的 `factions[].color`
+（F1 `#5AC8FF` 青蓝 / F2 `#FFD166` 金 / GD1 `#C9A0FF` 紫）。旧格式 `campaign.json` 的
+`factions[].color` 仍能读（载入时抄进关卡），但新数据不再写那一份。
 断言在 `tests/test_campaign_ai.gd` 的 `_group_faction_colors`（13 项）：
 登记生效 / 写错要兜底不能变黑 / 内置 id 不受影响 / **老路径一个颜色都不登记**。
 踩坑细节见 [`pitfalls.md`](pitfalls.md) 8.1（含 `Color.to_html()` 不带 `#` 那个二次坑）。
@@ -4984,7 +4985,8 @@ F2 `#FFD166` 金 / E1 `#FF6B6B` 红）+ 关卡 `factions[].color`（关卡可以
 * **战役编辑器**：重做为**七个页签**（战役 / 关卡 / 阵营与AI / 摆放 / 区划 / 红点 / 校验与导出）。
   - 摆放页：画笔三档（将领 / 单位 / 建筑）；**建筑所见即所得**（城墙=线、箭塔=圆、大本营=方块）；
     **去掉「附属兵」画笔**；选中将领 → 侧栏出现「附属单位规格」编辑器。
-  - **区划页**（新）：开局每一块地归哪方（覆盖 `zone_list[].owner`；「用地图的」与「清空=无主」是两件事）。
+  - **区划页**（新）：开局每一块地归哪方。★ 每块地都显式写 `zones[].owner`（阵营 id 或空串 = 无主）；
+    **没有「（用地图的）」**（地图编辑器不编辑区块归属，地图 owner 只在新建 / 换图 / 旧数据迁移时初始化一次）。
   - **红点页**（新，独立页签）：画布上选生成地块 + 两个表达式 + 将领类型权重 + 共享附属单位规格。
   - 校验新增 8 条 code；**旧 `escort_of` 模型仍读得进、校验得了**（老数据不炸）。
 * **单位编辑器**：恢复入口 + 「将领」页新增**编制上限**（`unit.general.caps[i]`）。~~弃用~~ → 按用户更正：**继续维护**。

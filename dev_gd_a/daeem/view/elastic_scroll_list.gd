@@ -46,6 +46,11 @@ var _is_scrolling: bool = false
 var _press_y: float = 0.0
 var _start_offset: float = 0.0
 var _settle_tween: Tween = null
+var _touch_index: int = -1
+var _built: bool = false
+## 内容没超出视口时是否也允许拖动（默认关：普通长列表不该抢下层点击）。
+## 合作大厅的房间列表会打开它：**没有房间时也能拉一下**，用来验证橡皮筋手感。
+var _allow_empty_drag: bool = false
 
 ## 手感参数（`_ready()` 时从 config.json 读一次，之后只读）。
 var _resistance: float = DEFAULT_RESISTANCE
@@ -58,6 +63,16 @@ func _ready() -> void:
 	clip_contents = true                              # 「滚动」的本质就是裁掉溢出部分
 	mouse_filter = Control.MOUSE_FILTER_STOP          # 接住滚轮（拖动那条走全局 _input）
 	_load_tunables()
+	_ensure_content()
+	_schedule_layout()
+
+
+## 内容层可能被调用方在 `_ready()` 之前就要用（合作大厅在面板进树之前就建列表）。
+## 这里做成幂等，谁先来都能拿到同一个 VBox。
+func _ensure_content() -> void:
+	if _built:
+		return
+	_built = true
 
 	_content = Control.new()
 	_content.name = "_content"
@@ -67,6 +82,7 @@ func _ready() -> void:
 	_vbox = VBoxContainer.new()
 	_vbox.name = "_vbox"
 	_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_vbox.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_vbox.add_theme_constant_override("separation", DEFAULT_ITEM_SEPARATION)
 	_content.add_child(_vbox)
 
@@ -93,6 +109,7 @@ func _load_tunables() -> void:
 
 ## 返回内部 VBoxContainer：调用方往它里面 `add_child()` 添加列表项。
 func get_content_box() -> VBoxContainer:
+	_ensure_content()
 	return _vbox
 
 
@@ -100,6 +117,19 @@ func get_content_box() -> VBoxContainer:
 func set_item_separation(px: int) -> void:
 	if _vbox != null:
 		_vbox.add_theme_constant_override("separation", px)
+
+
+## 内容不超过一屏时是否仍允许拖动（合作大厅的空房间列表要用）。
+func set_allow_empty_drag(on: bool) -> void:
+	_allow_empty_drag = on
+
+
+func allow_empty_drag() -> bool:
+	return _allow_empty_drag
+
+
+func _can_drag() -> bool:
+	return max_scroll() > 0.0 or _allow_empty_drag
 
 
 ## 当前逻辑偏移（**可越界**：负 = 顶部过拉）。
@@ -257,6 +287,41 @@ func _input(event: InputEvent) -> void:
 	if not is_visible_in_tree():
 		return
 
+	# 触摸拖动：与鼠标走同一套阈值 / 越界阻尼，只是事件类型不同。
+	if event is InputEventScreenTouch:
+		var st := event as InputEventScreenTouch
+		if st.pressed:
+			if get_global_rect().has_point(st.position) and _can_drag():
+				_touch_index = st.index
+				_pressing = true
+				_is_scrolling = false
+				_press_y = st.position.y
+				_start_offset = _logical_offset
+				_kill_settle_tween()
+		elif _pressing and st.index == _touch_index:
+			if _is_scrolling:
+				_settle_to_clamped()
+				get_viewport().set_input_as_handled()
+			_remove_drag_overlay()
+			_pressing = false
+			_is_scrolling = false
+			_touch_index = -1
+		return
+
+	if event is InputEventScreenDrag:
+		var sd := event as InputEventScreenDrag
+		if not _pressing or sd.index != _touch_index:
+			return
+		var dy_t := sd.position.y - _press_y
+		if not _is_scrolling and absf(dy_t) >= _drag_min_px:
+			_is_scrolling = true
+			_attach_drag_overlay()
+		if _is_scrolling:
+			_logical_offset = _start_offset - dy_t
+			_apply_offset()
+			get_viewport().set_input_as_handled()
+		return
+
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
 
@@ -272,8 +337,9 @@ func _input(event: InputEvent) -> void:
 
 		if mb.button_index == MOUSE_BUTTON_LEFT:
 			if mb.pressed:
-				# 内容没超出视口时**不接管左键**：否则拖一下列表会把下层的地图框选吃掉。
-				if get_global_rect().has_point(mb.global_position) and max_scroll() > 0.0:
+				# 内容没超出视口时**默认不接管左键**：否则拖一下列表会把下层的地图框选吃掉。
+				# 大厅房间列表显式打开 `_allow_empty_drag`，空列表也能拖。
+				if get_global_rect().has_point(mb.global_position) and _can_drag():
 					_pressing = true
 					_is_scrolling = false
 					_press_y = mb.global_position.y

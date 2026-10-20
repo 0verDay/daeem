@@ -12,6 +12,8 @@ const ProtocolRes = preload("res://net/protocol.gd")
 
 signal connected
 signal room_state_changed(state: Dictionary)
+## 房主选好地图之后发给客机；客机收到后刷新房间面板。
+signal room_config_changed(config: Dictionary)
 signal guest_started(payload: Dictionary, transport)
 signal error(code: String, msg: String)
 signal closed(reason: String)
@@ -63,8 +65,28 @@ func join_room(code: String, name: String = "guest") -> void:
 	_send("join_room", {"code": code.strip_edges().to_upper(), "name": name})
 
 
-func ready() -> void:
-	_send("ready", {})
+func ready(value: bool = true) -> void:
+	_send(ProtocolRes.T_READY, {"ready": bool(value)})
+
+
+## 房主把「这一局用哪张合作地图」发给客机。
+## ★ 中继不解析 body，原样转发；客机只读。
+func send_room_config(config: Dictionary) -> void:
+	_send(ProtocolRes.T_ROOM_CFG, config.duplicate(true))
+
+
+## 退出房间：先发 bye 让中继清理，再关掉 transport（房主退出 = 解散房间）。
+func leave_room() -> void:
+	if transport == null:
+		room = {}
+		my_role = ""
+		return
+	_send(ProtocolRes.T_BYE, {"reason": "left"})
+	var t = take_transport()
+	if t != null:
+		t.close()
+	room = {}
+	my_role = ""
 
 
 func room_code() -> String:
@@ -72,7 +94,12 @@ func room_code() -> String:
 
 
 func is_ready() -> bool:
-	return bool(room.get("ready_host", false)) and bool(room.get("ready_guest", false))
+	# 兼容旧调用：现在「开始」只要求客机准备好（主机按钮本身就是开始）。
+	return bool(room.get("ready_guest", false))
+
+
+func is_guest_ready() -> bool:
+	return bool(room.get("ready_guest", false))
 
 
 func has_guest() -> bool:
@@ -131,6 +158,8 @@ func _on_message(text: String) -> void:
 		"room_state":
 			room = body.duplicate(true)
 			room_state_changed.emit(room)
+		"room_cfg":
+			room_config_changed.emit(body.duplicate(true))
 		"start":
 			# Guest: the host is starting; hand the live transport to the game scene.
 			var t2 = take_transport()

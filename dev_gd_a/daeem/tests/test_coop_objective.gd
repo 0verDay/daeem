@@ -57,38 +57,52 @@ func _test_panel_data(cfg) -> void:
 	panel.setup(cfg, w, FontLoaderRes.load_font(cfg))
 	await process_frame
 
-	ok(panel.visible, "★ 有目标时目标条显示")
+	ok(panel.visible, "★ 有目标时目标栏显示")
 	v2_near(panel.position, UiLayoutRes.OBJECTIVE_RECT.position, 1.0,
-		"目标条在 (780,16)（顶部居中）")
-	v2_near(panel.size, UiLayoutRes.OBJECTIVE_RECT.size, 1.0,
-		"目标条尺寸 = 360×74")
-	ok(panel.title_text().contains("守住"), "标题写「守住 …」")
-	ok(panel.title_text().contains("c1"), "标题带区划名 c1")
-	ok(panel.progress_text().contains("已守"), "开局进度写「已守 …」")
+		"目标栏在左上角 (20,16)")
+	ok(panel.size.x >= UiLayoutRes.OBJECTIVE_RECT.size.x - 1.0,
+		"目标栏宽度至少 560（实际 %s）" % str(panel.size))
+	eq(panel.title_text(), "※坚守", "★ 第一行是「※」+ 目标简称「坚守」")
+	ok(panel.desc_text().contains("守住"), "第二行写「守住 …」")
+	ok(panel.desc_text().contains("c1"), "第二行带区划名 c1")
+	ok(panel.desc_text().begins_with("- "), "第二行以「- 」开头")
+	ok(panel.desc_text().contains("已守"), "开局描述里带「已守 …」进度")
 	near(panel.progress_ratio(), 0.0, 0.001, "开局进度 0")
-	ok(panel.state_text() == "", "进行中不显示右侧状态字")
+	ok(panel.state_text() == "", "进行中不显示状态字")
+
+	# ★ 简称 / 描述可被关卡数据覆盖（objectives[].short / desc）
+	w.level.objectives[0]["short"] = "死守"
+	panel.sync()
+	eq(panel.title_text(), "※死守", "★ objectives[].short 覆盖目标简称")
+	w.level.objectives[0].erase("short")
+	w.level.objectives[0]["desc"] = "剩余 {held}/{sec} 秒（{zone}）"
+	panel.sync()
+	eq(panel.desc_text(), "- 剩余 0/120 秒（c1）", "★ 自由描述 + 占位符替换")
+	w.level.objectives[0].erase("desc")
+	panel.sync()
 
 	w.objective_state["held"] = 60.0
 	panel.sync()
 	near(panel.progress_ratio(), 0.5, 0.001, "★ 守到 60/120 秒时进度 = 0.5")
-	ok(panel.progress_text().contains("60"), "进度文字跟着走到 60")
+	ok(panel.desc_text().contains("60"), "描述里的进度跟着走到 60")
 
 	w.objective_state["held"] = 120.0
 	w.objective_state["state"] = ObjectiveRes.STATE_WON
 	panel.sync()
 	eq(panel.state_text(), "本关守住！", "★ 胜利状态字")
 	near(panel.progress_ratio(), 1.0, 0.001, "胜利时进度满")
+	ok(panel.desc_text().contains("本关守住"), "★ 胜利后描述里写「本关守住」")
 
 	w.objective_state["state"] = ObjectiveRes.STATE_LOST
 	w.objective_state["reason"] = ObjectiveRes.R_OBJECTIVE_LOST
 	panel.sync()
-	ok(panel.progress_text().contains("目标区划失守"),
-		"★ 失败时写原因「目标区划失守」")
+	ok(panel.desc_text().contains("目标区划失守"),
+		"★ 失败时描述里写原因「目标区划失守」")
 	ok(panel.state_text().contains("失守"), "★ 失败状态字")
 
-	panel.queue_redraw()
+	panel.sync()
 	await process_frame
-	ok(panel.draw_count > 0, "★ 目标条真的画过一帧（不需要截图）")
+	ok(panel.refresh_count > 0, "★ 目标栏真的刷新过（不需要截图）")
 
 	# 没有目标（自由对战 / 老路径）→ 整块隐藏
 	w.objective_state = {}
@@ -101,7 +115,7 @@ func _test_panel_data(cfg) -> void:
 ## ★★ 回归（用户报的 bug）：main_test（`demo` 的 `mt`）选 **F2** 时，目标条一进关就写「已占领」。
 ##
 ## 那一关 F2 的目标是「占领囊关东门」（c8），而 c8 开局归 `sj`（F1 的盟友）。
-## 修好之后：标题仍是「占领 …」，但进度写「等待占领」、右侧没有状态字、进度条是 0。
+## 修好之后：第一行仍是「※攻占」，但进度写「等待占领」、右侧没有状态字、进度是 0。
 func _test_mt_capture_pending(cfg) -> void:
 	var camp = CampaignRes.load_campaign(DEMO_DIR, cfg)
 	var lv = camp.level("mt") if camp != null else null
@@ -118,10 +132,12 @@ func _test_mt_capture_pending(cfg) -> void:
 	panel.setup(cfg, w, FontLoaderRes.load_font(cfg))
 	await process_frame
 
-	ok(panel.visible, "★ 选 F2 进 mt：目标条显示")
-	ok(panel.title_text().contains("占领"), "标题是「占领 …」")
-	ok(panel.title_text().contains("囊关东门"), "标题带区划名（囊关东门）")
+	ok(panel.visible, "★ 选 F2 进 mt：目标栏显示")
+	eq(panel.title_text(), "※攻占", "第一行是「※攻占」")
+	ok(panel.desc_text().contains("占领"), "描述是「占领 …」")
+	ok(panel.desc_text().contains("囊关东门"), "描述带区划名（囊关东门）")
 	eq(panel.progress_text(), "等待占领", "★★ 开局写「等待占领」（原 bug：这里写「已占领」）")
+	ok(panel.desc_text().contains("等待占领"), "★★ 描述里是「等待占领」")
 	eq(panel.state_text(), "", "★★ 开局没有「已占领」状态字（原 bug 的症状）")
 	near(panel.progress_ratio(), 0.0, 0.001, "开局进度 0（不是满条）")
 	panel.queue_free()
@@ -147,8 +163,9 @@ func _test_hud_wiring(cfg) -> void:
 	var panel = game.hud.objective_panel
 	ok(panel != null, "★ HUD 里挂了目标条")
 	if panel != null:
-		ok(panel.visible, "★ 进合作关之后目标条显示")
-		ok(panel.title_text().contains("守住"), "HUD 里的标题是「守住 …」")
+		ok(panel.visible, "★ 进合作关之后目标栏显示")
+		eq(panel.title_text(), "※坚守", "HUD 里的第一行是「※坚守」")
+		ok(panel.desc_text().contains("守住"), "HUD 里的描述是「守住 …」")
 		ok(game.hud.get_node_or_null("HudRoot/ObjectivePanel") != null,
 			"节点树里有 HudRoot/ObjectivePanel")
 	main_node.queue_free()

@@ -2898,14 +2898,15 @@ colors.faction.<id>.<field>  →  colors.faction.player.<field>  →  Color.MAGE
 1. **游戏侧登记**：`world._register_level_colors()` 按关卡 / 战役数据里的
    `factions[].color` 调 `cfg.register_faction_color()`；`faction_color()` 的查找顺序
    变成「**先看登记的，再看配色表**」（登记必须在表之前，否则战役想覆盖内置 id 的颜色会被压住）。
-   ★ 数据在**载入关卡时**就抄进 `level.faction_colors`（先战役、后关卡，关卡优先）——
+   ★ 数据在**载入关卡时**就抄进 `level.faction_colors`（新格式只有关卡 `factions[]`；
+   旧格式 `campaign.json` 的那一份只作兜底、关卡优先）——
    运行时不回头去问 `Campaign` 对象，那会重新踩上 7.10 的引用环。
-2. **数据侧写颜色**：`campaign.json` 与关卡 `factions[]` 里都要有 `color`
-   （样例：F1 `#5AC8FF` 青蓝、E1 `#e05a5a` 红）。
+2. **数据侧写颜色**：关卡 `factions[]` 里每方都要有 `color`（新格式；旧格式
+   `campaign.json` 的那一份只作兜底）—— 样例：F1 `#5AC8FF` 青蓝、F2 `#E05A5A` 红。
 3. **兜底 + 痕迹**：还是没颜色的阵营（老数据 / 漏写）按**内置配色顺序**（p1/p2/…）
    补一个**并 `push_warning`** —— 宁可颜色不是设计者想要的那个，也不要整场一片紫。
 4. **编辑器拦住它**：`campaign_editor` 新增警告 `faction_no_color`
-   （自定义 id 在战役层与关卡层都没写 color ⇒ 导出时就提示）。
+   （自定义 id 在**本关** `factions[]` 里没写 color ⇒ 导出时就提示）。
    ★ 这条**本该早就在**：作者在编辑器里配了阵营，导出前就该被告知「少一个字段会让整场变紫」。
 
 **判据**（都已进断言）：
@@ -3133,7 +3134,8 @@ ok("p1" not in ... , "内置 id 不写 color 也不该被警告")
 - **校验层**：`level._ck_allies()` 第 8 条与它的「额外失败条件」那一条（8b）也是同方口径
   （`same_side_for_attack`）；编辑器侧 `model._ck_sides()` 用 `allies` 建出来的连通分量判。
 - **数据**：样例战役第一关把 c1（区划 4）划给了与蓝方结盟的渡口守军 `GD1`
-  （地图 `zone_list[].owner` + 关卡 `zones[]` 覆盖各一处），目标仍是「蓝方（F1）守住 c1 150 秒」。
+  （关卡 `zones[]` 显式写 `owner: "GD1"`；地图的 `zone_list[].owner` 只在载入迁移时当初始化来源），
+  目标仍是「蓝方（F1）守住 c1 150 秒」。
 - ★ 注意这与 `capture_zone` 是**相反**的要求：攻占类要求区划开局**不归**自己（含盟友），
   否则一进关就判胜 —— 两边的判据都在同一个函数里，改一处要看另一处。
 

@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Zero-dependency relay tests: handshake, rooms, forwarding, RFC6455 edges."""
 from __future__ import annotations
 
@@ -58,7 +58,7 @@ class RelayTests(unittest.TestCase):
         return WSClient("127.0.0.1", self.port)
 
     def hello(self, c: WSClient, name: str = "tester") -> None:
-        c.send_json(make("hello", 1, {"build": "coop-m12.2", "name": name}))
+        c.send_json(make("hello", 1, {"build": "coop-m13.1", "name": name}))
         msg = c.recv_json()
         self.assertEqual(msg.get("t"), "hello")
 
@@ -76,19 +76,18 @@ class RelayTests(unittest.TestCase):
         self.hello(host, "host")
         self.hello(guest, "guest")
 
-        host.send_json(make("create_room", 2, {"code": "FRWD23", "name": "host"}))
+        host.send_json(make("create_room", 2, {"code": "123456", "name": "host"}))
         self.assertEqual(host.recv_json().get("t"), "room_state")
-        guest.send_json(make("join_room", 2, {"code": "FRWD23", "name": "guest"}))
+        guest.send_json(make("join_room", 2, {"code": "123456", "name": "guest"}))
         state = guest.recv_json()
         self.assertEqual(state.get("t"), "room_state")
         self.assertTrue(state["body"].get("host"))
         self.assertTrue(state["body"].get("guest"))
 
-        host.send_json(make("ready", 3))
-        guest.send_json(make("ready", 3))
-        # Both sides get room_state updates; drain until both-ready.
+        # 2026.10.20：只有客机需要准备；主机按钮本身就是「开始」。
+        guest.send_json(make("ready", 3, {"ready": True}))
         host.recv_until(lambda m: m.get("t") == "room_state" and m["body"].get("ready_guest"), 5)
-        guest.recv_until(lambda m: m.get("t") == "room_state" and m["body"].get("ready_host"), 5)
+        guest.recv_until(lambda m: m.get("t") == "room_state" and m["body"].get("ready_guest"), 5)
 
         host.send_json(make("start", 4, {"campaign": "demo", "level_id": "02_twin_line"}))
         start = guest.recv_until(lambda m: m.get("t") == "start", 5)
@@ -113,24 +112,24 @@ class RelayTests(unittest.TestCase):
 
     def test_fragmented_hello_and_length_126(self) -> None:
         c = self.client()
-        raw = json.dumps(make("hello", 1, {"build": "coop-m12.2", "name": "frag"}))
+        raw = json.dumps(make("hello", 1, {"build": "coop-m13.1", "name": "frag"}))
         c.send_fragments([raw[:7], raw[7:19], raw[19:]])
         self.assertEqual(c.recv_json().get("t"), "hello")
         # >125 bytes but <65536: exercises the 126 length marker.
-        c.send_json(make("create_room", 2, {"code": "FRAG23", "name": "x" * 100}))
+        c.send_json(make("create_room", 2, {"code": "654321", "name": "x" * 100}))
         self.assertEqual(c.recv_json().get("t"), "room_state")
         c.close()
 
     def test_length_127(self) -> None:
         c = self.client()
         self.hello(c)
-        c.send_json(make("create_room", 2, {"code": "LNGH23", "name": "x" * 70000}))
+        c.send_json(make("create_room", 2, {"code": "112233", "name": "x" * 70000}))
         self.assertEqual(c.recv_json().get("t"), "room_state")
         c.close()
 
     def test_unmasked_client_frame_is_rejected(self) -> None:
         c = self.client()
-        raw = json.dumps(make("hello", 1, {"build": "coop-m12.2"}))
+        raw = json.dumps(make("hello", 1, {"build": "coop-m13.1"}))
         c.send_text(raw, mask=False)
         msg = c.recv_json()
         self.assertEqual(msg.get("t"), "err")

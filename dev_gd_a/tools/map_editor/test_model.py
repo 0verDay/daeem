@@ -143,7 +143,7 @@ def t_config() -> None:
     cols, rows = config_grid(cfg)
     eq((cols, rows), (24, 16), "默认画布尺寸来自 config.grid")
     colors = config_colors(cfg)
-    for key in ("grass", "grass_alt", "forest", "mountain"):
+    for key in ("grass", "grass_alt", "forest", "mountain", "water"):
         ok(isinstance(colors.get(key), str) and str(colors[key]).startswith("#"),
            "配色里有 %s" % key)
 
@@ -704,11 +704,16 @@ def t_zone_population_cap() -> None:
 
 def t_terrain_order() -> None:
     print("\n[9] 地形表")
-    eq(TERRAIN_ORDER, ("grass", "forest", "mountain"), "三种地形（与 map_data.gd 一致）")
+    eq(TERRAIN_ORDER, ("grass", "forest", "mountain", "water"),
+       "四种地形（与 map_data.gd 一致）")
     cfg = load_config(PROJECT_DIR)
     d = mapfile.empty_map(2, 2, "forest")
     eq(d.terrain_at(0, 0), "forest", "起始地形可以直接铺")
     eq(mapfile.model_to_dict(d)["layout"], ["^^", "^^"], "森林的图例字符是 ^")
+    d2 = mapfile.empty_map(2, 2, "water")
+    eq(mapfile.model_to_dict(d2)["layout"], ["~~", "~~"], "★ 水域的图例字符是 ~")
+    d2.set_terrain(0, 0, "mountain")
+    eq(mapfile.model_to_dict(d2)["layout"], ["#~", "~~"], "水域可以和其他地形混排")
     _ = cfg
 
 
@@ -885,8 +890,12 @@ def t_fill_rect_terrain() -> None:
        "★ 一片空白 → 建 2 格山地（changed 只数已有地块，这里是 0）")
     eq({m.terrain_at(5, 5), m.terrain_at(6, 5)}, {"mountain"}, "空白格建成了山地")
 
+    # 水域也是一种合法地形
+    eq(m.fill_rect_terrain(7, 7, 7, 7, "water"), (1, 0), "★ 空白格可以直接建成水域")
+    eq(m.terrain_at(7, 7), "water", "水域生效")
+
     # 认不出的地形 → 不建也不改
-    eq(m.fill_rect_terrain(9, 9, 9, 9, "water"), (0, 0), "★ 认不出的地形 → 什么都不做")
+    eq(m.fill_rect_terrain(9, 9, 9, 9, "lava"), (0, 0), "★ 认不出的地形 → 什么都不做")
     ok(not m.exists(9, 9), "认不出的地形不会凭空建格")
 
 

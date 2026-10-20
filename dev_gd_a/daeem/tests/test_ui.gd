@@ -50,20 +50,23 @@ func _run() -> void:
 		quit(0)
 
 func _test_layout_against_reference(cfg) -> void:
-	eq(UiLayoutRes.DETAIL_RECT.size.x, 1030.0, "详细信息面板宽 1030（参考图标注）")
+	eq(UiLayoutRes.DETAIL_RECT.size.x, 988.0, "详细信息面板宽 988（右缘左移给放大的右下组让位）")
 	eq(UiLayoutRes.DETAIL_RECT.size.y, 260.0,
-		"★ 详细信息面板高 260（参考图是 240，本版加高 20 给数值框）")
+		"★ 详细信息面板高 260（保持不变）")
 	eq(UiLayoutRes.DETAIL_RECT.position.y + UiLayoutRes.DETAIL_RECT.size.y,
-		UiLayoutRes.DESIGN_H, "★ 面板底边仍贴屏幕下沿（加高是向上长）")
+		UiLayoutRes.DESIGN_H, "★ 面板底边仍贴屏幕下沿")
 	eq(UiLayoutRes.DETAIL_CONTENT_H, 240.0,
-		"★ 面板内容高 = 260 − 2×10 = 240（以前各处写死的 220 收进这个常量）")
-	eq(UiLayoutRes.BAR_H, 240.0, "底栏高 240（其它面板不动，只有详细信息面板用了多出来的 20px）")
+		"★ 面板内容高 = 260 − 2×10 = 240")
+	eq(UiLayoutRes.BAR_H, 260.0, "底栏高 260（右下组按 13/12 放大到与详细信息平齐）")
+	eq(UiLayoutRes.BAR_TOP, 820.0, "底栏顶边 820")
 
-	eq(UiLayoutRes.SQUAD_RECT.size.x, 120.0, "部队列表宽 120（参考图 x 0..119）")
-	eq(UiLayoutRes.SQUAD_RECT.position.y, 40.0, "部队列表从 y=40 开始")
+	eq(UiLayoutRes.SQUAD_RECT.size.x, 240.0, "将领列表宽 240（改到右侧）")
+	eq(UiLayoutRes.SQUAD_RECT.position.y, 180.0, "将领列表从 y=180 开始（避开右上角设置按钮）")
+	eq(UiLayoutRes.SQUAD_RECT.position.x + UiLayoutRes.SQUAD_RECT.size.x,
+		UiLayoutRes.DESIGN_W, "将领列表紧贴屏幕右边缘")
 	eq(UiLayoutRes.SQUAD_SLOTS, 10, "★ 10 个槽位（部队1 ~ 部队10）")
-	eq(UiLayoutRes.SQUAD_ROW_H, 60.0, "每行 60 高")
-	eq(UiLayoutRes.SQUAD_RECT.size.y, 600.0, "10 行合计 600 高")
+	eq(UiLayoutRes.SQUAD_ROW_H, 56.0, "每行 56 高")
+	eq(UiLayoutRes.SQUAD_RECT.size.y, 560.0, "10 行合计 560 高")
 
 	eq(UiLayoutRes.MAP_RECT.size.x, 400.0, "地图占位宽 400")
 	eq(UiLayoutRes.MAP_RECT.size.y, 400.0, "地图占位高 400")
@@ -71,43 +74,44 @@ func _test_layout_against_reference(cfg) -> void:
 		"地图占位贴住屏幕下沿")
 
 	eq(UiLayoutRes.CARD_SLOTS, 9, "命令卡 9 格")
-	eq(UiLayoutRes.CARD_RECT.size.x, 240.0, "命令卡 3 列 × 80")
-	eq(UiLayoutRes.CARD_RECT.size.y, 240.0, "命令卡 3 行 × 80")
-	eq(UiLayoutRes.card_cell_local(0), Rect2(0, 0, 80, 80), "Q 格在左上")
-	eq(UiLayoutRes.card_cell_local(4), Rect2(80, 80, 80, 80), "S 格在正中（行优先）")
-	eq(UiLayoutRes.card_cell_local(8), Rect2(160, 160, 80, 80), "C 格在右下")
+	eq(UiLayoutRes.CARD_RECT.size.x, 260.0, "命令卡 260 宽（3 × 86.67）")
+	eq(UiLayoutRes.CARD_RECT.size.y, 260.0, "命令卡 260 高（3 × 86.67）")
+	near(UiLayoutRes.card_cell_local(0).size.x, 260.0 / 3.0, 1e-4, "Q 格宽 = 260/3")
+	near(UiLayoutRes.card_cell_local(4).position.x, 260.0 / 3.0, 1e-4, "S 格在正中（行优先）")
+	near(UiLayoutRes.card_cell_local(8).position.y, 2.0 * 260.0 / 3.0, 1e-4, "C 格在右下")
 	eq(String(UiLayoutRes.CARD_KEYS[0]), "Q", "第一格是 Q")
 	eq(String(UiLayoutRes.CARD_KEYS[8]), "C", "第九格是 C")
 
-	eq(UiLayoutRes.HOVER_W, UiLayoutRes.CARD_RECT.size.x + UiLayoutRes.TABS_RECT.size.x,
-		"★ 悬停面板宽 = 命令卡 240 + 页签列 100 = 340（需求补充：旁边的页签栏也要对齐上）")
-	eq(UiLayoutRes.HOVER_W, 340.0, "面板实宽 340")
-	eq(UiLayoutRes.hover_rect(100.0).size.x, 340.0, "hover_rect 的宽也是 340")
+	near(UiLayoutRes.HOVER_W, UiLayoutRes.CARD_RECT.size.x + UiLayoutRes.TABS_RECT.size.x,
+		0.01, "★ 悬停面板宽 = 命令卡 + 页签列（368.333）")
+	near(UiLayoutRes.HOVER_W, 368.3333, 0.01, "面板实宽 368.333")
+	near(UiLayoutRes.hover_rect(100.0).size.x, 368.3333, 0.01, "hover_rect 的宽也是 368.333")
 	eq(UiLayoutRes.hover_rect(100.0).position.x, UiLayoutRes.CARD_RECT.position.x,
 		"悬停面板左缘与命令卡左缘对齐")
-	eq(UiLayoutRes.hover_rect(100.0).position.x + UiLayoutRes.HOVER_W,
+	near(UiLayoutRes.hover_rect(100.0).position.x + UiLayoutRes.HOVER_W,
 		UiLayoutRes.TABS_RECT.position.x + UiLayoutRes.TABS_RECT.size.x,
-		"★ 悬停面板右缘与**页签列右缘**齐平（第一版只对到命令卡右缘 1820，页签那 100px 露在外面）")
+		0.01, "★ 悬停面板右缘与**页签列右缘**齐平")
 	eq(UiLayoutRes.HOVER_BOTTOM, UiLayoutRes.CARD_RECT.position.y - UiLayoutRes.HOVER_GAP,
-		"★ 面板**下缘**落在命令卡顶边上方 HOVER_GAP（%.0fpx，竖直距离是自己定的）"
-			% UiLayoutRes.HOVER_GAP)
-	ok(UiLayoutRes.HOVER_GAP > 0.0, "★ 与命令卡之间留了缝（= 0 时 1px 描边会贴着命令卡上沿）")
+		"★ 面板**下缘**落在命令卡顶边上方 HOVER_GAP")
+	eq(UiLayoutRes.HOVER_BOTTOM, 812.0, "★ 右下组放大后浮窗下缘上移到 812")
+	ok(UiLayoutRes.HOVER_GAP > 0.0, "★ 与命令卡之间留了缝")
 	eq(UiLayoutRes.hover_rect(120.0).position.y + UiLayoutRes.hover_rect(120.0).size.y,
-		UiLayoutRes.HOVER_BOTTOM, "★ 下缘钉住 ⇒ 面板变高是**向上长**（绝不压住命令卡）")
+		UiLayoutRes.HOVER_BOTTOM, "★ 下缘钉住 ⇒ 面板变高是**向上长**")
 	eq(UiLayoutRes.hover_rect(120.0).size.y, 120.0, "高度按传进去的文本高度走")
 	ok(UiLayoutRes.hover_rect(200.0).size.y > UiLayoutRes.hover_rect(80.0).size.y,
-		"★ 文本越多、面板越高（「根据文本动态缩放」那一条的几何落点）")
+		"★ 文本越多、面板越高")
 	ok(UiLayoutRes.hover_rect(5.0).size.y >= UiLayoutRes.HOVER_MIN_H,
-		"极短的文本也有兜底下限（不会薄成一条线）")
+		"极短的文本也有兜底下限")
 	ok(UiLayoutRes.hover_rect(99999.0).position.y >= 0.0,
 		"文案长到离谱时面板也不许顶出屏幕上沿")
 
-	eq(UiLayoutRes.TABS_RECT.size.x, 100.0, "页签列宽 100")
-	eq(UiLayoutRes.tab_button_local(2).position.y, 160.0, "第三颗按钮从 160 开始（3×80）")
-	eq(UiLayoutRes.tab_button_local(0, 2).size.y, 120.0,
-		"★ 页签是**动态**的：两颗时每颗 120 高（240 ÷ 2）")
-	eq(UiLayoutRes.tab_button_local(1, 1).size.y, 240.0,
-		"★ 只有一颗时它铺满整列（240）")
+	near(UiLayoutRes.TABS_RECT.size.x, 108.3333, 0.01, "页签列宽 108.333（13/12 放大）")
+	near(UiLayoutRes.tab_button_local(2).position.y, 2.0 * 260.0 / 3.0, 1e-4,
+		"第三颗按钮从 173.33 开始（3×86.67）")
+	near(UiLayoutRes.tab_button_local(0, 2).size.y, 130.0, 0.01,
+		"★ 页签是**动态**的：两颗时每颗 130 高（260 ÷ 2）")
+	near(UiLayoutRes.tab_button_local(1, 1).size.y, 260.0, 0.01,
+		"★ 只有一颗时它铺满整列（260）")
 	eq(UiLayoutRes.SETTINGS_RECT, Rect2(1840, 0, 80, 160), "设置按钮 80×160 在右上角（参考图）")
 
 	eq(UiLayoutRes.QUEUE_SLOTS, 5, "★ 招募队列 5 个格子（1 大 + 4 小，需求原话）")
@@ -124,9 +128,9 @@ func _test_layout_against_reference(cfg) -> void:
 			% UiLayoutRes.QUEUE_MARGIN)
 	ok(UiLayoutRes.QUEUE_Y >= 1.0, "★ 队列块的上缘不贴右栏顶边（否则上边框整条不见）")
 	eq(UiLayoutRes.QUEUE_X + UiLayoutRes.QUEUE_W, UiLayoutRes.UNIT_CONTENT_RIGHT,
-		"★ 队列块右缘 = 右栏内容的公共右缘（641 = 645 − 4，同样不贴裁剪线）")
+		"★ 队列块右缘 = 右栏内容的公共右缘（599 = 603 − 4）")
 	ok(UiLayoutRes.QUEUE_X + UiLayoutRes.QUEUE_W < UiLayoutRes.DETAIL_RIGHT_W,
-		"★ 队列块右缘**不**顶到 645（顶到就会被切）")
+		"★ 队列块右缘**不**顶到 603（顶到就会被切）")
 	eq(UiLayoutRes.queue_info_rect(), Rect2(0, 0, 141, 88), "汇总带占控件左边那条 141×88")
 	eq(UiLayoutRes.queue_info_line_rect(0), Rect2(8, 27, 125, 18), "汇总第一行（招募队列 3/5）")
 	eq(UiLayoutRes.queue_info_line_rect(1), Rect2(8, 49, 125, 16), "汇总第二行（共 22s）")
@@ -189,23 +193,22 @@ func _test_queue_info_text_fit(cfg) -> void:
 		"★ 小格子两行 13 号字（%.0f×2）装得进 40 高（放大前是 30 高装两行 11 号）"
 			% font.get_height(fs_small))
 
-	eq(UiLayoutRes.DETAIL_RECT.position.x + UiLayoutRes.DETAIL_RECT.size.x,
-		UiLayoutRes.FACTION_RECT.position.x, "详细信息右边缘接上阵营面板")
-	eq(UiLayoutRes.FACTION_RECT.position.x + UiLayoutRes.FACTION_RECT.size.x,
-		UiLayoutRes.CARD_RECT.position.x, "阵营面板右边缘接上命令卡")
-	eq(UiLayoutRes.CARD_RECT.position.x + UiLayoutRes.CARD_RECT.size.x,
-		UiLayoutRes.TABS_RECT.position.x, "命令卡右边缘接上页签列")
-	eq(UiLayoutRes.TABS_RECT.position.x + UiLayoutRes.TABS_RECT.size.x, UiLayoutRes.DESIGN_W,
-		"页签列贴住屏幕右边缘")
+	eq(UiLayoutRes.DETAIL_RECT.position.x + UiLayoutRes.DETAIL_RECT.size.x, 1388.0,
+		"详细信息右缘 1388")
+	ok(UiLayoutRes.DETAIL_RECT.position.x + UiLayoutRes.DETAIL_RECT.size.x
+			< UiLayoutRes.FACTION_RECT.position.x,
+		"★ 详细信息右缘在阵营面板左缘左边（约 1.17px 缝，不重叠）")
+	near(UiLayoutRes.FACTION_RECT.position.x + UiLayoutRes.FACTION_RECT.size.x,
+		UiLayoutRes.CARD_RECT.position.x, 0.01, "阵营面板右边缘接上命令卡")
+	near(UiLayoutRes.CARD_RECT.position.x + UiLayoutRes.CARD_RECT.size.x,
+		UiLayoutRes.TABS_RECT.position.x, 0.01, "命令卡右边缘接上页签列")
+	near(UiLayoutRes.TABS_RECT.position.x + UiLayoutRes.TABS_RECT.size.x, UiLayoutRes.DESIGN_W,
+		0.01, "页签列贴住屏幕右边缘")
 	eq(UiLayoutRes.DETAIL_RECT.position.x, UiLayoutRes.MAP_RECT.size.x,
 		"详细信息从地图占位的右边缘开始（x=400）")
 	for r in [UiLayoutRes.DETAIL_RECT, UiLayoutRes.FACTION_RECT, UiLayoutRes.CARD_RECT, UiLayoutRes.TABS_RECT]:
 		eq(r.position.y + r.size.y, UiLayoutRes.DESIGN_H, "底栏各块都贴住屏幕下沿")
-		if r == UiLayoutRes.DETAIL_RECT:
-			eq(r.position.y, UiLayoutRes.DESIGN_H - r.size.y,
-				"★ 详细信息面板（260 高）顶边在 y=820 —— 加高是向上长，底边仍贴屏幕下沿")
-		else:
-			eq(r.position.y, UiLayoutRes.BAR_TOP, "底栏其余各块顶边仍在 y=840（它们没长高）")
+		eq(r.position.y, UiLayoutRes.BAR_TOP, "底栏各块顶边都在 820（与详细信息平齐）")
 
 	_test_left_column_geometry()
 
@@ -379,10 +382,10 @@ func _test_hit_test() -> void:
 	# 拉伸后的详细信息面板右缘必须正好接上阵营列左缘（这就是「不要固定大小、填满下方栏位」）。
 	var sd := UiLayoutRes.stretched_detail_rect(wide)
 	var faction_left_wide: float = UiLayoutRes.FACTION_RECT.position.x + (wide.x - UiLayoutRes.DESIGN_W)
-	near(sd.position.x + sd.size.x, faction_left_wide, 0.01,
-		"★ 详细信息面板拉伸后右缘 == 阵营列左缘（中间不再有缝）")
+	near(faction_left_wide - (sd.position.x + sd.size.x), 1.1667, 0.01,
+		"★ 详细信息面板拉伸后右缘与阵营列左缘留约 1.17px 缝（不重叠）")
 	eq(UiLayoutRes.stretched_detail_rect(vp).size.x, UiLayoutRes.DETAIL_RECT.size.x,
-		"1920 基准下详细信息面板宽度仍是 1030（老几何不变）")
+		"1920 基准下详细信息面板宽度仍是 988")
 
 	# 右栏动态宽度函数在基准宽度处必须与写死的常量逐位一致（否则 1920 下会走样）。
 	var rw: float = UiLayoutRes.DETAIL_RIGHT_W
@@ -394,7 +397,7 @@ func _test_hit_test() -> void:
 	eq(UiLayoutRes.detail_body_col2_w(rw), UiLayoutRes.DETAIL_BODY_COL2_W,
 		"detail_body_col2_w(基准) == DETAIL_BODY_COL2_W")
 	eq(UiLayoutRes.detail_right_w(wide), UiLayoutRes.DETAIL_RIGHT_W + (wide.x - UiLayoutRes.DESIGN_W),
-		"超宽窗口右栏宽度 = 645 + 多出来的宽")
+		"超宽窗口右栏宽度 = 603 + 多出来的宽")
 
 func _test_panels(cfg) -> void:
 	var packed = load("res://view/main.tscn")
@@ -445,7 +448,7 @@ func _test_panels(cfg) -> void:
 	v2_near(main.hud.detail_panel.position, UiLayoutRes.DETAIL_RECT.position, 1.0,
 		"详细信息面板落在 (400, 820)")
 	v2_near(main.hud.detail_panel.size, UiLayoutRes.DETAIL_RECT.size, 1.0,
-		"★ 详细信息面板实际尺寸 = 1030×260（参考图 240 + 本版加高的 20）")
+		"★ 详细信息面板实际尺寸 = 988×260")
 
 	var qc = main.hud.detail_panel.queue_control()
 	ok(qc != null, "详细信息左栏里有招募队列控件")
@@ -462,19 +465,19 @@ func _test_panels(cfg) -> void:
 	v2_near(main.hud.map_placeholder.size, UiLayoutRes.MAP_RECT.size, 1.0,
 		"地图占位实际尺寸 = 400×400")
 	v2_near(main.hud.faction_placeholder.position, UiLayoutRes.FACTION_RECT.position, 1.0,
-		"阵营占位落在 (1430, 840)")
+		"阵营占位落在 (1389.17, 820)")
 	v2_near(main.hud.command_card.position, UiLayoutRes.CARD_RECT.position, 1.0,
-		"命令卡落在 (1580, 840)")
+		"命令卡落在 (1551.67, 820)")
 	v2_near(main.hud.page_tabs.position, UiLayoutRes.TABS_RECT.position, 1.0,
-		"页签列落在 (1820, 840)")
+		"页签列落在 (1811.67, 820)")
 	v2_near(main.hud.settings_button.position, UiLayoutRes.SETTINGS_RECT.position, 1.0,
 		"设置按钮落在 (1840, 0)")
 	v2_near(main.hud.settings_button.size, UiLayoutRes.SETTINGS_RECT.size, 1.0,
 		"设置按钮实际尺寸 = 80×160")
 	v2_near(main.hud.squad_panel.position, UiLayoutRes.SQUAD_RECT.position, 1.0,
-		"部队列表落在 (0, 40)")
+		"将领列表紧贴右侧")
 	v2_near(main.hud.squad_panel.size, UiLayoutRes.SQUAD_RECT.size, 1.0,
-		"部队列表实际尺寸 = 120×600")
+		"将领列表实际尺寸 = 240×560")
 
 	_test_squad_rows(main)
 	_test_page_tabs_and_card(main, cfg)
@@ -743,9 +746,9 @@ func _test_anchors(main) -> void:
 	root.size = Vector2i(2560, 1080)                      # 超宽：多出来的 640px 留在中间
 	await process_frame
 	await process_frame
-	v2_near(main.hud.command_card.position, Vector2(1580.0 + 640.0, 840.0), 1.0,
+	v2_near(main.hud.command_card.position, Vector2(UiLayoutRes.CARD_RECT.position.x + 640.0, 820.0), 1.0,
 		"★ 超宽窗口：命令卡仍贴右下角")
-	v2_near(main.hud.page_tabs.position, Vector2(1820.0 + 640.0, 840.0), 1.0,
+	v2_near(main.hud.page_tabs.position, Vector2(UiLayoutRes.TABS_RECT.position.x + 640.0, 820.0), 1.0,
 		"超宽窗口：页签列仍贴右下角")
 	v2_near(main.hud.detail_panel.position, UiLayoutRes.DETAIL_RECT.position, 1.0,
 		"超宽窗口：详细信息仍贴左边（x = 400）")
@@ -757,11 +760,12 @@ func _test_anchors(main) -> void:
 	near(main.hud.detail_panel.queue_position_x(),
 		UiLayoutRes.detail_queue_x(UiLayoutRes.DETAIL_RIGHT_W + 640.0), 1.0,
 		"★ 超宽窗口：招募队列右缘仍钉在右栏右缘（位置跟着变）")
-	v2_near(main.hud.squad_panel.position, UiLayoutRes.SQUAD_RECT.position, 1.0,
-		"超宽窗口：部队列表仍在左上")
+	v2_near(main.hud.squad_panel.position,
+		Vector2(UiLayoutRes.SQUAD_RECT.position.x + 640.0, UiLayoutRes.SQUAD_RECT.position.y), 1.0,
+		"超宽窗口：将领列表仍贴右上")
 	v2_near(main.hud.settings_button.position, Vector2(1840.0 + 640.0, 0.0), 1.0,
 		"超宽窗口：设置仍贴右上角")
-	ok(main.hud.blocks_edge_scroll(Vector2(1580.0 + 640.0 + 40.0, 880.0)),
+	ok(main.hud.blocks_edge_scroll(Vector2(UiLayoutRes.CARD_RECT.position.x + 640.0 + 40.0, 880.0)),
 		"超宽窗口：命令卡的新位置仍然拦边缘滚屏（判定跟着贴边走）")
 
 	_test_mobile_ui_scheduler(main)
@@ -989,31 +993,29 @@ func _test_squad_rows(main) -> void:
 		if u.alive and world.is_team_leader(u) and FactionRes.same_side(u.faction, world.my_faction):
 			teams += 1
 	eq(teams, 3, "己方有 3 支队伍")
-	ok(panel.slot_text(0).begins_with("部队1"), "第 1 槽写着「部队1」（实际：%s）" % panel.slot_text(0))
+	ok(panel.slot_text(0).begins_with("1 "),
+		"第 1 槽以数字 1 开头（实际：%s）" % panel.slot_text(0))
 	ok(panel.slot_text(0).contains("将领 1"), "第 1 槽带队伍名")
-	ok(panel.slot_text(0).contains("人"), "第 1 槽带人数")
+	ok(panel.slot_formation(0).contains("/"),
+		"第 1 槽带「当前/上限」编制（实际：%s）" % panel.slot_formation(0))
 
 	var line_font: Font = main.hud._font
 	if line_font != null:
 		var row_fs: int = panel.slot_button(0).get_theme_font_size("font_size")
-		eq(row_fs, UiStyleRes.FS_SMALL, "★ 部队行用 13 号字（15 号下最长 105px，只剩 3px 余量）")
-		var sb: StyleBox = panel.slot_button(0).get_theme_stylebox("normal")
-		var writable: float = UiLayoutRes.SQUAD_RECT.size.x \
-			- sb.content_margin_left - sb.content_margin_right
-		for i in 3:
-			var lines: PackedStringArray = String(panel.slot_text(i)).split("\n")
-			eq(lines.size(), 2, "★ 第 %d 行是两行文案（一行装不下，会被裁）" % (i + 1))
-			for ln in lines:
-				var w: float = line_font.get_string_size(String(ln),
-					HORIZONTAL_ALIGNMENT_LEFT, -1, row_fs).x
-				ok(w <= writable + 0.01,
-					"★ 部队行第 %d 行的「%s」宽 %.0f ≤ 可写宽 %.0f（装得下才不会被裁）"
-						% [i + 1, ln, w, writable])
-	else:
-		ok(true, "（没装中文字体，跳过部队行的宽度量算）")
+		eq(row_fs, 14, "★ 将领标签名字用 14 号字")
+		var row = panel.slot_button(0)
+		var lines: PackedStringArray = String(panel.slot_text(0)).split("\n")
+		eq(lines.size(), 2, "★ 每条标签是两行文案（名字 / 编制）")
+		for ln in lines:
+			var w: float = line_font.get_string_size(String(ln),
+				HORIZONTAL_ALIGNMENT_LEFT, -1, row_fs).x
+			ok(w <= UiLayoutRes.SQUAD_TEXT_W + 0.01,
+				"★ 将领标签「%s」宽 %.0f ≤ 可写宽 %.0f" % [ln, w, UiLayoutRes.SQUAD_TEXT_W])
+		ok(row.number_text() == "1", "第 1 条数字是 1")
 
 	ok(panel.slot_filled(2), "第 3 槽有队伍")
 	ok(not panel.slot_filled(3), "第 4 槽是空的")
+	eq(panel.slot_number(9), "0", "★ 第 10 条标签的数字显示 0")
 	for i in range(3, UiLayoutRes.SQUAD_SLOTS):
 		eq(panel.slot_text(i), "…", "空槽第 %d 行显示「…」" % (i + 1))
 
@@ -1086,7 +1088,7 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 	var fresh = PageTabsRes.new()
 	main.hud.add_child(fresh)
 	fresh.setup()                                   # setup 内部就是「1 颗建筑页」那一刻
-	eq(fresh.button_at(0).size.y, 240.0, "★ 进游戏那一刻：一颗页签铺满整列（240 高）")
+	eq(fresh.button_at(0).size.y, 260.0, "★ 进游戏那一刻：一颗页签铺满整列（260 高）")
 	fresh.set_pages([PageTabsRes.PAGE_BUILD, PageTabsRes.PAGE_TECH])
 	eq(fresh.label_at(0), "建筑", "★ 换成两颗后第一颗的**文案没变**（旧判据正是漏了这一种）")
 	for i in 2:
@@ -1111,8 +1113,8 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 		ok(tabs.button_at(0) != null and tabs.button_at(0).visible,
 			"页签按钮是可见的")
 		eq(tabs.label_at(0), "操作", "页签上写着「操作」")
-		v2_near(tabs.button_at(0).size, Vector2(100.0, 240.0), 1.0,
-			"★ 只有一颗时它铺满整列（100×240）")
+		v2_near(tabs.button_at(0).size, Vector2(108.3333, 260.0), 1.0,
+			"★ 只有一颗时它铺满整列（108.333×260）")
 		ok(tabs.is_active(0), "★ 当前页画成高亮")
 		ok(UiStyleRes.tab_normal().bg_color.a > 0.2,
 			"★ 非当前页的页签有底色（全透明时立在地图上看不见）")

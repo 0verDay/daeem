@@ -257,7 +257,8 @@ def roundtrip_ok(model: CampaignModel, tmp_root: Any, project_dir: Any) -> Tuple
     clone.description = model.description
     clone.default_mode = model.default_mode
     clone.unlock = model.unlock
-    clone.factions = [dict(f) for f in model.factions]
+    clone.legacy_factions = [dict(f) for f in model.legacy_factions]
+    clone.default_factions = [dict(f) for f in model.default_factions]
     clone.preserved = json.loads(json.dumps(model.preserved, ensure_ascii=False))
     clone.levels = model.levels            # 只借用，写盘时按它落文件
     save_campaign(clone)
@@ -291,6 +292,9 @@ def create_campaign(project_dir: Any, campaign_id: str, name: str = "",
     if map_id:
         lv = model.new_level("01_%s" % campaign_id, map_id)
         lv.name = "%s · 第一关" % (name or campaign_id)
+        # ★ 区划归属必须是**关卡显式**的（战役编辑器不再有「（用地图的）」）：
+        #   新关卡按地图的 `zone_list[].owner` 初始化一遍。
+        lv.ensure_zone_owners(model_mod.load_map(project_dir, map_id), force=True)
     written = new_campaign_files(model)
     return model, written
 

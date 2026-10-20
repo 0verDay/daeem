@@ -189,6 +189,8 @@ func _build_content() -> void:
 		_coop_lobby = CoopLobbyRes.new()
 		add_child(_coop_lobby)
 		_coop_lobby.setup(cfg, _font)
+		# 3.png 要把「返回」滑到左上角：按钮归面板所有，位置托管给大厅。
+		_coop_lobby.attach_back_button(_back_btn)
 		_coop_lobby.host_started.connect(
 			func(campaign_id: String, level_id: String, transport):
 				coop_host_started.emit(campaign_id, level_id, transport))
@@ -203,4 +205,9 @@ func _sync_size(origin_panel: Control) -> void:
 
 
 func _on_back_pressed() -> void:
+	# 合作大厅在 ROOM / MAP 状态下先处理返回（退出房间 / 放弃改图），
+	# 只有 LOBBY 才真的收起面板。
+	if _coop_lobby != null and _coop_lobby.has_method("handle_back"):
+		if bool(_coop_lobby.handle_back()):
+			return
 	back_pressed.emit()

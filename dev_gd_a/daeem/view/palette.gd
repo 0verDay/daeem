@@ -119,6 +119,8 @@ func terrain_color(kind: String) -> Color:
 	match kind:
 		"mountain":
 			return cfg.color("mountain")
+		"water":
+			return cfg.color("water")
 		"forest":
 			return cfg.color("forest")
 		_:

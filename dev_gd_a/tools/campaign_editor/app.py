@@ -182,6 +182,7 @@ C = {
     "grass": "#33422f",
     "forest": "#24402a",
     "mountain": "#4c4a45",
+    "water": "#2e4f66",
     "zone_line": "#5c6066",
     "center": "#ff8adf",
     "grid": "#2a2c30",
@@ -528,6 +529,9 @@ class EditorApp:
         self.config = config if config is not None else levelfile.load_config(self.project_dir)
         self.maps: Dict[str, MapInfo] = (maps if maps is not None
                                          else levelfile.maps_by_id(self.project_dir))
+        # ★ 旧数据迁移兜底：每一关的 `zones[]` 都补齐成显式归属（见 `ensure_zone_owners`）。
+        #   正常走 `load_campaign` 时已经补过，这里只是给「直接构造 EditorApp」的调用方兜底。
+        self._seed_all_zone_owners()
         self.page = "campaign"
         #: 当前选中的关卡 id（切页签不丢）。
         self.current_level_id = model.levels[0].level_id if model.levels else ""
@@ -819,13 +823,36 @@ class EditorApp:
         return self.model.level(self.current_level_id)
 
     def set_current_level(self, level_id: str) -> None:
+        """切到某一关（**唯一入口**：所有「换关卡」的路径都必须走它）。
+
+        ★★ 为什么必须集中到一处：下面这些状态全是**「属于上一关」**的编辑期缓存，
+          漏清一个就会出现「A 关的配置跑到 B 关」：
+            · `_sides` —— 敌友（边）的缓存。最脏的一个：不清的话 B 关会显示
+              A 关的边，点一下还会把 A 关的盟友关系**写进 B 关**；
+            · `selection` —— ④ 摆放页选中的下标（换关后指向另一关的单位）；
+            · `reddot_faction` —— ⑥ 红点页「当前编辑哪一方」；
+            · `brush_faction` —— 画笔的归属阵营（A 关的阵营 B 关可能根本没有）；
+            · 平移/按下/空格状态 —— 新画布一进来就跟着鼠标跑。
+        """
         if self.model.level(level_id) is None:
             return
         self.current_level_id = level_id
-        self.selection = None
-        self._reset_sides()                         # 换关卡 → 敌友边重新从数据里读
+        self._reset_level_state()
         self.refresh_all()
         self.fit_view()
+
+    def _reset_level_state(self) -> None:
+        """清掉一切**只属于上一关**的编辑期状态（切关卡 / 重新载入时调）。"""
+        self.selection = None
+        self._reset_sides()                         # 敌友边重新从当前关的数据里读
+        self.reddot_faction = ""                    # 红点页当前编辑的那一方
+        self._pan_anchor = None
+        self._left_down_at = None
+        self.space_held = False
+        self.hover = None
+        # 画笔的归属：A 关的阵营 B 关可能没有 → 清掉，让界面按当前关重新取第一个
+        if self.brush_faction and self.brush_faction not in self.all_faction_ids():
+            self.brush_faction = ""
 
     def _path_text(self) -> str:
         if self.model.dir_path is None:
@@ -845,25 +872,39 @@ class EditorApp:
         return self.maps.get(str(mid))
 
     def faction_color(self, fid: str) -> str:
-        """阵营颜色：战役 `factions[].color` → config 的配色表 → 兜底轮转。"""
+        """阵营颜色：**本关** `factions[].color` → config 的配色表 → 兜底轮转。"""
         fid = str(fid)
         if not fid:
             return UI["text_dim"]
-        color = self.model.faction_color(fid) or self.config.faction_color(fid)
+        lv = self.level()
+        color = (lv.faction_color(fid) if lv is not None else "") \
+            or self.config.faction_color(fid)
         if color:
             return color
         if fid not in _EPOCH_COLORS:
             _EPOCH_COLORS[fid] = FALLBACK_COLORS[len(_EPOCH_COLORS) % len(FALLBACK_COLORS)]
         return _EPOCH_COLORS[fid]
 
+    def faction_name(self, fid: str) -> str:
+        """阵营显示名：**本关** `factions[].name` → id。"""
+        lv = self.level()
+        return lv.faction_name(fid) if lv is not None else str(fid)
+
     def all_faction_ids(self) -> List[str]:
-        """界面上该列出的阵营 id：战役表 ∪ 本关在场（顺序稳定、去重）。"""
-        out: List[str] = [str(e.get("id", "")) for e in self.model.factions if e.get("id")]
+        """界面上该列出的阵营 id：**本关阵营表** ∪ 地图自带的阵营（顺序稳定、去重）。
+
+        ★ 不再包含「战役级阵营表」—— 阵营表跟着关卡走，别的关卡不会跑进来。
+        """
+        out: List[str] = []
         lv = self.level()
         if lv is not None:
-            for f in lv.present_ids():
-                if f and f not in out:
-                    out.append(f)
+            for e in lv.factions:
+                if e.fid and e.fid not in out:
+                    out.append(e.fid)
+            # ★ 防守：老数据里可能有「席位指向一方、但 factions[] 没写它」——照样列出来
+            for fid in lv.seats():
+                if fid and fid not in out:
+                    out.append(fid)
         info = self.map_info()
         if info is not None:
             for f in info.factions:
@@ -872,10 +913,21 @@ class EditorApp:
                     out.append(fid)
         return out
 
+    def _seed_all_zone_owners(self) -> None:
+        """把每一关的 `zones[]` 补齐成**显式**归属（地图的 owner 只当初始化来源）。"""
+        for lv in self.model.levels:
+            lv.ensure_zone_owners(self.maps.get(str(lv.map_id)))
+
     def sync_faction_context(self) -> None:
         self.model.sync_context()
         if not self.current_level_id and self.model.levels:
             self.current_level_id = self.model.levels[0].level_id
+        elif (self.current_level_id
+              and self.model.level(self.current_level_id) is None
+              and self.model.levels):
+            # 当前关被外部删掉了（不是走 do_delete_level）→ 退回第一关，别指着不存在的关。
+            self.current_level_id = self.model.levels[0].level_id
+            self._reset_level_state()
 
     # ==================================================================
     # 页签 / 重画
@@ -1018,7 +1070,7 @@ class EditorApp:
                         tuple(self._map_label(m) for m in sorted(self.maps)),
                         self._commit_level_map)
 
-        tk.Label(form, text="玩家目标（每个可玩阵营一条；可玩阵营在①战役页勾选）",
+        tk.Label(form, text="玩家目标（每个可玩阵营一条；可玩阵营在③阵营页勾选）",
                  bg=UI["panel"], fg=UI["text_dim"],
                  font=("Microsoft YaHei UI", 9)).pack(anchor="w", pady=(6, 2))
         self._objective_rows(form)
@@ -1267,8 +1319,8 @@ class EditorApp:
                 if not info.tile_exists(x, y):
                     continue
                 terrain = info.terrain_at(x, y)
-                fill = {".": C["grass"], "^": C["forest"], "#": C["mountain"]}.get(terrain,
-                                                                                  C["grass"])
+                fill = {".": C["grass"], "^": C["forest"], "#": C["mountain"],
+                        "~": C["water"]}.get(terrain, C["grass"])
                 self.canvas.create_rectangle(sx, sy, sx + size, sy + size,
                                              fill=fill, outline=C["grid"])
 
@@ -1921,10 +1973,14 @@ class EditorApp:
         self.model = fresh
         self.maps = levelfile.maps_by_id(self.project_dir)
         self.config = levelfile.load_config(self.project_dir)
-        self.current_level_id = (fresh.levels[0].level_id if fresh.levels else "")
-        self.selection = None
-        self._reset_sides()                         # 重新载入 → 敌友边重新从数据里读
-        self.refresh_all()
+        self._seed_all_zone_owners()
+        # ★ 统一入口：重新载入 = 换了一整套关卡数据，上一关的边 / 选中 / 画笔归属都不能留。
+        if fresh.levels:
+            self.set_current_level(fresh.levels[0].level_id)
+        else:
+            self.current_level_id = ""
+            self._reset_level_state()
+            self.refresh_all()
         self.status("重新载入了 %s" % fresh.campaign_id)
 
     # ---- 一键打开地图编辑器（6.4）----
@@ -1982,8 +2038,9 @@ class EditorApp:
             return                      # 重建的回声（见 `_applied_entry_sel` 的说明）
         lid = str(sel[0]).split(":", 1)[1]
         if lid != self.current_level_id:
-            self.current_level_id = lid
-            self.refresh_all()
+            # ★★ 必须走 `set_current_level()`：它负责清掉上一关的边缓存 / 选中 / 画笔归属。
+            #    以前这里只改 id 再 refresh，于是「选 dscj 再切到别的关」会看到 dscj 的边。
+            self.set_current_level(lid)
 
     def move_level(self, delta: int) -> None:
         if self.model.move_level(self.current_level_id, delta):
@@ -2005,8 +2062,10 @@ class EditorApp:
         level_id, map_id = answer
         lv = self.model.new_level(level_id, map_id)
         lv.name = level_id
-        self.current_level_id = lv.level_id
-        self.refresh_all()
+        # ★ 新关卡没有历史区划归属：按地图的 owner 初始化成显式 zones[]。
+        lv.ensure_zone_owners(self.maps.get(str(map_id)), force=True)
+        # ★ 走统一入口：新关卡不能继承上一关的边 / 选中 / 画笔归属。
+        self.set_current_level(lv.level_id)
         self.status("新建了关卡「%s」（地图 %s）—— 记得配目标（每个可玩阵营一条）+ 摆大本营"
                     % (lv.level_id, map_id))
 
@@ -2020,10 +2079,12 @@ class EditorApp:
                                    % lv.level_id):
             return
         if self.model.remove_level(lv.level_id):
-            self.current_level_id = (self.model.levels[0].level_id
-                                     if self.model.levels else "")
-            self.selection = None
-            self.refresh_all()
+            if self.model.levels:
+                self.set_current_level(self.model.levels[0].level_id)
+            else:
+                self.current_level_id = ""
+                self._reset_level_state()
+                self.refresh_all()
             self.status("删掉了关卡 %s（文件没有删）" % lv.level_id)
 
     # ---- ② 关卡页的提交 ----
@@ -2082,16 +2143,16 @@ class EditorApp:
         lv = self.level()
         if lv is None:
             return
-        playable = self.model.playable_ids()
+        playable = lv.playable_ids()
         if not playable:
-            self._hint(parent, "★ 还没有「可玩阵营」—— 去①战役页给阵营勾上「可玩」，"
+            self._hint(parent, "★ 这一关还没有「可玩阵营」—— 去③阵营页勾上「可玩」或加一方，"
                                "这里就会为每一方各出现一行目标")
             return
         for fid in playable:
             o = lv.objective_for(fid) or {}
             row = tk.Frame(parent, bg=UI["panel"])
             row.pack(side="top", fill="x", pady=2)
-            tk.Label(row, text="%s %s" % (fid, self.model.faction_name(fid)),
+            tk.Label(row, text="%s %s" % (fid, lv.faction_name(fid)),
                      width=14, anchor="w", bg=UI["panel"],
                      fg=self.faction_color(fid)).pack(side="left")
             kind = str(o.get("kind", "")) or OBJ_HOLD_ZONE
@@ -2210,8 +2271,32 @@ class EditorApp:
             entry.base = value
         elif field == "color":
             entry.color = str(value)
-            self.model.ensure_faction(fid, fid, str(value))["color"] = str(value)
+        elif field == "name":
+            entry.name = str(value)
+        elif field == "playable":
+            entry.playable = bool(value)
+            entry.playable_declared = True
+            # ★ 席位由**本关**的可玩阵营派生 —— 只动这一关。
+            lv.sync_players_from_playable()
         self._after_change()
+
+    def _add_level_faction(self, text: str) -> None:
+        """在本关阵营表里加一方（只写这一关的 JSON）。"""
+        lv = self.level()
+        if lv is None:
+            return
+        fid = str(text).strip()
+        if not fid:
+            return
+        if lv.faction(fid) is not None:
+            self.status("这一关已经有阵营「%s」了" % fid)
+            return
+        e = lv.ensure_faction(fid, fid, self.faction_color(fid))
+        # 新加的一方默认给个颜色（品红很难看，也过不了配色校验）
+        if not e.color:
+            e.color = self.faction_color(fid)
+        self._after_change()
+        self.status("给这一关加了阵营 %s（不勾「可玩」= 不是玩家席位）" % fid)
 
     def remove_faction_entry(self, fid: str) -> None:
         lv = self.level()
@@ -2317,30 +2402,14 @@ class EditorApp:
                          ("单人", "双人合作"), self._commit_default_mode)
         self._hint(section, "默认模式 = 「新建关卡」时新关卡的初始模式（关卡自己还能改）")
 
-        section2 = self._section("阵营表（campaign.json 的 factions[]）",
-                                 "★「可玩」= 玩家能选谁（单人关可跨边选）；"
-                                 "不勾的那些由 AI 驱动")
-        for e in self.model.factions:
-            fid = str(e.get("id", ""))
-            is_playable = bool(e.get("playable", False))
-            row = tk.Frame(section2, bg=UI["panel"])
-            row.pack(side="top", fill="x", pady=2)
-            tk.Label(row, text=("★可玩" if is_playable else "　"),
-                     width=6, anchor="w", bg=UI["panel"],
-                     fg=(UI["accent"] if is_playable else UI["text_dim"]),
-                     font=("Microsoft YaHei UI", 9, "bold")).pack(side="left")
-            tk.Label(row, text=fid, width=8, anchor="w", bg=UI["panel"],
-                     fg=self.faction_color(fid)).pack(side="left")
-            self._entry_cell(row, "名字", str(e.get("name", "")),
-                             lambda text, f=fid: self._set_campaign_faction(f, "name", text),
-                             width=14).pack(side="left")
-            self._entry_cell(row, "颜色", str(e.get("color", "")),
-                             lambda text, f=fid: self._set_campaign_faction(f, "color", text),
-                             width=10).pack(side="left")
-            self._check_cell(row, "可玩", is_playable,
-                             lambda on, f=fid: self._set_campaign_faction(f, "playable", on))
-        self._entry_cell(section2, "加一方 id", "", self._add_campaign_faction)
-        self._hint(section2, "加一方的 id 会同时出现在这一关的阵营页里（点「可玩」决定谁能被选）")
+        section2 = self._section("关卡与阵营",
+                                 "★ 阵营表跟着**关卡**走：每关的 levels/*.json 自带 "
+                                 "id / 名字 / 颜色 / 可玩，互不影响")
+        self._hint(section2, "当前关「%s」的阵营表在 **③ 阵营页**（加一方 / 勾可玩 / "
+                             "改名字和颜色都在那里）。" % (self.level().level_id
+                                                        if self.level() else "—"))
+        self._hint(section2, "★ 这一页的列表 = 关卡顺序；点一行切到那一关。")
+        self._hint(section2, "★ 阵营不再在战役级维护：A 关卡加的阵营不会出现在 B 关卡。")
 
     def _commit_campaign_name(self, text: str) -> None:
         text = str(text).strip()
@@ -2358,21 +2427,7 @@ class EditorApp:
         self.model.default_mode = MODE_COOP if str(text).strip() == "双人合作" else MODE_SOLO
         self.refresh_all()
 
-    def _set_campaign_faction(self, fid: str, field: str, value: Any) -> None:
-        entry = self.model.ensure_faction(fid, fid, self.faction_color(fid))
-        if field == "playable":
-            entry["playable"] = bool(value)
-        else:
-            entry[field] = str(value)
-        self._after_change()
-
-    def _add_campaign_faction(self, text: str) -> None:
-        fid = str(text).strip()
-        if not fid:
-            return
-        self.model.ensure_faction(fid, fid, self.faction_color(fid))
-        self._after_change()
-        self.status("加了阵营 %s" % fid)
+    # ---- ③ 阵营页：本关阵营表（加一方 / 改字段） ----
 
     # ---- ② 关卡页侧栏 ----
 
@@ -2393,7 +2448,7 @@ class EditorApp:
 
         section2 = self._section("玩家目标",
                                  "每个可玩阵营一条（守住 / 攻占 + 区划 + 秒数）；"
-                                 "可玩阵营在①战役页勾选")
+                                 "可玩阵营在③阵营页勾选")
         self._objective_rows(section2)
         self._hint(section2, "额外失败条件（「大本营被拆」那条常开）：")
         for i, f in enumerate(lv.fail_conditions):
@@ -2434,6 +2489,9 @@ class EditorApp:
             return
         lv.map_id = self._map_id_from_label(text)
         lv.mark_declared("map")
+        # ★★ 换地图 = 区划表按新地图**整张重建**（旧地图的区划号对新地图没有意义）。
+        #    战役编辑器不再有「（用地图的）」，所以这里必须把新地图的 owner 抄成显式值。
+        lv.ensure_zone_owners(self.maps.get(str(lv.map_id)), force=True)
         self._after_change()
 
     def _set_fail_zone(self, index: int, text: str) -> None:
@@ -2457,6 +2515,46 @@ class EditorApp:
         lv = self.level()
         if lv is None:
             return
+        # ---- ★★ 本关阵营表：跟着关卡走（用户口径：每一关就是一个独立战役）----
+        tsec = self._section("本关阵营表（关卡 JSON 的 factions[]）",
+                             "★ 阵营表跟着**关卡**走：这里改的只影响这一关，"
+                             "另一关 / 另一场战役看不到它。勾「可玩」= 玩家能选谁"
+                             "（玩家席位由它自动派生）。")
+        for e in lv.factions:
+            row = tk.Frame(tsec, bg=UI["panel"])
+            row.pack(side="top", fill="x", pady=2)
+            tk.Label(row, text=("★可玩" if e.playable else "　"), width=6, anchor="w",
+                     bg=UI["panel"],
+                     fg=(UI["accent"] if e.playable else UI["text_dim"]),
+                     font=("Microsoft YaHei UI", 9, "bold")).pack(side="left")
+            tk.Label(row, text=e.fid, width=7, anchor="w", bg=UI["panel"],
+                     fg=self.faction_color(e.fid)).pack(side="left")
+            name_var = tk.StringVar(value=e.name)
+            ne = ttk.Entry(row, textvariable=name_var, width=10)
+            ne.pack(side="left", padx=(0, 3))
+            ne.commit_action = (lambda f=e.fid, v=name_var:      # type: ignore[attr-defined]
+                                self.set_faction_field(f, "name", v.get()))
+            ne.bind("<Return>", lambda _e, en=ne: en.commit_action())
+            ne.bind("<FocusOut>", lambda _e, en=ne: en.commit_action())
+            color_var = tk.StringVar(value=e.color)
+            ce = ttk.Entry(row, textvariable=color_var, width=9)
+            ce.pack(side="left", padx=(0, 3))
+            ce.commit_action = (lambda f=e.fid, v=color_var:     # type: ignore[attr-defined]
+                                self.set_faction_field(f, "color", v.get()))
+            ce.bind("<Return>", lambda _e, en=ce: en.commit_action())
+            ce.bind("<FocusOut>", lambda _e, en=ce: en.commit_action())
+            play_var = tk.BooleanVar(value=e.playable)
+            ttk.Checkbutton(row, text="可玩", variable=play_var,
+                            command=lambda f=e.fid, v=play_var:
+                            self.set_faction_field(f, "playable", bool(v.get()))
+                            ).pack(side="left", padx=(0, 3))
+            self._button(row, "删", lambda f=e.fid: self.remove_faction_entry(f),
+                         padx=4, pady=1,
+                         font=("Microsoft YaHei UI", 8)).pack(side="right")
+        self._entry_cell(tsec, "加一方 id", "", self._add_level_faction, width=18)
+        self._hint(tsec, "★ 加一方只会写进**这一关**；名字 / 颜色 / 可玩都在这一行改。"
+                         "地图自带的阵营照样会列在下面，点「在这关点名」才会写进关卡。")
+
         # ---- 敌友（边）：同一条边互为友军；不同边 / 没分边的互相敌对 ----
         asec = self._section("敌友（边）",
                              "同一条边里的阵营互为友军；不同边的、以及没分边的阵营互相敌对"
@@ -2464,14 +2562,14 @@ class EditorApp:
         self._refresh_ally_rows(asec)
 
         # ---- 每一方一行 ----
-        playable = set(self.model.playable_ids())
+        playable = set(lv.playable_ids())
         for fid in self.all_faction_ids():
             e = lv.faction(fid)
-            title = "%s %s%s" % (fid, self.model.faction_name(fid),
+            title = "%s %s%s" % (fid, lv.faction_name(fid),
                                  "　★可玩" if fid in playable else "")
             section = self._section(title,
-                                    "关卡 factions[] 里写了这一方 = 这一关它被点名" if e
-                                    else "这一关没点名它（导出时不会为它写一份）")
+                                    "本关 factions[] 里有这一方（改名字 / 颜色 / 可玩见上面那张表）"
+                                    if e else "这一关没点名它（导出时不会为它写一份）")
             if e is None:
                 self._button(section, "在这关点名这一方",
                              lambda f=fid: self._point_faction(f)).pack(anchor="w")
@@ -2634,7 +2732,7 @@ class EditorApp:
             row.pack(side="top", fill="x", pady=1)
             tk.Label(row, text="边 %d" % (i + 1), width=6, anchor="w",
                      bg=UI["panel"], fg=UI["text"]).pack(side="left")
-            text = ("、".join("%s %s" % (f, self.model.faction_name(f)) for f in group)
+            text = ("、".join("%s %s" % (f, self.faction_name(f)) for f in group)
                     if group else "（空）")
             tk.Label(row, text=text, anchor="w", justify="left", wraplength=210,
                      bg=UI["panel"],
@@ -2652,7 +2750,7 @@ class EditorApp:
         for fid in self.all_faction_ids():
             row = tk.Frame(parent, bg=UI["panel"])
             row.pack(side="top", fill="x", pady=1)
-            tk.Label(row, text="%s %s" % (fid, self.model.faction_name(fid)),
+            tk.Label(row, text="%s %s" % (fid, self.faction_name(fid)),
                      width=14, anchor="w", bg=UI["panel"],
                      fg=UI["text"]).pack(side="left")
             combo = ttk.Combobox(row, values=self._side_choices(), width=18,
@@ -2669,10 +2767,19 @@ class EditorApp:
         return {"无": AI_NONE, "阵地性": AI_GARRISON, "红点性": AI_REDDOT}.get(label, AI_NONE)
 
     def _point_faction(self, fid: str) -> None:
+        """把地图/空表里的某一方**写进这一关**的 factions[]（带名字与颜色）。"""
         lv = self.level()
         if lv is None:
             return
-        lv.ensure_faction(fid)
+        name, color = "", ""
+        info = self.map_info()
+        if info is not None:
+            for f in info.factions:
+                if str(f.get("id", "")) == fid:
+                    name = str(f.get("name", ""))
+                    color = str(f.get("color", ""))
+                    break
+        lv.ensure_faction(fid, name, color or self.config.faction_color(fid))
         self._after_change()
 
     def _set_float(self, fid: str, field: str, text: str) -> None:
@@ -2965,24 +3072,27 @@ class EditorApp:
     # ==================================================================
 
     def _owner_choices(self) -> Tuple[str, ...]:
-        """区划页的「归属」下拉：用地图的 / 各阵营 / 清空。
+        """区划页的「归属」下拉：各阵营 / 无主。
+
+        ★★ **没有「（用地图的）」**：地图编辑器不提供区块归属编辑，所以关卡必须
+          每一块地都写清楚（阵营 id 或空串 = 无主）。地图的 `zone_list[].owner`
+          只在载入旧数据 / 新建关卡时当一次初始化来源。
 
         ⚠️ 名字**不能**叫 `_zone_choices`：那个是「列出地图里的各区划」（目标 / 失败条件 /
         单位 `zone` 三处用它），两个同名方法在 Python 里**后一个会盖掉前一个**（实测踩到）。
         """
-        return tuple(["（用地图的）"] + [str(f) for f in self.all_faction_ids()]
-                     + ["（清空 = 无主）"])
+        return tuple([str(f) for f in self.all_faction_ids()] + ["（清空 = 无主）"])
 
     def _zone_choice_label(self, lv: LevelModel, zid: int) -> str:
         cur = lv.zone_owner(zid)
-        if cur is None:
-            return "（用地图的）"
-        return "（清空 = 无主）" if cur == "" else str(cur)
+        # 正常载入后每一块地都有显式值；None 只可能是旧/外部数据 → 按「无主」显示
+        return "（清空 = 无主）" if cur is None or cur == "" else str(cur)
 
     def _build_zone_page(self) -> None:
         """区划页：一张表 —— 每一块地开局归哪个阵营（写 `zones[].owner`）。
 
-        ★ 「不选」= 用地图自带的归属（不写这个键）与「清空 = 无主」（写空串）是两件事。
+        ★★ 每一块地都**必须**有显式归属：阵营 id，或空串 = 无主。
+          不再有「不写这个键 = 用地图的」那一档（地图编辑器不编辑归属）。
         """
         for child in self.action_bar.winfo_children():
             child.destroy()
@@ -2999,7 +3109,7 @@ class EditorApp:
         head.pack(side="top", fill="x", padx=10, pady=(8, 2))
         tk.Label(head, text="开局区划归属", bg=UI["bg"], fg=UI["accent"],
                  font=("Microsoft YaHei UI", 10, "bold")).pack(side="left")
-        tk.Label(head, text="　（不选 = 用地图自带的；「清空 = 无主」写空串）",
+        tk.Label(head, text="　（每一块地都要选：阵营 / 「清空 = 无主」）",
                  bg=UI["bg"], fg=UI["text_dim"],
                  font=("Microsoft YaHei UI", 8)).pack(side="left")
 
@@ -3032,10 +3142,7 @@ class EditorApp:
         lv = self.level()
         if lv is None:
             return
-        if label == "（用地图的）":
-            lv.clear_zone_owner(zid)
-            self.status("区划 c%d：改回「用地图自带的」" % zid)
-        elif label == "（清空 = 无主）":
+        if label == "（清空 = 无主）":
             lv.set_zone_owner(zid, "")
             self.status("区划 c%d：开局无主" % zid)
         else:
@@ -3050,11 +3157,12 @@ class EditorApp:
         if lv is None or info is None:
             self._hint(sec, "这一关还没有地图：先到「关卡」页选一张。")
             return
-        self._hint(sec, "★ 归属属于**关卡层**（覆盖地图的 `zone_list[].owner`）："
-                        "「用地图的」= 不写这个键；「清空 = 无主」= 显式写空串。"
+        self._hint(sec, "★ 归属属于**关卡层**（`zones[]`）：每块地都显式写阵营 id，"
+                        "「清空 = 无主」写空串。地图编辑器不编辑区块归属，所以这里"
+                        "没有「（用地图的）」——地图的 owner 只在新建 / 换图时初始化一次。"
                         "地形 / 区划形状要改请点摆放页的『打开地图编辑器』。")
-        count_override = len(lv.zone_owners)
-        self._hint(sec, "本关覆盖了 %d 块地的归属。" % count_override)
+        self._hint(sec, "地图「%s」共 %d 块地；本关已写 %d 块。"
+                   % (info.map_id, len(info.zone_ids), len(lv.zone_owners)))
 
     # ==================================================================
     # ★★ 红点页：生成配置（挂在当前红点阵营的 `reddot_ai` 上）
@@ -3063,10 +3171,9 @@ class EditorApp:
     def do_new_reddot_faction(self) -> None:
         """新建一个阵营，并**自动把它的 AI 设成红点性**（红点页专用）。
 
-        ★ 落在两处：
-          · `campaign.json` 的阵营表（全战役都能用；名字 / 颜色之后能在 ① 战役页改）；
-          · 本关的 `factions[]`（`ensure_faction` 会标「声明过」，导出才会写），`ai = reddot`。
-        建完把它设成红点页当前编辑的那一方 —— 接着就能配生成地块 / 时间表，也能给它设「边」。
+        ★★ 只落在**本关**的 `factions[]` 里（阵营表跟着关卡走：别的关卡 / 别的战役
+          不会出现它），`ai = reddot`。建完把它设成红点页当前编辑的那一方 ——
+          接着就能配生成地块 / 时间表，也能给它设「边」。
         """
         lv = self.level()
         if lv is None:
@@ -3075,8 +3182,7 @@ class EditorApp:
         if not answer:
             return
         fid, name = answer
-        self.model.ensure_faction(fid, name or fid, self.faction_color(fid))
-        entry = lv.ensure_faction(fid)
+        entry = lv.ensure_faction(fid, name or fid, self.faction_color(fid))
         entry.ai = AI_REDDOT
         lv.mark_declared("factions")
         self.reddot_faction = fid

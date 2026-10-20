@@ -206,7 +206,8 @@ def t_step1b_terrain_only_from_panel() -> None:
     try:
         click_at(editor, 0, 0)
         buttons = editor._tile_widgets["terrain"]
-        eq(sorted(buttons), ["forest", "grass", "mountain"], "面板里有三种地形的按钮")
+        eq(sorted(buttons), ["forest", "grass", "mountain", "water"],
+           "面板里有四种地形的按钮")
 
         buttons["forest"].invoke()
         eq(editor.model.terrain_at(0, 0), "forest", "★ 点「森林」→ 这一格变成森林")
@@ -215,6 +216,13 @@ def t_step1b_terrain_only_from_panel() -> None:
 
         buttons["mountain"].invoke()
         eq(editor.model.terrain_at(0, 0), "mountain", "改成山地也立刻生效")
+
+        buttons["water"].invoke()
+        eq(editor.model.terrain_at(0, 0), "water", "★ 点「水域」→ 这一格变成水域")
+        ok("水域" in editor._tile_widgets["coord"].cget("text"),
+           "面板上的文字跟着变成水域")
+        buttons["mountain"].invoke()
+        eq(editor.model.terrain_at(0, 0), "mountain", "改回山地")
 
         # ★ 地形只影响「面板正在看的那一格」：点另一格建格，新格仍然是空白草地
         click_at(editor, 1, 0)
@@ -1856,9 +1864,9 @@ def t_box_fill_blank_terrain() -> None:
         eq(editor.selection, (0, 0, 2, 1), "★ Shift 框出了一片空白区域")
         eq(len(editor.batch_tiles()), 0, "矩形里一个已有地块都没有")
 
-        # ★★ 关键：一片空白时，批量面板里仍然有那三个地形按钮
-        eq(sorted(editor._batch_terrain_buttons), ["forest", "grass", "mountain"],
-           "★ 空白框选时批量面板也有三种地形按钮（以前这里没有）")
+        # ★★ 关键：一片空白时，批量面板里仍然有那四个地形按钮
+        eq(sorted(editor._batch_terrain_buttons), ["forest", "grass", "mountain", "water"],
+           "★ 空白框选时批量面板也有四种地形按钮（以前这里没有）")
 
         # 点「森林」→ 6 个空白格被建出来，且都是森林
         editor._batch_terrain_buttons["forest"].invoke()

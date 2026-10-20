@@ -17,6 +17,9 @@
     [4] ★ 进攻目标箭头：终点 = 目标的区划中心；`target_label` 的人话
     [4c] ★ 敌友（边）：面板列每条边 + 「＋ 新建一条边」按钮；同边友好、异边敌对
     [4d] ★ 红点页新建阵营：自动红点性 AI + 给它设一条边
+    [4e] ★★ 阵营表跟着关卡走（A 关加的一方在 B 关看不到）
+    [4f] ★★ 换关卡不串编辑期状态（上一关的边 / 选中 / 红点当前方 / 画笔归属）
+    [4g] ★★ 区划归属：没有「（用地图的）」，每块地显式；换地图整张重建
     [5] 导出：有拦截项时**禁止写文件**并弹框说清楚；没有拦截时才真写
     [6] 一键打开地图编辑器（**假 subprocess**，不真起地图编辑器）
     [7] 侧边栏「装得下就不许滚」（用户报过的 bug；判据是 canvasy(0)，不是 yview）
@@ -693,7 +696,7 @@ def t_ally_sides(app, model) -> None:
 
     # ---- 把 a 放进这条新边（走下拉）----
     new_label = "边 %d" % len(app._level_sides())
-    combo = sectioned(app).get(("敌友（边）", "combo:%s %s" % (a, app.model.faction_name(a))))
+    combo = sectioned(app).get(("敌友（边）", "combo:%s %s" % (a, level(app).faction_name(a))))
     ok(combo is not None, "★ 每个阵营都有一个「在哪条边」的下拉")
     if combo is not None:
         pick_combo(app, combo, new_label)
@@ -750,10 +753,15 @@ def t_new_reddot_faction(app, model) -> None:
     finally:
         app_module._ask_new_faction = real_ask
 
-    ok(any(str(e.get("id", "")) == added for e in model.factions),
-       "★ 新阵营进了 campaign 阵营表（全战役可用）")
+    ok(lv.faction(added) is not None and lv.faction(added).ai == M.AI_REDDOT,
+       "★ 新阵营只进了**本关**的 factions[]（自动红点性 AI）")
+    ok(not any(str(e.get("id", "")) == added for e in model.to_dict().get("factions", [])),
+       "★★ campaign.json 里**没有**阵营表（不再全战役共用）")
+    other = next((x for x in model.levels if x is not lv), None)
+    if other is not None:
+        ok(other.faction(added) is None,
+           "★★ 另一关完全看不到它（阵营表跟着关卡走，不互相污染）")
     e = lv.faction(added)
-    ok(e is not None, "★ 新阵营在本关被点名（factions[]）")
     if e is not None:
         eq(e.ai, M.AI_REDDOT, "★★ 自动设成红点性 AI")
     reddots = [x.fid for x in lv.factions if x.ai == M.AI_REDDOT]
@@ -769,7 +777,6 @@ def t_new_reddot_faction(app, model) -> None:
 
     # ---- 复原（别把样例改坏）----
     lv.remove_faction(added)
-    model.remove_faction(added)
     lv.allies = orig_pairs
     lv.allies_declared = orig_declared
     app.reddot_faction = ""
@@ -1132,6 +1139,180 @@ def t_misc(app, model) -> None:
        "★★ 那两条**没有**误伤样例数据（它把失败条件那一区划给了玩家）")
 
 
+def t_faction_list_per_level(app, model) -> None:
+    print("\n[4e] ★★ 阵营表跟着关卡走（A 关的阵营不会出现在 B 关）")
+    if len(model.levels) < 2:
+        ok(False, "（前提）样例战役至少两关")
+        return
+    lv1 = level(app)
+    lv2 = next((x for x in model.levels if x is not lv1), None)
+    if lv2 is None:
+        ok(False, "（前提）找得到另一关")
+        return
+    added = "scope_probe"
+
+    # ---- 在 A 关加一方：只出现在 A 关 ----
+    app._add_level_faction(added)
+    ok(lv1.faction(added) is not None, "★ 加的一方进了当前关的 factions[]")
+    ok(lv2.faction(added) is None, "★★ 另一关**看不到**它（不污染）")
+    ok(added in app.all_faction_ids(), "★ 当前关的界面列表里有它")
+
+    # ---- 切到 B 关：界面列表里没有它 ----
+    app.set_current_level(lv2.level_id)
+    ok(added not in app.all_faction_ids(), "★★ 切到另一关后，界面列表里没有它")
+    ok(not any(e.fid == added for e in level(app).factions), "★ 另一关的阵营表里也没有它")
+
+    # ---- 切回 A 关：它还在 ----
+    app.set_current_level(lv1.level_id)
+    ok(added in app.all_faction_ids(), "★ 切回来它还在（只属于这一关）")
+
+    # ---- 可玩标记同样是本关的（席位只在本关派生）----
+    app.set_faction_field(added, "playable", True)
+    ok(added in lv1.playable_ids(), "★★ 当前关把它标成可玩")
+    ok(added in lv1.seats(), "★ 当前关的席位由它派生")
+    ok(added not in lv2.playable_ids(), "★★ 另一关的可玩列表里没有它")
+    ok(added not in lv2.seats(), "★★ 另一关的席位也没有被改")
+    ok(not model.to_dict().get("factions"),
+       "★★ campaign.json 里始终没有阵营表（阵营表只存关卡）")
+
+    # ---- 复原 ----
+    app.set_faction_field(added, "playable", False)
+    lv1.remove_faction(added)
+    app._sides = None
+    app.refresh_all()
+    app.root.update()
+
+
+def t_level_switch_state(app, model) -> None:
+    print("\n[4f] ★★ 换关卡不串编辑期状态（用户报的「上一关的边跑到这一关」）")
+    if len(model.levels) < 2:
+        ok(False, "（前提）样例战役至少两关")
+        return
+    lv1, lv2 = model.levels[0], model.levels[1]
+    ids1 = lv1.present_ids()
+    if len(ids1) < 2:
+        ok(False, "（前提）第一关至少有两个阵营")
+        return
+
+    # ---- 造两组**明显不同**的边：第一关有边，第二关一条都没有 ----
+    orig = [(lv1, [list(p) for p in lv1.allies], lv1.allies_declared),
+            (lv2, [list(p) for p in lv2.allies], lv2.allies_declared)]
+    lv1.allies_declared = True
+    lv1.allies = [[ids1[0], ids1[1]]]
+    lv2.allies_declared = True
+    lv2.allies = []
+
+    def click_level(lid: str) -> bool:
+        app.set_page("campaign")
+        app.root.update()
+        if not app.level_tree.exists("lv:%s" % lid):
+            return False
+        app.level_tree.selection_set("lv:%s" % lid)
+        app._on_campaign_select()
+        app.root.update()
+        return True
+
+    # ---- 第一关：缓存里是它的边 ----
+    # ★ 用 set_current_level 重新从数据里读一次（之前用例可能已经把 _sides 缓存成旧值）
+    app.set_current_level(lv1.level_id)
+    app.set_page("factions")
+    app.root.update()
+    eq(app._level_sides(), [[ids1[0], ids1[1]]], "（前提）第一关的边读进来了")
+
+    # ---- 在「上一关」上留下各种编辑期状态 ----
+    only1 = [f for f in ids1 if f not in lv2.present_ids()]
+    app.selection = ("unit", 0)
+    app.reddot_faction = "red1"
+    app.brush_faction = only1[-1] if only1 else ""   # 一个只在第一关存在的阵营（如 GD1）
+    stale_pair = [list(p) for p in app._level_sides()]
+
+    # ---- 切到第二关：这些都不许跟过来 ----
+    ok(click_level(lv2.level_id), "（前提）能点中第二关")
+    app.set_page("factions")
+    app.root.update()
+    eq(app.current_level_id, lv2.level_id, "★ 当前关切到了第二关")
+    eq(app._level_sides(), [], "★★ 上一关的边**没有**跟过来（不再是 dscj 那种串数据）")
+    ok(app._level_sides() != stale_pair, "★★ 与上一关的边缓存确实不同")
+    ok(app.selection is None, "★ 摆放页的选中下标被清掉（它指向上一关的单位）")
+    eq(app.reddot_faction, "", "★ 红点页「当前编辑哪一方」被清掉")
+    if only1:
+        eq(app.brush_faction, "", "★ 画笔归属被清掉（第二关根本没有上一关那个阵营）")
+
+    # ---- 复原（别把样例的边改坏）----
+    for lv, pairs, declared in orig:
+        lv.allies = pairs
+        lv.allies_declared = declared
+    app.brush_faction = ""
+    app.reddot_faction = ""
+    app.set_current_level(lv1.level_id)
+    app.refresh_all()
+    app.root.update()
+
+
+def t_zone_owner_explicit(app, model) -> None:
+    print("\n[4g] ★★ 区划归属：没有「（用地图的）」，每一块地显式")
+    lv = level(app)
+    info = app.map_info()
+    if lv is None or info is None:
+        ok(False, "（前提）当前关有地图")
+        return
+    orig_zones = dict(lv.zone_owners)
+    orig_map = lv.map_id
+
+    # ---- 数据：载入后每一块地都有显式归属 ----
+    eq(set(lv.zone_owners), set(info.zone_ids),
+       "★★ 每一块地都在 zones[] 里（没有「用地图的」）")
+    ok(all(v in set(app.all_faction_ids()) | {""} for v in lv.zone_owners.values()),
+       "★ 每个值都是当前关的阵营 id 或空串（无主）")
+    # 旧数据缺的那一条 → 载入迁移会补成地图 owner（这里手动模拟「缺一条」）
+    missing_zid = info.zone_ids[0]
+    saved_value = lv.zone_owners.pop(missing_zid)
+    lv.ensure_zone_owners(info)
+    eq(lv.zone_owners.get(missing_zid), str(info.zone_owners.get(missing_zid, "")),
+       "★★ 缺的区划补成地图 owner（无主 = 空串）")
+    lv.zone_owners[missing_zid] = saved_value
+
+    # ---- 界面：下拉里没有「（用地图的）」；最后一项是「清空 = 无主」----
+    app.set_page("zone")
+    app.root.update()
+    combos = [w for w in walk(app.work) if isinstance(w, ttk.Combobox)]
+    ok(bool(combos), "★ 区划页有归属下拉")
+    if combos:
+        values = list(combos[0].cget("values"))
+        ok("（用地图的）" not in values, "★★ 下拉里**没有**「（用地图的）」")
+        ok("（清空 = 无主）" in values, "★ 有「（清空 = 无主）」")
+        eq(values[-1], "（清空 = 无主）", "★ 「无主」是最后一项")
+        eq(set(values[:-1]), set(app.all_faction_ids()),
+           "★ 其余选项 = 当前关的阵营表（不多不少）")
+
+    # ---- 选「无主」= 写空串；选阵营 = 写 id ----
+    zid = info.zone_ids[0]
+    app._set_zone_choice(zid, "（清空 = 无主）")
+    eq(lv.zone_owners.get(zid), "", "★★ 选「无主」→ 显式空串（不是删掉这个键）")
+    fid = app.all_faction_ids()[0]
+    app._set_zone_choice(zid, fid)
+    eq(lv.zone_owners.get(zid), fid, "★ 选阵营 → 写它的 id")
+
+    # ---- 换地图：区划表按新地图整张重建 ----
+    other = next((m for m in sorted(app.maps) if m != orig_map), None)
+    if other is not None:
+        app._set_level_map(app._map_label(other))
+        info2 = app.map_info()
+        ok(info2 is not None, "（前提）新地图读得出来")
+        if info2 is not None:
+            eq(set(lv.zone_owners), set(info2.zone_ids),
+               "★★ 换地图后区划表按新地图重建（没有残留旧地图的区划号）")
+            for z in info2.zone_ids:
+                eq(lv.zone_owners[z], str(info2.zone_owners.get(z, "")),
+                   "★ 新地图 c%d 的初值 = 它的 owner" % z)
+        app._set_level_map(app._map_label(orig_map))
+
+    # ---- 复原 ----
+    lv.zone_owners = orig_zones
+    app.refresh_all()
+    app.root.update()
+
+
 def main() -> int:
     print("DAEEM 战役编辑器 · 界面测试")
     print("工程目录：%s（测试只动 %s 里的副本）" % (PROJECT_DIR, TMP))
@@ -1165,6 +1346,9 @@ def main() -> int:
         t_same_field(app, model)
         t_ally_sides(app, model)
         t_new_reddot_faction(app, model)
+        t_faction_list_per_level(app, model)
+        t_level_switch_state(app, model)
+        t_zone_owner_explicit(app, model)
         t_escort_placement(app, model)
         t_export_blocked(app, model)
         t_open_map_editor(app, model)

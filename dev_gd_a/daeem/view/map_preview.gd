@@ -38,6 +38,7 @@ var _c_grass := Color(0.16, 0.24, 0.16)
 var _c_grass_alt := Color(0.14, 0.21, 0.15)
 var _c_forest := Color(0.10, 0.18, 0.12)
 var _c_mountain := Color(0.22, 0.20, 0.17)
+var _c_water := Color(0.18, 0.31, 0.40)
 
 
 func _ready() -> void:
@@ -55,6 +56,7 @@ func setup(p_cfg: ConfigRes, p_level) -> void:
 		_c_grass_alt = cfg.color("grass_alt")
 		_c_forest = cfg.color("forest")
 		_c_mountain = cfg.color("mountain")
+		_c_water = cfg.color("water")
 	_build_terrain()
 	queue_redraw()
 
@@ -186,6 +188,8 @@ func _build_terrain() -> void:
 			var c: Color = _c_grass if (x + y) % 2 == 0 else _c_grass_alt
 			if t == "mountain":
 				c = _c_mountain
+			elif t == "water":
+				c = _c_water
 			elif t == "forest":
 				c = _c_forest
 			img.set_pixel(x, y, c)

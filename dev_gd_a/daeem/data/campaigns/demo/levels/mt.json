@@ -17,7 +17,10 @@
       "base": [
         27,
         17
-      ]
+      ],
+      "name": "蓝方",
+      "color": "#5AC8FF",
+      "playable": true
     },
     {
       "id": "F2",
@@ -25,15 +28,22 @@
       "base": [
         1,
         4
-      ]
+      ],
+      "name": "红方",
+      "color": "#E05A5A",
+      "playable": true
     },
     {
       "id": "sj",
-      "ai": "none"
+      "ai": "none",
+      "name": "sj",
+      "color": "#ffd166"
     },
     {
       "id": "dgj",
-      "ai": "none"
+      "ai": "none",
+      "name": "dgj",
+      "color": "#5ac8ff"
     },
     {
       "id": "red1",
@@ -204,7 +214,9 @@
           }
         ],
         "escort_count": 3
-      }
+      },
+      "name": "red1",
+      "color": "#8ce08c"
     }
   ],
   "allies": [

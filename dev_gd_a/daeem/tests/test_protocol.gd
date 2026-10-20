@@ -37,8 +37,9 @@ func _run() -> void:
 	var no_body := {"v": 1, "t": "cmd", "seq": 1, "ts": 0}
 	ok(not bool(ProtocolRes.decode(JSON.stringify(no_body)).get("ok", true)), "缺 body → 拒")
 
-	ok(ProtocolRes.valid_room_code("ABC234"), "★ 合法房间码 ABC234")
-	ok(ProtocolRes.valid_room_code("abc234"), "允许小写（规范化后合法）")
-	eq(ProtocolRes.normalize_room_code(" abc234 "), "ABC234", "房间码去空白 / 转大写")
-	ok(not ProtocolRes.valid_room_code("ABC01O"), "★ 去掉易混的 0/O/1/I")
-	ok(not ProtocolRes.valid_room_code("ABC23"), "长度不对 → 拒")
+	ok(ProtocolRes.valid_room_code("123456"), "★ 合法房间码 123456")
+	ok(ProtocolRes.valid_room_code(" 123456 "), "允许前后空白（规范化后合法）")
+	eq(ProtocolRes.normalize_room_code(" 123456 "), "123456", "房间码去空白")
+	ok(not ProtocolRes.valid_room_code("ABC234"), "★ 字母码不再合法（键盘只有数字）")
+	ok(not ProtocolRes.valid_room_code("12345"), "长度不对 → 拒")
+	ok(not ProtocolRes.valid_room_code("12345a"), "混入字母 → 拒")
