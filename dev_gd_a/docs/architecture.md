@@ -215,12 +215,20 @@ dev_gd_a/daeem/
 │   ├── game_interaction.gd       #   ★ 与渲染无关的交互核心（事件提示 / 命令卡派发）
 │   ├── ground_view.gd            #   3D 地面：一整块 `PlaneMesh` + 一张烘出来的地形贴图；
 │   │                             #      **迷雾是另一块平面**（两层各 1 次 draw call）
+│   │                             #      ★ 地形色先按格烘，再双线性放大 ⇒ 水岸 / 林缘 / 山脚软过渡
+│   ├── terrain_props_view.gd     #   ★ 地形装饰：草 / 树 / 山块 / 水面（按种类各一个
+│   │                             #      `MultiMesh` ⇒ 固定 +4 次 draw call）。树 / 山块是
+│   │                             #      `assets/models/*_lowpoly.glb` 的 Blender 模型，
+│   │                             #      草 / 水是程序化网格；全部 unshaded + 面法线假光照
+│   │                             #      ★ 纯表现：只读 terrain / fog / buildings；
+│   │                             #        迷雾按格压暗、建筑占位格上的草 / 树缩到 0
 │   ├── unit_view_3d.gd           #   3D 单位：`MultiMesh` 按「阵营 × 是否将领」分桶 + billboard
 │   ├── unit_sprite_3d.gd         #   程序化兵人立牌贴图（SDF 光栅化，按变体缓存）
 │   ├── building_view_3d.gd       #   3D 建筑：`MultiMesh` + `BoxMesh`（★ 视觉高度 ≠ 逻辑高度）
 │   ├── overlay_view_3d.gd        #   3D 版的覆盖层（屏幕空间：选中圈 / 标记 / 拖框 / 建造预览）
 │   │                             #   ★ 网格 / 区划轮廓 / 占领触发区按「相机 + 区划签名」缓存
 │   │                             #     屏幕坐标；相机静止时不重投影，只重提 draw 命令
+│   │                             #   ★ **地面网格只在建造模式下画**（build_type 非空），平时保持干净
 │   ├── palette.gd                #   ★★ 坐标换算的**唯一**出处（3D 版）：**实例类**，持有 `Camera3D`；
 │   │                             #      `to_px` = `unproject_position`、`to_logic` = 地面射线求交
 │   │                             #      ⇒「格 ↔ 屏幕」的正反两面由**同一台相机**导出
@@ -483,6 +491,11 @@ static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void: ...
 房主继续 tick + 30Hz 快照（`net.snapshot_hz`，M12.7 起；原 20Hz）。合作局
 `input_ctrl.pause_allowed = false`。
 
+**调试后门（2026.10.21）**：`view/coop_lobby.gd` 在**房间界面**按 `Ctrl+Q`，会在本机
+伪造一个「已加入且已准备」的队友（只改 `_lobby.room`，不经过服务器），用来单人测合作关；
+进游戏后它就是关卡里的第二席位，没有客机、没有输入、没有 AI。真队友加入时服务器推来的
+`room_state` 会覆盖掉这份伪造。
+
 **M12.5 的实机部署（2026.10.19）**：腾讯云 Windows + nssm 服务 `DAEEMRelay`，
 监听 `0.0.0.0:8770`，公网 `ws://159.75.154.122:8770/ws`；部署脚本
 `server/deploy.ps1`（备份 / 健康检查 / 回滚 / `-DryRun`）。服务端状态只在主机上
@@ -650,6 +663,7 @@ Godot 里 DPR 由引擎处理，**但下面三条要原样继承**：
 | 视野半径的数值 | `data/config.json` 的 `fog.vision_default` / `fog.vision_building` / `unit.types.<id>.vision` / `unit.general.stats[i].vision` / **`building.<type>.vision`** | ★ **单位与建筑各有一张「每类型一个值」的表**，两处完全对称。游戏侧只读 `cfg.unit_vision_of()` / `cfg.general_vision_at()` / `cfg.building_vision_of()`（后两个的兜底分别是 `fog.vision_default` 与 `fog.vision_building`）；编辑器（tools/unit_editor）改的是同一批键 |
 | 灰色遮罩的颜色与不透明度 | `data/config.json` 的 `fog.mask_color` / `fog.mask_alpha` → `cfg.fog_mask_color` | 纯显示；`view/ground_view.gd` 烘的迷雾贴图只存「看得见 / 看不见」，颜色靠材质的 modulate —— 换颜色不必重烘贴图 |
 | 地图边界金线的位置 / 颜色 / 线宽 / 渐变与扫描 | `data/config.json` 的 `render.map_border_*`（offset / color / width / fade_tiles / dim_alpha / scan_alpha / scan_sec / scan_tiles）→ `view/map_border_view.gd` + `view/map_border.gdshader`（`game_scene3d` 建的 `MapBorderView3D`） | 纯表现：只读 `world.map.cols` / `rows`，线画在可玩矩形**之外** offset 格（默认 2），**不进快照**、不改逻辑、无碰撞。线宽是**世界单位**（缩放时跟着变粗变细）；渐变（默认 0.5 格，朝向地图内侧）由**几何**给形状、扫描（一遍 7 秒、由上往下循环）由 **shader** 按世界 z 算；它只挂在游戏内场景，两个编辑器都不画 |
+| 地形装饰（树 / 山块 / 水面）的密度、尺寸与配色 | `data/config.json` 的 `render.terrain_props.*`（enabled / tree_spacing / tree_scale / tree_density / tree_spill_tiles / mountain_scale / water_lift / water_color / water_alpha / fog_dim / shadow_alpha / fade_alpha）→ `view/terrain_props_view.gd` + `view/terrain_props.gdshader` / `view/terrain_water.gdshader`（`game_scene3d` 建的 `TerrainPropsView3D`）；地形底色另在 `colors.grass / grass_alt / forest / mountain / water` | 纯表现：只读 `world.map.terrain` / `world.fog` / `world.buildings`，**不进快照**、不改逻辑、无碰撞、不参与寻路。**草地不生成 3D 草叶**（只保留地面底色）。按种类各一个 `MultiMesh`（树 / 树影 / 山 / 水 = 固定 +4 次 draw call），**全局抖动网格撒点**（不按格中心）⇒ 没有一格为周期的重复；同一张图每次一致。树允许向林缘外的草地外溢 `tree_spill_tiles` 格，打散矩形林缘。树 / 山块模型按**1 单位 = 1 格、底边 y = 0** 建（山块 1×1×1 铺满整格）；迷雾按格把实例色乘 `fog_dim`（0.55，与 `fog.mask_alpha` 0.45 对齐）；建筑占位格上的树每 15 帧检查一次并缩到 0（墙 / 箭塔可以建在森林和草地上）；**单位所在格 3×3 内的树 / 山块淡出**（与建筑同一条规则，靠“不透明主批 + 淡出批”实现，避免 MultiMesh 整体进透明管线） |
 | 操作页的「命令模式」（点了移动 / 攻击 / 行军之后等左键点地图） | `view/input_controller.gd` 的 `order_mode` | 纯本地输入状态，与 `build_type` 同源、互斥；命令照旧只走 `command_issued` |
 | 招募队列的实现细节（进度、五个格子的几何） | `logic/unit.gd` 的 `train_*` 字段 / `logic/zone.gd` 的 `train_*` 字段（**区划招募**）+ `view/recruit_queue.gd` | 进度由 `unit.train_progress()` / `world.zone_train_progress()` 算好，视图只取色与填格子（不让视图自己发明判定，见 pitfalls 5.20）；同一个控件显示「将领的队列」或「区划的队列」（`set_queue(holder, is_zone)`） |
 | 事件（击杀 / 建筑被拆 / 招募…） | `logic/world.gd` 收集 → `world.tick()` 返回；客机走 `net/event_codec.gd` | **逻辑层不写 UI 文案**；目前只翻译三条：`recruit_rejected` / `order_rejected` → 左栏那行红字、`unit_recruited` → 把新兵选上（`view/game_scene3d.gd` → `hud` / `input_controller`）。★ 联机时事件里的对象引用换成 id / 建筑 key，客机再查回本地对象 |

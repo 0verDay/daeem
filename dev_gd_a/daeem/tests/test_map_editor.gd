@@ -25,6 +25,7 @@ func _cases() -> void:
 	_test_exists_forms(cfg)
 	_test_missing_tile_blocks(cfg)
 	_test_zones_grid(cfg)
+	_test_zone_id_gap(cfg)
 	_test_empty_zone_kept(cfg)
 	_test_zone_kinds(cfg)
 	_test_faction_bases(cfg)
@@ -337,6 +338,32 @@ func _test_zones_grid(cfg) -> void:
 	ok(zs.zone_at(0, 0) != null and int(zs.zone_at(0, 0)["id"]) == 0, "(0,0) 属于东关")
 	ok(zs.zone_at(2, 0) != null and int(zs.zone_at(2, 0)["id"]) == 1, "(2,0) 属于江陵")
 	ok(zs.zone_at(0, 2) != null and int(zs.zone_at(0, 2)["id"]) == 1, "(0,2) 属于江陵")
+
+
+## ★★ 区划 id 允许**跳号**（真实例子：dscj 的 id 是 0..23、25、26，24 被删掉了）。
+## `lookup` 存的是 id，`zone_at()` 必须按 id 查表；直接 `zones[id]` 会在 id=2 时越界。
+func _test_zone_id_gap(cfg) -> void:
+	var path := _write_map("zones_gap.json", {
+		"cols": 3, "rows": 1,
+		"layout": ["..."],
+		"zones": [[0, 2, 2]],
+		"zone_list": [
+			{"id": 0, "name": "甲"},
+			{"id": 2, "name": "丙"},
+		],
+		"base": [0, 0],
+	})
+	var m = MapDataRes.load_from(path, cfg)
+	ok(m != null, "区划 id 跳号的地图能载入")
+	if m == null:
+		return
+	var zs = ZoneRes.build_from_map(m, cfg, ["p1"])
+	eq(zs.zones.size(), 2, "只建出实际存在的两个区划（0 和 2）")
+	var z0 = zs.zone_at(0, 0)
+	var z2 = zs.zone_at(1, 0)
+	ok(z0 != null and int(z0["id"]) == 0, "(0,0) 属于 id=0")
+	ok(z2 != null and int(z2["id"]) == 2, "★ 跳号 id=2 的格子能正确取到（不会越界崩）")
+	ok(zs.zone_at(2, 0) != null and int(zs.zone_at(2, 0)["id"]) == 2, "(2,0) 也属于 id=2")
 
 func _test_empty_zone_kept(cfg) -> void:
 	var path := _write_map("zones_empty.json", {

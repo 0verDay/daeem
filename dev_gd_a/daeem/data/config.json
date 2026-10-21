@@ -176,6 +176,35 @@
     "selection_ring_alpha": 0.8,
     "selection_ring_sec": 0.18,
     "selection_ring_scale_from": 1.5,
+    "_terrain_props_comment": [
+      "★★ 地形装饰（见 view/terrain_props_view.gd）：树 / 山块 / 水面 / 树底阴影，",
+      "   纯表现：只读 terrain / fog / buildings，不参与寻路、视野、快照。",
+      "   草地不生成 3D 草叶（只保留地面底色）；树 / 山块是 assets/models 的 Blender glb（1 单位 = 1 格）。",
+      "   · tree_spacing       树间距（格）；0.50 ⇒ 每格约 4 棵",
+      "   · tree_scale         树模型缩放（模型 0.96 格高；0.78 ⇒ 约 0.75 格）",
+      "   · tree_density       格点被保留的概率",
+      "   · tree_spill_tiles   允许树长到林缘外草地的距离（格）：打散矩形边",
+      "   · mountain_scale     山块高度倍率（只压高度，XZ 仍铺满整格）",
+      "   · water_lift         水面比地面高多少世界单位",
+      "   · water_color/alpha  水面颜色与不透明度",
+      "   · fog_dim            迷雾里的道具压暗到多少（0.55 = 与 fog.mask_alpha 0.45 对齐）",
+      "   · shadow_alpha       树底接地暗斑的浓度（0 = 关掉）",
+      "   · fade_alpha         单位靠近时树 / 山块淡到的不透明度（1 = 不淡；0.3 = 与建筑同档）"
+    ],
+    "terrain_props": {
+      "enabled": true,
+      "tree_spacing": 0.50,
+      "tree_scale": 0.78,
+      "tree_density": 0.95,
+      "tree_spill_tiles": 0.35,
+      "mountain_scale": 1.0,
+      "water_lift": 2.0,
+      "water_color": "#3d84ad",
+      "water_alpha": 0.55,
+      "fog_dim": 0.55,
+      "shadow_alpha": 0.34,
+      "fade_alpha": 0.30
+    },
     "_map_border_comment": [
       "★★ 地图边界的金线（见 view/map_border_view.gd）：在**可玩矩形之外**画一圈金色细带，",
       "   让玩家一眼看出「地图到哪儿为止」。只挂在游戏内场景，两个编辑器都不画。",
@@ -1988,12 +2017,18 @@
     }
   },
 
-  "colors": {    "grass": "#33422f",
-    "grass_alt": "#2f3d2c",
-    "forest": "#24402a",
-    "mountain": "#4c4a45",
-    "mountain_edge": "#5f5c55",
-    "water": "#2e4f66",
+  "colors": {
+    "_terrain_comment": [
+      "★ 本轮提亮地形底色（配合 render.terrain_props 的立体道具）：",
+      "  草地更绿、森林更深、山更灰、水更蓝，四类一眼能分开。",
+      "  改这里同时影响地面贴图、小地图与地图预览的配色。"
+    ],
+    "grass": "#40573a",
+    "grass_alt": "#394f33",
+    "forest": "#264b2b",
+    "mountain": "#5e594f",
+    "mountain_edge": "#706a60",
+    "water": "#2c6288",
     "grid": "rgba(255,255,255,0.055)",
     "grid_strong": "rgba(255,255,255,0.12)",
     "zone_line": "rgba(255,255,255,0.10)",

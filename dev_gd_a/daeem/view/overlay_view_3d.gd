@@ -272,8 +272,15 @@ var capture_area_count: int = 0
 
 ## 网格线：**整张图**的横竖格线（顶点是格坐标，缓存一次即可）。
 ##
+## ★ 只在**建造模式**下画（`build_type` 非空）：
+##   平时地面保持干净，进入建造（Q / W 或右下建筑页）时网格才出现，帮玩家对齐地块。
+##   退出建造（再按一次 / Esc / 右键）后网格立刻消失。
+##
 ## ★ 计数与绘制**分开**（下一段说明为什么）。
 func _draw_grid() -> void:
+	if build_type == "":
+		grid_draw_count = 0
+		return
 	grid_draw_count = _count_grid_lines()
 	# ★★ 顶点是**上一帧缓存的屏幕坐标**（见 `_refresh_static_projection()`）：
 	#    相机不动时这里一次投影都不做，只重新提交 draw 调用。

@@ -51,8 +51,8 @@ func _run() -> void:
 		var lp = lobby.find_child("LobbyPanel", true, false)
 		ok(lp != null, "大厅面板在")
 		if lp != null:
-			v2_near((lp as Control).global_position, Vector2(1300, 140), 2.0,
-				"★ 大厅面板落在屏幕 (1300,140)，宽度缩到 500")
+			v2_near((lp as Control).global_position, Vector2(1372, 140), 2.0,
+				"★ 大厅面板右缘与返回按钮对齐（宽度 500）")
 		var back = lobby.get_parent().find_child("BackBtn", true, false)
 		ok(back != null, "大厅返回按钮在")
 		if back != null:
@@ -61,6 +61,10 @@ func _run() -> void:
 				"★ 大厅返回按钮与战役面板同一距离（不贴屏幕边）")
 			near((back as Control).global_position.y, 48.0, 2.0,
 				"★ 返回按钮上方也留出战菜单同样的边距")
+			if lp != null:
+				near((lp as Control).global_position.x + (lp as Control).size.x,
+					(back as Control).global_position.x + (back as Control).size.x, 2.0,
+					"★ 大厅面板右缘 == 返回按钮右缘")
 
 	screen.queue_free()
 	await process_frame

@@ -273,7 +273,8 @@ class FillAnimator extends Control:
 	##   需求要「禁用按钮也有悬停反馈，只是填灰的」，所以禁用走 `_goal()` 里的灰档，
 	##   这个字段留给「空槽 / 压根不是一个可交互动效」的场合。
 	var _available: bool = true
-	## ★ 这一帧用的是**灰档**（按钮被禁用 ⇒ 填灰，见 `_goal()`）。
+	## ★ 是否强制走**灰档**（按钮本身仍可交互）。合作大厅客机的地图预览要
+	##   “能悬停 / 能按、填灰、但点了没逻辑”，就是靠这个。
 	var _grey: bool = false
 	## ★★ 「上一帧这颗按钮吃不到鼠标（`mouse_filter == IGNORE`）」——
 	##   用来在**过滤器被还原的那一帧**按真实鼠标位置重算悬停态，见 `_sync_hover_filter()`。
@@ -528,7 +529,17 @@ class FillAnimator extends Control:
 	## 这一帧是不是灰档（禁用 + 已经填起来了一点点）。★ 用「已经填了多少」而不是
 	## 「现在禁不禁用」判断：否则「从禁用变成可用」的途中颜色会**中途跳一次金**。
 	func is_grey() -> bool:
-		return _button != null and is_instance_valid(_button) and _button.disabled
+		return _grey or (_button != null and is_instance_valid(_button) and _button.disabled)
+
+
+	## 强制灰档（不改变按钮的 disabled / 可点击性）。
+	func set_forced_grey(v: bool) -> void:
+		if _grey == v:
+			return
+		_grey = v
+		_was_grey = is_grey()
+		_refresh_colors()
+		queue_redraw()
 
 
 	## ★★ 「这片填充上**只准用原色（那个亮字）**，不许自动换成填充档的暗字」。
@@ -1089,6 +1100,18 @@ static func set_latched(b: Button, on: bool) -> void:
 	var a := animator_of(b)
 	if a != null:
 		a.set_latched(on)
+
+
+## 强制灰档但保持可点击 / 可悬停（合作大厅客机的地图预览）。
+static func set_grey(b: Button, on: bool) -> void:
+	var a := animator_of(b)
+	if a != null:
+		a.set_forced_grey(on)
+
+
+static func is_grey(b: Button) -> bool:
+	var a := animator_of(b)
+	return a != null and a.is_grey()
 
 
 ## 这颗按钮允不允许填充（禁用态 = false）。

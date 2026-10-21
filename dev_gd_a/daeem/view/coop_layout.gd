@@ -22,15 +22,15 @@ const MATE_SEAT := Rect2(640.0, 180.0, 360.0, 700.0)
 const SEAT_OFFSCREEN := -800.0
 
 ## 三块面板
-const LOBBY_PANEL := Rect2(1300.0, 140.0, 500.0, 800.0)
-const ROOM_PANEL := Rect2(1140.0, 140.0, 660.0, 800.0)
-const ROOM_PANEL_MAP := Rect2(60.0, 140.0, 660.0, 800.0)
+const LOBBY_PANEL := Rect2(1372.0, 140.0, 500.0, 800.0)
+const ROOM_PANEL := Rect2(1372.0, 140.0, 500.0, 800.0)
+const ROOM_PANEL_MAP := Rect2(60.0, 140.0, 500.0, 800.0)
 const MAP_PANEL := Rect2(760.0, 140.0, 600.0, 800.0)
-const OFFSCREEN_RIGHT := Rect2(1920.0, 140.0, 660.0, 800.0)
-const OFFSCREEN_LEFT := Rect2(-660.0, 140.0, 660.0, 800.0)
+const OFFSCREEN_RIGHT := Rect2(1920.0, 140.0, 500.0, 800.0)
+const OFFSCREEN_LEFT := Rect2(-500.0, 140.0, 500.0, 800.0)
 
 const PANEL_PAD := 24.0
-const INNER_W := 612.0
+const INNER_W := 452.0
 
 ## 大厅面板内部（2026.10.20 第三轮：面板再缩到 500 宽，内部 452）
 const LOBBY_INNER_W := 452.0
@@ -53,9 +53,9 @@ const LOBBY_ACTION := Rect2(24.0 + LOBBY_KEY_W + LOBBY_KEY_GAP,
 	452.0 - LOBBY_KEY_W - LOBBY_KEY_GAP, LOBBY_KEY_H)
 
 ## 房间面板内部
-const ROOM_PREVIEW := Rect2(24.0, 24.0, 612.0, 440.0)
-const ROOM_DESC := Rect2(24.0, 480.0, 612.0, 180.0)
-const ROOM_ACTION := Rect2(24.0, 680.0, 612.0, 72.0)
+const ROOM_PREVIEW := Rect2(24.0, 24.0, 452.0, 440.0)
+const ROOM_DESC := Rect2(24.0, 480.0, 452.0, 180.0)
+const ROOM_ACTION := Rect2(24.0, 680.0, 452.0, 72.0)
 
 ## 地图选择面板内部
 const MAP_HEADER := Rect2(24.0, 16.0, 552.0, 40.0)

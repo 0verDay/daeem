@@ -48,6 +48,14 @@ const DEFAULT_POPULATION_CAP := 1.0
 const DEFAULT_KIND := "population"
 
 var zones: Array = []
+## 区块 id → 区块字典。
+##
+## ⚠️ **不要**再用 `zones[id]` 取区块：地图编辑器导出的 `zone_list` 允许**跳号**
+##   （实测 `data/maps/dscj/map.json` 的 id 是 0..23、25、26 —— 24 被删掉了）。
+##   `lookup` 里存的是 id，直接拿它当下标，遇到第一个 25/26 的格子就会越界崩溃
+##   （`zone_at` 被 `world.add_building` → `_spawn_zone_centers` 调到时直接终止游戏）。
+##   这张表在 `build_from_map()` 末尾建好，`zone_at()` 只读它。
+var zones_by_id: Dictionary = {}
 ## 地块索引 → 区块 id（-1 = 不属于任何区块）
 var lookup: Array = []
 ## ★ 地块索引 → 「这一格是哪个区块的中心」（-1 = 不是任何区块的中心）。
@@ -88,7 +96,16 @@ static func build_from_map(map, cfg: ConfigRes, factions: Array) -> RefCounted:
 	zs._apply_map_population_caps(map)
 	# ★ 区划种类（地图给的；缺字段 / 手改写错 → 默认那一档，见 cfg.zone_kind_default()）
 	zs._apply_map_kinds(map)
+	# ★ id → 区块的索引（两条建法都走完再建；见 `zones_by_id` 的说明）
+	zs._reindex_zones()
 	return zs
+
+
+## 重建 `zones_by_id`。只在建区划的最后调一次；之后 id / 列表都不再变。
+func _reindex_zones() -> void:
+	zones_by_id.clear()
+	for z in zones:
+		zones_by_id[int(z["id"])] = z
 
 
 ## 一个区块字典（两条建法共用，字段集中在这里，免得漏一个）
@@ -615,14 +632,15 @@ static func _capture_factions(factions: Array) -> Array:
 	return out
 
 
-## 取得某个地块所属区块（越界返回 null）
+## 取得某个地块所属区块（越界 / 空 id 返回 null）
 func zone_at(x: int, y: int) -> Variant:
 	if x < 0 or y < 0 or x >= cols or y >= rows:
 		return null
 	var id: int = lookup[y * cols + x]
 	if id < 0:
 		return null
-	return zones[id]
+	# ★ 按 id 查表，**不能**写 `zones[id]`：zone_list 允许跳号（见 `zones_by_id`）。
+	return zones_by_id.get(id, null)
 
 
 ## 区块内是否存在某方建筑

@@ -338,15 +338,22 @@ func _bake(cols: int, rows: int) -> ImageTexture:
 		_tex = ImageTexture.create_from_image(_bake_img)
 	var img: Image = _bake_img
 	var c_grass: Color = cfg.color("grass")
-	var c_grass_alt: Color = cfg.color("grass_alt")
 	var c_forest: Color = cfg.color("forest")
 	var c_mountain: Color = cfg.color("mountain")
 	var c_water: Color = cfg.color("water")
 	var c_neutral: Color = cfg.color("zone_neutral")
-	baked_tiles = 0
+
+	# ① 先在**格分辨率**上铺一张颜色场（地形 + 区划归属），再交给引擎双线性放大。
+	#    ★★ 为什么要这样（本轮改）：原来逐格 `fill_rect` 是**一刀切**的硬边 ——
+	#      树林、山地、水泊在屏幕上就是一个矩形色块，像贴上去的地毯。
+	#      格分辨率 + `INTERPOLATE_BILINEAR` 放大 ⇒ 每条边界都变成约一格宽的软过渡
+	#      （水岸、山脚、林缘都自然晕开），而代价只有两次引擎级图像操作。
+	#    ★ 不在 16 像素/格的图上逐像素算：那要每个像素采 4 个邻居，
+	#      100×100 的大图 = 256 万像素 × 4，手机上会卡一下；这里与地图大小基本无关。
+	var low := Image.create(cols, rows, false, Image.FORMAT_RGBA8)
 	for ty in rows:
 		for tx in cols:
-			# ① 地形底色（棋盘格微差：让地块边界看得出来，又不至于像格子纸）
+			# ① 地形底色（不再做棋盘格：边界由软过渡 + 装饰层表达，棋盘格反而像格子纸）
 			var kind := String(world.map.terrain.get_cell(tx, ty)) \
 				if world.map.terrain.has(tx, ty) else ""
 			var c: Color
@@ -358,7 +365,7 @@ func _bake(cols: int, rows: int) -> ImageTexture:
 				"forest":
 					c = c_forest
 				_:
-					c = c_grass if (tx + ty) % 2 == 0 else c_grass_alt
+					c = c_grass
 			# ② 区划归属：**一层半透明的阵营色**压在底色上（不画任何轮廓）
 			var z = world.zones.zone_at(tx, ty) if world.zones != null else null
 			if z != null:
@@ -368,9 +375,18 @@ func _bake(cols: int, rows: int) -> ImageTexture:
 					c = c_lerp(c, oc, 0.22)
 				else:
 					c = c_lerp(c, c_neutral, 0.18)
-			# ③ 地图外的格子（exists = false）烘成**透明**：露出来的是世界背景
-			var exists: bool = world.map.tile_exists(tx, ty)
-			img.fill_rect(Rect2i(tx * k, ty * k, k, k), c if exists else Color(0, 0, 0, 0))
+			low.set_pixel(tx, ty, c)
+
+	# ② 双线性放大到贴图分辨率（一格 = PX_PER_TILE 像素）
+	low.resize(w, h, Image.INTERPOLATE_BILINEAR)
+	img.blit_rect(low, Rect2i(0, 0, w, h), Vector2i.ZERO)
+
+	# ③ 地图外的格子（exists = false）烘成**透明**：露出来的是世界背景
+	baked_tiles = 0
+	for ty in rows:
+		for tx in cols:
+			if not world.map.tile_exists(tx, ty):
+				img.fill_rect(Rect2i(tx * k, ty * k, k, k), Color(0, 0, 0, 0))
 			baked_tiles += 1
 	if _tex == null:
 		_tex = ImageTexture.create_from_image(img)

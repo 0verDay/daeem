@@ -8,6 +8,7 @@
 ##     GameScene3D (Node3D)
 ##       ├── Camera3D            ← 固定俯角：沿自身坐标轴平移 + 缩放，**不俯仰旋转**
 ##       ├── GroundView3D        ← 一块 PlaneMesh + 一张烘出来的地形贴图（1 次 draw call）
+##       ├── TerrainPropsView3D  ← 草 / 树 / 山块 / 水面（按种类各一个 MultiMesh，纯表现）
 ##       ├── MapBorderView3D     ← 可玩矩形**之外**的一圈金线（纯表现，只读 map 尺寸）
 ##       ├── UnitView3D          ← MultiMeshInstance3D + billboard（1000 单位一个批次）
 ##       └── Overlay2D (CanvasLayer) ← 选中圈 / 标记 / 拖框（屏幕空间，用 palette.to_px 定位）
@@ -18,6 +19,8 @@ const WorldRes = preload("res://logic/world.gd")
 const MapLibraryRes = preload("res://logic/map_library.gd")
 const PaletteRes = preload("res://view/palette.gd")
 const GroundViewRes = preload("res://view/ground_view.gd")
+## ★ 地形装饰（草 / 树 / 山块 / 水面）：纯表现，只读 terrain / fog / buildings
+const TerrainPropsRes = preload("res://view/terrain_props_view.gd")
 ## ★ 地图边界的金线（见 view/map_border_view.gd）：纯表现，只读 world.map 的尺寸
 const MapBorderViewRes = preload("res://view/map_border_view.gd")
 const UnitViewRes = preload("res://view/unit_view_3d.gd")
@@ -58,6 +61,8 @@ var cam: Camera3D = null
 ## ★ 投影助手（`view/palette.gd` 的实例）：所有「格 ↔ 屏幕」的换算都问它
 var palette = null
 var ground = null
+## ★ 地形装饰层（草 / 树 / 山块 / 水面）：纯表现，只读 terrain / fog / buildings
+var terrain_props = null
 ## ★ 地图边界的金线（只在对战场景画一层；读 border_tiles 看它画在哪一格）
 var map_border = null
 var units = null
@@ -369,6 +374,13 @@ func _assemble() -> void:
 	add_child(ground)
 	ground.setup(cfg, world, palette)
 
+	# 地形装饰：草 / 树 / 山块 / 水面。★ 挂在 ground 之后：它只读地形与迷雾，
+	#   不参与任何玩法；建筑占位与迷雾压暗由它自己按帧节拍处理。
+	terrain_props = TerrainPropsRes.new()
+	terrain_props.name = "TerrainPropsView3D"
+	add_child(terrain_props)
+	terrain_props.setup(cfg, world, palette)
+
 	# 地图边界的金线：在可玩矩形**之外** offset 格画一圈细带
 	#   ★ 只在游戏内挂（两个编辑器与预览都不画）；它不参与任何玩法判定
 	map_border = MapBorderViewRes.new()
@@ -647,6 +659,8 @@ func _process(dt: float) -> void:
 	# ★★ 建筑层复用单位层同一次遍历算好的「可见单位 3×3 邻格」——
 	#    否则它要自己再对全部单位扫一遍 + 再做一遍迷雾查询（1000 单位下约 2 ms/帧）。
 	buildings.set_fade_marked(units.fade_marked())
+	# 地形装饰也用同一份「可见单位所在格」：树 / 山块靠它决定谁淡出（3×3 规则，与建筑一致）
+	terrain_props.set_fade_marked(units.fade_marked())
 	buildings.sync()
 	_prof_done("view/buildings", _t_build)
 	var _t_other := _prof()

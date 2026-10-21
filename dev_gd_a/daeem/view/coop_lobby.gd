@@ -44,6 +44,9 @@ var _lobby = null
 var _transport = null
 var _pending_action: Dictionary = {}
 var _in_game: bool = false
+## ★★ 调试后门：Ctrl+Q 在房间界面伪造的队友（只在本机，不经过服务器）。
+##   见 `_debug_fake_guest()`；真队友加入时会被服务器的 room_state 覆盖掉。
+var _fake_guest: bool = false
 
 ## 房间列表
 var _http: HTTPRequest = null
@@ -85,8 +88,11 @@ var _back_btn: Button = null
 var _back_ready: bool = false
 var _relay_override: String = ""
 var _state_tween: Tween = null
+var _last_lobby_error: String = ""
 ## 大厅面板撑满时的尺寸：收回时按它的比例把整块内容缩小（而不是让内容被裁掉后“往右下跑”）。
 var _scale_base: Vector2 = Vector2.ZERO
+## 仅测试 / 截图用：覆盖视口宽度，模拟手机横屏比 1920 更宽。
+var _screen_width_override: float = 0.0
 
 
 func setup(p_cfg, p_font: Font) -> void:
@@ -95,7 +101,7 @@ func setup(p_cfg, p_font: Font) -> void:
 	_anim_sec = 0.0 if cfg == null else maxf(0.0, float(cfg.num("coop.lobby.anim_sec", 0.32)))
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
-	resized.connect(_apply_collapse_scale)
+	resized.connect(_on_resized)
 	_load_catalog()
 	_build()
 	_reposition_layout.call_deferred()
@@ -106,6 +112,31 @@ func setup(p_cfg, p_font: Font) -> void:
 func _process(_dt: float) -> void:
 	if _lobby != null:
 		_lobby.poll()
+
+
+## ★★ 调试后门：在「房间」界面按 Ctrl+Q，本机伪造一个已加入且已准备的队友。
+##
+## ★ 为什么只在本地改 `_lobby.room`：后门不该要求服务端配合。
+##   中继那边这间房仍然没有 guest，房主点「开始」时服务器会回一条 `err: start`，
+##   但**不会断开连接**；此时 transport 已经交给 `game_scene`，那条 err 被 HostSession
+##   静默丢弃，于是单人也能真的进合作关。
+## ★ 进入游戏后第二个席位就是关卡里的 F2：照常生成部队 / 建筑，但没有客机、
+##   没有输入、没有 AI —— 纯占位。它不会自己动，也不会发命令。
+## ★ 如果真有队友加入，服务器会推 `room_state`，`_on_room_state()` 把 `_fake_guest`
+##   清掉、用真实状态覆盖 ⇒ 后门自动失效，不会挡住正常联机。
+func _input(event: InputEvent) -> void:
+	if not (event is InputEventKey):
+		return
+	var key := event as InputEventKey
+	if not key.pressed or key.echo:
+		return
+	if not (key.keycode == KEY_Q or key.physical_keycode == KEY_Q) or not key.ctrl_pressed:
+		return
+	# 只在「房间」界面生效；已经进游戏 / 面板已收起时不响应。
+	if _state != STATE_ROOM or _in_game or not is_visible_in_tree():
+		return
+	if _debug_fake_guest():
+		get_viewport().set_input_as_handled()
 
 
 ## 测试 / 排查：覆盖 `net.relay_url`（正常玩家不调用）。
@@ -186,7 +217,7 @@ func _reposition_layout() -> void:
 	_set_state_instant(_state)
 	_apply_collapse_scale()
 	if _back_btn != null and is_instance_valid(_back_btn):
-		_back_btn.position = _local_pos(CoopLayoutRes.back_rect(_state).position)
+		_back_btn.position = _local_pos(_back_rect_for(_state).position)
 		_back_btn.size = CoopLayoutRes.BACK_RIGHT.size
 		_back_ready = true
 
@@ -200,6 +231,98 @@ func _apply_collapse_scale() -> void:
 	s = clampf(s, 0.04, 1.0)
 	scale = Vector2(s, s)
 	pivot_offset = size * 0.5
+
+
+## 窗口 / 手机横竖屏变化：只有“收回面板”（宽高都明显变小）才做整体缩小；
+## 其余情况按当前可视宽度重新排，面板右边始终跟返回按钮右边对齐。
+func _on_resized() -> void:
+	if not is_inside_tree():
+		return
+	var collapsing := _scale_base != Vector2.ZERO \
+		and size.x < _scale_base.x * 0.9 and size.y < _scale_base.y * 0.9
+	if collapsing:
+		_apply_collapse_scale()
+		return
+	scale = Vector2.ONE
+	pivot_offset = Vector2.ZERO
+	_set_state_instant(_state)
+	if _back_btn != null and is_instance_valid(_back_btn):
+		_back_btn.position = _local_pos(_back_rect_for(_state).position)
+		_back_btn.size = CoopLayoutRes.BACK_RIGHT.size
+
+
+## 当前视口宽度。不能拿 `size.x`：二级面板本身比屏幕窄 48px，
+## 手机横屏又被 stretch/expand 拉宽。
+func _screen_w() -> float:
+	if _screen_width_override > 0.0:
+		return _screen_width_override
+	var vp := get_viewport()
+	if vp != null:
+		return vp.get_visible_rect().size.x
+	return maxf(1920.0, size.x)
+
+
+## 测试 / 截图：模拟手机横屏宽度；传 0 恢复真实视口。
+func set_screen_width_override(w: float) -> void:
+	_screen_width_override = maxf(0.0, w)
+	_on_resized()
+
+
+## 右上角返回按钮的右缘（设计坐标）。
+func _right_edge() -> float:
+	return _screen_w() - 48.0
+
+
+func _offscreen_right() -> Rect2:
+	var r := CoopLayoutRes.OFFSCREEN_RIGHT
+	r.position.x = _screen_w() + 20.0
+	return r
+
+
+func _lobby_rect_for(state: String) -> Rect2:
+	if state != STATE_LOBBY:
+		return _offscreen_right()
+	var r := CoopLayoutRes.LOBBY_PANEL
+	r.position.x = _right_edge() - r.size.x
+	return r
+
+
+func _room_rect_for(state: String) -> Rect2:
+	match state:
+		STATE_LOBBY:
+			return _offscreen_right()
+		STATE_MAP:
+			return CoopLayoutRes.ROOM_PANEL_MAP
+		_:
+			var r := CoopLayoutRes.ROOM_PANEL
+			r.position.x = _right_edge() - r.size.x
+			return r
+
+
+func _map_rect_for(state: String) -> Rect2:
+	return CoopLayoutRes.MAP_PANEL if state == STATE_MAP else _offscreen_right()
+
+
+func _back_rect_for(state: String) -> Rect2:
+	if state == STATE_MAP:
+		return CoopLayoutRes.BACK_LEFT
+	var r := CoopLayoutRes.BACK_RIGHT
+	r.position.x = _right_edge() - r.size.x
+	return r
+
+
+## 电脑 1920 宽保持原版式；手机横屏更宽时把两席位在左侧可用区里居中，
+## 右面板贴到返回按钮下方，避免整页缩在左边、右侧空一大片。
+func _seat_rect_for(state: String, base: Rect2) -> Rect2:
+	if state == STATE_MAP:
+		return CoopLayoutRes.seat_target(state, base)
+	if _screen_w() <= 1920.5:
+		return base
+	var panel_left := _lobby_rect_for(STATE_LOBBY).position.x
+	var start := 120.0 + maxf(0.0, ((panel_left - 120.0) - 120.0 - 880.0) * 0.5)
+	var r := base
+	r.position.x = start if base == CoopLayoutRes.SELF_SEAT else start + 520.0
+	return r
 
 
 ## 设计坐标（1920×1080 屏幕）→ 本控件局部坐标。
@@ -414,11 +537,11 @@ func _set_state(next: String, animate: bool = true) -> void:
 	var tw := _state_tween
 	tw.set_parallel(true)
 	tw.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
-	_tween_panel(tw, _lobby_panel, CoopLayoutRes.lobby_rect(next))
-	_tween_panel(tw, _room_panel, CoopLayoutRes.room_rect(next))
-	_tween_panel(tw, _map_panel, CoopLayoutRes.map_rect(next))
-	_tween_seat(tw, _self_seat, CoopLayoutRes.seat_target(next, CoopLayoutRes.SELF_SEAT))
-	_tween_seat(tw, _mate_seat, CoopLayoutRes.seat_target(next, CoopLayoutRes.MATE_SEAT))
+	_tween_panel(tw, _lobby_panel, _lobby_rect_for(next))
+	_tween_panel(tw, _room_panel, _room_rect_for(next))
+	_tween_panel(tw, _map_panel, _map_rect_for(next))
+	_tween_seat(tw, _self_seat, _seat_rect_for(next, CoopLayoutRes.SELF_SEAT))
+	_tween_seat(tw, _mate_seat, _seat_rect_for(next, CoopLayoutRes.MATE_SEAT))
 	tw.chain().tween_callback(_finish_state.bind(next))
 
 
@@ -433,15 +556,15 @@ func _set_state_instant(next: String) -> void:
 	if _state_tween != null and _state_tween.is_valid():
 		_state_tween.kill()
 	_state_tween = null
-	_lobby_panel.position = _local_pos(CoopLayoutRes.lobby_rect(next).position)
+	_lobby_panel.position = _local_pos(_lobby_rect_for(next).position)
 	_lobby_panel.modulate.a = 1.0 if next == STATE_LOBBY else 0.0
-	_room_panel.position = _local_pos(CoopLayoutRes.room_rect(next).position)
+	_room_panel.position = _local_pos(_room_rect_for(next).position)
 	_room_panel.modulate.a = 0.0 if next == STATE_LOBBY else 1.0
-	_map_panel.position = _local_pos(CoopLayoutRes.map_rect(next).position)
+	_map_panel.position = _local_pos(_map_rect_for(next).position)
 	_map_panel.modulate.a = 1.0 if next == STATE_MAP else 0.0
-	_self_seat.position = _local_pos(CoopLayoutRes.seat_target(next, CoopLayoutRes.SELF_SEAT).position)
+	_self_seat.position = _local_pos(_seat_rect_for(next, CoopLayoutRes.SELF_SEAT).position)
 	_self_seat.modulate.a = 0.0 if next == STATE_MAP else 1.0
-	_mate_seat.position = _local_pos(CoopLayoutRes.seat_target(next, CoopLayoutRes.MATE_SEAT).position)
+	_mate_seat.position = _local_pos(_seat_rect_for(next, CoopLayoutRes.MATE_SEAT).position)
 	_mate_seat.modulate.a = 0.0 if next == STATE_MAP else 1.0
 	_apply_input_filters(next)
 	_sync_panel_visibility()
@@ -449,7 +572,7 @@ func _set_state_instant(next: String) -> void:
 
 func _tween_panel(tw: Tween, panel: Panel, target: Rect2) -> void:
 	tw.tween_property(panel, "position", _local_pos(target.position), _anim_sec)
-	tw.tween_property(panel, "modulate:a", 1.0 if target.position.x >= 0.0 and target.position.x < 1920.0 else 0.0,
+	tw.tween_property(panel, "modulate:a", 1.0 if target.position.x >= -1.0 and target.position.x <= _screen_w() + 1.0 else 0.0,
 		_anim_sec)
 
 
@@ -477,7 +600,7 @@ func _move_back_btn(animate: bool) -> void:
 		return
 	if not _back_ready:
 		_init_back_btn()
-	var target := CoopLayoutRes.back_rect(_state)
+	var target := _back_rect_for(_state)
 	if not animate or _anim_sec <= 0.0 or not ThemeRes.animations_enabled():
 		_back_btn.position = _local_pos(target.position)
 		return
@@ -496,7 +619,7 @@ func _init_back_btn() -> void:
 	if _back_btn == null or not is_instance_valid(_back_btn):
 		return
 	_back_btn.set_anchors_preset(Control.PRESET_TOP_LEFT, false)
-	_back_btn.position = _local_pos(CoopLayoutRes.back_rect(_state).position)
+	_back_btn.position = _local_pos(_back_rect_for(_state).position)
 	_back_btn.size = CoopLayoutRes.BACK_RIGHT.size
 	_back_ready = true
 
@@ -528,7 +651,9 @@ func _refresh_rooms() -> void:
 	if _http == null:
 		_http = HTTPRequest.new()
 		_http.name = "RoomListHttp"
-		_http.timeout = 3.0
+		_http.timeout = 8.0
+		# Android 上主线程 `HTTPClient` 偶发卡死 / 超时；房间列表走后台线程更稳。
+		_http.use_threads = true
 		_http.request_completed.connect(_on_rooms_completed)
 		add_child(_http)
 	if not _http.is_inside_tree():
@@ -546,8 +671,7 @@ func _refresh_rooms() -> void:
 	var err := _http.request(url)
 	if err != OK:
 		_http_busy = false
-		_set_status("房间列表获取失败")
-		_rooms = []
+		_set_status("房间列表获取失败（可直接输码）")
 		_render_rooms()
 
 
@@ -584,8 +708,7 @@ func _on_rooms_completed(result: int, code: int, _headers: PackedStringArray,
 		body: PackedByteArray) -> void:
 	_http_busy = false
 	if result != HTTPRequest.RESULT_SUCCESS or code != 200:
-		_set_status("房间列表获取失败")
-		_rooms = []
+		_set_status("房间列表获取失败（可直接输码）")
 		_render_rooms()
 		return
 	_rooms = RoomDirectoryRes.parse_rooms(body.get_string_from_utf8())
@@ -747,6 +870,7 @@ func _ensure_lobby() -> bool:
 		return true
 	if cfg == null:
 		return false
+	_last_lobby_error = ""
 	_transport = RelayTransportRes.new()
 	_lobby = LobbyRes.new()
 	_lobby.setup(cfg, _transport, String(cfg.str_val("net.build", ProtocolRes.BUILD)))
@@ -790,7 +914,8 @@ func _on_transport_error(message: String) -> void:
 
 func _on_lobby_error(code: String, msg: String) -> void:
 	_pending_action = {}
-	_set_status("错误：%s" % _error_text(code, msg))
+	_last_lobby_error = _error_text(code, msg)
+	_set_status("错误：%s" % _last_lobby_error)
 	if code == "no_room" or code == "room_full" or code == "code_taken":
 		_refresh_rooms()
 	_update_action()
@@ -800,7 +925,11 @@ func _on_lobby_closed(reason: String) -> void:
 	if _in_game:
 		return
 	_reset_network()
-	_set_status("连接已断开")
+	var msg := _last_lobby_error
+	_last_lobby_error = ""
+	if msg == "" and (reason.contains("build") or reason.contains("1008")):
+		msg = "服务端版本不匹配（需部署 coop-m13.1）"
+	_set_status(msg if msg != "" else "连接已断开")
 	_set_state(STATE_LOBBY, false)
 	_update_seats()
 	_refresh_rooms()
@@ -818,6 +947,8 @@ func _error_text(code: String, msg: String) -> String:
 			return "房间码不合法"
 		"start":
 			return "队友还没准备"
+		"build":
+			return "服务端版本不匹配（需部署 coop-m13.1）"
 		_:
 			return msg if msg != "" else code
 
@@ -830,11 +961,31 @@ func _on_room_state(state: Dictionary) -> void:
 	if _state == STATE_LOBBY and bool(state.get("host", false)):
 		# 自己已经是房主：进入房间面板（客机加入时 state 也会到）。
 		_set_state(STATE_ROOM)
+	# ★ 服务器的 room_state 是唯一真相：后门的 guest 从不上报服务器，
+	#   所以任何一次 room_state 都表示「本地那份伪造已被真实状态覆盖」。
+	_fake_guest = false
 	_update_seats()
 	_update_room_preview(_current_entry)
 	_update_room_action()
 	if _is_host() and bool(state.get("guest", false)):
 		_broadcast_room_cfg()
+
+
+## ★★ 调试后门：把本机的房间状态伪造成「队友已加入且已准备」。
+##   服务器不知道这件事；只要没人真的加入，它就不会用 room_state 覆盖这里。
+##   返回 true 表示这次真的伪造了（已经有人 / 不是房主时返回 false）。
+func _debug_fake_guest() -> bool:
+	if _lobby == null or not _is_host():
+		return false
+	if bool(_lobby.room.get("guest", false)):
+		return false        # 幂等：已经有队友（真的或已伪造过）就不重复加
+	_lobby.room["guest"] = true
+	_lobby.room["ready_guest"] = true
+	_fake_guest = true
+	_update_seats()
+	_update_room_action()
+	print("[COOP] Ctrl+Q：已加入占位队友（仅本机，不经过服务器）")
+	return true
 
 
 func _on_room_config(config: Dictionary) -> void:
@@ -866,7 +1017,9 @@ func _update_seats() -> void:
 		var code := String(_lobby.room_code()) if _lobby != null else ""
 		_room_code_label.text = ("房间码 %s" % code) if code != "" else ""
 	if guest:
-		_mate_seat.set_seat(_txt("player", "player"), "队友",
+		# 后门加进来的队友明确标成「占位队友」，与真联机的队友区分开。
+		var guest_role := "占位队友" if _fake_guest else "队友"
+		_mate_seat.set_seat(_txt("player", "player"), guest_role,
 			"已准备" if ready_guest else "未准备", true, ready_guest)
 	else:
 		_mate_seat.set_seat("", "", "等待队友…", false)
@@ -951,6 +1104,7 @@ func _reset_network() -> void:
 	_transport = null
 	_lobby = null
 	_pending_action = {}
+	_fake_guest = false
 
 
 # ------------------------------------------------------------------
@@ -987,7 +1141,11 @@ func _update_room_preview(entry: Dictionary) -> void:
 	_room_map_hint.text = _txt("map_hint_host", "点击更换地图") if _is_host() \
 		else _txt("map_hint_guest", "由房主选择地图")
 	_room_desc.text = String(entry.get("desc", ""))
-	_room_preview_btn.disabled = not _is_host()
+	# 客机也保持可交互：能悬停 / 长按 / 点击填灰，但 `_open_map_select()` 直接返回，
+	# 所以点击没有任何逻辑。不能简单 `disabled=true` —— 触摸下会出现“灰填一半就退、
+	# 之后再也点不动”的假死。
+	_room_preview_btn.disabled = false
+	FillButtonRes.set_grey(_room_preview_btn, not _is_host())
 
 
 func _broadcast_room_cfg() -> void:

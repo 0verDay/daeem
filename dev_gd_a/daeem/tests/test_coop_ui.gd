@@ -5,6 +5,7 @@ extends "res://tests/test_case.gd"
 
 const CoopLobbyRes = preload("res://view/coop_lobby.gd")
 const LobbyRes = preload("res://net/lobby.gd")
+const FillButtonRes = preload("res://view/fill_button.gd")
 const FontLoaderRes = preload("res://view/font_loader.gd")
 
 
@@ -110,6 +111,21 @@ func _run() -> void:
 	lobby.attach_back_button(back)
 	await _wait(3)
 	eq(back.position, Vector2(1712, 48), "★ 大厅返回按钮在右上（与战役面板同距）")
+	var lobby_panel = lobby.find_child("LobbyPanel", true, false)
+	if lobby_panel != null:
+		near((lobby_panel as Control).position.x + (lobby_panel as Control).size.x,
+			back.position.x + back.size.x, 0.1, "★ 大厅面板右缘 == 返回按钮右缘")
+
+	# 手机横屏（比 1920 宽）：右面板贴右边，席位在左侧可用区居中
+	lobby.set_screen_width_override(2400.0)
+	await _wait(2)
+	var lr: Rect2 = lobby._lobby_rect_for("lobby")
+	near(lr.position.x + lr.size.x, 2352.0, 0.1, "★ 手机宽屏：面板右缘贴屏幕右边（2400−48）")
+	near(back.position.x + back.size.x, 2352.0, 0.1, "★ 手机宽屏：返回按钮右缘同步")
+	ok(lobby._self_seat.position.x > 120.0, "★ 手机宽屏：席位不再死贴左边")
+	lobby.set_screen_width_override(0.0)
+	await _wait(2)
+	eq(back.position, Vector2(1712, 48), "★ 恢复 1920 宽后返回按钮回原位")
 
 	# ---- 房间码 / 键盘 / 按钮三态
 	var code := lobby.find_child("CodeEdit", true, false) as LineEdit
@@ -166,6 +182,20 @@ func _run() -> void:
 	fake.my_role = "guest"
 	fake.room = {"code": "123456", "host": true, "guest": true, "ready_guest": false}
 	lobby._on_room_state(fake.room)
+	var rp = lobby.find_child("RoomPanel", true, false)
+	if rp != null:
+		eq((rp as Control).size.x, 500.0, "★ 房间配置面板与大厅面板同宽（500）")
+	var preview = lobby.find_child("RoomPreviewBtn", true, false) as Button
+	ok(preview != null, "（前提）地图预览按钮在")
+	if preview != null:
+		ok(not preview.disabled, "★ 客机地图预览仍可交互（不会假死）")
+		ok(FillButtonRes.is_grey(preview), "★ 客机地图预览走灰档")
+		preview.mouse_entered.emit()
+		await _wait(20)
+		ok(FillButtonRes.fill_progress(preview) > 0.1,
+			"★ 客机悬停 / 长按地图预览会填充")
+		preview.pressed.emit()
+		eq(lobby.state_name(), "room", "★ 客机点击地图预览没有逻辑（仍留在房间）")
 	eq(lobby.find_child("RoomActionBtn", true, false).text, "准备",
 		"★ 客机未准备 → 「准备」")
 	fake.room["ready_guest"] = true
@@ -208,6 +238,14 @@ func _run() -> void:
 	near(lobby.scale.x, 0.5, 0.001, "★ 面板收回到一半尺寸 → 内容缩到 0.5")
 	near(lobby.pivot_offset.x, 250.0, 0.01, "★ 以面板中心为缩放轴")
 	lobby.scale = Vector2.ONE
+
+	# 服务端 build 不匹配：错误不能被后面的 "连接已断开" 覆盖
+	eq(lobby._error_text("build", ""), "服务端版本不匹配（需部署 coop-m13.1）",
+		"★ build 错误有明确文案")
+	lobby._on_lobby_error("build", "build mismatch")
+	lobby._on_lobby_closed("closed 1008 build mismatch")
+	ok(lobby._lobby_status.text.contains("服务端版本"),
+		"★ 关闭后仍显示服务端版本错误（不是笼统的「连接已断开」）")
 
 	lobby.queue_free()
 	back.queue_free()
