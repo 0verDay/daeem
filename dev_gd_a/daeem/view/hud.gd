@@ -186,7 +186,7 @@ var _hover_index: int = -1
 ##   手机上没有鼠标悬停：手指按在命令卡 / 科技格上时**不要**立刻弹详情（那会每点一下闪一下），
 ##   而是**按住 `touch.long_press_sec` 秒**之后才弹。松手时收起，并吞掉这一次「激活」
 ##   （长按只是为了看说明，不该顺手把那一格点下去）。
-##   · `_lp_src` / `_lp_index`：长按的是哪一格（"card" / "tech"）；
+##   · `_lp_src` / `_lp_index`：长按的是哪一格（"card" / "tech" / "buff"）；
 ##   · `_lp_active`：正在按住；`_lp_press_ms` / `_lp_press_pos`：按下时间 / 落点；
 ##   · `_lp_shown`：详情已经弹出（松手据此收起）；`_lp_swallow`：下一次激活要丢掉。
 var _lp_src: String = ""
@@ -1158,6 +1158,7 @@ func handle_touch(event: InputEventScreenTouch) -> void:
 		_lp_shown = false
 		_lp_src = ""
 		_lp_index = -1
+		_clear_buff_hover()
 		var hit := _cell_at_screen(event.position)
 		if hit.is_empty():
 			return
@@ -1172,6 +1173,7 @@ func handle_touch(event: InputEventScreenTouch) -> void:
 		return
 	# 抬起
 	var was_shown: bool = _lp_shown
+	var was_src: String = _lp_src
 	_set_touch_suppress(false)
 	_lp_active = false
 	_lp_shown = false
@@ -1185,8 +1187,11 @@ func handle_touch(event: InputEventScreenTouch) -> void:
 	call_deferred("_clear_hud_hover")
 	if was_shown:
 		_dismiss_hover()
+		_clear_buff_hover()
 		# ★ 长按只是看说明 —— 松手时随之而来的那次「激活」要丢掉（下一次按下会清掉这个记号）。
-		_lp_swallow = true
+		#   buff 不是按钮，没有激活要吞。
+		if was_src != "buff":
+			_lp_swallow = true
 
 
 ## 触摸抬起之后清整棵 HUD 的悬停（延迟一帧调用）。
@@ -1201,6 +1206,7 @@ func handle_touch_drag(event: InputEventScreenDrag) -> void:
 	if event.position.distance_to(_lp_press_pos) > cfg.touch_pan_min_px:
 		_lp_active = false
 		_set_touch_suppress(false)
+		_clear_buff_hover()
 
 
 ## 每帧推进长按计时（在 `_process` 里调）。
@@ -1210,23 +1216,38 @@ func _tick_long_press() -> void:
 	if Time.get_ticks_msec() - _lp_press_ms < int(cfg.touch_long_press_sec * 1000.0):
 		return
 	_lp_shown = true
-	if _lp_src == "tech" and tech_grid != null:
+	if _lp_src == "buff":
+		var bb = _buff_bar()
+		if bb != null:
+			bb.hover_at(_lp_index)
+	elif _lp_src == "tech" and tech_grid != null:
 		tech_grid.hover(_lp_index)
 	elif command_card != null:
 		command_card.hover(_lp_index)
 
 
-## 让命令卡 / 科技格「暂时忽略鼠标进入」——手机端按下的那一刻先别弹详情。
+## 让命令卡 / 科技格 / buff 条「暂时忽略鼠标进入」——手机端按下的那一刻先别弹详情。
 func _set_touch_suppress(on: bool) -> void:
 	if command_card != null:
 		command_card.touch_suppress_hover = on
 	if tech_grid != null:
 		tech_grid.touch_suppress_hover = on
+	var bb = _buff_bar()
+	if bb != null:
+		bb.touch_suppress_hover = on
+		if on:
+			bb.clear_hover()
 
 
-## 屏幕点落在哪一格上：`{"src": "card"/"tech", "index": i}`；不在任何格上时返回空字典。
+## 屏幕点落在哪一格上：`{"src": "card"/"tech"/"buff", "index": i}`；不在任何格上时返回空字典。
 ## ★ 科技页盖在命令卡上，所以在显示时优先判它（与它 `mouse_filter` 的优先级一致）。
+## ★ buff 条在详细信息右栏里，不与命令卡 / 科技格重叠；放在最前判只是让它先命中。
 func _cell_at_screen(pos: Vector2) -> Dictionary:
+	var bb = _buff_bar()
+	if bb != null and bb.visible:
+		for i in bb.count():
+			if bb.buff_global_rect(i).has_point(pos):
+				return {"src": "buff", "index": i}
 	if tech_grid != null and tech_grid.visible:
 		var ti := _cell_index_at(tech_grid, pos)
 		if ti >= 0:
@@ -1244,6 +1265,18 @@ func _cell_index_at(grid: Control, pos: Vector2) -> int:
 		if cell != null and cell.get_global_rect().has_point(pos):
 			return i
 	return -1
+
+
+## 详细信息右栏里的 buff 条（没有 / 还没建时返回 null）
+func _buff_bar():
+	return detail_panel.buff_bar_control() if detail_panel != null else null
+
+
+## 收起 buff 的悬停浮窗（手机松手 / 拖动取消时用）
+func _clear_buff_hover() -> void:
+	var bb = _buff_bar()
+	if bb != null:
+		bb.clear_hover()
 
 
 ## 悬停到的那一格数据。命令卡与科技九格是**两份不同形状**的 entries，所以按来源取。
@@ -2528,13 +2561,14 @@ func _refresh_detail() -> void:
 		detail_panel.set_unit_avatar_text("区")
 		# ★ 区划没有血量 → 头像底部那条血条不画。
 		detail_panel.set_unit_avatar_hp(0.0, false)
-		# ★ 区划没有士气 → 头像背景板不上士气色。
-		detail_panel.set_unit_avatar_morale(0.0, false)
 		detail_panel.set_unit_name(_zone_title(input_ctrl.selected_zone))
 		# ★★ 本次：当前人口只给**自己 / 友军**的区划看（用户原话：「如果是友军/己方区划，
 		#   额外显示其当前人口数量」）—— 敌方与中立区划的「现在有多少人」属于对手的情报。
-		detail_panel.set_detail(_zone_text(input_ctrl.selected_zone,
-			_zone_is_friendly(input_ctrl.selected_zone)))
+		# ★★ 本版：两列表格（左 = 类型 / 大小，右 = 产能多排 + 当前人口 + 特化）。
+		var zrows: Dictionary = _zone_detail_rows(input_ctrl.selected_zone,
+			_zone_is_friendly(input_ctrl.selected_zone))
+		detail_panel.set_detail_rows(zrows["left"], zrows["right"])
+		detail_panel.set_buffs([])
 		# ★ 右栏右上角那块面板（招募队列 / 单条读条共用，见 _refresh_progress_panel）
 		_refresh_progress_panel(input_ctrl.selected_zone)
 		return
@@ -2546,12 +2580,12 @@ func _refresh_detail() -> void:
 		var b = _primary_building()
 		detail_panel.set_buildings(_building_entries(input_ctrl.selected_buildings), b)
 		detail_panel.set_unit_avatar_text(_building_short(b))
-		# ★ 建筑也有血量 → 头像底部画它的血条。
+		# ★ 建筑也有血量 → 头像底部画它的血条（不再有士气背景板）。
 		detail_panel.set_unit_avatar_hp(b.hp_ratio(), true)
-		# ★ 建筑没有士气 → 头像背景板不上士气色。
-		detail_panel.set_unit_avatar_morale(0.0, false)
 		detail_panel.set_unit_name(b.display_name())
-		detail_panel.set_detail(_building_text(b))
+		var brows: Dictionary = _building_detail_rows(b)
+		detail_panel.set_detail_rows(brows["left"], brows["right"])
+		detail_panel.set_buffs([])
 		# 右栏那块面板：升级 / 特化读条 > 区划中心的招募队列 > 收起来
 		_refresh_progress_panel(b)
 		return
@@ -2577,10 +2611,12 @@ func _refresh_detail() -> void:
 	detail_panel.set_unit_avatar_text("" if shown == null else _unit_short(shown))
 	# ★ 头像底部血条：没选中单位 → 不画；否则按它的血量比例画。
 	detail_panel.set_unit_avatar_hp(1.0 if shown == null else shown.hp_ratio(), shown != null)
-	# ★ 头像背景板按士气上色（绿→红）：没选中单位 → 不上色。
-	detail_panel.set_unit_avatar_morale(1.0 if shown == null else shown.morale_ratio(), shown != null)
+	# ★ 头像**不再有士气背景板**（本版需求：单位 / 建筑只有图标 + 血条）。
 	detail_panel.set_unit_name("" if shown == null else String(shown.name))
-	detail_panel.set_detail(_unit_text(shown, troops))
+	var urows: Dictionary = _unit_detail_rows(shown)
+	detail_panel.set_detail_rows(urows["left"], urows["right"])
+	# ★ 动态 buff：当前士气系统给单位挂一条「士」；建筑 / 区划没有。
+	detail_panel.set_buffs(_buffs_for(shown))
 	# ★ 招募队列：显示**当前选中的第一个将领**的（选中整队时队长排在最前，
 	#   见 input_controller.first_selected_leader）。没选中将领 → 整块收起来。
 	detail_panel.set_queue(_queue_leader(troop), false)
@@ -2752,71 +2788,31 @@ func _refresh_enemy_detail() -> void:
 		"unit":
 			detail_panel.set_unit_avatar_text(_unit_short(e))
 			detail_panel.set_unit_avatar_hp(e.hp_ratio(), true)
-			detail_panel.set_unit_avatar_morale(e.morale_ratio(), true)
 			detail_panel.set_unit_name(String(e.name))
-			detail_panel.set_detail(_enemy_unit_text(e))
+			var urows: Dictionary = _unit_detail_rows(e)
+			detail_panel.set_detail_rows(urows["left"], urows["right"])
+			detail_panel.set_buffs(_buffs_for(e))
 		"building":
 			detail_panel.set_unit_avatar_text(_building_short(e))
 			detail_panel.set_unit_avatar_hp(e.hp_ratio(), true)
-			detail_panel.set_unit_avatar_morale(0.0, false)
 			detail_panel.set_unit_name(e.display_name())
-			detail_panel.set_detail(_enemy_building_text(e))
-
-
-## 敌对单位的数值（**只有它是什么 + 打得多疼**）。
-##
-## ★ 与己方的 `_unit_text` 只差一件事：**不写濒死那一段**。
-##   濒死是「玩家自己的将领」才有的机制（要读回复进度、判断能不能再起），
-##   敌人的将领濒死时对玩家的意义只是「它现在打不了人」，多写三行反而会误导。
-##   ⚠️ 也正因为不写那一段，敌人那几行永远是固定的三行 —— 面板不会忽然变高。
-func _enemy_unit_text(u) -> String:
-	if u == null:
-		return "未选中"
-	var lines: Array[String] = []
-	lines.append("血量 %d / %d" % [int(round(u.hp)), int(round(u.hp_max))])
-	lines.append("士气 %d" % int(round(u.morale)))
-	# ★ 兵种那一行（「长枪兵 · 近战步兵」这种）——走 `cfg.unit_class_line`，
-	#   与单位编辑器 / 其它界面同一处口径（界面不自己拼「步兵 / 骑兵」）。
-	var klass := cfg.unit_class_line(String(u.unit_type))
-	if klass != "":
-		lines.append("兵种 %s · %s" % [cfg.unit_name_of(String(u.unit_type)), klass])
-	lines.append("攻击力 %d" % int(u.combat_damage(cfg)))
-	lines.append("攻击距离 %d 格 / 间隔 %.1fs" % [
-		int(u.combat_range(cfg)), u.combat_cooldown(cfg)])
-	return "\n".join(lines)
-
-
-## 敌对建筑的数值（**只有它是什么 + 有多硬 + 打得多疼**）。
-##
-## ★★ 与己方的 `_building_text` 的差别（**故意不共用**，因为差的正是「操作性」）：
-##   · 不写「等级 N / M」——那是**升级**表的进度，升级是己方动作（玩家对敌人的建筑
-##     无能为力，写出来只会让人以为能升它）；
-##   · 不写「正在升级：还剩 X 秒」同上（那是敌人自己的内政，与玩家无关）；
-##   · 不写区划特化状态 —— 特化那一行本来就是「点自己的区划中心」看的；
-##   · 不写「建造中」—— 敌方在建的建筑信息对玩家没有价值。
-##   保留的：生命（决定要打多久）、攻击数值（决定站多远打它）、血量保底那句提示。
-func _enemy_building_text(b) -> String:
-	if b == null:
-		return "未选中"
-	var lines: Array[String] = []
-	lines.append("生命 %d / %d" % [int(round(b.hp)), int(round(b.hp_max))])
-	if b.is_attackable(cfg):
-		lines.append("伤害 %d　射程 %d 格　间隔 %.1fs" % [
-			int(b.attack_damage(cfg)), int(b.attack_range(cfg)), b.attack_cooldown(cfg),
-		])
-		if b.last_target != null and b.last_target.alive:
-			# ★ 它正在打谁 —— 这条对玩家有用（那多半是自己人），所以留着
-			lines.append("正在打：%s" % b.last_target.name)
-	return "\n".join(lines)
+			var brows: Dictionary = _building_detail_rows(e)
+			detail_panel.set_detail_rows(brows["left"], brows["right"])
+			detail_panel.set_buffs([])
 
 
 # ------------------------------------------------------------------
-# 右栏的文案（区划 / 建筑 / 选中单位的数值）
+# 右栏两列详情的**行构造**（本版新布局）
+#
+#   单位：左列 = 血量 / 攻击（+攻击增益）；右列 = 移速 / 防御（+防御增益）
+#   建筑：左列 = 血量 / 攻击；右列 = 移速（—）/ 防御
+#   区划中心：左列 = 类型 / 大小；右列 = 产能（占多排）+ 当前人口 + 特化
+#
+# ★ 行格式：`{"text": String, "small": bool, "dim": bool}`（见 view/detail_rows.gd）。
+# ★ 所有文案只在这一节组装；detail_panel 只负责排版。
 # ------------------------------------------------------------------
 
-## 区划的标题（右栏「单位名称」那一行显示的）。
-## ★★ 本版按需求只写**区划名本身**（用户原话：「选中区划中心时去掉『区划[xx]』文本」）——
-##   原来这里写「区划「xx」」、详情正文开头又写一遍，两处都带那层壳，现在都没了。
+## 区划的标题（右栏「单位名称」那一行显示的）：只写区划名本身。
 func _zone_title(z: Dictionary) -> String:
 	return String(z["name"])
 
@@ -2837,200 +2833,217 @@ func _unit_short(u) -> String:
 	return n.substr(0, 1) if n.length() > 0 else "?"
 
 
-## 建筑的数值（生命 / 等级 / 箭塔伤害 / 大本营说明）。
-##
-## ★ 本版按需求**精简**：
-##   · **去掉「归属」与「位置」两行**（谁的在建筑描边上一眼就看得出；坐标对玩家没用）；
-##   · **大本营那句「（本版不会被打掉：血量保底 1）」也去掉** —— 那是说明锁血机制的
-##     注释，不该出现在玩家界面上（用户原话：「大本营中的注释也去掉」）。
-## ★★ **等级**那一行保留（需求确认「等级显示在右栏数值里」）：有升级表的建筑写
-##   「等级 2 / 3」。
-## ★★ 本版又按需求去掉两处（用户原话：「不要显示『升级到 2 级』文本」+
-##   「去除大本营的『开局自带，不可建造，不可拆除』文本」）：
-##   · **「升级到 N 级：花费（时间）」那两行**（含满级那句「已经是最高等级」）——
-##     要花多少钱 / 多久从界面上撤掉，等级本身照旧看得到；
-##   · **大本营那句说明**。`config.json` 里 `building.base.desc` 一个字没动
-##     （它是地图编辑器那边的数据），只是不再往详情栏里画。
-##   ⚠️ 「正在升级：升到 N 级，还剩 X 秒」**留着** —— 那是**进行中**的读条反馈，
-##      不是「升级到 N 级」那条花费说明。
-func _building_text(b) -> String:
-	var lines: Array[String] = []
-	lines.append("生命 %d / %d" % [int(round(b.hp)), int(round(b.hp_max))])
-	# ★ 建造读条（config 的 build_sec > 0 时才有）：造完之前不开火，这里给一句进行中的反馈
-	if b.is_under_construction():
-		lines.append("建造中：还剩 %s 秒" % _fmt_num(b.build_eta()))
-	if world.building_can_upgrade(b.type):
-		var max_lv: int = world.building_max_level(b.type)
-		lines.append("等级 %d / %d" % [b.level, max_lv])
-		if b.is_upgrading():
-			lines.append("正在升级：升到 %d 级，还剩 %s 秒" % [
-				b.level + 1, _fmt_num(b.upgrade_eta())])
-	# ★ 攻击那一行改成**通用**的（原来是 `type == TYPE_TOWER` 才有）：判据是
-	#   config 的 attackable，数值按当前等级取（编辑器里新加的炮塔也看得见自己的数值）。
-	if b.is_attackable(cfg):
-		lines.append("伤害 %d　射程 %d 格　间隔 %.1fs" % [
-			int(b.attack_damage(cfg)), int(b.attack_range(cfg)), b.attack_cooldown(cfg),
-		])
-		if b.last_target != null and b.last_target.alive:
-			lines.append("正在打：%s" % b.last_target.name)
+## 一条主数值行（13 号字、正文色）
+func _row(text: String) -> Dictionary:
+	return {"text": text, "small": false, "dim": false}
+
+
+## 一条增益行（11 号字、次要色；文案自己带「- 」前缀）
+func _small_row(text: String) -> Dictionary:
+	return {"text": text, "small": true, "dim": true}
+
+
+## 把 row 字典拼成旧接口那种「左 \t 右」文本（测试 / 旧调用点用）
+func _rows_text(rows: Dictionary) -> String:
+	var left: Array = rows.get("left", [])
+	var right: Array = rows.get("right", [])
+	var out: Array[String] = []
+	for i in maxi(left.size(), right.size()):
+		var l: String = _row_text(left, i)
+		var r: String = _row_text(right, i)
+		out.append("%s\t%s" % [l, r] if r != "" else l)
+	return "\n".join(out)
+
+
+func _row_text(rows: Array, i: int) -> String:
+	if i < 0 or i >= rows.size():
+		return ""
+	var row = rows[i]
+	if row is Dictionary:
+		return String((row as Dictionary).get("text", ""))
+	return String(row)
+
+
+## 移动速度：**基础值 + 地形变化**，如 `3(-1.5)`（3 = 原始移速，-1.5 = 森林减益）。
+## 没有变化时只写基础值。
+func _speed_text(u) -> String:
+	if u == null or not u.has_method("speed"):
+		return "—"
+	var base: float = float(u.speed(cfg, null))
+	var cur: float = float(u.speed(cfg, world.map if world != null else null))
+	var delta: float = cur - base
+	if absf(delta) < 0.05:
+		return _fmt_num(base)
+	return "%s(%s%s)" % [_fmt_num(base), "+" if delta > 0.0 else "", _fmt_num(delta)]
+
+
+## 单位的两列详情（血量/攻击 | 移速/防御）。
+func _unit_detail_rows(shown) -> Dictionary:
+	var left: Array = []
+	var right: Array = []
+	if shown == null:
+		return {"left": [_row("未选中")], "right": []}
+
+	left.append(_row("血量 %d/%d" % [int(round(shown.hp)), int(round(shown.hp_max))]))
+	right.append(_row("移速 %s" % _speed_text(shown)))
+
+	# ---- 左列第二排起：攻击力 / 攻击频率 + 攻击增益 ----
+	if shown.is_downed():
+		left.append(_row("攻击 —"))
+		left.append(_small_row("- 濒死：无法行动"))
+	else:
+		var dmg: int = int(round(shown.combat_damage(cfg)))
+		if dmg <= 0:
+			left.append(_row("攻击 —"))
+		else:
+			left.append(_row("攻击 %s/%ss" % [_fmt_num(dmg),
+				_fmt_num(shown.combat_cooldown(cfg))]))
+	for line in _attack_bonus_lines(shown):
+		left.append(_small_row("- %s" % line))
+
+	# ---- 右列第二排起：防御力 + 防御增益 ----
+	right.append(_row("防御 0"))
+	for line in _defense_bonus_lines(shown):
+		right.append(_small_row("- %s" % line))
+	return {"left": left, "right": right}
+
+
+## 攻击特殊增益（目前没有这类数据 → 空数组；以后有系统就追加到这里）。
+func _attack_bonus_lines(_u) -> Array[String]:
+	return []
+
+
+## 防御特殊增益：目前只有**士气**的免伤 / 易伤（整支部队共享，对远近都生效）。
+func _defense_bonus_lines(u) -> Array[String]:
+	var out: Array[String] = []
+	if u == null or not u.has_method("morale_ratio"):
+		return out
+	if float(u.morale) >= cfg.morale_high_tier:
+		out.append("士气免伤 +%d%%" % int(round(cfg.morale_damage_reduction * 100.0)))
+	elif float(u.morale) <= cfg.morale_vuln_tier:
+		out.append("士气易伤 +%d%%" % int(round(cfg.morale_vulnerability * 100.0)))
+	return out
+
+
+## 建筑的两列详情（区划中心 → 走区划那一套）。
+func _building_detail_rows(b) -> Dictionary:
+	if b == null:
+		return {"left": [_row("未选中")], "right": []}
 	if b.type == BuildingRes.TYPE_ZONE_CENTER:
-		# 区划中心自己没有数值，但它所属**区划的特化**状态要写在这里
-		# （点中心时右栏显示的是区划详情那一套，这里是「从网格 / 框选点中它」时的兜底）
-		var spec_line := _zone_spec_line(world.zone_of_center_building(b))
-		if spec_line != "":
-			lines.append(spec_line)
-	return "\n".join(lines)
+		var z = world.zone_of_center_building(b)
+		if typeof(z) == TYPE_DICTIONARY:
+			return _zone_detail_rows(z, _zone_is_friendly(z))
+	var left: Array = []
+	var right: Array = []
+	left.append(_row("血量 %d/%d" % [int(round(b.hp)), int(round(b.hp_max))]))
+	right.append(_row("移速 —"))
+	if b.is_attackable(cfg):
+		left.append(_row("攻击 %s/%ss" % [
+			_fmt_num(b.attack_damage(cfg)), _fmt_num(b.attack_cooldown(cfg))]))
+	else:
+		left.append(_row("攻击 —"))
+	right.append(_row("防御 0"))
+	return {"left": left, "right": right}
 
 
-## 一个区划的特化状态那一行（没特化 → ""）。
-##   读条中：「正在特化：粮食特化，还剩 3 秒」/「正在取消特化：…，还剩 3 秒」
-##   已完成：「特化：粮食特化（本区块粮食 +0.5／地块／秒）」——
-##   括号里那句直接取 `config.json` 的 `zone_spec.list[].line`（效果文案跟着数据走）。
-func _zone_spec_line(z) -> String:
+## 区划中心的两列详情：左 = 类型 / 大小；右 = 产能（多排）+ 当前人口 + 特化。
+func _zone_detail_rows(z: Dictionary, show_population: bool = true) -> Dictionary:
+	var left: Array = []
+	var right: Array = []
+	var kind_entry: Dictionary = world.zones.kind_entry_of(z)
+	var kind_name := String(kind_entry.get("name", "区划"))
+	left.append(_row(kind_name))
+	left.append(_row("大小 %d 地块" % int(z["tile_count"])))
+
+	var prod: Dictionary = z["production"]
+	var n := float(z["tile_count"])
+	# ★ 与 `_zone_text` 的老口径一致：基础产能是每秒绝对值，特化按每地块叠进。
+	var eff: Dictionary = world.zone_spec_effect(z)
+	var food := float(prod["food"]) + float(eff["food_per_tile"]) * n
+	var gold := float(prod["gold"]) + float(eff["gold_per_tile"]) * n
+	var pop := float(prod["population"]) * float(eff["population_mult"])
+	var pop_cap := float(world.zones.population_cap_of(z))
+	right.append(_row("粮食 %s/s" % _fmt_num(food)))
+	right.append(_row("黄金 %s/s" % _fmt_num(gold)))
+	right.append(_row("人口 %s/s" % _fmt_num(pop)))
+	right.append(_row("人口上限 %s" % _fmt_num(pop_cap)))
+	if show_population:
+		right.append(_row("现有人口 %d" % world.zones.population_floor(z)))
+	var spec := _zone_spec_short(z)
+	if spec != "":
+		right.append(_small_row("- %s" % spec))
+	return {"left": left, "right": right}
+
+
+## 特化状态的**短句**（两列表格里放不下旧版那句「（本区块粮食 +0.5／地块／秒）」）。
+func _zone_spec_short(z) -> String:
 	if typeof(z) != TYPE_DICTIONARY:
 		return ""
 	if world.zone_spec_busy(z):
 		var is_cancel: bool = world.zone_spec_is_cancel(z)
 		var who_id := String(z.get("spec_done", "")) if is_cancel else String(z.get("spec_kind", ""))
 		var who := String(cfg.spec_entry(who_id).get("name", who_id))
-		return "%s：%s，还剩 %s 秒" % [
-			"正在取消特化" if is_cancel else "正在特化", who, _fmt_num(world.zone_spec_eta(z))]
+		return "%s %s %ss" % ["取消特化" if is_cancel else "正在特化", who,
+			_fmt_num(world.zone_spec_eta(z))]
 	var done := String(z.get("spec_done", ""))
 	if done == "":
 		return ""
 	var e: Dictionary = cfg.spec_entry(done)
-	return "特化：%s（%s）" % [String(e.get("name", done)), String(e.get("line", ""))]
+	return "特化 %s" % String(e.get("name", done))
 
 
-## ★★ 本版按需求**砍成单栏、只留三项数值**（用户原话：「选中部队时在第一列只显示选中的
-##   单位血量，攻击力和攻击距离攻击速度，第二列的编制和状态去掉」+
-##   「把选中部队时的『已选中x支部队』去掉，把兵种显示也去掉」）：
-##
-##     血量 200 / 200
-##     攻击力 10
-##     攻击距离 3 格 / 间隔 1.2s
-##
-##   · **右栏（第二栏）整块不再出现** —— 编制与状态（含「指定攻击」那几条命令反馈）
-##     都按需求去掉了，所以这里返回的文本里**没有 `\t`**，detail_panel 那边自然
-##     只填左栏、把右栏 Label 收起来（见 detail_panel.set_detail）。
-##   · **「兵种 …（步兵）」那一行也去掉了**（同上，第二条需求）—— 步兵 / 骑兵、
-##     远程与额外伤害那套标签不再进详情栏。
-##   · **多选时那句「已选中 N 支部队」也去掉了**（同上）—— 选中了几支看左侧部队列表的
-##     高亮就知道，详情栏只报**当前这一个单位**的三项数值。
-##   · `troops` 这个参数仍然收着（调用方照旧传）：现在文案与它无关，但接口不变，
-##     免得以后再要「多选提示」时又去改所有调用点。
-##   · 移动速度、所在区块、buff 占位行这些**一律不显示**（要恢复就在这里加回一行）。
-##   ⚠️ 每行**最多一行文字**：正文关掉了 autowrap，一行太长会被 `clip_text` 裁掉
-##      （版式不散，但说明文案该改短）。
-func _unit_text(shown, troops: Array) -> String:
-	if shown == null:
-		return "未选中"
-	var lines: Array[String] = []
-	lines.append("血量 %d / %d" % [int(round(shown.hp)), int(round(shown.hp_max))])
-	# ★★ 士气（本轮新增）：整支部队共享的一个值 —— 详情栏里唯一的读法（地图上不显示）。
-	lines.append("士气 %d" % int(round(shown.morale)))
-	# ★★ 濒死的将领（本轮新增）：右栏这块数值区是玩家唯一能读到「还要等多久」的地方，
-	#    所以把状态 / 回复进度 / 再起门槛都写出来（需求要玩家能判断什么时候能再起）。
-	if shown.is_downed():
-		lines.append("★ 濒死：倒在原地、不会受到伤害，也不能行动")
-		lines.append("回复 %d%%（上限 %d%%）· 每 %s 秒 +%d%%" % [
-			int(round(shown.hp_ratio() * 100.0)),
-			int(round(cfg.revive_regen_cap_ratio * 100.0)),
-			_fmt_num(cfg.revive_regen_sec),
-			int(round(cfg.revive_regen_ratio * 100.0))])
-		if shown.is_reviving():
-			lines.append("再起读条中：%d%%（还剩 %s 秒）" % [
-				int(round(shown.revive_progress() * 100.0)), _fmt_num(shown.revive_remaining)])
-		elif shown.revive_ready(cfg):
-			lines.append("可以在「操作」页点「再起」（%s，读条 %s 秒）" % [
-				_cost_text(world.revive_cost()), _fmt_num(world.revive_channel_sec())])
-		else:
-			lines.append("血量回到 %d%% 才能再起" % int(round(world.revive_ready_ratio() * 100.0)))
-		lines.append("攻击力 %d（濒死期间不出手）" % int(shown.combat_damage(cfg)))
-		return "\n".join(lines)
-	lines.append("攻击力 %d" % int(shown.combat_damage(cfg)))
-	lines.append("攻击距离 %d 格 / 间隔 %.1fs" % [
-		int(shown.combat_range(cfg)), shown.combat_cooldown(cfg)])
-	return "\n".join(lines)
+## 旧接口：单位文案（两侧拼成 `左 \t 右`，测试 / 旧调用点仍可读）。
+## ⚠️ 新代码请直接用 `_unit_detail_rows()` 喂 detail_panel.set_detail_rows()。
+func _unit_text(shown, _troops: Array = []) -> String:
+	return _rows_text(_unit_detail_rows(shown))
 
 
-## 区划详情（左键点区划中心时显示）：大小 / **种类** / 产能 / 人口。
-##
-## ★ 本版按需求**精简**：
-##   · **去掉「归属」那一行**（点开区划详情的玩家早就知道这块地是谁的；
-##     归属在整个底栏里也不再出现）；
-##   · ★★ 产能**直接给「资源每秒」的绝对值**：不再显示「每地块产能（合计 …）」
-##     那两个数 —— 每地块那个数来自地图编辑器的输入，对玩家没有意义。
-##     现在粮 / 金 / 人口三行报的都是**该区划每秒的实际产出**（基础产能是固定值、
-##     特化每地块 × 地块数，本轮口径变更），与 `zone.production_of` 的收入口径一致；
-##     数字**不带单位**（用户口径）；
-##   · ★★ **去掉开头那行「区划「xx」」**（用户原话：「选中区划中心时去掉『区划[xx]』文本」）——
-##     区划名只在上方那一行（detail_panel.set_unit_name ← `_zone_title`，见 hud.refresh）
-##     里出现一次，详情正文里不再重复；
-##   · ★★ **区划种类后面那串「（每地块每秒 …）」不再写**（用户原话：「区划种类后不要加
-##     『（每地块每秒xxx）』」）—— 产能下面三行里逐个列着，种类那一行只报名字。
-##     ⚠️ 那句文案来自 `config.json` 的 `zone_kind.list[].line`：**数据一个字没动**
-##     （它是地图编辑器那边的说明），只是不再往详情栏里画；
-##   · ★★ **「人口产能」与「人口」两行合并成一行**（用户原话：「人口产能和人口两个信息
-##     合并，变成『人口：x（产能x）』」）：括号里是**每秒**的人口产能（与粮食 / 黄金
-##     那两行现在是同一个口径，特化加成也算进去了），括号外是区划现在的人口（向下取整）。
-##
-## ⚠️ 行的顺序（本版调过一次，别随手挪回去）：
-##     大小 → 种类 → **特化状态** → 粮食 → 黄金 → 人口 → 人口上限
-##   特化那句原来排在最末。合并之后整屏最多 7 行（84 + 14 = 98px），而数值框的可视高只有
-##   88px ⇒ 排在最后的那一行**会被 clip 掉**，被切掉的恰好是「正在特化 / 已完成特化」——
-##   最该看见的那一条。所以它上移到产能前面（它本来就属于「种类」那一带的信息）。
-##
-## ★★ 本次改动（用户需求）：「选中区划中心时（不论是敌是友是中立），不用显示区划中心的
-##   血量（区划中心没有血量），可以显示其区划的产能（粮食 / 黄金 / 人口产能 / 人口上限），
-##   如果是友军 / 己方区划，额外显示其当前人口数量」。
-##   ⇒ 归路上由 `input_controller` 保证「任何归属的中心都走这一条」，
-##     这里再用 `show_population` 决定**当前人口**那一行给不给：
-##       · true  = 自己 / 友军区划 → 「人口：<现在>（产能 x）」
-##       · false = 敌方 / 中立区划 → 「人口产能：x」（只报产能，不报现在有多少人）
-##   ⚠️ 人口上限**两种都显示** —— 它是这块地值多少钱的一部分（用户把它列为产能之一），
-##     而不像「现在有多少人」那样是对手的情报。
+## 旧接口：建筑文案。
+func _building_text(b) -> String:
+	return _rows_text(_building_detail_rows(b))
+
+
+## 旧接口：区划中心文案。
 func _zone_text(z: Dictionary, show_population: bool = true) -> String:
-	var lines: Array[String] = []
-	lines.append("区划大小：%d 个地块" % int(z["tile_count"]))
-	# ★★ 本轮新增：**区划种类**那一行（粮食 / 黄金 / 人口区划）——
-	#   它决定这个区划能做哪些特化（见 _building_order_entries），玩家必须看得见。
-	# ★ 本版**只写种类名**，后面那串每地块产能说明按需求去掉了（见函数头）。
-	var kind_entry: Dictionary = world.zones.kind_entry_of(z)
-	if not kind_entry.is_empty():
-		lines.append("区划种类：%s" % String(kind_entry.get("name", "")))
-	# 特化状态那一行（没特化 / 读条中 → 由 _zone_spec_line 决定写什么）。
-	# ★ 位置见函数头那段 ⚠️：它必须在产能前面，否则整屏 7 行时会被裁掉。
-	var spec_line := _zone_spec_line(z)
-	if spec_line != "":
-		lines.append(spec_line)
-	var prod: Dictionary = z["production"]
-	var n := float(z["tile_count"])
-	# ★★ 产能显示口径（本轮口径变更）：**基础产能是「该区划每秒的绝对值」**（不乘地块数）——
-	#   与 `zone.production_of` / `update_population` 的收入口径一致。
-	#   ★ 特化效果仍按**每地块**叠进（见 UpgradeRes.zone_spec_effect：
-	#     粮 / 金特化 = 每地块 +n ⇒ 要 × 地块数；人口特化 = 人口产量 × 倍率 ⇒ 不乘地块数）。
-	#     不这么做的话，玩家做完特化看到的数字纹丝不动，会以为特化没生效。
-	var eff: Dictionary = world.zone_spec_effect(z)
-	var food := float(prod["food"]) + float(eff["food_per_tile"]) * n
-	var gold := float(prod["gold"]) + float(eff["gold_per_tile"]) * n
-	var pop := float(prod["population"]) * float(eff["population_mult"])
-	var pop_cap := float(world.zones.population_cap_of(z))
-	lines.append("粮食产能：%s" % _fmt_num(food))
-	lines.append("黄金产能：%s" % _fmt_num(gold))
-	# ★ 人口那一行（本版合并了「人口产能」与「人口」两行）：
-	#   括号里 = 每秒人口产能（特化后的绝对值），括号外 = 当前人口。
-	#   ⚠️ 人口显示**永远是整数**（向下取整，用户需求）—— 权威值是浮点（按秒累积），
-	#      直接印出小数点会让玩家看到「1.9999998」这种数。
-	# ★★ 当前人口只给「自己 / 友军」看；敌占 / 无主区划只报产能（见函数头）。
-	if show_population:
-		lines.append("人口：%d（产能%s）" % [world.zones.population_floor(z), _fmt_num(pop)])
-	else:
-		lines.append("人口产能：%s" % _fmt_num(pop))
-	# ★ 上限**单列一行**：不然「人口怎么不涨了」在界面上没有任何解释。
-	#   （合并后那一行按需求只放「人口 + 产能」，塞不下上限，所以它留在下面这一行。）
-	lines.append("人口上限：%s" % _fmt_num(pop_cap))
-	return "\n".join(lines)
+	return _rows_text(_zone_detail_rows(z, show_population))
+
+
+## 旧接口：敌对单位文案（本版与己方同一套两列布局）。
+func _enemy_unit_text(u) -> String:
+	return _unit_text(u)
+
+
+## 旧接口：敌对建筑文案（本版与己方同一套两列布局）。
+func _enemy_building_text(b) -> String:
+	return _building_text(b)
+
+
+## 单位 / 建筑的**动态 buff 列表**：当前只有士气一条（「士」，底色随士气绿→红）。
+## ★ 以后别的系统要加 buff，直接往这个数组追加 `{id, text, color, name, tip_title, tip_body}`。
+func _buffs_for(u) -> Array:
+	var out: Array = []
+	if u == null or not u.has_method("morale_ratio"):
+		return out
+	var ratio: float = clampf(float(u.morale_ratio()), 0.0, 1.0)
+	var m: int = int(round(u.morale))
+	var mm: int = int(round(u.morale_max))
+	# 悬停浮窗里写清楚「现在多少 + 各档效果」，与 logic/morale.gd 的口径一致。
+	var body := "当前 %d / %d\n≥%s：快速回血，受到伤害 -%d%%\n≥%s：缓慢回血\n≤%s：受到伤害 +%d%%\n≤%s：缓慢失去生命（0 时加快）" % [
+		m, mm,
+		_fmt_num(cfg.morale_high_tier), int(round(cfg.morale_damage_reduction * 100.0)),
+		_fmt_num(cfg.morale_mid_tier),
+		_fmt_num(cfg.morale_vuln_tier), int(round(cfg.morale_vulnerability * 100.0)),
+		_fmt_num(cfg.morale_low_tier),
+	]
+	out.append({
+		"id": "morale",
+		"text": "士",
+		"color": UiStyleRes.morale_plate(ratio, true),
+		"name": "士气 %d/%d" % [m, mm],
+		"tip_title": "士气",
+		"tip_body": body,
+	})
+	return out
 
 
 ## 这个区划是不是**自己 / 友军**的（用于「当前人口给不给看」与「给不给操作页签」）。

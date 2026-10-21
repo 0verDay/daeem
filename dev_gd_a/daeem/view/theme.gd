@@ -158,7 +158,7 @@ const DEFAULT_WARNING := Color(0.898, 0.282, 0.302, 1.0)     # #E5484D
 const DEFAULT_HP_HIGH := Color(0.478, 0.690, 0.416, 1.0)     # #7ab06a
 const DEFAULT_HP_MID := Color(0.878, 0.690, 0.290, 1.0)      # #e0b04a
 const DEFAULT_HP_LOW := Color(0.788, 0.349, 0.247, 1.0)      # #c9593f
-## ★★ 士气背景板的两个端点色（详细信息栏图标：绿 = 士气高、红 = 士气低）。
+## ★★ 士气填充的两个端点色（详细信息栏里的**部队**图标：绿 = 士气高、红 = 士气低）。
 const DEFAULT_MORALE_HIGH := Color(0.478, 0.690, 0.416, 1.0)  # #7ab06a
 const DEFAULT_MORALE_LOW := Color(0.788, 0.349, 0.247, 1.0)   # #c9593f
 
@@ -356,7 +356,7 @@ static func hp_low() -> Color:
 	return color("hp_low", DEFAULT_HP_LOW)
 
 
-## ★★ 士气背景板的两个端点色（详细信息栏图标用，见 ui_style.morale_plate）。
+## ★★ 士气填充的两个端点色（详细信息的部队图标用，见 ui_style.morale_plate）。
 static func morale_high() -> Color:
 	return color("morale_high", DEFAULT_MORALE_HIGH)
 

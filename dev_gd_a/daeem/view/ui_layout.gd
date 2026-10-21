@@ -7,9 +7,10 @@
 ##   ⚠️ 2026.10.20 按用户要求改了底栏：右下整组按 13/12 放大到 260 高、顶边抬到 820；
 ##      详细信息宽度 1030 → 988（右缘左移给放大的阵营列让位），高度保持 260。
 ##
-## ⚠️ 全部是 1920×1080 设计空间里的坐标。工程用 canvas_items + expand 拉伸，
+## ⚠️ 全部是 1920×1080 设计空间里的坐标。工程用 viewport + expand 拉伸，
 ##    窗口比例一变，设计空间就会向一侧变长 —— 所以每块面板都要说明自己「贴哪条边」
 ##    （见 apply_rect 的 anchor_right / anchor_bottom），多出来的空白留在中间。
+##    ★ 详细信息面板是**固定 988×260**（贴左、贴底），不跟着视口横向拉伸。
 ##
 ## 参考图实测（1920×1080；★ = 2026.10.20 改后的值）：
 ##   设置    x 1840..1919, y 0..159        → 80×160
@@ -219,11 +220,17 @@ const SETTINGS_RECT := Rect2(1840.0, 0.0, 80.0, 160.0)
 ##                每格又是「40×40 方框 + 右边一行字」，共 10 个方框。
 ##
 ##   两种语义共用这 10 个格子（由 hud 决定画什么，见 view/troop_grid.gd 的 mode）：
-##     · **选中多支部队**：左上第 1 格 = 当前展开那支部队的将领；
-##       下面 3×3 = 其余选中部队的将领（点一格 = 换展开哪一支）。
-##     · **只选中一支部队**：左上第 1 格 = 那支部队的将领；
+##     · **选中多支部队**：左上第 1 格 = 被聚焦那支部队的**序号图标**；
+##       下面 3×3 = 其余选中部队的序号图标（点一格 = 换聚焦哪一支）。
+##     · **只选中一支部队**：左上第 1 格 = 那支部队的**序号图标**；
 ##       下面 3×3 = 这支部队的**单位**（点一格 = 右栏切到那个单位）；
-##       单位超过 9 个时靠**滚轮翻页**（一次一页 9 格，见 GRID_PAGE）。
+##       单位超过 9 个时可**左右滑动**（拖动 / 滚轮按页）。
+##     · **选中建筑**：左上第 1 格 = 主选中建筑；下面 3×3 = 其余建筑，超过 3 列同样可滑。
+##
+##   ★★ 下方 3×3 是「3 行 × 3 列」的**可见窗口**，内容按**列**向右延伸
+##      （列优先，见 `troop_cell_rect`）；一列 = 3 个格子。
+##   ★★ 部队图标 = **序号**（1..9、第 10 个写 0）+ 士气填充；
+##      单个单位 / 建筑没有纯色背景，只画图标 + 底部血条（见 view/icon_badge.gd）。
 ##
 ## ⚠️ 单位编制上限（手玩原话：「y 是该将领的编制上限，目前所有将领的编制上限都暂时为 11」）
 ## ------------------------------------------------------------------
@@ -311,9 +318,9 @@ const TROOP_GRID_H := 3.0 * TROOP_CELL_H
 ##        ⇒ 收到 **72×72**，名称与 buff 全部挪到同一行（头像右边）。
 ##     ② 名称右边原来空着 307px（645 宽的右栏只用到 340），而数值方框又只有 90 高、
 ##        正文实际有 7 行（11 号字 + 行距 -1 硬塞，最后 1~2 行被 clip 掉）。
-##        ⇒ 数值框整宽、**加高到 116**，正文改成 **两栏制表位**（左栏基础数值 / 右栏状态），
+##        ⇒ 数值框**加高到 116**，正文改成 **两列表格**（左 = 血量/攻击，右 = 移速/防御），
 ##          字号 11 → 13、行距回正 —— 这才真的装得下、且不糊。
-##         （正文两栏见 detail_panel.gd 的 _body 与 hud._unit_text()）
+##         （两列表格见 view/detail_rows.gd 与 hud._unit_detail_rows()）
 ##     ③ 招募队列原来右边缘在 605 > 右栏宽 645？**不，是越出了面板**：
 ##        队列控件右边缘 = 左栏 350 + 缝 15 + 493 + 132 = 990 > 内容宽 1010 - … 实测越界 9px。
 ##        ⇒ QUEUE_X 收到 **513**，正好贴住右栏右边缘、整个落在面板里（test_ui 有断言）。
@@ -327,103 +334,86 @@ const TROOP_GRID_H := 3.0 * TROOP_CELL_H
 ##   `BUFF_X + 3×(BUFF_SIZE+BUFF_GAP) ≤ DETAIL_RIGHT_W`（buff 不越出右栏）、
 ##   `UNIT_NAME_X + UNIT_NAME_W ≤ QUEUE_X`（名称不顶到招募队列）。
 ##
-## ★★ **第七轮右栏再排一次：顶带单独成带、整块四周留出不贴边。**
-##   起因是手玩看着不对：「招募那块面板的 ui 还是不好看 —— **它的上方被裁剪了**，
-##   而且 ui 内容也太小了，显得将领头像和名字旁边很空」。
-##   截图量过，两条都是真的：
-##     ① 队列块的顶边**正好压在右栏的裁剪线（y=0）上**，而 `draw_rect(..., false, 1)`
-##        画的是**以边界为中心**的 1px 描边 ⇒ 贴边那一半被 `right.clip_contents` 切掉：
-##        画面上队列的**上边框整条不见了**（大格子也一样）。右边缘同理。
-##     ② 队列块 261×64 里塞着 64 的大格 + 30 的小格，字只有 13/11 号 ——
-##        旁边是 72 的头像与 29 号的名称，它显得又小又空。
+## ★★ **本版右栏再排一次：队列搬下来，与收窄后的详情框并排。**
+##   需求：「详情框向左缩小、与第三个 buff 右缘对齐；招募面板下移与详情框对齐；
+##   去掉三个 buff 占位，改成动态 buff」。手玩确认详情框保留最小可用宽（约 300）。
 ##
-##   现在的排法（右栏 645×240 —— ★ 本版内容高从 220 提到 240，见 DETAIL_RECT 那段）：
+##   现在右栏（603×240）：
+##     y   0 ..  96   顶带：头像（72×72）+ 名称 + 一行**动态 buff**（40×40）
+##     y 100 .. 216   下半：**详情框 282×116 + 4px 缝 + 招募队列 313×116** 并排
+##                    两者上/下缘完全齐平（QUEUE_Y = DETAIL_BODY_Y，QUEUE_H = DETAIL_BODY_H）
+##     y 220 .. 240   提示带（红字一行，横跨两者）
 ##
-##     y   8 ..  96   顶带（88 高 = 队列块高，上缘 8 与队列顶边重合）：头像 / 名称+buff / 招募队列
-##                    三块**同一条中轴线**（头像与队列都在带里垂直居中）
-##     y 100 .. 216   数值框（603×116）：正文从 108 起排，可视高 108px
-##     y 220 .. 240   提示带（红字一行）
-##
-##   ⇒ ① 队列块从 261×64 放大到 **313×92**（大格 84、小格 40、字号 15/13）；
-##      ② 队列块离右栏上/右边缘各留 4px（`QUEUE_MARGIN`）—— 描边不再被裁，
-##         同时和头像一起落在顶带的中轴线上；
-##      ③ 数值框右缘仍然与队列块右缘**对齐**（都是 `DETAIL_RIGHT_W - QUEUE_MARGIN`）。
 ##   ⚠️ 这几条被 tests/test_ui.gd 钉住（改了要一起改）：
-##     `UNIT_AVATAR_Y + UNIT_AVATAR < DETAIL_BODY_Y`（头像整块在数值框上面）、
-##     `BUFF_X + 3×(BUFF_SIZE+BUFF_GAP) ≤ DETAIL_RIGHT_W`（buff 不越出右栏）、
-##     `UNIT_NAME_X + UNIT_NAME_W ≤ QUEUE_X`（名称不顶到招募队列）、
-##     `QUEUE_Y ≥ 1` 且 `QUEUE_X + QUEUE_W ≤ DETAIL_RIGHT_W - 1`（**不许贴裁剪线**）。
-##   ⚠️ 顶带高度**每减 1px 队列块就得跟着矮 1px**：队列是 313×92 且与头像共用中轴线，
-##      所以 QUEUE_H / QUEUE_BIG / QUEUE_CELL_PAD 都是跟着 92 算出来的（见下面那段）。
+##     `UNIT_AVATAR_Y + UNIT_AVATAR < DETAIL_BODY_Y`（头像整块在详情框上面）、
+##     `BUFF_X + (BUFF_SLOTS−1)×(BUFF_SIZE+BUFF_GAP) + BUFF_SIZE ≤ detail_buff_w()`、
+##     `UNIT_NAME_X + UNIT_NAME_W ≤ QUEUE_X`（名称不顶到右侧；队列虽在下方，这条仍成立）、
+##     `DETAIL_BODY_W + QUEUE_MARGIN ≤ QUEUE_X`、`QUEUE_H == DETAIL_BODY_H`。
 ## ------------------------------------------------------------------
 const UNIT_AVATAR := 72.0            # 选中单位的头像方框（正方形；第五轮 100 → 72）
 const UNIT_AVATAR_X := 0.0           # 贴右栏左边
-## 顶带（头像 / 名称+buff / 队列 都住在这里）：y 8..96。
-## ★ 顶边**不取 0**：贴 0 会让描边落在右栏裁剪线（y=0）上被切掉（见上面第 ① 条）。
-## ★★ 本版 92 → 88、上缘 4 → 8：腾出 4px 给数值框。88 = QUEUE_H，所以顶带与队列块
-##    **上下缘完全重合**（`QUEUE_Y == UNIT_BAND_Y`）⇒ 中线也相同。
-##    ⚠️ 头像 / 名称+buff / 队列三块共用中轴线 y = 8 + 88/2 = 52。
+## 顶带（头像 / 名称 / 动态 buff）：y 8..96。
+## ★ 顶边**不取 0**：贴 0 会让描边落在右栏裁剪线（y=0）上被切掉。
 const UNIT_BAND_Y := 8.0
 const UNIT_BAND_H := 88.0
-## ★ 在顶带里**垂直居中**（8 + (88−72)/2 = 16），与右侧队列同一条中轴线。
+## ★ 头像在顶带里**垂直居中**：8 + (88−72)/2 = 16。
 const UNIT_AVATAR_Y := 16.0
 const UNIT_NAME_X := 84.0            # 名字的左边（= 头像 72 + 缝 12）
 ## ★ 本轮 0 → 16：贴着头像上缘那一带（29 号字的字面从 16 起，与抬头对齐）。
 const UNIT_NAME_Y := 16.0
-## 名称最多写到哪：★ 右边缘必须让开招募队列（QUEUE_X=286），否则名字会压到队列上。
-## ★ 2026.10.20：右栏 645 → 603，队列左缘由 328 挪到 286 ⇒ 名称宽度 236 → 194
-##   （84..278，与队列留 8px 缝）。实测最长的名字「亲兵 11」才 102px，绰绰有余。
+## 名称最多写到哪：194（84..278）。队列本版已搬到下方，这条宽度沿用旧版以免动版式；
+## 它仍然落在 QUEUE_X（286）之前，测试继续钉着这条。实测最长的名字「亲兵 11」才 102px。
 const UNIT_NAME_W := 194.0
-## buff 占位格：★ 本轮 30 → **40**（与左栏那些 40×40 的方块同一号尺寸），
-## 字号 11 → 13（"buff1" 实测 33px ≤ 40）—— 原来 30×30 + 11 号字看着像两个小疙瘩。
+## buff 槽位：**动态**（由 view/buff_bar.gd 画，HUD 每帧喂条目）。
+## ★ 本版去掉了原来三个写死的「buff1/2/3」；槽位宽 40×40（与左栏图标格同号），
+##   格距 12 —— 基线宽 198 里正好放 4 个（4×40 + 3×12 = 196）。
 const BUFF_SIZE := 40.0
-const BUFF_GAP := 14.0               # 格距 54 = 40 + 14（三格共 148px）
-## buff 行与名称**共用同一个左边缘**（84）；三格挂在头像下半段（46..86，
-## 头像 12..84 —— 本版顶带收到 88 之后两者差 2px，视觉上仍是「贴在头像下缘」那一带）。
+const BUFF_GAP := 12.0
+## buff 行与名称**共用同一个左边缘**（84），挂在头像下半段（46..86）。
 const BUFF_X := 84.0
 const BUFF_Y := 46.0
-## buff 先做几个**无效占位**（手玩原话：「可以先做几个无效果的 buff 凑数」）
-const BUFF_SLOTS := 3
-## 「详细信息」方框：**横跨整个右栏**，左边缘与头像对齐。
-## ★★ 第五轮从 90 加高到 116；第七轮 116 → 96（让 20px 给顶带）；
-##    **本版 96 → 116**（y 100..216）—— 面板加高 20px 之后，多出来的这一段全部给数值框，
-##    为的是让区划详情那 7 行 13 号字（= 98px）**原字号**就装得下（见 DETAIL_RECT 那段）。
-## ★★ 顶上那行「详细信息」标题按需求删掉了，所以方框里**只剩正文**，
-##    正文的顶边是 `DETAIL_BODY_TEXT_Y`（= 8）—— 标题的位置不会留成一条空白。
-## ★★ 宽度 = `DETAIL_RIGHT_W − QUEUE_MARGIN`（641）：与招募队列**共用同一条右缘**。
-##   ⚠️ DETAIL_BODY_Y + DETAIL_BODY_H ≤ `DETAIL_CONTENT_H`（= 240，本栏内容高）。
+## 基线宽下最多摆得下几个（超出部分由 buff_bar 的 clip_contents 裁掉）。
+const BUFF_SLOTS := 4
+## buff 悬停浮窗：贴在 buff 方块**下缘**往下长（上方是名称/头像，没地方）。
+## 宽度固定 230；高度由内容算（见 view/buff_tip.gd），和命令卡的悬停面板同一套底板。
+const BUFF_TIP_W := 230.0
+const BUFF_TIP_GAP := 6.0
+const BUFF_TIP_PAD := 8.0
+## 「详细信息」方框：**本版向左收窄到 282**（不再横跨整个右栏）。
+##
+## ★ 需求：「与第三个占位 buff 的右侧边对齐」。第三个 buff 的右缘是 232，
+##   但那样两列各只剩约 100px、长增益行放不下；手玩随后确认「保留最小可用宽度（约 300）」。
+##   ⇒ 取 **282**：右缘 = 招募队列左缘（286）− 4px 缝 —— 这是「详情框 + 队列并排」
+##   能给出的最大整块宽度，也最接近需求里的 300。
+## ★ y 仍然是 100..216（116 高）。右栏顶带（头像 / 名称 / buff）在 y 0..96，互不重叠。
 const DETAIL_BODY_X := 0.0
-const DETAIL_BODY_W := DETAIL_RIGHT_W - QUEUE_MARGIN
+const DETAIL_BODY_W := 282.0
 const DETAIL_BODY_Y := 100.0
 const DETAIL_BODY_H := 116.0
 ## 提示带的局部矩形（相对右栏）：**数值框下面那一条 20px**（100+116=216 .. 240）。
 ## ★★ 它曾经是面板 VBox 里的第二行 —— 一出现就把两栏各压掉 20px，
 ##    而左栏那 3×3 网格是**正好铺满内容高**的（40 + 15 + 3×55），于是最下面一截被裁。
 ##    现在它是右栏里的一个**绝对定位浮层**：出现与消失都不改任何一块的几何。
-## ★ 20 高 / 正文 15 号字（行高 16）刚好一行 —— 长文案实测最长 405px ≤ 645，一行放得下。
+## ★ 20 高 / 正文 15 号字（行高 16）刚好一行 —— 长文案实测最长 405px ≤ 599，一行放得下。
 const NOTICE_Y := 220.0
 const NOTICE_H := 20.0
 ## ------------------------------------------------------------------
-## 「详细信息」方框里的**正文**：真·两栏（两个 Label），不是制表符
+## 「详细信息」方框里的**两列**（左 = 血量/攻击，右 = 移速/防御；区划中心另算）
 ##
-## ★★ 第七轮修的：原来正文是一整段带 `\t` 的字符串。**Godot 的 Label 不把 `\t`
-##    当制表位**（它只推进一个很小的固定宽度），于是画面上两栏是**粘在一起**的：
-##      血量 200 / 200状态：待命
-##    截图里一眼就能看出来（手玩说的「ui 还是不好看」里也有它）。
-##    现在左栏一个 Label、右栏一个 Label，x 由这里定死，**永远对齐**。
+## ★ 宽度：282 − 左右各 8 内边距 − 中间 8 缝 = 258 ⇒ 每列 129。
+##   13 号字下约 9 个汉字；较长的增益行由 view/detail_rows.gd **逐行缩字号**
+##   （最小 9 号）再截断，所以不会顶出列外。
 ## ------------------------------------------------------------------
 const DETAIL_BODY_PAD := 8.0         # 正文离方框左边 / 上边的内边距
-## 正文两个 Label 的**顶边**（相对数值框）。
-## ★★ 本轮 20 → 8：20 是「标题 Label 占 3..21 那一段」时的老值 —— 标题按需求删掉之后，
-##    正文再停在 20 就变成**顶上一条空白**（实测就是用户报的「第一行是空的」）。
-##    现在顶边 = DETAIL_BODY_PAD，正文直接贴着方框内缘。
-## ⚠️ 最高的一屏文案是 4 行 13 号字（行高 20 ⇒ 80px），而可视高 = 96 − 8 = 88 ⇒ 装得下；
-##    行数再多就会被 `clip_text` 裁（界面上是「下面那行没了」，说明文案该改短）。
-const DETAIL_BODY_TEXT_Y := 8.0
-const DETAIL_BODY_COL_W := 190.0     # 左栏可写宽（最长一行「攻击距离 3 格 / 间隔 1.2s」实测 163）
-const DETAIL_BODY_COL_GAP := 18.0    # 两栏之间的缝
-const DETAIL_BODY_COL2_X := DETAIL_BODY_PAD + DETAIL_BODY_COL_W + DETAIL_BODY_COL_GAP   # 216
-const DETAIL_BODY_COL2_W := DETAIL_BODY_W - DETAIL_BODY_COL2_X - DETAIL_BODY_PAD        # 417
+const DETAIL_BODY_TEXT_Y := 8.0      # 两列文字的顶边（相对数值框）
+const DETAIL_BODY_COL_GAP := 8.0     # 两列之间的缝
+const DETAIL_BODY_COL_W := (DETAIL_BODY_W - 2.0 * DETAIL_BODY_PAD - DETAIL_BODY_COL_GAP) * 0.5
+const DETAIL_BODY_COL2_X := DETAIL_BODY_PAD + DETAIL_BODY_COL_W + DETAIL_BODY_COL_GAP
+const DETAIL_BODY_COL2_W := DETAIL_BODY_COL_W
+## 一行的高度（13 号字放得下；116 高的框里正好 6 行 = 102）。
+const DETAIL_ROW_H := 17.0
+## 两列文字控件的可视高（底边留 6px，免得最后一行贴着方框下缘）。
+const DETAIL_BODY_ROWS_H := DETAIL_BODY_H - DETAIL_BODY_TEXT_Y - 6.0
 ## ★★ 右栏所有方块的**公共右缘**，也是它们离右栏右边缘的留白。
 ##
 ## ★ 为什么必须有这个留白（手玩报的「上方被裁剪了」的真根因）：
@@ -436,35 +426,35 @@ const UNIT_CONTENT_RIGHT := DETAIL_RIGHT_W - QUEUE_MARGIN
 
 
 # ------------------------------------------------------------------
-# ★★ 手机端自适应：详细信息面板拉伸填满底栏
+# ★★ 详细信息面板：**固定尺寸**（不再做手机端横向拉伸）
 #
-# 起因（用户原话）：手机上「详细信息栏」与右侧「阵营 / 盾徽 / 旗帜」离得很远。
-# 根因：详细信息面板贴**左**（apply_rect(..., false, true)），阵营 / 命令卡 / 页签贴**右**
-#   （apply_rect(..., true, true)）—— 视口宽于 16:9（横屏手机都是）时设计空间横向变长，
-#   左边那几块不动、右边那几块右滑 ⇒ 中间裂开一条缝。
-#
-# 做法：面板改成「左缘钉 400、右缘钉到阵营列左缘」；多出来的宽**全部给右栏**
-#   （左栏那 3×3 是按参考图逐像素量死的，不跟着长）。下面这几个函数算的是
-#   **右栏宽度变化之后**各块的宽度 / 位置。
-# ⚠️ 在 `DETAIL_RIGHT_W`（= 645，1920 基准）处，这几个函数的结果必须与上面那些
-#   写死的常量**逐位相等**（tests/test_ui.gd 钉着这条）。
+# 历史：曾经把面板左缘钉 400、右缘钉到阵营列左缘，视口宽于 16:9 时把多出来的宽
+#   全部灌进右栏，好让「详细信息栏」与右侧阵营 / 页签**连起来**。
+# 本版需求：手机端不需要相连，**尺寸恰好即可**。拉伸会把面板拉得很长，
+#   右栏里还会空出一大片（详情框固定 282、队列固定 313），所以删掉拉伸。
+#   ⇒ 固定 `DETAIL_RECT`（988×260，贴左、贴底），右侧留白。
+# ⚠️ 下面几个 detail_* 函数仍然按传入的右栏宽度算，但正常只会收到 603。
 # ------------------------------------------------------------------
 
-## 详细信息面板拉伸后的矩形：宽 = 1030 + 视口比 1920 多出来的宽（横向 expand）。
-static func stretched_detail_rect(view_size: Vector2) -> Rect2:
-	var extra: float = maxf(0.0, view_size.x - DESIGN_W)
-	return Rect2(DETAIL_RECT.position.x, DETAIL_RECT.position.y,
-		DETAIL_RECT.size.x + extra, DETAIL_RECT.size.y)
-
-
-## 右栏宽度（= DETAIL_RIGHT_W + 视口多出来的宽）。
-static func detail_right_w(view_size: Vector2) -> float:
-	return DETAIL_RIGHT_W + maxf(0.0, view_size.x - DESIGN_W)
-
-
-## 数值框（正文背景板）的宽：与招募队列共用同一条右缘（`right_w − QUEUE_MARGIN`）。
+## 数值框（正文背景板）的宽：**固定 282**，不再跟着右栏拉宽（需求：向左收窄）。
+## ★ 兜底：右栏极窄时（还没布局 / 手机异常宽度）不超过 `right_w − QUEUE_MARGIN`。
 static func detail_body_w(right_w: float) -> float:
-	return right_w - QUEUE_MARGIN
+	return minf(DETAIL_BODY_W, maxf(0.0, right_w - QUEUE_MARGIN))
+
+
+## 两列文字控件的宽（方框内边距之内）。
+static func detail_rows_w(right_w: float) -> float:
+	return maxf(0.0, detail_body_w(right_w) - 2.0 * DETAIL_BODY_PAD)
+
+
+## 动态 buff 槽位那一行的可用宽（左起 BUFF_X，右到招募队列左缘前 4px）。
+static func detail_buff_w(right_w: float) -> float:
+	return maxf(0.0, detail_queue_x(right_w) - BUFF_X - 4.0)
+
+
+## 提示行（红字）的宽：它在下半区最底下、横跨详情框 + 队列，不跟着详情框收窄。
+static func detail_notice_w(right_w: float) -> float:
+	return maxf(0.0, right_w - QUEUE_MARGIN)
 
 
 ## 招募队列控件的 x（右缘钉在 `right_w − QUEUE_MARGIN`）。
@@ -477,9 +467,9 @@ static func detail_name_w(right_w: float) -> float:
 	return detail_queue_x(right_w) - UNIT_NAME_X - 8.0
 
 
-## 正文**右栏** Label 的宽。
-static func detail_body_col2_w(right_w: float) -> float:
-	return detail_body_w(right_w) - DETAIL_BODY_COL2_X - DETAIL_BODY_PAD
+## 正文**右列**的宽（与左列等宽）。
+static func detail_body_col2_w(_right_w: float) -> float:
+	return DETAIL_BODY_COL2_W
 
 
 # ------------------------------------------------------------------
@@ -509,14 +499,38 @@ static func unit_detail_rect() -> Rect2:
 	return Rect2(DETAIL_LEFT_W + DETAIL_GAP, 0.0, DETAIL_RIGHT_W, DETAIL_CONTENT_H)
 
 
-## 网格第 i 格（相对**网格控件自身**）—— 3 列 × 3 行，行优先
+## 网格第 i 格（相对**网格控件自身**）—— 3 行 × 3 列**可见**，**列优先**。
+##
+## ★★ 本版改成列优先（原来是行优先）：下方 3×3 现在是一个可以**左右滑动**的条带 ——
+##   一「列」= 3 个格子（3+3+3 里的那个「3」），往右一列就是接着的 3 个单位。
+##   行优先的话「滑动一列」会把同一行的 3 个不相邻单位挪进来，语义就散了。
+##   于是索引 i → 列 col = i / 3、行 row = i % 3：
+##     i = 0,1,2 → 第 1 列（从上到下）；i = 3,4,5 → 第 2 列 …… 以此类推。
 static func troop_cell_rect(i: int) -> Rect2:
-	var col: int = i % TROOP_GRID_COLS
-	var row: int = int(i / TROOP_GRID_COLS)
+	var col: int = int(i / TROOP_GRID_ROWS)
+	var row: int = i % TROOP_GRID_ROWS
 	return Rect2(
 		float(col) * TROOP_CELL_W,
 		float(row) * TROOP_CELL_H,
 		TROOP_CELL_W - 4.0, TROOP_CELL_H)
+
+
+## 网格**可见区**的宽（3 列）——横向滚动时「一屏」就是它。
+const TROOP_GRID_VIEW_W := TROOP_GRID_COLS * TROOP_CELL_W
+
+
+## 网格内容的总宽：一共几列 × 每列宽（列数 = ceil(格子数 / 3)）。
+## ★ total <= 0 → 0（没东西时没有可滚的内容）。
+static func troop_grid_content_w(total: int) -> float:
+	if total <= 0:
+		return 0.0
+	var cols: int = int(ceil(float(total) / float(TROOP_GRID_ROWS)))
+	return float(cols) * TROOP_CELL_W
+
+
+## 横向滚动的最大值（内容宽 - 可见宽；装得下时是 0 = 不能滚）。
+static func troop_grid_max_scroll(total: int) -> float:
+	return maxf(0.0, troop_grid_content_w(total) - TROOP_GRID_VIEW_W)
 
 
 ## 网格第 i 格里的方框（相对**网格控件自身**）：40×40，贴格子左上角
@@ -583,21 +597,22 @@ static func troop_cell_global_rect(i: int) -> Rect2:
 
 ## 招募队列的五个格子（星际争霸那套：1 个大格 + 4 个小格）
 ##
-## ★ 它画在**详细信息右栏的顶带里**（单位名称右边），只有选中的将领正在招募时才出现。
+## ★ 它画在**详细信息右栏的下半区**（详情框右边），只有选中的将领正在招募时才出现。
 ##   下面是**队列控件自身**的局部坐标 —— 控件本身由 detail_panel 摆进右栏。
 ##
 ## ★★ 第七轮：控件先加了左边一条 129px 汇总带，随后又按手玩反馈**整块放大**：
-##   大格 64 → **84**、小格 30 → **40**、字号 13/11 → **15/13**、控件 261×64 → **313×92**，
-##   并且**离右栏的上/右边缘各留 4px**（`QUEUE_MARGIN`）—— 贴边时 1px 描边会被
-##   右栏的 `clip_contents` 切掉一半（画面上就是「上边框不见了」），留 4px 之后四边全在。
+##   大格 64 → **84**、小格 30 → **40**、字号 13/11 → **15/13**、控件 261×64 → **313×116**
+##   （本版高度跟着详情框 92 → 116），并且**离右栏右侧 4px**（`QUEUE_MARGIN`）——
+##   贴边时 1px 描边会被右栏的 `clip_contents` 切掉一半（画面上就是「上边框不见了」）。
 ##
-##     328 ───────── 469 ─────────── 641     ← 641 = DETAIL_RIGHT_W − QUEUE_MARGIN
+##     286 ───────── 427 ─────────── 599     ← 599 = DETAIL_RIGHT_W − QUEUE_MARGIN（603 − 4）
 ##     │  汇总带 141 │  五个格子 172  │
-##     └─ QUEUE_X = DETAIL_RIGHT_W − QUEUE_MARGIN − QUEUE_W = 645 − 4 − 313 = 328
+##     └─ QUEUE_X = DETAIL_RIGHT_W − QUEUE_MARGIN − QUEUE_W = 603 − 4 − 313 = 286
 ##
-##   ⚠️ 竖直方向：控件高 = `UNIT_BAND_H`（= 88），格子 84 高，上下各留 `QUEUE_CELL_PAD`（= 2）。
-##   ⚠️ `QUEUE_X / QUEUE_W` 是**控件**的；`queue_cell_rect()` 给的是**格子**在控件内的位置
-##      （因此带 QUEUE_INFO_W 的偏移）。tests/test_ui.gd 有断言钉着（改了要一起改）。
+## ★★ 本版：招募面板**从顶带搬下来**，与详细信息框**上下对齐**：
+##   x 仍然钉右（QUEUE_X），y = `DETAIL_BODY_Y`，高 = `DETAIL_BODY_H`（116）。
+##   于是右栏下半是「详情框 282 + 4px 缝 + 队列 313」并排，顶/底边齐平。
+##   格子尺寸（大 84 / 小 40）不变，只把多出来的 28px 变成上下留白（各 16）。
 const QUEUE_BIG := 84.0              # 正在读条的那个（大格子）
 const QUEUE_SMALL := 40.0            # 排队的四个（小格子）
 const QUEUE_GAP := 4.0
@@ -606,21 +621,12 @@ const QUEUE_CELLS_W := QUEUE_BIG + QUEUE_GAP + QUEUE_SMALL * 2.0 + QUEUE_GAP   #
 const QUEUE_INFO_W := 141.0          # 左边汇总文字那一段（两行小字）
 const QUEUE_INFO_PAD := 8.0          # 汇总文字离控件左边 / 上边的内边距
 const QUEUE_W := QUEUE_INFO_W + QUEUE_CELLS_W                                  # 313：控件总宽
-## 控件总高 = **顶带高**（本版 92 → 88，跟着顶带一起收）：两者同高、上缘重合 ⇒ 中线相同。
-const QUEUE_H := UNIT_BAND_H
-## 格子在这个控件里的上下留白：88 − 84 = 4 ⇒ 上下各 2。
+const QUEUE_H := DETAIL_BODY_H       # 116：与详情框同高
+## 格子在这个控件里的上下留白：(116 − 84) / 2 = 16。
 const QUEUE_CELL_PAD := (QUEUE_H - QUEUE_BIG) * 0.5
-## 控件左上角：右缘钉在 `UNIT_CONTENT_RIGHT`（= 641）上，上缘 = **顶带的上缘**
-## （`UNIT_BAND_Y`，= 8）。
-## ★ 这里**故意写成推算式**（其它地方那几个数是写死的）：这两条对齐是「留出不贴边」，
-##   写成推算式之后改右栏宽 / 留白都不会再把它贴回裁剪线上。
-## ★★ `QUEUE_Y` 本版从 `QUEUE_MARGIN`（= 4）改成 `UNIT_BAND_Y`（= 8）：
-##   顶带收到 88 高之后，队列（也是 88 高）与顶带**上下缘重合**才谈得上「同一条中轴线」，
-##   而 `QUEUE_Y = 4` 会让队列中线落在 48、顶带中线落在 52 —— 差 4px（测试直接量出过）。
-##   ⇒ 现在 `UNIT_BAND_H == QUEUE_H` 且 `QUEUE_Y == UNIT_BAND_Y`，中线都是 52。
-##   ⚠️ 上缘 8 ≥ 1 仍然满足「不许贴 y=0 的裁剪线」（描边不会被切）。
+## 控件左上角：右缘钉在 `UNIT_CONTENT_RIGHT`（= 599）上，上缘 = 详情框顶边。
 const QUEUE_X := UNIT_CONTENT_RIGHT - QUEUE_W
-const QUEUE_Y := UNIT_BAND_Y
+const QUEUE_Y := DETAIL_BODY_Y
 
 
 
@@ -696,13 +702,14 @@ static func queue_info_rect() -> Rect2:
 
 ## 汇总带里第 i 行文字的矩形（0 = 「招募队列 3/5」，1 = 「共 22s」）。
 ##
-## ★ 两行作为一个文字块在 92 高的带子里**垂直居中**：
-##   块高 = 18(第一行) + 4(缝) + 16(第二行) = 38 ⇒ 上下各留 27。
+## ★ 两行作为一个文字块在 116 高的带子里**垂直居中**：
+##   块高 = 18(第一行) + 4(缝) + 16(第二行) = 38 ⇒ 上下各留 (116−38)/2 = 39。
 static func queue_info_line_rect(i: int) -> Rect2:
 	var w := QUEUE_INFO_W - 2.0 * QUEUE_INFO_PAD
+	var top: float = (QUEUE_H - 38.0) * 0.5
 	if i <= 0:
-		return Rect2(QUEUE_INFO_PAD, 27.0, w, 18.0)
-	return Rect2(QUEUE_INFO_PAD, 49.0, w, 16.0)
+		return Rect2(QUEUE_INFO_PAD, top, w, 18.0)
+	return Rect2(QUEUE_INFO_PAD, top + 22.0, w, 16.0)
 
 
 ## 鼠标停在某一格上时，那一格右上角那个「×」的边长与内边距（第七轮加的）。
@@ -761,21 +768,10 @@ static func apply_top_center(c: Control, r: Rect2) -> void:
 	c.offset_bottom = r.position.y + r.size.y
 
 
-## ★★ 详细信息面板专用：**左缘钉 400、右缘钉到阵营列左缘**（窗口变宽时自己填满中间那条缝）。
-##
-## ★ 阵营列（`FACTION_RECT`）放大后左缘是 1389.1667，右缘偏移 `1389.1667 − 1920 = −530.8333`；
-##   这里把详细信息的右缘定成 −532（= 400 + 988 − 1920）⇒ 1920 宽时右缘 1388，
-##   与阵营列留约 1.17px 缝，两者**永远相邻**。
-## ★ 高度不变（贴底、高 260）：窗口变高时底栏仍贴屏幕下沿。
-static func apply_stretched_detail(c: Control) -> void:
-	c.anchor_left = 0.0
-	c.anchor_right = 1.0
-	c.offset_left = DETAIL_RECT.position.x                                    # 400：贴左
-	c.offset_right = DETAIL_RECT.position.x + DETAIL_RECT.size.x - DESIGN_W   # 1388−1920 = −532：贴到阵营列左缘
-	c.anchor_top = 1.0
-	c.anchor_bottom = 1.0
-	c.offset_top = DETAIL_RECT.position.y - DESIGN_H
-	c.offset_bottom = DETAIL_RECT.position.y + DETAIL_RECT.size.y - DESIGN_H  # 贴底、高 260 不变
+## ★★ 详细信息面板：**固定贴左、贴底**（988×260）。
+## 不再做「右缘钉到阵营列」的拉伸 —— 手机端不需要和右侧页签相连，尺寸恰好即可。
+static func apply_fixed_detail(c: Control) -> void:
+	apply_rect(c, DETAIL_RECT, false, true)
 
 
 # ------------------------------------------------------------------
@@ -797,7 +793,10 @@ static func apply_stretched_detail(c: Control) -> void:
 ##   ★ 拖动那一段由 camera_rig.set_ui_dragging() 额外压住（例外区里的那次抖动）——
 ##     见 view/minimap.gd 文件末尾与 docs/route.md 19.4。
 ##
-## ★★ 网格（TROOP_GRID_SLOTS 格）是**第三轮改版**加进来的：点一格 = 换左栏展开哪支部队。
+## ★★ 网格是**能点 / 能拖动**的：整块（可见 3×3）都进「可点控件」名单。
+##   本版下方 3×3 改成可左右滑动后，不能再按 9 个固定格子登记 ——
+##   滚动之后「第 i 个格子现在在哪」是控件自己的事（见 view/troop_grid.gd），
+##   这里只登记**可见区**那一个矩形。
 ##   它整块都在详细信息面板里，所以「让路」的副作用是把面板中间那一大片也拦掉了 ——
 ##   这是有意的：鼠标停在能点的格子上时不该同时被边缘推着滚屏（与小地图同一条理由）。
 ##   面板**其余**的地方（右栏、左栏上半）仍然是「只有文字 → 照样滚屏」。
@@ -817,8 +816,9 @@ static func interactive_rects(view_size: Vector2) -> Array[Rect2]:
 		var r2 := tab_button_rect(i)                        # 贴右下
 		r2.position += shift
 		out.append(r2)
-	for i in TROOP_GRID_SLOTS:
-		out.append(troop_cell_global_rect(i))               # 详细信息左栏，贴左下
+	var gr := troop_grid_rect()                                 # 详细信息左栏，贴左下
+	gr.position += panel_content_pos()
+	out.append(gr)
 	var s := SETTINGS_RECT
 	s.position.x += shift.x                                     # 贴右上
 	out.append(s)
@@ -836,11 +836,11 @@ static func interactive_rects(view_size: Vector2) -> Array[Rect2]:
 ##     玩家正在看底栏的时候，那一下滚动不该把地图拉走 —— 与那一块能不能点无关。
 ##
 ## ★ 左下小地图**不在**名单里：它是地图本身（不是 ui 栏），鼠标停在上面时滚轮照旧缩放地图。
-## ★ 超宽窗口：详细信息贴左边不动，其余三块跟着贴右下（口径与 interactive_rects 一致）。
+## ★ 超宽窗口：详细信息固定贴左（988 宽，不再拉伸），其余三块跟着贴右下。
 static func bottom_bar_rects(view_size: Vector2) -> Array[Rect2]:
 	var shift := Vector2(maxf(0.0, view_size.x - DESIGN_W), maxf(0.0, view_size.y - DESIGN_H))
 	var out: Array[Rect2] = []
-	var d := stretched_detail_rect(view_size)   # 贴左边：宽度跟着视口横向长，只跟着下边修正
+	var d := DETAIL_RECT
 	d.position.y += shift.y
 	out.append(d)
 	for r in [FACTION_RECT, CARD_RECT, TABS_RECT]:   # 贴右下：右下都修正

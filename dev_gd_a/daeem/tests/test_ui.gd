@@ -11,6 +11,7 @@ const DetailPanelRes = preload("res://view/detail_panel.gd")
 const PageTabsRes = preload("res://view/page_tabs.gd")
 const RecruitQueueRes = preload("res://view/recruit_queue.gd")
 const TroopGridRes = preload("res://view/troop_grid.gd")
+const IconBadgeRes = preload("res://view/icon_badge.gd")
 const HoverTipRes = preload("res://view/hover_tip.gd")
 const FontLoaderRes = preload("res://view/font_loader.gd")
 const UnitRes = preload("res://logic/unit.gd")
@@ -118,30 +119,34 @@ func _test_layout_against_reference(cfg) -> void:
 	eq(UiLayoutRes.QUEUE_INFO_W, 141.0, "汇总带宽 141（表格子段左边那一条）")
 	eq(UiLayoutRes.QUEUE_W, UiLayoutRes.QUEUE_INFO_W + UiLayoutRes.QUEUE_CELLS_W,
 		"★ 控件总宽 = 汇总带 141 + 五个格子 172 = 313（常量之间是推算式，不会对不上）")
-	eq(UiLayoutRes.QUEUE_H, UiLayoutRes.UNIT_BAND_H,
-		"★ 控件总高 = 顶带高（本版 92 → 88，格子 84 + 上下各 2）—— 两者同高才会共用中轴线")
-	eq(UiLayoutRes.QUEUE_H, 88.0, "★ 控件总高 88（顶带一起收的 4px 都给了数值框）")
+	eq(UiLayoutRes.QUEUE_H, UiLayoutRes.DETAIL_BODY_H,
+		"★ 控件总高 = 详情框高（本版从顶带搬下来，与详情框上下对齐）")
+	eq(UiLayoutRes.QUEUE_H, 116.0, "★ 控件总高 116（与详情框 116 齐平）")
+	eq(UiLayoutRes.QUEUE_Y, UiLayoutRes.DETAIL_BODY_Y,
+		"★ 队列顶边 = 详情框顶边（y=100）")
 	eq(UiLayoutRes.QUEUE_BIG, 84.0, "★ 大格子 84×84（64 → 84）")
 	eq(UiLayoutRes.QUEUE_SMALL, 40.0, "★ 小格子 40×40（30 → 40）")
 	ok(UiLayoutRes.QUEUE_MARGIN >= 1.0,
-		"★ 队列块离右栏上/右边缘留了 %.0fpx（= 0 时 1px 描边会被裁剪线切掉半条）"
+		"★ 队列块离右栏右边缘留了 %.0fpx（= 0 时 1px 描边会被裁剪线切掉半条）"
 			% UiLayoutRes.QUEUE_MARGIN)
-	ok(UiLayoutRes.QUEUE_Y >= 1.0, "★ 队列块的上缘不贴右栏顶边（否则上边框整条不见）")
 	eq(UiLayoutRes.QUEUE_X + UiLayoutRes.QUEUE_W, UiLayoutRes.UNIT_CONTENT_RIGHT,
 		"★ 队列块右缘 = 右栏内容的公共右缘（599 = 603 − 4）")
 	ok(UiLayoutRes.QUEUE_X + UiLayoutRes.QUEUE_W < UiLayoutRes.DETAIL_RIGHT_W,
 		"★ 队列块右缘**不**顶到 603（顶到就会被切）")
-	eq(UiLayoutRes.queue_info_rect(), Rect2(0, 0, 141, 88), "汇总带占控件左边那条 141×88")
-	eq(UiLayoutRes.queue_info_line_rect(0), Rect2(8, 27, 125, 18), "汇总第一行（招募队列 3/5）")
-	eq(UiLayoutRes.queue_info_line_rect(1), Rect2(8, 49, 125, 16), "汇总第二行（共 22s）")
+	ok(UiLayoutRes.DETAIL_BODY_X + UiLayoutRes.DETAIL_BODY_W <= UiLayoutRes.QUEUE_X,
+		"★ 详情框右缘不压到队列（%.0f ≤ %.0f）" % [
+			UiLayoutRes.DETAIL_BODY_X + UiLayoutRes.DETAIL_BODY_W, UiLayoutRes.QUEUE_X])
+	eq(UiLayoutRes.queue_info_rect(), Rect2(0, 0, 141, 116), "汇总带占控件左边那条 141×116")
+	eq(UiLayoutRes.queue_info_line_rect(0), Rect2(8, 39, 125, 18), "汇总第一行（招募队列 3/5）")
+	eq(UiLayoutRes.queue_info_line_rect(1), Rect2(8, 61, 125, 16), "汇总第二行（共 22s）")
 	ok(UiLayoutRes.queue_info_line_rect(1).position.y + UiLayoutRes.queue_info_line_rect(1).size.y
 			<= UiLayoutRes.QUEUE_H,
 		"★ 汇总两行都落在控件里（否则会被右栏裁掉）")
-	eq(UiLayoutRes.queue_cell_rect(0), Rect2(141, 2, 84, 84), "大格子紧跟在汇总带右边（84×84）")
-	eq(UiLayoutRes.queue_cell_rect(1), Rect2(229, 2, 40, 40), "第 1 个小格排在大格右边")
-	eq(UiLayoutRes.queue_cell_rect(2), Rect2(273, 2, 40, 40), "第 2 个小格在它右边")
-	eq(UiLayoutRes.queue_cell_rect(3), Rect2(229, 46, 40, 40), "第 3 个小格换行")
-	eq(UiLayoutRes.queue_cell_rect(4), Rect2(273, 46, 40, 40), "第 4 个小格在右下角")
+	eq(UiLayoutRes.queue_cell_rect(0), Rect2(141, 16, 84, 84), "大格子紧跟在汇总带右边（84×84）")
+	eq(UiLayoutRes.queue_cell_rect(1), Rect2(229, 16, 40, 40), "第 1 个小格排在大格右边")
+	eq(UiLayoutRes.queue_cell_rect(2), Rect2(273, 16, 40, 40), "第 2 个小格在它右边")
+	eq(UiLayoutRes.queue_cell_rect(3), Rect2(229, 60, 40, 40), "第 3 个小格换行")
+	eq(UiLayoutRes.queue_cell_rect(4), Rect2(273, 60, 40, 40), "第 4 个小格在右下角")
 	var small_last := UiLayoutRes.queue_cell_rect(4)
 	ok(small_last.position.x + small_last.size.x <= UiLayoutRes.QUEUE_W + 1e-6
 		and small_last.position.y + small_last.size.y <= UiLayoutRes.QUEUE_H + 1e-6,
@@ -222,10 +227,18 @@ func _test_left_column_geometry() -> void:
 	eq(UiLayoutRes.GRID_PAGE, 9, "单选时滚轮**一次翻一页 = 9 格**（手玩原话）")
 	v2_near(UiLayoutRes.troop_avatar_rect(0).size, Vector2(40.0, 40.0), 0.01, "格里的方框 40×40")
 	eq(UiLayoutRes.troop_cell_rect(0), Rect2(0, 0, 112, 55), "第 0 格在左上（宽 116 - 内侧 4）")
-	eq(UiLayoutRes.troop_cell_rect(1).position.x, UiLayoutRes.TROOP_CELL_W,
-		"第 1 格在它右边（列优先 → 行优先）")
-	eq(UiLayoutRes.troop_cell_rect(3).position.y, UiLayoutRes.TROOP_CELL_H, "第 3 格换到第二行")
+	eq(UiLayoutRes.troop_cell_rect(1).position.y, UiLayoutRes.TROOP_CELL_H,
+		"★ 第 1 格换到第二行（列优先：一列 = 3 个格子）")
+	eq(UiLayoutRes.troop_cell_rect(3).position.x, UiLayoutRes.TROOP_CELL_W,
+		"★ 第 3 格换到第二列（横向滑动一列 = 3 格）")
 	eq(UiLayoutRes.troop_cell_rect(8).position.y, 2.0 * UiLayoutRes.TROOP_CELL_H, "第 8 格在第三行")
+	eq(UiLayoutRes.troop_grid_content_w(9), UiLayoutRes.TROOP_GRID_VIEW_W,
+		"★ 9 格正好 3 列，装得下可见区")
+	eq(UiLayoutRes.troop_grid_max_scroll(9), 0.0, "★ 9 格时不能横向滑动（不用滑）")
+	eq(UiLayoutRes.troop_grid_content_w(11), 4.0 * UiLayoutRes.TROOP_CELL_W,
+		"★ 11 格 = 4 列（多出来的一列靠滑动看）")
+	eq(UiLayoutRes.troop_grid_max_scroll(11), UiLayoutRes.TROOP_CELL_W,
+		"★ 11 格时最多滑一列宽（116）")
 	var bottom := UiLayoutRes.troop_cell_rect(8)
 	ok(UiLayoutRes.troop_grid_rect().position.y + bottom.position.y
 			+ UiLayoutRes.TROOP_AVATAR <= UiLayoutRes.DETAIL_CONTENT_H,
@@ -298,15 +311,15 @@ func _test_left_column_geometry() -> void:
 			"★ 第 %d 格的文字不越出本格（%s ≤ %s）" % [
 				gi, str(gname.position.x + gname.size.x),
 				str(gcell.position.x + gcell.size.x)])
-	ok(UiLayoutRes.troop_name_rect(0).position.x < UiLayoutRes.troop_name_rect(1).position.x
-			and UiLayoutRes.troop_name_rect(1).position.x < UiLayoutRes.troop_name_rect(2).position.x,
-		"★ 三列的文字左边依次右移（列差 = 格宽 %s）" % str(UiLayoutRes.TROOP_CELL_W))
-	near(UiLayoutRes.troop_name_rect(1).position.x - UiLayoutRes.troop_name_rect(0).position.x,
-		UiLayoutRes.TROOP_CELL_W, 0.01, "★ 相邻两列的文字左边正好差一格宽")
-	eq(UiLayoutRes.troop_name_rect(3).position.x, UiLayoutRes.troop_name_rect(0).position.x,
-		"★ 第 2 行第 1 列的文字左边与第 1 行第 1 列对齐")
-	eq(UiLayoutRes.troop_name_rect(3).position.y - UiLayoutRes.troop_name_rect(0).position.y,
-		UiLayoutRes.TROOP_CELL_H, "★ 换行时文字跟着下移一格高")
+	ok(UiLayoutRes.troop_name_rect(0).position.x == UiLayoutRes.troop_name_rect(1).position.x
+			and UiLayoutRes.troop_name_rect(1).position.x == UiLayoutRes.troop_name_rect(2).position.x,
+		"★ 第 1 列那 3 个格子的文字左边对齐（列优先）")
+	eq(UiLayoutRes.troop_name_rect(1).position.y - UiLayoutRes.troop_name_rect(0).position.y,
+		UiLayoutRes.TROOP_CELL_H, "★ 同一列往下排：文字跟着下移一格高")
+	eq(UiLayoutRes.troop_name_rect(3).position.x - UiLayoutRes.troop_name_rect(0).position.x,
+		UiLayoutRes.TROOP_CELL_W, "★ 换到第 2 列：文字左边正好差一格宽")
+	eq(UiLayoutRes.troop_name_rect(3).position.y, UiLayoutRes.troop_name_rect(0).position.y,
+		"★ 第 2 列第 1 行的文字顶边与第 1 列第 1 行对齐")
 
 func _test_hit_test() -> void:
 	var vp := Vector2(UiLayoutRes.DESIGN_W, UiLayoutRes.DESIGN_H)
@@ -323,7 +336,7 @@ func _test_hit_test() -> void:
 
 	ok(UiLayoutRes.point_hits_any(UiLayoutRes.interactive_rects(vp),
 		UiLayoutRes.troop_cell_global_rect(0).get_center()),
-		"★ 详细信息左栏下半那 9 个格子拦边缘滚屏（它是可点的）")
+		"★ 详细信息左栏下半那块网格拦边缘滚屏（它能点 / 能拖）")
 
 	ok(UiLayoutRes.point_hits_any(UiLayoutRes.interactive_rects(vp),
 		UiLayoutRes.squad_slot_rect(2).get_center()), "部队第 3 行拦边缘滚屏（它是可点的）")
@@ -374,17 +387,19 @@ func _test_hit_test() -> void:
 	card_wide.position.x += wide.x - UiLayoutRes.DESIGN_W
 	ok(UiLayoutRes.point_hits_any(bar_wide, card_wide.get_center()),
 		"★ 超宽窗口：命令卡的新位置仍然拦滚轮（判定跟着贴边走）")
-	# ★★ 手机端自适应：详细信息面板拉伸填满「原来那条缝」——
-	#    于是旧命令卡位置现在落在**详细信息面板**里（底栏连续、无空洞）。
-	ok(UiLayoutRes.point_hits_any(bar_wide, UiLayoutRes.card_cell_rect(0).get_center()),
-		"★ 超宽窗口：详细信息面板拉伸后填满了那条缝 ⇒ 旧命令卡位置也在底栏里（连续无空洞）")
+	# ★★ 本版：手机端不再把详细信息面板横向拉伸 —— 固定 988×260，右侧留白。
+	#    旧命令卡位置落在面板右侧的空白里，**不再**被底栏覆盖。
+	ok(not UiLayoutRes.point_hits_any(bar_wide, UiLayoutRes.card_cell_rect(0).get_center()),
+		"★ 超宽窗口：详细信息面板固定宽度 ⇒ 旧命令卡位置在面板外的留白里（不再相连）")
 
-	# 拉伸后的详细信息面板右缘必须正好接上阵营列左缘（这就是「不要固定大小、填满下方栏位」）。
-	var sd := UiLayoutRes.stretched_detail_rect(wide)
+	var d_wide: Rect2 = bar_wide[0]
+	eq(d_wide.size, UiLayoutRes.DETAIL_RECT.size,
+		"★ 超宽窗口：详细信息面板尺寸仍是 988×260（不拉伸）")
 	var faction_left_wide: float = UiLayoutRes.FACTION_RECT.position.x + (wide.x - UiLayoutRes.DESIGN_W)
-	near(faction_left_wide - (sd.position.x + sd.size.x), 1.1667, 0.01,
-		"★ 详细信息面板拉伸后右缘与阵营列左缘留约 1.17px 缝（不重叠）")
-	eq(UiLayoutRes.stretched_detail_rect(vp).size.x, UiLayoutRes.DETAIL_RECT.size.x,
+	ok(faction_left_wide > d_wide.position.x + d_wide.size.x,
+		"★ 面板右缘与阵营列之间允许留白（%.0f > %.0f）" % [
+			faction_left_wide, d_wide.position.x + d_wide.size.x])
+	eq(UiLayoutRes.bottom_bar_rects(vp)[0].size.x, UiLayoutRes.DETAIL_RECT.size.x,
 		"1920 基准下详细信息面板宽度仍是 988")
 
 	# 右栏动态宽度函数在基准宽度处必须与写死的常量逐位一致（否则 1920 下会走样）。
@@ -396,8 +411,6 @@ func _test_hit_test() -> void:
 		"detail_name_w(基准) == UNIT_NAME_W")
 	eq(UiLayoutRes.detail_body_col2_w(rw), UiLayoutRes.DETAIL_BODY_COL2_W,
 		"detail_body_col2_w(基准) == DETAIL_BODY_COL2_W")
-	eq(UiLayoutRes.detail_right_w(wide), UiLayoutRes.DETAIL_RIGHT_W + (wide.x - UiLayoutRes.DESIGN_W),
-		"超宽窗口右栏宽度 = 603 + 多出来的宽")
 
 func _test_panels(cfg) -> void:
 	var packed = load("res://view/main.tscn")
@@ -500,6 +513,7 @@ func _test_panels(cfg) -> void:
 	_test_detail_basic_stats(main)
 	_test_detail_two_columns(main)
 	_test_detail_vertical_fit(main)
+	_test_buff_long_press(main)
 	_test_clicked_unit_detail(main)
 	_test_enemy_selection(main)
 	_test_settings_inert(main)
@@ -511,13 +525,20 @@ func _test_panels(cfg) -> void:
 	ok(not main.hud.detail_panel.has_log(), "★ 事件日志整块删掉了（detail_panel 里没有日志栏）")
 	ok(main.hud.detail_panel.get_node_or_null("DetailBox/DetailTitle") == null,
 		"★ 数值区里没有「详细信息」标题控件了")
-	ok(main.hud.detail_panel.detail_text().contains("血量"), "右栏数值区显示选中单位的数值")
-	eq(main.hud.detail_panel.buff_count(), UiLayoutRes.BUFF_SLOTS, "★ 右栏有 3 个 buff 占位格")
+	ok(main.hud.detail_panel.detail_text().contains("血量")
+			and main.hud.detail_panel.detail_text().contains("移速"),
+		"★ 右栏两列详情：左列血量、右列移速（实际：%s）"
+			% main.hud.detail_panel.detail_text().replace("\n", "|"))
+	eq(main.hud.detail_panel.buff_count(), 1,
+		"★ 动态 buff 槽位：士气系统给单位挂了一条 buff")
+	var buff_bar = main.hud.detail_panel.buff_bar_control()
+	ok(buff_bar != null and String(buff_bar.entry(0).get("id", "")) == "morale",
+		"★ 那条 buff 的 id = morale（文字「士」，底色随士气）")
 	ok(main.hud.detail_panel.unit_name_text() != "", "右栏写着单位名称")
 
 	main.input_ctrl.select_units([])
 	main.hud.refresh()
-	eq(main.hud.detail_panel.detail_text(), "未选中", "★ 没选中时只显示「未选中」（不再有操作提示）")
+	eq(main.hud.detail_panel.detail_text(), "未选中", "★ 没选中时只显示「未选中」")
 	eq(main.hud.detail_panel.unit_name_text(), "", "没选中单位时右栏没有名称")
 	ok(not main.hud.detail_panel.roster_control().visible, "没选中部队时左栏上半收起来")
 	main.input_ctrl.select_units([main.world.unit_by_id("general-1")])
@@ -532,7 +553,7 @@ func _test_panels(cfg) -> void:
 	ok(not main.hud.blocks_edge_scroll(UiLayoutRes.panel_content_pos() + Vector2(8.0, 8.0)),
 		"★ 鼠标在详细信息面板**只有文字**的地方 → 照样滚屏（不然底边滚不动）")
 	ok(main.hud.blocks_edge_scroll(UiLayoutRes.troop_cell_global_rect(0).get_center()),
-		"★ 鼠标在将领头像网格上 → 不滚屏（那是可点的格子）")
+		"★ 鼠标在部队 / 单位网格上 → 不滚屏（那能点 / 能拖）")
 	ok(not main.hud.blocks_edge_scroll(Vector2(vp.x * 0.5, vp.y * 0.5)), "鼠标在地图中间 → 滚屏")
 
 	var row_center := UiLayoutRes.squad_slot_rect(2).get_center()
@@ -698,7 +719,7 @@ func _camera_look_point(main) -> Vector3:
 func _test_notice_band(main) -> void:
 	var panel = main.hud.detail_panel
 	var grid = panel.grid_control()
-	var body = panel._body
+	var body = panel._detail_box
 	var notice = panel._notice
 	ok(notice != null, "提示行的 Label 还在（只是从 VBox 搬进了右栏）")
 	if notice == null:
@@ -752,14 +773,17 @@ func _test_anchors(main) -> void:
 		"超宽窗口：页签列仍贴右下角")
 	v2_near(main.hud.detail_panel.position, UiLayoutRes.DETAIL_RECT.position, 1.0,
 		"超宽窗口：详细信息仍贴左边（x = 400）")
-	# ★★ 手机端自适应：多出来的 640px 全部进右栏 —— 面板右缘正好接上阵营列左缘。
-	near(main.hud.detail_panel.size.x, UiLayoutRes.DETAIL_RECT.size.x + 640.0, 1.0,
-		"★ 超宽窗口：详细信息面板横向拉伸 640（填满到阵营列左缘）")
-	near(main.hud.detail_panel.right_column_width(), UiLayoutRes.DETAIL_RIGHT_W + 640.0, 1.0,
-		"★ 超宽窗口：多出来的宽度全进了右栏（左栏仍 350）")
+	# ★★ 本版：手机端不再横向拉伸 —— 固定 988 宽，右侧留白，不需要与页签 / 阵营列相连。
+	near(main.hud.detail_panel.size.x, UiLayoutRes.DETAIL_RECT.size.x, 1.0,
+		"★ 超宽窗口：详细信息面板仍是 988 宽（不再拉伸）")
+	near(main.hud.detail_panel.right_column_width(), UiLayoutRes.DETAIL_RIGHT_W, 1.0,
+		"★ 超宽窗口：右栏仍是 603 宽（多出来的宽不再灌进来）")
 	near(main.hud.detail_panel.queue_position_x(),
-		UiLayoutRes.detail_queue_x(UiLayoutRes.DETAIL_RIGHT_W + 640.0), 1.0,
-		"★ 超宽窗口：招募队列右缘仍钉在右栏右缘（位置跟着变）")
+		UiLayoutRes.detail_queue_x(UiLayoutRes.DETAIL_RIGHT_W), 1.0,
+		"★ 超宽窗口：招募队列位置固定（右栏 603 下的 286）")
+	ok(main.hud.detail_panel.position.x + main.hud.detail_panel.size.x
+			< UiLayoutRes.FACTION_RECT.position.x + 640.0,
+		"★ 面板右缘与右侧阵营列之间留白（不相连）")
 	v2_near(main.hud.squad_panel.position,
 		Vector2(UiLayoutRes.SQUAD_RECT.position.x + 640.0, UiLayoutRes.SQUAD_RECT.position.y), 1.0,
 		"超宽窗口：将领列表仍贴右上")
@@ -794,13 +818,12 @@ func _test_mobile_ui_scheduler(main) -> void:
 	eq(hud.troops_scans - s0, 1,
 		"★★ 一次 refresh 只扫一遍 world.units（页签与详情共用 tick 缓存）")
 
-	# ② 同一段详情文本重喂不重排
+	# ② 同一段详情文本重喂仍保持内容（两列表格没有旧的整块自动缩放）
 	var text := "第一行\n第二行"
 	dp.set_detail(text)
-	var f0: int = dp.fit_calls
+	eq(dp.detail_text(), text, "★ 旧接口 set_detail() 仍能按行喂进两列表格")
 	dp.set_detail(text)
-	eq(dp.fit_calls, f0,
-		"★★ 同一段详情文本重喂不重排（不重复写字号 / 行距主题覆盖）")
+	eq(dp.detail_text(), text, "★ 重喂同一段文本结果不变")
 
 	# ③ 4 槽轮转
 	var old_interval: float = hud._refresh_interval
@@ -879,13 +902,65 @@ func _test_avatar_text_fit(cfg) -> void:
 	await process_frame
 	ok(panel.avatar_draw_count() > before, "★ 头像那一块真的画了一帧（_draw 跑过）")
 
-	eq(panel._buffs.size(), UiLayoutRes.BUFF_SLOTS, "（前提）3 个 buff 占位格都在")
-	for b in panel._buffs:
-		var bfs: int = b.get_theme_font_size("font_size")
-		var bw: float = font.get_string_size(String(b.text), HORIZONTAL_ALIGNMENT_LEFT, -1, bfs).x
-		ok(bw <= b.size.x + 0.01,
-			"★ buff 占位字「%s」用 %d 号字宽 %.0f ≤ 方框 %.0f（装得下才不会被裁）"
-				% [b.text, bfs, bw, b.size.x])
+	eq(panel.buff_count(), 0, "（前提）动态 buff 槽位默认是空的（不再有写死的占位）")
+	var empty_bar = panel.buff_bar_control()
+	eq(empty_bar.mouse_filter, Control.MOUSE_FILTER_IGNORE,
+		"★ 没有 buff 时槽位不吃鼠标（不挡底下的东西）")
+	panel.set_buffs([
+		{
+			"id": "morale", "text": "士", "color": UiStyleRes.morale_plate(0.5, true),
+			"name": "士气 50/100", "tip_title": "士气",
+			"tip_body": "当前 50 / 100\n≥100：快速回血，受到伤害 -50%\n≤50：受到伤害 +50%",
+		},
+	])
+	eq(panel.buff_count(), 1, "★ 动态 buff 槽位能加条目")
+	var bb = panel.buff_bar_control()
+	eq(bb.mouse_filter, Control.MOUSE_FILTER_STOP,
+		"★ 有 buff 时槽位收鼠标，才能收到悬停")
+	eq(String(bb.entry(0).get("text", "")), "士", "★ 士气 buff 的方块字是「士」")
+	var br: Rect2 = bb.buff_rect(0)
+	eq(br.size, Vector2(UiLayoutRes.BUFF_SIZE, UiLayoutRes.BUFF_SIZE),
+		"★ 每个 buff 是 40×40 的方块")
+	ok(br.position.x >= 0.0 and br.position.x + br.size.x <= bb.size.x + 0.01,
+		"★ 第 1 个 buff 落在槽位可用宽之内")
+
+	# ★★ 悬停浮窗：与命令卡那块悬停面板同一套（标题 + 多行正文，向下长）
+	bb.hover_at(0)
+	await process_frame
+	ok(bb.tip_showing(), "★ 鼠标停在 buff 上 → 悬停浮窗出现")
+	eq(bb.hover_index(), 0, "★ 当前悬停的是第 0 个 buff")
+	eq(bb.tip_title_text(), "士气", "★ 浮窗标题 = buff 名")
+	ok(bb.tip_body_text().contains("当前 50 / 100"),
+		"★ 浮窗正文第一行是当前值（实际：%s）" % bb.tip_body_text().replace("\n", "|"))
+	ok(bb.tip_body_text().contains("≥100") and bb.tip_body_text().contains("≤50"),
+		"★ 浮窗正文列出各档效果")
+	var tip = bb.tip_control()
+	eq(tip.position.x, br.position.x, "★ 浮窗左缘 = 那个 buff 方块的左缘")
+	eq(tip.position.y, UiLayoutRes.BUFF_SIZE + UiLayoutRes.BUFF_TIP_GAP,
+		"★ 浮窗贴在 buff 方块下缘（向下长）")
+	eq(tip.size.x, UiLayoutRes.BUFF_TIP_W, "★ 浮窗宽固定 230")
+	ok(tip.size.y > 0.0, "★ 浮窗高度按内容算（> 0）")
+	ok(bb.position.y + tip.position.y + tip.size.y <= UiLayoutRes.DETAIL_CONTENT_H + 0.01,
+		"★ 浮窗不越出右栏内容高（%.0f ≤ %.0f）" % [
+			bb.position.y + tip.position.y + tip.size.y, UiLayoutRes.DETAIL_CONTENT_H])
+	bb.clear_hover()
+	ok(not bb.tip_showing(), "★ 鼠标移开 → 浮窗收起")
+	eq(bb.hover_index(), -1, "★ 悬停下标清空")
+
+	# 没给 tip_title / tip_body 时退回 name（其它系统以后加 buff 不必强制写说明）
+	panel.set_buffs([
+		{"id": "x", "text": "X", "color": UiStyleRes.morale_plate(0.5, true),
+			"name": "测试 buff"},
+	])
+	bb.hover_at(0)
+	await process_frame
+	eq(bb.tip_title_text(), "测试 buff", "★ 没写 tip_title 时退回 name")
+	eq(bb.tip_body_text(), "", "★ 没有 tip_body 时正文为空")
+	bb.clear_hover()
+
+	panel.set_buffs([])
+	eq(panel.buff_count(), 0, "★ 传空数组 = 槽位清空")
+	eq(bb.mouse_filter, Control.MOUSE_FILTER_IGNORE, "★ 清空后又回到不吃鼠标")
 	panel.queue_free()
 	await process_frame
 
@@ -909,15 +984,15 @@ func _test_hp_bars(cfg) -> void:
 	var lo := UiStyleRes.hp_low()
 	ok(hi.g > hi.r and lo.r > lo.g, "★ 绿档偏绿、红档偏红（一眼分得出快死了）")
 
-	# ②b 士气背景板色：满士气偏绿 → 零士气偏红；队长档 alpha 更实（见 ui_style.morale_plate）
+	# ②b 士气填充色：满士气偏绿 → 零士气偏红（部队图标的背景，见 view/morale_fill.gd）
 	var mp_full := UiStyleRes.morale_plate(1.0)
 	var mp_zero := UiStyleRes.morale_plate(0.0)
-	ok(mp_full.g > mp_full.r, "★ 满士气背景板 → 偏绿")
-	ok(mp_zero.r > mp_zero.g, "★ 零士气背景板 → 偏红")
+	ok(mp_full.g > mp_full.r, "★ 满士气填充 → 偏绿")
+	ok(mp_zero.r > mp_zero.g, "★ 零士气填充 → 偏红")
 	near(UiStyleRes.morale_plate(1.0, true).a, UiStyleRes.MORALE_ALPHA_STRONG, 1e-6,
-		"★ 队长档背景板更实（alpha = MORALE_ALPHA_STRONG）")
+		"★ 部队图标的士气填充用较实的 alpha（MORALE_ALPHA_STRONG）")
 	near(UiStyleRes.morale_plate(1.0, false).a, UiStyleRes.MORALE_ALPHA_NORMAL, 1e-6,
-		"★ 普通档背景板较淡（alpha = MORALE_ALPHA_NORMAL）")
+		"★ 普通档 alpha 仍在（给需要更淡的地方用）")
 
 	# ③ 网格：血条真的画了 + 绑定单位血量
 	var font: Font = FontLoaderRes.load_font(cfg)
@@ -953,12 +1028,75 @@ func _test_hp_bars(cfg) -> void:
 	# 血量变了 → 比例跟着变（绑定不是画一次就定格）
 	u.hp = 10.0
 	near(grid._hp_ratio_at(0), 0.1, 0.001, "★ 掉血后比例跟着变（10/100 = 0.1）")
-	# 背景板绑定士气（整支部队共享的一个值）
+	# 单个单位**不再有士气背景**（本版需求：只有部队图标才有士气填充）
 	u.morale = u.morale_max * 0.25
-	near(grid._morale_ratio_at(0), 0.25, 0.001, "★ 背景板比例绑定单位士气（25%）")
+	eq(grid._morale_ratio_at(0), 1.0,
+		"★ 单个单位格子不再画士气背景（只有部队格才有）")
+
+	# ③b 部队图标：序号 + 士气填充（整支部队共享的一个值）
+	eq(IconBadgeRes.troop_number_text(1), "1", "★ 部队序号：第 1 支写 1")
+	eq(IconBadgeRes.troop_number_text(9), "9", "★ 部队序号：第 9 支写 9")
+	eq(IconBadgeRes.troop_number_text(10), "0",
+		"★ 部队序号：第 10 支写 0（与右侧部队列表同一口径）")
+	var leader = UnitRes.new()
+	leader.name = "测试队长"
+	leader.hp = 100.0
+	leader.hp_max = 100.0
+	leader.morale_max = 100.0
+	leader.morale = 50.0
+	grid.set_troops([{"leader": leader, "number": 3, "units": [leader]}])
+	eq(grid.cell_kind(0), "troop", "★ 多选部队时格子是部队格")
+	eq(grid.cell_short(0), "3", "★★ 部队图标 = 序号（不是将领名字首字）")
+	near(grid._morale_ratio_at(0), 0.5, 0.001, "★ 部队图标的士气比例绑定部队士气（50%）")
+
+	# ③c 横向滑动：11 个单位 = 4 列，可见 3 列 ⇒ 能滑一列
+	var many: Array = []
+	for k in 11:
+		var m = UnitRes.new()
+		m.name = "兵%d" % (k + 1)
+		m.hp = 100.0
+		m.hp_max = 100.0
+		many.append(m)
+	grid.set_units(many, [])
+	eq(grid.cell_count(), 11, "★ 整批 11 个单位都在网格里（不再只装一页 9 格）")
+	eq(grid.content_columns(), 4, "★ 11 个单位排成 4 列")
+	eq(grid.max_scroll_x(), UiLayoutRes.TROOP_CELL_W,
+		"★ 最多滑一列（116px）就能看到第 12 个位置")
+	eq(grid.page_count(), 2, "★ 滚轮翻页：11 个单位 = 2 页（一页 9 格）")
+	grid.set_page(0)
+	eq(grid.page(), 0, "（前提）停在第 1 页")
+	var wheel_down := InputEventMouseButton.new()
+	wheel_down.button_index = MOUSE_BUTTON_WHEEL_DOWN
+	wheel_down.pressed = true
+	grid._gui_input(wheel_down)
+	eq(grid.page(), 1, "★ 滚轮向下 → 翻到第 2 页")
+	eq(grid.scroll_x(), UiLayoutRes.TROOP_CELL_W, "★ 第 2 页滚到最右（夹在内容边界）")
+	var wheel_up := InputEventMouseButton.new()
+	wheel_up.button_index = MOUSE_BUTTON_WHEEL_UP
+	wheel_up.pressed = true
+	grid._gui_input(wheel_up)
+	eq(grid.page(), 0, "★ 滚轮向上 → 回到第 1 页")
+	eq(grid.scroll_x(), 0.0, "★ 第 1 页回到最左")
+	# 拖动：按住往左拖 100px → 内容跟着向左滚 100px（自由滑，不吸附）
+	var press := InputEventMouseButton.new()
+	press.button_index = MOUSE_BUTTON_LEFT
+	press.pressed = true
+	press.position = Vector2(200.0, 20.0)
+	grid._gui_input(press)
+	var drag := InputEventMouseMotion.new()
+	drag.position = Vector2(100.0, 20.0)
+	drag.button_mask = MOUSE_BUTTON_MASK_LEFT
+	grid._gui_input(drag)
+	near(grid.scroll_x(), 100.0, 0.01, "★ 鼠标拖动 → 自由横滑（不吸附）")
+	var release := InputEventMouseButton.new()
+	release.button_index = MOUSE_BUTTON_LEFT
+	release.pressed = false
+	release.position = Vector2(100.0, 20.0)
+	grid._gui_input(release)
+	eq(grid.scroll_x(), 100.0, "★ 松手后停在拖到的位置（自由滑）")
 	grid.queue_free()
 
-	# ④ 右栏大头像：show 时才画
+	# ④ 右栏大头像：show 时才画血条；**没有士气背景板**（本版需求）
 	var panel = DetailPanelRes.new()
 	root.add_child(panel)
 	await process_frame
@@ -974,11 +1112,8 @@ func _test_hp_bars(cfg) -> void:
 	panel._unit_avatar.queue_redraw()
 	await process_frame
 	eq(panel.avatar_bar_draw_count(), ab2, "★ show=false（区划 / 未选中）时不画头像血条")
-	# 头像背景板的士气开关
-	panel.set_unit_avatar_morale(0.2, true)
-	ok(panel._avatar_morale_visible, "★ 头像背景板按士气上色（setter 生效）")
-	panel.set_unit_avatar_morale(0.2, false)
-	ok(not panel._avatar_morale_visible, "★ 建筑 / 区划时头像背景板回素色")
+	ok(not panel.has_method("set_unit_avatar_morale"),
+		"★ 右栏头像不再有士气背景板（单位 / 建筑只有图标 + 血条）")
 	panel.queue_free()
 	await process_frame
 
@@ -1223,9 +1358,9 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 		eq(String(card.entry_at(0).get("spec", "")), "food", "第 1 格是粮食特化")
 		ok(not _entry_specs(card).has("population"),
 			"★ 人口区划**没有**人口特化那一格（需求：只能黄金 / 粮食特化）")
-		ok(main.hud.detail_panel.detail_text().contains("区划种类"),
-			"★ 区划详情里有「区划种类」那一行（实际：%s）"
-			% main.hud.detail_panel.detail_text())
+		ok(main.hud.detail_panel.detail_text().contains("粮食"),
+			"★ 区划详情右列显示产能（实际：%s）"
+				% main.hud.detail_panel.detail_text().replace("\n", "|"))
 		tabs.button_at(1).emit_signal("pressed")
 		eq(tabs.page(), PageTabsRes.PAGE_RECRUIT, "★ 第二颗 = 招募页签")
 		eq(card.entries().size(), 3, "★ 招募页里是三个占位将领（需求原话）")
@@ -1782,8 +1917,10 @@ func _test_upgrade_via_card(main) -> void:
 	eq(wall.level, lv0 + 1, "★ 读完等级 +1")
 	ok(not q.is_bar_mode(), "★ 读条结束 → 面板回到「不是读条」")
 	ok(card.cell_label(0).contains("升级"), "那一格又变回「升级%s」" % wall.display_name())
-	ok(main.hud.detail_panel.detail_text().contains("等级 %d" % wall.level),
-		"★ 右栏数值里有「等级 %d」（实际：%s）" % [wall.level, main.hud.detail_panel.detail_text()])
+	ok(main.hud.detail_panel.detail_text().contains("血量"),
+		"★ 建筑详情仍是两列（左列血量、右列防御）")
+	ok(main.hud.detail_panel.detail_text().contains("防御"),
+		"★ 建筑也有防御力那一行（当前显示 0）")
 
 	var zone = world.zones.zone_at(world.find_base_of("p1").tx, world.find_base_of("p1").ty)
 	ok(zone != null, "大本营所在的区划")
@@ -1821,7 +1958,8 @@ func _test_upgrade_via_card(main) -> void:
 		"★ 那一格是「取消特化」")
 	eq(card.cell_label(0), "取消特化", "格子上写着「取消特化」")
 	ok(main.hud.detail_panel.detail_text().contains("特化"),
-		"★ 区划详情里写着特化状态（实际：%s）" % main.hud.detail_panel.detail_text())
+		"★ 区划右列保留特化状态（实际：%s）"
+			% main.hud.detail_panel.detail_text().replace("\n", "|"))
 	card.activate_index(0)
 	ok(UpgradeRes.zone_is_busy(zone), "★ 取消特化也要读条")
 	ok(UpgradeRes.zone_spec_is_cancel(zone), "这一条是「取消特化」")
@@ -1906,11 +2044,18 @@ func _test_auto_select_on_recruit(main) -> void:
 	main.input_ctrl.select_units([g1])
 
 func _click_control(c: Control, pos: Vector2) -> void:
+	# ★ 按下 + 抬起两下都发：真实鼠标是这一套，而网格这类「按下记录、抬起才激活」
+	#   的控件（还要区分拖动）只发按下是点不动的。
 	var ev := InputEventMouseButton.new()
 	ev.button_index = MOUSE_BUTTON_LEFT
 	ev.pressed = true
 	ev.position = pos
 	c._gui_input(ev)
+	var up := InputEventMouseButton.new()
+	up.button_index = MOUSE_BUTTON_LEFT
+	up.pressed = false
+	up.position = pos
+	c._gui_input(up)
 
 func _test_order_locked_notice(main) -> void:
 	var world = main.world
@@ -2270,26 +2415,29 @@ func _test_box_select(main) -> void:
 
 	var roster = main.hud.detail_panel.roster_control()
 	var grid = main.hud.detail_panel.grid_control()
-	ok(roster != null, "详细信息左栏上半有「当前展开的部队」那一格")
+	ok(roster != null, "详细信息左栏上半有「当前聚焦的部队」那一格")
 	ok(grid != null, "详细信息左栏下半有 3×3 的网格")
 	if roster != null and grid != null:
 		ok(roster.visible, "选中单位之后左栏上半出现")
-		eq(roster.unit_count(), t1.size(), "★ 上半画的是**当前展开那一支**的完整部队")
+		eq(roster.unit_count(), t1.size(), "★ 上半画的是**当前聚焦那一支**的完整部队")
 		eq(roster.leader().id, g1.id, "★ 上半是第 1 支部队（内部状态对得上）")
 		eq(roster.leader_name(), String(g1.name),
 			"★ 那一格第一行写的是**将领真名**（参考图上写的就是这一行名字）")
 		eq(roster.count_text(), "%d/%d" % [t1.size(), UiLayoutRes.UNIT_CAP],
 			"★ 写着「现有单位数/编制上限」（y = 编制上限 11）")
-		eq(roster.leader_short(), "将",
-			"★ 那一格的短字是「将」——**不再额外画一个「将」大方块**（手玩原话）")
-		eq(roster.short_name(t1[0]), "将", "★ 队长的短字是「将」（没有头像，用字代替）")
+		eq(roster.icon_text(), "1",
+			"★★ 部队图标 = **序号**（第 1 支写 1），不再是将领名字首字")
+		eq(roster.kind(), "troop", "★ 这一格是部队格（有士气填充）")
+		ok(roster.morale_ratio() >= 0.0 and roster.morale_ratio() <= 1.0,
+			"★ 部队图标的士气比例在 0..1（实际 %.2f）" % roster.morale_ratio())
+		eq(roster.short_name(t1[0]), "将", "★ 单位图标仍用「将」字（没有头像，用字代替）")
 		eq(roster.short_name(t1[1]), "枪",
-			"★ 附属兵的短字是 config.recruit.list 里的 short（长枪兵 = 枪）")
+			"★ 附属兵仍用 config.recruit.list 里的 short（长枪兵 = 枪）")
 
 		eq(main.hud.detail_panel.unit_name_text(), String(g1.name),
 			"★ 整队选中时右栏报的是**将领**（不是排在最后的附属兵）")
-		ok(main.hud.detail_panel.detail_text().contains("血量 %d" % int(round(g1.hp))),
-			"★ 右栏那些数值也是将领的（将领 1 是长枪兵型：满血 %d）" % int(round(g1.hp_max)))
+		ok(main.hud.detail_panel.detail_text().contains("血量"),
+			"★ 右栏两列详情：血量仍在左列")
 
 		ok(UiLayoutRes.ROSTER_COUNT_X + 40.0 <= UiLayoutRes.DETAIL_LEFT_W,
 			"★ 「将领名称 1/11」那一行装得进左栏")
@@ -2298,18 +2446,19 @@ func _test_box_select(main) -> void:
 		eq(main.hud.detail_panel.grid_mode(), "leaders", "★ 选中多支部队时网格是**将领模式**")
 		eq(grid.troop_count(), 1, "★ 网格只列**没被展开的**那 1 支（展开的那支已在上半）")
 		eq(grid.cell_count(), 1, "画了 1 格")
-		eq(grid.leader_name(0), String(g2.name), "★ 那一格是第 2 支部队（第 1 支正在上面展开）")
-		ok(grid.cell_is_leader(0), "那一格是将领格")
-		eq(grid.cell_short(0), String(g2.name).substr(0, 1), "将领格方框里写名字首字")
+		eq(grid.leader_name(0), String(g2.name), "★ 那一格是第 2 支部队（第 1 支正在上面聚焦）")
+		ok(grid.cell_is_leader(0), "那一格是部队格")
+		eq(grid.cell_short(0), "2", "★ 部队格方框里写**序号**（第 2 支 = 2）")
 		eq(main.input_ctrl.selection_origin, "drag", "（前提）这一步是通过框选选中的")
 		eq(roster.leader().id, g1.id, "（前提）展开的是序号靠前的第 1 支部队")
 		eq(main.hud.detail_panel.unit_name_text(), String(g1.name),
 			"★ 拖拽选中多个部队 → 右栏显示**展开那支部队的将领**")
-		ok(not main.hud.detail_panel.detail_text().contains("已选中"),
-			"★ 多选时也不再补「已选中 N 支部队」那一行")
-		eq(grid.cell_count(), 1, "★ 多选时下半网格里只有那 1 支没展开的部队")
-		ok(grid.unit_at(0) == g2, "★ 那一格画的是将领本人（不是单位）")
-		eq(grid.unit_total(), 0, "★ 多选时没有「单位翻页」这回事（页数 = 0）")
+		ok(main.hud.detail_panel.detail_text().contains("血量"),
+			"★ 多选时右栏仍显示聚焦部队的详情（不再补「已选中 N 支部队」）")
+		eq(grid.cell_count(), 1, "★ 多选时下半网格里只有那 1 支没聚焦的部队")
+		ok(grid.unit_at(0) == g2, "★ 那一格画的是部队（序号图标）")
+		eq(grid.unit_total(), 1, "★ 多选时网格总数 = 其余选中的部队数")
+		eq(grid.page_count(), 1, "★ 两支部队装得下，不用翻页 / 滑动")
 		eq(UiLayoutRes.TROOP_GRID_SLOTS, 9,
 			"★ 网格正好 9 格（手玩原话：参考图下方是 1333 排列的 9 个格子）")
 		ok(UiLayoutRes.TROOP_GRID_SLOTS + 1 == 10,
@@ -2327,16 +2476,18 @@ func _test_box_select(main) -> void:
 			"★ 「详细信息」方框不越出右栏")
 		ok(UiLayoutRes.DETAIL_BODY_Y + UiLayoutRes.DETAIL_BODY_H <= 220.0,
 			"★ 「详细信息」方框装得进右栏内容高（220）")
-		ok(UiLayoutRes.BUFF_X + float(UiLayoutRes.BUFF_SLOTS)
-				* (UiLayoutRes.BUFF_SIZE + UiLayoutRes.BUFF_GAP)
-				<= UiLayoutRes.DETAIL_RIGHT_W + 1e-6,
-			"★ 三个 buff 不越出右栏")
+		ok((UiLayoutRes.BUFF_SLOTS - 1)
+				* (UiLayoutRes.BUFF_SIZE + UiLayoutRes.BUFF_GAP) + UiLayoutRes.BUFF_SIZE
+				<= UiLayoutRes.detail_buff_w(UiLayoutRes.DETAIL_RIGHT_W) + 1e-6,
+			"★ 动态 buff 槽位（最多 %d 个）不越出可用宽 %.0f" % [
+				UiLayoutRes.BUFF_SLOTS,
+				UiLayoutRes.detail_buff_w(UiLayoutRes.DETAIL_RIGHT_W)])
 		eq(UiLayoutRes.UNIT_AVATAR, 72.0,
 			"★ 右栏头像方框 72×72（第五轮重排：原来照参考图的 100×100 又大又空）")
 		eq(UiLayoutRes.BUFF_SIZE, 40.0,
-			"★ buff 三格各 40×40（第七轮 30 → 40：与左栏那些 40×40 方块同号，字也能用到 13 号）")
+			"★ 动态 buff 格 40×40（与左栏那些 40×40 方块同号，字也能用到 13 号）")
 		ok(UiLayoutRes.BUFF_X >= UiLayoutRes.UNIT_AVATAR_X + UiLayoutRes.UNIT_AVATAR,
-			"★ 三个 buff 排在头像**右边**（%s ≥ 头像右缘 %s）" % [
+			"★ buff 排在头像**右边**（%s ≥ 头像右缘 %s）" % [
 				str(UiLayoutRes.BUFF_X),
 				str(UiLayoutRes.UNIT_AVATAR_X + UiLayoutRes.UNIT_AVATAR)])
 		ok(UiLayoutRes.BUFF_Y >= UiLayoutRes.UNIT_NAME_Y,
@@ -2344,7 +2495,7 @@ func _test_box_select(main) -> void:
 				str(UiLayoutRes.BUFF_Y), str(UiLayoutRes.UNIT_NAME_Y)])
 		ok(UiLayoutRes.BUFF_Y + UiLayoutRes.BUFF_SIZE
 				<= UiLayoutRes.UNIT_AVATAR_Y + UiLayoutRes.UNIT_AVATAR + 1e-6,
-			"★ 三个 buff 落在头像的竖直范围内（%s..%s ≤ 头像下缘 %s）" % [
+			"★ buff 落在头像的竖直范围内（%s..%s ≤ 头像下缘 %s）" % [
 				str(UiLayoutRes.BUFF_Y),
 				str(UiLayoutRes.BUFF_Y + UiLayoutRes.BUFF_SIZE),
 				str(UiLayoutRes.UNIT_AVATAR_Y + UiLayoutRes.UNIT_AVATAR)])
@@ -2361,51 +2512,55 @@ func _test_box_select(main) -> void:
 			UiLayoutRes.UNIT_BAND_Y + (UiLayoutRes.UNIT_BAND_H - UiLayoutRes.UNIT_AVATAR) * 0.5,
 			"★ 头像在顶带里**垂直居中**（%.0f = %.0f + (%.0f−72)/2）" % [
 				UiLayoutRes.UNIT_AVATAR_Y, UiLayoutRes.UNIT_BAND_Y, UiLayoutRes.UNIT_BAND_H])
-		eq(UiLayoutRes.QUEUE_Y + UiLayoutRes.QUEUE_H * 0.5,
-			UiLayoutRes.UNIT_BAND_Y + UiLayoutRes.UNIT_BAND_H * 0.5,
-			"★ 招募队列与头像**同一条中轴线**（队列中心 = 顶带中心）")
+		eq(UiLayoutRes.QUEUE_Y, UiLayoutRes.DETAIL_BODY_Y,
+			"★ 招募队列与详情框**顶边对齐**（本版从顶带搬下来）")
+		eq(UiLayoutRes.QUEUE_Y + UiLayoutRes.QUEUE_H,
+			UiLayoutRes.DETAIL_BODY_Y + UiLayoutRes.DETAIL_BODY_H,
+			"★ 招募队列与详情框**底边也齐平**（116 高）")
 		ok(UiLayoutRes.DETAIL_BODY_Y >= UiLayoutRes.UNIT_BAND_Y + UiLayoutRes.UNIT_BAND_H,
 			"★ 数值框不压到顶带（%s ≥ %s）" % [
 				str(UiLayoutRes.DETAIL_BODY_Y),
 				str(UiLayoutRes.UNIT_BAND_Y + UiLayoutRes.UNIT_BAND_H)])
-		eq(UiLayoutRes.DETAIL_BODY_X + UiLayoutRes.DETAIL_BODY_W,
-			UiLayoutRes.UNIT_CONTENT_RIGHT,
-			"★ 数值框右缘 = 右栏内容的公共右缘 641（= 645 − 4，不贴裁剪线）")
-		eq(UiLayoutRes.DETAIL_BODY_X + UiLayoutRes.DETAIL_BODY_W,
-			UiLayoutRes.QUEUE_X + UiLayoutRes.QUEUE_W,
-			"★ 数值框右缘 = 招募队列右缘（右栏右侧没有任何一块短一截 / 长一截）")
+		eq(UiLayoutRes.DETAIL_BODY_W, 282.0,
+			"★ 详情框向左收窄到 282（最小可用宽，约 300）")
+		ok(UiLayoutRes.DETAIL_BODY_X + UiLayoutRes.DETAIL_BODY_W
+				+ UiLayoutRes.QUEUE_MARGIN <= UiLayoutRes.QUEUE_X,
+			"★ 详情框右缘与招募队列之间留出缝（%s + 4 ≤ %s）" % [
+				str(UiLayoutRes.DETAIL_BODY_X + UiLayoutRes.DETAIL_BODY_W),
+				str(UiLayoutRes.QUEUE_X)])
 		eq(UiLayoutRes.NOTICE_Y + UiLayoutRes.NOTICE_H, UiLayoutRes.DETAIL_CONTENT_H,
-			"★ 提示带正好收在右栏下沿（220..240 = 数值框下面那条本来空着的带）")
+			"★ 提示带正好收在右栏下沿（220..240）")
 		ok(UiLayoutRes.NOTICE_Y >= UiLayoutRes.DETAIL_BODY_Y + UiLayoutRes.DETAIL_BODY_H,
-			"★ 提示带与数值框不重叠（%s ≥ %s）" % [
+			"★ 提示带与详情框不重叠（%s ≥ %s）" % [
 				str(UiLayoutRes.NOTICE_Y),
 				str(UiLayoutRes.DETAIL_BODY_Y + UiLayoutRes.DETAIL_BODY_H)])
 		ok(UiLayoutRes.NOTICE_H >= 16.0,
 			"★ 提示带装得下一行 15 号字（行高 16，实测）")
-		eq(UiLayoutRes.DETAIL_BODY_COL2_X + UiLayoutRes.DETAIL_BODY_COL2_W
+		eq(UiLayoutRes.DETAIL_BODY_PAD + UiLayoutRes.DETAIL_BODY_COL_W
+				+ UiLayoutRes.DETAIL_BODY_COL_GAP + UiLayoutRes.DETAIL_BODY_COL2_W
 				+ UiLayoutRes.DETAIL_BODY_PAD,
 			UiLayoutRes.DETAIL_BODY_W,
-			"★ 正文两栏 + 边距正好铺满数值框（左栏 190 + 缝 18 + 右栏 417 + 边距 16 = 641）")
+			"★ 两列 + 边距正好铺满详情框（8 + 129 + 8 + 129 + 8 = 282）")
 		ok(UiLayoutRes.DETAIL_BODY_COL2_X
 				>= UiLayoutRes.DETAIL_BODY_PAD + UiLayoutRes.DETAIL_BODY_COL_W,
-			"★ 右栏不压到左栏（%s ≥ %s）" % [
+			"★ 右列不压到左列（%s ≥ %s）" % [
 				str(UiLayoutRes.DETAIL_BODY_COL2_X),
 				str(UiLayoutRes.DETAIL_BODY_PAD + UiLayoutRes.DETAIL_BODY_COL_W)])
 		var font: Font = main.hud._font
 		if font != null:
 			var body_fs: int = UiStyleRes.FS_SMALL
 			var lh: float = font.get_height(body_fs)
-			var visible: float = UiLayoutRes.DETAIL_BODY_H - UiLayoutRes.DETAIL_BODY_TEXT_Y
-			var capacity: int = int(floor(visible / lh))
-			ok(capacity >= 7,
-				"★ 数值框（可视高 %.0f）按 %d 号字装得下 %d 行 —— 区划详情最坏 7 行也要装得下" % [
-					visible, body_fs, capacity])
-			var probe := "攻击距离 3 格 / 间隔 1.2s"
-			ok(font.get_string_size(probe, HORIZONTAL_ALIGNMENT_LEFT, -1, body_fs).x
-					<= UiLayoutRes.DETAIL_BODY_COL_W,
-				"★ 最长的一行（「%s」）在 %d 号字下 %.0f px ≤ 左栏可写宽 %.0f" % [
-					probe, body_fs,
-					font.get_string_size(probe, HORIZONTAL_ALIGNMENT_LEFT, -1, body_fs).x,
+			var visible: float = UiLayoutRes.DETAIL_BODY_ROWS_H
+			var capacity: int = int(floor(visible / UiLayoutRes.DETAIL_ROW_H))
+			ok(capacity >= 6,
+				"★ 两列表格（可视高 %.0f、行高 %.0f）装得下 %d 行 —— 区划最坏 6 行也要装得下" % [
+					visible, UiLayoutRes.DETAIL_ROW_H, capacity])
+			# 最长的增益行：缩到 9 号字必须能塞进一列（detail_rows 会逐行缩字）
+			var probe := "- 对近战攻击免伤+25%"
+			ok(font.get_string_size(probe, HORIZONTAL_ALIGNMENT_LEFT, -1, 9).x
+					<= UiLayoutRes.DETAIL_BODY_COL_W + 0.01,
+				"★ 最长增益行「%s」在 9 号字下 %.0f px ≤ 列宽 %.0f" % [
+					probe, font.get_string_size(probe, HORIZONTAL_ALIGNMENT_LEFT, -1, 9).x,
 					UiLayoutRes.DETAIL_BODY_COL_W])
 		else:
 			ok(true, "（没装中文字体，跳过字号容量的量算）")
@@ -2425,8 +2580,8 @@ func _test_box_select(main) -> void:
 		eq(main.input_ctrl.selected_units.size(), t1.size() + t2.size(),
 			"★ 点格子**不改选中**（两支部队仍然都选着，需求原话）")
 		ok(main.hud.detail_panel.detail_text().contains("血量"),
-			"★ 右栏跟着换成那一支部队的单位数值")
-		eq(grid.cell_count(), 1, "★ 展开的那支从网格里消失、换成了另一支")
+			"★ 右栏跟着换成第 2 支部队的详情")
+		eq(grid.cell_count(), 1, "★ 聚焦的那支从网格里消失、换成了另一支")
 		eq(grid.leader_name(0), String(g1.name), "★ 网格里现在是第 1 支部队")
 
 		var both: Array = []
@@ -2477,33 +2632,44 @@ func _test_box_select(main) -> void:
 		eq(grid.unit_total(), t1.size() + 11, "（前提）这支部队的单位多到一页画不下")
 		ok(grid.page_count() >= 2, "★ 单位超过 9 个 → 不止一页（一页 9 格）")
 		eq(grid.page(), 0, "★ 默认停在第 1 页")
-		eq(grid.cell_count(), 9, "★ 第 1 页画满 9 格")
+		eq(grid.cell_count(), grid.unit_total(), "★ 整批单位都在网格里（滑出去的那些也在）")
+		ok(grid.max_scroll_x() > 0.0, "★ 超过 3 列 → 可以横向滑动")
 		eq(grid.unit_at(0).id, g1.id, "（前提）第 1 格还是将领")
-		var sec_page: int = grid.unit_total() - UiLayoutRes.GRID_PAGE
 		var wheel := InputEventMouseButton.new()
 		wheel.button_index = MOUSE_BUTTON_WHEEL_DOWN
 		wheel.pressed = true
 		wheel.position = Vector2(60.0, 20.0)
 		grid._gui_input(wheel)
 		eq(grid.page(), 1, "★ 滚轮往下 = 翻到下一页（一次一页 9 格）")
-		eq(grid.cell_count(), sec_page, "第 2 页只剩 %d 个格子的内容" % sec_page)
-		ok(grid.unit_at(0).id != g1.id, "第 2 页不再从将领开头")
+		eq(grid.scroll_x(), minf(float(UiLayoutRes.GRID_PAGE)
+			/ float(UiLayoutRes.TROOP_GRID_ROWS) * UiLayoutRes.TROOP_CELL_W,
+			grid.max_scroll_x()), "★ 翻页 = 横向滚 3 列（夹在内容边界内）")
+		ok(grid.unit_at(UiLayoutRes.GRID_PAGE).id != g1.id, "第 2 页不再从将领开头")
+		var last_page: int = grid.page_count() - 1
+		for _i in grid.page_count():
+			grid._gui_input(wheel)
+		eq(grid.page(), last_page, "★ 一路滚到最后一页")
+		eq(grid.scroll_x(), grid.max_scroll_x(), "★ 最后一页停在内容最右端")
 		grid._gui_input(wheel)
-		eq(grid.page(), 1, "★ 已经在最后一页 → 再往下滚也不动")
+		eq(grid.page(), last_page, "★ 已经在最后一页 → 再往下滚也不动")
 		var wheel_up := InputEventMouseButton.new()
 		wheel_up.button_index = MOUSE_BUTTON_WHEEL_UP
 		wheel_up.pressed = true
 		wheel_up.position = Vector2(60.0, 20.0)
 		grid._gui_input(wheel_up)
-		eq(grid.page(), 0, "★ 滚轮往上 = 翻回上一页")
-		eq(grid.unit_at(0).id, g1.id, "翻回第 1 页又是从将领开头")
+		eq(grid.page(), maxi(0, last_page - 1), "★ 滚轮往上 = 翻回上一页")
+		for _i in grid.page_count():
+			grid._gui_input(wheel_up)
+		eq(grid.page(), 0, "★ 一路滚回第 1 页")
+		eq(grid.scroll_x(), 0.0, "★ 第 1 页回到最左")
 		grid._gui_input(wheel_up)
 		eq(grid.page(), 0, "★ 已经在第一页 → 再往上滚也不动")
 
 		main.input_ctrl.select_units([g2])
 		main.hud.refresh()
 		eq(grid.page(), 0, "★ 换成别的部队 → 翻页回到第 1 页")
-		eq(grid.unit_at(0).id, g2.id, "网格里是第 2 支部队的将领")
+		eq(grid.scroll_x(), 0.0, "★ 同时回到最左（换了一批就重头看）")
+		eq(grid.unit_at(0).id, g2.id, "网格里是第 2 支部队（序号图标）")
 
 		for u6 in world.units.duplicate():
 			if String(u6.id).begins_with("scroll-"):
@@ -2535,15 +2701,21 @@ func _test_box_select(main) -> void:
 			"★ 左栏那一格的名字也按 ROSTER_ID_W 截断（%s）" % label_clip)
 
 		ok(grid.cell_count() >= 2, "（前提）网格里至少 2 格 —— 只有 ≥2 格才看得出串列")
-		eq(grid.cell_text_origin(1).x - grid.cell_text_origin(0).x, UiLayoutRes.TROOP_CELL_W,
-			"★ 第 2 列的文字左边 = 第 1 列 + 一格宽（不会叠到第 1 列）")
+		eq(grid.cell_text_origin(1).x, grid.cell_text_origin(0).x,
+			"★ 同一列往下排：第 2 个的文字左边与第 1 个对齐")
+		eq(grid.cell_text_origin(1).y - grid.cell_text_origin(0).y, UiLayoutRes.TROOP_CELL_H,
+			"★ 同一列往下排：文字跟着下移一格高")
 		ok(grid.cell_text_origin(0).x >= UiLayoutRes.TROOP_AVATAR,
 			"★ 第 1 列的文字在本格方框右边")
 		if grid.cell_count() >= 3:
-			eq(grid.cell_text_origin(2).x - grid.cell_text_origin(1).x, UiLayoutRes.TROOP_CELL_W,
-				"★ 第 3 列同理：左边 = 第 2 列 + 一格宽")
-		eq(grid.cell_text_origin(3).x, grid.cell_text_origin(0).x,
-			"★ 换行后回到第 1 列的 x（第 4 格在第 2 行第 1 列）")
+			eq(grid.cell_text_origin(2).x, grid.cell_text_origin(0).x,
+				"★ 第 3 个仍在第 1 列（列优先：一列 3 个）")
+		if grid.cell_count() >= 4:
+			eq(grid.cell_text_origin(3).x - grid.cell_text_origin(0).x,
+				UiLayoutRes.TROOP_CELL_W,
+				"★ 换到第 2 列时文字左边正好差一格宽（不会叠到第 1 列）")
+			eq(grid.cell_text_origin(3).y, grid.cell_text_origin(0).y,
+				"★ 第 2 列第 1 行的文字顶边与第 1 列第 1 行对齐")
 
 	main.input_ctrl.box_select(Vector2(0.0, 0.0), Vector2(0.5, 0.5))
 	eq(main.input_ctrl.selected_units.size(), 0, "★ 空框 = 清空选中")
@@ -2778,7 +2950,9 @@ func _test_box_select_buildings(main) -> void:
 	eq(panel.grid_mode(), "buildings", "★ 选中建筑时左栏下半是**建筑模式**")
 	ok(roster.visible, "★ 左栏左上那一格出现（主选中那个建筑）")
 	eq(roster.leader_name(), expect[0].display_name(), "★ 左上那一格写主选中建筑的名字")
-	eq(roster.leader_short(), expect[0].display_name().substr(0, 1), "方框里写名字首字")
+	eq(roster.kind(), "building", "★ 这一格是建筑格（**没有士气填充**）")
+	eq(roster.icon_text(), expect[0].display_name().substr(0, 1), "方框里写名字首字")
+	ok(roster.shows_hp(), "★ 建筑图标底部有血条")
 	eq(roster.count_text(), "%d/%d" % [int(round(expect[0].hp)), int(round(expect[0].hp_max))],
 		"★ 左上那一格第二行写血量 x/y")
 	if main.hud._font != null:
@@ -2793,17 +2967,22 @@ func _test_box_select_buildings(main) -> void:
 			"★ 左上那一格的文字留在左栏里")
 	else:
 		ok(true, "（没装中文字体，跳过这一行宽度的量算）")
-	eq(grid.cell_count(), mini(expect.size() - 1, UiLayoutRes.GRID_PAGE),
-		"★ 下面 3×3 画其余选中的建筑（一页最多 9 格）")
+	eq(grid.cell_count(), expect.size() - 1,
+		"★ 下面 3×3 装其余选中的建筑（整批都在里面，滑出去的那些也算）")
 	eq(grid.building_at(0), expect[1], "★ 网格第 1 格是第 2 个建筑（主选中在左上）")
 	eq(grid.cell_name(0), expect[1].display_name(), "格子里写着建筑名")
 	ok(grid.cell_is_building(0), "那一格是建筑格（不是单位格）")
+	eq(grid.cell_short(0), expect[1].display_name().substr(0, 1), "建筑格方框里写名字首字")
+	eq(grid._morale_ratio_at(0), 1.0, "★ 建筑格不画士气背景（只有部队才有）")
 	eq(grid.cell_sub_text(0), "%d/%d" % [int(round(expect[1].hp)), int(round(expect[1].hp_max))],
 		"★ 建筑格第二行是血量 x/y")
 
 	eq(panel.unit_name_text(), expect[0].display_name(), "★ 右栏报的是主选中的建筑")
-	var btext: String = panel.detail_text()
-	ok(btext.contains("生命"), "建筑详情里有生命值（实际：%s）" % btext.replace("\n", "|"))
+	ok(panel.detail_text().contains("血量") and panel.detail_text().contains("防御"),
+		"★ 建筑详情是两列：左列血量、右列防御（实际：%s）"
+			% panel.detail_text().replace("\n", "|"))
+	var btext: String = main.hud._building_text(expect[0])
+	ok(btext.contains("血量"), "（文案生成器）建筑详情里有血量（实际：%s）" % btext.replace("\n", "|"))
 	ok(not btext.contains("归属") and not btext.contains("位置"),
 		"★ 建筑详情里没有「归属」「位置」（本版精简掉了）")
 	ok(not btext.contains("升级到"),
@@ -2819,7 +2998,7 @@ func _test_box_select_buildings(main) -> void:
 		ok(not basetext.contains("开局自带"),
 			"★ 大本营详情里没有「开局自带，不可建造、不可拆除」（实际：%s）"
 				% basetext.replace("\n", "|"))
-		ok(basetext.contains("生命"), "★ 大本营的生命那一行照旧在")
+		ok(basetext.contains("血量"), "★ 大本营的血量那一行照旧在")
 	else:
 		ok(false, "★ 找不到己方大本营 —— 这条断言本该验它详情里没有那句说明")
 
@@ -2830,7 +3009,7 @@ func _test_box_select_buildings(main) -> void:
 	eq(main.input_ctrl.selected_buildings.size(), sel_before, "★ 点格子**不改选中**")
 	eq(panel.unit_name_text(), expect[1].display_name(), "★ 右栏跟着换成那个建筑")
 	eq(roster.leader_name(), expect[1].display_name(), "左上那一格也换成了它")
-	ok(panel.detail_text().contains("生命"), "右栏仍然画的是建筑详情")
+	ok(panel.detail_text().contains("血量"), "★ 右栏跟着换成那个建筑的详情")
 
 	if expect.size() > UiLayoutRes.GRID_PAGE:
 		ok(grid.page_count() >= 2, "★ 选中的建筑多到一页画不下 → 不止一页")
@@ -2861,64 +3040,54 @@ func _test_box_select_buildings(main) -> void:
 	eq(main.hud._fmt_num(1.23456), "1.235", "小数最多 3 位")
 	var zones: Array = world.zones.zones
 	if zones.size() > 0:
-		var ztext: String = main.hud._zone_text(zones[0])
-		ok(ztext.contains("区划大小") and ztext.contains("粮食产能"), "区划详情有大小与产能")
-		ok(not ztext.contains("区划「"),
-			"★ 区划详情里没有「区划「xx」」那一行（实际：%s）" % ztext.replace("\n", "|"))
-		ok(not ztext.contains("归属") and not ztext.contains("地块／"),
-			"★ 区划详情里没有「归属」，产能也不写「／地块／秒」（本版精简）")
-		ok(ztext.contains("区划种类："),
-			"★ 区划种类那一行还在（实际：%s）" % ztext.replace("\n", "|"))
-		ok(not ztext.contains("每地块每秒"),
-			"★ 种类后面不再跟「（每地块每秒 …）」（实际：%s）" % ztext.replace("\n", "|"))
-		var kind_line := ""
-		for row in ztext.split("\n"):
-			if String(row).begins_with("区划种类："):
-				kind_line = String(row)
-		eq(kind_line, "区划种类：%s" % world.zones.kind_entry_of(zones[0]).get("name", ""),
-			"★ 种类那一行只有种类名，没有括号里的说明")
-		var z0prod: Dictionary = zones[0]["production"]
-		var z0eff: Dictionary = UpgradeRes.zone_spec_effect(zones[0], world.cfg)
-		var z0pop: float = float(z0prod["population"]) * float(z0eff["population_mult"])
-		var pop_line := ""
-		for row in ztext.split("\n"):
-			if String(row).begins_with("人口："):
-				pop_line = String(row)
-		eq(pop_line, "人口：%d（产能%s）" % [
-				world.zones.population_floor(zones[0]), main.hud._fmt_num(z0pop)],
-			"★ 人口那一行 = 「人口：x（产能x）」（两行合并后长这样）")
-		ok(not ztext.contains("人口产能"),
-			"★ 不再单独有「人口产能」那一行（已合并进人口那行）")
-		ok(ztext.contains("人口上限："),
-			"★ 人口上限仍然看得见（只是从「人口：x（上限 y）」搬到单独一行）")
-		var i_kind: int = ztext.find("区划种类：")
-		var i_pop: int = ztext.find("人口：")
-		var i_cap: int = ztext.find("人口上限：")
-		ok(i_kind >= 0 and i_pop > i_kind and i_cap > i_pop,
-			"★ 顺序 = 种类 … 人口 … 人口上限（实际：%s）" % ztext.replace("\n", "|"))
-		var spec_zone: Dictionary = zones[0].duplicate(true)
+		var z0: Dictionary = zones[0]
+		var zrows: Dictionary = main.hud._zone_detail_rows(z0, true)
+		var zleft: Array = zrows["left"]
+		var zright: Array = zrows["right"]
+		eq(main.hud._row_text(zleft, 0),
+			String(world.zones.kind_entry_of(z0).get("name", "")),
+			"★ 左列第一排 = 区划类型（粮食 / 黄金 / 人口区划）")
+		eq(main.hud._row_text(zleft, 1), "大小 %d 地块" % int(z0["tile_count"]),
+			"★ 左列第二排 = 区划大小")
+		ok(main.hud._row_text(zright, 0).begins_with("粮食 ")
+				and main.hud._row_text(zright, 0).ends_with("/s"),
+			"★ 右列第一排 = 粮食产能（每秒）")
+		ok(main.hud._row_text(zright, 1).begins_with("黄金 "),
+			"★ 右列第二排 = 黄金产能")
+		ok(main.hud._row_text(zright, 2).begins_with("人口 "),
+			"★ 右列第三排 = 人口产能")
+		ok(main.hud._row_text(zright, 3).begins_with("人口上限 "),
+			"★ 右列第四排 = 人口上限")
+		ok(main.hud._row_text(zright, 4).begins_with("现有人口 "),
+			"★ 自己 / 友军区划额外显示当前人口")
+		ok(zright.size() <= 6, "★ 区划最多 6 行（正好装进两列表格的 6 行容量）")
+
+		var ztext: String = main.hud._zone_text(z0)
+		ok(ztext.contains("\t"), "★ 区划详情是两列（左 \t 右）")
+		ok(not ztext.contains("区划「"), "★ 不再写「区划「xx」」")
+		ok(not ztext.contains("归属"), "★ 不再写「归属」")
+		ok(not ztext.contains("每地块每秒"), "★ 不再写「每地块每秒 …」")
+		ok(not ztext.contains("区划大小："), "★ 旧的「区划大小：」文案已换成「大小 N 地块」")
+		var enemy_rows: Dictionary = main.hud._zone_detail_rows(z0, false)
+		ok(not main.hud._rows_text(enemy_rows).contains("现有人口"),
+			"★ 敌方 / 中立区划不显示当前人口")
+
+		var spec_zone: Dictionary = z0.duplicate(true)
 		spec_zone["spec_done"] = "food"
-		var stext: String = main.hud._zone_text(spec_zone)
-		var i_spec: int = stext.find("特化：")
-		var i_food: int = stext.find("粮食产能：")
-		ok(i_spec >= 0, "★ 已特化的区划会写一行特化状态（实际：%s）" % stext.replace("\n", "|"))
-		ok(i_spec < i_food,
-			"★ 特化那一行排在产能**前面**（第 %d 字符 < 第 %d 字符）—— 整屏 7 行时它才不会被裁"
-				% [i_spec, i_food])
-		if main.hud._font != null:
-			var zlh: float = main.hud._font.get_height(UiStyleRes.FS_SMALL)
-			var zvisible: float = UiLayoutRes.DETAIL_BODY_H - UiLayoutRes.DETAIL_BODY_TEXT_Y
-			var zcap: int = int(floor(zvisible / zlh))
-			var zrows: int = stext.split("\n").size()
-			ok(zrows - zcap <= 1,
-				"★ 区划详情最多 %d 行，比可视的 %d 行最多多 1 行 —— 只裁得到最后那行「人口上限」"
-					% [zrows, zcap])
-		main.input_ctrl.select_zone(zones[0])
+		var srows: Dictionary = main.hud._zone_detail_rows(spec_zone, true)
+		var sright: Array = srows["right"]
+		ok(main.hud._rows_text(srows).contains("特化 粮食特化"),
+			"★ 已特化的区划在右列末行写「特化 粮食特化」（实际：%s）"
+				% main.hud._rows_text(srows).replace("\n", "|"))
+		eq(main.hud._row_text(sright, sright.size() - 1),
+			"- 特化 粮食特化", "★ 特化那一行是唯一的小字增益行（带「- 」前缀）")
+
+		main.input_ctrl.select_zone(z0)
 		main.hud.refresh()
-		eq(main.hud.detail_panel.unit_name_text(), String(zones[0]["name"]),
+		eq(main.hud.detail_panel.unit_name_text(), String(z0["name"]),
 			"★ 选中区划时右栏标题就是区划名本身（不再套「区划「xx」」）")
 		eq(main.hud.detail_panel.detail_text(), ztext,
-			"★ 面板详情与 `_zone_text()` 的输出一致（没有第二处拼装）")
+			"★ 面板两列详情与 `_zone_text()` 一致（同一处拼装）")
 
 	ok(not main.input_ctrl.has_method("demolish_selected"), "★ 拆除入口已删除")
 	ok(not main.input_ctrl.handle_key(_key(KEY_X)), "★ 按 X 不再发拆除命令")
@@ -2937,116 +3106,61 @@ func _test_detail_two_columns(main) -> void:
 	main.input_ctrl.select_units([g1])
 	main.hud.refresh()
 
-	var ltext: String = panel.detail_left_text()
-	var rtext: String = panel.detail_right_text()
-	ok(not ltext.contains("\t"), "★ 左栏 Label 里没有制表符（它只画左栏）")
-	ok(ltext.contains("血量") and ltext.contains("攻击力"),
-		"左栏是基础数值（血量 / 攻击力）")
-	ok(not ltext.contains("兵种"),
-		"★ 不再显示「兵种 …（步兵）」（实际：%s）" % ltext.replace("\n", "|"))
-	eq(rtext, "", "★ 第二栏（编制 / 状态）按需求去掉 → 右栏 Label 是空的")
-	ok(not panel._body_right.visible, "★ 右栏 Label 收起来了")
-	ok(not panel.detail_text().contains("\t"),
-		"★ 单位文案是单栏（本版砍掉了第二栏）")
-	ok(panel.detail_text().contains("血量 %d" % int(round(g1.hp))),
-		"合成文本里仍然能读到「血量 N」（当前血量 %d）" % int(round(g1.hp)))
+	# ★★ 本版：两列表格 —— 左 = 血量 / 攻击，右 = 移速 / 防御
+	ok(panel.detail_left_text().contains("血量")
+			and panel.detail_left_text().contains("攻击"),
+		"★ 左列 = 血量 / 攻击力（实际：%s）"
+			% panel.detail_left_text().replace("\n", "|"))
+	ok(panel.detail_right_text().contains("移速")
+			and panel.detail_right_text().contains("防御"),
+		"★ 右列 = 移动速度 / 防御力（实际：%s）"
+			% panel.detail_right_text().replace("\n", "|"))
+	ok(panel.detail_text().contains("\t"),
+		"★ 两列之间用制表位合成（同一行左 \t 右）")
 
-	var text_top: float = panel._body.position.y
-	eq(text_top, UiLayoutRes.DETAIL_BODY_TEXT_Y,
-		"★ 正文顶边 = DETAIL_BODY_TEXT_Y（标题删掉后不留空白行）")
-	eq(text_top, UiLayoutRes.DETAIL_BODY_PAD,
-		"★ 正文顶边 = 方框内边距（%.0f）—— 贴着方框上沿起排" % UiLayoutRes.DETAIL_BODY_PAD)
-	eq(String(ltext.split("\n")[0]), "血量 %d / %d" % [int(round(g1.hp)), int(round(g1.hp_max))],
-		"★ 第一行就是血量（不是空行）—— 实际：%s" % ltext.replace("\n", "|"))
+	var rows = panel.detail_rows_control()
+	ok(rows != null, "★ 两列表格控件在")
+	if rows != null:
+		eq(rows.position, Vector2(UiLayoutRes.DETAIL_BODY_PAD,
+			UiLayoutRes.DETAIL_BODY_TEXT_Y),
+			"★ 表格贴在详情框内边距处起排")
+		near(rows.size.x, UiLayoutRes.detail_rows_w(UiLayoutRes.DETAIL_RIGHT_W), 0.01,
+			"★ 表格宽 = 详情框内宽")
+		ok(UiLayoutRes.DETAIL_BODY_COL2_X - UiLayoutRes.DETAIL_BODY_PAD
+				> UiLayoutRes.DETAIL_BODY_COL_W,
+			"★ 右列起点在左列右边（%s > %s）" % [
+				str(UiLayoutRes.DETAIL_BODY_COL2_X - UiLayoutRes.DETAIL_BODY_PAD),
+				str(UiLayoutRes.DETAIL_BODY_COL_W)])
+		ok((UiLayoutRes.DETAIL_BODY_COL2_X - UiLayoutRes.DETAIL_BODY_PAD)
+				+ UiLayoutRes.DETAIL_BODY_COL2_W
+				<= rows.size.x + 0.01,
+			"★ 右列不越出表格")
 
-	var left_label: Label = panel._body
-	var right_label: Label = panel._body_right
-	ok(right_label.position.x > left_label.position.x,
-		"★ 右栏的 x（%.0f）在左栏（%.0f）右边" % [right_label.position.x, left_label.position.x])
-	ok(left_label.position.x + left_label.size.x <= right_label.position.x + 0.01,
-		"★ 两栏的矩形不重叠（左栏右缘 %.0f ≤ 右栏左边 %.0f）" % [
-			left_label.position.x + left_label.size.x, right_label.position.x])
-	ok(right_label.position.x + right_label.size.x <= UiLayoutRes.DETAIL_BODY_W,
-		"★ 右栏不越出数值框")
-
+	# 旧接口仍能把 `\t` 文本拆成两列
 	panel.set_detail("左A\t右A\n左B\t右B")
-	eq(panel.detail_left_text(), "左A\n左B", "★ 带 `\\t` 的文本按制表位拆成两栏（左栏）")
-	eq(panel.detail_right_text(), "右A\n右B", "★ 右栏拿到 `\\t` 右边那一段")
-	ok(right_label.visible, "★ 这时候右栏 Label 显示出来")
-	eq(panel.detail_text(), "左A\t右A\n左B\t右B", "合成读口把两栏拼回原样")
-
-	var font: Font = main.hud._font
-	if font != null:
-		for pair in [[panel.detail_left_text(), left_label.size.x, "左栏"],
-				[panel.detail_right_text(), right_label.size.x, "右栏"]]:
-			var body: String = String(pair[0])
-			var avail: float = float(pair[1])
-			var name_cn: String = String(pair[2])
-			for row in body.split("\n"):
-				if String(row) == "":
-					continue
-				var w: float = font.get_string_size(String(row), HORIZONTAL_ALIGNMENT_LEFT, -1,
-					UiStyleRes.FS_SMALL).x
-				ok(w <= avail + 0.01,
-					"★ %s的「%s」宽 %.0f ≤ 可写 %.0f（装得下才不会被裁）"
-						% [name_cn, row, w, avail])
-	else:
-		ok(true, "（没装中文字体，跳过两栏宽度的量算）")
-
+	eq(panel.detail_text(), "左A\t右A\n左B\t右B", "★ set_detail() 的 `\t` 文本按两列读回")
 	panel.set_detail("第一行\n第二行")
-	eq(panel.detail_right_text(), "", "★ 没有制表符的文本（区划 / 建筑）→ 右栏收起来")
-	eq(panel.detail_text(), "第一行\n第二行", "单栏文本原样读出来（不多不少）")
-	ok(not panel._body_right.visible, "右栏 Label 隐藏了")
+	eq(panel.detail_text(), "第一行\n第二行", "★ 没有 `\t` 时只填左列")
 	main.hud.refresh()
 
 func _test_detail_vertical_fit(main) -> void:
 	var panel = main.hud.detail_panel
 	var world = main.world
 	var g1 = world.unit_by_id("general-1")
-	var font: Font = main.hud._font
-	if font == null:
-		ok(true, "（没装中文字体，跳过竖直方向的自适应量算）")
-		return
-	var avail: float = float(panel._body.size.y)
-
 	main.input_ctrl.select_units([g1])
 	main.hud.refresh()
-	eq(panel.body_font_size(), UiStyleRes.FS_SMALL, "★ 单位详情 4 行（血量 / 士气 / 攻击力 / 攻击距离），字号仍是默认的 13")
-	eq(panel.body_line_spacing(), 0, "★ 也没压行距")
-	ok(float(4) * font.get_height(panel.body_font_size()) <= avail + 0.01,
-		"★ 4 行装得进可视高 %.0f" % avail)
-
-	var z: Dictionary = (world.zones.zones[0] as Dictionary).duplicate(true)
-	z["spec_done"] = "food"
-	var ztext: String = main.hud._zone_text(z)
-	eq(ztext.split("\n").size(), 7, "（前提）这条区划详情是 7 行：%s" % ztext.replace("\n", "|"))
-	panel.set_detail(ztext)
-	eq(panel.body_font_size(), UiStyleRes.FS_SMALL,
-		"★ 7 行也不用缩字号（面板加高 20px 就是为这个）")
-	ok(float(7) * font.get_height(panel.body_font_size()) <= avail + 0.01,
-		"★ 7 行 × 行高 %.0f ≤ 可视高 %.0f —— 最后一行不会跑到面板外" % [
-			font.get_height(panel.body_font_size()), avail])
-
-	var long_text := ""
-	for i in 12:
-		long_text += ("第%d行 用来把这一格塞爆的一行字" % (i + 1)) + ("\n" if i < 11 else "")
-	panel.set_detail(long_text)
-	var fs_after: int = panel.body_font_size()
-	var ls_after: int = panel.body_line_spacing()
-	ok(fs_after < UiStyleRes.FS_SMALL or ls_after < 0,
-		"★ 12 行塞不下时真的会缩字号 / 压行距（字号 %d、行距 %d）" % [fs_after, ls_after])
-	var used: float = 12.0 * (font.get_height(fs_after) + float(ls_after))
-	ok(used <= avail + 0.01,
-		"★ 缩放之后 12 行（%.0f px）装进可视高 %.0f —— 没有任何一行落在面板外" % [used, avail])
-	ok(fs_after >= detail_panel_fs_floor(panel),
-		"★ 字号没有缩到不可读（下限 %d，实际 %d）" % [detail_panel_fs_floor(panel), fs_after])
-
-	main.input_ctrl.select_units([g1])
+	# ★ 两列表格是固定行高（17），可视高 102 ⇒ 正好 6 行；超过的行不画。
+	eq(panel.body_font_size(), UiStyleRes.FS_SMALL, "★ 主数值行字号 13")
+	eq(panel.body_line_spacing(), 0, "★ 两列表格没有整块行距覆盖")
+	eq(int(floor(UiLayoutRes.DETAIL_BODY_ROWS_H / UiLayoutRes.DETAIL_ROW_H)), 6,
+		"★ 表格正好装 6 行（6 × 17 = 102）")
+	var long_rows: Array = []
+	for i in 10:
+		long_rows.append("第%d行" % (i + 1))
+	panel.set_detail_rows(long_rows, [])
+	eq(panel.detail_rows_control().row_count(), 10,
+		"★ 喂 10 行时数据都在（只是超过 6 行的部分不画）")
 	main.hud.refresh()
-	eq(panel.body_font_size(), UiStyleRes.FS_SMALL, "★ 换回短文案之后字号恢复默认")
-
-func detail_panel_fs_floor(panel) -> int:
-	return int(panel.BODY_FS_MIN)
 
 func _test_detail_basic_stats(main) -> void:
 	var world = main.world
@@ -3059,29 +3173,34 @@ func _test_detail_basic_stats(main) -> void:
 	main.hud.refresh()
 	var panel = main.hud.detail_panel
 	var gtext: String = panel.detail_text()
-	ok(not gtext.contains("\t"),
-		"★ 单位详情是单栏（本版砍掉第二栏，实际：%s）" % gtext.replace("\n", "|"))
-	ok(gtext.contains("血量") and gtext.contains("攻击力") and gtext.contains("攻击距离"),
-		"★ 基础数值：血量 / 攻击力 / 攻击距离都在")
-	ok(gtext.contains("间隔"), "★ 攻击速度（= 间隔 Ns，与「攻击距离」同一行）也在")
-	ok(not gtext.contains("编制"), "★ 将领也不再显示「编制」（本版按需求去掉）")
-	ok(not gtext.contains("状态") and not gtext.contains("待命"),
-		"★ 也不再显示「状态」（同上）")
-	ok(not gtext.contains("兵种"), "★ 不再显示「兵种 …（步兵）」（实际：%s）" % gtext.replace("\n", "|"))
-	ok(not gtext.contains("已选中"), "★ 不再显示「已选中 N 支部队」")
-	ok(not gtext.contains("速度") and not gtext.contains("区块") and not gtext.contains("buff"),
-		"★ 移动速度 / 所在区块 / buff 占位这些不再出现（手玩：只需要基础数值）")
-	ok(gtext.contains("士气"), "★ 基础数值里有「士气」（本轮新增：整支部队共享）")
-	var g_lines: int = gtext.split("\n").size()
-	eq(g_lines, 4, "★ 将领正好 4 行：血量 / 士气 / 攻击力 / 攻击距离·间隔（实际：%s）"
-		% gtext.replace("\n", "|"))
-	if main.hud._font != null:
-		var lh: float = main.hud._font.get_height(UiStyleRes.FS_SMALL)
-		var natural: float = lh * float(g_lines)
-		var visible: float = UiLayoutRes.DETAIL_BODY_H - UiLayoutRes.DETAIL_BODY_TEXT_Y
-		ok(natural <= visible,
-			"★ 将领这段文案（%d 行 × 行高 %.1f = %.0f px）装得进可视高 %.0f —— 一行都不会被裁"
-			% [g_lines, lh, natural, visible])
+	ok(gtext.contains("血量") and gtext.contains("移速"),
+		"★ 血量在左第一排、移速在右第一排（实际：%s）" % gtext.replace("\n", "|"))
+	ok(gtext.contains("攻击 ") and gtext.contains("防御 0"),
+		"★ 攻击在左第二排、防御在右第二排（实际：%s）" % gtext.replace("\n", "|"))
+	ok(gtext.contains("/") and gtext.contains("s"),
+		"★ 攻击那一行是「原始攻击力/攻击频率」（如 14/1s）")
+	ok(not gtext.contains("攻击距离"), "★ 旧版「攻击距离」不再显示")
+	ok(not gtext.contains("编制") and not gtext.contains("状态") and not gtext.contains("兵种"),
+		"★ 不再有编制 / 状态 / 兵种")
+	ok(not gtext.contains("已选中"), "★ 不再有「已选中 N 支部队」")
+	eq(gtext.split("\n").size(), 2, "★ 两列 = 两行（血量/移速、攻击/防御）")
+
+	# 防御增益：士气免伤 / 易伤（只有这一套数据）
+	var old_morale: float = g1.morale
+	g1.morale = g1.morale_max
+	main.hud.refresh()
+	ok(panel.detail_right_text().contains("士气免伤 +%d%%"
+			% int(round(main.cfg.morale_damage_reduction * 100.0))),
+		"★ 士气高昂 → 右列防御增益「士气免伤 +50%%」（实际：%s）"
+			% panel.detail_right_text().replace("\n", "|"))
+	g1.morale = 20.0
+	main.hud.refresh()
+	ok(panel.detail_right_text().contains("士气易伤 +%d%%"
+			% int(round(main.cfg.morale_vulnerability * 100.0))),
+		"★ 士气低落 → 右列防御增益「士气易伤 +50%%」（实际：%s）"
+			% panel.detail_right_text().replace("\n", "|"))
+	g1.morale = old_morale
+	main.hud.refresh()
 
 	var retinue: Array = world.retinue_of(g1.id)
 	ok(retinue.size() > 0, "（前提）1 号将领带着附属兵（%d 个）" % retinue.size())
@@ -3089,25 +3208,25 @@ func _test_detail_basic_stats(main) -> void:
 		var soldier = retinue[0]
 		ok(not world.is_team_leader(soldier), "（前提）喂进去的这个确实是兵，不是将领")
 		var stext: String = main.hud._unit_text(soldier, [])
-		ok(stext.contains("血量") and stext.contains("攻击力") and stext.contains("攻击距离"),
-			"★ 兵的基础数值照常显示（血量 / 攻击力 / 攻击距离）")
-		ok(not stext.contains("\t"), "★ 兵的数值也是单栏")
+		ok(stext.contains("血量") and stext.contains("移速")
+				and stext.contains("攻击") and stext.contains("防御"),
+			"（文案生成器）兵的四个基础项照常")
+		ok(stext.contains("\t"), "★ 兵也是两列")
 		ok(not stext.contains("编制") and not stext.contains("状态"),
-			"★ 兵不显示「编制」「状态」（第二栏整块去掉）")
+			"★ 兵不显示「编制」「状态」")
 		ok(not stext.contains("兵种") and not stext.contains("已选中"),
 			"★ 兵也不显示「兵种」「已选中 N 支部队」")
-		eq(stext.split("\n").size(), 4, "★ 兵也是正好 4 行（血量 / 士气 / 攻击力 / 攻击距离·间隔）")
-		var ltext2: String = main.hud._unit_text(g1, [])
-		ok(not ltext2.contains("编制") and not ltext2.contains("状态"),
-			"★ 同一套文案：将领那边也没有编制 / 状态（对照）")
+		eq(stext.split("\n").size(), 2, "★ 兵也是两行（血量/移速、攻击/防御）")
 
 	var foe = world.spawn_enemy(g1.tx + 5, g1.ty)
 	if foe != null:
 		main.input_ctrl.clicked_unit = foe
 		main.input_ctrl.selection_origin = "click"
 		main.hud.refresh()
-		ok(not main.hud.detail_panel.detail_text().contains("测试敌人"),
-			"★ 点到敌人不会让右栏去报敌人（右栏只报己方单位 / 退回将领）")
+		ok(main.hud.detail_panel.detail_text().contains("血量"),
+			"★ 点到敌人右栏仍显示它的血量")
+		ok(not main.hud.detail_panel.detail_text().contains(String(foe.name)),
+			"★ 但不会把敌人的名字写成右栏标题")
 
 	main.input_ctrl.select_units([g1])
 	main.hud.refresh()
@@ -3138,6 +3257,56 @@ func _sorted_keys(d: Dictionary) -> Array:
 	var out: Array = d.keys()
 	out.sort()
 	return out
+
+func _test_buff_long_press(main) -> void:
+	var hud = main.hud
+	var world = main.world
+	var g1 = world.unit_by_id("general-1")
+	main.input_ctrl.select_units([g1])
+	hud.refresh()
+	var bb = hud.detail_panel.buff_bar_control()
+	ok(bb != null and bb.count() == 1, "（前提）选中单位有 1 条士气 buff")
+	if bb == null or bb.count() == 0:
+		return
+	var pos: Vector2 = bb.buff_global_rect(0).get_center()
+
+	# ① 按下：不立刻弹（手机端要长按）
+	var press := InputEventScreenTouch.new()
+	press.pressed = true
+	press.position = pos
+	hud.handle_touch(press)
+	eq(hud._lp_src, "buff", "★ 手机按在 buff 上 → 进入 buff 长按监视")
+	ok(not bb.tip_showing(), "★ 按下的瞬间不弹（要等长按）")
+	hud._tick_long_press()
+	ok(not bb.tip_showing(), "★ 还没到 touch.long_press_sec → 不弹")
+
+	# ② 把按下时间往前拨，模拟长按到点
+	hud._lp_press_ms -= int(main.cfg.touch_long_press_sec * 1000.0) + 10
+	hud._tick_long_press()
+	ok(bb.tip_showing(), "★ 长按到点 → 弹出 buff 浮窗")
+	eq(bb.tip_title_text(), "士气", "★ 长按浮窗内容与鼠标悬停同一套")
+	ok(bb.tip_body_text().contains("当前"), "★ 长按浮窗也写当前士气")
+	# 长按期间模拟鼠标的抖动 / 移出不应该把浮窗收掉（手指还按着）
+	bb._on_mouse_exited()
+	ok(bb.tip_showing(), "★ 长按期间模拟鼠标移出不会收浮窗")
+
+	# ③ 松手：收起，并恢复鼠标悬停
+	var release := InputEventScreenTouch.new()
+	release.pressed = false
+	release.position = pos
+	hud.handle_touch(release)
+	ok(not bb.tip_showing(), "★ 松手 → 浮窗收起")
+	ok(not bb.touch_suppress_hover, "★ 松手后恢复鼠标悬停")
+
+	# ④ 按住后滑动超过阈值：取消长按，不弹
+	hud.handle_touch(press)
+	var drag := InputEventScreenDrag.new()
+	drag.position = pos + Vector2(main.cfg.touch_pan_min_px + 20.0, 0.0)
+	hud.handle_touch_drag(drag)
+	ok(not hud._lp_active, "★ 按住后滑动超过阈值 → 取消长按")
+	ok(not bb.tip_showing(), "★ 取消之后不弹")
+	hud.handle_touch(release)
+
 
 func _test_clicked_unit_detail(main) -> void:
 	var world = main.world
@@ -3267,9 +3436,12 @@ func _test_enemy_selection(main) -> void:
 		"★ 科技九格也没被翻出来（它只属于科技页）")
 
 	eq(hud.detail_panel.unit_name_text(), String(foe.name), "★ 右栏报的是那个敌人的名字")
-	var txt: String = hud.detail_panel.detail_text()
-	ok(txt.contains("血量"), "★ 右栏有敌人的血量（玩家要判断打多久）")
-	ok(txt.contains("攻击力") or txt.contains("伤害"), "★ 也有它的攻击数值（判断站多远打）")
+	ok(hud.detail_panel.detail_text().contains("血量")
+			and hud.detail_panel.detail_text().contains("防御"),
+		"★ 敌人也走同一套两列详情（血量 / 防御）")
+	var txt: String = hud._enemy_unit_text(foe)
+	ok(txt.contains("血量") and txt.contains("攻击") and txt.contains("防御"),
+		"（文案生成器）敌人详情有血量 / 攻击 / 防御")
 	for bad in ["升级", "特化", "招募", "再起"]:
 		ok(not txt.contains(bad), "★ 敌人详情里不出现己方动作「%s」" % bad)
 	eq(hud.detail_panel.grid_mode(), "empty", "★ 左栏下半网格是空的（敌人进不了编组）")
@@ -3297,8 +3469,10 @@ func _test_enemy_selection(main) -> void:
 		eq(hud.page_tabs.page(), PageTabsRes.PAGE_NONE, "★ 空页签")
 		eq(hud.command_card.entries().size(), 0, "★ 命令卡空（没有「升级」那一格）")
 		eq(hud.detail_panel.unit_name_text(), foe_b.display_name(), "★ 右栏报的是那栋建筑的名字")
-		var btxt: String = hud.detail_panel.detail_text()
-		ok(btxt.contains("生命"), "★ 右栏有它的血量")
+		ok(hud.detail_panel.detail_text().contains("血量"),
+			"★ 敌对建筑也显示两列详情（血量 / 防御）")
+		var btxt: String = hud._enemy_building_text(foe_b)
+		ok(btxt.contains("血量"), "（文案生成器）右栏有它的血量")
 		for bad2 in ["等级", "升级", "特化", "建造中"]:
 			ok(not btxt.contains(bad2), "★ 敌对建筑详情里不出现「%s」" % bad2)
 
@@ -3322,19 +3496,18 @@ func _test_enemy_selection(main) -> void:
 		eq(hud.page_tabs.page(), PageTabsRes.PAGE_NONE,
 			"★ 但别人区划只给一颗空格子（不给特化 / 招募入口）")
 		eq(hud.command_card.entries().size(), 0, "★ 命令卡空（没有三个特化那一页）")
-		var ftxt: String = hud.detail_panel.detail_text()
-		ok(not ftxt.contains("生命"),
-			"★★ 不显示区划中心的血量（区划中心没有血量）—— 实际：%s" % ftxt.replace("\n", "|"))
-		ok(ftxt.contains("粮食产能") and ftxt.contains("黄金产能"),
-			"★★ 显示区划产能（粮食 / 黄金）")
-		ok(ftxt.contains("人口上限："),
-			"★★ 显示人口上限（它是「这块地值多少钱」的一部分）")
-		ok(ftxt.contains("人口产能："),
-			"★★ 别人区划只报**人口产能**")
-		ok(not ftxt.contains("人口："),
-			"★★ 别人区划**不显示当前人口**（那是对手的情报）")
-		eq(ftxt, hud._zone_text(ic.selected_zone, false),
-			"★ 面板详情与 _zone_text(…, false) 一致（没有第二处拼装）")
+		ok(hud.detail_panel.detail_text().contains("粮食")
+				and not hud.detail_panel.detail_text().contains("现有人口"),
+			"★ 别人区划：右列报产能、不报现有人口")
+		var ftxt: String = hud._zone_text(ic.selected_zone, false)
+		ok(not ftxt.contains("血量"),
+			"（文案生成器）不显示区划中心的血量 —— 实际：%s" % ftxt.replace("\n", "|"))
+		ok(ftxt.contains("粮食 ") and ftxt.contains("黄金 "),
+			"（文案生成器）显示区划产能（粮食 / 黄金）")
+		ok(ftxt.contains("人口上限 "),
+			"（文案生成器）显示人口上限")
+		ok(not ftxt.contains("现有人口"),
+			"（文案生成器）别人区划**不显示当前人口**（那是对手的情报）")
 
 	var own_center_tile := Vector2i(-1, -1)
 	for z2 in world.zones.zones:
@@ -3353,10 +3526,12 @@ func _test_enemy_selection(main) -> void:
 		eq(ic.selected_enemy, null, "★ 这时没有「选中的敌人」")
 		hud.refresh()
 		eq(hud.page_tabs.page_count(), 2, "★ 自己区划中心仍是两颗页签（操作 + 招募）")
-		var otxt: String = hud.detail_panel.detail_text()
-		ok(not otxt.contains("生命"), "★★ 自己区划也不显示血量")
-		ok(otxt.contains("人口：") and not otxt.contains("人口产能："),
-			"★★ 自己 / 友军区划**额外显示当前人口**（「人口：x（产能x）」）—— 实际：%s"
+		ok(hud.detail_panel.detail_text().contains("现有人口"),
+			"★ 自己 / 友军区划：右列额外显示当前人口")
+		var otxt: String = hud._zone_text(ic.selected_zone, true)
+		ok(not otxt.contains("血量"), "（文案生成器）自己区划也不显示血量")
+		ok(otxt.contains("现有人口"),
+			"（文案生成器）自己 / 友军区划**额外显示当前人口** —— 实际：%s"
 			% otxt.replace("\n", "|"))
 
 	if g1 != null:

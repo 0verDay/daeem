@@ -1,32 +1,31 @@
 ## detail_panel.gd —— 底栏「详细信息」面板（988×**260**）
 ##
-## ★★ 面板高度：参考图标的是 240，**本版按需求加高到 260**（用户原话：「也可以适当
-##    扩大详细信息面板的竖直方向长度」）。底栏贴着屏幕下沿 ⇒ 它是**向上长**的，
-##    底边仍在屏幕底部、顶边从 y=840 抬到 y=820，不会掉出屏幕。
-##    多出来的 20px 全部给了右栏的数值框（96 → 116），好让最坏 7 行的区划详情
-##    用**原字号**就装得下；`_fit_body_text()` 再兜一层「塞不下就缩字」。
+## ★★ 面板高度：参考图标的是 240，**本版按需求加高到 260**。底栏贴着屏幕下沿 ⇒
+##    它是**向上长**的，底边仍在屏幕底部、顶边从 y=840 抬到 y=820，不会掉出屏幕。
+##    多出来的 20px 全部给了右栏的数值框（96 → 116）。
 ##
 ## ★★ 第四轮改版（照新参考图逐像素重量的）：整块仍然是**左右两栏**，
 ##    但**左栏换成了「1 + 3×3 = 10 个格子」**（几何见 view/ui_layout.gd）：
 ##
 ##   左栏（350 宽）
-##     ├─ 上半：**当前展开 / 唯一选中的那支部队的将领格**（view/unit_roster.gd）
-##     │        左上角 1 个 40×40 方框 + 右边一行「将领名称 x/y」
-##     └─ 下半：**3×3 = 9 格的网格**（view/troop_grid.gd），三种语义共用：
-##               · **选中多支部队** → 画**其余**选中部队的将领（展开的那支不重复出现）；
-##                 点一格 = 把展开的部队换成它（同时右栏切到它的将领）。
+##     ├─ 上半：**当前聚焦 / 唯一选中的那支部队（或建筑）的图标格**（view/unit_roster.gd）
+##     │        左边 40×40 图标 + 右边两行「名字 / x÷y」
+##     │        ★ 部队图标 = **序号 + 士气填充**；建筑 = 首字、无填充
+##     └─ 下半：**3 行 × 3 列的可见窗口**（view/troop_grid.gd），三种语义共用：
+##               · **选中多支部队** → 画**其余**选中部队的序号图标（聚焦的那支不重复出现）；
+##                 点一格 = 把聚焦的部队换成它（同时右栏切到它的将领）。
 ##               · **只选中一支**   → 画这支部队的**单位**（第一个就是将领本人）；
-##                 点一格 = 右栏切到那个单位；超过 9 个时滚轮**翻页**（一次一页）。
-##               · **选中建筑**     → 左上那一格 = **主选中**的建筑，下面 9 格 = 其余选中的
-##                 建筑（框选可以选中一整批，见 input_controller.box_select）；
-##                 点一格 = 把右栏详情切到那个建筑；超过 9 个同样是滚轮翻页。
+##                 点一格 = 右栏切到那个单位；超过 9 个时可**左右滑动**（滚轮按页）。
+##               · **选中建筑**     → 左上那一格 = **主选中**的建筑，下面 = 其余选中的建筑；
+##                 点一格 = 把右栏详情切到那个建筑；超过 9 个同样可左右滑动。
 ##
-##   右栏（603 宽，第六轮排成「三条带 + 一条提示带」，几何见 ui_layout 那段注释）
-##     y   8.. 96  顶带：选中单位的**头像**（72×72）+「单位名称」+ 一行 **buff 图标**（占位，无效果）
-##                 右上角还有招募队列（view/recruit_queue.gd，只有正在招募时才出现）：
-##                 左边汇总带（「招募队列 3/5」+「共 22s」）+ 1 大 4 小五个格子
-##     y 100..216  数值区（血量 / 攻击力 / 攻击距离·间隔…）—— **横跨整个右栏**，
-##                 ★ 本版按需求去掉了这一块顶上那行「详细信息」标题（只剩正文）
+##   右栏（603 宽，本版重排成「顶带 + 下半并排 + 提示带」）
+##     y   0.. 96  顶带：选中单位的**头像**（72×72）+「单位名称」+
+##                 一行**动态 buff 槽位**（40×40；当前士气系统挂一条「士」）
+##     y 100..216  下半：**详细信息框（282 宽）+ 4px 缝 + 招募队列（313 宽）** 并排
+##                 · 详情框 = 两列表格（血量/攻击 | 移速/防御；区划中心 = 类型/大小 | 产能）
+##                 · 招募队列与详情框**上下缘齐平**（本版按需求从顶带搬下来）
+##                 两者都只在对应内容存在时出现；队列不可见时不挡鼠标
 ##     y 220..240  **红字提示**（操作被拒的原因，约 ui.notice_sec 秒，见 hud.show_notice）
 ##
 ## ★★ 第六轮那三处对齐（起因：右栏几块的对齐边各走各的，看着像四块补丁）：
@@ -41,14 +40,16 @@
 ##   · 玩家**鼠标单击**选中某个单位 → 默认显示**玩家点到的那个单位**。
 ##
 ## ★ 按需求砍掉的东西（别再默默加回来）：
+##   · **旧的单栏数值正文**（血量 / 士气 / 攻击力 / 攻击距离那一整段）—— 本版换成
+##     两列表格；旧的 7 行区划文案也不再使用（见 hud 的 `_*_detail_rows`）。
+##   · **三个写死的 buff 占位**（「buff1/2/3」）—— 换成 view/buff_bar.gd 的动态槽位。
+##   · **单位 / 建筑图标的纯色背景填充** —— 现在只有「图标 + 底部血条」，没有士气底色；
+##     士气只画在**部队**图标上（序号 + 自下而上的士气填充，见 view/icon_badge.gd）。
 ##   · **「阵营 + 粮食 + 黄金」那一行资源 —— 本轮按参考图删掉了**
-##   · **选中单位的那些汇总文字**（队伍人数 / 合计生命 / 指定攻击 / 状态）—— 一并删掉；
-##     右栏那一块数值现在只画**基础数值**（本版连第二栏的编制 / 状态也去掉了，见 hud._unit_text）
-##   · **数值区顶上那行「详细信息」标题**（用户原话：「把所有的详细信息栏的『详细信息』字样去除」）；
-##     标题一删，正文必须**整体上移**到 `DETAIL_BODY_TEXT_Y`（= 方框内边距）——
-##     不然原标题那一段就变成一条空白（实测就是「第一行是空的」）
+##   · **选中单位的那些汇总文字**（队伍人数 / 合计生命 / 指定攻击 / 状态）—— 一并删掉。
+##   · **数值区顶上那行「详细信息」标题**（用户原话：「把所有的详细信息栏的『详细信息』字样去除」）。
 ##   · **选中单位那三条之外的一切**：第二栏（编制 / 状态）、「已选中 N 支部队」、
-##     「兵种 …（步兵）」—— 见 hud._unit_text（用户原话两批需求都写在那边）
+##     「兵种 …（步兵）」—— 见 hud 的 `_unit_detail_rows`。
 ##   · **建筑详情里的「升级到 N 级：花费（时间）」那两行**（含满级那句「已经是最高等级」）、
 ##     大本营那句「开局自带，不可建造、不可拆除」，以及区划详情开头那行「区划「xx」」
 ##   · **建筑 / 区划详情里的「归属」与「位置」两行**（选中建筑那一轮按需求精简掉），
@@ -65,7 +66,9 @@ extends PanelContainer
 
 const UiLayoutRes = preload("res://view/ui_layout.gd")
 const UiStyleRes = preload("res://view/ui_style.gd")
-const HpBarRes = preload("res://view/hp_bar.gd")
+const IconBadgeRes = preload("res://view/icon_badge.gd")
+const DetailRowsRes = preload("res://view/detail_rows.gd")
+const BuffBarRes = preload("res://view/buff_bar.gd")
 const RecruitQueueRes = preload("res://view/recruit_queue.gd")
 const UnitRosterRes = preload("res://view/unit_roster.gd")
 const TroopGridRes = preload("res://view/troop_grid.gd")
@@ -83,9 +86,6 @@ signal unit_activated(index: int)
 ## 原样转发给 hud.gd —— 「右栏详情切到那个建筑」由它做。
 signal building_activated(index: int)
 
-## buff 占位（手玩原话：「可以先做几个无效果的 buff 凑数」）。
-## ★ 它是**纯显示**：逻辑层没有 buff 系统，这里只是把这几个字画进格子里。
-const BUFF_PLACEHOLDERS := ["buff1", "buff2", "buff3"]
 ## 左栏第一格右边那行小字：参考图上写的就是「将领名称」（不是将领真名）——
 ## 手玩原话：「两行：『将领名称』+『1/11』」。
 const ROSTER_LEADER_LABEL := "将领名称"
@@ -95,24 +95,17 @@ var _roster: Control
 var _grid: Control
 var _notice: Label
 var _queue: Control
-## 右栏整块（手机端自适应：它的实时宽度决定内部几块怎么摆，见 `_layout_right`）
+## 右栏整块（宽 **603 固定**；`_layout_right` 仍按实际宽度摆内部几块）
 var _right: Control
 
 # 右栏
 var _unit_avatar: Control
 var _unit_name: Label
-var _buffs: Array[Label] = []
+## 动态 buff 槽位（不写死占位；HUD 每帧 set_buffs）
+var _buff_bar: Control
 var _detail_box: Panel
-## 正文**左栏**（单栏文本也用它）与**右栏**（只有两栏文本才显示）
-var _body: Label
-var _body_right: Label
-## ★★ 上一次 `set_detail()` 的文本与正文高度。手机端 HUD 以 10Hz 重复喂同一段文案，
-##   文本和可用高度都没变时直接返回 —— 不 split、不 `_fit_body_text()`（字体度量 + 主题写入）。
-var _last_detail_valid: bool = false
-var _last_detail_text: String = ""
-var _last_detail_size: Vector2 = Vector2.ZERO
-## 诊断计数（测试读）：`_fit_body_text()` 真正执行的次数。
-var fit_calls: int = 0
+## 两列表格（血量/攻击 | 移速/防御；区划中心另算）
+var _rows: Control
 
 # 左栏上半「未选中」时的兜底文字
 var _empty_label: Label
@@ -125,9 +118,10 @@ func setup(world = null, font: Font = null) -> void:
 	var s := UiStyleRes.panel_style()
 	s.set_content_margin_all(UiLayoutRes.DETAIL_PAD)
 	add_theme_stylebox_override("panel", s)
-	# ★★ 手机端自适应：左缘钉 400、右缘钉到阵营列左缘 —— 窗口宽于 16:9 时自己填满中间那条缝
-	#    （原来 `apply_rect(self, DETAIL_RECT, false, true)` 把右缘写死在 1430，与贴右的阵营列之间会裂开）。
-	UiLayoutRes.apply_stretched_detail(self)
+	# ★★ 本版按需求**不再横向拉伸**：手机端不需要和右下角页签栏相连，尺寸恰好即可。
+	#   固定 `DETAIL_RECT`（988×260，贴左、贴底）；视口比 16:9 宽时右侧留白，
+	#   不再把多出来的宽灌进右栏（那会把面板拉得很长、里面一大片空）。
+	UiLayoutRes.apply_fixed_detail(self)
 
 	# 整块面板的根：两行 —— 上面是左右两栏，下面是提示行（红字，出现时才占位）
 	var root_box := VBoxContainer.new()
@@ -144,7 +138,7 @@ func setup(world = null, font: Font = null) -> void:
 	root_box.add_child(cols)
 
 	_build_left(cols, world, font)
-	_build_right(cols, world)
+	_build_right(cols, world, font)
 	# ★ 提示行不再挂在 root_box（VBox）上 —— 它现在是**右栏里的绝对定位浮层**，
 	#   见 `_build_notice()` 与 ui_layout 的 NOTICE_Y 注释（原来一出现就把两栏压扁 20px）。
 
@@ -192,26 +186,22 @@ func _build_left(cols: HBoxContainer, world, font: Font) -> void:
 
 
 # ------------------------------------------------------------------
-# 右栏：选中单位（头像 / 名称 / buff / 数值）+ 招募队列
+# 右栏：选中单位（头像 / 名称 / 动态 buff / 两列详情）+ 招募队列
 # ------------------------------------------------------------------
-func _build_right(cols: HBoxContainer, world) -> void:
+func _build_right(cols: HBoxContainer, world, font: Font) -> void:
 	var right := Control.new()
 	right.name = "DetailRight"
 	_right = right
 	right.custom_minimum_size = Vector2(UiLayoutRes.DETAIL_RIGHT_W, 0.0)
-	# ★★ 手机端自适应：右栏接住**多出来的全部宽度**（左栏那 3×3 是按参考图量死的、不跟着长）。
-	#    容器里左栏 SIZE_FILL（= 350 固定）、右栏 SIZE_EXPAND_FILL ⇒ 拉伸后的加宽都进右栏。
+	# ★★ 本版不再横向拉伸：面板固定 988 宽，右栏因此固定 603（左栏 350 + 缝 15）。
+	#    容器仍用 SIZE_EXPAND_FILL 只是让它在固定宽里把高度撑满，不会再加宽。
 	right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	right.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	right.clip_contents = true
 	right.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	cols.add_child(right)
 
-	# 头像：**100×100** 的方框（参考图实测 x 806..905、y 860..959，就是 100×100）。
-	# ⚠️ 这里改过两次（手玩报的「头像不对」）：
-	#   ① 方框 40×40 + 字号 44：字比方框大 ⇒ 被裁成右下角一块；
-	#   ② 方框本身也画小了 —— 参考图上它是 100×100，不是 40。
-	#   没有头像素材 → 方框里用字填充（字号按方框现算，见 _avatar_font_size）。
+	# 头像：72×72 的方框；没有头像素材 → 用字填充（字号按方框现算）。
 	_unit_avatar = Control.new()
 	_unit_avatar.name = "UnitAvatar"
 	_unit_avatar.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -220,8 +210,7 @@ func _build_right(cols: HBoxContainer, world) -> void:
 	_unit_avatar.draw.connect(_draw_unit_avatar)
 	right.add_child(_unit_avatar)
 
-	# 名称：右栏最大的字（参考图实测四个字宽 110、字高约 28 ⇒ 字号 29），
-	# 与头像**上半部**同一水平线（参考图 y 881..908，头像 y 860..959）。
+	# 名称：右栏最大的字，与头像上半部同一水平线。
 	var head_x := UiLayoutRes.UNIT_NAME_X
 	_unit_name = Label.new()
 	_unit_name.name = "UnitName"
@@ -234,71 +223,36 @@ func _build_right(cols: HBoxContainer, world) -> void:
 	_unit_name.size = Vector2(UiLayoutRes.UNIT_NAME_W, UiStyleRes.FS_UNIT_NAME + 6.0)
 	right.add_child(_unit_name)
 
-	# buff 三格：排在头像右边、**与头像下半同一水平线**
-	# （参考图实测 30×30 的三格在 y 930..959，正好落在 100 高的头像下缘那一段）
-	for i in UiLayoutRes.BUFF_SLOTS:
-		var b := Label.new()
-		b.name = "Buff%d" % (i + 1)
-		b.text = String(BUFF_PLACEHOLDERS[i % BUFF_PLACEHOLDERS.size()])
-		b.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		b.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		b.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-		b.clip_text = true
-		# ★ 方框 30 → **40**（与左栏那些 40×40 的方块同一号尺寸），字号 11 → 13：
-		#   占位文案「buff1」在 13 号下实测 33px ≤ 40，装得下；而 30×30 + 11 号字
-		#   在放大的右栏里看着像两个小疙瘩（手玩：「ui 内容也太小了」）。
-		#   `tests/test_ui.gd` 里有一条断言按真实字体量这件事（别改回去）。
-		b.add_theme_font_size_override("font_size", UiStyleRes.FS_SMALL)
-		b.add_theme_color_override("font_color", UiStyleRes.text_faint())
-		b.position = Vector2(
-			UiLayoutRes.BUFF_X + float(i) * (UiLayoutRes.BUFF_SIZE + UiLayoutRes.BUFF_GAP),
-			UiLayoutRes.BUFF_Y)
-		b.size = Vector2(UiLayoutRes.BUFF_SIZE, UiLayoutRes.BUFF_SIZE)
-		b.draw.connect(_draw_buff_box.bind(b))
-		right.add_child(b)
-		_buffs.append(b)
+	# ★★ 动态 buff 槽位（本版去掉三个写死的占位）：
+	#   由 HUD 每帧 `set_buffs([{id, text, color, name}])` 喂；当前至少会有一条「士气」。
+	_buff_bar = BuffBarRes.new()
+	right.add_child(_buff_bar)
+	_buff_bar.setup(font)
+	_buff_bar.position = Vector2(UiLayoutRes.BUFF_X, UiLayoutRes.BUFF_Y)
+	_buff_bar.size = Vector2(UiLayoutRes.detail_buff_w(UiLayoutRes.DETAIL_RIGHT_W),
+		UiLayoutRes.BUFF_SIZE)
 
-	# 数值区：正文（单位 / 建筑 / 区划的数值）——
-	# 横跨整个右栏的一个独立方框，左边缘与头像对齐。
-	# ★★ 重排（手玩报的「太拥挤」）：方框 90 → 116 高，正文 FS_TINY(11) → FS_SMALL(13)
-	#    且行距回正（原来是 -1，硬压出来的）。正文是**两栏制表位**（见下面 _body 的注释
-	#    与 hud._unit_text() / _zone_text() / _building_text()）。
+	# 数值区：本版**向左收窄**（右缘 = 招募队列左缘前 4px），
+	# 里面是两列表格（左 = 血量/攻击，右 = 移速/防御；区划中心另算）。
 	_detail_box = Panel.new()
 	_detail_box.name = "DetailBox"
 	_detail_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_detail_box.position = Vector2(UiLayoutRes.DETAIL_BODY_X, UiLayoutRes.DETAIL_BODY_Y)
-	_detail_box.size = Vector2(UiLayoutRes.DETAIL_BODY_W, UiLayoutRes.DETAIL_BODY_H)
+	_detail_box.size = Vector2(UiLayoutRes.detail_body_w(UiLayoutRes.DETAIL_RIGHT_W),
+		UiLayoutRes.DETAIL_BODY_H)
 	_detail_box.add_theme_stylebox_override("panel",
 		UiStyleRes.panel_style(UiStyleRes.bg_empty(), UiStyleRes.line_soft()))
 	right.add_child(_detail_box)
 
-	# ★★ 本版按需求**去掉「详细信息」这四个字**（用户原话：「把所有的详细信息栏的
-	#    『详细信息』字样去除」）—— 整块标题 Label（含 `set_detail_title()`）一并删掉，
-	#    数值框里现在**只剩正文**（正文随之上移，见下面那段 ⚠️⚠️）。
-	# 正文：**真·两栏** = 两个 Label（左栏 / 右栏），x 由 ui_layout 定死。
-	#   ★★ 第七轮修的：以前是一整段带 `\t` 的字符串，而 **Godot 的 Label 不把 `\t` 当制表位**
-	#      （只推进一个很小的固定宽度）⇒ 画面上两栏**粘在一起**（「血量 200 / 200状态：待命」），
-	#      截图里一眼可见。现在左右各一个 Label，永远对得齐。
-	#   ⚠️ 这里**必须关掉 autowrap**：换行由 hud 那边按「行」给；留着 autowrap 会在宽度不够时
-	#      把一行拆成两行（版式就散了）。宽度不够宁可裁（clip_text = true），那说明文案该改短。
-	#   ⚠️ hud.set_detail() 收到带 `\t` 的文本时才会分两栏；区划 / 建筑那种单栏多行文本
-	#      只填左栏，右栏空着（`_body_right.visible = false`）。
-	#   ⚠️⚠️ 正文的 y = **DETAIL_BODY_TEXT_Y**（= 8）：标题删掉之后它必须整体上移。
-	#      原来写死 20（标题 Label 占 3..21 那一段），标题一删就成了**顶上一条空白** ——
-	#      实测表现正是「第一行是空的」（用户报的）。现在顶边就是 DETAIL_BODY_PAD。
-	#   ⚠️ 高度 = 方框高 − 顶边（**整块**都归正文）：文字再高也只会落在方框里，
-	#      外加 `_fit_body_text()` 的自动缩放兜底（见那个函数）。
-	_body = _new_body_label("DetailBody",
-		Vector2(UiLayoutRes.DETAIL_BODY_PAD, UiLayoutRes.DETAIL_BODY_TEXT_Y),
-		Vector2(UiLayoutRes.DETAIL_BODY_COL_W,
-			UiLayoutRes.DETAIL_BODY_H - UiLayoutRes.DETAIL_BODY_TEXT_Y))
-	_body_right = _new_body_label("DetailBodyRight",
-		Vector2(UiLayoutRes.DETAIL_BODY_COL2_X, UiLayoutRes.DETAIL_BODY_TEXT_Y),
-		Vector2(UiLayoutRes.DETAIL_BODY_COL2_W,
-			UiLayoutRes.DETAIL_BODY_H - UiLayoutRes.DETAIL_BODY_TEXT_Y))
-	_body_right.visible = false
+	_rows = DetailRowsRes.new()
+	_detail_box.add_child(_rows)
+	_rows.setup(font)
+	_rows.position = Vector2(UiLayoutRes.DETAIL_BODY_PAD, UiLayoutRes.DETAIL_BODY_TEXT_Y)
+	_rows.size = Vector2(UiLayoutRes.detail_rows_w(UiLayoutRes.DETAIL_RIGHT_W),
+		UiLayoutRes.DETAIL_BODY_ROWS_H)
 
-	# 招募队列：贴右栏**右上角**（只有正在招募时才出现；不可见时收不到鼠标事件）
+	# 招募队列：本版搬到**下方**，与数值框上下缘对齐（y = DETAIL_BODY_Y，高 = 116）。
+	# 只有正在招募时才出现；不可见时收不到鼠标事件。
 	_queue = RecruitQueueRes.new()
 	right.add_child(_queue)
 	_queue.setup(world)
@@ -307,52 +261,46 @@ func _build_right(cols: HBoxContainer, world) -> void:
 
 	_build_notice(right)
 
-	# ★★ 手机端自适应：按当前右栏宽度摆好「钉右 / 跟宽」的那几块，
-	#    并在容器布局之后（窗口变宽 → 右栏变宽）再摆一次。
+	# ★★ buff 条摆到最后一个子节点：它的悬停浮窗会画到方块下面（详情框 / 队列之上）。
+	#   它自己的矩形只有 40 高，不挡任何东西；放在最后只影响「浮窗盖住谁」。
+	if _buff_bar != null:
+		right.move_child(_buff_bar, right.get_child_count() - 1)
+
+	# ★★ 按右栏宽度（固定 603）摆好「钉右 / 跟宽」的那几块；
+	#    仍接 resized 信号，纯粹是布局兜底（正常不会变宽）。
 	_layout_right(UiLayoutRes.DETAIL_RIGHT_W)
 	right.resized.connect(_on_right_resized.bind(right))
 
 
 ## ★★ 右栏里「钉右 / 跟宽」的子控件按**当前右栏宽度**重摆：
-##   · 数值框 / 提示行：宽 = 右栏宽 − QUEUE_MARGIN；
-##   · 招募队列：x = 右栏宽 − QUEUE_MARGIN − QUEUE_W（右缘不动）；
+##   · 数值框：**固定 282 宽**（向左收窄，不再跟右栏拉伸）；
+##   · 两列表格：跟着数值框的内宽；
+##   · 动态 buff：左起 84，右到招募队列左缘前 4px；
+##   · 招募队列：x = 右栏宽 − QUEUE_MARGIN − QUEUE_W（右缘不动），y = 100；
 ##   · 单位名称：可写宽缩到招募队列左缘之前（留 8px）；
-##   · 正文**右栏** Label：宽跟着数值框。
+##   · 提示行：横跨详情框 + 队列（右栏宽 − QUEUE_MARGIN）。
 ## ★ 头像 / buff / 名称起点都是左对齐的，不随宽度动 —— 所以不在这一函数里。
-## ⚠️ `right_w == DETAIL_RIGHT_W`（1920 基准）时，结果与原来的写死常量逐位一致。
 func _layout_right(right_w: float) -> void:
 	# ★ 兜底：容器布局途中可能给一个 0 / 很小的宽度（此时算出来是负数）。
 	#   夹到基准宽（603）—— 比「负尺寸」稳，也不会让某一块突然翻到左边去。
 	right_w = maxf(right_w, UiLayoutRes.DETAIL_RIGHT_W)
 	if _detail_box != null:
 		_detail_box.size.x = UiLayoutRes.detail_body_w(right_w)
-	if _body_right != null:
-		_body_right.size.x = UiLayoutRes.detail_body_col2_w(right_w)
+	if _rows != null:
+		_rows.size = Vector2(UiLayoutRes.detail_rows_w(right_w),
+			UiLayoutRes.DETAIL_BODY_ROWS_H)
+	if _buff_bar != null:
+		_buff_bar.size.x = UiLayoutRes.detail_buff_w(right_w)
 	if _queue != null:
-		_queue.position.x = UiLayoutRes.detail_queue_x(right_w)
+		_queue.position = Vector2(UiLayoutRes.detail_queue_x(right_w), UiLayoutRes.QUEUE_Y)
 	if _unit_name != null:
 		_unit_name.size.x = UiLayoutRes.detail_name_w(right_w)
 	if _notice != null:
-		_notice.size.x = UiLayoutRes.detail_body_w(right_w)
+		_notice.size.x = UiLayoutRes.detail_notice_w(right_w)
 
 
 func _on_right_resized(right: Control) -> void:
 	_layout_right(right.size.x)
-
-
-## 造一个正文 Label（左栏 / 右栏共用同一套版式），并按矩形摆好。
-func _new_body_label(node_name: String, pos: Vector2, size_v: Vector2) -> Label:
-	var l := Label.new()
-	l.name = node_name
-	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	l.autowrap_mode = TextServer.AUTOWRAP_OFF
-	l.clip_text = true
-	l.add_theme_font_size_override("font_size", UiStyleRes.FS_SMALL)
-	l.add_theme_color_override("font_color", UiStyleRes.text())
-	l.position = pos
-	l.size = size_v
-	_detail_box.add_child(l)
-	return l
 
 
 ## 提示行（红字）：**右栏数值框下面那一条 20px**，绝对定位的浮层。
@@ -379,7 +327,7 @@ func _build_notice(right: Control) -> void:
 	#    Label 的最小高度按**引擎兜底字体**算出来是 23px > 20px，于是 `set_size` 当场被夹成 23，
 	#    整个提示带就顶出右栏下沿（实测：200 + 23 = 223 > 当时的内容高 220；
 	#    现在内容高 240、提示带在 220..240，夹成 23 也只是压到 243 —— 仍在面板内）。
-	# ★ 宽度取 `UNIT_CONTENT_RIGHT`（= 641）：与数值框 / 招募队列共用同一条右缘。
+	# ★ 宽度取 `UNIT_CONTENT_RIGHT`（= 599）：横跨详情框 + 招募队列，与右栏公共右缘对齐。
 	_notice.size = Vector2(UiLayoutRes.UNIT_CONTENT_RIGHT, UiLayoutRes.NOTICE_H)
 
 
@@ -422,7 +370,18 @@ func set_buildings(entries: Array, primary) -> void:
 		else:
 			rest.append(e)
 	if _roster != null:
-		_roster.set_entry(null if main_entry.is_empty() else main_entry)
+		if main_entry.is_empty():
+			_roster.set_entry(null)
+		else:
+			# ★ 左上那一格与部队共用同一个落点（`unit_roster.set_entry`）：
+			#   建筑 = 首字图标 + 底部血条，**没有士气填充**。
+			var e: Dictionary = (main_entry as Dictionary).duplicate()
+			var ref = e.get("ref", null)
+			e["kind"] = "building"
+			e["icon"] = String(e.get("short", ""))
+			e["show_hp"] = ref != null
+			e["hp"] = 1.0 if ref == null else float(ref.hp_ratio())
+			_roster.set_entry(e)
 	if _grid != null:
 		if main_entry.is_empty():
 			_grid.clear()
@@ -451,122 +410,44 @@ func set_unit_name(text: String) -> void:
 		_unit_name.text = text
 
 
-## 右栏：数值区的正文（区划 / 建筑 / 单位数值都由 hud 决定）。
+## 右栏：**动态 buff 槽位**。每条 `{id, text, color, name}`（空数组 = 一个都不画）。
+## ★ 当前至少会有士气系统给单位挂的一条「士」；以后别的系统直接往数组里追加。
+func set_buffs(entries: Array) -> void:
+	if _buff_bar != null:
+		_buff_bar.set_buffs(entries)
+
+
+## 右栏：两列表格（区划 / 建筑 / 单位都由 hud 组装成**行**递进来）。
 ##
-## ★★ 文本里有 `\t` 时按**两栏**渲染：`\t` 左边进左栏 Label、右边进右栏 Label
-##    （两个 Label 的 x 由 ui_layout 定死，永远对齐）。没有 `\t` 就是普通单栏多行文本。
-##
-## ★ 为什么按 `\t` 分而不是让 hud 直接喂两份：
-##   正文的组装规则只有一处（hud），它写成「左栏 + `\t` + 右栏」的字符串；
-##   而**渲染**不该由 hud 管。这一层按同一个分隔符拆开只是把它画成两栏，
-##   文案的组装规则仍然只有一处（hud）。`detail_text()` 会把两栏**合回原样**，
-##   所以「文案对不对」的断言照旧在同一个出口上验。
-##
-## ⚠️ 本版三条文案（`hud._unit_text` / `_building_text` / `_zone_text`）**都不带 `\t`**
-##    （单位那条按需求砍掉了第二栏的编制 / 状态）⇒ 实际走的都是上面那条单栏分支，
-##    右栏 Label 一直收着。两栏这条路留着：有 `\t` 就照旧分栏画。
+## ★ 行格式：`{"text": String, "small": bool, "dim": bool}`，也接受纯字符串。
+##   左列 = 血量 / 攻击力（+攻击增益）；右列 = 移动速度 / 防御力（+防御增益）；
+##   区划中心则是「类型 / 大小 | 产能」。具体文案的组装**只有一处**（hud），
+##   这一层只负责把两列画出来（view/detail_rows.gd）。
+func set_detail_rows(left_rows: Array, right_rows: Array) -> void:
+	if _rows != null:
+		_rows.set_rows(left_rows, right_rows)
+
+
+## 兼容旧接口：`左 \t 右` 的纯文本 → 两列普通行（老测试 / 临时调用用）。
+## ⚠️ 新代码请直接走 `set_detail_rows()`，这样增益行才能用 11 号小字。
 func set_detail(text: String) -> void:
-	if _body == null:
-		return
-	# ★★ 同一段文案 + 同样的可用高度 ⇒ 什么都不用做。
-	#    HUD 每 100ms 会重复喂同一段文本；不拦的话每次都要 split + 反复写字号/行距主题覆盖，
-	#    而 `add_theme_*_override` 会让 Label 重新排版 —— 手机上这是实打实的尖峰。
-	if _last_detail_valid and text == _last_detail_text and _body.size == _last_detail_size:
-		return
-	_last_detail_valid = true
-	_last_detail_text = text
-	_last_detail_size = _body.size
-	var rows: PackedStringArray = text.split("\n")
-	var has_columns := text.contains("\t")
-	if not has_columns:
-		_body.text = text
-		if _body_right != null:
-			_body_right.text = ""
-			_body_right.visible = false
-		_fit_body_text(_body)
-		return
-	var left: PackedStringArray = []
-	var right: PackedStringArray = []
-	for row in rows:
+	var left: Array = []
+	var right: Array = []
+	for row in text.split("\n"):
 		var parts: PackedStringArray = String(row).split("\t")
 		left.append(parts[0])
 		right.append(parts[1] if parts.size() > 1 else "")
-	_body.text = "\n".join(left)
-	if _body_right != null:
-		_body_right.text = "\n".join(right)
-		_body_right.visible = true
-		_fit_body_text(_body_right)
-	_fit_body_text(_body)
+	set_detail_rows(left, right)
 
 
-# ------------------------------------------------------------------
-# 竖直方向自适应：**所有文本都别想跑出这一格**
-# ------------------------------------------------------------------
-
-## 正文字号的**下限**。到这个字号还塞不下就只压行距、再不行就让它裁 ——
-## 再小就成蚂蚁腿了，那时候该做的是把文案改短（或者再给面板加高）。
-const BODY_FS_MIN := 10
-## 行距下限（负数才是「压紧」；`LineSpacing` 是**加**在行高上的，所以负数 = 行间更紧）。
-## ⚠️ 别再往下调：-6 时 10 号字的两行几乎贴在一起，只适合「这一屏就是塞得满满」的兜底。
-const BODY_LS_MIN := -6.0
-
-## 把一段多行文本**压进 Label 自己的矩形**（竖直方向），必要时缩字号 / 压行距。
-##
-## ★ 需求原话：「能否强制让所有文本都挤进详细信息栏（在竖直方向上可以适当缩放）」。
-##   这一段就是那个「强制」：先按默认字号（FS_SMALL = 13）试，塞不下就一路缩到
-##   `BODY_FS_MIN`，再不行才压行距 —— 字号优先，因为字小比行挤更伤可读性。
-##
-## ★ 为什么量的是「行高 × 行数」而不是 `get_minimum_size().y`：
-##   `Label` 的最小高度**按当前主题字体**算，而 `add_theme_font_size_override()`
-##   改的就是那个字体 ⇒ 用最小高度也行，但那样要等一帧排版；这里直接按字体行高算，
-##   同一个函数里就能算出「要缩到几号」（无头测试也是即时可验的）。
-##
-## ⚠️ 这条路是**兜底**，不是日常：面板按需求加高之后，区划详情那最坏的 7 行
-##   （7 × 14 = 98px）在 13 号字下就装得进 108px 的可视高，字号根本不会动。
-##   它保的是「以后谁再加一行文案 / 用户把窗口调小」这类情况 ——
-##   表现是字略小，而不是最后一行跑到面板外面。
-func _fit_body_text(l: Label) -> void:
-	if l == null or l.text == "":
-		return
-	fit_calls += 1
-	var f: Font = l.get_theme_default_font()
-	if f == null:
-		return
-	var avail: float = l.size.y
-	var rows: int = l.text.split("\n").size()
-	var fs: int = UiStyleRes.FS_SMALL
-	var spacing: float = 0.0
-	# ① 字号优先：从 FS_SMALL 一路往下试，够装就停
-	while fs > BODY_FS_MIN and float(rows) * _body_row_h(f, fs, 0.0) > avail:
-		fs -= 1
-	# ② 还不行就压行距（最多压到 BODY_LS_MIN）
-	if float(rows) * _body_row_h(f, fs, 0.0) > avail:
-		while spacing > BODY_LS_MIN and float(rows) * _body_row_h(f, fs, spacing) > avail:
-			spacing = maxf(BODY_LS_MIN, spacing - 0.5)
-	l.add_theme_font_size_override("font_size", fs)
-	l.add_theme_constant_override("line_spacing", int(round(spacing)))
-
-
-## 一行占多高：字体行高（`get_height` 已经把字体自带的行距算进去了）+ `LineSpacing`。
-## ⚠️ 字号的兜底用 FS_SMALL 的 1.6 倍，纯粹是防「字体没字库 / 返回 0」那种情况。
-func _body_row_h(f: Font, fs: int, spacing: float) -> float:
-	var h := f.get_height(fs)
-	if h <= 0.0:
-		h = float(fs) * 1.6
-	return h + spacing
-
-
-## 测试读口：正文当前**实际用的**字号 / 行距（自动缩放之后的值）
+## 测试读口：主数值行用的字号（增益行会更小，见 detail_rows.gd）。
 func body_font_size() -> int:
-	if _body == null:
-		return UiStyleRes.FS_SMALL
-	return _body.get_theme_font_size("font_size")
+	return UiStyleRes.FS_SMALL
 
 
+## 测试读口：两列表格没有整块行距覆盖（行高固定 17）。
 func body_line_spacing() -> int:
-	if _body == null:
-		return 0
-	return _body.get_theme_constant("line_spacing")
+	return 0
 
 
 ## 右栏右上角的招募队列：显示哪个将领 / 哪个区划的（null = 没有 → 整块收起来）
@@ -634,9 +515,6 @@ var _avatar_draws: int = 0
 ## 头像底部那条**血量条**：比例 0..1 + 要不要画（区划 / 未选中 → 不画）。
 var _avatar_hp_ratio: float = 1.0
 var _avatar_hp_visible: bool = false
-## ★★ 头像**背景板**的士气：比例 0..1 + 要不要按士气上色（区划 / 建筑 / 未选中 → 不上色）。
-var _avatar_morale_ratio: float = 1.0
-var _avatar_morale_visible: bool = false
 ## 头像血条画过几帧（测试读它，理由同 `_avatar_draws`）
 var _avatar_bar_draws: int = 0
 
@@ -645,16 +523,14 @@ func _draw_unit_avatar() -> void:
 	_avatar_draws += 1
 	var side := UiLayoutRes.UNIT_AVATAR
 	var r := Rect2(Vector2.ZERO, Vector2(side, side))
-	# ★★ 背景板：单位 / 将领按士气绿→红（见 ui_style.morale_plate）；区划 / 建筑 / 未选中 → 素色。
-	_unit_avatar.draw_rect(r, UiStyleRes.morale_plate(_avatar_morale_ratio, true) \
-		if _avatar_morale_visible else UiStyleRes.bg_empty(), true)
-	_unit_avatar.draw_rect(r, UiStyleRes.line(), false, 1.0)
 	var f: Font = _unit_avatar.get_theme_default_font()
-	if _avatar_text != "" and f != null:
-		_draw_centered(f, _avatar_text, r, UiStyleRes.text(), _avatar_font_size(f))
-	# ★ 图标底部的血量条（需求：图标底部加一条，长度 = 图标）。区划 / 未选中不画。
+	var fs: int = _avatar_font_size(f) if f != null else UiStyleRes.FS_TITLE
+	# ★★ 本版按需求：头像**没有纯色背景填充**（原来的士气背景板已去掉），
+	#   只画边框 + 字 + 底部血条。
+	#   （交战中 / 选中的强调不在这里做：右栏头像只表示「现在看的是谁」。）
+	IconBadgeRes.draw(_unit_avatar, f, r, "unit", _avatar_text, 1.0,
+		_avatar_hp_ratio, _avatar_hp_visible, fs, UiStyleRes.line(), 1.0)
 	if _avatar_hp_visible:
-		HpBarRes.draw(_unit_avatar, r, _avatar_hp_ratio)
 		_avatar_bar_draws += 1
 
 
@@ -681,15 +557,8 @@ func _avatar_font_size(f: Font) -> int:
 	return size
 
 
-## 在一个矩形里居中画一行字（`draw_string` 的 pos 是**基线** ——
-## 垂直居中要按 ascent 推，不能拿字号硬凑，那是「字跑偏」的老根因）。
-func _draw_centered(f: Font, text: String, r: Rect2, color: Color, size: int) -> void:
-	if text == "":
-		return
-	var w := f.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x
-	var baseline := r.position.y + (r.size.y + f.get_ascent(size) - f.get_descent(size)) * 0.5
-	_unit_avatar.draw_string(f, Vector2(r.position.x + (r.size.x - w) * 0.5, baseline), text,
-		HORIZONTAL_ALIGNMENT_LEFT, -1, size, color)
+## 在这个矩形里居中画字已经交给 view/icon_badge.gd（三处图标共用同一套基线算法）。
+## 这里只保留「按方框量字号」这一段 —— 72×72 的头像要尽量填满，不能写死字号。
 
 
 func set_unit_avatar_text(text: String) -> void:
@@ -711,17 +580,6 @@ func set_unit_avatar_hp(ratio: float, show: bool) -> void:
 		_unit_avatar.queue_redraw()
 
 
-## 右栏头像**背景板**的士气：`show=false`（区划 / 建筑 / 没选中）→ 用素色。
-func set_unit_avatar_morale(ratio: float, show: bool) -> void:
-	var r := clampf(ratio, 0.0, 1.0)
-	if _avatar_morale_visible == show and is_equal_approx(_avatar_morale_ratio, r):
-		return
-	_avatar_morale_ratio = r
-	_avatar_morale_visible = show
-	if _unit_avatar != null:
-		_unit_avatar.queue_redraw()
-
-
 ## 头像那一块画过几帧（测试读它：确认 `_draw` 真的跑过）
 func avatar_draw_count() -> int:
 	return _avatar_draws
@@ -732,43 +590,29 @@ func avatar_bar_draw_count() -> int:
 	return _avatar_bar_draws
 
 
-func _draw_buff_box(b: Label) -> void:
-	var r := Rect2(Vector2.ZERO, b.size)
-	b.draw_rect(r, UiStyleRes.bg_empty(), true)
-	b.draw_rect(r, UiStyleRes.line_soft(), false, 1.0)
-
-
 # ------------------------------------------------------------------
 # 给测试用的小接口
 # ------------------------------------------------------------------
 
-## 右栏数值区的正文：两栏时**合回**「左栏 + \t + 右栏」的样子
-## （文案对不对的断言都在这个出口上；两栏各自的内容用下面两个读口）
+## 右栏两列表格的文本：两列**合回**「左 \t 右」的样子
+## （文案对不对的断言都在这个出口上；两列各自的内容用下面两个读口）。
 func detail_text() -> String:
-	if _body == null:
-		return ""
-	if _body_right == null or not _body_right.visible:
-		return _body.text
-	var left: PackedStringArray = _body.text.split("\n")
-	var right: PackedStringArray = _body_right.text.split("\n")
-	var out: Array[String] = []
-	for i in maxi(left.size(), right.size()):
-		var l: String = String(left[i]) if i < left.size() else ""
-		var r: String = String(right[i]) if i < right.size() else ""
-		out.append("%s\t%s" % [l, r] if r != "" else l)
-	return "\n".join(out)
+	return _rows.text() if _rows != null else ""
 
 
-## 正文**左栏**的实际文本（测试用它按真实字体量宽度）
+## 正文**左列**的实际文本
 func detail_left_text() -> String:
-	return _body.text if _body != null else ""
+	return _rows.left_text() if _rows != null else ""
 
 
-## 正文**右栏**的实际文本（没有两栏文本时是空串）
+## 正文**右列**的实际文本
 func detail_right_text() -> String:
-	if _body_right == null or not _body_right.visible:
-		return ""
-	return _body_right.text
+	return _rows.right_text() if _rows != null else ""
+
+
+## 两列表格控件（测试读行数 / 字号 / 画帧）
+func detail_rows_control() -> Control:
+	return _rows
 
 
 ## 右栏单位名称
@@ -794,15 +638,20 @@ func notice_text() -> String:
 	return _notice.text if _notice != null else ""
 
 
+## 动态 buff 槽位控件（测试读条目 / 方块位置）
+func buff_bar_control() -> Control:
+	return _buff_bar
+
+
 func buff_count() -> int:
-	return _buffs.size()
+	return _buff_bar.count() if _buff_bar != null else 0
 
 
 # ------------------------------------------------------------------
-# 手机端自适应：给测试读「右栏当前摆成什么样」
+# 给测试读「右栏当前摆成什么样」
 # ------------------------------------------------------------------
 
-## 右栏控件（它的实时宽度是自适应的输入）
+## 右栏控件（固定 603 宽）
 func right_column_control() -> Control:
 	return _right
 

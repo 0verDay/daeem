@@ -1,29 +1,30 @@
-## unit_roster.gd —— 详细信息左栏**上半**：左上那一格（当前展开 / 唯一选中的部队的将领）
+## unit_roster.gd —— 详细信息左栏**上半**：左上那一格（当前聚焦 / 唯一选中的部队或建筑）
 ##
-## ★★ 第四轮改版（照新参考图逐像素重量的）：这一段**只剩一个格子**了 ——
-##   参考图实测：x 415..454 一个 40×40 方框，它右边是「将领名称 1/11」那一行字。
-##   面板左栏总共 1 + 3×3 = 10 格，下面那 9 格由 view/troop_grid.gd 画：
-##     · 选中多支部队时 = 其余部队的将领（点一格换展开哪一支）；
-##     · 只选中一支部队时 = 这支部队的单位（点一格切右栏到那个单位）；
-##     · **选中建筑时 = 主选中（右栏正在显示）的那一个建筑**（其余建筑在下面 9 格里）。
-##   ⇒ 所以这里**不再有那排单位小方块、也没有滚轮**（方块搬进下面的网格里了，
-##     见 view/troop_grid.gd 的 MODE_UNITS / MODE_BUILDINGS）。
+## ★★ 本版按需求改成「**部队图标 = 序号 + 士气背景**」：
+##   · 选中部队时，这一格不再画将领名字的首字，而是写**部队序号**
+##     （1..9、第 10 支写 0，与右侧部队列表同一口径），背后是士气填充
+##     （view/morale_fill.gd：自下而上、越低越矮、绿→红）；
+##   · 选中建筑时，这一格仍画建筑名的首字，**没有纯色背景填充**（只有图标 + 血条）；
+##   · 右边那两行字（名字 / 编制）保留。
 ##
 ## ★ 纯表现：只读 `world.units` 与单位上的渲染标志（selected / target / hp），
-##   从不写任何逻辑状态。分组与「展开哪一支」由 hud/detail_panel 决定。
+##   从不写任何逻辑状态。分组与「聚焦哪一支」由 hud/detail_panel 决定。
 extends Control
 
 const UiLayoutRes = preload("res://view/ui_layout.gd")
 const UiStyleRes = preload("res://view/ui_style.gd")
+const IconBadgeRes = preload("res://view/icon_badge.gd")
 
 var world = null
 ## 中文字体（Godot 默认字体没有 CJK 字形 —— 不传就会画成方框）。
 var font: Font = null
 
-## 当前展开的那支部队：{"leader": 队长单位或 null, "number": 部队编号(0=没编号), "units": [...]}
+## 当前聚焦的那支部队：{"leader": 队长单位或 null, "number": 部队编号(0=没编号), "units": [...]}
 var _troop: Dictionary = {}
 ## 这一格现在画的内容（**通用**：部队 / 建筑都由外面组装成这个字典递进来）：
-##   {"short": 方框里的短字, "name": 第一行, "sub": 第二行, "highlight": 要不要点亮描边}
+##   {"kind": "troop"/"building", "icon": 方块里的字, "name": 第一行, "sub": 第二行,
+##    "morale": 士气比例(只有部队用), "hp": 血量比例, "show_hp": 画不画血条,
+##    "highlight": 要不要点亮描边}
 ## 空字典 = 这一格收起来。
 var _entry: Dictionary = {}
 ## 格子里右边那行小字（「将领名称」——参考图上写的就是这个，不是将领真名）
@@ -47,9 +48,8 @@ func setup(p_world, p_font: Font = null) -> void:
 # 刷新（每帧由 detail_panel 喂）
 # ------------------------------------------------------------------
 
-## @param troop null = 没有展开任何部队（整块收起来）
-## @param leader_name_text 格子右边那行小字（手玩原话：参考图上写的就是「将领名称」，
-##        所以 hud 传的是这个固定文案，而不是将领的真名）
+## @param troop null = 没有聚焦任何部队（整块收起来）
+## @param leader_name_text 拿不到将领真名时的兜底文案（参考图上写的就是「将领名称」）。
 func set_troop(troop, leader_name_text: String = "") -> void:
 	_troop = {} if troop == null else troop
 	_label_text = leader_name_text
@@ -57,12 +57,34 @@ func set_troop(troop, leader_name_text: String = "") -> void:
 	if l == null:
 		set_entry(null)
 		return
+	# ★★ 部队图标 = **序号**（1..9、第 10 支写 0）；拿不到编号时才退回将领首字。
+	var icon := IconBadgeRes.troop_number_text(int(_troop.get("number", 0)))
+	if icon == "":
+		icon = short_name(l)
 	set_entry({
-		"short": short_name(l),
+		"kind": "troop",
+		"icon": icon,
 		"name": label_text(),
 		"sub": _troop_count_text(),
+		"morale": _leader_morale_ratio(l),
+		"hp": _leader_hp_ratio(l),
+		"show_hp": true,
 		"highlight": bool(l.selected),
 	})
+
+
+## 队长当前士气比例（没有 morale_ratio 的老对象 → 满士气）。
+func _leader_morale_ratio(l) -> float:
+	if l != null and l.has_method("morale_ratio"):
+		return float(l.morale_ratio())
+	return 1.0
+
+
+## 队长当前血量比例（没有 hp_ratio 的老对象 → 满血）。
+func _leader_hp_ratio(l) -> float:
+	if l != null and l.has_method("hp_ratio"):
+		return float(l.hp_ratio())
+	return 1.0
 
 
 ## 部队那一格的第二行：「x/y」（x = 现有单位数，y = 编制上限）。
@@ -77,7 +99,8 @@ func _troop_count_text() -> String:
 ## @param entry null / 空字典 = 这一格收起来
 func set_entry(entry) -> void:
 	_entry = {} if entry == null else (entry as Dictionary).duplicate()
-	if _entry.is_empty():
+	# ★ 建筑那一路不带着「上一支部队」的 leader / units（否则 leader() 会返回旧对象）
+	if _entry.is_empty() or String(_entry.get("kind", "")) != "troop":
 		_troop = {}
 	visible = not _entry.is_empty()
 	queue_redraw()
@@ -112,9 +135,35 @@ func count_text() -> String:
 	return String(_entry.get("sub", ""))
 
 
-## 方框里的短字（与网格里的格子同一套口径：名字首字）
+## 方框里那个字：部队 = **序号**（1..9 / 0）；建筑 = 名字首字。
+func icon_text() -> String:
+	return String(_entry.get("icon", ""))
+
+
+## 这一格现在是部队还是建筑（""= 空）
+func kind() -> String:
+	return String(_entry.get("kind", ""))
+
+
+## 部队图标的士气比例（建筑 / 空 → 1.0）
+func morale_ratio() -> float:
+	return float(_entry.get("morale", 1.0))
+
+
+## 图标底部血条的填充比例（没有血条时也返回 1.0）
+func hp_ratio() -> float:
+	return float(_entry.get("hp", 1.0))
+
+
+## 要不要画血条
+func shows_hp() -> bool:
+	return bool(_entry.get("show_hp", false))
+
+
+## 已废弃的旧名：保留成 `icon_text()` 的别名，免得外部调用点突然炸掉。
+## ⚠️ 语义已经变了：部队现在给的是**序号**，不再是将领名字首字。
 func leader_short() -> String:
-	return String(_entry.get("short", ""))
+	return icon_text()
 
 
 ## 任意一个单位在这套 UI 里的短字（网格画单位格时也从这里取，只此一处口径）：
@@ -143,25 +192,19 @@ func _draw() -> void:
 	_draw_leader_cell(f)
 
 
-## 左边那一格：40×40 方框 + 右边**两行**字（将领真名 / x÷y）。
+## 左边那一格：40×40 图标 + 右边**两行**字（名字 / x÷y）。
 ##
-## ★ 参考图实测：方框 x 415..454、y 860..899；右边第一行 y 885..899、第二行 y 902..911。
-## ⇒ 本工程把两行作为一块、与 40 高的方框**垂直居中**（手玩原话：「对齐其对应左侧头像居中」）。
+## ★ 图标本身交给 view/icon_badge.gd 统一画：
+##   部队 = 序号 + 士气填充；建筑 = 首字、无填充。两者都带底部血条。
 func _draw_leader_cell(f: Font) -> void:
 	if _entry.is_empty():
 		return
 	var av := UiLayoutRes.roster_cell_avatar_rect()
-	# ★★ 背景板 = 士气色（绿 → 红）；左上这一格是**将领格**，所以走较实的 alpha（strong）。
-	#    建筑那一路（set_entry）没有士气 → 保持原来的素色。
-	#    （顶边 / 高亮描边那两行不动：士气只改**底**，不改边框语义。）
-	var l = leader()
-	if l != null and l.has_method("morale_ratio"):
-		draw_rect(av, UiStyleRes.morale_plate(float(l.morale_ratio()), true), true)
-	else:
-		draw_rect(av, UiStyleRes.bg_pressed(), true)
-	draw_rect(av, UiStyleRes.accent() if bool(_entry.get("highlight", false)) else UiStyleRes.line(),
-		false, 1.0)
-	_draw_centered(f, leader_short(), av, UiStyleRes.text(), UiStyleRes.FS_BODY)
+	var border: Color = UiStyleRes.accent() if bool(_entry.get("highlight", false)) \
+		else UiStyleRes.line()
+	IconBadgeRes.draw(self, f, av, kind(), icon_text(),
+		morale_ratio(), hp_ratio(), shows_hp(),
+		UiStyleRes.FS_TITLE, border, 1.0)
 	# 两行都用 FS_SMALL（13 号字、汉字约 15px 高）—— 与下面 9 个格子同一套字号。
 	draw_string(f, Vector2(UiLayoutRes.ROSTER_CELL_TEXT_X, UiLayoutRes.ROSTER_ID_Y),
 		_clip_text(f, leader_name(), UiLayoutRes.ROSTER_ID_W, UiStyleRes.FS_SMALL),
@@ -206,13 +249,3 @@ func _first_char(u, fallback: String) -> String:
 		return ""
 	var n := String(u.name)
 	return n.substr(0, 1) if n.length() > 0 else fallback
-
-
-## 在一个矩形里居中画一行字（draw_string 的 pos 是**基线**）
-func _draw_centered(f: Font, text: String, r: Rect2, color: Color, size: int) -> void:
-	if text == "":
-		return
-	var w := f.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x
-	var baseline := r.position.y + r.size.y * 0.5 + float(size) * 0.5 - 2.0
-	draw_string(f, Vector2(r.position.x + (r.size.x - w) * 0.5, baseline), text,
-		HORIZONTAL_ALIGNMENT_LEFT, -1, size, color)
