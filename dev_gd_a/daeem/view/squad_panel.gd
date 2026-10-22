@@ -8,11 +8,20 @@
 ##   · 不足 10 支队伍的空槽显示「…」并置灰、**点了不做任何事**
 ##   · 每条标签 = 数字（1..9，第 10 个写 0）+ 将领名字 + 「当前编制/编制上限」
 ##   · 当前编制 = 队长 + 附属兵；上限 = cfg.general_cap_at(该将领序号)，默认 11
-##   · 点一条 = 选中整队，**镜头不动**
-##   · 悬停 / 选中：金色泛光从最右竖线向左推进（见 view/troop_row.gd）
+##   · ★★ 点一条 = **反选**整队（需求：点击代表反选）：
+##       没选中 → 把整队**加进**当前选中；已选中 → 把整队**从选中里撤掉**。
+##       例：无选中 → 点 1 = 选中 1 → 点 2 = 选中 1+2 → 再点 1 = 只剩 2。
+##       ⇒ 点掉最后一支时选中集合为空（这是反选的正常结果，不是 bug）。
+##   · 点中的那一支同时成为详情面板「展开」的部队（发 `troop_focused`，见 HUD 的接法）
+##   · 点一条**镜头不动**（需求原话）
+##   · 悬停 / 选中：金色泛光从最右竖线向左推进（连续渐变，见 view/troop_row.gd）
 ##
 ## ★ 纯表现：只读 world 与输入层的选中状态，改选中也只走 input_controller 的接口。
 extends Control
+
+## ★ 点中某支标签后发出（1 起的部队编号，与「部队 1/2/3」同一口径）：
+##   HUD 收到后把详情面板切到这一支（`_on_troop_activated`，只改「展开哪一支」，不动选中）。
+signal troop_focused(number: int)
 
 const UiLayoutRes = preload("res://view/ui_layout.gd")
 const FactionRes = preload("res://logic/faction.gd")
@@ -135,12 +144,60 @@ func _formation_cap(leader, count: int) -> int:
 # 点击
 # ------------------------------------------------------------------
 
+## ★★ 点标签 = **反选**这一整队（需求原话：「点击代表反选」）。
+##
+## 例（需求给的例子）：无选中 → 点 1 选中 1 → 点 2 选中 1+2 → 再点 1 只剩 2。
+## 所以判据只有一条：**这一队的队长现在在不在选中集合里**。
+##   · 在  → 把整队从选中里撤掉（`_without_team`）；
+##   · 不在 → 把整队并进当前选中（**不是**替换 —— 否则按住 2 会把 1 顶掉）。
+##
+## ★ 走 `input_ctrl.select_units()` 而不是自己改 `selected_units`：那里是选中集合的
+##   唯一入口（会按队伍展开、同步 `u.selected` 渲染标志、清掉区划 / 建筑选中）。
+## ★ 只改选中，不动镜头（需求原话：「只选中，镜头不动」）。
 func _on_slot_pressed(i: int) -> void:
 	var team: Array = _teams[i] if i < _teams.size() else []
 	if team.is_empty():
 		return                        # 空槽：点了什么也不做
-	# ★ 只选中，不动镜头（需求原话：「只选中，镜头不动」）
-	input_ctrl.select_units(team)
+	var leader = team[0]
+	var was_selected: bool = input_ctrl.selected_units.has(leader)
+	var next: Array = []
+	if was_selected:
+		next = _without_team(team)
+	else:
+		next = input_ctrl.selected_units.duplicate()
+		for u in team:
+			if not next.has(u):
+				next.append(u)
+	input_ctrl.select_units(next)
+	if not was_selected:
+		# 新选中的这一支成为详情面板展开的部队（编号 = 槽位 + 1，与标签数字同源）。
+		# 反选时不发：HUD 的 `_pick_troop()` 发现「展开的那支已经不在选中里」会自己回退。
+		troop_focused.emit(i + 1)
+
+
+## 把一支队伍**整个**从当前选中里撤掉（反选的「撤」那一步）。
+##
+## ★ 为什么要按**队伍**过滤、而不是只减掉队长那个对象：
+##   选中集合是 `select_units()` 按队伍展开过的，里面除了队长还有全部亲兵；
+##   只减队长的话，剩下的亲兵在 `select_units()` 里又会 `expand_to_groups`
+##   把队长整个加回来 —— 反选看起来像没生效。
+## ★ 顺手丢掉已阵亡的旧成员：它们留在集合里同样会在展开时把队伍带回来。
+## ★ 也按 `leader_id` 兜一层：老存档 / 队长换了 id 的残兵不会被漏掉。
+func _without_team(team: Array) -> Array:
+	var leader = team[0]
+	var drop: Dictionary = {}
+	for u in team:
+		drop[u.id] = true
+	var next: Array = []
+	for u in input_ctrl.selected_units:
+		if u == null or not u.alive:
+			continue
+		if drop.has(u.id):
+			continue
+		if u.leader_id != "" and u.leader_id == leader.id:
+			continue
+		next.append(u)
+	return next
 
 
 # ------------------------------------------------------------------

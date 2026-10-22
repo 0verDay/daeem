@@ -8,6 +8,10 @@
 ##   本控件自己画，不挂 `fill_button` —— 它的渐变是竖向的，且绑定 Button.text；
 ##   这里要的是横向泛光 + 数字块 / 分隔线，自己画反而更简单、也不会影响别的按钮。
 ##
+## ★★ 泛光是**连续渐变**，不是一叠竖带（用户报「有明显分格」之后改的）：
+##   见 `_draw_glow()` —— 用顶点色多边形让 GPU 逐片元插值，与 `overlay_view_3d.gd`
+##   里「区划中心占领触发区」的内向渐变描边同一手法。
+##
 ## ★ 继承 Button 是为了保留 `pressed` 信号与 `mouse_entered/exited`，
 ##   HUD / 测试仍然可以直接 `emit_signal("pressed")`。
 extends Button
@@ -17,7 +21,13 @@ const UiStyleRes = preload("res://view/ui_style.gd")
 const ThemeRes = preload("res://view/theme.gd")
 
 const FADE_SEC := 0.18
-const GLOW_STRIPS := 14
+## ★★ 泛光的亮度参数（见 `_draw_glow()`）：
+##   · `GLOW_ALPHA` = 贴着最右金线那一端的峰值 alpha；
+##   · `GLOW_STOPS` = 亮度曲线的取样点（0 = 推进到的最左端，1 = 右缘）；
+##   · `GLOW_CURVE` = 衰减指数（>1 ⇒ 越靠左越暗得越快，观感更接近光晕而不是一层平铺）。
+const GLOW_ALPHA := 0.34
+const GLOW_STOPS := [0.0, 0.25, 0.5, 0.75, 1.0]
+const GLOW_CURVE := 1.7
 const NAME_FS := 14
 const FORM_FS := 12
 const NUM_FS := 20
@@ -197,17 +207,37 @@ func _draw() -> void:
 		HORIZONTAL_ALIGNMENT_CENTER, nr.size.x, NUM_FS, num_col)
 
 
-## 金色泛光：用 14 条竖带模拟横向渐变（右强左弱），比每像素画便宜得多。
+## 金色泛光：从最右竖线向左推进的**连续横向渐变**（右强左弱）。
+##
+## ★★ why not 「14 条竖带」：每条竖带是一块**同透明度**的矩形，带与带之间是硬边 ——
+##   屏幕上就是十几级台阶（用户报的「明显的分格」）。这里改成**顶点色多边形**
+##   （与 `overlay_view_3d.gd` 里占领触发区描边的 `draw_polygon(pts, colors)` 同一手法）：
+##   三角形内的顶点色由 GPU **逐片元插值**，颜色连续，没有台阶。
+## ★ 分段（`GLOW_STOPS`）只用来表达**非线性亮度曲线**；相邻两段在接缝处共用同一个
+##   端点颜色 ⇒ 接缝既没有色差、也没有缝（两段在 x 上首尾相接，不会叠加两层 alpha）。
+## ★ 推进动画照旧：`_glow` 0→1 时，整条渐变从右缘的 0 宽长到满宽（`span`）。
 func _draw_glow(w: float, h: float) -> void:
 	var span: float = w * _glow
-	var strip_w: float = span / float(GLOW_STRIPS)
+	if span <= 0.5:
+		return
 	var base := UiStyleRes.accent()
-	for i in GLOW_STRIPS:
-		var t: float = float(i + 1) / float(GLOW_STRIPS)   # 0..1，越靠右越亮
-		var x: float = w - span + float(i) * strip_w
-		var a: float = 0.34 * t
-		draw_rect(Rect2(x, 1.0, strip_w + 0.5, h - 2.0),
-			Color(base, a), true)
+	var x0: float = w - span
+	for i in GLOW_STOPS.size() - 1:
+		var t0: float = GLOW_STOPS[i]
+		var t1: float = GLOW_STOPS[i + 1]
+		var xa: float = x0 + span * t0
+		var xb: float = x0 + span * t1
+		var ca := Color(base, _glow_alpha_at(t0))
+		var cb := Color(base, _glow_alpha_at(t1))
+		draw_polygon(PackedVector2Array([
+			Vector2(xa, 1.0), Vector2(xb, 1.0),
+			Vector2(xb, h - 1.0), Vector2(xa, h - 1.0),
+		]), PackedColorArray([ca, cb, cb, ca]))
+
+
+## 泛光在「离右缘 t（0..1）」处的 alpha：`t = 1`（金线那一端）最亮，往左按曲线衰减到 0。
+static func _glow_alpha_at(t: float) -> float:
+	return GLOW_ALPHA * pow(clampf(t, 0.0, 1.0), GLOW_CURVE)
 
 
 ## 单行裁剪：宽度不够时截断并补「…」（与 detail_panel 的 _clip_text 同一个目的）。

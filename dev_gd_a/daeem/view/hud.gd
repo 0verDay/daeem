@@ -830,6 +830,10 @@ func _build_squad_panel() -> void:
 	squad_panel = SquadPanelRes.new()
 	_root.add_child(squad_panel)
 	squad_panel.setup(cfg, world, input_ctrl, _font)
+	# ★★ 点标签 = 反选整队（squad_panel 自己改选中）；点了谁就把**详情展开**切到谁。
+	#   复用 `_on_troop_activated`（点左栏下半将领格走的是同一条路：只改展开哪一支，
+	#   不再动选中集合）—— 于是「标签的选中逻辑」与「详情的焦点逻辑」各只有一处。
+	squad_panel.troop_focused.connect(_on_troop_activated)
 
 
 # ------------------------------------------------------------------

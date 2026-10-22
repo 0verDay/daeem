@@ -1169,6 +1169,47 @@ func _test_squad_rows(main) -> void:
 	panel.slot_button(7).emit_signal("pressed")
 	eq(main.input_ctrl.selected_units.size(), sel_before, "★ 空槽点了没有反应")
 
+	# ★★ 反选（本轮需求「点击代表反选」）：
+	#    无选中 → 点 1 = 选中 1 → 点 2 = 选中 1+2 → 再点 1 = 只剩 2 → 再点 2 = 清空。
+	main.input_ctrl.select_units([])
+	var g1 = world.unit_by_id("general-1")
+	var g2 = world.unit_by_id("general-2")
+	var team1: Array = world.group_of(g1)
+	var team2: Array = world.group_of(g2)
+	panel.slot_button(0).emit_signal("pressed")
+	eq(main.input_ctrl.selected_units.size(), team1.size(),
+		"★ 反选：点部队 1 = 选中第 1 支（%d 个）" % team1.size())
+	ok(panel.slot_active(0) and not panel.slot_active(1), "只有第 1 支高亮")
+
+	panel.slot_button(1).emit_signal("pressed")
+	eq(main.input_ctrl.selected_units.size(), team1.size() + team2.size(),
+		"★★ 反选：再点部队 2 = 两支一起选中（不是把第 1 支顶掉）")
+	ok(panel.slot_active(0) and panel.slot_active(1), "两支都高亮")
+	eq(int(main.hud._detail_troop_number), 2, "★ 点谁就展开谁（详情焦点 = 部队 2）")
+
+	panel.slot_button(0).emit_signal("pressed")
+	eq(main.input_ctrl.selected_units.size(), team2.size(),
+		"★★ 反选：再点部队 1 = 取消第 1 支，只剩第 2 支（%d 个）" % team2.size())
+	ok(not panel.slot_active(0) and panel.slot_active(1), "第 1 支取消高亮，第 2 支保持")
+	eq(String(main.input_ctrl.selected_units[0].id), String(g2.id),
+		"反选之后剩下的队长是第 2 支的将领")
+
+	# ★★ 详情焦点：点谁展开谁；**把展开的那支反选掉** → 回退到剩余部队的第一支。
+	panel.slot_button(0).emit_signal("pressed")           # 1+2，焦点 = 1
+	eq(main.input_ctrl.selected_units.size(), team1.size() + team2.size(),
+		"（前提）再点部队 1 又回到两支一起选中")
+	eq(int(main.hud._detail_troop_number), 1, "★ 点部队 1 → 详情焦点切到 1")
+	panel.slot_button(0).emit_signal("pressed")           # 反选掉 1
+	eq(main.input_ctrl.selected_units.size(), team2.size(), "（前提）反选掉 1 之后只剩 2")
+	main.hud.refresh()                                     # 让 _pick_troop 发现并回退
+	eq(int(main.hud._detail_troop_number), 2,
+		"★★ 展开的那支被反选掉 → 详情焦点回退到剩余的第一支（部队 2）")
+
+	panel.slot_button(1).emit_signal("pressed")
+	eq(main.input_ctrl.selected_units.size(), 0,
+		"★ 反选：点掉最后一支 = 清空选中（反选的正常结果）")
+	ok(not panel.slot_active(1), "清空后没有任何标签高亮")
+
 	main.input_ctrl.select_units([world.unit_by_id("general-1")])
 
 func _test_page_tabs_and_card(main, cfg) -> void:
