@@ -101,6 +101,15 @@ static func update_unit(world, cfg: ConfigRes, u: UnitRes, dt: float, idx: int =
 		u.tick_near_death(cfg, world, dt)
 		return
 
+	# ★★ 中立化单位：完全停摆（不索敌、不移动、不攻击、不反击）。
+	#    仍然可以被别人打（`is_attackable()` 不变），只是自己不再行动。
+	if u.neutralized:
+		if u.has_goal or u.moving:
+			u.halt()
+		if u.target != null or u.target_building != null:
+			u.drop_engagement()
+		return
+
 	if u.attack_cd > 0.0:
 		u.attack_cd = maxf(0.0, u.attack_cd - dt)
 	if u.attack_flash > 0.0:
@@ -215,6 +224,8 @@ static func update_unit(world, cfg: ConfigRes, u: UnitRes, dt: float, idx: int =
 static func acquire_target(world, cfg: ConfigRes, u: UnitRes, idx: int = -1) -> bool:
 	if not cfg.combat_enabled:
 		return false
+	if u.neutralized:
+		return false                       # 中立化：不再主动索敌
 	# ★★ 已经在打一个还能打的目标 ⇒ **不重新索敌**（本轮修 bug 时补上的一句）。
 	#
 	# 为什么必须有它（这是「原地抽搐」这条 bug 的**第二层**根因）：
@@ -473,6 +484,10 @@ static func update_combat(world, cfg: ConfigRes, u: UnitRes) -> void:
 		#    只有「玩家点名的那个目标」才连命令一起清掉（命令已经完成了）。
 		if u.ordered_target == t:
 			u.ordered_target = null
+		# ★★ 受击反击的目标没了 ⇒ 反击结束（程序命令下一帧会自己重新下发，
+		#    例如救援 / 巡逻；见 `unit.is_retaliating()` 的说明）。
+		if u.retaliate_target == t:
+			u.retaliate_target = null
 		u.drop_engagement()
 		return
 
@@ -558,12 +573,18 @@ static func attack_unit(world, cfg: ConfigRes, u: UnitRes, t: UnitRes) -> void:
 	u.attack_flash = 1.0
 	u.last_target = t
 	u.last_building = null
+	# ★★ 兵种特性的「对某大类伤害 +x%」（本轮新增）：近战与远程都在**这一处**乘一次，
+	#    于是「伤害 = 单位伤害 × 对目标兵种大类的倍率」只有一条口径。
+	#    · 目标按它自己的 `unit_class` 判（将领的 unit_class 来自所属兵种，见 unit.gd）；
+	#    · 没有对应特性 → `attack_multiplier_vs_class` 返回 1.0（逐位不变）；
+	#    · ⚠️ 拆建筑走 `attack_building`、不经过这里 —— 建筑没有兵种，自然不吃这条加成。
+	var damage: float = u.combat_damage(cfg) * u.attack_multiplier_vs_class(String(t.unit_class))
 	# ★★ 远程单位（长弓兵 / 远程将领）**发一枚投掷物**，伤害改到命中那一刻结算；
 	#    近战（长枪兵 / 骑手）仍是即时结算 —— 逐位不变。
 	if u.ranged:
-		ProjectileRes.spawn(world, cfg, String(u.faction), u, u.pos, t, false, u.combat_damage(cfg))
+		ProjectileRes.spawn(world, cfg, String(u.faction), u, u.pos, t, false, damage)
 	else:
-		t.take_damage(cfg, world, u.combat_damage(cfg), u)
+		t.take_damage(cfg, world, damage, u)
 
 
 ## 锁定一个建筑开始拆它（敌人 AI 用它拆挡路的城墙）。
@@ -650,6 +671,8 @@ static func update_towers(world, cfg: ConfigRes, dt: float) -> void:
 	for b in world.building_list:
 		if not b.alive:
 			continue
+		if b.neutralized:
+			continue                       # 大本营被拆后，残余建筑不再开火
 		if not b.is_attackable(cfg):
 			continue
 		if b.is_under_construction():

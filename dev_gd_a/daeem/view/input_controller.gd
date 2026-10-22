@@ -521,6 +521,8 @@ func box_select(start: Vector2, end_pos: Vector2, additive: bool = false) -> int
 ##      「脚底那个点」在不在框里 ⇒ 框住图标、锚点却在框外时**漏选**（用户报的
 ##      「框到了单个单位，有概率不会选中」就是它：概率取决于框画得多高）。
 ##      现在按**图标的屏幕矩形**判相交：框到图标任何一部分都算框到。
+##      ★★ 2026.10.22：矩形再向外扩 `cfg.box_select_pad_px` 像素（玩家反馈框选也偏紧），
+##      于是「框边贴着牌边」也算框到；这个值在 config 的 `ui.box_select_pad_px`。
 ##
 ## ⚠️ PC 那条路（`box_select`）**不改**：它画的就是世界四边形的投影，与判定本来就一致。
 ##
@@ -540,7 +542,7 @@ func box_select_screen(screen_rect: Rect2, additive: bool = false) -> int:
 			continue
 		if not FactionRes.same_side(u.faction, world.my_faction):
 			continue
-		if screen_rect.intersects(_unit_icon_screen_rect(u)):
+		if screen_rect.intersects(_unit_icon_screen_rect(u).grow(cfg.box_select_pad_px)):
 			picked.append(u)
 	if picked.is_empty():
 		var buildings := _buildings_in_screen_rect(screen_rect)
@@ -920,7 +922,8 @@ func selection_locked() -> bool:
 		if not u.alive:
 			continue
 		alive += 1
-		if not world.is_order_locked(u):
+		# ★ 只有**全都**被锁住（含中立化）才不出标记；有一个能动的就照常画。
+		if not u.neutralized and not world.is_order_locked(u):
 			return false
 	return alive > 0
 
@@ -1459,15 +1462,51 @@ func _build_name(t: String) -> String:
 ##      `cfg.cell_px` / `cfg.cell_h` 两个不同的分母（横向 / 纵向）算椭圆。
 ##
 ## ⚠️ `hit_pad` 是**像素**，所以除以格宽换成格 —— 与改造前逐位一致。
+## ★★ 2026.10.22：`hit_pad` 从 6 调到 8（玩家反馈「单位太难被选中」），
+##    并从 `cfg.num(...)` 改成**载入时算好的字段** `cfg.unit_hit_pad_px`。
+##    这里只是「脚底那一小圈」；**立牌**的更大命中区在 `_unit_click_score`。
 ##
 ## ★ 抽成函数是为了让三处拾取（任意 / 己方 / 敌方）用**同一份**口径 ——
 ##   三处各写一遍「距离怎么算」，早晚会出现「左键点得中、右键点不中」这种不对称。
 func _unit_hit_norm(u, world_grid: Vector2) -> float:
 	var rr: float = cfg.unit_radius_of(u.unit_type)
-	var pad_logical: float = cfg.num("unit.hit_pad", 6.0) / maxf(1e-6, cfg.cell_px)
+	var pad_logical: float = cfg.unit_hit_pad_px / maxf(1e-6, cfg.cell_px)
 	var d: Vector2 = world_grid - u.pos
 	var r: float = maxf(1e-6, rr + pad_logical)
 	return d.length() / r
+
+
+## ★★ 鼠标点到单位的**统一评分**（2026.10.22 新增；玩家反馈「单位太难被选中」）。
+##
+## 返回：
+##   · `≤ 1`  —— 命中了**脚底圆**（原口径，含 `unit.hit_pad`）；值越小越近。
+##   · `1~2`  —— 脚底圆没中，但点在了**立牌的屏幕矩形**上（含 `unit.pick_pad_px`）；
+##              同一片牌重叠时按离脚底的距离排（值越小越近）。
+##   · `INF`  —— 没点到。
+##
+## ★★ 为什么要有第二档：单位画的是**立牌**（从脚底向上 0.63 格），而原来的判据只有
+##    脚底那一小圈 —— 玩家点在胸口 / 头上（明明看着点在单位身上）完全没反应，
+##    这正是「太难被选中」的主因。判定改到**屏幕空间**是因为立牌是竖直的，
+##    它在世界坐标里不是一个圆（不能拿格坐标去近似）。
+## ★ 两档的优先级：圆命中永远赢过「只碰到牌」。于是两个单位叠在一起时，
+##   仍然先看谁离脚底更近 —— 与旧手感一致，不会因为牌高而抢选中后面的人。
+## ⚠️ 没有投影（无头 / 2D 老路径）时没有立牌可言，只剩脚底圆那一档。
+##
+## @param click_px 鼠标点的**屏幕像素**（三个拾取函数各算一次再共享 —— 1000 个单位时
+##        不能每个候选都把同一点重新投影一遍）。
+func _unit_click_score(u, world_grid: Vector2, click_px: Vector2) -> float:
+	var d: float = _unit_hit_norm(u, world_grid)
+	if d <= 1.0:
+		return d
+	if palette == null:
+		return INF
+	# 屏幕上的立牌矩形：与框选共用同一份几何（`_unit_icon_screen_rect`），
+	# 所以「能点中」与「能框到」的范围始终一致。
+	var icon: Rect2 = _unit_icon_screen_rect(u).grow(cfg.unit_pick_pad_px)
+	if not icon.has_point(click_px):
+		return INF
+	# +1 保证所有「牌命中」排在所有「圆命中」之后；再用脚底距离分出远近。
+	return 1.0 + minf(1.0, u.pos.distance_to(world_grid))
 
 
 ## ★★ 本轮新增（需求：玩家可以选中敌对单位）：左键那条路现在既要能点自己的兵，
@@ -1488,6 +1527,8 @@ func _unit_hit_norm(u, world_grid: Vector2) -> float:
 func _pick_any_unit_at(world_pos: Vector2) -> Variant:
 	var best = null
 	var best_d := INF
+	# ★ 投影只算一次：1000 个单位时不必每个候选都把同一点重投一遍（点击时的性能护栏）
+	var click_px: Vector2 = palette.to_px(world_pos) if palette != null else Vector2.ZERO
 	for u in world.units:
 		if not u.alive:
 			continue
@@ -1498,8 +1539,8 @@ func _pick_any_unit_at(world_pos: Vector2) -> Variant:
 				continue
 			if not _foe_unit_visible(u):
 				continue
-		var d: float = _unit_hit_norm(u, world_pos)
-		if d <= 1.0 and d < best_d:
+		var d: float = _unit_click_score(u, world_pos, click_px)
+		if d < INF and d < best_d:
 			best_d = d
 			best = u
 	return best
@@ -1515,13 +1556,15 @@ func _pick_any_unit_at(world_pos: Vector2) -> Variant:
 func _pick_unit_at(world_pos: Vector2) -> Variant:
 	var best = null
 	var best_d := INF
+	# ★ 投影只算一次：1000 个单位时不必每个候选都把同一点重投一遍（点击时的性能护栏）
+	var click_px: Vector2 = palette.to_px(world_pos) if palette != null else Vector2.ZERO
 	for u in world.units:
 		if not u.alive:
 			continue
 		if not FactionRes.same_side(u.faction, world.my_faction):
 			continue
-		var d: float = _unit_hit_norm(u, world_pos)
-		if d <= 1.0 and d < best_d:
+		var d: float = _unit_click_score(u, world_pos, click_px)
+		if d < INF and d < best_d:
 			best_d = d
 			best = u
 	return best
@@ -1538,6 +1581,8 @@ func _pick_unit_at(world_pos: Vector2) -> Variant:
 func _pick_foe_unit_at(world_pos: Vector2) -> Variant:
 	var best = null
 	var best_d := INF
+	# ★ 投影只算一次：1000 个单位时不必每个候选都把同一点重投一遍（点击时的性能护栏）
+	var click_px: Vector2 = palette.to_px(world_pos) if palette != null else Vector2.ZERO
 	for u in world.units:
 		if not u.alive:
 			continue
@@ -1554,8 +1599,8 @@ func _pick_foe_unit_at(world_pos: Vector2) -> Variant:
 			continue
 		if not _foe_unit_visible(u):
 			continue
-		var d: float = _unit_hit_norm(u, world_pos)
-		if d <= 1.0 and d < best_d:
+		var d: float = _unit_click_score(u, world_pos, click_px)
+		if d < INF and d < best_d:
 			best_d = d
 			best = u
 	return best

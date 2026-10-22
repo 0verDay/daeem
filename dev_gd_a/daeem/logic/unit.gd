@@ -91,6 +91,22 @@ var stat_overrides: Dictionary = {}
 ##    伤害判定在每帧每单位的路径上，创建时算好、之后只读，比每次下潜 JSON 便宜。
 var unit_class: String = CLASS_INFANTRY
 var ranged: bool = false
+## ★★ 兵种特性（本轮新增；权威定义在 config.json 的 `unit.types.<id>.traits`）。
+##
+##   · `attack_bonus_vs_class` —— 打某个**兵种大类**时的伤害加成（0.25 = +25%）。
+##     键是 `unit.classes` 的 id（infantry / cavalry），空字典 = 没有攻击特性。
+##     读的地方只有一处：`combat.attack_unit`（近战与远程都先乘它）；
+##     拆建筑**不**乘（建筑没有兵种）。
+##   · `ranged_damage_reduction` —— 受到**远程伤害**时的减伤（0.25 = 少受 25%）。
+##     读的地方只有一处：`take_damage` 的第五个参数为 true 时。
+##     「远程」按**伤害来路**判：远程单位的投掷物 + 可攻击建筑的投掷物。
+##
+## ★ 为什么抄到单位身上（而不是每次查 config）：与 `unit_class` / `ranged` / `vision`
+##   同一条口径 —— 伤害判定在每帧每单位的路径上，出生时读一次表、之后只读字段。
+## ★ 为什么归**单位**而不是**将领**：将领按所属兵种取特性（见上面 `unit_type` 的说明），
+##   于是「将领 3 是骑手 ⇒ 它也有骑手那两条」自动成立，代码里没有将领特例。
+var attack_bonus_vs_class: Dictionary = {}
+var ranged_damage_reduction: float = 0.0
 ## ★★ 视野半径（**格**）—— 战争迷雾用（见 logic/fog.gd）。
 ##
 ## ★ 与 hp_max / unit_class 同一个口径：**生出来那一刻就把 config 里的数抄到身上**，
@@ -103,6 +119,10 @@ var ranged: bool = false
 var vision: float = 8.0
 var faction: String = FactionRes.DEFAULT_FACTION
 var hotkey: String = ""
+## ★★ 中立化：所属阵营的大本营被击毁后置 true。
+##   保留 faction（迷雾 / 区划归属不变），但不再接受命令、不索敌、不移动、不攻击，
+##   并由视图统一画成灰色。见 world.neutralize_faction()。
+var neutralized: bool = false
 
 ## ★ 所属队长（将领）的 id。空 = 自己就是队长（将领）或不属于任何队伍（测试敌人）。
 ##
@@ -266,6 +286,22 @@ var ordered_building = null
 ## 打完了**继续走**（见 combat.gd 的 update_unit 末尾）。
 var has_attack_move: bool = false
 var attack_move_goal: Vector2 = Vector2.ZERO
+
+## ---- ★★ 受击反击（2026.10.22）----
+## 被**其他单位**打中时，这一个单位立刻脱离当前（程序下达的）命令，转为
+## 「行军攻击」那个打它的单位 —— 见 `order_retaliate()` 与 `world.on_unit_attacked()`。
+##
+## ★ 只影响**被打中的这一个单位**，不连带整队：需求原话是「当单个单位被其他单位
+##   攻击时」。队伍里的其他人各跑各的逻辑。
+## ★ 反击**不打断玩家命令**：`player_order` 为真且命令还在执行时，
+##   `world.on_unit_attacked` 直接不触发（`has_active_player_order()`）。
+var retaliate_target = null
+## ★ 玩家命令**是否还在执行**（只由 `command_processor` 在玩家命令被接受后置真）。
+##
+## 与 `retaliate_target` 的分工：一个是「谁打了我，我要打回去」，一个是「玩家让我
+## 去哪儿、打谁」。后者优先级更高 —— 玩家明确下令之后，挨打也照旧执行。
+## ★ 它不进快照：命令是房主 / 本地输入的事，客机不跑这条逻辑（与 ordered_target 同档）。
+var player_order: bool = false
 
 ## ---- ★★ 濒死救援（本次修 bug）：队长倒下 ⇒ 附属兵持续集结到倒下点 ----
 ##
@@ -458,6 +494,11 @@ static func create(cfg: ConfigRes, p_id: String, p_name: String, tile: Vector2i,
 	u.unit_type = p_unit_type if p_unit_type != "" else cfg.unit_type_of(p_kind)
 	u.unit_class = cfg.unit_class_of(u.unit_type)
 	u.ranged = cfg.unit_is_ranged(u.unit_type)
+	# ★★ 兵种特性：与血量 / 速度一样，在出生那一刻从类型表抄到单位身上（见上面两个字段）。
+	#    ⚠️ 将领走的是同一句：`u.unit_type` 已经是它所属的兵种，所以自动继承该兵种的特性。
+	var traits: Dictionary = cfg.unit_traits_of(u.unit_type)
+	u.attack_bonus_vs_class = traits.get("attack_vs_class", {})
+	u.ranged_damage_reduction = float(traits.get("ranged_reduction", 0.0))
 	u.faction = p_faction
 	u.hotkey = p_hotkey
 	u.leader_id = p_leader_id
@@ -498,6 +539,16 @@ func is_general() -> bool:
 ## 是不是骑兵（后续「按兵种额外伤害」的标签之一）
 func is_cavalry() -> bool:
 	return unit_class == CLASS_CAVALRY
+
+
+## ★★ 打某个**兵种大类**时的伤害倍率（没有对应特性 = 1.0）。
+##
+## @param cls 目标的 `unit_class`（infantry / cavalry）。空串（比如建筑）一律 1.0。
+## ★ 只读出生时抄好的 `attack_bonus_vs_class`，不查 config —— 每帧每次开火都要算。
+func attack_multiplier_vs_class(cls: String) -> float:
+	if cls == "" or attack_bonus_vs_class.is_empty():
+		return 1.0
+	return 1.0 + float(attack_bonus_vs_class.get(cls, 0.0))
 
 
 ## 是否正在等待复活（单机永远 false —— 死亡即离场）
@@ -882,10 +933,10 @@ func _tile_path(world, cfg: ConfigRes, from: Vector2i, to: Vector2i) -> Variant:
 ## ★ `offset`（本轮新增）：落点相对点击点 field_tile 的偏移。非零时 → move_to 走
 ##   「平移路线」（保持阵型）；为零时 → 走旧的「汇聚 + 散开」（行军攻击用）。
 func order_move_via_field(world, cfg: ConfigRes, dest_pt: Vector2, field_tile: Vector2i,
-		offset: Vector2 = Vector2.ZERO) -> bool:
+		offset: Vector2 = Vector2.ZERO, player: bool = false) -> bool:
 	_field_tile = field_tile
 	_field_offset = offset
-	var ok := order_move(world, cfg, dest_pt)
+	var ok := order_move(world, cfg, dest_pt, player)
 	_field_tile = Vector2i(-1, -1)
 	_field_offset = Vector2.ZERO
 	return ok
@@ -893,9 +944,19 @@ func order_move_via_field(world, cfg: ConfigRes, dest_pt: Vector2, field_tile: V
 
 ## 玩家 / AI 下达移动命令（点到哪走到哪）。
 ## 会清除当前交战目标：明确的移动命令优先于警戒。
-func order_move(world, cfg: ConfigRes, world_pt: Vector2) -> bool:
+##
+## @param player true = **玩家**命令（由 command_processor 传 true）。
+##        ★ 程序命令（巡逻 / 救援 / 受击反击）在 `is_retaliating()` 期间会被拒绝 ——
+##          受击反击必须能打断它们（需求），而玩家命令始终可以覆盖反击。
+func order_move(world, cfg: ConfigRes, world_pt: Vector2, player: bool = false) -> bool:
+	if neutralized:
+		return false                       # 大本营没了：不再接受任何命令
+	if is_retaliating() and not player:
+		return false
 	var ok := move_to(world, cfg, world_pt)
 	if ok:
+		retaliate_target = null           # 新命令（玩家或程序）作废这次反击
+		player_order = false              # 由 command_processor 在玩家命令后置真
 		clear_target()
 		# ★★ 顺手清掉「刚因为追击上限放弃过」的冷却：那是**自动索敌**的节流，
 		#    玩家明确下了命令之后，它就只该管「别再自己追出去」，不该拦住新命令。
@@ -934,7 +995,11 @@ func clear_chase() -> void:
 ## ★★ 判据走 `same_side_for_attack`（同阵营 **或盟友**）：加了阵营归属之后，
 ##    玩家**手动点名**也不该能指挥一方去打它的盟友 ——
 ##    否则「友善」只挡住了自动索敌，右键一点照样能挑起来（那不是需求要的东西）。
-func order_attack_unit(world, cfg: ConfigRes, enemy) -> bool:
+func order_attack_unit(world, cfg: ConfigRes, enemy, player: bool = false) -> bool:
+	if neutralized:
+		return false
+	if is_retaliating() and not player:
+		return false
 	# ★★ 濒死的将领**不能被选为攻击对象**（需求原话：「无论是行军攻击还是
 	#    指定攻击都不行」）——所以点名这一路也要挡住。
 	#    ⚠️ 用 `is_attackable()` 而不是 `alive`：濒死者是 alive 的，用 alive 判会漏掉。
@@ -945,6 +1010,8 @@ func order_attack_unit(world, cfg: ConfigRes, enemy) -> bool:
 	if FactionRes.same_side_for_attack(enemy.faction, faction):
 		return false
 	drop_engagement()
+	retaliate_target = null
+	player_order = false
 	leash_cd = 0.0             # 新命令：清掉自动索敌的节流（见 config.leash_release_cd）
 	target = enemy
 	ordered_target = enemy
@@ -957,7 +1024,11 @@ func order_attack_unit(world, cfg: ConfigRes, enemy) -> bool:
 ## 优先攻击某个敌对建筑（右键单击建筑）。
 ##
 ## ★ 判据同样走 `same_side_for_attack`（见 `order_attack_unit` 的说明）。
-func order_attack_building(world, cfg: ConfigRes, b) -> bool:
+func order_attack_building(world, cfg: ConfigRes, b, player: bool = false) -> bool:
+	if neutralized:
+		return false
+	if is_retaliating() and not player:
+		return false
 	if b == null or not b.alive:
 		return false
 	if FactionRes.same_side_for_attack(b.owner, faction):
@@ -968,6 +1039,8 @@ func order_attack_building(world, cfg: ConfigRes, b) -> bool:
 	if b.has_method("is_invulnerable") and b.is_invulnerable():
 		return false
 	drop_engagement()
+	retaliate_target = null
+	player_order = false
 	leash_cd = 0.0             # 新命令：清掉自动索敌的节流（见 config.leash_release_cd）
 	target_building = b
 	ordered_building = b
@@ -979,11 +1052,17 @@ func order_attack_building(world, cfg: ConfigRes, b) -> bool:
 
 ## 行军攻击（SC2 的 A 键）：走到 world_pt，路上遇到敌人就停下来打，打完了继续走。
 ## 与「普通移动」的区别就在「路上会打」—— 普通移动是明确命令，遇敌不停。
-func order_attack_move(world, cfg: ConfigRes, world_pt: Vector2) -> bool:
+func order_attack_move(world, cfg: ConfigRes, world_pt: Vector2, player: bool = false) -> bool:
+	if neutralized:
+		return false
+	if is_retaliating() and not player:
+		return false
 	var ok := move_to(world, cfg, world_pt)
 	if not ok:
 		return false
 	drop_engagement()          # 先脱离当前交战：新命令优先
+	retaliate_target = null
+	player_order = false
 	leash_cd = 0.0             # 新命令：清掉自动索敌的节流（见 config.leash_release_cd）
 	ordered_target = null
 	ordered_building = null
@@ -997,9 +1076,10 @@ func order_attack_move(world, cfg: ConfigRes, world_pt: Vector2) -> bool:
 ## ⚠️ attack_move_goal 必须是全队目标点而不是槽位 —— 「到点了就算完成」那条判定
 ##    用的是它（见 combat.update_unit），写槽位的话每个单位都要走到自己那格里才算完，
 ##    队尾的人会因为差半格而一直保持行军攻击状态。
-func order_attack_move_at(world, cfg: ConfigRes, dest_pt: Vector2, field_tile: Vector2i) -> bool:
+func order_attack_move_at(world, cfg: ConfigRes, dest_pt: Vector2, field_tile: Vector2i,
+		player: bool = false) -> bool:
 	_field_tile = field_tile
-	var ok := order_attack_move(world, cfg, dest_pt)
+	var ok := order_attack_move(world, cfg, dest_pt, player)
 	_field_tile = Vector2i(-1, -1)
 	if ok:
 		attack_move_goal = GridRes.center_of(field_tile)
@@ -1150,6 +1230,32 @@ func stop() -> void:
 	clear_settled_spot()
 
 
+## ★★ 变成中立单位：清掉一切命令与 AI 状态，之后只会站着挨打。
+##
+## ★ 招募队列不在这里清：那笔钱要退、区划人口要还，只有 `world` 有权威账本
+##   （见 world.neutralize_faction → _release_recruit）。
+func make_neutral() -> void:
+	neutralized = true
+	stop()
+	garrison_zone_id = -1
+	hold_position = false
+	patrol_points.clear()
+	patrol_index = 0
+	patrol_timer = 0.0
+	patrol_zone_id = -2
+	chasing = false
+	chase_anchor = Vector2.ZERO
+	chase_alert_range = 0.0
+	chase_stuck_timer = 0.0
+	chase_last_pos = Vector2.ZERO
+	returning_home = false
+	returning_home_sec = 0.0
+	rescue_leader_id = ""
+	rescue_anchor = Vector2.ZERO
+	defending_center = false
+	clear_attack_fx()
+
+
 ## 脱离当前交战目标（单位与建筑都清掉）
 func clear_target() -> void:
 	drop_engagement()
@@ -1158,6 +1264,78 @@ func clear_target() -> void:
 	ordered_target = null
 	ordered_building = null
 	has_attack_move = false
+	# 受击反击也属于「被打断的命令」：停止 / 新命令之后一并作废。
+	retaliate_target = null
+	player_order = false
+
+
+## ★★ 正在受击反击吗（反击目标还活着且能打）。
+##
+## ★ 目标死亡 / 进濒死 / 离场时**自动失效**，不需要谁去清 —— 程序命令随即
+##   恢复（救援 / 巡逻会自己重新下发），这正是「反击结束 → 回到原来的事」。
+func is_retaliating() -> bool:
+	return retaliate_target != null and is_instance_valid(retaliate_target) \
+		and retaliate_target.is_attackable()
+
+
+## ★★ 玩家命令是否**还在执行**（受击反击不打断玩家命令的判据）。
+##
+## 真正算「还在执行」的只有四种：
+##   · 玩家点名的单位目标还活着；  · 玩家点名的建筑还没倒；
+##   · 行军攻击还没到点；          · 移动还没到（还在走 / 还有目标点）。
+## 其余情况（走完了 / 目标死了 / 被 stop 清了）⇒ 把标记清掉并返回 false：
+## 这时玩家命令已经完成，单位重新变成「可以受击反击」。
+func has_active_player_order() -> bool:
+	if not player_order:
+		return false
+	if has_attack_move:
+		return true
+	if ordered_target != null and is_instance_valid(ordered_target) \
+			and ordered_target.is_attackable():
+		return true
+	if ordered_building != null and is_instance_valid(ordered_building) \
+			and ordered_building.alive:
+		return true
+	if moving or has_goal:
+		return true
+	player_order = false
+	return false
+
+
+## ★★ 受击反击：被一个**敌方单位**打中时，立刻转为打它。
+##
+## 与玩家「右键点敌人」的区别（为什么不用 `order_attack_unit`）：
+##   · 不写 `ordered_target` —— 那不是玩家点名，不该在命令层被当成玩家命令
+##     （否则它会挡掉后续的程序命令，还会被当成「不受追击上限约束」的玩家命令）；
+##   · 清掉当前所有程序命令（巡逻 / 救援 / 招募期的待命）—— 需求原话
+##     「此受击反击会阻断程序下达的命令」；
+##   · `anchor` 由 `drop_engagement()` 置空 ⇒ 不受追击上限约束（要一路打到攻击者身上）。
+##
+## ★ 如果这个单位已经在打同一个目标，直接返回 true（不反复重置路径）。
+## ★ 玩家命令在执行时根本不会走到这里（见 `world.on_unit_attacked`）。
+func order_retaliate(world, cfg: ConfigRes, enemy) -> bool:
+	if enemy == null or not enemy.is_attackable():
+		return false
+	if FactionRes.same_side_for_attack(String(enemy.faction), faction):
+		return false
+	if retaliate_target == enemy and target == enemy:
+		return true
+	drop_engagement()
+	leash_cd = 0.0
+	target = enemy
+	retaliate_target = enemy
+	# ★ 如果「点名目标」正好就是这个攻击者，**保留**它：招募被打断时
+	#   `world._interrupt_training_if_threatened()` 刚把威胁写进 `ordered_target`，
+	#   这里再清掉会让那条既有语义（打断那一帧就点名威胁）失效（实测 test_recruit_queue）。
+	#   它仍然**不算玩家命令**（`player_order` 是 false），所以程序命令照样被反击挡住。
+	if ordered_target != enemy:
+		ordered_target = null
+	ordered_building = null
+	has_attack_move = false
+	player_order = false
+	clear_settled_spot()
+	reset_repath()
+	return true
 
 
 ## ★ 换目标时调用：清掉重寻路的限流，并把「上次算路时目标在哪」推回哨兵值，
@@ -1406,18 +1584,31 @@ func clear_settled_spot() -> void:
 ##    （判定在 `world.enter_near_death` 里，因为「旗下有谁」要看整个 world.units）；
 ##    已经濒死的单位**免疫一切伤害**，所以第一句直接挡掉（`is_attackable()`）。
 ##
+## @param incoming_ranged 这一击是不是**远程伤害**（投掷物）—— 兵种特性的「对远程减伤」
+##        只在这一条路上生效，见下面那段减伤口径。
 ## @return 本击之后这个单位**还能不能被当作在场单位**（true = 还活着 / 或已濒死）
-func take_damage(cfg: ConfigRes, world, amount: float, _source = null) -> bool:
+func take_damage(cfg: ConfigRes, world, amount: float, _source = null,
+		incoming_ranged: bool = false) -> bool:
 	# ★ 濒死 = 无敌：需求原话「在将领濒死期间，该将领无法被选中为攻击对象且不会受到伤害」。
 	#   ⚠️ 这一句同时兜住了「读条中被打断」：读条期间仍然免疫（用户拍板）。
 	if downed:
 		return true
 	hit_flash = 1.0          # ★ 受击反应：闪白 + 左右振动（视图读它，逻辑不用）
-	# ★★ 士气档位影响**受到的伤害**：近战（combat）与远程（projectile）两条路都走这个收口，
-	#    所以一处生效即「远近通吃」。高士气 ≥ high_tier = 免伤；低士气 ≤ vuln_tier（含 25/0 各档）= 易伤。
+	# ★★ 减伤口径（本轮改为「先相加、再封顶」，用户拍板）：
+	#     · 士气高位免伤（morale.damage_reduction）+ 兵种特性「对远程减伤」**相加**；
+	#     · 相加后按 `cfg.damage_reduction_cap` 夹取（默认 0.75：50% + 25% 正好到顶）；
+	#     · 易伤（士气低位）**不参与**这个加法，而是减伤之后再乘一次（×1+vulnerability）——
+	#       两者本来就互斥（高位阈值 100 / 低位阈值 50，一个单位不可能同时满足）。
+	# ★ 近战（combat.attack_unit）与远程（projectile._impact）两条路都走这个收口，
+	#   区别只是远程那条传 `incoming_ranged = true`。
+	var reduction := 0.0
 	if morale >= cfg.morale_high_tier:
-		amount *= 1.0 - cfg.morale_damage_reduction
-	elif morale <= cfg.morale_vuln_tier:
+		reduction += cfg.morale_damage_reduction
+	if incoming_ranged:
+		reduction += ranged_damage_reduction
+	if reduction > 0.0:
+		amount *= 1.0 - clampf(reduction, 0.0, cfg.damage_reduction_cap)
+	if morale <= cfg.morale_vuln_tier:
 		amount *= 1.0 + cfg.morale_vulnerability
 	hp = maxf(0.0, hp - amount)
 	if hp <= 0.0 and alive:
@@ -1429,6 +1620,14 @@ func take_damage(cfg: ConfigRes, world, amount: float, _source = null) -> bool:
 				and world.enter_near_death(self):
 			return alive
 		_die(cfg, world, _source)
+	# ★★ 受击反击（2026.10.22）：这一击没打死它 ⇒ 立刻转为打那个**单位**攻击者。
+	#
+	# ⚠️ 放在扣血 / 死亡处理**之后**：死了就不该再下命令；濒死的将领在上面那一支
+	#    已经 return（它无敌且不能行动）。
+	# ⚠️ 只认单位来源：`world.on_unit_attacked()` 内部用 `is_downed()` 判掉建筑，
+	#    需求原话是「被其他**单位**攻击」——箭塔打过来不触发反击。
+	if alive and not downed and world != null and world.has_method("on_unit_attacked"):
+		world.on_unit_attacked(self, _source)
 	return alive
 
 

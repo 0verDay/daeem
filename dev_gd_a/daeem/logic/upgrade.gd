@@ -64,6 +64,8 @@ static func can_upgrade(world, b, faction: String) -> String:
 		return "type"
 	if not world.cfg.has_upgrade(b.type):
 		return "type"
+	if b.neutralized:
+		return "neutralized"          # 大本营没了：残余建筑停止升级
 	if not world.accepts_owner(String(b.owner), faction):
 		return "owner"
 	if b.is_upgrading():

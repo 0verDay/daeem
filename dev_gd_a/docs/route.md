@@ -5740,3 +5740,240 @@ debug keystore。明文 `ws://` 若被 Android 明文流量策略拦截，需要
 - **还没做自适应频率**：500+ 单位时房主每两帧有 10 ms 级序列化尖峰；可以先保留
   30Hz，若真机出现掉帧，再按单位数降到 20Hz（或把序列化拆帧）。
 - **客机插值仍未做**：30Hz 减少了台阶，但视觉平滑仍不如 20Hz + 插值；插值仍是可选优化。
+
+## 五十四、兵种特性：长枪兵 / 长弓兵 / 骑手（这一轮）
+
+需求原文（四条，且都要显示在**详细信息栏的对应位置**）：
+
+| 兵种 | 特性 | 归到哪一列 |
+|---|---|---|
+| 长枪兵 | 对骑兵伤害 +25% | 攻击 |
+| 长弓兵 | 对步兵伤害 +10% | 攻击 |
+| 骑手 | 对步兵伤害 +25% | 攻击 |
+| 骑手 | 对远程减伤 +25% | 防御 |
+
+动手前确认过四条口径：① **将领**按所属兵种继承特性（与「将领数值 = 兵种数值」同一条）；
+② 减伤与士气免伤是**加算**、再按上限封顶；③「远程」**包含**远程单位与可攻击建筑（箭塔）的投掷物；
+④ 数值写进 `data/config.json`（数据驱动），不硬编码。
+
+### 54.1 数据：只写在 `unit.types.<id>.traits`
+
+```json
+"spearman":  { "traits": { "attack_vs_class": { "cavalry": 0.25 } } },
+"longbowman":{ "traits": { "attack_vs_class": { "infantry": 0.10 } } },
+"rider":     { "traits": { "attack_vs_class": { "infantry": 0.25 },
+                           "ranged_reduction": 0.25 } }
+```
+
+- `attack_vs_class` 的键是 **`unit.classes` 的大类 id**（`infantry` / `cavalry`），值是比例；
+  只对**单位**生效（拆建筑走 `attack_building`，建筑没有兵种，自然不吃加成）。
+- `ranged_reduction` = 受到远程伤害时的减伤比例；读的地方只有 `unit.take_damage` 一处。
+- `logic/config.gd` 的 `_normalize_traits()` 在**载入时**把这张表洗成两键固定的字典：
+  写错的大类 id、非数字的值一律丢掉（不会留一条永远匹配不上的规则）；
+  单位出生时由 `unit.create` 抄到 `attack_bonus_vs_class` / `ranged_damage_reduction` 两个字段上，
+  与 `unit_class` / `ranged` / `vision` 同一条「出生算好、之后只读」的口径。
+- `combat.damage_reduction_cap`（默认 **0.75**）是**所有减伤来源相加后的上限**。
+
+### 54.2 伤害口径：攻击侧一处、受击侧一处
+
+| 侧 | 位置 | 规则 |
+|---|---|---|
+| 攻击 | `combat.attack_unit` | `damage = combat_damage × attack_multiplier_vs_class(目标.unit_class)`；近战与投掷物用的是**同一个** `damage` |
+| 受击 | `unit.take_damage(..., incoming_ranged)` | 减伤 = 士气免伤（高位）+ 对远程减伤（`incoming_ranged`），**相加后** `clampf(…, cfg.damage_reduction_cap)`；易伤不参与这个加法，仍在减伤之后乘 |
+
+- `projectile._impact` 对**单位目标**固定传 `incoming_ranged = true` —— 判据是「这一击来自投掷物」，
+  **不**按 `p.source.ranged` 判（箭塔也发投掷物，但它没有 `ranged` 字段）。
+- 于是「骑手被长弓兵射」= 长弓兵那 10% 只对步兵、对骑兵不加；骑手再减 25%。
+  「骑手被长枪兵捅」不加不减（近战不吃远程减伤）。
+
+### 54.3 详情栏（对应位置）
+
+- 左列「攻击 xx/xs」**下面**一行小字：`- 对骑兵伤害 +25%`（`hud._attack_bonus_lines`，原来恒空）。
+- 右列「防御 0」**下面**：先静态特性 `- 对远程减伤 +25%`，再士气（`hud._defense_bonus_lines`）。
+- 文案里的大类名走新加的 `cfg.class_display_name(大类 id)`。
+  ⚠️ **别**用 `cfg.unit_class_name()`：它的参数是**单位类型 id**（`"rider"`），
+  拿大类 id（`"cavalry"`）去查会兜底成步兵，整句变成「对步兵伤害」（本轮实测踩到）。
+- 行数上界：左列 3 行（血量 / 攻击 / 特性）、右列 4 行（移速 / 防御 / 特性 / 士气），
+  详情框 116 高、行高 17（6 行）装得下。
+
+### 54.4 回归
+
+- 新增 `tests/test_unit_traits.gd` **57 项**：config 解析（含写错键被洗掉）/ 单位字段 /
+  近战加成 / 远程减伤（加算、封顶、易伤）/ 投掷物装配与命中传参 / 详情栏两列文案 / 将领继承。
+- 两条旧断言随新口径更新：`test_projectile`（命中扣血 = 伤害 × 对步兵 +10%，49 项）、
+  `test_ui`（单位详情从 2 行变 3 行，1218 项）。
+- 已跑：`test_unit_types` 164、`test_logic` 280、`test_downed` 197、`test_ai` 61、
+  `test_attack_orders` 108、`test_alliance` 78、`test_zone_capture` 114、`test_retinue` 180、
+  `test_recruit_queue` 240、`test_snapshot_coop` 29、`test_session` 33、`test_unit_editor` 175、
+  `test_smoke` 123、`test_view3d` 213、`test_tech` 116 —— 全绿；
+  `tools/check-syntax.ps1` **186 个文件 ALL OK**。
+
+## 五十五、单位「点选 / 框选」范围调松（2026.10.22）
+
+玩家反馈：**单位有些太难被选中**。本轮只调**命中范围**，不动任何玩法数值。
+
+### 55.1 点击：从「脚底一小圈」改成「脚底圆 + 立牌」
+
+旧判据只有 `_unit_hit_norm`：`到脚底的距离 ≤ 单位半径 + hit_pad/cell_px`。
+单位画的是**立牌**（从脚底向上 0.63 格），点在胸口 / 头上完全没反应 —— 这是「难选中」的主因。
+
+现在 `input_controller._unit_click_score()` 给两档分数：
+
+| 档 | 判据 | 分数 |
+|---|---|---|
+| ① 脚底圆（原口径） | `_unit_hit_norm ≤ 1` | 0..1（越小越近） |
+| ② 立牌（新增） | 点在 `_unit_icon_screen_rect(u).grow(unit.pick_pad_px)` 里 | 1..2（按离脚底距离排） |
+| 没点到 | — | `INF` |
+
+- **圆命中永远赢过牌命中** ⇒ 两个单位叠在一起时仍然是「谁脚底近选谁」，旧手感不变。
+- 立牌判定在**屏幕空间**做（立牌是竖直的，世界坐标里不是圆）；没有投影时退回只有脚底圆。
+- 三处拾取（任意 / 己方 / 敌方）都改成同一个 `_unit_click_score`，不会出现「左键点得中、右键点不中」。
+
+### 55.2 框选：立牌矩形向外扩一圈
+
+`box_select_screen()` 原来判「选框 ∩ 立牌精确矩形」，现在把矩形 `grow(ui.box_select_pad_px)`：
+**框边贴着牌边也算框到**。世界坐标那条兜底路径（无投影 / 老测试）保持原样。
+
+### 55.3 数值在哪
+
+| 键 | 默认 | 含义 |
+|---|---:|---|
+| `unit.hit_pad` | 6 → **8** | 脚底圆的额外半径（**px**，载入时 / `cell_px` 换成格） |
+| `unit.pick_pad_px` | **4** | 立牌四周的点击容差（**屏幕 px**） |
+| `ui.box_select_pad_px` | **5** | 框选时立牌四周的容差（**屏幕 px**） |
+
+三个数在 `logic/config.gd` 载入时算成字段（`unit_hit_pad_px` / `unit_pick_pad_px` /
+`box_select_pad_px`），拾取路径上不再 `cfg.num("…")` 切字符串。
+调大 = 更好点 / 更好框；调太大 = 容易点到紧挨着的建筑或别的地块。
+
+### 55.4 回归
+
+- 新增 `tests/test_selection_range.gd` **21 项**：点立牌上半身、牌边容差内 / 外、
+  脚底旧判据仍在、框选贴边算选中、超出去不算、敌人立牌也能点名。
+- 已跑：`test_touch` 54、`test_fog` 156、`test_ui` 1218、`test_smoke` 123 —— 全绿；
+  `tools/check-syntax.ps1` 全部通过。
+
+## 五十六、buff 编辑器（Python 工具，2026.10.22）
+
+需求：在 `tools/` 下新建 `buff_editor/`，写一个 Python 工具，用于编辑**游戏内所有 buff 数值**；
+实现方式参考现有的 `unit_editor` / `map_editor` / `campaign_editor`。
+
+### 56.1 现状：buff 只有「士气」一条
+
+游戏里带 buff 槽位的界面只有详细信息右栏那一行（`view/buff_bar.gd`），
+而 `hud._buffs_for()` 目前只挂一条 **士气**（「士」）。它的数值全部来自
+`config.morale.*`（19 个键），另有一个共用的减伤封顶 `combat.damage_reduction_cap`
+（同时管士气免伤与骑手的「对远程减伤」）。所以本工具编辑的是这 **20 个数**，
+不发明新 buff、不改游戏代码。
+
+### 56.2 界面
+
+* 左栏：buff 列表（目前一条「士 士气」）；以后注册表加一条就自动多一行。
+* 右栏：按 **基础 / 阈值 / 生命 / 伤害 / 区划 / 战果** 六组排的表单，
+  每个数一行（名称 / 输入框 / 单位 / 说明）。
+* 下方：**悬停浮窗预览** —— 直接按 `hud._buffs_for` 的文案口径拼出来，
+  改一个数立刻能看到游戏里那句话会变成什么；再下面是跨字段提示（黄色，不阻止保存）。
+* 交互沿用单位编辑器：Enter / 点别处生效、Esc 恢复、打错字不写坏数据、
+  超范围夹取并说明、Ctrl+S / Ctrl+Z / Ctrl+Y / F5。
+
+百分数字段（免伤 / 易伤 / 封顶）界面显示与输入都是**百分数**（`50%`），
+写回 `config.json` 是小数（`0.5`），与游戏读取口径一致 —— 不需要在输入框里数小数点。
+
+### 56.3 数据安全
+
+`configfile.py` 与 `unit_editor/configfile.py` 是**同一份拷贝**（三个 Python 编辑器刻意
+各自独立、双击即跑）。保存仍然是「只改被改的那几个字符」：没改就逐字节原样，
+改一个数只多出一行 diff，改回来与原文一致（`test_model.py` 的 [0] 组钉着）。
+
+### 56.4 加新 buff 的顺序
+
+1. 游戏侧先真的读到它（config 段 + `logic/` 消费）；
+2. `tools/buff_editor/model.py` 的 `BUFFS` 注册表加一条 `Buff(...)`
+   （id / 名字 / 图标 / config 路径 / 字段表）；
+3. 界面自动生成，不用改 `app.py`；
+4. `test_model.py` 的字段集合与 `config.gd` 契约用例补一条。
+
+### 56.5 回归
+
+- `python dev_gd_a/tools/buff_editor --selftest`：逐条打印 20 个字段的 config 路径与当前值 +
+  悬停文案，并验「改一处写回 / 改回来逐字节一致」。
+- `test_model.py` **131 项**：文本原地改动、字段路径、百分数解析 / 夹取、
+  跨字段提示、悬停文案、`config.gd` 里逐键存在、保存 / 重载 / 撤销；
+  最后钉「真 config.json 一字未改」。
+- `test_app.py` **46 项**：真建 Tk 窗口，验证 20 个输入框、改值 / 打错字 /
+  百分数 / 撤销重做 / 保存 / 从磁盘重载 / 切换 buff。
+- 实际开窗目检过一遍（浅色主题、左列表右表单、预览卡片、状态栏）。
+
+## 五十七、受击反击（单个单位 / 程序命令 vs 玩家命令，2026.10.22）
+
+需求：给单位增加受击反击逻辑 —— **当单个单位被其他单位攻击时，会立刻行军攻击至该敌方单位处**；
+此反击会**阻断程序下达的命令**（即将领招募时的警戒、将领死亡时的警戒），但**不会阻断玩家下达的命令**
+（如玩家下达的移动 / 行军命令）。
+
+### 57.1 触发点
+
+`unit.take_damage()` 扣完血、处理完死亡 / 濒死之后，如果**还活着且没倒地**，调
+`world.on_unit_attacked(self, _source)`。判定顺序：
+
+1. 只认**单位**来源：`_source.has_method("is_downed")` —— 箭塔 / 城墙的投掷物虽然也走
+   `take_damage`，但没有这个能力，所以**不触发**（需求原话是「被其他单位攻击」）；
+2. 同阵营 / 盟友不触发（`FactionRes.same_side_for_attack`）；
+3. `combat.retaliation_enabled == false` 时不触发（唯一开关，默认开）；
+4. **玩家命令还在执行**时不触发（`unit.has_active_player_order()`）；
+5. 其余情况 → `victim.order_retaliate(self, cfg, attacker)`。
+
+### 57.2 「程序命令」与「玩家命令」怎么分
+
+单位上新增两个字段（都不进快照，和 `ordered_target` 同档）：
+
+| 字段 | 含义 |
+|---|---|
+| `retaliate_target` | 正在反击谁；非空 = 这条战斗优先于程序命令 |
+| `player_order` | 玩家命令**是否还在执行**（只由 `command_processor` 在命令被接受后置真） |
+
+* `command_processor` 的 `apply_move` / `apply_attack` / `apply_attack_move` 在命令成功后
+  给单位置 `player_order = true`（`order_move` 等函数加了一个 `player` 参数一路传下去）；
+* `unit.has_active_player_order()` 只有四种情况算「还在执行」：点名单位目标还活着 /
+  点名建筑还立着 / `has_attack_move` / 还在移动（`moving or has_goal`）。走完、目标没了、
+  被 stop 清掉 → 自动把标记清掉，下一次挨打就能反击；
+* 玩家新命令在反击期间照样接受（`player=true` 会先清 `retaliate_target`）；
+* 程序命令（`player=false`，默认）在 `is_retaliating()` 期间**被拒绝** —— 巡逻 / 返程 /
+  救援集结 / 红点出兵都走同一条单位函数，所以不用在每个 AI 里各写一遍判断。
+
+### 57.3 `order_retaliate()` 做什么
+
+* 只清掉**当前命令**：`drop_engagement()`（清 `target` / `target_building` / `anchor`）、
+  `has_attack_move = false`、`ordered_building = null`、`player_order = false`；
+* `target = attacker`、`retaliate_target = attacker`；
+* `anchor = null` ⇒ 不受追击上限约束（要一路打到攻击者身上，而不是追两步就回家）；
+* 如果 `ordered_target` **正好就是**这个攻击者，**保留**它 —— 招募被打断时
+  `world._interrupt_training_if_threatened()` 刚把威胁写进 `ordered_target`，清掉会让
+  「打断那一帧就点名威胁」这条既有语义失效（`test_recruit_queue` 当场抓住）；
+* 已经在打同一个目标 → 直接返回，不反复重置路径。
+
+追击 / 开火仍然走 `combat.update_combat()`：够不着就 `chase_to`，够得着就 `halt()` + 开火。
+反击目标死亡 / 进濒死 → `combat.update_combat()` 清掉 `retaliate_target`，程序命令
+（救援 / 巡逻）下一帧自己重新下发 —— 不需要谁去「恢复」。
+
+### 57.4 边界
+
+* **只影响被打中的那一个单位**，不连带整队（需求原话「单个单位」）；
+* 玩家**停止**（stop）会清掉玩家命令标记；之后挨打就按「空闲单位」处理（会反击）；
+* 建筑（箭塔）打过来不触发；同阵营 / 盟友不触发；倒地 / 已死的不触发；
+* 正在读条招募的**将领本人**仍然被钉在原地（`_pin_training_leaders`），但它的**附属兵**
+  会立刻脱离「只警戒」去反击 —— 这正是需求要的第 1 条；
+* 关掉 `combat.retaliation_enabled` = 回到旧行为（挨打只会被自动索敌接管，不会脱离程序命令），
+  用于对照 / 调试。
+
+### 57.5 回归
+
+* 新增 `tests/test_retaliation.gd` **53 项**：程序行军攻击被打断并真的朝攻击者走、玩家移动 /
+  行军攻击 / 点名攻击都不被打断、**反击中玩家仍能下新命令并覆盖反击**、只影响单个单位、
+  建筑 / 同阵营不触发、招募期警戒被打断、救援集结被打断且**反击结束后恢复**、开关关掉 = 旧行为。
+* 回归：`test_attack_orders` 108、`test_recruit_queue` 240、`test_retinue` 180、`test_downed` 197、
+  `test_ai` 61、`test_campaign_ai` 41、`test_zone_capture` 114、`test_logic` 280、
+  `test_alliance` 78、`test_melee_building` 18、`test_projectile` 49、`test_morale` 58、
+  `test_formation` 39、`test_arrival` 38、`test_path_feel` 36、`test_diagonal` 49、
+  `test_hit_fx` 45、`test_smoke` 123、`test_view3d` 213、`test_unit_traits` 57 —— 全绿。
+* `test_unit_traits` / buff 编辑器测试里原来写死的「士气免伤 50%」改成**从 `cfg` 读**：
+  buff 编辑器本来就会改这些数，测试不该因为策划调了数值就红。

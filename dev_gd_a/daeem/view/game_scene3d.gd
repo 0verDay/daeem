@@ -33,6 +33,9 @@ const InputControllerRes = preload("res://view/input_controller.gd")
 const HudRes = preload("res://view/hud.gd")
 const FontLoaderRes = preload("res://view/font_loader.gd")
 const InteractionRes = preload("res://view/game_interaction.gd")
+## ★★ 胜利 / 失败结算画面（王冠 + 宝石 / 裂纹 + 横幅 + 三颗按钮）。
+##   它只发 `continue_pressed`；真正回主菜单仍然走本场景的 return_to_menu_requested。
+const OutcomeOverlayRes = preload("res://view/outcome_overlay.gd")
 const CommandRes = preload("res://logic/command_processor.gd")
 const LevelRes = preload("res://logic/level.gd")
 const HostSessionRes = preload("res://net/host_session.gd")
@@ -98,6 +101,12 @@ var coop_campaign = null
 var coop_level = null
 var coop_guest_seat: String = ""
 var game_over_coop: bool = false
+## ★★ 结算画面是否已经弹出（= 本局停战：`_process` / 输入都在这道门后面）。
+##   它只由 `_show_outcome()` 置 true；「继续」之后整个场景会被 main 拆掉。
+var outcome_frozen: bool = false
+## 当前结算结果（"" / "win" / "lose"）与结算层（没有则 null）。
+var outcome_result: String = ""
+var _outcome_overlay = null
 ## start_level() 在 _assemble() **之前**记下的关卡，装配时再交给交互核心
 var interaction_pending_campaign = null
 var interaction_pending_level = null
@@ -618,6 +627,13 @@ func _place_camera_looking_at(target: Vector3) -> void:
 func _process(dt: float) -> void:
 	if world == null or input_ctrl == null:
 		return
+	# ★★ 结算画面已经弹出 = **停战**（用户口径：冻结逻辑与操作，地图静止）。
+	#    这里直接整段返回：世界不 tick、相机不滚、视图也不再同步 ——
+	#    画面停在最后一帧，结算层（独立的 CanvasLayer）照常跑自己的 Tween。
+	#    ⚠️ 不要在下面各段里零散地加 `if outcome_frozen`：漏一处就是
+	#       「结算画面后面部队还在走 / 相机还在滚动」。
+	if outcome_frozen:
+		return
 	# ① 输入：轮询鼠标（只有 input_controller 允许读鼠标）
 	var _t_input := _prof()
 	input_ctrl.poll_mouse()
@@ -915,9 +931,101 @@ func _consume_events(events: Array) -> void:
 	# ★★ 红点刷兵 → 小地图的「生成动效」（事件里带 `spawns`：本波每位将领的出生格）。
 	#    先于 `interaction.pump` 也可以：这里只往小地图记一笔，不改任何玩法状态。
 	_feed_red_dot_spawn_fx(events)
-	if interaction == null:
+	if interaction != null:
+		interaction.pump(events)
+	# ★★ 胜负事件 → 结算画面。合作局两端都走这里：
+	#   房主 tick 出的事件、客机 `events_received` 收到的事件，最后都进 `_consume_events`。
+	for e in events:
+		var evt: Dictionary = e
+		if String(evt.get("type", "")) != "level_end":
+			continue
+		_show_outcome(String(evt.get("result", "")), String(evt.get("reason", "")))
+
+
+# ------------------------------------------------------------------
+# 胜利 / 失败结算画面（Ctrl+W / Ctrl+L 与 level_end 共用这一段）
+# ------------------------------------------------------------------
+
+## 开发者快捷键：Ctrl+W = 立即胜利，Ctrl+L = 立即失败。
+##
+## ★ 只在**游戏内**生效：本函数由 game_scene3d 的 `_unhandled_input` 调，
+##   而主菜单 / 开场页根本没有这个场景（main.gd 只把事件转进 game）。
+## ★ 必须放行带 Ctrl 的组合：命令卡的 W 格自己也会放行（见那里的注释）。
+func _handle_outcome_hotkey(event: InputEvent) -> bool:
+	if not (event is InputEventKey):
+		return false
+	var k: InputEventKey = event as InputEventKey
+	if not k.pressed or k.echo or not k.ctrl_pressed:
+		return false
+	if k.keycode == KEY_W:
+		_force_outcome("win")
+		return true
+	if k.keycode == KEY_L:
+		_force_outcome("lose")
+		return true
+	return false
+
+
+## 把本局直接判成 win / lose，并立刻弹出结算画面。
+##
+## ★ 状态仍然走逻辑层（`World.force_outcome`）：目标栏、快照、判负原因与真结算同形；
+##   而不是只弹一个「看起来赢了」的界面。
+## ★ 合作房主还要把这条 `level_end` 立刻发给客机（与 `world.tick()` 的真结算同一条通道），
+##   否则客机收不到事件、只有房主看到结算画面。
+func _force_outcome(result: String) -> void:
+	if outcome_frozen or world == null:
 		return
-	interaction.pump(events)
+	var reason := "" if result == "win" else "developer_force"
+	var evt: Dictionary = world.force_outcome(result, reason)
+	if evt.is_empty():
+		return
+	if coop_role == "host" and coop_host_session != null:
+		coop_host_session.send_events([evt])
+	_consume_events([evt])
+
+
+## 弹出结算画面（幂等：一局只会有一层）。
+##
+## ★ 弹出的同时停战：`outcome_frozen` 让 `_process` / `_unhandled_input` / `_input`
+##   全部停掉；HUD 一并隐藏（结算画面是整屏的，底下不该还亮着一堆按钮）。
+## ★ 画面本身只发 `continue_pressed`；「回主菜单」由本场景转成既有的
+##   `return_to_menu_requested`（main.gd 接的就是它）。
+func _show_outcome(result: String, _reason: String = "") -> void:
+	if outcome_frozen:
+		return
+	if result != "win" and result != "lose":
+		push_warning("结算画面：未知的 result「%s」（只认 win / lose）" % result)
+		return
+	if world == null or cfg == null:
+		return
+	outcome_frozen = true
+	outcome_result = result
+	if hud != null and is_instance_valid(hud):
+		hud.visible = false
+		# 结算期间 HUD 不再刷新（世界已经冻结；隐藏之后它没有任何要显示的东西）。
+		hud.process_mode = Node.PROCESS_MODE_DISABLED
+	var font: Font = FontLoaderRes.load_font(cfg)
+	_outcome_overlay = OutcomeOverlayRes.new()
+	_outcome_overlay.name = "OutcomeOverlay"
+	add_child(_outcome_overlay)
+	_outcome_overlay.setup(cfg, font, result)
+	_outcome_overlay.continue_pressed.connect(_on_outcome_continue)
+
+
+## 「继续」：收干净联机连接，然后走既有的回主菜单信号（main.gd 拆场景）。
+func _on_outcome_continue() -> void:
+	_shutdown_coop()
+	return_to_menu_requested.emit()
+
+
+## 当前结算层（只给测试 / 排查用；没有则是 null）。
+func outcome_overlay():
+	return _outcome_overlay if _outcome_overlay != null and is_instance_valid(_outcome_overlay) else null
+
+
+## 本局是不是已经进了结算（= 已停战）。
+func outcome_open() -> bool:
+	return outcome_frozen
 
 
 ## 把 `red_dot_wave` 事件的出生格交给小地图（用户需求：红点生成时原地播菱形动效）。
@@ -1073,6 +1181,16 @@ func _camera_rig_for_hud() -> Object:
 ##   ★ 两条路都先问 HUD、再落到 input_controller，顺序不能反 —— 反了的表现是
 ##     「点命令卡上的格子变成了下命令」。
 func _unhandled_input(event: InputEvent) -> void:
+	# ★★ 开发者快捷键 Ctrl+W / Ctrl+L 要在**所有别的按键处理之前**：
+	#   命令卡的 W 格子必须放行带修饰键的组合（见 command_card.handle_key 的注释），
+	#   但这里仍然先判一遍，免得将来某条输入路径把这两颗组合键吃掉。
+	if _handle_outcome_hotkey(event):
+		get_viewport().set_input_as_handled()
+		return
+	# 结算画面开着：键盘 / 鼠标一概不再进游戏（GUI 的按钮点击在更早的 GUI 阶段已经处理）。
+	if outcome_frozen:
+		get_viewport().set_input_as_handled()
+		return
 	if input_ctrl == null:
 		return
 	# ★★ 手机端：手指会同时产生 `InputEventScreenTouch` 与「模拟鼠标」（emulate_mouse_from_touch）。
@@ -1119,6 +1237,9 @@ func _unhandled_input(event: InputEvent) -> void:
 ##    终点」），所以 UI 的悬停 / 点击行为一个字都没变。重复派发也安全 ——
 ##    `handle_mouse_motion` 与 `handle_mouse_button` 都是幂等的（见 `is_panning()` 那条差分）。
 func _input(event: InputEvent) -> void:
+	# 结算画面开着：手势状态机整段停掉（点任意处 / 点按钮都走 GUI，不经过这里）。
+	if outcome_frozen:
+		return
 	# ★★ 手机端触摸：在 **GUI 之前**拿到全过程 —— 手指可能从地图滑到 UI 控件（`MOUSE_FILTER_STOP`）
 	#    上，那时触摸事件会被 GUI 吃掉，`_unhandled_input` 收不到，拖视野 / 框选会「卡住再突变」。
 	#    ⚠️ 这里**不** set_input_as_handled：让模拟鼠标照旧交给 GUI（菜单 / 按钮靠它工作）。
@@ -1229,6 +1350,11 @@ func _on_host_session_closed(reason: String) -> void:
 ## 传输层断开：房主 / 客机都回主菜单（不做重连）。
 func _on_coop_transport_closed(_reason: String) -> void:
 	if coop_role == "" or game_over_coop:
+		return
+	# ★ 结算画面已经弹出来时，断线不该把玩家从结算页里拽回主菜单 ——
+	#   本局已经结束，输赢画面比「与服务器断开」更重要。玩家点「继续」时
+	#   `_on_outcome_continue()` 仍会走 `_shutdown_coop()` 把连接收干净。
+	if outcome_frozen:
 		return
 	game_over_coop = true
 	if hud != null:

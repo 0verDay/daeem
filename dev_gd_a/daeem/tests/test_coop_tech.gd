@@ -34,6 +34,12 @@ func _run() -> void:
 	ok(f1_base != null and f2_base != null, "（前提）两边都有大本营")
 	if f1_base == null or f2_base == null:
 		return
+	# ★ 这些用例要启用 tier 3 科技：两边大本营都先拉到 3 级（合作关的等级限制
+	#   由 test_base_limits.gd 专门验，这里只验「各吃各的科技」）。
+	f1_base.level = cfg.upgrade_max_level("base")
+	f2_base.level = cfg.upgrade_max_level("base")
+	w.apply_building_level_hp(f1_base)
+	w.apply_building_level_hp(f2_base)
 	var f1_hp: float = f1_base.hp_max
 	var f2_hp: float = f2_base.hp_max
 

@@ -120,6 +120,8 @@ func set_troops(troops: Array) -> void:
 			"sub": "",
 			"number": int(t.get("number", 0)),
 			"units": units,
+			# ★ 这一位将领的有效编制上限（含大本营等级加成；由 detail_panel 算好递进来）
+			"cap": int(t.get("cap", UiLayoutRes.UNIT_CAP)),
 		})
 	_apply(next)
 
@@ -589,7 +591,8 @@ func cell_sub_text(i: int) -> String:
 		return String(_cells[i].get("sub", ""))
 	if cell_is_leader(i):
 		var units: Array = _cells[i].get("units", [])
-		return "%d/%d" % [units.size(), UiLayoutRes.UNIT_CAP]
+		var cap: int = int(_cells[i].get("cap", UiLayoutRes.UNIT_CAP))
+		return "%d/%d" % [units.size(), cap]
 	var u = unit_at(i)
 	if u == null:
 		return ""

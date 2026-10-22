@@ -343,17 +343,34 @@ func _build_notice(right: Control) -> void:
 ##   @param unit_shorts 与 `units` 一一对应的方框短字（由 hud 用 world 算好：
 ##                 将领 =「将」、可招募兵种 =「兵」）
 func set_troops(troop, troops: Array, units: Array = [], unit_shorts: Array = []) -> void:
+	# ★ 编制上限含大本营等级加成：**只在逻辑层算**（world.effective_retinue_cap），
+	#   这里只负责把它分发给左栏两处显示（不在视图里再推导一遍规则）。
+	var main_cap := _effective_cap_of(troop)
 	if _roster != null:
-		_roster.set_troop(troop, ROSTER_LEADER_LABEL)
+		_roster.set_troop(troop, ROSTER_LEADER_LABEL, main_cap)
 	if _grid != null:
 		if troop == null:
 			_grid.clear()
 		elif not units.is_empty():
 			_grid.set_units(units, unit_shorts)
 		else:
-			_grid.set_troops(troops)
+			var with_caps: Array = []
+			for t in troops:
+				var d: Dictionary = (t as Dictionary).duplicate()
+				d["cap"] = _effective_cap_of(d.get("leader", null))
+				with_caps.append(d)
+			_grid.set_troops(with_caps)
 	if _empty_label != null:
 		_empty_label.visible = troop == null
+
+
+## 某位队长的有效编制上限（大本营等级加成之后）。没有 world / 拿不到将领 → 0（调用方退回默认）。
+func _effective_cap_of(leader) -> int:
+	if leader == null or _world == null:
+		return 0
+	if not _world.has_method("effective_retinue_cap"):
+		return 0
+	return int(_world.effective_retinue_cap(leader))
 
 
 ## 左栏：喂「选中的建筑」——同一个 1 + 3×3 版式（见文件头与 view/troop_grid.gd）。

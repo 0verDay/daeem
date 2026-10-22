@@ -153,20 +153,38 @@ func _same_entries(clean: Array) -> bool:
 			return false
 		if bool(a.get("active", false)) != bool(b.get("active", false)):
 			return false
+		if bool(a.get("available", true)) != bool(b.get("available", true)):
+			return false
+		if String(a.get("reason", "")) != String(b.get("reason", "")):
+			return false
 	return true
+
+
+## ★★ 九格是**列优先**摆的：config 列表第 e 条 → 单元格 (e % 3) * 3 + int(e / 3)。
+##   于是第一列 = 粮食 I/II/III、第二列 = 黄金 I/II/III、第三列 = 建筑 / 将领 / 区划人口。
+## ★ 科技「阶」= **显示出来的行**：第一行一阶、第二行二阶、第三行三阶
+##   （config 里的 tier 字段按 `index % 3` 写；九格转置不改变行号）。
+##   `_entry_index_for_cell()` 是它的逆变换（3×3 转置是自逆的）。
+func _entry_index_for_cell(cell: int) -> int:
+	return (cell % UiLayoutRes.CARD_COLS) * UiLayoutRes.CARD_ROWS \
+		+ int(cell / UiLayoutRes.CARD_COLS)
 
 
 func _apply() -> void:
 	for i in _cells.size():
 		var cell := _cells[i]
-		var filled: bool = i < _entries.size()
+		var ei := _entry_index_for_cell(i)
+		var filled: bool = ei >= 0 and ei < _entries.size()
 		var active := false
+		var locked := false
 		if filled:
-			var e: Dictionary = _entries[i]
+			var e: Dictionary = _entries[ei]
 			active = bool(e.get("active", false))
+			# ★ 不能启用（阶数不够 / 名额已满）⇒ 置灰不可点；已启用的照旧可点（= 弃用）。
+			locked = not active and not bool(e.get("available", true))
 			_name_labels[i].text = String(e.get("name", ""))
 			_line_labels[i].text = String(e.get("line", ""))
-			cell.disabled = false
+			cell.disabled = false             # 保持可悬停（悬停要能解释原因）
 			# ★★ 走「登记原色」的接口，而不是直接写 font_color override：
 			#   填充动效每帧都按「原色 + 当前填充进度」重算（见 fill_button._sync_text）。
 			FillButtonRes.set_base_font_color(cell,
@@ -175,9 +193,11 @@ func _apply() -> void:
 				Color(1.0, 1.0, 1.0, 0.85) if active else UiStyleRes.text_dim())
 			# ★★ 已启用 = 常驻满格 + 更亮那一档金（需求：点击启用后亮度稍微变大）
 			FillButtonRes.set_latched(cell, active)
-			# ★ 这一格「有科技」⇒ 参与填充动效（悬停填金 / 已启用常驻）。
-			#   上一帧它可能是空格子（被关掉过），所以这里要显式放回来。
+			# ★★ 这一格「有科技」⇒ 参与填充动效。
+			#   不能启用的格子**也参与**，只是把填充换成灰色（用户口径：
+			#   「灰色填充代替金色填充 + 点击后无效果」，不是实心灰按钮）。
 			FillButtonRes.set_available(cell, true)
+			FillButtonRes.set_grey(cell, locked)
 		else:
 			_name_labels[i].text = ""
 			_line_labels[i].text = ""
@@ -185,11 +205,10 @@ func _apply() -> void:
 			FillButtonRes.set_base_font_color(cell, UiStyleRes.text_faint())
 			FillButtonRes.on_fill_text(cell, _line_labels[i], UiStyleRes.text_faint())
 			FillButtonRes.set_latched(cell, false)
+			FillButtonRes.set_grey(cell, false)
 			# ★ 空格子**不参与填充**：它连「科技」都没有，填起来会让人以为这一格能点。
-			#   ⚠️ 与「已启用但点数不够」那种**置灰**不同 —— 那种照旧有灰色填充反馈，
-			#      走的是填充层对 `disabled` 的自动换档（见 view/fill_button.gd）。
 			FillButtonRes.set_available(cell, false)
-		_style_cell(cell, filled, active)
+		_style_cell(cell, filled, active, locked)
 
 
 ## 三个状态各自一套样式。
@@ -200,12 +219,19 @@ func _apply() -> void:
 ##   ⇒ 现在：没悬停 = 空框；悬停 = 金从下往上填；已启用 = 常驻满格且更亮一档。
 ##   ⚠️ 空格子（`filled = false`）仍用 `tech_disabled()` 的实底 —— 它不是按钮，
 ##      它是「这里没有科技」的一块底板，本来就该是死的。
-func _style_cell(cell: Button, filled: bool, active: bool) -> void:
+func _style_cell(cell: Button, filled: bool, active: bool, locked: bool = false) -> void:
 	if not filled:
 		cell.add_theme_stylebox_override("normal", UiStyleRes.tech_disabled())
 		cell.add_theme_stylebox_override("hover", UiStyleRes.tech_disabled())
 		cell.add_theme_stylebox_override("pressed", UiStyleRes.tech_disabled())
 		cell.add_theme_stylebox_override("disabled", UiStyleRes.tech_disabled())
+	elif locked:
+		# ★★ 不可启用 = **与普通格同一套透明底纹**，靠填充层画**灰色**填充；
+		#   不铺实底（否则灰填充会被压在底纹下面，又变成一坨灰按钮）。
+		cell.add_theme_stylebox_override("normal", UiStyleRes.tech_fill())
+		cell.add_theme_stylebox_override("hover", UiStyleRes.tech_fill())
+		cell.add_theme_stylebox_override("pressed", UiStyleRes.tech_fill())
+		cell.add_theme_stylebox_override("disabled", UiStyleRes.tech_fill())
 	elif active:
 		cell.add_theme_stylebox_override("normal", UiStyleRes.tech_latched())
 		cell.add_theme_stylebox_override("hover", UiStyleRes.tech_latched())
@@ -221,9 +247,13 @@ func _style_cell(cell: Button, filled: bool, active: bool) -> void:
 
 
 func _on_cell_pressed(i: int) -> void:
-	if i < 0 or i >= _entries.size():
+	var ei := _entry_index_for_cell(i)
+	if ei < 0 or ei >= _entries.size():
 		return
-	cell_activated.emit(String((_entries[i] as Dictionary).get("id", "")))
+	var e: Dictionary = _entries[ei]
+	if not bool(e.get("active", false)) and not bool(e.get("available", true)):
+		return                            # 置灰格：点了什么都不发生
+	cell_activated.emit(String(e.get("id", "")))
 
 
 ## 鼠标进入 / 离开第 i 格 —— 只转发序号（内容由 hud 现取，与命令卡同一条约定）
@@ -270,10 +300,12 @@ func entries() -> Array:
 	return _entries
 
 
+## 第 i **格**显示的条目（注意：格 ≠ config 下标 —— 九格是列优先转置过的）
 func entry_at(i: int) -> Dictionary:
-	if i < 0 or i >= _entries.size():
+	var ei := _entry_index_for_cell(i)
+	if ei < 0 or ei >= _entries.size():
 		return {}
-	return _entries[i]
+	return _entries[ei]
 
 
 func cell_at(i: int) -> Button:
@@ -298,9 +330,10 @@ func cell_line(i: int) -> String:
 
 ## 第 i 格是不是画成「已启用」（实心强调色）。空格子恒为 false。
 func cell_active(i: int) -> bool:
-	if i < 0 or i >= _entries.size():
+	var ei := _entry_index_for_cell(i)
+	if ei < 0 or ei >= _entries.size():
 		return false
-	return bool((_entries[i] as Dictionary).get("active", false))
+	return bool((_entries[ei] as Dictionary).get("active", false))
 
 
 ## 模拟点第 i 格（测试用；等价于玩家点那一下）

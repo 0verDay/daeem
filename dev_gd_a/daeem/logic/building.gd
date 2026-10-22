@@ -117,6 +117,10 @@ var base_hp_max: float = 300.0
 ## ★ 上次按等级算出来的上限倍率（见 `apply_hp_bonus`）
 var level_hp_mult: float = 1.0
 
+## ★★ 大本营被击毁后，该阵营的残余建筑会进入「中立化」：保留 owner（区划归属不变），
+##   但停止开火 / 升级，并由视图统一画成灰色。见 world.neutralize_faction()。
+var neutralized: bool = false
+
 ## ★★ 等级与升级读条（见 logic/upgrade.gd）。
 ##   等级从 1 起；`upgrade_*` 是**读条状态**（remaining/total <= 0 = 没在读条）。
 ##   ⚠️ 它们挂在建筑自己身上（与「招募队列挂在将领 / 区划上」同一个理由：
@@ -183,6 +187,10 @@ func max_hp_from_config(cfg: ConfigRes) -> float:
 ## `command_processor.apply_demolish` 都读它，别在两处各写一个类型判断。
 func is_invulnerable() -> bool:
 	return bool(def().get("invulnerable", false))
+
+
+func is_neutralized() -> bool:
+	return neutralized
 
 
 func def() -> Dictionary:
@@ -378,9 +386,8 @@ func hp_ratio() -> float:
 
 ## 受到伤害（单位拆建筑都走这里）：扣血 + 记一次受击闪光。
 ##
-## ★ 大本营**默认不可摧毁**：血量最低留 1，避免出现「活着但血量 0」的状态（单机行为）。
-##   对战模式把 config.pvp.destructible_base 打开，它就能被真正打掉 ——
-##   打掉某一方的大本营 = 那一方落败，这就是胜负条件。
+## ★ 是否能被打死由 `building.<type>.destructible` 决定（默认 true）。
+##   大本营现在也是 true：被打到 0 就会倒下，随后该阵营整体中立化（见 world）。
 ##
 ## ★ 区划中心**无敌**（`invulnerable`）：直接返回 false，一点血都不掉、也不闪红。
 ##
@@ -397,8 +404,8 @@ func take_damage(cfg: ConfigRes, amount: float, _source = null) -> bool:
 		return false                       # ★ 区划中心：无血量、无敌，连闪光都不给
 	flash = 1.0
 	hit_flash = 1.0          # ★ 受击反应：闪白 + 左右振动（视图读它）
-	var destructible: bool = cfg.destructible_base
-	var floor_hp: float = 1.0 if (type == TYPE_BASE and not destructible) else 0.0
+	var destructible: bool = cfg.building_destructible(type)
+	var floor_hp: float = 1.0 if not destructible else 0.0
 	hp = maxf(floor_hp, hp - amount)
 	if hp <= 0.0:
 		# 就地标记；真正的摘除由 world.tick() 末尾统一做（逻辑层不在遍历中改集合）

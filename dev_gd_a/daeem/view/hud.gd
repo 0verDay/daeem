@@ -1492,11 +1492,15 @@ func _hover_building(entry: Dictionary) -> Dictionary:
 		var kind := String(entry.get("type", ""))
 		lines.append("当前等级 %d / %d" % [b.level, world.building_max_level(b.type)])
 		lines.append("血量 %s / %s" % [_fmt_num(b.hp), _fmt_num(b.hp_max)])
+		if String(b.type) == BuildingRes.TYPE_BASE:
+			lines.append("本级限制：%s" % _base_limits_text(b.level))
 		if kind == "building_upgrade":
 			var nxt: int = b.level + 1
 			var mult: float = cfg.upgrade_hp_mult(b.type, nxt)
 			lines.append("升到 %d 级：血量上限 ×%s ⇒ %s" % [
 				nxt, _fmt_num(mult), _fmt_num(b.base_hp_max * mult * b.tech_hp_mult)])
+			if String(b.type) == BuildingRes.TYPE_BASE:
+				lines.append("升到 %d 级：%s" % [nxt, _base_limits_text(nxt)])
 		elif kind == "building_upgrade_cancel":
 			lines.append("已经扣掉：%s（取消后全额退还）" % _cost_text(
 				{"food": b.upgrade_cost_food, "gold": b.upgrade_cost_gold}))
@@ -1515,10 +1519,45 @@ func _hover_tech(entry: Dictionary) -> Dictionary:
 	var on: bool = world != null and world.is_tech_active(id)
 	var max_n: int = world.tech_max_active() if world != null else 0
 	var used: int = max_n - (world.tech_remaining_slots() if world != null else 0)
+	var tier: int = int(entry.get("tier", 0))
+	if tier <= 0 and world != null:
+		tier = world.tech_entry(id).get("tier", 0)
+	var max_tier: int = world.tech_max_tier() if world != null else 3
+	var base_lv: int = world.base_level_of(world.my_faction) if world != null else 0
+	lines.append("阶 %s（大本营 %d 级：最高第 %d 阶）" % [
+		_tech_tier_name(tier), base_lv, max_tier])
 	lines.append("状态 %s（同一时间最多启用 %d 条，现在 %d / %d）" % [
 		"已启用" if on else "未启用", max_n, used, max_n])
-	lines.append("点这一格 = %s" % ("弃用（把名额让出来）" if on else "启用"))
+	if not on and not bool(entry.get("available", true)):
+		match String(entry.get("reason", "")):
+			"tier":
+				lines.append("现在不能启用：需要更高等级的大本营")
+			"limit":
+				lines.append("现在不能启用：已经启用满 %d 条" % max_n)
+			_:
+				lines.append("现在不能启用")
+	else:
+		lines.append("点这一格 = %s" % ("弃用（把名额让出来）" if on else "启用"))
 	return _hover_text(String(entry.get("name", "")), lines)
+
+
+## 大本营某一级的四条限制（给悬停详情 / 详情栏共用）。
+func _base_limits_text(level: int) -> String:
+	if cfg == null:
+		return ""
+	var g: int = cfg.upgrade_limit("base", level, "max_generals", 0)
+	var bonus: int = cfg.upgrade_limit("base", level, "retinue_cap_bonus", 0)
+	var t: int = cfg.upgrade_limit("base", level, "max_techs", 0)
+	var tier: int = cfg.upgrade_limit("base", level, "max_tech_tier", 0)
+	return "将领上限 %d · 编制 %+d · 科技 %d 个（最高 %d 阶）" % [g, bonus, t, tier]
+
+
+func _tech_tier_name(tier: int) -> String:
+	match tier:
+		1: return "一阶"
+		2: return "二阶"
+		3: return "三阶"
+	return "—"
 
 
 ## 把一张招募表（recruit.list / recruit.zone.list）翻成命令卡的条目。
@@ -2167,6 +2206,11 @@ func recruit_reject_text(reason: String, kind: String, max_count: int = 0) -> St
 			return "只能在自己区划里招募（这个区划不属于你）"
 		"zone_not_found":
 			return "找不到这个区划"
+		"cap":
+			return "该将领已满编：先升级大本营提高编制上限，或等部队有损失"
+		"general_limit":
+			var gcap: int = world.base_max_generals(world.my_faction) if world != null else 0
+			return "将领已达上限（最多 %d 名）：升级大本营可以提高上限" % gcap
 		"queue_full":
 			var cap: int = max_count if max_count > 0 else world.recruit_queue_max()
 			return "招募队列已满（最多 %d 个）" % cap
@@ -2196,6 +2240,8 @@ func order_reject_text(reason: String) -> String:
 			return "将领已经倒地濒死：它自己不能行动，先让它「再起」（它辖下的部队照常能打）"
 		"leader_downed":
 			return "该部队的主将已经倒地：它们正在赶去保护主将，主将「再起」前不接受指令"
+		"neutralized":
+			return "这个大本营已经被摧毁：该阵营的单位已失去指挥，不能再行动或攻击"
 	return "这条指令现在下不了"
 
 
@@ -2232,6 +2278,9 @@ func tech_reject_text(reason: String) -> String:
 	match reason:
 		"limit":
 			return "最多只能同时启用 %d 个科技：先点一个已启用的弃用" % max_n
+		"tier":
+			var t: int = world.tech_max_tier() if world != null else 3
+			return "这条科技超出当前大本营允许的阶数（最高第 %d 阶）：升级大本营后再启用" % t
 		"unknown":
 			return "没有这条科技"
 	return "这条科技现在启用不了"
@@ -2268,6 +2317,8 @@ func upgrade_reject_text(reason: String, evt: Variant = null) -> String:
 			return "这个种类的区划做不了这种特化（粮食区划只能黄金 / 人口特化，黄金区划只能粮食 / 人口特化，人口区划只能粮食 / 黄金特化）"
 		"cost":
 			return "粮食或黄金不足"
+		"neutralized":
+			return "这个阵营已经失去大本营：残余建筑无法再升级"
 		"owner":
 			return "只能升级自己的建筑"
 		"zone":
@@ -2912,16 +2963,43 @@ func _unit_detail_rows(shown) -> Dictionary:
 	return {"left": left, "right": right}
 
 
-## 攻击特殊增益（目前没有这类数据 → 空数组；以后有系统就追加到这里）。
-func _attack_bonus_lines(_u) -> Array[String]:
-	return []
+## 攻击特殊增益：**兵种特性**「对某大类伤害 +x%」（config 的 `unit.types.<id>.traits`）。
+##
+## ★ 文案里的「骑兵 / 步兵」取自 config 的 `unit.classes`（`cfg.class_display_name`，
+##   **参数是大类 id 本身**）—— 代码里不写中文字面量，以后改大类名只改 JSON。
+##   ⚠️ 别用 `cfg.unit_class_name(cls)`：那条的参数是**单位类型 id**（"rider"），
+##     拿大类 id（"cavalry"）去查会兜底成步兵，整句变成「对步兵伤害」。
+## ★ 按大类 id 排序再输出：字典的顺序不该影响每次刷新时的行序（同一单位两次刷新
+##   行序不同会让 detail_rows 的签名一直变、每帧重画）。
+## ⚠️ 这里显示的是**特性本身**（静态规则），不是「这一次打谁生效了」。
+func _attack_bonus_lines(u) -> Array[String]:
+	var out: Array[String] = []
+	if u == null or cfg == null or not u.has_method("attack_multiplier_vs_class"):
+		return out
+	var bonus: Dictionary = u.attack_bonus_vs_class
+	var classes: Array = bonus.keys()
+	classes.sort()
+	for cls in classes:
+		var pct: int = int(round(float(bonus[cls]) * 100.0))
+		if pct <= 0:
+			continue
+		out.append("对%s伤害 +%d%%" % [cfg.class_display_name(String(cls)), pct])
+	return out
 
 
-## 防御特殊增益：目前只有**士气**的免伤 / 易伤（整支部队共享，对远近都生效）。
+## 防御特殊增益：**兵种特性**的「对远程减伤」+ **士气**的免伤 / 易伤。
+##
+## ★ 顺序：静态特性在前、士气（动态）在后 —— 前者是「这个兵种是什么」，
+##   后者是「这支部队现在的状态」，玩家扫一眼不会把两者混起来。
+## ★ 士气那条对远近都生效（见 unit.take_damage），与「对远程减伤」是**相加**关系，
+##   封顶在 `cfg.damage_reduction_cap`（默认 75%）。
 func _defense_bonus_lines(u) -> Array[String]:
 	var out: Array[String] = []
 	if u == null or not u.has_method("morale_ratio"):
 		return out
+	# ★★ 兵种特性：对远程减伤（只有写了 traits.ranged_reduction 的兵种才有）
+	if float(u.ranged_damage_reduction) > 0.0:
+		out.append("对远程减伤 +%d%%" % int(round(float(u.ranged_damage_reduction) * 100.0)))
 	if float(u.morale) >= cfg.morale_high_tier:
 		out.append("士气免伤 +%d%%" % int(round(cfg.morale_damage_reduction * 100.0)))
 	elif float(u.morale) <= cfg.morale_vuln_tier:
@@ -2947,6 +3025,11 @@ func _building_detail_rows(b) -> Dictionary:
 	else:
 		left.append(_row("攻击 —"))
 	right.append(_row("防御 0"))
+	if String(b.type) == BuildingRes.TYPE_BASE:
+		right.append(_row("等级 %d/%d" % [b.level, world.building_max_level(b.type)]))
+		right.append(_small_row(_base_limits_text(b.level)))
+		if b.neutralized:
+			right.append(_row("已中立化"))
 	return {"left": left, "right": right}
 
 

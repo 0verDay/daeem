@@ -335,6 +335,9 @@
       "★ drag_select_min_px：左键按下之后，移动超过这么多**像素**才算「框选」——",
       "  没超过就是普通单击（选中单位 / 建筑 / 区划）。单位是屏幕像素，所以与相机缩放无关。",
       "  调小 = 手一抖就出框（容易误框）；调大 = 要拖很远才开始框。",
+      "★ box_select_pad_px：框选时给**单位立牌**四周加的容差（屏幕像素）。",
+      "  判定用的是「立牌在屏幕上的矩形 ∩ 选框」，这个数把那个矩形向外扩一圈：",
+      "  调到 0 = 选框必须真的压到牌；调大 = 框贴着牌边也算框到（更好框，但别大到框空处也选中）。",
       "★ scroll_* / drag_scroll_min_px / fade_in_sec：通用滚动容器与入场淡入的手感数值",
       "  （view/elastic_scroll_list.gd、view/drag_scroll_helper.gd、view/fade_in.gd）。",
       "  · scroll_resistance：橡皮筋的阻尼系数。1 = 最跟手；调小 = 越拉越沉；",
@@ -350,6 +353,7 @@
     ],
     "notice_sec": 2.0,
     "drag_select_min_px": 6.0,
+    "box_select_pad_px": 5.0,
     "scroll_resistance": 0.55,
     "scroll_settle_sec": 0.28,
     "scroll_drag_min_px": 18.0,
@@ -495,7 +499,20 @@
     "forest_mult": 0.5,
     "hp_max": 200,
     "radius_factor": 0.1,
-    "hit_pad": 6,
+    "_pick_comment": [
+      "★★ 单位拾取容差（2026.10.22 按玩家反馈「单位太难被选中」调过）。",
+      "  三个数一起决定「点哪儿算点到一个单位」，单位一律是**像素**（不是格）：",
+      "  · hit_pad：**脚底圆**的额外半径。单位半径 = unit.types.<id>.radius_factor + hit_pad / render.cell_px。",
+      "    它是最原始的那一档判据（脚底那一小圈），保留是为了「点脚下也能选中」与无投影时的兜底。",
+      "  · pick_pad_px：**立牌**（屏幕上那张牌）四周的额外容差。牌本身 0.42×0.63 格，",
+      "    点牌上任何位置（含这圈容差）都算点到 —— 玩家点的是看见的牌，不是脚底那个点。",
+      "    调到 0 = 只认牌的精确矩形；调大 = 更宽容（太大会挡住紧挨着的建筑 / 地块）。",
+      "  ⚠️ hit_pad 在载入时被除以 cell_px 换成格，所以它**不随相机缩放**；",
+      "    pick_pad_px 直接在屏幕像素上判，同样不随缩放漂移。",
+      "  ★ 框选的同类容差在 ui.box_select_pad_px（见 ui._comment）。"
+    ],
+    "hit_pad": 8,
+    "pick_pad_px": 4,
 
     "_classes_comment": [
       "★★ 兵种大类（本轮新增）：单位 / 将领分成**步兵**与**骑兵**两类，",
@@ -558,6 +575,23 @@
       "     ⚠️ 这三个仍是**占位单位**（用户口径：「只是占位单位看着来」）——",
       "       数值是「能看出三种兵的区别」的量级，不是最终配平，之后按玩法再调这一张表。"
     ],
+    "_traits_comment": [
+      "★★ 兵种特性（本轮新增）：**只写在这里**，逻辑层不写死任何一条。",
+      "  每个兵种的 traits 只认两个键（别的键会被忽略，见 logic/config.gd 的 _cache_unit_types）：",
+      "  · attack_vs_class = { <兵种大类 id>: <比例> } —— 打**该大类**的目标时伤害 ×(1+比例)。",
+      "      · 大类 id 就是 unit.classes 的键（infantry / cavalry）；",
+      "      · 只作用于**单位**，拆建筑（建筑没有兵种）不受影响；",
+      "      · 比例是 0.25 = +25%，与将领的数值覆盖**相乘**（将领的伤害先按覆盖算，再乘特性）。",
+      "  · ranged_reduction = <比例> —— 受到**远程伤害**时减伤（0.25 = 少受 25%）。",
+      "      · 「远程」按**伤害来路**判：远程单位的投掷物 + 可攻击建筑（箭塔）的投掷物；",
+      "      · 与士气高位的免伤是**加算**，再按 combat.damage_reduction_cap 封顶",
+      "        （默认 0.75：25% 特性 + 50% 士气免伤 = 75%，正好到顶）。",
+      "  ★ 将领（kind = general / general_N）没有自己的 traits —— 它按 unit.general.types[i]",
+      "    所属的**兵种**取这里的特性，与「将领数值 = 所属兵种数值」同一条口径。",
+      "  ★ 详情栏的文案由 view/hud.gd 按这张表拼：",
+      "    攻击特性写在左列「攻击」下面的小字行，远程减伤写在右列「防御」下面的小字行；",
+      "    大类的显示名取自 unit.classes（代码里不写「骑兵」这种中文字面量）。"
+    ],
     "types": {
       "spearman": {
         "name": "长枪兵",
@@ -571,7 +605,10 @@
         "range": 1,
         "cooldown_sec": 1.0,
         "radius_factor": 0.09,
-        "vision": 8
+        "vision": 8,
+        "traits": {
+          "attack_vs_class": { "cavalry": 0.25 }
+        }
       },
       "longbowman": {
         "name": "长弓兵",
@@ -585,7 +622,10 @@
         "range": 4.0,
         "cooldown_sec": 1.4,
         "radius_factor": 0.085,
-        "vision": 10
+        "vision": 10,
+        "traits": {
+          "attack_vs_class": { "infantry": 0.10 }
+        }
       },
       "rider": {
         "name": "骑手",
@@ -599,7 +639,11 @@
         "range": 1,
         "cooldown_sec": 0.9,
         "radius_factor": 0.105,
-        "vision": 9
+        "vision": 9,
+        "traits": {
+          "attack_vs_class": { "infantry": 0.25 },
+          "ranged_reduction": 0.25
+        }
       }
     },
 
@@ -767,6 +811,28 @@
   "combat": {    "enabled": true,
     "aggro_range": 4,
     "leash_factor": 1.8,
+    "_retaliation_comment": [
+      "★★ 受击反击（2026.10.22）：被**其他单位**打中时，立刻转为行军攻击那个单位。",
+      "  口径：",
+      "  · 只影响**被打中的那一个单位**（不连带整队）；",
+      "  · **打断程序命令** —— 招募期间「只警戒」的部队、将领倒下后的救援集结 / 巡逻、",
+      "    驻防 AI 的巡逻 / 返程，都会被打断；",
+      "  · **不打断玩家命令** —— 玩家下的移动 / 攻击 / 行军攻击还在执行时，挨打也照旧执行；",
+      "    等它走完（或目标死了 / 被停止），下一次挨打才会触发反击；",
+      "  · 箭塔等**建筑**打过来**不触发**（需求是「被其他单位攻击」）；",
+      "  · 反击目标死亡 / 进濒死 ⇒ 自动结束，程序命令（救援 / 巡逻）会自己重新下发。",
+      "  ★ `false` = 退回旧行为（挨打只由自动索敌接管，不会脱离程序命令），用于对照调试。"
+    ],
+    "retaliation_enabled": true,
+    "_damage_reduction_comment": [
+      "★★ 减伤封顶（本轮新增）：所有**减伤来源相加**之后，最多只减到这里。",
+      "  当前来源只有两条：士气高位免伤（morale.damage_reduction，默认 50%）+",
+      "  骑手的「对远程减伤」（unit.types.rider.traits.ranged_reduction，默认 25%）。",
+      "  加算口径 = 50% + 25% = 75% ⇒ 恰好等于默认上限；调低这个值会让叠加提前封顶。",
+      "  ⚠️ 易伤（士气低位）**不**参与这个加法：它是在减伤之后再乘一次（×1.5），",
+      "    两者本来就互斥（高位阈值 100 / 低位阈值 50，一个单位不可能同时满足）。"
+    ],
+    "damage_reduction_cap": 0.75,
     "_leash_comment": [
       "★★ 追击上限（leash）与它**必须配套**的那个冷却（本轮修 bug 时加的）。",
       "",
@@ -1047,10 +1113,12 @@
       "body_scale": 0.6,
       "blocks_player": false, "blocks_enemy": false,
       "body_blocks_player": false, "body_blocks_enemy": true,
-      "attackable": false,
+      "attackable": true,
+      "damage": 12, "range": 3, "cooldown": 0.8,
+      "destructible": true,
       "vision": 9,
       "color": "#4a90d9",
-      "desc": "开局自带，不可建造、不可拆除"
+      "desc": "开局自带，不可建造、不可拆除；会像箭塔一样攻击射程内的敌人"
     }
   },
 
@@ -1168,7 +1236,10 @@
       "    `logic/upgrade.gd` 的 can_upgrade() 按 real_max_level() = 条数**算**，",
       "    不写死 3 —— 以后想加等级只加一条 JSON，代码一行不改。",
       "  · hp_mult 是**血量上限倍率**（乘在 config.building.<type>.hp_max 上）：",
-      "    1.0 / 1.5 / 2.25（每级 ×1.5）。等级越高越耐打，这是升级的唯一效果。",
+      "    1.0 / 1.5 / 2.25（每级 ×1.5）。等级越高越耐打。",
+      "  ★★ 大本营的等级还带四条限制（只对 base 那一张表有意义）：",
+      "    max_generals（最多拥有几名将领）/ retinue_cap_bonus（所有将领编制上限 +N）",
+      "    / max_techs（最多同时启用几条科技）/ max_tech_tier（最高能启用第几阶科技）。",
       "  · cost / time_sec 是**升到下一级**要花的钱与读条秒数（本级没有 next 就是不能升）。",
       "  只有大本营 / 城墙 / 箭塔有这个入口：区划中心是**中立无敌障碍**（无血量）——",
       "  需求里它走的是「特化」那三个选项，见下面的 zone_spec。",
@@ -1180,9 +1251,12 @@
     ],
     "levels": {
       "base": [
-        { "level": 1, "hp_mult": 1.0 },
-        { "level": 2, "hp_mult": 1.5, "cost": { "food": 100, "gold": 100 }, "time_sec": 10 },
-        { "level": 3, "hp_mult": 2.25, "cost": { "food": 200, "gold": 200 }, "time_sec": 20 }
+        { "level": 1, "hp_mult": 1.0,
+          "max_generals": 3, "retinue_cap_bonus": 0, "max_techs": 1, "max_tech_tier": 1 },
+        { "level": 2, "hp_mult": 1.5, "cost": { "food": 100, "gold": 100 }, "time_sec": 10,
+          "max_generals": 6, "retinue_cap_bonus": 2, "max_techs": 2, "max_tech_tier": 2 },
+        { "level": 3, "hp_mult": 2.25, "cost": { "food": 200, "gold": 200 }, "time_sec": 20,
+          "max_generals": 10, "retinue_cap_bonus": 4, "max_techs": 3, "max_tech_tier": 3 }
       ],
       "wall": [
         { "level": 1, "hp_mult": 1.0 },
@@ -1305,6 +1379,7 @@
   "tech": {
     "_comment": [
       "★ 科技表 —— 右下「科技」页签那 3×3 九格就照这张表生成（第 0 项 = 左上格）。",
+      "★ tier = 科技页的**行**：第一行一阶 / 第二行二阶 / 第三行三阶（九格按列优先摆放）。",
       "  显示条件：什么都没选中（与「建筑」页签并列）或选中大本营时，页签列里都有「科技」。",
       "★ max_active：玩家**同一时间最多启用几个**。点第 max_active+1 个会被拒（红字提示），",
       "  再点已启用的那个 = 弃用（名额让出来）。启用 / 弃用都是命令（tech_toggle），",
@@ -1326,6 +1401,7 @@
     "list": [
       {
         "id": "food_1",
+        "tier": 1,
         "name": "粮食产量 I",
         "line": "粮食 +0.05",
         "desc": "玩家粮食产量 +0.05／地块／秒",
@@ -1333,6 +1409,7 @@
       },
       {
         "id": "food_2",
+        "tier": 2,
         "name": "粮食产量 II",
         "line": "粮食 +0.1",
         "desc": "玩家粮食产量 +0.1／地块／秒",
@@ -1340,6 +1417,7 @@
       },
       {
         "id": "food_3",
+        "tier": 3,
         "name": "粮食产量 III",
         "line": "粮食 +0.15",
         "desc": "玩家粮食产量 +0.15／地块／秒",
@@ -1347,6 +1425,7 @@
       },
       {
         "id": "gold_1",
+        "tier": 1,
         "name": "黄金产量 I",
         "line": "黄金 +0.05",
         "desc": "玩家黄金产量 +0.05／地块／秒",
@@ -1354,6 +1433,7 @@
       },
       {
         "id": "gold_2",
+        "tier": 2,
         "name": "黄金产量 II",
         "line": "黄金 +0.1",
         "desc": "玩家黄金产量 +0.1／地块／秒",
@@ -1361,6 +1441,7 @@
       },
       {
         "id": "gold_3",
+        "tier": 3,
         "name": "黄金产量 III",
         "line": "黄金 +0.15",
         "desc": "玩家黄金产量 +0.15／地块／秒",
@@ -1368,6 +1449,7 @@
       },
       {
         "id": "building_hp",
+        "tier": 1,
         "name": "建筑加固",
         "line": "建筑血量 +10%",
         "desc": "玩家建筑血量 +10%",
@@ -1375,6 +1457,7 @@
       },
       {
         "id": "leader_hp",
+        "tier": 2,
         "name": "将领强化",
         "line": "将领血量 +10%",
         "desc": "玩家将领血量 +10%",
@@ -1382,6 +1465,7 @@
       },
       {
         "id": "zone_population",
+        "tier": 3,
         "name": "区划人口",
         "line": "人口产量 +10%",
         "desc": "玩家占领的区划人口产量 +10%",
@@ -1409,20 +1493,20 @@
     ],
     "max": 100,
     "start": 90,
-    "regen_ally": 2.0,
-    "decay_enemy": 0.4,
-    "decay_surrounded": 0.4,
+    "regen_ally": 1.5,
+    "decay_enemy": 0.5,
+    "decay_surrounded": 1,
     "high_tier": 100,
     "mid_tier": 90,
     "vuln_tier": 50,
     "low_tier": 25,
-    "hp_regen_high": 8.0,
-    "hp_regen_mid": 2.0,
-    "hp_decay_low": 0.75,
-    "hp_decay_zero": 2.0,
+    "hp_regen_high": 5,
+    "hp_regen_mid": 1,
+    "hp_decay_low": 0.5,
+    "hp_decay_zero": 3,
     "hp_floor": 1.0,
-    "damage_reduction": 0.5,
-    "vulnerability": 0.5,
+    "damage_reduction": 0.25,
+    "vulnerability": 0.25,
     "boost_kill": 5.0,
     "boost_leader": 10.0,
     "boost_capture": 10.0
@@ -1920,6 +2004,56 @@
     "panel_alpha": 0.94,
     "open_sec": 0.2,
     "submenu_sec": 0.15
+  },
+
+  "outcome": {
+    "_comment": [
+      "★★ 胜利 / 失败结算画面（view/outcome_overlay.gd + view/outcome_art.gd）。",
+      "  触发：logic 的 level_end（目标判胜 / 判负）或游戏内 Ctrl+W / Ctrl+L。",
+      "  流程：王冠渐入 → （胜利）宝石渐入并镶嵌 / （失败）裂纹渐显并整体变暗",
+      "        → 横幅水平拉开 → 字样渐显 → 横幅下方呼吸提示 → 点击任意处",
+      "        → 提示渐隐、横幅内渐显 观察 / 统计 / 继续。",
+      "  ★ 文案 / 尺寸 / 时长都在这里；颜色一律走 theme.palette",
+      "    （胜 = accent，负 = warning），不在这里写第二套配色。",
+      "  · crown_width / crown_height —— 王冠画布尺寸（屏幕居中）。",
+      "  · gem_size —— 宝石方形画布尺寸（镶嵌在王冠中央）。",
+      "  · banner_width / banner_height / banner_gap —— 横幅尺寸与离王冠底部的距离。",
+      "  · word_size / hint_size / button_size —— 主字 / 呼吸提示 / 按钮字号。",
+      "  · button_w / button_h / button_gap —— 三颗按钮的尺寸与间距。",
+      "  · dim_alpha —— 整屏暗幕不透明度（0 = 透明、1 = 全黑；底图仍会透出一点）。",
+      "  · *_sec —— 各段动效时长（秒）；动效总开关关掉时全部直接到位。"
+    ],
+    "win_word": "胜利",
+    "lose_word": "失败",
+    "hint": "——点击任意处继续——",
+    "buttons": ["观察", "统计", "继续"],
+    "word_size": 58,
+    "hint_size": 24,
+    "button_size": 22,
+    "crown_width": 380.0,
+    "crown_height": 250.0,
+    "gem_size": 96.0,
+    "banner_width": 760.0,
+    "banner_height": 164.0,
+    "banner_gap": 34.0,
+    "button_w": 150.0,
+    "button_h": 48.0,
+    "button_gap": 26.0,
+    "hint_gap": 22.0,
+    "dim_alpha": 0.86,
+    "backdrop_fade_sec": 0.30,
+    "crown_fade_sec": 0.45,
+    "gem_fade_sec": 0.40,
+    "gem_rise_px": 60.0,
+    "crack_sec": 0.65,
+    "banner_open_sec": 0.50,
+    "word_fade_sec": 0.35,
+    "hint_fade_sec": 0.30,
+    "hint_out_sec": 0.20,
+    "buttons_fade_sec": 0.30,
+    "breath_sec": 1.1,
+    "breath_min": 0.35,
+    "exit_fade_sec": 0.25
   },
 
   "debug": {

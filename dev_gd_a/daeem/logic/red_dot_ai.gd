@@ -248,6 +248,9 @@ static func _pick_spawn_tile(world, cfg: ConfigRes, faction: String,
 				if b.is_invulnerable():
 					continue                              # 区划中心：不拆，换下一格
 				if not FactionRes.same_side_for_attack(String(b.owner), faction):
+					# ★ 大本营被强制拆除时也要走「该阵营中立化」那条规则。
+					if String(b.type) == "base":
+						world.neutralize_faction(String(b.owner))
 					world.remove_building(b, true)        # 敌对建筑挡路 → 立刻拆除
 					world.push_event({"type": "building_down", "building": b, "source": null})
 					world.refresh_ownership()

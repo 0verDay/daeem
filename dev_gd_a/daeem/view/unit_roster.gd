@@ -29,6 +29,8 @@ var _troop: Dictionary = {}
 var _entry: Dictionary = {}
 ## 格子里右边那行小字（「将领名称」——参考图上写的就是这个，不是将领真名）
 var _label_text: String = ""
+## 这一支部队当前的编制上限（含大本营等级加成；由 hud 经 detail_panel 传进来）
+var _unit_cap: int = UiLayoutRes.UNIT_CAP
 ## 画过几帧（给测试用：无头下 `_draw` 里的错误不会让测试失败，所以盯一下它真的跑了）
 var draw_count: int = 0
 
@@ -50,9 +52,11 @@ func setup(p_world, p_font: Font = null) -> void:
 
 ## @param troop null = 没有聚焦任何部队（整块收起来）
 ## @param leader_name_text 拿不到将领真名时的兜底文案（参考图上写的就是「将领名称」）。
-func set_troop(troop, leader_name_text: String = "") -> void:
+func set_troop(troop, leader_name_text: String = "", cap: int = -1) -> void:
 	_troop = {} if troop == null else troop
 	_label_text = leader_name_text
+	if cap > 0:
+		_unit_cap = cap
 	var l = _troop.get("leader", null)
 	if l == null:
 		set_entry(null)
@@ -91,7 +95,7 @@ func _leader_hp_ratio(l) -> float:
 ## ⚠️ 必须直接读 `_troop`，**不能**读 `count_text()` —— 那一个读的是 `_entry`，
 ##    而它正是在 `set_troop()` 里被这次调用写掉的（先算后写，读到的会是上一格的内容）。
 func _troop_count_text() -> String:
-	return "%d/%d" % [unit_count(), UiLayoutRes.UNIT_CAP]
+	return "%d/%d" % [unit_count(), _unit_cap]
 
 
 ## 直接喂「这一格画什么」——建筑选中时走这条路（hud 组装好短字 / 名字 / 血量递进来）。

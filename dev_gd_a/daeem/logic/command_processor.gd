@@ -125,11 +125,16 @@ static func apply_move(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 	var group := _collect_units(world, ids, owner_faction)
 	var accepted := false
 	if group.size() >= cfg.formation_min_units:
-		accepted = order_group_formation(world, cfg, group, pt)
+		accepted = order_group_formation(world, cfg, group, pt, true)
 	else:
 		for u in group:
-			if u.order_move(world, cfg, pt):
+			if u.order_move(world, cfg, pt, true):
 				accepted = true
+	if accepted:
+		# ★★ 玩家命令：这些单位在执行期间**不会**被受击反击打断
+		#   （`unit.has_active_player_order()`；走完 / 目标没了自动解除）。
+		for u in group:
+			u.player_order = true
 	if not accepted:
 		note_order_rejected(world, ids, owner_faction)
 	return accepted
@@ -202,13 +207,15 @@ static func _collect_units(world, ids: Array, owner_faction: String,
 ## 到达时才成型 —— 见 order_attack_move_at）。
 ##
 ## @return 是否至少有一个单位接受了命令
-static func order_group_formation(world, cfg: ConfigRes, group: Array, click: Vector2) -> bool:
+## @param player true = 玩家命令（受击反击不能打断它；见 unit.order_move）
+static func order_group_formation(world, cfg: ConfigRes, group: Array, click: Vector2,
+		player: bool = false) -> bool:
 	var slots := formation_slots(world, cfg, group, click)
 	if slots.is_empty():
 		# 排不出阵（比如点击点在地图外）→ 退回「所有人都走到点击点」
 		var any_fallback := false
 		for u in group:
-			if u.order_move(world, cfg, click):
+			if u.order_move(world, cfg, click, player):
 				any_fallback = true
 		return any_fallback
 
@@ -220,7 +227,7 @@ static func order_group_formation(world, cfg: ConfigRes, group: Array, click: Ve
 	if not PathfinderRes.passable(world.map, world.buildings, cfg, anchor.x, anchor.y, group[0].faction):
 		var any2 := false
 		for u in group:
-			if u.order_move(world, cfg, click):
+			if u.order_move(world, cfg, click, player):
 				any2 = true
 		return any2
 
@@ -229,7 +236,7 @@ static func order_group_formation(world, cfg: ConfigRes, group: Array, click: Ve
 		var u = group[i]
 		# ★ 把槽位相对点击点的偏移也传下去：unit 会用它把「到点击格的路线」整体平移，
 		#   于是全队走出平行的路线、**行进中也保持阵型**（不再先汇聚到点击点再散开）。
-		if u.order_move_via_field(world, cfg, slots[i], anchor, slots[i] - click):
+		if u.order_move_via_field(world, cfg, slots[i], anchor, slots[i] - click, player):
 			any = true
 	return any
 
@@ -424,10 +431,11 @@ static func apply_attack(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 			continue                      # ★ 防冒充
 		var accepted: bool
 		if target_unit != null:
-			accepted = u.order_attack_unit(world, cfg, target_unit)
+			accepted = u.order_attack_unit(world, cfg, target_unit, true)
 		else:
-			accepted = u.order_attack_building(world, cfg, target_building)
+			accepted = u.order_attack_building(world, cfg, target_building, true)
 		if accepted:
+			u.player_order = true
 			any = true
 	if not any:
 		note_order_rejected(world, cmd.get("ids", []), owner_faction)
@@ -453,11 +461,15 @@ static func apply_attack_move(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 		if not slots.is_empty():
 			var anchor := Vector2i(floori(pt.x), floori(pt.y))
 			for i in group.size():
-				if group[i].order_attack_move_at(world, cfg, slots[i], anchor):
+				if group[i].order_attack_move_at(world, cfg, slots[i], anchor, true):
 					accepted = true
+			if accepted:
+				for u in group:
+					u.player_order = true
 			return accepted
 	for u in group:
-		if u.order_attack_move(world, cfg, pt):
+		if u.order_attack_move(world, cfg, pt, true):
+			u.player_order = true
 			accepted = true
 	if not accepted:
 		note_order_rejected(world, ids, owner_faction)
@@ -483,7 +495,7 @@ static func apply_attack_move(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 ##     玩家命令与 AI 决策一律走默认值，照旧被锁挡住。
 ##   ⚠️ 这是一个**面向逻辑层的**入口（不是网络命令），第 1 轮联机时不必发给客机。
 static func order_group_attack_move(world, cfg: ConfigRes, group: Array, pt: Vector2,
-		force: bool = false) -> bool:
+		force: bool = false, player: bool = false) -> bool:
 	var owner: String = String(world.my_faction) if world != null else ""
 	var group2 := _collect_units(world, _ids_of(group), owner, force)
 	if group2.is_empty():
@@ -515,11 +527,11 @@ static func order_group_attack_move(world, cfg: ConfigRes, group: Array, pt: Vec
 		if not slots.is_empty():
 			var anchor := Vector2i(floori(pt.x), floori(pt.y))
 			for i in group2.size():
-				if group2[i].order_attack_move_at(world, cfg, slots[i], anchor):
+				if group2[i].order_attack_move_at(world, cfg, slots[i], anchor, player):
 					accepted = true
 			return accepted
 	for u in group2:
-		if u.order_attack_move(world, cfg, pt):
+		if u.order_attack_move(world, cfg, pt, player):
 			accepted = true
 	return accepted
 

@@ -241,6 +241,11 @@ func _test_cancel_refund(cfg) -> void:
 func _test_upgrade_scales_with_tech(cfg) -> void:
 	var w = _quiet(cfg)
 	_give(w, 10000.0, 10000.0)
+	# 「建筑加固」是三阶科技：先把大本营拉到 3 级（等级限制由 test_base_limits 专门验）。
+	var bb = w.find_base_of(String(w.my_faction))
+	if bb != null:
+		bb.level = w.cfg.upgrade_max_level("base")
+		w.apply_building_level_hp(bb)
 	var wall = _player_wall(w)
 	var base_hp: float = wall.base_hp_max
 	ok(w.set_tech_active("building_hp", true), "启用「建筑加固」（+10%）")

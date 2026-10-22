@@ -75,6 +75,9 @@ static func to_snapshot(world) -> Dictionary:
 			"nt": round2(u.nd_regen_timer),
 			"nv": round2(u.revive_remaining),
 			"nvt": round2(u.revive_total),
+			# ★★ 中立化（大本营被拆后的停摆状态）：1 = 已中立化。
+			#   缺字段 = 老快照 ⇒ 保持本地现状。
+			"nz": 1 if u.neutralized else 0,
 		})
 
 	var buildings_out: Array = []
@@ -90,6 +93,7 @@ static func to_snapshot(world) -> Dictionary:
 			"uk": 1 if b.is_upgrading() else 0,
 			"ur": round2(b.upgrade_remaining),
 			"ut": round2(b.upgrade_total),
+			"nz": 1 if b.neutralized else 0,
 		})
 
 	var zones_out: Array = []
@@ -223,6 +227,8 @@ static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void:
 		# ★ 士气：缺字段（老快照）就保持本地现状；有就夹到本地上限里写回。
 		if su.has("mo"):
 			u.morale = clampf(float(su["mo"]), 0.0, u.morale_max)
+		if su.has("nz"):
+			u.neutralized = int(su["nz"]) != 0
 		u.moving = bool(su.get("m", 0))
 		# 队长 id：缺字段就保持本地现状（同上，别把「没有队长」当成默认值覆盖掉）
 		var ld: Variant = su.get("ld", null)
@@ -295,6 +301,15 @@ static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void:
 
 	# 建筑：整表替换（数量少、结构简单，比按 id 对齐更不容易出错）
 	_world_sync_buildings(world, cfg, snap.get("buildings", []))
+
+	# ★★ 客机侧没有 faction_neutralized 事件：从对象上的 nz 反推「哪些阵营已中立化」。
+	#    只增不清 —— 房主那边可能已经没有任何残余对象了（那时客机也无需再限制什么）。
+	for u in world.units:
+		if u.neutralized and String(u.faction) != "":
+			world.neutralized_factions[String(u.faction)] = true
+	for b in world.building_list:
+		if b.neutralized and String(b.owner) != "":
+			world.neutralized_factions[String(b.owner)] = true
 
 	# 区块归属（按序号对齐 —— 区块划分由地图决定，两边必然同序）
 	var zone_in: Array = snap.get("zones", [])
@@ -416,6 +431,8 @@ static func _apply_building_state(b, sb: Dictionary) -> void:
 		b.upgrade_remaining = float(sb["ur"])
 	if sb.has("ut"):
 		b.upgrade_total = float(sb["ut"])
+	if sb.has("nz"):
+		b.neutralized = int(sb["nz"]) != 0
 
 
 # ------------------------------------------------------------------

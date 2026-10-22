@@ -68,7 +68,12 @@ func _test_ranged_delayed_hit(cfg) -> void:
 	var frames := _advance_until_landed(w, cfg, 900)
 	ok(frames > 0, "投掷物真的飞了几帧（%d）" % frames)
 	eq(w.projectiles.size(), 0, "★ 命中后投掷物消失")
-	near(e.hp, hp0 - shooter.combat_damage(cfg), 1e-6, "★ 命中后扣 combat_damage")
+	# ★ 兵种特性（本轮新增）：长弓兵打**步兵** +10%，而 `spawn_enemy()` 刷出来的是长枪兵
+	#   （步兵、自身没有远程减伤）⇒ 命中扣的血 = 伤害 × 1.1，不再是裸的 combat_damage。
+	var want: float = shooter.combat_damage(cfg) \
+		* shooter.attack_multiplier_vs_class(String(e.unit_class))
+	near(e.hp, hp0 - want, 1e-6,
+		"★ 命中后扣「伤害 × 长弓兵对步兵的 +10%%」（%.1f）" % want)
 
 func _test_guaranteed_hit_moving(cfg) -> void:
 	var w = require_world(cfg)
@@ -88,7 +93,9 @@ func _test_guaranteed_hit_moving(cfg) -> void:
 	var frames := _advance_until_landed(w, cfg, 1200)
 	ok(frames > 0, "目标移动后投掷物仍在飞（%d 帧）" % frames)
 	eq(w.projectiles.size(), 0, "★ 投掷物一定到达（必中）")
-	near(e.hp, hp0 - shooter.combat_damage(cfg), 1e-6, "★ 目标真的掉血了（必中 = 命中即结算）")
+	var want: float = shooter.combat_damage(cfg) \
+		* shooter.attack_multiplier_vs_class(String(e.unit_class))
+	near(e.hp, hp0 - want, 1e-6, "★ 目标真的掉血了（必中 = 命中即结算）")
 
 func _test_melee_instant(cfg) -> void:
 	var w = require_world(cfg)
@@ -104,7 +111,10 @@ func _test_melee_instant(cfg) -> void:
 	var hp0: float = e.hp
 	CombatRes.attack_unit(w, cfg, m, e)
 	eq(w.projectiles.size(), 0, "★ 近战不生成投掷物（老行为逐位不变）")
-	near(e.hp, hp0 - m.combat_damage(cfg), 1e-6, "★ 近战伤害即时结算")
+	# 同一条口径：近战也要乘「对目标兵种大类」的特性倍率（长枪兵打步兵是 ×1.0）。
+	var m_want: float = m.combat_damage(cfg) \
+		* m.attack_multiplier_vs_class(String(e.unit_class))
+	near(e.hp, hp0 - m_want, 1e-6, "★ 近战伤害即时结算")
 
 func _test_tower_projectile(cfg) -> void:
 	var w = require_world(cfg)

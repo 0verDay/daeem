@@ -106,16 +106,27 @@ func is_active(id: String, faction: String = "") -> bool:
 
 ## ★ 能不能启用这一条。@return "" = 可以；否则是拒因码：
 ##   "unknown"  没有这条科技（表里查不到 —— 界面上不该发生，防手改 / 旧快照）
+##   "tier"     ★ 这条科技的「阶」超过当前大本营允许的阶数
 ##   "limit"    ★ 已经启用满 max_active 条（需求：到 3 个时再启用会被阻止并提示）
+##
+## @param max_active_override / max_tier_override
+##   大本营等级决定的上限（由 `world.tech_can_activate()` 传进来）。
+##   负数 = 不覆盖（直接调用 tech 的旧路径 / 测试保持原行为）。
 ##
 ## ⚠️ 已经启用的那条**不算占用新名额**（点它是弃用，见 `toggle()`）——
 ##   所以这里对「已启用」返回 "limit" 是不对的，得先看它是不是已经在用。
-func can_activate(id: String, faction: String = "") -> String:
+func can_activate(id: String, faction: String = "",
+		max_active_override: int = -1, max_tier_override: int = -1) -> String:
 	if not has(id):
 		return "unknown"
 	if is_active(id, faction):
 		return ""
-	if active_count(faction) >= max_active():
+	if max_tier_override >= 0:
+		var tier := cfg.tech_tier(id) if cfg != null else 0
+		if tier > max_tier_override:
+			return "tier"
+	var cap: int = max_active_override if max_active_override >= 0 else max_active()
+	if active_count(faction) >= cap:
 		return "limit"
 	return ""
 

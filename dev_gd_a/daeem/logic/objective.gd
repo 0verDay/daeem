@@ -1,20 +1,25 @@
 ## objective.gd —— **目标与胜负**（一个文件管一件事：这一局怎么算赢、怎么算输）。
 ##
 ## ★★ 规则（写死，逐条进断言 —— 见 dev_plan_7 1.3.6 / 3.4）：
-##   1. 只有一种目标：`{kind: "hold_zone", zone: <区划号>, hold_sec: <秒>}`
-##      —— 「守住指定区划 N 秒」。「占领即胜」**不做**；
+##   1. 两种目标（都来自关卡 `objectives[]`）：
+##      · `hold_zone`    —— 「守住指定区划 N 秒」；
+##      · `capture_zone` —— 「攻占指定区划」；
 ##   2. 判定「归玩家」一律走**同方**：
 ##      `FactionRes.side_of(owner) == FactionRes.side_of(玩家席位)`
 ##      —— 合作模式下 p2 守住也算（单机时它与 `owner == 自己` 等价）；
-##   3. ★ **一旦目标区划不再归玩家同方 ⇒ 当场判负**（用户拍板：连「暂停不清零」都不要）；
-##   4. `held >= hold_sec` ⇒ **当场判胜**（跨过阈值的那一帧就生效，不等下一帧）；
-##   5. **常开失败条件**：玩家同方的**大本营全部被拆** ⇒ 负（★ 常开**不可关**）；
-##      拆掉一半**不算** —— 「全部」是这条判据的关键字；
+##   3. ★ `hold_zone`：一旦目标区划不再归玩家同方 ⇒ **当场判负**
+##      （用户拍板：连「暂停不清零」都不要）；
+##   4. `hold_zone` 的 `held >= hold_sec` 或 `capture_zone` 的归属翻过来
+##      ⇒ **当场判胜**（跨过阈值 / 翻归属的那一帧就生效，不等下一帧）；
+##   5. **常开失败条件**：玩家席位里**任何一个大本营被拆** ⇒ 负（★ 常开**不可关**）；
+##      ★ 两种目标都生效 —— 攻占方自己的家被拆同样算输（合作：任一人的家没了就输）。
+##      这是用户口径「玩家大本营丢失 ⇒ 失败」，不是「全部被拆才输」；
 ##   6. **额外失败条件**（`fail_conditions[]`，第一批只做 `zone_lost`）：指定的区划
-##      一旦不再归玩家同方 ⇒ 负（可以配多个，谁先触发算谁的）；
-##   7. 开局兜底：目标区划**开局就不归玩家同方** ⇒ 立刻 `lost`
+##      一旦不再归玩家同方 ⇒ 负（可以配多个，谁先触发算谁的）；★ 同样对两种目标生效；
+##   7. 开局兜底：`hold_zone` 的目标区划**开局就不归玩家同方** ⇒ 立刻 `lost`
 ##      （`reason = "objective_never_held"`）。★ 这条**不是静默**：它是数据写错，
 ##      要留一条痕迹 —— 编辑器的导出校验第 8 条会先拦一遍，这里是第二道。
+##      `capture_zone` 不做这个兜底（它要求的正好相反：区划在敌手里）；
 ##   8. 结算后 world **继续 tick**（不做 UI 冻结）；界面读 `state` / `reason` 播报一次。
 ##
 ## ★ 为什么「大本营被拆」是常开的：它是「这一局还能不能继续」的底线判据
@@ -176,39 +181,45 @@ static func update(world, cfg, st: Dictionary, dt: float) -> void:
 	var zone := int(st.get("zone", -1))
 	var mine: Array = st.get("defend", [])
 
-	# 0) ★★ 攻占类：**归属翻过来的那一帧就赢**（不等下一帧、也不要求再守多久）
+	# ★★ 两种目标只在「怎么算完成」上不同；**大本营丢失 / 额外失败条件对两者都生效**。
+	#
+	# ⚠️ 别在 `capture_zone` 分支里提前 `return`（曾经就是这里漏了）：
+	#   攻占类关卡（01_beachhead / mt 的进攻方、dscj、ferry 的进攻方）在没打下来时
+	#   会直接返回，于是「大本营被拆」和 `fail_conditions` 永远不判负 ——
+	#   玩家家没了还能继续打。下面的公共失败段就是为此存在的。
 	if kind == "capture_zone":
+		# 0) ★★ 攻占类：**归属翻过来的那一帧就赢**（不等下一帧、也不要求再守多久）
 		var own_now := zone_owner(world, zone)
 		if own_now != "" and _mine_side(own_now, mine):
 			st["held"] = float(st.get("held", 0.0)) + dt
 			st["state"] = STATE_WON
 			return
-		# 还没打下来：继续。★ 丢了**不算输**（对攻关卡允许反复争夺）。
-		return
+		# 还没打下来：继续往下走常开失败判定。★ 丢了**不算输**（对攻关卡允许反复争夺）。
+	else:
+		# 1) ★ 守住类：丢掉即判负（在累加之前判：这一帧已经不归我了，就不该再记 0.1 秒）
+		var owner := zone_owner(world, zone)
+		if owner == "" or not _mine_side(owner, mine):
+			st["state"] = STATE_LOST
+			st["reason"] = R_OBJECTIVE_LOST
+			return
 
-	# 1) ★ 丢掉即判负（在累加之前判：这一帧已经不归我了，就不该再记 0.1 秒）
-	var owner := zone_owner(world, zone)
-	if owner == "" or not _mine_side(owner, mine):
-		st["state"] = STATE_LOST
-		st["reason"] = R_OBJECTIVE_LOST
-		return
+		# 2) 累加（只在这一帧仍然归玩家同方时）
+		st["held"] = float(st.get("held", 0.0)) + dt
 
-	# 2) 累加（只在这一帧仍然归玩家同方时）
-	st["held"] = float(st.get("held", 0.0)) + dt
-
-	# 3) 守满即胜（跨过阈值的那一帧就生效）
-	if float(st["held"]) >= float(st.get("sec", 0.0)):
-		st["held"] = float(st["sec"])
-		st["state"] = STATE_WON
-		return
+		# 3) 守满即胜（跨过阈值的那一帧就生效）
+		if float(st["held"]) >= float(st.get("sec", 0.0)):
+			st["held"] = float(st["sec"])
+			st["state"] = STATE_WON
+			return
 
 	# 4) ★ 常开：玩家席位的**任何一个**大本营被拆 ⇒ 负（见 `_all_seat_bases_alive`）
+	#    ★ 两种目标都走这里：攻占方的大本营被拆同样应该输。
 	if not _all_seat_bases_alive(world, mine):
 		st["state"] = STATE_LOST
 		st["reason"] = R_BASE_DESTROYED
 		return
 
-	# 5) 额外的失败条件（谁先触发算谁的）
+	# 5) 额外的失败条件（谁先触发算谁的）—— 两种目标都生效。
 	for item in (st.get("fail", []) as Array):
 		var zid := int(item)
 		var own2 := zone_owner(world, zid)

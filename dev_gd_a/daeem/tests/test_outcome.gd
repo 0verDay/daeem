@@ -23,9 +23,11 @@ func _run() -> void:
 	_group_lose_zone(cfg)
 	_group_base(cfg)
 	_group_extra_fail(cfg)
+	_group_capture(cfg)
 	_group_setup_guard(cfg)
 	_group_no_level(cfg)
 	_group_event(cfg)
+	_group_force(cfg)
 	_clean_tmp()
 
 func _group_hold(cfg) -> void:
@@ -179,6 +181,59 @@ func _group_extra_fail(cfg) -> void:
 	eq(String(st3["reason"]), ObjectiveRes.R_OBJECTIVE_LOST,
 		"目标区划与额外区划同时丢 → 报「目标区划失守」（它优先）")
 
+## ★★ 攻占类目标（`capture_zone`）也要有完整的胜负判定：
+##   以前这里提前 return，导致「大本营被拆」「额外失败区划失守」对进攻方**永远不判负**。
+func _group_capture(cfg) -> void:
+	var w = _make_world(cfg, {
+		"zones": [{"id": OBJ_ZONE, "owner": "E1"}],
+		"objectives": [{"kind": "capture_zone", "zone": OBJ_ZONE}],
+	})
+	if w == null:
+		ok(false, "能造出攻占类目标的世界")
+		return
+	var st: Dictionary = w.objective_state
+	eq(String(st["kind"]), "capture_zone", "目标种类是 capture_zone")
+	eq(String(st["state"]), "running", "开局进行中")
+	ObjectiveRes.update(w, cfg, st, 1.0)
+	eq(String(st["state"]), "running", "还没打下来 → 继续（丢目标不算输）")
+
+	# 1) 归属翻过来 ⇒ 当场判胜
+	_set_owner(w, OBJ_ZONE, "F1")
+	ObjectiveRes.update(w, cfg, st, 0.1)
+	eq(String(st["state"]), "won", "★ 攻占类：归属翻过来的那一帧判胜")
+	near(float(st["held"]), 0.1, 0.001, "攻占成功那一帧记了 dt")
+
+	# 2) ★ 大本营被拆 ⇒ 判负（旧代码在 capture 分支提前 return，漏了这一条）
+	var w2 = _make_world(cfg, {
+		"zones": [{"id": OBJ_ZONE, "owner": "E1"}],
+		"objectives": [{"kind": "capture_zone", "zone": OBJ_ZONE}],
+	})
+	if w2 == null:
+		return
+	var st2: Dictionary = w2.objective_state
+	var base = w2.find_base_of("F1")
+	ok(base != null, "攻占方有她自己的大本营")
+	if base != null:
+		_kill_building(w2, base)
+		ObjectiveRes.update(w2, cfg, st2, 0.5)
+		eq(String(st2["state"]), "lost", "★ 攻占类：大本营被拆同样判负")
+		eq(String(st2["reason"]), ObjectiveRes.R_BASE_DESTROYED,
+			"原因是 base_destroyed")
+
+	# 3) ★ 额外失败条件 ⇒ 判负（旧代码同样漏掉）
+	var w3 = _make_world(cfg, {
+		"zones": [{"id": OBJ_ZONE, "owner": "E1"}, {"id": 5, "owner": "F1"}],
+		"fail_conditions": [{"kind": "zone_lost", "zone": 5}],
+		"objectives": [{"kind": "capture_zone", "zone": OBJ_ZONE}],
+	})
+	if w3 == null:
+		return
+	var st3: Dictionary = w3.objective_state
+	_set_owner(w3, 5, "E1")
+	ObjectiveRes.update(w3, cfg, st3, 0.5)
+	eq(String(st3["state"]), "lost", "★ 攻占类：额外失败区划失守同样判负")
+	eq(String(st3["reason"]), "zone_lost:5", "原因带上区划号")
+
 func _group_setup_guard(cfg) -> void:
 	var w = _make_world(cfg, {
 		"zones": [{"id": OBJ_ZONE, "owner": "E1"}],
@@ -259,6 +314,40 @@ func _group_event(cfg) -> void:
 	w2.reset("F1", ["F1"])
 	eq(String(w2.objective_state["state"]), "running", "reset 之后目标状态回到 running")
 	eq(w2._objective_reported, "", "reset 之后「已播报」标记归零")
+
+## ★★ 开发者快捷键走的那条路：`World.force_outcome()`。
+## 它必须与真结算**同形**：状态改掉、去重标记记上、返回一条 level_end；
+## 之后继续 tick 也不能再补发一条。
+func _group_force(cfg) -> void:
+	var w = _make_world(cfg, {"objectives": [{"kind": "hold_zone", "zone": OBJ_ZONE, "hold_sec": 100.0}]})
+	if w == null:
+		return
+	var evt: Dictionary = w.force_outcome("win")
+	eq(String(evt.get("type", "")), "level_end", "★ force_outcome 返回一条 level_end")
+	eq(String(evt.get("result", "")), "win", "事件 result = win")
+	eq(String(w.objective_state["state"]), "won", "★ 目标状态被改写成 won")
+	eq(w._objective_reported, "won", "★ 去重标记同步写成 won")
+	eq(String(w.objective_state["reason"]), "", "胜局不带判负原因")
+
+	var ends := 0
+	for i in 30:
+		for e in w.tick(0.1):
+			if String((e as Dictionary).get("type", "")) == "level_end":
+				ends += 1
+	eq(ends, 0, "★ force_outcome 之后继续 tick 不会再补发 level_end")
+
+	var w2 = _make_world(cfg, {"objectives": [{"kind": "hold_zone", "zone": OBJ_ZONE, "hold_sec": 100.0}]})
+	if w2 == null:
+		return
+	var evt2: Dictionary = w2.force_outcome("lose", "developer_force")
+	eq(String(evt2.get("result", "")), "lose", "事件 result = lose")
+	eq(String(w2.objective_state["state"]), "lost", "★ 目标状态被改写成 lost")
+	eq(String(w2.objective_state["reason"]), "developer_force", "判负原因原样写进去")
+	eq(w2._objective_reported, "lost", "去重标记同步写成 lost")
+
+	var bad: Dictionary = w2.force_outcome("draw")
+	ok(bad.is_empty(), "★ 非法 result（draw）明确失败，不猜")
+	eq(String(w2.objective_state["state"]), "lost", "非法调用不会改掉已有状态")
 
 func _make_world(cfg, patch: Dictionary):
 	var lv = _make_level(cfg, "solo_lv", patch)

@@ -171,7 +171,7 @@ func _build_selection_layer() -> void:
 	_sel_quad.orientation = PlaneMesh.FACE_Y
 	_sel_layers = {}
 	# ★ 三档各一层：圈色 = 本机视角下的己 / 友 / 敌（见 view/side_color.gd）。
-	for rel in [SideColorRes.SELF, SideColorRes.ALLY, SideColorRes.ENEMY]:
+	for rel in [SideColorRes.SELF, SideColorRes.ALLY, SideColorRes.ENEMY, SideColorRes.NEUTRAL]:
 		var smat := ShaderMaterial.new()
 		smat.shader = SELECTION_RING_SHADER
 		smat.set_shader_parameter("albedo_tex", SpriteRes.selection_ring_texture())
@@ -202,6 +202,8 @@ func _selection_ring_color(rel: String) -> Color:
 			return cfg.side_color_ally
 		SideColorRes.ENEMY:
 			return cfg.side_color_enemy
+		SideColorRes.NEUTRAL:
+			return cfg.side_color_neutral
 	return ConfigRes.parse_color(cfg.str_val("render.selection_ring_color", "#3ddc5a"))
 
 
@@ -290,6 +292,7 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 	var last_type: String = ""
 	var last_leader: bool = false
 	var last_downed: bool = false
+	var last_neutral: bool = false
 	var last_key: String = ""
 	for u in world.units:
 		if not u.alive:
@@ -312,15 +315,20 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 		# ★★ 变体键 = 阵营 | 是否将领 | 兵种 | 是否濒死：都会变，各自决定用哪张图 / 哪个材质。
 		var key: String
 		if u.faction == last_fac and u.unit_type == last_type \
-				and leader == last_leader and downed == last_downed and last_key != "":
+				and leader == last_leader and downed == last_downed \
+				and u.neutralized == last_neutral and last_key != "":
 			key = last_key
 		else:
-			key = "%s|%d|%s|%d" % [String(u.faction), 1 if leader else 0,
+			# ★ 中立化单位用**空阵营键**：SideColorRes 对 "" 返回中性灰（见 side_color.gd）。
+			#   键里带上它，才不会被同一阵营的正常单位复用掉那张彩色贴图。
+			var fac_key := "" if u.neutralized else String(u.faction)
+			key = "%s|%d|%s|%d" % [fac_key, 1 if leader else 0,
 				String(u.unit_type), 1 if downed else 0]
 			last_fac = u.faction
 			last_type = u.unit_type
 			last_leader = leader
 			last_downed = downed
+			last_neutral = u.neutralized
 			last_key = key
 		var arr: Array = buckets.get(key, [])
 		arr.append(u)
@@ -458,8 +466,9 @@ func _sync_selection_rings(units_list: Array, dt: float) -> void:
 			continue
 		_sel_anim[id] = p
 		# ★ 按「本机视角」分桶：己方 / 友军 / 敌人各一层（圈色不同）
-		var rel := SideColorRes.relation(world, String(u.faction))
-		if rel == SideColorRes.NEUTRAL or not _sel_layers.has(rel):
+		var rel := SideColorRes.NEUTRAL if u.neutralized \
+			else SideColorRes.relation(world, String(u.faction))
+		if not _sel_layers.has(rel):
 			rel = SideColorRes.ENEMY
 		var layer: Dictionary = _sel_layers[rel]
 		var mm: MultiMesh = layer["mm"]

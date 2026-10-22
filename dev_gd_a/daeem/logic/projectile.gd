@@ -89,6 +89,11 @@ static func _target_pos(target, is_building: bool, fallback: Vector2) -> Vector2
 
 ## 命中结算。⚠️ 目标已消失 ⇒ 什么都不做（飞完自然消失）。
 ##
+## ★★ 单位目标一律按**远程伤害**结算（`incoming_ranged = true`）：投掷物本身就是远程，
+##   「对远程减伤」这条兵种特性只在这里生效（近战走 combat.attack_unit 的即时结算）。
+##   ⚠️ 别改成按 `p.source.ranged` 判：可攻击建筑（箭塔）也是投掷物，它没有 `ranged` 字段，
+##     而凡是投掷物都该算远程 —— 判据就是「这一击来自投掷物」本身。
+##
 ## ★ 拆建筑那一下要沿用 combat.attack_building 的口径：`take_damage` 返回
 ##   「**本击是否造成摧毁**」，只在**首次**摧毁时广播 `building_down`，
 ##   否则同一帧几枚投掷物砸同一栋会广播出好几条重复事件。
@@ -99,7 +104,7 @@ static func _impact(world, cfg: ConfigRes, p) -> void:
 		if p.target.take_damage(cfg, p.damage, p.source):
 			world.push_event({"type": "building_down", "building": p.target, "source": p.source})
 	else:
-		p.target.take_damage(cfg, world, p.damage, p.source)
+		p.target.take_damage(cfg, world, p.damage, p.source, true)
 
 
 # ------------------------------------------------------------------

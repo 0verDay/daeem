@@ -125,6 +125,10 @@ func consume_events(events: Array) -> void:
 			"revive_rejected":
 				if _is_my_event(evt):
 					hud.show_notice(hud.revive_reject_text(String(evt.get("reason", ""))))
+			"faction_neutralized":
+				# ★ 不过滤阵营：这是**世界级**消息（谁的大本营没了都值得看一眼）。
+				hud.show_notice("%s 的大本营被摧毁：该阵营的单位与建筑已失去指挥" %
+					String(evt.get("faction", "")))
 			"unit_recruited":
 				# ★ 这条**不过滤阵营**：`notify_unit_recruited` 自己按将领归属判断，
 				#   而且它要更新的是编队面板的「谁已就位」，AI 的招募同样会改变名册。

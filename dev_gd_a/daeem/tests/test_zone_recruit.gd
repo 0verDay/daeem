@@ -235,7 +235,14 @@ func _quiet(cfg) -> RefCounted:
 		c = cfg
 	else:
 		c.combat_enabled = false
-	return require_world(c)
+	var w = require_world(c)
+	# 区划招募的旧用例默认「将领想招几个招几个」；1 级大本营现在最多 3 名（开局正好 3 名），
+	# 所以把这些用例的大本营拉到 3 级（上限 10）。上限规则由 test_base_limits.gd 专门验。
+	var b = w.find_base_of("p1")
+	if b != null:
+		b.level = w.cfg.upgrade_max_level("base")
+		w.apply_building_level_hp(b)
+	return w
 
 func _give(w, food: float, gold: float) -> void:
 	w.resources["food"] = food

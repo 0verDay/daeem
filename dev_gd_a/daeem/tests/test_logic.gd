@@ -442,7 +442,9 @@ func _test_combat(world, cfg) -> void:
 			hp_after_first = e.hp
 	ok(cd_hits <= 1, "0.5 秒内不会连打（攻击冷却生效）")
 
-	g.order_move(w2, cfg, GridRes.center_of(Vector2i(g.tx, g.ty + 3)))
+	# ★ 直接调 order_move 时最后一个参数 = 玩家命令（受击反击不得打断它）。
+	#   真实客户端走 command_processor，那条路同样会带 player = true。
+	g.order_move(w2, cfg, GridRes.center_of(Vector2i(g.tx, g.ty + 3)), true)
 	ok(g.target == null, "右键移动命令会中断交战")
 
 	e.hp = 1.0
@@ -545,6 +547,11 @@ func _test_tower(world, cfg) -> void:
 	var free_e: Vector2i = spot["enemy"]
 	var tower = w.add_building("tower", free.x, free.y, "p1", false, true)
 	ok(tower != null, "箭塔建造成功")
+	# ★ 大本营现在也会开火（与箭塔同数值）：这条用例只量箭塔那一发，
+	#   先把场上所有大本营静音，免得它们也打到靶子上、伤害变成 24。
+	for bb in w.building_list:
+		if bb != null and bb.type == "base":
+			bb.neutralized = true
 	if tower == null:
 		return
 	eq(tower.tower_damage(cfg), 12.0, "箭塔伤害 12")

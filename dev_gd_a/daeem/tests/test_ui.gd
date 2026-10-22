@@ -1369,17 +1369,37 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 	var ids: Array = []
 	for i in g.entries().size():
 		ids.append(String((g.entry_at(i) as Dictionary).get("id", "")))
+	# ★ 这段验的是「最多 3 条」这条旧规则：把大本营拉到 3 级，
+	#   否则 1 级的「最多 1 条 + 仅一阶」会先把它挡住（那是 test_base_limits 的事）。
+	if base != null:
+		base.level = world.cfg.upgrade_max_level("base")
+		world.apply_building_level_hp(base)
 	for k in 3:
 		g.press(k)
 	eq(world.active_tech_ids().size(), 3, "★ 启用了三条")
 	ok(world.tech_remaining_slots() == 0, "名额用完")
 	g.press(3)
 	ok(not world.is_tech_active(ids[3]), "★ 第 4 条没有生效（被阻止）")
-	ok(main.hud.notice_active(), "★ 满了之后点第 4 条会弹提示")
-	ok(main.hud.notice_text().contains("3"), "提示里说明「最多 3 个」：%s" % main.hud.notice_text())
+	# ★ 新版口径：不能启用的格子**置灰不可点**（点了什么都不发生），原因写在悬停里。
+	ok(not main.hud.notice_active(), "置灰格点了不弹红字（悬停才说明原因）")
+	var locked_cell = g.cell_at(3)
+	ok(locked_cell != null and not locked_cell.disabled,
+		"★ 置灰格仍可悬停（不是 disabled 灰按钮）")
+	ok(FillButtonRes.is_grey(locked_cell), "★ 不可启用格走「灰色填充」档")
+	var locked_style: StyleBox = locked_cell.get_theme_stylebox("normal")
+	ok(locked_style is StyleBoxFlat and (locked_style as StyleBoxFlat).bg_color.a <= 0.01,
+		"★ 置灰格底纹透明（灰色来自填充，不是实心灰按钮）")
+	ok(not FillButtonRes.is_grey(g.cell_at(0)), "（对照）可启用 / 已启用的格子不是灰档")
+	var tip: Dictionary = main.hud._hover_detail("tech", g.entry_at(3))
+	ok(String(tip.get("body", "")).contains("不能启用"),
+		"★ 悬停说明「现在不能启用」：%s" % String(tip.get("body", "")))
 	for k in 3:
 		g.press(k)
 	eq(world.active_tech_ids().size(), 0, "收尾：弃用全部科技")
+	# 把大本营等级还原（下面还要验「大本营操作页 = 升级」那一格）。
+	if base != null:
+		base.level = 1
+		world.apply_building_level_hp(base)
 
 	var zone = _zone_with_center(world)
 	ok(zone != null, "地图上找得到一个带中心的区划")
@@ -1460,8 +1480,10 @@ func _eq_tech_page(main, where: String) -> void:
 	eq(g.cell_line(0), "粮食 +0.05", "%s：第 1 格第二行写效果" % where)
 	ok(String((g.entry_at(0) as Dictionary).get("desc", "")).contains("地块"),
 		"%s：entries 里带着完整效果说明（悬停详情面板写它）" % where)
-	eq(g.cell_name(6), "建筑加固", "%s：第 7 格 = 建筑加固" % where)
-	eq(g.cell_name(7), "将领强化", "%s：第 8 格 = 将领强化" % where)
+	# ★ 九格是**列优先**（第一列 = 一阶、第二列 = 二阶、第三列 = 三阶）：
+	#   cell 0/3/6 = 粮食 I/II/III，1/4/7 = 黄金 I/II/III，2/5/8 = 建筑/将领/区划人口。
+	eq(g.cell_name(2), "建筑加固", "%s：第 3 格 = 建筑加固（第三列第一格）" % where)
+	eq(g.cell_name(5), "将领强化", "%s：第 6 格 = 将领强化" % where)
 	eq(g.cell_name(8), "区划人口", "%s：第 9 格 = 区划人口" % where)
 	eq(g.cell_name(9), "", "%s：越界格（第 10 格）读不到东西" % where)
 	var c0: Rect2 = UiLayoutRes.card_cell_rect(0)
@@ -1857,6 +1879,9 @@ func _test_zone_recruit_via_card(main) -> void:
 	world.resources["food"] = 1000.0
 	world.resources["gold"] = 1000.0
 	zone["population"] = 10.0
+	# ★ 区划招募将领：1 级大本营上限 3 名（开局正好 3 名），先把等级拉到 3（上限 10）。
+	base.level = world.cfg.upgrade_max_level("base")
+	world.apply_building_level_hp(base)
 
 	main.input_ctrl.select_zone(zone)
 	main.hud.refresh()
@@ -1900,6 +1925,9 @@ func _test_zone_recruit_via_card(main) -> void:
 		world.cancel_zone_recruit(int(zone["id"]), 0, "p1")
 	main.hud.refresh()
 	ok(not q.showing(), "收尾：队列清空 → 五格收起来")
+	# 还原大本营等级（后面的建筑升级用例按 1 级写）。
+	base.level = 1
+	world.apply_building_level_hp(base)
 
 	main.input_ctrl.select_units([world.unit_by_id("general-1")])
 	main.hud.refresh()
@@ -3224,7 +3252,11 @@ func _test_detail_basic_stats(main) -> void:
 	ok(not gtext.contains("编制") and not gtext.contains("状态") and not gtext.contains("兵种"),
 		"★ 不再有编制 / 状态 / 兵种")
 	ok(not gtext.contains("已选中"), "★ 不再有「已选中 N 支部队」")
-	eq(gtext.split("\n").size(), 2, "★ 两列 = 两行（血量/移速、攻击/防御）")
+	# ★ 本轮新增：长枪兵有一条攻击特性，所以左列多一行小字（基础两行 + 特性一行）。
+	eq(gtext.split("\n").size(), 3,
+		"★ 两行基础 + 一行兵种特性（长枪兵：对骑兵伤害 +25%）")
+	ok(gtext.contains("对骑兵伤害 +25%"), "★ 攻击特性写在左列「攻击」下面（实际：%s）"
+		% gtext.replace("\n", "|"))
 
 	# 防御增益：士气免伤 / 易伤（只有这一套数据）
 	var old_morale: float = g1.morale
@@ -3257,7 +3289,9 @@ func _test_detail_basic_stats(main) -> void:
 			"★ 兵不显示「编制」「状态」")
 		ok(not stext.contains("兵种") and not stext.contains("已选中"),
 			"★ 兵也不显示「兵种」「已选中 N 支部队」")
-		eq(stext.split("\n").size(), 2, "★ 兵也是两行（血量/移速、攻击/防御）")
+		eq(stext.split("\n").size(), 3, "★ 兵也是两行基础 + 一行兵种特性")
+		ok(stext.contains("伤害 +"), "★ 兵的详情同样显示它自己的特性（实际：%s）"
+			% stext.replace("\n", "|"))
 
 	var foe = world.spawn_enemy(g1.tx + 5, g1.ty)
 	if foe != null:

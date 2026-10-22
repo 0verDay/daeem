@@ -103,6 +103,11 @@ var camera_edge_size: float = 44.0
 
 ## ---- 框选：左键移动超过多少像素才算「拖框」（见 config.json 的 ui._comment）----
 var drag_select_min_px: float = 6.0
+## ★★ 框选时给**单位立牌**四周加的容差（屏幕像素；2026.10.22 按玩家反馈调松）。
+## 判定是「立牌的屏幕矩形 ∩ 选框」，这个数把矩形向外扩一圈 —— 与 `drag_select_min_px`
+## 同一个单位（屏幕像素），所以相机拉近 / 拉远时手感一致。
+## ⚠️ 只作用于**单位**：建筑仍然按它自己的格子 / 屏幕矩形判（建筑本来就好点）。
+var box_select_pad_px: float = 5.0
 
 ## ---- ★★ 通用滚动容器 / 入场淡入的手感（见 config.json 的 ui._comment）----
 ## 前四个里除 `scroll_resistance` 之外都是**屏幕像素**（与 drag_select_min_px 同一种判据，
@@ -187,6 +192,13 @@ var unit_speed: float = 0.6
 var unit_forest_mult: float = 0.5
 var unit_hp_max: float = 200.0
 var unit_radius_factor: float = 0.1
+## ★★ 单位拾取的额外容差（见 config.json 的 `unit._pick_comment`）。
+##  · `unit_hit_pad_px`：**脚底圆**的额外半径，**像素** —— `view/input_controller.gd`
+##    的 `_unit_hit_norm` 会除以 `render.cell_px` 换成格（所以世界判定口径不变）；
+##  · `unit_pick_pad_px`：**立牌**屏幕矩形四周的容差，**屏幕像素**。
+## 两者都在 `_cache_scalars()` 里夹到 ≥0；调大 = 更好点中，调太大 = 容易点到旁边的东西。
+var unit_hit_pad_px: float = 8.0
+var unit_pick_pad_px: float = 4.0
 
 ## ---- ★★ 战争迷雾（config.json 的 fog 段 + unit.types.<id>.vision）----
 ##
@@ -315,8 +327,27 @@ var _combat_fallback: Dictionary = {"damage": 10.0, "range": 1.0, "cooldown_sec"
 
 ## 战斗数值表：**载入时建好、之后只读**（原先每次 unit_combat_of() 都新建一个字典）
 var combat_enabled: bool = true
+## ★★ 受击反击（2026.10.22）：被**其他单位**打中时，立刻转为攻击那个单位。
+##
+## 规则（见 `unit.order_retaliate` / `world.on_unit_attacked`）：
+##   · 只影响**被打中的那一个单位**，不连带整队；
+##   · **打断程序命令**（招募期的待命、将领死亡后的救援 / 巡逻、驻防巡逻…）；
+##   · **不打断玩家命令**（移动 / 攻击 / 行军攻击还在执行时，挨打也照旧执行）；
+##   · 建筑（箭塔）打过来**不触发** —— 需求是「被其他单位攻击」。
+## 关掉它 = 退回旧行为（挨打只会被自动索敌接管，不会脱离程序命令）。
+var retaliation_enabled: bool = true
 var aggro_range: float = 4.0
 var leash_factor: float = 1.8
+## ★★ **减伤封顶**（本轮新增；config.combat.damage_reduction_cap，默认 0.75）。
+##
+## 口径（用户拍板）：所有**减伤来源相加**，再夹到这个上限 —— 现在只有两条来源：
+##   · 士气高位的免伤 `morale.damage_reduction`（50%）；
+##   · 骑手的兵种特性「对远程减伤」（`unit.types.rider.traits.ranged_reduction`，25%）。
+## 于是 50% + 25% = 75%，恰好等于默认上限；以后再加减伤来源时改**这一个数**就能封顶，
+## 不用去每个来源里各写一份夹取。
+## ⚠️ 易伤（士气低位）**不进**这个加法：它是减伤之后再乘一次（×1.5），
+##    而且与高位免伤互斥（100 / 50 两个阈值不可能同时满足）。
+var damage_reduction_cap: float = 0.75
 ## ★★ 因为追击上限（leash）放弃之后，多久**不许再自动锁定单位**（秒）。
 ##
 ## 为什么必须有它（实测报回来的 bug：单位在区划边界「原地抽搐」）：
@@ -530,6 +561,8 @@ func _cache_scalars() -> void:
 	#     教训：改动长函数时，替换块的两端要落在**函数边界**上，别停在函数体中间。
 	camera_edge_size = num("camera.edge_size", 44.0)
 	drag_select_min_px = num("ui.drag_select_min_px", 6.0)
+	# ★ 框选给立牌留的容差（屏幕像素；0 = 选框必须真的压到牌）
+	box_select_pad_px = maxf(0.0, num("ui.box_select_pad_px", 5.0))
 	# ★★ 滚动 / 淡入（见字段声明处的注释）。夹取的理由：
 	#   · resistance 写成 0 会让阻尼公式的分子恒为 0 ⇒ 列表**永远拉不动**（看着像坏了），
 	#     上限 2.0 只是拦住「写了一个数量级都不对」的笔误；
@@ -573,6 +606,12 @@ func _cache_scalars() -> void:
 	unit_forest_mult = num("unit.forest_mult", 0.5)
 	unit_hp_max = num("unit.hp_max", 200.0)
 	unit_radius_factor = num("unit.radius_factor", 0.1)
+	# ★★ 单位拾取容差（见 config.json 的 unit._pick_comment / `_unit_hit_norm`）。
+	#   · hit_pad_px：脚底圆的额外半径（**像素**，除 cell_px 换成格去判世界坐标）；
+	#   · pick_pad_px：立牌屏幕矩形四周的容差（**屏幕像素**）。
+	#   ★ 都在这里算成字段：拾取在鼠标 / 悬停路径上，不能每次 `num("unit.hit_pad")`。
+	unit_hit_pad_px = maxf(0.0, num("unit.hit_pad", 8.0))
+	unit_pick_pad_px = maxf(0.0, num("unit.pick_pad_px", 4.0))
 
 	# ★ 迷雾：开关 / 兜底视野 / 遮罩颜色（颜色走 parse_color，与 colors.* 同一套写法）
 	fog_enabled = bool_val("fog.enabled", true)
@@ -624,6 +663,10 @@ func _cache_scalars() -> void:
 	combat_enabled = bool_val("combat.enabled", true)
 	aggro_range = num("combat.aggro_range", 4.0)
 	leash_factor = num("combat.leash_factor", 1.8)
+	# ★ 受击反击开关（默认开；关掉 = 挨打不会脱离程序命令）
+	retaliation_enabled = bool_val("combat.retaliation_enabled", true)
+	# ★ 减伤封顶：夹在 (0, 1) —— 1 = 完全不掉血（只可能是配错的数），0 = 等于没有封顶。
+	damage_reduction_cap = clampf(num("combat.damage_reduction_cap", 0.75), 0.0, 0.999)
 	leash_release_cd = maxf(0.0, num("combat.leash_release_cd", 0.5))
 	rescue_aggro_mult = clampf(num("combat.rescue_aggro_mult", 0.4), 0.0, 1.0)
 	repath_sec = num("combat.repath_sec", 0.3)
@@ -759,6 +802,38 @@ func _recompute_projection() -> void:
 #   kind 不该让那个单位变成 60 血的敌人 —— 那正是本项目踩过的坑（见 _combat_fallback）。
 # ------------------------------------------------------------------
 
+## ★★ 把 config 里的 `unit.types.<id>.traits` 整理成**两键固定**的字典（载入时一次）。
+##
+## 输出形状（之后只读，不再判断类型）：
+##   · `attack_vs_class`：`{ <兵种大类 id>: <比例> }` —— 打该大类的单位时伤害 ×(1+比例)；
+##   · `ranged_reduction`：受到远程伤害时的减伤比例。
+##
+## ⚠️ 为什么要在这里「洗一遍」而不是让读的地方直接 `td.get("traits")`：
+##   1. 手写配置可能漏键 / 写错类型 —— 载入时洗掉，运行期就只剩干净的标量；
+##   2. `attack_vs_class` 的键必须是**真实存在的大类**（unit.classes）——
+##      写错一个（比如 " Cavalry "）宁可当没写，也不要留一条永远匹配不上的特性；
+##   3. 这是 `unit.create` 每次出生只读一次的东西，洗一次比每次判断类型便宜。
+func _normalize_traits(raw: Variant) -> Dictionary:
+	var out: Dictionary = {"attack_vs_class": {}, "ranged_reduction": 0.0}
+	if typeof(raw) != TYPE_DICTIONARY:
+		return out
+	var d: Dictionary = raw
+	var av: Variant = d.get("attack_vs_class", null)
+	if typeof(av) == TYPE_DICTIONARY:
+		for cls in (av as Dictionary).keys():
+			var key := String(cls)
+			# 只认已经定义过的大类：写错的键在这里被丢掉（见上面第 2 条）。
+			if not _unit_classes.has(key):
+				continue
+			var v: Variant = (av as Dictionary)[cls]
+			if typeof(v) == TYPE_INT or typeof(v) == TYPE_FLOAT:
+				out["attack_vs_class"][key] = maxf(0.0, float(v))
+	var rr: Variant = d.get("ranged_reduction", 0.0)
+	if typeof(rr) == TYPE_INT or typeof(rr) == TYPE_FLOAT:
+		out["ranged_reduction"] = clampf(float(rr), 0.0, 1.0)
+	return out
+
+
 ## 载入时整理单位类型表（**只读**，之后别再改它）。
 func _cache_unit_types() -> void:
 	_unit_types = {}
@@ -802,6 +877,9 @@ func _cache_unit_types() -> void:
 				"radius_factor": clampf(float(td.get("radius_factor", unit_radius_factor)), 0.01, 0.5),
 				# ★ 视野半径（格）：战争迷雾用。没写 → fog.vision_default。
 				"vision": maxf(0.0, float(td.get("vision", fog_vision_default))),
+				# ★★ 兵种特性（本轮新增）：见 config.json 的 unit._traits_comment。
+				#   载入时就整理成**两键固定**的字典（缺键补 0），于是读的地方不用判断类型。
+				"traits": _normalize_traits(td.get("traits", null)),
 				"combat": {
 					"damage": maxf(0.0, float(td.get("damage", 0.0))),
 					"range": maxf(0.0, float(td.get("range", 1.0))),
@@ -1171,6 +1249,18 @@ func unit_is_ranged(id: String) -> bool:
 	return bool(unit_type_entry(id).get("ranged", false))
 
 
+## ★★ 某个单位类型的**兵种特性**（本轮新增；载入时已洗成两键固定，见 `_normalize_traits`）。
+##
+## 返回 `{ "attack_vs_class": { <大类 id>: <比例> }, "ranged_reduction": <比例> }`。
+## 参数可以是兵种 id，也可以是 kind（将领会被换算成它所属的类型，与 unit_hp_of 同口径）。
+## ⚠️ 查不到的类型返回**空字典**（不是造一份默认值）：`unit.create` 会按缺键走 0，
+##    这样「未知类型没有特性」是天然成立的，不必再判一次。
+## ★ 只在单位出生时读一次（结果抄到单位的两个字段上）—— 它不在每帧路径上。
+func unit_traits_of(id: String) -> Dictionary:
+	var t: Variant = unit_type_entry(id).get("traits", null)
+	return t if typeof(t) == TYPE_DICTIONARY else {}
+
+
 ## 大类的显示名（步兵 / 骑兵）—— 不带远近
 func unit_class_name(id: String) -> String:
 	var c: Variant = _unit_classes.get(unit_class_of(id), null)
@@ -1189,6 +1279,19 @@ func unit_class_line(id: String) -> String:
 	if unit_is_ranged(id):
 		return String(cd.get("ranged_name", cd.get("name", "")))
 	return String(cd.get("name", ""))
+
+
+## ★ **大类 id** → 显示名（步兵 / 骑兵）。
+##
+## ⚠️ 与 `unit_class_name(id)` 的区别（很容易用错）：`unit_class_name` 的参数是**单位类型 id**
+##   （"rider"），本函数的参数是**大类 id 本身**（"cavalry"）。
+##   兵种特性 `attack_vs_class` 的键就是大类 id，HUD 拼「对骑兵伤害 +25%」要用这一条 ——
+##   用错的话 `unit_class_of("cavalry")` 查不到这个类型，会兜底成步兵（文案全变「对步兵」）。
+func class_display_name(class_id: String) -> String:
+	var c: Variant = _unit_classes.get(class_id, null)
+	if typeof(c) != TYPE_DICTIONARY:
+		return class_id
+	return String((c as Dictionary).get("name", class_id))
 
 
 # ------------------------------------------------------------------
@@ -1515,6 +1618,13 @@ func building_attackable(type: String) -> bool:
 	return bool_val("building.%s.attackable" % type, false)
 
 
+## 被摧毁后是否真的会倒下（默认 true；只有配置显式写 false 才会锁血）。
+## ★ 旧口径走 `pvp.destructible_base`（单机永远 false ⇒ 大本营锁血）；
+##   现在改读建筑自己的 `building.<type>.destructible`，`pvp` 那个键留给以后的 PvP 规则。
+func building_destructible(type: String) -> bool:
+	return bool_val("building.%s.destructible" % type, true)
+
+
 ## ★★ 某个等级的攻击三件套 {damage, range, cooldown}：
 ##   等级行里写了就用它（`upgrade.levels.<type>[k].damage` …），没写就用
 ##   `building.<type>` 那一档的基础值。← 于是「现在的数据」逐位不变（等级行里没写）。
@@ -1648,8 +1758,14 @@ func _cache_techs() -> void:
 		#   逻辑层不写 UI 文案，效果说明是数据里给的）。
 		var line := String(src.get("line", ""))
 		var desc := String(src.get("desc", ""))
+		# ★ 科技「阶」= 科技页的**行**（第一行一阶、第二行二阶、第三行三阶）。
+		#   九格是列优先转置的，所以「行」= config 顺序里的 `index % 3`。
+		var tier_raw: Variant = src.get("tier", null)
+		var tier: int = int(tier_raw) if (typeof(tier_raw) == TYPE_INT or typeof(tier_raw) == TYPE_FLOAT) \
+			else (_tech_list.size() % 3) + 1
 		var entry := {
 			"id": id,
+			"tier": clampi(tier, 1, 3),
 			"name": name,
 			"line": line,
 			"desc": desc,
@@ -1676,6 +1792,12 @@ func has_tech(id: String) -> bool:
 ## 同一时间最多能启用几个（科技页拒绝第 4 个时的判据）
 func tech_max() -> int:
 	return tech_max_active
+
+
+## 某条科技的「阶」（1 / 2 / 3；未知 id 返回 0）
+func tech_tier(id: String) -> int:
+	var e := tech_entry(id)
+	return int(e.get("tier", 0)) if not e.is_empty() else 0
 
 
 # ------------------------------------------------------------------
@@ -1708,12 +1830,19 @@ func _cache_upgrades() -> void:
 				var v: Variant = d.get(key, null)
 				if typeof(v) == TYPE_INT or typeof(v) == TYPE_FLOAT:
 					atk[key] = float(v)
+			# ★ 大本营每级限制（其它建筑类型不写这些键 = 不会出现）。
+			var limits: Dictionary = {}
+			for key in ["max_generals", "retinue_cap_bonus", "max_techs", "max_tech_tier"]:
+				var lv: Variant = d.get(key, null)
+				if typeof(lv) == TYPE_INT or typeof(lv) == TYPE_FLOAT:
+					limits[key] = int(lv)
 			table.append({
 				"level": int(d.get("level", table.size() + 1)),
 				"hp_mult": maxf(0.01, float(d.get("hp_mult", 1.0))),
 				"cost": (cost as Dictionary) if typeof(cost) == TYPE_DICTIONARY else {},
 				"time_sec": maxf(0.0, float(d.get("time_sec", 0.0))),
 				"attack": atk,
+				"limits": limits,
 			})
 		_upgrade_levels[String(type)] = table
 
@@ -1761,6 +1890,21 @@ func upgrade_cost_to(type: String, level: int) -> Dictionary:
 func upgrade_time_to(type: String, level: int) -> float:
 	var row := upgrade_row(type, level + 1)
 	return maxf(0.0, float(row.get("time_sec", 0.0)))
+
+
+## 某一级的**整数限制值**（大本营的 max_generals / retinue_cap_bonus / max_techs / max_tech_tier）。
+## 该级没写 / 越界 → default。
+func upgrade_limit(type: String, level: int, key: String, default: int) -> int:
+	var row := upgrade_row(type, level)
+	if row.is_empty():
+		return default
+	var limits: Variant = row.get("limits", null)
+	if typeof(limits) != TYPE_DICTIONARY:
+		return default
+	var v: Variant = (limits as Dictionary).get(key, null)
+	if typeof(v) == TYPE_INT or typeof(v) == TYPE_FLOAT:
+		return int(v)
+	return default
 
 
 # ------------------------------------------------------------------

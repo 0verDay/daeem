@@ -510,6 +510,8 @@ func _draw_buildings() -> void:
 		var col: Color
 		if b.type == BuildingRes.TYPE_ZONE_CENTER:
 			col = cfg.color("zone_center")
+		elif b.neutralized:
+			col = cfg.side_color_neutral
 		elif String(b.owner) == "":
 			col = cfg.color("wall") if b.type == BuildingRes.TYPE_WALL else cfg.color("tower")
 		else:
@@ -531,8 +533,10 @@ func _draw_units() -> void:
 		if not _unit_visible(u):
 			continue
 		var p: Vector2 = o + u.pos * s
+		var col: Color = cfg.side_color_neutral if u.neutralized \
+			else _faction_color(String(u.faction))
 		draw_rect(Rect2(p - Vector2(UNIT_R, UNIT_R), Vector2(UNIT_R, UNIT_R) * 2.0),
-			_faction_color(String(u.faction)), true)
+			col, true)
 
 
 ## ★★ 迷雾：没视野的格子盖一层灰（与大地图同一份掩码、同一个颜色）。

@@ -115,6 +115,9 @@ var player_factions: Array[String] = []
 ## ★★ 红点性 AI 的状态表（见 logic/red_dot_ai.gd 的 setup）：
 ## 每项 {faction, params, spawn_region, timer, waves_left, serial}。
 var reddot_states: Array = []
+## ★★ 大本营被击毁后进入「中立化」的阵营：faction → true。
+##   它们的单位 / 建筑保留 owner（区划归属不变），但停摆、变灰、不再接受命令。
+var neutralized_factions: Dictionary = {}
 ## ★★ 这一局挂的关卡（`logic/level.gd` 的 Level；**null = 不做战役**）。
 ##
 ## ★ 它只有一个用途：让 AI / 目标在运行时能问「关卡数据里写了什么」
@@ -312,6 +315,7 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	_enemy_serial = 0
 	enemy_spawn_timer = 0.0
 	debug_auto_spawn = false
+	neutralized_factions = {}
 	time = 0.0
 	# ★★ 每局换一个随机盐（见 `rand_salt` 的说明）。测试要可复现就直接赋值。
 	rand_salt = int(randi()) & 0x7FFFFFFF
@@ -1650,6 +1654,8 @@ func _is_ai_piloted(faction: String) -> bool:
 func ai_kind_of(faction: String) -> String:
 	if faction == "":
 		return LevelRes.AI_NONE
+	if is_neutralized_faction(faction):
+		return LevelRes.AI_NONE          # 大本营没了：这一方不再有 AI
 	for e in ai_roster_cfg:
 		var it: Dictionary = e
 		if String(it.get("id", "")) != faction:
@@ -1895,6 +1901,9 @@ func can_recruit(kind: String, leader_id: String, faction: String) -> String:
 		return reason
 	if not leader_zone_owned(leader):
 		return "zone"
+	# ★★ 编制上限（含已排队的那几个）：满编就拒绝再招。
+	if leader.retinue_size(self) >= effective_retinue_cap(leader):
+		return "cap"
 	if leader.train_queue_size() >= recruit_queue_max():
 		return "queue_full"
 	return ""
@@ -1961,6 +1970,8 @@ func leader_zone_owned(leader) -> bool:
 func is_order_locked(u) -> bool:
 	if u == null or not u.alive:
 		return false
+	if u.neutralized:
+		return true                    # 大本营没了：这一方不再接受任何指令
 	if u.is_downed():
 		return true
 	if u.is_training():
@@ -1979,6 +1990,8 @@ func is_order_locked(u) -> bool:
 func order_lock_reason(u) -> String:
 	if u == null or not u.alive:
 		return "dead"
+	if u.neutralized:
+		return "neutralized"
 	if u.is_downed():
 		return "downed"
 	if u.is_training():
@@ -2063,6 +2076,41 @@ func enter_near_death(leader) -> bool:
 	push_event({"type": "leader_downed", "unit": leader, "faction": String(leader.faction)})
 	rally_retinue_to_leader(leader)
 	return true
+
+
+## ★★ 受击反击（2026.10.22）：一个单位被**敌方单位**打中时，立刻转为打那个单位。
+##
+## 需求口径：
+##   · **打断程序命令** —— 招募期的待命、将领倒下后的救援 / 巡逻、驻防巡逻都算；
+##   · **不打断玩家命令** —— 移动 / 攻击 / 行军攻击还在执行时，挨打照旧执行；
+##   · 只影响**被打中的这一个单位**（不是整队）；
+##   · 建筑（箭塔）打过来**不触发** —— 需求原话是「被其他单位攻击」。
+##
+## ★ 这里只做「该不该反击」的判定；具体怎么转向（清掉旧命令 / 锁目标 / 不受 leash）
+##   全在 `unit.order_retaliate()` —— 与玩家命令、程序命令共用单位上的那一套状态。
+##
+## @return true = 这次反击真的被下达了
+func on_unit_attacked(victim, attacker) -> bool:
+	if victim == null or attacker == null:
+		return false
+	if not cfg.retaliation_enabled or not cfg.combat_enabled:
+		return false
+	if not victim.alive or victim.is_downed():
+		return false
+	if victim.neutralized:
+		return false                       # 中立化单位：挨打也不还手
+	# ★ 只认单位：建筑没有 `is_downed()`。用鸭子类型而不是 preload unit.gd ——
+	#   world 已经 preload 了单位，但这里保持「按能力判」与 combat 的写法一致。
+	if not attacker.has_method("is_downed"):
+		return false
+	if not attacker.alive or not attacker.is_attackable():
+		return false
+	if FactionRes.same_side_for_attack(String(attacker.faction), String(victim.faction)):
+		return false
+	# ★★ 玩家命令优先：还在执行玩家命令 ⇒ 挨打也不反击（需求原话）。
+	if victim.has_active_player_order():
+		return false
+	return bool(victim.order_retaliate(self, cfg, attacker))
 
 
 ## 让某个将领辖下的存活部队**立刻向它（的倒下点）行军攻击**。
@@ -2662,6 +2710,10 @@ func can_recruit_zone(kind: String, zone_id: int, faction: String) -> String:
 		return "zone_not_found"
 	if not accepts_owner(String(z["owner"]), faction):
 		return "zone_owner"
+	# ★★ 将领数量硬上限（由这一方大本营的等级决定）。
+	if ConfigRes.general_index_of(kind) >= 0 \
+			and general_count_of(faction) >= base_max_generals(faction):
+		return "general_limit"
 	if zone_recruit_queue_size(z) >= zone_recruit_queue_max():
 		return "queue_full"
 	return ""
@@ -3350,6 +3402,112 @@ func refresh_zone_production() -> void:
 
 
 # ------------------------------------------------------------------
+# 大本营等级限制 / 中立化
+#
+# ★★ 大本营的等级（upgrade.levels.base[k]）除了 hp_mult，还带四条限制：
+#    max_generals / retinue_cap_bonus / max_techs / max_tech_tier。
+#    这里**每次现算**（不缓存）：升级完成、快照应用、客户端重放都会自然读到新值。
+# ------------------------------------------------------------------
+
+## 某一方**存活大本营**的等级。没有大本营 → 0（= 不受限：AI / NPC / 已被拆掉）。
+func base_level_of(faction: String) -> int:
+	var b = find_base_of(String(faction))
+	return int(b.level) if b != null else 0
+
+
+func base_limit(faction: String, key: String, default: int) -> int:
+	var lv := base_level_of(faction)
+	if lv <= 0:
+		return default
+	return cfg.upgrade_limit("base", lv, key, default)
+
+
+## 最多拥有几名将领（无大本营 → 不限制）
+func base_max_generals(faction: String) -> int:
+	return base_limit(faction, "max_generals", 9999)
+
+
+## 所有将领编制上限 +N
+func base_retinue_bonus(faction: String) -> int:
+	return maxi(0, base_limit(faction, "retinue_cap_bonus", 0))
+
+
+## 某位将领当前的**有效编制上限** = 兵种档位上限 + 大本营等级加成。
+func effective_retinue_cap(leader) -> int:
+	if leader == null:
+		return ConfigRes.GENERAL_CAP_DEFAULT
+	# ★ 兼容测试 / 视图递进来的「假队长字典」（它们只带 general_index / faction 两个键）。
+	var idx: int = -1
+	var faction := ""
+	if leader is Dictionary:
+		var d: Dictionary = leader
+		idx = int(d.get("general_index", -1))
+		faction = String(d.get("faction", ""))
+	else:
+		idx = int(leader.general_index)
+		faction = String(leader.faction)
+	var base_cap: int = cfg.general_cap_at(idx) if cfg != null else ConfigRes.GENERAL_CAP_DEFAULT
+	return maxi(0, base_cap + base_retinue_bonus(faction))
+
+
+## 某一方现在有几名将领（存活 + 区划招募队列里排着的将领）。
+## ★ 队列里那部分必须算：否则可以一次排满 3 个，绕过上限。
+func general_count_of(faction: String) -> int:
+	var f := String(faction)
+	var n := 0
+	for u in units:
+		if u.alive and u.is_general() and String(u.faction) == f:
+			n += 1
+	if zones != null:
+		for z in zones.zones:
+			var zd: Dictionary = z
+			var who := String(zd.get("train_faction", zd.get("owner", "")))
+			if who != f:
+				continue
+			if ConfigRes.general_index_of(String(zd.get("train_kind", ""))) >= 0:
+				n += 1
+			for q in (zd.get("train_queue", []) as Array):
+				if ConfigRes.general_index_of(String(q)) >= 0:
+					n += 1
+	return n
+
+
+func is_neutralized_faction(faction: String) -> bool:
+	return neutralized_factions.has(String(faction))
+
+
+## ★★ 大本营被击毁：该阵营的残余单位 / 建筑停摆变灰（保留归属）。
+##   只执行一次；重复调用什么都不做。
+func neutralize_faction(faction: String) -> void:
+	var f := String(faction)
+	if f == "" or neutralized_factions.has(f):
+		return
+	neutralized_factions[f] = true
+	for u in units.duplicate():
+		if String(u.faction) != f:
+			continue
+		# 招募中的单子先按既有退款路径清掉（钱 / 人口都退），再冻结单位。
+		if u.is_training() or not u.train_queue.is_empty():
+			_release_recruit(u, true, "neutralized")
+		u.make_neutral()
+	for b in building_list:
+		if not b.alive or String(b.owner) != f:
+			continue
+		b.neutralized = true
+		b.last_target = null
+		b.cooldown_left = 0.0
+		b.upgrade_remaining = 0.0
+		b.upgrade_total = 0.0
+	# 红点性 AI 也一起停掉（否则它还会继续刷兵）
+	var keep: Array = []
+	for st in reddot_states:
+		if String((st as Dictionary).get("faction", "")) != f:
+			keep.append(st)
+	reddot_states = keep
+	push_event({"type": "faction_neutralized", "faction": f})
+
+
+# ------------------------------------------------------------------
 # 科技（logic/tech.gd 是规则，这里是权威状态的持有者与落点）
 #
 # ★★ 需求原话：「玩家同一时间仅可启用三个占位科技……当玩家启用的科技数到 3 时，
@@ -3387,12 +3545,36 @@ func is_tech_active(id: String, faction: String = "") -> bool:
 
 ## 还能再启用几条（界面显示「2/3」这类用；满了就是 0）
 func tech_remaining_slots(faction: String = "") -> int:
-	return tech.remaining_slots(_tech_faction(faction)) if tech != null else 0
+	if tech == null:
+		return 0
+	var f := _tech_faction(faction)
+	return maxi(0, tech_max_active(f) - tech.active_count(f))
 
 
-## 同一时间最多启用几条
-func tech_max_active() -> int:
-	return tech.max_active() if tech != null else 3
+## 同一时间最多启用几条（由**这一方大本营的等级**决定）
+func tech_max_active(faction: String = "") -> int:
+	var f := _tech_faction(faction)
+	var lv := base_level_of(f)
+	if lv <= 0:
+		return tech.max_active() if tech != null else 3
+	return maxi(1, cfg.upgrade_limit("base", lv, "max_techs", 3))
+
+
+## 最高能启用第几阶科技（1 / 2 / 3）
+func tech_max_tier(faction: String = "") -> int:
+	var f := _tech_faction(faction)
+	var lv := base_level_of(f)
+	if lv <= 0:
+		return 3
+	return clampi(cfg.upgrade_limit("base", lv, "max_tech_tier", 3), 1, 3)
+
+
+## 这条科技现在**能不能启用**（大本营等级 + 已启用数量）。"" = 可以。
+func tech_can_activate(id: String, faction: String = "") -> String:
+	if tech == null:
+		return "unknown"
+	var f := _tech_faction(faction)
+	return tech.can_activate(id, f, tech_max_active(f), tech_max_tier(f))
 
 
 ## ★★ 科技页九格的**显示数据**（名字 / 第二行小字 / 悬停详情 / 是否已启用）。
@@ -3412,12 +3594,18 @@ func tech_entries(faction: String = "") -> Array:
 			continue
 		var e: Dictionary = item
 		var id := String(e.get("id", ""))
+		var on: bool = active.has(id)
+		var reason := "" if on else tech_can_activate(id, f)
 		out.append({
 			"id": id,
+			"tier": int(e.get("tier", 0)),
 			"name": String(e.get("name", id)),
 			"line": String(e.get("line", "")),
 			"desc": String(e.get("desc", "")),
-			"active": active.has(id),
+			"active": on,
+			# ★ 已启用的永远可点（点它 = 弃用）；未启用的看大本营等级 / 名额。
+			"available": on or reason == "",
+			"reason": reason,
 		})
 	return out
 
@@ -3440,7 +3628,7 @@ func set_tech_active(id: String, on: bool, faction: String = "") -> bool:
 	#    已启用的那条**不占新名额**（点它是弃用），不能被 limit 拦住。
 	var was: bool = tech.is_active(id, f)
 	if on and not was:
-		var reason := tech.can_activate(id, f)
+		var reason := tech_can_activate(id, f)
 		if reason != "":
 			# ★ 带上 `f`（解析出来的那一方，不是可能为空的形参）—— 阵营 AI 也会走
 			#   `set_tech_active()`，不带阵营的话界面会把 AI 的「名额满了」当成玩家的报错。
@@ -3953,6 +4141,10 @@ func _collect_destroyed_buildings() -> void:
 	for b in building_list.duplicate():
 		if b.alive:
 			continue
+		# ★★ 大本营倒下 ⇒ 该阵营整体中立化（保留归属、停摆变灰）。
+		#   在移除之前做：移除之后 owner 还在，但这里只处理一次、语义更清楚。
+		if String(b.type) == BuildingRes.TYPE_BASE and String(b.owner) != "":
+			neutralize_faction(String(b.owner))
 		remove_building(b, true)
 		removed = true
 	if removed:
@@ -3971,6 +4163,44 @@ func _collect_destroyed_buildings() -> void:
 # ------------------------------------------------------------------
 # 胜负（对战用；单机永远不判 —— 大本营本来就打不掉）
 # ------------------------------------------------------------------
+
+## ★★ 开发者快捷键 / 测试用：把本局目标**直接判成**胜利或失败。
+##
+## 与 `ObjectiveRes.update()` 的区别：它不看计时、不看区划归属，也不等下一帧 ——
+##   这就是「立即」。但仍然走**同一条结算形状**：
+##   ① 写 `objective_state.state / reason`（界面、快照读到的都是它）；
+##   ② 把 `_objective_reported` 记成同一个状态 —— 于是之后即使继续 tick，
+##      `tick()` 也不会再补发一条 `level_end`（去重口径与真结算完全一致）。
+##
+## @param result "win" / "lose"（其它值明确失败：宁可什么都不做，也不猜）
+## @param reason 判负原因短名（胜局会被清空）
+## @return 一条与正常结算同形的 `level_end` 事件；参数非法时返回空字典
+func force_outcome(result: String, reason: String = "") -> Dictionary:
+	var st := ""
+	if result == "win":
+		st = ObjectiveRes.STATE_WON
+	elif result == "lose":
+		st = ObjectiveRes.STATE_LOST
+	else:
+		push_error("force_outcome：result 只能是 win / lose（收到 %s）" % result)
+		return {}
+	# 老路径（按图直接开局）也有一份空 objective_state；这里只是兜底，
+	# 正常 create()/create_from_level() 之后它一定已经被 reset() 建好。
+	if objective_state.is_empty():
+		objective_state = {
+			"kind": "", "zone": -1, "sec": 0.0, "held": 0.0,
+			"state": ObjectiveRes.STATE_RUNNING, "reason": "",
+			"defend": [], "fail": [], "seat": "",
+		}
+	objective_state["state"] = st
+	objective_state["reason"] = "" if st == ObjectiveRes.STATE_WON else reason
+	_objective_reported = st
+	return {
+		"type": "level_end",
+		"result": result,
+		"reason": String(objective_state.get("reason", "")),
+	}
+
 
 func check_victory(_dt: float) -> void:
 	if not pvp_enabled:

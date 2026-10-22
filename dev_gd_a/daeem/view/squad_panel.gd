@@ -133,7 +133,10 @@ func _collect_teams() -> Array:
 ## ★ 队伍人数可能暂时超过上限（老存档 / 招募），此时显示更大的那个，避免「7/5」。
 func _formation_cap(leader, count: int) -> int:
 	var cap := UiLayoutRes.UNIT_CAP
-	if cfg != null and cfg.has_method("general_cap_at"):
+	# ★ 唯一口径：兵种档位上限 + 大本营等级加成（world.effective_retinue_cap）。
+	if world != null and world.has_method("effective_retinue_cap"):
+		cap = int(world.effective_retinue_cap(leader))
+	elif cfg != null and cfg.has_method("general_cap_at"):
 		var idx := int(leader.general_index)
 		if idx >= 0:
 			cap = int(cfg.general_cap_at(idx))

@@ -762,6 +762,9 @@ func update(cfg: ConfigRes, dt: float, units: Array, factions: Array) -> void:
 		var counts: Dictionary = {}
 		var sides: Dictionary = {}
 		for u in here:
+			# ★ 中立化单位不再参与占领：既不读条，也不冻结别人的进度。
+			if u.neutralized:
+				continue
 			var fid := String(u.faction)
 			counts[fid] = int(counts.get(fid, 0)) + 1
 			sides[FactionRes.side_of(fid)] = true

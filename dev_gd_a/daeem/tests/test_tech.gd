@@ -267,7 +267,18 @@ func _quiet(cfg) -> RefCounted:
 		c = cfg
 	else:
 		c.combat_enabled = false
-	return require_world_with_escorts(c, 3)
+	var w = require_world_with_escorts(c, 3)
+	_max_base(w)
+	return w
+
+
+## 这些是**科技系统本身**的旧用例：把大本营拉到 3 级，免得 1 级的名额 / 阶数限制
+## 把「最多 3 条」那组断言挡掉。1 级 / 2 级的限制由 test_base_limits.gd 专门验。
+func _max_base(w) -> void:
+	var b = w.find_base_of(String(w.my_faction))
+	if b != null:
+		b.level = w.cfg.upgrade_max_level("base")
+		w.apply_building_level_hp(b)
 
 func _no_income(w) -> void:
 	for z in w.zones.zones:

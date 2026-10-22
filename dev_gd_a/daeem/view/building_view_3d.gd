@@ -386,6 +386,20 @@ func _faction_or_type_color(b, owner: String) -> Color:
 				return cfg.color("zone_center")
 			_:
 				return cfg.color("wall")
+	# ★★ 中立化（大本营被拆）：保留归属，但一律画成中性灰。
+	if b.neutralized:
+		var nkey := "%s|%s|n" % [owner, String(b.type)]
+		var nhit: Variant = _color_cache.get(nkey, null)
+		if nhit != null:
+			return nhit
+		var nc: Color = cfg.side_color_neutral
+		match String(b.type):
+			"wall":
+				nc = nc.darkened(0.35)
+			"tower":
+				nc = nc.darkened(0.12)
+		_color_cache[nkey] = nc
+		return nc
 	var key := "%s|%s" % [owner, String(b.type)]
 	var hit: Variant = _color_cache.get(key, null)
 	if hit != null:
