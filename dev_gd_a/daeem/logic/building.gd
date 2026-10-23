@@ -132,6 +132,25 @@ var upgrade_total: float = 0.0
 var upgrade_cost_food: float = 0.0
 var upgrade_cost_gold: float = 0.0
 
+## ★★ 将领重生队列（只对**大本营**有意义；见 logic/world.gd 的 on_general_death）。
+##
+## · `respawn_queue` 的**队首**就是正在倒计时的那位，后面是排队的；
+## · 存的是**单位对象**（RefCounted）而不是 id：阵亡将领已经从 `world.units`
+##   摘掉了，这个队列是它唯一的引用（重生时再放回 units）；
+## · 串行：队首读完才轮到下一位（用户口径「进入大本营的招募队列」）；
+## · 队列不为空时 `is_respawning()` 为真，`upgrade.can_upgrade()` 会拒新升级。
+var respawn_queue: Array = []       # [{ "unit": <RefCounted>, "secs": float }]
+var respawn_active: bool = false
+var respawn_remaining: float = 0.0
+var respawn_total: float = 0.0
+
+## ★ 客机展示用（快照写入；权威侧自己是空的）。
+##   ⚠️ 客机不持有死将对象，所以只同步「几个人 / 当前是谁 / 剩几秒」这一组展示字段。
+var respawn_remote_count: int = 0
+var respawn_remote_remaining: float = 0.0
+var respawn_remote_total: float = 0.0
+var respawn_remote_name: String = ""
+
 ## ★★ 视野半径（**格**）—— 战争迷雾用（见 logic/fog.gd）。
 ##
 ## ★ 与单位的 `u.vision` 是**完全对称**的一处：数值来自 config 的
@@ -187,6 +206,11 @@ func max_hp_from_config(cfg: ConfigRes) -> float:
 ## `command_processor.apply_demolish` 都读它，别在两处各写一个类型判断。
 func is_invulnerable() -> bool:
 	return bool(def().get("invulnerable", false))
+
+
+## 是不是大本营（重生队列 / 升级阻塞都只针对它）。
+func is_base() -> bool:
+	return type == TYPE_BASE
 
 
 func is_neutralized() -> bool:
@@ -488,3 +512,129 @@ func upgrade_progress() -> float:
 ## 升级还要多久（秒）
 func upgrade_eta() -> float:
 	return maxf(0.0, upgrade_remaining)
+
+
+# ------------------------------------------------------------------
+# ★★ 将领重生队列（大本营专用；规则见 logic/world.gd 的 _tick_base_respawns）
+# ------------------------------------------------------------------
+
+## 大本营现在有没有重生任务（正在倒计时，或还有排队的）。
+## ★ 客机侧由快照写入 `respawn_remote_count`，所以这个判据同时覆盖两边。
+func is_respawning() -> bool:
+	return respawn_active or not respawn_queue.is_empty() or respawn_remote_count > 0
+
+
+## 队列里一共有几位（含正在倒计时的那位）。
+func respawn_count() -> int:
+	if respawn_queue.is_empty() and respawn_remote_count > 0:
+		return respawn_remote_count
+	return respawn_queue.size()
+
+
+## 正在倒计时的那位（没有 → null；客机侧没有对象，返回 null）。
+func respawn_current():
+	if respawn_queue.is_empty():
+		return null
+	var e: Variant = respawn_queue[0]
+	if typeof(e) != TYPE_DICTIONARY:
+		return null
+	return (e as Dictionary).get("unit", null)
+
+
+## 当前正在重生的是谁（显示名；客机侧退回快照里的名字）。
+func respawn_current_name() -> String:
+	var u = respawn_current()
+	if u != null:
+		return String(u.name)
+	return respawn_remote_name
+
+
+## 当前这一位的读条进度（0~1；没有在倒计时 → 0）。
+func respawn_progress() -> float:
+	if respawn_queue.is_empty():
+		if respawn_remote_total <= 0.0:
+			return 0.0
+		return clampf(1.0 - respawn_remote_remaining / respawn_remote_total, 0.0, 1.0)
+	if not respawn_active or respawn_total <= 0.0:
+		return 0.0
+	return clampf(1.0 - respawn_remaining / respawn_total, 0.0, 1.0)
+
+
+## 当前这一位还要多久（秒）。
+func respawn_eta() -> float:
+	if respawn_queue.is_empty():
+		return maxf(0.0, respawn_remote_remaining)
+	return maxf(0.0, respawn_remaining)
+
+
+## 入队一位阵亡将领（`secs` = 它自己的重生时长）。
+func enqueue_respawn(unit, secs: float) -> void:
+	if unit == null:
+		return
+	respawn_queue.append({"unit": unit, "secs": maxf(0.0, secs)})
+	if not respawn_active:
+		_start_next_respawn()
+
+
+## 把队首提到「正在倒计时」（队列空 → 回到空闲）。
+func _start_next_respawn() -> void:
+	if respawn_queue.is_empty():
+		respawn_active = false
+		respawn_remaining = 0.0
+		respawn_total = 0.0
+		return
+	var e: Variant = respawn_queue[0]
+	respawn_active = true
+	var secs := 0.0
+	if typeof(e) == TYPE_DICTIONARY:
+		secs = float((e as Dictionary).get("secs", 0.0))
+	respawn_total = maxf(0.0, secs)
+	respawn_remaining = respawn_total
+
+
+## 推进当前这一位的倒计时。
+## @return 本帧完成重生的单位对象数组（调用方负责把它们放回 world.units）。
+## ★ 与招募读条同一套「一帧可能读完好几单」的预算算法（guard 防病态数据）。
+func tick_respawn_queue(dt: float) -> Array:
+	var done: Array = []
+	if not respawn_active:
+		_start_next_respawn()
+	var budget: float = maxf(0.0, dt)
+	var guard := 0
+	while respawn_active and guard < 16:
+		guard += 1
+		if respawn_remaining > budget:
+			respawn_remaining -= budget
+			break
+		budget -= respawn_remaining
+		respawn_remaining = 0.0
+		var e: Variant = respawn_queue.pop_front()
+		if typeof(e) == TYPE_DICTIONARY:
+			var u: Variant = (e as Dictionary).get("unit", null)
+			if u != null:
+				done.append(u)
+		_start_next_respawn()
+		if budget <= 0.0:
+			break
+	return done
+
+
+## 清空队列（大本营被摧毁 / 中立化 / 被强制移除时用）。
+## ★ 队列里是死将对象，清掉之后没有别的引用 → 它们就是**永久阵亡**。
+func clear_respawn_queue() -> void:
+	respawn_queue.clear()
+	respawn_active = false
+	respawn_remaining = 0.0
+	respawn_total = 0.0
+	respawn_remote_count = 0
+	respawn_remote_remaining = 0.0
+	respawn_remote_total = 0.0
+	respawn_remote_name = ""
+
+
+## 客机应用快照：只写展示字段（本机权威侧不走这里）。
+func apply_respawn_snapshot(count: int, remaining: float, total: float, who: String) -> void:
+	respawn_remote_count = maxi(0, count)
+	respawn_remote_remaining = maxf(0.0, remaining)
+	respawn_remote_total = maxf(0.0, total)
+	respawn_remote_name = who

@@ -58,28 +58,33 @@ func _test_world_setup(world, cfg) -> void:
 		ok(base_b.hp == base_b.hp_max, "大本营满血开局")
 		eq(base_b.owner, "p1", "大本营属于 player")
 
-	var generals := _units_of_kind(world, UnitRes.KIND_GENERAL)
-	eq(generals.size(), 3, "开局 3 个将领")
-	var hotkeys: Array[String] = []
-	for u in generals:
-		hotkeys.append(u.hotkey)
-		eq(u.faction, "p1", "将领属于 player")
-	ok(hotkeys.has("1") and hotkeys.has("2") and hotkeys.has("3"), "三个将领带 1/2/3 快捷键")
+	var generals: Array = []
+	for u in world.units:
+		if u.is_general():
+			generals.append(u)
+	eq(generals.size(), 1, "★ 自由对战开局只有 #0 一位将领（旧的三位已去掉）")
+	if not generals.is_empty():
+		var g0 = generals[0]
+		eq(String(g0.kind), "general_0", "★ #0 的 kind")
+		eq(String(g0.id), "general-0", "★ #0 的 id")
+		eq(String(g0.name), "将领 0", "★ #0 的名字")
+		eq(String(g0.hotkey), "1", "★ #0 的快捷键是 1")
+		eq(String(g0.faction), "p1", "将领属于 player")
 
 	var want_types: Array = cfg.general_types()
-	eq(want_types.size(), 9,
-		"配置里给了九位将领类型（unit.general.types：前 3 位开局 + 后 6 位招募池）")
-	for i in generals.size():
-		var want := String(want_types[i])
-		eq(String(generals[i].unit_type), want,
-			"★ 将领 %d 是 %s" % [i + 1, cfg.unit_name_of(want)])
-		eq(generals[i].hp_max, cfg.unit_hp_of(want),
+	eq(want_types.size(), 10,
+		"配置里给了十位将领类型（#0 + 可招募 #1-9）")
+	for g in generals:
+		var want := String(want_types[int(g.general_index)])
+		eq(String(g.unit_type), want,
+			"★ %s 是 %s" % [g.id, cfg.unit_name_of(want)])
+		eq(g.hp_max, cfg.unit_hp_of(want),
 			"★ 将领血量 = 所属类型的血量（用户口径：完全按对应兵种数值）")
-		eq(generals[i].combat_damage(cfg), float(cfg.unit_combat_of(want)["damage"]),
+		eq(g.combat_damage(cfg), float(cfg.unit_combat_of(want)["damage"]),
 			"将领伤害也走所属类型")
-		eq(generals[i].combat_range(cfg), float(cfg.unit_combat_of(want)["range"]),
-			"将领射程也走所属类型（于是长弓兵将领是远程的）")
-		ok(generals[i].is_general(), "★ is_general() 认得出将领（描边加粗与科技加成共用这条判据）")
+		eq(g.combat_range(cfg), float(cfg.unit_combat_of(want)["range"]),
+			"将领射程也走所属类型")
+		ok(g.is_general(), "★ is_general() 认得出将领")
 
 	var subs: Array = []
 	for u in world.units:
@@ -702,7 +707,7 @@ func _test_zone_centers(world, cfg) -> void:
 		"★ 拆除命令对中心无效")
 	ok(w.building_at(tile.x, tile.y) != null, "拆不掉：它还在")
 
-	var g = w.unit_by_id("general-1")
+	var g = w.unit_by_id("general-0")
 	if g != null:
 		g.stop()
 		g.pos = GridRes.center_of(Vector2i(tile.x, tile.y + 2))

@@ -412,6 +412,33 @@ func _test_hit_test() -> void:
 	eq(UiLayoutRes.detail_body_col2_w(rw), UiLayoutRes.DETAIL_BODY_COL2_W,
 		"detail_body_col2_w(基准) == DETAIL_BODY_COL2_W")
 
+## 测试布置：自由对战默认只有 #0；把旧的三位 #1-3 补回来（仅测试用）。
+func _restore_three_generals(main) -> void:
+	var w = main.world
+	if w == null:
+		return
+	# ★ 不要删掉 #0（视图可能还引用着它）——把它就地改造成 #1。
+	var g0 = w.unit_by_id("general-0")
+	if g0 != null:
+		g0.id = "general-1"
+		g0.kind = "general"
+		g0.general_index = 0
+		g0.hotkey = "1"
+		g0.name = "将领 1"
+	for i in [1, 2]:
+		var gid := "general-%d" % (i + 1)
+		if w.unit_by_id(gid) == null:
+			var g = w.create_general("p1", i, i)
+			if g != null:
+				w.units.append(g)
+	if w.has_method("_mark_starting_generals_owned"):
+		w._mark_starting_generals_owned()
+	if main.input_ctrl != null:
+		main.input_ctrl.select_units([])
+	if main.hud != null:
+		main.hud.refresh()
+
+
 func _test_panels(cfg) -> void:
 	var packed = load("res://view/main.tscn")
 	var root_node = (packed as PackedScene).instantiate()
@@ -432,7 +459,13 @@ func _test_panels(cfg) -> void:
 		root_node.queue_free()
 		return
 
+	# ★ 自由对战现在开局只有 #0；这组 UI 用例沿用「#1-3 三支部队」的旧布置，
+	#   所以在测试里手动补回三位（并标记为已拥有），不改游戏本身的口径。
+	_restore_three_generals(main)
 	_seed_player_escorts(main, 5)
+	main.hud.refresh()          # 让 HUD 立刻看到新补的三支队伍
+	if main.hud.squad_panel != null:
+		main.hud.squad_panel.refresh()   # 左侧列表是独立 _process，测试里显式刷一次
 
 	# ★★ 触摸设备：地图侧**完全不认鼠标**（连 emulate_mouse_from_touch 造的模拟鼠标也不要）。
 	#    判据用「左键按下会不会进入拖框待定」—— 它不依赖光标底下有什么，最干净。
@@ -529,8 +562,9 @@ func _test_panels(cfg) -> void:
 			and main.hud.detail_panel.detail_text().contains("移速"),
 		"★ 右栏两列详情：左列血量、右列移速（实际：%s）"
 			% main.hud.detail_panel.detail_text().replace("\n", "|"))
+	# ★ 词条已停用：buff 条只剩士气一条。
 	eq(main.hud.detail_panel.buff_count(), 1,
-		"★ 动态 buff 槽位：士气系统给单位挂了一条 buff")
+		"★ 动态 buff 槽位：只有士气一条")
 	var buff_bar = main.hud.detail_panel.buff_bar_control()
 	ok(buff_bar != null and String(buff_bar.entry(0).get("id", "")) == "morale",
 		"★ 那条 buff 的 id = morale（文字「士」，底色随士气）")
@@ -1424,17 +1458,16 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 				% main.hud.detail_panel.detail_text().replace("\n", "|"))
 		tabs.button_at(1).emit_signal("pressed")
 		eq(tabs.page(), PageTabsRes.PAGE_RECRUIT, "★ 第二颗 = 招募页签")
-		eq(card.entries().size(), 3, "★ 招募页里是三个占位将领（池子抽出来的一手）")
-		var hand: Array = world.general_recruit_slots("p1")
-		eq(hand.size(), 3, "★ 池子给了一手三名")
-		for i in 3:
-			var hk := String(hand[i])
-			eq(card.cell_label(i), world.recruit_label_of(hk),
-				"第 %d 格 = 手牌第 %d 位（%s）" % [i + 1, i + 1, hk])
+		eq(card.entries().size(), 9, "★★ 招募页是固定九宫格（#1-9）")
+		var roster: Array = world.general_recruit_roster("p1")
+		eq(roster.size(), 9, "★ 固定阵容 9 位")
+		for i in 9:
+			eq(card.cell_label(i), world.recruit_label_of(String(roster[i])),
+				"第 %d 格 = 将领 %d" % [i + 1, i + 1])
 		eq(String(card.entry_at(0).get("type", "")), "zone_recruit",
 			"招募页那一项是「区划招募」（排进区划的队列）")
-		eq(String(card.entry_at(0).get("unit_kind", "")), String(hand[0]),
-			"第 1 格要招的兵种 = 手牌第一位")
+		eq(String(card.entry_at(0).get("unit_kind", "")), String(roster[0]),
+			"第 1 格 = 将领 1")
 		tabs.button_at(0).emit_signal("pressed")
 		eq(tabs.page(), PageTabsRes.PAGE_ORDER, "切回操作页")
 
@@ -1623,11 +1656,11 @@ func _test_hover_panel(main, cfg) -> void:
 		main.input_ctrl.select_zone(zone)
 		hud.refresh()
 		tabs.select_page(PageTabsRes.PAGE_RECRUIT)
-		var hover_hand: Array = world.general_recruit_slots("p1")
-		var hover_kind: String = String(hover_hand[0])
+		var hover_roster: Array = world.general_recruit_roster("p1")
+		var hover_kind: String = String(hover_roster[0])
 		var hover_label: String = world.recruit_label_of(hover_kind)
 		eq(card.cell_label(0), hover_label,
-			"（前提）招募页 Q 格 = 手牌第一位（%s）" % hover_label)
+			"（前提）招募页 Q 格 = 将领 1（%s）" % hover_label)
 		card.hover(0)
 		ok(tip.showing() and tip.title_text() == hover_label,
 			"★ 招募页那一格也有悬停详情")
@@ -1899,16 +1932,25 @@ func _test_zone_recruit_via_card(main) -> void:
 	eq(main.hud.page_tabs.page_count(), 2, "★ 选中区划中心 → 操作 + 招募两颗页签")
 	main.hud.page_tabs.select_page(PageTabsRes.PAGE_RECRUIT)
 	eq(main.hud.page_tabs.page(), PageTabsRes.PAGE_RECRUIT, "★ 切到「招募」页签")
-	eq(card.entries().size(), 3, "★ 招募页里是三个占位将领（池子抽出来的一手）")
-	var hand: Array = world.general_recruit_slots("p1")
-	eq(hand.size(), 3, "★ 池子给了一手三名")
-	var kind0: String = String(hand[0])
-	eq(card.cell_label(0), world.recruit_label_of(kind0),
-		"Q 格 = 手牌第一位（实际：%s）" % card.cell_label(0))
-	eq(String(card.entry_at(0).get("type", "")), "zone_recruit",
+	eq(card.entries().size(), 9, "★★ 招募页是固定九宫格（#1-9）")
+	var roster: Array = world.general_recruit_roster("p1")
+	eq(roster.size(), 9, "★ 固定阵容 9 位")
+	# 这个关卡开局摆了 #1-3（已拥有），大本营升到 3 级后 #4 是第一位可招的。
+	var kind0: String = String(roster[3])
+	eq(card.cell_label(3), world.recruit_label_of(kind0),
+		"Q/W/E/A 第 4 格 = 将领 4（实际：%s）" % card.cell_label(3))
+	eq(String(card.entry_at(3).get("type", "")), "zone_recruit",
 		"招募页那一项是「区划招募」（排进区划的队列）")
-	eq(String(card.entry_at(0).get("unit_kind", "")), kind0,
-		"第 1 格要招的兵种就是手牌第一位")
+	eq(String(card.entry_at(3).get("unit_kind", "")), kind0,
+		"第 4 格要招的兵种 = general_4")
+	# ★★ 不可招募的格子：disabled + 灰色填充档（与科技锁定格同一套效果）。
+	ok(not bool(card.entry_at(0).get("ready", true)), "★ 已拥有的 #1 不可招募")
+	eq(String(card.entry_at(0).get("lock_reason", "")), "owned", "拒因 = owned")
+	var locked_cell = card.cell_at(0)
+	ok(locked_cell != null and locked_cell.disabled,
+		"★★ 不可招募格的按钮是 disabled")
+	ok(locked_cell != null and FillButtonRes.is_grey(locked_cell),
+		"★★ 不可招募格走「灰色填充」档（悬停填灰）")
 	var cost0: Dictionary = world.recruit_cost(kind0)
 
 	var q = main.hud.detail_panel.queue_control()
@@ -1918,8 +1960,8 @@ func _test_zone_recruit_via_card(main) -> void:
 
 	var food_before: float = float(world.resources["food"])
 	var pop_before: float = float(zone["population"])
-	card.activate_index(0)
-	ok(world.zone_is_training(zone), "★ 点招募页的 Q 格 → 排进了**这个区划**的队列")
+	card.activate_index(3)
+	ok(world.zone_is_training(zone), "★ 点招募页的「将领 4」格 → 排进了**这个区划**的队列")
 	eq(world.zone_recruit_kind_at(zone, 0), kind0, "大格子里是刚排进去的那个将领")
 	near(float(world.resources["food"]),
 		food_before - float(cost0.get("food", 0.0)), 1e-4, "★ 入队即扣粮食")
@@ -1936,11 +1978,12 @@ func _test_zone_recruit_via_card(main) -> void:
 		"★ 区划详情里常驻显示招募冷却倒计时（实际：%s）"
 			% main.hud.detail_panel.detail_text().replace("\n", " | "))
 
-	# ★ 全局冷却：整页置灰；点第二格只给提示，不会排队。
+	# ★ 全局冷却：整页置灰；点另一个未拥有的格子只给提示，不会排队。
 	eq(world.zone_recruit_queue_size(zone), 1, "★ 全局冷却下队列里只有这一单")
-	ok(not bool(card.entry_at(0).get("ready", true)), "★ 冷却中整页置灰")
-	card.activate_index(1)
-	eq(world.zone_recruit_queue_size(zone), 1, "★ 冷却中点第二格不会排队")
+	ok(not bool(card.entry_at(4).get("ready", true)), "★ 冷却中未拥有的格也置灰")
+	eq(String(card.entry_at(4).get("lock_reason", "")), "cooldown", "拒因 = cooldown")
+	card.activate_index(4)
+	eq(world.zone_recruit_queue_size(zone), 1, "★ 冷却中点另一格不会排队")
 	ok(main.hud.notice_text().contains("冷却"),
 		"★ 点灰格给一句「冷却中」提示（实际：%s）" % main.hud.notice_text())
 
@@ -2213,7 +2256,7 @@ func _test_foreign_reject_notice_filter(main) -> void:
 		{"type": "recruit_rejected", "reason": "zone", "kind": "spearman", "faction": "enemy"},
 		{"type": "upgrade_rejected", "reason": "busy", "kind": "building_upgrade",
 			"faction": "enemy"},
-		{"type": "revive_rejected", "reason": "cost", "faction": "enemy"},
+		{"type": "revive_rejected", "reason": "hp", "faction": "enemy"},
 		{"type": "tech_rejected", "reason": "limit", "tech_id": "t1", "faction": "enemy"},
 	]
 	main._consume_events(foreign)
@@ -2249,7 +2292,7 @@ func _test_queue_control(cfg) -> void:
 	var w = require_world(cfg)
 	w.resources["food"] = 1000.0
 	w.resources["gold"] = 1000.0
-	var g1 = w.unit_by_id("general-1")
+	var g1 = w.unit_by_id("general-0")
 	w.zones.zone_at(g1.tx, g1.ty)["population"] = 10.0
 
 	var q = RecruitQueueRes.new()
@@ -2322,7 +2365,7 @@ func _test_recruit_queued_event(cfg) -> void:
 	var w = require_world(cfg)
 	w.resources["food"] = 1000.0
 	w.resources["gold"] = 1000.0
-	var g1 = w.unit_by_id("general-1")
+	var g1 = w.unit_by_id("general-0")
 	w.zones.zone_at(g1.tx, g1.ty)["population"] = 10.0
 
 	w.tick(1.0 / 60.0)                  # 把上一帧的残留事件清干净
@@ -3281,11 +3324,12 @@ func _test_detail_basic_stats(main) -> void:
 	ok(not gtext.contains("编制") and not gtext.contains("状态") and not gtext.contains("兵种"),
 		"★ 不再有编制 / 状态 / 兵种")
 	ok(not gtext.contains("已选中"), "★ 不再有「已选中 N 支部队」")
-	# ★ 本轮新增：长枪兵有一条攻击特性，所以左列多一行小字（基础两行 + 特性一行）。
+	# ★ 词条已停用：只剩「两行基础 + 一行兵种特性」。
 	eq(gtext.split("\n").size(), 3,
 		"★ 两行基础 + 一行兵种特性（长枪兵：对骑兵伤害 +25%）")
 	ok(gtext.contains("对骑兵伤害 +25%"), "★ 攻击特性写在左列「攻击」下面（实际：%s）"
 		% gtext.replace("\n", "|"))
+	ok(not gtext.contains("特性 "), "★ 不再有将领词条行")
 
 	# 防御增益：士气免伤 / 易伤（只有这一套数据）
 	var old_morale: float = g1.morale
@@ -3318,7 +3362,11 @@ func _test_detail_basic_stats(main) -> void:
 			"★ 兵不显示「编制」「状态」")
 		ok(not stext.contains("兵种") and not stext.contains("已选中"),
 			"★ 兵也不显示「兵种」「已选中 N 支部队」")
-		eq(stext.split("\n").size(), 3, "★ 兵也是两行基础 + 一行兵种特性")
+		# ★ 词条已停用：兵只剩「两行基础 + 兵种特性」。
+		var s_left: int = main.hud._attack_bonus_lines(soldier).size()
+		var s_right: int = main.hud._defense_bonus_lines(soldier).size()
+		eq(stext.split("\n").size(), 2 + maxi(s_left, s_right),
+			"★ 兵也是两行基础 + 兵种特性行")
 		ok(stext.contains("伤害 +"), "★ 兵的详情同样显示它自己的特性（实际：%s）"
 			% stext.replace("\n", "|"))
 
@@ -3369,10 +3417,17 @@ func _test_buff_long_press(main) -> void:
 	main.input_ctrl.select_units([g1])
 	hud.refresh()
 	var bb = hud.detail_panel.buff_bar_control()
-	ok(bb != null and bb.count() == 1, "（前提）选中单位有 1 条士气 buff")
-	if bb == null or bb.count() == 0:
+	# ★ 词条已停用：buff 条只有士气一条。
+	var morale_i := -1
+	if bb != null:
+		for i in bb.count():
+			if String(bb.entry(i).get("id", "")) == "morale":
+				morale_i = i
+				break
+	ok(bb != null and morale_i >= 0, "（前提）选中单位有一条士气 buff")
+	if bb == null or morale_i < 0:
 		return
-	var pos: Vector2 = bb.buff_global_rect(0).get_center()
+	var pos: Vector2 = bb.buff_global_rect(morale_i).get_center()
 
 	# ① 按下：不立刻弹（手机端要长按）
 	var press := InputEventScreenTouch.new()

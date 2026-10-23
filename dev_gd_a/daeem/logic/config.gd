@@ -308,6 +308,12 @@ var _unit_icons: Dictionary = {}
 ## ★ 空串 = 配置里没写 → 渲染层退回程序化剪影（见 view/unit_sprite_3d.gd 的 bake）。
 ## ★ 与 `_unit_icons` 同一口径：**数据**而不是代码里的字面量，加兵种只改 JSON。
 var _unit_sprites: Dictionary = {}
+## ★★ 将领特性表（config 的 `unit.general_traits`，部队光环）。
+##   · 键 = 特性 id；值 = `_normalize_general_trait()` 洗过的固定形状字典；
+##   · 载入时洗一次（与兵种 traits 同一条口径），之后只读；
+##   · `general_trait_ids()` 返回**排序后**的 id 列表 —— 随机抽取按它取下标，
+##     排序保证「同一抽签序号 → 同一特性」（不同机器的字典顺序不影响复现）。
+var _general_traits: Dictionary = {}
 ## ★★ 开局**没有**任何「每位将领带几个兵」的全局缺省（本轮口径变更）。
 ##
 ## 原先是 `unit.general.escort`（一个数或一个数组）+ `general_escort_count()` /
@@ -459,22 +465,24 @@ var destructible_base: bool = false
 
 ## ---- ★★ 将领**濒死保护**（config.json 的 revive 段；规则见 logic/unit.gd / world.gd）----
 ##
-## 六个数各管一件事，全部在 config 里可调（用户要求「消耗写 config，可调」）：
-##   · `revive_cost`        —— 「再起」要花的粮食 / 黄金（入队即扣，取消全额退）；
-##   · `revive_channel_sec` —— 「再起」的读条秒数（0 = 瞬发）；
+## 几个数各管一件事，全部在 config 里可调：
+##   · `revive_channel_sec` —— 「再起」的读条秒数（0 = 瞬发）；**再起不消耗资源**；
 ##   · `revive_ready_ratio` —— 血量到上限的这个比例才允许再起（= 10%）；
 ##   · `revive_regen_sec` / `revive_regen_ratio` —— 每几秒回上限的百分之几（= 每 3 秒 1%）；
-##   · `revive_regen_cap_ratio` —— 自然回复的天花板（= 上限的 20%）。
+##   · `revive_regen_cap_ratio` —— 自然回复的天花板（= 上限的 20%）；
+##   · `revive_respawn_sec` —— 正常阵亡后在大本营重生要多久（= 20 秒）；
+##   · `revive_recall_respawn_sec` —— 选择「召回」阵亡后的重生时长（= 10 秒，更短）。
 ##
 ## ★ 为什么整段在载入时算好：这些数在**每帧每濒死将领**的路径上（回复计时），
 ##   而且 UI 悬停 / 拒因文案也要读同一份 —— 与 unit_hp_max / aggro_range 同一条规矩，
 ##   不在调用点重下潜一次 JSON（那样两处口径一定会漂）。
-var revive_cost: Dictionary = {}
 var revive_channel_sec: float = 0.0
 var revive_ready_ratio: float = 0.1
 var revive_regen_sec: float = 3.0
 var revive_regen_ratio: float = 0.01
 var revive_regen_cap_ratio: float = 0.2
+var revive_respawn_sec: float = 20.0
+var revive_recall_respawn_sec: float = 10.0
 
 ## ---- ★★ 士气（见 config.json 的 morale 段、logic/morale.gd）----
 ## 整支部队共享一个值；作用范围 = 场上所有单位（含 AI / 敌方）。
@@ -704,9 +712,8 @@ func _cache_scalars() -> void:
 	destructible_base = bool_val("pvp.destructible_base", false)
 	sim_max_dt = num("sim.max_dt", 0.05)
 
-	# ★★ 将领濒死保护（见上面那组字段的说明）。cost 走与招募 / 升级同一套形状
-	#    （{"food":…, "gold":…}），所以 EconomyRes.can_afford / spend 直接就能用。
-	revive_cost = _read_cost("revive.cost")
+	# ★★ 将领濒死保护（见上面那组字段的说明）。
+	#    再起**不消耗资源**（用户拍板），所以这里没有再起造价。
 	revive_channel_sec = maxf(0.0, num("revive.channel_sec", 5.0))
 	# ⚠️ `ready_ratio` 夹到 (0, 1]：写成 0 会让「0 血就能再起」（绕开需求里的 10% 门槛），
 	#    写成负数更没意义。上限 1.0 = 必须回满才让再起。
@@ -717,6 +724,11 @@ func _cache_scalars() -> void:
 	# 取两者的较大值，而不是让玩家面对一颗永远灰着的格子）。
 	revive_regen_cap_ratio = clampf(
 		maxf(num("revive.regen_cap_ratio", 0.2), revive_ready_ratio), 0.0, 1.0)
+	# ★★ 阵亡后在大本营的重生时长：正常 20 秒；选择召回 10 秒。
+	#   ⚠️ 召回不允许比正常更久（配错时夹到正常值）—— 需求是「召回更短」。
+	revive_respawn_sec = maxf(0.0, num("revive.respawn_sec", 20.0))
+	revive_recall_respawn_sec = minf(
+		maxf(0.0, num("revive.recall_respawn_sec", 10.0)), revive_respawn_sec)
 
 	# ★★ 士气（logic/morale.gd 读这几个字段；整支部队共享一个值）。
 	#   夹取：血量下限 ≥0；减免夹到 [0, 1) —— 写成 1 会让「免伤 100% = 无敌」。
@@ -749,6 +761,9 @@ func _cache_scalars() -> void:
 	# ★★ 单位类型表（unit.types / unit.classes / unit.general）—— 必须在其它
 	#   单位字段之后调：它拿 unit_speed / unit_hp_max / unit_radius_factor 当兜底值。
 	_cache_unit_types()
+	# ★★ 将领特性（unit.general_traits）—— 必须在上一步之后调：
+	#   `_normalize_general_trait()` 要用 `_unit_classes` 校验 attack_vs_class 的键。
+	_cache_general_traits()
 
 
 ## 视口尺寸变了就重算投影常数（view 层在 setup 时喂一次；窗口拉伸时再喂一次）。
@@ -833,6 +848,114 @@ func _normalize_traits(raw: Variant) -> Dictionary:
 	if typeof(rr) == TYPE_INT or typeof(rr) == TYPE_FLOAT:
 		out["ranged_reduction"] = clampf(float(rr), 0.0, 1.0)
 	return out
+
+
+## ★★ 把 config 里的 `unit.general_traits.<id>` 洗成**固定形状**的一条特性（载入时一次）。
+##
+## 输出形状（之后只读，不再判断类型）：
+##   · speed_bonus / attack_speed_bonus：比例（0.25 = +25% / 攻击间隔 ÷1.25）；
+##   · melee_reduction / ranged_reduction：减伤比例（夹 0..1）；
+##   · attack_vs_class：`{ <兵种大类 id>: <比例> }`，键必须是真实存在的大类。
+##
+## ⚠️ 与 `_normalize_traits()` 同一套理由：手写配置可能漏键 / 写错类型 / 写错大类，
+##   载入时洗一遍，运行期就只剩干净的标量；写错的大类宁可当没写，也不要留一条
+##   永远匹配不上的规则（见那一段的第 2 条）。
+func _normalize_general_trait(id: String, raw: Variant) -> Dictionary:
+	var out: Dictionary = {
+		"id": id,
+		"name": id,
+		"short": "",
+		"desc": "",
+		"speed_bonus": 0.0,
+		"attack_speed_bonus": 0.0,
+		"melee_reduction": 0.0,
+		"ranged_reduction": 0.0,
+		"attack_vs_class": {},
+	}
+	if typeof(raw) != TYPE_DICTIONARY:
+		return out
+	var d: Dictionary = raw
+	if typeof(d.get("name", null)) == TYPE_STRING:
+		out["name"] = String(d["name"])
+	if typeof(d.get("short", null)) == TYPE_STRING:
+		out["short"] = String(d["short"])
+	if typeof(d.get("desc", null)) == TYPE_STRING:
+		out["desc"] = String(d["desc"])
+	var sb: Variant = d.get("speed_bonus", 0.0)
+	if typeof(sb) == TYPE_INT or typeof(sb) == TYPE_FLOAT:
+		out["speed_bonus"] = maxf(0.0, float(sb))
+	var ab: Variant = d.get("attack_speed_bonus", 0.0)
+	if typeof(ab) == TYPE_INT or typeof(ab) == TYPE_FLOAT:
+		out["attack_speed_bonus"] = maxf(0.0, float(ab))
+	var mr: Variant = d.get("melee_reduction", 0.0)
+	if typeof(mr) == TYPE_INT or typeof(mr) == TYPE_FLOAT:
+		out["melee_reduction"] = clampf(float(mr), 0.0, 1.0)
+	var rr: Variant = d.get("ranged_reduction", 0.0)
+	if typeof(rr) == TYPE_INT or typeof(rr) == TYPE_FLOAT:
+		out["ranged_reduction"] = clampf(float(rr), 0.0, 1.0)
+	var av: Variant = d.get("attack_vs_class", null)
+	if typeof(av) == TYPE_DICTIONARY:
+		for cls in (av as Dictionary).keys():
+			var key := String(cls)
+			if not _unit_classes.has(key):
+				continue
+			var v: Variant = (av as Dictionary)[cls]
+			if typeof(v) == TYPE_INT or typeof(v) == TYPE_FLOAT:
+				out["attack_vs_class"][key] = maxf(0.0, float(v))
+	return out
+
+
+## 载入时整理将领特性表（**只读**，之后别再改它）。
+## ★ 必须在 `_cache_unit_types()` **之后**调：`_normalize_general_trait()` 要用
+##   `_unit_classes` 校验 `attack_vs_class` 的键。
+func _cache_general_traits() -> void:
+	_general_traits = {}
+	var raw: Variant = get_path_value("unit.general_traits")
+	if typeof(raw) != TYPE_DICTIONARY:
+		return
+	for tid in (raw as Dictionary).keys():
+		var id := String(tid)
+		_general_traits[id] = _normalize_general_trait(id, (raw as Dictionary)[tid])
+
+
+## ★★ 全部将领特性 id（**排序后**；随机抽取按下标取，排序保证跨机器可复现）。
+func general_trait_ids() -> Array:
+	var ids: Array = _general_traits.keys()
+	ids.sort()
+	return ids
+
+
+## ★★ 一条特性洗好的定义（未知 id → 空字典，调用方用 `.get(k, 0)`）。
+func general_trait_def(id: String) -> Dictionary:
+	if id == "" or not _general_traits.has(id):
+		return {}
+	return _general_traits[id]
+
+
+## 特性的显示名（未知 → 空串；界面按空串决定「这条不存在」）。
+func general_trait_name(id: String) -> String:
+	return String(general_trait_def(id).get("name", ""))
+
+
+## 特性的短名（信息栏格子里的那一个字；没配 → 退回名字首字）。
+func general_trait_short(id: String) -> String:
+	var d := general_trait_def(id)
+	var s := String(d.get("short", ""))
+	if s != "":
+		return s
+	var n := String(d.get("name", ""))
+	return n.substr(0, 1) if n != "" else ""
+
+
+## 特性的说明（悬停 / 卡牌详情用）。
+func general_trait_desc(id: String) -> String:
+	return String(general_trait_def(id).get("desc", ""))
+
+
+## ★★ 特性的**效果**（单位出生 / 授予时读一次，之后只读单位上的 aura_* 字段）。
+## 与 `general_trait_def()` 返回同一个字典（只读，别改）。
+func general_trait_effect(id: String) -> Dictionary:
+	return general_trait_def(id)
 
 
 ## 载入时整理单位类型表（**只读**，之后别再改它）。
@@ -997,6 +1120,11 @@ func unit_type_of(kind: String) -> String:
 static func general_index_of(kind: String) -> int:
 	if kind == KIND_GENERAL:
 		return 0
+	# ★★ 开局将领 #0：名册里的第 10 项（下标 9），不可招募、不在九宫格里。
+	#   ⚠️ 必须在 `general_` 的数字解析之前：否则 `general_0` 会被算成 max(0, -1) = 0，
+	#      与 #1 撞车。
+	if kind == "general_0":
+		return 9
 	if kind.begins_with("general_"):
 		var tail := kind.substr(8)
 		if tail.is_valid_int():

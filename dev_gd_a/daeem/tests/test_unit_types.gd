@@ -72,14 +72,15 @@ func _test_class_tags(cfg) -> void:
 func _test_general_types(cfg) -> void:
 	var w = require_world_with_escorts(cfg, ESCORTS_PER_GENERAL)
 	var types: Array = cfg.general_types()
-	eq(types.size(), 9, "配置里给了九位将领的类型（前 3 位开局 + 后 6 位招募池）")
+	eq(types.size(), 10, "配置里给了十位将领的类型（#0 + 可招募 #1-9）")
 
 	var expect: Array = [
 		UnitRes.UNIT_TYPE_SPEARMAN, UnitRes.UNIT_TYPE_LONGBOWMAN, UnitRes.UNIT_TYPE_RIDER,
 		UnitRes.UNIT_TYPE_SPEARMAN, UnitRes.UNIT_TYPE_LONGBOWMAN, UnitRes.UNIT_TYPE_RIDER,
 		UnitRes.UNIT_TYPE_SPEARMAN, UnitRes.UNIT_TYPE_LONGBOWMAN, UnitRes.UNIT_TYPE_RIDER,
+		UnitRes.UNIT_TYPE_SPEARMAN,     # 第 10 项 = 开局将领 #0
 	]
-	eq(types, expect, "★ 九位将领按长枪兵 / 长弓兵 / 骑手循环")
+	eq(types, expect, "★ 九位招募将领按长枪兵 / 长弓兵 / 骑手循环，#0 是长枪兵")
 
 	for i in 3:
 		var g = w.unit_by_id("general-%d" % (i + 1))
@@ -93,8 +94,11 @@ func _test_general_types(cfg) -> void:
 		near(g.hp_max, cfg.unit_hp_of(want), 1e-6, "将领血量 = 类型血量")
 		near(g.combat_damage(cfg), float(cfg.unit_combat_of(want)["damage"]), 1e-6, "将领伤害 = 类型伤害")
 		near(g.combat_range(cfg), float(cfg.unit_combat_of(want)["range"]), 1e-6, "将领射程 = 类型射程")
-		near(g.combat_cooldown(cfg), float(cfg.unit_combat_of(want)["cooldown_sec"]), 1e-6,
-			"将领间隔 = 类型间隔")
+		# ★ 开局将领带一条随机特性：「神力」会把间隔缩短（×0.8）。
+		#   所以期望 = 类型间隔 × 这位将领自己的光环倍率（没抽到神力时它就是 1.0）。
+		near(g.combat_cooldown(cfg),
+			float(cfg.unit_combat_of(want)["cooldown_sec"]) * float(g.aura_cooldown_mult),
+			1e-6, "将领间隔 = 类型间隔 × 光环倍率")
 		eq(g.unit_class, cfg.unit_class_of(want), "将领的兵种大类")
 		eq(g.ranged, cfg.unit_is_ranged(want), "将领的远近标记")
 

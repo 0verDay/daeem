@@ -78,6 +78,12 @@ static func to_snapshot(world) -> Dictionary:
 			# ★★ 中立化（大本营被拆后的停摆状态）：1 = 已中立化。
 			#   缺字段 = 老快照 ⇒ 保持本地现状。
 			"nz": 1 if u.neutralized else 0,
+			# ★★ 将领特性（部队光环）：gt = 将领自己抽到的特性（决定属下继承谁），
+			#   ga = 这个单位实际享受的光环（附属兵必然与队长相同）。两个都要发：
+			#   客机重建单位的顺序不保证「队长先于附属兵」，靠查队长推导会漏。
+			#   缺字段 = 老快照 ⇒ 保持本地现状（与其它字段同一条约定）。
+			"gt": u.general_trait if u.general_trait != "" else null,
+			"ga": u.aura_trait_id if u.aura_trait_id != "" else null,
 		})
 
 	var buildings_out: Array = []
@@ -94,6 +100,12 @@ static func to_snapshot(world) -> Dictionary:
 			"ur": round2(b.upgrade_remaining),
 			"ut": round2(b.upgrade_total),
 			"nz": 1 if b.neutralized else 0,
+			# ★★ 大本营的将领重生队列（客机要画同一条进度条）。
+			#   非 base 建筑也会带 rq = 0（用来清掉客机可能残留的旧状态）。
+			"rq": b.respawn_count(),
+			"rr": round2(b.respawn_remaining if b.is_respawning() else 0.0),
+			"rt": round2(b.respawn_total),
+			"rn": b.respawn_current_name() if b.is_respawning() else null,
 		})
 
 	var zones_out: Array = []
@@ -241,6 +253,16 @@ static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void:
 		var ld: Variant = su.get("ld", null)
 		if typeof(ld) == TYPE_STRING:
 			u.leader_id = ld
+		# ★★ 将领特性：有 gt ⇒ 这是将领本人，连同自己的光环一起恢复；
+		#   否则有 ga ⇒ 附属兵 / 客机侧直接恢复它享受的那条光环。
+		#   两个都缺 = 老快照 ⇒ 保持本地现状（不把已有光环清掉）。
+		var gt: Variant = su.get("gt", null)
+		if typeof(gt) == TYPE_STRING:
+			u.set_general_trait(cfg, String(gt))
+		else:
+			var ga: Variant = su.get("ga", null)
+			if typeof(ga) == TYPE_STRING:
+				u.apply_aura_trait(cfg, String(ga))
 		# 朝向：新格式是 [x, y]；**缺字段就保持本地现状**（不要把数组默认成 0，
 		# 那会让所有远端单位突然朝向零向量，见 docs/pitfalls.md 3.6 的同类教训）
 		var fa: Variant = su.get("fa", null)
@@ -448,6 +470,13 @@ static func _apply_building_state(b, sb: Dictionary) -> void:
 		b.upgrade_total = float(sb["ut"])
 	if sb.has("nz"):
 		b.neutralized = int(sb["nz"]) != 0
+	# ★ 大本营重生队列：客机只保存展示字段（没有死将对象，也不 tick）。
+	if sb.has("rq"):
+		var rn := ""
+		if sb.get("rn", null) != null:
+			rn = String(sb["rn"])
+		b.apply_respawn_snapshot(int(sb.get("rq", 0)),
+			float(sb.get("rr", 0.0)), float(sb.get("rt", 0.0)), rn)
 
 
 # ------------------------------------------------------------------

@@ -27,6 +27,7 @@ func _cases() -> void:
 	_test_spec_stacks_with_tech(cfg)
 	_test_cancel_spec(cfg)
 	_test_commands(cfg)
+	_test_respawn_blocks_base_upgrade(cfg)
 
 func _test_config_table(cfg) -> void:
 	var w = _quiet(cfg)
@@ -477,6 +478,31 @@ func _test_commands(cfg) -> void:
 		"★★ 被拒事件带上了 faction（界面才能只显示自己这一方的）实际=%s" % got_faction)
 	ok(got_building, "★ 被拒事件带着那栋建筑（`busy` 的文案要点名是哪个对象）")
 	ok(not CommandRes.apply(w, w.cfg, {"kind": "not_a_command"}), "未知命令被拒")
+
+## ★★ 大本营的重生队列不为空时，不能**开始新的**升级；城墙 / 箭塔不受影响。
+func _test_respawn_blocks_base_upgrade(cfg) -> void:
+	var w = _quiet(cfg)
+	_give(w, 10000.0, 10000.0)
+	var base = w.find_base_of(w.my_faction)
+	ok(base != null, "（前提）有大本营")
+	if base == null:
+		return
+	eq(UpgradeRes.can_upgrade(w, base, w.my_faction), "", "（前提）空闲时大本营可升级")
+
+	base.enqueue_respawn(w.units[0], 5.0)
+	ok(base.is_respawning(), "（摆场面）大本营进入重生队列")
+	eq(UpgradeRes.can_upgrade(w, base, w.my_faction), "respawning",
+		"★★ 重生队列非空 → 拒因码 respawning")
+	ok(not w.start_building_upgrade(base.tx, base.ty, w.my_faction), "★ 升级命令被拒")
+
+	var wall = _player_wall(w)
+	if wall != null:
+		eq(UpgradeRes.can_upgrade(w, wall, w.my_faction), "",
+			"★ 城墙不受大本营重生队列影响")
+
+	base.clear_respawn_queue()
+	eq(UpgradeRes.can_upgrade(w, base, w.my_faction), "", "★★ 队列清空后恢复可升级")
+
 
 func _quiet(cfg) -> RefCounted:
 	var c = require_config()

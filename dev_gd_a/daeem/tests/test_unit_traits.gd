@@ -318,6 +318,7 @@ func _test_general_traits(cfg) -> void:
 	if g1 == null or g2 == null or g3 == null:
 		return
 
+	# ★ 词条已停用：将领只按所属兵种取特性。
 	near(g1.attack_multiplier_vs_class(ConfigRes.CLASS_CAVALRY), 1.25, 1e-9,
 		"★ 将领 1（长枪兵）：对骑兵 +25%")
 	near(g2.attack_multiplier_vs_class(ConfigRes.CLASS_INFANTRY), 1.10, 1e-9,

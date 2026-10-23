@@ -989,6 +989,13 @@ func _refresh_progress_panel(holder) -> void:
 			"升 %d 级" % (b.level + 1),
 			b.upgrade_progress(), b.upgrade_eta(), true)
 		return
+	# ①.5 大本营的将领重生队列（串行；条上写当前那一位与剩余秒数）
+	if b != null and b.is_base() and b.is_respawning():
+		detail_panel.set_progress_bar(
+			"将领重生 %d" % b.respawn_count(),
+			b.respawn_current_name(),
+			b.respawn_progress(), b.respawn_eta(), false)
+		return
 	# ② 区划特化读条（做特化 / 取消特化）
 	if zone != null and world.zone_spec_busy(zone):
 		var is_cancel: bool = world.zone_spec_is_cancel(zone)
@@ -1319,6 +1326,10 @@ func _hover_detail(src: String, entry: Dictionary) -> Dictionary:
 			return _hover_building(entry)
 		"revive", "revive_cancel":
 			return _hover_revive(entry)
+		"recall":
+			return _hover_recall(entry)
+		"building_respawn":
+			return _hover_building(entry)
 	return {}
 
 
@@ -1395,6 +1406,20 @@ func _hover_recruit(entry: Dictionary) -> Dictionary:
 				_fmt_num(float(c.get("cooldown_sec", 0.0)))])
 			lines.append("速度 %s 格/秒" % _fmt_num(cfg.unit_speed_of(ut)))
 		lines.append("兵种 %s" % cfg.unit_class_line(ut))
+	# ★★ 招募页专属：阶数（大本营等级解锁）+ 当前状态（已拥有 / 可招募 / …）。
+	if is_zone:
+		var tier := int(entry.get("tier", 1))
+		var lvl := int(entry.get("base_level", 0))
+		lines.append("阶数：%d 阶（%s）" % [
+			tier, "已解锁" if tier <= lvl else "大本营 %d 级解锁" % tier])
+		var reason := String(entry.get("lock_reason", ""))
+		var status := "可招募"
+		match reason:
+			"owned": status = "已拥有（不能重复招募）"
+			"tier": status = "大本营阶数不足"
+			"cap": status = "将领已满"
+			"cooldown": status = "招募冷却中"
+		lines.append("状态：%s" % status)
 	lines.append("造价 %s" % _cost_text(_entry_cost(entry)))
 	var pop := int(entry.get("population_cost", 0))
 	if pop > 0:
@@ -1418,7 +1443,7 @@ func _hover_recruit(entry: Dictionary) -> Dictionary:
 	return _hover_text(String(entry.get("name", "")), lines)
 
 
-## 濒死将领那颗「再起 / 取消再起」（本轮新增）—— 说明 + 造价 + 读条 + 当前状态。
+## 濒死将领那颗「再起 / 取消再起」—— 说明 + 读条 + 当前状态。
 ##
 ## ★ 数值全部取自**权威侧**（`world.revive_*` 与选中的那个将领的实时血量），
 ##   与界面上那颗格子的文案同一个出处 —— 不会出现「说明写着 10%、格子却要求 15%」。
@@ -1439,10 +1464,22 @@ func _hover_revive(entry: Dictionary) -> Dictionary:
 		else:
 			lines.append("再起点：血量 %d%%（现在 %d%%）" % [
 				int(round(world.revive_ready_ratio() * 100.0)), pct])
-		lines.append("再起造价 %s　读条 %s 秒" % [
-			_cost_text(world.revive_cost()), _fmt_num(world.revive_channel_sec())])
+		lines.append("再起读条 %s 秒（**不消耗资源**）" % _fmt_num(world.revive_channel_sec()))
 		lines.append("★ 再起后血量**保持不变**；它辖下的部队已在向它集结")
 	return _hover_text(String(entry.get("name", "再起")), lines)
+
+
+## 「召回」格子的悬停说明：把不可逆的后果写清楚（用户拍板「点即生效、不二次确认」）。
+func _hover_recall(entry: Dictionary) -> Dictionary:
+	var lines: Array = []
+	lines.append(String(entry.get("desc", "")))
+	lines.append("★ 召回 = 立即解散这支部队：旗下所有单位被静默击杀（不触发击杀 / 士气 / 退款）")
+	lines.append("将领随后阵亡，并进入**大本营的重生队列**（串行处理）")
+	lines.append("重生时长：召回 %s 秒；正常阵亡 %s 秒" % [
+		_fmt_num(world.revive_recall_respawn_sec()), _fmt_num(world.revive_respawn_sec())])
+	lines.append("大本营的重生队列不为空时，不能开始新的升级（进行中的升级不受影响）")
+	lines.append("没有可用大本营（被摧毁 / 已中立化）时，召回 = 永久阵亡")
+	return _hover_text(String(entry.get("name", "召回")), lines)
 
 
 ## 区域的特化（选中区划中心 → 操作页里那几格）—— 说明 + 效果 + 造价 + 读条 + 「只能选一个」。
@@ -1517,6 +1554,10 @@ func _hover_building(entry: Dictionary) -> Dictionary:
 		elif kind == "building_upgrade_cancel":
 			lines.append("已经扣掉：%s（取消后全额退还）" % _cost_text(
 				{"food": b.upgrade_cost_food, "gold": b.upgrade_cost_gold}))
+		elif kind == "building_respawn":
+			lines.append("重生队列 %d 位；当前「%s」剩 %s 秒" % [
+				b.respawn_count(), b.respawn_current_name(), _fmt_num(b.respawn_eta())])
+			lines.append("队列清空之前不能开始新的升级（进行中的升级不受影响）")
 	return _hover_text(String(entry.get("name", "")), lines)
 
 
@@ -1599,35 +1640,38 @@ func _recruit_entries(entry_type: String, cfg_path: String) -> Array:
 	return out
 
 
-## ★★ 招募页的内容：**当前这一手**（池子抽出来的三位）+ 冷却状态（本轮新增）。
+## ★★ 招募页的内容：**固定九宫格**（#1-9）+ 每位将领的阶数 / 已拥有 / 冷却状态。
 ##
 ## ★ 与单位页的区别：单位页读 config 的那张固定表；招募页读的是**权威状态**
-##   （world.general_recruit_slots），因为手牌会随着「招走一名 → 重抽」而变。
-## ★ 冷却中整页置灰（`ready = false`）：格子还在、还能悬停看「还要等几秒」，
-##   但点不动 —— 与濒死将领那颗「再起」同一条交互约定（见 command_card.set_entries）。
-## ★ 每条带上 `recruit_cooldown_sec`（这位将领自己的属性）与 `cooldown_left`（全局剩余），
-##   悬停详情的「招募冷却 N 秒 / 现在还需 X 秒」都从这里取，界面不自己查 config。
+##   （`world.general_recruit_state`：已拥有、阶数、将领上限、全局冷却）。
+## ★ 不可招募的格子 `ready = false` → `command_card` 把按钮置灰；悬停时
+##   `fill_button` 自动填**灰色**（与科技锁定格同一套灰档），详情写明原因。
+## ★ 每条带上 `recruit_cooldown_sec`（这位将领自己的属性）与 `cooldown_left`（全局剩余）。
 func _zone_recruit_entries() -> Array:
 	var out: Array = []
 	if world == null:
 		return out
-	var cd_left: float = world.general_recruit_cooldown_left(world.my_faction)
-	for k in world.general_recruit_slots(world.my_faction):
-		var kind := String(k)
+	for kind_v in world.general_recruit_roster(world.my_faction):
+		var kind := String(kind_v)
 		var e: Dictionary = world.recruit_entry(kind)
 		if e.is_empty():
 			continue
+		var s: Dictionary = world.general_recruit_state(world.my_faction, kind)
 		out.append({
 			"type": "zone_recruit",
 			"unit_kind": kind,
 			"name": String(e.get("label", kind)),
 			"desc": String(e.get("desc", "")),
+			"tier": int(s.get("tier", 1)),
+			"owned": bool(s.get("owned", false)),
+			"lock_reason": String(s.get("reason", "")),
+			"base_level": int(s.get("base_level", 0)),
 			"cost": e.get("cost", {}),
 			"train_sec": e.get("train_sec", 0.0),
 			"population_cost": e.get("population_cost", 0),
 			"recruit_cooldown_sec": float(e.get("recruit_cooldown_sec", 0.0)),
-			"cooldown_left": cd_left,
-			"ready": cd_left <= 0.0,
+			"cooldown_left": float(s.get("cooldown_left", 0.0)),
+			"ready": bool(s.get("ready", false)),
 		})
 	return out
 
@@ -1660,41 +1704,54 @@ func _order_entries() -> Array:
 ## 三种状态各一格，互斥（与建筑升级那一套同一种写法）：
 ##   ① 血量还没回到 `revive.ready_ratio`（默认 10%）→ 一颗**说明用**的格子
 ##      （名字就叫「再起」，`revive` 类型 + `ready = false`，界面把它画灰）；
-##   ② 到 10% 且没在读条 → 真正可点的「再起」（带造价与读条时间）；
-##   ③ 正在读条 → 「取消再起」（全额退款）。
+##   ② 到 10% 且没在读条 → 真正可点的「再起」（读条时间，免费）；
+##   ③ 正在读条 → 「取消再起」（免费，没有退款）。
 ##
-## ★ 判据**全部来自权威侧**（`unit.revive_ready()` / `world.revive_cost()` /
-##   `world.revive_ready_ratio()`）：界面不自己复算一遍「够不够 10%」——
-##   那会变成两份规则，一旦漂开就会出现「格子亮着、点下去被拒」这种最恼人的状态。
+## ★★ 第二格永远是「召回」（倒地即可用，不要求血量门槛）：
+##    立即静默击杀旗下所有部队，随后将领阵亡并进入大本营重生队列。
+##
+## ★ 判据**全部来自权威侧**（`unit.revive_ready()` / `world.revive_*`）：
+##   界面不自己复算一遍「够不够 10%」—— 那会变成两份规则，一旦漂开就会出现
+##   「格子亮着、点下去被拒」这种最恼人的状态。
 func _revive_entries(leader) -> Array:
 	# ⚠️ 这里**不能用** `:=`：`leader.revive_ready(cfg)` 是动态调用，
 	#    返回值没有确定类型（GDScript 会报 "Cannot infer the type of ready variable"）。
 	var ready: bool = leader.revive_ready(cfg)
-	var cost_text: String = _cost_text(world.revive_cost())
 	var channel: String = _fmt_num(world.revive_channel_sec())
+	var recall_secs: String = _fmt_num(world.revive_recall_respawn_sec())
+	var out: Array = []
 	if leader.is_reviving():
-		return [{
+		out.append({
 			"type": "revive_cancel",
 			"name": "取消再起",
-			"desc": "撤掉正在读条的再起，**全额退还**已经扣掉的%s（%s）" % [cost_text, channel],
+			"desc": "撤掉正在读条的再起（再起不消耗资源）",
 			"ready": true,
-		}]
-	var need_pct := int(round(world.revive_ready_ratio() * 100.0))
-	if not ready:
-		return [{
-			"type": "revive",
-			"name": "再起",
-			"desc": "血量回复到 %d%% 才能再起（现在 %d%%）—— 濒死期间每秒都在慢慢回血" % [
-				need_pct, int(round(leader.hp_ratio() * 100.0))],
-			"ready": false,
-		}]
-	return [{
-		"type": "revive",
-		"name": "再起",
-		"desc": "消耗%s，读条 %s 秒后脱离濒死（**血量保持不变**）重新投入战斗" % [
-			cost_text, channel],
+		})
+	else:
+		var need_pct := int(round(world.revive_ready_ratio() * 100.0))
+		if not ready:
+			out.append({
+				"type": "revive",
+				"name": "再起",
+				"desc": "血量回复到 %d%% 才能再起（现在 %d%%）—— 濒死期间每秒都在慢慢回血" % [
+					need_pct, int(round(leader.hp_ratio() * 100.0))],
+				"ready": false,
+			})
+		else:
+			out.append({
+				"type": "revive",
+				"name": "再起",
+				"desc": "读条 %s 秒后脱离濒死（**血量保持不变**）重新投入战斗（不消耗资源）" % channel,
+				"ready": true,
+			})
+	# ★ 召回：倒地即可用；把后果写清楚（部队全灭 + 阵亡 + 更短的重生）。
+	out.append({
+		"type": "recall",
+		"name": "召回",
+		"desc": "立即击杀旗下所有部队（不触发死亡效果），将领阵亡后在大本营重生（%s 秒）" % recall_secs,
 		"ready": true,
-	}]
+	})
+	return out
 
 
 
@@ -1820,6 +1877,15 @@ func _building_order_entries(b = null, sel_zone = null) -> Array:
 			"name": "取消升级",
 			"desc": "取消这次升级，全额退还已经扣掉的粮食与黄金（当前等级不变）",
 		}]
+	# ★★ 大本营正在排队重生将领 → 不能开始新的升级（进行中的升级上面已经处理）。
+	if b.is_base() and b.is_respawning():
+		return [{
+			"type": "building_respawn",
+			"name": "重生中",
+			"desc": "大本营正在为重生的将领排队：%d 位，当前剩 %s 秒；完成前不能升级" % [
+				b.respawn_count(), _fmt_num(b.respawn_eta())],
+			"ready": false,
+		}]
 	var max_lv: int = world.building_max_level(b.type)
 	if b.level >= max_lv:
 		return [{
@@ -1931,11 +1997,23 @@ func _on_card_entry(entry: Dictionary) -> void:
 				show_notice("先选中一个将领，才能把新兵排到它名下")
 		"zone_recruit":
 			# 区划招募（点区划中心 → 招募页）：命令里必须带 zone_id，没选中区划就不发。
-			# ★ 冷却中整页置灰（点不到，键盘也不吃）；这里再判一次只是保险
-			#   （测试 / 直接调 activate_index 时也走这条路）。
+			# ★ 不可招募的格子（已拥有 / 阶数不足 / 将领满员 / 冷却中）都置灰、
+			#   按钮点不到；这里再判一次只是保险（键盘 / 直接 activate_index 也走这条路）。
 			if not bool(entry.get("ready", true)):
-				show_notice("将领招募冷却中：还需 %s 秒" %
-					_fmt_num(float(entry.get("cooldown_left", 0.0))))
+				match String(entry.get("lock_reason", "")):
+					"owned":
+						show_notice("这位将领已经拥有，不能重复招募")
+					"tier":
+						show_notice("大本营升到 %d 级才能招募这位将领（当前 %d 级）" % [
+							int(entry.get("tier", 1)), int(entry.get("base_level", 0))])
+					"cap":
+						show_notice("将领已达上限（最多 %d 名）：升级大本营可以提高上限"
+							% world.base_max_generals(world.my_faction))
+					"cooldown":
+						show_notice("将领招募冷却中：还需 %s 秒"
+							% _fmt_num(float(entry.get("cooldown_left", 0.0))))
+					_:
+						show_notice("这位将领现在不能招募")
 				return
 			if not input_ctrl.request_zone_recruit(String(entry.get("unit_kind", ""))):
 				show_notice("先点一个区划中心，才能在这个区划里招募")
@@ -1979,9 +2057,20 @@ func _on_card_entry(entry: Dictionary) -> void:
 				show_notice("先选中一个濒死的将领，才能让它再起")
 		"revive_cancel":
 			if input_ctrl.request_revive_cancel():
-				show_notice("已取消再起读条（全额退款）")
+				show_notice("已取消再起读条")
 			else:
 				show_notice("先选中一个正在再起的将领，才能取消")
+		"recall":
+			# ★ 召回：点即生效（用户拍板不二次确认）。后果写在悬停说明里。
+			if input_ctrl.request_recall():
+				var base = world.find_base_of(world.my_faction) if world != null else null
+				if base != null and not base.neutralized:
+					show_notice("召回：旗下部队已解散，将领将在 %s 秒后于大本营重生"
+						% _fmt_num(world.revive_recall_respawn_sec()))
+				else:
+					show_notice("召回：旗下部队已解散；没有可用大本营，将领将永久阵亡")
+			else:
+				show_notice("先选中一个濒死的将领，才能召回")
 
 
 ## ★ 建筑「操作」页那几格 → 命令（升级 / 取消升级 / 特化 / 取消特化）。
@@ -2268,8 +2357,11 @@ func recruit_reject_text(reason: String, kind: String, max_count: int = 0,
 			return "将领已达上限（最多 %d 名）：升级大本营可以提高上限" % gcap
 		"cooldown":
 			return "将领招募冷却中：还需 %s 秒" % _fmt_num(maxf(0.0, cooldown_left))
-		"pool":
-			return "这名将领不在当前三个招募槽位里（换一手再招）"
+		"owned":
+			return "这位将领已经拥有，不能重复招募"
+		"tier":
+			var need: int = world.general_recruit_tier(kind) if world != null else 1
+			return "大本营升到 %d 阶才能招募这位将领" % need
 		"queue_full":
 			var cap: int = max_count if max_count > 0 else world.recruit_queue_max()
 			return "招募队列已满（最多 %d 个）" % cap
@@ -2296,9 +2388,9 @@ func order_reject_text(reason: String) -> String:
 		"recruiting":
 			return "将领正在招募单位：它和它的部队这会儿只警戒，不接受指令"
 		"downed":
-			return "将领已经倒地濒死：它自己不能行动，先让它「再起」（它辖下的部队照常能打）"
+			return "将领已经倒地濒死：它自己不能行动，先让它「再起」或「召回」（它辖下的部队照常能打）"
 		"leader_downed":
-			return "该部队的主将已经倒地：它们正在赶去保护主将，主将「再起」前不接受指令"
+			return "该部队的主将已经倒地：它们正在赶去保护主将，主将「再起 / 召回」前不接受指令"
 		"neutralized":
 			return "这个大本营已经被摧毁：该阵营的单位已失去指挥，不能再行动或攻击"
 	return "这条指令现在下不了"
@@ -2307,9 +2399,7 @@ func order_reject_text(reason: String) -> String:
 ## 「再起」被拒的**拒因码 → 中文**（码见 logic/world.gd 的 revive_reject_reason）。
 ##
 ## ★ 常规路径下这些码玩家**看不到**：那颗格子在血量不到 10% 时就是灰的（点不动）。
-##   但 AI 也会下单（它走同一个入口），而且「资源不够」这一条玩家那颗格子**照样是亮的**
-##   ——钱不够的判断在扣费那一步，界面没有提前拦（拦了就等于把规则抄两份）。
-##   所以这条翻译是给「钱不够」那一下用的，其余几条是兜底。
+##   但 AI 也会下单（它走同一个入口），所以这些中文主要给 AI / 手搓命令兜底。
 func revive_reject_text(reason: String) -> String:
 	match reason:
 		"leader":
@@ -2322,11 +2412,19 @@ func revive_reject_text(reason: String) -> String:
 			return "它已经在再起了（想中断就点「取消再起」）"
 		"hp":
 			return "血量还没回到 %d%%，再起还点不亮" % int(round(world.revive_ready_ratio() * 100.0))
-		"cost":
-			var c: Dictionary = world.revive_cost()
-			return "粮食或黄金不足，再起需要 粮食 %d / 黄金 %d" % [
-				int(round(float(c.get("food", 0.0)))), int(round(float(c.get("gold", 0.0))))]
 	return "现在不能让它再起"
+
+
+## 召回被拒的**拒因码 → 中文**（逻辑层只给码：见 world.recall_reject_reason）。
+func recall_reject_text(reason: String) -> String:
+	match reason:
+		"leader":
+			return "先选中一个将领，才能召回"
+		"faction":
+			return "不能召回别的阵营的将领"
+		"not_downed":
+			return "只有濒死的将领才能召回"
+	return "现在不能召回这个将领"
 
 
 ## 科技被拒的**拒因码 → 中文**（逻辑层只给码：见 logic/tech.gd 的 can_activate）。
@@ -2378,6 +2476,8 @@ func upgrade_reject_text(reason: String, evt: Variant = null) -> String:
 			return "粮食或黄金不足"
 		"neutralized":
 			return "这个阵营已经失去大本营：残余建筑无法再升级"
+		"respawning":
+			return "大本营正在为重生的将领排队：队列清空之前不能开始新的升级"
 		"owner":
 			return "只能升级自己的建筑"
 		"zone":
@@ -2490,16 +2590,21 @@ func _card_sig() -> String:
 		var zd: Dictionary = z
 		parts.append("z:%d:%s:%s:%s" % [int(zd.get("id", -1)), world.zone_kind_of(zd),
 			String(zd.get("spec_done", "")), String(zd.get("spec_kind", ""))])
-	# ★★ 招募页的手牌与冷却（本轮新增）：池子会「招走一名 → 三名全部重抽」，
-	#    冷却结束也要把整页从灰变回可点 —— 这两件事都不改页签、也不改选中对象，
-	#    不放进签名的话命令卡会一直停在生产它的那一帧（与濒死「再起」同一类 bug）。
-	#    ⚠️ 只放「是哪三位 + 冷却有没有」；**不放剩余秒数** —— 放进去就变成每秒重建一次。
+	# ★★ 招募页的九宫格状态：固定阵容本身不变，但下面这些会变 ——
+	#    · 大本营升级 → tier 解锁；
+	#    · 招走 / 取消 / 关卡开局拥有 → taken；
+	#    · 将领死亡 / 重生 / 上限变化 → cap；
+	#    · 冷却开始 / 结束 → 整页灰 ⇄ 可点。
+	#    ⚠️ 不放剩余秒数，否则命令卡会每秒重建一次。
 	if String(page_tabs.page()) == PageTabsRes.PAGE_RECRUIT:
-		var hand_key := ""
-		for k in world.general_recruit_slots(world.my_faction):
-			hand_key += String(k) + ","
-		parts.append("gh:%s:%d" % [hand_key,
-			1 if world.general_recruit_cooldown_left(world.my_faction) > 0.0 else 0])
+		var taken_key := ",".join(PackedStringArray(world.general_recruit_owned_kinds(world.my_faction)))
+		parts.append("gr:%d:%d:%d:%s:%d" % [
+			world.base_level_of(world.my_faction),
+			world.general_count_of(world.my_faction),
+			world.base_max_generals(world.my_faction),
+			taken_key,
+			1 if world.general_recruit_cooldown_left(world.my_faction) > 0.0 else 0,
+		])
 	# ③ 选中部队 / 什么都没选中这两档**不进签名**：它们的命令卡内容是静态的
 	#    （操作页那四条指令写死在 `_order_entries()`、建筑页来自 config.json 的 building 段），
 	#    与「选中了哪一支部队」无关 —— 放进去只会每次换选中都白重建一遍。
@@ -3024,6 +3129,10 @@ func _unit_detail_rows(shown) -> Dictionary:
 				_fmt_num(shown.combat_cooldown(cfg))]))
 	for line in _attack_bonus_lines(shown):
 		left.append(_small_row("- %s" % line))
+	# ★★ 将领特性（部队光环）的名字：效果行由上下两列按类型分别显示，
+	#    这里单独写一条名字，让玩家知道「这些（将）字增益来自哪一条特性」。
+	if shown.has_method("has_general_aura") and shown.has_general_aura():
+		left.append(_small_row("- 特性 %s" % cfg.general_trait_name(String(shown.aura_trait_id))))
 
 	# ---- 右列第二排起：防御力 + 防御增益 ----
 	right.append(_row("防御 0"))
@@ -3053,6 +3162,16 @@ func _attack_bonus_lines(u) -> Array[String]:
 		if pct <= 0:
 			continue
 		out.append("对%s伤害 +%d%%" % [cfg.class_display_name(String(cls)), pct])
+	# ★★ 将领特性（步兵 / 骑兵特攻）：与兵种特性同列，但标一个「（将）」——
+	#   两者在 unit.attack_multiplier_vs_class 里是**加算**的，分开写才能看出各占多少。
+	var aura: Dictionary = u.aura_attack_vs_class
+	var aura_classes: Array = aura.keys()
+	aura_classes.sort()
+	for cls in aura_classes:
+		var pct2: int = int(round(float(aura[cls]) * 100.0))
+		if pct2 <= 0:
+			continue
+		out.append("对%s伤害 +%d%%（将）" % [cfg.class_display_name(String(cls)), pct2])
 	return out
 
 
@@ -3069,6 +3188,12 @@ func _defense_bonus_lines(u) -> Array[String]:
 	# ★★ 兵种特性：对远程减伤（只有写了 traits.ranged_reduction 的兵种才有）
 	if float(u.ranged_damage_reduction) > 0.0:
 		out.append("对远程减伤 +%d%%" % int(round(float(u.ranged_damage_reduction) * 100.0)))
+	# ★★ 将领特性：近战 / 远程抵抗（两者互斥，同一单位只会有一条）。
+	#   标「（将）」是因为它们与上面那条、以及士气免伤**加算**后一起封顶。
+	if float(u.aura_melee_reduction) > 0.0:
+		out.append("近战减伤 +%d%%（将）" % int(round(float(u.aura_melee_reduction) * 100.0)))
+	if float(u.aura_ranged_reduction) > 0.0:
+		out.append("远程减伤 +%d%%（将）" % int(round(float(u.aura_ranged_reduction) * 100.0)))
 	if float(u.morale) >= cfg.morale_high_tier:
 		out.append("士气免伤 +%d%%" % int(round(cfg.morale_damage_reduction * 100.0)))
 	elif float(u.morale) <= cfg.morale_vuln_tier:
@@ -3191,6 +3316,18 @@ func _buffs_for(u) -> Array:
 	var ratio: float = clampf(float(u.morale_ratio()), 0.0, 1.0)
 	var m: int = int(round(u.morale))
 	var mm: int = int(round(u.morale_max))
+	# ★★ 将领特性（部队光环）：一个「将」字方块，悬停说明这一条具体是什么。
+	#   梯队顺序：特性在前、士气在后（特性是「这支部队为什么强」的由来）。
+	if u.has_method("has_general_aura") and u.has_general_aura():
+		var tid := String(u.aura_trait_id)
+		out.append({
+			"id": "general_trait",
+			"text": cfg.general_trait_short(tid),
+			"color": UiStyleRes.accent(),
+			"name": "将领特性：%s" % cfg.general_trait_name(tid),
+			"tip_title": cfg.general_trait_name(tid),
+			"tip_body": "%s\n来自将领，对将领本人及旗下所有单位生效。" % cfg.general_trait_desc(tid),
+		})
 	# 悬停浮窗里写清楚「现在多少 + 各档效果」，与 logic/morale.gd 的口径一致。
 	var body := "当前 %d / %d\n≥%s：快速回血，受到伤害 -%d%%\n≥%s：缓慢回血\n≤%s：受到伤害 +%d%%\n≤%s：缓慢失去生命（0 时加快）" % [
 		m, mm,

@@ -326,7 +326,18 @@ func cell_text(i: int) -> String:
 		return ""
 	if world == null:
 		return kind
-	return world.recruit_short_of(kind)
+	var short := String(world.recruit_short_of(kind))
+	# ★★ 区划招募的每一单都带一条将领特性（见 world.zone_recruit_trait_at）。
+	#   格子里写成「将·速」：短名 + 特性短名，一眼能看出这一单招到的是哪一条。
+	#   ⚠️ 将领自己的招募队列（_is_zone == false）不变 —— 那里招的是普通兵，
+	#      没有「将领特性」这回事。
+	if _is_zone and world.has_method("zone_recruit_trait_at") \
+			and world.has_method("general_trait_short"):
+		var tr := String(world.zone_recruit_trait_at(_holder, i))
+		var ts := String(world.general_trait_short(tr)) if tr != "" else ""
+		if ts != "":
+			return "%s·%s" % [short, ts]
+	return short
 
 
 ## 大格子的读条进度（0~1）

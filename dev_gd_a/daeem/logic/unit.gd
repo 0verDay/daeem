@@ -107,6 +107,25 @@ var ranged: bool = false
 ##   于是「将领 3 是骑手 ⇒ 它也有骑手那两条」自动成立，代码里没有将领特例。
 var attack_bonus_vs_class: Dictionary = {}
 var ranged_damage_reduction: float = 0.0
+## ★★ 将领特性（部队光环；权威定义在 config.json 的 `unit.general_traits`）。
+##
+## · `general_trait` —— 这位**将领自己**抽到的特性 id（非将领 / 没抽到 = ""）；
+## · `aura_trait_id`  —— 我正在享受的将领特性 id：将领 = 自己那条，
+##   附属兵 = 出生时从队长抄来的那一条（"" = 没有光环）；
+## · 下面几个 `aura_*` 是**算好的数值**，出生 / 授予时写一次、之后只读 ——
+##   与 `attack_bonus_vs_class` / `vision` 同一条口径：每帧每单位都要读，
+##   不查 config、不查 world。
+##
+## ★ 为什么不每帧沿着 `leader_id` 去查队长：那是每帧每单位一次 O(n) 的列表查找，
+##   而本工程从来没有「改绑队长」这条机制 —— 光环在出生那一刻绑定就够了。
+##   （将领倒下 / 阵亡后已有光环仍然保留，这是本次的明确口径。）
+var general_trait: String = ""
+var aura_trait_id: String = ""
+var aura_speed_mult: float = 1.0
+var aura_cooldown_mult: float = 1.0
+var aura_melee_reduction: float = 0.0
+var aura_ranged_reduction: float = 0.0
+var aura_attack_vs_class: Dictionary = {}
 ## ★★ 视野半径（**格**）—— 战争迷雾用（见 logic/fog.gd）。
 ##
 ## ★ 与 hp_max / unit_class 同一个口径：**生出来那一刻就把 config 里的数抄到身上**，
@@ -545,10 +564,70 @@ func is_cavalry() -> bool:
 ##
 ## @param cls 目标的 `unit_class`（infantry / cavalry）。空串（比如建筑）一律 1.0。
 ## ★ 只读出生时抄好的 `attack_bonus_vs_class`，不查 config —— 每帧每次开火都要算。
+## ★★ 将领特性（兵种特攻）在**同一处**相加：两项都是「+比例」，加算之后只乘一次，
+##   与减伤那条「先相加、再封顶」的口径保持一致（不会出现两次乘算的隐藏顺序）。
 func attack_multiplier_vs_class(cls: String) -> float:
-	if cls == "" or attack_bonus_vs_class.is_empty():
+	if cls == "":
 		return 1.0
-	return 1.0 + float(attack_bonus_vs_class.get(cls, 0.0))
+	return 1.0 + float(attack_bonus_vs_class.get(cls, 0.0)) \
+		+ float(aura_attack_vs_class.get(cls, 0.0))
+
+
+# ------------------------------------------------------------------
+# ★★ 将领特性（部队光环）—— 授予 / 继承 / 快照重建
+# ------------------------------------------------------------------
+
+## 给一位将领授予特性：记下自己的 id，并让自己先吃上自己的光环。
+## （需求口径：部队 buff 对「该将领旗下的所有单位」生效 —— 将领本人也算。)
+func set_general_trait(cfg: ConfigRes, trait_id: String) -> void:
+	general_trait = trait_id
+	_apply_aura(cfg, trait_id)
+
+
+## 附属兵出生时从队长继承光环（队长没有特性 → 中性，不报错）。
+func inherit_general_aura(cfg: ConfigRes, leader) -> void:
+	if leader == null:
+		_apply_aura(cfg, "")
+		return
+	_apply_aura(cfg, String(leader.general_trait))
+
+
+## 快照重建 / 客机侧：直接应用某条光环（不碰 `general_trait`）。
+func apply_aura_trait(cfg: ConfigRes, trait_id: String) -> void:
+	_apply_aura(cfg, trait_id)
+
+
+## 把一条特性的效果写进 `aura_*` 字段（没有特性 / 未知 id → 全部回到中性）。
+##
+## ★ 这段是**唯一**把配置比例换算成玩法数值的地方：
+##   · 攻速 +25% ⇒ 攻击间隔 ×(1 / 1.25) = ×0.8（不是 ×0.75 —— 「速度」与「间隔」是倒数）；
+##   · 减伤与攻击加成都是「比例」，直接存下来，在使用点相加。
+func _apply_aura(cfg: ConfigRes, trait_id: String) -> void:
+	aura_trait_id = ""
+	aura_speed_mult = 1.0
+	aura_cooldown_mult = 1.0
+	aura_melee_reduction = 0.0
+	aura_ranged_reduction = 0.0
+	aura_attack_vs_class = {}
+	if trait_id == "":
+		return
+	var e: Dictionary = cfg.general_trait_effect(trait_id)
+	if e.is_empty():
+		return
+	aura_trait_id = trait_id
+	aura_speed_mult = 1.0 + float(e.get("speed_bonus", 0.0))
+	var atk_speed_bonus := float(e.get("attack_speed_bonus", 0.0))
+	aura_cooldown_mult = 1.0 / (1.0 + atk_speed_bonus)
+	aura_melee_reduction = clampf(float(e.get("melee_reduction", 0.0)), 0.0, 1.0)
+	aura_ranged_reduction = clampf(float(e.get("ranged_reduction", 0.0)), 0.0, 1.0)
+	var av: Variant = e.get("attack_vs_class", {})
+	if typeof(av) == TYPE_DICTIONARY:
+		aura_attack_vs_class = av
+
+
+## 是否正在享受一条将领光环（界面 / 测试读它）。
+func has_general_aura() -> bool:
+	return aura_trait_id != ""
 
 
 ## 是否正在等待复活（单机永远 false —— 死亡即离场）
@@ -681,10 +760,13 @@ func train_progress() -> float:
 ## ★ 按 `unit_type` 查表（不是 kind）：将领的速度 = 它所属兵种的速度 ——
 ##   于是「骑手型的将领跑得更快」是数据决定的，代码里没有特例。
 ## ★ 将领自己填过速度就用它（config 的 unit.general.stats，见 stat_overrides）。
+## ★★ 将领特性「神速」在最后乘一次（森林与光环都乘在同一个基础值上）。
+##   ⚠️ 注意：`step_along_path()` 为了热路径把这段内联了，那里也必须乘 `aura_speed_mult`
+##      —— 只改这里的话，面板上的移速变了、实际走的距离却没变。
 func speed(cfg: ConfigRes, map) -> float:
 	var base: float = float(stat_overrides.get("speed", cfg.unit_speed_of(unit_type)))
 	var on_forest: bool = map != null and map.is_forest(tx, ty)
-	return base * (cfg.unit_forest_mult if on_forest else 1.0)
+	return base * (cfg.unit_forest_mult if on_forest else 1.0) * aura_speed_mult
 
 
 ## 该单位的战斗数值（按单位类型查 config.unit.types，见 cfg.unit_combat_of）。
@@ -698,9 +780,12 @@ func combat_range(cfg: ConfigRes) -> float:
 	return float(stat_overrides.get("range", cfg.unit_combat_of(unit_type)["range"]))
 
 
+## ★★ 将领特性「神力」= 攻击速度 +25% ⇒ 间隔 ×0.8（见 `_apply_aura`）。
+##   `combat.attack_unit` / `attack_building` 都从这里取，所以两处一起生效；
+##   HUD 的「攻击 x/ys」也读这个函数，显示与实际一致。
 func combat_cooldown(cfg: ConfigRes) -> float:
 	return float(stat_overrides.get("cooldown_sec",
-		cfg.unit_combat_of(unit_type)["cooldown_sec"]))
+		cfg.unit_combat_of(unit_type)["cooldown_sec"])) * aura_cooldown_mult
 
 
 ## 警戒半径（格）
@@ -1412,9 +1497,12 @@ func step_along_path(world, cfg: ConfigRes, dt: float) -> void:
 	#
 	# ★ 这里刻意**内联 speed()**：那是每单位每帧一次的方法调用，
 	#   而它内部又只是「查一次基础速度 + 查一次森林」。语义与 speed() 完全一致。
+	# ★★ 将领特性「神速」也必须乘在这里（与 speed() 同一个口径）：
+	#   只改 speed() 的话，面板上移速变快了、实际每帧走的距离却没变。
 	var base_speed: float = cfg.unit_speed_of(unit_type)
 	var on_forest: bool = map != null and map.is_forest(tx, ty)
-	var remaining: float = base_speed * (cfg.unit_forest_mult if on_forest else 1.0) * dt
+	var remaining: float = base_speed * (cfg.unit_forest_mult if on_forest else 1.0) \
+		* aura_speed_mult * dt
 
 	# recenter 与 remaining 同步消耗：到达判定要用的是**循环之后还剩多少预算**，
 	# 而不是本帧开头的预算（否则到达时又走一段，总位移会超过速度预算）。
@@ -1601,11 +1689,17 @@ func take_damage(cfg: ConfigRes, world, amount: float, _source = null,
 	#       两者本来就互斥（高位阈值 100 / 低位阈值 50，一个单位不可能同时满足）。
 	# ★ 近战（combat.attack_unit）与远程（projectile._impact）两条路都走这个收口，
 	#   区别只是远程那条传 `incoming_ranged = true`。
+	#
+	# ★★ 将领特性（本轮新增）：近战抵抗只加在近战那条路、远程抵抗只加在远程那条路，
+	#   两者同样**加进这个和**、再一起按 `damage_reduction_cap` 封顶 ——
+	#   与士气 / 兵种远程减伤是同一套口径（不另开一次乘算）。
 	var reduction := 0.0
 	if morale >= cfg.morale_high_tier:
 		reduction += cfg.morale_damage_reduction
 	if incoming_ranged:
-		reduction += ranged_damage_reduction
+		reduction += ranged_damage_reduction + aura_ranged_reduction
+	else:
+		reduction += aura_melee_reduction
 	if reduction > 0.0:
 		amount *= 1.0 - clampf(reduction, 0.0, cfg.damage_reduction_cap)
 	if morale <= cfg.morale_vuln_tier:
@@ -1636,7 +1730,9 @@ func take_damage(cfg: ConfigRes, world, amount: float, _source = null,
 ## ★ 为什么单独抽出来：死亡这件事现在有**三条**入口（吃到致命伤、进濒死时发现没兵、
 ##   濒死期间兵全死光），三条都要做同一套收尾（停手 / 计数 / 事件），
 ##   抄三份的话「哪次忘了 push_event」会表现成「将领没了但界面什么都没说」。
-func _die(cfg: ConfigRes, world, _source = null) -> void:
+## @param recalled true = 这次阵亡来自玩家选择「召回」（大本营重生时长更短，
+##        且旗下部队已经由 world 静默击杀）。
+func _die(cfg: ConfigRes, world, _source = null, recalled: bool = false) -> void:
 	if not alive:
 		return
 	# ★★ 濒死 / 读条中的状态一起清掉：它们是「还活着」的附属状态，
@@ -1651,8 +1747,14 @@ func _die(cfg: ConfigRes, world, _source = null) -> void:
 	alive = false
 	stop()
 	deaths += 1
+	# ★★ 阵亡后先问 world：能不能进**大本营重生队列**（有可用大本营才行）。
+	#   · true → 对象由队列持有，重生时长由 world 定（召回 10s / 正常 20s）；
+	#   · false → 没有大本营 / 已中立化 → 永久阵亡，走旧的 pvp 兜底（单机恒 0）。
+	var queued := false
+	if is_general() and world != null and world.has_method("on_general_death"):
+		queued = bool(world.on_general_death(self, recalled))
 	var sec := 0.0
-	if world != null and world.pvp_enabled:
+	if not queued and world != null and world.pvp_enabled:
 		sec = maxf(0.0, cfg.respawn_sec)
 	death_timer = sec
 	if world != null:
@@ -1660,10 +1762,11 @@ func _die(cfg: ConfigRes, world, _source = null) -> void:
 
 
 ## 立刻死亡（对外入口：world 判定「旗下部队全灭」时调它）。
-func die_now(cfg: ConfigRes, world, reason: String = "") -> void:
+## @param recalled true = 玩家选择「召回」导致的阵亡（见 `_die`）。
+func die_now(cfg: ConfigRes, world, reason: String = "", recalled: bool = false) -> void:
 	if not alive:
 		return
-	_die(cfg, world, null)
+	_die(cfg, world, null, recalled)
 	if world != null and reason != "":
 		world.push_event({"type": "leader_lost", "unit": self, "reason": reason})
 
@@ -1851,6 +1954,45 @@ func _finish_revive(world) -> void:
 	if world != null:
 		world.push_event({"type": "leader_revived", "unit": self})
 
+
+## ★★ 在大本营旁**重生**（大本营重生队列读完时由 world 调用）。
+##
+## 与「再起」的区别：再起是在倒下点站起来、血量保持不变；重生是**阵亡之后**
+## 从大本营重新出场、**满血**。对象在阵亡后被 `world.tick` 的清理段摘出
+## `world.units`，这里负责把它放回去。
+##
+## @param base 触发这次重生的大本营建筑（落点在它周围）。
+func respawn_at_base(cfg: ConfigRes, world, base) -> void:
+	downed = false
+	revive_pending = false
+	revive_remaining = 0.0
+	revive_total = 0.0
+	nd_regen_hp = 0.0
+	nd_hp_ratio = 0.0
+	nd_regen_timer = 0.0
+	death_timer = 0.0
+	alive = true
+	# ★ 阵亡期间不在 world.units 里，错过科技对血量上限的重算 —— 回来时补一次。
+	if world != null and world.has_method("_tech_hp_mult_for"):
+		apply_hp_bonus(float(world._tech_hp_mult_for(self)))
+	hp = hp_max
+	stop()
+	clear_attack_fx()
+	attack_cd = 0.0
+	# 刚重生那一下附近往往还有敌人：用驻防将领那条冷却挡住「一睁眼就被锁」。
+	retarget_cd = maxf(retarget_cd, 1.0)
+	var tile := Vector2i(tx, ty)
+	if world != null and world.has_method("base_respawn_tile"):
+		var t: Variant = world.base_respawn_tile(self, base)
+		if t != null:
+			tile = t
+	pos = GridRes.center_of(tile)
+	tx = tile.x
+	ty = tile.y
+	if world != null:
+		if not world.units.has(self):
+			world.units.append(self)
+		world.push_event({"type": "respawn", "unit": self, "faction": String(faction)})
 
 
 ## 复活倒计时。到点后满血、回到自家大本营旁边、清空所有交战状态。

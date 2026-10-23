@@ -149,9 +149,10 @@ func _test_general_count_cap(cfg) -> void:
 	if z == null:
 		return
 	var zid := int(z["id"])
-	# ★ 本轮起区划招募是「池子抽出来的一手」，只能拿**手牌里**的那位去验上限
-	#   （手搓 general_1 可能不在这一手，会先撞上拒因 pool）。
-	var kind: String = String(w.general_recruit_slots("p1")[0])
+	# ★ 关卡开局摆了 #1-3（已拥有）。清掉「已拥有」集合，专门验**将领上限**这一条；
+	#   否则会先撞上 owned / tier。
+	w.general_recruit_pools["p1"]["taken"] = []
+	var kind := "general_1"
 	eq(w.can_recruit_zone(kind, zid, "p1"), "general_limit",
 		"★ 1 级 3 将已满：区划招将被拒（general_limit）")
 	_set_level(w, b, 2)

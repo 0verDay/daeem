@@ -26,8 +26,10 @@
 ##   zone_spec_cancel        zone_id, faction          取消已完成的特化（**也要读条**，读完退款）
 ##   zone_spec_bar_cancel    zone_id, faction          撤掉**读条中**的那一单特化并退款
 ##   revive         leader_id, faction              ★ 让一个**濒死**的将领「再起」
-##                                                      （扣 revive.cost、读条 channel_sec）
-##   revive_cancel  leader_id, faction              取消读条中的再起并**全额退款**
+##                                                      （**不消耗资源**、读条 channel_sec）
+##   revive_cancel  leader_id, faction              取消读条中的再起（免费，无退款）
+##   recall         leader_id, faction              ★ 召回：静默击杀旗下部队，将领阵亡后
+##                                                      进入大本营重生队列（10 秒，更短）
 ##   spawn_enemy    tx, ty               调试刷兵
 ##
 ## ★ 关键约束：**命令里只放意图，不放结果**。
@@ -95,14 +97,20 @@ static func apply(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 			return world.cancel_zone_spec_bar(
 				int(cmd.get("zone_id", -1)), String(cmd.get("faction", world.my_faction)))
 		"revive":
-			# ★ 将领濒死 → 花资源「再起」（读条 channel_sec 秒）。
-			#   规则（能不能点 / 多少钱 / 读条多久）全在 world.start_revive 里，
+			# ★ 将领濒死 → 「再起」（免费，读条 channel_sec 秒）。
+			#   规则（能不能点 / 读条多久）全在 world.start_revive 里，
 			#   这里只把意图转过去（与招募 / 升级那几条同一条约定）。
 			return world.start_revive(
 				String(cmd.get("leader_id", "")),
 				String(cmd.get("faction", world.my_faction)))
 		"revive_cancel":
 			return world.cancel_revive(
+				String(cmd.get("leader_id", "")),
+				String(cmd.get("faction", world.my_faction)))
+		"recall":
+			# ★ 召回：静默击杀旗下部队 + 将领阵亡 + 进大本营重生队列。
+			#   能不能召回（是否濒死 / 归属）在 world.recall_general 里判。
+			return world.recall_general(
 				String(cmd.get("leader_id", "")),
 				String(cmd.get("faction", world.my_faction)))
 		"spawn_enemy":

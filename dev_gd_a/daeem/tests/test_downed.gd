@@ -31,9 +31,14 @@ func _cases() -> void:
 	_test_rally_retinue(cfg)
 	_test_rescue_lock(cfg)
 	_test_rescue_lock_released_on_revive(cfg)
-	_test_revive_gate_and_cost(cfg)
+	_test_revive_gate_no_cost(cfg)
 	_test_revive_channel_and_cancel(cfg)
 	_test_revive_keeps_hp(cfg)
+	_test_recall(cfg)
+	_test_normal_death_respawn(cfg)
+	_test_serial_respawn_queue(cfg)
+	_test_no_base_permanent_death(cfg)
+	_test_respawn_keeps_identity(cfg)
 	_test_recruit_queue_cleared(cfg)
 	_test_tech_recalc(cfg)
 	_test_snapshot_round_trip(cfg)
@@ -69,6 +74,13 @@ func _count_events(events: Array, type_name: String) -> int:
 			n += 1
 	return n
 
+
+func _first_event(events: Array, type_name: String) -> Dictionary:
+	for e in events:
+		if String(e.get("type", "")) == type_name:
+			return e
+	return {}
+
 func _add_mate(cfg, w, leader) -> Variant:
 	var m = UnitRes.create(cfg, "%s-testmate" % leader.id, "试验兵",
 		Vector2i(leader.tx, leader.ty), leader.faction, leader.unit_type,
@@ -81,14 +93,14 @@ func _add_mate(cfg, w, leader) -> Variant:
 
 func _test_config_table(cfg) -> void:
 	var w = require_world_with_escorts(cfg, 3)
-	var cost: Dictionary = w.revive_cost()
-	near(float(cost.get("food", 0.0)), 200.0, 1e-6, "★ 再起消耗 200 粮食（config.revive.cost）")
-	near(float(cost.get("gold", 0.0)), 200.0, 1e-6, "★ 再起消耗 200 黄金")
+	ok(not w.has_method("revive_cost"), "★★ 再起不再消耗资源（revive.cost / revive_cost 已移除）")
 	near(w.revive_channel_sec(), 5.0, 1e-6, "★ 再起读条 5 秒")
 	near(w.revive_ready_ratio(), 0.1, 1e-6, "★ 血量到 10% 才允许再起")
 	near(cfg.revive_regen_sec, 3.0, 1e-6, "★ 每 3 秒回复一次")
 	near(cfg.revive_regen_ratio, 0.01, 1e-6, "★ 每次回复 1% 血量上限")
 	near(cfg.revive_regen_cap_ratio, 0.2, 1e-6, "★ 回复天花板 = 20% 血量上限")
+	near(w.revive_respawn_sec(), 20.0, 1e-6, "★ 正常阵亡 → 20 秒后在大本营重生")
+	near(w.revive_recall_respawn_sec(), 10.0, 1e-6, "★ 召回阵亡 → 10 秒后重生（更短）")
 
 func _test_downed_entry(cfg) -> void:
 	var w = require_world_with_escorts(cfg, 3)
@@ -262,6 +274,10 @@ func _test_wipe_kills_downed(cfg) -> void:
 	eq(g.deaths, 1, "★ 记了一次阵亡")
 	ok(_count_events(evts, "kill") >= 1, "★ 发了 kill 事件（其中一条是它自己）")
 	eq(_count_events(evts, "leader_lost"), 1, "★ 另发一条 leader_lost（带 reason）")
+	var base = w.find_base_of(MY)
+	ok(base != null and base.is_respawning(), "★★ 阵亡将领进入大本营重生队列")
+	if base != null:
+		eq(base.respawn_count(), 1, "★ 队列里 1 位（正常阵亡 20 秒）")
 
 func _test_rally_retinue(cfg) -> void:
 	var w = require_world_with_escorts(cfg, 3)
@@ -346,37 +362,31 @@ func _test_rescue_lock_released_on_revive(cfg) -> void:
 		"x": float(m.tx + 3), "y": float(m.ty), "faction": MY}),
 		"★★ 再起之后玩家又能指挥它了")
 
-func _test_revive_gate_and_cost(cfg) -> void:
+func _test_revive_gate_no_cost(cfg) -> void:
 	var w = require_world_with_escorts(cfg, 3)
 	var g = w.unit_by_id("general-1")
-	_give(w, 1000.0, 1000.0)
+	_give(w, 0.0, 0.0)                       # ★ 一分钱都没有，验证再起免费
 	_smash(cfg, w, g)
 	ok(g.is_downed(), "（前提）它已经濒死")
 
 	ok(not g.revive_ready(cfg), "★ 刚倒下时（1 点血）还没到 10%，不能再起")
 	eq(w.revive_reject_reason(g, MY), "hp", "★ 拒因码 = hp")
 	ok(not w.start_revive(g.id, MY), "★ 这时再起被拒")
-	near(w.resources["food"], 1000.0, 1e-6, "★ 被拒时**一分钱都不扣**")
+	near(w.resources["food"], 0.0, 1e-6, "★ 被拒时资源不变")
 
 	_set_downed_hp(g, 0.1)
 	ok(g.revive_ready(cfg), "★ 血量到 10% ⟹ 允许再起")
-	eq(w.revive_reject_reason(g, MY), "", "★ 拒因码为空")
+	eq(w.revive_reject_reason(g, MY), "", "★ 拒因码为空（不再有 cost 这一条）")
 
-	_give(w, 10.0, 1000.0)
-	eq(w.revive_reject_reason(g, MY), "cost", "★ 粮食不够的拒因码 = cost")
-	ok(not w.start_revive(g.id, MY), "★ 钱不够时再起被拒")
-	ok(not g.is_reviving(), "★ 而且没有开始读条")
-
-	_give(w, 500.0, 500.0)
-	ok(w.start_revive(g.id, MY), "★★ 钱够了就能再起")
-	near(w.resources["food"], 300.0, 1e-6, "★★ 再起**立刻**扣掉 200 粮食")
-	near(w.resources["gold"], 300.0, 1e-6, "★★ 立刻扣掉 200 黄金")
+	ok(w.start_revive(g.id, MY), "★★ 0 资源也能再起（免费）")
+	near(w.resources["food"], 0.0, 1e-6, "★★ 再起不扣粮食")
+	near(w.resources["gold"], 0.0, 1e-6, "★★ 再起不扣黄金")
 	ok(g.is_reviving(), "★ 进入了读条状态")
 	near(g.revive_total, w.revive_channel_sec(), 1e-6, "★ 读条总时长 = config 的 5 秒")
 
 	eq(w.revive_reject_reason(g, MY), "channeling", "★ 读条中不能再下一单")
 	ok(not w.start_revive(g.id, MY), "★ 重复下单被拒")
-	near(w.resources["food"], 300.0, 1e-6, "★ 重复下单没有再扣钱")
+	near(w.resources["food"], 0.0, 1e-6, "★ 重复下单也不会扣钱")
 
 	eq(w.revive_reject_reason(g, "p2"), "faction", "★ 别的阵营不能替它再起")
 
@@ -401,14 +411,12 @@ func _test_revive_channel_and_cancel(cfg) -> void:
 	ok(g.revive_progress() > 0.3 and g.revive_progress() < 0.7,
 		"★ 读条进度与秒数对得上（约 40%%~60%%，实测 %.2f）" % g.revive_progress())
 
-	near(w.resources["food"], 800.0, 1e-6, "（对账）此刻只扣了那 200")
 	ok(w.cancel_revive(g.id, MY), "★ 取消读条成功")
 	ok(not g.is_reviving(), "★ 不再是读条状态")
-	near(w.resources["food"], 1000.0, 1e-6, "★★ 取消**全额退还** 200 粮食")
-	near(w.resources["gold"], 1000.0, 1e-6, "★★ 黄金也全额退还")
+	near(w.resources["food"], 1000.0, 1e-6, "★★ 再起免费，取消也不会退钱")
+	near(w.resources["gold"], 1000.0, 1e-6, "★★ 黄金同样不变")
 	ok(g.is_downed(), "★ 它仍然是濒死的（取消 ≠ 死亡，也 ≠ 复活）")
-	ok(not w.cancel_revive(g.id, MY), "★ 没在读条时再取消：返回 false（不重复退钱）")
-	near(w.resources["food"], 1000.0, 1e-6, "★ 没有凭空多出资源")
+	ok(not w.cancel_revive(g.id, MY), "★ 没在读条时再取消：返回 false")
 
 	ok(w.start_revive(g.id, MY), "再下一单")
 	ok(g.is_reviving(), "（前提）它在读条")
@@ -441,6 +449,157 @@ func _test_revive_keeps_hp(cfg) -> void:
 	ok(g.hp < g.hp_max - 1e-6, "★★ 再起**不是**满血复活（血量就是点下去时那个数）")
 	ok(g.hp > 1.0 + 1e-6, "★★ 也不是被打回 1 点")
 	ok(g.combat_damage(cfg) > 0.0, "★ 它能重新投入战斗（攻击数值照旧）")
+
+## ★★ 召回：静默击杀旗下部队 → 将领阵亡 → 大本营重生队列 10 秒 → 阻塞升级。
+func _test_recall(cfg) -> void:
+	var w = require_world_with_escorts(cfg, 2)
+	var upg = load("res://logic/upgrade.gd")
+	var g = w.unit_by_id("general-1")
+	var base = w.find_base_of(MY)
+	ok(g != null and base != null, "（前提）将领与大本营都在")
+	if g == null or base == null:
+		return
+	_give(w, 10000.0, 10000.0)
+	var mates: Array = w.retinue_of(g.id, true).duplicate()
+	ok(not mates.is_empty(), "（前提）它带着附属兵")
+
+	_smash(cfg, w, g)
+	ok(g.is_downed(), "（前提）将领已经濒死")
+
+	var evts: Array = []
+	ok(w.recall_general(g.id, MY), "★ 召回命令被接受")
+	evts.append_array(w.tick(DT))
+
+	ok(not g.alive, "★★ 召回后将领立即阵亡")
+	for m in mates:
+		ok(not m.alive, "★★ 旗下部队被静默击杀")
+		ok(not w.units.has(m), "★ 而且立即离开 world.units（不走死亡清理）")
+	eq(w.retinue_of(g.id, true).size(), 0, "★ 名下不再有任何活兵")
+	var kill_evts := 0
+	for e in evts:
+		if String(e.get("type", "")) == "kill" and (e.get("unit", null) == g or mates.has(e.get("unit", null))):
+			kill_evts += 1
+	eq(kill_evts, 1, "★★ 只有将领自己的 kill 事件（部队不触发死亡效果）")
+	var lost_evts := 0
+	for e in evts:
+		if String(e.get("type", "")) == "leader_lost" and e.get("unit", null) == g:
+			lost_evts += 1
+	eq(lost_evts, 1, "★ 将领走正常阵亡逻辑（leader_lost +1）")
+
+	ok(base.is_respawning(), "★★ 将领进入大本营重生队列")
+	eq(base.respawn_count(), 1, "队列里 1 位")
+	ok(base.respawn_eta() <= 10.0 + 1e-6, "★★ 召回的重生时长 = 10 秒（实际 %.2f）" % base.respawn_eta())
+	eq(upg.can_upgrade(w, base, MY), "respawning",
+		"★★ 重生队列不为空 → 大本营不能开始新升级")
+	ok(not w.start_building_upgrade(base.tx, base.ty, MY), "升级命令被拒")
+	var rej_evts: Array = w.tick(DT)
+	var rej: Dictionary = _first_event(rej_evts, "upgrade_rejected")
+	eq(String(rej.get("reason", "")), "respawning", "拒因码 = respawning")
+
+	_run_secs(w, 9.0)
+	ok(not g.alive, "★ 9 秒还没重生")
+	ok(base.is_respawning(), "★ 仍然在重生队列里")
+
+	_run_secs(w, 1.5)
+	ok(g.alive, "★★ 10 秒后将领在大本营重生")
+	ok(w.unit_by_id(g.id) != null, "★ 回到 world.units")
+	near(g.hp, g.hp_max, 1e-6, "★★ 重生满血")
+	ok(not base.is_respawning(), "★ 队列清空")
+	eq(upg.can_upgrade(w, base, MY), "", "★★ 重生完成后大本营恢复可升级")
+
+
+## ★★ 正常阵亡（没有召回）：20 秒后重生。
+func _test_normal_death_respawn(cfg) -> void:
+	var w = require_world_with_escorts(cfg, 1)
+	var base = w.find_base_of(MY)
+	ok(base != null, "（前提）有大本营")
+	if base == null:
+		return
+	# 造一个没有附属兵的将领：直接走「无兵即死」这条路。
+	var g = UnitRes.create(cfg, "respawn-20s", "测试将", Vector2i(base.tx + 2, base.ty + 2),
+		MY, "general_4", "", "", UnitRes.UNIT_TYPE_SPEARMAN, 3)
+	w.units.append(g)
+	_smash(cfg, w, g)
+	ok(not g.alive, "★★ 没有附属兵 → 当场阵亡")
+	ok(base.is_respawning(), "★ 进入大本营重生队列")
+	ok(base.respawn_eta() <= 20.0 + 1e-6, "★ 正常阵亡 = 20 秒（实际 %.2f）" % base.respawn_eta())
+
+	_run_secs(w, 19.0)
+	ok(not g.alive, "★ 19 秒还没重生")
+	_run_secs(w, 1.5)
+	ok(g.alive, "★★ 20 秒后重生")
+	ok(not base.is_respawning(), "★ 队列清空")
+
+
+## ★★ 串行：两位将领先后阵亡，前一位出来后才轮到下一位开始倒计时。
+func _test_serial_respawn_queue(cfg) -> void:
+	var w = require_world_with_escorts(cfg, 1)
+	var base = w.find_base_of(MY)
+	ok(base != null, "（前提）有大本营")
+	if base == null:
+		return
+	var a = UnitRes.create(cfg, "serial-a", "甲", Vector2i(base.tx + 1, base.ty + 1),
+		MY, "general_4", "", "", UnitRes.UNIT_TYPE_SPEARMAN, 3)
+	var b = UnitRes.create(cfg, "serial-b", "乙", Vector2i(base.tx + 2, base.ty + 2),
+		MY, "general_5", "", "", UnitRes.UNIT_TYPE_SPEARMAN, 4)
+	w.units.append(a)
+	w.units.append(b)
+	_smash(cfg, w, a)
+	_smash(cfg, w, b)
+	eq(base.respawn_count(), 2, "★ 队列里两位")
+	eq(base.respawn_eta(), 20.0, "★ 只有队首在倒计时（20 秒）")
+
+	_run_secs(w, 21.0)
+	ok(a.alive, "★★ 20 秒后第一位重生")
+	ok(not b.alive, "★★ 第二位还没出来（串行，不并行计时）")
+	ok(base.is_respawning(), "★ 队列还有一位 → 大本营仍然忙")
+	ok(base.respawn_eta() <= 19.2, "★ 第一位出来后才开始第二位的倒计时")
+
+	_run_secs(w, 20.0)
+	ok(b.alive, "★★ 再等 20 秒，第二位也重生")
+	ok(not base.is_respawning(), "★ 队列清空")
+
+
+## ★★ 没有可用大本营 → 永久阵亡（不排队、不重生）。
+func _test_no_base_permanent_death(cfg) -> void:
+	var w = require_world_with_escorts(cfg, 1)
+	var base = w.find_base_of(MY)
+	ok(base != null, "（前提）有大本营")
+	if base == null:
+		return
+	ok(w.remove_building(base, true), "（前提）强制移除大本营（模拟被摧毁）")
+	var g = UnitRes.create(cfg, "no-base-general", "无家将", Vector2i(2, 2),
+		MY, "general_4", "", "", UnitRes.UNIT_TYPE_SPEARMAN, 3)
+	w.units.append(g)
+	_smash(cfg, w, g)
+	ok(not g.alive, "★ 将领阵亡")
+	w.tick(DT)
+	ok(w.unit_by_id(g.id) == null, "★★ 没有大本营 → 直接从 world 消失（永久阵亡）")
+	ok(not base.is_respawning(), "★ 没有任何重生队列")
+
+
+## ★★ 重生后身份 / 特性 / 快捷键保持不变。
+func _test_respawn_keeps_identity(cfg) -> void:
+	var w = require_world_with_escorts(cfg, 1)
+	var base = w.find_base_of(MY)
+	ok(base != null, "（前提）有大本营")
+	if base == null:
+		return
+	var g = UnitRes.create(cfg, "identity-general", "老将", Vector2i(base.tx + 2, base.ty + 2),
+		MY, "general_5", "5", "", UnitRes.UNIT_TYPE_LONGBOWMAN, 4)
+	w.units.append(g)
+	_smash(cfg, w, g)
+	_run_secs(w, 21.0)
+	ok(g.alive, "（前提）已经重生")
+	eq(String(g.id), "identity-general", "★ id 保持")
+	eq(String(g.name), "老将", "★ 名字保持")
+	eq(String(g.kind), "general_5", "★ kind 保持")
+	eq(String(g.unit_type), UnitRes.UNIT_TYPE_LONGBOWMAN, "★ 兵种保持")
+	eq(int(g.general_index), 4, "★ 将领档保持")
+	eq(String(g.hotkey), "5", "★ 快捷键保持")
+	eq(String(g.general_trait), "", "★ 词条已停用：重生后仍没有词条")
+	near(g.hp, g.hp_max, 1e-6, "★ 满血回归")
+
 
 func _test_recruit_queue_cleared(cfg) -> void:
 	var w = require_world_with_escorts(cfg, 3)
@@ -544,11 +703,17 @@ func _test_ai(cfg) -> void:
 			ai_f = String(f)
 			break
 	ok(ai_f != "", "（前提）这一局确实有 AI 阵营")
+	# ★ 新口径：AI / 无大本营的阵营不再自动生成开局将；这里手动摆一位，
+	#   专门验「AI 的将领也走同一套濒死 / 再起规则」。
 	var g = null
 	for u in w.units:
 		if u.alive and String(u.faction) == ai_f and u.is_general():
 			g = u
 			break
+	if g == null:
+		g = w.create_general(ai_f, 0, 0)
+		if g != null:
+			w.units.append(g)
 	ok(g != null, "（前提）AI 那一边有将领")
 	if g == null:
 		return

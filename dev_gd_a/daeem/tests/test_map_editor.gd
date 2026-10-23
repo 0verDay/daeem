@@ -61,7 +61,7 @@ func _test_real_test_map(cfg) -> void:
 	ok(dist <= 2, "★ player 的基地起在指定点附近（指定 %s，实际 %s）"
 		% [str(want_player), str(got_player)])
 	ok(w.find_base_of("p1") != null, "player 的基地真的立起来了（TYPE_BASE 建筑在）")
-	ok(w.unit_by_id("general-1") != null, "将领正常生成了")
+	ok(w.unit_by_id("general-0") != null, "将领正常生成了")
 	eq(w.zones.zones.size(), m.zones_names.size(),
 		"地图里声明的 %d 个区块都进了世界" % m.zones_names.size())
 	ok(w.zones.zones.size() >= 10, "这张图至少有 10 个区块（实际 %d）" % w.zones.zones.size())
@@ -497,7 +497,7 @@ func _test_world_with_editor_map(cfg) -> void:
 		return
 	eq(w.zones.zones.size(), 2, "世界里是 2 个区块")
 	eq(String(w.zones.zones[0]["name"]), "西境", "区块名进了世界")
-	ok(w.unit_by_id("general-1") != null, "将领正常生成了")
+	ok(w.unit_by_id("general-0") != null, "将领正常生成了")
 	ok(w.faction_bases.has("p1"), "玩家大本营立起来了")
 	var b: Vector2i = w.faction_bases["p1"]
 	ok(m.tile_exists(b.x, b.y), "大本营落在存在的格子上（不会被塞进地图外）")

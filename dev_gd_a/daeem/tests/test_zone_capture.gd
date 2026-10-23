@@ -107,7 +107,7 @@ func _test_solo_reading(cfg) -> void:
 		return
 	var z: Dictionary = spot["zone"]
 
-	var g = w.unit_by_id("general-1")
+	var g = w.unit_by_id("general-0")
 	w.units = [g]                        # 隔离：只留一个单位
 	_put(g, spot["tile"], w)
 	eq(_state(z), "", "开局（还没 tick）没有进度条")
@@ -131,7 +131,7 @@ func _test_contested_freezes(cfg) -> void:
 	if spot.is_empty():
 		return
 	var z: Dictionary = spot["zone"]
-	var g = w.unit_by_id("general-1")
+	var g = w.unit_by_id("general-0")
 	w.units = [g]
 	_put(g, spot["tile"], w)
 	var frozen_at := _run_to(w, z, "p1", 0.5)
@@ -163,7 +163,7 @@ func _test_enemy_enters_then_wiped(cfg) -> void:
 	if spot.is_empty():
 		return
 	var z: Dictionary = spot["zone"]
-	var g = w.unit_by_id("general-1")
+	var g = w.unit_by_id("general-0")
 	w.units = [g]
 	_put(g, spot["tile"], w)
 	var before := _run_to(w, z, "p1", 0.5)
@@ -206,7 +206,7 @@ func _test_reader_leaves(cfg) -> void:
 	if spot.is_empty():
 		return
 	var z: Dictionary = spot["zone"]
-	var g = w.unit_by_id("general-1")
+	var g = w.unit_by_id("general-0")
 	w.units = [g]
 	_put(g, spot["tile"], w)
 	var before_left := _run_to(w, z, "p1", 0.5)
@@ -231,7 +231,7 @@ func _test_owned_zone_flip(cfg) -> void:
 	if spot.is_empty():
 		return
 	var z: Dictionary = spot["zone"]
-	var g = w.unit_by_id("general-1")
+	var g = w.unit_by_id("general-0")
 
 	w.units = [g]
 	_put(g, spot["tile"], w)
@@ -275,7 +275,7 @@ func _test_strict_blocking(cfg) -> void:
 	if spot.is_empty():
 		return
 	var z: Dictionary = spot["zone"]
-	var g = w.unit_by_id("general-1")
+	var g = w.unit_by_id("general-0")
 
 	w.units = [g]
 	_put(g, spot["tile"], w)
@@ -350,7 +350,7 @@ func _test_speed_curve(cfg) -> void:
 	var spot1 := _neutral_spot(w1, cfg)
 	if spot1.is_empty():
 		return
-	var g1 = w1.unit_by_id("general-1")
+	var g1 = w1.unit_by_id("general-0")
 	w1.units = [g1]
 	_put(g1, spot1["tile"], w1)
 	w1.tick(1.0)
@@ -384,7 +384,7 @@ func _test_speed_curve(cfg) -> void:
 	var spot3 := _neutral_spot(w3, cfg)
 	if spot3.is_empty():
 		return
-	var g3 = w3.unit_by_id("general-1")
+	var g3 = w3.unit_by_id("general-0")
 	var e3 = w3.spawn_enemy(spot3["tile2"].x, spot3["tile2"].y)
 	if e3 == null:
 		return
@@ -403,7 +403,7 @@ func _test_no_two_bars(cfg) -> void:
 	if spot.is_empty():
 		return
 	var z: Dictionary = spot["zone"]
-	var g = w.unit_by_id("general-1")
+	var g = w.unit_by_id("general-0")
 	var e = w.spawn_enemy(spot["tile2"].x, spot["tile2"].y)
 	if e == null:
 		return
@@ -429,7 +429,7 @@ func _test_no_two_bars(cfg) -> void:
 
 func _test_requires_center_proximity(cfg) -> void:
 	var w = require_world(cfg)
-	var g = w.unit_by_id("general-1")
+	var g = w.unit_by_id("general-0")
 	w.units = [g]
 
 	var found: Dictionary = {}

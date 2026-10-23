@@ -71,6 +71,7 @@ func _test_garrison_presence(cfg) -> void:
 	ok(w != null, "带 AI 的世界能建出来")
 	if w == null:
 		return
+	_spawn_ai_generals(w, cfg)
 	eq(w.ai_kind_of("ai"), LevelRes.AI_GARRISON, "'ai' 是阵地性 AI")
 	ok(w.find_base_of("ai") == null, "★ AI 阵营没有大本营建筑")
 	ok(w.resource_pool_for("ai") == null, "★ AI 阵营没有资源池（null = 无限）")
@@ -81,6 +82,7 @@ func _test_garrison_zone_assignment(cfg) -> void:
 	var w = WorldRes.create(cfg, MAP_PATH, true)
 	if w == null:
 		return
+	_spawn_ai_generals(w, cfg)
 	var n_zoned := 0
 	for g in _generals_of(w, "ai"):
 		if int(g.garrison_zone_id) >= 0:
@@ -91,6 +93,7 @@ func _test_garrison_free_recruit(cfg) -> void:
 	var w = WorldRes.create(cfg, MAP_PATH, true)
 	if w == null:
 		return
+	_spawn_ai_generals(w, cfg)
 	var gens := _generals_of(w, "ai")
 	if gens.is_empty():
 		ok(false, "（前提）AI 要有将领才能验招兵")
@@ -112,6 +115,7 @@ func _test_garrison_revive(cfg) -> void:
 	var w = WorldRes.create(cfg, MAP_PATH, true)
 	if w == null:
 		return
+	_spawn_ai_generals(w, cfg)
 	var gens := _generals_of(w, "ai")
 	if gens.is_empty():
 		ok(false, "（前提）AI 要有将领才能验再起")
@@ -241,6 +245,24 @@ func _passable_tiles(w, cfg, faction: String, need: int) -> Array:
 			if PathfinderRes.passable(w.map, w.buildings, cfg, x, y, faction):
 				out.append(Vector2i(x, y))
 	return out
+
+## ★ 新口径：AI 阵营不再自动生成开局将领。这组用例验的是「AI 逻辑」本身，
+##   所以手动给它摆 3 位（并补齐归属区划），不改游戏的生产行为。
+func _spawn_ai_generals(w, cfg) -> void:
+	if w == null:
+		return
+	for f in w.factions:
+		if w.ai_kind_of(String(f)) != LevelRes.AI_GARRISON:
+			continue
+		if not _generals_of(w, String(f)).is_empty():
+			continue
+		var from: int = w.units.size()
+		for i in 3:
+			var g = w.create_general(String(f), i, i)
+			if g != null:
+				w.units.append(g)
+		w._assign_garrison_zones(String(f), from)
+
 
 func _generals_of(w, faction: String) -> Array:
 	var out: Array = []

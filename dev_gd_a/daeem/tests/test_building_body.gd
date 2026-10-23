@@ -62,7 +62,7 @@ func _test_geometry(cfg) -> void:
 func _test_ally_passes(cfg) -> void:
 	var w = require_world(cfg)
 	var base_b = w.find_base_of(FactionRes.DEFAULT_FACTION)
-	var g = w.unit_by_id("general-1")
+	var g = w.unit_by_id("general-0")
 	ok(base_b != null and g != null, "有大本营与将领 1")
 	if base_b == null or g == null:
 		return
@@ -286,7 +286,7 @@ func _test_map_outpost(cfg) -> void:
 			break
 	if tower_tile.x < 0:
 		return
-	var g = w.unit_by_id("general-1")
+	var g = w.unit_by_id("general-0")
 	w.units = [g]                        # 隔离：只留将领，别让附属兵与敌兵干扰
 	g.stop()
 	g.pos = Vector2(tower_tile) + Vector2(-2.0, 0.5)   # 站在塔西边 2 格（射程 3 格内）

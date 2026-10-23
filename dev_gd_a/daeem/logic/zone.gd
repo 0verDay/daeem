@@ -165,6 +165,14 @@ func _new_zone(zid: int, name: String, flist: Array) -> Dictionary:
 		"train_remaining": 0.0,
 		"train_total": 0.0,
 		"train_queue": [],
+		# ★★ 每一单的**将领特性**（本轮新增）：与 train_kind / train_queue **一一对应**。
+		#   · train_trait  = 正在读条那一单的特性 id（跟着这一单一起出兵）；
+		#   · train_traits = 排队各单的特性 id（与 train_queue 同下标）。
+		#   ⚠️ 两个数组必须同步 append / pop_front / remove_at —— 错位一次就会「招到别人的特性」。
+		#   ★ 下单那一刻从「当前手牌」固化下来（见 world.start_zone_recruit）：
+		#     手牌之后重抽不会影响已经排进队列的这一单。
+		"train_trait": "",
+		"train_traits": [],
 		"train_faction": "",
 		"train_cost_food": 0.0,
 		"train_cost_gold": 0.0,

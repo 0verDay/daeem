@@ -47,7 +47,10 @@ func _test_solo_still_exact(cfg) -> void:
 
 func _test_pair_settles(cfg) -> void:
 	cfg.combat_enabled = false
-	var w = require_world(cfg)
+	# ★ 自由对战开局只有 #0；用关卡支架摆出 3 位将领再验「两人 + 一个旁观者」。
+	var w = require_world_with_escorts(cfg, 1)
+	if w == null:
+		return
 	_clear_zone_centers(w)
 	_keep_player_units(w)
 	ok(w.units.size() >= 3, "世界上至少 3 个己方单位（实际 %d）" % w.units.size())
@@ -215,8 +218,13 @@ func _test_speed_budget_in_crowd(cfg) -> void:
 	var worst := 0.0
 	var worst_ratio := 0.0
 	var prev: Dictionary = {}
+	# ★★ 预算必须在**这一帧开始前**取：`step_along_path` 用的是**当帧起始格**的森林倍率，
+	#   而 tick 之后单位可能刚跨进森林 —— 那时再读 `u.speed()` 会少一半，
+	#   本来正常的位移会算成 2× 预算（带「神速」的单位走得远，更容易踩到跨格那一帧）。
+	var budget: Dictionary = {}
 	for u in group:
 		prev[u.id] = u.pos
+		budget[u.id] = maxf(1e-9, u.speed(cfg, w.map) * DT)
 	var SKIP := 3
 	for i in 500:
 		w.tick(DT)
@@ -224,11 +232,12 @@ func _test_speed_budget_in_crowd(cfg) -> void:
 		for u in group:
 			if measure and u.moving and not u.settling:
 				var d: float = u.pos.distance_to(prev[u.id])
-				var b: float = maxf(1e-9, cfg.unit_speed_of(String(u.unit_type)) * DT)
+				var b: float = float(budget[u.id])
 				if d / b > worst_ratio:
 					worst_ratio = d / b
 					worst = d
 			prev[u.id] = u.pos
+			budget[u.id] = maxf(1e-9, u.speed(cfg, w.map) * DT)
 	var ratio_cap: float = 1.6 * maxf(1.0, float(group.size()) / CROWD_N)
 	ok(worst_ratio <= ratio_cap,
 		"★ 拥挤下移动位移仍不超预算太多（最大 %.4f 格 = %.2f× 该单位自己的预算，上限 %.2f×；%d 个单位）"

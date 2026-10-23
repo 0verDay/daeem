@@ -70,6 +70,9 @@ static func can_upgrade(world, b, faction: String) -> String:
 		return "owner"
 	if b.is_upgrading():
 		return "busy"
+	# ★★ 大本营正在排队重生将领 → 不能**开始新的**升级（进行中的不打断）。
+	if b.is_base() and b.is_respawning():
+		return "respawning"
 	if b.level >= world.cfg.upgrade_max_level(b.type):
 		return "max_level"
 	var pool: Variant = world.resource_pool_for(String(b.owner))

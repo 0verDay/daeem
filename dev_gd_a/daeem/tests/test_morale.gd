@@ -143,8 +143,8 @@ func _test_damage_mult(cfg) -> void:
 # 区划升降（己方↑ / 中立不变 / 敌方↓）
 # ------------------------------------------------------------------
 func _test_zone_drift(cfg, w) -> void:
-	var u = w.unit_by_id("general-1")
-	ok(u != null, "（前提）世界里有 general-1")
+	var u = w.unit_by_id("general-0")
+	ok(u != null, "（前提）世界里有 general-0")
 	if u == null:
 		return
 	var base: Vector2i = w.home_base_of("p1")
@@ -221,7 +221,7 @@ func _test_surrounded(cfg, w) -> void:
 	w.refresh_zone_connectivity()
 	ok(w.zone_is_surrounded(int(far["id"])), "★ 与营地不连通的己方区划 = 被包围")
 
-	var u = w.unit_by_id("general-1")
+	var u = w.unit_by_id("general-0")
 	if u != null:
 		var t: Vector2i = far["tiles"][0]
 		u.tx = t.x
@@ -236,8 +236,8 @@ func _test_surrounded(cfg, w) -> void:
 # 部队共享（镜像）+ 破敌 / 斩将 / 掠地
 # ------------------------------------------------------------------
 func _test_boosts(cfg, w) -> void:
-	var leader = w.unit_by_id("general-1")
-	ok(leader != null, "（前提）世界里有 general-1")
+	var leader = w.unit_by_id("general-0")
+	ok(leader != null, "（前提）世界里有 general-0")
 	if leader == null:
 		return
 	# 手动挂一个附属兵：验证「部队共享 = 队员镜像锚」
@@ -293,7 +293,7 @@ func _test_boosts(cfg, w) -> void:
 # 快照 round-trip
 # ------------------------------------------------------------------
 func _test_snapshot(cfg, w) -> void:
-	var u = w.unit_by_id("general-1")
+	var u = w.unit_by_id("general-0")
 	if u == null:
 		return
 	u.morale = 33.0
@@ -365,7 +365,7 @@ func _test_campaign_no_false_surround(cfg) -> void:
 	if bz != null:
 		ok(not w.zone_is_surrounded(int(bz["id"])),
 			"★★ 玩家自己那块（含大本营的）区划**不算**被包围（盟友的占位大本营不再误伤）")
-	# F1 的一支部队（mt 里单位 id 不是 general-1，按阵营 + 队长找）
+	# F1 的一支部队（mt 里单位 id 不是 general-0，按阵营 + 队长找）
 	var u = _first_unit_of(w, "F1")
 	ok(u != null, "（前提）mt 里找得到 F1 的单位")
 	if u != null:

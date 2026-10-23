@@ -2,6 +2,7 @@
 extends "res://tests/test_case.gd"
 
 const ConfigRes = preload("res://logic/config.gd")
+const UnitRes = preload("res://logic/unit.gd")
 const ProjectileRes = preload("res://logic/projectile.gd")
 const CombatRes = preload("res://logic/combat.gd")
 const ProjectileViewRes = preload("res://view/projectile_view_3d.gd")
@@ -43,7 +44,7 @@ func _test_config(cfg) -> void:
 	ok(int(cfg.num("render.projectile_trail_len", 0.0)) >= 2, "拖尾点数 ≥ 2")
 
 func _test_ranged_delayed_hit(cfg) -> void:
-	var w = require_world(cfg)
+	var w = _world(cfg)
 	var shooter = _ranged_of(w)
 	ok(shooter != null, "（前提）p1 有一个远程单位（长弓）")
 	if shooter == null:
@@ -76,7 +77,7 @@ func _test_ranged_delayed_hit(cfg) -> void:
 		"★ 命中后扣「伤害 × 长弓兵对步兵的 +10%%」（%.1f）" % want)
 
 func _test_guaranteed_hit_moving(cfg) -> void:
-	var w = require_world(cfg)
+	var w = _world(cfg)
 	var shooter = _ranged_of(w)
 	var e = w.spawn_enemy()
 	if shooter == null or e == null:
@@ -98,7 +99,7 @@ func _test_guaranteed_hit_moving(cfg) -> void:
 	near(e.hp, hp0 - want, 1e-6, "★ 目标真的掉血了（必中 = 命中即结算）")
 
 func _test_melee_instant(cfg) -> void:
-	var w = require_world(cfg)
+	var w = _world(cfg)
 	var m = _melee_of(w)
 	ok(m != null, "（前提）p1 有一个近战单位（长枪 / 骑手）")
 	if m == null:
@@ -117,7 +118,7 @@ func _test_melee_instant(cfg) -> void:
 	near(e.hp, hp0 - m_want, 1e-6, "★ 近战伤害即时结算")
 
 func _test_tower_projectile(cfg) -> void:
-	var w = require_world(cfg)
+	var w = _world(cfg)
 	_remove_towers(w)
 	var base_b = w.find_base_of(w.my_faction)
 	ok(base_b != null, "（前提）己方大本营在")
@@ -146,7 +147,7 @@ func _test_tower_projectile(cfg) -> void:
 	near(e.hp, hp0 - tower.attack_damage(cfg), 1e-6, "★ 箭塔伤害在命中时结算")
 
 func _test_target_dies_midflight(cfg) -> void:
-	var w = require_world(cfg)
+	var w = _world(cfg)
 	var shooter = _ranged_of(w)
 	var e = w.spawn_enemy()
 	if shooter == null or e == null:
@@ -161,7 +162,7 @@ func _test_target_dies_midflight(cfg) -> void:
 	eq(w.projectiles.size(), 0, "★ 投掷物飞完自然消失（不崩、不报错）")
 
 func _test_reset_clears(cfg) -> void:
-	var w = require_world(cfg)
+	var w = _world(cfg)
 	var shooter = _ranged_of(w)
 	var e = w.spawn_enemy()
 	if shooter == null or e == null:
@@ -180,7 +181,7 @@ func _test_determinism(cfg) -> void:
 	eq(f1, f2, "★ 同一配置两次运行的命中帧数一致（确定性）")
 
 func _ranged_hit_frames(cfg) -> int:
-	var w = require_world(cfg)
+	var w = _world(cfg)
 	var shooter = _ranged_of(w)
 	var e = w.spawn_enemy()
 	if shooter == null or e == null:
@@ -191,7 +192,7 @@ func _ranged_hit_frames(cfg) -> int:
 	return _advance_until_landed(w, cfg, 900)
 
 func _test_view(cfg) -> void:
-	var w = require_world(cfg)
+	var w = _world(cfg)
 	var shooter = _ranged_of(w)
 	var e = w.spawn_enemy()
 	if shooter == null or e == null:
@@ -216,6 +217,24 @@ func _test_view(cfg) -> void:
 	ok(pv.trail_segments_last_frame >= 1,
 		"★ 拖尾画出了线段（%d 段）" % pv.trail_segments_last_frame)
 	pv.queue_free()
+
+## ★ 自由对战开局只有 #0（长枪兵）；这里补一个长弓兵，专门验投掷物。
+func _world(cfg):
+	var w = require_world(cfg)
+	if w == null:
+		return null
+	if _ranged_of(w) == null:
+		var base = w.find_base_of(String(w.my_faction))
+		var tile := Vector2i(2, 2)
+		if base != null:
+			tile = Vector2i(clampi(base.tx + 1, 0, w.map.cols - 1),
+				clampi(base.ty + 1, 0, w.map.rows - 1))
+		var bow = UnitRes.create(cfg, "test-longbowman", "长弓兵", tile,
+			String(w.my_faction), UnitRes.UNIT_TYPE_LONGBOWMAN, "", "",
+			UnitRes.UNIT_TYPE_LONGBOWMAN, -1)
+		w.units.append(bow)
+	return w
+
 
 func _ranged_of(w):
 	for u in w.units:

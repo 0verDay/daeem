@@ -302,7 +302,9 @@ func _test_stats_are_per_type(cfg) -> void:
 	eq(s.hp_max, cfg.unit_hp_of(t), "附属兵血量走 config.unit.types.<类型>.hp_max")
 	eq(s.combat_damage(cfg), float(cfg.unit_combat_of(t)["damage"]), "附属兵伤害走 config")
 	eq(s.combat_range(cfg), float(cfg.unit_combat_of(t)["range"]), "附属兵射程走 config")
-	eq(s.combat_cooldown(cfg), float(cfg.unit_combat_of(t)["cooldown_sec"]), "附属兵攻击间隔走 config")
+	# ★ 词条已停用：不再继承光环，攻击间隔就是兵种基础值。
+	eq(s.combat_cooldown(cfg), float(cfg.unit_combat_of(t)["cooldown_sec"]),
+		"附属兵攻击间隔走 config")
 
 	eq(String(s.unit_type), String(g1.unit_type), "（前提）附属兵与将领同类型")
 	eq(g1.hp_max, s.hp_max, "★ 将领血量 = 同类型附属兵的血量")

@@ -126,6 +126,19 @@ func consume_events(events: Array) -> void:
 			"revive_rejected":
 				if _is_my_event(evt):
 					hud.show_notice(hud.revive_reject_text(String(evt.get("reason", ""))))
+			"recall_rejected":
+				if _is_my_event(evt):
+					hud.show_notice(hud.recall_reject_text(String(evt.get("reason", ""))))
+			"general_respawn_queued":
+				# ★ 阵亡 / 召回都走这一条：告诉玩家多久之后在大本营重生。
+				if _is_my_event(evt):
+					var secs: int = int(ceil(float(evt.get("secs", 0.0))))
+					var recalled: bool = bool(evt.get("recalled", false))
+					hud.show_notice("%s%d 秒后在大本营重生" % [
+						"召回：" if recalled else "将领阵亡：", secs])
+			"respawn":
+				if _is_my_event(evt):
+					hud.show_notice("将领已在大本营重生")
 			"faction_neutralized":
 				# ★ 不过滤阵营：这是**世界级**消息（谁的大本营没了都值得看一眼）。
 				hud.show_notice("%s 的大本营被摧毁：该阵营的单位与建筑已失去指挥" %

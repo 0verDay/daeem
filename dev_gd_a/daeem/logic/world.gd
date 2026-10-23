@@ -536,6 +536,10 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 		if _is_garrison_ai(String(lf)):
 			_assign_garrison_zones(String(lf), placement_from)
 
+	# ★★ 开局将领 → 招募唯一性：关卡 / 自由对战摆出来的 general_1..9 视为已拥有。
+	#    ⚠️ 必须在所有单位都就位之后（`spawn_faction_units` + `_apply_level_placement`）。
+	_mark_starting_generals_owned()
+
 	# ★★ 迷雾收口：所有建筑与单位都就位之后算一次视野 ——
 	#    于是「进游戏第一帧之前」玩家屏上就已经是正确的迷雾，
 	#    而不是先整屏灰一下、等第一次 tick 才亮起来。
@@ -910,7 +914,12 @@ func _place_faction_units(fid: String, placed: Array) -> void:
 		var roster := maxi(1, int(ud.get("general_index", 1))) - 1
 		var utype_g := String(ud.get("unit_type", ""))
 		var profile := cfg.general_slot_of_type(utype_g)
-		if profile < 0:
+		# ★★ 开局将领 #0：`kind = general_0` 强制走名册第 10 项（profile 9），
+		#   不能让 `general_slot_of_type("spearman") = 0` 把它认成 #1。
+		var is_start_general := kind == "general_0"
+		if is_start_general:
+			profile = 9
+		elif profile < 0:
 			# 没写兵种 / 兵种不在将领档里 → 退回 kind 那一档（旧数据 `general_N`）。
 			profile = maxi(0, ConfigRes.general_index_of(kind))
 		# ★ 名字：作者写了就用作者的；没写时 —— 将领退回 config 的名字（按**将领档**取，
@@ -920,7 +929,7 @@ func _place_faction_units(fid: String, placed: Array) -> void:
 			if is_placed_general:
 				uname = cfg.general_name_at(profile)
 				if uname == "":
-					uname = "将领 %d" % (roster + 1)
+					uname = "将领 0" if is_start_general else "将领 %d" % (roster + 1)
 			else:
 				uname = kind
 		var pu = null
@@ -932,7 +941,7 @@ func _place_faction_units(fid: String, placed: Array) -> void:
 				#    否则 id 与档位对得上、兵种却被换掉，读的人会以为数据没生效）。
 				if utype_g != "" and utype_g != String(pg.unit_type):
 					pg = UnitRes.create(cfg, pg.id, uname, tile, fid, kind,
-						str(roster + 1), "", utype_g, profile)
+						"1" if profile == 9 else str(roster + 1), "", utype_g, profile)
 				else:
 					pg.name = uname
 					pg.pos = GridRes.center_of(tile)
@@ -1051,6 +1060,7 @@ func fill_general_retinue(g, count: int, weighted_types: Array) -> void:
 			continue
 		# ★ 归属区划继承队长（跟着队长巡逻、受同一个区划约束）。
 		e.garrison_zone_id = int(g.garrison_zone_id)
+		# ⚠️ 词条已停用：不再从队长继承光环（`inherit_general_aura` 保留但无调用点）。
 		units.append(e)
 		pending.append(e)
 
@@ -1123,45 +1133,59 @@ func set_rand_salt(v: int) -> void:
 ##   ⚠️ 旧签名只有一个 `index`，两件事由它兼任；现在摆放页允许「序号 1 用将领 3」。
 func create_general(faction: String, profile: int, roster: int):
 	var spawns: Array = faction_spawns.get(faction, [])
+	# ★★ #0 = 名册第 10 项（profile 9）：开局将领，长枪兵型、kind = general_0、
+	#   id 固定 `general-0`、快捷键 1。它不可招募，也不在九宫格里。
+	var is_start := profile == 9
 	# ★★ 名字与类型都走 config 的**将领档**：
 	#   · `cfg.general_name_at(profile)` = 编辑器里给这一档起的名字（没写 → 「将领 <序号>」）；
 	#   · `cfg.general_type_at(profile)` = unit.general.types[profile]。
 	#   ⚠️ 名字在这里读一次**存进单位**（`unit.name`）—— 部队列表、右栏都读它。
 	var gname: String = cfg.general_name_at(profile)
 	if gname == "":
-		gname = "将领 %d" % (roster + 1)
+		gname = "将领 0" if is_start else "将领 %d" % (roster + 1)
+	var spawn_idx: int = 0 if is_start else profile
 	var tile: Vector2i = map.base
-	if profile < spawns.size():
-		tile = spawns[profile]
-	elif profile < map.general_spawns.size():
-		tile = map.general_spawns[profile]
+	if spawn_idx < spawns.size():
+		tile = spawns[spawn_idx]
+	elif spawn_idx < map.general_spawns.size():
+		tile = map.general_spawns[spawn_idx]
 	var unit_type: String = cfg.general_type_at(profile)
+	var kind: String = "general_0" if is_start else UnitRes.KIND_GENERAL
+	var tail: String = "0" if is_start else str(roster + 1)
+	var hotkey: String = "1" if is_start else str(roster + 1)
 	# ★ 最后那个参数 = **将领档**：它决定套不套 unit.general.stats 里那份数值覆盖
 	#   （id 里的数字则用 `roster`）。
-	return UnitRes.create(cfg, "%s-%d" % [general_id_prefix(faction), roster + 1], gname, tile,
-		faction, UnitRes.KIND_GENERAL, str(roster + 1), "", unit_type, profile)
+	# ★★ 词条已停用：这里**不再** set_general_trait()。词条数据 / 方法仍保留，
+	#    只是生产路径不再给任何将领授予特性。
+	return UnitRes.create(cfg, "%s-%s" % [general_id_prefix(faction), tail], gname, tile,
+		faction, kind, hotkey, "", unit_type, profile)
 
 
-## 建立某一阵营的**开局 3 位将领**（**非战役**：`level == null` 的地图试玩 / 测试）。
-## 站位取该阵营自己的出生点，退回地图默认站位，最后退回大本营。
+## ★★ 从特性表里按确定性伪随机抽一条（**目前停用**：保留代码，供以后重新启用）。
+## ★ 用 `unit_rand` 而不是引擎 RNG：同一局重算不漂，测试可以固定 `rand_salt` 断言。
+func _roll_general_trait(key: String) -> String:
+	var ids: Array = cfg.general_trait_ids()
+	if ids.is_empty():
+		return ""
+	var r := unit_rand(key, 0)
+	var idx := clampi(int(floor(r * float(ids.size()))), 0, ids.size() - 1)
+	return String(ids[idx])
+
+
+## 建立某一阵营的**开局将领 #0**（**非战役**：`level == null` 的地图试玩 / 测试）。
+## ★★ 旧口径的「开局 3 位将领」已经去掉；现在只有 1 位 #0（名册下标 9）。
+## 站位取该阵营自己的第一个出生点，退回地图默认站位，最后退回大本营。
 ##
-## ★★ 将领 = **带单位类型的队长**（不是一种兵种，见 config.json 的 unit._general_comment）：
-##   · 第 i 个将领的类型取 `cfg.general_type_at(i)` —— 于是「将领 1 = 长枪兵、
-##     将领 2 = 长弓兵、将领 3 = 骑手」（用户需求）；它的血量 / 伤害 / 射程 / 速度
-##     也全部等于那个类型的数值（`UnitRes.create` 里按 unit_type 查表）。
-##   · ★★ **自动生成的将领开局不带附属兵**：只有**关卡摆放的将领**才带规格与满编
-##     附属兵（见 `_place_faction_units` 的 `fill_general_retinue()`）。自动生成的这些
-##     由阵地 AI 按 `min_retinue` 自己招（`escort_target_of()` 的兜底那一条）。
-##   ⚠️ 这里序号与档位相同（第 i 位就是 i 档）——只有关卡摆放才可能两者不同。
-## ⚠️ 顺序有讲究：**将领先全部入列，附属兵跟在后面**。
-##    这样 world.units 里前几个永远是将领（快捷键 1/2/3 与按序号取将领的代码都靠它），
-##    而关卡摆的将领也照样「先将自己再带兵」（见 `_place_faction_units`）。
+## ★★ 将领 = **带单位类型的队长**（不是一种兵种，见 config.json 的 unit._general_comment）。
+##   · #0 = 长枪兵型，数值完全等于长枪兵；它是队长、描边更粗；
+##   · **自动生成的开局将领不带附属兵**：只有**关卡摆放的将领**才带规格与满编附属兵
+##     （见 `_place_faction_units` 的 `fill_general_retinue()`）。
+## ⚠️ 顺序有讲究：**将领先入列，附属兵跟在后面**（`spawn_faction_units` 负责 append）。
 func create_generals(faction: String) -> Array:
 	var out: Array = []
-	for i in 3:
-		var g = create_general(faction, i, i)
-		if g != null:
-			out.append(g)
+	var g = create_general(faction, 9, 0)
+	if g != null:
+		out.append(g)
 	return out
 
 
@@ -1466,8 +1490,13 @@ func spawn_faction_units(faction: String) -> void:
 	if level != null:
 		return
 	# ★★ 红点阵营**不自动生成将领**（它的兵全部由红点 AI 按冷却刷出来）。
-	#    否则它会额外白得 3 位站着不动的将领（与「刷一波」的语义冲突）。
 	if _is_reddot_ai(faction):
+		return
+	# ★★ 自由对战的开局将领 #0：**只有「本机在操作的玩家阵营」+「有大本营」**才生成。
+	#    其余阵营（AI / 无基地）一个都不给（用户口径 2026.10）。
+	if not _player_seat_factions().has(faction):
+		return
+	if find_base_of(faction) == null:
 		return
 	# ★ 记下「本函数造出来的那一段是从哪开始的」：下面兜底归属区划时只许扫这一段，
 	#   不许回头扫前面 `reset()` 已经放好的单位（理由见 `_assign_garrison_zones` 的 `from`）。
@@ -2192,12 +2221,8 @@ func update_rescue_orders() -> void:
 			u.order_attack_move(self, cfg, anchor)
 			u.begin_rescue(String(leader.id), anchor)
 
-## 「再起」要花多少（config.json 的 revive.cost；缺字段 = 免费）。
-func revive_cost() -> Dictionary:
-	return cfg.revive_cost
-
-
 ## 「再起」的读条秒数（config.json 的 revive.channel_sec；0 = 瞬发）。
+## ★ 再起**不消耗资源**（用户拍板），所以这里没有 revive_cost。
 func revive_channel_sec() -> float:
 	return cfg.revive_channel_sec
 
@@ -2207,13 +2232,22 @@ func revive_ready_ratio() -> float:
 	return cfg.revive_ready_ratio
 
 
+## 正常阵亡后在大本营的重生时长（config.json 的 revive.respawn_sec，默认 20 秒）。
+func revive_respawn_sec() -> float:
+	return cfg.revive_respawn_sec
+
+
+## 选择「召回」后的重生时长（config.json 的 revive.recall_respawn_sec，默认 10 秒）。
+func revive_recall_respawn_sec() -> float:
+	return cfg.revive_recall_respawn_sec
+
+
 ## 某个单位现在**能不能**开始再起。@return "" = 可以；否则是拒因码：
 ##   "leader"  / "dead"     找不到人 / 已经真的死了（死人不该走这条路）
 ##   "not_downed"           它没有濒死（根本没倒，或者已经再起过了）
 ##   "channeling"           ★ 已经在读条了（这时该走 cancel，不是再来一单）
 ##   "hp"                   血量还没回到 10%（界面那颗格子就是靠它置灰的）
 ##   "faction"              防冒充：不能替别人家的将领再起
-##   "cost"                 粮食 / 黄金不够
 ## ★ 顺序有讲究：先「是不是这个人 / 是不是这一方」再「状态对不对」——
 ##   否则客机拿别人的将领 id 会先收到一条「血量不够」这种莫名其妙的原因。
 func revive_reject_reason(leader, faction: String = "") -> String:
@@ -2229,12 +2263,10 @@ func revive_reject_reason(leader, faction: String = "") -> String:
 		return "channeling"
 	if not leader.revive_ready(cfg):
 		return "hp"
-	if not EconomyRes.can_afford(resource_pool_for(String(leader.faction)), revive_cost()):
-		return "cost"
 	return ""
 
 
-## ★★ 开始「再起」：**先校验 → 再扣费 → 最后开始读条**（与招募三步同序）。
+## ★★ 开始「再起」：校验通过后直接开始读条。
 ##
 ## ★★ 用户拍板的两条口径都落在这一句 `leader.start_revive(cfg)` 上：
 ##   · 从这一刻起该将领**被视为单位** —— 全灭判定**暂停**
@@ -2242,8 +2274,7 @@ func revive_reject_reason(leader, faction: String = "") -> String:
 ##     手下的兵死光而中断；
 ##   · 读条读完**不改血量**（几点血就是几点血，见 `unit._finish_revive`）。
 ##
-## ★ 钱从**这一方自己的池子**里出（`resource_pool_for`：AI 花自己的钱；
-##   池子为 null = 这一方没有资源库 = 资源无限，见那个函数）。与招募同一条语义。
+## ★ **再起不消耗资源**（用户拍板，2026.10）—— 所以这里没有扣费那一步。
 func start_revive(leader_id: String, faction: String = "") -> bool:
 	var leader = unit_by_id(leader_id)
 	var reason := revive_reject_reason(leader, faction)
@@ -2251,34 +2282,146 @@ func start_revive(leader_id: String, faction: String = "") -> bool:
 		push_event({"type": "revive_rejected", "reason": reason, "unit": leader,
 			"faction": String(leader.faction) if leader != null else faction})
 		return false
-	var cost := revive_cost()
-	var pool: Variant = resource_pool_for(String(leader.faction))
-	if not EconomyRes.spend(pool, cost):
-		push_event({"type": "revive_rejected", "reason": "cost", "unit": leader,
-			"faction": String(leader.faction)})
-		return false
 	leader.start_revive(cfg)
 	push_event({"type": "revive_started", "unit": leader, "faction": String(leader.faction)})
 	return true
 
 
-## 取消读条中的「再起」并**全额退还**已经扣掉的那笔钱。
+## 取消读条中的「再起」。
 ##
 ## @return true = 确实撤掉了一单（false = 它没在读条，或找不到人）。
-## ★ 只有「正在读条」才退钱：没读条时点取消不该凭空造出一笔资源。
-##   ⚠️ 退还走 `_refund`（它按**这一方自己的池子**退，池子为 null 时什么都不做）——
-##      与「取消招募」共用同一条路，不另写一份扣/退实现。
+## ★ 再起已经免费，所以取消**没有退款**（也不能凭空造资源）。
 func cancel_revive(leader_id: String, faction: String = "") -> bool:
 	var leader = unit_by_id(leader_id)
 	if leader == null or not leader.alive or not leader.is_reviving():
 		return false
 	if faction != "" and not accepts_owner(String(leader.faction), faction):
 		return false
-	var cost := revive_cost()
 	leader.cancel_revive()
-	_refund(leader, float(cost.get("food", 0.0)), float(cost.get("gold", 0.0)), 0.0, -1)
 	push_event({"type": "revive_cancelled", "unit": leader, "faction": String(leader.faction)})
 	return true
+
+
+# ------------------------------------------------------------------
+# ★★ 召回 / 阵亡 / 大本营重生队列
+# ------------------------------------------------------------------
+
+## 某个单位现在**能不能**被召回。@return "" = 可以；否则是拒因码：
+##   "leader" / "faction" / "not_downed"
+## ★ 与再起不同：召回**不要求**血量回到 10%（倒地即可用）。
+func recall_reject_reason(leader, faction: String = "") -> String:
+	if leader == null or not leader.alive:
+		return "leader"
+	if faction != "" and not accepts_owner(String(leader.faction), faction):
+		return "faction"
+	if not leader.is_general():
+		return "not_downed"
+	if not leader.downed:
+		return "not_downed"
+	return ""
+
+
+## ★★ 召回：立即静默击杀旗下所有部队，随后将领走阵亡逻辑（并进入大本营重生队列）。
+func recall_general(leader_id: String, faction: String = "") -> bool:
+	var leader = unit_by_id(leader_id)
+	var reason := recall_reject_reason(leader, faction)
+	if reason != "":
+		push_event({"type": "recall_rejected", "reason": reason, "unit": leader,
+			"faction": String(leader.faction) if leader != null else faction})
+		return false
+	# 正在读条再起 → 先撤掉（免费，没有退款）；然后改走召回。
+	if leader.is_reviving():
+		leader.cancel_revive()
+	# 保险：濒死时队列已经作废退款过，这里再兜一次（空队列时什么都不做）。
+	_release_recruit(leader, true, "recalled")
+	_kill_retinue_silently(leader)
+	leader.die_now(cfg, self, "recalled", true)
+	push_event({"type": "general_recalled", "unit": leader,
+		"faction": String(leader.faction)})
+	return true
+
+
+## ★★ 静默击杀旗下所有部队：**不走 `_die` / 清理段**，因此不触发任何死亡效果
+##   （不 push `kill`、不加士气、不算击杀、不退招募）。
+##
+## ★ 直接从 `world.units` 移除（"立即"生效）。若只置 `alive = false` 交给每帧清理，
+##   清理段会对它们调 `_release_recruit` 并 push 事件 —— 那正是需求禁止的「死亡效果」。
+func _kill_retinue_silently(leader) -> void:
+	if leader == null:
+		return
+	var keep: Array = []
+	for u in units:
+		if String(u.leader_id) != String(leader.id):
+			keep.append(u)
+			continue
+		u.alive = false
+		u.stop()
+		u.clear_attack_fx()
+	units = keep
+
+
+## ★★ 阵亡入口（由 `unit._die` 调用）：把将领交给**大本营重生队列**。
+## @return true = 已入队（由队列持有对象）；false = 没有可用大本营 → 永久阵亡。
+##
+## ★ 死将**留在 world.units 之外**（本帧清理段会照常摘掉它），对象由队列引用保住；
+##   重生时 `unit.respawn_at_base()` 再把它放回 units。
+func on_general_death(u, recalled: bool = false) -> bool:
+	if u == null or not u.is_general():
+		return false
+	var f := String(u.faction)
+	if is_neutralized_faction(f):
+		return false
+	var base = find_base_of(f)
+	if base == null or base.neutralized:
+		return false
+	var secs: float = cfg.revive_recall_respawn_sec if recalled else cfg.revive_respawn_sec
+	base.enqueue_respawn(u, secs)
+	push_event({"type": "general_respawn_queued", "unit": u, "faction": f,
+		"secs": secs, "recalled": recalled, "base": base})
+	return true
+
+
+## 每帧推进所有大本营的重生队列（串行：前一位出来后才轮到下一位）。
+func _tick_base_respawns(dt: float) -> void:
+	for b in building_list:
+		if b == null or not b.alive:
+			continue
+		if b.type != BuildingRes.TYPE_BASE or b.neutralized:
+			continue
+		for u in b.tick_respawn_queue(dt):
+			if u != null and is_instance_valid(u):
+				u.respawn_at_base(cfg, self, b)
+
+
+## 大本营重生的落点：围着自己那一圈找第一个可通行的格子（与 unit._slot_from_id 同序）。
+func base_respawn_tile(u, base) -> Vector2i:
+	var center := Vector2i(int(base.tx), int(base.ty))
+	var faction := String(u.faction) if u != null else ""
+	var slot: int = 1
+	if u != null:
+		slot = int(u._slot_from_id())
+	var ring: Array[Vector2i] = [
+		Vector2i(0, 1), Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, -1),
+		Vector2i(1, 1), Vector2i(-1, -1), Vector2i(1, -1), Vector2i(-1, 1),
+	]
+	for k in ring.size():
+		var o: Vector2i = ring[(slot - 1 + k) % ring.size()]
+		var nx: int = center.x + o.x
+		var ny: int = center.y + o.y
+		if PathfinderRes.passable(map, buildings, cfg, nx, ny, faction):
+			return Vector2i(nx, ny)
+	# 落圈全被占（很少见）：从**它倒下的那一格**出发找最近的相邻可达格。
+	# ⚠️ 不要把 `center` 当 `from`：大本营自己那一格通常是不可通行的，
+	#    可达掩码从那里建会得到一片空区域。
+	var from := center
+	if u != null:
+		from = Vector2i(int(u.tx), int(u.ty))
+	if not PathfinderRes.passable(map, buildings, cfg, from.x, from.y, faction):
+		from = center
+	var found = PathfinderRes.nearest_reachable(map, buildings, cfg, from, center, faction, 8, crowd)
+	if found != null:
+		return found
+	return from
 
 
 
@@ -2563,6 +2706,7 @@ func _spawn_from_recruit(leader, kind: String) -> Variant:
 	#     「不追出一个区划」那条硬约束管着；
 	#   · 队长没有归属（玩家 / 阵营 AI 的将领）⇒ 兵也没有（`-1`，行为一点不变）。
 	u.garrison_zone_id = int(leader.garrison_zone_id)
+	# ⚠️ 词条已停用：新兵不再从队长继承光环。
 	units.append(u)
 	# ★ 科技「将领血量 +10%」：区划招募出来的将领**自己就是队长**，走将领那一档
 	#   （附属兵走 1.0 = 不加），与 world._apply_tech_effects 同一套判据。
@@ -2688,6 +2832,103 @@ func general_recruit_slots(faction: String = "") -> Array:
 	return (_general_pool_state(f).get("slots", []) as Array).duplicate()
 
 
+## ★★ 招募页的**固定阵容**：`recruit.zone.list` 的 9 位将领（config 顺序）。
+## 视图 / 测试都读它；不再有「随机抽 3 张手牌」。
+func general_recruit_roster(_faction: String = "") -> Array:
+	return _general_pool_kinds()
+
+
+## 某位可招募将领的**阶数**（`recruit.zone.list[].tier`；缺省 1）。
+func general_recruit_tier(kind: String) -> int:
+	return maxi(1, int(recruit_entry(kind).get("tier", 1)))
+
+
+## 本阵营是否已经拥有 / 招过这位将领（永久唯一；阵亡也不释放）。
+func general_recruit_owned(faction: String, kind: String) -> bool:
+	if kind == "":
+		return false
+	var st := _general_pool_state(_pool_faction(faction))
+	return (st.get("taken", []) as Array).has(kind)
+
+
+## 已拥有 / 已招募的 kind 列表（排序副本；快照与卡片签名用）。
+func general_recruit_owned_kinds(faction: String = "") -> Array:
+	var st := _general_pool_state(_pool_faction(faction))
+	var out: Array = (st.get("taken", []) as Array).duplicate()
+	out.sort()
+	return out
+
+
+## 大本营阶数够不够招这位将领（无大本营 = level 0 = 全部锁）。
+func general_recruit_unlocked(faction: String, kind: String) -> bool:
+	return general_recruit_tier(kind) <= base_level_of(_pool_faction(faction))
+
+
+## ★★ 招募页每一位的**完整状态**（视图只读它，不自己拼规则）。
+## 优先级：已拥有 → 阶数不足 → 将领满员 → 全局冷却 → 可招募。
+func general_recruit_state(faction: String, kind: String) -> Dictionary:
+	var f := _pool_faction(faction)
+	var tier := general_recruit_tier(kind)
+	var owned := general_recruit_owned(f, kind)
+	var lvl := base_level_of(f)
+	var cd := general_recruit_cooldown_left(f)
+	var reason := ""
+	if owned:
+		reason = "owned"
+	elif tier > lvl:
+		reason = "tier"
+	elif general_count_of(f) >= base_max_generals(f):
+		reason = "cap"
+	elif cd > 0.0:
+		reason = "cooldown"
+	return {
+		"ready": reason == "",
+		"reason": reason,
+		"tier": tier,
+		"owned": owned,
+		"unlocked": tier <= lvl,
+		"base_level": lvl,
+		"cooldown_left": cd,
+	}
+
+
+## ⚠️ 词条已停用：接口保留（旧调用 / 测试仍可调），但恒返回空串数组。
+func general_recruit_traits(faction: String = "") -> Array:
+	var out: Array = []
+	for _i in general_recruit_slots(faction).size():
+		out.append("")
+	return out
+
+
+## ⚠️ 词条已停用：恒返回 ""（保留接口）。
+func general_recruit_trait_for(_faction: String, _kind: String) -> String:
+	return ""
+
+
+## ⚠️ 词条已停用（保留代码，当前无调用点）。
+## 非池 / AI 席位用的**确定性**特性：同 (faction, kind, 卡位) 永远同一条。
+func _static_general_trait(faction: String, kind: String, i: int) -> String:
+	var ids: Array = cfg.general_trait_ids()
+	if ids.is_empty():
+		return ""
+	var r := unit_rand("general_trait_static:%s:%s" % [faction, kind], i)
+	var idx := clampi(int(floor(r * float(ids.size()))), 0, ids.size() - 1)
+	return String(ids[idx])
+
+
+## 特性的显示名 / 短名（转发 config；`view/recruit_queue.gd` 手里只有 world，没有 cfg）。
+func general_trait_name(id: String) -> String:
+	return cfg.general_trait_name(id)
+
+
+func general_trait_short(id: String) -> String:
+	return cfg.general_trait_short(id)
+
+
+func general_trait_desc(id: String) -> String:
+	return cfg.general_trait_desc(id)
+
+
 ## 这个 kind 现在是不是「玩家手牌里的一张」（池启用时才限制；AI / 旧行为一律放行）。
 func general_recruit_pool_has_slot(faction: String, kind: String) -> bool:
 	var f := _pool_faction(faction)
@@ -2722,21 +2963,42 @@ func _general_pool_state(faction: String) -> Dictionary:
 
 func _make_general_pool_state(faction: String) -> Dictionary:
 	var st: Dictionary = {
-		"slots": [],                 # 这一手的三位（kind）
-		"available": [],             # 本次「盒」里还没被招走的（含手上那几张）
+		# ★★ 固定九宫格：slots / available / slot_traits / draw_serial 只为兼容旧字段保留，
+		#    UI 不再读取它们。真正驱动招募页的是下面的 `taken`。
+		"slots": [],
+		"slot_traits": [],
+		"available": [],
+		# ★★ 本阵营已拥有 / 已招募 / 永久阵亡的将领 kind（#1-9）。唯一性判据。
+		"taken": [],
 		"cooldown": 0.0,             # 全局招募冷却剩余（秒）
 		"cooldown_total": 0.0,       # 本次冷却总时长（秒）
 		"cooldown_kind": "",         # 是哪位将领触发的（取消时据此判断要不要解冻）
 		"cooldown_zone": -1,         # 在哪个区划触发的
-		"draw_serial": 0,            # 抽签序号（确定性伪随机用；同局可复现）
+		"draw_serial": 0,
 	}
 	var all := _general_pool_kinds()
+	# 旧手牌逻辑保留但不驱动界面（config 里 pool.enabled 已设为 false）。
 	if general_recruit_pool_enabled():
 		st["available"] = all.duplicate()
 		_draw_general_hand(faction, st)
 	else:
 		st["slots"] = all.slice(0, mini(general_recruit_hand_size(), all.size()))
+		# ★ 词条已停用：不再给每张卡抽词条。
+		var traits: Array = []
+		for _i in (st["slots"] as Array).size():
+			traits.append("")
+		st["slot_traits"] = traits
 	return st
+
+
+## 本机在操作的玩家席位（`player_factions`，为空时退回 `[my_faction]`）。
+## ★ 与 `player_seats` 的区别：选边关里 `player_seats` 可能包含两个基地，
+##   但只有 `player_factions` 是**本机真正操作**的那一方。
+func _player_seat_factions() -> Array:
+	var seats: Array = player_factions.duplicate()
+	if seats.is_empty() and my_faction != "":
+		seats.append(my_faction)
+	return seats
 
 
 ## 从 `available` 里随机抽一手（**同一手不重复**），并写回 `slots`。
@@ -2760,16 +3022,21 @@ func _draw_general_hand(faction: String, st: Dictionary) -> void:
 		st["available"] = avail
 	var pool := avail.duplicate()
 	var picked: Array = []
+	var picked_traits: Array = []
+	var serial := int(st.get("draw_serial", 0))
 	for i in hand:
 		if pool.is_empty():
 			# 理论上到不了（上面刚补过）；防御一下，绝不返回半手牌。
 			pool = all.duplicate()
-		var r := unit_rand("general_pool:%s:%d" % [faction, int(st.get("draw_serial", 0))], i)
+		var r := unit_rand("general_pool:%s:%d" % [faction, serial], i)
 		var idx := clampi(int(floor(r * float(pool.size()))), 0, pool.size() - 1)
 		picked.append(String(pool[idx]))
 		pool.remove_at(idx)
+		# ★ 词条已停用：不再抽特性（保留空串以维持数组对齐）。
+		picked_traits.append("")
 	st["slots"] = picked
-	st["draw_serial"] = int(st.get("draw_serial", 0)) + 1
+	st["slot_traits"] = picked_traits
+	st["draw_serial"] = serial + 1
 
 
 ## 招走一名：把它从本次「盒」里拿掉（之后重抽时不会出现）。
@@ -2791,22 +3058,37 @@ func _general_pool_return(faction: String, kind: String) -> void:
 	st["available"] = avail
 
 
-## 一次成功入队后的收口：扣池 + 起冷却 + 重抽一手。
+## 把一位将领标记为「本阵营已拥有 / 已招募」（唯一性；永久，不会因阵亡释放）。
+func _general_mark_owned(faction: String, kind: String) -> void:
+	var st := _general_pool_state(faction)
+	var taken: Array = st.get("taken", [])
+	if not taken.has(kind):
+		taken.append(kind)
+	st["taken"] = taken
+
+
+## 取消一单时释放名额（取消 = 这单不算招募过）。
+func _general_mark_unowned(faction: String, kind: String) -> void:
+	var st := _general_pool_state(faction)
+	var taken: Array = st.get("taken", [])
+	taken.erase(kind)
+	st["taken"] = taken
+
+
+## 一次成功入队后的收口：标记已拥有 + 起全局冷却。
+## ★ 固定九宫格不再有「扣池 / 重抽一手」。
 func _general_pool_on_recruited(faction: String, kind: String, zone_id: int) -> void:
-	if not player_seats.has(faction):
+	if not _player_seat_factions().has(faction):
 		return
-	if general_recruit_pool_enabled():
-		_general_pool_consume(faction, kind)
+	_general_mark_owned(faction, kind)
 	_begin_general_recruit_cooldown(faction, kind, zone_id)
-	if general_recruit_pool_enabled():
-		_draw_general_hand(faction, _general_pool_state(faction))
 
 
-## 取消一单后的收口：解除冷却 + 放回池子。
+## 取消一单后的收口：解除冷却 + 释放已拥有名额。
 ## ★ 只有「这一单就是当前冷却的触发者」才解冻 —— 否则取消一单旧队列
 ##   会把后来那一单刚起的冷却也清掉。
 func _general_pool_on_cancelled(faction: String, kind: String, zone_id: int) -> void:
-	if not player_seats.has(faction):
+	if not _player_seat_factions().has(faction):
 		return
 	var st := _general_pool_state(faction)
 	if String(st.get("cooldown_kind", "")) == kind \
@@ -2815,7 +3097,7 @@ func _general_pool_on_cancelled(faction: String, kind: String, zone_id: int) -> 
 		st["cooldown_total"] = 0.0
 		st["cooldown_kind"] = ""
 		st["cooldown_zone"] = -1
-	_general_pool_return(faction, kind)
+	_general_mark_unowned(faction, kind)
 
 
 func _begin_general_recruit_cooldown(faction: String, kind: String, zone_id: int) -> void:
@@ -2839,11 +3121,28 @@ func _tick_general_recruit_cooldowns(dt: float) -> void:
 ## 重开一局：每个「本机在操作的玩家席位」各抽一手。
 func _reset_general_recruit_pools() -> void:
 	general_recruit_pools = {}
-	var seats: Array = player_factions.duplicate()
-	if seats.is_empty() and my_faction != "":
-		seats.append(my_faction)
-	for f in seats:
+	for f in _player_seat_factions():
 		_general_pool_state(String(f))
+
+
+## ★★ 把「关卡 / 开局摆放的 general_1..9」标记为已拥有。
+## ★ 用 `unit.general_index`（不是 `general_index_of(kind)`）：关卡摆放的将领 kind 都是
+##   `general`，只有 `general_index` 分得清 #1-9。#0（index 9）不在九宫格里，跳过。
+func _mark_starting_generals_owned() -> void:
+	for f in _player_seat_factions():
+		var st := _general_pool_state(String(f))
+		var taken: Array = st.get("taken", [])
+		for u in units:
+			if String(u.faction) != String(f):
+				continue
+			if not u.is_general():
+				continue
+			var gi := int(u.general_index)
+			if gi >= 0 and gi < 9:
+				var kind := "general_%d" % (gi + 1)
+				if not taken.has(kind):
+					taken.append(kind)
+		st["taken"] = taken
 
 
 ## 空串 = 本机席位（与其它 `*_pool` accessor 同一条约定）
@@ -2851,18 +3150,20 @@ func _pool_faction(faction: String) -> String:
 	return faction if faction != "" else my_faction
 
 
-## 快照用：只发**显示需要**的两项（槽位 + 冷却剩余 / 总秒数）。
-## ★ 不发 `available` / 抽签序号：客机不抽牌，抽牌只发生在权威侧。
+## 快照用：招募池的**唯一性 + 冷却**（固定九宫格不依赖 slots / traits）。
+## ★ `s` / `t` 旧字段保留但恒为空（旧客机读到时不会崩）。
 func general_pool_snapshot(faction: String) -> Dictionary:
 	var st := _general_pool_state(faction)
 	return {
 		"s": (st.get("slots", []) as Array).duplicate(),
+		"t": general_recruit_traits(faction),
+		"tak": general_recruit_owned_kinds(faction),
 		"cd": float(st.get("cooldown", 0.0)),
 		"ct": float(st.get("cooldown_total", 0.0)),
 	}
 
 
-## 客机应用快照：槽位 + 冷却（缺字段保持现状，与快照其它字段同一条约定）。
+## 客机应用快照：唯一性 + 冷却（缺字段保持现状，与快照其它字段同一条约定）。
 func apply_general_pool_snapshot(faction: String, data: Variant) -> void:
 	if typeof(data) != TYPE_DICTIONARY:
 		return
@@ -2874,6 +3175,19 @@ func apply_general_pool_snapshot(faction: String, data: Variant) -> void:
 		for k in (sv as Array):
 			slots.append(String(k))
 		st["slots"] = slots
+	var tv: Variant = d.get("t", null)
+	if typeof(tv) == TYPE_ARRAY:
+		var traits: Array = []
+		for k in (tv as Array):
+			traits.append(String(k))
+		st["slot_traits"] = traits
+	# ★★ 唯一性：客机的九宫格靠它判断「已拥有」。
+	var kv: Variant = d.get("tak", null)
+	if typeof(kv) == TYPE_ARRAY:
+		var taken: Array = []
+		for k in (kv as Array):
+			taken.append(String(k))
+		st["taken"] = taken
 	if d.has("cd"):
 		st["cooldown"] = maxf(0.0, float(d["cd"]))
 	if d.has("ct"):
@@ -2946,6 +3260,21 @@ func zone_recruit_kind_at(zone, slot: int) -> String:
 	return String(q[k])
 
 
+## ★★ 某一格上那一单的**将领特性**（"" = 没有 / 老区划状态缺字段）。
+## 与 `zone_recruit_kind_at` 完全同签名、同下标：0 = 正在读条的大格子，1.. = 排队格。
+func zone_recruit_trait_at(zone, slot: int) -> String:
+	if typeof(zone) != TYPE_DICTIONARY or slot < 0:
+		return ""
+	var d: Dictionary = zone
+	if slot == 0:
+		return String(d.get("train_trait", ""))
+	var q: Array = d.get("train_traits", [])
+	var k := slot - 1
+	if k < 0 or k >= q.size():
+		return ""
+	return String(q[k])
+
+
 ## 第 slot 格**还要等多久**才轮到自己出人（秒）—— 与 recruit_eta 逐条同义。
 func zone_recruit_eta(zone, slot: int) -> float:
 	if typeof(zone) != TYPE_DICTIONARY or slot < 0:
@@ -2966,9 +3295,10 @@ func zone_recruit_eta(zone, slot: int) -> float:
 ##   "kind"        不在区划招募表里
 ##   "zone_not_found"  没有这个区划
 ##   "zone_owner"  ★ 这个区划**不属于你**（只能在自己区划里招）
+##   "owned"       ★ 这一位本阵营已经拥有 / 招过（永久唯一）
+##   "tier"        ★ 大本营等级不够这一位将领的阶数
 ##   "general_limit" ★ 该方将领数到顶（大本营等级）
 ##   "cooldown"    ★ 将领招募冷却中（全局；见「将领招募池」那一段）
-##   "pool"        ★ 这一位不在当前三个招募槽位里（池 / 手牌启用时）
 ##   "queue_full"  队列满了
 ##
 ## ⚠️ 「没有这个区划」用 `zone_not_found` 而**不是** `zone`：后者是**将领招募**那条路
@@ -2982,17 +3312,20 @@ func can_recruit_zone(kind: String, zone_id: int, faction: String) -> String:
 		return "zone_not_found"
 	if not accepts_owner(String(z["owner"]), faction):
 		return "zone_owner"
+	# ★★ 唯一性：每位将领每方只能拥有一次（永久，阵亡也不释放）。
+	if general_recruit_owned(faction, kind):
+		return "owned"
+	# ★★ 阶数：大本营等级必须 ≥ 这位将领的 tier（无大本营 = level 0 = 全锁）。
+	if ConfigRes.general_index_of(kind) >= 0 \
+			and general_recruit_tier(kind) > base_level_of(faction):
+		return "tier"
 	# ★★ 将领数量硬上限（由这一方大本营的等级决定）。
 	if ConfigRes.general_index_of(kind) >= 0 \
 			and general_count_of(faction) >= base_max_generals(faction):
 		return "general_limit"
-	# ★★ 全局招募冷却（本轮新增）：招到一名后整方的区划招募一起锁 N 秒。
+	# ★★ 全局招募冷却：招到一名后整方的区划招募一起锁 N 秒。
 	if general_recruit_cooldown_left(faction) > 0.0:
 		return "cooldown"
-	# ★★ 手牌校验（池启用时）：命令只能招**当前三个槽位**里的那三位。
-	#    界面本来就只画这三张；这一句防的是手搓命令 / 旧界面点到了上一手。
-	if not general_recruit_pool_has_slot(faction, kind):
-		return "pool"
 	if zone_recruit_queue_size(z) >= zone_recruit_queue_max():
 		return "queue_full"
 	return ""
@@ -3052,12 +3385,16 @@ func start_zone_recruit(kind: String, zone_id: int, faction: String) -> bool:
 	z["train_cost_food"] = float(z.get("train_cost_food", 0.0)) + float(cost.get("food", 0.0))
 	z["train_cost_gold"] = float(z.get("train_cost_gold", 0.0)) + float(cost.get("gold", 0.0))
 	z["train_cost_pop"] = float(z.get("train_cost_pop", 0.0)) + pop
+	# ★★ 先把「这一位当前手牌上的特性」固化下来（**必须在上面的池收口之前**：
+	#   `_general_pool_on_recruited()` 会立刻重抽下一手，那之后就查不到这一张了）。
+	var trait_id := general_recruit_trait_for(faction, kind)
 	if String(z.get("train_kind", "")) == "":
 		# 队列原本是空的 → 这一单立刻开读条，并**记下招募方**（读完按它出兵）
 		z["train_faction"] = faction
-		_start_zone_training(z, kind)
+		_start_zone_training(z, kind, trait_id)
 	else:
 		(z["train_queue"] as Array).append(kind)
+		(z["train_traits"] as Array).append(trait_id)
 	# ★★ 池 / 冷却收口（本轮新增）：招走的那位从本次「盒」里拿掉、起全局冷却、
 	#    重抽下一手。⚠️ 必须在「队列真的排上了」之后 —— 被拒的单不能消耗池子。
 	_general_pool_on_recruited(faction, kind, zone_id)
@@ -3065,24 +3402,30 @@ func start_zone_recruit(kind: String, zone_id: int, faction: String) -> bool:
 	return true
 
 
-## 让某个兵种进区划的「大格子」开始读条。
-func _start_zone_training(zone, kind: String) -> void:
+## 让某个兵种进区划的「大格子」开始读条（特性跟着这一单走）。
+func _start_zone_training(zone, kind: String, trait_id: String = "") -> void:
 	zone["train_kind"] = kind
+	zone["train_trait"] = trait_id
 	zone["train_total"] = recruit_train_sec(kind)
 	zone["train_remaining"] = zone["train_total"]
 
 
-## 把区划队列里的下一个提到大格子（队列空 → 变回空闲）
+## 把区划队列里的下一个提到大格子（队列空 → 变回空闲）。
+## ★★ `train_queue` 与 `train_traits` **必须同步 pop_front** —— 两个数组下标一一对应。
 func _start_next_zone_queue(zone) -> void:
 	var q: Array = zone.get("train_queue", [])
+	var traits: Array = zone.get("train_traits", [])
 	if q.is_empty():
 		zone["train_kind"] = ""
+		zone["train_trait"] = ""
 		zone["train_remaining"] = 0.0
 		zone["train_total"] = 0.0
 		return
 	var next := String(q.pop_front())
+	var next_trait := String(traits.pop_front()) if not traits.is_empty() else ""
 	zone["train_queue"] = q
-	_start_zone_training(zone, next)
+	zone["train_traits"] = traits
+	_start_zone_training(zone, next, next_trait)
 
 
 ## 每帧推进各区划的招募读条（world.tick 里跟在将领招募后面）。
@@ -3136,6 +3479,7 @@ func _spawn_zone_recruit(zone, kind: String) -> Variant:
 		recruit_label_of(kind), tile, faction, kind, "", "", "",
 		ConfigRes.general_index_of(kind)          # ★ 第几位将领（决定套不套它的数值覆盖）
 	)
+	# ⚠️ 词条已停用：`train_trait` 恒为空，不再授予（字段保留在 zone.gd 里）。
 	units.append(u)
 	# ★ 区划招募出来的将领自己就是队长 → 吃「将领血量 +10%」（用同一个判据函数）
 	u.apply_hp_bonus(_tech_hp_mult_for(u))
@@ -3189,10 +3533,15 @@ func cancel_zone_recruit(zone_id: int, slot: int, faction: String) -> bool:
 		return false
 
 	# 1) 先从队列里摘掉（后方的自动前移）
+	# ★★ 特性数组必须在**同一个下标**一起摘：漏一个就会「招到别人的特性」。
 	if slot == 0:
-		_start_next_zone_queue(z)
+		_start_next_zone_queue(z)          # 大格子：下一单连同它的特性一起前移
 	else:
 		(z["train_queue"] as Array).remove_at(slot - 1)
+		var traits: Array = z.get("train_traits", [])
+		if slot - 1 < traits.size():
+			traits.remove_at(slot - 1)
+			z["train_traits"] = traits
 
 	# 2) 再退款（顺序与招募相反：先摘掉再退，中途出错也不会「退了钱、队列里还留着」）
 	var cost := recruit_cost(kind)
@@ -3489,6 +3838,8 @@ func remove_building(b, force: bool = false) -> bool:
 	# ★ 建筑离场 → 它的升级读条作废（**不退款**：钱花在这栋楼上了，楼没了就是没了 ——
 	#   见 logic/upgrade.gd 的 cancel_upgrade_on_removed）。
 	UpgradeRes.cancel_upgrade_on_removed(b)
+	# ★ 大本营被强制移除（测试 / 关卡清理）→ 重生队列一并作废（永久阵亡）。
+	b.clear_respawn_queue()
 	b.alive = false
 	buildings.set_cell(b.tx, b.ty, null)
 	_building_at.erase(Vector2i(b.tx, b.ty))
@@ -3747,6 +4098,19 @@ func general_count_of(faction: String) -> int:
 	for u in units:
 		if u.alive and u.is_general() and String(u.faction) == f:
 			n += 1
+	# ★★ 大本营重生队列里的将领也算名额：否则「阵亡期间」可以多招一个，
+	#   等它回来就超上限了。死将不在 units 里，所以不会重复计数。
+	for b in building_list:
+		if b == null or not b.alive or b.type != BuildingRes.TYPE_BASE:
+			continue
+		if String(b.owner) != f:
+			continue
+		for e in b.respawn_queue:
+			if typeof(e) != TYPE_DICTIONARY:
+				continue
+			var qu: Variant = (e as Dictionary).get("unit", null)
+			if qu != null and qu.is_general():
+				n += 1
 	if zones != null:
 		for z in zones.zones:
 			var zd: Dictionary = z
@@ -3787,6 +4151,8 @@ func neutralize_faction(faction: String) -> void:
 		b.cooldown_left = 0.0
 		b.upgrade_remaining = 0.0
 		b.upgrade_total = 0.0
+		# ★ 大本营没了 → 重生队列作废：队列里的死将没有别的引用，等于永久阵亡。
+		b.clear_respawn_queue()
 	# 红点性 AI 也一起停掉（否则它还会继续刷兵）
 	var keep: Array = []
 	for st in reddot_states:
@@ -4236,6 +4602,8 @@ func tick(dt: float) -> Array:
 	# ★★ 建筑升级 + 区划特化的读条（读完在**本帧内**落效果：等级 +1 / 特化生效）。
 	#    与招募同一套「一帧可能读满好几单」的预算算法，见 logic/upgrade.gd 的 tick()。
 	UpgradeRes.tick(self, dt)
+	# ★★ 大本营的将领重生队列（串行倒计时；读完在本帧把死将放回 world.units）。
+	_tick_base_respawns(dt)
 	_prof_done("recruit", _t_recruit)
 
 	# 4) 单位：移动 + 战斗 / 警戒

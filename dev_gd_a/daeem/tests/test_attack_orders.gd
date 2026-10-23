@@ -37,7 +37,10 @@ func _cases() -> void:
 	_test_leash_anchor_follows_target(cfg)
 
 func _test_chase_needs_no_arrival_slot(cfg) -> void:
-	var w = require_world(cfg)
+	# ★ 自由对战只有 #0；用关卡支架凑出两个将领。
+	var w = require_world_with_escorts(cfg, 1)
+	if w == null:
+		return
 	var a = w.units[0]
 	var b = w.units[1]
 	ok(a != null and b != null, "有两个己方单位")
@@ -129,7 +132,7 @@ func _test_chase_repath_gate(cfg) -> void:
 
 func _test_attack_unit(cfg) -> void:
 	var w = require_world(cfg)
-	var g = w.unit_by_id("general-1")
+	var g = w.unit_by_id("general-0")
 	var e = w.spawn_enemy(g.tx + 4, g.ty)
 	ok(g != null and e != null, "有将领 1 和一个敌人")
 	if g == null or e == null:
@@ -153,7 +156,7 @@ func _test_attack_unit(cfg) -> void:
 
 func _test_attack_building(cfg) -> void:
 	var w = require_world(cfg)
-	var g = w.unit_by_id("general-1")
+	var g = w.unit_by_id("general-0")
 	for b in w.building_list.duplicate():
 		if b.owner == "enemy":
 			w.remove_building(b, true)
@@ -184,7 +187,7 @@ func _test_attack_building(cfg) -> void:
 
 func _test_ordered_building_not_distracted(cfg) -> void:
 	var w = require_world(cfg)
-	var g = w.unit_by_id("general-1")
+	var g = w.unit_by_id("general-0")
 	var t := _free_tile(w, g.tx + 5, g.ty)
 	var tower = w.add_building("tower", t.x, t.y, "p2")
 	var decoy = w.spawn_enemy(t.x - 2, t.y)
@@ -219,7 +222,7 @@ func _test_ordered_building_not_distracted(cfg) -> void:
 
 func _test_ordered_target_ignores_leash(cfg) -> void:
 	var w = require_world(cfg)
-	var g = w.unit_by_id("general-1")
+	var g = w.unit_by_id("general-0")
 	var e = w.spawn_enemy(g.tx + 10, g.ty)
 	if g == null or e == null:
 		return
@@ -241,7 +244,7 @@ func _test_ordered_target_ignores_leash(cfg) -> void:
 
 func _test_attack_move_resumes(cfg) -> void:
 	var w = require_world(cfg)
-	var g = w.unit_by_id("general-1")
+	var g = w.unit_by_id("general-0")
 	if g == null:
 		return
 	w.units = [g]
@@ -278,7 +281,7 @@ func _test_attack_move_resumes(cfg) -> void:
 
 func _test_move_cancels_orders(cfg) -> void:
 	var w = require_world(cfg)
-	var g = w.unit_by_id("general-1")
+	var g = w.unit_by_id("general-0")
 	var e = w.spawn_enemy(g.tx + 3, g.ty)
 	if g == null or e == null:
 		return
@@ -301,7 +304,7 @@ func _test_move_cancels_orders(cfg) -> void:
 
 func _test_players_acquire_buildings(cfg) -> void:
 	var w = require_world(cfg)
-	var g = w.unit_by_id("general-1")
+	var g = w.unit_by_id("general-0")
 	if g == null:
 		return
 	w.units = [g]
@@ -347,7 +350,7 @@ func _test_npc_does_not_acquire_buildings(cfg) -> void:
 
 func _test_ai_acquires_buildings(cfg) -> void:
 	var w = require_world(cfg)
-	var g = w.unit_by_id("general-1")
+	var g = w.unit_by_id("general-0")
 	ok(g != null, "（前提）有己方将领")
 	if g == null:
 		return
@@ -423,7 +426,7 @@ func _free_tile(w, x: int, y: int) -> Vector2i:
 
 func _test_leash_no_jitter(cfg) -> void:
 	var w = require_world(cfg)
-	var g = w.unit_by_id("general-1")
+	var g = w.unit_by_id("general-0")
 	var e = w.spawn_enemy(g.tx + 2, g.ty)
 	if g == null or e == null:
 		return
@@ -470,7 +473,7 @@ func _test_leash_no_jitter(cfg) -> void:
 
 func _test_leash_anchor_follows_target(cfg) -> void:
 	var w = require_world(cfg)
-	var g = w.unit_by_id("general-2")
+	var g = w.unit_by_id("general-0")
 	var e = w.spawn_enemy(g.tx + 2, g.ty)
 	if g == null or e == null:
 		return

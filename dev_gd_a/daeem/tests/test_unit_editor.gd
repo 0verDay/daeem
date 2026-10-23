@@ -157,10 +157,10 @@ func _test_general_overrides() -> void:
 		"将领 3 的移速 = 骑手那一档")
 	eq(cfg.general_name_at(0), "", "默认没有名字覆盖（调用方兜底「将领 N」）")
 	var w0 = require_world(cfg)
-	var g0 = w0.unit_by_id("general-1")
-	ok(g0 != null, "开局将领在场")
-	near(g0.hp_max, cfg.unit_hp_of("spearman"), 1e-6, "开局将领 1 的血量走兵种表")
-	eq(g0.general_index, 0, "★ 单位自己知道是第几位将领")
+	var g0 = w0.unit_by_id("general-0")
+	ok(g0 != null, "开局将领 #0 在场")
+	near(g0.hp_max, cfg.unit_hp_of("spearman"), 1e-6, "开局将领 #0 的血量走兵种表")
+	eq(g0.general_index, 9, "★ #0 是名册第 10 项（index 9）")
 
 	var cfg4 = _reload(_with_general_stats([
 		{"hp_max": 260, "name": "西境枪将"},
@@ -182,7 +182,9 @@ func _test_general_overrides() -> void:
 		"没写的项一律跟随")
 	eq(g1.name, "西境枪将", "★ 将领名字覆盖生效（开局那三个的名字从这里来）")
 	eq(g2.name, "将领 2", "没写名字 → 原来的「将领 N」")
-	near(g1.speed(cfg4, w.map), cfg4.unit_speed_of("spearman"), 1e-6, "速度也能覆盖（这里没写）")
+	# ★ 词条已停用：速度就是兵种基础值。
+	near(g1.speed(cfg4, w.map), cfg4.unit_speed_of("spearman"), 1e-6,
+		"速度也能覆盖（这里没写）")
 	near(cfg4.general_hp_at(1), 300.0, 1e-6, "查询口（悬停详情用）与单位身上的值一致")
 	near(g1.hp, 260.0, 1e-6, "当前血量也跟着上限走（开局满血）")
 

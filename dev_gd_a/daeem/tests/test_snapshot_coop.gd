@@ -42,6 +42,9 @@ func _run() -> void:
 		base.hp_max = 999.0
 		base.upgrade_remaining = 3.0
 		base.upgrade_total = 5.0
+		# ★ 大本营重生队列（本轮新增）：造一条「和默认不一样」的状态。
+		base.enqueue_respawn(host.units[0], 7.0)
+		base.respawn_remaining = 4.0
 	var zone = _zone_owned_by(host, "F1")
 	ok(zone != null, "（前提）F1 占着一块区")
 	if zone != null:
@@ -62,9 +65,9 @@ func _run() -> void:
 	ok(snap.has("pres"), "★ 快照带按席位资源 pres")
 	ok(snap.has("obj"), "★ 快照带目标 obj")
 	ok(snap.has("tech"), "★ 快照带科技 tech")
-	# ★★ 将领招募池 / 冷却（本轮新增）：先造一个**和默认不一样**的手牌 + 冷却。
+	# ★★ 将领招募池 / 冷却：先造一个**和默认不一样**的「已拥有」集合 + 冷却。
 	var host_pool: Dictionary = host.general_recruit_pools["F1"]
-	host_pool["slots"] = ["general_7", "general_8", "general_9"]
+	host_pool["taken"] = ["general_1", "general_4"]
 	host_pool["cooldown"] = 12.5
 	host_pool["cooldown_total"] = 30.0
 	snap = SnapshotRes.to_snapshot(host)
@@ -89,8 +92,9 @@ func _run() -> void:
 	eq(String(guest.objective_state["kind"]), "hold_zone", "★ 目标种类写回客机")
 	if tech_id != "":
 		ok(guest.active_tech_ids("F2").has(tech_id), "★ 客机的科技高亮状态写回")
-	eq(guest.general_recruit_slots("F1"), ["general_7", "general_8", "general_9"],
-		"★ 客机的招募手牌写回房主那一手")
+	ok(guest.general_recruit_owned("F1", "general_1"), "★ 客机看到 #1 已拥有")
+	ok(guest.general_recruit_owned("F1", "general_4"), "★ 客机看到 #4 已拥有")
+	ok(not guest.general_recruit_owned("F1", "general_2"), "★ 未招过的 #2 仍可招募")
 	near(guest.general_recruit_cooldown_left("F1"), 12.5, 1e-6,
 		"★ 客机看到同一个招募冷却剩余")
 	near(guest.general_recruit_cooldown_total("F1"), 30.0, 1e-6,
@@ -102,6 +106,11 @@ func _run() -> void:
 			eq(gb.level, 2, "★ 建筑等级写回")
 			eq(gb.hp_max, 999.0, "★ 建筑血量上限写回")
 			near(gb.upgrade_remaining, 3.0, 0.001, "★ 建筑升级剩余写回")
+			ok(gb.is_respawning(), "★★ 客机也看到大本营在重生")
+			eq(gb.respawn_count(), 1, "★ 重生队列人数写回")
+			near(gb.respawn_eta(), 4.0, 0.001, "★ 重生剩余秒数写回")
+			eq(gb.respawn_current_name(), String(host.units[0].name),
+				"★ 正在重生的将领名字写回")
 	if zone != null:
 		var gz = _zone_owned_by(guest, "F1")
 		ok(gz != null, "（前提）客机也有 F1 区划")
@@ -118,12 +127,12 @@ func _run() -> void:
 	for sb in old["buildings"]:
 		(sb as Dictionary).erase("mh")
 		(sb as Dictionary).erase("lv")
-	# 先给客机换一手「别的」，用来验证「缺 gp → 保持现状」。
-	guest.general_recruit_pools["F1"]["slots"] = ["general_1", "general_2", "general_3"]
+	# 先给客机换一组「别的已拥有」，用来验证「缺 gp → 保持现状」。
+	guest.general_recruit_pools["F1"]["taken"] = ["general_2"]
 	SnapshotRes.apply_snapshot(guest, cfg, old)
 	eq(float(guest.resource_pool_for("F2")["food"]), 333.0, "缺 pres → 客机资源保持现状")
-	eq(guest.general_recruit_slots("F1"), ["general_1", "general_2", "general_3"],
-		"缺 gp → 客机的招募手牌保持现状")
+	ok(guest.general_recruit_owned("F1", "general_2"),
+		"缺 gp → 客机的「已拥有」集合保持现状")
 	near(guest.general_recruit_cooldown_left("F1"), 12.5, 1e-6,
 		"缺 gp → 客机的招募冷却也保持现状")
 	eq(float(guest.objective_state["held"]), 42.0, "缺 obj → 目标保持现状")

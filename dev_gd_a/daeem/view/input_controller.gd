@@ -1327,13 +1327,25 @@ func request_revive() -> bool:
 	return true
 
 
-## 取消读条中的「再起」（全额退款）。★ 同一颗格子：读条中再点一次 = 取消。
+## 取消读条中的「再起」（再起免费，所以没有退款）。★ 读条中再点一次 = 取消。
 func request_revive_cancel() -> bool:
 	var leader = first_selected_leader()
 	if leader == null:
 		return false
 	command_issued.emit({
 		"kind": "revive_cancel", "leader_id": leader.id, "faction": world.my_faction,
+	})
+	return true
+
+
+## 召回：静默击杀旗下部队，将领阵亡后进入大本营重生队列（比正常阵亡更短）。
+## ★ 只发意图；是否濒死 / 归属校验在 world.recall_general 里。
+func request_recall() -> bool:
+	var leader = first_selected_leader()
+	if leader == null:
+		return false
+	command_issued.emit({
+		"kind": "recall", "leader_id": leader.id, "faction": world.my_faction,
 	})
 	return true
 
