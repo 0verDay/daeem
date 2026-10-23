@@ -1269,11 +1269,13 @@ class EditorApp:
         # ---- 造价与招募（recruit.zone.list）
         rsec = self._section("造价与招募", "recruit.zone.list")
         for key, label in (("cost_food", "造价 · 粮食"), ("cost_gold", "造价 · 黄金"),
-                           ("population_cost", "造价 · 人口"), ("train_sec", "招募时间")):
+                           ("population_cost", "造价 · 人口"), ("train_sec", "招募时间"),
+                           ("recruit_cooldown_sec", "招募冷却（秒）")):
             field = Field(key, label, "float", minimum=0)
             self._entry_row(rsec, field, gen.field(key),
                             lambda v, g=gen, k=key: self.model.set_general(g.index, k, v))
-        self._hint(rsec, "区划中心招将领时用的钱、人口与读条秒数（与兵种那套同一口径）。")
+        self._hint(rsec, "区划中心招将领时用的钱、人口与读条秒数（与兵种那套同一口径）；"
+                         "招募冷却 = 招到之后**该玩家全局**锁多少秒。")
 
     # ---- 建筑表单 -------------------------------------------------------
 

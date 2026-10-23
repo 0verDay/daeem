@@ -62,6 +62,14 @@ func _run() -> void:
 	ok(snap.has("pres"), "★ 快照带按席位资源 pres")
 	ok(snap.has("obj"), "★ 快照带目标 obj")
 	ok(snap.has("tech"), "★ 快照带科技 tech")
+	# ★★ 将领招募池 / 冷却（本轮新增）：先造一个**和默认不一样**的手牌 + 冷却。
+	var host_pool: Dictionary = host.general_recruit_pools["F1"]
+	host_pool["slots"] = ["general_7", "general_8", "general_9"]
+	host_pool["cooldown"] = 12.5
+	host_pool["cooldown_total"] = 30.0
+	snap = SnapshotRes.to_snapshot(host)
+	ok(snap.has("gp"), "★ 快照带将领招募池 gp")
+	ok(snap["gp"].has("F1") and snap["gp"].has("F2"), "gp 有房主与客机两份")
 	ok(snap["pres"].has("F1") and snap["pres"].has("F2"), "pres 有房主与客机两份")
 	var b0: Dictionary = snap["buildings"][0]
 	ok(b0.has("lv") and b0.has("mh") and b0.has("ur") and b0.has("ut"),
@@ -81,6 +89,12 @@ func _run() -> void:
 	eq(String(guest.objective_state["kind"]), "hold_zone", "★ 目标种类写回客机")
 	if tech_id != "":
 		ok(guest.active_tech_ids("F2").has(tech_id), "★ 客机的科技高亮状态写回")
+	eq(guest.general_recruit_slots("F1"), ["general_7", "general_8", "general_9"],
+		"★ 客机的招募手牌写回房主那一手")
+	near(guest.general_recruit_cooldown_left("F1"), 12.5, 1e-6,
+		"★ 客机看到同一个招募冷却剩余")
+	near(guest.general_recruit_cooldown_total("F1"), 30.0, 1e-6,
+		"★ 总冷却时长也写回（界面画「已过 / 总」）")
 	if base != null:
 		var gb = guest.find_base_of("F1")
 		ok(gb != null, "（前提）客机也有 F1 大本营")
@@ -100,11 +114,18 @@ func _run() -> void:
 	old.erase("pres")
 	old.erase("obj")
 	old.erase("tech")
+	old.erase("gp")
 	for sb in old["buildings"]:
 		(sb as Dictionary).erase("mh")
 		(sb as Dictionary).erase("lv")
+	# 先给客机换一手「别的」，用来验证「缺 gp → 保持现状」。
+	guest.general_recruit_pools["F1"]["slots"] = ["general_1", "general_2", "general_3"]
 	SnapshotRes.apply_snapshot(guest, cfg, old)
 	eq(float(guest.resource_pool_for("F2")["food"]), 333.0, "缺 pres → 客机资源保持现状")
+	eq(guest.general_recruit_slots("F1"), ["general_1", "general_2", "general_3"],
+		"缺 gp → 客机的招募手牌保持现状")
+	near(guest.general_recruit_cooldown_left("F1"), 12.5, 1e-6,
+		"缺 gp → 客机的招募冷却也保持现状")
 	eq(float(guest.objective_state["held"]), 42.0, "缺 obj → 目标保持现状")
 	eq(String(guest.objective_state["kind"]), "hold_zone", "缺 obj → 目标种类保持现状")
 	if base != null:

@@ -1011,7 +1011,7 @@ func _refresh_progress_panel(holder) -> void:
 ## 六张表都是**数据驱动 / 固定文案**的，这里不写死兵种名：
 ##   建筑页 ← config.json 的 building 段里 buildable = true 的那几项（默认是城墙 / 箭塔）
 ##   单位页 ← config.json 的 recruit.list（现在只有一项：占位单位 = 招募亲兵）
-##   招募页 ← config.json 的 recruit.zone.list（三个占位将领，排进**区划**的队列）
+##   招募页 ← world.general_recruit_slots（池子抽出的三位，排进**区划**的队列）
 ##   操作页 ← `_order_entries()`（对当前选中的部队下达的指令）
 ##   科技页 ← config.json 的 tech.list（九条占位科技）—— ★ 它**不走命令卡**：
 ##            九格由 view/tech_grid.gd 画（另一套三态样式 + 两行文字），
@@ -1047,7 +1047,9 @@ func _rebuild_card() -> void:
 		PageTabsRes.PAGE_UNIT:
 			entries = _recruit_entries("recruit", "recruit.list")
 		PageTabsRes.PAGE_RECRUIT:
-			entries = _recruit_entries("zone_recruit", "recruit.zone.list")
+			# ★★ 本轮起招募页是**池子抽出来的一手**（不是 config 里三条写死的卡）：
+			#    内容 = world.general_recruit_slots()，冷却中整页置灰。
+			entries = _zone_recruit_entries()
 		PageTabsRes.PAGE_ORDER:
 			# ★★ 本轮起「操作」页**不只属于部队**：选中建筑时它画的是
 			#    升级 / 特化那一套（需求：「为所有单位/建筑都添加上『操作』页签」）。
@@ -1296,7 +1298,7 @@ func _hover_entry(src: String, index: int) -> Dictionary:
 ##   · **建筑**         → `build`（建筑页的城墙 / 箭塔）+ 建筑那一格升级
 ##                        （`building_upgrade` / 取消 / 已满级）
 ##   · **招募单位 / 将领** → `recruit`（单位页：长枪兵 / 长弓兵 / 骑手）+
-##                        `zone_recruit`（招募页：将领 1/2/3）
+##                        `zone_recruit`（招募页：池子抽出的那一手）
 ##   · **区域的特化**    → `zone_specialize`
 ##   · **科技**          → 科技九格（那一份数据没有 `type`，按 `src == "tech"` 分派）
 func _hover_detail(src: String, entry: Dictionary) -> Dictionary:
@@ -1402,6 +1404,17 @@ func _hover_recruit(entry: Dictionary) -> Dictionary:
 	if train > 0.0:
 		lines.append("读条 %s 秒%s" % [_fmt_num(train),
 			"" if is_zone else "（挂在将领名下，读条期间它不能动）"])
+	# ★★ 招募冷却（本轮新增）：先写**这位将领的属性**，再写**现在还剩多少**。
+	#   · 属性 = 招完他之后整方锁多久（全局冷却，见 world 的「将领招募池」段）；
+	#   · 剩余 = 权威状态的倒计时，0 时不写（不占一行）。
+	if is_zone:
+		var cd_attr := float(entry.get("recruit_cooldown_sec", 0.0))
+		if cd_attr > 0.0:
+			lines.append("招募冷却 %s 秒（招到后该玩家全局冷却）" % _fmt_num(cd_attr))
+		if world != null:
+			var left: float = world.general_recruit_cooldown_left(world.my_faction)
+			if left > 0.0:
+				lines.append("现在冷却中：还需 %s 秒" % _fmt_num(left))
 	return _hover_text(String(entry.get("name", "")), lines)
 
 
@@ -1582,6 +1595,39 @@ func _recruit_entries(entry_type: String, cfg_path: String) -> Array:
 			"cost": e.get("cost", {}),
 			"train_sec": e.get("train_sec", 0.0),
 			"population_cost": e.get("population_cost", 0),
+		})
+	return out
+
+
+## ★★ 招募页的内容：**当前这一手**（池子抽出来的三位）+ 冷却状态（本轮新增）。
+##
+## ★ 与单位页的区别：单位页读 config 的那张固定表；招募页读的是**权威状态**
+##   （world.general_recruit_slots），因为手牌会随着「招走一名 → 重抽」而变。
+## ★ 冷却中整页置灰（`ready = false`）：格子还在、还能悬停看「还要等几秒」，
+##   但点不动 —— 与濒死将领那颗「再起」同一条交互约定（见 command_card.set_entries）。
+## ★ 每条带上 `recruit_cooldown_sec`（这位将领自己的属性）与 `cooldown_left`（全局剩余），
+##   悬停详情的「招募冷却 N 秒 / 现在还需 X 秒」都从这里取，界面不自己查 config。
+func _zone_recruit_entries() -> Array:
+	var out: Array = []
+	if world == null:
+		return out
+	var cd_left: float = world.general_recruit_cooldown_left(world.my_faction)
+	for k in world.general_recruit_slots(world.my_faction):
+		var kind := String(k)
+		var e: Dictionary = world.recruit_entry(kind)
+		if e.is_empty():
+			continue
+		out.append({
+			"type": "zone_recruit",
+			"unit_kind": kind,
+			"name": String(e.get("label", kind)),
+			"desc": String(e.get("desc", "")),
+			"cost": e.get("cost", {}),
+			"train_sec": e.get("train_sec", 0.0),
+			"population_cost": e.get("population_cost", 0),
+			"recruit_cooldown_sec": float(e.get("recruit_cooldown_sec", 0.0)),
+			"cooldown_left": cd_left,
+			"ready": cd_left <= 0.0,
 		})
 	return out
 
@@ -1885,6 +1931,12 @@ func _on_card_entry(entry: Dictionary) -> void:
 				show_notice("先选中一个将领，才能把新兵排到它名下")
 		"zone_recruit":
 			# 区划招募（点区划中心 → 招募页）：命令里必须带 zone_id，没选中区划就不发。
+			# ★ 冷却中整页置灰（点不到，键盘也不吃）；这里再判一次只是保险
+			#   （测试 / 直接调 activate_index 时也走这条路）。
+			if not bool(entry.get("ready", true)):
+				show_notice("将领招募冷却中：还需 %s 秒" %
+					_fmt_num(float(entry.get("cooldown_left", 0.0))))
+				return
 			if not input_ctrl.request_zone_recruit(String(entry.get("unit_kind", ""))):
 				show_notice("先点一个区划中心，才能在这个区划里招募")
 		"order":
@@ -2184,13 +2236,16 @@ func notice_text() -> String:
 ## 拒因码是 logic/world.gd 的 can_recruit / can_afford_recruit / can_recruit_zone 产出的：
 ##   kind / leader / faction / zone / zone_owner / zone_not_found / queue_full / cost / population
 ##   / **downed**（★ 本轮新增：将领濒死倒地，不能继续造兵）
+##   / **cooldown** / **pool**（★★ 本轮新增：全局招募冷却 / 不在当前三个槽位里）
 ## ★ 注意两个「区划」拒因是**不同的话**：
 ##   · "zone"          将领招募时它是「将领不站在己方区划里」；
 ##   · "zone_owner"    区划招募时它是「这个区划不属于你」。
 ##   （"zone_not_found" 才是「没有这个区划」—— 前两者都别拿来当它用。）
 ## ★ `max_count` 来自事件里的 max（区划招募的队列上限可能与单位那条不同）——
 ##   没带就用单位那条表的上限。
-func recruit_reject_text(reason: String, kind: String, max_count: int = 0) -> String:
+## ★ `cooldown_left` 来自事件的 cooldown（冷却拒因要写「还需 N 秒」）。
+func recruit_reject_text(reason: String, kind: String, max_count: int = 0,
+		cooldown_left: float = 0.0) -> String:
 	match reason:
 		"kind":
 			return "这个兵种不在可招募表里"
@@ -2211,6 +2266,10 @@ func recruit_reject_text(reason: String, kind: String, max_count: int = 0) -> St
 		"general_limit":
 			var gcap: int = world.base_max_generals(world.my_faction) if world != null else 0
 			return "将领已达上限（最多 %d 名）：升级大本营可以提高上限" % gcap
+		"cooldown":
+			return "将领招募冷却中：还需 %s 秒" % _fmt_num(maxf(0.0, cooldown_left))
+		"pool":
+			return "这名将领不在当前三个招募槽位里（换一手再招）"
 		"queue_full":
 			var cap: int = max_count if max_count > 0 else world.recruit_queue_max()
 			return "招募队列已满（最多 %d 个）" % cap
@@ -2431,6 +2490,16 @@ func _card_sig() -> String:
 		var zd: Dictionary = z
 		parts.append("z:%d:%s:%s:%s" % [int(zd.get("id", -1)), world.zone_kind_of(zd),
 			String(zd.get("spec_done", "")), String(zd.get("spec_kind", ""))])
+	# ★★ 招募页的手牌与冷却（本轮新增）：池子会「招走一名 → 三名全部重抽」，
+	#    冷却结束也要把整页从灰变回可点 —— 这两件事都不改页签、也不改选中对象，
+	#    不放进签名的话命令卡会一直停在生产它的那一帧（与濒死「再起」同一类 bug）。
+	#    ⚠️ 只放「是哪三位 + 冷却有没有」；**不放剩余秒数** —— 放进去就变成每秒重建一次。
+	if String(page_tabs.page()) == PageTabsRes.PAGE_RECRUIT:
+		var hand_key := ""
+		for k in world.general_recruit_slots(world.my_faction):
+			hand_key += String(k) + ","
+		parts.append("gh:%s:%d" % [hand_key,
+			1 if world.general_recruit_cooldown_left(world.my_faction) > 0.0 else 0])
 	# ③ 选中部队 / 什么都没选中这两档**不进签名**：它们的命令卡内容是静态的
 	#    （操作页那四条指令写死在 `_order_entries()`、建筑页来自 config.json 的 building 段），
 	#    与「选中了哪一支部队」无关 —— 放进去只会每次换选中都白重建一遍。
@@ -3059,6 +3128,14 @@ func _zone_detail_rows(z: Dictionary, show_population: bool = true) -> Dictionar
 	var spec := _zone_spec_short(z)
 	if spec != "":
 		right.append(_small_row("- %s" % spec))
+	# ★★ 将领招募冷却（本轮新增）：选中己方区划时给一行常驻倒计时，
+	#    玩家不必把鼠标停在灰卡上才知道还要等多久。
+	#    ⚠️ 放**左列**（只有 2 行）：右列最多已经 6 行（产能 4 + 人口 + 特化），
+	#       detail_rows 固定 6 行、超出不画 —— 挤到右列会被裁掉。
+	if show_population and world != null:
+		var cd_left: float = world.general_recruit_cooldown_left(world.my_faction)
+		if cd_left > 0.0:
+			left.append(_small_row("将领招募冷却 %ss" % _fmt_num(cd_left)))
 	return {"left": left, "right": right}
 
 

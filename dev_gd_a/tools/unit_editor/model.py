@@ -358,6 +358,10 @@ class General:
         self.cost_gold = _f(cost.get("gold"), 0.0)
         self.population_cost = _f(rec.get("population_cost"), 0.0)
         self.train_sec = _f(rec.get("train_sec"), 0.0)
+        #: ★★ 「招募冷却」（本轮新增，`recruit.zone.list[].recruit_cooldown_sec`）：
+        #: 招到这位之后、**该玩家全局**锁多少秒（见 logic/world.gd 的将领招募池段）。
+        #: 0 = 招完不冷却（老数据 / 普通占位将领的行为）。
+        self.recruit_cooldown_sec = _f(rec.get("recruit_cooldown_sec"), 0.0)
         #: 所属兵种那一档的数值（「跟随兵种」时显示的就是它）
         self.inherited = dict(defaults)
         #: 真正生效的数值 = 覆盖 ⊕ 兵种
@@ -844,7 +848,7 @@ class ConfigModel:
             raise ModelError("没有第 %d 位将领（现在有 %d 位）" % (index + 1, self.general_count()))
 
     def set_general(self, index: int, field: str, value: Any) -> None:
-        """改将领的 名称 / 造价 / 招募时间（名称同时写进覆盖与招募卡）。"""
+        """改将领的 名称 / 造价 / 招募时间 / 招募冷却（名称同时写进覆盖与招募卡）。"""
         self._check_general_index(index)
         kind = self._general_kind(index)
         self._ensure_general_slot(index)
@@ -865,9 +869,10 @@ class ConfigModel:
             if ridx >= 0:
                 self.doc.set(["recruit", "zone", "list", ridx, "label"], value)
             return
-        if field in ("cost_food", "cost_gold", "population_cost", "train_sec"):
+        if field in ("cost_food", "cost_gold", "population_cost", "train_sec",
+                     "recruit_cooldown_sec"):
             if ridx < 0:
-                raise ModelError("将领 %d 不在 recruit.zone.list 里，改不了造价 / 招募时间"
+                raise ModelError("将领 %d 不在 recruit.zone.list 里，改不了造价 / 招募时间 / 招募冷却"
                                  % (index + 1))
             if field == "cost_food":
                 self.doc.set(["recruit", "zone", "list", ridx, "cost", "food"], value)

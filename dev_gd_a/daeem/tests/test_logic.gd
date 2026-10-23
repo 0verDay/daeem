@@ -67,7 +67,8 @@ func _test_world_setup(world, cfg) -> void:
 	ok(hotkeys.has("1") and hotkeys.has("2") and hotkeys.has("3"), "三个将领带 1/2/3 快捷键")
 
 	var want_types: Array = cfg.general_types()
-	eq(want_types.size(), 3, "配置里给了三个将领类型（unit.general.types）")
+	eq(want_types.size(), 9,
+		"配置里给了九位将领类型（unit.general.types：前 3 位开局 + 后 6 位招募池）")
 	for i in generals.size():
 		var want := String(want_types[i])
 		eq(String(generals[i].unit_type), want,
@@ -910,7 +911,10 @@ func _test_snapshot(world, cfg) -> void:
 	eq(sub_in_snap, per_total, "快照里有 %d 个附属兵" % per_total)
 	ok(ld_ok, "★ 快照里的附属兵都指向一个**在场的**队长 id（客机才做得出整队选中）")
 	ok(ut_ok, "★ 快照里每个单位都带单位类型（ut）")
-	eq(snap_general_types, cfg.general_types(), "★ 三个将领的 ut 就是配置里那三个类型")
+	# ★ 世界开局只造 3 位将领（create_generals 写死 3），所以快照里只有前 3 个类型；
+	#   名册第 4..9 位只从招募池里出（见 test_zone_recruit）。
+	eq(snap_general_types, cfg.general_types().slice(0, snap_general_types.size()),
+		"★ 三个开局将领的 ut 就是名册里那前三个类型")
 
 	var w2 = require_world(cfg)
 	SnapshotRes.apply_snapshot(w2, cfg, snap)

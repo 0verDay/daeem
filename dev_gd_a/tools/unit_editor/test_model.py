@@ -383,7 +383,7 @@ def t_add_remove_unit() -> None:
 def t_generals() -> None:
     print("\n[3] 将领（类型 + 造价 + 单独数值）")
     model = fresh_model()
-    eq(model.general_count(), 3, "开局三位将领")
+    eq(model.general_count(), 9, "九位将领（前 3 位开局 + 后 6 位招募池）")
     # ★★ 「开局护卫数」（`unit.general.escort`）这个配置项**已经整体删掉**（产品决策）：
     #   开局带几个附属兵不再由 config.json 给一个全局缺省，只能在**战役编辑器的摆放页**
     #   里一个一个摆出来。★ 这里**不是把旧断言删掉**，而是反过来钉住「键没了 + 接口没了」
@@ -395,7 +395,8 @@ def t_generals() -> None:
     for _name in ("escort", "escort_at", "set_escort", "set_escort_at"):
         ok(not hasattr(model, _name),
            "★★ 模型不再提供 %s() 接口（配置项删了，接口不许留着当摆设）" % _name)
-    g0, g1, g2 = model.generals()
+    # 前 3 位是开局将领；第 4..9 位只从招募池里出（同一条名册，编辑器一视同仁）。
+    g0, g1, g2 = model.generals()[:3]
     eq(g0.type_id, "spearman", "将领 1 = 长枪兵")
     eq(g1.type_id, "longbowman", "将领 2 = 长弓兵")
     eq(g2.type_id, "rider", "将领 3 = 骑手")
@@ -414,6 +415,8 @@ def t_generals() -> None:
     near(g1.train_sec, zone_row["train_sec"], "招募时间（来自 recruit.zone.list）")
     near(g1.cost_food, zone_row["cost"]["food"], "造价 · 粮食（来自 recruit.zone.list）")
     near(g1.population_cost, 1, "造价 · 人口")
+    near(g1.recruit_cooldown_sec, zone_row.get("recruit_cooldown_sec", 0),
+         "招募冷却（本轮新增，来自 recruit.zone.list）")
 
     # 类型 / 名称 / 造价 / 招募时间
     model.set_general_type(1, "rider")
@@ -426,6 +429,10 @@ def t_generals() -> None:
        "★ 名字同时写进招募卡（两处一致）")
     model.set_general(1, "train_sec", 14)
     eq(model.doc.value(["recruit", "zone", "list", 1, "train_sec"]), 14, "招募时间")
+    model.set_general(1, "recruit_cooldown_sec", 33)
+    eq(model.doc.value(["recruit", "zone", "list", 1, "recruit_cooldown_sec"]), 33,
+       "★ 招募冷却（本轮新增：招到这位之后该玩家全局锁多少秒）")
+    near(model.general(1).recruit_cooldown_sec, 33, "模型读回同一个数")
     model.set_general(1, "cost_food", 80)
     eq(model.doc.value(["recruit", "zone", "list", 1, "cost", "food"]), 80, "造价 · 粮食")
     model.set_general(1, "cost_gold", 90)

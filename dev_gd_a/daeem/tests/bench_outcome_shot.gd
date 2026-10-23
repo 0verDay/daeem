@@ -52,7 +52,7 @@ func _capture(result: String, cfg) -> void:
 	evt.pressed = true
 	evt.keycode = KEY_W if result == "win" else KEY_L
 	evt.ctrl_pressed = true
-	game._handle_outcome_hotkey(evt)
+	game._handle_dev_hotkey(evt)
 
 	await _wait_sec(0.18)
 	await _shoot("outcome_%s_1_crown" % result)

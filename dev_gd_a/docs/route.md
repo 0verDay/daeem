@@ -5977,3 +5977,82 @@ debug keystore。明文 `ws://` 若被 Android 明文流量策略拦截，需要
   `test_hit_fx` 45、`test_smoke` 123、`test_view3d` 213、`test_unit_traits` 57 —— 全绿。
 * `test_unit_traits` / buff 编辑器测试里原来写死的「士气免伤 50%」改成**从 `cfg` 读**：
   buff 编辑器本来就会改这些数，测试不该因为策划调了数值就红。
+
+## 五十八、将领招募池与招募冷却（2026.10.23）
+
+需求原话：
+
+1. 玩家在招募一次将领后，将在一段时间内无法招募将领，该冷却作为将领属性可被配置
+   （字段名为「招募冷却」）；
+2. 为玩家的将领招募系统添加一个池，池中若干将领会被随机抽取；玩家选择招募一名后，
+   抽取三名将领放至下一次招募的三个槽位中；
+3. 现在只给池加占位将领（将领#1…#9），属性随意。
+
+### 58.1 口径（与用户逐条确认）
+
+* **全局冷却**：招到任意一名后，该玩家**所有区划**在 N 秒内都不能再招；
+  N = 被招那名的「招募冷却」。
+* **入队即开始**；取消那一单 → 立刻解冻，并把该将领**放回池子**。
+* **每个玩家一套**池 / 三个槽位（不是每个区划一套）。
+* 每招走一名 → 三名**全部重抽**；招走的那位在本次「盒」里不再出现；
+  盒里不足一手（< `hand_size`）时**整池重置**（盒抽）。
+* 数据键用英文 `recruit_cooldown_sec`，界面文案统一写「招募冷却」。
+
+### 58.2 数据（`data/config.json`）
+
+| 键 | 含义 |
+|---|---|
+| `recruit.zone.pool.enabled` | 是否启用随机手牌（缺省 false = 退回「永远显示 list 前 hand_size 条」） |
+| `recruit.zone.pool.hand_size` | 一手几名（缺省 3 = 命令卡 Q/W/E） |
+| `recruit.zone.list[].recruit_cooldown_sec` | 这位将领的**招募冷却**（秒；缺省 0 = 不冷却） |
+| `unit.general.types / caps / stats` | 将领名册扩到 **9 位**：前 3 位开局生成，4..9 只从池里出 |
+
+`recruit.zone.list` 现在就是池子的成员表（9 名占位将领，造价 / 读条 / 冷却各不相同）；
+池不需要另写一份名单。
+
+单位编辑器（`tools/unit_editor`）的「将领」页新增「招募冷却（秒）」一栏，
+读写的就是 `recruit.zone.list[kind=general_<i+1>].recruit_cooldown_sec`。
+
+### 58.3 逻辑（`logic/world.gd`）
+
+* `general_recruit_pools`：`faction → { slots, available, cooldown, cooldown_total,
+  cooldown_kind, cooldown_zone, draw_serial }`；`reset()` 时按 `player_factions` 各抽一手。
+* 读接口：`general_recruit_slots` / `general_recruit_cooldown_left` /
+  `general_recruit_cooldown_total` / `general_recruit_cooldown_of` /
+  `general_recruit_pool_has_slot`。
+* `can_recruit_zone()` 新增两个拒因：`cooldown`（全局冷却中）、
+  `pool`（这一位不在当前三个槽位里）。顺序在 `general_limit` 之后、`queue_full` 之前。
+* `start_zone_recruit()` 成功后收口：扣池（招走即出池）→ 起冷却 → 重抽一手。
+* `cancel_zone_recruit()`：退款之后解除**这一单触发的**冷却，并把该将放回池子。
+* `_tick_general_recruit_cooldowns()`：每帧倒计时（跟在区划招募后面）。
+* 抽签走 `unit_rand`（`(key, k) + rand_salt` 的纯函数），同局可复现、换局变手牌。
+* `snapshot` 新增 `gp`（每席位的 `slots` + `cd` + `ct`）：客机只读显示，不抽牌。
+
+### 58.4 界面（`view/hud.gd` / `view/game_interaction.gd`）
+
+* 招募页不再读 `config.recruit.zone.list`，改读 `world.general_recruit_slots()`；
+  一手就是三张卡。
+* 冷却中整页置灰（`entry.ready = false`），悬停详情写「招募冷却 N 秒」+
+  「现在冷却中：还需 X 秒」；点灰格给一句「将领招募冷却中」。
+* 区划详情右栏常驻一行「将领招募冷却 Xs」（选中己方区划时）。
+* `recruit_rejected` 事件新增 `cooldown` 字段，红字文案由 `hud.recruit_reject_text` 翻。
+* `_card_sig()` 纳入「这一手是哪三位 + 冷却有没有」：招走重抽 / 冷却结束都会重建命令卡；
+  **不放剩余秒数**（否则每秒白重建一次）。
+
+### 58.5 边界 / 已知限制
+
+* 冷却 > 读条（本版 20~45s vs 10s）⇒ 正常玩法下**区划招募队列实际一次只排一名**。
+  `queue_max = 5` 保留，给「冷却配得很短」的将来留余地。
+* 合作模式：快照只同步**显示状态**（槽位 + 冷却），客机不抽牌；区划招募队列本身
+  仍然没有进快照（既有问题，不在本轮扩大）。
+* 盒抽：第 7 次招募后池子不足一手 → 整池重置，招过的会重新回到池里。
+
+### 58.6 回归
+
+* `tests/test_zone_recruit.gd` 重写为 **186 项**：配置表 / 手牌 / 拒因 / 入队扣费 /
+  冷却计时 / 取消退款 + 回池 / 读条生成 / 队列上限 / 盒抽 / 命令路径。
+* `tests/test_ui.gd` **1232 项**：招募页手牌、冷却置灰、点灰格提示、悬停「招募冷却」、
+  区划详情倒计时。
+* 受「名册扩到 9 位」影响的旧断言一并改成读**前 3 位 / 单位招募表**：
+  `test_retinue` 180、`test_unit_types` 164、`test_logic` 280、`test_smoke` 123、
+  `test_base_limits` 98。

@@ -279,7 +279,8 @@ var path_corner_round_min_angle_deg: float = 20.0
 ## ★★ 这是「单位是什么」的唯一来源（见 data/config.json 的 _types_comment）：
 ##   · `_unit_types`   —— 类型 id → 整套数值（血量 / 速度 / 半径 / 战斗三件套 / 兵种标签）
 ##   · `_unit_classes` —— 兵种大类（步兵 / 骑兵）的显示名
-##   · `_general_types`—— 三个开局将领（以及 general_N）各自的类型，来自 unit.general.types
+##   · `_general_types`—— 将领**名册**（general_N）各自的类型，来自 unit.general.types
+##      （前 3 位是开局那三个；4..9 只从区划将领招募池里出）。
 ## ★ 与下面的战斗数值表同一条规矩：**载入时整理好、之后只读**。
 ##   这些查询全在「每帧每单位」的路径上（unit_hp_of / unit_combat_of / unit_radius_of），
 ##   所以表里存的是**算好的标量**，而不是每次去 split(".") 下潜 JSON。

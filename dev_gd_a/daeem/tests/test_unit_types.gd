@@ -72,10 +72,14 @@ func _test_class_tags(cfg) -> void:
 func _test_general_types(cfg) -> void:
 	var w = require_world_with_escorts(cfg, ESCORTS_PER_GENERAL)
 	var types: Array = cfg.general_types()
-	eq(types.size(), 3, "配置里给了三个将领类型")
+	eq(types.size(), 9, "配置里给了九位将领的类型（前 3 位开局 + 后 6 位招募池）")
 
-	var expect: Array = [UnitRes.UNIT_TYPE_SPEARMAN, UnitRes.UNIT_TYPE_LONGBOWMAN, UnitRes.UNIT_TYPE_RIDER]
-	eq(types, expect, "★ 三个将领依次是长枪兵 / 长弓兵 / 骑手")
+	var expect: Array = [
+		UnitRes.UNIT_TYPE_SPEARMAN, UnitRes.UNIT_TYPE_LONGBOWMAN, UnitRes.UNIT_TYPE_RIDER,
+		UnitRes.UNIT_TYPE_SPEARMAN, UnitRes.UNIT_TYPE_LONGBOWMAN, UnitRes.UNIT_TYPE_RIDER,
+		UnitRes.UNIT_TYPE_SPEARMAN, UnitRes.UNIT_TYPE_LONGBOWMAN, UnitRes.UNIT_TYPE_RIDER,
+	]
+	eq(types, expect, "★ 九位将领按长枪兵 / 长弓兵 / 骑手循环")
 
 	for i in 3:
 		var g = w.unit_by_id("general-%d" % (i + 1))
@@ -130,7 +134,11 @@ func _test_recruit_all_three(cfg) -> void:
 	w.resources["gold"] = 5000.0
 	w.zones.zone_at(g1.tx, g1.ty)["population"] = 100.0
 
-	var types: Array = cfg.general_types()
+	# ★★ 这里要的是「单位页能招的三个兵种」，不是将领名册 ——
+	#    将领名册（general_types）本轮扩到了 9 位，拿它当招募表会去招将领。
+	var types: Array = []
+	for item in w.recruit_list():
+		types.append(String((item as Dictionary).get("kind", "")))
 	eq(types.size(), 3, "三个可招募兵种")
 	for t in types:
 		var tt := String(t)

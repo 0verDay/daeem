@@ -1424,14 +1424,17 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 				% main.hud.detail_panel.detail_text().replace("\n", "|"))
 		tabs.button_at(1).emit_signal("pressed")
 		eq(tabs.page(), PageTabsRes.PAGE_RECRUIT, "★ 第二颗 = 招募页签")
-		eq(card.entries().size(), 3, "★ 招募页里是三个占位将领（需求原话）")
-		eq(card.cell_label(0), "将领 1", "Q 格 = 将领 1")
-		eq(card.cell_label(1), "将领 2", "W 格 = 将领 2")
-		eq(card.cell_label(2), "将领 3", "E 格 = 将领 3")
+		eq(card.entries().size(), 3, "★ 招募页里是三个占位将领（池子抽出来的一手）")
+		var hand: Array = world.general_recruit_slots("p1")
+		eq(hand.size(), 3, "★ 池子给了一手三名")
+		for i in 3:
+			var hk := String(hand[i])
+			eq(card.cell_label(i), world.recruit_label_of(hk),
+				"第 %d 格 = 手牌第 %d 位（%s）" % [i + 1, i + 1, hk])
 		eq(String(card.entry_at(0).get("type", "")), "zone_recruit",
 			"招募页那一项是「区划招募」（排进区划的队列）")
-		eq(String(card.entry_at(0).get("unit_kind", "")), "general_1",
-			"第 1 格要招的兵种是 general_1")
+		eq(String(card.entry_at(0).get("unit_kind", "")), String(hand[0]),
+			"第 1 格要招的兵种 = 手牌第一位")
 		tabs.button_at(0).emit_signal("pressed")
 		eq(tabs.page(), PageTabsRes.PAGE_ORDER, "切回操作页")
 
@@ -1620,12 +1623,20 @@ func _test_hover_panel(main, cfg) -> void:
 		main.input_ctrl.select_zone(zone)
 		hud.refresh()
 		tabs.select_page(PageTabsRes.PAGE_RECRUIT)
-		eq(card.cell_label(0), "将领 1", "（前提）招募页 Q 格 = 将领 1")
+		var hover_hand: Array = world.general_recruit_slots("p1")
+		var hover_kind: String = String(hover_hand[0])
+		var hover_label: String = world.recruit_label_of(hover_kind)
+		eq(card.cell_label(0), hover_label,
+			"（前提）招募页 Q 格 = 手牌第一位（%s）" % hover_label)
 		card.hover(0)
-		ok(tip.showing() and tip.title_text() == "将领 1", "★ 招募页那一格也有悬停详情")
+		ok(tip.showing() and tip.title_text() == hover_label,
+			"★ 招募页那一格也有悬停详情")
 		ok(tip.body_text().contains("区划"),
 			"★ 将领详情里说明了人口从哪里扣（实际：%s）" % tip.body_text().replace("\n", " | "))
 		ok(tip.body_text().contains("兵种"), "将领的数值按它所属兵种查同一张表")
+		ok(tip.body_text().contains("招募冷却"),
+			"★ 悬停详情写明这位将领的「招募冷却」（实际：%s）"
+				% tip.body_text().replace("\n", " | "))
 		card.unhover(0)
 
 		tabs.select_page(PageTabsRes.PAGE_ORDER)
@@ -1888,7 +1899,17 @@ func _test_zone_recruit_via_card(main) -> void:
 	eq(main.hud.page_tabs.page_count(), 2, "★ 选中区划中心 → 操作 + 招募两颗页签")
 	main.hud.page_tabs.select_page(PageTabsRes.PAGE_RECRUIT)
 	eq(main.hud.page_tabs.page(), PageTabsRes.PAGE_RECRUIT, "★ 切到「招募」页签")
-	eq(card.entries().size(), 3, "★ 招募页里是三个占位将领")
+	eq(card.entries().size(), 3, "★ 招募页里是三个占位将领（池子抽出来的一手）")
+	var hand: Array = world.general_recruit_slots("p1")
+	eq(hand.size(), 3, "★ 池子给了一手三名")
+	var kind0: String = String(hand[0])
+	eq(card.cell_label(0), world.recruit_label_of(kind0),
+		"Q 格 = 手牌第一位（实际：%s）" % card.cell_label(0))
+	eq(String(card.entry_at(0).get("type", "")), "zone_recruit",
+		"招募页那一项是「区划招募」（排进区划的队列）")
+	eq(String(card.entry_at(0).get("unit_kind", "")), kind0,
+		"第 1 格要招的兵种就是手牌第一位")
+	var cost0: Dictionary = world.recruit_cost(kind0)
 
 	var q = main.hud.detail_panel.queue_control()
 	ok(not q.showing(), "没在招募时五格收起来")
@@ -1899,30 +1920,38 @@ func _test_zone_recruit_via_card(main) -> void:
 	var pop_before: float = float(zone["population"])
 	card.activate_index(0)
 	ok(world.zone_is_training(zone), "★ 点招募页的 Q 格 → 排进了**这个区划**的队列")
-	eq(world.zone_recruit_kind_at(zone, 0), "general_1", "大格子里是刚排进去的那个将领")
-	near(float(world.resources["food"]), food_before - 100.0, 1e-4, "★ 入队即扣 100 粮食")
+	eq(world.zone_recruit_kind_at(zone, 0), kind0, "大格子里是刚排进去的那个将领")
+	near(float(world.resources["food"]),
+		food_before - float(cost0.get("food", 0.0)), 1e-4, "★ 入队即扣粮食")
 	near(float(zone["population"]), pop_before - 1.0, 1e-4, "★ 入队即扣这个区划 1 人口")
+	ok(world.general_recruit_cooldown_left("p1") > 0.0,
+		"★ 招募后进入全局冷却（= 这位将领的招募冷却）")
 
 	main.hud.refresh()
 	ok(q.showing(), "★ 信息栏里出现五个格子")
 	ok(q.is_zone_queue(), "★ 这个五格显示的是**区划**的队列（不是某个将领的）")
 	eq(q.slot_count(), 5, "五个格子")
 	ok(q.cell_label(0).contains("将"), "大格子里写着短名「将」（实际：%s）" % q.cell_label(0))
+	ok(main.hud.detail_panel.detail_text().contains("招募冷却"),
+		"★ 区划详情里常驻显示招募冷却倒计时（实际：%s）"
+			% main.hud.detail_panel.detail_text().replace("\n", " | "))
 
+	# ★ 全局冷却：整页置灰；点第二格只给提示，不会排队。
+	eq(world.zone_recruit_queue_size(zone), 1, "★ 全局冷却下队列里只有这一单")
+	ok(not bool(card.entry_at(0).get("ready", true)), "★ 冷却中整页置灰")
 	card.activate_index(1)
-	main.hud.refresh()
-	eq(world.zone_recruit_queue_size(zone), 2, "第二个排进小格子")
-	ok(q.cell_filled(1), "第 1 个小格子填上了")
+	eq(world.zone_recruit_queue_size(zone), 1, "★ 冷却中点第二格不会排队")
+	ok(main.hud.notice_text().contains("冷却"),
+		"★ 点灰格给一句「冷却中」提示（实际：%s）" % main.hud.notice_text())
 
+	# 取消大格子：全额退款 + 解除冷却。
 	food_before = float(world.resources["food"])
-	_click_control(q, UiLayoutRes.queue_cell_rect(1).get_center())
-	eq(world.zone_recruit_queue_size(zone), 1, "★ 点小格子 = 取消那一格")
-	near(float(world.resources["food"]), food_before + 100.0, 1e-4, "★ 取消会退款（区划招募退 100，回到 1000）")
-	main.hud.refresh()
-	ok(not q.cell_filled(1), "那一格空了")
-
-	while world.zone_is_training(zone):
-		world.cancel_zone_recruit(int(zone["id"]), 0, "p1")
+	_click_control(q, UiLayoutRes.queue_cell_rect(0).get_center())
+	eq(world.zone_recruit_queue_size(zone), 0, "★ 点大格子 = 取消那一单")
+	near(float(world.resources["food"]),
+		food_before + float(cost0.get("food", 0.0)), 1e-4, "★ 取消全额退款")
+	near(world.general_recruit_cooldown_left("p1"), 0.0, 1e-6,
+		"★ 取消招募 → 立刻解除冷却")
 	main.hud.refresh()
 	ok(not q.showing(), "收尾：队列清空 → 五格收起来")
 	# 还原大本营等级（后面的建筑升级用例按 1 级写）。

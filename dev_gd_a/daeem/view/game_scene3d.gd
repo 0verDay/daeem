@@ -946,17 +946,28 @@ func _consume_events(events: Array) -> void:
 # 胜利 / 失败结算画面（Ctrl+W / Ctrl+L 与 level_end 共用这一段）
 # ------------------------------------------------------------------
 
-## 开发者快捷键：Ctrl+W = 立即胜利，Ctrl+L = 立即失败。
+## 开发者快捷键：Ctrl+1 = 粮食 / 黄金 +1000，Ctrl+W = 立即胜利，Ctrl+L = 立即失败。
 ##
 ## ★ 只在**游戏内**生效：本函数由 game_scene3d 的 `_unhandled_input` 调，
 ##   而主菜单 / 开场页根本没有这个场景（main.gd 只把事件转进 game）。
-## ★ 必须放行带 Ctrl 的组合：命令卡的 W 格自己也会放行（见那里的注释）。
-func _handle_outcome_hotkey(event: InputEvent) -> bool:
+## ★ 必须放行带 Ctrl 的组合：命令卡的 W 格 / 数字键 1 自己也会放行
+##   （见 command_card.handle_key 的注释）。
+func _handle_dev_hotkey(event: InputEvent) -> bool:
 	if not (event is InputEventKey):
 		return false
 	var k: InputEventKey = event as InputEventKey
 	if not k.pressed or k.echo or not k.ctrl_pressed:
 		return false
+	if outcome_frozen:
+		return false                       # 结算之后开发者快捷键不再改任何状态
+	# ★ Ctrl+1（主键盘 / 小键盘都认）：给本机席位 +1000 粮食 +1000 黄金。
+	if k.keycode == KEY_1 or k.keycode == KEY_KP_1:
+		if world == null:
+			return false
+		world.debug_give_resources(1000.0, 1000.0)
+		if hud != null:
+			hud.show_notice("开发者：粮食 / 黄金 +1000")
+		return true
 	if k.keycode == KEY_W:
 		_force_outcome("win")
 		return true
@@ -1181,10 +1192,10 @@ func _camera_rig_for_hud() -> Object:
 ##   ★ 两条路都先问 HUD、再落到 input_controller，顺序不能反 —— 反了的表现是
 ##     「点命令卡上的格子变成了下命令」。
 func _unhandled_input(event: InputEvent) -> void:
-	# ★★ 开发者快捷键 Ctrl+W / Ctrl+L 要在**所有别的按键处理之前**：
-	#   命令卡的 W 格子必须放行带修饰键的组合（见 command_card.handle_key 的注释），
-	#   但这里仍然先判一遍，免得将来某条输入路径把这两颗组合键吃掉。
-	if _handle_outcome_hotkey(event):
+	# ★★ 开发者快捷键 Ctrl+1 / Ctrl+W / Ctrl+L 要在**所有别的按键处理之前**：
+	#   命令卡的 W 格子 / 数字键必须放行带修饰键的组合（见 command_card.handle_key 的注释），
+	#   但这里仍然先判一遍，免得将来某条输入路径把这几颗组合键吃掉。
+	if _handle_dev_hotkey(event):
 		get_viewport().set_input_as_handled()
 		return
 	# 结算画面开着：键盘 / 鼠标一概不再进游戏（GUI 的按钮点击在更早的 GUI 阶段已经处理）。

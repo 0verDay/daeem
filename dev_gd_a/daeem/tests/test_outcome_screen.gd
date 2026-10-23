@@ -3,7 +3,8 @@
 ## 盯四件事：
 ##   1. 两种结果各自的**终态**（文案、宝石 / 裂纹、横幅拉开、提示可点）；
 ##   2. 「点击任意处 → 提示渐隐、三颗按钮渐显」这条交互（不是自动出现）；
-##   3. 游戏内的 Ctrl+W / Ctrl+L：**改写目标状态** + 弹出结算 + 停战；
+##   3. 游戏内的 Ctrl+1 / Ctrl+W / Ctrl+L：Ctrl+1 加资源，Ctrl+W / Ctrl+L
+##      **改写目标状态** + 弹出结算 + 停战；
 ##   4. `level_end` 事件（单机 / 合作客机都走它）也能弹出结算。
 ##
 ## ★ 动效在本文件里统一关掉（`ThemeRes.set_animations_enabled(false)`）：
@@ -129,6 +130,21 @@ func _test_game_hotkeys(cfg) -> void:
 	root.add_child(game)
 	ok(game.start(String(MapLibraryRes.default_map_path())), "能开一局（快捷键测试的地基）")
 	await process_frame
+
+	# ---- Ctrl+1 = 粮食 / 黄金 +1000（★ 走真实键盘事件）----
+	# 先停掉产出：否则等待两帧的收入会让「正好 +1000」这条断言漂。
+	for z in game.world.zones.zones:
+		z["production"] = {"food": 0.0, "gold": 0.0, "population": 0.0}
+	var food0: float = float(game.world.resources["food"])
+	var gold0: float = float(game.world.resources["gold"])
+	await _press_ctrl_key(KEY_1)
+	near(float(game.world.resources["food"]), food0 + 1000.0, 1e-4,
+		"★ Ctrl+1 → 粮食 +1000")
+	near(float(game.world.resources["gold"]), gold0 + 1000.0, 1e-4,
+		"★ Ctrl+1 → 黄金 +1000")
+	ok(game.hud.notice_text().contains("1000"),
+		"★ 加资源时给一句开发者提示（实际：%s）" % game.hud.notice_text())
+	ok(not game.outcome_open(), "Ctrl+1 不会触发结算（只是加资源）")
 
 	# ---- Ctrl+W = 立即胜利（★ 走真实键盘事件，不是直接调 handler）----
 	await _press_ctrl_key(KEY_W)

@@ -85,7 +85,7 @@ func _cases() -> void:
 	ok(not cfg.unit_is_ranged(UnitRes.UNIT_TYPE_RIDER), "骑手是近战骑兵")
 	eq(cfg.unit_class_line(UnitRes.UNIT_TYPE_LONGBOWMAN), "远程步兵", "★ 长弓兵的标签是「远程步兵」")
 	eq(cfg.unit_class_line(UnitRes.UNIT_TYPE_RIDER), "骑兵", "骑手的标签是「骑兵」")
-	eq(cfg.general_types().size(), 3, "配置里给了三个将领类型")
+	eq(cfg.general_types().size(), 9, "配置里给了九位将领的类型（前 3 位开局 + 后 6 位招募池）")
 	eq(cfg.general_type_at(0), UnitRes.UNIT_TYPE_SPEARMAN, "将领 1 = 长枪兵")
 	eq(cfg.general_type_at(1), UnitRes.UNIT_TYPE_LONGBOWMAN, "将领 2 = 长弓兵")
 	eq(cfg.general_type_at(2), UnitRes.UNIT_TYPE_RIDER, "将领 3 = 骑手")

@@ -211,6 +211,12 @@ var _enemy_serial: int = 0
 ## 招募序号：只用来生成**永不重复**的 id（`general-1-r3`）。
 ## 为什么不用「现有附属兵数 + 1」：那个数会因为阵亡 / 离场而回退，回退就会撞名。
 var _recruit_serial: int = 0
+## ★★ 每位**玩家席位**的将领招募池 / 冷却（本轮新增）：
+##   "faction" → { slots / available / cooldown / cooldown_total / cooldown_kind /
+##                 cooldown_zone / draw_serial }
+## ★ 它是**玩法状态**（谁现在能招、手牌是哪三位、还要等几秒），不是界面状态：
+##   `can_recruit_zone` 在这里校验，界面只读它画卡。详见下面「将领招募池」那一段。
+var general_recruit_pools: Dictionary = {}
 var enemy_spawn_timer: float = 0.0
 var debug_auto_spawn: bool = false
 
@@ -313,6 +319,8 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	_events = []
 	_objective_reported = ""
 	_enemy_serial = 0
+	# ★★ 将领招募池 / 冷却：重开一局必须从空开始（下面 `_reset_player_pools()` 之后重建）。
+	general_recruit_pools = {}
 	enemy_spawn_timer = 0.0
 	debug_auto_spawn = false
 	neutralized_factions = {}
@@ -432,6 +440,9 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	fog.reset_cache()
 
 	_reset_player_pools()
+	# ★★ 将领招募池（本轮新增）：每个「本机在操作的玩家席位」各抽一手（见那一段）。
+	#    ⚠️ 必须在 `player_factions` 算好之后、任何区划招募之前。
+	_reset_general_recruit_pools()
 	reddot_states = []
 	faction_bases = {}
 	faction_spawns = {}
@@ -2612,6 +2623,264 @@ func _refund(leader, food: float, gold: float, pop: float, zid: int) -> void:
 
 
 # ------------------------------------------------------------------
+# ★★ 将领招募池 / 招募冷却（本轮新增）
+#
+# 需求原话：
+#   1.「玩家在招募一次将领后，将在一段时间内无法招募将领，该冷却将会作为将领属性可被配置
+#      （字段名为『招募冷却』）」；
+#   2.「为玩家的将领招募系统添加一个池，这个池中将有若干将领会被随机抽取，当玩家选择
+#      招募了一个将领后，会抽取三个将领放至玩家下一次招募的三个槽位中」。
+#
+# ★ 与用户确认过的口径（别自己改）：
+#   · 冷却**全局**：招到任意一名后，该玩家**所有区划**都锁 N 秒，N = 被招那名的
+#     `recruit_cooldown_sec`（界面「招募冷却」）；
+#   · **入队即开始**计时；取消那一单 → 立刻解除，并把那名将领**放回池子**；
+#   · 池**每个玩家一套**（不是每个区划一套）：三个槽位 = 当前可招的三名；
+#   · 每招走一名 → 三名**全部重抽**，且招走的那名在本次「盒」里不再出现；
+#     剩下的池子不足一手（< hand_size）时整池重置（盒抽）。
+#
+# ★ 为什么状态挂在 world 上而不是 view：它是玩法状态（谁能招 / 手牌是什么），
+#   命令在权威侧校验，界面只读它画卡；测试也直接问这几个 accessor。
+# ------------------------------------------------------------------
+
+## 池 / 手牌是否启用（config.recruit.zone.pool.enabled；缺省 false = 旧行为）
+func general_recruit_pool_enabled() -> bool:
+	var v: Variant = cfg.get_path_value("recruit.zone.pool.enabled")
+	if typeof(v) == TYPE_BOOL:
+		return bool(v)
+	return false
+
+
+## 一手抽几名（config.recruit.zone.pool.hand_size；缺省 3，夹在 1..9）
+func general_recruit_hand_size() -> int:
+	var v: Variant = cfg.get_path_value("recruit.zone.pool.hand_size")
+	if typeof(v) == TYPE_FLOAT or typeof(v) == TYPE_INT:
+		return clampi(int(v), 1, 9)
+	return 3
+
+
+## 某位将领的「招募冷却」（秒）—— 数据键 `recruit.zone.list[].recruit_cooldown_sec`。
+## ★ 没写 = 0 = 招完不冷却（老配置 / 普通占位将领仍是这个行为）。
+func general_recruit_cooldown_of(kind: String) -> float:
+	return maxf(0.0, float(recruit_entry(kind).get("recruit_cooldown_sec", 0.0)))
+
+
+## 池里的全部将领 kind（= `recruit.zone.list` 的 kind，按配置顺序、去重）。
+func _general_pool_kinds() -> Array:
+	var out: Array = []
+	for item in zone_recruit_list():
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		var k := String((item as Dictionary).get("kind", ""))
+		if k != "" and not out.has(k):
+			out.append(k)
+	return out
+
+
+## 视图 / 测试读「这一手是哪三位」（顺序就是命令卡 Q/W/E 的顺序）。
+## ★ 池没启用 → 退回 `recruit.zone.list` 的前 hand_size 条（旧行为）。
+## ★ 非本机玩家席位（AI）→ 同样给静态前几条（AI 不参与抽池）。
+func general_recruit_slots(faction: String = "") -> Array:
+	var f := _pool_faction(faction)
+	if not player_seats.has(f) or not general_recruit_pool_enabled():
+		var all := _general_pool_kinds()
+		return all.slice(0, mini(general_recruit_hand_size(), all.size()))
+	return (_general_pool_state(f).get("slots", []) as Array).duplicate()
+
+
+## 这个 kind 现在是不是「玩家手牌里的一张」（池启用时才限制；AI / 旧行为一律放行）。
+func general_recruit_pool_has_slot(faction: String, kind: String) -> bool:
+	var f := _pool_faction(faction)
+	if not player_seats.has(f) or not general_recruit_pool_enabled():
+		return true
+	return general_recruit_slots(f).has(kind)
+
+
+## 当前全局招募冷却还剩几秒（0 = 可以招）。
+func general_recruit_cooldown_left(faction: String = "") -> float:
+	var f := _pool_faction(faction)
+	if not player_seats.has(f):
+		return 0.0
+	return maxf(0.0, float(_general_pool_state(f).get("cooldown", 0.0)))
+
+
+## 本次冷却的总时长（界面要画「已过 / 总」时用；没在冷却 = 0）。
+func general_recruit_cooldown_total(faction: String = "") -> float:
+	var f := _pool_faction(faction)
+	if not player_seats.has(f):
+		return 0.0
+	return maxf(0.0, float(_general_pool_state(f).get("cooldown_total", 0.0)))
+
+
+## 本机玩家席位某人的池状态（没有就现建一手）。
+func _general_pool_state(faction: String) -> Dictionary:
+	var f := _pool_faction(faction)
+	if not general_recruit_pools.has(f):
+		general_recruit_pools[f] = _make_general_pool_state(f)
+	return general_recruit_pools[f]
+
+
+func _make_general_pool_state(faction: String) -> Dictionary:
+	var st: Dictionary = {
+		"slots": [],                 # 这一手的三位（kind）
+		"available": [],             # 本次「盒」里还没被招走的（含手上那几张）
+		"cooldown": 0.0,             # 全局招募冷却剩余（秒）
+		"cooldown_total": 0.0,       # 本次冷却总时长（秒）
+		"cooldown_kind": "",         # 是哪位将领触发的（取消时据此判断要不要解冻）
+		"cooldown_zone": -1,         # 在哪个区划触发的
+		"draw_serial": 0,            # 抽签序号（确定性伪随机用；同局可复现）
+	}
+	var all := _general_pool_kinds()
+	if general_recruit_pool_enabled():
+		st["available"] = all.duplicate()
+		_draw_general_hand(faction, st)
+	else:
+		st["slots"] = all.slice(0, mini(general_recruit_hand_size(), all.size()))
+	return st
+
+
+## 从 `available` 里随机抽一手（**同一手不重复**），并写回 `slots`。
+##
+## ★ 随机用 `unit_rand`（`(key, k) + rand_salt` 的纯函数），所以：
+##   · 同一局里同一抽签序号永远给同一手（重算不会漂）；
+##   · 换一局 / 改 `set_rand_salt()` 就换一手（测试可复现）。
+## ★ 「盒抽」：`available` 不足一手时整池重置 —— 这是用户选的口径
+##   （招走即出池；池子抽空后重置）。
+func _draw_general_hand(faction: String, st: Dictionary) -> void:
+	if not general_recruit_pool_enabled():
+		return
+	var all := _general_pool_kinds()
+	if all.is_empty():
+		st["slots"] = []
+		return
+	var hand := mini(general_recruit_hand_size(), all.size())
+	var avail: Array = st.get("available", [])
+	if avail.size() < hand:
+		avail = all.duplicate()
+		st["available"] = avail
+	var pool := avail.duplicate()
+	var picked: Array = []
+	for i in hand:
+		if pool.is_empty():
+			# 理论上到不了（上面刚补过）；防御一下，绝不返回半手牌。
+			pool = all.duplicate()
+		var r := unit_rand("general_pool:%s:%d" % [faction, int(st.get("draw_serial", 0))], i)
+		var idx := clampi(int(floor(r * float(pool.size()))), 0, pool.size() - 1)
+		picked.append(String(pool[idx]))
+		pool.remove_at(idx)
+	st["slots"] = picked
+	st["draw_serial"] = int(st.get("draw_serial", 0)) + 1
+
+
+## 招走一名：把它从本次「盒」里拿掉（之后重抽时不会出现）。
+func _general_pool_consume(faction: String, kind: String) -> void:
+	if not general_recruit_pool_enabled():
+		return
+	var st := _general_pool_state(faction)
+	(st.get("available", []) as Array).erase(kind)
+
+
+## 取消招募：把它**放回**本次「盒」（取消不该让玩家永久损失一位将领）。
+func _general_pool_return(faction: String, kind: String) -> void:
+	if not general_recruit_pool_enabled():
+		return
+	var st := _general_pool_state(faction)
+	var avail: Array = st.get("available", [])
+	if not avail.has(kind):
+		avail.append(kind)
+	st["available"] = avail
+
+
+## 一次成功入队后的收口：扣池 + 起冷却 + 重抽一手。
+func _general_pool_on_recruited(faction: String, kind: String, zone_id: int) -> void:
+	if not player_seats.has(faction):
+		return
+	if general_recruit_pool_enabled():
+		_general_pool_consume(faction, kind)
+	_begin_general_recruit_cooldown(faction, kind, zone_id)
+	if general_recruit_pool_enabled():
+		_draw_general_hand(faction, _general_pool_state(faction))
+
+
+## 取消一单后的收口：解除冷却 + 放回池子。
+## ★ 只有「这一单就是当前冷却的触发者」才解冻 —— 否则取消一单旧队列
+##   会把后来那一单刚起的冷却也清掉。
+func _general_pool_on_cancelled(faction: String, kind: String, zone_id: int) -> void:
+	if not player_seats.has(faction):
+		return
+	var st := _general_pool_state(faction)
+	if String(st.get("cooldown_kind", "")) == kind \
+			and int(st.get("cooldown_zone", -1)) == zone_id:
+		st["cooldown"] = 0.0
+		st["cooldown_total"] = 0.0
+		st["cooldown_kind"] = ""
+		st["cooldown_zone"] = -1
+	_general_pool_return(faction, kind)
+
+
+func _begin_general_recruit_cooldown(faction: String, kind: String, zone_id: int) -> void:
+	var st := _general_pool_state(faction)
+	var cd := general_recruit_cooldown_of(kind)
+	st["cooldown"] = cd
+	st["cooldown_total"] = cd
+	st["cooldown_kind"] = kind
+	st["cooldown_zone"] = zone_id
+
+
+## 每帧推进全局招募冷却（world.tick 里跟在区划招募后面）。
+func _tick_general_recruit_cooldowns(dt: float) -> void:
+	for f in general_recruit_pools.keys():
+		var st: Dictionary = general_recruit_pools[f]
+		var cd := float(st.get("cooldown", 0.0))
+		if cd > 0.0:
+			st["cooldown"] = maxf(0.0, cd - dt)
+
+
+## 重开一局：每个「本机在操作的玩家席位」各抽一手。
+func _reset_general_recruit_pools() -> void:
+	general_recruit_pools = {}
+	var seats: Array = player_factions.duplicate()
+	if seats.is_empty() and my_faction != "":
+		seats.append(my_faction)
+	for f in seats:
+		_general_pool_state(String(f))
+
+
+## 空串 = 本机席位（与其它 `*_pool` accessor 同一条约定）
+func _pool_faction(faction: String) -> String:
+	return faction if faction != "" else my_faction
+
+
+## 快照用：只发**显示需要**的两项（槽位 + 冷却剩余 / 总秒数）。
+## ★ 不发 `available` / 抽签序号：客机不抽牌，抽牌只发生在权威侧。
+func general_pool_snapshot(faction: String) -> Dictionary:
+	var st := _general_pool_state(faction)
+	return {
+		"s": (st.get("slots", []) as Array).duplicate(),
+		"cd": float(st.get("cooldown", 0.0)),
+		"ct": float(st.get("cooldown_total", 0.0)),
+	}
+
+
+## 客机应用快照：槽位 + 冷却（缺字段保持现状，与快照其它字段同一条约定）。
+func apply_general_pool_snapshot(faction: String, data: Variant) -> void:
+	if typeof(data) != TYPE_DICTIONARY:
+		return
+	var d: Dictionary = data
+	var st := _general_pool_state(faction)
+	var sv: Variant = d.get("s", null)
+	if typeof(sv) == TYPE_ARRAY:
+		var slots: Array = []
+		for k in (sv as Array):
+			slots.append(String(k))
+		st["slots"] = slots
+	if d.has("cd"):
+		st["cooldown"] = maxf(0.0, float(d["cd"]))
+	if d.has("ct"):
+		st["cooldown_total"] = maxf(0.0, float(d["ct"]))
+
+
+# ------------------------------------------------------------------
 # 区划招募（点区划中心 → 右下「招募」页签 → 把将领排进**区划**的队列）
 #
 # 需求原话：「当玩家选中区划中心时，右下角显示招募页签（显示三个占位将领，玩家可以
@@ -2697,6 +2966,9 @@ func zone_recruit_eta(zone, slot: int) -> float:
 ##   "kind"        不在区划招募表里
 ##   "zone_not_found"  没有这个区划
 ##   "zone_owner"  ★ 这个区划**不属于你**（只能在自己区划里招）
+##   "general_limit" ★ 该方将领数到顶（大本营等级）
+##   "cooldown"    ★ 将领招募冷却中（全局；见「将领招募池」那一段）
+##   "pool"        ★ 这一位不在当前三个招募槽位里（池 / 手牌启用时）
 ##   "queue_full"  队列满了
 ##
 ## ⚠️ 「没有这个区划」用 `zone_not_found` 而**不是** `zone`：后者是**将领招募**那条路
@@ -2714,6 +2986,13 @@ func can_recruit_zone(kind: String, zone_id: int, faction: String) -> String:
 	if ConfigRes.general_index_of(kind) >= 0 \
 			and general_count_of(faction) >= base_max_generals(faction):
 		return "general_limit"
+	# ★★ 全局招募冷却（本轮新增）：招到一名后整方的区划招募一起锁 N 秒。
+	if general_recruit_cooldown_left(faction) > 0.0:
+		return "cooldown"
+	# ★★ 手牌校验（池启用时）：命令只能招**当前三个槽位**里的那三位。
+	#    界面本来就只画这三张；这一句防的是手搓命令 / 旧界面点到了上一手。
+	if not general_recruit_pool_has_slot(faction, kind):
+		return "pool"
 	if zone_recruit_queue_size(z) >= zone_recruit_queue_max():
 		return "queue_full"
 	return ""
@@ -2751,9 +3030,11 @@ func start_zone_recruit(kind: String, zone_id: int, faction: String) -> bool:
 		reason = can_afford_zone_recruit(kind, zone_id)
 	if reason != "":
 		# ★ 走**同一个事件类型**（recruit_rejected）：界面那条「拒因码 → 中文」的通道
-		#   只写一处，这里多带一个 max（队列上限的文案要用它）。
+		#   只写一处，这里多带一个 max（队列上限的文案要用它）；
+		#   冷却拒因再带一个 cooldown（还剩几秒的文案要用它）。
 		push_event({"type": "recruit_rejected", "reason": reason, "kind": kind,
-			"zone_id": zone_id, "max": zone_recruit_queue_max(), "faction": faction})
+			"zone_id": zone_id, "max": zone_recruit_queue_max(), "faction": faction,
+			"cooldown": general_recruit_cooldown_left(faction)})
 		return false
 
 	var z = _zone_by_id(zone_id)
@@ -2777,6 +3058,9 @@ func start_zone_recruit(kind: String, zone_id: int, faction: String) -> bool:
 		_start_zone_training(z, kind)
 	else:
 		(z["train_queue"] as Array).append(kind)
+	# ★★ 池 / 冷却收口（本轮新增）：招走的那位从本次「盒」里拿掉、起全局冷却、
+	#    重抽下一手。⚠️ 必须在「队列真的排上了」之后 —— 被拒的单不能消耗池子。
+	_general_pool_on_recruited(faction, kind, zone_id)
 	push_event({"type": "zone_recruit_queued", "zone_id": zone_id, "kind": kind})
 	return true
 
@@ -2916,6 +3200,11 @@ func cancel_zone_recruit(zone_id: int, slot: int, faction: String) -> bool:
 	var gold := float(cost.get("gold", 0.0))
 	var pop := recruit_population_cost(kind)
 	_refund_zone(z, food, gold, pop)
+	# ★★ 池 / 冷却收口（本轮新增）：取消 = 解冻 + 把这位放回池子（不永久损失）。
+	var order_faction := String(z.get("train_faction", ""))
+	if order_faction == "":
+		order_faction = faction
+	_general_pool_on_cancelled(order_faction, kind, zone_id)
 	push_event({"type": "recruit_cancelled", "zone_id": zone_id, "reason": "cancelled",
 		"slot": slot, "kind": kind,
 		"refund_food": food, "refund_gold": gold, "refund_pop": pop})
@@ -3942,6 +4231,8 @@ func tick(dt: float) -> Array:
 	# ★ 区划招募（区划 = 兵营，招将领）走同一段预算：与上面那条一样，
 	#   必须在「清理离场单位」之前跑完（它要在本帧内把读完的那一单落成单位）。
 	_tick_zone_recruitment(dt)
+	# ★★ 将领招募冷却（本轮新增）：纯倒计时，不依赖读条 —— 放在招募后面一起算。
+	_tick_general_recruit_cooldowns(dt)
 	# ★★ 建筑升级 + 区划特化的读条（读完在**本帧内**落效果：等级 +1 / 特化生效）。
 	#    与招募同一套「一帧可能读满好几单」的预算算法，见 logic/upgrade.gd 的 tick()。
 	UpgradeRes.tick(self, dt)
@@ -4163,6 +4454,17 @@ func _collect_destroyed_buildings() -> void:
 # ------------------------------------------------------------------
 # 胜负（对战用；单机永远不判 —— 大本营本来就打不掉）
 # ------------------------------------------------------------------
+
+## ★★ 开发者快捷键用：给**本机席位**加粮食 / 黄金（不走经济 / 命令流）。
+##
+## ★ 只改 `resources`（= 本机席位那一份；合作模式下就是**自己**那一份，
+##   见 `_reset_player_pools` 的别名说明）—— 不碰队友的池子。
+## ⚠️ 客机上这一份会被下一帧快照覆盖：开发者快捷键按「单机 / 房主」口径设计，
+##    联机客机请让房主按（与 Ctrl+W / Ctrl+L 同一条边界）。
+func debug_give_resources(food: float, gold: float) -> void:
+	resources["food"] = float(resources.get("food", 0.0)) + food
+	resources["gold"] = float(resources.get("gold", 0.0)) + gold
+
 
 ## ★★ 开发者快捷键 / 测试用：把本局目标**直接判成**胜利或失败。
 ##

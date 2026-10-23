@@ -71,7 +71,9 @@ func _test_spawn(cfg) -> void:
 	var got_types: Array = []
 	for g2 in generals:
 		got_types.append(String(g2.unit_type))
-	eq(got_types, cfg.general_types(), "★ 三个将领分别被赋上配置里的三个类型")
+	# ★ 名册本轮扩到 9 位（后 6 位只在招募池里）；开局只造前 3 位。
+	eq(got_types, cfg.general_types().slice(0, generals.size()),
+		"★ 三个开局将领分别被赋上名册里的前三个类型")
 
 func _test_spawn_near_leader(cfg) -> void:
 	var w = require_world_with_escorts(cfg, PER)
@@ -318,7 +320,8 @@ func _test_stats_are_per_type(cfg) -> void:
 	eq(e.hp_max, cfg.unit_hp_of(UnitRes.UNIT_TYPE_SPEARMAN),
 		"★ 调试刷出来的单位按**长枪兵**查表（不再有自己的那一档）")
 
-	var types: Array = cfg.general_types()
+	# ★ 这里要的是「兵种表里的三种」，不是将领名册（名册本轮扩到了 9 位）。
+	var types: Array = cfg.general_types().slice(0, 3)
 	var seen_hp: Dictionary = {}
 	for tt in types:
 		seen_hp[cfg.unit_hp_of(String(tt))] = true
@@ -329,6 +332,14 @@ func _kind(world, kind: String) -> Array:
 	for u in world.units:
 		if u.kind == kind:
 			out.append(u)
+	return out
+
+
+## 单位页那张表（recruit.list）里的兵种 kind —— 与将领名册是两张表，别混用。
+func _unit_kinds(world) -> Array:
+	var out: Array = []
+	for item in world.recruit_list():
+		out.append(String((item as Dictionary).get("kind", "")))
 	return out
 
 func _test_recruit(cfg) -> void:
@@ -343,11 +354,13 @@ func _test_recruit(cfg) -> void:
 	var per: int = w.retinue_of(g2.id).size()
 	eq(per, PER, "（前提）将领 2 名下开局有 %d 个兵（关卡摆的）" % PER)
 
-	for tt in cfg.general_types():
+	# ★ 单位页能招的是 recruit.list 的三个兵种（不是将领名册 —— 名册本轮扩到 9 位）。
+	var unit_kinds: Array = _unit_kinds(w)
+	for tt in unit_kinds:
 		ok(w.is_recruitable(String(tt)), "config.recruit.list 里 %s 可招募" % tt)
 	ok(not w.is_recruitable("nope"), "表里没有的兵种不能招募")
 
-	var kind := String(cfg.general_types()[0])          # 长枪兵
+	var kind := String(unit_kinds[0])          # 长枪兵
 
 	w.resources["food"] = 1000.0
 	w.resources["gold"] = 1000.0
@@ -402,15 +415,15 @@ func _test_recruit(cfg) -> void:
 	var b0 = w.building_at(fresh.tx, fresh.ty)
 	ok(b0 == null or not b0.blocks(fresh.faction), "新兵没卡在不能站的建筑里")
 
-	for i in range(1, cfg.general_types().size()):
-		var other := String(cfg.general_types()[i])
+	for i in range(1, unit_kinds.size()):
+		var other := String(unit_kinds[i])
 		ok(CommandRes.apply(w, cfg, {
 			"kind": "recruit", "unit_kind": other, "leader_id": g2.id, "faction": "p1"}),
 			"将领 2 名下也能排 %s" % other)
 	for _i in 1210:
 		w.tick(DT)
-	eq(w.retinue_of(g2.id).size(), per + cfg.general_types().size(),
-		"★ 三个兵种各招一个之后，名下多了 %d 个" % cfg.general_types().size())
+	eq(w.retinue_of(g2.id).size(), per + unit_kinds.size(),
+		"★ 三个兵种各招一个之后，名下多了 %d 个" % unit_kinds.size())
 
 	var now_n: int = w.retinue_of(g2.id).size()
 	for i in 2:

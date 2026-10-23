@@ -108,10 +108,11 @@ func consume_events(events: Array) -> void:
 			"recruit_rejected":
 				# ★ max 来自事件（区划招募的队列上限可能与「将领招募」那条不同）；
 				#   没带（0）时由 hud 用它自己那张表的上限。
+				# ★ cooldown 来自事件（本轮新增：全局招募冷却还要等几秒）。
 				if _is_my_event(evt):
 					hud.show_notice(hud.recruit_reject_text(
 						String(evt.get("reason", "")), String(evt.get("kind", "")),
-						int(evt.get("max", 0))))
+						int(evt.get("max", 0)), float(evt.get("cooldown", 0.0))))
 			"order_rejected":
 				if _is_my_event(evt):
 					hud.show_notice(hud.order_reject_text(String(evt.get("reason", ""))))

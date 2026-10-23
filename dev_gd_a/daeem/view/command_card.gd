@@ -5,7 +5,7 @@
 ##     操作页 → 移动(Q) / 攻击(W) / 行军(E) / 停止(A)  ← 对**当前选中的部队**下达的指令
 ##     单位页 → 占位单位(Q) = 招募亲兵                ← 来自 config.json 的 recruit.list
 ##     建筑页 → 城墙(Q) / 箭塔(W)                     ← 来自 config.json 的 building 段（可建的那些）
-##     招募页 → 将领 1/2/3(Q/W/E)                     ← 来自 config.json 的 recruit.zone.list
+##     招募页 → 池子抽出的一手（Q/W/E）              ← world.general_recruit_slots()
 ##     科技页 → **命令卡这里是空的**：九格由 view/tech_grid.gd 画在最上层
 ##              （同一个 3×3 几何 + 科技自己的三态样式，见那个文件的说明）
 ##   没内容的格子只显示键位字母、置灰、点了不做事（页签一颗都没有时，九格全空）。

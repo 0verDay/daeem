@@ -155,6 +155,12 @@ static func to_snapshot(world) -> Dictionary:
 	for f in world.player_seats:
 		tech_out[String(f)] = world.active_tech_ids(String(f)).duplicate()
 
+	# ★★ 将领招募池 / 冷却（本轮新增）：每个玩家席位发「当前三个槽位 + 冷却剩余 / 总秒数」。
+	#    客机只读它画招募页（不抽牌）；抽牌 / 起冷却只发生在权威侧。
+	var gp_out: Dictionary = {}
+	for f in world.player_seats:
+		gp_out[String(f)] = world.general_pool_snapshot(String(f))
+
 	return {
 		"units": units_out,
 		"buildings": buildings_out,
@@ -163,6 +169,7 @@ static func to_snapshot(world) -> Dictionary:
 		"pres": pres_out,
 		"obj": ObjectiveRes.to_snapshot(world.objective_state),
 		"tech": tech_out,
+		"gp": gp_out,
 		"res": [round(float(world.resources["food"]) * 10.0) / 10.0, round(float(world.resources["gold"]) * 10.0) / 10.0],
 		"owned": world.owned_tiles,
 		"time": round2(world.time),
@@ -377,6 +384,14 @@ static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void:
 					continue
 				world.tech.active_by_faction[String(f)] = (ids as Array).duplicate()
 			world.tech_effects = world.tech.effects_of(world.my_faction)
+
+	# ★★ 将领招募池 / 冷却（本轮新增）：客机只更新显示状态。
+	#    ⚠️ 缺字段（老快照）→ 保持本地现状（与 res / owned / time 同一条约定）。
+	if snap.has("gp"):
+		var gp_in: Variant = snap["gp"]
+		if typeof(gp_in) == TYPE_DICTIONARY:
+			for f in (gp_in as Dictionary).keys():
+				world.apply_general_pool_snapshot(String(f), (gp_in as Dictionary)[f])
 
 	if snap.has("owned"):
 		world.owned_tiles = int(snap["owned"])
