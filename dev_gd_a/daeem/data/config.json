@@ -352,6 +352,60 @@
       "  · fade_in_sec：入场淡入时长（0 = 直接显示、不淡入）。"
     ],
     "notice_sec": 2.0,
+    "ai_panel": {
+      "_comment": [
+        "★ 合作模式 AI 队友的浮动指令面板（view/ai_order_panel.gd）。",
+        "  位置是 1920×1080 设计空间；面板可拖动 / 折叠，位置只存本地。",
+        "  按钮文案与提示都在这里，view 里不写死中文。"
+      ],
+      "width": 320.0,
+      "height": 236.0,
+      "margin_right": 16.0,
+      "margin_top": 96.0,
+      "right_reserve": 300.0,
+      "collapsed_height": 40.0,
+      "mobile_width": 260.0,
+      "mobile_height": 210.0,
+      "font_size": 15,
+      "title_font_size": 18,
+      "button_gap": 6.0,
+      "target_pick_hint": "点击地图选择目标（右键 / Esc 取消）",
+      "title": "AI 队友",
+      "buttons": {
+        "march": "行军",
+        "develop": "发展",
+        "expand": "扩张",
+        "mass": "屯兵"
+      },
+      "status_labels": {
+        "directive": "指令",
+        "army": "部队",
+        "resources": "资源",
+        "state": "状态"
+      },
+      "states": {
+        "march": "行军中",
+        "mass": "集结中",
+        "develop": "发展",
+        "expand": "扩张",
+        "auto": "自动",
+        "arrived": "已抵达",
+        "holding": "驻守",
+        "patrol": "巡逻中",
+        "defending": "回防",
+        "producing": "补员中",
+        "expanding": "扩张中",
+        "assault": "进攻",
+        "regroup": "回撤整备",
+        "rotating": "守军轮换",
+        "retreating": "职能后撤",
+        "counter": "受击反击",
+        "reviving": "再起中",
+        "recalling": "召回中",
+        "building": "建造 / 升级中",
+        "low_funds": "资源不足"
+      }
+    },
     "drag_select_min_px": 6.0,
     "box_select_pad_px": 5.0,
     "scroll_resistance": 0.55,
@@ -1332,8 +1386,12 @@
       "  而且那个将领必须站在**己方区划**里（区划归属 = 它那一方）。",
       "★ 招募是**队列**（星际争霸那套）：将领自己就是兵营 ——",
       "  一个正在读条（信息栏里的大格子）+ 最多 queue_max-1 个排队（小格子）。",
-      "  train_sec 是**每个单位**的读条时间，读满在将领所在格的**中心**生成。",
-      "  ★ 读条期间将领被钉在原地：不能移动、不能攻击（user 需求原文）。",
+      "  train_sec 是**每个单位**的读条时间，读满在将领**当前所在位置周围**生成。",
+      "★★ 2026.10.24 起招募不再把将领钉在原地：",
+      "  · 下单时要求「将领站在己方区划里 + 已脱战」；",
+      "  · 下单之后将领可随意移动 / 攻击，读条完成在它身边生成单位；",
+      "  · 读条期间进入战斗（有单位 / 建筑目标）或**受到伤害** ⇒ 读条**暂停**，",
+      "    重新脱战 combat_idle_sec 秒后从暂停处继续；队列与已扣费用都保留。",
       "★ 招出来的兵**挂在招它的将领名下**（leader_id = 那个将领）——",
       "  于是「点队伍里任何一个 = 选中整队」这条现成规则把它自然带上。",
       "★ cost / population_cost 是**入队即扣**；将领阵亡时整个队列作废并**退还**已扣的费用。",
@@ -1341,6 +1399,7 @@
       "★ 注意：招募的消耗**不受 economy.enabled 总开关影响**（那个开关现在只管建造免费）。"
     ],
     "queue_max": 5,
+    "combat_idle_sec": 10.0,
     "list": [
       {
         "kind": "spearman",
@@ -2083,17 +2142,22 @@
     "test_button_gap": 48,
 
     "_test_entries_comment": [
-      "★★ 主界面正中那三颗 test_1 / test_2 / test_3：入口直连一关。",
+      "★★ 主界面正中那几颗 test 按钮：入口直连一关。",
       "  label    = 按钮上那行字；",
       "  campaign = data/campaigns/ 下的目录名；",
-      "  level    = 那场战役里 levels[] 的关卡 id。",
+      "  level    = 那场战役里 levels[] 的关卡 id；",
+      "  ai_observer = true  → 走观战路径（AI 接管被观察方，玩家只看）；",
+      "  ai_observer_orders = true → 观战但仍允许用 AI 面板下四条指令（ai_test_2）；",
+      "  ai_observer_reveal = true → 只给玩家显示开全图，AI 仍走正常迷雾（ai_test_2）。",
       "  ★ 加一颗按钮只改这里；「载入哪一关、怎么建世界」在 view/main.gd（界面不碰玩法）。",
       "  ★ 剩下那一关（main_test）不在这里：它在「战役」菜单里（data/campaigns_menu.json）。"
     ],
     "test_entries": [
       {"label": "test_1", "campaign": "demo", "level": "01_beachhead"},
       {"label": "test_2", "campaign": "demo", "level": "02_twin_line", "coop": true},
-      {"label": "test_3", "campaign": "ferry", "level": "ferry"}
+      {"label": "test_3", "campaign": "ferry", "level": "ferry"},
+      {"label": "ai_test", "campaign": "demo", "level": "ai_test", "ai_observer": true},
+      {"label": "ai_test_2", "campaign": "demo", "level": "ai_test_2", "ai_observer": true, "ai_observer_orders": true, "ai_observer_reveal": true}
     ],
 
     "_transition_comment": [
@@ -2229,6 +2293,29 @@
     ],
     "lobby": {
       "title": "合作模式",
+      "ai_teammate": {
+        "_comment": [
+          "★ 合作模式开局前的「真人队友 / AI 队友」二选一。",
+          "  AI 队友占第二席位，不连中继；选真人队友时走原来的建房 / 加入流程。",
+          "  difficulty 取 ai.commander.difficulty 的键名。"
+        ],
+        "default_difficulty": "normal",
+        "difficulties": ["easy", "normal", "hard"],
+        "labels": {
+          "mode_human": "真人队友",
+          "mode_ai": "AI 队友",
+          "difficulty": "难度",
+          "easy": "简单",
+          "normal": "普通",
+          "hard": "困难",
+          "start_ai": "开始（AI 队友）",
+          "ai_seat_hint": "AI 会接管第二席位，和你共享视野。",
+          "ai_seat_role": "盟友",
+          "ai_seat_status": "由 AI 接管",
+          "local_start": "本地开局",
+          "select_map": "选择地图"
+        }
+      },
       "subtitle": "两人各指挥一方，共享视野；先建房或输入房间码加入。",
       "code_label": "房间码",
       "code_hint": "输入 6 位数字房间码",
@@ -2395,7 +2482,8 @@
 
   "ai": {
     "_comment": [
-      "★★ 两种 AI（规则实现在 logic/garrison_ai.gd 与 logic/red_dot_ai.gd）。",
+      "★★ 三种 AI：阵地性（garrison_ai.gd）、红点性（red_dot_ai.gd）、",
+      "   阵营指挥官（ai_commander.gd + ai_build/ai_army/ai_economy/ai_profile）。",
       "AI 阵营**都没有资源库、没有大本营**（本轮口径）：招募 / 再起都不花钱。",
       "",
       "一、阵地性 AI（garrison_ai.gd）—— 附属在一个**区划**下：",
@@ -2425,6 +2513,251 @@
     "factions": [
       { "id": "ai", "ai": "garrison", "base": [18, 18] }
     ],
+    "commander": {
+      "_comment": [
+        "★★ 阵营指挥官 AI（commander）：本轮新增。规则在 logic/ai_commander.gd 等文件。",
+        "  与 garrison / reddot 不同：它有自己的大本营、资源池、收入，会招将 / 招兵 /",
+        "  升级 / 科技 / 特化 / 建箭塔，并有一支会行军 / 驻守 / 扩张 / 回防的军队。",
+        "  ★ 全部数值按秒；难度只改经济 / 节奏 / 上限 / 反应延迟，不改单位数值。",
+        "  ★ 合作模式里它占第二席位（房主开局前选择真人队友或 AI 队友）。",
+        "  ★★ 军队上限不再是一个固定总数：实际 = Σ(每位将领 1 + 有效编制上限) × army_cap_ratio。",
+        "     将领越多、大本营等级越高（编制 +N），上限自然越大；难度只乘一个比例。",
+        "     difficulty.army_cap 只在「一个将领都没有」时作为兜底。",
+        "  ★★ 补将目标 general_target_by_base_level = [1级, 2级, 3级]：3 / 6 / 10，",
+        "     仍受大本营 max_generals（3 / 6 / 10）与招募冷却限制。",
+        "  ★★ 2026.10.24 行为重做：按「队」补员（守军轮换出门）、扩张派队伍到区划中心、",
+        "     小队占中立 / 大队打硬目标、光杆司令不出门；具体数值见 production / expand 段。"
+      ],
+      "default_profile": "normal",
+      "command_hold_sec": 60.0,
+      "intervals": {
+        "army_interval_sec": 0.6,
+        "strategic_interval_sec": 2.0,
+        "build_interval_sec": 2.5,
+        "production_interval_sec": 1.0,
+        "production_attempts": 3,
+        "retry_sec": 3.0
+      },
+      "economy": {
+        "reserve_food": 80.0,
+        "reserve_gold": 80.0,
+        "max_float_food": 600.0,
+        "max_float_gold": 600.0
+      },
+      "patrol": {
+        "_comment": [
+          "★★ 巡逻：正在读条的将领也可以被派出去（不再按 is_training 过滤）。",
+          "  · threat_radius / avoid_enemy_ratio：巡逻点周围可见敌军的风险半径与倍率；",
+          "    敌人 ≥ 我方 × 倍率时不把小队派去这个点（避免小股部队硬碰大部队）。",
+          "  · home_when_alone：只有守军一支队伍时，允许它去基地附近巡逻（基地附近有敌人则先守家）。"
+        ],
+        "enabled": true,
+        "interval_sec": 5.0,
+        "max_teams": 2,
+        "threat_radius": 7.0,
+        "avoid_enemy_ratio": 1.25,
+        "home_when_alone": true
+      },
+      "revive": {
+        "_comment": [
+          "★★ 指挥官的濒死将领处理：巡检 -> 能再起就再起；敌后 / 太远 / 兵太少就召回。",
+          "  · interval_sec：多快检查一次倒地将领；",
+          "  · recall_escort_threshold：敌后或危险时，活着的附属兵 ≤ 这个数就召回；",
+          "  · recall_distance_tiles：离家超过这个距离且一个兵都没有，就召回；",
+          "  · danger_radius：评估附近敌人 / 友军的半径。"
+        ],
+        "interval_sec": 0.75,
+        "recall_escort_threshold": 1,
+        "recall_distance_tiles": 7.0,
+        "danger_radius": 6.0
+      },
+      "cohesion": {
+        "_comment": [
+          "★★ 队伍粘合：将领在走 / 停时，发现非战斗的附属兵掉队，就重发整队命令。",
+          "  · interval_sec：巡检间隔；",
+          "  · max_distance_tiles：超过这个距离才算掉队（正在战斗的单位不拉回）。",
+          "  ⚠️ 只重发整队命令，绝不单独调动某个单位。"
+        ],
+        "enabled": true,
+        "interval_sec": 1.2,
+        "max_distance_tiles": 4.0
+      },
+      "roles": {
+        "_comment": [
+          "★★ 队伍职能（按将领顺序轮换）。",
+          "  · line：默认编成，正面推进；",
+          "  · ranged：远程队，招远程为主 + 少量抗线；停在目标射程外输出，前排倒光就撤；",
+          "  · guerrilla：游击队，少量快速单位，只打没有防备的边界区划，敌人一多就走。"
+        ],
+        "cycle": ["line", "ranged", "guerrilla"],
+        "ranged": {
+          "composition": [
+            {"type": "longbowman", "weight": 0.45},
+            {"type": "horse_archer", "weight": 0.20},
+            {"type": "catapult", "weight": 0.08},
+            {"type": "spearman", "weight": 0.17},
+            {"type": "knight", "weight": 0.07},
+            {"type": "grain_cart", "weight": 0.03}
+          ],
+          "standoff_tiles": 4.5,
+          "frontline_min": 1
+        },
+        "guerrilla": {
+          "composition": [
+            {"type": "rider", "weight": 0.40},
+            {"type": "horse_archer", "weight": 0.30},
+            {"type": "spearman", "weight": 0.20},
+            {"type": "longbowman", "weight": 0.10}
+          ],
+          "max_enemy_strength": 3.0,
+          "avoid_ratio": 0.9
+        }
+      },
+      "reaction": {
+        "_comment": [
+          "★★ 受击整队决策：队伍有新命令时，不进入默认复仇反击，由 AI 立即决定整队反击 / 继续撤。",
+          "  · cooldown_sec：同一队两次受击决策的最小间隔；",
+          "  · counter_ratio：敌人 ≤ 我方 × 倍率时反击；",
+          "  · retreat_counter_ratio：正在撤退时只有敌人 ≤ 我方 × 倍率才回头。"
+        ],
+        "cooldown_sec": 0.7,
+        "danger_radius": 6.0,
+        "counter_ratio": 1.15,
+        "retreat_counter_ratio": 0.75
+      },
+      "march": {
+        "arrive_radius": 3.0,
+        "hold_radius": 7.0,
+        "reissue_sec": 6.0,
+        "arrive_timeout_sec": 90.0
+      },
+      "mass": {
+        "arrive_radius": 3.0,
+        "hold_radius": 6.0
+      },
+      "expand": {
+        "_comment": [
+          "★★ 2026.10.24 重做：扩张不再按「总兵力 × squad_ratio」凑数，",
+          "  而是按**队**（将领 + 附属兵）凑够人数再派到区划中心读条。",
+          "  · min_field_units：低于这个数不许出门（防光杆司令）；",
+          "  · squad_units：打无主 / 无守军区划的小队规模；",
+          "  · enemy_zone_min_units：打敌方区划的最低规模；",
+          "  · assault_units：打敌方大本营的最低规模；",
+          "  · target_food/gold_income + target_population_ratio：经济需求评分，",
+          "    当前收入离目标越远，对应产能的区划加分越多。",
+          "  · threat_radius / avoid_enemy_ratio：目标周围可见敌军的风险半径与倍率；",
+          "    敌人兵力 ≥ 我方 × 这个倍率时不派小队去硬碰（1.35 = 至少多 35%）。"
+        ],
+        "min_field_units": 3,
+        "squad_units": 3,
+        "enemy_zone_min_units": 7,
+        "assault_units": 10,
+        "assault_timeout_sec": 90.0,
+        "expand_timeout_sec": 75.0,
+        "threat_radius": 6.0,
+        "avoid_enemy_ratio": 1.35,
+        "target_food_income": 4.0,
+        "target_gold_income": 4.0,
+        "target_population_ratio": 0.35,
+        "defender_weight": 0.8,
+        "distance_weight": 0.15,
+        "capture_hold_sec": 8.0,
+        "next_target_delay_sec": 4.0,
+        "squad_ratio": 0.65,
+        "min_squad_units": 4
+      },
+      "defense": {
+        "threat_radius": 10.0,
+        "recall_ratio": 0.35,
+        "base_low_hp_ratio": 0.45,
+        "recall_cooldown_sec": 20.0,
+        "hold_sec": 8.0
+      },
+      "production": {
+        "_comment": [
+          "★★ 2026.10.24：按「队」补员，不再让一支部队一路招到全族上限。",
+          "  · home_team_size：守军补到这么多人后轮换出门；",
+          "  · field_team_size：外勤队的目标规模（含将领）；",
+          "  · max_training_leaders：同时读条的将领数上限；",
+          "  · min_garrison_replace_escorts：接替守军至少要有几个兵；",
+          "  · dispatch_training_home：读条中的守军只要够出门规模，就可以被换下来去巡逻 / 出征。"
+        ],
+        "general_target": 2,
+        "general_target_by_base_level": [3, 6, 10],
+        "general_recruit_min_army_ratio": 0.0,
+        "develop_cap_ratio": 0.85,
+        "max_queue_per_leader": 3,
+        "home_team_size": 6,
+        "field_team_size": 4,
+        "max_training_leaders": 2,
+        "min_garrison_replace_escorts": 1,
+        "dispatch_training_home": true,
+        "composition": [
+          { "type": "spearman", "weight": 0.42 },
+          { "type": "longbowman", "weight": 0.24 },
+          { "type": "rider", "weight": 0.16 },
+          { "type": "knight", "weight": 0.08 },
+          { "type": "catapult", "weight": 0.05 },
+          { "type": "grain_cart", "weight": 0.05 }
+        ]
+      },
+      "build": {
+        "tower_max": 30,
+        "tower_hard_max": 30,
+        "tower_front_towers": 3,
+        "tower_threat_towers": 5,
+        "tower_rear_towers": 0,
+        "tower_rich_bonus_max": 3,
+        "production_reserve_recruits": 3,
+        "pause_defense_when_understrength": true,
+        "tower_threat_radius": 9.0,
+        "tower_cover_radius": 4,
+        "wall_enabled": true,
+        "wall_hard_max": 100,
+        "defense_upgrade_enabled": true,
+        "defense_upgrade_tower_bonus": 12.0,
+        "tower_frontier_bonus": 4.0,
+        "base_upgrade_priority": 10.0,
+        "tech_priority": []
+      },
+      "auto": {
+        "develop_until_ratio": 0.35,
+        "expand_until_ratio": 0.8,
+        "attack_after_sec": 45.0
+      },
+      "difficulty": {
+        "easy": {
+          "income_mult": 0.8,
+          "army_cap": 18,
+          "army_cap_ratio": 0.6,
+          "build_interval_mult": 1.3,
+          "production_interval_mult": 1.4,
+          "reaction_delay_sec": 2.0,
+          "start_food": 150.0,
+          "start_gold": 150.0
+        },
+        "normal": {
+          "income_mult": 1.0,
+          "army_cap": 26,
+          "army_cap_ratio": 0.8,
+          "build_interval_mult": 1.0,
+          "production_interval_mult": 1.0,
+          "reaction_delay_sec": 1.2,
+          "start_food": 250.0,
+          "start_gold": 250.0
+        },
+        "hard": {
+          "income_mult": 1.2,
+          "army_cap": 34,
+          "army_cap_ratio": 1.0,
+          "build_interval_mult": 0.8,
+          "production_interval_mult": 0.8,
+          "reaction_delay_sec": 0.7,
+          "start_food": 350.0,
+          "start_gold": 350.0
+        }
+      }
+    },
     "garrison": {
       "patrol_interval_sec": 4.0,
       "patrol_leash_tiles": 1,

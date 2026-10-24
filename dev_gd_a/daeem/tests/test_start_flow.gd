@@ -498,18 +498,19 @@ func _test_entry_flow() -> void:
 
 	await process_frame
 
-	# ★★ 主界面正中现在是**三颗 test_1 / test_2 / test_3**（各自直连一关）；
+	# ★★ 主界面正中现在是**五颗按钮**：test_1 / test_2 / test_3 / ai_test / ai_test_2（各自直连一关）；
 	#    旧的「地图选择条 + test + campaign_test」三件套已经从界面上移除。
 	var buttons: Array = menu.test_buttons()
-	ok(buttons.size() == 3, "★ 主界面正中正好有三颗 test 按钮（实际 %d）" % buttons.size())
-	if buttons.size() != 3:
+	ok(buttons.size() == 5, "★ 主界面正中正好有五颗 test 按钮（实际 %d）" % buttons.size())
+	if buttons.size() != 5:
 		main.queue_free()
 		return
 
+	var expected_labels := ["test_1", "test_2", "test_3", "ai_test", "ai_test_2"]
 	for i in buttons.size():
 		var b: Button = buttons[i]
 		ok(b is Button, "第 %d 颗是 Button" % i)
-		eq(b.text, "test_%d" % (i + 1), "★ 第 %d 颗的文案是 test_%d" % [i + 1, i + 1])
+		eq(b.text, String(expected_labels[i]), "★ 第 %d 颗的文案是 %s" % [i + 1, expected_labels[i]])
 		ok(b.get_parent() != null and b.get_parent().name == "MenuColumn",
 			"它住在 MenuColumn 里（主界面正中那一列）")
 		ok(absf(b.get_global_rect().get_center().x

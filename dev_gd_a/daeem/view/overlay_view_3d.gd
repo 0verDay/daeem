@@ -177,6 +177,7 @@ func _draw_impl() -> void:
 	_draw_aura_ranges()
 	_draw_capture_areas()
 	_draw_zone_capture()
+	_draw_ai_marks()
 	_draw_units_ui()
 	# ★ 移动 / 行军目标点不再在这里画圈 —— 改成 3D 旗子（view/order_flag_view_3d.gd）
 	_draw_build_preview()
@@ -842,6 +843,35 @@ func _clip_poly_near(poly: Array, inv: Transform3D, zn: float) -> PackedVector2A
 		if a_in != b_in:
 			out.append(a.lerp(b, (zn - za) / (zb - za)))
 	return out
+
+
+## 合作 AI 队友的目标环（行军 / 屯兵）。
+##
+## ★ 只画「与玩家同方的 commander」且当前指令有目标点的那些；develop / expand 没有点。
+## ★ 这只是显示：命令本身走 `command_processor`，覆盖层不读输入、不改世界。
+func _draw_ai_marks() -> void:
+	if world == null or palette == null or not world.has_method("ai_teammates_for"):
+		return
+	var mates: Array = world.ai_teammates_for(world.my_faction)
+	if mates.is_empty():
+		return
+	var seg := 40
+	for f in mates:
+		var pt: Variant = world.ai_directive_target(String(f))
+		if pt == null:
+			continue
+		var center: Vector2 = pt
+		var col: Color = SideColorRes.color(cfg, world, String(f), "main")
+		col.a = 0.9
+		var pts := PackedVector2Array()
+		for i in seg + 1:
+			var a := TAU * float(i) / float(seg)
+			pts.append(palette.to_px(center + Vector2(cos(a), sin(a)) * 1.3))
+		draw_polyline(pts, col, 2.0, true)
+		var c2: Vector2 = palette.to_px(center)
+		var d: float = 7.0
+		draw_line(c2 - Vector2(d, 0.0), c2 + Vector2(d, 0.0), col, 1.5, true)
+		draw_line(c2 - Vector2(0.0, d), c2 + Vector2(0.0, d), col, 1.5, true)
 
 
 ## 单位头上的东西（血条）——屏幕空间的条

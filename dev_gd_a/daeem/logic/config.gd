@@ -423,6 +423,14 @@ var zone_speed_curve_k: float = 2.5
 var zone_speed_curve_power: float = 1.7
 var zone_owned_by_building: bool = true
 
+## ★★ 招募读条「脱战」门槛（秒）：将领连续这么久没有单位 / 建筑目标，才算脱战。
+##   · 招募**开始**时要求脱战（`world.can_recruit` 的拒因 `combat`）；
+##   · 读条过程中一旦进入战斗（有目标）或**受击**，进度暂停；重新脱战后再继续，
+##     已投入的资源与队列都不清空。
+##   口径与守军 AI 的 `ai.garrison.combat_idle_sec` 相同（都是「没有攻击目标」），
+##   但**单独一份字段**：守军 AI 的计时器只维护它自己的单位，招募这一份要覆盖全场。
+var recruit_combat_idle_sec: float = 10.0
+
 var food_per_tile_per_sec: float = 1.0
 var gold_per_tile_per_sec: float = 1.0
 var start_food: float = 0.0
@@ -702,6 +710,9 @@ func _cache_scalars() -> void:
 	zone_speed_curve_k = num("zone.speed_curve_k", 2.5)
 	zone_speed_curve_power = num("zone.speed_curve_power", 1.7)
 	zone_owned_by_building = bool_val("zone.zone_owned_by_building", true)
+
+	# ★ 招募脱战门槛（见字段说明）：负数 / 0 视为「无目标即可招募」。
+	recruit_combat_idle_sec = maxf(0.0, num("recruit.combat_idle_sec", 10.0))
 
 	food_per_tile_per_sec = num("resource.food_per_tile_per_sec", 1.0)
 	gold_per_tile_per_sec = num("resource.gold_per_tile_per_sec", 1.0)
@@ -2296,12 +2307,20 @@ var _ai_factions: Array = []
 ## AI 的行为参数（整理成同一层字典，省得每帧下潜 JSON）。
 var _ai_garrison_cfg: Dictionary = {}
 var _ai_reddot_cfg: Dictionary = {}
+## ★★ 阵营指挥官 AI 的原始配置块（`ai.commander`）。
+##    默认值 / 难度合并 / 关卡覆盖都不在这里做 —— 那一步在 `logic/ai_profile.gd`，
+##    因为它是「一次 setup 查一次」的配置，不是每帧读的字段；这里只保留原始块。
+var _ai_commander_cfg: Dictionary = {}
 
 
 func _cache_ai() -> void:
 	_ai_factions = []
 	_ai_garrison_cfg = {}
 	_ai_reddot_cfg = {}
+	_ai_commander_cfg = {}
+	var cmdr_raw: Variant = get_path_value("ai.commander")
+	if typeof(cmdr_raw) == TYPE_DICTIONARY:
+		_ai_commander_cfg = (cmdr_raw as Dictionary).duplicate(true)
 
 	var raw: Variant = get_path_value("ai.factions")
 	if typeof(raw) == TYPE_ARRAY:
@@ -2399,6 +2418,11 @@ func ai_garrison_cfg() -> Dictionary:
 ## 红点性 AI 的行为参数（只读；键见 `_cache_ai()`）
 func ai_reddot_cfg() -> Dictionary:
 	return _ai_reddot_cfg
+
+
+## ★★ 阵营指挥官 AI 的原始配置块（只读；默认值合并见 `logic/ai_profile.gd`）。
+func ai_commander_cfg() -> Dictionary:
+	return _ai_commander_cfg
 
 
 ## 这个阵营是不是「由 AI 接管」的（单机 / 联机都能问：AI 只跑在权威侧）

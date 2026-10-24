@@ -101,11 +101,9 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 		#   只有「这个区划里有几位要巡逻」这一个数会影响切分。
 		var zid_self := int(u.garrison_zone_id)
 		var zone_count := int(patrol_counts.get(zid_self, 1))
-		# ★ 招募读条期间将领被钉在原地（world._pin_training_leaders），
-		#   这一段它的移动 / 战斗本来就被 world.tick 整段跳过 —— 这里也别再下命令，
-		#   否则那条「走回区划中心」的路径会一直挂着，读条一完就冲出去。
-		if u.is_training():
-			continue
+		# ★ 2026.10.24：招募读条**不再**阻止巡逻。将领可以边走边招；
+		#   进入战斗只会让读条暂停（见 world._tick_recruitment），所以这里不再
+		#   因为 `is_training()` 跳过巡逻 —— 那会让读条中的守将一直钉在基地。
 		# ★★ 濒死的驻防将领**这一帧什么都不做**（本轮新增）：需求是「倒在原地」——
 		#    不能巡逻、不能接战、也不该把整队带向某个巡逻点。
 		#    ⚠️ 这一条必须**早于**下面那些「脱战 / 收队 / 招兵」的判定：
@@ -773,6 +771,12 @@ static func _try_recruit(world, u, want: int) -> bool:
 	if u.retinue_size(world) >= want:
 		return false
 	if u.train_queue_size() >= world.recruit_queue_max():
+		return false
+	# ★ 2026.10.24：招募现在要求「脱战」。守军 AI 自己的 combat_idle_timer 与
+	#   招募的 recruit_idle_timer 是两份计时（后者受击会清零），先问世界要准确判据，
+	#   避免每 2 秒调用一次 start_recruit、每次都失败并刷 recruit_rejected 事件。
+	if world.has_method("is_out_of_combat_for_recruit") \
+			and not world.is_out_of_combat_for_recruit(u):
 		return false
 	var kind := _pick_recruit_kind(world, u)
 	if kind == "":

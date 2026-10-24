@@ -23,8 +23,8 @@ func _run() -> void:
 	await _wait(10)
 
 	var buttons: Array = screen.test_buttons()
-	eq(buttons.size(), 3, "（前提）主界面还是三颗 test 按钮")
-	if buttons.size() < 3:
+	eq(buttons.size(), 5, "（前提）主界面是五颗按钮（test_1/2/3 + ai_test + ai_test_2）")
+	if buttons.size() < 5:
 		screen.queue_free()
 		quit(1)
 		return

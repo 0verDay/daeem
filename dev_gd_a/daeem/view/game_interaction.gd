@@ -116,6 +116,10 @@ func consume_events(events: Array) -> void:
 			"order_rejected":
 				if _is_my_event(evt):
 					hud.show_notice(hud.order_reject_text(String(evt.get("reason", ""))))
+			"ai_order_rejected":
+				# ★ 事件带 `faction = 下单方`，所以只给下单的那位看。
+				if _is_my_event(evt):
+					hud.show_notice(hud.ai_order_reject_text(String(evt.get("reason", ""))))
 			"tech_rejected":
 				if _is_my_event(evt):
 					hud.show_notice(hud.tech_reject_text(String(evt.get("reason", ""))))

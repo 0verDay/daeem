@@ -136,8 +136,10 @@ func _build_start_screen() -> void:
 
 	start_screen.intro_dismissed.connect(_on_intro_dismissed)
 	start_screen.level_entry_pressed.connect(_on_level_entry_pressed)
+	start_screen.ai_test_requested.connect(_on_ai_test_requested)
 	start_screen.coop_host_started.connect(_on_coop_host_started)
 	start_screen.coop_guest_started.connect(_on_coop_guest_started)
+	start_screen.coop_solo_started.connect(_on_coop_solo_started)
 	# ★★ 主菜单「选项 → 设置 → 全屏」与游戏内走同一个 toggle_fullscreen（唯一实现）。
 	start_screen.fullscreen_toggled.connect(toggle_fullscreen)
 	start_screen.quit_requested.connect(_on_quit_requested)
@@ -271,6 +273,35 @@ func _on_level_entry_pressed(campaign_id: String, level_id: String) -> void:
 		_on_campaign_level_chosen(campaign, level, String(playable[0]))
 		return
 	_show_level_transition(campaign, level)
+
+
+## ★★ 主界面「ai_test / ai_test_2」按钮：载入演示战役对应关卡，AI 接管被观察方，玩家观战。
+## 不走战役过渡 / 阵营选择：这一关只有一个席位，且它本来就是给观察 AI 用的。
+## `allow_orders` = true（ai_test_2）时，观战仍允许用 AI 面板下四条指令；
+## `reveal_all` = true 时只给玩家显示开全图（AI 逻辑仍走正常迷雾）。
+func _on_ai_test_requested(campaign_id: String, level_id: String,
+		allow_orders: bool = false, reveal_all: bool = false) -> void:
+	if game != null:
+		return
+	var option := _find_campaign_option(campaign_id)
+	if option.is_empty():
+		push_warning("ai_test 战役不存在：%s" % campaign_id)
+		return
+	var campaign = CampaignLibraryRes.load_campaign_by_option(option, cfg)
+	var level = campaign.level(level_id) if campaign != null and campaign.has_method("level") else null
+	if level == null:
+		push_warning("ai_test 关卡不存在：%s / %s" % [campaign_id, level_id])
+		return
+	game = GameSceneRes.new()
+	game.name = "GameScene"
+	add_child(game)
+	if not game.start_ai_observer(level, allow_orders, reveal_all):
+		game.queue_free()
+		game = null
+		return
+	start_screen.close()
+	game.fullscreen_toggled.connect(toggle_fullscreen)
+	game.return_to_menu_requested.connect(return_to_menu)
 
 
 ## 在扫出来的战役表里按 id 找那一项（找不到 → 空字典）。
@@ -529,6 +560,32 @@ func _on_coop_host_started(campaign_id: String, level_id: String, transport) -> 
 	if not game.start_coop_host(campaign, level, transport):
 		if transport != null:
 			transport.close()
+		game.queue_free()
+		game = null
+		return
+	start_screen.close()
+	game.fullscreen_toggled.connect(toggle_fullscreen)
+	game.return_to_menu_requested.connect(return_to_menu)
+
+
+## ★★ 合作模式「AI 队友」：本地单人开局（无 transport / 无 HostSession）。
+## 关卡载入与真人合作局共用同一段；真正的世界装配在 `game_scene3d.start_coop_solo()`。
+func _on_coop_solo_started(campaign_id: String, level_id: String, ai_setup: Dictionary) -> void:
+	if game != null:
+		return
+	var option := _find_campaign_option(campaign_id)
+	if option.is_empty():
+		push_warning("合作战役不存在：%s" % campaign_id)
+		return
+	var campaign = CampaignLibraryRes.load_campaign_by_option(option, cfg)
+	var level = campaign.level(level_id) if campaign != null and campaign.has_method("level") else null
+	if level == null or String(level.mode) != "coop":
+		push_warning("合作关卡不存在或不是 coop：%s / %s" % [campaign_id, level_id])
+		return
+	game = GameSceneRes.new()
+	game.name = "GameScene"
+	add_child(game)
+	if not game.start_coop_solo(level, ai_setup):
 		game.queue_free()
 		game = null
 		return

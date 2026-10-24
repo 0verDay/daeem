@@ -95,6 +95,12 @@ var _sighted: Dictionary = {}
 ## 格掩码的列数（`tile_visible()` 要把 (tx, ty) 换成 idx）。
 ## ★ `update()` 每次按当前地图对齐 —— 缓存是跟着地图走的，换图必须 `reset_cache()`。
 var _cols: int = 0
+var _rows: int = 0
+
+## ★★ 只影响**显示**的全图视野（键 = `FactionRes.side_of`）：给观战验收用。
+##    AI 的逻辑查询走 `logic_tile_visible()` / `logic_unit_visible()` / `logic_building_visible()`，
+##    显示走 `tile_visible()` / `unit_visible()` / `building_visible()`（后者会尊重观战全图标记）。
+var _display_reveal: Dictionary = {}
 
 ## ---- 本地缓存（可以随时丢，丢了只是重算一遍）----
 ## 格索引 → 视野扇区 PackedByteArray（站在那一格能看见哪些格）。
@@ -123,6 +129,7 @@ static func create() -> RefCounted:
 func reset_cache() -> void:
 	sight = {}
 	_sighted = {}
+	_display_reveal = {}
 	_sector_cache = {}
 	_sector_radius = {}
 	_contrib = {}
@@ -203,6 +210,7 @@ func update(world) -> void:
 		_collect_contributors(world)
 	var cells: int = world.map.cols * world.map.rows
 	_cols = world.map.cols
+	_rows = world.map.rows
 
 	# ★★ 数字循环走 C# 内核（`fog.backend = "csharp"`）；加载不到 / 显式配成 gdscript
 	#    时走下面那条老路。两条路的输出**逐位一致**（test_fog 全量断言盯着）。
@@ -557,6 +565,13 @@ static func _los_blocked(map, ox: int, oy: int, tx: int, ty: int) -> bool:
 ## ⚠️ 忘了改这一句的症状很隐蔽：**掩码按方存了、查询还按阵营查** ⇒
 ##   p1（代表 id 恰好等于自己）一切正常，而 p2 永远查不到东西（整屏全黑）。
 func tile_visible(faction: String, tx: int, ty: int) -> bool:
+	if is_revealed_for_display(faction):
+		return tx >= 0 and ty >= 0 and tx < _cols and ty < _rows
+	return logic_tile_visible(faction, tx, ty)
+
+
+## 逻辑视野（AI / 规则用）：不受 `reveal_all_for_display()` 影响。
+func logic_tile_visible(faction: String, tx: int, ty: int) -> bool:
 	var mask: Variant = sight.get(FactionRes.side_of(faction), null)
 	if mask == null:
 		return false
@@ -569,15 +584,33 @@ func tile_visible(faction: String, tx: int, ty: int) -> bool:
 	return m[idx] != 0
 
 
+## ★★ 给**观战显示**开这个阵营的全图（不影响 AI 的逻辑视野）。
+##    AI 读 `logic_*()`；view/ 读 `*_visible()`，后者会尊重这个标记。
+func reveal_all_for_display(faction: String) -> void:
+	if faction == "":
+		return
+	_display_reveal[FactionRes.side_of(faction)] = true
+
+
+func is_revealed_for_display(faction: String) -> bool:
+	return _display_reveal.has(FactionRes.side_of(faction))
+
+
 ## 某个单位对这个阵营该不该画出来？
 ##   · 同一阵营 → 永远可见（己方部队不会被自己的迷雾盖住）；
 ##   · 其他阵营 → 只有**当前视野内**才可见（走出视野就消失，需求确认「不保留记忆」）。
 func unit_visible(faction: String, u) -> bool:
+	if is_revealed_for_display(faction):
+		return u != null and u.alive
+	return logic_unit_visible(faction, u)
+
+
+func logic_unit_visible(faction: String, u) -> bool:
 	if u == null or not u.alive:
 		return false
 	if FactionRes.same_side(String(u.faction), faction):
 		return true
-	return tile_visible(faction, int(u.tx), int(u.ty))
+	return logic_tile_visible(faction, int(u.tx), int(u.ty))
 
 
 ## 某栋建筑对这个阵营该不该画出来？
@@ -585,12 +618,18 @@ func unit_visible(faction: String, u) -> bool:
 ##   · 同一阵营 → 永远可见；
 ##   · 其他阵营 → **当前视野内**，或者**曾经看见过一次**（永久记忆，直到被摧毁）。
 func building_visible(faction: String, b) -> bool:
+	if is_revealed_for_display(faction):
+		return b != null and b.alive
+	return logic_building_visible(faction, b)
+
+
+func logic_building_visible(faction: String, b) -> bool:
 	if b == null or not b.alive:
 		return false
 	var owner := String(b.owner)
 	if owner == "" or FactionRes.same_side(owner, faction):
 		return true
-	if tile_visible(faction, int(b.tx), int(b.ty)):
+	if logic_tile_visible(faction, int(b.tx), int(b.ty)):
 		return true
 	return is_building_sighted(faction, b)
 
@@ -651,7 +690,7 @@ func _prune_sighted(world) -> void:
 			var owner := String(b.owner)
 			if owner == "" or FactionRes.same_side(owner, fid):
 				continue                    # 自己的 / 无主的：不需要记忆（本来就一直看得见）
-			if tile_visible(fid, int(b.tx), int(b.ty)):
+			if logic_tile_visible(fid, int(b.tx), int(b.ty)):
 				table[b] = true
 		_sighted[fid] = table
 

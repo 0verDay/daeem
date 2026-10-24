@@ -25,6 +25,8 @@ signal level_activated(campaign_id: String, level_id: String)
 ## 合作大厅的两条开局路径（transport 已从 lobby 交出来）。
 signal coop_host_started(campaign_id: String, level_id: String, transport)
 signal coop_guest_started(payload: Dictionary, transport)
+## ★★ 合作「AI 队友」本地开局（没有 transport）。
+signal coop_solo_started(campaign_id: String, level_id: String, ai_setup: Dictionary)
 ## ★ 首次进主界面的「三块面板滑入 + 子控件淡入」全部走完。
 ## 入口页落位刚切页时，正中那一列的按钮**还在 alpha 0**（面板展开层统一先清零再淡入），
 ## 但 Button 是吃鼠标的 —— 不等这一段结束就放行，快速点击会点到看不见的 test_1 直接开局。
@@ -539,6 +541,10 @@ func _on_panel_expanded() -> void:
 		p.coop_guest_started.connect(
 			func(payload: Dictionary, transport):
 				coop_guest_started.emit(payload, transport))
+	if p.has_signal("coop_solo_started"):
+		p.coop_solo_started.connect(
+			func(campaign_id: String, level_id: String, ai_setup: Dictionary):
+				coop_solo_started.emit(campaign_id, level_id, ai_setup))
 
 
 ## 打开「合作模式」面板（test_2 按钮用；等价于点右下角那颗）。

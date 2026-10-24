@@ -69,9 +69,16 @@ signal intro_dismissed
 ##   本页不认识 `data/campaigns/`、也不认识 `world` —— 载入战役、挑阵营、建世界
 ##   全在 `view/main.gd` 那一处（与战役目录扫描同一个口径：数据只有一个来源）。
 signal level_entry_pressed(campaign_id: String, level_id: String)
+## ★★ 主界面 ai_test / ai_test_2 按钮：进入观战（AI 操作被观察方，玩家只看）。
+## `allow_orders` = true 时仍允许用 AI 面板下四条指令（ai_test_2）；
+## `reveal_all` = true 时只给玩家显示开全图，AI 逻辑仍读正常迷雾（ai_test_2）。
+signal ai_test_requested(campaign_id: String, level_id: String,
+	allow_orders: bool, reveal_all: bool)
 ## 合作大厅的开局（transport 已从 lobby 交出来）。
 signal coop_host_started(campaign_id: String, level_id: String, transport)
 signal coop_guest_started(payload: Dictionary, transport)
+## ★★ 合作「AI 队友」本地开局：没有 transport，只带难度设置。
+signal coop_solo_started(campaign_id: String, level_id: String, ai_setup: Dictionary)
 ## ★★ 主菜单「选项 → 设置 → 全屏 / 窗口化」：与游戏内同一条信号链，窗口模式由 main.gd 改。
 signal fullscreen_toggled
 ## ★★ 主菜单「选项 → 退出游戏」：真正 quit 仍是 main.gd 的事。
@@ -181,6 +188,9 @@ func setup(p_cfg: ConfigRes, p_font: Font) -> void:
 		_chrome.coop_guest_started.connect(
 			func(payload: Dictionary, transport):
 				coop_guest_started.emit(payload, transport))
+		_chrome.coop_solo_started.connect(
+			func(campaign_id: String, level_id: String, ai_setup: Dictionary):
+				coop_solo_started.emit(campaign_id, level_id, ai_setup))
 		# ★ 首次进主界面：三块面板 + 子控件淡入全部走完，正中的按钮才允许点。
 		_chrome.intro_finished.connect(_on_chrome_intro_finished)
 
@@ -677,9 +687,15 @@ func _test_entries() -> Array:
 		var campaign := String(d.get("campaign", "")).strip_edges()
 		var level := String(d.get("level", "")).strip_edges()
 		var coop := bool(d.get("coop", false))
+		var ai_observer := bool(d.get("ai_observer", false))
+		var ai_observer_orders := bool(d.get("ai_observer_orders", false))
+		var ai_observer_reveal := bool(d.get("ai_observer_reveal", false))
 		if label == "" or campaign == "" or level == "":
 			continue
-		out.append({"label": label, "campaign": campaign, "level": level, "coop": coop})
+		out.append({"label": label, "campaign": campaign, "level": level,
+			"coop": coop, "ai_observer": ai_observer,
+			"ai_observer_orders": ai_observer_orders,
+			"ai_observer_reveal": ai_observer_reveal})
 	return out
 
 
@@ -712,12 +728,18 @@ func _make_test_button(entry: Dictionary) -> Button:
 	var campaign_id := String(entry["campaign"])
 	var level_id := String(entry["level"])
 	var is_coop := bool(entry.get("coop", false))
+	var is_ai_test := bool(entry.get("ai_observer", false))
+	var allow_orders := bool(entry.get("ai_observer_orders", false))
+	var reveal_all := bool(entry.get("ai_observer_reveal", false))
 	b.pressed.connect(func():
 		# ⚠️ 本文件是 CanvasLayer（不是 Control）：可见性用 `visible`，没有 is_visible_in_tree()。
 		if not visible:
 			return
 		# ★★ 入场落位 + 外壳首次淡入期间，这一列是 alpha 0 / 半透明 —— 看得见之前不许点。
 		if _menu_blocked:
+			return
+		if is_ai_test:
+			ai_test_requested.emit(campaign_id, level_id, allow_orders, reveal_all)
 			return
 		if is_coop and _chrome != null:
 			_chrome.open_coop_panel()

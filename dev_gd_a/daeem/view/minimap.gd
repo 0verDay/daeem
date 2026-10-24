@@ -549,6 +549,9 @@ func _draw_units() -> void:
 func _draw_fog() -> void:
 	if not cfg.fog_enabled or world.fog == null:
 		return
+	# ★ 观战验收（ai_test_2）给玩家开了全图显示：小地图不要再盖迷雾层。
+	if world.fog.is_revealed_for_display(world.my_faction):
+		return
 	var m = world.map
 	var r := Rect2(origin(), Vector2(float(m.cols), float(m.rows)) * scale())
 	draw_texture_rect(_fog_texture(), r, false)

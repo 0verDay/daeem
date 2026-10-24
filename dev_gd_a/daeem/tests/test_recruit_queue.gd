@@ -28,10 +28,11 @@ func _cases() -> void:
 	_test_enqueue_pays(cfg)
 	_test_reject_reasons(cfg)
 	_test_queue_cap(cfg)
-	_test_train_timing_and_center_spawn(cfg)
-	_test_push_units_aside(cfg)
-	_test_rooted_while_training(cfg)
-	_test_retinue_locked_while_training(cfg)
+	_test_train_timing_and_nearby_spawn(cfg)
+	_test_spawn_avoids_occupied_tile(cfg)
+	_test_mobile_while_training(cfg)
+	_test_damage_pauses_training(cfg)
+	_test_retinue_not_locked_while_training(cfg)
 	_test_cancel_queue(cfg)
 	_test_recruit_eta(cfg)
 	_test_cancel_then_death(cfg)
@@ -102,7 +103,7 @@ func _test_enqueue_pays(cfg) -> void:
 	near(g1.train_progress(), 0.0, 1e-6, "刚入队时进度是 0")
 	eq(w.retinue_of(g1.id).size(), before_subs, "★ 入队**不会立刻生成单位**（要读条 10 秒）")
 	eq(w.recruit_queue_max(), 5, "上限仍然是 5")
-	eq(g1.train_anchor, g1.pos, "★ 记住开招那一刻的位置（读条期间钉在这里）")
+	eq(g1.train_anchor, g1.pos, "★ 记录下单时的位置（历史字段；招募已不再因此钉住）")
 
 	ok(w.start_recruit(KIND, g1.id, "p1"), "再排一个也成功")
 	eq(g1.train_queue.size(), 1, "第二个排进小格子")
@@ -111,7 +112,10 @@ func _test_enqueue_pays(cfg) -> void:
 
 func _test_reject_reasons(cfg) -> void:
 	var w = require_world(cfg)
-	var g1 = w.unit_by_id("general-1")
+	var g1 = _first_general(w)
+	ok(g1 != null, "有开局将领")
+	if g1 == null:
+		return
 	var z = w.zones.zone_at(g1.tx, g1.ty)
 
 	eq(w.can_afford_recruit(KIND, g1.id), "cost", "★ 没钱 → 拒因 cost")
@@ -147,7 +151,10 @@ func _leader_reject_checks(cfg) -> void:
 func _test_queue_cap(cfg) -> void:
 	var w = require_world(cfg)
 	_give(w, 10000.0, 10000.0)
-	var g1 = w.unit_by_id("general-1")
+	var g1 = _first_general(w)
+	ok(g1 != null, "有开局将领")
+	if g1 == null:
+		return
 	var z = w.zones.zone_at(g1.tx, g1.ty)
 	z["population"] = 100.0
 
@@ -161,7 +168,7 @@ func _test_queue_cap(cfg) -> void:
 	near(float(w.resources["food"]), food_before, 1e-6, "被拒的第 6 个不扣钱")
 	eq(g1.train_queue_size(), 5, "队列还是 5 个")
 
-func _test_train_timing_and_center_spawn(cfg) -> void:
+func _test_train_timing_and_nearby_spawn(cfg) -> void:
 	var w = _quiet_world(cfg)          # 关战斗：这一节只验读条与落点
 	var g1 = w.unit_by_id("general-1")
 	_give(w, 1000.0, 1000.0)
@@ -187,9 +194,9 @@ func _test_train_timing_and_center_spawn(cfg) -> void:
 	var fresh = w.retinue_of(g1.id)[before]
 	eq(fresh.kind, KIND, "生成的就是招募的那个兵种")
 	eq(fresh.leader_id, g1.id, "新兵挂在将领名下")
-	v2i_eq(Vector2i(fresh.tx, fresh.ty), tile, "★ 生成在**将领所在那一格**")
-	v2_near(fresh.pos, GridRes.center_of(tile), 1e-4, "★ 强制生成在格心")
-	ok(w.map.terrain_walkable(fresh.tx, fresh.ty), "新兵站在可通行格上")
+	ok(w.map.terrain_walkable(fresh.tx, fresh.ty), "★ 新兵站在可通行格上")
+	ok(fresh.pos.distance_to(g1.pos) <= 1.5,
+		"★ 新兵生成在将领周围（距将领 %.2f 格）" % fresh.pos.distance_to(g1.pos))
 
 	ok(w.start_recruit(KIND, g1.id, "p1"), "再排两个")
 	ok(w.start_recruit(KIND, g1.id, "p1"), "（第二个进小格子）")
@@ -202,7 +209,7 @@ func _test_train_timing_and_center_spawn(cfg) -> void:
 	_tick_secs(w, 10.2)
 	eq(w.retinue_of(g1.id).size(), before + 3, "第三个也生成了")
 
-func _test_push_units_aside(cfg) -> void:
+func _test_spawn_avoids_occupied_tile(cfg) -> void:
 	var w = _quiet_world(cfg)
 	var g1 = w.unit_by_id("general-1")
 	_give(w, 1000.0, 1000.0)
@@ -223,70 +230,69 @@ func _test_push_units_aside(cfg) -> void:
 
 	eq(w.retinue_of(g1.id).size(), before + 1, "生成了 1 个新兵")
 	var fresh = w.retinue_of(g1.id)[before]
-	v2_near(fresh.pos, center, 0.05, "★ 新兵占住了格心（允许软分离挤开一点点）")
-	var need: float = cfg.unit_collision_radius * 2.0
-	ok(squatter.pos.distance_to(center) >= need - 1e-6,
-		"★ 原本站在格心上的单位被排开了（现在离格心 %.3f 格）" % squatter.pos.distance_to(center))
-	v2i_eq(Vector2i(squatter.tx, squatter.ty), tile, "被排开的单位还在同一格里（只是让开了格心）")
+	ok(Vector2i(fresh.tx, fresh.ty) != Vector2i(squatter.tx, squatter.ty),
+		"★ 新兵不会和占住格心的单位叠在同一格")
+	ok(fresh.pos.distance_to(g1.pos) <= 1.5,
+		"★ 新兵仍在将领周围（距将领 %.2f 格）" % fresh.pos.distance_to(g1.pos))
+	ok(squatter.pos.distance_to(center) < 0.5,
+		"★ 站在格心上的单位没有被无缘无故推开（它不在新兵的落点上）")
 
-func _test_rooted_while_training(cfg) -> void:
-	var w = require_world(cfg)              # 这一节要**开着战斗**（验「无法攻击」）
+func _test_mobile_while_training(cfg) -> void:
+	var w = _quiet_world(cfg)
 	var g1 = w.unit_by_id("general-1")
 	_give(w, 1000.0, 1000.0)
-	var z = w.zones.zone_at(g1.tx, g1.ty)
-	z["population"] = 10.0
+	w.zones.zone_at(g1.tx, g1.ty)["population"] = 10.0
+	var before: int = w.retinue_of(g1.id).size()
+	var start: Vector2 = g1.pos
 
 	ok(w.start_recruit(KIND, g1.id, "p1"), "入队成功")
-	w.units = [g1]
-	var foe = w.spawn_enemy(g1.tx + 1, g1.ty)
-	ok(foe != null, "旁边刷一个敌人")
-	if foe == null:
-		return
-	foe.hold_position = true                 # 别让它跑去打大本营
-	var anchor: Vector2 = g1.train_anchor
+	ok(not w.is_order_locked(g1), "★★ 招募不再锁住将领本人")
+	ok(not w.is_order_locked(w.retinue_of(g1.id)[0]), "★★ 招募也不再锁住附属兵")
 
-	ok(not CommandRes.apply(w, cfg, {"kind": "move", "ids": [g1.id],
-		"x": float(g1.tx + 5), "y": float(g1.ty), "faction": "p1"}),
-		"★ 招募期间 move 命令不生效")
-	ok(not CommandRes.apply(w, cfg, {"kind": "attack", "ids": [g1.id],
-		"target_id": foe.id, "faction": "p1"}),
-		"★ 招募期间 attack 命令不生效")
-	ok(not g1.moving and g1.path.is_empty(), "将领没有被命令带走")
-
-	var interrupted_at := -1.0
-	var saw_ordered := false
-	var el := 0.0
-	while el < 3.0:
-		w.tick(0.1)
-		el += 0.1
-		if not g1.is_training():
-			interrupted_at = el
-			saw_ordered = (g1.ordered_target == foe)
-			break
-	ok(interrupted_at >= 0.0,
-		"★★ 敌人贴脸 ⇒ 招募被打断（%.1f 秒内；旧行为是「照样读完条」）" % interrupted_at)
-	ok(saw_ordered, "★★ 打断的那一帧就点名了威胁（ordered_target 指着它）")
-	eq(g1.train_queue_size(), 0, "★★ 打断的是整单（队列也清空）")
-	v2_near(g1.pos, anchor, 1e-6, "★ 打断之前它一直钉在原地（位置没被推走）")
-
-	ok(g1.hp < g1.hp_max or not foe.alive,
-		"旁边那个敌人确实在打它（所以「被贴脸」是它被打断的原因）")
-	var hit_back := false
-	var t2 := 0.0
-	while t2 < 3.0:
-		w.tick(0.1)
-		t2 += 0.1
-		if g1.last_target == foe and g1.attack_flash > 0.0:
-			hit_back = true
-			break
-	ok(hit_back or not foe.alive, "★★ 打断之后它真的还手了（朝那个敌人开火）")
-
-	ok(not g1.is_training(), "打断之后它不在读条")
+	var dest: Vector2 = start + Vector2(3.0, 0.0)
 	ok(CommandRes.apply(w, cfg, {"kind": "move", "ids": [g1.id],
-		"x": float(g1.tx), "y": float(g1.ty + 2), "faction": "p1"}),
-		"★ 打断之后又能接受 move 命令了")
+		"x": dest.x, "y": dest.y, "faction": "p1"}),
+		"★★ 招募期间 move 命令照样生效（可以边走边招）")
+	_tick_secs(w, 1.2)
+	ok(g1.pos.distance_to(start) > 0.2, "★★ 将领真的带兵走开了（不再被钉在原地）")
+	ok(g1.is_training(), "★★ 移动期间读条没有被打断 / 取消")
 
-func _test_retinue_locked_while_training(cfg) -> void:
+	# 让这一单立刻读完：验证「在将领**当前**位置周围生成」。
+	g1.train_remaining = 0.05
+	_tick_secs(w, 0.2)
+	eq(w.retinue_of(g1.id).size(), before + 1, "移动中也能读完并生成 1 个新兵")
+	var fresh = w.retinue_of(g1.id)[before]
+	ok(fresh.pos.distance_to(g1.pos) <= 1.5,
+		"★★ 新兵生成在将领当前位置周围（距当前将领 %.2f 格）" % fresh.pos.distance_to(g1.pos))
+
+func _test_damage_pauses_training(cfg) -> void:
+	var w = _quiet_world(cfg)
+	var g1 = w.unit_by_id("general-1")
+	_give(w, 1000.0, 1000.0)
+	w.zones.zone_at(g1.tx, g1.ty)["population"] = 10.0
+	var before: int = w.retinue_of(g1.id).size()
+
+	ok(w.start_recruit(KIND, g1.id, "p1"), "入队成功")
+	_tick_secs(w, 2.0)
+	var left: float = g1.train_remaining
+	ok(left < 10.0 and left > 0.0, "（前提）已经读了一部分")
+
+	# ★ 直接造成伤害：受击清零脱战计时 ⇒ 读条暂停（不清队列、不退款）。
+	g1.take_damage(cfg, w, 5.0, null)
+	eq(w.can_recruit(KIND, g1.id, "p1"), "combat", "★ 受击后「脱战」不成立，不能再下单")
+	_tick_secs(w, 4.0)
+	near(g1.train_remaining, left, 1e-4, "★★ 战斗中读条暂停（进度一点没涨）")
+	eq(g1.train_queue_size(), 1, "★★ 暂停不会清队列")
+	ok(g1.is_training(), "★★ 仍然在招募状态（只是暂停）")
+
+	# 再站 6.2 秒（累计脱战 > 10 秒）⇒ 从暂停处继续。
+	_tick_secs(w, 6.2)
+	ok(g1.train_remaining < left - 1e-4, "★★ 脱战后从暂停处继续读条")
+	eq(w.retinue_of(g1.id).size(), before, "（还没读完，先不生成）")
+	_tick_secs(w, 10.0)
+	eq(w.retinue_of(g1.id).size(), before + 1, "★ 脱战后这一单正常读完")
+
+func _test_retinue_not_locked_while_training(cfg) -> void:
 	var w = require_world_with_escorts(cfg, ESCORTS_PER_GENERAL)
 	var g1 = w.unit_by_id("general-1")
 	var g2 = w.unit_by_id("general-2")
@@ -304,41 +310,28 @@ func _test_retinue_locked_while_training(cfg) -> void:
 	ok(mates[0].moving, "附属兵确实在赶路")
 
 	ok(w.start_recruit(KIND, g1.id, "p1"), "将领开始招募")
-	ok(not mates[0].moving and mates[0].path.is_empty(),
-		"★ 招募一开始，附属兵就**收队**（不再执行旧命令）")
-	ok(w.is_order_locked(g1), "将领自己被锁住")
-	ok(w.is_order_locked(mates[0]), "★ 它辖下的部队也被锁住")
-	ok(not w.is_order_locked(other[0]), "别的将领的部队不受影响")
+	ok(mates[0].moving and not mates[0].path.is_empty(),
+		"★★ 招募一开始，附属兵**不会**被强制收队（旧行为已移除）")
+	ok(not w.is_order_locked(g1), "★ 将领本人不再被锁")
+	ok(not w.is_order_locked(mates[0]), "★★ 它辖下的部队也不再被锁")
+	ok(not w.is_order_locked(other[0]), "别的将领的部队照旧不受影响")
 
-	ok(not CommandRes.apply(w, cfg, {"kind": "move", "ids": squad,
-		"x": far.x, "y": far.y, "faction": "p1"}), "★ 整队的 move 命令被拒")
-	ok(not CommandRes.apply(w, cfg, {"kind": "attack_move", "ids": squad,
-		"x": far.x, "y": far.y, "faction": "p1"}), "★ 整队的 attack_move 命令被拒")
-	var foe = w.spawn_enemy(g1.tx + 2, g1.ty)
-	if foe != null:
-		foe.hold_position = true                   # 别让它跑掉
-		ok(not CommandRes.apply(w, cfg, {"kind": "attack", "ids": squad,
-			"target_id": foe.id, "faction": "p1"}), "★ 整队的 attack 命令被拒")
-	ok(not mates[0].moving and mates[0].path.is_empty(), "被拒之后附属兵还是原地待命")
-	ok(mates[0].ordered_target == null and not mates[0].has_attack_move, "也没有留下玩家命令")
-
+	ok(CommandRes.apply(w, cfg, {"kind": "move", "ids": squad,
+		"x": far.x, "y": far.y, "faction": "p1"}), "★★ 整队的 move 命令照常接受")
+	ok(CommandRes.apply(w, cfg, {"kind": "attack_move", "ids": squad,
+		"x": far.x, "y": far.y, "faction": "p1"}), "★★ 整队的 attack_move 命令照常接受")
 	var evts: Array = w.tick(DT)
-	eq(_count_events(evts, "order_rejected"), 3, "★ 每条被拒的指令都发一条 order_rejected 事件")
-
+	eq(_count_events(evts, "order_rejected"), 0,
+		"★★ 不会再出现「招募中拒令」的报错事件")
 	ok(CommandRes.apply(w, cfg, {"kind": "move", "ids": [other[0].id],
-		"x": far.x, "y": far.y, "faction": "p1"}), "★ 别的将领的部队照旧能下令")
+		"x": far.x, "y": far.y, "faction": "p1"}), "★ 别的将领的部队同样能下令")
 
-	if foe != null:
-		for _i in 120:
-			w.tick(DT)
-		ok(foe.hp < foe.hp_max, "★ 附属兵仍然执行警戒逻辑（自己上去打了，敌人掉了血）")
-		ok(g1.target == null, "★ 将领本人还是不动手（读条期间无法攻击）")
-
+	# 清空队列后一切照旧（没有「解锁」这个状态变化了，因为本来就没锁）。
 	while g1.train_queue_size() > 0:
 		w.cancel_recruit(g1.id, 0, "p1")
-	ok(not w.is_order_locked(mates[0]), "★ 队列清空之后部队解锁")
+	ok(not w.is_order_locked(mates[0]), "★ 队列清空后仍然可指挥")
 	ok(CommandRes.apply(w, cfg, {"kind": "move", "ids": squad,
-		"x": far.x, "y": far.y, "faction": "p1"}), "★ 解锁之后整队又能接受 move 命令")
+		"x": far.x, "y": far.y, "faction": "p1"}), "★ 整队照常接受命令")
 
 func _test_cancel_queue(cfg) -> void:
 	var c = require_config()
@@ -349,7 +342,10 @@ func _test_cancel_queue(cfg) -> void:
 	var w = require_world(c)
 	_no_income(w)
 	_give(w, 1000.0, 1000.0)
-	var g1 = w.unit_by_id("general-1")
+	var g1 = _first_general(w)
+	ok(g1 != null, "有开局将领")
+	if g1 == null:
+		return
 	var z = w.zones.zone_at(g1.tx, g1.ty)
 	z["population"] = 10.0
 
@@ -423,7 +419,10 @@ func _test_recruit_eta(cfg) -> void:
 	var w = require_world(c)
 	_no_income(w)
 	_give(w, 1000.0, 1000.0)
-	var g1 = w.unit_by_id("general-1")
+	var g1 = _first_general(w)
+	ok(g1 != null, "有开局将领")
+	if g1 == null:
+		return
 	w.zones.zone_at(g1.tx, g1.ty)["population"] = 10.0
 
 	near(w.recruit_eta(g1, 0), 0.0, 1e-6, "没在招募时 ETA 是 0")
@@ -549,10 +548,13 @@ func _test_snapshot_round_trip(cfg) -> void:
 		ok(g2.is_training(), "客机侧也处于「招募中」")
 		near(g2.train_remaining, g1.train_remaining, 0.02, "剩余秒数对齐")
 		eq(g2.train_queue.size(), 1, "排队的那一个也过来了")
-		v2_near(g2.train_anchor, g2.pos, 1e-6, "钉住的位置取权威位置")
+		v2_near(g2.train_anchor, g2.pos, 1e-6, "历史字段 train_anchor 取权威位置（不再参与位移）")
 
 	var w3 = _quiet_world(cfg)
-	var g3 = w3.unit_by_id("general-1")
+	var g3 = _first_general(w3)
+	ok(g3 != null, "（快照）有将领")
+	if g3 == null:
+		return
 	_give(w3, 1000.0, 1000.0)
 	w3.zones.zone_at(g3.tx, g3.ty)["population"] = 10.0
 	w3.start_recruit(KIND, g3.id, "p1")
@@ -648,6 +650,18 @@ func _inject_second_kind(cfg) -> String:
 		"train_sec": 10, "population_cost": 1, "cost": {"food": 50, "gold": 50},
 	})
 	return "testkind2"
+
+## 取世界里第 idx 位将领（按 id 排序）。默认地图开局将领是 `general-0`，
+## 不能硬编码 `general-1` —— 那是「带附属兵的探针关卡」才有的 id。
+func _first_general(w, idx: int = 0):
+	var gs: Array = []
+	for u in w.units:
+		if u.is_general():
+			gs.append(u)
+	gs.sort_custom(func(a, b) -> bool: return String(a.id) < String(b.id))
+	if idx < 0 or idx >= gs.size():
+		return null
+	return gs[idx]
 
 func _tick_secs(w, secs: float) -> void:
 	var n: int = int(ceil(secs / DT))
