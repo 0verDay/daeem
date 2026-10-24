@@ -1415,7 +1415,18 @@ func is_retaliating() -> bool:
 func has_active_player_order() -> bool:
 	if not player_order:
 		return false
+	if has_active_order():
+		return true
+	player_order = false
+	return false
+
+
+## ★★ 这个单位当前有没有**任何**还在执行的移动 / 攻击命令（不分玩家还是 AI）。
+## 受击反击的默认规则看它：有命令就继续执行，没命令才自动反击。
+func has_active_order() -> bool:
 	if has_attack_move:
+		return true
+	if String(rescue_leader_id) != "":
 		return true
 	if ordered_target != null and is_instance_valid(ordered_target) \
 			and ordered_target.is_attackable():
@@ -1423,10 +1434,7 @@ func has_active_player_order() -> bool:
 	if ordered_building != null and is_instance_valid(ordered_building) \
 			and ordered_building.alive:
 		return true
-	if moving or has_goal:
-		return true
-	player_order = false
-	return false
+	return moving or has_goal
 
 
 ## ★★ 受击反击：被一个**敌方单位**打中时，立刻转为打它。

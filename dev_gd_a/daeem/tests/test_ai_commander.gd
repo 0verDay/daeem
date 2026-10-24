@@ -9,6 +9,7 @@ const AiProfileRes = preload("res://logic/ai_profile.gd")
 const CommandRes = preload("res://logic/command_processor.gd")
 const UnitRes = preload("res://logic/unit.gd")
 const AiArmyRes = preload("res://logic/ai_army.gd")
+const AiBuildRes = preload("res://logic/ai_build.gd")
 
 const COOP_LEVEL := "res://data/campaigns/demo/levels/02_twin_line.json"
 const AI_TEST_LEVEL := "res://data/campaigns/demo/levels/ai_test.json"
@@ -35,6 +36,16 @@ func _cases() -> void:
 	_test_training_home_rotation(cfg)
 	_test_training_leader_can_patrol(cfg)
 	_test_avoid_big_fights(cfg)
+	_test_revive_recall(cfg)
+	_test_points_in_bounds(cfg)
+	_test_cohesion(cfg)
+	_test_undefended_capture(cfg)
+	_test_roles(cfg)
+	_test_attack_reaction(cfg)
+	_test_tower_strategy(cfg)
+	_test_build_economy_guard(cfg)
+	_test_wall_and_upgrade(cfg)
+	_test_front_general_recruit(cfg)
 	_test_team_production_targets(cfg)
 	_test_march_moves_army(cfg)
 	_test_expand_target(cfg)
@@ -470,6 +481,449 @@ func _test_avoid_big_fights(cfg) -> void:
 	c.regroup_ids.clear()
 	AiArmyRes._avoid_bad_fights(c)
 	ok(c.regroup_ids.has(String(g.id)), "★★ 小队附近有大军时会被命令回撤，而不是硬碰")
+
+
+## ★★ 倒地的将领：安全位置能再起，敌后 / 太远没兵时召回。
+func _test_revive_recall(cfg) -> void:
+	var w = _make_ai_test_world(cfg)
+	if w == null:
+		ok(false, "再起 / 召回测试世界")
+		return
+	var c = w.ai_commanders["F1"]
+	var base = w.find_base_of("F1")
+	if base == null:
+		ok(false, "（前提）有基地")
+		return
+	# 1) 在基地倒下：血量到门槛 → 再起。
+	var g = w.create_general("F1", 1, 4)
+	if g == null:
+		ok(false, "能造再起测试将领")
+		return
+	g.pos = Vector2(float(base.tx) + 0.5, float(base.ty) + 0.5)
+	g.sync_tile(w.map)
+	w.units.append(g)
+	g.enter_near_death(cfg.revive_regen_sec)
+	g.hp = g.hp_max * 0.15
+	ok(g.revive_ready(cfg), "（前提）血量回到再起门槛")
+	c._revive_tick()
+	ok(g.is_reviving(), "★★ 指挥官 AI 会给倒地的将领点再起")
+	ok(int(c.stats.get("revives", 0)) >= 1, "★★ 再起计入 stats")
+	# 2) 倒在敌方区划、只带一个兵：召回会把它和这个兵一起清掉。
+	var g2 = w.create_general("F1", 1, 5)
+	if g2 == null:
+		ok(false, "能造召回测试将领")
+		return
+	var z6 = w.zone_by_id(6)
+	if z6 == null:
+		ok(false, "（前提）有 6 号区划")
+		return
+	var ct: Vector2i = (z6 as Dictionary)["center"]
+	g2.pos = Vector2(float(ct.x) + 0.5, float(ct.y) + 0.5)
+	g2.sync_tile(w.map)
+	w.units.append(g2)
+	w.fill_general_retinue(g2, 1, [{"type": "spearman", "weight": 1.0}])
+	var escorts: Array = w.retinue_of(g2.id, true)
+	ok(escorts.size() == 1, "（前提）召回测试将领带着 1 个兵")
+	(z6 as Dictionary)["owner"] = "enemy"
+	g2.enter_near_death(cfg.revive_regen_sec)
+	ok(not g2.revive_ready(cfg), "（前提）召回测试将领还没到再起门槛")
+	c._revive_tick()
+	ok(not g2.alive, "★★ 敌后且兵少时，AI 会召回将领")
+	for m in escorts:
+		ok(not m.alive and not w.units.has(m),
+			"★★ 召回立刻清掉旗下所有部队（%s）" % String(m.id))
+	ok(int(c.stats.get("recalls", 0)) >= 1, "★★ 召回计入 stats")
+
+
+## ★★ AI 的所有目标点都必须夹在地图内（基地贴边 / 巡逻环 / 区划中心 +1.5 都可能出界）。
+func _test_points_in_bounds(cfg) -> void:
+	var w = _make_ai_test_world(cfg)
+	if w == null:
+		ok(false, "边界测试世界")
+		return
+	var c = w.ai_commanders["F1"]
+	var max_x := float(w.map.cols) - 0.5
+	var max_y := float(w.map.rows) - 0.5
+	var p = AiArmyRes._clamp_map_point(c, Vector2(-50.0, 999.0))
+	ok(p.x >= 0.5 and p.x <= max_x and p.y >= 0.5 and p.y <= max_y,
+		"★★ 任意点会被夹进地图（%.1f, %.1f）" % [p.x, p.y])
+	var pts: Array = AiArmyRes._patrol_points(c)
+	ok(not pts.is_empty(), "（前提）有巡逻点")
+	for pt in pts:
+		var q: Vector2 = pt
+		ok(q.x >= 0.5 and q.x <= max_x and q.y >= 0.5 and q.y <= max_y,
+			"★★ 巡逻点在地图内（%.1f, %.1f）" % [q.x, q.y])
+	# 直接对一个图外点下命令：`last_orders` 里记的必须是夹过的点。
+	var home = AiArmyRes.ensure_garrison(c)
+	if home == null:
+		ok(false, "（前提）有守军")
+		return
+	var team := {"leader": home, "units": w.group_of(home)}
+	AiArmyRes._order_team(c, team, Vector2(-100.0, -100.0), false)
+	var lo: Dictionary = c.last_orders.get(String(home.id), {})
+	var lp: Vector2 = lo.get("pt", Vector2(-999.0, -999.0))
+	ok(lp.x >= 0.5 and lp.x <= max_x and lp.y >= 0.5 and lp.y <= max_y,
+		"★★ 下达给部队的目标点不会跑到地图外（%.1f, %.1f）" % [lp.x, lp.y])
+	# 真跑一段：所有 AI 单位都必须留在地图内。
+	for i in 200:
+		w.tick(0.1)
+	for u in w.units:
+		ok(u.tx >= 0 and u.tx < w.map.cols and u.ty >= 0 and u.ty < w.map.rows,
+			"★★ 单位 %s 的格坐标在地图内（%d,%d）" % [u.id, u.tx, u.ty])
+		ok(u.pos.x >= 0.0 and u.pos.x <= float(w.map.cols)
+				and u.pos.y >= 0.0 and u.pos.y <= float(w.map.rows),
+			"★★ 单位 %s 的浮点坐标在地图内（%.2f,%.2f）" % [u.id, u.pos.x, u.pos.y])
+
+
+## ★★ 队伍粘合：附属兵掉队 / 停下时，AI 重发的是**整队**命令，不是单个兵的命令。
+func _test_cohesion(cfg) -> void:
+	var w = _make_ai_test_world(cfg)
+	if w == null:
+		ok(false, "粘合测试世界")
+		return
+	var c = w.ai_commanders["F1"]
+	var g = w.create_general("F1", 1, 6)
+	if g == null:
+		ok(false, "能造粘合测试将领")
+		return
+	w.units.append(g)
+	w.fill_general_retinue(g, 2, [{"type": "spearman", "weight": 1.0}])
+	var escorts: Array = w.retinue_of(g.id, true)
+	ok(escorts.size() == 2, "（前提）粘合测试将领带着 2 个兵")
+	var target := Vector2(float(w.map.cols) - 3.5, float(w.map.rows) - 3.5)
+	AiArmyRes._order_team(c, {"leader": g, "units": w.group_of(g)}, target, true)
+	ok(bool(g.has_attack_move), "（前提）将领收到整队行军命令")
+	var stray = escorts[0]
+	stray.stop()
+	stray.has_attack_move = false
+	c.cohesion_next_at = 0.0
+	var orders_before := int(c.stats.get("orders", 0))
+	AiArmyRes._cohesion_tick(c)
+	ok(int(c.stats.get("orders", 0)) > orders_before,
+		"★★ 掉队时 AI 会重新下命令")
+	ok(bool(stray.has_attack_move), "★★ 掉队的附属兵重新收到整队命令")
+	ok(stray.attack_move_goal.distance_to(g.attack_move_goal) < 0.1,
+		"★★ 重发的是同一个整队目标，不是单独给这个兵指路")
+
+
+## ★★ 区划守军被清空后，残队也要继续去中心占领，不能因为掉编就放弃。
+func _test_undefended_capture(cfg) -> void:
+	var w = _make_ai_test_world(cfg)
+	if w == null:
+		ok(false, "占领测试世界")
+		return
+	var c = w.ai_commanders["F1"]
+	var z6 = w.zone_by_id(6)
+	if z6 == null:
+		ok(false, "（前提）6 号区划")
+		return
+	var g = w.create_general("F1", 1, 8)
+	if g == null:
+		ok(false, "能造占领测试将领")
+		return
+	w.units.append(g)
+	ok(AiArmyRes.team_total(c, g) == 1, "（前提）这支残队只有将领 1 人")
+	c.target_zone = 6
+	c.expand_team_ids.clear()
+	c.expand_team_ids.append(String(g.id))
+	c.expand_started_at = w.time
+	ok(AiArmyRes._continue_expand(c), "★★ 区划已无守军时，残队仍会继续执行占领")
+	eq(c.target_zone, 6, "★★ 不会因为队伍掉编就清掉占领任务")
+	ok(bool(g.has_attack_move), "★★ 残队被派往区划中心")
+	var ct: Vector2i = (z6 as Dictionary)["center"]
+	var center := Vector2(float(ct.x) + 0.5, float(ct.y) + 0.5)
+	ok(g.attack_move_goal.distance_to(center) < 2.0,
+		"★★ 目标是区划中心（占领范围）")
+
+
+## ★★ 职能：按 cycle 分配；远程队有独立编成 / 站位；游击队只打空档。
+func _test_roles(cfg) -> void:
+	var w = _make_ai_test_world(cfg)
+	if w == null:
+		ok(false, "职能测试世界")
+		return
+	var c = w.ai_commanders["F1"]
+	c._ensure_team_roles()
+	var roles: Dictionary = c.team_roles
+	ok(not roles.is_empty(), "（前提）初始将领分到职能")
+	# 补两位将，确保 cycle 里的远程 / 游击队都出现。
+	for i in 2:
+		var g = w.create_general("F1", 1, 20 + i)
+		if g != null:
+			w.units.append(g)
+	c._ensure_team_roles()
+	var vals: Array = []
+	for v in c.team_roles.values():
+		if not vals.has(String(v)):
+			vals.append(String(v))
+	ok(vals.has("line"), "★★ 有正面队（line）")
+	ok(vals.has("ranged"), "★★ 有远程队标签")
+	ok(vals.has("guerrilla"), "★★ 有游击队标签")
+	var roles_cfg: Dictionary = c.profile.get("roles", {})
+	var gc: Dictionary = roles_cfg.get("guerrilla", {})
+	var gcomp: Array = gc.get("composition", [])
+	var has_fast := false
+	for item in gcomp:
+		if typeof(item) == TYPE_DICTIONARY:
+			var k := String((item as Dictionary).get("type", ""))
+			if k == "rider" or k == "horse_archer":
+				has_fast = true
+	ok(has_fast, "★★ 游击队编成偏快速单位")
+	var gz = AiArmyRes._pick_guerrilla_zone(c)
+	ok(gz != null, "★★ 游击队能找到没有防备的边界区划")
+	var rcomp: Array = (roles_cfg.get("ranged", {}) as Dictionary).get("composition", [])
+	ok(not c._first_frontline_kind(rcomp).is_empty(),
+		"★★ 远程队编成里保留了可招的抗线兵")
+	# 远程队目标点：停在 standoff 距离外，而不是贴着中心。
+	var ranged_leader = null
+	for u in w.units:
+		if u.alive and u.is_general() and String(c.team_roles.get(String(u.id), "")) == "ranged":
+			ranged_leader = u
+			break
+	ok(ranged_leader != null, "（前提）找到远程队将领")
+	if ranged_leader != null:
+		var target := Vector2(10.0, 10.0)
+		ranged_leader.pos = Vector2(4.0, 4.0)
+		var rp := AiArmyRes._role_target_point(c, ranged_leader, target)
+		var standoff := float((roles_cfg.get("ranged", {}) as Dictionary).get("standoff_tiles", 4.5))
+		ok(absf(rp.distance_to(target) - standoff) < 0.6,
+			"★★ 远程队停在目标 %.1f 格外（实际 %.1f）" % [standoff, rp.distance_to(target)])
+	# 远程队前排倒光 + 附近有敌人 ⇒ 整队后撤。
+	var rg = w.create_general("F1", 1, 30)
+	if rg != null:
+		w.units.append(rg)
+		rg.pos = Vector2(3.5, 3.5)
+		rg.sync_tile(w.map)
+		c.team_roles[String(rg.id)] = "ranged"
+		w.fill_general_retinue(rg, 2, [{"type": "longbowman", "weight": 1.0}])
+		ok(c.frontline_count(rg) == 0, "（前提）远程队没有前排")
+		w.spawn_enemy(5, 3)
+		var before := int(c.stats.get("role_retreats", 0))
+		AiArmyRes._avoid_bad_fights(c)
+		ok(int(c.stats.get("role_retreats", 0)) > before,
+			"★★ 前排倒光的远程队会触发职能后撤")
+		var base = w.find_base_of("F1")
+		if base != null:
+			var rally := Vector2(float(base.tx) + 1.5, float(base.ty) + 1.5)
+			ok(bool(rg.has_attack_move) and rg.attack_move_goal.distance_to(rally) < 3.0,
+				"★★ 后撤目标是基地（整队命令）")
+
+
+## ★★ 队伍有命令时挨打：不进入默认单兵复仇，由 AI 立即整队反击 / 继续撤。
+func _test_attack_reaction(cfg) -> void:
+	var w = _make_ai_test_world(cfg)
+	if w == null:
+		ok(false, "受击决策测试世界")
+		return
+	var c = w.ai_commanders["F1"]
+	var g = w.create_general("F1", 1, 40)
+	if g == null:
+		ok(false, "能造受击决策将领")
+		return
+	w.units.append(g)
+	g.pos = Vector2(10.5, 10.5)
+	g.sync_tile(w.map)
+	c.team_roles[String(g.id)] = "line"
+	w.fill_general_retinue(g, 2, [{"type": "spearman", "weight": 1.0}])
+	var target := Vector2(float(w.map.cols) - 3.0, 10.5)
+	AiArmyRes._order_team(c, {"leader": g, "units": w.group_of(g)}, target, true)
+	ok(bool(g.has_attack_move), "（前提）队伍有行军命令")
+	var foe = w.spawn_enemy(12, 10)
+	ok(foe != null, "（前提）有攻击者")
+	var ev: bool = w.on_unit_attacked(g, foe)
+	ok(not ev and g.retaliate_target == null,
+		"★★ 队伍有命令时，不进入默认单兵复仇反击")
+	ok(bool(g.has_attack_move), "★★ AI 给整队重新下达了命令")
+	var counter := int(c.stats.get("counterattacks", 0))
+	ok(counter >= 1, "★★ 敌弱时 AI 选择整队反击")
+	# 敌强：整队改为后撤回基地，而不是几个兵各自反击。
+	c.react_next.clear()
+	g.attack_move_goal = target
+	g.has_attack_move = true
+	for i in 5:
+		w.spawn_enemy(12, 10 + i)
+	var before_retreat := int(c.stats.get("role_retreats", 0))
+	w.on_unit_attacked(g, foe)
+	ok(int(c.stats.get("role_retreats", 0)) > before_retreat,
+		"★★ 敌强时 AI 选择整队后撤")
+	var base = w.find_base_of("F1")
+	if base != null:
+		var rally := Vector2(float(base.tx) + 1.5, float(base.ty) + 1.5)
+		ok(g.attack_move_goal.distance_to(rally) < 3.0,
+			"★★ 后撤命令的目标是基地")
+
+
+## ★★ 箭塔：一个区划可以多座；前线多、后方少；被入侵时靠中心；拆掉后不原地重建。
+func _test_tower_strategy(cfg) -> void:
+	var w = _make_ai_test_world(cfg)
+	if w == null:
+		ok(false, "箭塔测试世界")
+		return
+	var c = w.ai_commanders["F1"]
+	w.ai_faction_resources["F1"] = {"food": 6000.0, "gold": 6000.0}
+	var z0 = null
+	for z in w.zones.zones:
+		if typeof(z) == TYPE_DICTIONARY and String((z as Dictionary).get("owner", "")) == "F1" \
+				and (z as Dictionary).get("center", null) != null:
+			z0 = z
+			break
+	if z0 == null:
+		ok(false, "（前提）有己方区划")
+		return
+	var zid := int((z0 as Dictionary).get("id", -1))
+	var target := AiBuildRes._tower_target(c)
+	ok(target >= 2, "★★ 前线区划的目标箭塔数 > 1（实际 %d）" % target)
+	AiBuildRes._try_tower(c)
+	AiBuildRes._try_tower(c)
+	var mine: Array = []
+	for b in w.building_list:
+		if b.alive and String(b.type) == "tower" and String(b.owner) == "F1" \
+				and int(b.zone_id) == zid:
+			mine.append(b)
+	ok(mine.size() >= 2, "★★ 同一个区划可以建多座箭塔（实际 %d）" % mine.size())
+	if mine.size() >= 2:
+		ok(not (int(mine[0].tx) == int(mine[1].tx) and int(mine[0].ty) == int(mine[1].ty)),
+			"★★ 多座塔不挤在同一格")
+	# 前线塔应压向靠敌方边界，而不是缩在区划中心。
+	var ftiles: Array = AiBuildRes._frontier_tiles(c, z0)
+	ok(not ftiles.is_empty(), "（前提）前线区划有靠敌方的边界格")
+	for b in mine:
+		var fmin := 999
+		for ft in ftiles:
+			var fv: Vector2i = ft
+			fmin = mini(fmin, maxi(absi(fv.x - int(b.tx)), absi(fv.y - int(b.ty))))
+		ok(fmin <= 4, "★★ 前线箭塔靠近敌方边界（距边界 %d 格）" % fmin)
+	# 被入侵：优先贴中心补塔。
+	var ct: Vector2i = (z0 as Dictionary)["center"]
+	w.spawn_enemy(ct.x + 1, ct.y + 1)
+	ok(AiBuildRes._zone_threatened(c, z0), "★★ 区划中心附近出现敌人 → 判定被入侵")
+	var near_tile = AiBuildRes._pick_tower_tile(c, z0)
+	if near_tile != null:
+		var ntv: Vector2i = near_tile
+		ok(maxi(absi(ntv.x - ct.x), absi(ntv.y - ct.y)) <= 3,
+			"★★ 被入侵时补塔位置贴近区划中心")
+
+
+## ★★ 经济规划：缺编时暂停防御建造，并把补员 / 补将的钱预留下来。
+func _test_build_economy_guard(cfg) -> void:
+	var w = _make_ai_test_world(cfg)
+	if w == null:
+		ok(false, "经济规划测试世界")
+		return
+	var c = w.ai_commanders["F1"]
+	w.ai_faction_resources["F1"] = {"food": 200.0, "gold": 200.0}
+	var g = w.create_general("F1", 1, 60)
+	if g == null:
+		ok(false, "（前提）能造缺编将领")
+		return
+	w.units.append(g)
+	g.pos = Vector2(5.5, 5.5)
+	g.sync_tile(w.map)
+	ok(AiArmyRes.understrength_team_count(c) > 0, "（前提）存在缺编队伍")
+	ok(AiBuildRes._defense_paused(c), "★★ 缺编时暂停防御建造")
+	var reserve: Dictionary = AiBuildRes._production_reserve(c)
+	ok(float(reserve.get("food", 0.0)) >= 200.0,
+		"★★ 生产预留覆盖补员成本（food=%.1f）" % float(reserve.get("food", 0.0)))
+	var avail: Dictionary = AiBuildRes._build_available(c)
+	ok(float(avail.get("food", 0.0)) <= 0.0,
+		"★★ 扣除生产预留后没有造塔预算（food）")
+	var before := 0
+	for b in w.building_list:
+		if b.alive and String(b.type) == "tower" and String(b.owner) == "F1":
+			before += 1
+	AiBuildRes.update(c)
+	var after := 0
+	for b in w.building_list:
+		if b.alive and String(b.type) == "tower" and String(b.owner) == "F1":
+			after += 1
+	ok(after == before, "★★ 缺编时 update 不会拿补员的钱去建塔")
+
+
+## ★★ 城墙：前线区划围绕中心 3×3 外圈连续造；被入侵时补缺口；塔 / 墙可升级。
+func _test_wall_and_upgrade(cfg) -> void:
+	var w = _make_ai_test_world(cfg)
+	if w == null:
+		ok(false, "城墙测试世界")
+		return
+	var c = w.ai_commanders["F1"]
+	w.ai_faction_resources["F1"] = {"food": 8000.0, "gold": 8000.0}
+	var z0 = null
+	for z in w.zones.zones:
+		if typeof(z) == TYPE_DICTIONARY and String((z as Dictionary).get("owner", "")) == "F1" \
+				and (z as Dictionary).get("center", null) != null:
+			z0 = z
+			break
+	if z0 == null:
+		ok(false, "（前提）有己方前线区划")
+		return
+	var ring: Array = AiBuildRes._wall_ring_tiles(c, z0)
+	ok(ring.size() == 8, "（前提）中心 3×3 外圈是 8 格")
+	for i in 16:
+		AiBuildRes._try_wall(c)
+	var ring_walls: Array = []
+	for b in w.building_list:
+		if b.alive and String(b.type) == "wall" and String(b.owner) == "F1":
+			ring_walls.append(b)
+	ok(ring_walls.size() >= 6, "★★ 前线区划围绕中心连续造墙（%d/8）" % ring_walls.size())
+	# 被入侵时补缺口。
+	if not ring_walls.is_empty():
+		var wb = ring_walls[0]
+		var old := Vector2i(int(wb.tx), int(wb.ty))
+		w.remove_building(wb, true)
+		(z0 as Dictionary)["capture_state"] = "reading"
+		(z0 as Dictionary)["capture_faction"] = "p2"
+		(z0 as Dictionary)["capture_value"] = 0.5
+		AiBuildRes._try_wall(c)
+		var rebuilt = false
+		for b in w.building_list:
+			if b.alive and String(b.type) == "wall" and String(b.owner) == "F1" \
+					and int(b.tx) == old.x and int(b.ty) == old.y:
+				rebuilt = true
+		ok(rebuilt, "★★ 被入侵时优先补上城墙缺口")
+	# 防御建筑升级：墙 / 塔走同一个升级入口。
+	var before_upg := int(c.stats.get("upgrades", 0))
+	AiBuildRes._try_defense_upgrade(c)
+	var upgrading := false
+	for b in w.building_list:
+		if b.alive and String(b.owner) == "F1" \
+				and (String(b.type) == "wall" or String(b.type) == "tower") \
+				and b.is_upgrading():
+			upgrading = true
+			break
+	ok(upgrading or int(c.stats.get("upgrades", 0)) > before_upg,
+		"★★ AI 会升级前线 / 受威胁区划的箭塔或城墙")
+
+
+## ★★ 招将：优先前线 / 被入侵区划，基地只是兜底。
+func _test_front_general_recruit(cfg) -> void:
+	var w = _make_ai_test_world(cfg)
+	if w == null:
+		ok(false, "招将测试世界")
+		return
+	var c = w.ai_commanders["F1"]
+	var z1 = w.zone_by_id(1)
+	if z1 == null:
+		ok(false, "（前提）1 号区划")
+		return
+	(z1 as Dictionary)["owner"] = "F1"
+	(z1 as Dictionary)["capture_state"] = "reading"
+	(z1 as Dictionary)["capture_faction"] = "p2"
+	(z1 as Dictionary)["capture_value"] = 0.5
+	var order: Array = c._general_recruit_zones()
+	ok(not order.is_empty() and int(order[0]) == 1,
+		"★★ 被入侵的前线区划排在招将顺序第一（实际 %s）" % str(order))
+	# 前线刚招出来、还没形成编制的将领：遇敌先整队后撤。
+	var g = w.create_general("F1", 1, 50)
+	if g != null:
+		w.units.append(g)
+		var ct: Vector2i = (z1 as Dictionary)["center"]
+		g.pos = Vector2(float(ct.x) + 0.5, float(ct.y) + 0.5)
+		g.sync_tile(w.map)
+		w.spawn_enemy(ct.x + 1, ct.y + 1)
+		var before := int(c.stats.get("role_retreats", 0))
+		AiArmyRes._avoid_bad_fights(c)
+		ok(int(c.stats.get("role_retreats", 0)) > before,
+			"★★ 前线未成形部队遇敌会整队后撤")
 
 
 func _test_team_production_targets(cfg) -> void:

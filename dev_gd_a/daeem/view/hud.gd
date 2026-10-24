@@ -754,8 +754,9 @@ func _build_ai_panel() -> void:
 	ai_panel.bind_world(world)
 
 
-## ★★ 观战：玩家不下命令，右下命令卡与页签整块收起；AI 面板保留但只读。
-func set_observer(on: bool) -> void:
+## ★★ 观战：玩家不下命令，右下命令卡与页签整块收起；AI 面板保留。
+## `allow_ai_orders = true`（ai_test_2）时 AI 面板四颗指令按钮仍可点，其余仍是只读。
+func set_observer(on: bool, allow_ai_orders: bool = false) -> void:
 	observer_mode = on
 	if command_card != null:
 		command_card.visible = not on
@@ -763,7 +764,7 @@ func set_observer(on: bool) -> void:
 		page_tabs.visible = not on
 	if ai_panel != null:
 		var fid := String(world.my_faction) if on and world != null else ""
-		ai_panel.set_observer(fid)
+		ai_panel.set_observer(fid, allow_ai_orders)
 		ai_panel.sync()
 
 

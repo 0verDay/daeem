@@ -100,24 +100,29 @@ func _test_data() -> void:
 	eq(fallback.size(), 1, "兜底只有一个战役")
 
 
-## 主界面正中四颗按钮（test_1/2/3 + ai_test）配的关卡**真的能载入**（它们不在菜单数据里，在 config 里）。
+## 主界面正中五颗按钮（test_1/2/3 + ai_test + ai_test_2）配的关卡**真的能载入**（它们不在菜单数据里，在 config 里）。
 func _test_test_entries(cfg) -> void:
 	var raw: Variant = cfg.get_path_value("menu.test_entries")
-	ok(typeof(raw) == TYPE_ARRAY, "config 里有 menu.test_entries（四颗按钮的数据）")
+	ok(typeof(raw) == TYPE_ARRAY, "config 里有 menu.test_entries（五颗按钮的数据）")
 	if typeof(raw) != TYPE_ARRAY:
 		return
 	var entries: Array = raw
-	eq(entries.size(), 4, "★ 四颗按钮 = 四条数据")
+	eq(entries.size(), 5, "★ 五颗按钮 = 五条数据")
 	var campaigns: Array = CampaignLibraryRes.list_campaigns(cfg)
 	for item in entries:
 		var d: Dictionary = item
 		var label := String(d.get("label", ""))
 		var cid := String(d.get("campaign", ""))
 		var lid := String(d.get("level", ""))
-		ok(label.begins_with("test_") or label == "ai_test",
+		ok(label.begins_with("test_") or label.begins_with("ai_test"),
 			"按钮文案是 test_N 或 ai_test（%s）" % label)
-		if label == "ai_test":
-			ok(bool(d.get("ai_observer", false)), "★ ai_test 带观战标记")
+		if label.begins_with("ai_test"):
+			ok(bool(d.get("ai_observer", false)), "★ %s 带观战标记" % label)
+		if label == "ai_test_2":
+			ok(bool(d.get("ai_observer_orders", false)),
+				"★★ ai_test_2 带「观战可下令」标记")
+			ok(bool(d.get("ai_observer_reveal", false)),
+				"★★ ai_test_2 带「玩家全图显示」标记")
 		var option: Dictionary = {}
 		for c in campaigns:
 			if String((c as Dictionary).get("id", "")) == cid:

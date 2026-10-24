@@ -1,12 +1,12 @@
-## test_retaliation.gd —— 受击反击（2026.10.22）
+## test_retaliation.gd —— 受击反击（2026.10.22，2026.10.24 改）
 ##
 ## 需求：
-##   · 单个单位被**其他单位**攻击时，立刻转为行军攻击那个敌方单位；
-##   · 反击会**阻断程序下达的命令**（将领招募时的警戒 / 将领死亡时的警戒 / 巡逻…）；
-##   · 反击**不会阻断玩家下达的命令**（玩家点的移动 / 攻击 / 行军攻击照旧执行）；
+##   · 单个单位被**其他单位**攻击时，默认转为行军攻击那个敌方单位；
+##   · **所属队伍有命令时优先执行命令**（玩家 / AI 的移动、攻击、行军攻击、救援）；
+##   · 只有所属队伍没有命令时，默认复仇反击才生效；
 ##   · 建筑（箭塔）打过来不触发；同阵营不触发。
 ##
-## 这里同时钉住「反击结束后程序命令能恢复」（救援集结）与「开关关掉 = 旧行为」。
+## 这里同时钉住「无命令才反击」「有命令保持命令」「开关关掉 = 旧行为」。
 extends "res://tests/test_case.gd"
 
 const UnitRes = preload("res://logic/unit.gd")
@@ -33,14 +33,14 @@ func _run() -> void:
 		quit(1)
 		return
 	_place_all_far(w)
-	_test_program_order_broken(cfg, w)
+	_test_program_order_kept(cfg, w)
 	_test_player_move_not_broken(cfg, w)
 	_test_player_attack_move_not_broken(cfg, w)
 	_test_player_attack_not_broken(cfg, w)
 	_test_only_hit_unit(cfg, w)
 	_test_building_and_friendly(cfg, w)
 	_test_recruit_guard_broken(cfg, w)
-	_test_rescue_guard_broken_and_resumed(cfg, w)
+	_test_rescue_order_kept(cfg, w)
 	_test_switch(cfg, w)
 	print("[CASE] %s -> 通过 %d 项，失败 %d 项" % [_case_name, _pass, _fail])
 	if _fail > 0:
@@ -52,9 +52,9 @@ func _run() -> void:
 
 
 # ----------------------------------------------------------------------
-# 1) 程序命令（行军攻击 / 巡逻）被反击打断
+# 1) 程序命令（行军攻击 / 巡逻）优先，不再被反击打断
 # ----------------------------------------------------------------------
-func _test_program_order_broken(cfg, w) -> void:
+func _test_program_order_kept(cfg, w) -> void:
 	var victim = _mk(w, cfg, "r_v", "p1", UnitRes.UNIT_TYPE_SPEARMAN, Vector2i(5, 5))
 	var foe = _mk(w, cfg, "r_f", "p2", UnitRes.UNIT_TYPE_SPEARMAN, Vector2i(10, 5))
 	victim.hp_max = 1000.0
@@ -64,17 +64,14 @@ func _test_program_order_broken(cfg, w) -> void:
 	ok(victim.has_attack_move, "（前提）现在在执行程序行军攻击")
 	ok(not victim.player_order, "（前提）它不是玩家命令")
 
-	var d0: float = victim.pos.distance_to(foe.pos)
 	victim.take_damage(cfg, w, 10.0, foe)
-	eq(victim.target, foe, "★★ 被打中 → 立刻锁定攻击者")
-	eq(victim.retaliate_target, foe, "★★ 进入受击反击状态")
-	ok(not victim.has_attack_move, "★★ 程序行军攻击被打断（has_attack_move = false）")
-	ok(victim.is_retaliating(), "is_retaliating() 为真")
+	eq(victim.target, null, "★★ 有程序命令时挨打：不转去追攻击者")
+	eq(victim.retaliate_target, null, "★★ 不进入默认反击")
+	ok(victim.has_attack_move, "★★ 程序行军攻击状态保持（继续执行命令）")
 
 	CombatRes.tick_frame(w, cfg, victim, DT, -1)
-	ok(not victim.path.is_empty() or victim.moving, "★★ 下一帧开始朝攻击者移动")
-	var d1: float = victim.pos.distance_to(foe.pos)
-	ok(d1 < d0, "★★ 距离在缩短（%.3f → %.3f）" % [d0, d1])
+	ok(victim.has_attack_move, "★★ 下一帧仍在执行原命令")
+	ok(victim.retaliate_target == null, "★★ 没有变成逃兵式追击")
 
 
 # ----------------------------------------------------------------------
@@ -210,9 +207,9 @@ func _test_recruit_guard_broken(cfg, w) -> void:
 
 
 # ----------------------------------------------------------------------
-# 6) 将领倒下后的救援集结：被打断；反击结束后恢复
+# 6) 将领倒下后的救援集结：属于队伍命令，优先执行，不转去反击
 # ----------------------------------------------------------------------
-func _test_rescue_guard_broken_and_resumed(cfg, w) -> void:
+func _test_rescue_order_kept(cfg, w) -> void:
 	var leader = _mk(w, cfg, "r_res", "p1", UnitRes.UNIT_TYPE_SPEARMAN, Vector2i(10, 15))
 	var mate = _mk(w, cfg, "r_res_m", "p1", UnitRes.UNIT_TYPE_SPEARMAN, Vector2i(12, 15),
 		leader.id)
@@ -224,20 +221,15 @@ func _test_rescue_guard_broken_and_resumed(cfg, w) -> void:
 	ok(mate.has_attack_move, "（前提）它正朝倒下的将领行军攻击")
 
 	mate.take_damage(cfg, w, 10.0, foe)
-	eq(mate.retaliate_target, foe, "★★ 救援集结被打断：转去打攻击者")
-	ok(not mate.has_attack_move, "★★ 救援的行军攻击状态被清掉")
+	eq(mate.retaliate_target, null, "★★ 救援命令优先：不转去打攻击者")
+	ok(mate.has_attack_move, "★★ 救援的行军攻击状态保持")
 
-	# 反击目标还活着时，救援逻辑的「补一次集结令」不能把反击顶掉
+	# 救援重发只补命令，不会把队伍拽去追攻击者。
 	mate.halt()
 	w.update_rescue_orders()
-	eq(mate.target, foe, "★★ 救援重发**不能**覆盖还活着的反击目标")
-	ok(not mate.has_attack_move, "反击期间不会被重新挂上行军攻击")
-
-	# 攻击者没了 ⇒ 反击结束，救援重新下发
-	foe.alive = false
-	w.update_rescue_orders()
-	ok(mate.has_attack_move, "★★ 反击结束 → 救援集结自动恢复")
-	eq(mate.retaliate_target, null, "反击状态已清")
+	eq(mate.retaliate_target, null, "★★ 救援重发后仍然没有反击目标")
+	ok(mate.has_attack_move, "★★ 救援集结被重新下发")
+	eq(mate.target, null, "★★ 没有转去打攻击者")
 
 
 # ----------------------------------------------------------------------

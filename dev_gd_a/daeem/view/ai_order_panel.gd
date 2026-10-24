@@ -24,6 +24,8 @@ var _font: Font = null
 var _faction: String = ""
 ## ★★ 观战模式：面板只显示状态、不接命令（空 = 正常 AI 队友面板）。
 var _observer_faction: String = ""
+## ★★ 观战但仍授权下令（ai_test_2）：四颗指令按钮保持可点，只放行 AI 指令。
+var _observer_allow_orders: bool = false
 var _collapsed: bool = false
 var _w: float = 320.0
 var _h: float = 236.0
@@ -74,14 +76,19 @@ func bind_world(p_world) -> void:
 	sync()
 
 
-## ★★ 观战：绑定被观察的 AI 阵营，四颗指令按钮置灰（只读）。
-func set_observer(fid: String) -> void:
+## ★★ 观战：绑定被观察的 AI 阵营，四颗指令按钮默认置灰（只读）。
+## `allow_orders = true`（ai_test_2）时按钮保持可点，玩家可以给 AI 下四条指令。
+func set_observer(fid: String, allow_orders: bool = false) -> void:
 	_observer_faction = fid
+	_observer_allow_orders = allow_orders and fid != ""
 	_pick_mode = ""
 	for k in _buttons.keys():
-		(_buttons[k] as Button).disabled = fid != ""
+		(_buttons[k] as Button).disabled = fid != "" and not _observer_allow_orders
 	if fid != "":
-		_title.text = "观战 · %s" % _txt("title", "AI 队友")
+		if _observer_allow_orders:
+			_title.text = "观战 · 可下令"
+		else:
+			_title.text = "观战 · %s" % _txt("title", "AI 队友")
 	else:
 		_title.text = _txt("title", "AI 队友")
 	sync()
@@ -229,7 +236,9 @@ func _set_body_visible(v: bool) -> void:
 
 
 func _on_order(order: String) -> void:
-	if _faction == "" or _observer_faction != "":
+	if _faction == "":
+		return
+	if _observer_faction != "" and not _observer_allow_orders:
 		return
 	if order == "march" or order == "mass":
 		_sync_pick_hint(order)
@@ -272,7 +281,7 @@ func sync() -> void:
 		if not visible:
 			return
 		_reposition()
-		_sync_state(true)
+		_sync_state(not _observer_allow_orders)
 		return
 	var mates: Array = world.ai_teammates_for(world.my_faction)
 	if mates.is_empty():
@@ -291,7 +300,10 @@ func _sync_state(read_only: bool) -> void:
 	var title := _txt("title", "AI 队友")
 	var nm := String(st.get("name", _faction))
 	if _observer_faction != "":
-		_title.text = "观战 · %s · %s" % [title, nm]
+		if _observer_allow_orders:
+			_title.text = "观战 · 可下令 · %s" % nm
+		else:
+			_title.text = "观战 · %s · %s" % [title, nm]
 	else:
 		_title.text = "%s · %s" % [title, nm]
 	var dir := String(st.get("directive", ""))

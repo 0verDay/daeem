@@ -93,11 +93,23 @@ const DEFAULTS := {
 		],
 	},
 	"build": {
-		"tower_max": 6,
+		"tower_max": 30,
+		"tower_hard_max": 30,
+		"tower_front_towers": 3,
+		"tower_threat_towers": 5,
+		"tower_rear_towers": 0,
+		"tower_rich_bonus_max": 3,
+		"production_reserve_recruits": 3,
+		"pause_defense_when_understrength": true,
+		"tower_threat_radius": 9.0,
+		"tower_cover_radius": 4,
+		"wall_enabled": true,
+		"wall_hard_max": 100,
+		"defense_upgrade_enabled": true,
+		"defense_upgrade_tower_bonus": 12.0,
 		"tower_frontier_bonus": 4.0,
 		"base_upgrade_priority": 10.0,
 		"tech_priority": [],
-		"wall_enabled": false,
 	},
 	"patrol": {
 		"enabled": true,
@@ -106,6 +118,52 @@ const DEFAULTS := {
 		"threat_radius": 7.0,        # 巡逻点周围多大范围内的敌人会被算进风险
 		"avoid_enemy_ratio": 1.25,   # 敌人 ≥ 我方 × 这个倍率 ⇒ 不把小队派去这个点
 		"home_when_alone": true,     # 只有守军一支队伍时，允许它（读条中）去基地附近巡逻
+	},
+	# ★ 濒死将领：再起 / 召回巡检。再起免费；召回是「回大本营重开」。
+	"revive": {
+		"interval_sec": 0.75,             # 多快检查一次倒地将领
+		"recall_escort_threshold": 1,     # 敌后 / 危险时，活着的附属兵 ≤ 这个数就召回
+		"recall_distance_tiles": 7.0,     # 离家超过这个距离、又没兵，就召回
+		"danger_radius": 6.0,             # 评估「附近敌人 / 友军」的半径
+	},
+	# ★ 队伍粘合：将领在走 / 停时，发现非战斗的附属兵掉队，就**重发整队命令**。
+	"cohesion": {
+		"enabled": true,
+		"interval_sec": 1.2,
+		"max_distance_tiles": 4.0,        # 超过这个距离就认为掉队（战斗中单位除外）
+	},
+	# ★ 队伍职能：按将领顺序轮换；职能同时影响招兵编成与战术。
+	"roles": {
+		"cycle": ["line", "ranged", "guerrilla"],
+		"ranged": {
+			"composition": [
+				{"type": "longbowman", "weight": 0.45},
+				{"type": "horse_archer", "weight": 0.20},
+				{"type": "catapult", "weight": 0.08},
+				{"type": "spearman", "weight": 0.17},
+				{"type": "knight", "weight": 0.07},
+				{"type": "grain_cart", "weight": 0.03},
+			],
+			"standoff_tiles": 4.5,       # 停在目标这个距离外，靠射程输出
+			"frontline_min": 1,          # 至少保留几个非远程兵抗线
+		},
+		"guerrilla": {
+			"composition": [
+				{"type": "rider", "weight": 0.40},
+				{"type": "horse_archer", "weight": 0.30},
+				{"type": "spearman", "weight": 0.20},
+				{"type": "longbowman", "weight": 0.10},
+			],
+			"max_enemy_strength": 3.0,   # 只打没有防备 / 守军很少的边界
+			"avoid_ratio": 0.9,          # 敌人接近这个比例就撤（游击队不硬碰）
+		},
+	},
+	# ★ 受击后的整队决策：有命令时不进入默认复仇，由 AI 决定反击还是继续撤。
+	"reaction": {
+		"cooldown_sec": 0.7,
+		"danger_radius": 6.0,
+		"counter_ratio": 1.15,          # 敌人 ≤ 我方 × 这个倍率 ⇒ 整队反击
+		"retreat_counter_ratio": 0.75,  # 正在撤退时，敌人 ≤ 我方 × 这个倍率才回头
 	},
 	"auto": {
 		"develop_until_ratio": 0.35,

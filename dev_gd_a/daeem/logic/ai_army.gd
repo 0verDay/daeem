@@ -57,6 +57,61 @@ static func update(ai, dt: float) -> void:
 			_auto(ai)
 		_:
 			_develop(ai)
+	_cohesion_tick(ai)
+
+
+## ★★ 队伍粘合：将领在移动、某个附属兵却停下 / 掉队（且不在战斗）时，
+## **重发整队命令**。绝不单独给某一个兵下令 —— 用户口径：command AI 只能给部队下指令。
+static func _cohesion_tick(ai) -> void:
+	var cc: Dictionary = ai.profile.get("cohesion", {})
+	if not bool(cc.get("enabled", true)):
+		return
+	if ai.world == null or ai.world.time < float(ai.cohesion_next_at):
+		return
+	ai.cohesion_next_at = ai.world.time \
+		+ maxf(0.2, float(cc.get("interval_sec", 1.2)))
+	var max_d := maxf(1.0, float(cc.get("max_distance_tiles", 4.0)))
+	for t in field_teams(ai):
+		var leader = t.get("leader", null)
+		if leader == null or not leader.alive or leader.is_downed():
+			continue
+		# 将领本身在战斗：别把整队从交战里拽出来。
+		if leader.target != null or leader.target_building != null:
+			continue
+		var leader_move := bool(leader.has_attack_move) or bool(leader.moving)
+		var goal: Vector2 = leader.pos
+		if bool(leader.has_attack_move):
+			goal = leader.attack_move_goal
+		elif bool(leader.moving):
+			goal = leader.goal
+		var need := false
+		for m in (t.get("units", []) as Array):
+			if m == null or m == leader or not m.alive or m.is_downed():
+				continue
+			# 这个兵在打自己的目标 / 正在救援 / 回家：不属于「掉队」。
+			if m.target != null or m.target_building != null:
+				continue
+			if String(m.rescue_leader_id) != "" or bool(m.returning_home):
+				continue
+			if m.pos.distance_to(leader.pos) > max_d:
+				need = true
+				break
+			# 将领走、兵却停了；或将领停、兵还在走（旧命令残留）。
+			if leader_move and not bool(m.has_attack_move):
+				need = true
+				break
+			if not leader_move and bool(m.has_attack_move):
+				need = true
+				break
+			# 都在走，但目标点不是同一个：说明兵还在执行上一条旧命令。
+			if leader_move and bool(m.has_attack_move) \
+					and m.attack_move_goal.distance_to(goal) > 1.5:
+				need = true
+				break
+		if not need:
+			continue
+		# ★ 重发**整队**命令；force 绕过去重，否则「同一目标、刚下过」会被跳过。
+		_order_team(ai, t, goal, false, true)
 
 
 # ------------------------------------------------------------------
@@ -73,11 +128,12 @@ static func teams(ai) -> Array:
 			continue
 		if String(u.leader_id) == "":
 			var g: Array = ai.world.group_of(u)
-			out.append({"leader": u, "units": g, "size": g.size()})
+			out.append({"leader": u, "units": g, "size": g.size(),
+				"role": String(ai.team_roles.get(String(u.id), ""))})
 		else:
 			var l = ai.world.unit_by_id(String(u.leader_id))
 			if l == null or not l.alive:
-				out.append({"leader": u, "units": [u], "size": 1})
+				out.append({"leader": u, "units": [u], "size": 1, "role": ""})
 	return out
 
 
@@ -110,6 +166,117 @@ static func team_projected(ai, leader) -> int:
 	if leader == null or not leader.alive:
 		return 0
 	return team_total(ai, leader) + int(leader.train_queue_size())
+
+
+static func _role_of(ai, leader) -> String:
+	if leader == null:
+		return ""
+	return String(ai.team_roles.get(String(leader.id), "line"))
+
+
+## 远程队的行军落点：停在目标 `standoff_tiles` 外，靠射程输出。
+static func _role_target_point(ai, leader, pt: Vector2) -> Vector2:
+	if _role_of(ai, leader) != "ranged":
+		return pt
+	var roles: Dictionary = ai.profile.get("roles", {})
+	var rc: Dictionary = roles.get("ranged", {})
+	var standoff := maxf(0.0, float(rc.get("standoff_tiles", 4.5)))
+	if standoff <= 0.0:
+		return pt
+	var dir: Vector2 = leader.pos - pt
+	if dir.length_squared() < 0.0001:
+		var base = ai.world.find_base_of(ai.faction)
+		if base != null:
+			dir = Vector2(float(base.tx) + 0.5, float(base.ty) + 0.5) - pt
+	if dir.length_squared() < 0.0001:
+		dir = Vector2.LEFT
+	return _clamp_map_point(ai, pt + dir.normalized() * standoff)
+
+
+## 把整队拉回大本营（整队命令；不单独调某个兵）。
+static func _retreat_team(ai, leader) -> void:
+	if leader == null or not leader.alive:
+		return
+	var base = ai.world.find_base_of(ai.faction)
+	if base == null:
+		return
+	var rally := _clamp_map_point(ai, Vector2(float(base.tx) + 1.5, float(base.ty) + 1.5))
+	_order_team(ai, {"leader": leader, "units": ai.world.group_of(leader)},
+		rally, false, true)
+	ai.regroup_ids[String(leader.id)] = true
+	ai.stats["role_retreats"] = int(ai.stats.get("role_retreats", 0)) + 1
+	ai.note_status("retreating")
+
+
+static func _my_zone_ids(ai) -> Dictionary:
+	var ids: Dictionary = {}
+	for z in ai.world.zones.zones:
+		if typeof(z) != TYPE_DICTIONARY:
+			continue
+		var zd: Dictionary = z
+		if FactionRes.same_side_for_attack(String(zd.get("owner", "")), ai.faction):
+			ids[int(zd.get("id", -1))] = true
+	return ids
+
+
+## ★ 游击队目标：与己方相邻、守军很少 / 没有守军的边界区划。
+static func _pick_guerrilla_zone(ai) -> Variant:
+	var my_ids := _my_zone_ids(ai)
+	if my_ids.is_empty():
+		return null
+	var roles: Dictionary = ai.profile.get("roles", {})
+	var gc: Dictionary = roles.get("guerrilla", {})
+	var max_enemy := maxf(0.0, float(gc.get("max_enemy_strength", 3.0)))
+	var threat_radius := maxf(0.0, float(ai.profile.get("expand", {}).get("threat_radius", 6.0)))
+	var best: Variant = null
+	var best_score := -INF
+	for z in ai.world.zones.zones:
+		if typeof(z) != TYPE_DICTIONARY:
+			continue
+		var zd: Dictionary = z
+		var zid := int(zd.get("id", -1))
+		if my_ids.has(zid) or ai.failed_expand_zones.has(zid):
+			continue
+		var owner := String(zd.get("owner", ""))
+		if owner != "" and FactionRes.same_side_for_attack(owner, ai.faction):
+			continue
+		var cv: Variant = zd.get("center", null)
+		if cv == null or not _adjacent_to_mine(ai, zd, my_ids):
+			continue
+		var ct: Vector2i = cv
+		var center := GridRes.center_of(ct)
+		var enemy := _enemy_strength_near(ai, center, threat_radius)
+		if enemy > max_enemy:
+			continue
+		var prod: Dictionary = zd.get("production", {})
+		var score := 4.0 - enemy * 2.0
+		if owner == "":
+			score += 2.0
+		score += float(prod.get("food", 0.0)) + float(prod.get("gold", 0.0))
+		# 同分按区划 id 稳定选择。
+		if score > best_score or (is_equal_approx(score, best_score) \
+				and (best == null or zid < int((best as Dictionary).get("id", -1)))):
+			best_score = score
+			best = zd
+	return best
+
+
+## 某个职能、已经能出门的队伍（按队总人数从多到少、id 稳定排序）。
+static func _role_teams(ai, role: String, min_units: int) -> Array:
+	var out: Array = []
+	for t in field_teams(ai):
+		if _role_of(ai, t["leader"]) != role:
+			continue
+		if team_total(ai, t["leader"]) < min_units:
+			continue
+		out.append(t)
+	out.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		var sa := team_total(ai, a["leader"])
+		var sb := team_total(ai, b["leader"])
+		if sa != sb:
+			return sa > sb
+		return String((a["leader"] as Object).id) < String((b["leader"] as Object).id))
+	return out
 
 
 ## 基地区划 id（没有大本营 / 没有区划 → -1）。
@@ -332,7 +499,7 @@ static func _develop(ai) -> void:
 	var base = ai.world.find_base_of(ai.faction)
 	if base == null:
 		return
-	var rally := Vector2(float(base.tx) + 1.5, float(base.ty) + 1.5)
+	var rally := _clamp_map_point(ai, Vector2(float(base.tx) + 1.5, float(base.ty) + 1.5))
 	for t in leader_teams(ai):
 		var leader = t["leader"]
 		if leader.target != null or leader.target_building != null:
@@ -362,7 +529,7 @@ static func _mass(ai) -> void:
 		var base = ai.world.find_base_of(ai.faction)
 		if base == null:
 			return
-		pt = Vector2(float(base.tx) + 1.5, float(base.ty) + 1.5)
+		pt = _clamp_map_point(ai, Vector2(float(base.tx) + 1.5, float(base.ty) + 1.5))
 	var all := leader_teams(ai)
 	# 至少留一位将领看家（否则生产会停）；只有一位时只能带上。
 	var home = ensure_garrison(ai)
@@ -383,7 +550,18 @@ static func _expand(ai, force: bool = false) -> bool:
 		return true
 	if ai.world.time < ai.next_target_at:
 		return false
-	var pick: Variant = _pick_expand_zone(ai)
+	var ec: Dictionary = ai.profile.get("expand", {})
+	var min_units := maxi(2, _i(ec, "min_field_units", 3))
+	# ★ 游击队优先：只挑「与己方相邻、守军很少 / 没有守军」的边界区划。
+	var guerrilla_target := false
+	var pick: Variant = null
+	if not force:
+		var guerrillas := _role_teams(ai, "guerrilla", min_units)
+		if not guerrillas.is_empty():
+			pick = _pick_guerrilla_zone(ai)
+			guerrilla_target = pick != null
+	if pick == null:
+		pick = _pick_expand_zone(ai)
 	if pick == null:
 		# 没有可扩张的区划：玩家强制扩张时退到「打最近敌方目标」；
 		# 自主模式交给 `_attack_if_ready()`（它要求更大的规模，避免小队伍送死）。
@@ -396,8 +574,19 @@ static func _expand(ai, force: bool = false) -> bool:
 		return false
 	var center: Vector2i = cv
 	var pt := GridRes.center_of(center)
-	var required := _required_units_for_zone(ai, zd)
-	var chosen := _pick_mission_teams(ai, pt, required, force)
+	var threat_radius0 := maxf(0.0, float(ec.get("threat_radius", 6.0)))
+	var target_defended := _enemy_strength_near(ai, pt, threat_radius0) > 0.0
+	var chosen: Array = []
+	if guerrilla_target:
+		chosen = _role_teams(ai, "guerrilla", min_units)
+		if not chosen.is_empty():
+			chosen = [chosen[0]]
+	else:
+		var required := _required_units_for_zone(ai, zd)
+		for t in _pick_mission_teams(ai, pt, required, force):
+			# 游击队不参加正面扩张 / 硬目标；它们只打空档。
+			if _role_of(ai, t["leader"]) != "guerrilla":
+				chosen.append(t)
 	if chosen.is_empty():
 		return false
 	ai.target_zone = int(zd.get("id", -1))
@@ -406,7 +595,10 @@ static func _expand(ai, force: bool = false) -> bool:
 		ai.expand_team_ids.append(String((t["leader"] as Object).id))
 	ai.expand_started_at = ai.world.time
 	for t2 in chosen:
-		_order_team(ai, t2, pt, true)
+		var op := pt
+		if target_defended:
+			op = _role_target_point(ai, t2["leader"], pt)
+		_order_team(ai, t2, op, true)
 	ai.stats["expands"] = int(ai.stats.get("expands", 0)) + 1
 	ai.note_status("expanding")
 	return true
@@ -441,6 +633,11 @@ static func _continue_expand(ai) -> bool:
 	var center: Vector2i = cv
 	var pt := GridRes.center_of(center)
 	var min_units := maxi(2, _i(ec, "min_field_units", 3))
+	var threat_radius := maxf(0.0, float(ec.get("threat_radius", 6.0)))
+	var enemy_at_center := _enemy_strength_near(ai, pt, threat_radius)
+	# ★★ 区划里的守军已经被清空：占领只看「有没有人站在中心」，不要求队伍还满编。
+	#    旧逻辑会在队伍被打到 min_units 以下时直接放弃任务，于是「杀光守军却没人占领」。
+	var undefended := enemy_at_center <= 0.0
 	var alive: Array = []
 	var total := 0
 	for id in ai.expand_team_ids:
@@ -449,25 +646,45 @@ static func _continue_expand(ai) -> bool:
 			continue
 		if not u.is_general():
 			continue
+		var role := _role_of(ai, u)
+		# 游击队：敌人一多就整队撤回，换空档；不要硬碰。
+		if role == "guerrilla":
+			var gc: Dictionary = (ai.profile.get("roles", {}) as Dictionary).get("guerrilla", {})
+			if enemy_at_center > maxf(0.0, float(gc.get("max_enemy_strength", 3.0))):
+				_retreat_team(ai, u)
+				_clear_expand(ai, true)
+				return false
+		# 远程队：前排倒光、附近还有敌人 ⇒ 整队后撤，不要被贴脸。
+		if role == "ranged":
+			var rc: Dictionary = (ai.profile.get("roles", {}) as Dictionary).get("ranged", {})
+			var need_front := int(rc.get("frontline_min", 1))
+			if enemy_at_center > 0.0 and ai.frontline_count(u) < need_front:
+				_retreat_team(ai, u)
+				_clear_expand(ai, true)
+				return false
 		# ★ 单支队伍掉到「不能出门」的规模 ⇒ 从任务里剔除，交给 `_regroup` 带回整备；
-		#   不能因为它还在 id 列表里就继续把光杆司令往区划中心送。
-		if team_total(ai, u) < min_units:
+		#   但目标已经没人防守时例外：一个活着的将也能站中心读条。
+		if team_total(ai, u) < min_units and not undefended:
 			continue
 		alive.append({"leader": u, "units": ai.world.group_of(u)})
 		total += team_total(ai, u)
-	if alive.is_empty() or total < min_units:
+	if alive.is_empty():
 		# 队伍被打残了：放弃这一块，让它们先回去整备（`_regroup` 会接管）。
 		_clear_expand(ai, true)
 		return false
+	if total < min_units and not undefended:
+		_clear_expand(ai, true)
+		return false
 	# ★ 占领途中敌人增援到明显多于我方：别让小队继续往中心送，先撤。
-	var threat_radius := maxf(0.0, float(ec.get("threat_radius", 6.0)))
 	var avoid_ratio := maxf(0.1, float(ec.get("avoid_enemy_ratio", 1.35)))
-	var enemy := _enemy_strength_near(ai, pt, threat_radius)
-	if float(total) < enemy * avoid_ratio:
+	if float(total) < enemy_at_center * avoid_ratio:
 		_clear_expand(ai, true)
 		return false
 	for t in alive:
-		_order_team(ai, t, pt, true)
+		var op := pt
+		if not undefended:
+			op = _role_target_point(ai, t["leader"], pt)
+		_order_team(ai, t, op, true)
 	ai.note_status("expanding")
 	return true
 
@@ -533,19 +750,44 @@ static func _avoid_bad_fights(ai) -> void:
 	var radius := maxf(0.0, float(ec.get("threat_radius", 6.0)))
 	var ratio := maxf(0.1, float(ec.get("avoid_enemy_ratio", 1.35)))
 	var squad_units := maxi(2, _i(ec, "squad_units", 3))
+	var min_units := maxi(2, _i(ec, "min_field_units", 3))
 	var base = ai.world.find_base_of(ai.faction)
 	if base == null:
 		return
-	var rally := Vector2(float(base.tx) + 1.5, float(base.ty) + 1.5)
+	var rally := _clamp_map_point(ai, Vector2(float(base.tx) + 1.5, float(base.ty) + 1.5))
 	for t in field_teams(ai):
 		var leader = t["leader"]
 		if leader == null or not leader.alive or leader.is_downed():
 			continue
 		var lid := String(leader.id)
-		if ai.assault_team_ids.has(lid):
-			continue
+		var role := _role_of(ai, leader)
+		var enemy_now := _enemy_strength_near(ai, leader.pos, radius)
+		if role == "guerrilla" and enemy_now > 0.0:
+			var gc: Dictionary = (ai.profile.get("roles", {}) as Dictionary).get("guerrilla", {})
+			var ours_g := float(team_total(ai, leader))
+			if enemy_now >= ours_g * maxf(0.1, float(gc.get("avoid_ratio", 0.9))):
+				_retreat_team(ai, leader)
+				ai.expand_team_ids.erase(lid)
+				ai.assault_team_ids.erase(lid)
+				continue
+		if role == "ranged" and enemy_now > 0.0:
+			var rc: Dictionary = (ai.profile.get("roles", {}) as Dictionary).get("ranged", {})
+			if ai.frontline_count(leader) < int(rc.get("frontline_min", 1)):
+				_retreat_team(ai, leader)
+				ai.expand_team_ids.erase(lid)
+				ai.assault_team_ids.erase(lid)
+				continue
 		var ours := float(team_total(ai, leader))
 		if ours <= 0.0:
+			continue
+		# ★★ 未成形的部队（前线刚招出来的将领、被打残的小队）：遇敌先退，
+		#    不要拿一两个人去填线。整队撤回基地补员。
+		if ours < float(min_units) and enemy_now > 0.0:
+			_retreat_team(ai, leader)
+			ai.expand_team_ids.erase(lid)
+			ai.assault_team_ids.erase(lid)
+			continue
+		if ai.assault_team_ids.has(lid):
 			continue
 		var enemy := _enemy_strength_near(ai, leader.pos, radius)
 		if enemy <= 0.0:
@@ -582,7 +824,7 @@ static func _regroup(ai) -> void:
 	var base = ai.world.find_base_of(ai.faction)
 	var rally := Vector2.ZERO
 	if base != null:
-		rally = Vector2(float(base.tx) + 1.5, float(base.ty) + 1.5)
+		rally = _clamp_map_point(ai, Vector2(float(base.tx) + 1.5, float(base.ty) + 1.5))
 	for t in field_teams(ai):
 		var leader = t["leader"]
 		if leader == null or not leader.alive or leader.is_downed():
@@ -635,7 +877,7 @@ static func _enemy_strength_near(ai, pt: Vector2, radius: float) -> float:
 			continue
 		if FactionRes.same_side_for_attack(String(u.faction), ai.faction):
 			continue
-		if ai.world.fog != null and not ai.world.fog.unit_visible(ai.faction, u):
+		if ai.world.fog != null and not ai.world.fog.logic_unit_visible(ai.faction, u):
 			continue
 		if u.pos.distance_squared_to(pt) <= r2:
 			n += 2.0 if u.is_general() else 1.0
@@ -755,10 +997,10 @@ static func _patrol_points(ai) -> Array:
 	var base = ai.world.find_base_of(ai.faction)
 	if base != null:
 		# 基地外围四个点（不要正好压在基地格上）
-		pts.append(Vector2(float(base.tx) + 3.5, float(base.ty) + 1.5))
-		pts.append(Vector2(float(base.tx) - 1.5, float(base.ty) + 3.5))
-		pts.append(Vector2(float(base.tx) - 3.5, float(base.ty) - 1.5))
-		pts.append(Vector2(float(base.tx) + 1.5, float(base.ty) - 3.5))
+		pts.append(_clamp_map_point(ai, Vector2(float(base.tx) + 3.5, float(base.ty) + 1.5)))
+		pts.append(_clamp_map_point(ai, Vector2(float(base.tx) - 1.5, float(base.ty) + 3.5)))
+		pts.append(_clamp_map_point(ai, Vector2(float(base.tx) - 3.5, float(base.ty) - 1.5)))
+		pts.append(_clamp_map_point(ai, Vector2(float(base.tx) + 1.5, float(base.ty) - 3.5)))
 	for z in ai.world.zones.zones:
 		var zd: Dictionary = z
 		if String(zd.get("owner", "")) != ai.faction:
@@ -767,7 +1009,7 @@ static func _patrol_points(ai) -> Array:
 		if c == null:
 			continue
 		var ct: Vector2i = c
-		pts.append(Vector2(float(ct.x) + 1.5, float(ct.y) + 1.5))
+		pts.append(_clamp_map_point(ai, Vector2(float(ct.x) + 1.5, float(ct.y) + 1.5)))
 	return pts
 
 
@@ -781,6 +1023,9 @@ static func _attack_if_ready(ai) -> bool:
 	var ready := ready_field_teams(ai, maxi(2, _i(ec, "min_field_units", 3)))
 	var total := 0
 	for t in ready:
+		# 游击队不去硬目标：它们只打没有防备的边界。
+		if _role_of(ai, t["leader"]) == "guerrilla":
+			continue
 		total += team_total(ai, t["leader"])
 	if total < required:
 		return false
@@ -798,6 +1043,8 @@ static func _attack_if_ready(ai) -> bool:
 	ai.assault_point = pt
 	ai.assault_team_ids.clear()
 	for t2 in ready:
+		if _role_of(ai, t2["leader"]) == "guerrilla":
+			continue
 		ai.assault_team_ids.append(String((t2["leader"] as Object).id))
 	# 目标可能很深：给一个上限，避免「追一个打不掉的目标」无限拖住全军。
 	ai.assault_until = ai.world.time + maxf(20.0, float(ec.get("assault_timeout_sec", 90.0)))
@@ -823,23 +1070,32 @@ static func _continue_assault(ai) -> bool:
 	var total := 0
 	var ec: Dictionary = ai.profile.get("expand", {})
 	var min_units := maxi(2, _i(ec, "min_field_units", 3))
+	var threat_radius := maxf(0.0, float(ec.get("threat_radius", 6.0)))
+	var avoid_ratio := maxf(0.1, float(ec.get("avoid_enemy_ratio", 1.35)))
+	var enemy := _enemy_strength_near(ai, ai.assault_point, threat_radius)
+	# ★★ 目标守军已经清空：残队也继续压上去拆建筑 / 站中心，不要因为掉编就整轮放弃。
+	var undefended := enemy <= 0.0
 	for id in ai.assault_team_ids:
 		var u = ai.world.unit_by_id(String(id))
 		if u == null or not u.alive or u.is_downed() or not u.is_general():
 			continue
-		# 单支队伍掉到不能出门的规模 ⇒ 从任务里剔除（交给 `_regroup`）。
-		if team_total(ai, u) < min_units:
+		# 远程队前排倒光、附近还有敌人 ⇒ 整队后撤（整队命令）。
+		if _role_of(ai, u) == "ranged":
+			var rc: Dictionary = (ai.profile.get("roles", {}) as Dictionary).get("ranged", {})
+			if enemy > 0.0 and ai.frontline_count(u) < int(rc.get("frontline_min", 1)):
+				_retreat_team(ai, u)
+				continue
+		# 单支队伍掉到不能出门的规模 ⇒ 从任务里剔除（交给 `_regroup`）；
+		# 目标已经没人防守时例外。
+		if team_total(ai, u) < min_units and not undefended:
 			continue
 		alive.append({"leader": u, "units": ai.world.group_of(u)})
 		total += team_total(ai, u)
-	if alive.is_empty() or total < min_units:
+	if alive.is_empty() or (total < min_units and not undefended):
 		clear_assault(ai)
 		return false
 	# ★ 进攻途中敌人越聚越多：如果已经明显多于我方，就放弃这一轮，
 	#   不要拿大部队去硬填一个更大的兵团（下一 tick 重新评估 / 补员）。
-	var threat_radius := maxf(0.0, float(ec.get("threat_radius", 6.0)))
-	var avoid_ratio := maxf(0.1, float(ec.get("avoid_enemy_ratio", 1.35)))
-	var enemy := _enemy_strength_near(ai, ai.assault_point, threat_radius)
 	if float(total) < enemy * avoid_ratio:
 		clear_assault(ai)
 		return false
@@ -853,11 +1109,16 @@ static func _continue_assault(ai) -> bool:
 
 static func _issue_assault_orders(ai) -> void:
 	var pt: Vector2 = ai.assault_point
+	var ec: Dictionary = ai.profile.get("expand", {})
+	var enemy := _enemy_strength_near(ai, pt, maxf(0.0, float(ec.get("threat_radius", 6.0))))
 	for id in ai.assault_team_ids:
 		var u = ai.world.unit_by_id(String(id))
 		if u == null or not u.alive or u.is_downed():
 			continue
-		_order_team(ai, {"leader": u, "units": ai.world.group_of(u)}, pt, true)
+		var op := pt
+		if enemy > 0.0:
+			op = _role_target_point(ai, u, pt)
+		_order_team(ai, {"leader": u, "units": ai.world.group_of(u)}, op, true)
 
 
 static func clear_assault(ai) -> void:
@@ -1190,7 +1451,7 @@ static func _find_threat(ai) -> Variant:
 	for u in ai.world.units:
 		if not u.alive or FactionRes.same_side_for_attack(String(u.faction), ai.faction):
 			continue
-		if ai.world.fog != null and not ai.world.fog.unit_visible(ai.faction, u):
+		if ai.world.fog != null and not ai.world.fog.logic_unit_visible(ai.faction, u):
 			continue
 		var p: Vector2 = u.pos
 		var d: float = p.distance_to(base_pt)
@@ -1228,13 +1489,27 @@ static func _find_threat(ai) -> Variant:
 
 ## 给一队下「行军攻击」；已经在去同一个点 / 已在目标半径内且没在交战 → 不重复下。
 ## ★ 招募中的将领**不再被跳过**：2026.10.24 起可以边移动边招募。
-static func _order_team(ai, team: Dictionary, pt: Vector2, keep: bool = true) -> bool:
+## ★★ 把任意目标点夹进地图内（0.5 .. cols-0.5 / rows-0.5）。
+##    这是「AI 部队跑到地图外」的最后一道保险：基地贴边时 `base + 1.5`、
+##    巡逻环 `base ± 3.5`、区划中心 +1.5 都可能算出界。
+static func _clamp_map_point(ai, pt: Vector2) -> Vector2:
+	if ai == null or ai.world == null or ai.world.map == null:
+		return pt
+	var max_x := maxf(0.5, float(ai.world.map.cols) - 0.5)
+	var max_y := maxf(0.5, float(ai.world.map.rows) - 0.5)
+	return Vector2(clampf(pt.x, 0.5, max_x), clampf(pt.y, 0.5, max_y))
+
+
+static func _order_team(ai, team: Dictionary, pt: Vector2, keep: bool = true,
+		force: bool = false) -> bool:
 	var leader = team["leader"]
 	if leader == null or not leader.alive or leader.is_downed():
 		return false
+	# ★ 所有 AI 目标点都在这里过一道地图边界，绝不把 move 目标发到图外。
+	pt = _clamp_map_point(ai, pt)
 	var reissue := maxf(1.0, float(ai.profile.get("march", {}).get("reissue_sec", 6.0)))
 	var last: Dictionary = ai.last_orders.get(String(leader.id), {})
-	if not last.is_empty():
+	if not force and not last.is_empty():
 		var lp: Vector2 = last.get("pt", Vector2(-9999.0, -9999.0))
 		var lt: float = float(last.get("t", -999.0))
 		if lp.distance_to(pt) < 0.75 and ai.world.time - lt < reissue:

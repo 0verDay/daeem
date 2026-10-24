@@ -528,7 +528,7 @@ func _test_campaign_menu_in_panel(menu, chrome) -> void:
 	ok(menu.campaign_menu() == null, "（前提）没展开面板时拿不到战役菜单")
 	ok(menu.get_node_or_null("StartRoot/MainMenu/MenuPad/MenuOuter/MenuColumn") != null,
 		"★ 主界面正中那一列又有了 MenuColumn（test_1/2/3）")
-	eq(menu.test_buttons().size(), 4, "★ 里面正好四颗 test 按钮（test_1/2/3 + ai_test）")
+	eq(menu.test_buttons().size(), 5, "★ 里面正好五颗 test 按钮（test_1/2/3 + ai_test + ai_test_2）")
 
 	# ② 展开「战役」（右下上排第一颗）
 	var side: Array = chrome.side_buttons()

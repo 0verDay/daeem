@@ -40,6 +40,20 @@ var production_timer: float = 0.0
 var strategic_timer: float = 0.0
 var retry_timer: float = 0.0
 var general_try_timer: float = 5.0
+## ★★ 濒死将领再起 / 召回巡检（独立于战略 tick，避免倒地后要等 2 秒才处理）。
+var revive_timer: float = 0.0
+## ★★ 队伍粘合巡检：将领在走、某个附属兵掉队 / 停下时，**重发整队命令**。
+##    绝不单独调一个兵 —— 用户口径：command AI 只能给部队下指令。
+var cohesion_next_at: float = 0.0
+## ★★ 队伍职能：leader_id -> line / ranged / guerrilla。
+##    职能由将领加入顺序轮换；影响招兵编成与行军目标（远程拉开、游击队打空档）。
+var team_roles: Dictionary = {}
+var role_serial: int = 0
+## ★★ 受击后的整队反应冷却：leader_id -> 下次可再决策的时间。
+##    第一次挨打立刻判断；同一队 0.7 秒内不重复刷命令。
+var react_next: Dictionary = {}
+## 攒钱升级防御建筑的截止时间；避免「差一点钱」时永远不建造。
+var build_save_until: float = 0.0
 
 ## 指令缓存（与 world.ai_directives 同步）
 var order_kind: String = "auto"
@@ -113,22 +127,29 @@ func setup(p_world, p_cfg, p_faction: String, p_profile: Dictionary) -> void:
 	var prod_iv := maxf(0.2, float(iv.get("production_interval_sec", 1.0))) \
 		* maxf(0.1, float(profile.get("production_interval_mult", 1.0)))
 	var strat_iv := maxf(0.5, float(iv.get("strategic_interval_sec", 2.0)))
+	var revive_iv := maxf(0.2, float(profile.get("revive", {}).get("interval_sec", 0.75)))
+	var cohesion_iv := maxf(0.2, float(profile.get("cohesion", {}).get("interval_sec", 1.2)))
 	# 错开各 AI 的第一次决策，避免同一帧叠在一起。
 	army_timer = world.unit_rand(faction, 1) * army_iv
 	build_timer = world.unit_rand(faction, 2) * build_iv
 	production_timer = world.unit_rand(faction, 3) * prod_iv
 	strategic_timer = world.unit_rand(faction, 4) * strat_iv
+	revive_timer = world.unit_rand(faction, 9) * revive_iv
+	cohesion_next_at = world.time + world.unit_rand(faction, 10) * cohesion_iv
 	_interval_army = army_iv
 	_interval_build = build_iv
 	_interval_production = prod_iv
 	_interval_strategic = strat_iv
+	_interval_revive = revive_iv
+	_interval_cohesion = cohesion_iv
 	stats = {
 		"orders": 0, "order_failures": 0,
 		"builds": 0, "build_failures": 0,
 		"recruits": 0, "recruit_failures": 0,
-		"techs": 0, "specs": 0, "revives": 0,
+		"techs": 0, "specs": 0, "revives": 0, "recalls": 0,
 		"rotations": 0, "expands": 0, "assaults": 0,
 		"zones_taken": 0, "regroups": 0, "avoids": 0,
+		"role_retreats": 0, "counterattacks": 0,
 	}
 	patrol_index = 0
 	var pat: Dictionary = profile.get("patrol", {})
@@ -141,6 +162,8 @@ var _interval_army: float = 0.6
 var _interval_build: float = 2.5
 var _interval_production: float = 1.0
 var _interval_strategic: float = 2.0
+var _interval_revive: float = 0.75
+var _interval_cohesion: float = 1.2
 
 
 ## ★★ 当前「自然军队容量」：跟着「在场将领」走，而不是一个固定总数。
@@ -204,13 +227,18 @@ func update(dt: float) -> void:
 		return
 	if world.is_neutralized_faction(faction):
 		return
+	_ensure_team_roles()
 	_sync_order()
 	army_timer -= dt
 	build_timer -= dt
 	production_timer -= dt
 	strategic_timer -= dt
+	revive_timer -= dt
 	retry_timer = maxf(0.0, retry_timer - dt)
 	general_try_timer = maxf(0.0, general_try_timer - dt)
+	if revive_timer <= 0.0:
+		revive_timer = _interval_revive
+		_revive_tick()
 	if strategic_timer <= 0.0:
 		strategic_timer = _interval_strategic
 		_strategic_tick()
@@ -257,6 +285,202 @@ func _sync_order() -> void:
 	order_x = float(d.get("x", -1.0))
 	order_y = float(d.get("y", -1.0))
 	on_directive_changed()
+
+
+## ★★ 给新将领分配职能：按 `roles.cycle` 顺序轮换（确定性，不看 RNG）。
+func _ensure_team_roles() -> void:
+	var roles: Dictionary = profile.get("roles", {})
+	var cycle: Array = roles.get("cycle", ["line"])
+	if cycle.is_empty():
+		cycle = ["line"]
+	for u in world.units:
+		if u == null or not u.alive or String(u.faction) != faction:
+			continue
+		if not u.is_general():
+			continue
+		var id := String(u.id)
+		if team_roles.has(id):
+			continue
+		team_roles[id] = String(cycle[role_serial % cycle.size()])
+		role_serial += 1
+
+
+func team_role_of(leader) -> String:
+	if leader == null:
+		return ""
+	return String(team_roles.get(String(leader.id), "line"))
+
+
+## 远程队的「前排」= 队里非远程兵的数量（不含远程 / 攻城 / 粮车）。
+func frontline_count(leader) -> int:
+	if leader == null or not leader.alive:
+		return 0
+	var n := 0
+	for m in world.retinue_of(String(leader.id), true):
+		if m == null or not m.alive or m.is_downed():
+			continue
+		if not cfg.unit_is_ranged(String(m.unit_type)):
+			n += 1
+	return n
+
+
+## ★★ 某个单位挨打：找到它所属的队伍，重新判断「整队反击」还是「继续后撤」，
+## 并立即重发**整队**命令。绝不单独移动挨打的那一个兵。
+##
+## 触发前提：这个世界层已经确认「该队当前有命令」；没有命令的单位仍走默认复仇反击。
+func react_to_attacked(victim, attacker) -> void:
+	if world == null or victim == null or attacker == null:
+		return
+	if String(order_kind) != "auto":
+		return                          # 玩家给 AI 的明确指令优先，不抢方向盘
+	var leader = victim if victim.is_general() else world.unit_by_id(String(victim.leader_id))
+	if leader == null or not leader.alive or leader.is_downed():
+		return
+	if String(leader.faction) != faction:
+		return
+	var lid := String(leader.id)
+	if world.time < float(react_next.get(lid, 0.0)):
+		return
+	var rc: Dictionary = profile.get("reaction", {})
+	react_next[lid] = world.time + maxf(0.2, float(rc.get("cooldown_sec", 0.7)))
+	var ours := float(AiArmyRes.team_total(self, leader))
+	if ours <= 0.0:
+		return
+	var radius := maxf(1.0, float(rc.get("danger_radius", 6.0)))
+	var enemy := AiArmyRes._enemy_strength_near(self, leader.pos, radius)
+	var role := team_role_of(leader)
+	var roles: Dictionary = profile.get("roles", {})
+	var base = world.find_base_of(faction)
+	var retreating := bool(regroup_ids.get(lid, false))
+	if base != null and bool(leader.has_attack_move):
+		var rally := Vector2(float(base.tx) + 1.5, float(base.ty) + 1.5)
+		if leader.attack_move_goal.distance_to(rally) < 7.0:
+			retreating = true
+	# 远程队前排已经倒光：即使敌人不多也先退，别让远程被贴脸。
+	if role == "ranged":
+		var rcfg: Dictionary = roles.get("ranged", {})
+		if frontline_count(leader) < int(rcfg.get("frontline_min", 1)):
+			_retreat_whole_team(leader)
+			return
+	# 游击队：被打就换空档，不和正规军纠缠。
+	if role == "guerrilla":
+		_retreat_whole_team(leader)
+		return
+	var counter_ratio := maxf(0.1, float(rc.get("counter_ratio", 1.15)))
+	var can_counter := enemy <= ours * counter_ratio
+	# 正在撤退时只有明显更弱才回头；否则继续撤。
+	if retreating and enemy > ours * maxf(0.1, float(rc.get("retreat_counter_ratio", 0.75))):
+		can_counter = false
+	if can_counter:
+		var pt: Vector2 = attacker.pos
+		if role == "ranged":
+			pt = AiArmyRes._role_target_point(self, leader, pt)
+		AiArmyRes._order_team(self, {"leader": leader, "units": world.group_of(leader)},
+			pt, false, true)
+		regroup_ids.erase(lid)
+		stats["counterattacks"] = int(stats.get("counterattacks", 0)) + 1
+		note_status("counter")
+	else:
+		_retreat_whole_team(leader)
+
+
+func _retreat_whole_team(leader) -> void:
+	if leader == null:
+		return
+	AiArmyRes._retreat_team(self, leader)
+	regroup_ids[String(leader.id)] = true
+
+
+## ★★ 濒死将领：能再起就再起；位置太危险 / 太远且没兵时改为「召回」。
+##
+## 规则与玩家点按钮完全同源：`world.start_revive()` / `world.recall_general()`。
+## 再起免费；召回会把旗下残兵静默清掉、将领阵亡并回大本营重生（10 秒，比正常 20 秒短）。
+##
+## 选召回而不是再起的情形（避免「在敌后光杆站起来」）：
+##   · 倒在敌方区划里、身边活着的附属兵 ≤ `recall_escort_threshold`；
+##   · 倒在离基地很远的地方、一个兵都没有、附近也没有友军；
+##   · 附近有可见敌军，且自己兵少、又没有友军能接应。
+## 其余情况：血量回到 `revive.ready_ratio` 就立刻再起。
+func _revive_tick() -> void:
+	if world == null:
+		return
+	var downs: Array = []
+	for u in world.units:
+		if u == null or not u.alive or String(u.faction) != faction:
+			continue
+		if not u.is_general() or not u.is_downed():
+			continue
+		if u.is_reviving():
+			continue
+		downs.append(u)
+	if downs.is_empty():
+		return
+	for u in downs:
+		var recalled := false
+		if _should_recall(u):
+			recalled = world.recall_general(String(u.id), faction)
+			if recalled:
+				stats["recalls"] = int(stats.get("recalls", 0)) + 1
+				note_status("recalling")
+		if recalled:
+			continue
+		if u.revive_ready(cfg):
+			if world.start_revive(String(u.id), faction):
+				stats["revives"] = int(stats.get("revives", 0)) + 1
+				note_status("reviving")
+
+
+func _should_recall(u) -> bool:
+	var rv: Dictionary = profile.get("revive", {})
+	var base = world.find_base_of(faction)
+	if base == null:
+		return false
+	var escorts := _living_escorts(u)
+	var friends := _friends_near(u, float(rv.get("danger_radius", 6.0)))
+	var enemy := AiArmyRes._enemy_strength_near(self, u.pos,
+		float(rv.get("danger_radius", 6.0)))
+	var z = world.zones.zone_at(int(u.tx), int(u.ty))
+	var in_enemy := false
+	if z != null:
+		var owner := String((z as Dictionary).get("owner", ""))
+		in_enemy = owner != "" and not world.accepts_owner(owner, faction)
+	var dist: float = u.pos.distance_to(Vector2(float(base.tx) + 0.5, float(base.ty) + 0.5))
+	var escort_limit := int(rv.get("recall_escort_threshold", 1))
+	var far := float(rv.get("recall_distance_tiles", 7.0))
+	if in_enemy and escorts <= escort_limit and friends <= 0:
+		return true
+	if escorts <= 0 and dist >= far and friends <= 0:
+		return true
+	if enemy > 0.0 and escorts <= escort_limit and friends <= 0:
+		return true
+	if enemy > 0.0 and dist >= far and escorts <= escort_limit:
+		return true
+	return false
+
+
+func _living_escorts(u) -> int:
+	var n := 0
+	for m in world.retinue_of(String(u.id), true):
+		if m != null and m.alive and not m.is_downed():
+			n += 1
+	return n
+
+
+func _friends_near(u, radius: float) -> int:
+	var n := 0
+	var r2 := maxf(0.0, radius) * maxf(0.0, radius)
+	for o in world.units:
+		if o == null or o == u or not o.alive or o.is_downed():
+			continue
+		# 自己的附属兵不算「附近友军」：召回本来就会把它们一起清掉，
+		# 不能因为它们站在旁边就误以为有人接应。
+		if String(o.leader_id) == String(u.id):
+			continue
+		if not world.accepts_owner(String(o.faction), faction):
+			continue
+		if o.pos.distance_squared_to(u.pos) <= r2:
+			n += 1
+	return n
 
 
 func _strategic_tick() -> void:
@@ -375,7 +599,15 @@ func _production_tick() -> void:
 ## 按编成权重抽一个兵种；过滤「没解锁 / 招不了 / 粮车已有」。
 func _pick_kind(leader) -> String:
 	var pc: Dictionary = profile.get("production", {})
-	var comp: Array = pc.get("composition", [])
+	var role := team_role_of(leader)
+	var roles: Dictionary = profile.get("roles", {})
+	var rc: Dictionary = roles.get(role, {})
+	var comp: Array = rc.get("composition", pc.get("composition", []))
+	# ★ 远程队如果前排已经倒光：先补一个抗线兵，再继续抽远程。
+	if role == "ranged" and frontline_count(leader) <= 0:
+		var front := _first_frontline_kind(comp)
+		if front != "":
+			return front
 	var hq := 0
 	for u in world.units:
 		if u.alive and String(u.faction) == faction and String(u.unit_type) == "grain_cart":
@@ -418,6 +650,31 @@ func _pick_kind(leader) -> String:
 	return last
 
 
+## 远程队的前排优先从编成里挑；编成里没有可招的近战，再扫全兵种表。
+func _first_frontline_kind(comp: Array) -> String:
+	for item in comp:
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		var kind := String((item as Dictionary).get("type", ""))
+		if kind == "" or kind == "grain_cart":
+			continue
+		if not cfg.unit_is_ranged(kind) \
+				and world.is_unit_recruitable(kind) \
+				and world.unit_recruit_unlocked(faction, kind):
+			return kind
+	for item2 in world.recruit_list():
+		if typeof(item2) != TYPE_DICTIONARY:
+			continue
+		var k2 := String((item2 as Dictionary).get("kind", ""))
+		if k2 == "" or k2 == "grain_cart":
+			continue
+		if not cfg.unit_is_ranged(k2) \
+				and world.is_unit_recruitable(k2) \
+				and world.unit_recruit_unlocked(faction, k2):
+			return k2
+	return ""
+
+
 ## 将领不足时，在**己方有人口的区划**补一位（区划招募）。钱不够 / 冷却 / 上限都会被世界拒。
 ##
 ## ★★ 不只试基地区划：扩张后新占的区划也有 1 点人口产出，只盯基地会在
@@ -430,18 +687,10 @@ func _try_general_recruit() -> void:
 	var want := general_target()
 	if world.general_count_of(faction) >= want:
 		return
-	var zids: Array[int] = []
-	var base = world.find_base_of(faction)
-	if base != null and int(base.zone_id) >= 0:
-		zids.append(int(base.zone_id))
-	for z in world.zones.zones:
-		var zd: Dictionary = z
-		if String(zd.get("owner", "")) != faction:
-			continue
-		var zid := int(zd.get("id", -1))
-		if zid >= 0 and not zids.has(zid):
-			zids.append(zid)
-	for zid in zids:
+	# ★★ 不固定在大本营：优先前线 / 被入侵区划，基地只是兜底。
+	#    前线招出来的将领一开始没有兵，由 `_avoid_bad_fights()` 的「未成形队伍」规则
+	#    在遇敌时整队后撤。
+	for zid in _general_recruit_zones():
 		for item in world.zone_recruit_list():
 			if typeof(item) != TYPE_DICTIONARY:
 				continue
@@ -456,6 +705,51 @@ func _try_general_recruit() -> void:
 				stats["generals"] = int(stats.get("generals", 0)) + 1
 				note_status("producing")
 			return
+
+
+## 招将的区划顺序：被入侵 > 前线 > 大本营兜底 > 后方。
+func _general_recruit_zones() -> Array[int]:
+	var rows: Array = []
+	var base = world.find_base_of(faction)
+	var base_zid := int(base.zone_id) if base != null else -1
+	for z in world.zones.zones:
+		if typeof(z) != TYPE_DICTIONARY:
+			continue
+		var zd: Dictionary = z
+		if String(zd.get("owner", "")) != faction:
+			continue
+		if zd.get("center", null) == null:
+			continue
+		var zid := int(zd.get("id", -1))
+		if zid < 0:
+			continue
+		var score := _general_recruit_zone_score(zd, zid, base_zid)
+		rows.append({"id": zid, "score": score})
+	rows.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		var sa := float(a["score"])
+		var sb := float(b["score"])
+		if absf(sa - sb) > 1e-9:
+			return sa > sb
+		return int(a["id"]) < int(b["id"]))
+	var out: Array[int] = []
+	for r in rows:
+		out.append(int((r as Dictionary)["id"]))
+	return out
+
+
+func _general_recruit_zone_score(zd: Dictionary, zid: int, base_zid: int) -> float:
+	var score := 0.0
+	if AiBuildRes._zone_threatened(self, zd):
+		score += 100.0
+	elif AiBuildRes._zone_is_frontier(self, zd):
+		score += 40.0
+	else:
+		score += 5.0
+	if zid == base_zid:
+		score += 10.0
+	# 有人口才能招；这里只给一点点加权，不让基地因为人口多而永远压过前线。
+	score += minf(3.0, float((zd as Dictionary).get("population", 0.0)))
+	return score
 
 
 # ------------------------------------------------------------------
@@ -526,6 +820,7 @@ func panel_state() -> Dictionary:
 		"gold": float(pool.get("gold", 0.0)),
 		"status": current_status(),
 		"reason": String(d.get("reason", "")),
+		"roles": team_roles.duplicate(),
 	}
 	return out
 
@@ -544,6 +839,7 @@ func debug_state() -> Dictionary:
 		"army": AiArmyRes.army_count(self),
 		"cap": force_cap(),
 		"general_target": general_target(),
+		"roles": team_roles.duplicate(),
 		"stats": stats.duplicate(true),
 		"food": AiEconomyRes.food(self),
 		"gold": AiEconomyRes.gold(self),

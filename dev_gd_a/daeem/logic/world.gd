@@ -2483,18 +2483,33 @@ func enter_near_death(leader) -> bool:
 	return true
 
 
-## ★★ 受击反击（2026.10.22）：一个单位被**敌方单位**打中时，立刻转为打那个单位。
+## ★★ 受击反击（2026.10.24 改）：默认只给「所属队伍没有任何命令」的单位。
 ##
-## 需求口径：
-##   · **打断程序命令** —— 招募期的待命、将领倒下后的救援 / 巡逻、驻防巡逻都算；
-##   · **不打断玩家命令** —— 移动 / 攻击 / 行军攻击还在执行时，挨打照旧执行；
-##   · 只影响**被打中的这一个单位**（不是整队）；
+## 新口径：
+##   · 队伍有命令（玩家或 AI 的移动 / 攻击 / 行军攻击 / 救援）⇒ **优先执行命令**；
+##   · 这时把受击事件交给同方指挥官 AI，由它重判「整队反击 / 继续撤退」；
+##   · 队伍没有命令 ⇒ 仍然默认单个单位复仇反击（2026.10.22 行为）；
 ##   · 建筑（箭塔）打过来**不触发** —— 需求原话是「被其他单位攻击」。
 ##
 ## ★ 这里只做「该不该反击」的判定；具体怎么转向（清掉旧命令 / 锁目标 / 不受 leash）
 ##   全在 `unit.order_retaliate()` —— 与玩家命令、程序命令共用单位上的那一套状态。
 ##
-## @return true = 这次反击真的被下达了
+## 这个单位自己或它的队长，有没有还在执行的命令。
+func unit_has_active_team_order(u) -> bool:
+	if u == null or not u.alive:
+		return false
+	if u.has_method("has_active_order") and u.has_active_order():
+		return true
+	var lid := String(u.leader_id)
+	if lid == "":
+		return false
+	var leader = unit_by_id(lid)
+	return leader != null and leader.alive and leader.has_method("has_active_order") \
+		and leader.has_active_order()
+
+
+## 受击入口：玩家命令 / 队伍命令优先；有队伍命令时交给 AI 重判，否则默认反击。
+## @return true = 默认的单个单位复仇反击真的被下达了
 func on_unit_attacked(victim, attacker) -> bool:
 	if victim == null or attacker == null:
 		return false
@@ -2515,7 +2530,23 @@ func on_unit_attacked(victim, attacker) -> bool:
 	# ★★ 玩家命令优先：还在执行玩家命令 ⇒ 挨打也不反击（需求原话）。
 	if victim.has_active_player_order():
 		return false
+	# ★★ 队伍有命令（AI / 玩家都算）：先让 command AI 重新判断「反击还是继续撤」，
+	#    并立即重发整队命令；不进入默认的单个单位复仇反击。
+	if unit_has_active_team_order(victim):
+		_notify_ai_attacked(victim, attacker)
+		return false
 	return bool(victim.order_retaliate(self, cfg, attacker))
+
+
+## 把「挨打」事件交给同方的指挥官 AI；由它决定整队反击 / 继续撤退。
+func _notify_ai_attacked(victim, attacker) -> void:
+	for f in factions:
+		var fid := String(f)
+		if not FactionRes.same_side_for_attack(fid, String(victim.faction)):
+			continue
+		var c = ai_commanders.get(fid, null)
+		if c != null and c.has_method("react_to_attacked"):
+			c.react_to_attacked(victim, attacker)
 
 
 ## 让某个将领辖下的存活部队**立刻向它（的倒下点）行军攻击**。

@@ -275,9 +275,12 @@ func _on_level_entry_pressed(campaign_id: String, level_id: String) -> void:
 	_show_level_transition(campaign, level)
 
 
-## ★★ 主界面「ai_test」按钮：载入演示战役的 ai_test 关，AI 接管 F1，玩家观战。
+## ★★ 主界面「ai_test / ai_test_2」按钮：载入演示战役对应关卡，AI 接管被观察方，玩家观战。
 ## 不走战役过渡 / 阵营选择：这一关只有一个席位，且它本来就是给观察 AI 用的。
-func _on_ai_test_requested(campaign_id: String, level_id: String) -> void:
+## `allow_orders` = true（ai_test_2）时，观战仍允许用 AI 面板下四条指令；
+## `reveal_all` = true 时只给玩家显示开全图（AI 逻辑仍走正常迷雾）。
+func _on_ai_test_requested(campaign_id: String, level_id: String,
+		allow_orders: bool = false, reveal_all: bool = false) -> void:
 	if game != null:
 		return
 	var option := _find_campaign_option(campaign_id)
@@ -292,7 +295,7 @@ func _on_ai_test_requested(campaign_id: String, level_id: String) -> void:
 	game = GameSceneRes.new()
 	game.name = "GameScene"
 	add_child(game)
-	if not game.start_ai_observer(level):
+	if not game.start_ai_observer(level, allow_orders, reveal_all):
 		game.queue_free()
 		game = null
 		return

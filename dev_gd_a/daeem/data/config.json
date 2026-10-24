@@ -398,6 +398,10 @@
         "assault": "进攻",
         "regroup": "回撤整备",
         "rotating": "守军轮换",
+        "retreating": "职能后撤",
+        "counter": "受击反击",
+        "reviving": "再起中",
+        "recalling": "召回中",
         "building": "建造 / 升级中",
         "low_funds": "资源不足"
       }
@@ -2138,10 +2142,13 @@
     "test_button_gap": 48,
 
     "_test_entries_comment": [
-      "★★ 主界面正中那三颗 test_1 / test_2 / test_3：入口直连一关。",
+      "★★ 主界面正中那几颗 test 按钮：入口直连一关。",
       "  label    = 按钮上那行字；",
       "  campaign = data/campaigns/ 下的目录名；",
-      "  level    = 那场战役里 levels[] 的关卡 id。",
+      "  level    = 那场战役里 levels[] 的关卡 id；",
+      "  ai_observer = true  → 走观战路径（AI 接管被观察方，玩家只看）；",
+      "  ai_observer_orders = true → 观战但仍允许用 AI 面板下四条指令（ai_test_2）；",
+      "  ai_observer_reveal = true → 只给玩家显示开全图，AI 仍走正常迷雾（ai_test_2）。",
       "  ★ 加一颗按钮只改这里；「载入哪一关、怎么建世界」在 view/main.gd（界面不碰玩法）。",
       "  ★ 剩下那一关（main_test）不在这里：它在「战役」菜单里（data/campaigns_menu.json）。"
     ],
@@ -2149,7 +2156,8 @@
       {"label": "test_1", "campaign": "demo", "level": "01_beachhead"},
       {"label": "test_2", "campaign": "demo", "level": "02_twin_line", "coop": true},
       {"label": "test_3", "campaign": "ferry", "level": "ferry"},
-      {"label": "ai_test", "campaign": "demo", "level": "ai_test", "ai_observer": true}
+      {"label": "ai_test", "campaign": "demo", "level": "ai_test", "ai_observer": true},
+      {"label": "ai_test_2", "campaign": "demo", "level": "ai_test_2", "ai_observer": true, "ai_observer_orders": true, "ai_observer_reveal": true}
     ],
 
     "_transition_comment": [
@@ -2550,6 +2558,73 @@
         "avoid_enemy_ratio": 1.25,
         "home_when_alone": true
       },
+      "revive": {
+        "_comment": [
+          "★★ 指挥官的濒死将领处理：巡检 -> 能再起就再起；敌后 / 太远 / 兵太少就召回。",
+          "  · interval_sec：多快检查一次倒地将领；",
+          "  · recall_escort_threshold：敌后或危险时，活着的附属兵 ≤ 这个数就召回；",
+          "  · recall_distance_tiles：离家超过这个距离且一个兵都没有，就召回；",
+          "  · danger_radius：评估附近敌人 / 友军的半径。"
+        ],
+        "interval_sec": 0.75,
+        "recall_escort_threshold": 1,
+        "recall_distance_tiles": 7.0,
+        "danger_radius": 6.0
+      },
+      "cohesion": {
+        "_comment": [
+          "★★ 队伍粘合：将领在走 / 停时，发现非战斗的附属兵掉队，就重发整队命令。",
+          "  · interval_sec：巡检间隔；",
+          "  · max_distance_tiles：超过这个距离才算掉队（正在战斗的单位不拉回）。",
+          "  ⚠️ 只重发整队命令，绝不单独调动某个单位。"
+        ],
+        "enabled": true,
+        "interval_sec": 1.2,
+        "max_distance_tiles": 4.0
+      },
+      "roles": {
+        "_comment": [
+          "★★ 队伍职能（按将领顺序轮换）。",
+          "  · line：默认编成，正面推进；",
+          "  · ranged：远程队，招远程为主 + 少量抗线；停在目标射程外输出，前排倒光就撤；",
+          "  · guerrilla：游击队，少量快速单位，只打没有防备的边界区划，敌人一多就走。"
+        ],
+        "cycle": ["line", "ranged", "guerrilla"],
+        "ranged": {
+          "composition": [
+            {"type": "longbowman", "weight": 0.45},
+            {"type": "horse_archer", "weight": 0.20},
+            {"type": "catapult", "weight": 0.08},
+            {"type": "spearman", "weight": 0.17},
+            {"type": "knight", "weight": 0.07},
+            {"type": "grain_cart", "weight": 0.03}
+          ],
+          "standoff_tiles": 4.5,
+          "frontline_min": 1
+        },
+        "guerrilla": {
+          "composition": [
+            {"type": "rider", "weight": 0.40},
+            {"type": "horse_archer", "weight": 0.30},
+            {"type": "spearman", "weight": 0.20},
+            {"type": "longbowman", "weight": 0.10}
+          ],
+          "max_enemy_strength": 3.0,
+          "avoid_ratio": 0.9
+        }
+      },
+      "reaction": {
+        "_comment": [
+          "★★ 受击整队决策：队伍有新命令时，不进入默认复仇反击，由 AI 立即决定整队反击 / 继续撤。",
+          "  · cooldown_sec：同一队两次受击决策的最小间隔；",
+          "  · counter_ratio：敌人 ≤ 我方 × 倍率时反击；",
+          "  · retreat_counter_ratio：正在撤退时只有敌人 ≤ 我方 × 倍率才回头。"
+        ],
+        "cooldown_sec": 0.7,
+        "danger_radius": 6.0,
+        "counter_ratio": 1.15,
+        "retreat_counter_ratio": 0.75
+      },
       "march": {
         "arrive_radius": 3.0,
         "hold_radius": 7.0,
@@ -2627,11 +2702,23 @@
         ]
       },
       "build": {
-        "tower_max": 6,
+        "tower_max": 30,
+        "tower_hard_max": 30,
+        "tower_front_towers": 3,
+        "tower_threat_towers": 5,
+        "tower_rear_towers": 0,
+        "tower_rich_bonus_max": 3,
+        "production_reserve_recruits": 3,
+        "pause_defense_when_understrength": true,
+        "tower_threat_radius": 9.0,
+        "tower_cover_radius": 4,
+        "wall_enabled": true,
+        "wall_hard_max": 100,
+        "defense_upgrade_enabled": true,
+        "defense_upgrade_tower_bonus": 12.0,
         "tower_frontier_bonus": 4.0,
         "base_upgrade_priority": 10.0,
-        "tech_priority": [],
-        "wall_enabled": false
+        "tech_priority": []
       },
       "auto": {
         "develop_until_ratio": 0.35,

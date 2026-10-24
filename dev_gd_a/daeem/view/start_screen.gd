@@ -69,8 +69,11 @@ signal intro_dismissed
 ##   本页不认识 `data/campaigns/`、也不认识 `world` —— 载入战役、挑阵营、建世界
 ##   全在 `view/main.gd` 那一处（与战役目录扫描同一个口径：数据只有一个来源）。
 signal level_entry_pressed(campaign_id: String, level_id: String)
-## ★★ 主界面 ai_test 按钮：进入观战（AI 操作 F1，玩家只看）。
-signal ai_test_requested(campaign_id: String, level_id: String)
+## ★★ 主界面 ai_test / ai_test_2 按钮：进入观战（AI 操作被观察方，玩家只看）。
+## `allow_orders` = true 时仍允许用 AI 面板下四条指令（ai_test_2）；
+## `reveal_all` = true 时只给玩家显示开全图，AI 逻辑仍读正常迷雾（ai_test_2）。
+signal ai_test_requested(campaign_id: String, level_id: String,
+	allow_orders: bool, reveal_all: bool)
 ## 合作大厅的开局（transport 已从 lobby 交出来）。
 signal coop_host_started(campaign_id: String, level_id: String, transport)
 signal coop_guest_started(payload: Dictionary, transport)
@@ -685,10 +688,14 @@ func _test_entries() -> Array:
 		var level := String(d.get("level", "")).strip_edges()
 		var coop := bool(d.get("coop", false))
 		var ai_observer := bool(d.get("ai_observer", false))
+		var ai_observer_orders := bool(d.get("ai_observer_orders", false))
+		var ai_observer_reveal := bool(d.get("ai_observer_reveal", false))
 		if label == "" or campaign == "" or level == "":
 			continue
 		out.append({"label": label, "campaign": campaign, "level": level,
-			"coop": coop, "ai_observer": ai_observer})
+			"coop": coop, "ai_observer": ai_observer,
+			"ai_observer_orders": ai_observer_orders,
+			"ai_observer_reveal": ai_observer_reveal})
 	return out
 
 
@@ -722,6 +729,8 @@ func _make_test_button(entry: Dictionary) -> Button:
 	var level_id := String(entry["level"])
 	var is_coop := bool(entry.get("coop", false))
 	var is_ai_test := bool(entry.get("ai_observer", false))
+	var allow_orders := bool(entry.get("ai_observer_orders", false))
+	var reveal_all := bool(entry.get("ai_observer_reveal", false))
 	b.pressed.connect(func():
 		# ⚠️ 本文件是 CanvasLayer（不是 Control）：可见性用 `visible`，没有 is_visible_in_tree()。
 		if not visible:
@@ -730,7 +739,7 @@ func _make_test_button(entry: Dictionary) -> Button:
 		if _menu_blocked:
 			return
 		if is_ai_test:
-			ai_test_requested.emit(campaign_id, level_id)
+			ai_test_requested.emit(campaign_id, level_id, allow_orders, reveal_all)
 			return
 		if is_coop and _chrome != null:
 			_chrome.open_coop_panel()

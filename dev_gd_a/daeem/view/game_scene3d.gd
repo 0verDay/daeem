@@ -96,6 +96,8 @@ var level_campaign = null
 var coop_role: String = ""
 ## 观战模式：玩家只看 AI，不下命令、不显示命令卡。
 var observer_mode: bool = false
+## ★★ 观战但允许用 AI 面板下指令（ai_test_2）：只放行 `ai_order`，其它玩法命令仍丢弃。
+var observer_can_command: bool = false
 var coop_transport = null
 var coop_host_session = null
 var coop_client_session = null
@@ -234,12 +236,16 @@ func start_level(campaign, level, my_faction: String) -> bool:
 	return true
 
 
-## ★★ 观战模式：`ai_test` 关卡由 commander AI 接管 F1，玩家只看、不下命令。
+## ★★ 观战模式：`ai_test` / `ai_test_2` 关卡由 commander AI 接管被观察方，玩家只看。
 ##
 ## 与 `start_coop_solo` 的区别只在两点：
-##   · 世界带 `observer_mode = true`（F1 仍算“玩家的家”，但控制权交给 AI）；
-##   · 装配后关闭输入命令 / 命令卡，AI 面板切成只读。
-func start_ai_observer(level) -> bool:
+##   · 世界带 `observer_mode = true`（被观察方仍算“玩家的家”，但控制权交给 AI）；
+##   · 装配后关闭输入命令 / 命令卡，AI 面板默认只读。
+## `allow_ai_orders = true`（ai_test_2）时保留 AI 面板四颗指令按钮：
+##   玩家仍不能操作部队，但可以给被观察的 AI 下「行军 / 发展 / 扩张 / 屯兵」四条指令。
+## `reveal_all = true`（ai_test_2）时只给**玩家显示**开全图；AI 逻辑仍读正常迷雾。
+func start_ai_observer(level, allow_ai_orders: bool = false,
+		reveal_all: bool = false) -> bool:
 	cfg = ConfigRes.load_default()
 	if cfg == null:
 		push_error("配置载入失败：%s" % ConfigRes.last_error)
@@ -255,11 +261,30 @@ func start_ai_observer(level) -> bool:
 		push_error("start_ai_observer：关卡没有席位")
 		return false
 	var watched := String(seats[0])
+	# ★★ 观战验收：这一关里的参展阵营**全部**交给 commander，形成 AI vs AI。
+	#    `ai_test` 只有 F1（和以前一样）；`ai_test_2` 是 p1 对 p2。
+	#    p1 仍是本机席位（面板 / 迷雾 / 目标按它走），p2 只是敌方 AI，不会听玩家指令。
+	var overrides: Dictionary = {}
+	var profiles: Dictionary = {}
+	for meta in level.faction_meta:
+		if typeof(meta) != TYPE_DICTIONARY:
+			continue
+		var fid := String((meta as Dictionary).get("id", ""))
+		if fid == "":
+			continue
+		overrides[fid] = LevelRes.AI_COMMANDER
+		profiles[fid] = {"difficulty": "normal"}
+	if not overrides.has(watched):
+		overrides[watched] = LevelRes.AI_COMMANDER
+		profiles[watched] = {"difficulty": "normal"}
 	world = WorldRes.create_from_level(cfg, level, watched, seats, true,
-		{watched: LevelRes.AI_COMMANDER}, {watched: {"difficulty": "normal"}}, -1, true)
+		overrides, profiles, -1, true)
 	if world == null:
 		push_error("AI 观战局装配失败（地图 = %s）" % String(level.map_id))
 		return false
+	# ★★ 只影响显示：玩家看全图，AI 的 `logic_unit_visible()` / 正常迷雾不变。
+	if reveal_all and world.fog != null:
+		world.fog.reveal_all_for_display(watched)
 	# ★★ 观战默认交给 AI 的自主战略（auto）：先发展，再扩张，没人可扩张时进攻 / 巡逻。
 	#    玩家在观战里没有指令权；想看「某一条指令」时靠合作模式 / 后续演示入口。
 	#    （这里不再硬写 expand，否则看不到自主决策。）
@@ -267,19 +292,22 @@ func start_ai_observer(level) -> bool:
 	interaction_pending_level = level
 	_assemble()
 	observer_mode = true
+	observer_can_command = allow_ai_orders
 	coop_role = "observer"
 	coop_campaign = null
 	coop_level = level
 	coop_guest_seat = ""
 	_disable_coop_pause()
 	if input_ctrl != null:
-		input_ctrl.set_observer(true)
+		input_ctrl.set_observer(true, allow_ai_orders)
 	if hud != null:
-		hud.set_observer(true)
+		hud.set_observer(true, allow_ai_orders)
 		if hud.ai_panel != null:
-			hud.ai_panel.set_observer(watched)
 			hud.ai_panel.sync()
-		hud.show_notice("观战：AI 正在操作 %s" % watched)
+		if allow_ai_orders:
+			hud.show_notice("观战：AI 正在操作 %s · 可用右侧面板下达四条指令" % watched)
+		else:
+			hud.show_notice("观战：AI 正在操作 %s" % watched)
 	return true
 
 
@@ -1422,10 +1450,12 @@ func _is_wheel(event: InputEventMouseButton) -> bool:
 func _on_command(cmd: Dictionary) -> void:
 	if world == null:
 		return
-	# 观战：所有玩法命令（移动 / 攻击 / 招募 / 建造 / AI 指令）一律丢弃。
+	# 观战：默认所有玩法命令（移动 / 攻击 / 招募 / 建造 / AI 指令）一律丢弃。
+	# ai_test_2（observer_can_command）只额外放行 AI 面板的 `ai_order`，部队命令仍然丢弃。
 	# 选择 / 相机 / 小地图不经过这里，仍可自由查看。
 	if observer_mode:
-		return
+		if not observer_can_command or String(cmd.get("kind", "")) != "ai_order":
+			return
 	if coop_role == "guest":
 		if coop_client_session != null:
 			coop_client_session.send_command(cmd)

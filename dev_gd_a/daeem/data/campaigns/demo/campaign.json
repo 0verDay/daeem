@@ -33,6 +33,11 @@
       "id": "ai_test",
       "file": "levels/ai_test.json",
       "name": "ai_test"
+    },
+    {
+      "id": "ai_test_2",
+      "file": "levels/ai_test_2.json",
+      "name": "ai_test_2"
     }
   ],
   "unlock": "in_order"

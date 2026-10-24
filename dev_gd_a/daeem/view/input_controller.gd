@@ -113,6 +113,8 @@ var order_mode: String = ""
 var ai_order_faction: String = ""
 ## ★★ 观战模式：只允许选择 / 相机操作，所有玩法命令一律不下发。
 var observer_mode: bool = false
+## ★★ 观战但仍允许 AI 面板下令（ai_test_2）：只放行 ai_march / ai_mass 选点。
+var observer_ai_orders: bool = false
 
 ## 供渲染读取的悬停状态
 var hover_tile: Vector2i = Vector2i(-1, -1)
@@ -841,6 +843,9 @@ func _on_left_click(additive: bool) -> void:
 ##   · 单击空地        → 普通移动（`move`，遇敌不停）
 func _on_right_click(double_click: bool = false) -> void:
 	if observer_mode:
+		# 观战授权（ai_test_2）：右键 = 取消 AI 面板的选点。
+		if observer_ai_orders and (order_mode == "ai_march" or order_mode == "ai_mass"):
+			set_order_mode("")
 		return
 	if build_type != "":
 		set_build_type("")
@@ -1089,6 +1094,11 @@ func set_build_type(t: String) -> void:
 ## @return 进入之后当前是不是这个模式（false = 这次是「退出」）
 func set_order_mode(m: String) -> bool:
 	if observer_mode:
+		# 观战授权（ai_test_2）：仍然允许 Esc / 右键取消 AI 选点。
+		if observer_ai_orders and (order_mode == "ai_march" or order_mode == "ai_mass"):
+			order_mode = ""
+			ai_order_faction = ""
+			local_ui_changed.emit()
 		return false
 	order_mode = "" if m == order_mode else m
 	if order_mode == "":
@@ -1100,8 +1110,10 @@ func set_order_mode(m: String) -> bool:
 
 
 ## ★★ 观战：清掉所有“等待选点 / 建造”的模式，并让后续命令出口直接返回。
-func set_observer(on: bool) -> void:
+## `allow_ai_orders = true`（ai_test_2）时保留 AI 面板的选点出口，其它命令仍禁止。
+func set_observer(on: bool, allow_ai_orders: bool = false) -> void:
 	observer_mode = on
+	observer_ai_orders = on and allow_ai_orders
 	if on:
 		order_mode = ""
 		build_type = ""
@@ -1114,6 +1126,8 @@ func set_observer(on: bool) -> void:
 ##   这里由面板直接决定进/退（同一条指令重复点应当**重新选点**，而不是静默退出）。
 func begin_ai_order_pick(order: String, ai_faction: String) -> void:
 	if order != "march" and order != "mass":
+		return
+	if observer_mode and not observer_ai_orders:
 		return
 	ai_order_faction = ai_faction
 	build_type = ""
@@ -1165,10 +1179,11 @@ func request_stop() -> bool:
 ## ★ 「攻击」找不到目标时**留在模式里**并给一句提示：玩家点歪了还能再点一下，
 ##   不必重新回命令卡点一次（Esc / 右键随时退出）。
 func _issue_order_click() -> void:
-	if observer_mode:
-		return
 	# ★★ AI 队友的选点：不要求选中单位，也不走下面「收集 ids」那一段。
+	#   观战授权（ai_test_2）时也走这条路 —— 这是观战里唯一允许发出的命令。
 	if order_mode == "ai_march" or order_mode == "ai_mass":
+		if observer_mode and not observer_ai_orders:
+			return
 		var ai_order := "march"
 		if order_mode == "ai_mass":
 			ai_order = "mass"
@@ -1184,6 +1199,8 @@ func _issue_order_click() -> void:
 		ai_order_faction = ""
 		clear_marks()
 		local_ui_changed.emit()
+		return
+	if observer_mode:
 		return
 	var ids: Array = []
 	for u in _commandable_selected():
