@@ -13,6 +13,8 @@ extends Control
 
 signal host_started(campaign_id: String, level_id: String, transport)
 signal guest_started(payload: Dictionary, transport)
+## ★★ 合作「AI 队友」本地开局（没有 transport）。
+signal solo_started(campaign_id: String, level_id: String, ai_setup: Dictionary)
 
 const LobbyRes = preload("res://net/lobby.gd")
 const RelayTransportRes = preload("res://net/relay_transport.gd")
@@ -47,6 +49,15 @@ var _in_game: bool = false
 ## ★★ 调试后门：Ctrl+Q 在房间界面伪造的队友（只在本机，不经过服务器）。
 ##   见 `_debug_fake_guest()`；真队友加入时会被服务器的 room_state 覆盖掉。
 var _fake_guest: bool = false
+## ★★ 合作 AI 队友：房主在开局前二选一（真人 / AI）。默认真人，旧流程完全不变。
+var _ai_mode: bool = false
+var _ai_diff: String = "normal"
+var _ai_mode_btns: Array = []
+var _ai_diff_btn: Button = null
+var _ai_hint: Label = null
+var _ai_map_btn: Button = null
+## AI 模式下要藏起来的大厅控件（房间列表 / 房间码 / 键盘 / 状态）。
+var _room_only_nodes: Array = []
 
 ## 房间列表
 var _http: HTTPRequest = null
@@ -174,6 +185,7 @@ func _build() -> void:
 	_build_lobby_panel()
 	_build_room_panel()
 	_build_map_panel()
+	_build_ai_mode()
 
 	# 按钮要压在面板之上（面板后建会盖住席位，这是有意的：席位只是背景）。
 	_set_state_instant(STATE_LOBBY)
@@ -421,6 +433,134 @@ func _build_lobby_panel() -> void:
 	_render_rooms()
 
 
+## ★★ 开局前的「真人队友 / AI 队友」二选一（在大厅面板上方，不挤压面板内部版式）。
+##
+## AI 模式下隐藏房间列表 / 房间码 / 键盘，只留「选择地图 + 难度 + 开始」；
+## 选真人模式则一切与旧版完全一致。
+func _build_ai_mode() -> void:
+	# ★ 放在「席位与右侧大厅面板之间的空档」：既不压大厅面板，也不压右上角的返回键
+	#   （BACK_RIGHT = 1712..1872 × 48..128，原来放面板正上方会正好盖住它）。
+	var human := _button("AiModeHuman", _ai_txt("labels.mode_human", "真人队友"), 16)
+	human.position = _local_pos(Vector2(1040.0, 64.0))
+	human.size = Vector2(150.0, 56.0)
+	human.pressed.connect(_set_ai_mode.bind(false))
+	add_child(human)
+	_ai_mode_btns.append(human)
+
+	var ai := _button("AiModeAI", _ai_txt("labels.mode_ai", "AI 队友"), 16)
+	ai.position = _local_pos(Vector2(1198.0, 64.0))
+	ai.size = Vector2(150.0, 56.0)
+	ai.pressed.connect(_set_ai_mode.bind(true))
+	add_child(ai)
+	_ai_mode_btns.append(ai)
+
+	_ai_diff_btn = _button("AiModeDiff", "", 15)
+	_ai_diff_btn.position = _local_pos(Vector2(1040.0, 124.0))
+	_ai_diff_btn.size = Vector2(308.0, 52.0)
+	_ai_diff_btn.pressed.connect(_cycle_ai_difficulty)
+	add_child(_ai_diff_btn)
+
+	_ai_hint = _label("AiModeHint", _ai_txt("labels.ai_seat_hint", "AI 会接管第二席位，和你共享视野。"),
+		15, UiStyleRes.text_dim())
+	_ai_hint.position = Vector2(24.0, 20.0)
+	_ai_hint.size = Vector2(452.0, 44.0)
+	_ai_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_lobby_panel.add_child(_ai_hint)
+
+	_ai_map_btn = _button("AiModeMap", "", 15)
+	_ai_map_btn.position = Vector2(24.0, 80.0)
+	_ai_map_btn.size = Vector2(452.0, 56.0)
+	_ai_map_btn.pressed.connect(_open_map_select)
+	_lobby_panel.add_child(_ai_map_btn)
+
+	# 记录「只在真人模式显示」的控件：按节点名找（大厅面板是现建的，拿不到局部变量）。
+	for n in ["RoomListHeader", "RoomListBox", "LobbyStatus", "CodeLabel", "CodeEdit", "ClearBtn",
+			"Key0", "Key1", "Key2", "Key3", "Key4", "Key5", "Key6", "Key7", "Key8", "Key9"]:
+		var node := _lobby_panel.find_child(n, true, false)
+		if node != null:
+			_room_only_nodes.append(node)
+	_apply_ai_mode()
+
+
+func _ai_txt(path: String, fallback: String) -> String:
+	if cfg == null:
+		return fallback
+	return String(cfg.str_val("coop.lobby.ai_teammate." + path, fallback))
+
+
+func _set_ai_mode(ai: bool) -> void:
+	if _ai_mode == ai:
+		_apply_ai_mode()
+		return
+	if ai and _lobby != null:
+		# 切到 AI 模式就不能还挂在服务器房间里。
+		_leave_room()
+	_ai_mode = ai
+	if ai:
+		_stop_room_timer()
+	elif _state == STATE_LOBBY:
+		_start_room_timer()
+		_refresh_rooms()
+	_apply_ai_mode()
+	_update_seats()
+	_update_action()
+
+
+func _apply_ai_mode() -> void:
+	for n in _room_only_nodes:
+		if n is CanvasItem:
+			(n as CanvasItem).visible = not _ai_mode
+	if _ai_hint != null:
+		_ai_hint.visible = _ai_mode
+	if _ai_map_btn != null:
+		_ai_map_btn.visible = _ai_mode
+	if _ai_diff_btn != null:
+		_ai_diff_btn.visible = _ai_mode
+	_refresh_ai_mode_texts()
+
+
+func _refresh_ai_mode_texts() -> void:
+	if _ai_mode_btns.size() >= 2:
+		var active := UiStyleRes.accent() if _ai_mode else UiStyleRes.text()
+		var idle := UiStyleRes.text() if _ai_mode else UiStyleRes.accent()
+		(_ai_mode_btns[0] as Button).add_theme_color_override("font_color", idle)
+		(_ai_mode_btns[1] as Button).add_theme_color_override("font_color", active)
+	if _ai_diff_btn != null:
+		_ai_diff_btn.text = "%s：%s" % [
+			_ai_txt("labels.difficulty", "难度"),
+			_ai_txt("labels." + _ai_diff, _ai_diff),
+		]
+	if _ai_map_btn != null:
+		var map_name := ""
+		if not _current_entry.is_empty():
+			map_name = String(_current_entry.get("map_name", ""))
+		if map_name == "":
+			_ai_map_btn.text = _ai_txt("labels.select_map", "选择地图")
+		else:
+			_ai_map_btn.text = "%s：%s" % [_ai_txt("labels.select_map", "选择地图"), map_name]
+
+
+func _cycle_ai_difficulty() -> void:
+	var list: Array = []
+	if cfg != null:
+		var v: Variant = cfg.get_path_value("coop.lobby.ai_teammate.difficulties")
+		if typeof(v) == TYPE_ARRAY:
+			list = v
+	if list.is_empty():
+		list = ["easy", "normal", "hard"]
+	var idx := list.find(_ai_diff)
+	_ai_diff = String(list[(idx + 1) % list.size()])
+	_refresh_ai_mode_texts()
+
+
+func _start_ai_solo() -> void:
+	if _current_entry.is_empty():
+		return
+	_in_game = true
+	solo_started.emit(String(_current_entry.get("campaign", "")),
+		String(_current_entry.get("level", "")), {"difficulty": _ai_diff})
+
+
 func _build_room_panel() -> void:
 	_room_preview_btn = _button("RoomPreviewBtn", "", 14)
 	_room_preview_btn.position = CoopLayoutRes.ROOM_PREVIEW.position
@@ -514,7 +654,8 @@ func _set_state(next: String, animate: bool = true) -> void:
 		_update_action()
 		return
 	_state = next
-	if next == STATE_LOBBY:
+	_refresh_mode_visibility(next)
+	if next == STATE_LOBBY and not _ai_mode:
 		_start_room_timer()
 	else:
 		_stop_room_timer()
@@ -552,10 +693,24 @@ func _finish_state(next: String) -> void:
 	_sync_panel_visibility()
 
 
+func _refresh_mode_visibility(state_name: String) -> void:
+	var show := state_name == STATE_LOBBY
+	for b in _ai_mode_btns:
+		if b is CanvasItem:
+			(b as CanvasItem).visible = show
+	if _ai_diff_btn != null:
+		_ai_diff_btn.visible = show and _ai_mode
+	if _ai_map_btn != null:
+		_ai_map_btn.visible = show and _ai_mode
+	if _ai_hint != null:
+		_ai_hint.visible = show and _ai_mode
+
+
 func _set_state_instant(next: String) -> void:
 	if _state_tween != null and _state_tween.is_valid():
 		_state_tween.kill()
 	_state_tween = null
+	_refresh_mode_visibility(next)
 	_lobby_panel.position = _local_pos(_lobby_rect_for(next).position)
 	_lobby_panel.modulate.a = 1.0 if next == STATE_LOBBY else 0.0
 	_room_panel.position = _local_pos(_room_rect_for(next).position)
@@ -815,6 +970,11 @@ func _update_action() -> void:
 	if _state == STATE_ROOM:
 		_update_room_action()
 		return
+	# ★★ AI 队友模式：不建房、不连服务器；有地图就能开始。
+	if _ai_mode:
+		_action_btn.text = _ai_txt("labels.start_ai", "开始（AI 队友）")
+		_action_btn.disabled = _current_entry.is_empty()
+		return
 	var code := _code()
 	if code.length() < 6:
 		# 2026.10.20：没输满 6 位**不显示任何字**，也不许点。
@@ -842,6 +1002,9 @@ func _on_action_pressed() -> void:
 		return
 	if _state == STATE_ROOM:
 		_on_room_action_pressed()
+		return
+	if _ai_mode:
+		_start_ai_solo()
 		return
 	var code := _code()
 	if code.length() < 6:
@@ -1012,10 +1175,21 @@ func _update_seats() -> void:
 	var guest := _lobby != null and bool(_lobby.room.get("guest", false))
 	var ready_guest := _lobby != null and bool(_lobby.room.get("ready_guest", false))
 	var role := "房主" if host else ("队友" if _lobby != null else "")
-	_self_seat.set_seat(_txt("player", "player"), role, "已入房" if _lobby != null else "未入房", true)
+	if _ai_mode:
+		_self_seat.set_seat(_txt("player", "player"), "玩家",
+			_ai_txt("labels.local_start", "本地开局"), true)
+	else:
+		_self_seat.set_seat(_txt("player", "player"), role,
+			"已入房" if _lobby != null else "未入房", true)
 	if _room_code_label != null:
 		var code := String(_lobby.room_code()) if _lobby != null else ""
 		_room_code_label.text = ("房间码 %s" % code) if code != "" else ""
+	if _ai_mode:
+		# 第二席位由 AI 接管：席位卡片要明确写出来，不能还挂着「等待队友…」。
+		_mate_seat.set_seat(_ai_txt("labels.mode_ai", "AI 队友"),
+			_ai_txt("labels.ai_seat_role", "AI 队友"),
+			_ai_txt("labels.ai_seat_status", "由 AI 接管"), true)
+		return
 	if guest:
 		# 后门加进来的队友明确标成「占位队友」，与真联机的队友区分开。
 		var guest_role := "占位队友" if _fake_guest else "队友"
@@ -1163,7 +1337,9 @@ func _broadcast_room_cfg() -> void:
 
 
 func _open_map_select() -> void:
-	if not _is_host() or _current_entry.is_empty():
+	if not _ai_mode and not _is_host():
+		return
+	if _current_entry.is_empty():
 		return
 	_pending_entry = _current_entry
 	_set_state(STATE_MAP)
@@ -1193,6 +1369,11 @@ func _apply_pending_map() -> void:
 	_pending_entry = {}
 	_refresh_map_selection()
 	_update_room_preview(_current_entry)
+	if _ai_mode:
+		_refresh_ai_mode_texts()
+		_update_action()
+		_set_state(STATE_LOBBY)
+		return
 	_broadcast_room_cfg()
 	_set_state(STATE_ROOM)
 
@@ -1201,7 +1382,10 @@ func _cancel_map_select() -> void:
 	_pending_entry = {}
 	_refresh_map_selection()
 	_update_room_preview(_current_entry)
-	_set_state(STATE_ROOM)
+	if _ai_mode:
+		_set_state(STATE_LOBBY)
+	else:
+		_set_state(STATE_ROOM)
 
 
 # ------------------------------------------------------------------

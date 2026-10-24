@@ -173,6 +173,35 @@ static func to_snapshot(world) -> Dictionary:
 	for f in world.player_seats:
 		gp_out[String(f)] = world.general_pool_snapshot(String(f))
 
+	# ★★ 指挥官 AI 的指令 / 资源（合作 AI 队友的面板在客机也要显示）。
+	#    只发 commander 阵营；键按 faction 排序（确定性）。
+	var aid_out: Dictionary = {}
+	var aid_keys: Array = world.ai_directives.keys()
+	aid_keys.sort()
+	for f in aid_keys:
+		var d: Variant = world.ai_directives[f]
+		if typeof(d) != TYPE_DICTIONARY:
+			continue
+		var dd: Dictionary = d
+		aid_out[String(f)] = {
+			"k": String(dd.get("kind", "")),
+			"x": round2(float(dd.get("x", -1.0))),
+			"y": round2(float(dd.get("y", -1.0))),
+			"s": int(dd.get("serial", 0)),
+			"t": round2(float(dd.get("since", 0.0))),
+		}
+	var air_out: Dictionary = {}
+	var air_keys: Array = world.ai_faction_resources.keys()
+	air_keys.sort()
+	for f2 in air_keys:
+		var p: Variant = world.ai_faction_resources[f2]
+		if typeof(p) != TYPE_DICTIONARY:
+			continue
+		air_out[String(f2)] = [
+			round(float((p as Dictionary).get("food", 0.0)) * 10.0) / 10.0,
+			round(float((p as Dictionary).get("gold", 0.0)) * 10.0) / 10.0,
+		]
+
 	return {
 		"units": units_out,
 		"buildings": buildings_out,
@@ -182,6 +211,8 @@ static func to_snapshot(world) -> Dictionary:
 		"obj": ObjectiveRes.to_snapshot(world.objective_state),
 		"tech": tech_out,
 		"gp": gp_out,
+		"aid": aid_out,
+		"air": air_out,
 		"res": [round(float(world.resources["food"]) * 10.0) / 10.0, round(float(world.resources["gold"]) * 10.0) / 10.0],
 		"owned": world.owned_tiles,
 		"time": round2(world.time),
@@ -284,7 +315,8 @@ static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void:
 			u.sync_tile(world.map)
 		# ★ 招募队列：一整组字段，按 **tk 在不在** 判断新旧格式（与 ld / fa 同一条约定：
 		#   老快照没有 tk → 整组保持本地现状，不要把队列清空）。
-		#   train_anchor 取权威位置 —— 客机侧「招募期间钉在原地」靠它。
+		#   ⚠️ 2026.10.24 起招募**不再把将领钉在原地**，客机侧也就没有
+		#   「train_anchor 钉位置」这件事了；`train_anchor` 只作为历史字段保留。
 		if su.has("tk"):
 			var tk: Variant = su["tk"]
 			u.train_kind = String(tk) if tk != null else ""
@@ -311,7 +343,7 @@ static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void:
 			#    多发一个就多一处要与 nv 对齐的状态，而两者本来就是同一件事。
 			u.revive_pending = u.downed and u.revive_remaining > 0.0
 			u.nd_hp_ratio = u.hp / u.hp_max if u.hp_max > 0.0 else 0.0
-			# ★ 倒下点：濒死期间位置被 `world._pin_training_leaders()` 钉在它上面，
+			# ★ 倒下点：濒死期间位置被 `world._pin_downed_leaders()` 钉在它上面，
 			#   所以客机必须跟着权威位置更新 —— 缺了它，客机会把这个将领拖回
 			#   本地那份旧的 downed_anchor（画面上一抖一抖）。
 			if u.downed:
@@ -414,6 +446,40 @@ static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void:
 		if typeof(gp_in) == TYPE_DICTIONARY:
 			for f in (gp_in as Dictionary).keys():
 				world.apply_general_pool_snapshot(String(f), (gp_in as Dictionary)[f])
+
+	# ★★ 指挥官 AI 的指令 / 资源（客机只读；缺字段 = 保持本地现状）。
+	if snap.has("aid"):
+		var aid_in: Variant = snap["aid"]
+		if typeof(aid_in) == TYPE_DICTIONARY:
+			var next: Dictionary = {}
+			for f in (aid_in as Dictionary).keys():
+				var dv: Variant = (aid_in as Dictionary)[f]
+				if typeof(dv) != TYPE_DICTIONARY:
+					continue
+				var dd: Dictionary = dv
+				next[String(f)] = {
+					"kind": String(dd.get("k", "")),
+					"x": float(dd.get("x", -1.0)),
+					"y": float(dd.get("y", -1.0)),
+					"serial": int(dd.get("s", 0)),
+					"since": float(dd.get("t", 0.0)),
+					"state": "running",
+					"reason": "",
+				}
+			world.ai_directives = next
+	if snap.has("air"):
+		var air_in: Variant = snap["air"]
+		if typeof(air_in) == TYPE_DICTIONARY:
+			var next2: Dictionary = {}
+			for f in (air_in as Dictionary).keys():
+				var av: Variant = (air_in as Dictionary)[f]
+				if typeof(av) != TYPE_ARRAY or (av as Array).size() < 2:
+					continue
+				next2[String(f)] = {
+					"food": float((av as Array)[0]),
+					"gold": float((av as Array)[1]),
+				}
+			world.ai_faction_resources = next2
 
 	if snap.has("owned"):
 		world.owned_tiles = int(snap["owned"])

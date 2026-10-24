@@ -361,8 +361,10 @@ var rescue_anchor: Vector2 = Vector2.ZERO ## 倒下点（下发那一刻的快�
 ## ★ 为什么状态挂在单位上而不是 world 里另开一张表：
 ##   队列天然属于某个将领（它死了队列就该没），而 world.units 已经是权威列表；
 ##   另开一张「将领 id → 队列」的表就多出一份要对齐、要快照、要清理的状态。
-## ★ 读条期间将领被**钉在原地**（不能移动、不能攻击，见 world.tick 的 _tick_recruitment
-##   与 _pin_training_leaders）—— 所以 train_anchor 必须记住开招那一刻的位置。
+## ★★ 招募**不再把将领钉在原地**（2026.10.24 改动）：下单只要求「那一刻站在己方区划里」，
+##   之后将领可以自由移动 / 攻击；读条完成时在它**当前所在位置周围**生成单位。
+##   读条会因战斗**暂停**（见 `recruit_idle_timer` 与 `cfg.recruit_combat_idle_sec`），
+##   但不会取消、也不会清空队列。
 var train_kind: String = ""            ## 正在读条的那个兵种（空 = 没在读条）
 var train_remaining: float = 0.0       ## 这一单还剩几秒
 var train_total: float = 0.0           ## 这一单总共几秒（渲染画进度条要分母）
@@ -374,8 +376,18 @@ var train_cost_gold: float = 0.0
 var train_cost_pop: float = 0.0
 ## 人口是从哪个区划扣的（退款要还回**同一个**区划）
 var train_zone_id: int = -1
-## 招募期间钉住的位置（开招那一刻的 pos）
+## 历史字段：开招那一刻的位置。现行逻辑**不再用它钉位置**（招募可以移动），
+## 保留只为老快照 / 老测试的字段兼容。
 var train_anchor: Vector2 = Vector2.ZERO
+## ★★ 距「上一次进入战斗」过去了多久（秒）——**招募专用**的脱战计时。
+##   · 有单位 / 建筑目标时清零；
+##   · 受到伤害时也清零（用户口径：「将领受到伤害 ⇒ 读条中断」）；
+##   · 达到 `cfg.recruit_combat_idle_sec` 才算脱战，读条才能继续。
+## ★ 初值给一个很大的数 = 「从出生起就没打过架」，于是开局 / 新招的将领可以立即招募；
+##   若用 0，所有单位都要先站 10 秒才能下单（既不符合直觉，也会让开局卡住）。
+## ⚠️ 与守军 AI 的 `combat_idle_timer` 分开：那个只由 garrison_ai 维护它自己的单位，
+##   这一份由 world 每帧为**所有单位**维护（招募是全局玩法规则）。
+var recruit_idle_timer: float = 9999.0
 
 ## ---- 阵亡与复活（config.pvp；单机开关永远关着）----
 var death_timer: float = 0.0  # > 0 表示已阵亡且正在等复活
@@ -411,7 +423,7 @@ var nd_regen_hp: float = 0.0
 var nd_hp_ratio: float = 0.0
 ## 「再起」的读条：剩余 / 总秒数（`revive_pending` = 正在读条）。
 ## ⚠️ 与招募的 train_* 是**两套独立字段**，不要合并：将领可能同时在招兵（读条）与再起，
-##   而两者的规则完全不同（招兵期间被钉住、再起期间无敌且暂停全灭判定）。
+##   而两者的规则完全不同（招兵在战斗中只**暂停**、不锁移动；再起期间无敌且暂停全灭判定）。
 var revive_remaining: float = 0.0
 var revive_total: float = 0.0
 ## ★★ 「正在读条再起」这个**布尔开关**（本轮新增）。
@@ -743,8 +755,9 @@ func revive_progress() -> float:
 # ------------------------------------------------------------------
 
 ## 这个单位现在是不是「正在招募」（在读条，或还有排队的）。
-## ★ 这就是「钉在原地」的判据：true 时 world.tick 跳过它的移动与战斗，
-##   命令层也会把它从 move / attack 的目标里剔掉。
+## ★ 2026.10.24 起它**不再**意味着「钉在原地 / 不接受命令」：招募可以在移动、
+##   战斗中暂停后继续。判断「读条能不能推进」要额外看 `recruit_idle_timer`
+##   （见 `world.is_out_of_combat_for_recruit`）。
 func is_training() -> bool:
 	return train_kind != "" or not train_queue.is_empty()
 
@@ -1322,12 +1335,13 @@ func halt() -> void:
 
 ## ★★ 把「上一次开火」的渲染残留清掉（攻击线读的就是这两样 + `attack_flash`）。
 ##
-## 为什么要单独一个函数（本轮修 bug 收口）：**只要单位这一帧不跑单位逻辑，
+## 为什么要单独一个函数（历史 bug 的收口）：**只要单位这一帧不跑单位逻辑，
 ## `attack_flash` 就不会衰减**（衰减在 `combat.update_unit` 的开头），
 ## 于是 flash 冻在非零值上、攻击线**永远留着**。实测报回来的两个入口：
-##   · 将领**开始招募**（读条期间整段逻辑被跳过，见 `world.tick` 第 4 步）；
-##   · 将领**倒下**（濒死整段逻辑被跳过，`enter_near_death()` 已经就地清过一次）。
-## ⇒ 凡是「要把它从『正常单位』切出去」的地方，都调一下这个函数。
+##   · 将领**倒下**（濒死整段逻辑被跳过，`enter_near_death()` 已经就地清过一次）；
+##   · 旧版将领**开始招募**（当时读条期间整段逻辑被跳过；2026.10.24 起招募已不跳过，
+##     但开始读条 / 因战斗暂停时仍要清一次，避免旧的开火线挂着）。
+## ⇒ 凡是「要把它从『正常单位』切出去 / 让读条暂停」的地方，都调一下这个函数。
 func clear_attack_fx() -> void:
 	attack_flash = 0.0
 	# 受击反应也是「一次性残留」：切出正常单位逻辑时一起清掉，免得冻在非零值上
@@ -1437,9 +1451,10 @@ func order_retaliate(world, cfg: ConfigRes, enemy) -> bool:
 	leash_cd = 0.0
 	target = enemy
 	retaliate_target = enemy
-	# ★ 如果「点名目标」正好就是这个攻击者，**保留**它：招募被打断时
-	#   `world._interrupt_training_if_threatened()` 刚把威胁写进 `ordered_target`，
-	#   这里再清掉会让那条既有语义（打断那一帧就点名威胁）失效（实测 test_recruit_queue）。
+	# ★ 如果「点名目标」正好就是这个攻击者，**保留**它：程序性命令（救援 / 驻防 /
+	#   以后的其它 AI）可能刚把威胁写进 `ordered_target`，这里再清掉会让那条语义失效。
+	#   ⚠️ 旧的 `_interrupt_training_if_threatened()` 已随「移动招募」一起移除；
+	#   这一段保留是因为它对任何「点名目标 = 攻击者」的程序命令都成立。
 	#   它仍然**不算玩家命令**（`player_order` 是 false），所以程序命令照样被反击挡住。
 	if ordered_target != enemy:
 		ordered_target = null
@@ -1709,10 +1724,14 @@ func clear_settled_spot() -> void:
 func take_damage(cfg: ConfigRes, world, amount: float, _source = null,
 		incoming_ranged: bool = false, ignore_reduction: bool = false) -> bool:
 	# ★ 濒死 = 无敌：需求原话「在将领濒死期间，该将领无法被选中为攻击对象且不会受到伤害」。
-	#   ⚠️ 这一句同时兜住了「读条中被打断」：读条期间仍然免疫（用户拍板）。
+	#   ⚠️ 招募读条**不再**提供无敌 / 钉住（2026.10.24 改动）：读条中照常可以被攻击，
+	#      受击只让读条**暂停**，等脱战后继续。
 	if downed:
 		return true
 	hit_flash = 1.0          # ★ 受击反应：闪白 + 左右振动（视图读它，逻辑不用）
+	# ★★ 受击 ⇒ 招募脱战计时清零（用户口径：「当将领受到伤害时，读条中断」）。
+	#   放在扣血之前：哪怕这一击被护甲 / 减伤吃掉大半，也算「正在挨打」。
+	recruit_idle_timer = 0.0
 	# ★★ 固定护甲（本轮新增）：**先**扣固定值，再算百分比减伤。
 	#   最低仍造成 1 点（amount > 0 时）—— 否则高护甲单位会被低级兵完全免疫，
 	#   表现成「打了半天一点伤害都没有」。护甲 0 = 这一段整段跳过。

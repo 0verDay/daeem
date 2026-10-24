@@ -2222,9 +2222,12 @@ func _test_order_locked_notice(main) -> void:
 	main.hud.refresh()
 	main.hud.page_tabs.select_page(PageTabsRes.PAGE_UNIT)   # 单位页（招募那一页）
 	main.hud.refresh()
-	card.activate_index(0)                       # 排一单 → 整队被锁住
-	ok(g1.is_training(), "将领开始招募（整队进入「不接指令」状态）")
+	card.activate_index(0)                       # 排一单
+	ok(g1.is_training(), "将领开始招募")
 	main.hud.show_notice("")                     # 先把提示清掉，免得误判
+	# ★★ 2026.10.24：招募不再把将领 / 附属兵锁住，右击照常下令。
+	ok(not main.input_ctrl.selection_locked(),
+		"★★ 招募中的队伍不再处于「被锁住」状态（可以边走边招）")
 
 	var empty := Vector2i(-1, -1)
 	for ty in world.map.rows:
@@ -2240,17 +2243,15 @@ func _test_order_locked_notice(main) -> void:
 	main.input_ctrl._on_right_click(false)
 	var evts: Array = world.tick(1.0 / 60.0)
 	main._consume_events(evts)
-	ok(main.hud.notice_active(), "★ 指令被拒 → 左栏出现红字提示")
-	ok(main.hud.notice_text().contains("招募"),
-		"★ 提示说明是「将领正在招募」（实际：%s）" % main.hud.notice_text())
-	ok(main.input_ctrl.move_marks.is_empty(),
-		"★ 被锁住的队伍不会画「没人会走的移动标记」（不骗玩家）")
-	ok(main.input_ctrl.selection_locked(), "选中的整队确实处于「被招募锁住」状态")
+	ok(not main.hud.notice_active() or not main.hud.notice_text().contains("招募"),
+		"★★ 招募中不再弹出「将领正在招募，不接受指令」的红字")
+	ok(main.input_ctrl.move_marks.size() >= 1,
+		"★★ 招募中的队伍照常画移动标记（命令真的会执行）")
 
 	var mate = world.retinue_of(g1.id)[0]
-	ok(not CommandRes.apply(world, main.cfg, {"kind": "move", "ids": [mate.id],
+	ok(CommandRes.apply(world, main.cfg, {"kind": "move", "ids": [mate.id],
 		"x": float(empty.x), "y": float(empty.y), "faction": "p1"}),
-		"★ 将领辖下的附属兵也不接受指令")
+		"★★ 将领辖下的附属兵照常接受指令")
 	var g2 = world.unit_by_id("general-2")
 	ok(CommandRes.apply(world, main.cfg, {"kind": "move", "ids": [g2.id],
 		"x": float(empty.x), "y": float(empty.y), "faction": "p1"}),

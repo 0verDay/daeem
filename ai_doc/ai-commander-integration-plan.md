@@ -1,6 +1,9 @@
 # DAEEM · AI 指挥官与「合作 AI 队友」接入方案（计划稿）
 
-> 状态：**待确认**（本文只做设计，不改代码）
+> 状态：**已完成（2026.10.24）**（M1~M5 全部落地；全量语法检查与 80 套回归全绿）
+> ★ 后续（2026.10.24 晚）：按实测反馈重做了**按队补员 / 守军轮换 / 区划中心扩张 / 大小队分工 / 巡逻**，
+>   并把招募底层改成**移动兵营**（受击暂停、脱战继续）；读条中的将领也可巡逻 / 出征，
+>   小股部队会按可见敌军规模避战。以代码注释与 README 为准；本文保留接入方案原文。
 > 依据：`ai_doc/rusted-warfare-ai-adaptation-spec.md`（下称「RW 规范」）
 > 勘察对象：`dev_gd_a/daeem/`（Godot 4.7.2 mono，当前 78 个测试套件 / 7494 项断言）
 > 目标：把 RW 规范里的「分层调度 / 效用评分 / 预算制生产 / 编组状态机 / 命令层 / 难度参数包」改造成适合本作的**阵营指挥官 AI**，先作为合作模式的第二席位 AI 队友接入；自定义对战房间本轮不实现，只保留可复用设计。
@@ -287,7 +290,7 @@ for b in world.fog.known_buildings(ai_faction): ...
       ]
     },
     "build": {
-      "tower_max": 4,
+      "tower_max": 6,
       "tower_frontier_bonus": 4.0,
       "base_upgrade_priority": 10.0,
       "tech_priority": ["..."],
@@ -1207,3 +1210,66 @@ AI 面板按钮
 | 12 测试 | Part II 19 |
 | 13 风险 | Part II 21 |
 | 14 未来 | Part II 16.1~16.9 |
+
+---
+
+## 16. 实施记录（2026.10.24）
+
+### 16.1 已落地
+
+| 里程碑 | 内容 | 主要文件 |
+|---|---|---|
+| M1 | `commander` 类型 / 配置合并 / 独立资源池 / 收入 / 大本营 / 基础控制器 / 生产 / 建造 / 科技 / 特化 / 箭塔 | `logic/ai_profile.gd`、`ai_economy.gd`、`ai_build.gd`、`ai_commander.gd`、`world.gd`、`config.gd`、`level.gd` |
+| M2 | `ai_order` 命令；行军 / 发展 / 扩张 / 屯兵四条状态机；回防 / 留守将领 / 军队编组 / 目标缓存 | `logic/command_processor.gd`、`logic/ai_army.gd`、`logic/ai_commander.gd` |
+| M3 | 合作大厅真人 / AI 二选一；`start_coop_solo`；主流程信号链；HUD 浮动面板；地图选点；主界面 `ai_test` 观战入口 | `view/coop_lobby.gd`、`view/menu_*`、`view/start_screen.gd`、`view/main.gd`、`view/game_scene3d.gd`、`view/hud.gd`、`view/ai_order_panel.gd`、`view/input_controller.gd` |
+| M4 | 快照 `aid` / `air`；面板客机只读；目标环；拒绝提示；确定性 seed | `logic/snapshot.gd`、`view/overlay_view_3d.gd`、`view/game_interaction.gd`、`logic/world.gd` |
+| M5 | 新测试 4 套 + 全量回归；文档更新 | `tests/test_ai_commander.gd`、`test_ai_order_panel.gd`、`test_coop_ai_teammate.gd`、`test_ai_observer.gd`、`README.md`、`docs/README.md`、`docs/architecture.md` |
+
+### 16.2 实际数值取舍
+
+- `develop_cap_ratio` 从计划里的 `0.6` 提到 **`0.85`**：合作关 `02_twin_line` 一开局就有 18 人，
+  0.6 × 26 = 15.6 < 18，AI 会**永远不补员**（实测发现）；0.85 × 26 ≈ 22，既有补员空间，也不至于把
+  「发展」变成「全军出击」。
+- 面板在 1920 设计空间里从右上角**左移 300px**：实机截图发现原位置会压住右侧部队列表
+  （`SQUAD_RECT.x = 1680`），现在右缘停在列表左侧；高度从 190 提到 236，四行状态不再互相压字。
+- 目标环半径从 2.2 格缩到 **1.3 格**：2.2 格在最大缩放档下直径约 500px，太抢戏。
+- **军队上限改为动态**：`Σ(每位在场将领 1 + 有效编制) × 难度 army_cap_ratio`
+  （简单 0.6 / 普通 0.8 / 困难 1.0）。3 位 1 级将领普通约 29；10 位 3 级将领普通约 128。
+  难度里的 `army_cap` 只在没有将领时兜底。
+- **补将目标改为按大本营等级**：`general_target_by_base_level = [3, 6, 10]`，
+  仍受大本营 `max_generals`（3/6/10）与 20 秒招募冷却限制；大后期可以到 10 位将领。
+- **新增 ai_test 观战入口**：`data/campaigns/demo/levels/ai_test.json` + 主界面按钮。
+  `World.observer_mode = true` 时被观察方仍算目标 / 判负口径的玩家阵营，但由 commander AI 控制；
+  输入命令全部丢弃，命令卡 / 页签隐藏，AI 面板只读显示指令、目标、兵力、将领、资源与状态。
+- 观战局默认指令改为 `expand`；`ai_test` 地图补了黄金产能（原来 7 块区划全是 food，AI 招完兵后
+  金=0，既建不了塔也补不了将）；开局将领改为 `general_0`（不占 #1-9 招募池），大后期可到 10 位；
+  补将不再只在“顶满目标上限”时尝试，且会遍历己方各区划；箭塔上限 4→6。
+- **AI 默认自主 `auto`**：兵力低于 35% 先发展，35%~80% 扩张，80% 以上 / 45 秒后
+  没有中立区就进攻最近敌方目标；没有敌人可打时派 1 支 field team 巡逻（默认 9 秒一班）。
+- **生产 / 外勤角色分离**：生产只允许基地区划内、未读条、无移动 / 攻击命令的留守将领当兵营；
+  没有合格留守将领就等，不再“退而求其次”抓队列最短的外勤队长。`home_leader()` 也不再在
+  基地无将领时退回“离基地最近的队长”，避免把外勤队误判成留守；只有一位将领时 `auto` 不派它出去，
+  先补出第二位形成“一守一攻”。
+- **固定生产将领**：`production_leader_id` 一旦选定，就只有它当兵营；它读条时生产等待，
+  不会换成另一位基地将领（否则 4 位基地将领会被轮流钉在招募上，外勤队全不动）。
+  当前生产将领离开基地 / 阵亡才重新选。
+- **玩家四指令改为 60 秒临时倾向**：`set_ai_directive` 写 `until`，到期由
+  `_tick_ai_directive_holds()` 自动回 `auto`；面板显示“指令剩余 Ns”。
+
+### 16.3 验证
+
+- `tools/check-syntax.ps1`：**205 个 .gd 全部通过**（logic / view / tests / net）。
+- `tools/run-tests.ps1`：**81 套 / 7698 项断言全绿**（含新增 4 套 157 项）。
+  - ⚠️ 本机 DSH 沙箱下 `user://` 不可写，`test_water.gd` 需要把 `APPDATA` 指到工程内
+    （否则失败在「能写临时地图」这个前提上，与本轮代码无关）。
+- 新增测试：
+  - `test_ai_commander.gd`（82）：配置 / 经济 / 生产 / 建造 / 四指令 / 临时倾向到期 / 自主 / 巡逻 / 生产-外勤角色分离 / 命令链路 / 回防 / 动态军队上限与补将 / 快照 / 确定性；
+  - `test_ai_order_panel.gd`（24）：面板布局 / 四按钮 / 折叠 / 无 AI 时隐藏 / 大厅模式切换；
+  - `test_coop_ai_teammate.gd`（27）：`start_coop_solo` / 第二席位 / 面板可见 / 选点下令 / 真人合作不受影响；
+  - `test_ai_observer.gd`（24）：主界面 ai_test 观战局 / AI 接管 F1 / 默认扩张 / 命令卡隐藏 / 输入与面板只读 / 命令丢弃 / ai_test 黄金与开局将领 #0。
+
+### 16.4 明确未做（按确认口径）
+
+- 自定义对战房间 / 基地槽位 / 多 AI 数量选择 / `annihilation` 模式；
+- AI 对手的专用开局 UI（但 `auto` 战略、难度包、基地兜底已经就位）；
+- 网络合作里的「真人 + AI 队友同时存在」——按确认口径，二者二选一。

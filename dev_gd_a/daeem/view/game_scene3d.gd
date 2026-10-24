@@ -94,6 +94,8 @@ var level_playing = null
 var level_campaign = null
 ## ★★ M12.4 合作局："" = 单机 / 战役；"host" / "guest" = 联机。
 var coop_role: String = ""
+## 观战模式：玩家只看 AI，不下命令、不显示命令卡。
+var observer_mode: bool = false
 var coop_transport = null
 var coop_host_session = null
 var coop_client_session = null
@@ -229,6 +231,98 @@ func start_level(campaign, level, my_faction: String) -> bool:
 	interaction_pending_level = level
 
 	_assemble()
+	return true
+
+
+## ★★ 观战模式：`ai_test` 关卡由 commander AI 接管 F1，玩家只看、不下命令。
+##
+## 与 `start_coop_solo` 的区别只在两点：
+##   · 世界带 `observer_mode = true`（F1 仍算“玩家的家”，但控制权交给 AI）；
+##   · 装配后关闭输入命令 / 命令卡，AI 面板切成只读。
+func start_ai_observer(level) -> bool:
+	cfg = ConfigRes.load_default()
+	if cfg == null:
+		push_error("配置载入失败：%s" % ConfigRes.last_error)
+		return false
+	if level == null:
+		push_error("start_ai_observer：关卡是 null")
+		return false
+	cfg.set_viewport_size(
+		float(ProjectSettings.get_setting("display/window/size/viewport_width", 1920)),
+		float(ProjectSettings.get_setting("display/window/size/viewport_height", 1080)))
+	var seats: Array = level.seats()
+	if seats.is_empty():
+		push_error("start_ai_observer：关卡没有席位")
+		return false
+	var watched := String(seats[0])
+	world = WorldRes.create_from_level(cfg, level, watched, seats, true,
+		{watched: LevelRes.AI_COMMANDER}, {watched: {"difficulty": "normal"}}, -1, true)
+	if world == null:
+		push_error("AI 观战局装配失败（地图 = %s）" % String(level.map_id))
+		return false
+	# ★★ 观战默认交给 AI 的自主战略（auto）：先发展，再扩张，没人可扩张时进攻 / 巡逻。
+	#    玩家在观战里没有指令权；想看「某一条指令」时靠合作模式 / 后续演示入口。
+	#    （这里不再硬写 expand，否则看不到自主决策。）
+	interaction_pending_campaign = null
+	interaction_pending_level = level
+	_assemble()
+	observer_mode = true
+	coop_role = "observer"
+	coop_campaign = null
+	coop_level = level
+	coop_guest_seat = ""
+	_disable_coop_pause()
+	if input_ctrl != null:
+		input_ctrl.set_observer(true)
+	if hud != null:
+		hud.set_observer(true)
+		if hud.ai_panel != null:
+			hud.ai_panel.set_observer(watched)
+			hud.ai_panel.sync()
+		hud.show_notice("观战：AI 正在操作 %s" % watched)
+	return true
+
+
+## ★★ 合作模式「AI 队友」：本地单人开局，不连中继、没有 HostSession。
+##
+## 第二席位在运行时被改成 `commander`（不改关卡 JSON）；它的基地 / 开局部队仍然来自
+## 合作关现成的 `players[]` / `start_units[]`，所以 AI 一进关就有一支自己的军队。
+func start_coop_solo(level, ai_setup: Dictionary) -> bool:
+	cfg = ConfigRes.load_default()
+	if cfg == null:
+		push_error("配置载入失败：%s" % ConfigRes.last_error)
+		return false
+	if level == null:
+		push_error("start_coop_solo：关卡是 null")
+		return false
+	if String(level.mode) != "coop":
+		push_error("start_coop_solo：关卡不是 coop")
+		return false
+	cfg.set_viewport_size(
+		float(ProjectSettings.get_setting("display/window/size/viewport_width", 1920)),
+		float(ProjectSettings.get_setting("display/window/size/viewport_height", 1080)))
+	var seats: Array = level.coop_roster()
+	if seats.size() < 2:
+		push_error("start_coop_solo：合作关需要两个席位")
+		return false
+	var host_seat := String(seats[0])
+	var ai_seat := String(seats[1])
+	var overrides := {ai_seat: LevelRes.AI_COMMANDER}
+	var profiles := {
+		ai_seat: {"difficulty": String(ai_setup.get("difficulty", "normal"))},
+	}
+	world = WorldRes.create_from_level(cfg, level, host_seat, seats, true, overrides, profiles)
+	if world == null:
+		push_error("合作 AI 队友局装配失败（地图 = %s）" % String(level.map_id))
+		return false
+	interaction_pending_campaign = null
+	interaction_pending_level = level
+	_assemble()
+	coop_role = "solo"
+	coop_campaign = null
+	coop_level = level
+	coop_guest_seat = ai_seat
+	_disable_coop_pause()
 	return true
 
 
@@ -1191,6 +1285,25 @@ func _build_hud() -> void:
 	#   —— 匿名 lambda 接上去会让这条断言失败（看着像「信号没接」）。
 	hud.fullscreen_toggled.connect(_on_fullscreen_toggled)
 	hud.return_to_menu_requested.connect(_on_return_to_menu_requested)
+	# ★★ 合作 AI 队友的浮动面板：只发信号，命令仍由 `_on_command` 统一走 command_processor。
+	if hud.ai_panel != null:
+		hud.ai_panel.order_requested.connect(_on_ai_order_requested)
+		hud.ai_panel.pick_requested.connect(_on_ai_order_pick)
+
+
+## AI 面板：发展 / 扩张（一键，不需要选点）。
+func _on_ai_order_requested(order: String, ai_faction: String) -> void:
+	_on_command({
+		"kind": "ai_order", "faction": world.my_faction,
+		"ai_faction": ai_faction, "order": order,
+		"x": -1.0, "y": -1.0,
+	})
+
+
+## AI 面板：行军 / 屯兵（进入地图选点模式；左键那一下由 input_controller 发 ai_order）。
+func _on_ai_order_pick(order: String, ai_faction: String) -> void:
+	if input_ctrl != null:
+		input_ctrl.begin_ai_order_pick(order, ai_faction)
 
 
 ## HUD / input_controller 用的相机替身（它们只需要「能不能告诉我视野 / 跳转」）
@@ -1309,12 +1422,18 @@ func _is_wheel(event: InputEventMouseButton) -> bool:
 func _on_command(cmd: Dictionary) -> void:
 	if world == null:
 		return
+	# 观战：所有玩法命令（移动 / 攻击 / 招募 / 建造 / AI 指令）一律丢弃。
+	# 选择 / 相机 / 小地图不经过这里，仍可自由查看。
+	if observer_mode:
+		return
 	if coop_role == "guest":
 		if coop_client_session != null:
 			coop_client_session.send_command(cmd)
 	else:
 		CommandRes.apply(world, cfg, cmd)
 	_update_order_flag(cmd)
+	if hud != null and hud.ai_panel != null:
+		hud.ai_panel.sync()
 
 
 ## ★★ 右键指令的提示：在**目标点插一面 3D 旗子**（移动 = 绿 / 行军 = 黄）；
@@ -1340,6 +1459,14 @@ func _on_local_ui_changed() -> void:
 		overlay.set_selection(_selected_ids())
 	if units != null:
 		units.set_selection(_selected_ids())
+	# ★ AI 面板的选点提示跟着输入模式走（Esc / 右键退出时提示也要收掉）。
+	if hud != null and hud.ai_panel != null and input_ctrl != null:
+		var pick := ""
+		if input_ctrl.order_mode == "ai_march":
+			pick = "march"
+		elif input_ctrl.order_mode == "ai_mass":
+			pick = "mass"
+		hud.ai_panel.set_pick_mode(pick)
 
 
 ## 当前选中的建筑（含**选中的敌对建筑** —— 敌方建筑被点中时也要亮金框）。

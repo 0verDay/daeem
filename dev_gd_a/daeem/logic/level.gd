@@ -70,6 +70,10 @@ const FAIL_ZONE_LOST := "zone_lost"
 ##   · `none`     = 这一方这一局不动。
 const AI_GARRISON := "garrison"
 const AI_REDDOT := "reddot"
+## ★★ 阵营指挥官 AI（本轮新增）：有基地 / 经济 / 生产 / 军队。
+##    它与 garrison / reddot 互斥；合作模式 AI 队友走运行时 `ai_kind_overrides`，
+##    不要求关卡 JSON 写这个值。
+const AI_COMMANDER := "commander"
 const AI_NONE := "none"
 ## 旧值（**只用于兼容读入**）：'faction' / 'general' 现在都归一成 'garrison'。
 const AI_LEGACY_FACTION := "faction"
@@ -670,6 +674,8 @@ func merged_ai_factions(config_ai: Array = []) -> Array:
 			"garrison_ai": (e as Dictionary).get("garrison_ai", null),
 			# 红点性 AI 的按阵营覆盖 + 生成区域（缺省 = config 的 ai.reddot / 出生点）。
 			"reddot_ai": (e as Dictionary).get("reddot_ai", null),
+			# ★★ 指挥官 AI 的按阵营覆盖（缺省 = config 的 ai.commander）。
+			"commander_ai": (e as Dictionary).get("commander_ai", null),
 			"spawn_region": (e as Dictionary).get("spawn_region", null),
 			# ⚠️ 本轮**删掉了** `resource_mult` / `start_food` / `start_gold` 三个键
 			#    （AI 阵营不再有资源库）与 `general_escort`（编制改由 start_units 逐兵摆）。
@@ -1504,6 +1510,8 @@ static func _read_level_factions(v: Variant) -> Array:
 			#    `garrison_ai`（阵地性按阵营覆盖）/ `reddot_ai`（红点性按阵营覆盖）/
 			#    `spawn_region`（红点生成区域）。
 			"attack_target": null, "garrison_ai": null, "reddot_ai": null, "spawn_region": null,
+			# ★★ 指挥官 AI 的按阵营覆盖（{difficulty, ...}）；缺省 null = 用 config。
+			"commander_ai": null,
 		}
 		var spec: Variant = d.get("attack_target", null)
 		if typeof(spec) == TYPE_DICTIONARY:
@@ -1514,6 +1522,9 @@ static func _read_level_factions(v: Variant) -> Array:
 		var ra: Variant = d.get("reddot_ai", null)
 		if typeof(ra) == TYPE_DICTIONARY:
 			entry["reddot_ai"] = (ra as Dictionary).duplicate(true)
+		var ca: Variant = d.get("commander_ai", null)
+		if typeof(ca) == TYPE_DICTIONARY:
+			entry["commander_ai"] = (ca as Dictionary).duplicate(true)
 		# 生成区域与 `attack_target` 同形（kind = zone / point）。
 		var sr: Variant = d.get("spawn_region", null)
 		if typeof(sr) == TYPE_DICTIONARY:
@@ -1522,13 +1533,13 @@ static func _read_level_factions(v: Variant) -> Array:
 	return out
 
 
-## `ai` 字段：认 garrison / reddot / none；旧值 faction / general 归一成 garrison；
+## `ai` 字段：认 garrison / reddot / commander / none；旧值 faction / general 归一成 garrison；
 ## 别的（含缺字段）→ none。
 static func _ai_kind(v: Variant) -> String:
 	if typeof(v) != TYPE_STRING:
 		return AI_NONE
 	var s := String(v).strip_edges().to_lower()
-	if s == AI_GARRISON or s == AI_REDDOT or s == AI_NONE:
+	if s == AI_GARRISON or s == AI_REDDOT or s == AI_COMMANDER or s == AI_NONE:
 		return s
 	if s == AI_LEGACY_FACTION or s == AI_LEGACY_GENERAL:
 		return AI_GARRISON

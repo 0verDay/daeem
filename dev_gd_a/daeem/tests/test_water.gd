@@ -5,7 +5,8 @@ extends "res://tests/test_case.gd"
 
 const MapDataRes = preload("res://logic/map_data.gd")
 
-const MAP_PATH := "user://test_water_map.json"
+const MAP_DIR := "res://.tmp_test_water"
+const MAP_PATH := MAP_DIR + "/map.json"
 
 
 func _initialize() -> void:
@@ -30,6 +31,7 @@ func _cases() -> void:
 		],
 		"faction_bases": {"p1": [0, 1]},
 	}
+	DirAccess.make_dir_recursive_absolute(MAP_DIR)
 	var f := FileAccess.open(MAP_PATH, FileAccess.WRITE)
 	ok(f != null, "（前提）能写临时地图")
 	if f == null:
@@ -41,6 +43,7 @@ func _cases() -> void:
 	ok(m != null, "★ 带水域的地图能载入")
 	if m == null:
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(MAP_PATH))
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(MAP_DIR))
 		return
 
 	eq(String(m.terrain.get_cell(2, 1)), MapDataRes.TERRAIN_WATER, "★ '~' 解析成 water")
@@ -77,3 +80,4 @@ func _cases() -> void:
 	ok(m.terrain_walkable(2, 1), "改成草地之后可以走")
 
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(MAP_PATH))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(MAP_DIR))

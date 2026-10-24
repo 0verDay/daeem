@@ -39,6 +39,9 @@ const UpgradeRes = preload("res://logic/upgrade.gd")
 const CombatRes = preload("res://logic/combat.gd")
 const GarrisonAiRes = preload("res://logic/garrison_ai.gd")
 const RedDotAiRes = preload("res://logic/red_dot_ai.gd")
+## ★★ 阵营指挥官 AI（本轮新增）：控制器 + 配置合并。
+const AiCommanderRes = preload("res://logic/ai_commander.gd")
+const AiProfileRes = preload("res://logic/ai_profile.gd")
 const CollisionRes = preload("res://logic/collision.gd")
 const CrowdBridgeRes = preload("res://logic/crowd/crowd_bridge.gd")
 const FogRes = preload("res://logic/fog.gd")
@@ -140,10 +143,26 @@ var level = null
 ## ★ 它只是一份**缓存**：`reset()` 单独被调用（老路径）时它是空的，那时现算一次。
 var _merged: Dictionary = {}
 ## ★★ 合并之后的 AI 名单（关卡优先 + 全局 config 兜底）：
-## 每项 {id, ai, base, attack_target, garrison_ai, reddot_ai, spawn_region, from_level, source}。
-## ★ `ai` 取值 `garrison` / `reddot` / `none`；`ai == "none"` 的整条不进这份名单。
-##   `base` 只是**出生锚点**（AI 不建大本营）。
+## 每项 {id, ai, base, attack_target, garrison_ai, reddot_ai, commander_ai, spawn_region, from_level, source}。
+## ★ `ai` 取值 `garrison` / `reddot` / `commander` / `none`；`ai == "none"` 的整条不进这份名单。
+##   `base` 只是**出生锚点**（garrison/reddot 不建大本营；commander 会建）。
 var ai_roster_cfg: Array = []
+## ★★ 运行时把某一方改成 `commander`（合作 AI 队友走这里，不改关卡 JSON）。
+##    `ai_kind_of()` 会**优先**读它；`neutralized` 仍然优先于它。
+var ai_kind_overrides: Dictionary = {}
+## ★★ 每方的指挥官参数覆盖（目前只有 {difficulty: "easy"/"normal"/"hard"}）。
+var ai_profiles: Dictionary = {}
+## ★★ 世界可见的指令状态（进快照；客机也读它画面板）。
+var ai_directives: Dictionary = {}
+## ★★ 指挥官的资源池（不进 `player_resources`；进快照供客机显示）。
+var ai_faction_resources: Dictionary = {}
+## ★★ 指挥官控制器（只在权威侧存在；客机为空）。
+var ai_commanders: Dictionary = {}
+## ★★ 固定随机盐（-1 = 每局现抽）。测试 / 未来的回放用它钉住 AI 的确定性随机。
+var fixed_rand_salt: int = -1
+## ★★ 观战模式：`my_faction` 仍是被观察的那一方（迷雾 / 目标 / HUD 都按它走），
+##    但这一方由 commander AI 接管，玩家只读、不下命令。
+var observer_mode: bool = false
 ## ★★ 附属单位的**规格**（本轮口径变更）：不再有「逐兵摆放的归属表」，
 ##    规格直接存在**将领单位自己**身上（`unit.retinue_target` / `unit.retinue_types`）。
 ##    `escort_target_of()` 现在按 `escort_of_index()` 找到那位将领、读它的规格；
@@ -283,7 +302,9 @@ static func create(p_cfg: ConfigRes, map_path: String = MapLibraryRes.FALLBACK_M
 ##    这条契约由 `_apply_level()` / `_apply_level_placement()` / `ObjectiveRes.setup()`
 ##    三处的「level == null 直接返回」共同保证（tests/test_logic.gd 的 383 项是回归）。
 static func create_from_level(cfg: ConfigRes, level, my_faction: String,
-		roster: Array = [], with_ai: bool = true) -> RefCounted:
+		roster: Array = [], with_ai: bool = true,
+		ai_overrides: Dictionary = {}, ai_profiles: Dictionary = {},
+		seed_value: int = -1, observer_mode: bool = false) -> RefCounted:
 	if level == null:
 		push_error("World.create_from_level：level 是 null（请改用 create()）")
 		return null
@@ -296,6 +317,11 @@ static func create_from_level(cfg: ConfigRes, level, my_faction: String,
 	w.with_ai = with_ai
 	w.fog = FogRes.create()
 	w.level = level
+	# ★★ 合作 AI 队友：把第二席位在**运行时**改成 commander（不改关卡 JSON）。
+	w.ai_kind_overrides = ai_overrides.duplicate(true)
+	w.ai_profiles = ai_profiles.duplicate(true)
+	w.fixed_rand_salt = seed_value
+	w.observer_mode = observer_mode
 	# ★★ 关卡覆盖层在这里**先合并出地图**（返回新对象，不改关卡自己那份 `level.map`）：
 	#    于是 `reset()` 里那一段「建基地 / 分地 / 摆建筑」读到的都是合并后的数据，
 	#    而**覆盖规则的实现仍然只有一处**（`logic/level.gd` 的 `merge_over_map`）。
@@ -339,7 +365,11 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	neutralized_factions = {}
 	time = 0.0
 	# ★★ 每局换一个随机盐（见 `rand_salt` 的说明）。测试要可复现就直接赋值。
-	rand_salt = int(randi()) & 0x7FFFFFFF
+	#    `fixed_rand_salt >= 0` 时用它（create_from_level 的可选参数 / 回放）。
+	if fixed_rand_salt >= 0:
+		rand_salt = fixed_rand_salt & 0x7FFFFFFF
+	else:
+		rand_salt = int(randi()) & 0x7FFFFFFF
 	owned_tiles = 0
 	production_food = 0.0
 	production_gold = 0.0
@@ -399,7 +429,11 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 			continue                        # 这一方这一局归 AI 管 ⇒ 不是「玩家的家」
 		player_factions.append(String(f))
 	# 兜底：一个都不剩时至少把本机席位算进来（否则「玩家的家」会一个都没有）
-	if player_factions.is_empty() and my_faction != "":
+	# ★★ 观战模式：被观察的那一方仍然算「玩家的家」（目标 / 判负按它走），
+	#    但它的 AI 控制权由 `_is_ai_piloted()` / `_is_commander_ai()` 放行。
+	if observer_mode and my_faction != "" and not player_factions.has(my_faction):
+		player_factions.append(my_faction)
+	elif player_factions.is_empty() and my_faction != "":
 		player_factions.append(my_faction)
 	# ★★ 关卡 / 战役数据里的**阵营颜色**（本轮新增）：必须在下面那句 `set_allies` 之前、
 	#    在所有阵营确定之后登记 —— `view/` 里所有取色都走 `cfg.faction_color()`，
@@ -457,6 +491,11 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	#    ⚠️ 必须在 `player_factions` 算好之后、任何区划招募之前。
 	_reset_general_recruit_pools()
 	reddot_states = []
+	# ★★ 指挥官 AI 的世界状态每局从空开始；`ai_kind_overrides` / `ai_profiles`
+	#    是**开局配置**（create_from_level 传进来的），不在这里清。
+	ai_directives = {}
+	ai_faction_resources = {}
+	ai_commanders = {}
 	faction_bases = {}
 	faction_spawns = {}
 
@@ -480,7 +519,9 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	#    但**不建任何建筑**（apply_faction_layout 的 with_base=false）。
 	var primary: String = factions[0] if factions.size() > 0 else my_faction
 	for f in factions:
-		apply_faction_layout(String(f), primary, player_factions.has(String(f)))
+		# ★★ commander 也要建大本营（它要经营）；garrison / reddot 仍然不建。
+		var with_base := player_factions.has(String(f)) or _is_commander_ai(String(f))
+		apply_faction_layout(String(f), primary, with_base)
 	# 地图上**预置**的建筑（对家据点这类固定摆设，坐标写在 `data/maps/<id>/map.json`
 	# 的 "buildings" 里）。
 	# 放在各阵营出生点之后：它们的坐标是手写的，不与出生点抢格；被占住的格子 add_building 会自己拒。
@@ -600,6 +641,18 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	refresh_zone_connectivity()
 	_snapshot_zone_owners()
 
+	# ★★ 指挥官 AI 的收口（与 fog / objective / 区划图同一处「reset 结束 = 一切是热的」）：
+	#    必须在所有单位 / 建筑 / 目标都就位之后 —— 控制器 setup 要读基地与将领。
+	_setup_ai_commanders()
+
+	# ★★ 观战：HUD 的资源条读 `world.resources`，这里把它指到被观察 AI 的钱包。
+	#    经济 tick 里玩家席位那一轮会跳过 `_is_ai_piloted()`，所以不会重复加钱。
+	if observer_mode:
+		var op: Variant = ai_faction_resources.get(my_faction, null)
+		if typeof(op) == TYPE_DICTIONARY:
+			resources = op
+			player_resources[my_faction] = resources
+
 
 ## 把地图里每个区块的「区划中心」落成一栋中立障碍建筑（无血量 / 无敌 / 无攻击）。
 ##
@@ -674,12 +727,70 @@ func _setup_ai_factions() -> void:
 	for e in ai_roster_cfg:
 		var entry: Dictionary = e
 		var fid := String(entry["id"])
-		if fid == "" or fid == my_faction:
+		if fid == "" or (fid == my_faction and not observer_mode):
 			continue
 		if String(entry.get("ai", LevelRes.AI_NONE)) == LevelRes.AI_NONE:
 			continue
 		if not factions.has(fid):
 			factions.append(fid)
+
+
+## ★★ 建立这一局所有 CommanderAI 控制器 + 世界可见状态（由 reset() 末尾调）。
+##
+## 做四件事：
+##   1. 清掉 commander 单位身上的「阵地性 AI」字段（万一关卡 start_units 写了 zone，
+##      不能让 GarrisonAi 抢走指挥权）；
+##   2. 如果这一方一个将领都没有（未来遭遇战 / 数据缺摆放），补一位 #0 将领；
+##   3. 开资源池 + 初始化指令（所有 commander 默认 auto = 自主发展 / 扩张 / 攻击）；
+##   4. new() 控制器并 setup（计时器 / 统计 / 难度）。
+##
+## ★★ 玩家的四条指令是**临时倾向**（`until`），到期回到 auto；不是永久状态。
+## ⚠️ `with_ai == false`（客机 / 测试的干净世界）时整段跳过：不建控制器、不刷指令。
+func _setup_ai_commanders() -> void:
+	if not with_ai:
+		return
+	for f in commander_factions():
+		var fid := String(f)
+		_prepare_commander_units(fid)
+		var profile: Dictionary = AiProfileRes.build(cfg, fid, ai_roster_cfg, ai_profiles)
+		ai_faction_resources[fid] = {
+			"food": float(profile.get("start_food", 250.0)),
+			"gold": float(profile.get("start_gold", 250.0)),
+		}
+		ai_directives[fid] = {
+			"kind": "auto",
+			"x": -1.0,
+			"y": -1.0,
+			"serial": 0,
+			"since": time,
+			"until": 0.0,
+			"state": "running",
+			"reason": "",
+		}
+		var c = AiCommanderRes.new()
+		c.setup(self, cfg, fid, profile)
+		ai_commanders[fid] = c
+
+
+## commander 的单位不能带「阵地性 AI」状态：GarrisonAi 会按 `is_garrison()` 接管，
+## 于是它会一边被 commander 下令、一边被巡逻/补兵逻辑拉走。
+func _prepare_commander_units(faction: String) -> void:
+	var leaders := 0
+	for u in units:
+		if not u.alive or String(u.faction) != faction:
+			continue
+		u.garrison_zone_id = -1
+		u.patrol_points.clear()
+		u.hold_position = false
+		u.returning_home = false
+		u.defending_center = false
+		if String(u.leader_id) == "" and not u.is_downed():
+			leaders += 1
+	# 兜底：一个将领都没有时，在基地区划补一位 #0（正常合作关有 start_units，不会触发）。
+	if leaders <= 0 and find_base_of(faction) != null:
+		var g = create_general(faction, 9, 0)
+		if g != null:
+			units.append(g)
 
 
 ## ★★ 合并后的 AI 名单：关卡写了 `ai` 的阵营优先，其余照旧吃 `config.json`。
@@ -1398,6 +1509,13 @@ func accepts_owner(actual: String, cmd_faction: String) -> bool:
 ##   · `EconomyRes.spend(null, cost)` 是空操作 —— 有消耗的 cost 也扣不动、空 cost 直接过。
 ## ⚠️ 玩家席位**永远有池子**（`resources`），所以「null = 无限」不会被玩家走到。
 func resource_pool_for(faction: String) -> Variant:
+	# ★★ 指挥官 AI：**优先**返回它自己的池子（即使它也在 player_seats 里）。
+	#    合作 AI 队友的第二席位就是这种情况：base / 开局部队来自玩家席位，
+	#    但钱包必须是 AI 自己的，不能花玩家的钱。
+	if _is_commander_ai(faction):
+		if not ai_faction_resources.has(faction):
+			ai_faction_resources[faction] = {"food": 0.0, "gold": 0.0}
+		return ai_faction_resources[faction]
 	# ★★ 本地席位（本机负责的那几个）：**每个席位各一份**（合作模式每人一个钱包）。
 	#    ⚠️ 判据用 `player_seats`（本机的 roster）而不是 `is_player_faction`。
 	#    ⚠️ 本机席位那一份与 `resources` 是**同一个字典对象**（见 reset 的说明）。
@@ -1406,7 +1524,7 @@ func resource_pool_for(faction: String) -> Variant:
 		if typeof(mine) == TYPE_DICTIONARY:
 			return mine
 		return resources
-	# ★★ 其余每一方（NPC / AI）→ null = 资源无限（本轮口径：AI 没有资源库）。
+	# ★★ 其余每一方（NPC / garrison / reddot）→ null = 资源无限。
 	return null
 
 
@@ -1685,7 +1803,7 @@ func _is_ai_piloted(faction: String) -> bool:
 	#     ⇒ `spawn_faction_units` 那条 `with_escort = not _is_ai_piloted(...)`
 	#     就不给玩家**开局附属兵**了 —— 症状是「选中 F1 进关，自己只有 3 个光杆将领」
 	#     （实测：F1 全程 3 个单位，26 秒就被 E1 推平）。
-	if faction != "" and faction == my_faction:
+	if faction != "" and faction == my_faction and not observer_mode:
 		return false
 	var k := ai_kind_of(faction)
 	return k != LevelRes.AI_NONE
@@ -1709,12 +1827,17 @@ func ai_kind_of(faction: String) -> String:
 		return LevelRes.AI_NONE
 	if is_neutralized_faction(faction):
 		return LevelRes.AI_NONE          # 大本营没了：这一方不再有 AI
+	# ★★ 运行时覆盖优先（合作 AI 队友把第二席位改成 commander）。
+	#    ⚠️ 必须在 `ai_roster_cfg` 之前：关卡里那一方通常写着 ai:none（真人席位），
+	#       覆盖就是用来盖掉它的。
+	if ai_kind_overrides.has(faction):
+		return String(ai_kind_overrides[faction])
 	for e in ai_roster_cfg:
 		var it: Dictionary = e
 		if String(it.get("id", "")) != faction:
 			continue
 		if it.has("ai"):
-			# 关卡点名过：`"garrison"` / `"reddot"` / `"none"` 照写读
+			# 关卡点名过：`"garrison"` / `"reddot"` / `"commander"` / `"none"` 照写读
 			return String(it.get("ai", ""))
 		# 名单里有、但没写 `ai`（config / 地图来的）⇒ 阵地性 AI
 		return LevelRes.AI_GARRISON
@@ -1722,6 +1845,209 @@ func ai_kind_of(faction: String) -> String:
 	if cfg != null and cfg.is_ai_faction(faction):
 		return LevelRes.AI_GARRISON
 	return LevelRes.AI_NONE
+
+
+## ★★ 这一方这一局是不是「指挥官 AI」（有基地 / 经济 / 生产 / 军队）。
+##    ★ 本机正在操作的那一方**永远不算**（与 `_is_ai_piloted` 同一条原则）。
+func _is_commander_ai(faction: String) -> bool:
+	if faction == "":
+		return false
+	# 观战模式下，被观察的那一方就是 AI 在操作（它同时仍是 my_faction，迷雾按它算）。
+	if faction == my_faction and not observer_mode:
+		return false
+	return ai_kind_of(faction) == LevelRes.AI_COMMANDER
+
+
+## 这一局所有 commander 阵营（顺序稳定：按 factions 名单顺序）。
+func commander_factions() -> Array:
+	var out: Array = []
+	for f in factions:
+		if _is_commander_ai(String(f)):
+			out.append(String(f))
+	return out
+
+
+## ★★ 玩家给 AI 队友下达战略指令（`ai_order` 命令的落点）。
+##
+## @return "" = 接受；否则是拒因码（文案在 view 一层翻译）。
+##
+## 口径：
+##   · 只有**同方**的玩家能指挥（`same_side_for_attack`；合作 AI 队友与玩家是盟友）；
+##   · 目标必须是 commander（不能指挥 garrison / reddot / 敌方）；
+##   · march / mass 必须带一个地图内、可通行的点；develop / expand 忽略坐标；
+##   · 接受后写 `ai_directives`、序号 +1、通知控制器清掉旧命令缓存。
+func set_ai_directive(ai_faction: String, order: String, x: float, y: float,
+		sender_faction: String) -> String:
+	if ai_faction == "" or sender_faction == "":
+		return "bad_faction"
+	if not ai_directives.has(ai_faction):
+		return "no_ai"
+	if ai_kind_of(ai_faction) != LevelRes.AI_COMMANDER:
+		return "not_commander"
+	if not FactionRes.same_side_for_attack(ai_faction, sender_faction):
+		return "not_ally"
+	if order != "march" and order != "develop" and order != "expand" and order != "mass":
+		return "bad_order"
+	var tx := int(floor(x))
+	var ty := int(floor(y))
+	if order == "march" or order == "mass":
+		if map == null or not map.tile_exists(tx, ty):
+			return "out_of_map"
+		if not PathfinderRes.passable(map, buildings, cfg, tx, ty, ai_faction):
+			# 玩家常点区划中心 / 建筑边：自动落到最近的空地，而不是整条指令拒掉。
+			var snapped := _nearest_free_tile(tx, ty, ai_faction, 3)
+			if snapped.x < 0:
+				return "unreachable"
+			tx = snapped.x
+			ty = snapped.y
+	var d: Dictionary = ai_directives[ai_faction]
+	d["kind"] = order
+	if order == "march" or order == "mass":
+		d["x"] = float(tx) + 0.5
+		d["y"] = float(ty) + 0.5
+	else:
+		d["x"] = -1.0
+		d["y"] = -1.0
+	d["serial"] = int(d.get("serial", 0)) + 1
+	d["since"] = time
+	# ★★ 玩家指令只保持 `command_hold_sec` 秒（默认 60），到期自动回到 auto。
+	#    连点同一条会刷新这个时间；`auto` 是内部战略，不会由这里写入。
+	var hold := maxf(0.0, float(cfg.num("ai.commander.command_hold_sec", 60.0)))
+	d["until"] = time + hold if hold > 0.0 else 0.0
+	d["state"] = "running"
+	d["reason"] = ""
+	var c = ai_commanders.get(ai_faction, null)
+	if c != null:
+		c.on_directive_changed()
+	return ""
+
+
+## ★★ 玩家指令的临时倾向到期：回到 auto，并让控制器清掉旧的 march/mass 目标缓存。
+## 由 `tick()` 在 AI 更新之前调用；没有直到期的指令时只遍历几个字符串。
+func _tick_ai_directive_holds() -> void:
+	for cid in ai_commanders.keys():
+		var d: Dictionary = ai_directives.get(String(cid), {})
+		if d.is_empty():
+			continue
+		var until := float(d.get("until", 0.0))
+		if until <= 0.0 or time < until:
+			continue
+		d["kind"] = "auto"
+		d["x"] = -1.0
+		d["y"] = -1.0
+		d["until"] = 0.0
+		d["serial"] = int(d.get("serial", 0)) + 1
+		d["since"] = time
+		d["state"] = "running"
+		d["reason"] = ""
+		var c = ai_commanders.get(String(cid), null)
+		if c != null:
+			c.on_directive_changed()
+
+
+## 从 (x,y) 起按半径 0..r 找最近的可通行、且没有建筑的格（确定性：先近后坐标顺序）。
+## 找不到 → (-1,-1)。
+func _nearest_free_tile(x: int, y: int, faction: String, r: int) -> Vector2i:
+	if map == null:
+		return Vector2i(-1, -1)
+	for radius in range(0, r + 1):
+		for dy in range(-radius, radius + 1):
+			for dx in range(-radius, radius + 1):
+				# 只查这一圈的边（内圈已经查过）
+				if radius > 0 and absi(dx) != radius and absi(dy) != radius:
+					continue
+				var nx := x + dx
+				var ny := y + dy
+				if not map.tile_exists(nx, ny):
+					continue
+				if building_at(nx, ny) != null:
+					continue
+				if not PathfinderRes.passable(map, buildings, cfg, nx, ny, faction):
+					continue
+				return Vector2i(nx, ny)
+	return Vector2i(-1, -1)
+
+
+## 某一方当前的 AI 指令（没有 → 空字典）。
+func ai_directive_of(faction: String) -> Dictionary:
+	var v: Variant = ai_directives.get(String(faction), null)
+	if typeof(v) == TYPE_DICTIONARY:
+		return v
+	return {}
+
+
+## 阵营显示名（战役 / 关卡里有自定义名字就用它；否则退回内置的 P1/P2）。
+func faction_label_of(faction: String) -> String:
+	var fid := String(faction)
+	if fid == "":
+		return ""
+	if level != null and level.has_method("faction_name"):
+		return String(level.faction_name(fid))
+	return FactionRes.faction_name(fid)
+
+
+## 面板 / 测试用：把「指令 + 军队 + 资源 + 状态」整理成一份只读字典。
+## ★ 客机没有控制器，也能从这里读快照写下来的指令 / 资源；军队数量从 units 现算。
+func ai_panel_state(faction: String) -> Dictionary:
+	var fid := String(faction)
+	var c = ai_commanders.get(fid, null)
+	if c != null:
+		return c.panel_state()
+	var d: Dictionary = ai_directive_of(fid)
+	var pool: Dictionary = {}
+	var pv: Variant = ai_faction_resources.get(fid, null)
+	if typeof(pv) == TYPE_DICTIONARY:
+		pool = pv
+	var army := 0
+	for u in units:
+		if u.alive and String(u.faction) == fid and not u.is_downed():
+			army += 1
+	var until := float(d.get("until", 0.0))
+	return {
+		"faction": fid,
+		"name": faction_label_of(fid),
+		"kind": ai_kind_of(fid),
+		"directive": String(d.get("kind", "")),
+		"target": Vector2i(int(floor(float(d.get("x", -1.0)))), int(floor(float(d.get("y", -1.0))))),
+		"serial": int(d.get("serial", 0)),
+		"hold_left": maxf(0.0, until - time) if until > 0.0 else 0.0,
+		"army": army,
+		"army_cap": 0,
+		"generals": general_count_of(fid),
+		"food": float(pool.get("food", 0.0)),
+		"gold": float(pool.get("gold", 0.0)),
+		"status": "",
+		"reason": String(d.get("reason", "")),
+	}
+
+
+## 与 `faction` 同方、且由 commander 接管的阵营（面板只给这些显示）。
+func ai_teammates_for(faction: String) -> Array:
+	var out: Array = []
+	for f in factions:
+		var fid := String(f)
+		if fid == faction:
+			continue
+		# 权威侧按 ai_kind 判；客机没有控制器 / 关卡里也没写 commander，
+		# 但快照会带来 `ai_directives` —— 用它兜底，面板在客机也能显示。
+		if ai_kind_of(fid) != LevelRes.AI_COMMANDER and not ai_directives.has(fid):
+			continue
+		if FactionRes.same_side_for_attack(fid, faction):
+			out.append(fid)
+	return out
+
+
+## 指令目标点（给 3D 覆盖层画环；develop / expand 没有点 → null）。
+func ai_directive_target(faction: String) -> Variant:
+	var d: Dictionary = ai_directive_of(faction)
+	var kind := String(d.get("kind", ""))
+	if kind != "march" and kind != "mass":
+		return null
+	var x := float(d.get("x", -1.0))
+	var y := float(d.get("y", -1.0))
+	if x < 0.0 or y < 0.0:
+		return null
+	return Vector2(x, y)
 
 
 ## 围着某个队长找一格能站的位置：右、下、左、上、右下…（第 index 个方向）。
@@ -1965,7 +2291,8 @@ func recruit_label_of(kind: String) -> String:
 ##   "leader"     队长不存在 / 已阵亡 / 根本不是队长
 ##   "faction"    防冒充：不能拿别人家的将领当招募对象
 ##   "tier"       ★ 单位所在行还没被大本营解锁（第 2 行要 2 级、第 3 行要 3 级）
-##   "zone"       ★ 将领不在**己方区划**里（本轮新增的限制条件）
+##   "zone"       ★ 将领不在**己方区划**里（下单那一刻的限制）
+##   "combat"     ★ 将领还没脱战（连续 `recruit.combat_idle_sec` 秒没有攻击目标）
 ##   "queue_full" ★ 队列满了（最多 recruit.queue_max 个，含正在读条的那个）
 ##
 ## @param ignore_tier ★★ true = 跳过「大本营行号」这一关。
@@ -1984,12 +2311,27 @@ func can_recruit(kind: String, leader_id: String, faction: String,
 		return "tier"
 	if not leader_zone_owned(leader):
 		return "zone"
+	# ★★ 脱战才能**开始**一单（用户口径：「只有在脱战时将领才可继续招募」）。
+	#   ⚠️ 这是「下单时」的判据；已经排上的单子在战斗中只是**暂停**，不会被取消
+	#      （见 `_tick_recruitment` 与 `unit.recruit_idle_timer`）。
+	if not is_out_of_combat_for_recruit(leader):
+		return "combat"
 	# ★★ 编制上限（含已排队的那几个）：满编就拒绝再招。
 	if leader.retinue_size(self) >= effective_retinue_cap(leader):
 		return "cap"
 	if leader.train_queue_size() >= recruit_queue_max():
 		return "queue_full"
 	return ""
+
+
+## 这位将领现在算不算「脱战」（招募读条允许继续 / 允许新下单）。
+## ★ 口径与守军 AI 的 `ai.garrison.combat_idle_sec` 相同：**连续 N 秒没有单位 / 建筑目标**。
+##   计时由 `_tick_recruit_idle()` 每帧为全场单位维护，受击时会额外清零
+##   （见 `unit.take_damage`）。
+func is_out_of_combat_for_recruit(u) -> bool:
+	if u == null:
+		return false
+	return float(u.recruit_idle_timer) >= cfg.recruit_combat_idle_sec
 
 
 ## 「这个单位能不能当招募对象」的公共校验（招募 / 取消招募共用）。
@@ -2027,29 +2369,15 @@ func leader_zone_owned(leader) -> bool:
 
 ## 这个单位现在**不接受玩家指令**吗？
 ##
-## 需求原话：「玩家无法为正在招募单位的将领及其附属队列发布任何指令（移动/攻击），
-##            其附属单位只会执行警戒逻辑」。
-## 所以被锁住的是**一整队**：将领自己在招募 → 它被锁；它辖下的部队 → 也一起被锁
-## （「附属队列」= 它名下那些附属兵）。
+## ★★ 2026.10.24 改动：**招募不再锁任何单位**。
+##   旧口径是「将领读条 ⇒ 将领与它辖下的部队都不接受指令、只执行警戒」；
+##   现在招募可以在移动中进行，再锁整队就变成了「招一个兵，全军立正」。
+##   现行的锁只剩两种（都与「招募」无关）：
+##     · 大本营没了（`neutralized`）—— 这一方不再接受任何指令；
+##     · 将领濒死 —— 将领本人不能动；它辖下的部队正在执行不可打断的救援集结。
 ##
 ## ★ 判据只写这一处：命令层（`command_processor`）用它过滤，
 ##   输入层要用也只问它 —— 两处各写一套「谁被锁住了」迟早会漂开。
-## ★ 队长已经不在场（阵亡）的附属兵**不算被锁**：它们已经各自为战了，
-##   再拦着玩家就没有道理（`team_leader()` 对这种情况返回 null）。
-##
-## ★★ 濒死的将领（本轮新增）：它自己**被锁**（倒在原地，不能动也不能打）。
-##
-## ★★ 本次修 bug —— 濒死将领**辖下的部队也一起被锁**（用户口径原话：
-##   「其旗下部队应当立刻行军攻击至其将领位置以保护他，并且在将领再起前
-##     不接受玩家或 ai 的指令」）。
-##   ⚠️ 这一条与上面那句旧注释**正好相反**，是本次按需求改掉的行为：
-##     旧口径是「只锁将领本人、不锁部队」（当时的理由是「援军要能行动」），
-##     但那样一来玩家的任何指令都能当场把救援集结令顶掉 ⇒ 部队被呼来喝去，
-##     根本走不到将领身边。现在救援令由 `update_rescue_orders()` 持续维持，
-##     玩家的指令被拒（拒因码 `leader_downed`），直到将领再起或真死。
-##   ⚠️ 与招募那条锁的**区别**：招募锁整队是因为将领钉在原地读条；
-##     濒死锁整队是因为部队正在执行不可打断的救援集结。两条都返回 true，
-##     但拒因码不同（`recruiting` / `leader_downed`），界面文案也不一样。
 func is_order_locked(u) -> bool:
 	if u == null or not u.alive:
 		return false
@@ -2057,19 +2385,17 @@ func is_order_locked(u) -> bool:
 		return true                    # 大本营没了：这一方不再接受任何指令
 	if u.is_downed():
 		return true
-	if u.is_training():
-		return true
 	var leader = team_leader(u)
 	if leader == null:
 		return false
-	return leader.is_training() or leader.is_downed()
+	return leader.is_downed()
 
 
 ## 这个单位现在不接受指令的**原因码**（"" = 可以下令）。
 ##
 ## ★ 为什么要单独给码（而不是让命令层猜）：`note_order_rejected` 要把拒因**报给玩家**
 ##   （界面按码翻中文，见 view/hud.gd 的 order_reject_text）——
-##   「将领正在招募」和「将领倒在地上」给玩家的下一步动作完全不同。
+##   「将领正在招募」这条已经不存在了（招募不再锁单位）；现在只剩「倒地」这一类。
 func order_lock_reason(u) -> String:
 	if u == null or not u.alive:
 		return "dead"
@@ -2077,14 +2403,10 @@ func order_lock_reason(u) -> String:
 		return "neutralized"
 	if u.is_downed():
 		return "downed"
-	if u.is_training():
-		return "recruiting"
 	var leader = team_leader(u)
 	if leader == null:
 		return ""
-	if leader.is_training():
-		return "recruiting"
-	# ★★ 本次新增：队长濒死 ⇒ 部队正在救援集结，不接受任何新指令。
+	# ★★ 队长濒死 ⇒ 部队正在救援集结，不接受任何新指令。
 	if leader.is_downed():
 		return "leader_downed"
 	return ""
@@ -2501,8 +2823,8 @@ func can_afford_recruit(kind: String, leader_id: String) -> String:
 ## @param free ★★ true = **无资源消耗**招兵（本轮新增，将领性 / 防御性 AI 专用）。
 ##   需求原文：「该类 AI 在脱战……会无资源消耗地招募单位（或者可以认定该类 AI 资源无限）」。
 ##   跳过的是**全部计价**（粮食 / 黄金 / 人口都不扣、也不记账），
-##   保留的是**其余全部规则**（读条 train_sec、队列上限、出生在格心、
-##   读条期间钉在原地、队列取消/阵亡退款）。
+##   保留的是**其余全部规则**（脱战门槛、读条 train_sec、队列上限、
+##   出生在将领周围、队列取消/阵亡退款）。
 ##   ⚠️ 不记账这一点很关键：`train_cost_*` 留在 0，
 ##      所以「取消队列 / 将领阵亡」那两条退款路径一分钱都退不出来（不会凭空造钱）。
 ##   ⚠️ 区划归属（`leader_zone_owned`）**照旧要过** —— 免费不等于可以在别人家里造兵。
@@ -2562,89 +2884,15 @@ func start_recruit(kind: String, leader_id: String, faction: String,
 		_start_training(leader, kind)
 	else:
 		leader.train_queue.append(kind)
-	# 5) ★ 读条期间**钉在原地**：先停手（清掉路径 + 玩家命令 + 交战），再记住这个位置。
-	#    ⚠️ 顺序不能反：stop() 会清 settled_spot，之后 train_anchor 取的才是最终位置。
-	leader.stop()
+	# 5) ★★ 不再钉住 / 不再收队（2026.10.24 改动，用户口径）：
+	#    「可以在己方区划内把单位放进招募队列，随后该部队可随意移动，
+	#      读条读完在将领周围生成单位」。
+	#    ⇒ 这里**不调** `leader.stop()`，也不清附属兵的命令；将领边打边招、
+	#      边走边招都是允许的（战斗只会让读条暂停，见 `_tick_recruitment`）。
+	#    ★ `train_anchor` 保留为「最后一次下单的位置」，但不再参与任何位移逻辑。
 	leader.train_anchor = leader.pos
-	# 6) ★ 它辖下的部队也一起**收队**：招募期间它们「只执行警戒逻辑」（用户需求），
-	#    所以已经在跑的那条移动 / 攻击命令要就地取消 —— 不然会出现
-	#    「将领立正读条、护卫却按旧命令一路走光」这种自相矛盾的画面。
-	#    只有「这一单让队列从空变成非空」时才需要（后面几单只是排队）。
-	if leader.train_queue_size() == 1:
-		_stop_retinue(leader)
 	push_event({"type": "recruit_queued", "leader": leader, "kind": kind})
 	return true
-
-
-## 让某个将领辖下的部队**收队**（清掉路径 / 玩家命令 / 交战）。
-## 它们接下来只会跑警戒逻辑（自发索敌 → 靠近 → 开火 → 追太远就放弃）。
-func _stop_retinue(leader) -> void:
-	for r in retinue_of(leader.id):
-		r.stop()
-
-
-## ★★ 读条中的将领**被贴脸就取消招募、转去迎战**（本轮新增，用户需求）。
-##
-## 需求原话：「增加 ai 逻辑，当自己在招募时，若有敌方单位进入己方攻击范围，
-##           则取消该招募转而攻击」。
-##
-## 为什么要有它：招募读条期间将领被**钉在原地**、不能动也不能还手（用户更早的需求），
-## 于是敌兵贴到脸上时它只是个活靶子 —— 继续把 10 秒的读条走完等于白送一位将领。
-##
-## 实现要点（每一条都是刻意的）：
-##   · 判据是**自己的攻击范围**（`cfg.unit_range_of`）而不是索敌半径 `aggro_range`：
-##     需求说的是「进入攻击范围」，也就是「现在就能打到它」；
-##   · 距离扣掉目标体积（与 `combat.gd` 的索敌同一口径）—— 允许「半个身子进射程」；
-##   · 只认**能被攻击的敌方单位**（`is_attackable()`：濒死将领不算，与 combat 一致），
-##     并且走 `same_side_for_attack()`（盟友不算敌人）；
-##   · 取消用 `cancel_recruit(..., slot = 0)`：那是**正在读条**的那一单，
-##     它会退回已扣的粮食 / 黄金 / 人口（`_refund()`），并让队列里的下一单前移 ——
-##     ⚠️ 这里**只用现成的命令路径**，不自己拼一份「取消」逻辑（两份必然漂开）。
-##
-## @return true = 这一帧确实取消了招募（调用方据此让它继续参与战斗）
-func _interrupt_training_if_threatened(u) -> bool:
-	if not u.is_training():
-		return false
-	var threat = _nearest_threat_in_attack_range(u)
-	if threat == null:
-		return false
-	if not cancel_recruit(String(u.id), 0, String(u.faction)):
-		return false                   # 取消被拒（理论上不会）：维持原状，下一帧再看
-	# ★ 顺手把「上一次开火的残留」清掉：它这一帧就要去打新目标，
-	#   不清的话会有一条线从它连到**旧目标**（与 `_start_training` 里那一手同一个理由）。
-	u.clear_attack_fx()
-	# ★ 直接点名这个威胁当目标：不然它这一帧还要等一次「索敌冷却」才动手，
-	#   而贴脸的敌人一秒都不该等。`ordered_target` 是玩家命令那一档，
-	#   与 `combat.gd` 的自动索敌同一个消费方式（下一帧就走「有目标」那条路）。
-	u.ordered_target = threat
-	u.reset_repath()
-	push_event({"type": "recruit_interrupted", "unit": u, "target": threat})
-	return true
-
-
-## 找一位将领**攻击范围内**最近的敌方单位（没有 → null）。
-##
-## ⚠️ 与 `combat.gd` 的索敌口径刻意保持一致（距离扣目标体积、跳过濒死、认盟友）：
-##    两处判据漂开的表现是「AI 说没人、combat 说有人」这种最难查的不一致。
-func _nearest_threat_in_attack_range(u) -> Variant:
-	# ★ 走 `u.combat_range(cfg)`（不是 `cfg.unit_combat_of(...)["range"]`）：
-	#   它会先看**将领自己的数值覆盖**（`unit.general.stats`）—— 那一位将领的射程
-	#   与它兵种的射程本来就可能是两回事，判据要跟「它真能打到多远」一致。
-	var reach: float = u.combat_range(cfg)
-	if reach <= 0.0:
-		return null
-	var best = null
-	var best_d := INF
-	for other in units:
-		if other == u or not other.is_attackable():
-			continue
-		if FactionRes.same_side_for_attack(String(other.faction), String(u.faction)):
-			continue
-		var d: float = u.pos.distance_to(other.pos) - cfg.unit_radius_of(other.unit_type)
-		if d <= reach and d < best_d:
-			best_d = d
-			best = other
-	return best
 
 
 ## 让某个兵种进「大格子」开始读条。
@@ -2657,14 +2905,12 @@ func _start_training(leader, kind: String) -> void:
 	leader.train_kind = kind
 	leader.train_total = recruit_train_sec(kind)
 	leader.train_remaining = leader.train_total
-	# ★★ 开始读条 ⇒ 把「上一次开火的渲染残留」清掉（本轮修的 bug）。
-	#    为什么要在这里清（实测报回来的症状：**有概率**有一条攻击线一直连在被攻击对象上）：
-	#      读条期间将领被钉在原地、`world.tick` 第 4 步**整段跳过**它的单位逻辑，
-	#      而 `attack_flash` 的衰减就在那段里（`combat.update_unit` 开头）⇒
-	#      flash **冻在开招那一刻的值上**、`last_target` 也一直指着那个人，
-	#      渲染（`view/overlay.gd` 的 `_draw_attack_lines`）就永远画着那条线。
-	#      说「有概率」是因为它取决于开招那一刻 flash 还剩多少：
-	#      刚开过火（flash ≈ 1）就开招 ⇒ 线一直留着；脱战一会儿再开招 ⇒ 看不出问题。
+	# ★★ 开始读条 ⇒ 把「上一次开火的渲染残留」清掉（历史 bug 的修法）。
+	#    症状：**有概率**有一条攻击线一直连在被攻击对象上。
+	#    旧版根因是「读条期间整段跳过单位逻辑」⇒ `attack_flash` 不衰减、`last_target`
+	#    一直指着旧目标，渲染（`view/overlay.gd` 的 `_draw_attack_lines`）就一直画线。
+	#    2026.10.24 起读条不再跳过单位逻辑（可以边走边打），但**开始读条时清一次**
+	#    仍然是必要的：读条可能随时因战斗暂停，暂停期间同样不该留着旧的开火线。
 	#    ⚠️ 逆方向（读条 → 攻击）也靠这一手：不清的话恢复战斗后那条线会从
 	#      「旧目标」跳一下才回到新目标（残留的 `last_target` 一直指着旧的那位）。
 	leader.clear_attack_fx()
@@ -2678,6 +2924,25 @@ func _start_next_in_queue(leader) -> void:
 		leader.train_total = 0.0
 		return
 	_start_training(leader, leader.train_queue.pop_front())
+
+
+## 给全场单位推进「招募脱战计时」（每帧一次，单位逻辑之后）。
+##
+## ★ 口径与守军 AI 的 `combat_idle_timer` 相同：**有攻击目标就算交战中**（清零），
+##   没有目标就累加。受击清零那一手在 `unit.take_damage()`。
+## ★ 为什么必须全场维护、而不是只在读条的将领身上算：
+##   刚脱战、还没下单的将领也要有正确的「已经脱战多久」，否则 `can_recruit`
+##   会永远拿一个旧值判它（初值 9999 = 从没打过架，但打完一场回来就再也不动了）。
+## ★ 暂停的判定只需要「>= 门槛」，所以计时可以一直涨（不做上限）。
+##   长时间运行也只是浮点数变大，不影响任何判据。
+func _tick_recruit_idle(dt: float) -> void:
+	for u in units:
+		if not u.alive:
+			continue
+		if u.target != null or u.target_building != null:
+			u.recruit_idle_timer = 0.0
+		else:
+			u.recruit_idle_timer += dt
 
 
 ## 每帧推进所有将领的招募读条（world.tick 第 3.5 步）。
@@ -2707,6 +2972,14 @@ func _tick_recruitment(dt: float) -> void:
 		if u.train_kind == "":
 			_start_next_in_queue(u)
 			continue
+		# ★★ 战斗中**暂停**读条（2026.10.24 口径）：
+		#    · 有攻击目标 / 正在挨打 ⇒ `recruit_idle_timer` 被清零，这里不推进；
+		#    · 重新脱战 `recruit.combat_idle_sec` 秒后自动**从暂停处继续**，
+		#      队列与已投入的资源都保留（不做退款、不清队列）。
+		#    ⚠️ 判据放在 `_start_next_in_queue` **之后**：队列里还有下一单时，
+		#      先把大格子补上（哪怕暂停，UI 也要显示「在排哪一单」），再决定推不推进。
+		if not is_out_of_combat_for_recruit(u):
+			continue
 		var budget := dt
 		var guard := 0
 		# ★ 一帧里可能读满好几个（dt 大 / train_sec 小）：把剩下的时间**接着往下算**，
@@ -2723,13 +2996,19 @@ func _tick_recruitment(dt: float) -> void:
 			_start_next_in_queue(u)
 
 
-## 读条完成：在**将领所在格的中心**生成这个兵种。
+## 读条完成：在**将领当前所在位置周围**生成这个兵种。
 ##
-## ★ 「强制生成在中心」分两半：先把格心上的**别人**排开（collision.clear_point），
-##   再把新兵放在格心上。将领自己不动 —— 它在招募期间是钉住的，所以新兵与它
-##   叠在一起时由这一帧末尾的软分离把**新兵**挤开（见 _pin_training_leaders）。
+## ★★ 2026.10.24 改动（用户口径：「读招募条读完后在将领周围生成单位」）：
+##   · 将领可以边移动边招募 ⇒ 生成点取**此刻**的位置，不再是开招时的 `train_anchor`；
+##   · 优先在将领格周围 8 格里挑一格可通行、且**没有其他单位**的（观感上像「从队尾补进来」）；
+##     都被占了就退回将领自己那一格；
+##   · 位置仍写「格心」（`GridRes.center_of`）—— 与旧的「强制生成在中心」保持同一套落点口径，
+##     只是中心从「开招那一格」换成了「当前这一格 / 它旁边的一格」。
+##
+## ★ 仍然先 `Collision.clear_point` 把格心上的别人排开：即便挑格子时没人，
+##   同一帧里连续生成多个兵也可能选中同一格（队列一帧读满好几单）。
 func _spawn_from_recruit(leader, kind: String) -> Variant:
-	var tile := Vector2i(leader.tx, leader.ty)
+	var tile := _pick_recruit_spawn_tile(leader)
 	var center := GridRes.center_of(tile)
 	# 排开的距离：两个碰撞圆刚不重叠（与 collision 的最小圆心距同一套口径）
 	var need: float = maxf(0.0, cfg.unit_collision_radius) * 2.0
@@ -2758,6 +3037,51 @@ func _spawn_from_recruit(leader, kind: String) -> Variant:
 	u.apply_hp_bonus(_tech_hp_mult_for(u))
 	push_event({"type": "unit_recruited", "unit": u, "leader": leader})
 	return u
+
+
+## 给新兵挑一格落点：将领周围 8 格里「可通行 + 没有别的单位」的优先；
+## 全都不可用 → 将领自己那一格。
+##
+## ★ 遍历顺序固定（先上、再左、右、下……最后四角，同距离按 y、x）⇒ 确定性：
+##   同一帧、同一个将领、同样的场面，永远挑到同一格。
+## ★ 只看**己方通行**（`Pathfinder.passable`）：新兵是这一方的人，盟友城墙 / 敌方建筑
+##   的口径与它之后的移动完全一致。
+func _pick_recruit_spawn_tile(leader) -> Vector2i:
+	var origin := Vector2i(leader.tx, leader.ty)
+	var faction := String(leader.faction)
+	var around: Array[Vector2i] = []
+	for dy in range(-1, 2):
+		for dx in range(-1, 2):
+			if dx == 0 and dy == 0:
+				continue
+			around.append(Vector2i(origin.x + dx, origin.y + dy))
+	# 排序键：离将领当前位置近的优先；同距离按 y、x（稳定）。
+	var from: Vector2 = leader.pos
+	around.sort_custom(func(a: Vector2i, b: Vector2i) -> bool:
+		var da: float = GridRes.center_of(a).distance_squared_to(from)
+		var db: float = GridRes.center_of(b).distance_squared_to(from)
+		if absf(da - db) > 1e-9:
+			return da < db
+		if a.y != b.y:
+			return a.y < b.y
+		return a.x < b.x)
+	for t in around:
+		if not map.tile_exists(t.x, t.y):
+			continue
+		if not PathfinderRes.passable(map, buildings, cfg, t.x, t.y, faction):
+			continue
+		if _unit_on_tile(t.x, t.y):
+			continue
+		return t
+	return origin
+
+
+## 这一格上有没有活着的单位（不含濒死者？含 —— 濒死将领也占位置）。
+func _unit_on_tile(tx: int, ty: int) -> bool:
+	for u in units:
+		if u.alive and int(u.tx) == tx and int(u.ty) == ty:
+			return true
+	return false
 
 
 ## 结束某个将领的招募（将领阵亡 / 被清场时调）。
@@ -3693,30 +4017,21 @@ func _zone_by_id(zid: int) -> Variant:
 	return null
 
 
-## 招募期间把将领**钉回**开招那一刻的位置（碰撞推挤不许把它挪走）。
+## 把**濒死**的将领拉回倒下点：推挤不许把它们挪走。
 ##
-## ★ 放在 tick 的碰撞消解**之后**：那时推挤已经把位置写回了，这里再把它们摁回去。
-## ★ 只钉「正在招募」的将领 —— 普通单位被推走是软分离的正常行为（collision.gd）。
-## 被**钉住**的将领（招募读条中 / 濒死倒地）拉回原位：推挤不许把它们挪走。
+## ★ 2026.10.24 改动：招募不再把将领钉在原地，所以这里只剩「濒死」这一种钉住。
+##   函数名保留 `_pin_training_leaders` 会让后来人以为招募还在钉人 —— 已改名为
+##   `_pin_downed_leaders`（调用点在 `tick` 末尾的碰撞消解之后）。
 ##
-## 两种「钉住」的共同点是「位置在这个机制里是语义的一部分」，所以放在同一个函数里：
-##   · **招募读条中**：位置取自开招那一刻记下的 `train_anchor`（用户需求：
-##     「将领固定在原地、无法行动、无法攻击」）；
-##   · **濒死**：位置取自倒下点 `downed_anchor`（用户拍板：「将领濒死后无法移动，
-##     视作倒在原地」）—— 附属兵的行军目标也是它，所以这里被推走会直接让援军走错地方。
+## 为什么濒死要钉：位置取自倒下点 `downed_anchor`（用户拍板：「将领濒死后无法移动，
+## 视作倒在原地」）—— 附属兵的行军目标也是它，所以这里被推走会直接让援军走错地方。
 ##
 ## ⚠️ 必须跑在碰撞消解**之后**：这一步是覆盖，不是参与推挤。
-func _pin_training_leaders() -> void:
+func _pin_downed_leaders() -> void:
 	for u in units:
-		if not u.alive:
+		if not u.alive or not u.is_downed():
 			continue
-		var anchor: Vector2
-		if u.is_training():
-			anchor = u.train_anchor
-		elif u.is_downed():
-			anchor = u.downed_anchor
-		else:
-			continue
+		var anchor: Vector2 = u.downed_anchor
 		if u.pos.distance_squared_to(anchor) <= 1e-12:
 			continue
 		u.pos = anchor
@@ -4379,6 +4694,10 @@ func _refresh_seat_tech_effects() -> void:
 	var seats: Array = player_factions.duplicate()
 	if my_faction != "" and not seats.has(my_faction):
 		seats.push_front(my_faction)
+	# ★★ commander 也要吃自己启用的科技（它走 `set_tech_active(faction)`）。
+	for cf in commander_factions():
+		if not seats.has(String(cf)):
+			seats.append(String(cf))
 	for f in seats:
 		seat_tech_effects[String(f)] = tech.effects_of(String(f))
 	var mine: Variant = seat_tech_effects.get(my_faction, null)
@@ -4638,6 +4957,25 @@ func tick(dt: float) -> Array:
 		var prate: Dictionary = _accumulate_production(pfid, false,
 			peff if typeof(peff) == TYPE_DICTIONARY else {})
 		EconomyRes.tick(cfg, dt, prate, ppos)
+	# ★★ commander 阵营：各自按占领区划产出入自己的池子，再乘难度收入倍率。
+	#    ⚠️ 它们**不在** `player_seats` 的循环里（那条只给真人席位加钱）。
+	for cf in commander_factions():
+		var cid := String(cf)
+		var cpos: Variant = ai_faction_resources.get(cid, null)
+		if typeof(cpos) != TYPE_DICTIONARY:
+			continue
+		var ceff: Variant = seat_tech_effects.get(cid, {})
+		var crate: Dictionary = _accumulate_production(cid,
+			observer_mode and cid == my_faction,
+			ceff if typeof(ceff) == TYPE_DICTIONARY else {})
+		var cai = ai_commanders.get(cid, null)
+		var mult: float = 1.0
+		if cai != null:
+			mult = maxf(0.1, float(cai.income_mult))
+		EconomyRes.tick(cfg, dt, {
+			"food": float(crate.get("food", 0.0)) * mult,
+			"gold": float(crate.get("gold", 0.0)) * mult,
+		}, cpos)
 	_prof_done("economy", _t_econ)
 
 	# 3.5) ★ 招募读条（将领自己就是兵营）。
@@ -4674,22 +5012,11 @@ func tick(dt: float) -> Array:
 			# 阵亡中的单位只跑复活倒计时；复活后本帧就正常参与逻辑
 			u.tick_respawn(cfg, self, dt)
 			continue
-		# ★★ 招募期间将领**钉在原地**（用户需求：固定在原地、无法行动、无法攻击）：
-		#    整段单位逻辑（移动 / 索敌 / 开火 / 回位）都跳过。位置由末尾的
-		#    _pin_training_leaders() 保证不被碰撞推走。
-		#
-		# ★★ 但在跳过**之前**先看一眼「有没有敌人进了它的攻击范围」（本轮新增）：
-		#    有 ⇒ **取消招募、转去迎战**（用户需求原话：「当自己在招募时，若有敌方单位
-		#    进入己方攻击范围，则取消该招募转而攻击」）。理由很直白：读条期间将领
-		#    不能动也不能还手，是活靶子 —— 被贴脸时继续读条等于白送一位将领。
-		#    ⚠️ 必须放在 `is_training()` 这一支**里面**（而不是循环外）：
-		#       取消之后要**立刻接着**跑这一帧的正常单位逻辑（索敌 / 开火），
-		#       放到外面的话它会白等一帧，而那正是「贴脸了还在读条」的那一帧。
-		if u.is_training():
-			if _interrupt_training_if_threatened(u) and not u.is_training():
-				pass                      # 已取消：往下走，这一帧就参与战斗
-			else:
-				continue
+		# ★★ 2026.10.24：招募**不再跳过**单位逻辑。
+		#    读条中的将领照常移动 / 索敌 / 开火 / 被推挤；战斗只会让读条暂停
+		#    （计时见 `unit.recruit_idle_timer`，推进见 `_tick_recruitment`）。
+		#    ⚠️ 不要把「招募中」再塞回这里当 continue —— 那正是旧版
+		#    「招一个兵、全军立正」的来源。
 		# ★★ 濒死的将领（本轮新增）**不要**在这里另开一支：它这一帧只跑「濒死状态机」
 		#    （缓慢回复 / 全灭判定 / 再起读条，见 unit.tick_near_death），而那一支
 		#    已经由下面 `CombatRes.tick_frame` → `update_unit` 的第一句接管了。
@@ -4699,6 +5026,9 @@ func tick(dt: float) -> Array:
 		var c0 := _prof()
 		CombatRes.tick_frame(self, cfg, u, dt, ui)
 		var _c1 := _prof()
+	# ★★ 4.1) 招募的「脱战计时」：必须在**单位逻辑之后**更新 ——
+	#    这一帧刚锁上的目标 / 刚挨的打要立刻反映到计时里（受击清零在 take_damage）。
+	_tick_recruit_idle(dt)
 	# ★★ 破敌 / 斩将：本帧的击杀事件 → 击杀者所在部队士气上升（死的是将领则加得更多）。
 	#    ⚠️ 在这一处统一扫，而不是塞进 unit._die —— 那里在 unit.gd 里，改它会把
 	#       「谁击杀谁」的语义散到两个文件（事件本身已经是唯一收口了）。
@@ -4761,6 +5091,12 @@ func tick(dt: float) -> Array:
 	var _t_ai := _prof()
 	GarrisonAiRes.update(self, cfg, dt)
 	RedDotAiRes.update(self, cfg, dt)
+	# ★★ 指挥官 AI（本轮新增）：只在权威侧存在；客机 `ai_commanders` 为空。
+	_tick_ai_directive_holds()
+	for cid in ai_commanders.keys():
+		var c = ai_commanders[cid]
+		if c != null:
+			c.update(dt)
 	_prof_done("ai", _t_ai)
 
 	# 8) 收尸：被打光的建筑从地图上摘掉。
@@ -4785,9 +5121,9 @@ func tick(dt: float) -> Array:
 		# 8.6) ★ 建筑本体的硬碰撞：大本营 / 箭塔不再整格挡人之后，
 		#      「本体挡敌方」这条规则就落在这里（己方单位不受影响）。
 		CollisionRes.resolve_buildings(self, cfg)
-	# 8.7) ★ 招募中的将领**钉回**原位：推挤不许把「固定在原地」的将领挪走。
-	#      （放在碰撞之后：这一步是覆盖，不是参与推挤）
-	_pin_training_leaders()
+	# 8.7) ★ **濒死**将领钉回倒下点：推挤不许把「倒在原地」的将领挪走。
+	#      （招募不再钉位置 —— 2026.10.24 起将领可以边移动边招募）
+	_pin_downed_leaders()
 	_prof_done("collision", _t_col)
 
 	# 8.8) ★★ 战争迷雾：本帧所有位置都定下来之后，重算「谁能看见哪一格」。

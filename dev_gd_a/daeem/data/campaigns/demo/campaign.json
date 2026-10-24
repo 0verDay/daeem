@@ -28,6 +28,11 @@
       "id": "dscj",
       "file": "levels/dscj.json",
       "name": "dscj"
+    },
+    {
+      "id": "ai_test",
+      "file": "levels/ai_test.json",
+      "name": "ai_test"
     }
   ],
   "unlock": "in_order"

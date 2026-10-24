@@ -56,6 +56,8 @@ const MinimapRes = preload("res://view/minimap.gd")
 const ObjectivePanelRes = preload("res://view/objective_panel.gd")
 ## ★★ 选项页菜单（仿 nsoc）：HUD 右上角「选项」与主菜单右上角「选项」共用同一套。
 const OptionsPanelRes = preload("res://view/options_panel.gd")
+## ★★ 合作 AI 队友的浮动指令面板（只在有同方 commander 时出现）。
+const AiOrderPanelRes = preload("res://view/ai_order_panel.gd")
 ## ★★ 悬停时「金色自下而上填进来」的那套动效（见 view/fill_button.gd）。
 const FillButtonRes = preload("res://view/fill_button.gd")
 
@@ -80,6 +82,10 @@ var hover_tip: Control = null
 ## ★★ 左上角目标栏：有目标才显示（老路径 / 自由对战整块隐藏）。
 var objective_panel: Control = null
 var settings_button: Button = null
+## ★★ 合作 AI 队友的浮动指令面板（null = 本局没有 AI 队友 / 还没建）。
+var ai_panel: Control = null
+## ★★ 观战模式：隐藏命令卡 / 页签，只保留查看用 UI。
+var observer_mode: bool = false
 ## ★★ 选项页控制器（overlay + 居中面板；见 view/options_panel.gd）。
 ##   `settings_panel` 只是它的 overlay 别名（兼容 main.gd / 旧测试）。
 var options_panel = null
@@ -252,6 +258,7 @@ func setup(p_cfg: ConfigRes, p_world, p_input, theme: Theme, p_camera_rig = null
 	#   万一以后谁把它的高度调过头，压住的是命令卡的上沿而不是被命令卡压住。
 	_build_hover_tip()
 	_build_settings_button()
+	_build_ai_panel()
 	_build_squad_panel()
 	# ★★ 选项页**最后建**：它是浮在别的 UI 之上的模态 overlay（z_index=200）
 	_build_options_panel()
@@ -736,6 +743,30 @@ func _build_settings_button() -> void:
 ##   （`fullscreen_toggled` / `return_to_menu_requested`）。
 ## ★ 兼容字段：`settings_panel` 仍指向 overlay（旧测试 / main.gd 的
 ##   `set_settings_menu_open(false)` 不用改）。
+## ★★ 合作 AI 队友的浮动指令面板。
+## ★ 建在选项页之前：选项页是模态 overlay（z_index=200），必须压在它上面；
+##   面板只在有同方 commander 时由 `sync()` 自己显示。
+func _build_ai_panel() -> void:
+	ai_panel = AiOrderPanelRes.new()
+	ai_panel.name = "AiOrderPanel"
+	add_child(ai_panel)
+	ai_panel.setup(cfg, _font)
+	ai_panel.bind_world(world)
+
+
+## ★★ 观战：玩家不下命令，右下命令卡与页签整块收起；AI 面板保留但只读。
+func set_observer(on: bool) -> void:
+	observer_mode = on
+	if command_card != null:
+		command_card.visible = not on
+	if page_tabs != null:
+		page_tabs.visible = not on
+	if ai_panel != null:
+		var fid := String(world.my_faction) if on and world != null else ""
+		ai_panel.set_observer(fid)
+		ai_panel.sync()
+
+
 func _build_options_panel() -> void:
 	options_panel = OptionsPanelRes.new()
 	options_panel.name = "OptionsPanel"
@@ -931,6 +962,11 @@ func _tab_plan() -> Dictionary:
 func _sync_tabs() -> void:
 	if page_tabs == null:
 		return
+	if observer_mode:
+		page_tabs.visible = false
+		if command_card != null:
+			command_card.visible = false
+		return
 	var plan := _tab_plan()
 	var pages: Array = plan["pages"]
 	var key := String(plan["kind"])
@@ -1035,6 +1071,9 @@ func rebuild_card() -> void:
 
 func _rebuild_card() -> void:
 	if command_card == null:
+		return
+	if observer_mode:
+		command_card.visible = false
 		return
 	var entries: Array = []
 	var page := String(page_tabs.page()) if page_tabs != null else ""
@@ -1157,6 +1196,8 @@ func _dismiss_hover() -> void:
 ##   手势起点落在贴边的命令卡 / 部队列表上就该算 UI（不能从控件上起一次拖视野 / 框选）。
 func point_hits_ui(global_pos: Vector2) -> bool:
 	var vp := view_size()
+	if ai_panel != null and ai_panel.visible and ai_panel.get_global_rect().has_point(global_pos):
+		return true
 	if UiLayoutRes.point_hits_any(UiLayoutRes.interactive_rects(vp), global_pos):
 		return true
 	return UiLayoutRes.point_hits_any(UiLayoutRes.bottom_bar_rects(vp), global_pos)
@@ -2411,6 +2452,9 @@ func recruit_reject_text(reason: String, kind: String, max_count: int = 0,
 			return "不能给别的阵营的将领招募"
 		"zone":
 			return "只能在己方区划内招募（将领现在站的地方不属于你）"
+		"combat":
+			return "将领正在交战：脱战 %d 秒后才能开始招募（已排上的单子只会暂停，不会取消）" % (
+				int(round(world.recruit_combat_idle_sec)) if world != null else 10)
 		"zone_owner":
 			return "只能在自己区划里招募（这个区划不属于你）"
 		"zone_not_found":
@@ -2449,17 +2493,18 @@ func recruit_reject_text(reason: String, kind: String, max_count: int = 0,
 
 ## 指令被拒的**拒因码 → 中文**（与上面那条同一条约定：逻辑层只给码）。
 ##
-## 目前两种拒因（都由 `world.order_lock_reason()` 产出）：
-##   · `recruiting` —— 将领正在招募时，**它和它辖下的部队**都不接受移动 / 攻击命令；
-##   · ★ `downed`   —— **本轮新增**：将领濒死倒在地上，它自己不接受任何指令。
-##   · ★★ `leader_downed` —— **本次修 bug 新增**：**附属兵**在队长濒死期间不接受指令。
+## 现行拒因（都由 `world.order_lock_reason()` 产出）：
+##   · ★ `downed`   —— 将领濒死倒在地上，它自己不接受任何指令。
+##   · ★★ `leader_downed` —— **附属兵**在队长濒死期间不接受指令。
 ##     与上面那条的区别：`downed` 拒的是将领本人，`leader_downed` 拒的是它的部队。
 ##     用户口径原话：「其旗下部队应当立刻行军攻击至其将领位置以保护他，
 ##     并且在将领再起前不接受玩家或 ai 的指令」。
+##   · `recruiting` —— **历史码**（2026.10.24 起招募不再锁单位，逻辑层已不再产出）。
+##     保留这一条只为兼容旧事件 / 旧录像里的拒因，不至于显示成「下不了」。
 func order_reject_text(reason: String) -> String:
 	match reason:
 		"recruiting":
-			return "将领正在招募单位：它和它的部队这会儿只警戒，不接受指令"
+			return "（旧版本）将领正在招募单位，不接受指令；现在招募已不再锁定部队"
 		"downed":
 			return "将领已经倒地濒死：它自己不能行动，先让它「再起」或「召回」（它辖下的部队照常能打）"
 		"leader_downed":
@@ -2467,6 +2512,25 @@ func order_reject_text(reason: String) -> String:
 		"neutralized":
 			return "这个大本营已经被摧毁：该阵营的单位已失去指挥，不能再行动或攻击"
 	return "这条指令现在下不了"
+
+
+## ★★ AI 队友指令被拒（`ai_order_rejected` 的 reason → 中文）。
+## 码见 logic/world.gd 的 `set_ai_directive()`。
+func ai_order_reject_text(reason: String) -> String:
+	match reason:
+		"no_ai":
+			return "这一局没有可指挥的 AI 队友"
+		"not_commander":
+			return "这一方不是可指挥的 AI 队友"
+		"not_ally":
+			return "你只能给同方的 AI 队友下指令"
+		"bad_order":
+			return "不认识这条 AI 指令"
+		"out_of_map":
+			return "目标点在地图外"
+		"unreachable":
+			return "目标点不可到达（水域 / 被建筑占住）"
+	return "这条 AI 指令现在下不了"
 
 
 ## 「再起」被拒的**拒因码 → 中文**（码见 logic/world.gd 的 revive_reject_reason）。
@@ -2610,6 +2674,8 @@ func blocks_edge_scroll(global_pos: Vector2) -> bool:
 	# ★ 选项页是模态 overlay：开着的时候鼠标在哪个边缘都不该滚地图
 	if options_panel != null and options_panel.is_open():
 		return true
+	if ai_panel != null and ai_panel.visible and ai_panel.get_global_rect().has_point(global_pos):
+		return true
 	var vp := view_size()
 	var margin: float = cfg.camera_edge_size if cfg != null else 0.0
 	if UiLayoutRes.in_edge_band(vp, global_pos, margin):
@@ -2630,6 +2696,8 @@ func blocks_edge_scroll(global_pos: Vector2) -> bool:
 ##   鼠标一移出底栏，下一下滚动就恢复缩放 —— 没有「记得复位」的状态。
 func blocks_wheel_zoom(global_pos: Vector2) -> bool:
 	if options_panel != null and options_panel.is_open():
+		return true
+	if ai_panel != null and ai_panel.visible and ai_panel.get_global_rect().has_point(global_pos):
 		return true
 	return UiLayoutRes.point_hits_any(UiLayoutRes.bottom_bar_rects(view_size()), global_pos)
 
@@ -2847,6 +2915,10 @@ func _refresh_shell() -> void:
 	#   命令卡那条路只在「签名变了」时跑（`_refresh_card_if_changed`），跟不上
 	#   「玩家点了一格科技」这种变化。
 	_refresh_tech_grid(page_tabs != null and String(page_tabs.page()) == PageTabsRes.PAGE_TECH)
+	# ★ AI 队友面板：只在有同方 commander 时显示，状态读 world（客机读快照）。
+	if ai_panel != null:
+		ai_panel.world = world
+		ai_panel.sync()
 
 
 ## 详细信息面板：敌人 → 区划 → 建筑 → 部队 四种互斥选中，一次只走一支。

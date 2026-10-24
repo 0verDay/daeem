@@ -351,7 +351,7 @@ dev_gd_a/daeem/
     ├── test_attack_orders.gd     #   ★ 攻击命令：点名打单位 / 建筑、行军攻击、索敌建筑
     ├── test_zone_capture.gd      #   ★ 占领进度显示：无主 / 我的地 / 别人的地 三种情况
     ├── test_recruit_queue.gd     #   ★ 招募队列：消耗 / 人口 / 队列上限 5 / 读条 10 秒 /
-    │                             #     格心生成 + 排开 / 区划限制 / 读条期间钉住 / 阵亡退款 / 快照
+    │                             #     将领周围生成 / 区划限制 / 可移动读条 + 受击暂停 / 阵亡退款 / 快照
     ├── test_tech.gd              #   ★ 科技：九条占位铺满 3×3 / 启用与弃用 / 最多同时 3 条（第 4 条被拒
     │                             #     + tech_rejected 事件）/ 三类效果（每地块加产量、建筑与将领
     │                             #     血量倍率实时生效、己方区划人口增长 +10%）/ reset 清零 / 命令层
@@ -773,3 +773,25 @@ func ok(cond: bool, what: String) -> void:
 - **注释写「为什么」，不写「是什么」** —— HTML 版最有价值的部分就是
   「这个坑当时是怎么踩的」那些注释（例如「这里必须传 force，否则基地被打爆还立着」）。
   迁移时**把这些注释一起搬过来**，见 [`porting.md`](porting.md) 第五节的搬运清单
+
+---
+
+## 八、AI 指挥官（commander）
+
+> 2026.10.24 新增。完整设计 / 验收见
+> [`../../ai_doc/ai-commander-integration-plan.md`](../../ai_doc/ai-commander-integration-plan.md)。
+
+- **类型**：`LevelRes.AI_COMMANDER`，与 `garrison` / `reddot` 并列；`ai_kind_of()` 先看
+  `world.ai_kind_overrides`（合作 AI 队友把第二席位在运行时改成 commander，不改关卡 JSON）。
+- **控制器**：`logic/ai_commander.gd`（每方一个，只在权威侧 `world.ai_commanders` 里）；
+  辅助纯函数在 `ai_profile.gd` / `ai_economy.gd` / `ai_build.gd` / `ai_army.gd`。
+- **世界可见状态**（进快照）：
+  - `world.ai_directives[faction]`：`{kind, x, y, serial, since, state, reason}`；
+  - `world.ai_faction_resources[faction]`：`{food, gold}`（commander 自己的钱包）。
+- **命令**：玩家面板 → `{kind:"ai_order", faction, ai_faction, order, x, y}`
+  → `command_processor.apply_ai_order()` → `world.set_ai_directive()`；
+  校验「同一方 + commander + 目标可通行」，失败发 `ai_order_rejected`。
+- **更新顺序**：`world.tick()` 在 Garrison / RedDot 之后逐个调
+  `world.ai_commanders[f].update(dt)`；经济在玩家席位经济之后按 commander 逐个入账。
+- **铁律不变**：AI 不直接改 `unit` / `building` 字段；移动 / 建造 / 招募 / 升级 / 科技
+  全部走现有公开入口或 `command_processor`。

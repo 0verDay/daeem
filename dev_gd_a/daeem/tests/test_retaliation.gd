@@ -192,10 +192,15 @@ func _test_recruit_guard_broken(cfg, w) -> void:
 	leader.train_remaining = 10.0
 	mate.hp_max = 1000.0
 	mate.hp = 1000.0
-	ok(w.is_order_locked(mate), "（前提）招募期间整个队伍被命令锁住")
-	ok(not CommandRes.apply_move(w, cfg, {
+	# ★ 2026.10.24：招募不再锁整队（可以边移动边招募），所以这里改为验证
+	#   「没有命令锁」；受击反击仍然会打断它当前的警戒 / 待命。
+	ok(not w.is_order_locked(mate), "（前提）招募期间队伍**不再**被命令锁住")
+	ok(CommandRes.apply_move(w, cfg, {
 		"kind": "move", "ids": [mate.id], "x": 5.5, "y": 18.5, "faction": "p1"}),
-		"（前提）玩家命令被拒（只警戒）")
+		"（前提）玩家命令照常接受（移动招募）")
+	# 清掉刚下的玩家命令：这一节要验证的是「没有玩家命令时，受击会反击」。
+	mate.player_order = false
+	mate.stop()
 
 	mate.take_damage(cfg, w, 10.0, foe)
 	eq(mate.retaliate_target, foe, "★★ 招募期的警戒被打断：附属兵转去反击")

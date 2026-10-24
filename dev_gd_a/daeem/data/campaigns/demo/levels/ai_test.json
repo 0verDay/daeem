@@ -1,0 +1,80 @@
+{
+  "name": "ai_test",
+  "mode": "solo",
+  "map": "ai_test",
+  "players": [
+    {
+      "faction": "F1"
+    }
+  ],
+  "factions": [
+    {
+      "id": "F1",
+      "ai": "none",
+      "base": [
+        9,
+        9
+      ],
+      "name": "F1",
+      "color": "#ffd166",
+      "playable": true
+    }
+  ],
+  "allies": [],
+  "zones": [
+    {
+      "id": 0,
+      "owner": ""
+    },
+    {
+      "id": 1,
+      "owner": "F1"
+    },
+    {
+      "id": 2,
+      "owner": ""
+    },
+    {
+      "id": 3,
+      "owner": ""
+    },
+    {
+      "id": 4,
+      "owner": ""
+    },
+    {
+      "id": 5,
+      "owner": ""
+    },
+    {
+      "id": 6,
+      "owner": ""
+    }
+  ],
+  "start_units": [
+    {
+      "faction": "F1",
+      "kind": "general_0",
+      "unit_type": "spearman",
+      "x": 13,
+      "y": 9,
+      "escort_count": 2,
+      "escort_types": [
+        {
+          "type": "spearman",
+          "weight": 1
+        }
+      ]
+    }
+  ],
+  "start_buildings": [],
+  "objectives": [
+    {
+      "for": "F1",
+      "kind": "hold_zone",
+      "zone": 1,
+      "hold_sec": 10000
+    }
+  ],
+  "fail_conditions": []
+}

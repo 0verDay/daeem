@@ -25,6 +25,8 @@ signal level_activated(campaign_id: String, level_id: String)
 ## 合作大厅：房主点开始 / 客机收到 start（transport 已从 lobby 交出来）。
 signal coop_host_started(campaign_id: String, level_id: String, transport)
 signal coop_guest_started(payload: Dictionary, transport)
+## ★★ 合作「AI 队友」本地开局（没有 transport）。
+signal coop_solo_started(campaign_id: String, level_id: String, ai_setup: Dictionary)
 
 const ConfigRes = preload("res://logic/config.gd")
 const ThemeRes = preload("res://view/theme.gd")
@@ -197,6 +199,9 @@ func _build_content() -> void:
 		_coop_lobby.guest_started.connect(
 			func(payload: Dictionary, transport):
 				coop_guest_started.emit(payload, transport))
+		_coop_lobby.solo_started.connect(
+			func(campaign_id: String, level_id: String, ai_setup: Dictionary):
+				coop_solo_started.emit(campaign_id, level_id, ai_setup))
 
 
 func _sync_size(origin_panel: Control) -> void:

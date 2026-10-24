@@ -115,6 +115,10 @@ static func apply(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 				String(cmd.get("faction", world.my_faction)))
 		"spawn_enemy":
 			return apply_spawn_enemy(world, cmd)
+		"ai_order":
+			# ★★ 玩家给 AI 队友下达战略指令（行军 / 发展 / 扩张 / 屯兵）。
+			#    真正的校验在 world.set_ai_directive()：同方、commander、目标可通行。
+			return apply_ai_order(world, cmd)
 		"select":
 			# 选中是**纯本地**的（不进命令流、不上网），这里只为调试句柄保留一个空实现
 			return true
@@ -679,6 +683,33 @@ static func apply_zone_recruit_cancel(world, _cfg: ConfigRes, cmd: Dictionary) -
 		int(cmd.get("zone_id", -1)),
 		int(cmd.get("slot", -1)),
 		String(cmd.get("faction", world.my_faction)))
+
+
+## ★★ 给 AI 队友下战略指令（面板四个按钮 → `ai_order`）。
+##
+## 命令里只有「哪一方 AI + 哪条指令 + 目标点」，没有单位 id、没有结果：
+## 具体怎么行军 / 怎么扩张全在 `logic/ai_commander.gd` 里算。
+##
+## ★ 事件带 `faction = 下单方`，界面据此判断「要不要给我弹红字」。
+static func apply_ai_order(world, cmd: Dictionary) -> bool:
+	var sender := String(cmd.get("faction", world.my_faction))
+	var ai_faction := String(cmd.get("ai_faction", ""))
+	var order := String(cmd.get("order", ""))
+	var x := float(cmd.get("x", -1.0))
+	var y := float(cmd.get("y", -1.0))
+	var reason: String = world.set_ai_directive(ai_faction, order, x, y, sender)
+	if reason != "":
+		world.push_event({
+			"type": "ai_order_rejected", "faction": sender,
+			"ai_faction": ai_faction, "order": order, "reason": reason,
+		})
+		return false
+	world.push_event({
+		"type": "ai_order_accepted", "faction": sender,
+		"ai_faction": ai_faction, "order": order,
+		"target": Vector2i(int(floor(x)), int(floor(y))),
+	})
+	return true
 
 
 ## 调试刷兵命令
