@@ -157,7 +157,7 @@ var _detail_troop_number: int = 0
 #   · 选中部队 / 单位 → 只显示两颗页签：**操作**（对部队下达的指令）+ **单位**（招募单位的页）
 #   · **所有建筑都有一颗「操作」页**（第二十四节的需求）：大本营的操作页里是
 #     「升级大本营」、城墙 / 箭塔是「升级它们」、区划中心是粮食 / 黄金 / 人口特化
-#   · 选中区划中心   → 操作 + **招募**（三个占位将领，点了排进这个区划的招募队列）
+#   · 选中区划中心   → 操作 + **招募**（九宫格的将领，点了排进这个区划的招募队列）
 #   · 选中大本营     → 操作 + **科技**（九条占位科技，点一下启用 / 再点弃用）
 #   · 什么都没选中   → **建筑**（城墙 / 箭塔的建造入口）+ **科技**两页
 #     ★ 科技那颗与选中大本营时是**同一页**（同一个 PAGE_TECH、同一套九格）——
@@ -1017,7 +1017,7 @@ func _refresh_progress_panel(holder) -> void:
 ##
 ## 六张表都是**数据驱动 / 固定文案**的，这里不写死兵种名：
 ##   建筑页 ← config.json 的 building 段里 buildable = true 的那几项（默认是城墙 / 箭塔）
-##   单位页 ← config.json 的 recruit.list（现在只有一项：占位单位 = 招募亲兵）
+##   单位页 ← config.json 的 recruit.list（三行七种兵，按 tier = 大本营等级解锁）
 ##   招募页 ← world.general_recruit_slots（池子抽出的三位，排进**区划**的队列）
 ##   操作页 ← `_order_entries()`（对当前选中的部队下达的指令）
 ##   科技页 ← config.json 的 tech.list（九条占位科技）—— ★ 它**不走命令卡**：
@@ -1373,7 +1373,7 @@ func _hover_build(entry: Dictionary) -> Dictionary:
 	return _hover_text(String(entry.get("name", "")), lines)
 
 
-## 招募：单位页那几个兵种（`recruit`）+ 招募页那三个将领（`zone_recruit`）。
+## 招募：单位页那几个兵种（`recruit`）+ 招募页九宫格的将领（`zone_recruit`）。
 ##
 ## ★ 将领与兵种的数值是**同一张表**：都按 `cfg.unit_type_of(kind)` 查兵种
 ##   （「将领的数值 = 它所属兵种」，见 logic/config.gd 的 unit.* 那一段），
@@ -1406,6 +1406,25 @@ func _hover_recruit(entry: Dictionary) -> Dictionary:
 				_fmt_num(float(c.get("cooldown_sec", 0.0)))])
 			lines.append("速度 %s 格/秒" % _fmt_num(cfg.unit_speed_of(ut)))
 		lines.append("兵种 %s" % cfg.unit_class_line(ut))
+		# ★★ 本轮新增的兵种玩法（都从 unit.types.<id> 现取，不写死兵种名）：
+		var te: Dictionary = cfg.unit_type_entry(ut)
+		var armor: float = float(te.get("armor", 0.0))
+		if armor > 0.0:
+			lines.append("护甲 %s（每次受击先减这么多点伤害，最低仍受 1 点）" % _fmt_num(armor))
+		if not bool(te.get("can_attack", true)):
+			lines.append("支援单位：不会自动攻击（只提供光环 / 跟随移动）")
+		if bool(te.get("move_shoot", false)):
+			lines.append("移动射击：有移动 / 行军命令时边走边射，不停止")
+		if bool(te.get("siege", false)):
+			lines.append("攻城：攻击无视目标的近战 / 远程减伤（护甲与士气免伤仍生效）")
+		var splash: float = float(te.get("splash_radius", 0.0))
+		if splash > 0.0:
+			lines.append("范围伤害：命中点周围 %s 格内的敌人全部受伤（仅敌方）" % _fmt_num(splash))
+		var aura_r: float = float(te.get("morale_aura_radius", 0.0))
+		var aura_rate: float = float(te.get("morale_aura_rate", 0.0))
+		if aura_r > 0.0 and aura_rate > 0.0:
+			lines.append("士气光环：周围 %s 格友军士气 +%s/秒（多辆不叠加，可与其他士气来源叠加）"
+				% [_fmt_num(aura_r), _fmt_num(aura_rate)])
 	# ★★ 招募页专属：阶数（大本营等级解锁）+ 当前状态（已拥有 / 可招募 / …）。
 	if is_zone:
 		var tier := int(entry.get("tier", 1))
@@ -1420,6 +1439,14 @@ func _hover_recruit(entry: Dictionary) -> Dictionary:
 			"cap": status = "将领已满"
 			"cooldown": status = "招募冷却中"
 		lines.append("状态：%s" % status)
+	else:
+		# ★★ 单位页：tier = 行号 = 需要的大本营等级（第 1 行 = 1 级）。
+		var utier := int(entry.get("tier", 1))
+		var ulevel := int(entry.get("base_level", 1))
+		lines.append("阶数：第 %d 行（%s）" % [
+			utier, "已解锁" if utier <= ulevel else "大本营 %d 级解锁" % utier])
+		if not bool(entry.get("ready", true)):
+			lines.append("状态：大本营等级不足（当前 %d 级）" % ulevel)
 	lines.append("造价 %s" % _cost_text(_entry_cost(entry)))
 	var pop := int(entry.get("population_cost", 0))
 	if pop > 0:
@@ -1616,28 +1643,59 @@ func _tech_tier_name(tier: int) -> String:
 
 ## 把一张招募表（recruit.list / recruit.zone.list）翻成命令卡的条目。
 ## @param entry_type 抛给 hud._on_card_entry 的动作类型（"recruit" = 排进将领 / "zone_recruit" = 排进区划）
+##
+## ★★ 单位页现在是**三行按大本营等级解锁**（需求）：
+##   `tier` = 行号 = 需要的大本营等级。这里按 tier 把条目摆到
+##   `(tier - 1) * 3 + 行内序号` 的格子里；某一行不满 3 个就**留空**（空字典）。
+##   命令卡那边（view/command_card.gd）把空字典当空格子画，不显示名字、点了不做事。
+##
+## ★ 为什么不在 config 的 list 里塞空占位条目：那会凭空多出「兵种」，
+##   单位编辑器 / 招募队列 / 测试都会把它当真。空格子只在**视图这一层**存在。
 func _recruit_entries(entry_type: String, cfg_path: String) -> Array:
-	var out: Array = []
+	var slots: Array = []
+	for _i in UiLayoutRes.CARD_SLOTS:
+		slots.append({})
 	var list: Variant = cfg.get_path_value(cfg_path) if cfg != null else null
 	if typeof(list) != TYPE_ARRAY:
-		return out
+		return slots
+	# 每一行下一个空位（缺省 = 该行第一格）—— 同一行按 config 顺序从左到右。
+	var next_slot: Dictionary = {}
 	for item in (list as Array):
 		if typeof(item) != TYPE_DICTIONARY:
 			continue
 		var e: Dictionary = item
-		out.append({
+		var tier := clampi(int(e.get("tier", 1)), 1, 3)
+		var row_start: int = (tier - 1) * 3
+		var col: int = int(next_slot.get(tier, row_start))
+		# 一行最多 3 个：多出来的**不画**（不静默挤到下一行）。
+		if col < row_start or col >= row_start + 3 or col >= UiLayoutRes.CARD_SLOTS:
+			continue
+		next_slot[tier] = col + 1
+		slots[col] = {
 			"type": entry_type,
 			"unit_kind": String(e.get("kind", "")),
 			"name": String(e.get("label", e.get("kind", ""))),
 			"desc": String(e.get("desc", "")),
-			# ★★ 悬停详情要用的三个字段，一并带在条目里（见 `_hover_recruit`）：
+			# ★★ 悬停详情要用的字段，一并带在条目里（见 `_hover_recruit`）：
 			#   两张招募表（recruit.list / recruit.zone.list）字段名一样，
 			#   所以「单位页」与「招募页」的详情共用同一段代码，不各写一份。
 			"cost": e.get("cost", {}),
 			"train_sec": e.get("train_sec", 0.0),
 			"population_cost": e.get("population_cost", 0),
-		})
-	return out
+			"tier": tier,
+		}
+	# ★★ 行号解锁状态：由**权威侧**的 `unit_recruit_level` 算（没有大本营按 1 级）。
+	#   不可招募的格子 `ready = false` → 命令卡置灰；悬停写原因。
+	var level: int = world.unit_recruit_level(world.my_faction) if world != null else 1
+	for i in slots.size():
+		var d: Dictionary = slots[i]
+		if d.is_empty():
+			continue
+		d["base_level"] = level
+		d["ready"] = int(d.get("tier", 1)) <= level
+		if not bool(d["ready"]):
+			d["lock_reason"] = "tier"
+	return slots
 
 
 ## ★★ 招募页的内容：**固定九宫格**（#1-9）+ 每位将领的阶数 / 已拥有 / 冷却状态。
@@ -1990,6 +2048,13 @@ func _on_card_entry(entry: Dictionary) -> void:
 			else:
 				input_ctrl.set_build_type(t)
 		"recruit":
+			# ★★ 单位页的「按行解锁」：第 2 / 3 行要先把大本营升到 2 / 3 级。
+			#    置灰的格子按钮点不到；这里再判一次是保险（键盘 / 直接 activate_index
+			#    也走这条路），顺便给一句明确的原因。
+			if not bool(entry.get("ready", true)):
+				show_notice("大本营升到 %d 级才能招募这个兵种（当前 %d 级）" % [
+					int(entry.get("tier", 1)), int(entry.get("base_level", 1))])
+				return
 			# ★ 没选中将领时**不发命令**（命令里必须带 leader_id），所以这里要自己给一句
 			#   可见反馈 —— 否则玩家点了 Q 什么都没发生，看起来像功能坏了。
 			#   逻辑层拒掉的其它原因走事件那条路（见 game_scene._consume_events）。
@@ -2360,8 +2425,16 @@ func recruit_reject_text(reason: String, kind: String, max_count: int = 0,
 		"owned":
 			return "这位将领已经拥有，不能重复招募"
 		"tier":
-			var need: int = world.general_recruit_tier(kind) if world != null else 1
-			return "大本营升到 %d 阶才能招募这位将领" % need
+			# ★★ 两张表都有 tier，但语义不同：
+			#   · 区划招将 = 将领阶数（1-9 号分三阶）；
+			#   · 单位页   = **行号 = 需要的大本营等级**（第 2 行 2 级、第 3 行 3 级）。
+			#   先判是不是区划招募表，别把兵种当将领去查（会退成 1 阶、文案全错）。
+			if world == null:
+				return "大本营等级不足"
+			if world.is_zone_recruitable(kind):
+				return "大本营升到 %d 阶才能招募这位将领" % world.general_recruit_tier(kind)
+			return "大本营升到 %d 级才能招募这个兵种（当前 %d 级）" % [
+				world.recruit_tier(kind), world.unit_recruit_level(world.my_faction)]
 		"queue_full":
 			var cap: int = max_count if max_count > 0 else world.recruit_queue_max()
 			return "招募队列已满（最多 %d 个）" % cap
@@ -2605,6 +2678,10 @@ func _card_sig() -> String:
 			taken_key,
 			1 if world.general_recruit_cooldown_left(world.my_faction) > 0.0 else 0,
 		])
+	# ★★ 单位页也要把大本营等级放进签名：升级完成那一刻第 2 / 3 行要**当场**解锁
+	#    （不放进来的话，格子会一直灰到玩家切一次页 —— 与招募页同一类坑）。
+	if String(page_tabs.page()) == PageTabsRes.PAGE_UNIT:
+		parts.append("ur:%d" % world.unit_recruit_level(world.my_faction))
 	# ③ 选中部队 / 什么都没选中这两档**不进签名**：它们的命令卡内容是静态的
 	#    （操作页那四条指令写死在 `_order_entries()`、建筑页来自 config.json 的 building 段），
 	#    与「选中了哪一支部队」无关 —— 放进去只会每次换选中都白重建一遍。
@@ -3135,7 +3212,9 @@ func _unit_detail_rows(shown) -> Dictionary:
 		left.append(_small_row("- 特性 %s" % cfg.general_trait_name(String(shown.aura_trait_id))))
 
 	# ---- 右列第二排起：防御力 + 防御增益 ----
-	right.append(_row("防御 0"))
+	# ★★ 「防御」现在就是**固定护甲值**（本轮新增）：每次受击先减这么多点。
+	var armor_v: int = int(round(float(shown.armor)))
+	right.append(_row("防御 %d（每击先减）" % armor_v if armor_v > 0 else "防御 0"))
 	for line in _defense_bonus_lines(shown):
 		right.append(_small_row("- %s" % line))
 	return {"left": left, "right": right}
@@ -3172,6 +3251,18 @@ func _attack_bonus_lines(u) -> Array[String]:
 		if pct2 <= 0:
 			continue
 		out.append("对%s伤害 +%d%%（将）" % [cfg.class_display_name(String(cls)), pct2])
+	# ★★ 本轮新增的兵种玩法（静态规则；从单位出生时抄好的字段读）。
+	if bool(u.siege):
+		out.append("攻城：无视目标的近战 / 远程减伤")
+	if float(u.splash_radius) > 0.0:
+		out.append("范围伤害：半径 %s 格（仅敌方，全额）" % _fmt_num(u.splash_radius))
+	if bool(u.move_shoot):
+		out.append("移动射击：移动 / 行军途中可开火")
+	if float(u.morale_aura_rate) > 0.0:
+		out.append("士气光环：周围 %s 格友军 +%s/秒（多辆不叠加）" % [
+			_fmt_num(u.morale_aura_radius), _fmt_num(u.morale_aura_rate)])
+	if not bool(u.can_attack):
+		out.append("支援单位：不攻击、不自动索敌")
 	return out
 
 

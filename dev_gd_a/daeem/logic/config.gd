@@ -1004,6 +1004,20 @@ func _cache_unit_types() -> void:
 				# ★★ 兵种特性（本轮新增）：见 config.json 的 unit._traits_comment。
 				#   载入时就整理成**两键固定**的字典（缺键补 0），于是读的地方不用判断类型。
 				"traits": _normalize_traits(td.get("traits", null)),
+				# ★★ 本轮新增的五个玩法键（都可选；不写 = 关闭）：
+				#   · armor：固定护甲（每次受击先减这么多点）；
+				#   · can_attack：false = 纯支援单位（粮车）；
+				#   · move_shoot：移动 / 行军途中可以边走边射；
+				#   · siege：这一击无视目标的近战 / 远程减伤；
+				#   · splash_radius：范围伤害半径（格，0 = 单体）。
+				"armor": maxf(0.0, float(td.get("armor", 0.0))),
+				"can_attack": bool(td.get("can_attack", true)),
+				"move_shoot": bool(td.get("move_shoot", false)),
+				"siege": bool(td.get("siege", false)),
+				"splash_radius": maxf(0.0, float(td.get("splash_radius", 0.0))),
+				# ★★ 粮车的士气光环（其它兵种不写 = 0 = 没有光环）。
+				"morale_aura_radius": maxf(0.0, float(td.get("morale_aura_radius", 0.0))),
+				"morale_aura_rate": maxf(0.0, float(td.get("morale_aura_rate", 0.0))),
 				"combat": {
 					"damage": maxf(0.0, float(td.get("damage", 0.0))),
 					"range": maxf(0.0, float(td.get("range", 1.0))),
@@ -1376,6 +1390,42 @@ func unit_class_of(id: String) -> String:
 ## 是不是远程单位（长弓兵那种；将来的马弓手也是骑兵 + 远程）
 func unit_is_ranged(id: String) -> bool:
 	return bool(unit_type_entry(id).get("ranged", false))
+
+
+## ★★ 固定护甲值（每次受击先减这么多点伤害；0 = 没有护甲）。
+##    参数可以是兵种 id 或 kind（将领按所属兵种取，与 unit_hp_of 同口径）。
+func unit_armor_of(id: String) -> float:
+	return float(unit_type_entry(id).get("armor", 0.0))
+
+
+## 这个兵种能不能攻击（false = 纯支援单位，例如粮车）。
+func unit_can_attack(id: String) -> bool:
+	return bool(unit_type_entry(id).get("can_attack", true))
+
+
+## 这个兵种是不是「移动射击」（移动 / 行军途中开火不停止）。
+func unit_move_shoot(id: String) -> bool:
+	return bool(unit_type_entry(id).get("move_shoot", false))
+
+
+## 这个兵种是不是「攻城」（这一击无视目标的近战 / 远程减伤）。
+func unit_is_siege(id: String) -> bool:
+	return bool(unit_type_entry(id).get("siege", false))
+
+
+## 范围伤害半径（格；0 = 单体伤害）。
+func unit_splash_radius_of(id: String) -> float:
+	return float(unit_type_entry(id).get("splash_radius", 0.0))
+
+
+## 士气光环半径（格；0 = 没有光环）。
+func unit_morale_aura_radius_of(id: String) -> float:
+	return float(unit_type_entry(id).get("morale_aura_radius", 0.0))
+
+
+## 士气光环每秒加多少士气（0 = 没有光环）。
+func unit_morale_aura_rate_of(id: String) -> float:
+	return float(unit_type_entry(id).get("morale_aura_rate", 0.0))
 
 
 ## ★★ 某个单位类型的**兵种特性**（本轮新增；载入时已洗成两键固定，见 `_normalize_traits`）。
@@ -1806,9 +1856,18 @@ const KIND_GENERAL := "general"
 const UNIT_TYPE_SPEARMAN := "spearman"
 const UNIT_TYPE_LONGBOWMAN := "longbowman"
 const UNIT_TYPE_RIDER := "rider"
+## ★★ 本轮新增的四个兵种（粮车 / 骑士 / 马弓手 / 投石车）。
+## ⚠️ 与上面三个一样只是**字符串字面量**：config.gd 是最底层，不能 preload unit.gd。
+const UNIT_TYPE_GRAIN_CART := "grain_cart"
+const UNIT_TYPE_KNIGHT := "knight"
+const UNIT_TYPE_HORSE_ARCHER := "horse_archer"
+const UNIT_TYPE_CATAPULT := "catapult"
 ## 兵种大类（unit.classes）—— 后续「按兵种做额外伤害」的主键。
 const CLASS_INFANTRY := "infantry"
 const CLASS_CAVALRY := "cavalry"
+## ★★ 器械（投石车）：第三个大类。任何 attack_vs_class.<infantry/cavalry>
+##    都打不到它 —— 这就是「器械受击不吃对骑兵步兵加成」的落地方式。
+const CLASS_SIEGE := "siege"
 
 
 ## 某个单位类型的最大生命

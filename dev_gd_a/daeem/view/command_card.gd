@@ -3,7 +3,7 @@
 ## ★ 内容**随右侧页签实时切换**（需求原话）。页签是**按选中对象动态显示**的
 ##   （见 view/page_tabs.gd 的文件头），所以这里可能收到的几套内容是：
 ##     操作页 → 移动(Q) / 攻击(W) / 行军(E) / 停止(A)  ← 对**当前选中的部队**下达的指令
-##     单位页 → 占位单位(Q) = 招募亲兵                ← 来自 config.json 的 recruit.list
+##     单位页 → 三行兵种（Q/W/E …；第 1/2/3 行分别要 1/2/3 级大本营） ← config.json 的 recruit.list
 ##     建筑页 → 城墙(Q) / 箭塔(W)                     ← 来自 config.json 的 building 段（可建的那些）
 ##     招募页 → 池子抽出的一手（Q/W/E）              ← world.general_recruit_slots()
 ##     科技页 → **命令卡这里是空的**：九格由 view/tech_grid.gd 画在最上层
@@ -136,7 +136,9 @@ func set_entries(list: Array) -> void:
 			_entries.append(e)
 
 	for i in _cells.size():
-		var filled: bool = i < _entries.size()
+		# ★★ 空字典 = **空格子**（单位页按行解锁后会留下空位，见 hud._recruit_entries）。
+		#    它占着序号（Q/W/E/A/S/D/Z/X/C 的键位不挪），但不显示名字、点了不做事。
+		var filled: bool = i < _entries.size() and not (_entries[i] as Dictionary).is_empty()
 		var cell := _cells[i]
 		if filled:
 			var e2: Dictionary = _entries[i]
@@ -216,6 +218,8 @@ func unhover(i: int) -> void:
 func activate_index(i: int) -> bool:
 	if i < 0 or i >= _entries.size():
 		return false
+	if (_entries[i] as Dictionary).is_empty():
+		return false                     # 空格子（单位页按行解锁留下的空位）
 	entry_activated.emit(_entries[i])
 	return true
 
@@ -240,6 +244,8 @@ func handle_key(event: InputEventKey) -> bool:
 	var slot: int = int(KEY_TO_SLOT.get(event.keycode, -1))
 	if slot < 0 or slot >= _entries.size():
 		return false
+	if (_entries[slot] as Dictionary).is_empty():
+		return false                     # 空格子不吃按键（让给别的绑定）
 	if not bool((_entries[slot] as Dictionary).get("ready", true)):
 		return false
 	activate_index(slot)

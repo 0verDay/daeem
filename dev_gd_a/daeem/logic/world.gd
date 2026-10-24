@@ -70,6 +70,17 @@ var zones: ZoneRes = null
 var _zone_adj: Dictionary = {}
 var _surrounded: Dictionary = {}
 var _zone_owner_prev: Dictionary = {}
+## ★★ 本帧「粮车士气光环」的结算表：**士气锚 id → 每秒加成**。
+##
+## 由 `_refresh_morale_aura(cfg)` 在单位循环之前算好，`morale.tick_unit` 直接读。
+## 为什么是「锚 id → 数值」而不是给每个单位挂一个字段：
+##   士气本来就是**整支部队共享**（见 morale.gd 的锚模型），所以同一个值只要给锚加一次；
+##   字典的键天然去重 —— 多辆粮车覆盖同一支部队时只会留下**最大值**（需求：不可叠加）。
+var morale_aura_bonus: Dictionary = {}
+## ★★ 粮车光环的重算间隔（秒）：光环是「缓慢提升」，没必要每帧做 O(粮车 × 单位) 的扫描。
+##    0.25 秒的延迟在士气这种慢变量上完全看不出来，但把每帧开销压到 1/15。
+const MORALE_AURA_REFRESH_SEC := 0.25
+var _morale_aura_timer: float = 0.0
 var units: Array = []
 ## ★★ 在飞的射箭投掷物（本轮新增，见 logic/projectile.gd）。
 ##    它们是**权威状态**（伤害在命中那一刻才结算），所以和 units / building_list 一样
@@ -316,6 +327,8 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	_bgrid_revision = -1
 	units = []
 	projectiles = []
+	morale_aura_bonus = {}
+	_morale_aura_timer = 0.0
 	_events = []
 	_objective_reported = ""
 	_enemy_serial = 0
@@ -1851,6 +1864,27 @@ func is_recruitable(kind: String) -> bool:
 	return not recruit_entry(kind).is_empty()
 
 
+## ★★ 单位招募的**行号**（`recruit.list[].tier`；缺省 = 1）。
+## 语义：第 N 行 = 需要大本营 N 级才能招（第 1 行 = 1 级）。
+## ⚠️ 区划招将那一张表也有 `tier`，但那是「将领阶数」，不要混用：
+##   本函数只该用来判 `recruit.list` 里的兵种。
+func recruit_tier(kind: String) -> int:
+	return maxi(1, int(recruit_entry(kind).get("tier", 1)))
+
+
+## 某一方**单位招募**的当前有效等级：没有大本营时按 1 级算。
+## ★ 为什么无大本营按 1 级：测试 / 自由对战里常有「还没摆大本营」的世界，
+##   而第 1 行（长枪兵 / 长弓兵）本来就是开局兵。第 2 / 3 行仍然要真的有大本营
+##   并且升到 2 / 3 级 —— 需求里那条限制照旧成立。
+func unit_recruit_level(faction: String) -> int:
+	return maxi(1, base_level_of(String(faction)))
+
+
+## 这个兵种在当前大本营等级下解锁了吗（单位页那一行是否可点）。
+func unit_recruit_unlocked(faction: String, kind: String) -> bool:
+	return recruit_tier(kind) <= unit_recruit_level(faction)
+
+
 ## 某个兵种的招募消耗。
 ## ⚠️ 招募是**无条件**扣费（不看 economy.enabled 那个总开关，它只管建造免费）——
 ##    需求要的是「每个单位消耗 50 粮食 50 黄金」，被总开关静默变成免费就没意义了。
@@ -1930,15 +1964,24 @@ func recruit_label_of(kind: String) -> String:
 ##   "kind"       不在可招募表里
 ##   "leader"     队长不存在 / 已阵亡 / 根本不是队长
 ##   "faction"    防冒充：不能拿别人家的将领当招募对象
+##   "tier"       ★ 单位所在行还没被大本营解锁（第 2 行要 2 级、第 3 行要 3 级）
 ##   "zone"       ★ 将领不在**己方区划**里（本轮新增的限制条件）
 ##   "queue_full" ★ 队列满了（最多 recruit.queue_max 个，含正在读条的那个）
-func can_recruit(kind: String, leader_id: String, faction: String) -> String:
+##
+## @param ignore_tier ★★ true = 跳过「大本营行号」这一关。
+##   目前只有**无消耗招募**（`start_recruit(..., free = true)`，阵地 AI 专用）会传它：
+##   AI 阵营没有大本营（base_level = 0），不放行的话守军 AI 一个兵都补不出来。
+func can_recruit(kind: String, leader_id: String, faction: String,
+		ignore_tier: bool = false) -> String:
 	if not is_unit_recruitable(kind):
 		return "kind"
 	var leader = unit_by_id(leader_id)
 	var reason := leader_reject_reason(leader, faction)
 	if reason != "":
 		return reason
+	# ★★ 大本营行号：第 N 行要 N 级（无大本营按 1 级算，见 unit_recruit_level）。
+	if not ignore_tier and recruit_tier(kind) > unit_recruit_level(String(leader.faction)):
+		return "tier"
 	if not leader_zone_owned(leader):
 		return "zone"
 	# ★★ 编制上限（含已排队的那几个）：满编就拒绝再招。
@@ -2467,7 +2510,7 @@ func can_afford_recruit(kind: String, leader_id: String) -> String:
 ## @return true = 已经入队（**不代表已经生成** —— 要读条 train_sec 秒）
 func start_recruit(kind: String, leader_id: String, faction: String,
 		free: bool = false) -> bool:
-	var reason := can_recruit(kind, leader_id, faction)
+	var reason := can_recruit(kind, leader_id, faction, free)
 	if reason == "" and not free:
 		reason = can_afford_recruit(kind, leader_id)
 	if reason != "":
@@ -2476,8 +2519,10 @@ func start_recruit(kind: String, leader_id: String, faction: String,
 		#    不带 faction 的话界面那条 `_is_my_event()` 会把它当成玩家自己的报错，
 		#    于是玩家一直看到「只能在己方区划内招募…」这种**别人的**红字
 		#    （而且 AI 每帧重试 ⇒ 提示被反复续期、永远不消失。实测报回来的正是这个）。
+		# ★ 顺带带上 tier / base_level：单位页的「大本营 N 级解锁」文案直接读它们。
 		push_event({"type": "recruit_rejected", "reason": reason, "kind": kind,
-			"faction": faction})
+			"faction": faction, "tier": recruit_tier(kind),
+			"base_level": unit_recruit_level(String(faction))})
 		return false
 
 	var leader = unit_by_id(leader_id)
@@ -4556,6 +4601,12 @@ func tick(dt: float) -> Array:
 	#      ⚠️ 必须在单位循环（第 4 步）**之前** —— 那一步里 morale.tick_unit 要用最新的
 	#         「被包围」集合来判断「疲惫」。
 	_tick_zone_morale(cfg)
+	# ★★ 粮车光环：也在单位循环之前算好（morale.tick_unit 要读这张表）。
+	#    每 0.25 秒重算一次即可（见 MORALE_AURA_REFRESH_SEC 的说明）。
+	_morale_aura_timer -= dt
+	if _morale_aura_timer <= 0.0:
+		_morale_aura_timer = MORALE_AURA_REFRESH_SEC
+		_refresh_morale_aura(cfg)
 
 	# 3) 资源：★ 按**占领方拥有的各区划**聚合（产能 × 该区划地块数）。
 	#    旧实现是「全局按占领地块数 × 1/秒」—— 现在产能由地图数据（地图编辑器）说了算，
@@ -4834,6 +4885,40 @@ func debug_give_resources(food: float, gold: float) -> void:
 	resources["gold"] = float(resources.get("gold", 0.0)) + gold
 
 
+## ★★ 开发者快捷键用：把某一方的大本营**立即**设到 target_level（不扣费、不读条）。
+##
+## 语义：
+##   · 直接改 `building.level`，再走与正常升级**同一条**血量重算（`apply_building_level_hp`）；
+##   · 如果这座大本营正在升级，先按正常「取消升级」撤掉并**全额退款**，再跳到目标等级；
+##   · 推一条与正常升级同形的 `upgrade_done` 事件（测试 / 以后加的表现层都能读到）。
+##
+## @return "" = 成功；"no_base" = 这一方没有存活大本营；"already" = 已经是目标等级或更高
+func debug_upgrade_base_to_level(target_level: int, faction: String = "") -> String:
+	var f := faction if faction != "" else my_faction
+	var b = find_base_of(f)
+	if b == null:
+		return "no_base"
+	var max_level: int = maxi(1, cfg.upgrade_max_level(BuildingRes.TYPE_BASE))
+	var target: int = clampi(target_level, 1, max_level)
+	if int(b.level) >= target:
+		return "already"
+	# 先撤掉正在读的那条升级（否则下一次 UpgradeRes.tick 会把它读到 4 级）。
+	# 走正常的 cancel_upgrade：已付的升级费会按「取消升级」全额退回（这条快捷方式本身免费）。
+	if b.is_upgrading():
+		UpgradeRes.cancel_upgrade(self, b, String(b.owner))
+	# 保险：即使 cancel_upgrade 因归属等原因没接受，也把读条清掉，绝不能让等级继续涨。
+	b.upgrade_remaining = 0.0
+	b.upgrade_total = 0.0
+	b.upgrade_cost_food = 0.0
+	b.upgrade_cost_gold = 0.0
+	b.level = target
+	apply_building_level_hp(b)
+	building_revision += 1
+	push_event({"type": "upgrade_done", "kind": "building_upgrade",
+		"building": b, "level": b.level})
+	return ""
+
+
 ## ★★ 开发者快捷键 / 测试用：把本局目标**直接判成**胜利或失败。
 ##
 ## 与 `ObjectiveRes.update()` 的区别：它不看计时、不看区划归属，也不等下一帧 ——
@@ -5033,6 +5118,52 @@ func _tick_zone_morale(cfg) -> void:
 			MoraleRes.boost_capture(self, cfg, z)
 	if changed:
 		refresh_zone_connectivity()
+
+
+## ★★ 粮车士气光环：算出本帧「哪些士气锚正在被粮车覆盖」以及**每秒加多少**。
+##
+## 需求：粮车持续为周围友方单位缓慢提升士气；多辆粮车**不可叠加**，
+## 但可以和其他士气上升效果（区划回复 / 击杀 / 掠地）叠加。
+##
+## 落地：
+##   · 候选 = 所有「有 morale_aura_radius」的存活单位（目前只有粮车）；
+##   · 对半径内**同一边**的每个单位，找到它所属部队的**士气锚**（morale.anchor_of），
+##     把这个锚记进字典 —— 字典键天然去重，所以同一支部队被 N 辆粮车覆盖也只算一次；
+##   · 同一锚被不同粮车覆盖时取**最大速率**（不累加）。
+##
+## ⚠️ 为什么不在 `morale.tick_unit` 里对每个单位各扫一遍：
+##   那是「单位数 × 单位数」的每帧开销；而这里只对**粮车**扫（通常 0~几辆），
+##   再把结果摊给整支部队的锚。`morale.tick_unit` 读一个字典就够。
+func _refresh_morale_aura(p_cfg) -> void:
+	morale_aura_bonus.clear()
+	var carts: Array = []
+	for u in units:
+		if not u.alive or u.neutralized:
+			continue
+		if u.morale_aura_radius <= 0.0 or u.morale_aura_rate <= 0.0:
+			continue
+		carts.append(u)
+	if carts.is_empty():
+		return
+	for c in carts:
+		var radius: float = float(c.morale_aura_radius)
+		var rate: float = float(c.morale_aura_rate)
+		for other in units:
+			if not other.alive or other.neutralized:
+				continue
+			if not other.is_attackable():
+				continue
+			if not FactionRes.same_side_for_attack(String(other.faction), String(c.faction)):
+				continue
+			# 与索敌同口径：允许「半个身子」进圈。
+			if c.pos.distance_to(other.pos) > radius + p_cfg.unit_radius_of(other.unit_type):
+				continue
+			var anchor = MoraleRes.anchor_of(self, other)
+			if anchor == null:
+				continue
+			var prev: float = float(morale_aura_bonus.get(anchor.id, 0.0))
+			if rate > prev:
+				morale_aura_bonus[anchor.id] = rate
 
 
 # ------------------------------------------------------------------

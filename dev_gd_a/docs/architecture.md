@@ -617,7 +617,10 @@ Godot 里 DPR 由引擎处理，**但下面三条要原样继承**：
 |---|---|---|
 | 地形、阵营大本营坐标、出生点 | `logic/map_data.gd` | 只读，载入时建好；老式「单数 base」只作兼容兜底（见 route.md 14.3） |
 | 单位（位置/血量/路径/目标/冷却） | `logic/unit.gd` | 唯一权威 |
+| ★★ **单位的玩法字段（护甲 / 攻城 / 移动射击 / 范围伤害 / 士气光环）** | `logic/unit.gd` 的 `armor` / `can_attack` / `siege` / `move_shoot` / `splash_radius` / `morale_aura_radius` / `morale_aura_rate` | ★ 与 `unit_class` / `ranged` / `vision` 同一条口径：**出生时**从 `data/config.json` 的 `unit.types.<id>` 抄到单位身上，之后只读。规则分别在 `combat.gd`（移动射击 / 不攻击单位）、`projectile.gd`（范围伤害 / 攻城）、`unit.take_damage`（固定护甲 / 攻城减伤）、`world._refresh_morale_aura` + `morale.gd`（粮车光环） |
 | 招募队列（`train_kind` / `train_remaining` / `train_queue` / `train_anchor`…） | `logic/unit.gd` | ★ **将领自己就是兵营**，队列挂在它身上（它死了队列就没）；读条期间它被钉在 `train_anchor` 上，位置由 `world._pin_training_leaders()` 每帧摁回去；★ 它**和它辖下的部队**都不接玩家指令（`world.is_order_locked()` 是唯一判据） |
+| ★★ **单位招募的行号 / 大本营门槛** | `data/config.json` 的 `recruit.list[].tier` → `logic/world.gd` 的 `recruit_tier()` / `unit_recruit_level()` / `unit_recruit_unlocked()`；拒因 `"tier"` 在 `can_recruit()` | ★ 第 N 行要 N 级大本营；无大本营按 1 级算（第 1 行可用、2/3 行锁）。`start_recruit(..., free=true)` 的 AI 免费招募跳过 `tier`（否则无大本营的守军 AI 补不了员）。视图只读 `world` 的这三个查询，不自己重算 |
+| ★★ **粮车光环范围（只显示被选中的）** | `view/overlay_view_3d.gd` 的 `_aura_range_loops()` / `_draw_aura_ranges()`；半径读 `unit.morale_aura_radius` | ★ 纯表现：沿圆周采样 96 点，逐点 `palette.to_px()` 投到 `y=0` 地面，画 1.25px 抗锯齿闭合细线；只在 `_selection` 含该粮车时画。与网格 / 区划轮廓同层（CanvasLayer，覆盖在 3D 之上） |
 | 招募序号（新兵 id） | `logic/world.gd` | `_recruit_serial`，只增不减（否则 id 会撞名） |
 | 建筑（类型/格位/所属/血量） | `logic/building.gd` | 用数组存，另建 `Vector2i → Building` 查询字典 |
 | 建筑本体的尺寸（占一格的比例） | `data/config.json` → `building.<type>.body_scale` | 渲染与碰撞**共用**这一个数（`building.body_rect()` / `palette.building_rect()`） |
@@ -689,7 +692,7 @@ Godot 里 DPR 由引擎处理，**但下面三条要原样继承**：
 
 - **布局 = 按兵种由前往后堆叠的带（band）**：「前」= 行进方向（队伍重心 → 点击点）；
   最前的带 = 层号最小的兵种。层序在 `data/config.json` 的
-  `unit.formation.tier_order`（默认 长枪兵 → 长弓兵 → 骑手），
+  `unit.formation.tier_order`（默认 长枪兵 / 骑士 → 长弓兵 / 马弓手 → 骑手 → 粮车 / 投石车），
   `tier_default` 给没登记的兵种（默认中间层）。**代码里没有写死的层次**。
 - **同一部队相邻**：同一部队 = `world.leader_of(u)` 相同的单位。同一带内它们连续相邻，
   各带用**同一个部队顺序** ⇒ 同一部队跨带的单位横向对齐（位置接近）。

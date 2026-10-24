@@ -22,6 +22,8 @@ func _cases() -> void:
 	_test_general_count_cap(cfg)
 	_test_retinue_cap(cfg)
 	_test_base_attack(cfg)
+	_test_unit_recruit_tiers(cfg)
+	_test_debug_upgrade_base(cfg)
 
 # ------------------------------------------------------------------
 # 配置表
@@ -213,6 +215,86 @@ func _test_base_attack(cfg) -> void:
 		near(b.attack_damage(w.cfg), 12.0, 1e-6, "%d 级大本营伤害 = 箭塔的 12" % lv)
 		near(b.attack_range(w.cfg), 3.0, 1e-6, "%d 级大本营射程 = 3" % lv)
 		near(b.attack_cooldown(w.cfg), 0.8, 1e-6, "%d 级大本营间隔 = 0.8s" % lv)
+
+# ------------------------------------------------------------------
+# 单位招募的「按行解锁」（第 2 / 3 行要 2 / 3 级大本营）
+# ------------------------------------------------------------------
+
+func _test_unit_recruit_tiers(cfg) -> void:
+	var w = _world(cfg)
+	var b = _base(w)
+	if b == null:
+		return
+	var g = null
+	for u in w.units:
+		if u.alive and u.is_general() and String(u.faction) == "p1":
+			g = u
+			break
+	ok(g != null, "（前提）找得到一位己方将领")
+	if g == null:
+		return
+	ok(w.leader_zone_owned(g), "（前提）将领站在己方区划里")
+
+	_set_level(w, b, 1)
+	eq(w.unit_recruit_level("p1"), 1, "1 级大本营 = 只开第 1 行")
+	eq(w.can_recruit("spearman", String(g.id), "p1"), "", "第 1 行（长枪兵）1 级可招")
+	eq(w.can_recruit("rider", String(g.id), "p1"), "tier", "★ 第 2 行（骑手）1 级被挡")
+	eq(w.can_recruit("grain_cart", String(g.id), "p1"), "tier", "★ 第 2 行（粮车）1 级被挡")
+	eq(w.can_recruit("knight", String(g.id), "p1"), "tier", "★ 第 3 行（骑士）1 级被挡")
+	eq(w.can_recruit("catapult", String(g.id), "p1"), "tier", "★ 第 3 行（投石车）1 级被挡")
+
+	_set_level(w, b, 2)
+	eq(w.unit_recruit_level("p1"), 2, "2 级大本营 = 开到第 2 行")
+	eq(w.can_recruit("rider", String(g.id), "p1"), "", "★ 2 级解锁骑手")
+	eq(w.can_recruit("grain_cart", String(g.id), "p1"), "", "★ 2 级解锁粮车")
+	eq(w.can_recruit("knight", String(g.id), "p1"), "tier", "第 3 行在 2 级仍然被挡")
+	eq(w.can_recruit("horse_archer", String(g.id), "p1"), "tier", "马弓手在 2 级仍然被挡")
+	eq(w.can_recruit("catapult", String(g.id), "p1"), "tier", "投石车在 2 级仍然被挡")
+
+	_set_level(w, b, 3)
+	eq(w.unit_recruit_level("p1"), 3, "3 级大本营 = 三行全开")
+	eq(w.can_recruit("knight", String(g.id), "p1"), "", "★ 3 级解锁骑士")
+	eq(w.can_recruit("horse_archer", String(g.id), "p1"), "", "★ 3 级解锁马弓手")
+	eq(w.can_recruit("catapult", String(g.id), "p1"), "", "★ 3 级解锁投石车")
+
+	# ★★ 无消耗招募（AI 专用）跳过行号：否则没有大本营的守军 AI 一个兵都补不出来。
+	_set_level(w, b, 1)
+	eq(w.can_recruit("catapult", String(g.id), "p1", true), "",
+		"★ free / AI 招募不受大本营行号限制")
+
+
+# ------------------------------------------------------------------
+# 开发者快捷键 Ctrl+3 的底层入口：大本营立即升到 3 级
+# ------------------------------------------------------------------
+
+func _test_debug_upgrade_base(cfg) -> void:
+	var w = _world(cfg)
+	var b = _base(w)
+	if b == null:
+		return
+	_set_level(w, b, 1)
+	w.resources["food"] = 10000.0
+	w.resources["gold"] = 10000.0
+	# 先起一条正常升级读条：Ctrl+3 必须把它撤掉，否则读完后会从 3 级再 +1。
+	ok(w.start_building_upgrade(b.tx, b.ty, "p1"), "（前提）大本营能开始正常升级")
+	ok(b.is_upgrading(), "（前提）升级读条已经在跑")
+
+	eq(w.debug_upgrade_base_to_level(3, "p1"), "", "★ 开发者入口：立即升到 3 级")
+	eq(int(b.level), 3, "★ 等级当场变成 3")
+	ok(not b.is_upgrading(), "★ 原来那条升级读条被撤掉")
+	eq(w.base_level_of("p1"), 3, "★ 大本营等级查询当场读到 3")
+	eq(w.base_max_generals("p1"), 10, "★ 3 级限制（10 将）当场生效")
+	near(b.hp_max, b.base_hp_max * cfg.upgrade_hp_mult("base", 3), 1e-6,
+		"★ 血量上限按 3 级的 hp_mult 重算")
+	eq(w.debug_upgrade_base_to_level(3, "p1"), "already", "已经是 3 级 → already")
+	eq(w.debug_upgrade_base_to_level(3, "no_such_faction"), "no_base",
+		"没有大本营的阵营 → no_base")
+
+	# 之后再 tick 很久，也不能从 3 级读到 4 级。
+	for _i in 600:
+		w.tick(DT)
+	eq(int(b.level), 3, "★ 撤掉读条后不会继续升到 4 级")
+
 
 # ------------------------------------------------------------------
 # 辅助

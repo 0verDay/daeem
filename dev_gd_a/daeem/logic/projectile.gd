@@ -19,6 +19,8 @@
 extends RefCounted
 
 const ConfigRes = preload("res://logic/config.gd")
+## ★ 范围伤害要按「敌 / 友」筛目标（投石车只炸敌人），所以这里要用同一套阵营判据。
+const FactionRes = preload("res://logic/faction.gd")
 
 
 ## 生成一枚投掷物并挂到世界上（由 combat.gd 的三处开火调用）。
@@ -28,8 +30,11 @@ const ConfigRes = preload("res://logic/config.gd")
 ## @param start_pos         起点（逻辑格；单位 = 它的 pos，建筑 = center()）
 ## @param target            目标（单位或建筑；索敌就是每帧读它的当前位置）
 ## @param target_is_building 目标是不是建筑（决定取 pos 还是 center()）
+## @param splash_radius     ★ 范围伤害半径（格；0 = 单体）—— 投石车用它。
+## @param ignore_reduction  ★ true = 攻城：命中结算时无视目标的近战 / 远程减伤。
 static func spawn(world, cfg: ConfigRes, faction: String, source, start_pos: Vector2,
-		target, target_is_building: bool, damage: float) -> RefCounted:
+		target, target_is_building: bool, damage: float,
+		splash_radius: float = 0.0, ignore_reduction: bool = false) -> RefCounted:
 	var p = new()
 	p.faction = faction
 	p.source = source
@@ -37,6 +42,8 @@ static func spawn(world, cfg: ConfigRes, faction: String, source, start_pos: Vec
 	p.target = target
 	p.target_is_building = target_is_building
 	p.damage = damage
+	p.splash_radius = maxf(0.0, splash_radius)
+	p.ignore_reduction = ignore_reduction
 	p.end = _target_pos(target, target_is_building, start_pos)
 	p.pos = start_pos
 	p.t = 0.0
@@ -87,24 +94,46 @@ static func _target_pos(target, is_building: bool, fallback: Vector2) -> Vector2
 	return target.pos
 
 
-## 命中结算。⚠️ 目标已消失 ⇒ 什么都不做（飞完自然消失）。
+## 命中结算。⚠️ 单体目标已消失 ⇒ 什么都不做（飞完自然消失）。
 ##
 ## ★★ 单位目标一律按**远程伤害**结算（`incoming_ranged = true`）：投掷物本身就是远程，
 ##   「对远程减伤」这条兵种特性只在这里生效（近战走 combat.attack_unit 的即时结算）。
 ##   ⚠️ 别改成按 `p.source.ranged` 判：可攻击建筑（箭塔）也是投掷物，它没有 `ranged` 字段，
 ##     而凡是投掷物都该算远程 —— 判据就是「这一击来自投掷物」本身。
 ##
+## ★★ 范围伤害（投石车）：命中点周围 `splash_radius` 内的**所有敌人**都吃全额伤害，
+##   友军不在候选里（需求口径：仅敌方、不误伤）。目标中途消失时仍然在最后已知
+##   位置炸开（`p.end` 是每帧跟着目标刷新的那个点），不会因为差一帧就整发白飞。
+##
 ## ★ 拆建筑那一下要沿用 combat.attack_building 的口径：`take_damage` 返回
 ##   「**本击是否造成摧毁**」，只在**首次**摧毁时广播 `building_down`，
 ##   否则同一帧几枚投掷物砸同一栋会广播出好几条重复事件。
 static func _impact(world, cfg: ConfigRes, p) -> void:
-	if not _target_valid(p):
-		return
 	if p.target_is_building:
+		if not _target_valid(p):
+			return
 		if p.target.take_damage(cfg, p.damage, p.source):
 			world.push_event({"type": "building_down", "building": p.target, "source": p.source})
-	else:
-		p.target.take_damage(cfg, world, p.damage, p.source, true)
+		return
+
+	if p.splash_radius <= 0.0:
+		if not _target_valid(p):
+			return
+		p.target.take_damage(cfg, world, p.damage, p.source, true, p.ignore_reduction)
+		return
+
+	# 范围伤害：中心 = 目标当前位置（目标已消失时用最后一次刷新的落点）。
+	var center: Vector2 = p.end
+	if _target_valid(p):
+		center = p.target.pos
+	for other in world.units:
+		if not other.is_attackable():
+			continue
+		if FactionRes.same_side_for_attack(String(other.faction), p.faction):
+			continue
+		if other.pos.distance_to(center) > p.splash_radius:
+			continue
+		other.take_damage(cfg, world, p.damage, p.source, true, p.ignore_reduction)
 
 
 # ------------------------------------------------------------------
@@ -131,5 +160,9 @@ var elapsed: float = 0.0
 var duration: float = 0.0
 ## 命中时结算的伤害
 var damage: float = 0.0
+## ★★ 范围伤害半径（格；0 = 单体）。投石车 = 1.5。
+var splash_radius: float = 0.0
+## ★★ true = 攻城：命中结算时无视目标的近战 / 远程减伤。
+var ignore_reduction: bool = false
 ## 还在飞（false = 本帧被移除）
 var alive: bool = true

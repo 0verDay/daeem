@@ -1,4 +1,5 @@
-## overlay_view_3d.gd —— 3D 版的覆盖层：血条 / 网格 / 区划轮廓 / 占领进度条 / 建造预览 / 拖框
+## overlay_view_3d.gd —— 3D 版的覆盖层：血条 / 网格 / 区划轮廓 / 粮车光环范围 /
+##                       占领进度条 / 建造预览 / 拖框
 ##
 ## ★★ 为什么这一层留在 **2D 屏幕空间**而不是做成 3D 物件（本版的重要取舍）：
 ##   · 它们是**界面反馈**，不是世界里的东西 —— 玩家要的是「我的部队在哪、点到哪」，
@@ -34,6 +35,11 @@ var move_marks: Array[Vector2] = []
 var attack_marks: Array[Vector2] = []
 var drag_active: bool = false
 var drag_rect: Rect2 = Rect2()
+## ★★ 粮车光环范围（只在该粮车被选中时画）：屏幕像素细线宽 / 采样段数。
+##   细分段数够多，透视下才会是一圈顺滑的**地面椭圆**，而不是多边形。
+const AURA_RANGE_SEGMENTS := 96
+const AURA_RANGE_WIDTH := 1.25
+const AURA_RANGE_ALPHA := 0.85
 ## ★ 触摸设备的选框：两指的**屏幕矩形**（`drag_screen_valid` 为真时优先按它画）。
 ##   见 `_draw_drag_box()` 的说明 —— 这是「框跟手」那条口径的落点。
 var drag_screen_box: Rect2 = Rect2()
@@ -43,6 +49,8 @@ var debug_aim: bool = false
 
 ## 诊断（只有测试读它）：最近一次 `_draw()` 发出的绘制命令数
 var draw_count: int = 0
+## ★ 最近一次 `_draw()` 画了几个粮车光环圈（单位是「被选中的粮车数」；测试读它）
+var aura_range_draw_count: int = 0
 
 
 func setup(p_cfg: ConfigRes, p_world, p_palette, p_units, p_ground = null) -> void:
@@ -166,6 +174,7 @@ func _draw_impl() -> void:
 	#   ③ 单位头上的 UI（血条）—— 最上面
 	_draw_grid()
 	_draw_zone_outlines()
+	_draw_aura_ranges()
 	_draw_capture_areas()
 	_draw_zone_capture()
 	_draw_units_ui()
@@ -496,6 +505,59 @@ func _build_zone_segments() -> Array:
 			continue
 		out.append({"id": zid, "segs": segs, "color": ground.zone_outline_color(z)})
 	return out
+
+
+# ------------------------------------------------------------------
+# ★★ 粮车光环范围（只在**被选中**时显示）
+# ------------------------------------------------------------------
+##
+## 需求：为粮车的生效范围加底部范围显示；只有粮车被选中时才显示；
+##      范围紧贴地面、用细线标识。
+##
+## 做法：
+##   · 范围 = `unit.morale_aura_radius`（逻辑层同一个字段，见 config.unit.types.grain_cart）；
+##   · 沿圆周采样 `AURA_RANGE_SEGMENTS` 个点，**逐点**走 `palette.to_px()` 投到 y=0 地面
+##     —— 所以透视下它是一圈贴地的椭圆，而不是飘在单位周围的屏幕圆；
+##   · 只画 `_selection` 里的单位：没选中 / 选中别的兵都不画；
+##   · 细线：1.25 屏幕像素（与区划轮廓 2.5 / 网格 2.0 同一套屏幕空间线宽）。
+##
+## ★ 为什么把「算几何」和「画」拆开（`_aura_range_loops()` / `_draw_aura_ranges()`）：
+##   与网格 / 区划轮廓 / 占领触发区同一个理由 —— 测试在无头下不能调 `draw_*`，
+##   但可以调纯函数量点数、验投影。
+func _aura_range_loops() -> Array:
+	var out: Array = []
+	if cfg == null or world == null or palette == null or _selection.is_empty():
+		return out
+	for u in world.units:
+		if u == null or not u.alive:
+			continue
+		if not _selection.has(String(u.id)):
+			continue
+		var radius: float = float(u.morale_aura_radius)
+		if radius <= 0.0:
+			continue
+		var pts := PackedVector2Array()
+		for i in AURA_RANGE_SEGMENTS + 1:     # +1：闭合（最后一点回到起点）
+			var ang: float = TAU * float(i) / float(AURA_RANGE_SEGMENTS)
+			var world_pos: Vector2 = u.pos + Vector2(cos(ang), sin(ang)) * radius
+			pts.append(palette.to_px(world_pos))
+		var c: Color = SideColorRes.color(cfg, world, String(u.faction), "main")
+		c.a = AURA_RANGE_ALPHA
+		out.append({
+			"unit_id": String(u.id),
+			"radius": radius,
+			"points": pts,
+			"color": c,
+		})
+	return out
+
+
+func _draw_aura_ranges() -> void:
+	aura_range_draw_count = 0
+	for entry in _aura_range_loops():
+		draw_polyline(entry["points"], entry["color"], AURA_RANGE_WIDTH, true)
+		aura_range_draw_count += 1
+		draw_count += 1
 
 
 # ------------------------------------------------------------------

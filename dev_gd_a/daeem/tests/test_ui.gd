@@ -1267,14 +1267,27 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 
 	tabs.button_at(1).emit_signal("pressed")
 	eq(tabs.page(), PageTabsRes.PAGE_UNIT, "点第二颗切到「单位」页")
-	eq(card.entries().size(), 3, "★ 单位页有 3 项（本轮三个占位兵种）")
+	eq(card.entries().size(), 9, "★ 单位页固定九格（三行；空位也是格子）")
 	eq(String(card.entry_at(0).get("type", "")), "recruit", "单位页那一项是「招募」")
-	eq(card.cell_label(0), "长枪兵", "单位页 Q 格 = 长枪兵")
-	eq(card.cell_label(1), "长弓兵", "单位页 W 格 = 长弓兵")
-	eq(card.cell_label(2), "骑手", "单位页 E 格 = 骑手")
+	eq(card.cell_label(0), "长枪兵", "单位页 Q 格 = 长枪兵（第 1 行）")
+	eq(card.cell_label(1), "长弓兵", "单位页 W 格 = 长弓兵（第 1 行）")
+	eq(card.cell_label(2), "", "单位页 E 格空着（第 1 行只有两个兵）")
+	eq(card.cell_label(3), "骑手", "★ 骑手挪到第 2 行第 1 格（A）")
+	eq(card.cell_label(4), "粮车", "★ 第 2 行第 2 格 = 粮车（S）")
+	eq(card.cell_label(5), "", "第 2 行第 3 格空着")
+	eq(card.cell_label(6), "骑士", "★ 第 3 行第 1 格 = 骑士（Z）")
+	eq(card.cell_label(7), "马弓手", "★ 第 3 行第 2 格 = 马弓手（X）")
+	eq(card.cell_label(8), "投石车", "★ 第 3 行第 3 格 = 投石车（C）")
 	eq(String(card.entry_at(0).get("unit_kind", "")), UnitRes.UNIT_TYPE_SPEARMAN,
 		"Q 格要招的是长枪兵")
-	eq(card.cell_label(3), "", "单位页第 4 格是空的")
+	eq(int(card.entry_at(3).get("tier", 0)), 2, "第 2 行 = 大本营 2 级解锁")
+	eq(int(card.entry_at(6).get("tier", 0)), 3, "第 3 行 = 大本营 3 级解锁")
+	ok(not bool(card.entry_at(3).get("ready", true)),
+		"★ 没有 2 级大本营时骑手格子置灰")
+	ok(not bool(card.entry_at(6).get("ready", true)),
+		"★ 没有 3 级大本营时骑士格子置灰")
+	ok(bool(card.entry_at(0).get("ready", false)),
+		"★ 第 1 行（长枪兵）在 1 级就可用")
 
 	main.input_ctrl.select_units([])
 	main.hud.refresh()

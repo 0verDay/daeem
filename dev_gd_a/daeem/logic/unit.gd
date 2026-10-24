@@ -30,6 +30,10 @@ const KIND_GENERAL := "general"
 const UNIT_TYPE_SPEARMAN := ConfigRes.UNIT_TYPE_SPEARMAN
 const UNIT_TYPE_LONGBOWMAN := ConfigRes.UNIT_TYPE_LONGBOWMAN
 const UNIT_TYPE_RIDER := ConfigRes.UNIT_TYPE_RIDER
+const UNIT_TYPE_GRAIN_CART := ConfigRes.UNIT_TYPE_GRAIN_CART
+const UNIT_TYPE_KNIGHT := ConfigRes.UNIT_TYPE_KNIGHT
+const UNIT_TYPE_HORSE_ARCHER := ConfigRes.UNIT_TYPE_HORSE_ARCHER
+const UNIT_TYPE_CATAPULT := ConfigRes.UNIT_TYPE_CATAPULT
 ## 兵种大类：步兵 / 骑兵
 const CLASS_INFANTRY := ConfigRes.CLASS_INFANTRY
 const CLASS_CAVALRY := ConfigRes.CLASS_CAVALRY
@@ -107,6 +111,21 @@ var ranged: bool = false
 ##   于是「将领 3 是骑手 ⇒ 它也有骑手那两条」自动成立，代码里没有将领特例。
 var attack_bonus_vs_class: Dictionary = {}
 var ranged_damage_reduction: float = 0.0
+## ★★ 本轮新增的战斗 / 支援字段（出生时从兵种表抄到单位身上，之后只读）：
+##   · armor          —— 固定护甲值：每次受击**先减这么多点**伤害（再算百分比减伤）。
+##                       最低仍会造成 1 点（不会完全免疫）。骑士 = 6，其余 = 0。
+##   · can_attack     —— false = 不攻击的支援单位（粮车）：不索敌、不攻击。
+##   · siege          —— 这一击无视目标的近战 / 远程减伤（投石车）。
+##   · move_shoot     —— 移动 / 行军途中可以边走边射、不停止（马弓手）。
+##   · splash_radius  —— 范围伤害半径（格；0 = 单体）。
+##   · morale_aura_*  —— 粮车的士气光环（半径 / 每秒士气；0 = 没有）。
+var armor: float = 0.0
+var can_attack: bool = true
+var siege: bool = false
+var move_shoot: bool = false
+var splash_radius: float = 0.0
+var morale_aura_radius: float = 0.0
+var morale_aura_rate: float = 0.0
 ## ★★ 将领特性（部队光环；权威定义在 config.json 的 `unit.general_traits`）。
 ##
 ## · `general_trait` —— 这位**将领自己**抽到的特性 id（非将领 / 没抽到 = ""）；
@@ -518,6 +537,15 @@ static func create(cfg: ConfigRes, p_id: String, p_name: String, tile: Vector2i,
 	var traits: Dictionary = cfg.unit_traits_of(u.unit_type)
 	u.attack_bonus_vs_class = traits.get("attack_vs_class", {})
 	u.ranged_damage_reduction = float(traits.get("ranged_reduction", 0.0))
+	# ★★ 本轮新增的战斗 / 支援字段：与上面同一口径，出生时抄一次。
+	#   ⚠️ 将领也走这里：它按所属兵种取，所以「骑士型将领」同样有护甲 / 攻城等。
+	u.armor = cfg.unit_armor_of(u.unit_type)
+	u.can_attack = cfg.unit_can_attack(u.unit_type)
+	u.siege = cfg.unit_is_siege(u.unit_type)
+	u.move_shoot = cfg.unit_move_shoot(u.unit_type)
+	u.splash_radius = cfg.unit_splash_radius_of(u.unit_type)
+	u.morale_aura_radius = cfg.unit_morale_aura_radius_of(u.unit_type)
+	u.morale_aura_rate = cfg.unit_morale_aura_rate_of(u.unit_type)
 	u.faction = p_faction
 	u.hotkey = p_hotkey
 	u.leader_id = p_leader_id
@@ -1674,14 +1702,22 @@ func clear_settled_spot() -> void:
 ##
 ## @param incoming_ranged 这一击是不是**远程伤害**（投掷物）—— 兵种特性的「对远程减伤」
 ##        只在这一条路上生效，见下面那段减伤口径。
+## @param ignore_reduction ★★ true = **攻城**：无视目标来自「近战 / 远程」的减伤
+##        （兵种 traits.ranged_reduction 与将领 aura_melee/ranged_reduction）。
+##        护甲与士气免伤**照旧生效** —— 需求只说了「不受远近战免伤影响」。
 ## @return 本击之后这个单位**还能不能被当作在场单位**（true = 还活着 / 或已濒死）
 func take_damage(cfg: ConfigRes, world, amount: float, _source = null,
-		incoming_ranged: bool = false) -> bool:
+		incoming_ranged: bool = false, ignore_reduction: bool = false) -> bool:
 	# ★ 濒死 = 无敌：需求原话「在将领濒死期间，该将领无法被选中为攻击对象且不会受到伤害」。
 	#   ⚠️ 这一句同时兜住了「读条中被打断」：读条期间仍然免疫（用户拍板）。
 	if downed:
 		return true
 	hit_flash = 1.0          # ★ 受击反应：闪白 + 左右振动（视图读它，逻辑不用）
+	# ★★ 固定护甲（本轮新增）：**先**扣固定值，再算百分比减伤。
+	#   最低仍造成 1 点（amount > 0 时）—— 否则高护甲单位会被低级兵完全免疫，
+	#   表现成「打了半天一点伤害都没有」。护甲 0 = 这一段整段跳过。
+	if amount > 0.0 and armor > 0.0:
+		amount = maxf(1.0, amount - armor)
 	# ★★ 减伤口径（本轮改为「先相加、再封顶」，用户拍板）：
 	#     · 士气高位免伤（morale.damage_reduction）+ 兵种特性「对远程减伤」**相加**；
 	#     · 相加后按 `cfg.damage_reduction_cap` 夹取（默认 0.75：50% + 25% 正好到顶）；
@@ -1693,13 +1729,17 @@ func take_damage(cfg: ConfigRes, world, amount: float, _source = null,
 	# ★★ 将领特性（本轮新增）：近战抵抗只加在近战那条路、远程抵抗只加在远程那条路，
 	#   两者同样**加进这个和**、再一起按 `damage_reduction_cap` 封顶 ——
 	#   与士气 / 兵种远程减伤是同一套口径（不另开一次乘算）。
+	#
+	# ★★ 攻城（ignore_reduction = true）：只跳过**按远近区分**的那几项，
+	#   士气高位免伤照旧相加 —— 它是士气效果，不是「远近战免伤」。
 	var reduction := 0.0
 	if morale >= cfg.morale_high_tier:
 		reduction += cfg.morale_damage_reduction
-	if incoming_ranged:
-		reduction += ranged_damage_reduction + aura_ranged_reduction
-	else:
-		reduction += aura_melee_reduction
+	if not ignore_reduction:
+		if incoming_ranged:
+			reduction += ranged_damage_reduction + aura_ranged_reduction
+		else:
+			reduction += aura_melee_reduction
 	if reduction > 0.0:
 		amount *= 1.0 - clampf(reduction, 0.0, cfg.damage_reduction_cap)
 	if morale <= cfg.morale_vuln_tier:

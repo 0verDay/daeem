@@ -42,6 +42,7 @@ func _run() -> void:
 	await _test_selection_ring(cfg)
 	await _test_grid_near_clip(cfg)
 	await _test_capture_area(cfg)
+	await _test_aura_range(cfg)
 
 	print("[CASE] %s -> 通过 %d 项，失败 %d 项" % [_case_name, _pass, _fail])
 	if _fail > 0:
@@ -1193,6 +1194,72 @@ func _test_capture_area(cfg) -> void:
 		"★ 相机移动后静态层缓存重建（%d → %d）" % [rebuilds, ov.static_rebuild_count])
 	ok(not ov._grid_screen.is_empty(), "静态层缓存里有网格线顶点")
 	ok(not ov._zone_screen.is_empty(), "静态层缓存里有区划轮廓顶点")
+
+	game.queue_free()
+	await process_frame
+
+
+## ★★ 粮车光环范围：只在选中时画、按地面投影、半径来自逻辑字段。
+func _test_aura_range(cfg) -> void:
+	var game = Game3DRes.new()
+	root.add_child(game)
+	await process_frame
+	if not game.start():
+		ok(false, "3D 场景起不来，光环范围断言无从谈起")
+		game.queue_free()
+		return
+	await process_frame
+	await process_frame
+	game.set_process(false)
+	var ov = game.overlay
+	var w = game.world
+	var g = null
+	for u in w.units:
+		if u.alive and u.is_general() and String(u.faction) == String(w.my_faction):
+			g = u
+			break
+	ok(g != null, "（前提）找得到一位己方将领")
+	if g == null:
+		game.queue_free()
+		await process_frame
+		return
+
+	var cart = UnitRes.create(cfg, "aura-ring-cart", "粮车",
+		Vector2i(g.tx, g.ty), String(w.my_faction), UnitRes.UNIT_TYPE_GRAIN_CART,
+		"", String(g.id), UnitRes.UNIT_TYPE_GRAIN_CART, -1)
+	cart.pos = g.pos + Vector2(1.0, 0.0)
+	w.units.append(cart)
+	game.cam.force_update_transform()
+
+	ov.set_selection([])
+	eq(ov._aura_range_loops().size(), 0, "★ 没选中粮车 → 不画光环范围")
+	ov.set_selection([g.id])
+	eq(ov._aura_range_loops().size(), 0, "★ 选中别的单位 → 不画粮车范围")
+
+	ov.set_selection([cart.id])
+	var loops: Array = ov._aura_range_loops()
+	eq(loops.size(), 1, "★ 选中粮车 → 画一圈范围")
+	if loops.is_empty():
+		game.queue_free()
+		await process_frame
+		return
+	var loop: Dictionary = loops[0]
+	near(float(loop["radius"]), 3.0, 1e-6, "半径来自粮车的 morale_aura_radius = 3 格")
+	var pts: PackedVector2Array = loop["points"]
+	eq(pts.size(), Overlay3DRes.AURA_RANGE_SEGMENTS + 1, "★ 圆周采样 + 闭合点")
+	if pts.size() >= 2:
+		v2_near(pts[0], pts[pts.size() - 1], 0.01, "★ 首尾闭合（画出来是一整圈）")
+	# 任取一个采样角：它必须是**地面点的投影**，不是屏幕空间的正圆。
+	var idx := 7
+	var ang: float = TAU * float(idx) / float(Overlay3DRes.AURA_RANGE_SEGMENTS)
+	var expected: Vector2 = ov.palette.to_px(
+		cart.pos + Vector2(cos(ang), sin(ang)) * float(loop["radius"]))
+	v2_near(pts[idx], expected, 0.01, "★ 每个采样点都走地面投影（贴地椭圆）")
+	near((loop["color"] as Color).a, Overlay3DRes.AURA_RANGE_ALPHA, 1e-6,
+		"细线带固定透明度")
+
+	ov.set_selection([cart.id, g.id])
+	eq(ov._aura_range_loops().size(), 1, "★ 多选时每辆粮车各一圈（别的单位不多画）")
 
 	game.queue_free()
 	await process_frame

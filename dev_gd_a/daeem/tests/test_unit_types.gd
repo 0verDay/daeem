@@ -22,7 +22,7 @@ func _run() -> void:
 		return
 	_test_class_tags(cfg)
 	_test_general_types(cfg)
-	_test_recruit_all_three(cfg)
+	_test_recruit_list(cfg)
 	_test_icons(cfg)
 	_test_icon_chars(cfg)
 	cleanup_escort_scaffold()
@@ -42,6 +42,28 @@ func _test_class_tags(cfg) -> void:
 	ok(not cfg.unit_is_ranged(UnitRes.UNIT_TYPE_SPEARMAN), "长枪兵是近战")
 	ok(cfg.unit_is_ranged(UnitRes.UNIT_TYPE_LONGBOWMAN), "★ 长弓兵是远程（需求：弓箭手算作远程步兵）")
 	ok(not cfg.unit_is_ranged(UnitRes.UNIT_TYPE_RIDER), "骑手是近战骑兵")
+	# ★★ 本轮新增的四个兵种：骑兵 / 器械的标签与远近是**两维**。
+	eq(cfg.unit_class_of(UnitRes.UNIT_TYPE_KNIGHT), ConfigRes.CLASS_CAVALRY, "骑士属于骑兵")
+	eq(cfg.unit_class_of(UnitRes.UNIT_TYPE_HORSE_ARCHER), ConfigRes.CLASS_CAVALRY, "马弓手属于骑兵")
+	eq(cfg.unit_class_of(UnitRes.UNIT_TYPE_GRAIN_CART), ConfigRes.CLASS_CAVALRY, "粮车属于骑兵")
+	eq(cfg.unit_class_of(UnitRes.UNIT_TYPE_CATAPULT), ConfigRes.CLASS_SIEGE, "★ 投石车属于器械（第三个大类）")
+	ok(not cfg.unit_is_ranged(UnitRes.UNIT_TYPE_KNIGHT), "骑士是近战")
+	ok(cfg.unit_is_ranged(UnitRes.UNIT_TYPE_HORSE_ARCHER), "★ 马弓手是远程骑兵")
+	ok(cfg.unit_is_ranged(UnitRes.UNIT_TYPE_GRAIN_CART), "★ 粮车带远程标签（虽然它不攻击）")
+	ok(cfg.unit_is_ranged(UnitRes.UNIT_TYPE_CATAPULT), "投石车是远程器械")
+	eq(cfg.unit_class_line(UnitRes.UNIT_TYPE_KNIGHT), "骑兵", "骑士的标签 = 骑兵")
+	eq(cfg.unit_class_line(UnitRes.UNIT_TYPE_HORSE_ARCHER), "远程骑兵", "★ 马弓手的标签 = 远程骑兵")
+	eq(cfg.unit_class_line(UnitRes.UNIT_TYPE_GRAIN_CART), "远程骑兵", "粮车的标签 = 远程骑兵")
+	eq(cfg.unit_class_line(UnitRes.UNIT_TYPE_CATAPULT), "器械", "★ 投石车的标签 = 器械（不写成远程器械）")
+	# 兵种玩法开关：从配置读进规范化字段。
+	near(cfg.unit_armor_of(UnitRes.UNIT_TYPE_KNIGHT), 6.0, 1e-6, "骑士固定护甲 = 6")
+	near(cfg.unit_armor_of(UnitRes.UNIT_TYPE_HORSE_ARCHER), 0.0, 1e-6, "马弓手无护甲")
+	ok(not cfg.unit_can_attack(UnitRes.UNIT_TYPE_GRAIN_CART), "★ 粮车不攻击（支援单位）")
+	ok(cfg.unit_move_shoot(UnitRes.UNIT_TYPE_HORSE_ARCHER), "★ 马弓手可以移动射击")
+	ok(cfg.unit_is_siege(UnitRes.UNIT_TYPE_CATAPULT), "★ 投石车有攻城（无视远近战减伤）")
+	near(cfg.unit_splash_radius_of(UnitRes.UNIT_TYPE_CATAPULT), 1.5, 1e-6, "投石车范围半径 1.5 格")
+	near(cfg.unit_morale_aura_radius_of(UnitRes.UNIT_TYPE_GRAIN_CART), 3.0, 1e-6, "粮车光环半径 3 格")
+	near(cfg.unit_morale_aura_rate_of(UnitRes.UNIT_TYPE_GRAIN_CART), 0.5, 1e-6, "粮车光环 +0.5 士气/秒")
 
 	eq(cfg.unit_class_name(UnitRes.UNIT_TYPE_RIDER), "骑兵", "大类显示名 = 骑兵")
 	eq(cfg.unit_class_line(UnitRes.UNIT_TYPE_SPEARMAN), "步兵", "近战步兵的标签就是「步兵」")
@@ -124,9 +146,11 @@ func _test_general_types(cfg) -> void:
 		eq(cfg.unit_type_of("general_%d" % (i + 1)), String(types[i]),
 			"general_%d 的类型与第 %d 个开局将领一致" % [i + 1, i + 1])
 
-func _test_recruit_all_three(cfg) -> void:
+func _test_recruit_list(cfg) -> void:
 	cfg.combat_enabled = false
-	var w = require_world(cfg)
+	var w = require_world_with_escorts(cfg, ESCORTS_PER_GENERAL)
+	if w == null:
+		return
 	var kept: Array = []
 	for u in w.units:
 		if u.faction == w.my_faction:
@@ -134,41 +158,65 @@ func _test_recruit_all_three(cfg) -> void:
 	w.units = kept
 
 	var g1 = w.unit_by_id("general-1")
+	ok(g1 != null, "（前提）找得到将领 1")
+	if g1 == null:
+		cfg.combat_enabled = true
+		return
 	w.resources["food"] = 5000.0
 	w.resources["gold"] = 5000.0
 	w.zones.zone_at(g1.tx, g1.ty)["population"] = 100.0
 
-	# ★★ 这里要的是「单位页能招的三个兵种」，不是将领名册 ——
-	#    将领名册（general_types）本轮扩到了 9 位，拿它当招募表会去招将领。
+	# ★★ 单位页现在的三行（tier = 行号 = 需要的大本营等级）。
+	var want := [
+		UnitRes.UNIT_TYPE_SPEARMAN, UnitRes.UNIT_TYPE_LONGBOWMAN,
+		UnitRes.UNIT_TYPE_RIDER, UnitRes.UNIT_TYPE_GRAIN_CART,
+		UnitRes.UNIT_TYPE_KNIGHT, UnitRes.UNIT_TYPE_HORSE_ARCHER,
+		UnitRes.UNIT_TYPE_CATAPULT,
+	]
+	var want_tier := [1, 1, 2, 2, 3, 3, 3]
 	var types: Array = []
 	for item in w.recruit_list():
 		types.append(String((item as Dictionary).get("kind", "")))
-	eq(types.size(), 3, "三个可招募兵种")
-	for t in types:
-		var tt := String(t)
+	eq(types, want, "★ 单位招募表 = 三行七个兵种（行内顺序也固定）")
+	for i in want.size():
+		var tt := String(want[i])
+		eq(w.recruit_tier(tt), int(want_tier[i]), "%s 在第 %d 行（大本营 %d 级解锁）"
+			% [tt, int(want_tier[i]), int(want_tier[i])])
 		ok(w.is_recruitable(tt), "★ %s 在 config.recruit.list 里" % tt)
 		ok(w.recruit_short_of(tt) != "", "%s 有短名（信息栏格子要写）" % tt)
 		ok(w.recruit_label_of(tt) != tt, "%s 有显示名" % tt)
 		ok(w.recruit_train_sec(tt) > 0.0, "%s 有读条时间" % tt)
 
 	var before: int = w.retinue_of(g1.id).size()
-	for t2 in types:
-		ok(w.start_recruit(String(t2), g1.id, "p1"), "排 %s 进队列" % t2)
-	for _i in int(ceil(32.0 / DT)):
-		w.tick(DT)
-	eq(w.retinue_of(g1.id).size(), before + 3, "★ 三单都读完了（名下多 3 个）")
+	for tt in want:
+		var k := String(tt)
+		# ★ free = true：这张测试图没有 p1 大本营，第 2 / 3 行会被 tier 挡住；
+		#   这里只验「七种兵都能被正确生成」，行号门槛在 test_base_limits 里单独验。
+		ok(w.start_recruit(k, g1.id, "p1", true), "排 %s 进队列" % k)
+		# 一单一单等它读完：队列上限 5，七单连着排会撞上限。
+		var secs: float = w.recruit_train_sec(k) + 0.2
+		for _i in int(ceil(secs / DT)):
+			w.tick(DT)
+	eq(w.retinue_of(g1.id).size(), before + want.size(), "★ 七单都读完了（名下多 7 个）")
 
 	var got: Array = []
 	var all_ret: Array = w.retinue_of(g1.id)
-	for i in range(all_ret.size() - 3, all_ret.size()):
+	for i in range(all_ret.size() - want.size(), all_ret.size()):
 		got.append(String(all_ret[i].unit_type))
-	eq(got, [String(types[0]), String(types[1]), String(types[2])],
-		"★ 招出来的三个单位类型就是三个兵种（一个不多一个不少）")
+	eq(got, want, "★ 招出来的七个单位类型就是七个兵种（一个不多一个不少）")
 
 	var fresh = all_ret[all_ret.size() - 1]
 	eq(fresh.leader_id, g1.id, "新兵挂在招它的将领名下")
 	near(fresh.hp_max, cfg.unit_hp_of(String(fresh.unit_type)), 1e-6, "新兵血量走自己的类型")
 	ok(fresh.alive and w.map.terrain_walkable(fresh.tx, fresh.ty), "新兵站在可通行格上")
+	# ★ 新兵身上的机制字段也在出生时抄好了。
+	var cart = null
+	for u in all_ret:
+		if String(u.unit_type) == UnitRes.UNIT_TYPE_GRAIN_CART:
+			cart = u
+	if cart != null:
+		ok(not cart.can_attack, "★ 招出来的粮车不攻击")
+		near(cart.morale_aura_rate, 0.5, 1e-6, "★ 招出来的粮车带 0.5/秒士气光环")
 	cfg.combat_enabled = true
 
 func _test_icons(cfg) -> void:
@@ -203,17 +251,23 @@ func _test_icons(cfg) -> void:
 
 	var distinct: Dictionary = {}
 	for id in [UnitRes.UNIT_TYPE_SPEARMAN, UnitRes.UNIT_TYPE_LONGBOWMAN,
-			UnitRes.UNIT_TYPE_RIDER]:
+			UnitRes.UNIT_TYPE_RIDER, UnitRes.UNIT_TYPE_GRAIN_CART,
+			UnitRes.UNIT_TYPE_KNIGHT, UnitRes.UNIT_TYPE_HORSE_ARCHER,
+			UnitRes.UNIT_TYPE_CATAPULT]:
 		var t := String(id)
 		var ch: String = cfg.unit_icon_of(t)
-		eq(ch.length(), 1, "%s 的地图图标**正好一个字**（实际 %r）" % [t, ch])
-		ok(ch != "?" and ch != "", "%s 的字不是兜底占位（%r）" % [t, ch])
+		eq(ch.length(), 1, "%s 的地图图标**正好一个字**（实际 %s）" % [t, ch])
+		ok(ch != "?" and ch != "", "%s 的字不是兜底占位（%s）" % [t, ch])
 		distinct[ch] = true
-	eq(distinct.size(), 3, "★ 三个兵种各是一个不同的字")
+	eq(distinct.size(), 7, "★ 七个兵种各是一个不同的字")
 
 	eq(cfg.unit_icon_of(UnitRes.UNIT_TYPE_SPEARMAN), "枪", "长枪兵的字来自 config（枪）")
 	eq(cfg.unit_icon_of(UnitRes.UNIT_TYPE_LONGBOWMAN), "弓", "长弓兵（弓）")
 	eq(cfg.unit_icon_of(UnitRes.UNIT_TYPE_RIDER), "骑", "骑手（骑）")
+	eq(cfg.unit_icon_of(UnitRes.UNIT_TYPE_GRAIN_CART), "粮", "粮车（粮）")
+	eq(cfg.unit_icon_of(UnitRes.UNIT_TYPE_KNIGHT), "士", "骑士（士）")
+	eq(cfg.unit_icon_of(UnitRes.UNIT_TYPE_HORSE_ARCHER), "骁", "马弓手（骁）")
+	eq(cfg.unit_icon_of(UnitRes.UNIT_TYPE_CATAPULT), "车", "投石车（车）")
 
 	eq(cfg.unit_icon_of("general"), cfg.unit_icon_of(UnitRes.UNIT_TYPE_SPEARMAN),
 		"★ 将领 1 画长枪兵那个字")

@@ -56,6 +56,12 @@ static func tick_unit(world, cfg, u, dt: float) -> void:
 			else:
 				# ★ 敌方区划**与中立区划**都算「疲惫」（中立也缓慢掉士气）。
 				rate = -cfg.morale_decay_enemy
+		# ★★ 粮车光环（本轮新增）：`world.morale_aura_bonus` 已在单位循环之前算好，
+		#    键 = 士气锚 id。它**加在**区划速率上（不是取代），所以：
+		#      · 与区划回士气 / 其它士气上升效果叠加；
+		#      · 多辆粮车覆盖同一支部队时 world 那边只留最大值 ⇒ 不叠加（需求口径）。
+		if world != null and world.morale_aura_bonus.has(u.id):
+			rate += float(world.morale_aura_bonus[u.id])
 		u.morale = clampf(u.morale + rate * dt, 0.0, u.morale_max)
 
 	# ★★ 生命档位对**每个单位**都生效（不只锚）：士气是整支部队共享的，

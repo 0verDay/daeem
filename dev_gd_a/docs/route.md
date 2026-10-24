@@ -1826,6 +1826,10 @@ y 200 .. 220   红字提示带 641×20
 
 ## 二十二、右下页签按选中对象动态显示 + 区划招募将领（这一轮）
 
+> ★ 2026.10.24 后续：**单位页**已从「Q/W/E 三个占位兵种」改成**三行七兵种**
+> （见第五十九节）；**招募页**已改成九宫格 9 位将领（`recruit.zone.list` 的固定阵容）。
+> 本节保留当时的页签规则与需求原文。
+
 **需求原话**：
 
 > 当玩家选中部队/单位时，右下角的页签只显示两个：操作，单位（操作为对部队下达的指令，
@@ -6056,3 +6060,129 @@ debug keystore。明文 `ws://` 若被 Android 明文流量策略拦截，需要
 * 受「名册扩到 9 位」影响的旧断言一并改成读**前 3 位 / 单位招募表**：
   `test_retinue` 180、`test_unit_types` 164、`test_logic` 280、`test_smoke` 123、
   `test_base_limits` 98。
+
+## 五十九、单位招募三行 + 四个新兵种 / Ctrl+3 / 粮车范围圈（2026.10.24）
+
+需求原话（拆成四条）：
+
+1. 把骑手移到单位招募页签**第二行第一个**，第二行再加**粮车**（骑兵、远程标签；
+   只消耗粮食；持续为周围友方单位缓慢提升士气，多辆粮车不叠加、可与其他士气来源叠加）；
+2. 单位招募页签**第二行**变成需要**大本营 2 级**才能招募；
+3. 第三行（大本营 3 级）加**骑士 / 马弓手 / 投石车**：
+   * 骑士：少量粮食 + 大量黄金；骑兵、近战；较高护甲 / 较高攻击 / 远程免伤 25%；
+   * 马弓手：大量粮食 + 少量黄金；骑兵、远程；无护甲 / 远程免伤 25%；可以移动射击；
+   * 投石车：大量粮食 + 大量黄金；器械、攻城；攻击与移动都慢；攻击是范围伤害；
+4. 之后追加：开发者快捷键 **Ctrl+3** = 本机阵营大本营立即 3 级；
+   粮车**被选中时**显示**紧贴地面**的**细线**范围圈。
+
+### 59.1 口径
+
+**三行 = 三个大本营等级**，`recruit.list[].tier` 就是行号：
+
+| 行 | 需要大本营 | 单位（从左到右） |
+|---|---|---|
+| 第 1 行 | 1 级 | 长枪兵、长弓兵、空 |
+| 第 2 行 | 2 级 | 骑手、粮车、空 |
+| 第 3 行 | 3 级 | 骑士、马弓手、投石车 |
+
+* 行内不足 3 个的格子**留空**（不是占位兵种；命令卡把空字典当空格子）。
+* 没有大本营时按 **1 级**算：第 1 行可用，第 2 / 3 行仍锁。
+* **AI 的免费招募**（`start_recruit(..., free = true)`）跳过行号限制 —— 否则没有大本营的
+  守军 AI 一个兵都补不出来。
+
+**四个新兵种**（数值是占位量级，全部在 `data/config.json`）：
+
+| 单位 | 大类 / 远近 | 血量 / 速度 | 攻击 | 造价 / 读条 | 特性 |
+|---|---|---|---|---|---|
+| 粮车 | 骑兵 / 远程 | 120 / 0.6 | 不攻击 | 粮 80 / 12s | 周围 3 格友军士气 +0.5/秒，多辆不叠加 |
+| 骑士 | 骑兵 / 近战 | 260 / 1.0 | 40 / 1.0s，射程 1 | 粮 60 + 金 160 / 18s | 固定护甲 6、远程减伤 25% |
+| 马弓手 | 骑兵 / 远程 | 100 / 1.3 | 22 / 1.1s，射程 3.5 | 粮 160 + 金 60 / 16s | 无护甲、远程减伤 25%、移动射击 |
+| 投石车 | 器械 / 远程 | 180 / 0.35 | 60 / 3.0s，射程 6 | 粮 180 + 金 180 / 24s | 攻城、1.5 格范围伤害 |
+
+* **固定护甲**：每次受击先减 `armor` 点，再走百分比减伤；最低仍造成 **1 点**（不会完全免疫）。
+  骑士 = 6，其余 = 0。
+* **器械（siege）**：第三个大类；现有「对步兵 / 骑兵伤害加成」都打不到它
+  （`attack_vs_class` 没有 `siege` 键），所以「器械受击不吃对骑兵步兵加成」不需要写特例。
+* **攻城**：投石车这一击无视目标的**近战 / 远程减伤**（兵种 `ranged_reduction` +
+  将领 `melee/ranged_reduction`），但**不**无视护甲与士气免伤。
+* **范围伤害**：命中点 1.5 格内的**所有敌人**都吃这一击的**全额**伤害；仅敌方，不误伤友军。
+  主目标中途死亡也仍在最后已知位置炸开。
+* **移动射击**：有移动 / 行军命令且正在沿路走时，对射程内敌人开火但**不停止**；
+  没有移动命令时与普通远程一样停下开火 / 追击。
+* **粮车光环**：士气是整支部队共享的（见 `logic/morale.gd` 的锚模型），所以按
+  **“这支部队里任一单位在半径内”** 生效；同一锚被多辆粮车覆盖时只取**最大速率**，
+  与区划回士气、击杀 / 掠地加士气正常相加。
+
+### 59.2 数据（`data/config.json`）
+
+* `recruit.list[]` 重排为 7 条，每条新增 `tier`（1/2/3）；`kind` 顺序 = 行内从左到右。
+* `unit.classes` 新增 `siege`（`name` / `ranged_name` 都是「器械」）。
+* `unit.types.<id>` 新增可选键：
+  `armor` / `can_attack` / `move_shoot` / `siege` / `splash_radius` /
+  `morale_aura_radius` / `morale_aura_rate`。不写 = 关闭，旧兵种逐位不变。
+* `unit.formation.tier_order` 补新兵种：骑士 0、马弓手 1、粮车 3、投石车 3。
+
+### 59.3 逻辑
+
+* `logic/config.gd`：`_cache_unit_types()` 把新键规范化；新增
+  `unit_armor_of` / `unit_can_attack` / `unit_move_shoot` / `unit_is_siege` /
+  `unit_splash_radius_of` / `unit_morale_aura_radius_of` / `unit_morale_aura_rate_of`；
+  常量补 `UNIT_TYPE_GRAIN_CART` / `KNIGHT` / `HORSE_ARCHER` / `CATAPULT` / `CLASS_SIEGE`。
+* `logic/unit.gd`：新增单位字段 `armor` / `can_attack` / `siege` / `move_shoot` /
+  `splash_radius` / `morale_aura_radius` / `morale_aura_rate`，**出生时从兵种表抄一次**；
+  `take_damage(..., ignore_reduction)` 先扣护甲，再算百分比减伤，攻城只跳过远近战那几项。
+* `logic/combat.gd`：
+  * `attack_unit` 守卫 `can_attack`；远程投掷物带 `splash_radius` / `siege`；
+  * `_fire_while_moving()` 是移动射击的独立支路（不 `halt()`、不写 `target`，只在冷却到点时
+    扫射程内最近敌人）；
+  * `acquire_target` / `update_combat` / `update_building_combat` / `attack_building`
+     都跳过不攻击的支援单位（粮车）。
+* `logic/projectile.gd`：`spawn` 新增 `splash_radius` / `ignore_reduction`；
+  `_impact` 对单位目标按半径遍历 `world.units`，只打敌方、全额伤害，命中结算带 `ignore_reduction`。
+* `logic/morale.gd` + `logic/world.gd`：`world.morale_aura_bonus`（士气锚 id → 每秒加成）
+  在单位循环之前算好；`_refresh_morale_aura()` 每 **0.25s** 重算一次（粮车 × 单位的扫描
+  不放进每帧路径），多车取最大值；`morale.tick_unit` 把该值加到区划速率上。
+* `logic/world.gd` 招募：`recruit_tier()` / `unit_recruit_level()` / `unit_recruit_unlocked()`；
+  `can_recruit(..., ignore_tier)` 在 leader 校验之后、区划校验之前挡 `"tier"`；
+  `start_recruit(..., free = true)` 把 `free` 作为 `ignore_tier` 传下去。
+* `debug_upgrade_base_to_level(target, faction)`：直接改 `building.level` 并走
+  `apply_building_level_hp()`；若正在升级，先走正常 `cancel_upgrade`（退款），再清读条，
+  最后推一条 `upgrade_done`。
+
+### 59.4 界面
+
+* `view/command_card.gd`：空字典 = 空格子（占着键位、不显示名字、不响应点击 / 快捷键）。
+* `view/hud.gd`：
+  * `_recruit_entries()` 按 `tier` 把条目摆到 `(tier-1)*3 + 行内序号`，返回固定 9 格；
+    带 `tier` / `base_level` / `ready` / `lock_reason`；
+  * 单位页 `ready = tier <= unit_recruit_level(my_faction)`，置灰格点了给「大本营 N 级解锁」；
+  * 悬停详情新增护甲 / 支援 / 移动射击 / 攻城 / 范围伤害 / 士气光环说明；
+  * `_card_sig()` 纳入单位页的大本营等级（升级完成当场解锁第 2 / 3 行）；
+  * 详情栏「防御」= 固定护甲值，攻击增益区显示攻城 / 范围 / 移动射击 / 光环。
+* `view/overlay_view_3d.gd`：`_aura_range_loops()` 沿圆采样 96 段，逐点 `palette.to_px()`
+  投到 y=0 地面，`_draw_aura_ranges()` 用 1.25px 抗锯齿细线画闭合折线；只在
+  `_selection` 里包含该粮车时画，多辆各一圈。
+* `view/game_scene3d.gd`：`_handle_dev_hotkey()` 新增 `KEY_3` / `KEY_KP_3`，在命令卡之前
+  处理；`world.debug_upgrade_base_to_level(3, world.my_faction)`，成功 / 已 3 级 / 无大本营
+  三种提示。
+
+### 59.5 边界 / 已知
+
+* 行内超过 3 个的条目会被视图丢弃（配置仍只该写 3 个）；缺的格子就是空。
+* 单位页的 tier 只判**当前存活大本营**等级；大本营被打掉后回到 1 级（第 1 行仍可用）。
+* 粮车光环按**部队**生效（士气共享），不是逐个单位独立计时；0.25s 的刷新延迟在士气这种
+  慢变量上不可感知，但粮车刚死亡时最多多生效 0.25s。
+* 投石车范围伤害**只对单位**；打建筑时仍走单体建筑伤害。
+* 粮车范围圈画在屏幕空间的覆盖层上（与网格 / 区划轮廓同层），形状是地面投影；
+  它不会被 3D 单位 / 地形遮挡（覆盖层在 3D 之上），这是与既有地面线的同一取舍。
+
+### 59.6 回归
+
+* 新增 `tests/test_expansion_units.gd` **30 项**：固定护甲 / 攻城 / 范围伤害 /
+  移动射击 / 粮车光环 / 不攻击。
+* `tests/test_unit_types.gd` **242 项**：七个兵种、标签、按行招募、图标、机制字段。
+* `tests/test_base_limits.gd` **132 项**：第 1/2/3 行门槛、free 跳过、Ctrl+3 底层入口。
+* `tests/test_view3d.gd` **223 项**：粮车范围圈的选中条件 / 半径 / 地面投影 / 闭合。
+* `tests/test_outcome_screen.gd` **71 项**：Ctrl+3 真键盘事件 + 提示。
+* `test_ui` 1254、`test_retinue` 188、`test_unit_traits` 57、`test_projectile` 49、
+  `test_morale` 58、`test_formation` 37 等旧套件全部保持绿。

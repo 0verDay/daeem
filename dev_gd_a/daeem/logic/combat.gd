@@ -131,6 +131,15 @@ static func update_unit(world, cfg: ConfigRes, u: UnitRes, dt: float, idx: int =
 	#    ⚠️ 这里不再有「先看血量再看领地」的短路 —— 满血单位也要涨士气。
 	MoraleRes.tick_unit(world, cfg, u, dt)
 
+	# ★★ 移动射击（马弓手）：有移动 / 行军命令、正在沿路走时，**不停下来**，
+	#    只对射程内的敌人开火。没有移动命令（站定）时走下面的普通战斗分支，
+	#    与其它远程单位一样「停下 → 开火 / 追击」。
+	#    ⚠️ 这一支必须在索敌之前：否则 `acquire_target` 会把目标锁上，而
+	#      `update_combat` 又会 `halt()`，就不叫移动射击了。
+	if cfg.combat_enabled and u.move_shoot and u.moving and not u.path.is_empty():
+		_fire_while_moving(world, cfg, u)
+		return
+
 	if not cfg.combat_enabled:
 		# 关掉战斗时不保留旧目标，否则表现上像「还在交战」
 		if u.target != null or u.target_building != null:
@@ -203,6 +212,35 @@ static func update_unit(world, cfg: ConfigRes, u: UnitRes, dt: float, idx: int =
 				u.order_attack_move(world, cfg, rescue_leader.downed_anchor)
 
 
+## ★★ 移动射击：边走边打，**不改变移动意图**。
+##
+## 只在 `attack_cd` 到点时扫一次「射程内最近的敌人」（这个函数因此每 1.1 秒
+## 才真正遍历一次，不是每帧 O(n)）：找到就调 `attack_unit` 开火，但不 `halt()`、
+## 不写 `target` —— 路径由 `tick_frame` 的 `step_along_path` 继续推进。
+##
+## ★ 为什么不用普通的 `acquire_target` + `update_combat`：
+##   那两条的语义是「锁定 → 站住 → 打」，而移动射击要求「锁定也不站住」；
+##   硬改它们会把所有远程单位都变成不停止，影响面太大。这里单独一条支路最干净。
+static func _fire_while_moving(world, cfg: ConfigRes, u: UnitRes) -> void:
+	if not u.can_attack or u.attack_cd > 0.0:
+		return
+	var reach: float = u.combat_range(cfg)
+	var best = null
+	var best_d := INF
+	for other in world.units:
+		if other == u or not other.is_attackable():
+			continue
+		if FactionRes.same_side_for_attack(String(other.faction), String(u.faction)):
+			continue
+		# 与 update_combat 同一条「半个身子进射程」口径：减去目标体积。
+		var d: float = u.pos.distance_to(other.pos) - cfg.unit_radius_of(other.unit_type)
+		if d <= reach and d < best_d:
+			best_d = d
+			best = other
+	if best != null:
+		attack_unit(world, cfg, u, best)
+
+
 ## 警戒：静止且没有目标的单位搜索警戒半径内的敌方**单位**，锁定最近的一个。
 ##
 ## 搜不到敌方单位时，**任何阵营**的单位都会再搜一次**敌方建筑**（需求：
@@ -226,6 +264,9 @@ static func acquire_target(world, cfg: ConfigRes, u: UnitRes, idx: int = -1) -> 
 		return false
 	if u.neutralized:
 		return false                       # 中立化：不再主动索敌
+	# ★★ 纯支援单位（粮车）不索敌：它没有攻击能力，锁上目标只会让它去送死。
+	if not u.can_attack:
+		return false
 	# ★★ 已经在打一个还能打的目标 ⇒ **不重新索敌**（本轮修 bug 时补上的一句）。
 	#
 	# 为什么必须有它（这是「原地抽搐」这条 bug 的**第二层**根因）：
@@ -474,6 +515,12 @@ static func needs_repath(u: UnitRes, cfg: ConfigRes, to_pos: Vector2) -> bool:
 
 ## 有目标时每帧的决策：够得着 → 站住开火；够不着 → 先移动靠近（追击）；追太远 → 放弃
 static func update_combat(world, cfg: ConfigRes, u: UnitRes) -> void:
+	# ★★ 不攻击的支援单位：目标一律作废，绝不追击 / 开火（粮车）。
+	if not u.can_attack:
+		if u.target != null or u.ordered_target != null:
+			u.drop_engagement()
+			u.ordered_target = null
+		return
 	var t = u.target
 	# ★★ `not t.is_attackable()` 覆盖两种「这个目标不该再打了」：
 	#   · 目标阵亡（老行为，用 alive）；
@@ -569,6 +616,8 @@ static func face_toward(u: UnitRes, to_pos: Vector2) -> void:
 
 ## 开火：单体伤害 + 冷却
 static func attack_unit(world, cfg: ConfigRes, u: UnitRes, t: UnitRes) -> void:
+	if not u.can_attack:
+		return                        # 纯支援单位（粮车）没有攻击
 	u.attack_cd = maxf(0.05, u.combat_cooldown(cfg))
 	u.attack_flash = 1.0
 	u.last_target = t
@@ -579,12 +628,16 @@ static func attack_unit(world, cfg: ConfigRes, u: UnitRes, t: UnitRes) -> void:
 	#    · 没有对应特性 → `attack_multiplier_vs_class` 返回 1.0（逐位不变）；
 	#    · ⚠️ 拆建筑走 `attack_building`、不经过这里 —— 建筑没有兵种，自然不吃这条加成。
 	var damage: float = u.combat_damage(cfg) * u.attack_multiplier_vs_class(String(t.unit_class))
-	# ★★ 远程单位（长弓兵 / 远程将领）**发一枚投掷物**，伤害改到命中那一刻结算；
-	#    近战（长枪兵 / 骑手）仍是即时结算 —— 逐位不变。
+	# ★★ 远程单位（长弓兵 / 远程将领 / 马弓手 / 投石车）**发一枚投掷物**，伤害改到命中那一刻结算；
+	#    近战（长枪兵 / 骑手 / 骑士）仍是即时结算 —— 逐位不变。
+	#    ★ 投石车的两件附加属性在这里随投掷物带过去：
+	#      `splash_radius` = 命中点周围 1.5 格内所有敌人全额受伤；
+	#      `siege` = 命中结算时无视目标的近战 / 远程减伤。
 	if u.ranged:
-		ProjectileRes.spawn(world, cfg, String(u.faction), u, u.pos, t, false, damage)
+		ProjectileRes.spawn(world, cfg, String(u.faction), u, u.pos, t, false, damage,
+			u.splash_radius, u.siege)
 	else:
-		t.take_damage(cfg, world, damage, u)
+		t.take_damage(cfg, world, damage, u, false, u.siege)
 
 
 ## 锁定一个建筑开始拆它（敌人 AI 用它拆挡路的城墙）。
@@ -603,6 +656,11 @@ static func set_building_target(u: UnitRes, b) -> bool:
 ## 建筑的本体是**居中、略小于一格**的，所以「够得着」要按本体半边长来算 ——
 ## 城墙 body_half = 0.5（与从前逐位一致），大本营 / 箭塔 0.3。
 static func update_building_combat(world, cfg: ConfigRes, u: UnitRes) -> void:
+	if not u.can_attack:
+		if u.target_building != null or u.ordered_building != null:
+			u.drop_engagement()
+			u.ordered_building = null
+		return
 	var b = u.target_building
 	if b == null or not b.alive:
 		# 拆完了（或目标没了）：玩家点名的那个命令就算完成了；
@@ -633,6 +691,8 @@ static func update_building_combat(world, cfg: ConfigRes, u: UnitRes) -> void:
 ## 拆建筑的一击：墙体不反击，所以只需要冷却 + 伤害；
 ## 打光后**立刻记下事件**（由 world.tick() 末尾统一收尸 —— 逻辑层不在遍历中改集合）
 static func attack_building(world, cfg: ConfigRes, u: UnitRes, b) -> void:
+	if not u.can_attack:
+		return                        # 纯支援单位（粮车）不能拆建筑
 	if b == null or not b.alive:
 		u.target_building = null          # 已经塌了就别再对着空气拆
 		return

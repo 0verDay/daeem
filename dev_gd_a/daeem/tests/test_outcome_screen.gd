@@ -3,7 +3,7 @@
 ## 盯四件事：
 ##   1. 两种结果各自的**终态**（文案、宝石 / 裂纹、横幅拉开、提示可点）；
 ##   2. 「点击任意处 → 提示渐隐、三颗按钮渐显」这条交互（不是自动出现）；
-##   3. 游戏内的 Ctrl+1 / Ctrl+W / Ctrl+L：Ctrl+1 加资源，Ctrl+W / Ctrl+L
+##   3. 游戏内的 Ctrl+1 / Ctrl+3 / Ctrl+W / Ctrl+L：Ctrl+1 加资源、Ctrl+3 升大本营，Ctrl+W / Ctrl+L
 ##      **改写目标状态** + 弹出结算 + 停战；
 ##   4. `level_end` 事件（单机 / 合作客机都走它）也能弹出结算。
 ##
@@ -145,6 +145,18 @@ func _test_game_hotkeys(cfg) -> void:
 	ok(game.hud.notice_text().contains("1000"),
 		"★ 加资源时给一句开发者提示（实际：%s）" % game.hud.notice_text())
 	ok(not game.outcome_open(), "Ctrl+1 不会触发结算（只是加资源）")
+
+	# ---- Ctrl+3 = 本机阵营大本营立即升到 3 级 ----
+	var base = game.world.find_base_of(game.world.my_faction)
+	ok(base != null, "（前提）本机阵营有大本营")
+	if base != null:
+		await _press_ctrl_key(KEY_3)
+		eq(int(base.level), 3, "★ Ctrl+3 → 大本营当场 3 级")
+		eq(game.world.base_level_of(game.world.my_faction), 3,
+			"★ 权威等级查询也读到 3")
+		ok(game.hud.notice_text().contains("3 级"),
+			"★ Ctrl+3 给一句开发者提示（实际：%s）" % game.hud.notice_text())
+		ok(not game.outcome_open(), "Ctrl+3 不会触发结算")
 
 	# ---- Ctrl+W = 立即胜利（★ 走真实键盘事件，不是直接调 handler）----
 	await _press_ctrl_key(KEY_W)

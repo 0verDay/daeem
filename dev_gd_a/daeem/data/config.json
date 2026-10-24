@@ -522,15 +522,21 @@
       "★ 为什么需要一个独立的 `ranged` 布尔量：",
       "  需求把**弓箭手算作远程步兵、马弓手算作远程骑兵** —— 也就是",
       "  「步兵/骑兵」是一维、「远/近」是另一维，两者挤不进同一个字段。",
-      "  于是标签 = class（infantry / cavalry）+ ranged（true / false）：",
+      "  于是标签 = class（infantry / cavalry / siege）+ ranged（true / false）：",
       "    长枪兵 = 近战步兵、长弓兵 = 远程步兵（弓箭手）、骑手 = 近战骑兵；",
-      "    将来的马弓手就是骑兵 + ranged（远程骑兵），数据里加一条即可，代码不用改。",
-      "★ 显示名只在这里：name = 不带远近的说法（步兵 / 骑兵），",
-      "  ranged_name = 带远近的说法（远程步兵 / 远程骑兵）。代码里不写中文。"
+      "    骑士 = 近战骑兵、马弓手 = 远程骑兵、粮车 = 远程骑兵（支援，不攻击）、",
+      "    投石车 = 器械（远程）。",
+      "★★ siege（器械）是**第三个大类**，它的意义只有一条：",
+      "  「按兵种大类做额外伤害」只在 infantry / cavalry 之间互相生效，",
+      "  所以任何写 `attack_vs_class.<大类>` 的兵种都打不到器械 —— 这正是",
+      "  需求里「器械受击时不受对骑兵步兵伤害加成影响」的落地方式（代码不用写特例）。",
+      "★ 显示名只在这里：name = 不带远近的说法（步兵 / 骑兵 / 器械），",
+      "  ranged_name = 带远近的说法（远程步兵 / 远程骑兵 / 器械）。代码里不写中文。"
     ],
     "classes": {
       "infantry": { "id": "infantry", "name": "步兵", "ranged_name": "远程步兵" },
-      "cavalry": { "id": "cavalry", "name": "骑兵", "ranged_name": "远程骑兵" }
+      "cavalry": { "id": "cavalry", "name": "骑兵", "ranged_name": "远程骑兵" },
+      "siege": { "id": "siege", "name": "器械", "ranged_name": "器械" }
     },
 
     "_general_traits_comment": [
@@ -589,9 +595,11 @@
       "★★ 单位类型表（本轮新增）：**所有单位类型的唯一定义处**，键 = 类型 id。",
       "  · 普通单位的 `kind` 就是这里的 id；将领的 kind 是 general / general_N，",
       "    它的类型由 unit.general.types 指定（将领是「带类型的队长」，不是一种兵种）。",
-      "  · spearman / longbowman / rider = 本轮新增的三个占位兵种，",
+      "  · spearman / longbowman / rider = 最早的三个占位兵种；",
       "    亲兵（subordinate）已被移除（需求原话：「将『亲兵』这个单位去除」）。",
-      "    属性是占位数值，之后按玩法调 —— 改这一张表就够了。",
+      "  · 本轮新增 grain_cart（粮车）/ knight（骑士）/ horse_archer（马弓手）/",
+      "    catapult（投石车），属性仍是占位数值，之后按玩法调 —— 改这一张表就够了。",
+      "    它们的造价 / 读条 / 解锁行数在 recruit.list 里（tier = 第几行 = 大本营几级）。",
       "  · enemy = 测试敌人。★★ **本次已删除**（用户口径：「把所有的『敌』这个具体单位",
       "    变成『长枪兵』，同时将『敌』从 editor 工具中移除」）——",
       "    它原来存在的理由是「把散在 debug.enemy_hp / debug.enemy_speed / combat.enemy",
@@ -621,18 +629,37 @@
       "     领地半径要写多大看 fog.vision_default 那段说明。",
       "     · 编辑器：tools/unit_editor 的「单位」页 →「视野半径」那一栏；",
       "     · 将领想单独调 → unit.general.stats[i].vision（没写就跟随所属兵种）。",
+      "  ★★ 本轮新增的五个玩法键（都可选，不写 = 关闭）：",
+      "     · armor = **固定护甲值**：每次受击先减这么多点伤害（再算百分比减伤），",
+      "       最低仍会造成 1 点伤害（不会完全免疫）。骑士 = 6，其余 = 0。",
+      "     · can_attack = false：**不攻击的支援单位**（不索敌、不发射投掷物）。",
+      "       粮车用它；它仍保留 class / ranged 标签（所以照旧会被长枪兵克制）。",
+      "     · move_shoot = true：**移动射击** —— 有移动 / 行军命令、正在沿路走时，",
+      "       对射程内的敌人开火但**不停止**；没有移动命令时与普通远程一样停下打。",
+      "     · siege = true：**攻城** —— 这一击无视目标来自「近战 / 远程」的减伤",
+      "       （兵种 traits.ranged_reduction 与将领的 melee/ranged_reduction），",
+      "       但**不**无视护甲与士气免伤。投石车用它。",
+      "     · splash_radius = **范围伤害半径（格）**：命中点周围该半径内的所有敌人",
+      "       都吃这一击的全额伤害（仅敌方，不误伤友军）。投石车 = 1.5。",
+      "  ★★ 粮车的士气光环写在它自己身上（其它兵种不写 = 没有）：",
+      "     · morale_aura_radius = 半径（格）；morale_aura_rate = 每秒加多少士气。",
+      "     · 同一支部队同时被多辆粮车覆盖时**只取最大值**（不叠加）；",
+      "       与区划回士气、击杀 / 掠地加士气等其它来源正常相加。",
       "  ★★ 资源层级（本次经济调参定的，招募价那一段照它排）：",
       "     粮食 = 低级资源，黄金 = 高级资源，人口 = 通用资源（谁都要）。",
-      "     长枪兵 / 长弓兵 = **低级单位，只花粮食**；骑手 = **高级单位，要粮更要金**。",
-      "     ⚠️ 这三个仍是**占位单位**（用户口径：「只是占位单位看着来」）——",
-      "       数值是「能看出三种兵的区别」的量级，不是最终配平，之后按玩法再调这一张表。"
+      "     长枪兵 / 长弓兵 = **低级单位，只花粮食**；骑手 / 粮车 / 骑士 / 马弓手 /",
+      "     投石车 = 高级单位（各自的粮金比例见 recruit.list）。",
+      "     ⚠️ 仍然是**占位数值** —— 数值是「能看出兵种区别」的量级，",
+      "       不是最终配平，之后按玩法再调这一张表。"
     ],
     "_traits_comment": [
       "★★ 兵种特性（本轮新增）：**只写在这里**，逻辑层不写死任何一条。",
       "  每个兵种的 traits 只认两个键（别的键会被忽略，见 logic/config.gd 的 _cache_unit_types）：",
       "  · attack_vs_class = { <兵种大类 id>: <比例> } —— 打**该大类**的目标时伤害 ×(1+比例)。",
-      "      · 大类 id 就是 unit.classes 的键（infantry / cavalry）；",
+      "      · 大类 id 就是 unit.classes 的键（infantry / cavalry；siege 是器械）。",
       "      · 只作用于**单位**，拆建筑（建筑没有兵种）不受影响；",
+      "      · 没写的键 = 0 ⇒ 打不到该大类。现有兵种只写 infantry / cavalry，",
+      "        所以器械（siege）天然不吃任何「对骑兵步兵」加成 —— 这是需求口径。",
       "      · 比例是 0.25 = +25%，与将领的数值覆盖**相乘**（将领的伤害先按覆盖算，再乘特性）。",
       "  · ranged_reduction = <比例> —— 受到**远程伤害**时减伤（0.25 = 少受 25%）。",
       "      · 「远程」按**伤害来路**判：远程单位的投掷物 + 可攻击建筑（箭塔）的投掷物；",
@@ -696,6 +723,76 @@
           "attack_vs_class": { "infantry": 0.25 },
           "ranged_reduction": 0.25
         }
+      },
+      "grain_cart": {
+        "name": "粮车",
+        "icon": "粮",
+        "class": "cavalry",
+        "ranged": true,
+        "can_attack": false,
+        "hp_max": 120,
+        "speed": 0.6,
+        "damage": 0,
+        "range": 0,
+        "cooldown_sec": 1.0,
+        "radius_factor": 0.10,
+        "vision": 9,
+        "armor": 0,
+        "morale_aura_radius": 3.0,
+        "morale_aura_rate": 0.5,
+        "traits": {}
+      },
+      "knight": {
+        "name": "骑士",
+        "icon": "士",
+        "class": "cavalry",
+        "ranged": false,
+        "hp_max": 260,
+        "speed": 1.0,
+        "damage": 40,
+        "range": 1,
+        "cooldown_sec": 1.0,
+        "radius_factor": 0.11,
+        "vision": 9,
+        "armor": 6,
+        "traits": {
+          "ranged_reduction": 0.25
+        }
+      },
+      "horse_archer": {
+        "name": "马弓手",
+        "icon": "骁",
+        "class": "cavalry",
+        "ranged": true,
+        "hp_max": 100,
+        "speed": 1.3,
+        "damage": 22,
+        "range": 3.5,
+        "cooldown_sec": 1.1,
+        "radius_factor": 0.10,
+        "vision": 10,
+        "armor": 0,
+        "move_shoot": true,
+        "traits": {
+          "ranged_reduction": 0.25
+        }
+      },
+      "catapult": {
+        "name": "投石车",
+        "icon": "车",
+        "class": "siege",
+        "ranged": true,
+        "hp_max": 180,
+        "speed": 0.35,
+        "damage": 60,
+        "range": 6.0,
+        "cooldown_sec": 3.0,
+        "radius_factor": 0.13,
+        "vision": 11,
+        "armor": 0,
+        "siege": true,
+        "splash_radius": 1.5,
+        "traits": {}
       }
     },
 
@@ -873,7 +970,12 @@
       "spacing_scale": 1.15,
       "aspect": 1.6,
       "max_slots": 400,
-      "tier_order": { "spearman": 0, "longbowman": 1, "rider": 2 },
+      "tier_order": {
+        "spearman": 0, "knight": 0,
+        "longbowman": 1, "horse_archer": 1,
+        "rider": 2,
+        "grain_cart": 3, "catapult": 3
+      },
       "tier_default": 1
     }
   },
@@ -1217,7 +1319,12 @@
   "recruit": {
     "_comment": [
       "★ 可招募单位表 —— UI 改版之后「单位」页的命令卡就照这张表生成（第 0 项 = Q 键）。",
-      "本轮三项 = 长枪兵 / 长弓兵 / 骑手（占位兵种，属性见 unit.types 那张表）。",
+      "★★ 单位页现在是**按行解锁的三行**（tier = 行号 = 需要的大本营等级）：",
+      "  · 第 1 行（tier 1，大本营 1 级）：长枪兵、长弓兵；",
+      "  · 第 2 行（tier 2，大本营 2 级）：骑手、粮车；",
+      "  · 第 3 行（tier 3，大本营 3 级）：骑士、马弓手、投石车。",
+      "  每行不足 3 个的格子**留空**（命令卡里是空格子，不是占位兵种）。",
+      "  列表顺序 = 同一行内的从左到右顺序；行号由 tier 决定，不是数组下标。",
       "  原来这里只有「占位单位」（亲兵），亲兵已按需求移除。",
       "以后加正式兵种：往 list 里加条目、并在 config.unit.types 里给它数值即可，",
       "world.start_recruit() / command_processor.apply_recruit() 都不用改。",
@@ -1237,30 +1344,73 @@
     "list": [
       {
         "kind": "spearman",
+        "tier": 1,
         "label": "长枪兵",
         "short": "枪",
-        "desc": "在选中将领所在格的中心生成 1 名长枪兵（近战步兵，占位单位）。★ 低级单位：只花粮食",
+        "desc": "在选中将领所在格的中心生成 1 名长枪兵（近战步兵）。★ 低级单位：只花粮食；对骑兵伤害 +25%",
         "train_sec": 10,
         "population_cost": 1,
         "cost": { "food": 40, "gold": 0 }
       },
       {
         "kind": "longbowman",
+        "tier": 1,
         "label": "长弓兵",
         "short": "弓",
-        "desc": "在选中将领所在格的中心生成 1 名长弓兵（远程步兵，占位单位）。★ 低级单位：只花粮食",
+        "desc": "在选中将领所在格的中心生成 1 名长弓兵（远程步兵）。★ 低级单位：只花粮食；对步兵伤害 +10%",
         "train_sec": 10,
         "population_cost": 1,
         "cost": { "food": 60, "gold": 0 }
       },
       {
         "kind": "rider",
+        "tier": 2,
         "label": "骑手",
         "short": "骑",
-        "desc": "在选中将领所在格的中心生成 1 名骑手（近战骑兵，占位单位）。★ 高级单位：要粮食，更要黄金",
+        "desc": "在选中将领所在格的中心生成 1 名骑手（近战骑兵）。★ 高级单位：要粮食，更要黄金；对步兵伤害 +25%，远程减伤 25%",
         "train_sec": 10,
         "population_cost": 1,
         "cost": { "food": 40, "gold": 80 }
+      },
+      {
+        "kind": "grain_cart",
+        "tier": 2,
+        "label": "粮车",
+        "short": "粮",
+        "desc": "在选中将领所在格的中心生成 1 辆粮车（支援单位，不攻击）。★ 只花粮食；周围 3 格友军士气 +0.5/秒（多辆不叠加，可与其他士气来源叠加）",
+        "train_sec": 12,
+        "population_cost": 1,
+        "cost": { "food": 80, "gold": 0 }
+      },
+      {
+        "kind": "knight",
+        "tier": 3,
+        "label": "骑士",
+        "short": "士",
+        "desc": "在选中将领所在格的中心生成 1 名骑士（近战骑兵）。★ 少量粮食 + 大量黄金；高护甲（固定减 6 点/击）、高攻击、远程减伤 25%",
+        "train_sec": 18,
+        "population_cost": 1,
+        "cost": { "food": 60, "gold": 160 }
+      },
+      {
+        "kind": "horse_archer",
+        "tier": 3,
+        "label": "马弓手",
+        "short": "骁",
+        "desc": "在选中将领所在格的中心生成 1 名马弓手（远程骑兵）。★ 大量粮食 + 少量黄金；无护甲、远程减伤 25%；可移动射击",
+        "train_sec": 16,
+        "population_cost": 1,
+        "cost": { "food": 160, "gold": 60 }
+      },
+      {
+        "kind": "catapult",
+        "tier": 3,
+        "label": "投石车",
+        "short": "车",
+        "desc": "在选中将领所在格的中心生成 1 辆投石车（器械，远程）。★ 大量粮食 + 大量黄金；移动与攻击都慢，攻击为 1.5 格范围伤害；攻城（无视目标的近战/远程减伤）",
+        "train_sec": 24,
+        "population_cost": 1,
+        "cost": { "food": 180, "gold": 180 }
       }
     ],
 

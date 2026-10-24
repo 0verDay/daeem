@@ -355,8 +355,13 @@ func _test_recruit(cfg) -> void:
 	ok(g1 != null and g2 != null, "有两个将领可用")
 	var per: int = w.retinue_of(g2.id).size()
 	eq(per, PER, "（前提）将领 2 名下开局有 %d 个兵（关卡摆的）" % PER)
+	# ★★ 单位页第 2 / 3 行要 2 / 3 级大本营：这里把己方大本营设成 3 级，
+	#    才能把七个兵种各招一遍（行号门槛本身在 test_base_limits 里单独验）。
+	var base = w.find_base_of("p1")
+	if base != null:
+		base.level = 3
 
-	# ★ 单位页能招的是 recruit.list 的三个兵种（不是将领名册 —— 名册本轮扩到 9 位）。
+	# ★ 单位页能招的是 recruit.list 的七个兵种（不是将领名册 —— 名册本轮扩到 9 位）。
 	var unit_kinds: Array = _unit_kinds(w)
 	for tt in unit_kinds:
 		ok(w.is_recruitable(String(tt)), "config.recruit.list 里 %s 可招募" % tt)
@@ -422,10 +427,11 @@ func _test_recruit(cfg) -> void:
 		ok(CommandRes.apply(w, cfg, {
 			"kind": "recruit", "unit_kind": other, "leader_id": g2.id, "faction": "p1"}),
 			"将领 2 名下也能排 %s" % other)
-	for _i in 1210:
-		w.tick(DT)
+		# 一单一单等它读完（队列上限 5；七单一起排会撞上限）。
+		for _j in int(ceil((float(w.recruit_train_sec(other)) + 0.2) / DT)):
+			w.tick(DT)
 	eq(w.retinue_of(g2.id).size(), per + unit_kinds.size(),
-		"★ 三个兵种各招一个之后，名下多了 %d 个" % unit_kinds.size())
+		"★ 七个兵种各招一个之后，名下多了 %d 个" % unit_kinds.size())
 
 	var now_n: int = w.retinue_of(g2.id).size()
 	for i in 2:
