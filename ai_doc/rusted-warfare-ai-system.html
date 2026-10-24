@@ -1,0 +1,1370 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rusted Warfare 1.15 — AI 系统逆向分析</title>
+<style>
+  :root{
+    --bg:#f5f7fa;
+    --panel:#ffffff;
+    --ink:#132033;
+    --muted:#5b6b7f;
+    --line:#dbe3ec;
+    --navy:#0d1b2a;
+    --navy-2:#12263d;
+    --teal:#0f766e;
+    --teal-soft:#e6f4f1;
+    --amber:#b45309;
+    --amber-soft:#fff4e5;
+    --red:#b42318;
+    --red-soft:#fff0ef;
+    --blue:#1d4ed8;
+    --blue-soft:#eef3ff;
+    --shadow:0 10px 30px rgba(13,27,42,.08);
+    --radius:16px;
+    --sidebar:286px;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0;
+    background:var(--bg);
+    color:var(--ink);
+    font-family:"Segoe UI","PingFang SC","Microsoft YaHei","Noto Sans SC",sans-serif;
+    line-height:1.75;
+    font-size:16px;
+  }
+  a{color:var(--teal);text-decoration:none}
+  a:hover{text-decoration:underline}
+  code,pre,kbd{
+    font-family:"Cascadia Code","Consolas","SFMono-Regular",monospace;
+  }
+  .progress{
+    position:fixed;top:0;left:0;height:3px;width:0%;
+    background:linear-gradient(90deg,var(--teal),#22c55e);
+    z-index:60;transition:width .08s linear;
+  }
+  .layout{display:grid;grid-template-columns:var(--sidebar) minmax(0,1fr);min-height:100vh}
+  .sidebar{
+    position:sticky;top:0;height:100vh;overflow:auto;
+    background:linear-gradient(180deg,var(--navy),var(--navy-2));
+    color:#c7d5e5;padding:26px 20px 30px;border-right:1px solid rgba(255,255,255,.08);
+  }
+  .brand{display:flex;gap:12px;align-items:center;margin-bottom:22px}
+  .brand-mark{
+    width:42px;height:42px;border-radius:12px;flex:0 0 42px;
+    background:linear-gradient(135deg,#14b8a6,#0f766e);
+    display:grid;place-items:center;color:white;font-weight:800;font-size:18px;
+    box-shadow:0 8px 20px rgba(20,184,166,.25);
+  }
+  .brand-title{font-weight:700;color:#fff;font-size:15px;line-height:1.25}
+  .brand-sub{font-size:11px;letter-spacing:.12em;color:#7dd3fc;text-transform:uppercase;margin-top:3px}
+  .toc-label{font-size:11px;letter-spacing:.16em;color:#6f8399;text-transform:uppercase;margin:18px 0 8px}
+  #toc{display:flex;flex-direction:column;gap:2px}
+  #toc a{
+    display:block;padding:7px 10px;border-radius:8px;color:#b9c8d9;font-size:13.5px;
+    border-left:2px solid transparent;text-decoration:none;transition:.15s;
+  }
+  #toc a:hover{background:rgba(255,255,255,.06);color:#fff}
+  #toc a.active{background:rgba(20,184,166,.16);color:#eafffb;border-left-color:#2dd4bf}
+  .sidebar-foot{
+    margin-top:26px;padding-top:16px;border-top:1px solid rgba(255,255,255,.08);
+    font-size:11.5px;color:#7f93a8;line-height:1.6;
+  }
+  main{padding:34px clamp(20px,4vw,56px) 80px;max-width:1180px;margin:0 auto;width:100%}
+  .hero{
+    position:relative;overflow:hidden;border-radius:26px;padding:clamp(28px,5vw,54px);
+    background:
+      radial-gradient(900px 400px at 90% -10%,rgba(45,212,191,.22),transparent 60%),
+      linear-gradient(135deg,#0b1726 0%,#10263a 55%,#0d3440 100%);
+    color:#eaf4ff;box-shadow:var(--shadow);margin-bottom:34px;
+  }
+  .hero::after{
+    content:"";position:absolute;inset:auto -80px -140px auto;width:360px;height:360px;
+    border-radius:50%;background:radial-gradient(circle,rgba(45,212,191,.18),transparent 65%);
+  }
+  .eyebrow{font-size:11px;letter-spacing:.22em;color:#5eead4;text-transform:uppercase;font-weight:700}
+  .hero h1{font-size:clamp(30px,4.4vw,54px);line-height:1.1;margin:14px 0 14px;font-weight:800;letter-spacing:-.02em}
+  .hero h1 span{color:#5eead4}
+  .lede{max-width:860px;color:#b9cde0;font-size:clamp(15px,1.6vw,18px);margin:0 0 22px}
+  .badges{display:flex;flex-wrap:wrap;gap:8px;margin:20px 0 6px;position:relative;z-index:1}
+  .badge{
+    display:inline-flex;align-items:center;gap:7px;padding:6px 11px;border-radius:999px;
+    background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);
+    color:#dbeafe;font-size:12.5px;white-space:nowrap;
+  }
+  .badge b{color:#fff;font-weight:700}
+  .meta{display:flex;flex-wrap:wrap;gap:18px;margin-top:22px;color:#8fa9c2;font-size:12.5px;position:relative;z-index:1}
+  .meta span{display:flex;align-items:center;gap:6px}
+  .dot{width:6px;height:6px;border-radius:50%;background:#2dd4bf;display:inline-block}
+  .section{
+    background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+    padding:clamp(22px,3vw,36px);margin:22px 0;box-shadow:0 1px 0 rgba(13,27,42,.02);
+  }
+  .section h2{
+    font-size:clamp(22px,2.4vw,29px);line-height:1.25;margin:0 0 8px;
+    letter-spacing:-.01em;display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+  }
+  .section h2 .num{
+    font-size:12px;letter-spacing:.14em;color:var(--teal);background:var(--teal-soft);
+    padding:4px 9px;border-radius:999px;font-weight:700;
+  }
+  .section h3{font-size:18.5px;margin:30px 0 10px;color:#16283d}
+  .section h4{font-size:15.5px;margin:22px 0 8px;color:#24384d}
+  .section p{margin:10px 0;color:#2a3a4d}
+  .muted{color:var(--muted)}
+  .small{font-size:13.5px}
+  .lead{font-size:17px;color:#34465c}
+  .grid{display:grid;gap:14px}
+  .grid-2{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .grid-3{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .grid-4{grid-template-columns:repeat(4,minmax(0,1fr))}
+  .card{
+    background:#fbfcfe;border:1px solid var(--line);border-radius:14px;padding:18px 18px 16px;
+  }
+  .card h4{margin:0 0 6px;font-size:15px;color:#16283d}
+  .card p{margin:4px 0;color:var(--muted);font-size:14px}
+  .card .kpi{font-size:28px;font-weight:800;color:var(--teal);line-height:1.1;margin:4px 0 6px}
+  .card.accent{border-top:3px solid var(--teal)}
+  .card.amber{border-top:3px solid #f59e0b}
+  .card.blue{border-top:3px solid #3b82f6}
+  .card.red{border-top:3px solid #ef4444}
+  .callout{
+    border-radius:12px;padding:14px 16px;margin:16px 0;border:1px solid var(--line);
+    background:#f8fafc;font-size:14.5px;
+  }
+  .callout strong{color:#10253a}
+  .callout.note{background:var(--blue-soft);border-color:#c7d7fe}
+  .callout.warn{background:var(--amber-soft);border-color:#fde2b8}
+  .callout.infer{background:var(--teal-soft);border-color:#bfe8e2}
+  .callout.danger{background:var(--red-soft);border-color:#fecaca}
+  .callout .label{
+    display:inline-block;font-size:11px;letter-spacing:.1em;text-transform:uppercase;
+    font-weight:800;margin-right:8px;
+  }
+  .callout.note .label{color:var(--blue)}
+  .callout.warn .label{color:var(--amber)}
+  .callout.infer .label{color:var(--teal)}
+  .callout.danger .label{color:var(--red)}
+  .tag{
+    display:inline-block;font-size:10.5px;letter-spacing:.06em;font-weight:700;
+    padding:2px 7px;border-radius:999px;vertical-align:1px;margin-left:6px;
+  }
+  .tag.infer{background:var(--teal-soft);color:var(--teal);border:1px solid #bfe8e2}
+  .tag.obs{background:var(--blue-soft);color:var(--blue);border:1px solid #c7d7fe}
+  .tag.unused{background:#f1f5f9;color:#64748b;border:1px solid #e2e8f0}
+  table{
+    width:100%;border-collapse:separate;border-spacing:0;margin:16px 0;
+    font-size:14px;border:1px solid var(--line);border-radius:12px;overflow:hidden;
+  }
+  thead th{
+    background:#f1f5f9;color:#334155;text-align:left;font-size:12px;
+    letter-spacing:.06em;text-transform:uppercase;padding:10px 12px;border-bottom:1px solid var(--line);
+  }
+  tbody td,tbody th{
+    padding:10px 12px;border-bottom:1px solid #edf2f7;vertical-align:top;text-align:left;
+  }
+  tbody tr:last-child td,tbody tr:last-child th{border-bottom:none}
+  tbody tr:nth-child(even) td,tbody tr:nth-child(even) th{background:#fbfcfe}
+  tbody th{font-weight:650;color:#24384d;background:#fff}
+  td code,th code,p code,li code{
+    background:#eef3f8;color:#0f4c5c;padding:1px 5px;border-radius:5px;font-size:.92em;
+    border:1px solid #e1e9f1;
+  }
+  pre{
+    background:#0d1b2a;color:#dbeafe;border-radius:14px;padding:18px 20px;
+    overflow:auto;font-size:13px;line-height:1.65;border:1px solid #1e3a52;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.04);
+  }
+  pre code{background:none;border:none;color:inherit;padding:0;font-size:inherit}
+  pre .cmt{color:#7f9bb5}
+  pre .kw{color:#5eead4}
+  pre .str{color:#fbbf24}
+  pre .num{color:#93c5fd}
+  .diagram{
+    width:100%;height:auto;display:block;border-radius:14px;border:1px solid var(--line);
+    background:#fbfcfe;margin:18px 0;
+  }
+  .diagram text{font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+  .flow{
+    display:flex;align-items:stretch;gap:10px;flex-wrap:wrap;margin:16px 0;
+  }
+  .flow .step{
+    flex:1 1 150px;min-width:150px;background:#f8fafc;border:1px solid var(--line);
+    border-radius:12px;padding:12px 14px;
+  }
+  .flow .step b{display:block;color:#0f172a;font-size:14px;margin-bottom:3px}
+  .flow .step span{display:block;color:var(--muted);font-size:12.5px;line-height:1.5}
+  .flow .arrow{align-self:center;color:#94a3b8;font-weight:800;font-size:20px;flex:0 0 auto}
+  .timeline{position:relative;margin:18px 0 6px;padding-left:22px}
+  .timeline::before{content:"";position:absolute;left:7px;top:4px;bottom:4px;width:2px;background:#dbe7f0}
+  .timeline .item{position:relative;margin:0 0 16px}
+  .timeline .item::before{
+    content:"";position:absolute;left:-20px;top:6px;width:12px;height:12px;border-radius:50%;
+    background:#fff;border:3px solid var(--teal);box-shadow:0 0 0 3px var(--teal-soft);
+  }
+  .timeline .item b{display:block;color:#10253a;font-size:14.5px}
+  .timeline .item span{display:block;color:var(--muted);font-size:13.5px;margin-top:2px}
+  .pill-row{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
+  .pill{
+    padding:5px 10px;border-radius:999px;background:#f1f5f9;border:1px solid #e2e8f0;
+    font-size:12.5px;color:#334155;
+  }
+  .pill.teal{background:var(--teal-soft);border-color:#bfe8e2;color:var(--teal)}
+  .pill.amber{background:var(--amber-soft);border-color:#fde2b8;color:var(--amber)}
+  .pill.blue{background:var(--blue-soft);border-color:#c7d7fe;color:var(--blue)}
+  .list-clean{margin:10px 0 10px 20px;padding:0}
+  .list-clean li{margin:6px 0;color:#2a3a4d}
+  .list-clean li::marker{color:var(--teal)}
+  .two-col{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  .kv{display:grid;grid-template-columns:150px 1fr;gap:8px 14px;font-size:14px;margin:12px 0}
+  .kv dt{color:var(--muted)}
+  .kv dd{margin:0;color:#1f3348}
+  .anchor{scroll-margin-top:18px}
+  .appendix details{border:1px solid var(--line);border-radius:12px;padding:0 16px;margin:12px 0;background:#fbfcfe}
+  .appendix details summary{cursor:pointer;padding:14px 0;font-weight:650;color:#16283d}
+  .appendix details[open]{padding-bottom:14px}
+  .appendix details summary::marker{color:var(--teal)}
+  .footnote{font-size:12.5px;color:var(--muted);margin-top:14px}
+  .to-top{
+    position:fixed;right:24px;bottom:24px;width:44px;height:44px;border-radius:50%;
+    border:1px solid #cfe0ea;background:#fff;color:#0f766e;font-size:20px;cursor:pointer;
+    box-shadow:0 10px 24px rgba(13,27,42,.14);display:none;z-index:50;
+  }
+  .to-top.show{display:block}
+  .to-top:hover{background:#f0fdfa}
+  .kbd{
+    display:inline-block;padding:1px 6px;border-radius:5px;border:1px solid #cbd5e1;
+    border-bottom-width:2px;background:#fff;font-size:12px;color:#334155;
+  }
+  .footer{
+    color:#7c8fa3;font-size:12.5px;text-align:center;padding:22px 0 8px;
+  }
+  @media (max-width: 1000px){
+    .layout{grid-template-columns:1fr}
+    .sidebar{position:relative;height:auto;padding:18px 18px 14px}
+    #toc{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
+    main{padding:22px 18px 60px}
+    .grid-4{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .grid-3{grid-template-columns:repeat(2,minmax(0,1fr))}
+  }
+  @media (max-width: 700px){
+    .grid-2,.grid-3,.grid-4,.two-col{grid-template-columns:1fr}
+    #toc{grid-template-columns:1fr}
+    .hero{border-radius:18px;padding:24px 20px}
+    .section{padding:20px 16px}
+    .kv{grid-template-columns:1fr}
+    .section h2{font-size:22px}
+  }
+  @media print{
+    body{background:#fff;font-size:11pt}
+    .sidebar,.progress,.to-top{display:none!important}
+    .layout{display:block}
+    main{max-width:none;padding:0}
+    .hero{box-shadow:none;background:#0d1b2a!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    .section{box-shadow:none;break-inside:avoid;page-break-inside:avoid}
+    pre{white-space:pre-wrap;overflow:visible}
+    a{color:#0f766e}
+  }
+</style>
+</head>
+<body>
+<div class="progress" id="progress"></div>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">RW</div>
+      <div>
+        <div class="brand-title">Rusted Warfare 1.15</div>
+        <div class="brand-sub">AI System / RE Report</div>
+      </div>
+    </div>
+    <div class="toc-label">目录</div>
+    <nav id="toc"></nav>
+    <div class="sidebar-foot">
+      静态逆向分析文档<br>
+      目标版本：1.15 · Code 176 · Build #28<br>
+      分析对象：<code>game-lib.jar</code><br>
+      反编译：CFR 0.152 + JDK 17 javap
+    </div>
+  </aside>
+
+  <main>
+    <header class="hero">
+      <div class="eyebrow">Reverse Engineering Report</div>
+      <h1>Rusted Warfare 1.15<br><span>AI 系统</span>逆向分析</h1>
+      <p class="lede">
+        这份文档解释 Rusted Warfare 遭遇战 AI 的实际工作方式：它如何调度、如何赚钱和建造、
+        如何编组、如何选择目标、难度如何生效，以及地图和 Mod 能怎样改变它。
+        所有结论来自对 <code>game-lib.jar</code> 的静态反编译与交叉验证。
+      </p>
+      <div class="badges">
+        <span class="badge"><b>反编译</b> 1698 类</span>
+        <span class="badge"><b>代码量</b> 约 17 万行</span>
+        <span class="badge"><b>语言</b> Java 8</span>
+        <span class="badge"><b>引擎</b> LWJGL 2.9.3 + Slick2D</span>
+        <span class="badge"><b>AI 包</b> com.corrodinggames.rts.game.a</span>
+      </div>
+      <div class="meta">
+        <span><i class="dot"></i>静态分析，无运行时调试</span>
+        <span><i class="dot"></i>混淆名保留原样，推断内容单独标注</span>
+        <span><i class="dot"></i>时间单位：60Hz 逻辑帧</span>
+      </div>
+    </header>
+
+    <section class="section anchor" id="summary">
+      <h2><span class="num">01</span>摘要</h2>
+      <p class="lead">
+        Rusted Warfare 的 AI 不是行为树，也不是神经网络。它是一个典型的
+        <strong>规则驱动 + 效用评分 + 随机权重 + 有限状态机</strong> 系统。
+      </p>
+      <div class="grid grid-4">
+        <div class="card accent">
+          <h4>三层结构</h4>
+          <p>战略层负责经济/生产，编组层负责基地与军队，执行层通过命令接口驱动单位。</p>
+        </div>
+        <div class="card blue">
+          <h4>预算制生产</h4>
+          <p>AI 不按固定 build order 排队，而是用“生产预算 + 加权评分”决定造什么。</p>
+        </div>
+        <div class="card amber">
+          <h4>随机目标</h4>
+          <p>攻击组从全局敌方单位表中随机挑选主目标（对内置单位），没有独立侦察模块。</p>
+        </div>
+        <div class="card red">
+          <h4>难度=经济</h4>
+          <p>难度主要改变 AI 收入倍率；Impossible 额外提高建造节奏与编组上限。</p>
+        </div>
+      </div>
+
+      <div class="callout infer">
+        <span class="label">核心结论</span>
+        AI 的“聪明”来自多层规则和参数，而不是搜索或学习。它的行为可以被总结为：
+        先保证经济与基地，再按地图连通性选择兵种，按预算持续生产，最后把闲置单位编成
+        攻击/防御/运输组，用随机敌方单位作为目标发起进攻。
+      </div>
+
+      <table>
+        <thead>
+          <tr><th>问题</th><th>结论</th></tr>
+        </thead>
+        <tbody>
+          <tr><th>AI 会侦察吗？</th><td>没有独立的侦察/探索模块。对内置单位，目标选择直接遍历全局敌方单位表。</td></tr>
+          <tr><th>AI 会优先打基地吗？</th><td>不会优先。攻击组从所有敌方单位中随机选目标，指挥中心只是候选之一。</td></tr>
+          <tr><th>难度改单位属性吗？</th><td>不直接改。主要改收入倍率，Impossible 额外改建造/生产/编组上限。</td></tr>
+          <tr><th>AI 会运输吗？</th><td>会。陆军无法到达目标时，单位会进入运输等待组，由运输组运送。</td></tr>
+          <tr><th>Mod 能改 AI 吗？</th><td>能。单位 <code>[ai]</code> 段、地图 <code>team_info</code>、AI 插件层都可以影响行为。</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section anchor" id="method">
+      <h2><span class="num">02</span>分析方法与证据</h2>
+      <p>
+        目标文件是游戏根目录下的 <code>game-lib.jar</code>（2,639,503 字节，SHA-256
+        <code>8A550A37E2D8A5430866090D4E7D5892F9010B47F52A5A09350FC66C620DEEC9</code>）。
+        反编译使用 CFR 0.152，辅以 JDK 17 的 <code>javap</code> 检查字节码常量池和枚举初始化。
+      </p>
+      <div class="grid grid-2">
+        <div class="card">
+          <h4>为什么需要字节码辅助</h4>
+          <p>JAR 经过 ProGuard 风格混淆，很多字段/方法名变成单字母。单位枚举 <code>ar</code> 的字段也被混淆成 <code>a..Z</code>，但枚举名字符串仍保留在 <code>&lt;clinit&gt;</code> 中，因此可以恢复原始单位名。</p>
+        </div>
+        <div class="card">
+          <h4>证据边界</h4>
+          <p>本文只做静态分析，没有运行游戏做动态插桩。所有“行为”均为从代码路径推导；推断内容会用 <span class="tag infer">推断</span> 标注。</p>
+        </div>
+      </div>
+
+      <h3>关键证据文件</h3>
+      <table>
+        <thead><tr><th>反编译类</th><th>作用</th><th>本文关注点</th></tr></thead>
+        <tbody>
+          <tr><td><code>game/a/a.java</code></td><td>AI 玩家（继承 <code>game.n</code>）</td><td>主调度、目标选择、生产、编组创建</td></tr>
+          <tr><td><code>game/a/i.java</code></td><td>基地组</td><td>建造评分、生产预算、扩张、防御</td></tr>
+          <tr><td><code>game/a/g.java</code></td><td>攻击/防御组</td><td>集结、进攻、撤退、解散</td></tr>
+          <tr><td><code>game/a/n.java</code></td><td>运输组</td><td>装载、运输、卸载</td></tr>
+          <tr><td><code>game/a/l.java</code></td><td>等待运输组</td><td>无法到达目标的单位集合</td></tr>
+          <tr><td><code>game/a/d.java</code></td><td>单位权重列表</td><td>按移动类型/角色加权随机</td></tr>
+          <tr><td><code>game/n.java</code></td><td>玩家/队伍基类</td><td>难度、收入倍率、阵营关系</td></tr>
+          <tr><td><code>gameFramework/n/f.java</code></td><td>MissionEngine</td><td>地图 AI 配置、生存模式</td></tr>
+          <tr><td><code>units/custom/ag.java</code></td><td>自定义单位加载器</td><td><code>[ai]</code> 段解析与权重</td></tr>
+        </tbody>
+      </table>
+      <p class="footnote">
+        注：文中类名、字段名均来自反编译结果；混淆名（如 <code>a.a</code>、<code>i.b</code>）保持原样，
+        便于回到反编译源码核对。方法名后括号内的参数名也按反编译结果保留。
+      </p>
+    </section>
+
+    <section class="section anchor" id="architecture">
+      <h2><span class="num">03</span>总体架构</h2>
+      <p>
+        AI 系统可以分成三层：战略层决定“做什么”，编组层决定“谁去做”，执行层通过统一命令接口把动作交给单位。
+      </p>
+
+      <svg class="diagram" viewBox="0 0 1000 560" role="img" aria-label="Rusted Warfare AI 架构图">
+        <defs>
+          <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+            <path d="M0,0 L0,6 L9,3 z" fill="#0f766e"></path>
+          </marker>
+          <marker id="arrowGray" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+            <path d="M0,0 L0,6 L9,3 z" fill="#94a3b8"></path>
+          </marker>
+          <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
+            <feDropShadow dx="0" dy="4" stdDeviation="5" flood-color="#0d1b2a" flood-opacity=".10"/>
+          </filter>
+        </defs>
+
+        <rect x="20" y="20" width="960" height="520" rx="18" fill="#fbfcfe" stroke="#dbe3ec"/>
+        <text x="44" y="52" font-size="12" fill="#64748b" letter-spacing="2">INPUTS</text>
+        <text x="330" y="52" font-size="12" fill="#64748b" letter-spacing="2">STRATEGIC LAYER</text>
+        <text x="690" y="52" font-size="12" fill="#64748b" letter-spacing="2">GROUP LAYER</text>
+        <text x="690" y="300" font-size="12" fill="#64748b" letter-spacing="2">EXECUTION LAYER</text>
+
+        <!-- inputs -->
+        <g filter="url(#soft)">
+          <rect x="40" y="78" width="210" height="82" rx="12" fill="#eef3ff" stroke="#c7d7fe"/>
+          <text x="58" y="104" font-size="14" font-weight="700" fill="#1d4ed8">SettingsEngine</text>
+          <text x="58" y="126" font-size="12.5" fill="#475569">aiDifficulty</text>
+          <text x="58" y="144" font-size="12.5" fill="#475569">team/network overrides</text>
+
+          <rect x="40" y="180" width="210" height="82" rx="12" fill="#fff4e5" stroke="#fde2b8"/>
+          <text x="58" y="206" font-size="14" font-weight="700" fill="#b45309">Map metadata</text>
+          <text x="58" y="228" font-size="12.5" fill="#475569">team_info: basicAI</text>
+          <text x="58" y="246" font-size="12.5" fill="#475569">disabledAI / lockAiDifficulty</text>
+
+          <rect x="40" y="282" width="210" height="82" rx="12" fill="#e6f4f1" stroke="#bfe8e2"/>
+          <text x="58" y="308" font-size="14" font-weight="700" fill="#0f766e">Unit metadata</text>
+          <text x="58" y="330" font-size="12.5" fill="#475569">[ai] buildPriority</text>
+          <text x="58" y="348" font-size="12.5" fill="#475569">maxGlobal / aiTags / aiUse</text>
+        </g>
+
+        <!-- strategic -->
+        <g filter="url(#soft)">
+          <rect x="300" y="78" width="260" height="160" rx="16" fill="#0d1b2a" stroke="#1e3a52"/>
+          <text x="322" y="108" font-size="16" font-weight="800" fill="#eaf4ff">AI Player</text>
+          <text x="322" y="130" font-size="12.5" fill="#8fb3d1">game.a.a extends game.n</text>
+          <text x="322" y="154" font-size="12.5" fill="#5eead4">25 / 80 / 250 frame scheduler</text>
+          <text x="322" y="176" font-size="12.5" fill="#b9cde0">economy · production · grouping</text>
+          <text x="322" y="198" font-size="12.5" fill="#b9cde0">target selection · difficulty</text>
+          <text x="322" y="220" font-size="12.5" fill="#b9cde0">AI plugin list (bJ)</text>
+        </g>
+
+        <!-- groups -->
+        <g filter="url(#soft)">
+          <rect x="650" y="78" width="220" height="60" rx="12" fill="#ffffff" stroke="#cbd5e1"/>
+          <text x="668" y="103" font-size="14" font-weight="700" fill="#0f172a">Base groups i</text>
+          <text x="668" y="123" font-size="12" fill="#64748b">main / expansion / builder</text>
+
+          <rect x="650" y="152" width="220" height="60" rx="12" fill="#ffffff" stroke="#cbd5e1"/>
+          <text x="668" y="177" font-size="14" font-weight="700" fill="#0f172a">Combat groups g</text>
+          <text x="668" y="197" font-size="12" fill="#64748b">attack / defense / sea</text>
+
+          <rect x="650" y="226" width="220" height="60" rx="12" fill="#ffffff" stroke="#cbd5e1"/>
+          <text x="668" y="251" font-size="14" font-weight="700" fill="#0f172a">Transport n / l</text>
+          <text x="668" y="271" font-size="12" fill="#64748b">waiting · loading · drop-off</text>
+        </g>
+
+        <!-- execution -->
+        <g filter="url(#soft)">
+          <rect x="650" y="330" width="220" height="86" rx="12" fill="#eef3ff" stroke="#c7d7fe"/>
+          <text x="668" y="356" font-size="14" font-weight="700" fill="#1d4ed8">Command interface</text>
+          <text x="668" y="378" font-size="12" fill="#475569">gameFramework.e</text>
+          <text x="668" y="396" font-size="12" fill="#475569">move / attack / build / upgrade</text>
+
+          <rect x="650" y="438" width="220" height="74" rx="12" fill="#f8fafc" stroke="#cbd5e1"/>
+          <text x="668" y="464" font-size="14" font-weight="700" fill="#0f172a">Units + Engine</text>
+          <text x="668" y="486" font-size="12" fill="#64748b">units.y · pathfinding · collision</text>
+          <text x="668" y="504" font-size="12" fill="#64748b">same command path as human players</text>
+        </g>
+
+        <!-- arrows -->
+        <line x1="250" y1="120" x2="300" y2="120" stroke="#0f766e" stroke-width="2" marker-end="url(#arrow)"/>
+        <line x1="250" y1="220" x2="300" y2="200" stroke="#0f766e" stroke-width="2" marker-end="url(#arrow)"/>
+        <line x1="250" y1="322" x2="300" y2="210" stroke="#0f766e" stroke-width="2" marker-end="url(#arrow)"/>
+        <line x1="560" y1="158" x2="650" y2="108" stroke="#0f766e" stroke-width="2" marker-end="url(#arrow)"/>
+        <line x1="560" y1="178" x2="650" y2="182" stroke="#0f766e" stroke-width="2" marker-end="url(#arrow)"/>
+        <line x1="560" y1="198" x2="650" y2="256" stroke="#0f766e" stroke-width="2" marker-end="url(#arrow)"/>
+        <line x1="760" y1="286" x2="760" y2="330" stroke="#0f766e" stroke-width="2" marker-end="url(#arrow)"/>
+        <line x1="760" y1="416" x2="760" y2="438" stroke="#0f766e" stroke-width="2" marker-end="url(#arrow)"/>
+        <line x1="870" y1="373" x2="930" y2="373" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrowGray)"/>
+        <text x="878" y="363" font-size="10.5" fill="#64748b">deterministic</text>
+        <text x="878" y="392" font-size="10.5" fill="#64748b">replay-compatible</text>
+
+        <rect x="300" y="280" width="260" height="96" rx="12" fill="#f8fafc" stroke="#dbe3ec" stroke-dasharray="5 5"/>
+        <text x="322" y="306" font-size="13" font-weight="700" fill="#475569">Design note</text>
+        <text x="322" y="328" font-size="12" fill="#64748b">AI 不直接改坐标或资源（难度倍率除外）。</text>
+        <text x="322" y="348" font-size="12" fill="#64748b">它和玩家一样发命令，所以能进入回放/锁步。</text>
+      </svg>
+
+      <div class="grid grid-3">
+        <div class="card accent"><h4>战略层</h4><p>AI 玩家 <code>game.a.a</code>：计时器、经济、建造、生产、编组、难度。</p></div>
+        <div class="card blue"><h4>编组层</h4><p><code>i</code> 基地组、<code>g</code> 战斗组、<code>n/l</code> 运输组，负责“谁去做”。</p></div>
+        <div class="card amber"><h4>执行层</h4><p>命令接口 <code>gameFramework.e</code> → 单位状态机 → 寻路/碰撞/攻击。</p></div>
+      </div>
+    </section>
+
+    <section class="section anchor" id="scheduler">
+      <h2><span class="num">04</span>运行节奏与调度器</h2>
+      <p>
+        AI 主循环在 <code>game.a.a.a(float f2)</code>。参数 <code>f2</code> 的单位是
+        <strong>60Hz 逻辑帧</strong>，不是秒。引擎每帧大约把它按 <code>16.666666</code>
+        换算成毫秒计数器，所以：
+      </p>
+      <div class="pill-row">
+        <span class="pill teal">1 帧 ≈ 16.7 ms</span>
+        <span class="pill">25 帧 ≈ 0.42 s</span>
+        <span class="pill">80 帧 ≈ 1.33 s</span>
+        <span class="pill">250 帧 ≈ 4.17 s</span>
+        <span class="pill">800 帧 ≈ 13.3 s</span>
+        <span class="pill amber">17000 帧 ≈ 283 s</span>
+      </div>
+
+      <table>
+        <thead><tr><th>周期</th><th>内部计时器</th><th>动作</th></tr></thead>
+        <tbody>
+          <tr><td>每帧</td><td><code>a(float)</code></td><td>处理首次运行、基地连通性分析、计时器累加、调用父类收入逻辑。</td></tr>
+          <tr><td>25 帧</td><td><code>aP</code></td><td>把累积时间分给编组；挑最多 2 个“饥饿”编组执行 <code>b()</code> / <code>d()</code>。</td></tr>
+          <tr><td>80 帧</td><td><code>aL</code></td><td><code>n()</code>：刷新编组、分配闲置单位、创建基地/攻击/防御/运输组、处理基地受攻击。</td></tr>
+          <tr><td>250 帧</td><td><code>aN</code></td><td><code>m()</code>：统计单位、运行 AI 插件、选生产目标、发建造/升级命令、创建扩展基地/工兵组。</td></tr>
+          <tr><td>1000 帧</td><td><code>by</code></td><td>AI 调试/维护周期（每 1000 帧检查单位数量、清理异常单位）。</td></tr>
+        </tbody>
+      </table>
+
+      <pre><code><span class="cmt">// game.a.a — 简化后的主调度</span>
+<span class="kw">void</span> a(<span class="kw">float</span> dt) {
+    <span class="kw">super</span>.a(dt);                 <span class="cmt">// 收入倍率、玩家基础逻辑</span>
+    <span class="kw">if</span> (disabled || defeated) <span class="kw">return</span>;
+
+    <span class="kw">if</span> (firstRun) {
+        findCommandCenter();
+        testLandAndHoverConnectivity();
+    }
+
+    aP += dt;
+    <span class="kw">if</span> (aP &gt; <span class="num">25</span>)  { updateStarvedGroups(); aP -= <span class="num">25</span>; }
+
+    aL += dt;
+    <span class="kw">if</span> (aL &gt; <span class="num">80</span>)  { n(aM); aL -= <span class="num">80</span>; }
+
+    aN += dt;
+    <span class="kw">if</span> (aN &gt; <span class="num">250</span>) { m(aO); aN -= <span class="num">250</span>; }
+}</code></pre>
+
+      <div class="callout note">
+        <span class="label">为什么不是每帧都做全部决策</span>
+        战略层的建造/生产/编组成本较高，AI 用低频计时器摊开；编组层和高频单位逻辑仍然逐帧运行。
+        这既降低 CPU 开销，也让 AI 的决策带有明显的“节奏感”。
+      </div>
+    </section>
+
+    <section class="section anchor" id="player-state">
+      <h2><span class="num">05</span>AI 玩家状态与开关</h2>
+      <p>
+        <code>game.a.a</code> 继承 <code>game.n</code>。玩家基类负责阵营、收入、难度和通用命令；
+        AI 子类只覆盖战略决策。以下字段决定 AI 是否运行、如何运行：
+      </p>
+      <table>
+        <thead><tr><th>字段 / 方法</th><th>含义</th><th>来源</th></tr></thead>
+        <tbody>
+          <tr><td><code>aX</code></td><td>AI 被禁用，直接不执行战略逻辑。</td><td>地图 <code>team_info.disabledAI</code></td></tr>
+          <tr><td><code>aY</code></td><td>Basic AI：跳过高级生产评分（<code>i.c()</code> 返回 <code>null</code>）。</td><td>地图 <code>team_info.basicAI</code></td></tr>
+          <tr><td><code>aZ</code></td><td>AI 已灭亡/休眠。</td><td>内部状态</td></tr>
+          <tr><td><code>U</code></td><td>生存模式 AI 标志。</td><td>地图 <code>team_info.ai=survival</code></td></tr>
+          <tr><td><code>aJ</code> bit 0</td><td>Turtling/龟缩模式。</td><td>地图/内部设置</td></tr>
+          <tr><td><code>x</code> / <code>y</code></td><td>锁定的难度覆盖值 / 是否启用覆盖。</td><td>地图 <code>lockAiDifficulty</code></td></tr>
+          <tr><td><code>z</code></td><td>网络/主机下发的难度覆盖。</td><td>多人房主设置</td></tr>
+          <tr><td><code>C()</code></td><td>返回当前 AI 难度。</td><td><code>game.n</code></td></tr>
+          <tr><td><code>E()</code></td><td>返回 AI 收入倍率。</td><td><code>game.n</code></td></tr>
+        </tbody>
+      </table>
+
+      <h3>命令接口</h3>
+      <p>
+        AI 通过 <code>l2.cf.a(this.R)</code> 取得一个命令构造器，然后调用
+        <code>a(unit)</code>、<code>a(x, y)</code>、<code>a(target)</code>、<code>a(action)</code> 等方法。
+        命令最终进入 <code>gameFramework.e</code>，由单位执行。这样 AI 不需要直接操作单位坐标，
+        也不会绕过寻路、碰撞和攻击规则。
+      </p>
+      <div class="callout infer">
+        <span class="label">设计含义</span>
+        因为 AI 走的是和玩家相同的命令路径，它在多人/回放中天然具有确定性；
+        AI 的“操作”也会像玩家一样被记录、校验和重放。
+      </div>
+    </section>
+
+    <section class="section anchor" id="economy">
+      <h2><span class="num">06</span>经济、建造与生产</h2>
+      <p>
+        AI 的经济核心不是“攒钱买固定套餐”，而是“收入 → 建造评分 → 生产预算 → 批量下单”。
+      </p>
+
+      <h3>6.1 收入与难度倍率</h3>
+      <p>AI 玩家的收入在 <code>game.n.b(float)</code> 中计算：</p>
+      <pre><code><span class="kw">float</span> E() {
+    <span class="kw">int</span> diff = C();                     <span class="cmt">// aiDifficulty</span>
+    <span class="kw">float</span> mul = <span class="num">1.0f</span>;
+    mul = diff &gt; <span class="num">0</span> ? mul + diff * <span class="num">0.4f</span>
+                     : mul + diff * <span class="num">0.3f</span>;
+    <span class="kw">if</span> (diff == <span class="num">3</span>) mul += <span class="num">1.5f</span>; <span class="cmt">// Impossible</span>
+    <span class="kw">return</span> mul;
+}
+
+<span class="kw">void</span> b(<span class="kw">float</span> dt) {
+    <span class="kw">if</span> (!isAI) { c(dt); <span class="kw">return</span>; }
+    c(E() * dt);                          <span class="cmt">// AI 收入倍率</span>
+}</code></pre>
+
+      <h3>6.2 建造优先级评分</h3>
+      <p>
+        <code>i.c()</code> 会遍历所有单位类型，按当前全局数量、本基地数量、工厂数量、资源给出一个分数，
+        选择最高分；有 1% 概率随机选一个次优项，避免每局完全一样。
+      </p>
+      <table>
+        <thead><tr><th>建造目标</th><th>条件 / 评分</th></tr></thead>
+        <tbody>
+          <tr><td><code>landFactory</code></td><td>没有时约 <b>0.8</b>；数量少时约 <b>0.46 / (n3 + n4·2)</b>。</td></tr>
+          <tr><td><code>airFactory</code></td><td>没有时约 <b>0.48</b>；随后约 <b>0.29 / (n3 + n4)</b>。</td></tr>
+          <tr><td><code>seaFactory</code></td><td>水图且没有时约 <b>0.3</b>；随后约 <b>0.1 / (n3 + n4·2)</b>。</td></tr>
+          <tr><td><code>turret</code></td><td>没有时约 <b>0.47</b>；之后约 <b>0.35 / n4</b>、<b>0.025 / n4</b>。</td></tr>
+          <tr><td><code>antiAirTurret</code></td><td>没有时约 <b>0.42</b>；之后约 <b>0.3 / n4</b>、<b>0.02 / n4</b>。</td></tr>
+          <tr><td><code>laserDefence</code></td><td>没有时约 <b>0.018</b>。</td></tr>
+          <tr><td><code>repairbay</code></td><td>没有时约 <b>0.02</b>。</td></tr>
+          <tr><td><code>fabricator</code></td><td>资金 &gt; 2000 且数量 &lt; 5 时约 <b>0.11</b>。</td></tr>
+          <tr><td><code>AntiNukeLaucher</code></td><td>资金 &gt; 2200 且数量 &lt; 4 时约 <b>0.06</b>。</td></tr>
+          <tr><td><code>experimentalLandFactory</code></td><td>Very Hard 以上、资金 &gt; 15000 时约 <b>0.04</b>；资金 &gt; 55000 且已有 1 个时约 <b>0.03</b>。</td></tr>
+        </tbody>
+      </table>
+      <div class="callout warn">
+        <span class="label">实现注意</span>
+        每个候选的初始分为 <b>-2</b>；如果条件命中但子分支不满足，会保持 <b>-2</b> 并跳过，不会回退到默认分。
+      </div>
+      <p class="footnote">
+        <code>n3</code> ≈ 全局数量，<code>n4</code> ≈ 本基地数量。表中数值来自 <code>i.c()</code> 的分支；
+        实际分数还会受自定义单位权重和资源条件影响。
+      </p>
+
+      <h3>6.3 生产预算</h3>
+      <div class="grid grid-3">
+        <div class="card accent">
+          <div class="kpi">3.5</div>
+          <h4>预算上限</h4>
+          <p><code>i.d</code> 是 AI 的“可生产单位数”预算，最高 3.5，随时间/收入增长。</p>
+        </div>
+        <div class="card blue">
+          <div class="kpi">12</div>
+          <h4>每轮生产循环</h4>
+          <p>固定 12 次 <code>i.v()</code>；Impossible 不增加循环次数。</p>
+        </div>
+        <div class="card amber">
+          <div class="kpi">50 / 65</div>
+          <h4>陆军上限</h4>
+          <p>攻击型陆军数量上限普通为 50；Impossible 为 65。海军上限 12 / 16。</p>
+        </div>
+      </div>
+
+      <p>
+        <code>i.d(float)</code> 会按资源状况提高预算：资金越多、基地越安全，预算增长越快；
+        每次成功训练单位，预算减 1。预算 ≥ 3 时，一轮可以连续下多个单位订单。
+      </p>
+
+      <h3>6.4 兵种选择与移动类型</h3>
+      <p>
+        <code>i.v()</code> 先按地图连通性决定陆军/悬浮/空军的权重，再从权重列表里抽取候选单位类型。
+      </p>
+      <table>
+        <thead><tr><th>地图条件</th><th>陆军 LAND</th><th>悬浮 HOVER</th><th>空军 AIR</th></tr></thead>
+        <tbody>
+          <tr><td>LAND 与 HOVER 都连通</td><td>0.4</td><td>0.3</td><td>剩余 ≈0.3</td></tr>
+          <tr><td>LAND 不连通</td><td>0.1</td><td>0.5</td><td>0.4</td></tr>
+          <tr><td>HOVER 不连通</td><td>0.2</td><td>0.1</td><td>0.7</td></tr>
+        </tbody>
+      </table>
+
+      <h3>6.5 单位权重列表</h3>
+      <p>
+        <code>game.a.d</code> 维护多组“单位类型 → 权重”的列表。每组通过一个过滤器从
+        <code>ar.ae</code>（全部内置单位类型）中筛选，默认权重 10，选择时按权重做随机。
+      </p>
+      <div class="pill-row">
+        <span class="pill teal">attackingUnitsLand</span>
+        <span class="pill teal">attackingUnitsHover</span>
+        <span class="pill teal">attackingUnitsAir</span>
+        <span class="pill teal">attackingUnitsWater</span>
+        <span class="pill">buildingUnits</span>
+        <span class="pill">transportUnits</span>
+        <span class="pill">transportUnitsFlying</span>
+        <span class="pill">transportUnitsNonFlying</span>
+        <span class="pill">builderUnits</span>
+        <span class="pill">harvesterUnits</span>
+        <span class="pill">extractorUnits</span>
+        <span class="pill">buildingFactories</span>
+        <span class="pill">buildingFactoriesForBuilders</span>
+      </div>
+
+      <h3>6.6 自定义单位的 AI 权重</h3>
+      <p>
+        自定义单位可以在 INI 的 <code>[ai]</code> 段覆盖默认权重。加载器
+        <code>units.custom.ag</code> 把字段读入 <code>custom.l</code>，<code>i.c()</code>
+        再按以下逻辑使用：
+      </p>
+      <pre><code><span class="cmt">// 简化：自定义单位参与建造评分</span>
+<span class="kw">if</span> (disableUse) skip;
+<span class="kw">if</span> (maxGlobal != -1 &amp;&amp; globalCount &gt;= maxGlobal) skip;
+<span class="kw">if</span> (maxEachBase != -1 &amp;&amp; baseCount &gt;= maxEachBase) skip;
+
+score = buildPriority;
+<span class="kw">if</span> (baseCount &lt; recommendedInEachBaseNum)
+    score = recommendedPriorityIfUnmet;
+<span class="kw">if</span> (baseCount == <span class="num">0</span>) score += noneInBaseExtraPriority;
+<span class="kw">if</span> (globalCount == <span class="num">0</span>) score += noneGlobalExtraPriority;
+<span class="kw">if</span> (isBuilding &amp;&amp; noBuildSpot) score = <span class="num">-2</span>;</code></pre>
+
+      <h3>6.7 科技升级</h3>
+      <p>
+        科技升级不是固定顺序。AI 会在资金和工厂/单位数量达到条件时，从可用升级动作中按概率挑选。
+        代码里有多个资金阈值（约 1300 / 1700 / 2100 / 2800 / 3100 / 4800 / 8000 …），
+        以及“没有某种单位时提高优先级”的修正。
+      </p>
+      <div class="callout warn">
+        <span class="label">注意</span>
+        这里的“优先级”不是严格概率，而是评分。AI 会选最高分，只在 1% 情况下随机选次优。
+        因此它既不是完全固定，也不是完全随机。
+      </div>
+    </section>
+
+    <section class="section anchor" id="base-group">
+      <h2><span class="num">07</span>基地组：<code>game.a.i</code></h2>
+      <p>
+        基地组是 AI 的经济与建造核心。它管理一组工兵/工厂，负责造建筑、造单位、扩张和防御。
+      </p>
+
+      <div class="grid grid-3">
+        <div class="card accent">
+          <h4><code>k.a</code> 主基地</h4>
+          <p>围绕 Command Center 创建，默认状态 <code>j.c</code>。负责基础经济、工厂、防御和单位生产。</p>
+        </div>
+        <div class="card blue">
+          <h4><code>k.b</code> 扩张基地</h4>
+          <p>在地图出生点/资源点创建，初始状态 <code>j.a</code>，约 2000 帧后转为 <code>j.c</code>。</p>
+        </div>
+        <div class="card amber">
+          <h4><code>k.c</code> 工兵/前哨组</h4>
+          <p>从已有单位位置创建，用于向前推进建造或补充工兵。</p>
+        </div>
+      </div>
+
+      <div class="callout infer">
+        <span class="label">命名说明</span>
+        <code>k.a</code> / <code>k.b</code> / <code>k.c</code> 的语义是根据创建位置、后续调用和调试输出推断的；
+        原始源码中的枚举名已被混淆，不能从字节码直接恢复。
+      </div>
+
+      <h3>7.1 内部状态</h3>
+      <p>
+        <code>i.b</code> 是内部状态枚举 <code>game.a.j</code>，<code>i.c</code> 是角色枚举
+        <code>game.a.k</code>。反编译中能确认的赋值只有：
+      </p>
+      <table>
+        <thead><tr><th>状态</th><th>观察到的用途</th></tr></thead>
+        <tbody>
+          <tr><td><code>j.a</code></td><td>新基地/扩张状态。创建扩张基地或工兵组时赋值；带“claim”计时器，约 2000 帧后转为 <code>j.c</code>。</td></tr>
+          <tr><td><code>j.c</code></td><td>正常活动状态。主基地默认状态；扩张完成后也进入此状态。</td></tr>
+          <tr><td><code>j.b</code></td><td><span class="tag unused">未发现赋值</span> 枚举中存在，但本版本代码里没有找到写入点，可能是旧版本遗留或未启用。</td></tr>
+        </tbody>
+      </table>
+
+      <div class="flow">
+        <div class="step"><b>j.a</b><span>新建/扩张<br>寻找合法位置</span></div>
+        <div class="arrow">→</div>
+        <div class="step"><b>claim 计时</b><span>约 2000 帧<br>确认基地可用</span></div>
+        <div class="arrow">→</div>
+        <div class="step"><b>j.c</b><span>正常活动<br>生产/建造/防御</span></div>
+      </div>
+
+      <h3>7.2 生命周期</h3>
+      <ol class="list-clean">
+        <li><b>创建主基地组：</b>如果没有任何基地组，优先在 Command Center 位置创建；没有 CC 则退而求其次找可建造单位。</li>
+        <li><b>分配工兵：</b>把闲置工兵、可建造单位分配到基地组；工兵数量不足时从其他基地组“借”。</li>
+        <li><b>寻找建造位置：</b><code>i.a()</code> 在基地半径内扫描资源块/可建造地块，给 Extractor 等建筑找落点。</li>
+        <li><b>选择建造目标：</b>调用 <code>i.c()</code> 得到当前最高优先级建筑/单位；<code>i.g(as)</code> 检查工兵、价格、可建造性后发命令。</li>
+        <li><b>生产单位：</b><code>i.v()</code> 根据预算和移动类型权重批量训练单位；每次成功训练扣 1 点预算。</li>
+        <li><b>扩张：</b>在地图出生点创建新的 <code>k.b</code> 基地组；同一区域最多保留有限数量，重叠时删除状态更低者。</li>
+        <li><b>防御：</b>检测基地附近敌人，命令范围内单位攻击；低血量单位撤退；基地长时间无单位则废弃。</li>
+      </ol>
+
+      <h3>7.3 关键计时器</h3>
+      <table>
+        <thead><tr><th>计时器</th><th>值</th><th>作用</th></tr></thead>
+        <tbody>
+          <tr><td>建造尝试间隔 <code>i.e</code></td><td>270 + Q%15 帧；Impossible 190 + Q%15；建造分 &lt; 0.2 再 +180；&lt; 0.08 再 +180（最多 +360）</td><td>多久尝试造一个建筑。</td></tr>
+          <tr><td>建造后延迟 <code>i.m</code></td><td>约 1000 帧</td><td>造完一个单位/建筑后的冷却。</td></tr>
+          <tr><td>请求工兵延迟 <code>i.g</code></td><td>1800–2500 帧</td><td>从其他基地组借工兵；第二次后显著增加。</td></tr>
+          <tr><td>基地废弃 <code>i.k</code></td><td>11000 帧 ≈ 183 s</td><td>长期没有单位时删除基地组。</td></tr>
+          <tr><td>基地安全计时 <code>i.v</code></td><td>6000 帧 ≈ 100 s</td><td>受攻击状态维持时间。</td></tr>
+          <tr><td>claim 计时 <code>i.l</code></td><td>2000 帧 ≈ 33 s</td><td>扩张基地从 <code>j.a</code> 转为 <code>j.c</code>。</td></tr>
+        </tbody>
+      </table>
+
+      <h3>7.4 基地选址检查</h3>
+      <p>扩张/新建基地时，AI 会检查：</p>
+      <ul class="list-clean">
+        <li>290 范围内没有敌方单位（<code>a(point)</code>）。</li>
+        <li>490 范围内没有其他基地组（避免重叠）。</li>
+        <li>160000 平方距离（约 400）内没有已用出生点。</li>
+        <li>地形可通行，且不在液体/不可建造区域。</li>
+        <li>如果已有多个基地组，会优先选择远离现有基地的出生点。</li>
+      </ul>
+    </section>
+
+    <section class="section anchor" id="combat-group">
+      <h2><span class="num">08</span>攻击 / 防御组：<code>game.a.g</code></h2>
+      <p>
+        战斗组负责把闲置单位组织成可执行的战斗编队。它有两种基本类型：
+        <strong>攻击组</strong> 和 <strong>防御组</strong>；海军组是攻击组的特殊变体。
+      </p>
+
+      <table>
+        <thead><tr><th>字段</th><th>含义</th></tr></thead>
+        <tbody>
+          <tr><td><code>h</code></td><td><code>true</code> = 攻击组，<code>false</code> = 防御组。</td></tr>
+          <tr><td><code>A</code></td><td>组内单位上限。</td></tr>
+          <tr><td><code>B</code></td><td>海军组标志。</td></tr>
+          <tr><td><code>k</code></td><td>关联的基地组（防御组回防目标）。</td></tr>
+          <tr><td><code>w</code></td><td>当前主目标（敌方单位）。</td></tr>
+          <tr><td><code>q</code></td><td>是否处于集结/等待阶段。</td></tr>
+          <tr><td><code>r</code></td><td>是否已找到可用集结点。</td></tr>
+          <tr><td><code>u</code></td><td>集结计时。</td></tr>
+          <tr><td><code>o</code></td><td>进攻计时。</td></tr>
+          <tr><td><code>l</code></td><td>进攻前延迟。</td></tr>
+          <tr><td><code>z</code></td><td>命令重发/重新选点计时。</td></tr>
+          <tr><td><code>G</code></td><td>无法到达目标、需要运输的单位。</td></tr>
+        </tbody>
+      </table>
+
+      <h3>8.1 攻击组状态机</h3>
+      <div class="flow">
+        <div class="step"><b>Collect</b><span>收集闲置单位<br>达到上限或超时</span></div>
+        <div class="arrow">→</div>
+        <div class="step"><b>Pick Target</b><span>随机敌方单位<br><code>R.as()</code></span></div>
+        <div class="arrow">→</div>
+        <div class="step"><b>Staging</b><span>在目标附近集结<br>检查路径/运输</span></div>
+        <div class="arrow">→</div>
+        <div class="step"><b>Attack</b><span>每 800 帧下令<br>攻击主目标</span></div>
+        <div class="arrow">→</div>
+        <div class="step"><b>Disband</b><span>空/太小/超时<br>解散</span></div>
+      </div>
+
+      <h3>8.2 各阶段细节</h3>
+      <h4>选目标</h4>
+      <p>
+        <code>w = R.as()</code>。`as()` 会遍历全局单位表，过滤掉死亡、非敌方单位，
+        然后随机返回一个。它不会优先指挥中心、炮塔或高价值单位，也不要求目标在视野内。
+      </p>
+
+      <h4>集结</h4>
+      <p>
+        <code>h()</code> 在目标附近计算集结点：
+      </p>
+      <ul class="list-clean">
+        <li>基础距离 50–720，至少 450；</li>
+        <li>80% 概率加 ±110° 角度扰动；</li>
+        <li>80% 概率在距离上再加随机偏移；</li>
+        <li>用 <code>a(x, y)</code> 和 <code>R.a(unit, x, y)</code> 检查每个单位能否按自己的移动类型到达；</li>
+        <li>不能到达的单位加入 <code>G</code>，等待运输组。</li>
+      </ul>
+      <p>
+        集结期间如果任何单位在最近 1000 帧内受到伤害，AI 会取消集结，避免在火力下站桩；
+        如果集结超过 17000 帧（约 283 秒），则直接转入进攻。
+      </p>
+
+      <h4>进攻</h4>
+      <ul class="list-clean">
+        <li>每 800 帧（约 13.3 秒）重新下发一次攻击命令。</li>
+        <li>只命令能到达主目标的单位；无法到达的单位留在 <code>G</code>。</li>
+        <li>如果没有任何单位能到达，放弃本次进攻。</li>
+        <li>如果组内少于 3 个单位且已过 1000 帧，解散。</li>
+        <li>如果进攻超过 11000 帧（约 183 秒），解散。</li>
+      </ul>
+
+      <h3>8.3 防御组</h3>
+      <p>
+        防御组围绕关联基地活动，逻辑更保守：
+      </p>
+      <ul class="list-clean">
+        <li>如果基地被攻击，找基地附近的敌人并回防。</li>
+        <li>如果敌人太强，向随机方向撤退，避免全军覆没。</li>
+        <li>基地组 <code>i.i()</code> 会命令基地半径内单位攻击靠近的敌人。</li>
+        <li>防御组数量与基地数量、单位数量相关，有上限。</li>
+      </ul>
+
+      <div class="callout warn">
+        <span class="label">行为特征</span>
+        攻击组的目标是“随机敌方单位”，再加上集结/受伤取消机制，所以实战中会出现：
+        小股部队反复集结、被擦伤就撤退、绕过近处军队去打远处单位、以及长时间不进攻。
+        这是规则设计的结果，不是 bug。
+      </div>
+    </section>
+
+    <section class="section anchor" id="transport">
+      <h2><span class="num">09</span>运输组：<code>game.a.n</code> / <code>game.a.l</code></h2>
+      <p>
+        当陆军无法通过地形到达目标时，AI 会尝试用运输单位把部队送过去。运输逻辑分两层：
+      </p>
+      <div class="grid grid-2">
+        <div class="card blue">
+          <h4><code>l</code>：等待运输组</h4>
+          <p>保存暂时无法到达目标的单位。单位距离组中心超过 3600，或组为空/超过 5000 帧，就会解散。</p>
+        </div>
+        <div class="card accent">
+          <h4><code>n</code>：运输组</h4>
+          <p>寻找运输单位、装载 <code>l</code> 组中的单位、移动到目标附近并卸载；支持飞行/非飞行运输。</p>
+        </div>
+      </div>
+      <p>
+        战斗组的 <code>G</code> 列表会收集“无法到达主目标”的单位；运输组从这些列表和
+        <code>l</code> 组中取货。运输组本身也会检查运输单位是否存活、是否已被占用，
+        并在没有运输单位时自动解散。
+      </p>
+      <p>
+        是否启用运输由地图连通性决定：<code>ai()</code> 表示需要运输，<code>aj()</code>
+        表示需要悬浮运输。基地组会按 <code>R.ai()</code> 条件和运输组数量决定是否生产运输单位。
+      </p>
+    </section>
+
+    <section class="section anchor" id="targeting">
+      <h2><span class="num">10</span>目标选择与地图知识</h2>
+      <p>
+        这是这套 AI 最容易被玩家感知、也最容易被误解的部分。
+      </p>
+
+      <h3>10.1 目标池是全局敌方单位</h3>
+      <pre><code><span class="cmt">// game.a.a — 目标选择</span>
+<span class="kw">public</span> am as() {
+    <span class="kw">int</span> count = <span class="num">0</span>;
+    <span class="kw">for</span> (am u : am.bE) {              <span class="cmt">// 全局单位表</span>
+        <span class="kw">if</span> (u.dead || u.cN != <span class="kw">null</span> || u.u()) <span class="kw">continue</span>;
+        <span class="kw">if</span> (!this.c(u.team)) <span class="kw">continue</span>;  <span class="cmt">// 只要敌方</span>
+        <span class="kw">if</span> (!this.j(u)) <span class="kw">continue</span>;       <span class="cmt">// 目标有效性</span>
+        count++;
+    }
+    <span class="cmt">// 随机返回其中一个</span>
+}
+
+<span class="kw">public</span> <span class="kw">boolean</span> j(am u) {
+    <span class="kw">return</span> u.cg() || !this.c(u.bX);
+}</code></pre>
+      <p>
+        在基类 <code>units.am</code> 中，<code>cg()</code> 直接返回 <code>true</code>；
+        <code>game.n.c(team)</code> 判断“是否敌方”（<code>this.r != other.r</code>）。
+        因此对内置单位来说，<code>j()</code> 几乎不会过滤视野。
+      </p>
+      <div class="callout danger">
+        <span class="label">关键结论</span>
+        AI 的主目标选择实际上拥有<strong>全局敌方单位表</strong>（对内置单位）。它没有独立的侦察/探索模块，
+        也不会因为战争迷雾而看不到目标。这解释了为什么 AI 会攻击远处随机单位。
+      </div>
+
+      <h3>10.2 地图连通性预计算</h3>
+      <p>
+        首次运行时，AI 会从自己的 Command Center 出发，测试到敌方基地/出生点的路径：
+      </p>
+      <ul class="list-clean">
+        <li><code>ao.b</code>：普通陆军；</li>
+        <li><code>ao.f</code>：悬浮/两栖；</li>
+        <li>结果写入 <code>bh</code>、<code>bi</code>、<code>bj</code>、<code>bk</code> 等标志；</li>
+        <li><code>ai()</code>/<code>aj()</code> 根据这些标志决定是否使用运输；</li>
+        <li><code>i.v()</code> 用这些标志调整陆军/悬浮/空军生产权重。</li>
+      </ul>
+
+      <h3>10.3 目标与位置的辅助方法</h3>
+      <table>
+        <thead><tr><th>方法</th><th>用途</th></tr></thead>
+        <tbody>
+          <tr><td><code>as()</code></td><td>随机敌方单位，作为攻击组主目标。</td></tr>
+          <tr><td><code>at()</code></td><td>随机敌方单位的位置，核弹 AI 用。</td></tr>
+          <tr><td><code>am()</code></td><td>地图上的随机点。</td></tr>
+          <tr><td><code>an()</code></td><td>随机出生点（地图 <code>startLocations</code>）。</td></tr>
+          <tr><td><code>ar()</code></td><td>随机己方单位，用于创建工兵/前哨组。</td></tr>
+          <tr><td><code>a(point)</code></td><td>基地位置合法性检查。</td></tr>
+          <tr><td><code>b(point)</code></td><td>基地周围敌方/己方单位密度检查。</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section anchor" id="difficulty">
+      <h2><span class="num">11</span>难度系统</h2>
+      <p>
+        难度主要由 <code>game.n</code> 的收入倍率实现，不直接修改单位属性。
+        <code>aiDifficulty</code> 的默认值来自 <code>preferences.ini</code>。
+      </p>
+      <table>
+        <thead><tr><th>值</th><th>名称</th><th>收入倍率</th><th>额外效果</th></tr></thead>
+        <tbody>
+          <tr><td>-2</td><td>Very Easy</td><td>0.4×</td><td>—</td></tr>
+          <tr><td>-1</td><td>Easy</td><td>0.7×</td><td>—</td></tr>
+          <tr><td>0</td><td>Medium</td><td>1.0×</td><td>默认</td></tr>
+          <tr><td>1</td><td>Hard</td><td>1.4×</td><td>—</td></tr>
+          <tr><td>2</td><td>Very Hard</td><td>1.8×</td><td>解锁 <code>experimentalLandFactory</code> 评分</td></tr>
+          <tr><td>3</td><td>Impossible</td><td>3.7×</td><td>建造更快、陆军/海军上限更高</td></tr>
+        </tbody>
+      </table>
+
+      <pre><code><span class="cmt">// 收入倍率</span>
+diff &gt; <span class="num">0</span> ? <span class="num">1.0</span> + diff * <span class="num">0.4</span> : <span class="num">1.0</span> + diff * <span class="num">0.3</span>
+diff == <span class="num">3</span> ? 额外 + <span class="num">1.5</span>
+</code></pre>
+
+      <h3>Impossible 的额外加成</h3>
+      <div class="grid grid-4">
+        <div class="card red"><div class="kpi">190</div><h4>建造间隔</h4><p>普通约 270 帧，Impossible 约 190 帧。</p></div>
+        <div class="card red"><div class="kpi">65</div><h4>陆军上限</h4><p>普通 50，Impossible 65。</p></div>
+        <div class="card red"><div class="kpi">12</div><h4>每轮生产循环</h4><p>固定 12 次；Impossible 提高的是海军/陆军上限，不是循环次数。</p></div>
+        <div class="card red"><div class="kpi">更多</div><h4>编组上限</h4><p>攻击组/防御组/海军组的单位上限提高。</p></div>
+      </div>
+      <p class="footnote">
+        代码里 <code>a.ac()</code> 实际判断的是“难度是否为 Impossible（3）或自定义 &gt;300”；
+        这个分支被大量用于建造/生产加成。Very Hard 以上由 <code>a.ad()</code> 判断。
+      </p>
+    </section>
+
+    <section class="section anchor" id="hooks">
+      <h2><span class="num">12</span>地图脚本与 Mod 钩子</h2>
+
+      <h3>12.1 地图 <code>team_info</code></h3>
+      <table>
+        <thead><tr><th>字段</th><th>效果</th></tr></thead>
+        <tbody>
+          <tr><td><code>basicAI</code></td><td>设为 basic AI，跳过高级建造评分（<code>i.c()</code> 返回 null）。</td></tr>
+          <tr><td><code>disabledAI</code></td><td>完全禁用该 AI。</td></tr>
+          <tr><td><code>lockAiDifficulty</code></td><td>锁定该玩家的 AI 难度，覆盖设置。</td></tr>
+          <tr><td><code>allyGroup</code></td><td>设置盟友分组，影响 <code>c()</code>/<code>d()</code> 关系。</td></tr>
+          <tr><td><code>ai=survival</code></td><td>切换为生存模式 AI。</td></tr>
+          <tr><td><code>credits</code></td><td>设置初始资金。</td></tr>
+        </tbody>
+      </table>
+
+      <h3>12.2 单位 INI 的 <code>[ai]</code> 段</h3>
+      <p>自定义单位可以暴露自己的 AI 权重、角色和使用条件：</p>
+      <table>
+        <thead><tr><th>键</th><th>作用</th></tr></thead>
+        <tbody>
+          <tr><td><code>disableUse</code></td><td>完全禁止 AI 生产/使用该单位。</td></tr>
+          <tr><td><code>useAsAttacker</code></td><td>是否可进入攻击组。</td></tr>
+          <tr><td><code>useAsBuilder</code></td><td>是否可进入工兵/建造组。</td></tr>
+          <tr><td><code>buildPriority</code></td><td>基础建造评分，默认约 0.05。</td></tr>
+          <tr><td><code>recommendedInEachBaseNum</code></td><td>每个基地建议数量；未达到时使用下一个权重。</td></tr>
+          <tr><td><code>recommendedInEachBasePriorityIfUnmet</code></td><td>未达到建议数量时的评分，默认约 0.5。</td></tr>
+          <tr><td><code>maxEachBase</code></td><td>每个基地数量上限。</td></tr>
+          <tr><td><code>maxGlobal</code></td><td>全局数量上限，-1 表示不限。</td></tr>
+          <tr><td><code>nonInBaseExtraPriority</code></td><td>本基地没有该单位时的额外评分。</td></tr>
+          <tr><td><code>noneInBaseExtraPriority</code></td><td>本基地完全没有该单位时的额外评分。</td></tr>
+          <tr><td><code>nonGlobalExtraPriority</code></td><td>全局没有该单位时的额外评分。</td></tr>
+          <tr><td><code>noneGlobalExtraPriority</code></td><td>全局完全没有该单位时的额外评分。</td></tr>
+          <tr><td><code>whenUsingAsHarvester_*</code></td><td>作为采集单位时的推荐数量/统计方式。</td></tr>
+          <tr><td><code>onlyUseAsHarvester_ifBaseHasUnitTagged</code></td><td>只有基地有特定标签单位时才作为采集单位。</td></tr>
+          <tr><td><code>ai_upgradePriority</code></td><td>升级优先级。</td></tr>
+          <tr><td><code>ai_isDisabled</code></td><td>逻辑表达式；为真时 AI 不使用。</td></tr>
+          <tr><td><code>ai_isHighPriority</code></td><td>高优先级标记。</td></tr>
+          <tr><td><code>aiTags</code></td><td>AI 标签，例如 <code>nukeLauncher</code>。</td></tr>
+          <tr><td><code>aiUse</code></td><td>AI 使用方式，例如 <code>launchAmmo</code> / <code>launch</code>。</td></tr>
+        </tbody>
+      </table>
+
+      <h4>示例</h4>
+      <pre><code>[ai]
+buildPriority: 0.08
+recommendedInEachBaseNum: 2
+recommendedInEachBasePriorityIfUnmet: 0.5
+maxEachBase: 4
+maxGlobal: -1
+useAsAttacker: true
+useAsBuilder: false
+ai_upgradePriority: 0.2
+aiTags: nukeLauncher
+aiUse: launchAmmo
+ai_isDisabled: if self.ammo(greaterThan=3)</code></pre>
+
+      <h3>12.3 AI 插件层</h3>
+      <p>
+        AI 有一个可插拔组件层：<code>game.a.a.a</code>，通过 <code>game.a.a.bJ</code>
+        列表挂载。当前版本能确认的内置插件是<strong>核弹控制器</strong>
+        <code>game.a.a.d</code>：
+      </p>
+      <ul class="list-clean">
+        <li>通过 <code>aiTags: nukeLauncher</code> 找到核弹单位；</li>
+        <li>用 <code>f.a(..., e.f)</code> 选择发射动作；</li>
+        <li>用 <code>R.at()</code> 选一个随机敌方位置；</li>
+        <li>在 <code>b(float)</code> 中周期性尝试发射/攻击建筑。</li>
+      </ul>
+      <p class="footnote">
+        插件会随存档序列化（<code>a.a.a</code> 的 <code>a(as)</code>/<code>a(k)</code>），
+        并通过 <code>a.a.b</code> 枚举恢复；这解释了为什么某些 AI 行为会出现在存档/回放状态里。
+      </p>
+
+      <h3>12.4 生存模式</h3>
+      <p>
+        地图 <code>map_info.type=survival</code> 时会走另一套节奏：
+      </p>
+      <ul class="list-clean">
+        <li>波次间隔约 1200 帧；低难度时约 3000 帧。</li>
+        <li><code>survivalWaves</code> 定义波次内容；<code>survivalWavesClassic</code> 选择经典波次。</li>
+        <li>AI 玩家的 <code>U</code> 标志为真，主循环进入生存分支：周期性集结、选择目标、派兵。</li>
+        <li>胜利条件可以是 <code>requiredObjectives</code>、<code>commandCenter</code> 等。</li>
+      </ul>
+    </section>
+
+    <section class="section anchor" id="survival-campaign">
+      <h2><span class="num">13</span>战役与脚本 AI</h2>
+      <p>
+        遭遇战 AI 和战役 AI 不是同一套东西：
+      </p>
+      <table>
+        <thead><tr><th>类型</th><th>驱动方式</th></tr></thead>
+        <tbody>
+          <tr><td>遭遇战 / 沙盒</td><td><code>game.a.a</code> 的规则 AI，本文主体。</td></tr>
+          <tr><td>生存模式</td><td>复用规则 AI，但由 <code>map_info</code> 的波次配置和 <code>U</code> 标志驱动。</td></tr>
+          <tr><td>战役任务</td><td>MissionEngine + 地图 <code>triggers</code> 层；脚本触发器负责剧情、增援、目标。</td></tr>
+        </tbody>
+      </table>
+      <p>
+        战役地图通常会在 <code>triggers</code> 对象层里定义任务逻辑。AI 玩家仍然可能存在，
+        但它们的行动会受到触发器、<code>team_info</code> 和地图脚本的共同约束。
+        因此“战役 AI 很难/很聪明”往往来自脚本编排，而不是遭遇战 AI 本身。
+      </p>
+    </section>
+
+    <section class="section anchor" id="behavior">
+      <h2><span class="num">14</span>行为特征与局限</h2>
+      <div class="grid grid-2">
+        <div class="card accent">
+          <h4>做得好的地方</h4>
+          <ul class="list-clean">
+            <li>经济、建造、扩张、防御、运输、核弹都有完整规则。</li>
+            <li>会按地图连通性选择陆军/悬浮/空军。</li>
+            <li>攻击组会集结、等待、受伤取消、超时进攻。</li>
+            <li>难度可以通过经济倍率平滑调整。</li>
+            <li>Mod 可以深度参与 AI 生产权重和特殊行为。</li>
+          </ul>
+        </div>
+        <div class="card red">
+          <h4>明显局限</h4>
+          <ul class="list-clean">
+            <li>没有侦察/战争迷雾探索模块。</li>
+            <li>主目标是随机敌方单位，不优先指挥中心或高价值目标。</li>
+            <li>生产是加权评分 + 随机，不是固定 build order。</li>
+            <li>编组时间阈值较长，容易出现小股部队送人头。</li>
+            <li>难度主要是经济倍率，不是战术智能。</li>
+          </ul>
+        </div>
+      </div>
+
+      <h3>玩家感知到的典型行为</h3>
+      <table>
+        <thead><tr><th>现象</th><th>代码层面的原因</th></tr></thead>
+        <tbody>
+          <tr><td>AI 越过近处军队去打远处单位</td><td><code>as()</code> 从全局敌方单位中随机选主目标。</td></tr>
+          <tr><td>AI 在玩家基地附近反复徘徊</td><td>攻击组集结/受伤取消/重新选点，目标可能已死亡或不可达。</td></tr>
+          <tr><td>AI 长时间不进攻</td><td>攻击组需要攒够单位、等待集结计时，且可能被伤害打断。</td></tr>
+          <tr><td>AI 经济突然爆发</td><td>难度收入倍率 + 生产预算 + 多基地扩张叠加。</td></tr>
+          <tr><td>AI 会跨海进攻</td><td>陆军不可达时进入运输等待组，运输组负责运送。</td></tr>
+        </tbody>
+      </table>
+
+      <div class="callout infer">
+        <span class="label">给 Mod 作者的建议</span>
+        如果你希望 AI 更偏向某种单位，优先调 <code>[ai] buildPriority</code> 和
+        <code>recommendedInEachBaseNum</code>，而不是改单位价格；价格只影响“能不能造”，
+        权重才影响“想不想造”。如果希望 AI 优先攻击建筑，需要修改 <code>as()</code> 的目标过滤逻辑，
+        这不是数据能直接做到的。
+      </div>
+    </section>
+
+    <section class="section anchor appendix" id="appendix-classes">
+      <h2><span class="num">15</span>附录 A：类与方法索引</h2>
+      <details open>
+        <summary>AI 核心类</summary>
+        <table>
+          <thead><tr><th>类</th><th>职责</th><th>关键方法</th></tr></thead>
+          <tbody>
+            <tr><td><code>game.a.a</code></td><td>AI 玩家</td><td><code>a(float)</code>, <code>m(float)</code>, <code>n(float)</code>, <code>as()</code>, <code>at()</code>, <code>a(point)</code></td></tr>
+            <tr><td><code>game.a.i</code></td><td>基地组</td><td><code>c()</code>, <code>d(float)</code>, <code>v()</code>, <code>g(as)</code>, <code>n()</code></td></tr>
+            <tr><td><code>game.a.g</code></td><td>攻击/防御组</td><td><code>b(float)</code>, <code>c(float)</code>, <code>d(float)</code>, <code>e(float)</code>, <code>h()</code></td></tr>
+            <tr><td><code>game.a.n</code></td><td>运输组</td><td><code>c(float)</code>, <code>a(float, boolean)</code>, <code>f()</code></td></tr>
+            <tr><td><code>game.a.l</code></td><td>等待运输组</td><td><code>c(float)</code>, <code>c(y)</code></td></tr>
+            <tr><td><code>game.a.h</code></td><td>编组基类</td><td><code>a(y)</code>, <code>b(y)</code>, <code>c(float)</code></td></tr>
+            <tr><td><code>game.a.o</code></td><td>编组位置基类</td><td><code>w()</code>, <code>e(as)</code>, <code>c(x,y)</code></td></tr>
+            <tr><td><code>game.a.d</code></td><td>单位权重列表</td><td><code>a(ao,n)</code>, <code>b()</code></td></tr>
+            <tr><td><code>game.a.a.a</code></td><td>AI 插件基类</td><td><code>a(float,a)</code>, <code>b(float,a)</code>, <code>a(a,y)</code></td></tr>
+            <tr><td><code>game.a.a.d</code></td><td>核弹插件</td><td><code>b(float,a)</code>, <code>e(a,y)</code>, <code>f(a,y)</code></td></tr>
+            <tr><td><code>game.n</code></td><td>玩家基类</td><td><code>C()</code>, <code>E()</code>, <code>c(team)</code>, <code>d(team)</code></td></tr>
+            <tr><td><code>gameFramework.n.f</code></td><td>MissionEngine</td><td>地图 AI 配置、生存波次</td></tr>
+          </tbody>
+        </table>
+      </details>
+
+      <details>
+        <summary>枚举与状态</summary>
+        <table>
+          <thead><tr><th>枚举</th><th>值</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td><code>game.a.j</code></td><td><code>a</code>, <code>b</code>, <code>c</code></td><td>基地组内部状态；<code>a</code> 新基地/扩张，<code>c</code> 正常活动，<code>b</code> 未发现赋值。</td></tr>
+            <tr><td><code>game.a.k</code></td><td><code>a</code>, <code>b</code>, <code>c</code></td><td>基地组角色：主基地、扩张基地、工兵/前哨组（推断）。</td></tr>
+            <tr><td><code>game.a.a.b</code></td><td><code>a</code>, <code>b</code></td><td>AI 插件类型枚举；<code>b</code> 对应核弹控制器。</td></tr>
+            <tr><td><code>game.a.b</code></td><td><code>a</code>, <code>b</code></td><td>单位计数/建造过滤模式。</td></tr>
+          </tbody>
+        </table>
+      </details>
+    </section>
+
+    <section class="section anchor appendix" id="appendix-params">
+      <h2><span class="num">16</span>附录 B：参数速查</h2>
+      <details open>
+        <summary>调度与生产</summary>
+        <table>
+          <thead><tr><th>参数</th><th>值</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td>AI 主调度</td><td>每帧</td><td>计时器累加、首次运行分析</td></tr>
+            <tr><td>编组饥饿更新</td><td>25 帧</td><td>最多 2 个编组</td></tr>
+            <tr><td>编组刷新</td><td>80 帧</td><td><code>n()</code></td></tr>
+            <tr><td>生产/建造</td><td>250 帧</td><td><code>m()</code></td></tr>
+            <tr><td>生产预算上限</td><td>3.5</td><td><code>i.d</code></td></tr>
+            <tr><td>每轮生产循环</td><td>12 次</td><td>固定；Impossible 不改变循环次数</td></tr>
+            <tr><td>陆军上限</td><td>50 / 65</td><td>普通 / Impossible</td></tr>
+            <tr><td>海军上限</td><td>12 / 16</td><td>普通 / Impossible</td></tr>
+            <tr><td>建造间隔</td><td>270 / 190 帧</td><td>普通 / Impossible；建造分 &lt; 0.2 再 +180，&lt; 0.08 再 +180</td></tr>
+            <tr><td>基地废弃</td><td>11000 帧</td><td>约 183 秒</td></tr>
+            <tr><td>扩张 claim</td><td>2000 帧</td><td>约 33 秒</td></tr>
+          </tbody>
+        </table>
+      </details>
+
+      <details>
+        <summary>战斗组</summary>
+        <table>
+          <thead><tr><th>参数</th><th>值</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td>进攻前延迟</td><td>1000 帧</td><td>约 16.7 秒</td></tr>
+            <tr><td>进攻命令重发</td><td>800 帧</td><td>约 13.3 秒</td></tr>
+            <tr><td>集结超时</td><td>17000 帧</td><td>约 283 秒后强制进攻</td></tr>
+            <tr><td>进攻超时</td><td>11000 帧</td><td>约 183 秒后解散</td></tr>
+            <tr><td>过小解散</td><td>&lt; 3 单位 + 1000 帧</td><td>避免空组</td></tr>
+            <tr><td>受伤取消集结</td><td>最近 1000 帧</td><td>有人受伤就取消</td></tr>
+            <tr><td>集结距离</td><td>50–720</td><td>至少 450；80% 加扰动</td></tr>
+            <tr><td>攻击组上限</td><td>8 / 10</td><td>普通 / Impossible（基础）</td></tr>
+          </tbody>
+        </table>
+      </details>
+
+      <details>
+        <summary>难度与收入</summary>
+        <table>
+          <thead><tr><th>难度</th><th>收入倍率</th><th>备注</th></tr></thead>
+          <tbody>
+            <tr><td>-2 Very Easy</td><td>0.4×</td><td></td></tr>
+            <tr><td>-1 Easy</td><td>0.7×</td><td></td></tr>
+            <tr><td>0 Medium</td><td>1.0×</td><td></td></tr>
+            <tr><td>1 Hard</td><td>1.4×</td><td></td></tr>
+            <tr><td>2 Very Hard</td><td>1.8×</td><td>解锁实验工厂评分</td></tr>
+            <tr><td>3 Impossible</td><td>3.7×</td><td>额外建造/上限加成</td></tr>
+          </tbody>
+        </table>
+      </details>
+    </section>
+
+    <section class="section anchor appendix" id="appendix-evidence">
+      <h2><span class="num">17</span>附录 C：证据与复现</h2>
+      <table>
+        <thead><tr><th>项目</th><th>值</th></tr></thead>
+        <tbody>
+          <tr><td>目标</td><td><code>Rusted Warfare/game-lib.jar</code></td></tr>
+          <tr><td>SHA-256</td><td><code>8A550A37E2D8A5430866090D4E7D5892F9010B47F52A5A09350FC66C620DEEC9</code></td></tr>
+          <tr><td>版本</td><td>Game 1.15 / Code 176 / Build #28</td></tr>
+          <tr><td>反编译</td><td>CFR 0.152（<code>--outputdir</code>）</td></tr>
+          <tr><td>字节码辅助</td><td>JDK 17 <code>javap -p -c</code></td></tr>
+          <tr><td>类/代码量</td><td>1698 个类，约 170,465 行 Java</td></tr>
+          <tr><td>主要证据</td><td><code>game/a/a.java</code>, <code>i.java</code>, <code>g.java</code>, <code>n.java</code>, <code>game/n.java</code>, <code>units/custom/ag.java</code></td></tr>
+        </tbody>
+      </table>
+      <div class="callout note">
+        <span class="label">复现提示</span>
+        反编译代码不是原始源码。CFR 对混淆字段、枚举构造和异常控制流可能产生不完全等价的结果；
+        本文只采用能由多条代码路径交叉验证的行为。若需进一步确认，建议在相同版本上做
+        <code>-sandbox</code> 运行时观察，或使用调试器跟踪 <code>game.a.a</code> 的计时器。
+      </div>
+    </section>
+
+    <div class="footer">
+      Rusted Warfare 1.15 AI 系统逆向分析 · 静态分析文档 · 生成于 <span id="date"></span>
+    </div>
+  </main>
+</div>
+
+<button class="to-top" id="toTop" aria-label="回到顶部">↑</button>
+
+<script>
+  // 自动生成目录
+  (function () {
+    const toc = document.getElementById('toc');
+    document.querySelectorAll('main section.section').forEach(function (sec) {
+      if (!sec.id) return;
+      const h = sec.querySelector('h2');
+      if (!h) return;
+      const a = document.createElement('a');
+      a.href = '#' + sec.id;
+      a.textContent = h.textContent.replace(/^\s*\d+\s*/, '').trim();
+      toc.appendChild(a);
+    });
+  })();
+
+  // 滚动监听
+  (function () {
+    const links = Array.from(document.querySelectorAll('#toc a'));
+    const map = new Map();
+    links.forEach(function (a) {
+      const el = document.querySelector(a.getAttribute('href'));
+      if (el) map.set(el, a);
+    });
+    const obs = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (!entry.isIntersecting) return;
+        links.forEach(function (a) { a.classList.remove('active'); });
+        const a = map.get(entry.target);
+        if (a) a.classList.add('active');
+      });
+    }, { rootMargin: '-18% 0px -72% 0px', threshold: 0.01 });
+    map.forEach(function (_, el) { obs.observe(el); });
+  })();
+
+  // 阅读进度
+  (function () {
+    const bar = document.getElementById('progress');
+    function update() {
+      const h = document.documentElement;
+      const max = h.scrollHeight - h.clientHeight;
+      const p = max > 0 ? (h.scrollTop / max) * 100 : 0;
+      bar.style.width = p.toFixed(2) + '%';
+    }
+    document.addEventListener('scroll', update, { passive: true });
+    update();
+  })();
+
+  // 回到顶部
+  (function () {
+    const btn = document.getElementById('toTop');
+    document.addEventListener('scroll', function () {
+      if (window.scrollY > 600) btn.classList.add('show');
+      else btn.classList.remove('show');
+    }, { passive: true });
+    btn.addEventListener('click', function () {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+  })();
+
+  // 日期
+  document.getElementById('date').textContent = new Date().toLocaleDateString('zh-CN');
+</script>
+</body>
+</html>
