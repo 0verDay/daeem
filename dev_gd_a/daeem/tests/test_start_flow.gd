@@ -498,7 +498,7 @@ func _test_entry_flow() -> void:
 
 	await process_frame
 
-	# ★★ 主界面正中现在是**五颗按钮**：test_1 / test_2 / test_3 / ai_test / ai_test_2（各自直连一关）；
+	# ★★ 主界面正中现在是**五颗按钮**：test_1 / ai_test / ai_test_2 / ai_test_battle / ai_test_hz；
 	#    旧的「地图选择条 + test + campaign_test」三件套已经从界面上移除。
 	var buttons: Array = menu.test_buttons()
 	ok(buttons.size() == 5, "★ 主界面正中正好有五颗 test 按钮（实际 %d）" % buttons.size())
@@ -506,7 +506,7 @@ func _test_entry_flow() -> void:
 		main.queue_free()
 		return
 
-	var expected_labels := ["test_1", "test_2", "test_3", "ai_test", "ai_test_2"]
+	var expected_labels := ["test_1", "ai_test", "ai_test_2", "ai_test_battle", "ai_test_hz"]
 	for i in buttons.size():
 		var b: Button = buttons[i]
 		ok(b is Button, "第 %d 颗是 Button" % i)

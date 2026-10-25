@@ -499,6 +499,129 @@
       ]
     },
     {
+      "faction": "df",
+      "kind": "general",
+      "general_index": 13,
+      "unit_type": "rider",
+      "x": 10,
+      "y": 19,
+      "ai": "garrison",
+      "zone": 15,
+      "escort_count": 5,
+      "escort_types": [
+        {
+          "type": "rider",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "faction": "df",
+      "kind": "general",
+      "general_index": 14,
+      "unit_type": "rider",
+      "x": 8,
+      "y": 19,
+      "ai": "garrison",
+      "zone": 15,
+      "escort_count": 5,
+      "escort_types": [
+        {
+          "type": "spearman",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "faction": "df",
+      "kind": "general",
+      "general_index": 15,
+      "unit_type": "longbowman",
+      "x": 4,
+      "y": 15,
+      "ai": "garrison",
+      "zone": 17,
+      "escort_count": 6,
+      "escort_types": [
+        {
+          "type": "spearman",
+          "weight": 0.5
+        },
+        {
+          "type": "longbowman",
+          "weight": 0.5
+        }
+      ]
+    },
+    {
+      "faction": "df",
+      "kind": "general",
+      "general_index": 16,
+      "unit_type": "spearman",
+      "x": 1,
+      "y": 16,
+      "ai": "garrison",
+      "zone": 17,
+      "escort_count": 10,
+      "escort_types": [
+        {
+          "type": "spearman",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "faction": "df",
+      "kind": "general",
+      "general_index": 17,
+      "unit_type": "spearman",
+      "x": 3,
+      "y": 20,
+      "ai": "garrison",
+      "zone": 16,
+      "escort_count": 10,
+      "escort_types": [
+        {
+          "type": "spearman",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "faction": "df",
+      "kind": "general",
+      "general_index": 18,
+      "unit_type": "rider",
+      "x": 19,
+      "y": 17,
+      "ai": "garrison",
+      "zone": 10,
+      "escort_count": 3,
+      "escort_types": [
+        {
+          "type": "rider",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "faction": "df",
+      "kind": "general",
+      "general_index": 19,
+      "unit_type": "rider",
+      "x": 25,
+      "y": 18,
+      "ai": "garrison",
+      "zone": 20,
+      "escort_count": 5,
+      "escort_types": [
+        {
+          "type": "rider",
+          "weight": 1
+        }
+      ]
+    },
+    {
       "faction": "F1",
       "kind": "general",
       "unit_type": "rider",

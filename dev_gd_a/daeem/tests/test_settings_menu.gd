@@ -196,7 +196,7 @@ func _test_return_to_menu() -> void:
 	ok(not screen.get_node("StartRoot/Intro").visible, "入场页那一层没有回来")
 
 	var buttons: Array = screen.test_buttons()
-	ok(buttons.size() == 5, "★★ 回到菜单后主界面正中还是那五颗按钮（test_1/2/3 + ai_test + ai_test_2）")
+	ok(buttons.size() == 5, "★★ 回到菜单后主界面正中还是那五颗按钮（test_1 + ai_test / ai_test_2 / ai_test_battle / ai_test_hz）")
 	if buttons.is_empty():
 		await _dispose(main)
 		return

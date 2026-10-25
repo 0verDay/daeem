@@ -22,7 +22,8 @@ const DEFAULTS := {
 		"strategic_interval_sec": 2.0,
 		"build_interval_sec": 2.5,
 		"production_interval_sec": 1.0,
-		"production_attempts": 3,
+		# ★ 2026.10.25：资源富足时一 tick 多下几单；生产永远在建造成之前。
+		"production_attempts": 6,
 		"retry_sec": 3.0,
 	},
 	"economy": {
@@ -75,12 +76,15 @@ const DEFAULTS := {
 		"general_target": 2,
 		"general_target_by_base_level": [3, 6, 10],
 		"general_recruit_min_army_ratio": 0.0,
+		"general_recruit_team_margin": 2,  # 现有队伍至少到「目标 - 2」才补新将
 		"develop_cap_ratio": 0.85,
-		"max_queue_per_leader": 3,
+		"max_queue_per_leader": 4,
+		"max_recruit_recalls": 2,     # 每 tick 最多叫回几支「缺兵且不在人口区」的队伍
 		# ★★ 2026.10.24：按「队」补员，不再让一支部队一路招到全族上限。
-		"home_team_size": 6,          # 守军补到这么多人后轮换出门
-		"field_team_size": 4,         # 外勤队的目标规模（含将领）
-		"max_training_leaders": 2,    # 同时读条的将领数上限（不是「只有 1 个兵营」）
+		# ★ 2026.10.25：放宽单队规模与同时训练数，资源富足时不再只有 2 个将领慢慢补。
+		"home_team_size": 8,          # 守军补到这么多人后轮换出门
+		"field_team_size": 6,         # 外勤队的目标规模（含将领）
+		"max_training_leaders": 4,    # 同时读条的将领数上限（不是「只有 1 个兵营」）
 		"min_garrison_replace_escorts": 1,  # 接替守军至少要有几个兵
 		"dispatch_training_home": true,     # 读条中的守军只要够出门规模，就可以被换下来去巡逻
 		"composition": [
@@ -99,12 +103,20 @@ const DEFAULTS := {
 		"tower_threat_towers": 5,
 		"tower_rear_towers": 0,
 		"tower_rich_bonus_max": 3,
-		"production_reserve_recruits": 3,
+		"production_reserve_recruits": 6,
 		"pause_defense_when_understrength": true,
 		"tower_threat_radius": 9.0,
 		"tower_cover_radius": 4,
 		"wall_enabled": true,
-		"wall_hard_max": 100,
+		"wall_hard_max": 240,
+		# ★★ 2026.10.25：边境封墙。前期只封与敌方接壤的前线；资源到
+		#   `3×max_float` 后再补中立接壤的整圈边境。每 tick 最多 3 格。
+		"wall_border_enabled": true,
+		"wall_border_rich_mult": 1.5,
+		"wall_border_full_rich_mult": 3.0,
+		"wall_border_per_tick": 3,
+		"wall_border_keep_slots": 16,
+		"wall_border_require_armed_generals": true,
 		"defense_upgrade_enabled": true,
 		"defense_upgrade_tower_bonus": 12.0,
 		"tower_frontier_bonus": 4.0,
@@ -118,6 +130,36 @@ const DEFAULTS := {
 		"threat_radius": 7.0,        # 巡逻点周围多大范围内的敌人会被算进风险
 		"avoid_enemy_ratio": 1.25,   # 敌人 ≥ 我方 × 这个倍率 ⇒ 不把小队派去这个点
 		"home_when_alone": true,     # 只有守军一支队伍时，允许它（读条中）去基地附近巡逻
+	},
+	# ★★ 2026.10.25：闲置部队调度。
+	#   · 缺编队（有 1~2 个兵、但不到 min_field_units）去己方前线中心 / 隘口驻守；
+	#   · 满编队去敌方 / 中立边界外侧侦察，遇强敌整队撤；空区划顺手占领。
+	"idle": {
+		"enabled": true,
+		"scout_enabled": true,
+		"max_scouts": 2,
+		"scout_hold_sec": 6.0,
+		"scout_reassign_sec": 16.0,
+		"scout_avoid_ratio": 0.9,
+		"scout_max_distance_tiles": 18.0,
+		"scout_capture_empty": true,
+		"scout_advance_tiles": 2.0,
+		"guard_enabled": true,
+		"max_posts": 4,
+		"max_ready_guards": 4,
+		"post_reassess_sec": 20.0,
+		"post_avoid_ratio": 1.25,
+		"guard_radius_tiles": 2.5,
+		"min_escorts_to_post": 1,
+		# ★★ 2026.10.25：区划布防 —— 把闲置满编队铺到可能被偷袭的己方边境 / 侧翼区划，
+		#   而不是全挤在大本营 / 中场 / 同一个前线中心。
+		"zone_guard_enabled": true,
+		"max_zone_guards": 4,
+		"zone_guard_radius_tiles": 3.0,
+		"zone_guard_reassess_sec": 25.0,
+		"zone_guard_avoid_ratio": 1.35,
+		"choke_enabled": true,
+		"choke_max_passable_neighbors": 3,
 	},
 	# ★ 濒死将领：再起 / 召回巡检。再起免费；召回是「回大本营重开」。
 	"revive": {
@@ -160,10 +202,34 @@ const DEFAULTS := {
 	},
 	# ★ 受击后的整队决策：有命令时不进入默认复仇，由 AI 决定反击还是继续撤。
 	"reaction": {
-		"cooldown_sec": 0.7,
+		"cooldown_sec": 2.0,            # 同一队两次受击即时命令的最小间隔
+		"mode_hold_sec": 2.8,           # 反击 / 撤退模式锁：锁定期内不再换方向
+		"counter_lock_radius": 6.0,     # 同一片交火内的新攻击者不换反击目标
 		"danger_radius": 6.0,
 		"counter_ratio": 1.15,          # 敌人 ≤ 我方 × 这个倍率 ⇒ 整队反击
 		"retreat_counter_ratio": 0.75,  # 正在撤退时，敌人 ≤ 我方 × 这个倍率才回头
+	},
+	# ★★ 2026.10.25：开局探索 —— 只有一支初始部队时，不要绕着基地左上右下来回走，
+	#   出去探一圈（普通移动，不主动进攻），回基地补员，再出去。
+	"early_explore": {
+		"enabled": true,
+		"until_sec": 60.0,          # 开局多少秒内允许探索（与 early_game 同步）
+		"min_escorts": 0,           # 开局光杆将领也允许出门探路
+		"hold_sec": 16.0,           # 单次外出探索时长
+		"rest_sec": 8.0,            # 回基地补员 / 休整时长
+		"max_distance_tiles": 22.0,
+		"min_start_distance_tiles": 6.0,
+		"avoid_ratio": 1.0,
+	},
+	# ★★ 2026.10.25：开局 60 秒「扩张期」—— 不按常规的「队伍少于 3 人不出门」卡住，
+	#   小队伍也允许去占中立 / 空区划；守备/区划布防暂缓，60 秒后切回常规。
+	"early_game": {
+		"enabled": true,
+		"until_sec": 60.0,
+		"min_field_units": 1,       # 开局允许 1 人队出门
+		"min_squad_units": 1,       # 开局 1 人也能去占无守军区划
+		"disable_guards": true,     # 开局先向外，不把队伍铺去守备
+		"require_garrison": false,  # 开局不强制大本营区划留人
 	},
 	"auto": {
 		"develop_until_ratio": 0.35,
@@ -172,17 +238,17 @@ const DEFAULTS := {
 	},
 	"difficulty": {
 		"easy": {
-			"income_mult": 0.8, "army_cap": 18, "army_cap_ratio": 0.6,
+			"income_mult": 0.8, "army_cap": 24, "army_cap_ratio": 0.75,
 			"build_interval_mult": 1.3, "production_interval_mult": 1.4,
 			"reaction_delay_sec": 2.0, "start_food": 150.0, "start_gold": 150.0,
 		},
 		"normal": {
-			"income_mult": 1.0, "army_cap": 26, "army_cap_ratio": 0.8,
+			"income_mult": 1.0, "army_cap": 36, "army_cap_ratio": 1.0,
 			"build_interval_mult": 1.0, "production_interval_mult": 1.0,
 			"reaction_delay_sec": 1.2, "start_food": 250.0, "start_gold": 250.0,
 		},
 		"hard": {
-			"income_mult": 1.2, "army_cap": 34, "army_cap_ratio": 1.0,
+			"income_mult": 1.2, "army_cap": 48, "army_cap_ratio": 1.0,
 			"build_interval_mult": 0.8, "production_interval_mult": 0.8,
 			"reaction_delay_sec": 0.7, "start_food": 350.0, "start_gold": 350.0,
 		},

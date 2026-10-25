@@ -65,6 +65,8 @@ var cfg: ConfigRes = null
 var world = null
 var input_ctrl = null
 var camera_rig = null
+## ★★ 稳定编队槽位（见 view/team_slots.gd）：右栏 / 左栏详情 / 数字键共用。
+var team_slots = null
 ## ★★ 3D 投影助手（`view/palette.gd` 的实例）：小地图的「视野框 / 点击跳转」要用它
 ##    （2D 回退已随 2D 栈删除）。由 `setup()` 传进来、再原样转交给小地图。
 var palette = null
@@ -216,11 +218,13 @@ var _page_memory: Dictionary = {}
 
 
 func setup(p_cfg: ConfigRes, p_world, p_input, theme: Theme, p_camera_rig = null,
-		p_palette = null) -> void:
+		p_palette = null, p_team_slots = null) -> void:
 	cfg = p_cfg
 	world = p_world
 	input_ctrl = p_input
 	camera_rig = p_camera_rig
+	# ★★ 编队槽位（稳定编号）：右栏 / 左栏详情 / 数字键共用同一份（见 view/team_slots.gd）。
+	team_slots = p_team_slots
 	# ★★ 投影助手一并收下并转交给小地图（见 `_build_minimap`）：这样小地图一建出来
 	#    就拿着完整的 3D 口径，不必等调用方事后再 setup 一次。
 	palette = p_palette
@@ -861,7 +865,7 @@ func _on_return_menu_pressed() -> void:
 func _build_squad_panel() -> void:
 	squad_panel = SquadPanelRes.new()
 	_root.add_child(squad_panel)
-	squad_panel.setup(cfg, world, input_ctrl, _font)
+	squad_panel.setup(cfg, world, input_ctrl, _font, team_slots)
 	# ★★ 点标签 = 反选整队（squad_panel 自己改选中）；点了谁就把**详情展开**切到谁。
 	#   复用 `_on_troop_activated`（点左栏下半将领格走的是同一条路：只改展开哪一支，
 	#   不再动选中集合）—— 于是「标签的选中逻辑」与「详情的焦点逻辑」各只有一处。
@@ -2455,7 +2459,7 @@ func recruit_reject_text(reason: String, kind: String, max_count: int = 0,
 			return "只能在己方区划内招募（将领现在站的地方不属于你）"
 		"combat":
 			return "将领正在交战：脱战 %d 秒后才能开始招募（已排上的单子只会暂停，不会取消）" % (
-				int(round(world.recruit_combat_idle_sec)) if world != null else 10)
+				int(round(cfg.recruit_combat_idle_sec)) if cfg != null else 10)
 		"zone_owner":
 			return "只能在自己区划里招募（这个区划不属于你）"
 		"zone_not_found":
@@ -2604,6 +2608,8 @@ func upgrade_reject_text(reason: String, evt: Variant = null) -> String:
 			return "这一项正在读条：等它读完，或者点信息栏那一格取消"
 		"max_level":
 			return "已经是最高等级了"
+		"generals":
+			return "将领数量不足：升二本需要 3 名将领，升三本需要 6 名将领"
 		"spec_done":
 			return "这个区划已经特化过了：先「取消特化」才能换别的"
 		"spec":
@@ -3004,8 +3010,8 @@ func _refresh_detail() -> void:
 ## 选中部队分组：[{"leader": 队长, "number": 部队编号, "units": [该队单位…]}]。
 ##
 ## ★ 口径必须与左侧部队列表（view/squad_panel.gd）**完全一致**：
-##   己方在场、`is_team_leader`、按 `world.units` 的顺序、最多 SQUAD_SLOTS 支。
-##   不一致的话网格上写着「部队2」、左边高亮的却是第 3 行 —— 玩家没法把两边对上。
+##   同方在场、`is_team_leader`、最多 SQUAD_SLOTS 支；编号优先取 `team_slots` 的
+##   **稳定槽位**（阵亡 / 复活后不变），没有槽位表时才退回存活顺序。
 func _selected_troops(units: Array) -> Array:
 	# ★ 一次刷新内只扫一遍：`_tab_plan()` 与详情分支共用 `_begin_tick_cache()` 的结果。
 	if _tick_cache_on:
@@ -3019,6 +3025,8 @@ func _compute_selected_troops(units: Array) -> Array:
 	var out: Array = []
 	if world == null:
 		return out
+	if team_slots != null:
+		team_slots.sync(world)
 	var index_of: Dictionary = {}
 	var n := 0
 	for u in world.units:
@@ -3034,7 +3042,12 @@ func _compute_selected_troops(units: Array) -> Array:
 		if not units.has(u):
 			continue
 		index_of[u.id] = out.size()
-		out.append({"leader": u, "number": n, "units": [u]})
+		var no := n
+		if team_slots != null:
+			var s := int(team_slots.slot_of(u))
+			if s > 0:
+				no = s
+		out.append({"leader": u, "number": no, "units": [u]})
 	# 第二遍：把选中列表里的亲兵塞进它们队长那一组（选中列表已经是整队展开过的，
 	# 所以这一步只是把「成员」补齐；找不到队长分组的（队长不在列表里）就忽略）。
 	for u2 in units:

@@ -23,6 +23,7 @@ func _run() -> void:
 	_test_guaranteed_hit_moving(cfg)
 	_test_melee_instant(cfg)
 	_test_tower_projectile(cfg)
+	_test_building_target_valid(cfg)
 	_test_target_dies_midflight(cfg)
 	_test_reset_clears(cfg)
 	_test_determinism(cfg)
@@ -145,6 +146,27 @@ func _test_tower_projectile(cfg) -> void:
 	_advance_until_landed(w, cfg, 900)
 	eq(w.projectiles.size(), 0, "箭塔的投掷物命中后消失")
 	near(e.hp, hp0 - tower.attack_damage(cfg), 1e-6, "★ 箭塔伤害在命中时结算")
+
+func _test_building_target_valid(cfg) -> void:
+	var w = _world(cfg)
+	_remove_towers(w)
+	var tile := _free_tile_near(w, int(w.map.cols / 2), int(w.map.rows / 2))
+	ok(tile.x >= 0, "（前提）找得到建测试建筑的空格")
+	if tile.x < 0:
+		return
+	var b = w.add_building("tower", tile.x, tile.y, w.my_faction, false, true)
+	ok(b != null, "（前提）测试建筑建好了")
+	if b == null:
+		return
+	# ★ 建筑没有 `downed` 字段：`get("downed")` 是 null。这里以前直接 `bool(null)`
+	#   会报 “Nonexistent 'bool' constructor”，箭塔拦截敌方远程时就会炸。
+	var p = ProjectileRes.new()
+	p.target = b
+	p.target_is_building = true
+	ok(ProjectileRes._target_valid(p), "★★ 建筑目标可以正常判存活（不会再 bool(null) 报错）")
+	b.alive = false
+	ok(not ProjectileRes._target_valid(p), "建筑被摧毁后目标判定失效")
+
 
 func _test_target_dies_midflight(cfg) -> void:
 	var w = _world(cfg)

@@ -829,6 +829,30 @@ def t_escort_placement(app, model) -> None:
     pick_combo(app, row(app, "选中的单位", "combo:将领"), app.config.general_label(1))
     eq(gen.unit_type, app.config.general_types[0], "★ 复原成将领 1")
 
+    # ---- 1c) ★★ 档位 > 3：types 里有重复兵种，必须靠 general_profile 记住「第几档」 ----
+    #   用户报的 bug：选「将领 4/5/6…」后显示按 1/2/3 循环。
+    eq(len(app.config.general_types) >= 10, True,
+       "（前提）当前配置有 10 个将领档位（实际 %d）" % len(app.config.general_types))
+    for n in (4, 5, 6, 7, 8, 9, 10):
+        pick_combo(app, row(app, "选中的单位", "combo:将领"), app.config.general_label(n))
+        gen = level(app).start_units[0]
+        eq(int(gen.general_profile or 0), n, "★★ 选「将领 %d」→ general_profile = %d" % (n, n))
+        eq(gen.unit_type, app.config.general_types[n - 1],
+           "★ 将领 %d 的兵种 = types[%d]" % (n, n - 1))
+        eq(app._general_label_of_unit(gen), app.config.general_label(n),
+           "★★ 刷新后显示还是「将领 %d」（不再 1/2/3 循环）" % n)
+        out_n = level(app).to_dict()["start_units"][0]
+        eq(out_n.get("general_profile"), n,
+           "★★ 将领 %d 的档位写进 JSON（general_profile）" % n)
+    # 选回 1..3 档：unit_type 已能唯一确定档位，不写多余的 general_profile
+    pick_combo(app, row(app, "选中的单位", "combo:将领"), app.config.general_label(3))
+    gen = level(app).start_units[0]
+    ok(gen.general_profile is None, "★ 第 3 档（兵种唯一）不写 general_profile")
+    ok("general_profile" not in level(app).to_dict()["start_units"][0],
+       "★ 导出也不落这个键（旧数据格式保持不变）")
+    pick_combo(app, row(app, "选中的单位", "combo:将领"), app.config.general_label(1))
+    eq(gen.unit_type, app.config.general_types[0], "★ 复原成将领 1")
+
     # ---- 2) 画笔里**没有**「附属兵」这一档（逐兵摆放已被规格取代）----
     brush = row(app, "画笔", "combo:放什么").cget("values")
     ok("附属兵" not in list(brush), "★★ 画笔不再有「附属兵」，实际 %r" % (brush,))
@@ -1313,6 +1337,49 @@ def t_zone_owner_explicit(app, model) -> None:
     app.root.update()
 
 
+def t_refresh_keeps_view(app, model) -> None:
+    """★★ 改数值 / 摆将领不能把缩放、平移、侧边栏滚动打回初始位置。
+
+    用户报的「所有 UI 回到初始位置」：战役编辑器以前每次 refresh_all 都重建画布
+    并强制 fit_view()，还把长侧边栏滚回顶部。这里钉住「重建 = 数据更新，不是复位」。
+    """
+    print("\n[4c] ★★ 刷新只更新数据：缩放 / 平移 / 侧边栏滚动都留在原地")
+    f = _facts(app)
+    app.set_page("place")
+    app.root.update()
+    app.zoom = 1.75
+    app.ox = 137.0
+    app.oy = -52.0
+    app._fit_pending = False
+    app.brush_kind = "general"
+    app.brush_faction = f["player"]
+    before_view = (app.zoom, app.ox, app.oy)
+    app.place_at((f["player_base"][0] + 1, f["player_base"][1]))
+    app.root.update()
+    eq((app.zoom, app.ox, app.oy), before_view,
+       "★★ 摆一位将领不会重置画布缩放 / 平移")
+
+    # 侧边栏：用内容更长的阵营页，把滚动条滚到中间再改一个字段
+    app.set_page("factions")
+    app.root.update()
+    try:
+        app.sidebar_canvas.configure(height=240)
+        app.root.update()
+    except tk.TclError:
+        pass
+    if app.sidebar_overflow() <= 0:
+        ok(True, "（这台机器上阵营页装得下，跳过侧边栏滚动断言）")
+        return
+    app.sidebar_yview("moveto", 0.5)
+    app.root.update()
+    before_scroll = app.sidebar_canvas.canvasy(0.0)
+    ok(before_scroll > 0, "（前提）先把阵营页滚下去（偏移 %d）" % before_scroll)
+    app.set_faction_field(app.all_faction_ids()[0], "name", "测试阵营")
+    app.root.update()
+    eq(app.sidebar_canvas.canvasy(0.0), before_scroll,
+       "★★ 改一个字段不会把侧边栏滚回顶部")
+
+
 def main() -> int:
     print("DAEEM 战役编辑器 · 界面测试")
     print("工程目录：%s（测试只动 %s 里的副本）" % (PROJECT_DIR, TMP))
@@ -1350,6 +1417,7 @@ def main() -> int:
         t_level_switch_state(app, model)
         t_zone_owner_explicit(app, model)
         t_escort_placement(app, model)
+        t_refresh_keeps_view(app, model)
         t_export_blocked(app, model)
         t_open_map_editor(app, model)
         t_sidebar_scroll(app, model)

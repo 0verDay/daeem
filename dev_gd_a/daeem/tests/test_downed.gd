@@ -25,6 +25,7 @@ func _cases() -> void:
 	_test_downed_entry(cfg)
 	_test_no_retinue_dies_at_once(cfg)
 	_test_immune_and_unattackable(cfg)
+	_test_kernel_ignores_downed(cfg)
 	_test_no_attack_line_when_downed(cfg)
 	_test_regen_rate_and_cap(cfg)
 	_test_wipe_kills_downed(cfg)
@@ -181,11 +182,59 @@ func _test_immune_and_unattackable(cfg) -> void:
 			"★★ 箭塔也不会伤害濒死的将领")
 		ok(g.alive and g.is_downed(), "★ 挨了这一会儿它仍然倒着（没被塔打死）")
 
+## ★★ 内核索敌（批量版）必须跳过濒死将领，并继续选后面的活兵；
+## 不能「最近目标是倒地将领 → 过滤成 null → 后面的活兵永远轮不到」。
+func _test_kernel_ignores_downed(cfg) -> void:
+	var w = require_world_with_escorts(cfg, 3)
+	if w == null or w.crowd == null:
+		ok(false, "（前提）有 crowd 内核测试世界")
+		return
+	var g = w.unit_by_id("general-1")
+	var live = w.unit_by_id("general-2")
+	_smash(cfg, w, g)
+	ok(g.is_downed() and live != null and not live.is_downed(), "（前提）一倒一活")
+	if live == null:
+		return
+	g.pos = Vector2(20.5, 20.5)
+	g.sync_tile(w.map)
+	live.pos = Vector2(23.5, 20.5)
+	live.sync_tile(w.map)
+	var foe = w.spawn_enemy(21, 20)
+	ok(foe != null, "（前提）刷出索敌单位")
+	if foe == null:
+		return
+	foe.hold_position = true
+	foe.target = null
+	foe.ordered_target = null
+	foe.leash_cd = 0.0
+	w.crowd.refresh_targets(w, cfg)
+	ok(w.crowd.targets_ready(w), "（前提）C# 批量索敌结果已就绪")
+	var idx: int = int(w.units.find(foe))
+	ok(idx >= 0, "（前提）能找到索敌单位下标")
+	var got := CombatAcquireAt(w, cfg, foe, idx)
+	ok(got, "★★ 内核索敌能找到活兵，而不是被濒死将领挡住")
+	ok(foe.target != null and foe.target.is_attackable(),
+		"★★ 锁到的目标必须是可攻击单位")
+	ok(foe.target != g, "★★ 不会锁定濒死将领")
+	# 点名目标中途倒地：命令层必须作废，不能重新锁回去。
+	foe.ordered_target = g
+	foe.target = null
+	w.tick(DT)
+	ok(foe.ordered_target == null, "★★ 点名目标倒地后，ordered_target 被清掉")
+
+
 func CombatAcquire(w, cfg, u) -> bool:
 	var cls: GDScript = load("res://logic/combat.gd")
 	if cls == null:
 		return false
 	return cls.acquire_target(w, cfg, u, -1)
+
+
+func CombatAcquireAt(w, cfg, u, idx: int) -> bool:
+	var cls: GDScript = load("res://logic/combat.gd")
+	if cls == null:
+		return false
+	return cls.acquire_target(w, cfg, u, idx)
 
 func _test_no_attack_line_when_downed(cfg) -> void:
 	var w = require_world_with_escorts(cfg, 3)

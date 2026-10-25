@@ -6,6 +6,7 @@ const ConfigRes = preload("res://logic/config.gd")
 const WorldRes = preload("res://logic/world.gd")
 const FactionRes = preload("res://logic/faction.gd")
 const ZoneRes = preload("res://logic/zone.gd")
+const CommandRes = preload("res://logic/command_processor.gd")
 
 const DT := 1.0 / 60.0
 
@@ -57,6 +58,7 @@ func _cases() -> void:
 	_test_speed_curve(cfg)
 	_test_requires_center_proximity(cfg)
 	_test_auto_centers(cfg)
+	_test_capture_blocks_building(cfg)
 
 func _neutral_spot(w, cfg) -> Dictionary:
 	for z in w.zones.zones:
@@ -461,6 +463,78 @@ func _test_requires_center_proximity(cfg) -> void:
 		"★★ 同区块但邻域外 → 不算在场（进度 %.4f → %.4f 开始回落）" % [before, _progress(z, "p1")])
 	eq(_state(z), "decaying", "状态是「回落」")
 	eq(String(z["owner"]), "", "★★ 离中心太远 ⇒ 占不下来（区块仍无主）")
+
+## ★★ 2026.10.25：敌方单位进入区划中心 3×3 占领区后，整块区划禁止建造；
+## 敌人离开 / 被清除后恢复。建造命令与 `can_build_at` 走同一条判据。
+func _test_capture_blocks_building(cfg) -> void:
+	var w = require_world(cfg)
+	var spot := _owned_build_spot(w, cfg)
+	ok(not spot.is_empty(), "（前提）找得到己方区块里的可建格")
+	if spot.is_empty():
+		return
+	var z: Dictionary = spot["zone"]
+	var tile: Vector2i = spot["tile"]
+	var center: Vector2i = z["center"]
+	ok(w.can_build_at(tile.x, tile.y, "p1"),
+		"（前提）没有敌人时可以建造")
+	var e = w.spawn_enemy(center.x, center.y)
+	ok(e != null, "（前提）能刷出进入占领区的敌人")
+	if e == null:
+		return
+	# 不 tick：敌人刚站进去、进度还是 0，也应该立刻禁止建造。
+	ok(w.zone_capture_blocks_build(tile.x, tile.y, "p1"),
+		"★★ 敌方单位进入中心 3×3 后，整块区划禁止建造")
+	ok(not w.can_build_at(tile.x, tile.y, "p1"),
+		"★★ can_build_at 同步返回 false")
+	var pool = w.resource_pool_for("p1")
+	if typeof(pool) == TYPE_DICTIONARY:
+		(pool as Dictionary)["food"] = 9999.0
+		(pool as Dictionary)["gold"] = 9999.0
+	var cmd := {
+		"kind": "build", "build_type": "tower",
+		"tx": tile.x, "ty": tile.y, "faction": "p1",
+	}
+	ok(not CommandRes.apply_build(w, cfg, cmd),
+		"★★ 敌方在占领区时，建造命令被拒绝")
+	# 敌人移出中心 3×3（仍在同一区划里）：不再算「正在被占领」。
+	var out: Variant = _outside_ring_tile(w, z, cfg)
+	# 别正好把敌人挪到要建造的那一格上。
+	if out != null and Vector2i(out) == tile:
+		out = null
+		for t2 in z.get("tiles", []):
+			var tv2: Vector2i = t2
+			if tv2 != tile and maxi(absi(tv2.x - center.x), absi(tv2.y - center.y)) > int(cfg.zone_capture_radius_tiles):
+				out = tv2
+				break
+	ok(out != null, "（前提）找得到同区块、中心 3×3 外、且不是建造格的格子")
+	if out == null:
+		return
+	_put(e, out, w)
+	ok(not w.zone_capture_blocks_build(tile.x, tile.y, "p1"),
+		"★★ 敌人离开中心 3×3 后解除建造封锁")
+	ok(w.can_build_at(tile.x, tile.y, "p1"),
+		"★★ 敌人离开后 can_build_at 恢复")
+	ok(CommandRes.apply_build(w, cfg, cmd),
+		"★★ 敌人离开后建造命令恢复执行")
+
+
+func _owned_build_spot(w, cfg) -> Dictionary:
+	var r: int = maxi(0, int(cfg.zone_capture_radius_tiles))
+	for z in w.zones.zones:
+		var zd: Dictionary = z
+		if String(zd.get("owner", "")) != "p1" or zd.get("center", null) == null:
+			continue
+		var center: Vector2i = zd["center"]
+		for t in zd.get("tiles", []):
+			var tv: Vector2i = t
+			if maxi(absi(tv.x - center.x), absi(tv.y - center.y)) <= r:
+				continue
+			if tv.x < 0 or tv.y < 0 or tv.x >= w.map.cols or tv.y >= w.map.rows:
+				continue
+			if w.can_build_at(tv.x, tv.y, "p1"):
+				return {"zone": zd, "tile": tv}
+	return {}
+
 
 func _outside_ring_tile(w, z: Dictionary, cfg) -> Variant:
 	var r: int = maxi(0, int(cfg.zone_capture_radius_tiles))

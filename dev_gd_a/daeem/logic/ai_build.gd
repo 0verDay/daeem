@@ -17,16 +17,26 @@ const AiArmyRes = preload("res://logic/ai_army.gd")
 
 
 static func update(ai) -> void:
-	_try_base_upgrade(ai)
+	# ★★ 2026.10.25 资源顺序：部队发展（生产预留）> 升本 > 建造建筑。
+	#   只要大本营还有下一级可升，就先尝试升本；这一轮没升成（钱不够）就
+	#   **攒钱**，不把余钱花到科技 / 特化 / 塔 / 墙 / 升级上。
+	#   大本营满级 / 正在读条 / 正在重生 / 被占领区封锁时，才轮到后面的建造。
+	var base_pick: Dictionary = _base_upgrade_candidate(ai)
+	if not base_pick.is_empty():
+		_try_base_upgrade(ai)
+		return
 	_try_tech(ai)
 	_try_spec(ai)
-	var paused := _defense_paused(ai)
-	if paused:
-		# 缺编时把钱留给补员；只有区划真被入侵才紧急补城墙。
-		if _any_own_threat(ai):
-			_try_wall(ai)
-		return
-	# 防御升级每 4 次建造动作穿插一次；有升级机会时先升级再花在造墙上。
+	# ★★ 2026.10.25：不再用「缺编就整段跳过建造」的硬闸门。
+	#   生产预留（`_production_reserve`）先把当前可生产缺口的钱全部扣掉，
+	#   建造只能用**扣完补员预算之后的余钱**：这才是「造部队始终优先」，
+	#   同时资源真的很多时仍能用富余造塔 / 封边。
+	#   `_defense_paused()` 仍保留给测试 / 面板判断，但不再阻断整个建造周期。
+	# ★★ 2026.10.25：塔优先于墙 —— 这一 tick 只要真的造了塔，就不再花墙的钱。
+	#   等塔目标都满足（或暂时造不了）才轮到中心环 / 边境长墙。
+	#   升级放在后面：升级的「攒钱」分支不能把这一 tick 的塔挤掉。
+	_try_tower_then_walls(ai)
+	# 防御升级每 4 次建造动作穿插一次。
 	var do_upgrade := int(ai.stats.get("builds", 0)) % 4 == 0
 	if do_upgrade:
 		var up: Dictionary = _defense_upgrade_candidate(ai)
@@ -46,40 +56,71 @@ static func update(ai) -> void:
 			else:
 				ai.build_save_until = 0.0
 				_try_defense_upgrade(ai)
-	# 塔优先，其次补墙；升级在上面已经先手。
-	_try_tower(ai)
-	_try_wall(ai)
 	# 钱明显花不完时，同一周期继续补塔 / 补墙 / 升级，别只攒钱。
 	if AiEconomyRes.float_excess(ai):
-		_try_tower(ai)
-		_try_wall(ai)
+		_try_tower_then_walls(ai)
 		if do_upgrade:
 			_try_defense_upgrade(ai)
+
+
+## 先尝试造一座塔；**只有塔这一 tick 没造出来**才允许碰墙。
+static func _try_tower_then_walls(ai) -> void:
+	var before := _tower_count(ai)
+	_try_tower(ai)
+	if _tower_count(ai) > before:
+		return
+	# 塔位还在、只是钱不够：攒钱等塔，不拿这笔钱去造墙。
+	if _should_save_for_tower(ai):
+		return
+	_try_wall_ring(ai)
+	_try_border_walls(ai, _wall_border_budget(ai))
 
 
 # ------------------------------------------------------------------
 # 大本营升级
 # ------------------------------------------------------------------
 
-static func _try_base_upgrade(ai) -> void:
+## 下一次大本营升级的候选（含成本）。空 = 现在不需要 / 不能升。
+## ★ 只做「是否可升级」的结构性判断，不检查部队预留后的余钱；
+##   affordability 由 `_try_base_upgrade()` / `update()` 统一判断。
+static func _base_upgrade_candidate(ai) -> Dictionary:
 	var b = ai.world.find_base_of(ai.faction)
-	if b == null or not b.alive:
-		return
+	if b == null or not b.alive or b.neutralized:
+		return {}
 	if not ai.world.building_can_upgrade(String(b.type)):
-		return
-	if b.is_upgrading():
-		return
+		return {}
+	if b.is_upgrading() or b.is_respawning():
+		return {}
 	if int(b.level) >= ai.world.building_max_level(String(b.type)):
-		return
-	var cost: Dictionary = ai.world.building_upgrade_cost(b)
-	if not AiEconomyRes.can_afford_above_reserve(ai, cost):
-		return
+		return {}
+	# 将领挡位不足时不算「可升本」：先把将领补到 3 / 6，再回来升。
+	var need_generals: int = int(ai.cfg.upgrade_limit("base", int(b.level), "max_generals", 0))
+	if need_generals > 0 \
+			and ai.world.general_count_of(ai.faction) < need_generals:
+		return {}
+	# 大本营所在区划正被踩占领区：先防守，不升级（也不为它囤钱）。
+	if _zone_capture_blocked(ai, ai.world.zones.zone_at(b.tx, b.ty)):
+		return {}
+	return {"b": b, "cost": ai.world.building_upgrade_cost(b)}
+
+
+## @return true = 真的开始了大本营升级
+static func _try_base_upgrade(ai) -> bool:
+	var pick: Dictionary = _base_upgrade_candidate(ai)
+	if pick.is_empty():
+		return false
+	var b = pick["b"]
+	var cost: Dictionary = pick.get("cost", {})
+	# ★ 资源顺序：部队发展（生产预留）> 升本 > 其它建筑。
+	if not _defense_afford(ai, cost):
+		return false
 	if not CommandRes.apply(ai.world, ai.cfg, {
 			"kind": "building_upgrade", "tx": b.tx, "ty": b.ty, "faction": ai.faction}):
 		ai.stats["build_failures"] = int(ai.stats.get("build_failures", 0)) + 1
-		return
+		return false
 	ai.stats["builds"] = int(ai.stats.get("builds", 0)) + 1
 	ai.note_status("building")
+	return true
 
 
 # ------------------------------------------------------------------
@@ -132,6 +173,8 @@ static func _try_spec(ai) -> void:
 		var zd: Dictionary = z
 		if String(zd.get("owner", "")) != ai.faction:
 			continue
+		if _zone_capture_blocked(ai, zd):
+			continue
 		if String(zd.get("spec_done", "")) != "":
 			continue
 		if ai.world.zone_spec_busy(zd):
@@ -149,7 +192,8 @@ static func _try_spec(ai) -> void:
 		if pick == "":
 			continue
 		var cost: Dictionary = ai.cfg.spec_cost(pick)
-		if not AiEconomyRes.can_afford_above_reserve(ai, cost):
+		# ★ 2026.10.25：区划特化也走生产预留 —— 先补兵，再谈经济建筑。
+		if not _defense_afford(ai, cost):
 			return
 		if ai.world.start_zone_specialize(zid, pick, ai.faction):
 			ai.stats["specs"] = int(ai.stats.get("specs", 0)) + 1
@@ -202,12 +246,7 @@ static func _try_tower(ai) -> void:
 		return
 	if _tower_count(ai) >= _tower_target(ai):
 		return
-	var cost: Dictionary = {}
-	var def_v: Variant = ai.cfg.building_def("tower")
-	if typeof(def_v) == TYPE_DICTIONARY:
-		var cv: Variant = (def_v as Dictionary).get("cost", {})
-		if typeof(cv) == TYPE_DICTIONARY:
-			cost = cv
+	var cost: Dictionary = _tower_cost(ai)
 	if not _defense_afford(ai, cost, build_cfg):
 		return
 	var zone = _pick_tower_zone(ai)
@@ -227,7 +266,36 @@ static func _try_tower(ai) -> void:
 		ai.blocked_tiles[t] = true
 
 
+static func _tower_cost(ai) -> Dictionary:
+	var cost: Dictionary = {}
+	var def_v: Variant = ai.cfg.building_def("tower")
+	if typeof(def_v) == TYPE_DICTIONARY:
+		var cv: Variant = (def_v as Dictionary).get("cost", {})
+		if typeof(cv) == TYPE_DICTIONARY:
+			cost = cv
+	return cost
+
+
+## 塔目标还没满、也确实有塔位，但这一 tick 钱不够 —— 此时不许拿钱去造墙，
+## 先攒着把塔造出来。这是「造箭塔优先于造城墙」的硬保证。
+static func _should_save_for_tower(ai) -> bool:
+	if _tower_count(ai) >= _tower_target(ai):
+		return false
+	var zone = _pick_tower_zone(ai)
+	if zone == null:
+		return false
+	if _pick_tower_tile(ai, zone) == null:
+		return false
+	return not _defense_afford(ai, _tower_cost(ai))
+
+
+## 兼容入口：中心环优先，然后按富足门槛补边境长墙（一次最多 `wall_border_per_tick`）。
 static func _try_wall(ai) -> void:
+	_try_wall_ring(ai)
+	_try_border_walls(ai, _wall_border_budget(ai))
+
+
+static func _try_wall_ring(ai) -> void:
 	var build_cfg: Dictionary = ai.profile.get("build", {})
 	if not bool(build_cfg.get("wall_enabled", true)):
 		return
@@ -308,6 +376,8 @@ static func _pick_wall_zone(ai):
 			continue
 		if zd.get("center", null) == null:
 			continue
+		if _zone_capture_blocked(ai, zd):
+			continue
 		var threatened := _zone_threatened(ai, zd)
 		if not threatened and not _zone_is_frontier(ai, zd):
 			continue
@@ -325,15 +395,308 @@ static func _pick_wall_zone(ai):
 	return best
 
 
-## 生产预留：先把下一轮补员 / 补将的钱留住，剩下的才允许造防御建筑。
+# ------------------------------------------------------------------
+# ★★ 2026.10.25：边境封墙（前线优先，资源极富后扩到全境）
+# ------------------------------------------------------------------
+
+## 本 tick 允许铺几格边境墙：0 = 条件不满足。
+static func _wall_border_budget(ai) -> int:
+	if not _wall_border_ready(ai):
+		return 0
+	var build_cfg: Dictionary = ai.profile.get("build", {})
+	return maxi(1, int(build_cfg.get("wall_border_per_tick", 3)))
+
+
+## 边境墙的硬条件：开关、总墙数余量、资源富足、没有光杆将领。
+##
+## ★ 补员预算由 `_build_available()` 统一先扣；这里只看「富足 + 没有光杆将领」。
+##   资源真的多到扣完补员预算还有余钱时，封边不会和造兵抢钱。
+## ★ 只把「一个兵都没有的将领」当红线：连 1 个护卫都没有的队伍先补人，
+##   有 1~2 个兵的缺编队不算（它们会被派去驻守，见 ai_army）。
+static func _wall_border_ready(ai) -> bool:
+	var build_cfg: Dictionary = ai.profile.get("build", {})
+	if not bool(build_cfg.get("wall_enabled", true)):
+		return false
+	if not bool(build_cfg.get("wall_border_enabled", true)):
+		return false
+	if int(build_cfg.get("wall_hard_max", 100)) <= 0:
+		return false
+	if _wall_count(ai) >= _wall_border_limit(ai):
+		return false
+	if _wall_border_rich_ratio(ai) < maxf(0.1, float(build_cfg.get("wall_border_rich_mult", 1.5))):
+		return false
+	if bool(build_cfg.get("wall_border_require_armed_generals", true)) \
+			and _bare_general_count(ai) > 0:
+		return false
+	return true
+
+
+## 边境墙最多占用的总墙数：给中心环留出 `wall_border_keep_slots` 个空位，
+## 免得「长墙铺满上限、新占的区划反而补不了中心环」。
+static func _wall_border_limit(ai) -> int:
+	var build_cfg: Dictionary = ai.profile.get("build", {})
+	var hard := maxi(0, int(build_cfg.get("wall_hard_max", 100)))
+	var keep := maxi(0, int(build_cfg.get("wall_border_keep_slots", 16)))
+	return maxi(0, hard - keep)
+
+
+## 浮存倍数：粮 / 金各自相对 `max_float_*` 的最大值（1.0 = 现有「钱花不完」线）。
+static func _wall_border_rich_ratio(ai) -> float:
+	var eco: Dictionary = ai.profile.get("economy", {})
+	var food_line := maxf(100.0, float(eco.get("max_float_food", 600.0)))
+	var gold_line := maxf(100.0, float(eco.get("max_float_gold", 600.0)))
+	return maxf(AiEconomyRes.food(ai) / food_line, AiEconomyRes.gold(ai) / gold_line)
+
+
+## 资源富足到「全境」档了吗？不到就只封与敌方接壤的前线。
+static func _border_scope_all(ai) -> bool:
+	var build_cfg: Dictionary = ai.profile.get("build", {})
+	var full := maxf(0.1, float(build_cfg.get("wall_border_full_rich_mult", 3.0)))
+	return _wall_border_rich_ratio(ai) >= full
+
+
+## 一个「完全没有护卫、也没有在排队」的将领数。只用于边境墙的软闸门。
+static func _bare_general_count(ai) -> int:
+	var n := 0
+	for u in ai.world.units:
+		if u == null or not u.alive or String(u.faction) != ai.faction:
+			continue
+		if u.is_downed() or not u.is_general():
+			continue
+		if String(u.leader_id) != "":
+			continue
+		if ai.world.retinue_of(String(u.id), true).is_empty() \
+				and int(u.train_queue_size()) <= 0:
+			n += 1
+	return n
+
+
+## 铺最多 `max_builds` 格边境墙。每次重新选点（墙线会越来越长，评分会跟着变）。
+static func _try_border_walls(ai, max_builds: int) -> void:
+	if max_builds <= 0 or not _wall_border_ready(ai):
+		return
+	var build_cfg: Dictionary = ai.profile.get("build", {})
+	var cost: Dictionary = {}
+	var def_v: Variant = ai.cfg.building_def("wall")
+	if typeof(def_v) == TYPE_DICTIONARY:
+		var cv: Variant = (def_v as Dictionary).get("cost", {})
+		if typeof(cv) == TYPE_DICTIONARY:
+			cost = cv
+	# 本 tick 的单位占位只采一次：铺三格墙时不要每格都把 units 扫一遍。
+	var occupied := _unit_tiles(ai)
+	var built := 0
+	var attempts := 0
+	var attempt_cap := maxi(1, max_builds * 4)
+	while built < max_builds and attempts < attempt_cap:
+		attempts += 1
+		if _wall_count(ai) >= _wall_border_limit(ai):
+			break
+		if not _defense_afford(ai, cost, build_cfg):
+			break
+		var tile: Variant = _pick_border_wall_tile(ai, occupied)
+		if tile == null:
+			break
+		var t: Vector2i = tile
+		if CommandRes.apply(ai.world, ai.cfg, {
+				"kind": "build", "build_type": "wall",
+				"tx": t.x, "ty": t.y, "faction": ai.faction}):
+			ai.stats["builds"] = int(ai.stats.get("builds", 0)) + 1
+			ai.stats["walls_built"] = int(ai.stats.get("walls_built", 0)) + 1
+			ai.stats["walls_border"] = int(ai.stats.get("walls_border", 0)) + 1
+			ai.note_status("building")
+			built += 1
+		else:
+			# 只拉黑这一格，继续找下一格；不因为一个格子失败就整轮停手。
+			ai.stats["build_failures"] = int(ai.stats.get("build_failures", 0)) + 1
+			ai.blocked_tiles[t] = true
+
+
+## 从所有合格区划的边境格里选一格：**先封与敌方接壤的前线**，没有前线缺口
+## 才轮得到中立边；同一档里优先接上已有墙线，其次隘口 / 敌人方向。
+static func _pick_border_wall_tile(ai, occupied: Dictionary) -> Variant:
+	var front: Variant = _pick_border_wall_tile_pass(ai, occupied, true)
+	if front != null:
+		return front
+	if _border_scope_all(ai):
+		return _pick_border_wall_tile_pass(ai, occupied, false)
+	return null
+
+
+static func _pick_border_wall_tile_pass(ai, occupied: Dictionary,
+		require_enemy_facing: bool) -> Variant:
+	var full := _border_scope_all(ai)
+	var best: Variant = null
+	var best_score := -INF
+	for z in ai.world.zones.zones:
+		if typeof(z) != TYPE_DICTIONARY:
+			continue
+		var zd: Dictionary = z
+		if String(zd.get("owner", "")) != ai.faction:
+			continue
+		if zd.get("center", null) == null:
+			continue
+		if _zone_capture_blocked(ai, zd):
+			continue
+		var enemy_facing := _zone_enemy_facing(ai, zd)
+		if require_enemy_facing and not enemy_facing:
+			continue
+		if not require_enemy_facing and enemy_facing:
+			continue
+		var threatened := _zone_threatened(ai, zd)
+		for t in _border_wall_tiles(ai, zd, full, occupied):
+			var tv: Vector2i = t
+			var score := _border_tile_score(ai, zd, tv, threatened, enemy_facing)
+			if score > best_score + 1e-9:
+				best_score = score
+				best = tv
+			elif absf(score - best_score) <= 1e-9 and best != null:
+				var bv: Vector2i = best
+				if tv.y < bv.y or (tv.y == bv.y and tv.x < bv.x):
+					best = tv
+	return best
+
+
+## 自己的边境格：四邻里至少有一个「同一格不属于本区划、可通行、且不是同方」的地块。
+## @param allow_neutral false = 只留与敌方区划接壤的边（前期只封前线）。
+static func _border_wall_tiles(ai, zone: Dictionary, allow_neutral: bool,
+		occupied: Dictionary) -> Array:
+	var out: Array = []
+	var zid := int(zone.get("id", -1))
+	for t in (zone.get("tiles", []) as Array):
+		var tv: Vector2i = t
+		if ai.blocked_tiles.has(tv):
+			continue
+		if not ai.world.map.tile_exists(tv.x, tv.y):
+			continue
+		if not ai.world.can_build_at(tv.x, tv.y, ai.faction):
+			continue
+		if ai.world.building_at(tv.x, tv.y) != null:
+			continue
+		if occupied.has(tv):
+			continue
+		var has_exit := false
+		var has_enemy_exit := false
+		for d in GridRes.DIRS4:
+			var n: Vector2i = tv + d
+			if not ai.world.map.tile_exists(n.x, n.y):
+				continue
+			var oz = ai.world.zones.zone_at(n.x, n.y)
+			if oz == null:
+				continue
+			var od: Dictionary = oz
+			if int(od.get("id", -1)) == zid:
+				continue
+			var owner := String(od.get("owner", ""))
+			if owner != "" and FactionRes.same_side_for_attack(owner, ai.faction):
+				continue
+			# 水 / 山本身就是屏障，不用再花一格墙。
+			if not ai.world.map.terrain_walkable(n.x, n.y):
+				continue
+			has_exit = true
+			if owner != "":
+				has_enemy_exit = true
+		if not has_exit:
+			continue
+		if not allow_neutral and not has_enemy_exit:
+			continue
+		out.append(tv)
+	return out
+
+
+## 单格边境墙的评分：已有墙邻接 > 出口多 / 隘口 > 受威胁 / 靠敌方 > 离基地近。
+static func _border_tile_score(ai, zone: Dictionary, t: Vector2i,
+		threatened: bool, enemy_facing: bool) -> float:
+	var wall4 := 0
+	var wall8 := 0
+	var passable8 := 0
+	for d in GridRes.DIRS8:
+		var n: Vector2i = t + d
+		if not ai.world.map.tile_exists(n.x, n.y):
+			continue
+		if ai.world.map.terrain_walkable(n.x, n.y):
+			passable8 += 1
+		var b = ai.world.building_at(n.x, n.y)
+		if b != null and b.alive and String(b.type) == "wall" and String(b.owner) == ai.faction:
+			wall8 += 1
+			if d.x == 0 or d.y == 0:
+				wall4 += 1
+	var exits := 0
+	for d in GridRes.DIRS4:
+		var n2: Vector2i = t + d
+		if not ai.world.map.tile_exists(n2.x, n2.y):
+			continue
+		var oz = ai.world.zones.zone_at(n2.x, n2.y)
+		if oz == null:
+			continue
+		var zd: Dictionary = oz
+		if int(zd.get("id", -1)) == int(zone.get("id", -1)):
+			continue
+		var owner := String(zd.get("owner", ""))
+		if owner != "" and FactionRes.same_side_for_attack(owner, ai.faction):
+			continue
+		if ai.world.map.terrain_walkable(n2.x, n2.y):
+			exits += 1
+	var score := float(wall4) * 18.0 + float(wall8) * 5.0
+	score += float(maxi(0, 8 - passable8)) * 5.0
+	score += float(exits) * 8.0
+	if threatened:
+		score += 60.0
+	if enemy_facing:
+		score += 10.0
+	var cv: Variant = zone.get("center", null)
+	if cv != null:
+		var c: Vector2i = cv
+		score -= Vector2(float(t.x - c.x), float(t.y - c.y)).length() * 0.05
+	var base = ai.world.find_base_of(ai.faction)
+	if base != null:
+		score -= Vector2(float(t.x - base.tx), float(t.y - base.ty)).length() * 0.08
+	return score
+
+
+## 这个区划有没有邻格属于敌方（不是中立、也不是同方）。
+static func _zone_enemy_facing(ai, zone: Dictionary) -> bool:
+	for t in (zone.get("tiles", []) as Array):
+		var tv: Vector2i = t
+		for d in GridRes.DIRS4:
+			var n: Vector2i = tv + d
+			if not ai.world.map.tile_exists(n.x, n.y):
+				continue
+			var oz = ai.world.zones.zone_at(n.x, n.y)
+			if oz == null:
+				continue
+			var owner := String((oz as Dictionary).get("owner", ""))
+			if owner != "" and not FactionRes.same_side_for_attack(owner, ai.faction):
+				return true
+	return false
+
+
+## 本 tick 所有活单位占的格（避免把墙盖在自家 / 敌方单位脚下）。
+static func _unit_tiles(ai) -> Dictionary:
+	var out: Dictionary = {}
+	for u in ai.world.units:
+		if u == null or not u.alive or u.is_downed():
+			continue
+		out[Vector2i(int(u.tx), int(u.ty))] = true
+	return out
+
+
+## 生产预留：先把「现在真的能造出来」的补员缺口全部留住，剩下的才允许建造。
+##
+## ★★ 2026.10.25：从「固定留 3 单」改成「按当前可生产缺口留」。
+##   用户口径是**造部队始终优先**：有 5 支缺编队、每支缺 3 个兵时，
+##   不能只留 3 个兵的钱，否则塔 / 墙 / 升级会一路把补员预算吃掉。
+## ★ 只算 `pending_recruit_units()`（脱战 / 人口够 / 未满编 / 队列没满）：
+##   被人口或战斗卡住的队伍留钱也没用，不能因此把建造永久锁死。
 static func _production_reserve(ai) -> Dictionary:
 	var eco: Dictionary = ai.profile.get("economy", {})
 	var build_cfg: Dictionary = ai.profile.get("build", {})
 	var rf := float(eco.get("reserve_food", 80.0))
 	var rg := float(eco.get("reserve_gold", 80.0))
+	var pending := AiArmyRes.pending_recruit_units(ai)
 	var under := AiArmyRes.understrength_team_count(ai)
-	if under > 0:
-		var n := maxi(1, int(build_cfg.get("production_reserve_recruits", 3)))
+	if pending > 0 or under > 0:
+		var n := maxi(1, int(build_cfg.get("production_reserve_recruits", 6)))
+		n = maxi(n, pending)
 		var c: Dictionary = AiEconomyRes.cheapest_cost(ai)
 		if c.is_empty():
 			c = {"food": 50.0, "gold": 50.0}
@@ -374,22 +737,12 @@ static func _build_available(ai) -> Dictionary:
 	}
 
 
-## 有队伍缺编时暂停防御建造，先把钱留给补员 / 补将。
+## 有缺编队伍时暂停防御建造，先把钱留给补员 / 补将。
 static func _defense_paused(ai) -> bool:
 	var build_cfg: Dictionary = ai.profile.get("build", {})
 	if not bool(build_cfg.get("pause_defense_when_understrength", true)):
 		return false
 	return AiArmyRes.understrength_team_count(ai) > 0
-
-
-static func _any_own_threat(ai) -> bool:
-	for z in ai.world.zones.zones:
-		if typeof(z) != TYPE_DICTIONARY:
-			continue
-		var zd: Dictionary = z
-		if String(zd.get("owner", "")) == ai.faction and _zone_threatened(ai, zd):
-			return true
-	return false
 
 
 ## 防御建筑（塔 / 墙 / 升级）的 affordability：必须留够生产预留。
@@ -410,11 +763,15 @@ static func _defense_upgrade_candidate(ai) -> Dictionary:
 		return {}
 	var best = null
 	var best_score := -INF
+	var tower_target_met := _tower_count(ai) >= _tower_target(ai)
 	for b in ai.world.building_list:
 		if b == null or not b.alive or String(b.owner) != ai.faction:
 			continue
 		var bt := String(b.type)
 		if bt != "tower" and bt != "wall":
+			continue
+		# ★ 2026.10.25：塔目标还没建满时，不升级墙（钱先留给塔）。
+		if bt == "wall" and not tower_target_met:
 			continue
 		if b.is_upgrading():
 			continue
@@ -429,6 +786,8 @@ static func _defense_upgrade_candidate(ai) -> Dictionary:
 		var zd = ai.world.zone_by_id(zid)
 		if zd == null:
 			continue
+		if _zone_capture_blocked(ai, zd):
+			continue
 		var threatened := _zone_threatened(ai, zd)
 		var front := _zone_is_frontier(ai, zd)
 		if not threatened and not front:
@@ -442,7 +801,8 @@ static func _defense_upgrade_candidate(ai) -> Dictionary:
 		if bt == "wall" and not _missing_wall_tiles(ai, zd).is_empty():
 			score += 8.0
 		if bt == "tower":
-			score += float(build_cfg.get("defense_upgrade_tower_bonus", 12.0))
+			# ★ 2026.10.25：塔升级永远排在墙升级前面（与「塔优先于墙」同一条口径）。
+			score += 1000.0 + float(build_cfg.get("defense_upgrade_tower_bonus", 12.0))
 		if score > best_score:
 			best_score = score
 			best = b
@@ -539,6 +899,15 @@ static func _rich_tower_bonus(ai) -> int:
 
 
 ## 区划当前是不是被入侵 / 正在被敌对占领。
+## 区划是否被敌方踏进中心 3×3 占领区 —— 这时整块区划不能建造。
+static func _zone_capture_blocked(ai, zd) -> bool:
+	if ai == null or ai.world == null or zd == null:
+		return false
+	if not ai.world.has_method("zone_capture_blocked"):
+		return false
+	return bool(ai.world.zone_capture_blocked(zd, ai.faction))
+
+
 static func _zone_threatened(ai, zd: Dictionary) -> bool:
 	var center: Variant = zd.get("center", null)
 	if center == null:
@@ -572,11 +941,14 @@ static func _zone_threatened(ai, zd: Dictionary) -> bool:
 
 
 ## ★★ 选一个「目标数量还没满」的己方区划。被入侵的区划优先级最高；
-## 其次是有缺口的前线；后方目标通常为 0（但配置调大后也能建）。
+## 其次是有缺口的前线；**只要有前线缺口，后方区划就完全不考虑**。
+## 后方目标通常为 0（但配置调大后也能建；仍然排在前线之后）。
 static func _pick_tower_zone(ai):
 	var build_cfg: Dictionary = ai.profile.get("build", {})
-	var best = null
-	var best_score := -INF
+	var front_best = null
+	var front_score := -INF
+	var rear_best = null
+	var rear_score := -INF
 	for z in ai.world.zones.zones:
 		if typeof(z) != TYPE_DICTIONARY:
 			continue
@@ -585,6 +957,9 @@ static func _pick_tower_zone(ai):
 			continue
 		if zd.get("center", null) == null:
 			continue
+		# 区划正被踩占领区：不选它造塔，先打退敌人。
+		if _zone_capture_blocked(ai, zd):
+			continue
 		var zid := int(zd.get("id", -1))
 		var desired := _zone_tower_target(ai, zd)
 		var current := _tower_count_in_zone(ai, zid)
@@ -592,20 +967,27 @@ static func _pick_tower_zone(ai):
 		if deficit <= 0:
 			continue
 		var threatened := _zone_threatened(ai, zd)
+		var frontier := _zone_is_frontier(ai, zd)
 		var score := float(deficit) * 10.0
 		if threatened:
 			score += 100.0
-		elif _zone_is_frontier(ai, zd):
+		elif frontier:
 			score += float(build_cfg.get("tower_frontier_bonus", 4.0))
 		var c: Vector2i = zd["center"]
 		var base = ai.world.find_base_of(ai.faction)
 		if base != null:
 			score -= Vector2(float(c.x - base.tx), float(c.y - base.ty)).length() * 0.05
-		if score > best_score or (is_equal_approx(score, best_score) \
-				and (best == null or zid < int((best as Dictionary).get("id", -1)))):
-			best_score = score
-			best = zd
-	return best
+		if threatened or frontier:
+			if score > front_score or (is_equal_approx(score, front_score) \
+					and (front_best == null or zid < int((front_best as Dictionary).get("id", -1)))):
+				front_score = score
+				front_best = zd
+		else:
+			if score > rear_score or (is_equal_approx(score, rear_score) \
+					and (rear_best == null or zid < int((rear_best as Dictionary).get("id", -1)))):
+				rear_score = score
+				rear_best = zd
+	return front_best if front_best != null else rear_best
 
 
 static func _zone_is_frontier(ai, zone: Dictionary) -> bool:

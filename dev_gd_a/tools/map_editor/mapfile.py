@@ -12,7 +12,7 @@
       "zone_list": [                     // ★ 区块表（名字 / 种类 / 区划中心 / 产能 / 人口上限）
         { "id": 0, "name": "A1", "kind": "population",   // ★ 区划种类（food / gold / population）
           "center": [2, 1],
-          "production": {"food": 4, "gold": 0, "population": 0.4},   // 每秒绝对值（不乘地块数），游戏以此为准
+          "production": {"food": 1, "gold": 0, "population": 0.5},   // 每秒绝对值（不乘地块数），游戏以此为准
           "population_cap": 10,          // 没填就不写 → 游戏侧默认 1
           "x0": 0, "y0": 0, "x1": 3, "y1": 3, "tiles": [[0,0], ...] }
       ],
@@ -289,7 +289,7 @@ def _read_zone_centers(model: MapModel, raw) -> None:
             model.set_zone_center(zid, x - ox, y - oy)
 
 
-## 读每个区块的产能：`zone_list[].production = {"food": 4, "gold": 0, "population": 0.4}`。
+## 读每个区块的产能：`zone_list[].production = {"food": 1, "gold": 0, "population": 0.5}`。
 ##
 ## ★ 单位是「**该区划每秒的绝对值**」（不乘地块数）—— 只有特化与科技仍按每地块。
 ##
@@ -560,7 +560,7 @@ def model_to_dict(model: MapModel) -> dict:
             entry["center"] = [int(zone.center[0]) - x0, int(zone.center[1]) - y0]
         # 产能：只在真的有非零产能时才写 —— 没配产能的区块导出后与从前逐字节一致
         # ⚠️ **游戏侧不按种类兜底**（用户确认保持老图行为）：没写 production 就是 0 产量，
-        #    所以「数字全填 0」与「种类预设（如人口区划每秒 2 粮食 + 1 人口）」不会打架 —— 以数字为准。
+        #    所以「数字全填 0」与「种类预设（如人口区划每秒 1 粮食 + 0.5 人口）」不会打架 —— 以数字为准。
         # ★ 写出的数字是「该区划每秒的绝对值」（不乘地块数）。
         if model.zone_has_production(zone.zone_id):
             entry["production"] = {

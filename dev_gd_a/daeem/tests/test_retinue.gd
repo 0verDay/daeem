@@ -369,8 +369,10 @@ func _test_recruit(cfg) -> void:
 
 	var kind := String(unit_kinds[0])          # 长枪兵
 
-	w.resources["food"] = 1000.0
-	w.resources["gold"] = 1000.0
+	# ★ 2026.10.25：全部造价 ×2 —— 七个兵种各招一遍要 1240 粮 / 960 金，
+	#   原来的 1000/1000 已经不够（投石车招不出来）。这里给足，本用例验的是编制归属。
+	w.resources["food"] = 5000.0
+	w.resources["gold"] = 5000.0
 	w.zones.zone_at(g1.tx, g1.ty)["population"] = 10.0
 	w.zones.zone_at(g2.tx, g2.ty)["population"] = 10.0
 

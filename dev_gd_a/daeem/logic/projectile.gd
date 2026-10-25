@@ -82,7 +82,15 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 ## 目标还“在场且可打”吗？（单位与建筑都有 `alive`）
 static func _target_valid(p) -> bool:
 	var t = p.target
-	return t != null and bool(t.alive)
+	if t == null or not is_instance_valid(t) or not bool(t.alive):
+		return false
+	# 单位目标倒地后不再追着它飞：`take_damage` 会免伤，继续命中只是浪费。
+	# ⚠️ 建筑没有 `downed` 字段，`get("downed")` 会返回 null —— 不能直接 `bool(null)`
+	#    （Godot 会报 “Nonexistent 'bool' constructor”）。只在它确实是 bool 时才判。
+	var downed: Variant = t.get("downed")
+	if typeof(downed) == TYPE_BOOL and bool(downed):
+		return false
+	return true
 
 
 ## 目标当前位置（逻辑格）：单位取 `pos`，建筑取 `center()`；目标为空时退回旧值。

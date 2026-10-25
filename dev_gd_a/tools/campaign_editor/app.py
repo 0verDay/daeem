@@ -60,6 +60,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from . import levelfile
 from . import model as model_mod
 from .model import (
+    AI_COMMANDER,
     AI_GARRISON,
     AI_REDDOT,
     AI_KINDS,
@@ -470,23 +471,34 @@ def _apply_theme(root: tk.Tk) -> ttk.Style:
 
 
 class _NoRepaint:
-    """整块重建控件时先把窗口的绘制锁住，建完再一次性解开 —— 消掉「闪白」。
+    """整块重建控件时先把窗口的绘制关掉，建完再一次性打开 —— 消掉「闪白」。
 
-    ★ 用 `LockWindowUpdate`（Windows 上专治「批量改控件时闪烁」的 API），**不是**
-      `WM_SETREDRAW` —— 后者会把窗口的激活状态一起搅乱（实测：跑完一个用例之后，
-      下一个新建的窗口拿不到键盘焦点）。`LockWindowUpdate` 只锁绘制，不动焦点。
-    ★ 只在 Windows 上生效，且**任何异常都退化成空操作** —— 绝不连累别的东西。
+    ★★ 为什么换成 `WM_SETREDRAW`（2026.10 用户报「改一个数就闪一下」）：
+      `LockWindowUpdate` 是给「拖动窗口时锁别的窗口」用的，它只锁**一个**窗口、
+      而且在 DWM 下常常压不住 Tk 子控件的中间态（销毁后先露出白底，再画新控件）。
+      `WM_SETREDRAW = 0` 才是「批量改控件期间不许画」的标准做法：重建期间窗口
+      保持上一帧，`= 1` 之后一次 `RedrawWindow(...ALLCHILDREN|UPDATENOW)` 画到最终态。
+    ★ 同时锁 **顶层窗口 + Tk 客户区**：Tk 在 Windows 上只有一个客户区 HWND，
+      两个都发一遍才能覆盖不同 Tk 版本的绘制路径。
+    ★ 只在 Windows 上生效；任何异常都退化成空操作 —— 绝不连累别的东西。
     """
 
+    _WM_SETREDRAW = 0x000B
+    _RDW_INVALIDATE = 0x0001
+    _RDW_ERASE = 0x0004
+    _RDW_ALLCHILDREN = 0x0080
+    _RDW_UPDATENOW = 0x0100
     _GA_ROOT = 2
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self._user32 = None
-        self._top = None
+        self._hwnds: List[int] = []
 
     def __enter__(self):
-        if sys.platform != "win32":
+        # 窗口不可见（初始化 / 无头测试 withdraw）时不做绘制锁定：
+        # 在 withdrawn 窗口上发 WM_SETREDRAW 会把后续 focus_set() 弄失效。
+        if sys.platform != "win32" or not self.root.winfo_viewable():
             return self
         try:
             import ctypes
@@ -494,26 +506,41 @@ class _NoRepaint:
             user32 = ctypes.windll.user32
             user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
             user32.GetAncestor.restype = wintypes.HWND
-            user32.LockWindowUpdate.argtypes = [wintypes.HWND]
-            user32.LockWindowUpdate.restype = wintypes.BOOL
+            user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT,
+                                            wintypes.WPARAM, wintypes.LPARAM]
+            user32.SendMessageW.restype = wintypes.LPARAM
+            user32.RedrawWindow.argtypes = [wintypes.HWND, ctypes.c_void_p,
+                                            ctypes.c_void_p, wintypes.UINT]
             top = user32.GetAncestor(self.root.winfo_id(), self._GA_ROOT)
-            if top:
-                user32.LockWindowUpdate(top)
-                self._user32 = user32
-                self._top = top
+            hwnds: List[int] = []
+            for hwnd in (top, self.root.winfo_id()):
+                if hwnd and int(hwnd) not in hwnds:
+                    hwnds.append(int(hwnd))
+            for hwnd in hwnds:
+                user32.SendMessageW(hwnd, self._WM_SETREDRAW, 0, 0)
+            self._hwnds = hwnds
+            self._user32 = user32
         except Exception:                                   # noqa: BLE001
             self._user32 = None
-            self._top = None
+            self._hwnds = []
         return self
 
     def __exit__(self, *exc):
         user32, self._user32 = self._user32, None
-        self._top = None
-        if user32 is not None:
+        hwnds, self._hwnds = self._hwnds, []
+        if user32 is None or not hwnds:
+            return False
+        for hwnd in hwnds:
             try:
-                user32.LockWindowUpdate(None)               # NULL = 解锁
+                user32.SendMessageW(hwnd, self._WM_SETREDRAW, 1, 0)
             except Exception:                               # noqa: BLE001
                 pass
+        try:
+            user32.RedrawWindow(hwnds[0], None, None,
+                                self._RDW_INVALIDATE | self._RDW_ERASE
+                                | self._RDW_ALLCHILDREN | self._RDW_UPDATENOW)
+        except Exception:                                   # noqa: BLE001
+            pass
         return False
 
 
@@ -577,6 +604,12 @@ class EditorApp:
         #:    ★ 少了这一步的后果是**死循环**，实测直接把进程挂住。
         self._applied_entry_sel: Optional[str] = None
         self._applied_level_sel: Optional[str] = None
+        #: ★★ 下一次 refresh 是否把侧边栏滚回顶部（换页签 / 换关卡 / 重新载入 = 是；
+        #:    改数值 / 摆东西 = 否，保持用户当前看的位置）。
+        self._sidebar_reset_pending = False
+        #: ★★ 下一次重建画布是否要「适应视图」。只有首次进摆放页 / 换关卡 / 换地图
+        #:    才置 True；改数值 / 摆将领绝不能把用户的缩放与平移重置掉。
+        self._fit_pending = True
         #: 最近一次写盘的结果（测试与状态栏都读它）。
         self.last_written: List[str] = []
         self.last_issues: List[Issue] = []
@@ -813,6 +846,81 @@ class EditorApp:
         return None
 
     # ==================================================================
+    # ★★ 重建前后的界面状态：整块重建控件不等于「用户想回到初始位置」
+    #
+    # 用户口径：改一个数值 / 摆一位将领之后，侧边栏滚动位置、列表滚动位置、
+    # 画布的缩放与平移、键盘焦点都不应该跳回去。所以 refresh_all() 在重建前
+    # 拍一份快照，重建后原样恢复；只有「换页签 / 换关卡 / 重新载入」才显式
+    # 要求回到顶部（见 `_sidebar_reset_pending`）。
+    # ==================================================================
+
+    def _ui_snapshot(self) -> dict:
+        state: dict = {"sidebar": None, "trees": {}, "focus": None}
+        try:
+            state["sidebar"] = self.sidebar_canvas.canvasy(0.0)
+        except tk.TclError:
+            pass
+        # ★ 用「深度遍历下标」而不是控件路径：Tk 的自动控件名（.!frame4）在销毁/
+        #   重建之后会往后递增，路径对不上；界面结构没变时同一个下标就是同一个逻辑控件。
+        widgets = list(_walk_widgets(self.root))
+        for index, widget in enumerate(widgets):
+            if isinstance(widget, ttk.Treeview):
+                try:
+                    state["trees"][index] = float(widget.yview()[0])
+                except tk.TclError:
+                    continue
+        try:
+            focused = self.root.focus_get()
+            if focused in widgets:
+                pos = None
+                if isinstance(focused, ttk.Entry):
+                    try:
+                        pos = int(focused.index("insert"))
+                    except (tk.TclError, ValueError):
+                        pos = None
+                state["focus"] = (widgets.index(focused), focused.winfo_class(), pos)
+        except tk.TclError:
+            pass
+        return state
+
+    def _ui_restore(self, state: dict, *, sidebar: bool = True) -> None:
+        if sidebar:
+            offset = state.get("sidebar")
+            if offset is not None:
+                self._restore_sidebar_offset(offset)
+        widgets = list(_walk_widgets(self.root))
+        for index, first in state.get("trees", {}).items():
+            if 0 <= index < len(widgets) and isinstance(widgets[index], ttk.Treeview):
+                try:
+                    widgets[index].yview_moveto(max(0.0, min(1.0, float(first))))
+                except tk.TclError:
+                    pass
+        focus = state.get("focus")
+        if focus is not None:
+            index, cls, pos = focus
+            if 0 <= index < len(widgets):
+                widget = widgets[index]
+                try:
+                    if widget.winfo_exists() and widget.winfo_class() == cls:
+                        widget.focus_set()
+                        if pos is not None and isinstance(widget, ttk.Entry):
+                            widget.icursor(pos)
+                except tk.TclError:
+                    pass
+
+    def _restore_sidebar_offset(self, offset: float) -> None:
+        overflow = self.sidebar_overflow()
+        if overflow <= 0:
+            self._pin_sidebar_top()
+            return
+        total = max(1.0, float(self.sidebar.winfo_reqheight()))
+        pos = max(0.0, min(float(offset), float(overflow)))
+        try:
+            self.sidebar_canvas.yview_moveto(pos / total)
+        except tk.TclError:
+            pass
+
+    # ==================================================================
     # 状态 / 标题
     # ==================================================================
 
@@ -838,6 +946,9 @@ class EditorApp:
             return
         self.current_level_id = level_id
         self._reset_level_state()
+        # 换关卡 = 新地图：侧边栏回顶部、画布重新适应视图（这两件是用户预期的「重置」）。
+        self._sidebar_reset_pending = True
+        self._fit_pending = True
         self.refresh_all()
         self.fit_view()
 
@@ -943,6 +1054,9 @@ class EditorApp:
         self._pan_anchor = None
         self._left_down_at = None
         self.space_held = False
+        # 换页签回顶部是用户预期的；摆放页第一次进来要适应视图。
+        self._sidebar_reset_pending = True
+        self._fit_pending = True
         self.refresh_all()
         for k, _label, hint in PAGES:
             if k == key:
@@ -955,13 +1069,22 @@ class EditorApp:
           换来「界面永远等于数据」——不用维护一堆控件与字段的对应关系。
         ★★ 重建期间必须把重入闸门关上（见 `self._suppress` 的说明）：不然
           `selection_set()` 触发的回调会再调一次 `refresh_all()`，直接死循环。
+        ★★ 重建**不等于**把用户踢回初始位置：重建前拍快照（侧边栏 / 列表滚动、
+          画布缩放平移、键盘焦点），重建后恢复。只有换页签 / 换关卡 / 重新载入
+          才用 `_sidebar_reset_pending` 要求侧边栏回顶部。
         """
+        state = self._ui_snapshot()
+        reset_sidebar = self._sidebar_reset_pending
+        self._sidebar_reset_pending = False
         self._suppress = True
         try:
             with _NoRepaint(self.root):        # 整块重建期间关掉重绘，消掉闪白
                 self._rebuild_body()
                 self._rebuild_sidebar()
                 self.update_title()
+                self._ui_restore(state, sidebar=not reset_sidebar)
+                if reset_sidebar:
+                    self._pin_sidebar_top()
         finally:
             self._suppress = False
 
@@ -1218,7 +1341,14 @@ class EditorApp:
                  font=("Microsoft YaHei UI", 8)).pack(side="left", padx=10)
 
         self.canvas.update_idletasks()
-        self.fit_view()
+        # ★★ 只有首次进摆放页 / 换关卡 / 换地图才「适应视图」。以前每次 refresh_all
+        #    都会重建画布并强制 fit_view —— 于是改一个数值 / 摆一位将领，缩放和平移
+        #    就被打回初始位置（用户报的「所有 UI 回到初始位置」其中一半）。
+        if self._fit_pending:
+            self._fit_pending = False
+            self.fit_view()
+        else:
+            self.request_redraw()
 
     # ---- 坐标换算（与 map_editor 同一套：1 格 = CELL_PX × zoom 像素）----
 
@@ -1243,7 +1373,8 @@ class EditorApp:
         self.oy = ch / 2 - cy * size
 
     def fit_view(self) -> None:
-        """把整张地图放进视口正中。"""
+        """把整张地图放进视口正中（显式「适应视图」；重建时不再自动调用）。"""
+        self._fit_pending = False
         info = self.map_info()
         if info is None or not hasattr(self, "canvas"):
             return
@@ -1259,6 +1390,7 @@ class EditorApp:
         """缩放；`anchor` 是**光标位置**（给了就以它为锚点，光标底下那一点不动）。"""
         if not hasattr(self, "canvas"):
             return
+        self._fit_pending = False
         new_zoom = max(MIN_ZOOM, min(MAX_ZOOM, self.zoom * factor))
         if abs(new_zoom - self.zoom) < 1e-9:
             return
@@ -1604,6 +1736,7 @@ class EditorApp:
         """拖动中：`_pan_anchor` 有值 = 正在平移（中键或空格 + 左键都走这里）。"""
         if self._pan_anchor is None:
             return
+        self._fit_pending = False
         self.ox += event.x - self._pan_anchor[0]
         self.oy += event.y - self._pan_anchor[1]
         self._pan_anchor = (event.x, event.y)
@@ -2492,6 +2625,8 @@ class EditorApp:
         # ★★ 换地图 = 区划表按新地图**整张重建**（旧地图的区划号对新地图没有意义）。
         #    战役编辑器不再有「（用地图的）」，所以这里必须把新地图的 owner 抄成显式值。
         lv.ensure_zone_owners(self.maps.get(str(lv.map_id)), force=True)
+        # 换地图 = 画布内容整张换了：重新适应视图（这是用户预期的「换了一张图」）。
+        self._fit_pending = True
         self._after_change()
 
     def _set_fail_zone(self, index: int, text: str) -> None:
@@ -2761,10 +2896,12 @@ class EditorApp:
                        lambda e, f=fid, c=combo: self._set_faction_side(f, c.get()))
 
     def _ai_label(self, ai: str) -> str:
-        return {AI_NONE: "无", AI_GARRISON: "阵地性", AI_REDDOT: "红点性"}.get(ai, "无")
+        return {AI_NONE: "无", AI_GARRISON: "阵地性", AI_REDDOT: "红点性",
+                AI_COMMANDER: "指挥官"}.get(ai, "无")
 
     def _ai_value(self, label: str) -> str:
-        return {"无": AI_NONE, "阵地性": AI_GARRISON, "红点性": AI_REDDOT}.get(label, AI_NONE)
+        return {"无": AI_NONE, "阵地性": AI_GARRISON, "红点性": AI_REDDOT,
+                "指挥官": AI_COMMANDER}.get(label, AI_NONE)
 
     def _point_faction(self, fid: str) -> None:
         """把地图/空表里的某一方**写进这一关**的 factions[]（带名字与颜色）。"""
@@ -2948,26 +3085,33 @@ class EditorApp:
     # ==================================================================
 
     def _general_choices(self) -> Tuple[str, ...]:
-        """「将领」下拉的选项：config 的三位将领（`unit.general.types`）。"""
+        """「将领」下拉的选项：config 里的全部将领档位（`unit.general.types`）。
+
+        ★ 档位数 = `types` 的长度（当前配置是 10）；每项都带档位序号，重复的兵种
+          也各占一行 —— 显式档位由 `general_profile` 保存，不再靠 `unit_type` 反推。
+        """
         n = len(self.config.general_types)
         if n == 0:
             return ("（config 里没有将领）",)
         return tuple(self.config.general_label(i + 1) for i in range(n))
 
     def _general_label_of_unit(self, unit: UnitEntry) -> str:
-        """选中将领的「将领」显示值（按它的兵种查出是第几档）。"""
+        """选中将领的「将领」显示值（按**显式档位** → unit_type → kind 查）。"""
         if not self.config.general_types:
             return "（config 里没有将领）"
-        profile = self.config.general_profile_of(unit.unit_type)
-        if profile < 0:
+        profile = model_mod.general_profile_of_unit(unit, self.config) - 1
+        if profile < 0 or profile >= len(self.config.general_types):
             profile = 0
         return self.config.general_label(profile + 1)
 
     def _set_unit_general(self, label: str) -> None:
-        """「将领」下拉提交：把选中将领的兵种改成所选那一档（数值 / 名字随之改变）。
+        """「将领」下拉提交：把选中将领的**档位**改成所选那一档。
 
-        ⚠️ 只改 `unit_type`：数值档、编制上限、默认名字都由运行时的**将领档**查表得到，
-           「将领序号」（名册号）不动 —— 两者相互独立。
+        ★★ 写两样东西：
+          · `unit_type` = 这一档的兵种（作者看得见、运行时也读）；
+          · `general_profile` = 档位序号（1 起）—— `types` 里兵种重复时，只有它能
+            区分「将领 4」和「将领 1」。若这个兵种在 types 里第一次出现的位置正好
+            就是所选档位，就清掉显式档位（旧数据 / 1..3 档保持不写这个键）。
         """
         u = self.selected_unit()
         if u is None:
@@ -2975,7 +3119,10 @@ class EditorApp:
         n = self._escort_index_from_label(label)      # 「将领 N（…）」→ N
         types = self.config.general_types
         if 1 <= n <= len(types):
-            u.unit_type = types[n - 1]
+            type_id = types[n - 1]
+            u.unit_type = type_id
+            first = self.config.general_profile_of(type_id) + 1
+            u.general_profile = n if n != first else None
         self.status("将领 → %s" % label)
         self.refresh_all()
 
@@ -2992,8 +3139,9 @@ class EditorApp:
         """
         box = self._section("附属单位规格",
                             "运行时**当场随机生成**满编附属兵（类型按权重抽、数量 ≤ 编制上限）")
-        # ★★ 编制上限按**将领档**取（由这位将领的兵种 `unit_type` 查出来），不是将领序号。
-        cap = self.config.general_cap(self.config.general_profile_of(unit.unit_type) + 1)
+        # ★★ 编制上限按**将领档**取（`general_profile` → unit_type → kind），不是将领序号。
+        profile = model_mod.general_profile_of_unit(unit, self.config) - 1
+        cap = self.config.general_cap(profile + 1 if profile >= 0 else 1)
         self._entry_cell(box, "生成数量", str(int(unit.escort_count)),
                          lambda text: self._set_escort_count(unit, text))
         self._hint(box, "编制上限 = %d（在单位编辑器的「将领」页改）；"
@@ -3600,6 +3748,8 @@ class EditorApp:
             return                      # 重建的回声（见 `_applied_entry_sel` 的说明）
         kind, index = str(sel[0]).split(":", 1)
         self.selection = (kind, int(index))
+        # 点另一行 = 换了编辑对象：侧边栏回顶部，让「选中的单位 / 建筑」第一眼可见。
+        self._sidebar_reset_pending = True
         self.refresh_all()
 
     def _set_unit_field(self, field: str, value: Any) -> None:
@@ -3660,6 +3810,13 @@ class EditorApp:
 # ======================================================================
 # 小工具
 # ======================================================================
+
+def _walk_widgets(widget):
+    """深度遍历一棵控件树（快照/恢复 Treeview 滚动位置用）。"""
+    yield widget
+    for child in widget.winfo_children():
+        yield from _walk_widgets(child)
+
 
 def _parse_point(text: str) -> Optional[Tuple[int, int]]:
     """`"3,4"` / `"3 4"` → `(3, 4)`；解析不了 → None。"""

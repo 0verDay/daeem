@@ -5,6 +5,7 @@ extends "res://tests/test_case.gd"
 const GameSceneRes = preload("res://view/game_scene3d.gd")
 const CampaignRes = preload("res://logic/campaign.gd")
 const FactionRes = preload("res://logic/faction.gd")
+const AiArmyRes = preload("res://logic/ai_army.gd")
 
 const DEMO_DIR := "res://data/campaigns/demo"
 const LEVEL_ID := "ai_test"
@@ -42,7 +43,8 @@ func _run() -> void:
 	ok(w.commander_factions().has("F1"), "F1 是 commander")
 	ok(w.ai_commanders.has("F1"), "F1 有 AI 控制器")
 	eq(String(w.ai_directive_of("F1").get("kind", "")), "auto", "观战默认交给 AI 自主战略")
-	ok(w.player_factions.has("F1"), "观战方仍算目标 / 判负口径的玩家阵营")
+	ok(w.player_factions.is_empty(), "★ 观战者是纯 spectator：F1 不算「玩家的家」")
+	ok(w.objective_state.is_empty(), "★ 观战者没有自己的目标 / 胜负")
 	ok(w.find_base_of("F1") != null, "F1 有基地")
 	var z1 = w.zone_by_id(1)
 	ok(z1 != null and float((z1 as Dictionary).get("production", {}).get("gold", 0.0)) > 0.0,
@@ -94,14 +96,29 @@ func _run() -> void:
 	eq(String(w2.my_faction), "p1", "被观察的是 p1")
 	ok(w2.ai_commanders.has("p1"), "p1 有 AI 控制器")
 	ok(w2.ai_commanders.has("p2"), "★★ p2 也被 commander 接管（AI vs AI）")
+	# ★★ 回归：开局没有守军时，p2 选初始探索队只能选自己的将，
+	#    不能因为遍历 world.units 而选到 p1 的将（曾导致 p1/p2 行为完全不对等）。
+	if w2.ai_commanders.has("p2"):
+		var g2 = AiArmyRes._first_alive_general(w2.ai_commanders["p2"])
+		ok(g2 != null and String(g2.faction) == "p2",
+			"★★ p2 的开局探索队不会选到 p1 的将领")
+	ok(w2.player_factions.is_empty(), "★★ 观战者独立于 p1 / p2（没有玩家阵营）")
+	ok(w2.objective_state.is_empty(), "★★ 观战者没有自己的目标 / 胜负")
 	ok(w2.find_base_of("p2") != null, "★★ p2 有基地（双 AI 正常发展）")
 	ok(not FactionRes.same_side_for_attack("p1", "p2"), "★★ p1 / p2 互为敌人")
+	# ★★ 观战者不得给被观察方额外注资：p1 / p2 同为 commander，0.1 秒收入必须相同。
+	var p1_food0: float = float(w2.ai_faction_resources["p1"]["food"])
+	var p2_food0: float = float(w2.ai_faction_resources["p2"]["food"])
+	w2.tick(0.1)
+	near(float(w2.ai_faction_resources["p1"]["food"]) - p1_food0,
+		float(w2.ai_faction_resources["p2"]["food"]) - p2_food0, 1e-4,
+		"★★ 观战者不给 p1 额外收入（双倍结算已修）")
 	var p2_reject := String(w2.set_ai_directive("p2", "expand", -1.0, -1.0, "p1"))
 	ok(p2_reject != "", "★★ 玩家不能给 p2 下指令（拒因 %s）" % p2_reject)
-	# ★ 只给玩家显示开全图：p1 的显示查询全亮，但 p1 的**逻辑**视野仍是正常迷雾。
+	# ★ 只给观战者显示开全图：显示键 = 被观察方 p1，但 p1 的**逻辑**视野仍是正常迷雾。
 	ok(w2.fog != null and w2.fog.is_revealed_for_display("p1"),
-		"★★ 玩家（p1）显示全图")
-	ok(w2.fog.tile_visible("p1", 0, 21), "★★ 玩家能看到远处格子")
+		"★★ 观战者显示全图（显示键 = 被观察方 p1）")
+	ok(w2.fog.tile_visible("p1", 0, 21), "★★ 观战者能看到远处格子")
 	ok(not w2.fog.logic_tile_visible("p1", 0, 21),
 		"★★ AI p1 的逻辑视野仍是正常迷雾（没有开天眼）")
 	ok(not w2.fog.tile_visible("p2", 0, 21), "p2 没有被开显示全图")

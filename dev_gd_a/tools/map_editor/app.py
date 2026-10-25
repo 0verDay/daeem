@@ -419,23 +419,30 @@ def _apply_theme(root: tk.Tk) -> ttk.Style:
 
 
 class _NoRepaint:
-    """整块重建控件时先把窗口的绘制锁住，建完再一次性解开 —— 消掉「闪白」。
+    """整块重建控件时先把窗口的绘制关掉，建完再一次性打开 —— 消掉「闪白」。
 
-    ★ 用 `LockWindowUpdate`（Windows 上专治「批量改控件时闪烁」的 API），**不是**
-      `WM_SETREDRAW` —— 后者会把窗口的激活状态一起搅乱（实测：跑完一个用例之后，
-      下一个新建的窗口拿不到键盘焦点）。`LockWindowUpdate` 只锁绘制，不动焦点。
-    ★ 只在 Windows 上生效，且**任何异常都退化成空操作** —— 绝不连累别的东西。
+    ★★ 为什么换成 `WM_SETREDRAW`：`LockWindowUpdate` 只锁一个窗口，在 DWM 下
+      常常压不住 Tk 销毁/新建控件时的中间态。`WM_SETREDRAW = 0` 才是「批量改
+      控件期间不许画」的标准做法；`= 1` 后一次 `RedrawWindow` 画到最终态。
+    ★ 同时锁 **顶层窗口 + Tk 客户区**；只在 Windows 上生效，异常退化成空操作。
     """
 
+    _WM_SETREDRAW = 0x000B
+    _RDW_INVALIDATE = 0x0001
+    _RDW_ERASE = 0x0004
+    _RDW_ALLCHILDREN = 0x0080
+    _RDW_UPDATENOW = 0x0100
     _GA_ROOT = 2
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self._user32 = None
-        self._top = None
+        self._hwnds: List[int] = []
 
     def __enter__(self):
-        if sys.platform != "win32":
+        # 窗口不可见（初始化 / 无头测试 withdraw）时不做绘制锁定：
+        # 在 withdrawn 窗口上发 WM_SETREDRAW 会把后续 focus_set() 弄失效。
+        if sys.platform != "win32" or not self.root.winfo_viewable():
             return self
         try:
             import ctypes
@@ -443,27 +450,49 @@ class _NoRepaint:
             user32 = ctypes.windll.user32
             user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
             user32.GetAncestor.restype = wintypes.HWND
-            user32.LockWindowUpdate.argtypes = [wintypes.HWND]
-            user32.LockWindowUpdate.restype = wintypes.BOOL
+            user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT,
+                                            wintypes.WPARAM, wintypes.LPARAM]
+            user32.SendMessageW.restype = wintypes.LPARAM
+            user32.RedrawWindow.argtypes = [wintypes.HWND, ctypes.c_void_p,
+                                            ctypes.c_void_p, wintypes.UINT]
             top = user32.GetAncestor(self.root.winfo_id(), self._GA_ROOT)
-            if top:
-                user32.LockWindowUpdate(top)
-                self._user32 = user32
-                self._top = top
+            hwnds: List[int] = []
+            for hwnd in (top, self.root.winfo_id()):
+                if hwnd and int(hwnd) not in hwnds:
+                    hwnds.append(int(hwnd))
+            for hwnd in hwnds:
+                user32.SendMessageW(hwnd, self._WM_SETREDRAW, 0, 0)
+            self._hwnds = hwnds
+            self._user32 = user32
         except Exception:                                   # noqa: BLE001
             self._user32 = None
-            self._top = None
+            self._hwnds = []
         return self
 
     def __exit__(self, *exc):
         user32, self._user32 = self._user32, None
-        self._top = None
-        if user32 is not None:
+        hwnds, self._hwnds = self._hwnds, []
+        if user32 is None or not hwnds:
+            return False
+        for hwnd in hwnds:
             try:
-                user32.LockWindowUpdate(None)               # NULL = 解锁
+                user32.SendMessageW(hwnd, self._WM_SETREDRAW, 1, 0)
             except Exception:                               # noqa: BLE001
                 pass
+        try:
+            user32.RedrawWindow(hwnds[0], None, None,
+                                self._RDW_INVALIDATE | self._RDW_ERASE
+                                | self._RDW_ALLCHILDREN | self._RDW_UPDATENOW)
+        except Exception:                                   # noqa: BLE001
+            pass
         return False
+
+
+def _walk_widgets(widget):
+    """深度遍历一棵控件树（快照/恢复 Treeview 滚动位置用）。"""
+    yield widget
+    for child in widget.winfo_children():
+        yield from _walk_widgets(child)
 
 
 class EditorApp:
@@ -542,6 +571,8 @@ class EditorApp:
         self._need_initial_view = True
         #: 合并重绘用的 after id（见 request_redraw）
         self._redraw_job: Optional[str] = None
+        #: ★★ 下一次重建侧边栏是否回顶部（换页签 / 新建 / 导入 = 是；改一格属性 = 否）。
+        self._sidebar_reset_pending = True
 
         self._setup_window()
         self._build_widgets()
@@ -759,6 +790,82 @@ class EditorApp:
             return None
         return "break"
 
+    def _ui_snapshot(self) -> dict:
+        """重建前拍一份「用户看到哪里」的快照：侧边栏偏移、列表滚动、焦点。
+
+        ★ 用「深度遍历下标」而不是控件路径：Tk 的自动控件名（.!frame4）销毁/重建
+          后会往后递增，路径对不上；界面结构没变时同一个下标就是同一个逻辑控件。
+        """
+        state: dict = {"sidebar": None, "trees": {}, "focus": None}
+        try:
+            state["sidebar"] = self.sidebar_canvas.canvasy(0.0)
+        except tk.TclError:
+            pass
+        widgets = list(_walk_widgets(self.root))
+        for index, widget in enumerate(widgets):
+            if isinstance(widget, ttk.Treeview):
+                try:
+                    state["trees"][index] = float(widget.yview()[0])
+                except tk.TclError:
+                    continue
+        try:
+            focused = self.root.focus_get()
+            if focused in widgets:
+                pos = None
+                if isinstance(focused, ttk.Entry):
+                    try:
+                        pos = int(focused.index("insert"))
+                    except (tk.TclError, ValueError):
+                        pos = None
+                state["focus"] = (widgets.index(focused), focused.winfo_class(), pos)
+        except tk.TclError:
+            pass
+        return state
+
+    def _ui_restore(self, state: dict, *, sidebar: bool = True) -> None:
+        if sidebar:
+            offset = state.get("sidebar")
+            if offset is not None:
+                self._restore_sidebar_offset(offset)
+        widgets = list(_walk_widgets(self.root))
+        for index, first in state.get("trees", {}).items():
+            if 0 <= index < len(widgets) and isinstance(widgets[index], ttk.Treeview):
+                try:
+                    widgets[index].yview_moveto(max(0.0, min(1.0, float(first))))
+                except tk.TclError:
+                    pass
+        focus = state.get("focus")
+        if focus is not None:
+            index, cls, pos = focus
+            if 0 <= index < len(widgets):
+                widget = widgets[index]
+                try:
+                    if widget.winfo_exists() and widget.winfo_class() == cls:
+                        widget.focus_set()
+                        if pos is not None and isinstance(widget, ttk.Entry):
+                            widget.icursor(pos)
+                except tk.TclError:
+                    pass
+
+    def _restore_sidebar_offset(self, offset: float) -> None:
+        try:
+            total = max(1.0, float(self.sidebar.winfo_reqheight()))
+            viewport = float(self.sidebar_canvas.winfo_height())
+        except tk.TclError:
+            return
+        overflow = max(0.0, total - viewport)
+        if overflow <= 0:
+            try:
+                self.sidebar_canvas.yview_moveto(0.0)
+            except tk.TclError:
+                pass
+            return
+        pos = max(0.0, min(float(offset), overflow))
+        try:
+            self.sidebar_canvas.yview_moveto(pos / total)
+        except tk.TclError:
+            pass
+
     def _build_sidebar(self) -> None:
         self._tile_widgets = {}
         #: 批量面板里的三个地形按钮（按地形 id 存）—— 只在框选时有，供测试与刷新取用。
@@ -774,11 +881,11 @@ class EditorApp:
             self._build_zone_sidebar()
         self._build_map_section()
         self._sidebar_page = self.page
-        # ★ 重建之后内容高度多半变了 → 顺手把滚动范围算对；换页签时回到顶部
-        #   （不回到顶部的话，从很长的区块页切到地块页会停在中间的空白处）。
+        # ★ 重建之后内容高度多半变了 → 顺手把滚动范围算对。**是否回顶部**由调用方
+        #   （`refresh_sidebar()`）按 `_sidebar_reset_pending` 决定：改一格属性不该
+        #   把用户从「人口上限」那一栏拽回顶部。
         try:
             self.sidebar.update_idletasks()
-            self.sidebar_canvas.yview_moveto(0.0)
         except tk.TclError:
             pass
         self.on_sidebar_content_configure()
@@ -1578,10 +1685,19 @@ class EditorApp:
         """
         if self._rebuilding:
             return
+        state = self._ui_snapshot()
+        reset_sidebar = self._sidebar_reset_pending
+        self._sidebar_reset_pending = False
         self._rebuilding = True
         try:
             with _NoRepaint(self.root):        # 重建期间关掉重绘，消掉闪白
                 self._build_sidebar()
+                self._ui_restore(state, sidebar=not reset_sidebar)
+                if reset_sidebar:
+                    try:
+                        self.sidebar_canvas.yview_moveto(0.0)
+                    except tk.TclError:
+                        pass
         finally:
             self._rebuilding = False
 
@@ -2491,6 +2607,8 @@ class EditorApp:
         self._select_drag = None
         self.page = page
         self.sync_tabs()
+        # 换页签 = 换了一整页内容：回顶部是预期行为。
+        self._sidebar_reset_pending = True
         self.refresh_sidebar()
         if page == "zone" and self.selected_zone is None and self.model.zones:
             self.selected_zone = self.model.zones[0].zone_id
@@ -2878,6 +2996,7 @@ class EditorApp:
         self.update_title()
         self.zoom = 1.0
         self.center_on(0, 0)          # 空画布：原点居中、1:1（与刚打开编辑器时一致）
+        self._sidebar_reset_pending = True
         self.refresh_sidebar()
         self.redraw()
         self.status("新建了一张空白地图：整张画布都是虚线格，左键点哪就在哪建地块")
@@ -2906,6 +3025,7 @@ class EditorApp:
         self.dirty = False
         self.update_title()
         self.fit_view()
+        self._sidebar_reset_pending = True
         self.refresh_sidebar()
         self.redraw()
         self.status("打开了 %s：%d×%d，%d 个地块，%d 个区块"

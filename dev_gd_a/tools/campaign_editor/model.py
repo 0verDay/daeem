@@ -42,6 +42,9 @@ AI_NONE = "none"
 AI_GARRISON = "garrison"
 #: 红点性 AI：长冷却在指定区域刷一波满编将领、行军攻击目标点。
 AI_REDDOT = "reddot"
+#: ★★ 指挥官 AI（有基地 / 经济 / 生产 / 军队）。ai_test_battle 的 p1 就是它；
+#:    合作 AI 队友在运行时把第二席位改成它（关卡 JSON 不写，但编辑器要能读能写）。
+AI_COMMANDER = "commander"
 #: 旧值（**只用于兼容读入**）：'faction' / 'general' 现在都归一成 'garrison'。
 AI_LEGACY_FACTION = "faction"
 AI_LEGACY_GENERAL = "general"
@@ -68,8 +71,8 @@ SEV_WARN = "warn"
 #: 可选的 `attack_target.kind`（界面下拉用；`None` = 不写 = 缺省挑选）。
 TARGET_KINDS: Tuple[str, ...] = (TARGET_ZONE, TARGET_POINT, TARGET_BUILDING, TARGET_BASE)
 
-#: `ai` 的三种取值（界面下拉用）。
-AI_KINDS: Tuple[str, ...] = (AI_NONE, AI_GARRISON, AI_REDDOT)
+#: `ai` 的四种取值（界面下拉用）。
+AI_KINDS: Tuple[str, ...] = (AI_NONE, AI_GARRISON, AI_REDDOT, AI_COMMANDER)
 
 #: `mode` 的两种取值。
 MODES: Tuple[str, ...] = (MODE_SOLO, MODE_COOP)
@@ -119,6 +122,18 @@ ESCORT_OF_KEY = "escort_of"
 ESCORT_COUNT_KEY = "escort_count"
 ESCORT_TYPES_KEY = "escort_types"
 
+#: ★★ 「这位将领是**哪一档**将领」（1 起，查 `unit.general.types/stats/caps/names`）。
+#:
+#: 为什么必须有这个键：`unit.general.types` 允许**重复**（当前配置是
+#: spearman / longbowman / rider 重复三轮 + 第 10 档）。只靠 `unit_type` 查
+#: `general_slot_of_type()` 永远只能拿到**第一次出现**的位置 —— 于是作者选「将领 4」
+#: 会被显示/运行成「将领 1」。显式档位把「是哪个将领」与「兵种是什么」分开，
+#: 两者可以不同（作者可以选第 4 档但把兵种改成 rider）。
+#:
+#: ⚠️ 旧数据没写这个键时，运行时/编辑器仍按 `unit_type` → `kind` 的顺序推断，
+#:    所以已有 JSON 一个字节都不用改。
+GENERAL_PROFILE_KEY = "general_profile"
+
 #: ★★ 红点性 AI 的**函数式生成配置**（挂在 `factions[].reddot_ai` 上，本轮新增）：
 #:   · `wave_time_expr`  第 x 波的生成时间（分钟）= y = a·x + b（默认 "x"）；
 #:   · `general_count_expr` 第 x 波的将领数（默认 "x"）；
@@ -160,12 +175,39 @@ def general_kind_slot(kind: str) -> int:
     k = str(kind)
     if k == "general":
         return 0
+    if k == "general_0":
+        return 9
     if k.startswith("general_"):
         try:
             return max(0, int(k[8:]) - 1)
         except ValueError:
             return -1
     return -1
+
+
+def general_profile_of_unit(u: Any, config: Any = None) -> int:
+    """一位将领的**档位**（1 起）；判断不出来 → -1。
+
+    判据顺序（与运行时 `world._place_faction_units()` 必须一致）：
+      1. 显式的 `general_profile`（本轮新增；能区分 `types` 里重复的兵种）；
+      2. `unit_type` 在 `unit.general.types` 里的位置（旧数据，只能取第一次出现）；
+      3. `kind`（`general_N` / `general_0`）—— 旧数据的兜底。
+    """
+    try:
+        explicit = int(getattr(u, "general_profile", 0) or 0)
+    except (TypeError, ValueError):
+        explicit = 0
+    if explicit >= 1:
+        return explicit
+    if config is not None:
+        try:
+            slot = config.general_profile_of(getattr(u, "unit_type", ""))
+        except (AttributeError, TypeError, ValueError):
+            slot = -1
+        if slot >= 0:
+            return slot + 1
+    kind_slot = general_kind_slot(getattr(u, "kind", ""))
+    return kind_slot + 1 if kind_slot >= 0 else -1
 
 
 class ModelError(Exception):
@@ -241,7 +283,8 @@ class UnitEntry:
     字段与 `logic/level.gd` 的 `_read_start_units()` 逐字段对齐。
     """
 
-    __slots__ = ("faction", "kind", "general_index", "unit_type", "x", "y",
+    __slots__ = ("faction", "kind", "general_index", "general_profile", "unit_type",
+                 "x", "y",
                  "ai", "zone", "hold", "name", "escort_of",
                  "escort_count", "escort_types", "declared")
 
@@ -252,6 +295,10 @@ class UnitEntry:
         #: ⚠️ 落进模型时补成 1（与逻辑层 `ConfigRes.general_index_of(kind) + 1` 同一条），
         #:   但**导出时**若它就是 1 且 JSON 里本来没写，就不写出去（免得凭空多一个键）。
         self.general_index: Optional[int] = None
+        #: ★★ 将领档位（1 起，`unit.general.types` 的下标 +1）；`None` = JSON 里没写。
+        #:   与 `general_index`（名册号）不是一回事：档位决定兵种 / 数值 / 名字 / 编制上限。
+        #:   `unit_type` 有重复兵种时（当前配置就有），只靠它无法区分 4..10 档。
+        self.general_profile: Optional[int] = None
         self.unit_type = ""
         self.x = x
         self.y = y
@@ -511,12 +558,15 @@ class LevelModel:
             del self.players[index]
 
     def sync_players_from_playable(self) -> None:
-        """玩家席位 = **本关每个可玩阵营一份**（不再手填、也不再问战役）。
+        """玩家席位 = 每个可玩阵营一份 + **显式由 AI 接管的参展席位**。
 
         ★★ 席位顺序：**保留 `players[]` 里原来的先后**（合作关的房主 / 客机顺序
           写在 `players[]` 里，不能因为阵营表的顺序变了就互换）；新出现的可玩阵营
           追加在末尾。已写过的同名 `base` 保留（兼容老数据）。
-
+        ★★ 为什么也保留「非可玩、但 `ai != none`」的席位：ai_test_battle 这种
+          「玩家 p2 对 commander p1」的关卡，p1 必须是席位（world 才会建它的基地 /
+          摆它的开局单位），但它**不可玩**。只按 playable 重建会把 p1 从 players[]
+          里删掉，编辑器一保存就把 AI 对手删了。
         ★ 单人关允许两个可玩阵营（选边关）—— 所以这里不按模式限制 1 / 2 个席位。
         """
         old_base = {str(p.get("faction", "")): p.get("base")
@@ -525,11 +575,16 @@ class LevelModel:
         players: List[dict] = []
         for p in self.players:
             fid = str(p.get("faction", ""))
-            if fid and fid in playable:
-                item: Dict[str, Any] = {"faction": fid}
-                if fid in old_base:
-                    item["base"] = old_base[fid]
-                players.append(item)
+            if not fid:
+                continue
+            entry = self.faction(fid)
+            is_ai_seat = entry is not None and entry.ai != AI_NONE
+            if fid not in playable and not is_ai_seat:
+                continue
+            item: Dict[str, Any] = {"faction": fid}
+            if fid in old_base:
+                item["base"] = old_base[fid]
+            players.append(item)
         seen = {str(p.get("faction", "")) for p in players}
         for fid in self.playable_ids():
             if fid in seen:
@@ -1587,6 +1642,10 @@ def _load_start_units(raw: Any, lv: LevelModel) -> None:
         gi = _as_int(item.get("general_index"), -1)
         # ★ 序号缺省 = 1（与逻辑层 `general_index_of(kind) + 1` 同一条：`general` → 1）。
         u.general_index = gi if gi >= 1 else 1
+        # ★★ 将领档位：显式写了的优先（能区分 types 里重复的兵种）；没写 = None，
+        #    由 `general_profile_of_unit()` 按 unit_type / kind 推断（旧数据）。
+        gp = _as_int(item.get(GENERAL_PROFILE_KEY), -1)
+        u.general_profile = gp if gp >= 1 else None
         u.unit_type = _as_str(item.get("unit_type", ""), "")
         u.ai = normalize_ai(item.get("ai"))
         u.zone = _as_int(item.get("zone"), -1)
@@ -1821,8 +1880,8 @@ _TERRAIN_BY_NAME = {"grass": ".", "forest": "^", "mountain": "#", "water": "~",
 
 
 def normalize_ai(value: Any) -> str:
-    """`ai` 字段：认 `garrison` / `reddot` / `none`；旧值 `faction` / `general` 归一成
-    `garrison`；别的（含缺字段）→ `none`。"""
+    """`ai` 字段：认 `garrison` / `reddot` / `commander` / `none`；旧值 `faction` /
+    `general` 归一成 `garrison`；别的（含缺字段）→ `none`。"""
     s = _as_str(value, "").lower()
     if s in AI_KINDS:
         return s
@@ -1983,6 +2042,10 @@ def _unit_to_dict(u: UnitEntry) -> dict:
     #    主将写了 `general_index: 1`，导出后这个键消失，往返比对当场报不一致）。
     if gi != 1 or u.has("general_index"):
         out["general_index"] = gi
+    # ★★ 将领档位：只有作者**显式选过**（或源里本来就有）才写。旧数据不写这个键，
+    #    运行时仍按 unit_type / kind 推断 —— 已有 JSON 的往返不受影响。
+    if u.is_general() and u.general_profile is not None and int(u.general_profile) >= 1:
+        out[GENERAL_PROFILE_KEY] = int(u.general_profile)
     if u.unit_type:
         out["unit_type"] = u.unit_type
     out["x"] = int(u.x)
@@ -2681,11 +2744,11 @@ def _ck_escort_specs(add, lv: LevelModel, config: Optional[ConfigInfo]) -> None:
     for u in lv.start_units:
         if not u.is_general():
             continue
-        # ★★ 编制上限按**将领档**取（由该将领的兵种 `unit_type` 查出来），**不是**将领序号
-        #    —— 与运行时 `logic/level.gd` 的 `_ck_start_units` 同一口径。
+        # ★★ 编制上限按**将领档**取（由 `general_profile` → unit_type → kind 查出来），
+        #    **不是**将领序号 —— 与运行时 `logic/level.gd` 的 `_ck_start_units` 同一口径。
         profile = -1
         if config is not None:
-            profile = config.general_profile_of(u.unit_type)
+            profile = general_profile_of_unit(u, config) - 1
         if profile < 0:
             profile = general_kind_slot(u.kind)
         cap = config.general_cap(profile + 1) if (config is not None and profile >= 0) else -1

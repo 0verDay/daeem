@@ -437,8 +437,14 @@ func apply(world: World, cmd: Dictionary) -> bool:
   「阵营 × 是否将领」这类**变体分桶**（每种变体一个批次）—— 1000 个单位也只是十几次 draw call。
 - **大块平坦色**（地形底色 / 区划归属 / 迷雾）：**烘进贴图**再铺一块平面（`ground_view.gd`），
   每层 **1 次 draw call**、放大也不糊。
-- **有「边」的东西**（网格线 / 区划轮廓 / 占领进度条 / 选中圈）：走**屏幕空间矢量**
-  （`overlay_view_3d.gd`）—— 烘进低分辨率贴图会被放大成软边，屏幕空间画才逐像素清晰。
+- **有「边」的东西**（网格线 / 区划轮廓 / 占领进度条 / 选中圈 / 单位头顶键帽与名牌）：
+  走**屏幕空间矢量**（`overlay_view_3d.gd`）—— 烘进低分辨率贴图会被放大成软边，
+  屏幕空间画才逐像素清晰。
+
+> 单位头顶的**敌 / 友 / 编号键帽**与**选中名牌**也在 `overlay_view_3d.gd`，并且是
+> `_draw_impl()` 的**最后一步**（天然压在所有 3D 物件之上）。编号的稳定槽位在
+> `view/team_slots.gd`：**纯 view 状态，不进快照**（开局按 `world.units` 顺序分配 1..10，
+> 阵亡 / 复活不改号）。口径见 [`route.md`](route.md) 第六十节。
 
 ```gdscript
 # view/unit_view_3d.gd（示意：只读 + 只写 MultiMesh，不改逻辑）
@@ -653,6 +659,7 @@ Godot 里 DPR 由引擎处理，**但下面三条要原样继承**：
 | ★ 战役菜单的**显示数据** | `data/campaigns_menu.json` → `logic/campaign_menu_db.gd` | ★ 与 `data/campaigns/` **分开**：那一份是能真的进游戏的关卡数据（被测试钉着），这一份只描述「菜单上摆什么」——战役名 / 简介 / 关卡名 / 指向哪份战役的哪一关。章节的 `campaign_id` + `level_id` 留空 = 占位关（长按什么都不发生）。加战役 / 关卡只改这一份 JSON |
 | 相机 / 缩放 | `view/game_scene3d.gd`（`Camera3D` 相机部分） | 纯表现，不进快照。★ 它的 `camera.edge_size` 与 HUD 的「屏幕最外圈不拦滚屏」是**同一个数**（`cfg.camera_edge_size`）。★★ **相机夹取**（`clamp_look_point`）：**可见区域不越出「地图 + `render.camera_view_margin_tiles` 格」，且镜头中心留在地图矩形内**（两条相与）——「可见区域」= 视口四角投到地面的包围盒，量一次即可（相机只平移不旋转 ⇒ 可见区域形状固定）；区间为空的方向（视野比地图还大）**不平移**，镜头钉在地图中心 |
 | 选中列表 | `view/input_controller.gd` | 纯本地，**不进命令流**（第 1 轮也一样）。★ 左键**点选**与左键**框选**（拖出矩形，见 route.md 16.3）走的是同一个入口 `select_units()` —— 它会用 `world.expand_to_groups()` 把「一个单位」展开成「它所属的整支部队」 |
+| ★★ **编队槽位 / 头顶键帽·名牌** | `view/team_slots.gd`（固定槽位表）+ `view/overlay_view_3d.gd`（屏幕空间键帽 / 名牌）；右栏 `view/squad_panel.gd`、数字键 `view/input_controller.gd`、左栏详情 `view/hud.gd` 共用 | 纯表现，**不进快照**：第一次按 `world.units` 顺序分配 1..10，之后阵亡 / 复活不改号；阵亡仍占槽（右栏置灰、显示重生倒计时），新将补最小空槽。敌 / 友键帽只写「友 / 敌」，不占编号；观战所有将按被观战方为「友」。地图 / 右栏 / 数字键 / 左栏详情同一口径（route.md 第六十节） |
 | 玩家下达的攻击命令 | `logic/unit.gd` 的 `ordered_target` / `ordered_building` / `has_attack_move` | 与「这一帧在打谁」（`target` / `target_building`）**分开存**，见 route.md 12.3 |
 | UI 几何（面板位置与尺寸） | `view/ui_layout.gd` | 纯常量，照参考图的像素稿；其它 view 文件不写坐标字面量 |
 | 当前页签（操作 / 单位 / 招募 / 科技 / 建筑） | `view/page_tabs.gd` + `hud._tab_plan()` | 纯本地显示状态，只决定命令卡里有什么；**显示哪几颗由当前选中对象决定**（route.md 二十二节），每一类选中各记「上次停在哪一页」（`hud._page_memory`）。★ 科技页在**选中大本营**与**什么都没选中**两处都出现，是同一颗页签、同一套九格 |

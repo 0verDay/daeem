@@ -564,12 +564,12 @@ def t_zone_center_and_production() -> None:
     c = m.add_zone("襄阳")
     m.assign_tile(1, 1, c.zone_id)
     # ★★ 本轮：新建的区划**自带默认种类的预设产能**（用户确认：所有区划默认值都改为
-    #    人口区划）—— 所以 n 不再是 0，而是 2 粮食 / 0 黄金 / 1 人口（每秒绝对值）。
+    #    人口区划）—— 所以 n 不再是 0，而是 1 粮食 / 0 黄金 / 0.5 人口（每秒绝对值）。
     eq(m.zone_kind(c.zone_id), "population", "新区块的默认种类是人口区划")
-    eq(m.zone_production(c.zone_id, "food"), 2.0,
-       "★ 人口区划的预设粮食产能是 2（本轮新口径：人口区划也产粮）")
-    eq(m.zone_production(c.zone_id, "population"), 1.0,
-       "★ 新区块默认带人口区划的预设（每秒 1 人口，绝对值）")
+    eq(m.zone_production(c.zone_id, "food"), 1.0,
+       "★ 人口区划的预设粮食产能是 1（人口区划也产粮）")
+    eq(m.zone_production(c.zone_id, "population"), 0.5,
+       "★ 新区块默认带人口区划的预设（每秒 0.5 人口，绝对值）")
     # ⚠️ `set_zone_production` 的返回值是「**有没有变化**」，不是「成没成功」——
     #    与 `set_zone_center` 一致（调用方靠它决定推不推撤销栈）。
     ok(m.set_zone_production(c.zone_id, "food", "1.5"), "填粮食产能（字符串也认）")
@@ -577,7 +577,7 @@ def t_zone_center_and_production() -> None:
     ok(not m.set_zone_production(c.zone_id, "food", 1.5), "填同一个值 → 没变化（返回 False）")
     eq(m.zone_production(c.zone_id, "food"), 1.5, "粮食 1.5")
     eq(m.zone_production(c.zone_id, "gold"), 2.0, "黄金 2")
-    eq(m.zone_production(c.zone_id, "population"), 1.0, "人口那一档没被碰 → 还是预设值")
+    eq(m.zone_production(c.zone_id, "population"), 0.5, "人口那一档没被碰 → 还是预设值")
     ok(m.zone_has_production(c.zone_id), "★ 有非零产能 → 导出时要写 production")
     # ★ 负数夹到 0（产能不是消耗）；这算「有变化」，所以返回 True 且值真的变了
     eq(m.set_zone_production(c.zone_id, "food", -3), True, "负数照样写进去（夹到 0）")
@@ -600,11 +600,11 @@ def t_zone_center_and_production() -> None:
     d = mapfile.model_to_dict(m)
     entries = {z["id"]: z for z in d["zone_list"]}
     eq(entries[c.zone_id]["center"], [1, 1], "襄阳的中心写对了（导出坐标系）")
-    eq(entries[c.zone_id]["production"], {"food": 1.5, "gold": 999, "population": 1},
+    eq(entries[c.zone_id]["production"], {"food": 1.5, "gold": 999, "population": 0.5},
        "★ 产能是整对象写出去（缺的档补 0；小数照原样）")
     # ★ 其余区块写的是它们**自己的默认预设**（新建时就带上了，不是「没配过就不写」）
     others = [z for z in d["zone_list"] if z["id"] != c.zone_id]
-    ok(all(z.get("production") == {"food": 2, "gold": 0, "population": 1} for z in others),
+    ok(all(z.get("production") == {"food": 1, "gold": 0, "population": 0.5} for z in others),
        "★ 其它区块写的是默认人口区划的预设产能（新建即带上）")
     # 出口那一层还要求「一个都不缺中心」——正常是在 do_export 前由 blockers() 保证，
     # 这里把剩下的补上（本用例中途删过一个区块，所以有一个区划缺中心）
@@ -932,28 +932,28 @@ def t_zone_kind() -> None:
     eq(m.zone_kind_name("food"), "粮食区划", "种类名字来自 config")
     # ★ 新建即带上默认种类的预设数字（用户确认：所有区划默认值都改为人口区划）
     eq([m.zone_production(a.zone_id, k) for k in ("food", "gold", "population")],
-       [2.0, 0.0, 1.0], "★ 新建的区划直接带人口区划的预设产能（每秒 2 粮 + 1 人口）")
+       [1.0, 0.0, 0.5], "★ 新建的区划直接带人口区划的预设产能（每秒 1 粮 + 0.5 人口）")
     ok(m.zone_kind_is_preset(a.zone_id), "新建的区划与预设一致（界面不提示「已手改」）")
 
     # ★★ 三档种类的**固定预设**（该区划每秒的绝对值，不乘地块数，本轮口径）：
-    #    粮食 = 4 粮 + 0.4 人口；黄金 = 4 金 + 0.4 人口；人口 = 2 粮 + 1 人口。
+    #    粮食 = 2 粮 + 0.2 人口；黄金 = 2 金 + 0.2 人口；人口 = 1 粮 + 0.5 人口。
     for kind_id in ("food", "gold", "population"):
         ok(m.zone_kind_production(kind_id)["population"] > 0.0,
            "★ %s 的预设人口产能 > 0（实际 %g）"
            % (kind_id, m.zone_kind_production(kind_id)["population"]))
-    eq(m.zone_kind_production("food")["food"], 4.0, "粮食区划预设粮食产能 4（绝对值）")
-    eq(m.zone_kind_production("gold")["gold"], 4.0, "黄金区划预设黄金产能 4")
+    eq(m.zone_kind_production("food")["food"], 2.0, "粮食区划预设粮食产能 2（绝对值）")
+    eq(m.zone_kind_production("gold")["gold"], 2.0, "黄金区划预设黄金产能 2")
 
     # ---- 选种类：同时把数字同步成预设值（需求原文那一条）
     ok(m.set_zone_kind(a.zone_id, "food"), "改成粮食区划（数字也跟着变）")
     eq(m.zone_kind(a.zone_id), "food", "种类变了")
     eq([m.zone_production(a.zone_id, k) for k in ("food", "gold", "population")],
-       [4.0, 0.0, 0.4],
-       "★ 粮食区划 → 每秒 4 粮食 + 0.4 人口（所有区划都带一份人口基础产能）")
+       [2.0, 0.0, 0.2],
+       "★ 粮食区划 → 每秒 2 粮食 + 0.2 人口（所有区划都带一份人口基础产能）")
     ok(not m.set_zone_kind(a.zone_id, "food"), "点已经选中的那个种类 → 没变化（返回 False）")
     ok(m.set_zone_kind(a.zone_id, "population"), "改成人口区划")
     eq([m.zone_production(a.zone_id, k) for k in ("food", "gold", "population")],
-       [2.0, 0.0, 1.0], "★ 人口区划 → 每秒 2 粮食 + 1 人口")
+       [1.0, 0.0, 0.5], "★ 人口区划 → 每秒 1 粮食 + 0.5 人口")
     ok(m.zone_kind_is_preset(a.zone_id), "数字与预设一致")
 
     # ---- 手改数字：种类不变，数字说了算（需求原文：游戏以数字为准）
@@ -984,10 +984,10 @@ def t_zone_kind() -> None:
     entries = {z["id"]: z for z in d["zone_list"]}
     eq(entries[a.zone_id]["kind"], "gold", "★ 种类写进 zone_list[].kind")
     eq(entries[b.zone_id]["kind"], "population", "★ 没特意改过的新区块也写（默认人口区划）")
-    eq(entries[a.zone_id]["production"], {"food": 3, "gold": 0, "population": 1},
+    eq(entries[a.zone_id]["production"], {"food": 3, "gold": 0, "population": 0.5},
        "★ 产能按**数字**导出（手改过的 3 也在）")
-    eq(entries[b.zone_id]["production"], {"food": 2, "gold": 0, "population": 1},
-       "★ 新建的区块带默认预设（每秒 2 粮 + 1 人口），导出时照写")
+    eq(entries[b.zone_id]["production"], {"food": 1, "gold": 0, "population": 0.5},
+       "★ 新建的区块带默认预设（每秒 1 粮 + 0.5 人口），导出时照写")
     # 把 b 的三档都改成 0 → 「这个区块就是不产出」→ 不写 production
     #   （游戏侧缺字段就是 0，**不**按种类预设兜底 —— 数字说了算）
     for key in ("food", "gold", "population"):

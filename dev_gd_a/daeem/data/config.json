@@ -1327,7 +1327,7 @@
     "wall": {
       "id": "wall", "name": "城墙", "hotkey": "B", "buildable": true,
       "build_sec": 4,
-      "cost": { "food": 25, "gold": 25 },
+      "cost": { "food": 50, "gold": 50 },
       "hp_max": 300,
       "body_scale": 1.0,
       "blocks_player": false, "blocks_enemy": true,
@@ -1340,7 +1340,7 @@
     "tower": {
       "id": "tower", "name": "箭塔", "hotkey": "T", "buildable": true,
       "build_sec": 6,
-      "cost": { "food": 50, "gold": 50 },
+      "cost": { "food": 100, "gold": 100 },
       "hp_max": 300,
       "body_scale": 0.6,
       "blocks_player": false, "blocks_enemy": false,
@@ -1409,7 +1409,7 @@
         "desc": "在选中将领所在格的中心生成 1 名长枪兵（近战步兵）。★ 低级单位：只花粮食；对骑兵伤害 +25%",
         "train_sec": 10,
         "population_cost": 1,
-        "cost": { "food": 40, "gold": 0 }
+        "cost": { "food": 80, "gold": 0 }
       },
       {
         "kind": "longbowman",
@@ -1419,7 +1419,7 @@
         "desc": "在选中将领所在格的中心生成 1 名长弓兵（远程步兵）。★ 低级单位：只花粮食；对步兵伤害 +10%",
         "train_sec": 10,
         "population_cost": 1,
-        "cost": { "food": 60, "gold": 0 }
+        "cost": { "food": 120, "gold": 0 }
       },
       {
         "kind": "rider",
@@ -1429,7 +1429,7 @@
         "desc": "在选中将领所在格的中心生成 1 名骑手（近战骑兵）。★ 高级单位：要粮食，更要黄金；对步兵伤害 +25%，远程减伤 25%",
         "train_sec": 10,
         "population_cost": 1,
-        "cost": { "food": 40, "gold": 80 }
+        "cost": { "food": 80, "gold": 160 }
       },
       {
         "kind": "grain_cart",
@@ -1439,7 +1439,7 @@
         "desc": "在选中将领所在格的中心生成 1 辆粮车（支援单位，不攻击）。★ 只花粮食；周围 3 格友军士气 +0.5/秒（多辆不叠加，可与其他士气来源叠加）",
         "train_sec": 12,
         "population_cost": 1,
-        "cost": { "food": 80, "gold": 0 }
+        "cost": { "food": 160, "gold": 0 }
       },
       {
         "kind": "knight",
@@ -1449,7 +1449,7 @@
         "desc": "在选中将领所在格的中心生成 1 名骑士（近战骑兵）。★ 少量粮食 + 大量黄金；高护甲（固定减 6 点/击）、高攻击、远程减伤 25%",
         "train_sec": 18,
         "population_cost": 1,
-        "cost": { "food": 60, "gold": 160 }
+        "cost": { "food": 120, "gold": 320 }
       },
       {
         "kind": "horse_archer",
@@ -1459,7 +1459,7 @@
         "desc": "在选中将领所在格的中心生成 1 名马弓手（远程骑兵）。★ 大量粮食 + 少量黄金；无护甲、远程减伤 25%；可移动射击",
         "train_sec": 16,
         "population_cost": 1,
-        "cost": { "food": 160, "gold": 60 }
+        "cost": { "food": 320, "gold": 120 }
       },
       {
         "kind": "catapult",
@@ -1469,7 +1469,7 @@
         "desc": "在选中将领所在格的中心生成 1 辆投石车（器械，远程）。★ 大量粮食 + 大量黄金；移动与攻击都慢，攻击为 1.5 格范围伤害；攻城（无视目标的近战/远程减伤）",
         "train_sec": 24,
         "population_cost": 1,
-        "cost": { "food": 180, "gold": 180 }
+        "cost": { "food": 360, "gold": 360 }
       }
     ],
 
@@ -1518,7 +1518,7 @@
           "train_sec": 10,
           "population_cost": 1,
           "recruit_cooldown_sec": 20,
-          "cost": { "food": 100, "gold": 100 }
+          "cost": { "food": 200, "gold": 200 }
         },
         {
           "kind": "general_2",
@@ -1529,7 +1529,7 @@
           "train_sec": 10,
           "population_cost": 1,
           "recruit_cooldown_sec": 20,
-          "cost": { "food": 100, "gold": 100 }
+          "cost": { "food": 200, "gold": 200 }
         },
         {
           "kind": "general_3",
@@ -1540,7 +1540,7 @@
           "train_sec": 10,
           "population_cost": 1,
           "recruit_cooldown_sec": 20,
-          "cost": { "food": 100, "gold": 100 }
+          "cost": { "food": 200, "gold": 200 }
         },
         {
           "kind": "general_4",
@@ -1551,7 +1551,7 @@
           "train_sec": 10,
           "population_cost": 1,
           "recruit_cooldown_sec": 25,
-          "cost": { "food": 120, "gold": 120 }
+          "cost": { "food": 240, "gold": 240 }
         },
         {
           "kind": "general_5",
@@ -1562,7 +1562,7 @@
           "train_sec": 10,
           "population_cost": 1,
           "recruit_cooldown_sec": 30,
-          "cost": { "food": 120, "gold": 140 }
+          "cost": { "food": 240, "gold": 280 }
         },
         {
           "kind": "general_6",
@@ -1573,7 +1573,7 @@
           "train_sec": 10,
           "population_cost": 1,
           "recruit_cooldown_sec": 30,
-          "cost": { "food": 120, "gold": 140 }
+          "cost": { "food": 240, "gold": 280 }
         },
         {
           "kind": "general_7",
@@ -1584,7 +1584,7 @@
           "train_sec": 10,
           "population_cost": 1,
           "recruit_cooldown_sec": 35,
-          "cost": { "food": 140, "gold": 160 }
+          "cost": { "food": 280, "gold": 320 }
         },
         {
           "kind": "general_8",
@@ -1595,7 +1595,7 @@
           "train_sec": 10,
           "population_cost": 1,
           "recruit_cooldown_sec": 40,
-          "cost": { "food": 140, "gold": 180 }
+          "cost": { "food": 280, "gold": 360 }
         },
         {
           "kind": "general_9",
@@ -1606,7 +1606,7 @@
           "train_sec": 10,
           "population_cost": 1,
           "recruit_cooldown_sec": 45,
-          "cost": { "food": 160, "gold": 200 }
+          "cost": { "food": 320, "gold": 400 }
         }
       ]
     }
@@ -1640,20 +1640,20 @@
       "base": [
         { "level": 1, "hp_mult": 1.0,
           "max_generals": 3, "retinue_cap_bonus": 0, "max_techs": 1, "max_tech_tier": 1 },
-        { "level": 2, "hp_mult": 1.5, "cost": { "food": 100, "gold": 100 }, "time_sec": 10,
+        { "level": 2, "hp_mult": 1.5, "cost": { "food": 200, "gold": 200 }, "time_sec": 10,
           "max_generals": 6, "retinue_cap_bonus": 2, "max_techs": 2, "max_tech_tier": 2 },
-        { "level": 3, "hp_mult": 2.25, "cost": { "food": 200, "gold": 200 }, "time_sec": 20,
+        { "level": 3, "hp_mult": 2.25, "cost": { "food": 400, "gold": 400 }, "time_sec": 20,
           "max_generals": 10, "retinue_cap_bonus": 4, "max_techs": 3, "max_tech_tier": 3 }
       ],
       "wall": [
         { "level": 1, "hp_mult": 1.0 },
-        { "level": 2, "hp_mult": 1.5, "cost": { "food": 50, "gold": 50 }, "time_sec": 10 },
-        { "level": 3, "hp_mult": 2.25, "cost": { "food": 100, "gold": 100 }, "time_sec": 15 }
+        { "level": 2, "hp_mult": 1.5, "cost": { "food": 100, "gold": 100 }, "time_sec": 10 },
+        { "level": 3, "hp_mult": 2.25, "cost": { "food": 200, "gold": 200 }, "time_sec": 15 }
       ],
       "tower": [
         { "level": 1, "hp_mult": 1.0 },
-        { "level": 2, "hp_mult": 1.5, "cost": { "food": 50, "gold": 50 }, "time_sec": 10 },
-        { "level": 3, "hp_mult": 2.25, "cost": { "food": 100, "gold": 100 }, "time_sec": 15 }
+        { "level": 2, "hp_mult": 1.5, "cost": { "food": 100, "gold": 100 }, "time_sec": 10 },
+        { "level": 3, "hp_mult": 2.25, "cost": { "food": 200, "gold": 200 }, "time_sec": 15 }
       ]
     }
   },
@@ -1668,8 +1668,12 @@
       "  （tech 的 food_per_tile_per_sec / gold_per_tile_per_sec）仍按地块算。",
       "  ⇒ 一个区划不管是 3 格还是 130 格，基础产出都是同一个数。",
       "★★ 三档种类的固定预设（编辑器里「选种类」时同步进数字输入框的那三个数）：",
-      "  粮食区划 = 粮食 4 + 人口 0.4；黄金区划 = 黄金 4 + 人口 0.4；",
-      "  人口区划 = 粮食 2 + 人口 1（所有区划都产两份资源，人口区划也产粮）。",
+      "  粮食区划 = 粮食 2 + 人口 0.2；黄金区划 = 黄金 2 + 人口 0.2；",
+      "  人口区划 = 粮食 1 + 人口 0.5（所有区划都产两份资源，人口区划也产粮）。",
+      "  ★ 2026.10.25：基础产能整体**减半**（用户需求「所有区划的产能下降 50%」）——",
+      "    上面这三个数、以及每张地图 `zone_list[].production` 都是减半后的值；",
+      "    地图编辑器的兜底预设（tools/map_editor/model.py 的 FALLBACK_ZONE_KINDS）同步改过，",
+      "    两份仍要一起改，否则编辑器读不到 config 时会用旧值把产能顶回去。",
       "  ⚠️ 这仍是**预设值**、不是游戏里的硬编码：游戏永远以地图 `zone_list[].production`",
       "     的数字为准；地图没写 production 的区划一律算 0（保持老图行为，不按种类兜底）。",
       "  ⚠️ 数值是占位初值，后续按玩法再调（见 docs/route.md 第四十四节）。",
@@ -1687,22 +1691,22 @@
       {
         "id": "food",
         "name": "粮食区划",
-        "line": "每秒 4 粮食 + 0.4 人口",
-        "production": { "food": 4, "gold": 0, "population": 0.4 },
+        "line": "每秒 2 粮食 + 0.2 人口",
+        "production": { "food": 2, "gold": 0, "population": 0.2 },
         "specs": ["gold", "population"]
       },
       {
         "id": "gold",
         "name": "黄金区划",
-        "line": "每秒 4 黄金 + 0.4 人口",
-        "production": { "food": 0, "gold": 4, "population": 0.4 },
+        "line": "每秒 2 黄金 + 0.2 人口",
+        "production": { "food": 0, "gold": 2, "population": 0.2 },
         "specs": ["food", "population"]
       },
       {
         "id": "population",
         "name": "人口区划",
-        "line": "每秒 2 粮食 + 1 人口",
-        "production": { "food": 2, "gold": 0, "population": 1 },
+        "line": "每秒 1 粮食 + 0.5 人口",
+        "production": { "food": 1, "gold": 0, "population": 0.5 },
         "specs": ["food", "gold"]
       }
     ]
@@ -1721,6 +1725,9 @@
       "     否则 132 格区块一次粮食特化 (+33/秒) 又会盖过整个基础经济。",
       "     现在一次特化 ≈ 本区基础产量的一半：值得做，但不一票定胜负。",
       "     ⚠️ 它与区划基础产量是**两套独立的数**：以后调基础产量时，记得一起看这里。",
+      "  ★ 2026.10.25（本次）：区划**基础产能整体减半**，但下面三档特化的数值**不变**",
+      "     （用户确认）。于是特化的相对权重翻倍 —— 现在一次特化 ≈ 本区基础产量甚至更高，",
+      "     调基础产量时务必一起看这一段。",
       "★ 三个特化只能选一个：选了一个之后另外两个入口就不再显示（界面层），",
       "  逻辑层也会拒（拒因码 `spec_done`）——两处都挡，缺一个就会被绕过。",
       "★ 哪些区划能做哪些特化由 `zone_kind.list[].specs` 决定（拒因码 `kind`），",
@@ -1734,9 +1741,11 @@
       "★ 取消特化也是一条读条（时间与扣费同特化）；它同时会**退回**当初特化扣掉的资源。",
       "  ⚠️ 这里没有「取消特化的取消」——取消读条期间的操作页只有「取消特化」那一格，",
       "     读条中再点它会被拒（拒因码 `busy`），与建筑升级那条约定一致。",
-      "★ cost / time_sec 是**三档共用**的默认值（list 里每项可以各自覆盖）。"
+      "★ cost / time_sec 是**三档共用**的默认值（list 里每项可以各自覆盖）。",
+      "  ★ 2026.10.25：造价随「所有部队 / 建筑 / 升级」一起 ×2（50/50 → 100/100）；",
+      "    特化效果（+0.05/地块、人口 +12.5%）**不变**（用户确认）。"
     ],
-    "cost": { "food": 50, "gold": 50 },
+    "cost": { "food": 100, "gold": 100 },
     "time_sec": 10,
     "list": [
       {
@@ -2148,16 +2157,18 @@
       "  level    = 那场战役里 levels[] 的关卡 id；",
       "  ai_observer = true  → 走观战路径（AI 接管被观察方，玩家只看）；",
       "  ai_observer_orders = true → 观战但仍允许用 AI 面板下四条指令（ai_test_2）；",
-      "  ai_observer_reveal = true → 只给玩家显示开全图，AI 仍走正常迷雾（ai_test_2）。",
+      "  ai_observer_reveal = true → 只给玩家显示开全图，AI 仍走正常迷雾（ai_test_2）；",
+      "  direct = true → 跳过战役过渡画面，直接按 level 的可玩阵营开局（ai_test_battle）；",
+      "  coop_ai = true → 直接开合作 AI 队友局：玩家第 1 席位，第 2 席位由 commander 接管（ai_test_hz）。",
       "  ★ 加一颗按钮只改这里；「载入哪一关、怎么建世界」在 view/main.gd（界面不碰玩法）。",
       "  ★ 剩下那一关（main_test）不在这里：它在「战役」菜单里（data/campaigns_menu.json）。"
     ],
     "test_entries": [
       {"label": "test_1", "campaign": "demo", "level": "01_beachhead"},
-      {"label": "test_2", "campaign": "demo", "level": "02_twin_line", "coop": true},
-      {"label": "test_3", "campaign": "ferry", "level": "ferry"},
       {"label": "ai_test", "campaign": "demo", "level": "ai_test", "ai_observer": true},
-      {"label": "ai_test_2", "campaign": "demo", "level": "ai_test_2", "ai_observer": true, "ai_observer_orders": true, "ai_observer_reveal": true}
+      {"label": "ai_test_2", "campaign": "demo", "level": "ai_test_2", "ai_observer": true, "ai_observer_orders": true, "ai_observer_reveal": true},
+      {"label": "ai_test_battle", "campaign": "demo", "level": "ai_test_battle", "direct": true},
+      {"label": "ai_test_hz", "campaign": "demo", "level": "dscj", "coop_ai": true}
     ],
 
     "_transition_comment": [
@@ -2535,7 +2546,7 @@
         "strategic_interval_sec": 2.0,
         "build_interval_sec": 2.5,
         "production_interval_sec": 1.0,
-        "production_attempts": 3,
+        "production_attempts": 6,
         "retry_sec": 3.0
       },
       "economy": {
@@ -2557,6 +2568,41 @@
         "threat_radius": 7.0,
         "avoid_enemy_ratio": 1.25,
         "home_when_alone": true
+      },
+      "idle": {
+        "_comment": [
+          "★★ 闲置部队调度：缺编队去己方前线中心 / 隘口驻守；满编队去边界外侧侦察。",
+          "  · max_scouts：同时在外侦察的满编队数；",
+          "  · scout_avoid_ratio：侦察队看到敌方兵力 ≥ 自己 × 这个倍率就整队撤；",
+          "  · scout_capture_empty：侦察途中顺手占领没有守军的空区划；",
+          "  · max_posts：同时驻守的缺编队数；max_ready_guards：满编队在前线中心站岗的上限；",
+          "  · post_avoid_ratio：敌人超过自己 × 这个倍率才撤；",
+          "  · min_escorts_to_post：至少带几个兵才允许单独去驻守（0 = 光杆也去，不建议）；",
+          "  · choke_enabled：区划中心都有人时，改守可通行邻格很少的前线隘口。"
+        ],
+        "enabled": true,
+        "scout_enabled": true,
+        "max_scouts": 2,
+        "scout_hold_sec": 6.0,
+        "scout_reassign_sec": 16.0,
+        "scout_avoid_ratio": 0.9,
+        "scout_max_distance_tiles": 18.0,
+        "scout_capture_empty": true,
+        "scout_advance_tiles": 2.0,
+        "guard_enabled": true,
+        "max_posts": 4,
+        "max_ready_guards": 4,
+        "post_reassess_sec": 20.0,
+        "post_avoid_ratio": 1.25,
+        "guard_radius_tiles": 2.5,
+        "min_escorts_to_post": 1,
+        "zone_guard_enabled": true,
+        "max_zone_guards": 4,
+        "zone_guard_radius_tiles": 3.0,
+        "zone_guard_reassess_sec": 25.0,
+        "zone_guard_avoid_ratio": 1.35,
+        "choke_enabled": true,
+        "choke_max_passable_neighbors": 3
       },
       "revive": {
         "_comment": [
@@ -2616,11 +2662,15 @@
       "reaction": {
         "_comment": [
           "★★ 受击整队决策：队伍有新命令时，不进入默认复仇反击，由 AI 立即决定整队反击 / 继续撤。",
-          "  · cooldown_sec：同一队两次受击决策的最小间隔；",
+          "  · cooldown_sec：同一队两次受击即时命令的最小间隔；",
+          "  · mode_hold_sec：反击 / 撤退模式锁，锁定期内不换方向；",
+          "  · counter_lock_radius：同一片交火内的新攻击者不重新选反击目标；",
           "  · counter_ratio：敌人 ≤ 我方 × 倍率时反击；",
           "  · retreat_counter_ratio：正在撤退时只有敌人 ≤ 我方 × 倍率才回头。"
         ],
-        "cooldown_sec": 0.7,
+        "cooldown_sec": 2.0,
+        "mode_hold_sec": 2.8,
+        "counter_lock_radius": 6.0,
         "danger_radius": 6.0,
         "counter_ratio": 1.15,
         "retreat_counter_ratio": 0.75
@@ -2685,11 +2735,13 @@
         "general_target": 2,
         "general_target_by_base_level": [3, 6, 10],
         "general_recruit_min_army_ratio": 0.0,
+        "general_recruit_team_margin": 2,
         "develop_cap_ratio": 0.85,
-        "max_queue_per_leader": 3,
-        "home_team_size": 6,
-        "field_team_size": 4,
-        "max_training_leaders": 2,
+        "max_queue_per_leader": 4,
+        "max_recruit_recalls": 2,
+        "home_team_size": 8,
+        "field_team_size": 6,
+        "max_training_leaders": 4,
         "min_garrison_replace_escorts": 1,
         "dispatch_training_home": true,
         "composition": [
@@ -2708,17 +2760,41 @@
         "tower_threat_towers": 5,
         "tower_rear_towers": 0,
         "tower_rich_bonus_max": 3,
-        "production_reserve_recruits": 3,
+        "production_reserve_recruits": 6,
         "pause_defense_when_understrength": true,
         "tower_threat_radius": 9.0,
         "tower_cover_radius": 4,
         "wall_enabled": true,
-        "wall_hard_max": 100,
+        "wall_hard_max": 240,
+        "wall_border_enabled": true,
+        "wall_border_rich_mult": 1.5,
+        "wall_border_full_rich_mult": 3.0,
+        "wall_border_per_tick": 3,
+        "wall_border_keep_slots": 16,
+        "wall_border_require_armed_generals": true,
         "defense_upgrade_enabled": true,
         "defense_upgrade_tower_bonus": 12.0,
         "tower_frontier_bonus": 4.0,
         "base_upgrade_priority": 10.0,
         "tech_priority": []
+      },
+      "early_explore": {
+        "enabled": true,
+        "until_sec": 60.0,
+        "min_escorts": 0,
+        "hold_sec": 16.0,
+        "rest_sec": 8.0,
+        "max_distance_tiles": 22.0,
+        "min_start_distance_tiles": 6.0,
+        "avoid_ratio": 1.0
+      },
+      "early_game": {
+        "enabled": true,
+        "until_sec": 60.0,
+        "min_field_units": 1,
+        "min_squad_units": 1,
+        "disable_guards": true,
+        "require_garrison": false
       },
       "auto": {
         "develop_until_ratio": 0.35,
@@ -2728,8 +2804,8 @@
       "difficulty": {
         "easy": {
           "income_mult": 0.8,
-          "army_cap": 18,
-          "army_cap_ratio": 0.6,
+          "army_cap": 24,
+          "army_cap_ratio": 0.75,
           "build_interval_mult": 1.3,
           "production_interval_mult": 1.4,
           "reaction_delay_sec": 2.0,
@@ -2738,8 +2814,8 @@
         },
         "normal": {
           "income_mult": 1.0,
-          "army_cap": 26,
-          "army_cap_ratio": 0.8,
+          "army_cap": 36,
+          "army_cap_ratio": 1.0,
           "build_interval_mult": 1.0,
           "production_interval_mult": 1.0,
           "reaction_delay_sec": 1.2,
@@ -2748,7 +2824,7 @@
         },
         "hard": {
           "income_mult": 1.2,
-          "army_cap": 34,
+          "army_cap": 48,
           "army_cap_ratio": 1.0,
           "build_interval_mult": 0.8,
           "production_interval_mult": 0.8,

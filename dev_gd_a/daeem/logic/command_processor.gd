@@ -579,6 +579,11 @@ static func apply_build(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 	if not world.zone_allows_build(tx, ty, owner):
 		world.push_event({"type": "build_rejected", "tile": Vector2i(tx, ty), "reason": "not_in_zone"})
 		return false
+	# ★★ 2026.10.25：敌方单位已经进入区划中心 3×3 占领区 ⇒ 整块区划禁止建造。
+	if world.has_method("zone_capture_blocks_build") \
+			and world.zone_capture_blocks_build(tx, ty, owner):
+		world.push_event({"type": "build_rejected", "tile": Vector2i(tx, ty), "reason": "under_capture"})
+		return false
 	var def_v = cfg.get_path_value("building.%s" % type)
 	var def: Dictionary = def_v if typeof(def_v) == TYPE_DICTIONARY else {}
 	var cost: Dictionary = def.get("cost", {})

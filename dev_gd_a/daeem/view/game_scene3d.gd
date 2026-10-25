@@ -31,6 +31,8 @@ const OrderFlagRes = preload("res://view/order_flag_view_3d.gd")
 const Overlay3DRes = preload("res://view/overlay_view_3d.gd")
 const InputControllerRes = preload("res://view/input_controller.gd")
 const HudRes = preload("res://view/hud.gd")
+## ★★ 稳定的编队槽位（1..10）：阵亡 / 复活后编号不变；地图键帽、右栏、数字键共用。
+const TeamSlotsRes = preload("res://view/team_slots.gd")
 const FontLoaderRes = preload("res://view/font_loader.gd")
 const InteractionRes = preload("res://view/game_interaction.gd")
 ## ★★ 胜利 / 失败结算画面（王冠 + 宝石 / 裂纹 + 横幅 + 三颗按钮）。
@@ -78,6 +80,8 @@ var projectiles = null
 ## ★ 右键指令的 3D 旗子（移动 = 绿 / 行军 = 黄）：由 `_on_command` 插 / 收，纯表现
 var order_flags = null
 var overlay = null
+## ★★ 本局的编队槽位表（见 `view/team_slots.gd`）；地图 / 右栏 / 数字键共用同一份。
+var team_slots = null
 var input_ctrl = null
 var hud: CanvasLayer = null
 ## ★★ 手机端触摸手势识别（见 view/touch_controller.gd）：由本场景在 `_input` 里喂事件
@@ -239,7 +243,8 @@ func start_level(campaign, level, my_faction: String) -> bool:
 ## ★★ 观战模式：`ai_test` / `ai_test_2` 关卡由 commander AI 接管被观察方，玩家只看。
 ##
 ## 与 `start_coop_solo` 的区别只在两点：
-##   · 世界带 `observer_mode = true`（被观察方仍算“玩家的家”，但控制权交给 AI）；
+##   · 世界带 `observer_mode = true`（本机是**纯 spectator / 看海**，不属于任何阵营；
+##     被观察方只决定 HUD / 迷雾 / AI 面板看谁，不由本机出钱、也不按它判胜负）；
 ##   · 装配后关闭输入命令 / 命令卡，AI 面板默认只读。
 ## `allow_ai_orders = true`（ai_test_2）时保留 AI 面板四颗指令按钮：
 ##   玩家仍不能操作部队，但可以给被观察的 AI 下「行军 / 发展 / 扩张 / 屯兵」四条指令。
@@ -263,7 +268,8 @@ func start_ai_observer(level, allow_ai_orders: bool = false,
 	var watched := String(seats[0])
 	# ★★ 观战验收：这一关里的参展阵营**全部**交给 commander，形成 AI vs AI。
 	#    `ai_test` 只有 F1（和以前一样）；`ai_test_2` 是 p1 对 p2。
-	#    p1 仍是本机席位（面板 / 迷雾 / 目标按它走），p2 只是敌方 AI，不会听玩家指令。
+	#    `watched` 只是**镜头/面板看谁**，不是本机阵营 —— 本机是纯观战者，
+	#    p1 / p2 都不由本机出钱，也不会因为某一方输赢而判本机胜负。
 	var overrides: Dictionary = {}
 	var profiles: Dictionary = {}
 	for meta in level.faction_meta:
@@ -546,17 +552,21 @@ func _assemble() -> void:
 	var layer := CanvasLayer.new()
 	layer.name = "OverlayLayer"
 	add_child(layer)
+	# ★★ 编队槽位先建：开局第一次 sync 按 `world.units` 顺序分配 1..N，
+	#    与旧版「存活顺序」的初始编号逐位一致；之后阵亡 / 复活都不再改号。
+	team_slots = TeamSlotsRes.new()
+	team_slots.sync(world)
 	overlay = Overlay3DRes.new()
 	overlay.name = "Overlay3D"
 	layer.add_child(overlay)
-	overlay.setup(cfg, world, palette, units, ground)
+	overlay.setup(cfg, world, palette, units, ground, team_slots)
 
 	# 输入层：**复用 2D 那版的 input_controller**（它只依赖 palette 的
 	# `to_px` / `to_logic` 与一个 `center_on_px` —— 本版用一个轻量替身满足后者）
 	input_ctrl = InputControllerRes.new()
 	input_ctrl.name = "InputController"
 	add_child(input_ctrl)
-	input_ctrl.setup(cfg, world, _make_camera_facade(), palette)
+	input_ctrl.setup(cfg, world, _make_camera_facade(), palette, team_slots)
 	# ★★ 交互接线（本轮补）：界面 → 逻辑那条路。
 	#    `command_issued` 是**唯一改逻辑状态**的入口（交给 command_processor）；
 	#    `local_ui_changed` 只重画选中，不碰逻辑。
@@ -787,6 +797,10 @@ func _process(dt: float) -> void:
 			coop_host_session.tick(dt)
 			coop_host_session.send_events(events)
 	_consume_events(events)
+	# ★★ 编队槽位：每帧补登记新将领（招募 / 重生），并更新阵亡对象的引用。
+	#    `team_slots` 只认 id，已经分配过的槽位永不变；这里只是「发现新 id」。
+	if team_slots != null:
+		team_slots.sync(world)
 	# ③ 视图：单位 MultiMesh 每帧重填（位置会变）
 	#    ★ 选中集合先喂给单位层：它据此画脚下的「绿色空心圆」选中下标（见 unit_view_3d）
 	var _t_units := _prof()
@@ -1307,7 +1321,7 @@ func _build_hud() -> void:
 	hud.name = "Hud"
 	add_child(hud)
 	# ★ 把投影助手一并交给 HUD（它转交给小地图：视野框 / 点击跳转都走 3D 投影）
-	hud.setup(cfg, world, input_ctrl, theme, _camera_rig_for_hud(), palette)
+	hud.setup(cfg, world, input_ctrl, theme, _camera_rig_for_hud(), palette, team_slots)
 	# ★ 用**具名方法**而不是 lambda：`test_settings_menu` 的接线断言是
 	#   `hud.fullscreen_toggled.is_connected(Callable(game, "_on_fullscreen_toggled"))`
 	#   —— 匿名 lambda 接上去会让这条断言失败（看着像「信号没接」）。

@@ -547,7 +547,7 @@ func _on_panel_expanded() -> void:
 				coop_solo_started.emit(campaign_id, level_id, ai_setup))
 
 
-## 打开「合作模式」面板（test_2 按钮用；等价于点右下角那颗）。
+## 打开「合作模式」面板（右下角那颗按钮 / 测试用；不模拟鼠标）。
 func open_coop_panel() -> void:
 	if _coop_btn != null:
 		_on_side_pressed(_coop_btn)

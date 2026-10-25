@@ -1,5 +1,5 @@
 ## overlay_view_3d.gd —— 3D 版的覆盖层：血条 / 网格 / 区划轮廓 / 粮车光环范围 /
-##                       占领进度条 / 建造预览 / 拖框
+##                       占领进度条 / 建造预览 / 拖框 / 头顶编队标识（键帽 / 名牌）
 ##
 ## ★★ 为什么这一层留在 **2D 屏幕空间**而不是做成 3D 物件（本版的重要取舍）：
 ##   · 它们是**界面反馈**，不是世界里的东西 —— 玩家要的是「我的部队在哪、点到哪」，
@@ -14,18 +14,79 @@ extends Control
 
 const ConfigRes = preload("res://logic/config.gd")
 const PaletteRes = preload("res://view/palette.gd")
+const FontLoaderRes = preload("res://view/font_loader.gd")
 ## ★★ 局内「敌 / 友 / 己」三色（本轮新增）：占领条 / 占领触发区 / 血条都走它
 const SideColorRes = preload("res://view/side_color.gd")
+## ★★ HUD 的皮肤（暗色面板 + 暗金细线 + 琥珀强调）：头顶标识与右栏数字块共用同一套色。
+##   ★ 本文件只读它的静态取色函数，不持有主题实例（见 view/theme.gd 的说明）。
+const ThemeRes = preload("res://view/theme.gd")
 
 const HP_BACK_COLOR := Color(0, 0, 0, 0.55)
+
+# ------------------------------------------------------------------
+# ★★ 头顶编队标识（本轮改版）：**常驻键帽徽章 + 选中名牌**
+#
+# 口径（与右栏「部队 1~10」的数字块同一套视觉语言）：
+#   · 未选中：只画一个**键帽**（深色底 + 暗金细线 + 底边阵营色），回答「这是第几支」；
+#   · 选中：换成**名牌**（键帽 + 兵种字 + 名字 + 编制 + 士气条），回答「这是谁」；
+#   · 倒地：整体压暗，名牌的编制位置改成「再起 / 倒地」；
+#   · 编号口径不变：`world.units` 里「存活 + 同方 + 队长」数到第几个——
+#     与左栏 / 数字键选中的是**同一支部队**（见 `_draw_team_markers`）。
+#
+# ★ 为什么选中时**换掉**键帽而不是叠在它上面：两个数字上下叠会互相打架；名牌本身带键帽，
+#   「换」等于同一个位置从「按键提示」升级成「部队名片」。
+# ★ 尺寸是**屏幕像素**（字永远正着、1:1）；键帽大小只跟着立牌的屏幕高度轻微浮动，
+#   所以远看不会比兵还大、近看也不会缩成一个点。
+# ------------------------------------------------------------------
+## 键帽边长：`quad 屏幕高 × BADGE_SPRITE_RATIO`，再夹到 [MIN, MAX]。
+const BADGE_SPRITE_RATIO := 0.62
+const BADGE_MIN_PX := 16.0
+const BADGE_MAX_PX := 26.0
+## 键帽底边离「立牌头顶」多少像素（血条在 -4..-1，这里留出空隙）。
+const BADGE_GAP := 7.0
+const BADGE_RADIUS := 3
+const BADGE_ALPHA := 0.94
+## 键帽底边那条阵营色（与右栏数字块 / 血条同一个色源）。
+const BADGE_STRIP_H := 2.5
+## 名牌：固定高度，宽度按内容算（上限 NAMEPLATE_MAX_W）。
+const NAMEPLATE_H := 27.0
+const NAMEPLATE_GAP := 8.0
+const NAMEPLATE_PAD := 5.0
+const NAMEPLATE_KEY := 20.0
+const NAMEPLATE_KEY_GAP := 5.0
+const NAMEPLATE_KEY_FONT := 14
+const NAMEPLATE_FONT := 13
+const NAMEPLATE_FORM_FONT := 12
+const NAMEPLATE_MAX_W := 200.0
+const NAMEPLATE_RADIUS := 4
+const NAMEPLATE_ALPHA := 0.94
+## 多个名牌互相压住时，纵向让位的间隙（每次 `NAMEPLATE_H + 这个值`）。
+const NAMEPLATE_STACK_PX := 8.0
+## 倒地将领的键帽 / 名牌整体不透明度。
+const DOWNED_MARKER_ALPHA := 0.45
 
 var cfg: ConfigRes = null
 var world = null
 var palette = null
 var units = null
+## ★★ 稳定编队槽位（见 view/team_slots.gd）：己方键帽 / 名牌上的编号取它，
+##   阵亡 / 复活后不变。为 null 时退回「存活顺序」。
+var team_slots = null
+## ★★ 头顶编队标识用的字体（`FontLoaderRes` 一次载入；null 时整组标识跳过）。
+var font: Font = null
 ## ★ 地面层（`ground_view.gd`）：只用来问「这一格的哪几条边是区划边界」
 ##   与「这个区划的轮廓该是什么颜色」。它**只读**，不改任何东西。
 var ground = null
+
+## ★★ 头顶标识的六种 StyleBox（键帽普通 / 选中 / 倒地、名牌普通 / 倒地、键帽内块）。
+##   在 `setup()` 里建一次：`_draw()` 每帧只做 `draw_style_box()`，不再临时 new。
+var _style_badge: StyleBoxFlat = null
+var _style_badge_sel: StyleBoxFlat = null
+var _style_badge_downed: StyleBoxFlat = null
+var _style_name: StyleBoxFlat = null
+var _style_name_downed: StyleBoxFlat = null
+var _style_key: StyleBoxFlat = null
+var _style_key_downed: StyleBoxFlat = null
 
 ## 由 game_scene / input_controller 每帧塞进来的纯本地状态
 var hover_tile: Vector2i = Vector2i(-1, -1)
@@ -51,14 +112,22 @@ var debug_aim: bool = false
 var draw_count: int = 0
 ## ★ 最近一次 `_draw()` 画了几个粮车光环圈（单位是「被选中的粮车数」；测试读它）
 var aura_range_draw_count: int = 0
+## ★★ 最近一次 `_draw()` 画了几个**键帽** / 几张**名牌**（测试 / 排查读它）。
+##   选中且名牌成功放下的将领只算名牌、不算键帽（两者是互斥的两种状态）。
+var badge_draw_count: int = 0
+var nameplate_draw_count: int = 0
 
 
-func setup(p_cfg: ConfigRes, p_world, p_palette, p_units, p_ground = null) -> void:
+func setup(p_cfg: ConfigRes, p_world, p_palette, p_units, p_ground = null,
+		p_team_slots = null) -> void:
 	cfg = p_cfg
 	world = p_world
 	palette = p_palette
 	units = p_units
 	ground = p_ground
+	team_slots = p_team_slots
+	font = FontLoaderRes.load_font(cfg)
+	_build_marker_styles()
 	# 铺满屏幕、但不吃鼠标（输入走 input_controller 那条路）
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -71,6 +140,36 @@ func setup(p_cfg: ConfigRes, p_world, p_palette, p_units, p_ground = null) -> vo
 
 func sync() -> void:
 	queue_redraw()
+
+
+## 建一次头顶标识的 StyleBox：颜色全走 `view/theme.gd`（暗金细线 / 琥珀强调 / 深色面板），
+## 形状与尺寸是本文件顶部的度量常量 —— 与 HUD 的分工完全一致（配色进 JSON、度量进代码）。
+func _build_marker_styles() -> void:
+	var bg: Color = ThemeRes.panel_alpha_color(BADGE_ALPHA, false)
+	_style_badge = _plate_box(bg, ThemeRes.line(), 1, BADGE_RADIUS)
+	_style_badge_sel = _plate_box(bg, ThemeRes.accent(), 2, BADGE_RADIUS)
+	_style_badge_downed = _plate_box(
+		ThemeRes.with_alpha(bg, DOWNED_MARKER_ALPHA),
+		ThemeRes.with_alpha(ThemeRes.line(), 0.65), 1, BADGE_RADIUS)
+	var nbg: Color = ThemeRes.panel_alpha_color(NAMEPLATE_ALPHA, false)
+	_style_name = _plate_box(nbg, ThemeRes.accent(), 1, NAMEPLATE_RADIUS)
+	_style_name_downed = _plate_box(
+		ThemeRes.with_alpha(nbg, NAMEPLATE_ALPHA * 0.85),
+		ThemeRes.with_alpha(ThemeRes.warning(), 0.85), 1, NAMEPLATE_RADIUS)
+	_style_key = _plate_box(ThemeRes.panel_alpha_color(0.98, true),
+		ThemeRes.line_soft(), 1, BADGE_RADIUS)
+	_style_key_downed = _plate_box(
+		ThemeRes.with_alpha(ThemeRes.panel_alpha_color(0.98, true), 0.55),
+		ThemeRes.with_alpha(ThemeRes.warning(), 0.6), 1, BADGE_RADIUS)
+
+
+static func _plate_box(bg: Color, border: Color, border_w: int, radius: int) -> StyleBoxFlat:
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = bg
+	sb.border_color = border
+	sb.set_border_width_all(border_w)
+	sb.set_corner_radius_all(radius)
+	return sb
 
 
 # ------------------------------------------------------------------
@@ -182,6 +281,9 @@ func _draw_impl() -> void:
 	# ★ 移动 / 行军目标点不再在这里画圈 —— 改成 3D 旗子（view/order_flag_view_3d.gd）
 	_draw_build_preview()
 	_draw_drag_box()
+	# ★★ 编队标识最后画：它在**所有世界物件与其它覆盖层之上**（不会被建筑 / 地形 / 单位
+	#    遮挡）；同时它在拖框之上，框选时编号 / 名牌仍然读得清。
+	_draw_team_markers()
 
 
 # ------------------------------------------------------------------
@@ -714,8 +816,16 @@ func _draw_zone_capture() -> void:
 	var items: Array = _capture_items()
 	capture_draw_count = 0
 	for it in items:
+		var fill: Color = it["fill"]
 		for quad in (it["quads"] as Array):
-			draw_colored_polygon(quad, (it["fill"] as Color))
+			# ★★ 拆成三角形再画：`draw_colored_polygon(quad)` 会再三角化一次，
+			#    数值贴近退化时仍可能返回空索引并报 "triangulation failed"。
+			#    三角形是凸的、且面积已验过，直接画不会再失败。
+			var tris := _screen_triangles(quad)
+			if tris.is_empty():
+				continue
+			for tri in tris:
+				draw_colored_polygon(tri, fill)
 			capture_draw_count += 1
 		var front_pts: PackedVector2Array = it["front"]
 		if front_pts.size() >= 2:
@@ -728,7 +838,9 @@ func _draw_zone_capture() -> void:
 func _count_zone_captures() -> int:
 	var n := 0
 	for it in _capture_items():
-		n += (it["quads"] as Array).size()
+		for quad in (it["quads"] as Array):
+			if not _screen_triangles(quad).is_empty():
+				n += 1
 	return n
 
 
@@ -809,7 +921,16 @@ func _capture_items() -> Array:
 				var screen := PackedVector2Array()
 				for lp in poly:
 					screen.append(palette.to_px(lp))
-				quads.append(screen)
+				# ★★ 近平面裁剪会在边界上产生**重合点**；投影后也可能整块退化成一条线。
+				#    `draw_colored_polygon()` 的三角化对这两种情况都会失败（实测报
+				#    "Invalid polygon data, triangulation failed"），所以这里先清掉重合点、
+				#    再按面积把退化四边形丢掉。
+				screen = _clean_screen_polygon(screen)
+				if screen.size() >= 3 and absf(_screen_polygon_area(screen)) > 0.01:
+					# ★ 面积非零仍可能是自交 / 数值退化；交给 Godot 的三角化先验一次。
+					#   通过的多边形在绘制时再拆成**三角形**（三角形不会再三角化失败）。
+					if not _screen_triangles(screen).is_empty():
+						quads.append(screen)
 			# ④ 水面正好穿过这一格 ⇒ 它的顶边是「前沿」的一段（同样要裁，交给 _project_segments）
 			if top < water and water < bottom:
 				front_logic.append(Vector2(x0, water))
@@ -842,6 +963,65 @@ func _clip_poly_near(poly: Array, inv: Transform3D, zn: float) -> PackedVector2A
 			out.append(a)
 		if a_in != b_in:
 			out.append(a.lerp(b, (zn - za) / (zb - za)))
+	return out
+
+
+## 去掉屏幕上相邻的重合点（近平面裁剪经常在一个角上留下 `a == b`）。
+## 三角化要求多边形至少 3 个**不同**的点，否则 `draw_colored_polygon()` 会报
+## "Invalid polygon data, triangulation failed"。
+func _clean_screen_polygon(pts: PackedVector2Array) -> PackedVector2Array:
+	var out := PackedVector2Array()
+	for p in pts:
+		if out.is_empty() or out[out.size() - 1].distance_squared_to(p) > 1e-8:
+			out.append(p)
+	while out.size() >= 2 and out[0].distance_squared_to(out[out.size() - 1]) <= 1e-8:
+		out.remove_at(out.size() - 1)
+	return out
+
+
+## 屏幕多边形的有向面积（鞋带公式）。返回 0 表示共线/退化，不能交给三角化。
+func _screen_polygon_area(pts: PackedVector2Array) -> float:
+	var n: int = pts.size()
+	if n < 3:
+		return 0.0
+	var area2 := 0.0
+	for i in n:
+		var a: Vector2 = pts[i]
+		var b: Vector2 = pts[(i + 1) % n]
+		area2 += a.x * b.y - b.x * a.y
+	return area2 * 0.5
+
+
+## 把一个屏幕多边形拆成三角形（三角化失败 → 空数组，调用方直接跳过）。
+## 三角形逐个交给 `draw_colored_polygon()`，避免它再对凹/退化多边形做一次三角化。
+func _screen_triangles(pts: PackedVector2Array) -> Array:
+	var out: Array = []
+	if pts.size() < 3:
+		return out
+	var poly := pts
+	var idx: PackedInt32Array = Geometry2D.triangulate_polygon(poly)
+	if idx.is_empty():
+		# 不同版本的三角化对绕向要求不一致：正向失败就反向再试一次。
+		var rev := PackedVector2Array()
+		for i in range(pts.size() - 1, -1, -1):
+			rev.append(pts[i])
+		idx = Geometry2D.triangulate_polygon(rev)
+		if not idx.is_empty():
+			poly = rev
+	var i := 0
+	while i + 2 < idx.size():
+		var a: Vector2 = poly[idx[i]]
+		var b: Vector2 = poly[idx[i + 1]]
+		var c: Vector2 = poly[idx[i + 2]]
+		var area := _screen_polygon_area(PackedVector2Array([a, b, c]))
+		if absf(area) > 0.001:
+			# 与 `_draw_build_preview()` 的四边形同一绕向（屏幕 y 向下，面积为正）。
+			if area < 0.0:
+				var tmp := b
+				b = c
+				c = tmp
+			out.append(PackedVector2Array([a, b, c]))
+		i += 3
 	return out
 
 
@@ -908,6 +1088,411 @@ func _draw_units_ui() -> void:
 			draw_rect(Rect2(Vector2(top.x - w * 0.5, top.y), Vector2(w * u.hp_ratio(), 3.0)),
 				SideColorRes.color(cfg, world, String(u.faction), "bar"), true)
 			draw_count += 1
+
+
+## ★★ 头顶编队标识：**常驻键帽 + 选中名牌**（本轮扩展）。
+##
+## 键帽文字：
+##   · 己方（本机操作）→ 固定槽位编号（1..9、第 10 支写 0）；
+##   · 合作队友 → 「友」；敌人 → 「敌」；观战 → 以被观战方为「友」，另一方「敌」。
+## 名牌：
+##   · 只有**己方**选中的将领出名牌（敌 / 友按需求只出键帽，不泄露编制 / 士气）；
+##   · 多个名牌互相压住时**不再退回键帽**，而是围绕各自的头顶找空位（上下为主，
+##     必要时左右让），保证展开的标签栏彼此不重叠；被让开的标签画一条细引线。
+##
+## ★ 编号口径：己方用 `view/team_slots.gd` 的**稳定槽位**（阵亡 / 复活不改号），
+##   与右栏 / 数字键同源。观察者模式不分配槽位，所有将只写敌 / 友。
+## ★ 只画**当前可见**的将（迷雾判据仍在 `_unit_visible`）；阵亡将已移出 world.units，
+##   地图上不画灰标（灰行由右栏 `squad_panel` 表达）。
+func _draw_team_markers() -> void:
+	badge_draw_count = 0
+	nameplate_draw_count = 0
+	if font == null or world == null or palette == null or units == null:
+		return
+	if palette.cam == null:
+		return
+	var vp_size: Vector2 = get_viewport_rect().size
+	if vp_size.x <= 0.0 or vp_size.y <= 0.0:
+		vp_size = size
+	if vp_size.x <= 0.0 or vp_size.y <= 0.0:
+		return
+	var keep: Rect2 = Rect2(Vector2.ZERO, vp_size).grow(64.0)
+	var observer: bool = bool(world.observer_mode)
+	if team_slots != null:
+		team_slots.sync(world)
+
+	# ① 收集**所有可见的将**（不分阵营）；敌 / 友只出键帽，己方才可能出名牌。
+	var entries: Array = []
+	var fallback_n := 0
+	for u in world.units:
+		if not u.alive:
+			continue
+		if not u.is_general():
+			continue
+		if bool(u.neutralized):
+			continue
+		# ★ 观战：用户要「所有将」都标，因此不过滤迷雾；正常局仍只标可见单位。
+		if not observer and not _unit_visible(u):
+			continue
+		var rel := SideColorRes.relation(world, String(u.faction))
+		if rel == SideColorRes.NEUTRAL:
+			continue
+		var is_self: bool = (rel == SideColorRes.SELF) and not observer
+		var label := ""
+		var slot := 0
+		if is_self:
+			fallback_n += 1
+			if team_slots != null:
+				slot = int(team_slots.slot_of(u))
+				if slot <= 0:
+					continue                 # >10 个槽 / 尚未登记：不画，免得编号重复
+			else:
+				slot = fallback_n
+			label = badge_text(slot)
+			if label == "":
+				continue
+		else:
+			label = "友" if (rel == SideColorRes.SELF or rel == SideColorRes.ALLY) else "敌"
+		var head: Vector2 = units.head_screen_pos(u)
+		if not keep.has_point(head):
+			continue
+		var quad: Vector2 = units.quad_screen_size(u)
+		if quad.y <= 0.0:
+			continue
+		entries.append({
+			"u": u,
+			"rel": rel,
+			"self": is_self,
+			"slot": slot,
+			"label": label,
+			"head": head,
+			"quad_h": quad.y,
+			"selected": _selection.has(String(u.id)),
+		})
+	if entries.is_empty():
+		return
+
+	# ② 己方选中的先排名牌：围绕各自头顶找**不重叠**的位置。
+	#    不再「挤不下就退回键帽」——用户口径：展开的标签栏彼此不压即可。
+	var plates: Array = []
+	var plate_rects: Array[Rect2] = []
+	var plate_ids: Dictionary = {}
+	for e in entries:
+		if not bool(e["self"]) or not bool(e["selected"]):
+			continue
+		var base: Rect2 = _nameplate_rect(e, vp_size)
+		var plate: Rect2 = _place_nameplate(base, vp_size, plate_rects)
+		e["plate"] = plate
+		e["base_plate"] = base
+		plates.append(e)
+		plate_rects.append(plate)
+		var uu = e["u"]
+		plate_ids[String(uu.id)] = true
+
+	# ③ 键帽：避让已放下的名牌 + 其它键帽；己方选中且已有名牌的不再画键帽。
+	var badge_rects: Array[Rect2] = []
+	for pr in plate_rects:
+		badge_rects.append(pr)
+	for pass_self in [true, false]:
+		for e in entries:
+			if bool(e["self"]) != bool(pass_self):
+				continue
+			if bool(e["self"]) and plate_ids.has(String(e["u"].id)):
+				continue
+			_draw_badge(e, badge_rects)
+
+	# ④ 名牌最后画（压在键帽之上）；被让开较远的先画一条细引线回头顶。
+	for e in plates:
+		var plate: Rect2 = e["plate"]
+		var base: Rect2 = e.get("base_plate", plate)
+		if absf(plate.position.y - base.position.y) > NAMEPLATE_H \
+				or absf(plate.position.x - base.position.x) > 8.0:
+			var head: Vector2 = e["head"]
+			var from := Vector2(plate.get_center().x, plate.end.y)
+			var c: Color = ThemeRes.line()
+			c.a = 0.35
+			draw_line(from, head, c, 1.0, true)
+	for e in plates:
+		_draw_nameplate(e)
+
+
+## 给一张名牌找不重叠的位置：
+##   · 先竖直向上 / 向下让（每次 `NAMEPLATE_H + 6`），再左右各让一列；
+##   · 必须完全落在视口内；
+##   · 找不到时退回锚点（极端情况，正常 10 个以内一定能找到）。
+func _place_nameplate(anchor: Rect2, vp_size: Vector2, placed: Array[Rect2]) -> Rect2:
+	var step_y: float = NAMEPLATE_H + NAMEPLATE_STACK_PX
+	var step_x: float = anchor.size.x + 8.0
+	var candidates: Array[Vector2] = [Vector2.ZERO]
+	for i in range(1, 17):
+		candidates.append(Vector2(0.0, -step_y * float(i)))
+		candidates.append(Vector2(0.0, step_y * float(i)))
+	for col in range(1, 4):
+		for i in range(0, 17):
+			var dx: float = step_x * float(col)
+			candidates.append(Vector2(dx, -step_y * float(i)))
+			candidates.append(Vector2(-dx, -step_y * float(i)))
+			candidates.append(Vector2(dx, step_y * float(i)))
+			candidates.append(Vector2(-dx, step_y * float(i)))
+	for off in candidates:
+		var r := Rect2(anchor.position + off, anchor.size)
+		if r.position.x < 4.0 or r.end.x > vp_size.x - 4.0:
+			continue
+		if r.position.y < 4.0 or r.end.y > vp_size.y - 4.0:
+			continue
+		if not _rect_hits(r, placed):
+			return r
+	return anchor
+
+
+## 一个键帽。`rects` = 已经放下的矩形（名牌 + 键帽；密集时逐级向上让 3px）。
+func _draw_badge(e: Dictionary, rects: Array[Rect2]) -> void:
+	var u = e["u"]
+	var selected: bool = bool(e["selected"])
+	var s: float = badge_size_for(float(e["quad_h"]))
+	var head: Vector2 = e["head"]
+	var r := Rect2(head.x - s * 0.5, head.y - BADGE_GAP - s, s, s)
+	for attempt in 4:
+		var rr := r
+		rr.position.y -= 3.0 * float(attempt)
+		if not _rect_hits(rr, rects):
+			r = rr
+			break
+	if r.position.y < 2.0:
+		r.position.y = 2.0
+	rects.append(r)
+
+	var downed: bool = u.has_method("is_downed") and bool(u.is_downed())
+	var alpha: float = DOWNED_MARKER_ALPHA if downed else 1.0
+	var style: StyleBoxFlat = _style_badge
+	if downed:
+		style = _style_badge_downed
+	elif selected:
+		style = _style_badge_sel
+	draw_style_box(style, r)
+
+	# 底边阵营色（与右栏数字块 / 血条同一个色源）：己蓝 / 友金 / 敌红。
+	# ★ 观战里被观战方也写「友」——按「友」的字面用盟友金，而不是自机蓝，
+	#   否则同一个「友」字在观战 / 合作两种局里会是两种颜色。
+	var side: Color = SideColorRes.color(cfg, world, String(u.faction), "main")
+	if not bool(e["self"]):
+		side = cfg.side_color_ally if String(e["label"]) == "友" else cfg.side_color_enemy
+	side.a *= alpha
+	var strip_w: float = maxf(0.0, r.size.x - 6.0)
+	if strip_w > 0.5:
+		draw_rect(Rect2(r.position.x + 3.0, r.end.y - BADGE_STRIP_H - 1.5,
+			strip_w, BADGE_STRIP_H), side, true)
+
+	# 数字 / 敌 / 友：己方走暖白，敌友直接走阵营色（蓝 / 金 / 红）。
+	var text: String = String(e["label"])
+	var fs: int = int(round(r.size.y * 0.66))
+	var tw: float = font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
+	var base := r.position.y + r.size.y * 0.5 + font.get_ascent(fs) * 0.5 - 1.0
+	var tcol: Color = ThemeRes.text() if bool(e["self"]) else side
+	tcol.a *= alpha
+	draw_string(font, Vector2(r.position.x + (r.size.x - tw) * 0.5, base), text,
+		HORIZONTAL_ALIGNMENT_LEFT, -1, fs, tcol)
+
+	# 倒地：右上角一个小十字（与旧 2D 版「头顶小十字」同一个意思）。
+	if downed:
+		var cw := 3.0
+		var c := Vector2(r.end.x - 5.0, r.position.y + 5.0)
+		var wc: Color = ThemeRes.warning()
+		wc.a *= 0.9
+		draw_line(c - Vector2(cw, cw), c + Vector2(cw, cw), wc, 1.2, true)
+		draw_line(c - Vector2(cw, -cw), c + Vector2(cw, -cw), wc, 1.2, true)
+
+	badge_draw_count += 1
+	draw_count += 1
+
+
+## 选中名牌的矩形：宽度按「键帽 + 兵种字 + 名字 + 编制」现算，夹在屏幕内。
+## 同时把排版用的文本 / 宽度写回 `e`，`_draw_nameplate` 不再重复量字。
+func _nameplate_rect(e: Dictionary, vp_size: Vector2) -> Rect2:
+	var u = e["u"]
+	var type_txt: String = _marker_type_text(u)
+	var name_txt: String = _marker_name(u)
+	var form_txt: String = _marker_formation(u)
+	var type_w: float = font.get_string_size(
+		type_txt, HORIZONTAL_ALIGNMENT_LEFT, -1, NAMEPLATE_FONT).x
+	var form_w: float = font.get_string_size(
+		form_txt, HORIZONTAL_ALIGNMENT_LEFT, -1, NAMEPLATE_FORM_FONT).x
+	var fixed: float = NAMEPLATE_PAD * 2.0 + NAMEPLATE_KEY + NAMEPLATE_KEY_GAP
+	var type_part: float = type_w + (NAMEPLATE_KEY_GAP if type_w > 0.0 else 0.0)
+	var name_avail: float = NAMEPLATE_MAX_W - fixed - type_part - 8.0 - form_w
+	if name_txt != "":
+		name_txt = _fit_text(name_txt, maxf(20.0, name_avail), NAMEPLATE_FONT)
+	var name_w: float = 0.0
+	if name_txt != "":
+		name_w = font.get_string_size(
+			name_txt, HORIZONTAL_ALIGNMENT_LEFT, -1, NAMEPLATE_FONT).x
+	var w: float = fixed + type_part + name_w + (8.0 if name_w > 0.0 else 0.0) + form_w
+	w = clampf(w, 70.0, NAMEPLATE_MAX_W)
+
+	e["type_txt"] = type_txt
+	e["name_txt"] = name_txt
+	e["form_txt"] = form_txt
+	e["type_w"] = type_w
+	e["name_w"] = name_w
+	e["form_w"] = form_w
+
+	var head: Vector2 = e["head"]
+	var x: float = head.x - w * 0.5
+	if x < 4.0:
+		x = 4.0
+	elif x + w > vp_size.x - 4.0:
+		x = maxf(4.0, vp_size.x - 4.0 - w)
+	var y: float = head.y - NAMEPLATE_GAP - NAMEPLATE_H
+	if y < 2.0:
+		y = 2.0
+	return Rect2(Vector2(x, y), Vector2(w, NAMEPLATE_H))
+
+
+## 选中名牌：`[键帽] 兵种字 名字        编制`，底边一条士气条。
+func _draw_nameplate(e: Dictionary) -> void:
+	var u = e["u"]
+	var r: Rect2 = e["plate"]
+	var downed: bool = u.has_method("is_downed") and bool(u.is_downed())
+	var alpha: float = 0.78 if downed else 1.0
+	draw_style_box(_style_name_downed if downed else _style_name, r)
+
+	# 键帽（名牌里也保留编号：按键提示不因「升级成名片」而丢）
+	var key := Rect2(r.position.x + NAMEPLATE_PAD,
+		r.position.y + (r.size.y - NAMEPLATE_KEY) * 0.5, NAMEPLATE_KEY, NAMEPLATE_KEY)
+	draw_style_box(_style_key_downed if downed else _style_key, key)
+	var side: Color = SideColorRes.color(cfg, world, String(u.faction), "main")
+	side.a *= alpha
+	draw_rect(Rect2(key.position.x + 3.0, key.end.y - 3.5, key.size.x - 6.0, 2.0),
+		side, true)
+	var ktxt: String = String(e["label"])
+	var kf: int = NAMEPLATE_KEY_FONT
+	var kw: float = font.get_string_size(ktxt, HORIZONTAL_ALIGNMENT_LEFT, -1, kf).x
+	var kb := key.position.y + key.size.y * 0.5 + font.get_ascent(kf) * 0.5 - 1.0
+	var kcol: Color = ThemeRes.text()
+	kcol.a *= alpha
+	draw_string(font, Vector2(key.position.x + (key.size.x - kw) * 0.5, kb), ktxt,
+		HORIZONTAL_ALIGNMENT_LEFT, -1, kf, kcol)
+
+	# 文本行：整体略偏上，给底部 2px 士气条留位置。
+	var baseline: float = (r.position.y + r.size.y * 0.5
+		+ font.get_ascent(NAMEPLATE_FONT) * 0.5 - 2.5)
+	var x: float = key.end.x + NAMEPLATE_KEY_GAP
+	var type_txt: String = String(e.get("type_txt", ""))
+	if type_txt != "":
+		var tcol: Color = side
+		draw_string(font, Vector2(x, baseline), type_txt, HORIZONTAL_ALIGNMENT_LEFT, -1,
+			NAMEPLATE_FONT, tcol)
+		x += float(e.get("type_w", 0.0)) + NAMEPLATE_KEY_GAP
+	var name_txt: String = String(e.get("name_txt", ""))
+	if name_txt != "":
+		var ncol: Color = ThemeRes.text()
+		ncol.a *= alpha
+		draw_string(font, Vector2(x, baseline), name_txt, HORIZONTAL_ALIGNMENT_LEFT, -1,
+			NAMEPLATE_FONT, ncol)
+
+	# 编制 / 状态右对齐（倒地时是「再起 / 倒地」，颜色走 warning）。
+	var form_txt: String = String(e.get("form_txt", ""))
+	var form_w: float = float(e.get("form_w", 0.0))
+	var fcol: Color = ThemeRes.warning() if downed else ThemeRes.text_dim()
+	fcol.a *= alpha
+	draw_string(font, Vector2(r.end.x - NAMEPLATE_PAD - form_w, baseline), form_txt,
+		HORIZONTAL_ALIGNMENT_LEFT, -1, NAMEPLATE_FORM_FONT, fcol)
+
+	# 士气条：绿 → 红，与图标里的士气填充同一套端点色。
+	var bar := Rect2(r.position.x + NAMEPLATE_PAD, r.end.y - 3.5,
+		r.size.x - NAMEPLATE_PAD * 2.0, 2.0)
+	var bg: Color = ThemeRes.line_soft()
+	bg.a *= 0.55 * alpha
+	draw_rect(bar, bg, true)
+	var ratio := 0.0
+	if u.has_method("morale_ratio"):
+		ratio = clampf(float(u.morale_ratio()), 0.0, 1.0)
+	var fill: Color = ThemeRes.morale_low().lerp(ThemeRes.morale_high(), ratio)
+	fill.a *= alpha
+	draw_rect(Rect2(bar.position, Vector2(bar.size.x * ratio, bar.size.y)), fill, true)
+
+	nameplate_draw_count += 1
+	draw_count += 1
+
+
+## 名牌里的兵种字：枪 / 弓 / 骑……（`cfg.unit_icon_of` 与 HUD 图标同一个口径）。
+func _marker_type_text(u) -> String:
+	if cfg == null:
+		return ""
+	var tid := String(u.unit_type)
+	var icon := ""
+	if tid != "":
+		icon = cfg.unit_icon_of(tid)
+	else:
+		icon = cfg.unit_icon_of(String(u.kind))
+	return "" if icon == "?" else icon
+
+
+## 名牌里的名字：单位名 → 兵种名 → 「将领」。
+func _marker_name(u) -> String:
+	var s := String(u.name).strip_edges()
+	if s != "":
+		return s
+	if cfg != null:
+		var nm := cfg.unit_name_of(String(u.unit_type))
+		if nm != "":
+			return nm
+	return "将领"
+
+
+## 名牌右端：编制 `当前/上限`；倒地时改成状态字（再起 / 倒地）。
+func _marker_formation(u) -> String:
+	if u.has_method("is_downed") and bool(u.is_downed()):
+		if u.has_method("is_reviving") and bool(u.is_reviving()):
+			return "再起"
+		return "倒地"
+	var count := 1
+	if world != null and world.has_method("group_of"):
+		count = (world.group_of(u) as Array).size()
+	var cap := 0
+	if world != null and world.has_method("effective_retinue_cap"):
+		cap = int(world.effective_retinue_cap(u))
+	elif cfg != null and cfg.has_method("general_cap_at"):
+		cap = int(cfg.general_cap_at(int(u.general_index)))
+	if cap > 0:
+		return "%d/%d" % [count, cap]
+	return str(count)
+
+
+## 第几支 → 键帽上的字：1..9 原样，第 10 支写 0（与数字键 / 左栏同一口径）。
+static func badge_text(slot: int) -> String:
+	if slot <= 0:
+		return ""
+	return str(slot % 10)
+
+
+## 键帽边长：跟着立牌的**屏幕高度**轻微浮动，再夹到 [BADGE_MIN_PX, BADGE_MAX_PX]。
+## ★ 为什么不是固定字号：默认视角下立牌只有 30 多像素高，固定 18px 字会显得比兵还大；
+##   拉近之后又显得小。跟着立牌高度走，远近都像「长在单位头顶」。
+static func badge_size_for(quad_h: float) -> float:
+	return clampf(quad_h * BADGE_SPRITE_RATIO, BADGE_MIN_PX, BADGE_MAX_PX)
+
+
+## 两矩形是否相压（只算真正重叠；贴边不算）。
+static func _rect_hits(r: Rect2, rects: Array[Rect2]) -> bool:
+	for o in rects:
+		if r.intersects(o, false):
+			return true
+	return false
+
+
+## 单行裁剪：宽度不够时截断并补「…」（与 troop_row 的 `_fit` 同一个目的）。
+func _fit_text(text: String, max_w: float, fs: int) -> String:
+	if font == null or max_w <= 0.0:
+		return ""
+	if font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x <= max_w:
+		return text
+	var s := text
+	while s.length() > 1:
+		s = s.substr(0, s.length() - 1)
+		if font.get_string_size(s + "…", HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x <= max_w:
+			return s + "…"
+	return "…"
 
 
 var _selection: Dictionary = {}
