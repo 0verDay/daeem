@@ -27,6 +27,10 @@
 ##   · ★★ `start_units[].escort_of`：**附属兵**（本轮口径）—— 整数、**1 起**、
 ##     与 `general_index` 同一套编号，指向**同阵营**的第几位将领。
 ##     缺省 = 不是附属兵（普通摆放单位，行为与加这个字段之前一字不差）。
+##   · ★★ `start_units[].general_profile`：将领的**档位**（1 起，`unit.general.types`
+##     的下标 +1）。`types` 允许重复兵种，只靠 `unit_type` 查会永远落到第一次出现
+##     的位置；显式档位才能区分「将领 4」和「将领 1」。旧数据没写时按
+##     `unit_type` → `kind` 推断（见 `world._place_faction_units`）。
 ##   · `start_units` / `start_buildings` 是**追加**（地图的预置建筑照旧先生效）。
 ##     ⚠️ 地图的**预置单位**（`map.json` 的 `units[]`）本轮已整个废弃、运行时不再读：
 ##        「开局就摆好的守军」现在**只能**由关卡的 `start_units` 摆（字段语义与它一字不差）。
@@ -1129,11 +1133,14 @@ func _ck_start_units() -> void:
 			_add(SEV_BLOCK, "unit_no_faction", "摆放单位 (%d,%d) 没写 faction" % [int(ud["x"]), int(ud["y"])])
 		# ★★ 将领条目的**附属单位规格**（本轮新增）。
 		if ConfigRes.general_index_of(String(ud.get("kind", ""))) >= 0:
-			# ★★ 编制上限按**将领档**取（由该将领的兵种 `unit_type` 查出来），
-			#    **不是**将领序号（序号只是名册号）——与 `world._place_faction_units` 同一口径。
+			# ★★ 编制上限按**将领档**取（显式 `general_profile` → 兵种 `unit_type` →
+			#    kind 兜底），**不是**将领序号（序号只是名册号）——与
+			#    `world._place_faction_units` 同一口径。
 			var slot := -1
 			if cfg != null:
-				slot = cfg.general_slot_of_type(String(ud.get("unit_type", "")))
+				slot = int(ud.get("general_profile", -1)) - 1
+				if slot < 0:
+					slot = cfg.general_slot_of_type(String(ud.get("unit_type", "")))
 			if slot < 0:
 				slot = ConfigRes.general_index_of(String(ud.get("kind", "")))
 			_ck_escort_spec(ud, "(%d,%d)" % [int(ud["x"]), int(ud["y"])], "将领", slot)
@@ -1609,6 +1616,11 @@ static func _read_start_units(v: Variant) -> Array:
 			"faction": String(d.get("faction", "")).strip_edges(),
 			"kind": kind,
 			"general_index": maxi(1, gi),
+			# ★★ 将领**档位**（1 起；`unit.general.types` 的下标 +1）：`types` 里
+			#    允许重复兵种，只靠 `unit_type` 查会永远落到第一次出现的位置 ——
+			#    显式档位才能区分「将领 4」和「将领 1」。缺省 / 非法 = -1，由
+			#    `world._place_faction_units()` 按 unit_type → kind 推断（旧数据）。
+			"general_profile": _int_or(d.get("general_profile", null), -1),
 			# ⚠️ 旧「逐兵摆放」的 `escort_of`（本轮不再产出，保留读取只为旧数据不炸）。
 			"escort_of": _escort_of_int(d.get("escort_of", null)),
 			"unit_type": String(d.get("unit_type", "")).strip_edges(),

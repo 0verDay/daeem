@@ -532,6 +532,7 @@ func _test_panels(cfg) -> void:
 	_test_card_keys(main)
 	_test_avatar_text_fit(cfg)
 	_test_recruit_via_card(main)
+	_test_multi_recruit_distribution(main)
 	_test_zone_recruit_via_card(main)
 	_test_upgrade_via_card(main)
 	await _test_queue_control(cfg)
@@ -1244,6 +1245,18 @@ func _test_squad_rows(main) -> void:
 		"★ 反选：点掉最后一支 = 清空选中（反选的正常结果）")
 	ok(not panel.slot_active(1), "清空后没有任何标签高亮")
 
+	# ★★ 数字键按**左栏部队编号**选，不按 unit.hotkey：将领阵亡 / 名册有空洞时
+	#    两者会错位（用户报的「序号和编号不对就选不中」）。
+	main.input_ctrl.select_units([])
+	var hotkey_before := String(g2.hotkey)
+	g2.hotkey = "9"                                     # 故意做成对不上的编号
+	ok(main.input_ctrl.handle_key(_key(KEY_2)), "★★ 按数字键 2 被识别为「选第 2 支部队」")
+	eq(main.input_ctrl.selected_units.size(), team2.size(),
+		"★★ 选中的是第 2 支整队（%d 个）" % team2.size())
+	eq(String(main.input_ctrl.selected_units[0].id), String(g2.id),
+		"★★ 即使 g2.hotkey=9，第 2 支仍然按左栏编号选中")
+	g2.hotkey = hotkey_before
+
 	main.input_ctrl.select_units([world.unit_by_id("general-1")])
 
 func _test_page_tabs_and_card(main, cfg) -> void:
@@ -1920,6 +1933,59 @@ func _test_recruit_via_card(main) -> void:
 	while g1.train_queue_size() > 0:
 		world.cancel_recruit(g1.id, 0, "p1")
 	ok(not g1.is_training(), "收尾：队列已清空")
+
+## ★★ 多选招募：不应全部塞给第一个将领，而应按「队列最短」摊到每个可招募将领。
+func _test_multi_recruit_distribution(main) -> void:
+	var world = main.world
+	var g1 = world.unit_by_id("general-1")
+	var g2 = world.unit_by_id("general-2")
+	ok(g1 != null and g2 != null, "（前提）有两支部队可多选")
+	if g1 == null or g2 == null:
+		return
+	for g in [g1, g2]:
+		while g.train_queue_size() > 0:
+			world.cancel_recruit(String(g.id), 0, "p1")
+	world.resources["food"] = 2000.0
+	world.resources["gold"] = 2000.0
+	var g2_old_pos: Vector2 = g2.pos
+	# 两支放到同一块己方区划里，保证两个都是「可招募」的（测试只关心分配顺序）。
+	g2.pos = g1.pos + Vector2(0.25, 0.0)
+	g2.sync_tile(world.map)
+	var saved_zones: Array = []
+	for g in [g1, g2]:
+		var z = world.zones.zone_at(g.tx, g.ty)
+		if z != null:
+			var seen := false
+			for rec in saved_zones:
+				if rec["zone"] == z:
+					seen = true
+					break
+			if not seen:
+				saved_zones.append({"zone": z, "owner": z.get("owner"),
+					"population": z.get("population")})
+			z["owner"] = "p1"
+			z["population"] = 20.0
+	main.input_ctrl.select_units([g1, g2])
+	ok(main.input_ctrl.request_recruit(UnitRes.UNIT_TYPE_SPEARMAN),
+		"（前提）多选时第一单招募发出去了")
+	eq(g1.train_queue_size(), 1, "★★ 第 1 单给第 1 支（它的队列最短）")
+	eq(g2.train_queue_size(), 0, "第 2 支这单不排")
+	ok(main.input_ctrl.request_recruit(UnitRes.UNIT_TYPE_SPEARMAN),
+		"（前提）第二单招募发出去了")
+	eq(g1.train_queue_size(), 1, "第 1 支队列已经比第 2 支长")
+	eq(g2.train_queue_size(), 1, "★★ 第 2 单自动轮到第 2 支（不是继续堆给第一个）")
+	main.input_ctrl.select_units([])
+	while g1.train_queue_size() > 0:
+		world.cancel_recruit(String(g1.id), 0, "p1")
+	while g2.train_queue_size() > 0:
+		world.cancel_recruit(String(g2.id), 0, "p1")
+	g2.pos = g2_old_pos
+	g2.sync_tile(world.map)
+	for rec in saved_zones:
+		var z: Dictionary = rec["zone"]
+		z["owner"] = rec["owner"]
+		z["population"] = rec["population"]
+
 
 func _test_zone_recruit_via_card(main) -> void:
 	var world = main.world

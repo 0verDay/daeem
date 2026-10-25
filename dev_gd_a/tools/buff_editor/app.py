@@ -279,20 +279,29 @@ def _apply_theme(root: tk.Tk) -> ttk.Style:
 
 
 class _NoRepaint:
-    """整块重建控件时锁住窗口绘制，建完一次性解锁（消掉闪白）。
+    """整块重建控件时先把窗口的绘制关掉，建完再一次性打开（消掉闪白）。
 
-    ★ 用 `LockWindowUpdate`（Windows 专治批量改控件闪烁），**不是** `WM_SETREDRAW`
-      —— 后者会把窗口激活状态一起搅乱。非 Windows / 任何异常都退化成空操作。
+    ★★ 用 `WM_SETREDRAW`（Windows 上批量改控件的标准做法），不是
+      `LockWindowUpdate` —— 后者只锁一个窗口，DWM 下压不住 Tk 销毁/新建控件的
+      中间态。`= 1` 后一次 `RedrawWindow` 画到最终态；非 Windows / 异常都退化成空操作。
     """
 
+    _WM_SETREDRAW = 0x000B
+    _RDW_INVALIDATE = 0x0001
+    _RDW_ERASE = 0x0004
+    _RDW_ALLCHILDREN = 0x0080
+    _RDW_UPDATENOW = 0x0100
     _GA_ROOT = 2
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self._user32 = None
+        self._hwnds: List[int] = []
 
     def __enter__(self):
-        if sys.platform != "win32":
+        # 窗口不可见（初始化 / 无头测试 withdraw）时不做绘制锁定：
+        # 在 withdrawn 窗口上发 WM_SETREDRAW 会把后续 focus_set() 弄失效。
+        if sys.platform != "win32" or not self.root.winfo_viewable():
             return self
         try:
             import ctypes
@@ -300,23 +309,41 @@ class _NoRepaint:
             user32 = ctypes.windll.user32
             user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
             user32.GetAncestor.restype = wintypes.HWND
-            user32.LockWindowUpdate.argtypes = [wintypes.HWND]
-            user32.LockWindowUpdate.restype = wintypes.BOOL
+            user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT,
+                                            wintypes.WPARAM, wintypes.LPARAM]
+            user32.SendMessageW.restype = wintypes.LPARAM
+            user32.RedrawWindow.argtypes = [wintypes.HWND, ctypes.c_void_p,
+                                            ctypes.c_void_p, wintypes.UINT]
             top = user32.GetAncestor(self.root.winfo_id(), self._GA_ROOT)
-            if top:
-                user32.LockWindowUpdate(top)
-                self._user32 = user32
+            hwnds: List[int] = []
+            for hwnd in (top, self.root.winfo_id()):
+                if hwnd and int(hwnd) not in hwnds:
+                    hwnds.append(int(hwnd))
+            for hwnd in hwnds:
+                user32.SendMessageW(hwnd, self._WM_SETREDRAW, 0, 0)
+            self._hwnds = hwnds
+            self._user32 = user32
         except Exception:                                   # noqa: BLE001
             self._user32 = None
+            self._hwnds = []
         return self
 
     def __exit__(self, *exc):
         user32, self._user32 = self._user32, None
-        if user32 is not None:
+        hwnds, self._hwnds = self._hwnds, []
+        if user32 is None or not hwnds:
+            return False
+        for hwnd in hwnds:
             try:
-                user32.LockWindowUpdate(None)
+                user32.SendMessageW(hwnd, self._WM_SETREDRAW, 1, 0)
             except Exception:                               # noqa: BLE001
                 pass
+        try:
+            user32.RedrawWindow(hwnds[0], None, None,
+                                self._RDW_INVALIDATE | self._RDW_ERASE
+                                | self._RDW_ALLCHILDREN | self._RDW_UPDATENOW)
+        except Exception:                                   # noqa: BLE001
+            pass
         return False
 
 
@@ -530,8 +557,17 @@ class BuffEditorApp:
                 btn.pack(fill="x", pady=2)
                 self._sidebar_buttons[buff.id] = btn
 
-    def _build_form(self) -> None:
+    def _build_form(self, *, reset_scroll: bool = True) -> None:
+        """重建整张表单。
+
+        ★ 撤销/重做只改数值时 `reset_scroll=False`：保留用户正在看的位置，
+          不再每次都把表单滚回顶部（用户报的「所有 UI 回到初始位置」）。
+        """
         buff = self.current_buff()
+        try:
+            old_offset = self._canvas.canvasy(0.0)
+        except tk.TclError:
+            old_offset = 0.0
         with _NoRepaint(self.root):
             self._building = True
             for child in self._inner.winfo_children():
@@ -566,7 +602,18 @@ class BuffEditorApp:
                     row_i += 1
             self._inner.columnconfigure(0, weight=1)
             self._building = False
-        self._canvas.yview_moveto(0.0)
+            try:
+                self._inner.update_idletasks()
+                self._canvas.configure(scrollregion=self._canvas.bbox("all"))
+            except tk.TclError:
+                pass
+            if reset_scroll:
+                self._canvas.yview_moveto(0.0)
+            else:
+                total = max(1.0, float(self._inner.winfo_reqheight()))
+                viewport = float(self._canvas.winfo_height())
+                pos = max(0.0, min(float(old_offset), max(0.0, total - viewport)))
+                self._canvas.yview_moveto(pos / total)
 
     def _draw_icon(self, text: str) -> None:
         c = self._icon_canvas
@@ -667,7 +714,7 @@ class BuffEditorApp:
         self._after_history_change("已重做")
 
     def _after_history_change(self, message: str) -> None:
-        self._build_form()
+        self._build_form(reset_scroll=False)
         self._refresh_preview()
         self._refresh_dirty()
         self._set_status(message + "（还没保存）" if self.model.dirty else message)
@@ -697,7 +744,7 @@ class BuffEditorApp:
             return
         self._undo_stack.clear()
         self._redo_stack.clear()
-        self._build_form()
+        self._build_form(reset_scroll=False)
         self._refresh_preview()
         self._refresh_dirty()
         self._set_status("已从磁盘重载（撤销 / 重做历史已清空）")

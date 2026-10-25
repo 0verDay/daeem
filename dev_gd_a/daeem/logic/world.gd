@@ -160,8 +160,10 @@ var ai_faction_resources: Dictionary = {}
 var ai_commanders: Dictionary = {}
 ## ★★ 固定随机盐（-1 = 每局现抽）。测试 / 未来的回放用它钉住 AI 的确定性随机。
 var fixed_rand_salt: int = -1
-## ★★ 观战模式：`my_faction` 仍是被观察的那一方（迷雾 / 目标 / HUD 都按它走），
-##    但这一方由 commander AI 接管，玩家只读、不下命令。
+## ★★ 观战模式：本机是**纯 spectator**（“看海”），不属于任何一个阵营。
+##    `my_faction` 只是**被观察方**（HUD / 迷雾 / AI 面板看谁），不再是「玩家的家」：
+##    · `player_factions` 为空 ⇒ 没有本地经济、目标、判负；
+##    · 被观察方仍由 commander AI 接管，玩家只读（ai_test_2 允许额外下 AI 指令）。
 var observer_mode: bool = false
 ## ★★ 附属单位的**规格**（本轮口径变更）：不再有「逐兵摆放的归属表」，
 ##    规格直接存在**将领单位自己**身上（`unit.retinue_target` / `unit.retinue_types`）。
@@ -286,9 +288,12 @@ static func create(p_cfg: ConfigRes, map_path: String = MapLibraryRes.FALLBACK_M
 ##
 ## @param cfg      配置
 ## @param level    `logic/level.gd` 的 Level（**必须非 null**）
-## @param my_faction 本机席位（房主 = `players[0]`，客机 = `players[1]`）
+## @param my_faction 本机席位（房主 = `players[0]`，客机 = `players[1]`）；
+##                   `observer_mode = true` 时它只是**被观察方**（镜头 / 迷雾 / 面板看谁）
 ## @param roster   本局的玩家席位；**空数组 = 用关卡 `players[]` 的顺序**（见下）
 ## @param with_ai  要不要建阵营 AI（与 `create()` 同一个开关）
+## @param observer_mode true = **纯观战 / 看海**：本机不属于任何阵营（`player_factions` 为空），
+##                      没有本地经济 / 目标 / 判负；被观察方仍由 commander AI 全权操作。
 ##
 ## ★★ `roster` 的顺序就是**席位顺序**（房主第 1 个、客机第 2 个），这是拍板第 18 项。
 ##    ⚠️ 传空数组时用 `level.seats()`（单人战役 / 单机跑一关的正常调用）；
@@ -424,17 +429,17 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	#    ⚠️ 用 `_is_ai_piloted()` 不行：它把 `my_faction` 排除了，于是「另一个可玩阵营」
 	#      也会被算成玩家（它的家被拆会连累玩家判负、目标判定也会把它算进去）。
 	player_factions = []
-	for f in player_seats:
-		if ai_kind_of(String(f)) != LevelRes.AI_NONE:
-			continue                        # 这一方这一局归 AI 管 ⇒ 不是「玩家的家」
-		player_factions.append(String(f))
-	# 兜底：一个都不剩时至少把本机席位算进来（否则「玩家的家」会一个都没有）
-	# ★★ 观战模式：被观察的那一方仍然算「玩家的家」（目标 / 判负按它走），
-	#    但它的 AI 控制权由 `_is_ai_piloted()` / `_is_commander_ai()` 放行。
-	if observer_mode and my_faction != "" and not player_factions.has(my_faction):
-		player_factions.append(my_faction)
-	elif player_factions.is_empty() and my_faction != "":
-		player_factions.append(my_faction)
+	# ★★ 观战 = 纯 spectator：本机**不属于任何阵营**，所以这里一个都不加。
+	#    被观察方（`my_faction`）只决定 HUD / 迷雾 / AI 面板“看谁”，不再是「玩家的家」，
+	#    于是也不会拿到本地经济、目标结算或判负。
+	if not observer_mode:
+		for f in player_seats:
+			if ai_kind_of(String(f)) != LevelRes.AI_NONE:
+				continue                        # 这一方这一局归 AI 管 ⇒ 不是「玩家的家」
+			player_factions.append(String(f))
+		# 兜底：一个都不剩时至少把本机席位算进来（否则「玩家的家」会一个都没有）
+		if player_factions.is_empty() and my_faction != "":
+			player_factions.append(my_faction)
 	# ★★ 关卡 / 战役数据里的**阵营颜色**（本轮新增）：必须在下面那句 `set_allies` 之前、
 	#    在所有阵营确定之后登记 —— `view/` 里所有取色都走 `cfg.faction_color()`，
 	#    漏了这一步战役的自定义阵营 id 会一片品红（见 `_register_level_colors`）。
@@ -625,14 +630,20 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	#
 	# ★ 第三个参数 `my_faction` = 本机在操作的那一方，它决定**打哪条目标**
 	#    （一关可以配两条：蓝方守住 c1 / 红方占领 c1）。
-	var defend: Array = []
-	for f in player_factions:
-		if ai_kind_of(String(f)) != LevelRes.AI_NONE:
-			continue
-		defend.append(String(f))
-	if defend.is_empty():
-		defend = [my_faction]
-	objective_state = ObjectiveRes.setup(self, level, defend, my_faction)
+	#
+	# ★★ 观战者是**纯 spectator**：没有自己的目标 / 胜负。目标状态留空
+	#    （HUD 的目标栏因此整块隐藏），`level` 仍然保留给 AI 读 attack_target 等。
+	if observer_mode:
+		objective_state = {}
+	else:
+		var defend: Array = []
+		for f in player_factions:
+			if ai_kind_of(String(f)) != LevelRes.AI_NONE:
+				continue
+			defend.append(String(f))
+		if defend.is_empty():
+			defend = [my_faction]
+		objective_state = ObjectiveRes.setup(self, level, defend, my_faction)
 
 	# ★★ 士气联动的区划图收口（与上面 fog / objective 同一处「reset 结束 = 一切是热的」）：
 	#    邻接图构建一次；连通性（被包围）先算一次；owner 快照一次 ——
@@ -646,7 +657,8 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	_setup_ai_commanders()
 
 	# ★★ 观战：HUD 的资源条读 `world.resources`，这里把它指到被观察 AI 的钱包。
-	#    经济 tick 里玩家席位那一轮会跳过 `_is_ai_piloted()`，所以不会重复加钱。
+	#    ⚠️ 只是**显示别名**：本地经济结算在 tick() 里被 observer_mode 跳过，
+	#    被观察方（它同时是 commander）的收入由下面的 commander 循环加一次 —— 不会重复。
 	if observer_mode:
 		var op: Variant = ai_faction_resources.get(my_faction, null)
 		if typeof(op) == TYPE_DICTIONARY:
@@ -1032,20 +1044,25 @@ func _place_faction_units(fid: String, placed: Array) -> void:
 		# ★★ 将领的两套编号（本轮解耦）：
 		#   · `roster` = **将领序号**（JSON `general_index`，1 起 → 这里 0 起）—— 只决定
 		#     **运行时 id**（`general-<fid>-<roster+1>`）与附属兵归属；
-		#   · `profile` = 「这位将领是**哪个将领**」—— 由它的**兵种** `unit_type` 查出来，
-		#     决定数值 / 兵种 / 编制上限 / 默认名字（查 unit.general.*）。
+		#   · `profile` = 「这位将领是**哪个将领**」—— 优先读显式 `general_profile`，
+		#     旧数据再按**兵种** `unit_type` / kind 推断，决定数值 / 兵种 / 编制上限 / 默认名字。
 		#   ⚠️ 旧口径里这两者由同一个 `general_index` 兼任；现在作者可以「序号 1 用将领 3」。
 		var roster := maxi(1, int(ud.get("general_index", 1))) - 1
 		var utype_g := String(ud.get("unit_type", ""))
-		var profile := cfg.general_slot_of_type(utype_g)
+		var profile := int(ud.get("general_profile", -1)) - 1
+		var is_start_general := kind == "general_0"
 		# ★★ 开局将领 #0：`kind = general_0` 强制走名册第 10 项（profile 9），
 		#   不能让 `general_slot_of_type("spearman") = 0` 把它认成 #1。
-		var is_start_general := kind == "general_0"
-		if is_start_general:
+		if is_start_general and profile < 0:
 			profile = 9
 		elif profile < 0:
+			profile = cfg.general_slot_of_type(utype_g)
+		if profile < 0:
 			# 没写兵种 / 兵种不在将领档里 → 退回 kind 那一档（旧数据 `general_N`）。
 			profile = maxi(0, ConfigRes.general_index_of(kind))
+		# 档位越界（手写 JSON / 配置删过项）→ 夹到最后一档，绝不让 -1 传进 create_general。
+		if not cfg.general_types().is_empty():
+			profile = clampi(profile, 0, cfg.general_types().size() - 1)
 		# ★ 名字：作者写了就用作者的；没写时 —— 将领退回 config 的名字（按**将领档**取，
 		#   没配 → 「将领 <将领序号>」）；普通单位退回 kind。
 		var uname := String(ud.get("name", ""))
@@ -2530,23 +2547,30 @@ func on_unit_attacked(victim, attacker) -> bool:
 	# ★★ 玩家命令优先：还在执行玩家命令 ⇒ 挨打也不反击（需求原话）。
 	if victim.has_active_player_order():
 		return false
-	# ★★ 队伍有命令（AI / 玩家都算）：先让 command AI 重新判断「反击还是继续撤」，
-	#    并立即重发整队命令；不进入默认的单个单位复仇反击。
+	# ★★ 2026.10.25：**有指挥官 AI 的一方，受击一律交给 AI 做整队决策**。
+	#   旧版只在「队伍已有命令」时才通知 AI；队伍没命令时走单兵复仇，
+	#   于是一个兵自己追出去、其他兵留在原地 —— 这正是「单位与部队脱轨」。
+	#   现在 AI 会检查该队的当前任务，整队反击或整队撤；没有指挥官的一方保留旧行为。
+	if _notify_ai_attacked(victim, attacker):
+		return false
+	# 没有指挥官、但整队正有命令：继续执行队伍命令，不进入单兵复仇。
 	if unit_has_active_team_order(victim):
-		_notify_ai_attacked(victim, attacker)
 		return false
 	return bool(victim.order_retaliate(self, cfg, attacker))
 
 
 ## 把「挨打」事件交给同方的指挥官 AI；由它决定整队反击 / 继续撤退。
-func _notify_ai_attacked(victim, attacker) -> void:
+## @return true = 这一方确实有指挥官接管了这次受击（调用方不要再走单兵复仇）。
+func _notify_ai_attacked(victim, attacker) -> bool:
 	for f in factions:
 		var fid := String(f)
 		if not FactionRes.same_side_for_attack(fid, String(victim.faction)):
 			continue
 		var c = ai_commanders.get(fid, null)
 		if c != null and c.has_method("react_to_attacked"):
-			c.react_to_attacked(victim, attacker)
+			if bool(c.react_to_attacked(victim, attacker)):
+				return true
+	return false
 
 
 ## 让某个将领辖下的存活部队**立刻向它（的倒下点）行军攻击**。
@@ -3063,6 +3087,9 @@ func _spawn_from_recruit(leader, kind: String) -> Variant:
 	u.garrison_zone_id = int(leader.garrison_zone_id)
 	# ⚠️ 词条已停用：新兵不再从队长继承光环。
 	units.append(u)
+	# ★★ 新兵必须**立刻接上队伍当前命令**，否则将领在行军 / 交战时招出来的兵会原地脱队。
+	#    放在 append 之后：命令里的寻路 / 碰撞会把它当成世界里的正常单位。
+	u.inherit_orders_from(leader, self, cfg)
 	# ★ 科技「将领血量 +10%」：区划招募出来的将领**自己就是队长**，走将领那一档
 	#   （附属兵走 1.0 = 不加），与 world._apply_tech_effects 同一套判据。
 	u.apply_hp_bonus(_tech_hp_mult_for(u))
@@ -4256,9 +4283,50 @@ func can_build_at(tx: int, ty: int, faction: String = "") -> bool:
 		return false
 	if PathfinderRes.occupied(buildings, tx, ty):
 		return false
-	if faction != "" and not zone_allows_build(tx, ty, faction):
-		return false
+	if faction != "":
+		if not zone_allows_build(tx, ty, faction):
+			return false
+		# ★★ 2026.10.25：区划正在被敌方进入中心占领区时，整块区划禁止建造。
+		if zone_capture_blocks_build(tx, ty, faction):
+			return false
 	return true
+
+
+## ★★ 2026.10.25：这个区划是否处于「敌方单位已进入中心 3×3 占领区」的状态。
+##
+## 判据是**实时扫描中心邻域里的敌对活单位**，不是看 `capture_state`：
+##   · 敌方刚踏进 3×3、进度还没涨，`capture_state` 可能还是空，但已经应该禁止建造；
+##   · `decaying`（敌人已经走了，只是进度在回落）不算，敌人清掉后应立刻恢复建造。
+##
+## 只对「当前 owner 接受 faction（自己 / 盟友）」的区划有意义；无主 / 敌方区划
+## 本来就不允许建造，直接返回 false。
+func zone_capture_blocked(zone: Dictionary, faction: String) -> bool:
+	if zone == null or faction == "":
+		return false
+	if not accepts_owner(String(zone.get("owner", "")), faction):
+		return false
+	var cv: Variant = zone.get("center", null)
+	if cv == null or units == null:
+		return false
+	var center: Vector2i = cv
+	var radius: int = maxi(0, int(cfg.zone_capture_radius_tiles))
+	for u in units:
+		if u == null or not u.alive or u.is_downed() or u.neutralized:
+			continue
+		if FactionRes.same_side_for_attack(String(u.faction), faction):
+			continue
+		if maxi(absi(int(u.tx) - center.x), absi(int(u.ty) - center.y)) <= radius:
+			return true
+	return false
+
+
+func zone_capture_blocks_build(tx: int, ty: int, faction: String) -> bool:
+	if zones == null or faction == "":
+		return false
+	var z = zones.zone_at(tx, ty)
+	if z == null:
+		return false
+	return zone_capture_blocked(z, faction)
 
 
 ## ★★ 这一格所在的区划归 `faction` 吗 —— 「只能在自己区划里建造」的唯一判据
@@ -4968,7 +5036,11 @@ func tick(dt: float) -> Array:
 		push_event({"type": "territory_changed", "tiles": tiles, "zones": zones.owned_zone_names(my_faction)})
 	_refresh_production()
 	# ★★ 本机席位的钱（与加战役之前**同一行**、同一个函数 —— 单机行为逐位不变）
-	EconomyRes.tick(cfg, dt, {"food": production_food, "gold": production_gold}, resources)
+	# ★★ 观战者是**纯 spectator**：没有本地钱包；`resources` 只是被观察 AI 钱包的
+	#    显示别名，它的收入由下面 commander 循环加一次。这里必须跳过 ——
+	#    否则被观察方（同时是 commander）会被结算两次，p1 收入 = p2 的两倍。
+	if not observer_mode:
+		EconomyRes.tick(cfg, dt, {"food": production_food, "gold": production_gold}, resources)
 	# ★★ 其余**本地席位**各加各的（合作模式：每人一个钱包，用户已拍板）。
 	#    ⚠️ 判据是 `player_seats`（本机负责的那几个），不是 `player_factions`：
 	#       一关两个可玩阵营时，没被选中的那一方**在本机席位里、但不本机操作** ——

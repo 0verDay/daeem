@@ -655,8 +655,11 @@ def t_zone_owner_materialization() -> None:
 def t_config_and_maps() -> None:
     print("\n[1b] 地图列表 / config 只读快照")
     info = levelfile.load_config(TMP_PROJECT)
-    eq(info.unit_types, ["spearman", "longbowman", "rider"], "config：三个兵种（enemy 类型已删除）")
-    eq(info.general_types, ["spearman", "longbowman", "rider"], "config：三位将领的类型")
+    ok(set(["spearman", "longbowman", "rider"]) <= set(info.unit_types),
+       "config：三个内置兵种都在（enemy 类型已删除），实际：%s" % info.unit_types)
+    eq(info.general_types[:3], ["spearman", "longbowman", "rider"],
+       "config：前三位将领的类型")
+    eq(len(info.general_types), 10, "config：将领档位有 10 个（types 可以重复兵种）")
     # ★★ 开局附属兵**没有全局缺省**了：`config.json` 的 `unit.general.escort` 已被删掉，
     #    每个兵都在摆放页里摆出来（`start_units[].escort_of`）。
     #    这里反过来钉住它 —— 守卫「有人把那个全局开关加回来」这种回归。
@@ -671,12 +674,25 @@ def t_config_and_maps() -> None:
     ok(info.faction_color("p1").lower() == "#ffd166", "config：阵营配色表")
     eq(info.general_label(1), "将领 1（长枪兵）", "将领下拉的写法")
     # ★★ 名册号与档位解耦：档位选项仍 1..3（= 将领类型数），名册号放宽到 1..10。
-    eq(list(info.general_indices()), [1, 2, 3], "将领**档位**选项仍是 1..3（= 将领类型数）")
+    eq(list(info.general_indices()), list(range(1, len(info.general_types) + 1)),
+       "将领**档位**选项 = 1..将领类型数（当前 10）")
     eq(list(info.general_roster_indices()), list(range(1, 11)),
        "★★ 将领序号（名册号）放宽到 1..10（用户需求）")
     eq(info.general_profile_of("rider"), 2, "★ 兵种 rider = 第 3 档（0 起 2）")
     eq(info.general_profile_of("nope"), -1, "★ 不在将领档里的兵种 → -1")
     eq(M.general_kind_slot("general_5"), 4, "★ kind general_5 → 档位 4（旧数据兜底用）")
+    eq(M.general_kind_slot("general_0"), 9, "★ kind general_0 → 档位 10（开局将领 #0）")
+    # ★★ 显式档位优先于 unit_type：types 里重复兵种时，unit_type 只能取第一次出现。
+    probe = M.UnitEntry("p1", "general", 0, 0)
+    probe.unit_type = "rider"
+    eq(M.general_profile_of_unit(probe, info), 3, "★ 旧数据：unit_type rider → 第 3 档")
+    probe.general_profile = 7
+    eq(M.general_profile_of_unit(probe, info), 7,
+       "★★ 显式 general_profile 优先（能区分重复兵种的第 7 档）")
+    probe.general_profile = None
+    probe.unit_type = "nope"
+    probe.kind = "general_5"
+    eq(M.general_profile_of_unit(probe, info), 5, "★ 最后兜底：kind general_5 → 第 5 档")
 
     ms = maps(real=True)
     info = ms["dongzheng"]
@@ -1101,9 +1117,9 @@ def t_validation_faction_color() -> None:
 # ======================================================================
 
 def t_ai_assignment_roundtrip() -> None:
-    print("\n[3] AI 指派：garrison / reddot / none 能存能读；旧值归一；玩家席位也能配 AI")
+    print("\n[3] AI 指派：garrison / reddot / commander / none 能存能读；旧值归一；玩家席位也能配 AI")
     f = FACTS
-    for ai in ("garrison", "reddot", "none"):
+    for ai in ("garrison", "reddot", "commander", "none"):
         data = base_level(factions=[{"id": f.enemy, "ai": ai, "base": list(f.enemy_base),
                                      "attack_target": {"kind": "zone", "zone": f.attack_zone}}])
         model = campaign_with(data)
@@ -1119,7 +1135,22 @@ def t_ai_assignment_roundtrip() -> None:
         eq(model.levels[0].faction(f.enemy).ai, "garrison",
            "★ 旧值 ai=%s → 归一成 garrison" % legacy)
 
-    # ★ 玩家席位也能配 AI（允许，运行时按选中的席位摘掉）—— 校验不拦
+    # ★★ 不可玩的 AI 对手也占一个**席位**（ai_test_battle：p2 玩家 / p1 commander AI）。
+    #    编辑器保存时必须保住它，否则「一保存 AI 对手就没了」。
+    data = base_level(factions=[{"id": f.player, "ai": "none", "base": list(f.player_base),
+                                 "playable": True},
+                                {"id": f.enemy, "ai": "commander", "base": list(f.enemy_base),
+                                 "playable": False}],
+                      players=[{"faction": f.player}, {"faction": f.enemy}])
+    model = campaign_with(data, playable=[f.player])
+    lv = model.levels[0]
+    eq(lv.seats(), [f.player, f.enemy], "★★ 非可玩的 commander AI 也留在 players[] 里")
+    eq(lv.playable_ids(), [f.player], "★★ 但它不是可玩阵营（玩家只能选 p2）")
+    eq(lv.to_dict()["players"], [{"faction": f.player}, {"faction": f.enemy}],
+       "★★ 导出时 AI 席位原样带回")
+    same, diffs = levelfile.roundtrip_ok(model, TMP_ROOT / "ai_seat_rt", TMP_PROJECT)
+    ok(same, "★★ 带 AI 席位的关卡往返一致%s" % ("" if same else "：%s" % diffs[:3]))
+
     data = base_level(factions=[{"id": f.player, "ai": "garrison", "base": list(f.player_base),
                                  "attack_target": {"kind": "zone", "zone": f.attack_zone}},
                                 {"id": f.enemy, "ai": "reddot", "base": list(f.enemy_base),
@@ -1213,6 +1244,18 @@ def t_escort_placement() -> None:
        "★ 缺省不落这个键（老关卡一个字节都不变）")
     ok(not M.faction_has_placed_escorts(model.levels[0], f.enemy),
        "★ 没摆附属兵 → 运行时照样自动生成将领")
+
+    # ★★ 将领档位 general_profile：读写往返（types 里重复兵种时靠它区分 4..10 档）
+    model = campaign_with(base_level(start_units=[
+        {"faction": f.enemy, "kind": "general", "general_index": 1,
+         "general_profile": 4, "unit_type": "spearman",
+         "x": f.enemy_base[0], "y": f.enemy_base[1]}]))
+    lv = model.levels[0]
+    eq(lv.start_units[0].general_profile, 4, "★★ 读盘：general_profile = 4")
+    out = lv.to_dict()["start_units"][0]
+    eq(out.get("general_profile"), 4, "★★ 写盘：general_profile 原样带出去")
+    same, diffs = levelfile.roundtrip_ok(model, TMP_ROOT / "general_profile_rt", TMP_PROJECT)
+    ok(same, "★★ 带 general_profile 的关卡往返一致%s" % ("" if same else "：%s" % diffs[:3]))
 
 
 def t_validation_escort_links() -> None:

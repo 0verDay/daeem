@@ -3,7 +3,7 @@
 ## 流程（需求原文 + 本轮改版的入口）：
 ##   1. 启动 = 暗色渐变入场页：上方徽记 + 标题 DAEEM；屏幕下方「————点击任意处进入游戏————」，
 ##      呼吸式渐显渐隐
-##   2. 点击任意处 → 主界面（正中：标题条 + **test_1 / test_2 / test_3**；
+##   2. 点击任意处 → 主界面（正中：标题条 + **五颗测试入口**；
 ##      右侧「战役」按钮撑开的是**战役菜单**：轮播 + 关卡圆点 + 描述 + 长按进入）
 ##   3. 按下任一颗 test_N，或在战役菜单里长按某一关 → 载入那一关并进入游戏内场景
 ##   4. ★ 游戏内的「设置 → 返回主菜单」→ 拆掉游戏场景、把主界面放回**第 2 步**那个状态
@@ -22,7 +22,7 @@
 ##     玩家上一次选的那一关还留在菜单上（见那里的注释）。
 ##
 ## ★ 职责边界（三层各管一段，谁都不越界）：
-##   view/start_screen.gd  开场两页：只认输入、test_1/2/3 与自己的信号，不认识 world
+##   view/start_screen.gd  开场两页：只认输入、测试按钮与自己的信号，不认识 world
 ##   view/game_scene3d.gd  游戏内场景（3D 唯一实现）：装配 world + view + hud，跑主循环
 ##   view/hud.gd           游戏内 UI：选项页只**发信号**，不切窗口也不拆场景
 ##   本文件                只做连接：把「按了哪一关」翻译成「进哪个游戏」，
@@ -43,7 +43,8 @@ const StartScreenRes = preload("res://view/start_screen.gd")
 ##      写成 `Node2D` 会让本文件直接 Parse Error（见下面 `var game` 那段）。
 const GameSceneRes = preload("res://view/game_scene3d.gd")
 ## ★★ 战斗入口（本轮改版）：
-##   · 主界面正中三颗 `test_1 / test_2 / test_3` —— 各自直连一关（见 config 的 `menu.test_entries`）；
+##   · 主界面正中五颗测试按钮（test_1 / ai_test / ai_test_2 / ai_test_battle / ai_test_hz）
+##     —— 各自直连一关（见 config 的 `menu.test_entries`）；
 ##   · 「战役」按钮撑开的面板里是**战役菜单**（轮播 + 关卡圆点 + 描述 + 长按进入）。
 ##   两条路都只发 `level_entry_pressed(campaign_id, level_id)`，本文件负责：
 ##   载入战役 → 取那一关 → 取第一个可玩阵营 → `game.start_level()`。
@@ -136,6 +137,7 @@ func _build_start_screen() -> void:
 
 	start_screen.intro_dismissed.connect(_on_intro_dismissed)
 	start_screen.level_entry_pressed.connect(_on_level_entry_pressed)
+	start_screen.direct_level_requested.connect(_on_direct_level_requested)
 	start_screen.ai_test_requested.connect(_on_ai_test_requested)
 	start_screen.coop_host_started.connect(_on_coop_host_started)
 	start_screen.coop_guest_started.connect(_on_coop_guest_started)
@@ -273,6 +275,33 @@ func _on_level_entry_pressed(campaign_id: String, level_id: String) -> void:
 		_on_campaign_level_chosen(campaign, level, String(playable[0]))
 		return
 	_show_level_transition(campaign, level)
+
+
+## ★★ 主界面 ai_test_battle：跳过战役过渡画面，直接按关卡的可玩阵营开局。
+##
+## 与 `_on_level_entry_pressed()` 的区别只有「不挂过渡画面」：
+##   关卡已经把玩家席位标成唯一可玩（ai_test_battle 是 p2），所以直接取第一个可玩阵营。
+## 用于「快速试一把和 commander AI 对打」，不用先看简报再点进入。
+func _on_direct_level_requested(campaign_id: String, level_id: String) -> void:
+	if game != null:
+		return
+	var option := _find_campaign_option(campaign_id)
+	if option.is_empty():
+		push_warning("direct 关卡战役不存在：%s" % campaign_id)
+		return
+	var campaign = CampaignLibraryRes.load_campaign_by_option(option, cfg)
+	if campaign == null:
+		push_warning("direct 关卡战役载入失败：%s" % campaign_id)
+		return
+	var level = campaign.level(level_id) if campaign.has_method("level") else null
+	if level == null:
+		push_warning("direct 关卡不存在：%s / %s" % [campaign_id, level_id])
+		return
+	var playable: Array = level.playable_ids()
+	if playable.is_empty():
+		push_warning("direct 关卡没有可玩阵营：%s / %s" % [campaign_id, level_id])
+		return
+	_on_campaign_level_chosen(campaign, level, String(playable[0]))
 
 
 ## ★★ 主界面「ai_test / ai_test_2」按钮：载入演示战役对应关卡，AI 接管被观察方，玩家观战。

@@ -100,7 +100,7 @@ func _test_data() -> void:
 	eq(fallback.size(), 1, "兜底只有一个战役")
 
 
-## 主界面正中五颗按钮（test_1/2/3 + ai_test + ai_test_2）配的关卡**真的能载入**（它们不在菜单数据里，在 config 里）。
+## 主界面正中五颗按钮（test_1 + ai_test / ai_test_2 + ai_test_battle / ai_test_hz）配的关卡**真的能载入**（它们不在菜单数据里，在 config 里）。
 func _test_test_entries(cfg) -> void:
 	var raw: Variant = cfg.get_path_value("menu.test_entries")
 	ok(typeof(raw) == TYPE_ARRAY, "config 里有 menu.test_entries（五颗按钮的数据）")
@@ -116,13 +116,19 @@ func _test_test_entries(cfg) -> void:
 		var lid := String(d.get("level", ""))
 		ok(label.begins_with("test_") or label.begins_with("ai_test"),
 			"按钮文案是 test_N 或 ai_test（%s）" % label)
-		if label.begins_with("ai_test"):
+		if label == "ai_test" or label == "ai_test_2":
 			ok(bool(d.get("ai_observer", false)), "★ %s 带观战标记" % label)
 		if label == "ai_test_2":
 			ok(bool(d.get("ai_observer_orders", false)),
 				"★★ ai_test_2 带「观战可下令」标记")
 			ok(bool(d.get("ai_observer_reveal", false)),
 				"★★ ai_test_2 带「玩家全图显示」标记")
+		if label == "ai_test_battle":
+			ok(bool(d.get("direct", false)),
+				"★★ ai_test_battle 带「跳过过渡画面、直接开局」标记")
+		if label == "ai_test_hz":
+			ok(bool(d.get("coop_ai", false)),
+				"★★ ai_test_hz 带「合作 + AI 队友」标记")
 		var option: Dictionary = {}
 		for c in campaigns:
 			if String((c as Dictionary).get("id", "")) == cid:
@@ -138,6 +144,15 @@ func _test_test_entries(cfg) -> void:
 		ok(lv != null, "★ 关卡 %s / %s 真的存在（否则按下去只会警告、不进游戏）" % [cid, lid])
 		if lv != null:
 			ok(not lv.playable_ids().is_empty(), "它有可玩阵营（默认会取第一个）")
+			if label == "ai_test_battle":
+				eq(lv.playable_ids(), ["p2"], "★★ ai_test_battle 只有 p2 可玩（玩家当 p2）")
+				var p1_ai := ""
+				for e in lv.faction_meta:
+					if String((e as Dictionary).get("id", "")) == "p1":
+						p1_ai = String((e as Dictionary).get("ai", ""))
+				eq(p1_ai, "commander", "★★ ai_test_battle 的 p1 是敌对 commander AI")
+			if label == "ai_test_hz":
+				eq(String(lv.mode), "coop", "★★ ai_test_hz 是合作关（F1 玩家 + F2 AI 队友）")
 
 
 # ------------------------------------------------------------------

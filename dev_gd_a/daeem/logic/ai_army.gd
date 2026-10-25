@@ -14,7 +14,10 @@
 ##   · **光杆司令不出门**：低于 `min_field_units` 的队伍不巡逻、不扩张、不进攻；
 ##     在己方领地外掉到这么少的队伍会**回撤**到最近的己方区划中心整备（边撤边招）；
 ##   · **扩张盯住区划中心**：选中目标后一直把队伍派到区划中心 3×3 内读条，
-##     直到归属翻过来才换下一个目标（不会走一半又换目标）。
+##     直到归属翻过来才换下一个目标（不会走一半又换目标）；
+##   · **闲置部队有活干**（2026.10.25）：缺编队（有 1~2 个兵）去己方前线区划
+##     中心 / 隘口驻守；满编队去敌方 / 中立边界外侧侦察，顺路占没有守军的空区划。
+##     侦察看到接近自己规模的敌军就整队撤；没有安全侦察目标时，满编队去前线守备。
 ##
 ## 四条玩家指令仍然在这里落地：
 ##   · march   —— 行军攻击到玩家点选的目标点，到达后驻守；目标是敌方区划中心时自然读条占领。
@@ -46,7 +49,8 @@ static func update(ai, dt: float) -> void:
 	ensure_garrison(ai)
 	if _defense_tick(ai):
 		return
-	match String(ai.order_kind):
+	var order := String(ai.order_kind)
+	match order:
 		"march":
 			_march(ai)
 		"mass":
@@ -57,6 +61,20 @@ static func update(ai, dt: float) -> void:
 			_auto(ai)
 		_:
 			_develop(ai)
+	# ★★ 缺编队的防守驻守：自主 / 玩家扩张时都要做。
+	#    `march` / `mass` 是玩家明确要全军动起来，不能拿弱队去占中心。
+	#    `auto` 的前线 / 区划守备已经在 `_auto()` 里、巡逻之前分配好；
+	#    这里只补弱队驻守，避免重复抢队伍。
+	if order == "auto":
+		_assign_defensive_posts(ai)
+	elif order == "expand":
+		_assign_defensive_posts(ai)
+		_assign_ready_guards(ai)
+		_assign_zone_guards(ai)
+	# `auto` 已经在 `_auto()` 里做过补员回撤；玩家「扩张 / 发展」下也要补兵优先。
+	if order == "expand" or order == "develop":
+		ai.regroup_ids.clear()
+		_recall_understrength_for_recruit(ai)
 	_cohesion_tick(ai)
 
 
@@ -71,25 +89,40 @@ static func _cohesion_tick(ai) -> void:
 	ai.cohesion_next_at = ai.world.time \
 		+ maxf(0.2, float(cc.get("interval_sec", 1.2)))
 	var max_d := maxf(1.0, float(cc.get("max_distance_tiles", 4.0)))
-	for t in field_teams(ai):
+	# ★★ 2026.10.25：守军也纳入粘合巡检 —— 守军附属兵追出去同样算脱轨。
+	for t in leader_teams(ai):
 		var leader = t.get("leader", null)
 		if leader == null or not leader.alive or leader.is_downed():
 			continue
-		# 将领本身在战斗：别把整队从交战里拽出来。
+		# 受击即时命令的冷却 / 模式锁期间不要重发整队命令。
+		if _react_locked(ai, String((leader as Object).id)):
+			continue
+		# 将领本身在战斗：不要把整队从交战里拽出来，但后方掉队的兵还是要拉上来。
 		if leader.target != null or leader.target_building != null:
+			_pull_stragglers(ai, t, leader, max_d)
 			continue
 		var leader_move := bool(leader.has_attack_move) or bool(leader.moving)
 		var goal: Vector2 = leader.pos
 		if bool(leader.has_attack_move):
 			goal = leader.attack_move_goal
 		elif bool(leader.moving):
-			goal = leader.goal
+			# 普通移动：`leader.goal` 是它的**队形槽位**，整队目标点记在 `last_orders` 里。
+			# 用槽位重发会让全队每次粘合都整体偏移一次。
+			var lo: Dictionary = ai.last_orders.get(String(leader.id), {})
+			goal = lo.get("pt", leader.goal)
 		var need := false
 		for m in (t.get("units", []) as Array):
 			if m == null or m == leader or not m.alive or m.is_downed():
 				continue
-			# 这个兵在打自己的目标 / 正在救援 / 回家：不属于「掉队」。
+			# ★★ 2026.10.25：正在打自己目标的兵也可能脱轨。
+			#   以前这里直接 `continue`，于是一个兵自己追出去、队伍走了也不管。
+			#   现在只要它离队超过 1.5 倍阈值（或将领在移动且它已掉出阈值）就重发整队命令，
+			#   `_order_team` 会先清掉它的单兵反击状态再拉回队伍。
 			if m.target != null or m.target_building != null:
+				var gap: float = m.pos.distance_to(leader.pos)
+				if gap > max_d * 1.5 or (leader_move and gap > max_d):
+					need = true
+					break
 				continue
 			if String(m.rescue_leader_id) != "" or bool(m.returning_home):
 				continue
@@ -111,7 +144,80 @@ static func _cohesion_tick(ai) -> void:
 		if not need:
 			continue
 		# ★ 重发**整队**命令；force 绕过去重，否则「同一目标、刚下过」会被跳过。
-		_order_team(ai, t, goal, false, true)
+		# ★ 撤退 / 回撤是普通移动，粘合时也必须保持「移动」而不是切成行军攻击，
+		#   否则队伍会在回家路上被沿途敌人反复拖住。
+		if bool(leader.has_attack_move):
+			_order_team(ai, t, goal, false, true)
+		else:
+			_move_team(ai, t, goal, true)
+
+
+## 将领已经在交战、不能重发整队命令时，只把后方掉队的成员拉向将领。
+## 这是「前面的部队还在打，后面的兵却停住」的补丁：不打断将领当前目标。
+static func _pull_stragglers(ai, team: Dictionary, leader, max_d: float) -> void:
+	var stuck: Array = []
+	for m in (team.get("units", []) as Array):
+		if m == null or m == leader or not m.alive or m.is_downed():
+			continue
+		if String(m.rescue_leader_id) != "" or bool(m.returning_home):
+			continue
+		var gap: float = m.pos.distance_to(leader.pos)
+		var fighting: bool = m.target != null or m.target_building != null
+		# 正在打而且离得不算远：让它继续打，别把兵从局部交火里拽出来。
+		if fighting and gap <= max_d * 1.5:
+			continue
+		# 只要它停了（哪怕还挂着旧的 attack_move 目标），在将领交战时都要拉上来。
+		var inactive := not bool(m.moving)
+		if gap > max_d or inactive:
+			stuck.append(m)
+	if stuck.is_empty():
+		return
+	for u in stuck:
+		if u.has_method("is_retaliating") and u.is_retaliating():
+			u.clear_retaliation()
+	var ok: bool = CommandProcessorRes.order_group_formation(
+		ai.world, ai.cfg, stuck, leader.pos, false)
+	if ok:
+		ai.stats["orders"] = int(ai.stats.get("orders", 0)) + 1
+
+
+## ★★ 受击即时命令的冷却 / 模式锁是否仍在生效。
+## 这期间其它战略逻辑（巡逻 / 扩张 / 守备 / 粘合 / 回撤）不要抢方向盘，
+## 否则会出现「刚反击又撤退、刚撤退又反击」的抽搐。
+static func _react_locked(ai, lid: String) -> bool:
+	if ai == null or ai.world == null:
+		return false
+	var t: float = ai.world.time
+	return t < float(ai.react_next.get(lid, 0.0)) \
+		or t < float(ai.react_until.get(lid, 0.0))
+
+
+## ★★ 2026.10.25：开局 60 秒「扩张期」。
+static func is_early_game(ai) -> bool:
+	if ai == null or ai.world == null:
+		return false
+	var eg: Dictionary = ai.profile.get("early_game", {})
+	if not bool(eg.get("enabled", true)):
+		return false
+	return ai.world.time < maxf(0.0, float(eg.get("until_sec", 60.0)))
+
+
+## 当前「能出门」的最低队伍人数：开局 1，之后恢复正常 `min_field_units`。
+static func _min_units(ai) -> int:
+	var eg: Dictionary = ai.profile.get("early_game", {})
+	if is_early_game(ai):
+		return maxi(1, _i(eg, "min_field_units", 1))
+	var ec: Dictionary = ai.profile.get("expand", {})
+	return maxi(2, _i(ec, "min_field_units", 3))
+
+
+## 当前「去占无守军区划」的最低规模：开局 1，之后恢复 `squad_units`。
+static func _squad_units(ai) -> int:
+	var eg: Dictionary = ai.profile.get("early_game", {})
+	if is_early_game(ai):
+		return maxi(1, _i(eg, "min_squad_units", 1))
+	var ec: Dictionary = ai.profile.get("expand", {})
+	return maxi(2, _i(ec, "squad_units", 3))
 
 
 # ------------------------------------------------------------------
@@ -193,7 +299,7 @@ static func _role_target_point(ai, leader, pt: Vector2) -> Vector2:
 	return _clamp_map_point(ai, pt + dir.normalized() * standoff)
 
 
-## 把整队拉回大本营（整队命令；不单独调某个兵）。
+## 把整队拉回大本营（**普通移动**，不是行军攻击：撤退路上不该停下来打）。
 static func _retreat_team(ai, leader) -> void:
 	if leader == null or not leader.alive:
 		return
@@ -201,9 +307,15 @@ static func _retreat_team(ai, leader) -> void:
 	if base == null:
 		return
 	var rally := _clamp_map_point(ai, Vector2(float(base.tx) + 1.5, float(base.ty) + 1.5))
-	_order_team(ai, {"leader": leader, "units": ai.world.group_of(leader)},
-		rally, false, true)
-	ai.regroup_ids[String(leader.id)] = true
+	# force=false：已经在去同一个集结点就不要再刷一次命令（否则每 tick 重置路径会抽搐）。
+	_move_team(ai, {"leader": leader, "units": ai.world.group_of(leader)},
+		rally, false)
+	var lid := String(leader.id)
+	ai.regroup_ids[lid] = true
+	# 撤退时立即放弃侦察 / 驻守任务，下一轮再重新评估（避免回家路上又被任务拉回去）。
+	ai.scout_missions.erase(lid)
+	ai.post_missions.erase(lid)
+	ai.guard_missions.erase(lid)
 	ai.stats["role_retreats"] = int(ai.stats.get("role_retreats", 0)) + 1
 	ai.note_status("retreating")
 
@@ -293,6 +405,12 @@ static func _base_zone_id(ai) -> int:
 ## `maybe_rotate_garrison()` 换人，它自己变成外勤队出去。
 ## 选人规则：基地区划内、活着的真将领，兵最多的优先（基地防守更稳），同分按 id。
 static func ensure_garrison(ai):
+	# ★★ 2026.10.25：开局 60 秒不强制「大本营区划必须有一支守军」。
+	#   否则将领刚走出基地、下一 tick 就被抓回去，表现成走到一半又整体回城。
+	if is_early_game(ai) \
+			and not bool((ai.profile.get("early_game", {}) as Dictionary).get("require_garrison", false)):
+		ai.garrison_leader_id = ""
+		return null
 	var bz := _base_zone_id(ai)
 	if bz < 0:
 		ai.garrison_leader_id = ""
@@ -320,6 +438,10 @@ static func ensure_garrison(ai):
 			best_e = e
 			best = u
 	ai.garrison_leader_id = "" if best == null else String(best.id)
+	if best != null:
+		ai.scout_missions.erase(String(best.id))
+		ai.post_missions.erase(String(best.id))
+		ai.guard_missions.erase(String(best.id))
 	return best
 
 
@@ -328,13 +450,16 @@ static func ensure_garrison(ai):
 ##
 ## @return true = 这一 tick 真的换人了
 static func maybe_rotate_garrison(ai) -> bool:
+	if is_early_game(ai) \
+			and not bool((ai.profile.get("early_game", {}) as Dictionary).get("require_garrison", false)):
+		return false
 	var home = ensure_garrison(ai)
 	if home == null:
 		return false
 	var pc: Dictionary = ai.profile.get("production", {})
 	var ec: Dictionary = ai.profile.get("expand", {})
 	var target := maxi(1, _i(pc, "home_team_size", 6))
-	var min_units := maxi(2, _i(ec, "min_field_units", 3))
+	var min_units := _min_units(ai)
 	# ★★ 2026.10.24：读条中的守军**也可以被换下来去巡逻 / 扩张**。
 	#   只要它已经有「能出门」的规模、且基地里有一支能接防的队伍，就轮换；
 	#   不要求它先补满 home_team_size（那会让读条中的将领永远钉在家里）。
@@ -371,6 +496,9 @@ static func maybe_rotate_garrison(ai) -> bool:
 	if best == null:
 		return false
 	ai.garrison_leader_id = String(best.id)
+	ai.scout_missions.erase(String(best.id))
+	ai.post_missions.erase(String(best.id))
+	ai.guard_missions.erase(String(best.id))
 	# 老守军身上的旧命令缓存清掉：它现在要去接一个出征 / 巡逻任务，
 	# 不清的话 `_order_team` 可能把它上一条「回家」的命令当成新的而跳过。
 	ai.last_orders.erase(String(home.id))
@@ -462,10 +590,82 @@ static func recruit_candidates(ai) -> Array:
 	return out
 
 
+## ★★ 当前「钱能解决」的补员缺口总数。
+##
+## 只统计：己方区划内、脱战、没到编制上限、队列没满、且**区划人口够**的候选。
+## 这些兵是现在/马上能造出来的，所以建造（塔 / 墙 / 升级 / 特化）不能抢这笔预算。
+## 被人口 / 战斗卡住的候选不算：那种情况下再怎么留钱也造不出来，不能因此把 AI 锁死。
+static func pending_recruit_units(ai) -> int:
+	if ai == null or ai.world == null:
+		return 0
+	var kind := _probe_recruit_kind(ai)
+	if kind == "":
+		return 0
+	var n := 0
+	for c in recruit_candidates(ai):
+		if typeof(c) != TYPE_DICTIONARY:
+			continue
+		var cd: Dictionary = c
+		var leader = cd.get("leader", null)
+		if leader == null or not leader.alive:
+			continue
+		var lid := String(leader.id)
+		if String(ai.world.can_recruit(kind, lid, ai.faction)) != "":
+			continue
+		if String(ai.world.can_afford_recruit(kind, lid)) == "population":
+			continue
+		n += maxi(0, int(cd.get("deficit", 0)))
+	return n
+
+
+## 预算估算用的「最便宜可招兵种」——**不消耗 RNG**。
+## 不能用 `ai._pick_kind()`：那是真正的生产决策，会推进 `production_serial`
+## 并抽 `unit_rand`；拿它来算预算会把随机序列改掉（确定性测试会漂）。
+static func _probe_recruit_kind(ai) -> String:
+	var best := ""
+	var best_sum := INF
+	for item in ai.world.recruit_list():
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		var kind := String((item as Dictionary).get("kind", ""))
+		if kind == "" or not ai.world.is_unit_recruitable(kind):
+			continue
+		if not ai.world.unit_recruit_unlocked(ai.faction, kind):
+			continue
+		var c: Dictionary = ai.world.recruit_cost(kind)
+		var s := float(c.get("food", 0.0)) + float(c.get("gold", 0.0))
+		if s < best_sum:
+			best_sum = s
+			best = kind
+	return best
+
+
+## ★★ 2026.10.25：还没补到「接近本队目标规模」的队伍数。
+##
+## 旧版补将前只看 `understrength_team_count()`（< min_field_units），
+## 于是一支 6 人目标的队伍只带 3 个兵时也算「齐了」，AI 会继续招新将领，
+## 结果一堆半编队 + 新光杆。现在补将前要求现有队伍至少到「目标 - 2」：
+## 外勤 6→4、守军 8→6。先把现有将领武装好，再考虑加新将。
+static func understaffed_team_count(ai) -> int:
+	var pc: Dictionary = ai.profile.get("production", {})
+	var home_size := maxi(1, _i(pc, "home_team_size", 8))
+	var field_size := maxi(1, _i(pc, "field_team_size", 6))
+	var margin := maxi(0, _i(pc, "general_recruit_team_margin", 2))
+	var home = ensure_garrison(ai)
+	var n := 0
+	for t in leader_teams(ai):
+		var leader = t["leader"]
+		var target := home_size if home != null and leader == home else field_size
+		var need := maxi(2, target - margin)
+		if team_projected(ai, leader) < need:
+			n += 1
+	return n
+
+
 ## 还没补到「能出门」规模的队伍数（补将前要看它：先装备好现有将领，别急着加光杆）。
 static func understrength_team_count(ai) -> int:
 	var ec: Dictionary = ai.profile.get("expand", {})
-	var min_units := maxi(2, _i(ec, "min_field_units", 3))
+	var min_units := _min_units(ai)
 	var n := 0
 	for t in leader_teams(ai):
 		if team_total(ai, t["leader"]) < min_units:
@@ -502,9 +702,11 @@ static func _develop(ai) -> void:
 	var rally := _clamp_map_point(ai, Vector2(float(base.tx) + 1.5, float(base.ty) + 1.5))
 	for t in leader_teams(ai):
 		var leader = t["leader"]
-		if leader.target != null or leader.target_building != null:
+		if leader == null or leader.is_downed():
 			continue
-		if leader.is_downed():
+		if _react_locked(ai, String(leader.id)):
+			continue
+		if leader.target != null or leader.target_building != null:
 			continue
 		var d: float = leader.pos.distance_to(rally)
 		if d > 9.0:
@@ -520,6 +722,8 @@ static func _march(ai) -> void:
 	if ts.is_empty():
 		ts = leader_teams(ai)
 	for t in ts:
+		if _react_locked(ai, String((t["leader"] as Object).id)):
+			continue
 		_order_team(ai, t, pt, true)
 
 
@@ -537,6 +741,8 @@ static func _mass(ai) -> void:
 	for t in all:
 		if keep_home and (t["leader"] as Object) == home:
 			continue
+		if _react_locked(ai, String((t["leader"] as Object).id)):
+			continue
 		_order_team(ai, t, pt, true)
 
 
@@ -551,7 +757,7 @@ static func _expand(ai, force: bool = false) -> bool:
 	if ai.world.time < ai.next_target_at:
 		return false
 	var ec: Dictionary = ai.profile.get("expand", {})
-	var min_units := maxi(2, _i(ec, "min_field_units", 3))
+	var min_units := _min_units(ai)
 	# ★ 游击队优先：只挑「与己方相邻、守军很少 / 没有守军」的边界区划。
 	var guerrilla_target := false
 	var pick: Variant = null
@@ -587,12 +793,25 @@ static func _expand(ai, force: bool = false) -> bool:
 			# 游击队不参加正面扩张 / 硬目标；它们只打空档。
 			if _role_of(ai, t["leader"]) != "guerrilla":
 				chosen.append(t)
+	# ★★ 2026.10.25：没有「达到出门规模」的外勤队时，允许一支小队伍去占
+	#   **完全无守军的无主区划**。否则新招的外勤将领会一直卡在 1~2 个兵、
+	#   既不能扩张也不能侦察，AI 会从 60 秒后一直闲置到它补满。
+	#   有守军的敌方区划仍然必须凑够 `_required_units_for_zone`，不走这条。
+	if chosen.is_empty() and not guerrilla_target \
+			and String(zd.get("owner", "")) == "" and not target_defended:
+		var boot: Variant = _pick_bootstrap_team(ai)
+		if boot != null:
+			chosen.append(boot)
 	if chosen.is_empty():
 		return false
 	ai.target_zone = int(zd.get("id", -1))
 	ai.expand_team_ids.clear()
 	for t in chosen:
-		ai.expand_team_ids.append(String((t["leader"] as Object).id))
+		var lid := String((t["leader"] as Object).id)
+		ai.expand_team_ids.append(lid)
+		ai.scout_missions.erase(lid)
+		ai.post_missions.erase(lid)
+		ai.guard_missions.erase(lid)
 	ai.expand_started_at = ai.world.time
 	for t2 in chosen:
 		var op := pt
@@ -632,7 +851,7 @@ static func _continue_expand(ai) -> bool:
 		return false
 	var center: Vector2i = cv
 	var pt := GridRes.center_of(center)
-	var min_units := maxi(2, _i(ec, "min_field_units", 3))
+	var min_units := _min_units(ai)
 	var threat_radius := maxf(0.0, float(ec.get("threat_radius", 6.0)))
 	var enemy_at_center := _enemy_strength_near(ai, pt, threat_radius)
 	# ★★ 区划里的守军已经被清空：占领只看「有没有人站在中心」，不要求队伍还满编。
@@ -705,7 +924,7 @@ static func _expand_fallback_attack(ai) -> bool:
 	if pt == null:
 		return false
 	var ec: Dictionary = ai.profile.get("expand", {})
-	var min_units := maxi(2, _i(ec, "min_field_units", 3))
+	var min_units := _min_units(ai)
 	var chosen := _pick_mission_teams(ai, pt, min_units, true)
 	if chosen.is_empty():
 		return false
@@ -723,20 +942,282 @@ static func _expand_fallback_attack(ai) -> bool:
 static func _auto(ai) -> void:
 	ensure_garrison(ai)
 	maybe_rotate_garrison(ai)
+	# ★ 开局探索：必须在巡逻 / 守备之前接管唯一一支初始部队。
+	_early_explore_tick(ai)
 	ai.regroup_ids.clear()
 	_regroup(ai)
+	# ★★ 2026.10.25：缺兵但不在己方人口区 / 野外的队伍，先回最近的人口区补员。
+	#   否则「资源富足」也没用 —— 将领不在己方区划里根本下不了招募单。
+	_recall_understrength_for_recruit(ai)
 	# ★ 小股 / 中等队伍看到成规模敌军就撤，不硬碰硬（进攻任务除外：那是主动凑够人才打的）。
 	_avoid_bad_fights(ai)
-	if _continue_assault(ai):
-		_patrol(ai)
-		return
-	if _expand(ai, false):
-		_patrol(ai)
-		return
-	if _attack_if_ready(ai):
-		_patrol(ai)
-		return
+	# 同一时间只跑一个「大战役」；其余队伍照常侦察 / 巡逻。
+	if not _continue_assault(ai):
+		if not _expand(ai, false):
+			_attack_if_ready(ai)
+	# ★★ 已经在敌方 / 中立区划里、周围敌人清空但没任务的队伍，直接去中心占。
+	#    `_expand()` 只从「与己方相邻」的区划里选；追击队深入后目标可能不再相邻，
+	#    需要这一条把「人已经站在区划里」的情况收口。
+	_capture_cleared_zone_tick(ai)
+	# ★★ 闲置满编队去边界外侧侦察；`_patrol` 会跳过已接侦察任务的队伍。
+	_scout_tick(ai)
+	# ★★ 2026.10.25：先把闲置满编队铺到前线 / 暴露区划，再让剩下的巡逻。
+	#   顺序必须在 `_patrol()` 之前 —— 旧版先巡逻，队伍已经在往大本营走，
+	#   守备分配看到 `moving` 就跳过，最后全挤在基地 / 中场。
+	_assign_ready_guards(ai)
+	_assign_zone_guards(ai)
 	_patrol(ai)
+
+
+## ★★ 2026.10.25：队伍已经站进敌方 / 中立区划、附近敌人清空，却没有任务：
+## 直接把它派到区划中心读条。旧逻辑只认「与己方相邻的扩张目标」，
+## 追击到深处的队伍即使把守军打光，也会原地站着不占。
+static func _capture_cleared_zone_tick(ai) -> void:
+	var ec: Dictionary = ai.profile.get("expand", {})
+	var threat_radius := maxf(0.0, float(ec.get("threat_radius", 6.0)))
+	for t in field_teams(ai):
+		var leader = t.get("leader", null)
+		if leader == null or not leader.alive or leader.is_downed():
+			continue
+		var lid := String(leader.id)
+		if _react_locked(ai, lid) or _is_early_explorer(ai, lid) \
+				or _is_capturing_cleared_zone(ai, leader):
+			continue
+		if ai.regroup_ids.has(lid) or ai.scout_missions.has(lid) \
+				or ai.post_missions.has(lid) or ai.guard_missions.has(lid) \
+				or ai.expand_team_ids.has(lid) or ai.assault_team_ids.has(lid):
+			continue
+		# 正在打 / 正在走的队伍先让它完成当前动作；停在原地且无目标的才接管。
+		if leader.target != null or leader.target_building != null or bool(leader.moving):
+			continue
+		var z = ai.world.zones.zone_at(leader.tx, leader.ty)
+		if z == null:
+			continue
+		var zd: Dictionary = z
+		if not _zone_worth_taking(ai, zd):
+			continue
+		var cv: Variant = zd.get("center", null)
+		if cv == null:
+			continue
+		var center: Vector2i = cv
+		var pt := GridRes.center_of(center)
+		if _enemy_strength_near(ai, pt, threat_radius) > 0.0:
+			continue
+		_order_team(ai, t, pt, true, true)
+		ai.note_status("capturing")
+
+
+## 这支队伍是不是正在执行「已进入空区划、去中心占领」的本地任务。
+## 其它调度（侦察 / 守备 / 巡逻）看到它就不要抢方向盘。
+static func _is_capturing_cleared_zone(ai, leader) -> bool:
+	if leader == null or not leader.alive or not bool(leader.has_attack_move):
+		return false
+	var z = ai.world.zones.zone_at(leader.tx, leader.ty)
+	if z == null:
+		return false
+	var zd: Dictionary = z
+	if not _zone_worth_taking(ai, zd):
+		return false
+	var cv: Variant = zd.get("center", null)
+	if cv == null:
+		return false
+	var center: Vector2i = cv
+	return leader.attack_move_goal.distance_to(GridRes.center_of(center)) < 2.5
+
+
+## ★★ 2026.10.25：这支队伍是不是「开局探索队」。
+## 开局没有「守军」概念时，按 id 稳定地选一支初始将领当探索队。
+static func _first_alive_general(ai):
+	var best = null
+	for u in ai.world.units:
+		if u == null or not u.alive or u.is_downed() or not u.is_general():
+			continue
+		# ⚠️ 必须限定自己的阵营：开局没有守军时这里若扫到别家的将领，
+		#    p2 的探索队会选中 p1 的将，造成 p1/p2 行为完全不对等。
+		if String(u.faction) != ai.faction:
+			continue
+		if String(u.leader_id) != "":
+			continue
+		if best == null or String(u.id) < String(best.id):
+			best = u
+	return best
+
+
+static func _is_early_explorer(ai, lid: String) -> bool:
+	return ai != null and String(ai.explore_leader_id) == lid \
+		and String(ai.explore_phase) != ""
+
+
+static func _stop_early_explore(ai) -> void:
+	ai.explore_leader_id = ""
+	ai.explore_phase = ""
+	ai.explore_target = Vector2.ZERO
+	ai.explore_until = 0.0
+	ai.explore_away = false
+
+
+## ★★ 2026.10.25：开局探索。
+##
+## 开局只有一支初始部队时，旧逻辑会把它当守军，在基地周围巡逻点之间
+## 左上右下来回走。这里改成：
+##   出去探一圈（普通移动，不主动进攻）→ 回基地补员休整 → 再出去；
+## 直到第二支将领出现 / 超过 `early_explore.until_sec`。
+##
+## 探索期间它不参加巡逻 / 扩张 / 进攻 / 守备；回到基地的 `rest` 阶段正常补员。
+## @return true = 这一 tick 探索队由本函数接管
+static func _early_explore_tick(ai) -> bool:
+	var ecfg: Dictionary = ai.profile.get("early_explore", {})
+	if not bool(ecfg.get("enabled", true)):
+		return false
+	var base = ai.world.find_base_of(ai.faction)
+	if base == null:
+		return false
+	var now: float = ai.world.time
+	var until_sec := maxf(1.0, float(ecfg.get("until_sec", 90.0)))
+	# 第二支将领出现 / 开局探索窗口结束：交回正常军队逻辑。
+	if now > until_sec or int(ai.world.general_count_of(ai.faction)) >= 2:
+		if String(ai.explore_phase) != "":
+			_stop_early_explore(ai)
+		return false
+	var leader = null
+	if String(ai.explore_leader_id) != "":
+		leader = ai.world.unit_by_id(String(ai.explore_leader_id))
+	if leader == null or not leader.alive or leader.is_downed():
+		# 开局没有强制守军，`ensure_garrison()` 会返回 null；直接选初始将领。
+		leader = ensure_garrison(ai)
+		if leader == null or not leader.alive or leader.is_downed():
+			leader = _first_alive_general(ai)
+		if leader == null or not leader.alive or leader.is_downed():
+			_stop_early_explore(ai)
+			return false
+		ai.explore_leader_id = String(leader.id)
+	var lid := String(leader.id)
+	var min_escorts := maxi(0, _i(ecfg, "min_escorts", 1))
+	var ec: Dictionary = ai.profile.get("expand", {})
+	# 开局探索不要求先补到正常出门规模：`min_escorts=0` 时光杆将领也能出去探路。
+	var min_units := maxi(1, min_escorts + 1)
+	if team_escorts(ai, leader) < min_escorts or team_total(ai, leader) < min_units:
+		if String(ai.explore_phase) != "":
+			_stop_early_explore(ai)
+		return false
+	var base_pt := _clamp_map_point(ai, Vector2(float(base.tx) + 1.5, float(base.ty) + 1.5))
+	var near_base: bool = leader.pos.distance_to(base_pt) <= 5.0
+	var team := {"leader": leader, "units": ai.world.group_of(leader)}
+	var phase := String(ai.explore_phase)
+	if phase == "":
+		# 只让「开局唯一一支」去探；已经有别的外勤队就交给正常逻辑。
+		var others := 0
+		for t in field_teams(ai):
+			if String((t["leader"] as Object).id) != lid:
+				others += 1
+		if others > 0:
+			return false
+		var target: Variant = _pick_explore_target(ai, leader)
+		if target == null:
+			return false
+		ai.explore_phase = "out"
+		ai.explore_target = target
+		ai.explore_until = now + maxf(4.0, float(ecfg.get("hold_sec", 16.0)))
+		ai.explore_away = false
+		_move_team(ai, team, ai.explore_target, true)
+		ai.stats["explores"] = int(ai.stats.get("explores", 0)) + 1
+		ai.note_status("exploring")
+		return true
+	if phase == "out":
+		if not near_base:
+			ai.explore_away = true
+		# 门口已经打起来了：停止开局探索，交给正常防守 / 回撤逻辑，
+		# 不要在「出门探索 ↔ 回基地」之间来回。
+		if near_base:
+			var threat_radius := maxf(0.0, float(ec.get("threat_radius", 6.0)))
+			if leader.target != null or _enemy_strength_near(ai, leader.pos, threat_radius) > 0.0:
+				_stop_early_explore(ai)
+				return false
+		if now >= float(ai.explore_until):
+			ai.explore_phase = "home"
+			ai.explore_until = now + maxf(4.0, float(ecfg.get("hold_sec", 16.0)) * 0.5)
+			_move_team(ai, team, base_pt, true)
+			return true
+		# ★★ 到了一个探索点不要立刻回基地：换下一个远处的点继续探，
+		#    直到 60 秒窗口结束或没有可探索的点。旧逻辑「到点 → 回家 → 休整 →
+		#    再出门」会在基地门口形成明显的反复进出。
+		if leader.pos.distance_to(ai.explore_target) <= 3.0:
+			var next: Variant = _pick_explore_target(ai, leader)
+			if next != null and (next as Vector2).distance_to(ai.explore_target) > 4.0:
+				ai.explore_target = next
+				ai.explore_until = now + maxf(4.0, float(ecfg.get("hold_sec", 16.0)))
+				_move_team(ai, team, ai.explore_target, true)
+				ai.stats["explores"] = int(ai.stats.get("explores", 0)) + 1
+				ai.note_status("exploring")
+				return true
+			ai.explore_phase = "home"
+			ai.explore_until = now + maxf(4.0, float(ecfg.get("hold_sec", 16.0)) * 0.5)
+			_move_team(ai, team, base_pt, true)
+			return true
+		if not bool(leader.moving) and not bool(leader.has_attack_move) \
+				and leader.target == null and leader.target_building == null:
+			_move_team(ai, team, ai.explore_target, true)
+		return true
+	if phase == "home":
+		if near_base:
+			ai.explore_phase = "rest"
+			ai.explore_away = false
+			ai.explore_until = now + maxf(2.0, float(ecfg.get("rest_sec", 8.0)))
+			return true
+		# 还没到基地：超时也继续往回走，不能停在半路进入休整。
+		if now >= float(ai.explore_until) or (
+				not bool(leader.moving) and not bool(leader.has_attack_move) \
+				and leader.target == null and leader.target_building == null):
+			ai.explore_until = now + maxf(4.0, float(ecfg.get("hold_sec", 16.0)) * 0.5)
+			_move_team(ai, team, base_pt, true)
+		return true
+	if phase == "rest":
+		if now >= float(ai.explore_until):
+			ai.explore_phase = ""
+			ai.explore_target = Vector2.ZERO
+			ai.explore_away = false
+		return true
+	return false
+
+
+## 开局探索目标：优先用侦察选点（空区划会顺手占）；没有就挑最近的
+## 非己方区划中心。只用普通移动，不主动进攻。
+static func _pick_explore_target(ai, leader) -> Variant:
+	var ecfg: Dictionary = ai.profile.get("early_explore", {})
+	var max_d := maxf(4.0, float(ecfg.get("max_distance_tiles", 22.0)))
+	var start_d := maxf(3.0, float(ecfg.get("min_start_distance_tiles", 6.0)))
+	var pick: Variant = _pick_scout_target(ai, leader)
+	if pick != null and typeof(pick) == TYPE_DICTIONARY:
+		var pv: Variant = (pick as Dictionary).get("pt", null)
+		# 太近的目标会让「出门」变成原地转一圈，直接换更远的。
+		if pv != null and leader.pos.distance_to(pv) >= start_d:
+			return pv
+	var avoid_ratio := maxf(0.1, float(ecfg.get("avoid_ratio", 1.0)))
+	var ec: Dictionary = ai.profile.get("expand", {})
+	var threat_radius := maxf(0.0, float(ec.get("threat_radius", 6.0)))
+	var ours := float(team_total(ai, leader))
+	var best: Variant = null
+	var best_d := INF
+	for z in ai.world.zones.zones:
+		if typeof(z) != TYPE_DICTIONARY:
+			continue
+		var zd: Dictionary = z
+		if String(zd.get("owner", "")) == ai.faction:
+			continue
+		var cv: Variant = zd.get("center", null)
+		if cv == null:
+			continue
+		var ct: Vector2i = cv
+		var pt := GridRes.center_of(ct)
+		var d: float = leader.pos.distance_to(pt)
+		if d < start_d or d > max_d or d >= best_d:
+			continue
+		var enemy := _enemy_strength_near(ai, pt, threat_radius)
+		if enemy > 0.0 and enemy > ours * avoid_ratio:
+			continue
+		best_d = d
+		best = pt
+	return best
 
 
 ## ★★ 小股部队不跟成规模的敌人硬碰硬：附近可见敌军明显多于自己时，先撤回基地 / 己方区划整备。
@@ -749,8 +1230,8 @@ static func _avoid_bad_fights(ai) -> void:
 	var ec: Dictionary = ai.profile.get("expand", {})
 	var radius := maxf(0.0, float(ec.get("threat_radius", 6.0)))
 	var ratio := maxf(0.1, float(ec.get("avoid_enemy_ratio", 1.35)))
-	var squad_units := maxi(2, _i(ec, "squad_units", 3))
-	var min_units := maxi(2, _i(ec, "min_field_units", 3))
+	var squad_units := _squad_units(ai)
+	var min_units := _min_units(ai)
 	var base = ai.world.find_base_of(ai.faction)
 	if base == null:
 		return
@@ -760,8 +1241,34 @@ static func _avoid_bad_fights(ai) -> void:
 		if leader == null or not leader.alive or leader.is_downed():
 			continue
 		var lid := String(leader.id)
+		if _react_locked(ai, lid):
+			continue
 		var role := _role_of(ai, leader)
 		var enemy_now := _enemy_strength_near(ai, leader.pos, radius)
+		var ours := float(team_total(ai, leader))
+		if ours <= 0.0:
+			continue
+		var idle_cfg: Dictionary = ai.profile.get("idle", {})
+		# ★★ 侦察队：只躲不打。看到「接近或超过自己」的兵力就整队撤，
+		#    把情报带回去比换掉几个兵更重要。
+		if ai.scout_missions.has(lid) and enemy_now > 0.0:
+			var scout_ratio := maxf(0.1, float(idle_cfg.get("scout_avoid_ratio", 0.9)))
+			if enemy_now >= ours * scout_ratio:
+				_retreat_team(ai, leader)
+				ai.expand_team_ids.erase(lid)
+				ai.assault_team_ids.erase(lid)
+				ai.stats["avoids"] = int(ai.stats.get("avoids", 0)) + 1
+				continue
+		# ★★ 驻守中的缺编队：站住不动，只有敌人明显更多时才撤。
+		#    这一条让「驻守」有意义，同时不拿 1~2 个兵去送。
+		if ai.post_missions.has(lid) and ours < float(min_units) and enemy_now > 0.0:
+			var post_ratio := maxf(0.1, float(idle_cfg.get("post_avoid_ratio", 1.25)))
+			if enemy_now > ours * post_ratio:
+				_retreat_team(ai, leader)
+				ai.expand_team_ids.erase(lid)
+				ai.assault_team_ids.erase(lid)
+				ai.stats["avoids"] = int(ai.stats.get("avoids", 0)) + 1
+			continue
 		if role == "guerrilla" and enemy_now > 0.0:
 			var gc: Dictionary = (ai.profile.get("roles", {}) as Dictionary).get("guerrilla", {})
 			var ours_g := float(team_total(ai, leader))
@@ -777,9 +1284,6 @@ static func _avoid_bad_fights(ai) -> void:
 				ai.expand_team_ids.erase(lid)
 				ai.assault_team_ids.erase(lid)
 				continue
-		var ours := float(team_total(ai, leader))
-		if ours <= 0.0:
-			continue
 		# ★★ 未成形的部队（前线刚招出来的将领、被打残的小队）：遇敌先退，
 		#    不要拿一两个人去填线。整队撤回基地补员。
 		if ours < float(min_units) and enemy_now > 0.0:
@@ -807,7 +1311,11 @@ static func _avoid_bad_fights(ai) -> void:
 			if ai.expand_team_ids.is_empty():
 				_clear_expand(ai, true)
 		ai.regroup_ids[lid] = true
-		_order_team(ai, t, rally, true)
+		# 开局探索队只撤不打：用普通移动回基地，不切成行军攻击。
+		if _is_early_explorer(ai, lid):
+			_retreat_team(ai, leader)
+		else:
+			_order_team(ai, t, rally, true)
 		ai.stats["avoids"] = int(ai.stats.get("avoids", 0)) + 1
 		ai.note_status("regroup")
 
@@ -818,21 +1326,34 @@ static func _avoid_bad_fights(ai) -> void:
 ## 已经在外面的会被叫回最近的己方区划中心（路上边撤边招）；已经在己方人口区里的
 ## 则先停住旧命令、等生产把它补起来。
 static func _regroup(ai) -> void:
-	var ec: Dictionary = ai.profile.get("expand", {})
-	var min_units := maxi(2, _i(ec, "min_field_units", 3))
-	var home = ensure_garrison(ai)
+	var min_units := _min_units(ai)
 	var base = ai.world.find_base_of(ai.faction)
 	var rally := Vector2.ZERO
 	if base != null:
 		rally = _clamp_map_point(ai, Vector2(float(base.tx) + 1.5, float(base.ty) + 1.5))
-	for t in field_teams(ai):
+	# ★★ 2026.10.25：守军也一起巡检。常规期守军如果只有 1~2 人却还挂着旧的
+	#   行军命令，会一直「走到一半又回家」；这里直接把它的旧命令停掉等补员。
+	for t in leader_teams(ai):
 		var leader = t["leader"]
 		if leader == null or not leader.alive or leader.is_downed():
 			continue
+		# 受击即时命令 / 开局探索优先：不要让 `_regroup` 把它再改一次。
+		if _react_locked(ai, String(leader.id)) or _is_early_explorer(ai, String(leader.id)):
+			continue
+		# ★★ 已经接到扩张 / 进攻任务的小队即使掉到 min_units 以下，也交给
+		#   `_continue_expand / _continue_assault` 决定（无守军时允许残队占中心）。
+		#   否则 `_regroup` 会把它们往基地拉，和扩张命令每帧互相覆盖，
+		#   表现就是「在目标与基地之间来回抽搐、永远占不下来」。
+		if ai.expand_team_ids.has(String(leader.id)) or ai.assault_team_ids.has(String(leader.id)):
+			continue
 		if team_total(ai, leader) >= min_units:
 			continue
-		if leader == home:
-			continue
+		# ★ 驻守中的缺编队：允许它继续往己方前线中心 / 隘口走，不要每秒被 `_regroup` 叫停。
+		#   任务失效（区划丢了 / 点没了）时才落回原来的「就地补员 / 回撤」。
+		if ai.post_missions.has(String(leader.id)):
+			if _post_still_valid(ai, String(leader.id)):
+				continue
+			ai.post_missions.erase(String(leader.id))
 		var z = ai.world.zones.zone_at(leader.tx, leader.ty)
 		var in_own := z != null and FactionRes.same_side_for_attack(
 			String((z as Dictionary).get("owner", "")), ai.faction)
@@ -852,6 +1373,112 @@ static func _regroup(ai) -> void:
 		ai.note_status("regroup")
 
 
+## ★★ 2026.10.25：缺兵但**不在己方人口区 / 在野外**的队伍，回最近的人口区补员。
+##
+## 这是「资源很富足却不补兵」的直接修法：招募只能在**己方区划**里下单，
+## 将领跑到中立 / 敌方区划后，钱再多也下不了单。这里把「还没补到目标规模」
+## 的外勤队叫回最近的有人口己方区划；已经在己方人口区的队伍不折腾。
+##
+## ★ 不抢正在打硬目标 / 扩张的队伍：那两种任务有自己的节奏，打一半拉回来会白送。
+## ★ 用 `regroup_ids` 标记，巡逻 / 侦察 / 守备 / 出征都会跳过它。
+static func _recall_understrength_for_recruit(ai) -> void:
+	# 开局扩张期：小队伍正在外面探索 / 占区划，不要按常规「没补满就回城」把她们拽回来。
+	if is_early_game(ai):
+		return
+	var pc: Dictionary = ai.profile.get("production", {})
+	var field_size := maxi(1, _i(pc, "field_team_size", 6))
+	var max_recalls := maxi(1, _i(pc, "max_recruit_recalls", 2))
+	var probe_kind := _probe_recruit_kind(ai)
+	if probe_kind == "":
+		return
+	var base = ai.world.find_base_of(ai.faction)
+	if base == null:
+		return
+	var recalled := 0
+	for t in field_teams(ai):
+		if recalled >= max_recalls:
+			break
+		var leader = t["leader"]
+		if leader == null or not leader.alive or leader.is_downed():
+			continue
+		var lid := String(leader.id)
+		if _react_locked(ai, lid) or _is_early_explorer(ai, lid) \
+				or _is_capturing_cleared_zone(ai, leader):
+			continue
+		if ai.expand_team_ids.has(lid) or ai.assault_team_ids.has(lid):
+			continue
+		if ai.regroup_ids.has(lid):
+			continue
+		if leader.target != null or leader.target_building != null:
+			continue
+		var z = ai.world.zones.zone_at(leader.tx, leader.ty)
+		var in_own := z != null and FactionRes.same_side_for_attack(
+			String((z as Dictionary).get("owner", "")), ai.faction)
+		if team_projected(ai, leader) >= field_size:
+			continue
+		var pop_cost := maxf(0.0, ai.world.recruit_population_cost(probe_kind))
+		# 已经在己方人口区：生产会选到它，不要来回跑。
+		if in_own and float((z as Dictionary).get("population", 0.0)) >= pop_cost:
+			continue
+		var reason := String(ai.world.can_recruit(probe_kind, lid, ai.faction))
+		if reason == "cap" or reason == "queue_full" or reason == "kind" \
+				or reason == "tier" or reason == "leader" or reason == "faction":
+			continue
+		var dest: Variant = _recruit_destination(ai, leader, pop_cost)
+		if dest == null:
+			continue
+		var pt: Vector2 = (dest as Dictionary).get("pt", leader.pos)
+		if leader.pos.distance_to(pt) <= 2.0:
+			continue
+		# 回撤补员优先于侦察 / 驻守 / 守备：这些任务先让位。
+		ai.scout_missions.erase(lid)
+		ai.post_missions.erase(lid)
+		ai.guard_missions.erase(lid)
+		ai.regroup_ids[lid] = true
+		if _move_team(ai, t, pt):
+			ai.stats["recruit_recalls"] = int(ai.stats.get("recruit_recalls", 0)) + 1
+			ai.note_status("regroup")
+			recalled += 1
+
+
+## 最近的有人口的己方区划中心；没有人口区时退回大本营。
+static func _recruit_destination(ai, leader, pop_cost: float) -> Variant:
+	var base = ai.world.find_base_of(ai.faction)
+	var ec: Dictionary = ai.profile.get("expand", {})
+	var threat_radius := maxf(0.0, float(ec.get("threat_radius", 6.0)))
+	var best: Variant = null
+	var best_score := -INF
+	for z in ai.world.zones.zones:
+		if typeof(z) != TYPE_DICTIONARY:
+			continue
+		var zd: Dictionary = z
+		if String(zd.get("owner", "")) != ai.faction:
+			continue
+		var cv: Variant = zd.get("center", null)
+		if cv == null:
+			continue
+		if float(zd.get("population", 0.0)) < pop_cost:
+			continue
+		var ct: Vector2i = cv
+		var pt := GridRes.center_of(ct)
+		var score := 0.0
+		if base != null and int(zd.get("id", -1)) == int(base.zone_id):
+			score += 100.0
+		score -= leader.pos.distance_to(pt) * 0.3
+		if _zone_capture_threatened(ai, zd):
+			score -= 80.0
+		score -= _enemy_strength_near(ai, pt, threat_radius) * 8.0
+		if score > best_score + 1e-6:
+			best_score = score
+			best = {"pt": pt, "zone": int(zd.get("id", -1))}
+	if best != null:
+		return best
+	if base != null:
+		return {"pt": GridRes.center_of(Vector2i(int(base.tx), int(base.ty))),
+			"zone": int(base.zone_id)}
+	return null
+
+
 ## 让一支队伍**停住**（清掉路径 / 玩家命令 / 交战目标），走命令层。
 ## 用于「兵力掉到出门规模以下、又已经在己方区划里」的队伍：先停手，等补员。
 static func _stop_team(ai, leader) -> void:
@@ -865,6 +1492,8 @@ static func _stop_team(ai, leader) -> void:
 	})
 	ai.last_orders.erase(String(leader.id))
 	ai.regroup_ids[String(leader.id)] = true
+	ai.post_missions.erase(String(leader.id))
+	ai.guard_missions.erase(String(leader.id))
 
 
 ## 某个点周围看得见的敌对**兵力估值**（将领算 2，普通兵算 1）。
@@ -911,15 +1540,22 @@ static func _patrol(ai) -> void:
 	if ai.world.time < ai.patrol_next_at:
 		return
 	var ec: Dictionary = ai.profile.get("expand", {})
-	var min_units := maxi(2, _i(ec, "min_field_units", 3))
+	var min_units := _min_units(ai)
 	var threat_radius := maxf(0.0, float(pc.get("threat_radius", 7.0)))
 	var avoid_ratio := maxf(0.1, float(pc.get("avoid_enemy_ratio", 1.25)))
-	var squad_units := maxi(2, _i(ec, "squad_units", 3))
+	var squad_units := _squad_units(ai)
 	var ts: Array = []
 	for t in ready_field_teams(ai, min_units):
 		var leader = t["leader"]
 		var lid := String((leader as Object).id)
+		if _react_locked(ai, lid) or _is_early_explorer(ai, lid) \
+				or _is_capturing_cleared_zone(ai, leader):
+			continue
 		if ai.expand_team_ids.has(lid) or ai.assault_team_ids.has(lid):
+			continue
+		# 已接侦察 / 驻守任务的队伍不参与普通巡逻（否则会被巡逻点拉走）。
+		if ai.scout_missions.has(lid) or ai.post_missions.has(lid) \
+				or ai.guard_missions.has(lid) or ai.regroup_ids.has(lid):
 			continue
 		ts.append(t)
 	# ★ 只有守军一支队伍时：允许它（读条中 / 空闲）去基地附近巡逻，
@@ -928,7 +1564,8 @@ static func _patrol(ai) -> void:
 	if ts.is_empty() and bool(pc.get("home_when_alone", true)):
 		var home = ensure_garrison(ai)
 		var base = ai.world.find_base_of(ai.faction)
-		if home != null and base != null and team_total(ai, home) >= min_units:
+		if home != null and base != null and team_total(ai, home) >= min_units \
+				and not _is_early_explorer(ai, String(home.id)):
 			var base_pt := Vector2(float(base.tx) + 0.5, float(base.ty) + 0.5)
 			if _enemy_strength_near(ai, base_pt, threat_radius) <= 0.0:
 				ts.append({"leader": home, "units": ai.world.group_of(home)})
@@ -994,13 +1631,10 @@ static func _pick_patrol_point(ai, from: Vector2, pts: Array, start_index: int,
 
 static func _patrol_points(ai) -> Array:
 	var pts: Array = []
-	var base = ai.world.find_base_of(ai.faction)
-	if base != null:
-		# 基地外围四个点（不要正好压在基地格上）
-		pts.append(_clamp_map_point(ai, Vector2(float(base.tx) + 3.5, float(base.ty) + 1.5)))
-		pts.append(_clamp_map_point(ai, Vector2(float(base.tx) - 1.5, float(base.ty) + 3.5)))
-		pts.append(_clamp_map_point(ai, Vector2(float(base.tx) - 3.5, float(base.ty) - 1.5)))
-		pts.append(_clamp_map_point(ai, Vector2(float(base.tx) + 1.5, float(base.ty) - 3.5)))
+	# ★★ 2026.10.25：不再把「基地外围四个点」放进普通巡逻。
+	#   那四个点只在基地门口，队伍会在左上右下之间反复进出大本营区划，
+	#   看起来没有任何战略目的。巡逻只走己方各区划中心（含前线）；
+	#   只有大本营一个区划时，中心就是基地格，队伍不会来回绕圈。
 	for z in ai.world.zones.zones:
 		var zd: Dictionary = z
 		if String(zd.get("owner", "")) != ai.faction:
@@ -1013,6 +1647,876 @@ static func _patrol_points(ai) -> Array:
 	return pts
 
 
+# ------------------------------------------------------------------
+# ★★ 2026.10.25：闲置部队调度 —— 缺编队驻守 / 满编队侦察
+# ------------------------------------------------------------------
+
+## 缺编队的防守驻守：只占己方前线区划中心 / 隘口，不出境侦察。
+##
+## ★ 只处理「低于 min_field_units、但至少有 `min_escorts_to_post` 个兵」的队伍：
+##   光杆司令仍然留在后方补员（用户口径：至少 1 个兵的底线）。
+## ★ 驻守是**持续任务**，不是一次巡逻：`_regroup()` 会跳过有效的驻守任务，
+##   只有区划丢了 / 敌人明显更多 / 到了重新评估时间才会解除。
+static func _assign_defensive_posts(ai) -> void:
+	var idle_cfg: Dictionary = ai.profile.get("idle", {})
+	if not bool(idle_cfg.get("enabled", true)) \
+			or not bool(idle_cfg.get("guard_enabled", true)):
+		return
+	var ec: Dictionary = ai.profile.get("expand", {})
+	var min_units := _min_units(ai)
+	var min_escorts := maxi(0, _i(idle_cfg, "min_escorts_to_post", 1))
+	var max_posts := maxi(1, _i(idle_cfg, "max_posts", 4))
+	var threat_radius := maxf(0.0, float(ec.get("threat_radius", 6.0)))
+	var post_ratio := maxf(0.1, float(idle_cfg.get("post_avoid_ratio", 1.25)))
+	# 1) 校验已有任务：队伍补满了 / 区划丢了 / 敌人太多 → 解除。
+	for lid in ai.post_missions.keys().duplicate():
+		var u = ai.world.unit_by_id(String(lid))
+		if u == null or not u.alive or u.is_downed():
+			ai.post_missions.erase(lid)
+			continue
+		if team_total(ai, u) >= min_units:
+			ai.post_missions.erase(lid)
+			continue
+		# 掉编到缺编：如果之前是满编守备任务，转成缺编驻守。
+		ai.guard_missions.erase(String(lid))
+		if not _post_still_valid(ai, String(lid)):
+			ai.post_missions.erase(lid)
+			continue
+		var ours := float(team_total(ai, u))
+		var enemy := _enemy_strength_near(ai, u.pos, threat_radius)
+		if enemy > 0.0 and enemy > ours * post_ratio:
+			ai.post_missions.erase(lid)
+	# 2) 给还没任务的缺编队找岗位。
+	var count: int = ai.post_missions.size()
+	if count >= max_posts:
+		return
+	for t in field_teams(ai):
+		if count >= max_posts:
+			break
+		var leader = t["leader"]
+		if leader == null or not leader.alive or leader.is_downed():
+			continue
+		var lid := String(leader.id)
+		if _react_locked(ai, lid) or _is_early_explorer(ai, lid) \
+				or _is_capturing_cleared_zone(ai, leader):
+			continue
+		if ai.post_missions.has(lid):
+			continue
+		if team_total(ai, leader) >= min_units:
+			continue
+		# 从满编掉成缺编：撤掉满编守备任务，改走缺编驻守。
+		ai.guard_missions.erase(lid)
+		if team_escorts(ai, leader) < min_escorts:
+			continue
+		if ai.regroup_ids.has(lid):
+			continue
+		if leader.target != null or leader.target_building != null:
+			continue
+		var pick: Variant = _pick_defensive_post(ai, leader)
+		if pick == null:
+			continue
+		var pd: Dictionary = pick
+		var pt: Vector2 = pd.get("pt", leader.pos)
+		ai.post_missions[lid] = {
+			"pt": pt,
+			"zone": int(pd.get("zone", -1)),
+			"kind": String(pd.get("kind", "center")),
+			"reassess_at": ai.world.time \
+				+ maxf(4.0, float(idle_cfg.get("post_reassess_sec", 20.0))),
+		}
+		if leader.pos.distance_to(pt) <= 1.75:
+			ai.stats["guards"] = int(ai.stats.get("guards", 0)) + 1
+			ai.note_status("guarding")
+			count += 1
+			continue
+		if _order_team(ai, t, pt, true, true):
+			ai.stats["guards"] = int(ai.stats.get("guards", 0)) + 1
+			ai.note_status("guarding")
+			count += 1
+		else:
+			# 走不过去：先撤掉任务，下一轮再找别的点。
+			ai.post_missions.erase(lid)
+
+
+## 驻守任务是否还有效（区划仍归己方、点还在图内、没到重新评估时间）。
+static func _post_still_valid(ai, lid: String) -> bool:
+	var mv: Variant = ai.post_missions.get(lid, null)
+	if typeof(mv) != TYPE_DICTIONARY:
+		return false
+	var m: Dictionary = mv
+	if ai.world.time >= float(m.get("reassess_at", INF)):
+		return false
+	var zid := int(m.get("zone", -1))
+	var z = ai.world.zone_by_id(zid)
+	if z == null:
+		return false
+	if String((z as Dictionary).get("owner", "")) != ai.faction:
+		return false
+	var pt: Vector2 = m.get("pt", Vector2.ZERO)
+	if not ai.world.map.tile_exists(int(floor(pt.x)), int(floor(pt.y))):
+		return false
+	return true
+
+
+## 给一支缺编队挑驻守点：受威胁区划中心 > 前线区划中心 > 前线隘口。
+static func _pick_defensive_post(ai, leader) -> Variant:
+	var idle_cfg: Dictionary = ai.profile.get("idle", {})
+	var ec: Dictionary = ai.profile.get("expand", {})
+	var threat_radius := maxf(0.0, float(ec.get("threat_radius", 6.0)))
+	var guard_radius := maxf(0.5, float(idle_cfg.get("guard_radius_tiles", 2.5)))
+	var post_ratio := maxf(0.1, float(idle_cfg.get("post_avoid_ratio", 1.25)))
+	var ours := float(team_total(ai, leader))
+	var best: Variant = null
+	var best_score := -INF
+	var best_id := 1 << 30
+	for z in ai.world.zones.zones:
+		if typeof(z) != TYPE_DICTIONARY:
+			continue
+		var zd: Dictionary = z
+		if String(zd.get("owner", "")) != ai.faction:
+			continue
+		if zd.get("center", null) == null:
+			continue
+		var zid := int(zd.get("id", -1))
+		var threatened := _zone_capture_threatened(ai, zd)
+		var frontier := _zone_is_frontier_local(ai, zd)
+		if not threatened and not frontier:
+			continue
+		var cv: Vector2i = zd["center"]
+		var pt := GridRes.center_of(cv)
+		var enemy := _enemy_strength_near(ai, pt, threat_radius)
+		if enemy > 0.0 and enemy > ours * post_ratio:
+			continue
+		if _friendly_near(ai, pt, guard_radius, String(leader.id)):
+			continue
+		if _post_near(ai, pt, guard_radius):
+			continue
+		var score := 40.0
+		if threatened:
+			score += 100.0
+		if _zone_has_enemy_neighbor(ai, zd):
+			score += 25.0
+		score -= leader.pos.distance_to(pt) * 0.2
+		if score > best_score + 1e-6 \
+				or (absf(score - best_score) <= 1e-6 and zid < best_id):
+			best_score = score
+			best_id = zid
+			best = {"pt": pt, "zone": zid, "kind": "center"}
+	# 中心都有人了：改守前线隘口（可通行邻格很少的边境格）。
+	if bool(idle_cfg.get("choke_enabled", true)):
+		for z2 in ai.world.zones.zones:
+			if typeof(z2) != TYPE_DICTIONARY:
+				continue
+			var zd2: Dictionary = z2
+			if String(zd2.get("owner", "")) != ai.faction:
+				continue
+			if not _zone_is_frontier_local(ai, zd2):
+				continue
+			var zid2 := int(zd2.get("id", -1))
+			for t in _frontier_choke_tiles(ai, zd2):
+				var tv: Vector2i = t
+				var pt2 := GridRes.center_of(tv)
+				var enemy2 := _enemy_strength_near(ai, pt2, threat_radius)
+				if enemy2 > 0.0 and enemy2 > ours * post_ratio:
+					continue
+				if _friendly_near(ai, pt2, guard_radius, String(leader.id)):
+					continue
+				if _post_near(ai, pt2, guard_radius):
+					continue
+				var score2 := 30.0
+				if _zone_capture_threatened(ai, zd2):
+					score2 += 60.0
+				if _zone_has_enemy_neighbor(ai, zd2):
+					score2 += 20.0
+				score2 -= leader.pos.distance_to(pt2) * 0.2
+				if score2 > best_score + 1e-6 \
+						or (absf(score2 - best_score) <= 1e-6 and zid2 < best_id):
+					best_score = score2
+					best_id = zid2
+					best = {"pt": pt2, "zone": zid2, "kind": "choke"}
+	return best
+
+
+## 满编队的防守驻守：侦察名额满了 / 目标太危险时，别让队伍在后方站着，
+## 去自家前线区划中心 / 隘口当哨兵（不主动出境）。
+static func _assign_ready_guards(ai) -> void:
+	var idle_cfg: Dictionary = ai.profile.get("idle", {})
+	if not bool(idle_cfg.get("enabled", true)) \
+			or not bool(idle_cfg.get("guard_enabled", true)):
+		return
+	var ec: Dictionary = ai.profile.get("expand", {})
+	var min_units := _min_units(ai)
+	var max_guards := maxi(0, _i(idle_cfg, "max_ready_guards", 3))
+	if max_guards <= 0:
+		return
+	# 开局扩张期先向外探索 / 占区划，不把队伍铺去守备。
+	var eg: Dictionary = ai.profile.get("early_game", {})
+	if is_early_game(ai) and bool(eg.get("disable_guards", true)):
+		return
+	var home = ensure_garrison(ai)
+	# 1) 校验已有守备任务。
+	for lid in ai.guard_missions.keys().duplicate():
+		var u = ai.world.unit_by_id(String(lid))
+		if u == null or not u.alive or u.is_downed():
+			ai.guard_missions.erase(lid)
+			continue
+		if home != null and u == home:
+			ai.guard_missions.erase(lid)
+			continue
+		# 玩家直接接管了这支队伍：撤掉 AI 守备任务，别和玩家抢方向盘。
+		if u.has_method("has_active_player_order") and u.has_active_player_order():
+			ai.guard_missions.erase(lid)
+			continue
+		if ai.expand_team_ids.has(String(lid)) or ai.assault_team_ids.has(String(lid)) \
+				or ai.scout_missions.has(String(lid)) or ai.post_missions.has(String(lid)) \
+				or ai.regroup_ids.has(String(lid)):
+			ai.guard_missions.erase(lid)
+			continue
+		if team_total(ai, u) < min_units:
+			ai.guard_missions.erase(lid)
+			continue
+		if not _guard_still_valid(ai, String(lid)):
+			ai.guard_missions.erase(lid)
+	# 2) 给「没有任何移动 / 攻击任务」的满编队找岗位。
+	# ★ 只数「前线守备」；`kind == "zone"` 是区划布防，走单独的 `max_zone_guards`。
+	var count := 0
+	for lid in ai.guard_missions.keys():
+		var mv: Variant = ai.guard_missions.get(lid, null)
+		if typeof(mv) == TYPE_DICTIONARY \
+				and String((mv as Dictionary).get("kind", "")) != "zone":
+			count += 1
+	if count >= max_guards:
+		return
+	for t in ready_field_teams(ai, min_units):
+		if count >= max_guards:
+			break
+		var leader = t["leader"]
+		if leader == null or not leader.alive or leader.is_downed():
+			continue
+		var lid := String(leader.id)
+		if _react_locked(ai, lid) or _is_early_explorer(ai, lid) \
+				or _is_capturing_cleared_zone(ai, leader):
+			continue
+		if home != null and leader == home:
+			continue
+		if ai.expand_team_ids.has(lid) or ai.assault_team_ids.has(lid):
+			continue
+		if ai.guard_missions.has(lid) or ai.scout_missions.has(lid) \
+				or ai.post_missions.has(lid) or ai.regroup_ids.has(lid):
+			continue
+		# ★ 玩家直接命令优先；普通巡逻 / 旧移动命令可以被守备预占（force 重发）。
+		if leader.has_method("has_active_player_order") and leader.has_active_player_order():
+			continue
+		if leader.target != null or leader.target_building != null:
+			continue
+		var pick: Variant = _pick_defensive_post(ai, leader)
+		if pick == null:
+			continue
+		var pd: Dictionary = pick
+		var pt: Vector2 = pd.get("pt", leader.pos)
+		ai.guard_missions[lid] = {
+			"pt": pt,
+			"zone": int(pd.get("zone", -1)),
+			"kind": String(pd.get("kind", "center")),
+			"reassess_at": ai.world.time \
+				+ maxf(4.0, float(idle_cfg.get("post_reassess_sec", 20.0))),
+		}
+		if leader.pos.distance_to(pt) <= 1.75:
+			ai.stats["guards"] = int(ai.stats.get("guards", 0)) + 1
+			ai.note_status("guarding")
+			count += 1
+			continue
+		if _order_team(ai, t, pt, true, true):
+			ai.stats["guards"] = int(ai.stats.get("guards", 0)) + 1
+			ai.note_status("guarding")
+			count += 1
+		else:
+			ai.guard_missions.erase(lid)
+
+
+## ★★ 2026.10.25：区划布防 —— 把闲置满编队铺到**可能被偷袭**的己方区划。
+##
+## 与 `_assign_ready_guards()` 的分工：
+##   · 前者只守「当前前线 / 受威胁区划」的中心 / 隘口；
+##   · 这里补的是「边境 / 侧翼但暂时没敌人」的区划 —— 每个区划最多一队，
+##     不让所有队伍都挤在大本营、中场或同一个前线中心。
+##
+## 任务写进 `guard_missions`，`kind = "zone"`，走单独的 `max_zone_guards` 名额；
+## 前线守备仍按 `max_ready_guards` 计数，互不挤占。
+static func _assign_zone_guards(ai) -> void:
+	var idle_cfg: Dictionary = ai.profile.get("idle", {})
+	if not bool(idle_cfg.get("enabled", true)) \
+			or not bool(idle_cfg.get("guard_enabled", true)) \
+			or not bool(idle_cfg.get("zone_guard_enabled", true)):
+		return
+	var ec: Dictionary = ai.profile.get("expand", {})
+	var min_units := _min_units(ai)
+	var max_zone := maxi(0, _i(idle_cfg, "max_zone_guards", 4))
+	if max_zone <= 0:
+		return
+	var eg: Dictionary = ai.profile.get("early_game", {})
+	if is_early_game(ai) and bool(eg.get("disable_guards", true)):
+		return
+	var radius := maxf(0.5, float(idle_cfg.get("zone_guard_radius_tiles", 3.0)))
+	var avoid_ratio := maxf(0.1, float(idle_cfg.get("zone_guard_avoid_ratio", 1.35)))
+	var threat_radius := maxf(0.0, float(ec.get("threat_radius", 6.0)))
+	var home = ensure_garrison(ai)
+	# 1) 校验已有区划布防任务。
+	var count := 0
+	for lid in ai.guard_missions.keys().duplicate():
+		var mv: Variant = ai.guard_missions.get(lid, null)
+		if typeof(mv) != TYPE_DICTIONARY:
+			ai.guard_missions.erase(lid)
+			continue
+		var m: Dictionary = mv
+		if String(m.get("kind", "")) != "zone":
+			continue
+		var u = ai.world.unit_by_id(String(lid))
+		if u == null or not u.alive or u.is_downed() or team_total(ai, u) < min_units:
+			ai.guard_missions.erase(lid)
+			continue
+		if home != null and u == home:
+			ai.guard_missions.erase(lid)
+			continue
+		# 玩家直接接管了这支队伍：撤掉 AI 区划布防任务。
+		if u.has_method("has_active_player_order") and u.has_active_player_order():
+			ai.guard_missions.erase(lid)
+			continue
+		if ai.expand_team_ids.has(String(lid)) or ai.assault_team_ids.has(String(lid)) \
+				or ai.scout_missions.has(String(lid)) or ai.post_missions.has(String(lid)) \
+				or ai.regroup_ids.has(String(lid)):
+			ai.guard_missions.erase(lid)
+			continue
+		if not _guard_still_valid(ai, String(lid)):
+			ai.guard_missions.erase(lid)
+			continue
+		var ours := float(team_total(ai, u))
+		var enemy := _enemy_strength_near(ai, u.pos, threat_radius)
+		if enemy > 0.0 and enemy > ours * avoid_ratio:
+			ai.guard_missions.erase(lid)
+			continue
+		count += 1
+	if count >= max_zone:
+		return
+	# 2) 给闲置满编队找「没被覆盖的暴露区划」。
+	for t in ready_field_teams(ai, min_units):
+		if count >= max_zone:
+			break
+		var leader = t["leader"]
+		if leader == null or not leader.alive or leader.is_downed():
+			continue
+		var lid := String(leader.id)
+		if _react_locked(ai, lid) or _is_early_explorer(ai, lid) \
+				or _is_capturing_cleared_zone(ai, leader):
+			continue
+		if home != null and leader == home:
+			continue
+		if ai.guard_missions.has(lid) or ai.scout_missions.has(lid) \
+				or ai.post_missions.has(lid) or ai.regroup_ids.has(lid):
+			continue
+		if ai.expand_team_ids.has(lid) or ai.assault_team_ids.has(lid):
+			continue
+		# ★ 玩家直接命令优先；普通巡逻 / 旧移动命令可以被区划布防预占。
+		if leader.has_method("has_active_player_order") and leader.has_active_player_order():
+			continue
+		if leader.target != null or leader.target_building != null:
+			continue
+		var pick: Variant = _pick_zone_guard(ai, leader, radius, avoid_ratio, threat_radius)
+		if pick == null:
+			continue
+		var pd: Dictionary = pick
+		var pt: Vector2 = pd.get("pt", leader.pos)
+		ai.guard_missions[lid] = {
+			"pt": pt,
+			"zone": int(pd.get("zone", -1)),
+			"kind": "zone",
+			"reassess_at": ai.world.time \
+				+ maxf(5.0, float(idle_cfg.get("zone_guard_reassess_sec", 25.0))),
+		}
+		if leader.pos.distance_to(pt) <= 1.75:
+			ai.stats["zone_guards"] = int(ai.stats.get("zone_guards", 0)) + 1
+			ai.stats["guards"] = int(ai.stats.get("guards", 0)) + 1
+			ai.note_status("guarding")
+			count += 1
+			continue
+		if _order_team(ai, t, pt, true, true):
+			ai.stats["zone_guards"] = int(ai.stats.get("zone_guards", 0)) + 1
+			ai.stats["guards"] = int(ai.stats.get("guards", 0)) + 1
+			ai.note_status("guarding")
+			count += 1
+		else:
+			ai.guard_missions.erase(lid)
+
+
+## 挑一个「可能被偷袭、且附近没有己方队伍」的己方区划中心。
+static func _pick_zone_guard(ai, leader, radius: float, avoid_ratio: float,
+		threat_radius: float) -> Variant:
+	var base = ai.world.find_base_of(ai.faction)
+	var ours := float(team_total(ai, leader))
+	var best: Variant = null
+	var best_score := -INF
+	var best_id := 1 << 30
+	for z in ai.world.zones.zones:
+		if typeof(z) != TYPE_DICTIONARY:
+			continue
+		var zd: Dictionary = z
+		if String(zd.get("owner", "")) != ai.faction:
+			continue
+		var cv: Variant = zd.get("center", null)
+		if cv == null:
+			continue
+		var zid := int(zd.get("id", -1))
+		# 大本营区划由守军负责，不占区划布防名额。
+		if base != null and zid == int(base.zone_id):
+			continue
+		var captured := _zone_capture_threatened(ai, zd)
+		var enemy_neighbor := _zone_has_enemy_neighbor(ai, zd)
+		var frontier := _zone_is_frontier_local(ai, zd)
+		if not captured and not enemy_neighbor and not frontier:
+			continue
+		var ct: Vector2i = cv
+		var pt := GridRes.center_of(ct)
+		var enemy := _enemy_strength_near(ai, pt, threat_radius)
+		if enemy > 0.0 and enemy > ours * avoid_ratio:
+			continue
+		if _friendly_near(ai, pt, radius, String(leader.id)):
+			continue          # 这个区划已经有队伍了：一区一队
+		if _post_near(ai, pt, radius):
+			continue
+		var score := 0.0
+		if captured:
+			score += 120.0
+		if enemy_neighbor:
+			score += 70.0
+		if frontier:
+			score += 35.0
+		score += enemy * 8.0
+		score -= leader.pos.distance_to(pt) * 0.25
+		if score > best_score + 1e-6 \
+				or (absf(score - best_score) <= 1e-6 and zid < best_id):
+			best_score = score
+			best_id = zid
+			best = {"pt": pt, "zone": zid, "kind": "zone"}
+	return best
+
+
+static func _guard_still_valid(ai, lid: String) -> bool:
+	var mv: Variant = ai.guard_missions.get(lid, null)
+	if typeof(mv) != TYPE_DICTIONARY:
+		return false
+	var m: Dictionary = mv
+	if ai.world.time >= float(m.get("reassess_at", INF)):
+		return false
+	var zid := int(m.get("zone", -1))
+	var z = ai.world.zone_by_id(zid)
+	if z == null:
+		return false
+	if String((z as Dictionary).get("owner", "")) != ai.faction:
+		return false
+	var pt: Vector2 = m.get("pt", Vector2.ZERO)
+	if not ai.world.map.tile_exists(int(floor(pt.x)), int(floor(pt.y))):
+		return false
+	return true
+
+
+## 区划中心是不是正被敌方读条（只读公开的区划状态）。
+static func _zone_capture_threatened(ai, zd: Dictionary) -> bool:
+	if ai.world.zones == null:
+		return false
+	var bar: Dictionary = ai.world.zones.capture_bar(zd)
+	var st := String(bar.get("state", ""))
+	if st != "reading" and st != "frozen":
+		return false
+	var f := String(bar.get("faction", ""))
+	return f != "" and not FactionRes.same_side_for_attack(f, ai.faction)
+
+
+static func _zone_is_frontier_local(ai, zone: Dictionary) -> bool:
+	for t in (zone.get("tiles", []) as Array):
+		var tv: Vector2i = t
+		for d in GridRes.DIRS4:
+			var n: Vector2i = tv + d
+			var oz = ai.world.zones.zone_at(n.x, n.y)
+			if oz == null:
+				continue
+			var owner := String((oz as Dictionary).get("owner", ""))
+			if owner == "" or not FactionRes.same_side_for_attack(owner, ai.faction):
+				return true
+	return false
+
+
+static func _zone_has_enemy_neighbor(ai, zone: Dictionary) -> bool:
+	for t in (zone.get("tiles", []) as Array):
+		var tv: Vector2i = t
+		for d in GridRes.DIRS4:
+			var n: Vector2i = tv + d
+			var oz = ai.world.zones.zone_at(n.x, n.y)
+			if oz == null:
+				continue
+			var owner := String((oz as Dictionary).get("owner", ""))
+			if owner != "" and not FactionRes.same_side_for_attack(owner, ai.faction):
+				return true
+	return false
+
+
+## 前线隘口：贴着非己方地块、且周围可通行格很少的己方格。
+static func _frontier_choke_tiles(ai, zone: Dictionary) -> Array:
+	var out: Array = []
+	var idle_cfg: Dictionary = ai.profile.get("idle", {})
+	var threshold := maxi(1, _i(idle_cfg, "choke_max_passable_neighbors", 3))
+	var zid := int(zone.get("id", -1))
+	for t in (zone.get("tiles", []) as Array):
+		var tv: Vector2i = t
+		if not ai.world.map.terrain_walkable(tv.x, tv.y):
+			continue
+		if ai.world.building_at(tv.x, tv.y) != null:
+			continue
+		var outside := false
+		for d in GridRes.DIRS4:
+			var n: Vector2i = tv + d
+			if not ai.world.map.tile_exists(n.x, n.y):
+				continue
+			var oz = ai.world.zones.zone_at(n.x, n.y)
+			if oz == null:
+				continue
+			var od: Dictionary = oz
+			if int(od.get("id", -1)) == zid:
+				continue
+			var owner := String(od.get("owner", ""))
+			if owner != "" and FactionRes.same_side_for_attack(owner, ai.faction):
+				continue
+			if ai.world.map.terrain_walkable(n.x, n.y):
+				outside = true
+		if not outside:
+			continue
+		var passable := 0
+		for d2 in GridRes.DIRS8:
+			var n2: Vector2i = tv + d2
+			if ai.world.map.tile_exists(n2.x, n2.y) \
+					and ai.world.map.terrain_walkable(n2.x, n2.y):
+				passable += 1
+		if passable <= threshold:
+			out.append(tv)
+	out.sort_custom(func(a: Vector2i, b: Vector2i) -> bool:
+		if a.y != b.y:
+			return a.y < b.y
+		return a.x < b.x)
+	return out
+
+
+static func _friendly_near(ai, pt: Vector2, radius: float, except_id: String) -> bool:
+	var r2 := maxf(0.0, radius) * maxf(0.0, radius)
+	for u in ai.world.units:
+		if u == null or not u.alive or u.is_downed():
+			continue
+		if String(u.id) == except_id:
+			continue
+		# 同一支队的附属兵也算「自己」，不能因为护卫站在旁边就判定中心已经有人守。
+		if except_id != "" and String(u.leader_id) == except_id:
+			continue
+		if not FactionRes.same_side_for_attack(String(u.faction), ai.faction):
+			continue
+		if u.pos.distance_squared_to(pt) <= r2:
+			return true
+	return false
+
+
+static func _post_near(ai, pt: Vector2, radius: float) -> bool:
+	for dict in [ai.post_missions, ai.guard_missions]:
+		for mv in (dict as Dictionary).values():
+			if typeof(mv) != TYPE_DICTIONARY:
+				continue
+			var m: Dictionary = mv
+			var p: Vector2 = m.get("pt", Vector2.ZERO)
+			if p.distance_to(pt) <= radius:
+				return true
+	return false
+
+
+## 满编队的侦察：去敌方 / 中立边界外侧找敌军和建筑；看到接近自己规模的
+## 敌军就整队撤。顺路发现没有守军的空区划时，会去中心读条占领。
+static func _scout_tick(ai) -> void:
+	var idle_cfg: Dictionary = ai.profile.get("idle", {})
+	if not bool(idle_cfg.get("enabled", true)) \
+			or not bool(idle_cfg.get("scout_enabled", true)):
+		return
+	var ec: Dictionary = ai.profile.get("expand", {})
+	var min_units := _min_units(ai)
+	var max_scouts := maxi(1, _i(idle_cfg, "max_scouts", 2))
+	var hold_sec := maxf(0.5, float(idle_cfg.get("scout_hold_sec", 6.0)))
+	var reassign_sec := maxf(hold_sec, float(idle_cfg.get("scout_reassign_sec", 16.0)))
+	var threat_radius := maxf(0.0, float(ec.get("threat_radius", 6.0)))
+	var scout_ratio := maxf(0.1, float(idle_cfg.get("scout_avoid_ratio", 0.9)))
+	var home = ensure_garrison(ai)
+	# 1) 校验已有侦察任务。
+	for lid in ai.scout_missions.keys().duplicate():
+		var u = ai.world.unit_by_id(String(lid))
+		if u == null or not u.alive or u.is_downed():
+			ai.scout_missions.erase(lid)
+			continue
+		if home != null and u == home:
+			ai.scout_missions.erase(lid)
+			continue
+		if ai.expand_team_ids.has(String(lid)) or ai.assault_team_ids.has(String(lid)) \
+				or ai.post_missions.has(String(lid)) or ai.guard_missions.has(String(lid)) \
+				or ai.regroup_ids.has(String(lid)):
+			ai.scout_missions.erase(lid)
+			continue
+		if team_total(ai, u) < min_units:
+			ai.scout_missions.erase(lid)
+			continue
+		var mv: Variant = ai.scout_missions.get(lid, null)
+		if typeof(mv) != TYPE_DICTIONARY:
+			ai.scout_missions.erase(lid)
+			continue
+		var m: Dictionary = mv
+		var zid := int(m.get("zone", -1))
+		var z = ai.world.zone_by_id(zid)
+		if z == null:
+			ai.scout_missions.erase(lid)
+			continue
+		var owner := String((z as Dictionary).get("owner", ""))
+		if bool(m.get("capture", false)) \
+				and FactionRes.same_side_for_attack(owner, ai.faction):
+			ai.scout_missions.erase(lid)       # 空区划已经拿下了
+			continue
+		var pt: Vector2 = m.get("pt", u.pos)
+		var ours := float(team_total(ai, u))
+		var enemy := _enemy_strength_near(ai, u.pos, threat_radius)
+		if enemy > 0.0 and enemy >= ours * scout_ratio:
+			_retreat_team(ai, u)
+			ai.stats["avoids"] = int(ai.stats.get("avoids", 0)) + 1
+			continue
+		if u.pos.distance_to(pt) <= 1.75:
+			var hold_until := float(m.get("hold_until", 0.0))
+			if hold_until <= 0.0:
+				m["hold_until"] = ai.world.time + hold_sec
+			elif ai.world.time >= hold_until:
+				ai.scout_missions.erase(lid)
+			continue
+		if ai.world.time - float(m.get("started_at", ai.world.time)) >= reassign_sec:
+			ai.scout_missions.erase(lid)
+	# 2) 给还没任务的满编队派侦察。
+	var count: int = ai.scout_missions.size()
+	if count >= max_scouts:
+		return
+	var teams: Array = []
+	for t in ready_field_teams(ai, min_units):
+		var leader = t["leader"]
+		var lid := String(leader.id)
+		if _react_locked(ai, lid) or _is_early_explorer(ai, lid) \
+				or _is_capturing_cleared_zone(ai, leader):
+			continue
+		if home != null and leader == home:
+			continue
+		if ai.expand_team_ids.has(lid) or ai.assault_team_ids.has(lid):
+			continue
+		if ai.scout_missions.has(lid) or ai.post_missions.has(lid) \
+				or ai.guard_missions.has(lid) or ai.regroup_ids.has(lid):
+			continue
+		if leader.target != null or leader.target_building != null:
+			continue
+		teams.append(t)
+	teams.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		var la = a["leader"]
+		var lb = b["leader"]
+		var ra := _scout_role_rank(ai, la)
+		var rb := _scout_role_rank(ai, lb)
+		if ra != rb:
+			return ra < rb
+		var ta: float = float((ai.last_orders.get(String((la as Object).id), {}) as Dictionary).get("t", -INF))
+		var tb: float = float((ai.last_orders.get(String((lb as Object).id), {}) as Dictionary).get("t", -INF))
+		if absf(ta - tb) > 1e-6:
+			return ta < tb
+		return String((la as Object).id) < String((lb as Object).id))
+	for t2 in teams:
+		if count >= max_scouts:
+			break
+		var leader2 = t2["leader"]
+		var lid2 := String(leader2.id)
+		var pick: Variant = _pick_scout_target(ai, leader2)
+		if pick == null:
+			continue
+		var pd: Dictionary = pick
+		var pt2: Vector2 = pd.get("pt", leader2.pos)
+		if _order_team(ai, t2, pt2, true, true):
+			ai.scout_missions[lid2] = {
+				"pt": pt2,
+				"zone": int(pd.get("zone", -1)),
+				"capture": bool(pd.get("capture", false)),
+				"started_at": ai.world.time,
+				"hold_until": 0.0,
+			}
+			ai.stats["scouts"] = int(ai.stats.get("scouts", 0)) + 1
+			ai.note_status("scouting")
+			count += 1
+
+
+## 侦察选队的偏好：游击队（骑手 / 马弓）> 远程（马弓）> 正面队。
+static func _scout_role_rank(ai, leader) -> int:
+	match _role_of(ai, leader):
+		"guerrilla":
+			return 0
+		"ranged":
+			return 1
+		_:
+			return 2
+
+
+## 给侦察队挑一个边界外侧的点。空区划（无守军）优先，其次敌方区划的外沿。
+static func _pick_scout_target(ai, leader) -> Variant:
+	var idle_cfg: Dictionary = ai.profile.get("idle", {})
+	var ec: Dictionary = ai.profile.get("expand", {})
+	var threat_radius := maxf(0.0, float(ec.get("threat_radius", 6.0)))
+	var scout_ratio := maxf(0.1, float(idle_cfg.get("scout_avoid_ratio", 0.9)))
+	var max_dist := maxf(4.0, float(idle_cfg.get("scout_max_distance_tiles", 18.0)))
+	var capture_empty := bool(idle_cfg.get("scout_capture_empty", true))
+	var advance := maxf(0.5, float(idle_cfg.get("scout_advance_tiles", 2.0)))
+	var ours := float(team_total(ai, leader))
+	var my_ids := _my_zone_ids(ai)
+	var candidates: Array = []
+	for z in ai.world.zones.zones:
+		if typeof(z) != TYPE_DICTIONARY:
+			continue
+		var own: Dictionary = z
+		if String(own.get("owner", "")) != ai.faction:
+			continue
+		if not _zone_is_frontier_local(ai, own):
+			continue
+		for az in _adjacent_zones(ai, own):
+			if typeof(az) != TYPE_DICTIONARY:
+				continue
+			var adj: Dictionary = az
+			var zid := int(adj.get("id", -1))
+			if my_ids.has(zid):
+				continue
+			var owner := String(adj.get("owner", ""))
+			if owner != "" and FactionRes.same_side_for_attack(owner, ai.faction):
+				continue
+			var cv: Variant = adj.get("center", null)
+			if cv == null:
+				continue
+			var center: Vector2i = cv
+			var pt := Vector2.ZERO
+			var capture := false
+			var score := 0.0
+			if owner == "":
+				var ep := _enemy_strength_near(ai, GridRes.center_of(center), threat_radius)
+				if capture_empty and ep <= 0.0 and zid != int(ai.target_zone) \
+						and _zone_worth_taking(ai, adj):
+					pt = GridRes.center_of(center)
+					capture = true
+					score = 90.0
+				else:
+					continue
+			else:
+				var pv: Variant = _enemy_frontier_point(ai, own, adj, advance)
+				if pv == null:
+					continue
+				pt = pv
+				var ep2 := _enemy_strength_near(ai, pt, threat_radius)
+				if ep2 > 0.0 and ep2 >= ours * scout_ratio:
+					continue
+				score = 70.0 - ep2 * 3.0
+			var d: float = leader.pos.distance_to(pt)
+			if d > max_dist:
+				continue
+			score -= d * 0.35
+			if _point_too_dangerous(ai, pt, ours, threat_radius, scout_ratio):
+				continue
+			if _scout_target_taken(ai, pt, 5.0):
+				continue
+			candidates.append({"pt": pt, "zone": zid, "capture": capture,
+				"score": score})
+	if candidates.is_empty():
+		return null
+	candidates.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		var sa := float(a.get("score", 0.0))
+		var sb := float(b.get("score", 0.0))
+		if absf(sa - sb) > 1e-6:
+			return sa > sb
+		var za := int(a.get("zone", -1))
+		var zb := int(b.get("zone", -1))
+		if za != zb:
+			return za < zb
+		var pa: Vector2 = a.get("pt", Vector2.ZERO)
+		var pb: Vector2 = b.get("pt", Vector2.ZERO)
+		if pa.y != pb.y:
+			return pa.y < pb.y
+		return pa.x < pb.x)
+	return candidates[0]
+
+
+## 敌方区划的外沿点：从「己方边境格 → 敌方边境格」再往里推进 `advance` 格。
+static func _enemy_frontier_point(ai, own: Dictionary, enemy_zone: Dictionary,
+		advance: float) -> Variant:
+	var target_id := int(enemy_zone.get("id", -1))
+	var best: Variant = null
+	var best_score := -INF
+	for t in (own.get("tiles", []) as Array):
+		var tv: Vector2i = t
+		for d in GridRes.DIRS4:
+			var n: Vector2i = tv + d
+			if not ai.world.map.tile_exists(n.x, n.y):
+				continue
+			var oz = ai.world.zones.zone_at(n.x, n.y)
+			if oz == null or int((oz as Dictionary).get("id", -1)) != target_id:
+				continue
+			if not ai.world.map.terrain_walkable(n.x, n.y):
+				continue
+			var raw := Vector2(float(n.x) + 0.5 + float(d.x) * advance,
+				float(n.y) + 0.5 + float(d.y) * advance)
+			var pt := _clamp_map_point(ai, raw)
+			var tile: Vector2i = ai.world.map.nearest_walkable(int(floor(pt.x)),
+				int(floor(pt.y)), 4)
+			if tile.x < 0 or tile.y < 0:
+				continue
+			pt = Vector2(float(tile.x) + 0.5, float(tile.y) + 0.5)
+			# 优先靠近敌方区划中心的方向，但不要真的走到中心。
+			var ecv: Variant = enemy_zone.get("center", null)
+			var score := 0.0
+			if ecv != null:
+				var ect: Vector2i = ecv
+				score -= Vector2(float(tile.x - ect.x), float(tile.y - ect.y)).length() * 0.05
+			if score > best_score or best == null:
+				best_score = score
+				best = pt
+	return best
+
+
+static func _adjacent_zones(ai, zone: Dictionary) -> Array:
+	var out: Array = []
+	var seen: Dictionary = {}
+	var zid := int(zone.get("id", -1))
+	for t in (zone.get("tiles", []) as Array):
+		var tv: Vector2i = t
+		for d in GridRes.DIRS4:
+			var n: Vector2i = tv + d
+			if not ai.world.map.tile_exists(n.x, n.y):
+				continue
+			var oz = ai.world.zones.zone_at(n.x, n.y)
+			if oz == null:
+				continue
+			var od: Dictionary = oz
+			var oid := int(od.get("id", -1))
+			if oid == zid or seen.has(oid):
+				continue
+			seen[oid] = true
+			out.append(od)
+	return out
+
+
+static func _scout_target_taken(ai, pt: Vector2, radius: float) -> bool:
+	for mv in ai.scout_missions.values():
+		if typeof(mv) != TYPE_DICTIONARY:
+			continue
+		var m: Dictionary = mv
+		var p: Vector2 = m.get("pt", Vector2.ZERO)
+		if p.distance_to(pt) <= radius:
+			return true
+	return false
+
+
 ## ★★ 大部队的「硬目标」档：凑够 `assault_units` 才主动打最近敌方目标（区划 / 大本营）。
 ## 小队由 `_expand()` 负责占中立 / 薄弱的敌方区划。
 static func _attack_if_ready(ai) -> bool:
@@ -1020,11 +2524,15 @@ static func _attack_if_ready(ai) -> bool:
 		return true                      # 已有任务：交给 `_continue_assault()` 推进
 	var ec: Dictionary = ai.profile.get("expand", {})
 	var required := maxi(2, _i(ec, "assault_units", 10))
-	var ready := ready_field_teams(ai, maxi(2, _i(ec, "min_field_units", 3)))
+	var ready := ready_field_teams(ai, _min_units(ai))
 	var total := 0
 	for t in ready:
 		# 游击队不去硬目标：它们只打没有防备的边界。
 		if _role_of(ai, t["leader"]) == "guerrilla":
+			continue
+		var tlid := String((t["leader"] as Object).id)
+		if ai.regroup_ids.has(tlid) or _react_locked(ai, tlid) \
+				or _is_early_explorer(ai, tlid):
 			continue
 		total += team_total(ai, t["leader"])
 	if total < required:
@@ -1045,7 +2553,14 @@ static func _attack_if_ready(ai) -> bool:
 	for t2 in ready:
 		if _role_of(ai, t2["leader"]) == "guerrilla":
 			continue
-		ai.assault_team_ids.append(String((t2["leader"] as Object).id))
+		var alid := String((t2["leader"] as Object).id)
+		if ai.regroup_ids.has(alid) or _react_locked(ai, alid) \
+				or _is_early_explorer(ai, alid):
+			continue
+		ai.assault_team_ids.append(alid)
+		ai.scout_missions.erase(alid)
+		ai.post_missions.erase(alid)
+		ai.guard_missions.erase(alid)
 	# 目标可能很深：给一个上限，避免「追一个打不掉的目标」无限拖住全军。
 	ai.assault_until = ai.world.time + maxf(20.0, float(ec.get("assault_timeout_sec", 90.0)))
 	_issue_assault_orders(ai)
@@ -1069,7 +2584,7 @@ static func _continue_assault(ai) -> bool:
 	var alive: Array = []
 	var total := 0
 	var ec: Dictionary = ai.profile.get("expand", {})
-	var min_units := maxi(2, _i(ec, "min_field_units", 3))
+	var min_units := _min_units(ai)
 	var threat_radius := maxf(0.0, float(ec.get("threat_radius", 6.0)))
 	var avoid_ratio := maxf(0.1, float(ec.get("avoid_enemy_ratio", 1.35)))
 	var enemy := _enemy_strength_near(ai, ai.assault_point, threat_radius)
@@ -1228,9 +2743,8 @@ static func _owned_population_ratio(ai) -> float:
 ##   再乘 `avoid_enemy_ratio` 留出安全余量；小股部队不会被派去硬碰大部队。
 static func _required_units_for_zone(ai, zd: Dictionary) -> int:
 	var ec: Dictionary = ai.profile.get("expand", {})
-	var min_units := maxi(2, _i(ec, "min_field_units", 3))
-	var squad := maxi(min_units, _i(ec, "squad_units",
-		_i(ec, "min_squad_units", min_units)))
+	var min_units := _min_units(ai)
+	var squad := maxi(min_units, _squad_units(ai))
 	var enemy_min := maxi(squad, _i(ec, "enemy_zone_min_units", 7))
 	var threat_radius := maxf(0.0, float(ec.get("threat_radius", 6.0)))
 	var avoid_ratio := maxf(0.1, float(ec.get("avoid_enemy_ratio", 1.35)))
@@ -1241,9 +2755,30 @@ static func _required_units_for_zone(ai, zd: Dictionary) -> int:
 		enemy = _enemy_strength_near(ai, GridRes.center_of(ct), threat_radius)
 	var need_from_enemy := int(ceil(enemy * avoid_ratio)) + 1
 	var owner := String(zd.get("owner", ""))
-	if owner == "":
+	# ★★ 2026.10.25：敌方区划里的守军已经被清空时，不再硬卡 `enemy_zone_min_units`。
+	#   否则「附近敌人打光了」也永远要 7 人，小队不会去站中心，区划永远占不下来。
+	if owner == "" or enemy <= 0.0:
 		return maxi(min_units, maxi(squad, need_from_enemy))
 	return maxi(min_units, maxi(enemy_min, need_from_enemy + 1))
+
+
+## 没有满编外勤队时，挑一支「最小的、但能动的」外勤队去占空无主区划。
+## 只用于 `_expand()` 的无主 / 无守军目标，不用于敌方区划。
+static func _pick_bootstrap_team(ai):
+	for t in field_teams(ai):
+		var leader = t.get("leader", null)
+		if leader == null or not leader.alive or leader.is_downed():
+			continue
+		var lid := String(leader.id)
+		if _react_locked(ai, lid) or _is_early_explorer(ai, lid):
+			continue
+		if ai.regroup_ids.has(lid) or ai.scout_missions.has(lid) \
+				or ai.post_missions.has(lid) or ai.guard_missions.has(lid) \
+				or ai.expand_team_ids.has(lid) or ai.assault_team_ids.has(lid):
+			continue
+		if team_total(ai, leader) >= 1:
+			return t
+	return null
 
 
 ## 从「已经能出门」的外勤队里挑一支（或几支）去 pt。
@@ -1253,14 +2788,24 @@ static func _required_units_for_zone(ai, zd: Dictionary) -> int:
 ## @return 选中的队伍数组（`{leader, units}`）；凑不够且 force=false → 空数组
 static func _pick_mission_teams(ai, pt: Vector2, required: int, force: bool) -> Array:
 	var ec: Dictionary = ai.profile.get("expand", {})
-	var min_units := maxi(2, _i(ec, "min_field_units", 3))
+	var min_units := _min_units(ai)
 	var assault_units := maxi(min_units, _i(ec, "assault_units", 10))
-	var ts := ready_field_teams(ai, min_units)
+	var ts: Array = []
+	for t0 in ready_field_teams(ai, min_units):
+		var mlid := String((t0["leader"] as Object).id)
+		# 正在回撤补员 / 受击即时命令锁定中的队伍不参加新的出击任务。
+		if ai.regroup_ids.has(mlid) or _react_locked(ai, mlid) \
+				or _is_early_explorer(ai, mlid):
+			continue
+		ts.append(t0)
 	if ts.is_empty() and force:
 		# ★ 玩家直接下令「扩张」时，如果还没有任何外勤队（开局只有一位将领），
 		#   允许把守军本身派出去 —— 这是明确意图，不能因为「要留人看家」而原地不动。
 		#   自主模式（force=false）仍然绝不派走守军。
 		for t0 in leader_teams(ai):
+			var flid := String((t0["leader"] as Object).id)
+			if _react_locked(ai, flid) or _is_early_explorer(ai, flid):
+				continue
 			if team_total(ai, t0["leader"]) >= min_units:
 				ts.append(t0)
 	if ts.is_empty():
@@ -1407,9 +2952,14 @@ static func _defense_tick(ai) -> bool:
 	var all_defend: bool = bool(td.get("all", false))
 	var dc: Dictionary = ai.profile.get("defense", {})
 	var ratio := 1.0 if all_defend else clampf(float(dc.get("recall_ratio", 0.35)), 0.1, 1.0)
-	var ts := field_teams(ai)
+	# 回防也只派「达到当前出门规模」的队伍：常规期不拿 1~2 人队去填线。
+	var min_units := _min_units(ai)
+	var ts := ready_field_teams(ai, min_units)
 	if ts.is_empty():
-		ts = leader_teams(ai)
+		# 没有外勤队时，守军自己可以回防（守军规模也达标才派）。
+		var home = ensure_garrison(ai)
+		if home != null and team_total(ai, home) >= min_units:
+			ts.append({"leader": home, "units": ai.world.group_of(home)})
 	if ts.is_empty():
 		return false
 	ts.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
@@ -1425,6 +2975,13 @@ static func _defense_tick(ai) -> bool:
 	for t in ts:
 		if sent >= want:
 			break
+		var dlid := String((t["leader"] as Object).id)
+		# 正在执行受击即时命令 / 开局探索的队伍不抢去回防。
+		if _react_locked(ai, dlid) or _is_early_explorer(ai, dlid):
+			continue
+		ai.scout_missions.erase(dlid)
+		ai.post_missions.erase(dlid)
+		ai.guard_missions.erase(dlid)
 		_order_team(ai, t, pt, false)
 		sent += 1
 	ai.defend_until = ai.world.time + maxf(1.0, float(dc.get("hold_sec", 8.0)))
@@ -1521,7 +3078,46 @@ static func _order_team(ai, team: Dictionary, pt: Vector2, keep: bool = true,
 	var units: Array = team.get("units", [])
 	if units.is_empty():
 		return false
+	# ★★ 2026.10.25：整队命令必须能压过**单兵受击反击**。
+	#   `unit.order_attack_move(player=false)` 会拒绝「正在反击」的单位；
+	#   不先清掉的话，挨打的那个兵会继续追自己的目标，队形从这里散开。
+	for u in units:
+		if u == null or not u.alive or u.is_downed():
+			continue
+		if u.has_method("is_retaliating") and u.is_retaliating():
+			u.clear_retaliation()
 	var ok: bool = CommandProcessorRes.order_group_attack_move(ai.world, ai.cfg, units, pt)
+	if ok:
+		ai.last_orders[String(leader.id)] = {"pt": pt, "t": ai.world.time}
+		ai.stats["orders"] = int(ai.stats.get("orders", 0)) + 1
+	else:
+		ai.stats["order_failures"] = int(ai.stats.get("order_failures", 0)) + 1
+	return ok
+
+
+## 整队**普通移动**（撤退 / 回撤补员 / 粘合回位用）：路上遇敌**不停**。
+## 与 `_order_team()`（行军攻击）分开，是为了让「撤」和「打」在命令层就不同。
+static func _move_team(ai, team: Dictionary, pt: Vector2, force: bool = false) -> bool:
+	var leader = team["leader"]
+	if leader == null or not leader.alive or leader.is_downed():
+		return false
+	pt = _clamp_map_point(ai, pt)
+	var reissue := maxf(1.0, float(ai.profile.get("march", {}).get("reissue_sec", 6.0)))
+	var last: Dictionary = ai.last_orders.get(String(leader.id), {})
+	if not force and not last.is_empty():
+		var lp: Vector2 = last.get("pt", Vector2(-9999.0, -9999.0))
+		var lt: float = float(last.get("t", -999.0))
+		if lp.distance_to(pt) < 0.75 and ai.world.time - lt < reissue:
+			return false
+	var units: Array = team.get("units", [])
+	if units.is_empty():
+		return false
+	for u in units:
+		if u == null or not u.alive or u.is_downed():
+			continue
+		if u.has_method("is_retaliating") and u.is_retaliating():
+			u.clear_retaliation()
+	var ok: bool = CommandProcessorRes.order_group_formation(ai.world, ai.cfg, units, pt, false)
 	if ok:
 		ai.last_orders[String(leader.id)] = {"pt": pt, "t": ai.world.time}
 		ai.stats["orders"] = int(ai.stats.get("orders", 0)) + 1

@@ -154,6 +154,9 @@ static func update_unit(world, cfg: ConfigRes, u: UnitRes, dt: float, idx: int =
 		# 表现就是「走到箭塔附近之后随机打周围的敌人」，玩家点的那个建筑反而没人管了。
 		# 与 SC2 一致：明确点名的目标不会被路过的敌人顶掉，直到它被摧毁。
 		update_building_combat(world, cfg, u)
+	elif u.ordered_target != null and not u.ordered_target.is_attackable():
+		# 点名目标已经倒地 / 阵亡：命令作废，别把它重新锁回来。
+		u.ordered_target = null
 	elif u.ordered_target != null and u.ordered_target.alive:
 		# 点名要打的**单位**还在，但当前交战对象被清掉了（理论上不该发生，留个保险）：
 		# 直接重新锁上，别让这条命令悬在半空。
@@ -339,13 +342,11 @@ static func acquire_target(world, cfg: ConfigRes, u: UnitRes, idx: int = -1) -> 
 		#      （否则单位会「看到了敌人却当没看到」，表现成有时不还手）。
 		if best != null and FactionRes.same_side_for_attack(String(best.faction), String(u.faction)):
 			best = null
-		#  ★★ 同一道闸门还要挡「濒死的将领」（本轮新增）：内核只认「活着的单位」，
-		#     而濒死将领在它眼里就是活的（alive == true，见 unit.downed 的说明）——
-		#     不过滤的话「已经倒地的将领照旧挨打」，正是需求禁止的那件事。
-		#     ⚠️ 只用 `alive` 判是不够的：`_tgt_alive` 那一档在内核里表达的是
-		#     「这个单位在不在场」，把它写成 0 会让濒死将领**连索敌都做不了**，
-		#     而它作为「在场单位」要照旧占位（占 AI 槽位、进区块读条）。
-		#     所以过滤放在这里、读目标的 `is_attackable()`。
+		#  ★★ 同一道闸门还要挡「濒死的将领」：内核只认「活着的单位」，
+		#     而濒死将领在它眼里就是活的（alive == true，见 unit.downed 的说明）。
+		#     `crowd_bridge.refresh_targets()` 已经把 `_tgt_alive` 按
+		#     `is_attackable()` 打包（倒地 = 0）；这里保留一次兜底过滤，
+		#     防止内核 / 映射再次把倒地单位送进来。
 		if best != null and not best.is_attackable():
 			best = null
 

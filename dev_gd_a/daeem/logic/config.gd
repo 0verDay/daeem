@@ -1231,6 +1231,10 @@ func general_type_at(i: int) -> String:
 ## ★ 用在「摆放的将领按它选的兵种决定数值档」上：将领序号（`general_index`，名册号 1..10）
 ##   只决定 id 与附属兵归属，**不再**决定数值 / 兵种 / 编制上限 —— 那三样改由
 ##   「这位将领是哪个将领（unit_type）」查 `unit.general.types/stats/caps/names`。
+## ⚠️ `types` 允许**重复兵种**（当前配置就是 spear/longbow/rider 重复三轮），所以
+##   `find()` 只能拿到第一次出现的位置。要选第 4..10 档请用关卡里的显式
+##   `start_units[].general_profile`（`world._place_faction_units` 优先读它）；
+##   这个函数只作为旧数据（没写 general_profile）的兜底。
 func general_slot_of_type(type_id: String) -> int:
 	return _general_types.find(type_id)
 

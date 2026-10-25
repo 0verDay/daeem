@@ -1,11 +1,13 @@
 # DAEEM · AI 指挥官与「合作 AI 队友」接入方案（计划稿）
 
-> 状态：**已完成（2026.10.24）**（M1~M5 全部落地；全量语法检查与 80 套回归全绿）
+> 状态：**设计稿 / 历史实现记录**。M1~M5 已落地；后续行为仍在迭代。
+> ★ **当前实际行为请先读 [ai-commander-current-status.md](ai-commander-current-status.md)**；
+>   本文只保留接入方案与早期实现过程，旧测试数字 / 旧规则可能已被覆盖。
 > ★ 后续（2026.10.24 晚）：按实测反馈重做了**按队补员 / 守军轮换 / 区划中心扩张 / 大小队分工 / 巡逻**，
 >   并把招募底层改成**移动兵营**（受击暂停、脱战继续）；读条中的将领也可巡逻 / 出征，
->   小股部队会按可见敌军规模避战。以代码注释与 README 为准；本文保留接入方案原文。
-> 依据：`ai_doc/rusted-warfare-ai-adaptation-spec.md`（下称「RW 规范」）
-> 勘察对象：`dev_gd_a/daeem/`（Godot 4.7.2 mono，当前 78 个测试套件 / 7494 项断言）
+>   小股部队会按可见敌军规模避战。
+> 依据：[`rusted-warfare-ai-adaptation-spec.md`](rusted-warfare-ai-adaptation-spec.md)（下称「RW 规范」）
+> 勘察对象：`dev_gd_a/daeem/`（Godot 4.7.2 mono；测试基线以下方的「当前实现状态」为准）
 > 目标：把 RW 规范里的「分层调度 / 效用评分 / 预算制生产 / 编组状态机 / 命令层 / 难度参数包」改造成适合本作的**阵营指挥官 AI**，先作为合作模式的第二席位 AI 队友接入；自定义对战房间本轮不实现，只保留可复用设计。
 
 ---
@@ -910,7 +912,7 @@ AI 面板按钮
 | `view/overlay_view_3d.gd` | AI 指令目标环 / 旗帜 / 可选的扩张目标框 |
 | `view/game_interaction.gd` | `ai_order_rejected` → 红字提示 |
 | `data/config.json` | 新增 `ai.commander` / `ui.ai_panel` / `coop.lobby.ai_teammate` |
-| `docs/README.md` / `docs/architecture.md` / `docs/route.md` | 完成后补一节「AI 指挥官 / 合作 AI 队友」；本文是设计稿，实现后再落文档 |
+| `README.md` / `ai_doc/README.md` / `ai_doc/ai-commander-current-status.md` | 完成后补「AI 指挥官 / 合作 AI 队友」的现状与索引；本文只保留设计稿 |
 
 > 说明：`logic/ai_*.gd` 按项目风格放在 `logic/` 扁平目录，文件名 snake_case，不写 `class_name`，跨文件引用用 preload 常量。如果实现时觉得 5 个文件太碎，可以合并成 3 个（controller / economy+build / army），但职责边界不要混。
 
@@ -1223,7 +1225,7 @@ AI 面板按钮
 | M2 | `ai_order` 命令；行军 / 发展 / 扩张 / 屯兵四条状态机；回防 / 留守将领 / 军队编组 / 目标缓存 | `logic/command_processor.gd`、`logic/ai_army.gd`、`logic/ai_commander.gd` |
 | M3 | 合作大厅真人 / AI 二选一；`start_coop_solo`；主流程信号链；HUD 浮动面板；地图选点；主界面 `ai_test` 观战入口 | `view/coop_lobby.gd`、`view/menu_*`、`view/start_screen.gd`、`view/main.gd`、`view/game_scene3d.gd`、`view/hud.gd`、`view/ai_order_panel.gd`、`view/input_controller.gd` |
 | M4 | 快照 `aid` / `air`；面板客机只读；目标环；拒绝提示；确定性 seed | `logic/snapshot.gd`、`view/overlay_view_3d.gd`、`view/game_interaction.gd`、`logic/world.gd` |
-| M5 | 新测试 4 套 + 全量回归；文档更新 | `tests/test_ai_commander.gd`、`test_ai_order_panel.gd`、`test_coop_ai_teammate.gd`、`test_ai_observer.gd`、`README.md`、`docs/README.md`、`docs/architecture.md` |
+| M5 | 新测试 4 套 + 全量回归；文档更新 | `tests/test_ai_commander.gd`、`test_ai_order_panel.gd`、`test_coop_ai_teammate.gd`、`test_ai_observer.gd`、`README.md`、`ai_doc/README.md`、`ai_doc/ai-commander-current-status.md` |
 
 ### 16.2 实际数值取舍
 
@@ -1273,3 +1275,11 @@ AI 面板按钮
 - 自定义对战房间 / 基地槽位 / 多 AI 数量选择 / `annihilation` 模式；
 - AI 对手的专用开局 UI（但 `auto` 战略、难度包、基地兜底已经就位）；
 - 网络合作里的「真人 + AI 队友同时存在」——按确认口径，二者二选一。
+
+### 16.5 2026.10.25 之后的增量
+
+16.5 及以后属于**实现增量**，已从设计稿移出，避免把历史计划当成现状：
+
+- 当前行为、配置、测试基线：[ai-commander-current-status.md](ai-commander-current-status.md)
+- 按日期的完整变更：[../CHANGELOG.md](../CHANGELOG.md)
+

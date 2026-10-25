@@ -264,6 +264,10 @@ func _test_mobile_while_training(cfg) -> void:
 	var fresh = w.retinue_of(g1.id)[before]
 	ok(fresh.pos.distance_to(g1.pos) <= 1.5,
 		"★★ 新兵生成在将领当前位置周围（距当前将领 %.2f 格）" % fresh.pos.distance_to(g1.pos))
+	# ★★ 新兵不能一出生就脱队：它应当立刻接上将领当前的移动命令。
+	ok(fresh.moving or fresh.has_goal, "★★ 新兵立刻继承将领的移动命令（不会站在原地脱队）")
+	near(fresh.goal.distance_to(g1.goal), 0.0, 0.2,
+		"★★ 新兵的行军目标 = 将领当前的 goal")
 
 func _test_damage_pauses_training(cfg) -> void:
 	var w = _quiet_world(cfg)

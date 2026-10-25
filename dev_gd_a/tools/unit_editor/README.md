@@ -62,9 +62,13 @@ Python + tkinter，**零第三方依赖**，与地图编辑器同一套界面风
   * **下拉框选中后不能变白**：clam 主题在 `readonly` 状态下会把下拉框的底落回浅灰
     （实测 `dcdad5`），光 `style.configure` 压不住 —— 必须 `style.map` 把
     `readonly` / `active` / `disabled` 这几个状态一起按下去（见 `_apply_theme`）。
-  * **改一个数值不再闪白**：整块重建控件时用 `LockWindowUpdate` 把绘制锁住、建完再
-    一次性解开（`_NoRepaint`）。⚠️ **别改成 `WM_SETREDRAW`** —— 那会把窗口的激活状态
-    一起搞乱（实测：跑完一个用例之后，下一个新建的窗口拿不到键盘焦点）。
+  * **改一个数值不再闪白**：整块重建控件时用 `WM_SETREDRAW` 关绘制、建完再打开并
+    `RedrawWindow`（`_NoRepaint`）。⚠️ 别改回 `LockWindowUpdate`：DWM 下压不住
+    Tk 销毁/新建控件的中间态。
+  * **改数值不重置滚动/选中**：`refresh_all()` 重建前拍快照、重建后恢复侧边栏滚动、
+    列表滚动与键盘焦点；只有换页签 / 换选中项才回顶部（`_sidebar_reset_pending`）。
+    ★ 重建列表时 `selection_set()` 延迟派发的 `<<TreeviewSelect>>` 也要按「回声」忽略，
+    否则会再重建一次侧边栏并把滚动位置打回 0。
 
 ---
 

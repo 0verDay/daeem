@@ -399,25 +399,32 @@ def _apply_theme(root: tk.Tk) -> ttk.Style:
 
 
 class _NoRepaint:
-    """整块重建控件时先把窗口的绘制锁住，建完再一次性解开 —— 消掉「闪白」。
+    """整块重建控件时先把窗口的绘制关掉，建完再一次性打开 —— 消掉「闪白」。
 
-    ★ 为什么需要它：tk 每销毁 / 新建一个控件都要重画一次，重建一整条侧边栏就是
-      几十次重画，中间态会在屏幕上闪一帧（用户报的「改一个数值整个编辑器闪一下」）。
-    ★ 用 `LockWindowUpdate`（Windows 上专治「批量改控件时闪烁」的 API），**不是**
-      `WM_SETREDRAW` —— 后者会把窗口的激活状态一起搅乱（实测：跑完一个用例之后，
-      下一个新建的窗口拿不到键盘焦点）。`LockWindowUpdate` 只锁绘制，不动焦点。
+    ★★ 为什么换成 `WM_SETREDRAW`（2026.10 用户报「改一个数值整个编辑器闪一下」）：
+      `LockWindowUpdate` 只锁一个窗口，在 DWM 下常常压不住 Tk 销毁/新建控件时的
+      中间态（白底先露出来，再画新控件）。`WM_SETREDRAW = 0` 才是「批量改控件期间
+      不许画」的标准做法：重建期间保持上一帧，`= 1` 之后一次 `RedrawWindow` 画到最终态。
+    ★ 同时锁 **顶层窗口 + Tk 客户区**，覆盖不同 Tk 版本的绘制路径。
     ★ 只在 Windows 上生效，且**任何异常都退化成空操作** —— 绝不连累别的东西。
     """
 
+    _WM_SETREDRAW = 0x000B
+    _RDW_INVALIDATE = 0x0001
+    _RDW_ERASE = 0x0004
+    _RDW_ALLCHILDREN = 0x0080
+    _RDW_UPDATENOW = 0x0100
     _GA_ROOT = 2
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self._user32 = None
-        self._top = None
+        self._hwnds: List[int] = []
 
     def __enter__(self):
-        if sys.platform != "win32":
+        # 窗口不可见（初始化 / 无头测试 withdraw）时不做绘制锁定：
+        # 在 withdrawn 窗口上发 WM_SETREDRAW 会把后续 focus_set() 弄失效。
+        if sys.platform != "win32" or not self.root.winfo_viewable():
             return self
         try:
             import ctypes
@@ -425,27 +432,49 @@ class _NoRepaint:
             user32 = ctypes.windll.user32
             user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
             user32.GetAncestor.restype = wintypes.HWND
-            user32.LockWindowUpdate.argtypes = [wintypes.HWND]
-            user32.LockWindowUpdate.restype = wintypes.BOOL
+            user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT,
+                                            wintypes.WPARAM, wintypes.LPARAM]
+            user32.SendMessageW.restype = wintypes.LPARAM
+            user32.RedrawWindow.argtypes = [wintypes.HWND, ctypes.c_void_p,
+                                            ctypes.c_void_p, wintypes.UINT]
             top = user32.GetAncestor(self.root.winfo_id(), self._GA_ROOT)
-            if top:
-                user32.LockWindowUpdate(top)
-                self._user32 = user32
-                self._top = top
+            hwnds: List[int] = []
+            for hwnd in (top, self.root.winfo_id()):
+                if hwnd and int(hwnd) not in hwnds:
+                    hwnds.append(int(hwnd))
+            for hwnd in hwnds:
+                user32.SendMessageW(hwnd, self._WM_SETREDRAW, 0, 0)
+            self._hwnds = hwnds
+            self._user32 = user32
         except Exception:                                   # noqa: BLE001
             self._user32 = None
-            self._top = None
+            self._hwnds = []
         return self
 
     def __exit__(self, *exc):
         user32, self._user32 = self._user32, None
-        self._top = None
-        if user32 is not None:
+        hwnds, self._hwnds = self._hwnds, []
+        if user32 is None or not hwnds:
+            return False
+        for hwnd in hwnds:
             try:
-                user32.LockWindowUpdate(None)               # NULL = 解锁
+                user32.SendMessageW(hwnd, self._WM_SETREDRAW, 1, 0)
             except Exception:                               # noqa: BLE001
                 pass
+        try:
+            user32.RedrawWindow(hwnds[0], None, None,
+                                self._RDW_INVALIDATE | self._RDW_ERASE
+                                | self._RDW_ALLCHILDREN | self._RDW_UPDATENOW)
+        except Exception:                                   # noqa: BLE001
+            pass
         return False
+
+
+def _walk_widgets(widget):
+    """深度遍历一棵控件树（快照/恢复 Treeview 滚动位置用）。"""
+    yield widget
+    for child in widget.winfo_children():
+        yield from _walk_widgets(child)
 
 
 class EditorApp:
@@ -461,6 +490,9 @@ class EditorApp:
         self._editing = False             # 正在提交（防止递归）
         self._undo: List[str] = []
         self._redo: List[str] = []
+        #: ★★ 下一次重建是否把侧边栏回顶部（换页签 / 换选中项 = 是；
+        #:    改一个数值 = 否，保持用户正在看的位置）。
+        self._sidebar_reset_pending = False
 
         self._setup_window()
         self._build_widgets()
@@ -691,6 +723,80 @@ class EditorApp:
         return False
 
     # ==================================================================
+    # ★★ 重建前后的界面状态（改一个数值不能把用户踢回初始位置）
+    #
+    # 用户口径：改数值之后侧边栏滚动位置、列表滚动位置、键盘焦点都不应该跳回
+    # 顶部/第一行。refresh_all() 重建前拍快照、重建后恢复；只有换页签 / 换选中项
+    # 才用 `_sidebar_reset_pending` 明确要求回到顶部。
+    # ==================================================================
+
+    def _ui_snapshot(self) -> dict:
+        state: dict = {"sidebar": None, "trees": {}, "focus": None}
+        try:
+            state["sidebar"] = self.sidebar_canvas.canvasy(0.0)
+        except tk.TclError:
+            pass
+        # ★ 用「深度遍历下标」而不是控件路径：Tk 的自动控件名（.!frame4）销毁/重建
+        #   后会往后递增，路径对不上；界面结构没变时同一个下标就是同一个逻辑控件。
+        widgets = list(_walk_widgets(self.root))
+        for index, widget in enumerate(widgets):
+            if isinstance(widget, ttk.Treeview):
+                try:
+                    state["trees"][index] = float(widget.yview()[0])
+                except tk.TclError:
+                    continue
+        try:
+            focused = self.root.focus_get()
+            if focused in widgets:
+                pos = None
+                if isinstance(focused, ttk.Entry):
+                    try:
+                        pos = int(focused.index("insert"))
+                    except (tk.TclError, ValueError):
+                        pos = None
+                state["focus"] = (widgets.index(focused), focused.winfo_class(), pos)
+        except tk.TclError:
+            pass
+        return state
+
+    def _ui_restore(self, state: dict, *, sidebar: bool = True) -> None:
+        if sidebar:
+            offset = state.get("sidebar")
+            if offset is not None:
+                self._restore_sidebar_offset(offset)
+        widgets = list(_walk_widgets(self.root))
+        for index, first in state.get("trees", {}).items():
+            if 0 <= index < len(widgets) and isinstance(widgets[index], ttk.Treeview):
+                try:
+                    widgets[index].yview_moveto(max(0.0, min(1.0, float(first))))
+                except tk.TclError:
+                    pass
+        focus = state.get("focus")
+        if focus is not None:
+            index, cls, pos = focus
+            if 0 <= index < len(widgets):
+                widget = widgets[index]
+                try:
+                    if widget.winfo_exists() and widget.winfo_class() == cls:
+                        widget.focus_set()
+                        if pos is not None and isinstance(widget, ttk.Entry):
+                            widget.icursor(pos)
+                except tk.TclError:
+                    pass
+
+    def _restore_sidebar_offset(self, offset: float) -> None:
+        overflow = self.sidebar_overflow()
+        if overflow <= 0:
+            self._pin_sidebar_top()
+            return
+        total = max(1.0, float(self.sidebar.winfo_reqheight()))
+        pos = max(0.0, min(float(offset), float(overflow)))
+        try:
+            self.sidebar_canvas.yview_moveto(pos / total)
+        except tk.TclError:
+            pass
+
+    # ==================================================================
     # 状态与标题
     # ==================================================================
 
@@ -726,17 +832,25 @@ class EditorApp:
             return
         self.page = key
         self.selection = None
+        self._sidebar_reset_pending = True
         self.refresh_all()
         for k, _label, hint in PAGES:
             if k == key:
                 self.status(hint)
 
     def refresh_all(self) -> None:
+        # ★★ 重建不等于「回到初始位置」：重建前拍快照、重建后恢复滚动/焦点。
+        state = self._ui_snapshot()
+        reset_sidebar = self._sidebar_reset_pending
+        self._sidebar_reset_pending = False
         # ★ 整条重建期间把重绘关掉（见 _NoRepaint）：不然一次改动会在屏幕上闪几帧。
         with _NoRepaint(self.root):
             self._rebuild_list()
-            self._rebuild_sidebar()
+            self._rebuild_sidebar(reset_scroll=reset_sidebar)
             self.update_title()
+            self._ui_restore(state, sidebar=not reset_sidebar)
+            if reset_sidebar:
+                self._pin_sidebar_top()
 
     def _rebuild_list(self) -> None:
         for child in self.list_host.winfo_children():
@@ -926,13 +1040,25 @@ class EditorApp:
             return
         iid = picked[0]
         if iid.startswith("u:"):
-            self.selection = ("unit", iid[2:])
+            new_selection = ("unit", iid[2:])
         elif iid.startswith("g:"):
-            self.selection = ("general", int(iid[2:]))
+            new_selection = ("general", int(iid[2:]))
         elif iid.startswith("b:"):
-            self.selection = ("building", iid[2:])
+            new_selection = ("building", iid[2:])
         elif iid.startswith("t:"):
-            self.selection = ("tech", int(iid[2:]))
+            new_selection = ("tech", int(iid[2:]))
+        else:
+            return
+        # ★★ 重建列表时 `_select_current()` 会给 Treeview 设一次选中，而 tk 的
+        #   `<<TreeviewSelect>>` 是**延迟**派发的 —— 刷新返回后才打回来。
+        #   这里若还按「用户点了新行」处理，就会再重建一次侧边栏并把滚动位置
+        #   重置到顶部（用户看到的「改个数值 UI 就回到初始位置」）。
+        #   选中项没变 = 这是重建的回声，直接忽略。
+        if new_selection == self.selection:
+            return
+        self.selection = new_selection
+        # 换了编辑对象 → 侧边栏回顶部（用户预期的「点一行，从第一项开始看」）。
+        self._sidebar_reset_pending = True
         self._rebuild_sidebar()
 
     # ==================================================================
@@ -955,7 +1081,10 @@ class EditorApp:
         frame.section_title = title
         return frame
 
-    def _rebuild_sidebar(self) -> None:
+    def _rebuild_sidebar(self, reset_scroll: Optional[bool] = None) -> None:
+        if reset_scroll is None:
+            reset_scroll = self._sidebar_reset_pending
+            self._sidebar_reset_pending = False
         self._suppress = True
         try:
             for child in self.sidebar.winfo_children():
@@ -979,9 +1108,10 @@ class EditorApp:
                     self._build_tech_form(self.model.tech(int(self.selection[1])))
             self.sidebar.update_idletasks()
             self.sidebar_canvas.configure(scrollregion=self.sidebar_canvas.bbox("all"))
-            # ★ 换了内容/换了一个人 → 一律回到顶部；装不下的时候这也是「从头开始看」，
-            #   装得下的时候它同时保证「滚动条固定在顶」（见 sidebar_yview 那一段）。
-            self.sidebar_yview("moveto", 0.0)
+            # ★ 只有「换了内容/换了一个人」才回到顶部；改一个数值时由
+            #   `refresh_all()` 恢复原来的滚动位置。
+            if reset_scroll:
+                self.sidebar_yview("moveto", 0.0)
         finally:
             self._suppress = False
 
@@ -1509,6 +1639,7 @@ class EditorApp:
         self._undo.clear()
         self._redo.clear()
         self.selection = None
+        self._sidebar_reset_pending = True
         self.refresh_all()
         self.status("✓ 已从磁盘重读 %s" % self._path_text())
 
@@ -1524,6 +1655,7 @@ class EditorApp:
                      lambda: self.model.add_unit(new_id, name, template))
         if self.model.doc.has(["unit", "types", new_id]):
             self.selection = ("unit", new_id)
+            self._sidebar_reset_pending = True
             self.refresh_all()
 
     def do_delete_unit(self) -> None:
@@ -1535,6 +1667,7 @@ class EditorApp:
             return
         if self._mutate("删除兵种 %s" % uid, lambda: self.model.remove_unit(uid)):
             self.selection = None
+            self._sidebar_reset_pending = True
             self.refresh_all()
 
     def do_new_building(self) -> None:
@@ -1548,6 +1681,7 @@ class EditorApp:
                      lambda: self.model.add_building(new_id, name, template))
         if self.model.doc.has(["building", new_id]):
             self.selection = ("building", new_id)
+            self._sidebar_reset_pending = True
             self.refresh_all()
 
     def do_delete_building(self) -> None:
@@ -1559,6 +1693,7 @@ class EditorApp:
             return
         if self._mutate("删除建筑 %s" % bid, lambda: self.model.remove_building(bid)):
             self.selection = None
+            self._sidebar_reset_pending = True
             self.refresh_all()
 
     def _commit_max_active(self) -> None:

@@ -35,6 +35,8 @@ var world = null
 var camera_rig = null
 ## ★★ 3D 版的投影助手（持有 Camera3D）：为 null 时走 2D / 无头回退（见 `_to_logic`）
 var palette = null
+## ★★ 稳定编队槽位（见 view/team_slots.gd）：数字键按它选人；为 null 时退回存活顺序。
+var team_slots = null
 
 ## 选中列表（纯本地，**不进命令流**）
 var selected_units: Array = []
@@ -176,10 +178,13 @@ var pause_allowed: bool = true
 var show_zone_names: bool = true
 
 
-func setup(p_cfg: ConfigRes, p_world, p_camera_rig, p_palette = null) -> void:
+func setup(p_cfg: ConfigRes, p_world, p_camera_rig, p_palette = null,
+		p_team_slots = null) -> void:
 	cfg = p_cfg
 	world = p_world
 	camera_rig = p_camera_rig
+	# ★★ 稳定编队槽位（见 view/team_slots.gd）：数字键按它选人，阵亡 / 复活不改号。
+	team_slots = p_team_slots
 	# ★★ 3D 版：投影是一个**实例**（它持有 Camera3D），不再是静态函数。
 	#    为 null 时退回「自己拿引擎画布变换反算」（无头测试与 2D 老路径仍可用）。
 	palette = p_palette
@@ -229,10 +234,14 @@ func handle_key(event: InputEventKey) -> bool:
 		return false
 	var k := event.keycode
 
-	# 1/2/3：快速选中将领
-	for i in 3:
-		if k == KEY_1 + i:
-			select_general_by_hotkey(str(i + 1))
+	# 1..9 / 0：快速选中**固定编队槽位**里的第 N 支（0 = 第 10 支）。
+	# ★ 槽位由 `view/team_slots.gd` 分配：首次按开局顺序 1..N，之后阵亡 / 复活都不改号；
+	#   阵亡将的槽位仍占着（按它的键不选人，只提示），后面的将不会前移。
+	#   右栏 `squad_panel` / 地图键帽 / 左栏详情（`hud._compute_selected_troops`）同源。
+	for i in 10:
+		var code: int = KEY_0 if i == 9 else KEY_1 + i
+		if k == code:
+			select_general_by_hotkey("0" if i == 9 else str(i + 1))
 			return true
 
 	# ★ 建筑快捷键（config.json 的 `building.<type>.hotkey`，现在是城墙 B / 箭塔 T）。
@@ -1065,12 +1074,45 @@ func selected_enemy_kind() -> String:
 
 
 func select_general_by_hotkey(key: String) -> void:
+	var wanted := int(key)
+	if wanted == 0:
+		wanted = 10                       # 左栏第 10 支写「0」
+	if wanted <= 0 or world == null:
+		return
+	# ★★ 稳定槽位：数字键按「这个将领的固定号」选，不按存活顺序。
+	#    · 阵亡将的槽位仍占着 —— 按它的键什么都不选，只给一句提示；
+	#    · 后面的将不会因为前面的阵亡而前移。
+	if team_slots != null:
+		team_slots.sync(world)
+		var u = team_slots.unit_in_slot(wanted)
+		if u == null:
+			if team_slots.has_slot(wanted):
+				toast.emit("第 %d 支部队已阵亡，等待复活" % wanted)
+			else:
+				toast.emit("没有第 %d 支部队" % wanted)
+			return
+		if not u.alive:
+			var st := String(team_slots.slot_status_text(wanted))
+			toast.emit("第 %d 支部队%s" % [wanted, ("：" + st) if st != "" else "已阵亡"])
+			return
+		select_units([u])
+		camera_rig.center_on_px(palette.to_px(u.pos))
+		return
+	# === 回退：没有槽位表（老测试 / 2D 路径）时仍按存活顺序 ===
+	var n := 0
 	for u in world.units:
-		if u.alive and world.is_own_seat(String(u.faction)) and u.hotkey == key:
+		if not u.alive:
+			continue
+		if not FactionRes.same_side(String(u.faction), world.my_faction):
+			continue
+		if not world.is_team_leader(u):
+			continue
+		n += 1
+		if n == wanted:
 			select_units([u])
 			camera_rig.center_on_px(palette.to_px(u.pos))
 			return
-	toast.emit("没有快捷键 %s 的将领" % key)
+	toast.emit("没有第 %d 支部队" % wanted)
 
 
 func set_build_type(t: String) -> void:
@@ -1271,16 +1313,50 @@ func _issue_order_click() -> void:
 ##   选中将领时整队（将领 + 亲兵）都会被选中，而队长永远排在队伍第一个
 ##   （world.group_of() 的顺序契约），所以这里直接取第一个队长就是玩家看到的那个将领。
 func first_selected_leader() -> Variant:
+	var leaders := selected_leaders()
+	return leaders[0] if not leaders.is_empty() else null
+
+
+## 当前选中的**全部己方队长**（按选中列表顺序；同一队长去重）。
+## ★ 多选招募要「平均分配」，所以不能只取第一个 —— 见 `_pick_recruit_leader()`。
+func selected_leaders() -> Array:
+	var out: Array = []
 	if world == null:
-		return null
+		return out
 	for u in selected_units:
-		if not u.alive:
+		if u == null or not is_instance_valid(u) or not u.alive:
 			continue
 		if not world.is_own_seat(String(u.faction)):
 			continue
-		if world.is_team_leader(u):
-			return u
-	return null
+		if not world.is_team_leader(u):
+			continue
+		if not out.has(u):
+			out.append(u)
+	return out
+
+
+## 从选中的队长里挑一个来吃这一单招募：
+##   · 先排除**现在不能招**的（区划 / 脱战 / 编制 / 队列上限 / 资源 / 人口）；
+##   · 剩下的里挑 `train_queue_size()` 最小的（= 把队列平均摊开）；
+##   · 一样长按选中顺序取第一个。
+## 如果全都不合格，退回第一个 —— 让 `world.start_recruit()` 发出具体的拒绝原因，
+## 界面才能显示「资源不足 / 正在交战 / 队列满」这类明确提示，而不是静默失败。
+func _pick_recruit_leader(kind: String, leaders: Array):
+	if leaders.is_empty():
+		return null
+	var fallback = leaders[0]
+	var best = null
+	var best_queue := 1 << 30
+	for u in leaders:
+		if world.can_recruit(kind, String(u.id), String(world.my_faction)) != "":
+			continue
+		if world.can_afford_recruit(kind, String(u.id)) != "":
+			continue
+		var q: int = int(u.train_queue_size())
+		if q < best_queue:
+			best_queue = q
+			best = u
+	return best if best != null else fallback
 
 
 ## 把单位**排进**当前选中将领的招募队列（读条 10 秒后才真的生成）。
@@ -1292,9 +1368,14 @@ func first_selected_leader() -> Variant:
 ##
 ## @return true = 命令已发出（不代表已经入队/招出来，落成与否看逻辑层）
 func request_recruit(kind: String) -> bool:
-	var leader = first_selected_leader()
-	if leader == null:
+	var leaders := selected_leaders()
+	if leaders.is_empty():
 		toast.emit("先选中一个将领，才能把新兵排到它名下")
+		return false
+	# ★★ 多选时按「队列最短」挑一个：第一次给 A、下一次自然轮到 B / C，
+	#    不会所有单子都堆在选中列表的第一个将领身上。
+	var leader = _pick_recruit_leader(kind, leaders)
+	if leader == null:
 		return false
 	command_issued.emit({
 		"kind": "recruit", "unit_kind": kind, "leader_id": leader.id,

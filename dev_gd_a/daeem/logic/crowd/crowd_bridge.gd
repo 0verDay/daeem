@@ -83,6 +83,8 @@ var _buf_n: int = 0
 
 ## ---- 警戒索敌（每帧一次批量算好，见 refresh_targets）----
 var _tgt_xy := PackedFloat64Array()
+## ★ 注意：这是**可攻击掩码**（`is_attackable()`，倒地 = 0），不是 `_alive` 的在场掩码。
+##   人群分离 / 占位仍走 `_alive`；这里只决定内核能不能把它选成索敌目标。
 var _tgt_alive := PackedByteArray()
 var _tgt_side := PackedInt32Array()
 var _tgt_aggro := PackedFloat64Array()
@@ -279,7 +281,11 @@ func refresh_targets(world, cfg: ConfigRes) -> void:
 		_tgt_unit[m] = i
 		_tgt_xy[m * 2] = u.pos.x
 		_tgt_xy[m * 2 + 1] = u.pos.y
-		_tgt_alive[m] = 1
+		# ★★ 2026.10.25：`_tgt_alive` 是**索敌目标掩码**，不是「在场 / 碰撞」掩码。
+		#   濒死将领（alive but downed）必须在这里写 0，否则内核会把它当最近目标；
+		#   `combat.acquire_target` 再过滤成 null，后面的活兵就永远轮不到。
+		#   注意别改 `_alive`（人群分离/占位仍按 alive 算）。
+		_tgt_alive[m] = 1 if u.is_attackable() else 0
 		_tgt_side[m] = si
 		_tgt_aggro[m] = cfg.aggro_range
 		_tgt_radius[m] = cfg.unit_radius_of(u.unit_type)
@@ -315,7 +321,7 @@ func refresh_targets(world, cfg: ConfigRes) -> void:
 			_tgt_unit[m] = i
 			_tgt_xy[m * 2] = u2.pos.x
 			_tgt_xy[m * 2 + 1] = u2.pos.y
-			_tgt_alive[m] = 1
+			_tgt_alive[m] = 1 if u2.is_attackable() else 0
 			_tgt_side[m] = si2
 			_tgt_aggro[m] = cfg.aggro_range
 			_tgt_radius[m] = cfg.unit_radius_of(u2.unit_type)

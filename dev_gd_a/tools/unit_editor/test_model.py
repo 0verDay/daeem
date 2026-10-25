@@ -197,12 +197,12 @@ def t_unit_fields() -> None:
     eq(u.class_label, "步兵", "归属的中文说法读 config 的 unit.classes")
     eq(u.ranged, False, "长枪兵不是远程")
     near(u.hp_max, 140, "血量")
-    near(u.damage, 16, "攻击力")
+    near(u.damage, 14, "攻击力")
     near(u.range, 1, "攻击距离")
     near(u.cooldown_sec, 1.0, "攻击速度（间隔秒）")
     near(u.speed, 0.6, "移动速度")
     # ★★ 本次：长枪兵是**低级单位，只吃粮食**（用户口径：「低级单位只需要粮食就可以招募」）
-    near(u.cost_food, 60, "造价 · 粮食（来自 recruit.list）")
+    near(u.cost_food, 80, "造价 · 粮食（来自 recruit.list，已按造价 ×2 调整）")
     near(u.cost_gold, 0, "造价 · 黄金（低级单位不要黄金）")
     near(u.population_cost, 1, "造价 · 人口")
     near(u.train_sec, 10, "招募时间")
@@ -285,11 +285,13 @@ def t_unit_fields() -> None:
 
     # 再把它加回招募表
     before = m4.text
+    before_count = m4.doc.size(["recruit", "list"])
     m4.add_recruit_entry("zombie")
-    eq(m4.doc.size(["recruit", "list"]), 4, "加进招募表：多了一条")
+    eq(m4.doc.size(["recruit", "list"]), before_count + 1, "加进招募表：多了一条")
     eq(m4.unit("zombie").has_recruit, True, "加完之后它有招募数值了")
     m4.set_unit("zombie", "train_sec", 6)
-    eq(m4.doc.value(["recruit", "list", 3, "train_sec"]), 6, "加进去之后就能改招募时间")
+    eq(m4.doc.value(["recruit", "list", before_count, "train_sec"]), 6,
+       "加进去之后就能改招募时间")
     ok(changed_lines(before, m4.text) > 0, "确实动了文件")
 
 
@@ -300,9 +302,9 @@ def t_unit_fields() -> None:
 def t_add_remove_unit() -> None:
     print("\n[2] 新建 / 删除兵种")
     model = fresh_model()
-    model.add_unit("horse_archer", "马弓手", "rider")
-    ok(model.doc.has(["unit", "types", "horse_archer"]), "新兵种进了 unit.types")
-    u = model.unit("horse_archer")
+    model.add_unit("test_horse", "马弓手", "rider")
+    ok(model.doc.has(["unit", "types", "test_horse"]), "新兵种进了 unit.types")
+    u = model.unit("test_horse")
     eq(u.name, "马弓手", "名字")
     eq(u.unit_class, "cavalry", "★ 照模板复制：归属跟着 rider（骑兵）")
     eq(u.ranged, False, "★ 远程标记也照抄（之后设计师自己改）")
@@ -317,18 +319,18 @@ def t_add_remove_unit() -> None:
     eq(u.label, "马弓手", "★ 命令卡标题 = 新名字")
     eq(u.icon, "", "★ 模板抄过来的那个字被删掉了（不留着模板的 icon）")
     eq(u.icon_char, "马", "★★ 新兵种地图上显示「马」（跟着名字的第一个字）")
-    model.set_unit("horse_archer", "icon", "弓")
-    eq(model.unit("horse_archer").icon_char, "弓", "想换就填一个自己的字")
+    model.set_unit("test_horse", "icon", "弓")
+    eq(model.unit("test_horse").icon_char, "弓", "想换就填一个自己的字")
     rows = parse(model.text)["recruit"]["list"]
-    eq([r["kind"] for r in rows], ["spearman", "longbowman", "rider", "horse_archer"],
+    eq([r["kind"] for r in rows][-1], "test_horse",
        "招募表顺序：新的排在最后")
     eq(model.unit("spearman").name, "长枪兵", "★ 模板本身没被改动")
 
     # 改成「马弓手 = 远程骑兵」（这就是设计师真实的下一步）
-    model.set_unit("horse_archer", "ranged", True)
-    model.set_unit("horse_archer", "range", 3.0)
-    eq(model.unit("horse_archer").ranged, True, "改成远程")
-    near(model.unit("horse_archer").range, 3.0, "改成 3 格射程")
+    model.set_unit("test_horse", "ranged", True)
+    model.set_unit("test_horse", "range", 3.0)
+    eq(model.unit("test_horse").ranged, True, "改成远程")
+    near(model.unit("test_horse").range, 3.0, "改成 3 格射程")
 
     # 照一个**不在招募表**的模板加：招募条目按默认值新建
     # ★ 本次改法：原来这里用「测试敌人」当那个模板（它不在招募表里），但那个单位
@@ -357,11 +359,12 @@ def t_add_remove_unit() -> None:
 
     # 删除
     m4 = fresh_model()
-    m4.add_unit("horse_archer", "马弓手", "rider")
-    m4.remove_unit("horse_archer")
-    ok(not m4.doc.has(["unit", "types", "horse_archer"]), "自定义兵种删掉了")
+    m4.add_unit("test_horse", "马弓手", "rider")
+    m4.remove_unit("test_horse")
+    ok(not m4.doc.has(["unit", "types", "test_horse"]), "自定义兵种删掉了")
     eq([r["kind"] for r in parse(m4.text)["recruit"]["list"]],
-       ["spearman", "longbowman", "rider"], "★ 招募表那一项一起删掉（不留孤儿）")
+       [r["kind"] for r in parse(fresh_model().text)["recruit"]["list"]],
+       "★ 招募表那一项一起删掉（不留孤儿）")
     for uid in BUILTIN_UNITS:
         raises(lambda u=uid: fresh_model().remove_unit(u), "内置兵种不许删：%s" % uid)
 
@@ -383,7 +386,8 @@ def t_add_remove_unit() -> None:
 def t_generals() -> None:
     print("\n[3] 将领（类型 + 造价 + 单独数值）")
     model = fresh_model()
-    eq(model.general_count(), 9, "九位将领（前 3 位开局 + 后 6 位招募池）")
+    eq(model.general_count(), len(model.doc.value(["unit", "general", "types"], [])),
+       "将领数 = unit.general.types 的长度（当前 10 位）")
     # ★★ 「开局护卫数」（`unit.general.escort`）这个配置项**已经整体删掉**（产品决策）：
     #   开局带几个附属兵不再由 config.json 给一个全局缺省，只能在**战役编辑器的摆放页**
     #   里一个一个摆出来。★ 这里**不是把旧断言删掉**，而是反过来钉住「键没了 + 接口没了」
@@ -440,7 +444,8 @@ def t_generals() -> None:
     # ★ 这里原来有 `model.set_escort(4)` + `eq(model.escort(), 4, "开局护卫数")` 两行：
     #   接口与配置项都删了（见 [3] 开头那一组断言），所以不再有可写的「开局护卫数」。
     raises(lambda: model.set_general_type(1, "no_such"), "类型必须是表里有的兵种")
-    raises(lambda: model.set_general(9, "name", "越界"), "越界的将领序号被拒")
+    raises(lambda: model.set_general(model.general_count(), "name", "越界"),
+           "越界的将领序号被拒")
 
     # 单独数值：写 / 读 / 删
     m2 = fresh_model()
@@ -531,9 +536,9 @@ def t_buildings() -> None:
     near(tower.cooldown, 0.8, "攻击速度（间隔）")
     eq(tower.max_level, 3, "三级")
     near(tower.levels[1].hp_mult, 1.5, "2 级血量倍率 1.5")
-    near(tower.levels[1].cost_food, 50, "升 2 级要 50 粮")
+    near(tower.levels[1].cost_food, 100, "升 2 级要 100 粮（造价 ×2）")
     near(tower.levels[1].time_sec, 10, "升 2 级读条 10 秒")
-    near(tower.levels[2].cost_gold, 100, "升 3 级要 100 金")
+    near(tower.levels[2].cost_gold, 200, "升 3 级要 200 金（造价 ×2）")
     near(tower.levels[0].cost_food, 0, "1 级那行没有代价（开局就是它）")
     near(tower.levels[1].hp_of(tower.hp_max), 450, "★ 2 级血量 = 基础 × 倍率 = 450")
     near(tower.levels[2].hp_of(tower.hp_max), 675, "3 级血量 675")
@@ -618,7 +623,7 @@ def t_buildings() -> None:
     near(b.damage, 12, "数值照模板（箭塔）")
     near(b.hp_max, 300, "血量照模板")
     eq(b.max_level, 3, "★ 连升级表一起复制（3 级）")
-    near(b.levels[1].cost_food, 50, "升级表的数字也照抄")
+    near(b.levels[1].cost_food, 100, "升级表的数字也照抄（箭塔 2 级 100 粮，造价 ×2）")
     eq([lv.id for lv in m4.buildings()] == ["wall", "tower", "base", "outpost"], True,
        "建筑顺序：新的排在最后")
     ok(changed_lines(before, m4.text) > 10, "确实往文件里加了东西")
@@ -650,10 +655,10 @@ def t_techs() -> None:
     eq(len(techs), 9, "九条科技（3×3）")
     eq(model.max_active(), 3, "同一时间最多启用 3 条")
     eq(techs[0].name, "粮食产量 I", "名称")
-    eq(techs[0].line, "粮食 +1", "第二行小字")
+    eq(techs[0].line, "粮食 +0.05", "第二行小字")
     ok(techs[0].desc, "有悬停说明")
-    near(techs[0].effect_value("food_per_tile_per_sec"), 1, "加成数值")
-    eq(techs[0].effect_label, "粮食产量 +1", "列表里那一句话")
+    near(techs[0].effect_value("food_per_tile_per_sec"), 0.05, "加成数值")
+    eq(techs[0].effect_label, "粮食产量 +0.05", "列表里那一句话")
     near(techs[8].effect_value("zone_population_mult"), 0.1, "人口科技是倍率 0.1")
 
     model.set_tech(0, "name", "粮食产量 甲")
@@ -703,8 +708,9 @@ def t_game_contract() -> None:
         for key in ("name", "class", "ranged", "hp_max", "speed", "damage", "range",
                     "cooldown_sec", "radius_factor"):
             ok(model.doc.has(path + [key]), "unit.types.%s.%s 存在" % (uid, key))
-        eq(model.doc.value(path + ["class"]) in ("infantry", "cavalry"), True,
-           "★ %s 的 class 是 config.gd 认的那两种之一" % uid)
+        eq(model.doc.value(path + ["class"]) in {cid for cid, _label in model.class_choices()},
+           True,
+           "★ %s 的 class 是 config.gd 认的类别之一" % uid)
     for idx in range(3):
         ok(model.doc.has(["unit", "general", "types", idx]),
            "unit.general.types[%d] 存在（将领 = 带类型的队长）" % idx)

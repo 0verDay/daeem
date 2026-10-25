@@ -261,9 +261,13 @@ def t_window(app, model) -> None:
     eq(app.tab_buttons["unit"].cget("fg"), app_module.UI["accent"], "当前页签是强调色")
     eq(app.tab_buttons["building"].cget("fg"), app_module.UI["text_dim"], "其它页签是暗色")
 
-    eq(list(app.unit_tree.get_children()), ["u:spearman", "u:longbowman", "u:rider"],
-       "兵种列表：三个单位类型（★ 本次：「测试敌人」已从编辑器移除）")
-    eq(list(app.general_tree.get_children()), ["g:0", "g:1", "g:2"], "将领列表：三位")
+    unit_ids = list(app.unit_tree.get_children())
+    ok(all("u:" + uid in unit_ids for uid in ("spearman", "longbowman", "rider")),
+       "兵种列表里有三个内置兵种（★ 「测试敌人」已从编辑器移除）")
+    eq(len(unit_ids), len(model.units()), "兵种列表覆盖 config 的全部兵种")
+    eq(list(app.general_tree.get_children()),
+       ["g:%d" % i for i in range(model.general_count())],
+       "将领列表 = config 的全部将领档位（当前 %d 位）" % model.general_count())
     eq(app.unit_tree.item("u:rider", "values")[1], "骑手", "列表里有名字")
     eq(app.unit_tree.item("u:rider", "values")[2], "骑兵", "列表里有归属")
     # ★ 列号写成「按列名找」而不是写死 8/9：本轮在「攻速」后面插了一列「视野」
@@ -280,7 +284,8 @@ def t_window(app, model) -> None:
     app.set_page("tech")
     app.root.update()
     eq(len(app.tech_tree.get_children()), 9, "科技列表：九条")
-    eq(app.tech_tree.item("t:0", "values")[2], "粮食产量 +1", "列表里有加成那句话")
+    eq(app.tech_tree.item("t:0", "values")[2], model.tech(0).effect_label,
+       "列表里的加成那句话 = model 的 effect_label")
     app.set_page("unit")
     app.root.update()
     eq(app.selection, None, "换页签之后选中被清掉（免得看见上一页的表单）")
@@ -414,10 +419,11 @@ def t_unit_form(app, model) -> None:
        "★ 不在招募表里的单位：那一页说明它不在招募表里")
     btn = buttons(app).get("把它加进招募表（照默认值）")
     ok(btn is not None, "有「加进招募表」按钮")
+    before_recruits = len(data(model)["recruit"]["list"])
     btn.invoke()
     app.root.update()
-    eq(len(data(model)["recruit"]["list"]), 4, "点一下 → 加进招募表")
-    eq(data(model)["recruit"]["list"][3]["kind"], "skeleton", "新那一条的 kind = skeleton")
+    eq(len(data(model)["recruit"]["list"]), before_recruits + 1, "点一下 → 加进招募表")
+    eq(data(model)["recruit"]["list"][-1]["kind"], "skeleton", "新那一条的 kind = skeleton")
 
 
 # ======================================================================
@@ -933,6 +939,48 @@ def t_sidebar_scroll(app, model) -> None:
     app.root.withdraw()                          # 收工，别把窗口留在屏幕上
 
 
+def t_refresh_keeps_scroll(app, model) -> None:
+    """★★ 改一个数值不能把侧边栏滚回顶部、也不能把选中项弄丢。
+
+    用户报的「所有 UI 回到初始位置」：以前每次改值都整块重建列表 + 侧边栏，
+    侧边栏固定 `moveto(0)`，而且重建列表的 `selection_set()` 会延迟触发
+    `<<TreeviewSelect>>` → 再重建一次。这里钉住修完后的行为。
+    """
+    print("\n[9] ★★ 改数值只更新数据：侧边栏滚动位置留在原地")
+    app.set_page("unit")
+    tree = app.unit_tree
+    tree.selection_set("u:spearman")
+
+    class _Ev:
+        widget = tree
+
+    app._on_list_select(_Ev())
+    app.root.update()
+    eq(app.selection, ("unit", "spearman"), "（前提）选中长枪兵")
+    try:
+        app.sidebar_canvas.configure(height=240)
+        app.root.update()
+    except tk.TclError:
+        pass
+    if app.sidebar_overflow() <= 0:
+        ok(True, "（这台机器上长枪兵表单装得下，跳过滚动断言）")
+        return
+    # 滚到「内容底部」：无头窗口的 canvas 高度不一定听 configure 的，所以按
+    # 实际溢出量滚，而不是假设一个像素偏移。
+    app.sidebar_yview("scroll", 100000, "units")
+    app.root.update()
+    before = app.sidebar_canvas.canvasy(0.0)
+    ok(before > 0, "（前提）先把长枪兵表单滚下去（偏移 %d）" % before)
+    app._mutate("改血量", lambda: app.model.set_unit("spearman", "hp_max", 222))
+    app.root.update()
+    after = app.sidebar_canvas.canvasy(0.0)
+    # 无头窗口的视口高度可能在 update 后变化；能保住的是「不回到 0」，
+    # 且最多被夹到当前内容底部（与 sidebar_yview 的夹值同一条）。
+    eq(after, min(before, float(app.sidebar_overflow())),
+       "★★ 改一个数值不会把侧边栏滚回顶部（偏移 %d）" % after)
+    eq(app.selection, ("unit", "spearman"), "★★ 改完选中项还在")
+
+
 def main() -> int:
     print("DAEEM 单位编辑器 · 界面测试")
     print("配置文件：%s（改的是 .tmp_unit_editor_app_test 里的副本）" % CONFIG)
@@ -954,6 +1002,7 @@ def main() -> int:
         t_undo_save(app, model, path)
         t_add_remove(app, model)
         t_sidebar_scroll(app, model)
+        t_refresh_keeps_scroll(app, model)
     finally:
         teardown(app)
         shutil.rmtree(TMP, ignore_errors=True)

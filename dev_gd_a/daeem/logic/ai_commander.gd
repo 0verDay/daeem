@@ -50,8 +50,16 @@ var cohesion_next_at: float = 0.0
 var team_roles: Dictionary = {}
 var role_serial: int = 0
 ## ★★ 受击后的整队反应冷却：leader_id -> 下次可再决策的时间。
-##    第一次挨打立刻判断；同一队 0.7 秒内不重复刷命令。
+##    第一次挨打立刻判断；同一队在冷却 + 模式锁期间不重复刷命令。
 var react_next: Dictionary = {}
+## ★★ 2026.10.25：受击即时命令的「模式锁」。
+##   react_mode[lid]  = "counter" / "retreat"
+##   react_point[lid] = 这次反击的落点（用来识别「还是同一场交火」）
+##   react_until[lid] = 模式锁到期时间
+##   目的：短时间连续挨打不要每 0.7 秒重新选一次反击 / 撤退，导致队伍来回抽搐。
+var react_mode: Dictionary = {}
+var react_point: Dictionary = {}
+var react_until: Dictionary = {}
 ## 攒钱升级防御建筑的截止时间；避免「差一点钱」时永远不建造。
 var build_save_until: float = 0.0
 
@@ -73,6 +81,22 @@ var threat_since: float = -1.0
 ## ★★ 巡逻：下一次派队时间 / 轮换下标（自主 mode 用）。
 var patrol_next_at: float = 0.0
 var patrol_index: int = 0
+## ★★ 2026.10.25：开局探索状态（只有一支初始部队时用）。
+##   phase: "" / "out" / "home" / "rest"；out=在外探索，home=回基地，rest=基地补员。
+var explore_leader_id: String = ""
+var explore_phase: String = ""
+var explore_target: Vector2 = Vector2.ZERO
+var explore_until: float = 0.0
+var explore_away: bool = false
+## ★★ 2026.10.25：闲置部队的「侦察 / 防守驻守」任务。
+##    key = 将领 id；value = {pt, zone, kind, reassess_at}。
+##    侦察只派满编队；缺编队（有兵但没补满）去前线中心 / 隘口驻守；
+##    满编队在没有安全侦察目标时也可以去守备。三者都不占用扩张 / 进攻任务。
+##    ★ 都在 `ai_army.gd` 里维护，控制器只负责在改指令时清空。
+var scout_missions: Dictionary = {}
+var post_missions: Dictionary = {}
+## 满编队的防守驻守（没有安全侦察目标 / 侦察名额已满时，去前线中心站岗）。
+var guard_missions: Dictionary = {}
 ## ★★ 2026.10.24：守军是**角色**（谁在基地看家 / 优先补员），不是「唯一的生产者」。
 ##    它补满 `production.home_team_size` 后会轮换出门，由另一支接防。
 ##    `AiArmyRes.ensure_garrison()` / `maybe_rotate_garrison()` 维护它。
@@ -150,6 +174,8 @@ func setup(p_world, p_cfg, p_faction: String, p_profile: Dictionary) -> void:
 		"rotations": 0, "expands": 0, "assaults": 0,
 		"zones_taken": 0, "regroups": 0, "avoids": 0,
 		"role_retreats": 0, "counterattacks": 0,
+		"scouts": 0, "guards": 0, "zone_guards": 0, "recruit_recalls": 0,
+		"explores": 0,
 	}
 	patrol_index = 0
 	var pat: Dictionary = profile.get("patrol", {})
@@ -267,12 +293,24 @@ func on_directive_changed() -> void:
 	assault_until = 0.0
 	failed_expand_zones.clear()
 	regroup_ids.clear()
+	scout_missions.clear()
+	post_missions.clear()
+	guard_missions.clear()
+	react_next.clear()
+	react_mode.clear()
+	react_point.clear()
+	react_until.clear()
 	expand_hold = 0.0
 	defend_until = 0.0
 	threat_since = -1.0
 	next_target_at = world.time if world != null else 0.0
 	patrol_index = 0
 	patrol_next_at = (world.time + 2.0) if world != null else 0.0
+	explore_leader_id = ""
+	explore_phase = ""
+	explore_target = Vector2.ZERO
+	explore_until = 0.0
+	explore_away = false
 
 
 func _sync_order() -> void:
@@ -324,48 +362,86 @@ func frontline_count(leader) -> int:
 	return n
 
 
-## ★★ 某个单位挨打：找到它所属的队伍，重新判断「整队反击」还是「继续后撤」，
-## 并立即重发**整队**命令。绝不单独移动挨打的那一个兵。
+## ★★ 某个单位挨打：找到它所属的队伍，结合**当前任务**重新判断
+## 「整队反击」还是「整队撤到安全区」，并立即重发整队命令。
 ##
-## 触发前提：这个世界层已经确认「该队当前有命令」；没有命令的单位仍走默认复仇反击。
-func react_to_attacked(victim, attacker) -> void:
+## 绝不单独移动挨打的那一个兵 —— 这是「单位与部队脱轨」的正面修法。
+##
+## @return true = 指挥官接管了这次受击（world 不再走单兵复仇）。
+##   即使这次因为冷却 / 没有队伍而不下新命令，也返回 true：队伍继续执行原命令，
+##   但**绝不允许**某个兵自己切到单兵复仇状态。
+func react_to_attacked(victim, attacker) -> bool:
 	if world == null or victim == null or attacker == null:
-		return
-	if String(order_kind) != "auto":
-		return                          # 玩家给 AI 的明确指令优先，不抢方向盘
+		return false
 	var leader = victim if victim.is_general() else world.unit_by_id(String(victim.leader_id))
-	if leader == null or not leader.alive or leader.is_downed():
-		return
+	if leader == null or not leader.alive:
+		return false
+	# 队长倒地：全队正在救援集结，不要再给某个兵切单兵复仇。
+	if leader.is_downed():
+		return true
 	if String(leader.faction) != faction:
-		return
+		return false
 	var lid := String(leader.id)
-	if world.time < float(react_next.get(lid, 0.0)):
-		return
+	var now: float = world.time
 	var rc: Dictionary = profile.get("reaction", {})
-	react_next[lid] = world.time + maxf(0.2, float(rc.get("cooldown_sec", 0.7)))
-	var ours := float(AiArmyRes.team_total(self, leader))
-	if ours <= 0.0:
-		return
-	var radius := maxf(1.0, float(rc.get("danger_radius", 6.0)))
-	var enemy := AiArmyRes._enemy_strength_near(self, leader.pos, radius)
-	var role := team_role_of(leader)
-	var roles: Dictionary = profile.get("roles", {})
+	var cooldown := maxf(0.2, float(rc.get("cooldown_sec", 2.0)))
+	var hold := maxf(cooldown, float(rc.get("mode_hold_sec", 2.8)))
 	var base = world.find_base_of(faction)
 	var retreating := bool(regroup_ids.get(lid, false))
-	if base != null and bool(leader.has_attack_move):
+	if base != null:
 		var rally := Vector2(float(base.tx) + 1.5, float(base.ty) + 1.5)
-		if leader.attack_move_goal.distance_to(rally) < 7.0:
+		if bool(leader.has_attack_move) and leader.attack_move_goal.distance_to(rally) < 7.0:
 			retreating = true
+		# 撤退现在走**普通移动**（不是行军攻击），所以这里也要看 `goal`。
+		elif bool(leader.moving) and leader.goal.distance_to(rally) < 7.0:
+			retreating = true
+	var mode := String(react_mode.get(lid, ""))
+	var until := float(react_until.get(lid, 0.0))
+	# 1) 硬冷却：短时间连续挨打不再重发即时命令。
+	if now < float(react_next.get(lid, 0.0)):
+		return true
+	# 2) 模式锁：刚决定反击 / 撤退，锁定期内保持原命令。
+	if now < until:
+		return true
+	# 3) 同一场交火：还是同一片攻击者，继续当前反击，不换目标。
+	var lock_r := maxf(1.0, float(rc.get("counter_lock_radius", 6.0)))
+	if mode == "counter" and bool(leader.has_attack_move) and react_point.has(lid):
+		var prev: Vector2 = react_point[lid]
+		if leader.attack_move_goal.distance_to(prev) <= lock_r \
+				and attacker.pos.distance_to(prev) <= lock_r:
+			react_next[lid] = now + cooldown
+			react_until[lid] = now + hold
+			return true
+	# 4) 已经在撤退：继续撤，不因为又挨一下马上回头反击。
+	if mode == "retreat" and retreating:
+		react_next[lid] = now + cooldown
+		react_until[lid] = now + hold
+		return true
+	react_next[lid] = now + cooldown
+	var ours := float(AiArmyRes.team_total(self, leader))
+	if ours <= 0.0:
+		return false
+	var radius := maxf(1.0, float(rc.get("danger_radius", 6.0)))
+	# 决策看两处：攻击者身边（打回去要面对多少）和队伍身边（现在被多少贴脸）。
+	var enemy_at := AiArmyRes._enemy_strength_near(self, attacker.pos, radius)
+	var enemy_near := AiArmyRes._enemy_strength_near(self, leader.pos, radius)
+	var enemy := maxf(enemy_at, enemy_near)
+	var role := team_role_of(leader)
+	var roles: Dictionary = profile.get("roles", {})
+	# 侦察队的任务是「看见就回来报」，不是回头打；受击直接退。
+	if scout_missions.has(lid):
+		_retreat_whole_team(leader)
+		return true
 	# 远程队前排已经倒光：即使敌人不多也先退，别让远程被贴脸。
 	if role == "ranged":
 		var rcfg: Dictionary = roles.get("ranged", {})
 		if frontline_count(leader) < int(rcfg.get("frontline_min", 1)):
 			_retreat_whole_team(leader)
-			return
+			return true
 	# 游击队：被打就换空档，不和正规军纠缠。
 	if role == "guerrilla":
 		_retreat_whole_team(leader)
-		return
+		return true
 	var counter_ratio := maxf(0.1, float(rc.get("counter_ratio", 1.15)))
 	var can_counter := enemy <= ours * counter_ratio
 	# 正在撤退时只有明显更弱才回头；否则继续撤。
@@ -375,20 +451,54 @@ func react_to_attacked(victim, attacker) -> void:
 		var pt: Vector2 = attacker.pos
 		if role == "ranged":
 			pt = AiArmyRes._role_target_point(self, leader, pt)
-		AiArmyRes._order_team(self, {"leader": leader, "units": world.group_of(leader)},
-			pt, false, true)
-		regroup_ids.erase(lid)
-		stats["counterattacks"] = int(stats.get("counterattacks", 0)) + 1
-		note_status("counter")
-	else:
+		# 受击反应优先于侦察 / 驻守 / 守备：这些任务先让位。
+		scout_missions.erase(lid)
+		post_missions.erase(lid)
+		guard_missions.erase(lid)
+		# 大规模任务也要让位，否则下一 tick 原来那条「去区划中心 / 打大本营」的命令
+		# 会把整队又拉走，表现成队伍在受击点与任务点之间来回抖。
+		_drop_team_mission(lid)
+		# `_order_team` 会先清掉各成员的单兵反击状态，再发整队行军攻击。
+		if AiArmyRes._order_team(self, {"leader": leader, "units": world.group_of(leader)},
+				pt, false, true):
+			regroup_ids.erase(lid)
+			react_mode[lid] = "counter"
+			react_point[lid] = pt
+			react_until[lid] = now + hold
+			stats["counterattacks"] = int(stats.get("counterattacks", 0)) + 1
+			note_status("counter")
+			return true
+		# 追不过去 / 没路：退回安全区，别让队伍原地分裂。
 		_retreat_whole_team(leader)
+		return true
+	_retreat_whole_team(leader)
+	return true
 
 
 func _retreat_whole_team(leader) -> void:
 	if leader == null:
 		return
+	var lid := String(leader.id)
+	_drop_team_mission(lid)
 	AiArmyRes._retreat_team(self, leader)
-	regroup_ids[String(leader.id)] = true
+	regroup_ids[lid] = true
+	var rc: Dictionary = profile.get("reaction", {})
+	var cooldown := maxf(0.2, float(rc.get("cooldown_sec", 2.0)))
+	react_mode[lid] = "retreat"
+	react_point.erase(lid)
+	react_until[lid] = world.time + maxf(cooldown, float(rc.get("mode_hold_sec", 2.8)))
+
+
+## 把一支队伍从扩张 / 进攻任务里摘掉；任务空了就一起清掉，避免下一 tick 又把它拉走。
+func _drop_team_mission(lid: String) -> void:
+	if expand_team_ids.has(lid):
+		expand_team_ids.erase(lid)
+		if expand_team_ids.is_empty():
+			AiArmyRes._clear_expand(self, true)
+	if assault_team_ids.has(lid):
+		assault_team_ids.erase(lid)
+		if assault_team_ids.is_empty():
+			AiArmyRes.clear_assault(self)
 
 
 ## ★★ 濒死将领：能再起就再起；位置太危险 / 太远且没兵时改为「召回」。
@@ -534,8 +644,13 @@ func _production_tick() -> void:
 	# 2) 补将：只有「现有将领都至少有 1 个兵」时才考虑加新将。
 	#    ⚠️ 旧版按「兵力 ≥ 上限 × 比例」才补将，而上限又随将领数上涨 ——
 	#       结果永远追不上。现在只看「现有队伍是否装备好」。
+	# ★ 2026.10.25：现有队伍至少补到「目标 - margin」才加新将，避免半编队旁边又冒光杆。
+	# ★★ 2026.10.25：如果现在一支外勤队都没有（只有守军，或守军没成形），
+	#   必须优先补一位将领出来当外勤队 —— 否则 `_expand / _scout / _patrol`
+	#   全部没有可派的队伍，AI 会从 60 秒后一直闲置到守军补满为止。
+	var has_field := not AiArmyRes.field_teams(self).is_empty()
 	if world.general_count_of(faction) < general_target() \
-			and AiArmyRes.understrength_team_count(self) <= 0:
+			and (AiArmyRes.understaffed_team_count(self) <= 0 or not has_field):
 		_try_general_recruit()
 	# 3) 按队补员。
 	var pc: Dictionary = profile.get("production", {})
@@ -545,6 +660,16 @@ func _production_tick() -> void:
 	var cands: Array = AiArmyRes.recruit_candidates(self)
 	if cands.is_empty():
 		return
+	# ★★ 2026.10.25：一支「能出门」的外勤队都没有时，补员先补外勤队，
+	#   不要再按守军优先把外勤将领晾在 1 个兵上 —— 否则它会一直不够
+	#   `min_field_units`，扩张/侦察/巡逻全派不出去，AI 看起来在发呆。
+	if AiArmyRes.ready_field_teams(self, AiArmyRes._min_units(self)).is_empty():
+		cands.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+			var ga := bool(a.get("garrison", false))
+			var gb := bool(b.get("garrison", false))
+			if ga != gb:
+				return not ga
+			return float(a.get("prio", 0.0)) > float(b.get("prio", 0.0)))
 	for c in cands:
 		if attempts <= 0:
 			break
@@ -821,6 +946,9 @@ func panel_state() -> Dictionary:
 		"status": current_status(),
 		"reason": String(d.get("reason", "")),
 		"roles": team_roles.duplicate(),
+		"scouts": scout_missions.size(),
+		"posts": post_missions.size(),
+		"guards": post_missions.size() + guard_missions.size(),
 	}
 	return out
 
@@ -840,6 +968,9 @@ func debug_state() -> Dictionary:
 		"cap": force_cap(),
 		"general_target": general_target(),
 		"roles": team_roles.duplicate(),
+		"scouts": scout_missions.size(),
+		"posts": post_missions.size(),
+		"guards": post_missions.size() + guard_missions.size(),
 		"stats": stats.duplicate(true),
 		"food": AiEconomyRes.food(self),
 		"gold": AiEconomyRes.gold(self),

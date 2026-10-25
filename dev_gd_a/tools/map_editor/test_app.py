@@ -1417,8 +1417,8 @@ def t_zone_center_and_production_ui() -> None:
 
         # ---- 换区划：输入框跟着换成那一个区划的产能
         select_zone(a)
-        eq(editor._zone_prod_vars["food"].get(), "2",
-           "★ 换区划后显示的是它自己的产能（默认人口区划预设：2/秒 粮食）")
+        eq(editor._zone_prod_vars["food"].get(), "1",
+           "★ 换区划后显示的是它自己的产能（默认人口区划预设：1/秒 粮食）")
         # ★★ 本轮口径：输入框里就是绝对值，写回**不再按地块数换算**
         eq(a.tile_count, 2, "（前提）a 有 2 格")
         editor._zone_prod_vars["food"].set("4")
@@ -1502,10 +1502,10 @@ def t_zone_kind_ui() -> None:
         eq(editor.model.zone_kind(zone.zone_id), "population",
            "★ 新建的区划默认是人口区划（用户确认：没有默认区划了）")
         eq(editor.zone_kind_var.get(), "population", "单选钮停在「人口区划」上")
-        # ★ 输入框是「资源/秒」绝对值：人口区划预设 = 每秒 2 粮 + 1 人口
-        eq(editor._zone_prod_vars["population"].get(), "1",
-           "★ 输入框里就是人口区划的预设（每秒 1 人口，绝对值，与地块数无关）")
-        eq(editor._zone_prod_vars["food"].get(), "2", "粮食那一档是 2（人口区划也产粮）")
+        # ★ 输入框是「资源/秒」绝对值：人口区划预设 = 每秒 1 粮 + 0.5 人口
+        eq(editor._zone_prod_vars["population"].get(), "0.5",
+           "★ 输入框里就是人口区划的预设（每秒 0.5 人口，绝对值，与地块数无关）")
+        eq(editor._zone_prod_vars["food"].get(), "1", "粮食那一档是 1（人口区划也产粮）")
         eq(editor.zone_kind_hint.cget("text"), "", "新建的区划与预设一致 → 不提示「已手改」")
         # ---- 几何：三颗单选钮都在侧边栏宽度之内、从上到下排列（新控件不许溢出/叠住）
         kinds = [k for k in ("food", "gold", "population") if k in editor._zone_kind_buttons]
@@ -1522,12 +1522,12 @@ def t_zone_kind_ui() -> None:
         editor._zone_kind_buttons["food"].invoke()
         eq(editor.model.zone_kind(zone.zone_id), "food", "★ 点单选钮 = 换种类")
         eq([editor.model.zone_production(zone.zone_id, k)
-            for k in ("food", "gold", "population")], [4.0, 0.0, 0.4],
-           "★ 选粮食区划 → 产能数字同步成 每秒 4 粮食 + 0.4 人口（所有区划都带一份人口基础产能）")
-        eq(editor._zone_prod_vars["food"].get(), "4",
-           "输入框显示同步后的粮食产能 4/秒（绝对值，不乘地块数）")
-        eq(editor._zone_prod_vars["population"].get(), "0.4",
-           "输入框显示同步后的 0.4 人口/秒")
+            for k in ("food", "gold", "population")], [2.0, 0.0, 0.2],
+           "★ 选粮食区划 → 产能数字同步成 每秒 2 粮食 + 0.2 人口（所有区划都带一份人口基础产能）")
+        eq(editor._zone_prod_vars["food"].get(), "2",
+           "输入框显示同步后的粮食产能 2/秒（绝对值，不乘地块数）")
+        eq(editor._zone_prod_vars["population"].get(), "0.2",
+           "输入框显示同步后的 0.2 人口/秒")
         eq(editor.zone_kind_hint.cget("text"), "", "刚同步过 → 仍然与预设一致")
 
         # ---- ③ 手改数字（输入框就是绝对值）：种类不动，导出写的就是那个绝对值
@@ -1541,15 +1541,15 @@ def t_zone_kind_ui() -> None:
         data = mapfile.model_to_dict(editor.model)
         entry = {z["id"]: z for z in data["zone_list"]}[zone.zone_id]
         eq(entry["kind"], "food", "导出写种类")
-        eq(entry["production"], {"food": 4, "gold": 2.5, "population": 0.4},
-           "★ 导出写的就是输入框里的绝对值（粮食 4 / 黄金 2.5 / 人口 0.4）")
+        eq(entry["production"], {"food": 2, "gold": 2.5, "population": 0.2},
+           "★ 导出写的就是输入框里的绝对值（粮食 2 / 黄金 2.5 / 人口 0.2）")
 
         # ---- 撤销：手改数字一步、换种类一步，两步都能退
         editor.undo()
         eq(editor.model.zone_production(zone.zone_id, "gold"), 0.0, "★ Ctrl+Z 退掉手改的数字")
         editor.undo()
         eq(editor.model.zone_kind(zone.zone_id), "population", "★ 再退一步：种类回到人口区划")
-        eq(editor.model.zone_production(zone.zone_id, "population"), 1.0,
+        eq(editor.model.zone_production(zone.zone_id, "population"), 0.5,
            "★ 数字也跟着回到人口区划的预设")
         eq(editor.zone_kind_var.get(), "population", "单选钮跟着退回去")
         editor.redo()
@@ -2147,6 +2147,39 @@ def t_campaign_map_hidden() -> None:
         root2.destroy()
 
 
+def t_refresh_keeps_sidebar_scroll() -> None:
+    """★★ 改一格 / 加一个区块不能把侧边栏滚回顶部。
+
+    用户报的「所有 UI 回到初始位置」：以前 `_build_sidebar()` 末尾固定
+    `yview_moveto(0.0)`，任何一次 refresh_sidebar 都会把正在看「人口上限」的人
+    拽回顶部。现在重建前拍快照、重建后恢复（只有换页签 / 新建 / 导入才回顶部）。
+    """
+    print("\n[29] ★★ 刷新侧边栏不重置滚动位置")
+    root, editor = build_editor()
+    try:
+        editor.set_page("zone")
+        root.update()
+        try:
+            editor.sidebar_canvas.configure(height=260)
+            root.update()
+        except tk.TclError:
+            pass
+        editor.sidebar_canvas.yview_moveto(0.5)
+        root.update()
+        before = editor.sidebar_canvas.canvasy(0.0)
+        ok(before > 0, "（前提）先把区块页侧边栏滚下去（偏移 %d）" % before)
+        editor.add_zone()
+        root.update()
+        eq(editor.sidebar_canvas.canvasy(0.0), before,
+           "★★ 新建一个区块不会把侧边栏滚回顶部")
+        editor.set_page("tile")
+        root.update()
+        eq(editor.sidebar_canvas.canvasy(0.0), 0.0,
+           "★ 换页签仍然回顶部（这是用户预期的重置）")
+    finally:
+        root.destroy()
+
+
 def main() -> int:
     global _SKIPPED
     print("DAEEM 地图编辑器 · 界面动作测试（无头，不截图）")
@@ -2182,6 +2215,7 @@ def main() -> int:
     t_zone_kind_ui()
     t_zone_page_box_select()
     t_sidebar_scrolls()
+    t_refresh_keeps_sidebar_scroll()
     t_export_blocked_without_center()
     t_box_selection_batch_edit()
     t_box_fill_blank_terrain()

@@ -82,8 +82,14 @@ python dev_gd_a/tools/campaign_editor --list                # 列出所有战役
 * ★★ **战役关卡里运行时一个将领都不自动生成**（用户需求）：将领必须由作者在摆放页摆出来。
   旧口径「没摆将领的一方自动补 3 位」**已删除**（地图试玩 / 测试那种不带关卡的场景照旧自动生成）。
 * ★★ 摆将领时有两套**相互独立**的编号：
-  * **将领**（侧栏下拉，写 `unit_type`）：这位将领是 config 里的**哪个将领** ——
-    决定它的**兵种 / 数值档 / 编制上限 / 默认名字**（查 `unit.general.types/stats/caps/names`）。
+  * **将领**（侧栏下拉，写 `unit_type` + `general_profile`）：这位将领是 config 里的
+    **哪一档将领** —— 决定它的**兵种 / 数值档 / 编制上限 / 默认名字**
+    （查 `unit.general.types/stats/caps/names`）。
+    ★ `unit.general.types` 允许**重复兵种**（当前配置就是 spearman/longbowman/rider
+    重复三轮 + 第 10 档）；此时只靠 `unit_type` 永远只能查到第一次出现的位置。
+    所以选「将领 4..10」时还会写 `general_profile`（1 起，= 档位序号）—— 这是
+    「显示成 1/2/3 循环」那个 bug 的修法。第 1..3 档（兵种唯一）不写这个键，
+    旧关卡一个字节都不用改。
   * **将领序号**（写 `general_index`，**1..10**）：**名册号** —— 只决定运行时 id
     （`general-<阵营>-N`）与附属兵的归属（`escort_of`）。
   于是「序号 1 用将领 3」这种搭配是允许的；序号不再限于 3 个。
@@ -149,6 +155,8 @@ python dev_gd_a/tools/campaign_editor --list                # 列出所有战役
 （不会丢），要改就直接手改关卡 JSON 的 `factions[]`（`ai` / `attack_target` /
 `spawn_region` / `garrison_ai` / `reddot_ai`）。校验照旧按这些字段给提示/拦截。
 ★ 例外：**红点的行军目标**在 **⑥ 红点页**编辑（`reddot_ai.march_tiles`）。
+★ 编辑器**认** `ai: "commander"`（ai_test_battle 的 p1 就是它；不可玩但占一个
+  `players[]` 席位）。保存时会原样带回，不会因为「不是可玩阵营」把它从名单里删掉。
 
 ★ **新建阵营在 ③ 阵营页**（「加一方 id」，或 ⑥ 红点页的「＋ 新建红点阵营」）——
   两处都只写**当前这一关**。
@@ -326,9 +334,13 @@ python dev_gd_a/tools/campaign_editor/test_app.py     # 开窗（界面），跑
 * **下拉框选中后不能变白**：clam 主题在 `readonly` 状态下会把下拉框的底落回浅灰
   （实测 `dcdad5`），光 `style.configure` 压不住 —— 必须 `style.map` 把 `readonly` /
   `active` / `disabled` 这几个状态一起按下去。
-* **改一个数值不再闪白**：整块重建控件（`refresh_all`）时用 `LockWindowUpdate` 把绘制
-  锁住、建完再一次性解开（`_NoRepaint`）。⚠️ **别改成 `WM_SETREDRAW`** —— 那会把窗口的
-  激活状态一起搞乱（实测：跑完一个用例之后，下一个新建的窗口拿不到键盘焦点）。
+* **改一个数值不再闪白**：整块重建控件（`refresh_all`）时用 `WM_SETREDRAW`
+  把绘制关掉、建完再一次性打开并 `RedrawWindow`（`_NoRepaint`）。⚠️ 别改回
+  `LockWindowUpdate`：它只锁一个窗口，DWM 下压不住 Tk 销毁/新建控件的中间态。
+* **重建不等于回到初始位置**：`refresh_all()` 重建前拍快照、重建后恢复侧边栏滚动、
+  列表滚动、画布缩放/平移、键盘焦点；只有换页签 / 换关卡 / 换地图才用
+  `_sidebar_reset_pending` / `_fit_pending` 显式要求「回顶部 / 适应视图」。
+  ★ 摆将领 / 改数值时会重建画布，但**不会**再自动 `fit_view()`。
 
 ## 已知取舍
 

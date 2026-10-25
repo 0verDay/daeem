@@ -38,6 +38,11 @@
       "id": "ai_test_2",
       "file": "levels/ai_test_2.json",
       "name": "ai_test_2"
+    },
+    {
+      "id": "ai_test_battle",
+      "file": "levels/ai_test_battle.json",
+      "name": "ai_test_battle"
     }
   ],
   "unlock": "in_order"

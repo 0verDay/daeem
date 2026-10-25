@@ -55,7 +55,7 @@ func _test_config_table(cfg) -> void:
 	eq(w.zone_recruit_queue_max(), 5, "★ 区划队列上限 5 个")
 	near(w.recruit_train_sec("general_4"), 10.0, 1e-6, "★ 每个将领读条 10 秒")
 	near(float(w.recruit_population_cost("general_4")), 1.0, 1e-6, "★ 每个将领吃 1 人口")
-	near(float(w.recruit_cost("general_1").get("food", 0.0)), 100.0, 1e-6, "★ 将领 1 100 粮食")
+	near(float(w.recruit_cost("general_1").get("food", 0.0)), 200.0, 1e-6, "★ 将领 1 200 粮食（造价 ×2）")
 	near(w.general_recruit_cooldown_of("general_9"), 45.0, 1e-6, "★ 将领 9 冷却 45 秒")
 
 # ------------------------------------------------------------------

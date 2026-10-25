@@ -58,6 +58,7 @@ const EconomyRes = preload("res://logic/economy.gd")
 ##   "max_level"  已经到最高级（等级表的条数）
 ##   "busy"       ★ 已经在读条了（需求确认：读条期间拒绝新的升级请求）
 ##   "owner"      不是自己这一方的建筑
+##   "generals"   ★ 大本营将领挡位不足（升 2 本要 3 将，升 3 本要 6 将）
 ##   "cost"       粮食 / 黄金不够
 static func can_upgrade(world, b, faction: String) -> String:
 	if b == null or not b.alive:
@@ -75,6 +76,14 @@ static func can_upgrade(world, b, faction: String) -> String:
 		return "respawning"
 	if b.level >= world.cfg.upgrade_max_level(b.type):
 		return "max_level"
+	# ★★ 2026.10.25：大本营升级的将领挡位。
+	#   1 级升 2 级需要 3 名将领，2 级升 3 级需要 6 名将领；
+	#   直接用当前等级配置里的 `max_generals` 作为门槛，后续加等级也能沿用。
+	if b.is_base():
+		var need_generals: int = int(world.cfg.upgrade_limit("base", int(b.level), "max_generals", 0))
+		if need_generals > 0 \
+				and world.general_count_of(String(b.owner)) < need_generals:
+			return "generals"
 	var pool: Variant = world.resource_pool_for(String(b.owner))
 	if not EconomyRes.can_afford(pool, world.cfg.upgrade_cost_to(b.type, b.level)):
 		return "cost"

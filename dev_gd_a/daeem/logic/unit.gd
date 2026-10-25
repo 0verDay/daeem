@@ -1212,6 +1212,47 @@ func order_attack_move_at(world, cfg: ConfigRes, dest_pt: Vector2, field_tile: V
 	return ok
 
 
+## ★★ 新生成的附属兵**立刻继承队长的当前命令**（用户口径：不能一出来就脱队）。
+##
+## 只抄「还在执行的命令」，不抄历史状态：
+##   · 行军攻击 → 同一个全队目标点；
+##   · 点名打单位 / 建筑 → 同一个目标；
+##   · 正在自动交战的当前目标 → 跟着打（否则新兵会在原地看戏）；
+##   · 普通移动 → 队长当前的 goal（新兵从自己的生成格重新寻路，不会穿墙）；
+##   · 队长原地待命 → 继承 hold_position / 警戒锚点。
+##
+## ⚠️ 顺序不能反：`has_attack_move` 的优先级高于 `ordered_target` —— 行军攻击途中
+##   自动索敌也会写 `target`，先判 target 会把「继续赶路」偷换成「停在这里打」。
+func inherit_orders_from(other, world, cfg: ConfigRes) -> void:
+	if other == null or world == null or cfg == null or not other.alive:
+		return
+	var copied := false
+	if bool(other.has_attack_move):
+		copied = order_attack_move(world, cfg, other.attack_move_goal, false)
+	if not copied and other.ordered_building != null \
+			and is_instance_valid(other.ordered_building) and other.ordered_building.alive:
+		copied = order_attack_building(world, cfg, other.ordered_building, false)
+	if not copied and other.ordered_target != null \
+			and is_instance_valid(other.ordered_target) and other.ordered_target.is_attackable():
+		copied = order_attack_unit(world, cfg, other.ordered_target, false)
+	if not copied and other.target_building != null \
+			and is_instance_valid(other.target_building) and other.target_building.alive:
+		copied = order_attack_building(world, cfg, other.target_building, false)
+	if not copied and other.target != null \
+			and is_instance_valid(other.target) and other.target.is_attackable():
+		copied = order_attack_unit(world, cfg, other.target, false)
+	if not copied and (bool(other.moving) or bool(other.has_goal)):
+		copied = order_move(world, cfg, other.goal, false)
+	if not copied:
+		# 没有正在执行的命令：把「原地待命」的姿势也带过来。
+		hold_position = bool(other.hold_position)
+		if other.anchor != null:
+			anchor = other.anchor
+	# 玩家命令标记跟着抄：否则新兵会因为「程序命令」被受击反击打断。
+	if bool(other.player_order) and has_active_order():
+		player_order = true
+
+
 # ------------------------------------------------------------------
 # 到达落点（拥挤时就近找空位）
 # ------------------------------------------------------------------
@@ -1394,6 +1435,12 @@ func clear_target() -> void:
 	# 受击反击也属于「被打断的命令」：停止 / 新命令之后一并作废。
 	retaliate_target = null
 	player_order = false
+
+
+## ★★ 只清掉「单兵受击反击」标记，**不动**玩家 / AI 的移动攻击命令。
+## 整队命令下达前用它：队伍命令必须能压过某个兵自己的复仇，但不能顺手清掉玩家命令。
+func clear_retaliation() -> void:
+	retaliate_target = null
 
 
 ## ★★ 正在受击反击吗（反击目标还活着且能打）。

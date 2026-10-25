@@ -11,7 +11,7 @@
 ##   动效总开关关掉时两段都跳过、当场到位。
 ##
 ## ★★ 主界面上的**进游戏入口**有两处：
-##   · 正中那一列 `MenuColumn`：**test_1 / test_2 / test_3**（各自直连一关，见 `_build_menu`）；
+##   · 正中那一列 `MenuColumn`：**五颗测试入口**（各自直连一关，见 `_build_menu`）；
 ##   · 右下「战役」按钮撑开的面板：**战役菜单**（`view/campaign_menu.gd`，长按进入某一关）。
 ##   两路都归到本文件的同一个信号 `level_entry_pressed(campaign_id, level_id)` ——
 ##   ⇒ `view/main.gd` 那侧只认这一个信号（载入战役 / 建世界都在它那儿）。
@@ -56,19 +56,21 @@ const TextMarksRes = preload("res://view/text_marks.gd")
 const MenuChromeRes = preload("res://view/menu_chrome.gd")
 ## ★★ 悬停时「金色自下而上填进来」的那套动效（见 view/fill_button.gd）。
 const FillButtonRes = preload("res://view/fill_button.gd")
-## ★ 正中那三颗 test_1/2/3 的线框样式（与外壳上的按钮同一套）。
+## ★ 正中那几颗测试按钮的线框样式（与外壳上的按钮同一套）。
 const MenuThemeRes = preload("res://view/menu_theme.gd")
 ## ★★ 选项页菜单（仿 nsoc）：与 HUD 右上角「选项」共用 view/options_panel.gd。
 const OptionsPanelRes = preload("res://view/options_panel.gd")
 
 ## 入场页被点掉了（main.gd 只需知道这件事，不必知道点的哪个像素）
 signal intro_dismissed
-## ★★ 玩家选定了「从哪一关进游戏」（主界面正中的 test_1/2/3，或「战役」面板里长按的那一关）。
+## ★★ 玩家选定了「从哪一关进游戏」（主界面正中的 test 按钮，或「战役」面板里长按的那一关）。
 ##
 ## ★ 参数是**数据**（战役 id + 关卡 id），不是已经载入的对象：
 ##   本页不认识 `data/campaigns/`、也不认识 `world` —— 载入战役、挑阵营、建世界
 ##   全在 `view/main.gd` 那一处（与战役目录扫描同一个口径：数据只有一个来源）。
 signal level_entry_pressed(campaign_id: String, level_id: String)
+## ★★ 主界面 ai_test_battle：跳过战役过渡画面，直接按关卡的可玩阵营开局。
+signal direct_level_requested(campaign_id: String, level_id: String)
 ## ★★ 主界面 ai_test / ai_test_2 按钮：进入观战（AI 操作被观察方，玩家只看）。
 ## `allow_orders` = true 时仍允许用 AI 面板下四条指令（ai_test_2）；
 ## `reveal_all` = true 时只给玩家显示开全图，AI 逻辑仍读正常迷雾（ai_test_2）。
@@ -175,7 +177,7 @@ func setup(p_cfg: ConfigRes, p_font: Font) -> void:
 	#   （dir = 0 = 只淡出不移位）：外壳上的按钮撑开面板时它必须让开。
 	if _chrome != null and _menu != null:
 		_chrome.add_avoid_target(_menu, 0)
-	# ★★ 真正的「进哪一关」入口现在有两处：正中那三颗 test_1/2/3，以及「战役」面板里
+	# ★★ 真正的「进哪一关」入口现在有两处：正中那五颗测试按钮，以及「战役」面板里
 	#   长按选中的关卡。外壳把面板那一路往上传一层，这里再转成自己的 level_entry_pressed ——
 	#   ⇒ **view/main.gd 那侧只认一个信号**（它只管「载入哪一关」，不关心从哪按的）。
 	if _chrome != null:
@@ -443,7 +445,7 @@ func _build_intro() -> void:
 ## ★★ 它与 `_menu`（正中那一列）的分工：
 ##   · 本函数建的这个外壳 = **版式**：资料、五个侧边栏入口、右下战役 / 演义 / 合作模式；
 ##     点它们会撑开一块面板（机制在 view/panel_expand.gd）；「战役」那块里是战役菜单。
-##   · `_build_menu()` 建的那一列 = **test_1 / test_2 / test_3**（直连关卡）。
+##   · `_build_menu()` 建的那一列 = **五颗测试入口**（直连关卡）。
 ##
 ## ⚠️ 顺序：先在 `_root` 上 `add_child` 外壳、再建那一列 —— `add_child` 的先后就是叠放顺序。
 ## ⚠️ `setup()` 必须在 `add_child` **之后**调：外壳内部的转场引擎要 `await get_tree().process_frame`
@@ -569,7 +571,7 @@ func _build_menu() -> void:
 	#     └ `MenuOuter`（VBox，**把标题条与按钮列竖着连起来**）
 	#         ├ `MenuOrnaments`（标题条：徽记 + DAEEM + 金线，自己也是一个 VBox）
 	#         ├ 一个下边距（`menu_rule_gap`，标题条与那一列之间的呼吸）
-	#         └ `MenuColumn`（VBox：test_1 / test_2 / test_3）
+	#         └ `MenuColumn`（VBox：config 的 menu.test_entries）
 	#
 	# ★★ 为什么标题条与按钮列要放进**同一个 VBox**（而不是各摆各的）：
 	#   第一版把标题条锚在屏幕下边、按钮列整页居中，两者互不知情 ——
@@ -652,7 +654,7 @@ func _build_menu() -> void:
 	rule.custom_minimum_size = Vector2(cfg.num("menu.menu_rule_width", 220.0), 1.0)
 	rule_wrap.add_child(rule)
 
-	# ★★ 正中那一列按钮（`MenuColumn`）：**test_1 / test_2 / test_3**，各自直连一关。
+	# ★★ 正中那一列按钮（`MenuColumn`）：**五颗测试入口**，各自直连一关。
 	#
 	#   为什么又回到 MenuOuter 里：这三颗是「进游戏」的快捷入口，与标题条同属主界面正中那一块；
 	#   放进同一个 VBox 才有「标题在上、按钮在下」的排版保证（旧版把两者各摆各的，窗口比例一变
@@ -690,12 +692,15 @@ func _test_entries() -> Array:
 		var ai_observer := bool(d.get("ai_observer", false))
 		var ai_observer_orders := bool(d.get("ai_observer_orders", false))
 		var ai_observer_reveal := bool(d.get("ai_observer_reveal", false))
+		var direct := bool(d.get("direct", false))
+		var coop_ai := bool(d.get("coop_ai", false))
 		if label == "" or campaign == "" or level == "":
 			continue
 		out.append({"label": label, "campaign": campaign, "level": level,
 			"coop": coop, "ai_observer": ai_observer,
 			"ai_observer_orders": ai_observer_orders,
-			"ai_observer_reveal": ai_observer_reveal})
+			"ai_observer_reveal": ai_observer_reveal,
+			"direct": direct, "coop_ai": coop_ai})
 	return out
 
 
@@ -731,6 +736,8 @@ func _make_test_button(entry: Dictionary) -> Button:
 	var is_ai_test := bool(entry.get("ai_observer", false))
 	var allow_orders := bool(entry.get("ai_observer_orders", false))
 	var reveal_all := bool(entry.get("ai_observer_reveal", false))
+	var is_direct := bool(entry.get("direct", false))
+	var is_coop_ai := bool(entry.get("coop_ai", false))
 	b.pressed.connect(func():
 		# ⚠️ 本文件是 CanvasLayer（不是 Control）：可见性用 `visible`，没有 is_visible_in_tree()。
 		if not visible:
@@ -740,6 +747,15 @@ func _make_test_button(entry: Dictionary) -> Button:
 			return
 		if is_ai_test:
 			ai_test_requested.emit(campaign_id, level_id, allow_orders, reveal_all)
+			return
+		# ★★ ai_test_hz：直接开「合作 + AI 队友」本地局（玩家第 1 席位，commander 接管第 2 席位）。
+		#    不弹合作大厅，也不要求先选地图。
+		if is_coop_ai:
+			coop_solo_started.emit(campaign_id, level_id, {"difficulty": "normal"})
+			return
+		# ★★ ai_test_battle：跳过战役过渡画面，直接按关卡的可玩阵营开局（玩家就是 p2）。
+		if is_direct:
+			direct_level_requested.emit(campaign_id, level_id)
 			return
 		if is_coop and _chrome != null:
 			_chrome.open_coop_panel()
@@ -1231,9 +1247,9 @@ func menu_chrome() -> Control:
 	return _chrome
 
 
-## ★ 主界面正中那三颗 `test_1/2/3` —— 只给测试与排查用。
+## ★ 主界面正中那几颗测试入口 —— 只给测试与排查用。
 ## ★ 顺序 = `menu.test_entries` 里的顺序（左列从上到下）。
-## 打开合作面板（test_2 与测试用；不模拟鼠标）。
+## 打开合作面板（右下角「合作模式」与测试用；不模拟鼠标）。
 func open_coop_panel() -> void:
 	if _chrome != null:
 		_chrome.open_coop_panel()
