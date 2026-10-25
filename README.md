@@ -21,6 +21,14 @@ Dynasty And Empire : Eastern March
    ```powershell
    powershell -ExecutionPolicy Bypass -File tools/setup-font.ps1
    ```
+### 2026.10.24 单位招募与command ai更新
+1. 程序员节快乐！
+2. 为游戏添加了新的占位单位，现在可招募的单位达到了三阶七个，目前的单位有：长枪兵，长弓兵，骑手，粮车，骑士，马弓手，投石车
+3. 新增开发者快捷键ctrl+3，可以让本机控制的大本营升至3级
+4. **重大的更新：** 仿照铁锈战争的ai，为游戏内加入了一个规则驱动的command ai，现在的ai已经可以用来电子斗蛐蛐了，玩家可以看海了！！！
+5. 新增了ai_test_1和2用于测试command ai
+6. 玩家可以为ai下达指令，这将会在后续的单人合作模式中应用，参考的是红色警戒3的指挥官ai（但没有测试）
+7. 更改了单位受击反击机制
 
    > 在 `dev_gd_a/daeem` 目录下执行；脚本会把字体拷到 `assets/fonts/` 并执行一次 `--headless --import`。
 
