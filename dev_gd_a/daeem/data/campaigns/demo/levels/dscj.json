@@ -297,7 +297,7 @@
   "start_units": [
     {
       "faction": "df",
-      "kind": "general",
+      "kind": "spearman",
       "unit_type": "spearman",
       "x": 8,
       "y": 30,
@@ -618,6 +618,285 @@
         {
           "type": "rider",
           "weight": 1
+        }
+      ]
+    },
+    {
+      "faction": "df",
+      "kind": "general",
+      "general_index": 20,
+      "unit_type": "spearman",
+      "x": 7,
+      "y": 11,
+      "ai": "garrison",
+      "zone": 18,
+      "escort_count": 5,
+      "escort_types": [
+        {
+          "type": "spearman",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "faction": "df",
+      "kind": "general",
+      "general_index": 21,
+      "unit_type": "longbowman",
+      "x": 8,
+      "y": 11,
+      "ai": "garrison",
+      "zone": 18,
+      "escort_count": 5,
+      "escort_types": [
+        {
+          "type": "longbowman",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "faction": "df",
+      "kind": "general",
+      "general_index": 22,
+      "unit_type": "rider",
+      "x": 7,
+      "y": 14,
+      "ai": "garrison",
+      "zone": 18,
+      "escort_count": 3,
+      "escort_types": [
+        {
+          "type": "rider",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "faction": "df",
+      "kind": "general",
+      "general_index": 23,
+      "unit_type": "spearman",
+      "x": 11,
+      "y": 14,
+      "ai": "garrison",
+      "zone": 19,
+      "escort_count": 8,
+      "escort_types": [
+        {
+          "type": "spearman",
+          "weight": 0.5
+        },
+        {
+          "type": "longbowman",
+          "weight": 0.5
+        }
+      ]
+    },
+    {
+      "faction": "df",
+      "kind": "general",
+      "general_index": 24,
+      "unit_type": "longbowman",
+      "x": 13,
+      "y": 11,
+      "ai": "garrison",
+      "zone": 19,
+      "escort_count": 4,
+      "escort_types": [
+        {
+          "type": "longbowman",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "faction": "df",
+      "kind": "general",
+      "general_index": 25,
+      "unit_type": "spearman",
+      "x": 17,
+      "y": 9,
+      "ai": "garrison",
+      "zone": 21,
+      "escort_count": 5,
+      "escort_types": [
+        {
+          "type": "spearman",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "faction": "df",
+      "kind": "general",
+      "general_index": 26,
+      "unit_type": "spearman",
+      "x": 17,
+      "y": 10,
+      "ai": "garrison",
+      "zone": 21,
+      "escort_count": 5,
+      "escort_types": [
+        {
+          "type": "spearman",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "faction": "df",
+      "kind": "general",
+      "general_index": 27,
+      "unit_type": "spearman",
+      "x": 20,
+      "y": 10,
+      "ai": "garrison",
+      "zone": 21,
+      "escort_count": 10,
+      "escort_types": [
+        {
+          "type": "longbowman",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "faction": "df",
+      "kind": "general",
+      "general_index": 28,
+      "unit_type": "spearman",
+      "x": 23,
+      "y": 10,
+      "ai": "garrison",
+      "zone": 20,
+      "escort_count": 10,
+      "escort_types": [
+        {
+          "type": "spearman",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "faction": "df",
+      "kind": "general",
+      "general_index": 29,
+      "unit_type": "longbowman",
+      "x": 25,
+      "y": 8,
+      "ai": "garrison",
+      "zone": 20,
+      "escort_count": 10,
+      "escort_types": [
+        {
+          "type": "longbowman",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "faction": "df",
+      "kind": "general",
+      "general_index": 30,
+      "unit_type": "spearman",
+      "x": 3,
+      "y": 11,
+      "ai": "garrison",
+      "zone": 23,
+      "escort_count": 10,
+      "escort_types": [
+        {
+          "type": "spearman",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "faction": "df",
+      "kind": "general",
+      "general_index": 31,
+      "unit_type": "longbowman",
+      "x": 1,
+      "y": 11,
+      "ai": "garrison",
+      "zone": 23,
+      "escort_count": 10,
+      "escort_types": [
+        {
+          "type": "longbowman",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "faction": "df",
+      "kind": "general",
+      "general_index": 32,
+      "unit_type": "spearman",
+      "x": 11,
+      "y": 2,
+      "ai": "garrison",
+      "zone": 26,
+      "escort_count": 11,
+      "escort_types": [
+        {
+          "type": "spearman",
+          "weight": 0.33
+        },
+        {
+          "type": "longbowman",
+          "weight": 0.33
+        },
+        {
+          "type": "rider",
+          "weight": 0.34
+        }
+      ]
+    },
+    {
+      "faction": "df",
+      "kind": "general",
+      "general_index": 33,
+      "unit_type": "longbowman",
+      "x": 9,
+      "y": 2,
+      "ai": "garrison",
+      "zone": 26,
+      "escort_count": 11,
+      "escort_types": [
+        {
+          "type": "spearman",
+          "weight": 0.33
+        },
+        {
+          "type": "longbowman",
+          "weight": 0.33
+        },
+        {
+          "type": "rider",
+          "weight": 0.34
+        }
+      ]
+    },
+    {
+      "faction": "df",
+      "kind": "general",
+      "general_index": 34,
+      "unit_type": "rider",
+      "x": 10,
+      "y": 2,
+      "ai": "garrison",
+      "zone": 26,
+      "escort_count": 11,
+      "escort_types": [
+        {
+          "type": "longbowman",
+          "weight": 0.5
+        },
+        {
+          "type": "rider",
+          "weight": 0.5
         }
       ]
     },

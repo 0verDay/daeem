@@ -100,14 +100,14 @@
       "unit_type": "spearman",
       "x": 7,
       "y": 3,
+      "name": "AI 指挥官",
       "escort_count": 0,
       "escort_types": [
         {
           "type": "spearman",
           "weight": 1
         }
-      ],
-      "name": "AI 指挥官"
+      ]
     },
     {
       "faction": "p2",
@@ -115,14 +115,14 @@
       "unit_type": "spearman",
       "x": 19,
       "y": 18,
+      "name": "玩家主将",
       "escort_count": 0,
       "escort_types": [
         {
           "type": "spearman",
           "weight": 1
         }
-      ],
-      "name": "玩家主将"
+      ]
     }
   ],
   "start_buildings": [],

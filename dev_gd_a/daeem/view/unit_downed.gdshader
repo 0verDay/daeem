@@ -9,23 +9,32 @@
 //
 // ★ 不写 `ALPHA_SCISSOR_THRESHOLD`：那会把半透明又变回"要么全有、要么全无"。
 // ★ 不闪白：濒死将领无敌、不再吃伤害（见 logic/unit.gd 的 take_damage）。
+// ★★ 悬停填充与 `unit_flash.gdshader` **同一套通道与语义**（`INSTANCE_CUSTOM.g` =
+//   悬停进度、批次 uniform = 阵营色 + 叠色强度）—— 己方部队里濒死的将领也要跟着亮。
 shader_type spatial;
 render_mode unshaded, cull_disabled;
 
 uniform sampler2D albedo_tex : filter_linear_mipmap_anisotropic;
 // 濒死立牌的透明度（config 的 render.downed_alpha）
 uniform float downed_alpha : hint_range(0.0, 1.0) = 0.4;
+// 悬停填充色（阵营色，由 view/unit_view_3d.gd 按批次设）+ 叠色强度
+uniform vec4 hover_fill_color : source_color = vec4(1.0);
+uniform float hover_fill_alpha : hint_range(0.0, 1.0) = 0.7;
+
+varying float v_hover;
 
 void vertex() {
 	// 面向相机的立牌：用相机基向量替换模型的旋转，只保留实例的平移（与 unit_flash 同一段）
 	MODELVIEW_MATRIX = VIEW_MATRIX * mat4(
 		INV_VIEW_MATRIX[0], INV_VIEW_MATRIX[1], INV_VIEW_MATRIX[2],
 		MODEL_MATRIX[3]);
+	v_hover = INSTANCE_CUSTOM.g;
 }
 
 void fragment() {
 	vec4 tex = texture(albedo_tex, UV);
-	ALBEDO = tex.rgb;
+	float fill = clamp(v_hover * hover_fill_alpha, 0.0, 1.0);
+	ALBEDO = mix(tex.rgb, hover_fill_color.rgb, fill);
 	// 整体半透明 ⇒ 引擎按透明管线渲染（这几面立牌不写深度，只有濒死将领受影响）
 	ALPHA = tex.a * downed_alpha;
 }

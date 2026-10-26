@@ -224,10 +224,14 @@ dev_gd_a/daeem/
 │   │                             #        迷雾按格压暗、建筑占位格上的草 / 树缩到 0
 │   ├── unit_view_3d.gd           #   3D 单位：`MultiMesh` 按「阵营 × 将领 × 兵种 × 选中 × 濒死」
 │   │                             #      分桶 + billboard（每桶一张烘好的贴图 ⇒ 同桶合批）
+│   │                             #   ★★ 悬停填充：`INSTANCE_CUSTOM.g` = 进度（`.r` 是受击闪白），
+│   │                             #      颜色是**每批次 uniform**（= 该批阵营色）⇒ 不新增批次
 │   ├── unit_sprite_3d.gd         #   兵种立牌贴图：`sprite_tint = art` 保留原画（默认阵营色描边、
 │   │                             #      选中整圈换金边）；`faction` 取形状填阵营色（单字占位）；
 │   │                             #      素材缺失 → 程序化 SDF 剪影兜底。贴图在生成期烘好并缓存
 │   ├── building_view_3d.gd       #   3D 建筑：`MultiMesh` + `BoxMesh`（★ 视觉高度 ≠ 逻辑高度）
+│   │                             #   ★★ 悬停填充：`INSTANCE_CUSTOM.b` = 进度（`.r` 闪白 / `.g` 淡出），
+│   │                             #      填充色 = **纯阵营色**（不是按类型暗化过的本体色）
 │   ├── overlay_view_3d.gd        #   3D 版的覆盖层（屏幕空间：选中圈 / 标记 / 拖框 / 建造预览）
 │   │                             #   ★ 网格 / 区划轮廓 / 占领触发区按「相机 + 区划签名」缓存
 │   │                             #     屏幕坐标；相机静止时不重投影，只重提 draw 命令
@@ -247,6 +251,13 @@ dev_gd_a/daeem/
 │   │                             #     + 左侧键**框选**那条状态机（按下 → 移动 → 松开，见 route.md 16.3）
 │   │                             #     ★★ 手机端策略也住在这里（`touch_tap` / `touch_double_tap` /
 │   │                             #     `touch_box_*`）：手势→动作的分派与桌面共用同一个大脑
+│   │                             #   ★★ 悬停拾取（桌面）：`_poll_hover_pick` 每帧填
+│   │                             #     `hover_unit / hover_buildings / hover_unit_ids`
+│   │                             #     （己方 → 整支部队；敌 / 友 / 建筑 → 单个；
+│   │                             #      **拖框**按「框里的己方单位 > 己方建筑」预览）；
+│   │                             #     ★ 触摸端只有**双指框选**这一路（判定走屏幕矩形，
+│   │                             #      `hover_from_box` 放行），拖框之外不出高亮。
+│   │                             #     纯表现、不进命令与快照
 │   ├── touch_controller.gd       #   ★★ 手机端触摸**识别**（Rusted Warfare 风格）：单指拖视野 /
 │   │                             #     单击（选中或下令）/ 双击（行军）/ 双指框选（选框两角 = 两指）；
 │   │                             #     阈值在 config 的 `touch.*`；由 game_scene3d 在 `_input` 喂事件，
@@ -668,6 +679,7 @@ Godot 里 DPR 由引擎处理，**但下面三条要原样继承**：
 | UI 几何（面板位置与尺寸） | `view/ui_layout.gd` | 纯常量，照参考图的像素稿；其它 view 文件不写坐标字面量 |
 | 当前页签（操作 / 单位 / 招募 / 科技 / 建筑） | `view/page_tabs.gd` + `hud._tab_plan()` | 纯本地显示状态，只决定命令卡里有什么；**显示哪几颗由当前选中对象决定**（route.md 二十二节），每一类选中各记「上次停在哪一页」（`hud._page_memory`）。★ 科技页在**选中大本营**与**什么都没选中**两处都出现，是同一颗页签、同一套九格 |
 | **悬停到哪一格 / 悬停面板写什么** | 序号由 `view/command_card.gd` · `view/tech_grid.gd` 报（`cell_hovered` / `cell_unhovered`）；**文案**由 `hud._hover_detail()` 现取；面板本身是 `view/hover_tip.gd` | 纯本地显示状态，**不进命令、不进快照**。★ 与点击同一条划分：格子控件只报「第几格」，**界面词只在 hud 一处**（`_hover_detail` 那一段）；对应关系见 route.md 第二十七节 |
+| ★★ **悬停到哪个单位 / 建筑、给谁填色** | `view/input_controller.gd` 的 `hover_unit` / `hover_buildings` / `hover_unit_ids`（`_poll_hover_pick` 每帧算，拖框走 `_hover_from_box`）；渲染在 `view/unit_view_3d.gd` / `view/building_view_3d.gd` 的 `set_hover()`；旋钮在 `data/config.json` 的 `render.hover_fill_*` | ★ 纯本地表现状态，**不进命令、不进快照**，`logic/` 一行不改。口径：**己方**（`world.my_faction`，**不是** `same_side` —— 盟友按单个算）→ `world.group_of(u)` 整支部队；敌 / 友单位与**所有建筑** → 只填那一个。颜色取 `colors.side`（自己 / 盟友 / 敌人 / 无主灰），强度 0.7、淡入淡出 0.1s。判定顺序与左键点选逐条对齐（单位优先、迷雾 / 濒死同判据）。★★ **拖框预览**（`drag_active`）：框里的**己方单位 → 整支部队**、否则框里的**己方建筑 → 全部**、都没有才退回光标单目标 —— 即「己方单位 > 己方建筑 > 单个友 / 敌目标」；判定口径跟着松手时走哪条路（桌面 = 世界矩形 / `box_select`，触摸 = 屏幕矩形 / `box_select_screen`）。建造模式 / 中键拖拽 / 鼠标压在 HUD 上（非拖框时）不出高亮。★★ **触摸端没有悬停**：只放行**双指框选预览**（`input_ctrl.hover_from_box` + `game_scene3d._hover_*_for_view()` 按 `touch_device` 判），拖框之外一律不出高亮 |
 | 科技的启用状态（谁启用了哪几条） | `logic/tech.gd` 的 `active_by_faction`（由 `logic/world.gd` 持有并暴露查询） | ★ 它是**世界状态**（影响产量 / 血量 / 人口），不是界面状态：界面每帧读 `world.tech_entries()` 画高亮，命令只有 `tech_toggle` 一条。效果数值全在 `data/config.json` 的 `tech.list`。★ 合作时 `world.seat_tech_effects` 每个玩家席位一份（`tech_effects` 是本机那份的别名） |
 | 建筑升级的读条（等级 / 进度 / 已扣的钱） | `logic/building.gd` 的 `level` / `upgrade_*` 字段；规则在 `logic/upgrade.gd` | ★ 与「招募队列挂在将领 / 区划上」同一个理由：「这栋楼正在干嘛」属于这栋楼。命令只有 `building_upgrade` / `building_upgrade_cancel` 两条（按**地块**定位） |
 | 区划特化（已选哪一种 / 读条 / 已扣的钱） | `logic/zone.gd` 的 `spec_*` 字段；规则在 `logic/upgrade.gd` | `spec_done` = 已经生效的特化（**跟着地块走**，区划易主保留）；`spec_kind` = 正在读条的那一单。命令 `zone_specialize` / `zone_spec_cancel` / `zone_spec_bar_cancel` |

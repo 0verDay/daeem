@@ -199,6 +199,10 @@ var unit_radius_factor: float = 0.1
 ## 两者都在 `_cache_scalars()` 里夹到 ≥0；调大 = 更好点中，调太大 = 容易点到旁边的东西。
 var unit_hit_pad_px: float = 8.0
 var unit_pick_pad_px: float = 4.0
+## ★★ 悬停拾取的**格半径剪枝**（见 config.json 的 `render._hover_fill_comment`）：
+##   `view/input_controller.gd` 的 `_poll_hover_pick` 只在鼠标周围这么大一圈里找单位，
+##   否则 1000 单位时每帧要为单位立牌各投一次屏。纯表现，不参与任何玩法判定。
+var hover_pick_radius_tiles: float = 2.5
 
 ## ---- ★★ 战争迷雾（config.json 的 fog 段 + unit.types.<id>.vision）----
 ##
@@ -634,6 +638,8 @@ func _cache_scalars() -> void:
 	#   ★ 都在这里算成字段：拾取在鼠标 / 悬停路径上，不能每次 `num("unit.hit_pad")`。
 	unit_hit_pad_px = maxf(0.0, num("unit.hit_pad", 8.0))
 	unit_pick_pad_px = maxf(0.0, num("unit.pick_pad_px", 4.0))
+	# ★ 悬停拾取的格半径剪枝（纯表现；见 `view/input_controller.gd` 的 `_poll_hover_pick`）
+	hover_pick_radius_tiles = maxf(0.5, num("render.hover_pick_radius_tiles", 2.5))
 
 	# ★ 迷雾：开关 / 兜底视野 / 遮罩颜色（颜色走 parse_color，与 colors.* 同一套写法）
 	fog_enabled = bool_val("fog.enabled", true)

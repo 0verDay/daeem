@@ -174,6 +174,30 @@ var observer_ai_orders: bool = false
 var hover_tile: Vector2i = Vector2i(-1, -1)
 var hover_valid: bool = false
 var mouse_world: Vector2 = Vector2.ZERO
+## ★★ 悬停高亮（桌面端；手机端由 `game_scene3d` 整体关掉）：
+##   · `hover_unit`      = 鼠标底下的单位（敌 / 友 / 己都算；只认「活着 + 看得见 + 非濒死」，
+##                         判据与左键点选同一条）
+##   · `hover_buildings` = 要填色的建筑**地块**（悬停 = 那一格一栋；**拖框** = 框里那一批）
+##   · `hover_unit_ids`  = 要填色的单位 id：**己方 → 整支部队**（`world.group_of`），
+##                         敌 / 友 → 只有它自己；空 = 不高亮
+##   ★ 纯本地表现状态：不进命令流、不进快照、**不要**在这里改逻辑状态。
+var hover_unit = null
+var hover_buildings: Array = []
+var hover_unit_ids: Array = []
+## ★ 屏幕点是不是压在 HUD 上 —— 由 `game_scene3d` 注入（= `hud.point_hits_ui`）：
+##   输入层只负责读鼠标，它不认识 HUD。
+var ui_hit_test: Callable = Callable()
+## ★★ 这一端是不是触摸设备（由 `game_scene3d` 每帧把 `touch_device` 镜像进来）。
+##   触摸端没有「悬停」：只有**双指框选**期间出高亮（见 `_hover_from_box`），
+##   模拟鼠标的位置不可靠，所以拖框之外一律不出单目标高亮。
+var touch_mode: bool = false
+## 这一帧的悬停是不是来自**拖框预览** —— 触摸端只有这一路允许出高亮
+## （`game_scene3d._hover_*_for_view()` 按它放行）。
+var hover_from_box: bool = false
+## ★ 触摸端框选预览的**降频计数器**（见 `_poll_hover_pick`）：
+##   触摸端的框选判定与松手那条一样贵（每个己方单位两次立牌投影），
+##   手机上 60Hz 做没必要 ⇒ 每 2 帧算一次；奇数帧保留上一帧的预览（不清空，否则会闪）。
+var _hover_touch_tick: int = 0
 var move_marks: Array[Vector2] = []
 ## 行军攻击的目标点（右键双击）。与 move_marks 分开画：那个是绿的，这个是红的。
 var attack_marks: Array[Vector2] = []
@@ -249,6 +273,12 @@ func setup(p_cfg: ConfigRes, p_world, p_camera_rig, p_palette = null,
 	selected_enemy = null
 	clicked_unit = null
 	selection_origin = "drag"
+	# 悬停：重开一局别留着上一局的对象引用
+	hover_unit = null
+	hover_buildings = []
+	hover_unit_ids = []
+	hover_from_box = false
+	_hover_touch_tick = 0
 	order_mode = ""
 	# 框选那条状态机也归零（重开一局时别留着上一局的半个框）
 	_drag_pending = false
@@ -279,14 +309,15 @@ func poll_gestures(now_ms: int = -1) -> void:
 			_follow_general(int(slot))
 
 
-## 每帧更新一次「鼠标在哪、指向哪个地块」——渲染要用，且**只有这里**读鼠标位置
+## 每帧更新一次「鼠标在哪、指向哪个地块、指着谁」——渲染要用，且**只有这里**读鼠标位置
 func poll_mouse() -> void:
 	if world == null:
 		return
-	mouse_world = _to_logic(get_global_mouse_position())
+	# ★ 鼠标位置一帧只读一次（地块判定与悬停拾取共用同一个点）
+	var screen: Vector2 = get_global_mouse_position()
+	mouse_world = _to_logic(screen)
 	var t := Vector2i(floori(mouse_world.x), floori(mouse_world.y))
 	var inside: bool = world.map.terrain.has(t.x, t.y)
-	var changed: bool = (t != hover_tile) or (inside != hover_valid)
 	hover_tile = t if inside else Vector2i(-1, -1)
 	if build_type != "":
 		# ★★ 建造预览也认「只能在自己的区划里建」（与 `apply_build` 同一判据
@@ -295,6 +326,155 @@ func poll_mouse() -> void:
 		hover_valid = inside and world.can_build_at(t.x, t.y, world.my_faction)
 	else:
 		hover_valid = inside
+	_poll_hover_pick(screen)
+
+
+## ★★ 每帧算一次「鼠标底下是谁」——只读世界、只写本文件的悬停字段。
+##
+## 需求口径（2026.10.26）：
+##   · 己方单位 → 它**所属整支部队**一起填色（`world.group_of`）；
+##   · 敌方 / 友方单位、任意建筑 → 只填那一个；
+##   · ★ 拖框期间按**三级优先**预览（见 `_hover_from_box`）：
+##       框里的己方单位（整队） > 框里的己方建筑（全部） > 光标下的单个目标。
+##   · ★★ **触摸端只有拖框这一路**（手机没有悬停；模拟鼠标位置不可靠）：
+##     双指框选的矩形照样走上面的三级优先，松手后立刻收掉。
+##
+## ★ 判定顺序与左键点选**逐条对齐**（先单位、再建筑）⇒「悬停亮谁」与「点得中谁」
+##   不会互相矛盾。迷雾 / 濒死的过滤也直接复用点击那条路（`_pick_any_unit_at`）。
+## ★ 纯本地表现状态：不进命令流、不进快照、不改逻辑。
+func _poll_hover_pick(screen: Vector2) -> void:
+	if not _hover_pick_allowed(screen):
+		_clear_hover()
+		return
+	# ⓪ 拖框：先按框里的东西预览（框到己方就整队 / 整批，框里没有己方才退回光标单目标）
+	if drag_active:
+		# ★ 触摸端：判定与松手那条一样贵（每个己方单位两次立牌投影）⇒ 每 2 帧算一次；
+		#   奇数帧**保留**上一帧的预览（不清空），否则预览会一帧亮一帧灭地闪。
+		if touch_mode:
+			_hover_touch_tick = (_hover_touch_tick + 1) % 2
+			if _hover_touch_tick != 0:
+				return
+		if _hover_from_box():
+			return
+	# ⓪.5 触摸端：拖框之外没有「悬停」这一说 ⇒ 收掉（别让模拟鼠标在屏幕上一直亮一个兵）
+	if touch_mode:
+		_clear_hover()
+		return
+	# ① 单位（只在这个格半径里找 —— 1000 单位时省掉每帧上千次屏幕投影）
+	var u = _pick_any_unit_at(mouse_world, cfg.hover_pick_radius_tiles)
+	if u != null:
+		_hover_on_unit(u)
+		return
+	# ② 建筑：鼠标脚下的那一格（与点击同一条 `hover_tile` + 同一条迷雾判据）
+	hover_unit = null
+	hover_unit_ids = []
+	hover_buildings = []
+	hover_from_box = false
+	if hover_tile.x >= 0:
+		var cand = world.building_at(hover_tile.x, hover_tile.y)
+		if cand != null and cand.alive and _foe_building_visible(cand):
+			hover_buildings = [Vector2i(cand.tx, cand.ty)]
+
+
+## ★★ 拖框预览（需求原话：「框选划过己方单位时，也要为该单位所在的部队的所有单位添加遮罩；
+##   仅划过己方建筑时，为选框中的己方建筑添加遮罩。己方建筑优先级低于己方单位、
+##   高于单个友 / 敌方单位 / 建筑」）。
+##
+## ★★ 判定口径跟着「松手时走哪条路」：
+##   · **触摸端**（`touch_mode` + 有屏幕框）→ 屏幕矩形，与 `box_select_screen` 一致
+##     （单位按**立牌屏幕矩形**判相交 + `box_select_pad_px`，建筑按格中心屏幕点）；
+##   · **桌面端** → 世界矩形，与 `box_select` 一致（单位 `rect.has_point(u.pos)`，
+##     建筑复用 `_buildings_in_rect`）。
+##   ⚠️ 两条都不能自己发明判据：预览亮起的范围必须**等于**松手后真正选中的范围。
+## ★ 差别只有一处：这里**不改选中**，只把「要被填色的对象」写进悬停字段。
+## @return true = 框里框到了己方目标（调用方就不要再退回光标单目标）
+func _hover_from_box() -> bool:
+	var rect: Rect2 = drag_box()
+	var screen_rect: Rect2 = drag_screen_box
+	var by_screen: bool = touch_mode and palette != null and drag_screen_valid
+	# ① 己方单位：先只收「队长 id」，第二遍再把整支部队收全 ——
+	#   框里只框到一个人也要整队亮，但对每个人都调一次 `group_of` 是 O(n²)。
+	var leaders: Dictionary = {}
+	for u in world.units:
+		if not u.alive:
+			continue
+		if not FactionRes.same_side(u.faction, world.my_faction):
+			continue
+		if by_screen:
+			if not screen_rect.intersects(
+					_unit_icon_screen_rect(u).grow(cfg.box_select_pad_px)):
+				continue
+		elif not rect.has_point(u.pos):
+			continue
+		leaders[world.leader_of(u)] = true
+	hover_unit = null
+	hover_buildings = []
+	hover_from_box = false
+	if not leaders.is_empty():
+		var ids: Array = []
+		for u in world.units:
+			if not u.alive:
+				continue
+			if leaders.has(world.leader_of(u)):
+				ids.append(u.id)
+		hover_unit_ids = ids
+		hover_from_box = true
+		return true
+	# ② 己方建筑（框里那一批，可以多栋）
+	var boxes: Array = _buildings_in_screen_rect(screen_rect) if by_screen \
+		else _buildings_in_rect(rect)
+	var tiles: Array = []
+	for b in boxes:
+		tiles.append(Vector2i(b.tx, b.ty))
+	hover_unit_ids = []
+	hover_buildings = tiles
+	hover_from_box = not tiles.is_empty()
+	return hover_from_box
+
+
+## 什么时候**不出**悬停高亮：
+##   · 建造模式（那一格归建造预览，两套高亮打架）；中键拖拽期间同理；
+##   · 鼠标出窗（`get_global_mouse_position` 会继续返回窗外坐标）；
+##   · 鼠标压在 HUD 上（详细信息 / 命令卡 / 页签 / 部队列表…）—— 那不是"指着地图"。
+## ★ 左键**按住但还没拖出阈值**（`_drag_pending`）**不**抑制：那只是一次点击的路上，
+##   高亮消失一下再接回来会闪。
+## ★★ **拖框（`drag_active`）不抑制**（2026.10.26 需求）：框选要实时预览将被选中的对象。
+##   拖框期间鼠标可能划出地图 / 划到 HUD 上，那不等于「框没了」⇒ 只保留出窗那条。
+## ★ 命令模式（`order_mode`）**不**抑制：攻击 / 移动选点时知道鼠标底下是谁有用。
+func _hover_pick_allowed(screen: Vector2) -> bool:
+	if build_type != "" or _pan_pending:
+		return false
+	if not Rect2(Vector2.ZERO, get_viewport_rect().size).has_point(screen):
+		return false
+	if drag_active:
+		return true
+	if hover_tile.x < 0:
+		return false
+	if ui_hit_test.is_valid() and bool(ui_hit_test.call(screen)):
+		return false
+	return true
+
+
+func _clear_hover() -> void:
+	hover_unit = null
+	hover_buildings = []
+	hover_unit_ids = []
+	hover_from_box = false
+
+
+## ★★ 「己方」= 本机正在操作的那一方（`world.my_faction`），**不是** `same_side`：
+##   盟友（友方）按需求只点亮它自己一个 —— 用 same_side 会把盟友的整队也点亮。
+func _hover_on_unit(u) -> void:
+	hover_buildings = []
+	hover_unit = u
+	hover_from_box = false
+	if String(u.faction) == String(world.my_faction):
+		var ids: Array = []
+		for m in world.group_of(u):
+			ids.append(m.id)
+		hover_unit_ids = ids
+	else:
+		hover_unit_ids = [u.id]
 
 
 # ------------------------------------------------------------------
@@ -1986,13 +2166,18 @@ func _unit_click_score(u, world_grid: Vector2, click_px: Vector2) -> float:
 ##
 ## ⚠️ 敌我之分留给调用方（`_on_left_click` 按 `same_side` 分派到 select_units /
 ##   select_enemy）：这里只管「鼠标底下是谁」，与「选中它是干什么」无关。
-func _pick_any_unit_at(world_pos: Vector2) -> Variant:
+##
+## ★ `max_dist > 0` 时先做一次**格距离剪枝**（悬停每帧都要跑：1000 单位时不能每个兵
+##   都投一次屏）。点击那条路不传它（默认 -1 = 剪枝关闭，行为与从前逐位一致）。
+func _pick_any_unit_at(world_pos: Vector2, max_dist: float = -1.0) -> Variant:
 	var best = null
 	var best_d := INF
 	# ★ 投影只算一次：1000 个单位时不必每个候选都把同一点重投一遍（点击时的性能护栏）
 	var click_px: Vector2 = palette.to_px(world_pos) if palette != null else Vector2.ZERO
 	for u in world.units:
 		if not u.alive:
+			continue
+		if max_dist > 0.0 and u.pos.distance_squared_to(world_pos) > max_dist * max_dist:
 			continue
 		var mine: bool = FactionRes.same_side(u.faction, world.my_faction)
 		if not mine:

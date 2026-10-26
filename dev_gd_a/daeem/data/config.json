@@ -196,6 +196,26 @@
       "     所以它会和「是否将领 / 是否濒死」一样多占一个批次；选中集合通常很小。"
     ],
     "unit_select_outline_color": "#f2b544",
+    "_hover_fill_comment": [
+      "★★ 鼠标悬停高亮（见 view/input_controller.gd 的 _poll_hover_pick +",
+      "   view/unit_flash.gdshader / view/unit_downed.gdshader / view/building_flash.gdshader 的填充混色）：",
+      "   · 悬停在**己方**（world.my_faction，不含盟友）单位上 → 它**所属整支部队**一起填色；",
+      "   · 悬停在**敌方 / 友方**单位、或**任意建筑**上 → 只填那一个；",
+      "   · ★ **拖框期间**按框里的东西预览（判定与松手时的 box_select 一致）：",
+      "     框里的己方单位（→ 整支部队）> 框里的己方建筑（→ 那一批）> 光标下的单个目标；",
+      "   · 颜色取 colors.side（自己 / 盟友 / 敌人 / 无主灰），与单位描边、选中圈、血条、小地图同源。",
+      "   走 MultiMesh 的每实例自定义数据 INSTANCE_CUSTOM.g（单位）/ .b（建筑）当开关量，",
+      "   填充色是**每批次一个 uniform**（单位批次 = 一个阵营，建筑批次 = 一个 owner）。",
+      "   · hover_fill_alpha — 叠色强度：0 = 看不见，0.7 = 半透明罩色（默认），1 = 完全纯色剪影；",
+      "   · hover_fill_sec   — 淡入 / 淡出时长（秒），0 = 立即切换；",
+      "   · hover_pick_radius_tiles — 只在鼠标周围这个半径（格）内找单位（省掉 1000 次屏幕投影）。",
+      "   ★ 纯表现：不进快照、不改逻辑。",
+      "   ★★ **触摸端没有悬停**，只在**双指框选**期间预览（同一条三级优先；判定走屏幕矩形，",
+      "      与松手时 box_select_screen 一致）；拖框之外一律不出单目标高亮。"
+    ],
+    "hover_fill_alpha": 0.7,
+    "hover_fill_sec": 0.1,
+    "hover_pick_radius_tiles": 2.5,
     "_terrain_props_comment": [
       "★★ 地形装饰（见 view/terrain_props_view.gd）：树 / 山块 / 水面 / 树底阴影，",
       "   纯表现：只读 terrain / fog / buildings，不参与寻路、视野、快照。",

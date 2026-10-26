@@ -589,6 +589,9 @@ func _assemble() -> void:
 	#    相机替身与 HUD 用的是同一个 —— 它只用到 `pan_screen`。
 	touch_ctrl = TouchControllerRes.new()
 	touch_ctrl.setup(cfg, palette, input_ctrl, _camera_rig_for_hud(), hud)
+	# ★★ 悬停拾取的「压在 HUD 上就不算指着地图」判据：输入层只认这个 Callable
+	#    （它不认识 HUD；见 input_controller 的 `_hover_pick_allowed`）。
+	input_ctrl.ui_hit_test = point_hits_hud
 	# 交互核心：宿主（本场景）把已建好的东西交给它，之后每帧由它派发事件
 	interaction = InteractionRes.new()
 	interaction.setup(self)
@@ -822,6 +825,8 @@ func _process(dt: float) -> void:
 		return
 	# ① 输入：轮询鼠标（只有 input_controller 允许读鼠标）
 	var _t_input := _prof()
+	# ★ 触摸端镜像：输入层据此选「框选预览的判定口径」以及「要不要出光标悬停」
+	input_ctrl.touch_mode = touch_device
 	input_ctrl.poll_mouse()
 	# ★★ 将领标签 / 数字键的长按计时：桌面与手机都靠这一句推进
 	#   （手机端 squad_panel 自己的 `_process` 被 HUD 关掉了，不能放那里）。
@@ -862,6 +867,8 @@ func _process(dt: float) -> void:
 	#    ★ 选中集合先喂给单位层：它据此画脚下的「绿色空心圆」选中下标（见 unit_view_3d）
 	var _t_units := _prof()
 	units.set_selection(_selected_ids())
+	# ★★ 悬停高亮（桌面端）：必须在 sync 之前喂进去（手机端这里恒为空）
+	units.set_hover(_hover_ids_for_view())
 	units.sync(dt)
 	_prof_done("view/units", _t_units)
 	var _t_build := _prof()
@@ -870,7 +877,8 @@ func _process(dt: float) -> void:
 	buildings.set_fade_marked(units.fade_marked())
 	# 地形装饰也用同一份「可见单位所在格」：树 / 山块靠它决定谁淡出（3×3 规则，与建筑一致）
 	terrain_props.set_fade_marked(units.fade_marked())
-	buildings.sync()
+	buildings.set_hover(_hover_buildings_for_view())
+	buildings.sync(dt)
 	_prof_done("view/buildings", _t_build)
 	var _t_other := _prof()
 	projectiles.sync()
@@ -927,6 +935,30 @@ func _selected_ids() -> Array:
 	if input_ctrl.selected_enemy_kind() == "unit" and input_ctrl.selected_enemy != null:
 		ids.append(input_ctrl.selected_enemy.id)
 	return ids
+
+
+## ★★ 触摸端只放行**拖框预览**（需求：手机端也要有框选遮罩；没有悬停这一说）；
+##   桌面端原样交给单位 / 建筑层。`hover_from_box` 由输入层在拖框命中时置位。
+##   `touch_device` 是现成的、测试可改的平台判据（见 `_assemble` 的说明）。
+func _hover_ids_for_view() -> Array:
+	if input_ctrl == null:
+		return []
+	if touch_device and not input_ctrl.hover_from_box:
+		return []
+	return input_ctrl.hover_unit_ids
+
+
+func _hover_buildings_for_view() -> Array:
+	if input_ctrl == null:
+		return []
+	if touch_device and not input_ctrl.hover_from_box:
+		return []
+	return input_ctrl.hover_buildings
+
+
+## 悬停命中 HUD 的判据（交给 input_controller 当 Callable：它自己不认 HUD）。
+func point_hits_hud(screen: Vector2) -> bool:
+	return hud != null and hud.point_hits_ui(screen)
 
 
 ## ★★ 相机每帧更新（边缘滚屏 / 方向键 / Space 加速 / 夹取）——**整块从 2D 移植**。

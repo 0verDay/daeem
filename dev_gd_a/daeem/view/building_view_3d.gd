@@ -98,6 +98,18 @@ var flash_written_last_frame: int = 0
 var faded_last_frame: int = 0
 ## ★★ 本帧画了几面旗（区划中心占领动画；诊断，测试读它）
 var flag_instance_count: int = 0
+## ★ 本帧有几栋建筑带着悬停填充（诊断，测试读它）
+var hovered_last_frame: int = 0
+
+## ★★ 悬停填充（见 config.json 的 `render._hover_fill_comment`）：
+##   · `_hover_tiles` = 要被填色的**地块集合**（鼠标底下那一栋，或框选里那一批己方建筑）；
+##   · `_hover_anim`  = 地块 → 0..1 的淡入淡出进度（建筑不会移动 ⇒ 用格坐标当键）；
+##   · 填充走**逐实例自定义数据** `INSTANCE_CUSTOM.b`（`.r` 闪白、`.g` 淡出），
+##     填充色是**每批次一个 uniform**（建筑批次 = 一个 owner ⇒ 同批必然同色）。
+var _hover_tiles: Dictionary = {}
+var _hover_anim: Dictionary = {}
+var _hover_fill_alpha: float = 0.7
+var _hover_sec: float = 0.1
 ## 受击振动参数（setup 缓存）
 var _cell: float = 128.0
 var _hit_amp: float = 0.06
@@ -120,6 +132,41 @@ func setup(p_cfg: ConfigRes, p_world, p_palette) -> void:
 	_moving_meshes = {}
 	for t in BUILDING_MOVING_MODELS:
 		_moving_meshes[t] = _load_building_mesh(BUILDING_MOVING_MODELS[t])
+	# ★★ 悬停填充参数（每帧要用 ⇒ setup 缓存；0 = 立即切换）
+	_hover_fill_alpha = clampf(cfg.num("render.hover_fill_alpha", 0.7), 0.0, 1.0)
+	_hover_sec = maxf(0.0, cfg.num("render.hover_fill_sec", 0.1))
+	_hover_tiles = {}
+	_hover_anim = {}
+
+
+## ★★ 悬停填充：`game_scene3d` 每帧把「要填色的建筑格」喂进来（手机端喂空）。
+##   · 鼠标悬停 = 那一格一栋；**拖框** = 框里那一批己方建筑（可多栋）。
+##   `sync()` 之前调用；只改 shader 的混色量，不改贴图、不加批次、不进快照。
+## @param tiles `Vector2i` 的地块数组（建筑不会移动 ⇒ 地块是稳定的键）
+func set_hover(tiles: Array) -> void:
+	_hover_tiles = {}
+	for t in tiles:
+		_hover_tiles[t as Vector2i] = true
+	# 清掉已经不在世界里的（被打掉 / 换局）：只有 fade-out 尾巴上那几个键，
+	# 不做的话「悬停中被拆掉」会留一条永远到不了 0 的进度。
+	if world == null or _hover_anim.is_empty():
+		return
+	for key in _hover_anim.keys():
+		if _hover_tiles.has(key):
+			continue
+		var t2: Vector2i = key
+		var still = world.building_at(t2.x, t2.y)
+		if still == null or not still.alive:
+			_hover_anim.erase(key)
+
+
+## 悬停填充色 = **纯阵营色**（不是 `_faction_or_type_color` 的暗化本体色；
+## 否则悬停一堵暗色墙会像"没亮"）。无主（owner == ""，如区划中心）= 中性灰，
+## 与单位立牌的中立口径一致。
+func _hover_color_of(owner: String) -> Color:
+	if owner == "":
+		return cfg.side_color_neutral
+	return SideColorRes.color(cfg, world, owner, "main")
 
 
 ## 建筑在世界里的高度（格）——**纯表现**，缺省 1 格
@@ -142,13 +189,17 @@ func _height_of(b) -> float:
 	return maxf(0.05, h)
 
 
-func _batch_for(key: String, color: Color, type: String = "") -> Dictionary:
+func _batch_for(key: String, color: Color, type: String = "",
+		hover_color: Color = Color.WHITE) -> Dictionary:
 	var hit: Variant = _batches.get(key, null)
 	if hit != null:
 		return hit
 	var mat := ShaderMaterial.new()
 	mat.shader = BUILDING_FLASH_SHADER
 	mat.set_shader_parameter("base_color", color)
+	# ★★ 悬停填充：颜色 = **本批的纯阵营色**（不是暗化过的 `color`，见 `_hover_color_of`）
+	mat.set_shader_parameter("hover_fill_color", hover_color)
+	mat.set_shader_parameter("hover_fill_alpha", _hover_fill_alpha)
 	mat.set_shader_parameter("flash_strength", cfg.num("render.hit_flash_alpha", 0.8))
 	# ★ 有单位靠近时整栋淡到的不透明度（见 building_flash.gdshader 的 depth_draw_always 说明）
 	mat.set_shader_parameter("fade_alpha", cfg.num("render.building_fade_alpha", 0.3))
@@ -173,13 +224,16 @@ func _batch_for(key: String, color: Color, type: String = "") -> Dictionary:
 
 
 ## 每帧同步（建筑很少，重建的代价可忽略；但仍按「阵营 + 类型 + 等级」分桶以保持合批）
-func sync() -> void:
+func sync(dt: float = 1.0 / 60.0) -> void:
 	if world == null or palette == null or _box == null:
 		return
 	shake_applied_last_frame = 0
 	flash_written_last_frame = 0
 	faded_last_frame = 0
+	hovered_last_frame = 0
 	flag_instance_count = 0
+	# ★ 悬停淡入淡出每帧的推进量（`render.hover_fill_sec`；= 0 表示立即切换）
+	var hover_step: float = 1.0 if _hover_sec <= 0.0 else dt / _hover_sec
 	# ★ 先把「哪些格附近有可见单位」标出来（一次 O(单位数)），建筑逐栋查表即可
 	var marked: Dictionary = _fade_marked_tiles()
 	var buckets: Dictionary = {}
@@ -202,21 +256,32 @@ func sync() -> void:
 		var b0 = arr[0]
 		var owner := String(b0.owner)
 		var col: Color = _faction_or_type_color(b0, owner)
-		var rec: Dictionary = _batch_for(key, col, String(b0.type))
+		var rec: Dictionary = _batch_for(key, col, String(b0.type), _hover_color_of(owner))
 		var mm: MultiMesh = rec["mm"]
 		if mm.instance_count < arr.size():
 			mm.instance_count = maxi(arr.size(), mm.instance_count * 2)
 		for i in arr.size():
 			mm.set_instance_transform(i, _transform_of(arr[i]))
-			# ★ 受击闪白（.r）+ 靠近淡出（.g）：逐实例自定义数据
+			# ★ 受击闪白（.r）+ 靠近淡出（.g）+ 悬停填充（.b）：逐实例自定义数据
 			#   （建筑很少，直接每帧写，不做脏检查 —— 与闪白同一条口径）
 			var flash: float = clampf(arr[i].hit_flash, 0.0, 1.0)
 			var fade: float = 1.0 if should_fade(arr[i], marked) else 0.0
-			mm.set_instance_custom_data(i, Color(flash, fade, 0.0, 0.0))
+			var tile := Vector2i(arr[i].tx, arr[i].ty)
+			var wanted: bool = _hover_tiles.has(tile)
+			var hov: float = move_toward(
+				float(_hover_anim.get(tile, 0.0)), 1.0 if wanted else 0.0, hover_step)
+			if hov <= 0.0001 and not wanted:
+				_hover_anim.erase(tile)
+				hov = 0.0
+			else:
+				_hover_anim[tile] = hov
+			mm.set_instance_custom_data(i, Color(flash, fade, hov, 0.0))
 			if flash > 0.0:
 				flash_written_last_frame += 1
 			if fade > 0.0:
 				faded_last_frame += 1
+			if hov > 0.0:
+				hovered_last_frame += 1
 		mm.visible_instance_count = arr.size()
 		(rec["node"] as MultiMeshInstance3D).visible = true
 		total += arr.size()

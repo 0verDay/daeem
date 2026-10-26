@@ -69,6 +69,16 @@ var _sel_sec: float = 0.18
 var _sel_alpha: float = 0.8
 var _sel_scale_from: float = 1.5
 
+## ★★ 悬停填充（见 config.json 的 `render._hover_fill_comment`）：
+##   · `_hover_set`   = 本帧要填色的单位 id（由 `set_hover(ids)` 喂进来）；
+##   · `_hover_anim`  = id → 0..1 的淡入淡出进度（与选中圈同一套「反向播放」思路）；
+##   · 填充走**逐实例自定义数据** `INSTANCE_CUSTOM.g`（`.r` 已经是受击闪白），
+##     填充色是**每批次一个 uniform** —— 单位批次 = 一个阵营 ⇒ 同批必然同色。
+var _hover_set: Dictionary = {}
+var _hover_anim: Dictionary = {}
+var _hover_fill_alpha: float = 0.7
+var _hover_sec: float = 0.1
+
 ## 诊断（只有测试读它）
 var instance_count: int = 0
 var visible_count: int = 0
@@ -88,6 +98,8 @@ var downed_count: int = 0
 var decal_count: int = 0
 ## ★ 本帧画了几个「选中下标」（诊断，测试读它）
 var selection_ring_count: int = 0
+## ★ 本帧有几个实例带着悬停填充（诊断，测试读它）
+var hover_instance_count: int = 0
 ## ★ 本帧**第一个**选中下标的缩放 / 不透明度（诊断，测试读它）。
 ##   ⚠️ 为什么不直接读 MultiMesh 的实例数据：实测（Godot 4.7 + 无头）
 ##   `MultiMesh.get_instance_transform()` **读不回**刚写进去的值（单位批次也读回单位阵），
@@ -129,6 +141,11 @@ func setup(p_cfg: ConfigRes, p_world, p_palette) -> void:
 	_sel_alpha = clampf(cfg.num("render.selection_ring_alpha", 0.8), 0.0, 1.0)
 	_sel_scale_from = maxf(0.1, cfg.num("render.selection_ring_scale_from", 1.5))
 	_build_selection_layer()
+	# ★★ 悬停填充参数（每帧要用 ⇒ setup 缓存；0 = 立即切换）
+	_hover_fill_alpha = clampf(cfg.num("render.hover_fill_alpha", 0.7), 0.0, 1.0)
+	_hover_sec = maxf(0.0, cfg.num("render.hover_fill_sec", 0.1))
+	_hover_set = {}
+	_hover_anim = {}
 
 
 ## ★★ 将领脚下的占位贴花层：一块**平放**的 PlaneMesh + 一张程序化占位贴花，
@@ -242,6 +259,11 @@ func _batch_for(key: String, faction: String, leader: bool, unit_type: String,
 		mat.shader = UNIT_FLASH_SHADER
 		mat.set_shader_parameter("scissor_threshold", 0.35)
 		mat.set_shader_parameter("flash_strength", cfg.num("render.hit_flash_alpha", 0.8))
+	# ★★ 悬停填充：颜色 = **本批的阵营色**（`col` 已经是 SideColorRes 的口径；
+	#   中立化单位走空阵营键 ⇒ 中性灰，与贴图 / 圈色自动一致）。
+	#   ★ 两个 shader（正常 / 濒死）都要设，否则濒死将领在自己部队里悬停时不亮。
+	mat.set_shader_parameter("hover_fill_color", col)
+	mat.set_shader_parameter("hover_fill_alpha", _hover_fill_alpha)
 
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
@@ -290,10 +312,16 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 	shake_applied_last_frame = 0
 	flash_written_last_frame = 0
 	downed_count = 0
+	hover_instance_count = 0
 	var buckets: Dictionary = {}
 	# ★★ 有没有「选中 / 正在做动效」的单位？没有就整段跳过每单位的 `String(id)` 与两次字典查询
 	#    （1000 单位常态下选中为空 —— 这是每帧 1000 次字符串转换 + 2000 次查表）。
 	var track_sel: bool = not (_selection_set.is_empty() and _sel_anim.is_empty())
+	# ★★ 悬停同理：常态下没人被悬停 ⇒ 每单位连 `String(id)` 都不做。
+	var track_hover: bool = not (_hover_set.is_empty() and _hover_anim.is_empty())
+	# ★ 悬停候选（本帧真正要写 `.g` 的实例）：桶循环里只**收集**，循环结束后统一补写。
+	#   候选 ≤ 一支队伍的人数，所以热循环里只多一次两表查询。
+	var hover_writes: Array = []
 	# ★★ 变体键的记忆：同一支队伍里绝大多数相邻单位的「阵营/兵种/是否将领/是否濒死」都相同，
 	#    记忆上一把键、不同才重新拼 —— 省掉每单位一次的 `%` 格式化（1000 单位常态下几乎全省）。
 	var last_fac: String = ""
@@ -399,6 +427,12 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 				lf[i] = flash
 				if flash > 0.0:
 					flash_written_last_frame += 1
+			# ★★ 悬停候选：这里只**收集**（下标已经定了），进度与 `.g` 通道在
+			#   桶循环结束后由 `_apply_hover` 统一补写 —— 热循环里别做插值。
+			if track_hover:
+				var huid := String(u.id)
+				if _hover_set.has(huid) or _hover_anim.has(huid):
+					hover_writes.append({"mm": mm, "i": i, "flash": flash, "uid": huid})
 		mm.visible_instance_count = arr.size()
 		(rec["node"] as MultiMeshInstance3D).visible = true
 		total += arr.size()
@@ -413,8 +447,38 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 	visible_count = total
 	mesh_batch_count = used
 	instance_writes_last_frame = wrote
+	_apply_hover(hover_writes, dt)
 	_sync_decals(_vis_generals)
 	_sync_selection_rings(_vis_sel, dt)
+
+
+## ★★ 悬停填充：把这一帧收集到的候选逐个写进 `INSTANCE_CUSTOM`
+##   （`.r` = 受击闪白，`.g` = 悬停进度；`.g` 由 shader 变成「填充多少阵营色」）。
+##
+## ★ 为什么不在桶循环里直接算：那里是「每单位每帧」的热路径（1000 单位），
+##   而悬停候选最多一支队伍十几个人。挪到这里之后热循环里只多一次 `_hover_set` 查询。
+## ★ 进度朝目标推进（`render.hover_fill_sec`，默认 0.1s）：进入 = 0→1，离开 = 1→0，
+##   与选中圈同一个「反向播放」口径；收到 0 就把这一项从表里删掉，表不会无限长。
+func _apply_hover(writes: Array, dt: float) -> void:
+	if writes.is_empty():
+		return
+	for w in writes:
+		var uid := String(w["uid"])
+		var want: float = 1.0 if _hover_set.has(uid) else 0.0
+		var p: float = want
+		if _hover_sec > 0.0:
+			p = move_toward(float(_hover_anim.get(uid, 0.0)), want, dt / _hover_sec)
+		if p <= 0.0001 and want <= 0.0:
+			_hover_anim.erase(uid)
+			p = 0.0
+		else:
+			_hover_anim[uid] = p
+		# ★ `set_instance_custom_data` 写的是**整个** Color：必须连 `.r`（受击闪白）
+		#   一起带上，否则这里会把闪白清零。
+		(w["mm"] as MultiMesh).set_instance_custom_data(
+			int(w["i"]), Color(float(w["flash"]), p, 0.0, 0.0))
+		if p > 0.0:
+			hover_instance_count += 1
 
 
 ## 将领脚下的贴花：把每个**可见将领**摆一块平放的小面片（逐实例色 = 阵营色）。
@@ -571,6 +635,27 @@ func set_selection(ids: Array) -> void:
 	_selection_set = {}
 	for id in ids:
 		_selection_set[String(id)] = true
+
+
+## ★★ 悬停填充：`game_scene3d` 每帧把「要填色的单位 id」喂进来
+##   （己方 = 整支部队；敌 / 友 = 单个）。手机端由 game_scene 直接喂空表。
+##
+## ★ 填充是**纯表现**：只改 shader 的混色量，不改贴图、不加批次、不进快照。
+## ⚠️ 这个方法**必须有**：缺了会抛 `Nonexistent function` 并中断整个 `_process`（同 set_selection）。
+func set_hover(ids: Array) -> void:
+	_hover_set = {}
+	for id in ids:
+		_hover_set[String(id)] = true
+	# 清掉已经不在世界里的（阵亡 / 换局）：悬停集合变化时才做，而且只有 fade-out 尾巴上
+	# 那十几个 id —— 不做的话「悬停中被击杀」会留一条永远到不了 0 的进度。
+	if world == null or _hover_anim.is_empty():
+		return
+	for id in _hover_anim.keys():
+		if _hover_set.has(String(id)):
+			continue
+		if world.unit_by_id(String(id)) == null:
+			_hover_anim.erase(id)
+
 
 ## ★★ 「压扁档的补偿计数」在 3D 下**恒为 0**（保留是为了接口不破）。
 ##
