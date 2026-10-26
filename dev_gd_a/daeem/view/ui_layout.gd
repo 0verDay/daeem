@@ -78,7 +78,10 @@ const BAR_H := 260.0
 ##   底边仍钉在屏幕底部，顶边从 y=840 抬到 y=820，不会掉出屏幕。
 ## ★ 2026.10.20 修订：右下整组放大到 260 高、左缘从 1430 左移到 1389.1667；
 ##   详细信息保持 260 高，宽度 1030 → 988（右缘 1388），给放大的阵营列让出约 1.17px 缝。
-const DETAIL_RECT := Rect2(400.0, 820.0, 988.0, 260.0)
+## ★★ 本版：阵营盾徽移到**详细信息栏左侧、紧贴地图**（见 FACTION_RECT）——
+##   盾徽占 x 400..562.5，详细信息整体右移到 x=562.5（宽度仍 988），
+##   右缘 1550.5 与命令卡（1551.6667）之间仍是约 1.17px 的缝。
+const DETAIL_RECT := Rect2(562.5, 820.0, 988.0, 260.0)
 const DETAIL_PAD := 10.0
 ## 右栏内容高 = 面板高 − 上下边距（260 − 2×10 = 240）。
 ## ⚠️ 这个数以前是**各处写死的 220**（`right_column_rect()`、提示带下沿、测试断言里都有），
@@ -106,9 +109,10 @@ const DETAIL_LEFT_W := 350.0
 ## 右栏 = 968 − 350 − 15 = 603（968 = 988 − 2×10）。
 const DETAIL_RIGHT_W := 603.0
 
-## 阵营 / 盾徽 / 旗帜（本轮不做，只留位置）
-## ★ 按 13/12 等比放大：150×240 → 162.5×260，左缘 1430 → 1389.1667。
-const FACTION_RECT := Rect2(1389.1667, 820.0, 162.5, 260.0)
+## 阵营 / 盾徽 / 旗帜：**贴在详细信息栏左侧、紧贴地图**（用户本版需求）。
+## ★ 左缘 = 地图占位右缘 400，右缘 562.5 = 详细信息左缘；两块严丝合缝。
+## ★ 尺寸沿用 13/12 等比放大那版（162.5×260），只换位置。
+const FACTION_RECT := Rect2(400.0, 820.0, 162.5, 260.0)
 
 ## ------------------------------------------------------------------
 ## 资源面板（粮食 / 黄金）—— 按需求新增
@@ -122,20 +126,23 @@ const FACTION_RECT := Rect2(1389.1667, 820.0, 162.5, 260.0)
 ##   所以它既不压住左下小地图那 400px，也不往右伸长。
 ## ★ 尺寸 200×56：两行**竖着排**（每行 20 高 + 行距 6 + 上下各 5 的留白），
 ##   再不用横着铺 1030 —— 「不需要那么长」就是这一条。
+## ★★ 本版：宽度从 200 **缩到 162.5**，与右侧阵营盾徽旗帜**左右平齐**
+##   （同左缘 x=400、同宽 162.5 ⇒ 右缘都在 562.5）。文字可写宽同步收窄到 128。
 ## ★ 每行 = 色块（20×20）+ 右边一行字（15 号，实测行高 16）。
 ##   ⚠️ 子控件的 size **必须在 add_child 之后设**（进树前继承不到中文字体，
 ##      Label 会按兜底字体算一次最小高度并把 set_size 夹掉 —— 实测踩过）。
 ##   ⚠️ 它**不进** `interactive_rects`（见那个函数）：整块只有字和色块、点不动，
 ##      鼠标停上去照样允许边缘滚屏 —— 与「详细信息面板只有文字的地方让路」同一条规矩。
-const RES_BAR_RECT := Rect2(400.0, 764.0, 200.0, 56.0)
+const RES_BAR_RECT := Rect2(400.0, 764.0, 162.5, 56.0)
 ## 色块（粮食 / 黄金各一个 20×20）边长
 const RES_ICON := 20.0
 ## 两行的 y（相对资源面板自身）：第一行 5、行距 26 ⇒ 第二行 31，下缘 31+20 = 51 ≤ 56
 const RES_ROW_Y := 5.0
 const RES_ROW2_Y := 31.0
-## 颜色那一行字：左边（= 色块 20 + 缝 6）与可写宽（「粮食 1234」实测 78px）
+## 颜色那一行字：左边（= 色块 20 + 缝 6）与可写宽（「粮食 1234」实测 78px；
+## ★ 资源条缩到 162.5 后，26 + 128 = 154，右侧仍留 8.5px 边距）。
 const RES_TEXT_X := 26.0
-const RES_TEXT_W := 150.0
+const RES_TEXT_W := 128.0
 
 ## 命令卡：3×3，每格 260/3 ≈ 86.6667 —— 内容随右侧页签实时切换
 ## ★ 按 13/12 等比放大：240×240 → 260×260，左缘 1580 → 1551.6667。
@@ -800,7 +807,9 @@ static func apply_fixed_detail(c: Control) -> void:
 ##   它整块都在详细信息面板里，所以「让路」的副作用是把面板中间那一大片也拦掉了 ——
 ##   这是有意的：鼠标停在能点的格子上时不该同时被边缘推着滚屏（与小地图同一条理由）。
 ##   面板**其余**的地方（右栏、左栏上半）仍然是「只有文字 → 照样滚屏」。
-static func interactive_rects(view_size: Vector2) -> Array[Rect2]:
+## @param detail_visible 详细信息面板是否可见。隐藏时它那块区域**不再算 UI**
+##        （左栏网格与面板矩形都不拦输入 → 恢复地图滚轮 / 边缘滚屏 / 触摸手势）。
+static func interactive_rects(view_size: Vector2, detail_visible: bool = true) -> Array[Rect2]:
 	var shift := Vector2(maxf(0.0, view_size.x - DESIGN_W), maxf(0.0, view_size.y - DESIGN_H))
 	var out: Array[Rect2] = []
 	for i in SQUAD_SLOTS:
@@ -816,9 +825,10 @@ static func interactive_rects(view_size: Vector2) -> Array[Rect2]:
 		var r2 := tab_button_rect(i)                        # 贴右下
 		r2.position += shift
 		out.append(r2)
-	var gr := troop_grid_rect()                                 # 详细信息左栏，贴左下
-	gr.position += panel_content_pos()
-	out.append(gr)
+	if detail_visible:
+		var gr := troop_grid_rect()                         # 详细信息左栏，贴左下
+		gr.position += panel_content_pos()
+		out.append(gr)
 	var s := SETTINGS_RECT
 	s.position.x += shift.x                                     # 贴右上
 	out.append(s)
@@ -836,14 +846,20 @@ static func interactive_rects(view_size: Vector2) -> Array[Rect2]:
 ##     玩家正在看底栏的时候，那一下滚动不该把地图拉走 —— 与那一块能不能点无关。
 ##
 ## ★ 左下小地图**不在**名单里：它是地图本身（不是 ui 栏），鼠标停在上面时滚轮照旧缩放地图。
-## ★ 超宽窗口：详细信息固定贴左（988 宽，不再拉伸），其余三块跟着贴右下。
-static func bottom_bar_rects(view_size: Vector2) -> Array[Rect2]:
+## ★ 贴边：详细信息 / 阵营盾徽都贴**左**（只跟 y 走）；命令卡 / 页签贴右下（x/y 都跟）。
+## @param detail_visible 详细信息是否可见。隐藏时只去掉它那一块 —— 盾徽 / 命令卡 / 页签
+##       仍然算底栏（它们还在屏幕上）。
+static func bottom_bar_rects(view_size: Vector2, detail_visible: bool = true) -> Array[Rect2]:
 	var shift := Vector2(maxf(0.0, view_size.x - DESIGN_W), maxf(0.0, view_size.y - DESIGN_H))
 	var out: Array[Rect2] = []
-	var d := DETAIL_RECT
-	d.position.y += shift.y
-	out.append(d)
-	for r in [FACTION_RECT, CARD_RECT, TABS_RECT]:   # 贴右下：右下都修正
+	if detail_visible:
+		var d := DETAIL_RECT
+		d.position.y += shift.y
+		out.append(d)
+	var f := FACTION_RECT
+	f.position.y += shift.y
+	out.append(f)
+	for r in [CARD_RECT, TABS_RECT]:        # 贴右下：右下都修正
 		var rr: Rect2 = r
 		rr.position += shift
 		out.append(rr)

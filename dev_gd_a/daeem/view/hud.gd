@@ -538,7 +538,8 @@ func _build_faction_placeholder() -> void:
 	var s := UiStyleRes.panel_style()
 	s.set_content_margin_all(UiLayoutRes.DETAIL_PAD)
 	faction_placeholder.add_theme_stylebox_override("panel", s)
-	UiLayoutRes.apply_rect(faction_placeholder, UiLayoutRes.FACTION_RECT, true, true)
+	# ★★ 现在贴在**详细信息栏左侧、紧贴地图**：贴左（x 钉在 400）+ 贴底。
+	UiLayoutRes.apply_rect(faction_placeholder, UiLayoutRes.FACTION_RECT, false, true)
 	_root.add_child(faction_placeholder)
 
 	var label := Label.new()
@@ -572,8 +573,10 @@ func _build_resource_bar() -> void:
 	resource_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	# Panel（不是 PanelContainer）：子控件按**绝对坐标**摆 —— stylebox 的 content margin
 	# 只有 PanelContainer 那种容器才会套用，这里用默认那套底板就行。
+	# ★★ 本版：描边改用更强的 line()（原来是 line_soft，压在地图上几乎看不见），
+	#   配合 panel_style 的 2px 默认粗细 ⇒ 资源栏整体有清楚的边框。
 	resource_bar.add_theme_stylebox_override("panel",
-		UiStyleRes.panel_style(UiStyleRes.bg(), UiStyleRes.line_soft()))
+		UiStyleRes.panel_style(UiStyleRes.bg(), UiStyleRes.line()))
 	UiLayoutRes.apply_rect(resource_bar, UiLayoutRes.RES_BAR_RECT, false, true)
 	_root.add_child(resource_bar)
 
@@ -1202,9 +1205,11 @@ func point_hits_ui(global_pos: Vector2) -> bool:
 	var vp := view_size()
 	if ai_panel != null and ai_panel.visible and ai_panel.get_global_rect().has_point(global_pos):
 		return true
-	if UiLayoutRes.point_hits_any(UiLayoutRes.interactive_rects(vp), global_pos):
+	# ★★ 详细信息隐藏时，它那块区域恢复地图手势（盾徽 / 命令卡 / 页签仍然算 UI）。
+	var detail_on := is_detail_visible()
+	if UiLayoutRes.point_hits_any(UiLayoutRes.interactive_rects(vp, detail_on), global_pos):
 		return true
-	return UiLayoutRes.point_hits_any(UiLayoutRes.bottom_bar_rects(vp), global_pos)
+	return UiLayoutRes.point_hits_any(UiLayoutRes.bottom_bar_rects(vp, detail_on), global_pos)
 
 
 ## 接收一个触摸事件（由 game_scene3d 在 `_input` 里转发）。
@@ -2766,7 +2771,8 @@ func blocks_edge_scroll(global_pos: Vector2) -> bool:
 	var margin: float = cfg.camera_edge_size if cfg != null else 0.0
 	if UiLayoutRes.in_edge_band(vp, global_pos, margin):
 		return false
-	return UiLayoutRes.point_hits_any(UiLayoutRes.interactive_rects(vp), global_pos)
+	return UiLayoutRes.point_hits_any(
+		UiLayoutRes.interactive_rects(vp, is_detail_visible()), global_pos)
 
 
 ## 鼠标是不是停在**底栏**上（详细信息 / 阵营 / 命令卡 / 页签 —— **不含**左下小地图）。
@@ -2785,7 +2791,8 @@ func blocks_wheel_zoom(global_pos: Vector2) -> bool:
 		return true
 	if ai_panel != null and ai_panel.visible and ai_panel.get_global_rect().has_point(global_pos):
 		return true
-	return UiLayoutRes.point_hits_any(UiLayoutRes.bottom_bar_rects(view_size()), global_pos)
+	return UiLayoutRes.point_hits_any(
+		UiLayoutRes.bottom_bar_rects(view_size(), is_detail_visible()), global_pos)
 
 
 ## ★★ 当前这一屏「操作」页该画哪几格 —— 用一个**短字符串签名**表达（见 `_card_sig()`）。
@@ -3007,8 +3014,36 @@ func _refresh_shell() -> void:
 		ai_panel.sync()
 
 
+## 现在有没有「能查看详细信息」的选中对象：
+##   己方部队 / 建筑 / 区划 / 敌方单位或建筑 —— 有任何一个就显示详细信息栏；
+##   全都没有（开局、点空地清空选中）→ 整块隐藏。
+func has_detail_selection() -> bool:
+	if input_ctrl == null:
+		return false
+	if not input_ctrl.selected_units.is_empty():
+		return true
+	if not input_ctrl.selected_buildings.is_empty():
+		return true
+	if input_ctrl.selected_zone != null:
+		return true
+	if input_ctrl.selected_enemy != null:
+		return true
+	return false
+
+
+## 详细信息面板现在是否可见（隐藏时它那块区域恢复地图交互，见 ui_layout 的两个 rects）。
+func is_detail_visible() -> bool:
+	return detail_panel != null and detail_panel.visible
+
+
 ## 详细信息面板：敌人 → 区划 → 建筑 → 部队 四种互斥选中，一次只走一支。
 func _refresh_detail() -> void:
+	# ★★ 没有可查看的对象 → 整块隐藏（用户本版需求）。
+	#    ★ 内容仍然照常刷到「空态」：重新显示时不会闪上一帧的旧内容，
+	#      测试 / 排查也能直接读面板内部状态。
+	var show := has_detail_selection()
+	if detail_panel.visible != show:
+		detail_panel.visible = show
 	# ★ 详细信息是**左右两栏**（第三轮改版，见 view/detail_panel.gd 的文件头）：
 	#   左栏 = 当前展开的那支部队（上半）+ 选中部队的将领头像网格（下半）
 	#   右栏 = 选中单位的头像 / 名称 / buff / 基础数值（★ 数值那块的「详细信息」标题已删）

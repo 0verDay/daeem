@@ -300,6 +300,12 @@ class FillAnimator extends Control:
 	var _top: Color = Color(1, 1, 1, 1)
 	## 调用点显式指定的「按钮下面的底色」（alpha < 0 = 没给，于是按底纹猜）。
 	var _panel_override: Color = Color(-1.0, -1.0, -1.0, -1.0)
+	## ★★ 常驻底色（画在**填充金下面**、按钮底纹上面那一层；alpha = 0 表示不用）。
+	##   ⚠️ 为什么画在这里而不是写进 StyleBox：底纹画在本动画器**之后**，
+	##      实底底纹会把整片金盖住（见文件头那条层次）。想让「灰底常驻 + 金在上面」，
+	##      灰底就只能和填充金一起画在这一层：灰先画、金后画。
+	##      于是页签的 `tab_plain*` 可以继续保持**全透明**（那条约束不能破）。
+	var _base_bg: Color = Color(0, 0, 0, 0)
 	## 每一条按钮上文字 / 子 Label 的**原色**（`_sync_text()` 每次都从它算，可重入）。
 	var _text: Dictionary = {}
 	## ★★ 已经真正写进控件的「节点 → {槽位: 颜色}」。
@@ -357,8 +363,11 @@ class FillAnimator extends Control:
 		_refresh_colors()
 
 
-	## 动画器自己的绘制：**那片金就是在这一层画出来的**。
+	## 动画器自己的绘制：**常驻底色 + 那片金都在这一层画出来的**。
 	func _draw() -> void:
+		# ★★ 先铺常驻底色，再让金盖上去 —— 这就是「灰底一直存在、悬停时金往上填」。
+		if _base_bg.a > 0.001 and _button != null and is_instance_valid(_button):
+			draw_rect(Rect2(Vector2.ZERO, _button.size), _base_bg, true)
 		draw_fill_now()
 
 
@@ -926,6 +935,20 @@ class FillAnimator extends Control:
 		queue_redraw()
 
 
+	## ★★ 常驻底色（画在填充金**下面**）：用来让「按钮本身一直有底色」，
+	##   而悬停时金色从底部往上盖在这层底色上。传透明色（alpha = 0）＝ 关掉。
+	func set_base_bg(c: Color) -> void:
+		if _base_bg == c:
+			return
+		_base_bg = c
+		queue_redraw()
+
+
+	## 当前常驻底色（测试 / 排查读）。
+	func base_bg() -> Color:
+		return _base_bg
+
+
 	## 引擎画这颗按钮时**可能用到**的底纹槽，按「当前最可能的那一个」排在前面。
 	##
 	## ⚠️ 这里只能**猜**：Godot 不暴露「当前实际生效的是哪一格底纹」（那在
@@ -1135,6 +1158,20 @@ static func set_panel_color(b: Button, c: Color) -> void:
 	var a := animator_of(b)
 	if a != null:
 		a.set_panel_color(c)
+
+
+## ★★ 指定这颗按钮的**常驻底色**（画在填充金下面，悬停时金盖上去）。
+##   主要用于「底纹必须透明、但又希望按钮一直有底色」的那类按钮（页签）。
+static func set_base_bg(b: Button, c: Color) -> void:
+	var a := animator_of(b)
+	if a != null:
+		a.set_base_bg(c)
+
+
+## 这颗按钮的常驻底色（没挂动画器 → 全透明）。
+static func base_bg(b: Button) -> Color:
+	var a := animator_of(b)
+	return a.base_bg() if a != null else Color(0, 0, 0, 0)
 
 
 ## 把一条文字挂到按钮的填充上（**按钮自己的字**直接传宿主的 `base_font_color()`）。

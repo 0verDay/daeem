@@ -75,6 +75,9 @@ func setup() -> void:
 		cell.mouse_exited.connect(_on_cell_mouse_exited.bind(i))
 		# ★★ 悬停填充：一行挂上「自绘填充（画在底纹下面）+ 鼠标跟随 + 填满时把字压成暖黑」
 		FillButtonRes.attach_text(cell)
+		# ★★ 每格都带常驻灰底（空格子也不例外）：底纹是全透明的，
+		#   灰底画在填充层里、金的上方；这样悬停时灰底不会消失（用户报的 bug）。
+		FillButtonRes.set_base_bg(cell, UiStyleRes.bg_empty())
 		# ★★ 字色的**统一口径**（用户要求）：「3×3 里的文字都由下往上由白变黑，
 		#   与金色填充线同步」。
 		#   ⇒ 一律走「原色 + 跟着金色前沿翻面」那条路（`_sync_text()` 里唯一的规则）。
@@ -111,6 +114,15 @@ func setup() -> void:
 		_cells.append(cell)
 		_key_labels.append(key_label)
 		_name_labels.append(name_label)
+
+	# ★★ 整组 2px 外框：九格自己的 1px 描边只勾出格子，外框把整块命令卡和地图分开。
+	#    ★ 最后加（画在九格之上）+ IGNORE（铺满整块，STOP 会吞掉所有格子点击）。
+	var frame := Panel.new()
+	frame.name = "CardFrame"
+	frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	frame.set_anchors_preset(Control.PRESET_FULL_RECT)
+	frame.add_theme_stylebox_override("panel", UiStyleRes.outline_style(UiStyleRes.line(), 2))
+	add_child(frame)
 
 	set_entries([])
 

@@ -75,6 +75,9 @@ func setup() -> void:
 		cell.mouse_exited.connect(_on_cell_mouse_exited.bind(i))
 		# ★★ 悬停填充 + 启用常驻（一行挂上，见 view/fill_button.gd）
 		FillButtonRes.attach_text(cell)
+		# ★★ 常驻灰底：底纹（`tech_fill*`）是全透明的，灰底画在填充层里、
+		#   金的下层 —— 悬停 / 启用时灰底不消失，金只是盖上去。
+		FillButtonRes.set_base_bg(cell, UiStyleRes.bg_empty())
 		# ★ 与命令卡同一口径：字色走「跟着金色前沿由白变黑」那条统一规则
 		#   （`set_prefer_light` 是历史遗留的作废开关，见 fill_button 里的说明）。
 		FillButtonRes.set_prefer_light(cell, true)

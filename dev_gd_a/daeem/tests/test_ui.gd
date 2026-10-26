@@ -198,19 +198,22 @@ func _test_queue_info_text_fit(cfg) -> void:
 		"★ 小格子两行 13 号字（%.0f×2）装得进 40 高（放大前是 30 高装两行 11 号）"
 			% font.get_height(fs_small))
 
-	eq(UiLayoutRes.DETAIL_RECT.position.x + UiLayoutRes.DETAIL_RECT.size.x, 1388.0,
-		"详细信息右缘 1388")
-	ok(UiLayoutRes.DETAIL_RECT.position.x + UiLayoutRes.DETAIL_RECT.size.x
-			< UiLayoutRes.FACTION_RECT.position.x,
-		"★ 详细信息右缘在阵营面板左缘左边（约 1.17px 缝，不重叠）")
+	eq(UiLayoutRes.FACTION_RECT.position.x, UiLayoutRes.MAP_RECT.size.x,
+		"★★ 阵营盾徽紧贴地图右缘（x=400）")
 	near(UiLayoutRes.FACTION_RECT.position.x + UiLayoutRes.FACTION_RECT.size.x,
-		UiLayoutRes.CARD_RECT.position.x, 0.01, "阵营面板右边缘接上命令卡")
+		UiLayoutRes.DETAIL_RECT.position.x, 0.01, "★★ 盾徽右边缘接上详细信息面板（x=562.5）")
+	eq(UiLayoutRes.DETAIL_RECT.position.x + UiLayoutRes.DETAIL_RECT.size.x, 1550.5,
+		"详细信息右缘 1550.5")
+	ok(UiLayoutRes.DETAIL_RECT.position.x + UiLayoutRes.DETAIL_RECT.size.x
+			< UiLayoutRes.CARD_RECT.position.x,
+		"★ 详细信息右缘在命令卡左缘左边（约 1.17px 缝，不重叠）")
+	near(UiLayoutRes.FACTION_RECT.position.y + UiLayoutRes.FACTION_RECT.size.y,
+		UiLayoutRes.DESIGN_H, 0.01, "盾徽贴住屏幕下沿")
+	eq(UiLayoutRes.FACTION_RECT.position.y, UiLayoutRes.BAR_TOP, "盾徽顶边在 820")
 	near(UiLayoutRes.CARD_RECT.position.x + UiLayoutRes.CARD_RECT.size.x,
 		UiLayoutRes.TABS_RECT.position.x, 0.01, "命令卡右边缘接上页签列")
 	near(UiLayoutRes.TABS_RECT.position.x + UiLayoutRes.TABS_RECT.size.x, UiLayoutRes.DESIGN_W,
 		0.01, "页签列贴住屏幕右边缘")
-	eq(UiLayoutRes.DETAIL_RECT.position.x, UiLayoutRes.MAP_RECT.size.x,
-		"详细信息从地图占位的右边缘开始（x=400）")
 	for r in [UiLayoutRes.DETAIL_RECT, UiLayoutRes.FACTION_RECT, UiLayoutRes.CARD_RECT, UiLayoutRes.TABS_RECT]:
 		eq(r.position.y + r.size.y, UiLayoutRes.DESIGN_H, "底栏各块都贴住屏幕下沿")
 		eq(r.position.y, UiLayoutRes.BAR_TOP, "底栏各块顶边都在 820（与详细信息平齐）")
@@ -395,10 +398,10 @@ func _test_hit_test() -> void:
 	var d_wide: Rect2 = bar_wide[0]
 	eq(d_wide.size, UiLayoutRes.DETAIL_RECT.size,
 		"★ 超宽窗口：详细信息面板尺寸仍是 988×260（不拉伸）")
-	var faction_left_wide: float = UiLayoutRes.FACTION_RECT.position.x + (wide.x - UiLayoutRes.DESIGN_W)
-	ok(faction_left_wide > d_wide.position.x + d_wide.size.x,
-		"★ 面板右缘与阵营列之间允许留白（%.0f > %.0f）" % [
-			faction_left_wide, d_wide.position.x + d_wide.size.x])
+	eq(d_wide.position.x, UiLayoutRes.DETAIL_RECT.position.x,
+		"★ 超宽窗口：详细信息贴左（不跟着右边漂）")
+	eq(bar_wide[1].position.x, UiLayoutRes.FACTION_RECT.position.x,
+		"★ 超宽窗口：阵营盾徽仍贴地图右缘（x=400）")
 	eq(UiLayoutRes.bottom_bar_rects(vp)[0].size.x, UiLayoutRes.DETAIL_RECT.size.x,
 		"1920 基准下详细信息面板宽度仍是 988")
 
@@ -511,7 +514,7 @@ func _test_panels(cfg) -> void:
 	v2_near(main.hud.map_placeholder.size, UiLayoutRes.MAP_RECT.size, 1.0,
 		"地图占位实际尺寸 = 400×400")
 	v2_near(main.hud.faction_placeholder.position, UiLayoutRes.FACTION_RECT.position, 1.0,
-		"阵营占位落在 (1389.17, 820)")
+		"★★ 阵营盾徽落在 (400, 820)，紧贴地图、在详细信息左侧")
 	v2_near(main.hud.command_card.position, UiLayoutRes.CARD_RECT.position, 1.0,
 		"命令卡落在 (1551.67, 820)")
 	v2_near(main.hud.page_tabs.position, UiLayoutRes.TABS_RECT.position, 1.0,
@@ -526,6 +529,7 @@ func _test_panels(cfg) -> void:
 		"将领列表实际尺寸 = 240×560")
 
 	_test_squad_rows(main)
+	_test_detail_visibility(main)
 	_test_page_tabs_and_card(main, cfg)
 	_test_hover_panel(main, cfg)
 	await _test_hover_tip_control(cfg)
@@ -618,9 +622,23 @@ func _test_resource_bar(main) -> void:
 		return
 
 	v2_near(bar.position, UiLayoutRes.RES_BAR_RECT.position, 1.0, "资源面板落在 (400, 764)")
-	v2_near(bar.size, UiLayoutRes.RES_BAR_RECT.size, 1.0, "资源面板尺寸 = 200×56（两行竖排）")
-	eq(UiLayoutRes.RES_BAR_RECT.position.x, UiLayoutRes.DETAIL_RECT.position.x,
-		"★ 资源面板与详细信息面板同一个左边缘")
+	v2_near(bar.size, UiLayoutRes.RES_BAR_RECT.size, 1.0, "资源面板尺寸 = 162.5×56（两行竖排）")
+	# ★★ 本版：资源栏整体描边加厚到 2px，并用看得清的 line()。
+	var rsb: StyleBoxFlat = bar.get_theme_stylebox("panel")
+	ok(rsb != null, "资源栏有整体底板 / 描边")
+	if rsb != null:
+		eq(rsb.border_width_left, 2, "★★ 资源栏整体描边 2px")
+		eq(rsb.border_color, UiStyleRes.line(),
+			"★★ 资源栏描边用 line()（不再用几乎看不见的 line_soft）")
+	eq(UiLayoutRes.RES_BAR_RECT.size.x, UiLayoutRes.FACTION_RECT.size.x,
+		"★★ 资源条宽度 = 阵营盾徽宽度（162.5）")
+	eq(UiLayoutRes.RES_BAR_RECT.position.x + UiLayoutRes.RES_BAR_RECT.size.x,
+		UiLayoutRes.FACTION_RECT.position.x + UiLayoutRes.FACTION_RECT.size.x,
+		"★★ 资源条右缘与盾徽右缘平齐（562.5）")
+	eq(UiLayoutRes.RES_BAR_RECT.position.x, UiLayoutRes.MAP_RECT.size.x,
+		"★ 资源面板仍从地图右缘开始（x=400，紧贴地图）")
+	eq(UiLayoutRes.RES_BAR_RECT.position.x, UiLayoutRes.FACTION_RECT.position.x,
+		"★ 资源面板在阵营盾徽正上方")
 	ok(UiLayoutRes.RES_BAR_RECT.size.x < UiLayoutRes.DETAIL_RECT.size.x,
 		"★ 资源面板**不再铺满整宽**（%.0f < %.0f）—— 需求：面板不需要那么长" % [
 			UiLayoutRes.RES_BAR_RECT.size.x, UiLayoutRes.DETAIL_RECT.size.x])
@@ -814,8 +832,8 @@ func _test_anchors(main) -> void:
 	v2_near(main.hud.page_tabs.position, Vector2(UiLayoutRes.TABS_RECT.position.x + 640.0, 820.0), 1.0,
 		"超宽窗口：页签列仍贴右下角")
 	v2_near(main.hud.detail_panel.position, UiLayoutRes.DETAIL_RECT.position, 1.0,
-		"超宽窗口：详细信息仍贴左边（x = 400）")
-	# ★★ 本版：手机端不再横向拉伸 —— 固定 988 宽，右侧留白，不需要与页签 / 阵营列相连。
+		"超宽窗口：详细信息仍贴左（x = 562.5）")
+	# ★★ 本版：手机端不再横向拉伸 —— 固定 988 宽，右侧留白，不需要与页签相连。
 	near(main.hud.detail_panel.size.x, UiLayoutRes.DETAIL_RECT.size.x, 1.0,
 		"★ 超宽窗口：详细信息面板仍是 988 宽（不再拉伸）")
 	near(main.hud.detail_panel.right_column_width(), UiLayoutRes.DETAIL_RIGHT_W, 1.0,
@@ -823,9 +841,8 @@ func _test_anchors(main) -> void:
 	near(main.hud.detail_panel.queue_position_x(),
 		UiLayoutRes.detail_queue_x(UiLayoutRes.DETAIL_RIGHT_W), 1.0,
 		"★ 超宽窗口：招募队列位置固定（右栏 603 下的 286）")
-	ok(main.hud.detail_panel.position.x + main.hud.detail_panel.size.x
-			< UiLayoutRes.FACTION_RECT.position.x + 640.0,
-		"★ 面板右缘与右侧阵营列之间留白（不相连）")
+	v2_near(main.hud.faction_placeholder.position, UiLayoutRes.FACTION_RECT.position, 1.0,
+		"★ 超宽窗口：阵营盾徽仍贴地图右缘（x = 400）")
 	v2_near(main.hud.squad_panel.position,
 		Vector2(UiLayoutRes.SQUAD_RECT.position.x + 640.0, UiLayoutRes.SQUAD_RECT.position.y), 1.0,
 		"超宽窗口：将领列表仍贴右上")
@@ -1165,6 +1182,15 @@ func _test_squad_rows(main) -> void:
 	var world = main.world
 
 	eq(panel.slot_count(), UiLayoutRes.SQUAD_SLOTS, "部队列表有 10 个槽")
+	# ★★ 整列外框：左 / 上 / 下 2px，右边留 0（不压最右金线 / 泛光起点）。
+	var sframe = panel.get_node_or_null("SquadFrame")
+	ok(sframe != null, "★★ 将领标签栏整体外框存在")
+	if sframe != null:
+		eq(sframe.mouse_filter, Control.MOUSE_FILTER_IGNORE, "★ 外框不吞标签点击")
+		var ssb: StyleBoxFlat = sframe.get_theme_stylebox("panel")
+		if ssb != null:
+			eq(ssb.border_width_left, 2, "★★ 标签栏外框加厚到 2px")
+			eq(ssb.border_width_right, 0, "★ 右边不留外框（不压最右金线）")
 	var teams := 0
 	for u in world.units:
 		if u.alive and world.is_team_leader(u) and FactionRes.same_side(u.faction, world.my_faction):
@@ -1430,10 +1456,106 @@ func _test_squad_rows(main) -> void:
 
 	main.input_ctrl.select_units([world.unit_by_id("general-1")])
 
+
+## ★★ 详细信息栏的显隐：没有可查看的选中对象时整块隐藏；
+##   己方部队 / 建筑 / 区划 / 敌方单位都算「能查看」。
+##   隐藏后它那块区域恢复地图交互（滚轮 / 手势），而盾徽始终显示。
+func _test_detail_visibility(main) -> void:
+	var hud = main.hud
+	var panel = hud.detail_panel
+	var world = main.world
+	var detail_center: Vector2 = UiLayoutRes.DETAIL_RECT.get_center()
+
+	# ① 没有任何选中 → 隐藏
+	main.input_ctrl.select_units([])
+	hud.refresh()
+	ok(not panel.visible, "★★ 没有选中任何东西 → 详细信息栏隐藏")
+	ok(hud.faction_placeholder.visible, "★ 盾徽始终显示（不跟详情栏一起隐藏）")
+	ok(not hud.blocks_wheel_zoom(detail_center), "★ 隐藏后详情栏区域不再拦滚轮缩放")
+	ok(not hud.point_hits_ui(detail_center), "★ 隐藏后详情栏区域恢复地图手势")
+	ok(hud.blocks_wheel_zoom(UiLayoutRes.FACTION_RECT.get_center()),
+		"★ 盾徽自己仍然拦滚轮")
+	ok(hud.point_hits_ui(UiLayoutRes.FACTION_RECT.get_center()),
+		"★ 盾徽自己仍然算 UI")
+
+	# ② 选中己方部队 → 显示
+	var g1 = world.unit_by_id("general-1")
+	main.input_ctrl.select_units([g1])
+	hud.refresh()
+	ok(panel.visible, "★★ 选中己方部队 → 详细信息栏显示")
+	ok(hud.blocks_wheel_zoom(detail_center), "★ 显示时详情栏区域重新拦滚轮")
+	ok(hud.point_hits_ui(detail_center), "★ 显示时详情栏区域重新算 UI")
+
+	# ③ 选中己方建筑 → 显示
+	var own_b = null
+	for b in world.building_list:
+		if FactionRes.same_side(String(b.owner), world.my_faction):
+			own_b = b
+			break
+	if own_b != null:
+		main.input_ctrl.select_building(own_b)
+		hud.refresh()
+		ok(panel.visible, "★★ 选中己方建筑 → 详细信息栏显示")
+
+	# ④ 选中区划 → 显示
+	var zone = _zone_with_center(world)
+	if zone != null:
+		main.input_ctrl.select_zone(zone)
+		hud.refresh()
+		ok(panel.visible, "★★ 选中区划 → 详细信息栏显示")
+
+	# ⑤ 选中敌方建筑 → 显示（敌人也能看详细信息）
+	var foe_b = null
+	for b in world.building_list:
+		if not FactionRes.same_side(String(b.owner), world.my_faction):
+			foe_b = b
+			break
+	if foe_b != null:
+		main.input_ctrl.select_enemy(foe_b)
+		hud.refresh()
+		ok(panel.visible, "★★ 选中敌方建筑 → 详细信息栏显示")
+
+	# ⑥ 再清空 → 重新隐藏
+	main.input_ctrl.select_units([])
+	hud.refresh()
+	ok(not panel.visible, "★★ 清空选中 → 详细信息栏重新隐藏")
+
+
 func _test_page_tabs_and_card(main, cfg) -> void:
 	var tabs = main.hud.page_tabs
 	var card = main.hud.command_card
 	var world = main.world
+
+	# ★★ 整列描边：最后加的 TabsFrame 盖在页签上，但鼠标穿透。
+	var frame = tabs.get_node_or_null("TabsFrame")
+	ok(frame != null, "★★ 页签栏整体描边（TabsFrame）存在")
+	if frame != null:
+		eq(frame.mouse_filter, Control.MOUSE_FILTER_IGNORE, "★ 描边不吞页签点击")
+		var fsb: StyleBoxFlat = frame.get_theme_stylebox("panel")
+		ok(fsb != null, "★ 描边用一个透明底的 StyleBoxFlat")
+		if fsb != null:
+			eq(fsb.border_width_left, 2, "★★ 页签整列外框加厚到 2px")
+		v2_near(frame.size, UiLayoutRes.TABS_RECT.size, 1.0, "★ 描边覆盖整列页签")
+
+	# ★★ 所有页签按钮都自带**常驻灰底**（画在填充金下面，悬停时金只是往上盖）。
+	eq(UiStyleRes.panel_style().border_width_left, 2,
+		"★★ 通用面板描边统一加厚到 2px")
+	for i in tabs.page_count():
+		var tb = tabs.button_at(i)
+		ok(FillButtonRes.base_bg(tb).a > 0.2,
+			"★★ 页签 %d 自带常驻灰底（悬停时不会消失）" % i)
+		var nsb: StyleBoxFlat = tb.get_theme_stylebox("normal")
+		ok(nsb.bg_color.a <= 0.001,
+			"★ 页签底纹仍全透明（灰底画在填充层，金才盖得上去）")
+
+	# ★★ 命令卡整组外框（2px，不吃点击）。
+	var cframe = main.hud.command_card.get_node_or_null("CardFrame")
+	ok(cframe != null, "★★ 命令卡整组外框存在")
+	if cframe != null:
+		eq(cframe.mouse_filter, Control.MOUSE_FILTER_IGNORE, "★ 命令卡外框不吞格子点击")
+		var csb: StyleBoxFlat = cframe.get_theme_stylebox("panel")
+		if csb != null:
+			eq(csb.border_width_left, 2, "★★ 命令卡外框加厚到 2px")
 
 	main.input_ctrl.select_units([world.unit_by_id("general-1")])
 	main.hud.refresh()
@@ -1442,6 +1564,19 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 	eq(tabs.page_id_at(1), PageTabsRes.PAGE_UNIT, "第二颗是「单位」")
 	eq(tabs.page(), PageTabsRes.PAGE_ORDER, "★ 默认停在「操作」页")
 	eq(card.entries().size(), 4, "★ 操作页有四格（移动 / 攻击 / 行军 / 停止）")
+
+	# ★★ 命令卡每一格（含空格子）都有常驻灰底；底纹本身仍全透明，
+	#   所以悬停不会「灰底消失再填金」——灰底在填充层、金的下层。
+	for i in UiLayoutRes.CARD_SLOTS:
+		var cc = card.cell_at(i)
+		ok(FillButtonRes.base_bg(cc).a > 0.2,
+			"★★ 命令卡第 %d 格自带常驻灰底" % (i + 1))
+		var ns: StyleBoxFlat = cc.get_theme_stylebox("normal")
+		var hs: StyleBoxFlat = cc.get_theme_stylebox("hover")
+		ok(ns.bg_color.a <= 0.001 and hs.bg_color.a <= 0.001,
+			"★★ 命令卡第 %d 格 normal/hover 底纹全透明（灰由填充层给）" % (i + 1))
+	var tech_cell0 = main.hud.tech_grid.cell_at(0)
+	ok(FillButtonRes.base_bg(tech_cell0).a > 0.2, "★★ 科技格也带常驻灰底")
 	eq(String(card.entry_at(0).get("type", "")), "order", "操作页那一项是「部队指令」")
 	eq(card.cell_label(0), "移动", "操作页 Q 格 = 移动")
 	eq(card.cell_label(1), "攻击", "操作页 W 格 = 攻击")

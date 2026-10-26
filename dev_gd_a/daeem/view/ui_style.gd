@@ -187,13 +187,25 @@ const FS_UNIT_NAME := 29
 ## ⚠️ 两个颜色参数的默认值是**哨兵**（alpha < 0 = 没给），不是 `bg()` / `line()`：
 ##   GDScript 不允许默认参数表达式引用同类里的其它静态函数名（解析期就报错），
 ##   而把配色抄成字面量又会立刻漂成第二份主题 —— 所以进函数再补默认值。
+## ★★ 本版描边统一加厚到 **2px**（用户要求：UI 要和大地图区分明显）。
+##   想单独调某一处的粗细时显式传第三个参数即可。
 static func panel_style(bg_color: Color = Color(-1, -1, -1, -1),
-		border_color: Color = Color(-1, -1, -1, -1), border_width: int = 1) -> StyleBoxFlat:
+		border_color: Color = Color(-1, -1, -1, -1), border_width: int = 2) -> StyleBoxFlat:
 	var s := StyleBoxFlat.new()
 	s.bg_color = bg() if bg_color.a < 0.0 else bg_color
 	s.border_color = line() if border_color.a < 0.0 else border_color
 	s.set_border_width_all(border_width)
 	s.set_content_margin_all(8.0)
+	return s
+
+
+## ★★ 自绘容器的「整体描边」底纹：透明底 + 指定颜色 / 粗细。
+##   给没有现成底板的面板用（页签栏 / 命令卡 / 将领标签栏这些自绘控件）。
+static func outline_style(border_color: Color, border_width: int = 2) -> StyleBoxFlat:
+	var s := StyleBoxFlat.new()
+	s.bg_color = Color(0.0, 0.0, 0.0, 0.0)
+	s.border_color = border_color
+	s.set_border_width_all(border_width)
 	return s
 
 
@@ -273,9 +285,13 @@ static func row_empty() -> StyleBoxFlat:
 
 
 ## 命令卡的格子（参考图里格与格之间就是一条线，所以只描边、不留缝）
+##
+## ★★ 本版：**底色一律交给填充层**（`FillButtonRes.set_base_bg(cell, bg_empty())`，
+##   灰底常驻 + 悬停金盖上去）。所以这里 normal / hover / pressed 全部透明；
+##   自己铺实底会把画在底纹下面的填充金盖住（用户报的「悬停时灰底消失 / 点击后看不见金」）。
 static func card_normal(filled: bool = true) -> StyleBoxFlat:
 	var s := StyleBoxFlat.new()
-	s.bg_color = Color(0.0, 0.0, 0.0, 0.0) if filled else bg_empty()
+	s.bg_color = Color(0.0, 0.0, 0.0, 0.0)
 	s.border_color = line()
 	s.set_border_width_all(1)
 	s.content_margin_left = 2.0

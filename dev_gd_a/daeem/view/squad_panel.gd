@@ -27,6 +27,7 @@
 extends Control
 
 const UiLayoutRes = preload("res://view/ui_layout.gd")
+const UiStyleRes = preload("res://view/ui_style.gd")
 const FactionRes = preload("res://logic/faction.gd")
 const TroopRowRes = preload("res://view/troop_row.gd")
 
@@ -100,6 +101,17 @@ func setup(p_cfg, p_world, p_input, p_font: Font = null, p_team_slots = null) ->
 		_teams.append([])
 		_dead.append(false)
 		_numbers.append(str((i + 1) % 10))
+
+	# ★★ 整列 2px 外框（左 / 上 / 下；**右边留 0**）：右边那条是最右竖线 + 泛光起点，
+	#   盖上外框会把选中时的亮金线压掉。最后一格加、IGNORE，不吃行点击。
+	var frame := Panel.new()
+	frame.name = "SquadFrame"
+	frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	frame.set_anchors_preset(Control.PRESET_FULL_RECT)
+	var fs := UiStyleRes.outline_style(UiStyleRes.line(), 2)
+	fs.border_width_right = 0
+	frame.add_theme_stylebox_override("panel", fs)
+	add_child(frame)
 
 	refresh()
 

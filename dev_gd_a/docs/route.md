@@ -6396,3 +6396,83 @@ debug keystore。明文 `ws://` 若被 Android 明文流量策略拦截，需要
   `test_tech` / `test_campaign*` / `test_projectile` / `test_melee_building` /
   `test_attack_orders` / `test_alliance` / `test_hit_fx` 也全过。
 * Python 编辑器：`unit_editor` 571 + 209、`campaign_editor` 331 + 245 全过（本轮未跑全量）。
+
+---
+
+## 六十三、阵营盾徽移到详情栏左侧 + 详情栏按选中显隐
+
+### 63.1 布局：盾徽 ↔ 详情栏换位
+
+* `UiLayoutRes.FACTION_RECT`：`(1389.1667, 820, 162.5, 260)` → **`(400, 820, 162.5, 260)`**
+  （左缘 = 地图占位右缘，紧贴地图）。
+* `UiLayoutRes.DETAIL_RECT`：`(400, 820, 988, 260)` → **`(562.5, 820, 988, 260)`**
+  （整体右移 162.5，宽度仍是 988；右缘 1550.5 与命令卡 1551.6667 之间仍留约 1.17px 缝）。
+* 盾徽改成**贴左 + 贴底**（`apply_rect(..., false, true)`），超宽窗口不随右边漂。
+* `bottom_bar_rects()`：详情 / 盾徽都只跟 `y` 走，命令卡 / 页签仍贴右下。
+* 资源条 `RES_BAR_RECT` 保持 `x=400`（依旧从地图右缘开始，落在盾徽正上方）；
+  **宽度 200 → 162.5**，与盾徽左右平齐（右缘都在 562.5），`RES_TEXT_W` 150 → 128。
+
+### 63.2 详情栏显隐
+
+* `hud.has_detail_selection()`：己方部队 / 己方建筑 / 区划 / 敌方单位或建筑
+  （`selected_units` / `selected_buildings` / `selected_zone` / `selected_enemy`）
+  任意一个存在 → 显示；全都没有 → 隐藏。
+* `hud._refresh_detail()` 每帧按它设置 `detail_panel.visible`；**内容仍照常刷到空态**，
+  重新显示时不会闪上一帧的旧内容。
+* 隐藏时详情栏那块区域恢复地图交互：`interactive_rects()` / `bottom_bar_rects()`
+  新增 `detail_visible` 参数，`hud.point_hits_ui()` / `blocks_edge_scroll()` /
+  `blocks_wheel_zoom()` 传 `is_detail_visible()`。盾徽 / 命令卡 / 页签仍然算 UI。
+* 盾徽**始终显示**（不跟详情栏一起隐藏）。
+
+### 63.3 页签栏整体描边
+
+* `view/page_tabs.gd` 在按钮之后加一个 `TabsFrame`（Panel + 透明底 `StyleBoxFlat`，
+  1px `UiStyleRes.line()` 描边，`mouse_filter = IGNORE`）。
+* 必须**最后加**：子节点按顺序画，后加的在上，否则页签自己的描边会盖住外框；
+  `IGNORE` 必须保留，否则它会吞掉整列的点击。
+
+### 63.4 回归
+
+* `tests/test_ui.gd` 新增 `_test_detail_visibility`：无选中隐藏、己方部队 / 建筑 /
+  区划 / 敌方建筑显示、清空后重新隐藏；隐藏时详情区域不拦滚轮 / 手势、盾徽仍拦。
+* 布局断言更新：盾徽贴地图右缘、盾徽右缘接详情栏左缘、详情右缘 1550.5；
+  超宽窗口下盾徽与详情栏都贴左。
+* `test_ui` **1316** 项全过；全量 `tools/run-tests.ps1` 退出码 0。
+
+---
+
+## 六十四、页签常驻灰底 + 全 UI 描边加厚
+
+### 64.1 页签 / 命令卡 / 科技格：灰底常驻、金往上盖
+
+* 问题：这些按钮的底纹（`tab_plain*` / `card_normal` / `tech_fill*`）必须**全透明**，
+  否则会把填充金盖住；但玩家希望「按钮一直有灰底」，悬停时金再填上去。
+  旧实现里命令卡/科技格的 hover 底纹是透明的 ⇒ **悬停时灰底消失**；
+  有内容的命令卡格子 normal 也是透明的 ⇒ **可点击的格子根本没有灰底**。
+* 做法：给 `FillAnimator` 增加 `set_base_bg(color)` —— 常驻底色画在**填充金下面**
+  （同一层：先灰、后金），按钮底纹继续全透明。
+  * 页签：每颗 `set_base_bg(b, bg_empty())`；
+  * 命令卡九格：每格 `set_base_bg(cell, bg_empty())`，`card_normal()` 改为**永远透明**
+    （含空格子 / 置灰格，灰底统一由填充层给，避免叠两层）；
+  * 科技九格：每格 `set_base_bg(cell, bg_empty())`；空格子仍走 `tech_disabled()` 实底。
+* 效果：静止 = 灰底；悬停 / 当前页 = 灰底不动，金色从下往上盖；
+  移开 = 金退回，灰底始终在。
+
+### 64.2 全 UI 描边加厚到 2px
+
+* `UiStyleRes.panel_style()` 的默认 `border_width` **1 → 2**：详细信息 / 阵营盾徽 /
+  资源栏 / 小地图 / 目标栏 / AI 面板 / 大厅面板等全部跟着加厚。
+* 新增 `UiStyleRes.outline_style()`（透明底 + 指定颜色 / 粗细），给自绘容器用。
+* 资源栏：描边色 `line_soft()` → **`line()`**（原来几乎看不见），2px。
+* 目标栏：同上改用 `line()`。
+* 页签栏：`TabsFrame` 外框 1px → **2px**。
+* 命令卡：新增 `CardFrame`（2px，`IGNORE`，画在九格之上）。
+* 将领标签栏：新增 `SquadFrame`（左 / 上 / 下 2px，**右边 0**，不压最右金线 / 泛光起点）。
+
+### 64.3 回归
+
+* `test_ui` 新增：每颗页签 / 命令卡九格 / 科技格 `base_bg().a > 0.2`、底纹全透明；
+  `panel_style` 2px；`TabsFrame` / `CardFrame` / `SquadFrame` 的 2px 与 `mouse_filter`；
+  资源栏描边色为 `line()`。
+* `test_ui` **1351** 项、`test_fill_button` 140 项、`test_ui_kit` 97 项全过；
+  全量 `tools/run-tests.ps1` 退出码 0。

@@ -97,6 +97,9 @@ func setup() -> void:
 		#   ⚠️ 在这之后**不要**再直接写 `add_theme_color_override("font_color", …)`：
 		#      填充动效每帧按「原色 + 进度」重算字色，直接写会被盖掉。
 		FillButtonRes.attach_text(b)
+		# ★★ 常驻灰底：底纹（`tab_plain*`）必须保持全透明，否则会把填充金盖住；
+		#   所以灰底交给填充动画器画在**金的下层** —— 悬停时灰底不消失，金只是往上盖。
+		FillButtonRes.set_base_bg(b, UiStyleRes.bg_empty())
 		b.visible = false
 		UiLayoutRes.apply_rect(b, UiLayoutRes.tab_button_local(i))
 		b.pressed.connect(_on_tab_pressed.bind(i))
@@ -106,6 +109,21 @@ func setup() -> void:
 		_char_labels.append([])
 		_char_h.append(0.0)
 		_was_active.append(false)
+
+	# ★★ 整列描边：一条外框把这一列页签整体圈起来。
+	#    ★ 必须**最后加**（子节点按顺序画，后加的在上）：页签各自的描边在边缘处会盖住
+	#      父节点的 `_draw()`，所以用一个 `mouse_filter = IGNORE` 的 Panel 压在最上层。
+	#    ⚠️ IGNORE 是必须的：它铺满整列，STOP 会把所有页签点击吞掉。
+	var frame := Panel.new()
+	frame.name = "TabsFrame"
+	frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	frame.set_anchors_preset(Control.PRESET_FULL_RECT)
+	var fs := StyleBoxFlat.new()
+	fs.bg_color = Color(0, 0, 0, 0)
+	fs.border_color = UiStyleRes.line()
+	fs.set_border_width_all(2)                       # ★ 本版：外框加厚到 2px
+	frame.add_theme_stylebox_override("panel", fs)
+	add_child(frame)
 
 	set_pages([PAGE_BUILD])
 

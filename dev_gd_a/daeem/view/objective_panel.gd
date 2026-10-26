@@ -50,7 +50,7 @@ func setup(p_cfg, p_world, font: Font) -> void:
 	_bg.name = "ObjectiveBg"
 	_bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_bg.add_theme_stylebox_override("panel",
-		UiStyleRes.panel_style(UiStyleRes.bg(), UiStyleRes.line_soft()))
+		UiStyleRes.panel_style(UiStyleRes.bg(), UiStyleRes.line()))
 	add_child(_bg)
 
 	_accent = ColorRect.new()
