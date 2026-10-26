@@ -258,6 +258,25 @@ func _test_views(cfg) -> void:
 		units.set_hover([])
 		units.sync(0.2)
 		eq(units.hover_instance_count, 0, "★ 移开鼠标后填充退回 0（淡出完成）")
+
+		# ★★ 回归（用户报的 bug）：MultiMesh 自定义数据按**实例下标**存，而选中态会换批次。
+		#   「在某批次里亮过 1 → 换到另一批次淡出 → 换回来」时，旧批次的那几个下标上
+		#   还留着 1；只给"当前悬停候选"写值的话，换回来的部队会整片变蓝。
+		units.set_selection([])
+		units.set_hover([target.id])
+		units.sync(0.2)
+		var c1: Color = units.last_custom_for(target.id)
+		near(c1.g, 1.0, 0.01, "★ （前提）该单位在当前批次的槽位填充满 1")
+		units.set_selection([target.id])      # 换到「选中」批次
+		units.set_hover([])                   # 淡出发生在**另一个**批次里
+		units.sync(0.2)
+		units.set_selection([])               # 换回原批次（旧槽位上还留着 1）
+		units.sync(0.2)
+		near(units.last_custom_for(target.id).g, 0.0, 0.01,
+			"★★ 换批次再换回来后槽位被重写成 0（不继承旧填充 —— 用户报的「取消选中后整队变蓝」）")
+		units.set_selection([])
+		units.set_hover([])
+		units.sync(0.2)
 	else:
 		ok(false, "地图里找不到可用于悬停测试的己方单位")
 

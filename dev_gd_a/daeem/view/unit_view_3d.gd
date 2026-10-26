@@ -281,9 +281,12 @@ func _batch_for(key: String, faction: String, leader: bool, unit_type: String,
 	node.material_override = mat
 	add_child(node)
 	batches_created += 1
-	# ★ `last_flash` 必须**逐批次**存（每个批次的 MultiMesh 是各自一份自定义数据缓冲）：
-	#   共用一份全局缓存会在两个批次落在同一个下标时互相覆盖，把闪白**卡住**。
-	var rec := {"node": node, "mm": mm, "faction": faction, "leader": leader, "last_flash": []}
+	# ★ `last_flash` / `last_uid` / `last_hover` 必须**逐批次、逐槽位**存：
+	#   每个批次的 MultiMesh 各自一份自定义数据缓冲；共用一份全局缓存会在两个批次的
+	#   同一个下标上互相覆盖，把闪白 / 填充**卡住**。`last_uid` 是「这一槽位现在是谁」，
+	#   下标换人时必须整条重写（否则新单位继承上一任的填充）。
+	var rec := {"node": node, "mm": mm, "faction": faction, "leader": leader,
+		"last_flash": [], "last_uid": [], "last_hover": []}
 	_batches[key] = rec
 	return rec
 
@@ -317,11 +320,8 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 	# ★★ 有没有「选中 / 正在做动效」的单位？没有就整段跳过每单位的 `String(id)` 与两次字典查询
 	#    （1000 单位常态下选中为空 —— 这是每帧 1000 次字符串转换 + 2000 次查表）。
 	var track_sel: bool = not (_selection_set.is_empty() and _sel_anim.is_empty())
-	# ★★ 悬停同理：常态下没人被悬停 ⇒ 每单位连 `String(id)` 都不做。
+	# ★★ 悬停同理：常态下没人被悬停 ⇒ 连进度表都不查。
 	var track_hover: bool = not (_hover_set.is_empty() and _hover_anim.is_empty())
-	# ★ 悬停候选（本帧真正要写 `.g` 的实例）：桶循环里只**收集**，循环结束后统一补写。
-	#   候选 ≤ 一支队伍的人数，所以热循环里只多一次两表查询。
-	var hover_writes: Array = []
 	# ★★ 变体键的记忆：同一支队伍里绝大多数相邻单位的「阵营/兵种/是否将领/是否濒死」都相同，
 	#    记忆上一把键、不同才重新拼 —— 省掉每单位一次的 `%` 格式化（1000 单位常态下几乎全省）。
 	var last_fac: String = ""
@@ -415,24 +415,38 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 				mm.set_instance_transform(i, Transform3D(Basis(), w))
 				_slot_set(i, w, key)
 				wrote += 1
-			# ★ 受击闪白：写进**每实例自定义数据**（shader 读 INSTANCE_CUSTOM.r）。
-			#   值没变就不写（待命单位占多数，每帧写 1000 次是白花）。
+			# ★★ 逐实例自定义数据：`.r` = 受击闪白，`.g` = 悬停填充进度。
+			#   ★★ 脏检查必须**带上「这个槽位上现在是哪个单位」**：
+			#     MultiMesh 的自定义数据是按**实例下标**存的，而下标每帧都可能换人
+			#     （选中态要换批次 / 阵亡 / 被迷雾挡住 / 新兵入列）。只给「当前悬停候选」
+			#     写值的话，新占位的单位会**继承上一任留下的填充** ——
+			#     实测症状（用户报的 bug）：取消选中一支部队后，该队突然整片变蓝
+			#     （蓝 = 自己方阵营色），因为那几个下标上还留着框选预览写的 1。
+			#   ★ 单位没换槽、且三个值都没变时才跳过写入（省引擎调用）。
 			var flash: float = clampf(u.hit_flash, 0.0, 1.0)
+			var hov: float = _hover_tick(u.id, dt) if track_hover else 0.0
 			var lf: Array = rec["last_flash"]
-			var cf: Variant = lf[i] if i < lf.size() else null
-			if cf == null or float(cf) != flash:
-				mm.set_instance_custom_data(i, Color(flash, 0.0, 0.0, 0.0))
-				while lf.size() <= i:
+			var lu: Array = rec["last_uid"]
+			var lh: Array = rec["last_hover"]
+			var pf: Variant = lf[i] if i < lf.size() else null
+			var pu: Variant = lu[i] if i < lu.size() else null
+			var ph: Variant = lh[i] if i < lh.size() else null
+			var same_uid: bool = pu != null and pu == u.id
+			# 诊断按「现在带着填充的实例数」算，与有没有触发写入无关
+			if hov > 0.0:
+				hover_instance_count += 1
+			if not same_uid or pf == null or float(pf) != flash \
+					or ph == null or float(ph) != hov:
+				mm.set_instance_custom_data(i, Color(flash, hov, 0.0, 0.0))
+				while lu.size() <= i:
 					lf.append(null)
+					lu.append(null)
+					lh.append(null)
+				lu[i] = u.id
 				lf[i] = flash
+				lh[i] = hov
 				if flash > 0.0:
 					flash_written_last_frame += 1
-			# ★★ 悬停候选：这里只**收集**（下标已经定了），进度与 `.g` 通道在
-			#   桶循环结束后由 `_apply_hover` 统一补写 —— 热循环里别做插值。
-			if track_hover:
-				var huid := String(u.id)
-				if _hover_set.has(huid) or _hover_anim.has(huid):
-					hover_writes.append({"mm": mm, "i": i, "flash": flash, "uid": huid})
 		mm.visible_instance_count = arr.size()
 		(rec["node"] as MultiMeshInstance3D).visible = true
 		total += arr.size()
@@ -447,38 +461,49 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 	visible_count = total
 	mesh_batch_count = used
 	instance_writes_last_frame = wrote
-	_apply_hover(hover_writes, dt)
 	_sync_decals(_vis_generals)
 	_sync_selection_rings(_vis_sel, dt)
 
 
-## ★★ 悬停填充：把这一帧收集到的候选逐个写进 `INSTANCE_CUSTOM`
-##   （`.r` = 受击闪白，`.g` = 悬停进度；`.g` 由 shader 变成「填充多少阵营色」）。
+## ★★ 推进一个单位的悬停填充进度（0..1）：目标 = 它在 `_hover_set` 里 ? 1 : 0。
 ##
-## ★ 为什么不在桶循环里直接算：那里是「每单位每帧」的热路径（1000 单位），
-##   而悬停候选最多一支队伍十几个人。挪到这里之后热循环里只多一次 `_hover_set` 查询。
-## ★ 进度朝目标推进（`render.hover_fill_sec`，默认 0.1s）：进入 = 0→1，离开 = 1→0，
-##   与选中圈同一个「反向播放」口径；收到 0 就把这一项从表里删掉，表不会无限长。
-func _apply_hover(writes: Array, dt: float) -> void:
-	if writes.is_empty():
-		return
-	for w in writes:
-		var uid := String(w["uid"])
-		var want: float = 1.0 if _hover_set.has(uid) else 0.0
-		var p: float = want
-		if _hover_sec > 0.0:
-			p = move_toward(float(_hover_anim.get(uid, 0.0)), want, dt / _hover_sec)
-		if p <= 0.0001 and want <= 0.0:
-			_hover_anim.erase(uid)
-			p = 0.0
-		else:
-			_hover_anim[uid] = p
-		# ★ `set_instance_custom_data` 写的是**整个** Color：必须连 `.r`（受击闪白）
-		#   一起带上，否则这里会把闪白清零。
-		(w["mm"] as MultiMesh).set_instance_custom_data(
-			int(w["i"]), Color(float(w["flash"]), p, 0.0, 0.0))
-		if p > 0.0:
-			hover_instance_count += 1
+## ★ 与选中圈同一套「反向播放」：离开时从 1 退到 0，退完就删掉这一项（进度表不会无限长）。
+## ★ 只有「悬停集合非空 / 还有动效在跑」时才会被调用（见 `sync` 的 `track_hover`）。
+## ⚠️ 进度是**按单位 id** 算的；写进 MultiMesh 时要连「这个槽位上是谁」一起做脏检查，
+##   否则换人占位会继承上一任的填充值（见桶循环里那段注释）。
+func _hover_tick(uid: String, dt: float) -> float:
+	var want: float = 1.0 if _hover_set.has(uid) else 0.0
+	var cur: float = float(_hover_anim.get(uid, 0.0))
+	if cur == want:
+		return cur
+	var p: float = want
+	if _hover_sec > 0.0:
+		p = move_toward(cur, want, dt / _hover_sec)
+	if p <= 0.0001 and want <= 0.0:
+		_hover_anim.erase(uid)
+		return 0.0
+	_hover_anim[uid] = p
+	return p
+
+
+## ★★ 测试用：某个单位**当前槽位**上最后写进 MultiMesh 的自定义数据
+##   （`.r` = 受击闪白，`.g` = 悬停填充进度）。
+##
+## ★ 为什么不直接读 `MultiMesh.get_instance_custom_data`：实测（Godot 4.7 + 无头）
+##   它**读不回**刚写进去的值（同 `get_instance_transform`，见 pitfalls）。这里读的是
+##   我们自己的写入缓存 —— 它和真正写进缓冲的是同一份，所以能钉住「槽位换人时必须重写」
+##   这条判据。
+## @return `(r, g)`；`r < 0` = 这一帧没有这个单位的槽位（不可见 / 没画出来）
+func last_custom_for(unit_id: String) -> Color:
+	for rec in _batches.values():
+		var mm: MultiMesh = rec["mm"]
+		var lu: Array = rec["last_uid"]
+		var lf: Array = rec["last_flash"]
+		var lh: Array = rec["last_hover"]
+		for i in mm.visible_instance_count:
+			if i < lu.size() and String(lu[i]) == unit_id:
+				return Color(float(lf[i]), float(lh[i]), 0.0, 0.0)
+	return Color(-1.0, -1.0, 0.0, 0.0)
 
 
 ## 将领脚下的贴花：把每个**可见将领**摆一块平放的小面片（逐实例色 = 阵营色）。
