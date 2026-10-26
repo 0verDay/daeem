@@ -866,10 +866,11 @@ func _build_squad_panel() -> void:
 	squad_panel = SquadPanelRes.new()
 	_root.add_child(squad_panel)
 	squad_panel.setup(cfg, world, input_ctrl, _font, team_slots)
-	# ★★ 点标签 = 反选整队（squad_panel 自己改选中）；点了谁就把**详情展开**切到谁。
-	#   复用 `_on_troop_activated`（点左栏下半将领格走的是同一条路：只改展开哪一支，
-	#   不再动选中集合）—— 于是「标签的选中逻辑」与「详情的焦点逻辑」各只有一处。
-	squad_panel.troop_focused.connect(_on_troop_activated)
+	# ★★ 详情焦点改为听输入层的统一信号：单击标签 / 数字键、双击快速选中都会发，
+	#   触摸端也走同一条（squad_panel 不再自己 emit troop_focused）。
+	#   复用 `_on_troop_activated`（点左栏下半将领格也走它：只改展开哪一支，不动选中集合）。
+	if input_ctrl != null and not input_ctrl.general_focused.is_connected(_on_troop_activated):
+		input_ctrl.general_focused.connect(_on_troop_activated)
 
 
 # ------------------------------------------------------------------
@@ -932,6 +933,11 @@ func _tab_plan() -> Dictionary:
 		if b != null and b.type == BuildingRes.TYPE_ZONE_CENTER:
 			return {"kind": "zone_center", "pages": [PageTabsRes.PAGE_ORDER, PageTabsRes.PAGE_RECRUIT],
 				"default": PageTabsRes.PAGE_ORDER}
+		# ★★ 2026.10.26：取消建筑升级后，木墙 / 哨塔 / 石墙 / 警戒塔没有任何可操作项
+		#    → 与「选中敌对建筑」同一档：立一颗空格子（PAGE_NONE）。
+		if b != null and not world.building_can_upgrade(String(b.type)):
+			return {"kind": "building", "pages": [PageTabsRes.PAGE_NONE],
+				"default": PageTabsRes.PAGE_NONE}
 		return {"kind": "building", "pages": [PageTabsRes.PAGE_ORDER],
 			"default": PageTabsRes.PAGE_ORDER}
 	# 选中部队 / 单位 → 「操作」+「单位」两页（默认操作）
@@ -1084,17 +1090,10 @@ func _rebuild_card() -> void:
 	var page := String(page_tabs.page()) if page_tabs != null else ""
 	match page:
 		PageTabsRes.PAGE_BUILD:
-			# ★★ 本轮起读 **config.json 的 building 段**（`buildable = true` 的那几项），
-			#    不再是写死的 `BuildingRes.DEFS`：编辑器里新加的建筑要真的出现在这一页，
-			#    名字 / 说明 / 快捷键也跟着数据走。
-			for d in cfg.buildable_building_defs():
-				entries.append({
-					"type": "build",
-					"build_type": String(d.get("id", "")),
-					"name": String(d.get("name", "")),
-					"desc": "%s（快捷键 %s，也可点这一格）" % [String(d.get("desc", "")),
-															String(d.get("hotkey", ""))],
-				})
+			# ★★ 2026.10.26：建筑页也改成**按行解锁**（与单位页同一套 `tier`）：
+			#    第 1 行木墙 / 哨塔（1 级大本营），第 2 行石墙 / 警戒塔（2 级）。
+			#    不足 3 个的格子留空；不可建造的格子 `ready = false`（置灰 + 悬停写原因）。
+			entries = _build_entries()
 		PageTabsRes.PAGE_UNIT:
 			entries = _recruit_entries("recruit", "recruit.list")
 		PageTabsRes.PAGE_RECRUIT:
@@ -1210,6 +1209,10 @@ func point_hits_ui(global_pos: Vector2) -> bool:
 
 ## 接收一个触摸事件（由 game_scene3d 在 `_input` 里转发）。
 func handle_touch(event: InputEventScreenTouch) -> void:
+	# ★★ 右侧将领标签优先：单击 / 双击 / 长按都由 squad_panel → input_ctrl 处理。
+	#   命中标签时整串触摸（按下 + 抬起）都归它，不再走命令卡 / 科技格的长按详情。
+	if squad_panel != null and squad_panel.handle_touch(event):
+		return
 	if event.pressed:
 		# 新的一次触摸：清掉上一轮遗留的「吞掉激活」，并重置长按监视。
 		_lp_swallow = false
@@ -1260,6 +1263,9 @@ func _clear_hud_hover() -> void:
 
 ## 手指在 UI 上滑动：动得够远就取消这次长按（那是想拖动 / 划走，不是想看详情）。
 func handle_touch_drag(event: InputEventScreenDrag) -> void:
+	# ★ 将领标签：滑走超过阈值 → 取消这次标签按住（单击 / 长按都不再触发）。
+	if squad_panel != null:
+		squad_panel.handle_touch_drag(event)
 	if not _lp_active or _lp_shown:
 		return
 	if event.position.distance_to(_lp_press_pos) > cfg.touch_pan_min_px:
@@ -1398,24 +1404,30 @@ func _entry_cost(entry: Dictionary) -> Dictionary:
 	return v if typeof(v) == TYPE_DICTIONARY else {}
 
 
-## 建筑（建筑页那两格：城墙 / 箭塔）—— 说明 + 血量 + 攻击（箭塔）+ 占地 + 造价 + 快捷键。
-## ★ 数值全部来自 `config.json` 的 `building.<type>.*`，与 logic/building.gd 读的是同一份；
-##   `tower.hp_max` 在 config 里没写（走建筑的兜底 300），这里也用同一个兜底值。
+## 建筑（建筑页那几格：木墙 / 哨塔 / 石墙 / 警戒塔）—— 说明 + 血量 + 攻击 + 远程免伤 + 占地 + 造价 + 快捷键。
+## ★ 数值全部来自 `config.json` 的 `building.<type>.*`，与 logic/building.gd 读的是同一份。
 func _hover_build(entry: Dictionary) -> Dictionary:
 	var t := String(entry.get("build_type", ""))
 	var lines: Array = []
 	lines.append(cfg.str_val("building.%s.desc" % t, ""))
 	lines.append("血量上限 %s" % _fmt_num(cfg.num("building.%s.hp_max" % t, 300.0)))
-	if t == BuildingRes.TYPE_TOWER:
+	# ★★ 2026.10.26：不再写死 TYPE_TOWER —— 任何 attackable 的塔（含警戒塔）都出这一行。
+	if cfg.building_attackable(t):
+		var atk: Dictionary = cfg.building_attack_of(t, 1)
 		lines.append("攻击 %s / 射程 %s 格 / 间隔 %ss" % [
-			_fmt_num(cfg.num("building.tower.damage", 0.0)),
-			_fmt_num(cfg.num("building.tower.range", 0.0)),
-			_fmt_num(cfg.num("building.tower.cooldown", 0.0))])
+			_fmt_num(float(atk.get("damage", 0.0))),
+			_fmt_num(float(atk.get("range", 0.0))),
+			_fmt_num(float(atk.get("cooldown", 0.0)))])
+	lines.append("远程免伤 %d%%（投石车等攻城伤害不受影响）"
+		% int(round(cfg.building_ranged_reduction(t) * 100.0)))
 	lines.append("本体占格 %d%%（居中；本体之外的缝隙走得过去）" % int(round(
 		cfg.building_body_scale(t) * 100.0)))
 	var cost: Variant = cfg.get_path_value("building.%s.cost" % t)
 	lines.append("造价 %s" % _cost_text(cost if typeof(cost) == TYPE_DICTIONARY else {}))
 	lines.append("快捷键 %s（也可点这一格进入建造模式）" % cfg.str_val("building.%s.hotkey" % t, ""))
+	if not bool(entry.get("ready", true)):
+		lines.append("★ 需要 %d 级大本营（当前 %d 级）" % [
+			int(entry.get("tier", 1)), int(entry.get("base_level", 1))])
 	return _hover_text(String(entry.get("name", "")), lines)
 
 
@@ -1613,8 +1625,12 @@ func _hover_building(entry: Dictionary) -> Dictionary:
 	lines.append(String(entry.get("desc", "")))
 	if b != null:
 		var kind := String(entry.get("type", ""))
-		lines.append("当前等级 %d / %d" % [b.level, world.building_max_level(b.type)])
+		# ★★ 2026.10.26：只有大本营还有等级；木墙 / 哨塔等永远 1 级，不再展示等级。
+		if String(b.type) == BuildingRes.TYPE_BASE:
+			lines.append("当前等级 %d / %d" % [b.level, world.building_max_level(b.type)])
 		lines.append("血量 %s / %s" % [_fmt_num(b.hp), _fmt_num(b.hp_max)])
+		lines.append("远程免伤 %d%%（攻城伤害不受影响）" % int(round(
+			cfg.building_ranged_reduction(String(b.type)) * 100.0)))
 		if String(b.type) == BuildingRes.TYPE_BASE:
 			lines.append("本级限制：%s" % _base_limits_text(b.level))
 		if kind == "building_upgrade":
@@ -1685,6 +1701,46 @@ func _tech_tier_name(tier: int) -> String:
 		2: return "二阶"
 		3: return "三阶"
 	return "—"
+
+
+## ★★ 2026.10.26 建筑页内容：与单位页同一套「按行解锁」。
+##   行号 = `building.<type>.tier`（1 = 1 级大本营，2 = 2 级大本营）；同一行按 config 顺序。
+##   不足 3 个的格子留空字典；未解锁的格子 `ready = false`（command_card 置灰）。
+func _build_entries() -> Array:
+	var slots: Array = []
+	for _i in UiLayoutRes.CARD_SLOTS:
+		slots.append({})
+	if cfg == null:
+		return slots
+	var next_slot: Dictionary = {}
+	for d in cfg.buildable_building_defs():
+		var e: Dictionary = d
+		var bid := String(e.get("id", ""))
+		var tier := clampi(cfg.building_tier(bid), 1, 3)
+		var row_start: int = (tier - 1) * 3
+		var col: int = int(next_slot.get(tier, row_start))
+		# 一行最多 3 个：多出来的不画（不静默挤到下一行）。
+		if col < row_start or col >= row_start + 3 or col >= UiLayoutRes.CARD_SLOTS:
+			continue
+		next_slot[tier] = col + 1
+		slots[col] = {
+			"type": "build",
+			"build_type": bid,
+			"name": String(e.get("name", "")),
+			"desc": "%s（快捷键 %s，也可点这一格）" % [
+				String(e.get("desc", "")), String(e.get("hotkey", ""))],
+			"tier": tier,
+		}
+	var level: int = world.unit_recruit_level(world.my_faction) if world != null else 1
+	for i in slots.size():
+		var s: Dictionary = slots[i]
+		if s.is_empty():
+			continue
+		s["base_level"] = level
+		s["ready"] = int(s.get("tier", 1)) <= level
+		if not bool(s["ready"]):
+			s["lock_reason"] = "tier"
+	return slots
 
 
 ## 把一张招募表（recruit.list / recruit.zone.list）翻成命令卡的条目。
@@ -2088,6 +2144,13 @@ func _on_card_entry(entry: Dictionary) -> void:
 		return
 	match String(entry.get("type", "")):
 		"build":
+			# ★★ 2026.10.26：建筑页第二行（石墙 / 警戒塔）要 2 级大本营。
+			#    置灰的格子按钮点不到；这里再判一次是保险（键盘 / 直接 activate_index 也走这条路）。
+			if not bool(entry.get("ready", true)):
+				show_notice("大本营升到 %d 级才能建造%s（当前 %d 级）" % [
+					int(entry.get("tier", 1)), String(entry.get("name", "")),
+					int(entry.get("base_level", 1))])
+				return
 			var t := String(entry.get("build_type", ""))
 			if input_ctrl.build_type == t:
 				input_ctrl.set_build_type("")        # 再点一次 = 退出建造模式（与 B/T 一致）
@@ -2664,6 +2727,22 @@ func handle_key(event: InputEventKey) -> bool:
 	if command_card == null:
 		return false
 	return command_card.handle_key(event)
+
+
+## ★★ Tab = 切换右下角页签（Shift+Tab 反向）。
+##
+## ★ 由 `game_scene3d._input` 在 **GUI 之前**调用：Tab 同时是 Godot 的「焦点导航」
+##   按键，等 `_unhandled_input` 时可能已经被 GUI 吃掉，焦点还会乱跑。
+## ★ 选项页是模态 → 让 Tab 留给它做焦点导航；观战 / UI 隐藏 / 只有一页时也不消费。
+## @return true = 真的切了页（调用方应 `set_input_as_handled()`）
+func handle_tab_key(event: InputEventKey) -> bool:
+	if event == null or not event.pressed or event.echo or event.keycode != KEY_TAB:
+		return false
+	if page_tabs == null or not page_tabs.visible:
+		return false
+	if options_panel != null and options_panel.is_open():
+		return false
+	return page_tabs.cycle_page(-1 if event.shift_pressed else 1)
 
 
 ## 鼠标是不是停在**可点的控件**上（部队行 / 命令卡 / 页签 / 设置）。
@@ -3395,7 +3474,9 @@ func _building_detail_rows(b) -> Dictionary:
 			_fmt_num(b.attack_damage(cfg)), _fmt_num(b.attack_cooldown(cfg))]))
 	else:
 		left.append(_row("攻击 —"))
-	right.append(_row("防御 0"))
+	# ★★ 2026.10.26：所有建筑对远程伤害免伤 90%（攻城伤害不走这一条）。
+	right.append(_row("远程免伤 %d%%" % int(round(
+		cfg.building_ranged_reduction(String(b.type)) * 100.0))))
 	if String(b.type) == BuildingRes.TYPE_BASE:
 		right.append(_row("等级 %d/%d" % [b.level, world.building_max_level(b.type)]))
 		right.append(_small_row(_base_limits_text(b.level)))

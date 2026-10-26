@@ -82,13 +82,22 @@
     "_projectile_comment": [
       "★★ 射箭投掷物（远程单位 / 可攻击建筑）的**纯表现**参数（见 view/projectile_view_3d.gd）。",
       "   伤害结算不在这里 —— 它在逻辑层（logic/projectile.gd，用 combat.projectile_speed）。",
-      "   · projectile_size = 小方块边长（相对格宽；0.10 ≈ 1/10 格）——用户口径是「先用一个小方块代替」。",
+      "   · projectile_size = 小方块边长（相对格宽；0.10 ≈ 1/10 格）——没配箭的远程仍用它。",
       "   · projectile_arc_ratio = 抛物线拱高 = 起点↔终点距离 × 这个比例（它由视图施加，逻辑只走地面直线）。",
-      "   · projectile_trail_len = 拖尾保留的历史点数（一段短线跟在方块后方，随抛物线弯曲）。"
+      "   · projectile_trail_len = 拖尾保留的历史点数（一段短线跟在投射物后方，随抛物线弯曲）。",
+      "   ★★ 箭（本轮新增）：projectile_arrow_types 里的兵种（长弓兵 / 马弓手）射出的投掷物",
+      "      改成 assets/test_units/Projectile/arrow_white.png 的**箭形**，并染成开火方阵营色；",
+      "      其它（投石车、箭塔）仍是小方块。",
+      "   · projectile_arrow_types = 用箭的兵种 id 列表（空 [] = 全部退回小方块）。",
+      "   · projectile_arrow_texture = 箭贴图（白剪影 + alpha；颜色由阵营色乘上去）。",
+      "   · projectile_arrow_length = 箭长（相对格宽；0.45 ≈ 接近半个兵人的高度）。"
     ],
     "projectile_size": 0.10,
     "projectile_arc_ratio": 0.18,
     "projectile_trail_len": 6,
+    "projectile_arrow_types": ["longbowman", "horse_archer"],
+    "projectile_arrow_texture": "res://assets/test_units/Projectile/arrow_white.png",
+    "projectile_arrow_length": 0.45,
     "_hit_fx_comment": [
       "★★ 受击动效（本轮新增，见 view/hit_fx.gd 与 overlay_view_3d.gd）：",
       "   被打中的单位 / 建筑**闪白 + 左右振动一小段**。",
@@ -176,6 +185,17 @@
     "selection_ring_alpha": 0.8,
     "selection_ring_sec": 0.18,
     "selection_ring_scale_from": 1.5,
+    "_unit_outline_comment": [
+      "★★ 单位立牌的描边（见 view/unit_sprite_3d.gd 的 bake_asset）：",
+      "   · sprite_tint = art 的立牌（保留原画）：默认描边 = **阵营色**（3px / 将领 5px）；",
+      "   · sprite_tint = faction 的立牌（单字占位）：默认描边仍是深色（字本身已经是阵营色）。",
+      "   · ★ 单位被选中时，**整圈描边换成** unit_select_outline_color（金 #f2b544），宽度不变 ——",
+      "     是「阵营色边 → 金边」的替换，**不是**在阵营色外再套一圈。",
+      "   ★ 立牌画布是 64×96；art 档四周留了 6px 安全边，放得下最粗的将领描边（5px + 抗锯齿）。",
+      "   ★ 选中态是**另一张烘好的贴图**（MultiMesh 一批共用一张图，做不到逐实例描边），",
+      "     所以它会和「是否将领 / 是否濒死」一样多占一个批次；选中集合通常很小。"
+    ],
+    "unit_select_outline_color": "#f2b544",
     "_terrain_props_comment": [
       "★★ 地形装饰（见 view/terrain_props_view.gd）：树 / 山块 / 水面 / 树底阴影，",
       "   纯表现：只读 terrain / fog / buildings，不参与寻路、视野、快照。",
@@ -349,9 +369,16 @@
       "  · scroll_wheel_step_px：滚轮拨一格滚多少像素。",
       "  · drag_scroll_min_px：原生 ScrollContainer 上「按住拖动」的那条判据。",
       "    它比 scroll_drag_min_px 小：原生滚动不会把「点一下列表项」误判成滚动。",
-      "  · fade_in_sec：入场淡入时长（0 = 直接显示、不淡入）。"
+      "  · fade_in_sec：入场淡入时长（0 = 直接显示、不淡入）。",
+      "★ tag_long_press_sec / tag_double_click_sec：右侧将领标签与数字键的三套手势",
+      "  （view/input_controller.gd 的 gesture_press / poll_gestures）：",
+      "  · tag_long_press_sec：按住超过这么多秒 = 跟随该将领视角（默认沿用 touch.long_press_sec）；",
+      "  · tag_double_click_sec：两次单击之间的时间在阈值内 = 双击（快速选中 + 跳镜头）。",
+      "  ★ 标签与数字键共用同一套阈值；PC 与移动端也共用（移动端双击窗口 0.35 秒足够）。"
     ],
     "notice_sec": 2.0,
+    "tag_long_press_sec": 0.4,
+    "tag_double_click_sec": 0.35,
     "ai_panel": {
       "_comment": [
         "★ 合作模式 AI 队友的浮动指令面板（view/ai_order_panel.gd）。",
@@ -666,15 +693,22 @@
       "    radius_factor 是格半径（渲染与射程判定共用，碰撞另走 unit.collision_radius）。",
       "  ★★ icon = **地图上这个单位显示的那一个字**（本轮改版：原来是一份线条画的预制体）。",
       "     · 正好一个字符（中文 / 字母都行）；地图上就画这一个字，按阵营色上色。",
+      "     · ★ 没有专属立牌素材的兵种，3D 立牌也用这个字（单字占位）；",
+      "       素材由 tools/bake_unit_sprites.py 从本键生成 —— 改字之后要重跑一次脚本。",
       "     · 不写这个键 → 退成**名字的第一个字**（见 config.gd 的 unit_icon_of）。",
       "     · 将领用它所属兵种的那一个字（三位的 kind 都是 general，还靠描边更粗区分）。",
       "     · 编辑器：tools/unit_editor 的「单位」页 →「地图上的字」那一栏。",
-      "  ★★ sprite = **3D 立牌的素材路径**（本轮新增，占位素材）。",
-      "     · 取素材的**形状**（alpha 当剪影遮罩），运行时填充**阵营色** ⇒ 敌我仍分得清；",
+      "  ★★ sprite = **3D 立牌的素材路径**。",
+      "     · `sprite_tint = art` → **保留原画**（人物 / 武器照原样上屏），描边走**阵营色**；",
+      "       单位被选中时，**整圈描边换成金边**（旋钮见 render.unit_select_outline_color）。",
       "       **将领那一档的描边更粗**（与 icon 那条「靠描边区分将领」同一口径）。",
+      "     · `sprite_tint = faction`（默认）→ 取素材的 alpha 形状填**阵营色** + 深描边；",
+      "       缺素材的兵种用「单字」占位（骑 / 粮 / 士 / 骁 / 车），素材由",
+      "       tools/bake_unit_sprites.py 生成（字取自本表的 icon，不会两处不一致）。",
       "     · 不写这个键 / 路径载不到 → 渲染层退回**程序化剪影**（view/unit_sprite_3d.gd 的 bake）。",
       "     · 将领用它**所属兵种**的素材（unit_sprite_of 走 unit_type_of，与 icon 同口径）。",
-      "     · ⚠️ 只在 **3D 立牌**上生效；2D 遗留栈的「圆盘 + 一个字」不看这个键。",
+      "     · ⚠️ 只在 **3D 立牌**上生效；HUD / 详情栏那套「圆盘 + 一个字」不看这个键。",
+      "  ★ sprite_tint = 立牌的**上色口径**：只认 \"art\"（保留原画）；不写 / 别的值 = \"faction\"。",
       "  ★ 将领的数值 = 它所属类型的数值（用户确认「完全按对应兵种数值」）：",
       "    所以这里没有单独的将领数值块。想单独强化将领就在 unit.general 里加倍率，",
       "    并在 logic/config.gd 的 unit_hp_of / unit_combat_of 里乘上去。",
@@ -729,7 +763,8 @@
       "spearman": {
         "name": "长枪兵",
         "icon": "枪",
-        "sprite": "res://assets/test_units/SpearMan/s.png",
+        "sprite": "res://assets/test_units/SpearMan/spearman.png",
+        "sprite_tint": "art",
         "class": "infantry",
         "ranged": false,
         "hp_max": 140,
@@ -746,7 +781,8 @@
       "longbowman": {
         "name": "长弓兵",
         "icon": "弓",
-        "sprite": "res://assets/test_units/LongbowMan/l.png",
+        "sprite": "res://assets/test_units/LongbowMan/longbowman.png",
+        "sprite_tint": "art",
         "class": "infantry",
         "ranged": true,
         "hp_max": 80,
@@ -763,7 +799,7 @@
       "rider": {
         "name": "骑手",
         "icon": "骑",
-        "sprite": "res://assets/test_units/Rider/r.png",
+        "sprite": "res://assets/test_units/Rider/rider.png",
         "class": "cavalry",
         "ranged": false,
         "hp_max": 110,
@@ -781,6 +817,7 @@
       "grain_cart": {
         "name": "粮车",
         "icon": "粮",
+        "sprite": "res://assets/test_units/GrainCart/grain_cart.png",
         "class": "cavalry",
         "ranged": true,
         "can_attack": false,
@@ -799,6 +836,7 @@
       "knight": {
         "name": "骑士",
         "icon": "士",
+        "sprite": "res://assets/test_units/Knight/knight.png",
         "class": "cavalry",
         "ranged": false,
         "hp_max": 260,
@@ -816,6 +854,7 @@
       "horse_archer": {
         "name": "马弓手",
         "icon": "骁",
+        "sprite": "res://assets/test_units/HorseArcher/horse_archer.png",
         "class": "cavalry",
         "ranged": true,
         "hp_max": 100,
@@ -834,6 +873,7 @@
       "catapult": {
         "name": "投石车",
         "icon": "车",
+        "sprite": "res://assets/test_units/Catapult/catapult.png",
         "class": "siege",
         "ranged": true,
         "hp_max": 180,
@@ -1291,8 +1331,8 @@
       "★ 本体（body）：建筑真正**占地方**的那块方块，永远**居中**放在自己那一格里，",
       "  边长 = body_scale × 格宽。渲染与碰撞读的是同一个数（view 那边不许再写内缩量）。",
       "  规则（手玩定的）：本体挡**敌方**单位、不挡己方；本体之外的缝可以走。",
-      "  wall = 1.0：城墙就是填满整格（与从前完全一致，敌人仍然一格都进不来）。",
-      "  base / tower = 0.6：格子四周各留 0.2 格，相邻两格的建筑之间留 0.4 格通道 ——",
+      "  wall / stone_wall = 1.0：城墙就是填满整格（与从前完全一致，敌人仍然一格都进不来）。",
+      "  base / tower / watch_tower = 0.6：格子四周各留 0.2 格，相邻两格的建筑之间留 0.4 格通道 ——",
       "  测试敌人的碰撞半径是 unit.collision_radius（0.18，直径 0.36），所以刚好挤得过去；",
       "  想让它过不去就把 body_scale 调大（≥ 0.65 就堵死了），想更宽松就调小。"
     ],
@@ -1300,19 +1340,23 @@
     "_defs_comment": [
       "★★ 本轮起：**可建造的建筑定义以这一段为准**（editor：tools/unit_editor 的「建筑」页）。",
       "  logic/building.gd 的 DEFS 现在只剩「区划中心（不是建筑，编辑器不管它）」+ 未知类型的兜底；",
-      "  base / wall / tower 的**阻挡语义也搬到这里**了（下面的 blocks_* 四个键），读法是",
+      "  base / wall / tower / stone_wall / watch_tower 的**阻挡语义也搬到这里**了（下面的 blocks_* 四个键），读法是",
       "  `cfg.building_def(type)` = DEFS 兜底 ⊕ 这一段（**这一段优先**）。",
       "★ 每个类型能写的键：",
       "  name / desc / hotkey  —— 名字 / 说明 / 建造页快捷键（右下「建筑」页直接读这一段）",
       "  buildable             —— 会不会出现在「建筑」页的命令卡里（大本营 false）",
+      "  tier                  —— ★ 建造页的**行号 / 解锁所需的大本营等级**（缺省 1）。",
+      "                            第 1 行 tier=1 开局可建；第 2 行 tier=2 需要 2 级大本营。",
       "  build_sec             —— ★ 建造读条秒数。**0 = 瞬发**（默认，与从前的行为逐位一致）",
       "  cost {food, gold}     —— 造价（economy.enabled = false 时建造免费，见 logic/economy.gd）",
-      "  hp_max                —— 基础血量上限（等级 / 科技都是在它上面乘倍率，不叠着乘）",
+      "  hp_max                —— 基础血量上限（大本营等级 / 科技都是在它上面乘倍率）",
       "  body_scale            —— 本体边长占一格的比例（渲染与碰撞共用同一个数）",
       "  blocks_player / blocks_enemy           —— **格级**阻挡（只给 A* 用，见 building.gd 文件头）",
       "  body_blocks_player / body_blocks_enemy —— **本体级**阻挡（只给移动碰撞用）",
       "  attackable            —— 能不能攻击：true 才读 damage / range / cooldown",
       "  damage / range / cooldown —— 攻击力 / 攻击距离（格）/ 攻击间隔（秒）",
+      "  ranged_reduction      —— ★★ **对远程伤害的免伤比例**（0.9 = 90%，缺省 0.9）。",
+      "                            只作用于投掷物；近战与攻城（投石车）走别的伤害标签，不受影响。",
       "  vision                —— ★★ **这一栋建筑自己的视野半径（格）**（战争迷雾）。",
       "                            与 unit.types.<id>.vision 同一条口径：从建筑所在的**格心**算起，",
       "                            视线被**山脉**挡住（其他地形不挡）。",
@@ -1320,12 +1364,13 @@
       "                            · 编辑器：tools/unit_editor 的「建筑」页 →「视野半径」那一栏",
       "                              （清空就是删掉这个键 → 回到 fog.vision_building）。",
       "  color                 —— 地图上的颜色（view 读它）",
-      "★ 能升到几级、每级多少血 / 多少钱多少秒，写在 upgrade.levels.<type> 那一段，不在这里。",
-      "★ 编辑器的「添加建筑」会照这份键表建一个完整条目 + 一张 3 级升级表。"
+      "★ 本轮起**只有大本营可以升级**（upgrade.levels.base）；木墙 / 哨塔 / 石墙 / 警戒塔都不再有等级表。",
+      "★ 编辑器的「添加建筑」会照这份键表建一个完整条目（不再自动配升级表）。"
     ],
 
     "wall": {
-      "id": "wall", "name": "城墙", "hotkey": "B", "buildable": true,
+      "id": "wall", "name": "木墙", "hotkey": "B", "buildable": true,
+      "tier": 1, "ranged_reduction": 0.9,
       "build_sec": 4,
       "cost": { "food": 50, "gold": 50 },
       "hp_max": 300,
@@ -1335,10 +1380,11 @@
       "attackable": false,
       "vision": 5,
       "color": "#7d7466",
-      "desc": "填满整个地块；己方单位可穿过，敌方单位不可进入"
+      "desc": "木制城墙：填满整个地块；己方单位可穿过，敌方单位不可进入"
     },
     "tower": {
-      "id": "tower", "name": "箭塔", "hotkey": "T", "buildable": true,
+      "id": "tower", "name": "哨塔", "hotkey": "T", "buildable": true,
+      "tier": 1, "ranged_reduction": 0.9,
       "build_sec": 6,
       "cost": { "food": 100, "gold": 100 },
       "hp_max": 300,
@@ -1349,7 +1395,36 @@
       "damage": 12, "range": 3, "cooldown": 0.8,
       "vision": 12,
       "color": "#8d6e63",
-      "desc": "对范围内最近的敌人造成单体伤害"
+      "desc": "基础哨塔：对范围内最近的敌人造成单体伤害"
+    },
+    "stone_wall": {
+      "id": "stone_wall", "name": "石墙", "hotkey": "Y", "buildable": true,
+      "tier": 2, "ranged_reduction": 0.9,
+      "build_sec": 5,
+      "cost": { "food": 120, "gold": 120 },
+      "hp_max": 700,
+      "body_scale": 1.0,
+      "blocks_player": false, "blocks_enemy": true,
+      "body_blocks_player": false, "body_blocks_enemy": true,
+      "attackable": false,
+      "vision": 5,
+      "color": "#9aa0a6",
+      "desc": "石制城墙：血量更高；己方单位可穿过，敌方单位不可进入"
+    },
+    "watch_tower": {
+      "id": "watch_tower", "name": "警戒塔", "hotkey": "U", "buildable": true,
+      "tier": 2, "ranged_reduction": 0.9,
+      "build_sec": 7,
+      "cost": { "food": 180, "gold": 180 },
+      "hp_max": 550,
+      "body_scale": 0.6,
+      "blocks_player": false, "blocks_enemy": false,
+      "body_blocks_player": false, "body_blocks_enemy": true,
+      "attackable": true,
+      "damage": 16, "range": 4, "cooldown": 0.7,
+      "vision": 15,
+      "color": "#b07d62",
+      "desc": "高级哨塔：攻击力 / 射程 / 视野更高"
     },
     "base": {
       "id": "base", "name": "大本营", "buildable": false,
@@ -1362,9 +1437,10 @@
       "attackable": true,
       "damage": 12, "range": 3, "cooldown": 0.8,
       "destructible": true,
+      "ranged_reduction": 0.9,
       "vision": 9,
       "color": "#4a90d9",
-      "desc": "开局自带，不可建造、不可拆除；会像箭塔一样攻击射程内的敌人"
+      "desc": "开局自带，不可建造、不可拆除；会像防御塔一样攻击射程内的敌人"
     }
   },
 
@@ -1614,27 +1690,21 @@
 
   "upgrade": {
     "_comment": [
-      "★ 建筑升级（右下「操作」页签 → 「升级大本营 / 升级箭塔 / 升级城墙」）。",
+      "★ 建筑升级（右下「操作」页签 → 「升级大本营」）。",
+      "  ★★ 2026.10.26 口径变更：**只有大本营可以升级**；木墙 / 哨塔 / 石墙 / 警戒塔不再有等级表。",
       "  每次升级都是一条**读条**（复用招募单位那块面板的样式），入队即扣粮食 / 黄金，",
       "  读条中可以在面板上点它取消并**全额退款**（与招募同一条规则）。",
       "★ levels 是**等级表**：下标 0 = 1 级（开局就是它）。",
       "  · 读到 levels[k] 表示「当前 k 级时」的数值；下一级 = k + 1 级；",
       "    所以**最大等级 = levels 的条数**（这里 3 条 ⇒ 1→2→3，最多升 2 次，3 级封顶）。",
-      "    `logic/upgrade.gd` 的 can_upgrade() 按 real_max_level() = 条数**算**，",
-      "    不写死 3 —— 以后想加等级只加一条 JSON，代码一行不改。",
+      "    `logic/upgrade.gd` 的 can_upgrade() 按条数**算**，不写死 3。",
       "  · hp_mult 是**血量上限倍率**（乘在 config.building.<type>.hp_max 上）：",
       "    1.0 / 1.5 / 2.25（每级 ×1.5）。等级越高越耐打。",
-      "  ★★ 大本营的等级还带四条限制（只对 base 那一张表有意义）：",
+      "  ★★ 大本营的等级还带四条限制：",
       "    max_generals（最多拥有几名将领）/ retinue_cap_bonus（所有将领编制上限 +N）",
       "    / max_techs（最多同时启用几条科技）/ max_tech_tier（最高能启用第几阶科技）。",
       "  · cost / time_sec 是**升到下一级**要花的钱与读条秒数（本级没有 next 就是不能升）。",
-      "  只有大本营 / 城墙 / 箭塔有这个入口：区划中心是**中立无敌障碍**（无血量）——",
-      "  需求里它走的是「特化」那三个选项，见下面的 zone_spec。",
-      "★★ 本轮新增：每一行还可以写 **damage / range / cooldown**（攻击力 / 距离 / 间隔）——",
-      "  **没写的键 = 沿用 building.<type> 那一档的基础攻击值**，所以现在的数据逐位不变。",
-      "  读的地方只有一处：cfg.building_attack_of(type, level)（building.gd 的",
-      "  attack_damage / attack_range / attack_cooldown 走它）—— 每次开火都按**当前等级**取一次，",
-      "  所以升级读完不需要再刷任何缓存的状态。"
+      "  区划中心是**中立无敌障碍**（无血量）——它走的是「特化」那三个选项，见下面的 zone_spec。"
     ],
     "levels": {
       "base": [
@@ -1644,16 +1714,6 @@
           "max_generals": 6, "retinue_cap_bonus": 2, "max_techs": 2, "max_tech_tier": 2 },
         { "level": 3, "hp_mult": 2.25, "cost": { "food": 400, "gold": 400 }, "time_sec": 20,
           "max_generals": 10, "retinue_cap_bonus": 4, "max_techs": 3, "max_tech_tier": 3 }
-      ],
-      "wall": [
-        { "level": 1, "hp_mult": 1.0 },
-        { "level": 2, "hp_mult": 1.5, "cost": { "food": 100, "gold": 100 }, "time_sec": 10 },
-        { "level": 3, "hp_mult": 2.25, "cost": { "food": 200, "gold": 200 }, "time_sec": 15 }
-      ],
-      "tower": [
-        { "level": 1, "hp_mult": 1.0 },
-        { "level": 2, "hp_mult": 1.5, "cost": { "food": 100, "gold": 100 }, "time_sec": 10 },
-        { "level": 3, "hp_mult": 2.25, "cost": { "food": 200, "gold": 200 }, "time_sec": 15 }
       ]
     }
   },
@@ -2676,10 +2736,17 @@
         "retreat_counter_ratio": 0.75
       },
       "march": {
+        "_comment": [
+          "★★ 2026.10.26：arrive_radius / hold_radius 现在真的被使用 ——",
+          "  全部队伍进入 arrive_radius、目标点 hold_radius 内没有可见敌人时，",
+          "  行军指令提前结束回到 auto；否则仍由 command_hold_sec（60s）兜底。",
+          "  end_when_clear = false 可关掉提前结束。"
+        ],
         "arrive_radius": 3.0,
         "hold_radius": 7.0,
         "reissue_sec": 6.0,
-        "arrive_timeout_sec": 90.0
+        "arrive_timeout_sec": 90.0,
+        "end_when_clear": true
       },
       "mass": {
         "arrive_radius": 3.0,
@@ -2772,8 +2839,6 @@
         "wall_border_per_tick": 3,
         "wall_border_keep_slots": 16,
         "wall_border_require_armed_generals": true,
-        "defense_upgrade_enabled": true,
-        "defense_upgrade_tower_bonus": 12.0,
         "tower_frontier_bonus": 4.0,
         "base_upgrade_priority": 10.0,
         "tech_priority": []
@@ -2943,6 +3008,8 @@
     "wall": "#8b8172",
     "wall_dark": "#5f594e",
     "tower": "#a1887f",
+    "stone_wall": "#9aa0a6",
+    "watch_tower": "#b07d62",
     "zone_center": "#ff8adf",
     "general": "#ffd166",
     "general_sel": "#fff2b0",

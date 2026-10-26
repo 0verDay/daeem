@@ -667,7 +667,9 @@ def t_config_and_maps() -> None:
        "★★ config 的 unit.general 里**没有** escort（开局附属兵改在摆放页摆）")
     ok(not hasattr(info, "escort_count") and not hasattr(info, "escorts"),
        "★ 只读快照也不再提供「开局编制」那种字段")
-    eq(info.building_types, ["base", "tower", "wall"], "config：三种建筑")
+    eq(info.building_types,
+       ["base", "stone_wall", "tower", "wall", "watch_tower"],
+       "config：五种建筑（按 id 排序）")
     eq(info.zone_kinds, ["food", "gold", "population"], "config：三种区划")
     ok("patrol_interval_sec" in info.ai_garrison_cfg, "config：阵地性 AI 的默认参数拿到了")
     ok("cooldown_sec" in info.ai_reddot_cfg, "config：红点性 AI 的默认参数拿到了")

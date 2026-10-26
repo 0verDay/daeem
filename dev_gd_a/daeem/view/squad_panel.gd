@@ -10,20 +10,21 @@
 ##   · 真正空着的槽显示「…」并置灰、**点了不做任何事**；阵亡槽同样不可点，但保留名字
 ##   · 每条标签 = 数字（1..9，第 10 个写 0）+ 将领名字 + 「当前编制/编制上限」
 ##   · 当前编制 = 队长 + 附属兵；上限 = cfg.general_cap_at(该将领序号)，默认 11
-##   · ★★ 点一条 = **反选**整队（需求：点击代表反选）：
+##   · ★★ 单击 = **反选**整队（需求：点击代表反选）：
 ##       没选中 → 把整队**加进**当前选中；已选中 → 把整队**从选中里撤掉**。
 ##       例：无选中 → 点 1 = 选中 1 → 点 2 = 选中 1+2 → 再点 1 = 只剩 2。
 ##       ⇒ 点掉最后一支时选中集合为空（这是反选的正常结果，不是 bug）。
-##   · 点中的那一支同时成为详情面板「展开」的部队（发 `troop_focused`，见 HUD 的接法）
-##   · 点一条**镜头不动**（需求原话）
-##   · 悬停 / 选中：金色泛光从最右竖线向左推进（连续渐变，见 view/troop_row.gd）
+##   · ★★ 长按（0.4s）= 跟随该将领视角；双击 = 快速选中（只加不撤）+ 立即跳镜头。
+##       三套手势的**状态机在 input_controller**（标签 / 数字键同源），本文件只负责
+##       把 PC 的 Button 信号与移动端的触摸事件转给 `input_ctrl.gesture_*()`。
+##   · 单击**镜头不动**（需求原话）；跳镜头只属于双击。
+##   · 悬停 / 选中：金色泛光从最右竖线向左推进（连续渐变，见 view/troop_row.gd）；
+##     选中的键帽亮起、悬停时黯淡（见 troop_row 的 `number_key_state()`）。
+##   · 手机端整行 `MOUSE_FILTER_IGNORE`，触摸在 `handle_touch()` 里统一路由
+##     （否则 emulate_mouse_from_touch 会让同一次触摸再点一遍）。
 ##
 ## ★ 纯表现：只读 world / 槽位表与输入层的选中状态，改选中也只走 input_controller 的接口。
 extends Control
-
-## ★ 点中某支标签后发出（1 起的**固定槽位**，与「部队 1/2/3」/ 数字键同一口径）：
-##   HUD 收到后把详情面板切到这一支（`_on_troop_activated`，只改「展开哪一支」，不动选中）。
-signal troop_focused(number: int)
 
 const UiLayoutRes = preload("res://view/ui_layout.gd")
 const FactionRes = preload("res://logic/faction.gd")
@@ -52,6 +53,17 @@ var _refresh_accum: float = 0.0
 ## 刷新过多少次（诊断；测试用它确认手机调度器的槽 2 真的调了部队列表）
 var refresh_count: int = 0
 
+## ★★ 手机端：行不吃鼠标，触摸由本文件统一路由（见文件头）。
+var _touch_mode: bool = false
+## 这一串触摸按在第几槽（1 起；0 = 当前没有标签触摸）
+var _touch_slot: int = 0
+## 按在标签上的那根手指的 index（多指时其它手指不归标签管）
+var _touch_index: int = -1
+var _touch_press_pos: Vector2 = Vector2.ZERO
+var _touch_cancelled: bool = false
+## 上一次按下后是否已收到抬起（用于 `handle_touch` 的返回值：整串触摸都由标签消化）
+var _touch_consumed: bool = false
+
 
 func setup(p_cfg, p_world, p_input, p_font: Font = null, p_team_slots = null) -> void:
 	cfg = p_cfg
@@ -63,6 +75,9 @@ func setup(p_cfg, p_world, p_input, p_font: Font = null, p_team_slots = null) ->
 	_refresh_interval = 0.0
 	if OS.has_feature("mobile") and cfg != null and cfg.mobile_hud_refresh_hz > 0.0:
 		_refresh_interval = 1.0 / cfg.mobile_hud_refresh_hz
+	# ★★ 手机端：触摸由 `handle_touch()` 统一路由，行必须鼠标穿透
+	#   （否则 emulate_mouse_from_touch 会让同一次触摸再点一遍 Button）。
+	_touch_mode = OS.has_feature("mobile")
 
 	name = "SquadPanel"
 	mouse_filter = Control.MOUSE_FILTER_STOP          # 面板底下的地图不吃这一片的点击
@@ -72,8 +87,14 @@ func setup(p_cfg, p_world, p_input, p_font: Font = null, p_team_slots = null) ->
 	for i in UiLayoutRes.SQUAD_SLOTS:
 		var row = TroopRowRes.new()
 		row.setup(_font, i, cfg)
+		row.set_touch_mode(_touch_mode)
 		UiLayoutRes.apply_rect(row, UiLayoutRes.squad_slot_local(i))
+		# 按下 → 开始长按计时；pressed = 行内抬起（有效单击）；button_up 兜底取消；
+		# mouse_exited = 拖出本行（取消这次长按）。
+		row.button_down.connect(_on_slot_down.bind(i))
 		row.pressed.connect(_on_slot_pressed.bind(i))
+		row.button_up.connect(_on_slot_up.bind(i))
+		row.mouse_exited.connect(_on_slot_exit.bind(i))
 		add_child(row)
 		_rows.append(row)
 		_teams.append([])
@@ -103,11 +124,13 @@ func refresh() -> void:
 	refresh_count += 1
 	if world == null or input_ctrl == null:
 		return
+	# ★★ 当前正在跟随的将领（没有 → null）：那一行最左侧画「跟随眼睛」。
+	var followed = _followed_unit()
 	# ★★ 有稳定槽位表：按槽位 1..10 刷新（阵亡行置灰、仍占位）。
 	#    没有（老测试 / 2D 路径）才退回旧的「存活队伍」口径。
 	if team_slots != null:
 		team_slots.sync(world)
-		_refresh_from_slots()
+		_refresh_from_slots(followed)
 		return
 	var teams := _collect_teams()
 	for i in _rows.size():
@@ -120,14 +143,23 @@ func refresh() -> void:
 			var cap := _formation_cap(leader, team.size())
 			row.set_data(_numbers[i], String(leader.name), "%d/%d" % [team.size(), cap], true)
 			row.set_selected(input_ctrl.selected_units.has(leader))
+			row.set_following(followed != null and followed == leader)
 		else:
 			_teams[i] = []
 			row.set_data(_numbers[i], "…", "--/--", false)
 			row.set_selected(false)
+			row.set_following(false)
+
+
+## 当前跟随的将领（相机替身没有这个接口时返回 null）。
+func _followed_unit():
+	if input_ctrl == null or not input_ctrl.has_method("following_general"):
+		return null
+	return input_ctrl.following_general()
 
 
 ## 按稳定槽位刷新：活着的行可点，阵亡的行置灰但仍占位（显示名字 + 重生倒计时）。
-func _refresh_from_slots() -> void:
+func _refresh_from_slots(followed = null) -> void:
 	for i in _rows.size():
 		var row = _rows[i]
 		var slot: int = i + 1
@@ -136,6 +168,7 @@ func _refresh_from_slots() -> void:
 			_dead[i] = false
 			row.set_data(_numbers[i], "…", "--/--", false)
 			row.set_selected(false)
+			row.set_following(false)
 			continue
 		if team_slots.slot_is_dead(slot):
 			# ★ 阵亡：名字 / 状态仍然显示，用 filled=false 让 troop_row 把整行压暗、
@@ -150,6 +183,7 @@ func _refresh_from_slots() -> void:
 				st = "阵亡"
 			row.set_data(_numbers[i], nm, st, false)
 			row.set_selected(false)
+			row.set_following(false)
 			continue
 		var u = team_slots.unit_in_slot(slot)
 		if u == null:
@@ -157,6 +191,7 @@ func _refresh_from_slots() -> void:
 			_dead[i] = false
 			row.set_data(_numbers[i], "…", "--/--", false)
 			row.set_selected(false)
+			row.set_following(false)
 			continue
 		var team: Array = world.group_of(u)
 		if team.is_empty():
@@ -166,6 +201,7 @@ func _refresh_from_slots() -> void:
 		var cap := _formation_cap(u, team.size())
 		row.set_data(_numbers[i], String(u.name), "%d/%d" % [team.size(), cap], true)
 		row.set_selected(input_ctrl.selected_units.has(u))
+		row.set_following(followed != null and followed == u)
 
 
 ## 现有队伍：己方**在场的队长**各算一队。
@@ -202,63 +238,118 @@ func _formation_cap(leader, count: int) -> int:
 
 
 # ------------------------------------------------------------------
-# 点击
+# 手势：PC 的 Button 信号 / 移动端的触摸事件 → input_ctrl.gesture_*()
+#
+# ★ 单击 / 长按 / 双击的**判定**不在这里：`input_controller` 里有一套状态机，
+#   标签与数字键共用（见那里的 `gesture_press / gesture_release / poll_gestures`）。
+#   本文件只负责把「哪一槽、按下了 / 抬起了 / 拖走了」告诉它。
 # ------------------------------------------------------------------
 
-## ★★ 点标签 = **反选**这一整队（需求原话：「点击代表反选」）。
-##
-## 例（需求给的例子）：无选中 → 点 1 选中 1 → 点 2 选中 1+2 → 再点 1 只剩 2。
-## 所以判据只有一条：**这一队的队长现在在不在选中集合里**。
-##   · 在  → 把整队从选中里撤掉（`_without_team`）；
-##   · 不在 → 把整队并进当前选中（**不是**替换 —— 否则按住 2 会把 1 顶掉）。
-##
-## ★ 走 `input_ctrl.select_units()` 而不是自己改 `selected_units`：那里是选中集合的
-##   唯一入口（会按队伍展开、同步 `u.selected` 渲染标志、清掉区划 / 建筑选中）。
-## ★ 只改选中，不动镜头（需求原话：「只选中，镜头不动」）。
+## 按下：开始长按计时（空槽 / 阵亡槽在刷新时已 `MOUSE_FILTER_IGNORE`，这里再兜一层）。
+func _on_slot_down(i: int) -> void:
+	if not _slot_usable(i):
+		return
+	if input_ctrl != null:
+		input_ctrl.gesture_press("tag", i + 1)
+
+
+## 行内抬起 = 一次有效单击（`Button.pressed`）。双击配对与反选都在输入层。
 func _on_slot_pressed(i: int) -> void:
-	var team: Array = _teams[i] if i < _teams.size() else []
-	if team.is_empty():
-		return                        # 空槽：点了什么也不做
-	var leader = team[0]
-	var was_selected: bool = input_ctrl.selected_units.has(leader)
-	var next: Array = []
-	if was_selected:
-		next = _without_team(team)
-	else:
-		next = input_ctrl.selected_units.duplicate()
-		for u in team:
-			if not next.has(u):
-				next.append(u)
-	input_ctrl.select_units(next)
-	if not was_selected:
-		# 新选中的这一支成为详情面板展开的部队（编号 = 槽位 + 1，与标签数字同源）。
-		# 反选时不发：HUD 的 `_pick_troop()` 发现「展开的那支已经不在选中里」会自己回退。
-		troop_focused.emit(i + 1)
+	if not _slot_usable(i):
+		return
+	if input_ctrl != null:
+		input_ctrl.gesture_release("tag", i + 1)
 
 
-## 把一支队伍**整个**从当前选中里撤掉（反选的「撤」那一步）。
-##
-## ★ 为什么要按**队伍**过滤、而不是只减掉队长那个对象：
-##   选中集合是 `select_units()` 按队伍展开过的，里面除了队长还有全部亲兵；
-##   只减队长的话，剩下的亲兵在 `select_units()` 里又会 `expand_to_groups`
-##   把队长整个加回来 —— 反选看起来像没生效。
-## ★ 顺手丢掉已阵亡的旧成员：它们留在集合里同样会在展开时把队伍带回来。
-## ★ 也按 `leader_id` 兜一层：老存档 / 队长换了 id 的残兵不会被漏掉。
-func _without_team(team: Array) -> Array:
-	var leader = team[0]
-	var drop: Dictionary = {}
-	for u in team:
-		drop[u.id] = true
-	var next: Array = []
-	for u in input_ctrl.selected_units:
-		if u == null or not u.alive:
+## 抬起兜底：`pressed` 没发（鼠标已拖出本行 / 长按后松开）时取消这次按住。
+func _on_slot_up(i: int) -> void:
+	if input_ctrl != null and input_ctrl.gesture_active_slot("tag") == i + 1:
+		input_ctrl.gesture_cancel("tag")
+
+
+## 鼠标拖出本行：取消尚未触发的长按（不要「按住拖到地图上还在跟」）。
+func _on_slot_exit(i: int) -> void:
+	if input_ctrl != null and input_ctrl.gesture_active_slot("tag") == i + 1:
+		input_ctrl.gesture_cancel("tag")
+
+
+func _slot_usable(i: int) -> bool:
+	return i >= 0 and i < _teams.size() and not (_teams[i] as Array).is_empty()
+
+
+# ------------------------------------------------------------------
+# 移动端触摸（由 HUD 在 GUI 之前转发：见 hud.handle_touch / handle_touch_drag）
+# ------------------------------------------------------------------
+
+## 屏幕点落在第几槽（0 起；-1 = 不在任何可用标签上）。
+## ★ 只认有队伍的槽；空槽 / 阵亡槽不响应触摸。
+func slot_at_screen(global_pos: Vector2) -> int:
+	for i in _rows.size():
+		if not _slot_usable(i):
 			continue
-		if drop.has(u.id):
-			continue
-		if u.leader_id != "" and u.leader_id == leader.id:
-			continue
-		next.append(u)
-	return next
+		if _rows[i].get_global_rect().has_point(global_pos):
+			return i
+	return -1
+
+
+## @return true = 这一串触摸由标签栏消化（HUD 不再走命令卡 / 科技格的长按逻辑）
+## @param now_ms 测试注入时间；-1 = 用 `Time.get_ticks_msec()`
+func handle_touch(event: InputEventScreenTouch, now_ms: int = -1) -> bool:
+	if not _touch_mode:
+		return false
+	if event.pressed:
+		# 已经有一根手指按在标签上：其它手指的按下不归标签管（也不能打乱这一串）
+		if _touch_consumed:
+			return event.index == _touch_index
+		var i := slot_at_screen(event.position)
+		if i < 0:
+			return false
+		_touch_slot = i + 1
+		_touch_index = event.index
+		_touch_press_pos = event.position
+		_touch_cancelled = false
+		_touch_consumed = true
+		if input_ctrl != null:
+			input_ctrl.gesture_press("tag", _touch_slot, now_ms)
+		return true
+	# 抬起：只有「从标签上开始」的那根手指才算标签的
+	if not _touch_consumed or event.index != _touch_index:
+		return false
+	var slot := _touch_slot
+	var cancelled := _touch_cancelled
+	_touch_slot = 0
+	_touch_index = -1
+	_touch_cancelled = false
+	_touch_consumed = false
+	if slot > 0 and not cancelled and input_ctrl != null:
+		input_ctrl.gesture_release("tag", slot, now_ms)
+	return true
+
+
+## 手指滑走：超过拖动阈值就取消这次按住（长按 / 单击都不再触发）。
+func handle_touch_drag(event: InputEventScreenDrag) -> void:
+	if not _touch_mode or not _touch_consumed \
+			or event.index != _touch_index or _touch_cancelled:
+		return
+	var limit: float = cfg.touch_pan_min_px if cfg != null else 24.0
+	if event.position.distance_to(_touch_press_pos) > limit:
+		_touch_cancelled = true
+		if input_ctrl != null:
+			input_ctrl.gesture_cancel("tag")
+
+
+# ------------------------------------------------------------------
+# 测试钩子（直接驱动输入层的手势状态机，绕过鼠标坐标 / 触摸坐标）
+# ------------------------------------------------------------------
+
+func debug_press_slot(i: int, now_ms: int = -1) -> void:
+	if _slot_usable(i) and input_ctrl != null:
+		input_ctrl.gesture_press("tag", i + 1, now_ms)
+
+
+func debug_release_slot(i: int, now_ms: int = -1) -> void:
+	if _slot_usable(i) and input_ctrl != null:
+		input_ctrl.gesture_release("tag", i + 1, now_ms)
 
 
 # ------------------------------------------------------------------

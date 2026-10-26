@@ -13,6 +13,10 @@
 ##   屏幕 → 世界一律走 `get_global_mouse_position()`（Camera2D 自己算），
 ##   世界（像素）→ 世界（格）走 palette.to_logic()。
 ##   **绝不自己手算屏幕坐标**，那是错位的开始。
+##
+## ★★ 将领标签 / 数字键的三套操作也在这里（见 `gesture_press` 那一节）：
+##   · 单击 = 反选整队；· 长按 = 跟随视角；· 双击 = 快速选中 + 跳镜头。
+##   右栏标签（鼠标 / 触摸）与键盘数字键共用同一套状态机 —— 不要在 UI 文件里再写一份。
 extends Control
 
 const ConfigRes = preload("res://logic/config.gd")
@@ -29,6 +33,10 @@ signal command_issued(cmd: Dictionary)
 signal local_ui_changed()
 ## 提示气泡
 signal toast(text: String)
+## ★★ 某一支部队成为「详情面板当前展开的那一支」（1 起的固定槽位号，与右栏标签 / 数字键同源）。
+##   由右栏标签的单击 / 双击与数字键的统一手势逻辑发出；HUD 接它去刷详情面板。
+##   （原来这条信号长在 squad_panel 上，只有鼠标点标签会发；现在键盘 / 触摸也走同一条。）
+signal general_focused(number: int)
 
 var cfg: ConfigRes = null
 var world = null
@@ -37,6 +45,50 @@ var camera_rig = null
 var palette = null
 ## ★★ 稳定编队槽位（见 view/team_slots.gd）：数字键按它选人；为 null 时退回存活顺序。
 var team_slots = null
+
+# ------------------------------------------------------------------
+# ★★ 将领标签 / 数字键的**统一手势状态机**（单击反选 / 长按跟随 / 双击快速选中+跳镜头）
+#
+#   右栏标签（鼠标 + 触摸）与键盘数字键共用同一套语义，所以状态机放在输入层，
+#   而不是各写一份在 squad_panel / handle_key 里。
+#   两个来源各自独立：鼠标 / 触摸共用一个 "tag"，键盘用一个 "key"。
+#
+#   ⚠️ **按下状态必须按槽位分开存**：快速连按 1 / 2 / 3 时，往往是「2 按下时 1 还没抬起」。
+#      旧实现每个来源只有一份 `slot`，后按下的会覆盖前一个 ⇒ 抬起时前两个被丢掉，
+#      只选中最后一个键（用户报的 bug）。现在每个 (来源, 槽位) 各有一份按下状态。
+#   ★ 双击配对仍然只认**这个来源最后一次单击**（同一槽位 + 时间窗内）；
+#     所以 1 → 2 → 1 的第三下不会被误判成双击（中间隔着 2）。
+# ------------------------------------------------------------------
+
+const GESTURE_TAG := "tag"
+const GESTURE_KEY := "key"
+## 长按 / 双击的兜底阈值（cfg 读不到时用这两个；正常由 config 的 ui.* 覆盖）
+const GESTURE_LONG_SEC := 0.4
+const GESTURE_DOUBLE_SEC := 0.35
+
+## 一次「按住」（每个槽位一份）
+class PressState:
+	extends RefCounted
+	var press_ms: int = 0
+	## 这一次按住已经触发过「长按跟随」→ 抬起不再当单击
+	var long_fired: bool = false
+
+## 一个来源的「上一次单击」（双击配对用）
+class ClickState:
+	extends RefCounted
+	var slot: int = 0
+	var ms: int = -99999999
+	var has: bool = false
+	## 第一次单击**之前**的选中快照 —— 双击时先回滚它，再执行「只加不撤」的快速选中。
+	## ★ 只存单位集合（建筑 / 区划 / 敌方选中在第一次反选时已被 select_units 清掉，
+	##   与现有反选语义一致，不回滚）。
+	var snapshot: Array = []
+
+
+## source -> { slot -> PressState }
+var _press_states: Dictionary = {}
+## source -> ClickState
+var _click_states: Dictionary = {}
 
 ## 选中列表（纯本地，**不进命令流**）
 var selected_units: Array = []
@@ -205,6 +257,26 @@ func setup(p_cfg: ConfigRes, p_world, p_camera_rig, p_palette = null,
 	_drag_freeze_cam = false
 	_pan_pending = false
 	_touch_panning = false
+	reset_general_gestures()
+
+
+## 每帧推进「将领标签 / 数字键」的长按计时（桌面 / 手机都要跑）。
+## ★ 必须在场景的 `_process` 里调：手机端 `squad_panel` 自己的 `_process` 被 HUD 关掉了，
+##   长按计时不能放在那里（见 view/hud.gd 的 `_mobile_ui_stagger`）。
+## @param now_ms 测试注入时间；-1 = 用 `Time.get_ticks_msec()`
+func poll_gestures(now_ms: int = -1) -> void:
+	var now: int = Time.get_ticks_msec() if now_ms < 0 else now_ms
+	var long_ms: int = int(_gesture_long_sec() * 1000.0)
+	for source in _press_states.keys():
+		var states: Dictionary = _press_states[source]
+		for slot in states.keys():
+			var g: PressState = states[slot]
+			if g.long_fired:
+				continue
+			if now - g.press_ms < long_ms:
+				continue
+			g.long_fired = true
+			_follow_general(int(slot))
 
 
 ## 每帧更新一次「鼠标在哪、指向哪个地块」——渲染要用，且**只有这里**读鼠标位置
@@ -230,19 +302,30 @@ func poll_mouse() -> void:
 # ------------------------------------------------------------------
 ## @return true 表示这个事件被消费了（不再往下传）
 func handle_key(event: InputEventKey) -> bool:
-	if not event.pressed or event.echo:
+	if event.echo:
 		return false
 	var k := event.keycode
 
-	# 1..9 / 0：快速选中**固定编队槽位**里的第 N 支（0 = 第 10 支）。
+	# 1..9 / 0：与右栏标签**完全同一套手势**（0 = 第 10 支）。
+	#   · 按下 → 开始计时（长按到阈值 = 跟随该将领）；
+	#   · 抬起 → 单击 / 双击判定（反选 / 快速选中 + 跳镜头）。
 	# ★ 槽位由 `view/team_slots.gd` 分配：首次按开局顺序 1..N，之后阵亡 / 复活都不改号；
 	#   阵亡将的槽位仍占着（按它的键不选人，只提示），后面的将不会前移。
 	#   右栏 `squad_panel` / 地图键帽 / 左栏详情（`hud._compute_selected_troops`）同源。
 	for i in 10:
 		var code: int = KEY_0 if i == 9 else KEY_1 + i
-		if k == code:
-			select_general_by_hotkey("0" if i == 9 else str(i + 1))
-			return true
+		if k != code:
+			continue
+		var slot: int = 10 if i == 9 else i + 1
+		if event.pressed:
+			gesture_press(GESTURE_KEY, slot)
+		else:
+			gesture_release(GESTURE_KEY, slot)
+		return true
+
+	# 其余按键只认按下（抬起 / 重复不算）
+	if not event.pressed:
+		return false
 
 	# ★ 建筑快捷键（config.json 的 `building.<type>.hotkey`，现在是城墙 B / 箭塔 T）。
 	#   ★★ 数据驱动：编辑器里新加一栋楼、填一个字母，这里就认它
@@ -256,6 +339,12 @@ func handle_key(event: InputEventKey) -> bool:
 			continue
 		if k == OS.find_keycode_from_string(hk.to_upper()):
 			var t := String(d.get("id", ""))
+			# ★★ 2026.10.26：第二行建筑（石墙 / 警戒塔）要 2 级大本营。
+			#    这里先给一句明确反馈，避免进入建造模式后点地图才失败。
+			if world != null and not world.building_unlocked(world.my_faction, t):
+				toast.emit("大本营升到 %d 级才能建造%s" % [
+					cfg.building_tier(t), String(d.get("name", t))])
+				return true
 			set_build_type(t if build_type != t else "")
 			return true
 
@@ -1073,31 +1162,132 @@ func selected_enemy_kind() -> String:
 	return "unit" if selected_enemy.get("faction") != null else "building"
 
 
-func select_general_by_hotkey(key: String) -> void:
-	var wanted := int(key)
-	if wanted == 0:
-		wanted = 10                       # 左栏第 10 支写「0」
-	if wanted <= 0 or world == null:
+# ------------------------------------------------------------------
+# ★★ 将领标签 / 数字键的统一语义
+#
+#   右栏标签（鼠标 / 触摸）与键盘数字键都走这里：
+#     · 单击 = 反选整队（`_toggle_team`）
+#     · 双击 = 快速选中（只加不撤）+ 立即跳镜头
+#     · 长按 = 跟随视角（`_follow_general`）
+#
+#   手势状态机见 `_press_states` / `_click_states` 与 `poll_gestures()`。
+#   ★ 按住状态按 (来源, 槽位) 分开存 —— 连按 1/2/3 时它们的按下会重叠。
+# ------------------------------------------------------------------
+
+## 手势：按下（标签 `button_down` / 触摸按下 / 数字键按下）。
+func gesture_press(source: String, slot: int, now_ms: int = -1) -> void:
+	if slot <= 0:
 		return
-	# ★★ 稳定槽位：数字键按「这个将领的固定号」选，不按存活顺序。
-	#    · 阵亡将的槽位仍占着 —— 按它的键什么都不选，只给一句提示；
-	#    · 后面的将不会因为前面的阵亡而前移。
+	var now: int = Time.get_ticks_msec() if now_ms < 0 else now_ms
+	# ★ 标签是单指针：新按下直接覆盖该来源的旧按下（键盘则必须各槽位独立，
+	#   否则连按 1/2/3 时后按下的会把先按下的顶掉）。
+	var states: Dictionary = {} if source == GESTURE_TAG else _press_states.get(source, {})
+	var g := PressState.new()
+	g.press_ms = now
+	states[slot] = g
+	_press_states[source] = states
+
+
+## 手势：抬起（标签 `pressed` / 触摸抬起 / 数字键抬起）。
+## ★ 没有按下记录时也按「单击」处理：测试可以直接 `emit_signal("pressed")`。
+func gesture_release(source: String, slot: int, now_ms: int = -1) -> void:
+	if slot <= 0 or world == null:
+		return
+	var states: Dictionary = _press_states.get(source, {})
+	var g: PressState = states.get(slot, null)
+	var was_long: bool = false
+	if g != null:
+		was_long = g.long_fired
+		states.erase(slot)
+	if was_long:
+		return                       # 长按已经跟随过，这次抬起不再反选
+
+	var u = _resolve_general(slot)
+	if u == null:
+		return                       # 空槽 / 阵亡：只给提示
+	var now: int = Time.get_ticks_msec() if now_ms < 0 else now_ms
+	var c := _click_state(source)
+	var is_double: bool = c.has \
+		and c.slot == slot \
+		and now - c.ms <= int(_gesture_double_sec() * 1000.0)
+	if is_double:
+		# ★ 双击 = 「快速选中 + 立即跳镜头」，**不是反选**：
+		#   先把第一次单击造成的反选回滚掉，再把这一队**只加不撤**地并进选中。
+		select_units(_live_selection(c.snapshot))
+		_quick_select_team(u)
+		_jump_to_unit(u)
+		c.has = false                # 消化，避免第三次点击又配成一对
+		general_focused.emit(slot)
+		return
+
+	# 单击：先记快照（双击时用它回滚），再做反选。
+	c.snapshot = selected_units.duplicate()
+	c.has = true
+	c.slot = slot
+	c.ms = now
+	if _toggle_team(u):
+		general_focused.emit(slot)
+
+
+## 手势：取消（鼠标拖出标签 / 手指滑走）。只用于标签（单指针）。
+func gesture_cancel(source: String) -> void:
+	_press_states.erase(source)
+
+
+## 现在按住的槽位（0 = 没按住）——标签栏用它决定这次 `button_up` 要不要取消。
+## ★ 标签是单指针，最多只有一个；键盘有多个时返回任意一个（调用方只用于标签）。
+func gesture_active_slot(source: String) -> int:
+	var states: Dictionary = _press_states.get(source, {})
+	for slot in states.keys():
+		return int(slot)
+	return 0
+
+
+## 测试 / 重开一局：把两套手势状态都归零。
+func reset_general_gestures() -> void:
+	_press_states.clear()
+	_click_states.clear()
+
+
+func _click_state(source: String) -> ClickState:
+	if not _click_states.has(source):
+		_click_states[source] = ClickState.new()
+	return _click_states[source]
+
+
+func _gesture_long_sec() -> float:
+	if cfg == null:
+		return GESTURE_LONG_SEC
+	return maxf(0.0, cfg.num("ui.tag_long_press_sec", cfg.touch_long_press_sec))
+
+
+func _gesture_double_sec() -> float:
+	if cfg == null:
+		return GESTURE_DOUBLE_SEC
+	return maxf(0.0, cfg.num("ui.tag_double_click_sec", GESTURE_DOUBLE_SEC))
+
+
+## 槽位（1 起）→ 该槽当前活着的将领（队长）；空槽 / 阵亡只发提示并返回 null。
+## ★ 稳定槽位：按「这个将领的固定号」选，不按存活顺序。
+##    · 阵亡将的槽位仍占着 —— 什么都不选，只给一句提示；
+##    · 后面的将不会因为前面的阵亡而前移。
+func _resolve_general(slot: int) -> Variant:
+	if slot <= 0 or world == null:
+		return null
 	if team_slots != null:
 		team_slots.sync(world)
-		var u = team_slots.unit_in_slot(wanted)
+		var u = team_slots.unit_in_slot(slot)
 		if u == null:
-			if team_slots.has_slot(wanted):
-				toast.emit("第 %d 支部队已阵亡，等待复活" % wanted)
+			if team_slots.has_slot(slot):
+				toast.emit("第 %d 支部队已阵亡，等待复活" % slot)
 			else:
-				toast.emit("没有第 %d 支部队" % wanted)
-			return
+				toast.emit("没有第 %d 支部队" % slot)
+			return null
 		if not u.alive:
-			var st := String(team_slots.slot_status_text(wanted))
-			toast.emit("第 %d 支部队%s" % [wanted, ("：" + st) if st != "" else "已阵亡"])
-			return
-		select_units([u])
-		camera_rig.center_on_px(palette.to_px(u.pos))
-		return
+			var st: String = String(team_slots.slot_status_text(slot))
+			toast.emit("第 %d 支部队%s" % [slot, ("：" + st) if st != "" else "已阵亡"])
+			return null
+		return u
 	# === 回退：没有槽位表（老测试 / 2D 路径）时仍按存活顺序 ===
 	var n := 0
 	for u in world.units:
@@ -1108,11 +1298,115 @@ func select_general_by_hotkey(key: String) -> void:
 		if not world.is_team_leader(u):
 			continue
 		n += 1
-		if n == wanted:
-			select_units([u])
-			camera_rig.center_on_px(palette.to_px(u.pos))
-			return
-	toast.emit("没有第 %d 支部队" % wanted)
+		if n == slot:
+			return u
+	toast.emit("没有第 %d 支部队" % slot)
+	return null
+
+
+## 反选这一整队；返回「操作后这一队是否被选中」。
+func _toggle_team(u) -> bool:
+	if u == null:
+		return false
+	var team: Array = world.group_of(u)
+	if team.is_empty():
+		team = [u]
+	var was_selected: bool = selected_units.has(u)
+	var next: Array = []
+	if was_selected:
+		next = _without_team(team)
+	else:
+		next = selected_units.duplicate()
+		for x in team:
+			if not next.has(x):
+				next.append(x)
+	select_units(next)
+	return not was_selected
+
+
+## 快速选中：没选中才把整队并进来；已选中则**不撤**。
+func _quick_select_team(u) -> void:
+	if u == null or selected_units.has(u):
+		return
+	var team: Array = world.group_of(u)
+	if team.is_empty():
+		team = [u]
+	var next: Array = selected_units.duplicate()
+	for x in team:
+		if not next.has(x):
+			next.append(x)
+	select_units(next)
+
+
+func _jump_to_unit(u) -> void:
+	if u == null or camera_rig == null or palette == null:
+		return
+	camera_rig.center_on_px(palette.to_px(u.pos))
+
+
+## 长按：跟随该将领的视角（**不改选中**）。取消条件在相机一侧
+## （手动动镜头 / 目标阵亡，见 view/game_scene3d.gd 的 `follow_target`）。
+func _follow_general(slot: int) -> void:
+	var u = _resolve_general(slot)
+	if u == null or camera_rig == null:
+		return
+	if camera_rig.has_method("follow_unit"):
+		camera_rig.follow_unit(u)
+
+
+## 对外薄封装（标签栏 / 其它 UI 也可以直接用）
+func toggle_general(slot: int) -> bool:
+	return _toggle_team(_resolve_general(slot))
+
+
+func quick_select_general(slot: int) -> void:
+	_quick_select_team(_resolve_general(slot))
+
+
+func follow_general(slot: int) -> void:
+	_follow_general(slot)
+
+
+## 当前正在跟随的将领（没有 → null）。右栏标签用它画「跟随眼睛」。
+## ★ 跟随状态住在场景（手动动镜头 / 目标阵亡会清掉），这里只是转问相机替身。
+func following_general() -> Variant:
+	if camera_rig == null or not camera_rig.has_method("following_unit"):
+		return null
+	return camera_rig.following_unit()
+
+
+## 把一支队伍**整个**从当前选中里撤掉（反选的「撤」那一步）。
+## ★ 为什么按**队伍**过滤、而不是只减掉队长那个对象：
+##   选中集合是 `select_units()` 按队伍展开过的，里面除了队长还有全部亲兵；
+##   只减队长的话，剩下的亲兵在 `select_units()` 里又会 `expand_to_groups`
+##   把队长整个加回来 —— 反选看起来像没生效。
+## ★ 顺手丢掉已阵亡的旧成员：它们留在集合里同样会在展开时把队伍带回来。
+## ★ 也按 `leader_id` 兜一层：老存档 / 队长换了 id 的残兵不会被漏掉。
+func _without_team(team: Array) -> Array:
+	var leader = team[0]
+	var drop: Dictionary = {}
+	for u in team:
+		drop[u.id] = true
+	var next: Array = []
+	for u in selected_units:
+		if u == null or not u.alive:
+			continue
+		if drop.has(u.id):
+			continue
+		if u.leader_id != "" and u.leader_id == leader.id:
+			continue
+		next.append(u)
+	return next
+
+
+## 双击回滚用：快照里已阵亡的单位不该再被恢复进选中集合。
+func _live_selection(snapshot: Array) -> Array:
+	var out: Array = []
+	for u in snapshot:
+		if u != null and u.alive:
+			out.append(u)
+	return out
+
 
 
 func set_build_type(t: String) -> void:

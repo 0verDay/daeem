@@ -21,6 +21,8 @@
 ##
 ## 四条玩家指令仍然在这里落地：
 ##   · march   —— 行军攻击到玩家点选的目标点，到达后驻守；目标是敌方区划中心时自然读条占领。
+##                ★ 2026.10.26：所有队伍到点且目标点周围清场 → 主动结束（回到 auto），
+##                不再死等 60 秒；仍有敌人 / 仍在交战则继续，60 秒兜底。
 ##   · develop —— 不主动出击；军队留在基地区划附近，受威胁时回防。
 ##   · expand  —— 优先夺取与己方领土相邻、按经济需求评分最高的中立 / 敌方区划：
 ##                派队伍去区划中心读条，拿下一块再找下一块。
@@ -721,10 +723,37 @@ static func _march(ai) -> void:
 	var ts := field_teams(ai)
 	if ts.is_empty():
 		ts = leader_teams(ai)
+	# ★★ 2026.10.26：所有队到点 + 目标点清场 → 主动结束，不再傻等 60 秒。
+	if _march_reached_clear(ai, pt, ts):
+		ai.world.end_ai_directive(ai.faction, "arrived")
+		return
 	for t in ts:
 		if _react_locked(ai, String((t["leader"] as Object).id)):
 			continue
 		_order_team(ai, t, pt, true)
+
+
+## ★★ 2026.10.26 行军的主动结束判据（用户口径：到目的地后周围没有敌人、
+## 或部队行军自然结束，就返回 command AI 的「行军结束」）：
+##   · 每支被派的队都必须活着进 `arrive_radius`（阵亡 / 倒地的不阻挡）；
+##   · 任何一队还挂着 `target` / `target_building` → 仍在打，不结束；
+##   · 目标点 `hold_radius` 内还有可见敌人 → 不结束（继续打到清场或 60s 上限）。
+##   · 一支活队都没有（全军倒地 / 阵亡）时，只要目标点清场也算结束。
+static func _march_reached_clear(ai, pt: Vector2, teams: Array) -> bool:
+	var mc: Dictionary = ai.profile.get("march", {})
+	if not bool(mc.get("end_when_clear", true)):
+		return false
+	var arrive := maxf(0.5, float(mc.get("arrive_radius", 3.0)))
+	var hold := maxf(arrive, float(mc.get("hold_radius", 7.0)))
+	for t in teams:
+		var leader = t.get("leader", null)
+		if leader == null or not leader.alive or leader.is_downed():
+			continue
+		if leader.pos.distance_to(pt) > arrive:
+			return false
+		if leader.target != null or leader.target_building != null:
+			return false
+	return _enemy_strength_near(ai, pt, hold) <= 0.0
 
 
 static func _mass(ai) -> void:

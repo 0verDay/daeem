@@ -37,6 +37,8 @@ const DEFAULTS := {
 		"hold_radius": 7.0,
 		"reissue_sec": 6.0,
 		"arrive_timeout_sec": 90.0,
+		# ★★ 2026.10.26：全部到点 + 目标点清场 → 提前结束行军（否则仍等 60s）。
+		"end_when_clear": true,
 	},
 	"mass": {
 		"arrive_radius": 3.0,
@@ -117,8 +119,6 @@ const DEFAULTS := {
 		"wall_border_per_tick": 3,
 		"wall_border_keep_slots": 16,
 		"wall_border_require_armed_generals": true,
-		"defense_upgrade_enabled": true,
-		"defense_upgrade_tower_bonus": 12.0,
 		"tower_frontier_bonus": 4.0,
 		"base_upgrade_priority": 10.0,
 		"tech_priority": [],

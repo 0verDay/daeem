@@ -6263,9 +6263,18 @@ debug keystore。明文 `ws://` 若被 Android 明文流量策略拦截，需要
   己方编号读 `team_slots.slot_of(u)`，敌 / 友只读关系写「敌 / 友」。
 * 右栏：`view/squad_panel.gd` 的 `_refresh_from_slots()` 按槽位 1..10 建行：
   活着 = 可点 / 高亮；阵亡 = `filled=false`（整行压暗、鼠标穿透）+ 名字 + 「重生 N 秒」，
-  数字仍是原槽位。
-* 数字键：`view/input_controller.gd` 的 `select_general_by_hotkey()` 按槽位取人；
-  阵亡 / 空槽不选人，只 `toast` 提示。
+  数字仍是原槽位。数字键帽：选中亮起、悬停时黯淡（`troop_row.number_key_state()`）。
+* 手势（标签与数字键**同源**，状态机在 `view/input_controller.gd`）：
+  单击 = 反选整队（镜头不动）；长按 = 跟随该将领视角（手动动镜头 / 目标阵亡自动取消）；
+  双击 = 快速选中（只加不撤）+ 立即跳镜头。
+  PC 走 `button_down` / `pressed` / `button_up`；手机在 `hud.handle_touch()` 里把触摸转给
+  `squad_panel.handle_touch()`（手机端整行 `MOUSE_FILTER_IGNORE`，避免模拟鼠标重复触发）。
+* 跟随指示：正在跟随的那一行**最左侧画一个眼睛**（`troop_row._draw_follow_eye()`）；
+  跟随结束（手动动镜头 / 目标阵亡）后随下一次刷新消失。
+* 页签切换：**Tab / Shift+Tab** 循环切换右下角页签（`hud.handle_tab_key()` →
+  `page_tabs.cycle_page()`；在 `game_scene3d._input` 的 GUI 之前拦截，避免被 Tab 焦点导航吃掉）。
+* 数字键：`view/input_controller.gd` 的 `handle_key()` 按下 / 抬起都喂给同一套手势；
+  `_resolve_general()` 按槽位取人，阵亡 / 空槽不选人，只 `toast` 提示。
 * 左栏详情：`view/hud.gd` 的 `_compute_selected_troops()` 用 `slot_of()` 当 `number`，
   与右栏 / 地图同号。
 * 装配：`view/game_scene3d.gd` 在 `_assemble()` 里建 `team_slots` 并传给 overlay /
@@ -6295,3 +6304,95 @@ debug keystore。明文 `ws://` 若被 Android 明文流量策略拦截，需要
 * `test_ui` **1360 项**（右栏稳定槽位 + 数字键 + 反选）、`test_view` **323 项**、
   `test_ai_observer` **57 项**、`test_downed` **265 项** 全过。
 * 2026.10.25 全量 **83 个测试文件 / 8163 条断言** 全部通过。
+
+## 六十一、合作 AI 队友起手资源 + 行军主动结束（2026.10.26）
+
+### 61.1 起手资源对齐
+
+* 口径：只在**合作关 + 同方 commander** 时，把**本机玩家席位**的起手抬到
+  **normal 难度基准**（当前 250 粮 / 250 金）；**固定 normal，不跟随 AI 实际难度**。
+  友军 AI 自己仍按难度拿起手（easy 150 / normal 250 / hard 350）。
+* 门槛：`level.mode == "coop"` + `player_factions` 非空 + 存在 `same_side_for_attack`
+  的 commander。真人双人合作 / 战役 / 观战 / 普通对战都不变。
+* 落点：`logic/world.gd` 的 `_align_player_start_with_commander_ally()`，在
+  `_setup_ai_commanders()` 末尾调用（此时 commander 名单与 `ai_faction_resources` 已就位，
+  且早于 observer 的资源别名）。本机席位的 `player_resources[my_faction]` 与
+  `world.resources` 是同一个字典对象，所以 HUD / 经济 / 快照自动同步。
+* `resource_pool_for()` 不变：AI 仍然花自己的池子，不会花玩家的钱。
+
+### 61.2 行军主动结束
+
+* 口径：每个 army tick（0.6s）检查一次 —— **所有被派出的队**都进目标点
+  `march.arrive_radius`（3 格）、没有队还挂着 `target` / `target_building`、
+  且目标点 `march.hold_radius`（7 格）内**无可见敌人** → 立即结束回 `auto`。
+* 仍有敌人 / 没到点 / 仍在交战 → 继续，最迟 60 秒 `command_hold_sec` 到期。
+* 落点：`logic/ai_army.gd` 的 `_march()` 先调 `_march_reached_clear()`；
+  命中后调 `logic/world.gd` 新增的 `end_ai_directive(faction, "arrived")`。
+* `end_ai_directive()` 与 60 秒到期**共用同一条收口**（kind=auto、清目标点、serial+1、
+  `on_directive_changed()`）；面板先显示 2.5 秒 `states.arrived`「已抵达」。
+* 敌方区划中心仍然能继续占领：结束后 `auto` 的 `_capture_cleared_zone_tick()` 接续读条。
+* 「屯兵」(`mass`) 不变，仍只靠 60 秒到期。
+* 配置：`ai.commander.march.end_when_clear`（默认 `true`）；
+  `arrive_radius` / `hold_radius` 从本轮起真正生效。
+
+### 61.3 回归
+
+* `tests/test_ai_commander.gd` 新增 **21 项**：起手资源（normal / hard 固定基准 /
+  无 commander 不抬）、行军到点清场提前结束、有敌人不结束、没到点不结束、
+  `end_ai_directive()` 幂等。
+* 聚焦结果：`test_ai_commander` **309 / 309**、`test_ai_order_panel` **24 / 24**、
+  `test_ai_observer` **57 / 57**；修改脚本 `--check-only` 全过（本轮未跑全量）。
+
+## 六十二、建筑改版：木墙 / 哨塔 + 石墙 / 警戒塔 + 取消建筑升级 + 远程免伤 90%（2026.10.26）
+
+> 旧章节里的「城墙 / 箭塔」= 现在的**木墙 / 哨塔**（内部 id 仍是 `wall` / `tower`，地图与战役数据未迁移）。
+> 从本节起，木墙 / 哨塔 / 石墙 / 警戒塔**都不能升级**；只有大本营保留升级链。
+
+### 62.1 名称与第二行建筑
+
+* `wall` 显示名改为 **木墙**，`tower` 显示名改为 **哨塔**（`config.json` 的 `building.*.name`）。
+* 新增 **石墙**（`stone_wall`）：700 血 / 120·120 / 5s / 视野 5 / 与木墙同阻挡语义。
+* 新增 **警戒塔**（`watch_tower`）：550 血 / 180·180 / 7s / 攻击 16、射程 4、间隔 0.7s / 视野 15。
+* 新字段 `building.<type>.tier`：建造页行号 / 解锁所需的大本营等级（缺省 1）。
+  木墙 / 哨塔 = 1，石墙 / 警戒塔 = 2。
+* 建造页（`view/hud.gd:_build_entries()`）改成与单位页同一套 9 格行布局：
+  第 2 行在 1 级大本营时**可见但置灰**（悬停写「需要 2 级大本营」），2 级后变亮。
+* 权威侧兜底：`world.building_unlocked()` + `command_processor.apply_build()` 的
+  `base_level` 拒因；`input_controller` 的建造快捷键也会先提示、不进建造模式。
+
+### 62.2 取消建筑升级
+
+* `config.json` 的 `upgrade.levels` 只剩 `base`；`wall` / `tower` 两张表删除。
+* `UpgradeRes.can_upgrade()`：非大本营直接返回 `type`；`world.building_can_upgrade()`
+  也只认大本营。因此即使有人手写等级表，游戏也不会再升级墙塔。
+* 选中木墙 / 哨塔 / 石墙 / 警戒塔时，右下角与「敌对建筑」同一档（`PAGE_NONE`，没有升级入口）；
+  大本营仍是「操作 + 科技」，操作页里升级大本营。
+* AI：删除 `_defense_upgrade_candidate()` / `_try_defense_upgrade()` 与
+  `defense_upgrade_enabled` / `defense_upgrade_tower_bonus` / `build_save_until`；
+  AI 继续造木墙 / 哨塔，不再升级任何墙塔，本轮也不使用石墙 / 警戒塔。
+* 编辑器：`unit_editor` 的升级区只对 `base` 显示；新建建筑不再自动生成升级表；
+  `BUILTIN_BUILDINGS` 扩到 5 个；新增 `tier` / `ranged_reduction` 字段。
+
+### 62.3 所有建筑远程免伤 90%
+
+* 新字段 `building.<type>.ranged_reduction`（缺省 0.9）：`cfg.building_ranged_reduction(type)`。
+* `Building.take_damage()` 新增 `incoming_ranged` / `ignore_reduction` 两个默认可选参数：
+  * 投掷物命中建筑 → `incoming_ranged = true`（`projectile._impact` 唯一调用点）；
+  * 近战 → `false`（全额）；
+  * **攻城（投石车）** → `ignore_reduction = true`（`combat.attack_building` 把 `u.siege`
+    传给投掷物）：攻城是**自己的伤害标签**，不算远程，仍然全额。
+* ⚠️ 故意不用 `combat.damage_reduction_cap`（单位 75% 封顶），否则 90% 会被压成 75%。
+* UI：选中建筑详情面板写「远程免伤 90%」；建造页悬停写攻击 / 远程免伤 / 解锁等级。
+
+### 62.4 回归
+
+* 新增 `tests/test_building_defense.gd` **26 项**：直调 `take_damage` 的三条路径
+  （远程 10% / 近战全额 / 攻城全额）、投掷物命中路径、长弓兵 / 投石车的实际开火路径。
+* 新增 `tests/test_building_tiers.gd` **24 项**：1 级未解锁、2 级解锁、
+  `apply_build` 的 `base_level` 拒因、建造页置灰。
+* 聚焦结果：`test_ai_commander` **310**、`test_upgrade` **236**、`test_ui` **1260**、
+  `test_unit_editor` **193**、`test_smoke` **132**、`test_building_defense` **26**、
+  `test_building_tiers` **24** 全过；`test_logic` / `test_building_body` / `test_base_limits` /
+  `test_tech` / `test_campaign*` / `test_projectile` / `test_melee_building` /
+  `test_attack_orders` / `test_alliance` / `test_hit_fx` 也全过。
+* Python 编辑器：`unit_editor` 571 + 209、`campaign_editor` 331 + 245 全过（本轮未跑全量）。

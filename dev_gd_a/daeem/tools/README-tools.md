@@ -80,6 +80,25 @@ powershell -ExecutionPolicy Bypass -File tools/setup-font.ps1 -Force   # 重新�
 > （或跑的是会 detach 的 GUI 版、`$LASTEXITCODE` 为空）则退出码 1 ——
 > 别让「其实是没导入」被当成绿灯。
 
+## bake_unit_sprites.py —— 把美术素材烘成 3D 立牌贴图
+
+```powershell
+python tools/bake_unit_sprites.py            # 默认读 ../../../art_draft/test_assets，写到 assets/test_units
+python tools/bake_unit_sprites.py --src <素材目录> --out <输出目录>
+```
+
+产物：
+
+- `SpearMan/spearman.png`：人 + 剑（剑当长枪用）。
+- `LongbowMan/longbowman.png`：人 + 弓。
+- `Rider/rider.png`、`GrainCart/grain_cart.png`、`Knight/knight.png`、
+  `HorseArcher/horse_archer.png`、`Catapult/catapult.png`：缺素材兵种的**单字**占位
+  （字从 `data/config.json` 的 `unit.types.<id>.icon` 现读，不会两处不一致）。
+- `Projectile/arrow.png` / `arrow_white.png`：箭的投射物贴图（白剪影那张给材质染阵营色）。
+
+改了 `art_draft/test_assets` 的源图、或改了某个兵种的 `icon` 之后重跑一次即可；
+跑完让 Godot 导入（`--headless --import`）再进游戏。
+
 ## 引擎路径
 
 `C:\D\GodotEngine\...` 只在本机成立。脚本允许用 `$env:GODOT_EXE` 覆盖，

@@ -1,17 +1,22 @@
-## projectile_view_3d.gd —— 3D 射箭投掷物：**一个小方块 + 一条短线拖尾**
+## projectile_view_3d.gd —— 3D 射箭投掷物：**箭（或小方块）+ 一条短线拖尾**
 ##
 ## ★★ 它只读 `world.projectiles`（逻辑层的权威状态，见 logic/projectile.gd）：
 ##   地面位置由逻辑给（`p.pos = start.lerp(end, t)`），这里**只负责画** ——
 ##   索敌、命中结算、冷却全在逻辑层，视图一个字都不碰。
 ##
-## ★★ 抛物线是**纯表现**：逻辑只走地面直线，这里按**同一个进度 `t`** 把方块抬高
+## ★★ 两条画法（本轮新增箭）：
+##   · `render.projectile_arrow_types` 里的兵种（长弓兵 / 马弓手）→ **箭**：
+##     一块平放的 QuadMesh，按飞行方向绕 Y 轴转，白剪影乘上开火方阵营色；
+##   · 其余（投石车 / 箭塔）→ 原来的小方块（`render.projectile_size`）。
+##
+## ★★ 抛物线是**纯表现**：逻辑只走地面直线，这里按**同一个进度 `t`** 把投射物抬高
 ##   `arc_h · 4t(1−t)`（`arc_h` = 起点↔终点距离 × render.projectile_arc_ratio）。
 ##   于是「看到的命中」与「逻辑的命中」**同帧**。
 ##
 ## ★ 拖尾 = 最近 N 个位置的折线（N = render.projectile_trail_len）。位置本身带抛物线
-##   高度 ⇒ 拖尾天然跟着曲线弯曲（用户口径：一段短线在方块后方）。
+##   高度 ⇒ 拖尾天然跟着曲线弯曲（用户口径：一段短线在投射物后方）。
 ##
-## ★ 对象池：每个投掷物占一个 slot（方块 MeshInstance3D + 拖尾 ImmediateMesh），
+## ★ 对象池：每个投掷物占一个 slot（MeshInstance3D + 拖尾 ImmediateMesh），
 ##   离场归还 —— **不在每帧 new / queue_free**（pitfalls 2.3）。
 ##
 ## ★ 迷雾：只画「本机阵营」或「该格对玩家可见」的投掷物（不暴露雾里的敌人）。
@@ -27,6 +32,15 @@ var world = null
 var palette = null
 
 var _box: BoxMesh = null
+## ★★ 箭（本轮新增）：长弓兵 / 马弓手的投掷物改成「箭形」，其余仍是小方块。
+##   贴图是**白剪影 + alpha**，阵营色走材质的 albedo_color（一张图复用到所有阵营）。
+var _arrow_quad: QuadMesh = null
+var _arrow_tex: Texture2D = null
+## 兵种 id → true（config 的 render.projectile_arrow_types）
+var _arrow_types: Dictionary = {}
+## 阵营 → 箭材质（albedo_color = 阵营色）
+var _arrow_mats: Dictionary = {}
+var _arrow_length: float = 0.45
 ## 投掷物对象 → slot（Dictionary）。用对象本身当键，命中即消失 ⇒ 键自然回收。
 var _slots: Dictionary = {}
 var _free: Array = []
@@ -44,6 +58,8 @@ var projectile_count: int = 0
 var visible_projectile_count: int = 0
 var trail_segments_last_frame: int = 0
 var slots_created: int = 0
+## ★ 本帧有几枚投掷物画成了**箭**（诊断；0 = 全走小方块）
+var arrow_count_last_frame: int = 0
 
 
 func setup(p_cfg: ConfigRes, p_world, p_palette) -> void:
@@ -61,6 +77,7 @@ func setup(p_cfg: ConfigRes, p_world, p_palette) -> void:
 
 	_box = BoxMesh.new()
 	_box.size = Vector3(size, size, size)
+	_build_arrow(cell)
 
 	_trail_mat = StandardMaterial3D.new()
 	_trail_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
@@ -84,6 +101,71 @@ func _mat_for(faction: String) -> StandardMaterial3D:
 	return m
 
 
+## ★★ 箭的准备工作：读 config（用箭的兵种 / 贴图 / 长度），没有贴图就**整条退回小方块**。
+##   贴图必须是「白剪影 + alpha」——阵营色走材质 albedo_color，不能烘进图里
+##   （每个 slot 是一个 MeshInstance，材质按阵营缓存；一张图可以复用到所有阵营）。
+func _build_arrow(cell: float) -> void:
+	_arrow_length = maxf(0.05, cfg.num("render.projectile_arrow_length", 0.45))
+	_arrow_types = {}
+	var raw: Variant = cfg.get_path_value("render.projectile_arrow_types")
+	if typeof(raw) == TYPE_ARRAY:
+		for t in (raw as Array):
+			_arrow_types[String(t)] = true
+	var path: String = cfg.str_val("render.projectile_arrow_texture",
+		"res://assets/test_units/Projectile/arrow_white.png")
+	if path != "" and ResourceLoader.exists(path):
+		var res: Variant = load(path)
+		if res is Texture2D:
+			_arrow_tex = res
+	if _arrow_tex == null or _arrow_types.is_empty():
+		_arrow_quad = null
+		return
+	var aspect: float = 1.0
+	if _arrow_tex.get_height() > 0:
+		aspect = float(_arrow_tex.get_width()) / float(_arrow_tex.get_height())
+	_arrow_quad = QuadMesh.new()
+	var len_world: float = cell * _arrow_length
+	_arrow_quad.size = Vector2(len_world, len_world / maxf(1.0, aspect))
+
+
+func _arrow_mat_for(faction: String) -> StandardMaterial3D:
+	var hit: Variant = _arrow_mats.get(faction, null)
+	if hit != null:
+		return hit
+	var col: Color = SideColorRes.color(cfg, world, faction, "main")
+	var m := StandardMaterial3D.new()
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+	m.alpha_scissor_threshold = 0.35
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	m.albedo_texture = _arrow_tex
+	m.albedo_color = col
+	_arrow_mats[faction] = m
+	return m
+
+
+## 这一枚投掷物该不该画成箭：只看**开火者**是不是 config 列的远程兵种。
+## ★ 建筑（箭塔）没有 unit_type ⇒ 自动走小方块；投石车不在列表里也走小方块。
+func _is_arrow(p) -> bool:
+	if _arrow_quad == null:
+		return false
+	var src = p.source
+	if src == null or not is_instance_valid(src):
+		return false
+	var t: Variant = src.get("unit_type")
+	return typeof(t) == TYPE_STRING and _arrow_types.has(String(t))
+
+
+## 箭的变换：**平放**（法线朝上）+ 绕 Y 轴转到飞行方向。
+##   QuadMesh 默认在 XY 平面、+X 是箭尖；先绕 X 轴 -90° 放平（+Y → -Z），再按地面方向转。
+func _arrow_basis(p) -> Basis:
+	var d: Vector2 = p.end - p.start
+	if d.length_squared() < 1e-8:
+		return Basis(Vector3.RIGHT, -PI * 0.5)
+	var yaw: float = atan2(-d.y, d.x)     # 逻辑 +y = 世界 +z
+	return Basis(Vector3.UP, yaw) * Basis(Vector3.RIGHT, -PI * 0.5)
+
+
 func _acquire() -> Dictionary:
 	if not _free.is_empty():
 		var slot: Dictionary = _free.pop_back()
@@ -100,7 +182,7 @@ func _acquire() -> Dictionary:
 	trail.material_override = _trail_mat
 	add_child(trail)
 	slots_created += 1
-	return {"mesh": mesh, "trail": trail, "im": im, "hist": []}
+	return {"mesh": mesh, "trail": trail, "im": im, "hist": [], "arrow": false}
 
 
 func _release(slot: Dictionary) -> void:
@@ -116,6 +198,7 @@ func sync() -> void:
 	projectile_count = world.projectiles.size() if world != null else 0
 	visible_projectile_count = 0
 	trail_segments_last_frame = 0
+	arrow_count_last_frame = 0
 	if world == null or palette == null or _box == null:
 		return
 
@@ -131,8 +214,18 @@ func sync() -> void:
 			_slots[p] = slot
 		var w: Vector3 = _visual_pos(p)
 		var mesh: MeshInstance3D = slot["mesh"]
-		mesh.transform = Transform3D(Basis(), w)
-		mesh.material_override = _mat_for(String(p.faction))
+		# ★★ 箭 / 小方块二选一：槽位是复用的，所以「形状变了才换 mesh」。
+		var arrow: bool = _is_arrow(p)
+		if bool(slot.get("arrow", false)) != arrow:
+			slot["arrow"] = arrow
+			mesh.mesh = _arrow_quad if arrow else _box
+		if arrow:
+			mesh.transform = Transform3D(_arrow_basis(p), w)
+			mesh.material_override = _arrow_mat_for(String(p.faction))
+			arrow_count_last_frame += 1
+		else:
+			mesh.transform = Transform3D(Basis(), w)
+			mesh.material_override = _mat_for(String(p.faction))
 		_update_trail(slot, w, String(p.faction))
 		visible_projectile_count += 1
 

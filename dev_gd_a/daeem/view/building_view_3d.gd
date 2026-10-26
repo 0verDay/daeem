@@ -46,6 +46,9 @@ const BUILDING_FLASH_SHADER = preload("res://view/building_flash.gdshader")
 const BUILDING_MODELS := {
 	"wall": "res://assets/models/wall_lowpoly.glb",
 	"tower": "res://assets/models/tower_lowpoly.glb",
+	# ★★ 2026.10.26：第二行建筑复用基础版的低模（靠颜色 / 名称区分）。
+	"stone_wall": "res://assets/models/wall_lowpoly.glb",
+	"watch_tower": "res://assets/models/tower_lowpoly.glb",
 	"base": "res://assets/models/base_lowpoly.glb",
 	"zone_center": "res://assets/models/zone_center_lowpoly.glb",
 }
@@ -126,9 +129,9 @@ func _height_of(b) -> float:
 	if h <= 0.0:
 		# 没配就用「类型缺省表」：城墙矮、大本营最高
 		match t:
-			"wall":
+			"wall", "stone_wall":
 				h = 0.55
-			"tower":
+			"tower", "watch_tower":
 				h = 1.15
 			"base":
 				h = 1.35
@@ -384,6 +387,12 @@ func _faction_or_type_color(b, owner: String) -> Color:
 		match String(b.type):
 			"zone_center":
 				return cfg.color("zone_center")
+			"stone_wall":
+				return cfg.color("stone_wall")
+			"tower":
+				return cfg.color("tower")
+			"watch_tower":
+				return cfg.color("watch_tower")
 			_:
 				return cfg.color("wall")
 	# ★★ 中立化（大本营被拆）：保留归属，但一律画成中性灰。
@@ -396,8 +405,12 @@ func _faction_or_type_color(b, owner: String) -> Color:
 		match String(b.type):
 			"wall":
 				nc = nc.darkened(0.35)
+			"stone_wall":
+				nc = nc.darkened(0.5)
 			"tower":
 				nc = nc.darkened(0.12)
+			"watch_tower":
+				nc = nc.darkened(0.0)
 		_color_cache[nkey] = nc
 		return nc
 	var key := "%s|%s" % [owner, String(b.type)]
@@ -412,8 +425,12 @@ func _faction_or_type_color(b, owner: String) -> Color:
 	match String(b.type):
 		"wall":
 			c = side.darkened(0.35)
+		"stone_wall":
+			c = side.darkened(0.5)
 		"tower":
 			c = side.darkened(0.12)
+		"watch_tower":
+			c = side
 		_:
 			c = side
 	_color_cache[key] = c

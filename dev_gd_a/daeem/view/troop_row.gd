@@ -8,6 +8,14 @@
 ##   本控件自己画，不挂 `fill_button` —— 它的渐变是竖向的，且绑定 Button.text；
 ##   这里要的是横向泛光 + 数字块 / 分隔线，自己画反而更简单、也不会影响别的按钮。
 ##
+## ★★ 右侧数字键帽的两态（本轮需求）：
+##   · 已选中 → 键帽**亮起**（实心金 + 亮描边 + 深色数字）；
+##   · 已选中且鼠标悬停 → 键帽**黯淡**（深色底 + 淡金描边 + 半透明数字）；
+##   · 未选中 / 空槽 → 原来的深色键帽。见 `_draw()` ③ 与 `number_key_state()`。
+##
+## ★★ 手机端：`set_touch_mode(true)` 后整行鼠标穿透 —— 触摸手势由
+##   `squad_panel.handle_touch()` 统一路由，避免同一次触摸被「模拟鼠标」再点一遍。
+##
 ## ★★ 泛光是**连续渐变**，不是一叠竖带（用户报「有明显分格」之后改的）：
 ##   见 `_draw_glow()` —— 用顶点色多边形让 GPU 逐片元插值，与 `overlay_view_3d.gd`
 ##   里「区划中心占领触发区」的内向渐变描边同一手法。
@@ -31,6 +39,10 @@ const GLOW_CURVE := 1.7
 const NAME_FS := 14
 const FORM_FS := 12
 const NUM_FS := 20
+## ★★ 「跟随眼睛」画在行的最左侧；开启跟随时把文字区右移，避免压住长名字。
+const FOLLOW_EYE_X := 4.0
+const FOLLOW_EYE_W := 12.0
+const FOLLOW_TEXT_GAP := 6.0
 
 var _font: Font = null
 var _slot: int = 0
@@ -40,6 +52,12 @@ var _formation_text: String = ""
 var _filled: bool = false
 var _selected: bool = false
 var _hover: bool = false
+## ★★ 正在跟随这支部队（长按标签 / 数字键触发）：
+##   最左侧画一个眼睛标志；跟随结束（手动动镜头 / 目标阵亡）后刷新会清掉。
+var _following: bool = false
+## ★★ 手机端：行**不吃鼠标**（触摸由 squad_panel.handle_touch 统一路由）。
+##   不吃的话 `emulate_mouse_from_touch` 会再触发一次 Button.pressed，同一次触摸被处理两遍。
+var _touch_mode: bool = false
 var _glow: float = 0.0
 var _target: float = 0.0
 
@@ -83,8 +101,19 @@ func set_data(number_text: String, leader_name: String, formation_text: String,
 	_formation_text = formation_text
 	_filled = filled
 	mouse_filter = Control.MOUSE_FILTER_STOP if filled else Control.MOUSE_FILTER_IGNORE
+	if _touch_mode:
+		mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_sync_glow_target()
 	queue_redraw()
+
+
+## 手机端：整行改成鼠标穿透（触摸由 squad_panel 的 `handle_touch` 统一处理）。
+func set_touch_mode(on: bool) -> void:
+	_touch_mode = on
+	mouse_filter = Control.MOUSE_FILTER_IGNORE if (on or not _filled) \
+		else Control.MOUSE_FILTER_STOP
+	if on:
+		_hover = false
 
 
 func set_selected(on: bool) -> void:
@@ -93,6 +122,44 @@ func set_selected(on: bool) -> void:
 	_selected = on
 	_sync_glow_target()
 	queue_redraw()
+
+
+## 跟随态：最左侧显示 / 隐藏眼睛标志。
+func set_following(on: bool) -> void:
+	if _following == on:
+		return
+	_following = on
+	queue_redraw()
+
+
+func is_row_following() -> bool:
+	return _following
+
+
+## 悬停态（鼠标进入 / 离开调它；测试也直接调）。
+func set_hover(on: bool) -> void:
+	if _hover == on:
+		return
+	_hover = on
+	_sync_glow_target()
+	queue_redraw()
+
+
+func is_row_hovered() -> bool:
+	return _hover
+
+
+## 数字键帽的显示状态（给测试断言）：
+##   "empty"  = 空槽 / 阵亡（整行压暗）
+##   "lit"    = 已选中且未悬停（键帽亮起）
+##   "dim"    = 已选中且悬停（键帽黯淡）
+##   "normal" = 未选中
+func number_key_state() -> String:
+	if not _filled:
+		return "empty"
+	if _selected:
+		return "dim" if _hover else "lit"
+	return "normal"
 
 
 func is_selected() -> bool:
@@ -124,15 +191,11 @@ func _sync_glow_target() -> void:
 
 
 func _on_mouse_entered() -> void:
-	_hover = true
-	_sync_glow_target()
-	queue_redraw()
+	set_hover(true)
 
 
 func _on_mouse_exited() -> void:
-	_hover = false
-	_sync_glow_target()
-	queue_redraw()
+	set_hover(false)
 
 
 func _process(dt: float) -> void:
@@ -169,16 +232,42 @@ func _draw() -> void:
 		draw_rect(Rect2(edge - 2.0, 5.0, 1.0, h - 10.0),
 			Color(edge_col, 0.35 * _glow), true)
 
-	# ③ 数字块
+	# ③ 数字块（键帽）：
+	#   · 已选中且未悬停 → 亮起（实心金 + 亮描边 + 深色数字）；
+	#   · 已选中且悬停   → 黯淡（回到深色底 + 淡金描边 + 半透明数字），
+	#                       作为「再点一下就是反选」的提示；
+	#   · 未选中 / 空槽  → 原来的深色键帽。
 	var nr := Rect2(UiLayoutRes.SQUAD_NUM_X, (h - UiLayoutRes.SQUAD_NUM_SIZE) * 0.5,
 		UiLayoutRes.SQUAD_NUM_SIZE, UiLayoutRes.SQUAD_NUM_SIZE)
-	draw_rect(nr, _num_color, true)
-	draw_rect(nr, Color(UiStyleRes.line_soft(), 0.75), false, 1.0)
+	var key_state := number_key_state()
+	var num_bg: Color = _num_color
+	var num_border: Color = Color(UiStyleRes.line_soft(), 0.75)
+	var num_col: Color = UiStyleRes.text()
+	if key_state == "lit":
+		num_bg = UiStyleRes.accent()
+		num_border = UiStyleRes.accent_bright()
+		num_col = UiStyleRes.text_on_accent()
+	elif key_state == "dim":
+		num_bg = Color(_num_color.r, _num_color.g, _num_color.b, 0.55)
+		num_border = Color(UiStyleRes.accent_dim(), 0.55)
+		num_col = Color(UiStyleRes.text(), 0.55)
+	elif key_state == "empty":
+		num_col.a = 0.40
+	draw_rect(nr, num_bg, true)
+	draw_rect(nr, num_border, false, 1.0)
 
 	# ④ 灰色分隔线
 	draw_line(Vector2(UiLayoutRes.SQUAD_DIVIDER_X, 7.0),
 		Vector2(UiLayoutRes.SQUAD_DIVIDER_X, h - 7.0),
 		Color(UiStyleRes.text_faint(), 0.55), 1.0)
+
+	# ★★ 跟随眼睛（行最左侧）：开启跟随时画；文字区向右让出它的位置。
+	var text_x: float = UiLayoutRes.SQUAD_TEXT_X
+	var text_w: float = UiLayoutRes.SQUAD_TEXT_W
+	if _following and _filled:
+		text_x = FOLLOW_EYE_X + FOLLOW_EYE_W + FOLLOW_TEXT_GAP
+		text_w = maxf(16.0, UiLayoutRes.SQUAD_TEXT_X + UiLayoutRes.SQUAD_TEXT_W - text_x)
+		_draw_follow_eye(h)
 
 	var f: Font = _font if _font != null else get_theme_default_font()
 	if f == null:
@@ -191,20 +280,41 @@ func _draw() -> void:
 
 	var name_text := _leader_name if _leader_name != "" else "…"
 	var form_text := _formation_text if _formation_text != "" else "--/--"
-	name_text = _fit(f, name_text, UiLayoutRes.SQUAD_TEXT_W, NAME_FS)
-	form_text = _fit(f, form_text, UiLayoutRes.SQUAD_TEXT_W, FORM_FS)
+	name_text = _fit(f, name_text, text_w, NAME_FS)
+	form_text = _fit(f, form_text, text_w, FORM_FS)
 	# 名字与编制都**右对齐**（右缘落在灰线左边），与数字块形成一条整齐的竖边。
-	draw_string(f, Vector2(UiLayoutRes.SQUAD_TEXT_X, 22.0), name_text,
-		HORIZONTAL_ALIGNMENT_RIGHT, UiLayoutRes.SQUAD_TEXT_W, NAME_FS, name_col)
-	draw_string(f, Vector2(UiLayoutRes.SQUAD_TEXT_X, 42.0), form_text,
-		HORIZONTAL_ALIGNMENT_RIGHT, UiLayoutRes.SQUAD_TEXT_W, FORM_FS, form_col)
+	draw_string(f, Vector2(text_x, 22.0), name_text,
+		HORIZONTAL_ALIGNMENT_RIGHT, text_w, NAME_FS, name_col)
+	draw_string(f, Vector2(text_x, 42.0), form_text,
+		HORIZONTAL_ALIGNMENT_RIGHT, text_w, FORM_FS, form_col)
 
-	# 数字（贴数字块中心）：泛光只改底板/右缘，**不把白字改成黑字**。
-	var num_col: Color = UiStyleRes.text()
-	if not _filled:
-		num_col.a = 0.40
+	# 数字（贴数字块中心）：颜色跟着键帽状态走（亮起 = 深字，黯淡 / 未选中 = 原色）。
 	draw_string(f, Vector2(nr.position.x, nr.position.y + 31.0), _number_text,
 		HORIZONTAL_ALIGNMENT_CENTER, nr.size.x, NUM_FS, num_col)
+
+
+## ★★ 「跟随中」的眼睛标志（画在行最左侧）：
+##   杏仁形轮廓（上下两条对称曲线）+ 实心瞳孔，全部用自绘图元 —— 不依赖字体里有没有眼睛字形。
+##   颜色用亮一档的金（`accent_bright`），在深色行底与金色泛光上都看得清。
+func _draw_follow_eye(h: float) -> void:
+	var cx: float = FOLLOW_EYE_X + FOLLOW_EYE_W * 0.5
+	var cy: float = h * 0.5
+	var rx: float = FOLLOW_EYE_W * 0.5
+	var ry: float = FOLLOW_EYE_W * 0.28
+	var col: Color = UiStyleRes.accent_bright()
+	var steps := 8
+	var pts := PackedVector2Array()
+	# 上眼睑（左 → 右）
+	for i in steps + 1:
+		var t: float = float(i) / float(steps)
+		pts.append(Vector2(cx - rx + 2.0 * rx * t, cy - ry * sin(PI * t)))
+	# 下眼睑（右 → 左；收尾点 = 左上角，闭合成杏仁形）
+	for i in range(steps - 1, 0, -1):
+		var t: float = float(i) / float(steps)
+		pts.append(Vector2(cx - rx + 2.0 * rx * t, cy + ry * sin(PI * t)))
+	pts.append(pts[0])
+	draw_polyline(pts, col, 1.3, true)
+	draw_circle(Vector2(cx, cy), maxf(1.2, ry * 0.55), col)
 
 
 ## 金色泛光：从最右竖线向左推进的**连续横向渐变**（右强左弱）。

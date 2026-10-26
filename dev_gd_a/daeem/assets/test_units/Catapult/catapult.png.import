@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://dc2e80hiplikn"
-path="res://.godot/imported/s.png-5f6ef2a703a04159e633bda146f913ac.ctex"
+uid="uid://ddl6gwlssl14r"
+path="res://.godot/imported/catapult.png-ed30cb1cebfef9fa2c4e14b21d9a8caa.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://assets/test_units/SpearMan/s.png"
-dest_files=["res://.godot/imported/s.png-5f6ef2a703a04159e633bda146f913ac.ctex"]
+source_file="res://assets/test_units/Catapult/catapult.png"
+dest_files=["res://.godot/imported/catapult.png-ed30cb1cebfef9fa2c4e14b21d9a8caa.ctex"]
 
 [params]
 

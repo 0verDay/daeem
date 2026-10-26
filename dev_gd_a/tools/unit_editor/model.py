@@ -59,7 +59,7 @@ TECH_EFFECTS: Tuple[Tuple[str, str, str], ...] = (
 #:    ⚠️ 它同时也是一个「可以被删除」的自定义单位 id 了；若某个旧地图/关卡里还写着
 #:       kind = "enemy"，游戏会退到 unit.<default> 的兜底值（不崩）。
 BUILTIN_UNITS: Tuple[str, ...] = ("spearman", "longbowman", "rider")
-BUILTIN_BUILDINGS: Tuple[str, ...] = ("wall", "tower", "base")
+BUILTIN_BUILDINGS: Tuple[str, ...] = ("wall", "tower", "stone_wall", "watch_tower", "base")
 
 #: id 的写法：小写字母开头 + 小写字母/数字/下划线。
 #: ★ 为什么必须限制：id 会进 `kind`（存档 / 快照 / 地图 JSON 都在用它），
@@ -162,6 +162,9 @@ GENERAL_STAT_FIELDS: Tuple[Field, ...] = (
 BUILDING_FIELDS: Tuple[Field, ...] = (
     Field("name", "名称", "text", "地图上 / 建造页里的名字"),
     Field("buildable", "可建造", "bool", "会不会出现在右下「建筑」页的命令卡里"),
+    Field("tier", "解锁大本营等级", "int",
+          "建筑页的行号 / 解锁所需的大本营等级：1 = 第 1 行，2 = 第 2 行（2 级大本营）",
+          minimum=1, maximum=3),
     Field("hotkey", "快捷键", "text",
           "建造页那一格上的快捷键字母（可空）。⚠️ 别用已经被占用的键："
           "N（区划名字）/ P（暂停）/ E（刷敌人）/ G / 数字 1~3 —— 占了就会把那个键抢走"),
@@ -170,10 +173,13 @@ BUILDING_FIELDS: Tuple[Field, ...] = (
     Field("cost_food", "造价 · 粮食", "float",
           "economy.enabled = false 时建造免费（那个开关只管建造）", minimum=0),
     Field("cost_gold", "造价 · 黄金", "float", minimum=0),
-    Field("hp_max", "血量", "float", "基础血量上限；等级与科技都在它上面乘倍率", minimum=1),
+    Field("hp_max", "血量", "float", "基础血量上限；大本营等级与科技都在它上面乘倍率", minimum=1),
     Field("body_scale", "本体大小", "float",
           "本体边长占一格的比例（渲染与碰撞共用）：1.0 = 填满整格", minimum=0.05, maximum=1.0),
     Field("vision", "视野半径", "float", VISION_HINT, minimum=0),
+    Field("ranged_reduction", "远程免伤", "float",
+          "0~1：对投掷物伤害的免伤比例（0.9 = 90%）。攻城（投石车）不受影响",
+          minimum=0.0, maximum=0.99),
     Field("attackable", "可攻击", "bool", "不打勾 = 不显示也不需要下面的攻击三属性"),
     Field("damage", "攻击力", "float", minimum=0),
     Field("range", "攻击距离", "float", "格", minimum=0),
@@ -444,6 +450,10 @@ class Building:
         self.cooldown = _f(data.get("cooldown"), 0.0)
         #: ★ 视野半径（格）—— 战争迷雾。没写那个键时显示的是 `vision_effective`
         self.vision = _f(data.get("vision"), 0.0)
+        #: ★★ 2026.10.26：建筑页行号 / 解锁所需的大本营等级（缺省 1）。
+        self.tier = int(_f(data.get("tier"), 1))
+        #: ★★ 2026.10.26：对远程伤害的免伤比例（缺省 0.9 = 90%）。
+        self.ranged_reduction = _f(data.get("ranged_reduction"), 0.9)
         self.color = _s(data.get("color"), "#888888")
         self.desc = _s(data.get("desc"), "")
         base = {"damage": self.damage, "range": self.range, "cooldown": self.cooldown}
@@ -952,8 +962,9 @@ class ConfigModel:
             #   （与兵种那边的 `set_unit("vision", None)` 同一条语义）。
             if self.doc.has(path + ["vision"]):
                 self.doc.remove(path + ["vision"])
-        elif field in ("name", "buildable", "hotkey", "build_sec", "hp_max", "body_scale",
-                       "vision", "attackable", "damage", "range", "cooldown", "color", "desc"):
+        elif field in ("name", "buildable", "tier", "hotkey", "build_sec", "hp_max",
+                       "body_scale", "vision", "ranged_reduction", "attackable",
+                       "damage", "range", "cooldown", "color", "desc"):
             self.doc.set(path + [field], value)
         else:
             raise ModelError("不认识的建筑字段：%s" % field)
@@ -982,7 +993,7 @@ class ConfigModel:
             raise ModelError("不认识的升级字段：%s" % field)
 
     def add_building(self, new_id: str, name: str, template_id: str) -> None:
-        """加一个建筑：复制模板的定义 **与它的整张升级表**。"""
+        """加一个建筑：复制模板的定义（**不再**给新建筑配升级表）。"""
         self._check_new_id(new_id, "建筑")
         if not self.doc.has(["building", template_id]):
             raise ModelError("模板建筑不存在：%s" % template_id)
@@ -994,15 +1005,11 @@ class ConfigModel:
         #   设计师会以为编辑器坏了。想让它当「开局自带」的东西，把勾去掉即可。
         self.doc.set(["building", new_id, "buildable"], True)
         self.doc.set(["building", new_id, "hotkey"], "")
-        if self.doc.has(["upgrade", "levels", template_id]):
-            self.doc.insert_raw(["upgrade", "levels"], new_id,
-                                self.doc.text_of(["upgrade", "levels", template_id]))
-        else:
-            self.doc.set(["upgrade", "levels", new_id], self.default_levels())
+        # ★★ 2026.10.26：只有大本营可以升级；新建筑不再自动生成 upgrade.levels。
 
     @staticmethod
     def default_levels() -> List[Dict[str, Any]]:
-        """一份 3 级升级表（照 base / wall / tower 现在的口径）。"""
+        """一份 3 级升级表（只给大本营 / 旧数据兜底；普通建筑不再使用）。"""
         return [
             {"level": 1, "hp_mult": 1.0},
             {"level": 2, "hp_mult": 1.5, "cost": {"food": 50, "gold": 50}, "time_sec": 10},

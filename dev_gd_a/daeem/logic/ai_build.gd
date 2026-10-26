@@ -34,33 +34,11 @@ static func update(ai) -> void:
 	#   `_defense_paused()` 仍保留给测试 / 面板判断，但不再阻断整个建造周期。
 	# ★★ 2026.10.25：塔优先于墙 —— 这一 tick 只要真的造了塔，就不再花墙的钱。
 	#   等塔目标都满足（或暂时造不了）才轮到中心环 / 边境长墙。
-	#   升级放在后面：升级的「攒钱」分支不能把这一 tick 的塔挤掉。
 	_try_tower_then_walls(ai)
-	# 防御升级每 4 次建造动作穿插一次。
-	var do_upgrade := int(ai.stats.get("builds", 0)) % 4 == 0
-	if do_upgrade:
-		var up: Dictionary = _defense_upgrade_candidate(ai)
-		if not up.is_empty():
-			var ucost: Dictionary = up.get("cost", {})
-			var ugold := float(ucost.get("gold", 0.0))
-			var avail: Dictionary = _build_available(ai)
-			var gold_now := float(avail.get("gold", 0.0))
-			if ugold > 0.0 and gold_now < ugold:
-				if gold_now >= ugold * 0.75:
-					if float(ai.build_save_until) <= 0.0:
-						ai.build_save_until = ai.world.time + 8.0
-						return
-					if ai.world.time < float(ai.build_save_until):
-						return
-					ai.build_save_until = 0.0
-			else:
-				ai.build_save_until = 0.0
-				_try_defense_upgrade(ai)
-	# 钱明显花不完时，同一周期继续补塔 / 补墙 / 升级，别只攒钱。
+	# ★★ 2026.10.26：取消建筑升级 —— AI 只造木墙 / 哨塔，不再升级任何墙塔。
+	#   钱明显花不完时，同一周期继续补塔 / 补墙。
 	if AiEconomyRes.float_excess(ai):
 		_try_tower_then_walls(ai)
-		if do_upgrade:
-			_try_defense_upgrade(ai)
 
 
 ## 先尝试造一座塔；**只有塔这一 tick 没造出来**才允许碰墙。
@@ -745,7 +723,7 @@ static func _defense_paused(ai) -> bool:
 	return AiArmyRes.understrength_team_count(ai) > 0
 
 
-## 防御建筑（塔 / 墙 / 升级）的 affordability：必须留够生产预留。
+## 防御建筑（塔 / 墙）的 affordability：必须留够生产预留。
 static func _defense_afford(ai, cost: Dictionary, _build_cfg: Dictionary = {}) -> bool:
 	if cost.is_empty():
 		return true
@@ -754,81 +732,6 @@ static func _defense_afford(ai, cost: Dictionary, _build_cfg: Dictionary = {}) -
 		if float(avail.get(String(k), 0.0)) < float(cost[k]):
 			return false
 	return true
-
-
-## 选出当前最该升级的塔 / 墙（只选，不扣钱）。
-static func _defense_upgrade_candidate(ai) -> Dictionary:
-	var build_cfg: Dictionary = ai.profile.get("build", {})
-	if not bool(build_cfg.get("defense_upgrade_enabled", true)):
-		return {}
-	var best = null
-	var best_score := -INF
-	var tower_target_met := _tower_count(ai) >= _tower_target(ai)
-	for b in ai.world.building_list:
-		if b == null or not b.alive or String(b.owner) != ai.faction:
-			continue
-		var bt := String(b.type)
-		if bt != "tower" and bt != "wall":
-			continue
-		# ★ 2026.10.25：塔目标还没建满时，不升级墙（钱先留给塔）。
-		if bt == "wall" and not tower_target_met:
-			continue
-		if b.is_upgrading():
-			continue
-		if not ai.world.building_can_upgrade(bt):
-			continue
-		var max_lv: int = ai.world.building_max_level(bt)
-		if int(b.level) >= max_lv:
-			continue
-		var zid := int(b.zone_id)
-		if zid < 0:
-			continue
-		var zd = ai.world.zone_by_id(zid)
-		if zd == null:
-			continue
-		if _zone_capture_blocked(ai, zd):
-			continue
-		var threatened := _zone_threatened(ai, zd)
-		var front := _zone_is_frontier(ai, zd)
-		if not threatened and not front:
-			continue
-		var deficit: int = max_lv - int(b.level)
-		var score := float(deficit) * 10.0
-		if threatened:
-			score += 100.0
-		else:
-			score += 30.0
-		if bt == "wall" and not _missing_wall_tiles(ai, zd).is_empty():
-			score += 8.0
-		if bt == "tower":
-			# ★ 2026.10.25：塔升级永远排在墙升级前面（与「塔优先于墙」同一条口径）。
-			score += 1000.0 + float(build_cfg.get("defense_upgrade_tower_bonus", 12.0))
-		if score > best_score:
-			best_score = score
-			best = b
-	if best == null:
-		return {}
-	return {"b": best, "cost": ai.world.building_upgrade_cost(best)}
-
-
-## 升级前线 / 受威胁区划的箭塔和城墙。
-static func _try_defense_upgrade(ai) -> void:
-	var build_cfg: Dictionary = ai.profile.get("build", {})
-	if not bool(build_cfg.get("defense_upgrade_enabled", true)):
-		return
-	var pick: Dictionary = _defense_upgrade_candidate(ai)
-	if pick.is_empty():
-		return
-	var best = pick["b"]
-	var cost: Dictionary = pick.get("cost", {})
-	if not _defense_afford(ai, cost, build_cfg):
-		return
-	if CommandRes.apply(ai.world, ai.cfg, {
-			"kind": "building_upgrade", "tx": best.tx, "ty": best.ty,
-			"faction": ai.faction}):
-		ai.stats["builds"] = int(ai.stats.get("builds", 0)) + 1
-		ai.stats["upgrades"] = int(ai.stats.get("upgrades", 0)) + 1
-		ai.note_status("building")
 
 
 static func _tower_count(ai) -> int:

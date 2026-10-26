@@ -1442,6 +1442,14 @@ class EditorApp:
                             "（数据还在文件里，勾上就能改）。")
 
         # ---- 升级表
+        # ★★ 2026.10.26：只有大本营可以升级；其他建筑不再有等级表。
+        if b.id != "base":
+            lsec = self._section("升级", "本轮起只有大本营可以升级")
+            tk.Label(lsec, text="木墙 / 哨塔 / 石墙 / 警戒塔没有升级机制。"
+                                "只有大本营保留 upgrade.levels.base。",
+                     bg=UI["panel"], fg=UI["text_dim"], anchor="w", justify="left",
+                     wraplength=380).pack(fill="x")
+            return
         if not b.levels:
             lsec = self._section("升级", "还没有升级表")
             tk.Label(lsec, text="这个建筑没有 upgrade.levels 表：游戏里不能升级。",

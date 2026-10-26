@@ -513,7 +513,16 @@ func _draw_buildings() -> void:
 		elif b.neutralized:
 			col = cfg.side_color_neutral
 		elif String(b.owner) == "":
-			col = cfg.color("wall") if b.type == BuildingRes.TYPE_WALL else cfg.color("tower")
+			# ★★ 2026.10.26：第二行建筑也有自己的颜色（石墙 / 警戒塔）。
+			match String(b.type):
+				"stone_wall":
+					col = cfg.color("stone_wall")
+				"tower":
+					col = cfg.color("tower")
+				"watch_tower":
+					col = cfg.color("watch_tower")
+				_:
+					col = cfg.color("wall")
 		else:
 			# ★★ 有主建筑：按本机视角的己 / 友 / 敌三色（本轮新增）
 			col = SideColorRes.color(cfg, world, String(b.owner), "main")

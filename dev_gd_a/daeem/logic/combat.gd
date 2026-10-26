@@ -708,8 +708,11 @@ static func attack_building(world, cfg: ConfigRes, u: UnitRes, b) -> void:
 	#    否则同一帧里几个单位围着同一堵墙，会广播出好几条重复的 building_down。
 	# ★★ 远程单位拆建筑也走投掷物（伤害仍用共用的 building_damage）——
 	#    命中结算与 building_down 广播都在 projectile._impact 里。
+	#    ★ 2026.10.26：`u.siege` = 攻城标签 → 投掷物把它当 `ignore_reduction` 传给建筑，
+	#    于是投石车不受「建筑远程免伤 90%」影响。
 	if u.ranged:
-		ProjectileRes.spawn(world, cfg, String(u.faction), u, u.pos, b, true, cfg.building_damage)
+		ProjectileRes.spawn(world, cfg, String(u.faction), u, u.pos, b, true,
+			cfg.building_damage, 0.0, bool(u.siege))
 	elif b.take_damage(cfg, cfg.building_damage, u):
 		world.push_event({"type": "building_down", "building": b, "source": u})
 

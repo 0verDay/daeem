@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://cnw5r2yfu31co"
-path="res://.godot/imported/r.png-3892d3343252ea3c1c1a108693a0fe74.ctex"
+uid="uid://n1qbdjwcdyht"
+path="res://.godot/imported/spearman.png-944d0da50e3c656d40ff6ac0e4fc60b4.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://assets/test_units/Rider/r.png"
-dest_files=["res://.godot/imported/r.png-3892d3343252ea3c1c1a108693a0fe74.ctex"]
+source_file="res://assets/test_units/SpearMan/spearman.png"
+dest_files=["res://.godot/imported/spearman.png-944d0da50e3c656d40ff6ac0e4fc60b4.ctex"]
 
 [params]
 

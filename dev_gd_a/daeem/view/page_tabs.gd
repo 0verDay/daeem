@@ -18,6 +18,8 @@
 ##   选中对象算的，见 `hud._tab_plan()`），也不关心页里有什么（内容由 hud 组装，
 ##   科技那一页的九格由 view/tech_grid.gd 画）。
 ##   本控件只做三件事：摆按钮、记当前页、把点击抛出去（`page_changed`）。
+## ★★ 键盘也能切页：`cycle_page(dir)` 按当前这屏的顺序循环（Tab / Shift+Tab 由
+##   `hud.handle_tab_key()` 在 GUI 之前调过来）。
 ##
 ## 配色：参考图里几颗都是实心的，但那样看不出「当前在哪一页」——
 ## 所以当前页用**实心金**（theme.accent），其余只描边。这样仍然一看就是同一套色。
@@ -223,6 +225,25 @@ func select_page(page: String) -> void:
 	_page = page
 	_apply_styles()
 	page_changed.emit(_page)
+
+
+## ★★ Tab 键切页：按当前这屏的顺序循环到下一页（dir = +1）/ 上一页（dir = -1）。
+##
+## @return true = 真的切了（按键该被消费）；只有一页 / 没有页签 / 目标就是当前页 → false。
+## ★ 当前页不在列表里（`PAGE_NONE` 占位页签 / 刚换了一类选中）时，从第一页开始。
+func cycle_page(dir: int = 1) -> bool:
+	var n := _page_ids.size()
+	if n <= 1:
+		return false
+	var idx := _page_ids.find(_page)
+	var next: int = 0 if idx < 0 else (idx + dir) % n
+	if next < 0:
+		next += n
+	var target := _page_ids[next]
+	if target == _page:
+		return false
+	select_page(target)
+	return true
 
 
 ## 普通态的底色（`tab_normal` / `tab_hover` 那一档）**留给没挂填充的场合**；

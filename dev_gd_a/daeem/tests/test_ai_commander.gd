@@ -25,6 +25,7 @@ func _cases() -> void:
 		return
 	_test_profile(cfg)
 	_test_world_setup(cfg)
+	_test_coop_start_resources(cfg)
 	_test_force_cap_and_generals(cfg)
 	_test_economy_and_production(cfg)
 	_test_build_and_tech(cfg)
@@ -62,6 +63,7 @@ func _cases() -> void:
 	_test_front_general_recruit(cfg)
 	_test_team_production_targets(cfg)
 	_test_march_moves_army(cfg)
+	_test_march_early_end(cfg)
 	_test_expand_target(cfg)
 	_test_auto_captures_zones(cfg)
 	_test_no_lone_wanderers(cfg)
@@ -133,6 +135,36 @@ func _test_world_setup(cfg) -> void:
 	eq(w.ai_directive_of("F2").get("kind", ""), "auto", "盟友默认自主 auto")
 	ok(not w.player_factions.has("F2"), "AI 队友不算玩家操作席位")
 	ok(w.ai_teammates_for("F1").has("F2"), "F1 能看到 F2 这个 AI 队友")
+
+
+func _test_coop_start_resources(cfg) -> void:
+	var w = _make_world(cfg)
+	if w == null:
+		ok(false, "合作起手资源测试世界")
+		return
+	near(float(w.resources.get("food", -1.0)), 250.0, 1e-4,
+		"★★ 合作 AI 队友：玩家起手粮食对齐 normal 基准")
+	near(float(w.resources.get("gold", -1.0)), 250.0, 1e-4,
+		"★★ 合作 AI 队友：玩家起手黄金对齐 normal 基准")
+	var ai_pool: Dictionary = w.ai_faction_resources.get("F2", {})
+	near(float(ai_pool.get("food", -1.0)), 250.0, 1e-4, "友军 AI 起手粮食 normal = 250")
+	# 固定 normal 基准：AI 难度调高，玩家仍是 250，AI 自己变 350。
+	var lv = LevelRes.load_level(null, COOP_LEVEL, cfg)
+	var hard_w = WorldRes.create_from_level(cfg, lv, "F1", ["F1", "F2"], true,
+		{"F2": LevelRes.AI_COMMANDER}, {"F2": {"difficulty": "hard"}}, 1234)
+	if hard_w != null:
+		near(float(hard_w.resources.get("food", -1.0)), 250.0, 1e-4,
+			"★★ 玩家起手固定 normal 基准（不跟随 hard）")
+		var hard_pool: Dictionary = hard_w.ai_faction_resources.get("F2", {})
+		near(float(hard_pool.get("food", -1.0)), 350.0, 1e-4,
+			"（前提）友军 AI 自己按 hard 拿 350")
+	# 没有 commander 的合作世界：保持 cfg.start_*，不抬升。
+	var plain_w = WorldRes.create_from_level(cfg, lv, "F1", ["F1", "F2"], true)
+	if plain_w != null:
+		near(float(plain_w.resources.get("food", -1.0)), float(cfg.start_food), 1e-4,
+			"★ 没有 AI 队友的合作局不抬粮食")
+		near(float(plain_w.resources.get("gold", -1.0)), float(cfg.start_gold), 1e-4,
+			"★ 没有 AI 队友的合作局不抬黄金")
 
 
 func _test_force_cap_and_generals(cfg) -> void:
@@ -971,7 +1003,7 @@ func _test_build_economy_guard(cfg) -> void:
 	ok(after == before, "★★ 缺编时 update 不会拿补员的钱去建塔")
 
 
-## ★★ 城墙：前线区划围绕中心 3×3 外圈连续造；被入侵时补缺口；塔 / 墙可升级。
+## ★★ 城墙：前线区划围绕中心 3×3 外圈连续造；被入侵时补缺口；木墙 / 哨塔不升级。
 func _test_wall_and_upgrade(cfg) -> void:
 	var w = _make_ai_test_world(cfg)
 	if w == null:
@@ -1012,22 +1044,14 @@ func _test_wall_and_upgrade(cfg) -> void:
 					and int(b.tx) == old.x and int(b.ty) == old.y:
 				rebuilt = true
 		ok(rebuilt, "★★ 被入侵时优先补上城墙缺口")
-	# 防御建筑升级：墙 / 塔走同一个升级入口。
-	# ★ 2026.10.25：塔目标没建满时不升级墙；这里把塔目标临时设为 0，
-	#   单独验证「塔目标满足后，墙也能升级」这条路径。
-	c.profile["build"]["tower_hard_max"] = 0
-	c.profile["build"]["tower_max"] = 0
-	var before_upg := int(c.stats.get("upgrades", 0))
-	AiBuildRes._try_defense_upgrade(c)
-	var upgrading := false
+	# ★★ 2026.10.26：取消建筑升级 —— AI 只造木墙 / 哨塔，不再升级任何墙塔。
+	var any_upgrading := false
 	for b in w.building_list:
-		if b.alive and String(b.owner) == "F1" \
-				and (String(b.type) == "wall" or String(b.type) == "tower") \
-				and b.is_upgrading():
-			upgrading = true
+		if b.alive and String(b.owner) == "F1" and b.is_upgrading():
+			any_upgrading = true
 			break
-	ok(upgrading or int(c.stats.get("upgrades", 0)) > before_upg,
-		"★★ AI 会升级前线 / 受威胁区划的箭塔或城墙")
+	ok(not any_upgrading, "★★ AI 不再升级木墙 / 哨塔")
+	ok(not c.stats.has("upgrades"), "★★ AI 统计里不再有 upgrades")
 
 
 ## ★★ 2026.10.25：边境封墙。前期只封与敌方接壤的边；资源到 3×max_float
@@ -1780,6 +1804,69 @@ func _test_march_moves_army(cfg) -> void:
 	var after := _nearest_unit_distance(w, "F2", target)
 	ok(int(c.stats.get("orders", 0)) >= 1, "AI 至少发出一条行军命令")
 	ok(after < before, "部队离目标更近了（%f -> %f）" % [before, after])
+
+
+func _test_march_early_end(cfg) -> void:
+	var w = _make_world(cfg)
+	if w == null:
+		ok(false, "行军主动结束测试世界")
+		return
+	var c = w.ai_commanders["F2"]
+	var g = null
+	for u in w.units:
+		if u.alive and String(u.faction) == "F2" and u.is_general() and not u.is_downed():
+			g = u
+			break
+	ok(g != null, "（前提）F2 有开局将领")
+	if g == null:
+		return
+	var pt: Vector2 = g.pos
+	# 单元判据：全部到点 + 目标点清场 → 可以结束。
+	ok(AiArmyRes._march_reached_clear(c, pt, AiArmyRes.leader_teams(c)),
+		"★ 全部到点且清场 → 可以结束")
+	# 目标点附近有可见敌人 → 不结束。
+	var fx := clampi(int(floor(pt.x)) + 2, 0, w.map.cols - 1)
+	var fy := clampi(int(floor(pt.y)), 0, w.map.rows - 1)
+	var foe = UnitRes.create(cfg, "foe-march-clear", "敌将",
+		Vector2i(fx, fy), "enemy", "general")
+	ok(foe != null, "能造一个测试敌将")
+	if foe != null:
+		foe.hp_max = 100000.0
+		foe.base_hp_max = 100000.0
+		foe.hp = 100000.0
+		w.units.append(foe)
+		w.fog.update(w)
+		if w.fog.unit_visible("F2", foe):
+			ok(not AiArmyRes._march_reached_clear(c, pt, AiArmyRes.leader_teams(c)),
+				"★★ 目标点周围有可见敌人 → 不结束")
+		else:
+			ok(true, "（跳过）敌将不在 F2 视野内，无法验证敌人分支")
+		foe.alive = false
+		w.units.erase(foe)
+	# 集成：向 F2 大本营中心下令 march（开局三将都在 3 格内），army tick 后应自动结束。
+	var base = w.find_base_of("F2")
+	ok(base != null, "（前提）F2 有基地")
+	if base == null:
+		return
+	eq(w.set_ai_directive("F2", "march", float(base.tx) + 0.5, float(base.ty) + 0.5, "F1"),
+		"", "行军指令接受")
+	var serial0 := int(w.ai_directive_of("F2").get("serial", 0))
+	for i in 10:
+		w.tick(0.1)
+	eq(String(w.ai_directive_of("F2").get("kind", "")), "auto",
+		"★★ 到点且清场后行军提前结束（不用等 60 秒）")
+	ok(int(w.ai_directive_of("F2").get("serial", 0)) > serial0, "结束也会 bump serial")
+	near(float(w.ai_panel_state("F2").get("hold_left", -1.0)), 0.0, 1e-4,
+		"结束后没有保留倒计时")
+	# 反向：远处目标在没到点前不会提前结束。
+	eq(w.set_ai_directive("F2", "march", 1.5, 1.5, "F1"), "", "远处行军接受")
+	for i in 20:
+		w.tick(0.1)
+	eq(String(w.ai_directive_of("F2").get("kind", "")), "march", "★★ 没到点不会提前结束")
+	# 手动结束：进行中 true，auto 再结束 false。
+	ok(w.end_ai_directive("F2", ""), "end_ai_directive 能结束进行中的指令")
+	eq(String(w.ai_directive_of("F2").get("kind", "")), "auto", "结束后回到 auto")
+	ok(not w.end_ai_directive("F2", ""), "auto 状态再结束返回 false")
 
 
 func _test_expand_target(cfg) -> void:

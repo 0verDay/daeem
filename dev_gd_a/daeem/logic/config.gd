@@ -308,6 +308,11 @@ var _unit_icons: Dictionary = {}
 ## ★ 空串 = 配置里没写 → 渲染层退回程序化剪影（见 view/unit_sprite_3d.gd 的 bake）。
 ## ★ 与 `_unit_icons` 同一口径：**数据**而不是代码里的字面量，加兵种只改 JSON。
 var _unit_sprites: Dictionary = {}
+## ★★ 单位类型 id → 立牌的**上色口径**（config 的 `unit.types.<id>.sprite_tint`）。
+##   · `"art"`     = 保留原画（人物 / 武器原色），描边走阵营色；选中再加金描边；
+##   · `"faction"` = 取形状填阵营色 + 深描边（单字占位走这一档，也是**默认值**）。
+## ★ 只回答「怎么上色」，具体烘图在 view/unit_sprite_3d.gd（config 不碰 Texture）。
+var _unit_sprite_tints: Dictionary = {}
 ## ★★ 将领特性表（config 的 `unit.general_traits`，部队光环）。
 ##   · 键 = 特性 id；值 = `_normalize_general_trait()` 洗过的固定形状字典；
 ##   · 载入时洗一次（与兵种 traits 同一条口径），之后只读；
@@ -975,6 +980,7 @@ func _cache_unit_types() -> void:
 	_unit_classes = {}
 	_general_types = []
 	_unit_sprites = {}
+	_unit_sprite_tints = {}
 
 	# 1) 兵种大类（unit.classes）：id → 显示名（带 / 不带远近两种说法）
 	var raw_classes: Variant = get_path_value("unit.classes")
@@ -1039,6 +1045,9 @@ func _cache_unit_types() -> void:
 			_unit_icons[id] = String(td.get("icon", ""))
 			# 3D 立牌素材路径：没写就是空串（渲染层退回程序化剪影）
 			_unit_sprites[id] = String(td.get("sprite", ""))
+			# 3D 立牌上色口径：只认 "art"；别的一律 "faction"（含没写）
+			var st := String(td.get("sprite_tint", "faction")).strip_edges().to_lower()
+			_unit_sprite_tints[id] = "art" if st == "art" else "faction"
 
 	# 3) 开局将领（general_N 同序）各自的类型
 	var types: Variant = get_path_value("unit.general.types")
@@ -1394,6 +1403,17 @@ func unit_sprite_of(id: String) -> String:
 	var tid := unit_type_of(id)
 	var v: Variant = _unit_sprites.get(tid, "")
 	return String(v) if typeof(v) == TYPE_STRING else ""
+
+
+## ★★ 单位类型 id → **立牌上色口径**（config 的 `unit.types.<id>.sprite_tint`）。
+##
+## · `"art"`     = 保留原画（描边走阵营色、选中再加金描边）；
+## · `"faction"` = 取形状填阵营色 + 深描边（**默认**；单字占位用它）。
+## ★ 与 `unit_sprite_of` 完全同一条口径：参数可以是类型 id，也可以是 kind（将领换算成所属类型）。
+## ★ 这一层只回答「怎么上色」，**不碰 Texture**（config 是依赖图最底层）。
+func unit_sprite_tint_of(id: String) -> String:
+	var tid := unit_type_of(id)
+	return String(_unit_sprite_tints.get(tid, "faction"))
 
 
 ## 兵种大类：infantry（步兵）/ cavalry（骑兵）—— 「后续额外伤害」的主键
@@ -1795,6 +1815,18 @@ func buildable_building_defs() -> Array:
 		if bool(d.get("buildable", false)):
 			out.append(d)
 	return out
+
+
+## ★★ 2026.10.26：建筑页的行号 / 解锁所需的大本营等级（缺省 1 = 开局可建）。
+##   与单位页的 `recruit.list[].tier` 同一套口径：第 1 行 = 1 级，第 2 行 = 2 级。
+func building_tier(type: String) -> int:
+	return maxi(1, int(num("building.%s.tier" % type, 1)))
+
+
+## ★★ 2026.10.26：建筑对**远程伤害**的免伤比例（缺省 0.9 = 所有建筑 90%）。
+##   ⚠️ 只作用于投掷物；近战 / 攻城（投石车）走别的伤害路径，不经过这里。
+func building_ranged_reduction(type: String) -> float:
+	return clampf(num("building.%s.ranged_reduction" % type, 0.9), 0.0, 0.99)
 
 
 ## 建筑的基础血量上限（等级 / 科技都是在它上面乘倍率）

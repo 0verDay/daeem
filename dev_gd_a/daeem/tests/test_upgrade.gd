@@ -33,12 +33,12 @@ func _cases() -> void:
 func _test_config_table(cfg) -> void:
 	var w = _quiet(cfg)
 	ok(cfg.has_upgrade("base"), "大本营有升级表")
-	ok(cfg.has_upgrade("wall"), "城墙有升级表")
-	ok(cfg.has_upgrade("tower"), "箭塔有升级表")
+	ok(not cfg.has_upgrade("wall"), "★★ 木墙没有升级表（本轮取消建筑升级）")
+	ok(not cfg.has_upgrade("tower"), "★★ 哨塔没有升级表（本轮取消建筑升级）")
 	ok(not cfg.has_upgrade(BuildingRes.TYPE_ZONE_CENTER),
 		"★ 区划中心**没有**升级表（它走特化那三个选项）")
 	eq(cfg.upgrade_max_level("base"), 3, "★ 大本营最多 3 级（config 里 3 条）")
-	eq(cfg.upgrade_max_level("wall"), 3, "城墙最多 3 级")
+	eq(cfg.upgrade_max_level("wall"), 1, "★★ 木墙不能升级（最大等级 1）")
 	near(cfg.upgrade_hp_mult("base", 1), 1.0, 1e-6, "1 级血量倍率 1.0")
 	near(cfg.upgrade_hp_mult("base", 2), 1.5, 1e-6, "★ 2 级血量倍率 1.5")
 	near(cfg.upgrade_hp_mult("base", 3), 2.25, 1e-6, "★ 3 级血量倍率 2.25")
@@ -65,6 +65,7 @@ func _test_config_table(cfg) -> void:
 	near(float(sc.get("food", 0.0)), 100.0, 1e-6, "特化要 100 粮食（造价 ×2）")
 	near(float(sc.get("gold", 0.0)), 100.0, 1e-6, "特化要 100 黄金（造价 ×2）")
 	ok(w.building_can_upgrade("base"), "world 转发：大本营能升级")
+	ok(not w.building_can_upgrade(BuildingRes.TYPE_WALL), "★★ world 转发：木墙不能升级")
 	ok(not w.building_can_upgrade(BuildingRes.TYPE_ZONE_CENTER), "world 转发：区划中心不能升级")
 
 func _test_zone_kind_table(cfg) -> void:
@@ -127,19 +128,20 @@ func _test_reject_rules(cfg) -> void:
 	var base = w.find_base_of("p1")
 	var wall = _player_wall(w)
 	ok(base != null, "有己方大本营")
-	ok(wall != null, "有己方城墙")
+	ok(wall != null, "有己方木墙")
 	if base == null or wall == null:
 		return
 	var f: String = String(w.my_faction)
 	_ensure_generals(w, 3, f)
 	eq(UpgradeRes.can_upgrade(w, base, f), "", "平常状态下大本营可以升级")
 	eq(UpgradeRes.can_upgrade(w, null, f), "type", "不存在的建筑 → type")
+	eq(UpgradeRes.can_upgrade(w, wall, f), "type", "★★ 木墙不再能升级（只有大本营可升）")
 	var zc = _zone_center(w)
 	if zc != null:
 		eq(UpgradeRes.can_upgrade(w, zc, f), "type", "★ 区划中心不能升级（没有升级表）")
-	var foe = _enemy_building(w)
+	var foe = _enemy_base(w)
 	if foe != null:
-		eq(UpgradeRes.can_upgrade(w, foe, f), "owner", "★ 别人的建筑不能升级")
+		eq(UpgradeRes.can_upgrade(w, foe, f), "owner", "★ 别人的大本营不能升级")
 	w.resources["food"] = 0.0
 	w.resources["gold"] = 0.0
 	eq(UpgradeRes.can_upgrade(w, base, f), "cost", "★ 钱不够 → cost")
@@ -149,7 +151,6 @@ func _test_reject_rules(cfg) -> void:
 	eq(UpgradeRes.can_upgrade(w, base, f), "max_level", "★ 满级之后不能再升")
 	base.level = 1
 	ok(w.start_building_upgrade(base.tx, base.ty), "开始一次升级")
-	eq(UpgradeRes.can_upgrade(w, wall, f), "", "读条中的是**大本营**，城墙照样能升")
 	eq(UpgradeRes.can_upgrade(w, base, f), "busy", "★ 读条中再升同一栋 → busy")
 
 ## ★★ 2026.10.25：升 2 本要 3 将，升 3 本要 6 将。
@@ -181,49 +182,52 @@ func _test_base_general_gate(cfg) -> void:
 func _test_upgrade_flow(cfg) -> void:
 	var w = _quiet(cfg)
 	_give(w, 1000.0, 1000.0)
-	var wall = _player_wall(w)
-	ok(wall != null, "有己方城墙")
-	if wall == null:
+	_ensure_generals(w, 3, w.my_faction)
+	var base = w.find_base_of(w.my_faction)
+	ok(base != null, "有大本营")
+	if base == null:
 		return
-	var lv0: int = wall.level
-	var hp0: float = wall.hp_max
-	var cost: Dictionary = w.building_upgrade_cost(wall)
+	var lv0: int = base.level
+	var hp0: float = base.hp_max
+	var cost: Dictionary = w.building_upgrade_cost(base)
 	var food0: float = float(w.resources["food"])
-	eq(lv0, 1, "城墙开局 1 级")
+	eq(lv0, 1, "大本营开局 1 级")
 
-	ok(CommandRes.apply(w, w.cfg, {"kind": "building_upgrade", "tx": wall.tx, "ty": wall.ty}),
+	ok(CommandRes.apply(w, w.cfg, {"kind": "building_upgrade", "tx": base.tx, "ty": base.ty}),
 		"★ building_upgrade 命令被接受")
-	ok(wall.is_upgrading(), "★ 开始读条（is_upgrading）")
+	ok(base.is_upgrading(), "★ 开始读条（is_upgrading）")
 	near(float(w.resources["food"]), food0 - float(cost.get("food", 0.0)), 1e-6,
 		"★ 入队即扣粮食")
-	near(wall.upgrade_progress(), 0.0, 1e-6, "刚入队时进度是 0")
-	near(wall.upgrade_eta(), w.building_upgrade_time(wall), 1e-6, "剩余时间 = 整条读条")
-	eq(UpgradeRes.can_upgrade(w, wall, w.my_faction), "busy", "读条中拒绝新的升级请求")
+	near(base.upgrade_progress(), 0.0, 1e-6, "刚入队时进度是 0")
+	near(base.upgrade_eta(), w.building_upgrade_time(base), 1e-6, "剩余时间 = 整条读条")
+	eq(UpgradeRes.can_upgrade(w, base, w.my_faction), "busy", "读条中拒绝新的升级请求")
 
-	var half: float = maxf(0.01, wall.upgrade_total * 0.5)
+	var half: float = maxf(0.01, base.upgrade_total * 0.5)
 	w.tick(half)
-	eq(wall.level, lv0, "★ 读条没读完时等级不变")
-	near(wall.upgrade_progress(), 0.5, 0.02, "进度条走到一半")
-	near(wall.hp_max, hp0, 1e-6, "血量上限也还没变")
+	eq(base.level, lv0, "★ 读条没读完时等级不变")
+	near(base.upgrade_progress(), 0.5, 0.02, "进度条走到一半")
+	near(base.hp_max, hp0, 1e-6, "血量上限也还没变")
 
 	w.tick(BIG_STEP)
-	ok(not wall.is_upgrading(), "★ 读条结束")
-	eq(wall.level, lv0 + 1, "★ 等级 +1")
-	var mult: float = cfg.upgrade_hp_mult("wall", wall.level)
-	near(wall.hp_max, wall.base_hp_max * mult, 1e-3, "★ 血量上限 = 基础值 × 等级倍率")
+	ok(not base.is_upgrading(), "★ 读条结束")
+	eq(base.level, lv0 + 1, "★ 等级 +1")
+	var mult: float = cfg.upgrade_hp_mult("base", base.level)
+	near(base.hp_max, base.base_hp_max * mult, 1e-3, "★ 血量上限 = 基础值 × 等级倍率")
 
 	var w2 = _quiet(cfg)
-	var wall2 = _player_wall(w2)
+	var base2 = w2.find_base_of(w2.my_faction)
 	_give(w2, 1000.0, 1000.0)
-	wall2.hp = wall2.hp_max * 0.5
-	w2.start_building_upgrade(wall2.tx, wall2.ty)
+	_ensure_generals(w2, 3, w2.my_faction)
+	base2.hp = base2.hp_max * 0.5
+	w2.start_building_upgrade(base2.tx, base2.ty)
 	w2.tick(BIG_STEP)
-	near(wall2.hp / wall2.hp_max, 0.5, 1e-3, "★ 升级按比例带血（半血的墙升完还是半血）")
+	near(base2.hp / base2.hp_max, 0.5, 1e-3, "★ 升级按比例带血（半血的大本营升完还是半血）")
 
 	var w3 = _quiet(cfg)
-	var wall3 = _player_wall(w3)
+	var base3 = w3.find_base_of(w3.my_faction)
 	_give(w3, 1000.0, 1000.0)
-	w3.start_building_upgrade(wall3.tx, wall3.ty)
+	_ensure_generals(w3, 3, w3.my_faction)
+	w3.start_building_upgrade(base3.tx, base3.ty)
 	var evts: Array = w3.tick(BIG_STEP)
 	var done := false
 	for e in evts:
@@ -246,47 +250,44 @@ func _test_upgrade_flow(cfg) -> void:
 func _test_cancel_refund(cfg) -> void:
 	var w = _quiet(cfg)
 	_give(w, 1000.0, 1000.0)
-	var wall = _player_wall(w)
+	_ensure_generals(w, 3, w.my_faction)
+	var base = w.find_base_of(w.my_faction)
 	var food0: float = float(w.resources["food"])
 	var gold0: float = float(w.resources["gold"])
-	w.start_building_upgrade(wall.tx, wall.ty)
+	w.start_building_upgrade(base.tx, base.ty)
 	w.tick(DT * 10)
-	ok(wall.is_upgrading(), "还在读条中")
+	ok(base.is_upgrading(), "还在读条中")
 	ok(CommandRes.apply(w, w.cfg, {"kind": "building_upgrade_cancel",
-		"tx": wall.tx, "ty": wall.ty}), "★ building_upgrade_cancel 命令被接受")
-	ok(not wall.is_upgrading(), "★ 读条被取消")
-	eq(wall.level, 1, "等级没变")
+		"tx": base.tx, "ty": base.ty}), "★ building_upgrade_cancel 命令被接受")
+	ok(not base.is_upgrading(), "★ 读条被取消")
+	eq(base.level, 1, "等级没变")
 	near(float(w.resources["food"]), food0, 1e-6, "★ 粮食全额退回")
 	near(float(w.resources["gold"]), gold0, 1e-6, "★ 黄金全额退回")
-	eq(UpgradeRes.can_cancel_upgrade(wall, w.my_faction), "idle", "没有读条时不能取消")
+	eq(UpgradeRes.can_cancel_upgrade(base, w.my_faction), "idle", "没有读条时不能取消")
 
 	var w2 = _quiet(cfg)
-	var wall2 = _player_wall(w2)
+	var base2 = w2.find_base_of(w2.my_faction)
 	_give(w2, 1000.0, 1000.0)
-	w2.start_building_upgrade(wall2.tx, wall2.ty)
-	ok(wall2.is_upgrading(), "在建的墙在读条")
-	w2.remove_building(wall2, true)
-	ok(not wall2.is_upgrading(), "★ 建筑离场 → 升级读条作废")
+	_ensure_generals(w2, 3, w2.my_faction)
+	w2.start_building_upgrade(base2.tx, base2.ty)
+	ok(base2.is_upgrading(), "大本营在读条")
+	w2.remove_building(base2, true)
+	ok(not base2.is_upgrading(), "★ 建筑离场 → 升级读条作废")
 
 func _test_upgrade_scales_with_tech(cfg) -> void:
 	var w = _quiet(cfg)
 	_give(w, 10000.0, 10000.0)
 	# 「建筑加固」是三阶科技：先把大本营拉到 3 级（等级限制由 test_base_limits 专门验）。
-	var bb = w.find_base_of(String(w.my_faction))
-	if bb != null:
-		bb.level = w.cfg.upgrade_max_level("base")
-		w.apply_building_level_hp(bb)
-	var wall = _player_wall(w)
-	var base_hp: float = wall.base_hp_max
+	var base = w.find_base_of(String(w.my_faction))
+	var base_hp: float = base.base_hp_max
+	base.level = w.cfg.upgrade_max_level("base")
+	w.apply_building_level_hp(base)
 	ok(w.set_tech_active("building_hp", true), "启用「建筑加固」（+10%）")
-	near(wall.hp_max, base_hp * 1.1, 1e-3, "科技生效：基础 × 1.1")
-	w.start_building_upgrade(wall.tx, wall.ty)
-	w.tick(BIG_STEP)
-	near(wall.hp_max, base_hp * 1.1 * cfg.upgrade_hp_mult("wall", 2), 1e-3,
-		"★ 上限 = 基础 × 等级(1.5) × 科技(1.1)（两者叠加）")
+	near(base.hp_max, base_hp * cfg.upgrade_hp_mult("base", 3) * 1.1, 1e-3,
+		"★ 上限 = 基础 × 等级(2.25) × 科技(1.1)（两者叠加）")
 	w.set_tech_active("building_hp", false)
-	near(wall.hp_max, base_hp * cfg.upgrade_hp_mult("wall", 2), 1e-3,
-		"★ 弃用科技后只剩等级那一份（精确回到 1.5 倍）")
+	near(base.hp_max, base_hp * cfg.upgrade_hp_mult("base", 3), 1e-3,
+		"★ 弃用科技后只剩等级那一份（精确回到 2.25 倍）")
 
 func _test_specialize_flow(cfg) -> void:
 	var w = _quiet(cfg)
@@ -508,7 +509,7 @@ func _test_commands(cfg) -> void:
 	ok(got_building, "★ 被拒事件带着那栋建筑（`busy` 的文案要点名是哪个对象）")
 	ok(not CommandRes.apply(w, w.cfg, {"kind": "not_a_command"}), "未知命令被拒")
 
-## ★★ 大本营的重生队列不为空时，不能**开始新的**升级；城墙 / 箭塔不受影响。
+## ★★ 大本营的重生队列不为空时，不能**开始新的**升级；建筑升级本轮只保留大本营。
 func _test_respawn_blocks_base_upgrade(cfg) -> void:
 	var w = _quiet(cfg)
 	_give(w, 10000.0, 10000.0)
@@ -527,8 +528,8 @@ func _test_respawn_blocks_base_upgrade(cfg) -> void:
 
 	var wall = _player_wall(w)
 	if wall != null:
-		eq(UpgradeRes.can_upgrade(w, wall, w.my_faction), "",
-			"★ 城墙不受大本营重生队列影响")
+		eq(UpgradeRes.can_upgrade(w, wall, w.my_faction), "type",
+			"★★ 木墙本来就不能升级（与重生队列无关）")
 
 	base.clear_respawn_queue()
 	eq(UpgradeRes.can_upgrade(w, base, w.my_faction), "", "★★ 队列清空后恢复可升级")
@@ -602,5 +603,12 @@ func _zone_center(w):
 func _enemy_building(w):
 	for b in w.building_list:
 		if b.alive and String(b.owner) != "" and String(b.owner) != w.my_faction:
+			return b
+	return null
+
+func _enemy_base(w):
+	for b in w.building_list:
+		if b.alive and b.is_base() and String(b.owner) != "" \
+				and String(b.owner) != w.my_faction:
 			return b
 	return null

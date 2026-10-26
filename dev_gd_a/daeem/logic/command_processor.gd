@@ -570,6 +570,12 @@ static func apply_build(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 		return false
 	var tx := int(cmd.get("tx", -1))
 	var ty := int(cmd.get("ty", -1))
+	# ★★ 2026.10.26：建筑页第二行（石墙 / 警戒塔）要 2 级大本营。
+	#    UI 的格子会置灰，这里是权威侧兜底（命令仍然可能来自键盘 / 联机 / 测试）。
+	if not world.building_unlocked(owner, type):
+		world.push_event({"type": "build_rejected", "tile": Vector2i(tx, ty),
+			"reason": "base_level"})
+		return false
 	if not world.can_build_at(tx, ty):
 		world.push_event({"type": "build_rejected", "tile": Vector2i(tx, ty), "reason": "occupied_or_terrain"})
 		return false

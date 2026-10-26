@@ -111,14 +111,21 @@ func _cases() -> void:
 	near(cfg.zone_speed_curve_power, 1.7, 1e-6, "人数加成指数 p=1.7（>1 才是先慢后快）")
 	near(cfg.unit_radius(), 0.1, 1e-6, "unit_radius() 单位是「格」而不是像素")
 
-	eq(cfg.int_val("building.wall.hp_max", 0), 300, "城墙生命 300")
+	eq(cfg.int_val("building.wall.hp_max", 0), 300, "木墙生命 300")
+	eq(cfg.int_val("building.stone_wall.hp_max", 0), 700, "★★ 石墙生命 700")
 	eq(cfg.int_val("building.base.hp_max", 0), 1000, "大本营生命 1000")
-	near(cfg.num("building.tower.damage", 0.0), 12.0, 1e-6, "箭塔伤害 12")
-	near(cfg.num("building.tower.range", 0.0), 3.0, 1e-6, "箭塔射程 3 格")
-	near(cfg.num("building.tower.cooldown", 0.0), 0.8, 1e-6, "箭塔间隔 0.8s")
+	near(cfg.num("building.tower.damage", 0.0), 12.0, 1e-6, "哨塔伤害 12")
+	near(cfg.num("building.tower.range", 0.0), 3.0, 1e-6, "哨塔射程 3 格")
+	near(cfg.num("building.tower.cooldown", 0.0), 0.8, 1e-6, "哨塔间隔 0.8s")
+	near(cfg.num("building.watch_tower.damage", 0.0), 16.0, 1e-6, "★★ 警戒塔伤害 16")
+	near(cfg.num("building.watch_tower.range", 0.0), 4.0, 1e-6, "★★ 警戒塔射程 4 格")
+	near(cfg.building_ranged_reduction("wall"), 0.9, 1e-6, "★★ 木墙远程免伤 90%")
+	near(cfg.building_ranged_reduction("base"), 0.9, 1e-6, "★★ 大本营也有 90% 远程免伤")
+	ok(not cfg.has_upgrade("wall"), "★★ 木墙没有升级表")
+	ok(not cfg.has_upgrade("tower"), "★★ 哨塔没有升级表")
 
 	eq(cfg.bool_val("economy.enabled", false), true,
-		"★ 建造不再免费（economy.enabled = true）—— 城墙 / 箭塔的 cost 不再是空转的")
+		"★ 建造不再免费（economy.enabled = true）—— 木墙 / 哨塔的 cost 不再是空转的")
 	eq(cfg.destructible_base, false, "单机大本营不可摧毁")
 	eq(cfg.respawn_sec, 8.0, "复活的数值留着（第 1 轮用），但由运行时开关控制")
 

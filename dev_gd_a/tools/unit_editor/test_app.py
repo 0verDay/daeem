@@ -279,8 +279,9 @@ def t_window(app, model) -> None:
 
     app.set_page("building")
     app.root.update()
-    eq(list(app.building_tree.get_children()), ["b:wall", "b:tower", "b:base"],
-       "建筑列表：三个（没有区划中心）")
+    eq(list(app.building_tree.get_children()),
+       ["b:wall", "b:tower", "b:stone_wall", "b:watch_tower", "b:base"],
+       "建筑列表：五个（没有区划中心）")
     app.set_page("tech")
     app.root.update()
     eq(len(app.tech_tree.get_children()), 9, "科技列表：九条")
@@ -568,9 +569,10 @@ def t_building_form(app, model) -> None:
     app.root.update()
     pick(app, "b:wall")
     entries = sidebar_entries(app)
-    for label in ("名称", "建造时间", "造价 · 粮食", "造价 · 黄金", "血量", "本体大小", "视野半径"):
+    for label in ("名称", "解锁大本营等级", "建造时间", "造价 · 粮食", "造价 · 黄金",
+                  "血量", "本体大小", "视野半径", "远程免伤"):
         ok(label in entries, "建筑表单里有「%s」" % label)
-    ok("攻击力" not in entries, "★ 城墙「不可攻击」→ 攻击三行收起来了")
+    ok("攻击力" not in entries, "★ 木墙「不可攻击」→ 攻击三行收起来了")
 
     type_into(app, E(app, "建造时间"), "6")
     eq(data(model)["building"]["wall"]["build_sec"], 6, "★ 改建造时间")
@@ -580,13 +582,17 @@ def t_building_form(app, model) -> None:
     eq(app.building_tree.item("b:wall", "values")[bcols()["vision"]], "7", "列表里的视野刷新了")
     type_into(app, sidebar_entries(app)["血量"], "500")
     eq(data(model)["building"]["wall"]["hp_max"], 500, "改血量")
-    type_into(app, sidebar_entries(app)["名称"], "石墙")
-    eq(data(model)["building"]["wall"]["name"], "石墙", "改名称")
-    eq(app.building_tree.item("b:wall", "values")[0], "石墙", "列表里的名字刷新了")
+    type_into(app, sidebar_entries(app)["名称"], "土墙")
+    eq(data(model)["building"]["wall"]["name"], "土墙", "改名称")
+    eq(app.building_tree.item("b:wall", "values")[0], "土墙", "列表里的名字刷新了")
     type_into(app, sidebar_entries(app)["快捷键"], "W")
     eq(data(model)["building"]["wall"]["hotkey"], "W", "改建造页快捷键")
     type_into(app, sidebar_entries(app)["造价 · 黄金"], "25")
     eq(data(model)["building"]["wall"]["cost"]["gold"], 25, "改建筑造价")
+    type_into(app, sidebar_entries(app)["解锁大本营等级"], "2")
+    eq(data(model)["building"]["wall"]["tier"], 2, "★★ 改解锁大本营等级")
+    type_into(app, sidebar_entries(app)["远程免伤"], "0.75")
+    eq(data(model)["building"]["wall"]["ranged_reduction"], 0.75, "★★ 改远程免伤")
 
     # 可攻击勾上 → 攻击三行出现
     sidebar_checks(app)["可攻击"].invoke()
@@ -611,37 +617,43 @@ def t_building_form(app, model) -> None:
     eq(app.building_tree.item("b:wall", "values")[bcols()["vision"]], "9",
        "★★ 列表里显示的是**生效值**（没写 → config 的 fog.vision_building = 9）")
 
+    # ★★ 2026.10.26：升级表只剩大本营；木墙 / 哨塔没有升级区。
+    pick(app, "b:base")
+    app.root.update()
     # 升级表（★ 按「节 + 标签」定位：同名的行在三级里各有一份）
-    type_into(app, E_in(app, "升到 2 级", "需要的价格 · 粮食"), "80")
-    eq(data(model)["upgrade"]["levels"]["wall"][1]["cost"]["food"], 80, "★ 升 2 级的价格（粮食）")
-    type_into(app, E_in(app, "升到 2 级", "需要的价格 · 黄金"), "90")
-    eq(data(model)["upgrade"]["levels"]["wall"][1]["cost"]["gold"], 90, "升 2 级的价格（黄金）")
+    type_into(app, E_in(app, "升到 2 级", "需要的价格 · 粮食"), "260")
+    eq(data(model)["upgrade"]["levels"]["base"][1]["cost"]["food"], 260,
+       "★ 大本营升 2 级的价格（粮食）")
+    type_into(app, E_in(app, "升到 2 级", "需要的价格 · 黄金"), "270")
+    eq(data(model)["upgrade"]["levels"]["base"][1]["cost"]["gold"], 270,
+       "升 2 级的价格（黄金）")
     type_into(app, E_in(app, "升到 2 级", "需要的读条时间"), "12")
-    eq(data(model)["upgrade"]["levels"]["wall"][1]["time_sec"], 12, "升 2 级的读条时间")
+    eq(data(model)["upgrade"]["levels"]["base"][1]["time_sec"], 12, "升 2 级的读条时间")
     type_into(app, E_in(app, "升到 2 级", "血量倍率"), "1.8")
-    eq(data(model)["upgrade"]["levels"]["wall"][1]["hp_mult"], 1.8, "★ 升 2 级的血量倍率")
-    eq(data(model)["upgrade"]["levels"]["wall"][0]["hp_mult"], 1.0, "★ 1 级那一行没被动过")
-    type_into(app, E_in(app, "升到 3 级", "需要的价格 · 粮食"), "150")
-    eq(data(model)["upgrade"]["levels"]["wall"][2]["cost"]["food"], 150, "★ 升 3 级的价格")
+    eq(data(model)["upgrade"]["levels"]["base"][1]["hp_mult"], 1.8, "★ 升 2 级的血量倍率")
+    eq(data(model)["upgrade"]["levels"]["base"][0]["hp_mult"], 1.0, "★ 1 级那一行没被动过")
+    type_into(app, E_in(app, "升到 3 级", "需要的价格 · 粮食"), "450")
+    eq(data(model)["upgrade"]["levels"]["base"][2]["cost"]["food"], 450, "★ 升 3 级的价格")
 
     # 逐级攻击：自定 / 跟随（用的是「跟随基础值」那套可选行）
     set_optional_at(app, "升到 2 级", "攻击力", "20")
-    rows = data(model)["upgrade"]["levels"]["wall"]
-    eq(rows[1]["damage"], 20, "★★ 2 级可以有自己的攻击力")
-    eq(data(model)["building"]["wall"]["damage"], 9, "★ 基础攻击力没被动过")
+    rows = data(model)["upgrade"]["levels"]["base"]
+    eq(rows[1]["damage"], 20, "★★ 大本营 2 级可以有自己的攻击力")
+    eq(data(model)["building"]["base"]["damage"], 12, "★ 基础攻击力没被动过")
     follow_optional_at(app, "升到 2 级", "攻击力")
-    rows = data(model)["upgrade"]["levels"]["wall"]
+    rows = data(model)["upgrade"]["levels"]["base"]
     ok(not any(k in rows[1] for k in ("damage", "range", "cooldown")),
        "★★ 点「跟随」→ 覆盖被删掉（回到沿用基础值）")
-    eq(E_in(app, "升到 2 级", "攻击力").get(), "9", "输入框回到基础值 9")
+    eq(E_in(app, "升到 2 级", "攻击力").get(), "12", "输入框回到基础值 12")
 
-    # 箭塔：默认就能攻击，升级表里直接有攻击三行
+    # 哨塔：默认就能攻击；没有升级表。
     pick(app, "b:tower")
     entries = sidebar_entries(app)
-    ok("攻击力" in entries, "箭塔默认就有攻击力那一行")
+    ok("攻击力" in entries, "哨塔默认就有攻击力那一行")
     eq(E(app, "攻击力").get(), "12", "显示 12")
     ok("可攻击" in sidebar_checks(app), "有「可攻击」勾选框")
-    eq(sidebar_checks(app)["可攻击"].instate(["selected"]), True, "★ 箭塔默认是勾上的")
+    eq(sidebar_checks(app)["可攻击"].instate(["selected"]), True, "★ 哨塔默认是勾上的")
+    ok("升到 2 级" not in entries, "★★ 哨塔没有升级表（表单里没有升级区）")
 
 
 # ======================================================================
@@ -774,7 +786,8 @@ def t_add_remove(app, model) -> None:
     ok(model.doc.has(["building", "outpost"]), "★ 新建建筑进了配置")
     ok(app.building_tree.exists("b:outpost"), "建筑列表里出现了它")
     eq(data(model)["building"]["outpost"]["buildable"], True, "★★ 新建筑默认「可建造」")
-    eq(len(data(model)["upgrade"]["levels"]["outpost"]), 3, "★ 连带一张 3 级升级表")
+    ok(not model.doc.has(["upgrade", "levels", "outpost"]),
+       "★★ 新建筑不再自动配升级表")
     eq(app.selection, ("building", "outpost"), "自动选中它")
     # 删掉
     app.do_delete_building()

@@ -99,16 +99,19 @@ static func _first_tinted_color(img: Image) -> Color:
 func _test_sprite_bake_assets(cfg) -> void:
 	SpriteRes.clear_cache()
 	var types: Array = [UnitRes.UNIT_TYPE_SPEARMAN, UnitRes.UNIT_TYPE_LONGBOWMAN,
-		UnitRes.UNIT_TYPE_RIDER]
+		UnitRes.UNIT_TYPE_RIDER, UnitRes.UNIT_TYPE_GRAIN_CART, UnitRes.UNIT_TYPE_KNIGHT,
+		UnitRes.UNIT_TYPE_HORSE_ARCHER, UnitRes.UNIT_TYPE_CATAPULT]
 	var seen_paths: Dictionary = {}
 	var images: Dictionary = {}
 	for id in types:
 		var t := String(id)
 		var path: String = cfg.unit_sprite_of(t)
+		var tint: String = cfg.unit_sprite_tint_of(t)
 		ok(path != "", "%s 配了 sprite 路径" % t)
 		ok(ResourceLoader.exists(path), "★ %s 的素材被导入过（%s）" % [t, path])
-		var tex: ImageTexture = SpriteRes.bake_asset(path, Color(0.9, 0.2, 0.2), false, Color(0, 0, 0))
-		ok(tex != null, "%s 的兵种贴图烘得出来" % t)
+		var tex: ImageTexture = SpriteRes.bake_asset(path, Color(0.9, 0.2, 0.2), false,
+			Color(0.9, 0.2, 0.2), tint)
+		ok(tex != null, "%s 的立牌贴图烘得出来" % t)
 		if tex == null:
 			continue
 		var img: Image = tex.get_image()
@@ -116,36 +119,85 @@ func _test_sprite_bake_assets(cfg) -> void:
 			"★ %s 的剪影有实质像素（不透明 %d）" % [t, _count_opaque(img) if img != null else -1])
 		if img == null:
 			continue
-		var c := _first_tinted_color(img)
-		ok(c.a > 0.5 and c.r > c.g + 0.2,
-			"★ %s 的阵营色烘进了贴图（找到染色像素 r=%.2f > g=%.2f）" % [t, c.r, c.g])
+		if tint == "art":
+			ok(_has_greyish(img), "★★ %s 是 art 档：原画的灰色留在贴图里（没被阵营色刷掉）" % t)
+			ok(_count_near(img, Color(0.9, 0.2, 0.2), 0.08) > 10,
+				"★ %s 的 art 描边是阵营色" % t)
+		else:
+			ok(_count_near(img, Color(0.9, 0.2, 0.2), 0.05) > _count_opaque(img) / 3,
+				"★ %s 是 faction 档：字/形状被阵营色填满" % t)
 		seen_paths[path] = true
 		images[t] = img
-	ok(seen_paths.size() == 3, "★ 三个兵种的素材路径互不相同（%d 个）" % seen_paths.size())
+	ok(seen_paths.size() == types.size(),
+		"★ 七个兵种的素材路径互不相同（%d 个）" % seen_paths.size())
+	ok(cfg.unit_sprite_tint_of(UnitRes.UNIT_TYPE_SPEARMAN) == "art", "长枪兵 = art（保留原画）")
+	ok(cfg.unit_sprite_tint_of(UnitRes.UNIT_TYPE_LONGBOWMAN) == "art", "长弓兵 = art")
+	ok(cfg.unit_sprite_tint_of(UnitRes.UNIT_TYPE_RIDER) == "faction", "骑手 = faction（单字占位）")
+	ok(cfg.unit_sprite_tint_of("general") == "art",
+		"★ 将领跟随所属兵种（general → 长枪兵 = art）")
 	var keys: Array = images.keys()
-	var all_distinct := keys.size() == 3
+	var all_distinct := keys.size() == types.size()
 	if all_distinct:
 		for i in keys.size():
 			for j in range(i + 1, keys.size()):
 				if (images[keys[i]] as Image).get_data() == (images[keys[j]] as Image).get_data():
 					all_distinct = false
-	ok(all_distinct, "★★ 三个兵种的贴图两两不同（否则还是「三个兵长得一样」）")
+	ok(all_distinct, "★★ 七个兵种的贴图两两不同（否则还是「长得一样」）")
 	var p0: String = cfg.unit_sprite_of(UnitRes.UNIT_TYPE_SPEARMAN)
-	var troop: ImageTexture = SpriteRes.bake_asset(p0, Color(0.9, 0.2, 0.2), false, Color(0, 0, 0))
-	var leader: ImageTexture = SpriteRes.bake_asset(p0, Color(0.9, 0.2, 0.2), true, Color(0, 0, 0))
+	var faction := Color(0.9, 0.2, 0.2)
+	var troop: ImageTexture = SpriteRes.bake_asset(p0, faction, false, faction, "art")
+	var leader: ImageTexture = SpriteRes.bake_asset(p0, faction, true, faction, "art")
 	if troop != null and leader != null and troop.get_image() != null and leader.get_image() != null:
 		var ot := _count_opaque(troop.get_image())
 		var ol := _count_opaque(leader.get_image())
 		ok(ol > ot, "★ 将领档描边更粗（不透明像素 %d > %d）" % [ol, ot])
-	ok(SpriteRes.bake_asset(p0, Color(0.9, 0.2, 0.2), false, Color(0, 0, 0)) == troop,
+	ok(SpriteRes.bake_asset(p0, faction, false, faction, "art") == troop,
 		"★ 素材贴图命中缓存（不重复光栅化）")
+	# ★★ 选中档：**整圈描边换成金色**（用户二轮口径：不是「阵营色外再套一圈」）
+	var sel_col := Color(0.949, 0.710, 0.267)     # #f2b544
+	var picked: ImageTexture = SpriteRes.bake_asset(p0, faction, false, faction, "art",
+		true, sel_col)
+	if picked != null and picked.get_image() != null and troop != null \
+			and troop.get_image() != null:
+		var n_unsel := _count_opaque(troop.get_image())
+		var n_sel := _count_opaque(picked.get_image())
+		ok(absi(n_sel - n_unsel) <= 40,
+			"★ 选中档的几何不变、只换描边颜色（%d ≈ %d）" % [n_sel, n_unsel])
+		ok(_count_near(picked.get_image(), sel_col, 0.06) > 10,
+			"★★ 选中档的描边是金色")
+		ok(_count_near(picked.get_image(), faction, 0.05) < 10,
+			"★★ 选中后阵营色描边被**替换**掉了（没有残留的红边）")
+		ok(picked != troop, "选中 / 未选中是两张不同的贴图")
 	SpriteRes.clear_cache()
-	var fallback: ImageTexture = SpriteRes.bake_asset("", Color(0.9, 0.2, 0.2), false, Color(0, 0, 0))
-	var proc: ImageTexture = SpriteRes.bake(Color(0.9, 0.2, 0.2), false, Color(0, 0, 0))
+	var fallback: ImageTexture = SpriteRes.bake_asset("", faction, false, faction, "art")
+	var proc: ImageTexture = SpriteRes.bake(faction, false, faction)
 	ok(fallback != null and proc != null and fallback.get_image() != null
 		and proc.get_image() != null
 		and fallback.get_image().get_data() == proc.get_image().get_data(),
 		"★ 没配素材 / 载不到 → 退回程序化剪影（同一张图）")
+
+
+## 贴图里有没有「灰阶原画色」（r≈g≈b 且够亮）——用来钉「art 档保留原画」。
+static func _has_greyish(img: Image) -> bool:
+	for y in img.get_height():
+		for x in img.get_width():
+			var c := img.get_pixel(x, y)
+			if c.a > 0.9 and absf(c.r - c.g) < 0.03 and absf(c.g - c.b) < 0.03 and c.r > 0.4:
+				return true
+	return false
+
+
+## 与 `want` 每个通道都相差不超过 `tol` 的像素个数。
+## ⚠️ 门槛是 a > 0.5 而不是「不透明」：默认描边带 OUTLINE_ALPHA = 0.72 的 alpha。
+static func _count_near(img: Image, want: Color, tol: float) -> int:
+	var n := 0
+	for y in img.get_height():
+		for x in img.get_width():
+			var c := img.get_pixel(x, y)
+			if c.a > 0.5 and absf(c.r - want.r) <= tol and absf(c.g - want.g) <= tol \
+					and absf(c.b - want.b) <= tol:
+				n += 1
+	return n
 
 func _test_projection_roundtrip(cfg) -> void:
 	var cam: Camera3D = make_test_camera(cfg, 24, 16)
@@ -227,8 +279,10 @@ func _test_units_multimesh(cfg) -> void:
 	var variants: Dictionary = {}
 	for u in w.units:
 		if u.alive and game.units._visible_to_me(u):
-			var vk := "%s|%d|%s|%d" % [String(u.faction), 1 if u.is_general() else 0,
-				String(u.unit_type), 1 if u.is_downed() else 0]
+			var vk := "%s|%d|%s|%d|%d" % [String(u.faction), 1 if u.is_general() else 0,
+				String(u.unit_type),
+				1 if game.units._selection_set.has(String(u.id)) else 0,
+				1 if u.is_downed() else 0]
 			variants[vk] = true
 	var max_batches: int = variants.size()
 	ok(game.units.mesh_batch_count <= max_batches,
@@ -244,6 +298,28 @@ func _test_units_multimesh(cfg) -> void:
 		if u.alive and not game.units._visible_to_me(u):
 			hidden_count += 1
 	ok(hidden_count >= 0, "（诊断）被迷雾挡住的单位数 = %d" % hidden_count)
+
+	# ★★ 选中一个可见单位 → 批次键多一段「是否选中 = 1」（金描边是另一张贴图）
+	var pick = null
+	for u3 in w.units:
+		if u3.alive and game.units._visible_to_me(u3):
+			pick = u3
+			break
+	if pick != null:
+		game.units.set_selection([String(pick.id)])
+		game.units.sync()
+		var sel_key := ""
+		for k in game.units._batches.keys():
+			var ps: PackedStringArray = String(k).split("|")
+			if ps.size() == 5 and ps[3] == "1":
+				sel_key = String(k)
+		ok(sel_key != "", "★★ 选中单位落在带「选中 = 1」的批次里（金描边贴图）")
+		ok(sel_key.begins_with(String(pick.faction) + "|"),
+			"★ 选中批次的阵营段对得上（%s）" % sel_key)
+		game.units.set_selection([])
+		game.units.sync()
+		ok(game.units.instance_count == expect,
+			"★ 取消选中后实例数不变（只是换个批次）")
 
 	game.queue_free()
 	await process_frame

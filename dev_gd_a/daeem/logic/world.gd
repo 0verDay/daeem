@@ -782,6 +782,43 @@ func _setup_ai_commanders() -> void:
 		var c = AiCommanderRes.new()
 		c.setup(self, cfg, fid, profile)
 		ai_commanders[fid] = c
+	# ★★ 2026.10.26：合作关 + 同方 commander 时，把玩家的起手抬到正常难度基准。
+	#    放在这里（而不是 `_reset_player_pools()`）是因为此时 commander 名单与 AI 资源池都已就位。
+	_align_player_start_with_commander_ally()
+
+
+## ★★ 2026.10.26 合作 AI 队友的起手资源对齐（用户口径）：
+##   · 只在**合作关**（`level.mode == coop`）且有**同方 commander**时生效；
+##   · 玩家起手 = max(`cfg.start_food/gold`, **normal 难度基准**)；
+##     AI 自己的起手仍按它自己的难度，**不跟随**（normal = 250 / easy = 150 / hard = 350）；
+##   · 本机席位的 `player_resources[my_faction]` 与 `world.resources` 是同一个对象，
+##     所以只改前者即可，HUD / 经济 / 快照自然同步。
+func _align_player_start_with_commander_ally() -> void:
+	if level == null or String(level.mode) != LevelRes.MODE_COOP:
+		return
+	if observer_mode or player_factions.is_empty():
+		return
+	for f in player_factions:
+		var fid := String(f)
+		var food := float(cfg.start_food)
+		var gold := float(cfg.start_gold)
+		for cf in commander_factions():
+			var cid := String(cf)
+			if not FactionRes.same_side_for_attack(fid, cid):
+				continue
+			# 固定 normal 基准：临时覆盖难度再 build 一次，关卡里的其它 commander_ai 键照旧合并。
+			var normal_ov: Dictionary = {}
+			normal_ov[cid] = {"difficulty": "normal"}
+			var base: Dictionary = AiProfileRes.build(
+				cfg, cid, ai_roster_cfg, normal_ov)
+			food = maxf(food, float(base.get("start_food", 250.0)))
+			gold = maxf(gold, float(base.get("start_gold", 250.0)))
+		var pool: Variant = player_resources.get(fid, null)
+		if typeof(pool) != TYPE_DICTIONARY:
+			continue
+		var pd: Dictionary = pool
+		pd["food"] = food
+		pd["gold"] = gold
 
 
 ## commander 的单位不能带「阵地性 AI」状态：GarrisonAi 会按 `is_garrison()` 接管，
@@ -973,6 +1010,9 @@ func _effective_allies() -> Array:
 ## ★ 非本机席位（合作模式的客机）**照样要开池子**：房主侧替它执行命令时要扣它的钱。
 ##   ⚠️ 两边都从 `cfg.start_food` / `cfg.start_gold` 起手 —— 与单机完全一致
 ##      （「资源各自独立」说的是**之后**各花各的，不是开局给的不一样）。
+## ★★ 2026.10.26：合作关里若有同方 commander，玩家起手会在 `_setup_ai_commanders()`
+##    末尾被抬到 normal 难度基准（见 `_align_player_start_with_commander_ally()`）；
+##    这里仍然先按 `cfg.start_*` 建池，抬升在 AI 名单 / 资源池就位之后做。
 func _reset_player_pools() -> void:
 	resources = {"food": cfg.start_food, "gold": cfg.start_gold}
 	player_resources = {}
@@ -1892,7 +1932,9 @@ func commander_factions() -> Array:
 ##   · 只有**同方**的玩家能指挥（`same_side_for_attack`；合作 AI 队友与玩家是盟友）；
 ##   · 目标必须是 commander（不能指挥 garrison / reddot / 敌方）；
 ##   · march / mass 必须带一个地图内、可通行的点；develop / expand 忽略坐标；
-##   · 接受后写 `ai_directives`、序号 +1、通知控制器清掉旧命令缓存。
+##   · 接受后写 `ai_directives`、序号 +1、通知控制器清掉旧命令缓存；
+##   · 保持 `command_hold_sec` 秒；march 在「全部到点 + 目标点清场」时可提前
+##     由 `end_ai_directive()` 结束（见 `logic/ai_army.gd` 的 `_march_reached_clear()`）。
 func set_ai_directive(ai_faction: String, order: String, x: float, y: float,
 		sender_faction: String) -> String:
 	if ai_faction == "" or sender_faction == "":
@@ -1927,7 +1969,8 @@ func set_ai_directive(ai_faction: String, order: String, x: float, y: float,
 		d["y"] = -1.0
 	d["serial"] = int(d.get("serial", 0)) + 1
 	d["since"] = time
-	# ★★ 玩家指令只保持 `command_hold_sec` 秒（默认 60），到期自动回到 auto。
+	# ★★ 玩家指令最多保持 `command_hold_sec` 秒（默认 60），到期自动回到 auto。
+	#    march 还会在「全部到点 + 目标点清场」时提前结束（`end_ai_directive()`）。
 	#    连点同一条会刷新这个时间；`auto` 是内部战略，不会由这里写入。
 	var hold := maxf(0.0, float(cfg.num("ai.commander.command_hold_sec", 60.0)))
 	d["until"] = time + hold if hold > 0.0 else 0.0
@@ -1937,6 +1980,32 @@ func set_ai_directive(ai_faction: String, order: String, x: float, y: float,
 	if c != null:
 		c.on_directive_changed()
 	return ""
+
+
+## ★★ 主动结束一条玩家指令（行军到点且清场时由 AI 调用）。
+##    与 60 秒到期走**同一条收口**：kind=auto、清目标点、serial+1、通知控制器。
+## @return true = 确实结束了一条进行中的指令
+func end_ai_directive(ai_faction: String, reason: String = "") -> bool:
+	var d: Dictionary = ai_directives.get(String(ai_faction), {})
+	if d.is_empty():
+		return false
+	if String(d.get("kind", "auto")) == "auto":
+		return false
+	d["kind"] = "auto"
+	d["x"] = -1.0
+	d["y"] = -1.0
+	d["until"] = 0.0
+	d["serial"] = int(d.get("serial", 0)) + 1
+	d["since"] = time
+	d["state"] = "running"
+	d["reason"] = reason
+	var c = ai_commanders.get(String(ai_faction), null)
+	if c != null:
+		# 面板在 `status_until` 到期前显示这条状态（例如 arrived → 「已抵达」）。
+		if reason != "":
+			c.note_status(reason)
+		c.on_directive_changed()
+	return true
 
 
 ## ★★ 玩家指令的临时倾向到期：回到 auto，并让控制器清掉旧的 march/mass 目标缓存。
@@ -1949,17 +2018,7 @@ func _tick_ai_directive_holds() -> void:
 		var until := float(d.get("until", 0.0))
 		if until <= 0.0 or time < until:
 			continue
-		d["kind"] = "auto"
-		d["x"] = -1.0
-		d["y"] = -1.0
-		d["until"] = 0.0
-		d["serial"] = int(d.get("serial", 0)) + 1
-		d["since"] = time
-		d["state"] = "running"
-		d["reason"] = ""
-		var c = ai_commanders.get(String(cid), null)
-		if c != null:
-			c.on_directive_changed()
+		end_ai_directive(String(cid), "")
 
 
 ## 从 (x,y) 起按半径 0..r 找最近的可通行、且没有建筑的格（确定性：先近后坐标顺序）。
@@ -2226,6 +2285,12 @@ func unit_recruit_level(faction: String) -> int:
 ## 这个兵种在当前大本营等级下解锁了吗（单位页那一行是否可点）。
 func unit_recruit_unlocked(faction: String, kind: String) -> bool:
 	return recruit_tier(kind) <= unit_recruit_level(faction)
+
+
+## ★★ 2026.10.26：这个建筑在当前大本营等级下解锁了吗（建筑页那一行是否可点）。
+##   与单位页同一套 `tier` 口径：第 2 行（石墙 / 警戒塔）要 2 级大本营。
+func building_unlocked(faction: String, type: String) -> bool:
+	return cfg.building_tier(String(type)) <= unit_recruit_level(String(faction))
 
 
 ## 某个兵种的招募消耗。
@@ -4383,7 +4448,8 @@ func refresh_after_snapshot() -> void:
 
 ## 建筑类型在 config 里有没有升级表（区划中心没有 → 它的操作页只有特化）
 func building_can_upgrade(type: String) -> bool:
-	return cfg.has_upgrade(type)
+	# ★★ 2026.10.26：取消建筑升级 —— 只有大本营还能升。
+	return String(type) == BuildingRes.TYPE_BASE and cfg.has_upgrade(String(type))
 
 
 ## 这个建筑最多能到几级（= config 里那张等级表的条数）

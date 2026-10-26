@@ -120,7 +120,9 @@ static func _impact(world, cfg: ConfigRes, p) -> void:
 	if p.target_is_building:
 		if not _target_valid(p):
 			return
-		if p.target.take_damage(cfg, p.damage, p.source):
+		# ★★ 2026.10.26：投掷物 → 建筑 = 远程伤害（建筑 90% 减免）。
+		#    `p.ignore_reduction` 是攻城标签（投石车）：攻城不算远程，直接全额。
+		if p.target.take_damage(cfg, p.damage, p.source, true, p.ignore_reduction):
 			world.push_event({"type": "building_down", "building": p.target, "source": p.source})
 		return
 

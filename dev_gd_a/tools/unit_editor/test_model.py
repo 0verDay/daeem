@@ -507,10 +507,11 @@ def t_generals() -> None:
 def t_buildings() -> None:
     print("\n[4] 建筑")
     model = fresh_model()
-    eq([b.id for b in model.buildings()], ["wall", "tower", "base"],
+    eq([b.id for b in model.buildings()],
+       ["wall", "tower", "stone_wall", "watch_tower", "base"],
        "★ 建筑表里没有区划中心（它不是建筑）")
     wall = model.building("wall")
-    eq(wall.name, "城墙", "名称")
+    eq(wall.name, "木墙", "名称")
     near(wall.hp_max, 300, "血量")
     # ★★ 城墙现在**要钱、要时间**（本次经济调参：堵掉「0 成本造墙占地」那条路）。
     #    数值不写死 —— 读出来只钉「编辑器能正确读到 config 里的数」。
@@ -519,33 +520,48 @@ def t_buildings() -> None:
     near(wall.cost_food, model.doc.value(["building", "wall", "cost", "food"]),
          "造价 · 粮食来自 config（%s）" % model.doc.value(["building", "wall", "cost", "food"]))
     near(wall.body_scale, 1.0, "本体大小")
-    ok(not wall.attackable, "城墙不能攻击")
-    ok(wall.buildable, "城墙在建造页里")
+    ok(not wall.attackable, "木墙不能攻击")
+    ok(wall.buildable, "木墙在建造页里")
+    eq(wall.tier, 1, "★ 木墙在第 1 行")
+    near(wall.ranged_reduction, 0.9, "★★ 木墙远程免伤 90%")
     # ★ 视野（战争迷雾）：**每个建筑类型自己一个值**，与 unit.types.<id>.vision 对称
-    near(wall.vision, 5.0, "★ 城墙的视野 5")
-    ok(not wall.inherits_vision, "城墙写了 vision（不是吃全局兜底）")
-    eq(model.building("tower").vision, 12.0, "★ 箭塔的视野 12（瞭望塔看得最远）")
+    near(wall.vision, 5.0, "★ 木墙的视野 5")
+    ok(not wall.inherits_vision, "木墙写了 vision（不是吃全局兜底）")
+    eq(model.building("tower").vision, 12.0, "★ 哨塔的视野 12")
     eq(model.building("base").vision, 9.0, "大本营的视野 9")
+    eq(model.building("stone_wall").vision, 5.0, "★★ 石墙的视野 5")
+    eq(model.building("watch_tower").vision, 15.0, "★★ 警戒塔的视野 15")
     ok(model.building("tower").vision > model.building("wall").vision,
        "★ 每个类型各写各的（塔 > 墙）")
     ok(not model.building("base").buildable, "★ 大本营不在建造页里")
     tower = model.building("tower")
-    ok(tower.attackable, "箭塔能攻击")
+    ok(tower.attackable, "哨塔能攻击")
     near(tower.damage, 12, "攻击力")
     near(tower.range, 3, "攻击距离")
     near(tower.cooldown, 0.8, "攻击速度（间隔）")
-    eq(tower.max_level, 3, "三级")
-    near(tower.levels[1].hp_mult, 1.5, "2 级血量倍率 1.5")
-    near(tower.levels[1].cost_food, 100, "升 2 级要 100 粮（造价 ×2）")
-    near(tower.levels[1].time_sec, 10, "升 2 级读条 10 秒")
-    near(tower.levels[2].cost_gold, 200, "升 3 级要 200 金（造价 ×2）")
-    near(tower.levels[0].cost_food, 0, "1 级那行没有代价（开局就是它）")
-    near(tower.levels[1].hp_of(tower.hp_max), 450, "★ 2 级血量 = 基础 × 倍率 = 450")
-    near(tower.levels[2].hp_of(tower.hp_max), 675, "3 级血量 675")
+    eq(tower.max_level, 1, "★★ 哨塔没有升级表（最大等级 1）")
+    eq(len(tower.levels), 0, "★★ 哨塔没有逐级数据")
+    stone = model.building("stone_wall")
+    ok(not stone.attackable, "★★ 石墙不能攻击")
+    near(stone.hp_max, 700, "★★ 石墙 700 血")
+    eq(stone.tier, 2, "★★ 石墙在第 2 行")
+    watch = model.building("watch_tower")
+    ok(watch.attackable, "★★ 警戒塔能攻击")
+    near(watch.damage, 16, "★★ 警戒塔攻击 16")
+    near(watch.range, 4, "★★ 警戒塔射程 4")
+    near(watch.cooldown, 0.7, "★★ 警戒塔间隔 0.7")
+    eq(watch.tier, 2, "★★ 警戒塔在第 2 行")
+    base = model.building("base")
+    eq(base.max_level, 3, "★★ 只有大本营有 3 级升级表")
+    near(base.levels[1].hp_mult, 1.5, "大本营 2 级血量倍率 1.5")
+    near(base.levels[1].cost_food, 200, "大本营升 2 级要 200 粮")
+    near(base.levels[1].time_sec, 10, "大本营升 2 级读条 10 秒")
 
     # 字段 → 键
     for field, value, path in (
-            ("name", "石墙", ["building", "wall", "name"]),
+            ("tier", 2, ["building", "wall", "tier"]),
+            ("ranged_reduction", 0.75, ["building", "wall", "ranged_reduction"]),
+            ("name", "木墙改", ["building", "wall", "name"]),
             ("buildable", False, ["building", "wall", "buildable"]),
             ("hotkey", "W", ["building", "wall", "hotkey"]),
             ("build_sec", 6, ["building", "wall", "build_sec"]),
@@ -568,7 +584,7 @@ def t_buildings() -> None:
 
     # ---- ★★ 清空视野 = **删掉那个键** → 退回 fog.vision_building（与兵种那边同一条）----
     m_v = fresh_model()
-    eq(m_v.doc.has(["building", "tower", "vision"]), True, "（前提）箭塔写了 vision")
+    eq(m_v.doc.has(["building", "tower", "vision"]), True, "（前提）哨塔写了 vision")
     m_v.set_building("tower", "vision", None)
     eq(m_v.doc.has(["building", "tower", "vision"]), False,
        "★★ set_building(vision = None) → 删掉那个键")
@@ -578,38 +594,40 @@ def t_buildings() -> None:
          "★★ 生效值 = config 的 fog.vision_building（编辑器里显示的就是它）")
     near(m_v.fog_vision_building_default(), 9.0, "（前提）fog.vision_building = 9")
 
-    # 升级表：每一级
+    # ★★ 升级表只剩大本营；对哨塔调用 set_level 应该被拒。
     m2 = fresh_model()
     for field, value, path in (
-            ("cost_food", 60, ["upgrade", "levels", "tower", 1, "cost", "food"]),
-            ("cost_gold", 70, ["upgrade", "levels", "tower", 1, "cost", "gold"]),
-            ("time_sec", 12, ["upgrade", "levels", "tower", 1, "time_sec"]),
-            ("hp_mult", 1.8, ["upgrade", "levels", "tower", 1, "hp_mult"]),
+            ("cost_food", 260, ["upgrade", "levels", "base", 1, "cost", "food"]),
+            ("cost_gold", 270, ["upgrade", "levels", "base", 1, "cost", "gold"]),
+            ("time_sec", 12, ["upgrade", "levels", "base", 1, "time_sec"]),
+            ("hp_mult", 1.8, ["upgrade", "levels", "base", 1, "hp_mult"]),
     ):
-        m2.set_level("tower", 1, field, value)
+        m2.set_level("base", 1, field, value)
         eq(m2.doc.value(path), value, "set_level(%s) → %s" % (field, ".".join(map(str, path))))
-    near(m2.building("tower").levels[1].hp_of(300), 540, "改完倍率：2 级血量 540")
-    raises(lambda: m2.set_level("tower", 9, "time_sec", 1), "越界等级被拒")
-    raises(lambda: m2.set_level("tower", 1, "banana", 1), "不认识的升级字段被拒")
+    near(m2.building("base").levels[1].hp_of(1000), 1800, "改完倍率：大本营 2 级血量 1800")
+    raises(lambda: m2.set_level("base", 9, "time_sec", 1), "越界等级被拒")
+    raises(lambda: m2.set_level("base", 1, "banana", 1), "不认识的升级字段被拒")
+    raises(lambda: m2.set_level("tower", 0, "hp_mult", 1),
+           "★★ 哨塔没有升级表：set_level 被拒")
 
-    # 逐级攻击：写 / 读 / 删（删 = 沿用基础值）
+    # 逐级攻击：写 / 读 / 删（删 = 沿用基础值）—— 只有大本营还有等级表。
     m3 = fresh_model()
-    t = m3.building("tower")
-    ok(not t.levels[1].has_attack("damage"), "★ 现在 2 级没有自己的攻击力")
+    t = m3.building("base")
+    ok(not t.levels[1].has_attack("damage"), "★ 现在大本营 2 级没有自己的攻击力")
     near(t.levels[1].attack_of("damage"), 12, "没写 → 沿用基础值 12")
-    m3.set_level("tower", 1, "damage", 20)
-    m3.set_level("tower", 1, "range", 4)
-    m3.set_level("tower", 1, "cooldown", 0.6)
-    t = m3.building("tower")
+    m3.set_level("base", 1, "damage", 20)
+    m3.set_level("base", 1, "range", 4)
+    m3.set_level("base", 1, "cooldown", 0.6)
+    t = m3.building("base")
     ok(t.levels[1].has_attack("damage"), "2 级有自己的攻击力了")
     near(t.levels[1].attack_of("damage"), 20, "2 级攻击 20")
     near(t.levels[1].attack_of("range"), 4, "2 级射程 4")
     near(t.levels[1].attack_of("cooldown"), 0.6, "2 级间隔 0.6")
     near(t.damage, 12, "★ 基础值没被动过（1 级还是 12）")
-    eq(m3.doc.value(["upgrade", "levels", "tower", 1, "damage"]), 20, "写在目标等级那一行")
-    m3.set_level("tower", 1, "damage", None)
-    ok(not m3.building("tower").levels[1].has_attack("damage"), "★ 传 None = 删掉覆盖")
-    near(m3.building("tower").levels[1].attack_of("damage"), 12, "回到沿用基础值 12")
+    eq(m3.doc.value(["upgrade", "levels", "base", 1, "damage"]), 20, "写在目标等级那一行")
+    m3.set_level("base", 1, "damage", None)
+    ok(not m3.building("base").levels[1].has_attack("damage"), "★ 传 None = 删掉覆盖")
+    near(m3.building("base").levels[1].attack_of("damage"), 12, "回到沿用基础值 12")
 
     # 新建建筑
     m4 = fresh_model()
@@ -620,17 +638,22 @@ def t_buildings() -> None:
     eq(b.name, "前哨站", "名字")
     ok(b.buildable, "★★ 新建筑一律「可建造」（否则游戏里根本出不来）")
     eq(b.hotkey, "", "快捷键留空（设计师自己填）")
-    near(b.damage, 12, "数值照模板（箭塔）")
+    near(b.damage, 12, "数值照模板（哨塔）")
     near(b.hp_max, 300, "血量照模板")
-    eq(b.max_level, 3, "★ 连升级表一起复制（3 级）")
-    near(b.levels[1].cost_food, 100, "升级表的数字也照抄（箭塔 2 级 100 粮，造价 ×2）")
-    eq([lv.id for lv in m4.buildings()] == ["wall", "tower", "base", "outpost"], True,
+    eq(b.max_level, 1, "★★ 新建筑不再自动配升级表（最大等级 1）")
+    eq(len(b.levels), 0, "★★ 新建筑没有逐级数据")
+    ok(not m4.doc.has(["upgrade", "levels", "outpost"]),
+       "★★ 不会生成 upgrade.levels.outpost")
+    eq([x.id for x in m4.buildings()],
+       ["wall", "tower", "stone_wall", "watch_tower", "base", "outpost"],
        "建筑顺序：新的排在最后")
     ok(changed_lines(before, m4.text) > 10, "确实往文件里加了东西")
     parse(m4.text)
 
     m4.add_building("barrackslike", "兵营", "base")
     ok(m4.building("barrackslike").buildable, "★ 照「不可建造」的模板加，也强制成可建造")
+    ok(not m4.doc.has(["upgrade", "levels", "barrackslike"]),
+       "★★ 新建筑即使照大本营复制，也不带升级表")
 
     # 删除
     m5 = fresh_model()
@@ -639,7 +662,7 @@ def t_buildings() -> None:
     ok(not m5.doc.has(["building", "outpost"]), "自定义建筑删掉了")
     ok(not m5.doc.has(["upgrade", "levels", "outpost"]), "★ 升级表一起删掉")
     eq([k for k in m5.doc.keys(["upgrade", "levels"]) if not k.startswith("_")],
-       ["base", "wall", "tower"], "升级表里只剩内置那三张")
+       ["base"], "★★ 升级表里只剩大本营那一张")
     for bid in BUILTIN_BUILDINGS:
         raises(lambda b=bid: fresh_model().remove_building(b), "内置建筑不许删：%s" % bid)
 

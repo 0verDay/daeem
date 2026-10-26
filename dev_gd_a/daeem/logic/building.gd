@@ -27,6 +27,9 @@ const FactionRes = preload("res://logic/faction.gd")
 const TYPE_BASE := "base"
 const TYPE_WALL := "wall"
 const TYPE_TOWER := "tower"
+## ★★ 2026.10.26：第二行建筑（2 级大本营解锁）—— 内部 id 与基础版分开，显示名不同。
+const TYPE_STONE_WALL := "stone_wall"
+const TYPE_WATCH_TOWER := "watch_tower"
 ## 区划中心：地图编辑器在「区块」页签里给每个区划指定的那一格。
 ##
 ## ★ 它是**中立物**（用户需求：无血量、无敌、没有攻击手段，且**不阻挡任何单位**）：
@@ -61,13 +64,23 @@ const DEFS := {
 		"body_blocks_player": false, "body_blocks_enemy": true,
 	},
 	"wall": {
-		"id": "wall", "name": "城墙", "buildable": true,
+		"id": "wall", "name": "木墙", "buildable": true,
 		# 城墙填满整格：敌方连格子都进不来（语义与从前一致）
 		"blocks_player": false, "blocks_enemy": true,
 		"body_blocks_player": false, "body_blocks_enemy": true,
 	},
 	"tower": {
-		"id": "tower", "name": "箭塔", "buildable": true,
+		"id": "tower", "name": "哨塔", "buildable": true,
+		"blocks_player": false, "blocks_enemy": false,
+		"body_blocks_player": false, "body_blocks_enemy": true,
+	},
+	"stone_wall": {
+		"id": "stone_wall", "name": "石墙", "buildable": true,
+		"blocks_player": false, "blocks_enemy": true,
+		"body_blocks_player": false, "body_blocks_enemy": true,
+	},
+	"watch_tower": {
+		"id": "watch_tower", "name": "警戒塔", "buildable": true,
 		"blocks_player": false, "blocks_enemy": false,
 		"body_blocks_player": false, "body_blocks_enemy": true,
 	},
@@ -421,7 +434,13 @@ func hp_ratio() -> float:
 ##    HTML 版用的是后者，于是同一帧里第二个攻击者打一栋已经 0 血的墙，
 ##    也会再广播一次 building_down —— 三个将领围着一堵墙就是三条重复事件。
 ##    调用方只该在**首次**摧毁时广播（见 combat.attack_building）。
-func take_damage(cfg: ConfigRes, amount: float, _source = null) -> bool:
+##
+## ★★ 2026.10.26：建筑对**远程伤害**免伤 90%（`building.<type>.ranged_reduction`）。
+##   · `incoming_ranged` 只由**投掷物**命中建筑时传 true（近战传 false / 不传）；
+##   · `ignore_reduction` 是「攻城标签」（投石车）：攻城伤害不走远程减免；
+##   · 故意**不用** `combat.damage_reduction_cap`（那是单位的 75% 封顶），否则 90% 会被压成 75%。
+func take_damage(cfg: ConfigRes, amount: float, _source = null,
+		incoming_ranged: bool = false, ignore_reduction: bool = false) -> bool:
 	if not alive:
 		return false                       # 早就死了，不重复报销
 	if is_invulnerable():
@@ -430,6 +449,8 @@ func take_damage(cfg: ConfigRes, amount: float, _source = null) -> bool:
 	hit_flash = 1.0          # ★ 受击反应：闪白 + 左右振动（视图读它）
 	var destructible: bool = cfg.building_destructible(type)
 	var floor_hp: float = 1.0 if not destructible else 0.0
+	if incoming_ranged and not ignore_reduction:
+		amount *= 1.0 - clampf(cfg.building_ranged_reduction(type), 0.0, 0.99)
 	hp = maxf(floor_hp, hp - amount)
 	if hp <= 0.0:
 		# 就地标记；真正的摘除由 world.tick() 末尾统一做（逻辑层不在遍历中改集合）

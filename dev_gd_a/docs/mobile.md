@@ -356,7 +356,7 @@ Debug 包用 Godot 自动的调试密钥库；**Release 必须配置发布密钥
 | `view/minimap.gd` | 地形烘图 + 手机端重画节流 |
 | `view/overlay_view_3d.gd` | 血条单次投影 + 屏幕外剔除 |
 | `view/unit_view_3d.gd` | `quad_screen_size()`（宽高一次算完） |
-| `view/squad_panel.gd` | 手机端刷新节流 |
+| `view/squad_panel.gd` | 手机端刷新节流；触摸手势入口（单击反选 / 双击跳转 / 长按跟随，行在手机端 `MOUSE_FILTER_IGNORE`，由 `hud.handle_touch()` 在 GUI 之前优先路由） |
 | `view/ground_view.gd` | 地面/迷雾烘图缓冲复用（`ImageTexture.update`） |
 | `logic/crowd/crowd_bridge.gd` | C# 内核不可用时 `push_warning` |
 | `tests/test_touch.gd` | **新文件**：触摸手势与命令的回归测试 |

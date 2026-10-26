@@ -1522,7 +1522,7 @@ class EditorApp:
         # ---- 摆放的建筑 / 单位 ----
         if lv is not None:
             for i, b in enumerate(lv.start_buildings):
-                # ★★ 建筑**所见即所得**：按类型画不同的形状（城墙 = 线段、箭塔 = 圆点、
+                # ★★ 建筑**所见即所得**：按类型画不同的形状（木墙 / 石墙 = 线段、哨塔 / 警戒塔 = 圆点、
                 #    大本营 = 方块），不再是统一的「建」字 —— 一眼认出摆的是什么。
                 self._draw_building_marker(b, self.faction_color(b.owner), ("building", i))
             # ★★ 附属部队先画「它属于哪位将领」的连线（画在方块下面）——
@@ -1612,18 +1612,18 @@ class EditorApp:
                               tag: Tuple[str, int]) -> None:
         """★ 建筑的**所见即所得**画法：按类型画不同形状 + 归属色。
 
-        · 城墙 = 一条横贯整格的**粗线**（本体就是整格）；
-        · 箭塔 = 居中的**实心圆**（本体比一格小一圈）；
+        · 城墙（木墙 / 石墙）= 一条横贯整格的**粗线**（本体就是整格）；
+        · 箭塔（哨塔 / 警戒塔）= 居中的**实心圆**（本体比一格小一圈）；
         · 大本营 = 居中的**方块**（本体比一格小一圈）；
         · 其它类型（自定义建筑）→ 退回「圆盘 + 类型首字」（与单位同一种画法）。
         """
         size = self.tile_px()
         sx, sy = self.cell_origin(b.x, b.y)
         t = str(b.type)
-        if t == "wall":
+        if t in ("wall", "stone_wall"):
             self.canvas.create_line(sx + 2, sy + size / 2, sx + size - 2, sy + size / 2,
                                     fill=color, width=max(3, int(size * 0.14)))
-        elif t == "tower":
+        elif t in ("tower", "watch_tower"):
             pad = size * 0.28
             self.canvas.create_oval(sx + pad, sy + pad, sx + size - pad, sy + size - pad,
                                     fill=color, outline="#101010")

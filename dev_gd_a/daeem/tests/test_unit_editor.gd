@@ -54,48 +54,60 @@ func _test_config_contract() -> void:
 
 	ok(cfg.has_building_type("wall"), "wall 是 config 里定义的建筑")
 	ok(cfg.has_building_type("tower"), "tower 是 config 里定义的建筑")
+	ok(cfg.has_building_type("stone_wall"), "★★ stone_wall 是 config 里定义的建筑")
+	ok(cfg.has_building_type("watch_tower"), "★★ watch_tower 是 config 里定义的建筑")
 	ok(cfg.has_building_type("base"), "base 在 config 里（虽然不可建造）")
 	ok(not cfg.has_building_type("zone_center"),
 		"★ 区划中心**不是** config 里的建筑（它是中立障碍，编辑器不管它）")
-	eq(cfg.building_type_ids(), ["wall", "tower", "base"],
+	eq(cfg.building_type_ids(), ["wall", "tower", "stone_wall", "watch_tower", "base"],
 		"建筑类型的顺序 = 文件里的顺序")
-	eq(cfg.building_def("wall").get("name"), "城墙", "建筑定义读得到名字")
-	eq(cfg.building_def("wall").get("buildable"), true, "城墙可建造")
+	eq(cfg.building_def("wall").get("name"), "木墙", "建筑定义读得到名字")
+	eq(cfg.building_def("tower").get("name"), "哨塔", "哨塔的名字来自 config")
+	eq(cfg.building_def("stone_wall").get("name"), "石墙", "石墙的名字来自 config")
+	eq(cfg.building_def("watch_tower").get("name"), "警戒塔", "警戒塔的名字来自 config")
+	eq(cfg.building_def("wall").get("buildable"), true, "木墙可建造")
 	eq(cfg.building_def("base").get("buildable"), false, "★ 大本营不可建造")
-	eq(cfg.building_def("wall", {"name": "兜底名"}).get("name"), "城墙",
+	eq(cfg.building_def("wall", {"name": "兜底名"}).get("name"), "木墙",
 		"★ config 里写了的键**盖掉**兜底（不是反过来）")
 	eq(cfg.building_def("no_such_type", {"name": "兜底名"}).get("name"), "兜底名",
 		"config 里没有的类型 → 用调用方给的兜底")
 
 	var buildable: Array = cfg.buildable_building_defs()
-	eq(buildable.size(), 2, "★ 建造页那两项：城墙 + 箭塔")
-	eq(String(buildable[0].get("id", "")), "wall", "第一项是城墙")
-	eq(String(buildable[1].get("id", "")), "tower", "第二项是箭塔")
+	eq(buildable.size(), 4, "★★ 建造页四项：木墙 / 哨塔 / 石墙 / 警戒塔")
+	eq(String(buildable[0].get("id", "")), "wall", "第一项是木墙")
+	eq(String(buildable[1].get("id", "")), "tower", "第二项是哨塔")
+	eq(String(buildable[2].get("id", "")), "stone_wall", "第三项是石墙")
+	eq(String(buildable[3].get("id", "")), "watch_tower", "第四项是警戒塔")
+	eq(cfg.building_tier("wall"), 1, "木墙在第 1 行")
+	eq(cfg.building_tier("tower"), 1, "哨塔在第 1 行")
+	eq(cfg.building_tier("stone_wall"), 2, "★★ 石墙在第 2 行（2 级大本营）")
+	eq(cfg.building_tier("watch_tower"), 2, "★★ 警戒塔在第 2 行（2 级大本营）")
+	near(cfg.building_ranged_reduction("wall"), 0.9, 1e-6, "★★ 木墙远程免伤 90%")
+	near(cfg.building_ranged_reduction("watch_tower"), 0.9, 1e-6, "★★ 警戒塔远程免伤 90%")
 
-	eq(cfg.building_max_hp("wall"), 300.0, "城墙血量 300（从这里读）")
+	eq(cfg.building_max_hp("wall"), 300.0, "木墙血量 300（从这里读）")
+	eq(cfg.building_max_hp("stone_wall"), 700.0, "★★ 石墙血量 700")
+	eq(cfg.building_max_hp("watch_tower"), 550.0, "★★ 警戒塔血量 550")
 	eq(cfg.building_max_hp("base"), 1000.0, "大本营血量 1000")
-	eq(cfg.building_build_sec("wall"), 4.0, "★ 城墙建造时间 4 秒（本次经济调参：不再瞬发）")
-	eq(cfg.building_attackable("tower"), true, "箭塔可攻击")
-	eq(cfg.building_attackable("wall"), false, "★ 城墙不可攻击（编辑器里那个勾没打）")
+	eq(cfg.building_build_sec("wall"), 4.0, "★ 木墙建造时间 4 秒（本次经济调参：不再瞬发）")
+	eq(cfg.building_build_sec("stone_wall"), 5.0, "★★ 石墙建造时间 5 秒")
+	eq(cfg.building_attackable("tower"), true, "哨塔可攻击")
+	eq(cfg.building_attackable("watch_tower"), true, "★★ 警戒塔可攻击")
+	eq(cfg.building_attackable("wall"), false, "★ 木墙不可攻击（编辑器里那个勾没打）")
 
 	var lv1: Dictionary = cfg.building_attack_of("tower", 1)
-	near(float(lv1["damage"]), 12.0, 1e-6, "1 级箭塔伤害 = 基础值 12")
-	near(float(lv1["range"]), 3.0, 1e-6, "1 级箭塔射程 = 3")
-	near(float(lv1["cooldown"]), 0.8, 1e-6, "1 级箭塔间隔 = 0.8")
-	cfg.data["upgrade"]["levels"]["tower"][1]["damage"] = 30.0
-	cfg.data["upgrade"]["levels"]["tower"][1]["range"] = 4.0
-	var fresh = require_config()
-	fresh.data["upgrade"]["levels"]["tower"][1]["damage"] = 30.0
-	fresh.data["upgrade"]["levels"]["tower"][1]["range"] = 4.0
-	var cfg2 = _reload(fresh)
-	var lv2: Dictionary = cfg2.building_attack_of("tower", 2)
-	near(float(lv2["damage"]), 30.0, 1e-6, "★★ 2 级自己写的伤害 30 生效")
-	near(float(lv2["range"]), 4.0, 1e-6, "2 级自己写的射程 4 生效")
-	near(float(lv2["cooldown"]), 0.8, 1e-6, "★ 2 级没写的间隔沿用基础值 0.8")
-	near(float(cfg2.building_attack_of("tower", 1)["damage"]), 12.0, 1e-6,
-		"★ 1 级不受影响（还是 12）")
-	near(float(cfg2.building_attack_of("tower", 3)["damage"]), 12.0, 1e-6,
-		"★ 3 级没写 → 沿用基础值")
+	near(float(lv1["damage"]), 12.0, 1e-6, "1 级哨塔伤害 = 基础值 12")
+	near(float(lv1["range"]), 3.0, 1e-6, "1 级哨塔射程 = 3")
+	near(float(lv1["cooldown"]), 0.8, 1e-6, "1 级哨塔间隔 = 0.8")
+	var wt: Dictionary = cfg.building_attack_of("watch_tower", 1)
+	near(float(wt["damage"]), 16.0, 1e-6, "★★ 警戒塔伤害 16")
+	near(float(wt["range"]), 4.0, 1e-6, "★★ 警戒塔射程 4")
+	near(float(wt["cooldown"]), 0.7, 1e-6, "★★ 警戒塔间隔 0.7")
+	# ★★ 2026.10.26：没有等级表的建筑，任何等级都回落到基础值。
+	near(float(cfg.building_attack_of("tower", 2)["damage"]), 12.0, 1e-6,
+		"★★ 哨塔没有升级表：2 级仍是基础值 12")
+	near(float(cfg.building_attack_of("watch_tower", 3)["damage"]), 16.0, 1e-6,
+		"★★ 警戒塔没有升级表：3 级仍是基础值 16")
 
 	eq(cfg.unit_icon_of("spearman"), "枪", "★ 地图上的字来自 config（枪）")
 	eq(cfg.unit_icon_of("longbowman"), "弓", "长弓兵的字（弓）")
@@ -261,9 +273,11 @@ func _test_vision() -> void:
 	near(cfg3.building_vision(), cfg3.fog_vision_building, 1e-6,
 		"`building_vision()` = fog.vision_building（没写 vision 的建筑用它兜底）")
 	near(cfg3.building_vision_of("tower"), 12.0, 1e-6,
-		"★★ 箭塔自己的视野 12（编辑器「建筑」页那一栏）")
+		"★★ 哨塔自己的视野 12（编辑器「建筑」页那一栏）")
 	near(cfg3.building_vision_of("base"), 9.0, 1e-6, "大本营 9")
-	near(cfg3.building_vision_of("wall"), 5.0, 1e-6, "城墙 5")
+	near(cfg3.building_vision_of("wall"), 5.0, 1e-6, "木墙 5")
+	near(cfg3.building_vision_of("watch_tower"), 15.0, 1e-6, "★★ 警戒塔 15")
+	near(cfg3.building_vision_of("stone_wall"), 5.0, 1e-6, "★★ 石墙 5")
 	var cfg_b = require_config()
 	if cfg_b.data.has("building") and cfg_b.data["building"].has("tower"):
 		cfg_b.data["building"]["tower"]["vision"] = 3
@@ -317,8 +331,8 @@ func _test_new_building() -> void:
 	cfg.data["building"]["outpost"] = NEW_BUILDING.duplicate(true)
 
 	ok(cfg.has_building_type("outpost"), "★ 新建筑被认出来了")
-	eq(cfg.building_type_ids().size(), 4, "建筑类型多了一种")
-	eq(cfg.buildable_building_defs().size(), 3, "★ 建造页那一份列表也多了它")
+	eq(cfg.building_type_ids().size(), 6, "建筑类型多了一种")
+	eq(cfg.buildable_building_defs().size(), 5, "★ 建造页那一份列表也多了它")
 	eq(cfg.building_max_hp("outpost"), 250.0, "血量来自 config")
 	eq(cfg.building_build_sec("outpost"), 1.0, "建造时间来自 config")
 	eq(cfg.building_attackable("outpost"), true, "可攻击")
@@ -483,19 +497,23 @@ func _test_hud_build_page() -> void:
 	main.input_ctrl.select_units([])      # 什么都没选中 → 建筑页
 	main.hud.refresh()
 	var card = main.hud.command_card
-	eq(card.entries().size(), 2, "（前提）建造页默认两项：城墙 / 箭塔")
-	eq(String(card.entry_at(0).get("build_type", "")), "wall", "第 1 项是城墙")
-	eq(card.cell_label(0), "城墙", "名字来自 config")
+	eq(card.entries().size(), 9, "（前提）建造页按 3×3 九格")
+	eq(String(card.entry_at(0).get("build_type", "")), "wall", "第 1 格是木墙")
+	eq(card.cell_label(0), "木墙", "名字来自 config")
+	eq(String(card.entry_at(1).get("build_type", "")), "tower", "第 2 格是哨塔")
+	eq(String(card.entry_at(3).get("build_type", "")), "stone_wall", "第二行第 1 格是石墙")
+	eq(String(card.entry_at(4).get("build_type", "")), "watch_tower", "第二行第 2 格是警戒塔")
 
 	main.cfg.data["building"]["outpost"] = NEW_BUILDING.duplicate(true)
 	main.hud.rebuild_card()
-	eq(card.entries().size(), 3, "★★ 编辑器里新加的建筑出现在建造页了")
-	eq(String(card.entry_at(2).get("build_type", "")), "outpost", "第 3 格就是它")
+	eq(String(card.entry_at(2).get("build_type", "")), "outpost",
+		"★★ 编辑器里新加的建筑出现在建造页第 3 格（tier 缺省 1）")
 	eq(card.cell_label(2), "前哨站", "★ 格子上是 config 里的名字")
 
 	main.cfg.data["building"]["outpost"]["buildable"] = false
 	main.hud.rebuild_card()
-	eq(card.entries().size(), 2, "★★ 取消「可建造」→ 它从建造页消失")
+	eq(String(card.entry_at(2).get("build_type", "")), "",
+		"★★ 取消「可建造」→ 它从建造页消失")
 
 	main.cfg.data["building"]["outpost"]["buildable"] = true
 	main.cfg.data["building"]["outpost"]["name"] = "石头哨塔"

@@ -63,6 +63,10 @@ const EconomyRes = preload("res://logic/economy.gd")
 static func can_upgrade(world, b, faction: String) -> String:
 	if b == null or not b.alive:
 		return "type"
+	# ★★ 2026.10.26：只有大本营可以升级；木墙 / 哨塔 / 石墙 / 警戒塔不再有升级机制。
+	#    即使有人手写了一张等级表，这里也不会放行。
+	if not b.is_base():
+		return "type"
 	if not world.cfg.has_upgrade(b.type):
 		return "type"
 	if b.neutralized:

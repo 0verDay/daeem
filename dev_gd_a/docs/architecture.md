@@ -222,8 +222,11 @@ dev_gd_a/daeem/
 │   │                             #      草 / 水是程序化网格；全部 unshaded + 面法线假光照
 │   │                             #      ★ 纯表现：只读 terrain / fog / buildings；
 │   │                             #        迷雾按格压暗、建筑占位格上的草 / 树缩到 0
-│   ├── unit_view_3d.gd           #   3D 单位：`MultiMesh` 按「阵营 × 是否将领」分桶 + billboard
-│   ├── unit_sprite_3d.gd         #   程序化兵人立牌贴图（SDF 光栅化，按变体缓存）
+│   ├── unit_view_3d.gd           #   3D 单位：`MultiMesh` 按「阵营 × 将领 × 兵种 × 选中 × 濒死」
+│   │                             #      分桶 + billboard（每桶一张烘好的贴图 ⇒ 同桶合批）
+│   ├── unit_sprite_3d.gd         #   兵种立牌贴图：`sprite_tint = art` 保留原画（默认阵营色描边、
+│   │                             #      选中整圈换金边）；`faction` 取形状填阵营色（单字占位）；
+│   │                             #      素材缺失 → 程序化 SDF 剪影兜底。贴图在生成期烘好并缓存
 │   ├── building_view_3d.gd       #   3D 建筑：`MultiMesh` + `BoxMesh`（★ 视觉高度 ≠ 逻辑高度）
 │   ├── overlay_view_3d.gd        #   3D 版的覆盖层（屏幕空间：选中圈 / 标记 / 拖框 / 建造预览）
 │   │                             #   ★ 网格 / 区划轮廓 / 占领触发区按「相机 + 区划签名」缓存
@@ -302,9 +305,10 @@ dev_gd_a/daeem/
 │   │                             #     ⚠️ 高度**只问 Label 自己**（get_minimum_size），
 │   │                             #     不许拿 Font.get_multiline_string_size 顶替（见 pitfalls 5.52）
 │   │                             #     文案由 hud 喂（`_hover_detail`），本控件只排版与画
-│   ├── squad_panel.gd            #   右侧「部队 1~10」（动态生成，点了只选中）
+│   ├── squad_panel.gd            #   右侧「部队 1~10」（动态生成；单击反选 / 长按跟随 / 双击跳转）
 │   │                             #   ★ 每行是 view/troop_row.gd：数字 1..9/0 + 名字 + 当前/上限
 │   │                             #     右缘竖线是金色泛光起点（向左推进）
+│   │                             #     选中的数字键帽亮起、悬停时黯淡；手势判定在 input_controller
 │   ├── detail_panel.gd           #   ★ 底栏「详细信息」：**左右两栏**（第四轮改版）
 │   │                             #     左 = view/unit_roster.gd（上）+ view/troop_grid.gd（下）
 │   │                             #     右 = 选中单位头像 / 名称 / buff 占位 / 数值 + 招募五格

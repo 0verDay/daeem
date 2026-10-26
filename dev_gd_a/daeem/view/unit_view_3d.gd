@@ -1,13 +1,13 @@
-## unit_view_3d.gd —— 3D 单位：**按「阵营 × 是否将领 × 兵种 × 是否濒死」分组的多批次 MultiMesh**
+## unit_view_3d.gd —— 3D 单位：**按「阵营 × 将领 × 兵种 × 选中 × 濒死」分组的多批次 MultiMesh**
 ##                   + 将领脚下的**占位贴花**层
 ##
 ## ★★ 为什么是「多批次」而不是「一个 MultiMesh 画全部」（本版最重要的性能取舍）：
 ##   `MultiMesh` 的所有实例**共用同一个 mesh ⇒ 同一张贴图**，因此它**不支持逐实例贴图**。
-##   而兵人立牌要做到「阵营色 + 将领更粗的描边 + 每个兵种一张占位素材 + 濒死半透明」，
-##   就必须有多张图 / 多个材质。
+##   而兵人立牌要做到「阵营色描边 + 选中时的金描边 + 将领更粗的描边 + 每个兵种一张素材
+##   + 濒死半透明」，就必须有多张图 / 多个材质。
 ##   ⇒ 做法是：**每种变体一个 `MultiMeshInstance3D`**（各自一张贴图），
-##     变体数 = 阵营数 × 2 × 兵种数，本项目每一项都是个位数 ⇒ **仍然只有个位数 draw call**，
-##     1000 个单位全部塞在这些 MultiMesh 里，一个实例一个单位。
+##     变体数 = 阵营数 × 2 × 兵种数 × 2（选中），本项目每一项都是个位数
+##     ⇒ 场上真正有实例的批次仍然只有十来个，1000 个单位全部塞在这些 MultiMesh 里。
 ##   ★ 与 2D 那版「按贴图分桶再合批」是**同一个意图换了工具**：
 ##     那次踩过的坑是「桶用值语义的打包数组 ⇒ 永远是空的 ⇒ 什么都不画」，
 ##     这里同样留了计数器（`instance_count` / `mesh_batch_count`）给测试钉。
@@ -209,17 +209,25 @@ func _selection_ring_color(rel: String) -> Color:
 
 ## 取（或创建）一个变体的批次。
 ##
-## ★ 变体键 = `阵营|是否将领|兵种|是否濒死`（见 `sync` 的拼法）；贴图按变体烘一张。
+## ★ 变体键 = `阵营|是否将领|兵种|是否选中|是否濒死`（见 `sync` 的拼法）；贴图按变体烘一张。
 func _batch_for(key: String, faction: String, leader: bool, unit_type: String,
-		downed: bool) -> Dictionary:
+		selected: bool, downed: bool) -> Dictionary:
 	var hit: Variant = _batches.get(key, null)
 	if hit != null:
 		return hit
 	var col: Color = SideColorRes.color(cfg, world, faction, "main")
-	var outline: Color = Color(0.05, 0.05, 0.07, 1.0)
-	# ★ 兵种素材（`unit.types.<id>.sprite`）+ 阵营色剪影；将领的描边更粗。
+	# ★★ 描边色按上色口径分两档（见 config.gd 的 unit_sprite_tint_of）：
+	#   · "art"     → 描边 = **阵营色**（保留原画，靠描边区分敌我）；
+	#   · "faction" → 描边 = 深色（字本身已经填了阵营色，深描边才压得住地形）。
+	var tint: String = cfg.unit_sprite_tint_of(unit_type)
+	var outline: Color = col if tint == "art" else Color(0.05, 0.05, 0.07, 1.0)
+	# ★★ 选中：**整圈描边换成金色**（用户口径：是替换，不是「阵营色外面再包一圈」）。
+	var sel_col: Color = ConfigRes.parse_color(
+		cfg.str_val("render.unit_select_outline_color", "#fff2b0"))
+	# ★ 兵种素材（`unit.types.<id>.sprite`）；将领的描边更粗。
 	#   素材缺失 / 没配 → `bake_asset` 内部退回程序化剪影（见 unit_sprite_3d.gd 的说明）。
-	var tex: ImageTexture = SpriteRes.bake_asset(cfg.unit_sprite_of(unit_type), col, leader, outline)
+	var tex: ImageTexture = SpriteRes.bake_asset(cfg.unit_sprite_of(unit_type), col, leader,
+		outline, tint, selected, sel_col)
 
 	# ★★ 材质按「是否濒死」二选一：
 	#   · 正常：flash shader（写 ALPHA + scissor ⇒ **不透明管线**、深度正确）；
@@ -291,6 +299,7 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 	var last_fac: String = ""
 	var last_type: String = ""
 	var last_leader: bool = false
+	var last_sel: bool = false
 	var last_downed: bool = false
 	var last_neutral: bool = false
 	var last_key: String = ""
@@ -309,24 +318,31 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 		#    这两类都很少 —— 后面只遍历这两张小表，不再各扫一遍 `world.units` + 迷雾。
 		if leader:
 			_vis_generals.append(u)
-		if track_sel and (_selection_set.has(String(u.id)) or _sel_anim.has(String(u.id))):
-			_vis_sel.append(u)
+		# ★★ 是否被选中：只在这一档才做 `String(u.id)`（选中为空时整段省掉，见 track_sel）。
+		#    选中态会换一张**多一圈金描边**的贴图（变体键的第四段），所以也是分桶依据。
+		var picked: bool = false
+		if track_sel:
+			var uid := String(u.id)
+			picked = _selection_set.has(uid)
+			if picked or _sel_anim.has(uid):
+				_vis_sel.append(u)
 		var downed: bool = u.is_downed()
-		# ★★ 变体键 = 阵营 | 是否将领 | 兵种 | 是否濒死：都会变，各自决定用哪张图 / 哪个材质。
+		# ★★ 变体键 = 阵营 | 是否将领 | 兵种 | 是否选中 | 是否濒死：各自决定用哪张图 / 哪个材质。
 		var key: String
 		if u.faction == last_fac and u.unit_type == last_type \
-				and leader == last_leader and downed == last_downed \
+				and leader == last_leader and picked == last_sel and downed == last_downed \
 				and u.neutralized == last_neutral and last_key != "":
 			key = last_key
 		else:
 			# ★ 中立化单位用**空阵营键**：SideColorRes 对 "" 返回中性灰（见 side_color.gd）。
 			#   键里带上它，才不会被同一阵营的正常单位复用掉那张彩色贴图。
 			var fac_key := "" if u.neutralized else String(u.faction)
-			key = "%s|%d|%s|%d" % [fac_key, 1 if leader else 0,
-				String(u.unit_type), 1 if downed else 0]
+			key = "%s|%d|%s|%d|%d" % [fac_key, 1 if leader else 0,
+				String(u.unit_type), 1 if picked else 0, 1 if downed else 0]
 			last_fac = u.faction
 			last_type = u.unit_type
 			last_leader = leader
+			last_sel = picked
 			last_downed = downed
 			last_neutral = u.neutralized
 			last_key = key
@@ -346,9 +362,9 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 		#    本轮第四次踩同类坑：凡是无类型容器 / 无类型参数参与，都要显式标类型。
 		var parts: PackedStringArray = key.split("|")
 		var rec: Dictionary = _batch_for(key, String(parts[0]), int(parts[1]) == 1,
-			String(parts[2]), int(parts[3]) == 1)
+			String(parts[2]), int(parts[3]) == 1, int(parts[4]) == 1)
 		var mm: MultiMesh = rec["mm"]
-		var batch_downed: bool = int(parts[3]) == 1
+		var batch_downed: bool = int(parts[4]) == 1
 		if mm.instance_count < arr.size():
 			mm.instance_count = maxi(arr.size(), mm.instance_count * 2)
 		for i in arr.size():

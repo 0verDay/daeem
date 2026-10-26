@@ -7,7 +7,7 @@
 ★ 为什么不走「json.load → 改字典 → json.dump 整份重写」
 
     `config.json` 是**手写 + 带注释**的文件：那些 `"_comment"` 键就是文档本体，
-    而且很多条目刻意压在一行里（`"wall": { "id": "wall", "name": "城墙", … }`）。
+    而且很多条目刻意压在一行里（`"wall": { "id": "wall", "name": "木墙", … }`）。
     实测：把现在这份文件整份 `json.dumps(indent=2)` 重排，898 行里**约 320 行**会变 ——
     设计师只想改一个「建造时间」，diff 里却躺着三百行格式噪音，
     git blame / review / 回滚全部作废。

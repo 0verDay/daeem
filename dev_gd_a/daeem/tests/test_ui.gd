@@ -751,6 +751,13 @@ func _send_wheel(main, button: int, pos: Vector2) -> void:
 func _camera_look_point(main) -> Vector3:
 	return main._ground_under_screen(main._view_center())
 
+
+## 模拟一次「单击标签」：清掉双击配对，再直接发 Button.pressed。
+## ★ 生产路径里 button_down 会先记录按下时间；输入层支持「没有按下记录的 pressed」也按单击处理。
+func _click_slot(main, panel, i: int) -> void:
+	main.input_ctrl.reset_general_gestures()
+	panel.slot_button(i).emit_signal("pressed")
+
 func _test_notice_band(main) -> void:
 	var panel = main.hud.detail_panel
 	var grid = panel.grid_control()
@@ -1192,7 +1199,7 @@ func _test_squad_rows(main) -> void:
 	var g3 = world.unit_by_id("general-3")
 	ok(g3 != null, "有 general-3")
 	var cam_before: Vector3 = _camera_look_point(main)
-	panel.slot_button(2).emit_signal("pressed")
+	_click_slot(main, panel, 2)
 	eq(main.input_ctrl.selected_units.size(), world.group_of(g3).size(),
 		"点部队行 = 选中整队（%d 个）" % world.group_of(g3).size())
 	eq(main.input_ctrl.selected_units[0].id, g3.id, "整队的队长排在第一个")
@@ -1201,7 +1208,7 @@ func _test_squad_rows(main) -> void:
 	ok(panel.slot_active(2), "当前选中的队伍在列表里高亮")
 
 	var sel_before: int = main.input_ctrl.selected_units.size()
-	panel.slot_button(7).emit_signal("pressed")
+	_click_slot(main, panel, 7)
 	eq(main.input_ctrl.selected_units.size(), sel_before, "★ 空槽点了没有反应")
 
 	# ★★ 反选（本轮需求「点击代表反选」）：
@@ -1211,18 +1218,18 @@ func _test_squad_rows(main) -> void:
 	var g2 = world.unit_by_id("general-2")
 	var team1: Array = world.group_of(g1)
 	var team2: Array = world.group_of(g2)
-	panel.slot_button(0).emit_signal("pressed")
+	_click_slot(main, panel, 0)
 	eq(main.input_ctrl.selected_units.size(), team1.size(),
 		"★ 反选：点部队 1 = 选中第 1 支（%d 个）" % team1.size())
 	ok(panel.slot_active(0) and not panel.slot_active(1), "只有第 1 支高亮")
 
-	panel.slot_button(1).emit_signal("pressed")
+	_click_slot(main, panel, 1)
 	eq(main.input_ctrl.selected_units.size(), team1.size() + team2.size(),
 		"★★ 反选：再点部队 2 = 两支一起选中（不是把第 1 支顶掉）")
 	ok(panel.slot_active(0) and panel.slot_active(1), "两支都高亮")
 	eq(int(main.hud._detail_troop_number), 2, "★ 点谁就展开谁（详情焦点 = 部队 2）")
 
-	panel.slot_button(0).emit_signal("pressed")
+	_click_slot(main, panel, 0)
 	eq(main.input_ctrl.selected_units.size(), team2.size(),
 		"★★ 反选：再点部队 1 = 取消第 1 支，只剩第 2 支（%d 个）" % team2.size())
 	ok(not panel.slot_active(0) and panel.slot_active(1), "第 1 支取消高亮，第 2 支保持")
@@ -1230,17 +1237,17 @@ func _test_squad_rows(main) -> void:
 		"反选之后剩下的队长是第 2 支的将领")
 
 	# ★★ 详情焦点：点谁展开谁；**把展开的那支反选掉** → 回退到剩余部队的第一支。
-	panel.slot_button(0).emit_signal("pressed")           # 1+2，焦点 = 1
+	_click_slot(main, panel, 0)                          # 1+2，焦点 = 1
 	eq(main.input_ctrl.selected_units.size(), team1.size() + team2.size(),
 		"（前提）再点部队 1 又回到两支一起选中")
 	eq(int(main.hud._detail_troop_number), 1, "★ 点部队 1 → 详情焦点切到 1")
-	panel.slot_button(0).emit_signal("pressed")           # 反选掉 1
+	_click_slot(main, panel, 0)                          # 反选掉 1
 	eq(main.input_ctrl.selected_units.size(), team2.size(), "（前提）反选掉 1 之后只剩 2")
 	main.hud.refresh()                                     # 让 _pick_troop 发现并回退
 	eq(int(main.hud._detail_troop_number), 2,
 		"★★ 展开的那支被反选掉 → 详情焦点回退到剩余的第一支（部队 2）")
 
-	panel.slot_button(1).emit_signal("pressed")
+	_click_slot(main, panel, 1)
 	eq(main.input_ctrl.selected_units.size(), 0,
 		"★ 反选：点掉最后一支 = 清空选中（反选的正常结果）")
 	ok(not panel.slot_active(1), "清空后没有任何标签高亮")
@@ -1250,12 +1257,176 @@ func _test_squad_rows(main) -> void:
 	main.input_ctrl.select_units([])
 	var hotkey_before := String(g2.hotkey)
 	g2.hotkey = "9"                                     # 故意做成对不上的编号
+	main.input_ctrl.reset_general_gestures()
 	ok(main.input_ctrl.handle_key(_key(KEY_2)), "★★ 按数字键 2 被识别为「选第 2 支部队」")
+	main.input_ctrl.handle_key(_key_up(KEY_2))
 	eq(main.input_ctrl.selected_units.size(), team2.size(),
 		"★★ 选中的是第 2 支整队（%d 个）" % team2.size())
 	eq(String(main.input_ctrl.selected_units[0].id), String(g2.id),
 		"★★ 即使 g2.hotkey=9，第 2 支仍然按左栏编号选中")
 	g2.hotkey = hotkey_before
+
+	# ★★ 双击标签 = 快速选中（只加不撤）+ 立即跳镜头（第一次的反选要回滚）。
+	main.input_ctrl.select_units([])
+	main.input_ctrl.reset_general_gestures()
+	panel.debug_press_slot(0, 1000)
+	panel.debug_release_slot(0, 1010)                    # 第一次：反选 → 选中第 1 支
+	panel.debug_press_slot(0, 1100)
+	panel.debug_release_slot(0, 1110)                    # 第二次：双击窗口内
+	eq(main.input_ctrl.selected_units.size(), team1.size(),
+		"★★ 双击标签：回滚第一次反选后，仍只选中第 1 支（%d 个）" % team1.size())
+	ok(String(main.input_ctrl.selected_units[0].id) == String(g1.id),
+		"★★ 双击后选中的队长是第 1 支")
+	var look_after_double: Vector3 = _camera_look_point(main)
+	ok(look_after_double.distance_to(main.palette.to_world(g1.pos)) < 1.5,
+		"★★ 双击标签 = 立即把镜头跳到该将领（误差 %.2f 格）"
+			% look_after_double.distance_to(main.palette.to_world(g1.pos)))
+
+	# ★★ 已选中的队伍被双击：不撤选中，只跳镜头（「无取消选中逻辑」）。
+	panel.debug_press_slot(0, 2000)
+	panel.debug_release_slot(0, 2010)
+	panel.debug_press_slot(0, 2100)
+	panel.debug_release_slot(0, 2110)
+	eq(main.input_ctrl.selected_units.size(), team1.size(),
+		"★★ 双击已选中的队伍：不会把它取消掉")
+	ok(panel.slot_active(0), "双击后它仍然是选中的")
+
+	# ★★ 长按标签 = 跟随视角；手动动镜头 → 自动取消。
+	main.input_ctrl.select_units([])
+	main.input_ctrl.reset_general_gestures()
+	main.stop_follow()
+	panel.debug_press_slot(0, 3000)
+	main.input_ctrl.poll_gestures(3600)                  # 超过 0.4s
+	ok(main.following_unit() == g1, "★★ 长按标签 = 跟随第 1 支将领的视角")
+	panel.refresh()
+	ok(panel.slot_button(0).is_row_following(),
+		"★★ 跟随时标签最左侧显示眼睛标志")
+	panel.debug_release_slot(0, 3700)                    # 抬起不应再反选
+	eq(main.input_ctrl.selected_units.size(), 0, "★ 长按后的抬起不再触发反选")
+	main.pan_screen(Vector2(5.0, 0.0))
+	ok(main.following_unit() == null, "★★ 手动动镜头 → 退出跟随")
+	panel.refresh()
+	ok(not panel.slot_button(0).is_row_following(),
+		"★ 结束跟随后眼睛标志消失")
+
+	# ★★ 数字键：双击 = 快速选中 + 跳镜头；长按 = 跟随。
+	main.input_ctrl.select_units([])
+	main.input_ctrl.reset_general_gestures()
+	main.input_ctrl.handle_key(_key(KEY_1))
+	main.input_ctrl.handle_key(_key_up(KEY_1))
+	main.input_ctrl.handle_key(_key(KEY_1))
+	main.input_ctrl.handle_key(_key_up(KEY_1))
+	eq(main.input_ctrl.selected_units.size(), team1.size(),
+		"★★ 数字键双击 = 快速选中第 1 支（%d 个）" % team1.size())
+	ok(panel.slot_active(0), "数字键双击后第 1 支高亮")
+	main.stop_follow()
+	main.input_ctrl.handle_key(_key(KEY_1))
+	main.input_ctrl.poll_gestures(Time.get_ticks_msec() + 1000)
+	ok(main.following_unit() == g1, "★★ 数字键长按 = 跟随第 1 支将领的视角")
+	main.input_ctrl.handle_key(_key_up(KEY_1))
+	main.stop_follow()
+
+	# ★★ 回归（用户报的 bug）：快速连按 1/2/3 时，下一次按下往往发生在上一键抬起之前。
+	#    旧实现每个来源只有一份「按下状态」，2 的按下会覆盖 1、3 再覆盖 2 ⇒ 只剩 3 生效。
+	#    现在每个 (来源, 槽位) 各存一份按下状态，三支都要选中。
+	main.input_ctrl.select_units([])
+	main.input_ctrl.reset_general_gestures()
+	main.input_ctrl.gesture_press("key", 1, 5000)
+	main.input_ctrl.gesture_press("key", 2, 5010)
+	main.input_ctrl.gesture_press("key", 3, 5020)
+	main.input_ctrl.gesture_release("key", 1, 5100)
+	main.input_ctrl.gesture_release("key", 2, 5110)
+	main.input_ctrl.gesture_release("key", 3, 5120)
+	eq(main.input_ctrl.selected_units.size(),
+		team1.size() + team2.size() + world.group_of(g3).size(),
+		"★★ 连按 1/2/3（按键重叠）→ 三支部队都被选中")
+
+	# 走真实按键事件再复现一次（三次按下都发生在任何抬起之前）。
+	main.input_ctrl.select_units([])
+	main.input_ctrl.reset_general_gestures()
+	main.input_ctrl.handle_key(_key(KEY_1))
+	main.input_ctrl.handle_key(_key(KEY_2))
+	main.input_ctrl.handle_key(_key(KEY_3))
+	main.input_ctrl.handle_key(_key_up(KEY_1))
+	main.input_ctrl.handle_key(_key_up(KEY_2))
+	main.input_ctrl.handle_key(_key_up(KEY_3))
+	eq(main.input_ctrl.selected_units.size(),
+		team1.size() + team2.size() + world.group_of(g3).size(),
+		"★★ handle_key：按键重叠时 1/2/3 也都被选中")
+
+	# ★★ 同一按键的「1 → 2 → 1」不算双击（中间隔着 2）：第三下应该把 1 反选掉。
+	main.input_ctrl.select_units([])
+	main.input_ctrl.reset_general_gestures()
+	main.input_ctrl.gesture_press("key", 1, 6000)
+	main.input_ctrl.gesture_release("key", 1, 6010)
+	main.input_ctrl.gesture_press("key", 2, 6020)
+	main.input_ctrl.gesture_release("key", 2, 6030)
+	main.input_ctrl.gesture_press("key", 1, 6040)
+	main.input_ctrl.gesture_release("key", 1, 6050)
+	eq(main.input_ctrl.selected_units.size(), team2.size(),
+		"★★ 1→2→1 的第三下不是双击（1 被正常反选掉，只剩 2）")
+
+	# ★★ 数字键帽：选中 → 亮起；悬停 → 黯淡；取消选中 → 普通。
+	var row1 = panel.slot_button(0)
+	main.input_ctrl.select_units([g1])
+	panel.refresh()                                       # 行状态由刷新同步
+	row1.set_hover(false)
+	eq(row1.number_key_state(), "lit", "★★ 选中的标签数字键帽亮起")
+	row1.set_hover(true)
+	eq(row1.number_key_state(), "dim", "★★ 悬停在已选中标签上 → 数字键帽黯淡")
+	row1.set_hover(false)
+	main.input_ctrl.select_units([])
+	panel.refresh()
+	eq(row1.number_key_state(), "normal", "★ 取消选中后数字键帽回到普通态")
+
+	# ★★ 移动端：标签触摸由 squad_panel 统一路由（单击反选 / 双击跳转 / 长按跟随）。
+	main.input_ctrl.select_units([])
+	main.input_ctrl.reset_general_gestures()
+	panel._touch_mode = true
+	var row_rect: Rect2 = row1.get_global_rect()
+	var touch_center: Vector2 = row_rect.get_center()
+	ok(panel.handle_touch(_touch_ev(true, touch_center), 1000),
+		"★ 触摸按下命中标签（由标签栏消化）")
+	ok(panel.handle_touch(_touch_ev(false, touch_center), 1010),
+		"★ 触摸抬起也由标签栏消化")
+	eq(main.input_ctrl.selected_units.size(), team1.size(),
+		"★★ 移动端单击标签 = 反选（选中第 1 支）")
+
+	# 双击 → 快速选中 + 立即跳镜头
+	main.input_ctrl.select_units([])
+	main.input_ctrl.reset_general_gestures()
+	panel.handle_touch(_touch_ev(true, touch_center), 2000)
+	panel.handle_touch(_touch_ev(false, touch_center), 2010)
+	panel.handle_touch(_touch_ev(true, touch_center), 2100)
+	panel.handle_touch(_touch_ev(false, touch_center), 2110)
+	eq(main.input_ctrl.selected_units.size(), team1.size(),
+		"★★ 移动端双击标签 = 快速选中第 1 支")
+	var touch_look: Vector3 = _camera_look_point(main)
+	ok(touch_look.distance_to(main.palette.to_world(g1.pos)) < 1.5,
+		"★★ 移动端双击 = 立即把镜头跳过去")
+
+	# 长按 → 跟随；抬起不再反选
+	main.input_ctrl.select_units([])
+	main.input_ctrl.reset_general_gestures()
+	main.stop_follow()
+	panel.handle_touch(_touch_ev(true, touch_center), 3000)
+	main.input_ctrl.poll_gestures(3600)
+	ok(main.following_unit() == g1, "★★ 移动端长按标签 = 跟随第 1 支将领的视角")
+	panel.handle_touch(_touch_ev(false, touch_center), 3700)
+	eq(main.input_ctrl.selected_units.size(), 0, "★ 长按后抬起不反选")
+	main.stop_follow()
+
+	# 手指滑走 → 取消这次触摸（不反选、也不长按跟随）
+	main.input_ctrl.select_units([])
+	main.input_ctrl.reset_general_gestures()
+	panel.handle_touch(_touch_ev(true, touch_center), 4000)
+	var drag_ev := InputEventScreenDrag.new()
+	drag_ev.index = 0
+	drag_ev.position = touch_center + Vector2(60.0, 0.0)
+	panel.handle_touch_drag(drag_ev)
+	panel.handle_touch(_touch_ev(false, touch_center), 4010)
+	eq(main.input_ctrl.selected_units.size(), 0, "★ 手指滑走 → 取消这次标签触摸")
+	panel._touch_mode = false
 
 	main.input_ctrl.select_units([world.unit_by_id("general-1")])
 
@@ -1277,6 +1448,15 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 	eq(card.cell_label(2), "行军", "操作页 E 格 = 行军")
 	eq(card.cell_label(3), "停止", "操作页 A 格 = 停止")
 	ok(tabs.is_active(0), "当前页在页签上高亮")
+
+	# ★★ Tab 切换右下角页签（Shift+Tab 反向；到末尾循环）。
+	ok(main.hud.handle_tab_key(_tab_key(false)), "★★ Tab 被页签栏消费")
+	eq(tabs.page(), PageTabsRes.PAGE_UNIT, "★★ Tab 切到下一颗页签（操作 → 单位）")
+	ok(main.hud.handle_tab_key(_tab_key(false)), "再按一次 Tab")
+	eq(tabs.page(), PageTabsRes.PAGE_ORDER, "★★ 到末尾后循环回第一颗（单位 → 操作）")
+	ok(main.hud.handle_tab_key(_tab_key(true)), "Shift+Tab 反向切页")
+	eq(tabs.page(), PageTabsRes.PAGE_UNIT, "★★ Shift+Tab 切到上一颗（循环到末尾）")
+	tabs.select_page(PageTabsRes.PAGE_ORDER)            # 收尾：回到操作页
 
 	tabs.button_at(1).emit_signal("pressed")
 	eq(tabs.page(), PageTabsRes.PAGE_UNIT, "点第二颗切到「单位」页")
@@ -1308,11 +1488,18 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 	eq(tabs.page_id_at(0), PageTabsRes.PAGE_BUILD, "第一颗是「建筑」")
 	eq(tabs.page_id_at(1), PageTabsRes.PAGE_TECH, "★ 第二颗是「科技」（本轮新增）")
 	eq(tabs.page(), PageTabsRes.PAGE_BUILD, "★ 默认停在「建筑」页")
-	eq(card.entries().size(), 2, "★ 建筑页有 2 项（需求原话：只有两个建筑）")
-	eq(String(card.entry_at(0).get("build_type", "")), "wall", "建筑页第 1 项是城墙")
-	eq(String(card.entry_at(1).get("build_type", "")), "tower", "建筑页第 2 项是箭塔")
-	eq(card.cell_label(0), "城墙", "城墙在 Q 格（需求原话）")
-	eq(card.cell_label(1), "箭塔", "箭塔在 W 格（需求原话）")
+	eq(card.entries().size(), 9, "★ 建筑页是 3×3 九格（按行解锁后有空槽）")
+	eq(String(card.entry_at(0).get("build_type", "")), "wall", "建筑页第 1 格是木墙")
+	eq(String(card.entry_at(1).get("build_type", "")), "tower", "建筑页第 2 格是哨塔")
+	eq(String(card.entry_at(3).get("build_type", "")), "stone_wall", "★★ 第二行第 1 格是石墙")
+	eq(String(card.entry_at(4).get("build_type", "")), "watch_tower", "★★ 第二行第 2 格是警戒塔")
+	eq(card.cell_label(0), "木墙", "木墙在 Q 格")
+	eq(card.cell_label(1), "哨塔", "哨塔在 W 格")
+	eq(card.cell_label(3), "石墙", "★★ 石墙在第二行第 1 格（A）")
+	eq(card.cell_label(4), "警戒塔", "★★ 警戒塔在第二行第 2 格（S）")
+	ok(bool(card.entry_at(0).get("ready", false)), "木墙 1 级就能建")
+	ok(not bool(card.entry_at(3).get("ready", true)), "★★ 石墙 1 级时置灰")
+	ok(not bool(card.entry_at(4).get("ready", true)), "★★ 警戒塔 1 级时置灰")
 	ok(not main.hud.tech_grid.visible, "★ 不是科技页时九格收起来（命令卡照常画）")
 
 	# ★★ 回归（手玩报的「刚进游戏时右下角『建筑』按钮错位」）：
@@ -1340,55 +1527,23 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 
 	# 开局不再自动生成防御阵地 → 需要一栋己方普通建筑时现造一栋
 	var plain_b = _ensure_own_building(world, "wall")
-	ok(plain_b != null, "拿得到一栋己方普通建筑（城墙 / 箭塔）")
+	ok(plain_b != null, "拿得到一栋己方普通建筑（木墙）")
 	if plain_b != null:
 		main.input_ctrl.select_building(plain_b)
 		main.hud.refresh()
 		eq(tabs.page_count(), 1, "★ 选中普通建筑 → 一颗页签")
-		eq(tabs.page(), PageTabsRes.PAGE_ORDER, "★ 它是「操作」页")
-		ok(tabs.button_at(0) != null and tabs.button_at(0).visible,
-			"页签按钮是可见的")
-		eq(tabs.label_at(0), "操作", "页签上写着「操作」")
-		v2_near(tabs.button_at(0).size, Vector2(108.3333, 260.0), 1.0,
-			"★ 只有一颗时它铺满整列（108.333×260）")
-		ok(tabs.is_active(0), "★ 当前页画成高亮")
-		ok(UiStyleRes.tab_normal().bg_color.a > 0.2,
-			"★ 非当前页的页签有底色（全透明时立在地图上看不见）")
-		ok(UiStyleRes.tab_active().bg_color.a > 0.9, "当前页仍是实心强调色（变的是普通态）")
-		eq(card.entries().size(), 1, "★ 操作页只有一格（升级）")
-		eq(String(card.entry_at(0).get("type", "")), "building_upgrade",
-			"那一格是「升级」")
-		eq(card.cell_label(0), "升级%s" % plain_b.display_name(),
-			"★ 格子上写着「升级%s」" % plain_b.display_name())
+		eq(tabs.page(), PageTabsRes.PAGE_NONE,
+			"★★ 取消升级后普通建筑没有可操作项（空格子）")
+		eq(card.entries().size(), 0, "★ 命令卡为空")
 
-	var wall_b = _ensure_own_building(world, "wall")
 	var tower_b = _ensure_own_building(world, "tower")
-	ok(wall_b != null and tower_b != null, "（前提）拿得到己方的城墙与箭塔")
-	if wall_b != null and tower_b != null:
-		eq(wall_b.type, "wall", "（前提）第 1 栋是城墙")
-		eq(tower_b.type, "tower", "（前提）第 2 栋是箭塔")
-		main.input_ctrl.select_building(wall_b)
-		main.hud.refresh()
-		eq(card.cell_label(0), "升级城墙", "（前提）选中城墙 → 操作页写着「升级城墙」")
+	ok(tower_b != null, "（前提）拿得到己方哨塔")
+	if tower_b != null:
+		eq(tower_b.type, "tower", "（前提）第 2 栋是哨塔")
 		main.input_ctrl.select_building(tower_b)
 		main.hud.refresh()
-		eq(card.cell_label(0), "升级箭塔",
-			"★ 改选箭塔 → 那一格必须跟着变成「升级箭塔」（不许还写着城墙）")
-		eq(String(card.entry_at(0).get("type", "")), "building_upgrade",
-			"换选中之后那一格还是「升级」那一套（只是换了目标）")
-		main.input_ctrl.select_building(wall_b)
-		main.hud.refresh()
-		eq(card.cell_label(0), "升级城墙", "★ 再改回城墙 → 又跟着变回来（反方向也要对）")
-		var wall_b2 = null
-		for b2 in world.building_list:
-			if b2 != null and b2.alive and b2.type == "wall" and b2 != wall_b \
-					and FactionRes.same_side(String(b2.owner), String(wall_b.owner)):
-				wall_b2 = b2
-				break
-		if wall_b2 != null:
-			main.input_ctrl.select_building(wall_b2)
-			main.hud.refresh()
-			eq(card.cell_label(0), "升级城墙", "换同类型的另一栋城墙：文案照旧（内容本来就一样）")
+		eq(tabs.page(), PageTabsRes.PAGE_NONE, "★★ 哨塔也没有升级入口（空格子）")
+		eq(card.entries().size(), 0, "★ 哨塔的命令卡为空")
 
 	var base = world.find_base_of("p1")
 	ok(base != null, "有己方大本营")
@@ -1553,8 +1708,8 @@ func _eq_tech_page(main, where: String) -> void:
 	v2_near(g_rect.position, c0.position, 1.0,
 		"%s：★ 科技九格的左上角与命令卡重合" % where)
 
-## 找一栋**己方**的普通建筑（城墙 / 箭塔）；没有就现造一栋 —— 开局不再自动在大本营旁
-## 生成防御阵地了，所以「地图上有一栋己方城墙 / 箭塔」这件事得自己保证。
+## 找一栋**己方**的普通建筑（木墙 / 哨塔）；没有就现造一栋 —— 开局不再自动在大本营旁
+## 生成防御阵地了，所以「地图上有一栋己方木墙 / 哨塔」这件事得自己保证。
 func _ensure_own_building(world, t: String):
 	for b in world.building_list:
 		if b != null and b.alive and b.type == t and String(b.owner) == world.my_faction:
@@ -1609,11 +1764,12 @@ func _test_hover_panel(main, cfg) -> void:
 	tabs.select_page(PageTabsRes.PAGE_BUILD)
 	card.hover(0)
 	ok(tip.showing(), "★ 鼠标停在命令卡某一格上 → 弹出悬停详情")
-	eq(tip.title_text(), "城墙", "标题就是那一格的名字")
+	eq(tip.title_text(), "木墙", "标题就是那一格的名字")
 	var bt: String = tip.body_text()
 	ok(bt.contains("地块"), "★ 建筑详情里有建筑说明（实际：%s）" % bt.replace("\n", " | "))
 	ok(bt.contains("血量"), "★ 建筑详情里有血量上限")
 	ok(bt.contains("造价"), "建筑详情里有造价")
+	ok(bt.contains("远程免伤"), "★★ 建筑详情里有远程免伤（本轮新增）")
 
 	var card_rect: Rect2 = card.get_global_rect()
 	var tabs_rect: Rect2 = tabs.get_global_rect()
@@ -1635,7 +1791,7 @@ func _test_hover_panel(main, cfg) -> void:
 	card.hover(0)
 	card.hover(1)          # 新的一格先到
 	card.unhover(0)        # 迟到的旧 exit
-	ok(tip.showing() and tip.title_text() == "箭塔",
+	ok(tip.showing() and tip.title_text() == "哨塔",
 		"★ 迟到的 mouse_exited 不会把新面板收掉（实际：%s）" % tip.title_text())
 	card.unhover(1)
 	ok(not tip.showing(), "（收尾）面板收起来")
@@ -1753,21 +1909,21 @@ func _test_hover_tip_control(cfg) -> void:
 	ok(not tip.showing() and not tip.visible, "刚建出来时不显示")
 	eq(tip.size, Vector2.ZERO, "收起时尺寸归零（不留一个幽灵矩形）")
 
-	tip.show_text("城墙", "填满整个地块\n血量上限 300")
+	tip.show_text("木墙", "填满整个地块\n血量上限 300")
 	ok(tip.showing() and tip.visible, "喂了文本就显示出来")
-	eq(tip.title_text(), "城墙", "标题是那一格的名字")
+	eq(tip.title_text(), "木墙", "标题是那一格的名字")
 	ok(tip.body_text().contains("血量"), "正文里是多行说明")
 	eq(tip.size.x, UiLayoutRes.HOVER_W, "★ 面板宽 = HOVER_W（340 = 命令卡 + 页签列）")
 	near(tip.position.x, UiLayoutRes.CARD_RECT.position.x, 1.0, "左缘与命令卡对齐")
 	near(tip.position.y + tip.size.y, UiLayoutRes.HOVER_BOTTOM, 0.01,
 		"★ 下缘钉在命令卡顶边上方（变高是**向上长**）")
 
-	tip.show_text("城墙", "一行")
+	tip.show_text("木墙", "一行")
 	var h_short: float = tip.content_height()
-	tip.show_text("城墙", "一行\n两行")
+	tip.show_text("木墙", "一行\n两行")
 	ok(tip.content_height() > h_short, "★ 两行正文比一行高（%.0f > %.0f）"
 		% [tip.content_height(), h_short])
-	tip.show_text("城墙", "一行\n两行\n三行\n四行")
+	tip.show_text("木墙", "一行\n两行\n三行\n四行")
 	var h_four: float = tip.content_height()
 	ok(h_four - h_short > 3.0 * font.get_height(UiStyleRes.FS_SMALL),
 		"★ 每多一行正文涨的高度**大于** font.get_height（%.0f > 3 × %.0f）—— 用的是 Label 的真实行高"
@@ -1811,17 +1967,17 @@ func _test_card_keys(main) -> void:
 	eq(tabs.page(), PageTabsRes.PAGE_BUILD, "（前提）没选中东西 → 停在建筑页")
 
 	var a_ev := _key(KEY_A)
-	ok(not card.handle_key(a_ev), "空格子（A）不消费按键")
+	ok(not card.handle_key(a_ev), "未解锁的 A 格（石墙）不消费按键")
 
 	ok(card.handle_key(_key(KEY_Q)), "建筑页的 Q 被命令卡吃掉")
-	eq(main.input_ctrl.build_type, "wall", "★ 建筑页按 Q = 城墙")
+	eq(main.input_ctrl.build_type, "wall", "★ 建筑页按 Q = 木墙")
 	ok(card.handle_key(_key(KEY_W)), "建筑页的 W 被命令卡吃掉")
-	eq(main.input_ctrl.build_type, "tower", "★ 建筑页按 W = 箭塔（W 已不再平移镜头）")
+	eq(main.input_ctrl.build_type, "tower", "★ 建筑页按 W = 哨塔（W 已不再平移镜头）")
 	ok(card.handle_key(_key(KEY_W)), "再按一次 W")
 	eq(main.input_ctrl.build_type, "", "再按一次同一格 = 退出建造模式")
 
 	card.cell_at(0).emit_signal("pressed")
-	eq(main.input_ctrl.build_type, "wall", "点 Q 格 = 进城墙建造模式")
+	eq(main.input_ctrl.build_type, "wall", "点 Q 格 = 进木墙建造模式")
 	main.input_ctrl.set_build_type("")
 
 	main.input_ctrl.select_units([g1])
@@ -2093,21 +2249,29 @@ func _test_upgrade_via_card(main) -> void:
 	var q = main.hud.detail_panel.queue_control()
 	world.resources["food"] = 5000.0
 	world.resources["gold"] = 5000.0
+	# ★★ 2026.10.26：建筑升级只剩大本营；大本营升 2 级要 3 名将领。
+	var idx := 1
+	while world.general_count_of("p1") < 3 and idx < 32:
+		var gnew = world.create_general("p1", idx, 500 + idx)
+		if gnew == null:
+			break
+		world.units.append(gnew)
+		idx += 1
 
-	var wall = _ensure_own_building(world, "wall")
-	ok(wall != null, "有一栋己方城墙")
-	if wall == null:
+	var base = world.find_base_of("p1")
+	ok(base != null, "有大本营")
+	if base == null:
 		return
-	main.input_ctrl.select_building(wall)
+	main.input_ctrl.select_building(base)
 	main.hud.refresh()
-	eq(tabs.page(), PageTabsRes.PAGE_ORDER, "（前提）城墙停在操作页")
-	eq(card.cell_label(0), "升级城墙", "★ Q 格 = 升级城墙")
-	var lv0: int = wall.level
+	eq(tabs.page(), PageTabsRes.PAGE_ORDER, "（前提）大本营停在操作页")
+	eq(card.cell_label(0), "升级大本营", "★ Q 格 = 升级大本营")
+	var lv0: int = base.level
 	var food0: float = float(world.resources["food"])
 	card.activate_index(0)
-	ok(wall.is_upgrading(), "★ 点那一格 = 开始读条")
+	ok(base.is_upgrading(), "★ 点那一格 = 开始读条")
 	near(float(world.resources["food"]), food0 - float(
-		float(world.cfg.upgrade_cost_to("wall", lv0).get("food", 0.0))), 1e-4,
+		float(world.cfg.upgrade_cost_to("base", lv0).get("food", 0.0))), 1e-4,
 		"★ 入队即扣粮食")
 	main.hud.refresh()
 	ok(q.showing(), "★ 信息栏里出现读条面板")
@@ -2121,8 +2285,8 @@ func _test_upgrade_via_card(main) -> void:
 	eq(String(card.entry_at(0).get("type", "")), "building_upgrade_cancel",
 		"★ 那一格是「取消升级」（实际：%s）" % String(card.entry_at(0).get("type", "")))
 	_click_control(q, UiLayoutRes.queue_cell_rect(0).get_center())
-	ok(not wall.is_upgrading(), "★ 点读条那一格 = 取消升级")
-	eq(wall.level, lv0, "等级没变")
+	ok(not base.is_upgrading(), "★ 点读条那一格 = 取消升级")
+	eq(base.level, lv0, "等级没变")
 	near(float(world.resources["food"]), food0, 1e-4, "★ 取消全额退款")
 
 	main.hud.refresh()
@@ -2130,17 +2294,17 @@ func _test_upgrade_via_card(main) -> void:
 	eq(String(card.entry_at(0).get("type", "")), "building_upgrade",
 		"（前提）那一格回到「升级」（实际：%s）" % String(card.entry_at(0).get("type", "")))
 	card.activate_index(0)
-	ok(wall.is_upgrading(), "再次开始读条（食物 %.0f / 黄金 %.0f）" % [
+	ok(base.is_upgrading(), "再次开始读条（食物 %.0f / 黄金 %.0f）" % [
 		float(world.resources["food"]), float(world.resources["gold"])])
 	world.tick(60.0)
 	main.hud.refresh()
-	eq(wall.level, lv0 + 1, "★ 读完等级 +1")
+	eq(base.level, lv0 + 1, "★ 读完等级 +1")
 	ok(not q.is_bar_mode(), "★ 读条结束 → 面板回到「不是读条」")
-	ok(card.cell_label(0).contains("升级"), "那一格又变回「升级%s」" % wall.display_name())
+	ok(card.cell_label(0).contains("升级"), "那一格又变回「升级%s」" % base.display_name())
 	ok(main.hud.detail_panel.detail_text().contains("血量"),
-		"★ 建筑详情仍是两列（左列血量、右列防御）")
-	ok(main.hud.detail_panel.detail_text().contains("防御"),
-		"★ 建筑也有防御力那一行（当前显示 0）")
+		"★ 建筑详情仍是两列（左列血量、右列远程免伤）")
+	ok(main.hud.detail_panel.detail_text().contains("远程免伤"),
+		"★★ 建筑详情写着远程免伤（本轮新增的防御特性）")
 
 	var zone = world.zones.zone_at(world.find_base_of("p1").tx, world.find_base_of("p1").ty)
 	ok(zone != null, "大本营所在的区划")
@@ -3140,7 +3304,7 @@ func _test_box_select_buildings(main) -> void:
 				var nb = world.add_building("wall", tx, ty, world.my_faction, true)
 				if nb != null:
 					built.append(nb)
-	ok(built.size() >= 2, "（前提）在框内建了 %d 段己方城墙" % built.size())
+	ok(built.size() >= 2, "（前提）在框内建了 %d 段己方木墙" % built.size())
 
 	var expect: Array = []
 	for b in world.building_list:
@@ -3199,8 +3363,8 @@ func _test_box_select_buildings(main) -> void:
 		"★ 建筑格第二行是血量 x/y")
 
 	eq(panel.unit_name_text(), expect[0].display_name(), "★ 右栏报的是主选中的建筑")
-	ok(panel.detail_text().contains("血量") and panel.detail_text().contains("防御"),
-		"★ 建筑详情是两列：左列血量、右列防御（实际：%s）"
+	ok(panel.detail_text().contains("血量") and panel.detail_text().contains("远程免伤"),
+		"★ 建筑详情是两列：左列血量、右列远程免伤（实际：%s）"
 			% panel.detail_text().replace("\n", "|"))
 	var btext: String = main.hud._building_text(expect[0])
 	ok(btext.contains("血量"), "（文案生成器）建筑详情里有血量（实际：%s）" % btext.replace("\n", "|"))
@@ -3850,4 +4014,24 @@ func _key(code: int, ctrl: bool = false) -> InputEventKey:
 	ev.keycode = code
 	ev.pressed = true
 	ev.ctrl_pressed = ctrl
+	return ev
+
+func _key_up(code: int) -> InputEventKey:
+	var ev := InputEventKey.new()
+	ev.keycode = code
+	ev.pressed = false
+	return ev
+
+func _tab_key(shift: bool = false) -> InputEventKey:
+	var ev := InputEventKey.new()
+	ev.keycode = KEY_TAB
+	ev.pressed = true
+	ev.shift_pressed = shift
+	return ev
+
+func _touch_ev(pressed: bool, pos: Vector2) -> InputEventScreenTouch:
+	var ev := InputEventScreenTouch.new()
+	ev.index = 0
+	ev.pressed = pressed
+	ev.position = pos
 	return ev

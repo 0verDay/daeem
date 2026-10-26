@@ -1,18 +1,21 @@
-## unit_sprite_3d.gd —— 程序化生成**兵人立牌贴图**（白剪影 + alpha，阵营色靠逐实例染）
+## unit_sprite_3d.gd —— **兵种立牌贴图**的生成器（CPU 逐像素烘，按变体缓存）
 ##
-## ★★ 为什么是「白剪影 + alpha」而不是「直接画出彩色兵人」（本版的关键取舍）：
-##   `MultiMesh` 的合批前提是**所有实例共用同一个 mesh**（= 同一张贴图）。
-##   如果每个阵营各烘一张彩色兵人图，就变成「一张贴图一个 draw call」，
-##   阵营一多就把合批拆散了。
-##   ⇒ 所以贴图里**只放形状与明暗**（白色），颜色由 `MultiMesh.set_instance_color`
-##     在运行时乘上去（材质的 `vertex_color_use_as_albedo = true`）。
-##   ★ 与 2D 那版「圆盘底走贴图、阵营色走 modulate」是同一个意图换了工具。
+## ★★ 三种来源，优先级从高到低：
+##   1. `sprite_tint = art`     —— `unit.types.<id>.sprite` 的**原画**（人 + 武器）；
+##                                 描边 = **阵营色**；选中时再往外加一圈**金描边**；
+##   2. `sprite_tint = faction` —— 同一张素材只取 alpha 形状，填阵营色 + 深描边
+##                                 （缺素材的兵种用「单字」占位，字来自 unit.types.*.icon）；
+##   3. 素材缺失 / 没配         —— **程序化剪影**（SDF 并集：头 + 肩 + 躯干 + 腿），
+##                                 所以老地图 / 未知 kind 也不会「没图」。
 ##
-## ★ 形态：一个**立着的小兵**（头 + 肩 + 躯干 + 两条腿），底边贴地。
-##   剪影之外还有一圈深色描边（压在 alpha 边缘），让兵人在任何底色上都看得清 ——
-##   这条与 2D 图标「描边区分将领」的口径一致。
+## ★★ 为什么每张图要按「阵营 × 将领 × 选中」烘：
+##   `MultiMesh` 一批共用同一张贴图，做不到逐实例换色 / 换描边；
+##   ⇒ 变体数 = 阵营数 × 2（将领）× 2（选中），仍是**个位数批次**（见 unit_view_3d 的分桶）。
 ##
-## ⚠️ 本文件是**纯静态生成**，不持有任何状态、不读 world；缓存按「类型」键。
+## ★ 画布 64×96（一格 128 世界单位的尺度下足够清晰）：**底边贴地**、不翻转
+##   （QuadMesh 的 UV v=0 在**顶部**，见 `_bake_uncached` 的说明）。
+##
+## ⚠️ 本文件是**纯静态生成**：不持有任何状态、不读 world；缓存键里带全部影响像素的参数。
 extends RefCounted
 
 ## 贴图像素尺寸（宽 × 高）。64×96 在「一格 128 世界单位」的尺度下足够清晰
@@ -28,10 +31,20 @@ const OUTLINE_COLOR := Color(0.05, 0.05, 0.07, 1.0)
 ##   与程序化那版的 OUTLINE_PX 是同一种单位（64×96 画布上的像素）；
 ##   素材的剪影更实心，所以数值略收敛。两档的「粗细分档」与 2D 图标
 ##   （view/unit_icon.gd 的 OUTLINE_W / OUTLINE_W_LEADER）是同一个口径。
-const ASSET_OUTLINE_PX := 2.0
+const ASSET_OUTLINE_PX := 3.0
 const ASSET_OUTLINE_PX_LEADER := 5.0
 ## 描边不透明度（与 view/unit_icon.gd 的 OUTLINE_ALPHA 同一档）
 const OUTLINE_ALPHA := 0.72
+## ★★ `sprite_tint = "art"` 的立牌在画布四周留的**安全边**（像素）。
+##   `art` 立牌 = 保留原画 + 一圈描边（默认阵营色 / 选中金边）；
+##   不 reserve 余量的话，贴图边缘会把描边切出一条直边（角色贴满 64 宽时尤其明显）。
+##   ⇒ 原画只装进 52×84 的内框，四周 6px 正好留给最粗的将领描边（5px + 1px 抗锯齿）。
+##   ★ `sprite_tint = "faction"`（单字占位）不留边：字本身就是阵营色、描边是深色，
+##     贴满画布的「切边」与原来的 S / L / R 占位观感一致。
+const ART_PAD_PX := 6
+## 选中时描边的颜色（**整圈换成这个颜色**，不是「阵营色外面再套一圈」——用户口径）。
+##   真正的值由 config.json 的 render.unit_select_outline_color 传进来。
+const SEL_OUTLINE_DEFAULT := Color(0.949, 0.710, 0.267, 1.0)   # #f2b544（主题金）
 ## 将领脚下**占位贴花**贴图的边长（像素）
 const DECAL_SIZE := 64
 
@@ -55,13 +68,15 @@ static var _sel_ring_cache: ImageTexture = null
 ##     每种变体一个 MultiMeshInstance3D ⇒ **每种变体只 1 次 draw call**，
 ##     仍然满足「1000 单位保持合批」的目标（阵营数是个位数）。
 ##   ⚠️ 烘图有缓存，切换阵营 / 重开一局都不会重复光栅化。
-static func bake(faction_color: Color, leader: bool, outline: Color) -> ImageTexture:
-	var key := "%s|%d|%s" % [faction_color.to_html(false), 1 if leader else 0,
-		outline.to_html(false)]
+static func bake(faction_color: Color, leader: bool, outline: Color,
+		selected: bool = false, sel_outline: Color = SEL_OUTLINE_DEFAULT) -> ImageTexture:
+	var key := "%s|%d|%s|%d|%s" % [faction_color.to_html(false),
+		1 if leader else 0, outline.to_html(false), 1 if selected else 0,
+		sel_outline.to_html(false)]
 	var hit: Variant = _cache.get(key, null)
 	if hit != null:
 		return hit
-	var tex := _bake_uncached(leader, faction_color, outline)
+	var tex := _bake_uncached(leader, faction_color, outline, selected, sel_outline)
 	_cache[key] = tex
 	return tex
 
@@ -79,12 +94,15 @@ static func clear_cache() -> void:
 ##   取最小值就是并集；再用它算抗锯齿与描边。
 ##   这套做法在本项目里已经用过一次（`view/unit_icon.gd` 的圆盘烘图），
 ##   直接沿用同一个模式 —— 不引入任何新依赖。
-static func _bake_uncached(leader: bool, body: Color, outline: Color) -> ImageTexture:
+static func _bake_uncached(leader: bool, body: Color, outline: Color,
+		selected: bool = false, sel_outline: Color = SEL_OUTLINE_DEFAULT) -> ImageTexture:
 	var img := Image.create(TEX_W, TEX_H, false, Image.FORMAT_RGBA8)
 	var parts: Array = _silhouette_parts(leader)
 	# 1 像素在「剪影空间」里是多少（剪影空间用 0..1 的归一化坐标，x 居中于 0）
 	var px_per_unit := float(TEX_W)
 	var rim := OUTLINE_PX / px_per_unit
+	# ★★ 选中 = **整圈描边换成金色**（不是「阵营色外面再包一圈」）。
+	var rim_col: Color = sel_outline if selected else outline
 	for y in TEX_H:
 		for x in TEX_W:
 			# 归一化到 [-0.5, 0.5] × [0, 1]（y 向上：贴图第 0 行是**顶**，所以翻转）
@@ -95,7 +113,7 @@ static func _bake_uncached(leader: bool, body: Color, outline: Color) -> ImageTe
 			var rim_cov := clampf(0.5 - (d * px_per_unit - OUTLINE_PX), 0.0, 1.0)
 			var a_rim := clampf(rim_cov - body_cov, 0.0, 1.0)
 			# 合成：描边在下、躯体在上（与 2D 图标同一顺序）
-			var col := _over(Color(outline.r, outline.g, outline.b, a_rim), Color(0, 0, 0, 0))
+			var col := _over(Color(rim_col.r, rim_col.g, rim_col.b, a_rim), Color(0, 0, 0, 0))
 			col = _over(Color(body.r, body.g, body.b, body_cov), col)
 			img.set_pixel(x, y, col)
 	# ★ 朝向：第 0 行是**顶部**，而 QuadMesh 的 UV v=0 也在**顶部**
@@ -105,10 +123,17 @@ static func _bake_uncached(leader: bool, body: Color, outline: Color) -> ImageTe
 
 
 # ------------------------------------------------------------------
-# ★★ 素材版立牌（本轮新增）：用 `unit.types.<id>.sprite` 的那张占位图当形状
+# ★★ 素材版立牌：用 `unit.types.<id>.sprite` 那张图当形状
 #
-# 口径（用户拍板「阵营色剪影」）：
-#   · 取素材的**形状**（alpha 当剪影遮罩），填**阵营色** —— 敌我仍然分得清；
+# 两种上色口径（`unit.types.<id>.sprite_tint`）：
+#   · `"art"`     = **保留原画**（人物 / 武器 / 单字原样），描边用**阵营色**；
+#                   选中时**整圈描边换成金色**（是替换，不是「阵营色外面再包一圈」）。
+#                   口径（用户原话）：「保留原画，用阵营色做默认描边，当单位被选中时
+#                   添加额外的金色描边」→ 二轮修正：「选中后原先的阵营色边变成金边」。
+#                   目前 spearman / longbowman 用它。
+#   · `"faction"` = 取素材的**形状**（alpha 当剪影遮罩），填**阵营色**、深色描边 ——
+#                   单字占位（骑 / 粮 / 士 / 骁 / 车）走这一档：字本身就是阵营色。
+#                   ★ 选中时同样把深色描边换成金色（两档共用同一条选中口径）。
 #   · 素材**缺失 / 路径为空**时**退回程序化剪影**（`bake()`），
 #     所以未知兵种、老地图里的怪 kind 都不会「没图」。
 # ★ 与程序化那版共用同一块 QuadMesh / 同一个 shader ⇒ 画布尺寸与**朝向**必须一致
@@ -118,22 +143,29 @@ static func _bake_uncached(leader: bool, body: Color, outline: Color) -> ImageTe
 ## 取一张**基于兵种素材**的立牌贴图。
 ##
 ## @param path  素材路径（`cfg.unit_sprite_of(unit_type)`；空串 = 没配）
-## @param faction_color 阵营主色（烘进剪影 —— MultiMesh 一批共用一张贴图，没法逐实例染色）
+## @param faction_color 阵营主色（`art` = 描边色；`faction` = 填充色）
 ## @param leader 将领档（描边更粗）
-## @param outline 描边色
+## @param outline 描边色（`art` 档传阵营色；`faction` 档传深色）
+## @param tint   "art" = 保留原画 / "faction" = 填阵营色
+## @param selected 选中档（**整圈描边换成金色**，宽度与默认档一致）
+## @param sel_outline 选中描边的颜色（config: render.unit_select_outline_color）
 ## @return 贴图；素材载不到时返回**程序化剪影**（永远不返回 null）
-static func bake_asset(path: String, faction_color: Color, leader: bool, outline: Color) -> ImageTexture:
+static func bake_asset(path: String, faction_color: Color, leader: bool, outline: Color,
+		tint: String = "faction", selected: bool = false,
+		sel_outline: Color = SEL_OUTLINE_DEFAULT) -> ImageTexture:
 	var src: Image = _load_asset_image(path)
 	if src == null:
-		return bake(faction_color, leader, outline)
-	var key := "%s|%s|%d|%s" % [path, faction_color.to_html(false),
-		1 if leader else 0, outline.to_html(false)]
+		return bake(faction_color, leader, outline, selected, sel_outline)
+	var key := "%s|%s|%s|%d|%s|%d|%s" % [path, faction_color.to_html(false),
+		tint, 1 if leader else 0, outline.to_html(false),
+		1 if selected else 0, sel_outline.to_html(false)]
 	var hit: Variant = _cache.get(key, null)
 	if hit != null:
 		return hit
-	var tex := _bake_from_image(src, leader, faction_color, outline)
+	var tex := _bake_from_image(src, leader, faction_color, outline, tint, selected,
+		sel_outline)
 	if tex == null:
-		return bake(faction_color, leader, outline)
+		return bake(faction_color, leader, outline, selected, sel_outline)
 	_cache[key] = tex
 	return tex
 
@@ -157,14 +189,25 @@ static func _load_asset_image(path: String) -> Image:
 	return img
 
 
-## 把一张素材图烘成 64×96 立牌：contain-fit（保长宽比）+ 底部对齐 + 阵营色剪影 + 膨胀描边。
-static func _bake_from_image(src: Image, leader: bool, body: Color, outline: Color) -> ImageTexture:
+## 把一张素材图烘成 64×96 立牌：
+## contain-fit（保长宽比）+ 底部对齐 + 阵营色 / 原画躯体 + 膨胀描边
+## （选中时整圈描边换成金色，宽度不变）。
+static func _bake_from_image(src: Image, leader: bool, body: Color, outline: Color,
+		tint: String = "faction", selected: bool = false,
+		sel_outline: Color = SEL_OUTLINE_DEFAULT) -> ImageTexture:
 	var sw: int = src.get_width()
 	var sh: int = src.get_height()
 	if sw <= 0 or sh <= 0:
 		return null
-	# ① contain-fit：整张装得进画布，水平居中、**底部对齐**（脚贴地）
-	var scale: float = minf(float(TEX_W) / float(sw), float(TEX_H) / float(sh))
+	var keep_art := tint == "art"
+	# ★★ 选中 = **整圈描边换成金色**（不是「阵营色外面再包一圈」）。
+	var rim_col: Color = sel_outline if selected else outline
+	# ★ `art` 档四周留安全边（见 ART_PAD_PX 的说明）；单字档贴满画布（与旧占位一致）。
+	var pad: int = ART_PAD_PX if keep_art else 0
+	# ① contain-fit：整张装得进内框，水平居中、**底部对齐**（脚贴地）
+	var avail_w: int = TEX_W - pad * 2
+	var avail_h: int = TEX_H - pad * 2
+	var scale: float = minf(float(avail_w) / float(sw), float(avail_h) / float(sh))
 	var tw: int = maxi(1, int(round(float(sw) * scale)))
 	var th: int = maxi(1, int(round(float(sh) * scale)))
 	var scaled: Image = src.duplicate()
@@ -174,7 +217,8 @@ static func _bake_from_image(src: Image, leader: bool, body: Color, outline: Col
 	if tw != sw or th != sh:
 		scaled.resize(tw, th, Image.INTERPOLATE_NEAREST)   # 像素风：硬边更贴素材
 	var canvas := Image.create(TEX_W, TEX_H, false, Image.FORMAT_RGBA8)
-	canvas.blit_rect(scaled, Rect2i(0, 0, tw, th), Vector2i((TEX_W - tw) / 2, TEX_H - th))
+	canvas.blit_rect(scaled, Rect2i(0, 0, tw, th),
+		Vector2i((TEX_W - tw) / 2, TEX_H - pad - th))
 
 	# ② 剪影覆盖率（= 画布 alpha）+ 膨胀（取「环」当描边）
 	var cov := PackedFloat32Array()
@@ -185,15 +229,19 @@ static func _bake_from_image(src: Image, leader: bool, body: Color, outline: Col
 	var rim_px: float = ASSET_OUTLINE_PX_LEADER if leader else ASSET_OUTLINE_PX
 	var dil := _dilate(cov, TEX_W, TEX_H, int(ceil(rim_px)))
 
-	# ③ 合成：描边在下、阵营色躯体在上（与程序化那版同一顺序）
+	# ③ 合成：描边 → 躯体（原画或阵营色）
 	var out := Image.create(TEX_W, TEX_H, false, Image.FORMAT_RGBA8)
 	for y in TEX_H:
 		for x in TEX_W:
 			var i := y * TEX_W + x
+			var px: Color = canvas.get_pixel(x, y)
 			var body_cov: float = cov[i]
 			var ring: float = clampf(dil[i] - body_cov, 0.0, 1.0) * OUTLINE_ALPHA
-			var col := _over(Color(outline.r, outline.g, outline.b, ring), Color(0, 0, 0, 0))
-			col = _over(Color(body.r, body.g, body.b, body_cov), col)
+			var col := _over(Color(rim_col.r, rim_col.g, rim_col.b, ring), Color(0, 0, 0, 0))
+			if keep_art:
+				col = _over(Color(px.r, px.g, px.b, body_cov), col)
+			else:
+				col = _over(Color(body.r, body.g, body.b, body_cov), col)
 			out.set_pixel(x, y, col)
 	# ★ 朝向：与程序化那版一致 —— QuadMesh 的 UV v=0 在**顶部**（见 `_bake_uncached`），
 	#   素材头朝上 = 屏幕头朝上 ⇒ **不需要翻转**。

@@ -60,8 +60,6 @@ var react_next: Dictionary = {}
 var react_mode: Dictionary = {}
 var react_point: Dictionary = {}
 var react_until: Dictionary = {}
-## 攒钱升级防御建筑的截止时间；避免「差一点钱」时永远不建造。
-var build_save_until: float = 0.0
 
 ## 指令缓存（与 world.ai_directives 同步）
 var order_kind: String = "auto"

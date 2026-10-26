@@ -235,6 +235,9 @@ func _test_view(cfg) -> void:
 	eq(pv.projectile_count, 1, "★ 视图看到 1 枚投掷物")
 	eq(pv.visible_projectile_count, 1, "★ 己方投掷物对玩家可见")
 	ok(pv.slots_created >= 1, "对象池为它建了一个 slot")
+	# ★★ 长弓兵的投掷物走**箭**（config 的 render.projectile_arrow_types）
+	eq(pv.arrow_count_last_frame, 1, "★★ 长弓兵射出来的是箭（不是小方块）")
+	ok(pv._arrow_quad != null and pv._arrow_tex != null, "★ 箭的 mesh / 贴图装好了")
 	pv.sync()
 	ok(pv.trail_segments_last_frame >= 1,
 		"★ 拖尾画出了线段（%d 段）" % pv.trail_segments_last_frame)

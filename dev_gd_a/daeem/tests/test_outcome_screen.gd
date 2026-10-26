@@ -3,8 +3,8 @@
 ## 盯四件事：
 ##   1. 两种结果各自的**终态**（文案、宝石 / 裂纹、横幅拉开、提示可点）；
 ##   2. 「点击任意处 → 提示渐隐、三颗按钮渐显」这条交互（不是自动出现）；
-##   3. 游戏内的 Ctrl+1 / Ctrl+3 / Ctrl+W / Ctrl+L：Ctrl+1 加资源、Ctrl+3 升大本营，Ctrl+W / Ctrl+L
-##      **改写目标状态** + 弹出结算 + 停战；
+##   3. 游戏内的 Ctrl+1 / Ctrl+3 / Ctrl+- / Ctrl+W / Ctrl+L：Ctrl+1 加资源、Ctrl+3 升大本营、
+##      Ctrl+- 隐藏 / 显示 HUD，Ctrl+W / Ctrl+L **改写目标状态** + 弹出结算 + 停战；
 ##   4. `level_end` 事件（单机 / 合作客机都走它）也能弹出结算。
 ##
 ## ★ 动效在本文件里统一关掉（`ThemeRes.set_animations_enabled(false)`）：
@@ -157,6 +157,14 @@ func _test_game_hotkeys(cfg) -> void:
 		ok(game.hud.notice_text().contains("3 级"),
 			"★ Ctrl+3 给一句开发者提示（实际：%s）" % game.hud.notice_text())
 		ok(not game.outcome_open(), "Ctrl+3 不会触发结算")
+
+	# ---- Ctrl+- = 隐藏 / 显示所有 UI 栏 ----
+	ok(game.hud.visible, "（前提）HUD 一开始是可见的")
+	await _press_ctrl_key(KEY_MINUS)
+	ok(game.ui_hidden and not game.hud.visible, "★ Ctrl+- → 所有 UI 栏隐藏")
+	await _press_ctrl_key(KEY_MINUS)
+	ok(not game.ui_hidden and game.hud.visible, "★ 再按一次 → UI 栏恢复（不是重建）")
+	ok(not game.outcome_open(), "Ctrl+- 不会触发结算（只是隐藏界面）")
 
 	# ---- Ctrl+W = 立即胜利（★ 走真实键盘事件，不是直接调 handler）----
 	await _press_ctrl_key(KEY_W)

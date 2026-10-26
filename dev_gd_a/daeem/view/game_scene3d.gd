@@ -115,6 +115,8 @@ var outcome_frozen: bool = false
 ## 当前结算结果（"" / "win" / "lose"）与结算层（没有则 null）。
 var outcome_result: String = ""
 var _outcome_overlay = null
+## ★★ 开发者快捷键 Ctrl+- 的「UI 栏已隐藏」状态（测试读它；只影响 `hud` 那一层）。
+var ui_hidden: bool = false
 ## start_level() 在 _assemble() **之前**记下的关卡，装配时再交给交互核心
 var interaction_pending_campaign = null
 var interaction_pending_level = null
@@ -122,6 +124,13 @@ var interaction_pending_level = null
 ## ★ 开局值 = ZOOM_MAX（0.3）：一进游戏就停在**最远**视野，之后只能往近处缩。
 ##   它必须落在 [ZOOM_MIN, ZOOM_MAX] 内，否则滚轮一滚就会被夹到区间边上。
 var zoom: float = 0.3
+
+## ★★ 跟随镜头（长按将领标签 / 长按数字键触发）：为 null = 不跟随。
+##   · 每帧在 `_camera_update()` 里把镜头中心摆到该将领身上（单位会移动）；
+##   · **手动动镜头**会取消：`pan_screen()` / `center_on_*()` / `zoom_at()`；
+##   · 目标阵亡也自动取消。
+##   ★ 跟随自身**不走** `center_on_tile_precise()`（那条会取消跟随），直接 `_place_camera_looking_at()`。
+var follow_target = null
 
 ## ---- 相机输入状态（边缘滚屏 / Space 加速 / 夹取都要这几样）----
 ## 缺一个的症状是「滚不动 / 拖到地图外」——正是用户报回来过的问题
@@ -706,6 +715,20 @@ class CameraFacade:
 		get:
 			return scene.cam if scene != null else null
 
+	## ★★ 长按将领标签 / 长按数字键 → 跟随这个单位的视角。
+	##   跟随状态住在场景（`follow_target`），这里只是给输入层的一层最小接口。
+	func follow_unit(u) -> void:
+		if scene != null:
+			scene.follow_unit(u)
+
+	func stop_follow() -> void:
+		if scene != null:
+			scene.stop_follow()
+
+	## 当前跟随的单位（没有 → null）。右栏标签用它决定画不画「跟随眼睛」。
+	func following_unit():
+		return scene.following_unit() if scene != null else null
+
 
 ## 把镜头中心移到某个**屏幕像素**（精确版：射线求交拿到那一格，再用法对准）。
 ##
@@ -728,6 +751,7 @@ func center_on_screen(screen_px: Vector2) -> void:
 ## ★★ 做法：保持相机姿态与高度不变，只把「它看向的地面点」搬到目标格。
 ##   于是「格 → 屏幕」的中心映射恒定 —— 这就是「相机在同一高度」的实现方式。
 func center_on_tile(logic_pos: Vector2) -> void:
+	stop_follow()                      # 手动跳镜头 = 退出跟随
 	if cam == null or palette == null:
 		return
 	var target: Vector3 = palette.to_world(logic_pos)
@@ -752,6 +776,36 @@ func _place_camera_looking_at(target: Vector3) -> void:
 	cam.fov = rad_to_deg(cfg.cam_fov)
 
 
+# ------------------------------------------------------------------
+# ★★ 跟随镜头（长按将领标签 / 长按数字键）
+#
+#   ★ 初始落点与每帧跟踪都用 `_place_camera_looking_at()` **直摆**：
+#     不能走 `center_on_tile*()`，那条现在会 `stop_follow()`（手动跳镜头才走它）。
+#   ★ 取消条件是「手动动镜头」：`pan_screen()` / `center_on_tile()` /
+#     `center_on_tile_precise()` / `zoom_at()` 都会清掉它。方向键 / 边缘滚屏 /
+#     中键拖拽 / 触摸拖拽最终都经过 `pan_screen()`。
+# ------------------------------------------------------------------
+
+func follow_unit(u) -> void:
+	if u == null or cam == null or palette == null:
+		return
+	follow_target = u
+	_place_camera_looking_at(palette.to_world(u.pos))
+
+
+func stop_follow() -> void:
+	follow_target = null
+
+
+## 当前跟随的单位（没有 → null）。测试 / HUD 用。
+func following_unit():
+	return follow_target
+
+
+func is_following() -> bool:
+	return follow_target != null and follow_target.alive
+
+
 ## 每帧主循环：推进逻辑 → 同步视图 → 把本地 UI 状态交给覆盖层。
 ##
 ## ★ 这与 2D 版 `game_scene.gd` 的 `_process` 是同一条思路（架构文档第一节）：
@@ -769,6 +823,9 @@ func _process(dt: float) -> void:
 	# ① 输入：轮询鼠标（只有 input_controller 允许读鼠标）
 	var _t_input := _prof()
 	input_ctrl.poll_mouse()
+	# ★★ 将领标签 / 数字键的长按计时：桌面与手机都靠这一句推进
+	#   （手机端 squad_panel 自己的 `_process` 被 HUD 关掉了，不能放那里）。
+	input_ctrl.poll_gestures()
 	_prof_done("input", _t_input)
 	# ①.5 联机收包：房主 / 客机都要在推进逻辑之前把 transport 里的消息收掉。
 	if coop_host_session != null:
@@ -920,7 +977,10 @@ func _camera_update(dt: float) -> void:
 		pan_screen(dir.normalized() * speed * dt * (2.5 if _space_held else 1.0))
 
 	# ③ 边缘滚屏（越贴边滚得越快：归一化后取平方，与 2D / HTML 版同一手感）
-	if _edge_scroll_on and _mouse_inside and not _space_held and not _ui_dragging_camera:
+	#   ★ 跟随期间跳过：否则鼠标只要停在屏幕边缘，跟随就会在下一帧被自己踢掉。
+	#     方向键仍然会走 ② 的 `pan_screen()` —— 那是明确的「手动动镜头」，照常取消跟随。
+	if _edge_scroll_on and _mouse_inside and not _space_held and not _ui_dragging_camera \
+			and not is_following():
 		var margin: float = cfg.camera_edge_size
 		var max_speed: float = cfg.num("camera.edge_max_speed", 1500.0)
 		var vp: Vector2 = get_viewport().get_visible_rect().size
@@ -935,6 +995,15 @@ func _camera_update(dt: float) -> void:
 			e.y = _edge_power(_mouse_pos.y - (vp.y - margin), margin)
 		if e.length_squared() > 0.0:
 			pan_screen(e * max_speed * dt)
+
+	# ③.5 跟随镜头：目标还活着就每帧把画面中心摆到它身上。
+	#   目标阵亡 → 自动取消（与「手动动镜头取消」并列的第二种结束条件）。
+	#   ★ 用 `_place_camera_looking_at()` 直摆，不能走 `center_on_tile*()`（那条会取消跟随）。
+	if follow_target != null:
+		if not follow_target.alive:
+			follow_target = null
+		else:
+			_place_camera_looking_at(palette.to_world(follow_target.pos))
 
 	# ④ 夹取：镜头看向的地面点必须落在**允许区间**里（可见区域不越出「地图 + margin 格」，
 	#    且中心仍留在图内 —— 两条的完整口径见 clamp_look_point）。
@@ -1083,12 +1152,14 @@ func _consume_events(events: Array) -> void:
 # ------------------------------------------------------------------
 
 ## 开发者快捷键：Ctrl+1 = 粮食 / 黄金 +1000，Ctrl+3 = 本机阵营大本营立即升到 3 级，
-## Ctrl+W = 立即胜利，Ctrl+L = 立即失败。
+## Ctrl+- = 隐藏 / 显示**所有 UI 栏**，Ctrl+W = 立即胜利，Ctrl+L = 立即失败。
 ##
 ## ★ 只在**游戏内**生效：本函数由 game_scene3d 的 `_unhandled_input` 调，
 ##   而主菜单 / 开场页根本没有这个场景（main.gd 只把事件转进 game）。
 ## ★ 必须放行带 Ctrl 的组合：命令卡的 W 格 / 数字键 1 自己也会放行
 ##   （见 command_card.handle_key 的注释）。
+## ★ Ctrl+- 隐藏的是 **HUD 那一层**（左栏 / 详情栏 / 右侧命令卡 / 小地图 / 选项按钮…）；
+##   世界内的血条 / 键帽 / 名牌 / 选中圈属于 3D 覆盖层，不叫「栏」，不受它影响。
 func _handle_dev_hotkey(event: InputEvent) -> bool:
 	if not (event is InputEventKey):
 		return false
@@ -1097,6 +1168,16 @@ func _handle_dev_hotkey(event: InputEvent) -> bool:
 		return false
 	if outcome_frozen:
 		return false                       # 结算之后开发者快捷键不再改任何状态
+	# ★★ Ctrl+-（主键盘 / 小键盘都认）：隐藏 / 显示所有 UI 栏。
+	#    隐藏后 GUI 收不到点击（隐藏的 Control 不参与命中），画面只剩 3D 战场；
+	#    再按一次原样恢复（不重建 HUD，连「当前停在哪一页」都还在）。
+	if k.keycode == KEY_MINUS or k.keycode == KEY_KP_SUBTRACT:
+		if hud == null:
+			return false
+		ui_hidden = not ui_hidden
+		hud.visible = not ui_hidden
+		print("[UI] %s所有 UI 栏" % ("隐藏" if ui_hidden else "显示"))
+		return true
 	# ★ Ctrl+1（主键盘 / 小键盘都认）：给本机席位 +1000 粮食 +1000 黄金。
 	if k.keycode == KEY_1 or k.keycode == KEY_KP_1:
 		if world == null:
@@ -1219,6 +1300,7 @@ func _feed_red_dot_spawn_fx(events: Array) -> void:
 
 ## 滚轮缩放：以**光标下的地面点**为锚点（缩放前后它留在同一屏幕位置）
 func zoom_at(screen_pos: Vector2, factor: float) -> void:
+	stop_follow()                      # 手动缩放 = 退出跟随
 	if palette == null or cam == null:
 		return
 	var anchor = palette.to_logic(screen_pos)
@@ -1274,6 +1356,7 @@ func _ground_under_screen(screen_px: Vector2) -> Vector3:
 ## ★ 用「屏幕像素 → 地面位移」的换算：把屏幕中心与「中心 + delta」两点都反算成格，
 ##   两者之差就是这一步该走的地面位移 ⇒ 手感与缩放无关。
 func pan_screen(screen_delta: Vector2) -> void:
+	stop_follow()                      # 手动平移 = 退出跟随
 	if palette == null or cam == null or screen_delta == Vector2.ZERO:
 		return
 	var c: Vector2 = _view_center()
@@ -1420,6 +1503,15 @@ func _input(event: InputEvent) -> void:
 	# 结算画面开着：手势状态机整段停掉（点任意处 / 点按钮都走 GUI，不经过这里）。
 	if outcome_frozen:
 		return
+	# ★★ Tab = 切换右下角页签：必须在 **GUI 之前**拦 —— Tab 同时是 Godot 的焦点导航键，
+	#   等 `_unhandled_input` 时可能已经被 GUI 吃掉，焦点还会乱跑。
+	#   只有真的切了页才 set_input_as_handled；选项页开着 / 只有一页时让事件照常走 GUI。
+	if event is InputEventKey:
+		var key := event as InputEventKey
+		if key.pressed and not key.echo and key.keycode == KEY_TAB:
+			if hud != null and hud.handle_tab_key(key):
+				get_viewport().set_input_as_handled()
+			return
 	# ★★ 手机端触摸：在 **GUI 之前**拿到全过程 —— 手指可能从地图滑到 UI 控件（`MOUSE_FILTER_STOP`）
 	#    上，那时触摸事件会被 GUI 吃掉，`_unhandled_input` 收不到，拖视野 / 框选会「卡住再突变」。
 	#    ⚠️ 这里**不** set_input_as_handled：让模拟鼠标照旧交给 GUI（菜单 / 按钮靠它工作）。
