@@ -145,6 +145,13 @@ var _edge_scroll_on: bool = true
 ##    迷雾**不在这里**：它每帧做一次整块掩码比较（`ground.rebake_fog()`，O(格数) 的
 ##    memcmp），重烘频率由 `cfg.fog_rebake_min_sec`（默认 0.1s）合并 —— 见 ⑤a。
 const REBAKE_INTERVAL_FRAMES := 15
+## ★★ 2026.10.27：移动端自适应 3D 分辨率状态（见 `_mobile_scale_tick`）。
+##    起始 = `cfg.mobile_3d_scale`；低帧时每次 -0.05（下限 0.5），恢复后每次 +0.05。
+var _mobile_scale_base: float = 1.0
+var _mobile_scale_cur: float = 1.0
+var _mobile_scale_timer: float = 0.0
+var _mobile_scale_low: int = 0
+var _mobile_scale_high: int = 0
 var _rebake_tick: int = 0
 
 ## ★★ 逐节剖析（默认关闭）：打开后 `_process` 各段累计微秒，供 `tests/bench_fps_3d.gd` 读。
@@ -495,8 +502,13 @@ func _assemble() -> void:
 	#    见 config.json 的 render._mobile_comment。
 	if OS.has_feature("mobile"):
 		var vp: Viewport = get_viewport()
+		_mobile_scale_base = clampf(cfg.mobile_3d_scale, 0.5, 1.0)
+		_mobile_scale_cur = _mobile_scale_base
+		_mobile_scale_timer = 0.0
+		_mobile_scale_low = 0
+		_mobile_scale_high = 0
 		if vp != null:
-			vp.scaling_3d_scale = cfg.mobile_3d_scale
+			vp.scaling_3d_scale = _mobile_scale_cur
 		# ★★ 帧率诊断（见 config.json 的 render._mobile_frame_comment）：
 		#   vsync 会把帧率量化到刷新率的整数分之一 —— 90Hz 屏上「差一点点到 11.1ms」
 		#   会直接掉到 45fps，看起来像「帧时间 22ms」，其实可能只差 1ms。
@@ -925,6 +937,50 @@ func _process(dt: float) -> void:
 	var _t_cam := _prof()
 	_camera_update(dt)
 	_prof_done("camera", _t_cam)
+	_mobile_scale_tick(dt)
+
+
+## ★★ 2026.10.27：移动端自适应 3D 分辨率（只改 3D，不改 UI / 命中判定）。
+##
+## 手机 GPU 差异极大：同一档 0.6 在高端机很轻松、在低端机仍然 20fps。
+## 这里用 **Engine.get_frames_per_second()** 做保守的滞回调节：
+##   · 连续 2 次检查（约 3 秒）低于 26fps → 0.05 步降，最低 0.5；
+##   · 连续 3 次检查（约 4.5 秒）高于 52fps → 0.05 步升，最高回到起始值。
+## 开局前 5 秒不做（着色器编译 / 加载会短暂低帧，避免误降）。
+func _mobile_scale_tick(dt: float) -> void:
+	if not OS.has_feature("mobile") or cfg == null or not cfg.mobile_auto_scale:
+		return
+	if world == null or world.time < 5.0:
+		return
+	_mobile_scale_timer += dt
+	if _mobile_scale_timer < 1.5:
+		return
+	_mobile_scale_timer = 0.0
+	var fps: float = float(Engine.get_frames_per_second())
+	if fps <= 0.0:
+		return
+	if fps < 26.0:
+		_mobile_scale_low += 1
+		_mobile_scale_high = 0
+	elif fps > 52.0:
+		_mobile_scale_high += 1
+		_mobile_scale_low = 0
+	else:
+		_mobile_scale_low = 0
+		_mobile_scale_high = 0
+	var next := _mobile_scale_cur
+	if _mobile_scale_low >= 2 and _mobile_scale_cur > 0.5001:
+		next = maxf(0.5, _mobile_scale_cur - 0.05)
+		_mobile_scale_low = 0
+	elif _mobile_scale_high >= 3 and _mobile_scale_cur < _mobile_scale_base - 0.0001:
+		next = minf(_mobile_scale_base, _mobile_scale_cur + 0.05)
+		_mobile_scale_high = 0
+	if absf(next - _mobile_scale_cur) < 0.0001:
+		return
+	_mobile_scale_cur = next
+	var vp: Viewport = get_viewport()
+	if vp != null:
+		vp.scaling_3d_scale = _mobile_scale_cur
 
 
 ## 该被点亮选中圈的单位 id（本机选中 + 选中的敌方单位）

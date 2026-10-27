@@ -586,6 +586,40 @@ static func create(cfg: ConfigRes, p_id: String, p_name: String, tile: Vector2i,
 	return u
 
 
+## ★★ 2026.10.27：按**权威快照里的兵种**纠正这个单位（客机专用）。
+##
+## 背景（用户实测）：两端看到的兵种不一致（一端骑兵、一端步兵）。快照里一直带 `ut`，
+## 但 `apply_snapshot` 原来**只在新单位创建时读 ut**，已有单位即使本地兵种不同也
+## 不会纠正 —— 于是「客机开局按自己的 config / 旧包建出来的类型」会一直留着。
+##
+## 只重算「出生时从兵种表抄下来」的那批字段；位置 / 血量 / 士气 / 招募队列 / 队长 /
+## 濒死等运行状态**不动**（紧接着由快照的其它字段覆盖）。
+func reapply_type(cfg: ConfigRes, p_unit_type: String) -> void:
+	if p_unit_type == "" or p_unit_type == unit_type:
+		return
+	unit_type = p_unit_type
+	unit_class = cfg.unit_class_of(unit_type)
+	ranged = cfg.unit_is_ranged(unit_type)
+	var traits: Dictionary = cfg.unit_traits_of(unit_type)
+	attack_bonus_vs_class = traits.get("attack_vs_class", {})
+	ranged_damage_reduction = float(traits.get("ranged_reduction", 0.0))
+	armor = cfg.unit_armor_of(unit_type)
+	can_attack = cfg.unit_can_attack(unit_type)
+	siege = cfg.unit_is_siege(unit_type)
+	move_shoot = cfg.unit_move_shoot(unit_type)
+	splash_radius = cfg.unit_splash_radius_of(unit_type)
+	morale_aura_radius = cfg.unit_morale_aura_radius_of(unit_type)
+	morale_aura_rate = cfg.unit_morale_aura_rate_of(unit_type)
+	# 血量上限 / 视野与 `create()` 同一口径：将领仍吃自己的数值覆盖。
+	var new_max: float = float(stat_overrides.get("hp_max", cfg.unit_hp_of(unit_type)))
+	base_hp_max = new_max
+	hp_max = new_max
+	if general_index >= 0:
+		vision = cfg.general_vision_at(general_index)
+	else:
+		vision = cfg.unit_vision_of(unit_type)
+
+
 ## 这个单位是不是**将领**（开局的 general，或区划招募出来的 general_N）。
 ##
 ## ★ 判据是 kind，**不是 leader_id**：测试敌人的 leader_id 也是空的，
@@ -593,8 +627,6 @@ static func create(cfg: ConfigRes, p_id: String, p_name: String, tile: Vector2i,
 ## ★ 这是渲染（描边更粗）与「将领吃的科技加成」共用的判据，别在别处另写一份。
 func is_general() -> bool:
 	return ConfigRes.general_index_of(kind) >= 0
-
-
 ## 是不是骑兵（后续「按兵种额外伤害」的标签之一）
 func is_cavalry() -> bool:
 	return unit_class == CLASS_CAVALRY

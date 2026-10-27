@@ -10,11 +10,13 @@ const PADDING := 8.0
 var _cfg = null
 var _map = null
 var _tex: ImageTexture = null
+var _cover: bool = false
 
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	clip_contents = true
 	resized.connect(queue_redraw)
 
 
@@ -22,6 +24,13 @@ func setup(cfg, map) -> void:
 	_cfg = cfg
 	_map = map
 	_bake()
+	queue_redraw()
+
+
+## true = cover（填满控件、可能裁边，用于详情/准备的正方形缩略图）；
+## false = contain（完整显示地图，用于地图选择卡片）。
+func set_cover(on: bool) -> void:
+	_cover = on
 	queue_redraw()
 
 
@@ -38,6 +47,13 @@ func map_rect() -> Rect2:
 		return Rect2()
 	var avail := size - Vector2(PADDING, PADDING) * 2.0
 	var aspect := float(_map.cols) / float(_map.rows)
+	if _cover:
+		var w := avail.x
+		var h := w / aspect
+		if h < avail.y:
+			h = avail.y
+			w = h * aspect
+		return Rect2(Vector2((size.x - w) * 0.5, (size.y - h) * 0.5), Vector2(w, h))
 	var w := avail.x
 	var h := w / aspect
 	if h > avail.y:

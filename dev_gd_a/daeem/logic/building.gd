@@ -184,6 +184,9 @@ var build_total: float = 0.0
 
 ## ---- 渲染用（不进快照、纯表现）----
 var last_target = null      # 最近锁定的目标单位，画攻击线用
+## ★★ 2026.10.27：塔的索敌节流（秒）。没目标时不必每帧扫全部单位 ——
+##   见 `combat.update_towers()`；0 = 这一帧可以扫。
+var target_scan_cd: float = 0.0
 var flash: float = 0.0      # 受击闪光 1 → 0（红色覆盖，沿用）
 ## ★★ 受击反应（本轮新增）：被打中时置 1，按 `combat.hit_flash_sec` 衰减（视图画闪白 + 振动）。
 var hit_flash: float = 0.0

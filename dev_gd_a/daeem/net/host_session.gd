@@ -30,13 +30,22 @@ var guest_seat: String = ""
 ## 快照间隔（秒）。`setup()` 会按 `net.snapshot_hz` 覆盖；测试可以调大 / 调小。
 var snap_interval: float = 1.0 / 30.0
 ## 出站缓冲超过这么多字节时跳过快照（0 = 不检查）。见 `send_snapshot()`。
-var snap_buffer_limit: int = 1024 * 1024
+## ★★ 2026.10.27：默认从 1 MiB 降到 64 KiB —— 移动端链路（约 0.3~0.6 MB/s）下
+##    1 MiB 的积压 = 客机落后 2~3 秒（实测），这是「移动端联机严重不同步」的根因。
+var snap_buffer_limit: int = 64 * 1024
 ## 因背压跳过的快照数（诊断用；不参与玩法）。
 var snapshots_skipped: int = 0
+## 每隔多少条快照发一次**完整关键帧**（0 = 只发第一次）。
+## 增量快照相对关键帧累积变化；关键帧是丢帧 / 版本边界时的自愈点（默认 10 秒 @30Hz）。
+var snap_keyframe_every: int = 300
 
 var _seq: int = 0
 var _last_cmd_seq: int = 0
 var _snap_accum: float = 0.0
+## ★★ 增量快照的基准：单位 id → 上一次关键帧时的完整字段字典。
+##    只在**真的发出去**的快照上推进（背压跳过时不调用 `to_snapshot`）。
+var _snap_delta: Dictionary = {}
+var _snap_count: int = 0
 
 
 ## 每帧由 game_scene 调：把 transport 里的消息收进来。
@@ -54,9 +63,12 @@ func setup(p_world, p_cfg, p_transport, p_host_seat: String, p_guest_seat: Strin
 	if cfg != null and cfg.has_method("num"):
 		var hz: float = float(cfg.num("net.snapshot_hz", 30.0))
 		snap_interval = 1.0 / clampf(hz, 10.0, 60.0)
-		var limit_kb: float = float(cfg.num("net.snapshot_buffer_limit_kb", 1024.0))
+		var limit_kb: float = float(cfg.num("net.snapshot_buffer_limit_kb", 64.0))
 		snap_buffer_limit = int(maxf(0.0, limit_kb) * 1024.0)
+		snap_keyframe_every = maxi(0, int(cfg.num("net.snapshot_keyframe_every", 300.0)))
 		snapshots_skipped = 0
+		_snap_delta.clear()
+		_snap_count = 0
 	if transport != null and not transport.message.is_connected(_on_message):
 		transport.message.connect(_on_message)
 
@@ -104,7 +116,13 @@ func send_snapshot() -> void:
 		if int(transport.buffered_amount()) > snap_buffer_limit:
 			snapshots_skipped += 1
 			return
-	_send("snap", {"snap": SnapshotRes.to_snapshot(world)}, true)
+	# ★★ 增量快照：首次与每隔 `snap_keyframe_every` 条发完整关键帧，其余只发变化字段。
+	#    跳过的帧**不推进** `_snap_count` / `_snap_delta` —— 下一次发出去的仍相对同一个基准。
+	_snap_count += 1
+	var keyframe: bool = _snap_count <= 1 \
+		or (snap_keyframe_every > 0 and _snap_count % snap_keyframe_every == 0)
+	var snap: Dictionary = SnapshotRes.to_snapshot(world, _snap_delta, keyframe)
+	_send("snap", {"snap": snap}, true)
 
 
 ## 把 tick 产生的事件发给客机（对象引用由 event_codec 换成 id / 建筑 key）。

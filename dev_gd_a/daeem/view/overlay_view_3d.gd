@@ -110,6 +110,9 @@ var debug_aim: bool = false
 
 ## 诊断（只有测试读它）：最近一次 `_draw()` 发出的绘制命令数
 var draw_count: int = 0
+var unit_ui_seen: int = 0
+var unit_ui_visible: int = 0
+var unit_ui_bars: int = 0
 ## ★ 最近一次 `_draw()` 画了几个粮车光环圈（单位是「被选中的粮车数」；测试读它）
 var aura_range_draw_count: int = 0
 ## ★★ 最近一次 `_draw()` 画了几个**键帽** / 几张**名牌**（测试 / 排查读它）。
@@ -186,12 +189,18 @@ static func _plate_box(bg: Color, border: Color, border_w: int, radius: int) -> 
 ##   「归属变了、轮廓颜色要换」的判据；相机静止时这点开销可以忽略。
 func _static_key_changed() -> bool:
 	if not _static_ready or palette == null or palette.cam == null:
+		static_last_reason = "init"
 		return true
 	var cam: Camera3D = palette.cam
-	return cam.global_transform != _static_key_xform \
-		or cam.get_camera_projection() != _static_key_proj \
-		or get_viewport_rect().size != _static_key_vp \
-		or _zone_edge_signature() != _static_key_zone_sig
+	var xf: bool = cam.global_transform != _static_key_xform
+	var pj: bool = cam.get_camera_projection() != _static_key_proj
+	var vp: bool = get_viewport_rect().size != _static_key_vp
+	var sg: bool = _zone_edge_signature() != _static_key_zone_sig
+	if xf or pj or vp or sg:
+		static_last_reason = "%s%s%s%s" % [
+			"x" if xf else "", "p" if pj else "", "v" if vp else "", "s" if sg else ""]
+		return true
+	return false
 
 
 func _remember_static_key() -> void:
@@ -271,19 +280,42 @@ func _draw_impl() -> void:
 	#   ② 占领进度条 —— 也是地面上的东西，同样在单位之下
 	#      （2D 版里它属于 `zone_view`，与地块同层）。
 	#   ③ 单位头上的 UI（血条）—— 最上面
+	var _d0 := _pt()
 	_draw_grid()
 	_draw_zone_outlines()
 	_draw_aura_ranges()
+	_pd("ov/grid_outline", _d0)
+	var _d1 := _pt()
 	_draw_capture_areas()
+	_pd("ov/capture_area", _d1)
+	var _d1b := _pt()
 	_draw_zone_capture()
+	_pd("ov/capture_bar", _d1b)
+	var _d2 := _pt()
 	_draw_ai_marks()
+	_pd("ov/ai_marks", _d2)
+	var _d3 := _pt()
 	_draw_units_ui()
+	_pd("ov/units_ui", _d3)
 	# ★ 移动 / 行军目标点不再在这里画圈 —— 改成 3D 旗子（view/order_flag_view_3d.gd）
 	_draw_build_preview()
 	_draw_drag_box()
 	# ★★ 编队标识最后画：它在**所有世界物件与其它覆盖层之上**（不会被建筑 / 地形 / 单位
 	#    遮挡）；同时它在拖框之上，框选时编号 / 名牌仍然读得清。
+	var _d4 := _pt()
 	_draw_team_markers()
+	_pd("ov/team_markers", _d4)
+
+
+## 剖析辅助（只在 `world.profile_on` 时计时）。
+func _pt() -> int:
+	return Time.get_ticks_usec() if (world != null and world.profile_on) else 0
+
+
+func _pd(key: String, t0: int) -> void:
+	if t0 != 0:
+		world.profile_us[key] = int(world.profile_us.get(key, 0)) \
+			+ (Time.get_ticks_usec() - t0)
 
 
 # ------------------------------------------------------------------
@@ -374,6 +406,7 @@ var _zone_screen: Array = []
 var _capture_screen: Array = []
 ## 缓存重建次数（纯诊断：测试 / 排查用）
 var static_rebuild_count: int = 0
+var static_last_reason: String = ""
 ## 诊断（测试读它）：最近一次 `_draw()` 里网格线 / 区划轮廓 / 占领填充各画了几条
 var grid_draw_count: int = 0
 var zone_outline_draw_count: int = 0
@@ -783,6 +816,10 @@ func _project_culled(inv: Transform3D, zn: float, vp: Rect2, logic: Array) -> Pa
 func _draw_grad_quad(pts: PackedVector2Array, outer: Color, inner: Color) -> void:
 	if pts.size() != 4:
 		return
+	# ★ 退化 / 自交的四边形直接跳过：`draw_polygon` 内部三角化会报
+	#   "Invalid polygon data, triangulation failed"（实测在区划触发区跨相机近平面时出现）。
+	if Geometry2D.triangulate_polygon(pts).is_empty():
+		return
 	draw_polygon(pts, PackedColorArray([outer, outer, inner, inner]))
 
 
@@ -1068,11 +1105,31 @@ func _draw_units_ui() -> void:
 	if vp_size.x <= 0.0 or vp_size.y <= 0.0:
 		vp_size = size
 	var keep: Rect2 = Rect2(Vector2.ZERO, vp_size).grow(64.0)
+	# ★★ 2026.10.27：单位层这一帧已经算过迷雾可见性（`units.sync`），直接复用。
+	#    旧实现对 256 个单位各查一次 `fog.unit_visible`（桌面上 ov/units_ui 1.7ms 的主因）；
+	#    只在「单位层也跑过同一帧」时启用，测试 / 无头直接调 `_draw` 时退回原判据。
+	var use_vis_cache: bool = units != null and world != null \
+		and int(units.visibility_frame) == int(world.frame_serial)
+	unit_ui_seen = 0
+	unit_ui_visible = 0
+	unit_ui_bars = 0
 	for u in world.units:
-		if not u.alive or not _unit_visible(u):
+		unit_ui_seen += 1
+		if not u.alive:
 			continue
+		if use_vis_cache:
+			if not units.is_visible_this_frame(u):
+				continue
+		elif not _unit_visible(u):
+			continue
+		unit_ui_visible += 1
 		var p: Vector2 = palette.to_px(u.pos)
 		if not keep.has_point(p):
+			continue
+		# ★★ 2026.10.27：满血单位不画血条 ⇒ **不要**再算一次立牌尺寸（两次投影）。
+		#    旧顺序是「先 quad_screen_size 再判满血」，256 个单位里绝大多数满血，
+		#    等于每帧白投 500+ 次（桌面实测 ov/units_ui 1.7ms 的主因）。
+		if u.hp >= u.hp_max - 1e-6:
 			continue
 		var us: Vector2 = units.quad_screen_size(u)
 		var r: float = us.x * 0.5
@@ -1081,13 +1138,13 @@ func _draw_units_ui() -> void:
 		# ★ 选中下标不再在这里画圈 —— 改成单位层脚下的「绿色空心圆」贴花
 		#   （view/unit_view_3d.gd 的 `_sync_selection_rings`：150%→100% 缩放 + 淡入动效）。
 		# 血条：不满血才画（满血不画，避免刷屏）
-		if u.hp < u.hp_max - 1e-6:
-			var w: float = maxf(r * 2.2, 10.0)
-			var top: Vector2 = p - Vector2(0.0, us.y * 0.5 + 4.0)
-			draw_rect(Rect2(Vector2(top.x - w * 0.5, top.y), Vector2(w, 3.0)), HP_BACK_COLOR, true)
-			draw_rect(Rect2(Vector2(top.x - w * 0.5, top.y), Vector2(w * u.hp_ratio(), 3.0)),
-				SideColorRes.color(cfg, world, String(u.faction), "bar"), true)
-			draw_count += 1
+		var w: float = maxf(r * 2.2, 10.0)
+		var top: Vector2 = p - Vector2(0.0, us.y * 0.5 + 4.0)
+		draw_rect(Rect2(Vector2(top.x - w * 0.5, top.y), Vector2(w, 3.0)), HP_BACK_COLOR, true)
+		draw_rect(Rect2(Vector2(top.x - w * 0.5, top.y), Vector2(w * u.hp_ratio(), 3.0)),
+			SideColorRes.color(cfg, world, String(u.faction), "bar"), true)
+		draw_count += 1
+		unit_ui_bars += 1
 
 
 ## ★★ 头顶编队标识：**常驻键帽 + 选中名牌**（本轮扩展）。

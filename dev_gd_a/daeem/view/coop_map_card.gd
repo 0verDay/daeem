@@ -3,7 +3,8 @@ extends Button
 
 const UiStyleRes = preload("res://view/ui_style.gd")
 const MapThumbRes = preload("res://view/map_thumb.gd")
-const CoopLayoutRes = preload("res://view/coop_layout.gd")
+const CARD_W := 176.0
+const CARD_H := 200.0
 
 var _thumb = null
 var _name_label: Label = null
@@ -18,7 +19,7 @@ func setup(cfg, entry: Dictionary, map_data, font: Font) -> void:
 	_font = font
 	focus_mode = Control.FOCUS_NONE
 	clip_contents = true
-	custom_minimum_size = Vector2(CoopLayoutRes.MAP_CARD_W, CoopLayoutRes.MAP_CARD_H)
+	custom_minimum_size = Vector2(CARD_W, CARD_H)
 	size = custom_minimum_size
 	text = ""
 	if font != null:
@@ -27,19 +28,19 @@ func setup(cfg, entry: Dictionary, map_data, font: Font) -> void:
 
 	_thumb = MapThumbRes.new()
 	_thumb.position = Vector2(0, 0)
-	_thumb.size = Vector2(CoopLayoutRes.MAP_CARD_W, 132.0)
+	_thumb.size = Vector2(CARD_W, 132.0)
 	_thumb.setup(cfg, map_data)
 	add_child(_thumb)
 
 	_name_label = _label("MapName", String(entry.get("map_name", "")), 15, UiStyleRes.text())
 	_name_label.position = Vector2(6.0, 136.0)
-	_name_label.size = Vector2(CoopLayoutRes.MAP_CARD_W - 12.0, 24.0)
+	_name_label.size = Vector2(CARD_W - 12.0, 24.0)
 	add_child(_name_label)
 
 	_desc_label = _label("MapDesc", String(entry.get("level_name", entry.get("level", ""))),
 		11, UiStyleRes.text_faint())
 	_desc_label.position = Vector2(6.0, 162.0)
-	_desc_label.size = Vector2(CoopLayoutRes.MAP_CARD_W - 12.0, 28.0)
+	_desc_label.size = Vector2(CARD_W - 12.0, 28.0)
 	add_child(_desc_label)
 
 

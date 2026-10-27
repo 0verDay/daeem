@@ -5163,6 +5163,9 @@ func tick(dt: float) -> Array:
 	# ★★ 大本营的将领重生队列（串行倒计时；读完在本帧把死将放回 world.units）。
 	_tick_base_respawns(dt)
 	_prof_done("recruit", _t_recruit)
+	# ★★ 这一帧的 id→单位索引（见 `_tick_lookup` 的说明）。招募 / 重生都已完成，
+	#   单位循环与后面的 AI 都读同一份；tick 结束会清空。
+	_rebuild_tick_lookup()
 
 	# 4) 单位：移动 + 战斗 / 警戒
 	#    ★ 先按需重建建筑空间索引（只在 building_revision 变了才真的重建）：
@@ -5228,18 +5231,28 @@ func tick(dt: float) -> Array:
 		else:
 			_release_recruit(u, true, "leader_died")
 	units = keep
+	# 清理之后重建索引：后面的 AI / 目标判定按 id 查时不应再看到已经离场的单位。
+	_rebuild_tick_lookup()
 
 	# 5) 箭塔开火 + 建筑受击闪光衰减
 	#    ★★ 前面先走一段「建筑建造读条」（config 的 building.<type>.build_sec；默认 0 = 瞬发）：
 	#       排在开火**之前**，于是「这一帧读完的那栋楼」本帧就能开火 ——
 	#       与招募 / 升级那两条读条「读完在本帧内落效果」是同一条约定。
 	var _t_towers := _prof()
+	var _t_cons := _prof()
 	_tick_construction(dt)
+	_prof_done("tw/construction", _t_cons)
+	var _t_tw := _prof()
 	CombatRes.update_towers(self, cfg, dt)
+	_prof_done("tw/towers", _t_tw)
 	# ★★ 投掷物推进 + 命中结算：必须排在**单位与箭塔都开完火之后**（它们的开火
 	#    会在这一帧生成投掷物），这样本帧生成的投掷物本帧就开始飞。
+	var _t_proj := _prof()
 	ProjectileRes.update(self, cfg, dt)
+	_prof_done("tw/projectiles", _t_proj)
+	var _t_beff := _prof()
 	CombatRes.update_building_effects(self, cfg, dt)
+	_prof_done("tw/effects", _t_beff)
 	_prof_done("towers", _t_towers)
 
 	# 6) 调试：自动刷敌人
@@ -5258,14 +5271,20 @@ func tick(dt: float) -> Array:
 	#   位置这一步在下面第 8.5 步才落定，所以这里下命令、下面那一帧就按新路径走，
 	#   顺序与玩家命令完全一致。
 	var _t_ai := _prof()
+	var _t_ai_g := _prof()
 	GarrisonAiRes.update(self, cfg, dt)
+	_prof_done("ai/garrison", _t_ai_g)
+	var _t_ai_r := _prof()
 	RedDotAiRes.update(self, cfg, dt)
+	_prof_done("ai/reddot", _t_ai_r)
 	# ★★ 指挥官 AI（本轮新增）：只在权威侧存在；客机 `ai_commanders` 为空。
 	_tick_ai_directive_holds()
+	var _t_ai_c := _prof()
 	for cid in ai_commanders.keys():
 		var c = ai_commanders[cid]
 		if c != null:
 			c.update(dt)
+	_prof_done("ai/commander", _t_ai_c)
 	_prof_done("ai", _t_ai)
 
 	# 8) 收尸：被打光的建筑从地图上摘掉。
@@ -5338,7 +5357,30 @@ func tick(dt: float) -> Array:
 	#    开头清空就等于把它们在送到 HUD 之前丢掉 —— 表现是「建好了却没日志」。
 	var out := _events
 	_events = []
+	_tick_lookup.clear()
 	return out
+
+
+## ★★ 仅在一次 `world.tick` 内有效的 id → 单位索引（性能）。
+##
+## `unit_by_id()` 原来是**线性扫描**。每帧有大量「按 id 找队长 / 找目标」的调用：
+##   · 士气锚点：每个单位每帧一次（`MoraleRes.anchor_of` → `team_leader` → `unit_by_id`）；
+##   · AI 编组 / 濒死救援 / 扩张任务按 id 找队伍；
+##   · 战斗 / 事件 / 投掷物按 id 找目标。
+## 256 单位时这是 O(n²)（dscj 实测 `units/combat` 3.2ms 里的一大部分）。
+## ⇒ tick 内建表、用完清空；**tick 之外**（测试 / 视图 / 命令层）仍走原来的线性扫描，
+##   不改变任何调用方的语义。
+var _tick_lookup: Dictionary = {}
+## ★★ 2026.10.27：箭塔索敌节流的辅助（见 `combat.update_towers`）。
+##    单位数量变化（新兵 / 重生 / 测试刷兵）时强制所有塔立刻扫一次，
+##    避免「新敌人出现在射程里，但塔要等 0.2 秒才反应」。
+var tower_scan_units_size: int = -1
+
+
+func _rebuild_tick_lookup() -> void:
+	_tick_lookup.clear()
+	for u in units:
+		_tick_lookup[u.id] = u
 
 
 ## 给子阶段累加微秒（只有 profile_on 时会被调用，见 unit.tick_frame）
@@ -5682,6 +5724,8 @@ func push_event(evt: Dictionary) -> void:
 
 ## 按 id 找单位
 func unit_by_id(id: String) -> Variant:
+	if not _tick_lookup.is_empty():
+		return _tick_lookup.get(id, null)
 	for u in units:
 		if u.id == id:
 			return u

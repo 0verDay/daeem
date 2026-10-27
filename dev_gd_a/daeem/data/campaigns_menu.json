@@ -16,7 +16,7 @@
       "chapters": [
         {
           "name": "main_test",
-          "description": "主测试关卡：地图 main_test。蓝方（F1）守，红方（F2）攻，\n另有红点阵营从边缘增援。长按进入。",
+          "description": "主测试关卡：地图 main_test。蓝方（F1）守，红方（F2）攻，\n另有红点阵营从边缘增援。点击旗帜进入详情，选一方出战。",
           "campaign_id": "demo",
           "level_id": "mt"
         }

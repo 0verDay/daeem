@@ -274,3 +274,67 @@ static func fill_top_latched() -> Color:
 
 static func fill_bottom_latched() -> Color:
 	return ThemeRes.fill_bottom_latched()
+
+
+# ------------------------------------------------------------------
+# 新菜单（MenuDeck）的底板 / 大按钮
+# ------------------------------------------------------------------
+
+## 新菜单的整块侧面板：比 chrome_panel() 更实，压在渐变背景上不露底。
+static func deck_panel() -> StyleBoxFlat:
+	var s := StyleBoxFlat.new()
+	s.bg_color = ThemeRes.with_alpha(ThemeRes.bg_bottom(), 0.94)
+	s.border_color = ThemeRes.line()
+	s.set_border_width_all(1)
+	s.set_corner_radius_all(2)
+	return s
+
+
+## 面板内部的次级块（描述 / 列表 / 输入器）。
+static func deck_block() -> StyleBoxFlat:
+	var s := StyleBoxFlat.new()
+	s.bg_color = ThemeRes.with_alpha(ThemeRes.bg_top(), 0.55)
+	s.border_color = ThemeRes.with_alpha(ThemeRes.line(), 0.85)
+	s.set_border_width_all(1)
+	s.set_corner_radius_all(2)
+	return s
+
+
+## 主菜单那三颗「黑块」按钮：实心深底 + 金线；悬停金仍交给 fill_button。
+static func block_button() -> StyleBoxFlat:
+	var s := StyleBoxFlat.new()
+	s.bg_color = ThemeRes.with_alpha(ThemeRes.bg_bottom(), 0.92)
+	s.border_color = ThemeRes.line()
+	s.set_border_width_all(1)
+	s.set_corner_radius_all(2)
+	s.content_margin_left = 12.0
+	s.content_margin_right = 12.0
+	return s
+
+
+## 主菜单左侧栏的「当前大类」：满金底、无边框，文字反色。
+static func selected_button() -> StyleBoxFlat:
+	var s := StyleBoxFlat.new()
+	s.bg_color = ThemeRes.accent()
+	s.set_border_width_all(0)
+	s.set_corner_radius_all(2)
+	s.content_margin_left = 12.0
+	s.content_margin_right = 12.0
+	return s
+
+
+## 主菜单底部那条自定义/备战：更暗、无外框，只靠分隔线。
+static func bottom_button() -> StyleBoxFlat:
+	var s := StyleBoxFlat.new()
+	s.bg_color = ThemeRes.with_alpha(ThemeRes.bg_top(), 0.38)
+	s.border_color = ThemeRes.with_alpha(ThemeRes.line(), 0.75)
+	s.border_width_top = 1
+	s.set_corner_radius_all(0)
+	s.content_margin_left = 12.0
+	s.content_margin_right = 12.0
+	return s
+
+
+## 左侧灰层：中性灰半透明，压在面板内容之上。
+static func sidebar_dim_color() -> Color:
+	return Color(0.10, 0.10, 0.11, 0.66)

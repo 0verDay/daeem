@@ -23,68 +23,194 @@ static func round2(v: float) -> float:
 	return roundf(v * 100.0) / 100.0
 
 
+## 一个单位的**完整**快照字段（关键帧 / 新单位整条发时用）。
+## ★ 增量帧走 `to_snapshot` 里那段「和关键帧 base 比」的循环，字段集合与这里一致。
+static func _unit_fields(u) -> Dictionary:
+	return {
+		"i": u.id,
+		"f": u.faction,
+		"k": u.kind,
+		# ★ 单位类型（兵种）：**必须发**，因为 kind 分不出将领的兵种 ——
+		#   三个开局将领的 kind 都是 "general"，只有 ut 说得清谁是长枪兵谁是骑手。
+		#   客机靠它查数值（血/速度/射程）与画图标，缺了就会把将领画成同一种兵。
+		"ut": u.unit_type,
+		"x": round2(u.pos.x),
+		"y": round2(u.pos.y),
+		"h": int(round(u.hp)),
+		# ★ 血量上限（科技 / 等级加成之后的值）：客机画血条比例要用；
+		#   缺字段 = 保持本地现状（老快照没有这一项）。
+		"mh": int(round(u.hp_max)),
+		# ★★ 士气（本轮新增）：整支部队共享的权威状态，客机不发详情栏就画不出背景板颜色。
+		#    沿用「缺字段 = 保持本地现状」的规矩（见 apply 那一段）。
+		"mo": int(round(u.morale)),
+		"m": 1 if u.moving else 0,
+		# 朝向是**向量**（八方向之后 ±1 不够用了）。
+		# ⚠️ 字段名仍是最短的 "fa"，但类型从 int 变成了 [x, y] 两元数组 ——
+		#    第 1 轮联机时两边必须同版本，否则客机会把数组当 int 读出 0。
+		"fa": [round2(u.facing.x), round2(u.facing.y)],
+		# 队长 id（空 = 自己就是队长）。客机靠它把「选中将领 = 选中整队」做出来，
+		# 否则客机侧点将领时只有自己会被选中（单机与联机行为会不一致）。
+		"ld": u.leader_id if u.leader_id != "" else null,
+		"hk": u.hotkey if u.hotkey != "" else null,
+		# ★ 招募队列（将领 = 兵营）：信息栏里那五个格子是**权威状态**画出来的，
+		#   客机不发就只能是空的。三个短字段：正在读条的兵种 / 剩余秒 / 总秒数，
+		#   外加排队的兵种数组（tq = train queue）。
+		"tk": u.train_kind if u.train_kind != "" else null,
+		"tr": round2(u.train_remaining),
+		"tt": round2(u.train_total),
+		"tq": (u.train_queue.duplicate() if not u.train_queue.is_empty() else null),
+		# ★★ 将领濒死（本轮新增）：这是**权威状态**，客机不发就只能看到一个
+		#   站在原地的将领（它会照旧被画成能打、也能被点成目标，两边就不一致了）。
+		#   · nd = 是否濒死；nh = 已回复出来的血量（比例口径见 unit.nd_hp_ratio）；
+		#   · nt = 离下一次回复还有几秒；nv/nvt = 再起读条的剩余 / 总秒数。
+		#   ⚠️ 与 tk 那一组同一条约定：**nd 在不在**决定新旧格式，
+		#      老快照没有 nd ⇒ 整组保持本地现状（不要把濒死状态静默清掉）。
+		"nd": 1 if u.downed else 0,
+		"nh": round2(u.nd_regen_hp),
+		"nt": round2(u.nd_regen_timer),
+		"nv": round2(u.revive_remaining),
+		"nvt": round2(u.revive_total),
+		# ★★ 中立化（大本营被拆后的停摆状态）：1 = 已中立化。
+		#   缺字段 = 老快照 ⇒ 保持本地现状。
+		"nz": 1 if u.neutralized else 0,
+		# ★★ 将领特性（部队光环）：gt = 将领自己抽到的特性（决定属下继承谁），
+		#   ga = 这个单位实际享受的光环（附属兵必然与队长相同）。两个都要发：
+		#   客机重建单位的顺序不保证「队长先于附属兵」，靠查队长推导会漏。
+		#   缺字段 = 老快照 ⇒ 保持本地现状（与其它字段同一条约定）。
+		"gt": u.general_trait if u.general_trait != "" else null,
+		"ga": u.aura_trait_id if u.aura_trait_id != "" else null,
+	}
+
+
+## 增量条目：只放「相对关键帧 base 变化过」的**动态字段**（外加永远要带的 id / 兵种）。
+##
+## ★★ 2026.10.27 性能口径：真正的静态字段（f / k / ld / hk）不在这里逐帧比 ——
+##    它们极少变化，由每 `snapshot_keyframe_every` 条的完整关键帧兜底纠正。
+##    dscj 256 单位时明显降 CPU（移动端做房主时不白烧主线程）。
+## ★ 与 `_unit_fields` 的取值口径必须一致 —— 两边都改时记得同时改。
+static func _unit_delta(u, prev: Dictionary) -> Dictionary:
+	var out: Dictionary = {"i": u.id, "ut": u.unit_type}
+	# ★ 全部内联：`prev` 一定是完整字典，`prev[key]` 直接读；不再走 16 次方法调用。
+	var x := round2(u.pos.x)
+	if prev["x"] != x:
+		out["x"] = x
+	var y := round2(u.pos.y)
+	if prev["y"] != y:
+		out["y"] = y
+	var h := int(round(u.hp))
+	if prev["h"] != h:
+		out["h"] = h
+	var mh := int(round(u.hp_max))
+	if prev["mh"] != mh:
+		out["mh"] = mh
+	var mo := int(round(u.morale))
+	if prev["mo"] != mo:
+		out["mo"] = mo
+	var m := 1 if u.moving else 0
+	if prev["m"] != m:
+		out["m"] = m
+	var fx := round2(u.facing.x)
+	var fy := round2(u.facing.y)
+	var pfa: Array = prev["fa"]
+	if pfa[0] != fx or pfa[1] != fy:
+		out["fa"] = [fx, fy]
+	var tk: Variant = u.train_kind if u.train_kind != "" else null
+	if prev["tk"] != tk:
+		out["tk"] = tk
+	var tr := round2(u.train_remaining)
+	if prev["tr"] != tr:
+		out["tr"] = tr
+	var tt := round2(u.train_total)
+	if prev["tt"] != tt:
+		out["tt"] = tt
+	var pq: Variant = prev["tq"]
+	if u.train_queue.is_empty():
+		if pq != null:
+			out["tq"] = null
+	else:
+		var tq: Array = u.train_queue.duplicate()
+		if pq != tq:
+			out["tq"] = tq
+	var nd := 1 if u.downed else 0
+	if prev["nd"] != nd:
+		out["nd"] = nd
+	var nh := round2(u.nd_regen_hp)
+	if prev["nh"] != nh:
+		out["nh"] = nh
+	var nt := round2(u.nd_regen_timer)
+	if prev["nt"] != nt:
+		out["nt"] = nt
+	var nv := round2(u.revive_remaining)
+	if prev["nv"] != nv:
+		out["nv"] = nv
+	var nvt := round2(u.revive_total)
+	if prev["nvt"] != nvt:
+		out["nvt"] = nvt
+	# 中立化 / 将领光环：变化很少但**看得出**（颜色 / 光环圈），也跟着增量走。
+	var nz := 1 if u.neutralized else 0
+	if prev["nz"] != nz:
+		out["nz"] = nz
+	var gt: Variant = u.general_trait if u.general_trait != "" else null
+	if prev["gt"] != gt:
+		out["gt"] = gt
+	var ga: Variant = u.aura_trait_id if u.aura_trait_id != "" else null
+	if prev["ga"] != ga:
+		out["ga"] = ga
+	return out
+
+
 ## 建面板快照。
 ## ★ 刻意**不**同步：terrain / 相机 / 视口 / 日志 / path —— 那些是本地的东西，
 ##   或者属于「过程」而不是「结果」。
-static func to_snapshot(world) -> Dictionary:
+##
+## ★★ 2026.10.27 增量快照（移动端联机修复）：
+##   `delta_cache != null` 时只发**相对上一次关键帧**变化过的字段；没变的字段不发，
+##   客机沿用本地值（`apply_snapshot` 的「缺字段 = 保持现状」本来就是为此设计的）。
+##   · `delta_cache` 由 `host_session` 持有：单位 id → **关键帧时**的完整字段字典；
+##   · `keyframe = true`（首次 / 每 N 帧）时发完整字段，并把缓存重置成当前状态；
+##   · 两次关键帧之间**累积**变化（不是只跟上一条比）⇒ 客机即使被合并掉中间的
+##     快照，下一条仍然带着全部变化（配合 `client_session` 的 merge_delta）。
+##   · `delta_cache == null` 时保持旧行为：完整快照（测试 / 回放 / 读档都走它）。
+static func to_snapshot(world, delta_cache: Variant = null, keyframe: bool = false) -> Dictionary:
+	var use_delta: bool = delta_cache != null
+	var full_units: bool = (not use_delta) or keyframe \
+		or (delta_cache as Dictionary).is_empty()
+	# 关键帧：写进一个临时表，最后整表替换缓存；增量的中间帧：直接改缓存里的 base。
+	var base: Dictionary = {} if full_units else (delta_cache as Dictionary)
+
 	var units_out: Array = []
 	for u in world.units:
 		if not u.alive:
 			continue                 # 阵亡的单位不发 —— 客机上看它就「消失了」，复活后再出现
-		units_out.append({
-			"i": u.id,
-			"f": u.faction,
-			"k": u.kind,
-			# ★ 单位类型（兵种）：**必须发**，因为 kind 分不出将领的兵种 ——
-			#   三个开局将领的 kind 都是 "general"，只有 ut 说得清谁是长枪兵谁是骑手。
-			#   客机靠它查数值（血/速度/射程）与画图标，缺了就会把将领画成同一种兵。
-			"ut": u.unit_type,
-			"x": round2(u.pos.x),
-			"y": round2(u.pos.y),
-			"h": int(round(u.hp)),
-			# ★ 血量上限（科技 / 等级加成之后的值）：客机画血条比例要用；
-			#   缺字段 = 保持本地现状（老快照没有这一项）。
-			"mh": int(round(u.hp_max)),
-			# ★★ 士气（本轮新增）：整支部队共享的权威状态，客机不发详情栏就画不出背景板颜色。
-			#    沿用「缺字段 = 保持本地现状」的规矩（见 apply 那一段）。
-			"mo": int(round(u.morale)),
-			"m": 1 if u.moving else 0,
-			# 朝向是**向量**（八方向之后 ±1 不够用了）。
-			# ⚠️ 字段名仍是最短的 "fa"，但类型从 int 变成了 [x, y] 两元数组 ——
-			#    第 1 轮联机时两边必须同版本，否则客机会把数组当 int 读出 0。
-			"fa": [round2(u.facing.x), round2(u.facing.y)],
-			# 队长 id（空 = 自己就是队长）。客机靠它把「选中将领 = 选中整队」做出来，
-			# 否则客机侧点将领时只有自己会被选中（单机与联机行为会不一致）。
-			"ld": u.leader_id if u.leader_id != "" else null,
-			"hk": u.hotkey if u.hotkey != "" else null,
-			# ★ 招募队列（将领 = 兵营）：信息栏里那五个格子是**权威状态**画出来的，
-			#   客机不发就只能是空的。三个短字段：正在读条的兵种 / 剩余秒 / 总秒数，
-			#   外加排队的兵种数组（tq = train queue）。
-			"tk": u.train_kind if u.train_kind != "" else null,
-			"tr": round2(u.train_remaining),
-			"tt": round2(u.train_total),
-			"tq": (u.train_queue.duplicate() if not u.train_queue.is_empty() else null),
-			# ★★ 将领濒死（本轮新增）：这是**权威状态**，客机不发就只能看到一个
-			#   站在原地的将领（它会照旧被画成能打、也能被点成目标，两边就不一致了）。
-			#   · nd = 是否濒死；nh = 已回复出来的血量（比例口径见 unit.nd_hp_ratio）；
-			#   · nt = 离下一次回复还有几秒；nv/nvt = 再起读条的剩余 / 总秒数。
-			#   ⚠️ 与 tk 那一组同一条约定：**nd 在不在**决定新旧格式，
-			#      老快照没有 nd ⇒ 整组保持本地现状（不要把濒死状态静默清掉）。
-			"nd": 1 if u.downed else 0,
-			"nh": round2(u.nd_regen_hp),
-			"nt": round2(u.nd_regen_timer),
-			"nv": round2(u.revive_remaining),
-			"nvt": round2(u.revive_total),
-			# ★★ 中立化（大本营被拆后的停摆状态）：1 = 已中立化。
-			#   缺字段 = 老快照 ⇒ 保持本地现状。
-			"nz": 1 if u.neutralized else 0,
-			# ★★ 将领特性（部队光环）：gt = 将领自己抽到的特性（决定属下继承谁），
-			#   ga = 这个单位实际享受的光环（附属兵必然与队长相同）。两个都要发：
-			#   客机重建单位的顺序不保证「队长先于附属兵」，靠查队长推导会漏。
-			#   缺字段 = 老快照 ⇒ 保持本地现状（与其它字段同一条约定）。
-			"gt": u.general_trait if u.general_trait != "" else null,
-			"ga": u.aura_trait_id if u.aura_trait_id != "" else null,
-		})
+		if full_units:
+			var full: Dictionary = _unit_fields(u)
+			units_out.append(full)
+			if use_delta:
+				base[String(u.id)] = full
+			continue
+		var prev: Variant = base.get(String(u.id), null)
+		if typeof(prev) != TYPE_DICTIONARY:
+			# 关键帧之后新出现的单位（招募 / 复活）：整条发一次，之后按增量比。
+			var full_new: Dictionary = _unit_fields(u)
+			units_out.append(full_new)
+			base[String(u.id)] = full_new
+			continue
+		# ★★ 直接按关键帧基准比字段，**不**先建完整字典（那会让增量比完整快照还贵：
+		#    dscj 256 单位实测 3.68ms vs 1.58ms）。`ut` 每帧都带，用来纠正兵种不一致。
+		units_out.append(_unit_delta(u, prev as Dictionary))
+	if use_delta:
+		if full_units:
+			(delta_cache as Dictionary).clear()
+			(delta_cache as Dictionary).merge(base, true)
+		else:
+			# 清掉已经阵亡 / 离场的单位，避免缓存无限增长；它们再出现时按「新单位」整条发。
+			var alive_now: Dictionary = {}
+			for u2 in world.units:
+				if u2.alive:
+					alive_now[String(u2.id)] = true
+			for k2 in (delta_cache as Dictionary).keys():
+				if not alive_now.has(k2):
+					(delta_cache as Dictionary).erase(k2)
 
 	var buildings_out: Array = []
 	for b in world.building_list:
@@ -219,6 +345,36 @@ static func to_snapshot(world) -> Dictionary:
 	}
 
 
+## ★★ 客机：把同一帧内收到的多条快照合并成一条（增量快照下**不能只留最后一条**）。
+##
+## 增量帧只带「相对关键帧变化过的字段」，中间帧被丢掉就可能永远丢一段变化。
+## 合并规则：
+##   · `units`：按 id 合并字段；**只保留最后一条快照里的单位**（它代表最新存活名单），
+##     前面的字段变化叠到同一个字典上；
+##   · 建筑 / 区划 / 投掷物 / 资源 / 目标 / 时间：最后一条快照就是完整结果，直接用它。
+static func merge_delta(acc: Dictionary, snap: Dictionary) -> Dictionary:
+	if acc.is_empty():
+		return snap
+	var prev_by_id: Dictionary = {}
+	for pu in acc.get("units", []):
+		if typeof(pu) == TYPE_DICTIONARY:
+			prev_by_id[String((pu as Dictionary).get("i", ""))] = pu
+	var out: Array = []
+	for su in snap.get("units", []):
+		if typeof(su) != TYPE_DICTIONARY:
+			continue
+		var sd: Dictionary = su
+		var id := String(sd.get("i", ""))
+		var base: Variant = prev_by_id.get(id, null)
+		if typeof(base) == TYPE_DICTIONARY:
+			(base as Dictionary).merge(sd, true)
+			out.append(base)
+		else:
+			out.append(sd)
+	snap["units"] = out
+	return snap
+
+
 ## 应用权威快照。
 ## 按 id 对齐单位：有的就地更新，没有的新建（别人刚刷出来的），快照里没有的删掉。
 ##
@@ -263,12 +419,17 @@ static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void:
 			)
 			world.units.append(u)
 			unit_index[uid] = u
+		# ★★ 2026.10.27：**已有单位**的兵种也要按权威快照纠正。
+		#    用户实测「一端看到一堆骑兵、另一端看到一堆步兵」：客机按自己的 config /
+		#    旧包建出来的单位类型与房主不同，而旧代码只在新单位创建时读 ut。
+		#    `reapply_type()` 会把 hp_max / unit_class / 护甲 / 射程等**由兵种派生**的
+		#    字段一起重算；随后的 mh / h 会覆盖血量，位置 / 士气 / 队列等运行状态不动。
+		if su.has("ut"):
+			var ut_fix := String(su.get("ut", ""))
+			if ut_fix != "":
+				u.reapply_type(cfg, ut_fix)
 		u.alive = true
 		u.faction = String(su.get("f", u.faction))
-		# ⚠️ 单位类型（ut）**只在新建时读**，不在这里覆盖已有单位：
-		#    一个单位的类型当局内不会变，而 hp_max / base_hp_max / unit_class
-		#    都是创建时按类型算好的 —— 单独改 unit_type 会让它与血量上限对不上。
-		#    （快照里带 ut 是为了**新单位**能被正确地建出来，见上面那段。）
 		if su.has("mh"):
 			u.hp_max = maxf(1.0, float(su["mh"]))
 		u.hp = float(su.get("h", u.hp))

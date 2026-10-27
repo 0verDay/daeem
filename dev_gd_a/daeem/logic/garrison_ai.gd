@@ -74,7 +74,27 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 	# ⚠️ 只数「活着 + 有归属区划 + 自己带队」的：附属兵**不算**（它们跟着队长走，
 	#    各算一个的话「同一个区划里几个队长」这个数会虚高、扇区被切得太碎）。
 	# ⚠️ 正在招兵的那些**不算**（它们这一帧不巡逻，算进去会让别人的下标跟着跳）。
+	# ★★ 每帧只建一次索引（旧实现两趟全量扫描，且每人每趟都要
+	#    `world.unit_by_id()` 线性找队长 ⇒ O(n²)；dscj 256 单位时这是 AI 段的大头）：
+	#   · alive_ids：判「队长还在不在」用（与 `world.team_leader` 同口径）；
+	#   · retinues ：队长 id → 活着的附属兵（与 `world.retinue_of` 同口径）。
+	#   同一帧内世界不会增减单位（招募落成发生在本函数之前的 world.tick 段），
+	#   所以这份索引可以放心用到底。
+	var alive_ids: Dictionary = {}
+	var retinues: Dictionary = {}
+	for u0 in world.units:
+		if not u0.alive:
+			continue
+		alive_ids[u0.id] = true
+		if u0.leader_id != "":
+			var arr: Variant = retinues.get(u0.leader_id, null)
+			if arr == null:
+				retinues[u0.leader_id] = [u0]
+			else:
+				(arr as Array).append(u0)
+
 	var patrol_counts: Dictionary = {}
+	var leaders: Array = []
 	for u2 in world.units:
 		if not u2.alive or int(u2.garrison_zone_id) < 0:
 			continue
@@ -82,21 +102,18 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 		#   算进去会让同一区划里**别人**分到的扇区跟着变（路线随人数切分）。
 		if u2.is_downed():
 			continue
-		if not is_patrol_leader(world, u2):
-			continue
-		var zid2 := int(u2.garrison_zone_id)
-		patrol_counts[zid2] = int(patrol_counts.get(zid2, 0)) + 1
-
-	for u in world.units:
-		if not u.alive or not u.is_garrison():
-			continue
 		# ★★ 附属兵**不走这一套**：它们不是「守将」，而是队长手下的兵 ——
 		#    队长的巡逻命令会把整队带上（见 `_patrol_leader` 的 `_patrol_group`）。
 		#    ⚠️ 少了这一条就是手玩报的那个 bug：「将领会巡逻，但将领招募出来的
 		#       单位不会巡逻」—— 每个兵各算一个巡逻队长时，它们要么站着不动
 		#       （没有路线可用），要么各走各的（一支小队散成四个人）。
-		if not is_patrol_leader(world, u):
+		if not is_patrol_leader(world, u2, alive_ids):
 			continue
+		leaders.append(u2)
+		var zid2 := int(u2.garrison_zone_id)
+		patrol_counts[zid2] = int(patrol_counts.get(zid2, 0)) + 1
+
+	for u in leaders:
 		# ★ 这一方在自己区划里排第几个**不看**（扇区由 `_sector_of()` 按 id 稳定派生）——
 		#   只有「这个区划里有几位要巡逻」这一个数会影响切分。
 		var zid_self := int(u.garrison_zone_id)
@@ -152,7 +169,7 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 		#     判据只跟**目标的移动**有关，跟我自己被挤到哪、区划边界画在哪都无关 ⇒ 抖动的
 		#     回路从根上断掉（只剩「敌人跑了 → 我回家」这一条单调的转移）。
 		if in_combat and u.chasing and not _chase_should_continue(world, u, retarget_cd):
-			_abandon_chase(world, cfg, u, z, zone_count, retarget_cd)
+			_abandon_chase(world, cfg, u, z, zone_count, retarget_cd, retinues)
 			in_combat = false
 
 		# ---- 1.2) ★ 追击中：让这一队跟上（本轮新增）----
@@ -163,9 +180,9 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 		# ⚠️ 用的是巡逻那一条现成的「掉队就叫上」（`_catch_up_retinue`），阈值
 		#    `patrol_retinue_leash_tiles` 与巡逻时同一个口径（不另立一套）。
 		if in_combat and u.chasing:
-			var stuck := _catch_up_retinue(world, cfg, u, u.pos, dt)
+			var stuck := _catch_up_retinue(world, cfg, u, u.pos, retinues, dt)
 			if stuck or not _chase_should_continue(world, u, retarget_cd):
-				_abandon_chase(world, cfg, u, z, zone_count, retarget_cd)
+				_abandon_chase(world, cfg, u, z, zone_count, retarget_cd, retinues)
 				in_combat = false
 
 		# ---- 1.5) 再战冷却期内：见到敌人也不接（把它刚锁上的那个放掉）----
@@ -221,7 +238,7 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 				u.defending_center = true
 				var c: Variant = (z as Dictionary).get("center", null)
 				if c != null:
-					_patrol_group(world, cfg, u, GridRes.center_of(c))
+					_patrol_group(world, cfg, u, GridRes.center_of(c), retinues)
 			continue
 		u.defending_center = false
 
@@ -259,10 +276,16 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 				u.returning_home = false
 			else:
 				continue
+		# ★★ 首次巡逻错峰（性能）：`patrol_timer` 初始都是 0，旧实现会让**全部**
+		#    守将在同一帧一起重算路线 / 寻路（dscj 实测 max 42 ms 的尖峰就是它），
+		#    然后每 `patrol_interval_sec` 秒再一起撞一次。用单位 id 派生的稳定种子
+		#    把首巡相位摊到整个间隔里 —— 与路线种子同一套哈希，确定性不受影响。
+		if int(u.patrol_zone_id) == -2:
+			u.patrol_timer = patrol_interval * _phase01(u)
 		u.patrol_timer -= dt
 		if u.patrol_timer <= 0.0:
 			u.patrol_timer = patrol_interval
-			_patrol_leader(world, cfg, u, z, zone_count)
+			_patrol_leader(world, cfg, u, z, zone_count, retinues)
 
 
 ## 每次决策里最多下几条「招兵」指令（护栏）。
@@ -328,7 +351,7 @@ static func _chase_should_continue(world, u, retarget_cd: float) -> bool:
 ## ⚠️ 返程只下一道命令（`returning_home` 把这一段变成**一次**命令）：
 ##    每帧重下会把路径一帧一帧重置，人永远走不回家（那正是「原地抽搐」的成因之一）。
 static func _abandon_chase(world, cfg: ConfigRes, u, z, zone_count: int,
-		retarget_cd: float) -> void:
+		retarget_cd: float, retinues: Dictionary) -> void:
 	u.drop_engagement()
 	u.clear_chase()
 	# ★ 冷却：回家路上别被同一个敌人立刻再锁上（距离判据已经能防抖，
@@ -336,7 +359,7 @@ static func _abandon_chase(world, cfg: ConfigRes, u, z, zone_count: int,
 	u.retarget_cd = maxf(float(u.retarget_cd), retarget_cd)
 	if not u.returning_home:
 		u.returning_home = true
-		_patrol_leader(world, cfg, u, z, zone_count)
+		_patrol_leader(world, cfg, u, z, zone_count, retinues)
 	u.patrol_timer = float(cfg.ai_garrison_cfg()["patrol_interval_sec"])
 
 
@@ -452,7 +475,7 @@ static func _out_of_garrison(world, u, z, leash: float) -> bool:
 ##
 ## ★ 队长阵亡之后**不**让那一队站死：`world.team_leader()` 查不到队长 ⇒ 剩下的兵
 ##   自己接手巡逻（那一块地照样有人守）。
-static func is_patrol_leader(world, u) -> bool:
+static func is_patrol_leader(world, u, alive_ids: Variant = null) -> bool:
 	if u == null or not u.alive:
 		return false
 	# ★ 濒死的将领不是「这一块的巡逻队长」（本轮新增）：它倒在原地，
@@ -463,6 +486,13 @@ static func is_patrol_leader(world, u) -> bool:
 		return false
 	if int(u.garrison_zone_id) < 0:
 		return false
+	# `world.team_leader(u) == null` 的等价判据：没有队长，或队长已经不在场。
+	# ★★ `alive_ids` 是 `update()` 每帧建好的索引（避免每人一次线性 `unit_by_id`）；
+	#    其它调用方（测试）不传时就退回原来的查表。
+	if String(u.leader_id) == "":
+		return true
+	if alive_ids != null:
+		return not (alive_ids as Dictionary).has(u.leader_id)
 	return world.team_leader(u) == null
 
 
@@ -482,7 +512,8 @@ static func is_patrol_leader(world, u) -> bool:
 ## ★ 已经站在目标点附近（半格内）就**直接跳到下一个点**：否则每几秒重算一次路径，白费。
 ##
 ## @param zone_count 同一区划里**要巡逻的队长总数**（用来把区划切成几个扇区）
-static func _patrol_leader(world, cfg: ConfigRes, u, z, zone_count: int) -> void:
+static func _patrol_leader(world, cfg: ConfigRes, u, z, zone_count: int,
+		retinues: Dictionary) -> void:
 	var tile: Vector2i = _next_patrol_tile(world, cfg, u, z, zone_count)
 	if tile.x < 0:
 		# ★ 算不出巡逻点（区划被删 / 数据坏了）⇒ 返程也算结束，否则这个标志会
@@ -491,11 +522,11 @@ static func _patrol_leader(world, cfg: ConfigRes, u, z, zone_count: int) -> void
 		return
 	var pt: Vector2 = GridRes.center_of(tile)
 	if u.pos.distance_to(pt) > 0.5:
-		_patrol_group(world, cfg, u, pt)
+		_patrol_group(world, cfg, u, pt, retinues)
 	# ★★ 即使队长**已经站在**这个点上（这一趟不挪窝），也要检查一次队里有没有人掉队：
 	#    「队长到了、兵还落在后面」正是最常见的掉队形态，只在队长移动时才检查的话
 	#    那几个人会一直站在半路（它们没有新命令，旧的 goal 早就到了）。
-	_catch_up_retinue(world, cfg, u, pt)
+	_catch_up_retinue(world, cfg, u, pt, retinues)
 	# ★★ 返程什么时候算结束（本轮重写，别只留「到点」那一条）：
 	#   `returning_home` 的语义是「回家路上，别插新的巡逻命令」。它必须**保证会结束**，
 	#   否则这个标志一挂上，第 5 步就永远跳过 —— 人定死在原地（那正是旧代码靠
@@ -519,9 +550,10 @@ static func _patrol_leader(world, cfg: ConfigRes, u, z, zone_count: int) -> void
 ## ★ 队形槽位由命令层算：`group.size() >= unit.formation.min_units`（默认 4）时排阵，
 ##   否则逐个下 —— 「一个将领 + 3 个兵」正好是 4 个，所以默认就会排开，
 ##   不会四个人挤在同一个格子上。
-static func _patrol_group(world, cfg: ConfigRes, u, pt: Vector2) -> void:
+static func _patrol_group(world, cfg: ConfigRes, u, pt: Vector2,
+		retinues: Dictionary) -> void:
 	var group: Array = [u]
-	for m in _retinue_of(world, u):
+	for m in _retinue_list(u, retinues):
 		group.append(m)
 	# ⚠️ 用命令层那一条（而不是自己写循环调 order_move）：
 	#    队形 / 落点挑选 / 通行判定全在它里面，抄一份出来迟早会漂开。
@@ -549,13 +581,14 @@ static func _patrol_group(world, cfg: ConfigRes, u, pt: Vector2) -> void:
 ##    （巡逻 / 追击两条路都会调它），不必再开一条遍历。
 ##
 ## @return true = 这一队**追不动了**（调用方在追击中据此放弃追击、转回家）
-static func _catch_up_retinue(world, cfg: ConfigRes, u, pt: Vector2, dt: float = 0.0) -> bool:
+static func _catch_up_retinue(world, cfg: ConfigRes, u, pt: Vector2,
+		retinues: Dictionary, dt: float = 0.0) -> bool:
 	if dt > 0.0 and u.chasing and _track_chase_stuck(u, dt):
 		return true
 	var gc: Dictionary = cfg.ai_garrison_cfg()
 	var leash: float = float(gc.get("patrol_retinue_leash_tiles", 3.0))
 	var missing := false
-	for m in _retinue_of(world, u):
+	for m in _retinue_list(u, retinues):
 		if m.pos.distance_to(u.pos) <= leash:
 			continue
 		if not m.moving or m.path.is_empty() or m.pos.distance_to(m.goal) >= m.best_dist:
@@ -563,13 +596,13 @@ static func _catch_up_retinue(world, cfg: ConfigRes, u, pt: Vector2, dt: float =
 			missing = true
 			break
 	if missing:
-		_patrol_group(world, cfg, u, pt)
+		_patrol_group(world, cfg, u, pt, retinues)
 	return false
 
 
-## 某位队长**还活着**的附属兵（`world.retinue_of` 的薄封装，只为少写一遍 id 转换）。
-static func _retinue_of(world, u) -> Array:
-	return world.retinue_of(String(u.id))
+## 某位队长**还活着**的附属兵（`update()` 每帧建好的索引；与 `world.retinue_of` 同口径）。
+static func _retinue_list(u, retinues: Dictionary) -> Array:
+	return retinues.get(u.id, [])
 
 
 ## 下一个巡逻点（网格坐标；`x < 0` = 这一帧没有可去的点）。
@@ -743,9 +776,16 @@ static func _can_stand(world, cfg: ConfigRes, u, t: Vector2i) -> bool:
 ##   存档 / 回放会漂。所以自己按**字符码**做一个稳定的小哈希（只用整数运算）。
 static func _route_seed(unit_id: String, faction: String) -> int:
 	var h: int = 2166136261            # FNV-1a 的 32 位偏移基数
-	for i in (unit_id + "|" + faction).length():
-		h = ((h ^ int((unit_id + "|" + faction).unicode_at(i))) * 16777619) & 0x7FFFFFFF
+	var key := unit_id + "|" + faction
+	for i in key.length():
+		h = ((h ^ int(key.unicode_at(i))) * 16777619) & 0x7FFFFFFF
 	return h
+
+
+## 首巡相位（0.0 ~ 1.0）：与路线种子同一套稳定哈希，用来把「同一帧全员巡逻」
+## 摊到整个 `patrol_interval_sec` 里（见 `update()` 第 5 步的错峰注释）。
+static func _phase01(u) -> float:
+	return float(_route_seed(String(u.id), String(u.faction)) % 1000) / 1000.0
 
 
 ## 路线算不出来时的兜底：老口径 —— 区划中心，其次区划第一格，最后大本营。
@@ -823,10 +863,16 @@ static func _pick_recruit_kind(world, u) -> String:
 ## ★ 一帧可以起多位（互不干扰），但每位最多一单 —— `revive_remaining > 0` 就跳过，
 ##   不会对着同一位反复下单。
 static func _tick_revive(world, cfg: ConfigRes) -> void:
+	# ★ 阵营 → AI 类别只算一次（`world.ai_kind_of` 要查名单 / 建筑；每位将领每帧调一次不划算）。
+	var kind_cache: Dictionary = {}
 	for u in world.units:
 		if not u.alive or not u.is_general():
 			continue
-		var kind: String = world.ai_kind_of(String(u.faction))
+		var f := String(u.faction)
+		var kind: String = String(kind_cache.get(f, ""))
+		if not kind_cache.has(f):
+			kind = String(world.ai_kind_of(f))
+			kind_cache[f] = kind
 		if kind != LevelRes.AI_GARRISON and kind != LevelRes.AI_REDDOT:
 			continue                        # 玩家 / 不挂 AI 的阵营不走这条路
 		if not u.is_downed():

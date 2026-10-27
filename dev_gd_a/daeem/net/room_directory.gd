@@ -6,7 +6,7 @@
 ##   加入 / 退出后各拉一次，LOBBY 状态每 2 秒再拉一次即可。
 ##
 ## ★ 本文件只做**纯函数**（URL 转换 + JSON 解析），不建 Node、不碰网络，
-##   所以可以无头测试。真正的请求在 `view/coop_lobby.gd`。
+##   所以可以无头测试。真正的请求在 `view/coop_session.gd`。
 extends RefCounted
 
 

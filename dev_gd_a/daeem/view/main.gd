@@ -136,14 +136,10 @@ func _build_start_screen() -> void:
 	start_screen.setup(cfg, font)
 
 	start_screen.intro_dismissed.connect(_on_intro_dismissed)
-	start_screen.level_entry_pressed.connect(_on_level_entry_pressed)
-	start_screen.direct_level_requested.connect(_on_direct_level_requested)
-	start_screen.ai_test_requested.connect(_on_ai_test_requested)
+	start_screen.campaign_level_chosen.connect(_on_menu_campaign_level_chosen)
 	start_screen.coop_host_started.connect(_on_coop_host_started)
 	start_screen.coop_guest_started.connect(_on_coop_guest_started)
 	start_screen.coop_solo_started.connect(_on_coop_solo_started)
-	# ★★ 主菜单「选项 → 设置 → 全屏」与游戏内走同一个 toggle_fullscreen（唯一实现）。
-	start_screen.fullscreen_toggled.connect(toggle_fullscreen)
 	start_screen.quit_requested.connect(_on_quit_requested)
 
 
@@ -184,6 +180,9 @@ func _on_android_back() -> void:
 	if _quit_confirm != null and is_instance_valid(_quit_confirm) and _quit_confirm.is_open():
 		_quit_confirm.cancel()
 		return
+	# ★ 战役过渡不可取消：返回键被吞掉。
+	if _level_transition != null and is_instance_valid(_level_transition):
+		return
 	if game != null and is_instance_valid(game):
 		var hud = game.hud
 		if hud != null and is_instance_valid(hud) \
@@ -191,6 +190,8 @@ func _on_android_back() -> void:
 				and hud.options_panel.is_open():
 			hud.options_panel.close()
 			return
+	if start_screen != null and start_screen.handle_back():
+		return
 	_show_quit_confirm()
 
 
@@ -248,7 +249,7 @@ func _on_test_pressed(map_path: String) -> void:
 ##   合作关仍直接开局（`level.mode == "coop"`），因为合作大厅有自己的流程。
 ##
 ## ★ 占位战役 / 占位关（`campaigns_menu.json` 里没填 campaign_id / level_id 的）：
-##   根本不会走到这里（`view/campaign_menu.gd` 的 activate_chapter 会直接不发信号）。
+##   根本不会走到这里（`view/campaign_map_panel.gd` 的旗帜点击 会直接不发信号）。
 ##   但数据写坏（战役 / 关卡读不出来）也必须**安静地不动**：宁可不进游戏，
 ##   也不要进到一个空 World 里（那样报错会离真正的数据问题很远）。
 func _on_level_entry_pressed(campaign_id: String, level_id: String) -> void:
@@ -274,7 +275,37 @@ func _on_level_entry_pressed(campaign_id: String, level_id: String) -> void:
 	if String(level.mode) == "coop":
 		_on_campaign_level_chosen(campaign, level, String(playable[0]))
 		return
-	_show_level_transition(campaign, level)
+	_show_level_transition(campaign, level, String(playable[0]))
+
+
+## ★★ 新菜单：战役详情里选好阵营 → 载入 → 打开战役过渡（阵营已定）。
+##
+## 与 `_on_level_entry_pressed()` 的区别：阵营由详情页按钮决定，过渡页不再选阵营。
+## 载入与建世界仍然只在本文件；菜单只发数据。
+func _on_menu_campaign_level_chosen(campaign_id: String, level_id: String,
+		faction_id: String) -> void:
+	if game != null:
+		return
+	var option := _find_campaign_option(campaign_id)
+	if option.is_empty():
+		push_warning("战役不存在：%s" % campaign_id)
+		return
+	var campaign = CampaignLibraryRes.load_campaign_by_option(option, cfg)
+	if campaign == null:
+		push_warning("战役载入失败：%s" % campaign_id)
+		return
+	var level = campaign.level(level_id) if campaign.has_method("level") else null
+	if level == null:
+		push_warning("关卡不存在：%s / %s" % [campaign_id, level_id])
+		return
+	var playable: Array = level.playable_ids()
+	if playable.is_empty():
+		push_warning("关卡没有可玩阵营：%s / %s" % [campaign_id, level_id])
+		return
+	if not playable.has(faction_id):
+		push_warning("阵营不可玩：%s / %s / %s" % [campaign_id, level_id, faction_id])
+		return
+	_show_level_transition(campaign, level, faction_id)
 
 
 ## ★★ 主界面 ai_test_battle：跳过战役过渡画面，直接按关卡的可玩阵营开局。
@@ -359,7 +390,7 @@ func _on_campaign_level_chosen(campaign, level, faction: String) -> void:
 	if not game.start_level(campaign, level, faction):
 		game.queue_free()
 		game = null
-		# 装配失败：人留在主界面（战役菜单还在面板里，可以换一关再试）。
+		# 装配失败：人留在战役详情（菜单还开着，可以换一关或换阵营再试）。
 		return
 
 	# 进游戏之后开场页整层下线（与老路径同一个理由：背景与点击处理器一起停掉）
@@ -376,7 +407,7 @@ func _on_campaign_level_chosen(campaign, level, faction: String) -> void:
 ## ★★ 单人关卡：先进过渡画面，再由玩家点「进入」才建世界。
 ## 合作关不走这里（`_on_level_entry_pressed` 里直接开局）。
 ##
-## ★★ 打开时是一段**先隐后显**的转场（用户口径：长按战役进入时，战役界面渐隐，
+## ★★ 打开时是一段**先隐后显**的转场（用户口径：点旗帜进入过渡时，战役界面渐隐，
 ##   随后再让过渡画面渐显）：
 ##     ① 先推黑幕（`open_fade_sec`，默认 0.22s）—— 战役界面连同撑开的面板一起渐隐；
 ##     ② 在黑幕底下建过渡页（它自己的面板滑入同时开始，于是渐显那一段能看到滑入）；
@@ -384,7 +415,7 @@ func _on_campaign_level_chosen(campaign, level, faction: String) -> void:
 ##   ★ 复用 `_enter_fade` 那套黑幕：露出一块全屏纯色，顺带把这两拍里的点击挡掉
 ##     （否则玩家能在这 0.2s 里再点一次，长出第二个过渡页）。
 ##   ★ 动效总开关关掉 / 时长为 0 ⇒ 两拍都跳过，行为与以前完全一样（同步建页）。
-func _show_level_transition(campaign, level) -> void:
+func _show_level_transition(campaign, level, faction: String) -> void:
 	if _transition_opening:
 		return
 	if _level_transition != null and is_instance_valid(_level_transition):
@@ -402,10 +433,12 @@ func _show_level_transition(campaign, level) -> void:
 	_level_transition = LevelTransitionRes.new()
 	_level_transition.name = "LevelTransition"
 	add_child(_level_transition)
-	_level_transition.setup(cfg, _ui_font, campaign, level)
+	_level_transition.setup(cfg, _ui_font, campaign, level, faction)
+	# ★ 过渡页盖住菜单时，菜单的 Esc 不能在背后翻页；关闭过渡时再放开。
+	if start_screen != null:
+		start_screen.set_menu_input_blocked(true)
 	_level_transition.enter_requested.connect(
 		_on_level_transition_enter.bind(campaign, level))
-	_level_transition.cancelled.connect(_on_level_transition_cancelled)
 	_transition_opening = false
 	if use_fade and fade_in > 0.0:
 		await _fade_from_black(fade_in)
@@ -547,14 +580,12 @@ func enter_fade():
 
 
 ## Esc 取消：收掉过渡画面，留在主界面（不建世界）。
-func _on_level_transition_cancelled() -> void:
-	_close_level_transition()
-
-
 func _close_level_transition() -> void:
 	if _level_transition != null and is_instance_valid(_level_transition):
 		_level_transition.queue_free()
 	_level_transition = null
+	if start_screen != null:
+		start_screen.set_menu_input_blocked(false)
 
 
 ## 当前过渡画面（只给测试 / 排查用；没有则是 null）。

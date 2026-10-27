@@ -1,9 +1,8 @@
-## test_ai_order_panel.gd —— AI 队友浮动面板 + 合作大厅「真人 / AI」二选一。
+## test_ai_order_panel.gd —— AI 队友浮动面板 + 合作会话（AI 模式）开局参数。
 extends "res://tests/test_case.gd"
 
 const AiPanelRes = preload("res://view/ai_order_panel.gd")
-const CoopLobbyRes = preload("res://view/coop_lobby.gd")
-const CoopLayoutRes = preload("res://view/coop_layout.gd")
+const CoopSessionRes = preload("res://view/coop_session.gd")
 const ConfigRes = preload("res://logic/config.gd")
 const WorldRes = preload("res://logic/world.gd")
 const LevelRes = preload("res://logic/level.gd")
@@ -25,7 +24,7 @@ func _run() -> void:
 		quit(1)
 		return
 	_test_panel(cfg)
-	_test_lobby_ai_mode(cfg)
+	_test_session_ai_mode(cfg)
 	await process_frame
 	print("[CASE] %s -> 通过 %d 项，失败 %d 项" % [_case_name, _pass, _fail])
 	if _fail > 0:
@@ -81,29 +80,21 @@ func _test_panel(cfg) -> void:
 	panel.queue_free()
 
 
-func _test_lobby_ai_mode(cfg) -> void:
-	var lobby = CoopLobbyRes.new()
-	root.add_child(lobby)
-	lobby.setup(cfg, null)
-	lobby.solo_started.connect(_on_solo_started)
-	ok(not lobby._ai_mode, "大厅默认真人模式")
-	lobby._set_ai_mode(true)
-	ok(lobby._ai_mode, "切到 AI 模式")
-	ok(lobby._ai_map_btn != null and lobby._ai_map_btn.visible, "AI 模式显示选择地图")
-	ok(lobby._ai_diff_btn != null and lobby._ai_diff_btn.visible, "AI 模式显示难度")
-	# 模式条放在席位与大厅面板之间：不压右侧大厅面板、也不压右上角返回键。
-	ok((lobby._ai_mode_btns[1] as Control).position.x < 1372.0, "AI 模式按钮不压大厅面板")
-	ok(lobby._ai_diff_btn.position.x < 1372.0, "难度按钮不压大厅面板 / 返回键")
-	if not lobby._room_only_nodes.is_empty():
-		ok(not (lobby._room_only_nodes[0] as CanvasItem).visible, "AI 模式隐藏房间列表")
-	lobby._cycle_ai_difficulty()
-	ok(lobby._ai_diff == "easy" or lobby._ai_diff == "hard", "难度可切换")
-	lobby._start_ai_solo()
-	ok(not _solo_payload.is_empty(), "★ 大厅发出 solo_started")
-	eq(String(_solo_payload.get("difficulty", "")), String(lobby._ai_diff), "开局带难度")
-	lobby._set_ai_mode(false)
-	ok(not lobby._ai_mode, "切回真人模式")
-	lobby.queue_free()
+func _test_session_ai_mode(cfg) -> void:
+	var session = CoopSessionRes.new()
+	root.add_child(session)
+	session.setup(cfg)
+	session.solo_started.connect(_on_solo_started)
+	eq(session.mode(), "idle", "合作会话默认 idle")
+	session.enter_ai_mode()
+	ok(session.is_ai(), "★ 切到 AI 模式")
+	ok(not session.current_entry().is_empty(), "AI 模式有默认合作地图")
+	session.start()
+	ok(not _solo_payload.is_empty(), "★ 会话发出 solo_started")
+	eq(String(_solo_payload.get("difficulty", "")), "normal", "AI 队友固定普通难度")
+	session.leave_all()
+	ok(session.mode() == "idle" and not session.is_ai(), "离开后回到 idle")
+	session.queue_free()
 
 
 func _on_solo_started(campaign_id: String, level_id: String, ai_setup: Dictionary) -> void:

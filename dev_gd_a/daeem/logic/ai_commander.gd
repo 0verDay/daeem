@@ -45,6 +45,8 @@ var revive_timer: float = 0.0
 ## ★★ 队伍粘合巡检：将领在走、某个附属兵掉队 / 停下时，**重发整队命令**。
 ##    绝不单独调一个兵 —— 用户口径：command AI 只能给部队下指令。
 var cohesion_next_at: float = 0.0
+## ★★ 2026.10.27：粘合巡检的轮转游标（每 tick 只查一部分队伍，见 `_cohesion_tick`）。
+var cohesion_cursor: int = 0
 ## ★★ 队伍职能：leader_id -> line / ranged / guerrilla。
 ##    职能由将领加入顺序轮换；影响招兵编成与行军目标（远程拉开、游击队打空档）。
 var team_roles: Dictionary = {}
@@ -60,6 +62,23 @@ var react_next: Dictionary = {}
 var react_mode: Dictionary = {}
 var react_point: Dictionary = {}
 var react_until: Dictionary = {}
+
+## ★★ 2026.10.27：邻域查询索引（性能）。
+##
+## `ai_army` 的目标选择会反复问「这个点周围有多少敌军 / 有没有友军」，旧实现每次
+## 都扫一遍 `world.units`（O(全部单位)），一次 army tick 里几十次 ⇒ dscj 256 单位
+## 实测有 20ms+ 的尖峰。这里改成**每帧最多建一次**的格子桶：
+##   · `_enemy_cells` / `_friend_cells`：格子坐标 → 该格里的活单位；
+##   · `_near_frame` 与 `world.frame_serial` 对齐 —— 同一帧内复用，下一帧重建；
+##   · `AiArmyRes.update()` 开头会强制失效（测试直接反复调 update 时也不会拿到旧位置）。
+var _near_frame: int = -1
+var _near_cell: float = 8.0
+var _enemy_cells: Dictionary = {}
+var _friend_cells: Dictionary = {}
+## ★ 只有 `AiArmyRes.update()` 期间才允许跨查询复用邻域索引。
+##   `react_to_attacked()` 等「战斗里逐次调用」的路径必须每次都重建 ——
+##   单位循环里位置会变，而且测试会在同一帧里直接刷兵 / 挪人。
+var _near_scope_active: bool = false
 
 ## 指令缓存（与 world.ai_directives 同步）
 var order_kind: String = "auto"
@@ -251,8 +270,10 @@ func update(dt: float) -> void:
 		return
 	if world.is_neutralized_faction(faction):
 		return
+	var _p := _pt()
 	_ensure_team_roles()
 	_sync_order()
+	_pd("cmd/roles", _p)
 	army_timer -= dt
 	build_timer -= dt
 	production_timer -= dt
@@ -262,21 +283,41 @@ func update(dt: float) -> void:
 	general_try_timer = maxf(0.0, general_try_timer - dt)
 	if revive_timer <= 0.0:
 		revive_timer = _interval_revive
+		var _pr := _pt()
 		_revive_tick()
+		_pd("cmd/revive", _pr)
 	if strategic_timer <= 0.0:
 		strategic_timer = _interval_strategic
+		var _ps := _pt()
 		_strategic_tick()
+		_pd("cmd/strategic", _ps)
 	if production_timer <= 0.0:
 		production_timer = _interval_production
+		var _pp := _pt()
 		_production_tick()
+		_pd("cmd/production", _pp)
 	if build_timer <= 0.0:
 		build_timer = _interval_build
+		var _pb := _pt()
 		AiBuildRes.update(self)
+		_pd("cmd/build", _pb)
 	if army_timer <= 0.0:
 		army_timer = _interval_army
 		# ★ 这里要传**本次决策间隔**，不是帧 dt：army 层只用它推进回防冷却。
 		#   传帧 dt 会让 20 秒冷却实际变成几分钟（每 0.6 秒才扣 0.016）。
+		var _pa := _pt()
 		AiArmyRes.update(self, _interval_army)
+		_pd("cmd/army", _pa)
+
+
+func _pt() -> int:
+	return Time.get_ticks_usec() if (world != null and world.profile_on) else 0
+
+
+func _pd(key: String, t0: int) -> void:
+	if t0 != 0:
+		world.profile_us[key] = int(world.profile_us.get(key, 0)) \
+			+ (Time.get_ticks_usec() - t0)
 
 
 ## 玩家改了指令（或开局第一次）→ 丢掉旧的编组缓存，避免把「上一个目标的命令」当成新的。

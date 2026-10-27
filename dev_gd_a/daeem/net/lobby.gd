@@ -1,7 +1,7 @@
 ## lobby.gd —— 合作大厅的**会话**（房间 / 准备 / 开局），不画界面。
 ##
 ## 它只认 `transport`（M12.3 的 RelayTransport）和 `protocol.gd` 的信封；
-## 建房 / 加入 / 准备 / 收 `start` 都是四五个字段，真正的 UI 在 `view/coop_lobby.gd`。
+## 建房 / 加入 / 准备 / 收 `start` 都是四五个字段，真正的 UI 在 `view/coop_session.gd` / `view/coop_room_panel.gd`。
 ##
 ## ★ 开局的交接：收到 `start`（客机）或房主按下开始（`take_transport()`）之后，
 ##   本对象把 transport 的 `message` 处理器断开、把通道交给 `host_session` /

@@ -1,10 +1,11 @@
-## test_settings_menu.gd —— ★ 选项页菜单（仿 nsoc）：HUD 右上角 / 主菜单右上角
+## test_settings_menu.gd —— HUD 选项页（仿 nsoc）+ 返回主菜单
 ##
 ## 盯的东西：
-##   · 按钮文案改成「选项」，点开是**居中 overlay**（不是贴按钮下方的下拉）；
+##   · 按钮文案是「选项」，点开是**居中 overlay**（不是贴按钮下方的下拉）；
 ##   · 一级继续 / 设置 / 返回主菜单；二级设置里是 全屏/窗口化 + 返回；
-##   · HUD 的全屏 / 返回主菜单仍然只发信号（窗口与流程归 main.gd）；
-##   · 主菜单右上角的「选项」走同一套控制器。
+##   · HUD 的全屏 / 返回主菜单只发信号（窗口与流程归 main.gd）；
+##   · 返回主菜单后 StartScreen 停在主菜单页，能再开一局。
+## ★ 新菜单已经去掉主菜单上的「选项」入口；本文件只测局内设置 + 回菜单。
 extends "res://tests/test_case.gd"
 
 const MapLibraryRes = preload("res://logic/map_library.gd")
@@ -25,7 +26,6 @@ func _run() -> void:
 	await _test_fullscreen_request()
 	await _test_touch_release_clears_hud_hover()
 	await _test_return_to_menu()
-	await _test_menu_options()
 
 	print("[CASE] %s -> 通过 %d 项，失败 %d 项" % [_case_name, _pass, _fail])
 	if _fail > 0:
@@ -192,29 +192,17 @@ func _test_return_to_menu() -> void:
 
 	ok(screen.visible, "★ 开场页重新可见（整层 show() 了，不只是页内两层）")
 	eq(int(screen.page()), PAGE_MENU, "★ 回到的是**主界面**那一页")
-	ok(screen.get_node("StartRoot/MainMenu").visible, "主界面那一层可见")
+	ok(screen.get_node("StartRoot/MenuDeck").visible, "★ 新菜单层可见")
 	ok(not screen.get_node("StartRoot/Intro").visible, "入场页那一层没有回来")
+	ok(screen.main_panel() != null and screen.main_panel().visible, "主菜单面板还在")
+	near(screen.main_panel().position.x, 1280.0, 1.0, "返回后主菜单面板回到右侧")
 
-	var buttons: Array = screen.test_buttons()
-	ok(buttons.size() == 5, "★★ 回到菜单后主界面正中还是那五颗按钮（test_1 + ai_test / ai_test_2 / ai_test_battle / ai_test_hz）")
-	if buttons.is_empty():
-		await _dispose(main)
-		return
-	var tb: Button = buttons[0]
-	await _click_at(tb.get_global_rect().get_center())
-	# ★ 现在点 test_1 先进战役过渡画面：选 F1 再点进入，才建第二局。
-	var tr = await _wait_transition(main)
-	ok(tr != null, "★ 回到菜单之后再按 test_1 会先出现战役过渡画面")
-	if tr != null:
-		tr.select_faction("F1")
-		await _wait_transition_ready(tr)
-		tr._enter()
-		var d: int = Time.get_ticks_msec() + 6000
-		while Time.get_ticks_msec() < d and main.game == null:
-			await process_frame
-		await process_frame
+	# 回菜单之后再开一局：测试/截图专用的直连入口仍然有效。
+	main._on_test_pressed(String(MapLibraryRes.default_map_path()))
+	await process_frame
+	await _wait_sec(0.4)
 	var second = main.game
-	ok(second != null, "★ 回到菜单之后再按 test_1 能开出一局新的")
+	ok(second != null, "★ 回到菜单之后还能开出一局新的")
 	ok(second != game, "★ 新一局是**新的** game_scene")
 
 	if second != null:
@@ -226,56 +214,6 @@ func _test_return_to_menu() -> void:
 		second.hud.return_menu_button.emit_signal("pressed")
 		await _wait_sec(0.32)
 		eq(main.game, null, "★ 第二次返回菜单同样生效")
-
-	await _dispose(main)
-
-
-func _test_menu_options() -> void:
-	var packed = load("res://view/main.tscn")
-	if packed == null:
-		ok(false, "能载入主场景 main.tscn")
-		return
-	var main = (packed as PackedScene).instantiate()
-	root.add_child(main)
-	await process_frame
-	var screen = main.start_screen
-	screen.dismiss_intro()
-	await _wait_sec(0.12)
-	while int(screen.page()) != PAGE_MENU:
-		await process_frame
-	# 主菜单三块面板的首次滑入也是 panel_expand 的 busy 状态；等它跑完再点选项。
-	await _wait_sec(0.75)
-
-	var btn: Button = screen.options_button()
-	ok(btn != null, "★★ 主菜单右上角有「选项」按钮")
-	if btn == null:
-		await _dispose(main)
-		return
-	eq(btn.text, screen.cfg.str_val("settings.title", "选项"), "主菜单选项按钮文案来自 config")
-	ok(btn.visible, "主界面时选项按钮可见")
-	ok(btn.get_global_rect().position.x > 1600.0, "选项按钮在屏幕右上角")
-
-	var op = screen.options_panel()
-	ok(op != null, "主菜单也挂了同一个选项页控制器")
-	if op == null:
-		await _dispose(main)
-		return
-	await _click_at(btn.get_global_rect().get_center())
-	await _wait_sec(0.28)
-	ok(op.overlay.visible, "★ 主菜单点「选项」→ overlay 打开")
-	eq(op.resume_button.text, screen.cfg.str_val("settings.back_text", "返回"),
-		"主菜单一级第一项是「返回」")
-	eq(op.exit_button.text, screen.cfg.str_val("settings.exit_game_text", "退出游戏"),
-		"主菜单一级第三项是「退出游戏」")
-
-	await _click_at(op.settings_button.get_global_rect().get_center())
-	await _wait_sec(0.22)
-	ok(op.is_settings_page_open(), "★ 主菜单也能进「设置」二级页")
-	await _click_at(op.back_button.get_global_rect().get_center())
-	await _wait_sec(0.22)
-	await _click_at(op.resume_button.get_global_rect().get_center())
-	await _wait_sec(0.28)
-	ok(not op.overlay.visible, "★ 主菜单「返回」关闭选项页")
 
 	await _dispose(main)
 

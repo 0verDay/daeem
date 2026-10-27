@@ -59,11 +59,18 @@
     "_mobile_comment": [
       "★★ 手机端 3D 渲染分辨率缩放（只在 OS.has_feature(\"mobile\") 时生效；桌面恒为 1.0）。",
       "  Godot 的 Viewport.scaling_3d_scale：3D 按「视口 × 这个比例」渲染再放大回全屏。",
-      "  手机上 GPU 多半卡在**分辨率 / 填充率**上，降到 0.75 常能救回一大截帧率；",
-      "  代价是 3D 略微变糊（UI 在 CanvasLayer 上，**不受影响**，仍然逐像素清晰）。",
-      "  取值 [0.5, 1.0]；1.0 = 关掉（与桌面一致）。"
+      "  手机上 GPU 多半卡在**分辨率 / 填充率**上；dscj（256 单位 / 27×42）实测比小图重得多，",
+      "  默认从 0.75 调到 **0.6**（3D 填充率约 -36%，UI 在 CanvasLayer 上不受影响）。",
+      "  还卡就继续降到 0.5；画面糊得不能接受就调回 0.75 / 1.0。取值 [0.5, 1.0]。"
     ],
-    "mobile_3d_scale": 0.75,
+    "mobile_3d_scale": 0.6,
+    "_mobile_auto_comment": [
+      "★ 手机端**自适应** 3D 分辨率（默认 true）。",
+      "  起始 = mobile_3d_scale；连续几秒低于 26fps 就每次减 0.05，最低 0.5；",
+      "  连续几秒高于 52fps 再每次加 0.05，升回 mobile_3d_scale。",
+      "  只改 3D（UI / 点选命中不受影响）。想看固定分辨率就设 false。"
+    ],
+    "mobile_auto_scale": true,
     "_mobile_frame_comment": [
       "★★ 手机端帧率诊断（只在 OS.has_feature(\"mobile\") 时生效；桌面 / 无头不读）。",
       "  【为什么要这两个开关】垂直同步会把帧率**量化到刷新率的整数分之一**：",
@@ -506,10 +513,11 @@
     "mobile_ui_stagger": true,
     "_minimap_hz_comment": [
       "★ 手机端小地图的重画频率上限（桌面 / 无头每帧）。小地图每帧要画地形 + 迷雾 + 单位，",
-      "  手机上没必要 60Hz；迷雾已烘成贴图后 10Hz 足够。0 = 不节流。",
+      "  dscj 上单次重画实测约 2ms（桌面）；20fps 时 10Hz 等于每 2 帧就抖一次，",
+      "  所以默认降到 **5Hz**（每 4 帧一次）。0 = 不节流。",
       "  HUD 会在建好小地图后把它第一次重画**错开半个节拍**，避免和 HUD 槽位同帧叠加。"
     ],
-    "mobile_minimap_hz": 10.0,
+    "mobile_minimap_hz": 5.0,
     "_perf_comment": [
       "★ 手机端**左上角**的性能读数，约 2Hz 刷新。",
       "  show_perf = 整块读数的总开关（关掉就一个字都不显示）。",
@@ -2034,6 +2042,42 @@
   },
 
   "menu": {
+    "deck": {
+      "transition_sec": 0.46,
+      "main": {
+        "name_size": 36,
+        "name_tracking": 8,
+        "buttons": ["战役", "合作", "演义"],
+        "bottom_buttons": ["自定义", "备战"]
+      },
+      "titles": {
+        "campaign": "战役",
+        "detail": "详情",
+        "coop": "合作",
+        "room": "房间",
+        "ready": "详情"
+      },
+      "campaign": {
+        "chapters": ["I", "II", "III"],
+        "flag_sub": "关卡"
+      }
+    },
+    "campaign_start": {
+      "margin": 40,
+      "gap": 40,
+      "panel_alpha": 0.92,
+      "title_size": 38,
+      "subtitle_size": 20,
+      "body_size": 21,
+      "hint_size": 24,
+      "bar_height": 26,
+      "bar_bottom": 120,
+      "bar_move_sec": 0.35,
+      "hint_fade_sec": 0.25,
+      "slide_sec": 0.42,
+      "fade_sec": 0.35,
+      "hint": "————点击进入游戏————"
+    },
     "_comment": [
       "★ 开场两页（暗色渐变入场页 + 主界面）的全部可调数值：文案、配色、字号、位置。",
       "★★ 底不再是白底（本轮 UI 改版）：这两页现在是「深蓝黑渐变底 + 冷灰蓝细线」的独立画面",
@@ -2366,12 +2410,17 @@
       "  · snapshot_hz = 房主发快照的频率；代码夹在 10~60。30 是当前目标",
       "    （20Hz 的全量 JSON 在客机上会跳，30Hz 是带宽/手感的第一档折中）。",
       "  · snapshot_buffer_limit_kb = 出站缓冲超过这么多 KB 时**跳过这一帧快照**，",
-      "    避免网络慢时旧快照越积越多、延迟越拖越大；0 = 关闭背压检查。"
+      "    避免网络慢时旧快照越积越多、延迟越拖越大；0 = 关闭背压检查。",
+      "    ★★ 2026.10.27：默认 64（原 1024）。移动端链路实测 0.3~0.6 MB/s，",
+      "    1 MiB 积压会让客机落后 2~3 秒（联机严重不同步）；64 KiB 把延迟压到 0.1~0.25 秒。",
+      "  · snapshot_keyframe_every = 每隔多少条快照发一次**完整关键帧**（0 = 只发首次）。",
+      "    其余快照只发相对关键帧变化过的单位字段（移动端带宽约降到 1/4~1/8）。"
     ],
     "relay_url": "ws://159.75.154.122:8770/ws",
     "build": "coop-m13.1",
     "snapshot_hz": 30,
-    "snapshot_buffer_limit_kb": 1024
+    "snapshot_buffer_limit_kb": 64,
+    "snapshot_keyframe_every": 300
   },
 
   "coop": {

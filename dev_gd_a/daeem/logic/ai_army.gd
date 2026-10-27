@@ -42,15 +42,26 @@ const GridRes = preload("res://logic/grid.gd")
 static func update(ai, dt: float) -> void:
 	if ai.world == null or ai.world.zones == null:
 		return
+	# ★ 邻域索引按帧缓存；每次 army tick 开头强制失效（见 ai_commander 的同名字段）。
+	ai._near_frame = -1
+	ai._near_scope_active = true
 	ai.recall_cd = maxf(0.0, ai.recall_cd - dt)
 	# 回防期间不再执行原指令（否则每帧「回防 → 又被指令拉走」来回抖）
 	if ai.world.time < ai.defend_until:
+		ai._near_scope_active = false
 		return
 	# ★ 守军角色每帧校验一次：阵亡 / 离开基地区划时立刻换人，
 	#   不然生产与「谁看家」会各说各话。
+	var _p_gar := _pt(ai)
 	ensure_garrison(ai)
+	_pd(ai, "ai_army/garrison", _p_gar)
+	var _p_def := _pt(ai)
 	if _defense_tick(ai):
+		_pd(ai, "ai_army/defense", _p_def)
+		ai._near_scope_active = false
 		return
+	_pd(ai, "ai_army/defense", _p_def)
+	var _p_order := _pt(ai)
 	var order := String(ai.order_kind)
 	match order:
 		"march":
@@ -63,21 +74,40 @@ static func update(ai, dt: float) -> void:
 			_auto(ai)
 		_:
 			_develop(ai)
+	_pd(ai, "ai_army/order", _p_order)
 	# ★★ 缺编队的防守驻守：自主 / 玩家扩张时都要做。
 	#    `march` / `mass` 是玩家明确要全军动起来，不能拿弱队去占中心。
 	#    `auto` 的前线 / 区划守备已经在 `_auto()` 里、巡逻之前分配好；
 	#    这里只补弱队驻守，避免重复抢队伍。
+	var _p_assign := _pt(ai)
 	if order == "auto":
 		_assign_defensive_posts(ai)
 	elif order == "expand":
 		_assign_defensive_posts(ai)
 		_assign_ready_guards(ai)
 		_assign_zone_guards(ai)
+	_pd(ai, "ai_army/assign", _p_assign)
 	# `auto` 已经在 `_auto()` 里做过补员回撤；玩家「扩张 / 发展」下也要补兵优先。
 	if order == "expand" or order == "develop":
 		ai.regroup_ids.clear()
+		var _p_recall := _pt(ai)
 		_recall_understrength_for_recruit(ai)
+		_pd(ai, "ai_army/recall", _p_recall)
+	var _p_coh := _pt(ai)
 	_cohesion_tick(ai)
+	_pd(ai, "ai_army/cohesion", _p_coh)
+	ai._near_scope_active = false
+
+
+## 剖析辅助（只在 `world.profile_on` 时计时；与 world.tick 的分段同一套口径）。
+static func _pt(ai) -> int:
+	return Time.get_ticks_usec() if (ai.world != null and ai.world.profile_on) else 0
+
+
+static func _pd(ai, key: String, t0: int) -> void:
+	if t0 != 0:
+		ai.world.profile_us[key] = int(ai.world.profile_us.get(key, 0)) \
+			+ (Time.get_ticks_usec() - t0)
 
 
 ## ★★ 队伍粘合：将领在移动、某个附属兵却停下 / 掉队（且不在战斗）时，
@@ -92,7 +122,20 @@ static func _cohesion_tick(ai) -> void:
 		+ maxf(0.2, float(cc.get("interval_sec", 1.2)))
 	var max_d := maxf(1.0, float(cc.get("max_distance_tiles", 4.0)))
 	# ★★ 2026.10.25：守军也纳入粘合巡检 —— 守军附属兵追出去同样算脱轨。
-	for t in leader_teams(ai):
+	# ★★ 2026.10.27：分批轮转。一次最多查 `cohesion.max_teams_per_tick` 支队伍 ——
+	#    实测同一 tick 给 5 支队伍重下整队命令（每支一次寻路）会打出 ~6 ms 尖峰；
+	#    粘合是 1.2 秒一次的「纠偏」，晚半秒处理掉队的兵不影响手感。
+	var all := leader_teams(ai)
+	if all.is_empty():
+		return
+	var budget := maxi(1, int(cc.get("max_teams_per_tick", 8)))
+	var start: int = int(ai.cohesion_cursor) % all.size()
+	var checked := 0
+	for k in all.size():
+		if checked >= budget:
+			break
+		checked += 1
+		var t: Dictionary = all[(start + k) % all.size()]
 		var leader = t.get("leader", null)
 		if leader == null or not leader.alive or leader.is_downed():
 			continue
@@ -152,6 +195,7 @@ static func _cohesion_tick(ai) -> void:
 			_order_team(ai, t, goal, false, true)
 		else:
 			_move_team(ai, t, goal, true)
+	ai.cohesion_cursor = start + checked
 
 
 ## 将领已经在交战、不能重发整队命令时，只把后方掉队的成员拉向将领。
@@ -227,21 +271,45 @@ static func _squad_units(ai) -> int:
 # ------------------------------------------------------------------
 
 ## 所有「活着的队长」各成一队；队长已阵亡的散兵各算一队（避免他们永远不动）。
+##
+## ★★ 2026.10.27：单趟建索引（性能）。
+##   旧实现对每个附属兵都调 `world.unit_by_id(leader_id)`、每个队长再调
+##   `world.group_of()` —— 两条都是 O(全部单位)，于是 `teams()` 是 O(n²)，
+##   而一次 army tick 里它被十几处调用（每个 `field_teams()` / `leader_teams()`）。
+##   现在先在**一趟**里建 `alive_ids` + `成员表`，再按原顺序拼队：
+##   结果（顺序、成员、`role`、`size`）与旧实现逐项一致，但复杂度是 O(n)。
 static func teams(ai) -> Array:
+	var world = ai.world
+	# 1) 一趟建索引：活单位 id + 每个队长 id 下的活成员（与 `world.group_of` 同口径：
+	#    只要求「活」，不要求未濒死 —— 濒死队长的附属兵仍然算在那一队里）。
+	var alive_ids: Dictionary = {}
+	var members: Dictionary = {}
+	for u in world.units:
+		if not u.alive:
+			continue
+		alive_ids[u.id] = true
+		if u.leader_id != "":
+			var arr: Variant = members.get(u.leader_id, null)
+			if arr == null:
+				members[u.leader_id] = [u]
+			else:
+				(arr as Array).append(u)
+	# 2) 按世界顺序拼队（队长在前，成员保持世界顺序）。
 	var out: Array = []
-	for u in ai.world.units:
+	for u in world.units:
 		if not u.alive or String(u.faction) != ai.faction:
 			continue
 		if u.is_downed():
 			continue
 		if String(u.leader_id) == "":
-			var g: Array = ai.world.group_of(u)
+			var g: Array = [u]
+			var ms: Variant = members.get(u.id, null)
+			if ms != null:
+				g.append_array(ms as Array)
 			out.append({"leader": u, "units": g, "size": g.size(),
 				"role": String(ai.team_roles.get(String(u.id), ""))})
-		else:
-			var l = ai.world.unit_by_id(String(u.leader_id))
-			if l == null or not l.alive:
-				out.append({"leader": u, "units": [u], "size": 1, "role": ""})
+		elif not alive_ids.has(u.leader_id):
+			out.append({"leader": u, "units": [u], "size": 1, "role": ""})
 	return out
 
 
@@ -1525,20 +1593,65 @@ static func _stop_team(ai, leader) -> void:
 	ai.guard_missions.erase(String(leader.id))
 
 
+## ★★ 每帧最多建一次的邻域索引（见 `ai_commander._enemy_cells` 的说明）。
+##
+## 口径与旧的全量扫描**逐条一致**：
+##   · 敌军：活、未濒死、非盟友，且我方视野内（`fog.logic_unit_visible`）；
+##   · 友军：活、未濒死、同阵营 / 盟友。
+## 视野只在这一帧建索引时判一次 —— 同一帧内迷雾不变，结果与逐次查询相同。
+static func _ensure_near_index(ai) -> void:
+	var world = ai.world
+	var cache_ok: bool = bool(ai._near_scope_active)
+	var fs: int = int(world.frame_serial)
+	if cache_ok and int(ai._near_frame) == fs:
+		return
+	if cache_ok:
+		ai._near_frame = fs
+	var cell: float = maxf(1.0, float(ai._near_cell))
+	var enemies: Dictionary = {}
+	var friends: Dictionary = {}
+	for u in world.units:
+		if not u.alive or u.is_downed():
+			continue
+		var key := Vector2i(floori(u.pos.x / cell), floori(u.pos.y / cell))
+		if FactionRes.same_side_for_attack(String(u.faction), ai.faction):
+			var fa: Variant = friends.get(key, null)
+			if fa == null:
+				friends[key] = [u]
+			else:
+				(fa as Array).append(u)
+			continue
+		if world.fog != null and not world.fog.logic_unit_visible(ai.faction, u):
+			continue
+		var ea: Variant = enemies.get(key, null)
+		if ea == null:
+			enemies[key] = [u]
+		else:
+			(ea as Array).append(u)
+	ai._enemy_cells = enemies
+	ai._friend_cells = friends
+
+
 ## 某个点周围看得见的敌对**兵力估值**（将领算 2，普通兵算 1）。
 ## ★ 用「可见」而不是全图：公平视野；看不见的大部队不该被 AI 开天眼躲开。
 static func _enemy_strength_near(ai, pt: Vector2, radius: float) -> float:
+	_ensure_near_index(ai)
+	var r := maxf(0.0, radius)
+	var r2 := r * r
+	var cell: float = maxf(1.0, float(ai._near_cell))
+	var x0 := floori((pt.x - r) / cell)
+	var x1 := floori((pt.x + r) / cell)
+	var y0 := floori((pt.y - r) / cell)
+	var y1 := floori((pt.y + r) / cell)
 	var n := 0.0
-	var r2 := maxf(0.0, radius) * maxf(0.0, radius)
-	for u in ai.world.units:
-		if not u.alive or u.is_downed():
-			continue
-		if FactionRes.same_side_for_attack(String(u.faction), ai.faction):
-			continue
-		if ai.world.fog != null and not ai.world.fog.logic_unit_visible(ai.faction, u):
-			continue
-		if u.pos.distance_squared_to(pt) <= r2:
-			n += 2.0 if u.is_general() else 1.0
+	for cy in range(y0, y1 + 1):
+		for cx in range(x0, x1 + 1):
+			var arr: Variant = ai._enemy_cells.get(Vector2i(cx, cy), null)
+			if arr == null:
+				continue
+			for u in (arr as Array):
+				if u.pos.distance_squared_to(pt) <= r2:
+					n += 2.0 if u.is_general() else 1.0
 	return n
 
 
@@ -2234,19 +2347,25 @@ static func _frontier_choke_tiles(ai, zone: Dictionary) -> Array:
 
 
 static func _friendly_near(ai, pt: Vector2, radius: float, except_id: String) -> bool:
-	var r2 := maxf(0.0, radius) * maxf(0.0, radius)
-	for u in ai.world.units:
-		if u == null or not u.alive or u.is_downed():
-			continue
-		if String(u.id) == except_id:
-			continue
-		# 同一支队的附属兵也算「自己」，不能因为护卫站在旁边就判定中心已经有人守。
-		if except_id != "" and String(u.leader_id) == except_id:
-			continue
-		if not FactionRes.same_side_for_attack(String(u.faction), ai.faction):
-			continue
-		if u.pos.distance_squared_to(pt) <= r2:
-			return true
+	_ensure_near_index(ai)
+	var r := maxf(0.0, radius)
+	var r2 := r * r
+	var cell: float = maxf(1.0, float(ai._near_cell))
+	var x0 := floori((pt.x - r) / cell)
+	var x1 := floori((pt.x + r) / cell)
+	var y0 := floori((pt.y - r) / cell)
+	var y1 := floori((pt.y + r) / cell)
+	for cy in range(y0, y1 + 1):
+		for cx in range(x0, x1 + 1):
+			var arr: Variant = ai._friend_cells.get(Vector2i(cx, cy), null)
+			if arr == null:
+				continue
+			for u in (arr as Array):
+				if except_id != "" and (String(u.id) == except_id \
+						or String(u.leader_id) == except_id):
+					continue
+				if u.pos.distance_squared_to(pt) <= r2:
+					return true
 	return false
 
 

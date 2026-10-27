@@ -91,10 +91,17 @@ func _on_message(text: String) -> void:
 		"start":
 			started.emit(body)
 		"snap":
-			# ★ 不立刻 apply：同一轮 poll 里可能还有更新的一条；只留最后一条。
-			if _has_pending_snap:
+			# ★★ 增量快照：同一轮 poll 里可能有多条，**不能只留最后一条** ——
+			#    前面的增量里可能有后面不再重复的字段变化（见 `merge_delta`）。
+			var new_snap: Variant = body.get("snap", null)
+			if typeof(new_snap) != TYPE_DICTIONARY:
+				protocol_error.emit("snapshot")
+				return
+			if _has_pending_snap and typeof(_pending_snap) == TYPE_DICTIONARY:
+				_pending_snap = SnapshotRes.merge_delta(_pending_snap, new_snap)
 				snapshots_coalesced += 1
-			_pending_snap = body.get("snap", null)
+			else:
+				_pending_snap = new_snap
 			_has_pending_snap = true
 		"event":
 			_apply_events(body)

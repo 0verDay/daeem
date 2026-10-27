@@ -75,54 +75,6 @@ func v2i_eq(actual: Vector2i, expected: Vector2i, what: String) -> void:
 		_failed_names.append(what)
 		printerr("  [FAIL] %s（实际 %s，期望 %s）" % [what, str(actual), str(expected)])
 
-## 打开「战役」按钮撑开的那块面板，并返回里面那块**战役菜单**（`view/campaign_menu.gd`）。
-##
-## ★★ 战役菜单现在住在**那块面板里**（左侧轮播 / 顶部关卡圆点 / 右侧描述 / 长按进入）：
-##   凡是与「战役菜单」有关的用例，都要先走这一步。
-## ★ 用**发信号**等价于点「战役」（不依赖鼠标落在哪），并等转场真的撑开
-##   （转场是时间驱动的 Tween，按帧数赌不够）。
-## @return 那块战役菜单控件；拿不到时返回 null —— 调用方自己 ok() 断一下再往下走。
-func open_campaign_panel(menu) -> Variant:
-	if menu == null:
-		return null
-	var chrome = menu.menu_chrome()
-	if chrome == null:
-		return null
-	return await _open_panel(chrome, func(): return menu.campaign_menu())
-
-
-## 只把「战役」面板撑开，不要内容（给只关心面板开合 / 返回按钮的用例）。
-## @return true = 面板已处于撑开态
-func open_panel(menu) -> bool:
-	if menu == null:
-		return false
-	var chrome = menu.menu_chrome()
-	if chrome == null:
-		return false
-	var got = await _open_panel(chrome, func(): return true)
-	return got == true
-
-
-func _open_panel(chrome, getter: Callable) -> Variant:
-	var engine = chrome.expand_engine()
-	# ★ 先等引擎空下来：**入场那一下的「滑入」也是它跑的**（`play_intro()`），
-	#   它忙的时候 `expand()` 会被直接忽略 —— 不等的话这里会白等到超时再返回 null。
-	var deadline: int = Time.get_ticks_msec() + 8000
-	while Time.get_ticks_msec() < deadline and engine.is_busy():
-		await process_frame
-	if not engine.is_expanded():
-		var side: Array = chrome.side_buttons()
-		if side.is_empty():
-			return null
-		(side[0] as Button).pressed.emit()
-		# 转场是**时间驱动**的 Tween：等它真的撑开（按帧数赌不够）
-		var open_deadline: int = Time.get_ticks_msec() + 8000
-		while Time.get_ticks_msec() < open_deadline and not engine.is_expanded():
-			await process_frame
-		await process_frame
-	return getter.call()
-
-
 func script_at(path: String) -> GDScript:
 	var s := load(path)
 	if s == null:
@@ -224,7 +176,14 @@ func require_world_with_escorts(cfg, per_general: int = 3, faction: String = "p1
 	})
 	var path := "res://.tmp_test_case/escort_scaffold.json"
 	DirAccess.make_dir_recursive_absolute("res://.tmp_test_case")
-	var f := FileAccess.open(path, FileAccess.WRITE)
+	# ★ 连续跑多个测试文件时，Windows 偶尔还没释放上一轮的文件句柄（杀毒 / 索引也会短暂占用）。
+	#   这里重试几次，避免把「探针文件被占用」误报成玩法回归。
+	var f: FileAccess = null
+	for _attempt in 5:
+		f = FileAccess.open(path, FileAccess.WRITE)
+		if f != null:
+			break
+		OS.delay_msec(20)
 	if f == null:
 		ok(false, "能写探针关卡：%s" % path)
 		return null

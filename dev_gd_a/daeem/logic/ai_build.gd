@@ -21,12 +21,22 @@ static func update(ai) -> void:
 	#   只要大本营还有下一级可升，就先尝试升本；这一轮没升成（钱不够）就
 	#   **攒钱**，不把余钱花到科技 / 特化 / 塔 / 墙 / 升级上。
 	#   大本营满级 / 正在读条 / 正在重生 / 被占领区封锁时，才轮到后面的建造。
-	var base_pick: Dictionary = _base_upgrade_candidate(ai)
+	#
+	# ★★ 2026.10.27：整个建造 tick 共享一份区划级 memo（被入侵 / 前线 / 占领封锁）。
+	#   这些判断会扫单位或全图地块，而一次 tick 里塔 / 墙 / 边境墙会反复问同一批区划。
+	var memo: Dictionary = {}
+	var _p0 := _pt(ai)
+	var base_pick: Dictionary = _base_upgrade_candidate(ai, memo)
+	_pd(ai, "build/base", _p0)
 	if not base_pick.is_empty():
 		_try_base_upgrade(ai)
 		return
+	var _p1 := _pt(ai)
 	_try_tech(ai)
-	_try_spec(ai)
+	_pd(ai, "build/tech", _p1)
+	var _p2 := _pt(ai)
+	_try_spec(ai, memo)
+	_pd(ai, "build/spec", _p2)
 	# ★★ 2026.10.25：不再用「缺编就整段跳过建造」的硬闸门。
 	#   生产预留（`_production_reserve`）先把当前可生产缺口的钱全部扣掉，
 	#   建造只能用**扣完补员预算之后的余钱**：这才是「造部队始终优先」，
@@ -34,24 +44,41 @@ static func update(ai) -> void:
 	#   `_defense_paused()` 仍保留给测试 / 面板判断，但不再阻断整个建造周期。
 	# ★★ 2026.10.25：塔优先于墙 —— 这一 tick 只要真的造了塔，就不再花墙的钱。
 	#   等塔目标都满足（或暂时造不了）才轮到中心环 / 边境长墙。
-	_try_tower_then_walls(ai)
+	var _p3 := _pt(ai)
+	_try_tower_then_walls(ai, memo)
+	_pd(ai, "build/tower_walls", _p3)
 	# ★★ 2026.10.26：取消建筑升级 —— AI 只造木墙 / 哨塔，不再升级任何墙塔。
 	#   钱明显花不完时，同一周期继续补塔 / 补墙。
 	if AiEconomyRes.float_excess(ai):
-		_try_tower_then_walls(ai)
+		var _p4 := _pt(ai)
+		_try_tower_then_walls(ai, memo)
+		_pd(ai, "build/tower_walls2", _p4)
+
+
+## 剖析辅助（只在 `world.profile_on` 时计时）。
+static func _pt(ai) -> int:
+	return Time.get_ticks_usec() if (ai.world != null and ai.world.profile_on) else 0
+
+
+static func _pd(ai, key: String, t0: int) -> void:
+	if t0 != 0:
+		ai.world.profile_us[key] = int(ai.world.profile_us.get(key, 0)) \
+			+ (Time.get_ticks_usec() - t0)
 
 
 ## 先尝试造一座塔；**只有塔这一 tick 没造出来**才允许碰墙。
-static func _try_tower_then_walls(ai) -> void:
+static func _try_tower_then_walls(ai, memo: Variant = null) -> void:
+	var _p0 := _pt(ai)
 	var before := _tower_count(ai)
-	_try_tower(ai)
+	_try_tower(ai, memo)
+	_pd(ai, "build/tower", _p0)
 	if _tower_count(ai) > before:
 		return
 	# 塔位还在、只是钱不够：攒钱等塔，不拿这笔钱去造墙。
-	if _should_save_for_tower(ai):
+	if _should_save_for_tower(ai, memo):
 		return
-	_try_wall_ring(ai)
-	_try_border_walls(ai, _wall_border_budget(ai))
+	_try_wall_ring(ai, memo)
+	_try_border_walls(ai, _wall_border_budget(ai), memo)
 
 
 # ------------------------------------------------------------------
@@ -61,7 +88,7 @@ static func _try_tower_then_walls(ai) -> void:
 ## 下一次大本营升级的候选（含成本）。空 = 现在不需要 / 不能升。
 ## ★ 只做「是否可升级」的结构性判断，不检查部队预留后的余钱；
 ##   affordability 由 `_try_base_upgrade()` / `update()` 统一判断。
-static func _base_upgrade_candidate(ai) -> Dictionary:
+static func _base_upgrade_candidate(ai, memo: Variant = null) -> Dictionary:
 	var b = ai.world.find_base_of(ai.faction)
 	if b == null or not b.alive or b.neutralized:
 		return {}
@@ -77,7 +104,7 @@ static func _base_upgrade_candidate(ai) -> Dictionary:
 			and ai.world.general_count_of(ai.faction) < need_generals:
 		return {}
 	# 大本营所在区划正被踩占领区：先防守，不升级（也不为它囤钱）。
-	if _zone_capture_blocked(ai, ai.world.zones.zone_at(b.tx, b.ty)):
+	if _zone_capture_blocked(ai, ai.world.zones.zone_at(b.tx, b.ty), memo):
 		return {}
 	return {"b": b, "cost": ai.world.building_upgrade_cost(b)}
 
@@ -141,7 +168,7 @@ static func _try_tech(ai) -> void:
 # 区划特化
 # ------------------------------------------------------------------
 
-static func _try_spec(ai) -> void:
+static func _try_spec(ai, memo: Variant = null) -> void:
 	var zones: Variant = ai.world.zones
 	if zones == null:
 		return
@@ -151,7 +178,7 @@ static func _try_spec(ai) -> void:
 		var zd: Dictionary = z
 		if String(zd.get("owner", "")) != ai.faction:
 			continue
-		if _zone_capture_blocked(ai, zd):
+		if _zone_capture_blocked(ai, zd, memo):
 			continue
 		if String(zd.get("spec_done", "")) != "":
 			continue
@@ -214,7 +241,7 @@ static func _pick_spec(ai, zone: Dictionary, choices: Array) -> String:
 # 箭塔
 # ------------------------------------------------------------------
 
-static func _try_tower(ai) -> void:
+static func _try_tower(ai, memo: Variant = null) -> void:
 	var build_cfg: Dictionary = ai.profile.get("build", {})
 	var hard_max := int(build_cfg.get("tower_hard_max",
 		build_cfg.get("tower_max", 24)))
@@ -222,15 +249,15 @@ static func _try_tower(ai) -> void:
 		return
 	if _tower_count(ai) >= hard_max:
 		return
-	if _tower_count(ai) >= _tower_target(ai):
+	if _tower_count(ai) >= _tower_target(ai, memo):
 		return
 	var cost: Dictionary = _tower_cost(ai)
 	if not _defense_afford(ai, cost, build_cfg):
 		return
-	var zone = _pick_tower_zone(ai)
+	var zone = _pick_tower_zone(ai, memo)
 	if zone == null:
 		return
-	var tile: Variant = _pick_tower_tile(ai, zone)
+	var tile: Variant = _pick_tower_tile(ai, zone, memo)
 	if tile == null:
 		return
 	var t: Vector2i = tile
@@ -256,13 +283,13 @@ static func _tower_cost(ai) -> Dictionary:
 
 ## 塔目标还没满、也确实有塔位，但这一 tick 钱不够 —— 此时不许拿钱去造墙，
 ## 先攒着把塔造出来。这是「造箭塔优先于造城墙」的硬保证。
-static func _should_save_for_tower(ai) -> bool:
-	if _tower_count(ai) >= _tower_target(ai):
+static func _should_save_for_tower(ai, memo: Variant = null) -> bool:
+	if _tower_count(ai) >= _tower_target(ai, memo):
 		return false
-	var zone = _pick_tower_zone(ai)
+	var zone = _pick_tower_zone(ai, memo)
 	if zone == null:
 		return false
-	if _pick_tower_tile(ai, zone) == null:
+	if _pick_tower_tile(ai, zone, memo) == null:
 		return false
 	return not _defense_afford(ai, _tower_cost(ai))
 
@@ -273,7 +300,7 @@ static func _try_wall(ai) -> void:
 	_try_border_walls(ai, _wall_border_budget(ai))
 
 
-static func _try_wall_ring(ai) -> void:
+static func _try_wall_ring(ai, memo: Variant = null) -> void:
 	var build_cfg: Dictionary = ai.profile.get("build", {})
 	if not bool(build_cfg.get("wall_enabled", true)):
 		return
@@ -288,7 +315,7 @@ static func _try_wall_ring(ai) -> void:
 			cost = cv
 	if not _defense_afford(ai, cost, build_cfg):
 		return
-	var zone = _pick_wall_zone(ai)
+	var zone = _pick_wall_zone(ai, memo)
 	if zone == null:
 		return
 	var missing := _missing_wall_tiles(ai, zone)
@@ -331,8 +358,27 @@ static func _wall_ring_tiles(ai, zone: Dictionary) -> Array:
 	return out
 
 
+## ★★ 区划级的「这里能不能造」判据（性能）。
+##
+## `world.can_build_at(tx, ty, faction)` 里那两条 faction 判据
+## （`zone_allows_build` / `zone_capture_blocks_build`）只看**该格所属的区划**；
+## 而 `zone_capture_blocked` 会扫一遍全部单位。选塔位 / 边境墙时会对同一个区划的
+## 上百个候选格各调一次 ⇒ O(候选 × 单位数)（dscj 实测单次 3 ms+）。
+## 区划内所有格子结果相同，所以这里每个区划只算一次，逐格只保留地形 / 占位判定
+## （`can_build_at(tx, ty)` 不传 faction）。
+static func _zone_build_ok(ai, zone: Dictionary) -> bool:
+	var cv: Variant = zone.get("center", null)
+	if cv == null:
+		return false
+	var ct: Vector2i = cv
+	return ai.world.zone_allows_build(ct.x, ct.y, ai.faction) \
+		and not ai.world.zone_capture_blocks_build(ct.x, ct.y, ai.faction)
+
+
 static func _missing_wall_tiles(ai, zone: Dictionary) -> Array:
 	var out: Array = []
+	# ⚠️ 这里**不能**用 `_zone_build_ok` 一把梭：3×3 外圈可能跨到邻区，
+	#    每格必须按**它自己的区划**判（与旧实现一致）。只有 8 格，代价可以忽略。
 	for t in _wall_ring_tiles(ai, zone):
 		var tv: Vector2i = t
 		if ai.world.building_at(tv.x, tv.y) != null:
@@ -343,7 +389,7 @@ static func _missing_wall_tiles(ai, zone: Dictionary) -> Array:
 	return out
 
 
-static func _pick_wall_zone(ai):
+static func _pick_wall_zone(ai, memo: Variant = null):
 	var best = null
 	var best_score := -INF
 	for z in ai.world.zones.zones:
@@ -354,10 +400,10 @@ static func _pick_wall_zone(ai):
 			continue
 		if zd.get("center", null) == null:
 			continue
-		if _zone_capture_blocked(ai, zd):
+		if _zone_capture_blocked(ai, zd, memo):
 			continue
-		var threatened := _zone_threatened(ai, zd)
-		if not threatened and not _zone_is_frontier(ai, zd):
+		var threatened := _zone_threatened(ai, zd, memo)
+		if not threatened and not _zone_is_frontier(ai, zd, memo):
 			continue
 		var missing := _missing_wall_tiles(ai, zd)
 		if missing.is_empty():
@@ -450,7 +496,7 @@ static func _bare_general_count(ai) -> int:
 
 
 ## 铺最多 `max_builds` 格边境墙。每次重新选点（墙线会越来越长，评分会跟着变）。
-static func _try_border_walls(ai, max_builds: int) -> void:
+static func _try_border_walls(ai, max_builds: int, memo: Variant = null) -> void:
 	if max_builds <= 0 or not _wall_border_ready(ai):
 		return
 	var build_cfg: Dictionary = ai.profile.get("build", {})
@@ -471,7 +517,7 @@ static func _try_border_walls(ai, max_builds: int) -> void:
 			break
 		if not _defense_afford(ai, cost, build_cfg):
 			break
-		var tile: Variant = _pick_border_wall_tile(ai, occupied)
+		var tile: Variant = _pick_border_wall_tile(ai, occupied, memo)
 		if tile == null:
 			break
 		var t: Vector2i = tile
@@ -491,17 +537,18 @@ static func _try_border_walls(ai, max_builds: int) -> void:
 
 ## 从所有合格区划的边境格里选一格：**先封与敌方接壤的前线**，没有前线缺口
 ## 才轮得到中立边；同一档里优先接上已有墙线，其次隘口 / 敌人方向。
-static func _pick_border_wall_tile(ai, occupied: Dictionary) -> Variant:
-	var front: Variant = _pick_border_wall_tile_pass(ai, occupied, true)
+static func _pick_border_wall_tile(ai, occupied: Dictionary,
+		memo: Variant = null) -> Variant:
+	var front: Variant = _pick_border_wall_tile_pass(ai, occupied, true, memo)
 	if front != null:
 		return front
 	if _border_scope_all(ai):
-		return _pick_border_wall_tile_pass(ai, occupied, false)
+		return _pick_border_wall_tile_pass(ai, occupied, false, memo)
 	return null
 
 
 static func _pick_border_wall_tile_pass(ai, occupied: Dictionary,
-		require_enemy_facing: bool) -> Variant:
+		require_enemy_facing: bool, memo: Variant = null) -> Variant:
 	var full := _border_scope_all(ai)
 	var best: Variant = null
 	var best_score := -INF
@@ -513,14 +560,14 @@ static func _pick_border_wall_tile_pass(ai, occupied: Dictionary,
 			continue
 		if zd.get("center", null) == null:
 			continue
-		if _zone_capture_blocked(ai, zd):
+		if _zone_capture_blocked(ai, zd, memo):
 			continue
-		var enemy_facing := _zone_enemy_facing(ai, zd)
+		var enemy_facing := _zone_enemy_facing(ai, zd, memo)
 		if require_enemy_facing and not enemy_facing:
 			continue
 		if not require_enemy_facing and enemy_facing:
 			continue
-		var threatened := _zone_threatened(ai, zd)
+		var threatened := _zone_threatened(ai, zd, memo)
 		for t in _border_wall_tiles(ai, zd, full, occupied):
 			var tv: Vector2i = t
 			var score := _border_tile_score(ai, zd, tv, threatened, enemy_facing)
@@ -539,6 +586,8 @@ static func _pick_border_wall_tile_pass(ai, occupied: Dictionary,
 static func _border_wall_tiles(ai, zone: Dictionary, allow_neutral: bool,
 		occupied: Dictionary) -> Array:
 	var out: Array = []
+	if not _zone_build_ok(ai, zone):
+		return out
 	var zid := int(zone.get("id", -1))
 	for t in (zone.get("tiles", []) as Array):
 		var tv: Vector2i = t
@@ -546,7 +595,7 @@ static func _border_wall_tiles(ai, zone: Dictionary, allow_neutral: bool,
 			continue
 		if not ai.world.map.tile_exists(tv.x, tv.y):
 			continue
-		if not ai.world.can_build_at(tv.x, tv.y, ai.faction):
+		if not ai.world.can_build_at(tv.x, tv.y):
 			continue
 		if ai.world.building_at(tv.x, tv.y) != null:
 			continue
@@ -632,7 +681,17 @@ static func _border_tile_score(ai, zone: Dictionary, t: Vector2i,
 
 
 ## 这个区划有没有邻格属于敌方（不是中立、也不是同方）。
-static func _zone_enemy_facing(ai, zone: Dictionary) -> bool:
+static func _zone_enemy_facing(ai, zone: Dictionary, memo: Variant = null) -> bool:
+	var key := "ef:%d" % int(zone.get("id", -1))
+	var cached: Variant = _memo_get(memo, key)
+	if cached != null:
+		return bool(cached)
+	var v := _zone_enemy_facing_raw(ai, zone)
+	_memo_put(memo, key, v)
+	return v
+
+
+static func _zone_enemy_facing_raw(ai, zone: Dictionary) -> bool:
 	for t in (zone.get("tiles", []) as Array):
 		var tv: Vector2i = t
 		for d in GridRes.DIRS4:
@@ -753,7 +812,7 @@ static func _tower_count_in_zone(ai, zid: int) -> int:
 
 ## ★★ 战略目标：前线多、后方少；被入侵的区划再加码。
 ## 不再限制「一个区划只能一塔」——每个区划按自己的战略角色算目标数量。
-static func _tower_target(ai) -> int:
+static func _tower_target(ai, memo: Variant = null) -> int:
 	var build_cfg: Dictionary = ai.profile.get("build", {})
 	var hard_max := int(build_cfg.get("tower_hard_max",
 		build_cfg.get("tower_max", 24)))
@@ -766,16 +825,16 @@ static func _tower_target(ai) -> int:
 			continue
 		if zd.get("center", null) == null:
 			continue
-		total += _zone_tower_target(ai, zd)
+		total += _zone_tower_target(ai, zd, memo)
 	return mini(total, hard_max)
 
 
-static func _zone_tower_target(ai, zd: Dictionary) -> int:
+static func _zone_tower_target(ai, zd: Dictionary, memo: Variant = null) -> int:
 	var build_cfg: Dictionary = ai.profile.get("build", {})
 	var rich := _rich_tower_bonus(ai)
-	if _zone_threatened(ai, zd):
+	if _zone_threatened(ai, zd, memo):
 		return maxi(0, int(build_cfg.get("tower_threat_towers", 5)) + rich)
-	if _zone_is_frontier(ai, zd):
+	if _zone_is_frontier(ai, zd, memo):
 		return maxi(0, int(build_cfg.get("tower_front_towers", 3)) + rich)
 	return maxi(0, int(build_cfg.get("tower_rear_towers", 0)))
 
@@ -803,7 +862,31 @@ static func _rich_tower_bonus(ai) -> int:
 
 ## 区划当前是不是被入侵 / 正在被敌对占领。
 ## 区划是否被敌方踏进中心 3×3 占领区 —— 这时整块区划不能建造。
-static func _zone_capture_blocked(ai, zd) -> bool:
+## ★ 区划级判断的 memo（性能）：只在**一次建造 tick 内**共享，不挂在 ai 上。
+##   `update()` 建一个 `memo` 传给这一轮的所有子步骤；直接调用（测试）不传 ⇒ 照旧实时计算。
+static func _memo_get(memo: Variant, key: String) -> Variant:
+	if memo == null:
+		return null
+	return (memo as Dictionary).get(key, null)
+
+
+static func _memo_put(memo: Variant, key: String, value: Variant) -> void:
+	if memo != null:
+		(memo as Dictionary)[key] = value
+
+
+static func _zone_capture_blocked(ai, zd, memo: Variant = null) -> bool:
+	var zid := int((zd as Dictionary).get("id", -1))
+	var key := "cb:%d" % zid
+	var cached: Variant = _memo_get(memo, key)
+	if cached != null:
+		return bool(cached)
+	var v := _zone_capture_blocked_raw(ai, zd)
+	_memo_put(memo, key, v)
+	return v
+
+
+static func _zone_capture_blocked_raw(ai, zd) -> bool:
 	if ai == null or ai.world == null or zd == null:
 		return false
 	if not ai.world.has_method("zone_capture_blocked"):
@@ -811,7 +894,17 @@ static func _zone_capture_blocked(ai, zd) -> bool:
 	return bool(ai.world.zone_capture_blocked(zd, ai.faction))
 
 
-static func _zone_threatened(ai, zd: Dictionary) -> bool:
+static func _zone_threatened(ai, zd: Dictionary, memo: Variant = null) -> bool:
+	var key := "th:%d" % int(zd.get("id", -1))
+	var cached: Variant = _memo_get(memo, key)
+	if cached != null:
+		return bool(cached)
+	var v := _zone_threatened_raw(ai, zd)
+	_memo_put(memo, key, v)
+	return v
+
+
+static func _zone_threatened_raw(ai, zd: Dictionary) -> bool:
 	var center: Variant = zd.get("center", null)
 	if center == null:
 		return false
@@ -846,7 +939,7 @@ static func _zone_threatened(ai, zd: Dictionary) -> bool:
 ## ★★ 选一个「目标数量还没满」的己方区划。被入侵的区划优先级最高；
 ## 其次是有缺口的前线；**只要有前线缺口，后方区划就完全不考虑**。
 ## 后方目标通常为 0（但配置调大后也能建；仍然排在前线之后）。
-static func _pick_tower_zone(ai):
+static func _pick_tower_zone(ai, memo: Variant = null):
 	var build_cfg: Dictionary = ai.profile.get("build", {})
 	var front_best = null
 	var front_score := -INF
@@ -861,16 +954,16 @@ static func _pick_tower_zone(ai):
 		if zd.get("center", null) == null:
 			continue
 		# 区划正被踩占领区：不选它造塔，先打退敌人。
-		if _zone_capture_blocked(ai, zd):
+		if _zone_capture_blocked(ai, zd, memo):
 			continue
 		var zid := int(zd.get("id", -1))
-		var desired := _zone_tower_target(ai, zd)
+		var desired := _zone_tower_target(ai, zd, memo)
 		var current := _tower_count_in_zone(ai, zid)
 		var deficit := desired - current
 		if deficit <= 0:
 			continue
-		var threatened := _zone_threatened(ai, zd)
-		var frontier := _zone_is_frontier(ai, zd)
+		var threatened := _zone_threatened(ai, zd, memo)
+		var frontier := _zone_is_frontier(ai, zd, memo)
 		var score := float(deficit) * 10.0
 		if threatened:
 			score += 100.0
@@ -893,7 +986,17 @@ static func _pick_tower_zone(ai):
 	return front_best if front_best != null else rear_best
 
 
-static func _zone_is_frontier(ai, zone: Dictionary) -> bool:
+static func _zone_is_frontier(ai, zone: Dictionary, memo: Variant = null) -> bool:
+	var key := "fr:%d" % int(zone.get("id", -1))
+	var cached: Variant = _memo_get(memo, key)
+	if cached != null:
+		return bool(cached)
+	var v := _zone_is_frontier_raw(ai, zone)
+	_memo_put(memo, key, v)
+	return v
+
+
+static func _zone_is_frontier_raw(ai, zone: Dictionary) -> bool:
 	for t in (zone.get("tiles", []) as Array):
 		var tv: Vector2i = t
 		for d in GridRes.DIRS4:
@@ -946,20 +1049,49 @@ static func _enemy_zone_points(ai) -> Array:
 ##   · 被入侵 ⇒ 尽量贴着中心（2~3 格；1 格留给城墙环），方便补防；
 ##   · 平时在前线 ⇒ 往「靠敌方的那条边界」压，优先能覆盖更多边界格的位置；
 ##   · 不做「隔一格 / 最近建过就跳过」的人为限制，位置完全由战术评分决定。
-static func _pick_tower_tile(ai, zone: Dictionary) -> Variant:
+static func _pick_tower_tile(ai, zone: Dictionary, memo: Variant = null) -> Variant:
 	var center: Variant = zone.get("center", null)
 	if center == null:
 		return null
 	var c: Vector2i = center
 	var zid := int(zone.get("id", -1))
 	var build_cfg: Dictionary = ai.profile.get("build", {})
-	var threatened := _zone_threatened(ai, zone)
+	# ★ 区划级建造判据只算一次（逐格调会扫全部单位，见 `_zone_build_ok`）。
+	if not _zone_build_ok(ai, zone):
+		return null
+	var threatened := _zone_threatened(ai, zone, memo)
 	var dmax := 4 if threatened else 8
 	var cover_radius := maxi(1, int(build_cfg.get("tower_cover_radius", 4)))
 	var wall_enabled := bool(build_cfg.get("wall_enabled", true))
-	var reserve_ring := wall_enabled and (threatened or _zone_is_frontier(ai, zone))
+	var reserve_ring := wall_enabled and (threatened or _zone_is_frontier(ai, zone, memo))
 	var frontier := _frontier_tiles(ai, zone)
 	var enemy_pts := _enemy_zone_points(ai)
+	# ★★ 2026.10.27 预计算（性能）：frontier 可能有上百格，而候选塔位最多 ~289 格。
+	#   旧实现在候选循环里把 frontier 扫两遍（最坏 O(候选 × 边界)，实测单次 ~10 ms）。
+	#   这里先各算一张小表，循环里只做 O(1) 查表 —— 评分公式与选点结果逐位不变：
+	#     · `front_dist`：到最近边界格的切比雪夫距离（非受威胁时只用到 ≤ 4，
+	#       > 4 的候选本来就会被丢掉，所以表只铺 4 格）；
+	#     · `cover_count`：以该格为中心、`cover_radius` 内覆盖了多少边界格。
+	var front_dist: Dictionary = {}
+	if not threatened and not frontier.is_empty():
+		var reach := 4
+		for ft in frontier:
+			var fv: Vector2i = ft
+			for dy in range(-reach, reach + 1):
+				for dx in range(-reach, reach + 1):
+					var dd := maxi(absi(dx), absi(dy))
+					var key := Vector2i(fv.x + dx, fv.y + dy)
+					if dd < int(front_dist.get(key, 999)):
+						front_dist[key] = dd
+	var cover_count: Dictionary = {}
+	if not frontier.is_empty():
+		var cr := maxi(1, cover_radius)
+		for ft2 in frontier:
+			var fv2: Vector2i = ft2
+			for dy2 in range(-cr, cr + 1):
+				for dx2 in range(-cr, cr + 1):
+					var key2 := Vector2i(fv2.x + dx2, fv2.y + dy2)
+					cover_count[key2] = int(cover_count.get(key2, 0)) + 1
 	var pool: Array = []
 	for t in (zone.get("tiles", []) as Array):
 		var tv: Vector2i = t
@@ -971,16 +1103,14 @@ static func _pick_tower_tile(ai, zone: Dictionary) -> Variant:
 		# 1 格环留给城墙，不拿塔去占围墙位。
 		if reserve_ring and d <= 1:
 			continue
-		if not ai.world.can_build_at(tv.x, tv.y, ai.faction):
+		if not ai.world.can_build_at(tv.x, tv.y):
 			continue
 		if ai.world.building_at(tv.x, tv.y) != null:
 			continue
 		# 到最近边界格 / 最近敌方区划中心的距离，以及能覆盖多少边界格。
 		var front_edge := 999
-		for ft in frontier:
-			var fv: Vector2i = ft
-			front_edge = mini(front_edge,
-				maxi(absi(fv.x - tv.x), absi(fv.y - tv.y)))
+		if not threatened:
+			front_edge = int(front_dist.get(tv, 999))
 		if not threatened and not frontier.is_empty() and front_edge > 4:
 			continue
 		var enemy_d := 9999.0
@@ -988,11 +1118,7 @@ static func _pick_tower_tile(ai, zone: Dictionary) -> Variant:
 			var ev: Vector2 = ep
 			enemy_d = minf(enemy_d, Vector2(float(tv.x) + 0.5,
 				float(tv.y) + 0.5).distance_to(ev))
-		var coverage := 0
-		for ft in frontier:
-			var fv: Vector2i = ft
-			if maxi(absi(fv.x - tv.x), absi(fv.y - tv.y)) <= cover_radius:
-				coverage += 1
+		var coverage := int(cover_count.get(tv, 0))
 		var score := 0.0
 		if threatened:
 			# 中心附近 + 覆盖边界：补防优先。

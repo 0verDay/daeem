@@ -304,12 +304,27 @@ func _batch_for(key: String, faction: String, leader: bool, unit_type: String,
 ##   ★ 判据：`bench_fps_3d.gd` 的 `_process` 分项 —— 优化前后对比。
 var _last_pos: Array = []          # 下标 → 上一次写的世界位置（Vector3）
 var _last_slot_key: Array = []     # 下标 → 上一次写的「桶键」（变了就必须重写）
+## ★★ 2026.10.27：本帧**可见单位 id**（迷雾判据已经在这一趟里算过）。
+##    overlay 的血条 / 小地图 / 其它视图直接查它，不再对 256 个单位各查一次迷雾。
+##    `visibility_frame` 与 `world.frame_serial` 对齐；不相等（测试直接调 _draw）时
+##    调用方退回自己的 `_unit_visible()`。
+var _vis_ids: Dictionary = {}
+var visibility_frame: int = -1
+
+
+## 这个单位在**本帧**是不是可见的（只在 `visibility_frame == world.frame_serial` 时可信）。
+func is_visible_this_frame(u) -> bool:
+	return u != null and _vis_ids.has(u.id)
+
+
 func sync(dt: float = 1.0 / 60.0) -> void:
 	# ★★ 三张小表在**这一次遍历**里一起产出（见下面循环里的三条注释）。
 	#    ⚠️ 必须在早退之前清空：否则早退那一帧会留下上一帧的旧值。
 	_fade_marked.clear()
 	_vis_generals.clear()
 	_vis_sel.clear()
+	_vis_ids.clear()
+	visibility_frame = -1 if world == null else int(world.frame_serial)
 	if world == null or palette == null or _quad == null:
 		return
 	shake_applied_last_frame = 0
@@ -331,12 +346,24 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 	var last_downed: bool = false
 	var last_neutral: bool = false
 	var last_key: String = ""
+	# ★★ 2026.10.27 移动端屏幕剔除：相机通常只看到地图一角，256 个单位里真正在屏幕内的
+	#    可能只有十几个。只把**屏幕附近**的可见单位塞进 MultiMesh，省 GPU 顶点/填充与实例写回。
+	#    ⚠️ 只在 mobile 生效：桌面 / 无头测试的 instance_count 断言保持原样。
+	var cull_on: bool = OS.has_feature("mobile") and palette.cam != null
+	var cull_rect := Rect2()
+	if cull_on:
+		var vp: Viewport = get_viewport()
+		if vp != null:
+			cull_rect = Rect2(Vector2.ZERO, vp.get_visible_rect().size).grow(256.0)
 	for u in world.units:
 		if not u.alive:
 			continue
 		# ★★ 战争迷雾：看不见的敌方单位**一个实例都不占**（判据只在 logic/fog.gd）
 		if not _visible_to_me(u):
 			continue
+		if cull_on and not cull_rect.has_point(palette.to_px(u.pos)):
+			continue
+		_vis_ids[u.id] = true
 		# ★★ 单次遍历的副产品①：本帧可见单位的**所在格**（建筑层淡出用它）。
 		#    ⚠️ 这里只写 1 格（每单位 1 次字典写）——「3×3 内有没有单位」由建筑层
 		#       对**建筑自己的 3×3** 查表得出（建筑很少，比每单位写 9 格便宜得多）。
@@ -610,6 +637,10 @@ func _visible_to_me(u) -> bool:
 	if world == null or world.fog == null or cfg == null:
 		return true
 	if not cfg.fog_enabled:
+		return true
+	# ★★ 2026.10.27：己方单位**永远可见** —— 不走迷雾查表（dscj 256 单位里约一半是自己 /
+	#    守军，省掉的是每帧几百次 `is_revealed` + `same_side` + 格查表）。
+	if String(u.faction) == String(world.my_faction):
 		return true
 	return world.fog.unit_visible(world.my_faction, u)
 

@@ -82,6 +82,10 @@ var ui_compensate: bool = true
 ## ★★ 手机端 3D 渲染分辨率缩放（见 config.json 的 render._mobile_comment）。
 ## 只在 `OS.has_feature("mobile")` 时由 view/game_scene3d.gd 应用；桌面 / 无头恒为 1.0 不使用。
 var mobile_3d_scale: float = 0.75
+## ★★ 手机端**自适应** 3D 分辨率：起始 = `mobile_3d_scale`，持续低帧时逐步降到 0.5；
+## 帧率恢复后再逐步升回起始值。只改 3D 渲染，不影响 UI / 命中判定。
+## false = 固定用 `mobile_3d_scale`（旧行为）。
+var mobile_auto_scale: bool = true
 
 ## ★★ 手机端帧率诊断（见 config.json 的 render._mobile_frame_comment）。
 ##   · mobile_vsync    —— 垂直同步。**默认 false**（手机端按原始帧时间跑，避免被
@@ -576,6 +580,7 @@ func _cache_scalars() -> void:
 	ui_compensate = bool_val("render.ui_compensate", true)
 	# 手机端 3D 分辨率缩放（桌面/无头不使用；见字段声明处注释）
 	mobile_3d_scale = clampf(num("render.mobile_3d_scale", 0.75), 0.5, 1.0)
+	mobile_auto_scale = bool_val("render.mobile_auto_scale", true)
 	# 手机端帧率诊断：vsync 开关与帧率上限（0 = 不限；负数按 0 处理）
 	mobile_vsync = bool_val("render.mobile_vsync", false)
 	mobile_max_fps = maxi(0, int_val("render.mobile_max_fps", 60))

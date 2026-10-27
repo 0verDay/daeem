@@ -11,7 +11,7 @@
 ## ★ 本文件是**纯数据**（RefCounted、不碰场景树），与 `logic/map_library.gd` /
 ##   `logic/campaign_library.gd` 同一层：读盘 + 校验 + 出统一形状，不建节点。
 ##
-## ★ 形状（`view/campaign_menu.gd` / `view/campaign_carousel.gd` 直接用）：
+## ★ 形状（`view/campaign_map_panel.gd` / `view/campaign_detail_panel.gd` 直接用）：
 ##   Array[Dictionary]，每项：
 ##     { "key": String, "name": String, "description": String,
 ##       "chapters": Array[Dictionary] }

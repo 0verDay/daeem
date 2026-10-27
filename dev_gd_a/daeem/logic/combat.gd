@@ -30,6 +30,9 @@ const FactionRes = preload("res://logic/faction.gd")
 ## ⚠️ 这也是 `unit.gd` 里**不能** preload `combat.gd` 的原因：两边互相 preload 会形成
 ##    循环依赖（Godot 直接报 Could not resolve script）。所以 `tick_frame` 放在这边。
 const UnitRes = preload("res://logic/unit.gd")
+## ★★ 2026.10.27：箭塔的**索敌节流**（秒）。没目标 / 目标不在射程时不必每帧扫全部单位；
+##   0.2 秒一次对塔的反应完全够（它的开火冷却本来就在 0.5~1 秒量级）。
+const TOWER_RETARGET_SEC := 0.2
 ## ★ 同理给「碰撞/索敌桥」加类型：`world.crowd` 本身是动态查找，而
 ##   `crowd._targets_ready` / `crowd._target_idx` 在**每单位每帧**的索敌路径上。
 ##   crowd_bridge.gd 不 preload 本文件，所以不是循环依赖。
@@ -732,6 +735,11 @@ static func attack_building(world, cfg: ConfigRes, u: UnitRes, b) -> void:
 ##   但一旦引入结盟/组队就会变成「箭塔打队友」（见 docs/pitfalls.md 3.7）。
 ##   ★ 这一行就是那句预言的落点：加了阵营归属（盟友）之后，两方的箭塔不再互射。
 static func update_towers(world, cfg: ConfigRes, dt: float) -> void:
+	# ★★ 单位数量变了（招募 / 重生 / 刷兵）⇒ 这一帧让所有塔立刻扫一次：
+	#    新单位可能就是射程里的目标，不能等 0.2 秒的节流。
+	var force_scan: bool = int(world.tower_scan_units_size) != world.units.size()
+	if force_scan:
+		world.tower_scan_units_size = world.units.size()
 	for b in world.building_list:
 		if not b.alive:
 			continue
@@ -743,6 +751,18 @@ static func update_towers(world, cfg: ConfigRes, dt: float) -> void:
 			continue                       # ★ 还在建造：这一栋先不开火
 		if b.cooldown_left > 0.0:
 			b.cooldown_left = maxf(0.0, b.cooldown_left - dt)
+			# ★★ 2026.10.27：冷却期间**不索敌**。旧实现对每座塔每帧都扫一遍全部单位
+			#    （dscj 256 单位 / 多座塔 ≈ 每帧上万次距离比较），而塔只在冷却结束那一帧
+			#    才会真正开火 —— 目标晚 0.5~1 秒重选完全不影响玩法/伤害。
+			if b.cooldown_left > 0.0:
+				continue
+		# ★★ 没目标时也**不必每帧**扫：0.2 秒一次足够（塔的射程 / 反应不需要 60Hz）。
+		#    ⚠️ 有目标时这一段会被上面的冷却分支挡住；冷却结束后的第一次扫描仍然立刻发生。
+		if not force_scan:
+			b.target_scan_cd = maxf(0.0, b.target_scan_cd - dt)
+			if b.target_scan_cd > 0.0:
+				continue
+		b.target_scan_cd = TOWER_RETARGET_SEC
 
 		var range_tiles: float = b.attack_range(cfg)
 		# 允许打到「半个身子进射程」的敌人：用**被瞄准的具体单位**的半径，
