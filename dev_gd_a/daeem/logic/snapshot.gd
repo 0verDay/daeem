@@ -88,6 +88,14 @@ static func _unit_fields(u) -> Dictionary:
 ##    它们极少变化，由每 `snapshot_keyframe_every` 条的完整关键帧兜底纠正。
 ##    dscj 256 单位时明显降 CPU（移动端做房主时不白烧主线程）。
 ## ★ 与 `_unit_fields` 的取值口径必须一致 —— 两边都改时记得同时改。
+## ★★ 关于 `ut`（兵种）为什么**必须**每帧带（2026.10.27 试过省掉，被测试拦回）：
+##
+## 我试过从增量里去掉它 —— 它看起来是静态字段，256 个单位每条增量重复
+## `"ut":"spearman"` 占 22.1 KB 里的 ~3.8 KB（17%）。但 `test_snapshot_delta` 里有两条
+## 断言明确钉着它：「兵种 ut 每帧都带（客机据此纠正兵种不一致）」、
+## 「快照 ut 把已有单位的兵种纠正回房主（不再一端骑兵一端步兵）」。
+## ⇒ 它是**版本/建单位不一致的自愈机制**，不是冗余。省掉它 → 两端兵种可能永久不一致。
+## 想省带宽只能改**编码**（把兵种发成小整数下标 + 关键帧发表格），不能简单地"不发"。
 static func _unit_delta(u, prev: Dictionary) -> Dictionary:
 	var out: Dictionary = {"i": u.id, "ut": u.unit_type}
 	# ★ 全部内联：`prev` 一定是完整字典，`prev[key]` 直接读；不再走 16 次方法调用。
@@ -171,17 +179,49 @@ static func _unit_delta(u, prev: Dictionary) -> Dictionary:
 ##   · 两次关键帧之间**累积**变化（不是只跟上一条比）⇒ 客机即使被合并掉中间的
 ##     快照，下一条仍然带着全部变化（配合 `client_session` 的 merge_delta）。
 ##   · `delta_cache == null` 时保持旧行为：完整快照（测试 / 回放 / 读档都走它）。
-static func to_snapshot(world, delta_cache: Variant = null, keyframe: bool = false) -> Dictionary:
+static func to_snapshot(world, delta_cache: Variant = null, keyframe: bool = false,
+		viewer_side: String = "") -> Dictionary:
 	var use_delta: bool = delta_cache != null
 	var full_units: bool = (not use_delta) or keyframe \
 		or (delta_cache as Dictionary).is_empty()
 	# 关键帧：写进一个临时表，最后整表替换缓存；增量的中间帧：直接改缓存里的 base。
 	var base: Dictionary = {} if full_units else (delta_cache as Dictionary)
 
+	# ★★ 2026.10.27（联机带宽）：**按视野过滤**。
+	#
+	# 用户实测：客机下移动命令延迟很高、画面还跳。查下来是快照把**全图 256 个单位**
+	# 都发了，而客机那一方「本方 + 看得见」只有 **26** 个 —— 90% 的带宽发给了
+	# 永远不会被渲染的单位（也顺手消掉了一个「客机手里有全图敌军位置」的信息泄露）。
+	#
+	# 判据（与 `fog` 同一口径，不另发明）：
+	#   · 属于**同一方**（含盟友，`side_of`）⇒ 永远发；
+	#   · 否则只在**客机那一方的视野掩码**里该格非 0 时发。
+	# 离开视野的单位会进 `"g"`（gone）列表，客机据此把它从世界里删掉 ——
+	# 不删的话会留下"幽灵单位"，而且它们还会参与客机的迷雾重算（越算越亮）。
+	#
+	# ⚠️ `viewer_side == ""`（测试 / 回放 / 读档 / 单人）⇒ 不过滤，行为与从前逐位一致。
+	var view_mask := PackedByteArray()
+	var filtered := false
+	if viewer_side != "" and world.fog != null:
+		var m: Variant = world.fog.sight.get(viewer_side, null)
+		if typeof(m) == TYPE_PACKED_BYTE_ARRAY and (m as PackedByteArray).size() > 0:
+			view_mask = m
+			filtered = true
+	var cols: int = int(world.map.cols) if world.map != null else 0
+	## 本帧**真的发出去**的单位 id（判断谁"离开视野了"要用）
+	var sent_ids: Dictionary = {}
+	## 上一次发出去的 id 集合（= 调用前 `delta_cache` 的键）——只有它才需要判"离开"
+	var prev_sent: Array = (delta_cache as Dictionary).keys() if use_delta and filtered else []
+
 	var units_out: Array = []
 	for u in world.units:
 		if not u.alive:
 			continue                 # 阵亡的单位不发 —— 客机上看它就「消失了」，复活后再出现
+		if filtered and String(FactionRes.side_of(String(u.faction))) != viewer_side:
+			var cell: int = int(u.ty) * cols + int(u.tx)
+			if cell < 0 or cell >= view_mask.size() or view_mask[cell] == 0:
+				continue                 # 客机看不见这一格 ⇒ 这个敌人不发
+		sent_ids[String(u.id)] = true
 		if full_units:
 			var full: Dictionary = _unit_fields(u)
 			units_out.append(full)
@@ -198,18 +238,22 @@ static func to_snapshot(world, delta_cache: Variant = null, keyframe: bool = fal
 		# ★★ 直接按关键帧基准比字段，**不**先建完整字典（那会让增量比完整快照还贵：
 		#    dscj 256 单位实测 3.68ms vs 1.58ms）。`ut` 每帧都带，用来纠正兵种不一致。
 		units_out.append(_unit_delta(u, prev as Dictionary))
+	# ★ 告诉客机「这些单位这一帧不再属于你」——它必须把本地那份删掉。
+	#   判据：**上一次发出去过、这一次没发**（`prev_sent` 在循环前抓的）。
+	var gone_out: Array = []
+	if filtered:
+		for k4 in prev_sent:
+			if not sent_ids.has(k4):
+				gone_out.append(String(k4))
 	if use_delta:
 		if full_units:
 			(delta_cache as Dictionary).clear()
 			(delta_cache as Dictionary).merge(base, true)
 		else:
-			# 清掉已经阵亡 / 离场的单位，避免缓存无限增长；它们再出现时按「新单位」整条发。
-			var alive_now: Dictionary = {}
-			for u2 in world.units:
-				if u2.alive:
-					alive_now[String(u2.id)] = true
+			# 清掉已经阵亡 / 离场 / **出了视野**的单位，避免缓存无限增长；
+			# 它们再出现时按「新单位」整条发（这正是视野过滤要的自愈行为）。
 			for k2 in (delta_cache as Dictionary).keys():
-				if not alive_now.has(k2):
+				if not sent_ids.has(k2):
 					(delta_cache as Dictionary).erase(k2)
 
 	var buildings_out: Array = []
@@ -330,6 +374,8 @@ static func to_snapshot(world, delta_cache: Variant = null, keyframe: bool = fal
 
 	return {
 		"units": units_out,
+		# ★ 只有真的有人"出视野"时才带这个键（绝大多数快照没有它，不占字节）。
+		"gone": gone_out,
 		"buildings": buildings_out,
 		"zones": zones_out,
 		"projectiles": proj_out,
@@ -372,6 +418,15 @@ static func merge_delta(acc: Dictionary, snap: Dictionary) -> Dictionary:
 		else:
 			out.append(sd)
 	snap["units"] = out
+	# ★ 2026.10.27：`gone`（离开视野的单位）要**并起来**，不能只留最后一条 ——
+	#   同一帧里被合并掉的那几条也可能各带了几个离场 id。
+	var g_new: Variant = snap.get("gone", null)
+	var g_old: Variant = acc.get("gone", null)
+	if typeof(g_old) == TYPE_ARRAY and not (g_old as Array).is_empty():
+		var merged: Array = (g_old as Array).duplicate()
+		if typeof(g_new) == TYPE_ARRAY:
+			merged.append_array(g_new as Array)
+		snap["gone"] = merged
 	return snap
 
 
@@ -383,6 +438,14 @@ static func merge_delta(acc: Dictionary, snap: Dictionary) -> Dictionary:
 static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void:
 	if snap.is_empty():
 		return
+	# ★★ 2026.10.27（视野过滤的配套）：先把「出了视野」的单位从本地世界删掉。
+	#    必须**在建索引之前**做：删掉的单位不该再参与后续的对齐 / 迷雾重算。
+	#    ⚠️ 少了这一步，客机会留着幽灵单位：画面上被迷雾遮住看不见，却仍在
+	#      `units` 里贡献视野、参与点选 —— 迷雾会越算越亮，点空地也会选中看不见的人。
+	var gone: Variant = snap.get("gone", null)
+	if typeof(gone) == TYPE_ARRAY and not (gone as Array).is_empty():
+		if world.has_method("drop_unit_ids"):
+			world.drop_unit_ids(gone as Array)
 
 	# ★★ 一次性建 id → unit 索引：`world.unit_by_id()` 是线性扫描，
 	#    对每个快照单位都调一次就是 O(n²)（500 单位实测是客机侧最大的一笔开销）。
@@ -472,8 +535,16 @@ static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void:
 		var nx := float(su.get("x", u.pos.x))
 		var ny := float(su.get("y", u.pos.y))
 		if nx != u.pos.x or ny != u.pos.y:
+			# ★★ 2026.10.27（插值）：起点取**这一帧真正画在屏幕上的位置**
+			#    （= `render_pos_of`，也就是上一段插值走到的地方），不是旧的 `pos`。
+			#    否则「上一段插值还没走完就来了新快照」会在 alpha 归零时**回跳**一下 ——
+			#    9Hz 快照下那一下非常明显。
+			u.prev_pos = world.render_pos_of(u)
 			u.pos = Vector2(nx, ny)
 			u.sync_tile(world.map)
+		else:
+			# 没挪动 ⇒ 起点 = 终点。不写这一句的话，alpha 归零那一刻它会跳回上一条快照的位置。
+			u.prev_pos = u.pos
 		# ★ 招募队列：一整组字段，按 **tk 在不在** 判断新旧格式（与 ld / fa 同一条约定：
 		#   老快照没有 tk → 整组保持本地现状，不要把队列清空）。
 		#   ⚠️ 2026.10.24 起招募**不再把将领钉在原地**，客机侧也就没有

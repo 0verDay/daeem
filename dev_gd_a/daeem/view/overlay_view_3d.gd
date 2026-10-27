@@ -20,6 +20,10 @@ const SideColorRes = preload("res://view/side_color.gd")
 ## ★★ HUD 的皮肤（暗色面板 + 暗金细线 + 琥珀强调）：头顶标识与右栏数字块共用同一套色。
 ##   ★ 本文件只读它的静态取色函数，不持有主题实例（见 view/theme.gd 的说明）。
 const ThemeRes = preload("res://view/theme.gd")
+## ★★ 2026.10.27（性能）：覆盖层的**静态层**放在这个独立子节点里（见 view/overlay_layer.gd）。
+##   原因：本节点为了画血条 / 拖框 / 编队标识必须每帧重画，而网格 / 区划轮廓 /
+##   占领触发区只随相机与归属变化 —— 放在同一个 CanvasItem 里就等于每帧重录一遍。
+const OverlayLayerRes = preload("res://view/overlay_layer.gd")
 
 const HP_BACK_COLOR := Color(0, 0, 0, 0.55)
 
@@ -139,10 +143,95 @@ func setup(p_cfg: ConfigRes, p_world, p_palette, p_units, p_ground = null,
 	_grid_screen = PackedVector2Array()
 	_zone_screen = []
 	_capture_screen = []
+	_build_static_layer()
+
+
+## ★★ 建「静态层」子节点（见文件头与 view/overlay_layer.gd）。
+##
+## 为什么是**子节点 + show_behind_parent**，而不是把动态部分挪进子节点：
+##   动态部分有 30+ 处 `draw_*` 调用（血条 / 拖框 / 名牌…），静态部分只有 4 处
+##   （网格 1、区划轮廓 N、触发区 4N）。动静倒过来改，改动面小一个数量级，
+##   而 z 序照样正确：`show_behind_parent = true` 让它画在宿主自己的绘制**之下**。
+func _build_static_layer() -> void:
+	if _static_layer != null:
+		return
+	_static_layer = OverlayLayerRes.new()
+	_static_layer.name = "OverlayStatic"
+	_static_layer.host = self
+	_static_layer.which = 0
+	_static_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_static_layer.show_behind_parent = true
+	_static_layer.set_anchors_preset(Control.PRESET_FULL_RECT)
+	add_child(_static_layer)
+
+
+## 静态层这一帧要不要重画？（相机 / 视口 / 区划归属任一变化）
+##
+## ★ 与 `_refresh_static_projection()` 共用同一个判据（`_static_key_changed`），
+##   所以这里说「要重画」而实际 `_draw` 里发现没变的情况不会发生。
+func poll_static_dirty() -> bool:
+	if _static_layer == null:
+		return false
+	if _static_key_changed():
+		_static_layer.queue_redraw()
+		return true
+	return false
 
 
 func sync() -> void:
+	# 动态层（本节点自己）：每帧都变（血条跟单位走、拖框跟手指走）
 	queue_redraw()
+	# 静态层：只在相机 / 视口 / 归属变化时重录 —— 相机静止时这一段是 0 成本
+	poll_static_dirty()
+
+
+## 静态层要重画了：**只算几何**，绘制由 `view/overlay_layer.gd` 的 `_draw_static()` 发。
+##
+## ⚠️ `draw_*` 只允许在**它自己**的 `_draw()` 里调用（实测：从宿主调
+##    `layer.draw_polygon()` 会报 "Drawing is only allowed inside this node's `_draw()`"），
+##    所以这里一律不碰绘制 API，只把「已经验过、可以直接画」的数据放进 `node`。
+func build_static_layer_data(node) -> void:
+	if node == null:
+		return
+	var t0: int = Time.get_ticks_usec() if (world != null and world.profile_on) else 0
+	# 静态层的几何要在这里才保证是新的（相机刚动过的那一帧 `sync()` 已经排了重画）
+	_refresh_static_projection()
+
+	# ① 网格：只在建造模式下画（`build_type` 非空）
+	if build_type == "":
+		grid_draw_count = 0
+		node.grid_pts = PackedVector2Array()
+	else:
+		grid_draw_count = _count_grid_lines()
+		node.grid_pts = _grid_screen
+	node.grid_color = GRID_COLOR
+	node.grid_width = GRID_WIDTH
+
+	# ② 区划轮廓：缓存的屏幕顶点（已按相机键失效、并做过屏幕外剔除）
+	zone_outline_draw_count = _count_zone_outlines()
+	node.zone_groups = _zone_screen
+	node.zone_width = ZONE_OUTLINE_WIDTH
+
+	# ③ 占领触发区：四条边的渐变梯形。**在这里**做面积 / 凸性判定并算好逐顶点颜色，
+	#    子节点那边只发 `draw_polygon` —— 判据仍然只有一处（`_drawable_grad_quad`）。
+	var items: Array = _visible_capture_areas()
+	capture_area_count = items.size()
+	var quads: Array = []
+	for it in items:
+		var o: PackedVector2Array = it["outer"]     # 顺序：左上, 右上, 右下, 左下
+		var i: PackedVector2Array = it["inner"]     # 同上
+		var oc: Color = it["outer_c"]
+		var ic: Color = it["inner_c"]
+		# 四条边各一个梯形：外沿 = 邻域边框，内沿 = 整体内缩 g 格（「画框」拼法）
+		_push_grad_quad(quads, PackedVector2Array([o[0], o[1], i[1], i[0]]), oc, ic)   # 上
+		_push_grad_quad(quads, PackedVector2Array([o[1], o[2], i[2], i[1]]), oc, ic)   # 右
+		_push_grad_quad(quads, PackedVector2Array([o[2], o[3], i[3], i[2]]), oc, ic)   # 下
+		_push_grad_quad(quads, PackedVector2Array([o[3], o[0], i[0], i[3]]), oc, ic)   # 左
+	node.capture_quads = quads
+
+	if t0 != 0:
+		world.profile_us["draw/overlay_static"] = \
+			int(world.profile_us.get("draw/overlay_static", 0)) + (Time.get_ticks_usec() - t0)
 
 
 ## 建一次头顶标识的 StyleBox：颜色全走 `view/theme.gd`（暗金细线 / 琥珀强调 / 深色面板），
@@ -271,23 +360,15 @@ func _draw_impl() -> void:
 	draw_count = 0
 	if cfg == null or world == null or palette == null:
 		return
-	# ★★ 静态层：相机 / 视口 / 区划归属没变就复用上一帧投影好的屏幕坐标
-	#    （见 `_static_ready` 那段说明）。必须放在所有 `_draw_*` 之前。
-	_refresh_static_projection()
-	# ★★ 顺序即层次（后画的在上面），这一串是刻意排的：
-	#   ① 地面上的"线"（网格 / 区划轮廓 / 占领触发区描边）—— 在地面之上、单位之下
-	#      ⚠️ 它们必须**先于**单位画：否则网格线会盖在兵人身上（看起来像网格穿透了部队）。
-	#   ② 占领进度条 —— 也是地面上的东西，同样在单位之下
-	#      （2D 版里它属于 `zone_view`，与地块同层）。
-	#   ③ 单位头上的 UI（血条）—— 最上面
+	# ★★ 2026.10.27（性能）：**静态三件套（网格 / 区划轮廓 / 占领触发区）不在这里画** ——
+	#    它们搬到了独立子节点 `OverlayStatic`（见 `_build_static_layer()` 与
+	#    `view/overlay_layer.gd`），只随相机 / 视口 / 归属变化重录。
+	#    本节点现在每帧只重录**动态**部分：粮车光环 / 占领进度条 / AI 目标环 /
+	#    血条 / 建造预览 / 拖框 / 编队标识。
+	# ★ 顺序即层次（后画的在上面）：地面上的东西 → 单位头上的 UI → 最顶上的编队标识。
 	var _d0 := _pt()
-	_draw_grid()
-	_draw_zone_outlines()
 	_draw_aura_ranges()
-	_pd("ov/grid_outline", _d0)
-	var _d1 := _pt()
-	_draw_capture_areas()
-	_pd("ov/capture_area", _d1)
+	_pd("ov/aura", _d0)
 	var _d1b := _pt()
 	_draw_zone_capture()
 	_pd("ov/capture_bar", _d1b)
@@ -407,6 +488,8 @@ var _capture_screen: Array = []
 ## 缓存重建次数（纯诊断：测试 / 排查用）
 var static_rebuild_count: int = 0
 var static_last_reason: String = ""
+## ★★ 静态层的子节点（见 `_build_static_layer()`）；`self` 只画动态部分。
+var _static_layer = null
 ## 诊断（测试读它）：最近一次 `_draw()` 里网格线 / 区划轮廓 / 占领填充各画了几条
 var grid_draw_count: int = 0
 var zone_outline_draw_count: int = 0
@@ -421,17 +504,10 @@ var capture_area_count: int = 0
 ##   平时地面保持干净，进入建造（Q / W 或右下建筑页）时网格才出现，帮玩家对齐地块。
 ##   退出建造（再按一次 / Esc / 右键）后网格立刻消失。
 ##
+## ★★ 2026.10.27：绘制本身搬到了静态层子节点（`view/overlay_layer.gd`）——
+##    这里只负责「要不要画 / 画几条」并准备顶点（见 `build_static_layer_data()`）。
+##
 ## ★ 计数与绘制**分开**（下一段说明为什么）。
-func _draw_grid() -> void:
-	if build_type == "":
-		grid_draw_count = 0
-		return
-	grid_draw_count = _count_grid_lines()
-	# ★★ 顶点是**上一帧缓存的屏幕坐标**（见 `_refresh_static_projection()`）：
-	#    相机不动时这里一次投影都不做，只重新提交 draw 调用。
-	if _grid_screen.is_empty():
-		return
-	draw_multiline(_grid_screen, GRID_COLOR, GRID_WIDTH)
 
 
 ## 网格线这一帧**画几条**（纯计数，不碰绘制 API）。
@@ -552,14 +628,7 @@ func _proj_snap(logic_pos: Vector2) -> Vector2:
 ##   分组之后每块地一次 draw 调用（24 块 ⇒ 24 次），与 2D 版同一取舍。
 ## ★★ 缓存：边界是**格坐标**的几何，只在归属 / 地块划分变化时才会变
 ##   —— 相机每帧移动不该让它重算（`palette.to_px` 才是每帧要做的投影）。
-func _draw_zone_outlines() -> void:
-	zone_outline_draw_count = _count_zone_outlines()
-	# ★★ 直接画缓存的**屏幕顶点**（已按相机键失效、并做过屏幕外剔除）。
-	for entry in _zone_screen:
-		var segs: PackedVector2Array = entry["segs"]
-		if segs.is_empty():
-			continue
-		draw_multiline(segs, (entry["color"] as Color), ZONE_OUTLINE_WIDTH)
+## ★★ 2026.10.27：绘制搬到静态层（见 `build_static_layer_data()`），这里不再有 `draw_*`。
 
 
 ## 区划轮廓这一帧**画几组**（纯计数，不碰绘制 API）——同时保证几何缓存是新的。
@@ -711,19 +780,26 @@ func _draw_aura_ranges() -> void:
 ## ★ 颜色判据是**区块归属**（`owner`），不是「谁正在读条」：中立白灰、有主用主人色。
 ## ★★ **可见性剔除**（本轮补）：只画**屏幕内**的触发区（见 `_visible_capture_areas()`）——
 ##    屏幕外的一律不投影、不绘制，于是开销随「屏幕里有几块」走，而不是随全图区块数走。
-func _draw_capture_areas() -> void:
-	var items: Array = _visible_capture_areas()
-	capture_area_count = items.size()
-	for it in items:
-		var o: PackedVector2Array = it["outer"]     # 顺序：左上, 右上, 右下, 左下
-		var i: PackedVector2Array = it["inner"]     # 同上
-		var oc: Color = it["outer_c"]
-		var ic: Color = it["inner_c"]
-		# 四条边各一个梯形：外沿 = 邻域边框，内沿 = 整体内缩 g 格（「画框」拼法）
-		_draw_grad_quad(PackedVector2Array([o[0], o[1], i[1], i[0]]), oc, ic)   # 上
-		_draw_grad_quad(PackedVector2Array([o[1], o[2], i[2], i[1]]), oc, ic)   # 右
-		_draw_grad_quad(PackedVector2Array([o[2], o[3], i[3], i[2]]), oc, ic)   # 下
-		_draw_grad_quad(PackedVector2Array([o[3], o[0], i[0], i[3]]), oc, ic)   # 左
+## ★★ 2026.10.27：绘制搬到静态层（见 `build_static_layer_data()`）——
+##    这里只剩「算出 4 个梯形、验过能画、算好逐顶点颜色」，把结果交给子节点。
+func _push_grad_quad(quads: Array, pts: PackedVector2Array,
+		outer: Color, inner: Color) -> void:
+	if pts.size() != 4:
+		return
+	# ★ 退化 / 自交的四边形直接跳过：`draw_polygon` 内部三角化会报
+	#   "Invalid polygon data, triangulation failed"（实测在区划触发区跨相机近平面时出现）。
+	#
+	# ★★ 判据用**面积 + 凸性**，不用 `Geometry2D.triangulate_polygon()`：
+	#    这一句每帧、每个可见区划、每个梯形各跑一次 —— 27×22 的图上
+	#    `ov/capture_area` 就吃掉 0.675 ms/帧。能画 ⟺ 面积不为 0 且不自交，
+	#    而四边形的「不自交 + 凸」只需 4 次叉积（`_is_convex_screen_poly`），
+	#    比走一遍原生耳切便宜一个数量级；`draw_polygon()` 对**已验过的凸四边形**
+	#    三角化是常数时间，且不会再失败。
+	if absf(_screen_polygon_area(pts)) <= 0.01:
+		return
+	if not _is_convex_screen_poly(pts):
+		return
+	quads.append({"pts": pts, "colors": PackedColorArray([outer, outer, inner, inner])})
 
 
 ## ★★ 这一帧**真正要画**的占领触发区（**纯计算**，不做绘制调用）——剔除两件事：
@@ -811,18 +887,6 @@ func _project_culled(inv: Transform3D, zn: float, vp: Rect2, logic: Array) -> Pa
 	return sps
 
 
-## 一个「外实内透」的梯形（**屏幕坐标**，已经投好）：`pts` = [外 a, 外 b, 内 b, 内 a]。
-## 外两点给 `outer`、内两点给 `inner`（一般是全透明）⇒ 画出来就是一条向内渐隐的边。
-func _draw_grad_quad(pts: PackedVector2Array, outer: Color, inner: Color) -> void:
-	if pts.size() != 4:
-		return
-	# ★ 退化 / 自交的四边形直接跳过：`draw_polygon` 内部三角化会报
-	#   "Invalid polygon data, triangulation failed"（实测在区划触发区跨相机近平面时出现）。
-	if Geometry2D.triangulate_polygon(pts).is_empty():
-		return
-	draw_polygon(pts, PackedColorArray([outer, outer, inner, inner]))
-
-
 ## 占领触发区描边的颜色：**中立 = 白灰**、有主 = 该阵营主色（需求原话见上）。
 func _capture_area_color(owner: String) -> Color:
 	if owner == "":
@@ -854,14 +918,11 @@ func _draw_zone_capture() -> void:
 	capture_draw_count = 0
 	for it in items:
 		var fill: Color = it["fill"]
-		for quad in (it["quads"] as Array):
-			# ★★ 拆成三角形再画：`draw_colored_polygon(quad)` 会再三角化一次，
-			#    数值贴近退化时仍可能返回空索引并报 "triangulation failed"。
-			#    三角形是凸的、且面积已验过，直接画不会再失败。
-			var tris := _screen_triangles(quad)
-			if tris.is_empty():
-				continue
-			for tri in tris:
+		# ★★ 2026.10.27（性能）：三角在这里**已经拆好**（`_capture_items` 里做一次），
+		#    这里只负责发绘制调用 —— 原来 `_capture_items` 验一遍、这里再拆一遍，
+		#    同一格每帧要走两次三角化（桌面实测 `ov/capture_bar` 0.245 ms/帧）。
+		for tris in (it["tris"] as Array):
+			for tri in (tris as Array):
 				draw_colored_polygon(tri, fill)
 			capture_draw_count += 1
 		var front_pts: PackedVector2Array = it["front"]
@@ -875,9 +936,7 @@ func _draw_zone_capture() -> void:
 func _count_zone_captures() -> int:
 	var n := 0
 	for it in _capture_items():
-		for quad in (it["quads"] as Array):
-			if not _screen_triangles(quad).is_empty():
-				n += 1
+		n += (it["tris"] as Array).size()
 	return n
 
 
@@ -918,13 +977,10 @@ func _capture_items() -> Array:
 		var cells: Array = (z as Dictionary).get("tiles", [])
 		if cells.is_empty():
 			continue
-		# ① 高度基准（整个区划共用）
-		var y0 := 1 << 20
-		var y1 := -(1 << 20)
-		for t in cells:
-			var tile: Vector2i = t
-			y0 = mini(y0, tile.y)
-			y1 = maxi(y1, tile.y)
+		# ① 高度基准（整个区划共用）—— ★ 从缓存读，不再每帧重扫 tiles
+		var yb: Vector2i = _zone_y_range(z as Dictionary, cells)
+		var y0: int = yb.x
+		var y1: int = yb.y
 		if y1 < y0:
 			continue
 		var span: float = float(y1 - y0 + 1)
@@ -939,7 +995,7 @@ func _capture_items() -> Array:
 			lerpf(fc.r, 1.0, 0.35), lerpf(fc.g, 1.0, 0.35), lerpf(fc.b, 1.0, 0.35),
 			CAPTURE_FRONT_ALPHA)
 		# ③ 逐格：整格在水面下就整格填；水面穿过就只填水面以下那一块
-		var quads: Array = []
+		var tris_groups: Array = []
 		var front_logic: Array = []
 		for t2 in cells:
 			var tile2: Vector2i = t2
@@ -964,17 +1020,49 @@ func _capture_items() -> Array:
 				#    再按面积把退化四边形丢掉。
 				screen = _clean_screen_polygon(screen)
 				if screen.size() >= 3 and absf(_screen_polygon_area(screen)) > 0.01:
-					# ★ 面积非零仍可能是自交 / 数值退化；交给 Godot 的三角化先验一次。
-					#   通过的多边形在绘制时再拆成**三角形**（三角形不会再三角化失败）。
-					if not _screen_triangles(screen).is_empty():
-						quads.append(screen)
+					# ★★ 2026.10.27（性能）：三角化**只做这一次**，结果直接带出去给
+					#    `_draw_zone_capture` 用 —— 原来这里验一遍、绘制时再拆一遍。
+					var tris := _screen_triangles(screen)
+					if not tris.is_empty():
+						tris_groups.append(tris)
 			# ④ 水面正好穿过这一格 ⇒ 它的顶边是「前沿」的一段（同样要裁，交给 _project_segments）
 			if top < water and water < bottom:
 				front_logic.append(Vector2(x0, water))
 				front_logic.append(Vector2(x1, water))
-		out.append({"quads": quads, "front": _project_segments(front_logic),
+		out.append({"tris": tris_groups, "front": _project_segments(front_logic),
 			"fill": fill, "front_color": front})
 	return out
+
+
+## 区划地块的 `y` 范围（`Vector2i(y0, y1)`；空区划返回 `y1 < y0` 的哨兵）。
+##
+## ★★ 为什么缓存：地块在一局之内**不会变**，而 `_capture_items()` 每帧都会对每个
+##    正在读条的区划重扫一遍 tiles 求 min/max —— 27×22 的图上这是每帧几百次
+##    `mini/maxi`，纯浪费。缓存键 = `world.zones` 的实例 id + 区划 id：
+##    换关卡 / 换世界时 `zones` 是**另一个对象**，整表自然作废（不需要额外失效点）。
+var _zone_y_cache: Dictionary = {}
+var _zone_y_cache_owner: int = 0
+
+
+func _zone_y_range(z: Dictionary, cells: Array) -> Vector2i:
+	var zs = world.zones if world != null else null
+	var owner_id: int = int(zs.get_instance_id()) if zs != null else 0
+	if owner_id != _zone_y_cache_owner:
+		_zone_y_cache.clear()
+		_zone_y_cache_owner = owner_id
+	var zid: int = int(z.get("id", -1))
+	var hit: Variant = _zone_y_cache.get(zid, null)
+	if hit != null:
+		return hit
+	var y0 := 1 << 20
+	var y1 := -(1 << 20)
+	for t in cells:
+		var tile: Vector2i = t
+		y0 = mini(y0, tile.y)
+		y1 = maxi(y1, tile.y)
+	var r := Vector2i(y0, y1)
+	_zone_y_cache[zid] = r
+	return r
 
 
 ## 把一个**凸多边形**（格坐标）对相机近平面裁一刀（Sutherland–Hodgman，单平面）。
@@ -1031,10 +1119,34 @@ func _screen_polygon_area(pts: PackedVector2Array) -> float:
 
 ## 把一个屏幕多边形拆成三角形（三角化失败 → 空数组，调用方直接跳过）。
 ## 三角形逐个交给 `draw_colored_polygon()`，避免它再对凹/退化多边形做一次三角化。
+##
+## ★★ 2026.10.27（性能）：**凸多边形走扇形快路径**，不再调 `Geometry2D.triangulate_polygon()`
+##    —— 那时候每帧每条占领进度带的每一格都要走一遍原生耳切，桌面实测 `ov/capture_bar`
+##    0.245 ms/帧。近平面裁出来的多边形（凸四边形 / 五边形）占绝大多数，扇形三角化对它们
+##    是**同一组**三角形（凸多边形从任一顶点扇形划分必然合法），只是不再过一遍耳切。
+##    凹 / 自交 / 退化的少数情况仍走原路径，语义一字未改。
 func _screen_triangles(pts: PackedVector2Array) -> Array:
 	var out: Array = []
 	if pts.size() < 3:
 		return out
+	# ── 快路径：凸 ⇒ 扇形三角化 ──
+	if _is_convex_screen_poly(pts):
+		var n: int = pts.size()
+		var a0: Vector2 = pts[0]
+		for k in range(1, n - 1):
+			var b0: Vector2 = pts[k]
+			var c0: Vector2 = pts[k + 1]
+			var ar := _screen_polygon_area(PackedVector2Array([a0, b0, c0]))
+			if absf(ar) <= 0.001:
+				continue
+			# 与 `_draw_build_preview()` 的四边形同一绕向（屏幕 y 向下，面积为正）。
+			if ar < 0.0:
+				var t2 := b0
+				b0 = c0
+				c0 = t2
+			out.append(PackedVector2Array([a0, b0, c0]))
+		return out
+	# ── 慢路径（凹 / 自交 / 退化）：原实现，逐字保留 ──
 	var poly := pts
 	var idx: PackedInt32Array = Geometry2D.triangulate_polygon(poly)
 	if idx.is_empty():
@@ -1060,6 +1172,35 @@ func _screen_triangles(pts: PackedVector2Array) -> Array:
 			out.append(PackedVector2Array([a, b, c]))
 		i += 3
 	return out
+
+
+## 屏幕多边形是不是**凸**的（且绕向一致、面积非零）。
+##
+## ★ 判据：每个顶点处相邻两边的叉积同号（允许 0 = 共线）。屏幕 y 向下，所以正向凸多边形
+##   的叉积全为负或全为正都算（调用方自己按面积定绕向）。
+## ★ 只用于**屏幕空间**的小多边形（4~6 点），O(n) 且没有任何分配。
+func _is_convex_screen_poly(pts: PackedVector2Array) -> bool:
+	var n: int = pts.size()
+	if n < 3:
+		return false
+	if n == 3:
+		return absf(_screen_polygon_area(pts)) > 0.001
+	var sign_seen := 0
+	for i in n:
+		var a: Vector2 = pts[i]
+		var b: Vector2 = pts[(i + 1) % n]
+		var c: Vector2 = pts[(i + 2) % n]
+		var cross: float = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x)
+		if absf(cross) <= 1e-6:
+			continue                       # 共线：不影响凸性
+		var s: int = 1 if cross > 0.0 else -1
+		if sign_seen == 0:
+			sign_seen = s
+		elif s != sign_seen:
+			return false                   # 反向拐弯 ⇒ 凹或自交
+	if sign_seen == 0:
+		return false                       # 全共线：退化
+	return absf(_screen_polygon_area(pts)) > 0.001
 
 
 ## 合作 AI 队友的目标环（行军 / 屯兵）。
@@ -1123,7 +1264,9 @@ func _draw_units_ui() -> void:
 		elif not _unit_visible(u):
 			continue
 		unit_ui_visible += 1
-		var p: Vector2 = palette.to_px(u.pos)
+		# ★★ 2026.10.27（插值）：血条必须与立牌用同一个位置（客机上 `u.pos` 是
+		#    「上一条快照的位置」，立牌画的是插值后的位置 —— 直接用 u.pos 会错开半格）。
+		var p: Vector2 = palette.to_px(units.render_pos_of(u))
 		if not keep.has_point(p):
 			continue
 		# ★★ 2026.10.27：满血单位不画血条 ⇒ **不要**再算一次立牌尺寸（两次投影）。

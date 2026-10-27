@@ -1,4 +1,4 @@
-{
+﻿{
   "_comment": [
     "DAEEM · 全部可调数值。对应 HTML 版 js/config.js —— 数值一个不改地搬过来（见 docs/porting.md 第四节）。",
     "铁律：代码里不写游戏数值字面量，只读这一份 JSON。",
@@ -81,11 +81,13 @@
       "    · 好处：不会被刷新率量化到 45/40/30 档，能直接看到真实帧率；",
       "    · 代价：可能有撕裂；高帧率下发热 / 耗电增加。看到撕裂就把这里改回 true。",
       "  【排查时】保持 false 看原始帧率；切回 true 对比 vsync 卡档的影响。",
-      "  mobile_max_fps：**默认 60（锁 60 帧）**；0 = 不限制；90 = 放开到 90。",
-      "    锁帧能避免偶尔跑到 90/100 帧带来的发热与帧时间抖动；配合 vsync off 使用。"
+      "  mobile_max_fps：**默认 90（按 90 帧跑）**；0 = 不限制；60 = 老的低功耗档。",
+      "    ★ 2026.10.27 从 60 提到 90（用户口径：按 90 帧做，最低不能低于 60）。",
+      "    ⚠️ 它同时是**自适应分辨率的判据基准**（阈值 = 本值 × 0.55 / × 0.92）：",
+      "       只把它改回 60 会让降档变得非常迟钝（低到 33fps 才动），别以为那就是 60 帧档。"
     ],
     "mobile_vsync": false,
-    "mobile_max_fps": 60,
+    "mobile_max_fps": 90,
     "_projectile_comment": [
       "★★ 射箭投掷物（远程单位 / 可攻击建筑）的**纯表现**参数（见 view/projectile_view_3d.gd）。",
       "   伤害结算不在这里 —— 它在逻辑层（logic/projectile.gd，用 combat.projectile_speed）。",
@@ -1011,6 +1013,17 @@
     ],
     "collision_enabled": true,
     "collision_backend": "csharp",
+    "_sim_backend_comment": [
+      "★★ 2026.10.27：单位循环的后端。",
+      "  gdscript = 现行实现（永远是回退路径）；csharp = 逐段下沉到 logic/unit/*.cs 的内核。",
+      "  【当前已下沉】士气 + 回血/掉血（UnitMoraleKernel.cs）。",
+      "    等价性由 tests/test_unit_backend_equiv.gd 盯着：同种子世界跑两个后端、",
+      "    逐字段完全相等（不是容差）；dscj 256 单位实测 tick 10.77 → 9.89 ms/帧（-8%）。",
+      "  【为什么是「整段」而不是零碎几刀】单位循环是逐个交错的（A 士气→A 战斗→B 士气→B 战斗），",
+      "    抽一段出来批量算会改顺序；而打包成本实测 0.2~0.7 µs/单位，碎刀会被组包开销吃掉。",
+      "  ⚠️ 内核加载不到（普通版 Godot / 没编译程序集）时自动回退 gdscript，world.unit_sim_used 会如实写 gdscript。"
+    ],
+    "sim_backend": "csharp",
     "collision_radius": 0.18,
     "overlap_allowance": 0.7,
     "collision_iterations": 3,
@@ -2418,8 +2431,33 @@
     ],
     "relay_url": "ws://159.75.154.122:8770/ws",
     "build": "coop-m13.1",
-    "snapshot_hz": 30,
+    "snapshot_hz": 40,
     "snapshot_buffer_limit_kb": 64,
+    "_budget_comment": [
+      "★★ 2026.10.27：每秒快照字节预算（0 = 不限）。",
+      "  为什么需要：buffer_limit 那条背压读的是**本机 WebSocket 的出站积压** ——",
+      "  字节一交给内核 / 中继，这一侧就归零了，真正的队列在中继和手机上。",
+      "  带宽不够时它永远不触发 ⇒ 快照照旧 30Hz 往外推 ⇒ 队列越堆越长 ⇒ 同步慢几秒。",
+      "  实测（dscj 256 单位）：单条增量快照 26.6KB，30Hz = 0.78 MB/s，",
+      "  而移动端链路约 0.3~0.6 MB/s。默认 256 KB/s ⇒ 实际约 9~10 快照/秒，延迟回到百余毫秒。",
+      "  链路好就调大（512 更跟手）；想省流量就调小（256 → 128 再省一半，但客机会更跳）。",
+      "  ⚠️ 守军「巡逻死锁」修好之后，dscj 的活动单位从 22 涨到 256 ⇒ 单条快照从 ~2KB 涨到 26.6KB，",
+      "     这才是「同步突然变慢」的直接原因；这条预算就是给这种规模的关卡兜底的。"
+    ],
+    "snapshot_budget_kb_per_sec": 384,
+    "_adaptive_comment": [
+      "★★ 2026.10.27：预算是**自适应**的 —— 起始值 384，好链路会自己往上爬，拥塞会退守。",
+      "  反馈信号 = 本机 socket 的积压（buffered_amount）：链路跟不上它会先涨。",
+      "  每秒结算一次：撞到积压 ⇒ ×0.7（不低于 min）；没积压且在跳帧 ⇒ ×1.25（不高于 max）。",
+      "  为什么不写死一个值：固定预算对最差链路安全、对好链路浪费。家里 WiFi 能跑 2MB/s",
+      "  却只发 17 条/秒，延迟就卡在 60ms 上不去；实测空链路 12 秒会爬到 937KB/s，",
+      "  即 30 条/秒（= snapshot_hz 的上限，单条 22.1KB × 30 ≈ 663KB/s）。",
+      "  拥塞 6 秒会退到 min（128KB/s ≈ 5.8 条/秒，很跳但延迟最小）。",
+      "  想关掉就设 snapshot_budget_adaptive = 0，用固定 snapshot_budget_kb_per_sec。"
+    ],
+    "snapshot_budget_adaptive": 1,
+    "snapshot_budget_min_kb": 128,
+    "snapshot_budget_max_kb": 1024,
     "snapshot_keyframe_every": 300
   },
 

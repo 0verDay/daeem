@@ -170,8 +170,18 @@ func _hover_color_of(owner: String) -> Color:
 
 
 ## 建筑在世界里的高度（格）——**纯表现**，缺省 1 格
+##
+## ★★ 2026.10.27（性能）：按**类型**缓存。原来每栋建筑每帧都做一次
+##    `"render.building_height.%s" % t`（字符串格式化 + 配置查表）——
+##    20 栋建筑就是每帧 20 次格式化。高度只由类型决定，类型一局内不变。
+var _height_cache: Dictionary = {}
+
+
 func _height_of(b) -> float:
 	var t := String(b.type)
+	var cached: Variant = _height_cache.get(t, null)
+	if cached != null:
+		return cached
 	var h: float = cfg.num("render.building_height.%s" % t, 0.0)
 	if h <= 0.0:
 		# 没配就用「类型缺省表」：城墙矮、大本营最高
@@ -186,7 +196,9 @@ func _height_of(b) -> float:
 				h = 0.35
 			_:
 				h = 1.0
-	return maxf(0.05, h)
+	h = maxf(0.05, h)
+	_height_cache[t] = h
+	return h
 
 
 func _batch_for(key: String, color: Color, type: String = "",
@@ -302,26 +314,53 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 ## ★ `body_scale` 是 **logic 的权威**（占一格的比例，碰撞也用它）；
 ##   这里只把它翻译成 3D 的宽 / 深，**不新增任何尺寸来源**。
 ##   高度来自 `_height_of()`（纯表现）；有模型的类型（城墙）改用模型自带的高度。
+## ★★ 2026.10.27（性能）：**静态变换缓存**（建筑实例 id → 不含受击振动的 Transform3D）。
+##
+## 建筑不会移动、不会缩放：`_transform_of()` 里的 `palette.to_world(center)`、
+## `body_scale()`、`_height_of()` 每帧重算的都是同一串常量。
+## 缓存键带 `world.building_revision`：建筑增 / 删 / 换归属时整表作废
+## （归属会换颜色、但不动变换；这一条只是保险，代价是每帧一次整数比较）。
+## 受击振动仍然是每帧现算的**偏移量**，行为不变。
+var _xform_cache: Dictionary = {}
+var _xform_rev: int = -1
+
+
 func _transform_of(b) -> Transform3D:
+	var rev: int = int(world.building_revision)
+	if _xform_rev != rev:
+		_xform_cache.clear()
+		_xform_rev = rev
+	var iid: int = int(b.get_instance_id())
+	var cached: Variant = _xform_cache.get(iid, null)
+	if cached == null:
+		cached = _static_transform_of(b)
+		_xform_cache[iid] = cached
+	var xf: Transform3D = cached
+	# ★ 受击左右振动（纯表现）：X 方向一个小位移，随 hit_flash 衰减
+	if b.hit_flash > 0.0:
+		var cell: float = palette.cell_size()
+		var shake: float = HitFxRes.shake_tiles(b.hit_flash, _hit_amp, _hit_freq) * cell
+		shake_applied_last_frame += 1
+		xf.origin = Vector3(xf.origin.x + shake, xf.origin.y, xf.origin.z)
+	return xf
+
+
+## `_transform_of()` 的**静态部分**（不含受击振动）——这是会被缓存的那一半。
+func _static_transform_of(b) -> Transform3D:
 	var cell: float = palette.cell_size()
 	var c: Vector2 = b.center()
 	var base: Vector3 = palette.to_world(c)
-	# ★ 受击左右振动（纯表现）：X 方向一个小位移，随 hit_flash 衰减
-	var shake := 0.0
-	if b.hit_flash > 0.0:
-		shake = HitFxRes.shake_tiles(b.hit_flash, _hit_amp, _hit_freq) * cell
-		shake_applied_last_frame += 1
 	var s: float = b.body_scale(cfg)
 	# ★★ 有模型的类型（城墙 / 箭塔 / 大本营 / 区划中心）：模型已按「1 单位 = 1 格、底边在 y = 0」建好 ⇒
 	#    统一缩放格宽 × body_scale、底边直接贴地（高度由模型自己决定，不再走 `_height_of`）。
 	if _uses_model(String(b.type)):
 		var k: float = cell * s
 		return Transform3D(Basis().scaled(Vector3(k, k, k)),
-			Vector3(base.x + shake, GROUND_LIFT, base.z))
+			Vector3(base.x, GROUND_LIFT, base.z))
 	var w: float = cell * s
 	var h: float = cell * _height_of(b)
 	# 立方体以**中心**为原点 ⇒ 抬到「底边贴地」，并贴在地面之上一点避免 z-fighting
-	var pos := Vector3(base.x + shake, h * 0.5 + GROUND_LIFT, base.z)
+	var pos := Vector3(base.x, h * 0.5 + GROUND_LIFT, base.z)
 	return Transform3D(Basis().scaled(Vector3(w, h, w)), pos)
 
 

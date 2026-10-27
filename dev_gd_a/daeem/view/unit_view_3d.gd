@@ -361,7 +361,7 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 		# ★★ 战争迷雾：看不见的敌方单位**一个实例都不占**（判据只在 logic/fog.gd）
 		if not _visible_to_me(u):
 			continue
-		if cull_on and not cull_rect.has_point(palette.to_px(u.pos)):
+		if cull_on and not cull_rect.has_point(palette.to_px(_render_pos(u))):
 			continue
 		_vis_ids[u.id] = true
 		# ★★ 单次遍历的副产品①：本帧可见单位的**所在格**（建筑层淡出用它）。
@@ -426,7 +426,7 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 			var u = arr[i]
 			if batch_downed:
 				downed_count += 1
-			var w: Vector3 = palette.to_world(u.pos)
+			var w: Vector3 = palette.to_world(_render_pos(u))
 			# ★ 受击左右振动（纯表现）：X 方向一个小位移，随 hit_flash 衰减
 			if u.hit_flash > 0.0:
 				w.x += HitFxRes.shake_tiles(u.hit_flash, _hit_amp, _hit_freq) * _cell
@@ -547,7 +547,7 @@ func _sync_decals(units_list: Array) -> void:
 		_decal_mm.instance_count = maxi(units_list.size(), _decal_mm.instance_count * 2)
 	var i: int = 0
 	for u in units_list:
-		var w: Vector3 = palette.to_world(u.pos)
+		var w: Vector3 = palette.to_world(_render_pos(u))
 		w.y = 1.0                       # 贴在地面上方一点点（避免与地面 z-fighting）
 		_decal_mm.set_instance_transform(i, Transform3D(Basis(), w))
 		_decal_mm.set_instance_color(i, SideColorRes.color(cfg, world, String(u.faction), "main"))
@@ -607,7 +607,7 @@ func _sync_selection_rings(units_list: Array, dt: float) -> void:
 		var i: int = int(counts[rel])
 		if mm.instance_count <= i:
 			mm.instance_count = maxi(i + 1, mm.instance_count * 2)
-		var w: Vector3 = palette.to_world(u.pos)
+		var w: Vector3 = palette.to_world(_render_pos(u))
 		w.y = 1.0
 		var s: float = lerpf(_sel_scale_from, 1.0, p)
 		mm.set_instance_transform(i, Transform3D(Basis().scaled(Vector3(s, 1.0, s)), w))
@@ -652,8 +652,9 @@ func _visible_to_me(u) -> bool:
 func quad_screen_width(u) -> float:
 	if palette == null:
 		return 0.0
-	var a: Vector2 = palette.to_px(u.pos + Vector2(-QUAD_W * 0.5, 0.0))
-	var b: Vector2 = palette.to_px(u.pos + Vector2(QUAD_W * 0.5, 0.0))
+	var rp: Vector2 = _render_pos(u)
+	var a: Vector2 = palette.to_px(rp + Vector2(-QUAD_W * 0.5, 0.0))
+	var b: Vector2 = palette.to_px(rp + Vector2(QUAD_W * 0.5, 0.0))
 	return a.distance_to(b)
 
 
@@ -673,9 +674,24 @@ func quad_screen_size(u) -> Vector2:
 func head_screen_pos(u) -> Vector2:
 	if palette == null or palette.cam == null:
 		return Vector2.ZERO
-	var w: Vector3 = palette.to_world(u.pos)
+	var w: Vector3 = palette.to_world(_render_pos(u))
 	w.y = _quad.size.y
 	return palette.cam.unproject_position(w)
+
+
+## 这个单位**这一帧该画在哪**（格）——房主 / 单机 = `u.pos`；客机 = 两条快照之间插值。
+##
+## ★★ 2026.10.27：视图层一律走这一个入口，不要直接读 `u.pos` ——
+##    否则立牌（插值）与血条 / 选中圈（原始 pos）会错开，9Hz 快照下肉眼可见。
+func _render_pos(u) -> Vector2:
+	if world != null and world.has_method("render_pos_of"):
+		return world.render_pos_of(u)
+	return u.pos
+
+
+## 公开入口：覆盖层（血条 / 选中圈 / 名牌）必须与立牌用**同一个**位置。
+func render_pos_of(u) -> Vector2:
+	return _render_pos(u)
 
 
 ## 选中集合（`game_scene3d` 每帧把 `_selected_ids()` 喂进来）。
@@ -699,6 +715,10 @@ func set_selection(ids: Array) -> void:
 ## ★ 填充是**纯表现**：只改 shader 的混色量，不改贴图、不加批次、不进快照。
 ## ⚠️ 这个方法**必须有**：缺了会抛 `Nonexistent function` 并中断整个 `_process`（同 set_selection）。
 func set_hover(ids: Array) -> void:
+	# ★★ 2026.10.27（性能）：**手机端这条每帧都会以空表调用**（触摸端没有悬停），
+	#   全空的时候直接返回 —— 否则每帧白建一个空字典（90Hz 下每秒 90 次分配）。
+	if ids.is_empty() and _hover_set.is_empty() and _hover_anim.is_empty():
+		return
 	_hover_set = {}
 	for id in ids:
 		_hover_set[String(id)] = true

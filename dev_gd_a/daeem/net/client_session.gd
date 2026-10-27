@@ -36,12 +36,23 @@ var _has_pending_snap: bool = false
 ## 诊断计数（不进玩法）。
 var snapshots_applied: int = 0
 var snapshots_coalesced: int = 0
+## ★★ 2026.10.27（插值）：上一条快照的应用时刻 / 实测间隔（毫秒）。
+##    `poll()` 每帧把 `world.render_alpha` 从 0 推到 1（按 wall clock），
+##    于是「网络 9Hz、画面 90Hz」也能平滑 —— 见 `world.render_pos_of`。
+var _interp_t0_ms: int = 0
+var _interp_span_ms: float = 100.0
+var _last_apply_ms: int = 0
 
 
 ## 每帧由 game_scene 调：握手推进 / 收消息 / 应用**最新**快照。
 func poll() -> void:
 	if transport != null:
 		transport.poll()
+	# ★ 插值推进：与快照到达无关，每帧都走（快照 9Hz / 画面 90Hz 正是靠这一句拉平的）
+	if world != null and _interp_t0_ms > 0:
+		var now_ms: int = Time.get_ticks_msec()
+		var a: float = float(now_ms - _interp_t0_ms) / maxf(1.0, _interp_span_ms)
+		world.render_alpha = clampf(a, 0.0, 1.0)
 	if not _has_pending_snap:
 		return
 	var snap: Variant = _pending_snap
@@ -121,6 +132,20 @@ func _apply_snapshot_data(snap: Variant) -> void:
 		protocol_error.emit("snapshot")
 		return
 	SnapshotRes.apply_snapshot(world, cfg, snap)
+	# ★★ 插值窗口重置：本帧起从 0 推到 1。
+	#   `span` 用**实测的相邻两条快照间隔**（夹在 50~400ms）—— 于是房主按预算降频
+	#   （256KB/s ⇒ ~9 条/秒）时，客机会自动用 ~110ms 的窗口把运动摊平，
+	#   不需要改任何配置。首条快照没有历史 ⇒ 用默认 100ms。
+	var now_ms: int = Time.get_ticks_msec()
+	if _last_apply_ms > 0:
+		var dt_ms: float = float(now_ms - _last_apply_ms)
+		if dt_ms >= 20.0:
+			# ★ 窗口取实测间隔的 **1.2 倍**：这样下一条快照通常**在** alpha 走到 1 之前到达，
+			#   单位不会在两条快照之间「停在原地等」—— 那会在 9Hz 下变成一顿一顿的。
+			_interp_span_ms = clampf(dt_ms * 1.2, 60.0, 400.0)
+	_interp_t0_ms = now_ms
+	_last_apply_ms = now_ms
+	world.render_alpha = 0.0
 	# ★ 客机不 tick：迷雾 / 归属 / 科技加成这些派生数据必须在这里补一遍。
 	world.refresh_after_snapshot()
 	snapshot_applied.emit()

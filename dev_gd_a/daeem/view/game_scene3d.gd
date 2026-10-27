@@ -152,6 +152,13 @@ var _mobile_scale_cur: float = 1.0
 var _mobile_scale_timer: float = 0.0
 var _mobile_scale_low: int = 0
 var _mobile_scale_high: int = 0
+## ★★ A/B 探测（见 `_mobile_scale_tick` 的说明）：
+##   `_mobile_scale_probe` >= 0 = 刚降过一档、等在 1.5 秒后结算「帧率有没有涨」；
+##   `_mobile_scale_locked` = 已证明「降分辨率没用」⇒ 本次关卡不再调（CPU 瓶颈）。
+var _mobile_scale_probe: int = -1
+var _mobile_scale_probe_prev: float = 1.0
+var _mobile_scale_probe_fps: float = 0.0
+var _mobile_scale_locked: bool = false
 var _rebake_tick: int = 0
 
 ## ★★ 逐节剖析（默认关闭）：打开后 `_process` 各段累计微秒，供 `tests/bench_fps_3d.gd` 读。
@@ -878,7 +885,11 @@ func _process(dt: float) -> void:
 	# ③ 视图：单位 MultiMesh 每帧重填（位置会变）
 	#    ★ 选中集合先喂给单位层：它据此画脚下的「绿色空心圆」选中下标（见 unit_view_3d）
 	var _t_units := _prof()
-	units.set_selection(_selected_ids())
+	# ★★ 2026.10.27（性能）：选中列表**只构一次**。原来 `units.set_selection(...)` 与
+	#    下面的 `overlay.set_selection(...)` 各调一次 `_selected_ids()` —— 每帧两次数组
+	#    分配 + 两次遍历 `selected_units`。90Hz 下这是每秒 180 次白给的分配。
+	var sel: Array = _selected_ids()
+	units.set_selection(sel)
 	# ★★ 悬停高亮（桌面端）：必须在 sync 之前喂进去（手机端这里恒为空）
 	units.set_hover(_hover_ids_for_view())
 	units.sync(dt)
@@ -912,7 +923,8 @@ func _process(dt: float) -> void:
 	overlay.drag_screen_box = input_ctrl.drag_screen_box
 	overlay.drag_screen_valid = input_ctrl.drag_screen_valid
 	overlay.mouse_world = input_ctrl.mouse_world
-	overlay.set_selection(_selected_ids())
+	# ★ 复用上面算好的同一份选中列表（见 ③ 开头那条注释）
+	overlay.set_selection(sel)
 	overlay.sync()
 	_prof_done("view/overlay", _t_overlay)
 	# ⑤a ★★ 迷雾：**每帧**检查一次掩码变没变（整块 memcmp，O(格数)，可忽略）。
@@ -943,14 +955,26 @@ func _process(dt: float) -> void:
 ## ★★ 2026.10.27：移动端自适应 3D 分辨率（只改 3D，不改 UI / 命中判定）。
 ##
 ## 手机 GPU 差异极大：同一档 0.6 在高端机很轻松、在低端机仍然 20fps。
-## 这里用 **Engine.get_frames_per_second()** 做保守的滞回调节：
-##   · 连续 2 次检查（约 3 秒）低于 26fps → 0.05 步降，最低 0.5；
-##   · 连续 3 次检查（约 4.5 秒）高于 52fps → 0.05 步升，最高回到起始值。
+## 这里用 **Engine.get_frames_per_second()** 做保守的滞回调节，阈值跟着**目标帧率**走：
+##   · 连续 2 次检查（约 3 秒）低于 `目标 × 0.55` → 0.05 步降，最低 0.5；
+##   · 连续 3 次检查（约 4.5 秒）高于 `目标 × 0.92` → 0.05 步升，最高回到起始值。
 ## 开局前 5 秒不做（着色器编译 / 加载会短暂低帧，避免误降）。
+##
+## ★★ 2026.10.27（本轮补的**关键一条**）：**降分辨率没换来帧率就停手**。
+##
+## 为什么必须有：这个游戏在 66 单位时是**CPU（GDScript 主线程）瓶颈** ——
+##   实测分段 `tk 7.5 / vu 2.1 / dov 1.7 / rest 3.4`，`rest`（GPU + 呈现）只占 22%。
+##   降 3D 分辨率只动 `rest` 那一块，对另外 78% 一点用都没有。
+##   旧行为是「帧率低就降档」，于是低帧时它会把画面从 0.6 一路拖到 0.5（变糊），
+##   而帧率一动不动；帧率因别的原因回升之后又升回去 —— 玩家看到的是「画面自己变糊」。
+##   现在的判据是**A/B 探测**：每降一档，1.5 秒后比对帧率；涨不到 3% 就还原这一档，
+##   并**本次关卡不再尝试**（`_mobile_scale_locked`）。只有真的 GPU 瓶颈才继续降。
 func _mobile_scale_tick(dt: float) -> void:
 	if not OS.has_feature("mobile") or cfg == null or not cfg.mobile_auto_scale:
 		return
 	if world == null or world.time < 5.0:
+		return
+	if _mobile_scale_locked:
 		return
 	_mobile_scale_timer += dt
 	if _mobile_scale_timer < 1.5:
@@ -959,28 +983,49 @@ func _mobile_scale_tick(dt: float) -> void:
 	var fps: float = float(Engine.get_frames_per_second())
 	if fps <= 0.0:
 		return
-	if fps < 26.0:
+	# ★ A/B 探测结算：上一次降档到底有没有用？
+	if _mobile_scale_probe >= 0:
+		if fps < _mobile_scale_probe_fps * 1.03:
+			# 降了分辨率、帧率没涨 ⇒ CPU 瓶颈 ⇒ 还原并永久停手（本次关卡）
+			_mobile_scale_cur = _mobile_scale_probe_prev
+			_apply_mobile_scale(_mobile_scale_cur)
+			_mobile_scale_locked = true
+			_mobile_scale_probe = -1
+			push_warning("[perf] 降 3D 分辨率没有提升帧率（CPU 瓶颈），已还原并停止自适应")
+			return
+		_mobile_scale_probe = -1
+		_mobile_scale_probe_fps = 0.0
+	var target: float = float(cfg.mobile_max_fps) if cfg.mobile_max_fps > 0 else 60.0
+	target = maxf(30.0, target)
+	var low_line: float = target * 0.55
+	var high_line: float = target * 0.92
+	if fps < low_line:
 		_mobile_scale_low += 1
 		_mobile_scale_high = 0
-	elif fps > 52.0:
+	elif fps > high_line:
 		_mobile_scale_high += 1
 		_mobile_scale_low = 0
 	else:
 		_mobile_scale_low = 0
 		_mobile_scale_high = 0
-	var next := _mobile_scale_cur
 	if _mobile_scale_low >= 2 and _mobile_scale_cur > 0.5001:
-		next = maxf(0.5, _mobile_scale_cur - 0.05)
+		_mobile_scale_probe_prev = _mobile_scale_cur
+		_mobile_scale_probe_fps = fps
+		_mobile_scale_cur = maxf(0.5, _mobile_scale_cur - 0.05)
 		_mobile_scale_low = 0
-	elif _mobile_scale_high >= 3 and _mobile_scale_cur < _mobile_scale_base - 0.0001:
-		next = minf(_mobile_scale_base, _mobile_scale_cur + 0.05)
-		_mobile_scale_high = 0
-	if absf(next - _mobile_scale_cur) < 0.0001:
+		_apply_mobile_scale(_mobile_scale_cur)
+		_mobile_scale_probe = 1        # 1.5 秒后结算「有没有用」
 		return
-	_mobile_scale_cur = next
+	if _mobile_scale_high >= 3 and _mobile_scale_cur < _mobile_scale_base - 0.0001:
+		_mobile_scale_cur = minf(_mobile_scale_base, _mobile_scale_cur + 0.05)
+		_mobile_scale_high = 0
+		_apply_mobile_scale(_mobile_scale_cur)
+
+
+func _apply_mobile_scale(v: float) -> void:
 	var vp: Viewport = get_viewport()
 	if vp != null:
-		vp.scaling_3d_scale = _mobile_scale_cur
+		vp.scaling_3d_scale = v
 
 
 ## 该被点亮选中圈的单位 id（本机选中 + 选中的敌方单位）

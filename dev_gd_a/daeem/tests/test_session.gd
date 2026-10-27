@@ -54,8 +54,11 @@ func _run() -> void:
 	var client = ClientSessionRes.new()
 	host.setup(host_w, cfg, ht, "F1", "F2")
 	client.setup(guest_w, cfg, gt, "F2")
-	near(host.snap_interval, 1.0 / 30.0, 1e-6,
-		"★ 默认按 net.snapshot_hz=30 装配（夹在 10~60）")
+	# ★ 断言的是「按 config 里的 net.snapshot_hz 装配（并夹在 10~60）」，不是「必须是 30」——
+	#   把具体数值写死会让「调频率的手感实验」变成改测试。
+	var want_hz: float = clampf(float(cfg.num("net.snapshot_hz", 30.0)), 10.0, 60.0)
+	near(host.snap_interval, 1.0 / want_hz, 1e-6,
+		"★ 按 net.snapshot_hz=%.0f 装配（夹在 10~60）" % want_hz)
 	host.snap_interval = 0.05
 	client.started.connect(_on_started)
 	client.snapshot_applied.connect(_on_snapshot)

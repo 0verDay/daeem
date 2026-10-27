@@ -127,12 +127,18 @@ static func update_unit(world, cfg: ConfigRes, u: UnitRes, dt: float, idx: int =
 	if u.leash_cd > 0.0:
 		u.leash_cd = maxf(0.0, u.leash_cd - dt)
 
-	# ★★ 士气（本轮新增，**取代**旧的「玩家阵营站己方区划每秒回 4 血」）：
-	#    整支部队共享一个值，按所在区划缓慢升降（己方↑ / 敌方或包围区↓），
-	#    并按它的档位回血 / 掉血（免伤 / 易伤在 unit.take_damage 里）。
-	#    ★ 作用范围从「玩家阵营」扩大到**所有单位**（需求：含 AI / 敌方）。
-	#    ⚠️ 这里不再有「先看血量再看领地」的短路 —— 满血单位也要涨士气。
-	MoraleRes.tick_unit(world, cfg, u, dt)
+	# ★★ 2026.10.27：**士气不再在逐单位循环里算** —— 它现在是 `world.tick` 里
+	#    单位循环**之前**的一整遍（`MoraleRes.tick_all`），见那里的说明。
+	#
+	# 为什么必须挪出去（这两条是同一个决定的两面）：
+	#   1. **性能**：士气的开销是「查区划 + 判同方 + 判包围 + 查粮车光环 + 回血档位」，
+	#      全是逐单位的查表与算术 —— 正好是能整段下沉到 C# 的那种活。
+	#      而「批量」的前提是它不能和战斗交替：交错着算就永远只能逐单位调内核（跨语言开销反而更大）。
+	#   2. **语义**：挪出去之后所有单位都在**同一时刻**结算士气/回复，再统一结算战斗 ——
+	#      这本来就是「一个 tick」更自然的读法（不再依赖 `world.units` 的遍历顺序）。
+	#    ⚠️ 行为上确实有一处差别：满血单位在同一帧既回血又挨打时，先回血再挨打
+	#      （原来取决于它在列表里的位置）。差一个 `regen*dt` 的量级，肉眼不可见；
+	#      `tests/test_unit_backend_equiv.gd` 会钉住「重构前后与两个后端都一致」。
 
 	# ★★ 移动射击（马弓手）：有移动 / 行军命令、正在沿路走时，**不停下来**，
 	#    只对射程内的敌人开火。没有移动命令（站定）时走下面的普通战斗分支，
@@ -180,7 +186,9 @@ static func update_unit(world, cfg: ConfigRes, u: UnitRes, dt: float, idx: int =
 			#    ⚠️ 错开的相位用 (单位下标 + 帧号)，保证同一帧里三拨各占三分之一 ——
 			#      只用单位下标的话，一波单位会永远落在同一帧上，等于没分摊。
 			if not u.has_attack_move or (idx + world.frame_serial) % 3 == 0:
+				var _t_acq := _ft_start(world)
 				acquire_target(world, cfg, u, idx)
+				_ft_end(world, "u/acquire", _t_acq)
 		# ★★ 行军攻击的「到点就算完成」必须**在索敌之前**判，不能等下面三个分支都落空：
 		#    打完之后它会站住，而「静止」正是自动索敌的触发条件 —— 目标点旁边要是
 		#    有建筑在警戒半径内（区划中心 / 对家城墙），`target_building` 那一支就会
@@ -408,9 +416,21 @@ static func acquire_target(world, cfg: ConfigRes, u: UnitRes, idx: int = -1) -> 
 	#     由 general_ai 驱动）—— 用户要的「AI 对建筑有反应」正是它们。
 	if u.faction == FactionRes.NPC_FACTION and not u.is_garrison():
 		return false
+	# ★★ 2026.10.27（性能）：**建筑索敌的负缓存**（见 `unit.bscan_*` 的说明）。
+	#    位置 / 半径 / 建筑表版本三项都没变、且上次就查过「附近没有敌方建筑」⇒ 直接跳过。
+	#    这是精确判据（返回值只由这三项 + 阵营决定，阵营一局内不变）。
+	if u.bscan_valid and u.bscan_rev == world.building_revision \
+			and u.bscan_pos == u.pos and absf(u.bscan_aggro - aggro) < 0.0001:
+		return false
 	var b = nearest_enemy_building(world, cfg, u, aggro)
 	if b == null:
+		u.bscan_pos = u.pos
+		u.bscan_rev = world.building_revision
+		u.bscan_aggro = aggro
+		u.bscan_valid = true
 		return false
+	# 查到建筑 ⇒ 负缓存作废（目标被打掉之后要重新查）
+	u.bscan_valid = false
 	set_building_target(u, b)
 	# ★★ 同上：自动索敌到一座建筑 ⇒ 作废「走回旧落点」，否则会在落点与建筑之间徘徊。
 	u.clear_settled_spot()
@@ -463,6 +483,12 @@ static func nearest_enemy_building(world, cfg: ConfigRes, u: UnitRes, aggro: flo
 	# ★ 网格不新鲜就补建（正常路径由 world.tick 每帧建好；这里兜「直接调用」那条）。
 	if world._bgrid_revision != world.building_revision:
 		rebuild_building_grid(world)
+	# ★★ 2026.10.27（性能）：**空网格 ⇒ 全图没有可打的建筑，直接返回**。
+	#    待命单位每帧都会走到这里（`acquire_target` 末尾那条「再看一眼建筑」），
+	#    而这一步是 3×3 次字典查找 + 两层 `range()` —— 66 个待命单位实测 0.40 ms/帧
+	#    （桌面），正是 `u/acquire` 的全部。空表时它的结果必然是 null，语义不变。
+	if world._bgrid.is_empty():
+		return null
 	var reach := int(ceilf(aggro)) + 2
 	# 只查单位附近 3×3 个格子（aggro_range 默认 4 ⇒ reach 6 ≤ 8，够覆盖）
 	var c0x: int = (int(u.tx) - reach) >> BGRID_SHIFT
@@ -796,3 +822,18 @@ static func update_building_effects(world, cfg: ConfigRes, dt: float) -> void:
 			b.flash = maxf(0.0, b.flash - dt * 4.0)
 		if b.hit_flash > 0.0:
 			b.hit_flash = maxf(0.0, b.hit_flash - dt / cfg.hit_flash_sec_safe)
+
+## ★★ 2026.10.27（排查 / 剖析用）：单位循环内的**细分计时**。
+##
+## ★ 只在 `world.profile_on` 时付两次 `Time.get_ticks_usec()`；关着的时候 `_ft_start`
+##   返回 0、`_ft_end` 见到 0 立刻返回 —— 生产路径上每单位多两次布尔判断（可忽略）。
+## ★ 为什么不做成"每段一个 Timer 对象"：这是每帧每单位都要走的路径，
+##   任何额外分配都会把要测的东西本身变慢。
+static func _ft_start(world) -> int:
+	return Time.get_ticks_usec() if (world != null and world.profile_on) else 0
+
+
+static func _ft_end(world, key: String, t0: int) -> void:
+	if t0 == 0 or world == null:
+		return
+	world.profile_sub(key, Time.get_ticks_usec() - t0)

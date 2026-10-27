@@ -187,6 +187,12 @@ var retinue_types: Array = []
 
 ## 连续位置（格）
 var pos: Vector2 = Vector2.ZERO
+## ★★ 2026.10.27（联机插值）：**上一帧「画在哪」**。客机不 tick，位置只按快照跳变；
+##    渲染层用 `world.render_pos_of(u)` 在 `prev_pos → pos` 之间按 `world.render_alpha` 插值，
+##    于是「网络 9Hz、画面 90Hz」也能走得很顺（见 `net/client_session.poll`）。
+##    ★ 房主 / 单机下 `render_alpha` 恒为 1.0 ⇒ `render_pos_of` 直接返回 `pos`，
+##      这个字段完全不参与渲染，行为与加它之前逐位一致。
+var prev_pos: Vector2 = Vector2.ZERO
 ## 所在地块缓存：只用于占区块 / 资源 / 箭塔 / 警戒判定
 var tx: int = 0
 var ty: int = 0
@@ -308,6 +314,21 @@ var leash_cd: float = 0.0
 ##    **49 ms/帧（20 fps）**，而且帧一慢 dt 变大、同一帧里到期的重寻路更多，是正反馈。
 ##    哨兵值取一个离任何目标都很远的点，保证「刚发现目标」时一定会算一次。
 var last_repath_to: Vector2 = Vector2(-99999.0, -99999.0)
+
+## ★★ 2026.10.27（性能）：**建筑索敌的「负缓存」**（见 `combat.acquire_target` 末尾那条）。
+##
+## 问题：没有敌方**单位**可锁的单位，每帧都会再问一次「附近有没有敌方建筑」——
+##   那是一次 3×3 网格查询（每格字典查找 + 逐个候选算距离）。20 栋建筑、66 个待命
+##   单位时实测 `u/acquire` = 0.40 ms/帧（桌面），而且会随单位数线性长。
+## 做法：把「查过一次、结果是 null」这件事连**查的时候的位置 / 半径 / 建筑表版本**一起记住。
+##   四项都没变 ⇒ 结果必然还是 null，直接跳过。四个值一起比是**精确**判据：
+##   `nearest_enemy_building` 的返回值只由 (u.pos, aggro, faction, 建筑集合) 决定，
+##   而 faction 一局内不变、建筑集合变了 `building_revision` 就会变。
+## ⚠️ 只缓存**否定结果**：查到建筑就正常锁上，不需要缓存（锁上之后就不再走这条路）。
+var bscan_pos: Vector2 = Vector2(-99999.0, -99999.0)
+var bscan_rev: int = -1
+var bscan_aggro: float = -1.0
+var bscan_valid: bool = false
 
 ## ---- 玩家下达的攻击命令（右键点敌人 / 右键点建筑 / 双击行军攻击）----
 ##
@@ -565,6 +586,7 @@ static func create(cfg: ConfigRes, p_id: String, p_name: String, tile: Vector2i,
 	if p_general_index >= 0:
 		u.stat_overrides = cfg.general_stat_overrides(p_general_index)
 	u.pos = GridRes.center_of(tile)
+	u.prev_pos = u.pos          # ★ 插值起点 = 出生点（否则第一帧会从世界原点滑过来）
 	u.tx = tile.x
 	u.ty = tile.y
 	# ★ 数值走 cfg.unit_*_of(unit_type)：原来写的是「是将领吗？不是就当敌人」，

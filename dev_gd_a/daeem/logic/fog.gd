@@ -120,6 +120,21 @@ var _last_contrib: Dictionary = {}
 ## 上一次更新时的阵营数（联机有人进场 / 名单变化都要重建）。
 var _last_faction_count: int = 0
 
+## ★★ 2026.10.27：C# 后端专用的**扁平贡献表**（取代 `_contrib` 那套字典，见 `_collect_flat`）。
+var _flat_side := PackedInt32Array()
+var _flat_tile := PackedInt32Array()
+var _flat_radius := PackedFloat64Array()
+var _flat_count: int = 0
+## 方下标 → 方名（就是 `sight` 的键）。顺序 = 遍历 `world.factions` 去重后的顺序，与旧实现同序。
+var _flat_side_ids: Array = []
+var _last_flat_side := PackedInt32Array()
+var _last_flat_tile := PackedInt32Array()
+var _last_flat_radius := PackedFloat64Array()
+var _last_flat_count: int = -1
+var _last_flat_ids: int = -1
+## 「本帧已经用扁平路径采集过」——与 `_fresh` 同一个用途，只是另一条后端。
+var _fresh_flat: bool = false
+
 
 static func create() -> RefCounted:
 	return new()
@@ -169,6 +184,9 @@ func refresh_needed(world) -> bool:
 		return false
 	if world.map == null:
 		return false
+	# ★★ 2026.10.27：C# 后端走**扁平表**（不建字典，见 `_collect_flat`）。
+	if _use_csharp(world.cfg):
+		return _refresh_needed_flat(world)
 	_collect_contributors(world)
 	# ★ 标记「本帧已采集」：紧随的 update() 会复用它，不再重复采集（见 `_fresh`）。
 	_fresh = true
@@ -189,8 +207,126 @@ func refresh_needed(world) -> bool:
 	return false
 
 
-## 重建所有阵营的视野（每一方**只**并入自己那些来源的扇区，见 `_contrib` 的说明）。
+## ★★ 2026.10.27：C# 后端的**扁平贡献表**采集（取代 `_contrib` 那套字典）。
 ##
+## 为什么可以完全不要字典：内核 `BuildSight` 对同一格的贡献是**逐条 OR**，
+## 而半径 r1 < r2 时「r1 的扇区」⊆「r2 的扇区」—— 由 OR 的单调性，
+## 「不去重、全部 OR」与「同格取最大半径再 OR」结果**逐位相同**。
+## ⇒ 每帧 256 次 `dict.get` + `append` + 赋值，变成三次数组写入；
+##   变更判定也从「遍历字典比对」变成**原生数组比较**（`==` 走 memcmp）。
+##
+## ⚠️ 等价前提是「半径越大看得越多」。以后若给扇区加真实遮挡（山后的格子看不见），
+##    这条必须重新论证，否则会悄悄改变视野语义。
+func _collect_flat(world) -> void:
+	_flat_count = 0
+	_flat_side_ids.clear()
+	var side_of: Dictionary = {}          # 方名 → 方下标
+	var side_cache: Dictionary = {}       # 阵营 id → 方名（同一帧内只算一次 side_of）
+	for f in world.factions:
+		_register_side(String(f), side_of, side_cache)
+	# 上限 = 单位数 + 建筑数；一次 resize 到底，避免循环里反复扩容。
+	var cap: int = world.units.size() + world.building_list.size()
+	_flat_side.resize(cap)
+	_flat_tile.resize(cap)
+	_flat_radius.resize(cap)
+	var k := 0
+	for u in world.units:
+		if u == null or not u.alive:
+			continue
+		var ux := int(u.tx)
+		var uy := int(u.ty)
+		if not world.map.terrain.has(ux, uy):
+			continue
+		# ⚠️ 名单之外的阵营（单机时的 "enemy" 守军）也要登记：
+		#    它们挪一格同样是「视野变了」，漏掉会让变更判定漏更新。
+		var si: int = _register_side(String(u.faction), side_of, side_cache)
+		_flat_side[k] = si
+		_flat_tile[k] = world.map.terrain.idx(ux, uy)
+		_flat_radius[k] = _unit_vision(world.cfg, u)
+		k += 1
+	for b in world.building_list:
+		if b == null or not b.alive:
+			continue
+		if not world.map.terrain.has(b.tx, b.ty):
+			continue
+		if not _faction_contributes(String(b.owner)):
+			continue
+		var si2: int = _register_side(String(b.owner), side_of, side_cache)
+		_flat_side[k] = si2
+		_flat_tile[k] = world.map.terrain.idx(b.tx, b.ty)
+		_flat_radius[k] = _building_vision(world.cfg, b)
+		k += 1
+	_flat_count = k
+	_flat_side.resize(k)
+	_flat_tile.resize(k)
+	_flat_radius.resize(k)
+
+
+## 把一个阵营登记进「方表」（同方共用一个下标）并返回它的下标。
+func _register_side(faction: String, side_of: Dictionary, side_cache: Dictionary) -> int:
+	var sid := _side_name(faction, side_cache)
+	var idx: Variant = side_of.get(sid, null)
+	if idx != null:
+		return int(idx)
+	var fresh: int = _flat_side_ids.size()
+	side_of[sid] = fresh
+	_flat_side_ids.append(sid)
+	return fresh
+
+
+func _side_name(faction: String, side_cache: Dictionary) -> String:
+	var s: Variant = side_cache.get(faction, null)
+	if s == null:
+		s = FactionRes.side_of(faction)
+		side_cache[faction] = s
+	return String(s)
+
+
+## 扁平表的变更判定：**原生数组比较**（相等即 memcmp），比遍历字典快一个量级。
+##
+## ⚠️ 这条判据比旧版更**严**：旧版只比「格集合」，这里连半径与顺序一起比。
+##   严的后果只是「多重建一次掩码」，不会漏更新 —— 反过来才是 bug。
+func _refresh_needed_flat(world) -> bool:
+	_collect_flat(world)
+	_fresh_flat = true
+	_fresh = false
+	if _last_flat_count < 0 or _last_flat_ids < 0:
+		return true
+	if _flat_count != _last_flat_count or _flat_side_ids.size() != _last_flat_ids:
+		return true
+	if _flat_tile != _last_flat_tile:
+		return true
+	if _flat_radius != _last_flat_radius:
+		return true
+	if _flat_side != _last_flat_side:
+		return true
+	return false
+
+
+## 用扁平表建掩码：**一次内核调用**算完所有方，再按方切片。
+func _build_sight_flat(world, cells: int) -> void:
+	_ensure_kernel_map(world)
+	if _flat_side_ids.is_empty() or _flat_count <= 0:
+		sight.clear()
+		_snapshot_flat()
+		return
+	var flat: PackedByteArray = kernel.BuildSight(_flat_side_ids.size(),
+		_flat_side, _flat_tile, _flat_radius, _flat_count)
+	for si in _flat_side_ids.size():
+		sight[String(_flat_side_ids[si])] = flat.slice(si * cells, (si + 1) * cells)
+	_snapshot_flat()
+
+
+## 记下「这一版贡献表」，给下一帧的变更判定当基线（原生数组复制，引擎侧 memcpy）。
+func _snapshot_flat() -> void:
+	_last_flat_side = _flat_side.duplicate()
+	_last_flat_tile = _flat_tile.duplicate()
+	_last_flat_radius = _flat_radius.duplicate()
+	_last_flat_count = _flat_count
+	_last_flat_ids = _flat_side_ids.size()
+
+
+## 重建所有阵营的视野（每一方**只**并入自己那些来源的扇区，见 `_contrib` 的说明）。##
 ## ★★ 贡献格的采集：**只有 `refresh_needed` 刚刚采过（同一帧的相邻调用）才复用它**，
 ##    其余任何情况都**重新收集**（见 `_fresh` 与下面那句）。
 ##    这一条踩过坑 —— 曾经的写法是「阵营数没变就沿用 `_contrib`」，而 `_contrib`
@@ -204,23 +340,36 @@ func update(world) -> void:
 		return
 	# ★★ 若 `refresh_needed` **刚刚**采集过（同一帧的相邻调用），就用它那一次 ——
 	#    否则自己采集。见 `_fresh` 的说明：单独调用 `update` 的路径语义不变。
-	if _fresh:
+	var use_cs: bool = _use_csharp(world.cfg)
+	if use_cs:
+		# ★ 扁平路径（2026.10.27）：与 `_fresh` 同一条约定，只是另一套数据。
+		if not _fresh_flat:
+			_collect_flat(world)
+		_fresh_flat = false
 		_fresh = false
 	else:
-		_collect_contributors(world)
+		if _fresh:
+			_fresh = false
+		else:
+			_collect_contributors(world)
+		_fresh_flat = false
 	var cells: int = world.map.cols * world.map.rows
 	_cols = world.map.cols
 	_rows = world.map.rows
 
 	# ★★ 数字循环走 C# 内核（`fog.backend = "csharp"`）；加载不到 / 显式配成 gdscript
 	#    时走下面那条老路。两条路的输出**逐位一致**（test_fog 全量断言盯着）。
-	if _use_csharp(world.cfg):
-		_build_sight_csharp(world, cells)
+	if use_cs:
+		_build_sight_flat(world, cells)
 	else:
 		_build_sight_gdscript(world, cells)
 
 	_prune_sighted(world)
-	_last_contrib = _contrib.duplicate(true)
+	# ★★ 2026.10.27（性能）：用**交换**代替 `_contrib.duplicate(true)` ——
+	#    原来每帧把「方 × 贡献格」整张嵌套字典深拷贝一遍，只为留一份给 `refresh_needed` 比对。
+	var prev: Dictionary = _last_contrib
+	_last_contrib = _contrib
+	_contrib = prev
 	_last_faction_count = world.factions.size()
 
 
@@ -250,51 +399,11 @@ func _build_sight_gdscript(world, cells: int) -> void:
 		sight[side] = mask
 
 
-## C# 版的掩码构建：**一次调用**算完所有方（接口按批，不做「每格一次跨语言调用」）。
-##
-## ★ 输入是三条 Packed 数组（方下标 / 格下标 / 半径），输出是
-##   `sideCount × cols × rows` 的扁平掩码，这里再按方切片。
-## ★ 扇区缓存与山脉视线都在内核里；本文件只负责「谁是贡献格」。
-func _build_sight_csharp(world, cells: int) -> void:
-	_ensure_kernel_map(world)
-	# 输出的「方」与旧实现完全同序：遍历 world.factions，按 side_of 去重。
-	var sides_list: Array = []
-	var seen_sides: Dictionary = {}
-	for f in world.factions:
-		var side := FactionRes.side_of(String(f))
-		if seen_sides.has(side):
-			continue
-		seen_sides[side] = true
-		sides_list.append(side)
-	if sides_list.is_empty():
-		return
+## C# 版的掩码构建已由 `_build_sight_flat()` 取代（2026.10.27）：
+## 旧的这条「从 `_contrib` 字典二次打包成三条数组」的路径连同字典一起被删掉了 ——
+## 字典去重（同格取最大半径）在数学上等价于「不去重、逐条 OR」（见 `_collect_flat` 的说明），
+## 于是 `_build_sight_flat()` 直接吃扁平表，少了两遍字典操作。
 
-	# 压成三条数组（只统计这些方的贡献格）
-	var total := 0
-	for side in sides_list:
-		var table: Variant = _contrib.get(side, null)
-		if typeof(table) == TYPE_DICTIONARY:
-			total += (table as Dictionary).size()
-	var sides := PackedInt32Array()
-	var tiles := PackedInt32Array()
-	var radii := PackedFloat64Array()
-	sides.resize(total)
-	tiles.resize(total)
-	radii.resize(total)
-	var k := 0
-	for si in sides_list.size():
-		var table2: Variant = _contrib.get(sides_list[si], null)
-		if typeof(table2) != TYPE_DICTIONARY:
-			continue
-		for idx in (table2 as Dictionary).keys():
-			sides[k] = si
-			tiles[k] = int(idx)
-			radii[k] = float((table2 as Dictionary)[idx])
-			k += 1
-
-	var flat: PackedByteArray = kernel.BuildSight(sides_list.size(), sides, tiles, radii, total)
-	for si2 in sides_list.size():
-		sight[String(sides_list[si2])] = flat.slice(si2 * cells, (si2 + 1) * cells)
 
 
 ## 内核按哪张地图建表（换图 / `reset_cache()` 之后重建一次）。
@@ -337,6 +446,11 @@ func _collect_contributors(world) -> void:
 	#       「视野变了」，漏掉会让 refresh_needed 误判成 false（见下面第 1 条）。
 	for f in world.factions:
 		_side_bucket(String(f))
+	# ★★ 2026.10.27（性能）：**每帧一次的「阵营 → 同方代表」缓存**。
+	# `FactionRes.side_of()` 不是纯查表：它要沿盟友关系做连通搜索、还会分配一个数组。
+	# 原来每个单位、每栋建筑都调一次 —— 256 单位就是每帧 256 次。
+	# 同一帧内结果恒定、阵营总数只有几个 ⇒ 缓存一次就够（实测 fog 1.26 → 1.08 ms）。
+	var side_cache: Dictionary = {}
 	# 1) 单位（含将领与附属兵；阵亡的不给视野）。
 	for u in world.units:
 		if u == null or not u.alive:
@@ -345,7 +459,7 @@ func _collect_contributors(world) -> void:
 		var uy := int(u.ty)
 		if not world.map.terrain.has(ux, uy):
 			continue
-		_dict_max(_bucket(String(u.faction)), world.map.terrain.idx(ux, uy),
+		_dict_max(_bucket_cached(String(u.faction), side_cache), world.map.terrain.idx(ux, uy),
 			_unit_vision(world.cfg, u))
 	# 2) 建筑（自己的建筑也是眼睛 —— 用户确认「自己的建筑也给视野」）
 	#    ★ 区划中心（中立障碍）不算：它不属于任何阵营，见 `_faction_contributes`。
@@ -356,8 +470,17 @@ func _collect_contributors(world) -> void:
 			continue
 		if not _faction_contributes(String(b.owner)):
 			continue
-		_dict_max(_bucket(String(b.owner)), world.map.terrain.idx(b.tx, b.ty),
+		_dict_max(_bucket_cached(String(b.owner), side_cache), world.map.terrain.idx(b.tx, b.ty),
 			_building_vision(world.cfg, b))
+
+
+## `_bucket()` 的缓存版：同一帧内同一个阵营只算一次 `side_of`。
+func _bucket_cached(faction: String, side_cache: Dictionary) -> Dictionary:
+	var side: Variant = side_cache.get(faction, null)
+	if side == null:
+		side = FactionRes.side_of(faction)
+		side_cache[faction] = side
+	return _side_bucket(String(side))
 
 
 ## ★★ 取（必要时新建）**某一方**（= 同方代表阵营）的那张贡献格表。

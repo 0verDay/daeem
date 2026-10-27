@@ -220,6 +220,33 @@ var rand_salt: int = 0
 ## （例如 crowd_bridge 的警戒索敌结果 —— 在 tick 之外读到上一帧的结果就是 bug）。
 var frame_serial: int = 0
 
+## ★★ 2026.10.27（联机插值）：渲染插值系数 0..1，**只在客机上**被 `net/client_session` 驱动。
+##
+## 1.0 = 不插值 ⇒ `render_pos_of()` 直接返回 `u.pos`，与加这个功能之前**逐位一致**。
+## 房主 / 单机 / 演示 / 测试永远是 1.0；只有客机在两条快照之间把它从 0 推回 1。
+## ★ 为什么放在 world 上而不是视图里：`unit_view_3d`（立牌）与 `overlay`（血条 / 选中圈）
+##   必须用**同一个**位置，否则血条会跟立牌错开半格。
+var render_alpha: float = 1.0
+## 一个单位这一帧**该画在哪**（格）。
+##
+## ★ 房主 / 单机：`render_alpha == 1.0` ⇒ 直接返回 `u.pos`（一次比较，零开销，值完全相同）。
+## ★ 客机：在「上一帧画的位置」与「本帧快照给的位置」之间线性插值 ——
+##   于是网络 9Hz 也能让画面 90Hz 平滑移动（标准做法：网络频率与显示频率解耦）。
+func render_pos_of(u) -> Vector2:
+	if u == null:
+		return Vector2.ZERO
+	if render_alpha >= 1.0:
+		return u.pos
+	return u.prev_pos.lerp(u.pos, render_alpha)
+
+
+## ★★ 2026.10.27：**本帧单位循环实际跑在哪个后端**（"gdscript" / "csharp"）。
+##
+## 读的是「实际」，不是 `cfg.unit_sim_backend`（那个是「想要」）：
+## 内核没实装 / 加载不到 / 抛异常时必须如实写 "gdscript"，
+## 否则 `tests/test_unit_backend_equiv.gd` 会以为下沉生效了，拿两条 GDScript 路径去"等价"。
+var unit_sim_used: String = "gdscript"
+
 ## ★★ 战争迷雾（logic/fog.gd）：**按阵营算「谁能看见哪一格」** + 「见过一次的敌方建筑」。
 ##
 ## ★ 它是**世界状态的一部分，但不是玩法状态**：战斗 / 索敌 / 寻路 / 占领全都不看它，
@@ -5171,6 +5198,15 @@ func tick(dt: float) -> Array:
 	#    ★ 先按需重建建筑空间索引（只在 building_revision 变了才真的重建）：
 	#      本帧要给上千个空闲单位做「最近敌建筑」查询，见 combat.nearest_enemy_building。
 	CombatRes.rebuild_building_grid(self)
+	# ★★ 2026.10.27：**士气 + 回血/掉血整段在单位循环之前结算一次**。
+	#    原来是逐单位夹在 `update_unit` 里（士气 → 战斗 → 下一个单位）。
+	#    挪出来之后：所有单位同一时刻结算，且这一整段可以下沉到 C#（见 morale.tick_all）。
+	#    ⚠️ `unit_sim_used` 在**这里**复位：本帧实际的执行路径由下面几步各自往上写
+	#      （士气内核 → "csharp(morale)"；将来整段循环 → "csharp(units)"）。
+	unit_sim_used = "gdscript"
+	var _t_morale := _prof()
+	MoraleRes.tick_all(self, cfg, dt)
+	_prof_done("morale", _t_morale)
 	var _t_units := _prof()
 	# 单位循环再拆三段的计时（只在 profile_on 时累加）
 	var t_combat := 0
@@ -5178,6 +5214,13 @@ func tick(dt: float) -> Array:
 	var t_step := 0
 	# ★★ 本帧击杀事件从哪个下标开始 —— 循环后据此扫出「破敌 / 斩将」的士气加成。
 	var morale_ev_start := _events.size()
+	# ★★ 2026.10.27：**单位循环的后端**（见 config.gd 的 `unit_sim_backend`）。
+	#    `unit_sim_used` 是**实际跑的是哪一个**，不是配置想要哪一个 ——
+	#    内核没实装 / 加载不到时必须如实写 "gdscript"，否则等价测试会以为下沉生效了。
+	#    ⚠️ 复位在**士气那一遍之前**（见上面），这里不能再写一次 ——
+	#      写了就会把士气内核刚写下的 "csharp(morale)" 覆盖掉（实测踩到）。
+	#    ⚠️ 下一刀（整段 `update_unit`）接在这里：`if UnitKernelRes.tick_units(...)`
+	#      之后 `unit_sim_used = "csharp(units)"` 并跳过下面的逐个循环。
 	for ui in units.size():
 		var u: UnitRes = units[ui]
 		if not u.alive:
@@ -5720,6 +5763,30 @@ func _refresh_morale_aura(p_cfg) -> void:
 ## 记录本帧发生的一件事。view/ 每帧取走并显示（逻辑层不认识 UI）
 func push_event(evt: Dictionary) -> void:
 	_events.append(evt)
+
+
+## 按 id 找单位
+## ★★ 2026.10.27（联机视野过滤）：把一批单位**从这个世界里删掉**。
+##
+## 只给客机用：房主按视野过滤快照后，客机手里那些「出了视野」的敌方单位必须真的移除，
+## 否则会变成幽灵（画面上被迷雾遮着，却还在参与客机的迷雾重算与点选判定）。
+## ★ 就地改 `units`（不重新赋值）：别处可能持有这个数组的引用。
+func drop_unit_ids(ids: Array) -> void:
+	if ids.is_empty():
+		return
+	var drop: Dictionary = {}
+	for it in ids:
+		drop[String(it)] = true
+	var kept: Array = []
+	for u in units:
+		if u != null and drop.has(String(u.id)):
+			_tick_lookup.erase(String(u.id))
+			continue
+		kept.append(u)
+	if kept.size() == units.size():
+		return
+	units.clear()
+	units.append_array(kept)
 
 
 ## 按 id 找单位

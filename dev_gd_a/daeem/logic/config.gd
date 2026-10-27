@@ -251,6 +251,17 @@ var side_color_neutral: Color = Color(0.620, 0.650, 0.690, 1.0) # #9ea6b0 灰
 ## ---- 碰撞（★ 每帧每单位都会读；原先走 num() 每次都要 split(".") + 逐层下潜）----
 var unit_collision_enabled: bool = true
 var unit_collision_backend: String = "csharp"
+## ★★ 2026.10.27：**单位循环（`combat.update_unit`）跑在哪一边**。
+##
+## · "gdscript"（默认，永远是回退路径）：现行实现，逐单位 GDScript；
+## · "csharp"：整个 `update_unit` 的决策下沉到 `logic/unit/UnitKernel.cs`。
+##
+## ★ 为什么是「整个 update_unit」而不是「士气 / 计时器各来一个内核」：
+##   单位循环是**逐个交错**的 —— A 的士气 → A 的战斗（可能打伤 B）→ B 的士气 → B 的战斗。
+##   把任何一段抽出来批量算，都会改变这个顺序（等价性当场断）；
+##   而只批量算「数值」又不划算：打包 256 个单位的状态本身就要 ~1µs/单位，
+##   而士气全程才 2.4µs/单位。⇒ 只有把决策整体搬过去才可能赢。
+var unit_sim_backend: String = "gdscript"
 var unit_collision_radius: float = 0.18
 var unit_overlap_allowance: float = 0.7
 var unit_collision_iterations: int = 3
@@ -666,6 +677,7 @@ func _cache_scalars() -> void:
 
 	unit_collision_enabled = bool_val("unit.collision_enabled", true)
 	unit_collision_backend = str_val("unit.collision_backend", "csharp")
+	unit_sim_backend = str_val("unit.sim_backend", "gdscript")
 	unit_collision_radius = num("unit.collision_radius", 0.18)
 	unit_overlap_allowance = num("unit.overlap_allowance", 0.7)
 	unit_collision_iterations = int_val("unit.collision_iterations", 3)

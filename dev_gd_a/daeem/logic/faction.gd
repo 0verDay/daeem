@@ -195,7 +195,17 @@ static func allied(a: String, b: String) -> bool:
 ## ⚠️ 与 `same_side` 的分工（别互换）：`same_side` 还负责**建筑通行 / 寻路**，
 ##    盟友之间照样互相挡路、互相挡箭塔本体（用户只要求「不互相攻击」，没要求拆墙）。
 static func same_side_for_attack(a: String, b: String) -> bool:
-	return a == b or _ALLY.has(_pair_key(a, b))
+	# ★★ 2026.10.27（性能）：**没结盟时一句话返回**，不再拼 `_pair_key`。
+	#    这一句在热路径上（每个待命单位每帧的索敌闸门、逐个候选的过滤、
+	#    建筑索敌的过滤都要走它），而 `_pair_key` 每次都要做一次 `"%s|%s" % [...]`
+	#    —— 66 个单位时无感，1000 个单位时就是每帧几千次字符串分配。
+	#    绝大多数地图的 `allies` 是空的 ⇒ 这条捷径覆盖常态，语义完全不变
+	#    （`_ALLY` 为空时 `_ALLY.has(...)` 必然 false）。
+	if a == b:
+		return true
+	if _ALLY.is_empty():
+		return false
+	return _ALLY.has(_pair_key(a, b))
 
 
 ## ★★ 「同一方」的**代表阵营**（canonical id）—— 用于「敌我双方」这类计数。

@@ -745,14 +745,29 @@ func update(cfg: ConfigRes, dt: float, units: Array, factions: Array) -> void:
 
 	# ★★ 单位先按格分桶：逐区块只看它中心那 (2r+1)² 格，而不是「区块 × 全部单位」
 	#   （1000 单位 × 24 区块那样扫是每帧几万次；分桶后是 O(单位数) + O(区块数 × 9)）。
-	var by_tile: Dictionary = {}
-	for u in units:
-		if not u.alive:
+	#
+	# ★★ 2026.10.27（性能）：分桶从**字典 + 每格一个 Array** 换成**整型链表**。
+	#   原来的写法每个单位都要 `dict.get` + `append` + `dict[key]=bucket`（三次脚本层操作，
+	#   其中一次还是字典哈希），256 个单位实测这一小段就吃掉 `zones` 段的大头（1.17 ms/帧）。
+	#   现在是 `head[格] → 单位下标` 的链表：每单位只有两次整型数组写入，**零字典、零分配**。
+	#   ★ 语义不变：`_units_in_capture_area()` 依旧只按「中心 ± r 格」取人，
+	#     而下游只用 `counts` / `sides`（计数与集合），**与顺序无关**。
+	var cells: int = int(cols) * int(rows)
+	var head := PackedInt32Array()
+	head.resize(cells)
+	head.fill(-1)
+	var nxt := PackedInt32Array()
+	nxt.resize(units.size())
+	nxt.fill(-1)
+	for i in units.size():
+		var u0 = units[i]
+		if u0 == null or not u0.alive:
 			continue
-		var key: int = u.ty * cols + u.tx
-		var bucket: Array = by_tile.get(key, [])
-		bucket.append(u)
-		by_tile[key] = bucket
+		var key0: int = int(u0.ty) * cols + int(u0.tx)
+		if key0 < 0 or key0 >= cells:
+			continue                     # 站到图外（理论上不会）：不进桶，等价于原来的「查不到」
+		nxt[i] = head[key0]
+		head[key0] = i
 
 	# 1) 逐区块清点「**中心邻域**里站着哪些阵营、各几个活单位」，同时算出「有几个**方**」。
 	#
@@ -766,7 +781,7 @@ func update(cfg: ConfigRes, dt: float, units: Array, factions: Array) -> void:
 	var present_sides: Dictionary = {}
 	for z in zones:
 		var zid := int(z["id"])
-		var here: Array = _units_in_capture_area(z, by_tile, units, radius)
+		var here: Array = _units_in_capture_area(z, head, nxt, units, radius)
 		var counts: Dictionary = {}
 		var sides: Dictionary = {}
 		for u in here:
@@ -801,8 +816,8 @@ func update(cfg: ConfigRes, dt: float, units: Array, factions: Array) -> void:
 ##   跨到邻区 / 地图外的格子照样算。
 ## ★ 没有中心的区块退回「整块地」（防御分支）：正常装配时 `_ensure_centers()` 已给它补了中心，
 ##   走到这里只可能是那张图里这个区块一个格都没有。
-func _units_in_capture_area(z: Dictionary, by_tile: Dictionary, all_units: Array,
-		radius: int) -> Array:
+func _units_in_capture_area(z: Dictionary, head: PackedInt32Array,
+		nxt: PackedInt32Array, all_units: Array, radius: int) -> Array:
 	var c: Variant = z["center"]
 	if c == null:
 		var out: Array = []
@@ -820,9 +835,11 @@ func _units_in_capture_area(z: Dictionary, by_tile: Dictionary, all_units: Array
 			var tx: int = center.x + dx
 			if tx < 0 or tx >= cols:
 				continue
-			var bucket: Variant = by_tile.get(ty * cols + tx, null)
-			if bucket != null:
-				out2.append_array(bucket as Array)
+			# ★ 2026.10.27：整型链表遍历（见 `update()` 的分桶说明）
+			var i: int = head[ty * cols + tx]
+			while i >= 0:
+				out2.append(all_units[i])
+				i = nxt[i]
 	return out2
 
 

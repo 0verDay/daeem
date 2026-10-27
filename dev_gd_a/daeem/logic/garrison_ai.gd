@@ -82,6 +82,16 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 	#   所以这份索引可以放心用到底。
 	var alive_ids: Dictionary = {}
 	var retinues: Dictionary = {}
+	# ★★ 2026.10.27（性能）：**一遍扫描**同时建三个索引。
+	#
+	# 原来这里是两遍全量 `for u0 in world.units`：第一遍建 alive_ids / retinues，
+	# 第二遍再挑「巡逻队长候选」。256 个单位就是每帧 512 次遍历 + 一批字典操作。
+	# 现在第二遍只走**候选**（有归属区划、活着、没濒死的），不再扫全表。
+	#
+	# ⚠️ 为什么不能把 `is_patrol_leader()` 直接挪进这一遍：它要查 `alive_ids`，
+	#   而那个字典必须**全部填完**才准 —— 队长有可能排在自己队员之后。
+	#   所以这一遍只收集候选，判身份留到下一遍（对着已完成的索引）。
+	var candidates: Array = []
 	for u0 in world.units:
 		if not u0.alive:
 			continue
@@ -92,16 +102,12 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 				retinues[u0.leader_id] = [u0]
 			else:
 				(arr as Array).append(u0)
+		if int(u0.garrison_zone_id) >= 0 and not u0.is_downed():
+			candidates.append(u0)
 
 	var patrol_counts: Dictionary = {}
 	var leaders: Array = []
-	for u2 in world.units:
-		if not u2.alive or int(u2.garrison_zone_id) < 0:
-			continue
-		# ★ 濒死者不算「这一帧要巡逻的队长」（本轮新增）：它倒在原地，
-		#   算进去会让同一区划里**别人**分到的扇区跟着变（路线随人数切分）。
-		if u2.is_downed():
-			continue
+	for u2 in candidates:
 		# ★★ 附属兵**不走这一套**：它们不是「守将」，而是队长手下的兵 ——
 		#    队长的巡逻命令会把整队带上（见 `_patrol_leader` 的 `_patrol_group`）。
 		#    ⚠️ 少了这一条就是手玩报的那个 bug：「将领会巡逻，但将领招募出来的
@@ -280,7 +286,16 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 		#    守将在同一帧一起重算路线 / 寻路（dscj 实测 max 42 ms 的尖峰就是它），
 		#    然后每 `patrol_interval_sec` 秒再一起撞一次。用单位 id 派生的稳定种子
 		#    把首巡相位摊到整个间隔里 —— 与路线种子同一套哈希，确定性不受影响。
-		if int(u.patrol_zone_id) == -2:
+		#
+		# ⚠️⚠️ 这一句**必须只生效一次**（`patrol_timer <= 0.0` 这个前置条件是它的全部含义）。
+		#    踩过的坑（dscj 实测：**234 个守军全部钉死在原地 30 秒**）：
+		#    原来这里只有 `if patrol_zone_id == -2:` —— 而 `patrol_zone_id` 要等
+		#    `_patrol_leader() → _ensure_route()` 才被写成真实区划，那是**计时器归零之后**
+		#    的事。于是每一帧都把计时器重新武装成 `interval × 相位`（≈0.3~4 秒），
+		#    它永远到不了 0 ⇒ 巡逻永远不触发 ⇒ `patrol_zone_id` 永远还是 -2 ⇒
+		#    下一帧又重置……**自我维持的死锁**，而且完全不报错。
+		#    ⇒ 错峰只在「计时器还没走过」时做一次，之后交给正常的倒数。
+		if int(u.patrol_zone_id) == -2 and u.patrol_timer <= 0.0:
 			u.patrol_timer = patrol_interval * _phase01(u)
 		u.patrol_timer -= dt
 		if u.patrol_timer <= 0.0:
