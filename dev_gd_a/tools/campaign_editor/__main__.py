@@ -30,10 +30,14 @@ if __package__ in (None, ""):        # 直接 python 这个文件时也能跑
     from campaign_editor import app as app_module
     from campaign_editor import levelfile
     from campaign_editor import model as model_mod
+    from editor_catalog import add_campaign as catalog_add_campaign
+    from editor_catalog import map_ids as catalog_map_ids
 else:
     from . import app as app_module
     from . import levelfile
     from . import model as model_mod
+    from editor_catalog import add_campaign as catalog_add_campaign
+    from editor_catalog import map_ids as catalog_map_ids
 
 #: 仓库里的 Godot 工程目录（编辑器读它的 data/，一个字节都不写）
 DEFAULT_PROJECT_DIR = Path(__file__).resolve().parents[2] / "daeem"
@@ -140,14 +144,26 @@ def selftest(project_dir: Path, campaign_dir: Optional[str] = None) -> int:
     if not maps:
         print("[error] data/maps/ 下一张地图都没有")
         return 1
-    for mid in sorted(maps):
+    keep_maps = set(app_module.visible_map_ids(project_dir))
+    shown_maps = [mid for mid in sorted(maps) if not keep_maps or mid in keep_maps]
+    for mid in shown_maps:
         info = maps[mid]
         marks = [m for m, on in (("仅战役", info.hidden), ("占位", info.placeholder)) if on]
         print("[map] %-10s %2dx%-2d 区划 %d 个大本营 %d 个%s"
               % (mid, info.cols, info.rows, len(info.zone_ids), len(info.faction_bases),
                  "（%s）" % "、".join(marks) if marks else ""))
+    hidden_maps = len(maps) - len(shown_maps)
+    if hidden_maps:
+        print("[map] （另有 %d 张旧图未列出，仍在 data/maps；有用表见 data/editor_visible.json）"
+              % hidden_maps)
 
-    dirs = levelfile.list_campaign_dirs(project_dir)
+    all_dirs = levelfile.list_campaign_dirs(project_dir)
+    keep = set(app_module.visible_campaign_ids(project_dir))
+    dirs = [d for d in all_dirs if not keep or d.name in keep]
+    if campaign_dir:
+        explicit = Path(campaign_dir)
+        if explicit.is_dir() and explicit not in dirs:
+            dirs.insert(0, explicit)
     if not dirs:
         print("[warn] data/campaigns/ 下一个战役都没有 —— 用 --new <id> 建一个")
         return 0
@@ -262,16 +278,21 @@ def main(argv=None) -> int:
 
     if args.list:
         dirs = levelfile.list_campaign_dirs(project_dir)
+        keep = set(app_module.visible_campaign_ids(project_dir))
+        if keep:
+            dirs = [d for d in dirs if d.name in keep]
         for d in dirs:
             print("%s\t%s" % (d.name, d))
         return 0
 
     if args.new:
+        first_map = args.map or next(iter(catalog_map_ids(project_dir)), "")
         try:
-            model, written = levelfile.create_campaign(project_dir, args.new, args.name, args.map)
+            model, written = levelfile.create_campaign(project_dir, args.new, args.name, first_map)
         except model_mod.ModelError as exc:
             print("[error] %s" % exc)
             return 2
+        catalog_add_campaign(project_dir, model.campaign_id)
         print("[new] 战役「%s」建在 %s" % (model.campaign_id, model.dir_path))
         for p in written:
             print("      写了 %s" % p)
@@ -292,10 +313,13 @@ def main(argv=None) -> int:
         target = resolve_campaign_dir(args.campaign, project_dir)
     else:
         last = load_last_dir()
-        if last and Path(last).is_dir():
+        keep = set(app_module.visible_campaign_ids(project_dir))
+        if last and Path(last).is_dir() and (not keep or Path(last).name in keep):
             target = Path(last)
         else:
             dirs = levelfile.list_campaign_dirs(project_dir)
+            if keep:
+                dirs = [d for d in dirs if d.name in keep]
             if dirs:
                 target = dirs[0]
     if target is None:

@@ -527,7 +527,14 @@ class FillAnimator extends Control:
 	func _goal() -> float:
 		if not _available or _button == null or not is_instance_valid(_button):
 			return 0.0
-		var can_hover: bool = _hovered and _button.mouse_filter != Control.MOUSE_FILTER_IGNORE
+		var usable: bool = _button.mouse_filter != Control.MOUSE_FILTER_IGNORE
+		var can_hover: bool
+		if ThemeRes.hover_enabled():
+			can_hover = _hovered and usable
+		else:
+			# ★ 移动端没有悬停（按下的模拟 enter 等不到 exit，按钮会一直满金）：
+			#   改成「按住 = 悬停」，松手就退回去。
+			can_hover = _button.is_pressed() and usable
 		if _button.disabled:
 			# 禁用态：只有鼠标停上来才填（灰），移开就退回去；不算「已启用」。
 			return 1.0 if can_hover else 0.0

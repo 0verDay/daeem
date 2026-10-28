@@ -1,8 +1,10 @@
-## troop_row.gd —— 右侧「部队 1~10」的一条将领标签（参考 art_draft/4.png）
+## troop_row.gd —— 右侧「部队 1~6」的一条将领标签（参考 art_draft/4.png）
 ##
 ## 版式（从右到左）：
-##   最右竖线（泛光起点）→ 数字块（第几部队；第 10 个写 0）
+##   最右竖线（泛光起点）→ 数字块（第几部队，1..6）
 ##   → 灰色分隔线 → 左侧两行：将领名字 / 当前编制（当前/上限）
+## ★ 行高由 `UiLayoutRes.SQUAD_ROW_H` 决定（手机端的触摸高度）：数字块、分隔线、
+##   两行文字全部**按行高居中**，改那一个常量就能整体加高而不糊版。
 ##
 ## ★ 悬停 / 选中：金色泛光**从最右竖线向左**推进（与旧版「自下而上」相反）。
 ##   本控件自己画，不挂 `fill_button` —— 它的渐变是竖向的，且绑定 Button.text；
@@ -282,10 +284,13 @@ func _draw() -> void:
 	var form_text := _formation_text if _formation_text != "" else "--/--"
 	name_text = _fit(f, name_text, text_w, NAME_FS)
 	form_text = _fit(f, form_text, text_w, FORM_FS)
+	# ★ 两行**按行高居中**（行高是手机端可调的触摸高度，见 ui_layout.SQUAD_ROW_H）：
+	#   行高 56 时与原基线 22 / 42 完全一致（-6 / +14），加高后自动跟着走。
+	var mid := h * 0.5
 	# 名字与编制都**右对齐**（右缘落在灰线左边），与数字块形成一条整齐的竖边。
-	draw_string(f, Vector2(text_x, 22.0), name_text,
+	draw_string(f, Vector2(text_x, mid - 6.0), name_text,
 		HORIZONTAL_ALIGNMENT_RIGHT, text_w, NAME_FS, name_col)
-	draw_string(f, Vector2(text_x, 42.0), form_text,
+	draw_string(f, Vector2(text_x, mid + 14.0), form_text,
 		HORIZONTAL_ALIGNMENT_RIGHT, text_w, FORM_FS, form_col)
 
 	# 数字（贴数字块中心）：颜色跟着键帽状态走（亮起 = 深字，黯淡 / 未选中 = 原色）。

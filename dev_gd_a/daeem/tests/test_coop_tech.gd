@@ -52,14 +52,14 @@ func _run() -> void:
 		"★ 两个玩家席位各有一份科技效果")
 	near(float(w.seat_tech_effects["F1"].get("food_per_tile_per_sec", 0.0)), 0.0, 1e-6,
 		"★ 房主没启用粮食科技 → 房主那份是 0")
-	near(float(w.seat_tech_effects["F2"].get("food_per_tile_per_sec", 0.0)), 0.05, 1e-6,
+	near(float(w.seat_tech_effects["F2"].get("food_per_tile_per_sec", 0.0)), 0.04, 1e-6,
 		"★★ 客机启用的粮食科技只在客机那份里")
 
 	var tiles: int = w.zones.owned_tile_count("F2")
 	var base_rate: Dictionary = w.zones.production_of("F2")
 	var with_tech: Dictionary = w._accumulate_production("F2", false, w.seat_tech_effects["F2"])
 	near(float(with_tech["food"]) - float(base_rate["food"]),
-		float(tiles) * 0.05, 1e-6, "★ 客机的粮食产量按自己的地块数加 0.05/格")
+		float(tiles) * 0.04, 1e-6, "★ 客机的粮食产量按自己的地块数加 0.04/格")
 
 	near(w.tech_population_mult("F1"), 1.0, 1e-6, "房主人口倍率仍是 1.0")
 	near(w.tech_population_mult("F2"), 1.1, 1e-6, "★ 客机人口倍率是 1.1")

@@ -34,9 +34,31 @@ func _run() -> void:
 
 	# 2) 主菜单
 	screen.dismiss_intro()
-	await _wait_page("main")
-	await _wait_sec(1.0)
+	# 2-0) 落位中途：只有 logo/游戏名在右移 + 面板在渐显；左侧**必须还是空的**，
+	#      四角泛光也还没亮（用户口径：这两样要等面板站好之后一起亮）
+	await _wait_sec(0.12)
+	await _shoot("01b_morph_mid")
+	# ★ 等的是 start_screen 的「落位结束」（page == PAGE_MENU），不是 deck 的页名 ——
+	#   deck 在 prepare_intro 里就已经是 main 了，等它会立刻返回、拍到落位中途。
+	var morph_deadline := Time.get_ticks_msec() + 4000
+	while Time.get_ticks_msec() < morph_deadline and screen.page() != 1:
+		await process_frame
+	# 2-1) 面板刚站好、泛光与雕版正在一起渐显（两者应当同处在半透明状态）
+	await _wait_sec(0.22)
+	await _shoot("01c_glow_plate_in")
+	await _wait_sec(0.9)
 	await _shoot("02_menu")
+
+	# 2a) 左侧那幅雕版：关掉动效 = 钉在「扫描头在中间」那一帧
+	if screen.art() != null:
+		screen.art().set_running(false)
+		await _wait_sec(0.2)
+		await _shoot("02a_plate_frozen")
+		# 2b) 扫描头刚进画：金线正在被点亮
+		screen.art().set_time(2.2)
+		await _wait_sec(0.15)
+		await _shoot("02b_plate_scan")
+		screen.art().set_running(true)
 
 	# 2b) 退出按钮悬停：右上角边缘泛光变亮
 	screen.main_panel().corner_hit().mouse_entered.emit()
@@ -54,6 +76,9 @@ func _run() -> void:
 
 	# 3) 战役地图
 	screen.main_panel().main_buttons()[0].pressed.emit()
+	# 3-0) 左移中途：左侧雕版应当**跟着主面板一起**往左滑出去（不是原地淡出）
+	await _wait_sec(0.18)
+	await _shoot("03a_slide_out")
 	await _wait_page("campaign")
 	await _wait_sec(0.4)
 	await _shoot("03_campaign")

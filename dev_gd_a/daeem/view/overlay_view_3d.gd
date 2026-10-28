@@ -1659,7 +1659,7 @@ func _marker_formation(u) -> String:
 	return str(count)
 
 
-## 第几支 → 键帽上的字：1..9 原样，第 10 支写 0（与数字键 / 左栏同一口径）。
+## 第几支 → 键帽上的字：现在槽位是 1..6，原样写；`% 10` 只是兜底（与数字键同一口径）。
 static func badge_text(slot: int) -> String:
 	if slot <= 0:
 		return ""

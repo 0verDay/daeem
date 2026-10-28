@@ -1,0 +1,17 @@
+{
+  "_comment": [
+    "编辑器可见范围：只影响地图编辑器 / 战役编辑器的列表与下拉，不改变运行时数据。",
+    "maps：地图编辑器「可见地图」菜单、战役编辑器地图下拉里优先列出的地图 id。",
+    "campaigns：战役编辑器 --list / 启动 / 自检里优先列出的战役目录名。",
+    "运行时仍按 data/maps 与 data/campaigns 读全部；这份清单只收口编辑器界面。"
+  ],
+  "maps": [
+    "main_test",
+    "ai_test_2",
+    "dscj",
+    "between_moutains"
+  ],
+  "campaigns": [
+    "demo"
+  ]
+}

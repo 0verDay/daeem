@@ -14,10 +14,10 @@ func _initialize() -> void:
 
 
 func _cases() -> void:
-	# 1..9 原样；第 10 支写 0（与数字键 / 左栏同一口径）。
+	# 槽位现在是 1..6，原样写；`% 10` 只作兜底（10 → 0）。
 	eq(OverlayRes.badge_text(1), "1", "★ 第 1 支写 1")
-	eq(OverlayRes.badge_text(9), "9", "★ 第 9 支写 9")
-	eq(OverlayRes.badge_text(10), "0", "★ 第 10 支写 0（与数字键一致）")
+	eq(OverlayRes.badge_text(6), "6", "★ 第 6 支写 6")
+	eq(OverlayRes.badge_text(10), "0", "★ 兜底：10 按 %10 写 0")
 	eq(OverlayRes.badge_text(0), "", "★ 没有编号 → 空串")
 	eq(OverlayRes.badge_text(-1), "", "★ 非法编号 → 空串")
 

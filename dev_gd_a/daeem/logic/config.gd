@@ -433,12 +433,12 @@ var projectile_max_sec: float = 0.6
 var zone_cols: int = 6
 var zone_rows: int = 4
 ## 1 个单位独自占下一个区块要多少秒（= 占领速率 1/capture_time_sec 的倒数）。
-## 历史：4 → 32（需求「占领速度缩小为原来的 1/8」）。
-var capture_time_sec: float = 32.0
+## 历史：4 → 32（占领速度缩到 1/8）→ 16（节奏调整：占领速度 ×2）。
+var capture_time_sec: float = 16.0
 ## 读条方**不在场**时，进度每秒回落多少（进度比例/秒）。
-## 历史：0.125 → 0.03125（需求「自然占领进度降低速度缩小为原来的 1/4」）。
-## ⚠️ 与 capture_time_sec 的缩放倍数不同（1/4 vs 1/8），别顺手改成一样。
-var decay_per_sec: float = 0.03125
+## ★ 现在与占领速率相等（都是 1/16 = 0.0625/秒）⇒ 读满多久、退干净也多久。
+## ⚠️ 调 capture_time_sec 时把它一起改成 1/capture_time_sec，别让两者脱钩。
+var decay_per_sec: float = 0.0625
 ## ★★ 占领半径（格）：**单位必须离区划中心的切比雪夫距离 ≤ 它**才算「在场」。
 ##   1 ⇒ 3×3（中心格 + 周围 8 格，即需求里的「3x3」）；0 ⇒ 只有中心格本身。
 ##   ⚠️ 中心格上通常立着「区划中心」那栋中立障碍 ⇒ 实际能站的是周围那 8 格。
@@ -754,8 +754,8 @@ func _cache_scalars() -> void:
 
 	zone_cols = int_val("zone.zone_cols", 6)
 	zone_rows = int_val("zone.zone_rows", 4)
-	capture_time_sec = num("zone.capture_time_sec", 32.0)
-	decay_per_sec = num("zone.decay_per_sec", 0.03125)
+	capture_time_sec = num("zone.capture_time_sec", 16.0)
+	decay_per_sec = num("zone.decay_per_sec", 0.0625)
 	# ★ 占领半径（格）：负数当 0（只认中心格），保证 `update()` 里的邻域循环合法。
 	zone_capture_radius_tiles = maxi(0, int_val("zone.capture_radius_tiles", 1))
 	zone_speed_max_mult = num("zone.speed_max_mult", 2.0)
@@ -2118,8 +2118,10 @@ func _cache_upgrades() -> void:
 				if typeof(v) == TYPE_INT or typeof(v) == TYPE_FLOAT:
 					atk[key] = float(v)
 			# ★ 大本营每级限制（其它建筑类型不写这些键 = 不会出现）。
+			#   ★ `need_generals` 是「升到这一级要几名将领」，与 max_generals（上限）是两件事。
 			var limits: Dictionary = {}
-			for key in ["max_generals", "retinue_cap_bonus", "max_techs", "max_tech_tier"]:
+			for key in ["max_generals", "retinue_cap_bonus", "max_techs", "max_tech_tier",
+					"need_generals"]:
 				var lv: Variant = d.get(key, null)
 				if typeof(lv) == TYPE_INT or typeof(lv) == TYPE_FLOAT:
 					limits[key] = int(lv)
@@ -2128,6 +2130,9 @@ func _cache_upgrades() -> void:
 				"hp_mult": maxf(0.01, float(d.get("hp_mult", 1.0))),
 				"cost": (cost as Dictionary) if typeof(cost) == TYPE_DICTIONARY else {},
 				"time_sec": maxf(0.0, float(d.get("time_sec", 0.0))),
+				# 提速档（只大本营用）：任一为 0 = 没有这一档。见 upgrade._comment。
+				"time_sec_fast": maxf(0.0, float(d.get("time_sec_fast", 0.0))),
+				"fast_need_generals": maxi(0, int(d.get("fast_need_generals", 0))),
 				"attack": atk,
 				"limits": limits,
 			})
@@ -2177,6 +2182,25 @@ func upgrade_cost_to(type: String, level: int) -> Dictionary:
 func upgrade_time_to(type: String, level: int) -> float:
 	var row := upgrade_row(type, level + 1)
 	return maxf(0.0, float(row.get("time_sec", 0.0)))
+
+
+## 「从 level 升到 level+1」的**提速档**读条秒数（目标行没写 → 0 = 没有提速档）。
+## ★ 用不用它由 world.building_upgrade_time() 决定（按开始那一刻的将领数选档）。
+func upgrade_time_fast_to(type: String, level: int) -> float:
+	var row := upgrade_row(type, level + 1)
+	return maxf(0.0, float(row.get("time_sec_fast", 0.0)))
+
+
+## 提速档的门槛：开始升级时该方将领数 ≥ 这个数才用 time_sec_fast（0 = 没有提速档）。
+func upgrade_fast_need_generals(type: String, level: int) -> int:
+	var row := upgrade_row(type, level + 1)
+	return maxi(0, int(row.get("fast_need_generals", 0)))
+
+
+## 「升到 level+1 必须已有几名将领」（读**目标行**的 need_generals；0 = 不要求）。
+## ⚠️ 与 upgrade_limit(..., "max_generals") 是两件事：门槛 2 / 4、上限 2 / 5 / 6。
+func upgrade_need_generals(type: String, level: int) -> int:
+	return maxi(0, upgrade_limit(type, level + 1, "need_generals", 0))
 
 
 ## 某一级的**整数限制值**（大本营的 max_generals / retinue_cap_bonus / max_techs / max_tech_tier）。

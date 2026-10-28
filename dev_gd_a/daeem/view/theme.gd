@@ -148,6 +148,40 @@ static func animations_enabled() -> bool:
 static func set_animations_enabled(on: bool) -> void:
 	_animations_enabled = on
 
+
+# ------------------------------------------------------------------
+# 悬停（hover）总开关
+# ------------------------------------------------------------------
+
+## `true` = 有「悬停」这回事（桌面鼠标：停上去就亮、移开就灭）。
+## `false` = **移动端 / 触屏**：整套悬停态关掉，改成「按下即亮、松开即灭」。
+##
+## ★★ 为什么必须有一个总开关：触屏没有悬停。手指按下去时引擎会**模拟一次
+##   `mouse_entered`**（`input_devices/pointing/emulate_mouse_from_touch`），
+##   但松开之后**不会再补 `mouse_exited`** —— 于是：
+##     · 战役 / 合作 / 演义 的左右横线会**一直亮着**；
+##     · 四角的泛光会**一直亮着**（还要靠侧栏灰层「强行熄灯」去兜）；
+##     · 填充按钮会**一直保持满金**。
+##   关掉之后这三处都改由「按住」驱动，松手就回去 —— 见各控件里的 `hover_enabled()`。
+##
+## ★ 默认按平台判定（`mobile`），**不是**按「有没有触屏」：带触摸屏的 Windows 笔记本
+##   仍然有鼠标，按触屏判定会把桌面用户的悬停也一起关掉。
+static var _hover_enabled: bool = true
+static var _hover_ready: bool = false
+
+
+static func hover_enabled() -> bool:
+	if not _hover_ready:
+		_hover_ready = true
+		_hover_enabled = not OS.has_feature("mobile")
+	return _hover_enabled
+
+
+## 给测试 / 选项页用的口子（与 `set_animations_enabled` 同一类）。
+static func set_hover_enabled(on: bool) -> void:
+	_hover_enabled = on
+	_hover_ready = true
+
 ## 中心辉光（入场页 / 主界面背景那团光）。alpha 单独一个键，便于「有颜色但几乎看不见」。
 ## ★ 用**冷蓝**而不是琥珀：琥珀是 10% 的强调层，铺一大团光就不叫「只给主行动」了。
 const DEFAULT_GLOW := Color(0.169, 0.290, 0.451, 1.0)          # #2B4A73

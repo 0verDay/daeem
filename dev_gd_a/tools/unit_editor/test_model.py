@@ -678,10 +678,10 @@ def t_techs() -> None:
     eq(len(techs), 9, "九条科技（3×3）")
     eq(model.max_active(), 3, "同一时间最多启用 3 条")
     eq(techs[0].name, "粮食产量 I", "名称")
-    eq(techs[0].line, "粮食 +0.05", "第二行小字")
+    eq(techs[0].line, "粮食 +0.04", "第二行小字")
     ok(techs[0].desc, "有悬停说明")
-    near(techs[0].effect_value("food_per_tile_per_sec"), 0.05, "加成数值")
-    eq(techs[0].effect_label, "粮食产量 +0.05", "列表里那一句话")
+    near(techs[0].effect_value("food_per_tile_per_sec"), 0.04, "加成数值")
+    eq(techs[0].effect_label, "粮食产量 +0.04", "列表里那一句话")
     near(techs[8].effect_value("zone_population_mult"), 0.1, "人口科技是倍率 0.1")
 
     model.set_tech(0, "name", "粮食产量 甲")

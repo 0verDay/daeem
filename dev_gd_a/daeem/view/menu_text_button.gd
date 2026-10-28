@@ -62,6 +62,20 @@ func _layout_label() -> void:
 
 
 func _on_hover(on: bool) -> void:
+	# ★ 触屏没有悬停：手指按下去会模拟 mouse_entered，但松开不补 mouse_exited，
+	#   照旧处理的话横线会**一直亮着**。移动端把「亮不亮」交给按下/松开（见 _gui_input），
+	#   这里只保留「离开」的兜底清场。
+	if not ThemeRes.hover_enabled():
+		if not on:
+			_lit(false)
+		return
+	_lit(on)
+
+
+## 点亮 / 熄灭左右横线（悬停在桌面端、按住/松开在移动端）。
+func _lit(on: bool) -> void:
+	if _hovered == on:
+		return
 	_hovered = on
 	_animate_dash()
 
@@ -115,7 +129,12 @@ func _set_dash(v: float) -> void:
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
-		if mb.button_index == MOUSE_BUTTON_LEFT and mb.pressed:
+		if mb.button_index != MOUSE_BUTTON_LEFT:
+			return
+		# ★ 移动端：悬停与点击合并成同一件事 —— 按住 = 亮，松开 = 灭。
+		if not ThemeRes.hover_enabled():
+			_lit(mb.pressed)
+		if mb.pressed:
 			accept_event()
 			pressed.emit()
 
@@ -125,14 +144,15 @@ func _draw() -> void:
 		return
 	var text_w: float = _label.get_minimum_size().x
 	var gap: float = 22.0
-	var full_len: float = 58.0
-	var len: float = full_len * _dash
+	var full_len: float = 116.0
+	var left_end: float = (size.x - text_w) * 0.5 - gap
+	var right_start: float = (size.x + text_w) * 0.5 + gap
+	var max_len: float = minf(left_end - 4.0, size.x - right_start - 4.0)
+	var len: float = clampf(full_len * _dash, 0.0, maxf(0.0, max_len))
 	var y: float = size.y * 0.5
 	var t: float = clampf((_dash - DEFAULT_DASH) / (HOVER_DASH - DEFAULT_DASH), 0.0, 1.0)
 	var c: Color = ThemeRes.line().lerp(ThemeRes.accent_bright(), t)
 	c.a = lerpf(0.62, 1.0, t)
-	var left_end: float = (size.x - text_w) * 0.5 - gap
-	var right_start: float = (size.x + text_w) * 0.5 + gap
 	draw_line(Vector2(left_end - len, y), Vector2(left_end, y), c, 2.0, true)
 	draw_line(Vector2(right_start, y), Vector2(right_start + len, y), c, 2.0, true)
 

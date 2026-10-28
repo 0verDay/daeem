@@ -21,6 +21,7 @@ func _cases() -> void:
 	_test_zone_kind_table(cfg)
 	_test_reject_rules(cfg)
 	_test_base_general_gate(cfg)
+	_test_base_upgrade_fast_time(cfg)
 	_test_upgrade_flow(cfg)
 	_test_cancel_refund(cfg)
 	_test_upgrade_scales_with_tech(cfg)
@@ -44,22 +45,26 @@ func _test_config_table(cfg) -> void:
 	near(cfg.upgrade_hp_mult("base", 3), 2.25, 1e-6, "★ 3 级血量倍率 2.25")
 	var c1: Dictionary = cfg.upgrade_cost_to("base", 1)
 	near(float(c1.get("food", 0.0)), 200.0, 1e-6, "升到 2 级要 200 粮食（造价 ×2）")
-	near(cfg.upgrade_time_to("base", 1), 10.0, 1e-6, "升到 2 级读条 10 秒")
+	near(cfg.upgrade_time_to("base", 1), 40.0, 1e-6, "升到 2 级读条 40 秒")
 	var c2: Dictionary = cfg.upgrade_cost_to("base", 2)
 	near(float(c2.get("food", 0.0)), 400.0, 1e-6, "★ 升到 3 级更贵（400 粮食，造价 ×2）")
-	near(cfg.upgrade_time_to("base", 2), 20.0, 1e-6, "★ 升到 3 级读条更久（20 秒）")
+	near(cfg.upgrade_time_to("base", 2), 80.0, 1e-6, "★ 升到 3 级读条更久（80 秒）")
+	# ★ 提速档：≥5 将时 60 秒（只有 2→3 这一档有）。
+	near(cfg.upgrade_time_fast_to("base", 2), 60.0, 1e-6, "★ 升 3 本的提速档 = 60 秒")
+	eq(cfg.upgrade_fast_need_generals("base", 2), 5, "★ 提速档门槛 = 5 名将领")
+	ok(cfg.upgrade_time_fast_to("base", 1) <= 0.0, "升 2 本没有提速档")
 	ok(cfg.upgrade_cost_to("base", 3).is_empty(), "3 级（最高级）没有 next 的价钱")
 	near(cfg.upgrade_time_to("base", 3), 0.0, 1e-6, "最高级没有 next 的读条")
 
 	eq(cfg.spec_list().size(), 3, "★ 三个特化（粮食 / 黄金 / 人口）")
 	for want in ["food", "gold", "population"]:
 		ok(cfg.has_spec(want), "特化表里有 %s" % want)
-	near(float(cfg.spec_entry("food").get("effect", {}).get("food_per_tile", 0.0)), 0.05, 1e-6,
-		"★ 粮食特化 = 每地块每秒额外 0.05 粮食")
-	near(float(cfg.spec_entry("gold").get("effect", {}).get("gold_per_tile", 0.0)), 0.05, 1e-6,
-		"★ 黄金特化 = 每地块每秒额外 0.05 黄金")
-	near(float(cfg.spec_entry("population").get("effect", {}).get("population_mult", 0.0)), 0.125, 1e-6,
-		"★ 人口特化 = 本区划人口产量 +12.5%")
+	near(float(cfg.spec_entry("food").get("effect", {}).get("food_per_tile", 0.0)), 0.04, 1e-6,
+		"★ 粮食特化 = 每地块每秒额外 0.04 粮食")
+	near(float(cfg.spec_entry("gold").get("effect", {}).get("gold_per_tile", 0.0)), 0.04, 1e-6,
+		"★ 黄金特化 = 每地块每秒额外 0.04 黄金")
+	near(float(cfg.spec_entry("population").get("effect", {}).get("population_mult", 0.0)), 0.1, 1e-6,
+		"★ 人口特化 = 本区划人口产量 +10%")
 	near(cfg.spec_time_sec("food"), 10.0, 1e-6, "★ 特化读条 10 秒")
 	var sc: Dictionary = cfg.spec_cost("food")
 	near(float(sc.get("food", 0.0)), 100.0, 1e-6, "特化要 100 粮食（造价 ×2）")
@@ -76,16 +81,16 @@ func _test_zone_kind_table(cfg) -> void:
 	ok(not cfg.has_zone_kind("none"), "★ 没有「默认区划」这一档了")
 	eq(cfg.zone_kind_name("food"), "粮食区划", "种类名字来自 config")
 	var pf: Dictionary = cfg.zone_kind_production("food")
-	near(float(pf["food"]), 2.0, 1e-6, "★ 粮食区划预设 = 每秒 2 粮食（基础产能已减半）")
+	near(float(pf["food"]), 1.5, 1e-6, "★ 粮食区划预设 = 每秒 1.5 粮食")
 	near(float(pf["gold"]), 0.0, 1e-6, "粮食区划不产黄金")
-	near(float(pf["population"]), 0.2, 1e-6,
-		"★ 粮食区划也带 0.2 人口（所有区划都带一份人口产能，已减半）")
+	near(float(pf["population"]), 0.15, 1e-6,
+		"★ 粮食区划也带 0.15 人口（所有区划都带一份人口产能）")
 	var pg: Dictionary = cfg.zone_kind_production("gold")
-	near(float(pg["gold"]), 2.0, 1e-6, "★ 黄金区划预设 = 每秒 2 黄金（已减半）")
-	near(float(pg["population"]), 0.2, 1e-6, "★ 黄金区划也带 0.2 人口")
+	near(float(pg["gold"]), 1.2, 1e-6, "★ 黄金区划预设 = 每秒 1.2 黄金（降幅最大）")
+	near(float(pg["population"]), 0.15, 1e-6, "★ 黄金区划也带 0.15 人口")
 	var pp: Dictionary = cfg.zone_kind_production("population")
-	near(float(pp["population"]), 0.5, 1e-6, "★ 人口区划预设 = 每秒 0.5 人口（已减半）")
-	near(float(pp["food"]), 1.0, 1e-6, "★ 人口区划也产粮（每秒 1 粮食，已减半）")
+	near(float(pp["population"]), 0.4, 1e-6, "★ 人口区划预设 = 每秒 0.4 人口")
+	near(float(pp["food"]), 0.8, 1e-6, "★ 人口区划也产粮（每秒 0.8 粮食）")
 	near(float(pp["gold"]), 0.0, 1e-6, "人口区划不产黄金")
 	for kind_id in ["food", "gold", "population"]:
 		ok(float(cfg.zone_kind_production(kind_id)["population"]) > 0.0,
@@ -101,8 +106,8 @@ func _test_zone_kind_table(cfg) -> void:
 	ok(cfg.zone_kind_allows_spec("population", "gold"), "人口区划能做黄金特化")
 	ok(not cfg.zone_kind_allows_spec("population", "population"), "★ 人口区划**不能**做人口特化")
 	eq(cfg.zone_kind_name("banana"), "人口区划", "认不出的种类 → 默认那一档")
-	near(float(cfg.zone_kind_production("banana")["population"]), 0.5, 1e-9,
-		"认不出的种类 → 拿默认那一档的预设值（人口区划 0.5，已减半）")
+	near(float(cfg.zone_kind_production("banana")["population"]), 0.4, 1e-9,
+		"认不出的种类 → 拿默认那一档的预设值（人口区划 0.4）")
 
 	var w = _quiet(cfg)
 	var kinds: Dictionary = {}
@@ -153,7 +158,7 @@ func _test_reject_rules(cfg) -> void:
 	ok(w.start_building_upgrade(base.tx, base.ty), "开始一次升级")
 	eq(UpgradeRes.can_upgrade(w, base, f), "busy", "★ 读条中再升同一栋 → busy")
 
-## ★★ 2026.10.25：升 2 本要 3 将，升 3 本要 6 将。
+## ★★ 升 2 本要 2 将，升 3 本要 4 将（门槛读 config 的 need_generals，与上限 2/5/6 是两件事）。
 func _test_base_general_gate(cfg) -> void:
 	var w = _quiet(cfg)
 	_give(w, 10000.0, 10000.0)
@@ -163,20 +168,56 @@ func _test_base_general_gate(cfg) -> void:
 		return
 	var f := String(w.my_faction)
 	base.level = 1
-	_ensure_generals(w, 2, f)
+	_ensure_generals(w, 1, f)
 	eq(UpgradeRes.can_upgrade(w, base, f), "generals",
-		"★★ 只有 2 将时不能升二本")
+		"★★ 只有 1 将时不能升二本")
 	ok(not w.start_building_upgrade(base.tx, base.ty, f),
 		"★★ 将领不足时升级命令被拒")
-	_ensure_generals(w, 3, f)
+	_ensure_generals(w, 2, f)
 	eq(UpgradeRes.can_upgrade(w, base, f), "",
-		"★★ 3 将后可以升二本")
+		"★★ 2 将后可以升二本")
 	base.level = 2
+	_ensure_generals(w, 3, f)
 	eq(UpgradeRes.can_upgrade(w, base, f), "generals",
 		"★★ 只有 3 将时不能升三本")
-	_ensure_generals(w, 6, f)
+	_ensure_generals(w, 4, f)
 	eq(UpgradeRes.can_upgrade(w, base, f), "",
-		"★★ 6 将后可以升三本")
+		"★★ 4 将后可以升三本")
+
+
+## ★★ 升三本的提速档：4 将 → 80 秒；≥5 将 → 60 秒；且**开始那一刻定死**。
+func _test_base_upgrade_fast_time(cfg) -> void:
+	var w = _quiet(cfg)
+	_give(w, 10000.0, 10000.0)
+	var base = w.find_base_of(w.my_faction)
+	if base == null:
+		ok(false, "（前提）有大本营")
+		return
+	var f := String(w.my_faction)
+
+	# ① 升二本：40 秒（没有提速档）
+	_ensure_generals(w, 2, f)
+	base.level = 1
+	ok(w.start_building_upgrade(base.tx, base.ty, f), "（前提）2 将时开始升二本")
+	near(base.upgrade_total, 40.0, 1e-6, "★ 升二本读条 40 秒")
+	w.cancel_building_upgrade(base.tx, base.ty, f)
+
+	# ② 升三本 · 4 将：80 秒
+	base.level = 2
+	_ensure_generals(w, 4, f)
+	ok(w.start_building_upgrade(base.tx, base.ty, f), "（前提）4 将时开始升三本")
+	near(base.upgrade_total, 80.0, 1e-6, "★ 4 将升三本读条 80 秒")
+
+	# ③ 读条中补到 5 将 ⇒ 总时长**不重算**（开始时定死）
+	_ensure_generals(w, 5, f)
+	near(base.upgrade_total, 80.0, 1e-6, "★★ 读条中补到 5 将也不改总时长（定死）")
+	near(w.building_upgrade_time(base), 60.0, 1e-6,
+		"（对照）现在再问一次会选 60 秒那档 —— 但这一条读条不受影响")
+	w.cancel_building_upgrade(base.tx, base.ty, f)
+
+	# ④ 5 将从头开始：60 秒
+	ok(w.start_building_upgrade(base.tx, base.ty, f), "（前提）5 将时开始升三本")
+	near(base.upgrade_total, 60.0, 1e-6, "★★ 5 将升三本读条降到 60 秒")
 
 
 func _test_upgrade_flow(cfg) -> void:
@@ -341,16 +382,16 @@ func _test_specialize_flow(cfg) -> void:
 	w.tick(BIG_STEP)
 	ok(not UpgradeRes.zone_is_busy(mine), "★ 读条结束")
 	eq(String(mine.get("spec_done", "")), "food", "★ 特化生效（spec_done = food）")
-	near(UpgradeRes.zone_spec_effect(mine, cfg)["food_per_tile"], 0.05, 1e-6,
-		"★ 粮食特化 = 每地块每秒 +0.05 粮食")
+	near(UpgradeRes.zone_spec_effect(mine, cfg)["food_per_tile"], 0.04, 1e-6,
+		"★ 粮食特化 = 每地块每秒 +0.04 粮食")
 	near(UpgradeRes.zone_spec_effect(mine, cfg)["gold_per_tile"], 0.0, 1e-6,
 		"黄金不受粮食特化影响")
 	near(UpgradeRes.zone_spec_effect(mine, cfg)["population_mult"], 1.0, 1e-6,
 		"人口倍率不受粮食特化影响")
 
 	var rates: Dictionary = w.zones.production_of(f)
-	near(float(rates["food"]), (2.0 + 0.05 * n_mine) + 2.0, 1e-3,
-		"★ 粮食产出 = 本区块（固定基础 2 + 特化 0.05×地块）+ 别的区块固定 2")
+	near(float(rates["food"]), (2.0 + 0.04 * n_mine) + 2.0, 1e-3,
+		"★ 粮食产出 = 本区块（固定基础 2 + 特化 0.04×地块）+ 别的区块固定 2")
 	near(float(rates["gold"]), 3.0 + 3.0, 1e-3, "★ 黄金产出不变（两块各固定 3，无特化）")
 
 	eq(UpgradeRes.can_specialize(w, mine, "gold", f), "spec_done",
@@ -387,17 +428,17 @@ func _test_specialize_flow(cfg) -> void:
 	ok(w2.start_zone_specialize(int(z2["id"]), "population"), "（前提）人口特化入队")
 	w2.tick(BIG_STEP)
 	eq(String(z2.get("spec_done", "")), "population", "人口特化生效")
-	near(UpgradeRes.zone_spec_effect(z2, cfg)["population_mult"], 1.125, 1e-6,
-		"★ 人口特化 = 人口产量 ×1.125")
+	near(UpgradeRes.zone_spec_effect(z2, cfg)["population_mult"], 1.10, 1e-6,
+		"★ 人口特化 = 人口产量 ×1.10")
 	z2["population"] = 0.0
 	z3["population"] = 0.0
 	w2.zones.update_population(1.0, w2.my_faction, w2.tech_population_mult())
-	near(float(z2["population"]), 2.0 * 1.125, 1e-3,
-		"★ 本区块人口涨快 12.5%（基础产能固定，不乘地块数）")
+	near(float(z2["population"]), 2.0 * 1.10, 1e-3,
+		"★ 本区块人口涨快 10%（基础产能固定，不乘地块数）")
 	near(float(z3["population"]), 2.0, 1e-3, "★ 别的区块不受影响")
 
 	mine["owner"] = "p2"
-	near(UpgradeRes.zone_spec_effect(mine, cfg)["food_per_tile"], 0.05, 1e-6,
+	near(UpgradeRes.zone_spec_effect(mine, cfg)["food_per_tile"], 0.04, 1e-6,
 		"★ 区划易主后特化保留（谁占谁吃加成）")
 	mine["owner"] = f
 
@@ -414,12 +455,12 @@ func _test_spec_stacks_with_tech(cfg) -> void:
 	near(base, 1.0, 1e-3, "（前提）本区块固定产能 1（绝对值，不乘地块数）")
 	w.start_zone_specialize(int(mine["id"]), "food")
 	w.tick(BIG_STEP)
-	near(w.production_food, base + 0.05 * tiles_n, 1e-3,
-		"★ 只有特化时：固定基础 1 + 本区块每地块 +0.05")
-	ok(w.set_tech_active("food_1", true), "再启用科技「粮食 +0.05/地块/秒」")
+	near(w.production_food, base + 0.04 * tiles_n, 1e-3,
+		"★ 只有特化时：固定基础 1 + 本区块每地块 +0.04")
+	ok(w.set_tech_active("food_1", true), "再启用科技「粮食 +0.04/地块/秒」")
 	var tiles: int = int(w.owned_tiles)
-	near(w.production_food, base + 0.05 * tiles_n + 0.05 * float(tiles), 1e-3,
-		"★ 特化（本区块每地块 +0.05）与科技（每地块 +0.05，乘己方占领地块数）相加")
+	near(w.production_food, base + 0.04 * tiles_n + 0.04 * float(tiles), 1e-3,
+		"★ 特化（本区块每地块 +0.04）与科技（每地块 +0.04，乘己方占领地块数）相加")
 
 func _test_cancel_spec(cfg) -> void:
 	var w = _quiet(cfg)
@@ -442,7 +483,7 @@ func _test_cancel_spec(cfg) -> void:
 	ok(UpgradeRes.zone_spec_is_cancel(mine), "这一条读条标成「取消特化」")
 	eq(String(mine.get("spec_done", "")), "food",
 		"★ 读条期间特化**仍然生效**（读完才去掉）")
-	near(UpgradeRes.zone_spec_effect(mine, cfg)["food_per_tile"], 0.05, 1e-6, "加成还在")
+	near(UpgradeRes.zone_spec_effect(mine, cfg)["food_per_tile"], 0.04, 1e-6, "加成还在")
 	w.tick(BIG_STEP)
 	ok(not UpgradeRes.zone_is_busy(mine), "读条结束")
 	eq(String(mine.get("spec_done", "")), "", "★ 特化被去掉")

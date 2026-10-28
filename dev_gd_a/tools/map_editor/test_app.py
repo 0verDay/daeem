@@ -1253,12 +1253,12 @@ def _dashed_tiles(editor) -> set:
 
 
 def t_file_buttons_wired() -> None:
-    """需求：「在编辑器里加导入导出按钮」—— 断言这两颗按钮真的在、而且真的接上了动作。
+    """工具栏的导出 / 新建 / 可见地图菜单都真的接上了动作。
 
     为什么值得单独测：按钮「看起来在」但 command 接错（或者压根忘了接）是这种工具最常见的坏法，
     它不会崩、只会「点了没反应」—— 正是最难自己发现的一类问题。
     """
-    print("\n[7] 导入 / 导出按钮（在工具栏上，而且真的接上了动作）")
+    print("\n[7] 导出 / 新建 / 可见地图（工具栏上，而且真的接上了动作）")
     root, editor = build_editor()
     root.update()
     # ⚠️ 不用 tempfile.TemporaryDirectory：它会把目录 chmod 成 0700，
@@ -1272,7 +1272,7 @@ def t_file_buttons_wired() -> None:
     restore_dialogs = stub_dialogs()
     try:
         buttons = getattr(editor, "file_buttons", {})
-        for key, expected in (("export", "导出"), ("import", "导入"), ("new", "新建")):
+        for key, expected in (("export", "导出"), ("new", "新建")):
             btn = buttons.get(key)
             ok(btn is not None, "工具栏上有「%s」按钮" % expected)
             if btn is None:
@@ -1281,6 +1281,17 @@ def t_file_buttons_wired() -> None:
                % (expected, str(btn.cget("text"))))
             ok(bool(btn.cget("command")), "「%s」按钮接上了动作（点了不会没反应）" % expected)
             ok(btn.winfo_manager() == "pack", "「%s」按钮真的被排进了工具栏" % expected)
+        ok("import" not in buttons, "★ 工具栏不再有手动导入按钮")
+
+        # 「可见地图」菜单只列有用表三张
+        menu = getattr(editor, "visible_map_menu", None)
+        ok(menu is not None, "工具栏有「可见地图」菜单")
+        labels = []
+        if menu is not None:
+            end = menu.index("end")
+            if end is not None:
+                labels = [menu.entrycget(i, "label") for i in range(int(end) + 1)]
+        eq(labels, ["main_test", "ai_test_2", "dscj"], "★ 可见地图菜单只列三张有用图")
 
         # 点「导出 JSON」：替换掉文件对话框，确认它真的写出文件
         target = tmpdir / "from_button.json"
@@ -1290,19 +1301,11 @@ def t_file_buttons_wired() -> None:
         filedialog.asksaveasfilename = original_save
         ok(target.is_file(), "★ 点「导出 JSON」真的写出了文件")
 
-        # 点「导入地图…」：同样替换对话框，确认它读进一张真图
-        # ★ 用随游戏发布的那张图（老图 map_01.json 已删，只剩 data/maps/frontier/map.json）。
-        # ⚠️ 断言用**真实图上的数**，别写死 374/10：设计师往图里加地块 / 加区块是常事
-        #    （这一轮就加了 4 个区块），写死的后果是一批「导入没生效」的假失败。
-        pub_map = PROJECT_DIR / "data" / "maps" / "frontier" / "map.json"
-        from map_editor.model import load_config as _load_cfg_pub
-        pub_model = mapfile.load_map(pub_map, _load_cfg_pub(PROJECT_DIR))
-        filedialog.askopenfilename = lambda **kwargs: str(pub_map)
-        editor.file_buttons["import"].invoke()
-        filedialog.askopenfilename = original_open
-        eq(editor.model.existing_count(), pub_model.existing_count(),
-           "★ 点「导入地图…」真的把仓库里那张默认地图读进来了")
-        eq(len(editor.model.zones), len(pub_model.zones), "导入之后区块也一起进来了")
+        # 从可见地图菜单打开 main_test（文件名是 main_test_map.json，不是 map.json）
+        editor.open_visible_map("main_test")
+        ok(editor.current_path is not None and editor.current_path.name == "main_test_map.json",
+           "★ 从「可见地图」打开 main_test 成功")
+        ok(editor.model.existing_count() > 0, "打开后地图有实际地块")
 
         # 「新建」不再弹任何对话框：直接给一张全新的无限虚线画布
         ok(bool(editor.file_buttons["new"].cget("command")), "「新建地图」按钮也接上了动作")
@@ -1417,8 +1420,8 @@ def t_zone_center_and_production_ui() -> None:
 
         # ---- 换区划：输入框跟着换成那一个区划的产能
         select_zone(a)
-        eq(editor._zone_prod_vars["food"].get(), "1",
-           "★ 换区划后显示的是它自己的产能（默认人口区划预设：1/秒 粮食）")
+        eq(editor._zone_prod_vars["food"].get(), "0.8",
+           "★ 换区划后显示的是它自己的产能（默认人口区划预设：0.8/秒 粮食）")
         # ★★ 本轮口径：输入框里就是绝对值，写回**不再按地块数换算**
         eq(a.tile_count, 2, "（前提）a 有 2 格")
         editor._zone_prod_vars["food"].set("4")
@@ -1502,10 +1505,10 @@ def t_zone_kind_ui() -> None:
         eq(editor.model.zone_kind(zone.zone_id), "population",
            "★ 新建的区划默认是人口区划（用户确认：没有默认区划了）")
         eq(editor.zone_kind_var.get(), "population", "单选钮停在「人口区划」上")
-        # ★ 输入框是「资源/秒」绝对值：人口区划预设 = 每秒 1 粮 + 0.5 人口
-        eq(editor._zone_prod_vars["population"].get(), "0.5",
-           "★ 输入框里就是人口区划的预设（每秒 0.5 人口，绝对值，与地块数无关）")
-        eq(editor._zone_prod_vars["food"].get(), "1", "粮食那一档是 1（人口区划也产粮）")
+        # ★ 输入框是「资源/秒」绝对值：人口区划预设 = 每秒 0.8 粮 + 0.4 人口
+        eq(editor._zone_prod_vars["population"].get(), "0.4",
+           "★ 输入框里就是人口区划的预设（每秒 0.4 人口，绝对值，与地块数无关）")
+        eq(editor._zone_prod_vars["food"].get(), "0.8", "粮食那一档是 0.8（人口区划也产粮）")
         eq(editor.zone_kind_hint.cget("text"), "", "新建的区划与预设一致 → 不提示「已手改」")
         # ---- 几何：三颗单选钮都在侧边栏宽度之内、从上到下排列（新控件不许溢出/叠住）
         kinds = [k for k in ("food", "gold", "population") if k in editor._zone_kind_buttons]
@@ -1522,12 +1525,12 @@ def t_zone_kind_ui() -> None:
         editor._zone_kind_buttons["food"].invoke()
         eq(editor.model.zone_kind(zone.zone_id), "food", "★ 点单选钮 = 换种类")
         eq([editor.model.zone_production(zone.zone_id, k)
-            for k in ("food", "gold", "population")], [2.0, 0.0, 0.2],
-           "★ 选粮食区划 → 产能数字同步成 每秒 2 粮食 + 0.2 人口（所有区划都带一份人口基础产能）")
-        eq(editor._zone_prod_vars["food"].get(), "2",
-           "输入框显示同步后的粮食产能 2/秒（绝对值，不乘地块数）")
-        eq(editor._zone_prod_vars["population"].get(), "0.2",
-           "输入框显示同步后的 0.2 人口/秒")
+            for k in ("food", "gold", "population")], [1.5, 0.0, 0.15],
+           "★ 选粮食区划 → 产能数字同步成 每秒 1.5 粮食 + 0.15 人口（所有区划都带一份人口基础产能）")
+        eq(editor._zone_prod_vars["food"].get(), "1.5",
+           "输入框显示同步后的粮食产能 1.5/秒（绝对值，不乘地块数）")
+        eq(editor._zone_prod_vars["population"].get(), "0.15",
+           "输入框显示同步后的 0.15 人口/秒")
         eq(editor.zone_kind_hint.cget("text"), "", "刚同步过 → 仍然与预设一致")
 
         # ---- ③ 手改数字（输入框就是绝对值）：种类不动，导出写的就是那个绝对值
@@ -1541,15 +1544,15 @@ def t_zone_kind_ui() -> None:
         data = mapfile.model_to_dict(editor.model)
         entry = {z["id"]: z for z in data["zone_list"]}[zone.zone_id]
         eq(entry["kind"], "food", "导出写种类")
-        eq(entry["production"], {"food": 2, "gold": 2.5, "population": 0.2},
-           "★ 导出写的就是输入框里的绝对值（粮食 2 / 黄金 2.5 / 人口 0.2）")
+        eq(entry["production"], {"food": 1.5, "gold": 2.5, "population": 0.15},
+           "★ 导出写的就是输入框里的绝对值（粮食 1.5 / 黄金 2.5 / 人口 0.15）")
 
         # ---- 撤销：手改数字一步、换种类一步，两步都能退
         editor.undo()
         eq(editor.model.zone_production(zone.zone_id, "gold"), 0.0, "★ Ctrl+Z 退掉手改的数字")
         editor.undo()
         eq(editor.model.zone_kind(zone.zone_id), "population", "★ 再退一步：种类回到人口区划")
-        eq(editor.model.zone_production(zone.zone_id, "population"), 0.5,
+        eq(editor.model.zone_production(zone.zone_id, "population"), 0.4,
            "★ 数字也跟着回到人口区划的预设")
         eq(editor.zone_kind_var.get(), "population", "单选钮跟着退回去")
         editor.redo()

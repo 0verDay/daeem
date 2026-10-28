@@ -43,10 +43,10 @@ const StartScreenRes = preload("res://view/start_screen.gd")
 ##      写成 `Node2D` 会让本文件直接 Parse Error（见下面 `var game` 那段）。
 const GameSceneRes = preload("res://view/game_scene3d.gd")
 ## ★★ 战斗入口（本轮改版）：
-##   · 主界面正中五颗测试按钮（test_1 / ai_test / ai_test_2 / ai_test_battle / ai_test_hz）
-##     —— 各自直连一关（见 config 的 `menu.test_entries`）；
+##   · 屏幕正中央的 ai_test 测试按钮（只在主菜单页显示）—— 直连 ai_test_battle 关
+##     （map = ai_test_2，玩家 p2 vs command AI p1，跳过过渡页）；
 ##   · 「战役」按钮撑开的面板里是**战役菜单**（轮播 + 关卡圆点 + 描述 + 长按进入）。
-##   两条路都只发 `level_entry_pressed(campaign_id, level_id)`，本文件负责：
+##   入口只带 `campaign_id + level_id`（ai_test 按钮由本文件直接指定 ai_test_battle），本文件负责：
 ##   载入战役 → 取那一关 → 取第一个可玩阵营 → `game.start_level()`。
 ##
 ## ★ 单人战役的占位页（`view/campaign_test.gd`）与「地图选择条 + test」那一套已经删掉：
@@ -63,6 +63,11 @@ const ThemeRes = preload("res://view/theme.gd")
 
 ## 开场页用的字体基准字号（标题 / 提示 / 按钮各自另有字号，见 config.json 的 menu 段）
 const MENU_FONT_SIZE := 32
+
+## ★★ 主菜单 ai_test 测试入口：ai_test_battle 关
+##   （map = ai_test_2，玩家 p2 vs command AI p1，难度走 config 默认 normal）。
+const AI_TEST_CAMPAIGN := "demo"
+const AI_TEST_LEVEL := "ai_test_battle"
 
 ## ★★ 进入游戏的黑屏转场（只用于战役过渡画面点「进入」；见 `_on_level_transition_enter`）：
 ##   `enter_fade_sec`    = 画面推成全黑的时长；
@@ -137,6 +142,7 @@ func _build_start_screen() -> void:
 
 	start_screen.intro_dismissed.connect(_on_intro_dismissed)
 	start_screen.campaign_level_chosen.connect(_on_menu_campaign_level_chosen)
+	start_screen.ai_test_pressed.connect(_on_ai_test_button_pressed)
 	start_screen.coop_host_started.connect(_on_coop_host_started)
 	start_screen.coop_guest_started.connect(_on_coop_guest_started)
 	start_screen.coop_solo_started.connect(_on_coop_solo_started)
@@ -306,6 +312,12 @@ func _on_menu_campaign_level_chosen(campaign_id: String, level_id: String,
 		push_warning("阵营不可玩：%s / %s / %s" % [campaign_id, level_id, faction_id])
 		return
 	_show_level_transition(campaign, level, faction_id)
+
+
+## ★★ 主菜单中央的 ai_test 测试按钮：直接开 ai_test_battle 关（ai_test_2 地图 1v1）。
+## 不挂战役过渡页，复用 `_on_direct_level_requested()` 的载入 / 建世界那一段。
+func _on_ai_test_button_pressed() -> void:
+	_on_direct_level_requested(AI_TEST_CAMPAIGN, AI_TEST_LEVEL)
 
 
 ## ★★ 主界面 ai_test_battle：跳过战役过渡画面，直接按关卡的可玩阵营开局。

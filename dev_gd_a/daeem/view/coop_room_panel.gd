@@ -8,6 +8,11 @@ signal room_entered
 
 const RoomDirectoryRes = preload("res://net/room_directory.gd")
 
+## 数字键盘只有 1~9 / 0；清空改为输入框内的 x 按钮。
+const KEY_LABELS := ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]
+## 房间列表表头高度：刷新按钮与「房间列表」标题同高。
+const LIST_HEADER_H := 56.0
+
 var session = null
 var _list_panel: Panel = null
 var _list_title: Label = null
@@ -17,6 +22,7 @@ var _rows_box: VBoxContainer = null
 var _status: Label = null
 var _input_panel: Panel = null
 var _code_edit: LineEdit = null
+var _clear_btn: Button = null
 var _key_buttons: Array = []
 var _action_btn: Button = null
 var _rows: Array = []
@@ -36,13 +42,12 @@ func setup(p_cfg, p_font: Font, p_session) -> void:
 
 	_list_title = make_label("ListTitle", _txt("room_list", "房间列表"), 20,
 		ThemeRes.accent())
-	_list_title.position = Vector2(16.0, 12.0)
-	_list_title.size = Vector2(320.0, 30.0)
+	_list_title.position = Vector2(16.0, 8.0)
+	_list_title.size = Vector2(320.0, LIST_HEADER_H)
+	_list_title.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_list_panel.add_child(_list_title)
 
 	_refresh_btn = make_text_button("RefreshBtn", _txt("refresh", "刷新"), 15)
-	_refresh_btn.position = Vector2(444.0, 8.0)
-	_refresh_btn.size = Vector2(120.0, 38.0)
 	_refresh_btn.pressed.connect(func(): session.refresh_rooms())
 	_list_panel.add_child(_refresh_btn)
 
@@ -96,7 +101,28 @@ func setup(p_cfg, p_font: Font, p_session) -> void:
 	_code_edit.text_changed.connect(_on_code_changed)
 	_input_panel.add_child(_code_edit)
 
-	for i in 12:
+	_clear_btn = Button.new()
+	_clear_btn.name = "CodeClear"
+	_clear_btn.text = "x"
+	_clear_btn.tooltip_text = "清空"
+	_clear_btn.focus_mode = Control.FOCUS_NONE
+	_clear_btn.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	if font != null:
+		_clear_btn.add_theme_font_override("font", font)
+	_clear_btn.add_theme_font_size_override("font_size", 20)
+	_clear_btn.add_theme_stylebox_override("normal", MenuThemeRes.button_normal())
+	_clear_btn.add_theme_stylebox_override("hover", MenuThemeRes.button_hover_clear())
+	_clear_btn.add_theme_stylebox_override("pressed", MenuThemeRes.button_fill_latched())
+	_clear_btn.add_theme_stylebox_override("focus", MenuThemeRes.button_normal())
+	_clear_btn.add_theme_stylebox_override("disabled", MenuThemeRes.button_disabled())
+	_clear_btn.add_theme_color_override("font_color", ThemeRes.text())
+	_clear_btn.add_theme_color_override("font_hover_color", ThemeRes.accent_bright())
+	_clear_btn.add_theme_color_override("font_pressed_color", ThemeRes.accent())
+	_clear_btn.pressed.connect(_on_clear)
+	_clear_btn.visible = true
+	_code_edit.add_child(_clear_btn)
+
+	for i in KEY_LABELS.size():
 		var b := make_text_button("Key%d" % i, "", 22)
 		b.position = LayoutRes.room_key_rect(0.0, i).position
 		b.size = LayoutRes.room_key_rect(0.0, i).size
@@ -133,18 +159,11 @@ func _bind_session() -> void:
 
 
 func _configure_keys() -> void:
-	var digits := ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "清空", ""]
 	for i in _key_buttons.size():
 		var b: Button = _key_buttons[i]
-		var label := String(digits[i])
+		var label := String(KEY_LABELS[i])
 		b.text = label
-		b.visible = label != ""
-		if label == "":
-			continue
-		if label == "清空":
-			b.pressed.connect(_on_clear)
-		else:
-			b.pressed.connect(_append_digit.bind(label))
+		b.pressed.connect(_append_digit.bind(label))
 
 
 func _on_rooms_changed(rooms: Array) -> void:
@@ -175,7 +194,7 @@ func _on_rooms_changed(rooms: Array) -> void:
 				row.pressed.connect(_fill_code.bind(code))
 			_rows_box.add_child(row)
 			_rows.append(row)
-	_list_title.text = "%s  %d" % [_txt("room_list", "房间列表"), rooms.size()]
+	_list_title.text = _txt("room_list", "房间列表")
 
 
 func _on_room_entered(_role: String, _code: String) -> void:
@@ -262,9 +281,15 @@ func _layout() -> void:
 	var lr := LayoutRes.room_list(size.x)
 	_list_panel.position = lr.position
 	_list_panel.size = lr.size
+	_refresh_btn.size = Vector2(120.0, LIST_HEADER_H)
+	_refresh_btn.position = Vector2(lr.size.x - 12.0 - 120.0, 8.0)
+	_list_title.position = Vector2(16.0, 8.0)
+	_list_title.size = Vector2(
+		lr.size.x - 12.0 - 120.0 - 12.0 - _list_title.position.x, LIST_HEADER_H)
 	var list_bg := _list_panel.get_node_or_null("RoomListBox") as Panel
 	if list_bg != null:
-		list_bg.size = Vector2(lr.size.x - 24.0, lr.size.y - 64.0)
+		list_bg.position = Vector2(12.0, 8.0 + LIST_HEADER_H + 8.0)
+		list_bg.size = Vector2(lr.size.x - 24.0, lr.size.y - list_bg.position.y - 12.0)
 		_scroll.position = Vector2(8.0, 8.0)
 		_scroll.size = list_bg.size - Vector2(16.0, 16.0)
 
@@ -274,6 +299,10 @@ func _layout() -> void:
 	var cr := LayoutRes.room_code_display(ir.size.x)
 	_code_edit.position = cr.position
 	_code_edit.size = cr.size
+	var cs := 36.0
+	_clear_btn.size = Vector2(cs, cs)
+	_clear_btn.position = Vector2(_code_edit.size.x - cs - 8.0,
+		(_code_edit.size.y - cs) * 0.5)
 	for i in _key_buttons.size():
 		var r := LayoutRes.room_key_rect(ir.size.x, i)
 		var b: Button = _key_buttons[i]
@@ -286,6 +315,10 @@ func _layout() -> void:
 
 func code_edit() -> LineEdit:
 	return _code_edit
+
+
+func clear_button() -> Button:
+	return _clear_btn
 
 
 func action_button() -> Button:

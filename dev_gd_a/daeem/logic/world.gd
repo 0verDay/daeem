@@ -2001,6 +2001,26 @@ func commander_factions() -> Array:
 	return out
 
 
+## 「指挥官阵营」= 真人席位（`player_factions` / `player_seats` / 本机 `my_faction`）+ command AI。
+##
+## ★★ 阵地性（garrison）/ 红点性（reddot）AI 不算。这条判据同时用在两处：
+##    · 将领上限（`base_max_generals` 对不指挥官阵营豁免）；
+##    · 大本营升级播报（只播指挥官阵营，`view/game_interaction.gd`）。
+## ⚠️ 先问 `_is_ai_piloted()`（它排除本机操作的一方），再看 `ai_kind_of()`：
+##    关卡数据里可玩阵营也可能写着 `ai: "garrison"`（给没被选中的那一方用），
+##    直接按 `ai_kind_of()` 判会把真人玩家的播报吞掉。
+func is_commander_side(faction: String) -> bool:
+	var f := String(faction)
+	if f == "":
+		return false
+	if _is_ai_piloted(f):
+		return ai_kind_of(f) == LevelRes.AI_COMMANDER
+	# 不是 AI 在开 ⇒ 真人席位（玩家阵营名单 / 本机）。没有 AI 的静态阵营不算。
+	if player_factions.has(f) or player_seats.has(f):
+		return true
+	return f == my_faction and not observer_mode
+
+
 ## ★★ 玩家给 AI 队友下达战略指令（`ai_order` 命令的落点）。
 ##
 ## @return "" = 接受；否则是拒因码（文案在 view 一层翻译）。
@@ -4573,10 +4593,21 @@ func building_upgrade_cost(b) -> Dictionary:
 	return cfg.upgrade_cost_to(b.type, b.level)
 
 
+## 这个建筑升到下一级的**实际**读条秒数。
+##
+## ★ 大本营有「将领越多读得越快」的提速档（config 的 time_sec_fast / fast_need_generals）：
+##   这里按**当前**将领数选档；`UpgradeRes.start_upgrade()` 在开始那一帧把它写进
+##   `upgrade_total` ⇒ 读条中人数变化不会再改计时（定死）。
+## ★ 视图与逻辑都走这一个函数，「看到的秒数」与「实际读条」不会分叉。
 func building_upgrade_time(b) -> float:
 	if b == null:
 		return 0.0
-	return cfg.upgrade_time_to(b.type, b.level)
+	var t: float = cfg.upgrade_time_to(b.type, b.level)
+	var fast: float = cfg.upgrade_time_fast_to(b.type, b.level)
+	var need: int = cfg.upgrade_fast_need_generals(b.type, b.level)
+	if fast > 0.0 and need > 0 and general_count_of(String(b.owner)) >= need:
+		return fast
+	return t
 
 
 ## 开始升级某个建筑（`building_upgrade` 命令的落点；按**地块**定位）。
@@ -4697,8 +4728,25 @@ func base_limit(faction: String, key: String, default: int) -> int:
 
 
 ## 最多拥有几名将领（无大本营 → 不限制）
+##
+## ★★ 上限**只约束指挥官阵营**（真人席位 + command AI）：阵地性 / 红点性 AI 豁免。
+##    它们本来就靠波次 / 补员生成将领，不吃「最多几名」这条规则。
 func base_max_generals(faction: String) -> int:
+	if _general_cap_exempt(faction):
+		return 9999
 	return base_limit(faction, "max_generals", 9999)
+
+
+## 这一方是不是**不受将领上限约束**（被阵地性 / 红点性 AI 接管）。
+##
+## ★★ 判据必须走 `_is_ai_piloted()`：**本机正在操作的那一方永远不算 AI**，
+##    哪怕关卡数据里给它写着 `ai: "garrison"`（`01_beachhead` / `02_twin_line` 就是这样）。
+##    只按 `ai_kind_of()` 判会把真人玩家一起豁免掉 —— 上限与播报都会失效。
+func _general_cap_exempt(faction: String) -> bool:
+	if not _is_ai_piloted(String(faction)):
+		return false
+	var k := ai_kind_of(String(faction))
+	return k == LevelRes.AI_GARRISON or k == LevelRes.AI_REDDOT
 
 
 ## 所有将领编制上限 +N

@@ -232,18 +232,22 @@ def right_click_canvas(app, cell) -> None:
     app.root.update()
 
 
-def setup() -> tuple:
+def setup(show_all_levels: bool = True) -> tuple:
     """开一个真窗口 + 一份临时战役副本。"""
     shutil.rmtree(TMP, ignore_errors=True)
     TMP_PROJECT.mkdir(parents=True, exist_ok=True)
     shutil.copytree(PROJECT_DIR / "data" / "maps", TMP_PROJECT / "data" / "maps")
     shutil.copyfile(PROJECT_DIR / "data" / "config.json", TMP_PROJECT / "data" / "config.json")
+    catalog = PROJECT_DIR / "data" / "editor_visible.json"
+    if catalog.is_file():
+        shutil.copyfile(catalog, TMP_PROJECT / "data" / "editor_visible.json")
     shutil.copytree(PROJECT_DIR / "data" / "campaigns" / "demo",
                     TMP_PROJECT / "data" / "campaigns" / CASE)
     model = levelfile.load_campaign(TMP_PROJECT / "data" / "campaigns" / CASE, TMP_PROJECT)
     root = tk.Tk()
     root.withdraw()                        # 不显示（无头也能跑）
-    app = app_module.EditorApp(root, model, TMP_PROJECT)
+    app = app_module.EditorApp(root, model, TMP_PROJECT,
+                               show_all_levels=show_all_levels)
     app.subprocess_mod = FakeSubprocess    # ★ 不真起地图编辑器
     root.update()
     return app, model
@@ -1380,6 +1384,29 @@ def t_refresh_keeps_view(app, model) -> None:
        "★★ 改一个字段不会把侧边栏滚回顶部")
 
 
+def t_catalog_filter() -> None:
+    """有用表过滤：关卡树只显示有用表地图对应的关卡。"""
+    print("\n[10] 有用表过滤关卡树")
+    model = levelfile.load_campaign(TMP_PROJECT / "data" / "campaigns" / CASE, TMP_PROJECT)
+    root = tk.Tk()
+    root.withdraw()
+    app = app_module.EditorApp(root, model, TMP_PROJECT, show_all_levels=False)
+    try:
+        root.update()
+        ids = [str(app.level_tree.item(iid, "values")[1])
+               for iid in app.level_tree.get_children()]
+        eq(ids, ["mt", "dscj", "ai_test_2", "ai_test_battle"],
+           "★ 关卡树只列有用表地图对应的关卡")
+        ok(not app.level_tree.exists("lv:01_beachhead"), "★ 隐藏 01_beachhead")
+        ok(not app.level_tree.exists("lv:02_twin_line"), "★ 隐藏 02_twin_line")
+        ok(not app.level_tree.exists("lv:ai_test"), "★ 隐藏 ai_test")
+        eq(app.current_level_id, "mt", "★ 默认当前关 = 第一个可见关卡")
+        eq(app._map_choice_ids(), ["main_test", "ai_test_2", "dscj"],
+           "★ 地图下拉 = 有用表三张")
+    finally:
+        root.destroy()
+
+
 def main() -> int:
     print("DAEEM 战役编辑器 · 界面测试")
     print("工程目录：%s（测试只动 %s 里的副本）" % (PROJECT_DIR, TMP))
@@ -1422,6 +1449,7 @@ def main() -> int:
         t_open_map_editor(app, model)
         t_sidebar_scroll(app, model)
         t_misc(app, model)
+        t_catalog_filter()
     finally:
         teardown(app)
         after_camp, after_maps = tree_digest(real_camp), tree_digest(real_maps)

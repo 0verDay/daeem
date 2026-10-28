@@ -699,8 +699,8 @@ def t_config_and_maps() -> None:
     ms = maps(real=True)
     info = ms["dongzheng"]
     # ⚠️ 只要求「这几张在」—— 作者随时会往 data/maps/ 加新图，写死全集会假红。
-    ok(set(["arena", "crossing", "dongzheng", "frontier"]) <= set(ms),
-       "★ 四张地图全在（含 hidden 与 占位），实际：%s" % sorted(ms))
+    ok(set(["arena", "dongzheng", "frontier"]) <= set(ms),
+       "★ 这三张地图都在（含 hidden 与 占位），实际：%s" % sorted(ms))
     ok(info.hidden, "★ dongzheng 带 hidden 标记（照样列出来）")
     ok(ms["arena"].placeholder, "★ arena 带 placeholder 标记（照样列出来）")
     ok(not ms["frontier"].hidden and not ms["frontier"].placeholder, "frontier 两个标记都没有")

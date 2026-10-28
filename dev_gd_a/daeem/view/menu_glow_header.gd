@@ -11,6 +11,8 @@ const TEX_H := 128
 
 var _tex: ImageTexture = null
 var _title: Label = null
+## 只有那团半圆光受它控制；标题文字不跟着变淡（转场时文字不该闪）。
+var _alpha: float = 1.0
 
 
 func setup(p_font: Font, text: String, title_size: int = 44) -> void:
@@ -41,6 +43,19 @@ func title_label() -> Label:
 	return _title
 
 
+## 半圆光的透明度（0=全灭，1=常态）。标题文字保持原样。
+func set_glow_alpha(a: float) -> void:
+	a = clampf(a, 0.0, 1.0)
+	if is_equal_approx(a, _alpha):
+		return
+	_alpha = a
+	queue_redraw()
+
+
+func glow_alpha() -> float:
+	return _alpha
+
+
 func _build_texture() -> void:
 	var img := Image.create(TEX_W, TEX_H, false, Image.FORMAT_RGBA8)
 	var base := ThemeRes.accent_bright()
@@ -66,4 +81,4 @@ func _layout() -> void:
 func _draw() -> void:
 	if _tex == null or size.x <= 1.0 or size.y <= 1.0:
 		return
-	draw_texture_rect(_tex, Rect2(Vector2.ZERO, size), false)
+	draw_texture_rect(_tex, Rect2(Vector2.ZERO, size), false, Color(1.0, 1.0, 1.0, _alpha))

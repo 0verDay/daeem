@@ -41,6 +41,12 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Dict, List, Optional, Tuple
 
+_TOOLS_DIR = Path(__file__).resolve().parent.parent
+if str(_TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(_TOOLS_DIR))
+from editor_catalog import add_map as catalog_add_map
+from editor_catalog import map_ids as catalog_map_ids
+
 from . import mapfile
 from .model import (
     DEFAULT_COLORS,
@@ -654,12 +660,22 @@ class EditorApp:
         right = tk.Frame(top, bg=UI["bg"])
         right.pack(side="right", padx=8)
         # 分组标题 + 三颗按钮，整体当一组排在右上角
+        tk.Label(right, text="可见地图", bg=UI["bg"], fg=UI["text_dim"],
+                 font=("Microsoft YaHei UI", 9)).pack(side="left", padx=(0, 4))
+        self.visible_map_picker = tk.Menubutton(
+            right, text="选择地图…", relief="flat",
+            bg=UI["panel_alt"], fg=UI["text"],
+            activebackground=UI["hover"], activeforeground=UI["accent"],
+            padx=10, pady=4, font=("Microsoft YaHei UI", 9))
+        self.visible_map_menu = tk.Menu(self.visible_map_picker, tearoff=0)
+        self.visible_map_picker.configure(menu=self.visible_map_menu)
+        self.visible_map_picker.pack(side="left", padx=(0, 12))
+        self._refresh_visible_map_menu()
         tk.Label(right, text="地图文件", bg=UI["bg"], fg=UI["text_dim"],
                  font=("Microsoft YaHei UI", 9)).pack(side="left", padx=(0, 6))
         self.file_buttons: Dict[str, tk.Button] = {}
         for key, text, cmd, tip in (
                 ("export", "导出 JSON", self.do_export, "把当前地图写成 JSON（Ctrl+S）"),
-                ("import", "导入地图…", self.do_open, "打开一张已有的地图 JSON（Ctrl+O）"),
                 ("new", "新建地图…", self.do_new, "重开一张空白画布（Ctrl+N）")):
             btn = self._button(right, text, cmd, padx=12, pady=5,
                                bg=UI["panel_alt"], fg=UI["text"],
@@ -2486,7 +2502,6 @@ class EditorApp:
         r.bind("<Control-Z>", lambda e: self._shortcut(self.redo))
         r.bind("<Control-y>", lambda e: self._shortcut(self.redo))
         r.bind("<Control-s>", lambda e: self._shortcut(self.do_export))
-        r.bind("<Control-o>", lambda e: self._shortcut(self.do_open))
         r.bind("<Control-n>", lambda e: self._shortcut(self.do_new))
         # Esc：先取消框选（更近的一层），没有框选时才切回地块页签
         r.bind("<Escape>", lambda e: self._shortcut(self.on_escape))
@@ -3009,13 +3024,58 @@ class EditorApp:
             filetypes=[("Godot 地图 JSON", "*.json"), ("所有文件", "*.*")])
         if not path:
             return
+        self._open_map_path(Path(path))
+
+    def open_visible_map(self, map_id: str) -> None:
+        """工具栏「可见地图」菜单：直接打开当前工作用图（清单见 editor_visible.json）。"""
+        if not self._confirm_discard():
+            return
+        folder = self.project_dir / "data" / "maps" / str(map_id)
+        path = folder / "map.json"
+        if not path.is_file():
+            path = folder / ("%s.json" % map_id)
+        if not path.is_file() and folder.is_dir():
+            candidates = sorted(p for p in folder.glob("*.json") if p.is_file())
+            path = candidates[0] if candidates else path
+        if not path.is_file():
+            messagebox.showerror("打开失败", "找不到地图：%s" % folder)
+            return
+        self._open_map_path(path)
+
+    def _refresh_visible_map_menu(self) -> None:
+        """按有用表重建菜单；导出新图后立刻能在这里看到。"""
+        menu = getattr(self, "visible_map_menu", None)
+        if menu is None:
+            return
+        menu.delete(0, "end")
+        ids = catalog_map_ids(self.project_dir)
+        if not ids:
+            menu.add_command(label="（表里还没有地图）", state="disabled")
+            return
+        for mid in ids:
+            menu.add_command(label=mid,
+                             command=lambda m=mid: self.open_visible_map(m))
+
+    def _sync_catalog_after_export(self, saved: Path) -> None:
+        """导出到 data/maps/<id>/map.json 时，把 <id> 追加进有用表并刷新菜单。"""
         try:
-            model = mapfile.load_map(path, self.cfg)
+            maps_root = (self.project_dir / "data" / "maps").resolve()
+            target = saved.resolve()
+        except OSError:
+            return
+        if target.parent.parent != maps_root:
+            return
+        if catalog_add_map(self.project_dir, target.parent.name):
+            self._refresh_visible_map_menu()
+
+    def _open_map_path(self, path: Path) -> None:
+        try:
+            model = mapfile.load_map(str(path), self.cfg)
         except MapError as exc:
             messagebox.showerror("打开失败", str(exc))
             return
         self.model = model
-        self.current_path = Path(path)
+        self.current_path = path
         self.inspect = None
         self.selected_zone = self.model.zones[0].zone_id if self.model.zones else None
         self.selection = None
@@ -3046,7 +3106,7 @@ class EditorApp:
             if not messagebox.askyesno("导出提醒", text):
                 return
         initial = str(self.current_path) if self.current_path else str(
-            self.project_dir / "data" / "maps" / "frontier" / "map.json")
+            self.project_dir / "data" / "maps" / "main_test" / "main_test_map.json")
         path = filedialog.asksaveasfilename(
             title="导出地图 JSON", initialdir=self._default_dir(),
             initialfile=Path(initial).name,
@@ -3062,6 +3122,7 @@ class EditorApp:
         self.current_path = saved
         self.dirty = False
         self.update_title()
+        self._sync_catalog_after_export(Path(saved))
         self.status("已导出到 %s（%d 个地块 / %d 个区块）%s"
                     % (saved, self.model.existing_count(), len(self.model.zones),
                        "　★ 战役专用（hidden）" if self.model.extra.get(mapfile.KEY_HIDDEN)

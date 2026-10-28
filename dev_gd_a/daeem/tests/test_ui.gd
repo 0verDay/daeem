@@ -65,9 +65,11 @@ func _test_layout_against_reference(cfg) -> void:
 	eq(UiLayoutRes.SQUAD_RECT.position.y, 180.0, "将领列表从 y=180 开始（避开右上角设置按钮）")
 	eq(UiLayoutRes.SQUAD_RECT.position.x + UiLayoutRes.SQUAD_RECT.size.x,
 		UiLayoutRes.DESIGN_W, "将领列表紧贴屏幕右边缘")
-	eq(UiLayoutRes.SQUAD_SLOTS, 10, "★ 10 个槽位（部队1 ~ 部队10）")
-	eq(UiLayoutRes.SQUAD_ROW_H, 56.0, "每行 56 高")
-	eq(UiLayoutRes.SQUAD_RECT.size.y, 560.0, "10 行合计 560 高")
+	eq(UiLayoutRes.SQUAD_SLOTS, 6, "★ 6 个槽位（部队1 ~ 部队6）")
+	eq(UiLayoutRes.SQUAD_ROW_H, 88.0, "★ 每行 88 高（手机端触摸命中高度，原 56）")
+	eq(UiLayoutRes.SQUAD_RECT.size.y, 6.0 * 88.0, "6 行合计 528 高")
+	ok(UiLayoutRes.SQUAD_RECT.position.y + UiLayoutRes.SQUAD_RECT.size.y <= UiLayoutRes.BAR_TOP,
+		"★ 加高之后仍不压底栏（面板底 ≤ %s）" % UiLayoutRes.BAR_TOP)
 
 	eq(UiLayoutRes.MAP_RECT.size.x, 400.0, "地图占位宽 400")
 	eq(UiLayoutRes.MAP_RECT.size.y, 400.0, "地图占位高 400")
@@ -1096,7 +1098,7 @@ func _test_hp_bars(cfg) -> void:
 	eq(IconBadgeRes.troop_number_text(1), "1", "★ 部队序号：第 1 支写 1")
 	eq(IconBadgeRes.troop_number_text(9), "9", "★ 部队序号：第 9 支写 9")
 	eq(IconBadgeRes.troop_number_text(10), "0",
-		"★ 部队序号：第 10 支写 0（与右侧部队列表同一口径）")
+		"★ 部队序号：兜底 10 → 0（槽位只到 6，正常用不到这一档）")
 	var leader = UnitRes.new()
 	leader.name = "测试队长"
 	leader.hp = 100.0
@@ -1181,7 +1183,7 @@ func _test_squad_rows(main) -> void:
 	var panel = main.hud.squad_panel
 	var world = main.world
 
-	eq(panel.slot_count(), UiLayoutRes.SQUAD_SLOTS, "部队列表有 10 个槽")
+	eq(panel.slot_count(), UiLayoutRes.SQUAD_SLOTS, "部队列表有 6 个槽")
 	# ★★ 整列外框：左 / 上 / 下 2px，右边留 0（不压最右金线 / 泛光起点）。
 	var sframe = panel.get_node_or_null("SquadFrame")
 	ok(sframe != null, "★★ 将领标签栏整体外框存在")
@@ -1218,7 +1220,7 @@ func _test_squad_rows(main) -> void:
 
 	ok(panel.slot_filled(2), "第 3 槽有队伍")
 	ok(not panel.slot_filled(3), "第 4 槽是空的")
-	eq(panel.slot_number(9), "0", "★ 第 10 条标签的数字显示 0")
+	eq(panel.slot_number(5), "6", "★ 第 6 条标签的数字显示 6")
 	for i in range(3, UiLayoutRes.SQUAD_SLOTS):
 		eq(panel.slot_text(i), "…", "空槽第 %d 行显示「…」" % (i + 1))
 
@@ -1234,7 +1236,7 @@ func _test_squad_rows(main) -> void:
 	ok(panel.slot_active(2), "当前选中的队伍在列表里高亮")
 
 	var sel_before: int = main.input_ctrl.selected_units.size()
-	_click_slot(main, panel, 7)
+	_click_slot(main, panel, 5)
 	eq(main.input_ctrl.selected_units.size(), sel_before, "★ 空槽点了没有反应")
 
 	# ★★ 反选（本轮需求「点击代表反选」）：
@@ -1829,7 +1831,7 @@ func _eq_tech_page(main, where: String) -> void:
 	eq(g.entries().size(), 9, "%s：★ 九格铺满（9 条占位科技）" % where)
 	eq(card.entries().size(), 0, "%s：命令卡在科技页是空的（内容由科技那一层画）" % where)
 	eq(g.cell_name(0), "粮食产量 I", "%s：第 1 格 = 粮食产量 I" % where)
-	eq(g.cell_line(0), "粮食 +0.05", "%s：第 1 格第二行写效果" % where)
+	eq(g.cell_line(0), "粮食 +0.04", "%s：第 1 格第二行写效果" % where)
 	ok(String((g.entry_at(0) as Dictionary).get("desc", "")).contains("地块"),
 		"%s：entries 里带着完整效果说明（悬停详情面板写它）" % where)
 	# ★ 九格是**列优先**（第一列 = 一阶、第二列 = 二阶、第三列 = 三阶）：
@@ -2384,9 +2386,10 @@ func _test_upgrade_via_card(main) -> void:
 	var q = main.hud.detail_panel.queue_control()
 	world.resources["food"] = 5000.0
 	world.resources["gold"] = 5000.0
-	# ★★ 2026.10.26：建筑升级只剩大本营；大本营升 2 级要 3 名将领。
+	# ★ 建筑升级只剩大本营；升 2 级的将领门槛读 config（现在是 2 名）。
+	var need_g := int(world.cfg.upgrade_need_generals("base", 1))
 	var idx := 1
-	while world.general_count_of("p1") < 3 and idx < 32:
+	while world.general_count_of("p1") < need_g and idx < 32:
 		var gnew = world.create_general("p1", idx, 500 + idx)
 		if gnew == null:
 			break
@@ -2470,8 +2473,8 @@ func _test_upgrade_via_card(main) -> void:
 	main.hud.refresh()
 	main.hud.rebuild_card()      # 真实游戏里由每帧 refresh 的页签比较兜底；测试里显式刷一次
 	eq(String(zone.get("spec_done", "")), "food", "★ 读完特化生效")
-	near(UpgradeRes.zone_spec_effect(zone, world.cfg)["food_per_tile"], 0.05, 1e-6,
-		"★ 粮食特化 = 每地块每秒 +0.05 粮食")
+	near(UpgradeRes.zone_spec_effect(zone, world.cfg)["food_per_tile"], 0.04, 1e-6,
+		"★ 粮食特化 = 每地块每秒 +0.04 粮食")
 	eq(card.entries().size(), 1, "★ 特化后操作页只剩一格（不能再特化）")
 	eq(String(card.entry_at(0).get("type", "")), "zone_spec_cancel",
 		"★ 那一格是「取消特化」")
@@ -2982,7 +2985,7 @@ func _test_box_select(main) -> void:
 		eq(UiLayoutRes.TROOP_GRID_SLOTS, 9,
 			"★ 网格正好 9 格（手玩原话：参考图下方是 1333 排列的 9 个格子）")
 		ok(UiLayoutRes.TROOP_GRID_SLOTS + 1 == 10,
-			"★ 9 格 + 左上展开的那一格 = 10 格，正好对上「玩家部队上限 10 支」（手玩原话）")
+			"★ 9 格 + 左上展开的那一格 = 左栏共 10 个方框（参考图布局，与编队槽数无关）")
 		eq(UiLayoutRes.DETAIL_LEFT_W + UiLayoutRes.DETAIL_GAP + UiLayoutRes.DETAIL_RIGHT_W,
 			UiLayoutRes.DETAIL_RECT.size.x - 2.0 * UiLayoutRes.DETAIL_PAD,
 			"★ 左栏 + 缝 + 右栏 = 面板内容宽（不然右栏会被裁掉）")

@@ -426,7 +426,7 @@ COOP_READY（任意来源）
 | `view/menu_deck.gd` | 页面栈 / 横向滑动 / 面板显隐 / 输入闸。 |
 | `view/menu_deck_layout.gd` | 新菜单的几何常量与 `panel_rect` / `main_layout` / `campaign_layout` / `detail_layout` / `coop_layout` / `room_layout` / `ready_layout` 静态函数。 |
 | `view/menu_glow_header.gd` | 半圆形泛光 + 居中标题；程序化纹理，无贴图。 |
-| `view/menu_close_button.gd` | 程序化 X（两条斜线）；56×56；hover 提亮。 |
+| ~~`view/menu_close_button.gd`~~ | 已并入 `view/menu_corner_button.gd`（退出 X 就是它的 `ICON_CLOSE`）。 |
 | `view/menu_back_button.gd` | 56×56 方块返回按钮（`‹`），统一样式。 |
 | `view/menu_banner.gd` | 旗帜：旗杆 + 旗面 + 顶部横杆；支持玩家/空位/关卡三种状态；hover/选中。 |
 | `view/menu_faction_button.gd` | 阵营按钮：左侧阵营色条 + 阵营名 + 目标；按钮底层用 `fill_button`。 |

@@ -107,13 +107,13 @@ PRODUCTION_MAX = 999.0
 #:
 #: ★★ 三种区划的预设产能（**该区划每秒的绝对值**，不乘地块数）——
 #:   与 `data/config.json` 的 `zone_kind.list` 同一套数值：
-#:     粮食区划 = 每秒 2 粮食 + 0.2 人口；
-#:     黄金区划 = 每秒 2 黄金 + 0.2 人口；
-#:     人口区划 = 每秒 1 粮食 + 0.5 人口（人口区划也产粮）。
-#:   ★ 2026.10.25：基础产能整体**减半**（用户需求「所有区划的产能下降 50%」）；
-#:     这里是减半后的值，config.json 与各张地图的 production 也是。
+#:     粮食区划 = 每秒 1.5 粮食 + 0.15 人口；
+#:     黄金区划 = 每秒 1.2 黄金 + 0.15 人口；
+#:     人口区划 = 每秒 0.8 粮食 + 0.4 人口（人口区划也产粮）。
+#:   ★ 节奏调整：黄金降幅最大（−40%），粮食 / 人口 −20%~−25%；
+#:     config.json、各张地图的 production、这里的兜底是同一组数。
 #:   ⚠️ 这里只是**配置读不到时的兜底**：正常运行走 `zone_kind_table(cfg)` 读 config.json，
-#:      所以两份必须一起改（旧值 0.12 / 0.015 会把经济重新顶起来）。
+#:      所以两份必须一起改（旧值会把经济重新顶回去）。
 #: ★ 只有这三种 —— **没有「默认区划」那一档**（用户确认：「没有默认区划了，
 #:   所有区划默认值都改为人口区划」）：`ZONE_KIND_DEFAULT` 只是「老图 / 没写 kind 时
 #:   算哪一种」，不是第四种区划。
@@ -124,22 +124,22 @@ FALLBACK_ZONE_KINDS: Tuple[Dict[str, object], ...] = (
     {
         "id": "food",
         "name": "粮食区划",
-        "line": "每秒 2 粮食 + 0.2 人口",
-        "production": {"food": 2.0, "gold": 0.0, "population": 0.2},
+        "line": "每秒 1.5 粮食 + 0.15 人口",
+        "production": {"food": 1.5, "gold": 0.0, "population": 0.15},
         "specs": ("gold", "population"),
     },
     {
         "id": "gold",
         "name": "黄金区划",
-        "line": "每秒 2 黄金 + 0.2 人口",
-        "production": {"food": 0.0, "gold": 2.0, "population": 0.2},
+        "line": "每秒 1.2 黄金 + 0.15 人口",
+        "production": {"food": 0.0, "gold": 1.2, "population": 0.15},
         "specs": ("food", "population"),
     },
     {
         "id": "population",
         "name": "人口区划",
-        "line": "每秒 1 粮食 + 0.5 人口",
-        "production": {"food": 1.0, "gold": 0.0, "population": 0.5},
+        "line": "每秒 0.8 粮食 + 0.4 人口",
+        "production": {"food": 0.8, "gold": 0.0, "population": 0.4},
         "specs": ("food", "gold"),
     },
 )

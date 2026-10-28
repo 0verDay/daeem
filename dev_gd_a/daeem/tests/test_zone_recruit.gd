@@ -270,6 +270,11 @@ func _test_queue_cap_and_cancel(cfg) -> void:
 	var zid := int(z["id"])
 
 	var kinds: Array = []
+	# ★ 将领上限降成 2/5/6 之后，开局那位 #0 也占名额（3 级上限 6）。
+	#   这一节专门验**队列满**，所以先把场上的将领移走，让计数只剩队列里那几单。
+	for u in w.units.duplicate():
+		if u.is_general() and String(u.faction) == "p1":
+			w.units.erase(u)
 	for i in 5:
 		_clear_cooldown(w)
 		var k := _kind_at(w, i)

@@ -23,6 +23,8 @@ const ConfigRes = preload("res://logic/config.gd")
 const PaletteRes = preload("res://view/palette.gd")
 const CommandRes = preload("res://logic/command_processor.gd")
 const FactionRes = preload("res://logic/faction.gd")
+## ★ 数字键 1..N 的 N（= 右栏槽数）：只在这里读一次，别再写死循环次数。
+const UiLayoutRes = preload("res://view/ui_layout.gd")
 ## ★ 只为「单位立牌的宽高比」这两个常量（`QUAD_W` / `QUAD_H_RATIO`）——
 ##   框选要按**图标**判命中，不能在两个文件里各写一份尺寸（见 `_unit_icon_screen_rect`）。
 const UnitViewRes = preload("res://view/unit_view_3d.gd")
@@ -486,17 +488,17 @@ func handle_key(event: InputEventKey) -> bool:
 		return false
 	var k := event.keycode
 
-	# 1..9 / 0：与右栏标签**完全同一套手势**（0 = 第 10 支）。
+	# 1..6：与右栏标签**完全同一套手势**（槽位上限 = UiLayoutRes.SQUAD_SLOTS）。
 	#   · 按下 → 开始计时（长按到阈值 = 跟随该将领）；
 	#   · 抬起 → 单击 / 双击判定（反选 / 快速选中 + 跳镜头）。
 	# ★ 槽位由 `view/team_slots.gd` 分配：首次按开局顺序 1..N，之后阵亡 / 复活都不改号；
 	#   阵亡将的槽位仍占着（按它的键不选人，只提示），后面的将不会前移。
 	#   右栏 `squad_panel` / 地图键帽 / 左栏详情（`hud._compute_selected_troops`）同源。
-	for i in 10:
-		var code: int = KEY_0 if i == 9 else KEY_1 + i
+	for i in UiLayoutRes.SQUAD_SLOTS:
+		var code: int = KEY_1 + i
 		if k != code:
 			continue
-		var slot: int = 10 if i == 9 else i + 1
+		var slot: int = i + 1
 		if event.pressed:
 			gesture_press(GESTURE_KEY, slot)
 		else:

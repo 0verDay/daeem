@@ -179,9 +179,7 @@ func _test_force_cap_and_generals(cfg) -> void:
 		return
 	var cap3 := int(c.force_cap())
 	ok(cap3 > 0, "有将领时有动态军队上限")
-	eq(int(c.general_target()), 3, "1 级大本营补将目标 = 3")
-	# 3 位 1 级将领 × (自己 + 11 编制) × 0.8 = 28.8 → 29
-	ok(cap3 >= 29, "3 位将领的上限至少 29（实际 %d）" % cap3)
+	eq(int(c.general_target()), 2, "1 级大本营补将目标 = 2")
 	var cap_before := int(c.force_cap())
 	var g = w.create_general("F2", 0, 3)
 	ok(g != null, "能造第 4 位将领")
@@ -189,9 +187,9 @@ func _test_force_cap_and_generals(cfg) -> void:
 		w.units.append(g)
 		ok(int(c.force_cap()) > cap_before, "多一位将领后上限变大")
 	base.level = 2
-	eq(int(c.general_target()), 6, "2 级大本营补将目标 = 6")
+	eq(int(c.general_target()), 5, "2 级大本营补将目标 = 5")
 	base.level = 3
-	eq(int(c.general_target()), 10, "3 级大本营补将目标 = 10")
+	eq(int(c.general_target()), 6, "3 级大本营补将目标 = 6")
 	# 3 级基地 + 充足资源：真的会继续补将（不是只算了个目标）
 	w.ai_faction_resources["F2"] = {"food": 2000.0, "gold": 2000.0}
 	var bz = w.zones.zone_at(base.tx, base.ty)
@@ -1211,10 +1209,10 @@ func _test_base_build_priority(cfg) -> void:
 		return
 	# 1) 钱够：先升大本营，这一 tick 不造塔 / 墙。
 	ok(AiBuildRes._base_upgrade_candidate(c).is_empty(),
-		"★★ 将领不足 3 时 AI 不把升二本当作候选")
-	_ensure_ai_generals(w, "F1", 3)
+		"★★ 将领不足 2 时 AI 不把升二本当作候选")
+	_ensure_ai_generals(w, "F1", 2)
 	ok(not AiBuildRes._base_upgrade_candidate(c).is_empty(),
-		"★★ 3 将后 AI 才把升二本当作候选")
+		"★★ 2 将后 AI 才把升二本当作候选")
 	w.ai_faction_resources["F1"] = {"food": 6000.0, "gold": 6000.0}
 	var towers0 := AiBuildRes._tower_count(c)
 	var walls0 := AiBuildRes._wall_count(c)

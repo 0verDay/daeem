@@ -132,7 +132,10 @@ dev_gd_a/daeem/
 │   │                             #     · 性能：按格缓存视野扇区 + 没变化就不重算
 │   ├── upgrade.gd                #   ★ 建筑升级 + 区划特化（右下「操作」页里那几格）
 │   │                             #     升级：等级 1→N（config.upgrade.levels），血量上限 ×倍率
-│   │                             #     特化：粮食 / 黄金 = 每地块每秒 +0.5；人口 = 本区划人口产量 ×1.25；
+│   │                             #     ★ 大本营升本要「已有 N 名将领」（need_generals，2/4）；
+│   │                             #       读条时长走 world.building_upgrade_time()（≥5 将走提速档，开始时定死）；
+│   │                             #       开始成功时推 `upgrade_started`（faction / target_level）→ 顶部播报
+│   │                             #     特化：粮食 / 黄金 = 每地块每秒 +0.04；人口 = 本区划人口产量 ×1.10；
 │   │                             #     能做哪几档由**区划种类**（config.zone_kind.list[].specs）决定
 │   │                             #     两者都是**读条**（复用招募那块面板）、入队即扣费、可取消退款
 │   ├── combat.gd                 #   战斗结算与事件（索敌 / 开火 / 拆建筑）
@@ -304,6 +307,10 @@ dev_gd_a/daeem/
 │   │                             #     （否则最后一帧会露出底下的界面，见 pitfalls 5.78）；
 │   │                             #     ★ 不是 autoload：只发信号，**quit 只在 main.gd**；
 │   │                             #     桌面窗口 X 不拦（nsoc 原样），安卓返回由 main 接
+│   ├── broadcast_banner.gd        #   ★★ 屏幕上方居中的播报横幅（大本营升级）：
+│   │                             #     最多堆叠 3 条、满了挤掉最旧、各自 hold_sec 后淡出；
+│   │                             #     纯代码绘制（暗底 + 1px 金线 + 阵营色强调条），零图片；
+│   │                             #     尺寸 / 时长 / 文案在 config 的 ui.broadcast
 │   ├── minimap.gd                #   ★ 左下角小地图：地形 / 迷雾烘成 1px/格 贴图，
 │   │                             #     视野框由 3D 相机四角反算；手机端 10Hz 重画，
 │   │                             #     并把第一次重画错开 HUD 槽位（stagger_redraw）
@@ -316,8 +323,8 @@ dev_gd_a/daeem/
 │   │                             #     ⚠️ 高度**只问 Label 自己**（get_minimum_size），
 │   │                             #     不许拿 Font.get_multiline_string_size 顶替（见 pitfalls 5.52）
 │   │                             #     文案由 hud 喂（`_hover_detail`），本控件只排版与画
-│   ├── squad_panel.gd            #   右侧「部队 1~10」（动态生成；单击反选 / 长按跟随 / 双击跳转）
-│   │                             #   ★ 每行是 view/troop_row.gd：数字 1..9/0 + 名字 + 当前/上限
+│   ├── squad_panel.gd            #   右侧「部队 1~6」（动态生成；单击反选 / 长按跟随 / 双击跳转）
+│   │                             #   ★ 每行是 view/troop_row.gd：数字 1..6 + 名字 + 当前/上限
 │   │                             #     右缘竖线是金色泛光起点（向左推进）
 │   │                             #     选中的数字键帽亮起、悬停时黯淡；手势判定在 input_controller
 │   ├── detail_panel.gd           #   ★ 底栏「详细信息」：**左右两栏**（第四轮改版）
@@ -372,7 +379,11 @@ dev_gd_a/daeem/
     │                             #     血量倍率实时生效、己方区划人口增长 +10%）/ reset 清零 / 命令层
     ├── test_upgrade.gd           #   ★ 建筑升级 + 区划特化：等级表与血量倍率 / 入队即扣费 / 读条 /
     │                             #     取消退款 / 满级封顶 / 「特化只能选一个」/ 取消特化也要读条 /
-    │                             #     特化只影响本区块且与科技叠加 / 命令层
+    │                             #     特化只影响本区块且与科技叠加 / 命令层 /
+    │                             #     ★ 升本门槛（need_generals 2/4）与提速档（≥5 将 60 秒，开始时定死）
+    ├── test_base_broadcast.gd    #   ★★ 大本营升级播报：事件字段 / 取消不撤播 + 再升再播 /
+    │                             #     指挥官阵营分类（真人 + command 播，garrison / reddot 不播）/
+    │                             #     顶部横幅队列（3 条上限、挤掉最旧、计时淡出、关动画直接终态）
     ├── test_map_editor.gd        #   ★ 地图编辑器导出的地图：exists 存在格（地图外不可通行）
     │                             #   + zones 区块网格（非矩形区块、空区块保留）
     ├── test_ai.gd                #   ★★ 两种 AI（本轮新增）：阵营 AI（自己的资源库 / 资源随
@@ -458,7 +469,7 @@ func apply(world: World, cmd: Dictionary) -> bool:
 
 > 单位头顶的**敌 / 友 / 编号键帽**与**选中名牌**也在 `overlay_view_3d.gd`，并且是
 > `_draw_impl()` 的**最后一步**（天然压在所有 3D 物件之上）。编号的稳定槽位在
-> `view/team_slots.gd`：**纯 view 状态，不进快照**（开局按 `world.units` 顺序分配 1..10，
+> `view/team_slots.gd`：**纯 view 状态，不进快照**（开局按 `world.units` 顺序分配 1..6，
 > 阵亡 / 复活不改号）。口径见 [`route.md`](route.md) 第六十节。
 
 ```gdscript

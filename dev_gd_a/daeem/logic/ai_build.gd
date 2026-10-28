@@ -98,8 +98,9 @@ static func _base_upgrade_candidate(ai, memo: Variant = null) -> Dictionary:
 		return {}
 	if int(b.level) >= ai.world.building_max_level(String(b.type)):
 		return {}
-	# 将领挡位不足时不算「可升本」：先把将领补到 3 / 6，再回来升。
-	var need_generals: int = int(ai.cfg.upgrade_limit("base", int(b.level), "max_generals", 0))
+	# 将领挡位不足时不算「可升本」：先把将领补到门槛（2 / 4），再回来升。
+	# ★ 门槛读 need_generals（不再是 max_generals —— 上限 2/5/6 与门槛 2/4 是两件事）。
+	var need_generals: int = int(ai.cfg.upgrade_need_generals("base", int(b.level)))
 	if need_generals > 0 \
 			and ai.world.general_count_of(ai.faction) < need_generals:
 		return {}

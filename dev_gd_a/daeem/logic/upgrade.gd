@@ -58,7 +58,7 @@ const EconomyRes = preload("res://logic/economy.gd")
 ##   "max_level"  已经到最高级（等级表的条数）
 ##   "busy"       ★ 已经在读条了（需求确认：读条期间拒绝新的升级请求）
 ##   "owner"      不是自己这一方的建筑
-##   "generals"   ★ 大本营将领挡位不足（升 2 本要 3 将，升 3 本要 6 将）
+##   "generals"   ★ 大本营将领挡位不足（门槛读 config 的 need_generals：升 2 本要 2 将、升 3 本要 4 将）
 ##   "cost"       粮食 / 黄金不够
 static func can_upgrade(world, b, faction: String) -> String:
 	if b == null or not b.alive:
@@ -80,11 +80,10 @@ static func can_upgrade(world, b, faction: String) -> String:
 		return "respawning"
 	if b.level >= world.cfg.upgrade_max_level(b.type):
 		return "max_level"
-	# ★★ 2026.10.25：大本营升级的将领挡位。
-	#   1 级升 2 级需要 3 名将领，2 级升 3 级需要 6 名将领；
-	#   直接用当前等级配置里的 `max_generals` 作为门槛，后续加等级也能沿用。
+	# ★★ 大本营升级的将领挡位：读**目标行**的 `need_generals`（升 2 本 2 将 / 升 3 本 4 将）。
+	#   ⚠️ 不要回头借用 `max_generals`（上限 2/5/6）—— 门槛与上限是两件事，见 config 注释。
 	if b.is_base():
-		var need_generals: int = int(world.cfg.upgrade_limit("base", int(b.level), "max_generals", 0))
+		var need_generals: int = int(world.cfg.upgrade_need_generals(b.type, int(b.level)))
 		if need_generals > 0 \
 				and world.general_count_of(String(b.owner)) < need_generals:
 			return "generals"
@@ -321,6 +320,10 @@ static func start_upgrade(world, b, faction: String) -> bool:
 		if b != null:
 			ev["building"] = b
 			ev["faction"] = String(b.owner)
+			# ★ 文案要「升到几级 / 要几名 / 现在几名」，在逻辑层算好，视图不自己猜。
+			ev["target_level"] = int(b.level) + 1
+			ev["need"] = int(world.cfg.upgrade_need_generals(b.type, int(b.level)))
+			ev["have"] = int(world.general_count_of(String(b.owner)))
 		world.push_event(ev)
 		return false
 	var cost: Dictionary = world.cfg.upgrade_cost_to(b.type, b.level)
@@ -330,12 +333,19 @@ static func start_upgrade(world, b, faction: String) -> bool:
 		world.push_event({"type": "upgrade_rejected", "reason": "cost",
 			"kind": "building_upgrade", "building": b, "faction": String(b.owner)})
 		return false
-	b.upgrade_remaining = world.cfg.upgrade_time_to(b.type, b.level)
-	b.upgrade_total = b.upgrade_remaining
+	# ★★ 读条时长在**这一帧定死**（`building_upgrade_time` 内含「≥N 将走提速档」的选档）：
+	#    读条中将领数再变，`upgrade_total` 也不会重算。
+	var secs: float = world.building_upgrade_time(b)
+	b.upgrade_remaining = secs
+	b.upgrade_total = secs
 	# 记账：取消（或建筑没了）时按这三个数退款
 	b.upgrade_cost_food = float(cost.get("food", 0.0))
 	b.upgrade_cost_gold = float(cost.get("gold", 0.0))
-	world.push_event({"type": "upgrade_started", "kind": "building_upgrade", "building": b})
+	# ★★ 播报用的事件：带上阵营与目标等级（`view/game_interaction.gd` 据此弹顶部横幅）。
+	#    `cancel_upgrade()` 不透支它 ⇒ 取消不撤播报；取消后再升会再推一条。
+	world.push_event({"type": "upgrade_started", "kind": "building_upgrade",
+		"building": b, "faction": String(b.owner),
+		"level": int(b.level), "target_level": int(b.level) + 1, "secs": secs})
 	return true
 
 

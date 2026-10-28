@@ -110,7 +110,9 @@ python dev_gd_a/tools/campaign_editor --list                # 列出所有战役
 
 当前关的名字 / 模式 / 地图 / **玩家目标** / **额外失败条件**。
 
-* 地图下拉扫 `data/maps/`（`hidden` 与 `placeholder` 的图**照样列出来**，只是标一句「仅战役」/「占位」）。
+* 「战役」页关卡树只列 **关卡地图 ∈ 有用表 maps** 的关卡；当前为 `mt / dscj / ai_test_2 / ai_test_battle`。旧测试关仍留在磁盘，但不在树里。
+* 地图下拉默认只列 `daeem/data/editor_visible.json` 里的三张（`main_test / ai_test_2 / dscj`）；当前关卡用的是旧图时会把**当前这张**追加进来，其它旧图不显示。新建关卡同样只列三张。
+* 保存战役 / `--new` 会把当前战役 id 自动追加进有用表的 `campaigns`。详见 [`tools/README-editor-scope.md`](../README-editor-scope.md)。
 * **玩家目标**：**每个可玩阵营一行** —— 选「守住 / 攻占」+ 区划（守住再填秒数）。
   守 = `hold_zone`（带秒数）、攻 = `capture_zone`（不写秒数），写进 `objectives[]` 的 `for=<阵营>`。
   ★ 一关两个**对立**的可玩阵营就是这样表达的：蓝方守 c1 / 红方攻 c1。可玩阵营在③阵营页勾。

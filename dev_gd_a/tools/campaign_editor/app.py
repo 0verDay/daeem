@@ -57,6 +57,13 @@ from pathlib import Path
 from tkinter import messagebox, simpledialog, ttk
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
+_TOOLS_DIR = Path(__file__).resolve().parent.parent
+if str(_TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(_TOOLS_DIR))
+from editor_catalog import add_campaign as catalog_add_campaign
+from editor_catalog import campaign_ids as catalog_campaign_ids
+from editor_catalog import map_ids as catalog_map_ids
+
 from . import levelfile
 from . import model as model_mod
 from .model import (
@@ -88,6 +95,15 @@ from .model import (
     clean_number,
     fmt_sec,
 )
+
+#: 编辑器里优先显示的地图/战役（有用表在 `daeem/data/editor_visible.json`）。
+def visible_map_ids(project_dir: Any) -> List[str]:
+    return catalog_map_ids(project_dir)
+
+
+def visible_campaign_ids(project_dir: Any) -> List[str]:
+    return catalog_campaign_ids(project_dir)
+
 
 #: 「属于将领」下拉里表示「不是附属兵」的那一项（普通摆放单位）。
 ESCORT_NONE_LABEL = "（不是附属兵）"
@@ -549,19 +565,25 @@ class EditorApp:
 
     def __init__(self, root: tk.Tk, model: CampaignModel, project_dir: Any,
                  config: Optional[ConfigInfo] = None,
-                 maps: Optional[Dict[str, MapInfo]] = None) -> None:
+                 maps: Optional[Dict[str, MapInfo]] = None,
+                 show_all_levels: bool = False) -> None:
         self.root = root
         self.model = model
         self.project_dir = Path(project_dir)
         self.config = config if config is not None else levelfile.load_config(self.project_dir)
         self.maps: Dict[str, MapInfo] = (maps if maps is not None
                                          else levelfile.maps_by_id(self.project_dir))
+        #: 编辑器下拉里优先列出的当前地图（完整 self.maps 仍用于校验/保存）。
+        self.visible_map_ids: List[str] = visible_map_ids(self.project_dir)
+        #: 测试钩子：True = 关卡树列出全部关卡；False = 只列有用表地图对应的关卡。
+        self.show_all_levels: bool = bool(show_all_levels)
         # ★ 旧数据迁移兜底：每一关的 `zones[]` 都补齐成显式归属（见 `ensure_zone_owners`）。
         #   正常走 `load_campaign` 时已经补过，这里只是给「直接构造 EditorApp」的调用方兜底。
         self._seed_all_zone_owners()
         self.page = "campaign"
-        #: 当前选中的关卡 id（切页签不丢）。
-        self.current_level_id = model.levels[0].level_id if model.levels else ""
+        #: 当前选中的关卡 id（切页签不丢）。默认第一关必须也是「有用关卡」。
+        _visible = self._visible_levels()
+        self.current_level_id = _visible[0].level_id if _visible else ""
         #: 摆放页的画笔：("unit"|"general"|"building", 值) + 归属阵营。
         self.brush_kind = "unit"
         self.brush_value = (self.config.unit_types[0] if self.config.unit_types else "enemy")
@@ -930,6 +952,13 @@ class EditorApp:
     def level(self) -> Optional[LevelModel]:
         return self.model.level(self.current_level_id)
 
+    def _visible_levels(self) -> List[LevelModel]:
+        """关卡树里该列哪些关：有用表地图对应的关卡（测试钩子可关掉过滤）。"""
+        if self.show_all_levels or not self.visible_map_ids:
+            return list(self.model.levels)
+        keep = {str(m) for m in self.visible_map_ids}
+        return [lv for lv in self.model.levels if str(lv.map_id) in keep]
+
     def set_current_level(self, level_id: str) -> None:
         """切到某一关（**唯一入口**：所有「换关卡」的路径都必须走它）。
 
@@ -1031,13 +1060,11 @@ class EditorApp:
 
     def sync_faction_context(self) -> None:
         self.model.sync_context()
-        if not self.current_level_id and self.model.levels:
-            self.current_level_id = self.model.levels[0].level_id
-        elif (self.current_level_id
-              and self.model.level(self.current_level_id) is None
-              and self.model.levels):
-            # 当前关被外部删掉了（不是走 do_delete_level）→ 退回第一关，别指着不存在的关。
-            self.current_level_id = self.model.levels[0].level_id
+        visible = self._visible_levels()
+        visible_ids = {lv.level_id for lv in visible}
+        if (not self.current_level_id or self.current_level_id not in visible_ids) and visible:
+            # 当前关不存在 / 不在这张有用表里 → 退回第一个可见关卡。
+            self.current_level_id = visible[0].level_id
             self._reset_level_state()
 
     # ==================================================================
@@ -1141,12 +1168,15 @@ class EditorApp:
             ("no", "序", 40), ("id", "关卡 id", 190), ("name", "名字", 210),
             ("mode", "模式", 80), ("map", "地图", 110), ("summary", "目标", 260),
             ("file", "文件", 240)))
-        for i, lv in enumerate(self.model.levels):
+        levels = self._visible_levels()
+        for i, lv in enumerate(levels):
             self.level_tree.insert("", "end", iid="lv:%s" % lv.level_id,
                                    values=(i + 1, lv.level_id, lv.name,
                                            "双人合作" if lv.mode == MODE_COOP else "单人",
                                            lv.map_id, lv.summary(),
                                            model_mod.level_file_of(lv)))
+        if not levels:
+            self.status("有用表里没有可用关卡：先新建一关，或把地图加进有用表")
         if self.current_level_id and self.level_tree.exists("lv:%s" % self.current_level_id):
             self.level_tree.selection_set("lv:%s" % self.current_level_id)
             self._applied_level_sel = "lv:%s" % self.current_level_id
@@ -1190,7 +1220,7 @@ class EditorApp:
 
         self.lv_map_var = tk.StringVar(value=self._map_label(lv.map_id))
         self._combo_row(form, "地图", self.lv_map_var,
-                        tuple(self._map_label(m) for m in sorted(self.maps)),
+                        tuple(self._map_label(m) for m in self._map_choice_ids()),
                         self._commit_level_map)
 
         tk.Label(form, text="玩家目标（每个可玩阵营一条；可玩阵营在③阵营页勾选）",
@@ -1253,6 +1283,15 @@ class EditorApp:
         if info.placeholder:
             marks.append("占位")
         return "%s%s" % (info.map_id, "（%s）" % "、".join(marks) if marks else "")
+
+
+    def _map_choice_ids(self) -> List[str]:
+        """地图下拉里列哪些图：可见清单 + 当前关卡正在用的图（旧关卡不被改坏）。"""
+        ids = [m for m in self.visible_map_ids if m in self.maps]
+        cur = self.level().map_id if self.level() is not None else ""
+        if cur and cur in self.maps and cur not in ids:
+            ids.append(cur)
+        return ids or sorted(self.maps)
 
     def _map_id_from_label(self, label: str) -> str:
         return str(label).split("（")[0].strip()
@@ -2086,6 +2125,7 @@ class EditorApp:
             return
         try:
             self.last_written = levelfile.save_campaign(self.model)
+            catalog_add_campaign(self.project_dir, self.model.campaign_id)
         except (ModelError, OSError) as exc:
             messagebox.showerror("写文件失败", str(exc))
             self.status("写文件失败：%s" % exc)
@@ -2176,20 +2216,36 @@ class EditorApp:
             self.set_current_level(lid)
 
     def move_level(self, delta: int) -> None:
-        if self.model.move_level(self.current_level_id, delta):
-            self.refresh_all()
-            self.status("关卡顺序已调整")
-        else:
+        visible = self._visible_levels()
+        ids = [lv.level_id for lv in visible]
+        if self.current_level_id not in ids:
+            self.status("当前关不在有用表里，不能调整顺序")
+            return
+        idx = ids.index(self.current_level_id)
+        tgt = idx + int(delta)
+        if tgt < 0 or tgt >= len(ids):
             self.status("已经到头了" if delta < 0 else "已经是最后一关")
+            return
+        target_id = ids[tgt]
+        i = self.model.index_of(self.current_level_id)
+        j = self.model.index_of(target_id)
+        if i < 0 or j < 0 or i == j:
+            self.status("关卡顺序没有变化")
+            return
+        # 在完整 levels[] 里搬动，隐藏关卡不会和可见关卡互换而看起来「没动」。
+        self.model.levels.insert(j, self.model.levels.pop(i))
+        self.refresh_all()
+        self.status("关卡顺序已调整")
 
     def do_new_level(self) -> None:
         """新建一关（问 id 与地图；对话框可被测试换成「直接给答案」）。"""
         if not self.maps:
             messagebox.showerror("没有地图", "data/maps/ 下一张地图都没有：先放一张图进去。")
             return
-        default_map = (self.level().map_id if self.level() and self.level().map_id in self.maps
-                       else sorted(self.maps)[0])
-        answer = _ask_new_level(self.root, sorted(self.maps), default_map)
+        choices = self._map_choice_ids()
+        default_map = (self.level().map_id if self.level() and self.level().map_id in choices
+                       else choices[0])
+        answer = _ask_new_level(self.root, choices, default_map)
         if not answer:
             return
         level_id, map_id = answer
@@ -2212,8 +2268,9 @@ class EditorApp:
                                    % lv.level_id):
             return
         if self.model.remove_level(lv.level_id):
-            if self.model.levels:
-                self.set_current_level(self.model.levels[0].level_id)
+            visible = self._visible_levels()
+            if visible:
+                self.set_current_level(visible[0].level_id)
             else:
                 self.current_level_id = ""
                 self._reset_level_state()
@@ -2576,7 +2633,7 @@ class EditorApp:
                          "双人合作" if lv.mode == MODE_COOP else "单人",
                          ("单人", "双人合作"), self._set_level_mode)
         self._combo_cell(section, "地图", self._map_label(lv.map_id),
-                         tuple(self._map_label(m) for m in sorted(self.maps)),
+                         tuple(self._map_label(m) for m in self._map_choice_ids()),
                          self._set_level_map)
 
         section2 = self._section("玩家目标",

@@ -13,6 +13,7 @@ const BannerRes = preload("res://view/menu_banner.gd")
 
 var _self_flag = null
 var _empty_flag = null
+var _hint: Label = null
 var _ai_joined: bool = false
 
 
@@ -33,6 +34,13 @@ func setup(p_cfg, p_font: Font) -> void:
 	add_child(_empty_flag)
 	_empty_flag.setup(font, "empty", "虚位以待", "点击加入 AI 队友")
 	_empty_flag.pressed.connect(func(): ai_pressed.emit())
+
+	_hint = make_label("BlankHint",
+		String(cfg.str_val("coop.lobby.click_blank_hint", "——点击空白处进入房间列表——")),
+		22, ThemeRes.text_dim(), HORIZONTAL_ALIGNMENT_CENTER)
+	_hint.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_hint.z_index = 5
+	add_child(_hint)
 
 	resized.connect(_layout)
 	_layout()
@@ -56,6 +64,10 @@ func _layout() -> void:
 	_empty_flag.position = r1.position
 	_empty_flag.size = r1.size
 
+	var hr := LayoutRes.coop_hint(size.x, size.y)
+	_hint.position = hr.position
+	_hint.size = hr.size
+
 
 func player_flag():
 	return _self_flag
@@ -63,6 +75,10 @@ func player_flag():
 
 func empty_flag():
 	return _empty_flag
+
+
+func blank_hint() -> Label:
+	return _hint
 
 
 ## AI 加入后，虚位旗变成「AI 队友 / 已加入」，并且不再可点。

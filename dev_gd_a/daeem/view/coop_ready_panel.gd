@@ -10,6 +10,9 @@ signal ready_toggled(on: bool)
 
 const MapThumbRes = preload("res://view/map_thumb.gd")
 
+## 缩略图与地图按钮边框之间的留白。
+const THUMB_MARGIN := 12.0
+
 var session = null
 var _source: String = "coop_start"
 var _thumb_frame: Panel = null
@@ -177,7 +180,7 @@ func _refresh_status(entry: Dictionary) -> void:
 
 func _refresh_action(entry: Dictionary) -> void:
 	if session.is_ai():
-		_action.text = _txt("ai_teammate.labels.start_ai", "开始（AI 队友）")
+		_action.text = _txt("ai_teammate.labels.start_ai", "开始")
 		_action.disabled = false
 		return
 	if session.is_host():
@@ -223,8 +226,8 @@ func _layout() -> void:
 	_thumb_frame.size = tr.size
 	_map_btn.position = Vector2(1.0, 1.0)
 	_map_btn.size = tr.size - Vector2(2.0, 2.0)
-	_thumb.position = Vector2.ZERO
-	_thumb.size = _map_btn.size
+	_thumb.position = Vector2(THUMB_MARGIN, THUMB_MARGIN)
+	_thumb.size = _map_btn.size - Vector2(THUMB_MARGIN * 2.0, THUMB_MARGIN * 2.0)
 	_map_hint.position = Vector2(12.0, _map_btn.size.y - 38.0)
 	_map_hint.size = Vector2(_map_btn.size.x - 24.0, 30.0)
 

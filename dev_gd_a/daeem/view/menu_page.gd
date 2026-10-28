@@ -15,6 +15,9 @@ const CornerGlowRes = preload("res://view/menu_corner_glow.gd")
 const CornerHitRes = preload("res://view/menu_corner_hit.gd")
 const FillButtonRes = preload("res://view/fill_button.gd")
 
+## 泛光渐显/渐隐的默认时长（可被 config 的 `menu.deck.glow_fade_sec` 覆盖）。
+const GLOW_FADE_SEC := 0.26
+
 var cfg = null
 var font: Font = null
 
@@ -26,6 +29,8 @@ var _back: Button = null
 var _dim: ColorRect = null
 var _dim_tween: Tween = null
 var _dimmed: bool = false
+var _glow_alpha: float = 1.0
+var _glow_tween: Tween = null
 
 
 ## 在 add_child + 设置 size 之后调用。
@@ -67,8 +72,15 @@ func setup_page(p_cfg, p_font: Font, title: String = "", with_back: bool = true)
 	_corner_hit.name = "CornerHit"
 	_corner_hit.z_index = 30
 	add_child(_corner_hit)
-	_corner_hit.mouse_entered.connect(func(): _corner_glow.set_hover(true))
-	_corner_hit.mouse_exited.connect(func(): _corner_glow.set_hover(false))
+	# ★ 桌面：悬停点亮角泛光。移动端：没有悬停（按下时的模拟 enter 不再有 exit，
+	#   泛光会一直亮着），改成按住才亮；另外留一条 mouse_exited 兜底清场。
+	if ThemeRes.hover_enabled():
+		_corner_hit.mouse_entered.connect(func(): _corner_glow.set_hover(true))
+		_corner_hit.mouse_exited.connect(func(): _corner_glow.set_hover(false))
+	else:
+		_corner_hit.press_started.connect(func(): _corner_glow.set_lit(true))
+		_corner_hit.press_ended.connect(func(): _corner_glow.set_lit(false))
+		_corner_hit.mouse_exited.connect(func(): _corner_glow.set_lit(false))
 	if with_back:
 		_corner_hit.pressed.connect(func(): back_pressed.emit())
 
@@ -119,7 +131,8 @@ func set_sidebar_dimmed(on: bool, animate: bool = true) -> void:
 		#   才被子树加进来的；因此灰层要移到最后一个子节点，否则按钮仍能点到。
 		_dim.move_to_front()
 		if _corner_glow != null:
-			_corner_glow.set_hover(false)
+			# ★ 强制熄灭走 set_lit：移动端没有悬停，set_hover 是空操作，熄不掉。
+			_corner_glow.set_lit(false)
 		FillButtonRes.clear_hover_in(self)
 		FillButtonRes.clear_latched_in(self)
 	if not ThemeRes.animations_enabled() or not animate:
@@ -162,6 +175,66 @@ func back_button() -> Button:
 
 func background() -> Panel:
 	return _bg
+
+
+# ------------------------------------------------------------------
+# 泛光渐显 / 渐隐
+# ------------------------------------------------------------------
+#
+# 每块面板都自带泛光：右上角那团角光（子类还会加四角）、以及带标题的页面
+# 顶部那团半圆光。转场时「聚焦的那一页渐显、其余页渐隐」就靠这一组接口：
+#   deck 只认 `set_glows(on, animate)` / `glow_alpha()`，
+#   具体每个控件怎么变暗由各自的 `set_glow_alpha(a)` 决定
+#   （角光是整块 modulate，顶部半圆光只压纹理 alpha，标题文字不动）。
+
+## 本页所有泛光控件。子类可以追加自己的（主菜单的四角就走这条路）。
+func glow_nodes() -> Array:
+	var out: Array = []
+	if _corner_glow != null:
+		out.append(_corner_glow)
+	if _glow != null:
+		out.append(_glow)
+	return out
+
+
+## 整组泛光的当前透明度（0=全灭，1=常态）。
+func glow_alpha() -> float:
+	return _glow_alpha
+
+
+## 立即把整组泛光设到 a。不做补间：`tween_method` 与「动效关闭」都走这里。
+func apply_glow_alpha(a: float) -> void:
+	_glow_alpha = clampf(a, 0.0, 1.0)
+	for n in glow_nodes():
+		if n != null and is_instance_valid(n):
+			n.set_glow_alpha(_glow_alpha)
+
+
+## 整组泛光渐显/渐隐到 to。animate=false（或动效关闭）时瞬间到位。
+func fade_glows(to: float, animate: bool = true, sec: float = -1.0) -> void:
+	to = clampf(to, 0.0, 1.0)
+	if _glow_tween != null and _glow_tween.is_valid():
+		_glow_tween.kill()
+	_glow_tween = null
+	var dur: float = glow_fade_sec() if sec <= 0.0 else sec
+	if not animate or not ThemeRes.animations_enabled() or dur <= 0.0 \
+			or is_equal_approx(to, _glow_alpha) or not is_inside_tree():
+		apply_glow_alpha(to)
+		return
+	_glow_tween = create_tween()
+	_glow_tween.tween_method(apply_glow_alpha, _glow_alpha, to, dur) \
+		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+
+
+## 亮起 / 熄灭整组泛光。
+func set_glows(on: bool, animate: bool = true) -> void:
+	fade_glows(1.0 if on else 0.0, animate)
+
+
+func glow_fade_sec() -> float:
+	if cfg != null:
+		return maxf(0.0, cfg.num("menu.deck.glow_fade_sec", GLOW_FADE_SEC))
+	return GLOW_FADE_SEC
 
 
 # ------------------------------------------------------------------

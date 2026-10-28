@@ -1,4 +1,4 @@
-## team_slots.gd —— **稳定的编队槽位**（1..10）：将领阵亡 / 复活后编号不变。
+## team_slots.gd —— **稳定的编队槽位**（1..6）：将领阵亡 / 复活后编号不变。
 ##
 ## ★★ 为什么需要这一层（本版口径）：
 ##   · 旧版地图 / 右栏 / 数字键都按「存活顺序」现数，将领一阵亡后面的编号全部前移；
@@ -11,7 +11,7 @@
 ##   `world` 只提供单位列表与存活状态，不持有任何 UI 概念。
 ##
 ## ★ 分配规则（用户口径）：
-##   · 开局第一次同步时，按 `world.units` 里「同方 + 将领」的顺序分配 1..10
+##   · 开局第一次同步时，按 `world.units` 里「同方 + 将领」的顺序分配 1..6
 ##     ⇒ 与旧版开局编号逐位一致（不会改动已有将领的序号）；
 ##   · 之后永远按 **id** 复用同一个槽位；新将领补**最小空槽**（阵亡占着的不算空）；
 ##   · 阵亡将的对象由大本营重生队列持有，槽位继续指向它；复活（同一对象）自动复用；
@@ -22,10 +22,10 @@ extends RefCounted
 
 const FactionRes = preload("res://logic/faction.gd")
 
-## 最多 10 个编队槽（与右栏 `SQUAD_SLOTS` / 数字键 1..0 同口径）。
-const MAX_SLOTS := 10
+## 最多 6 个编队槽（与右栏 `SQUAD_SLOTS` / 数字键 1..6 同口径）。
+const MAX_SLOTS := 6
 
-## unit id → 槽位（1..10）。**永不删除**：阵亡也占着，只有新一局 `reset()` 才清。
+## unit id → 槽位（1..6）。**永不删除**：阵亡也占着，只有新一局 `reset()` 才清。
 var _slot_by_id: Dictionary = {}
 ## 对象实例 id → 槽位：防止「同一个对象换了 id」被当成新将重复占槽
 ## （测试里会把 general-0 就地改名成 general-1；正常玩法 id 不会变）。
@@ -75,7 +75,7 @@ func sync(world) -> void:
 		else:
 			slot = _lowest_free()
 			if slot <= 0:
-				continue                   # 10 个槽都占着（含阵亡）→ 新将没有编号
+				continue                   # 6 个槽都占着（含阵亡）→ 新将没有编号
 			_slot_by_id[id] = slot
 			_slot_by_instance[iid] = slot
 		_owner_by_slot[slot] = u
@@ -146,7 +146,7 @@ func slot_status_text(slot: int) -> String:
 	return "阵亡"
 
 
-## 最小空槽（1..10）；满了返回 0。
+## 最小空槽（1..6）；满了返回 0。
 func _lowest_free() -> int:
 	for slot in range(1, MAX_SLOTS + 1):
 		if not _owner_by_slot.has(slot):

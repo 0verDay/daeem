@@ -13,6 +13,7 @@ signal campaign_level_chosen(campaign_id: String, level_id: String, faction_id: 
 signal coop_host_started(campaign_id: String, level_id: String, transport)
 signal coop_guest_started(payload: Dictionary, transport)
 signal coop_solo_started(campaign_id: String, level_id: String, ai_setup: Dictionary)
+signal ai_test_pressed
 signal quit_requested
 ## 兼容旧测试 / 旧调试入口；新菜单本身不再发这条信号。
 signal level_entry_pressed(campaign_id: String, level_id: String)
@@ -24,6 +25,8 @@ const MenuEmblemRes = preload("res://view/menu_emblem.gd")
 const TextMarksRes = preload("res://view/text_marks.gd")
 const MenuDeckRes = preload("res://view/menu_deck.gd")
 const FillButtonRes = preload("res://view/fill_button.gd")
+const LayoutRes = preload("res://view/menu_deck_layout.gd")
+const EtchedPlateRes = preload("res://view/menu_art/etched_plate.gd")
 
 const PAGE_INTRO := 0
 const PAGE_MENU := 1
@@ -40,6 +43,7 @@ var _font: Font = null
 
 var _root: Control = null
 var _bg: Control = null
+var _art: Control = null
 var _intro: Control = null
 var _title: Control = null
 var _emblem: Control = null
@@ -49,6 +53,7 @@ var _shine: Control = null
 var _menu_deck = null
 
 var _morph_tween: Tween = null
+var _art_tween: Tween = null
 var _intro_morphing: bool = false
 var _menu_input_blocked: bool = false
 var _blink_tween: Tween = null
@@ -70,6 +75,7 @@ func setup(p_cfg: ConfigRes, p_font: Font) -> void:
 	add_child(_root)
 
 	_build_background()
+	_build_art()
 	_build_intro()
 	_build_deck()
 	_build_boot_fade()
@@ -111,6 +117,9 @@ func close() -> void:
 	_stop_title_shine()
 	_cancel_intro_morph()
 	_finish_boot_fade()
+	# 进游戏之后把左侧那幅画停掉：它每帧都在重建几何，没必要在战斗里空转。
+	if _art != null:
+		_art.set_running(false)
 	hide()
 	FillButtonRes.clear_hover_in(self)
 
@@ -122,7 +131,14 @@ func open_menu() -> void:
 	set_menu_input_blocked(false)
 	if _menu_deck != null:
 		_menu_deck.reset_to_main(true)
-		_menu_deck.finish_intro()
+		_menu_deck.finish_intro(true)
+	# 从战斗回菜单是「整页一下子出来」，雕版跟着同一拍淡入（不是立刻给满）。
+	if _art != null:
+		_art.restart_scan()
+		_art.set_running(true)
+		# 先把落位对好再淡入：否则会有一帧停在「上一次离开时」的那个 x 上。
+		_sync_art_x()
+		_fade_art(1.0, _art_fade_in_sec())
 	FillButtonRes.clear_hover_in(self)
 	FillButtonRes.clear_latched_in(self)
 
@@ -230,6 +246,94 @@ func _build_background() -> void:
 	_root.add_child(_bg)
 
 
+## 主菜单左侧那张**雕版图**。
+##
+## ★ 位置是**背景之上、入场页之下**：它天然只出现在「没有任何面板盖住的」左半边，
+##   而且**跟着主面板一起横移**（见 `_sync_art_x()`）—— 切到战役 / 合作时
+##   不是原地淡出，是跟面板一起滑出屏幕左边；回来时同一段滑动滑回来。
+## ★ 矩形止于右侧面板的左缘（`size.x - side_w`）：面板底色是 0.94 的 alpha，
+##   密排的亮线是会透出来的，所以宁可裁掉也不让它渗进 UI。
+func _build_art() -> void:
+	_art = EtchedPlateRes.new()
+	_art.name = "MenuArt"
+	_art.setup(cfg)
+	_art.modulate.a = 0.0
+	_root.add_child(_art)
+	_root.resized.connect(_layout_art)
+	_layout_art()
+
+
+func _layout_art() -> void:
+	if _art == null or not is_instance_valid(_art):
+		return
+	var sw: float = LayoutRes.side_w(_root.size.x)
+	_art.size = Vector2(maxf(0.0, _root.size.x - sw), _root.size.y)
+	_sync_art_x()
+
+
+## 让左侧雕版**跟着主菜单面板一起右移**。
+##
+## ★★ 用户口径：切到战役 / 合作再切回来时，雕版不能是「突然又淡入一遍」，
+##   而要**跟着右侧面板一起左移出去、再一起右移回来**。
+##   ⇒ 于是它的 x 不是 0，而是「主面板当前位置 − 主菜单时主面板应在的位置」：
+##     · 主菜单：主面板在 (w − side_w) ⇒ 偏移 0，雕版正对左区；
+##     · 战役页：主面板滑到 0 ⇒ 偏移 −(w − side_w)，雕版整幅移出屏幕左边；
+##     · 回来时偏移从 −(w − side_w) 回到 0，是**同一段滑动**，不是另一次淡入。
+##   ★ 每帧读一次主面板的 x，而不是自己再补一条 tween：转场里主面板是被
+##     `menu_deck` 的补间驱动的，跟着它走就永远不会和它脱拍（曲线、时长都不用管）。
+##   ★ 只在值真的变了才赋值，避免每帧写 transform（会白白标脏 canvas item）。
+func _sync_art_x() -> void:
+	if _art == null or not is_instance_valid(_art) or _menu_deck == null:
+		return
+	var main = _menu_deck.menu_main()
+	if main == null:
+		return
+	var base_x: float = _root.size.x - LayoutRes.side_w(_root.size.x)
+	var dx: float = main.position.x - base_x
+	if absf(_art.position.x - dx) > 0.01:
+		_art.position.x = dx
+
+
+func _process(_delta: float) -> void:
+	# 只有菜单可见时才需要跟（进游戏之后 start_screen 是隐藏的）
+	if not visible:
+		return
+	_sync_art_x()
+
+
+## 左侧线稿控件（测试 / 截图用）。
+func art():
+	return _art
+
+
+## 左侧雕版的淡入 / 淡出（唯一的入口：别的地方不要再直接改 `modulate.a`，
+## 否则两条补间会互相打架）。
+##
+## @param sec 时长；动效关掉或 sec <= 0 时**瞬间到位**（状态照常切）。
+##
+## ★★ 曲线必须与 `menu_page.fade_glows()` **完全一致**（SINE / EASE_IN_OUT）：
+##    入场那一下是「四角泛光与雕版同时渐显」，两条补间只要 easing 不同，
+##    同一时刻两者的透明度就不一样 —— 用户看到的是「一个先亮」。
+func _fade_art(to: float, sec: float) -> void:
+	if _art == null or not is_instance_valid(_art):
+		return
+	if _art_tween != null and _art_tween.is_valid():
+		_art_tween.kill()
+	_art_tween = null
+	to = clampf(to, 0.0, 1.0)
+	if not ThemeRes.animations_enabled() or sec <= 0.0:
+		_art.modulate.a = to
+		return
+	_art_tween = create_tween()
+	_art_tween.tween_property(_art, "modulate:a", to, sec) \
+		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+
+
+## 左侧雕版在「面板完全显现之后」淡入的时长。
+func _art_fade_in_sec() -> float:
+	return cfg.num("menu.plate.fade_in_sec", 0.6) if cfg != null else 0.6
+
+
 func _build_intro() -> void:
 	_intro = Control.new()
 	_intro.name = "Intro"
@@ -250,7 +354,7 @@ func _build_intro() -> void:
 
 	_title = TextMarksRes.SpacedLabel.new()
 	_title.name = "Title"
-	_title.text = cfg.str_val("menu.title", "DAEEM")
+	_title.text = cfg.str_val("menu.title", "DAE")
 	_title.font = _font
 	_title.font_size = int(cfg.num("menu.title_size", 128.0))
 	_title.tracking = cfg.num("menu.title_tracking", 26.0)
@@ -312,6 +416,7 @@ func _build_deck() -> void:
 		func(p, t): coop_guest_started.emit(p, t))
 	_menu_deck.coop_solo_started.connect(
 		func(c, l, a): coop_solo_started.emit(c, l, a))
+	_menu_deck.ai_test_pressed.connect(func(): ai_test_pressed.emit())
 	_menu_deck.quit_requested.connect(func(): quit_requested.emit())
 
 
@@ -389,7 +494,7 @@ func _play_intro_morph() -> void:
 		return
 
 	var main = _menu_deck.menu_main()
-	var target_logo: Rect2 = main.logo_rect()
+	var target_logo: Rect2 = main.emblem_rect()
 	var target_name: Rect2 = main.name_rect()
 	var target_word = main.wordmark()
 	var sec: float = _intro_morph_sec()
@@ -404,6 +509,14 @@ func _play_intro_morph() -> void:
 	_morph_tween.tween_method(_set_title_tracking, float(_title.tracking),
 		float(target_word.tracking), sec)
 	_morph_tween.tween_property(main.background(), "modulate:a", 1.0, sec * 0.7)
+	# ★ 四角泛光**不在这段里亮**：用户口径是「logo 与游戏名右移 + 面板渐显，
+	#   随后四角泛光和左侧雕版**同时**渐显」。于是这里把它按在 0，
+	#   真正的渐显由 `_finish_intro()` 同时发起（同一个时长）。
+	if main != null:
+		main.apply_glow_alpha(0.0)
+	# 左侧雕版同样一点不露，等面板完全立好再淡入。
+	if _art != null:
+		_art.modulate.a = 0.0
 	_morph_tween.tween_method(main.set_content_alpha, 0.0, 1.0, sec * 0.55) \
 		.set_delay(sec * 0.45)
 	if _title_rule != null:
@@ -438,9 +551,22 @@ func _finish_intro() -> void:
 		return
 	_intro_morphing = false
 	_intro.z_index = 0
+	# 「面板已经站好」这一刻：
+	#   ① 面板收起底板 / 内容 / logo（泛光先留在 0）；
+	#   ② 四角泛光 与 左侧雕版 **同时**开始渐显，同一个时长、同一条曲线。
+	# ★ 用户口径的编排：logo/游戏名右移 + 面板渐显 → **随后**这两样一起亮。
+	var sec: float = _art_fade_in_sec()
 	if _menu_deck != null:
 		_menu_deck.visible = true
-		_menu_deck.finish_intro()
+		_menu_deck.finish_intro(false)
+		var panel = _menu_deck.menu_main()
+		if panel != null:
+			panel.fade_glows(1.0, true, sec)
+	if _art != null:
+		# 扫描也在这时候重新起步：于是「画面淡进来」和「扫描从最左边进来」是同一拍。
+		_art.restart_scan()
+		_art.set_running(true)
+		_fade_art(1.0, sec)
 	show_page(PAGE_MENU)
 	intro_dismissed.emit()
 

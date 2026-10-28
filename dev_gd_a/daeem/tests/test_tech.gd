@@ -133,13 +133,13 @@ func _test_food_and_gold_bonus(cfg) -> void:
 	var g0: float = w.production_gold
 
 	ok(w.set_tech_active(T_FOOD, true), "启用「粮食产量 I」")
-	near(w.production_food, f0 + 0.05 * float(tiles), 1e-6,
-		"★ 粮食 +0.05/地块/秒（%d 地块 → +%s/秒）" % [tiles, 0.05 * tiles])
+	near(w.production_food, f0 + 0.04 * float(tiles), 1e-6,
+		"★ 粮食 +0.04/地块/秒（%d 地块 → +%s/秒）" % [tiles, 0.04 * tiles])
 	near(w.production_gold, g0, 1e-6, "黄金不受影响")
 
 	ok(w.set_tech_active(T_FOOD2, true), "再启用「粮食产量 II」")
-	near(w.production_food, f0 + 0.15 * float(tiles), 1e-6,
-		"★ 两条叠加 = +0.15/地块/秒（加产量求和）")
+	near(w.production_food, f0 + 0.12 * float(tiles), 1e-6,
+		"★ 两条叠加 = +0.12/地块/秒（加产量求和）")
 
 	var before: float = float(w.resources["food"])
 	w.tick(1.0)
@@ -148,8 +148,8 @@ func _test_food_and_gold_bonus(cfg) -> void:
 
 	w.resources["gold"] = 0.0
 	ok(w.set_tech_active(T_GOLD, true), "启用「黄金产量 I」")
-	near(w.production_gold, g0 + 0.05 * float(tiles), 1e-6,
-		"★ 黄金 +0.05/地块/秒")
+	near(w.production_gold, g0 + 0.04 * float(tiles), 1e-6,
+		"★ 黄金 +0.04/地块/秒")
 
 	w.set_tech_active(T_FOOD, false)
 	w.set_tech_active(T_FOOD2, false)

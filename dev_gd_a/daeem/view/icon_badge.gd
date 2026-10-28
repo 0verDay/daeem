@@ -19,7 +19,7 @@ const HpBarRes = preload("res://view/hp_bar.gd")
 const MoraleFillRes = preload("res://view/morale_fill.gd")
 
 
-## 部队序号怎么写：1..9 原样，第 10 支写 0（与右侧部队列表 `squad_panel` 同一口径）。
+## 部队序号怎么写：槽位现在是 1..6，原样写；`% 10` 只是兜底（与右侧部队列表同一口径）。
 ## 编号 <= 0（拿不到编号）→ 空串，由调用方退回别的图标字。
 static func troop_number_text(number: int) -> String:
 	if number <= 0:

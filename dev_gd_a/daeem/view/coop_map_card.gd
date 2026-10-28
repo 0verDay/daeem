@@ -5,6 +5,8 @@ const UiStyleRes = preload("res://view/ui_style.gd")
 const MapThumbRes = preload("res://view/map_thumb.gd")
 const CARD_W := 176.0
 const CARD_H := 200.0
+## 缩略图与卡片边框之间的留白。
+const THUMB_MARGIN := 8.0
 
 var _thumb = null
 var _name_label: Label = null
@@ -27,8 +29,8 @@ func setup(cfg, entry: Dictionary, map_data, font: Font) -> void:
 	_apply_style(false)
 
 	_thumb = MapThumbRes.new()
-	_thumb.position = Vector2(0, 0)
-	_thumb.size = Vector2(CARD_W, 132.0)
+	_thumb.position = Vector2(THUMB_MARGIN, THUMB_MARGIN)
+	_thumb.size = Vector2(CARD_W - THUMB_MARGIN * 2.0, 132.0 - THUMB_MARGIN * 2.0)
 	_thumb.setup(cfg, map_data)
 	add_child(_thumb)
 

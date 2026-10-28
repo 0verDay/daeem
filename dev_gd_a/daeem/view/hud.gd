@@ -54,6 +54,9 @@ const HoverTipRes = preload("res://view/hover_tip.gd")
 const MinimapRes = preload("res://view/minimap.gd")
 ## ★★ 左上角目标栏（战役 / 合作；M12.1 新增，2026.10.20 改为左上两行）。见 view/objective_panel.gd。
 const ObjectivePanelRes = preload("res://view/objective_panel.gd")
+## ★★ 屏幕上方居中的播报横幅（大本营升级）。见 view/broadcast_banner.gd。
+const BroadcastBannerRes = preload("res://view/broadcast_banner.gd")
+const SideColorRes = preload("res://view/side_color.gd")
 ## ★★ 选项页菜单（仿 nsoc）：HUD 右上角「选项」与主菜单右上角「选项」共用同一套。
 const OptionsPanelRes = preload("res://view/options_panel.gd")
 ## ★★ 合作 AI 队友的浮动指令面板（只在有同方 commander 时出现）。
@@ -83,6 +86,8 @@ var tech_grid: Control = null
 var hover_tip: Control = null
 ## ★★ 左上角目标栏：有目标才显示（老路径 / 自由对战整块隐藏）。
 var objective_panel: Control = null
+## ★★ 屏幕上方居中的播报横幅（大本营升级；`ui.broadcast` 的尺寸与时长）。
+var broadcast_banner: Control = null
 var settings_button: Button = null
 ## ★★ 合作 AI 队友的浮动指令面板（null = 本局没有 AI 队友 / 还没建）。
 var ai_panel: Control = null
@@ -255,6 +260,8 @@ func setup(p_cfg: ConfigRes, p_world, p_input, theme: Theme, p_camera_rig = null
 	_build_resource_bar()
 	# ★ 目标条在资源条之后、详细信息之前：它只影响屏幕上沿，与底栏无关。
 	_build_objective_panel()
+	# ★ 播报横幅紧跟着建（也是屏幕上沿，位置居中，与左上目标条不重叠）。
+	_build_broadcast_banner()
 	_build_detail_panel()
 	_build_command_card()
 	_build_page_tabs()
@@ -307,6 +314,7 @@ func _process(dt: float) -> void:
 		else:
 			refresh()
 	_tick_notice(dt)
+	_tick_broadcast(dt)
 	_tick_long_press()
 	# ★ 手机端性能读数：约 2Hz 刷新（见 `_build_perf_readout`）。
 	if _perf_label != null:
@@ -629,6 +637,33 @@ func _build_objective_panel() -> void:
 	# ⚠️ 先 add_child、再 setup：与资源条 / 选项页同一条坑（进树前拿不到主题字体）。
 	_root.add_child(objective_panel)
 	objective_panel.setup(cfg, world, _font)
+
+
+## ★★ 屏幕上方居中的播报横幅（大本营升级）。建一次，之后 `show_broadcast()` 往里塞。
+func _build_broadcast_banner() -> void:
+	broadcast_banner = BroadcastBannerRes.new()
+	_root.add_child(broadcast_banner)
+	broadcast_banner.setup(cfg, _font)
+
+
+## 播一条「某阵营开始升级大本营」。
+##
+## ★ 由 `view/game_interaction.gd` 在收到 `upgrade_started` 时调用（**不过**「是不是我的事件」
+##   那道筛选 —— 这是一条要给所有人看的播报）。
+## ★ 颜色用**本机视角**的三色档（自己蓝 / 友军黄 / 敌人红，见 view/side_color.gd）。
+func show_broadcast(faction: String, target_level: int) -> void:
+	if broadcast_banner == null:
+		return
+	var who := faction
+	if world != null:
+		who = String(world.faction_label_of(faction))
+	var color: Color = SideColorRes.color(cfg, world, faction)
+	broadcast_banner.push(broadcast_banner.format_text(who, target_level), color)
+
+
+func _tick_broadcast(dt: float) -> void:
+	if broadcast_banner != null:
+		broadcast_banner.tick(dt)
 
 
 ## 资源条上的两个数字：**每帧**从权威值（`world.resources`）重新格式化。
@@ -2677,7 +2712,11 @@ func upgrade_reject_text(reason: String, evt: Variant = null) -> String:
 		"max_level":
 			return "已经是最高等级了"
 		"generals":
-			return "将领数量不足：升二本需要 3 名将领，升三本需要 6 名将领"
+			# ★ 数字全部来自事件（逻辑层算好的 target_level / need / have），不在这里写死 3 / 6。
+			return "将领数量不足：升到 %d 级需要 %d 名将领（当前 %d 名）" % [
+				int(evt.get("target_level", 0)) if typeof(evt) == TYPE_DICTIONARY else 0,
+				int(evt.get("need", 0)) if typeof(evt) == TYPE_DICTIONARY else 0,
+				int(evt.get("have", 0)) if typeof(evt) == TYPE_DICTIONARY else 0]
 		"spec_done":
 			return "这个区划已经特化过了：先「取消特化」才能换别的"
 		"spec":

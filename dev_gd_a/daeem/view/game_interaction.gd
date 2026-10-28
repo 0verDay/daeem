@@ -147,6 +147,15 @@ func consume_events(events: Array) -> void:
 				# ★ 不过滤阵营：这是**世界级**消息（谁的大本营没了都值得看一眼）。
 				hud.show_notice("%s 的大本营被摧毁：该阵营的单位与建筑已失去指挥" %
 					String(evt.get("faction", "")))
+			"upgrade_started":
+				# ★★ 大本营升级播报：**不过滤「是不是我的」** —— 这是给所有人看的横幅。
+				#   只有指挥官阵营（真人 + command AI）播；阵地性 / 红点性 AI 不播。
+				#   `cancel_upgrade()` 不会再推事件 ⇒ 取消不撤播报、取消后再升会再播一条。
+				if String(evt.get("kind", "")) == "building_upgrade" \
+						and host.world != null \
+						and host.world.is_commander_side(String(evt.get("faction", ""))):
+					hud.show_broadcast(String(evt.get("faction", "")),
+						int(evt.get("target_level", 0)))
 			"unit_recruited":
 				# ★ 这条**不过滤阵营**：`notify_unit_recruited` 自己按将领归属判断，
 				#   而且它要更新的是编队面板的「谁已就位」，AI 的招募同样会改变名册。

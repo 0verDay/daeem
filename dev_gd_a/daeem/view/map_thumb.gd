@@ -5,7 +5,11 @@
 ## 配色与游戏内地面同源（`data/config.json` 的 `colors.*`，含 2026.10.20 新增的 `water`）。
 extends Control
 
+const ThemeRes = preload("res://view/theme.gd")
+
 const PADDING := 8.0
+## 区划分割线的透明度（与战役过渡页的 map_preview 同一档）。
+const ZONE_LINE_ALPHA := 0.42
 
 var _cfg = null
 var _map = null
@@ -100,3 +104,46 @@ func _draw() -> void:
 		draw_rect(Rect2(Vector2.ZERO, size), Color(0.08, 0.09, 0.10, 0.9), true)
 		return
 	draw_texture_rect(_tex, map_rect(), false)
+	_draw_zone_borders()
+
+
+func _zone_at(x: int, y: int) -> int:
+	var grid: Array = _map.zones_grid
+	if y < 0 or y >= grid.size():
+		return -1
+	var row = grid[y]
+	if typeof(row) != TYPE_ARRAY:
+		return -1
+	var arr: Array = row
+	if x < 0 or x >= arr.size():
+		return -1
+	return int(arr[x])
+
+
+func _draw_zone_borders() -> void:
+	if _map == null or _map.zones_grid.is_empty():
+		return
+	var cols := int(_map.cols)
+	var rows := int(_map.rows)
+	var mr := map_rect()
+	if cols <= 0 or rows <= 0 or mr.size.x <= 0.0 or mr.size.y <= 0.0:
+		return
+	var cw: float = mr.size.x / float(cols)
+	var ch: float = mr.size.y / float(rows)
+	var col := ThemeRes.line()
+	col.a = ZONE_LINE_ALPHA
+	for y in rows:
+		for x in cols:
+			if not _map.tile_exists(x, y):
+				continue
+			var z := _zone_at(x, y)
+			var x0: float = mr.position.x + float(x) * cw
+			var y0: float = mr.position.y + float(y) * ch
+			var x1: float = x0 + cw
+			var y1: float = y0 + ch
+			if x + 1 < cols and _map.tile_exists(x + 1, y) \
+					and _zone_at(x + 1, y) != z:
+				draw_line(Vector2(x1, y0), Vector2(x1, y1), col, 1.0, true)
+			if y + 1 < rows and _map.tile_exists(x, y + 1) \
+					and _zone_at(x, y + 1) != z:
+				draw_line(Vector2(x0, y1), Vector2(x1, y1), col, 1.0, true)
