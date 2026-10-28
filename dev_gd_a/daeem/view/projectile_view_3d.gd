@@ -238,11 +238,34 @@ func sync() -> void:
 
 ## 方块在 3D 里的位置：逻辑地面点 + 抛物线抬升（用逻辑的同一个进度 `t`）。
 func _visual_pos(p) -> Vector3:
-	var w: Vector3 = palette.to_world(p.pos)
+	var t: float = _draw_t(p)
+	var ground: Vector2 = p.pos if t == p.t else p.start.lerp(p.end, t)
+	var w: Vector3 = palette.to_world(ground)
 	var dist: float = p.start.distance_to(p.end)
 	var arc: float = minf(dist * palette.cell_size() * _arc_ratio, _arc_max)
-	w.y = _base_h + arc * 4.0 * p.t * (1.0 - p.t)
+	w.y = _base_h + arc * 4.0 * t * (1.0 - t)
 	return w
+
+
+## **这一帧该画到哪个进度**（0..1）。
+##
+## ★★ 2026.10.28：固定逻辑步长（手机 30 Hz）下，若直接画 `p.pos`，箭会以 30 Hz
+##   一跳一跳地走 —— 而渲染是 60 fps，肉眼就是「箭在抖」。
+##   这里用 `world.render_alpha`（两步之间走到了哪）按**同一速度**外推：
+##     本帧进度 = 逻辑进度 + alpha × (一步的时长 / 全程时长)
+##   与单位插值（`world.render_pos_of`）是同一个口径，只是投掷物更容易直接算。
+## ★ 旧行为（每帧一步）下 `render_alpha == 1.0` ⇒ 直接返回 `p.t`，与从前逐位一致。
+func _draw_t(p) -> float:
+	var t: float = p.t
+	if world == null:
+		return t
+	# ⚠️ 用 `get()` 而不是直接读属性：测试里可能拿桩对象进来（`test_fog` 踩过同款）。
+	var alpha: float = float(world.get("render_alpha"))
+	var step_dt: float = float(world.get("last_step_dt"))
+	if alpha >= 1.0 or step_dt <= 0.0:
+		return t
+	var dur: float = maxf(1e-6, p.duration)
+	return clampf(t + alpha * step_dt / dur, 0.0, 1.0)
 
 
 ## 拖尾：把当前位置压进环形历史，重建一条折线（最近 N 个点连起来）。

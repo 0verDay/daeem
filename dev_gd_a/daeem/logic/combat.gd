@@ -56,15 +56,15 @@ static var repath_calls: int = 0
 ##   合并之后每单位只剩一次调用 —— 1000 单位就是每帧省下 2000 次 GDScript 方法调用。
 ##
 ## @param idx 本单位在 world.units 里的下标（用于取本帧批量算好的索敌结果）
-static func tick_frame(world, cfg: ConfigRes, u: UnitRes, dt: float, idx: int) -> void:
-	# ★★ 生产路径：三段直接连着跑，**不做任何逐段计时**。
-	#    ⚠️ 濒死的将领不在这里特判（`update_unit` 第一句就接管了）：这一层被
-	#       `world.tick` 只在「活着 + 没在招募 + 没濒死」时调用，所以那一支走不到；
-	#       真在这里也补一次的话，`update_unit` 那一支会让回复**跑两遍**（实测踩到）。
-	#    分段计时如果写在这个循环里（每单位 4 次 `_prof()`），即使 profile 关着也要付那 4 次调用
-	#    —— 1000 单位就是每帧 ~0.8 ms，纯属为了「跑 bench 时能看细分」在生产路径上白交的钱。
-	if not world.profile_on:
-		update_unit(world, cfg, u, dt, idx)
+## @param prof 本帧要不要计时。★ 由 `world.tick` 每帧读一次 `profile_on` 后传入：
+##        原来这里每单位读一次 `world.profile_on`（1000 单位 = 每帧 1000 次动态属性查找）。
+##        默认 false = 旧测试直接调本函数时的语义（不产生分段读数）。
+## @param dt_flash / dt_hit 本帧的闪光衰减量（`dt / flash_sec_safe`）。
+##        由 `world.tick` 每帧算一次；缺省（<0）时在这里现算，保证直接调用的语义不变。
+static func tick_frame(world, cfg: ConfigRes, u: UnitRes, dt: float, idx: int,
+		prof: bool = false, dt_flash: float = -1.0, dt_hit: float = -1.0) -> void:
+	if not prof:
+		update_unit(world, cfg, u, dt, idx, dt_flash, dt_hit)
 		# 站定后被推离落点就自己走回去（必须在 step 之前：先决定要不要回位）
 		if not u.moving and u.has_settled_goal:
 			u.reclaim_settled_spot(world, cfg)
@@ -73,7 +73,7 @@ static func tick_frame(world, cfg: ConfigRes, u: UnitRes, dt: float, idx: int) -
 		return
 
 	var t0 := Time.get_ticks_usec()
-	update_unit(world, cfg, u, dt, idx)
+	update_unit(world, cfg, u, dt, idx, dt_flash, dt_hit)
 	var t1 := Time.get_ticks_usec()
 	if not u.moving and u.has_settled_goal:
 		u.reclaim_settled_spot(world, cfg)
@@ -90,7 +90,13 @@ static func tick_frame(world, cfg: ConfigRes, u: UnitRes, dt: float, idx: int) -
 ##
 ## @param idx 这个单位在 world.units 里的下标（由 world.tick 传进来）。
 ##        有它才能取「本帧批量算好的索敌结果」；不传就走原来的逐个扫描（测试里会这样调）。
-static func update_unit(world, cfg: ConfigRes, u: UnitRes, dt: float, idx: int = -1) -> void:
+## @param dt_flash / dt_hit 本帧的闪光衰减量；<0 表示调用方没算（测试 / 旧调用点）⇒ 这里现算。
+static func update_unit(world, cfg: ConfigRes, u: UnitRes, dt: float, idx: int = -1,
+		dt_flash: float = -1.0, dt_hit: float = -1.0) -> void:
+	if dt_flash < 0.0:
+		dt_flash = dt / cfg.flash_sec_safe
+	if dt_hit < 0.0:
+		dt_hit = dt / cfg.hit_flash_sec_safe
 	# ★★ 濒死的将领（本轮新增）：这一帧**只跑濒死状态机**（缓慢回复 / 全灭判定 /
 	#    再起读条），其余什么都不做 —— 需求是「倒在原地」：不能移动、不能攻击、
 	#    也不做任何索敌（它已经不可能被谁选中了，见 `is_attackable()`）。
@@ -113,19 +119,23 @@ static func update_unit(world, cfg: ConfigRes, u: UnitRes, dt: float, idx: int =
 			u.drop_engagement()
 		return
 
+	# ★ 五个计时器的衰减（纯算术、无分支副作用）。单独计时是为了回答
+	#   「1.7ms 里有多少花在这段每单位必跑的算术上」—— 这段是最容易批量下沉的候选。
+	var _t_timers := _ft_start(world)
 	if u.attack_cd > 0.0:
 		u.attack_cd = maxf(0.0, u.attack_cd - dt)
 	if u.attack_flash > 0.0:
-		u.attack_flash = maxf(0.0, u.attack_flash - dt / cfg.flash_sec_safe)
+		u.attack_flash = maxf(0.0, u.attack_flash - dt_flash)
 	# ★ 受击反应（本轮新增）：闪白 + 左右振动，按 combat.hit_flash_sec 衰减
 	if u.hit_flash > 0.0:
-		u.hit_flash = maxf(0.0, u.hit_flash - dt / cfg.hit_flash_sec_safe)
+		u.hit_flash = maxf(0.0, u.hit_flash - dt_hit)
 	if u.repath_timer > 0.0:
 		u.repath_timer = maxf(0.0, u.repath_timer - dt)
 	# ★★ 「因为追击上限放弃」之后的冷却（见 config 的 leash_release_cd）：
 	#    它只挡**自动索敌**，不影响任何玩家命令。
 	if u.leash_cd > 0.0:
 		u.leash_cd = maxf(0.0, u.leash_cd - dt)
+	_ft_end(world, "u/timers", _t_timers)
 
 	# ★★ 2026.10.27：**士气不再在逐单位循环里算** —— 它现在是 `world.tick` 里
 	#    单位循环**之前**的一整遍（`MoraleRes.tick_all`），见那里的说明。

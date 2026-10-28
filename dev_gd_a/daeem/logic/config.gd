@@ -231,6 +231,13 @@ var fog_mask_color: Color = Color(0.0, 0.0, 0.0, 0.45)
 ##   「重画贴图 + 上传显存」的频率：大图（100×100）+ 千单位时掩码几乎每帧都在变，
 ##   不合并就会变成周期性尖峰。0.1 = 观感延迟上限 100ms，玩家看不出来。
 var fog_rebake_min_sec: float = 0.1
+## ★★ 2026.10.28：视野变更判定的**版本号闸门**（见 `logic/fog.gd` 的 `refresh_needed`）。
+##   1 = 只有「有人真的换格 / 单位进出场 / 建筑增删 / 归属变动」时才重新采集贡献格；
+##   0 = 回到旧行为（每帧全量采集 + 原生数组比较）。出问题时改这一个数字即可回退。
+var fog_revision_gate: bool = true
+## ★ 调试用：闸门判「没变」时再跑一次全量校验，不一致就 `push_warning` 并按全量重建。
+##   默认关（每次判定要付两遍采集）。排查「迷雾不刷新」时打开它。
+var fog_verify_revision: bool = false
 
 ## ---- ★★ 局内「敌 / 友 / 己」的统一配色（见 config.json 的 colors.side._comment）----
 ##
@@ -542,6 +549,21 @@ var morale_boost_capture: float = 10.0
 ## 一帧最多按多少秒推进逻辑（防止「帧慢→dt 大→活更多→更慢」的死亡螺旋）
 var sim_max_dt: float = 0.05
 
+## ★★ 2026.10.28：**固定逻辑步长**（秒）。0 = 关闭（每个渲染帧推进一次，旧行为）。
+##
+## 为什么需要它（见 `data/config.json` 的 `_step_comment`）：
+##   旧行为下「逻辑步数 = 渲染帧数」⇒ 帧率越高，每秒的逻辑总成本越高 ——
+##   这会把帧率**按在一个不动点上**（手机实测 dscj 256 单位停在 30 fps）。
+##   固定步长把逻辑钉在 `sim_step_sec` 上，渲染多快都不增加逻辑成本；
+##   两次逻辑步之间由 `world.render_pos_of()` 插值，画面仍然连续。
+##
+## ★ 桌面默认 0（手感不变）；`sim_mobile_step_sec` 只在移动平台生效。
+var sim_step_sec: float = 0.0
+## 移动平台的逻辑步长（`sim.mobile_step_sec`，默认 1/30 秒）。
+var sim_mobile_step_sec: float = 0.0333333
+## 一帧最多补几步（防止长时间卡顿后「一次补一大堆」把帧拖死）。
+var sim_step_max_steps: int = 4
+
 
 ## 载入配置。失败时返回 null，并把原因写进 last_error —— 调用方必须处理
 ## （静默用一份默认值会让「JSON 写错了」表现为「手感莫名不对」，最难查）。
@@ -667,6 +689,8 @@ func _cache_scalars() -> void:
 	fog_mask_color = parse_color(str_val("fog.mask_color", "#000000"))
 	fog_mask_color.a = clampf(num("fog.mask_alpha", 0.45), 0.0, 1.0)
 	fog_rebake_min_sec = maxf(0.0, num("fog.rebake_min_sec", 0.1))
+	fog_revision_gate = bool_val("fog.revision_gate", true)
+	fog_verify_revision = bool_val("fog.verify_revision", false)
 
 	# ★ 局内敌/友/己三色（见 config.json 的 colors.side._comment）。
 	#   颜色走 parse_color，与 colors.* 同一套写法；写坏了退回下面这几个默认值。
@@ -750,6 +774,11 @@ func _cache_scalars() -> void:
 	respawn_sec = num("pvp.respawn_sec", 8.0)
 	destructible_base = bool_val("pvp.destructible_base", false)
 	sim_max_dt = num("sim.max_dt", 0.05)
+	# ★★ 固定逻辑步长（0 = 关闭；见 `sim_step_sec` 的说明）。
+	#   夹在 [0, sim_max_dt]：比 max_dt 还大的步长没有意义（那样一帧只走得了一步半步）。
+	sim_step_sec = clampf(num("sim.step_sec", 0.0), 0.0, sim_max_dt)
+	sim_mobile_step_sec = clampf(num("sim.mobile_step_sec", 0.0333333), 0.0, sim_max_dt)
+	sim_step_max_steps = maxi(1, int(num("sim.step_max_steps", 4.0)))
 
 	# ★★ 将领濒死保护（见上面那组字段的说明）。
 	#    再起**不消耗资源**（用户拍板），所以这里没有再起造价。
@@ -2404,6 +2433,8 @@ func _cache_ai() -> void:
 			})
 
 	_ai_garrison_cfg = {
+		# ★★ 决策周期（2026.10.28）：0 = 每个逻辑步都跑（旧行为 = 回退开关）。
+		"decision_interval_sec": maxf(0.0, num("ai.garrison.decision_interval_sec", 0.1)),
 		"patrol_interval_sec": maxf(0.1, num("ai.garrison.patrol_interval_sec", 4.0)),
 		"patrol_leash_tiles": maxf(1.0, num("ai.garrison.patrol_leash_tiles", 1.0)),
 		"combat_idle_sec": maxf(0.0, num("ai.garrison.combat_idle_sec", 10.0)),

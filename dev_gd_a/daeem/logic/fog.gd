@@ -134,6 +134,16 @@ var _last_flat_count: int = -1
 var _last_flat_ids: int = -1
 ## 「本帧已经用扁平路径采集过」——与 `_fresh` 同一个用途，只是另一条后端。
 var _fresh_flat: bool = false
+## ★★ 2026.10.28：**版本号闸门**的状态（见 `refresh_needed`）。
+##   `map.vision_revision` 在「有人真的换格 / 单位进出场 / 建筑增删 / 归属变动」时 +1，
+##   没变就说明贡献格一模一样 —— 连采集都可以不做（0.45ms → 一次整数比较）。
+##   ⚠️ 记的是「上一次采集时」的 map 与版本号：换图必须重新比（`reset_cache` 清掉）。
+var _seen_map = null
+var _seen_rev: int = -1
+## ★ 诊断计数器（只有 bench 读）：闸门挡掉了几次采集 / 真正采集了几次。
+##   `hits / (hits + collects)` 就是闸门的命中率 —— 判断「这个优化在这一局值不值」的唯一依据。
+var stat_gate_hits: int = 0
+var stat_collects: int = 0
 
 
 static func create() -> RefCounted:
@@ -151,6 +161,12 @@ func reset_cache() -> void:
 	_last_contrib = {}
 	_last_faction_count = -1
 	_fresh = false
+	# ★ 扁平表的「上一版」也必须作废：换图后旧数组与新的世界不可比。
+	_last_flat_count = -1
+	_last_flat_ids = -1
+	_fresh_flat = false
+	_seen_map = null
+	_seen_rev = -1
 	# ★ 内核的扇区缓存按**地形**存：换图 / 地形变了必须一起清（见 `_ensure_kernel_map`）
 	_kernel_map_ref = null
 	if kernel != null:
@@ -186,6 +202,23 @@ func refresh_needed(world) -> bool:
 		return false
 	# ★★ 2026.10.27：C# 后端走**扁平表**（不建字典，见 `_collect_flat`）。
 	if _use_csharp(world.cfg):
+		# ★★ 2026.10.28：版本号闸门（见 `_seen_map` 的注释）。
+		#   版本号取不到（FakeWorld / 旧 map）时 `_map_rev` 返回 -1 ⇒ 不启用闸门，
+		#   退回全量比较 —— 宁可多算一次，不能把迷雾冻住。
+		var rev: int = _map_rev(world)
+		# ★ 闸门只对「自己维护版本号」的世界生效（真的 WorldRes 有 mark_vision_dirty）。
+		#   测试里的 FakeWorld 直接改 `u.tx` / append 建筑，绕过了所有出口 ——
+		#   对它必须退回全量比较，否则「检测得到变化」这条约定会在桩对象上失效。
+		var gate_ok: bool = bool(world.cfg.fog_revision_gate) and world.has_method("mark_vision_dirty")
+		if gate_ok and rev >= 0 and _last_flat_count >= 0 \
+				and world.map == _seen_map and rev == _seen_rev:
+			if world.cfg.fog_verify_revision:
+				# ★ 调试开关：闸门说「没变」时再全量跑一遍。不一致 ⇒ 以全量为准并告警。
+				if _refresh_needed_flat(world):
+					push_warning("[daeem] fog 版本号闸门漏判：vision_revision 未变，但全量比较发现变化（已按全量重建）")
+					return true
+			stat_gate_hits += 1
+			return false
 		return _refresh_needed_flat(world)
 	_collect_contributors(world)
 	# ★ 标记「本帧已采集」：紧随的 update() 会复用它，不再重复采集（见 `_fresh`）。
@@ -222,8 +255,17 @@ func _collect_flat(world) -> void:
 	_flat_side_ids.clear()
 	var side_of: Dictionary = {}          # 方名 → 方下标
 	var side_cache: Dictionary = {}       # 阵营 id → 方名（同一帧内只算一次 side_of）
+	# ★ 2026.10.28：阵营 id → 方下标**一张表**。原来每个单位都要走
+	#   `_register_side` → `_side_name`（side_cache.get）→ `side_of.get` 两次字典查找。
+	var fac_idx: Dictionary = {}
 	for f in world.factions:
-		_register_side(String(f), side_of, side_cache)
+		var fid0 := String(f)
+		fac_idx[fid0] = _register_side(fid0, side_of, side_cache)
+	# ★ 地形格换算内联：`terrain.has()` + `terrain.idx()` 每单位两次跨对象方法调用，
+	#   而两者都只是「边界判断 + y*cols+x」（见 logic/grid.gd）。
+	var terrain = world.map.terrain
+	var cols: int = int(terrain.cols)
+	var rows: int = int(terrain.rows)
 	# 上限 = 单位数 + 建筑数；一次 resize 到底，避免循环里反复扩容。
 	var cap: int = world.units.size() + world.building_list.size()
 	_flat_side.resize(cap)
@@ -235,25 +277,35 @@ func _collect_flat(world) -> void:
 			continue
 		var ux := int(u.tx)
 		var uy := int(u.ty)
-		if not world.map.terrain.has(ux, uy):
+		if ux < 0 or uy < 0 or ux >= cols or uy >= rows:
 			continue
 		# ⚠️ 名单之外的阵营（单机时的 "enemy" 守军）也要登记：
 		#    它们挪一格同样是「视野变了」，漏掉会让变更判定漏更新。
-		var si: int = _register_side(String(u.faction), side_of, side_cache)
-		_flat_side[k] = si
-		_flat_tile[k] = world.map.terrain.idx(ux, uy)
+		var fid := String(u.faction)
+		var si: Variant = fac_idx.get(fid, null)
+		if si == null:
+			si = _register_side(fid, side_of, side_cache)
+			fac_idx[fid] = si
+		_flat_side[k] = int(si)
+		_flat_tile[k] = uy * cols + ux
 		_flat_radius[k] = _unit_vision(world.cfg, u)
 		k += 1
 	for b in world.building_list:
 		if b == null or not b.alive:
 			continue
-		if not world.map.terrain.has(b.tx, b.ty):
+		var bx := int(b.tx)
+		var by := int(b.ty)
+		if bx < 0 or by < 0 or bx >= cols or by >= rows:
 			continue
-		if not _faction_contributes(String(b.owner)):
+		var bfid := String(b.owner)
+		if not _faction_contributes(bfid):
 			continue
-		var si2: int = _register_side(String(b.owner), side_of, side_cache)
-		_flat_side[k] = si2
-		_flat_tile[k] = world.map.terrain.idx(b.tx, b.ty)
+		var si2: Variant = fac_idx.get(bfid, null)
+		if si2 == null:
+			si2 = _register_side(bfid, side_of, side_cache)
+			fac_idx[bfid] = si2
+		_flat_side[k] = int(si2)
+		_flat_tile[k] = by * cols + bx
 		_flat_radius[k] = _building_vision(world.cfg, b)
 		k += 1
 	_flat_count = k
@@ -282,11 +334,25 @@ func _side_name(faction: String, side_cache: Dictionary) -> String:
 	return String(s)
 
 
+## 视野版本号（见 `map_data.vision_revision`）。
+## 取不到（FakeWorld / 没有这个字段的旧 map）返回 -1 ⇒ 调用方关闭闸门、退回全量比较。
+func _map_rev(world) -> int:
+	var m = world.map
+	if m == null:
+		return -1
+	var v: Variant = m.get("vision_revision")
+	return int(v) if v != null else -1
+
+
 ## 扁平表的变更判定：**原生数组比较**（相等即 memcmp），比遍历字典快一个量级。
 ##
 ## ⚠️ 这条判据比旧版更**严**：旧版只比「格集合」，这里连半径与顺序一起比。
 ##   严的后果只是「多重建一次掩码」，不会漏更新 —— 反过来才是 bug。
 func _refresh_needed_flat(world) -> bool:
+	# ★ 版本号在**采集之前**记：采集期间若有改动，下一帧会看到版本号变了（宁可多算一次）。
+	stat_collects += 1
+	_seen_map = world.map
+	_seen_rev = _map_rev(world)
 	_collect_flat(world)
 	_fresh_flat = true
 	_fresh = false
@@ -357,14 +423,27 @@ func update(world) -> void:
 	_cols = world.map.cols
 	_rows = world.map.rows
 
+	# ★★ 2026.10.28（诊断）：把 update 拆成「建掩码 / 记忆清理」两段。
+	#   256 单位时 `fog` 整段约 0.55 ms，只看总数分不清是内核建掩码贵、
+	#   还是每帧清理「见过的建筑」贵。
+	# ⚠️ 用 `world.get("profile_on")` 而不是 `world.profile_on`：`tests/test_fog.gd`
+	#   用的是 **FakeWorld 桩对象**（没有这两个字段），直接读属性会抛错并中断 update
+	#   （实测：38 条断言全红，表现是「迷雾一片空白」）。`Object.get()` 不存在时返回 null。
+	var prof_on: bool = world.get("profile_on") == true
+	var _t0: int = Time.get_ticks_usec() if prof_on else 0
+
 	# ★★ 数字循环走 C# 内核（`fog.backend = "csharp"`）；加载不到 / 显式配成 gdscript
 	#    时走下面那条老路。两条路的输出**逐位一致**（test_fog 全量断言盯着）。
 	if use_cs:
 		_build_sight_flat(world, cells)
 	else:
 		_build_sight_gdscript(world, cells)
+	var _t1: int = Time.get_ticks_usec() if prof_on else 0
 
 	_prune_sighted(world)
+	if _t0 != 0 and world.has_method("profile_sub"):
+		world.profile_sub("fog/build", _t1 - _t0)
+		world.profile_sub("fog/prune", Time.get_ticks_usec() - _t1)
 	# ★★ 2026.10.27（性能）：用**交换**代替 `_contrib.duplicate(true)` ——
 	#    原来每帧把「方 × 贡献格」整张嵌套字典深拷贝一遍，只为留一份给 `refresh_needed` 比对。
 	var prev: Dictionary = _last_contrib

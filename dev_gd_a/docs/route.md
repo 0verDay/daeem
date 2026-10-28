@@ -6476,3 +6476,113 @@ debug keystore。明文 `ws://` 若被 Android 明文流量策略拦截，需要
   资源栏描边色为 `line()`。
 * `test_ui` **1351** 项、`test_fill_button` 140 项、`test_ui_kit` 97 项全过；
   全量 `tools/run-tests.ps1` 退出码 0。
+
+---
+
+## 65. 逻辑 tick 与帧率解耦（2026.10.28：手机 30 → 60 帧）
+
+> 详细版（实测表 / 复测命令 / 剩余待办）在 **`docs/mobile.md` 第 23 节**，这里只记决策与边界。
+
+### 65.1 问题不是「某一项太慢」，是结构
+
+旧写法是**每个渲染帧推进一次逻辑**：
+
+```gdscript
+events = world.tick(minf(dt, cfg.sim_max_dt))
+```
+
+⇒ 帧率越高，每秒跑的逻辑步越多、CPU 越贵 ⇒ 系统稳定在一个**不动点**上
+（手机 dscj 256 单位停在 30 fps：一升到 40 就多跑 33% 的逻辑步，立刻掉回来）。
+这与 `performance_and_network_doc/` 那条 MUST 正好相反：
+*「用固定步长模拟，不用可变 dt 直接驱动逻辑；渲染帧率与逻辑 tick 解耦」*。
+
+### 65.2 做法：固定步长，但**默认关**
+
+* `sim.step_sec`（默认 `0` = 关闭 = 旧行为）、`sim.mobile_step_sec`（默认 1/30，仅移动平台）、
+  `sim.step_max_steps`（默认 4，防卡顿后一次补一大堆）；
+* 累加器攒够 `step` 才走一步；步数换算抽成纯函数 `GameScene3D.take_logic_steps()`；
+* **游戏速度不变**：60 帧 × 1/60 s @ 30 Hz ⇒ 恰好 30 步（`tests/test_time_step.gd` 钉死）；
+* **插值**复用客机那条现成链路：`world.begin_logic_step()` 记 `prev_pos`，
+  `render_alpha = 累加量 / 步长`，视图统一走 `render_pos_of()`；
+* 投掷物按同一速度**外推**（否则 30 Hz 下箭是一跳一跳的）；
+* 客机不受影响（它不 tick，`render_alpha` 仍由 `client_session` 按快照驱动）。
+
+### 65.3 为什么桌面默认关
+
+手感优先：桌面 60~144 Hz 本来就不是瓶颈，而 30 Hz 逻辑会让「镜头跟手 / 单位起步」
+这类细节差一档。**手机默认开**是因为那里真的卡，而且 30 Hz 逻辑 + 60 Hz 渲染
+与 60 Hz 逻辑逐帧几乎不可分辨。
+
+### 65.4 回归与工具
+
+* 新增 `tests/test_time_step.gd`（24 条）与 `tests/bench_dscj.gd`
+  （复现 dscj + command AI 的纯 CPU 基准，`DAEEM_DSCJ_STEP` 直接 A/B）；
+* 全量 **88 文件 / 8006 断言**全过；
+* 新增诊断分段 `z/update`、`z/population`、`z/ownership`、`fog/build`、`fog/prune`、
+  `props/fade`、`props/fog`。
+
+### 65.5 一条给后来者的警告
+
+诊断计时**不能**直接读 `world.profile_on`：`tests/test_fog.gd` 用的是 FakeWorld 桩对象，
+缺字段会抛错并**中断整段 `fog.update`**（38 条断言全红、表现为「迷雾一片空白」）。
+一律 `world.get("profile_on") == true` + `world.has_method("profile_sub")`。
+
+---
+
+## 66. 性能优化收尾（2026.10.28：到此结束）
+
+> **一页交接在 `docs/mobile.md` 第 25 节**（现状 / 关键设置表 / 经验 / 回退 / 何时再开）。
+> 这里只记**决策与边界**，以及为什么不再继续。
+
+### 66.1 结论
+
+用户确认 **手机端与电脑端都已流畅运行**，性能优化**正式结束**：
+
+| 平台 | 场景 | 结果 |
+|---|---|---|
+| Android 真机 | `dscj` 256 单位 / 27×42 + command AI | ≈60 fps（30 Hz 逻辑 + 60 fps 渲染） |
+| Windows | 同一局，纯 CPU（`bench_dscj`，1/60 手动驱动） | 4.76~4.86 ms/帧（`tick` 3.09~3.15） |
+
+最后两轮（第 65 / 66 节）的贡献：**固定逻辑步长**（把「逻辑步数 = 渲染帧数」这个不动点拆掉）
++ **迷雾变更闸门 / 驻防 AI 分层** + 一批逐帧热点。更早的层（C# 视野 / 群编内核、
+迷雾缓存、HUD 分槽、自适应 3D 分辨率）见 `mobile.md` 第 12~24 节。
+
+### 66.2 三条边界（写死，避免以后反复）
+
+1. **逻辑 30 Hz + 渲染 60 fps 是手机默认，桌面仍每帧 tick**。
+   理由：30 Hz 逻辑省一半 `tick`，而 RTS 的决策密度本来就在 10~30 Hz；
+   桌面手感优先，不默认解耦（想要就 `sim.step_sec = 0.0166667`）。
+2. **性能开关一律进 `config.json` 且都能一键回退**。
+   `sim.*` / `unit.*_backend` / `fog.*` / `ai.garrison.decision_interval_sec` /
+   `ui.mobile_*` / `render.mobile_*` —— 清单与回退值见 `mobile.md` §25.2。
+3. **C# 只用于「整段、无回调、可批量」的数值内核**。
+   现在只有三个：`FogKernel`（视野扇区）、`CrowdKernel`（碰撞 / 索敌 / 寻路）、
+   `UnitMoraleKernel`（士气 + 回血）。三者都有 GDScript 回退，`world.unit_sim_used`
+   读的是**实际**后端（等价测试据此防止「绿得毫无意义」）。
+
+### 66.3 明确**不做**的结构改造（附一句理由）
+
+| 不做 | 为什么 |
+|---|---|
+| `units` 整段下沉 C# | 实测 `units` 仅 ~1.1 ms/帧，而 `update_unit` 每一支都回调世界（寻路 / 事件 / 投掷物）；整段重写 ≥1000 行，收益不匹配（`mobile.md` §24.4） |
+| `u.path` 改 packed 数组 + 游标 | `path_pops` 实测 0.21~0.26 次/帧 ⇒ `Array.remove_at(0)` 不是病根（§24.3） |
+| fog 增量索引 | 能把 `fog` 0.19 → ~0.08，但要维护「格子→来源」增删表与失效逻辑，风险最高（§24.7） |
+| 快照编码改造 | 视野过滤后单条 7.5KB、自适应预算下带宽够用；改协议要两端同版本（§22.19） |
+| 客户端预测 | 剩下的延迟是网络 RTT，属于联机手感（§22.17） |
+| 服务器 tick / 多线程逻辑 | 单机与双人合作都不需要，且会破坏确定性测试 |
+
+### 66.4 再开性能工作的入口
+
+**只在**出现「真机掉帧 / 新增玩法踩爆预算」时才重开，顺序固定：
+先 `ui.show_perf` 看 `fr` 均值与 max → 均值查 `tick` 分段、max 查周期性重活 →
+先问「这一局是不是本来就超规模」→ 最后才考虑结构改造。
+完整清单见 `mobile.md` §25.5；两条新坑见 `pitfalls.md` 5.85 / 5.86。
+
+### 66.5 回归
+
+* 新一轮只跑相关套件（未跑全量）：`test_fog` 183、`test_fog_revision` 30、`test_ai*` 462、
+  `test_campaign*` 487、`test_logic` 265、`test_time_step` 24、`test_view*` 358、
+  `test_snapshot*` 74、`test_ui*` 1448、`test_zone*` 301 等，全过；
+  `test_unit_backend_equiv`（`DAEEM_UNIT_BACKEND=csharp`）8 项通过；
+* `tools/check-syntax.ps1` 228 文件全过；
+* 基准：`bench_dscj`（A/B 用 `DAEEM_FOG_GATE` / `DAEEM_GARRISON_INTERVAL`，不改 config.json）。

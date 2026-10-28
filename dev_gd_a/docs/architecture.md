@@ -601,9 +601,13 @@ Godot 里 DPR 由引擎处理，**但下面三条要原样继承**：
 - ★ **地面是一整块 `PlaneMesh` + 一张烘出来的贴图**（网格线与区块归属是**贴图上的像素**
   ⇒ 天然连续，不可能出现「斜着的区块线互相穿插」）；
   **迷雾是另一块平面 + 另一张贴图**（它每帧都在变，而地形图只在归属变化时重烘），两层各 1 次 draw call。
-  ★★ 迷雾的变更检测是**每帧整块掩码 memcmp**（`ground.rebake_fog()`），重烘由
-  `cfg.fog_rebake_min_sec`（默认 0.1s）合并；**不是**抽样签名、也不跟区划一起走 15 帧节流
-  （旧写法在大图上漏检率 >96%，见 pitfalls 11.6）。
+  ★★ 迷雾的变更检测分两层：
+  1. **逻辑层是否要重算视野**：先看 `map.vision_revision`（`fog.revision_gate`，默认开）——
+     只有「有人真的换格 / 单位进出场 / 建筑增删 / 归属变动」才采集贡献格并比较；
+     版本号没变就是一次整数比较（见 pitfalls 5.85：漏钩子 = 迷雾静默冻结）。
+  2. **贴图要不要重烘**：`ground.rebake_fog()` 每帧做**整块掩码 memcmp**，重烘由
+     `cfg.fog_rebake_min_sec`（默认 0.1s）合并；**不是**抽样签名、也不跟区划一起走 15 帧节流
+     （旧写法在大图上漏检率 >96%，见 pitfalls 11.6）。
 - ★ 单位与建筑各自用 `MultiMesh` 合批：单位按「**阵营 × 是否将领**」分桶
   （`MultiMesh` 不支持逐实例贴图 ⇒ 变体数 = 阵营数 × 2，本项目是个位数），立牌用材质自带的 billboard；
   建筑是一个单位 `BoxMesh` 靠**逐实例非等比缩放**表达尺寸差异。
@@ -653,6 +657,8 @@ Godot 里 DPR 由引擎处理，**但下面三条要原样继承**：
 | ★★ **红点 AI 的状态** | `logic/world.gd` 的 `reddot_states[]`（每项 `{faction, params, spawn_region, elapsed, wave_index, waves_cap, serial}`），规则在 `logic/red_dot_ai.gd` | 它是**世界状态**（与 `tech.active_by_faction` 同源），不是界面状态。`setup()` 在 `world.reset()` 末尾建；每帧 `red_dot_ai.update()` 推进（累计时间 ≥ `wave_time_expr(第 n 波)` 就发一波，一帧可补发多波） |
 | ★★ **将领的附属单位规格（本轮新增）** | `logic/unit.gd` 的 `retinue_target`（目标编队规模）+ `retinue_types`（`[{type, weight}]`），规则在 `logic/world.gd` 的 `fill_general_retinue()` / `pick_weighted_type()` | ★ 挂在**将领单位自己**身上：摆放时按关卡 `escort_count` / `escort_types` 写入并**当场生成满编随机附属兵**；阵地补员按同一份权重抽兵种；`world.escort_target_of(fid, index)` 读它（没设过才退回 `ai.garrison.min_retinue`）。权重抽样的随机种子由 `(将领 id, 序号)` 派生（确定性，可复现） |
 | ★★ **阵地性 AI 的状态** | `logic/unit.gd` 的 `garrison_zone_id` / `patrol_timer` / `combat_idle_timer` / `retarget_cd` / `garrison_recruit_timer`，规则在 `logic/garrison_ai.gd` | ★ 挂在**单位自己**身上（与 `train_*` 同一个理由：它天然属于某个将领，单位没了状态就该没）。它**不**在 world 上另开一张表，也**不**进任何资源库 |
+| ★★ **阵地性 AI 的节流状态**（2026.10.28） | `logic/world.gd` 的 `garrison_ai_accum` / `garrison_ai_primed` / `garrison_ai_generals` | 决策周期 `ai.garrison.decision_interval_sec`（默认 0.1 = 10 Hz）：`accum` 攒时间、`primed` 保证首帧必跑、`generals` 是「AI 将领」短列表（决策时刷新，给**每步都跑**的濒死复活检查用）。★ 放 world 而**不是 static**：同一进程里测试会同时建两个世界（等价性测试） |
+| ★★ **视野「贡献集合」版本号**（2026.10.28） | `logic/map_data.gd` 的 `vision_revision` + `logic/fog.gd` 的 `refresh_needed()` | 单位**真的跨格**时由 `unit.sync_tile()` / `_sync_tile_if_changed()` 直接 +1（它们手里只有 map）；单位进出场 / 阵亡 / 建筑增删 / 归属变动走 `world.mark_vision_dirty()`。版本号没变 ⇒ 迷雾整段跳过贡献格采集（`fog.revision_gate`，0 = 回旧行为）。⚠️ 漏钩子 = 迷雾静默冻结，见 pitfalls 5.85 |
 | ★ AI 阵营的名单与出生锚点 | `data/config.json` 的 `ai.factions[]`（`{id, ai, base}`，ai 缺省 = `garrison`） | 名单决定「谁由 AI 驱动」；★ 本轮 AI **没有大本营、没有资源库** —— `base` 只是**出生锚点**（`_register_config_bases()` 不看 `with_ai`），将来算将领站位用；名单里的一方若没有点位会落到 (0,0) 顶掉区块 11 的中心（route.md 33.5 坑①） |
 | ★ 地图里 NPC 阵营的开局归属 | `data/maps/frontier/map.json` 的 `zone_list[].owner` → `logic/map_data.gd` 的 `zones_owners` → `logic/zone.gd` 的 `apply_initial_ownership()` | 玩家那一方的地靠出生点大本营自动收归（`refresh_building_ownership`），那条**只认玩家阵营** —— 所以 NPC 的地必须能在地图里直接写出来 |
 | ★ 这一局开不开 AI | `logic/world.gd` 的 `with_ai`（`World.create(cfg, map, with_ai)`，默认 true） | 开了就多一整个 AI 阵营（阵地性的将领 / 红点刷兵）。★ 本轮 AI **没有大本营、没有资源池**（只有玩家席位才有大本营）。测试 / 基准走 `tests/test_case.require_world()`（= `with_ai = false`），要验 AI 的用例才用默认那条（route.md 33.4） |

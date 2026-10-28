@@ -481,6 +481,8 @@ static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void:
 				ConfigRes.general_index_of(kind)
 			)
 			world.units.append(u)
+			# ★ 新单位 = 多一个视野来源（客机的迷雾变更判定只看这个版本号）。
+			world.mark_vision_dirty()
 			unit_index[uid] = u
 		# ★★ 2026.10.27：**已有单位**的兵种也要按权威快照纠正。
 		#    用户实测「一端看到一堆骑兵、另一端看到一堆步兵」：客机按自己的 config /
@@ -490,9 +492,19 @@ static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void:
 		if su.has("ut"):
 			var ut_fix := String(su.get("ut", ""))
 			if ut_fix != "":
+				# ★ 兵种会改 `vision`（由兵种派生）⇒ 视野来源的半径变了也要重新采集。
+				var old_vision: float = float(u.vision)
 				u.reapply_type(cfg, ut_fix)
+				if not is_equal_approx(float(u.vision), old_vision):
+					world.mark_vision_dirty()
+		var was_alive: bool = bool(u.alive)
 		u.alive = true
+		if not was_alive:
+			world.mark_vision_dirty()
+		var old_faction := String(u.faction)
 		u.faction = String(su.get("f", u.faction))
+		if old_faction != String(u.faction):
+			world.mark_vision_dirty()
 		if su.has("mh"):
 			u.hp_max = maxf(1.0, float(su["mh"]))
 		u.hp = float(su.get("h", u.hp))
@@ -586,6 +598,9 @@ static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void:
 	for u in world.units:
 		if seen.has(u.id):
 			keep.append(u)
+	if keep.size() != world.units.size():
+		# ★ 快照里「没有了」= 视野来源少了一个。
+		world.mark_vision_dirty()
 	world.units = keep
 	# 重建索引（去掉本帧阵亡的），投掷物解析目标 / 来源时复用同一份。
 	unit_index.clear()
@@ -750,6 +765,7 @@ static func _world_sync_buildings(world, cfg: ConfigRes, list: Array) -> void:
 	world.rebuild_building_index()
 	# ★ 归属缓存 / 迷雾靠这个版本号知道「建筑表换过了」；`rebuild_building_index()` 不涨版本。
 	world.building_revision += 1
+	world.mark_vision_dirty()
 
 
 ## 把快照里的一栋建筑状态写进本地对象（**缺字段 = 保持本地现状**）。

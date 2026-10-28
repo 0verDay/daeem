@@ -121,6 +121,8 @@ static var _ALLY_PAIRS: Array = []
 static func set_allies(pairs: Array) -> void:
 	_ALLY = {}
 	_ALLY_PAIRS = []
+	# ★★ 关系变了 ⇒ 代表阵营的缓存作废（见 `_SIDE_REP`）。
+	_SIDE_REP = {}
 	for pr in pairs:
 		if typeof(pr) != TYPE_ARRAY:
 			continue
@@ -146,6 +148,8 @@ static func set_allies(pairs: Array) -> void:
 static func clear_allies() -> void:
 	_ALLY = {}
 	_ALLY_PAIRS = []
+	# ★★ 关系变了 ⇒ 代表阵营的缓存作废（见 `_SIDE_REP`）。
+	_SIDE_REP = {}
 
 
 ## 这一局登记了哪些盟友对（只读，给测试与调试用）。
@@ -217,8 +221,31 @@ static func same_side_for_attack(a: String, b: String) -> bool:
 ## 代表怎么选：**字典序最小的那个 id** —— 与「谁先被发现」无关，只与名字有关，
 ## 所以同一局里跑一百帧、或者联机两端各算一次，结果都一样（可复现）。
 ## 没有盟友时返回它自己 ⇒ 行为与加这个功能之前**逐位一致**。
+##
+## ★★ 2026.10.27（性能）：**结果缓存**（`_SIDE_REP`）。
+##
+## 为什么必须缓存：这个函数在**每帧几千次**的路径上 ——
+##   · `fog.tile_visible / unit_visible / building_visible`（视图逐个单位 / 逐栋建筑查）；
+##   · `ground_view._bake_fog`（**逐格**，29×22 图 = 638 次 / 100×100 图 = 1 万次一次重烘）；
+##   · `terrain_props_view._apply_fog`（逐个树 / 山块）；
+##   · `snapshot.to_snapshot`（逐个单位）；
+##   · `zone.update`（逐个单位）。
+## 而 `_side_rep()` 每次都要建一个 Dictionary + 一个 Array、再 `sort()` 一次
+## ⇒ 单次约 3 次分配。638 次重烘就是 1900 次分配，纯浪费。
+##
+## 结果只取决于「盟友关系」（只在 `set_allies` / `clear_allies` 时变）与 `f`，
+## 所以缓存不会过期；两处改关系的地方都会清它（见那两个函数）。
+## ⚠️ 缓存值是**纯函数值**、不是跨局状态：它不影响任何玩法判定，只是把算过的不再算一遍。
+static var _SIDE_REP: Dictionary = {}
+
+
 static func side_of(f: String) -> String:
-	return _side_rep(f)
+	var hit: Variant = _SIDE_REP.get(f, null)
+	if hit != null:
+		return String(hit)
+	var rep := _side_rep(f)
+	_SIDE_REP[f] = rep
+	return rep
 
 
 ## 与 `f` 同方的所有阵营（含它自己）；顺序稳定（字典序）。

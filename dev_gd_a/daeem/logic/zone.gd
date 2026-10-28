@@ -71,6 +71,13 @@ var rows: int = 0
 ## ⚠️ 不缓存成静态 / 不跨实例复用：测试会在同一进程里换配置建好几个世界。
 var cfg: ConfigRes = null
 
+## ★★ 2026.10.28（性能）：`update()` 每帧复用的三张临时表（键 = 区块 id）。
+##    见 `update()` 里那段说明：原来每帧给每个区块各新建 2 个字典 + 1 个数组，
+##    24 个区块就是每帧 72 次分配；现在只 `clear()`（原地清空，不分配）。
+var _present_counts: Dictionary = {}     # zid → {阵营 id: 活单位数}
+var _present_sides: Dictionary = {}      # zid → {方: true}
+var _present_here: Dictionary = {}       # zid → Array（该区块邻域里的活单位）
+
 
 static func build_from_map(map, cfg: ConfigRes, factions: Array) -> RefCounted:
 	var zs = new()
@@ -777,13 +784,25 @@ func update(cfg: ConfigRes, dt: float, units: Array, factions: Array) -> void:
 	#     → `progress_by` 仍按真实阵营铺键，UI 取色拿到的还是「enemy / ai / p1」这些**真名字**。
 	#   · `present_sides`：这个区块里站着**几方**（联盟折叠后）
 	#     → 只有「恰好一方」才有人能读条；两个盟友的兵同处一区算**一方**（不互相抵消）。
-	var present_by: Dictionary = {}
-	var present_sides: Dictionary = {}
+	# ★★ 2026.10.28（性能）：三张「每帧一次」的临时表改为**复用**。
+	#
+	# 原来是每帧给**每个区块**各新建 2 个字典 + 1 个数组（`counts` / `sides` / `here`）：
+	# 24 个区块 = 每帧 72 次分配。手机读数里 `zones` 那一项（`z 1.0 ms`）有相当一部分在这里，
+	# 因为手机的内存分配器比桌面慢得多。
+	# 现在按「区块 id → 容器」缓存，每帧只 `clear()`（原地清空，不分配）。
+	#
+	# ⚠️ 复用的前提是「下游只读、且不跨帧持有」：
+	#     · `_advance_zone()` 只**读**这两个字典（进度写在 `z["progress_by"]` 里）；
+	#     · `here` 只在本段内被遍历两次，不存进任何长期结构。
+	#   键是区块 id，一局内不变 ⇒ 每帧 `clear()` 之后内容与「新建」逐位一致。
+	var present_by: Dictionary = _present_counts
+	var present_sides: Dictionary = _present_sides
 	for z in zones:
 		var zid := int(z["id"])
-		var here: Array = _units_in_capture_area(z, head, nxt, units, radius)
-		var counts: Dictionary = {}
-		var sides: Dictionary = {}
+		var here: Array = _scratch_list(_present_here, zid)
+		_fill_units_in_capture_area(z, head, nxt, units, radius, here)
+		var counts: Dictionary = _scratch_map(present_by, zid)
+		var sides: Dictionary = _scratch_map(present_sides, zid)
 		for u in here:
 			# ★ 中立化单位不再参与占领：既不读条，也不冻结别人的进度。
 			if u.neutralized:
@@ -800,14 +819,36 @@ func update(cfg: ConfigRes, dt: float, units: Array, factions: Array) -> void:
 				if FactionRes.same_side(own, String(u2.faction)):
 					sides[FactionRes.side_of(own)] = true
 					break
-		present_by[zid] = counts
-		present_sides[zid] = sides
 
-	# 2) 逐区块推进
+	# 2) 逐区块推进（顺序与「先算完全部区块、再逐个推进」逐位一致）
 	for z in zones:
 		var zi := int(z["id"])
 		_advance_zone(z, present_by[zi], present_sides[zi], flist,
 			capture_time, decay, max_mult, curve_k, curve_p, dt)
+
+
+## 取（必要时新建）一张可复用的「区块 id → 字典」，并清空它。
+func _scratch_map(store: Dictionary, zid: int) -> Dictionary:
+	var hit: Variant = store.get(zid, null)
+	if hit == null:
+		var fresh: Dictionary = {}
+		store[zid] = fresh
+		return fresh
+	var d: Dictionary = hit
+	d.clear()
+	return d
+
+
+## 取（必要时新建）一个可复用的「区块 id → 数组」，并清空它。
+func _scratch_list(store: Dictionary, zid: int) -> Array:
+	var hit: Variant = store.get(zid, null)
+	if hit == null:
+		var fresh: Array = []
+		store[zid] = fresh
+		return fresh
+	var a: Array = hit
+	a.clear()
+	return a
 
 
 ## 「落在某区块**中心邻域**里的活单位」——占领判定的「在场」口径（见 `update()` 的说明）。
@@ -818,15 +859,23 @@ func update(cfg: ConfigRes, dt: float, units: Array, factions: Array) -> void:
 ##   走到这里只可能是那张图里这个区块一个格都没有。
 func _units_in_capture_area(z: Dictionary, head: PackedInt32Array,
 		nxt: PackedInt32Array, all_units: Array, radius: int) -> Array:
+	var out: Array = []
+	_fill_units_in_capture_area(z, head, nxt, all_units, radius, out)
+	return out
+
+
+## `_units_in_capture_area()` 的**写入版**：结果填进调用方给的数组（默认是复用的）。
+## ★★ 2026.10.28（性能）：占领判定每帧要问**每个区块**一次，而「每区块新建一个数组」
+##    在手机上就是每帧几十次分配。`update()` 现在传进一张按 zid 复用的数组。
+func _fill_units_in_capture_area(z: Dictionary, head: PackedInt32Array,
+		nxt: PackedInt32Array, all_units: Array, radius: int, out: Array) -> void:
 	var c: Variant = z["center"]
 	if c == null:
-		var out: Array = []
 		for u in all_units:
 			if u.alive and zone_at(u.tx, u.ty) == z:
 				out.append(u)
-		return out
+		return
 	var center: Vector2i = c
-	var out2: Array = []
 	for dy in range(-radius, radius + 1):
 		var ty: int = center.y + dy
 		if ty < 0 or ty >= rows:
@@ -838,9 +887,8 @@ func _units_in_capture_area(z: Dictionary, head: PackedInt32Array,
 			# ★ 2026.10.27：整型链表遍历（见 `update()` 的分桶说明）
 			var i: int = head[ty * cols + tx]
 			while i >= 0:
-				out2.append(all_units[i])
+				out.append(all_units[i])
 				i = nxt[i]
-	return out2
 
 
 ## ★ 人数加成曲线：n 个同阵营单位在场时的读条倍率。

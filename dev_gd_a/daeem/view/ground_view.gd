@@ -299,12 +299,28 @@ func _bake_fog(cols: int, rows: int, force: bool = false) -> ImageTexture:
 		_fog_painted.fill(0)
 	fog_painted_tiles = 0
 	var m = world.map
+	# ★★ 2026.10.28（性能）：不再逐格调 `world.fog.tile_visible()`。
+	#
+	# 那个函数每格要做两次 `FactionRes.side_of()`（一次查 `_display_reveal`、一次查 `sight`）
+	# + 两次字典查表 + 越界判断；而这里是一张 **cols × rows 的全图循环**
+	# （29×22 = 638 次 / 100×100 = 10000 次，每次重烘都跑一遍）。
+	# 现在把「本方位图 / 是否开全图 / 哪几格在图内」各算**一次**，
+	# 循环里只剩一次数组下标 —— 语义与 `tile_visible()` **逐位等价**：
+	#   · 掩码没算出来（size 不够）⇒ `tile_visible` 全 false ⇒ 这里 `mask_ok = false`；
+	#   · 开全图时 `tile_visible` 只判「在不在图内」，而且要掩码算过 ⇒ 同 `reveal`；
+	#   · 地图外的格子一律算看得见 ⇒ 由 `exists` 兜住。
+	var my := String(world.my_faction)
+	var side_mask_v: Variant = world.fog.sight.get(FactionRes.side_of(my), null)
+	var side_mask: PackedByteArray = side_mask_v if side_mask_v is PackedByteArray else PackedByteArray()
+	var mask_ok: bool = side_mask.size() >= cells
+	var reveal: bool = mask_ok and world.fog.is_revealed_for_display(my)
 	for ty in rows:
+		var row_i: int = ty * cols
 		for tx in cols:
-			var seen: bool = world.fog.tile_visible(world.my_faction, tx, ty)
+			var idx: int = row_i + tx
+			var seen: bool = reveal or (mask_ok and side_mask[idx] != 0)
 			if not m.tile_exists(tx, ty):
 				seen = true
-			var idx: int = ty * cols + tx
 			if diff and (_fog_painted[idx] != 0) == seen:
 				continue                    # 这一格没变：不重画
 			img.fill_rect(Rect2i(tx * k, ty * k, k, k), clear if seen else solid)

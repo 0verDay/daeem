@@ -47,6 +47,14 @@ var terrain: GridRes = null
 var exists: GridRes = null
 var cols: int = 0
 var rows: int = 0
+## ★★ 视野「贡献集合」版本号（单调递增）。谁改了它：
+##   · `unit.sync_tile()` / `unit._sync_tile_if_changed()` —— **只有真的跨格**才 +1（格粒度，
+##     与迷雾的判定粒度一致；碰撞每帧推挤但没换格时不会触发）；
+##   · `world.mark_vision_dirty()` —— 单位进出场 / 阵亡 / 建筑增删 / 归属变动。
+## 消费者只有一个：`fog.refresh_needed()`（没变就整段跳过贡献格采集）。
+## ★ 为什么挂在 **map** 上而不是 world 上：位置写入的两个公共出口手里只有 map，
+##   挂在 world 上就得逐个调用点接钩子 —— 那正是漏掉一个就「迷雾静默冻结」的来源。
+var vision_revision: int = 0
 ## 主阵营的参考点：**从 `faction_bases` 推导出来**，不再单独写在 JSON 里（见 `_resolve_primary_base`）。
 ## 用途只有两个：连通性修正的 BFS 起点、以及「地图没给某一方指定大本营」时的兜底。
 var base: Vector2i = Vector2i.ZERO

@@ -220,13 +220,54 @@ var rand_salt: int = 0
 ## （例如 crowd_bridge 的警戒索敌结果 —— 在 tick 之外读到上一帧的结果就是 bug）。
 var frame_serial: int = 0
 
+## ★★ 2026.10.28：驻地性 AI（`logic/garrison_ai.gd`）的**决策节流**状态。
+##   · `garrison_ai_accum`：距离上一次决策累加了多少秒；
+##   · `garrison_ai_primed`：首帧必跑（否则「第一次 update 什么都不做」）；
+##   · `garrison_ai_generals`：AI 阵营的将领短列表（对象引用）—— 决策那遍刷新，
+##     给**每步都跑**的濒死复活检查用（30 Hz 扫 34 个，而不是 256 个单位）。
+##   ⚠️ 放在 world 上而不是 static：同一进程里测试会同时建两个世界（等价性测试）。
+var garrison_ai_accum: float = 0.0
+var garrison_ai_primed: bool = false
+var garrison_ai_generals: Array = []
+
 ## ★★ 2026.10.27（联机插值）：渲染插值系数 0..1，**只在客机上**被 `net/client_session` 驱动。
 ##
 ## 1.0 = 不插值 ⇒ `render_pos_of()` 直接返回 `u.pos`，与加这个功能之前**逐位一致**。
 ## 房主 / 单机 / 演示 / 测试永远是 1.0；只有客机在两条快照之间把它从 0 推回 1。
 ## ★ 为什么放在 world 上而不是视图里：`unit_view_3d`（立牌）与 `overlay`（血条 / 选中圈）
 ##   必须用**同一个**位置，否则血条会跟立牌错开半格。
+##
+## ★★ 2026.10.28：**单机 / 房主的固定逻辑步长也走这一条**。
+##   逻辑 30 Hz、渲染 60 Hz 时，两次逻辑步之间靠这里插值把动作摊平
+##   （`world.begin_logic_step()` 在每一步之前记下 `prev_pos`）。
 var render_alpha: float = 1.0
+
+## ★★ 2026.10.28：上一次 `tick()` 用的逻辑步长（秒）。
+##
+## 只给**视图**用：固定逻辑步长（30 Hz）下，`render_alpha` 只是「两步之间走到哪」，
+## 要把它换算成「这一帧该往前推多少」还需要「一步是多长」。
+## 投掷物（`view/projectile_view_3d.gd`）靠它做外推，否则箭会以 30 Hz 一跳一跳地走。
+## ⚠️ 不参与任何玩法判定；旧行为（每帧一步）下它等于帧 dt，视图那边会因
+##    `render_alpha == 1.0` 直接短路，不会去读它。
+var last_step_dt: float = 0.0
+
+
+## 固定步长下的「一步开始」：把每个单位当前的位置记成**插值起点**。
+##
+## ★ 什么时候调：`game_scene3d` 在真正调用 `world.tick(step)` **之前**调一次
+##   （一帧要补两步时只在第一步之前调 —— 这两步合起来就是这一帧的位移）。
+## ★ 只在 `render_alpha < 1`（= 开了固定步长）时才有意义：关着的时候直接返回，
+##   一个字段都不写，行为与从前**逐位一致**。
+## ★ 与客机那条路的关系：客机由 `apply_snapshot()` 自己写 `prev_pos`，**不走这里**
+##   （客机不 tick）。两条路都只写同一个字段，不会互相覆盖。
+func begin_logic_step() -> void:
+	if render_alpha >= 1.0:
+		return
+	for u in units:
+		if u.alive:
+			u.prev_pos = u.pos
+
+
 ## 一个单位这一帧**该画在哪**（格）。
 ##
 ## ★ 房主 / 单机：`render_alpha == 1.0` ⇒ 直接返回 `u.pos`（一次比较，零开销，值完全相同）。
@@ -387,6 +428,10 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	projectiles = []
 	morale_aura_bonus = {}
 	_morale_aura_timer = 0.0
+	# ★ 驻地性 AI 的节流状态：重开一局必须从「首帧」重新开始。
+	garrison_ai_accum = 0.0
+	garrison_ai_primed = false
+	garrison_ai_generals = []
 	_events = []
 	_objective_reported = ""
 	_enemy_serial = 0
@@ -1185,6 +1230,7 @@ func _place_faction_units(fid: String, placed: Array) -> void:
 				pu.garrison_zone_id = -1
 				pu.hold_position = false
 		units.append(pu)
+		mark_vision_dirty()
 		# ★★ 将领的附属单位规格（写进单位 + 当场生成满编随机附属兵）。
 		if is_placed_general and pu != null:
 			pu.retinue_target = int(ud.get("escort_count", -1))
@@ -1271,6 +1317,7 @@ func fill_general_retinue(g, count: int, weighted_types: Array) -> void:
 		# ⚠️ 词条已停用：不再从队长继承光环（`inherit_general_aura` 保留但无调用点）。
 		units.append(e)
 		pending.append(e)
+		mark_vision_dirty()
 
 
 ## 从 `weighted_types` 里按权重抽一个**兵种 id**（空表 / 全 0 → ""）。
@@ -1669,6 +1716,8 @@ func apply_faction_layout(faction: String, primary: String = "", with_base: bool
 		for u in units:
 			if u.faction != faction:
 				kept.append(u)
+		if kept.size() != units.size():
+			mark_vision_dirty()
 		units = kept
 
 
@@ -1718,6 +1767,7 @@ func spawn_faction_units(faction: String) -> void:
 	var created_from: int = units.size()
 	for u in create_generals(faction):
 		units.append(u)
+		mark_vision_dirty()
 	# ★★ 挂**将领性（守家）AI** 的那一方：给每位将领一个**归属区划**。
 	#
 	# 为什么需要这一步（实测）：`logic/garrison_ai.gd` 的一切行为都以
@@ -2870,6 +2920,7 @@ func _kill_retinue_silently(leader) -> void:
 		u.stop()
 		u.clear_attack_fx()
 	units = keep
+	mark_vision_dirty()
 
 
 ## ★★ 阵亡入口（由 `unit._die` 调用）：把将领交给**大本营重生队列**。
@@ -3179,6 +3230,7 @@ func _spawn_from_recruit(leader, kind: String) -> Variant:
 	u.garrison_zone_id = int(leader.garrison_zone_id)
 	# ⚠️ 词条已停用：新兵不再从队长继承光环。
 	units.append(u)
+	mark_vision_dirty()
 	# ★★ 新兵必须**立刻接上队伍当前命令**，否则将领在行军 / 交战时招出来的兵会原地脱队。
 	#    放在 append 之后：命令里的寻路 / 碰撞会把它当成世界里的正常单位。
 	u.inherit_orders_from(leader, self, cfg)
@@ -4000,6 +4052,7 @@ func _spawn_zone_recruit(zone, kind: String) -> Variant:
 	)
 	# ⚠️ 词条已停用：`train_trait` 恒为空，不再授予（字段保留在 zone.gd 里）。
 	units.append(u)
+	mark_vision_dirty()
 	# ★ 区划招募出来的将领自己就是队长 → 吃「将领血量 +10%」（用同一个判据函数）
 	u.apply_hp_bonus(_tech_hp_mult_for(u))
 	push_event({"type": "zone_unit_recruited", "zone_id": int(zone["id"]), "unit": u})
@@ -4237,6 +4290,7 @@ func spawn_enemy(tx: int = -1, ty: int = -1) -> Variant:
 	var e = UnitRes.create(cfg, "enemy-%d" % _enemy_serial, "长枪兵",
 		open, FactionRes.NPC_FACTION, ConfigRes.UNIT_TYPE_SPEARMAN)
 	units.append(e)
+	mark_vision_dirty()
 	push_event({"type": "enemy_spawned", "unit": e})
 	return e
 
@@ -4284,6 +4338,7 @@ func add_building(type: String, tx: int, ty: int, owner: String, silent: bool = 
 	_building_at[Vector2i(tx, ty)] = b
 	building_list.append(b)
 	building_revision += 1
+	mark_vision_dirty()
 	# ★ 科技的「建筑血量 +10%」在这里就地补上（**粘性**：倍率没变时是空操作）。
 	#   为什么落在这里而不是每帧刷：新建的建筑必须当场带上加成，
 	#   否则「刚造好的墙比开局那座脆」——那是玩家一眼就看得出的不一致。
@@ -4357,6 +4412,7 @@ func remove_building(b, force: bool = false) -> bool:
 	if i >= 0:
 		building_list.remove_at(i)
 	building_revision += 1
+	mark_vision_dirty()
 	return true
 
 
@@ -4452,13 +4508,39 @@ func refresh_ownership() -> void:
 ##
 ## ⚠️ 不要在这里调 `tick()`：那会把客机变成第二个权威，目标 / 资源 / 战斗会双算。
 ## ⚠️ 也不要在这里 `drop_dead_selection()`：那是 view 的本地选中状态，归 game_scene 管。
+##
+## ★★ 2026.10.28（性能 + 正确性）：这里原来先 `fog.reset_cache()` 再 `fog.update()`
+##   —— **`reset_cache()` 是多余的，而且有害**：
+##     · `fog.update()` 本来就是「按当前世界整块重建掩码」，不需要先清任何东西；
+##     · `reset_cache()` 会连带清掉 `_sector_cache`（按格缓存的视野扇区）、
+##       `_kernel_map_ref`（C# 内核的地形表，清掉之后下一次 update 要用 GDScript
+##       双重循环把整张山地图重建一遍）——**每条快照都重来一次**，
+##       而快照最多 40 条/秒 ⇒ 客机每秒最多 40 次「从零重建全部视野」；
+##     · 更要紧的是它还会清掉 `_sighted`（「敌方建筑见过一次就永久记住」）——
+##       于是客机上「看见过一次的敌方建筑」会随迷雾重新盖住而消失，**而房主上不会**，
+##       两端画面不一致，且不报任何错。
+##   ⇒ 现在只调 `update()`：掩码照样整块重建（等价于旧结果），但缓存与记忆都留住了。
 func refresh_after_snapshot() -> void:
-	if fog != null:
-		fog.reset_cache()
+	# ★ 2026.10.28：与主循环同一条闸门 —— 快照里没人换格 / 没多没少视野来源时，
+	#   不必每秒 40 次把全部掩码重建一遍（判定用的是 `map.vision_revision`，格子级精确）。
+	if fog != null and fog.refresh_needed(self):
 		fog.update(self)
 	refresh_ownership()
 	if tech != null:
 		_refresh_seat_tech_effects()
+
+
+## ★★ 2026.10.28：视野的「贡献集合」变了（单位进出场 / 阵亡 / 建筑增删 / 归属变动）。
+##
+## 迷雾的变更判定只看这个版本号（`map.vision_revision`）——没变就整段跳过贡献格采集。
+## ★ 位置变化**不**经过这里：它由 `unit.sync_tile()` / `_sync_tile_if_changed()` 直接
+##   推进（那两个函数手里有 map，且只在**真的跨格**时 +1）。
+## ⚠️ 新增任何「让某格多出/少掉一个视野来源」的路径，都必须在这里补一次 ——
+##   漏掉的后果是迷雾**静默冻结**（不报错、只是不刷新）。排查时打开
+##   `fog.verify_revision = true`，它会做双路比对并告警。
+func mark_vision_dirty() -> void:
+	if map != null and map.get("vision_revision") != null:
+		map.vision_revision += 1
 
 
 # ------------------------------------------------------------------
@@ -4711,6 +4793,7 @@ func neutralize_faction(faction: String) -> void:
 		if String((st as Dictionary).get("faction", "")) != f:
 			keep.append(st)
 	reddot_states = keep
+	mark_vision_dirty()
 	push_event({"type": "faction_neutralized", "faction": f})
 
 
@@ -5073,6 +5156,7 @@ func tick(dt: float) -> Array:
 	if dt <= 0.0:
 		return _events
 	time += dt
+	last_step_dt = dt
 	frame_serial += 1
 
 	# 警戒索敌：每帧**一次**批量算好（内核里按阵营分组，只扫敌对那一组）。
@@ -5092,20 +5176,28 @@ func tick(dt: float) -> Array:
 
 	# 1) 区块占领（占位规则）
 	var _t_zones := _prof()
+	var _t_zu := _prof()
 	zones.update(cfg, dt, units, factions)
+	# ★★ 2026.10.28（诊断）：把 `zones` 这一段再拆开 —— 它包含「占领读条 / 人口累加 /
+	#   归属刷新」三件事，只看一个总数没法判断该优化哪一件。
+	_prof_done("z/update", _t_zu)
 
 	# 1.5) ★ 区划人口：每个区块各算各的，只按时间涨、不消耗（用户需求）。
 	#      与占领**无关**，也不进 HUD 的资源 —— 点开某个区划的中心能看它自己的人口。
 	#      ★ 科技「区划人口产量 +10%」加的是**己方占领区划**的自然增长速度
 	#        （用户确认的口径：production.population × 地块数），只影响涨得多快，
 	#        上限 population_cap 不变。
+	var _t_pop := _prof()
 	var pop_mults: Dictionary = {}
 	for f in seat_tech_effects.keys():
 		pop_mults[String(f)] = tech_population_mult(String(f))
 	zones.update_population_multi(dt, pop_mults)
+	_prof_done("z/population", _t_pop)
 
 	# 2) 建筑归属变化时才重算
+	var _t_own := _prof()
 	refresh_ownership()
+	_prof_done("z/ownership", _t_own)
 	_prof_done("zones", _t_zones)
 
 	# 2.5) ★★ 士气联动的区划变化：归属变化（掠地）+ 连通性（包围）刷新。
@@ -5208,10 +5300,14 @@ func tick(dt: float) -> Array:
 	MoraleRes.tick_all(self, cfg, dt)
 	_prof_done("morale", _t_morale)
 	var _t_units := _prof()
-	# 单位循环再拆三段的计时（只在 profile_on 时累加）
-	var t_combat := 0
-	var t_reclaim := 0
-	var t_step := 0
+	# ★ `profile_on` 在这里读一次：单位循环里每单位再读一次是动态属性查找（1000 单位 = 每帧 1000 次）。
+	#   细分计时（`units/combat` / `units/reclaim` / `units/step` / `u/timers` / `u/acquire`）
+	#   由 `CombatRes.tick_frame` 与 `update_unit` 自己写，这里不再重复汇总。
+	var prof_on: bool = profile_on
+	# ★ 闪光衰减量每帧算一次：原来 `update_unit` 每单位两次 `cfg.flash_sec_safe` /
+	#   `cfg.hit_flash_sec_safe` 方法调用 + 两次除法（256 单位 = 每帧 512 次）。
+	var dt_flash: float = dt / cfg.flash_sec_safe
+	var dt_hit: float = dt / cfg.hit_flash_sec_safe
 	# ★★ 本帧击杀事件从哪个下标开始 —— 循环后据此扫出「破敌 / 斩将」的士气加成。
 	var morale_ev_start := _events.size()
 	# ★★ 2026.10.27：**单位循环的后端**（见 config.gd 的 `unit_sim_backend`）。
@@ -5238,9 +5334,7 @@ func tick(dt: float) -> Array:
 		#    ⚠️⚠️ 在这里再写一次 `if u.is_downed(): u.tick_near_death(...); continue`
 		#      会让回复与全灭判定**每帧跑两遍**（实测：每 3 秒 1% 变成每 2 秒 1%，
 		#      而且读条会提前读完）—— 这是本轮踩到的最隐蔽的一个坑。
-		var c0 := _prof()
-		CombatRes.tick_frame(self, cfg, u, dt, ui)
-		var _c1 := _prof()
+		CombatRes.tick_frame(self, cfg, u, dt, ui, prof_on, dt_flash, dt_hit)
 	# ★★ 4.1) 招募的「脱战计时」：必须在**单位逻辑之后**更新 ——
 	#    这一帧刚锁上的目标 / 刚挨的打要立刻反映到计时里（受击清零在 take_damage）。
 	_tick_recruit_idle(dt)
@@ -5257,10 +5351,6 @@ func tick(dt: float) -> Array:
 	# 只遍历「有救援意图」的那几个（正常情况 0 个），不影响 bench 的分段开销。
 	update_rescue_orders()
 	_prof_done("units", _t_units)
-	if profile_on:
-		profile_us["units/combat"] = int(profile_us.get("units/combat", 0)) + t_combat
-		profile_us["units/reclaim"] = int(profile_us.get("units/reclaim", 0)) + t_reclaim
-		profile_us["units/step"] = int(profile_us.get("units/step", 0)) + t_step
 
 	# 4.5) 清理离场单位。
 	#      ⚠️ 这里**不能**简单地按 alive 过滤：对战模式下阵亡的单位要留在列表里等复活，
@@ -5268,12 +5358,16 @@ func tick(dt: float) -> Array:
 	#      ★ 被摘掉的这一批要**在这里**结算招募队列（退款 + 事件）——
 	#        下一帧 _tick_recruitment 已经看不到它们了。
 	var keep: Array = []
+	var dropped := 0
 	for u in units:
 		if u.alive or u.awaiting_respawn():
 			keep.append(u)
 		else:
 			_release_recruit(u, true, "leader_died")
+			dropped += 1
 	units = keep
+	if dropped > 0:
+		mark_vision_dirty()
 	# 清理之后重建索引：后面的 AI / 目标判定按 id 查时不应再看到已经离场的单位。
 	_rebuild_tick_lookup()
 
@@ -5438,8 +5532,17 @@ func profile_sub(key: String, us: int) -> void:
 ## 把它标成 not alive 了，hp 只是给渲染看血条用的。
 func _collect_destroyed_buildings() -> void:
 	var removed := false
-	for b in building_list.duplicate():
-		if b.alive:
+	# ★★ 2026.10.28（性能）：**从后往前按下标扫**，不再 `building_list.duplicate()`。
+	#
+	# 原来是「先整表复制一份，再在副本上遍历」——那是**每帧**一次 O(建筑数) 的数组分配
+	# （城墙上限 240 段 + 箭塔 / 大本营，实战里几十到几百栋都是常态）。
+	# `remove_building()` 只会从**本数组**里 `remove_at`，而从后往前删不会跳过任何元素
+	# （删掉的是当前下标，之后要看的是 i-1，它前面的元素位置不受影响）。
+	var i: int = building_list.size() - 1
+	while i >= 0:
+		var b = building_list[i]
+		i -= 1
+		if b == null or b.alive:
 			continue
 		# ★★ 大本营倒下 ⇒ 该阵营整体中立化（保留归属、停摆变灰）。
 		#   在移除之前做：移除之后 owner 还在，但这里只处理一次、语义更清楚。
@@ -5787,6 +5890,7 @@ func drop_unit_ids(ids: Array) -> void:
 		return
 	units.clear()
 	units.append_array(kept)
+	mark_vision_dirty()
 
 
 ## 按 id 找单位

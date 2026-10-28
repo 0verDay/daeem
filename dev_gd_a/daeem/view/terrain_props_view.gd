@@ -38,8 +38,11 @@
 extends Node3D
 
 const ConfigRes = preload("res://logic/config.gd")
-const PathfinderRes = preload("res://logic/pathfinder.gd")
 const FactionRes = preload("res://logic/faction.gd")
+## ★★ 「3×3 内有可见单位」的按格位图（见 view/fade_stamp.gd）：
+##    原来是对**每一棵树 / 每一个山块**各做 9 次 `Dictionary.has(Vector2i)`，
+##    现在由单位那一侧铺一次位图，这里只做一次数组下标。
+const FadeStampRes = preload("res://view/fade_stamp.gd")
 
 const PROP_SHADER = preload("res://view/terrain_props.gdshader")
 const FADE_SHADER = preload("res://view/terrain_props_fade.gdshader")
@@ -120,6 +123,17 @@ var _fog_side: String = ""
 ## 上一次是否处于「迷雾关闭」状态（关掉时要一次性把所有实例恢复成亮色）
 var _fog_was_off: bool = false
 
+## ★★ 2026.10.28（性能）：**逐格缓存**的三张位图（长度 = cols × rows）。
+##
+## · `_exists_flags` —— 这一格在不在图里（`map.tile_exists()`）。
+##   原来每个实例、每次重绘迷雾都调一次 `tile_exists()`（内部两次 Grid 方法调用）；
+##   而它与地形一起**只在装配时确定**，所以建一次就够。
+## · `_fade_stamp` / `_fade_stamp_prev` —— 「3×3 内有可见单位」的位图与本帧之前那一份。
+##   两张相等（`PackedByteArray ==` 是 memcmp）⇒ 单位没挪窝 ⇒ 整段淡出循环直接跳过。
+var _exists_flags: PackedByteArray = PackedByteArray()
+var _fade_stamp: PackedByteArray = PackedByteArray()
+var _fade_stamp_prev: PackedByteArray = PackedByteArray()
+
 
 func setup(p_cfg: ConfigRes, p_world, p_palette) -> void:
 	cfg = p_cfg
@@ -159,6 +173,7 @@ func setup(p_cfg: ConfigRes, p_world, p_palette) -> void:
 	_build_mountains()
 	_build_water()
 
+	_build_exists_flags()
 	_refresh_buildings()
 	_apply_fog(true)
 	_apply_fade()
@@ -186,10 +201,24 @@ func _process(_dt: float) -> void:
 	if not _enabled or world == null:
 		return
 	_frame += 1
+	# ★★ 2026.10.28（诊断）：**把这一层纳入分段计时**。
+	#
+	# 在此之前 `terrain_props._process` 完全不在任何 profile 里 ——
+	# 它在手机读数上一直落在 `rest` 那一栏（"fr 减去所有已知分段"），是最大的黑盒。
+	# ⚠️ 只有 `ui.show_perf_detail = true`（真机排查）时才付这两次时钟调用。
+	# ⚠️ 用 `world.get("profile_on")` 而不是直接读属性：测试里可能拿桩对象进来
+	#    （`test_fog` 的 FakeWorld 就是这样 —— 直接读会抛错并中断整段 `_process`）。
+	var prof_on: bool = world.get("profile_on") == true
+	var t0: int = Time.get_ticks_usec() if prof_on else 0
 	_apply_fog(false)
+	var t1: int = Time.get_ticks_usec() if prof_on else 0
 	_apply_fade()
+	var t2: int = Time.get_ticks_usec() if prof_on else 0
 	if _frame % BUILDING_CHECK_FRAMES == 0:
 		_refresh_buildings()
+	if t0 != 0 and world.has_method("profile_sub"):
+		world.profile_sub("props/fog", t1 - t0)
+		world.profile_sub("props/fade", t2 - t1)
 
 
 # ------------------------------------------------------------------
@@ -536,15 +565,29 @@ func _apply_fog(force: bool = false) -> void:
 	_fog_side = side
 	_fog_mask = mask.duplicate()
 
+	# ★★ 2026.10.28（性能）：不再逐实例调 `world.fog.tile_visible()`。
+	#
+	# 那个函数每格要做：`is_revealed_for_display()`（一次 `side_of` + 字典查）
+	# + `logic_tile_visible()`（再一次 `side_of` + 字典查 + 越界判断）。
+	# 而树 / 山块的量级是**每格 4 个候选点**（`tree_spacing = 0.5`）——
+	# 29×22 的图约 700 个、100×100 的图上万 ⇒ 每次重绘迷雾就是上万次
+	# 「函数调用 + 两次字典查表 + 两次数组分配」。
+	#
+	# 现在把三件事各算**一次**（本方位图 / 是否开全图 / 图内哪几格存在），
+	# 之后每个实例只做一次数组下标。语义与 `tile_visible()` **逐位等价**：
+	#   · 掩码还没算出来（size 不够）⇒ 全 false；
+	#   · 开全图（观战）时只判「在不在图内」，且要掩码算过 ⇒ 同 `reveal`；
+	#   · 地图外的格子一律算看得见 ⇒ 由 `_exists_flags` 兜住。
+	var mask_ok: bool = mask.size() >= _cols * _rows
+	var reveal: bool = world.fog.is_revealed_for_display(String(world.my_faction)) and mask_ok
+
 	for b in _batches:
 		if not b.receives_fog:
 			continue
 		for i in b.tiles.size():
 			var t: int = b.tiles[i]
-			var tx: int = t % _cols
-			var ty: int = t / _cols
-			var seen: bool = world.fog.tile_visible(world.my_faction, tx, ty)
-			if not world.map.tile_exists(tx, ty):
+			var seen: bool = reveal or (mask_ok and mask[t] != 0)
+			if t < _exists_flags.size() and _exists_flags[t] == 0:
 				seen = true
 			var want: int = 1 if seen else 0
 			if b.visible[i] == want:
@@ -553,6 +596,19 @@ func _apply_fog(force: bool = false) -> void:
 			var tint: Color = b.tints[i]
 			var d: float = 1.0 if seen else _fog_dim
 			_set_batch_custom_data(b, i, Color(tint.r * d, tint.g * d, tint.b * d, 1.0))
+
+
+## 建「这一格在不在图里」的位图（装配时一次；见 `_exists_flags` 的说明）。
+func _build_exists_flags() -> void:
+	_exists_flags = PackedByteArray()
+	if world == null or world.map == null or _cols <= 0 or _rows <= 0:
+		return
+	_exists_flags.resize(_cols * _rows)
+	var m = world.map
+	for ty in _rows:
+		var row: int = ty * _cols
+		for tx in _cols:
+			_exists_flags[row + tx] = 1 if m.tile_exists(tx, ty) else 0
 
 
 func _set_all_instances_visible() -> void:
@@ -580,14 +636,17 @@ func _set_batch_custom_data(b: Batch, i: int, c: Color) -> void:
 func _refresh_buildings() -> void:
 	if world == null or world.buildings == null:
 		return
+	# ★★ 2026.10.28（性能）：直接读建筑网格的底层数组，不再走
+	#   `PathfinderRes.occupied()`（静态调用 + `get_cell` 的越界判断）。
+	#   等价性：`occupied()` 就是 `buildings.get_cell(x, y) != null`，
+	#   而这里的 `t = ty * cols + tx` 一定是图内的合法下标。
+	var bdata: Array = world.buildings.data
 	for b in _batches:
 		if not b.hide_on_build:
 			continue
 		for i in b.tiles.size():
 			var t: int = b.tiles[i]
-			var tx: int = t % _cols
-			var ty: int = t / _cols
-			var want: int = 1 if PathfinderRes.occupied(world.buildings, tx, ty) else 0
+			var want: int = 1 if (t < bdata.size() and bdata[t] != null) else 0
 			if b.hidden[i] == want:
 				continue
 			b.hidden[i] = want
@@ -655,24 +714,27 @@ func _apply_instance_state(b: Batch, i: int) -> void:
 
 
 ## 每帧：3×3 内有可见单位的树 / 山块搬到淡出批，其余回主批。
+##
+## ★★ 2026.10.28（性能）：**两层省法**。
+##   ① 位图代替 9 次字典探测（见 `view/fade_stamp.gd`）：每个道具从 9 次
+##      「新建 Vector2i + 哈希」降到 1 次数组下标；
+##   ② 位图与上一帧**完全相同**（单位全站着没动）⇒ 整段循环直接跳过。
+##      这一步不需要额外的脏标记：`PackedByteArray ==` 就是一次 memcmp
+##      （648 格 ≈ 648 字节），比走 700 个实例便宜三个数量级。
 func _apply_fade() -> void:
 	var marked: Dictionary = _fade_marked_tiles()
+	_fade_stamp = FadeStampRes.build(marked, _cols, _rows)
+	# 尺寸非法（cols / rows = 0）时位图是空的：不要去下标它（那时也没有批次）。
+	if _fade_stamp.is_empty():
+		return
+	if _fade_stamp == _fade_stamp_prev:
+		return
+	_fade_stamp_prev = _fade_stamp.duplicate()
 	for b in _batches:
 		if not b.has_fade:
 			continue
 		for i in b.tiles.size():
-			var t: int = b.tiles[i]
-			var tx: int = t % _cols
-			var ty: int = t / _cols
-			var near: bool = false
-			for dy in range(-1, 2):
-				for dx in range(-1, 2):
-					if marked.has(Vector2i(tx + dx, ty + dy)):
-						near = true
-						break
-				if near:
-					break
-			var want: int = 1 if near else 0
+			var want: int = 1 if _fade_stamp[b.tiles[i]] != 0 else 0
 			if b.faded[i] == want:
 				continue
 			b.faded[i] = want

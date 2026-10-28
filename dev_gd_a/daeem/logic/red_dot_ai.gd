@@ -218,6 +218,8 @@ static func _spawn_general(world, cfg: ConfigRes, faction: String, gi: int,
 	if g == null:
 		return null
 	world.units.append(g)
+	# ★ 红点将领也是视野来源（迷雾变更判定只看这个版本号）。
+	world.mark_vision_dirty()
 	return g
 
 

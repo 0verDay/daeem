@@ -47,18 +47,45 @@ const CommandProcessorRes = preload("res://logic/command_processor.gd")
 const FactionRes = preload("res://logic/faction.gd")
 
 
+## 单次决策最多推进多少秒（极端卡顿后不要一次补一大段）。
+const DECISION_STEP_MAX := 0.5
+
+
 ## 每帧推进所有「驻防将领」。
 ##
 ## @param dt 本帧秒数。★ 必须由调用方传进来：world 上**没有** dt 字段，
 ##        而脱战计时 / 巡逻计时全靠它 —— 传 0 会让守将永远停在「刚脱战」那一帧。
+##
+## ★★ 2026.10.28：**决策降频**（参考 Rusted Warfare 的分层 AI：决策 10~30 Hz）。
+##   · 决策周期 = `ai.garrison.decision_interval_sec`（默认 0.1 = 10 Hz；0 = 每帧，旧行为）；
+##   · 首帧必跑（`world.garrison_ai_primed`），否则「第一次 update 什么都不做」；
+##   · 决策体里所有计时器推进用的是**累加经过的时间**（`step`），不是帧 dt ——
+##     用帧 dt 的话 `patrol_interval_sec` / `retarget_cooldown_sec` 会被拉长 3 倍
+##     （`ai_commander.gd:306-308` 对同一个坑有注释）；
+##   · `_tick_revive` **不降频**：它每步都跑，但只走缓存下来的「AI 将领」短列表。
 static func update(world, cfg: ConfigRes, dt: float) -> void:
 	# ★★ 再起与 dt 无关（只看血量门槛与是否在读条）—— 放在最前面，dt <= 0 时也照跑。
 	_tick_revive(world, cfg)
 	if dt <= 0.0:
 		return
 	var gc: Dictionary = cfg.ai_garrison_cfg()
+	var interval: float = float(gc.get("decision_interval_sec", 0.0))
+	# ★ 首帧传**帧 dt**（不是周期）：测试与开局都依赖「一次 update 立即生效」的语义。
+	var step: float = dt
+	if interval > 0.0:
+		world.garrison_ai_accum = float(world.garrison_ai_accum) + dt
+		if bool(world.garrison_ai_primed) and float(world.garrison_ai_accum) + 1e-9 < interval:
+			return
+		if bool(world.garrison_ai_primed):
+			step = float(world.garrison_ai_accum)
+		world.garrison_ai_accum = 0.0
+	else:
+		# interval = 0 = 回退到「每步决策」：累加器不参与，别让它无限增长。
+		world.garrison_ai_accum = 0.0
+	world.garrison_ai_primed = true
+	step = minf(step, DECISION_STEP_MAX)
+
 	var patrol_interval: float = float(gc["patrol_interval_sec"])
-	var leash: float = float(gc["patrol_leash_tiles"])
 	var idle_sec: float = float(gc["combat_idle_sec"])
 	var retarget_cd: float = float(gc["retarget_cooldown_sec"])
 	var recruit_check: float = float(gc["recruit_check_sec"])
@@ -74,36 +101,41 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 	# ⚠️ 只数「活着 + 有归属区划 + 自己带队」的：附属兵**不算**（它们跟着队长走，
 	#    各算一个的话「同一个区划里几个队长」这个数会虚高、扇区被切得太碎）。
 	# ⚠️ 正在招兵的那些**不算**（它们这一帧不巡逻，算进去会让别人的下标跟着跳）。
-	# ★★ 每帧只建一次索引（旧实现两趟全量扫描，且每人每趟都要
-	#    `world.unit_by_id()` 线性找队长 ⇒ O(n²)；dscj 256 单位时这是 AI 段的大头）：
-	#   · alive_ids：判「队长还在不在」用（与 `world.team_leader` 同口径）；
-	#   · retinues ：队长 id → 活着的附属兵（与 `world.retinue_of` 同口径）。
-	#   同一帧内世界不会增减单位（招募落成发生在本函数之前的 world.tick 段），
-	#   所以这份索引可以放心用到底。
-	var alive_ids: Dictionary = {}
+	# ★★ 2026.10.27：**一遍扫描**同时建三个索引（旧实现是两遍全表 + 每人一次线性找队长）。
+	# ★★ 2026.10.28：
+	#   · `alive_ids` 那 256 次字典插入**删掉了** —— `is_patrol_leader()` 改走
+	#     `world.team_leader()`（`unit_by_id` + `.alive`，同口径、O(1)），
+	#   · 同一遍里顺手收集「AI 将领」短列表，给每步都跑的 `_tick_revive` 用。
 	var retinues: Dictionary = {}
-	# ★★ 2026.10.27（性能）：**一遍扫描**同时建三个索引。
-	#
-	# 原来这里是两遍全量 `for u0 in world.units`：第一遍建 alive_ids / retinues，
-	# 第二遍再挑「巡逻队长候选」。256 个单位就是每帧 512 次遍历 + 一批字典操作。
-	# 现在第二遍只走**候选**（有归属区划、活着、没濒死的），不再扫全表。
-	#
-	# ⚠️ 为什么不能把 `is_patrol_leader()` 直接挪进这一遍：它要查 `alive_ids`，
-	#   而那个字典必须**全部填完**才准 —— 队长有可能排在自己队员之后。
-	#   所以这一遍只收集候选，判身份留到下一遍（对着已完成的索引）。
 	var candidates: Array = []
+	var ai_generals: Array = []
+	var kind_cache: Dictionary = {}
 	for u0 in world.units:
 		if not u0.alive:
 			continue
-		alive_ids[u0.id] = true
 		if u0.leader_id != "":
 			var arr: Variant = retinues.get(u0.leader_id, null)
 			if arr == null:
 				retinues[u0.leader_id] = [u0]
 			else:
 				(arr as Array).append(u0)
+		if u0.is_general():
+			var f0 := String(u0.faction)
+			var kind0: Variant = kind_cache.get(f0, null)
+			if kind0 == null:
+				kind0 = String(world.ai_kind_of(f0))
+				kind_cache[f0] = kind0
+			if String(kind0) == LevelRes.AI_GARRISON or String(kind0) == LevelRes.AI_REDDOT:
+				ai_generals.append(u0)
 		if int(u0.garrison_zone_id) >= 0 and not u0.is_downed():
 			candidates.append(u0)
+	world.garrison_ai_generals = ai_generals
+	# ★ 区划 id → 区划：`world.zone_by_id()` 是**线性扫描**，而每个队长每帧都要查一次。
+	#   一次决策建一次表即可（区划只随地图重建）。
+	var zone_cache: Dictionary = {}
+	if world.zones != null:
+		for zid_k in world.zones.zones:
+			zone_cache[int((zid_k as Dictionary)["id"])] = zid_k
 
 	var patrol_counts: Dictionary = {}
 	var leaders: Array = []
@@ -113,7 +145,7 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 		#    ⚠️ 少了这一条就是手玩报的那个 bug：「将领会巡逻，但将领招募出来的
 		#       单位不会巡逻」—— 每个兵各算一个巡逻队长时，它们要么站着不动
 		#       （没有路线可用），要么各走各的（一支小队散成四个人）。
-		if not is_patrol_leader(world, u2, alive_ids):
+		if not is_patrol_leader(world, u2):
 			continue
 		leaders.append(u2)
 		var zid2 := int(u2.garrison_zone_id)
@@ -138,14 +170,14 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 		if u.is_downed():
 			continue
 
-		var z: Variant = _garrison_zone(world, u)
-		u.retarget_cd = maxf(0.0, u.retarget_cd - dt)
+		var z: Variant = zone_cache.get(zid_self, null) if zid_self >= 0 else null
+		u.retarget_cd = maxf(0.0, u.retarget_cd - step)
 		# ★★ 返程的**兜底终点**（本轮修 bug，见 `unit.returning_home_sec`）：
 		#    实测卡过一次 —— 放弃追击之后它一直没能回到自己区划，
 		#    `returning_home` 挂着不清 ⇒ 第 5 步永远跳过 ⇒ 它定死在原地、
 		#    再也接不到新的巡逻命令。给它一个上限，超了就当到家。
 		if u.returning_home:
-			u.returning_home_sec += dt
+			u.returning_home_sec += step
 			if u.returning_home_sec > RETURN_HOME_MAX_SEC:
 				u.returning_home = false
 				u.returning_home_sec = 0.0
@@ -186,7 +218,7 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 		# ⚠️ 用的是巡逻那一条现成的「掉队就叫上」（`_catch_up_retinue`），阈值
 		#    `patrol_retinue_leash_tiles` 与巡逻时同一个口径（不另立一套）。
 		if in_combat and u.chasing:
-			var stuck := _catch_up_retinue(world, cfg, u, u.pos, retinues, dt)
+			var stuck := _catch_up_retinue(world, cfg, u, u.pos, retinues, step)
 			if stuck or not _chase_should_continue(world, u, retarget_cd):
 				_abandon_chase(world, cfg, u, z, zone_count, retarget_cd, retinues)
 				in_combat = false
@@ -220,7 +252,7 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 		if in_combat:
 			u.combat_idle_timer = 0.0
 		else:
-			u.combat_idle_timer += dt
+			u.combat_idle_timer += step
 
 		# ---- 3) 正在打（单位或建筑）→ 这一帧交给 combat.gd，什么都不做 ----
 		if in_combat:
@@ -261,7 +293,7 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 		if int(u.retinue_target) >= 0:
 			want = int(u.retinue_target)
 		if u.combat_idle_timer >= idle_sec and want > 0:
-			u.garrison_recruit_timer -= dt
+			u.garrison_recruit_timer -= step
 			if u.garrison_recruit_timer <= 0.0:
 				u.garrison_recruit_timer = recruit_check
 				if orders < MAX_RECRUIT_ORDERS_PER_TICK and _try_recruit(world, u, want):
@@ -297,7 +329,7 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 		#    ⇒ 错峰只在「计时器还没走过」时做一次，之后交给正常的倒数。
 		if int(u.patrol_zone_id) == -2 and u.patrol_timer <= 0.0:
 			u.patrol_timer = patrol_interval * _phase01(u)
-		u.patrol_timer -= dt
+		u.patrol_timer -= step
 		if u.patrol_timer <= 0.0:
 			u.patrol_timer = patrol_interval
 			_patrol_leader(world, cfg, u, z, zone_count, retinues)
@@ -415,13 +447,12 @@ static func _center_under_attack(world, u, z) -> bool:
 		return false
 	if (z as Dictionary).get("center", null) == null:
 		return false
-	var bar: Dictionary = world.zones.capture_bar(z)
-	var st := String(bar.get("state", ""))
+	var st := String((z as Dictionary).get("capture_state", ""))
 	if st != "reading" and st != "frozen":
 		return false
-	if float(bar.get("value", 0.0)) <= 0.0:
+	if float((z as Dictionary).get("progress", 0.0)) <= 0.0:
 		return false
-	var f := String(bar.get("faction", ""))
+	var f := String((z as Dictionary).get("capture_faction", ""))
 	if f == "":
 		return false
 	return not FactionRes.same_side(String(u.faction), f)
@@ -863,6 +894,15 @@ static func _pick_recruit_kind(world, u) -> String:
 	return kind
 
 
+## ★ 测试 / 调试用：跳过决策节流，让下一次 `update` 立刻做一次决策。
+##   降频之后，「一次 update 就生效」的断言要靠它显式推进（见 `test_campaign_ai`）。
+static func force_next(world) -> void:
+	if world == null:
+		return
+	world.garrison_ai_accum = 0.0
+	world.garrison_ai_primed = false
+
+
 ## ★★ 让 **AI 阵营**的濒死将领「一够条件就再起」（本轮口径）。
 ##
 ## 需求原话：「保留将领的再起逻辑，当将领可以再起时，无消耗地立刻执行再起」。
@@ -880,9 +920,25 @@ static func _pick_recruit_kind(world, u) -> String:
 static func _tick_revive(world, cfg: ConfigRes) -> void:
 	# ★ 阵营 → AI 类别只算一次（`world.ai_kind_of` 要查名单 / 建筑；每位将领每帧调一次不划算）。
 	var kind_cache: Dictionary = {}
-	for u in world.units:
-		if not u.alive or not u.is_general():
-			continue
+	# ★★ 2026.10.28：**不再每步扫全表**。决策那一遍把「AI 将领」缓存在
+	#   `world.garrison_ai_generals`（dscj 约 34 个），这里只走它 —— 30 Hz × 256 单位
+	#   的整表遍历降到 30 Hz × 34 次简单判断。
+	#   ⚠️ 只在「决策还没跑过」（`garrison_ai_primed == false`：首次调用 / reset 之后）
+	#      时退回全表扫描，保证首帧语义与从前逐位一致。
+	#      ★ 缓存**为空**不等于「要扫全表」：玩家阵营的局里 AI 将领本来就是 0 个，
+	#        那时若回退成全表扫描，等于把这个优化又还回去了。
+	var generals: Array = world.garrison_ai_generals
+	if not bool(world.garrison_ai_primed):
+		generals = []
+		for u in world.units:
+			if u.alive and u.is_general():
+				generals.append(u)
+	else:
+		# 顺手剔除已离场的对象（阵亡 -> 复活用的是同一个对象，所以不必重新收集）。
+		for i in range(generals.size() - 1, -1, -1):
+			if generals[i] == null or not generals[i].alive:
+				generals.remove_at(i)
+	for u in generals:
 		var f := String(u.faction)
 		var kind: String = String(kind_cache.get(f, ""))
 		if not kind_cache.has(f):

@@ -128,6 +128,8 @@ func setup(p_cfg: ConfigRes, p_world, p_palette) -> void:
 	cfg = p_cfg
 	world = p_world
 	palette = p_palette
+	# ★ 换局 / 换世界 = 重新 setup ⇒ 「有没有 `render_pos_of`」的缓存必须复位（见 `_render_pos`）。
+	_render_pos_ok = -1
 	_quad = QuadMesh.new()
 	var w: float = palette.cell_size() * QUAD_W
 	_quad.size = Vector2(w, w * QUAD_H_RATIO)
@@ -683,9 +685,22 @@ func head_screen_pos(u) -> Vector2:
 ##
 ## ★★ 2026.10.27：视图层一律走这一个入口，不要直接读 `u.pos` ——
 ##    否则立牌（插值）与血条 / 选中圈（原始 pos）会错开，9Hz 快照下肉眼可见。
+##
+## ★★ 2026.10.28（性能）：`has_method("render_pos_of")` 的结果**缓存起来**。
+##    `has_method` 是一次字符串查表 + 调用分派，而这里每个单位每帧要问 2~3 次
+##    （立牌 / 贴花 / 选中圈各一次）—— 1000 单位就是每帧两三千次白给的查表。
+##    `world` 只在 `setup()` 时确定（换局 = 换场景 = 重新 setup），所以缓存不会过期。
+var _render_pos_ok: int = -1      # -1 = 还没问过，0 = 没有这个方法，1 = 有
+
+
 func _render_pos(u) -> Vector2:
-	if world != null and world.has_method("render_pos_of"):
-		return world.render_pos_of(u)
+	if _render_pos_ok != 0:
+		if _render_pos_ok == 1:
+			return world.render_pos_of(u)
+		if world != null and world.has_method("render_pos_of"):
+			_render_pos_ok = 1
+			return world.render_pos_of(u)
+		_render_pos_ok = 0
 	return u.pos
 
 

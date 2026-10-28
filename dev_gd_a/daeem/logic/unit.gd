@@ -1594,8 +1594,16 @@ func drop_engagement() -> void:
 
 ## 把连续位置换算成所在地块（tx/ty 只用于占区块 / 资源 / 箭塔 / 警戒判定）
 func sync_tile(map) -> void:
-	tx = clampi(floori(pos.x), 0, map.terrain.cols - 1)
-	ty = clampi(floori(pos.y), 0, map.terrain.rows - 1)
+	var nx := clampi(floori(pos.x), 0, map.terrain.cols - 1)
+	var ny := clampi(floori(pos.y), 0, map.terrain.rows - 1)
+	if nx == tx and ny == ty:
+		return
+	tx = nx
+	ty = ny
+	# ★ 真的换格才算「视野来源动了」——迷雾是格粒度的（见 map_data.vision_revision）。
+	#   碰一下属性就 bump 的话，碰撞每帧推挤会让迷雾的版本号闸门永远失效。
+	if map.get("vision_revision") != null:
+		map.vision_revision += 1
 
 
 ## 只在**真的跨了格**的时候才改 tx/ty。
@@ -1606,10 +1614,13 @@ func sync_tile(map) -> void:
 func _sync_tile_if_changed(map) -> void:
 	var nx := clampi(floori(pos.x), 0, map.terrain.cols - 1)
 	var ny := clampi(floori(pos.y), 0, map.terrain.rows - 1)
-	if nx != tx:
-		tx = nx
-	if ny != ty:
-		ty = ny
+	if nx == tx and ny == ty:
+		return
+	tx = nx
+	ty = ny
+	# ★ 与 sync_tile 同一条：只有真的跨格才推进视野版本号（迷雾变更判定的唯一依据）。
+	if map.get("vision_revision") != null:
+		map.vision_revision += 1
 
 
 ## 一帧最多推进几段路径（见 STEP_GUARD_MIN 的注释）。
@@ -1626,6 +1637,10 @@ static var _guard_val: int = 0
 ## ★ 诊断计数器：真正进过 move_to（= 寻路）多少次。只有基准读它，逻辑不依赖。
 ##   和 CombatRes.repath_calls 一起看，就能分清「次数太多」还是「单次太贵」。
 static var move_to_calls: int = 0
+## ★ 诊断计数器：路点被消费（`path.remove_at(0)`）的次数。只有基准读它，逻辑不依赖。
+##   用途：`Array.remove_at(0)` 是 O(n) 前移，文档里曾把单位循环的成本归因于它 ——
+##   这个计数直接回答「每帧到底 pop 了几个路点」，别再靠猜。
+static var path_pops: int = 0
 
 
 func step_guard(map) -> int:
@@ -1673,6 +1688,7 @@ func step_along_path(world, cfg: ConfigRes, dt: float) -> void:
 
 		if d <= 1e-6:                     # 已经在这一段终点上
 			path.remove_at(0)
+			path_pops += 1
 			_sync_tile_if_changed(map)
 			continue
 
@@ -1691,6 +1707,7 @@ func step_along_path(world, cfg: ConfigRes, dt: float) -> void:
 			remaining -= d
 			recenter = remaining
 			path.remove_at(0)
+			path_pops += 1
 			_sync_tile_if_changed(map)
 		else:
 			# 本帧走不完这一段 → 沿方向推进，单位停在地块之间的连续位置上
@@ -1914,6 +1931,9 @@ func _die(cfg: ConfigRes, world, _source = null, recalled: bool = false) -> void
 	revive_total = 0.0
 	alive = false
 	stop()
+	# ★ 阵亡 = 这个视野来源消失（迷雾的变更判定只看 map.vision_revision）。
+	if world != null and world.has_method("mark_vision_dirty"):
+		world.mark_vision_dirty()
 	deaths += 1
 	# ★★ 阵亡后先问 world：能不能进**大本营重生队列**（有可用大本营才行）。
 	#   · true → 对象由队列持有，重生时长由 world 定（召回 10s / 正常 20s）；
@@ -2160,6 +2180,9 @@ func respawn_at_base(cfg: ConfigRes, world, base) -> void:
 	if world != null:
 		if not world.units.has(self):
 			world.units.append(self)
+		# ★ 复活 = 这个视野来源重新出现（迷雾的变更判定只看 map.vision_revision）。
+		if world.has_method("mark_vision_dirty"):
+			world.mark_vision_dirty()
 		world.push_event({"type": "respawn", "unit": self, "faction": String(faction)})
 
 

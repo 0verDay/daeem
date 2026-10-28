@@ -115,6 +115,9 @@ func _test_garrison_defends_center(cfg) -> void:
 	z["capture_state"] = ""
 	z["capture_faction"] = ""
 	z["progress"] = 0.0
+	# ★ 2026.10.28：驻地 AI 决策降到 10 Hz（`ai.garrison.decision_interval_sec`）。
+	#   第二次 update 的 dt 只有 1/60，会被节流掉 —— 显式推进到下一决策点。
+	GarrisonAiRes.force_next(w)
 	GarrisonAiRes.update(w, cfg, 1.0 / 60.0)
 	ok(not g.defending_center, "★ 威胁解除 → 退出「守中心」，恢复正常巡逻")
 

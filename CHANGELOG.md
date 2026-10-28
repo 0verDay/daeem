@@ -7,6 +7,20 @@
 
 本版本为在godot引擎内的原型开发，仅展示完整的局内玩法
 
+### 2026.10.28 性能优化收尾（结束）
+1. **用户确认手机端与电脑端都已流畅运行，性能优化正式结束**；不再安排性能轮次
+2. 一页交接写进 `dev_gd_a/docs/mobile.md` **第 25 节**：现状（真机 ≈60 fps / 桌面 `bench_dscj` 4.76~4.86 ms/帧）、**唯一一份关键设置表**（`sim.*` / `unit.*_backend` / `fog.*` / `ai.garrison.decision_interval_sec` / `ui.mobile_*` / `render.mobile_*`，每项都带「怎么退」）、历轮落地汇总、**8 条经验**、再开性能工作的排查顺序（先 `ui.show_perf` → 均值查 `tick` 分段 / max 查周期性重活 → 最后才考虑结构改造）
+3. 决策与边界另记 `docs/route.md` **第六十六节**：三条边界（手机 30 Hz 逻辑 + 60 fps 渲染、开关必须能一键回退、C# 只用于整段可批量的数值内核），以及**明确不做**的五项（`units` 整段 C# / packed 路径 / fog 增量索引 / 快照编码 / 客户端预测）与各自理由
+4. `docs/README.md` 的「读哪一篇」「当前状态」与 `docs/architecture.md` 的「状态存在哪」同步更新（新增：驻防 AI 节流状态、视野版本号两条）
+
+### 2026.10.28 性能第六轮：units 实测 / fog 版本号闸门 / 驻防 AI 10 Hz
+1. **先修测量**：`world.tick` 单位循环里每单位两次无效 `_prof()` 与从未赋值的分段变量删除 —— 此前 `units/combat`、`units/reclaim`、`units/step` 三个读数**恒为 0**；新增 `u/timers` 与 `Unit.path_pops` 诊断计数器
+2. **units**：实测 256 单位 `units 1.06~1.10 ms/帧`（combat 0.55~0.58 / step 0.26~0.28），`path_pops` 仅 **0.21~0.26 次/帧** ⇒ 推翻「成本在 `Array.remove_at(0)`」与「整段下沉 C#」两条旧判断，本轮**不做** C# 内核（决策表见 `docs/mobile.md` §24.4）
+3. **fog 变更检测**：新增 `map.vision_revision` 版本号闸门（`fog.revision_gate`，默认开）——单位**真的跨格**时 +1，单位进出场 / 阵亡 / 建筑增删 / 归属变动走 `world.mark_vision_dirty()`；`_collect_flat` 顺带内联地形换算与阵营索引。dscj 实测命中率 12%、省 0.01~0.02 ms（大胜需要增量索引，未做）；新增 `tests/test_fog_revision.gd` **30 项**双路校验（两个 `FogRes`，300 帧逐字节相等）
+4. **驻防 AI 降频**：`ai.garrison.decision_interval_sec`（默认 0.1 = 10 Hz，0 = 旧行为）；决策体所有计时器按**累加 dt** 推进；濒死复活不降频、改走缓存的 AI 将领短列表；删除 256 次字典插入、区划线性查找与每帧 `capture_bar()` 分配。实测 `ai/garrison` **0.565~0.600 → 0.269~0.348 ms**
+5. 配置新增 `fog.revision_gate` / `fog.verify_revision` / `ai.garrison.decision_interval_sec`（均在 `config.json` 带注释与回退说明）；`tests/bench_dscj.gd` 新增 `DAEEM_FOG_GATE` / `DAEEM_GARRISON_INTERVAL` 两个 A/B 旋钮
+6. 本轮只跑相关套件（未跑全量）：`test_fog` 183、`test_fog_revision` 30、`test_ai*` 462、`test_campaign*` 487、`test_logic` 265、`test_time_step` 24、`test_view*` 358、`test_snapshot*` 74、`test_ui*` 1448、`test_zone*` 301、`test_recruit_queue` 248、`test_attack_orders` 107、`test_retaliation` 51、`test_alliance` 78、`test_session` 33、`test_collision` 15、`test_crowd_path` 12、`test_morale` 58、`test_downed` 265、`test_minimap*` 59、`test_smoke` 132 —— 全过；`test_unit_backend_equiv`（强制 csharp）8 项通过
+
 ### 2026.10.26 建筑改版：木墙 / 哨塔 + 石墙 / 警戒塔 + 取消建筑升级 + 远程免伤 90%
 1. 显示名：`wall` = **木墙**、`tower` = **哨塔**（内部 id 不变，地图 / 战役数据不用迁移）
 2. 新增 **石墙**（`stone_wall`，700 血 / 120·120 / 5s）与 **警戒塔**（`watch_tower`，550 血 / 180·180 / 7s / 攻击 16、射程 4、间隔 0.7s、视野 15），放在建筑页**第二行**，需要 **2 级大本营**（1 级时可见但置灰）

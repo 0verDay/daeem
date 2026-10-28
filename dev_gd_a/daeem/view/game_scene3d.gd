@@ -44,7 +44,6 @@ const HostSessionRes = preload("res://net/host_session.gd")
 const ClientSessionRes = preload("res://net/client_session.gd")
 ## ★★ 手机端触摸手势识别（单指拖视野 / 单击 / 双击 / 双指框选）—— 见那个文件的文件头
 const TouchControllerRes = preload("res://view/touch_controller.gd")
-
 const MAP_PATH := MapLibraryRes.FALLBACK_MAP_PATH
 
 ## 相机距离倍率的上下限（= 视野的两端）—— **唯一**的取值处（`fit_to_map` / `zoom_at` 都读它）。
@@ -59,6 +58,17 @@ const ZOOM_MAX := 0.3
 ## ★ 与 2D 版同名的两条流程信号：main.gd 原样接得上（不需要为 3D 改上层）。
 signal fullscreen_toggled
 signal return_to_menu_requested
+
+## ★★ 2026.10.28：**固定逻辑步长**（秒）。0 = 关闭（每个渲染帧推进一次 = 旧行为）。
+##
+## `_assemble()` 按平台从 config 取：桌面 `sim.step_sec`（默认 0，手感不变），
+## 手机 `sim.mobile_step_sec`（默认 1/30 = 30 Hz）。
+## 测试 / 基准可以直接改这个字段来复现手机行为（`tests/bench_dscj.gd` 就是这么做的）。
+var logic_step_sec: float = 0.0
+## 固定步长的累加器：攒够 `logic_step_sec` 才走一步。
+var _logic_accum: float = 0.0
+## 是否已经走过至少一步（决定能不能用插值 —— 见 `_process` 里那段 ⚠️）。
+var _logic_alpha_on: bool = false
 
 var cfg: ConfigRes = null
 var world = null
@@ -534,6 +544,18 @@ func _assemble() -> void:
 	if touch_device:
 		_edge_scroll_on = false
 
+	# ★★ 2026.10.28：**固定逻辑步长**（0 = 关闭 = 每渲染帧一步，旧行为）。
+	#
+	# 桌面默认关（手感与旧版逐位一致）；手机默认 30 Hz —— 目的是打破
+	# 「帧率越高 ⇒ 每秒逻辑步越多 ⇒ CPU 越贵 ⇒ 帧率掉回去」这个不动点
+	# （实测 dscj 256 单位停在 30 fps）。两次逻辑步之间由 `world.render_pos_of()` 插值。
+	# ★ 客机不 tick，这个值对它无意义（但保持一致，免得 `_process` 里出现两套判断）。
+	_logic_accum = 0.0
+	_logic_alpha_on = false
+	logic_step_sec = cfg.sim_step_sec
+	if logic_step_sec <= 0.0 and touch_device:
+		logic_step_sec = cfg.sim_mobile_step_sec
+
 	ground = GroundViewRes.new()
 	ground.name = "GroundView3D"
 	add_child(ground)
@@ -828,6 +850,28 @@ func is_following() -> bool:
 	return follow_target != null and follow_target.alive
 
 
+## 固定步长的一步计算：把 `accum` 里攒够的步数取出来（纯函数，测试直接调它）。
+##
+## @param accum     累加器（秒）
+## @param step      一步多长（秒；<= 0 表示没开固定步长）
+## @param max_steps 一帧最多补几步
+## @return `[步数, 剩下的累加量]`
+##
+## ★★ 为什么单独抽出来：固定步长最容易错的地方是「步数算错 / 累加量漂移」
+##   （60 帧之后多跑一步或少跑一步 ⇒ 整体游戏速度变了，而且不容易发现）。
+##   抽成纯函数之后 `tests/test_time_step.gd` 可以直接钉住不变量：
+##   「60 帧 × 1/60 秒、步长 1/30 ⇒ 恰好 30 步，剩余量 < 步长」。
+static func take_logic_steps(accum: float, step: float, max_steps: int) -> Array:
+	if step <= 0.0:
+		return [0, accum]
+	var n: int = 0
+	var cap: int = maxi(1, max_steps)
+	while accum >= step and n < cap:
+		accum -= step
+		n += 1
+	return [n, accum]
+
+
 ## 每帧主循环：推进逻辑 → 同步视图 → 把本地 UI 状态交给覆盖层。
 ##
 ## ★ 这与 2D 版 `game_scene.gd` 的 `_process` 是同一条思路（架构文档第一节）：
@@ -869,9 +913,43 @@ func _process(dt: float) -> void:
 		#   这就是经典的「死亡螺旋」：实测 1000 单位时单帧从 86 ms 滚到 666 ms，
 		#   夹住之后稳定在十几毫秒（2D 版为此专门写过注释，同一条教训）。
 		if coop_role != "guest":
-			var logic_dt: float = minf(dt, cfg.sim_max_dt)
 			var _t_tick := _prof()
-			events = world.tick(logic_dt)
+			if logic_step_sec > 0.0:
+				# ★★ 2026.10.28：**固定逻辑步长**（见 config 的 `_step_comment`）。
+				#
+				# 为什么必须这样：旧写法是「每个渲染帧 tick 一次」⇒ 帧率越高，
+				# 每秒跑的逻辑步越多、CPU 越贵 ⇒ 帧率被钉在一个不动点上
+				# （手机实测：dscj 256 单位稳定在 30 fps，一升到 40 fps 就多跑
+				# 33% 的逻辑步，立刻又掉回去）。
+				# 固定步长之后：渲染 60 fps 时逻辑只跑 30 步/秒 ⇒ 每帧 tick 成本减半。
+				_logic_accum += minf(dt, cfg.sim_max_dt)
+				var pair: Array = take_logic_steps(_logic_accum, logic_step_sec, cfg.sim_step_max_steps)
+				var steps: int = int(pair[0])
+				_logic_accum = float(pair[1])
+				for _i in steps:
+					# 只在**这一帧的第一步**之前记插值起点（多步合起来就是这一帧的位移）。
+					if _i == 0:
+						world.begin_logic_step()
+					var ev: Array = world.tick(logic_step_sec)
+					if not ev.is_empty():
+						events.append_array(ev)
+				# ★ 插值系数：本帧在两次逻辑步之间走了多远（0 = 刚 tick 完，1 = 就要到下一步）。
+				#   `render_alpha < 1` 时视图走 `world.render_pos_of()` 的插值分支。
+				#
+				# ⚠️ 必须在**每一帧**都算（哪怕这一帧一步都没走）：60 fps 渲染 + 30 Hz 逻辑时，
+				#   隔一帧才有一次 tick，中间那一帧要靠 alpha 从 0 走到 0.5，
+				#   否则单位会「停一帧再跳一格」。
+				# ⚠️ 第一步之前不能插值：那时 `prev_pos` 还没被 `begin_logic_step()` 写过
+				#   （新建单位的是零向量），alpha < 1 会让它们从原点飞过来。
+				if steps > 0:
+					_logic_alpha_on = true
+				if _logic_alpha_on:
+					world.render_alpha = clampf(_logic_accum / logic_step_sec, 0.0, 1.0)
+			else:
+				# 旧行为（桌面默认）：每个渲染帧推进一次，dt 可变。
+				var logic_dt: float = minf(dt, cfg.sim_max_dt)
+				world.render_alpha = 1.0          # 不插值 ⇒ `render_pos_of` 直接返回 u.pos
+				events = world.tick(logic_dt)
 			_prof_done("tick", _t_tick)
 			input_ctrl.drop_dead_selection()
 		if coop_host_session != null:

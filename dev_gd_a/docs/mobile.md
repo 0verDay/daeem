@@ -2,9 +2,17 @@
 
 > 本文是「手机端适配 + 性能调优」的完整交接文档：**做了什么、为什么这么做、实测到哪一步、还剩什么**。
 > 新任务可以直接从这里接手，不必重新翻聊天记录。
-> ★ 最新状态与关键配置见**第 17 节**；只想快速接手可以直接跳到那里。
+> ★★ **性能任务从这里接手：[第 25 节「收尾」](#25-收尾性能优化到此结束20261028)** ——
+>    一句话现状、**唯一一份关键设置表**、历轮汇总、8 条经验、验收 / 回退命令、何时才需要再开。
+>    第 17 节是较早的「当前配置总览」，已被第 25 节取代（内容仍可参考）。
 > ★★ **2026.10.27 的第四轮（目标 90 帧 / 覆盖层静态层 / 索敌负缓存）见第 22 节** ——
 >    那一节有「改前 vs 改后」的桌面分段表，接手性能任务先看它。
+> ★★ **2026.10.28 的第五轮（固定逻辑步长：手机 30 → 60 帧）见第 23 节** ——
+>    那一节讲清「逻辑步数 = 渲染帧数」这个不动点，以及 `sim.step_sec` / `sim.mobile_step_sec` 怎么调、怎么回退。
+> ★★ **2026.10.28 的第六轮（units 实测 / fog 版本号闸门 / 驻防 AI 10 Hz）见第 24 节** ——
+>    那一节给出 units 的**真实分段**与「C# 下沉值不值」的结论，以及两个新开关的回退办法。
+> ★★ **收尾（2026.10.28）：性能优化已结束，见第 25 节** ——
+>    用户确认手机与电脑都流畅；那一节是一页交接（设置 / 经验 / 回退 / 何时再开）。
 > 相关文件：`view/touch_controller.gd`、`view/input_controller.gd`、`view/game_scene3d.gd`、
 > `view/hud.gd`、`view/minimap.gd`、`view/overlay_view_3d.gd`、`view/fill_button.gd`、
 > `view/detail_panel.gd`、`view/troop_grid.gd`、`view/squad_panel.gd`、
@@ -18,16 +26,22 @@
   双指框选时会实时预览「将被选中的整支部队 / 框里的己方建筑」（阵营色遮罩）。
 - **底栏 UI**：详细信息面板已自适应拉伸，与「阵营/盾徽/旗帜」不再有缝。
 - **渲染器**：已切到 **Mobile**（`rendering/renderer/rendering_method="mobile"`），Release 导出。
-- **性能（最新）**：66 单位 / 29×22 图上，Release + vsync off + `max_fps=60`：
+- **性能（2026.10.28 最新）**：手机单机 + command AI 跑 `dscj`（**256 单位 / 27×42**）已能
+  **≈60 fps**（固定逻辑步长 30 Hz + 60 fps 渲染，见第 23 节）。下面这条是更早一轮
+  66 单位小图的读数，留作对照：
+- **性能（2026.10.27，66 单位）**：66 单位 / 29×22 图上，Release + vsync off + `max_fps=60`：
   - 4 槽 UI 调度后实测 **57~65fps**，`fr 15.3 (11.1~16.7)ms`；
   - **周期性尖峰已消失**（`fr` 最大值不再到 25/33ms），`rest` 从 7.8ms 降到 **3.4ms**；
   - `tk 7.5`（u 1.9 / fg 1.5 / z 1.0）、`vu 1.0 vb 1.1`、`dov 1.7`、`sq 0.2`。
 - **已落的性能改造**：overlay 静态投影缓存、小地图迷雾烘图、
   **大地图迷雾「精确检测 + 脏格重绘 + 0.1s 合并」**（见 2.2 第 4 条）、
   **C# `FogKernel.cs`**（视野）与 `CrowdKernel.cs`（碰撞/索敌/寻路）、
-  HUD 4 槽调度 + 内容没变不重排、按钮主题查表缓存的静息快路径。
-- **下一步重点**：真机确认锁 60 后的稳定性；若要更多余量，先压
-  `dov 1.7ms`（overlay 拆静态/动态层）与 `tw 1.4ms`（箭塔 / 投掷物）。
+  HUD 4 槽调度 + 内容没变不重排、按钮主题查表缓存的静息快路径、
+  **固定逻辑步长（30 Hz 逻辑 / 60 fps 渲染）**（第 23 节）、
+  **fog 版本号闸门 + 驻防 AI 10 Hz 决策**（第 24 节）。
+- **下一步重点**：**没有了 —— 性能优化已收尾**（手机 / 桌面都流畅，见第 25 节）。
+  以后新增玩法若踩到预算，按 §25.5 的排查顺序先测量再动手；
+  ★ `units` 的 C# 下沉**已实测论证为不值得**（第 24 节四），不要再从那里开刀。
 
 ---
 
@@ -768,14 +782,16 @@ HUD 原来每个节拍（20Hz）都做一次**全量**刷新：
 | 键 | 值 | 作用 |
 |---|---|---|
 | `rendering/renderer/rendering_method` | `mobile` | 手机渲染器 |
-| `render.mobile_3d_scale` | `0.75` | 只降 3D 分辨率 |
+| `render.mobile_3d_scale` | `0.6` | 只降 3D 分辨率（自适应探针的最低下限另算） |
 | `render.mobile_vsync` | `false` | 手机端不等 vsync，按原始帧时间跑 |
-| `render.mobile_max_fps` | `60` | 进游戏时 `Engine.max_fps = 60` |
+| `render.mobile_max_fps` | `90` | 进游戏时 `Engine.max_fps = 90` |
+| `sim.step_sec` | `0` | **固定逻辑步长**（0 = 关 = 每渲染帧一步，见 §23） |
+| `sim.mobile_step_sec` | `0.0333333` | 手机端逻辑 30 Hz（仅移动平台；0 = 关） |
 | `fog.backend` | `csharp` | 视野走 `logic/FogKernel.cs`，可切 `gdscript` |
 | `unit.collision_backend` | `csharp` | 群编走 `CrowdKernel.cs` |
 | `ui.mobile_hud_refresh_hz` | `20` | HUD 调度节拍（4 槽各 10/5Hz） |
 | `ui.mobile_ui_stagger` | `true` | 4 槽轮转；`false` 回退全量刷新 |
-| `ui.mobile_minimap_hz` | `10` | 小地图重画频率，并错开 HUD 槽位 |
+| `ui.mobile_minimap_hz` | `5` | 小地图重画频率，并错开 HUD 槽位 |
 | `ui.show_perf` | `true` | 手机端四行性能读数 |
 
 ### 17.2 最近几轮落地的性能改动
@@ -789,6 +805,10 @@ HUD 原来每个节拍（20Hz）都做一次**全量**刷新：
 | 详情 / 头像 / 网格 / 队列「没变不重排」 | `detail_panel.gd`、`troop_grid.gd`、`recruit_queue.gd` | `hs/hd` 降到 <0.05ms/帧 |
 | 按钮每帧主题查表 / 重复字色同步 | `view/fill_button.gd` | 静息按钮接近 0 成本 |
 | vsync / 锁帧开关 | `project` 配置 + `game_scene3d.gd` | `vs off` + `max_fps=60` |
+| **固定逻辑步长（30 Hz 逻辑 / 独立渲染）** | `game_scene3d.gd`、`world.gd`、`logic/config.gd` | **dscj 256 单位：CPU 7.69 → 4.82 ms/帧（−37%），真机 30 → 60 fps**（§23） |
+| 3×3 淡出位图 + 树/建筑逐帧热点 | `view/fade_stamp.gd`、`terrain_props_view.gd`、`building_view_3d.gd` | `view/buildings` 0.309 → 0.250 ms；这两层原先不在任何 profile 里 |
+| 客机不再每快照 `fog.reset_cache()` | `logic/world.gd` | 客机 CPU↓，且修好「见过的敌方建筑」在客机上被清空 |
+| `side_of()` 记忆化 / 区划容器复用 / 迷雾烘图读掩码 | `faction.gd`、`zone.gd`、`ground_view.gd` | `zones` −17%；迷雾逐格调用全部降为一次下标 |
 
 ### 17.3 最新真机读数（锁 60 前）
 
@@ -1649,3 +1669,445 @@ world.tick  6.16 ~ 6.49 ms/帧
    它是**建单位不一致的自愈机制**。已回退。
 2. **把士气当"分片"下沉**：实测打包成本 0.2~0.7 µs/单位，而士气全程才 2.4 µs/单位，
    碎刀会被组包吃掉大半。**要搬就整段搬**（这也是 `unit.sim_backend` 注释里的结论）。
+
+---
+
+## 23. 第五轮：手机 30 帧 → 60 帧（2026.10.28：固定逻辑步长 + 逐帧热点清除）
+
+> 本节目录：① 要解决什么 · ② 先复现（`bench_dscj`） · ③ 根因（不动点） · ④ 方案（固定步长）
+> · ⑤ 同时清掉的 9 处逐帧热点 · ⑥ 实测 · ⑦ 测试 · ⑧ 新增诊断分段 · ⑨ 怎么调 / 怎么回退 · ⑩ 剩余待办
+
+#### 一、这一轮要解决什么
+
+联机那一侧已经顺了（见 §22 与 `net/` 里的字节预算），但**手机单机 + command AI 跑
+`dscj`（256 单位 / 27×42）只有 30 fps 左右**。
+
+这一轮做两件事，按收益排序：
+
+1. **把「逻辑步数 = 渲染帧数」这个结构改掉**（固定逻辑步长，手机 30 Hz）；
+2. **清掉一批每帧固定开销**（`side_of`、树/建筑的 3×3 探测、迷雾烘图、区划容器…）。
+
+结果：用户真机实测 **≈ 60 fps**；同一场景在桌面上的纯 CPU 从 **7.69 → 4.82 ms/帧（−37%）**。
+
+#### 二、先复现：`tests/bench_dscj.gd`（新增）
+
+`bench_fps_3d` 用的是 fallback 默认图 + 手动摆的一坨单位，**没有 command AI**，
+和用户报的那一局不是同一个成本结构。所以另起一份，直接走
+`main.gd` 的 `_on_coop_solo_started()` 那条路（`demo` 战役的 `dscj` 关 + `coop_ai`）。
+
+★ 它与墙钟基准的关键差别：**手动驱动 `game._process(1/60)` 并逐次计时**。
+
+* 量到的是**纯 CPU 帧成本**（逻辑 + 视图同步），不含呈现 / vsync；
+* dt 固定 1/60 ⇒ 每帧要做的活与实机 60 Hz 一致（headless 那种 0.2 ms 的假 dt 量不出东西）；
+* 每次调用之间 `await process_frame`，让 `_draw`（overlay / 小地图）也照常跑一遍。
+
+```powershell
+# 复现手机行为（30 Hz 逻辑 + 60 fps 渲染）
+$env:DAEEM_DSCJ_STEP="33"; $env:DAEEM_DSCJ_FRAMES="180"
+<Godot>_console.exe --headless --path . --script res://tests/bench_dscj.gd
+# 对照：旧行为（每帧 tick）
+$env:DAEEM_DSCJ_STEP="0"
+```
+
+读法：`CPU xx ms/帧` 是这一局一帧要多少 CPU；手机按 **×2.5** 估算；
+下面两张分段表告诉钱花在哪（`tick` / `view/*` / `draw/*` / `props/*`）。
+
+#### 三、根因：逻辑步数跟着渲染帧数走
+
+旧写法（`view/game_scene3d.gd` 的 `_process`）：
+
+```gdscript
+events = world.tick(minf(dt, cfg.sim_max_dt))   # 每个渲染帧推进一次逻辑
+```
+
+于是**帧率越高，每秒跑的逻辑步越多、CPU 越贵**，系统稳定在一个不动点上：
+手机停在 30 fps —— 一旦升到 40 fps 就多跑 33% 的逻辑步，立刻又掉回 30。
+这就是「怎么优化都卡在 30」的真正原因，而不是某一项特别慢。
+
+这与 `performance_and_network_doc/` 里那条 **MUST** 完全对应：
+*「用固定步长模拟，不用可变 dt 直接驱动逻辑；把渲染帧率与逻辑 tick 解耦」*。
+
+#### 四、方案：固定逻辑步长（桌面默认关，手机 30 Hz）
+
+| 配置键 | 默认 | 作用 |
+|---|---|---|
+| `sim.step_sec` | `0` | 逻辑步长（秒）。**0 = 关闭 = 旧行为**（每渲染帧一步） |
+| `sim.mobile_step_sec` | `0.0333333` | 手机端步长（仅当 `OS.has_feature("mobile")` 且 `step_sec == 0`） |
+| `sim.step_max_steps` | `4` | 一帧最多补几步（防止长时间卡顿后一次补一大堆） |
+| `sim.max_dt` | `0.05` | 仍在用：单帧最多推进多少秒（防死亡螺旋） |
+
+实现要点（`view/game_scene3d.gd`）：
+
+* 累加器：`_logic_accum += min(dt, sim_max_dt)`，攒够 `logic_step_sec` 才走一步；
+* 步数换算抽成**纯函数** `take_logic_steps(accum, step, max_steps)`，测试直接钉它；
+* **游戏速度不变**：60 帧 × 1/60 s @ 30 Hz ⇒ 恰好 30 步；120 帧 × 1/120 s 也一样
+  （`tests/test_time_step.gd` 的断言）；
+* **插值**：`world.begin_logic_step()` 在每步之前把 `u.prev_pos = u.pos` 记一笔，
+  之后 `render_alpha = 累加量 / 步长`，视图统一走 `world.render_pos_of()`。
+  ⚠️ 插值**只在走过第一步之后**才启用 —— 新建单位的 `prev_pos` 是零向量，
+  提前插值会让它们从原点飞过来；
+* **投掷物要外推**：否则 30 Hz 逻辑下箭是一跳一跳的。`view/projectile_view_3d.gd`
+  用 `render_alpha × world.last_step_dt / p.duration` 按同一速度往前推；
+* **客机不受影响**：客机不 tick，`render_alpha` 仍由 `net/client_session` 按快照驱动
+  （两条路只共用同一个字段，互不覆盖）；
+* 暂停时不累加（`running == false` 时整段不跑），恢复后不会瞬间补一大堆。
+
+为什么手机取 30 Hz 而不是 60 Hz：**逻辑速度一样，但 tick 次数减半**。
+RTS 的决策密度本来就在 10~30 Hz 量级，30 Hz 逻辑 + 60 Hz 渲染的画面与 60 Hz 逻辑
+逐帧几乎不可分辨，而 CPU 直接省一半。
+
+#### 五、同时清掉的逐帧热点（都做了行为等价性核对）
+
+| # | 位置 | 改法 | 为什么值得 |
+|---|---|---|---|
+| 1 | `logic/faction.gd` | `side_of()` 加结果缓存（`set_allies` / `clear_allies` 时失效） | 它每次要建 1 字典 + 1 数组 + `sort()`，而它在**每帧几千次**的路径上（迷雾逐格、快照逐单位、区划逐单位、视图逐建筑/逐树） |
+| 2 | `view/fade_stamp.gd`（新增） | 「3×3 内有可见单位」由**每对象 9 次 `Vector2i` + 哈希**换成**一张位图 + 1 次下标** | 树按 `tree_spacing = 0.5` 撒，100×100 图可达上万棵；建筑（墙上限 240）另算一遍 |
+| 3 | `view/terrain_props_view.gd` | 淡出/迷雾/建筑占位都走位图与底层数组；装配时缓存「哪几格在图内」；位图与上一帧相同就整段跳过 | 这层原先**完全不在任何 profile 里**（一直算进 `rest`，是手机上最大的黑盒） |
+| 4 | `view/building_view_3d.gd` | 主循环与旗面两趟共用同一张位图；`owner\|type` 桶键按「上一把」记忆；`Color.to_html()` 加缓存 | 原来是**两趟全量扫描 + 每栋两次字符串拼接 + 两遍 9 格探测** |
+| 5 | `view/ground_view.gd` | 迷雾烘图的全图逐格循环不再调 `tile_visible()`，改为一次性读本方位图 | 29×22 = 638 次 / 100×100 = 1 万次，每次重烘都跑 |
+| 6 | `logic/world.gd` | `refresh_after_snapshot()` **不再 `fog.reset_cache()`** | 那是客机每收一条快照（≤40 Hz）就把视野扇区缓存 / C# 地形表**从零重建**一遍；更要紧的是它会清掉 `_sighted` ⇒ **「敌方建筑见过一次就永久记住」在客机上被静默废掉**（房主上还在）。这是**性能 + 正确性**双修 |
+| 7 | `logic/zone.gd` | 占领判定的容器（每区块 2 字典 + 1 数组）按 zid **复用**，每帧只 `clear()` | 24 个区块 = 每帧 72 次分配；实测 `zones` 0.334 → 0.278 ms（−17%） |
+| 8 | `view/unit_view_3d.gd` | `has_method("render_pos_of")` 结果缓存（`setup()` 复位） | 每单位每帧问 2~3 次，而 `has_method` 是字符串查表 + 分派 |
+| 9 | `logic/world.gd` | `_collect_destroyed_buildings()` 改**倒序按下标扫**，不再 `building_list.duplicate()` | 原来每帧一次 O(建筑数) 的数组复制 |
+
+#### 六、实测
+
+**主场景（`dscj` 256 单位 + command AI，手动 1/60 驱动，桌面 headless）**
+
+| 指标 | 旧行为（每帧 tick） | 固定步长 30 Hz | 变化 |
+|---|---|---|---|
+| CPU / 帧 | 7.69 ms | **4.82 ms** | **−37%** |
+| `tick` | 6.04 ms | **3.22 ms** | **−47%** |
+| `fog` | 0.61 | 0.31 | −49%（跑得少一半） |
+| `zones` | 0.50 | 0.25 | −50% |
+| 手机估算（×2.5） | 19.2 ms ≈ 52 fps | **12.1 ms ≈ 83 fps** | — |
+
+**分项 A/B（`bench_crowd` / `bench_fps_3d`，交替采样）**
+
+* `zones` 0.334 → **0.278 ms**（256 单位，4 次采样一致）；
+* `view/buildings` 0.309 → **0.250 ms**（64 单位）；
+* `tick` 总量在测试图上落在噪声里（那些图森林稀疏，第 2~4 条的收益要等真实地图才显形）。
+
+> 测量纪律仍然沿用 §22 第六条：同一份代码在机器有负载时会差 50%，
+> 所以这里的结论一律来自**同进程 A/B** 或**同一次运行内的比例**。
+
+#### 七、测试
+
+* 全量 `tools/run-tests.ps1`：**88 文件 / 8006 断言 / ALL PASS**（基线 87 / 7982）；
+* 新增 `tests/test_time_step.gd`（24 条）钉住三件事：
+  1. 步数换算：攒够才走、`max_steps` 夹住、`step = 0` 时一步不走；
+  2. **长期不漂移**：60 帧 @ 1/60 s & 30 Hz ⇒ 恰好 30 步；120 帧 @ 1/120 s 也是 30 步；
+  3. 插值口径：`alpha = 0 / 0.5 / 1` ⇒ 起点 / 中点 / 终点，`begin_logic_step()` 只在
+     `alpha < 1` 时写 `prev_pos`。
+
+**踩到的坑（已修，记在这里免得再犯）**：`tests/test_fog.gd` 用的是 **FakeWorld 桩对象**，
+没有 `profile_on` / `profile_sub`。新加的计时如果直接 `world.profile_on`，会抛错并**中断整个
+`fog.update`** —— 表现是 38 条断言全红、「迷雾一片空白」。
+⇒ 诊断计时一律 `world.get("profile_on") == true` + `world.has_method("profile_sub")`。
+
+#### 八、新增的诊断分段（下次排查直接用）
+
+第 4 行读数现在多了这些（都只在 `ui.show_perf_detail = true` 时计时）：
+
+| 键 | 含义 |
+|---|---|
+| `z/update` / `z/population` / `z/ownership` | 区划「占领读条 / 人口累加 / 归属刷新」三段 |
+| `fog/build` / `fog/prune` | 视野掩码构建 / 「见过的建筑」清理 |
+| `props/fade` / `props/fog` | 树 / 山块的淡出判定 / 迷雾压暗 |
+
+★ 还发现一件**不是问题**的事：`draw/minimap` 在桌面上约 1 ms/帧，但手机端被
+`ui.mobile_minimap_hz`（当前 **5 Hz**）节流 ⇒ 手机上摊到每帧只有 ~0.08 ms。
+**桌面读数里的这一项不要当成手机的成本。**
+
+#### 九、怎么调 / 怎么回退
+
+* 觉得 30 Hz 逻辑「不够跟手」：`sim.mobile_step_sec` 改 `0.02`（50 Hz）或 `0`（关掉、回旧行为），
+  改数值即可，不用动代码；
+* 某台机器仍然吃力：`0.05`（20 Hz）比旧行为仍省一半以上；
+* 想让桌面也走固定步长：`sim.step_sec = 0.0166667`（逻辑速度不变，只是与帧率解耦）；
+* **回退到旧行为**：`sim.step_sec = 0` 且 `sim.mobile_step_sec = 0`。
+
+#### 十、剩余待办（2026.10.28 第六轮已清掉前三条，见第 24 节）
+
+| 项 | ms/帧（桌面，60 fps 渲染） | 状态 |
+|---|---|---|
+| `units` 单位循环 | 1.7 / 256 单位 | ✅ **只做了清扫 + 测量，不做 C# 下沉**。真实分段见 §24.3；按决策规则（step 0.27 < 0.5、combat 0.56 < 1.2）收益不够，停止投入 |
+| `fog` 变更检测 | 0.45 | ✅ 版本号闸门 + 采集微优化（§24.2）。**dscj 这种 256 单位一直在走的局面命中率只有 12%** ⇒ 只省 0.01~0.02 ms；大胜只能靠增量索引（未做） |
+| `ai/garrison` | 0.79 | ✅ 决策 10 Hz + 缓存将领短列表 + 去掉 zone 线性查找与 `capture_bar()` 分配（§24.2）：**0.565~0.600 → 0.269~0.348 ms** |
+| `draw/minimap` | 1.0（**桌面**，手机 5 Hz 已节流） | 若要继续压：把迷雾层也烘成贴图（地形已经这么做了） |
+| `view/units` | 0.80 | 已是 MultiMesh 单批；剩余是逐单位投影与 `set_instance_*` |
+
+---
+
+## 24. 第六轮：units 实测 / fog 版本号闸门 / 驻防 AI 10 Hz（2026.10.28）
+
+> 本节目录：① 方法 · ② 改动与实测 · ③ units 的真实分段 · ④ C# 边界结论（**别再试**）
+> · ⑤ 配置旋钮与回退 · ⑥ 怎么验证 · ⑦ 剩余待办
+
+### 一、方法：先修测量，再动刀
+
+动工前发现**测量本身是坏的**：
+
+- `world.tick` 的单位循环里每单位调两次 `_prof()`（`c0` / `_c1`，共 512 次/帧），而
+  `t_combat / t_reclaim / t_step` 声明后**从未赋值** ⇒ `units/combat`、`units/reclaim`、
+  `units/step` 三个读数**恒为 0**。§23 里那组细分是上一版代码留下的，已经作废。
+- 修法：删掉两行无效调用与死变量；`profile_on` 与两个闪光衰减系数（`dt / flash_sec_safe`、
+  `dt / hit_flash_sec_safe`）改成每帧算一次；给计时器衰减段加 `u/timers`。
+- 另外给 `Unit` 加诊断计数器 `path_pops`，直接回答「`Array.remove_at(0)` 是不是病根」。
+
+测量口径沿用 §22 六：同一台机器、连跑、只看同一次运行内的比例；A/B 用环境变量切开关，
+不改 `config.json`。`tests/bench_dscj.gd` 新增 `DAEEM_FOG_GATE` / `DAEEM_GARRISON_INTERVAL`
+两个 A/B 旋钮，并打印 `path_pops`、`move_to`、`repath` 与 fog 闸门命中率。
+
+### 二、改动与实测
+
+| 改动 | 类型 | 实测（dscj 256 单位，30 Hz 逻辑 + 60 fps 手动驱动） |
+|---|---|---|
+| 驻防 AI：决策降频 10 Hz（`ai.garrison.decision_interval_sec`，传入**累加 dt**） | 规则层节流 | `ai/garrison` **0.565~0.600 → 0.269~0.348 ms**（−43~55%），`ai` 0.68~0.70 → 0.39~0.44 |
+| 驻防 AI：`alive_ids` 的 256 次字典插入删除（改走 `world.team_leader()`） | 少一次全表写 | 含在上面 |
+| 驻防 AI：`zone_by_id()` 线性查找 → 一次决策建一张 `zid → zone` 表 | 去 O(队数 × 区划数) | 含在上面 |
+| 驻防 AI：`_center_under_attack` 不再每队长每帧 `capture_bar()` 分配 Dictionary | 零分配 | 含在上面 |
+| 驻防 AI：濒死复活每步只走「AI 将领短列表」（决策时缓存，dscj ≈ 34 个） | 30 Hz 256 → 34 次判断 | 0.315~0.348 → **0.269~0.348**（这一步单独再省 ~0.05） |
+| fog：**版本号闸门**（`map.vision_revision` + `fog.revision_gate`） | 少一次采集 | `fog` 0.199~0.202 → 0.182~0.193 ms；**命中率只有 12.1%**（见 §24.2 的注） |
+| fog：`_collect_flat` 采集微优化（阵营→方下标一张表、地形格换算内联） | 去重复查找 | 含在上面（闸门不命中时也省一点） |
+| 单位循环：删死代码 + 每帧算一次衰减系数 + 修好细分计时 | 清扫 | `units` 1.06~1.10（与改前 1.09~1.11 持平），但四个子分段第一次有真实数字 |
+
+总账（`CPU/帧`）：**5.11~5.19 → 4.76~4.84 ms（−0.3~0.4）**，`tick` 3.39~3.48 → 3.09~3.15。
+
+**★ 关于 fog 闸门命中率（必须如实说）**：dscj 里 256 个单位一直在走，
+按 30 Hz × 约 1.4 格/秒算，**每一步都有十来个单位跨格** ⇒ 版本号几乎每帧都变。
+实测 11 次命中 / 80 次采集（12.1%），所以闸门在「打起来的战斗」里只值 0.01~0.02 ms。
+它真正有用的场景是**单位停着**（驻守、布阵、看地图）——那时采集可以被整段跳过。
+要在这个局面拿到大胜，只有 §2.1 里说的「增量索引」（格子→来源的增删表），
+那是**另一轮 + 最高风险**，本轮不做。
+
+### 三、units 的真实分段（第一次可读，替换掉 §23 里作废的旧表）
+
+```
+units                    1.06 ~ 1.10 ms/帧
+  units/combat           0.55 ~ 0.58   ← update_unit（决策 + 追击 + 开火）
+    u/timers             0.05 ~ 0.06   （五个计时器衰减，纯算术）
+    u/acquire            0.18 ~ 0.20   （索敌；已经是 C# 批量内核的结果取用）
+  units/step             0.255 ~ 0.284 ← 沿路推进
+  units/reclaim          0.015
+  其余                   ≈ 0.24       （循环本身 + 每单位分支 / 方法调用）
+```
+
+诊断：`path_pops` **0.21~0.26 次/帧**（256 个单位）。
+⇒ 「成本在 `Array.remove_at(0)` 的数组前移」这条判断**不成立**：
+单位一秒只走一格多，路点几秒才消费一次。§22.19 的结论（要救得先换 packed 数组）
+比 §23.10 的「整段下沉 C#」更接近事实，但两条都不是本轮的主要矛盾。
+
+### 四、C# 边界结论（决策表已执行）
+
+| 实测 | 结论 |
+|---|---|
+| `units/step` ≥ 0.5 ms | ❌ 未达到（0.26~0.28） |
+| `units/combat` ≥ 1.2 ms | ❌ 未达到（0.55~0.58） |
+| ⇒ | **本轮不写 C# 内核，也不做 `u.path` 数据结构改造。** |
+
+理由（写下来免得下次重新论证）：
+- `update_unit` 的每一支都要回调世界（`move_to` 寻路、`push_event`、`ProjectileRes.spawn`、
+  `world.unit_by_id`），整段下沉 = 把战斗 / 移动重写一遍（≥1000 行 + 完整 GDScript 回退），
+  而它现在只占 **0.56 ms**（约整帧 CPU 的 11%）；
+- 碎刀更不划算：§22.10 已实测组包 0.2~0.7 µs/单位，而 `u/timers` 全程才 0.05 ms；
+- 真要 90 帧，剩下的钱在 `view/units`、`draw/minimap`、overlay，不在这里。
+
+**下次如果单位数翻倍（≥500）再回来看这张表**：那时 `units` 会线性涨到 ~2.2 ms，
+决策规则可能翻面 —— 但请先看「≥500 单位是不是本来就该改关卡设计」这个更便宜的选项。
+
+### 五、配置旋钮与回退
+
+| 键 | 默认 | 说明 / 回退 |
+|---|---|---|
+| `fog.revision_gate` | `1` | `0` = 关闸门，回到「每帧全量采集 + 数组比较」（**回退开关**） |
+| `fog.verify_revision` | `0` | `1` = 闸门说「没变」时再全量校验一次，不一致则 `push_warning` 并按全量重建（排查「迷雾不刷新」用） |
+| `ai.garrison.decision_interval_sec` | `0.1` | `0` = 每个逻辑步都决策（**回退开关**）；调大更省，但巡逻 / 守中心的反应会变慢 |
+
+⚠️ **闸门漏钩子 = 迷雾静默冻结**（不报错、只是不刷新）。新增任何
+「让某格多出 / 少掉一个视野来源」的路径，必须在 `world.mark_vision_dirty()` 里补一次；
+位置变化不用管 —— `unit.sync_tile()` / `_sync_tile_if_changed()` 会自己在**真的跨格**时推进。
+`tests/test_fog_revision.gd` 用「同一世界两个 FogRes、一个走闸门一个强制全量、300 帧逐字节比对」
+兜这件事。
+
+### 六、怎么验证
+
+```powershell
+cd dev_gd_a/daeem
+powershell -ExecutionPolicy Bypass -File tools/check-syntax.ps1
+powershell -ExecutionPolicy Bypass -File tools/run-tests.ps1 -Filter test_fog      # 含 test_fog_revision
+powershell -ExecutionPolicy Bypass -File tools/run-tests.ps1 -Filter test_ai
+powershell -ExecutionPolicy Bypass -File tools/run-tests.ps1 -Filter test_campaign_ai
+powershell -ExecutionPolicy Bypass -File tools/run-tests.ps1 -Filter test_logic
+$env:DAEEM_UNIT_BACKEND="csharp"
+& '<godot>' --headless --path . --script res://tests/test_unit_backend_equiv.gd
+
+# bench（A/B 只切环境变量，不改 config.json）
+$env:DAEEM_DSCJ_STEP="33"; $env:DAEEM_DSCJ_FRAMES="180"
+$env:DAEEM_FOG_GATE="1"; $env:DAEEM_GARRISON_INTERVAL="0.1"   # 本轮
+& '<godot>' --headless --path . --script res://tests/bench_dscj.gd
+$env:DAEEM_FOG_GATE="0"; $env:DAEEM_GARRISON_INTERVAL="0"     # 旧行为
+```
+
+本轮已跑：`check-syntax`（228 文件全过）、`test_fog` 183、`test_fog_revision` 30、
+`test_ai*` 462、`test_campaign*` 487、`test_logic` 265、`test_time_step` 24、
+`test_view*` 358、`test_snapshot*` 74、`test_ui*` 1448、`test_zone*` 301、
+`test_recruit_queue` 248、`test_attack_orders` 107、`test_retaliation` 51、
+`test_alliance` 78、`test_session` 33、`test_collision` 15、`test_crowd_path` 12、
+`test_morale` 58、`test_downed` 265、`test_minimap*` 59、`test_smoke` 132 —— 全过。
+**真机帧率与「迷雾会不会延迟刷新 / 守将反应是否更迟钝」需要你在手机上验**
+（`ui.show_perf = true` + `ui.show_perf_detail = true`）。
+
+### 七、剩余待办
+
+| 项 | 值 | 为什么没做 |
+|---|---|---|
+| fog 增量索引（格子 → 来源的增删表） | 能把 0.19 压到 ~0.08 | 新数据结构 + 失效逻辑，风险最高；本轮闸门只值 0.02，先不做 |
+| units 整段 C# | ~0.6 → ~0.3（估） | §24.4：收益不匹配工程量 |
+| `draw/minimap` 1.0（桌面） | 手机 5 Hz 已节流 | 要继续压就把迷雾层也烘成贴图 |
+| `view/units` 0.80 | — | 逐单位投影 + `set_instance_*`；要再压得改成按批写矩阵 |
+
+---
+
+## 25. 收尾：性能优化到此结束（2026.10.28）
+
+> **结论**：用户确认 **手机端与电脑端都已流畅运行**，性能优化工作**正式结束**。
+> 这一节是**一页交接**：现状、关键设置、历轮汇总、经验、验收 / 回退、**什么时候才需要再开**。
+> 以后接手性能任务，先读这里；需要细节再按表里的节号往回翻。
+
+### 25.1 现状（验收口径）
+
+| 平台 | 场景 | 状态 |
+|---|---|---|
+| Android（真机） | `dscj` 256 单位 / 27×42 + command AI，30 Hz 逻辑 + 渲染 | **流畅（≈60 fps）**，用户 2026.10.28 确认 |
+| Windows（桌面） | 同上，手动 1/60 驱动（纯 CPU） | **4.76~4.86 ms/帧**（基准见 §24.2） |
+| 桌面 / 无头 | 单元测试、基准、编辑器 | 不受移动端开关影响（`OS.has_feature("mobile")` 门控） |
+
+> ★ 真机帧率是**用户手动验收**的；自动化只能证明「逻辑与分段开销」。再开性能工作前
+> 请先按 §25.5 拿一次 `ui.show_perf` 读数，不要凭印象。
+
+### 25.2 关键设置（唯一一份，全部在 `data/config.json`）
+
+**A. 逻辑节拍与插值**
+
+| 键 | 默认 | 作用 | 怎么退 |
+|---|---|---|---|
+| `sim.step_sec` | `0` | 固定逻辑步长（0 = 每渲染帧一步 = 旧行为） | 设 0.0166667 让桌面也解耦；保持 0 即旧行为 |
+| `sim.mobile_step_sec` | `0.0333333` | 手机端步长（仅 `step_sec == 0` 时生效） | `0` = 手机也回旧行为；`0.05` = 20 Hz 更省 |
+| `sim.step_max_steps` | `4`* | 一帧最多补几步（防卡顿后一次补一大堆） | *代码默认 4，`config.json` 没写也生效 |
+| `sim.max_dt` | `0.05` | 单帧最多推进多少秒（防死亡螺旋） | 调小更稳、严重掉帧时时间走得更慢 |
+
+**B. 后端选择（C# 内核都有 GDScript 回退）**
+
+| 键 | 默认 | 作用 |
+|---|---|---|
+| `unit.sim_backend` | `csharp` | 士气 + 回血档位走 `UnitMoraleKernel`（`gdscript` = 纯回退） |
+| `unit.collision_backend` | `csharp` | 碰撞 / 索敌 / 寻路走 `CrowdKernel` |
+| `fog.backend` | `csharp` | 视野扇区走 `FogKernel` |
+
+**C. 变更检测 / 重活节流**
+
+| 键 | 默认 | 作用 | 怎么退 |
+|---|---|---|---|
+| `fog.revision_gate` | `1` | 迷雾只在「有人换格 / 单位进出场 / 建筑增删 / 归属变动」时重算 | `0` = 每帧全量采集比较 |
+| `fog.verify_revision` | `0` | 闸门判「没变」时再做一次全量校验并告警（排查用） | 平时保持 0 |
+| `fog.rebake_min_sec` | `0.1` | 迷雾贴图最短重烘间隔 | 调大更省、观感更滞后 |
+| `ai.garrison.decision_interval_sec` | `0.1` | 驻防 AI 决策周期（10 Hz；计时器按累加 dt 推进） | `0` = 每帧决策；`0.05` = 20 Hz |
+| `ui.mobile_hud_refresh_hz` | `20.0` | 手机 HUD 刷新节拍（桌面每帧） | `0` = 不节流 |
+| `ui.mobile_ui_stagger` | `true` | 手机 HUD 摊到 4 个槽位，削周期性尖峰 | `false` = 一次性全刷 |
+| `ui.mobile_minimap_hz` | `5.0` | 手机小地图重画频率上限 | `0` = 不节流 |
+
+**D. 移动端画面（只影响手机）**
+
+| 键 | 默认 | 作用 |
+|---|---|---|
+| `render.mobile_3d_scale` | `0.6`（config；代码兜底 0.75） | 3D 渲染分辨率缩放（UI 不受影响） |
+| `render.mobile_auto_scale` | `true` | 连续掉到 26fps 以下自动减 0.05（最低 0.5），回到 52fps 以上再加回 |
+| `render.mobile_vsync` | `false` | 关 vsync 看真实帧率（代价是可能撕裂） |
+| `render.mobile_max_fps` | `90`（config；代码兜底 60） | 帧率上限（0 = 不限；也是自适应分辨率的判据基准） |
+
+**E. 诊断**
+
+| 键 | 默认 | 作用 |
+|---|---|---|
+| `ui.show_perf` | 见 config | 左上角性能读数（FPS / 帧时间） |
+| `ui.show_perf_detail` | `false` | 展开 4 行分段（`tk` / `vu` / `dov` / `rest` 与 `tick` 子分段） |
+| `DAEEM_PROFILE` / `DAEEM_DSCJ_*` | — | 基准脚本用的环境变量（见 §24.6） |
+
+### 25.3 历轮落地（性能相关的全部轮次）
+
+| 轮次 | 主题 | 关键改动 | 实测 |
+|---|---|---|---|
+| §12 | 第二轮 | overlay 静态投影缓存、小地图迷雾烘图、地形块 | 周期性尖峰下降 |
+| §15 | C# `FogKernel` | 视野扇区下沉 C#（按格缓存） | 视野不再逐格射线 |
+| §16 | HUD 4 槽调度 | 手机 HUD 分槽 + 内容没变不重排 | 尖峰消失（`fr` max 不再到 25/33ms） |
+| §20 | Android 真机 | Mobile 渲染器 / stretch viewport / 自适应分辨率 / vsync 关闭 | 真机可玩 |
+| §22 | 第四轮（目标 90 帧） | overlay 拆静态/动态、索敌负缓存、快照按视野过滤 + 自适应预算 + 客机插值 | 联机三件套落地 |
+| §23 | 第五轮（30 → 60 帧） | **固定逻辑步长 + 插值**、9 处逐帧热点 | CPU **7.69 → 4.82 ms/帧**；真机 30 → 60 |
+| §24 | 第六轮 | units 实测（**不做 C# 下沉**）、fog 版本号闸门、驻防 AI 10 Hz | `ai/garrison` **0.57~0.60 → 0.27~0.35**；CPU 5.1 → 4.8 |
+
+### 25.4 经验（跨轮，按重要性；下次先看这 8 条）
+
+1. **先修测量，再优化**。本轮开头发现 `units/*` 三个分段**恒为 0**（累加变量没赋值）、
+   循环里还留着每单位两次空 `_prof()`。测量错了，后面所有判断都错（[`pitfalls.md`](pitfalls.md) 5.86）。
+2. **机器状态能差 50%**。同一份代码 9.2~12.0ms vs 6.2~6.5ms。只采信「连跑 3 次、方差 <5%」，
+   跨时间点一律用**同进程 A/B** 或**同一次运行内的比例**（§22 六）。
+3. **先找结构问题，再抠单点**。最大的那一刀不是某项快，而是「逻辑步数 = 渲染帧数」这个不动点；
+   改成固定步长后 `tick` 直接减半（§23）。
+4. **周期性尖峰要摊开，不要硬扛**：HUD 分槽、迷雾重烘合并、小地图降频、AI 分层 ——
+   都是「把活摊到多帧 / 降频」，比逐项微优化有效（taste：宁可稍旧一点，也要稳的帧预算）。
+5. **变更检测优先于重算**：迷雾扇区缓存 → 扁平表 → 版本号闸门；地形 chunk 同理。
+   但**闸门只值它在场景里的命中率**：dscj 一直在走，命中率 12%（§24.2），
+   要更大收益只能上增量索引（没做）。
+6. **C# 只在「整段、无回调、可批量」时才划算**。士气那刀 8%，碎刀被组包吃掉；
+   `units` 实测算完 ROI 后**明确不做**（§24.4）。搬之前先量 `per-unit µs` 与组包成本。
+7. **每个改动留一个数字回退**。上面 A~D 四张表里每一项都能用 `config.json` 一个数退回去；
+   没有回退开关的优化不要合入。
+8. **文档会自相矛盾**：§23.10 说「整段下沉 C#」、§22.19 说「搬 C# 救不了」。
+   遇到这种情况**以实测为准**，并把结论连同反例写进文档（§24.3 / §24.4）。
+
+### 25.5 什么时候才需要再开性能工作（排查顺序）
+
+1. **先看读数**：`ui.show_perf` 的 `fr` 平均与 **max**。均值高 = 每帧都贵；max 高 = 周期性尖峰。
+2. **周期性尖峰**：按 §22 的清单查「每 N 秒 / 每 N 帧做一次重活」——
+   HUD 全刷、迷雾重烘、小地图、快照批量应用、AI 全局重规划。
+3. **均值高**：`ui.show_perf_detail` 看 `tk` 分段，谁最大查谁（§24.3 有一份真实分段的读法）。
+4. **先问「这一局是不是本来就超规模」**：dscj 256 单位是普通关的四倍；
+   90 帧的可行区间在 30 Hz 逻辑下是 ≤64 单位量级（§22.7）。
+5. **最后才考虑结构改造**（C# 整段、packed 路径、增量索引、快照编码）——
+   每一件的收益与风险都在 §24.4 / §24.7 里写着，别从那里开刀。
+
+### 25.6 验收 / 回退（一条命令一件事）
+
+```powershell
+cd dev_gd_a/daeem
+# 语法（最快、报行号最准）
+powershell -ExecutionPolicy Bypass -File tools/check-syntax.ps1
+# 相关套件（性能改动涉及 fog / ai / 单位循环 / 时间步）
+powershell -ExecutionPolicy Bypass -File tools/run-tests.ps1 -Filter test_fog
+powershell -ExecutionPolicy Bypass -File tools/run-tests.ps1 -Filter test_ai
+powershell -ExecutionPolicy Bypass -File tools/run-tests.ps1 -Filter test_logic
+powershell -ExecutionPolicy Bypass -File tools/run-tests.ps1 -Filter test_time_step
+# 桌面基准（A/B 只切环境变量）
+$env:DAEEM_DSCJ_STEP="33"; $env:DAEEM_DSCJ_FRAMES="180"
+$env:DAEEM_FOG_GATE="1"; $env:DAEEM_GARRISON_INTERVAL="0.1"
+& '<mono Godot>_console.exe' --headless --path . --script res://tests/bench_dscj.gd
+# 真机：ui.show_perf + ui.show_perf_detail
+```
+
+**一键回退到「没做本轮优化」**：`fog.revision_gate = 0` + `ai.garrison.decision_interval_sec = 0`
+（本轮两项）；再往回退到固定步长之前：`sim.step_sec = 0` 且 `sim.mobile_step_sec = 0`。
+
+### 25.7 明确不做（写下来防止反复）
+
+| 没做 | 为什么 |
+|---|---|
+| `units` 整段下沉 C# | 实测 `units` 只占 ~1.1ms/帧；`update_unit` 每一支都回调世界（寻路 / 事件 / 投掷物），整段重写 ≥1000 行（§24.4） |
+| `u.path` 改 packed 数组 + 游标 | `path_pops` 实测 0.21~0.26 次/帧，`remove_at(0)` 不是病根（§24.3） |
+| fog 增量索引 | 能把 fog 从 0.19 压到 ~0.08，但要维护「格子→来源」的增删表与失效逻辑，风险最高（§24.7） |
+| 快照编码（并行数组 / 兵种整数 / id 句柄） | 视野过滤后单条已 7.5KB，带宽够用；改协议要两端同版本（§22.19 七） |
+| 客户端预测 | 剩下的延迟是网络 RTT，属于联机手感，不属于性能（§22.17） |
+| 服务端 tick / 多线程 | 单机与双人合作都不需要，且会破坏确定性测试（§22 / §23） |
+
+> **优化结束**。以后新增玩法若踩到预算，按 §25.5 的顺序先测量、再决定 ——
+> 不要凭「感觉哪里慢」直接改代码。

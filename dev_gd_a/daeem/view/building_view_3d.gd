@@ -33,6 +33,9 @@ const PaletteRes = preload("res://view/palette.gd")
 const HitFxRes = preload("res://view/hit_fx.gd")
 ## ★★ 局内「敌 / 友 / 己」三色（本轮新增；判据只在 view/side_color.gd）
 const SideColorRes = preload("res://view/side_color.gd")
+## ★★ 「3×3 内有可见单位」的按格位图（见 view/fade_stamp.gd）：
+##    原来对每一栋建筑各做 9 次 `Dictionary.has(Vector2i)`，旗面那一趟还要再来一遍。
+const FadeStampRes = preload("res://view/fade_stamp.gd")
 ## ★ 建筑材质：逐像素受击闪白（自定义 shader，见文件）
 const BUILDING_FLASH_SHADER = preload("res://view/building_flash.gdshader")
 
@@ -248,7 +251,15 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 	var hover_step: float = 1.0 if _hover_sec <= 0.0 else dt / _hover_sec
 	# ★ 先把「哪些格附近有可见单位」标出来（一次 O(单位数)），建筑逐栋查表即可
 	var marked: Dictionary = _fade_marked_tiles()
+	# ★★ 2026.10.28（性能）：把那张字典铺成位图**一次**，之后逐栋只做下标
+	#   （见 `_fade_at` 与 `view/fade_stamp.gd`）。旗面那一趟复用同一张位图。
+	var stamp: PackedByteArray = FadeStampRes.build(marked, int(world.map.cols), int(world.map.rows))
 	var buckets: Dictionary = {}
+	# ★★ 同一批建筑在列表里通常挨在一起（玩家一口气拉的一排墙）⇒ 记住上一把键，
+	#   只有 owner / type 变了才重新拼字符串。
+	var last_owner: String = ""
+	var last_type: String = ""
+	var last_key: String = ""
 	for b in world.building_list:
 		if not b.alive:
 			continue
@@ -256,7 +267,14 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 		#    （判据只在 logic/fog.gd：己方 / 无主永远可见，敌方「见过就记住」）
 		if not _visible_to_me(b):
 			continue
-		var key := "%s|%s" % [String(b.owner), String(b.type)]
+		var key: String
+		if last_key != "" and String(b.owner) == last_owner and String(b.type) == last_type:
+			key = last_key
+		else:
+			last_owner = String(b.owner)
+			last_type = String(b.type)
+			key = "%s|%s" % [last_owner, last_type]
+			last_key = key
 		var arr: Array = buckets.get(key, [])
 		arr.append(b)
 		buckets[key] = arr
@@ -277,7 +295,7 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 			# ★ 受击闪白（.r）+ 靠近淡出（.g）+ 悬停填充（.b）：逐实例自定义数据
 			#   （建筑很少，直接每帧写，不做脏检查 —— 与闪白同一条口径）
 			var flash: float = clampf(arr[i].hit_flash, 0.0, 1.0)
-			var fade: float = 1.0 if should_fade(arr[i], marked) else 0.0
+			var fade: float = 1.0 if _fade_at(stamp, arr[i]) else 0.0
 			var tile := Vector2i(arr[i].tx, arr[i].ty)
 			var wanted: bool = _hover_tiles.has(tile)
 			var hov: float = move_toward(
@@ -306,7 +324,7 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 	instance_count = total
 	mesh_batch_count = used
 	# ★★ 旗面（可动部件）单独一发：按占领进度摆在旗杆上（见 `_sync_flags`）
-	_sync_flags(marked)
+	_sync_flags(marked, stamp)
 
 
 ## 一栋建筑在世界里的变换：底边贴地、尺寸 = 本体平面尺寸 × 视觉高度
@@ -440,7 +458,10 @@ func _flag_batch_for(key: String, color: Color, type: String) -> Dictionary:
 
 
 ## 每帧摆旗面：只画 `progress > 0` 的区划中心，逐面按进度抬高（闪白 / 淡出与建筑同一条口径）。
-func _sync_flags(marked: Dictionary) -> void:
+##
+## ★★ 2026.10.28（性能）：`stamp` 是 `sync()` 已经算好的「3×3 内有可见单位」位图，
+##   这里不再对每一面旗重做 9 次字典探测（见 `_fade_at`）。
+func _sync_flags(marked: Dictionary, stamp: PackedByteArray = PackedByteArray()) -> void:
 	if world == null or cfg == null:
 		return
 	var buckets: Dictionary = {}
@@ -456,7 +477,7 @@ func _sync_flags(marked: Dictionary) -> void:
 			continue
 		var type := String(b.type)
 		var col: Color = st["color"]
-		var key := "%s|%s" % [type, col.to_html(false)]
+		var key := "%s|%s" % [type, _color_hex(col)]
 		var rec: Variant = buckets.get(key, null)
 		if rec == null:
 			rec = {"type": type, "color": col, "items": []}
@@ -473,7 +494,7 @@ func _sync_flags(marked: Dictionary) -> void:
 			var b = items[i]["b"]
 			mm.set_instance_transform(i, _flag_transform(b, float(items[i]["p"])))
 			var flash: float = clampf(b.hit_flash, 0.0, 1.0)
-			var fade: float = 1.0 if should_fade(b, marked) else 0.0
+			var fade: float = 1.0 if _flag_fade(b, marked, stamp) else 0.0
 			mm.set_instance_custom_data(i, Color(flash, fade, 0.0, 0.0))
 		mm.visible_instance_count = items.size()
 		(brec["node"] as MultiMeshInstance3D).visible = true
@@ -483,6 +504,27 @@ func _sync_flags(marked: Dictionary) -> void:
 			var r2: Dictionary = _flag_batches[key]
 			(r2["mm"] as MultiMesh).visible_instance_count = 0
 			(r2["node"] as MultiMeshInstance3D).visible = false
+
+
+## 旗面的淡出判据：有位图就走快路径，没有就退回按字典查 9 格（语义一致）。
+func _flag_fade(b, marked: Dictionary, stamp: PackedByteArray) -> bool:
+	if not stamp.is_empty():
+		return _fade_at(stamp, b)
+	return should_fade(b, marked)
+
+
+## `Color.to_html()` 的缓存：同一帧里几十面旗常常是同一个颜色，
+## 而 `to_html` 每次都要拼一个 6 位十六进制字符串（纯分配）。
+var _color_hex_cache: Dictionary = {}
+
+
+func _color_hex(c: Color) -> String:
+	var hit: Variant = _color_hex_cache.get(c, null)
+	if hit != null:
+		return String(hit)
+	var s := c.to_html(false)
+	_color_hex_cache[c] = s
+	return s
 
 
 func _faction_or_type_color(b, owner: String) -> Color:
@@ -588,12 +630,27 @@ func _fade_marked_tiles() -> Dictionary:
 
 
 ## 这栋建筑要不要淡出（它**自己的 3×3** 里有没有可见单位 = 查 `marked` 9 格）。
+##
+## ★ 保留这个「按字典查 9 格」的版本是为了**接口不变**（`tests/test_view3d.gd` 直接拿
+##   `_fade_marked_tiles()` 的结果调它）。`sync()` 那一侧走 `_fade_at()` 的位图快路径，
+##   两者语义逐位一致（见 `view/fade_stamp.gd` 的等价性说明）。
 func should_fade(b, marked: Dictionary) -> bool:
 	for dy in range(-1, 2):
 		for dx in range(-1, 2):
 			if marked.has(Vector2i(b.tx + dx, b.ty + dy)):
 				return true
 	return false
+
+
+## `should_fade()` 的位图快路径：一次数组下标（见 `view/fade_stamp.gd`）。
+## ★★ 2026.10.28（性能）：城墙上限 240 段、加上箭塔 / 大本营，`building_list` 可以是**几百栋**；
+##   原来每帧对每栋各做 9 次「新建 `Vector2i` + 字典哈希」——而 `_sync_flags()`
+##   还会把同一份判断再跑一遍（旗面）。位图把这两遍都压成一次下标。
+func _fade_at(stamp: PackedByteArray, b) -> bool:
+	if stamp.is_empty():
+		return false
+	var t: int = int(b.ty) * int(world.map.cols) + int(b.tx)
+	return t >= 0 and t < stamp.size() and stamp[t] != 0
 
 
 ## 单位对「我这边」可不可见（与 unit_view_3d 同一条判据：迷雾的唯一出处是 logic/fog.gd）。
