@@ -73,7 +73,7 @@ func _test_library_scan() -> void:
 		"★ 选项按目录名排序（第一项是 arena，而不是枚举顺序随机的某个）")
 
 	eq(MapLibraryRes.default_map_path(), MAPS_PREFIX + EXPECT_FRONTIER_ID + "/map.json",
-		"★ 默认地图 = 第一张**非占位**图（arena 排在前面也轮不到它）")
+		"★ 默认地图 = frontier（FALLBACK_MAP_PATH 在列表里就用它；新图 / 占位图都抢不走）")
 	eq(MapLibraryRes.is_placeholder(MAPS_PREFIX + EXPECT_ARENA_ID + "/map.json"), true,
 		"is_placeholder 认得 arena")
 	eq(MapLibraryRes.is_placeholder(MAPS_PREFIX + EXPECT_FRONTIER_ID + "/map.json"), false,

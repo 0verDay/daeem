@@ -110,6 +110,24 @@ func _run() -> void:
 	var total_us: int = 0
 	var peak_us: int = 0
 	var samples: Array = []
+	# ★★ 2026.10.28：**整帧 process 成本**（`Performance.TIME_PROCESS`）。
+	#   上面那个 `total_us` 只量了 `game._process` 自己；HUD / 地形道具 / 小地图 /
+	#   新加的播报横幅都是**别的节点**，它们每帧的开销只有这个监视器看得见。
+	var proc_sum: float = 0.0
+	var proc_max: float = 0.0
+	# `DAEEM_DSCJ_BANNER=<每多少帧播一条>`：压力测试播报横幅（0 = 不播）。
+	var banner_every: int = _env_int("DAEEM_DSCJ_BANNER", 0)
+	# ★★ 2026.10.28（长跑）：`DAEEM_DSCJ_TRACE=<每多少帧打一行>` 打点。
+	#   为什么需要：短测只覆盖开局（256 单位）。而**打久了单位会涨**（AI 满编 / 玩家造兵），
+	#   真正的掉帧往往出现在 2~5 分钟之后 —— 那一帧的成本与开局根本不是一回事。
+	var trace: int = _env_int("DAEEM_DSCJ_TRACE", 0)
+	var win_start_us: int = 0
+	var win_frames: int = 0
+	# ★ 播报横幅在屏幕上出现的帧数（占比 = 它对平均帧成本的实际影响面）。
+	var banner_frames: int = 0
+	# ★ 播报「从无到有」的次数（= 真正弹了几次横幅；用来判断它是不是常态开销）。
+	var banner_bursts: int = 0
+	var banner_was_on: bool = false
 	for i in frames:
 		var t0: int = Time.get_ticks_usec()
 		game._process(1.0 / 60.0)
@@ -118,8 +136,38 @@ func _run() -> void:
 		if used > peak_us:
 			peak_us = used
 		samples.append(float(used) / 1000.0)
+		if banner_every > 0 and i % banner_every == 0 and game.hud != null \
+				and game.hud.broadcast_banner != null:
+			game.hud.show_broadcast(String(game.world.my_faction), 2)
+		win_start_us += used
+		win_frames += 1
+		if game.hud != null and game.hud.broadcast_banner != null \
+				and game.hud.broadcast_banner.visible:
+			banner_frames += 1
+			if not banner_was_on:
+				banner_bursts += 1
+			banner_was_on = true
+		else:
+			banner_was_on = false
+		if trace > 0 and (i + 1) % trace == 0:
+			# ★ 只数「commander AI 那一方」的单位（没有 `unit_count_of` 这种 API，自己数）。
+			var ai_sides: Array = game.world.commander_factions()
+			var ai_n: int = 0
+			for u0 in game.world.units:
+				if ai_sides.has(String(u0.faction)):
+					ai_n += 1
+			print("[DSCJ] t=%5.1fs  units=%d  ｜ commander_ai_units=%d  buildings=%d  ｜ 本段 CPU %.2f ms/帧"
+				% [float(i + 1) / 60.0, game.world.units.size(), ai_n,
+					game.world.building_list.size(),
+					float(win_start_us) / 1000.0 / float(maxi(1, win_frames))])
+			win_start_us = 0
+			win_frames = 0
 		# 让这一帧真的被画一次（`_draw` 里的 overlay / 小地图不会被 `_process` 覆盖到）
 		await process_frame
+		# ★ 采样「上一帧的整帧 process 耗时」（含 HUD / props / 小地图 / 播报横幅）。
+		var proc: float = Performance.get_monitor(Performance.TIME_PROCESS)
+		proc_sum += proc
+		proc_max = maxf(proc_max, proc)
 
 	samples.sort()
 	var n: int = maxi(1, frames)
@@ -134,6 +182,10 @@ func _run() -> void:
 	print("[DSCJ] 手机估算（×2.5）：%.1f ms/帧 => %.1f fps"
 		% [float(total_us) / 1000.0 / float(n) * 2.5,
 			1000.0 / (float(total_us) / 1000.0 / float(n) * 2.5)])
+	print("[DSCJ] 整帧 process（含 HUD/props/小地图/播报）：平均 %.2f ms，峰值 %.2f ms"
+		% [proc_sum * 1000.0 / float(n), proc_max * 1000.0])
+	print("[DSCJ] 播报横幅在屏帧占比 %.1f%%（%d / %d 帧），弹出 %d 次"
+		% [100.0 * float(banner_frames) / float(n), banner_frames, n, banner_bursts])
 
 	_print_profile("game_scene._process 分段（视图侧）", game.profile_us, n)
 	var world_sum: float = _print_profile("world.tick 分段（逻辑侧）", game.world.profile_us, n)

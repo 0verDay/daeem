@@ -201,18 +201,50 @@ func _alpha_for(t: float) -> float:
 	return 1.0
 
 
+## 把每一行同步到复用的控件上。
+##
+## ★★ 2026.10.28（性能）：**只在值真的变了才写**。
+##
+## 原来这里每帧无条件写 `row.modulate` / `label.text` / `accent.color`：
+##   · `modulate` 一变，Godot 就把这个 CanvasItem 标脏 ⇒ 该行的 `Panel`（带描边的
+##     StyleBox）与 `Label`（**要把文字重新画进字形纹理**）每帧重绘一次；
+##   · 一条播报在屏 4 秒（`ui.broadcast.hold_sec`），60 fps 就是 240 次重绘 × 每行。
+##   实测（`tests/bench_dscj.gd`，同一帧里对比）：**横幅在屏时整帧 process +1.4 ms**，
+##   而其中绝大部分是「停留期明明什么都没变、却在重绘」。
+##
+## 现在停留期（alpha 恒为 1.0、文字不变）**一次写入都没有** ⇒ 零重绘；
+## 只有淡入 / 淡出那 0.25 秒会真的改 alpha。
+## ⚠️ 与 `view/fill_button.gd` 的 `_applied` 缓存是同一条教训（见 docs/mobile.md 2.2 第 1 条）：
+##    **Godot 里的「写属性」不是免费的**，没变就别写。
 func _sync_slots() -> void:
 	for i in _slots.size():
 		var slot: Dictionary = _slots[i]
 		var row: Control = slot["row"]
 		if i >= _lines.size():
-			row.visible = false
+			if bool(slot.get("on", false)):
+				row.visible = false
+				slot["on"] = false
 			continue
 		var e: Dictionary = _lines[i]
 		var a := _alpha_for(float(e.get("t", 0.0)))
 		var c: Color = e.get("color", UiStyleRes.accent())
-		row.visible = true
-		row.modulate = Color(1.0, 1.0, 1.0, a)
+		var text := String(e.get("text", ""))
+		if not bool(slot.get("on", false)):
+			row.visible = true
+			slot["on"] = true
+			# 重新显示时上一次的缓存不可信（可能是别的播报留下的）。
+			slot["alpha"] = -1.0
+			slot["text"] = ""
+			slot["col"] = Color(0, 0, 0, 0)
+		# alpha：只有变化超过 1/500 才写（避免浮点抖动导致每帧都写）。
+		if absf(a - float(slot.get("alpha", -1.0))) > 0.002:
+			row.modulate = Color(1.0, 1.0, 1.0, a)
+			slot["alpha"] = a
 		var label: Label = slot["label"]
-		label.text = String(e.get("text", ""))
-		(slot["accent"] as ColorRect).color = c
+		if String(slot.get("text", "")) != text:
+			label.text = text
+			slot["text"] = text
+		var last_col: Color = slot.get("col", Color(0, 0, 0, 0))
+		if last_col != c:
+			(slot["accent"] as ColorRect).color = c
+			slot["col"] = c

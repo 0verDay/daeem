@@ -1052,7 +1052,7 @@
       ],
       "production": {
         "food": 0.8,
-        "gold": 0,
+        "gold": 0.6,
         "population": 0.4
       },
       "x0": 3,

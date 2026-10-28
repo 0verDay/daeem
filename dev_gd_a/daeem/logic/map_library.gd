@@ -158,26 +158,35 @@ static func declared_id(path: String) -> String:
 
 ## ★★ 进游戏时用哪张图（`game_scene.start()` 的默认值 / 主界面下拉框的初始选中项）。
 ##
-## ★ 规则：扫描结果里**第一张不是占位图的**（= 目录名最小的正式图，稳定）；
+## ★ 规则（2026.10.28 修正）：**优先 `FALLBACK_MAP_PATH`**（= frontier）——
+##   它在列表里就用它；不在（被删 / 改名）才退回「第一张不是占位图的」；
 ##   全是占位图 → 第一张；一张都没有 → `FALLBACK_MAP_PATH`。
+##
+## ★★ 为什么从「第一张非占位图」改成「优先 frontier」：
+##   旧规则下**加一张正式图就可能把默认局换掉** —— 只要它的目录名排在前面。
+##   实测（2026.10.28）：新增 `between_moutains` 之后，默认局从 `frontier` 变成它，
+##   `test_campaign` / `test_map_select` 两处断言同时变红。
+##   默认局是玩家的第一印象 + 保证能跑的最小图，**不该由目录名排序这种偶然因素决定**；
+##   而 `FALLBACK_MAP_PATH` 这个名字本来就意味着「没选就是它」。
 ##
 ## ★★ 为什么要把占位图排除掉：`data/maps/arena/` 那种图是**为测试选项生成逻辑**而存在的
 ##    （它的地形 / 区划根本没调过平衡）。选择条上它当然该出现（那正是要验的东西），
-##    但「不选就按 test」默认进的**不该**是它 —— 否则加一张测试图就把默认局换掉了。
-##    判据写在图自己身上（`placeholder: true`），不是在这里列白名单：
-##    地图目录一变，这个函数不需要跟着改。
+##    但「不选就按 test」默认进的**不该**是它。
 ## ★★ 只给战役用的图（`hidden: true`）**压根不在 `list_maps()` 里**（那一步就过滤掉了），
-##    所以这里看不到它们 —— 加一张战役图同样不会换掉默认局。
+##    所以它们也不会改变默认局。
 ##
 ## ⚠️ 这里**不读 config**：启动路径上多一次 JSON 解析不值得，而且「默认地图是哪张」
-##    本来就该由目录内容决定（与选择条同一个来源）。
+##    本来就该由代码里那一个常量决定（与 `FALLBACK_MAP_PATH` 同一个来源）。
 static func default_map_path() -> String:
 	var maps := list_maps()
 	if maps.is_empty():
 		return FALLBACK_MAP_PATH
 	for item in maps:
-		if not bool((item as Dictionary).get("placeholder", false)):
-			return String((item as Dictionary)["path"])
+		if String((item as Dictionary)["path"]) == FALLBACK_MAP_PATH:
+			return FALLBACK_MAP_PATH
+	for item2 in maps:
+		if not bool((item2 as Dictionary).get("placeholder", false)):
+			return String((item2 as Dictionary)["path"])
 	return String((maps[0] as Dictionary)["path"])
 
 
