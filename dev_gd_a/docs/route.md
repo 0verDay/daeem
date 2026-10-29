@@ -1,4 +1,4 @@
-# Godot 版 DAEEM · 开发路线
+﻿# Godot 版 DAEEM · 开发路线
 
 > 本文是 **Godot 移植的总纲**：先定死已经拍板的取舍，再给出多轮路线与**本轮（第 0 轮）的详细里程碑**。
 > 架构细节见 [`architecture.md`](architecture.md)，HTML → Godot 的逐模块对照见 [`porting.md`](porting.md)，
@@ -6789,3 +6789,479 @@ events = world.tick(minf(dt, cfg.sim_max_dt))
 `test_team_slots` **15** —— 全过（**未跑全量**）。
 
 
+
+---
+
+## 70. 经济改版：科技变常驻投资（预热 / 持续扣金 / 断金冷却）+ 单位维护费 + 断粮士气（2026.10.29）
+
+**需求原话**：「我决定这样调整：科技启用后会一直消耗金，越高阶的科技消耗的金越多；每个单位
+在战场上存活时都需要消耗粮，若粮食不足则全军士气下降（士气下降的速度等于粮车使士气上升的
+速度）；AI也可以用科技；加成不需要离开每地块，科技改为总体产能上升10%/20%/30%，特化改为每地块+0.01」。
+
+追问后补的口径：① 科技金耗 **0.5 / 1.0 / 2.0 金/秒**（按阶）；
+② 金不够 ⇒ **所有科技弃用 + 全科技 30 秒冷却**，并且**启用一条科技本身要预热 30 秒**
+（点下即扣金、30 秒后才生效；预热中取消**不退金、不进冷却**）；
+③ 断金冷却结束后要**重新点 + 再预热 30 秒**（一次断金 = 60 秒没科技）；
+④ 维护费**按兵种分档**（枪 0.03 / 骑 0.06 / 器械 0.10），**粮车按器械档 0.10**；
+⑤ 断粮士气 **固定 −0.5/秒**，叠加在区划 / 粮车之上；⑥ 三条科技**加法叠加**（+10+20+30 = +60%）。
+
+### 70.1 为什么要动
+
+改之前的账（01 关蓝方，实测脚本算的）：
+
+| 阶段 | 粮/秒 | 金/秒 | 其中「每地块」科技与特化占 |
+|---|---|---|---|
+| 开局 2 区划 180 格，无科技 | 3.0 | 0.0 | 0% |
+| 开局 + 1 条粮科技 | 10.2 | 0.0 | **71%** |
+| 中期 4 区划 258 格，2 条科技 | 34.0 | 2.4 | **91%** |
+| 后期 6 区划 396 格，3 条科技 + 2 次黄金特化 | 99.6 | 13.0 | **95%** |
+
+三个病灶：
+
+1. **基础产能是「每区划绝对值」，加成却是「每地块」**（第四十四节只改了基础、没改加成）⇒
+   加成随领土线性膨胀，最终必然盖掉整个基础经济。dscj 全图 801 格时，三条粮科技
+   = **+192 粮/秒**，而全图区划基础粮只有 15.6/秒。
+2. **科技免费、秒切**（`can_activate` 只查阶数与名额），不是经济决策，是个免费旋钮。
+3. **唯一的持续消耗是招兵，而招兵被「6 将 × 15 编制 = 90 单位」硬封顶**：填满 90 单位
+   一次性只要 15943 粮 / 12343 金，之后按 99.6 粮/秒 **每 160 秒就又攒出一整支军队**，
+   但没有编制可买。
+
+### 70.2 数值（改前 → 改后）
+
+| 项 | 改前 | 改后 |
+|---|---|---|
+| 科技产量效果 | `food/gold_per_tile_per_sec` = 0.04 / 0.08 / 0.12（**每地块**） | **`food/gold_production_mult` = 0.10 / 0.20 / 0.30**（**总体产能**百分比，加法叠加） |
+| 科技金耗 | 无 | **0.5 / 1.0 / 2.0 金/秒**（按阶；预热期间照扣） |
+| 科技预热 | 点了立刻生效 | **30 秒**（`tech.warmup_sec`） |
+| 断金 | —— | **全部科技弃用 + 全科技 30 秒冷却**（`tech.shortfall_cooldown_sec`） |
+| 粮食 / 黄金特化 | +0.04 / 地块 / 秒 | **+0.01**（收益 1/4） |
+| 特化造价 | 100 粮 + 100 金 | **50 / 50**（同步降，回本仍约 38 秒） |
+| 人口特化 | +10% | 不变 |
+| 单位维护费 | 无 | **枪 0.03 / 骑 0.06 / 器械 0.10 / 粮车 0.10**（粮/秒/存活单位） |
+| 断粮士气 | —— | 该方**这一帧付不起全额维护费** ⇒ 全军 **−0.5/秒**（`morale.starve_drain`） |
+| AI 科技优先 | `[]`（其实仍会按表顺序点，见 70.3⑤） | **`["food_1","gold_1","building_hp"]`** |
+
+改之后的账（同一张 01 关，6 区划 + 264 格黄金特化 + 两条三阶科技 + 90 单位混编）：
+
+| 项 | 改后 |
+|---|---|
+| 粮食 | 4.6 × 1.3 = 5.98，减维护费 ≈ 4.1 ⇒ **净 +1.8/秒** |
+| 黄金 | (2.4 + 2.64) × 1.3 = 6.55，减科技金 4.0 ⇒ **净 +2.6/秒** |
+| 合计 | **≈ 4.4/秒**（改前 112.6/秒，约 1/26） |
+| 满编后再攒一支军队 | 15943 / 1.8 ≈ **147 分钟**（改前 160 秒） |
+
+### 70.3 口径（最容易踩的五条）
+
+1. **预热也算名额**：`tech.slot_count()` = 已生效 + 预热中。不算的话玩家可以先点满五条再
+   让它们同时生效，`max_active` 形同虚设。三处读名额的地方（`can_activate` /
+   `remaining_slots` / `world.tech_remaining_slots`）全部改走 `slot_count()`。
+2. **扣金从「点下去」那一刻开始**（预热期间照扣），而**效果**要等预热读完。
+   所以「点错了」的代价是那几秒的金，取消不退。
+3. **断金判据是「这一帧付不起」**：金 < 本帧应付 ⇒ 金清 0 + `tech.fail_all()`；
+   **不让金变成负数**（负数会污染 HUD，还会让「先欠着再还」变成更优策略）。
+4. **断粮判据同理**（粮 < 本帧全额维护费 ⇒ 清 0 + 打标记），**但惩罚不同**：
+   不断科技，只是全军士气 −0.5/秒。粮车光环正好是 +0.5/秒 ⇒ **一辆粮车刚好抵消**。
+5. **`resource_pool_for()` 返回 null 的阵营（阵地性 / 红点性 AI）不吃粮、不扣金、不会断粮**，
+   与 `economy.can_afford(null, …)` 的「null = 资源无限」是同一条语义。
+   ★ 顺带修正一个旧结论：**指挥官 AI 其实一直在用科技**（`ai_build._try_tech` 在「优先级表」
+   之后会把表里其余科技补进候选），只是原先 `tech_priority` 为空、只能按表顺序吃。
+   本轮给它一条真正的优先序列 + 「养得起才点」的预算闸门 + 「断金后清掉防抖表」的重试路径。
+
+### 70.4 落点
+
+| 文件 | 改动 |
+|---|---|
+| `data/config.json` | `tech`：`gold_per_sec_by_tier` / `warmup_sec` / `shortfall_cooldown_sec` + 六条产量科技的 `effect` 换形状 + 文案；`zone_spec`：0.01 / 50-50；`unit.classes`：每档 `upkeep_food`；`unit.types.grain_cart.upkeep_food = 0.10`；`morale.starve_drain`；`economy.upkeep_enabled`；`ai.commander.build.tech_priority` |
+| `logic/config.gd` | 缓存 `tech_gold_per_sec` / `tech_warmup_sec` / `tech_shortfall_cooldown_sec` / `morale_starve_drain` / `upkeep_enabled`；新增 `tech_gold_per_sec_of()` / `unit_upkeep_of()` |
+| `logic/tech.gd` | 三张表（active / warmup / cooldown）+ `begin()` / `deactivate()` / `fail_all()` / `tick()` / `gold_drain_per_sec()` / `slot_count()`；`effects_of()` 换成产能百分比 |
+| `logic/world.gd` | `set_tech_active` 走 `begin`；`tick` 里推进科技计时（在重算聚合之前）；新增 `_tick_upkeep` / `_charge_upkeep` / `starving_factions` / `is_starving`；`_accumulate_production` 改成 ×(1+pct)；`tech_entries` 带预热 / 冷却 / 每秒金耗 |
+| `logic/morale.gd` | `_zone_morale_rate` 加断粮惩罚；C# 内核那条路把它折进 `aura` 列（**内核一行没改**，两条后端天然等价） |
+| `logic/snapshot.gd` | 新增 `tw`（预热剩余）/ `tc`（冷却剩余），整份替换而不是合并 |
+| `logic/ai_build.gd` | 预算闸门（负担 ≤ 黄金收入 × 0.5、余额够付 45 秒）+ 冷却期清 `tech_attempted` |
+| `view/hud.gd` | 悬停写「消耗 x 金/秒 / 预热 / 冷却」；拒因新增 `cooldown` / `warming`；资源条写「断粮」「-x」 |
+| `view/tech_grid.gd` | 预热 / 冷却时第二行换成倒计时；预热格走灰色填充但**可点**（= 取消） |
+| `view/game_interaction.gd` | 新增 `tech_starved` 红字提示 |
+| `tools/unit_editor/model.py` + 两个测试 | `TECH_EFFECTS` 换成新键名 |
+
+### 70.5 测试
+
+* **总闸**：`economy.upkeep_enabled`（默认 true）。`tests/test_case.require_config()` 把它
+  **关掉** —— 仓库里大量用例做的是「粮食 200 → 招一个兵 → 150」这种精确对账，而维护费 /
+  科技金耗是**每帧都在扣**的，不关掉那些断言全会差 0.x。
+  新机制自己的覆盖在 **`tests/test_economy.gd`**（把总闸显式打开）：维护费分档、扣粮、
+  断粮士气（端到端 + 速率精确比对）、30 秒预热、每秒扣金、断金全灭 + 冷却、产能百分比。
+* 改过的旧用例（都是「点一条科技 → 立刻断言生效」这一类）：
+  `test_tech`（基础 / 上限 / 产量 / 血量 / 人口 / 命令）、`test_base_limits`、`test_coop_tech`、
+  `test_snapshot_coop`、`test_upgrade`、`test_ui`。全部改成先 `finish_tech_warmup()`
+  （`test_case.gd` 新增的脚手架）或 `instant_tech()`（跳过预热，只给不关心预热的旧断言用）。
+* 数值断言：`test_upgrade`（特化 0.04 → 0.01、造价 100 → 50）、`test_ui`（科技格第二行
+  `粮食产能 +10%`、特化 0.01）、`tools/unit_editor/test_model.py` / `test_app.py`。
+
+### 70.6 未验证 / 要观察
+
+* ⚠️ **本轮没有跑测试**：开发机上没有 Godot 可执行文件。改动做了「括号 / 缩进 / 引号」的
+  静态体检与 JSON 校验，但**断言是否全绿要你跑一遍**：
+  `godot --headless --path dev_gd_a/daeem --script tests/test_economy.gd`（以及 70.5 列的那些）。
+* 要观察的手感：**30 秒预热 + 断金 60 秒**是不是太硬（点了看不见、断了感觉像 bug）；
+  如果太硬，改 `tech.warmup_sec` / `tech.shortfall_cooldown_sec` 两个数即可，不用动代码。
+* 要观察的平衡：后期净收入 ≈ 4.4/秒 是「紧但能玩」；维护费是主旋钮
+  （`unit.classes.*.upkeep_food`），科技金耗是次旋钮（`tech.gold_per_sec_by_tier`）。
+* AI 的科技预算闸门是保守估的（用区划基础产能当收入），实战里 AI 可能偏保守 —— 先观察。
+
+---
+
+## 71. 资源条显示每秒净增长（+n）+ 收支统计接口（2026.10.29）
+
+**需求原话**：「为游戏添加一个内容：统计每秒的产能与消耗，把资源变动放到每秒，同时在资源栏的数字
+区域加上（+n）以显示每秒的资源增长」。
+
+### 71.1 口径
+
+* **净额 = 产能 − 持续消耗**，两行各自算：
+  * 粮食：`production_food`（已含科技百分比加成）**− 单位维护费**；
+  * 黄金：`production_gold` − **启用中（含预热中）科技的每秒扣金**。
+* 显示粒度 **0.1 /秒**：`粮食 1234(+3.2)` / `黄金 800(-0.5)`；**一律带符号**，
+  0 附近（|n| < 0.05）写成 `(+0.0)`（否则浮点的 `-0.0` 会印成 `(+-0.0)`）。
+* 净额为负 ⇒ 整行改成 `UiStyleRes.warn()` 的告警色（断粮 / 科技烧钱一眼可见）。
+* **断粮不再塞进资源条**（134px 的可写宽放不下第 3 段文字），改成**事件**：
+  `starving_started`（只在「刚开始挨饿」那一帧推一次）→ 红字提示
+  「粮食不够养兵：全军士气正在下降（每秒 −0.5，粮车可以抵消）」。
+* 「统计」本身落在 `world.income_breakdown()`：产能 / 维护费 / 科技 / 净额四项分开给，
+  资源条只读净额，**界面不自己算扣费**（扣费口径只有 `_tick_upkeep` 一处）。
+
+### 71.2 落点
+
+| 文件 | 改动 |
+|---|---|
+| `logic/world.gd` | 新增 `_upkeep_food_rate` / `_tech_gold_rate` 两个缓存（由 `_charge_upkeep` 每帧写、`reset()` 清空）；新增 `net_per_sec()` / `income_breakdown()`；断粮转「事件」 |
+| `view/hud.gd` | 资源条文案改成「数值 + `(+n)`」；`_rate_text()` 负责符号与舍入；`_res_last_text` 缓存避免每帧重设 text / font_color |
+| `view/ui_layout.gd` | `RES_TEXT_W` **128 → 134**（26+134=160 ≤ 面板 162.5，右缘仍与阵营盾徽平齐）；资源条那一行的字号在 hud 里降到 **FS_SMALL(13)** —— 15 号字排「粮食 12345(+12.3)」要 149px，装不下 |
+| `view/game_interaction.gd` | 新增 `starving_started` 红字 |
+
+### 71.3 断言
+
+* `test_economy` 新增一节：报表的「维护费」= Σ 各兵种 upkeep、产能为 0 时净粮 = −维护费、
+  科技金耗单独列且从净额里扣、`net_per_sec()` 与明细一致、产能那一项已含科技 +10%。
+* `test_ui`：资源条文字由「精确相等」改成 `begins_with`（数字部分）+ 新断言（两行都带 `(+n)`）；
+  新增 `_rate_text` 的格式断言（`(+3.2)` / `(-1.3)` / `(+0.0)` / `(-0.001) → (+0.0)`）；
+  资源条宽度量算用的样例字符串改成 `粮食 12345(+3.2)` / `黄金 12345(-12.3)`。
+
+### 71.4 要观察
+
+* 资源条那一行现在是 `粮食 1234(+3.2)`（**13 号字**，数字与括号之间不留空格 —— 空格要
+  花 4px，而这一行只有 134px）。实测（SimHei 13px，按「粮食 1234 = 78px」那个经验比换算）：
+  `粮食 12345(+3.2)` ≈ 122px、`黄金 12345(-12.3)` ≈ 130px，都 ≤ 134；
+  **6 位数会开始裁尾**（`clip_text = true`，不会撑破面板）。
+  真到那一步只有两条路：把「粮食 / 黄金」这两个词去掉（色块上已经有「粮 / 金」），
+  或把资源条宽度从 162.5 放开（那会破坏「与阵营盾徽左右平齐」这条设计，见 ui_layout 的注释）。
+* 净额是**理论值**（产能 − 已承诺的消耗），不是「上一秒实际变了多少」：
+  池子见底时实际变化会被截到 0，但显示仍然是负的 —— 这正是玩家要看的「我在亏」。
+
+---
+
+## 72. command AI 的发命令间隔改由难度控制（2026.10.29）
+
+**需求原话**：「我想延长command ai发命令的间隔，且让这个用难度控制，改一个参考数据出来，
+要我可以轻松点打赢简单，但战胜困难却要点技巧」。
+
+### 72.1 为什么只动 army 这一层
+
+`ai_commander` 是四层定时调度，原来只有 **两层的间隔带难度倍率**：
+
+| 层 | 基础间隔 | 原来有难度倍率吗 |
+|---|---|---|
+| `production`（补员 / 守军轮换 / 招将） | 1.0s | ✅ `production_interval_mult` |
+| `build`（升本 / 科技 / 特化 / 箭塔） | 2.5s | ✅ `build_interval_mult` |
+| **`army`（回防 / 整备 / 扩张 / 进攻 / 巡逻）** | 0.6s | ❌ **没有 —— 三档难度都是 0.6 秒** |
+| `strategic`（状态 / 归属对账） | 2.0s | ❌ 没有 |
+
+`army` 这一层就是「**发命令**」：所有移动 / 进攻 / 扩张 / 回防 / 巡逻指令都在 `AiArmyRes.update()`
+里发出。它固定 0.6 秒 ⇒ AI 每 0.6 秒就能推翻重来一次，等于**近乎无延迟的战术反应**，
+难度差只体现在经济和建造上。所以本轮补的正是这个缺口。
+
+### 72.2 参考数据（改动后）
+
+基础 `intervals.army_interval_sec` **0.6 → 1.0 秒**，再乘难度倍率：
+
+| 难度 | `army_interval_mult` | **发命令间隔** | 20 秒内的决策次数 | 招兵节拍 | 建造/科技 | 战略对账 | 收入倍率 | 军队上限比例 | 回防反应 |
+|---|---|---|---|---|---|---|---|---|---|
+| 简单 | 1.8 | **1.80s** | 11 | 1.60s | 3.75s | 4.00s | 0.70 | 0.70 | 3.0s |
+| 普通 | 1.2 | **1.20s** | 17 | 1.00s | 2.50s | 2.40s | 1.00 | 1.00 | 1.2s |
+| 困难 | 0.7 | **0.70s** | 29 | 0.75s | 1.88s | 1.60s | 1.25 | 1.00 | 0.5s |
+
+* 相对改前：三档**全部变慢**（0.6 → 1.80 / 1.20 / 0.70），简单最慢、困难只慢 17%。
+* **简单 ↔ 困难 的发命令频率差 2.57 倍**（1.80 / 0.70）—— 这是「轻松赢」与「要技巧」的主要来源。
+* 「回防反应」= 发现威胁的**最坏延迟** ≈ `army_interval + reaction_delay_sec`：
+  简单 4.8s（玩家能抢下一块地再走）、普通 2.4s、困难 1.2s（基本抢不动）。
+* 另外三档的 `production` / `build` 倍率也从「1.4/1.0/0.8」拉开到「1.6/1.0/0.75」，
+  `income_mult` 0.8/1.0/1.2 → **0.7/1.0/1.25**。
+
+### 72.3 落点
+
+| 文件 | 改动 |
+|---|---|
+| `data/config.json` | `intervals.army_interval_sec` 0.6 → 1.0；`difficulty` 三档新增 `army_interval_mult` / `strategic_interval_mult`，并把 `income_mult` / `army_cap_ratio` / `build_interval_mult` / `production_interval_mult` / `reaction_delay_sec` 一并调成上表；`difficulty._comment` 写清每个键的含义 |
+| `logic/ai_profile.gd` | `DEFAULTS.difficulty` 三档同步；`build()` 把两个新键夹到 ≥0.1 后摊进 profile |
+| `logic/ai_commander.gd` | `setup()` 里 `army_iv` / `strat_iv` 各乘自己的倍率（与 build / production 同一条写法）；`_interval_army` 默认值 0.6 → 1.0；文件头那四条间隔注释补上「× 难度」 |
+| `tests/test_ai_commander.gd` | `_test_profile`：三档倍率必须严格递增（简单 > 普通 > 困难）；`_test_world_setup`：`_interval_army == 基础 × 倍率`，且普通难度 ≥ 1.0 秒 |
+
+### 72.4 要观察
+
+* **简单的 AI 会不会显得「傻」**：1.8 秒一次决策 + 4.8 秒回防延迟，在快攻下可能反应不过来。
+  这是刻意的；如果显得呆滞，先把 `reaction_delay_sec` 从 3.0 降到 2.0（比降间隔更温和）。
+* **困难的 0.7 秒是否仍然「要技巧」**：如果玩家还是被平推，往下动 `income_mult`（1.25 → 1.35）
+  或把 `army_cap_ratio` 提到 1.1；**不建议**再把间隔压回 0.6 以下 —— 那等于回到「零延迟反应」。
+* 间隔变长后，`AiArmyRes.update(ai, dt)` 里的**冷却仍然按真实时间走**（传进去的就是本次间隔），
+  所以「20 秒回防冷却」不会因为间隔变长而变慢 —— 只有**决策粒度**变粗。
+* 联机不受影响：难度是权威侧（房主）的 profile，客机只收结果。
+
+---
+
+## 73. TTK 改版：单位加血 / 加护甲 / 降攻击，将领再单独更抗打（2026.10.29）
+
+**需求原话**：「现在我需要修改一下其中的单位数据，将所有单位的数据偏向ttk长的方向改，血量增加，
+给点防御，降低攻击，同时修改一下将领血量和攻击防御，让将领可以更抗打一些」。
+
+### 73.1 怎么定的数（不是拍脑袋）
+
+先把伤害公式抄成脚本（`take_damage` + `combat.attack_unit` 的原样），算出**改前**每一对兵种的
+1v1 TTK，再按一个目标倒推：**所有对局一律 ×2**。
+
+公式（与代码逐项对应）：
+
+```
+每次实收 = max(1, 伤害×(1+兵种克制加成) − 护甲) × (1 − clamp(减伤和, 0, 0.75))
+减伤和   = 0.25（高士气）+ 兵种「对远程减伤」（只在挨远程时）
+TTK      = 血量 / (每次实收 / 攻击间隔)
+```
+
+于是给定「伤害 ×0.75 左右、护甲 +1~2」，**血量由 TTK 目标反解**（不是先拍血量再算 TTK）：
+
+| 兵种 | 血量 旧→新 | 护甲 旧→新 | 攻击 旧→新 | 攻击间隔 |
+|---|---|---|---|---|
+| 长枪兵 | 140 → **180** | 0 → **2** | 14 → **11** | 1.0 |
+| 长弓兵 | 80 → **115** | 0 → **1** | 24 → **18** | 1.4 |
+| 骑手 | 110 → **150** | 0 → **2** | 26 → **20** | 0.9 |
+| 粮车 | 120 → **190** | 0 → **2** | 0（支援） | — |
+| 骑士 | 260 → **365** | 6（不动） | 40 → **30** | 1.0 |
+| 马弓手 | 100 → **145** | 0 → **1** | 22 → **17** | 1.1 |
+| 投石车 | 180 → **265** | 0 → **2** | 60 → **46** | 3.0 |
+
+实测（14 个对局）**倍率 1.82x ~ 2.11x，平均 1.96x**；同兵种镜像对局 6 组全部 **1.97~2.02x**。
+（`spearman->knight` 从 30s 变 63s、`longbowman->knight` 从 40s 变 85s —— 这两个绝对值很长，
+但它们是「骑士有护甲 6 + 对远程减伤 25%」的既有设计，倍率与其他对局一致，没有额外变坏。）
+
+### 73.2 护甲为什么只给 1~2
+
+护甲是**每次受击先减固定值**，对低伤害高频率的单位极其值钱：
+长枪兵 11 点伤害遇到 2 点护甲就只剩 9（−18%），而投石车 46 点只少 4%。所以：
+* 前排（长枪 / 骑手 / 器械 / 粮车）给 2，远程给 1，骑士保持 6（它本来就是重甲）；
+* **不敢再往上加**：护甲 6 对 11 点伤害是「一刀只剩 5」，再高就会出现
+  「低级兵完全打不动重甲」的死局（代码里 `max(1, …)` 那一条只是兜底，不是平衡）。
+
+### 73.3 将领：三个全局旋钮（`unit.general.*`）
+
+不逐位手写 10 个数字，而是给一层**全局成长**，作用在「这一位将领的基准值」上
+（基准 = `stats[i]` 覆盖 ⊕ 所属兵种）：
+
+| 键 | 值 | 含义 |
+|---|---|---|
+| `hp_mult` | **1.5** | 血量上限 ×1.5 |
+| `armor_bonus` | **1** | 护甲 +1（叠在兵种护甲上） |
+| `damage_mult` | **1.0** | 攻击不降 ⇒ 兵种降了 25%，将领相对更疼 |
+
+效果（以「#1 长枪型将领」为例，1v1 被杀所需秒数）：
+
+| 攻击者 | 打普通长枪兵 | 打将领 | 将领相对更耐打 |
+|---|---|---|---|
+| 长枪兵 | 13.3s → 26.7s（2.0x） | 13.3s → **45.0s（3.38x）** | 1.69× |
+| 骑手 | 5.2s → 9.4s（1.82x） | 5.2s → **14.7s（2.85x）** | 1.56× |
+| 长弓兵 | 9.9s → 18.9s（1.91x） | 9.9s → **30.0s（3.03x）** | 1.59× |
+
+即：**将领比同类型小兵耐打 1.6 倍左右**，而且这个倍率是**一处可调**的（不用改 10 个数）。
+
+### 73.4 落点
+
+| 文件 | 改动 |
+|---|---|
+| `data/config.json` | 7 个兵种的 `hp_max` / `armor` / `damage`；新增 `unit.general._general_growth_comment` + `hp_mult` / `armor_bonus` / `damage_mult` |
+| `logic/config.gd` | 缓存三个将领倍率（夹取 mult ≥0.1、bonus ≥0；**缺键用中性值**，老配置不会静默变强）；`general_hp_at` / `_general_combat` 也乘上倍率（否则界面显示的数与单位身上的不一致）；将领覆盖白名单加 `armor` |
+| `logic/unit.gd` | `create()` / `reapply_type()`：将领血量 ×`hp_mult`、护甲 = (覆盖 ⊕ 兵种) + `armor_bonus`；`combat_damage()` 乘 `damage_mult` |
+| `tools/unit_editor/model.py` | 单位表单加「护甲」；将领覆盖表单加「护甲」（原来是硬编码的 6 个键） |
+| 测试 | `test_smoke`（3 个血量）、`test_unit_types`（将领血量/伤害 = 类型 × 倍率）、`test_logic` / `test_retinue`（同一条口径）、`test_unit_editor`（覆盖 × 倍率）、`test_expansion_units`（马弓手护甲 0→1）、`test_general_traits`（显式清零护甲以隔离「抵抗」那 25%）、`tools/unit_editor/test_model.py` |
+
+### 73.5 副作用（要观察）
+
+* **箭塔相对变弱**：塔 12 伤害 / 0.8 秒，打长枪兵现在要先减 2 点护甲，再叠加 +80 血
+  ⇒ 打死一个长枪兵从 12.4s 变 **19.2s**。要补就把 `building.tower.damage` 12 → 14、
+  `watch_tower` 16 → 18（**本轮没动**，因为需求只说单位）。
+* **拆建筑速度不变**：单位拆建筑用的是固定的 `combat.building_damage = 40`，不吃兵种伤害 ⇒
+  单位变肉的同时，攻城节奏没变。若想让拆建筑也变慢，动那个数。
+* **士气 / 易伤口径不变**：高士气仍然 −25%，低士气仍然 +25%，只是基数（血量）大了。
+* `general.damage_mult = 1.0` 意味着将领的绝对伤害没降、兵种降了 ⇒ 将领在小兵堆里更突出；
+  如果觉得将领砍人太狠，把它调到 0.9。
+
+### 73.6 未验证
+
+本机仍无 Godot，断言没跑。相关用例：
+
+```
+godot --headless --path dev_gd_a/daeem --script tests/test_expansion_units.gd
+godot --headless --path dev_gd_a/daeem --script tests/test_unit_types.gd
+godot --headless --path dev_gd_a/daeem --script tests/test_smoke.gd
+godot --headless --path dev_gd_a/daeem --script tests/test_general_traits.gd
+godot --headless --path dev_gd_a/daeem --script tests/test_retinue.gd
+```
+
+---
+
+## 74. 单位维护费按阶提高 + AI 富余时补满编制（2026.10.29）
+
+**需求原话**：「允许让ai在资源充足时将将领编制补到上限」「提高维持每个单位需要消耗的粮食，
+同时为维持单位需要消耗的粮食做差分，高阶单位需要更多粮食」。
+
+### 74.1 维护费表（粮/秒/存活单位）
+
+`unit.classes` 上的值只作**兜底**（查不到的兵种 / 老地图）；实际区分按阶走
+`unit.types.<id>.upkeep_food`：
+
+| 阶 | 兵种 | 旧值 | 新值 |
+|---|---|---|---|
+| 一阶 | 长枪兵 | 0.03 | **0.08** |
+| 一阶 | 长弓兵 | 0.03 | **0.10** |
+| 二阶 | 骑手 | 0.06 | **0.18** |
+| 二阶 | 粮车 | 0.10 | **0.12** |
+| 三阶 | 骑士 | 0.06 | **0.32** |
+| 三阶 | 马弓手 | 0.06 | **0.26** |
+| 三阶 | 投石车 | 0.10 | **0.40** |
+
+兜底 `unit.classes`：步兵 0.08 / 骑兵 0.18 / 器械 0.40。
+参考：满编 12 人的一阶队 ≈ 1.1 粮/秒；混合 12 人 ≈ 1.6~2.2 粮/秒。
+这让「2 个粮食区（3 粮/秒）」仍能维持满编，但不再能无限扩张军队。
+
+### 74.2 AI 富余时补到编制上限
+
+* 新增 `ai_army.team_target(ai, leader, is_home)`：基础目标仍是 `home_team_size` / `field_team_size`；
+  当 `AiEconomyRes.float_excess(ai)`（浮存 > `economy.max_float_food/gold`，默认 600）
+  且 `ai.commander.production.fill_to_cap_when_rich`（默认 `true`）时，目标抬到
+  `1 + effective_retinue_cap(leader)`（含将领本人）。
+* `recruit_candidates()` 用这个目标算缺口；`world.can_recruit()` 仍会在编制上限处硬拦。
+* `understaffed_team_count()` **不**跟着抬：它决定「什么时候补新将」，仍按基础目标 —
+  否则富余 AI 会先把现有两支队伍塞满，却不补第三位将领。
+* 配 `fill_to_cap_when_rich: false` 可回滚旧行为（队伍永远停在 home/field 目标）。
+
+### 74.3 落点
+
+| 文件 | 改动 |
+|---|---|
+| `data/config.json` | 7 个兵种的 `upkeep_food`；`unit.classes.upkeep_food` 兜底值；`ai.commander.production.fill_to_cap_when_rich` |
+| `logic/ai_army.gd` | 新增 `team_target()`；`recruit_candidates()` 改用它；预载 `ai_economy.gd` |
+| `logic/ai_profile.gd` | `DEFAULTS.production.fill_to_cap_when_rich = true` |
+| `ai_doc/ai-commander-current-status.md` | 4.2 生产补一条「富余时补到编制上限」 |
+| `tests/test_economy.gd` | 维护费表按阶断言 + 跨阶递增断言 |
+| `tests/test_ai_commander.gd` | 新增 `_test_rich_fill_to_cap()`；富余时最大队伍断言改为「不超过编制上限」；`_test_auto_captures_zones` 的扩张断言改为「常规任务或开局顺路占领」 |
+
+### 74.4 验证
+
+```
+godot --headless --path dev_gd_a/daeem --script tests/test_economy.gd
+godot --headless --path dev_gd_a/daeem --script tests/test_ai_commander.gd
+```
+
+* `test_economy`：**74/74** 通过。
+* `test_ai_commander`：**341/341** 通过。
+
+> ★ 顺手修的陈旧断言：开局探索（2026.10.29）会在 180 秒内把 ai_test 的安全区划占完，
+> 于是常规扩张 `expands` 没有新目标可派。旧断言 `expands >= 1` 在这种情况下必然失败，
+> 现在接受「`expands >= 1` 或 `zones_taken >= 1`」。
+
+---
+
+## 75. 战役菜单新增三个 ai_test 测试战役（简单 / 中等 / 困难，2026.10.29）
+
+**需求原话**：「将当前的 ai_test 的简单/中等/困难加入战役菜单中，作为三个测试战役存在，
+旗子随便插在哪，玩家可以选择上下任意一方」。
+
+### 75.1 三个关卡
+
+`data/campaigns/demo/levels/` 新增三关（模板 = `ai_test_battle.json`）：
+
+| level_id | 名称 | 难度 | 地图 | 阵营 |
+|---|---|---|---|---|
+| `ai_test_easy` | 测试·简单 | `easy` | `between_moutains` | p1 `下方（南军）` / p2 `上方（北军）` |
+| `ai_test_normal` | 测试·中等 | `normal` | 同上 | 同上 |
+| `ai_test_hard` | 测试·困难 | `hard` | 同上 | 同上 |
+
+三关共用：
+
+- `players = [p1, p2]`，两边 `playable: true`；
+- 双方各 1 名开局将领（p1 `(28,29)` / p2 `(8,2)`)；
+- 起手 **100 粮 / 100 金**；zones 只把 0 给 p2、2 给 p1，其余中立；
+- 目标：p1 攻占 0 号区、p2 攻占 2 号区（对方出生区）。
+
+### 75.2 难度为什么不用改代码
+
+每个 `factions[]` 项都写：
+
+```json
+{"id": "p1", "ai": "commander", "commander_ai": {"difficulty": "easy"}, "playable": true}
+```
+
+- `world.ai_kind_of()` 先看 `ai_kind_overrides`（这里为空），再看 `ai_roster_cfg` 的关卡条目；
+- `world._setup_ai_factions()` 遇到 `fid == my_faction` 直接 continue ⇒
+  **玩家选中的那一方自动从 AI 名单里摘掉**；
+- 另一方的 `commander_ai` 由 `AiProfileRes.build()` 读入，
+  `difficulty_name` / `income_mult` / 节奏 / 军队上限全部按 easy / normal / hard 生效。
+
+于是 `view/main.gd`、`view/game_scene3d.gd`、`logic/world.gd` 一行未改。
+
+### 75.3 战役菜单：一面旗 = 一个真实战役
+
+- `data/campaigns_menu.json` 新增 `c4` / `c5` / `c6`，各自只有一个真实章节，
+  `campaign_id = "demo"`，`level_id` 分别指向上面三关。
+- `view/campaign_map_panel.gd`：
+  - 不再只读 `campaigns[0]`，而是遍历所有战役；
+  - 每份战役取**第一个真实章节**（`CampaignMenuDbRes.is_placeholder_chapter()` 跳过占位）；
+  - 每份战役建一面 `menu_banner` 关卡旗，标题 = 战役显示名、副标题 = 章节名；
+  - 点旗 → `flag_pressed(chapter)` → 现有详情页 → 选阵营 → 进关。
+- `view/menu_deck_layout.gd`：新增 `campaign_flags(w, h, count)`（一排居中、间距 24；
+  宽度不够时等比缩小），删除旧的 `campaign_rail` / `campaign_rail_button`。
+- 当前数据下共 **4 面旗**：`main_test`（c1）+ 简单 / 中等 / 困难（c4/c5/c6）。
+  占位战役 c2/c3 没有真实章节，不生成旗子。
+
+### 75.4 落点
+
+| 文件 | 改动 |
+|---|---|
+| `data/campaigns/demo/levels/ai_test_easy|normal|hard.json` | 新增三关（见 75.1） |
+| `data/campaigns/demo/campaign.json` | `levels[]` 追加三关 |
+| `data/campaigns_menu.json` | 新增 `c4` / `c5` / `c6` |
+| `view/campaign_map_panel.gd` | 多旗；删除章节栏 |
+| `view/menu_deck_layout.gd` | `campaign_flags()`；删除章节栏布局 |
+| `tests/test_campaign_menu.gd` | 多旗断言（不再断言 I/II/III） |
+| `tests/test_ai_test_campaigns.gd` | 新增：数据 / 难度 / 双席位装配 / 菜单 / 真实场景 |
+| `tools/campaign_editor/test_app.py` + `README.md` | 关卡树精确列表同步 |
+
+### 75.5 验证
+
+```
+godot --headless --path dev_gd_a/daeem --script tests/test_ai_test_campaigns.gd
+godot --headless --path dev_gd_a/daeem --script tests/test_campaign_menu.gd
+godot --headless --path dev_gd_a/daeem --script tests/test_all_levels_outcome.gd
+godot --headless --path dev_gd_a/daeem --script tests/test_campaign.gd
+godot --headless --path dev_gd_a/daeem --script tests/test_campaign_seats.gd
+```
+
+实测：`test_ai_test_campaigns` 91/91、`test_campaign_menu` 65/65、
+`test_all_levels_outcome` 257/257、`test_campaign` 312/312、`test_campaign_seats` 95/95。
+
+手动验收：主菜单 → 战役 → 看到 4 面旗 → 点「测试·困难」→ 详情页选
+「下方（南军）」或「上方（北军）」→ 另一方由困难 commander AI 接管。
+
+### 75.6 注意
+
+- 三个测试关都写 `ai: "commander"`，所以 `test_campaign_seats` 的
+  「选边关每个可玩阵营都必须挂 AI」规则自动满足。
+- 只想要三面旗：删掉 `campaigns_menu.json` 的 `c1` 即可，代码不用改。
+- 战役编辑器的关卡树只列「地图 ∈ 有用表 maps」的关卡；`between_moutains` 在表里，
+  所以三个新关会出现在编辑器中。`test_app.py` 的精确列表必须跟着更新。

@@ -123,6 +123,21 @@ func consume_events(events: Array) -> void:
 			"tech_rejected":
 				if _is_my_event(evt):
 					hud.show_notice(hud.tech_reject_text(String(evt.get("reason", ""))))
+			"tech_starved":
+				# ★★ 2026.10.29 断金：科技按每秒扣金，付不起就把这一方**全部科技弃用**并锁一段时间。
+				#    这是玩家最需要解释的一类事件（"我的科技怎么全没了"），必须给红字。
+				#    事件带 `faction`，所以只给掉科技的那一方看。
+				if _is_my_event(evt):
+					var lost: Array = evt.get("techs", [])
+					var secs: int = int(ceil(float(evt.get("cooldown_sec", 0.0))))
+					hud.show_notice("金不够，%d 条科技全部失效：冷却 %d 秒后要重新启用（再等 30 秒预热）" % [
+						lost.size(), secs])
+			"starving_started":
+				# ★★ 2026.10.29 断粮：只在「刚开始挨饿」那一帧推一次（恢复时不推，免得边缘反复刷）。
+				#    资源条上的 `(+n)` 会变红，但「士气为什么在掉」必须用一句话解释清楚。
+				if _is_my_event(evt):
+					hud.show_notice("粮食不够养兵：全军士气正在下降（每秒 −%s，粮车可以抵消）" % [
+						String.num(float(evt.get("drain", 0.5)), 1)])
 			"upgrade_rejected":
 				# ★ 整个事件传进去：`busy` 那条文案要点名是哪个对象
 				if _is_my_event(evt):

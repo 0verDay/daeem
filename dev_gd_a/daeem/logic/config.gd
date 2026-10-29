@@ -325,6 +325,18 @@ var _general_combat: Array = []
 ##   红点将领的附属兵数也以它封顶（见 logic/expr.gd 与 tools/unit_editor）。
 ##   ★ 缺省 / 越界一律 11（与界面那个常量 UNIT_CAP 同值，但两者暂时各自独立）。
 var _general_caps: Array = []
+## ★★ 2026.10.29：**将领比兵种更抗打**的三个全局旋钮（`unit.general.*`）。
+##   · `general_hp_mult`     —— 血量上限 ×它（config 里写 1.5；**缺键时中性值 1.0**）
+##   · `general_armor_bonus` —— 护甲**加成**（config 里 +1；缺键 0）
+##   · `general_damage_mult` —— 攻击 ×它（config 里 1.0）
+##   ★ 三者都作用在「这一位将领的基准值」上（基准 = stats 覆盖 ⊕ 所属兵种），
+##     所以下面是**唯一的**「将领强度」口径，unit.gd 不自己再写一份。
+##   ⚠️ 只对 `is_general()` 的单位生效；普通兵只吃兵种表。
+##   ⚠️ 缺键时给**中性值**（1.0 / 0.0 / 1.0）而不是 config 里那一档 ——
+##     否则「一份没有这几个键的老配置 / 测试配置」会静默变强。
+var general_hp_mult: float = 1.0
+var general_armor_bonus: float = 0.0
+var general_damage_mult: float = 1.0
 ## 单位类型 id → 地图上显示的那**一个字**（config 的 `unit.types.<id>.icon`）。
 ## ★ 空串 = 配置里没写（`unit_icon_of` 退成名字的第一个字）。
 ## ★★ 它是**数据**而不是美术：设计师在单位编辑器里给每个兵种挑一个字，
@@ -466,6 +478,12 @@ var food_per_tile_per_sec: float = 1.0
 var gold_per_tile_per_sec: float = 1.0
 var start_food: float = 0.0
 var start_gold: float = 0.0
+## ★★ 2026.10.29：**持续消耗**的总闸（`economy.upkeep_enabled`，默认 true）。
+##   管两件事：单位维护费（每存活单位每秒吃粮）+ 科技的每秒扣金。
+##   false = 两样都不扣、也不会有断粮 / 断金。
+##   ★ 为什么值得一个总闸：旧测试里有大量「粮食 200 → 招一个兵 → 150」这种**精确对账**，
+##     而这两个消耗是每帧都在扣的（见 tests/test_case.gd）。正常游戏永远是 true。
+var upkeep_enabled: bool = true
 
 ## ---- 科技（config.json 的 tech 段）----
 ## ★ 与战斗数值表一样：**载入时整理好、之后只读**（科技页每帧按它重画九格，
@@ -475,6 +493,14 @@ var start_gold: float = 0.0
 var tech_max_active: int = 3
 var _tech_list: Array = []
 var _tech_by_id: Dictionary = {}
+## ★★ 2026.10.29：科技从「点一下永久生效」改成**持续花钱的常驻投资**（见 config.json 的 tech._comment）。
+##   · `tech_gold_per_sec`         —— 下标 0/1/2 = 一/二/三阶，**每秒**扣多少金；
+##   · `tech_warmup_sec`           —— 点下之后要等多久才真正生效（这段**照扣金**、占名额）；
+##   · `tech_shortfall_cooldown_sec` —— 断金之后「全科技」锁多少秒。
+## 三个数在载入时夹到 ≥0，之后逻辑层只读字段（`tech_gdscript` / `world._tick_upkeep`）。
+var tech_gold_per_sec: Array = [0.5, 1.0, 2.0]
+var tech_warmup_sec: float = 30.0
+var tech_shortfall_cooldown_sec: float = 30.0
 
 ## ---- 建筑升级（config.json 的 upgrade.levels）+ 区划特化（zone_spec）----
 ## ★ 与科技表一样：**载入时整理好、之后只读**（升级判定与每帧读条都要用）。
@@ -531,6 +557,15 @@ var morale_start: float = 90.0
 var morale_regen_ally: float = 2.0
 var morale_decay_enemy: float = 0.4
 var morale_decay_surrounded: float = 0.4
+## ★★ 2026.10.29：主将**濒死（倒地）**期间，其整支部队的士气额外下降速率（点/秒）。
+##    这是**叠加**在区划速率 / 粮车光环之上的固定值（增加和减少都算），
+##    只在 `unit.is_downed()` 期间生效；再起后按当前值恢复正常规则。
+var morale_leader_down_drain: float = 3.0
+## ★★ 2026.10.29：**断粮**惩罚 —— 这一方本帧付不起单位维护费时，全军每秒掉多少士气。
+##   与粮车光环（`unit.types.grain_cart.morale_aura_rate` = 0.5）**等速**是有意的：
+##   一辆粮车刚好把断粮惩罚抵消掉（用户口径：「下降速度等于粮车使士气上升的速度」）。
+##   它**叠加**在区划速率与粮车光环之上，因此站在敌方区划上断粮 = 0.5(疲惫) + 0.5(断粮)。
+var morale_starve_drain: float = 0.5
 var morale_high_tier: float = 100.0
 var morale_mid_tier: float = 90.0
 var morale_vuln_tier: float = 50.0
@@ -770,6 +805,8 @@ func _cache_scalars() -> void:
 	gold_per_tile_per_sec = num("resource.gold_per_tile_per_sec", 1.0)
 	start_food = num("resource.start_food", 0.0)
 	start_gold = num("resource.start_gold", 0.0)
+	# ★★ 持续消耗的总闸（缺省 true —— 老配置里没这个键时也按「照常扣」算）
+	upkeep_enabled = bool_val("economy.upkeep_enabled", true)
 
 	respawn_sec = num("pvp.respawn_sec", 8.0)
 	destructible_base = bool_val("pvp.destructible_base", false)
@@ -805,6 +842,9 @@ func _cache_scalars() -> void:
 	morale_regen_ally = maxf(0.0, num("morale.regen_ally", 2.0))
 	morale_decay_enemy = maxf(0.0, num("morale.decay_enemy", 0.4))
 	morale_decay_surrounded = maxf(0.0, num("morale.decay_surrounded", 0.4))
+	morale_leader_down_drain = maxf(0.0, num("morale.leader_down_drain", 3.0))
+	# ★★ 断粮（本轮新增）：付不起维护费时全军每秒掉多少士气；夹到 ≥0。
+	morale_starve_drain = maxf(0.0, num("morale.starve_drain", 0.5))
 	morale_high_tier = num("morale.high_tier", 100.0)
 	morale_mid_tier = num("morale.mid_tier", 90.0)
 	morale_vuln_tier = num("morale.vuln_tier", 50.0)
@@ -1046,6 +1086,9 @@ func _cache_unit_types() -> void:
 				"id": String(cid),
 				"name": String(cd.get("name", cid)),
 				"ranged_name": String(cd.get("ranged_name", cd.get("name", cid))),
+				# ★★ 2026.10.29：这一档兵种的**单位维护费**（粮/秒/存活单位）。
+				#   单个兵种可以在 unit.types.<id>.upkeep_food 覆盖（粮车就是那一个）。
+				"upkeep_food": maxf(0.0, float(cd.get("upkeep_food", 0.0))),
 			}
 
 	# 2) 单位类型表（unit.types）
@@ -1087,6 +1130,12 @@ func _cache_unit_types() -> void:
 				# ★★ 粮车的士气光环（其它兵种不写 = 0 = 没有光环）。
 				"morale_aura_radius": maxf(0.0, float(td.get("morale_aura_radius", 0.0))),
 				"morale_aura_rate": maxf(0.0, float(td.get("morale_aura_rate", 0.0))),
+				# ★★ 2026.10.29：**单位维护费**（粮/秒/存活单位）。
+				#   取值优先 `unit.types.<id>.upkeep_food`，没写就用它那个大类（unit.classes）的值。
+				#   ⚠️ 载入时就算成标量：这条在「每个单位每帧」的路径上（world._tick_upkeep），
+				#     不能每帧去查两个字典。
+				"upkeep_food": maxf(0.0, float(td.get("upkeep_food",
+					(_unit_classes.get(cls, {}) as Dictionary).get("upkeep_food", 0.0)))),
 				"combat": {
 					"damage": maxf(0.0, float(td.get("damage", 0.0))),
 					"range": maxf(0.0, float(td.get("range", 1.0))),
@@ -1144,7 +1193,7 @@ func _cache_unit_types() -> void:
 			var nm := ""
 			if typeof(item) == TYPE_DICTIONARY:
 				var d: Dictionary = item
-				for key in ["hp_max", "speed", "damage", "range", "cooldown_sec", "vision"]:
+				for key in ["hp_max", "speed", "damage", "range", "cooldown_sec", "vision", "armor"]:
 					var v: Variant = d.get(key, null)
 					if typeof(v) == TYPE_INT or typeof(v) == TYPE_FLOAT:
 						ov[key] = float(v)
@@ -1152,6 +1201,13 @@ func _cache_unit_types() -> void:
 					nm = String(d["name"])
 			_general_stats.append(ov)
 			_general_names.append(nm)
+
+	# 3.6) ★★ 将领的全局成长（`unit.general.hp_mult / armor_bonus / damage_mult`）。
+	#   夹取：倍数 ≥0.1（写 0 会让将领血量归零 / 攻击归零），加成 ≥0。
+	#   ⚠️ 缺键用**中性值**，与字段声明的默认一致（见字段说明）。
+	general_hp_mult = maxf(0.1, num("unit.general.hp_mult", 1.0))
+	general_damage_mult = maxf(0.1, num("unit.general.damage_mult", 1.0))
+	general_armor_bonus = maxf(0.0, num("unit.general.armor_bonus", 0.0))
 
 	# 4) 兜底值（来自同一张表，不再是第二份配置）
 	#
@@ -1175,12 +1231,19 @@ func _cache_unit_types() -> void:
 			base = (_unit_types[tid] as Dictionary)["combat"]
 		if ov.has("damage") or ov.has("range") or ov.has("cooldown_sec"):
 			_general_combat.append({
-				"damage": float(ov.get("damage", base["damage"])),
+				"damage": float(ov.get("damage", base["damage"])) * general_damage_mult,
 				"range": float(ov.get("range", base["range"])),
 				"cooldown_sec": float(ov.get("cooldown_sec", base["cooldown_sec"])),
 			})
 		else:
-			_general_combat.append(base)
+			# ★★ 2026.10.29：没覆盖的那几位**不能**再共享兵种那一份了 ——
+			#   将领要乘 `general_damage_mult`（默认 1.0 时数值完全一样，但仍是独立一份，
+			#   免得以后调倍率时漏掉这几档）。每人一份只在载入时建一次，开销可忽略。
+			_general_combat.append({
+				"damage": float(base["damage"]) * general_damage_mult,
+				"range": float(base["range"]),
+				"cooldown_sec": float(base["cooldown_sec"]),
+			})
 
 
 ## 某个 kind 对应的**单位类型 id**。
@@ -1359,12 +1422,13 @@ func general_combat_at(index: int) -> Dictionary:
 
 ## 第 index 位将领的**生效血量 / 速度**（覆盖 ⊕ 所属兵种）。
 ## ★ 给悬停详情与编辑器对照用；单位自己那边在 create 时就把值抄走了（见 unit.gd）。
+## ★★ 2026.10.29：血量再乘 `general_hp_mult`（「将领比兵种更抗打」那一条），
+##   否则界面会显示 180 而单位其实有 270。
 func general_hp_at(index: int) -> float:
 	var ov: Dictionary = general_stat_overrides(index)
 	var type_id := general_type_at(index)
-	if ov.has("hp_max"):
-		return float(ov["hp_max"])
-	return unit_hp_of(type_id)
+	var base: float = float(ov["hp_max"]) if ov.has("hp_max") else unit_hp_of(type_id)
+	return maxf(1.0, base * general_hp_mult)
 
 
 func general_speed_at(index: int) -> float:
@@ -1472,6 +1536,14 @@ func unit_sprite_tint_of(id: String) -> String:
 func unit_class_of(id: String) -> String:
 	var e := unit_type_entry(id)
 	return String(e.get("class", CLASS_INFANTRY))
+
+
+## ★★ 2026.10.29：这个兵种**每个存活单位每秒吃多少粮**（维护费，见 world._tick_upkeep）。
+## 取值：`unit.types.<id>.upkeep_food` ⊕ `unit.classes.<class>.upkeep_food`（载入时已算好）；
+## 查不到的类型 → 0（老地图里写了不存在的兵种也不会凭空开始吃粮）。
+## ⚠️ 参数可以是兵种 id 或 kind（将领按所属兵种取，与 unit_hp_of 同一口径）。
+func unit_upkeep_of(id: String) -> float:
+	return maxf(0.0, float(unit_type_entry(id).get("upkeep_food", 0.0)))
 
 
 ## 是不是远程单位（长弓兵那种；将来的马弓手也是骑兵 + 远程）
@@ -2027,6 +2099,16 @@ func zone_capture_color(faction: String) -> Color:
 
 func _cache_techs() -> void:
 	tech_max_active = maxi(1, int_val("tech.max_active", 3))
+	# ★★ 金耗表（按阶）：写成「不足三条」就用默认那三个数，别让一条写错把整张表作废。
+	tech_gold_per_sec = [0.5, 1.0, 2.0]
+	var tiers: Variant = get_path_value("tech.gold_per_sec_by_tier")
+	if typeof(tiers) == TYPE_ARRAY and (tiers as Array).size() >= 3:
+		var out: Array = []
+		for i in 3:
+			out.append(maxf(0.0, float((tiers as Array)[i])))
+		tech_gold_per_sec = out
+	tech_warmup_sec = maxf(0.0, num("tech.warmup_sec", 30.0))
+	tech_shortfall_cooldown_sec = maxf(0.0, num("tech.shortfall_cooldown_sec", 30.0))
 	_tech_list = []
 	_tech_by_id = {}
 	var raw: Variant = get_path_value("tech.list")
@@ -2085,6 +2167,16 @@ func tech_max() -> int:
 func tech_tier(id: String) -> int:
 	var e := tech_entry(id)
 	return int(e.get("tier", 0)) if not e.is_empty() else 0
+
+
+## ★★ 2026.10.29：这条科技**每秒扣多少金**（按阶查 `tech.gold_per_sec_by_tier`）。
+## 未知 id / 阶数越界 → 0（不会因为数据写错让玩家白扣钱）。
+## ⚠️ 三条非产量科技（建筑加固 / 将领强化 / 区划人口）**同样扣金** —— 见 config.json 的说明。
+func tech_gold_per_sec_of(id: String) -> float:
+	var tier := tech_tier(id)
+	if tier <= 0 or tier > tech_gold_per_sec.size():
+		return 0.0
+	return maxf(0.0, float(tech_gold_per_sec[tier - 1]))
 
 
 # ------------------------------------------------------------------

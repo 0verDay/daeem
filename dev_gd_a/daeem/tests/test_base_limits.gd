@@ -139,6 +139,9 @@ func _test_tech_gating(cfg) -> void:
 
 	_set_level(w, b, 3)
 	ok(w.set_tech_active("zone_population", true), "★ 3 级：第三行科技可以启用（第 3 条）")
+	# ★★ 2026.10.29：验收「同时启用 3 条」得先把 30 秒预热推完（预热中也占名额，
+	#    所以上面那几句名额断言不用改）。
+	finish_tech_warmup(w, cfg)
 	eq(w.active_tech_ids().size(), 3, "3 级可同时启用 3 条")
 	eq(w.tech_remaining_slots(), 0, "名额用完")
 	eq(w.tech_can_activate("leader_hp"), "limit", "3 级也已满：第 4 条被名额挡住")

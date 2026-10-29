@@ -923,6 +923,11 @@ func _draw_zone_capture() -> void:
 		#    同一格每帧要走两次三角化（桌面实测 `ov/capture_bar` 0.245 ms/帧）。
 		for tris in (it["tris"] as Array):
 			for tri in (tris as Array):
+				# ★★ 2026.10.29：最后一道保险 —— 投影退化 / NaN / 坐标爆掉时
+				#    `draw_colored_polygon()` 的三角化会直接报
+				#    "Invalid polygon data, triangulation failed"。
+				if not _valid_screen_triangle(tri):
+					continue
 				draw_colored_polygon(tri, fill)
 			capture_draw_count += 1
 		var front_pts: PackedVector2Array = it["front"]
@@ -1105,7 +1110,8 @@ func _clean_screen_polygon(pts: PackedVector2Array) -> PackedVector2Array:
 
 
 ## 屏幕多边形的有向面积（鞋带公式）。返回 0 表示共线/退化，不能交给三角化。
-func _screen_polygon_area(pts: PackedVector2Array) -> float:
+## ★★ 2026.10.29：改成 static —— `_valid_screen_triangle()` 是 static，要调它。
+static func _screen_polygon_area(pts: PackedVector2Array) -> float:
 	var n: int = pts.size()
 	if n < 3:
 		return 0.0
@@ -1144,7 +1150,9 @@ func _screen_triangles(pts: PackedVector2Array) -> Array:
 				var t2 := b0
 				b0 = c0
 				c0 = t2
-			out.append(PackedVector2Array([a0, b0, c0]))
+			var tri := PackedVector2Array([a0, b0, c0])
+			if _valid_screen_triangle(tri):
+				out.append(tri)
 		return out
 	# ── 慢路径（凹 / 自交 / 退化）：原实现，逐字保留 ──
 	var poly := pts
@@ -1169,9 +1177,39 @@ func _screen_triangles(pts: PackedVector2Array) -> Array:
 				var tmp := b
 				b = c
 				c = tmp
-			out.append(PackedVector2Array([a, b, c]))
+			var tri2 := PackedVector2Array([a, b, c])
+			if _valid_screen_triangle(tri2):
+				out.append(tri2)
 		i += 3
 	return out
+
+
+## 这个屏幕三角形能不能安全交给 `draw_colored_polygon()`。
+##
+## ★★ 2026.10.29：用户实机报 `Invalid polygon data, triangulation failed`。
+##    三角化失败的输入不一定面积为零：**NaN / INF / 坐标爆掉**（近平面附近投影）
+##    时面积是 NaN，`absf(NaN) > 0.001` 为 false 但也不会被现有的面积判据拦住；
+##    另外两点几乎重合、第三点很远的退化三角形也可能在浮点误差下拿到非零面积。
+##    这里把三种情况一起挡掉：
+##      · 三个点都是有限值、且不超过 `MAX_SCREEN_COORD`（超出视口几十万像素的
+##        一定是投影炸开的点，CanvasItem 也不会画）；
+##      · 三点两两不同；
+##      · 面积有限且 > 0.001。
+const MAX_SCREEN_COORD := 1.0e6
+static func _valid_screen_triangle(tri: PackedVector2Array) -> bool:
+	if tri.size() != 3:
+		return false
+	for p in tri:
+		if not is_finite(p.x) or not is_finite(p.y):
+			return false
+		if absf(p.x) > MAX_SCREEN_COORD or absf(p.y) > MAX_SCREEN_COORD:
+			return false
+	if tri[0].distance_squared_to(tri[1]) <= 1e-6 \
+			or tri[1].distance_squared_to(tri[2]) <= 1e-6 \
+			or tri[2].distance_squared_to(tri[0]) <= 1e-6:
+		return false
+	var ar := _screen_polygon_area(tri)
+	return is_finite(ar) and absf(ar) > 0.001
 
 
 ## 屏幕多边形是不是**凸**的（且绕向一致、面积非零）。

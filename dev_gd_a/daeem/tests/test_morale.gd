@@ -31,6 +31,7 @@ func _run() -> void:
 		_test_boosts(cfg, w)
 		_test_snapshot(cfg, w)
 	_test_campaign_no_false_surround(cfg)
+	_test_downed_leader_drain(cfg)
 	print("[CASE] %s -> 通过 %d 项，失败 %d 项" % [_case_name, _pass, _fail])
 	if _fail > 0:
 		for n in _failed_names:
@@ -61,6 +62,7 @@ func _test_config(cfg) -> void:
 	ok(cfg.morale_hp_decay_zero > cfg.morale_hp_decay_low, "「快速掉血」比「缓慢掉血」快")
 	ok(cfg.morale_damage_reduction > 0.0 and cfg.morale_damage_reduction < 1.0, "免伤在 (0, 1)")
 	ok(cfg.morale_vulnerability > 0.0, "易伤 > 0")
+	eq(cfg.morale_leader_down_drain, 3.0, "★★ 主将濒死期间整队额外 -3 士气/秒")
 
 	var u = _mk(cfg, "general", "p1", "c1")
 	eq(u.morale_max, cfg.morale_max, "create 后 morale_max 取 config")
@@ -403,3 +405,116 @@ func _test_campaign_no_false_surround(cfg) -> void:
 			w.tick(1.0 / 60.0)
 		near(u.morale, 50.0 + cfg.morale_regen_ally, 1e-3,
 			"★★ 站在刚占领的相邻区划里 1 秒：士气回升（不再继续掉）")
+
+
+## ★★ 2026.10.29：主将濒死期间，整队士气按「常规区划/光环速率 - 固定 3/s」下降；
+## 队员镜像锚；再起后停止固定下降。C# 内核也必须在濒死时镜像主将，而不是清零。
+func _test_downed_leader_drain(cfg) -> void:
+	var w = require_world_with_escorts(cfg, 3)
+	if w == null:
+		ok(false, "（前提）濒死士气测试世界")
+		return
+	var g = w.unit_by_id("general-1")
+	if g == null:
+		ok(false, "（前提）general-1")
+		return
+	var mates: Array = w.retinue_of(String(g.id), true)
+	if mates.is_empty():
+		ok(false, "（前提）general-1 带着附属兵")
+		return
+	var m = mates[0]
+	var base = w.find_base_of(String(g.faction))
+	var base_zone = null if base == null else w.zones.zone_at(base.tx, base.ty)
+	if base_zone == null:
+		ok(false, "（前提）大本营落在某个区划里")
+		return
+	# 找一个中立区划（基地所在区划会被大本营自动收归己方，不能当中立用）。
+	# ★ 区划中心上立着「中立障碍建筑」，所以选点要避开它；这里取该区划里
+	#   第一块可通行、没有建筑的地块。
+	var neutral_zone = null
+	var neutral_tile := Vector2i(-1, -1)
+	for zz in w.zones.zones:
+		if String((zz as Dictionary).get("owner", "")) != "":
+			continue
+		if int((zz as Dictionary).get("id", -1)) == int((base_zone as Dictionary).get("id", -2)):
+			continue
+		for t in ((zz as Dictionary).get("tiles", []) as Array):
+			var tv: Vector2i = t
+			if w.map.terrain_walkable(tv.x, tv.y) and w.building_at(tv.x, tv.y) == null:
+				neutral_zone = zz
+				neutral_tile = tv
+				break
+		if neutral_zone != null:
+			break
+	if neutral_zone == null:
+		ok(false, "（前提）地图上有一个中立区划")
+		return
+	var neutral_pt := Vector2(float(neutral_tile.x) + 0.5, float(neutral_tile.y) + 0.5)
+	var base_pt := Vector2(float(base.tx) + 0.5, float(base.ty) + 0.5)
+	g.take_damage(cfg, w, g.hp + 9999.0, null)
+	ok(g.is_downed(), "（前提）主将已濒死")
+
+	# ① 中立区划：常规疲惫 -decay_enemy，再叠加固定 -3/s。
+	#   ★ 濒死将领每帧会被 `_pin_downed_leaders()` 钉回 `downed_anchor`，
+	#     测试里挪位置要把这个点一起改掉。
+	g.pos = neutral_pt
+	g.sync_tile(w.map)
+	g.downed_anchor = neutral_pt
+	g.morale = 100.0
+	m.morale = 100.0
+	for _i in 60:
+		w.tick(1.0 / 60.0)
+	var neutral_expect: float = 100.0 - float(cfg.morale_decay_enemy) \
+		- float(cfg.morale_leader_down_drain)
+	near(g.morale, neutral_expect, 0.15,
+		"★★ 中立区划濒死 1 秒：常规速率 + 固定 3/s（实际 %.2f）" % g.morale)
+	near(m.morale, g.morale, 1e-6, "★★ 队员镜像主将的士气")
+
+	# ② 己方区划（大本营那区划，不会被判包围）：回士气抵消一部分，但仍被固定下降压着。
+	g.pos = base_pt
+	g.sync_tile(w.map)
+	g.downed_anchor = base_pt
+	ok(not w.zone_is_surrounded(int((base_zone as Dictionary)["id"])),
+		"（前提）大本营区划没有被包围")
+	g.morale = 100.0
+	m.morale = 100.0
+	for _i in 60:
+		w.tick(1.0 / 60.0)
+	near(g.morale, 100.0 + float(cfg.morale_regen_ally) - float(cfg.morale_leader_down_drain),
+		0.15, "★★ 己方区划：回士气与固定下降叠加（实际 %.2f）" % g.morale)
+	near(m.morale, g.morale, 1e-6, "★ 队员照样镜像")
+
+	# ③ 直接调 tick_unit 也走同一套（不依赖 tick_all 的预结算）。
+	g.pos = neutral_pt
+	g.sync_tile(w.map)
+	g.downed_anchor = neutral_pt
+	g.morale = 100.0
+	MoraleRes.tick_unit(w, cfg, g, 1.0)
+	near(g.morale, neutral_expect, 1e-4, "★ tick_unit 直调也套用濒死下降")
+
+	# ④ 再起后停止固定下降，按当前值恢复正常规则（不额外补偿）。
+	g.downed = false
+	g.revive_pending = false
+	g.pos = base_pt
+	g.sync_tile(w.map)
+	g.morale = 50.0
+	m.morale = 50.0
+	for _i in 60:
+		w.tick(1.0 / 60.0)
+	near(g.morale, 50.0 + float(cfg.morale_regen_ally), 0.15,
+		"★★ 再起后只按区划速率走（不再 -3；实际 %.2f）" % g.morale)
+
+	# ⑤ C# 后端：濒死队长的队员不能被清零（旧 bug）。
+	var old_backend := String(cfg.unit_sim_backend)
+	g.enter_near_death(cfg.revive_regen_sec)
+	g.morale = 100.0
+	m.morale = 100.0
+	cfg.unit_sim_backend = "csharp"
+	w.tick(1.0 / 60.0)
+	if String(w.unit_sim_used).begins_with("csharp"):
+		ok(m.morale > 90.0,
+			"★★ C# 后端：队员士气没有被濒死主将清零（实际 %.2f）" % m.morale)
+		near(m.morale, g.morale, 1e-9, "★★ C# 后端：队员镜像主将的士气")
+	else:
+		ok(true, "（C# 士气内核不可用，跳过 C# 后端断言）")
+	cfg.unit_sim_backend = old_backend

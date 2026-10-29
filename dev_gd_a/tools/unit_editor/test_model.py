@@ -196,8 +196,10 @@ def t_unit_fields() -> None:
     eq(u.unit_class, "infantry", "归属 = infantry（步兵）")
     eq(u.class_label, "步兵", "归属的中文说法读 config 的 unit.classes")
     eq(u.ranged, False, "长枪兵不是远程")
-    near(u.hp_max, 140, "血量")
-    near(u.damage, 14, "攻击力")
+    # ★★ 2026.10.29：TTK 改版 —— 血量上调、攻击下调、并把护甲写进兵种表。
+    near(u.hp_max, 180, "血量")
+    near(u.armor, 2, "护甲")
+    near(u.damage, 11, "攻击力")
     near(u.range, 1, "攻击距离")
     near(u.cooldown_sec, 1.0, "攻击速度（间隔秒）")
     near(u.speed, 0.6, "移动速度")
@@ -678,10 +680,10 @@ def t_techs() -> None:
     eq(len(techs), 9, "九条科技（3×3）")
     eq(model.max_active(), 3, "同一时间最多启用 3 条")
     eq(techs[0].name, "粮食产量 I", "名称")
-    eq(techs[0].line, "粮食 +0.04", "第二行小字")
+    eq(techs[0].line, "粮食产能 +10%", "第二行小字")
     ok(techs[0].desc, "有悬停说明")
-    near(techs[0].effect_value("food_per_tile_per_sec"), 0.04, "加成数值")
-    eq(techs[0].effect_label, "粮食产量 +0.04", "列表里那一句话")
+    near(techs[0].effect_value("food_production_mult"), 0.10, "加成数值（总体产能 +10%）")
+    eq(techs[0].effect_label, "粮食产能 +0.1", "列表里那一句话")
     near(techs[8].effect_value("zone_population_mult"), 0.1, "人口科技是倍率 0.1")
 
     model.set_tech(0, "name", "粮食产量 甲")
@@ -690,10 +692,10 @@ def t_techs() -> None:
     eq(model.doc.value(["tech", "list", 0, "line"]), "粮食 +++", "改小字")
     model.set_tech(0, "desc", "说明改过了")
     eq(model.doc.value(["tech", "list", 0, "desc"]), "说明改过了", "改说明")
-    model.set_tech_effect(0, "food_per_tile_per_sec", 2.5)
-    eq(model.doc.value(["tech", "list", 0, "effect", "food_per_tile_per_sec"]), 2.5,
+    model.set_tech_effect(0, "food_production_mult", 0.25)
+    eq(model.doc.value(["tech", "list", 0, "effect", "food_production_mult"]), 0.25,
        "改加成数值")
-    eq(model.tech(0).effect_value("food_per_tile_per_sec"), 2.5, "读回来是 2.5")
+    eq(model.tech(0).effect_value("food_production_mult"), 0.25, "读回来是 0.25")
     model.set_max_active(2)
     eq(model.max_active(), 2, "改「最多启用几条」")
     raises(lambda: model.set_tech(0, "id", "x"), "id 不许改（它是存档 / 引用的键）")
@@ -703,13 +705,13 @@ def t_techs() -> None:
 
     # 加成：加一条 / 删一条 / 换成另一种形状
     m2 = fresh_model()
-    m2.set_tech_effect(0, "gold_per_tile_per_sec", 3)
+    m2.set_tech_effect(0, "gold_production_mult", 0.3)
     eq(sorted(k for k in m2.tech(0).effect if not k.startswith("_")),
-       ["food_per_tile_per_sec", "gold_per_tile_per_sec"], "★ 一条科技可以同时有两条加成")
-    m2.set_tech_effect(0, "food_per_tile_per_sec", None)
-    eq(list(m2.tech(0).effect.keys()), ["gold_per_tile_per_sec"], "删掉其中一条")
-    eq(m2.tech(0).effect_label, "黄金产量 +3", "列表里那句话跟着变")
-    eq(m2.tech(0).effect_value("food_per_tile_per_sec"), None, "删掉之后读不到")
+       ["food_production_mult", "gold_production_mult"], "★ 一条科技可以同时有两条加成")
+    m2.set_tech_effect(0, "food_production_mult", None)
+    eq(list(m2.tech(0).effect.keys()), ["gold_production_mult"], "删掉其中一条")
+    eq(m2.tech(0).effect_label, "黄金产能 +0.3", "列表里那句话跟着变")
+    eq(m2.tech(0).effect_value("food_production_mult"), None, "删掉之后读不到")
     ok(TECH_EFFECTS and all(len(t) == 3 for t in TECH_EFFECTS), "加成表是（键, 名字, 说明）三件套")
 
 

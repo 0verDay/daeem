@@ -420,21 +420,26 @@
     "notice_sec": 2.0,
     "broadcast": {
       "_comment": [
-        "★ 大本营升级播报（屏幕上方居中的横幅，view/broadcast_banner.gd）。",
+        "★ 大本营升级播报（左下角小地图正上方的横幅，view/broadcast_banner.gd）。",
         "  只播**指挥官阵营**（真人席位 + command AI）开始升级大本营的那一刻；",
         "  阵地性 / 红点性 AI 不播，取消升级也不撤播、再次升级会再播一条。",
-        "  ★ 尺寸是 1920×1080 设计空间；单条宽 width、第 1 条顶边 top、行高 line_height、行距 gap。",
-        "  ★ 最多同时堆叠 max_lines 条（满了挤掉最旧的一条）；每条自己 hold_sec 后 fade_sec 淡出。",
+        "  ★ 位置：贴左下角，宽度 = 小地图宽度（400）；底边离小地图上沿 bottom_gap。",
+        "  ★ 最新的在最下面；新的一条从左滑入（pop_sec），旧的整体上移一格（move_sec）；",
+        "    到期 / 被 max_lines 挤掉的那条向上飘 exit_rise 并淡出。",
+        "  ★ 尺寸是 1920×1080 设计空间；行高 line_height、行距 gap。",
+        "  ★ 最多同时堆叠 max_lines 条（正在退场的那条不算）；每条自己 hold_sec 后 fade_sec 淡出。",
         "  ★ text_fmt 的 %s = 阵营名（world.faction_label_of），%d = 目标等级；",
         "    颜色用阵营主色（与区块归属同源：红方红、黄方黄）。"
       ],
-      "width": 460.0,
-      "top": 16.0,
+      "bottom_gap": 8.0,
       "line_height": 44.0,
       "gap": 6.0,
       "max_lines": 3,
       "hold_sec": 4.0,
       "fade_sec": 0.25,
+      "pop_sec": 0.22,
+      "move_sec": 0.18,
+      "exit_rise": 24.0,
       "text_fmt": "%s 正在升级大本营 → %d 级"
     },
     "tag_long_press_sec": 0.4,
@@ -675,10 +680,11 @@
       "★ 显示名只在这里：name = 不带远近的说法（步兵 / 骑兵 / 器械），",
       "  ranged_name = 带远近的说法（远程步兵 / 远程骑兵 / 器械）。代码里不写中文。"
     ],
+    "_classes_comment_note": "★★ 每个大类带一条 `upkeep_food` —— 该兵种**每个存活单位每秒消耗多少粮食**（见 world._tick_upkeep）。classes 上的值只是**兜底**（查不到的兵种/老地图用它）；实际区分按阶走 `unit.types.<id>.upkeep_food`：一阶 0.08~0.10、二阶 0.12~0.18、三阶 0.26~0.40，高阶单位明显更贵。",
     "classes": {
-      "infantry": { "id": "infantry", "name": "步兵", "ranged_name": "远程步兵" },
-      "cavalry": { "id": "cavalry", "name": "骑兵", "ranged_name": "远程骑兵" },
-      "siege": { "id": "siege", "name": "器械", "ranged_name": "器械" }
+      "infantry": { "id": "infantry", "name": "步兵", "ranged_name": "远程步兵", "upkeep_food": 0.08 },
+      "cavalry": { "id": "cavalry", "name": "骑兵", "ranged_name": "远程骑兵", "upkeep_food": 0.18 },
+      "siege": { "id": "siege", "name": "器械", "ranged_name": "器械", "upkeep_food": 0.40 }
     },
 
     "_general_traits_comment": [
@@ -828,13 +834,15 @@
         "sprite_tint": "art",
         "class": "infantry",
         "ranged": false,
-        "hp_max": 140,
+        "hp_max": 180,
+        "armor": 2,
         "speed": 0.6,
-        "damage": 14,
+        "damage": 11,
         "range": 1,
         "cooldown_sec": 1.0,
         "radius_factor": 0.09,
         "vision": 8,
+        "upkeep_food": 0.08,
         "traits": {
           "attack_vs_class": { "cavalry": 0.25 }
         }
@@ -846,13 +854,15 @@
         "sprite_tint": "art",
         "class": "infantry",
         "ranged": true,
-        "hp_max": 80,
+        "hp_max": 115,
+        "armor": 1,
         "speed": 0.5,
-        "damage": 24,
+        "damage": 18,
         "range": 4.0,
         "cooldown_sec": 1.4,
         "radius_factor": 0.085,
         "vision": 10,
+        "upkeep_food": 0.10,
         "traits": {
           "attack_vs_class": { "infantry": 0.10 }
         }
@@ -863,13 +873,15 @@
         "sprite": "res://assets/test_units/Rider/rider.png",
         "class": "cavalry",
         "ranged": false,
-        "hp_max": 110,
+        "hp_max": 150,
+        "armor": 2,
         "speed": 1.2,
-        "damage": 26,
+        "damage": 20,
         "range": 1,
         "cooldown_sec": 0.9,
         "radius_factor": 0.105,
         "vision": 9,
+        "upkeep_food": 0.18,
         "traits": {
           "attack_vs_class": { "infantry": 0.25 },
           "ranged_reduction": 0.25
@@ -882,16 +894,17 @@
         "class": "cavalry",
         "ranged": true,
         "can_attack": false,
-        "hp_max": 120,
+        "hp_max": 190,
         "speed": 0.6,
         "damage": 0,
         "range": 0,
         "cooldown_sec": 1.0,
         "radius_factor": 0.10,
         "vision": 9,
-        "armor": 0,
+        "armor": 2,
         "morale_aura_radius": 3.0,
         "morale_aura_rate": 0.5,
+        "upkeep_food": 0.12,
         "traits": {}
       },
       "knight": {
@@ -900,14 +913,15 @@
         "sprite": "res://assets/test_units/Knight/knight.png",
         "class": "cavalry",
         "ranged": false,
-        "hp_max": 260,
+        "hp_max": 365,
         "speed": 1.0,
-        "damage": 40,
+        "damage": 30,
         "range": 1,
         "cooldown_sec": 1.0,
         "radius_factor": 0.11,
         "vision": 9,
         "armor": 6,
+        "upkeep_food": 0.32,
         "traits": {
           "ranged_reduction": 0.25
         }
@@ -918,15 +932,16 @@
         "sprite": "res://assets/test_units/HorseArcher/horse_archer.png",
         "class": "cavalry",
         "ranged": true,
-        "hp_max": 100,
+        "hp_max": 145,
         "speed": 1.3,
-        "damage": 22,
+        "damage": 17,
         "range": 3.5,
         "cooldown_sec": 1.1,
         "radius_factor": 0.10,
         "vision": 10,
-        "armor": 0,
+        "armor": 1,
         "move_shoot": true,
+        "upkeep_food": 0.26,
         "traits": {
           "ranged_reduction": 0.25
         }
@@ -937,15 +952,16 @@
         "sprite": "res://assets/test_units/Catapult/catapult.png",
         "class": "siege",
         "ranged": true,
-        "hp_max": 180,
+        "hp_max": 265,
         "speed": 0.35,
-        "damage": 60,
+        "damage": 46,
         "range": 6.0,
         "cooldown_sec": 3.0,
         "radius_factor": 0.13,
         "vision": 11,
-        "armor": 0,
+        "armor": 2,
         "siege": true,
+        "upkeep_food": 0.40,
         "splash_radius": 1.5,
         "traits": {}
       }
@@ -972,7 +988,22 @@
         "spearman"
       ],
 
-      "_caps_comment": [
+      "_general_growth_comment": [
+      "★★ 2026.10.29：**将领比它的兵种更抗打**的三个旋钮（全局，对 10 位将领先生效再叠覆盖）。",
+      "  口径（三者都作用在「这一位将领的基准值」上；基准 = 它自己的 stats 覆盖，没写就跟随兵种）：",
+      "  · hp_mult      —— 血量上限 ×这个倍率（默认 1.5）。",
+      "    ★ 与兵种血量叠加：长枪兵 180 → 将领型长枪兵 270。",
+      "  · armor_bonus  —— **加成**护甲（默认 +1）。护甲是「每次受击先减固定值」，",
+      "    所以 +1 对低攻单位（长枪兵 11）相对更值钱，对投石车（46）几乎无感 —— 这是有意的。",
+      "  · damage_mult  —— 攻击 ×这个倍率（默认 1.0 = 保持绝对值）。",
+      "    ★ 兵种攻击这一版整体降了 ~25%，将领不降 ⇒ 将领**相对**更疼，符合「队长是精锐」。",
+      "  ⚠️ 只作用于 `is_general()` 的单位；普通兵只吃兵种表。",
+      "  ⚠️ 三个值都夹过（mult ≥ 0.1、bonus ≥ 0），写 0 不会让将领变纸片或无敌。"
+    ],
+    "hp_mult": 1.5,
+    "armor_bonus": 1.0,
+    "damage_mult": 1.0,
+    "_caps_comment": [
         "★★ 编制上限：**每位将领一个值**，与 types 同序（现在 10 项）。",
         "  · 语义 = 「这位将领的目标编队规模」：摆放的将领开局就生成到它，",
         "    阵地上 AI 脱战后也补到它；红点将领的附属兵数同样以它封顶。",
@@ -1535,7 +1566,19 @@
     }
   },
 
-  "economy": { "enabled": true },
+  "economy": {
+    "_comment": [
+      "★ enabled：经济总开关。false = **建造免费**（见 logic/economy.gd 的 try_spend）。",
+      "★★ upkeep_enabled（2026.10.29 新增）：**持续消耗**的总闸 ——",
+      "   单位维护费（每存活单位每秒吃粮）+ 科技的每秒扣金，两样都归它管。",
+      "   false = 两样都不扣（也不会有断粮 / 断金），用来做「只看收入」的对账与调试。",
+      "   ⚠️ 正常游戏必须是 true；tests/test_case.gd 会把它关掉，好让旧用例的",
+      "      「粮食 200 → 招一个兵 → 150」这种精确对账继续保持成立。",
+      "      新机制本身的覆盖在 tests/test_economy.gd（那边会显式打开它）。"
+    ],
+    "enabled": true,
+    "upkeep_enabled": true
+  },
 
   "recruit": {
     "_comment": [
@@ -1884,12 +1927,12 @@
       "  黄金特化 = 每地块每秒额外产 0.5 黄金，人口特化 = 当前区划人口产量 +25%」。",
       "  历史：旧版三档都是「本区块产量 +10%」的倍率；之后粮食 / 黄金改成**每地块加产量**、",
       "  人口保留倍率。",
-      "  ★★ 数值（本次节奏调整再降 20%）：每地块 **0.04**（原 0.05），人口倍率 **+10%**（原 +12.5%）。",
-      "     它与区划基础产量是**两套独立的数**：基础产量降了，特化跟着按同一量级降，",
-      "     免得固定加法反过来盖过整个基础经济。一次特化的量级仍约等于一个区划的基础产量：",
-      "     值得做，但不一票定胜负。",
+      "  ★★ 数值（2026.10.29 经济改版）：每地块 **0.01**，人口倍率 **+10%** 不变。",
+      "     上一轮是 0.04；这一轮科技改成了「总体产能百分比」，特化就退回**细水长流**的量级：",
+      "     132 格的大区划做一次特化 = +1.32/秒，约等于一个粮食区划的基础产出（1.5），",
+      "     值得做、但不是一票定胜负。",
       "     ⚠️ 以后调基础产量时，记得一起看这里。",
-      "  ★ 历史：0.25 → 0.05 → 0.04（本次 −20%）；人口倍率 +12.5% → +10%。",
+      "  ★ 历史：0.25 → 0.05 → 0.04 → **0.01**（本次）；人口倍率 +12.5% → +10%。",
       "★ 三个特化只能选一个：选了一个之后另外两个入口就不再显示（界面层），",
       "  逻辑层也会拒（拒因码 `spec_done`）——两处都挡，缺一个就会被绕过。",
       "★ 哪些区划能做哪些特化由 `zone_kind.list[].specs` 决定（拒因码 `kind`），",
@@ -1904,25 +1947,26 @@
       "  ⚠️ 这里没有「取消特化的取消」——取消读条期间的操作页只有「取消特化」那一格，",
       "     读条中再点它会被拒（拒因码 `busy`），与建筑升级那条约定一致。",
       "★ cost / time_sec 是**三档共用**的默认值（list 里每项可以各自覆盖）。",
-      "  ★ 2026.10.25：造价随「所有部队 / 建筑 / 升级」一起 ×2（50/50 → 100/100）；",
-      "    特化效果当时不变，本次随节奏调整降到 +0.04/地块、人口 +10%。"
+      "  ★ 2026.10.25：造价随「所有部队 / 建筑 / 升级」一起 ×2（50/50 → 100/100）。",
+      "  ★★ 2026.10.29：收益降到 1/4（0.04 → 0.01），**造价同步降回 50/50** ——",
+      "    回本时间按 132 格的大区划算约 38 秒（50 粮 / 50 金 各回各的），仍是「值得做」那一档。"
     ],
-    "cost": { "food": 100, "gold": 100 },
+    "cost": { "food": 50, "gold": 50 },
     "time_sec": 10,
     "list": [
       {
         "id": "food",
         "name": "粮食特化",
-        "line": "本区块粮食 +0.04／地块／秒",
-        "desc": "本区块每地块每秒额外产出 0.04 粮食（一个区划只能选一种特化）",
-        "effect": { "food_per_tile": 0.04 }
+        "line": "本区块粮食 +0.01／地块／秒",
+        "desc": "本区块每地块每秒额外产出 0.01 粮食（一个区划只能选一种特化）",
+        "effect": { "food_per_tile": 0.01 }
       },
       {
         "id": "gold",
         "name": "黄金特化",
-        "line": "本区块黄金 +0.04／地块／秒",
-        "desc": "本区块每地块每秒额外产出 0.04 黄金（一个区划只能选一种特化）",
-        "effect": { "gold_per_tile": 0.04 }
+        "line": "本区块黄金 +0.01／地块／秒",
+        "desc": "本区块每地块每秒额外产出 0.01 黄金（一个区划只能选一种特化）",
+        "effect": { "gold_per_tile": 0.01 }
       },
       {
         "id": "population",
@@ -1943,67 +1987,82 @@
       "  再点已启用的那个 = 弃用（名额让出来）。启用 / 弃用都是命令（tech_toggle），",
       "  落点在 world.set_tech_active() —— 视图不自己记住谁启用了，每帧读权威状态。",
       "★ 效果只有三种形状（见 logic/tech.gd 的效果聚合）：",
-      "  · food_per_tile_per_sec / gold_per_tile_per_sec —— **每地块每秒**的加产量，",
-      "    与地图编辑器给区划配的产能同一套口径：加成 = 这个数 × 己方占领地块数（格/秒）。",
+      "  · food_production_mult / gold_production_mult —— **总体产能**的加成（0.1 = +10%）。",
+      "    「总体产能」= 区划基础产能 **+ 特化加成**（两者一起放大），**不再按地块算**。",
+      "    多条**加法叠加**：+10% +20% +30% = +60%（不是 1.1×1.2×1.3）。",
       "  · building_hp_mult / leader_hp_mult    —— 己方建筑 / 己方将领的**血量上限倍率**，",
       "    实时生效（已建成 / 已存在的也一起按比例变），弃用后回到 1.0。",
       "  · zone_population_mult                 —— 己方占领区划的**人口自然增长速度**倍率，",
       "    只影响涨得多快（上限 population_cap 不变），且只作用于己方区划。",
-      "★ 九条都是**占位科技**（用户需求：先铺满 3×3 九格），数值刻意简单、无前置、无消耗。",
-      "  以后加真科技：往 list 里加条目即可（world / command_processor / 视图都不用改），",
+      "★★ 2026.10.29 起科技是**持续花钱的常驻投资**（不再是点一下就永久生效）：",
+      "  · gold_per_sec_by_tier —— 按**阶**每秒扣金（[一阶, 二阶, 三阶] = 0.5 / 1.0 / 2.0），",
+      "    **从点下那一刻就开始扣**（预热期间照扣）。三条满配 = 3.5 金/秒。",
+      "  · warmup_sec —— 预热：点下后先扣金，**30 秒后**才真正生效。",
+      "    预热期间**占名额、不出效果**；中途取消 = 立即放弃、已扣的金不退、**没有冷却**。",
+      "  · 生效中手动弃用 = 立即失效，**没有冷却**。",
+      "  · shortfall_cooldown_sec —— 断金：某一帧金付不起 ⇒ **该方全部科技弃用** +",
+      "    全科技 **30 秒冷却**（冷却期间一格都点不了）。冷却结束后要**重新点**，",
+      "    并且**再等一次 30 秒预热** ⇒ 一次断金 = 60 秒没有科技。",
+      "  · 三条非产量科技（建筑加固 / 将领强化 / 区划人口）**同样按阶扣金** ——",
+      "    不然玩家会拿免费格子把三个名额占满。",
+      "  · 金耗与预热/冷却都**按阵营各算各的**（合作模式两个席位互不影响）。",
+      "★ 以前加真科技：往 list 里加条目即可（world / command_processor / 视图都不用改），",
       "  要新的效果形状才需要在 logic/tech.gd 的 effects_of() 与 world 的取用处各加一条。",
       "★ desc 是鼠标悬停时**命令卡正上方那块悬停详情面板**里的说明（一句话说清效果）；",
       "  line 是格子里的第二行小字（格子只有 80×80，名字一行 + 效果一行最清楚）。"
     ],
     "max_active": 3,
+    "gold_per_sec_by_tier": [0.5, 1.0, 2.0],
+    "warmup_sec": 30,
+    "shortfall_cooldown_sec": 30,
     "list": [
       {
         "id": "food_1",
         "tier": 1,
         "name": "粮食产量 I",
-        "line": "粮食 +0.04",
-        "desc": "玩家粮食产量 +0.04／地块／秒",
-        "effect": { "food_per_tile_per_sec": 0.04 }
+        "line": "粮食产能 +10%",
+        "desc": "玩家总体粮食产能 +10%",
+        "effect": { "food_production_mult": 0.10 }
       },
       {
         "id": "food_2",
         "tier": 2,
         "name": "粮食产量 II",
-        "line": "粮食 +0.08",
-        "desc": "玩家粮食产量 +0.08／地块／秒",
-        "effect": { "food_per_tile_per_sec": 0.08 }
+        "line": "粮食产能 +20%",
+        "desc": "玩家总体粮食产能 +20%",
+        "effect": { "food_production_mult": 0.20 }
       },
       {
         "id": "food_3",
         "tier": 3,
         "name": "粮食产量 III",
-        "line": "粮食 +0.12",
-        "desc": "玩家粮食产量 +0.12／地块／秒",
-        "effect": { "food_per_tile_per_sec": 0.12 }
+        "line": "粮食产能 +30%",
+        "desc": "玩家总体粮食产能 +30%",
+        "effect": { "food_production_mult": 0.30 }
       },
       {
         "id": "gold_1",
         "tier": 1,
         "name": "黄金产量 I",
-        "line": "黄金 +0.04",
-        "desc": "玩家黄金产量 +0.04／地块／秒",
-        "effect": { "gold_per_tile_per_sec": 0.04 }
+        "line": "黄金产能 +10%",
+        "desc": "玩家总体黄金产能 +10%",
+        "effect": { "gold_production_mult": 0.10 }
       },
       {
         "id": "gold_2",
         "tier": 2,
         "name": "黄金产量 II",
-        "line": "黄金 +0.08",
-        "desc": "玩家黄金产量 +0.08／地块／秒",
-        "effect": { "gold_per_tile_per_sec": 0.08 }
+        "line": "黄金产能 +20%",
+        "desc": "玩家总体黄金产能 +20%",
+        "effect": { "gold_production_mult": 0.20 }
       },
       {
         "id": "gold_3",
         "tier": 3,
         "name": "黄金产量 III",
-        "line": "黄金 +0.12",
-        "desc": "玩家黄金产量 +0.12／地块／秒",
-        "effect": { "gold_per_tile_per_sec": 0.12 }
+        "line": "黄金产能 +30%",
+        "desc": "玩家总体黄金产能 +30%",
+        "effect": { "gold_production_mult": 0.30 }
       },
       {
         "id": "building_hp",
@@ -2046,6 +2105,13 @@
       "  站被包围的己方区划（疲惫）→ -decay_surrounded /s；中立区划**也算疲惫**（同 decay_enemy）。",
       "  ★ 下降速度本轮调慢到原先的 1/5（2.0 → 0.4 /s）：decay_enemy / decay_surrounded 都是 0.4。",
       "  ★ 低士气的**掉血**速度本轮调慢到原先的 1/4（hp_decay_low 3.0→0.75、hp_decay_zero 8.0→2.0 /s）。",
+      "  ★★ 主将濒死（倒地）期间：其整支部队额外 -leader_down_drain /s（默认 3）。",
+      "  ★★ 2026.10.29 断粮：该方**这一帧付不起单位维护费**（见 world._tick_upkeep）时，",
+      "     全军额外 **-starve_drain /s**（默认 0.5）。它**叠加**在上面的区划速率与粮车光环之上，",
+      "     而粮车光环正好是 +0.5/s ⇒ **一辆粮车刚好抵消断粮惩罚**（用户口径：两者等速）。",
+      "     ⚠️ 这个下降是每帧判定的：只要这一方还在断粮就一直掉，掉到 0 之后走 ==0 那一档掉血。",
+      "     这个固定下降**叠加**在区划速率与粮车光环之上（增加和减少都算）；",
+      "     再起后按当前值恢复正常规则（不额外补偿）。",
       "  瞬间加成：破敌（杀敌单位）boost_kill、斩将（杀敌将领）boost_leader、",
       "  掠地（所在区划转己方/友方）boost_capture —— 都加到击杀者 / 区内单位所在部队的士气上。"
     ],
@@ -2054,6 +2120,8 @@
     "regen_ally": 1.5,
     "decay_enemy": 0.5,
     "decay_surrounded": 1,
+    "leader_down_drain": 3.0,
+    "starve_drain": 0.5,
     "high_tier": 100,
     "mid_tier": 90,
     "vuln_tier": 50,
@@ -2161,6 +2229,7 @@
         "rule_fade": 40,
         "buttons": ["战役", "合作", "演义"],
         "ai_test_button": "ai_test",
+        "see_ai_button": "see_ai",
         "bottom_buttons": ["自定义", "备战"]
       },
       "titles": {
@@ -2169,10 +2238,6 @@
         "coop": "合作",
         "room": "房间",
         "ready": "详情"
-      },
-      "campaign": {
-        "chapters": ["I", "II", "III"],
-        "flag_sub": "关卡"
       }
     },
     "campaign_start": {
@@ -2395,7 +2460,7 @@
       "  ai_observer = true  → 走观战路径（AI 接管被观察方，玩家只看）；",
       "  ai_observer_orders = true → 观战但仍允许用 AI 面板下四条指令（ai_test_2）；",
       "  ai_observer_reveal = true → 只给玩家显示开全图，AI 仍走正常迷雾（ai_test_2）；",
-      "  direct = true → 跳过战役过渡画面，直接按 level 的可玩阵营开局（ai_test_battle）；",
+      "  direct = true → 跳过战役过渡画面（ai_test_battle 每次按下由 main.gd 随机选边，另一方交给 command AI）；",
       "  coop_ai = true → 直接开合作 AI 队友局：玩家第 1 席位，第 2 席位由 commander 接管（ai_test_hz）。",
       "  ★ 加一颗按钮只改这里；「载入哪一关、怎么建世界」在 view/main.gd（界面不碰玩法）。",
       "  ★ 剩下那一关（main_test）不在这里：它在「战役」菜单里（data/campaigns_menu.json）。"
@@ -2798,6 +2863,8 @@
         "  与 garrison / reddot 不同：它有自己的大本营、资源池、收入，会招将 / 招兵 /",
         "  升级 / 科技 / 特化 / 建箭塔，并有一支会行军 / 驻守 / 扩张 / 回防的军队。",
         "  ★ 全部数值按秒；难度只改经济 / 节奏 / 上限 / 反应延迟，不改单位数值。",
+        "  ★★ 起手资源默认 0：关卡 factions[].start_food/start_gold 逐方覆盖（战役编辑器可配）；",
+        "     难度里的 start_food/start_gold 保留键位但默认 0，不再给 commander 额外启动资金。",
         "  ★ 合作模式里它占第二席位（房主开局前选择真人队友或 AI 队友）。",
         "  ★★ 军队上限不再是一个固定总数：实际 = Σ(每位将领 1 + 有效编制上限) × army_cap_ratio。",
         "     将领越多、大本营等级越高（编制 +N），上限自然越大；难度只乘一个比例。",
@@ -2810,7 +2877,7 @@
       "default_profile": "normal",
       "command_hold_sec": 60.0,
       "intervals": {
-        "army_interval_sec": 0.6,
+        "army_interval_sec": 1.0,
         "strategic_interval_sec": 2.0,
         "build_interval_sec": 2.5,
         "production_interval_sec": 1.0,
@@ -3005,7 +3072,10 @@
           "  · field_team_size：外勤队的目标规模（含将领）；",
           "  · max_training_leaders：同时读条的将领数上限；",
           "  · min_garrison_replace_escorts：接替守军至少要有几个兵；",
-          "  · dispatch_training_home：读条中的守军只要够出门规模，就可以被换下来去巡逻 / 出征。"
+          "  · dispatch_training_home：读条中的守军只要够出门规模，就可以被换下来去巡逻 / 出征。",
+          "★★ fill_to_cap_when_rich（2026.10.29）：资源充足（浮存 > economy.max_float_food / max_float_gold）时，",
+          "   允许每支队伍**越过** home_team_size / field_team_size，继续补到该将领的编制上限",
+          "   （1 + effective_retinue_cap）。false = 旧行为（永远停在目标规模）。"
         ],
         "general_target": 2,
         "general_target_by_base_level": [3, 6, 10],
@@ -3019,6 +3089,7 @@
         "max_training_leaders": 4,
         "min_garrison_replace_escorts": 1,
         "dispatch_training_home": true,
+        "fill_to_cap_when_rich": true,
         "composition": [
           { "type": "spearman", "weight": 0.42 },
           { "type": "longbowman", "weight": 0.24 },
@@ -3049,9 +3120,16 @@
         "wall_border_require_armed_generals": true,
         "tower_frontier_bonus": 4.0,
         "base_upgrade_priority": 10.0,
-        "tech_priority": []
+        "tech_priority": ["food_1", "gold_1", "building_hp"]
       },
       "early_explore": {
+        "_comment": [
+          "★★ 开局探索 / 发展（前 60 秒，只有一支初始部队时）。",
+          "  · capture_safe = true：优先占「与己方相邻、无主、中心附近没有可见敌人」的安全区划；",
+          "    走到区划中心后站住读条，直到归属翻过来（旧行为「到点就换下一个」永远占不下来）。",
+          "  · hold_sec / rest_sec / max_distance_tiles / min_start_distance_tiles：没有安全区划时，",
+          "    才回到普通的远处探索（到点换下一个点，不回基地绕圈）。"
+        ],
         "enabled": true,
         "until_sec": 60.0,
         "min_escorts": 0,
@@ -3059,7 +3137,8 @@
         "rest_sec": 8.0,
         "max_distance_tiles": 22.0,
         "min_start_distance_tiles": 6.0,
-        "avoid_ratio": 1.0
+        "avoid_ratio": 1.0,
+        "capture_safe": true
       },
       "early_game": {
         "enabled": true,
@@ -3075,35 +3154,58 @@
         "attack_after_sec": 45.0
       },
       "difficulty": {
+        "_comment": [
+          "★★ 难度只改**节奏 / 经济 / 上限 / 反应**，绝不改单位数值（同一张兵种表）。",
+          "★★ 2026.10.29：新增 `army_interval_mult` / `strategic_interval_mult` ——",
+          "   **发命令的间隔**现在由难度控制（实际间隔 = intervals.army_interval_sec × 这个倍率）。",
+          "   这是本版区分难度最主要的旋钮：倍率越大 ⇒ AI 重新下令越慢 ⇒ 玩家越容易先手、越容易撤。",
+          "   参考值（基础 1.0 秒）：简单 1.8 → **1.80 秒/次**、普通 1.2 → 1.20、困难 0.7 → 0.70。",
+          "   一仗 20 秒里 AI 能重新下令的次数：简单 11 次 / 普通 17 次 / 困难 29 次。",
+          "★ 各键含义：",
+          "  · army_interval_mult     —— ★ 战术层发命令的间隔（移动 / 进攻 / 扩张 / 回防 / 巡逻都在这层）",
+          "  · strategic_interval_mult—— 战略对账（状态 / 区划归属）的间隔，比 army 慢一档",
+          "  · production_interval_mult —— 招兵 / 补员节拍",
+          "  · build_interval_mult    —— 升本 / 科技 / 特化 / 箭塔节拍",
+          "  · income_mult            —— AI 区划收入的倍率（**只给它自己**，玩家不吃）",
+          "  · army_cap / army_cap_ratio —— 军队上限的绝对兜底 / 动态比例",
+          "  · reaction_delay_sec     —— 第一次发现威胁到「回防」之间要等多久（不给瞬间全图反应）",
+          "  ⚠️ 所有倍率都夹在 ≥0.1（写 0 会让定时器每帧触发，AI 变成每帧下令的疯子）。"
+        ],
         "easy": {
-          "income_mult": 0.8,
+          "income_mult": 0.7,
           "army_cap": 24,
-          "army_cap_ratio": 0.75,
-          "build_interval_mult": 1.3,
-          "production_interval_mult": 1.4,
-          "reaction_delay_sec": 2.0,
-          "start_food": 150.0,
-          "start_gold": 150.0
+          "army_cap_ratio": 0.70,
+          "army_interval_mult": 1.8,
+          "strategic_interval_mult": 2.0,
+          "build_interval_mult": 1.5,
+          "production_interval_mult": 1.6,
+          "reaction_delay_sec": 3.0,
+          "start_food": 0.0,
+          "start_gold": 0.0
         },
         "normal": {
           "income_mult": 1.0,
           "army_cap": 36,
           "army_cap_ratio": 1.0,
+          "army_interval_mult": 1.2,
+          "strategic_interval_mult": 1.2,
           "build_interval_mult": 1.0,
           "production_interval_mult": 1.0,
           "reaction_delay_sec": 1.2,
-          "start_food": 250.0,
-          "start_gold": 250.0
+          "start_food": 0.0,
+          "start_gold": 0.0
         },
         "hard": {
-          "income_mult": 1.2,
+          "income_mult": 1.25,
           "army_cap": 48,
           "army_cap_ratio": 1.0,
-          "build_interval_mult": 0.8,
-          "production_interval_mult": 0.8,
-          "reaction_delay_sec": 0.7,
-          "start_food": 350.0,
-          "start_gold": 350.0
+          "army_interval_mult": 0.7,
+          "strategic_interval_mult": 0.8,
+          "build_interval_mult": 0.75,
+          "production_interval_mult": 0.75,
+          "reaction_delay_sec": 0.5,
+          "start_food": 0.0,
+          "start_gold": 0.0
         }
       }
     },

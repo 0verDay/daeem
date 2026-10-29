@@ -14,6 +14,8 @@ signal coop_host_started(campaign_id: String, level_id: String, transport)
 signal coop_guest_started(payload: Dictionary, transport)
 signal coop_solo_started(campaign_id: String, level_id: String, ai_setup: Dictionary)
 signal ai_test_pressed
+## ★★ 2026.10.29：ai_test 下面的 see_ai —— 同一张 between_moutains，双方 commander AI，玩家看海。
+signal see_ai_pressed
 signal quit_requested
 ## 兼容旧测试 / 旧调试入口；新菜单本身不再发这条信号。
 signal level_entry_pressed(campaign_id: String, level_id: String)
@@ -417,6 +419,7 @@ func _build_deck() -> void:
 	_menu_deck.coop_solo_started.connect(
 		func(c, l, a): coop_solo_started.emit(c, l, a))
 	_menu_deck.ai_test_pressed.connect(func(): ai_test_pressed.emit())
+	_menu_deck.see_ai_pressed.connect(func(): see_ai_pressed.emit())
 	_menu_deck.quit_requested.connect(func(): quit_requested.emit())
 
 

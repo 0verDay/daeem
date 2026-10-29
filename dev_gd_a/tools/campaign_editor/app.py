@@ -2463,6 +2463,14 @@ class EditorApp:
             entry.color = str(value)
         elif field == "name":
             entry.name = str(value)
+        elif field in ("start_food", "start_gold"):
+            if value is None:
+                setattr(entry, field, None)
+            else:
+                try:
+                    setattr(entry, field, max(0.0, float(value)))
+                except (TypeError, ValueError):
+                    pass
         elif field == "playable":
             entry.playable = bool(value)
             entry.playable_declared = True
@@ -2743,8 +2751,26 @@ class EditorApp:
             self._button(row, "删", lambda f=e.fid: self.remove_faction_entry(f),
                          padx=4, pady=1,
                          font=("Microsoft YaHei UI", 8)).pack(side="right")
+            # ★★ 2026.10.29：这一方的起手资源（逐阵营配）。留空 = 不写（运行时默认 0）。
+            res = tk.Frame(tsec, bg=UI["panel"])
+            res.pack(side="top", fill="x", pady=(0, 4))
+            tk.Label(res, text="　　起手", width=8, anchor="w", bg=UI["panel"],
+                     fg=UI["text_dim"], font=("Microsoft YaHei UI", 8)).pack(side="left")
+            for fld, label in (("start_food", "粮"), ("start_gold", "金")):
+                tk.Label(res, text=label, bg=UI["panel"], fg=UI["text_dim"],
+                         font=("Microsoft YaHei UI", 8)).pack(side="left")
+                cur = getattr(e, fld)
+                var = tk.StringVar(
+                    value="" if cur is None else str(model_mod.clean_number(cur)))
+                ent = ttk.Entry(res, textvariable=var, width=5)
+                ent.pack(side="left", padx=(2, 6))
+                ent.commit_action = (lambda f=e.fid, fl=fld, v=var:   # type: ignore[attr-defined]
+                                     self._set_faction_optional_float(f, fl, v.get()))
+                ent.bind("<Return>", lambda _e, en=ent: en.commit_action())
+                ent.bind("<FocusOut>", lambda _e, en=ent: en.commit_action())
         self._entry_cell(tsec, "加一方 id", "", self._add_level_faction, width=18)
-        self._hint(tsec, "★ 加一方只会写进**这一关**；名字 / 颜色 / 可玩都在这一行改。"
+        self._hint(tsec, "★ 加一方只会写进**这一关**；名字 / 颜色 / 可玩 / 起手粮金都在这一行改。"
+                         "起手资源留空 = 不写（commander 默认 0，玩家沿用全局配置）。"
                          "地图自带的阵营照样会列在下面，点「在这关点名」才会写进关卡。")
 
         # ---- 敌友（边）：同一条边互为友军；不同边 / 没分边的互相敌对 ----
@@ -2760,7 +2786,7 @@ class EditorApp:
             title = "%s %s%s" % (fid, lv.faction_name(fid),
                                  "　★可玩" if fid in playable else "")
             section = self._section(title,
-                                    "本关 factions[] 里有这一方（改名字 / 颜色 / 可玩见上面那张表）"
+                                    "本关 factions[] 里有这一方（改名字 / 颜色 / 可玩 / 起手资源见上面那张表）"
                                     if e else "这一关没点名它（导出时不会为它写一份）")
             if e is None:
                 self._button(section, "在这关点名这一方",
@@ -2984,6 +3010,20 @@ class EditorApp:
             self.refresh_all()
             return
         self.set_faction_field(fid, field, value)
+
+    def _set_faction_optional_float(self, fid: str, field: str, text: str) -> None:
+        """阵营配置里的「可选数字」：留空 = `None`（不写这个键），数字 = max(0, 值)。"""
+        s = str(text).strip()
+        if s == "":
+            self.set_faction_field(fid, field, None)
+            return
+        try:
+            value = float(s)
+        except ValueError:
+            self.status("「%s」要填数字（留空 = 不配置）" % field)
+            self.refresh_all()
+            return
+        self.set_faction_field(fid, field, max(0.0, value))
 
     # ---- ④ 摆放页侧栏 ----
 

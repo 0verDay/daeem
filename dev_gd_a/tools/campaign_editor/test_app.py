@@ -1211,6 +1211,38 @@ def t_faction_list_per_level(app, model) -> None:
     app.root.update()
 
 
+def t_faction_start_resources(app, model) -> None:
+    print("\n[4g] ★ 阵营起手资源（③阵营页：粮 / 金两个输入框）")
+    lv = level(app)
+    if not lv.factions:
+        ok(False, "（前提）当前关有阵营")
+        return
+    fid = lv.factions[0].fid
+    e = lv.faction(fid)
+    old_food, old_gold = e.start_food, e.start_gold
+
+    app.set_faction_field(fid, "start_food", 100)
+    app.set_faction_field(fid, "start_gold", 0)
+    eq(float(e.start_food), 100.0, "★ set_faction_field 写入 start_food")
+    eq(float(e.start_gold), 0.0, "★★ 显式 0 保存成 0（不是 None）")
+    row = next(x for x in lv.to_dict()["factions"] if x.get("id") == fid)
+    eq(row.get("start_food"), 100, "★ 导出行带 start_food")
+    eq(row.get("start_gold"), 0, "★ 导出行带显式 0")
+
+    app._set_faction_optional_float(fid, "start_food", "")
+    ok(e.start_food is None, "★ 留空 = None（不覆盖）")
+    row2 = next(x for x in lv.to_dict()["factions"] if x.get("id") == fid)
+    ok("start_food" not in row2, "★ 留空后导出不带这个键")
+
+    app._set_faction_optional_float(fid, "start_gold", "-5")
+    eq(float(e.start_gold), 0.0, "★ 负数夹到 0")
+
+    # 复原
+    e.start_food, e.start_gold = old_food, old_gold
+    app.refresh_all()
+    app.root.update()
+
+
 def t_level_switch_state(app, model) -> None:
     print("\n[4f] ★★ 换关卡不串编辑期状态（用户报的「上一关的边跑到这一关」）")
     if len(model.levels) < 2:
@@ -1395,14 +1427,15 @@ def t_catalog_filter() -> None:
         root.update()
         ids = [str(app.level_tree.item(iid, "values")[1])
                for iid in app.level_tree.get_children()]
-        eq(ids, ["mt", "dscj", "ai_test_2", "ai_test_battle"],
+        eq(ids, ["mt", "dscj", "ai_test_2", "ai_test_battle", "between_moutains",
+                 "ai_test_easy", "ai_test_normal", "ai_test_hard"],
            "★ 关卡树只列有用表地图对应的关卡")
         ok(not app.level_tree.exists("lv:01_beachhead"), "★ 隐藏 01_beachhead")
         ok(not app.level_tree.exists("lv:02_twin_line"), "★ 隐藏 02_twin_line")
         ok(not app.level_tree.exists("lv:ai_test"), "★ 隐藏 ai_test")
         eq(app.current_level_id, "mt", "★ 默认当前关 = 第一个可见关卡")
-        eq(app._map_choice_ids(), ["main_test", "ai_test_2", "dscj"],
-           "★ 地图下拉 = 有用表三张")
+        eq(app._map_choice_ids(), ["main_test", "ai_test_2", "dscj", "between_moutains"],
+           "★ 地图下拉 = 有用表里的那几张")
     finally:
         root.destroy()
 
@@ -1441,6 +1474,7 @@ def main() -> int:
         t_ally_sides(app, model)
         t_new_reddot_faction(app, model)
         t_faction_list_per_level(app, model)
+        t_faction_start_resources(app, model)
         t_level_switch_state(app, model)
         t_zone_owner_explicit(app, model)
         t_escort_placement(app, model)

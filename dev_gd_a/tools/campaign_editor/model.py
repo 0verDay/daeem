@@ -42,8 +42,9 @@ AI_NONE = "none"
 AI_GARRISON = "garrison"
 #: 红点性 AI：长冷却在指定区域刷一波满编将领、行军攻击目标点。
 AI_REDDOT = "reddot"
-#: ★★ 指挥官 AI（有基地 / 经济 / 生产 / 军队）。ai_test_battle 的 p1 就是它；
-#:    合作 AI 队友在运行时把第二席位改成它（关卡 JSON 不写，但编辑器要能读能写）。
+#: ★★ 指挥官 AI（有基地 / 经济 / 生产 / 军队）。关卡可以把某一阵营标成它；
+#:    合作 AI 队友 / 主菜单 ai_test 的随机对局也会在运行时把某一席位改成它
+#:    （关卡 JSON 不写，但编辑器要能读能写）。
 AI_COMMANDER = "commander"
 #: 旧值（**只用于兼容读入**）：'faction' / 'general' 现在都归一成 'garrison'。
 AI_LEGACY_FACTION = "faction"
@@ -222,20 +223,23 @@ class FactionEntry:
     """关卡 `factions[]` 的一行 —— **这一关的阵营表**（定义 + 怎么打）。
 
     字段与 `logic/level.gd` 的 `_read_level_factions()` **逐字段对齐**：
-    `id / ai / base / color / attack_target / garrison_ai / reddot_ai / spawn_region`，
-    加上本编辑器写入 / 运行时读取的 `name` 与 `playable`。
+     `id / ai / base / color / start_food / start_gold / attack_target / garrison_ai /
+     reddot_ai / spawn_region`，加上本编辑器写入 / 运行时读取的 `name` 与 `playable`。
 
     ★★ 阵营表**跟着关卡走**（用户口径：每一关就是一个独立战役）：
       · `name` / `color` / `playable` 都是**这一关**自己的；
       · `playable: true` = 玩家能选这一方（玩家席位由它派生）；
       · 不会再有「战役级阵营表」——A 关卡写的阵营不会出现在 B 关卡里。
 
-    ⚠️ 本轮删掉了 `resource_mult` / `start_food` / `start_gold`（AI 不再有资源库）
-       与 `faction_ai` / `general_ai`（旧的两套 AI 参数）—— 换成 `garrison_ai` /
-       `reddot_ai`（按阵营覆盖）与 `spawn_region`（红点生成区域）。
+    ★★ 起手资源（2026.10.29 重新加回，口径变了）：`start_food` / `start_gold` 是
+    **这一方自己**的起手资源；`None` = 不写（运行时 commander 默认 0、玩家沿用
+    `cfg.start_*`）。`resource_mult` 仍然删掉（AI 没有独立经济倍率）。
+    旧的两套 AI 参数 `faction_ai` / `general_ai` 也删掉，换成 `garrison_ai` /
+    `reddot_ai`（按阵营覆盖）与 `spawn_region`（红点生成区域）。
     """
 
-    __slots__ = ("fid", "ai", "base", "attack_target", "attack_target_raw",
+    __slots__ = ("fid", "ai", "base", "start_food", "start_gold",
+                 "attack_target", "attack_target_raw",
                  "garrison_ai", "reddot_ai", "spawn_region", "spawn_region_raw",
                  "name", "color", "playable", "playable_declared", "declared")
 
@@ -243,6 +247,9 @@ class FactionEntry:
         self.fid = fid
         self.ai = AI_NONE
         self.base: Optional[Tuple[int, int]] = None
+        #: 这一方的起手资源；`None` = JSON 没写 / 不覆盖（引擎默认 0）。
+        self.start_food: Optional[float] = None
+        self.start_gold: Optional[float] = None
         #: 形状 {"kind": ..., ...}；None = 没写（运行时退回「打最近的敌方区划」）。
         self.attack_target: Optional[dict] = None
         #: `attack_target` 在源 JSON 里的**原样值**（`True` 表示「这个键出现过」）。
@@ -563,10 +570,10 @@ class LevelModel:
         ★★ 席位顺序：**保留 `players[]` 里原来的先后**（合作关的房主 / 客机顺序
           写在 `players[]` 里，不能因为阵营表的顺序变了就互换）；新出现的可玩阵营
           追加在末尾。已写过的同名 `base` 保留（兼容老数据）。
-        ★★ 为什么也保留「非可玩、但 `ai != none`」的席位：ai_test_battle 这种
-          「玩家 p2 对 commander p1」的关卡，p1 必须是席位（world 才会建它的基地 /
-          摆它的开局单位），但它**不可玩**。只按 playable 重建会把 p1 从 players[]
-          里删掉，编辑器一保存就把 AI 对手删了。
+        ★★ 为什么也保留「非可玩、但 `ai != none`」的席位：玩家对**不可玩 AI 对手**的
+          关卡（AI 对局），那一方必须是席位（world 才会建它的基地 / 摆它的开局单位），
+          但它**不可玩**。只按 playable 重建会把 AI 对手从 players[] 里删掉，
+          编辑器一保存就把 AI 对手删了。
         ★ 单人关允许两个可玩阵营（选边关）—— 所以这里不按模式限制 1 / 2 个席位。
         """
         old_base = {str(p.get("faction", "")): p.get("base")
@@ -1584,6 +1591,8 @@ def _load_level_factions(raw: Any, lv: LevelModel) -> None:
         e = FactionEntry(fid)
         e.ai = normalize_ai(item.get("ai"))
         e.base = _as_point(item.get("base"))
+        e.start_food = _as_optional_float(item.get("start_food"))
+        e.start_gold = _as_optional_float(item.get("start_gold"))
         spec = item.get("attack_target")
         if isinstance(spec, dict) and spec:
             e.attack_target = normalize_target(spec)
@@ -1959,6 +1968,27 @@ def fmt_sec(value: float) -> str:
     return "%.1f" % v
 
 
+def _as_optional_float(value: Any) -> Optional[float]:
+    """宽容地取「可选数字」：缺键 / None / 空串 / 坏值 → None；数字 → max(0, 值)。
+
+    用于 `factions[].start_food` / `start_gold`：`None` 表示「这一方不覆盖起手资源」，
+    不能与「显式写了 0」混为一谈（导出时前者不写、后者写 `0`）。
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return max(0.0, float(value))
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        try:
+            return max(0.0, float(s))
+        except ValueError:
+            return None
+    return None
+
+
 def clean_number(value: Any) -> Any:
     """写进 JSON 的数字：整数写整数（`1.0` → `1`），小数保留（map_editor 同款）。"""
     try:
@@ -1991,6 +2021,11 @@ def _faction_to_dict(e: FactionEntry) -> dict:
     out["ai"] = e.ai if e.ai in AI_KINDS else AI_NONE
     if e.base is not None:
         out["base"] = [int(e.base[0]), int(e.base[1])]
+    # ★★ 起手资源：只在配过的时候写（`None` = 不写，运行时默认 0）。
+    if e.start_food is not None:
+        out["start_food"] = clean_number(e.start_food)
+    if e.start_gold is not None:
+        out["start_gold"] = clean_number(e.start_gold)
     if e.attack_target:
         out["attack_target"] = _target_to_dict(e.attack_target)
     if e.garrison_ai:

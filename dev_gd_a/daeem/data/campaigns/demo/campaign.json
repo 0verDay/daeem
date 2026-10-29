@@ -43,6 +43,26 @@
       "id": "ai_test_battle",
       "file": "levels/ai_test_battle.json",
       "name": "ai_test_battle"
+    },
+    {
+      "id": "between_moutains",
+      "file": "levels/between_moutains.json",
+      "name": "between_moutains"
+    },
+    {
+      "id": "ai_test_easy",
+      "file": "levels/ai_test_easy.json",
+      "name": "测试·简单"
+    },
+    {
+      "id": "ai_test_normal",
+      "file": "levels/ai_test_normal.json",
+      "name": "测试·中等"
+    },
+    {
+      "id": "ai_test_hard",
+      "file": "levels/ai_test_hard.json",
+      "name": "测试·困难"
     }
   ],
   "unlock": "in_order"

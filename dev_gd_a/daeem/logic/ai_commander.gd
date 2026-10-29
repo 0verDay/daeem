@@ -3,10 +3,14 @@
 ## 它把「经济 / 建造 / 生产 / 军队」串成一个分层调度器（参考 Rusted Warfare 的 25/80/250
 ## 帧分层，换算成本作的秒制）：
 ##   · 每帧：校验 + 同步玩家指令 + 推进计时器；
-##   · production_interval（默认 1.0s）：**按队补员** + 守军轮换 + 招将；
-##   · build_interval（默认 2.5s）：升级 / 科技 / 特化 / 箭塔；
-##   · army_interval（默认 0.6s）：回防 + 整备 + 扩张 / 进攻 / 巡逻；
-##   · strategic_interval（默认 2.0s）：状态 / 区划归属对账。
+##   · production_interval（默认 1.0s × 难度）：**按队补员** + 守军轮换 + 招将；
+##   · build_interval（默认 2.5s × 难度）：升级 / 科技 / 特化 / 箭塔；
+##   · army_interval（默认 1.0s × 难度）：回防 + 整备 + 扩张 / 进攻 / 巡逻；
+##   · strategic_interval（默认 2.0s × 难度）：状态 / 区划归属对账。
+##
+## ★★ 2026.10.29：**四个间隔都乘难度倍率**（`*_interval_mult`），其中
+##   `army_interval_mult` 是「发命令的快慢」，也是本版区分难度最主要的旋钮：
+##   基础 1.0 秒 × (简单 1.8 / 普通 1.2 / 困难 0.7) = 1.80 / 1.20 / 0.70 秒一次。
 ##
 ## ★★ 2026.10.24 重做要点（用户口径：让指挥官「更会玩游戏、更有活人感」）：
 ##   · 不再用「全族兵力 / 动态上限」的比例做生产闸门（那个比例永远追不上将领增长）；
@@ -162,12 +166,17 @@ func setup(p_world, p_cfg, p_faction: String, p_profile: Dictionary) -> void:
 	income_mult = maxf(0.1, float(profile.get("income_mult", 1.0)))
 	army_cap = maxi(1, int(profile.get("army_cap", 26)))
 	var iv: Dictionary = profile.get("intervals", {})
-	var army_iv := maxf(0.1, float(iv.get("army_interval_sec", 0.6)))
+	# ★★ 2026.10.29：**发命令的间隔**（army）与战略对账间隔也由难度控制了 ——
+	#   `army_interval_mult` / `strategic_interval_mult`（见 config.json 的 difficulty._comment）。
+	#   基础值在 `intervals.army_interval_sec`（1.0 秒），难度倍率 简单 1.8 / 普通 1.2 / 困难 0.7。
+	var army_iv := maxf(0.1, float(iv.get("army_interval_sec", 1.0))) \
+		* maxf(0.1, float(profile.get("army_interval_mult", 1.0)))
 	var build_iv := maxf(0.2, float(iv.get("build_interval_sec", 2.5))) \
 		* maxf(0.1, float(profile.get("build_interval_mult", 1.0)))
 	var prod_iv := maxf(0.2, float(iv.get("production_interval_sec", 1.0))) \
 		* maxf(0.1, float(profile.get("production_interval_mult", 1.0)))
-	var strat_iv := maxf(0.5, float(iv.get("strategic_interval_sec", 2.0)))
+	var strat_iv := maxf(0.5, float(iv.get("strategic_interval_sec", 2.0))) \
+		* maxf(0.1, float(profile.get("strategic_interval_mult", 1.0)))
 	var revive_iv := maxf(0.2, float(profile.get("revive", {}).get("interval_sec", 0.75)))
 	var cohesion_iv := maxf(0.2, float(profile.get("cohesion", {}).get("interval_sec", 1.2)))
 	# 错开各 AI 的第一次决策，避免同一帧叠在一起。
@@ -201,7 +210,7 @@ func setup(p_world, p_cfg, p_faction: String, p_profile: Dictionary) -> void:
 	_refresh_zone_ownership(true)
 
 
-var _interval_army: float = 0.6
+var _interval_army: float = 1.0
 var _interval_build: float = 2.5
 var _interval_production: float = 1.0
 var _interval_strategic: float = 2.0

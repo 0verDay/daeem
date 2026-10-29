@@ -163,15 +163,16 @@ func _test_general_overrides() -> void:
 		return
 
 	eq(cfg.general_stat_overrides(0), {}, "★ 默认没有覆盖（stats[0] = {}）")
-	near(cfg.general_hp_at(0), cfg.unit_hp_of("spearman"), 1e-6,
-		"将领 1 的血量 = 长枪兵那一档")
+	near(cfg.general_hp_at(0), cfg.unit_hp_of("spearman") * cfg.general_hp_mult, 1e-6,
+		"将领 1 的血量 = 长枪兵那一档 × 将领倍率")
 	near(cfg.general_speed_at(2), cfg.unit_speed_of("rider"), 1e-6,
 		"将领 3 的移速 = 骑手那一档")
 	eq(cfg.general_name_at(0), "", "默认没有名字覆盖（调用方兜底「将领 N」）")
 	var w0 = require_world(cfg)
 	var g0 = w0.unit_by_id("general-0")
 	ok(g0 != null, "开局将领 #0 在场")
-	near(g0.hp_max, cfg.unit_hp_of("spearman"), 1e-6, "开局将领 #0 的血量走兵种表")
+	near(g0.hp_max, cfg.unit_hp_of("spearman") * cfg.general_hp_mult, 1e-6,
+		"开局将领 #0 的血量 = 兵种表 × 将领倍率")
 	eq(g0.general_index, 9, "★ #0 是名册第 10 项（index 9）")
 
 	var cfg4 = _reload(_with_general_stats([
@@ -183,13 +184,17 @@ func _test_general_overrides() -> void:
 	var g1 = w.unit_by_id("general-1")
 	var g2 = w.unit_by_id("general-2")
 	var g3 = w.unit_by_id("general-3")
-	near(g1.hp_max, 260.0, 1e-6, "★★ 将领 1 用自己的血量 260")
-	near(g2.hp_max, 300.0, 1e-6, "★★ 将领 2 用自己的血量 300（不是 260！）")
-	near(g3.hp_max, cfg4.unit_hp_of("rider"), 1e-6,
-		"★★ 将领 3 没写覆盖 → 跟随骑手（140）")
-	near(g2.combat_damage(cfg4), 40.0, 1e-6, "将领 2 用自己的攻击力 40")
-	near(g1.combat_damage(cfg4), cfg4.unit_combat_of("spearman")["damage"], 1e-6,
-		"★ 将领 1 没写攻击力 → 跟随长枪兵（20）")
+	# ★★ 2026.10.29：覆盖值是**基准**，再乘 `general_hp_mult`（默认 1.5）。
+	near(g1.hp_max, 260.0 * cfg4.general_hp_mult, 1e-6, "★★ 将领 1 用自己的血量 260 × 倍率")
+	near(g2.hp_max, 300.0 * cfg4.general_hp_mult, 1e-6,
+		"★★ 将领 2 用自己的血量 300（不是 260！）× 倍率")
+	near(g3.hp_max, cfg4.unit_hp_of("rider") * cfg4.general_hp_mult, 1e-6,
+		"★★ 将领 3 没写覆盖 → 跟随骑手，再乘将领倍率")
+	near(g2.combat_damage(cfg4), 40.0 * cfg4.general_damage_mult, 1e-6,
+		"将领 2 用自己的攻击力 40（× 将领攻击倍率）")
+	near(g1.combat_damage(cfg4),
+		float(cfg4.unit_combat_of("spearman")["damage"]) * cfg4.general_damage_mult, 1e-6,
+		"★ 将领 1 没写攻击力 → 跟随长枪兵（× 将领攻击倍率）")
 	near(g1.combat_range(cfg4), cfg4.unit_combat_of("spearman")["range"], 1e-6,
 		"没写的项一律跟随")
 	eq(g1.name, "西境枪将", "★ 将领名字覆盖生效（开局那三个的名字从这里来）")
@@ -197,8 +202,9 @@ func _test_general_overrides() -> void:
 	# ★ 词条已停用：速度就是兵种基础值。
 	near(g1.speed(cfg4, w.map), cfg4.unit_speed_of("spearman"), 1e-6,
 		"速度也能覆盖（这里没写）")
-	near(cfg4.general_hp_at(1), 300.0, 1e-6, "查询口（悬停详情用）与单位身上的值一致")
-	near(g1.hp, 260.0, 1e-6, "当前血量也跟着上限走（开局满血）")
+	near(cfg4.general_hp_at(1), 300.0 * cfg4.general_hp_mult, 1e-6,
+		"查询口（悬停详情用）与单位身上的值一致")
+	near(g1.hp, 260.0 * cfg4.general_hp_mult, 1e-6, "当前血量也跟着上限走（开局满血）")
 
 	var esc: Array = w.retinue_of(g1.id)
 	ok(esc.size() > 0, "将领 1 带着附属兵")

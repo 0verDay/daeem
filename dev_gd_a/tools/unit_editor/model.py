@@ -43,9 +43,11 @@ ICON_HINT = "地图上就显示这**一个字**；不写 = 用名字的第一个
 VISION_HINT = "战争迷雾的视野半径（格）：从单位所在的格心算起，视线被山脉挡住（其他地形不挡）"
 
 #: 科技效果的形状（`logic/tech.gd` 的 effects_of 认这几个键；数值全是单个数字）
+#: ★★ 2026.10.29：产量那两条从「每地块每秒加 n」改成「**总体产能**的百分比」——
+#:   写 0.1 表示 +10%，多条**加法叠加**（+10% +20% +30% = +60%）。
 TECH_EFFECTS: Tuple[Tuple[str, str, str], ...] = (
-    ("food_per_tile_per_sec", "粮食产量", "每地块每秒 +n（与地图编辑器给区划配的产能同一口径）"),
-    ("gold_per_tile_per_sec", "黄金产量", "每地块每秒 +n"),
+    ("food_production_mult", "粮食产能", "总体产能 +比例（0.1 = +10%；基础产能与特化一起放大）"),
+    ("gold_production_mult", "黄金产能", "总体产能 +比例（0.1 = +10%）"),
     ("building_hp_mult", "己方建筑血量上限", "倍率（1.1 = +10%），实时生效"),
     ("leader_hp_mult", "己方将领血量上限", "倍率（1.1 = +10%），实时生效"),
     ("zone_population_mult", "己方区划人口增长", "倍率（1.25 = +25%），只影响涨得多快"),
@@ -115,6 +117,8 @@ UNIT_FIELDS: Tuple[Field, ...] = (
           choices=CLASS_CHOICES),
     Field("ranged", "远程", "bool", "远程单位（弓箭手那种）：与归属是两维，长弓兵 = 远程步兵"),
     Field("hp_max", "血量", "float", "单位出生时的血量上限", minimum=1),
+    Field("armor", "护甲", "float",
+          "每次受击先减这么多点伤害（最低仍造成 1 点）；骑士 6、其余 1~2", minimum=0),
     Field("damage", "攻击力", "float", "每次攻击造成的伤害", minimum=0),
     Field("range", "攻击距离", "float", "单位：**格**（1 = 贴脸）", minimum=0),
     Field("cooldown_sec", "攻击速度", "float",
@@ -151,6 +155,9 @@ GENERAL_CAP_FIELD = Field("cap", "编制上限", "int",
 #: 将领的数值覆盖（`unit.general.stats[i]`；没写的键 = 跟随所属兵种）
 GENERAL_STAT_FIELDS: Tuple[Field, ...] = (
     Field("hp_max", "血量", "float", minimum=1),
+    Field("armor", "护甲", "float",
+          "每次受击先减这么多点伤害（再加将领全局护甲加成）；不写就跟随所属兵种",
+          minimum=0),
     Field("damage", "攻击力", "float", minimum=0),
     Field("range", "攻击距离", "float", minimum=0),
     Field("cooldown_sec", "攻击速度", "float", minimum=0.01),
@@ -274,6 +281,8 @@ class Unit:
         self.unit_class = _s(data.get("class"), "infantry")
         self.ranged = _b(data.get("ranged"), False)
         self.hp_max = _f(data.get("hp_max"), 0.0)
+        #: ★ 固定护甲（每次受击先减这么多点，最低仍造成 1 点）。没写 = 0。
+        self.armor = _f(data.get("armor"), 0.0)
         self.damage = _f(data.get("damage"), 0.0)
         self.range = _f(data.get("range"), 0.0)
         self.cooldown_sec = _f(data.get("cooldown_sec"), 0.0)
@@ -375,7 +384,7 @@ class General:
         # ★ 可覆盖的数值键全在这里（与 GENERAL_STAT_FIELDS 同序）。
         #   ⚠️ 加一个可覆盖字段就必须同时加进 GENERAL_STAT_FIELDS（那张表是界面的来源）
         #      和这一行 —— 少一处就会「界面上有输入框、改了却没生效」。
-        for key in ("hp_max", "damage", "range", "cooldown_sec", "speed", "vision"):
+        for key in ("hp_max", "armor", "damage", "range", "cooldown_sec", "speed", "vision"):
             if key in self.override and isinstance(self.override[key], (int, float)):
                 self.effective[key] = float(self.override[key])
 
@@ -673,7 +682,7 @@ class ConfigModel:
             elif self.doc.has(unit_path + ["icon"]):
                 self.doc.remove(unit_path + ["icon"])
             return
-        if field in ("name", "ranged", "hp_max", "damage", "range", "cooldown_sec",
+        if field in ("name", "ranged", "hp_max", "armor", "damage", "range", "cooldown_sec",
                      "speed", "radius_factor", "vision"):
             # ★ `vision = None` = **删掉这个键** → 回到 config 的 fog.vision_default
             #   （与将领数值覆盖那套「不写就跟随」同一条语义）。

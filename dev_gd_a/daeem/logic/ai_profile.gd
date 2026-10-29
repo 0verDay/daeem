@@ -90,6 +90,9 @@ const DEFAULTS := {
 		"max_training_leaders": 4,    # 同时读条的将领数上限（不是「只有 1 个兵营」）
 		"min_garrison_replace_escorts": 1,  # 接替守军至少要有几个兵
 		"dispatch_training_home": true,     # 读条中的守军只要够出门规模，就可以被换下来去巡逻
+		# ★★ 2026.10.29：资源充足（浮存 > economy.max_float_*）时，允许补到编制上限
+		#   （1 + effective_retinue_cap），而不是停在 home/field 目标规模。
+		"fill_to_cap_when_rich": true,
 		"composition": [
 			{"type": "spearman", "weight": 0.42},
 			{"type": "longbowman", "weight": 0.24},
@@ -221,6 +224,9 @@ const DEFAULTS := {
 		"max_distance_tiles": 22.0,
 		"min_start_distance_tiles": 6.0,
 		"avoid_ratio": 1.0,
+		# ★★ 2026.10.29：开局优先占「与己方相邻、无主、无守军」的安全区划，
+		#    到达中心后站住读条直到归属翻过来（而不是到点就换下一个）。
+		"capture_safe": true,
 	},
 	# ★★ 2026.10.25：开局 60 秒「扩张期」—— 不按常规的「队伍少于 3 人不出门」卡住，
 	#   小队伍也允许去占中立 / 空区划；守备/区划布防暂缓，60 秒后切回常规。
@@ -238,20 +244,30 @@ const DEFAULTS := {
 		"attack_after_sec": 45.0,
 	},
 	"difficulty": {
+		# ★★ 2026.10.29：commander 默认**没有额外起手资源**（0）。
+		#   关卡 `factions[].start_food/start_gold` 可以逐方覆盖（战役编辑器可配）；
+		#   难度不再决定起手资源，只改收入 / 节奏 / 上限 / 反应延迟。
+		# ★★ 2026.10.29：新增 `army_interval_mult` / `strategic_interval_mult` ——
+		#   **发命令的间隔**由难度控制（见 ai_commander.setup()）。
+		#   ⚠️ 这几个默认值必须与 config.json 的 `ai.commander.difficulty` 保持一致：
+		#     这里只是「配置文件缺这一项」时的兜底。
 		"easy": {
-			"income_mult": 0.8, "army_cap": 24, "army_cap_ratio": 0.75,
-			"build_interval_mult": 1.3, "production_interval_mult": 1.4,
-			"reaction_delay_sec": 2.0, "start_food": 150.0, "start_gold": 150.0,
+			"income_mult": 0.7, "army_cap": 24, "army_cap_ratio": 0.70,
+			"army_interval_mult": 1.8, "strategic_interval_mult": 2.0,
+			"build_interval_mult": 1.5, "production_interval_mult": 1.6,
+			"reaction_delay_sec": 3.0, "start_food": 0.0, "start_gold": 0.0,
 		},
 		"normal": {
 			"income_mult": 1.0, "army_cap": 36, "army_cap_ratio": 1.0,
+			"army_interval_mult": 1.2, "strategic_interval_mult": 1.2,
 			"build_interval_mult": 1.0, "production_interval_mult": 1.0,
-			"reaction_delay_sec": 1.2, "start_food": 250.0, "start_gold": 250.0,
+			"reaction_delay_sec": 1.2, "start_food": 0.0, "start_gold": 0.0,
 		},
 		"hard": {
-			"income_mult": 1.2, "army_cap": 48, "army_cap_ratio": 1.0,
-			"build_interval_mult": 0.8, "production_interval_mult": 0.8,
-			"reaction_delay_sec": 0.7, "start_food": 350.0, "start_gold": 350.0,
+			"income_mult": 1.25, "army_cap": 48, "army_cap_ratio": 1.0,
+			"army_interval_mult": 0.7, "strategic_interval_mult": 0.8,
+			"build_interval_mult": 0.75, "production_interval_mult": 0.75,
+			"reaction_delay_sec": 0.5, "start_food": 0.0, "start_gold": 0.0,
 		},
 	},
 }
@@ -310,11 +326,15 @@ static func build(cfg, faction: String, roster: Array, overrides: Dictionary) ->
 	base["income_mult"] = _f(diff, "income_mult", 1.0)
 	base["army_cap"] = _i(diff, "army_cap", 26)
 	base["army_cap_ratio"] = clampf(_f(diff, "army_cap_ratio", 0.8), 0.1, 2.0)
+	# ★★ 2026.10.29：**发命令的间隔**（army 层）与战略对账间隔，由难度控制。
+	#   ⚠️ 夹在 ≥0.1：写 0 会让定时器每帧归零 ⇒ AI 变成每帧下令。
+	base["army_interval_mult"] = maxf(0.1, _f(diff, "army_interval_mult", 1.0))
+	base["strategic_interval_mult"] = maxf(0.1, _f(diff, "strategic_interval_mult", 1.0))
 	base["build_interval_mult"] = maxf(0.1, _f(diff, "build_interval_mult", 1.0))
 	base["production_interval_mult"] = maxf(0.1, _f(diff, "production_interval_mult", 1.0))
 	base["reaction_delay_sec"] = maxf(0.0, _f(diff, "reaction_delay_sec", 1.2))
-	base["start_food"] = maxf(0.0, _f(diff, "start_food", 250.0))
-	base["start_gold"] = maxf(0.0, _f(diff, "start_gold", 250.0))
+	base["start_food"] = maxf(0.0, _f(diff, "start_food", 0.0))
+	base["start_gold"] = maxf(0.0, _f(diff, "start_gold", 0.0))
 	return base
 
 

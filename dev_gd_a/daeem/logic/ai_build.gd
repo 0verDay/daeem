@@ -138,8 +138,27 @@ static func _try_tech(ai) -> void:
 		return
 	if ai.world.tech_remaining_slots(ai.faction) <= 0:
 		return
+	# ★★ 2026.10.29：断金之后**允许重排**。`tech_attempted` 原本是「试过就放弃」的防抖表，
+	#   但断金会把所有科技一起抹掉；不清表的话 AI 一辈子都不会再把它们点回来。
+	#   冷却期（什么都点不了）正是清表的最佳时机。
+	if ai.world.tech.in_cooldown(ai.faction):
+		ai.tech_attempted.clear()
 	var build_cfg: Dictionary = ai.profile.get("build", {})
 	var priority: Array = build_cfg.get("tech_priority", [])
+	# ★★ 2026.10.29：科技现在**每秒扣金**，AI 必须先算自己养不养得起 ——
+	#   否则会陷入「点下去 → 30 秒预热 → 断金全灭 → 锁 30 秒 → 再点」的抖动。
+	#   两条判据（都偏保守）：
+	#     · 现有负担 + 这一条 ≤ 黄金收入 × 0.5（另一半留给招兵 / 建筑）；
+	#     · 余额够付 45 秒（预热 30 秒 + 一点余量），避免刚点下就断金。
+	var gold_income := 0.0
+	if ai.world.zones != null:
+		gold_income = float(ai.world.zones.production_of(ai.faction).get("gold", 0.0))
+	var budget: float = gold_income * 0.5
+	var drain: float = float(ai.world.tech.gold_drain_per_sec(ai.faction))
+	var gold_now := 0.0
+	var pool: Variant = ai.world.resource_pool_for(ai.faction)
+	if typeof(pool) == TYPE_DICTIONARY:
+		gold_now = float((pool as Dictionary).get("gold", 0.0))
 	var candidates: Array = []
 	# 先按配置里的优先级，再补表里其余的（避免「优先级表为空 = 永远不点科技」）
 	for id in priority:
@@ -152,13 +171,21 @@ static func _try_tech(ai) -> void:
 	for id2 in candidates:
 		if ai.world.is_tech_active(id2, ai.faction):
 			continue
+		# 预热中也是「已经点了」，别再点第二次。
+		if ai.world.tech.is_warming(id2, ai.faction):
+			continue
 		if ai.tech_attempted.has(id2):
 			continue
 		if String(ai.world.tech_can_activate(id2, ai.faction)) != "":
 			continue
+		# 这一条的金耗：养不起就跳过（不是「试过就放弃」，所以**不**记进 tech_attempted）。
+		var cost: float = float(ai.cfg.tech_gold_per_sec_of(id2))
+		if cost > 0.0 and (drain + cost > budget or gold_now < cost * 45.0):
+			continue
 		if CommandRes.apply(ai.world, ai.cfg, {
 				"kind": "tech_toggle", "tech_id": id2, "on": true, "faction": ai.faction}):
 			ai.stats["techs"] = int(ai.stats.get("techs", 0)) + 1
+			drain += cost
 			return
 		# 失败（大本营等级 / 槽位刚好变了）：记下来，别每轮重试同一条。
 		ai.tech_attempted[id2] = true

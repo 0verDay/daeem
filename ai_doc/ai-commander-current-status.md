@@ -1,6 +1,6 @@
 # AI 指挥官当前实现状态
 
-> 本文描述**当前代码实际行为**，不是设计愿景。最后同步：2026-10-26。  
+> 本文描述**当前代码实际行为**，不是设计愿景。最后同步：2026-10-29。  
 > 代码优先顺序：`logic/ai_*.gd` → `logic/upgrade.gd` / `logic/world.gd` → `data/config.json`。
 
 ## 1. 范围与模块
@@ -39,9 +39,18 @@ AI 指挥官（`commander`）是第三种 AI，和 `garrison`、`reddot` 并列�
 - 开局只允许 **1 人队**出门，`min_field_units` / `min_squad_units` 临时降为 1。
 - **不强制大本营区划留守军**（`require_garrison=false`），避免刚出门的初始将领被下一 tick 抓回。
 - 守备 / 区划布防暂缓，补员回撤暂停。
-- 初始唯一部队执行**开局探索**：普通移动去中立 / 空区划，顺路占空区；不主动进攻。
-- 到达一个探索点后**换下一个远处点继续探**，不会「到点 → 回家 → 休整 → 再出门」循环；门口出现敌人时结束探索，交给正常防守。
-- 第二支将领出现或 60 秒到期后结束探索，恢复 3 人出门门槛、守军、守备和常规回撤。
+- 初始唯一部队执行**开局发展**（`early_explore.capture_safe`，默认开）：
+  - 优先挑「与己方区划相邻、**无主**、中心附近没有可见敌人」的安全区划（按粮食 / 黄金 / 人口缺口 + 距离评分）；
+  - 用普通移动走到区划中心，**站住读条直到归属翻过来**，不再「到点（≤3 格）就换下一个」——
+    旧行为永远凑不满 `capture_time_sec`（16 秒），开局一块地都占不下来；
+  - 占下一块后继续找下一块安全区划；附近出现敌人就放弃当前目标，不主动进攻。
+- 只有**没有安全区划**可占时才回到「远处探索」：到点换下一个远处点，不回基地绕圈；门口出现敌人时结束探索，交给正常防守。
+- **开局探索队不再挡住补将**：它在外时无法招募附属兵（招募要求将领站在己方区划），
+  `understaffed_team_count()` 会跳过它，所以第二支将领可以正常排进区划招募队列，
+  不再被卡到 60 秒探索窗口结束。
+- `between_moutains` 实测（normal、双方 100/100 起手）：第一次占领约 **28 秒**；
+  第二支将领约 **114 秒**（100 金买不起 200 金的将领，必须先靠占下的黄金区划攒钱）。
+- 第二支将领出现（含区划招募队列里排着的那一位）或 60 秒到期后结束探索，恢复 3 人出门门槛、守军、守备和常规回撤。
 
 > 60 秒后到第二将领训练完成之间可能有一段短暂空档，这是正常的招募 / 训练时间；AI 不会在这段时间派光杆司令去送，但会在有外勤将后立刻恢复扩张。
 
@@ -56,6 +65,9 @@ AI 指挥官（`commander`）是第三种 AI，和 `garrison`、`reddot` 并列�
 ### 4.2 生产
 
 - 按队补员：守军补到 `home_team_size`，外勤补到 `field_team_size`。
+  ★ 2026.10.29：浮存 > `economy.max_float_food/gold`（默认 600）且 `production.fill_to_cap_when_rich`
+  开着时，目标抬到该将领的 `1 + effective_retinue_cap`（编制上限）；钱不够时仍是上面的基础目标。
+  补将判定仍按基础目标，避免富余 AI 只把现有队伍塞满、却不补新将。
 - 没有外勤队时，**即使守军没补满也先招一位将领当外勤**，避免 60 秒后没有队伍可派。
 - 没有满编外勤队时，补员**优先补未成形的外勤队**，不再永远先补守军。
 - 招将不固定在大本营：按「被入侵 > 前线 > 大本营兜底」顺序选区划。
@@ -112,14 +124,16 @@ AI 指挥官（`commander`）是第三种 AI，和 `garrison`、`reddot` 并列�
 - `can_build_at(..., faction)` / 建造命令拒绝，reason = `under_capture`；
 - AI 不选该区造塔 / 封墙，不升级该区建筑、不特化、不升大本营。
 
-### 5.3 合作 AI 队友的玩家起手资源
+### 5.3 起手资源（2026.10.29 口径）
 
-- 只在**合作关**（`level.mode == "coop"`）且有**同方 commander**时生效（`ai_test_hz` 就是这种局）。
-- 玩家席位起手 = `max(cfg.start_food/gold, normal 难度基准)`；当前 normal 基准是 **250 粮 / 250 金**。
-- **固定 normal 基准，不跟随 AI 实际难度**：选 hard 时玩家仍是 250，友军 AI 自己拿 350。
-- 真人双人合作（没有 commander）、战役、观战、普通对战都**不抬**。
-- 实现：`world._align_player_start_with_commander_ally()`，在 `_setup_ai_commanders()` 末尾执行。
-- AI 仍然花自己的 `ai_faction_resources`（`resource_pool_for()` 优先返回它），不会花玩家的钱。
+- **commander AI 默认 0**：难度包里的 `start_food/start_gold` 保留键位但都是 0，
+  不再按 easy / normal / hard 给额外启动资金。AI 之后靠区划产能发展。
+- 玩家默认沿用 `cfg.start_food/gold`（`config.json` 的 `resource.start_*`，当前也是 0）。
+- 关卡 `factions[]` 可以**逐方**写 `start_food` / `start_gold`：
+  `logic/level.gd` 读进 `faction_meta`，`world._apply_level_start_resources()` 在
+  `reset()` 末尾覆盖**写了的那一方**（玩家池 / AI 池 / 观战别名都会更新）。
+- 双方各配各的：没有「一方有资源就自动抬另一方」的逻辑；旧的合作 AI 队友
+  250 对齐（`_align_player_start_with_commander_ally`）已删除。
 
 ### 5.4 建筑改版（2026.10.26）
 
@@ -128,6 +142,28 @@ AI 指挥官（`commander`）是第三种 AI，和 `garrison`、`reddot` 并列�
 - **取消建筑升级**：`upgrade.levels` 只剩大本营；`UpgradeRes.can_upgrade()` 对非大本营直接返回 `type`，`world.building_can_upgrade()` 也只看大本营。
 - AI 行为不变：继续造木墙 / 哨塔，**不再升级**任何墙塔；本轮 AI 不使用石墙 / 警戒塔。
 - 所有建筑对**投掷物**伤害免伤 90%（`building.<type>.ranged_reduction`，缺省 0.9）；近战与攻城（投石车）全额。
+
+### 5.5 关卡阵营起手资源（2026.10.29）
+
+- 关卡 JSON 的 `factions[]` 每一项支持可选的 `start_food` / `start_gold`：
+  只收数字（负值夹 0），缺键 / null = 不覆盖这一方。
+- 战役编辑器 **③ 阵营页**的每一方多了一行「起手 粮 / 金」输入框：
+  留空 = 不写这个键；填 `0` = 显式写 0（与「没配」区分开）。
+- `between_moutains` 的两份关卡（`ai_test_battle.json` / `between_moutains.json`）
+  给 p1 / p2 都写了 **100 粮 / 100 金**：commander AI 在这张图上按关卡配置起手
+  （默认是 0），开局买不起 200 金的将领，只能先占周围安全区划攒经济 ——
+  招将速度随之变慢，前期更偏发展。
+
+### 5.6 主菜单「看海」入口（see_ai，2026.10.29）
+
+- 主界面左上角 `ai_test` 正下方新增 `see_ai` 按钮（默认文案见
+  `menu.deck.main.see_ai_button`），只在主菜单页显示。
+- 点击后仍进 `between_moutains` / `ai_test_battle`，但走
+  `game.start_ai_observer(..., reveal_all=true)`：p1 / p2 全部改成 commander，
+  `observer_mode`，玩家不属于任何一方（无目标 / 不判负），并**显示全图**。
+- 全图只影响**显示**：p1 / p2 的 `logic_unit_visible()` / `logic_tile_visible()` 仍是
+  正常迷雾，看海不给 AI 开天眼。
+- 与 `ai_test` 的区别：`ai_test` 随机让玩家当一方、另一方 AI；`see_ai` 玩家纯观战。
 
 ## 6. 战斗与索敌
 
@@ -140,6 +176,8 @@ AI 指挥官（`commander`）是第三种 AI，和 `garrison`、`reddot` 并列�
 
 - 默认值：`logic/ai_profile.gd`。
 - 覆盖值：`data/config.json` 的 `ai.commander`。
+- 起手资源：关卡 `factions[].start_food/start_gold`（逐方；战役编辑器③阵营页可配），
+  不写 = commander 0 / 玩家 `cfg.start_*`。
 - 常用段：
   - `early_explore` / `early_game`
   - `production` / `expand` / `patrol` / `idle` / `cohesion`
@@ -149,12 +187,19 @@ AI 指挥官（`commander`）是第三种 AI，和 `garrison`、`reddot` 并列�
 
 ## 8. 测试基线
 
-2026-10-26 本轮聚焦（未跑全量）：
+2026-10-29 全量：`tools/run-tests.ps1` **95 套 / 8554 项断言全部通过**；`tools/check-syntax.ps1` **237 个 `.gd` 通过**。战役编辑器：`test_model.py` **341** 项、`test_app.py` **258** 项通过。重点套件：
 
-- `test_ai_commander.gd`：**309** 项通过（新增起手资源 / 行军主动结束 21 项）。
+- `test_ai_commander.gd`：**325** 项通过（开局安全区占领 / 探索队不挡补将 / 起手资源默认 0 与逐阵营覆盖）。
+- `test_ai_test_duel.gd`：**148** 项通过（主菜单 ai_test 随机选边 / see_ai 看海 + 全图 / 双方起手资源）。
+- `test_ai_order_panel.gd`：19 项通过。
+- `test_ai_observer.gd`：57 项通过。
+- `test_coop_ai_teammate.gd`：27 项通过。
+
+上一次聚焦（2026-10-26）：
+
+- `test_ai_commander.gd`：309 项通过。
 - `test_ai_order_panel.gd`：24 项通过。
 - `test_ai_observer.gd`：57 项通过。
-- `world.gd` / `ai_army.gd` / `ai_profile.gd` / `test_ai_commander.gd` 的 `--check-only` 均通过。
 
 上一次全量（2026-10-25）：
 

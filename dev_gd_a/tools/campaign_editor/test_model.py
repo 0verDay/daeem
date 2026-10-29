@@ -539,6 +539,39 @@ def t_load_and_roundtrip() -> None:
     eq(out3["_comment"], ["给我自己看的"], "★ _comment 原样带回")
 
 
+def t_faction_start_resources() -> None:
+    print("\n[0b] 阵营起手资源（factions[].start_food / start_gold）")
+    f = FACTS
+    data = base_level(factions=[{"id": f.enemy, "ai": "none",
+                                 "start_food": 100, "start_gold": 0}])
+    model = campaign_with(data)
+    lv = model.levels[0]
+    e = lv.faction(f.enemy)
+    ok(e is not None, "（前提）阵营读进来了")
+    if e is not None:
+        eq(float(e.start_food), 100.0, "★ 读回 start_food")
+        eq(float(e.start_gold), 0.0, "★★ 显式 0 不能丢成 None")
+    out = lv.to_dict()
+    row = next((x for x in out.get("factions", []) if x.get("id") == f.enemy), {})
+    eq(row.get("start_food"), 100, "★ 写出 start_food（整数写法）")
+    eq(row.get("start_gold"), 0, "★ 写出显式 start_gold = 0")
+
+    # 没配的一方：两个键都不写（运行时默认 0）
+    bare = M.LevelModel("t", f.map_id)
+    bare.name = "t"
+    bare.add_player(f.player)
+    be = bare.ensure_faction(f.enemy)
+    ok(be.start_food is None and be.start_gold is None, "★ 默认 None")
+    brow = bare.to_dict()["factions"][0]
+    ok("start_food" not in brow and "start_gold" not in brow,
+       "★ 没配就不写这两个键")
+
+    # 宽容读取：负数夹到 0；空 / 坏值 → None
+    eq(M._as_optional_float(-5), 0.0, "★ 负数夹到 0")
+    eq(M._as_optional_float("abc"), None, "★ 坏值 → None")
+    eq(M._as_optional_float(""), None, "★ 空串 → None")
+
+
 # ======================================================================
 # [1] 覆盖规则（关卡 vs 地图）
 # ======================================================================
@@ -1523,6 +1556,7 @@ def main() -> int:
 
     try:
         t_load_and_roundtrip()
+        t_faction_start_resources()
         t_override_rules()
         t_zone_owner_materialization()
         t_config_and_maps()

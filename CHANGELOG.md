@@ -7,6 +7,63 @@
 
 本版本为在godot引擎内的原型开发，仅展示完整的局内玩法
 
+### 2026.10.29 战役菜单新增三个 ai_test 测试战役（简单 / 中等 / 困难）
+1. `data/campaigns/demo/levels/` 新增 `ai_test_easy.json` / `ai_test_normal.json` / `ai_test_hard.json`：`between_moutains` 1v1，双方各 1 名开局将领、100 粮 / 100 金；两边都写 `ai: "commander"` + `commander_ai.difficulty`（easy / normal / hard）——玩家在详情页选哪一方，运行时就把那一方的 AI 摘掉，另一边按本关难度接管
+2. `data/campaigns/demo/campaign.json` 的 `levels[]` 追加三关；`data/campaigns_menu.json` 新增 `c4` / `c5` / `c6` 三个独立战役条目，分别指向这三关
+3. `view/campaign_map_panel.gd` 从「一面旗 + I/II/III 章节栏」改为**每个真实战役一面旗**：遍历菜单数据，取每份战役的第一个真实章节建旗；点任意旗进详情。`view/menu_deck_layout.gd` 新增 `campaign_flags()`（一排居中、窄屏等比缩小），删除不再使用的章节栏布局
+4. 三个测试关的阵营显示名改为「下方（南军）」/「上方（北军）」，详情页两个按钮任选一方
+5. 测试：`test_campaign_menu` 改为多旗断言（65 项）；新增 `test_ai_test_campaigns`（数据 / 难度 / 双席位装配 / 菜单 / 真实场景，91 项）；`test_all_levels_outcome` 自动覆盖三关 × 两席位（257 项）；`test_campaign`（312）/ `test_campaign_seats`（95）保持通过；战役编辑器 `test_app` 的关卡树精确列表同步
+6. 难度完全由关卡数据驱动，`view/main.gd` / `view/game_scene3d.gd` / `logic/world.gd` 一行未改；主菜单左上角的 ai_test / see_ai 行为不变
+
+### 2026.10.29 单位维护费按阶提高 + AI 富余时补满编制
+1. `data/config.json`：单位维护费整体提高约 **2.5~3 倍**，并按**阶**拉开差距 —— 一阶 长枪 **0.08** / 长弓 **0.10**；二阶 骑手 **0.18** / 粮车 **0.12**；三阶 骑士 **0.32** / 马弓 **0.26** / 投石车 **0.40**。`unit.classes` 上的值只作兜底（0.08 / 0.18 / 0.40）
+2. `logic/ai_army.gd` 新增 `team_target()`：浮存超过 `economy.max_float_food/gold`（默认 600）且 `ai.commander.production.fill_to_cap_when_rich` 开着时，`recruit_candidates()` 的目标从 `home_team_size` / `field_team_size` 抬到 `1 + effective_retinue_cap`（编制上限）；钱不够时仍是旧行为
+3. 补将判定 `understaffed_team_count()` 仍按基础目标走 —— 否则富余 AI 会先把现有两支队伍塞满，却不补第三位将领
+4. `logic/ai_profile.gd` + `data/config.json`：新增 `production.fill_to_cap_when_rich`（默认 `true`，可回滚旧行为）
+5. 测试：`test_economy` 维护费表改为按阶断言（**74/74**）；`test_ai_commander` 新增 `_test_rich_fill_to_cap`（穷/富目标、越过基础目标继续补员、开关回滚）并把「富余时最大队伍」断言改成「不超过编制上限」（**341/341**）。顺手修了 `_test_auto_captures_zones` 的陈旧断言：开局探索会在 180 秒内把安全区划占完，常规扩张（`expands`）自然没有新目标，改成「常规任务或开局顺路占领」二者其一即可
+
+### 2026.10.29 升本播报改到小地图上方 + 弹出 / 上移 / 上浮动效
+1. `view/broadcast_banner.gd`：位置从屏幕顶部居中改到**左下角小地图正上方**（宽度 = 小地图 400，底边离小地图 `ui.broadcast.bottom_gap` 8px，贴左贴底）；最新的通知贴着地图，旧的通知向上堆
+2. 新通知从左侧滑入（`pop_sec` 0.22s，easeOutBack 轻微回弹）并淡入；旧通知整体上移一格（`move_sec` 0.18s）；到期 / 被 `max_lines` 挤掉的那条向上飘 `exit_rise` 24px 并淡出。正在退场的那条不占 `max_lines`，允许短暂多一行
+3. `data/config.json` 的 `ui.broadcast`：删 `width` / `top`，新增 `bottom_gap` / `pop_sec` / `move_sec` / `exit_rise`；宽度固定取小地图宽度。`view/hud.gd` 的注释同步
+4. 测试：`test_base_broadcast` 46 → **67 项**（新增锚点 / 位置、最新在下、旧的上移、左滑入、上浮淡出、关动画直接终态）；全量 **95 套 / 8575 项断言全部通过**
+
+### 2026.10.29 修复占领进度条多边形报错 + 主将濒死士气机制
+1. `view/overlay_view_3d.gd`：新增 `_valid_screen_triangle()` —— 挡掉 NaN / INF / 坐标爆掉 / 重合点 / 共线三角形；`_screen_triangles()` 与 `_draw_zone_capture()` 双重校验，修实机 `Invalid polygon data, triangulation failed`
+2. `logic/morale.gd` + `config.json`：新增 `morale.leader_down_drain`（默认 **3 点/秒**）。主将**濒死（倒地）**期间，整队士气 = 常规区划速率 + 粮车光环 - 3/s（增加和减少都叠加）；再起后保持当前值、恢复正常规则
+3. 修复 C# 士气内核（`_tick_all_csharp`）：濒死 / 阵亡队长的士气原来没有填入分组数组，队员会镜像 **0**（用户报的「主将死后士气掉得很快」）。现在先填锚士气再 skip，且只锚到**还活着**的队长（与 GDScript `team_leader()` 同口径）
+4. 测试：`test_view3d.gd` 新增 6 条退化三角形断言（264）；`test_morale.gd` 新增濒死士气下降 / 队员镜像 / 再起恢复 / C# 后端断言（70）。全量 **95 套 / 8554 项断言全部通过**
+
+### 2026.10.29 主菜单新增 see_ai（看海）：between_moutains 双 AI 对战
+1. `view/menu_deck.gd` / `view/start_screen.gd` 新增 `see_ai_pressed` 信号与 `see_ai` 按钮；位置在左上角 `ai_test` 正下方（同一 260×56、间隔 12px、同一显示条件），文案走 `menu.deck.main.see_ai_button`（默认 `see_ai`）
+2. `view/main.gd` 新增 `_on_see_ai_button_pressed()`：仍载入 `ai_test_battle`（between_moutains），但走 `game.start_ai_observer(..., reveal_all=true)` —— p1 / p2 全部由 commander 接管，玩家是纯 spectator（`observer_mode`，不选边、无目标、不判负），并**显示全图**；AI 的逻辑视野仍是正常迷雾（不给他们开天眼）
+3. `view/menu_deck_layout.gd` 新增 `screen_see_ai_button()`；`data/config.json` 的 `menu.deck.main` 新增 `see_ai_button`
+4. `tests/test_ai_test_duel.gd`：验证两颗按钮同时存在 / 尺寸一致 / see_ai 在 ai_test 下方 / 显示条件一致；以及 see_ai 入口的观战装配（双方 commander、玩家不属于任何一方、无目标、看海全图显示但 AI 逻辑视野不变）。全量 **95 套 / 8536 项断言全部通过**
+
+### 2026.10.29 起手资源：commander 默认 0 + 战役编辑器按阵营配置
+1. **commander AI 默认不再附带额外资源**：`ai_profile.gd` 与 `data/config.json` 的 `difficulty.*.start_food/start_gold` 全部改为 **0**；难度只改收入 / 节奏 / 上限 / 反应延迟
+2. 关卡 `factions[]` 每一项新增可选 `start_food` / `start_gold`（`logic/level.gd` 的 `faction_meta`；只收数字、负值夹 0、缺键 = 不覆盖这一方）
+3. `logic/world.gd` 的 `_apply_level_start_resources()` 改为**逐阵营**覆盖：在 `reset()` 末尾把写了起手资源的那一方写到它的玩家池 / AI 池；没写的保持默认（玩家 `cfg.start_*`、commander 0）
+4. 删除旧的「合作 AI 队友把玩家抬到 normal 250」逻辑（`_align_player_start_with_commander_ally`）—— 起手资源不再由难度或同方 AI 推导
+5. `data/campaigns/demo/levels/ai_test_battle.json` / `between_moutains.json`：p1 / p2 各写 `start_food: 100` / `start_gold: 100`；实测第一次占领约 **28 秒**、第二支将领约 **114 秒**（100 金买不起 200 金的将领，必须先占黄金区划攒钱）
+6. **战役编辑器**：`FactionEntry` 新增 `start_food` / `start_gold`（`None` = 不写），`model.py` 负责读写；`app.py` 的③阵营页每一方下面多一行「起手 粮 / 金」输入框（留空 = 不配置，填 0 = 显式写 0）
+7. 测试：GDScript 全量 **95 套 / 8517 项断言全部通过**（`test_ai_commander` 325、`test_ai_test_duel` 129）；战役编辑器 `test_model` 341 / `test_app` 258 全部通过
+
+### 2026.10.29 commander AI 开局发展：先占周围安全区划
+1. `logic/ai_army.gd` 新增开局安全区目标选择 `_pick_early_capture_target()`：与己方相邻、**无主**、中心附近没有可见敌人，按粮食 / 黄金 / 人口缺口 + 距离评分；`_pick_explore_target()` 现在优先返回它，只有没有安全区划时才回到远处的普通探索
+2. 开局探索队到达安全区划中心后**站住读条**（`_hold_early_capture()`），直到归属翻过来或附近出现敌人；旧逻辑「欧氏距离 ≤3 格就换下一个目标」永远凑不满 `capture_time_sec`（16 秒），所以开局一块地都占不下来
+3. 占下一块后继续找下一块安全区划（`_at_owned_zone_center()` 给这次外出续时间），不再「到点 → 回家 → 再出门」循环
+4. `understaffed_team_count()` 跳过正在外面的开局探索队：它无法在己方区划外招募附属兵，旧逻辑会一直把它算成「未装备队伍」，从而**挡住第二支将领**直到 60 秒探索结束 —— 这是开头 70~110 秒才第一次占领的直接原因
+5. 配置新增 `ai.commander.early_explore.capture_safe`（默认 `true`）；`ai_profile.gd` 与 `data/config.json` 同步
+6. `between_moutains` 实测（normal，p2 为 commander）：第一次占领由约 **110 秒**提前到约 **30 秒**，70 秒内拿下 4 块周围区划，经济与补将随之启动
+7. 测试：`test_ai_commander.gd` 新增 `_test_duel_early_capture`（ai_test_battle 开局 60 秒内占领）；更新开局探索用例以验证「站住中心读条 / 占下后才换目标」；`_test_auto_captures_zones` 增加「90 秒内首占」断言。全量 **95 套 / 8494 项断言全部通过**
+
+### 2026.10.29 主菜单 ai_test：between_moutains 随机选边 vs commander AI
+1. `data/campaigns/demo/levels/ai_test_battle.json` 的目标地图由 `ai_test_2` 改为 **`between_moutains`**；两边都标成可玩、`ai: none`，并各摆一位开局将领（南军主将 / 北军主将），保证随机到任意一方都能直接开打
+2. `view/main.gd` 的 ai_test 入口改成**每次按下随机**把 p1 / p2 之一给玩家，另一个席位在运行时覆盖成 commander（新入口 `game.start_level_vs_commander()`）；随机结果不写进关卡 JSON —— 同一份数据两边都写 `ai: none`
+3. `view/game_scene3d.gd`：`start_level()` 新增可选 `ai_overrides` / `ai_profiles` 参数（不传 = 与以前逐位一致，老调用点零改动），并新增 `start_level_vs_commander()` 装配入口（内部只把「AI 那一方」写成 commander + normal 难度）
+4. 新增 `tests/test_ai_test_duel.gd`（111 条）：目标图 / 双方可玩 / 按阵营分开的目标 / 玩家当 p1 与当 p2 两种装配（双方基地、开局将领、只有另一方是 commander、输入与 HUD 不是观战）/ 主菜单按钮的真实入口 / 随机结果两边都会出现
+
 ### 2026.10.28 移动端主菜单：去掉悬停，按下即点亮
 1. 新增静态开关 `theme.hover_enabled()` / `set_hover_enabled()`（默认 = **非 `mobile`**）。★ 触屏按下去时引擎会模拟一次 `mouse_entered`，松开却**不补 `mouse_exited`** —— 桌面那套悬停态在手机上会**卡住**：横线一直亮、角泛光一直亮、填充按钮一直满金（后者以前靠 `start_screen` 在触摸松手时 `clear_hover_in` 兜底）
 2. 战役 / 合作 / 演义（`menu_text_button`）：移动端忽略悬停事件，左右横线改由**按住 / 松开**驱动，松手回短横线 —— 悬停与点击合并成同一个反馈

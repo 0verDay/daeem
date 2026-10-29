@@ -16,7 +16,9 @@ data/campaigns/<campaign_id>/           ← 目录名 = 战役 id（与「一个
 ★★ **阵营表跟着关卡走**（用户口径：**每一关就是一个独立战役**）：
 
 * `levels/*.json` 的 `factions[]` 每一项就是这一关的一方，**自带** `id / name / color /
-  playable`（以及 AI / 大本营等）。
+  playable`（以及 AI / 大本营 / **起手资源 `start_food` `start_gold`** 等）。
+  ★ 起手资源留空 = 不写这个键：commander AI 默认 **0**，玩家沿用 `config.json` 的
+  `resource.start_food/gold`。
 * **`campaign.json` 不再存 `factions[]`** —— A 关卡加的阵营**不会**出现在 B 关卡；
   不同战役之间更不会互相污染。旧格式（`campaign.json` 里还有 `factions[]`）仍能读：
   载入时会把旧表**抄进每一关**，保存时就只写关卡那一份。
@@ -110,7 +112,7 @@ python dev_gd_a/tools/campaign_editor --list                # 列出所有战役
 
 当前关的名字 / 模式 / 地图 / **玩家目标** / **额外失败条件**。
 
-* 「战役」页关卡树只列 **关卡地图 ∈ 有用表 maps** 的关卡；当前为 `mt / dscj / ai_test_2 / ai_test_battle`。旧测试关仍留在磁盘，但不在树里。
+* 「战役」页关卡树只列 **关卡地图 ∈ 有用表 maps** 的关卡；当前为 `mt / dscj / ai_test_2 / ai_test_battle / between_moutains / ai_test_easy / ai_test_normal / ai_test_hard`。旧测试关仍留在磁盘，但不在树里。
 * 地图下拉默认只列 `daeem/data/editor_visible.json` 里的三张（`main_test / ai_test_2 / dscj`）；当前关卡用的是旧图时会把**当前这张**追加进来，其它旧图不显示。新建关卡同样只列三张。
 * 保存战役 / `--new` 会把当前战役 id 自动追加进有用表的 `campaigns`。详见 [`tools/README-editor-scope.md`](../README-editor-scope.md)。
 * **玩家目标**：**每个可玩阵营一行** —— 选「守住 / 攻占」+ 区划（守住再填秒数）。
@@ -127,6 +129,8 @@ python dev_gd_a/tools/campaign_editor --list                # 列出所有战役
 ★★ **本关阵营表**（`levels/<id>.json` 的 `factions[]`）—— 每方一行：
 
 * 每行有 **★可玩** 徽标 / `id` / **名字** / **颜色** / **可玩** 勾选 / **删**。
+* 每行下面还有 **起手粮 / 起手金** 两个输入框（写 `factions[].start_food/gold`）：
+  留空 = 不配置（commander 默认 0、玩家沿用全局）；填 `0` 会**显式写 0**。
 * 勾「可玩」= 玩家能选这一方；**玩家席位由本关的可玩阵营自动派生**（不再手填）。
 * 「加一方 id」只写进**当前这一关**；**另一关 / 另一场战役看不到它** ——
   这就是「A 关卡的阵营列表不会污染 B 关卡」。

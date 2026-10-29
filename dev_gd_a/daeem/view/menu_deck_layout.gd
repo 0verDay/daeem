@@ -189,6 +189,14 @@ static func screen_test_button(w: float, h: float) -> Rect2:
 	return Rect2(40.0, 36.0, 260.0, 56.0)
 
 
+## ★★ 2026.10.29：ai_test 正下方的 see_ai（看海）入口 —— 同一尺寸、同一左缘。
+## 两个按钮之间留 12px；整组仍落在主菜单左上角那块空地里。
+static func screen_see_ai_button(w: float, h: float) -> Rect2:
+	var above := screen_test_button(w, h)
+	return Rect2(above.position.x, above.position.y + above.size.y + 12.0,
+		above.size.x, above.size.y)
+
+
 static func main_bottom(w: float, h: float) -> Rect2:
 	return Rect2(0.0, h - MAIN_BOTTOM_H, w, MAIN_BOTTOM_H)
 
@@ -201,22 +209,25 @@ static func main_bottom_half(w: float, h: float, index: int) -> Rect2:
 # 战役地图（宽栏 1280×1080）
 # ------------------------------------------------------------------
 
-static func campaign_rail(w: float, h: float) -> Rect2:
-	var rail_h: float = minf(800.0, h - 280.0)
-	return Rect2(w - 48.0 - 100.0, (h - rail_h) * 0.5, 100.0, rail_h)
-
-
-static func campaign_rail_button(rail: Rect2, index: int) -> Rect2:
-	var size := 84.0
-	var gap := 16.0
-	var total: float = size * 3.0 + gap * 2.0
-	var y0: float = rail.position.y + (rail.size.y - total) * 0.5
-	return Rect2(rail.position.x + (rail.size.x - size) * 0.5,
-		y0 + float(index) * (size + gap), size, size)
-
-
-static func campaign_flag(w: float, h: float) -> Rect2:
-	return Rect2(w * 0.5 - 85.0, h * 0.5 - 105.0, 170.0, 210.0)
+## 战役地图上的旗子：**一面旗 = 一个真实战役**，一排居中。
+##
+## ★ 1280 宽设计值 170×210、间距 24；宽度不够时等比缩小（不换行、不溢出）。
+## ★ y 居中略偏上（-40），给下方留出呼吸空间。
+static func campaign_flags(w: float, h: float, count: int) -> Array:
+	var n: int = maxi(1, count)
+	var gap := 24.0
+	var base_w := 170.0
+	var base_h := 210.0
+	var avail: float = maxf(120.0, w - PAD * 2.0 - gap * float(n - 1))
+	var fw: float = minf(base_w, avail / float(n))
+	var fh: float = fw * (base_h / base_w)
+	var total: float = fw * float(n) + gap * float(n - 1)
+	var x0: float = (w - total) * 0.5
+	var y: float = (h - fh) * 0.5 - 40.0
+	var out: Array = []
+	for i in n:
+		out.append(Rect2(x0 + float(i) * (fw + gap), y, fw, fh))
+	return out
 
 
 # ------------------------------------------------------------------

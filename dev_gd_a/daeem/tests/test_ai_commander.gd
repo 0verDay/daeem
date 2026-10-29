@@ -14,6 +14,7 @@ const GridRes = preload("res://logic/grid.gd")
 
 const COOP_LEVEL := "res://data/campaigns/demo/levels/02_twin_line.json"
 const AI_TEST_LEVEL := "res://data/campaigns/demo/levels/ai_test.json"
+const AI_TEST_BATTLE_LEVEL := "res://data/campaigns/demo/levels/ai_test_battle.json"
 
 func _initialize() -> void:
 	_case_name = "test_ai_commander"
@@ -25,9 +26,10 @@ func _cases() -> void:
 		return
 	_test_profile(cfg)
 	_test_world_setup(cfg)
-	_test_coop_start_resources(cfg)
+	_test_start_resources(cfg)
 	_test_force_cap_and_generals(cfg)
 	_test_economy_and_production(cfg)
+	_test_rich_fill_to_cap(cfg)
 	_test_build_and_tech(cfg)
 	_test_directives(cfg)
 	_test_command_route(cfg)
@@ -60,6 +62,7 @@ func _cases() -> void:
 	_test_general_staffing(cfg)
 	_test_early_explore(cfg)
 	_test_early_game(cfg)
+	_test_duel_early_capture(cfg)
 	_test_front_general_recruit(cfg)
 	_test_team_production_targets(cfg)
 	_test_march_moves_army(cfg)
@@ -92,6 +95,15 @@ func _make_ai_test_world(cfg, seed_value: int = 1234):
 		seed_value, true)
 
 
+## ai_test_battle（between_moutains）：主菜单 ai_test 按钮的那张图，玩家 p1 / AI p2。
+func _make_duel_world(cfg, seed_value: int = 1234):
+	var lv = LevelRes.load_level(null, AI_TEST_BATTLE_LEVEL, cfg)
+	if lv == null:
+		return null
+	return WorldRes.create_from_level(cfg, lv, "p1", ["p1", "p2"], true,
+		{"p2": LevelRes.AI_COMMANDER}, {"p2": {"difficulty": "normal"}}, seed_value)
+
+
 func _ensure_ai_generals(w, faction: String, n: int) -> void:
 	var idx := 1
 	while w.general_count_of(faction) < n and idx < 64:
@@ -117,6 +129,19 @@ func _test_profile(cfg) -> void:
 	ok(int(p["army_cap"]) >= 20, "hard 军队上限够大")
 	ok(float(p["army_cap_ratio"]) >= 1.0, "hard 动态上限比例 = 1.0")
 	ok(String(p["difficulty_name"]) == "hard", "profile 记住难度名")
+	# ★★ 2026.10.29：**发命令的间隔**由难度控制（easy 最慢 → hard 最快）
+	var p_easy: Dictionary = AiProfileRes.build(cfg, "F2", [], {"F2": {"difficulty": "easy"}})
+	var p_norm: Dictionary = AiProfileRes.build(cfg, "F2", [], {"F2": {"difficulty": "normal"}})
+	ok(p_easy.has("army_interval_mult") and p_norm.has("army_interval_mult"),
+		"★ profile 里有「发命令间隔」的难度倍率")
+	ok(float(p_easy["army_interval_mult"]) > float(p_norm["army_interval_mult"]),
+		"★ 简单比普通更慢下令（%.2f > %.2f）" % [
+			float(p_easy["army_interval_mult"]), float(p_norm["army_interval_mult"])])
+	ok(float(p_norm["army_interval_mult"]) > float(p["army_interval_mult"]),
+		"★ 普通比困难更慢下令（%.2f > %.2f）" % [
+			float(p_norm["army_interval_mult"]), float(p["army_interval_mult"])])
+	ok(float(p["army_interval_mult"]) > 0.0, "倍率必须是正数（0 会让 AI 每帧下令）")
+	ok(p.has("strategic_interval_mult"), "战略对账间隔也进了 profile")
 	var p2: Dictionary = AiProfileRes.build(cfg, "F2", [], {"F2": {"difficulty": "nope"}})
 	eq(String(p2["difficulty_name"]), "normal", "未知难度退回 normal")
 
@@ -135,36 +160,67 @@ func _test_world_setup(cfg) -> void:
 	eq(w.ai_directive_of("F2").get("kind", ""), "auto", "盟友默认自主 auto")
 	ok(not w.player_factions.has("F2"), "AI 队友不算玩家操作席位")
 	ok(w.ai_teammates_for("F1").has("F2"), "F1 能看到 F2 这个 AI 队友")
+	# ★★ 2026.10.29：发命令的间隔真的落到控制器上了（基础 × 难度倍率）
+	var ai = w.ai_commanders.get("F2", null)
+	ok(ai != null, "（前提）拿得到 F2 的控制器")
+	if ai != null:
+		var base_iv: float = cfg.num("ai.commander.intervals.army_interval_sec", 1.0)
+		var mult: float = float(ai.profile.get("army_interval_mult", 1.0))
+		near(float(ai._interval_army), base_iv * mult, 1e-6,
+			"★ 发命令的间隔 = 基础 %.2fs × 难度 %.2f = %.2fs" % [
+				base_iv, mult, base_iv * mult])
+		ok(float(ai._interval_army) >= 1.0,
+			"★ 普通难度下 AI 至少 1 秒才重新下令一次（不再是 0.6 秒疯点）")
 
 
-func _test_coop_start_resources(cfg) -> void:
+## ★★ 2026.10.29：起手资源口径 —— commander 默认 **0**，只有关卡
+## `factions[].start_food/start_gold` 逐方覆盖（战役编辑器可配）。
+func _test_start_resources(cfg) -> void:
+	# 1) 没有配置起手资源的合作关：玩家 = cfg.start_*，AI = 0。
 	var w = _make_world(cfg)
 	if w == null:
-		ok(false, "合作起手资源测试世界")
+		ok(false, "起手资源测试世界")
 		return
-	near(float(w.resources.get("food", -1.0)), 250.0, 1e-4,
-		"★★ 合作 AI 队友：玩家起手粮食对齐 normal 基准")
-	near(float(w.resources.get("gold", -1.0)), 250.0, 1e-4,
-		"★★ 合作 AI 队友：玩家起手黄金对齐 normal 基准")
+	near(float(w.resources.get("food", -1.0)), float(cfg.start_food), 1e-4,
+		"★★ 合作玩家默认沿用 cfg.start_food")
+	near(float(w.resources.get("gold", -1.0)), float(cfg.start_gold), 1e-4,
+		"★★ 合作玩家默认沿用 cfg.start_gold")
 	var ai_pool: Dictionary = w.ai_faction_resources.get("F2", {})
-	near(float(ai_pool.get("food", -1.0)), 250.0, 1e-4, "友军 AI 起手粮食 normal = 250")
-	# 固定 normal 基准：AI 难度调高，玩家仍是 250，AI 自己变 350。
+	near(float(ai_pool.get("food", -1.0)), 0.0, 1e-4,
+		"★★ commander AI 默认起手粮食 = 0（不再按难度给 250）")
+	near(float(ai_pool.get("gold", -1.0)), 0.0, 1e-4,
+		"★★ commander AI 默认起手黄金 = 0")
+	# 2) 难度不再决定起手：hard 也一样是 0。
 	var lv = LevelRes.load_level(null, COOP_LEVEL, cfg)
 	var hard_w = WorldRes.create_from_level(cfg, lv, "F1", ["F1", "F2"], true,
 		{"F2": LevelRes.AI_COMMANDER}, {"F2": {"difficulty": "hard"}}, 1234)
 	if hard_w != null:
-		near(float(hard_w.resources.get("food", -1.0)), 250.0, 1e-4,
-			"★★ 玩家起手固定 normal 基准（不跟随 hard）")
 		var hard_pool: Dictionary = hard_w.ai_faction_resources.get("F2", {})
-		near(float(hard_pool.get("food", -1.0)), 350.0, 1e-4,
-			"（前提）友军 AI 自己按 hard 拿 350")
-	# 没有 commander 的合作世界：保持 cfg.start_*，不抬升。
-	var plain_w = WorldRes.create_from_level(cfg, lv, "F1", ["F1", "F2"], true)
-	if plain_w != null:
-		near(float(plain_w.resources.get("food", -1.0)), float(cfg.start_food), 1e-4,
-			"★ 没有 AI 队友的合作局不抬粮食")
-		near(float(plain_w.resources.get("gold", -1.0)), float(cfg.start_gold), 1e-4,
-			"★ 没有 AI 队友的合作局不抬黄金")
+		near(float(hard_pool.get("food", -1.0)), 0.0, 1e-4,
+			"★★ hard 难度也不再给 commander 额外起手粮食")
+		near(float(hard_pool.get("gold", -1.0)), 0.0, 1e-4,
+			"★★ hard 难度也不再给 commander 额外起手黄金")
+	# 3) 关卡逐方配置：ai_test_battle 的 p1 / p2 都写 100。
+	var dw = _make_duel_world(cfg)
+	if dw != null:
+		var p1_pool: Variant = dw.resource_pool_for("p1")
+		var p2_pool: Dictionary = dw.ai_faction_resources.get("p2", {})
+		near(float((p1_pool as Dictionary).get("food", -1.0)), 100.0, 1e-4,
+			"★★ 关卡配置的玩家起手粮食 = 100")
+		near(float((p1_pool as Dictionary).get("gold", -1.0)), 100.0, 1e-4,
+			"★★ 关卡配置的玩家起手黄金 = 100")
+		near(float(p2_pool.get("food", -1.0)), 100.0, 1e-4,
+			"★★ 关卡配置的 AI 起手粮食 = 100")
+		near(float(p2_pool.get("gold", -1.0)), 100.0, 1e-4,
+			"★★ 关卡配置的 AI 起手黄金 = 100")
+	# 4) ai_test 没有配置起手资源：commander 仍是 0。
+	var aw = _make_ai_test_world(cfg)
+	if aw != null:
+		var ap: Dictionary = aw.ai_faction_resources.get("F1", {})
+		near(float(ap.get("food", -1.0)), 0.0, 1e-4,
+			"★★ 没配起手资源的关卡：commander 起手粮食仍是 0")
+		near(float(ap.get("gold", -1.0)), 0.0, 1e-4,
+			"★★ 没配起手资源的关卡：commander 起手黄金仍是 0")
 
 
 func _test_force_cap_and_generals(cfg) -> void:
@@ -208,6 +264,8 @@ func _test_economy_and_production(cfg) -> void:
 		ok(false, "经济测试世界")
 		return
 	var c = w.ai_commanders["F2"]
+	# ★★ 2026.10.29：commander 默认起手 0；补员测试自己给足资源，测的是「有钱就会补」。
+	w.ai_faction_resources["F2"] = {"food": 2000.0, "gold": 2000.0}
 	var f0 := float(c.panel_state()["food"])
 	var g0 := float(c.panel_state()["gold"])
 	var army0 := AiArmyRes.army_count(c)
@@ -221,12 +279,71 @@ func _test_economy_and_production(cfg) -> void:
 	ok(int(c.stats.get("recruits", 0)) > r0, "★ 有队伍没补满时会继续补员")
 	ok(AiArmyRes.army_count(c) >= army0, "军队数量不减少")
 	ok(f1 != f0 or g1 != g0, "资源随收入变化")
-	# ★ 新口径：每支队伍都有目标规模，不会把全族的兵都塞进一支队伍。
+	# ★★ 2026.10.29：资源充足时允许越过 home/field 目标、补到编制上限，
+	#   但**不能**超过将领自己的编制（1 + effective_retinue_cap）。
 	var biggest := 0
+	var hardest_cap := 0
 	for t in AiArmyRes.leader_teams(c):
 		biggest = maxi(biggest, int(t["size"]))
-	ok(biggest <= int(c.profile.get("production", {}).get("home_team_size", 6)) + 2,
-		"★ 没有哪支队伍被一路招到全族上限（最大 %d 人）" % biggest)
+		hardest_cap = maxi(hardest_cap, 1 + int(w.effective_retinue_cap(t["leader"])))
+	ok(biggest <= hardest_cap,
+		"★ 富余时最多补到编制上限（最大 %d / 上限 %d）" % [biggest, hardest_cap])
+
+
+## ★★ 2026.10.29：资源充足（浮存 > economy.max_float_*）时，队伍补到编制上限；
+##   资源不足时仍停在 home_team_size / field_team_size；开关可以回滚旧行为。
+func _test_rich_fill_to_cap(cfg) -> void:
+	var w = _make_ai_test_world(cfg)
+	if w == null:
+		ok(false, "富余补员测试世界")
+		return
+	w.time = 61.0
+	var c = w.ai_commanders["F1"]
+	var home = AiArmyRes.ensure_garrison(c)
+	if home == null:
+		ok(false, "（前提）ai_test 有守军")
+		return
+	var pc: Dictionary = c.profile.get("production", {})
+	var base_target := int(pc.get("home_team_size", 8))
+	var cap := 1 + int(w.effective_retinue_cap(home))
+	ok(cap > base_target,
+		"（前提）编制上限高于守军基础目标（%d > %d）" % [cap, base_target])
+
+	# 穷：目标 = home_team_size
+	w.ai_faction_resources["F1"] = {"food": 100.0, "gold": 100.0}
+	eq(AiArmyRes.team_target(c, home, true), base_target,
+		"★ 资源不充足时仍按 home_team_size 补")
+	# 富：目标 = 编制上限
+	w.ai_faction_resources["F1"] = {"food": 2000.0, "gold": 2000.0}
+	eq(AiArmyRes.team_target(c, home, true), cap,
+		"★★ 资源充足时补到编制上限")
+
+	# 把守军补到基础目标（team_total 含将领本人；开局可能已经带了几个兵）。
+	var need: int = base_target - AiArmyRes.team_total(c, home)
+	if need > 0:
+		w.fill_general_retinue(home, need, [{"type": "spearman", "weight": 1}])
+	eq(AiArmyRes.team_projected(c, home), base_target, "（前提）守军正好到基础目标")
+	w.ai_faction_resources["F1"] = {"food": 100.0, "gold": 100.0}
+	ok(not _is_candidate(home, AiArmyRes.recruit_candidates(c)),
+		"★ 资源不足时到基础目标就不再进补员候选")
+	w.ai_faction_resources["F1"] = {"food": 2000.0, "gold": 2000.0}
+	ok(_is_candidate(home, AiArmyRes.recruit_candidates(c)),
+		"★★ 资源充足时越过基础目标、继续补到编制上限")
+
+	# 回滚开关：关掉后即使富余也停在基础目标。
+	pc["fill_to_cap_when_rich"] = false
+	eq(AiArmyRes.team_target(c, home, true), base_target,
+		"★ fill_to_cap_when_rich=false ⇒ 恢复旧行为")
+	ok(not _is_candidate(home, AiArmyRes.recruit_candidates(c)),
+		"★ 关掉开关后不再越过基础目标")
+	pc["fill_to_cap_when_rich"] = true
+
+
+func _is_candidate(leader, cands: Array) -> bool:
+	for cand in cands:
+		if (cand as Dictionary).get("leader", null) == leader:
+			return true
+	return false
 
 
 func _test_build_and_tech(cfg) -> void:
@@ -334,7 +451,8 @@ func _test_defense(cfg) -> void:
 	w.fog.update(w)
 	ok(w.fog.unit_visible("F2", foe), "敌将进入 F2 视野（前提）")
 	var before := int(c.stats.get("orders", 0))
-	# 难度 normal 的 reaction_delay 是 1.2s，army 决策间隔 0.6s；留 4s 足够。
+	# ★ 难度 normal：reaction_delay 1.2s，army 决策间隔 1.2s（2026.10.29 起由难度控制）
+	#   ⇒ 最坏 1.2 + 1.2 = 2.4s 就会回防，留 4s 足够。
 	for i in 40:
 		w.tick(0.1)
 	ok(c.defend_until > w.time or int(c.stats.get("orders", 0)) > before,
@@ -1632,19 +1750,36 @@ func _test_early_explore(cfg) -> void:
 	ok(g.pos.distance_to(c.explore_target) >= 6.0,
 		"★★ 探索目标在基地外，不是原地左左右右")
 	ok(int(c.stats.get("explores", 0)) > before, "★ 探索计入统计")
+	# ★★ 2026.10.29：开局探索的目标必须是「无主安全区划」—— 先发展再探索。
+	var target_zone: Variant = AiArmyRes._early_capture_zone_at(c, c.explore_target)
+	ok(target_zone != null, "★★ 开局探索优先去占周围的无主安全区划")
+	if target_zone != null:
+		eq(String((target_zone as Dictionary).get("owner", "")), "",
+			"★★ 安全区划是无主状态（不是敌方区划）")
+		ok((target_zone as Dictionary).get("center", null) != null,
+			"★ 安全区划有自己的中心（可以读条）")
 	# 刚下命令时队伍还在基地附近，不能立刻判定「已经回来了」。
 	AiArmyRes._early_explore_tick(c)
 	eq(String(c.explore_phase), "out", "★★ 刚出门不会因为还在基地附近就取消")
-	# ★★ 到达一个探索点后继续去下一个远处点，不要立刻回基地 → 再出门。
+	# ★★ 到达安全区划中心后要站住读条，不能到点就换下一个目标。
 	var first_target: Vector2 = c.explore_target
 	g.pos = first_target
 	g.sync_tile(w.map)
 	c.explore_until = w.time + 100.0
 	AiArmyRes._early_explore_tick(c)
-	eq(String(c.explore_phase), "out", "★★ 到达探索点后继续探索，不立刻回基地")
+	eq(String(c.explore_phase), "out", "★★ 到达安全区划后继续留在原地占领")
+	ok(c.explore_target.distance_to(first_target) < 0.01,
+		"★★ 站住区划中心读条，不立刻换下一个目标")
+	# 模拟读条完成（归属翻过来）→ 继续去找下一块。
+	if target_zone != null:
+		(target_zone as Dictionary)["owner"] = "F1"
+	AiArmyRes._early_explore_tick(c)
+	eq(String(c.explore_phase), "out", "★★ 占下一块后继续发展，不立刻回基地")
 	ok(c.explore_target.distance_to(first_target) > 4.0,
-		"★★ 下一个探索点在别处，不会原地绕圈")
-	# 超时 → 回基地；回基地也是普通移动。
+		"★★ 下一个目标在别处，不会原地绕圈")
+	# 超时 → 回基地；回基地也是普通移动。用一个「不是区划中心」的点，
+	# 避免被「站住占领」那条逻辑接管。
+	c.explore_target = base_pt + Vector2(5.0, 0.0)
 	c.explore_until = w.time - 0.1
 	AiArmyRes._early_explore_tick(c)
 	eq(String(c.explore_phase), "home", "★★ 探索超时会回基地")
@@ -1719,6 +1854,59 @@ func _test_early_game(cfg) -> void:
 	c.explore_until = 0.0
 	c.explore_away = false
 	ok(not AiArmyRes._early_explore_tick(c), "★★ 60 秒后不再启动开局探索")
+
+
+## ★★ 2026.10.29：ai_test_battle（between_moutains）里，commander AI 开局要主动发展 ——
+## 在自家周围的无主安全区划中心读条，而不是只在远处来回走。
+func _test_duel_early_capture(cfg) -> void:
+	var w = _make_duel_world(cfg)
+	if w == null:
+		ok(false, "ai_test_battle 开局发展测试世界")
+		return
+	var c = w.ai_commanders["p2"]
+	var base = w.find_base_of("p2")
+	if base == null:
+		ok(false, "（前提）AI 有大本营")
+		return
+	var owned0 := _owned_zone_count(w, "p2")
+	var start_zone := int(base.zone_id)
+	var ai_pool: Dictionary = w.ai_faction_resources.get("p2", {})
+	near(float(ai_pool.get("food", -1.0)), 100.0, 1e-4,
+		"★★ 这张图上 AI 起手粮食 = 100（不再有 normal 250 的额外资金）")
+	near(float(ai_pool.get("gold", -1.0)), 100.0, 1e-4,
+		"★★ 这张图上 AI 起手黄金 = 100")
+	var initial_owner: Dictionary = {}
+	for z in w.zones.zones:
+		var zd0: Dictionary = z
+		initial_owner[int(zd0.get("id", -1))] = String(zd0.get("owner", ""))
+	# AI 开局只有一位将领、0 个附属兵：这是「第二支将领出现」之前最容易发呆的窗口。
+	ok(w.general_count_of("p2") == 1, "（前提）AI 开局只有一位将领")
+	var first_new_zone := -1
+	var captured_at := -1.0
+	var elapsed := 0.0
+	while elapsed < 70.0:
+		w.tick(0.1)
+		elapsed += 0.1
+		var owned := _owned_zone_count(w, "p2")
+		if owned > owned0:
+			captured_at = elapsed
+			for z in w.zones.zones:
+				var zd: Dictionary = z
+				if String(zd.get("owner", "")) == "p2" \
+						and int(zd.get("id", -1)) != start_zone:
+					first_new_zone = int(zd.get("id", -1))
+					break
+			break
+	ok(first_new_zone >= 0, "★★ AI 开局 70 秒内主动占下了周围的安全区划（实际 %.1fs）" % captured_at)
+	ok(captured_at > 0.0 and captured_at < 60.0,
+		"★★ 第一次占领发生在开局 60 秒内（实际 %.1fs）" % captured_at)
+	if first_new_zone >= 0:
+		eq(String(initial_owner.get(first_new_zone, "?")), "",
+			"★★ 第一块新领地是开局就存在的中立安全区划")
+	# 占领必须由 AI 自己的「发展」调度推进，而不是某种被动归属变化。
+	ok(c.stats.get("expands", 0) >= 1 or c.stats.get("explores", 0) >= 1,
+		"★ 开局占领由扩张 / 探索推进（扩张 %d 次 / 探索 %d 次）" % [
+			int(c.stats.get("expands", 0)), int(c.stats.get("explores", 0))])
 
 
 ## ★★ 招将：优先前线 / 被入侵区划，基地只是兜底。
@@ -1849,7 +2037,9 @@ func _test_march_early_end(cfg) -> void:
 	eq(w.set_ai_directive("F2", "march", float(base.tx) + 0.5, float(base.ty) + 0.5, "F1"),
 		"", "行军指令接受")
 	var serial0 := int(w.ai_directive_of("F2").get("serial", 0))
-	for i in 10:
+	# ★ 2026.10.29：army 决策间隔现在由难度控制（normal = 1.2s，且首次 tick 还有
+	#   `unit_rand × 1.2` 的错峰）⇒ 给它 4 秒，别卡在 1 秒上。
+	for i in 40:
 		w.tick(0.1)
 	eq(String(w.ai_directive_of("F2").get("kind", "")), "auto",
 		"★★ 到点且清场后行军提前结束（不用等 60 秒）")
@@ -1895,19 +2085,29 @@ func _test_auto_captures_zones(cfg) -> void:
 	var owned0 := _owned_zone_count(w, "F1")
 	# ai_test 的 1 号区划是开局领地；其余 6 块是可扩张目标。
 	var captured := -1
+	var captured_at := -1.0
 	var elapsed := 0.0
 	while elapsed < 180.0:
 		w.tick(0.1)
 		elapsed += 0.1
 		var owned := _owned_zone_count(w, "F1")
-		if owned > owned0:
+		if owned > owned0 and captured < 0:
 			captured = owned
+			captured_at = elapsed
+		# ★★ 2026.10.29：第一块地可能是「开局探索顺路占下的安全区划」，
+		#    `expands` 统计要等常规扩张那一条接管后才涨 —— 再等等看。
+		if captured > owned0 and int(c.stats.get("expands", 0)) >= 1:
 			break
 	ok(captured > owned0,
 		"★★ 自主模式在 180 秒内占下了新地块（%d → %d）" % [owned0, maxi(owned0, captured)])
-	ok(int(c.stats.get("expands", 0)) >= 1, "★ 至少发起过一次扩张任务")
-	# 归属统计每 2 秒对一次账：多跑一个战略周期再断言。
-	for _i in 22:
+	ok(captured_at > 0.0 and captured_at < 90.0,
+		"★★ 开局 90 秒内就拿下了第一块地（实际 %.1fs）" % captured_at)
+	# ★★ 开局探索会顺路占下多个安全区划；如果 180 秒内已经把它们占完，
+	#    常规扩张（`expands`）自然没有新目标可派 —— 这时候 `zones_taken` 才算数。
+	ok(int(c.stats.get("expands", 0)) >= 1 or int(c.stats.get("zones_taken", 0)) >= 1,
+		"★ 至少完成过一次扩张（常规任务或开局顺路占领）")
+	# 归属统计按战略周期对账（2026.10.29 起 normal = 2.0 × 1.2 = 2.4 秒）：多跑一个周期再断言。
+	for _i in 30:
 		w.tick(0.1)
 	ok(int(c.stats.get("zones_taken", 0)) >= 1, "★ 扩张完成时计入 zones_taken")
 

@@ -297,22 +297,6 @@
   "start_units": [
     {
       "faction": "df",
-      "kind": "spearman",
-      "unit_type": "spearman",
-      "x": 8,
-      "y": 30,
-      "ai": "garrison",
-      "zone": 5,
-      "escort_count": 2,
-      "escort_types": [
-        {
-          "type": "spearman",
-          "weight": 1
-        }
-      ]
-    },
-    {
-      "faction": "df",
       "kind": "general",
       "general_index": 2,
       "unit_type": "spearman",
@@ -897,6 +881,23 @@
         {
           "type": "rider",
           "weight": 0.5
+        }
+      ]
+    },
+    {
+      "faction": "df",
+      "kind": "general",
+      "general_index": 35,
+      "unit_type": "spearman",
+      "x": 8,
+      "y": 30,
+      "ai": "garrison",
+      "zone": 5,
+      "escort_count": 2,
+      "escort_types": [
+        {
+          "type": "spearman",
+          "weight": 1
         }
       ]
     },

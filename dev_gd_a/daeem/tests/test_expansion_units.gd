@@ -64,12 +64,12 @@ func _test_armor_and_siege(cfg) -> void:
 	knight.take_damage(cfg, null, 3.0)
 	near(knight.hp, hp0 - 1.0, 1e-6, "★ 伤害低于护甲时仍受 1 点")
 
-	# 马弓手无护甲，但远程减伤 25%。
+	# 马弓手护甲 1（2026.10.29 TTK 改版：从 0 提到 1），远程减伤 25%。
 	var archer = _mk(cfg, "armor-archer", "p1", UnitRes.UNIT_TYPE_HORSE_ARCHER)
-	eq(archer.armor, 0.0, "马弓手护甲 = 0")
+	eq(archer.armor, 1.0, "马弓手护甲 = 1")
 	hp0 = archer.hp
 	archer.take_damage(cfg, null, 20.0, null, true)
-	near(archer.hp, hp0 - 15.0, 1e-6, "★ 马弓手远程 20 → ×0.75 = 15")
+	near(archer.hp, hp0 - 14.25, 1e-6, "★ 马弓手远程 20 → (20-1)×0.75 = 14.25")
 
 	# 器械不吃「对骑兵 / 步兵」加成：长枪兵（对骑兵 +25%）打投石车不加伤。
 	ok(cfg.unit_class_of(UnitRes.UNIT_TYPE_CATAPULT) == "siege",

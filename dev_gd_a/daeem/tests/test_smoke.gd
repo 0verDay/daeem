@@ -68,9 +68,9 @@ func _cases() -> void:
 	near(cfg.repath_sec, 0.3, 1e-6, "追击重寻路 0.3 秒")
 	near(cfg.building_damage, 40.0, 1e-6, "拆建筑伤害 40")
 
-	near(cfg.unit_hp_of(UnitRes.UNIT_TYPE_SPEARMAN), 140.0, 1e-6, "长枪兵生命 140")
-	near(cfg.unit_hp_of(UnitRes.UNIT_TYPE_LONGBOWMAN), 80.0, 1e-6, "长弓兵生命 80")
-	near(cfg.unit_hp_of(UnitRes.UNIT_TYPE_RIDER), 110.0, 1e-6, "骑手生命 110")
+	near(cfg.unit_hp_of(UnitRes.UNIT_TYPE_SPEARMAN), 180.0, 1e-6, "长枪兵生命 180（TTK 改版）")
+	near(cfg.unit_hp_of(UnitRes.UNIT_TYPE_LONGBOWMAN), 115.0, 1e-6, "长弓兵生命 115")
+	near(cfg.unit_hp_of(UnitRes.UNIT_TYPE_RIDER), 150.0, 1e-6, "骑手生命 150")
 	near(cfg.unit_speed_of(UnitRes.UNIT_TYPE_SPEARMAN), 0.6, 1e-6, "长枪兵速度 0.6")
 	near(cfg.unit_speed_of(UnitRes.UNIT_TYPE_RIDER), 1.2, 1e-6, "★ 骑手更快（1.2 格/秒）")
 	near(float(cfg.unit_combat_of(UnitRes.UNIT_TYPE_LONGBOWMAN)["range"]), 4.0, 1e-6,
@@ -101,7 +101,7 @@ func _cases() -> void:
 	ok(not cfg.has_method("enemy_damage_at"), "（形状）cfg 不再有敌人专用数值入口")
 	ok(not cfg.has_unit_type("enemy"), "★★ unit.types 里不再有 enemy 这个类型")
 	ok(cfg.has_unit_type(UnitRes.UNIT_TYPE_SPEARMAN), "★★ 长枪兵仍然是合法类型（调试刷兵用它）")
-	near(cfg.unit_hp_of(UnitRes.UNIT_TYPE_SPEARMAN), 140.0, 1e-6, "长枪兵血量 140")
+	near(cfg.unit_hp_of(UnitRes.UNIT_TYPE_SPEARMAN), 180.0, 1e-6, "长枪兵血量 180")
 	eq(cfg.zone_cols, 6, "区块横向 6 列")
 	eq(cfg.zone_rows, 4, "区块纵向 4 行")
 	near(cfg.capture_time_sec, 16.0, 1e-6, "占领耗时 16 秒（基准：1 个单位独自占下）")

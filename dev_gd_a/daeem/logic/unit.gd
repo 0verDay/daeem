@@ -113,7 +113,9 @@ var attack_bonus_vs_class: Dictionary = {}
 var ranged_damage_reduction: float = 0.0
 ## ★★ 本轮新增的战斗 / 支援字段（出生时从兵种表抄到单位身上，之后只读）：
 ##   · armor          —— 固定护甲值：每次受击**先减这么多点**伤害（再算百分比减伤）。
-##                       最低仍会造成 1 点（不会完全免疫）。骑士 = 6，其余 = 0。
+##                       最低仍会造成 1 点（不会完全免疫）。
+##                       2026.10.29 TTK 改版后：骑士 6、长枪兵 / 骑手 / 器械 2、
+##                       长弓兵 / 马弓手 1；将领再 +`unit.general.armor_bonus`。
 ##   · can_attack     —— false = 不攻击的支援单位（粮车）：不索敌、不攻击。
 ##   · siege          —— 这一击无视目标的近战 / 远程减伤（投石车）。
 ##   · move_shoot     —— 移动 / 行军途中可以边走边射、不停止（马弓手）。
@@ -585,6 +587,10 @@ static func create(cfg: ConfigRes, p_id: String, p_name: String, tile: Vector2i,
 	u.general_index = p_general_index
 	if p_general_index >= 0:
 		u.stat_overrides = cfg.general_stat_overrides(p_general_index)
+		# ★★ 2026.10.29：将领的**护甲** = (覆盖值 ⊕ 所属兵种) **+ 将领加成**。
+		#   基础护甲在更上面已经按兵种抄过一次，这里只补「将领那一份」。
+		#   ⚠️ 加成放在覆盖之后：给某位将领写 `armor` 是「它的底子」，不是「连加成一起换掉」。
+		u.armor = maxf(0.0, float(u.stat_overrides.get("armor", u.armor))) + cfg.general_armor_bonus
 	u.pos = GridRes.center_of(tile)
 	u.prev_pos = u.pos          # ★ 插值起点 = 出生点（否则第一帧会从世界原点滑过来）
 	u.tx = tile.x
@@ -593,7 +599,12 @@ static func create(cfg: ConfigRes, p_id: String, p_name: String, tile: Vector2i,
 	#    加了第三种兵种之后那个二元判断会**静默把新兵种当成测试敌人**（60 血）。
 	#    现在每个单位类型都在 config.unit.types 里明确定义，查不到才用兜底值。
 	# ★★ 将领的**数值覆盖**在这里落地（没写的键 = 跟随所属兵种那一档）。
-	u.hp_max = float(u.stat_overrides.get("hp_max", cfg.unit_hp_of(u.unit_type)))
+	# ★★ 2026.10.29：将领再乘一次**全局血量倍率**（`unit.general.hp_mult`）——
+	#   所以「覆盖 ⊕ 兵种」是基准，倍率是「将领比兵更抗打」那一层，两者不互相吞掉。
+	var hp_base: float = float(u.stat_overrides.get("hp_max", cfg.unit_hp_of(u.unit_type)))
+	if p_general_index >= 0:
+		hp_base *= cfg.general_hp_mult
+	u.hp_max = maxf(1.0, hp_base)
 	u.base_hp_max = u.hp_max
 	u.hp = u.hp_max
 	# ★ 士气：整支部队共享，初始值 / 上限取自 config（见 logic/morale.gd）。
@@ -626,16 +637,21 @@ func reapply_type(cfg: ConfigRes, p_unit_type: String) -> void:
 	attack_bonus_vs_class = traits.get("attack_vs_class", {})
 	ranged_damage_reduction = float(traits.get("ranged_reduction", 0.0))
 	armor = cfg.unit_armor_of(unit_type)
+	if general_index >= 0:
+		# ★★ 与 `create()` 同一口径：覆盖 ⊕ 兵种，再叠将领加成。
+		armor = maxf(0.0, float(stat_overrides.get("armor", armor))) + cfg.general_armor_bonus
 	can_attack = cfg.unit_can_attack(unit_type)
 	siege = cfg.unit_is_siege(unit_type)
 	move_shoot = cfg.unit_move_shoot(unit_type)
 	splash_radius = cfg.unit_splash_radius_of(unit_type)
 	morale_aura_radius = cfg.unit_morale_aura_radius_of(unit_type)
 	morale_aura_rate = cfg.unit_morale_aura_rate_of(unit_type)
-	# 血量上限 / 视野与 `create()` 同一口径：将领仍吃自己的数值覆盖。
+	# 血量上限 / 视野与 `create()` 同一口径：将领仍吃自己的数值覆盖（再乘全局将领倍率）。
 	var new_max: float = float(stat_overrides.get("hp_max", cfg.unit_hp_of(unit_type)))
-	base_hp_max = new_max
-	hp_max = new_max
+	if general_index >= 0:
+		new_max *= cfg.general_hp_mult
+	base_hp_max = maxf(1.0, new_max)
+	hp_max = base_hp_max
 	if general_index >= 0:
 		vision = cfg.general_vision_at(general_index)
 	else:
@@ -868,7 +884,12 @@ func speed(cfg: ConfigRes, map) -> float:
 ## ★★ 将领自己填过的那一项优先（config 的 unit.general.stats）——
 ##    没填的**不比**、直接走兵种那一档（`get(键, 兵种值)` 一句就表达了「跟随」）。
 func combat_damage(cfg: ConfigRes) -> float:
-	return float(stat_overrides.get("damage", cfg.unit_combat_of(unit_type)["damage"]))
+	var d := float(stat_overrides.get("damage", cfg.unit_combat_of(unit_type)["damage"]))
+	# ★★ 2026.10.29：将领再乘 `unit.general.damage_mult`（默认 1.0）。
+	#   兵种攻击这一版整体降了 ~25%，将领保持绝对值 ⇒ 相对更疼。
+	if is_general():
+		d *= cfg.general_damage_mult
+	return d
 
 
 func combat_range(cfg: ConfigRes) -> float:

@@ -60,6 +60,8 @@ func _run() -> void:
 			break
 	if tech_id != "":
 		ok(host.set_tech_active(tech_id, true, "F2"), "（前提）F2 能启用一条科技")
+		# ★★ 2026.10.29：预热满 30 秒才进 active；快照里的 `tech` 发的是**已生效**那几张。
+		finish_tech_warmup(host, host.cfg)
 
 	var snap: Dictionary = SnapshotRes.to_snapshot(host)
 	ok(snap.has("pres"), "★ 快照带按席位资源 pres")

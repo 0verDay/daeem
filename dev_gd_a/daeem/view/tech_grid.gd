@@ -160,6 +160,14 @@ func _same_entries(clean: Array) -> bool:
 			return false
 		if String(a.get("reason", "")) != String(b.get("reason", "")):
 			return false
+		# ★★ 2026.10.29：预热 / 冷却也算「内容」—— 不然倒计时不会动。
+		#    ⚠️ 按**整秒**比较：直接比浮点会每帧都重建一遍控件。
+		if bool(a.get("warming", false)) != bool(b.get("warming", false)):
+			return false
+		if ceili(float(a.get("warmup_left", 0.0))) != ceili(float(b.get("warmup_left", 0.0))):
+			return false
+		if ceili(float(a.get("cooldown_left", 0.0))) != ceili(float(b.get("cooldown_left", 0.0))):
+			return false
 	return true
 
 
@@ -180,13 +188,26 @@ func _apply() -> void:
 		var filled: bool = ei >= 0 and ei < _entries.size()
 		var active := false
 		var locked := false
+		var warming := false
+		var cd_left := 0.0
 		if filled:
 			var e: Dictionary = _entries[ei]
 			active = bool(e.get("active", false))
-			# ★ 不能启用（阶数不够 / 名额已满）⇒ 置灰不可点；已启用的照旧可点（= 弃用）。
-			locked = not active and not bool(e.get("available", true))
+			# ★★ 2026.10.29：点下去了但还在预热 —— 占名额、不出效果、可点（= 取消）。
+			warming = bool(e.get("warming", false))
+			cd_left = float(e.get("cooldown_left", 0.0))
+			# ★ 不能启用（阶数不够 / 名额已满 / 断金冷却）⇒ 置灰不可点；
+			#   已启用 / 预热中的照旧可点（= 弃用 / 取消）。
+			locked = not active and not warming and not bool(e.get("available", true))
 			_name_labels[i].text = String(e.get("name", ""))
-			_line_labels[i].text = String(e.get("line", ""))
+			# ★★ 预热 / 冷却期间第二行改写成**倒计时**：这一格最要紧的信息是「还差几秒」。
+			#    效果说明在悬停面板里仍然读得到（见 hud._hover_tech）。
+			if warming:
+				_line_labels[i].text = "预热 %d 秒" % ceili(float(e.get("warmup_left", 0.0)))
+			elif cd_left > 0.0 and not active:
+				_line_labels[i].text = "冷却 %d 秒" % ceili(cd_left)
+			else:
+				_line_labels[i].text = String(e.get("line", ""))
 			cell.disabled = false             # 保持可悬停（悬停要能解释原因）
 			# ★★ 走「登记原色」的接口，而不是直接写 font_color override：
 			#   填充动效每帧都按「原色 + 当前填充进度」重算（见 fill_button._sync_text）。
@@ -200,7 +221,7 @@ func _apply() -> void:
 			#   不能启用的格子**也参与**，只是把填充换成灰色（用户口径：
 			#   「灰色填充代替金色填充 + 点击后无效果」，不是实心灰按钮）。
 			FillButtonRes.set_available(cell, true)
-			FillButtonRes.set_grey(cell, locked)
+			FillButtonRes.set_grey(cell, locked or warming)
 		else:
 			_name_labels[i].text = ""
 			_line_labels[i].text = ""
@@ -211,7 +232,7 @@ func _apply() -> void:
 			FillButtonRes.set_grey(cell, false)
 			# ★ 空格子**不参与填充**：它连「科技」都没有，填起来会让人以为这一格能点。
 			FillButtonRes.set_available(cell, false)
-		_style_cell(cell, filled, active, locked)
+		_style_cell(cell, filled, active, locked or warming)
 
 
 ## 三个状态各自一套样式。

@@ -78,10 +78,12 @@ func _test_world_setup(world, cfg) -> void:
 		var want := String(want_types[int(g.general_index)])
 		eq(String(g.unit_type), want,
 			"★ %s 是 %s" % [g.id, cfg.unit_name_of(want)])
-		eq(g.hp_max, cfg.unit_hp_of(want),
-			"★ 将领血量 = 所属类型的血量（用户口径：完全按对应兵种数值）")
-		eq(g.combat_damage(cfg), float(cfg.unit_combat_of(want)["damage"]),
-			"将领伤害也走所属类型")
+		# ★★ 2026.10.29：将领 = 所属类型 × 全局将领倍率（血量 / 攻击各乘一次）。
+		eq(g.hp_max, cfg.unit_hp_of(want) * cfg.general_hp_mult,
+			"★ 将领血量 = 所属类型血量 × 将领倍率（%s）" % cfg.general_hp_mult)
+		eq(g.combat_damage(cfg),
+			float(cfg.unit_combat_of(want)["damage"]) * cfg.general_damage_mult,
+			"将领伤害 = 所属类型伤害 × 将领攻击倍率")
 		eq(g.combat_range(cfg), float(cfg.unit_combat_of(want)["range"]),
 			"将领射程也走所属类型")
 		ok(g.is_general(), "★ is_general() 认得出将领")

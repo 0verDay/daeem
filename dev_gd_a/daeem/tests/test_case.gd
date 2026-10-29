@@ -35,6 +35,33 @@ func frames_at_baseline(cfg, base_frames: int) -> int:
 	var spd: float = maxf(0.01, float(cfg.unit_speed))
 	return int(ceil(float(base_frames) * maxf(1.0, SPEED_BASELINE / spd)))
 
+
+## ★★ 2026.10.29：科技有 `tech.warmup_sec` 秒**预热**（默认 30）——「点下去」不等于「生效」。
+## 测试里凡是「点了一条科技 → 立刻断言它生效 / 产量变了」的地方，都要先调这一个。
+##
+## ★ 走的是**权威那条路**（`tech.tick` + `_apply_tech_effects`），不是直接改表 ——
+##   这样顺带把「预热到点 → 真生效」这段状态机也覆盖了。
+## ⚠️ 故意**不**调 `world.tick(30)`：那一帧会把占领 / 战斗 / 士气一起推进 30 秒，
+##   在只关心科技的用例里只会引入噪声（还会让刚招出来的兵白跑 30 秒）。
+func finish_tech_warmup(w, cfg) -> void:
+	if w == null or cfg == null or w.tech == null:
+		return
+	var secs: float = float(cfg.tech_warmup_sec)
+	if secs <= 0.0:
+		return
+	w.tech.tick(secs + 0.01)
+	w._apply_tech_effects()
+
+
+## 把一条科技**立刻**变成生效（跳过预热）—— 只给「这条用例不关心预热」的旧断言用。
+## ⚠️ 想覆盖预热 / 冷却本身，请用 `finish_tech_warmup` 或新测试里的真实路径。
+func instant_tech(w, id: String, faction: String = "") -> void:
+	if w == null or w.tech == null:
+		return
+	w.set_tech_active(id, true, faction)
+	w.tech.set_active(id, true, faction)
+	w._apply_tech_effects()
+
 func ok(cond: bool, what: String) -> void:
 	if cond:
 		_pass += 1
@@ -114,6 +141,17 @@ func require_config() -> RefCounted:
 		return null
 	var cfg = cls.load_default()
 	ok(cfg != null, "config.json 能载入（%s）" % cls.last_error)
+	# ★★ 2026.10.29：**旧用例默认关掉「持续消耗」**（单位维护费 + 科技每秒扣金）。
+	#
+	# 为什么必须在这里关：这两个消耗**每帧都在扣**，而本仓库有大量用例做的是精确对账
+	#   （「粮食 200 → 招一个兵 → 150」「读条 3 秒后金还剩 x」）。
+	#   不关的话所有那些断言都会差 0.x，而它们要验的其实是招募 / 升级本身，不是维护费。
+	#
+	# ⚠️ 这不是「只给测试的假路径」：游戏里 `economy.upkeep_enabled` 恒为 true，
+	#   而**新机制自己的覆盖**在 `tests/test_economy.gd` —— 那边会把它显式打开，
+	#   用真实的维护费 / 金耗 / 断粮 / 断金做断言。
+	if cfg != null:
+		cfg.upkeep_enabled = false
 	return cfg
 
 func require_map(cfg, path: String = DEFAULT_MAP_PATH) -> RefCounted:

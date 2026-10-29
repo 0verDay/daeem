@@ -43,11 +43,12 @@ const StartScreenRes = preload("res://view/start_screen.gd")
 ##      写成 `Node2D` 会让本文件直接 Parse Error（见下面 `var game` 那段）。
 const GameSceneRes = preload("res://view/game_scene3d.gd")
 ## ★★ 战斗入口（本轮改版）：
-##   · 屏幕正中央的 ai_test 测试按钮（只在主菜单页显示）—— 直连 ai_test_battle 关
-##     （map = ai_test_2，玩家 p2 vs command AI p1，跳过过渡页）；
+##   · 屏幕左上角的 ai_test 测试按钮（只在主菜单页显示）—— 直连 ai_test_battle 关
+##     （map = between_moutains；**每次按下随机**玩家为 p1 或 p2，另一方由 command AI 接管，
+##      跳过过渡页）；
 ##   · 「战役」按钮撑开的面板里是**战役菜单**（轮播 + 关卡圆点 + 描述 + 长按进入）。
 ##   入口只带 `campaign_id + level_id`（ai_test 按钮由本文件直接指定 ai_test_battle），本文件负责：
-##   载入战役 → 取那一关 → 取第一个可玩阵营 → `game.start_level()`。
+##   载入战役 → 取那一关 → **随机挑一个可玩阵营** → `game.start_level_vs_commander()`。
 ##
 ## ★ 单人战役的占位页（`view/campaign_test.gd`）与「地图选择条 + test」那一套已经删掉：
 ##   它们的功能被上面两条入口取代（用户要求：旧三件套从「战役」面板移除）。
@@ -65,7 +66,7 @@ const ThemeRes = preload("res://view/theme.gd")
 const MENU_FONT_SIZE := 32
 
 ## ★★ 主菜单 ai_test 测试入口：ai_test_battle 关
-##   （map = ai_test_2，玩家 p2 vs command AI p1，难度走 config 默认 normal）。
+##   （map = between_moutains；玩家随机 p1 / p2，另一方 command AI，难度走 config 默认 normal）。
 const AI_TEST_CAMPAIGN := "demo"
 const AI_TEST_LEVEL := "ai_test_battle"
 
@@ -143,6 +144,7 @@ func _build_start_screen() -> void:
 	start_screen.intro_dismissed.connect(_on_intro_dismissed)
 	start_screen.campaign_level_chosen.connect(_on_menu_campaign_level_chosen)
 	start_screen.ai_test_pressed.connect(_on_ai_test_button_pressed)
+	start_screen.see_ai_pressed.connect(_on_see_ai_button_pressed)
 	start_screen.coop_host_started.connect(_on_coop_host_started)
 	start_screen.coop_guest_started.connect(_on_coop_guest_started)
 	start_screen.coop_solo_started.connect(_on_coop_solo_started)
@@ -314,37 +316,76 @@ func _on_menu_campaign_level_chosen(campaign_id: String, level_id: String,
 	_show_level_transition(campaign, level, faction_id)
 
 
-## ★★ 主菜单中央的 ai_test 测试按钮：直接开 ai_test_battle 关（ai_test_2 地图 1v1）。
-## 不挂战役过渡页，复用 `_on_direct_level_requested()` 的载入 / 建世界那一段。
+## ★★ 主菜单左上角的 ai_test 测试按钮：直接开 ai_test_battle 关（between_moutains 地图 1v1）。
+## 不挂战役过渡页；随机选边 + 另一方交给 command AI 都在 `_on_ai_test_duel_requested()`。
 func _on_ai_test_button_pressed() -> void:
-	_on_direct_level_requested(AI_TEST_CAMPAIGN, AI_TEST_LEVEL)
+	_on_ai_test_duel_requested(AI_TEST_CAMPAIGN, AI_TEST_LEVEL)
 
 
-## ★★ 主界面 ai_test_battle：跳过战役过渡画面，直接按关卡的可玩阵营开局。
+## ★★ 2026.10.29：主菜单左上角 ai_test 下方的 see_ai（看海入口）。
+## 同一张 between_moutains / ai_test_battle，但**玩家不选边**：
+## `start_ai_observer()` 会把这一关的参展阵营全部改成 commander，双方 AI 对打，玩家只看。
+## `reveal_all = true`：看海的玩家**显示全图**；AI 逻辑视野仍是正常迷雾（不会开天眼）。
+func _on_see_ai_button_pressed() -> void:
+	_on_ai_test_requested(AI_TEST_CAMPAIGN, AI_TEST_LEVEL, false, true)
+
+
+## ★★ ai_test_battle：跳过战役过渡画面，**随机**让玩家当 p1 或 p2，另一个席位由 command AI 接管。
 ##
-## 与 `_on_level_entry_pressed()` 的区别只有「不挂过渡画面」：
-##   关卡已经把玩家席位标成唯一可玩（ai_test_battle 是 p2），所以直接取第一个可玩阵营。
-## 用于「快速试一把和 commander AI 对打」，不用先看简报再点进入。
-func _on_direct_level_requested(campaign_id: String, level_id: String) -> void:
+## ★ 与 `_on_level_entry_pressed()` 的区别：
+##   · 不挂过渡页（快速试一把和 commander AI 对打）；
+##   · 玩家阵营**每次按下都重掷**（不是「取第一个可玩阵营」）；
+##   · 没被掷中的那一方交给 `start_level_vs_commander()` 做运行时 AI 覆盖，
+##     由 commander AI 全权操作 —— 关卡 JSON 里两边都写 `ai: none`，
+##     「这一局谁由 AI 开」是运行时决定，不写死进数据。
+func _on_ai_test_duel_requested(campaign_id: String, level_id: String) -> void:
 	if game != null:
 		return
 	var option := _find_campaign_option(campaign_id)
 	if option.is_empty():
-		push_warning("direct 关卡战役不存在：%s" % campaign_id)
+		push_warning("ai_test 战役不存在：%s" % campaign_id)
 		return
 	var campaign = CampaignLibraryRes.load_campaign_by_option(option, cfg)
 	if campaign == null:
-		push_warning("direct 关卡战役载入失败：%s" % campaign_id)
+		push_warning("ai_test 战役载入失败：%s" % campaign_id)
 		return
 	var level = campaign.level(level_id) if campaign.has_method("level") else null
 	if level == null:
-		push_warning("direct 关卡不存在：%s / %s" % [campaign_id, level_id])
+		push_warning("ai_test 关卡不存在：%s / %s" % [campaign_id, level_id])
 		return
 	var playable: Array = level.playable_ids()
 	if playable.is_empty():
-		push_warning("direct 关卡没有可玩阵营：%s / %s" % [campaign_id, level_id])
+		push_warning("ai_test 关卡没有可玩阵营：%s / %s" % [campaign_id, level_id])
 		return
-	_on_campaign_level_chosen(campaign, level, String(playable[0]))
+
+	var player_faction := _roll_ai_test_faction(playable)
+	var ai_faction := ""
+	for fid in playable:
+		if String(fid) != player_faction:
+			ai_faction = String(fid)
+			break
+
+	game = GameSceneRes.new()
+	game.name = "GameScene"
+	add_child(game)
+	if not game.start_level_vs_commander(campaign, level, player_faction, ai_faction):
+		game.queue_free()
+		game = null
+		return
+	start_screen.close()
+	game.fullscreen_toggled.connect(toggle_fullscreen)
+	game.return_to_menu_requested.connect(return_to_menu)
+
+
+## ★★ 随机挑一个可玩阵营（ai_test 按钮每按一次都重掷）。
+##
+## ★ 用全局 `randi()`：Godot 4 启动时会给全局 RNG 自动播种，所以每次启动都不同；
+##   同一进程里连按也不会总落在同一边。
+## ★ 测试可以直接反复调它，断言两个阵营都能出现（见 tests/test_ai_test_duel.gd）。
+func _roll_ai_test_faction(playable: Array) -> String:
+	if playable.is_empty():
+		return ""
+	return String(playable[randi() % playable.size()])
 
 
 ## ★★ 主界面「ai_test / ai_test_2」按钮：载入演示战役对应关卡，AI 接管被观察方，玩家观战。

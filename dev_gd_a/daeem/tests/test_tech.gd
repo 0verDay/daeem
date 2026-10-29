@@ -59,7 +59,11 @@ func _test_toggle_basics(cfg) -> void:
 	ok(not w.is_tech_active(T_FOOD), "开局 food_1 没启用")
 	ok(CommandRes.apply(w, w.cfg, {"kind": "tech_toggle", "tech_id": T_FOOD, "on": true}),
 		"★ tech_toggle(on) 命令被接受")
-	ok(w.is_tech_active(T_FOOD), "启用之后是启用状态")
+	# ★★ 2026.10.29：点下去 = **进预热队列**（30 秒后才生效），但名额当场就占住。
+	ok(not w.is_tech_active(T_FOOD), "★ 预热期间还没生效")
+	ok(w.tech.is_warming(T_FOOD), "★ 它在预热队列里")
+	finish_tech_warmup(w, cfg)
+	ok(w.is_tech_active(T_FOOD), "预热结束之后是启用状态")
 	eq(w.active_tech_ids().size(), 1, "启用列表里有 1 条")
 	eq(w.tech_remaining_slots(), 2, "还剩 2 个名额")
 	var act := false
@@ -79,7 +83,9 @@ func _test_toggle_basics(cfg) -> void:
 	eq(w.tech_remaining_slots(), 3, "名额全回来了")
 	ok(CommandRes.apply(w, w.cfg, {"kind": "tech_toggle", "tech_id": T_FOOD}),
 		"不带 on 的 tech_toggle = 切换（点一下格子的语义）")
-	ok(w.is_tech_active(T_FOOD), "切换之后启用了")
+	ok(not w.is_tech_active(T_FOOD), "★ 切换之后进入预热，还没生效")
+	finish_tech_warmup(w, cfg)
+	ok(w.is_tech_active(T_FOOD), "预热结束后启用了")
 	ok(CommandRes.apply(w, w.cfg, {"kind": "tech_toggle", "tech_id": T_FOOD}),
 		"再切换一次")
 	ok(not w.is_tech_active(T_FOOD), "★ 第二次切换 = 弃用")
@@ -92,8 +98,9 @@ func _test_limit_three(cfg) -> void:
 	var w = _quiet(cfg)
 	for id in [T_FOOD, T_FOOD2, T_GOLD]:
 		ok(CommandRes.apply(w, w.cfg, {"kind": "tech_toggle", "tech_id": id, "on": true}),
-			"启用第 %d 条" % (w.active_tech_ids().size()))
-	eq(w.active_tech_ids().size(), 3, "★ 三条都启用了")
+			"启用第 %d 条" % w.tech.slot_count())
+	# ★ 预热中的也占名额 ⇒ 名额这一侧与旧版逐位一致（不用等 30 秒）
+	eq(w.tech.slot_count(), 3, "★ 三条都占住了名额（含预热中的）")
 	eq(w.tech_remaining_slots(), 0, "名额用完")
 	ok(w.tech.can_activate(T_BUILDING) == "limit", "★ 第 4 条被规则判为 limit")
 	ok(not w.is_tech_active(T_BUILDING), "第 4 条现在没启用")
@@ -109,37 +116,43 @@ func _test_limit_three(cfg) -> void:
 			got_reject = true
 	ok(got_reject, "★ 第 4 条被阻止，并留了一条 tech_rejected(limit) 给界面提示")
 	ok(not w.is_tech_active(T_BUILDING), "★ 第 4 条没有生效")
-	eq(w.active_tech_ids().size(), 3, "启用数仍然是 3")
+	eq(w.tech.slot_count(), 3, "占用数仍然是 3")
 
 	ok(w.set_tech_active(T_GOLD, false), "弃用中间那一条")
 	ok(w.set_tech_active(T_BUILDING, true), "★ 腾出名额之后第 4 条可以启用")
+	finish_tech_warmup(w, cfg)
 	ok(w.is_tech_active(T_BUILDING), "它现在生效")
 	eq(w.active_tech_ids().size(), 3, "又是 3 条")
 
 	w.reset()
 	eq(w.active_tech_ids().size(), 0, "★ reset() 之后一条科技都没启用")
+	eq(w.tech.warming_count(), 0, "★ reset() 也清掉预热队列")
+	eq(w.tech.cooldown_left(), 0.0, "★ reset() 也清掉断金冷却")
 
 func _test_food_and_gold_bonus(cfg) -> void:
 	var w = _quiet(cfg)
-	_no_income(w)                       # 先把区划产能清零，只留科技那一份
 	w.tick(DT)
 	w.resources["food"] = 0.0
 	w.resources["gold"] = 0.0
-	var tiles: int = int(w.owned_tiles)
-	ok(tiles > 0, "开局有己方占领地块（大本营把出生区划收归己方）")
-	if tiles <= 0:
+	# ★★ 2026.10.29：科技从「每地块 +n」改成「**总体产能** +%」——
+	#   基数就是区划聚出来的那个数（基础产能 + 特化），所以这里直接向它取基准。
+	var base: Dictionary = w.zones.production_of(w.my_faction)
+	var f0: float = float(base["food"])
+	var g0: float = float(base["gold"])
+	ok(f0 > 0.0, "开局基础粮食产能 > 0（%s/秒）" % f0)
+	if f0 <= 0.0:
 		return
-	var f0: float = w.production_food
-	var g0: float = w.production_gold
+	near(w.production_food, f0, 1e-6, "没科技时产能 = 区划基础产能")
 
-	ok(w.set_tech_active(T_FOOD, true), "启用「粮食产量 I」")
-	near(w.production_food, f0 + 0.04 * float(tiles), 1e-6,
-		"★ 粮食 +0.04/地块/秒（%d 地块 → +%s/秒）" % [tiles, 0.04 * tiles])
+	ok(w.set_tech_active(T_FOOD, true), "启用「粮食产量 I」（进预热队列）")
+	ok(not w.is_tech_active(T_FOOD), "★ 预热期间还没生效（点下去 ≠ 已经生效）")
+	finish_tech_warmup(w, cfg)
+	ok(w.is_tech_active(T_FOOD), "★ 预热满 30 秒之后才真正生效")
+	near(w.production_food, f0 * 1.1, 1e-6, "★ 粮食产能 +10%（总体产能的百分比）")
 	near(w.production_gold, g0, 1e-6, "黄金不受影响")
 
-	ok(w.set_tech_active(T_FOOD2, true), "再启用「粮食产量 II」")
-	near(w.production_food, f0 + 0.12 * float(tiles), 1e-6,
-		"★ 两条叠加 = +0.12/地块/秒（加产量求和）")
+	instant_tech(w, T_FOOD2)
+	near(w.production_food, f0 * 1.3, 1e-6, "★ 两条叠加 = +30%（加法，不是 1.1×1.2）")
 
 	var before: float = float(w.resources["food"])
 	w.tick(1.0)
@@ -147,9 +160,8 @@ func _test_food_and_gold_bonus(cfg) -> void:
 		"★ 一秒钟涨的量 = HUD 上显示的那个「+n/秒」")
 
 	w.resources["gold"] = 0.0
-	ok(w.set_tech_active(T_GOLD, true), "启用「黄金产量 I」")
-	near(w.production_gold, g0 + 0.04 * float(tiles), 1e-6,
-		"★ 黄金 +0.04/地块/秒")
+	instant_tech(w, T_GOLD)
+	near(w.production_gold, g0 * 1.1, 1e-6, "★ 黄金产能 +10%")
 
 	w.set_tech_active(T_FOOD, false)
 	w.set_tech_active(T_FOOD2, false)
@@ -178,6 +190,7 @@ func _test_hp_bonus(cfg) -> void:
 	var wall_hp: float = wall.hp
 
 	ok(w.set_tech_active(T_BUILDING, true), "启用「建筑加固」")
+	finish_tech_warmup(w, cfg)          # ★ 30 秒预热之后才生效（2026.10.29）
 	near(base.hp_max, base_max * 1.1, 1e-3, "★ 已建好的大本营血量上限 +10%")
 	near(wall.hp_max, wall_max * 1.1, 1e-3, "★ 已建好的城墙血量上限 +10%")
 	near(wall.hp / wall.hp_max, wall_hp / wall_max, 1e-6,
@@ -185,6 +198,7 @@ func _test_hp_bonus(cfg) -> void:
 	near(leader.hp_max, leader_max, 1e-6, "只启用建筑那一条时，将领血量不变")
 
 	ok(w.set_tech_active(T_LEADER, true), "启用「将领强化」")
+	finish_tech_warmup(w, cfg)
 	near(leader.hp_max, leader_max * 1.1, 1e-3, "★ 将领血量上限 +10%")
 	near(sub.hp_max, sub_max, 1e-6, "★ 附属兵不吃这一条（需求只写将领）")
 	near(base.hp_max, base_max * 1.1, 1e-3, "建筑那一条仍在生效（两条互不影响）")
@@ -229,6 +243,7 @@ func _test_population_bonus(cfg) -> void:
 	for z in [mine, theirs]:
 		z["population"] = 0.0
 	ok(w.set_tech_active(T_POP, true), "启用「区划人口」")
+	finish_tech_warmup(w, cfg)          # ★ 30 秒预热之后才生效
 	near(w.tech_population_mult(), 1.1, 1e-6, "★ 人口增长倍率变成 1.1")
 	w.zones.update_population(1.0, w.my_faction, w.tech_population_mult())
 	near(float(mine["population"]), 2.0 * 1.1, 1e-6,
@@ -255,8 +270,10 @@ func _test_population_bonus(cfg) -> void:
 func _test_commands(cfg) -> void:
 	var w = _quiet(cfg)
 	ok(CommandRes.apply(w, w.cfg, {"kind": "tech_toggle", "tech_id": T_POP}), "切换命令")
-	ok(w.is_tech_active(T_POP), "切换 = 启用")
-	near(w.tech_population_mult(), 1.1, 1e-6, "★ 命令生效后当帧就能读到加成")
+	ok(not w.is_tech_active(T_POP), "★ 命令只是「开始预热」，还没生效")
+	finish_tech_warmup(w, cfg)
+	ok(w.is_tech_active(T_POP), "切换 = 预热完之后启用")
+	near(w.tech_population_mult(), 1.1, 1e-6, "★ 预热结束后当帧就能读到加成")
 	ok(not CommandRes.apply(w, w.cfg, {"kind": "tech_toggle", "tech_id": ""}),
 		"空 id 的命令被拒")
 	ok(not CommandRes.apply(w, w.cfg, {"kind": "not_a_command"}), "未知命令被拒")

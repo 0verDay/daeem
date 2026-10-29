@@ -696,6 +696,26 @@ func _test_ground_bake(cfg) -> void:
 		game.overlay._zone_seg_sig = ""
 		g.rebake(true)
 
+	# ★★ 2026.10.29：占领进度条的多边形三角化保护。
+	ok(game.overlay._valid_screen_triangle(
+			PackedVector2Array([Vector2(0, 0), Vector2(10, 0), Vector2(0, 10)])),
+		"★ 正常三角形可以交给 draw_colored_polygon")
+	ok(not game.overlay._valid_screen_triangle(
+			PackedVector2Array([Vector2(0, 0), Vector2(5, 5), Vector2(10, 10)])),
+		"★★ 共线三角形被挡掉（triangulation failed 的一种）")
+	ok(not game.overlay._valid_screen_triangle(
+			PackedVector2Array([Vector2(0, 0), Vector2(0, 0), Vector2(10, 10)])),
+		"★★ 重合点被挡掉")
+	ok(not game.overlay._valid_screen_triangle(
+			PackedVector2Array([Vector2(NAN, 0), Vector2(10, 0), Vector2(0, 10)])),
+		"★★ NaN 顶点被挡掉")
+	ok(not game.overlay._valid_screen_triangle(
+			PackedVector2Array([Vector2(INF, 0), Vector2(10, 0), Vector2(0, 10)])),
+		"★★ INF 顶点被挡掉")
+	ok(not game.overlay._valid_screen_triangle(
+			PackedVector2Array([Vector2(0, 0), Vector2(1.0e7, 0), Vector2(0, 10)])),
+		"★★ 坐标爆掉的三角形被挡掉")
+
 	eq(game.overlay._count_zone_captures(), 0, "★ 没有区划在占领时，进度条一块都不画")
 	var zc = null
 	if w.zones != null and w.zones.zones.size() > 0:

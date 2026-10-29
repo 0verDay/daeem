@@ -113,8 +113,11 @@ func _test_general_types(cfg) -> void:
 		eq(g.kind, UnitRes.KIND_GENERAL, "将领的 kind 仍是 general（队伍 / 招募都按它判）")
 		eq(String(g.unit_type), want, "★ general-%d 的类型是 %s" % [i + 1, want])
 		ok(g.is_general(), "★ is_general() 为真（描边加粗与将领科技共用这条判据）")
-		near(g.hp_max, cfg.unit_hp_of(want), 1e-6, "将领血量 = 类型血量")
-		near(g.combat_damage(cfg), float(cfg.unit_combat_of(want)["damage"]), 1e-6, "将领伤害 = 类型伤害")
+		# ★★ 2026.10.29：将领 = 类型基准 × `general_hp_mult`（将领比兵种更抗打）。
+		near(g.hp_max, cfg.unit_hp_of(want) * cfg.general_hp_mult, 1e-6,
+			"将领血量 = 类型血量 × 将领倍率")
+		near(g.combat_damage(cfg), float(cfg.unit_combat_of(want)["damage"]) * cfg.general_damage_mult,
+			1e-6, "将领伤害 = 类型伤害 × 将领攻击倍率")
 		near(g.combat_range(cfg), float(cfg.unit_combat_of(want)["range"]), 1e-6, "将领射程 = 类型射程")
 		# ★ 开局将领带一条随机特性：「神力」会把间隔缩短（×0.8）。
 		#   所以期望 = 类型间隔 × 这位将领自己的光环倍率（没抽到神力时它就是 1.0）。

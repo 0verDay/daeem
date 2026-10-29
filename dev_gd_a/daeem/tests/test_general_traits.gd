@@ -158,7 +158,10 @@ func _test_manual_aura_effects(cfg) -> void:
 		"★ 将领特攻与兵种特攻加算")
 
 	# 近战 / 远程抵抗
+	# ★ 2026.10.29：长枪兵现在有 2 点护甲，会先削掉伤害 —— 这一节只验「抵抗」那 25%，
+	#   所以显式把护甲清零（把固定护甲变成被测变量会让下面的数字全是 73.5 这种）。
 	var mg = _mk(cfg, "g_melee_guard", UnitRes.UNIT_TYPE_SPEARMAN)
+	mg.armor = 0.0
 	mg.hp_max = 1000.0
 	mg.hp = 1000.0
 	mg.morale = cfg.morale_mid_tier
@@ -170,6 +173,7 @@ func _test_manual_aura_effects(cfg) -> void:
 	near(1000.0 - mg.hp, 100.0, 1e-6, "★ 近战抵抗不挡远程")
 
 	var rg = _mk(cfg, "g_ranged_guard", UnitRes.UNIT_TYPE_SPEARMAN)
+	rg.armor = 0.0
 	rg.hp_max = 1000.0
 	rg.hp = 1000.0
 	rg.morale = cfg.morale_mid_tier

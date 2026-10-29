@@ -241,7 +241,13 @@ func start(map_path: String = MAP_PATH) -> bool:
 ##
 ## ★★ 为什么签名要稳定：`main.gd` 是「流程层」，它不该知道视角怎么画 ——
 ##   它只认 `start` / `start_level` / 两条流程信号 / `_unhandled_input` 这套接口。
-func start_level(campaign, level, my_faction: String) -> bool:
+##
+## ★★ `ai_overrides` / `ai_profiles`（新增，可选）：把「这一局某几方交给哪种 AI」从
+##   **关卡数据**抬到**运行时**。主菜单 ai_test 的随机对局就是靠它：同一份关卡数据里
+##   两边都写 `ai: none`，按下按钮后由 `main.gd` 随机选边、把另一方覆盖成 commander。
+##   ⚠️ 不传 = 空字典 ⇒ 行为与加这两个参数之前**逐位一致**（所有老调用点都不受影响）。
+func start_level(campaign, level, my_faction: String,
+		ai_overrides: Dictionary = {}, ai_profiles: Dictionary = {}) -> bool:
 	cfg = ConfigRes.load_default()
 	if cfg == null:
 		push_error("配置载入失败：%s" % ConfigRes.last_error)
@@ -258,7 +264,8 @@ func start_level(campaign, level, my_faction: String) -> bool:
 	#    「我选的那一方必须排第一 —— `objective.setup()` 拿第一个席位决定打哪条目标」
 	#    「真正的 NPC 敌人不进 roster」），所以它属于逻辑层，不属于任何视图。
 	var roster: Array = level.build_roster(cfg, my_faction)
-	world = WorldRes.create_from_level(cfg, level, my_faction, roster, true)
+	world = WorldRes.create_from_level(cfg, level, my_faction, roster, true,
+		ai_overrides, ai_profiles)
 	if world == null:
 		push_error("关卡装配失败（地图 = %s）" % String(level.map_id))
 		return false
@@ -271,6 +278,26 @@ func start_level(campaign, level, my_faction: String) -> bool:
 
 	_assemble()
 	return true
+
+
+## ★★ 主菜单 ai_test 的随机对局：玩家操作 `my_faction`，另一个席位由 **commander AI** 接管。
+##
+## ★ 随机选边不在这里：`view/main.gd` 每次按下按钮掷一次，把「玩家方 / AI 方」当参数传进来
+##   —— 本函数只做「把 AI 方写进运行时覆盖」这一件纯装配的事（与关卡数据无关）。
+## ★ 覆盖走 `create_from_level()` 已有的 `ai_overrides` / `ai_profiles` 通道：
+##   `world.ai_kind_of()` 优先读覆盖，于是 `player_factions` / 建基地 / 开 AI 控制器
+##   （`_is_commander_ai()`）都会自动把这一方当成 commander，不需要第二套判据。
+## ★ 难度固定 normal（与 ai_test_battle 一直以来的默认口径一致）。
+## ⚠️ 关卡数据里两边都写着 `ai: none` 也能用：覆盖就是用来盖掉关卡那一份的
+##   （与「合作 AI 队友把第二席位改成 commander」同一个机制）。
+func start_level_vs_commander(campaign, level, my_faction: String,
+		ai_faction: String) -> bool:
+	var overrides: Dictionary = {}
+	var profiles: Dictionary = {}
+	if ai_faction != "" and ai_faction != my_faction:
+		overrides[ai_faction] = LevelRes.AI_COMMANDER
+		profiles[ai_faction] = {"difficulty": "normal"}
+	return start_level(campaign, level, my_faction, overrides, profiles)
 
 
 ## ★★ 观战模式：`ai_test` / `ai_test_2` 关卡由 commander AI 接管被观察方，玩家只看。

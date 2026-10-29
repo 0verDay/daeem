@@ -5,7 +5,8 @@
 ##     {
 ##       "name": "第一关·渡口", "mode": "solo", "map": "dongzheng",
 ##       "players":  [{"faction": "F1", "base": [5, 4]}],
-##       "factions": [{"id": "E1", "ai": "faction", "base": [18, 14], "resource_mult": 1.3,
+##       "factions": [{"id": "E1", "ai": "faction", "base": [18, 14],
+##                     "start_food": 100, "start_gold": 100,  ← 这一方的起手资源（不写 = 默认 0）
 ##                     "attack_target": {"kind": "zone", "zone": 2},
 ##                     "faction_ai": {"generals": 2, "attack_repeat_sec": 12.0}}],
 ##       "allies":   [["E1", "E2"]]        ← 不写就用地图的
@@ -387,6 +388,7 @@ func faction_config(fid: String) -> Dictionary:
 			return d
 	return {
 		"id": fid, "ai": AI_NONE, "base": Vector2i(-1, -1),
+		"start_food": null, "start_gold": null,
 		"attack_target": null, "garrison_ai": null, "reddot_ai": null,
 		"spawn_region": null, "declared": false,
 	}
@@ -1512,10 +1514,15 @@ static func _read_level_factions(v: Variant) -> Array:
 			#   与「关卡里明确写了 false」（新格式，就是不可玩）。
 			"playable": bool(d.get("playable", false)),
 			"playable_declared": d.has("playable"),
-			# ⚠️ 本轮删掉了 `resource_mult` / `start_food` / `start_gold`（AI 不再有资源库）
-			#    与 `faction_ai` / `general_ai`（旧的两套 AI 参数）—— 改成
-			#    `garrison_ai`（阵地性按阵营覆盖）/ `reddot_ai`（红点性按阵营覆盖）/
-			#    `spawn_region`（红点生成区域）。
+			# ★★ 这一方的**起手资源**（2026.10.29 重新加回，口径变了）：
+			#   `start_food` / `start_gold` 是这一方自己的起手；缺省 null = 不覆盖。
+			#   玩家默认 `cfg.start_*`，commander 默认 0（见 `world._apply_level_start_resources`）。
+			#   `resource_mult` 仍然删掉（AI 没有独立的经济倍率）。
+			"start_food": _read_optional_number(d.get("start_food", null)),
+			"start_gold": _read_optional_number(d.get("start_gold", null)),
+			# `faction_ai` / `general_ai`（旧的两套 AI 参数）已删；改成
+			# `garrison_ai`（阵地性按阵营覆盖）/ `reddot_ai`（红点性按阵营覆盖）/
+			# `spawn_region`（红点生成区域）。
 			"attack_target": null, "garrison_ai": null, "reddot_ai": null, "spawn_region": null,
 			# ★★ 指挥官 AI 的按阵营覆盖（{difficulty, ...}）；缺省 null = 用 config。
 			"commander_ai": null,
@@ -1565,6 +1572,14 @@ static func _read_attack_target(d: Dictionary) -> Dictionary:
 	elif kind == TARGET_BASE:
 		out["faction"] = String(d.get("faction", "")).strip_edges()
 	return out
+
+
+## 可选的数字（`factions[].start_food` / `start_gold`）：数字 → `max(0, 值)`；
+## 缺键 / null / 类型不对 → `null`（= 这一方不覆盖起手资源，沿用引擎默认）。
+static func _read_optional_number(v: Variant) -> Variant:
+	if typeof(v) == TYPE_INT or typeof(v) == TYPE_FLOAT:
+		return maxf(0.0, float(v))
+	return null
 
 
 ## `zones[]`：开局的区块归属（每项 {id, owner}）。

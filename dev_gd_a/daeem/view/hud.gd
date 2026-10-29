@@ -54,7 +54,7 @@ const HoverTipRes = preload("res://view/hover_tip.gd")
 const MinimapRes = preload("res://view/minimap.gd")
 ## ★★ 左上角目标栏（战役 / 合作；M12.1 新增，2026.10.20 改为左上两行）。见 view/objective_panel.gd。
 const ObjectivePanelRes = preload("res://view/objective_panel.gd")
-## ★★ 屏幕上方居中的播报横幅（大本营升级）。见 view/broadcast_banner.gd。
+## ★★ 左下角小地图正上方的播报横幅（大本营升级）。见 view/broadcast_banner.gd。
 const BroadcastBannerRes = preload("res://view/broadcast_banner.gd")
 const SideColorRes = preload("res://view/side_color.gd")
 ## ★★ 选项页菜单（仿 nsoc）：HUD 右上角「选项」与主菜单右上角「选项」共用同一套。
@@ -86,7 +86,7 @@ var tech_grid: Control = null
 var hover_tip: Control = null
 ## ★★ 左上角目标栏：有目标才显示（老路径 / 自由对战整块隐藏）。
 var objective_panel: Control = null
-## ★★ 屏幕上方居中的播报横幅（大本营升级；`ui.broadcast` 的尺寸与时长）。
+## ★★ 左下角小地图正上方的播报横幅（大本营升级；`ui.broadcast` 的尺寸与时长）。
 var broadcast_banner: Control = null
 var settings_button: Button = null
 ## ★★ 合作 AI 队友的浮动指令面板（null = 本局没有 AI 队友 / 还没建）。
@@ -106,6 +106,10 @@ var minimap: Control = null
 var faction_placeholder: PanelContainer = null
 ## 资源条（粮食 / 黄金，横排）—— 详细信息面板**正上方**那一条。见 `_build_resource_bar()`。
 var resource_bar: Panel = null
+## ★★ 2026.10.29：上一次写进资源条的文字（键 = "food" / "gold"）。
+##   资源条每帧刷一次，而 `(+n)` 显示到 0.1 ⇒ 一秒里也变不了几次；存一份上次的字符串，
+##   没变就整段跳过（不重设 text、不重设 font_color）。
+var _res_last_text: Dictionary = {}
 
 var _root: Control = null
 
@@ -260,7 +264,7 @@ func setup(p_cfg: ConfigRes, p_world, p_input, theme: Theme, p_camera_rig = null
 	_build_resource_bar()
 	# ★ 目标条在资源条之后、详细信息之前：它只影响屏幕上沿，与底栏无关。
 	_build_objective_panel()
-	# ★ 播报横幅紧跟着建（也是屏幕上沿，位置居中，与左上目标条不重叠）。
+	# ★ 播报横幅紧跟着建（贴左下角、压在小地图上沿，与左上目标条不重叠）。
 	_build_broadcast_banner()
 	_build_detail_panel()
 	_build_command_card()
@@ -576,6 +580,9 @@ func _build_faction_placeholder() -> void:
 ## ★ `mouse_filter = IGNORE`：整块只有字和色块，点不动也不需要拦鼠标
 ##   （边缘滚屏照样能在它上面工作，见 ui_layout.interactive_rects 的规矩）。
 func _build_resource_bar() -> void:
+	# ★ 重新建控件 ⇒ 上一份「写进去的文字」作废（否则新 Label 会因为
+	#   「文字没变」而一直空着 —— 重开一局 / 重建 HUD 时会踩到）。
+	_res_last_text.clear()
 	resource_bar = Panel.new()
 	resource_bar.name = "ResourceBar"
 	resource_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -620,8 +627,10 @@ func _build_resource_bar() -> void:
 		value.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		value.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 		value.clip_text = true
-		# ★ 数字用 FS_BODY（15）：每行 20 高，15 号字（行高 16）装得下。
-		value.add_theme_font_size_override("font_size", UiStyleRes.FS_BODY)
+		# ★★ 2026.10.29：字号 **FS_BODY(15) → FS_SMALL(13)**。
+		#    这一行现在要装「粮食 12345(+12.3)」——15 号字排到 149px，超过 134 的可写宽；
+		#    13 号字最坏（5 位数 + 负的两位数）约 130px，装得下（实测见 route.md 71.4）。
+		value.add_theme_font_size_override("font_size", UiStyleRes.FS_SMALL)
 		value.add_theme_color_override("font_color", UiStyleRes.text())
 		resource_bar.add_child(value)
 		value.position = Vector2(UiLayoutRes.RES_TEXT_X, float(r["y"]))
@@ -639,7 +648,7 @@ func _build_objective_panel() -> void:
 	objective_panel.setup(cfg, world, _font)
 
 
-## ★★ 屏幕上方居中的播报横幅（大本营升级）。建一次，之后 `show_broadcast()` 往里塞。
+## ★★ 左下角小地图正上方的播报横幅（大本营升级）。建一次，之后 `show_broadcast()` 往里塞。
 func _build_broadcast_banner() -> void:
 	broadcast_banner = BroadcastBannerRes.new()
 	_root.add_child(broadcast_banner)
@@ -680,12 +689,35 @@ func _refresh_resource_bar() -> void:
 		{"short": "粮", "key": "food", "label": "粮食"},
 		{"short": "金", "key": "gold", "label": "黄金"},
 	]
+	# ★★ 净额只问一次（`net_per_sec` 会拼两份小字典；放进循环里就白算一遍）
+	var net_rates: Dictionary = world.net_per_sec() if world != null else {}
 	for p in pairs:
 		var l := resource_bar.get_node_or_null("ResText_" + String(p["short"])) as Label
 		if l == null:
 			continue
-		l.text = "%s %d" % [String(p["label"]),
-			int(round(float(res.get(String(p["key"]), 0.0))))]
+		var key := String(p["key"])
+		# ★★ 2026.10.29：资源条 = **数值 + 每秒净增长**（产能 − 维护费 − 科技金耗）。
+		#   净额由 world 统计（`net_per_sec`），界面只负责写出来 —— 扣费口径只有一处。
+		var net := float(net_rates.get(key, 0.0))
+		var text := "%s %d%s" % [String(p["label"]),
+			int(round(float(res.get(key, 0.0)))), _rate_text(net)]
+		# ★ 只在文字真的变了时才写控件 + 换颜色：`add_theme_color_override` 每帧调是白花钱，
+		#   而显示到 0.1 的净额一秒里也变不了几次。
+		if String(_res_last_text.get(key, "")) == text:
+			continue
+		_res_last_text[key] = text
+		l.text = text
+		# 净额是负的 ⇒ 用告警色（断粮 / 科技烧钱时玩家一眼能看见）。
+		l.add_theme_color_override("font_color",
+			UiStyleRes.warn() if net < -0.05 else UiStyleRes.text())
+
+
+## ★★ 资源条上那个 `(+n)` 的写法：**一律带正负号**、1 位小数。
+##   ★ 0 附近（|n| < 0.05）一律写成 `(+0.0)` —— 否则 `-0.0` 会被印成 `(+-0.0)`
+##     （浮点里 `-0.0 >= 0.0` 为真，但 `%.1f` 会印出负号，看着像 bug）。
+static func _rate_text(rate: float) -> String:
+	var v: float = 0.0 if absf(rate) < 0.05 else rate
+	return "(%s%.1f)" % ["+" if v >= 0.0 else "", v]
 
 
 func _build_detail_panel() -> void:
@@ -1700,6 +1732,12 @@ func _hover_tech(entry: Dictionary) -> Dictionary:
 	if line != "":
 		lines.append("效果 %s" % line)
 	var on: bool = world != null and world.is_tech_active(id)
+	# ★★ 2026.10.29：科技变成「每秒扣金的常驻投资」，悬停必须把价钱 / 预热 / 冷却讲清楚 ——
+	#   否则玩家只会看到金在掉，却不知道是哪一格在烧（本版最重要的可读性补丁）。
+	var gps: float = float(entry.get("gold_per_sec", 0.0))
+	var warming: bool = bool(entry.get("warming", false))
+	var warm_left: float = float(entry.get("warmup_left", 0.0))
+	var cd_left: float = float(entry.get("cooldown_left", 0.0))
 	var max_n: int = world.tech_max_active() if world != null else 0
 	var used: int = max_n - (world.tech_remaining_slots() if world != null else 0)
 	var tier: int = int(entry.get("tier", 0))
@@ -1710,17 +1748,27 @@ func _hover_tech(entry: Dictionary) -> Dictionary:
 	lines.append("阶 %s（大本营 %d 级：最高第 %d 阶）" % [
 		_tech_tier_name(tier), base_lv, max_tier])
 	lines.append("状态 %s（同一时间最多启用 %d 条，现在 %d / %d）" % [
-		"已启用" if on else "未启用", max_n, used, max_n])
-	if not on and not bool(entry.get("available", true)):
+		"已启用" if on else ("预热中" if warming else "未启用"), max_n, used, max_n])
+	if gps > 0.0:
+		lines.append("消耗 %s 金／秒（点下那一刻就开始扣，整段启用期间一直扣）" % String.num(gps, 1))
+	if warming:
+		lines.append("预热：还要 %d 秒才生效（中途取消 = 已扣的金不退）" % ceili(warm_left))
+	if cd_left > 0.0:
+		lines.append("★ 断金冷却中：%d 秒内一格都点不了" % ceili(cd_left))
+	if not on and not warming and not bool(entry.get("available", true)):
 		match String(entry.get("reason", "")):
 			"tier":
 				lines.append("现在不能启用：需要更高等级的大本营")
 			"limit":
 				lines.append("现在不能启用：已经启用满 %d 条" % max_n)
+			"cooldown":
+				lines.append("现在不能启用：断金冷却中（%d 秒）" % ceili(cd_left))
+			"warming":
+				lines.append("这一条已经在预热队列里")
 			_:
 				lines.append("现在不能启用")
 	else:
-		lines.append("点这一格 = %s" % ("弃用（把名额让出来）" if on else "启用"))
+		lines.append("点这一格 = %s" % ("弃用（把名额让出来）" if (on or warming) else "启用（30 秒后生效）"))
 	return _hover_text(String(entry.get("name", "")), lines)
 
 
@@ -2143,7 +2191,11 @@ func _on_tech_cell_activated(id: String) -> void:
 		return
 	if input_ctrl == null or world == null or id == "":
 		return
-	var on: bool = not world.is_tech_active(id)
+	# ★★ 2026.10.29：预热中的格子再点一下 = **取消**，所以「现在是开着的」要把
+	#    `is_warming` 也算进去（否则点了会变成「再启用一次」，而那次会被拒）。
+	var is_on: bool = world.is_tech_active(id) \
+		or (world.tech != null and world.tech.is_warming(id, world.my_faction))
+	var on: bool = not is_on
 	if on and world.tech_remaining_slots() <= 0:
 		var max_n: int = world.tech_max_active()
 		show_notice("最多只能同时启用 %d 个科技：先点一个已启用的弃用" % max_n)
@@ -2683,6 +2735,11 @@ func tech_reject_text(reason: String) -> String:
 		"tier":
 			var t: int = world.tech_max_tier() if world != null else 3
 			return "这条科技超出当前大本营允许的阶数（最高第 %d 阶）：升级大本营后再启用" % t
+		"cooldown":
+			# ★★ 2026.10.29 断金：全部科技被弃用 + 全科技锁 30 秒，之后还要重新预热。
+			return "金不够，科技全部失效了：等冷却结束再重新启用（启用后还要再等 30 秒预热）"
+		"warming":
+			return "这一条已经在预热队列里了，再点一次是取消"
 		"unknown":
 			return "没有这条科技"
 	return "这条科技现在启用不了"

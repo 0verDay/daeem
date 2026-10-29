@@ -1,0 +1,123 @@
+{
+  "name": "between_moutains",
+  "mode": "solo",
+  "map": "between_moutains",
+  "players": [
+    {
+      "faction": "p1"
+    },
+    {
+      "faction": "p2"
+    }
+  ],
+  "factions": [
+    {
+      "id": "p1",
+      "ai": "none",
+      "base": [
+        28,
+        30
+      ],
+      "start_food": 100,
+      "start_gold": 100,
+      "name": "p1",
+      "color": "#ffd166",
+      "playable": true
+    },
+    {
+      "id": "p2",
+      "ai": "none",
+      "base": [
+        8,
+        1
+      ],
+      "start_food": 100,
+      "start_gold": 100,
+      "name": "p2",
+      "color": "#5ac8ff",
+      "playable": true
+    }
+  ],
+  "allies": [],
+  "zones": [
+    {
+      "id": 0,
+      "owner": "p2"
+    },
+    {
+      "id": 1,
+      "owner": ""
+    },
+    {
+      "id": 2,
+      "owner": "p1"
+    },
+    {
+      "id": 3,
+      "owner": ""
+    },
+    {
+      "id": 4,
+      "owner": ""
+    },
+    {
+      "id": 5,
+      "owner": ""
+    },
+    {
+      "id": 6,
+      "owner": ""
+    },
+    {
+      "id": 7,
+      "owner": ""
+    },
+    {
+      "id": 8,
+      "owner": ""
+    },
+    {
+      "id": 9,
+      "owner": ""
+    },
+    {
+      "id": 10,
+      "owner": ""
+    },
+    {
+      "id": 11,
+      "owner": ""
+    },
+    {
+      "id": 12,
+      "owner": ""
+    },
+    {
+      "id": 13,
+      "owner": ""
+    },
+    {
+      "id": 14,
+      "owner": ""
+    },
+    {
+      "id": 15,
+      "owner": ""
+    }
+  ],
+  "start_units": [],
+  "start_buildings": [],
+  "objectives": [
+    {
+      "for": "p1",
+      "kind": "capture_zone",
+      "zone": 0
+    },
+    {
+      "for": "p2",
+      "kind": "capture_zone",
+      "zone": 2
+    }
+  ],
+  "fail_conditions": []
+}

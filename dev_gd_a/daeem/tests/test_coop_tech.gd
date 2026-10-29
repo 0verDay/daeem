@@ -47,19 +47,20 @@ func _run() -> void:
 	ok(w.set_tech_active("food_1", true, "F2"), "客机能启用 food_1")
 	ok(w.set_tech_active("building_hp", true, "F2"), "客机能启用 building_hp")
 	ok(w.set_tech_active("zone_population", true, "F2"), "客机能启用 zone_population")
+	# ★★ 2026.10.29：三条都要**预热满 30 秒**才真生效（点下去只是排队 + 开始扣金）。
+	finish_tech_warmup(w, cfg)
 
 	ok(w.seat_tech_effects.has("F1") and w.seat_tech_effects.has("F2"),
 		"★ 两个玩家席位各有一份科技效果")
-	near(float(w.seat_tech_effects["F1"].get("food_per_tile_per_sec", 0.0)), 0.0, 1e-6,
-		"★ 房主没启用粮食科技 → 房主那份是 0")
-	near(float(w.seat_tech_effects["F2"].get("food_per_tile_per_sec", 0.0)), 0.04, 1e-6,
-		"★★ 客机启用的粮食科技只在客机那份里")
+	near(float(w.seat_tech_effects["F1"].get("food_production_mult", 0.0)), 0.0, 1e-6,
+		"★ 房主没启用粮食科技 → 房主那份是 +0%")
+	near(float(w.seat_tech_effects["F2"].get("food_production_mult", 0.0)), 0.10, 1e-6,
+		"★★ 客机启用的粮食科技只在客机那份里（+10%）")
 
-	var tiles: int = w.zones.owned_tile_count("F2")
 	var base_rate: Dictionary = w.zones.production_of("F2")
 	var with_tech: Dictionary = w._accumulate_production("F2", false, w.seat_tech_effects["F2"])
-	near(float(with_tech["food"]) - float(base_rate["food"]),
-		float(tiles) * 0.04, 1e-6, "★ 客机的粮食产量按自己的地块数加 0.04/格")
+	near(float(with_tech["food"]), float(base_rate["food"]) * 1.1, 1e-6,
+		"★ 客机的粮食产量 = **自己的总体产能 ×1.1**（2026.10.29 起不再按地块数加）")
 
 	near(w.tech_population_mult("F1"), 1.0, 1e-6, "房主人口倍率仍是 1.0")
 	near(w.tech_population_mult("F2"), 1.1, 1e-6, "★ 客机人口倍率是 1.1")

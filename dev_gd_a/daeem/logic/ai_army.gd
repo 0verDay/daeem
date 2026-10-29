@@ -18,6 +18,9 @@
 ##   · **闲置部队有活干**（2026.10.25）：缺编队（有 1~2 个兵）去己方前线区划
 ##     中心 / 隘口驻守；满编队去敌方 / 中立边界外侧侦察，顺路占没有守军的空区划。
 ##     侦察看到接近自己规模的敌军就整队撤；没有安全侦察目标时，满编队去前线守备。
+##   · **资源充足时补到编制上限**（2026.10.29）：浮存超过 `economy.max_float_food/gold`
+##     且 `production.fill_to_cap_when_rich` 开着时，`recruit_candidates()` 的目标从
+##     home/field 规模抬到该将领的 `1 + effective_retinue_cap`；钱不够时仍是旧行为。
 ##
 ## 四条玩家指令仍然在这里落地：
 ##   · march   —— 行军攻击到玩家点选的目标点，到达后驻守；目标是敌方区划中心时自然读条占领。
@@ -37,6 +40,7 @@ extends RefCounted
 const CommandProcessorRes = preload("res://logic/command_processor.gd")
 const FactionRes = preload("res://logic/faction.gd")
 const GridRes = preload("res://logic/grid.gd")
+const AiEconomyRes = preload("res://logic/ai_economy.gd")
 
 
 static func update(ai, dt: float) -> void:
@@ -602,6 +606,28 @@ static func ready_field_teams(ai, min_units: int) -> Array:
 	return out
 
 
+## ★★ 这一队当前的补员目标人数（含将领本人）。
+##
+## 基础目标 = 守军 `home_team_size` / 外勤 `field_team_size`。
+## 资源充足（浮存 > `economy.max_float_food` / `max_float_gold`，见 AiEconomyRes.float_excess）
+## 且 `production.fill_to_cap_when_rich` 开着时，目标抬到该将领的**编制上限**
+## （1 + effective_retinue_cap；`world.can_recruit` 仍会在 cap 处硬拦）。
+## ★ 这里只影响「往一队里补兵」，不改补将判定（`understaffed_team_count` 仍用基础目标）——
+##   否则富余的 AI 会先把现有几支队伍塞满、却不补新的将领。
+static func team_target(ai, leader, is_home: bool) -> int:
+	if ai == null or ai.world == null:
+		return 1
+	var pc: Dictionary = ai.profile.get("production", {})
+	var base_target := maxi(1, _i(pc, "home_team_size" if is_home else "field_team_size", 6))
+	if leader == null:
+		return base_target
+	if not bool(pc.get("fill_to_cap_when_rich", true)):
+		return base_target
+	if not AiEconomyRes.float_excess(ai):
+		return base_target
+	return maxi(base_target, 1 + int(ai.world.effective_retinue_cap(leader)))
+
+
 ## ★★ 生产候选：己方区划内、还没补到「本队目标规模」的将领（守军优先）。
 ##
 ## 返回数组元素：{leader, deficit, escorts, garrison, prio}，已按 prio 降序排好。
@@ -609,9 +635,6 @@ static func ready_field_teams(ai, min_units: int) -> Array:
 ##   固定兵营一路招到上限。
 static func recruit_candidates(ai) -> Array:
 	var home = ensure_garrison(ai)
-	var pc: Dictionary = ai.profile.get("production", {})
-	var home_size := maxi(1, _i(pc, "home_team_size", 6))
-	var field_size := maxi(1, _i(pc, "field_team_size", 4))
 	var ec: Dictionary = ai.profile.get("expand", {})
 	var min_escorts := maxi(1, _i(ec, "min_field_units", 3) - 1)
 	var base = ai.world.find_base_of(ai.faction)
@@ -632,7 +655,7 @@ static func recruit_candidates(ai) -> Array:
 				String((z as Dictionary).get("owner", "")), ai.faction):
 			continue
 		var is_home: bool = home != null and u == home
-		var target_size := home_size if is_home else field_size
+		var target_size := team_target(ai, u, is_home)
 		var projected := team_projected(ai, u)
 		var deficit := target_size - projected
 		if deficit <= 0:
@@ -725,6 +748,11 @@ static func understaffed_team_count(ai) -> int:
 	var n := 0
 	for t in leader_teams(ai):
 		var leader = t["leader"]
+		# ★★ 2026.10.29：开局探索队在外面补不了兵（招募要求将领站在己方区划里），
+		#   不能因为它「还没满编」就一直挡住补将 —— 否则第二支将领要等整整 60 秒
+		#   探索窗口结束才出现，AI 的开局发展整段被卡住。
+		if _is_early_explorer(ai, String(leader.id)):
+			continue
 		var target := home_size if home != null and leader == home else field_size
 		var need := maxi(2, target - margin)
 		if team_projected(ai, leader) < need:
@@ -1214,7 +1242,10 @@ static func _early_explore_tick(ai) -> bool:
 			return false
 		ai.explore_phase = "out"
 		ai.explore_target = target
-		ai.explore_until = now + maxf(4.0, float(ecfg.get("hold_sec", 16.0)))
+		ai.explore_until = now + _explore_hold_sec(ai, ecfg)
+		# ★ 目标是安全区划中心：留出「走过去 + 读满条」的时间。
+		if _early_capture_zone_at(ai, ai.explore_target) != null:
+			ai.explore_until = now + _capture_wait_sec(ai, ecfg)
 		ai.explore_away = false
 		_move_team(ai, team, ai.explore_target, true)
 		ai.stats["explores"] = int(ai.stats.get("explores", 0)) + 1
@@ -1230,6 +1261,16 @@ static func _early_explore_tick(ai) -> bool:
 			if leader.target != null or _enemy_strength_near(ai, leader.pos, threat_radius) > 0.0:
 				_stop_early_explore(ai)
 				return false
+		# ★★ 2026.10.29：目标是安全区划中心 → 站进去读条，直到归属翻过来。
+		#    旧逻辑「到点（≤3 格）就换下一个目标」会让探索队永远占不下地：
+		#    占领需要在中心 3×3 内连续站满 capture_time_sec（默认 16 秒）。
+		if bool(ecfg.get("capture_safe", true)):
+			var cap_zone: Variant = _early_capture_zone_at(ai, ai.explore_target)
+			if cap_zone != null:
+				return _hold_early_capture(ai, team, leader, cap_zone)
+			# 刚占下一块：给这次外出续一段时间，好接着去占下一块安全区划。
+			if _at_owned_zone_center(ai, ai.explore_target):
+				ai.explore_until = maxf(float(ai.explore_until), now + _explore_hold_sec(ai, ecfg))
 		if now >= float(ai.explore_until):
 			ai.explore_phase = "home"
 			ai.explore_until = now + maxf(4.0, float(ecfg.get("hold_sec", 16.0)) * 0.5)
@@ -1242,7 +1283,9 @@ static func _early_explore_tick(ai) -> bool:
 			var next: Variant = _pick_explore_target(ai, leader)
 			if next != null and (next as Vector2).distance_to(ai.explore_target) > 4.0:
 				ai.explore_target = next
-				ai.explore_until = now + maxf(4.0, float(ecfg.get("hold_sec", 16.0)))
+				ai.explore_until = now + _explore_hold_sec(ai, ecfg)
+				if _early_capture_zone_at(ai, ai.explore_target) != null:
+					ai.explore_until = now + _capture_wait_sec(ai, ecfg)
 				_move_team(ai, team, ai.explore_target, true)
 				ai.stats["explores"] = int(ai.stats.get("explores", 0)) + 1
 				ai.note_status("exploring")
@@ -1283,6 +1326,13 @@ static func _pick_explore_target(ai, leader) -> Variant:
 	var ecfg: Dictionary = ai.profile.get("early_explore", {})
 	var max_d := maxf(4.0, float(ecfg.get("max_distance_tiles", 22.0)))
 	var start_d := maxf(3.0, float(ecfg.get("min_start_distance_tiles", 6.0)))
+	# ★★ 2026.10.29（开局发展）：优先去占「与己方相邻、无主、附近没有敌人」的安全区划。
+	#   旧逻辑只挑离基地 ≥6 格的远处点探索，一到点就换下一个，**从不停下来读条**，
+	#   于是开局前 60 秒一块地都占不下来。这里把「占周围安全区划」放在探索之前。
+	if bool(ecfg.get("capture_safe", true)):
+		var safe: Variant = _pick_early_capture_target(ai, leader)
+		if safe != null:
+			return (safe as Dictionary).get("pt", null)
 	var pick: Variant = _pick_scout_target(ai, leader)
 	if pick != null and typeof(pick) == TYPE_DICTIONARY:
 		var pv: Variant = (pick as Dictionary).get("pt", null)
@@ -1315,6 +1365,152 @@ static func _pick_explore_target(ai, leader) -> Variant:
 		best_d = d
 		best = pt
 	return best
+
+
+## ★★ 2026.10.29：开局发展的「安全区划」候选 —— 与己方相邻、无主、中心附近没有可见敌人。
+##
+## 评分沿用扩张那一套「缺什么补什么」：粮食 / 黄金收入越低，对应产能越值钱；
+## 再按距离扣分（开局只有一支小队，跑太远等于不发展）。
+##
+## @return {zone: Dictionary, pt: Vector2} 或 null
+static func _pick_early_capture_target(ai, leader) -> Variant:
+	if ai == null or ai.world == null or ai.world.zones == null:
+		return null
+	if leader == null or not leader.alive or leader.is_downed():
+		return null
+	var my_ids := _my_zone_ids(ai)
+	if my_ids.is_empty():
+		return null
+	var ec: Dictionary = ai.profile.get("expand", {})
+	var threat_radius := maxf(0.0, float(ec.get("threat_radius", 6.0)))
+	var target_food := maxf(0.5, float(ec.get("target_food_income", 4.0)))
+	var target_gold := maxf(0.5, float(ec.get("target_gold_income", 4.0)))
+	var target_pop := clampf(float(ec.get("target_population_ratio", 0.35)), 0.0, 1.0)
+	var income: Dictionary = ai.world.zones.production_of(ai.faction)
+	var food_need := clampf(1.0 - float(income.get("food", 0.0)) / target_food, 0.0, 1.0)
+	var gold_need := clampf(1.0 - float(income.get("gold", 0.0)) / target_gold, 0.0, 1.0)
+	var pop_need := clampf(1.0 - _owned_population_ratio(ai) / maxf(0.01, target_pop), 0.0, 1.0)
+	# 开局小队尽量打近处的安全区划：距离权重比常规扩张更大。
+	var dist_w := maxf(0.05, float(ec.get("distance_weight", 0.15)) * 3.0)
+	var best: Variant = null
+	var best_score := -INF
+	var best_id := 1 << 30
+	for z in ai.world.zones.zones:
+		if typeof(z) != TYPE_DICTIONARY:
+			continue
+		var zd: Dictionary = z
+		var zid := int(zd.get("id", -1))
+		if my_ids.has(zid) or ai.failed_expand_zones.has(zid):
+			continue
+		# ★ 只占「无主」区划；敌方区划留给常规扩张 / 进攻，开局不主动挑事。
+		if String(zd.get("owner", "")) != "":
+			continue
+		var cv: Variant = zd.get("center", null)
+		if cv == null or not _adjacent_to_mine(ai, zd, my_ids):
+			continue
+		var ct: Vector2i = cv
+		var pt := GridRes.center_of(ct)
+		if _enemy_strength_near(ai, pt, threat_radius) > 0.0:
+			continue
+		if _scout_target_taken(ai, pt, 5.0):
+			continue
+		var prod: Dictionary = zd.get("production", {})
+		var score := 5.0
+		score += float(prod.get("food", 0.0)) * (0.8 + 1.6 * food_need)
+		score += float(prod.get("gold", 0.0)) * (0.8 + 1.6 * gold_need)
+		score += float(prod.get("population", 0.0)) * (0.5 + 1.0 * pop_need)
+		score -= leader.pos.distance_to(pt) * dist_w
+		if score > best_score + 1e-6 \
+				or (absf(score - best_score) <= 1e-6 and zid < best_id):
+			best_score = score
+			best_id = zid
+			best = {"zone": zd, "pt": pt}
+	return best
+
+
+## `pt` 正好落在某个区划中心上时返回那个区划（不论归属）；否则 null。
+static func _zone_center_at(ai, pt: Vector2) -> Variant:
+	if ai == null or ai.world == null or ai.world.zones == null:
+		return null
+	var z: Variant = ai.world.zones.zone_at(int(floor(pt.x)), int(floor(pt.y)))
+	if z == null or typeof(z) != TYPE_DICTIONARY:
+		return null
+	var zd: Dictionary = z
+	var cv: Variant = zd.get("center", null)
+	if cv == null:
+		return null
+	var ct: Vector2i = cv
+	if GridRes.center_of(ct).distance_to(pt) > 0.75:
+		return null
+	return zd
+
+
+## 如果 `pt` 正好是某个「还值得占」的区划中心，返回那个区划；否则 null。
+## 开局探索用它判断「当前目标是不是要去读条的区划中心」。
+static func _early_capture_zone_at(ai, pt: Vector2) -> Variant:
+	var z: Variant = _zone_center_at(ai, pt)
+	if z == null:
+		return null
+	if not _zone_worth_taking(ai, z as Dictionary):
+		return null
+	return z
+
+
+## 这个探索目标是不是「刚刚被自己占下来的区划中心」。
+static func _at_owned_zone_center(ai, pt: Vector2) -> bool:
+	var z: Variant = _zone_center_at(ai, pt)
+	if z == null:
+		return false
+	return String((z as Dictionary).get("owner", "")) == ai.faction
+
+
+## 占领判定的半径（切比雪夫格数；默认 1 = 中心 3×3）。
+static func _capture_radius(ai) -> int:
+	if ai == null or ai.cfg == null:
+		return 1
+	return maxi(0, int(ai.cfg.zone_capture_radius_tiles))
+
+
+## 一次「出门探索」的时长：普通探索用 hold_sec；去占安全区划时要留出读条时间。
+static func _explore_hold_sec(ai, ecfg: Dictionary) -> float:
+	return maxf(4.0, float(ecfg.get("hold_sec", 16.0)))
+
+
+## 「走到目标 + 读满一条占领进度」的预留时间（默认 16 + 8 秒）。
+static func _capture_wait_sec(ai, ecfg: Dictionary) -> float:
+	var cap := 16.0
+	if ai != null and ai.cfg != null:
+		cap = maxf(1.0, float(ai.cfg.capture_time_sec))
+	return maxf(_explore_hold_sec(ai, ecfg), cap + 8.0)
+
+
+## ★★ 2026.10.29：开局探索队到达安全区划中心后**站住读条**。
+##
+## 旧逻辑一到点（欧氏距离 ≤3）就换下一个目标，而占领要求单位在中心 3×3 内连续站
+## `capture_time_sec`（默认 16 秒）—— 于是「探索」永远占不下来任何地。
+## 这里改成：站进中心邻域后不再换目标，直到归属翻过来（`_zone_worth_taking` 变 false），
+## 或者附近出现敌人（开局小队不主动打，换下一个安全目标）。
+##
+## @return true = 这一 tick 由本函数接管
+static func _hold_early_capture(ai, team: Dictionary, leader, zone: Dictionary) -> bool:
+	var ec: Dictionary = ai.profile.get("expand", {})
+	var threat_radius := maxf(0.0, float(ec.get("threat_radius", 6.0)))
+	var cv: Vector2i = zone["center"]
+	var cpt := GridRes.center_of(cv)
+	# 有人来抢 / 路上撞见敌人：放弃这块，交给下一 tick 重新挑一个安全目标。
+	if _enemy_strength_near(ai, cpt, threat_radius) > 0.0 \
+			or _enemy_strength_near(ai, leader.pos, threat_radius) > 0.0:
+		ai.explore_phase = ""
+		ai.explore_target = Vector2.ZERO
+		ai.explore_until = 0.0
+		return true
+	var radius := _capture_radius(ai)
+	var dx := absi(int(leader.tx) - cv.x)
+	var dy := absi(int(leader.ty) - cv.y)
+	if maxi(dx, dy) > radius:
+		# 还没站进中心邻域：普通移动过去（不切成行军攻击，开局不主动打）。
+		_move_team(ai, team, cpt, false)
+	return true
 
 
 ## ★★ 小股部队不跟成规模的敌人硬碰硬：附近可见敌军明显多于自己时，先撤回基地 / 己方区划整备。

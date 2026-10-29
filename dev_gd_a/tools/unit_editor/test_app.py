@@ -667,28 +667,29 @@ def t_tech_form(app, model) -> None:
     pick(app, "t:0")
     entries = sidebar_entries(app)
     ok("名称" in entries and "第二行小字" in entries and "说明" in entries, "文案三件套")
-    ok("粮食产量" in entries, "★ 有「粮食产量」这一条加成的输入框")
-    ok("黄金产量" in entries, "★ 没有的加成也列出来（填数字 = 加上它）")
+    ok("粮食产能" in entries, "★ 有「粮食产能」这一条加成的输入框")
+    ok("黄金产能" in entries, "★ 没有的加成也列出来（填数字 = 加上它）")
 
     type_into(app, E(app, "名称"), "粮食产量 甲")
     eq(data(model)["tech"]["list"][0]["name"], "粮食产量 甲", "改科技名称")
     eq(app.tech_tree.item("t:0", "values")[0], "粮食产量 甲", "列表刷新")
     type_into(app, sidebar_entries(app)["第二行小字"], "粮食 +++")
     eq(data(model)["tech"]["list"][0]["line"], "粮食 +++", "改第二行小字")
-    type_into(app, sidebar_entries(app)["粮食产量"], "2.5")
-    eq(data(model)["tech"]["list"][0]["effect"]["food_per_tile_per_sec"], 2.5, "★ 改加成数值")
-    eq(app.tech_tree.item("t:0", "values")[2], "粮食产量 +2.5", "列表里的加成跟着变")
+    type_into(app, sidebar_entries(app)["粮食产能"], "0.25")
+    eq(data(model)["tech"]["list"][0]["effect"]["food_production_mult"], 0.25,
+       "★ 改加成数值（总体产能 +25%）")
+    eq(app.tech_tree.item("t:0", "values")[2], "粮食产能 +0.25", "列表里的加成跟着变")
 
     # 加一条原来没有的加成
-    type_into(app, sidebar_entries(app)["黄金产量"], "3")
-    eq(data(model)["tech"]["list"][0]["effect"]["gold_per_tile_per_sec"], 3,
+    type_into(app, sidebar_entries(app)["黄金产能"], "0.3")
+    eq(data(model)["tech"]["list"][0]["effect"]["gold_production_mult"], 0.3,
        "★ 填一个数 = 加上这条加成")
     # 删一条
     btn = buttons(app).get("删掉这条")
     ok(btn is not None, "有「删掉这条」按钮")
     btn.invoke()
     app.root.update()
-    eq(list(data(model)["tech"]["list"][0]["effect"].keys()), ["gold_per_tile_per_sec"],
+    eq(list(data(model)["tech"]["list"][0]["effect"].keys()), ["gold_production_mult"],
        "★ 删掉第一条加成（粮食那条没了）")
 
     # 「最多启用几条」

@@ -84,6 +84,79 @@ var morale_aura_bonus: Dictionary = {}
 ##    0.25 秒的延迟在士气这种慢变量上完全看不出来，但把每帧开销压到 1/15。
 const MORALE_AURA_REFRESH_SEC := 0.25
 var _morale_aura_timer: float = 0.0
+
+## ★★ 2026.10.29：**断粮阵营**表（阵营 id → true）。
+##
+## 「断粮」= 这一帧**付不起全额单位维护费**（见 `_tick_upkeep`）。它只管一件事：
+## 让 `morale._zone_morale_rate` 给这一方**所有单位**额外扣 `morale.starve_drain`（=0.5 点/秒，
+## 与粮车光环等速 ⇒ 一辆粮车刚好抵消）。
+## ★ 每帧重算、只保留当前帧的状态（不跨帧累积），所以字典里出现的键永远只有「正在挨饿」的那几方。
+## ⚠️ 只有**有资源池**的阵营会进来：阵地性 / 红点性 AI 资源无限，永远不会断粮。
+var starving_factions: Dictionary = {}
+
+
+## 这一方现在是不是在断粮（士气那边每帧每锚都会问一次）。
+func is_starving(faction: String) -> bool:
+	return bool(starving_factions.get(faction, false))
+
+
+## ★★ 2026.10.29：**每秒消耗**的两个缓存（阵营 → 每秒扣多少）。
+##
+## 它们只有一个用途：让 HUD 资源条那个 `(+n)` 能算出**净**每秒收支
+## （= 产能 − 维护费 − 科技金耗）。权威计算发生在 `_tick_upkeep` 里（每帧写一次），
+## 这里只是把结果留下来给界面读 —— 界面绝不自己再算一遍扣费口径。
+##   · `_upkeep_food_rate[f]` —— 单位维护费（粮/秒）
+##   · `_tech_gold_rate[f]`   —— 启用中（含预热中）科技的扣金（金/秒）
+## ⚠️ 只在**有资源池**的阵营上有值（阵地 / 红点 AI 不收钱，字典里就没有它们）。
+var _upkeep_food_rate: Dictionary = {}
+var _tech_gold_rate: Dictionary = {}
+
+
+## ★★ 每秒**净**收支：产能 − 维护费 − 科技金耗。就是资源条上那个 `(+n)`。
+## @param faction 空 = 本机席位
+## @return {"food": float, "gold": float}
+## ★ 负数表示「每秒在跌」；断粮 / 断金时它一定是负的（那正是玩家该看见的信号）。
+func net_per_sec(faction: String = "") -> Dictionary:
+	var b := income_breakdown(faction)
+	return {
+		"food": float((b["food"] as Dictionary)["net"]),
+		"gold": float((b["gold"] as Dictionary)["net"]),
+	}
+
+
+## ★★ 每秒收支的**明细**（产能 / 维护费 / 科技金耗 / 净额）—— 悬停稿、调试、测试用。
+##
+## @return {
+##   "food": {"produce": float, "upkeep": float, "tech": float, "net": float},
+##   "gold": {"produce": float, "upkeep": float, "tech": float, "net": float},
+## }
+## ★ 产能那一项**已经含科技的百分比加成**（它就是 `production_*` 那一份）；
+##   科技的金耗单独列在 `gold.tech`，所以玩家能分清「我产多少」和「科技烧多少」。
+func income_breakdown(faction: String = "") -> Dictionary:
+	var f: String = faction if faction != "" else my_faction
+	var prod_food := 0.0
+	var prod_gold := 0.0
+	if f == my_faction:
+		# 本机席位：直接用每帧算好的那两个数（含科技加成，见 `_accumulate_production`）
+		prod_food = float(production_food)
+		prod_gold = float(production_gold)
+	elif zones != null:
+		# 别的席位（合作队友 / 调试）：现算一份**不落字段**的（local = false）
+		var eff: Variant = seat_tech_effects.get(f, {})
+		var rate: Dictionary = _accumulate_production(f, false,
+			eff if typeof(eff) == TYPE_DICTIONARY else {})
+		prod_food = float(rate["food"])
+		prod_gold = float(rate["gold"])
+	var upkeep := float(_upkeep_food_rate.get(f, 0.0))
+	var tech_gold := float(_tech_gold_rate.get(f, 0.0))
+	return {
+		"food": {"produce": prod_food, "upkeep": upkeep, "tech": 0.0,
+			"net": prod_food - upkeep},
+		"gold": {"produce": prod_gold, "upkeep": 0.0, "tech": tech_gold,
+			"net": prod_gold - tech_gold},
+	}
+
+
 var units: Array = []
 ## ★★ 在飞的射箭投掷物（本轮新增，见 logic/projectile.gd）。
 ##    它们是**权威状态**（伤害在命中那一刻才结算），所以和 units / building_list 一样
@@ -428,6 +501,11 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	projectiles = []
 	morale_aura_bonus = {}
 	_morale_aura_timer = 0.0
+	# ★★ 断粮标记：每帧重算的临时状态，重开一局必须从「没人挨饿」开始。
+	starving_factions = {}
+	# ★★ 每秒消耗的缓存同理（上一局的维护费 / 科技金耗不能带到下一局）。
+	_upkeep_food_rate = {}
+	_tech_gold_rate = {}
 	# ★ 驻地性 AI 的节流状态：重开一局必须从「首帧」重新开始。
 	garrison_ai_accum = 0.0
 	garrison_ai_primed = false
@@ -737,6 +815,10 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 			resources = op
 			player_resources[my_faction] = resources
 
+	# ★★ 2026.10.29：关卡 `factions[]` 的逐阵营起手资源 —— 放在最后，
+	#    玩家池 / commander 池 / 观战别名都已就位。
+	_apply_level_start_resources()
+
 
 ## 把地图里每个区块的「区划中心」落成一栋中立障碍建筑（无血量 / 无敌 / 无攻击）。
 ##
@@ -837,9 +919,11 @@ func _setup_ai_commanders() -> void:
 		var fid := String(f)
 		_prepare_commander_units(fid)
 		var profile: Dictionary = AiProfileRes.build(cfg, fid, ai_roster_cfg, ai_profiles)
+		# ★★ 2026.10.29：commander 默认**没有额外起手资源**；只有关卡
+		#    `factions[].start_food/start_gold` 会覆盖（见 `_apply_level_start_resources`）。
 		ai_faction_resources[fid] = {
-			"food": float(profile.get("start_food", 250.0)),
-			"gold": float(profile.get("start_gold", 250.0)),
+			"food": float(profile.get("start_food", 0.0)),
+			"gold": float(profile.get("start_gold", 0.0)),
 		}
 		ai_directives[fid] = {
 			"kind": "auto",
@@ -854,43 +938,47 @@ func _setup_ai_commanders() -> void:
 		var c = AiCommanderRes.new()
 		c.setup(self, cfg, fid, profile)
 		ai_commanders[fid] = c
-	# ★★ 2026.10.26：合作关 + 同方 commander 时，把玩家的起手抬到正常难度基准。
-	#    放在这里（而不是 `_reset_player_pools()`）是因为此时 commander 名单与 AI 资源池都已就位。
-	_align_player_start_with_commander_ally()
 
 
-## ★★ 2026.10.26 合作 AI 队友的起手资源对齐（用户口径）：
-##   · 只在**合作关**（`level.mode == coop`）且有**同方 commander**时生效；
-##   · 玩家起手 = max(`cfg.start_food/gold`, **normal 难度基准**)；
-##     AI 自己的起手仍按它自己的难度，**不跟随**（normal = 250 / easy = 150 / hard = 350）；
-##   · 本机席位的 `player_resources[my_faction]` 与 `world.resources` 是同一个对象，
-##     所以只改前者即可，HUD / 经济 / 快照自然同步。
-func _align_player_start_with_commander_ally() -> void:
-	if level == null or String(level.mode) != LevelRes.MODE_COOP:
+## ★★ 2026.10.29：关卡 `factions[]` 的**阵营起手资源**。
+##
+## 用户口径：
+##   · commander AI 默认**不带额外资源**（0）；玩家沿用 `cfg.start_*`（默认也是 0）；
+##   · 只有关卡 / 战役编辑器给某一方写了 `start_food` / `start_gold` 才覆盖那一方；
+##   · 双方各配各的，不因为一方有资源就去抬另一方。
+##
+## ★ 只覆盖写了的那一个键；缺省 null = 保持这一方原来的起手。
+## ★ 必须放在 `_setup_ai_commanders()` 之后：两条资源路（玩家池 / AI 池）都已建好，
+##   观战局里 `resources` 也已别名到被观察 AI 的钱包。
+func _apply_level_start_resources() -> void:
+	if level == null:
 		return
-	if observer_mode or player_factions.is_empty():
-		return
-	for f in player_factions:
-		var fid := String(f)
-		var food := float(cfg.start_food)
-		var gold := float(cfg.start_gold)
-		for cf in commander_factions():
-			var cid := String(cf)
-			if not FactionRes.same_side_for_attack(fid, cid):
-				continue
-			# 固定 normal 基准：临时覆盖难度再 build 一次，关卡里的其它 commander_ai 键照旧合并。
-			var normal_ov: Dictionary = {}
-			normal_ov[cid] = {"difficulty": "normal"}
-			var base: Dictionary = AiProfileRes.build(
-				cfg, cid, ai_roster_cfg, normal_ov)
-			food = maxf(food, float(base.get("start_food", 250.0)))
-			gold = maxf(gold, float(base.get("start_gold", 250.0)))
-		var pool: Variant = player_resources.get(fid, null)
-		if typeof(pool) != TYPE_DICTIONARY:
+	for item in level.faction_meta:
+		if typeof(item) != TYPE_DICTIONARY:
 			continue
-		var pd: Dictionary = pool
-		pd["food"] = food
-		pd["gold"] = gold
+		var entry: Dictionary = item
+		var fid := String(entry.get("id", ""))
+		if fid == "":
+			continue
+		var food: Variant = entry.get("start_food", null)
+		var gold: Variant = entry.get("start_gold", null)
+		if food == null and gold == null:
+			continue
+		var p: Variant = player_resources.get(fid, null)
+		if typeof(p) == TYPE_DICTIONARY:
+			_override_pool_start(p as Dictionary, food, gold)
+		var q: Variant = ai_faction_resources.get(fid, null)
+		if typeof(q) == TYPE_DICTIONARY:
+			_override_pool_start(q as Dictionary, food, gold)
+		if fid == my_faction:
+			_override_pool_start(resources, food, gold)
+
+
+static func _override_pool_start(pool: Dictionary, food: Variant, gold: Variant) -> void:
+	if food != null:
+		pool["food"] = float(food)
+	if gold != null:
+		pool["gold"] = float(gold)
 
 
 ## commander 的单位不能带「阵地性 AI」状态：GarrisonAi 会按 `is_garrison()` 接管，
@@ -1082,9 +1170,9 @@ func _effective_allies() -> Array:
 ## ★ 非本机席位（合作模式的客机）**照样要开池子**：房主侧替它执行命令时要扣它的钱。
 ##   ⚠️ 两边都从 `cfg.start_food` / `cfg.start_gold` 起手 —— 与单机完全一致
 ##      （「资源各自独立」说的是**之后**各花各的，不是开局给的不一样）。
-## ★★ 2026.10.26：合作关里若有同方 commander，玩家起手会在 `_setup_ai_commanders()`
-##    末尾被抬到 normal 难度基准（见 `_align_player_start_with_commander_ally()`）；
-##    这里仍然先按 `cfg.start_*` 建池，抬升在 AI 名单 / 资源池就位之后做。
+## ★★ 2026.10.29：这里先按 `cfg.start_*` 建池；`reset()` 末尾的
+##    `_apply_level_start_resources()` 再用关卡 `factions[].start_food/start_gold`
+##    覆盖**写了的那一方**（没写的保持 `cfg.start_*` / commander 默认 0）。
 func _reset_player_pools() -> void:
 	resources = {"food": cfg.start_food, "gold": cfg.start_gold}
 	player_resources = {}
@@ -4886,7 +4974,8 @@ func tech_remaining_slots(faction: String = "") -> int:
 	if tech == null:
 		return 0
 	var f := _tech_faction(faction)
-	return maxi(0, tech_max_active(f) - tech.active_count(f))
+	# ★★ 2026.10.29：预热中的也算占用名额（与 tech.slot_count 同一口径）。
+	return maxi(0, tech_max_active(f) - tech.slot_count(f))
 
 
 ## 同一时间最多启用几条（由**这一方大本营的等级**决定）
@@ -4933,7 +5022,11 @@ func tech_entries(faction: String = "") -> Array:
 		var e: Dictionary = item
 		var id := String(e.get("id", ""))
 		var on: bool = active.has(id)
-		var reason := "" if on else tech_can_activate(id, f)
+		# ★★ 2026.10.29：预热 / 冷却也要给界面（它是权威状态的一部分，视图不自己算）。
+		var warming: bool = tech != null and tech.is_warming(id, f)
+		var warm_left: float = tech.warmup_left(id, f) if tech != null else 0.0
+		var cd_left: float = tech.cooldown_left(f) if tech != null else 0.0
+		var reason := "" if (on or warming) else tech_can_activate(id, f)
 		out.append({
 			"id": id,
 			"tier": int(e.get("tier", 0)),
@@ -4941,30 +5034,40 @@ func tech_entries(faction: String = "") -> Array:
 			"line": String(e.get("line", "")),
 			"desc": String(e.get("desc", "")),
 			"active": on,
-			# ★ 已启用的永远可点（点它 = 弃用）；未启用的看大本营等级 / 名额。
-			"available": on or reason == "",
+			# ★★ 「点下去了、正在预热」= 占着名额但还没效果；界面据此画进度。
+			"warming": warming,
+			"warmup_left": warm_left,
+			"warmup_total": float(cfg.tech_warmup_sec),
+			# ★ 全科技冷却（同一方可同时有好几格都读到它）。
+			"cooldown_left": cd_left,
+			# ★ 这条科技每秒要付多少金（界面在悬停 / 格子上显示「0.5 金/秒」）。
+			"gold_per_sec": cfg.tech_gold_per_sec_of(id),
+			# ★ 已启用 / 预热中的永远可点（点它 = 弃用）；未启用的看大本营等级 / 名额 / 冷却。
+			"available": on or warming or reason == "",
 			"reason": reason,
 		})
 	return out
 
 
 ## ★ 点一下某条科技（`tech_toggle` 命令的唯一落点）：
-##   没启用 → 启用；已启用 → 弃用。启用满 3 条时再启用会被拒，并留一条事件给界面。
+##   没启用 → **开始预热**（`tech.begin`，30 秒后才生效）；已启用 / 预热中 → 弃用。
+##   名额满了 / 冷却中时再启用会被拒，并留一条事件给界面。
 ##
 ## @return true = 状态真的变了（被拒时返回 false，并在 `tech_rejected` 事件里带上拒因）
 ##
 ## ★ 为什么拒因走**事件**而不是返回值：命令层与界面之间隔着 tick 的事件收口
 ##   （view/game_scene._consume_events 是唯一把事件翻成中文的地方）——
 ##   与 recruit_rejected / order_rejected 完全同一条通道。
-## ★ 效果改动**立即落地**：产量 / 人口是每帧读的（下一帧自然生变），
-##   但血量是「建的时候写死的」，所以这里要显式刷一次（见 _apply_tech_effects）。
+## ★★ 2026.10.29：`on = true` 走 `tech.begin()` 而不是 `tech.set_active()` ——
+##   科技是「点了先扣金、30 秒后才生效」的常驻投资（见 config.json 的 tech._comment）。
+##   `tech.set_active()` 仍然保留「立刻生效」的语义，只给快照回读 / 调试用。
 func set_tech_active(id: String, on: bool, faction: String = "") -> bool:
 	if tech == null:
 		return false
 	var f := _tech_faction(faction)
-	# ⚠️ 先算「现在是不是启用着」：弃用与启用两条路的拒因不一样 ——
+	# ⚠️ 先算「现在是不是启用着 / 在预热」：弃用与启用两条路的拒因不一样 ——
 	#    已启用的那条**不占新名额**（点它是弃用），不能被 limit 拦住。
-	var was: bool = tech.is_active(id, f)
+	var was: bool = tech.is_active(id, f) or tech.is_warming(id, f)
 	if on and not was:
 		var reason := tech_can_activate(id, f)
 		if reason != "":
@@ -4972,21 +5075,30 @@ func set_tech_active(id: String, on: bool, faction: String = "") -> bool:
 			#   `set_tech_active()`，不带阵营的话界面会把 AI 的「名额满了」当成玩家的报错。
 			push_event({"type": "tech_rejected", "reason": reason, "tech_id": id, "faction": f})
 			return false
-	var changed: bool = tech.set_active(id, on, f)
+	var changed: bool = tech.begin(id, f) if on else tech.deactivate(id, f)
 	if not changed:
 		return false
 	tech_revision += 1
 	_apply_tech_effects()
-	push_event({"type": "tech_changed", "tech_id": id, "active": tech.is_active(id, f)})
+	push_event({
+		"type": "tech_changed", "tech_id": id, "faction": f,
+		# ★ 界面读的是**权威状态**：预热中 active 仍然是 false，warming 才是 true。
+		"active": tech.is_active(id, f),
+		"warming": tech.is_warming(id, f),
+		"warmup_left": tech.warmup_left(id, f),
+	})
 	return true
 
 
 ## 点一下（切换）—— 界面的唯一入口：`tech_toggle` 命令带的是 on/off，
 ## 而玩家点格子那一下就是「切换」，所以这里包一层。
+## ★ 预热中的格子再点一下 = 取消（`is_warming` 也要算进「现在是开着的」）。
 func toggle_tech(id: String, faction: String = "") -> bool:
 	if tech == null:
 		return false
-	return set_tech_active(id, not tech.is_active(id, _tech_faction(faction)), faction)
+	var f := _tech_faction(faction)
+	var on: bool = tech.is_active(id, f) or tech.is_warming(id, f)
+	return set_tech_active(id, not on, faction)
 
 
 ## 本帧的科技加成（启用状态变了之后 tick 里会重算；别留着当缓存用）
@@ -5125,16 +5237,134 @@ func _refresh_production() -> void:
 func _accumulate_production(faction: String, local: bool, eff: Dictionary = {}) -> Dictionary:
 	var rates: Dictionary = zones.production_of(faction)
 	var tiles: int = zones.owned_tile_count(faction)
-	var food := float(rates["food"])
-	var gold := float(rates["gold"])
-	# ★ 科技加成按**这一方自己启用的**那几条，不按全局 `tech_effects`。
-	food += float(eff.get("food_per_tile_per_sec", 0.0)) * float(tiles)
-	gold += float(eff.get("gold_per_tile_per_sec", 0.0)) * float(tiles)
+	# ★★ 2026.10.29：科技从「每地块每秒加若干」改成**总体产能 ×(1 + 百分比)** ——
+	#   基础产能与特化加成都**一起**放大（用户口径：「科技改为总体产能上升 10/20/30%」）。
+	#   ⇒ 收入不再随领土面积线性膨胀：这是本次经济改版掐掉「后期资源过多」的主刀。
+	var food := float(rates["food"]) * (1.0 + float(eff.get("food_production_mult", 0.0)))
+	var gold := float(rates["gold"]) * (1.0 + float(eff.get("gold_production_mult", 0.0)))
 	if local:
 		owned_tiles = tiles
 		production_food = food
 		production_gold = gold
 	return {"food": food, "gold": gold}
+
+
+## ★★ 2026.10.29：**科技金耗 + 单位维护费 + 断粮判定**（经济改版的两条持续消耗）。
+##
+## 口径（用户拍板）：
+##   · 科技：启用中（**含预热中**）的每条科技按阶每秒扣金（`tech.gold_drain_per_sec`）。
+##     某一帧**付不起** ⇒ 该方全部科技弃用 + 全科技 `shortfall_cooldown_sec` 秒冷却
+##     （`tech.fail_all`），并留一条 `tech_starved` 事件给界面。
+##   · 维护费：每个**存活**单位按兵种每秒扣粮（`cfg.unit_upkeep_of`：枪 0.03 / 骑 0.06 /
+##     器械与粮车 0.10）。扣到 0 为止 —— **不欠账、不掉血、不阻止招募**。
+##   · 断粮：这一帧付不起全额维护费 ⇒ `starving_factions[f] = true`，
+##     全军士气按 `morale.starve_drain` 掉（morale 那边每帧读 `is_starving`）。
+##
+## ★ 为什么「付不起」判成「余额清 0 + 标记」而不是让余额变负：
+##   负数会污染 HUD，也会让「先欠着再还」变成一条更优策略（本版不做信贷）。
+## ★ 只对**有资源池**的阵营收：与 `resource_pool_for()` 的「null = 资源无限」同一条语义。
+## ⚠️ 必须在士气（`MoraleRes.tick_all`）之前跑 —— 否则断粮晚一帧才生效。
+func _tick_upkeep(dt: float) -> void:
+	if dt <= 0.0 or cfg == null:
+		return
+	# ★★ 总闸（`economy.upkeep_enabled`）：关掉时两样都不扣，也不留断粮标记。
+	#   正常游戏恒为 true；旧测试靠它维持「精确对账」的语义（见 config.json 的说明）。
+	if not cfg.upkeep_enabled:
+		starving_factions.clear()
+		_upkeep_food_rate.clear()
+		_tech_gold_rate.clear()
+		return
+	# ★★ 每帧重填「每秒消耗」缓存（阵营少了 / 科技全弃用了都要跟着消失）
+	_upkeep_food_rate.clear()
+	_tech_gold_rate.clear()
+	# 0) 一次分桶：阵营 → 本帧的维护费（粮/秒）。O(单位数)，不是 O(阵营数 × 单位数)。
+	var upkeep_rate: Dictionary = {}
+	for u in units:
+		if u == null or not u.alive:
+			continue
+		var uf := String(u.faction)
+		upkeep_rate[uf] = float(upkeep_rate.get(uf, 0.0)) + cfg.unit_upkeep_of(u.unit_type)
+	# 1) 逐个「有钱包」的阵营结算（三条来源与加收入那一段**逐条对应**，不要多也不要少）
+	var done: Dictionary = {}
+	#   本机席位（观战者没有本地钱包 —— `resources` 只是被观察 AI 钱包的显示别名）
+	if not observer_mode:
+		_charge_upkeep(my_faction, resources, dt, float(upkeep_rate.get(my_faction, 0.0)))
+		done[my_faction] = true
+	for f in player_seats:
+		var fid := String(f)
+		if done.has(fid) or fid == my_faction or _is_ai_piloted(fid):
+			continue
+		var p: Variant = player_resources.get(fid, null)
+		if typeof(p) != TYPE_DICTIONARY:
+			continue
+		_charge_upkeep(fid, p, dt, float(upkeep_rate.get(fid, 0.0)))
+		done[fid] = true
+	#   commander 阵营（各自的钱包；合作 AI 队友也走这里）
+	for cf in commander_factions():
+		var cid := String(cf)
+		if done.has(cid):
+			continue
+		var q: Variant = ai_faction_resources.get(cid, null)
+		if typeof(q) != TYPE_DICTIONARY:
+			continue
+		_charge_upkeep(cid, q, dt, float(upkeep_rate.get(cid, 0.0)))
+		done[cid] = true
+	# 2) 没有钱包的阵营永远不算断粮（顺手清掉上一帧可能留下的痕迹）
+	for f2 in starving_factions.keys():
+		if not done.has(String(f2)):
+			starving_factions.erase(f2)
+
+
+## 给一方扣「科技金 + 单位维护粮」，并写下断粮标记。口径见 `_tick_upkeep`。
+func _charge_upkeep(fid: String, pool: Variant, dt: float, food_rate: float) -> void:
+	if typeof(pool) != TYPE_DICTIONARY:
+		return
+	var p: Dictionary = pool
+	# ── 0) 把「每秒消耗」记下来（HUD 那个 (+n) 要用它算净额；界面不自己算）──
+	var gold_rate: float = tech.gold_drain_per_sec(fid) if tech != null else 0.0
+	_upkeep_food_rate[fid] = maxf(0.0, food_rate)
+	_tech_gold_rate[fid] = maxf(0.0, gold_rate)
+	# ── 1) 科技金耗（预热中的也照扣 —— 用户口径：点下那一刻就开始付钱）──
+	if gold_rate > 0.0:
+		var need_g: float = gold_rate * dt
+		var have_g: float = maxf(0.0, float(p.get("gold", 0.0)))
+		if have_g + 1e-6 < need_g:
+			p["gold"] = 0.0
+			# ⚠️ 先记下「丢了哪几条」——`fail_all()` 之后两张表都空了。
+			var lost: Array = tech.active_ids(fid).duplicate()
+			for it in tech.warming_ids(fid):
+				lost.append(String(it))
+			tech.fail_all(fid)
+			# 效果（血量倍率）不必当场刷：tick 开头那个版本号闸门下一帧会用新值重算。
+			tech_revision += 1
+			push_event({
+				"type": "tech_starved", "faction": fid, "techs": lost,
+				"cooldown_sec": float(cfg.tech_shortfall_cooldown_sec),
+			})
+		else:
+			p["gold"] = have_g - need_g
+	# ── 2) 单位维护费（扣到 0 为止，不欠账）──
+	var was_starving := bool(starving_factions.get(fid, false))
+	var starving := false
+	if food_rate > 0.0:
+		var need_f: float = food_rate * dt
+		var have_f: float = maxf(0.0, float(p.get("food", 0.0)))
+		if have_f + 1e-6 < need_f:
+			p["food"] = 0.0
+			starving = true
+		else:
+			p["food"] = have_f - need_f
+	if starving:
+		starving_factions[fid] = true
+	else:
+		starving_factions.erase(fid)
+	# ★★ 只在「刚开始断粮」的那一帧推一条事件 —— 界面给一句红字解释士气为什么在掉。
+	#    ⚠️ 恢复时不推（否则「刚好够 / 刚好不够」会在边缘反复刷提示）。
+	if starving and not was_starving:
+		push_event({
+			"type": "starving_started", "faction": fid,
+			"drain": float(cfg.morale_starve_drain),
+		})
 
 
 # ------------------------------------------------------------------
@@ -5213,7 +5443,20 @@ func tick(dt: float) -> Array:
 	if crowd != null and cfg.combat_enabled:
 		crowd.refresh_targets(self, cfg)
 
-	# 0) ★ 科技加成：每帧重算一次**每个玩家席位**的聚合值（九条各查一次表、几条加法），
+	# 0) ★★ 科技：先推进**预热 / 冷却**倒计时，再重算每个席位的聚合值 ——
+	#    顺序不能反：本帧刚读完预热的那条必须在本帧就计入产量。
+	var _t_tech := _prof()
+	if tech != null:
+		for it in tech.tick(dt):
+			var tf := String(it.get("faction", ""))
+			var tid := String(it.get("id", ""))
+			tech_revision += 1
+			push_event({
+				"type": "tech_changed", "tech_id": tid, "faction": tf,
+				"active": true, "warming": false, "warmup_left": 0.0,
+			})
+	_prof_done("tech", _t_tech)
+	# 0.5) ★ 科技加成：每帧重算一次**每个玩家席位**的聚合值（九条各查一次表、几条加法），
 	#    产量 / 人口按各自席位读它。
 	_refresh_seat_tech_effects()
 	#    ⚠️ 血量那一步是**按版本号**触发的，不是每帧跑：它要遍历所有建筑与单位，
@@ -5312,6 +5555,10 @@ func tick(dt: float) -> Array:
 			"food": float(crate.get("food", 0.0)) * mult,
 			"gold": float(crate.get("gold", 0.0)) * mult,
 		}, cpos)
+	# ★★ 2026.10.29：**先加收入、再收两笔持续消耗**（科技金 / 单位维护粮）。
+	#    顺序很重要：玩家这一帧的收入必须先到账，才谈得上「付不付得起」。
+	#    ⚠️ 必须在士气（下面第 4 步的 `MoraleRes.tick_all`）之前 —— 断粮要当帧生效。
+	_tick_upkeep(dt)
 	_prof_done("economy", _t_econ)
 
 	# 3.5) ★ 招募读条（将领自己就是兵营）。

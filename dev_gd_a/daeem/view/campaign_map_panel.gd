@@ -1,148 +1,100 @@
 ## campaign_map_panel.gd —— 战役地图面板（1280×1080）。
 ##
-## 本轮只显示 `c1` 的唯一真实关 `main_test → demo/mt`：
-##   · 中央一面小型关卡旗帜；
-##   · 右侧 I/II/III 章节栏只切换选中高亮，不切地图、不换旗帜；
-##   · 点旗帜进入战役详情。
+## ★★ 一个「真实战役」一面旗：
+##   · 遍历 `campaigns_menu.json` 的战役，取每份战役的**第一个真实章节**；
+##   · 有真实章节（`campaign_id` + `level_id` 都填了）的才生成旗子，占位战役不画；
+##   · 点任意一面旗 → 打开该战役的详情（选阵营 / 进关）。
+##   · 战役键序 = 旗子从左到右的顺序；旗子位置见
+##     `view/menu_deck_layout.gd` 的 `campaign_flags()`（一排居中，窄屏等比缩小）。
+##
+## ★ 这里不再有章节栏（I/II/III）：三个测试战役是**独立战役**，不是同一战役下的章节。
 extends "res://view/menu_page.gd"
 
 signal flag_pressed(chapter: Dictionary)
-signal chapter_selected(index: int)
 
 const CampaignMenuDbRes = preload("res://logic/campaign_menu_db.gd")
 const BannerRes = preload("res://view/menu_banner.gd")
 
-const DEFAULT_ROMANS := ["I", "II", "III"]
-
-var _flag = null
-var _rail: Panel = null
-var _rail_buttons: Array = []
-var _campaigns: Array = []
-var _chapters: Array = []
+## 每面旗：{campaign: Dictionary, chapter: Dictionary}
+var _entries: Array = []
+var _flags: Array = []
 var _chapter: Dictionary = {}
-var _selected: int = 0
 
 
 func setup(p_cfg, p_font: Font) -> void:
 	name = "CampaignPanel"
 	setup_page(p_cfg, p_font, String(p_cfg.str_val("menu.deck.titles.campaign", "战役")), true)
-
-	_rail = Panel.new()
-	_rail.name = "ChapterRail"
-	_rail.z_index = 5
-	_rail.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_rail.add_theme_stylebox_override("panel", MenuThemeRes.deck_block())
-	add_child(_rail)
-
-	var romans: Array = _string_list("menu.deck.campaign.chapters", DEFAULT_ROMANS)
-	for i in romans.size():
-		var b := Button.new()
-		b.name = "ChapterBtn%d" % i
-		b.text = String(romans[i])
-		b.focus_mode = Control.FOCUS_NONE
-		b.mouse_filter = Control.MOUSE_FILTER_STOP
-		if font != null:
-			b.add_theme_font_override("font", font)
-		b.add_theme_font_size_override("font_size", 34)
-		b.pressed.connect(select_chapter.bind(i))
-		_rail.add_child(b)
-		_rail_buttons.append(b)
-
-	_flag = BannerRes.new()
-	_flag.name = "LevelFlag"
-	_flag.z_index = 6
-	add_child(_flag)
-
 	_load_data()
 	resized.connect(_layout)
 	_layout()
 
 
-func _string_list(path: String, fallback: Array) -> Array:
-	var v: Variant = cfg.get_path_value(path) if cfg != null else null
-	var out: Array = []
-	if typeof(v) == TYPE_ARRAY:
-		for item in (v as Array):
-			var s := String(item).strip_edges()
-			if s != "":
-				out.append(s)
-	return out if not out.is_empty() else fallback
-
-
 func _load_data() -> void:
-	_campaigns = CampaignMenuDbRes.load_campaigns()
-	_chapters = []
-	if not _campaigns.is_empty():
-		var raw: Variant = (_campaigns[0] as Dictionary).get("chapters", [])
-		if typeof(raw) == TYPE_ARRAY:
-			for item in (raw as Array):
-				if typeof(item) == TYPE_DICTIONARY:
-					_chapters.append(item)
-	if _chapters.is_empty():
-		_chapters = [{"name": "关卡#1", "description": "", "campaign_id": "", "level_id": ""}]
-	_chapter = _chapters[0]
-	_selected = 0
+	_entries = []
+	_flags = []
+	for raw in CampaignMenuDbRes.load_campaigns():
+		if typeof(raw) != TYPE_DICTIONARY:
+			continue
+		var campaign: Dictionary = raw
+		var chapter := _first_real_chapter(campaign)
+		if chapter.is_empty():
+			continue
+		_entries.append({"campaign": campaign, "chapter": chapter})
+	if _entries.is_empty():
+		# 兜底：一份真实战役都没有时，仍显示一面禁用旗（面板不空白）。
+		_entries = [{
+			"campaign": {"name": "战役#1"},
+			"chapter": {"name": "关卡#1", "description": "", "campaign_id": "", "level_id": ""},
+		}]
+	_chapter = _entries[0]["chapter"]
 
-	_flag.setup(font, "level", String(_chapter.get("name", "")),
-		String(cfg.str_val("menu.deck.campaign.flag_sub", "关卡")))
-	_flag.pressed.connect(func(): flag_pressed.emit(_chapter))
-	_refresh_rail()
+	for i in _entries.size():
+		var entry: Dictionary = _entries[i]
+		var chapter2: Dictionary = entry["chapter"]
+		var placeholder := CampaignMenuDbRes.is_placeholder_chapter(chapter2)
+		var f := BannerRes.new()
+		f.name = "CampaignFlag%d" % i
+		f.z_index = 6
+		add_child(f)
+		f.setup(font, "level", String((entry["campaign"] as Dictionary).get("name", "")),
+			String(chapter2.get("name", "")))
+		f.set_clickable(not placeholder)
+		f.pressed.connect(func(): _on_flag_pressed(chapter2))
+		_flags.append(f)
 
 
-func select_chapter(index: int) -> void:
-	if index < 0 or index >= _rail_buttons.size():
-		return
-	_selected = index
-	_refresh_rail()
-	chapter_selected.emit(index)
+## 这一份战役里第一个「指向真实关卡」的章（没有 → 空字典）。
+func _first_real_chapter(campaign: Dictionary) -> Dictionary:
+	var chapters: Variant = campaign.get("chapters", [])
+	if typeof(chapters) != TYPE_ARRAY:
+		return {}
+	for item in (chapters as Array):
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		var chapter: Dictionary = item
+		if not CampaignMenuDbRes.is_placeholder_chapter(chapter):
+			return chapter
+	return {}
 
 
-func selected_chapter() -> int:
-	return _selected
+func _on_flag_pressed(chapter: Dictionary) -> void:
+	_chapter = chapter
+	flag_pressed.emit(chapter)
 
 
 func current_chapter() -> Dictionary:
 	return _chapter
 
 
-func chapters() -> Array:
-	return _chapters
-
-
-func chapter_buttons() -> Array:
-	return _rail_buttons
-
-
-func flag_button():
-	return _flag
-
-
-func _refresh_rail() -> void:
-	for i in _rail_buttons.size():
-		var b: Button = _rail_buttons[i]
-		var on: bool = (i == _selected)
-		b.add_theme_stylebox_override("normal",
-			MenuThemeRes.button_selected() if on else MenuThemeRes.button_normal())
-		b.add_theme_stylebox_override("hover",
-			MenuThemeRes.button_selected_hover() if on else MenuThemeRes.button_hover_clear())
-		b.add_theme_stylebox_override("pressed", MenuThemeRes.button_fill_latched())
-		b.add_theme_stylebox_override("focus", MenuThemeRes.button_normal())
-		b.add_theme_color_override("font_color",
-			MenuThemeRes.text_on_fill() if on else MenuThemeRes.text_normal())
-		b.add_theme_color_override("font_hover_color",
-			MenuThemeRes.text_on_fill() if on else MenuThemeRes.text_normal())
+## 所有旗子（测试与界面用；顺序 = 战役键序）。
+func flag_buttons() -> Array:
+	return _flags
 
 
 func _layout() -> void:
-	var rail := LayoutRes.campaign_rail(size.x, size.y)
-	_rail.position = rail.position
-	_rail.size = rail.size
-	for i in _rail_buttons.size():
-		var r := LayoutRes.campaign_rail_button(rail, i)
-		var b: Button = _rail_buttons[i]
-		b.position = r.position - rail.position
-		b.size = r.size
-
-	var fr := LayoutRes.campaign_flag(size.x, size.y)
-	_flag.position = fr.position
-	_flag.size = fr.size
+	var rects: Array = LayoutRes.campaign_flags(size.x, size.y, _flags.size())
+	for i in _flags.size():
+		var r: Rect2 = rects[i]
+		var f: Control = _flags[i]
+		f.position = r.position
+		f.size = r.size

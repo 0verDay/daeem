@@ -690,13 +690,26 @@ func _test_resource_bar(main) -> void:
 		main.world.resources["food"] = 120.6
 		main.world.resources["gold"] = 80.2
 		main.hud.refresh()
-		eq(food.text, "粮食 121", "★ 粮食取整显示（120.6 → 121），实际：%s" % food.text)
-		eq(gold.text, "黄金 80", "★ 黄金取整显示（80.2 → 80），实际：%s" % gold.text)
+		ok(food.text.begins_with("粮食 121"),
+			"★ 粮食取整显示（120.6 → 121），实际：%s" % food.text)
+		ok(gold.text.begins_with("黄金 80"),
+			"★ 黄金取整显示（80.2 → 80），实际：%s" % gold.text)
+		# ★★ 2026.10.29：数字后面跟一个「(+n)」= **每秒净增长**（产能 − 维护费 − 科技金耗）。
+		ok(food.text.contains("(") and food.text.ends_with(")"),
+			"★ 数字区域带「(+n)」：每秒净增长（实际：%s）" % food.text)
+		ok(gold.text.contains("(") and gold.text.ends_with(")"),
+			"★ 黄金那一行同样带「(+n)」（实际：%s）" % gold.text)
 		main.world.resources["food"] = 7.0
 		main.world.resources["gold"] = 0.0
 		main.hud.refresh()
-		eq(food.text, "粮食 7", "★ 整数资源不带小数点")
-		eq(gold.text, "黄金 0", "★ 0 也照实显示")
+		ok(food.text.begins_with("粮食 7"), "★ 整数资源不带小数点")
+		ok(gold.text.begins_with("黄金 0"), "★ 0 也照实显示")
+
+		# ★★ 2026.10.29：「(+n)」的写法（带正负号、1 位小数、0 附近不许出 "(+-0.0)"）
+		eq(main.hud._rate_text(3.24), "(+3.2)", "净增长带 + 号、保留 1 位小数")
+		eq(main.hud._rate_text(-1.26), "(-1.3)", "负数自己带 - 号，不再补 +")
+		eq(main.hud._rate_text(0.0), "(+0.0)", "0 写成 (+0.0)")
+		eq(main.hud._rate_text(-0.001), "(+0.0)", "★ 0 附近的负数不许印成 (+-0.0)")
 
 		ok(food.size.y <= UiLayoutRes.RES_ICON + 0.01
 				and food.position.y + food.size.y
@@ -705,15 +718,17 @@ func _test_resource_bar(main) -> void:
 				food.position.y, food.size.y, UiLayoutRes.RES_BAR_RECT.size.y])
 		var font: Font = main.hud._font
 		if font != null:
-			for pair in [[food, "粮食 1234"], [gold, "黄金 1234"]]:
+			# ★★ 2026.10.29：这一行现在是「粮食 12345(+12.3)」，字号降到 FS_SMALL(13)。
+			#   最坏的现实组合 = **5 位数 + 负的两位数**（金色那行）≈ 130px ≤ 134。
+			for pair in [[food, "粮食 12345(+3.2)"], [gold, "黄金 12345(-12.3)"]]:
 				var w: float = font.get_string_size(String(pair[1]),
-					HORIZONTAL_ALIGNMENT_LEFT, -1, UiStyleRes.FS_BODY).x
+					HORIZONTAL_ALIGNMENT_LEFT, -1, UiStyleRes.FS_SMALL).x
 				ok(w <= (pair[0] as Label).size.x + 0.01,
-					"★ 「%s」宽 %.0f ≤ 可写 %.0f（4 位数也不被裁）" % [
+					"★ 「%s」宽 %.0f ≤ 可写 %.0f（5 位数 + (+n) 也不被裁）" % [
 						pair[1], w, (pair[0] as Label).size.x])
-			ok(font.get_height(UiStyleRes.FS_BODY) <= UiLayoutRes.RES_ICON + 0.01,
-				"★ 15 号字的行高 %.0f 装得进 %.0f 高那一行" % [
-					font.get_height(UiStyleRes.FS_BODY), UiLayoutRes.RES_ICON])
+			ok(font.get_height(UiStyleRes.FS_SMALL) <= UiLayoutRes.RES_ICON + 0.01,
+				"★ 13 号字的行高 %.0f 装得进 %.0f 高那一行" % [
+					font.get_height(UiStyleRes.FS_SMALL), UiLayoutRes.RES_ICON])
 		else:
 			ok(true, "（没装中文字体，跳过资源条文字宽度的量算）")
 
@@ -1714,7 +1729,12 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 	ok(first_id != "", "第一格有 id")
 	ok(not world.is_tech_active(first_id), "开局这一条没启用")
 	g.press(0)
-	ok(world.is_tech_active(first_id), "★ 点一格 = 启用（走 tech_toggle 命令）")
+	# ★★ 2026.10.29：点一格 = **进预热队列**（30 秒后才生效、且当场开始扣金）。
+	ok(not world.is_tech_active(first_id), "★ 点一格 = 进预热（还没生效）")
+	ok(world.tech.is_warming(first_id), "★ 它在预热队列里")
+	finish_tech_warmup(world, world.cfg)
+	main.hud.refresh()           # 让九格按权威状态重画（真实游戏里每帧都会刷）
+	ok(world.is_tech_active(first_id), "★ 预热结束才算真的启用（走 tech_toggle 命令）")
 	ok(g.cell_active(0), "★ 已启用的那一格画成高亮")
 	g.press(0)
 	ok(not world.is_tech_active(first_id), "★ 再点一次 = 弃用")
@@ -1728,7 +1748,8 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 		world.apply_building_level_hp(base)
 	for k in 3:
 		g.press(k)
-	eq(world.active_tech_ids().size(), 3, "★ 启用了三条")
+	# ★ 预热中的也占名额 ⇒ 三条一点下去名额就满了（不用等 30 秒）。
+	eq(world.tech.slot_count(), 3, "★ 三条都占住了名额（含预热中的）")
 	ok(world.tech_remaining_slots() == 0, "名额用完")
 	g.press(3)
 	ok(not world.is_tech_active(ids[3]), "★ 第 4 条没有生效（被阻止）")
@@ -1831,8 +1852,8 @@ func _eq_tech_page(main, where: String) -> void:
 	eq(g.entries().size(), 9, "%s：★ 九格铺满（9 条占位科技）" % where)
 	eq(card.entries().size(), 0, "%s：命令卡在科技页是空的（内容由科技那一层画）" % where)
 	eq(g.cell_name(0), "粮食产量 I", "%s：第 1 格 = 粮食产量 I" % where)
-	eq(g.cell_line(0), "粮食 +0.04", "%s：第 1 格第二行写效果" % where)
-	ok(String((g.entry_at(0) as Dictionary).get("desc", "")).contains("地块"),
+	eq(g.cell_line(0), "粮食产能 +10%", "%s：第 1 格第二行写效果" % where)
+	ok(String((g.entry_at(0) as Dictionary).get("desc", "")).contains("产能"),
 		"%s：entries 里带着完整效果说明（悬停详情面板写它）" % where)
 	# ★ 九格是**列优先**（第一列 = 一阶、第二列 = 二阶、第三列 = 三阶）：
 	#   cell 0/3/6 = 粮食 I/II/III，1/4/7 = 黄金 I/II/III，2/5/8 = 建筑/将领/区划人口。
@@ -1941,11 +1962,16 @@ func _test_hover_panel(main, cfg) -> void:
 	g.hover(0)
 	ok(tip.showing(), "★ 科技九格也能弹悬停详情（与命令卡共用同一块面板）")
 	eq(tip.title_text(), "粮食产量 I", "标题是科技名")
-	ok(tip.body_text().contains("地块"), "科技详情里有完整效果说明")
+	ok(tip.body_text().contains("产能"), "科技详情里有完整效果说明")
 	ok(tip.body_text().contains("未启用"), "★ 状态那一行读的是**权威状态**（现在没启用）")
 	var first_id := String((g.entry_at(0) as Dictionary).get("id", ""))
 	g.press(0)
-	ok(world.is_tech_active(first_id), "（前提）点一格 = 启用")
+	ok(not world.is_tech_active(first_id), "（前提）点一格 = 进预热，还没生效")
+	ok(tip.body_text().contains("预热中"),
+		"★ 预热期间悬停详情写着「预热中」（权威状态，不是界面自己猜）")
+	finish_tech_warmup(world, world.cfg)
+	hud.refresh()
+	ok(world.is_tech_active(first_id), "（前提）预热结束才算启用")
 	ok(tip.showing() and tip.title_text() == "粮食产量 I", "（前提）点完之后面板还是同一格")
 	ok(tip.body_text().contains("已启用"),
 		"★ 启用之后悬停详情里立刻写着「已启用」（不用移开鼠标；实际：%s）"
@@ -2473,8 +2499,8 @@ func _test_upgrade_via_card(main) -> void:
 	main.hud.refresh()
 	main.hud.rebuild_card()      # 真实游戏里由每帧 refresh 的页签比较兜底；测试里显式刷一次
 	eq(String(zone.get("spec_done", "")), "food", "★ 读完特化生效")
-	near(UpgradeRes.zone_spec_effect(zone, world.cfg)["food_per_tile"], 0.04, 1e-6,
-		"★ 粮食特化 = 每地块每秒 +0.04 粮食")
+	near(UpgradeRes.zone_spec_effect(zone, world.cfg)["food_per_tile"], 0.01, 1e-6,
+		"★ 粮食特化 = 每地块每秒 +0.01 粮食")
 	eq(card.entries().size(), 1, "★ 特化后操作页只剩一格（不能再特化）")
 	eq(String(card.entry_at(0).get("type", "")), "zone_spec_cancel",
 		"★ 那一格是「取消特化」")

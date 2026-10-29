@@ -1,4 +1,4 @@
-﻿## morale.gd —— ★★ 士气：整支部队共享的回血 / 掉血 / 免伤 / 易伤，与区划和战斗联动
+## morale.gd —— ★★ 士气：整支部队共享的回血 / 掉血 / 免伤 / 易伤，与区划和战斗联动
 ##
 ## 需求（原话拆解）：
 ##   · 士气是**单位属性**、初始上限 100、初始值 90；
@@ -42,6 +42,13 @@ static func anchor_of(world, u):
 static func tick_all(world, cfg, dt: float) -> void:
 	if world == null or cfg == null or dt <= 0.0:
 		return
+	# ★★ 2026.10.29：**濒死将领先结算**。它是整队的士气锚 —— 队员在本帧要镜像
+	#    它这一帧的值（先算锚、再算队员，与下标顺序无关）。
+	#    ⚠️ 这一步必须在 C# 分支之前：内核里濒死单位是 skip 的，它只会读输入里的
+	#       士气；不先把它算好，队员就会镜像上一帧（或 0，见 `_tick_all_csharp`）。
+	for u in world.units:
+		if u != null and u.alive and u.is_downed():
+			tick_downed_leader(world, cfg, u, dt)
 	if String(cfg.unit_sim_backend) == "csharp":
 		var k = _get_kernel()
 		if k != null and _tick_all_csharp(k, world, cfg, dt):
@@ -51,11 +58,10 @@ static func tick_all(world, cfg, dt: float) -> void:
 	for u in world.units:
 		if u == null or not u.alive:
 			continue
-		# ★★ **濒死的将领不吃士气 / 回血档位** —— 它这一帧只跑「濒死状态机」
+		# ★★ **濒死的将领不吃常规士气 / 回血档位** —— 它这一帧只跑「濒死状态机」
 		#    （`unit.tick_near_death`，由 `combat.update_unit` 的第一句接管）。
-		#    原来士气夹在 `update_unit` 里、排在那个 `return` 之后，所以天然轮不到它；
-		#    现在士气是单独一遍，必须显式跳过，否则「濒死缓慢回复」会和「士气回血」
-		#    叠加成双倍回复（`test_downed` 实测：3 秒后回了 5.9 而不是 2.4）。
+		#    士气下降已经在上面 `tick_downed_leader()` 里单独结算过；这里跳过，
+		#    否则「濒死缓慢回复」会和「士气回血」叠加成双倍回复。
 		if u.is_downed():
 			continue
 		tick_unit(world, cfg, u, dt)
@@ -149,24 +155,41 @@ static func _tick_all_csharp(k, world, cfg, dt: float) -> bool:
 	side.resize(n)
 	aura.resize(n)
 	var has_aura: bool = not world.morale_aura_bonus.is_empty()
+	# ★★ 2026.10.29：断粮惩罚也走**同一个 `aura` 列**（它是「每单位额外的士气速率修正」），
+	#    这样 C# 内核一行都不用改、两条后端天然等价（见 `_zone_morale_rate` 的同一条口径）。
+	var has_starve: bool = not world.starving_factions.is_empty()
 	for i in n:
 		var u = units[i]
 		anchor[i] = i
-		if u == null or not u.alive or u.is_downed():
+		if u == null or not u.alive:
 			skip[i] = 1
 			continue
+		# ★★ 2026.10.29：**先填士气**，再判「这一位要不要跳过」。
+		#    濒死将领在核心里是 skip（不写回），但它的**队员要镜像它的士气** ——
+		#    以前在 skip 之后才填 `mo[i]`，濒死 / 已阵亡队长的 `mo` 永远是 0，
+		#    队员整队士气会瞬间归零（用户报的「主将死后士气掉得很快」）。
 		mo[i] = u.morale
 		mo_max[i] = u.morale_max
 		hp[i] = u.hp
 		hp_max[i] = u.hp_max
+		if u.is_downed():
+			skip[i] = 1
+			continue
 		tile[i] = int(u.ty) * cols + int(u.tx)
 		side[i] = int(fac_side.get(String(u.faction), -1))
-		if has_aura:
-			aura[i] = float(world.morale_aura_bonus.get(u.id, 0.0))
+		if has_aura or has_starve:
+			var extra: float = float(world.morale_aura_bonus.get(u.id, 0.0))
+			if has_starve and world.is_starving(String(u.faction)):
+				extra -= cfg.morale_starve_drain
+			aura[i] = extra
 		if u.leader_id != "":
 			var lead: Variant = idx_by_id.get(String(u.leader_id), null)
+			# ★ 只锚到**还活着**的队长，与 GDScript 的 `team_leader()` 同口径：
+			#   阵亡队长已经不在队里（`team_leader` 返回 null），不能再让队员镜像 0。
 			if lead != null:
-				anchor[i] = int(lead)
+				var lu = units[int(lead)]
+				if lu != null and lu.alive:
+					anchor[i] = int(lead)
 
 	var out: PackedFloat64Array = k.Tick(skip, anchor, mo, mo_max, hp, hp_max,
 		tile, side, aura, zone_of_tile, zone_owner_side, zone_surrounded, dt,
@@ -192,6 +215,12 @@ static func _tick_all_csharp(k, world, cfg, dt: float) -> bool:
 static func tick_unit(world, cfg, u, dt: float) -> void:
 	if u == null or not u.alive:
 		return
+	# ★★ 2026.10.29：濒死将领（整队的锚）只跑「主将倒地」这一套：
+	#    常规区划速率 + 粮车光环 - 固定下降；**不碰生命档位**（HP 回复由
+	#    `unit.tick_near_death` 独占，见那里的说明）。
+	if u.is_downed():
+		tick_downed_leader(world, cfg, u, dt)
+		return
 	var anchor = anchor_of(world, u)
 	if anchor != u:
 		# 队员：镜像锚的权威值（区划升降只由锚算一次）
@@ -199,28 +228,59 @@ static func tick_unit(world, cfg, u, dt: float) -> void:
 		u.morale_max = anchor.morale_max
 	else:
 		# 锚：按所在区划升降
-		var rate := 0.0
-		if world != null and world.zones != null:
-			var z = world.zones.zone_at(u.tx, u.ty)
-			var owner := "" if z == null else String(z.get("owner", ""))
-			if z != null and owner != "" and FactionRes.same_side_for_attack(owner, u.faction):
-				# 己方 / 友方区划：被包围（不与大本营区划连通）时改判「疲惫」
-				rate = -cfg.morale_decay_surrounded if world.zone_is_surrounded(int(z["id"])) \
-					else cfg.morale_regen_ally
-			else:
-				# ★ 敌方区划**与中立区划**都算「疲惫」（中立也缓慢掉士气）。
-				rate = -cfg.morale_decay_enemy
-		# ★★ 粮车光环（本轮新增）：`world.morale_aura_bonus` 已在单位循环之前算好，
-		#    键 = 士气锚 id。它**加在**区划速率上（不是取代），所以：
-		#      · 与区划回士气 / 其它士气上升效果叠加；
-		#      · 多辆粮车覆盖同一支部队时 world 那边只留最大值 ⇒ 不叠加（需求口径）。
-		if world != null and world.morale_aura_bonus.has(u.id):
-			rate += float(world.morale_aura_bonus[u.id])
+		var rate := _zone_morale_rate(world, cfg, u)
 		u.morale = clampf(u.morale + rate * dt, 0.0, u.morale_max)
 
 	# ★★ 生命档位对**每个单位**都生效（不只锚）：士气是整支部队共享的，
 	#    就该整支部队一起回血 / 掉血 —— 只给锚上档位的话，只有将领一个人动血（实测踩到）。
 	_apply_hp_tiers(cfg, u, dt)
+
+
+## 常规「所在区划 + 粮车光环」的士气速率（点/秒），锚与濒死将领共用。
+static func _zone_morale_rate(world, cfg, u) -> float:
+	var rate := 0.0
+	if world != null and world.zones != null:
+		var z = world.zones.zone_at(u.tx, u.ty)
+		var owner := "" if z == null else String(z.get("owner", ""))
+		if z != null and owner != "" and FactionRes.same_side_for_attack(owner, u.faction):
+			# 己方 / 友方区划：被包围（不与大本营区划连通）时改判「疲惫」
+			rate = -cfg.morale_decay_surrounded if world.zone_is_surrounded(int(z["id"])) \
+				else cfg.morale_regen_ally
+		else:
+			# ★ 敌方区划**与中立区划**都算「疲惫」（中立也缓慢掉士气）。
+			rate = -cfg.morale_decay_enemy
+	# ★★ 粮车光环（本轮新增）：`world.morale_aura_bonus` 已在单位循环之前算好，
+	#    键 = 士气锚 id。它**加在**区划速率上（不是取代），所以：
+	#      · 与区划回士气 / 其它士气上升效果叠加；
+	#      · 多辆粮车覆盖同一支部队时 world 那边只留最大值 ⇒ 不叠加（需求口径）。
+	if world != null and world.morale_aura_bonus.has(u.id):
+		rate += float(world.morale_aura_bonus[u.id])
+	# ★★ 2026.10.29 断粮：这一方**付不起单位维护费**（world._tick_upkeep 当帧写的标记）时，
+	#    全军额外 -morale.starve_drain（默认 0.5/秒）。
+	#    ★ 与粮车光环**等速**是有意的：一辆粮车刚好把这个惩罚抵消掉。
+	#    ★ 它叠加在「区划速率 + 光环」之上 ⇒ 站在敌方区划上断粮 = 0.5(疲惫) + 0.5(断粮)。
+	if world != null and world.is_starving(String(u.faction)):
+		rate -= cfg.morale_starve_drain
+	return rate
+
+
+## ★★ 2026.10.29：主将**濒死（倒地）**期间的整队士气结算。
+##
+## 用户口径：
+##   · 只在 `is_downed()` 期间生效；
+##   · 固定额外 `-cfg.morale_leader_down_drain`（默认 3/s）；
+##   · 「增加和减少都叠加」：先算常规区划速率（己方回士气 / 敌方·中立掉士气 /
+##     被包围疲惫）+ 粮车光环，再减这个固定值；
+##   · 再起后不做补偿：士气停在当前值，下一帧起按正常规则走。
+##
+## ★ 这个函数只改士气，不碰 HP：濒死回复由 `unit.tick_near_death` 独占，
+##   两边都动 HP 会把「每 3 秒回 1%」变成双倍。
+static func tick_downed_leader(world, cfg, u, dt: float) -> void:
+	if u == null or not u.is_downed():
+		return
+	var rate: float = _zone_morale_rate(world, cfg, u) \
+		- float(cfg.morale_leader_down_drain)
+	u.morale = clampf(u.morale + rate * dt, 0.0, u.morale_max)
 
 
 ## 生命档位（回血 / 掉血）。★ 只增到 hp_max、只减到 hp_floor —— **不触发死亡**。
