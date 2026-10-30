@@ -9,6 +9,8 @@ signal start_requested
 signal ready_toggled(on: bool)
 
 const MapThumbRes = preload("res://view/map_thumb.gd")
+## 地图缩略图那颗按钮是裸 `Button.new()`，不走 fill_button，音效要自己挂。
+const SfxRes = preload("res://view/sfx.gd")
 
 ## 缩略图与地图按钮边框之间的留白。
 const THUMB_MARGIN := 12.0
@@ -49,6 +51,7 @@ func setup(p_cfg, p_font: Font, p_session) -> void:
 	_map_btn.add_theme_stylebox_override("focus", _flat_style(0.0))
 	_map_btn.add_theme_stylebox_override("disabled", _flat_style(0.0))
 	_map_btn.pressed.connect(func(): map_requested.emit())
+	SfxRes.attach(_map_btn)
 	_thumb_frame.add_child(_map_btn)
 
 	_thumb = MapThumbRes.new()

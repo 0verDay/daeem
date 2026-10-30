@@ -553,6 +553,16 @@
     "press_brighten_alpha": 0.03,
     "press_snap_sec": 0.07,
     "press_snap_hold_sec": 0.06,
+    "_sfx_comment": [
+      "★★ 菜单 / 建造音效的音量（dB；0 = 素材原始音量，负值更小）。见 view/sfx.gd。",
+      "   · sfx_click_db —— 菜单按钮按下（click_button/down.wav）；素材峰值只有 0.154，默认 +3。",
+      "   · sfx_hover_db —— 菜单按钮悬停（click_button/hover.wav）；素材峰值 0.345 比点击还响，默认 -8。",
+      "   · sfx_build_db —— 本机阵营的建筑落成（build/build.wav）；默认 0。",
+      "   ★ 三档共用同一个播放器池；配置缺失 / 写坏时用代码里的同一组默认值（夹在 -30..+12）。"
+    ],
+    "sfx_click_db": 3.0,
+    "sfx_hover_db": -8.0,
+    "sfx_build_db": 0.0,
     "_mobile_refresh_comment": [
       "★ 手机端 HUD 的**调度节拍**（只在 OS.has_feature(\"mobile\") 时生效；桌面 / 测试仍每帧全刷）。",
       "  20Hz = 每 50ms 做一小块，而不是把「资源条 + 页签 + 命令卡 + 科技格 + 详细信息」",
@@ -1499,10 +1509,12 @@
       "  base / wall / tower / stone_wall / watch_tower 的**阻挡语义也搬到这里**了（下面的 blocks_* 四个键），读法是",
       "  `cfg.building_def(type)` = DEFS 兜底 ⊕ 这一段（**这一段优先**）。",
       "★ 每个类型能写的键：",
-      "  name / desc / hotkey  —— 名字 / 说明 / 建造页快捷键（右下「建筑」页直接读这一段）",
+      "  name / desc  —— 名字 / 说明（右下「建筑」页直接读这一段）",
       "  buildable             —— 会不会出现在「建筑」页的命令卡里（大本营 false）",
       "  tier                  —— ★ 建造页的**行号 / 解锁所需的大本营等级**（缺省 1）。",
       "                            第 1 行 tier=1 开局可建；第 2 行 tier=2 需要 2 级大本营。",
+      "  slot                  —— ★ 建造页**同一行内的列**（1 = 最左，3 = 最右）。",
+      "                            不写 = 按 config 顺序自动排；建筑只认九宫格键位，没有单独字母快捷键。",
       "  build_sec             —— ★ 建造读条秒数。**0 = 瞬发**（默认，与从前的行为逐位一致）",
       "  cost {food, gold}     —— 造价（economy.enabled = false 时建造免费，见 logic/economy.gd）",
       "  hp_max                —— 基础血量上限（大本营等级 / 科技都是在它上面乘倍率）",
@@ -1525,7 +1537,7 @@
     ],
 
     "wall": {
-      "id": "wall", "name": "木墙", "hotkey": "B", "buildable": true,
+      "id": "wall", "name": "木墙", "buildable": true,
       "tier": 1, "ranged_reduction": 0.9,
       "build_sec": 4,
       "cost": { "food": 50, "gold": 0 },
@@ -1539,7 +1551,7 @@
       "desc": "木制城墙：填满整个地块；己方单位可穿过，敌方单位不可进入"
     },
     "tower": {
-      "id": "tower", "name": "哨塔", "hotkey": "T", "buildable": true,
+      "id": "tower", "name": "哨塔", "buildable": true,
       "tier": 1, "ranged_reduction": 0.9,
       "build_sec": 6,
       "cost": { "food": 100, "gold": 0 },
@@ -1554,7 +1566,7 @@
       "desc": "基础哨塔：对范围内最近的敌人造成单体伤害"
     },
     "farm": {
-      "id": "farm", "name": "粮田", "hotkey": "G", "buildable": true,
+      "id": "farm", "name": "粮田", "buildable": true,
       "tier": 1, "ranged_reduction": 0.9,
       "build_sec": 8,
       "cost": { "food": 80, "gold": 0 },
@@ -1569,7 +1581,7 @@
       "desc": "资源建筑：建在己方区划内，为全阵营提供粮食 +0.5/秒"
     },
     "stone_wall": {
-      "id": "stone_wall", "name": "石墙", "hotkey": "Y", "buildable": true,
+      "id": "stone_wall", "name": "石墙", "buildable": true,
       "tier": 2, "ranged_reduction": 0.9,
       "build_sec": 5,
       "cost": { "food": 120, "gold": 120 },
@@ -1583,7 +1595,7 @@
       "desc": "石制城墙：血量更高；己方单位可穿过，敌方单位不可进入"
     },
     "watch_tower": {
-      "id": "watch_tower", "name": "警戒塔", "hotkey": "U", "buildable": true,
+      "id": "watch_tower", "name": "警戒塔", "buildable": true,
       "tier": 2, "ranged_reduction": 0.9,
       "build_sec": 7,
       "cost": { "food": 180, "gold": 180 },
@@ -1598,7 +1610,7 @@
       "desc": "高级哨塔：攻击力 / 射程 / 视野更高"
     },
     "house": {
-      "id": "house", "name": "房屋", "hotkey": "H", "buildable": true,
+      "id": "house", "name": "房屋", "buildable": true,
       "tier": 2, "ranged_reduction": 0.9,
       "build_sec": 12,
       "cost": { "food": 100, "gold": 0 },
@@ -1614,7 +1626,7 @@
       "desc": "资源建筑：建在己方区划内，使所在区划人口增长 +0.03/秒、人口上限 +1"
     },
     "mine": {
-      "id": "mine", "name": "矿脉", "hotkey": "M", "buildable": true,
+      "id": "mine", "name": "矿脉", "buildable": true, "slot": 3,
       "tier": 3, "ranged_reduction": 0.9,
       "build_sec": 10,
       "cost": { "food": 100, "gold": 0 },
@@ -2217,7 +2229,9 @@
   "menu": {
     "plate": {
       "_comment": [
-        "★★ 主菜单左侧空白处那张**雕版图**（view/menu_art/etched_plate.gd）。",
+        "★★ 主菜单左侧空白处的**雕版轮播**（view/menu_art/plate_cycle.gd + etched_plate.gd）。",
+        "  一轮里每张图各占一个 cycle：扫描 → 停留 → 跨张溶解（渐隐 / 下一张渐显），",
+        "  然后轮到下一张，全部轮完回到第一张。",
         "  图的来源是用户给的那张「高塔倒塌」参考图，由 tools/bake_menu_plate.py 烘成",
         "  **只有线**的蒙版（assets/menu/menu_plate.png：白线 + alpha）—— 颜色不烤进贴图，",
         "  运行时按 theme.palette.accent 上色（金色），换主题不用重烘。",
@@ -2233,6 +2247,9 @@
         "  · opacity —— 整体不透明度（不要给满：它是背景，不是主秀）；",
         "  · start_frac —— 进菜单时扫描头的位置（0 = 画外左缘，从最左边扫进来；0.3 = 一进来就已经在中间）。",
         "    ★ 用户口径：必须是 0 —— 点进主菜单时要看到它从最左边开始扫。",
+        "  · fade_sec —— 跨张溶解的时长：第 N 张渐隐、第 N+1 张渐显发生在同一段时间里",
+        "    （做成溶解而不是「先空一段再亮」：左边那块才不会闪一下空场）。",
+        "  · images —— 轮播的图（蒙版路径，按顺序）。读不到的会被跳过；全读不到时用第一张兜底。",
         "  ★ fit 是铺满方式：fill = 横竖各自拉满（默认，任何分辨率都不留空，代价是非等比拉伸）；",
         "    cover = 等比放大到铺满、多出来的一边裁掉（宽屏贴顶保塔冠 / 窄屏贴右保塔身）。",
         "  ★ fade_in_sec 是**入场编排**的最后一步：点击进入游戏后，logo 与游戏名右移、",
@@ -2249,7 +2266,12 @@
       "glow": 1.15,
       "start_frac": 0.0,
       "fade_in_sec": 0.6,
-      "fit": "fill"
+      "fit": "fill",
+      "fade_sec": 0.8,
+      "images": [
+        "res://assets/menu/menu_plate.png",
+        "res://assets/menu/menu_plate_2.png"
+      ]
     },
     "deck": {
       "transition_sec": 0.46,

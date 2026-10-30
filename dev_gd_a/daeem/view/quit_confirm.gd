@@ -29,6 +29,8 @@ signal cancelled
 const ConfigRes = preload("res://logic/config.gd")
 const ThemeRes = preload("res://view/theme.gd")
 const MenuThemeRes = preload("res://view/menu_theme.gd")
+## 确认退出那颗大面板相当于一个按钮：点击时播菜单点击音。
+const SfxRes = preload("res://view/sfx.gd")
 
 ## 盖在开场页（100）与 HUD（1）之上。
 const LAYER := 200
@@ -81,6 +83,7 @@ func setup(p_cfg: ConfigRes, p_font: Font) -> void:
 	_font = p_font
 	name = "QuitConfirm"
 	layer = LAYER
+	SfxRes.mark_menu(self)
 	visible = false
 	_read_config()
 
@@ -342,6 +345,9 @@ func _on_panel_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
 		# 阻止冒泡到 overlay（panel 是 overlay 的子，事件在 panel 这里就停住）。
 		_panel.accept_event()
+		# ★ 关闭动画进行中的连点不再补一声（`confirm()` 自己也会早退）。
+		if _open and not _closing:
+			SfxRes.play_click()
 		confirm()
 
 

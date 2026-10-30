@@ -76,6 +76,8 @@ extends Control
 const ThemeRes = preload("res://view/theme.gd")
 ## ★★ 所有 Button 统一的「按下压缩 / 回弹 / 亮边」由它负责（见 view/press_fx.gd）。
 const PressFxRes = preload("res://view/press_fx.gd")
+## ★★ 菜单按钮的点击 / 悬停音效（非菜单按钮挂上也静音，见 view/sfx.gd）。
+const SfxRes = preload("res://view/sfx.gd")
 
 ## 进度存在按钮身上的元数据键（`attach()` 写、`draw()` 读）。
 ## ★ 用元数据而不是「给 Button 加个字段」：调用点建的是**真 Button**，
@@ -130,6 +132,10 @@ static func attach(b: Button) -> FillAnimator:
 	var old: Variant = b.get_meta(META) if b.has_meta(META) else null
 	# ★★ 按下动效也在这里统一挂上：调用点不需要第二行 attach。
 	PressFxRes.attach(b)
+	# ★★ 点击音效同样统一挂上（只有菜单子树里的按钮会真的出声，见 sfx.gd）。
+	#   ⚠️ `false` = 悬停音**不在这里连**：本按钮的 `mouse_entered` 已经归动画器
+	#   （`setup_host`），由动画器的回调调 `SfxRes.on_hover()` —— 同一帧不接两条。
+	SfxRes.attach(b, false)
 	if old != null and is_instance_valid(old):
 		return old
 	var anim := FillAnimator.new()
@@ -258,6 +264,10 @@ static func draw_fill(b: Button) -> void:
 ##   （`_process` 才有地方跑、`_draw` 才有地方画），并且 `show_behind_parent = true`
 ##   ⇒ 它画的东西排在宿主的底纹 / 文字**之前**（层次见文件头那一节）。
 class FillAnimator extends Control:
+	## ★ 内层类看不到外层的常量（见文件头 FLIP_LO 那条），所以音效模块在这里再 preload
+	##   一次 —— 同一条 `res://` 只会载入一份资源，不是又建一个播放器池。
+	const SfxRes = preload("res://view/sfx.gd")
+
 	## 已经填了多少（0 = 空，1 = 满）。★ 只读用途请走 `host` 上的静态接口。
 	var _fill: float = 0.0
 	## ★ 确认按下后的「快速补满」剩余时间 / 满格保持时间（见 `_on_pressed_snap`）。
@@ -577,6 +587,8 @@ class FillAnimator extends Control:
 
 	func _on_mouse_entered() -> void:
 		_hovered = true
+		# ★ 悬停音借用这一条已有的 `mouse_entered`（不给宿主再连第二条，见 sfx.attach 的说明）。
+		SfxRes.on_hover(_button)
 
 	func _on_mouse_exited() -> void:
 		_hovered = false

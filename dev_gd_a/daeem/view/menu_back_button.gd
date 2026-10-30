@@ -2,6 +2,7 @@
 extends Button
 
 const ThemeRes = preload("res://view/theme.gd")
+const SfxRes = preload("res://view/sfx.gd")
 
 
 func setup(p_font: Font) -> void:
@@ -19,3 +20,4 @@ func setup(p_font: Font) -> void:
 	add_theme_color_override("font_hover_color", ThemeRes.accent_bright())
 	add_theme_color_override("font_pressed_color", ThemeRes.accent())
 	add_theme_color_override("font_focus_color", ThemeRes.text())
+	SfxRes.attach(self)

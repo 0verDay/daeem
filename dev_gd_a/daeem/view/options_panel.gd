@@ -19,6 +19,8 @@ const ThemeRes = preload("res://view/theme.gd")
 const UiStyleRes = preload("res://view/ui_style.gd")
 const MenuThemeRes = preload("res://view/menu_theme.gd")
 const FillButtonRes = preload("res://view/fill_button.gd")
+## ★ 选项页也是「菜单页」：面板子树标记成菜单，里面的按钮才会播点击音（见 sfx.gd）。
+const SfxRes = preload("res://view/sfx.gd")
 
 const OPEN_SCALE := Vector2(0.85, 0.85)
 const SUBMENU_SLIDE_PX := 30.0
@@ -106,6 +108,7 @@ func setup(parent: Control, font: Font, p_cfg: ConfigRes, config: Dictionary = {
 
 	_read_layout()
 	_build_overlay_panel()
+	SfxRes.mark_menu(panel)
 	_build_menu_page()
 	_build_config_page()
 	_menu_offsets = _capture_offsets(menu_vbox)

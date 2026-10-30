@@ -389,17 +389,21 @@ func _poll_hover_pick(screen: Vector2) -> void:
 ##   高于单个友 / 敌方单位 / 建筑」）。
 ##
 ## ★★ 判定口径跟着「松手时走哪条路」：
-##   · **触摸端**（`touch_mode` + 有屏幕框）→ 屏幕矩形，与 `box_select_screen` 一致
-##     （单位按**立牌屏幕矩形**判相交 + `box_select_pad_px`，建筑按格中心屏幕点）；
-##   · **桌面端** → 世界矩形，与 `box_select` 一致（单位 `rect.has_point(u.pos)`，
-##     建筑复用 `_buildings_in_rect`）。
+##   · **有屏幕矩形**（桌面拖拽与触摸都会记 `drag_screen_box`）→ 与 `box_select_screen`
+##     完全一致：单位按**立牌屏幕矩形**判相交 + `box_select_pad_px`，
+##     建筑按**模型屏幕包围矩形**判相交；
+##   · **没有屏幕矩形**（老路径 / 无头造不出视口）→ 退回世界矩形，与 `box_select` 一致。
 ##   ⚠️ 两条都不能自己发明判据：预览亮起的范围必须**等于**松手后真正选中的范围。
+##      桌面松手走的是 `box_select_screen` ⇒ 预览也必须走屏幕矩形，否则
+##      「拖过一长串城墙时高亮断断续续、松手却全选中」就是两套判据的差集。
 ## ★ 差别只有一处：这里**不改选中**，只把「要高亮的对象」写进悬停字段。
 ## @return true = 框里框到了己方目标（调用方就不要再退回光标单目标）
 func _hover_from_box() -> bool:
 	var rect: Rect2 = drag_box()
 	var screen_rect: Rect2 = drag_screen_box
-	var by_screen: bool = touch_mode and palette != null and drag_screen_valid
+	# ★★ 桌面也要走屏幕矩形：`_finish_drag` 在桌面同样调 `box_select_screen`
+	#   （见 `handle_mouse_motion` 里记录 `drag_screen_box` 的那一段）。
+	var by_screen: bool = palette != null and drag_screen_valid
 	# ① 己方单位：先只收「队长 id」，第二遍再把整支部队收全 ——
 	#   框里只框到一个人也要整队亮，但对每个人都调一次 `group_of` 是 O(n²)。
 	var leaders: Dictionary = {}
@@ -515,27 +519,10 @@ func handle_key(event: InputEventKey) -> bool:
 	if not event.pressed:
 		return false
 
-	# ★ 建筑快捷键（config.json 的 `building.<type>.hotkey`，现在是城墙 B / 箭塔 T）。
-	#   ★★ 数据驱动：编辑器里新加一栋楼、填一个字母，这里就认它
-	#      （原来写死 KEY_B / KEY_T 两条，新建筑只能点卡片建造）。
-	#   ⚠️ 排在下面的 match **之前**：填了 N / P / E / G 这类已被占用的字母，
-	#      就会把那几个键抢走 —— 编辑器那一栏的说明里写着这条。
-	#   ⚠️ 只认**单个字母**：多字符 / 空的快捷键在这里被跳过（不会误匹配）。
-	for d in cfg.buildable_building_defs():
-		var hk := String(d.get("hotkey", ""))
-		if hk.length() != 1:
-			continue
-		if k == OS.find_keycode_from_string(hk.to_upper()):
-			var t := String(d.get("id", ""))
-			# ★★ 2026.10.26：第二行建筑（石墙 / 警戒塔）要 2 级大本营。
-			#    这里先给一句明确反馈，避免进入建造模式后点地图才失败。
-			if world != null and not world.building_unlocked(world.my_faction, t):
-				toast.emit("大本营升到 %d 级才能建造%s" % [
-					cfg.building_tier(t), String(d.get("name", t))])
-				return true
-			set_build_type(t if build_type != t else "")
-			return true
-
+	# ★★ 2026.10.30：建筑的**单独字母快捷键已移除**（原来是 config 的
+	#   `building.<type>.hotkey`，如城墙 B / 箭塔 T）。建筑页只认九宫格
+	#   Q/W/E/A/S/D/Z/X/C，由 `hud.handle_key()` → `command_card.handle_key()`
+	#   统一处理；这里不再遍历建筑定义，也不再抢 N / P / E / G 那几个键。
 	match k:
 		KEY_ESCAPE:
 			if build_type != "":

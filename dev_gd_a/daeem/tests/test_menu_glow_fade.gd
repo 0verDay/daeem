@@ -127,7 +127,7 @@ func _test_page_switch() -> void:
 	near(hdr.modulate.a, 1.0, 0.01, "战役页：标题控件本身不被压暗")
 
 	# 战役 → 详情
-	campaign.flag_button().pressed.emit()
+	campaign.flag_buttons()[0].pressed.emit()
 	ok(await _wait_page(deck, "detail"), "进入详情页")
 	await _wait_sec(0.15)
 	near(campaign.glow_alpha(), 0.0, 0.01, "详情页：战役页泛光已灭")

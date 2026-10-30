@@ -16,6 +16,8 @@ const MenuThemeRes = preload("res://view/menu_theme.gd")
 const MenuBackgroundRes = preload("res://view/menu_background.gd")
 const MapPreviewRes = preload("res://view/map_preview.gd")
 const LevelBriefRes = preload("res://logic/level_brief.gd")
+## 本页也是菜单流程的一页：「点击进入游戏」与菜单按钮同一套点击音。
+const SfxRes = preload("res://view/sfx.gd")
 
 const LAYER := 150
 const NEXT_SCENE_PATH := "res://view/game_scene3d.gd"
@@ -83,6 +85,7 @@ func setup(p_cfg: ConfigRes, p_font: Font, p_campaign, p_level, p_faction: Strin
 	faction = p_faction
 	name = "LevelTransition"
 	layer = LAYER
+	SfxRes.mark_menu(self)
 	_read_config()
 	_build()
 	call_deferred("_layout")
@@ -462,6 +465,7 @@ func _on_hint_input(event: InputEvent) -> void:
 	if mb.button_index != MOUSE_BUTTON_LEFT or not mb.pressed:
 		return
 	_hint_hit.accept_event()
+	SfxRes.play_click()
 	_enter()
 
 

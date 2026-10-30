@@ -1453,7 +1453,7 @@ func _entry_cost(entry: Dictionary) -> Dictionary:
 	return v if typeof(v) == TYPE_DICTIONARY else {}
 
 
-## 建筑（建筑页那几格：木墙 / 哨塔 / 石墙 / 警戒塔）—— 说明 + 血量 + 攻击 + 远程免伤 + 占地 + 造价 + 快捷键。
+## 建筑（建筑页那几格：木墙 / 哨塔 / 石墙 / 警戒塔）—— 说明 + 血量 + 攻击 + 远程免伤 + 占地 + 造价。
 ## ★ 数值全部来自 `config.json` 的 `building.<type>.*`，与 logic/building.gd 读的是同一份。
 func _hover_build(entry: Dictionary) -> Dictionary:
 	var t := String(entry.get("build_type", ""))
@@ -1473,7 +1473,7 @@ func _hover_build(entry: Dictionary) -> Dictionary:
 		cfg.building_body_scale(t) * 100.0)))
 	var cost: Variant = cfg.get_path_value("building.%s.cost" % t)
 	lines.append("造价 %s" % _cost_text(cost if typeof(cost) == TYPE_DICTIONARY else {}))
-	lines.append("快捷键 %s（也可点这一格进入建造模式）" % cfg.str_val("building.%s.hotkey" % t, ""))
+	lines.append("点这一格进入建造模式")
 	if not bool(entry.get("ready", true)):
 		lines.append("★ 需要 %d 级大本营（当前 %d 级）" % [
 			int(entry.get("tier", 1)), int(entry.get("base_level", 1))])
@@ -1720,33 +1720,59 @@ func _tech_tier_name(tier: int) -> String:
 
 
 ## ★★ 2026.10.26 建筑页内容：与单位页同一套「按行解锁」。
-##   行号 = `building.<type>.tier`（1 = 1 级大本营，2 = 2 级大本营）；同一行按 config 顺序。
-##   不足 3 个的格子留空字典；未解锁的格子 `ready = false`（command_card 置灰）。
+##   行号 = `building.<type>.tier`（1 = 1 级大本营，2 = 2 级大本营）。
+##   ★★ 2026.10.30：同一行内可以用 `building.<type>.slot`（1..3）指定列；
+##   没写的按 config 顺序自动补空位。不足 3 个的格子留空字典；
+##   未解锁的格子 `ready = false`（command_card 置灰）。
 func _build_entries() -> Array:
 	var slots: Array = []
 	for _i in UiLayoutRes.CARD_SLOTS:
 		slots.append({})
 	if cfg == null:
 		return slots
-	var next_slot: Dictionary = {}
+	# ① 按 tier 分组（组内保持 config 顺序）。
+	var rows: Dictionary = {}
 	for d in cfg.buildable_building_defs():
 		var e: Dictionary = d
-		var bid := String(e.get("id", ""))
-		var tier := clampi(cfg.building_tier(bid), 1, 3)
+		var tier := clampi(cfg.building_tier(String(e.get("id", ""))), 1, 3)
+		if not rows.has(tier):
+			rows[tier] = []
+		(rows[tier] as Array).append(e)
+	# ② 每一行：先放显式 slot，再按 config 顺序补空位。
+	for tier_v in rows.keys():
+		var tier := int(tier_v)
 		var row_start: int = (tier - 1) * 3
-		var col: int = int(next_slot.get(tier, row_start))
-		# 一行最多 3 个：多出来的不画（不静默挤到下一行）。
-		if col < row_start or col >= row_start + 3 or col >= UiLayoutRes.CARD_SLOTS:
-			continue
-		next_slot[tier] = col + 1
-		slots[col] = {
-			"type": "build",
-			"build_type": bid,
-			"name": String(e.get("name", "")),
-			"desc": "%s（快捷键 %s，也可点这一格）" % [
-				String(e.get("desc", "")), String(e.get("hotkey", ""))],
-			"tier": tier,
-		}
+		var list: Array = rows[tier]
+		var used: Dictionary = {}
+		var explicit: Dictionary = {}
+		for d in list:
+			var e: Dictionary = d
+			var bid := String(e.get("id", ""))
+			var col := cfg.building_slot(bid)
+			if col < 1 or col > 3:
+				continue
+			var idx: int = row_start + col - 1
+			if idx < row_start or idx >= row_start + 3 or idx >= UiLayoutRes.CARD_SLOTS:
+				continue
+			if used.has(idx):
+				continue                 # 同一格重复写：先到先得，后来者走自动补位
+			used[idx] = true
+			explicit[bid] = true
+			slots[idx] = _build_entry(e, bid, tier)
+		var cursor: int = row_start
+		for d in list:
+			var e: Dictionary = d
+			var bid := String(e.get("id", ""))
+			if explicit.has(bid):
+				continue
+			while cursor < row_start + 3 and used.has(cursor):
+				cursor += 1
+			# 一行最多 3 个：多出来的不画（不静默挤到下一行）。
+			if cursor >= row_start + 3 or cursor >= UiLayoutRes.CARD_SLOTS:
+				continue
+			used[cursor] = true
+			slots[cursor] = _build_entry(e, bid, tier)
+			cursor += 1
 	var level: int = world.unit_recruit_level(world.my_faction) if world != null else 1
 	for i in slots.size():
 		var s: Dictionary = slots[i]
@@ -1757,6 +1783,17 @@ func _build_entries() -> Array:
 		if not bool(s["ready"]):
 			s["lock_reason"] = "tier"
 	return slots
+
+
+## 建筑页的一格（名字 / 说明 / tier）；具体落在哪一格由 `_build_entries()` 决定。
+func _build_entry(e: Dictionary, bid: String, tier: int) -> Dictionary:
+	return {
+		"type": "build",
+		"build_type": bid,
+		"name": String(e.get("name", "")),
+		"desc": "%s（也可点这一格）" % String(e.get("desc", "")),
+		"tier": tier,
+	}
 
 
 ## 把一张招募表（recruit.list / recruit.zone.list）翻成命令卡的条目。
@@ -2118,7 +2155,7 @@ func _on_card_entry(entry: Dictionary) -> void:
 				return
 			var t := String(entry.get("build_type", ""))
 			if input_ctrl.build_type == t:
-				input_ctrl.set_build_type("")        # 再点一次 = 退出建造模式（与 B/T 一致）
+				input_ctrl.set_build_type("")        # 再点一次 = 退出建造模式（与九宫格键位一致）
 			else:
 				input_ctrl.set_build_type(t)
 		"recruit":
@@ -2642,9 +2679,14 @@ func _reject_target_name(evt: Variant) -> String:
 # 键盘 / 鼠标
 # ------------------------------------------------------------------
 
-## 命令卡上的九个字母键（有内容的格优先于其它绑定）。
+## 命令卡 / 科技九格上的九个字母键（有内容的格优先于其它绑定）。
 ## 由 view/main.gd 在 input_controller 之前调用。
+##
+## ★★ 科技页时九格由 `tech_grid` 盖在命令卡上画，所以**先问它**：
+##   两层的几何完全重合，判定顺序必须与鼠标命中（`_cell_at_screen`）一致。
 func handle_key(event: InputEventKey) -> bool:
+	if tech_grid != null and tech_grid.visible:
+		return tech_grid.handle_key(event)
 	if command_card == null:
 		return false
 	return command_card.handle_key(event)

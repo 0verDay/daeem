@@ -8,6 +8,8 @@ extends Control
 signal pressed
 
 const ThemeRes = preload("res://view/theme.gd")
+## ★ 点击音效（本控件是自绘 Control，不走 fill_button，需要自己挂）。
+const SfxRes = preload("res://view/sfx.gd")
 
 const DEFAULT_DASH := 0.42
 const HOVER_DASH := 1.0
@@ -47,6 +49,7 @@ func setup(p_font: Font, text: String, font_size: int = 44) -> void:
 	_dash = DEFAULT_DASH
 	queue_redraw()
 
+	SfxRes.attach(self)
 	mouse_entered.connect(_on_hover.bind(true))
 	mouse_exited.connect(_on_hover.bind(false))
 	resized.connect(_layout_label)

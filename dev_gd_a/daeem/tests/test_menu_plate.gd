@@ -43,8 +43,8 @@ func _cases() -> void:
 	_test_scan_pauses()
 	_test_scan_wraps()
 	_test_start_frac()
-	_test_restart()
-	_test_freeze_when_animations_off()
+	_test_paths_from()
+	_test_two_masks()
 	_test_bad_config_clamps()
 	_free_all()
 
@@ -237,27 +237,43 @@ func _test_start_frac() -> void:
 		"start_frac=0（出厂值）时 t=0 在画外左缘")
 
 
-func _test_restart() -> void:
-	var a = _plate()
-	a.set_time(8.0)
-	a.restart_scan()
-	near(a.scan_time(), 0.0, 0.01, "restart_scan 把时钟清回起点")
-	near(a.scan_x(), -0.06, 0.001,
-		"重开那一刻扫描头在**画外左缘**（用户口径：从最左边开始扫）")
+func _test_paths_from() -> void:
+	var cfg = require_config()
+	var paths: Array = PlateRes.paths_from(cfg)
+	eq(paths.size(), 2, "配置里列了两张图（轮播两张）")
+	if paths.size() >= 2:
+		ok(String(paths[0]).ends_with("menu_plate.png"), "第一张是那张高塔")
+		ok(String(paths[1]).ends_with("menu_plate_2.png"), "第二张是骑士 + 风车")
+	# 坏配置 / 空配置退回第一张，不能一张都没有
+	var none: Array = PlateRes.paths_from(null)
+	eq(none.size(), 1, "没有配置时退回第一张")
+	eq(String(none[0]), PlateRes.PLATE_PATH, "退回的就是 PLATE_PATH")
 
 
-func _test_freeze_when_animations_off() -> void:
-	var a = _plate()
-	a.set_running(true)
-	ThemeRes.set_animations_enabled(false)
-	a.advance(1.0)
-	near(a.scan_x(), PlateRes.FREEZE_X, 0.02, "动效关掉时钉在「扫描头在中间」那一帧")
-	var x_frozen: float = a.scan_x()
-	a.advance(5.0)
-	near(a.scan_x(), x_frozen, EPS, "冻结期间扫描头不动")
-	ThemeRes.set_animations_enabled(true)
-	a.advance(1.0)
-	ok(a.scan_x() > x_frozen, "动效打开后继续往右走")
+func _test_two_masks() -> void:
+	# 两张蒙版都得真的烘出来了（尺寸、alpha、覆盖率都在合理区间）
+	for spec in [["res://assets/menu/menu_plate.png", 1280, 1080],
+			["res://assets/menu/menu_plate_2.png", 1280, 1080]]:
+		var path: String = String(spec[0])
+		ok(ResourceLoader.exists(path), "蒙版存在：%s" % path.get_file())
+		if not ResourceLoader.exists(path):
+			continue
+		var tex: Texture2D = load(path)
+		eq(tex.get_width(), int(spec[1]), "%s 宽 = 设计空间左区宽" % path.get_file())
+		eq(tex.get_height(), int(spec[2]), "%s 高 = 设计空间高" % path.get_file())
+		var img: Image = tex.get_image()
+		if img == null:
+			continue
+		var lit := 0
+		var total := 0
+		for y in range(0, img.get_height(), 6):
+			for x in range(0, img.get_width(), 6):
+				total += 1
+				if img.get_pixel(x, y).a > 0.1:
+					lit += 1
+		var frac: float = float(lit) / float(maxi(1, total))
+		ok(frac > 0.03, "%s 不是空的（覆盖率 %.1f%%）" % [path.get_file(), frac * 100.0])
+		ok(frac < 0.45, "%s 没有糊成一片（覆盖率 %.1f%%）" % [path.get_file(), frac * 100.0])
 
 
 func _test_bad_config_clamps() -> void:

@@ -44,6 +44,8 @@ const HostSessionRes = preload("res://net/host_session.gd")
 const ClientSessionRes = preload("res://net/client_session.gd")
 ## ★★ 手机端触摸手势识别（单指拖视野 / 单击 / 双击 / 双指框选）—— 见那个文件的文件头
 const TouchControllerRes = preload("res://view/touch_controller.gd")
+## ★★ 音效（`building_built` → 建造音；菜单点击音也在同一模块，见 view/sfx.gd）。
+const SfxRes = preload("res://view/sfx.gd")
 const MAP_PATH := MapLibraryRes.FALLBACK_MAP_PATH
 
 ## 相机距离倍率的上下限（= 视野的两端）—— **唯一**的取值处（`fit_to_map` / `zoom_at` 都读它）。
@@ -1422,6 +1424,8 @@ func _consume_events(events: Array) -> void:
 	# ★★ 红点刷兵 → 小地图的「生成动效」（事件里带 `spawns`：本波每位将领的出生格）。
 	#    先于 `interaction.pump` 也可以：这里只往小地图记一笔，不改任何玩法状态。
 	_feed_red_dot_spawn_fx(events)
+	# ★ 本机阵营的建筑落成 → 建造音（别人的建造不播，见 `_feed_build_sfx`）。
+	_feed_build_sfx(events)
 	if interaction != null:
 		interaction.pump(events)
 	# ★★ 胜负事件 → 结算画面。合作局两端都走这里：
@@ -1581,6 +1585,34 @@ func _feed_red_dot_spawn_fx(events: Array) -> void:
 			pts.append(Vector2(float(d.get("x", -1)) + 0.5, float(d.get("y", -1)) + 0.5))
 		if not pts.is_empty():
 			mm.note_red_dot_spawns(pts)
+
+
+## 本机阵营的建筑**落成** → 建造音。
+##
+## ★ 只认 `building_built`（`world.add_building` 里推：玩家 / AI 的真实建造都会推；
+##   开局预置的建筑走 `silent` 分支不推 ⇒ 进关时不会响一串）。
+## ★★ 只播**本机阵营**的：这是全局音效，没有方位感 —— 把双方 AI 的建造也播出来，
+##   玩家会听到一堆不知道从哪来的声音（而且 AI 一直在建）。
+## ★ 合作局两端都经过 `_consume_events()`：客机收到的 `building` 已由 event_codec
+##   按坐标查回本地对象（见 net/event_codec.gd），所以客机自己的建造同样会响。
+## ⚠️ 建造有读条时（`building.<type>.build_sec > 0`），事件仍然是**放下那一刻**推的；
+##   这里跟事件走，不另外等读条结束。
+func _feed_build_sfx(events: Array) -> void:
+	if world == null:
+		return
+	var mine := String(world.my_faction)
+	if mine == "":
+		return
+	for evt in events:
+		var e: Dictionary = evt
+		if String(e.get("type", "")) != "building_built":
+			continue
+		var b: Variant = e.get("building", null)
+		if b == null:
+			continue
+		if String(b.owner) != mine:
+			continue
+		SfxRes.play_build()
 
 
 

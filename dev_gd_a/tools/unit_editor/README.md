@@ -113,9 +113,10 @@ Python + tkinter，**零第三方依赖**，与地图编辑器同一套界面风
 
 | 界面上的字段 | config.json 里的位置 |
 |---|---|
-| 名称 / 说明 / 快捷键 | `building.<id>.name` / `.desc` / `.hotkey`（建造页直接读它） |
+| 名称 / 说明 | `building.<id>.name` / `.desc`（建造页直接读它） |
 | 可建造 | `building.<id>.buildable`（建造页只列 `true` 的；大本营是 `false`） |
 | **解锁大本营等级** | `building.<id>.tier`（建筑页行号 / 需要几级大本营；缺省 1。石墙 / 警戒塔 = 2） |
+| **排内位置** | `building.<id>.slot`（同一行内的列：1 = 最左，3 = 最右；**空 = 按 config 顺序自动排**。建筑不再有单独字母快捷键，只认九宫格 Q/W/E/A/S/D/Z/X/C） |
 | 建造时间 | `building.<id>.build_sec`（**0 = 瞬发**，默认；> 0 就要读条） |
 | 造价（粮食 / 黄金） | `building.<id>.cost.food` / `.cost.gold` |
 | 血量 / 本体大小 | `building.<id>.hp_max` / `.body_scale` |

@@ -7,6 +7,8 @@ extends "res://view/menu_page.gd"
 signal room_entered
 
 const RoomDirectoryRes = preload("res://net/room_directory.gd")
+## 输入框里的清空按钮是裸 `Button.new()`，不走 fill_button，音效要自己挂。
+const SfxRes = preload("res://view/sfx.gd")
 
 ## 数字键盘只有 1~9 / 0；清空改为输入框内的 x 按钮。
 const KEY_LABELS := ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]
@@ -119,6 +121,7 @@ func setup(p_cfg, p_font: Font, p_session) -> void:
 	_clear_btn.add_theme_color_override("font_hover_color", ThemeRes.accent_bright())
 	_clear_btn.add_theme_color_override("font_pressed_color", ThemeRes.accent())
 	_clear_btn.pressed.connect(_on_clear)
+	SfxRes.attach(_clear_btn)
 	_clear_btn.visible = true
 	_code_edit.add_child(_clear_btn)
 

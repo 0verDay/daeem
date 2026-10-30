@@ -1988,6 +1988,12 @@ func building_tier(type: String) -> int:
 	return maxi(1, int(num("building.%s.tier" % type, 1)))
 
 
+## ★★ 2026.10.30：建筑在建造页**同一行内的列**（1 = 最左，3 = 最右）。
+##   0 = 没写 / 越界 → 按 config 顺序自动排（`hud._build_entries()` 负责补位）。
+func building_slot(type: String) -> int:
+	return clampi(int(num("building.%s.slot" % type, 0)), 0, 3)
+
+
 ## ★★ 2026.10.26：建筑对**远程伤害**的免伤比例（缺省 0.9 = 所有建筑 90%）。
 ##   ⚠️ 只作用于投掷物；近战 / 攻城（投石车）走别的伤害路径，不经过这里。
 func building_ranged_reduction(type: String) -> float:

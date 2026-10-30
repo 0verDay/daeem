@@ -378,8 +378,8 @@ C:\D\GodotEngine\gd4.7.2mono\Godot_v4.7.2-stable_mono_win64_console.exe `
 | 每行显示什么 | 「编号 + 队伍名 + 人数」，当前选中的那队高亮 | |
 | 点部队行 | **只选中，镜头不动** | 与按 1/2/3 的差别就在「不动镜头」 |
 | 小地图 | ~~本轮**只占位**~~ → **已在后续轮次做完**：真小地图（地形 / 建筑 / 单位 + 视野框 + 点击跳转 + 按住拖动），见[第十九节](#十九小地图动起来视野框--点击跳转--按住拖动) | 两次需求：「显示整个地图的内容和玩家当前的视野框」「左键点击地图中的某处时把视角移动过去」「点击小地图后可长按拖动小地图以移动视角」 |
-| 命令卡的内容 | **随右侧页签实时切换**，而页签是**按选中对象动态显示**的（第二十二节）：操作页 = 移动(Q)/攻击(W)/行军(E)/停止(A)，单位页 = 占位单位(Q)，建筑页 = 城墙(Q)/箭塔(W)，招募页 = 三个占位将领，科技页 = **九格由 `view/tech_grid.gd` 画**（命令卡本身是空的；见第二十三节） | 单位 / 招募两张表都是数据驱动的（`config.recruit.list`、`config.recruit.zone.list`），建筑页来自 `building.DEFS` 的 `buildable`，科技页来自 `config.tech.list` |
-| 九个字母键 | **是真快捷键**：有内容的格优先于其它绑定，空格子让路 | 见 9.3 |
+| 命令卡的内容 | **随右侧页签实时切换**，而页签是**按选中对象动态显示**的（第二十二节）：操作页 = 移动(Q)/攻击(W)/行军(E)/停止(A)，单位页 = 三行兵种，建筑页 = 木墙/哨塔/粮田(Q/W/E)、石墙/警戒塔/房屋(A/S/D)、矿脉(C)，招募页 = 九宫格将领，科技页 = **九格由 `view/tech_grid.gd` 画**（命令卡本身是空的；见第二十三节） | 单位 / 招募两张表都是数据驱动的（`config.recruit.list`、`config.recruit.zone.list`），建筑页来自 `config.building` 的 `buildable` + `tier` + `slot`，科技页来自 `config.tech.list` |
+| 九个字母键 | **是真快捷键**：有内容的格优先于其它绑定，空格子让路。★ **建筑没有单独的字母快捷键**（B/T/G/Y/U/H/M 已移除），只认这九格 | 见 9.3；科技页的九格同样响应这九个键（键位字母画在格子左上角） |
 | 单位页 | 显示可招募的单位；招募时在**当前选中的将领**身旁生成 | 没选中将领 → 只给提示、**不发命令** |
 | 操作页 | 对**当前选中的部队**下达指令（移动 / 攻击 / 行军 / 停止）：点一格进**命令模式**，再左键点地图 / 点目标下达（第二十二节 22.2） | 命令照旧只走 `command_issued` → `command_processor`，站位与结果在权威侧算 |
 | 招募页（区划中心） | 显示三个占位将领；点了排进**这个区划**的招募队列，读条 10 秒后在**区划中心旁**的空地生成（第二十二节 22.3） | 只能在**自己的**区划里招 |
@@ -1851,7 +1851,7 @@ y 200 .. 220   红字提示带 641×20
 | 区划中心 | **招募** | `config.recruit.zone.list` 的三个占位将领（Q/W/E） |
 | 大本营 | **科技** | 九条占位科技（`config.tech.list`），由 `view/tech_grid.gd` 画（第二十三节） |
 | 普通建筑（城墙 / 箭塔） | **一颗空页签**（`PAGE_NONE`：位置照常立着、没有标签、**不画「当前页」高亮**） | 九格全空 |
-| 什么都没选中 | **建筑 + 科技**（默认建筑） | 建筑页 = 城墙(Q) / 箭塔(W)（建造入口住在这儿，手玩定的）；科技页 = 九条占位科技 |
+| 什么都没选中 | **建筑 + 科技**（默认建筑） | 建筑页 = 木墙/哨塔/粮田(Q/W/E)、石墙/警戒塔/房屋(A/S/D)、矿脉(C)（建造入口住在这儿，手玩定的）；科技页 = 九条占位科技 |
 
 - `view/page_tabs.gd` 因此从「三颗写死的按钮」改成 `set_pages(ids, preferred)` 的**动态页签**：
   按钮仍建满 `TABS_COUNT` 颗，多的**隐藏**（节点树稳定），高度 = 240 ÷ 当前页数
@@ -1943,7 +1943,7 @@ y 200 .. 220   红字提示带 641×20
 | 规则 | `logic/tech.gd`：`can_activate()` 只给拒因码（`unknown` / `limit`），`toggle()` / `activate()` / `deactivate()` 是**唯一**改启用状态的地方 |
 | 权威状态 | `world.tech`（`active_by_faction`：阵营 → 已启用的 id 数组）。`world.tech_entries()` 给出九格的显示数据（名字 / 第二行小字 / tooltip / 是否已启用） |
 | 命令 | `tech_toggle`（`tech_id` + `on` + `faction`）。`on` 缺省 = **切换**（玩家点格子那一下的语义）。被拒时留一条 `tech_rejected` 事件 → 左栏红字（与招募 / 指令被拒同一条通道） |
-| 视图 | `view/tech_grid.gd`：3×3 九格，**几何与命令卡完全重合**（`ui_layout.card_cell_local`），只在「科技」页显示；已启用 = 实心蓝 + 亮描边；点一下发 `tech_toggle` |
+| 视图 | `view/tech_grid.gd`：3×3 九格，**几何与命令卡完全重合**（`ui_layout.card_cell_local`），只在「科技」页显示；已启用 = 实心蓝 + 亮描边；点一下发 `tech_toggle`。★ 2026.10.30 起九格也响应 **Q/W/E/A/S/D/Z/X/C**（键位字母画在格子左上角）；`hud.handle_key()` 在科技页优先问 `tech_grid`，空格 / 置灰格不消费按键 |
 
 ### 23.3 效果（三种形状，都是「启用即生效、弃用即回退」）
 
@@ -2439,7 +2439,7 @@ c1 = 人口区划但**手改过数字**（1 粮食 + 1 黄金 + 0.15 人口／�
 
 | 哪一类 | 例子（单位页 Q 格「长枪兵」） |
 |---|---|
-| **建筑**（建筑页 Q/W） | 建筑说明 → `血量上限 300` → `本体占格 100%（居中；本体之外的缝隙走得过去）` → `造价 免费` → `快捷键 B（也可点这一格进入建造模式）`；箭塔多一行 `攻击 12 / 射程 3 格 / 间隔 0.8s` |
+| **建筑**（建筑页九格） | 建筑说明 → `血量上限 300` → `本体占格 100%（居中；本体之外的缝隙走得过去）` → `造价 免费` → `点这一格进入建造模式`；箭塔多一行 `攻击 12 / 射程 3 格 / 间隔 0.8s` |
 | **招募单位**（单位页） | 说明 → `血量 160` → `攻击 20 / 射程 1 格 / 间隔 1s` → `速度 0.6 格/秒` → `兵种 步兵` → `造价 粮食 50 / 黄金 50` → `占用人口 1（从将领所在区划的人口里扣）` → `读条 10 秒（挂在将领名下，读条期间它不能动）` |
 | **招募将领**（招募页） | 与上面同一条代码（两张招募表字段名一样）；只差「人口从**本区划**扣」与读条那句话 |
 | **区域的特化**（操作页） | 说明 → `效果 本区块粮食 +0.5／地块／秒` → `造价 粮食 50 / 黄金 50` → `读条 10 秒` → `一个区划只能选一种特化；选错了可以在操作页取消（取消也要读条，全额退款）` |
@@ -2565,11 +2565,11 @@ c1 = 人口区划但**手改过数字**（1 粮食 + 1 黄金 + 0.15 人口／�
 | 单位 `icon`（新增） | 图标按类型 id 写死在 `view/unit_icon.gd` | `cfg.unit_icon_of(类型)` → 图标名；`unit_view` 按图标名烘图。新兵种可以借用现成的线条 |
 | 将领**独立数值**（新增 `unit.general.stats`） | 将领数值**必须**等于所属兵种（kind 分不出开局那三位，都是 `general`） | `unit.general_index` + `unit.stat_overrides` 落在**单位自己身上**（create 时按序号取一次）：没写的键跟随兵种 —— 默认与从前逐位一致。悬停详情走 `general_hp_at / general_combat_at / general_speed_at` |
 | 将领名字（可省） | `world.create_generals` 里写死 `["将领 1","将领 2","将领 3"]` | `cfg.general_name_at(i)`，没写就是原来那三个名字 |
-| 建筑 `name` / `desc` / `hotkey` / `buildable` / `blocks_*` | 全写死在 `logic/building.gd` 的 `DEFS`，建造页遍历它 | **搬进 config 的 `building` 段**（`cfg.building_def(type, 兜底)` = DEFS 兜底 ⊕ config，**config 优先**）。`DEFS` 只剩「区划中心 + 未知类型兜底」 |
+| 建筑 `name` / `desc` / `buildable` / `tier` / `slot` / `blocks_*` | 全写死在 `logic/building.gd` 的 `DEFS`，建造页遍历它 | **搬进 config 的 `building` 段**（`cfg.building_def(type, 兜底)` = DEFS 兜底 ⊕ config，**config 优先**）。`DEFS` 只剩「区划中心 + 未知类型兜底」 |
 | 建筑 **`build_sec`**（新增） | 建造是**瞬发**的 | 建造读条：`add_building` 起读条（**开局自带的传 `instant = true`**：大本营 / 防御阵地 / 区划中心直接完工），`world._tick_construction(dt)` 每帧推进，读完广播 `building_ready`；读条期间**不开火**，`building_view` 画一条进度条，右栏写「建造中：还剩 N 秒」 |
 | 建筑 **`attackable`**（新增） | 写死 `type == "tower"` 才能攻击 | `b.is_attackable(cfg)`；`combat.update_towers` 遍历**所有**建筑按它判。新加的炮塔真的会开火 |
 | 升级行**逐级攻击**（新增，可省） | 升级只改血量倍率 | `cfg.building_attack_of(type, level)`：等级行写了就用它、没写用基础值。`building.attack_damage/range/cooldown` 按**当前等级**取（开火那一刻读，升级读完不用刷任何缓存） |
-| 建筑快捷键 | `input_controller` 里写死 `KEY_B` / `KEY_T` | 遍历 `cfg.buildable_building_defs()` 的 `hotkey`（单个字母）—— 编辑器里填的字母真的能用，也能把已占用的键抢走（界面上写着这条） |
+| 建筑快捷键 | `input_controller` 里写死 `KEY_B` / `KEY_T` | **2026.10.30 已彻底移除**：`building.<type>.hotkey` 字段、`input_controller` 的读取、悬停里的「快捷键 X」全部删除。建筑只认建造页九宫格 Q/W/E/A/S/D/Z/X/C（命令卡统一处理） |
 | 新建筑能建出来 | `command_processor.apply_build` 只认 `DEFS.has(type)` | 认 `cfg.has_building_type(type)` **且** `buildable`；HUD 的建造页也改成读 config |
 
 ★ 三处「一个类型只在一个地方定义」的老规矩**没有破**：`DEFS` 仍是运行时兜底（手改地图写出
@@ -6367,7 +6367,8 @@ debug keystore。明文 `ws://` 若被 Android 明文流量策略拦截，需要
 * 建造页（`view/hud.gd:_build_entries()`）改成与单位页同一套 9 格行布局：
   第 2 行在 1 级大本营时**可见但置灰**（悬停写「需要 2 级大本营」），2 级后变亮。
 * 权威侧兜底：`world.building_unlocked()` + `command_processor.apply_build()` 的
-  `base_level` 拒因；`input_controller` 的建造快捷键也会先提示、不进建造模式。
+  `base_level` 拒因；建造页的置灰格与 `hud._on_card_entry("build")` 也会先提示、不进建造模式。
+  （2026.10.30 起建筑没有单独字母快捷键，`input_controller` 不再参与这条提示。）
 
 ### 62.2 取消建筑升级
 
@@ -7265,3 +7266,46 @@ godot --headless --path dev_gd_a/daeem --script tests/test_campaign_seats.gd
 - 只想要三面旗：删掉 `campaigns_menu.json` 的 `c1` 即可，代码不用改。
 - 战役编辑器的关卡树只列「地图 ∈ 有用表 maps」的关卡；`between_moutains` 在表里，
   所以三个新关会出现在编辑器中。`test_app.py` 的精确列表必须跟着更新。
+
+## 七十六、建造页排内位置 / 移除建筑字母快捷键 / 科技页键盘（2026.10.30）
+
+> 需求原话：「将游戏中的『矿脉』建筑在建筑页签中的位置从第三排最左侧改到第三排最右侧」；
+> 「建筑不需要再有比如 YUT 什么的快捷键，而是只需要遵循右下角九宫格页签的快捷键即可」；
+> 「科技页没有也无法使用快捷键，修复一下这个 bug」。
+
+### 76.1 规则
+
+| 项 | 现在的口径 |
+|---|---|
+| 建筑排内位置 | `config.building.<id>.slot`（1 = 最左，3 = 最右；**不写 = 按 config 顺序自动补位**）。矿脉写 `slot: 3`，落在建造页第三行最右（C 格） |
+| 行号 | 仍是 `building.<id>.tier`（1/2/3 = 需要几级大本营），一行最多 3 格 |
+| 显式位置冲突 | 显式 slot 先到先得；后来者退回自动补位，不会覆盖已有格子 |
+| 建筑快捷键 | **没有任何单独字母快捷键**。`building.<id>.hotkey` 字段、`input_controller` 的读取、悬停文案里的「快捷键 X」全部删除；只认九宫格 Q/W/E/A/S/D/Z/X/C |
+| 科技页快捷键 | `tech_grid.handle_key()` 接收 Q/W/E/A/S/D/Z/X/C，按键映射到**视觉格**（九格是列优先转置的），与鼠标点击走同一条 `cell_activated → tech_toggle` 路径；空格 / 置灰格不消费按键 |
+
+### 76.2 落点
+
+| 文件 | 改动 |
+|---|---|
+| `data/config.json` | 7 个可建造建筑删除 `hotkey`；`mine` 增加 `slot: 3`；`_defs_comment` 同步 |
+| `logic/config.gd` | 新增 `building_slot(type)`（缺省 0 = 自动） |
+| `view/hud.gd` | `_build_entries()` 支持显式 slot + 自动补位；悬停去掉快捷键行；`handle_key()` 在科技页优先转发 `tech_grid` |
+| `view/input_controller.gd` | 删除建筑 hotkey 遍历 |
+| `view/ui_layout.gd` | 新增 `CARD_KEY_TO_SLOT`（命令卡与科技格共用） |
+| `view/command_card.gd` | 改用 `UiLayoutRes.CARD_KEY_TO_SLOT` |
+| `view/tech_grid.gd` | 每格左上角键位字母；`handle_key()`；`cell_key()` |
+| `tools/unit_editor/model.py` / `app.py` / `README.md` | 删除 `hotkey` 字段，新增可选 `slot` |
+| `tests/test_ui.gd` | 矿脉位置断言、建筑字母快捷键失效断言、`_test_tech_keys()` 回归 |
+| `tests/test_unit_editor.gd` | 矿脉在 C 格；outpost 自动补位改为第三行第 1 格 |
+| `tools/unit_editor/test_model.py` / `test_app.py` | `slot` 读写 / 清空删键；删除 hotkey 相关断言 |
+
+### 76.3 验证
+
+```
+godot --headless --path dev_gd_a/daeem --script res://tests/test_ui.gd
+godot --headless --path dev_gd_a/daeem --script res://tests/test_unit_editor.gd
+python dev_gd_a\tools\unit_editor\test_model.py
+```
+
+手玩：空手 → 建筑页，矿脉在第三排最右（C），第三排左/中为空；按 B/T/G/Y/U/H/M 不再进入建造模式；
+切到科技页按 Q/W/E/A/S/D/Z/X/C 与点击一致，锁定格无反应，格子左上角有键位字母。

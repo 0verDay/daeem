@@ -172,9 +172,9 @@ BUILDING_FIELDS: Tuple[Field, ...] = (
     Field("tier", "解锁大本营等级", "int",
           "建筑页的行号 / 解锁所需的大本营等级：1 = 第 1 行，2 = 第 2 行（2 级大本营）",
           minimum=1, maximum=3),
-    Field("hotkey", "快捷键", "text",
-          "建造页那一格上的快捷键字母（可空）。⚠️ 别用已经被占用的键："
-          "N（区划名字）/ P（暂停）/ E（刷敌人）/ G / 数字 1~3 —— 占了就会把那个键抢走"),
+    Field("slot", "排内位置", "int",
+          "建筑页同一行内的列：1 = 最左，3 = 最右；空 = 按 config 顺序自动排",
+          minimum=1, maximum=3),
     Field("build_sec", "建造时间", "float",
           "秒。**0 = 瞬发**（默认，与从前一致）；> 0 就要读条，读条期间不能攻击", minimum=0),
     Field("cost_food", "造价 · 粮食", "float",
@@ -446,7 +446,8 @@ class Building:
         self.fog_default = fog_default
         self.name = _s(data.get("name"), bid)
         self.buildable = _b(data.get("buildable"), False)
-        self.hotkey = _s(data.get("hotkey"), "")
+        #: ★ 建造页同一行内的列（1..3）；没写 = None（自动排序，界面显示空输入框）。
+        self.slot = int(_f(data.get("slot"), 0)) if "slot" in data else None
         self.build_sec = _f(data.get("build_sec"), 0.0)
         cost = data.get("cost") if isinstance(data.get("cost"), dict) else {}
         self.cost_food = _f(cost.get("food"), 0.0)
@@ -971,7 +972,11 @@ class ConfigModel:
             #   （与兵种那边的 `set_unit("vision", None)` 同一条语义）。
             if self.doc.has(path + ["vision"]):
                 self.doc.remove(path + ["vision"])
-        elif field in ("name", "buildable", "tier", "hotkey", "build_sec", "hp_max",
+        elif field == "slot" and value is None:
+            # ★ `slot = None` = 删掉这个键 → 回到「按 config 顺序自动排」。
+            if self.doc.has(path + ["slot"]):
+                self.doc.remove(path + ["slot"])
+        elif field in ("name", "buildable", "tier", "slot", "build_sec", "hp_max",
                        "body_scale", "vision", "ranged_reduction", "attackable",
                        "damage", "range", "cooldown", "color", "desc"):
             self.doc.set(path + [field], value)
@@ -1013,7 +1018,9 @@ class ConfigModel:
         # ★ 新建筑一律**可建造**：否则它在游戏里根本出不来（建造页不列它），
         #   设计师会以为编辑器坏了。想让它当「开局自带」的东西，把勾去掉即可。
         self.doc.set(["building", new_id, "buildable"], True)
-        self.doc.set(["building", new_id, "hotkey"], "")
+        # ★ 新建筑不继承模板的排内位置：空着 = 在它那一行自动补位。
+        if self.doc.has(["building", new_id, "slot"]):
+            self.doc.remove(["building", new_id, "slot"])
         # ★★ 2026.10.26：只有大本营可以升级；新建筑不再自动生成 upgrade.levels。
 
     @staticmethod

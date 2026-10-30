@@ -58,6 +58,11 @@ func _run() -> void:
 		screen.art().set_time(2.2)
 		await _wait_sec(0.15)
 		await _shoot("02b_plate_scan")
+		# 2c) 轮播的第二张（骑士 + 风车）：拨到它自己那一档、扫到一半
+		if screen.art().plate_count() > 1:
+			screen.art().set_time(screen.art().time_for_x(0.5, 1))
+			await _wait_sec(0.15)
+			await _shoot("02c_plate2")
 		screen.art().set_running(true)
 
 	# 2b) 退出按钮悬停：右上角边缘泛光变亮
@@ -84,7 +89,7 @@ func _run() -> void:
 	await _shoot("03_campaign")
 
 	# 4) 战役详情
-	screen.campaign_panel().flag_button().pressed.emit()
+	screen.campaign_panel().flag_buttons()[0].pressed.emit()
 	await _wait_page("detail")
 	await _wait_sec(0.4)
 	await _shoot("04_detail")

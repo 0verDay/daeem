@@ -44,6 +44,8 @@ const FS_LINE := 11
 var _cells: Array[Button] = []
 var _name_labels: Array[Label] = []
 var _line_labels: Array[Label] = []
+## ★★ 每格左上角的键位字母（与命令卡同一套 QWE / ASD / ZXC）。
+var _key_labels: Array[Label] = []
 ## 上一次喂进来的条目（测试与调试读它；也是点击回调的 id 来源）
 var _entries: Array = []
 
@@ -104,13 +106,24 @@ func setup() -> void:
 		line_label.position = Vector2(0.0, cell_size.y * 0.58)
 		cell.add_child(line_label)
 
-		# ★ 两条子 Label 登记到填充上：填满时它们会一起被压成暖黑（否则暖白压金读不出来）
+		# ★★ 键位字母（与命令卡 / 页签同一套）：画在左上角。
+		var key_label := Label.new()
+		key_label.text = String(UiLayoutRes.CARD_KEYS[i])
+		key_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		key_label.add_theme_font_size_override("font_size", UiStyleRes.FS_TINY)
+		key_label.add_theme_color_override("font_color", UiStyleRes.text_faint())
+		key_label.position = Vector2(4.0, 1.0)
+		cell.add_child(key_label)
+
+		# ★ 三条子 Label 登记到填充上：填满时它们会一起被压成暖黑（否则暖白压金读不出来）
 		FillButtonRes.on_fill_text(cell, name_label, UiStyleRes.text())
 		FillButtonRes.on_fill_text(cell, line_label, UiStyleRes.text_dim())
+		FillButtonRes.on_fill_text(cell, key_label, UiStyleRes.text_faint())
 
 		_cells.append(cell)
 		_name_labels.append(name_label)
 		_line_labels.append(line_label)
+		_key_labels.append(key_label)
 
 	set_entries([])
 
@@ -195,6 +208,9 @@ func _apply() -> void:
 				UiStyleRes.text_on_accent() if active else UiStyleRes.text())
 			FillButtonRes.on_fill_text(cell, _line_labels[i],
 				Color(1.0, 1.0, 1.0, 0.85) if active else UiStyleRes.text_dim())
+			FillButtonRes.on_fill_text(cell, _key_labels[i],
+				UiStyleRes.text_on_accent() if active
+					else (UiStyleRes.text_faint() if locked else UiStyleRes.text()))
 			# ★★ 已启用 = 常驻满格 + 更亮那一档金（需求：点击启用后亮度稍微变大）
 			FillButtonRes.set_latched(cell, active)
 			# ★★ 这一格「有科技」⇒ 参与填充动效。
@@ -208,6 +224,7 @@ func _apply() -> void:
 			cell.disabled = true              # 空格子点了不做事（也不吃键盘）
 			FillButtonRes.set_base_font_color(cell, UiStyleRes.text_faint())
 			FillButtonRes.on_fill_text(cell, _line_labels[i], UiStyleRes.text_faint())
+			FillButtonRes.on_fill_text(cell, _key_labels[i], UiStyleRes.text_faint())
 			FillButtonRes.set_latched(cell, false)
 			FillButtonRes.set_grey(cell, false)
 			# ★ 空格子**不参与填充**：它连「科技」都没有，填起来会让人以为这一格能点。
@@ -258,6 +275,31 @@ func _on_cell_pressed(i: int) -> void:
 	if not bool(e.get("active", false)) and not bool(e.get("available", true)):
 		return                            # 置灰格：点了什么都不发生
 	cell_activated.emit(String(e.get("id", "")))
+
+
+## ★★ 键盘：科技页的九格快捷键（Q/W/E/A/S/D/Z/X/C）。
+##
+## ★ 与点击**完全同一条路**：键位映射到视觉格 → `_on_cell_pressed()` →
+##   `cell_activated` → hud → `tech_toggle` 命令。这里不自己改任何逻辑状态。
+## ★ 空格 / 置灰格**不吃按键**（与 `command_card.handle_key()` 同一条约定），
+##   让这几个字母继续走别的绑定。
+## ★ 带 Ctrl / Alt / Meta 的组合键一律放行（Ctrl+Q 全屏等）。
+func handle_key(event: InputEventKey) -> bool:
+	if not event.pressed or event.echo:
+		return false
+	if event.ctrl_pressed or event.alt_pressed or event.meta_pressed:
+		return false
+	var slot: int = int(UiLayoutRes.CARD_KEY_TO_SLOT.get(event.keycode, -1))
+	if slot < 0 or slot >= _cells.size():
+		return false
+	var ei := _entry_index_for_cell(slot)
+	if ei < 0 or ei >= _entries.size():
+		return false
+	var e: Dictionary = _entries[ei]
+	if not bool(e.get("active", false)) and not bool(e.get("available", true)):
+		return false
+	_on_cell_pressed(slot)
+	return true
 
 
 ## 鼠标进入 / 离开第 i 格 —— 只转发序号（内容由 hud 现取，与命令卡同一条约定）
@@ -330,6 +372,13 @@ func cell_line(i: int) -> String:
 	if i < 0 or i >= _line_labels.size():
 		return ""
 	return _line_labels[i].text
+
+
+## 第 i 格左上角显示的键位字母
+func cell_key(i: int) -> String:
+	if i < 0 or i >= _key_labels.size():
+		return ""
+	return _key_labels[i].text
 
 
 ## 第 i 格是不是画成「已启用」（实心强调色）。空格子恒为 false。

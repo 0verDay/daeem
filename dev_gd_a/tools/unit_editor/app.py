@@ -1416,10 +1416,14 @@ class EditorApp:
             if field.key == "attackable":
                 self._bool_row(sec, field, b.attackable,
                                lambda v, bb=b: self.model.set_building(bb.id, "attackable", v))
-            elif field.key in ("name", "hotkey", "color", "desc"):
+            elif field.key in ("name", "color", "desc"):
                 self._entry_row(sec, field, b.field(field.key),
-                                lambda v, bb=b, f=field: self.model.set_building(bb.id, f.key, v),
-                                allow_empty=(field.key == "hotkey"))
+                                lambda v, bb=b, f=field: self.model.set_building(bb.id, f.key, v))
+            elif field.key == "slot":
+                # ★ 清空 = 删掉 slot 键 → 按 config 顺序自动排（与「视野半径」同一条语义）。
+                self._entry_row(sec, field, b.field(field.key),
+                                lambda v, bb=b: self.model.set_building(bb.id, "slot", v),
+                                allow_empty=True)
             elif field.key == "buildable":
                 self._bool_row(sec, field, b.buildable,
                                lambda v, bb=b: self.model.set_building(bb.id, "buildable", v))

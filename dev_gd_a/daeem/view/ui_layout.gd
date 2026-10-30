@@ -162,6 +162,12 @@ const CARD_ROWS := 3
 const CARD_SLOTS := CARD_COLS * CARD_ROWS
 ## 九个格子的键位：按参考图排（上排 QWE / 中排 ASD / 下排 ZXC）
 const CARD_KEYS := ["Q", "W", "E", "A", "S", "D", "Z", "X", "C"]
+## ★ 键位 → **视觉格子序号**（0..8）。命令卡与科技九格共用同一套。
+const CARD_KEY_TO_SLOT := {
+	KEY_Q: 0, KEY_W: 1, KEY_E: 2,
+	KEY_A: 3, KEY_S: 4, KEY_D: 5,
+	KEY_Z: 6, KEY_X: 7, KEY_C: 8,
+}
 
 ## ------------------------------------------------------------------
 ## ★★ 悬停详情面板（右下角命令卡**正上方**）—— 本版新增

@@ -64,6 +64,17 @@
 3. `view/game_scene3d.gd`：`start_level()` 新增可选 `ai_overrides` / `ai_profiles` 参数（不传 = 与以前逐位一致，老调用点零改动），并新增 `start_level_vs_commander()` 装配入口（内部只把「AI 那一方」写成 commander + normal 难度）
 4. 新增 `tests/test_ai_test_duel.gd`（111 条）：目标图 / 双方可玩 / 按阵营分开的目标 / 玩家当 p1 与当 p2 两种装配（双方基地、开局将领、只有另一方是 commander、输入与 HUD 不是观战）/ 主菜单按钮的真实入口 / 随机结果两边都会出现
 
+### 2026.10.30 主菜单左侧：雕版**轮播**（两张图交替扫描）
+1. 第二张图（骑士 + 风车）走同一套流程：`tools/bake_menu_plate.py` 改成 **PLATES 表**（每张图自己的裁切 / 尺寸 / 画框内缩），可以一次烘两张、也可以只烘某一张；产物 `assets/menu/menu_plate_2.png`（1280×1080，白线 + alpha，8% 覆盖率）。第一张的产物与之前**逐字节一致**
+2. 拆成两层：`etched_plate.gd` 只剩「画一张」（自己的 shader 材质 + `set_scan_x()` / `set_alpha()`）；**时间线**搬到新的 `plate_cycle.gd`（N 个 `etched_plate` 子控件 + 绝对时钟），`start_screen` / 测试 / bench 的调用点基本没动
+3. 一档 = **扫描 9s → 停留 3s → 溶解 0.8s**；溶解发生在两档交界，上一张渐隐与下一张渐显**同时**进行（做成溶解而不是「先空一段再亮」：左边那块才不会闪一下空场）
+4. 下一张淡进来的时候它的扫描头**停在画外左缘**，淡完才开始扫 —— 不会出现「淡进来时已经扫了一半」
+5. 动效总开关关掉 / 进战斗停表时，钉在「第 0 张、扫描头在画面中间」那一帧（仍然不是空画面）
+6. 配置：`menu.plate.images`（轮播的图，按顺序；读不到的会跳过，全读不到时用第一张兜底）+ `menu.plate.fade_sec`（溶解时长）
+7. 测试拆成两份：`test_menu_plate.gd`（95 条：两张蒙版、shader、落位、参数）+ `test_menu_plate_cycle.gd`（76 条：轮播时间线、溶解不空场、下一张从最左边起扫、整轮回绕、冻结帧）
+8. 顺手修了 `tests/bench_menu_shot.gd` / `test_menu_glow_fade.gd` 里已经失效的 `flag_button()`（战役页 API 早前改名成 `flag_buttons()`）
+   ⚠️ `tests/test_start_flow.gd` 仍然引用已删除的 `chapter_buttons()` / `selected_chapter()`，那是战役页重构留下的，**没有动**
+
 ### 2026.10.28 移动端主菜单：去掉悬停，按下即点亮
 1. 新增静态开关 `theme.hover_enabled()` / `set_hover_enabled()`（默认 = **非 `mobile`**）。★ 触屏按下去时引擎会模拟一次 `mouse_entered`，松开却**不补 `mouse_exited`** —— 桌面那套悬停态在手机上会**卡住**：横线一直亮、角泛光一直亮、填充按钮一直满金（后者以前靠 `start_screen` 在触摸松手时 `clear_hover_in` 兜底）
 2. 战役 / 合作 / 演义（`menu_text_button`）：移动端忽略悬停事件，左右横线改由**按住 / 松开**驱动，松手回短横线 —— 悬停与点击合并成同一个反馈

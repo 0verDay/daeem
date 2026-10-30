@@ -279,9 +279,10 @@ def t_window(app, model) -> None:
 
     app.set_page("building")
     app.root.update()
-    eq(list(app.building_tree.get_children()),
-       ["b:wall", "b:tower", "b:stone_wall", "b:watch_tower", "b:base"],
-       "建筑列表：五个（没有区划中心）")
+    building_rows = list(app.building_tree.get_children())
+    ok("b:zone_center" not in building_rows, "建筑列表没有区划中心")
+    for required_id in ("wall", "tower", "stone_wall", "watch_tower", "base"):
+        ok("b:" + required_id in building_rows, "建筑列表里有「%s」" % required_id)
     app.set_page("tech")
     app.root.update()
     eq(len(app.tech_tree.get_children()), 9, "科技列表：九条")
@@ -569,7 +570,7 @@ def t_building_form(app, model) -> None:
     app.root.update()
     pick(app, "b:wall")
     entries = sidebar_entries(app)
-    for label in ("名称", "解锁大本营等级", "建造时间", "造价 · 粮食", "造价 · 黄金",
+    for label in ("名称", "解锁大本营等级", "排内位置", "建造时间", "造价 · 粮食", "造价 · 黄金",
                   "血量", "本体大小", "视野半径", "远程免伤"):
         ok(label in entries, "建筑表单里有「%s」" % label)
     ok("攻击力" not in entries, "★ 木墙「不可攻击」→ 攻击三行收起来了")
@@ -585,8 +586,11 @@ def t_building_form(app, model) -> None:
     type_into(app, sidebar_entries(app)["名称"], "土墙")
     eq(data(model)["building"]["wall"]["name"], "土墙", "改名称")
     eq(app.building_tree.item("b:wall", "values")[0], "土墙", "列表里的名字刷新了")
-    type_into(app, sidebar_entries(app)["快捷键"], "W")
-    eq(data(model)["building"]["wall"]["hotkey"], "W", "改建造页快捷键")
+    type_into(app, sidebar_entries(app)["排内位置"], "2")
+    eq(data(model)["building"]["wall"]["slot"], 2, "★ 改排内位置 → building.wall.slot")
+    type_into(app, sidebar_entries(app)["排内位置"], "")
+    eq("slot" in data(model)["building"]["wall"], False,
+       "★★ 清空排内位置 = 删掉 slot 键（回到自动补位）")
     type_into(app, sidebar_entries(app)["造价 · 黄金"], "25")
     eq(data(model)["building"]["wall"]["cost"]["gold"], 25, "改建筑造价")
     type_into(app, sidebar_entries(app)["解锁大本营等级"], "2")

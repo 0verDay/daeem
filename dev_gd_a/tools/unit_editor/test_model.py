@@ -509,9 +509,10 @@ def t_generals() -> None:
 def t_buildings() -> None:
     print("\n[4] 建筑")
     model = fresh_model()
-    eq([b.id for b in model.buildings()],
-       ["wall", "tower", "stone_wall", "watch_tower", "base"],
-       "★ 建筑表里没有区划中心（它不是建筑）")
+    building_ids = [b.id for b in model.buildings()]
+    ok("zone_center" not in building_ids, "★ 建筑表里没有区划中心（它不是建筑）")
+    for required_id in ("wall", "tower", "stone_wall", "watch_tower", "base"):
+        ok(required_id in building_ids, "建筑表里有「%s」" % required_id)
     wall = model.building("wall")
     eq(wall.name, "木墙", "名称")
     near(wall.hp_max, 300, "血量")
@@ -557,7 +558,9 @@ def t_buildings() -> None:
     eq(base.max_level, 3, "★★ 只有大本营有 3 级升级表")
     near(base.levels[1].hp_mult, 1.5, "大本营 2 级血量倍率 1.5")
     near(base.levels[1].cost_food, 200, "大本营升 2 级要 200 粮")
-    near(base.levels[1].time_sec, 10, "大本营升 2 级读条 10 秒")
+    near(base.levels[1].time_sec,
+         float(model.doc.value(["upgrade", "levels", "base", 1, "time_sec"])),
+         "大本营升 2 级读条 = config 里写的值（数值可调，不写死）")
 
     # 字段 → 键
     for field, value, path in (
@@ -565,7 +568,7 @@ def t_buildings() -> None:
             ("ranged_reduction", 0.75, ["building", "wall", "ranged_reduction"]),
             ("name", "木墙改", ["building", "wall", "name"]),
             ("buildable", False, ["building", "wall", "buildable"]),
-            ("hotkey", "W", ["building", "wall", "hotkey"]),
+            ("slot", 2, ["building", "wall", "slot"]),
             ("build_sec", 6, ["building", "wall", "build_sec"]),
             ("cost_food", 10, ["building", "wall", "cost", "food"]),
             ("cost_gold", 20, ["building", "wall", "cost", "gold"]),
@@ -595,6 +598,16 @@ def t_buildings() -> None:
     near(tower_v.vision_effective, m_v.fog_vision_building_default(),
          "★★ 生效值 = config 的 fog.vision_building（编辑器里显示的就是它）")
     near(m_v.fog_vision_building_default(), 9.0, "（前提）fog.vision_building = 9")
+
+    # ---- ★★ 清空「排内位置」= 删掉 slot 键 → 回到按 config 顺序自动排 ----
+    m_s = fresh_model()
+    eq(m_s.building("wall").slot, None, "（前提）木墙没写 slot")
+    m_s.set_building("wall", "slot", 2)
+    eq(m_s.building("wall").slot, 2, "★ 写 slot = 建造页同一行第 2 列")
+    m_s.set_building("wall", "slot", None)
+    eq(m_s.doc.has(["building", "wall", "slot"]), False,
+       "★★ set_building(slot = None) → 删掉那个键")
+    eq(m_s.building("wall").slot, None, "于是又回到「自动补位」")
 
     # ★★ 升级表只剩大本营；对哨塔调用 set_level 应该被拒。
     m2 = fresh_model()
@@ -639,16 +652,19 @@ def t_buildings() -> None:
     b = m4.building("outpost")
     eq(b.name, "前哨站", "名字")
     ok(b.buildable, "★★ 新建筑一律「可建造」（否则游戏里根本出不来）")
-    eq(b.hotkey, "", "快捷键留空（设计师自己填）")
+    eq(b.slot, None, "排内位置留空（在它那一行自动补位）")
+    ok(not m4.doc.has(["building", "outpost", "slot"]),
+       "★ 新建筑不继承模板的 slot 键")
     near(b.damage, 12, "数值照模板（哨塔）")
     near(b.hp_max, 300, "血量照模板")
     eq(b.max_level, 1, "★★ 新建筑不再自动配升级表（最大等级 1）")
     eq(len(b.levels), 0, "★★ 新建筑没有逐级数据")
     ok(not m4.doc.has(["upgrade", "levels", "outpost"]),
        "★★ 不会生成 upgrade.levels.outpost")
-    eq([x.id for x in m4.buildings()],
-       ["wall", "tower", "stone_wall", "watch_tower", "base", "outpost"],
-       "建筑顺序：新的排在最后")
+    ids_after_add = [x.id for x in m4.buildings()]
+    eq(ids_after_add[-1], "outpost", "建筑顺序：新的排在最后")
+    for required_id in ("wall", "tower", "stone_wall", "watch_tower", "base"):
+        ok(required_id in ids_after_add, "原有建筑「%s」还在" % required_id)
     ok(changed_lines(before, m4.text) > 10, "确实往文件里加了东西")
     parse(m4.text)
 

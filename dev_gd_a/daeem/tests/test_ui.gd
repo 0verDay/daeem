@@ -535,6 +535,7 @@ func _test_panels(cfg) -> void:
 	_test_hover_panel(main, cfg)
 	await _test_hover_tip_control(cfg)
 	_test_card_keys(main)
+	_test_tech_keys(main)
 	_test_avatar_text_fit(cfg)
 	_test_recruit_via_card(main)
 	_test_multi_recruit_distribution(main)
@@ -1650,6 +1651,11 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 	eq(card.cell_label(1), "哨塔", "哨塔在 W 格")
 	eq(card.cell_label(3), "石墙", "★★ 石墙在第二行第 1 格（A）")
 	eq(card.cell_label(4), "警戒塔", "★★ 警戒塔在第二行第 2 格（S）")
+	eq(String(card.entry_at(6).get("build_type", "")), "",
+		"★★ 第三行第 1 格空着（矿脉已右移）")
+	eq(String(card.entry_at(8).get("build_type", "")), "mine",
+		"★★ 矿脉在第三行最右侧（C 格）")
+	eq(card.cell_label(8), "矿脉", "★ 第三行最右格写着「矿脉」")
 	ok(bool(card.entry_at(0).get("ready", false)), "木墙 1 级就能建")
 	ok(not bool(card.entry_at(3).get("ready", true)), "★★ 石墙 1 级时置灰")
 	ok(not bool(card.entry_at(4).get("ready", true)), "★★ 警戒塔 1 级时置灰")
@@ -2061,6 +2067,14 @@ func _test_card_keys(main) -> void:
 	tabs.select_page(PageTabsRes.PAGE_BUILD)
 	eq(tabs.page(), PageTabsRes.PAGE_BUILD, "（前提）没选中东西 → 停在建筑页")
 
+	# ★★ 2026.10.30：建筑的单独字母快捷键已移除，只认九宫格键位。
+	ok(not main.cfg.building_def("wall").has("hotkey"),
+		"★★ config 里不再有 building.wall.hotkey")
+	var bt_before := String(main.input_ctrl.build_type)
+	ok(not main.input_ctrl.handle_key(_key(KEY_B)), "★ 按 B 不再进入木墙建造模式")
+	ok(not main.input_ctrl.handle_key(_key(KEY_M)), "★ 按 M 不再进入矿脉建造模式")
+	eq(main.input_ctrl.build_type, bt_before, "★ 这两个键没有改变建造模式")
+
 	var a_ev := _key(KEY_A)
 	ok(not card.handle_key(a_ev), "未解锁的 A 格（石墙）不消费按键")
 
@@ -2110,6 +2124,60 @@ func _test_card_keys(main) -> void:
 		"★ Ctrl+Q 不被命令卡消费（要让给 main 的全屏快捷键）")
 	ok(not card.handle_key(_key(KEY_W, true)),
 		"★ Ctrl+W 也不被命令卡消费（同一类组合键一起让出来）")
+
+
+## ★★ 2026.10.30 回归：科技页九格没有键盘入口（用户报的 bug）。
+##   修复前 `hud.handle_key()` 只问命令卡，而科技页命令卡是空的 ⇒ Q/W/E 全部无效。
+func _test_tech_keys(main) -> void:
+	var world = main.world
+	var tabs = main.hud.page_tabs
+	var g = main.hud.tech_grid
+	var base = world.find_base_of("p1")
+	ok(base != null, "（前提）有己方大本营")
+	if base == null:
+		return
+	var level_before: int = base.level
+	base.level = world.cfg.upgrade_max_level("base")
+	world.apply_building_level_hp(base)
+	give_gold_income(world, 100.0)
+
+	main.input_ctrl.select_units([])
+	main.hud.refresh()
+	tabs.select_page(PageTabsRes.PAGE_TECH)
+	eq(tabs.page(), PageTabsRes.PAGE_TECH, "（前提）切到科技页")
+	main.hud.refresh()
+	ok(g.visible, "（前提）科技九格显示出来")
+
+	# 视觉第 1/2/3 格 = Q/W/E = entry 0/3/6（九格是列优先转置的）。
+	var keys := [KEY_Q, KEY_W, KEY_E]
+	var ids: Array = []
+	for i in 3:
+		var id := String((g.entry_at(i) as Dictionary).get("id", ""))
+		ok(id != "", "（前提）视觉第 %d 格有科技" % (i + 1))
+		ids.append(id)
+		ok(main.hud.handle_key(_key(int(keys[i]))),
+			"★★ 科技页按 %s 被九格消费" % String(UiLayoutRes.CARD_KEYS[i]))
+		ok(world.is_tech_active(id),
+			"★★ 按 %s = 启用视觉第 %d 格（%s）"
+				% [String(UiLayoutRes.CARD_KEYS[i]), i + 1, id])
+		eq(g.cell_key(i), String(UiLayoutRes.CARD_KEYS[i]),
+			"★ 科技格左上角显示键位字母 %s" % String(UiLayoutRes.CARD_KEYS[i]))
+	main.hud.refresh()
+	for i in 3:
+		ok(g.cell_active(i), "★ 键盘启用后第 %d 格画成高亮" % (i + 1))
+
+	# 再按一次同一个键 = 弃用（与鼠标点击同一条路）。
+	for i in 3:
+		ok(main.hud.handle_key(_key(int(keys[i]))), "再按一次 %s" % String(UiLayoutRes.CARD_KEYS[i]))
+		ok(not world.is_tech_active(String(ids[i])),
+			"★★ 再按 %s = 弃用视觉第 %d 格" % [String(UiLayoutRes.CARD_KEYS[i]), i + 1])
+
+	ok(not main.hud.handle_key(_key(KEY_Q, true)),
+		"★ 科技页 Ctrl+Q 不被九格消费（仍让给全屏快捷键）")
+
+	base.level = level_before
+	world.apply_building_level_hp(base)
+	main.hud.refresh()
 
 func _test_recruit_via_card(main) -> void:
 	var world = main.world

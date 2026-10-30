@@ -12,6 +12,8 @@ signal press_started
 signal press_ended
 
 const LayoutRes = preload("res://view/menu_deck_layout.gd")
+## ★ 点击音效（自绘 Control，不走 fill_button，需要自己挂）。
+const SfxRes = preload("res://view/sfx.gd")
 
 ## 与 LayoutRes.CORNER_* 一致；默认右上（退出 X / 返回箭头都在右上）。
 var corner: int = LayoutRes.CORNER_TOP_RIGHT
@@ -22,6 +24,7 @@ var _hovered: bool = false
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	SfxRes.attach(self)
 
 
 func _has_point(point: Vector2) -> bool:

@@ -33,13 +33,6 @@ signal entry_activated(entry: Dictionary)
 signal cell_hovered(index: int)
 signal cell_unhovered(index: int)
 
-## 键位 → 格子序号。格子序号是行优先（0..2 = Q/W/E）。
-const KEY_TO_SLOT := {
-	KEY_Q: 0, KEY_W: 1, KEY_E: 2,
-	KEY_A: 3, KEY_S: 4, KEY_D: 5,
-	KEY_Z: 6, KEY_X: 7, KEY_C: 8,
-}
-
 var _entries: Array = []
 var _cells: Array[Button] = []
 var _key_labels: Array[Label] = []
@@ -253,7 +246,7 @@ func handle_key(event: InputEventKey) -> bool:
 		return false
 	if event.ctrl_pressed or event.alt_pressed or event.meta_pressed:
 		return false
-	var slot: int = int(KEY_TO_SLOT.get(event.keycode, -1))
+	var slot: int = int(UiLayoutRes.CARD_KEY_TO_SLOT.get(event.keycode, -1))
 	if slot < 0 or slot >= _entries.size():
 		return false
 	if (_entries[slot] as Dictionary).is_empty():

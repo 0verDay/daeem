@@ -15,7 +15,7 @@ const FactionRes = preload("res://logic/faction.gd")
 const DT := 1.0 / 60.0
 
 const NEW_BUILDING := {
-	"id": "outpost", "name": "前哨站", "hotkey": "K", "buildable": true,
+	"id": "outpost", "name": "前哨站", "buildable": true,
 	"tier": 3,                       # 第三行（前两行已被现有建筑占满）
 	"build_sec": 1.0,
 	"cost": {"food": 0, "gold": 0},
@@ -522,21 +522,24 @@ func _test_hud_build_page() -> void:
 	eq(String(card.entry_at(1).get("build_type", "")), "tower", "第 2 格是哨塔")
 	eq(String(card.entry_at(3).get("build_type", "")), "stone_wall", "第二行第 1 格是石墙")
 	eq(String(card.entry_at(4).get("build_type", "")), "watch_tower", "第二行第 2 格是警戒塔")
+	eq(String(card.entry_at(8).get("build_type", "")), "mine",
+		"★★ 矿脉按 slot = 3 落在第三行最右侧")
+	eq(card.cell_label(8), "矿脉", "★ 第三行最右格是矿脉")
 
 	main.cfg.data["building"]["outpost"] = NEW_BUILDING.duplicate(true)
 	main.hud.rebuild_card()
-	eq(String(card.entry_at(7).get("build_type", "")), "outpost",
-		"★★ 编辑器里新加的建筑出现在建造页第 8 格（tier = 3 的第二个空位）")
-	eq(card.cell_label(7), "前哨站", "★ 格子上是 config 里的名字")
+	eq(String(card.entry_at(6).get("build_type", "")), "outpost",
+		"★★ 编辑器里新加的建筑出现在建造页第 7 格（tier = 3 的第一个空位）")
+	eq(card.cell_label(6), "前哨站", "★ 格子上是 config 里的名字")
 
 	main.cfg.data["building"]["outpost"]["buildable"] = false
 	main.hud.rebuild_card()
-	eq(String(card.entry_at(7).get("build_type", "")), "",
+	eq(String(card.entry_at(6).get("build_type", "")), "",
 		"★★ 取消「可建造」→ 它从建造页消失")
 
 	main.cfg.data["building"]["outpost"]["buildable"] = true
 	main.cfg.data["building"]["outpost"]["name"] = "石头哨塔"
 	main.hud.rebuild_card()
-	eq(card.cell_label(7), "石头哨塔", "★ 改名之后卡片上的字跟着变")
+	eq(card.cell_label(6), "石头哨塔", "★ 改名之后卡片上的字跟着变")
 
 	root_node.queue_free()
