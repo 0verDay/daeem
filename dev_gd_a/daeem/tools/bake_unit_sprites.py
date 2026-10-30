@@ -12,17 +12,18 @@
 
     SpearMan/spearman.png      人 + 剑（剑当长枪用，用户口径「人物带剑 → 长枪兵」）
     LongbowMan/longbowman.png  人 + 弓
-    Rider/rider.png            单字「骑」  ┐
-    GrainCart/grain_cart.png   单字「粮」  │ 缺素材的兵种：单字占位
-    Knight/knight.png          单字「士」  │ （字取自 data/config.json 的 unit.types.*.icon）
-    HorseArcher/horse_archer.png 单字「骁」│
-    Catapult/catapult.png      单字「车」  ┘
+    Rider/rider.png            原画「骑手」  ┐
+    GrainCart/grain_cart.png   原画「粮车」  │ art_draft 根目录的整张原画（直接拷贝）
+    Knight/knight.png          原画「骑士」  │
+    HorseArcher/horse_archer.png 原画「马弓手」│
+    Catapult/catapult.png      原画「投石车」┘
     Projectile/arrow.png       箭（原样拷贝；投射物用）
 
 ★ 只有**形状与颜色**写进 PNG；阵营色描边、选中金描边都由运行时按阵营烘
   （MultiMesh 一批共用一张图，见 view/unit_sprite_3d.gd 与 view/unit_view_3d.gd）。
-★ 立牌画布固定 64×96（与 unit_sprite_3d.gd 的 TEX_W / TEX_H 一致）；这里输出更高分辨率的
-  原图，运行时再 contain-fit 到 64×96 并逐像素烘描边。
+★ 运行时按兵种立牌比例生成画布（步兵 1×1 / 骑兵 1×1.5 / 器械 2×1，基准 64×96，
+  与 unit_sprite_3d.gd 的 TEX_W / TEX_H 同一像素密度）；这里输出更高分辨率的原图，
+  运行时再 contain-fit 并逐像素烘描边。
 ★ 单字永远从 config.json 现读 —— 改了「地图上的字」重跑本脚本即可，不会两处不一致。
 
 ⚠️ 这个脚本只是**开发期工具**（不进游戏、不参与 run-tests）：改了 art_draft 里的素材就重跑。
@@ -53,13 +54,17 @@ BOW_DY = 0.88
 GLYPH_PX = 64
 GLYPH_FILL = 0.88
 
-# 缺素材的兵种 → 产物文件名（字从 config 的 icon 读）
-GLYPH_TARGETS = [
-    ("Rider", "rider", "rider.png"),
-    ("GrainCart", "grain_cart", "grain_cart.png"),
-    ("Knight", "knight", "knight.png"),
-    ("HorseArcher", "horse_archer", "horse_archer.png"),
-    ("Catapult", "catapult", "catapult.png"),
+# 缺素材的兵种 → 产物文件名（字从 config 的 icon 读）。
+# ★ 目前七个兵种都有整张原画了，这里为空；将来加缺素材的兵种时往里加即可。
+GLYPH_TARGETS = []
+
+# 已有整张原画的兵种：art_draft 根目录的文件 → 产物（原样拷贝，不再画单字）
+ART_TARGETS = [
+    ("粮车.png", "GrainCart", "grain_cart.png"),
+    ("骑手.png", "Rider", "rider.png"),
+    ("骑士.png", "Knight", "knight.png"),
+    ("马弓手.png", "HorseArcher", "horse_archer.png"),
+    ("投石车.png", "Catapult", "catapult.png"),
 ]
 
 
@@ -68,7 +73,8 @@ def _default_paths():
     project = os.path.abspath(os.path.join(here, ".."))          # dev_gd_a/daeem
     repo = os.path.abspath(os.path.join(project, "..", ".."))    # 仓库根
     return (os.path.join(repo, "art_draft", "test_assets"),
-            os.path.join(project, "assets", "test_units"))
+            os.path.join(project, "assets", "test_units"),
+            os.path.join(repo, "art_draft"))
 
 
 def load_rgba(path):
@@ -125,10 +131,12 @@ def save(img, path):
 
 
 def main(argv=None):
-    src_default, out_default = _default_paths()
-    ap = argparse.ArgumentParser(description="烘 3D 立牌贴图（人 + 武器 / 单字 / 箭）")
+    src_default, out_default, art_default = _default_paths()
+    ap = argparse.ArgumentParser(description="烘 3D 立牌贴图（人 + 武器 / 原画 / 单字 / 箭）")
     ap.add_argument("--src", default=src_default, help="art_draft/test_assets 目录")
     ap.add_argument("--out", default=out_default, help="工程 assets/test_units 目录")
+    ap.add_argument("--art", default=art_default,
+                    help="art_draft 根目录（整张原画所在处，直接拷贝）")
     ap.add_argument("--config", default=None, help="config.json（默认取工程 data/config.json）")
     ap.add_argument("--font", default=None, help="单字用的字体（默认 assets/fonts/simhei.ttf）")
     args = ap.parse_args(argv)
@@ -137,10 +145,12 @@ def main(argv=None):
     project = os.path.abspath(os.path.join(out, "..", ".."))
     cfg_path = args.config or os.path.join(project, "data", "config.json")
     font_path = args.font or os.path.join(project, "assets", "fonts", "simhei.ttf")
-    if not os.path.isfile(cfg_path):
-        raise SystemExit("找不到 config.json：%s" % cfg_path)
-    if not os.path.isfile(font_path):
-        raise SystemExit("找不到字体：%s" % font_path)
+    # 只有还要画单字占位时才需要 config / 字体（目前 GLYPH_TARGETS 为空）。
+    if GLYPH_TARGETS:
+        if not os.path.isfile(cfg_path):
+            raise SystemExit("找不到 config.json：%s" % cfg_path)
+        if not os.path.isfile(font_path):
+            raise SystemExit("找不到字体：%s" % font_path)
 
     print("[bake] 源素材：%s" % os.path.abspath(args.src))
     print("[bake] 输出：  %s" % out)
@@ -153,15 +163,21 @@ def main(argv=None):
     save(compose(args.src, "g.png", BOW_H, BOW_DX, BOW_DY),
          os.path.join(out, "LongbowMan", "longbowman.png"))
 
-    cfg = json.loads(io.open(cfg_path, encoding="utf-8").read())
-    types = cfg["unit"]["types"]
-    print("[bake] 单字占位（字从 config.json 的 unit.types.*.icon 读）")
-    for folder, type_id, filename in GLYPH_TARGETS:
-        ch = str(types.get(type_id, {}).get("icon", "") or "").strip()
-        if not ch:
-            raise SystemExit("config 里 %s 没有 icon" % type_id)
-        print("[bake]   %s = %r" % (type_id, ch))
-        save(bake_glyph(ch, font_path), os.path.join(out, folder, filename))
+    print("[bake] 整张原画（直接拷贝 art_draft 根目录的素材）")
+    for src_name, folder, filename in ART_TARGETS:
+        save(load_rgba(os.path.join(args.art, src_name)),
+             os.path.join(out, folder, filename))
+
+    if GLYPH_TARGETS:
+        cfg = json.loads(io.open(cfg_path, encoding="utf-8").read())
+        types = cfg["unit"]["types"]
+        print("[bake] 单字占位（字从 config.json 的 unit.types.*.icon 读）")
+        for folder, type_id, filename in GLYPH_TARGETS:
+            ch = str(types.get(type_id, {}).get("icon", "") or "").strip()
+            if not ch:
+                raise SystemExit("config 里 %s 没有 icon" % type_id)
+            print("[bake]   %s = %r" % (type_id, ch))
+            save(bake_glyph(ch, font_path), os.path.join(out, folder, filename))
 
     print("[bake] 箭（投射物贴图）")
     arrow = load_rgba(os.path.join(args.src, "arrow.png"))

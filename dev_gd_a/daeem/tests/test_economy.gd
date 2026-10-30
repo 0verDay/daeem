@@ -38,6 +38,8 @@ func _cases() -> void:
 	cfg.upkeep_enabled = true
 	cfg.combat_enabled = false
 	_test_upkeep_table(cfg)
+	_test_base_resource_bonus(cfg)
+	_test_resource_buildings(cfg)
 	_test_upkeep_deducts_food(cfg)
 	_test_starving_morale(cfg)
 	_test_tech_warmup(cfg)
@@ -70,6 +72,109 @@ func _test_upkeep_table(cfg) -> void:
 		"★ 器械 > 骑兵")
 	ok(cfg.unit_upkeep_of("grain_cart") > cfg.unit_upkeep_of("spearman"),
 		"★ 二阶支援也比一阶步兵贵")
+
+
+# ------------------------------------------------------------------
+# 1.5) 大本营分阶资源加成
+# ------------------------------------------------------------------
+
+func _test_base_resource_bonus(cfg) -> void:
+	var w = _make(cfg)
+	var f: String = String(w.my_faction)
+	var b = w.find_base_of(f)
+	ok(b != null, "（前提）有大本营")
+	if b == null:
+		return
+	b.level = 1
+	var flat1: Dictionary = w._flat_resource_bonus(f)
+	near(float(flat1["food"]), 0.5, 1e-9, "★ 一本：粮食 +0.5/秒")
+	near(float(flat1["gold"]), 0.0, 1e-9, "一本不产黄金")
+	var zb1: Dictionary = w._zone_population_bonus_map()
+	var zid: int = int(b.zone_id)
+	ok(not zb1.has(zid) or float((zb1[zid] as Dictionary).get("rate", 0.0)) == 0.0,
+		"一本没有人口速率加成")
+
+	b.level = 2
+	var flat2: Dictionary = w._flat_resource_bonus(f)
+	near(float(flat2["food"]), 0.5, 1e-9, "★ 二本仍提供粮食 +0.5")
+	var zb2: Dictionary = w._zone_population_bonus_map()
+	ok(zb2.has(zid), "二本给所在区划人口加成")
+	if zb2.has(zid):
+		near(float((zb2[zid] as Dictionary).get("rate", 0.0)), 0.05, 1e-9,
+			"★ 二本：所在区划人口 +0.05/秒")
+		near(float((zb2[zid] as Dictionary).get("cap", 0.0)), 1.0, 1e-9,
+			"★ 二本：所在区划人口上限 +1")
+
+	b.level = 3
+	var flat3: Dictionary = w._flat_resource_bonus(f)
+	near(float(flat3["food"]), 0.5, 1e-9, "★ 三本仍提供粮食")
+	near(float(flat3["gold"]), 0.5, 1e-9, "★ 三本：黄金 +0.5/秒")
+	var zb3: Dictionary = w._zone_population_bonus_map()
+	if zb3.has(zid):
+		near(float((zb3[zid] as Dictionary).get("rate", 0.0)), 0.10, 1e-9,
+			"★ 三本：所在区划人口 +0.10/秒")
+		near(float((zb3[zid] as Dictionary).get("cap", 0.0)), 2.0, 1e-9,
+			"★ 三本：所在区划人口上限 +2")
+
+
+# ------------------------------------------------------------------
+# 1.6) 资源建筑：粮田 / 房屋 / 矿脉
+# ------------------------------------------------------------------
+
+func _test_resource_buildings(cfg) -> void:
+	var w = _make(cfg)
+	w.base_bonus_enabled = false
+	w.refresh_zone_production()
+	var f: String = String(w.my_faction)
+	var b = w.find_base_of(f)
+	if b == null:
+		return
+	var zone: Variant = w.zones.zone_at(b.tx, b.ty)
+	ok(zone != null, "（前提）大本营所在区划")
+	if zone == null:
+		return
+	var zd: Dictionary = zone
+	var pop_cap0: float = w.zones.population_cap_of(zd)
+
+	var farm = _place_free(w, zd, f, "farm")
+	var house = _place_free(w, zd, f, "house")
+	var mine = _place_free(w, zd, f, "mine")
+	ok(farm != null and house != null and mine != null, "★ 三个资源建筑都能建在己方区划")
+	if farm == null or house == null or mine == null:
+		return
+
+	var flat: Dictionary = w._flat_resource_bonus(f)
+	near(float(flat["food"]), 0.5, 1e-9, "★ 粮田：全阵营粮食 +0.5/秒")
+	near(float(flat["gold"]), 0.4, 1e-9, "★ 矿脉：全阵营黄金 +0.4/秒")
+	var zb: Dictionary = w._zone_population_bonus_map()
+	var zid := int(zd["id"])
+	ok(zb.has(zid), "房屋给所在区划人口加成")
+	if zb.has(zid):
+		near(float((zb[zid] as Dictionary).get("rate", 0.0)), 0.03, 1e-9,
+			"★ 房屋：人口 +0.03/秒")
+		near(float((zb[zid] as Dictionary).get("cap", 0.0)), 1.0, 1e-9,
+			"★ 房屋：人口上限 +1")
+	w.zones.apply_population_bonuses(zb)
+	near(w.zones.population_cap_of(zd), pop_cap0 + 1.0, 1e-9,
+		"★ 房屋让所在区划上限 +1")
+
+	w.remove_building(house, true)
+	var zb2: Dictionary = w._zone_population_bonus_map()
+	ok(not zb2.has(zid), "房屋被拆后人口加成消失")
+	w.zones.apply_population_bonuses(zb2)
+	near(w.zones.population_cap_of(zd), pop_cap0, 1e-9, "上限也回到原值")
+
+
+## 在某个区划里找一格空地建一栋资源建筑（silent + instant）。
+func _place_free(w, zd: Dictionary, faction: String, type: String):
+	for t in (zd.get("tiles", []) as Array):
+		var tile: Vector2i = t
+		if not w.can_build_at(tile.x, tile.y, faction):
+			continue
+		var b = w.add_building(type, tile.x, tile.y, faction, true, true)
+		if b != null:
+			return b
+	return null
 
 
 # ------------------------------------------------------------------
@@ -142,31 +247,22 @@ func _test_starving_morale(cfg) -> void:
 
 
 # ------------------------------------------------------------------
-# 4) 预热
+# 4) 点下即生效（预热已删除）
 # ------------------------------------------------------------------
 
 func _test_tech_warmup(cfg) -> void:
 	var w = _make(cfg)
 	_no_production(w)
-	w.resources["gold"] = 1000.0           # 没有金会在下一帧直接断金，先把钱给足
+	give_gold_income(w, 10.0)              # 赤字规则：先给足黄金产能
+	w.resources["gold"] = 1000.0
 	ok(w.set_tech_active(T_FOOD, true), "点下「粮食产量 I」")
-	ok(not w.is_tech_active(T_FOOD), "★ 点下去 ≠ 生效（预热期间没有加成）")
-	ok(w.tech.is_warming(T_FOOD), "★ 它在预热队列里")
-	eq(w.tech.slot_count(), 1, "★ 预热的也占名额")
-	near(w.tech.warmup_left(T_FOOD), float(cfg.tech_warmup_sec), 0.5,
-		"预热时长 = tech.warmup_sec（%s 秒）" % cfg.tech_warmup_sec)
+	ok(w.is_tech_active(T_FOOD), "★ 点下即生效（没有预热）")
+	eq(w.tech.slot_count(), 1, "★ 占用一个名额")
 
-	w.tick(float(cfg.tech_warmup_sec) * 0.5)
-	ok(not w.is_tech_active(T_FOOD), "预热一半时还没生效")
-	w.tick(float(cfg.tech_warmup_sec) * 0.5 + 0.1)
-	ok(w.is_tech_active(T_FOOD), "★ 预热满 30 秒之后生效")
-
-	# 预热中取消：立即退出，不留冷却。
 	ok(w.set_tech_active(T_FOOD, false), "弃用")
 	ok(not w.is_tech_active(T_FOOD), "弃用后立即失效")
-	ok(not w.tech.in_cooldown(w.my_faction), "★ 手动取消**不进冷却**（用户口径）")
 	ok(w.set_tech_active(T_FOOD, true), "可以马上再点")
-	ok(not w.is_tech_active(T_FOOD), "再点又是从预热开始")
+	ok(w.is_tech_active(T_FOOD), "★ 再点也是立刻生效")
 	ok(w.set_tech_active(T_FOOD, false), "（收尾）取消，别把金耗留给后面的用例")
 
 
@@ -180,11 +276,10 @@ func _test_tech_gold_drain(cfg) -> void:
 	var f: String = String(w.my_faction)
 	w.resources["gold"] = 100.0
 
-	ok(w.set_tech_active(T_FOOD, true), "启用 food_1（一阶）")
+	instant_tech(w, T_FOOD)                # 绕过赤字规则，单独验扣金
 	near(w.tech.gold_drain_per_sec(f), 0.5, 1e-9, "★ 一阶 = 0.5 金/秒")
 	w.tick(1.0)
-	near(float(w.resources["gold"]), 99.5, 1e-3,
-		"★ **预热期间就开始扣金**（用户口径：点下那刻开始付钱）")
+	near(float(w.resources["gold"]), 99.5, 1e-3, "★ 点下那一刻就开始扣金")
 
 	instant_tech(w, T_FOOD2)
 	near(w.tech.gold_drain_per_sec(f), 1.5, 1e-9,
@@ -198,7 +293,7 @@ func _test_tech_gold_drain(cfg) -> void:
 
 
 # ------------------------------------------------------------------
-# 6) 断金：全灭 + 冷却
+# 6) 断金：不取消科技，只禁止新启用
 # ------------------------------------------------------------------
 
 func _test_tech_shortfall(cfg) -> void:
@@ -206,25 +301,21 @@ func _test_tech_shortfall(cfg) -> void:
 	_no_production(w)
 	var f: String = String(w.my_faction)
 	w.resources["gold"] = 1.0
-	ok(w.set_tech_active(T_FOOD, true), "启用 food_1")
+	instant_tech(w, T_FOOD)                # 先让科技处于启用状态
 	w.tick(3.0)                            # 0.5/秒 的消耗在 2 秒内就吃光这 1 金
 
-	ok(w.active_tech_ids().is_empty(), "★ 断金 ⇒ 全部科技被弃用")
-	eq(w.tech.warming_count(), 0, "★ 预热中的也一起清掉")
-	ok(w.tech.in_cooldown(f), "★ 进入「全科技冷却」")
-	near(w.tech.cooldown_left(f), float(cfg.tech_shortfall_cooldown_sec), 1.5,
-		"冷却是 shortfall_cooldown_sec（%s 秒）" % cfg.tech_shortfall_cooldown_sec)
-	eq(w.tech_can_activate(T_FOOD, f), "cooldown", "★ 冷却期间一格都点不了")
-	ok(not w.set_tech_active(T_FOOD, true), "冷却期间启用被拒")
+	ok(w.is_tech_active(T_FOOD), "★ 断金不会取消科技（仍在生效）")
+	near(float(w.resources["gold"]), 0.0, 1e-6, "★ 金库扣到 0 为止")
+	near(w.gold_net_per_sec(f), -0.5, 1e-9, "★ 黄金净收入为赤字")
+	eq(w.tech_can_activate(T_FOOD2, f), "gold_deficit", "★ 赤字时不能启用新科技")
+	ok(not w.set_tech_active(T_FOOD2, true), "赤字期间新启用被拒")
 
-	w.tick(float(cfg.tech_shortfall_cooldown_sec) + 1.0)
-	ok(not w.tech.in_cooldown(f), "冷却结束")
-	ok(w.tech_can_activate(T_FOOD, f) == "", "★ 冷却结束后可以重新点")
-	w.resources["gold"] = 1000.0
-	ok(w.set_tech_active(T_FOOD, true), "重新点得动")
-	ok(not w.is_tech_active(T_FOOD), "★ 但还要重新等一次 30 秒预热（一次断金 = 60 秒没科技）")
-	finish_tech_warmup(w, cfg)
-	ok(w.is_tech_active(T_FOOD), "预热满之后才恢复")
+	# 弃用已有科技来止损是允许的；赤字解除后又能继续启用。
+	ok(w.set_tech_active(T_FOOD, false), "★ 赤字时仍可弃用已有科技")
+	near(w.gold_net_per_sec(f), 0.0, 1e-9, "弃用后赤字解除")
+	ok(w.tech_can_activate(T_FOOD2, f) == "", "★ 赤字解除后可以启用")
+	ok(w.set_tech_active(T_FOOD2, true), "启用 food_2")
+	ok(w.is_tech_active(T_FOOD2), "新科技立刻生效")
 
 
 # ------------------------------------------------------------------
@@ -235,11 +326,12 @@ func _test_production_mult(cfg) -> void:
 	var w = _make(cfg)
 	w.tick(DT)
 	var base: Dictionary = w.zones.production_of(w.my_faction)
-	var f0: float = float(base["food"])
-	ok(f0 > 0.0, "（前提）有粮食基础产能（%s/秒）" % f0)
+	var flat: Dictionary = w._flat_resource_bonus(w.my_faction)
+	var f0: float = float(base["food"]) + float(flat["food"])
+	ok(f0 > 0.0, "（前提）有粮食产能（区划 %s + 大本营/建筑 %s）" % [base["food"], flat["food"]])
 	if f0 <= 0.0:
 		return
-	near(w.production_food, f0, 1e-6, "没科技时产能 = 区划基础产能")
+	near(w.production_food, f0, 1e-6, "没科技时产能 = 区划基础 + 大本营/建筑固定产出")
 
 	instant_tech(w, T_FOOD)
 	near(w.production_food, f0 * 1.1, 1e-6, "★ 总体产能 +10%（不再是每地块加值）")
@@ -304,12 +396,15 @@ func _make(cfg):
 	return w
 
 
-## 把区划产能清零：只留「持续消耗」那一份，别让收入掺进来。
+## 把区划产能与**大本营固定产出**一起清零：只留「持续消耗」那一份。
+## ★ 大本营的产出是靠 `neutralized` 关掉的（它同时仍算「有基地」，科技上限不受影响）。
 func _no_production(w) -> void:
 	if w == null:
 		return
 	for z in w.zones.zones:
 		z["production"] = {"food": 0.0, "gold": 0.0, "population": 0.0}
+	w.base_bonus_enabled = false
+	w.refresh_zone_production()
 
 
 ## 这一方本帧的维护费（粮/秒）= 所有存活单位的 upkeep 之和。

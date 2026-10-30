@@ -76,8 +76,8 @@ func _run() -> void:
 	host.world.player_resources["F2"]["food"] = 777.0
 	await _wait(30)
 	var guest_food := float(guest.world.resources["food"])
-	ok(guest_food >= 777.0 and guest_food < 790.0,
-		"★★ 快照把客机自己的钱写回（同时客机经济也在涨：%.1f）" % guest_food)
+	ok(guest_food >= 775.0 and guest_food < 790.0,
+		"★★ 快照把客机自己的钱写回（允许客机这一 tick 的少量人口消耗：%.1f）" % guest_food)
 
 	# 客机命令：走 guest._on_command（input_controller 的出口）→ client_session
 	# → 假连接 → host_session → command_processor。

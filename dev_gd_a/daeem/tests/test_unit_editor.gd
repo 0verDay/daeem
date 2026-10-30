@@ -16,6 +16,7 @@ const DT := 1.0 / 60.0
 
 const NEW_BUILDING := {
 	"id": "outpost", "name": "前哨站", "hotkey": "K", "buildable": true,
+	"tier": 3,                       # 第三行（前两行已被现有建筑占满）
 	"build_sec": 1.0,
 	"cost": {"food": 0, "gold": 0},
 	"hp_max": 250,
@@ -59,7 +60,8 @@ func _test_config_contract() -> void:
 	ok(cfg.has_building_type("base"), "base 在 config 里（虽然不可建造）")
 	ok(not cfg.has_building_type("zone_center"),
 		"★ 区划中心**不是** config 里的建筑（它是中立障碍，编辑器不管它）")
-	eq(cfg.building_type_ids(), ["wall", "tower", "stone_wall", "watch_tower", "base"],
+	eq(cfg.building_type_ids(),
+		["wall", "tower", "farm", "stone_wall", "watch_tower", "house", "mine", "base"],
 		"建筑类型的顺序 = 文件里的顺序")
 	eq(cfg.building_def("wall").get("name"), "木墙", "建筑定义读得到名字")
 	eq(cfg.building_def("tower").get("name"), "哨塔", "哨塔的名字来自 config")
@@ -73,11 +75,14 @@ func _test_config_contract() -> void:
 		"config 里没有的类型 → 用调用方给的兜底")
 
 	var buildable: Array = cfg.buildable_building_defs()
-	eq(buildable.size(), 4, "★★ 建造页四项：木墙 / 哨塔 / 石墙 / 警戒塔")
+	eq(buildable.size(), 7, "★★ 建造页七项：墙 / 塔 / 粮田 / 石墙 / 警戒塔 / 房屋 / 矿脉")
 	eq(String(buildable[0].get("id", "")), "wall", "第一项是木墙")
 	eq(String(buildable[1].get("id", "")), "tower", "第二项是哨塔")
-	eq(String(buildable[2].get("id", "")), "stone_wall", "第三项是石墙")
-	eq(String(buildable[3].get("id", "")), "watch_tower", "第四项是警戒塔")
+	eq(String(buildable[2].get("id", "")), "farm", "第三项是粮田")
+	eq(String(buildable[3].get("id", "")), "stone_wall", "第四项是石墙")
+	eq(String(buildable[4].get("id", "")), "watch_tower", "第五项是警戒塔")
+	eq(String(buildable[5].get("id", "")), "house", "第六项是房屋")
+	eq(String(buildable[6].get("id", "")), "mine", "第七项是矿脉")
 	eq(cfg.building_tier("wall"), 1, "木墙在第 1 行")
 	eq(cfg.building_tier("tower"), 1, "哨塔在第 1 行")
 	eq(cfg.building_tier("stone_wall"), 2, "★★ 石墙在第 2 行（2 级大本营）")
@@ -337,8 +342,8 @@ func _test_new_building() -> void:
 	cfg.data["building"]["outpost"] = NEW_BUILDING.duplicate(true)
 
 	ok(cfg.has_building_type("outpost"), "★ 新建筑被认出来了")
-	eq(cfg.building_type_ids().size(), 6, "建筑类型多了一种")
-	eq(cfg.buildable_building_defs().size(), 5, "★ 建造页那一份列表也多了它")
+	eq(cfg.building_type_ids().size(), 9, "★ 建筑类型多了它（原 8 种 + outpost）")
+	eq(cfg.buildable_building_defs().size(), 8, "★ 建造页那一份列表也多了它（原 7 + outpost）")
 	eq(cfg.building_max_hp("outpost"), 250.0, "血量来自 config")
 	eq(cfg.building_build_sec("outpost"), 1.0, "建造时间来自 config")
 	eq(cfg.building_attackable("outpost"), true, "可攻击")
@@ -381,14 +386,20 @@ func _test_new_building() -> void:
 	ok(w.projectiles.size() >= 1, "★★ 新建筑开火：生成了一枚投掷物")
 	near(e.hp, hp0, 1e-6, "命中之前不掉血")
 	_settle_projectiles(w, cfg)
-	near(e.hp, hp0 - 20.0, 1e-6, "★★ 投掷物命中，伤害 = config 的 20")
+	var want_dmg: float = maxf(1.0, 20.0 - cfg.unit_armor_of(e.unit_type))
+	near(e.hp, hp0 - want_dmg, 1e-6,
+		"★★ 投掷物命中，伤害 = config 的 20 − 目标护甲 %s" % cfg.unit_armor_of(e.unit_type))
 
 	var tile2: Vector2i = _free_tile_near(w, base_b.tx + 1, base_b.ty + 1, FactionRes.DEFAULT_FACTION)
 	if tile2.x >= 0:
+		# ★ 这一节只验「新类型能走建造命令」：暂时把 tier 调回 1，
+		#   免得前面的战斗把测试世界里的大本营打掉之后卡在解锁判定上。
+		cfg.data["building"]["outpost"]["tier"] = 1
 		var cmd := {"kind": "build", "build_type": "outpost", "tx": tile2.x, "ty": tile2.y,
 			"faction": FactionRes.DEFAULT_FACTION}
 		ok(CommandRes.apply(w, cfg, cmd), "★ 建造命令认这个新类型")
 		ok(w.building_at(tile2.x, tile2.y) != null, "那一格上真的多了一栋")
+		cfg.data["building"]["outpost"]["tier"] = 3
 	var tile3: Vector2i = _free_tile_near(w, base_b.tx - 4, base_b.ty - 2)
 	if tile3.x >= 0:
 		var cmd2 := {"kind": "build", "build_type": "base", "tx": tile3.x, "ty": tile3.y,
@@ -466,7 +477,9 @@ func _test_construction() -> void:
 		eq(b.last_target, e2, "★ 造完之后锁定敌人了")
 		ok(w.projectiles.size() >= 1, "★★ 造完之后就开火了（生成投掷物）")
 		_settle_projectiles(w, cfg)
-		near(e2.hp, hp1 - 20.0, 1e-6, "★★ 投掷物命中，伤害 = config 的 20")
+		var want2: float = maxf(1.0, 20.0 - cfg.unit_armor_of(e2.unit_type))
+		near(e2.hp, hp1 - want2, 1e-6,
+			"★★ 投掷物命中，伤害 = config 的 20 − 目标护甲 %s" % cfg.unit_armor_of(e2.unit_type))
 
 	var cfg2 = require_config()
 	cfg2.data["building"]["base"]["build_sec"] = 5.0
@@ -512,18 +525,18 @@ func _test_hud_build_page() -> void:
 
 	main.cfg.data["building"]["outpost"] = NEW_BUILDING.duplicate(true)
 	main.hud.rebuild_card()
-	eq(String(card.entry_at(2).get("build_type", "")), "outpost",
-		"★★ 编辑器里新加的建筑出现在建造页第 3 格（tier 缺省 1）")
-	eq(card.cell_label(2), "前哨站", "★ 格子上是 config 里的名字")
+	eq(String(card.entry_at(7).get("build_type", "")), "outpost",
+		"★★ 编辑器里新加的建筑出现在建造页第 8 格（tier = 3 的第二个空位）")
+	eq(card.cell_label(7), "前哨站", "★ 格子上是 config 里的名字")
 
 	main.cfg.data["building"]["outpost"]["buildable"] = false
 	main.hud.rebuild_card()
-	eq(String(card.entry_at(2).get("build_type", "")), "",
+	eq(String(card.entry_at(7).get("build_type", "")), "",
 		"★★ 取消「可建造」→ 它从建造页消失")
 
 	main.cfg.data["building"]["outpost"]["buildable"] = true
 	main.cfg.data["building"]["outpost"]["name"] = "石头哨塔"
 	main.hud.rebuild_card()
-	eq(card.cell_label(2), "石头哨塔", "★ 改名之后卡片上的字跟着变")
+	eq(card.cell_label(7), "石头哨塔", "★ 改名之后卡片上的字跟着变")
 
 	root_node.queue_free()

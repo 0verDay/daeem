@@ -289,13 +289,9 @@ static func to_snapshot(world, delta_cache: Variant = null, keyframe: bool = fal
 			"cf": String(z.get("capture_faction", "")),
 			"cs": String(z.get("capture_state", "")),
 			"pop": round2(float(z.get("population", 0.0))),
-			# ★ 本轮补：区划特化（正在读哪一单 / 读条进度 / 已经生效的那一档）。
-			#   客机点开区划中心时「操作」页要画这些；缺字段 = 保持本地现状。
-			"sk": String(z.get("spec_kind", "")),
-			"sr": round2(float(z.get("spec_remaining", 0.0))),
-			"st": round2(float(z.get("spec_total", 0.0))),
-			"sd": String(z.get("spec_done", "")),
-			"sx": 1 if bool(z.get("spec_cancel", false)) else 0,
+			# ★★ 大本营 / 资源建筑给的动态人口加成：客机不 tick，靠快照同步展示值。
+			"pg": round2(float(z.get("population_growth_bonus", 0.0))),
+			"pc": round2(float(z.get("population_cap_bonus", 0.0))),
 		})
 
 	# ★★ 射箭投掷物（本轮新增）：在飞的投掷物也是**权威状态**（伤害在命中那一刻结算），
@@ -336,21 +332,6 @@ static func to_snapshot(world, delta_cache: Variant = null, keyframe: bool = fal
 	var tech_out: Dictionary = {}
 	for f in world.player_seats:
 		tech_out[String(f)] = world.active_tech_ids(String(f)).duplicate()
-
-	# ★★ 2026.10.29：预热 / 冷却也要发 —— 否则客机上「点了还没生效」的那格会显示成
-	#    「早就生效了」（或者反过来，永远卡在 0 秒），两端读数不一致。
-	#    字段：`tw` = {席位: {科技 id: 还剩几秒生效}}；`tc` = {席位: 冷却还剩几秒}。
-	var warm_out: Dictionary = {}
-	var cool_out: Dictionary = {}
-	if world.tech != null:
-		for f in world.player_seats:
-			var fid := String(f)
-			var w: Dictionary = world.tech.warmup_by_faction.get(fid, {})
-			if typeof(w) == TYPE_DICTIONARY and not (w as Dictionary).is_empty():
-				warm_out[fid] = (w as Dictionary).duplicate()
-			var cd: float = world.tech.cooldown_left(fid)
-			if cd > 0.0:
-				cool_out[fid] = round2(cd)
 
 	# ★★ 将领招募池 / 冷却（本轮新增）：每个玩家席位发「当前三个槽位 + 冷却剩余 / 总秒数」。
 	#    客机只读它画招募页（不抽牌）；抽牌 / 起冷却只发生在权威侧。
@@ -397,8 +378,6 @@ static func to_snapshot(world, delta_cache: Variant = null, keyframe: bool = fal
 		"pres": pres_out,
 		"obj": ObjectiveRes.to_snapshot(world.objective_state),
 		"tech": tech_out,
-		"tw": warm_out,
-		"tc": cool_out,
 		"gp": gp_out,
 		"aid": aid_out,
 		"air": air_out,
@@ -651,17 +630,11 @@ static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void:
 		# 区划人口：老快照没有 pop → 保持本地现状（同上，别用 0 覆盖）
 		if sz.has("pop"):
 			z["population"] = float(sz["pop"])
-		# ★ 区划特化：整组按字段存在与否写，缺字段保持本地现状（与 pop 同一条约定）。
-		if sz.has("sk"):
-			z["spec_kind"] = String(sz["sk"])
-		if sz.has("sr"):
-			z["spec_remaining"] = float(sz["sr"])
-		if sz.has("st"):
-			z["spec_total"] = float(sz["st"])
-		if sz.has("sd"):
-			z["spec_done"] = String(sz["sd"])
-		if sz.has("sx"):
-			z["spec_cancel"] = bool(sz["sx"])
+		# ★★ 动态人口加成：缺字段保持本地现状（与 pop 同一条约定）。
+		if sz.has("pg"):
+			z["population_growth_bonus"] = float(sz["pg"])
+		if sz.has("pc"):
+			z["population_cap_bonus"] = float(sz["pc"])
 
 	# ★★ 目标状态：客机只读，不自己 tick（见 world.refresh_after_snapshot / client_session）。
 	if snap.has("obj"):
@@ -702,33 +675,6 @@ static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void:
 					continue
 				world.tech.active_by_faction[String(f)] = (ids as Array).duplicate()
 			world.tech_effects = world.tech.effects_of(world.my_faction)
-
-	# ★★ 2026.10.29：预热 / 冷却（缺字段 = 老快照 ⇒ 保持本地现状，与 res / owned 同一条约定）。
-	#    ⚠️ 这两张表是**整份替换**，不是合并：房主那边已经清空的项，客机必须也清掉，
-	#       否则客机会一直显示一条「永远差 3 秒生效」的科技。
-	if snap.has("tw") and world.tech != null:
-		var tw_in: Variant = snap["tw"]
-		if typeof(tw_in) == TYPE_DICTIONARY:
-			var next_warm: Dictionary = {}
-			for f in (tw_in as Dictionary).keys():
-				var one: Variant = (tw_in as Dictionary)[f]
-				if typeof(one) != TYPE_DICTIONARY:
-					continue
-				var m: Dictionary = {}
-				for tid in (one as Dictionary).keys():
-					m[String(tid)] = maxf(0.0, float((one as Dictionary)[tid]))
-				if not m.is_empty():
-					next_warm[String(f)] = m
-			world.tech.warmup_by_faction = next_warm
-	if snap.has("tc") and world.tech != null:
-		var tc_in: Variant = snap["tc"]
-		if typeof(tc_in) == TYPE_DICTIONARY:
-			var next_cool: Dictionary = {}
-			for f2 in (tc_in as Dictionary).keys():
-				var left := maxf(0.0, float((tc_in as Dictionary)[f2]))
-				if left > 0.0:
-					next_cool[String(f2)] = left
-			world.tech.cooldown_by_faction = next_cool
 
 	# ★★ 将领招募池 / 冷却（本轮新增）：客机只更新显示状态。
 	#    ⚠️ 缺字段（老快照）→ 保持本地现状（与 res / owned / time 同一条约定）。

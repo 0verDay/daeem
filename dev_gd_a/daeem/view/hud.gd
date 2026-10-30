@@ -973,9 +973,9 @@ func _tab_plan() -> Dictionary:
 	if _selected_enemy_kind() != "":
 		return {"kind": "enemy", "pages": [PageTabsRes.PAGE_NONE],
 			"default": PageTabsRes.PAGE_NONE}
-	# 区划中心（左键点中心 = 看这个区划的详情）→ 「操作」（三个特化）+「招募」
-	# ★ 本轮改动：原来这里只有「招募」一页；需求要求所有单位 / 建筑都有操作页，
-	#   而区划中心的操作页就是粮食 / 黄金 / 人口特化那一页。
+	# 区划中心（左键点中心 = 看这个区划的详情）→ 只给「招募」一页。
+	# ★★ 2026.10.30：区域特化移除后，区划中心的操作页已经没有内容，
+	#   按需求去掉该页签；点中心默认直接停在招募页。
 	# ★★ 本次改动：**只有自己 / 友军的区划才给页签**。
 	#   `input_controller` 现在把**任何**归属的区划中心都交给 `select_zone`（用户需求：
 	#   不论敌友中立都显示区划产能，而不是显示「区划中心的血量」），所以「能不能对它
@@ -986,23 +986,23 @@ func _tab_plan() -> Dictionary:
 			return {"kind": "zone_center_foreign", "pages": [PageTabsRes.PAGE_NONE],
 				"default": PageTabsRes.PAGE_NONE}
 		return {"kind": "zone_center",
-			"pages": [PageTabsRes.PAGE_ORDER, PageTabsRes.PAGE_RECRUIT],
-			"default": PageTabsRes.PAGE_ORDER}
+			"pages": [PageTabsRes.PAGE_RECRUIT],
+			"default": PageTabsRes.PAGE_RECRUIT}
 	# ★★ 建筑：**一律有「操作」页**（需求原话：「为所有单位/建筑都添加上『操作』页签」），
 	#    默认就停在它上面 —— 升级 / 特化的入口住在那儿。
 	#      · 大本营   → 操作 + 科技（升级大本营那一格在操作页；科技照旧）
-	#      · 区划中心 → 操作 + 招募（操作页里是粮食 / 黄金 / 人口特化）
+	#      · 区划中心 → 只有招募（操作页已随区域特化一起移除）
 	#      · 城墙/箭塔 → 只有操作（升级那一格）
 	#    ⚠️ 区划中心在 `_tab_plan` 前面那条 `selected_zone != null` 分支里也会命中
-	#      （点中心 = 看区划详情），那条分支同样给「操作 + 招募」。
+	#      （点中心 = 看区划详情），那条分支同样只给「招募」。
 	if not input_ctrl.selected_buildings.is_empty():
 		var b = _primary_building()
 		if b != null and b.type == BuildingRes.TYPE_BASE:
 			return {"kind": "base", "pages": [PageTabsRes.PAGE_ORDER, PageTabsRes.PAGE_TECH],
 				"default": PageTabsRes.PAGE_ORDER}
 		if b != null and b.type == BuildingRes.TYPE_ZONE_CENTER:
-			return {"kind": "zone_center", "pages": [PageTabsRes.PAGE_ORDER, PageTabsRes.PAGE_RECRUIT],
-				"default": PageTabsRes.PAGE_ORDER}
+			return {"kind": "zone_center", "pages": [PageTabsRes.PAGE_RECRUIT],
+				"default": PageTabsRes.PAGE_RECRUIT}
 		# ★★ 2026.10.26：取消建筑升级后，木墙 / 哨塔 / 石墙 / 警戒塔没有任何可操作项
 		#    → 与「选中敌对建筑」同一档：立一颗空格子（PAGE_NONE）。
 		if b != null and not world.building_can_upgrade(String(b.type)):
@@ -1077,9 +1077,9 @@ func _recruit_zone():
 	return null
 
 
-## ★★ 右栏右上角那块面板显示什么（**三种内容共用一个控件**，见 view/recruit_queue.gd）：
-##   ① 建筑升级 / 区划特化的**单条读条**（本轮新增 —— 需求：可以复用招募单位的面板）；
-##   ② 区划中心自己的**招募队列**（点中心 → 招募页那套，原本就有）；
+## ★★ 右栏右上角那块面板显示什么（**两种内容共用一个控件**，见 view/recruit_queue.gd）：
+##   ① 建筑升级 / 大本营重生队列的**单条读条**；
+##   ② 区划中心自己的**招募队列**（点中心 → 招募页那套）；
 ##   ③ 都没有 → 收起来。
 ##
 ## @param holder 当前主选中的东西：**区划字典**（选中区划详情）或**建筑**（选中建筑）
@@ -1089,15 +1089,9 @@ func _refresh_progress_panel(holder) -> void:
 	if holder == null:
 		detail_panel.set_queue(null)
 		return
-	# 选中「区划详情」时，读条挂在区划字典上；选中「建筑」时要分建筑升级 / 它所属区划的特化
-	var zone = null
 	var b = null
-	if typeof(holder) == TYPE_DICTIONARY:
-		zone = holder
-	else:
+	if typeof(holder) != TYPE_DICTIONARY:
 		b = holder
-		if b.type == BuildingRes.TYPE_ZONE_CENTER:
-			zone = world.zone_of_center_building(b)
 
 	# ① 建筑升级读条
 	if b != null and b.is_upgrading():
@@ -1113,19 +1107,7 @@ func _refresh_progress_panel(holder) -> void:
 			b.respawn_current_name(),
 			b.respawn_progress(), b.respawn_eta(), false)
 		return
-	# ② 区划特化读条（做特化 / 取消特化）
-	if zone != null and world.zone_spec_busy(zone):
-		var is_cancel: bool = world.zone_spec_is_cancel(zone)
-		var done := String(zone.get("spec_done", ""))
-		var who := String(cfg.spec_entry(done).get("name", done)) if is_cancel else \
-			String(cfg.spec_entry(String(zone.get("spec_kind", ""))).get("name", ""))
-		detail_panel.set_progress_bar(
-			("取消%s" % who) if is_cancel else who,
-			("取消特化" if is_cancel else "特化中"),
-			world.zone_spec_progress(zone), world.zone_spec_eta(zone),
-			not is_cancel)      # ★ 「取消特化」这条读条本身不可再取消
-		return
-	# ③ 区划中心的招募队列（原本就有的那套）
+	# ② 区划中心的招募队列（原本就有的那套）
 	var rz = _recruit_zone()
 	detail_panel.set_queue(rz, rz != null)
 
@@ -1430,7 +1412,6 @@ func _hover_entry(src: String, index: int) -> Dictionary:
 ##                        （`building_upgrade` / 取消 / 已满级）
 ##   · **招募单位 / 将领** → `recruit`（单位页：长枪兵 / 长弓兵 / 骑手）+
 ##                        `zone_recruit`（招募页：池子抽出的那一手）
-##   · **区域的特化**    → `zone_specialize`
 ##   · **科技**          → 科技九格（那一份数据没有 `type`，按 `src == "tech"` 分派）
 func _hover_detail(src: String, entry: Dictionary) -> Dictionary:
 	if entry.is_empty():
@@ -1442,10 +1423,6 @@ func _hover_detail(src: String, entry: Dictionary) -> Dictionary:
 			return _hover_build(entry)
 		"recruit", "zone_recruit":
 			return _hover_recruit(entry)
-		"zone_specialize":
-			return _hover_spec(entry)
-		"zone_spec_cancel", "zone_spec_bar_cancel":
-			return _hover_spec_cancel(entry)
 		"building_upgrade", "building_upgrade_cancel", "building_upgrade_max":
 			return _hover_building(entry)
 		"revive", "revive_cancel":
@@ -1639,50 +1616,6 @@ func _hover_recall(entry: Dictionary) -> Dictionary:
 	return _hover_text(String(entry.get("name", "召回")), lines)
 
 
-## 区域的特化（选中区划中心 → 操作页里那几格）—— 说明 + 效果 + 造价 + 读条 + 「只能选一个」。
-## ★ 「能做哪几档」由区划种类白名单决定（`config.zone_kind.list[].specs`），
-##   操作页上**只画允许的那几格**，所以这里不必再重复一遍限制条件。
-func _hover_spec(entry: Dictionary) -> Dictionary:
-	var id := String(entry.get("spec", ""))
-	var e := cfg.spec_entry(id)
-	var lines: Array = []
-	lines.append(String(e.get("desc", entry.get("desc", ""))))
-	var line := String(e.get("line", ""))
-	if line != "":
-		lines.append("效果 %s" % line)
-	lines.append("造价 %s" % _cost_text(cfg.spec_cost(id)))
-	lines.append("读条 %s 秒" % _fmt_num(cfg.spec_time_sec(id)))
-	lines.append("一个区划只能选一种特化；选错了可以在操作页取消（取消也要读条，全额退款）")
-	return _hover_text(String(entry.get("name", e.get("name", ""))), lines)
-
-
-## 「取消特化」那两格（读条中 / 已特化）—— 说明 + **这一单是哪一档** + 退款提醒。
-## ★ 它同样属于需求点名的「区域的特化」：旁边那两格（粮食 / 黄金特化）有详情，
-##   同一排的「取消特化」没有就说不过去。
-## ★ 目标区划与操作页画格子用同一条判据（`_recruit_zone()`：选中区划，或从区划中心反查）。
-func _hover_spec_cancel(entry: Dictionary) -> Dictionary:
-	var lines: Array = [String(entry.get("desc", ""))]
-	var z = _recruit_zone()
-	if z != null and typeof(z) == TYPE_DICTIONARY:
-		var zd: Dictionary = z
-		var done := String(zd.get("spec_done", ""))
-		var busy := String(zd.get("spec_kind", ""))
-		var which := busy if busy != "" else done
-		if busy != "":
-			var eta: float = world.zone_spec_eta(zd)
-			lines.append("%s：%s，还剩 %s 秒" % [
-				"正在取消特化" if world.zone_spec_is_cancel(zd) else "正在特化",
-				String(cfg.spec_entry(busy).get("name", busy)), _fmt_num(eta)])
-		elif done != "":
-			lines.append("当前特化：%s（%s）" % [
-				String(cfg.spec_entry(done).get("name", done)),
-				String(cfg.spec_entry(done).get("line", ""))])
-		if which != "":
-			lines.append("撤掉之后全额退还：%s" % _cost_text(cfg.spec_cost(which)))
-		lines.append("取消特化也要读条（读完才真的撤掉）")
-	return _hover_text(String(entry.get("name", "")), lines)
-
-
 ## 建筑「操作」页那几格（升级 / 取消升级 / 已满级）—— 那一格的说明 + 等级 + 血量 + 下一级的上限。
 ## ★ 目标建筑与操作页画格子用的是**同一条判据**（选中区划时从中心格反查那栋建筑），
 ##   见 `_building_order_entries`。
@@ -1732,12 +1665,9 @@ func _hover_tech(entry: Dictionary) -> Dictionary:
 	if line != "":
 		lines.append("效果 %s" % line)
 	var on: bool = world != null and world.is_tech_active(id)
-	# ★★ 2026.10.29：科技变成「每秒扣金的常驻投资」，悬停必须把价钱 / 预热 / 冷却讲清楚 ——
-	#   否则玩家只会看到金在掉，却不知道是哪一格在烧（本版最重要的可读性补丁）。
+	# ★★ 科技是「点下即生效、持续扣金的常驻投资」，悬停要把价钱与赤字状态讲清楚。
 	var gps: float = float(entry.get("gold_per_sec", 0.0))
-	var warming: bool = bool(entry.get("warming", false))
-	var warm_left: float = float(entry.get("warmup_left", 0.0))
-	var cd_left: float = float(entry.get("cooldown_left", 0.0))
+	var deficit: bool = bool(entry.get("deficit", false))
 	var max_n: int = world.tech_max_active() if world != null else 0
 	var used: int = max_n - (world.tech_remaining_slots() if world != null else 0)
 	var tier: int = int(entry.get("tier", 0))
@@ -1748,27 +1678,25 @@ func _hover_tech(entry: Dictionary) -> Dictionary:
 	lines.append("阶 %s（大本营 %d 级：最高第 %d 阶）" % [
 		_tech_tier_name(tier), base_lv, max_tier])
 	lines.append("状态 %s（同一时间最多启用 %d 条，现在 %d / %d）" % [
-		"已启用" if on else ("预热中" if warming else "未启用"), max_n, used, max_n])
+		"已启用" if on else "未启用", max_n, used, max_n])
 	if gps > 0.0:
-		lines.append("消耗 %s 金／秒（点下那一刻就开始扣，整段启用期间一直扣）" % String.num(gps, 1))
-	if warming:
-		lines.append("预热：还要 %d 秒才生效（中途取消 = 已扣的金不退）" % ceili(warm_left))
-	if cd_left > 0.0:
-		lines.append("★ 断金冷却中：%d 秒内一格都点不了" % ceili(cd_left))
-	if not on and not warming and not bool(entry.get("available", true)):
+		lines.append("消耗 %s 金／秒（点下即生效，整段启用期间一直扣）" % String.num(gps, 1))
+	if on:
+		lines.append("★ 金库扣到 0 时不会自动弃用；弃用后立即停止扣金")
+	if deficit:
+		lines.append("★ 当前黄金净收入为赤字：不能再启用新科技（已启用的保持生效）")
+	if not on and not bool(entry.get("available", true)):
 		match String(entry.get("reason", "")):
 			"tier":
 				lines.append("现在不能启用：需要更高等级的大本营")
 			"limit":
 				lines.append("现在不能启用：已经启用满 %d 条" % max_n)
-			"cooldown":
-				lines.append("现在不能启用：断金冷却中（%d 秒）" % ceili(cd_left))
-			"warming":
-				lines.append("这一条已经在预热队列里")
+			"gold_deficit":
+				lines.append("现在不能启用：黄金净收入为赤字（先弃用一条科技止损）")
 			_:
 				lines.append("现在不能启用")
 	else:
-		lines.append("点这一格 = %s" % ("弃用（把名额让出来）" if (on or warming) else "启用（30 秒后生效）"))
+		lines.append("点这一格 = %s" % ("弃用（把名额让出来）" if on else "启用"))
 	return _hover_text(String(entry.get("name", "")), lines)
 
 
@@ -2003,23 +1931,12 @@ func _revive_entries(leader) -> Array:
 
 
 
-## ★★ 「操作」页该画什么：选中建筑时是升级 / 特化那一套，否则是部队的四条指令。
-##
-## 需求原话：「为所有单位/建筑都添加上『操作』页签，大本营的操作页签中有一个
-## 升级大本营选项……箭塔和城墙也有一个升级选项，区划中心有三个特化选项」。
+## ★★ 「操作」页该画什么：选中建筑时是升级那一套，否则是部队的四条指令。
+## ★★ 2026.10.30：区划中心已经取消「操作」页签（区域特化移除后该页为空），
+##   这里直接返回空，避免万一被其他入口调用时掉回部队指令。
 func _order_entries_for_selection() -> Array:
-	# ★★ 三种选中要分开判，**不能**只看 `selected_buildings`：
-	#   选中「区划中心」时 `input_ctrl.selected_zone` 会被填上，而
-	#   `selected_buildings` 会被**清空**（`select_zone` 与 `select_buildings` 互斥）——
-	#   只判 `selected_buildings` 的话，区划中心的操作页会掉回部队那四条指令
-	#   （实测症状：点区划中心，「操作」页里写着移动 / 攻击 / 行军 / 停止）。
 	if input_ctrl.selected_zone != null:
-		# 区划中心：从区划反查它那一格的建筑，再按「区划中心」那一套画。
-		# ★ 同时把**这个区划**传进去：特化状态要读的正是它，
-		#   而不是「中心那栋建筑反查出来的那个区划」（两者在出生区不一定同一块，
-		#   实测：大本营与区划中心不在同一格时，反查会得到另一块地 → 界面永远显示「三个特化」）。
-		var zc = _zone_center_building_of(input_ctrl.selected_zone)
-		return _building_order_entries(zc, input_ctrl.selected_zone)
+		return []
 	if not input_ctrl.selected_buildings.is_empty():
 		var out := _building_order_entries(_primary_building())
 		if not out.is_empty():
@@ -2054,23 +1971,18 @@ func _zone_center_building_of(zone):
 	return world.building_at(t.x, t.y)
 
 
-## 建筑「操作」页的格子。三种建筑各一套（**数据驱动**，文案与数值都来自 config）：
-##   · 大本营 / 城墙 / 箭塔 → **升级**那一格（读条中则换成「取消升级」）
-##   · 区划中心            → **这个种类允许的**特化（见 zone_kind.list[].specs，
-##                            通常是两格）；已经特化过则换成「取消特化」
+## 建筑「操作」页的格子（**数据驱动**，文案与数值都来自 config）：
+##   · 大本营 → **升级**那一格（读条中则换成「取消升级」）；
+##   · 其它建筑 / 区划中心 → 没有操作页内容（区域特化机制已移除）。
 ##
-## ★ 三种状态互斥，所以最多 3 格：
-##     ① 读条中（升级 / 特化 / 取消特化）→ 只有「取消」那一格；
-##     ② 区划已特化                      → 只有「取消特化」那一格；
-##     ③ 平常                            → 升级那一格（建筑）/
-##                                          这个种类允许的特化（区划中心）。
+## ★ 三种状态互斥，所以最多 1 格：
+##     ① 读条中 → 只有「取消升级」那一格；
+##     ② 平常   → 升级那一格。
 ##   「读条中不给新的升级请求」这条规则由逻辑层把关（拒因 `busy`），
-##   界面只是**不给入口**；两处都做是有意的 —— 界面上摆一颗点了必然被拒的格子，
-##   玩家会以为功能坏了。
+##   界面只是**不给入口**；两处都做是有意的。
 ##
-## @param b 要画哪一栋（默认 = `_primary_building()`；选中区划时由调用方从
-##          区划的中心格反查出一栋传进来）
-## @param sel_zone 选中的那个**区划字典**（区划中心特化状态要读它；null = 用建筑反查）
+## @param b 要画哪一栋（默认 = `_primary_building()`）
+## @param sel_zone 选中的那个**区划字典**（保留参数，当前不再使用）
 func _building_order_entries(b = null, sel_zone = null) -> Array:
 	# ⚠️ 默认参数是 null，这里**不能**用 `var b = ...` 再赋一次
 	#   （那会报「同名变量」）；直接用参数缺省值兜底。
@@ -2078,44 +1990,9 @@ func _building_order_entries(b = null, sel_zone = null) -> Array:
 		b = _primary_building()
 	if b == null:
 		return []
-	# ① 读条中：只有「取消」那一格
+	# 区划中心：没有操作（区域特化已移除）。
 	if b.type == BuildingRes.TYPE_ZONE_CENTER:
-		var z = sel_zone if sel_zone != null else world.zone_of_center_building(b)
-		if z != null and world.zone_spec_busy(z):
-			if world.zone_spec_is_cancel(z):
-				# 「取消特化」本身在读条：不可取消（需求只说了取消特化要读条，
-				# 没有「取消取消」这一说）——给一颗说明用的空格子。
-				return []
-			return [{
-				"type": "zone_spec_bar_cancel",
-				"name": "取消特化",
-				"desc": "撤掉正在读条的这一单特化，全额退还已经扣掉的粮食与黄金",
-			}]
-		# ② 已经特化过 → 只能取消特化（需求：特化后的区块无法再次特化）
-		if z != null and String(z.get("spec_done", "")) != "":
-			var done := String(z.get("spec_done", ""))
-			return [{
-				"type": "zone_spec_cancel",
-				"name": "取消特化",
-				"desc": "取消「%s」（**也要读条**，读完退回当初特化花掉的粮食与黄金）"
-					% String(cfg.spec_entry(done).get("name", done)),
-			}]
-		# ③ 平常：**这个种类允许的**特化（只能选一个）
-		#
-		# ★★ 本轮：白名单按区划种类过滤（需求：粮食区划仅能黄金 / 人口特化…）——
-		#   判据只有一处（`config.json` 的 zone_kind.list[].specs，经
-		#   `world.zone_spec_choices()` 取），界面**不**自己再写一份名单；
-		#   逻辑层（`upgrade.gd can_specialize`）用同一个白名单再挡一次。
-		var out: Array = []
-		for e in world.zone_spec_choices(z):
-			var entry: Dictionary = e
-			out.append({
-				"type": "zone_specialize",
-				"spec": String(entry.get("id", "")),
-				"name": String(entry.get("name", entry.get("id", ""))),
-				"desc": String(entry.get("desc", "")),
-			})
-		return out
+		return []
 	# 建筑：升级 / 取消升级
 	if not world.building_can_upgrade(b.type):
 		return []
@@ -2191,11 +2068,7 @@ func _on_tech_cell_activated(id: String) -> void:
 		return
 	if input_ctrl == null or world == null or id == "":
 		return
-	# ★★ 2026.10.29：预热中的格子再点一下 = **取消**，所以「现在是开着的」要把
-	#    `is_warming` 也算进去（否则点了会变成「再启用一次」，而那次会被拒）。
-	var is_on: bool = world.is_tech_active(id) \
-		or (world.tech != null and world.tech.is_warming(id, world.my_faction))
-	var on: bool = not is_on
+	var on: bool = not world.is_tech_active(id)
 	if on and world.tech_remaining_slots() <= 0:
 		var max_n: int = world.tech_max_active()
 		show_notice("最多只能同时启用 %d 个科技：先点一个已启用的弃用" % max_n)
@@ -2302,12 +2175,6 @@ func _on_card_entry(entry: Dictionary) -> void:
 			_on_building_action(entry)
 		"building_upgrade_cancel":
 			_on_building_action(entry)
-		"zone_specialize":
-			_on_building_action(entry)
-		"zone_spec_cancel":
-			_on_building_action(entry)
-		"zone_spec_bar_cancel":
-			_on_building_action(entry)
 		"revive":
 			# ★★ 濒死将领的「再起」（本轮新增）：与「停止」那一格一样，
 			#    点一下当场发命令（不需要目标、也不进命令模式）。
@@ -2339,10 +2206,10 @@ func _on_card_entry(entry: Dictionary) -> void:
 				show_notice("先选中一个濒死的将领，才能召回")
 
 
-## ★ 建筑「操作」页那几格 → 命令（升级 / 取消升级 / 特化 / 取消特化）。
+## ★ 建筑「操作」页那几格 → 命令（升级 / 取消升级）。
 ##
 ## ★ 与其它格子同一条约定：这里只调输入层的接口发命令，自己绝不碰逻辑状态。
-##   目标（哪栋建筑 / 哪个区划）由**当前选中**决定：命令里带地块坐标或区划 id。
+##   目标（哪栋建筑）由**当前选中**决定：命令里带地块坐标。
 ## ★ 被拒时的提示走 `upgrade_rejected` 事件（game_scene → 左栏红字），
 ##   所以这里不为「钱不够 / 满级」再写一份判断 —— 规则只有逻辑层一份。
 func _on_building_action(entry: Dictionary) -> void:
@@ -2360,22 +2227,6 @@ func _on_building_action(entry: Dictionary) -> void:
 			input_ctrl.request_building_upgrade(b)
 		"building_upgrade_cancel":
 			input_ctrl.request_building_upgrade_cancel(b)
-		"zone_specialize", "zone_spec_cancel", "zone_spec_bar_cancel":
-			# ★ 与操作页画格子用的是同一条判据：选中区划时**优先用选中的那个区划**，
-			#   而不是「中心那栋建筑反查出来的区划」（出生区里两者不一定同一块）。
-			var z = input_ctrl.selected_zone
-			if z == null:
-				z = world.zone_of_center_building(b)
-			if z == null:
-				show_notice("这栋区划中心找不到它所属的区划")
-				return
-			match t:
-				"zone_specialize":
-					input_ctrl.request_zone_specialize(z, String(entry.get("spec", "")))
-				"zone_spec_cancel":
-					input_ctrl.request_zone_spec_cancel(z)
-				_:
-					input_ctrl.request_zone_spec_bar_cancel(z)
 	# ★★ 点完立刻按**权威状态**重画一遍操作页。
 	#
 	# 为什么必须有这一句（**实测踩到的**）：操作页的内容跟权威状态走
@@ -2389,43 +2240,25 @@ func _on_building_action(entry: Dictionary) -> void:
 
 
 ## 点了信息栏里那块面板上的某一格 = **取消那一格**（招募队列 = 取消那一单；
-## 单条读条 = 取消这次升级 / 退掉这一单特化）。
+## 单条读条 = 取消这次升级）。
 ##
 ## ★ 队列主人有两种（选中将领 / 选中区划），两条取消命令的形状不同
 ##   （leader_id vs zone_id），所以这里按当前选中分派 —— 视图不猜，只看选中状态。
-## ★★ 本轮新增第三种内容：**单条读条**（建筑升级 / 区划特化，见 view/recruit_queue.gd）。
-##   它和「招募队列」共用同一块面板，所以先问面板「你现在是哪一种」
-##   （`detail_panel.queue_is_bar()`），再决定发哪条取消命令。
+## ★★ 单条读条（建筑升级，见 view/recruit_queue.gd）和「招募队列」共用同一块面板，
+##   所以先问面板「你现在是哪一种」（`detail_panel.queue_is_bar()`）。
 ## ★ 这里只发命令（`*_cancel`）：退多少钱、等级怎么变全在权威侧算，
 ##   界面下一帧按权威状态重画 —— 所以本地不需要自己「删格子」。
 func _on_queue_cell_activated(slot: int) -> void:
 	if input_ctrl == null or detail_panel == null:
 		return
-	# ① 单条读条（建筑升级 / 区划特化）
+	# ① 单条读条（建筑升级）
 	if detail_panel.queue_is_bar():
-		# ★★ 先看「选中的是不是一个区划」——选中区划中心看详情时
-		#   `selected_buildings` 是空的（两种选中互斥），`_primary_building()` 会返回 null；
-		#   这时那块面板上的读条就是**这个区划**的特化（实测：原来在这里直接
-		#   `return` 了，于是「点读条面板撤单」永远没反应）。
 		var b = _primary_building()
-		if b == null and input_ctrl.selected_zone != null:
-			if not input_ctrl.request_zone_spec_bar_cancel(input_ctrl.selected_zone):
-				show_notice("这一单不能取消")
-			_rebuild_card()
-			return
 		if b == null:
 			show_notice("现在没有可以取消的升级")
 			return
-		if b.is_upgrading():
-			if not input_ctrl.request_building_upgrade_cancel(b):
-				show_notice("现在没有可以取消的升级")
-			_rebuild_card()
-			return
-		var z = input_ctrl.selected_zone
-		if z == null and b.type == BuildingRes.TYPE_ZONE_CENTER:
-			z = world.zone_of_center_building(b)
-		if z == null or not input_ctrl.request_zone_spec_bar_cancel(z):
-			show_notice("这一单不能取消")
+		if not input_ctrl.request_building_upgrade_cancel(b):
+			show_notice("现在没有可以取消的升级")
 		_rebuild_card()
 		return
 	# ② 招募队列（原本那套）
@@ -2735,11 +2568,8 @@ func tech_reject_text(reason: String) -> String:
 		"tier":
 			var t: int = world.tech_max_tier() if world != null else 3
 			return "这条科技超出当前大本营允许的阶数（最高第 %d 阶）：升级大本营后再启用" % t
-		"cooldown":
-			# ★★ 2026.10.29 断金：全部科技被弃用 + 全科技锁 30 秒，之后还要重新预热。
-			return "金不够，科技全部失效了：等冷却结束再重新启用（启用后还要再等 30 秒预热）"
-		"warming":
-			return "这一条已经在预热队列里了，再点一次是取消"
+		"gold_deficit":
+			return "黄金净收入为赤字：不能再启用新科技（可以弃用已有科技来止损）"
 		"unknown":
 			return "没有这条科技"
 	return "这条科技现在启用不了"
@@ -2774,12 +2604,6 @@ func upgrade_reject_text(reason: String, evt: Variant = null) -> String:
 				int(evt.get("target_level", 0)) if typeof(evt) == TYPE_DICTIONARY else 0,
 				int(evt.get("need", 0)) if typeof(evt) == TYPE_DICTIONARY else 0,
 				int(evt.get("have", 0)) if typeof(evt) == TYPE_DICTIONARY else 0]
-		"spec_done":
-			return "这个区划已经特化过了：先「取消特化」才能换别的"
-		"spec":
-			return "没有这种特化"
-		"kind":
-			return "这个种类的区划做不了这种特化（粮食区划只能黄金 / 人口特化，黄金区划只能粮食 / 人口特化，人口区划只能粮食 / 黄金特化）"
 		"cost":
 			return "粮食或黄金不足"
 		"neutralized":
@@ -2788,10 +2612,6 @@ func upgrade_reject_text(reason: String, evt: Variant = null) -> String:
 			return "大本营正在为重生的将领排队：队列清空之前不能开始新的升级"
 		"owner":
 			return "只能升级自己的建筑"
-		"zone":
-			return "只能特化属于自己的区划"
-		"zone_not_found":
-			return "找不到这个区划"
 		"type":
 			return "这种建筑不能升级"
 		"idle":
@@ -2913,13 +2733,11 @@ func _card_sig() -> String:
 	if b != null:
 		parts.append("b:%s@%d,%d:lv%d:up%d" % [
 			b.type, b.tx, b.ty, b.level, 1 if b.is_upgrading() else 0])
-	# ② 选中的那个区划：**种类**决定能做哪几档特化，spec_done / spec_kind 决定
-	#    操作页画的是「三档特化」还是「取消特化」那一格
+	# ② 选中的那个区划：种类决定详情栏的种类行。
 	var z = _recruit_zone()
 	if z != null and typeof(z) == TYPE_DICTIONARY:
 		var zd: Dictionary = z
-		parts.append("z:%d:%s:%s:%s" % [int(zd.get("id", -1)), world.zone_kind_of(zd),
-			String(zd.get("spec_done", "")), String(zd.get("spec_kind", ""))])
+		parts.append("z:%d:%s" % [int(zd.get("id", -1)), world.zone_kind_of(zd)])
 	# ★★ 招募页的九宫格状态：固定阵容本身不变，但下面这些会变 ——
 	#    · 大本营升级 → tier 解锁；
 	#    · 招走 / 取消 / 关卡开局拥有 → taken；
@@ -3616,7 +3434,7 @@ func _building_detail_rows(b) -> Dictionary:
 	return {"left": left, "right": right}
 
 
-## 区划中心的两列详情：左 = 类型 / 大小；右 = 产能（多排）+ 当前人口 + 特化。
+## 区划中心的两列详情：左 = 类型 / 大小；右 = 产能（多排）+ 当前人口 + 建筑加成。
 func _zone_detail_rows(z: Dictionary, show_population: bool = true) -> Dictionary:
 	var left: Array = []
 	var right: Array = []
@@ -3626,12 +3444,10 @@ func _zone_detail_rows(z: Dictionary, show_population: bool = true) -> Dictionar
 	left.append(_row("大小 %d 地块" % int(z["tile_count"])))
 
 	var prod: Dictionary = z["production"]
-	var n := float(z["tile_count"])
-	# ★ 与 `_zone_text` 的老口径一致：基础产能是每秒绝对值，特化按每地块叠进。
-	var eff: Dictionary = world.zone_spec_effect(z)
-	var food := float(prod["food"]) + float(eff["food_per_tile"]) * n
-	var gold := float(prod["gold"]) + float(eff["gold_per_tile"]) * n
-	var pop := float(prod["population"]) * float(eff["population_mult"])
+	# ★ 基础产能是每秒绝对值；大本营 / 房屋的固定人口加成直接叠进显示值。
+	var food := float(prod["food"])
+	var gold := float(prod["gold"])
+	var pop := float(prod["population"]) + float(z.get("population_growth_bonus", 0.0))
 	var pop_cap := float(world.zones.population_cap_of(z))
 	right.append(_row("粮食 %s/s" % _fmt_num(food)))
 	right.append(_row("黄金 %s/s" % _fmt_num(gold)))
@@ -3639,35 +3455,16 @@ func _zone_detail_rows(z: Dictionary, show_population: bool = true) -> Dictionar
 	right.append(_row("人口上限 %s" % _fmt_num(pop_cap)))
 	if show_population:
 		right.append(_row("现有人口 %d" % world.zones.population_floor(z)))
-	var spec := _zone_spec_short(z)
-	if spec != "":
-		right.append(_small_row("- %s" % spec))
-	# ★★ 将领招募冷却（本轮新增）：选中己方区划时给一行常驻倒计时，
+	var growth_bonus := float(z.get("population_growth_bonus", 0.0))
+	if growth_bonus > 0.0:
+		right.append(_small_row("- 建筑人口加成 +%s/s" % _fmt_num(growth_bonus)))
+	# ★★ 将领招募冷却：选中己方区划时给一行常驻倒计时，
 	#    玩家不必把鼠标停在灰卡上才知道还要等多久。
-	#    ⚠️ 放**左列**（只有 2 行）：右列最多已经 6 行（产能 4 + 人口 + 特化），
-	#       detail_rows 固定 6 行、超出不画 —— 挤到右列会被裁掉。
 	if show_population and world != null:
 		var cd_left: float = world.general_recruit_cooldown_left(world.my_faction)
 		if cd_left > 0.0:
 			left.append(_small_row("将领招募冷却 %ss" % _fmt_num(cd_left)))
 	return {"left": left, "right": right}
-
-
-## 特化状态的**短句**（两列表格里放不下旧版那句「（本区块粮食 +0.5／地块／秒）」）。
-func _zone_spec_short(z) -> String:
-	if typeof(z) != TYPE_DICTIONARY:
-		return ""
-	if world.zone_spec_busy(z):
-		var is_cancel: bool = world.zone_spec_is_cancel(z)
-		var who_id := String(z.get("spec_done", "")) if is_cancel else String(z.get("spec_kind", ""))
-		var who := String(cfg.spec_entry(who_id).get("name", who_id))
-		return "%s %s %ss" % ["取消特化" if is_cancel else "正在特化", who,
-			_fmt_num(world.zone_spec_eta(z))]
-	var done := String(z.get("spec_done", ""))
-	if done == "":
-		return ""
-	var e: Dictionary = cfg.spec_entry(done)
-	return "特化 %s" % String(e.get("name", done))
 
 
 ## 旧接口：单位文案（两侧拼成 `左 \t 右`，测试 / 旧调用点仍可读）。

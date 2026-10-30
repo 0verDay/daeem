@@ -207,6 +207,14 @@ var unit_pick_pad_px: float = 4.0
 ##   `view/input_controller.gd` 的 `_poll_hover_pick` 只在鼠标周围这么大一圈里找单位，
 ##   否则 1000 单位时每帧要为单位立牌各投一次屏。纯表现，不参与任何玩法判定。
 var hover_pick_radius_tiles: float = 2.5
+## ★★ 悬停高亮的**白描边**（config.json 的 render.hover_outline_color）：
+##   · 单位立牌：烘进悬停贴图（纯阵营色躯体 + 这圈白边）；
+##   · 建筑 / 区划中心：3D 描边 pass 的描边色（见 view/building_hover_outline.gdshader）。
+var hover_outline_color: Color = Color(1, 1, 1, 1)
+## ★★ 建筑 / 区划中心**外轮廓**的额外加粗壳：把网格整体放大的倍率（1.02 = 向外 2%）。
+##   ★ 因为建筑的大小差异很大（城墙 1 格、区划中心旗杆只有 0.3 格），这里用**比例**，
+##     所以越小的建筑描边越细；要统一视觉厚度就调这个值（见 config 的注释）。
+var building_outline_scale: float = 1.02
 
 ## ---- ★★ 战争迷雾（config.json 的 fog 段 + unit.types.<id>.vision）----
 ##
@@ -351,6 +359,11 @@ var _unit_sprites: Dictionary = {}
 ##   · `"faction"` = 取形状填阵营色 + 深描边（单字占位走这一档，也是**默认值**）。
 ## ★ 只回答「怎么上色」，具体烘图在 view/unit_sprite_3d.gd（config 不碰 Texture）。
 var _unit_sprite_tints: Dictionary = {}
+## ★★ 单位类型 id → 立牌的**宽高比例**（config 的 `unit.types.<id>.sprite_ratio`）。
+##   · 只写 `[宽, 高]` 两个数（1 = 基准宽度，不是像素 / 格）；
+##   · 不写就按兵种大类：infantry = 1×1、cavalry = 1×1.5、siege = 2×1；
+##   · 想给某个兵种单独改视觉尺寸时，在它自己的条目里写这一项即可。
+var _unit_sprite_ratios: Dictionary = {}
 ## ★★ 将领特性表（config 的 `unit.general_traits`，部队光环）。
 ##   · 键 = 特性 id；值 = `_normalize_general_trait()` 洗过的固定形状字典；
 ##   · 载入时洗一次（与兵种 traits 同一条口径），之后只读；
@@ -494,23 +507,20 @@ var tech_max_active: int = 3
 var _tech_list: Array = []
 var _tech_by_id: Dictionary = {}
 ## ★★ 2026.10.29：科技从「点一下永久生效」改成**持续花钱的常驻投资**（见 config.json 的 tech._comment）。
-##   · `tech_gold_per_sec`         —— 下标 0/1/2 = 一/二/三阶，**每秒**扣多少金；
-##   · `tech_warmup_sec`           —— 点下之后要等多久才真正生效（这段**照扣金**、占名额）；
-##   · `tech_shortfall_cooldown_sec` —— 断金之后「全科技」锁多少秒。
-## 三个数在载入时夹到 ≥0，之后逻辑层只读字段（`tech_gdscript` / `world._tick_upkeep`）。
+##   `tech_gold_per_sec` —— 下标 0/1/2 = 一/二/三阶，**每秒**扣多少金。
+## ★★ 2026.10.30：预热与断金冷却已删除，只剩「点下即生效 + 持续扣金」。
 var tech_gold_per_sec: Array = [0.5, 1.0, 2.0]
-var tech_warmup_sec: float = 30.0
-var tech_shortfall_cooldown_sec: float = 30.0
 
-## ---- 建筑升级（config.json 的 upgrade.levels）+ 区划特化（zone_spec）----
+## ---- 大本营分阶资源加成（config.json 的 base_bonus 段）----
+## 下标 0/1/2 = 1/2/3 级；每项 {food_per_sec, gold_per_sec,
+## zone_pop_rate_per_sec, zone_pop_cap}。载入时夹到 ≥0，之后只读。
+var _base_bonus_levels: Array = []
+
+## ---- 建筑升级（config.json 的 upgrade.levels）----
 ## ★ 与科技表一样：**载入时整理好、之后只读**（升级判定与每帧读条都要用）。
-## ★ 升级表按**建筑类型**分开存（base / wall / tower 各一张等级表，下标 0 = 1 级）；
-##   特化表是一张全局表（三档，cost / time_sec 是共用的默认值，条目可覆盖）。
+## ★ 升级表按**建筑类型**分开存（base / wall / tower 各一张等级表，下标 0 = 1 级）。
+## ★★ 2026.10.30：区域特化机制已移除，`zone_spec` 表与相关字段一起删除。
 var _upgrade_levels: Dictionary = {}
-var _spec_list: Array = []
-var _spec_by_id: Dictionary = {}
-var _spec_cost: Dictionary = {}
-var _spec_time_sec: float = 0.0
 
 ## ---- 区划种类（config.json 的 zone_kind 段）----
 ## ★★ 游戏里只有三种区划（粮食 / 黄金 / 人口），**没有「默认区划」那一档**：
@@ -519,8 +529,7 @@ var _spec_time_sec: float = 0.0
 ##   · `production` —— **编辑器选种类时同步进数字输入框的预设值**（该区划每秒的绝对值，
 ##     不乘地块数）；游戏里**不**拿它当兜底：地图没写 production 的区划一律算 0
 ##     （用户确认保持老图行为，不按种类预设兜底）。
-##   · `specs`      —— 这种区划**能选**哪些特化（需求：粮食区划仅能黄金 / 人口特化…）。
-## ★ 同样是**载入时整理好、之后只读**（区划详情每帧读名字 / 特化判定每次点击都读白名单）。
+## ★ 同样是**载入时整理好、之后只读**（区划详情每帧读名字 / 预设产能）。
 var _zone_kind_default: String = "population"
 var _zone_kind_list: Array = []
 var _zone_kind_by_id: Dictionary = {}
@@ -713,6 +722,10 @@ func _cache_scalars() -> void:
 	unit_pick_pad_px = maxf(0.0, num("unit.pick_pad_px", 4.0))
 	# ★ 悬停拾取的格半径剪枝（纯表现；见 `view/input_controller.gd` 的 `_poll_hover_pick`）
 	hover_pick_radius_tiles = maxf(0.5, num("render.hover_pick_radius_tiles", 2.5))
+	# ★ 悬停白描边（纯表现；单位烘进贴图、建筑走描边 pass）
+	hover_outline_color = parse_color(str_val("render.hover_outline_color", "#ffffff"))
+	# ★ 建筑的描边厚度是「整体放大的倍率」：1.0 = 没有描边
+	building_outline_scale = clampf(num("render.building_outline_scale", 1.02), 1.0, 1.5)
 
 	# ★ 迷雾：开关 / 兜底视野 / 遮罩颜色（颜色走 parse_color，与 colors.* 同一套写法）
 	fog_enabled = bool_val("fog.enabled", true)
@@ -862,8 +875,8 @@ func _cache_scalars() -> void:
 
 	_cache_techs()
 	_cache_upgrades()
+	_cache_base_bonus()
 	_cache_zone_kinds()
-	_cache_zone_specs()
 	# ★ AI（本轮新增）：阵营 AI 的名单 + 两种 AI 的行为参数（见 _cache_ai）。
 	_cache_ai()
 	# ★★ 单位类型表（unit.types / unit.classes / unit.general）—— 必须在其它
@@ -1073,6 +1086,7 @@ func _cache_unit_types() -> void:
 	_general_types = []
 	_unit_sprites = {}
 	_unit_sprite_tints = {}
+	_unit_sprite_ratios = {}
 
 	# 1) 兵种大类（unit.classes）：id → 显示名（带 / 不带远近两种说法）
 	var raw_classes: Variant = get_path_value("unit.classes")
@@ -1149,6 +1163,12 @@ func _cache_unit_types() -> void:
 			# 3D 立牌上色口径：只认 "art"；别的一律 "faction"（含没写）
 			var st := String(td.get("sprite_tint", "faction")).strip_edges().to_lower()
 			_unit_sprite_tints[id] = "art" if st == "art" else "faction"
+			# 立牌宽高比例（可选；[宽, 高]，1 = 基准宽度）。缺省由大类决定（见 accessor）。
+			var sr: Variant = td.get("sprite_ratio", null)
+			if typeof(sr) == TYPE_ARRAY and (sr as Array).size() >= 2:
+				var arr: Array = sr
+				_unit_sprite_ratios[id] = Vector2(
+					maxf(0.01, float(arr[0])), maxf(0.01, float(arr[1])))
 
 	# 3) 开局将领（general_N 同序）各自的类型
 	var types: Variant = get_path_value("unit.general.types")
@@ -1530,6 +1550,27 @@ func unit_sprite_of(id: String) -> String:
 func unit_sprite_tint_of(id: String) -> String:
 	var tid := unit_type_of(id)
 	return String(_unit_sprite_tints.get(tid, "faction"))
+
+
+## ★★ 单位类型 id → **立牌宽高比例**（`1` = 基准宽度，不是像素）。
+##
+## 取值顺序：
+##   1. `unit.types.<id>.sprite_ratio`（可选，形如 `[2, 1]`）；
+##   2. 兵种大类：infantry = 1×1、cavalry = 1×1.5、siege = 2×1。
+## ★ 默认按 `class` 走；视觉尺寸仍允许 `sprite_ratio` 覆盖，
+##   这样「长得像器械但战斗标签是别的」这种需求不必改玩法数值。
+## ★ 与 `unit_sprite_of` 同一口径：参数可以是类型 id，也可以是 kind（将领换算成所属类型）。
+func unit_sprite_ratio_of(id: String) -> Vector2:
+	var tid := unit_type_of(id)
+	var hit: Variant = _unit_sprite_ratios.get(tid, null)
+	if hit != null:
+		return hit
+	match unit_class_of(tid):
+		CLASS_CAVALRY:
+			return Vector2(1.0, 1.5)
+		CLASS_SIEGE:
+			return Vector2(2.0, 1.0)
+	return Vector2(1.0, 1.0)
 
 
 ## 兵种大类：infantry（步兵）/ cavalry（骑兵）—— 「后续额外伤害」的主键
@@ -2107,8 +2148,6 @@ func _cache_techs() -> void:
 		for i in 3:
 			out.append(maxf(0.0, float((tiers as Array)[i])))
 		tech_gold_per_sec = out
-	tech_warmup_sec = maxf(0.0, num("tech.warmup_sec", 30.0))
-	tech_shortfall_cooldown_sec = maxf(0.0, num("tech.shortfall_cooldown_sec", 30.0))
 	_tech_list = []
 	_tech_by_id = {}
 	var raw: Variant = get_path_value("tech.list")
@@ -2311,14 +2350,67 @@ func upgrade_limit(type: String, level: int, key: String, default: int) -> int:
 
 
 # ------------------------------------------------------------------
+# 大本营分阶资源加成（config.json 的 base_bonus 段）
+# ------------------------------------------------------------------
+
+func _cache_base_bonus() -> void:
+	_base_bonus_levels = []
+	var raw: Variant = get_path_value("base_bonus.levels")
+	if typeof(raw) != TYPE_ARRAY:
+		return
+	for item in (raw as Array):
+		if typeof(item) != TYPE_DICTIONARY:
+			_base_bonus_levels.append({
+				"food_per_sec": 0.0, "gold_per_sec": 0.0,
+				"zone_pop_rate_per_sec": 0.0, "zone_pop_cap": 0.0,
+			})
+			continue
+		var d: Dictionary = item
+		_base_bonus_levels.append({
+			"food_per_sec": maxf(0.0, float(d.get("food_per_sec", 0.0))),
+			"gold_per_sec": maxf(0.0, float(d.get("gold_per_sec", 0.0))),
+			"zone_pop_rate_per_sec": maxf(0.0, float(d.get("zone_pop_rate_per_sec", 0.0))),
+			"zone_pop_cap": maxf(0.0, float(d.get("zone_pop_cap", 0.0))),
+		})
+
+
+## 某一级大本营的资源加成（越界 / 没配 → 全 0）。
+## @return {food_per_sec, gold_per_sec, zone_pop_rate_per_sec, zone_pop_cap}
+func base_bonus(level: int) -> Dictionary:
+	var i: int = int(level) - 1
+	if i < 0 or i >= _base_bonus_levels.size():
+		return {"food_per_sec": 0.0, "gold_per_sec": 0.0,
+			"zone_pop_rate_per_sec": 0.0, "zone_pop_cap": 0.0}
+	return _base_bonus_levels[i]
+
+
+## 资源建筑给**全阵营**的每秒固定粮食 / 黄金（普通建筑没写 → 0）。
+func building_food_per_sec(type: String) -> float:
+	return maxf(0.0, num("building.%s.food_per_sec" % type, 0.0))
+
+
+func building_gold_per_sec(type: String) -> float:
+	return maxf(0.0, num("building.%s.gold_per_sec" % type, 0.0))
+
+
+## 资源建筑给**所在区划**的人口增长速度加成（人口/秒；没写 → 0）。
+func building_population_rate(type: String) -> float:
+	return maxf(0.0, num("building.%s.population_rate_per_sec" % type, 0.0))
+
+
+## 资源建筑给**所在区划**的人口上限加成（没写 → 0）。
+func building_population_cap(type: String) -> float:
+	return maxf(0.0, num("building.%s.population_cap_bonus" % type, 0.0))
+
+
+# ------------------------------------------------------------------
 # 区划种类（config.json 的 zone_kind 段）
 #
 # ★★ 这一层只回答四件事（判定与文案在别处）：
 #   1. 有哪几种区划、各自叫什么（`zone_kind_list` / `zone_kind_name`）；
 #   2. 地图没写 kind 时算哪一种（`zone_kind_default`）；
 #   3. 选这个种类时编辑器该同步出什么产量（`zone_kind_production`；
-#      ⚠️ 游戏侧**不用**它兜底：没写 production 就是 0）；
-#   4. 这个种类允许做哪些特化（`zone_kind_specs` / `zone_kind_allows_spec`）。
+#      ⚠️ 游戏侧**不用**它兜底：没写 production 就是 0）。
 # ⚠️ 表里查不到的 kind 一律退回 `default` 那一档 —— 地图可以被手改，
 #   写一个不认识的 kind 不该让游戏崩，也不该让那个区划凭空多出产量。
 # ------------------------------------------------------------------
@@ -2341,20 +2433,11 @@ func _cache_zone_kinds() -> void:
 			if typeof(prod) == TYPE_DICTIONARY:
 				for k in prod_out.keys():
 					prod_out[k] = maxf(0.0, float((prod as Dictionary).get(k, 0.0)))
-			# 允许的特化 id 列表（顺序 = 界面上的顺序）
-			var spec_out: Array = []
-			var specs: Variant = src.get("specs", [])
-			if typeof(specs) == TYPE_ARRAY:
-				for s in (specs as Array):
-					var sid := String(s)
-					if sid != "" and not spec_out.has(sid):
-						spec_out.append(sid)
 			var entry := {
 				"id": id,
 				"name": String(src.get("name", id)),
 				"line": String(src.get("line", "")),
 				"production": prod_out,
-				"specs": spec_out,
 			}
 			_zone_kind_list.append(entry)
 			_zone_kind_by_id[id] = entry
@@ -2416,78 +2499,6 @@ func zone_kind_production(id: String) -> Dictionary:
 		for k in out.keys():
 			out[k] = float((p as Dictionary).get(k, 0.0))
 	return out
-
-
-## 这个种类允许做哪些特化（id 数组）
-func zone_kind_specs(id: String) -> Array:
-	var e := zone_kind_entry(id)
-	var v: Variant = e.get("specs", [])
-	return v if typeof(v) == TYPE_ARRAY else []
-
-
-## 这个种类能不能做这种特化（逻辑层「按种类限制特化」的唯一判据）
-func zone_kind_allows_spec(kind: String, spec_id: String) -> bool:
-	return zone_kind_specs(kind).has(spec_id)
-
-
-# ------------------------------------------------------------------
-# 区划特化（config.json 的 zone_spec 段）
-# ------------------------------------------------------------------
-
-func _cache_zone_specs() -> void:
-	_spec_list = []
-	_spec_by_id = {}
-	var c: Variant = get_path_value("zone_spec.cost")
-	_spec_cost = (c as Dictionary) if typeof(c) == TYPE_DICTIONARY else {}
-	_spec_time_sec = maxf(0.0, float(num("zone_spec.time_sec", 0.0)))
-	var raw: Variant = get_path_value("zone_spec.list")
-	if typeof(raw) != TYPE_ARRAY:
-		return
-	for item in (raw as Array):
-		if typeof(item) != TYPE_DICTIONARY:
-			continue
-		var src: Dictionary = item
-		var id := String(src.get("id", ""))
-		if id == "":
-			continue
-		var eff: Variant = src.get("effect", {})
-		var entry := {
-			"id": id,
-			"name": String(src.get("name", id)),
-			"line": String(src.get("line", "")),
-			"desc": String(src.get("desc", "")),
-			"effect": (eff as Dictionary) if typeof(eff) == TYPE_DICTIONARY else {},
-		}
-		_spec_list.append(entry)
-		_spec_by_id[id] = entry
-
-
-## 全部特化条目（顺序 = 操作页里那三格的顺序；只读）
-func spec_list() -> Array:
-	return _spec_list
-
-
-func spec_entry(id: String) -> Dictionary:
-	return _spec_by_id.get(id, {})
-
-
-func has_spec(id: String) -> bool:
-	return _spec_by_id.has(id)
-
-
-## 特化的消耗 / 读条时间（条目没写就退回 zone_spec 的共用默认值）
-func spec_cost(id: String) -> Dictionary:
-	var c: Variant = spec_entry(id).get("cost", null)
-	if typeof(c) == TYPE_DICTIONARY:
-		return c
-	return _spec_cost
-
-
-func spec_time_sec(id: String) -> float:
-	var v: Variant = spec_entry(id).get("time_sec", null)
-	if typeof(v) == TYPE_FLOAT or typeof(v) == TYPE_INT:
-		return maxf(0.0, float(v))
-	return _spec_time_sec
 
 
 # ------------------------------------------------------------------

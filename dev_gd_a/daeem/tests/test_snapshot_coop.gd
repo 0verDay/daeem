@@ -48,20 +48,16 @@ func _run() -> void:
 	var zone = _zone_owned_by(host, "F1")
 	ok(zone != null, "（前提）F1 占着一块区")
 	if zone != null:
-		zone["spec_done"] = "food"
-		zone["spec_kind"] = "gold"
-		zone["spec_remaining"] = 2.0
-		zone["spec_total"] = 10.0
-		zone["spec_cancel"] = false
+		zone["population_growth_bonus"] = 0.5
+		zone["population_cap_bonus"] = 2.0
 	var tech_id := ""
 	for item in host.tech_list():
 		tech_id = String((item as Dictionary).get("id", ""))
 		if tech_id != "":
 			break
 	if tech_id != "":
-		ok(host.set_tech_active(tech_id, true, "F2"), "（前提）F2 能启用一条科技")
-		# ★★ 2026.10.29：预热满 30 秒才进 active；快照里的 `tech` 发的是**已生效**那几张。
-		finish_tech_warmup(host, host.cfg)
+		instant_tech(host, tech_id, "F2")
+		ok(host.is_tech_active(tech_id, "F2"), "（前提）F2 启用了这条科技")
 
 	var snap: Dictionary = SnapshotRes.to_snapshot(host)
 	ok(snap.has("pres"), "★ 快照带按席位资源 pres")
@@ -81,8 +77,7 @@ func _run() -> void:
 		"★ 建筑带等级 / 血量上限 / 升级读条")
 	var z0: Dictionary = snap["zones"][int(zone["id"])] if zone != null else {}
 	if zone != null:
-		ok(z0.has("sk") and z0.has("sr") and z0.has("st") and z0.has("sd"),
-			"★ 区划带特化读条 / 已完成特化")
+		ok(z0.has("pg") and z0.has("pc"), "★ 区划带动态人口加成")
 
 	SnapshotRes.apply_snapshot(guest, cfg, snap)
 	guest.refresh_after_snapshot()
@@ -117,8 +112,8 @@ func _run() -> void:
 		var gz = _zone_owned_by(guest, "F1")
 		ok(gz != null, "（前提）客机也有 F1 区划")
 		if gz != null:
-			eq(String(gz["spec_done"]), "food", "★ 已完成特化写回")
-			near(float(gz["spec_remaining"]), 2.0, 0.001, "★ 特化读条剩余写回")
+			near(float(gz["population_growth_bonus"]), 0.5, 1e-6, "★ 人口增长加成写回")
+			near(float(gz["population_cap_bonus"]), 2.0, 1e-6, "★ 人口上限加成写回")
 
 	# ---- 缺字段 = 保持本地现状 ----
 	var old: Dictionary = snap.duplicate(true)
@@ -129,6 +124,10 @@ func _run() -> void:
 	for sb in old["buildings"]:
 		(sb as Dictionary).erase("mh")
 		(sb as Dictionary).erase("lv")
+	for sz in old["zones"]:
+		if typeof(sz) == TYPE_DICTIONARY:
+			(sz as Dictionary).erase("pg")
+			(sz as Dictionary).erase("pc")
 	# 先给客机换一组「别的已拥有」，用来验证「缺 gp → 保持现状」。
 	guest.general_recruit_pools["F1"]["taken"] = ["general_2"]
 	SnapshotRes.apply_snapshot(guest, cfg, old)
@@ -147,7 +146,10 @@ func _run() -> void:
 	if zone != null:
 		var gz2 = _zone_owned_by(guest, "F1")
 		if gz2 != null:
-			near(float(gz2["spec_remaining"]), 2.0, 0.001, "缺 sr → 特化读条保持现状")
+			near(float(gz2["population_growth_bonus"]), 0.5, 1e-6,
+				"缺 pg → 人口增长加成保持现状")
+			near(float(gz2["population_cap_bonus"]), 2.0, 1e-6,
+				"缺 pc → 人口上限加成保持现状")
 
 
 func _zone_owned_by(w, fid: String):

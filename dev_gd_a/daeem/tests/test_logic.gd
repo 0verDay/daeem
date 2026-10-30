@@ -582,7 +582,11 @@ func _test_tower(world, cfg) -> void:
 	while not w.projectiles.is_empty() and drain < 600:
 		w.tick(DT)
 		drain += 1
-	ok(absf(e.hp - (hp0 - 12.0)) < 1e-6, "★ 投掷物命中后打掉 12 点")
+	var tower_dmg: float = float(cfg.building_attack_of("tower", 1)["damage"])
+	var armor: float = cfg.unit_armor_of(e.unit_type)
+	var want_dmg: float = maxf(1.0, tower_dmg - armor)
+	ok(absf(e.hp - (hp0 - want_dmg)) < 1e-6,
+		"★ 投掷物命中后打掉 %s 点（%s 攻击 − %s 护甲）" % [want_dmg, tower_dmg, armor])
 
 	var hp1: float = e.hp
 	for i in 30:

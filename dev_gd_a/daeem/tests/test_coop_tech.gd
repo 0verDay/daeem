@@ -42,13 +42,17 @@ func _run() -> void:
 	w.apply_building_level_hp(f2_base)
 	var f1_hp: float = f1_base.hp_max
 	var f2_hp: float = f2_base.hp_max
+	# ★★ 赤字规则：先给 F2 足够的黄金产能，否则第二、三条会被拒。
+	give_gold_income(w, 100.0, "F2")
 
 	# 客机启用「粮食产量 I」+「建筑加固」；房主一条都不启用。
-	ok(w.set_tech_active("food_1", true, "F2"), "客机能启用 food_1")
-	ok(w.set_tech_active("building_hp", true, "F2"), "客机能启用 building_hp")
-	ok(w.set_tech_active("zone_population", true, "F2"), "客机能启用 zone_population")
-	# ★★ 2026.10.29：三条都要**预热满 30 秒**才真生效（点下去只是排队 + 开始扣金）。
-	finish_tech_warmup(w, cfg)
+	# ★ 用 instant_tech 直接落状态：本用例验的是「各吃各的科技」，不验赤字门槛。
+	instant_tech(w, "food_1", "F2")
+	instant_tech(w, "building_hp", "F2")
+	instant_tech(w, "zone_population", "F2")
+	ok(w.is_tech_active("food_1", "F2"), "客机启用了 food_1")
+	ok(w.is_tech_active("building_hp", "F2"), "客机启用了 building_hp")
+	ok(w.is_tech_active("zone_population", "F2"), "客机启用了 zone_population")
 
 	ok(w.seat_tech_effects.has("F1") and w.seat_tech_effects.has("F2"),
 		"★ 两个玩家席位各有一份科技效果")
@@ -58,9 +62,10 @@ func _run() -> void:
 		"★★ 客机启用的粮食科技只在客机那份里（+10%）")
 
 	var base_rate: Dictionary = w.zones.production_of("F2")
+	var flat: Dictionary = w._flat_resource_bonus("F2")
 	var with_tech: Dictionary = w._accumulate_production("F2", false, w.seat_tech_effects["F2"])
-	near(float(with_tech["food"]), float(base_rate["food"]) * 1.1, 1e-6,
-		"★ 客机的粮食产量 = **自己的总体产能 ×1.1**（2026.10.29 起不再按地块数加）")
+	near(float(with_tech["food"]), (float(base_rate["food"]) + float(flat["food"])) * 1.1, 1e-6,
+		"★ 客机的粮食产量 = **自己的总体产能 ×1.1**（含大本营/资源建筑固定产出）")
 
 	near(w.tech_population_mult("F1"), 1.0, 1e-6, "房主人口倍率仍是 1.0")
 	near(w.tech_population_mult("F2"), 1.1, 1e-6, "★ 客机人口倍率是 1.1")

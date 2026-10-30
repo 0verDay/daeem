@@ -126,6 +126,11 @@ const DEFAULTS := {
 		"tower_frontier_bonus": 4.0,
 		"base_upgrade_priority": 10.0,
 		"tech_priority": [],
+		# ★★ 2026.10.30：资源建筑（粮田 / 房屋 / 矿脉）。
+		#   AI 在没有光杆将领、己方区划没有被打时，会用补员预算之外的余钱补经济建筑。
+		"resource_buildings_enabled": true,
+		"resource_building_hard_max": 10,
+		"resource_building_per_zone": 2,
 	},
 	"patrol": {
 		"enabled": true,

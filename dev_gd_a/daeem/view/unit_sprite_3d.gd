@@ -12,13 +12,19 @@
 ##   `MultiMesh` 一批共用同一张贴图，做不到逐实例换色 / 换描边；
 ##   ⇒ 变体数 = 阵营数 × 2（将领）× 2（选中），仍是**个位数批次**（见 unit_view_3d 的分桶）。
 ##
-## ★ 画布 64×96（一格 128 世界单位的尺度下足够清晰）：**底边贴地**、不翻转
-##   （QuadMesh 的 UV v=0 在**顶部**，见 `_bake_uncached` 的说明）。
+## ★★ 悬停：每个批次再烘**第二张**贴图（`hover = true`）= **纯阵营色躯体 + 白描边**。
+##   shader 按 `INSTANCE_CUSTOM.g` 把两张图交叉混合 ⇒ 悬停不新增批次、还能淡入淡出。
+##   两张图的 padding / fit 必须完全一致（所以 `hover` 沿用原 `tint` 的 padding），
+##   否则悬停的一瞬间剪影会「胀一下」。
+##
+## ★ 画布尺寸 = 立牌比例 × 基准像素密度（步兵 64×64、骑兵 64×96、器械 128×64）：
+##   **底边贴地**、不翻转（QuadMesh 的 UV v=0 在**顶部**，见 `_bake_uncached` 的说明）。
 ##
 ## ⚠️ 本文件是**纯静态生成**：不持有任何状态、不读 world；缓存键里带全部影响像素的参数。
 extends RefCounted
 
-## 贴图像素尺寸（宽 × 高）。64×96 在「一格 128 世界单位」的尺度下足够清晰
+## 基准贴图像素尺寸（宽 × 高）。实际画布 = 立牌比例 × 这个基准（1 单位 = 64px）：
+## 步兵 64×64、骑兵 64×96、器械 128×64。
 const TEX_W := 64
 const TEX_H := 96
 ## 描边宽度（像素）
@@ -45,6 +51,9 @@ const ART_PAD_PX := 6
 ## 选中时描边的颜色（**整圈换成这个颜色**，不是「阵营色外面再套一圈」——用户口径）。
 ##   真正的值由 config.json 的 render.unit_select_outline_color 传进来。
 const SEL_OUTLINE_DEFAULT := Color(0.949, 0.710, 0.267, 1.0)   # #f2b544（主题金）
+## ★★ 悬停时描边的颜色（默认纯白；由 config.json 的 render.hover_outline_color 传进来）。
+##   悬停贴图 = **纯阵营色填充 + 这圈白边**（见 `bake_asset` 的 `hover` 参数）。
+const HOVER_OUTLINE_DEFAULT := Color(1, 1, 1, 1)
 ## 将领脚下**占位贴花**贴图的边长（像素）
 const DECAL_SIZE := 64
 
@@ -68,15 +77,20 @@ static var _sel_ring_cache: ImageTexture = null
 ##     每种变体一个 MultiMeshInstance3D ⇒ **每种变体只 1 次 draw call**，
 ##     仍然满足「1000 单位保持合批」的目标（阵营数是个位数）。
 ##   ⚠️ 烘图有缓存，切换阵营 / 重开一局都不会重复光栅化。
+##
+## ★ `hover = true` 时烘的是**悬停贴图**：躯体仍是 `faction_color`（纯色），
+##   但整圈描边换成 `hover_outline`（白，满不透明）——见文件头。
 static func bake(faction_color: Color, leader: bool, outline: Color,
-		selected: bool = false, sel_outline: Color = SEL_OUTLINE_DEFAULT) -> ImageTexture:
-	var key := "%s|%d|%s|%d|%s" % [faction_color.to_html(false),
+		selected: bool = false, sel_outline: Color = SEL_OUTLINE_DEFAULT,
+		hover: bool = false, hover_outline: Color = HOVER_OUTLINE_DEFAULT) -> ImageTexture:
+	var key := "%s|%d|%s|%d|%s|%d|%s" % [faction_color.to_html(false),
 		1 if leader else 0, outline.to_html(false), 1 if selected else 0,
-		sel_outline.to_html(false)]
+		sel_outline.to_html(false), 1 if hover else 0, hover_outline.to_html(false)]
 	var hit: Variant = _cache.get(key, null)
 	if hit != null:
 		return hit
-	var tex := _bake_uncached(leader, faction_color, outline, selected, sel_outline)
+	var tex := _bake_uncached(leader, faction_color, outline, selected, sel_outline,
+		hover, hover_outline)
 	_cache[key] = tex
 	return tex
 
@@ -88,6 +102,13 @@ static func clear_cache() -> void:
 	_sel_ring_cache = null
 
 
+## 这个兵种有没有可用素材（没配 / 载不到 = false）。
+## ★ `unit_view_3d.unit_quad_cells` 用它决定「按兵种大类取比例」还是「退回程序化剪影的基准比例」
+##   —— 后者必须和 `bake()` 的 64×96 画布一致，否则剪影会被拉变形。
+static func has_sprite(path: String) -> bool:
+	return _load_asset_image(path) != null
+
+
 ## 逐像素光栅化：把「兵人剪影」写成一张 RGBA 图。
 ##
 ## ★ 用**距离场**（SDF）而不是逐形状画：剪影由若干椭圆/胶囊的并集构成，
@@ -95,14 +116,16 @@ static func clear_cache() -> void:
 ##   这套做法在本项目里已经用过一次（`view/unit_icon.gd` 的圆盘烘图），
 ##   直接沿用同一个模式 —— 不引入任何新依赖。
 static func _bake_uncached(leader: bool, body: Color, outline: Color,
-		selected: bool = false, sel_outline: Color = SEL_OUTLINE_DEFAULT) -> ImageTexture:
+		selected: bool = false, sel_outline: Color = SEL_OUTLINE_DEFAULT,
+		hover: bool = false, hover_outline: Color = HOVER_OUTLINE_DEFAULT) -> ImageTexture:
 	var img := Image.create(TEX_W, TEX_H, false, Image.FORMAT_RGBA8)
 	var parts: Array = _silhouette_parts(leader)
 	# 1 像素在「剪影空间」里是多少（剪影空间用 0..1 的归一化坐标，x 居中于 0）
 	var px_per_unit := float(TEX_W)
 	var rim := OUTLINE_PX / px_per_unit
-	# ★★ 选中 = **整圈描边换成金色**（不是「阵营色外面再包一圈」）。
-	var rim_col: Color = sel_outline if selected else outline
+	# ★★ 选中 = **整圈描边换成金色**；悬停 = **整圈换成白边 + 纯阵营色躯体**。
+	#   三档互斥，优先级：悬停 > 选中 > 默认（悬停时金边让位给白边）。
+	var rim_col: Color = hover_outline if hover else (sel_outline if selected else outline)
 	for y in TEX_H:
 		for x in TEX_W:
 			# 归一化到 [-0.5, 0.5] × [0, 1]（y 向上：贴图第 0 行是**顶**，所以翻转）
@@ -130,14 +153,14 @@ static func _bake_uncached(leader: bool, body: Color, outline: Color,
 #                   选中时**整圈描边换成金色**（是替换，不是「阵营色外面再包一圈」）。
 #                   口径（用户原话）：「保留原画，用阵营色做默认描边，当单位被选中时
 #                   添加额外的金色描边」→ 二轮修正：「选中后原先的阵营色边变成金边」。
-#                   目前 spearman / longbowman 用它。
+#                   现在七个兵种都用它。
 #   · `"faction"` = 取素材的**形状**（alpha 当剪影遮罩），填**阵营色**、深色描边 ——
 #                   单字占位（骑 / 粮 / 士 / 骁 / 车）走这一档：字本身就是阵营色。
 #                   ★ 选中时同样把深色描边换成金色（两档共用同一条选中口径）。
 #   · 素材**缺失 / 路径为空**时**退回程序化剪影**（`bake()`），
 #     所以未知兵种、老地图里的怪 kind 都不会「没图」。
-# ★ 与程序化那版共用同一块 QuadMesh / 同一个 shader ⇒ 画布尺寸与**朝向**必须一致
-#   （两者都**不翻转**：QuadMesh 的 UV v=0 在**顶部**，见 `_bake_uncached` 的说明）。
+# ★ 与程序化那版共用同一个 shader ⇒ 画布宽高比必须与立牌网格一致（`box` 参数），
+#   朝向也必须一致（两者都**不翻转**：QuadMesh 的 UV v=0 在**顶部**，见 `_bake_uncached`）。
 # ------------------------------------------------------------------
 
 ## 取一张**基于兵种素材**的立牌贴图。
@@ -149,23 +172,33 @@ static func _bake_uncached(leader: bool, body: Color, outline: Color,
 ## @param tint   "art" = 保留原画 / "faction" = 填阵营色
 ## @param selected 选中档（**整圈描边换成金色**，宽度与默认档一致）
 ## @param sel_outline 选中描边的颜色（config: render.unit_select_outline_color）
+## @param hover 悬停档：纯阵营色躯体 + `hover_outline` 白描边（padding 沿用 `tint`）
+## @param hover_outline 悬停描边色（config: render.hover_outline_color，默认白）
+## @param box 立牌的**宽高比例**（1 = 基准宽度，64px；默认 1×1.5 = 基准 64×96）。
+##        由 `unit_view_3d` 按兵种大类传进来（步兵 1×1 / 骑兵 1×1.5 / 器械 2×1），
+##        贴图画布的宽高比必须与立牌网格一致，否则原画会被拉变形。
 ## @return 贴图；素材载不到时返回**程序化剪影**（永远不返回 null）
 static func bake_asset(path: String, faction_color: Color, leader: bool, outline: Color,
 		tint: String = "faction", selected: bool = false,
-		sel_outline: Color = SEL_OUTLINE_DEFAULT) -> ImageTexture:
+		sel_outline: Color = SEL_OUTLINE_DEFAULT,
+		hover: bool = false, hover_outline: Color = HOVER_OUTLINE_DEFAULT,
+		box: Vector2 = Vector2(1.0, 1.5)) -> ImageTexture:
 	var src: Image = _load_asset_image(path)
 	if src == null:
-		return bake(faction_color, leader, outline, selected, sel_outline)
-	var key := "%s|%s|%s|%d|%s|%d|%s" % [path, faction_color.to_html(false),
+		return bake(faction_color, leader, outline, selected, sel_outline,
+			hover, hover_outline)
+	var key := "%s|%s|%s|%d|%s|%d|%s|%d|%s|%.3f,%.3f" % [path, faction_color.to_html(false),
 		tint, 1 if leader else 0, outline.to_html(false),
-		1 if selected else 0, sel_outline.to_html(false)]
+		1 if selected else 0, sel_outline.to_html(false),
+		1 if hover else 0, hover_outline.to_html(false), box.x, box.y]
 	var hit: Variant = _cache.get(key, null)
 	if hit != null:
 		return hit
 	var tex := _bake_from_image(src, leader, faction_color, outline, tint, selected,
-		sel_outline)
+		sel_outline, hover, hover_outline, box)
 	if tex == null:
-		return bake(faction_color, leader, outline, selected, sel_outline)
+		return bake(faction_color, leader, outline, selected, sel_outline,
+			hover, hover_outline)
 	_cache[key] = tex
 	return tex
 
@@ -189,24 +222,35 @@ static func _load_asset_image(path: String) -> Image:
 	return img
 
 
-## 把一张素材图烘成 64×96 立牌：
+## 把一张素材图烘成**立牌画布**（宽高比例 = `box`）：
 ## contain-fit（保长宽比）+ 底部对齐 + 阵营色 / 原画躯体 + 膨胀描边
-## （选中时整圈描边换成金色，宽度不变）。
+## （选中时整圈描边换成金色；悬停时换成白边 + 纯阵营色躯体；宽度都不变）。
 static func _bake_from_image(src: Image, leader: bool, body: Color, outline: Color,
 		tint: String = "faction", selected: bool = false,
-		sel_outline: Color = SEL_OUTLINE_DEFAULT) -> ImageTexture:
+		sel_outline: Color = SEL_OUTLINE_DEFAULT,
+		hover: bool = false, hover_outline: Color = HOVER_OUTLINE_DEFAULT,
+		box: Vector2 = Vector2(1.0, 1.5)) -> ImageTexture:
 	var sw: int = src.get_width()
 	var sh: int = src.get_height()
 	if sw <= 0 or sh <= 0:
 		return null
 	var keep_art := tint == "art"
-	# ★★ 选中 = **整圈描边换成金色**（不是「阵营色外面再包一圈」）。
-	var rim_col: Color = sel_outline if selected else outline
+	# ★★ 选中 = **整圈描边换成金色**（不是「阵营色外面再包一圈」）；
+	#   悬停 = **整圈换成白边 + 纯阵营色躯体**，且必须沿用 `art` 档的安全边 ——
+	#   否则悬停贴图会比原贴图大一圈，交叉混合时剪影会「胀一下」。
+	var rim_col: Color = hover_outline if hover else (sel_outline if selected else outline)
 	# ★ `art` 档四周留安全边（见 ART_PAD_PX 的说明）；单字档贴满画布（与旧占位一致）。
+	#   ⚠️ 悬停贴图也用**原 tint 的** padding，保证两张图的**剪影覆盖范围**逐像素对齐
+	#     （白边更实，所以 alpha 数值会更高；覆盖到哪些像素必须完全一样）。
 	var pad: int = ART_PAD_PX if keep_art else 0
+	# ★★ 画布宽高比 = 立牌网格的宽高比（`box`，1 = 64px）：
+	#   步兵 1×1 = 64×64、骑兵 1×1.5 = 64×96、器械 2×1 = 128×64。
+	#   ⚠️ 两者必须一致，否则把 2:1 的原画贴到方形 / 竖长的牌上会被拉变形。
+	var cw: int = clampi(int(round(float(TEX_W) * maxf(0.05, box.x))), 8, 512)
+	var ch: int = clampi(int(round(float(TEX_W) * maxf(0.05, box.y))), 8, 512)
 	# ① contain-fit：整张装得进内框，水平居中、**底部对齐**（脚贴地）
-	var avail_w: int = TEX_W - pad * 2
-	var avail_h: int = TEX_H - pad * 2
+	var avail_w: int = cw - pad * 2
+	var avail_h: int = ch - pad * 2
 	var scale: float = minf(float(avail_w) / float(sw), float(avail_h) / float(sh))
 	var tw: int = maxi(1, int(round(float(sw) * scale)))
 	var th: int = maxi(1, int(round(float(sh) * scale)))
@@ -215,30 +259,36 @@ static func _bake_from_image(src: Image, leader: bool, body: Color, outline: Col
 		scaled.decompress()          # 导入设置可能压过（VRAM 压缩），先解回像素
 	scaled.convert(Image.FORMAT_RGBA8)
 	if tw != sw or th != sh:
-		scaled.resize(tw, th, Image.INTERPOLATE_NEAREST)   # 像素风：硬边更贴素材
-	var canvas := Image.create(TEX_W, TEX_H, false, Image.FORMAT_RGBA8)
+		# ★ art 档是**高分辨率原画**：用 LANCZOS 平滑缩放，避免逐个像素抽样的锯齿；
+		#   单字占位仍是像素风，保持硬边（NEAREST）。
+		scaled.resize(tw, th,
+			Image.INTERPOLATE_LANCZOS if keep_art else Image.INTERPOLATE_NEAREST)
+	var canvas := Image.create(cw, ch, false, Image.FORMAT_RGBA8)
 	canvas.blit_rect(scaled, Rect2i(0, 0, tw, th),
-		Vector2i((TEX_W - tw) / 2, TEX_H - pad - th))
+		Vector2i((cw - tw) / 2, ch - pad - th))
 
 	# ② 剪影覆盖率（= 画布 alpha）+ 膨胀（取「环」当描边）
 	var cov := PackedFloat32Array()
-	cov.resize(TEX_W * TEX_H)
-	for y in TEX_H:
-		for x in TEX_W:
-			cov[y * TEX_W + x] = canvas.get_pixel(x, y).a
+	cov.resize(cw * ch)
+	for y in ch:
+		for x in cw:
+			cov[y * cw + x] = canvas.get_pixel(x, y).a
 	var rim_px: float = ASSET_OUTLINE_PX_LEADER if leader else ASSET_OUTLINE_PX
-	var dil := _dilate(cov, TEX_W, TEX_H, int(ceil(rim_px)))
+	var dil := _dilate(cov, cw, ch, int(ceil(rim_px)))
 
 	# ③ 合成：描边 → 躯体（原画或阵营色）
-	var out := Image.create(TEX_W, TEX_H, false, Image.FORMAT_RGBA8)
-	for y in TEX_H:
-		for x in TEX_W:
-			var i := y * TEX_W + x
+	var out := Image.create(cw, ch, false, Image.FORMAT_RGBA8)
+	for y in ch:
+		for x in cw:
+			var i := y * cw + x
 			var px: Color = canvas.get_pixel(x, y)
 			var body_cov: float = cov[i]
-			var ring: float = clampf(dil[i] - body_cov, 0.0, 1.0) * OUTLINE_ALPHA
+			# ★ 悬停白边用**满亮度**（普通描边是 0.72）：白边就是要一眼看见。
+			var ring_alpha: float = 1.0 if hover else OUTLINE_ALPHA
+			var ring: float = clampf(dil[i] - body_cov, 0.0, 1.0) * ring_alpha
 			var col := _over(Color(rim_col.r, rim_col.g, rim_col.b, ring), Color(0, 0, 0, 0))
-			if keep_art:
+			# ★ 悬停 = 纯阵营色躯体（art 档原来的画不要）；不悬停时 art 保留原画。
+			if keep_art and not hover:
 				col = _over(Color(px.r, px.g, px.b, body_cov), col)
 			else:
 				col = _over(Color(body.r, body.g, body.b, body_cov), col)

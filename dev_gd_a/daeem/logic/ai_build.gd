@@ -15,6 +15,9 @@ const EconomyRes = preload("res://logic/economy.gd")
 const AiEconomyRes = preload("res://logic/ai_economy.gd")
 const AiArmyRes = preload("res://logic/ai_army.gd")
 
+## ★★ 资源建筑类型（顺序 = 同分时的优先顺序）。
+const RESOURCE_BUILDING_TYPES := ["farm", "mine", "house"]
+
 
 static func update(ai) -> void:
 	# ★★ 2026.10.25 资源顺序：部队发展（生产预留）> 升本 > 建造建筑。
@@ -34,9 +37,15 @@ static func update(ai) -> void:
 	var _p1 := _pt(ai)
 	_try_tech(ai)
 	_pd(ai, "build/tech", _p1)
+	# ★★ 2026.10.30：科技之后补资源建筑（粮田 / 房屋 / 矿脉）。
+	#   只在「没有缺编队 + 己方区划没被入侵」时做，并且只用扣完补员预留后的余钱；
+	#   造出来就结束这一 tick（与「升本 / 造塔」一样，一次只落一栋）。
 	var _p2 := _pt(ai)
-	_try_spec(ai, memo)
-	_pd(ai, "build/spec", _p2)
+	var built_resource := _try_resource_building(ai, memo)
+	_pd(ai, "build/resource", _p2)
+	if built_resource:
+		return
+	# ★★ 2026.10.30：区域特化已移除（资源建筑走普通建造流程）。
 	# ★★ 2026.10.25：不再用「缺编就整段跳过建造」的硬闸门。
 	#   生产预留（`_production_reserve`）先把当前可生产缺口的钱全部扣掉，
 	#   建造只能用**扣完补员预算之后的余钱**：这才是「造部队始终优先」，
@@ -49,7 +58,9 @@ static func update(ai) -> void:
 	_pd(ai, "build/tower_walls", _p3)
 	# ★★ 2026.10.26：取消建筑升级 —— AI 只造木墙 / 哨塔，不再升级任何墙塔。
 	#   钱明显花不完时，同一周期继续补塔 / 补墙。
-	if AiEconomyRes.float_excess(ai):
+	#   ★ 2026.10.30：塔 / 墙现在**只吃粮食**，所以「富余」按塔的实际造价资源算，
+	#     不再要求黄金也富余。
+	if _rich_ratio_for(ai, "tower") >= 1.0:
 		var _p4 := _pt(ai)
 		_try_tower_then_walls(ai, memo)
 		_pd(ai, "build/tower_walls2", _p4)
@@ -138,21 +149,17 @@ static func _try_tech(ai) -> void:
 		return
 	if ai.world.tech_remaining_slots(ai.faction) <= 0:
 		return
-	# ★★ 2026.10.29：断金之后**允许重排**。`tech_attempted` 原本是「试过就放弃」的防抖表，
-	#   但断金会把所有科技一起抹掉；不清表的话 AI 一辈子都不会再把它们点回来。
-	#   冷却期（什么都点不了）正是清表的最佳时机。
-	if ai.world.tech.in_cooldown(ai.faction):
-		ai.tech_attempted.clear()
 	var build_cfg: Dictionary = ai.profile.get("build", {})
 	var priority: Array = build_cfg.get("tech_priority", [])
 	# ★★ 2026.10.29：科技现在**每秒扣金**，AI 必须先算自己养不养得起 ——
 	#   否则会陷入「点下去 → 30 秒预热 → 断金全灭 → 锁 30 秒 → 再点」的抖动。
 	#   两条判据（都偏保守）：
 	#     · 现有负担 + 这一条 ≤ 黄金收入 × 0.5（另一半留给招兵 / 建筑）；
-	#     · 余额够付 45 秒（预热 30 秒 + 一点余量），避免刚点下就断金。
+	#     · 余额够付 45 秒，避免刚点下就断金。
 	var gold_income := 0.0
 	if ai.world.zones != null:
 		gold_income = float(ai.world.zones.production_of(ai.faction).get("gold", 0.0))
+	gold_income += float(ai.world._flat_resource_bonus(ai.faction).get("gold", 0.0))
 	var budget: float = gold_income * 0.5
 	var drain: float = float(ai.world.tech.gold_drain_per_sec(ai.faction))
 	var gold_now := 0.0
@@ -171,17 +178,18 @@ static func _try_tech(ai) -> void:
 	for id2 in candidates:
 		if ai.world.is_tech_active(id2, ai.faction):
 			continue
-		# 预热中也是「已经点了」，别再点第二次。
-		if ai.world.tech.is_warming(id2, ai.faction):
-			continue
 		if ai.tech_attempted.has(id2):
 			continue
 		if String(ai.world.tech_can_activate(id2, ai.faction)) != "":
 			continue
-		# 这一条的金耗：养不起就跳过（不是「试过就放弃」，所以**不**记进 tech_attempted）。
+		# 这一条的金耗：要么「流量养得起」（收入的一半够付），要么「库存养得起」
+		# （现有黄金够付 45 秒）。两条都不满足才跳过（不是「试过就放弃」）。
 		var cost: float = float(ai.cfg.tech_gold_per_sec_of(id2))
-		if cost > 0.0 and (drain + cost > budget or gold_now < cost * 45.0):
-			continue
+		if cost > 0.0:
+			var flow_ok: bool = drain + cost <= budget
+			var stock_ok: bool = gold_now >= cost * 45.0
+			if not flow_ok and not stock_ok:
+				continue
 		if CommandRes.apply(ai.world, ai.cfg, {
 				"kind": "tech_toggle", "tech_id": id2, "on": true, "faction": ai.faction}):
 			ai.stats["techs"] = int(ai.stats.get("techs", 0)) + 1
@@ -193,76 +201,254 @@ static func _try_tech(ai) -> void:
 
 
 # ------------------------------------------------------------------
-# 区划特化
+# ★★ 2026.10.30：资源建筑（粮田 / 房屋 / 矿脉）
 # ------------------------------------------------------------------
 
-static func _try_spec(ai, memo: Variant = null) -> void:
-	var zones: Variant = ai.world.zones
-	if zones == null:
-		return
-	for z in zones.zones:
+## 尝试补一栋资源建筑。@return true = 这一 tick 真的建出来了一栋。
+##
+## 规则（都在这里收口，别在 controller 里再判一套）：
+##   · 有**光杆将领** / 己方区划正被入侵 ⇒ 先顾军事与防御，不补经济；
+##     （普通缺编不用等：下面 `_defense_afford` 已经先留够补员预算）
+##   · 只能用扣完**补员预留**之后的余钱（`_defense_afford`）；
+##   · 全场硬上限 `resource_building_hard_max`，单区划上限 `resource_building_per_zone`；
+##   · 目标数量随己方区划数增长：粮田 / 房屋约每 3 块地 1 座，矿脉每 4 块地 1 座。
+static func _try_resource_building(ai, memo: Variant = null) -> bool:
+	var build_cfg: Dictionary = ai.profile.get("build", {})
+	if not bool(build_cfg.get("resource_buildings_enabled", true)):
+		return false
+	if _bare_general_count(ai) > 0:
+		return false
+	var hard_max := maxi(0, int(build_cfg.get("resource_building_hard_max", 10)))
+	if hard_max <= 0:
+		return false
+	var counts: Dictionary = _resource_building_counts(ai)
+	if int(counts.get("total", 0)) >= hard_max:
+		return false
+	if _any_owned_zone_threatened(ai, memo):
+		return false
+	var pick := _pick_resource_building(ai, counts)
+	if pick == "":
+		return false
+	var per_zone := maxi(1, int(build_cfg.get("resource_building_per_zone", 2)))
+	var site: Dictionary = _pick_resource_site(ai, per_zone, memo)
+	if site.is_empty():
+		return false
+	var t: Vector2i = site["tile"]
+	var cost: Dictionary = _building_cost(ai, pick)
+	if not _defense_afford(ai, cost):
+		return false
+	if CommandRes.apply(ai.world, ai.cfg, {
+			"kind": "build", "build_type": pick,
+			"tx": t.x, "ty": t.y, "faction": ai.faction}):
+		ai.stats["builds"] = int(ai.stats.get("builds", 0)) + 1
+		ai.stats["resource_builds"] = int(ai.stats.get("resource_builds", 0)) + 1
+		ai.stats["resource_%s" % pick] = int(ai.stats.get("resource_%s" % pick, 0)) + 1
+		ai.note_status("building")
+		return true
+	ai.stats["build_failures"] = int(ai.stats.get("build_failures", 0)) + 1
+	ai.blocked_tiles[t] = true
+	return false
+
+
+## 己方资源建筑数量：`{farm, house, mine, total}`。
+static func _resource_building_counts(ai) -> Dictionary:
+	var out := {"farm": 0, "house": 0, "mine": 0, "total": 0}
+	for b in ai.world.building_list:
+		if b == null or not b.alive or String(b.owner) != ai.faction:
+			continue
+		var t := String(b.type)
+		if not out.has(t) or t == "total":
+			continue
+		out[t] = int(out[t]) + 1
+		out["total"] = int(out["total"]) + 1
+	return out
+
+
+## 选一个还没到目标数量的资源建筑类型；空串 = 暂时不需要 / 都解锁不了。
+static func _pick_resource_building(ai, counts: Dictionary) -> String:
+	var owned := _owned_zone_count(ai)
+	var targets := {
+		"farm": clampi(int(ceil(float(owned) / 3.0)), 1, 4),
+		"mine": clampi(int(ceil(float(owned) / 4.0)), 1, 3),
+		"house": clampi(int(ceil(float(owned) / 3.0)), 1, 3),
+	}
+	var food_need := _stock_need(ai, "food")
+	var gold_need := _stock_need(ai, "gold")
+	var pop_ratio := AiArmyRes._owned_population_ratio(ai)
+	var best := ""
+	var best_score := -INF
+	for t in RESOURCE_BUILDING_TYPES:
+		var type := String(t)
+		if not ai.world.building_unlocked(ai.faction, type):
+			continue
+		var have := int(counts.get(type, 0))
+		var target := int(targets.get(type, 1))
+		if have >= target:
+			continue
+		var score := float(target - have)
+		match type:
+			"farm":
+				score += food_need * 0.5
+			"mine":
+				score += gold_need * 0.5
+			"house":
+				score += pop_ratio * 0.5
+		if score > best_score + 1e-6:
+			best_score = score
+			best = type
+	return best
+
+
+## 资源建筑选点：先选一个安全的己方区划，再在它里面挑一格空地。
+## @return {"zone": Dictionary, "tile": Vector2i}；空 = 没有位置。
+static func _pick_resource_site(ai, per_zone: int, memo: Variant = null) -> Dictionary:
+	var base = ai.world.find_base_of(ai.faction)
+	var base_pt := Vector2.ZERO
+	if base != null:
+		base_pt = Vector2(float(base.tx), float(base.ty))
+	var occupied: Dictionary = _unit_tiles(ai)
+	var best: Dictionary = {}
+	var best_score := -INF
+	for z in ai.world.zones.zones:
 		if typeof(z) != TYPE_DICTIONARY:
 			continue
 		var zd: Dictionary = z
 		if String(zd.get("owner", "")) != ai.faction:
 			continue
-		if _zone_capture_blocked(ai, zd, memo):
+		if zd.get("center", null) == null:
 			continue
-		if String(zd.get("spec_done", "")) != "":
+		if _zone_capture_blocked(ai, zd, memo) or _zone_threatened(ai, zd, memo):
 			continue
-		if ai.world.zone_spec_busy(zd):
+		var here := _resource_buildings_in_zone(ai, int(zd.get("id", -1)))
+		if here >= per_zone:
 			continue
-		var cv: Variant = zd.get("center", null)
-		if cv == null:
+		var tile: Variant = _pick_resource_tile(ai, zd, occupied)
+		if tile == null:
 			continue
-		var zid := int(zd.get("id", -1))
-		if zid < 0 or ai.spec_attempted.has(zid):
-			continue
-		var choices: Array = ai.world.zone_spec_choices(zd)
-		if choices.is_empty():
-			continue
-		var pick := _pick_spec(ai, zd, choices)
-		if pick == "":
-			continue
-		var cost: Dictionary = ai.cfg.spec_cost(pick)
-		# ★ 2026.10.25：区划特化也走生产预留 —— 先补兵，再谈经济建筑。
-		if not _defense_afford(ai, cost):
-			return
-		if ai.world.start_zone_specialize(zid, pick, ai.faction):
-			ai.stats["specs"] = int(ai.stats.get("specs", 0)) + 1
-			ai.note_status("building")
-			return
-		ai.spec_attempted[zid] = true
-		return
+		var score := 0.0
+		# 后方 / 基地附近优先；已经堆了资源建筑的区划降权。
+		if not _zone_is_frontier(ai, zd, memo):
+			score += 10.0
+		if base != null:
+			var c: Vector2i = zd["center"]
+			score -= Vector2(float(c.x), float(c.y)).distance_to(base_pt) * 0.2
+			if int(zd.get("id", -1)) == int(base.zone_id):
+				score += 4.0
+		score -= float(here) * 3.0
+		if score > best_score + 1e-6:
+			best_score = score
+			best = {"zone": zd, "tile": tile}
+	return best
 
 
-## 按「缺什么补什么」选一档特化（粮食 / 黄金 / 人口）。
-## ★ 只有 `zone_kind` 白名单允许的那几档会出现在 choices 里。
-static func _pick_spec(ai, zone: Dictionary, choices: Array) -> String:
-	var has_food := false
-	var has_gold := false
-	var has_pop := false
-	for c in choices:
-		var id := String((c as Dictionary).get("id", ""))
-		if id == "food":
-			has_food = true
-		elif id == "gold":
-			has_gold = true
-		elif id == "population":
-			has_pop = true
-	# 人口区划优先人口特化；其余按粮食 / 黄金哪一个更缺。
-	var kind := String(ai.world.zone_kind_of(zone))
-	if kind == "population" and has_pop:
-		return "population"
-	if has_food and has_gold:
-		return "food" if AiEconomyRes.food(ai) <= AiEconomyRes.gold(ai) else "gold"
-	if has_food:
-		return "food"
-	if has_gold:
-		return "gold"
-	if has_pop:
-		return "population"
-	return ""
+## 某个己方区划里已经有多少座资源建筑（任意种类）。
+static func _resource_buildings_in_zone(ai, zid: int) -> int:
+	if zid < 0:
+		return 0
+	var n := 0
+	for b in ai.world.building_list:
+		if b == null or not b.alive or String(b.owner) != ai.faction:
+			continue
+		if int(b.zone_id) != zid:
+			continue
+		if RESOURCE_BUILDING_TYPES.has(String(b.type)):
+			n += 1
+	return n
+
+
+## 在指定区划里挑一格能建的空地：优先靠近大本营，其次靠近区划中心；完全确定。
+static func _pick_resource_tile(ai, zd: Dictionary, occupied: Dictionary) -> Variant:
+	var base = ai.world.find_base_of(ai.faction)
+	var base_pt := Vector2.ZERO
+	if base != null:
+		base_pt = Vector2(float(base.tx), float(base.ty))
+	var center: Variant = zd.get("center", null)
+	var center_pt := Vector2.ZERO
+	if center != null:
+		var c: Vector2i = center
+		center_pt = Vector2(float(c.x), float(c.y))
+	var best: Variant = null
+	var best_score := INF
+	for t in (zd.get("tiles", []) as Array):
+		var tile: Vector2i = t
+		if occupied.has(tile):
+			continue
+		if ai.world.building_at(tile.x, tile.y) != null:
+			continue
+		# 区划归属 / 占领封锁已在 `_pick_resource_site` 按区划判过，这里只查地形与占位
+		# （逐格再带 faction 会为每格扫一遍全部单位）。
+		if not ai.world.can_build_at(tile.x, tile.y):
+			continue
+		var pt := Vector2(float(tile.x), float(tile.y))
+		var score := pt.distance_to(base_pt) + pt.distance_to(center_pt) * 0.1
+		if score < best_score - 1e-6:
+			best_score = score
+			best = tile
+		elif absf(score - best_score) <= 1e-6 and best != null:
+			var bt: Vector2i = best
+			if tile.y < bt.y or (tile.y == bt.y and tile.x < bt.x):
+				best = tile
+	return best
+
+
+static func _owned_zone_count(ai) -> int:
+	var n := 0
+	for z in ai.world.zones.zones:
+		if typeof(z) == TYPE_DICTIONARY and String((z as Dictionary).get("owner", "")) == ai.faction:
+			n += 1
+	return n
+
+
+static func _any_owned_zone_threatened(ai, memo: Variant = null) -> bool:
+	for z in ai.world.zones.zones:
+		if typeof(z) != TYPE_DICTIONARY:
+			continue
+		var zd: Dictionary = z
+		if String(zd.get("owner", "")) != ai.faction:
+			continue
+		if _zone_threatened(ai, zd, memo):
+			return true
+	return false
+
+
+## 按“这种建筑实际消耗的资源”算富余倍数（1.0 = 库存刚好到 max_float 线）。
+## ★ 2026.10.30：木墙 / 哨塔 / 粮田 / 房屋 / 矿脉全部只消耗粮食 ——
+##   AI 判断“够不够富、要不要为它攒钱”时只看粮食，不再被黄金库存误导。
+static func _rich_ratio_for(ai, type: String) -> float:
+	return _cost_rich_ratio(ai, _building_cost(ai, type))
+
+
+static func _cost_rich_ratio(ai, cost: Dictionary) -> float:
+	var eco: Dictionary = ai.profile.get("economy", {})
+	var best := 0.0
+	for k in cost.keys():
+		var key := String(k)
+		if key != "food" and key != "gold":
+			continue
+		var need := float(cost[k])
+		if need <= 0.0:
+			continue
+		var line := maxf(100.0, float(eco.get("max_float_%s" % key, 600.0)))
+		var cur := AiEconomyRes.food(ai) if key == "food" else AiEconomyRes.gold(ai)
+		best = maxf(best, cur / line)
+	return best
+
+
+## 「这一项库存有多缺」：0 = 已超过 max_float 线，1 = 完全见底。
+static func _stock_need(ai, resource: String) -> float:
+	var eco: Dictionary = ai.profile.get("economy", {})
+	var line := maxf(100.0, float(eco.get("max_float_%s" % resource, 600.0)))
+	var cur := AiEconomyRes.food(ai) if resource == "food" else AiEconomyRes.gold(ai)
+	return clampf(1.0 - cur / line, 0.0, 1.0)
+
+
+static func _building_cost(ai, type: String) -> Dictionary:
+	var def_v: Variant = ai.cfg.building_def(type)
+	if typeof(def_v) == TYPE_DICTIONARY:
+		var c: Variant = (def_v as Dictionary).get("cost", {})
+		if typeof(c) == TYPE_DICTIONARY:
+			return c
+	return {}
 
 
 # ------------------------------------------------------------------
@@ -492,12 +678,10 @@ static func _wall_border_limit(ai) -> int:
 	return maxi(0, hard - keep)
 
 
-## 浮存倍数：粮 / 金各自相对 `max_float_*` 的最大值（1.0 = 现有「钱花不完」线）。
+## 浮存倍数：按**这种建筑实际消耗的资源**算 `库存 / max_float_*` 的最大值。
+## ★ 2026.10.30：墙 / 塔 / 资源建筑都不再消耗黄金，所以只看粮食库存。
 static func _wall_border_rich_ratio(ai) -> float:
-	var eco: Dictionary = ai.profile.get("economy", {})
-	var food_line := maxf(100.0, float(eco.get("max_float_food", 600.0)))
-	var gold_line := maxf(100.0, float(eco.get("max_float_gold", 600.0)))
-	return maxf(AiEconomyRes.food(ai) / food_line, AiEconomyRes.gold(ai) / gold_line)
+	return _rich_ratio_for(ai, "wall")
 
 
 ## 资源富足到「全境」档了吗？不到就只封与敌方接壤的前线。
@@ -868,17 +1052,13 @@ static func _zone_tower_target(ai, zd: Dictionary, memo: Variant = null) -> int:
 
 
 ## 资源浮存越多，允许在前线 / 受威胁区划多补几座塔（不是乱铺）。
+## ★ 2026.10.30：只按塔自己的造价资源（粮食）判断富余，黄金库存不参与。
 static func _rich_tower_bonus(ai) -> int:
-	var eco: Dictionary = ai.profile.get("economy", {})
 	var build_cfg: Dictionary = ai.profile.get("build", {})
 	var cap := maxi(0, int(build_cfg.get("tower_rich_bonus_max", 3)))
 	if cap <= 0:
 		return 0
-	var gold := AiEconomyRes.gold(ai)
-	var food := AiEconomyRes.food(ai)
-	var gold_line := maxf(100.0, float(eco.get("max_float_gold", 600.0)))
-	var food_line := maxf(100.0, float(eco.get("max_float_food", 600.0)))
-	var mult := maxf(gold / gold_line, food / food_line)
+	var mult := _rich_ratio_for(ai, "tower")
 	if mult >= 3.0:
 		return cap
 	if mult >= 2.0:

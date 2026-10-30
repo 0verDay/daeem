@@ -6,7 +6,6 @@ const ConfigRes = preload("res://logic/config.gd")
 const MapDataRes = preload("res://logic/map_data.gd")
 const ZoneRes = preload("res://logic/zone.gd")
 const WorldRes = preload("res://logic/world.gd")
-const UpgradeRes = preload("res://logic/upgrade.gd")
 
 const TMP_DIR := "res://.tmp_test_map_editor"
 
@@ -428,21 +427,8 @@ func _test_zone_kinds(cfg) -> void:
 	ok(w != null, "带种类的地图能开出世界")
 	if w == null:
 		return
-	var f: String = String(w.my_faction)
 	w.resources["food"] = 1000.0
 	w.resources["gold"] = 1000.0
-	var zf: Dictionary = w.zones.zones[0]
-	zf["owner"] = f                      # 大本营在 (0,0) → 0 号区划归玩家
-	eq(String(zf["kind"]), "food", "（前提）这一块是粮食区划")
-	eq(UpgradeRes.can_specialize(w, zf, "gold", f), "", "粮食区划能做黄金特化")
-	eq(UpgradeRes.can_specialize(w, zf, "population", f), "", "粮食区划能做人口特化")
-	eq(UpgradeRes.can_specialize(w, zf, "food", f), "kind",
-		"★ 粮食区划做不了粮食特化（拒因 kind）")
-	eq(UpgradeRes.spec_choices(zf, cfg).size(), 2, "★ 操作页只有这个种类的两格")
-	var zg: Dictionary = w.zones.zones[1]
-	zg["owner"] = f
-	eq(UpgradeRes.can_specialize(w, zg, "food", f), "", "黄金区划能做粮食特化")
-	eq(UpgradeRes.can_specialize(w, zg, "gold", f), "kind", "★ 黄金区划做不了黄金特化")
 
 func _test_world_with_editor_map(cfg) -> void:
 	var path := _write_map("playable.json", {

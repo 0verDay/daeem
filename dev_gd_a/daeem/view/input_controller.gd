@@ -23,9 +23,11 @@ const ConfigRes = preload("res://logic/config.gd")
 const PaletteRes = preload("res://view/palette.gd")
 const CommandRes = preload("res://logic/command_processor.gd")
 const FactionRes = preload("res://logic/faction.gd")
+## ★ 只为 `TYPE_ZONE_CENTER`：点中区划中心时走「看区划详情」那条路。
+const BuildingRes = preload("res://logic/building.gd")
 ## ★ 数字键 1..N 的 N（= 右栏槽数）：只在这里读一次，别再写死循环次数。
 const UiLayoutRes = preload("res://view/ui_layout.gd")
-## ★ 只为「单位立牌的宽高比」这两个常量（`QUAD_W` / `QUAD_H_RATIO`）——
+## ★ 只为「单位立牌尺寸」这一个判据（`UnitViewRes.unit_quad_cells`）——
 ##   框选要按**图标**判命中，不能在两个文件里各写一份尺寸（见 `_unit_icon_screen_rect`）。
 const UnitViewRes = preload("res://view/unit_view_3d.gd")
 
@@ -179,8 +181,8 @@ var mouse_world: Vector2 = Vector2.ZERO
 ## ★★ 悬停高亮（桌面端；手机端由 `game_scene3d` 整体关掉）：
 ##   · `hover_unit`      = 鼠标底下的单位（敌 / 友 / 己都算；只认「活着 + 看得见 + 非濒死」，
 ##                         判据与左键点选同一条）
-##   · `hover_buildings` = 要填色的建筑**地块**（悬停 = 那一格一栋；**拖框** = 框里那一批）
-##   · `hover_unit_ids`  = 要填色的单位 id：**己方 → 整支部队**（`world.group_of`），
+##   · `hover_buildings` = 要高亮的建筑**地块**（悬停 = 那一格一栋；**拖框** = 框里那一批）
+##   · `hover_unit_ids`  = 要高亮的单位 id：**己方 → 整支部队**（`world.group_of`），
 ##                         敌 / 友 → 只有它自己；空 = 不高亮
 ##   ★ 纯本地表现状态：不进命令流、不进快照、**不要**在这里改逻辑状态。
 var hover_unit = null
@@ -189,6 +191,11 @@ var hover_unit_ids: Array = []
 ## ★ 屏幕点是不是压在 HUD 上 —— 由 `game_scene3d` 注入（= `hud.point_hits_ui`）：
 ##   输入层只负责读鼠标，它不认识 HUD。
 var ui_hit_test: Callable = Callable()
+## ★★ 建筑在屏幕上的包围矩形 —— 由 `game_scene3d` 注入
+##    （= `building_view_3d.screen_rect_of`）。有它时，悬停 / 左键 / 右键 / 手机框选
+##    都按**模型投影**判（大本营上半部分也点得中）；没有它（无头测试 / 2D 老路径）
+##    退回「鼠标下方的地面格」。
+var building_screen_rect: Callable = Callable()
 ## ★★ 这一端是不是触摸设备（由 `game_scene3d` 每帧把 `touch_device` 镜像进来）。
 ##   触摸端没有「悬停」：只有**双指框选**期间出高亮（见 `_hover_from_box`），
 ##   模拟鼠标的位置不可靠，所以拖框之外一律不出单目标高亮。
@@ -334,7 +341,7 @@ func poll_mouse() -> void:
 ## ★★ 每帧算一次「鼠标底下是谁」——只读世界、只写本文件的悬停字段。
 ##
 ## 需求口径（2026.10.26）：
-##   · 己方单位 → 它**所属整支部队**一起填色（`world.group_of`）；
+##   · 己方单位 → 它**所属整支部队**一起高亮（`world.group_of`）；
 ##   · 敌方 / 友方单位、任意建筑 → 只填那一个；
 ##   · ★ 拖框期间按**三级优先**预览（见 `_hover_from_box`）：
 ##       框里的己方单位（整队） > 框里的己方建筑（全部） > 光标下的单个目标。
@@ -367,15 +374,14 @@ func _poll_hover_pick(screen: Vector2) -> void:
 	if u != null:
 		_hover_on_unit(u)
 		return
-	# ② 建筑：鼠标脚下的那一格（与点击同一条 `hover_tile` + 同一条迷雾判据）
+	# ② 建筑：按**模型屏幕包围矩形**（与点击同一条判据；高建筑的上半部分也算）
 	hover_unit = null
 	hover_unit_ids = []
 	hover_buildings = []
 	hover_from_box = false
-	if hover_tile.x >= 0:
-		var cand = world.building_at(hover_tile.x, hover_tile.y)
-		if cand != null and cand.alive and _foe_building_visible(cand):
-			hover_buildings = [Vector2i(cand.tx, cand.ty)]
+	var cand = _building_at_screen(screen)
+	if cand != null and cand.alive and _foe_building_visible(cand):
+		hover_buildings = [Vector2i(cand.tx, cand.ty)]
 
 
 ## ★★ 拖框预览（需求原话：「框选划过己方单位时，也要为该单位所在的部队的所有单位添加遮罩；
@@ -388,7 +394,7 @@ func _poll_hover_pick(screen: Vector2) -> void:
 ##   · **桌面端** → 世界矩形，与 `box_select` 一致（单位 `rect.has_point(u.pos)`，
 ##     建筑复用 `_buildings_in_rect`）。
 ##   ⚠️ 两条都不能自己发明判据：预览亮起的范围必须**等于**松手后真正选中的范围。
-## ★ 差别只有一处：这里**不改选中**，只把「要被填色的对象」写进悬停字段。
+## ★ 差别只有一处：这里**不改选中**，只把「要高亮的对象」写进悬停字段。
 ## @return true = 框里框到了己方目标（调用方就不要再退回光标单目标）
 func _hover_from_box() -> bool:
 	var rect: Rect2 = drag_box()
@@ -848,7 +854,42 @@ func box_select_screen(screen_rect: Rect2, additive: bool = false) -> int:
 	return picked.size()
 
 
+## ★★ 屏幕点下的**建筑**（悬停 / 左键 / 右键共用这一条判据）。
+##
+## ★ 有 3D 投影时按**模型屏幕包围矩形**判：建筑是立起来的，鼠标在模型上半部分时
+##   地面格落在建筑后方 —— 只判 `hover_tile` 会点不到（用户报的「只能点到底部左右」）。
+## ★ 重叠时取「脚底锚点离鼠标最近」的那一栋（与单位点选同一口径）。
+## ★ 没有注入投影（无头测试 / 2D 老路径）时退回「鼠标下方的地面格」。
+func _building_at_screen(screen: Vector2):
+	if world == null:
+		return null
+	if building_screen_rect.is_valid() and palette != null:
+		var best = null
+		var best_d: float = INF
+		for b in world.building_list:
+			if b == null or not b.alive:
+				continue
+			var r: Rect2 = building_screen_rect.call(b)
+			if r.size.x <= 0.0 or r.size.y <= 0.0:
+				continue
+			if not r.has_point(screen):
+				continue
+			if not _foe_building_visible(b):
+				continue
+			var d: float = palette.to_px(b.center()).distance_to(screen)
+			if d < best_d:
+				best_d = d
+				best = b
+		if best != null:
+			return best
+	# 兜底：投影没命中（或没有投影）时仍认鼠标下的地面格。
+	if hover_tile.x < 0:
+		return null
+	return world.building_at(hover_tile.x, hover_tile.y)
+
+
 ## 屏幕矩形里的**己方建筑**（与 `_buildings_in_rect` 同一条口径，只是命中改判屏幕位置）。
+## ★ 命中判据用**建筑模型的屏幕包围矩形**（与悬停 / 点选同源），高建筑的上半部分也能框到。
 func _buildings_in_screen_rect(screen_rect: Rect2) -> Array:
 	var out: Array = []
 	if world == null or palette == null:
@@ -860,28 +901,36 @@ func _buildings_in_screen_rect(screen_rect: Rect2) -> Array:
 			continue
 		if not FactionRes.same_side(b.owner, world.my_faction):
 			continue
-		if screen_rect.has_point(palette.to_px(b.center())):
+		var hit := false
+		if building_screen_rect.is_valid():
+			var r: Rect2 = building_screen_rect.call(b)
+			hit = r.size.x > 0.0 and r.size.y > 0.0 and screen_rect.intersects(r)
+		else:
+			hit = screen_rect.has_point(palette.to_px(b.center()))
+		if hit:
 			out.append(b)
 	return out
 
 
-## 单位「立牌」在**屏幕上**的矩形（底边 = 脚底锚点，向上 `QUAD_H_RATIO` 倍宽）。
+## 单位「立牌」在**屏幕上**的矩形（底边 = 脚底锚点，向上按兵种自己的高宽比）。
 ##
 ## ★★ 为什么框选要按这个矩形判，而不是判 `u.pos` 那个点：
-##   单位在画面上是从脚底立起来的一张牌（宽 `QUAD_W` 格、高 `QUAD_W×QUAD_H_RATIO` 格）。
+##   单位在画面上是从脚底立起来的一张牌（宽高按兵种原画比例，见 UnitViewRes.unit_quad_cells）。
 ##   玩家框的是**看见的牌**；只判脚底那个点的话，把框画在牌的上半部分就会「框到了却不选中」
 ##   —— 这正是用户报的「框到了单个单位，有概率不会选中（连带整支部队）」。
 ##
 ## ⚠️ 宽度必须**从投影算**，不能写死像素：相机拉近 / 拉远时牌会跟着变大变小。
-##   横向半宽 = `to_px(pos + (QUAD_W/2, 0))` 与 `to_px(pos)` 的距离（透视下左右也不对称，
+##   横向半宽 = `to_px(pos + (宽/2, 0))` 与 `to_px(pos)` 的距离（透视下左右也不对称，
 ##   取同一侧即可，误差远小于牌的宽度）。
 func _unit_icon_screen_rect(u) -> Rect2:
 	var feet: Vector2 = palette.to_px(u.pos)
-	var side: Vector2 = palette.to_px(u.pos + Vector2(UnitViewRes.QUAD_W * 0.5, 0.0))
+	# ★ 每块牌按兵种尺寸（粮车/投石车宽、骑手/骑士高），与 3D 层同一个函数。
+	var cells: Vector2 = UnitViewRes.unit_quad_cells(cfg, String(u.unit_type))
+	var side: Vector2 = palette.to_px(u.pos + Vector2(cells.x * 0.5, 0.0))
 	var half_w: float = absf(side.x - feet.x)
 	if half_w < 1.0:
 		half_w = 1.0
-	var h: float = half_w * 2.0 * UnitViewRes.QUAD_H_RATIO
+	var h: float = half_w * 2.0 * (cells.y / maxf(cells.x, 1e-6))
 	return Rect2(feet.x - half_w, feet.y - h, half_w * 2.0, h)
 
 
@@ -1071,8 +1120,16 @@ func _on_left_click(additive: bool) -> void:
 	#     那条路会走到 `_building_text()`，于是给一个**没有血量**的中立障碍画出一行
 	#     「生命 0 / 0」，正是用户报的那个 UI 错误。
 	#   ⚠️ 安全性不靠这里把关：**能不能给这个区划下命令**由 `hud._tab_plan()` 按归属决定
-	#     （不是自己那一方的区划不给任何页签），逻辑层另有 `can_recruit_zone` /
-	#     `can_specialize` 的 owner 校验 —— 三层里任何一层单独都能挡住。
+	#     （不是自己那一方的区划不给任何页签），逻辑层另有 `can_recruit_zone`
+	#     的 owner 校验 —— 三层里任何一层单独都能挡住。
+	# ★★ 按屏幕投影先拿到鼠标下的建筑（高建筑的上半部分也能点中）。
+	var hit_building = _building_at_screen(get_global_mouse_position())
+	if hit_building != null and String(hit_building.type) == BuildingRes.TYPE_ZONE_CENTER:
+		var cz = world.zone_by_id(int(hit_building.zone_id))
+		if cz != null:
+			select_zone(cz)
+			return
+	# 兜底 / 无投影：仍按鼠标下方的地面格认区划中心。
 	var center_zone = world.zone_center_zone_at(hover_tile.x, hover_tile.y)
 	if center_zone != null:
 		select_zone(center_zone)
@@ -1101,7 +1158,6 @@ func _on_left_click(additive: bool) -> void:
 		selection_origin = "click"
 		return
 
-	var hit_building = world.building_at(hover_tile.x, hover_tile.y)
 	# ★★ 战争迷雾：看不见的敌方建筑不能被左键选中（用户确认）。
 	#    ⚠️ 判据用 `_foe_building_visible()`：己方 / 无主（区划中心）它一律放行 ——
 	#      所以「点自己的建筑」与「点自己的区划中心」（上面那条先判了）都不受影响。
@@ -1174,12 +1230,12 @@ func _on_right_click(double_click: bool = false) -> void:
 	# ★★ 判据必须是 `same_side_for_attack`（同阵营 **或盟友**），不能是严格的 `same_side`：
 	#    友军的建筑不是敌人 —— 用 `same_side` 会发出一条 `attack`，而逻辑层按
 	#    `same_side_for_attack` 又会拒掉它 ⇒ 表现就是「右键友军建筑完全没反应」。
-	var foe_b = world.building_at(hover_tile.x, hover_tile.y)
+	var foe_b = _building_at_screen(get_global_mouse_position())
 	if foe_b != null and foe_b.alive and not foe_b.is_invulnerable() \
 			and not FactionRes.same_side_for_attack(foe_b.owner, world.my_faction) \
 			and _foe_building_visible(foe_b):
 		command_issued.emit({
-			"kind": "attack", "ids": ids, "tx": hover_tile.x, "ty": hover_tile.y,
+			"kind": "attack", "ids": ids, "tx": int(foe_b.tx), "ty": int(foe_b.ty),
 			"faction": world.my_faction,
 		})
 		clear_marks()
@@ -1761,13 +1817,13 @@ func _issue_order_click() -> void:
 				clear_marks()
 				set_order_mode("")
 				return
-			var foe_b = world.building_at(hover_tile.x, hover_tile.y)
+			var foe_b = _building_at_screen(get_global_mouse_position())
 			if foe_b != null and foe_b.alive and not foe_b.is_invulnerable() \
 					and not FactionRes.same_side_for_attack(foe_b.owner, world.my_faction) \
 					and _foe_building_visible(foe_b):
 				command_issued.emit({
 					"kind": "attack", "ids": ids,
-					"tx": hover_tile.x, "ty": hover_tile.y,
+					"tx": int(foe_b.tx), "ty": int(foe_b.ty),
 					"faction": world.my_faction,
 				})
 				clear_marks()
@@ -2009,7 +2065,7 @@ func request_tech_toggle(id: String, on: bool) -> bool:
 
 
 # ------------------------------------------------------------------
-# 建筑升级 / 区划特化（UI：右下「操作」页签里那几格）
+# 建筑升级（UI：右下「操作」页签里那一格）
 #
 # ★ 与其它 UI 动作同一条约定：**只发命令**。「能不能升 / 升到几级 / 退多少钱 / 读条多久」
 #   全在权威侧（logic/upgrade.gd + world）算 —— 界面不预先判断，
@@ -2033,39 +2089,6 @@ func request_building_upgrade_cancel(b) -> bool:
 		return false
 	command_issued.emit({
 		"kind": "building_upgrade_cancel", "tx": b.tx, "ty": b.ty,
-		"faction": world.my_faction,
-	})
-	return true
-
-
-## 给某个区划做特化（`spec` = food / gold / population）。
-func request_zone_specialize(zone, spec: String) -> bool:
-	if world == null or typeof(zone) != TYPE_DICTIONARY or spec == "":
-		return false
-	command_issued.emit({
-		"kind": "zone_specialize", "zone_id": int((zone as Dictionary).get("id", -1)),
-		"spec": spec, "faction": world.my_faction,
-	})
-	return true
-
-
-## 取消已经完成的特化（**也要读条**，读完退款）。
-func request_zone_spec_cancel(zone) -> bool:
-	if world == null or typeof(zone) != TYPE_DICTIONARY:
-		return false
-	command_issued.emit({
-		"kind": "zone_spec_cancel", "zone_id": int((zone as Dictionary).get("id", -1)),
-		"faction": world.my_faction,
-	})
-	return true
-
-
-## 撤掉区划上**读条中**的那一单特化（放弃 + 退款）。
-func request_zone_spec_bar_cancel(zone) -> bool:
-	if world == null or typeof(zone) != TYPE_DICTIONARY:
-		return false
-	command_issued.emit({
-		"kind": "zone_spec_bar_cancel", "zone_id": int((zone as Dictionary).get("id", -1)),
 		"faction": world.my_faction,
 	})
 	return true
@@ -2128,7 +2151,7 @@ func _unit_hit_norm(u, world_grid: Vector2) -> float:
 ##              同一片牌重叠时按离脚底的距离排（值越小越近）。
 ##   · `INF`  —— 没点到。
 ##
-## ★★ 为什么要有第二档：单位画的是**立牌**（从脚底向上 0.63 格），而原来的判据只有
+## ★★ 为什么要有第二档：单位画的是**立牌**（从脚底向上 0.5~0.75 格），而原来的判据只有
 ##    脚底那一小圈 —— 玩家点在胸口 / 头上（明明看着点在单位身上）完全没反应，
 ##    这正是「太难被选中」的主因。判定改到**屏幕空间**是因为立牌是竖直的，
 ##    它在世界坐标里不是一个圆（不能拿格坐标去近似）。

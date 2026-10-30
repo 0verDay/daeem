@@ -36,31 +36,34 @@ func frames_at_baseline(cfg, base_frames: int) -> int:
 	return int(ceil(float(base_frames) * maxf(1.0, SPEED_BASELINE / spd)))
 
 
-## ★★ 2026.10.29：科技有 `tech.warmup_sec` 秒**预热**（默认 30）——「点下去」不等于「生效」。
-## 测试里凡是「点了一条科技 → 立刻断言它生效 / 产量变了」的地方，都要先调这一个。
-##
-## ★ 走的是**权威那条路**（`tech.tick` + `_apply_tech_effects`），不是直接改表 ——
-##   这样顺带把「预热到点 → 真生效」这段状态机也覆盖了。
-## ⚠️ 故意**不**调 `world.tick(30)`：那一帧会把占领 / 战斗 / 士气一起推进 30 秒，
-##   在只关心科技的用例里只会引入噪声（还会让刚招出来的兵白跑 30 秒）。
-func finish_tech_warmup(w, cfg) -> void:
-	if w == null or cfg == null or w.tech == null:
-		return
-	var secs: float = float(cfg.tech_warmup_sec)
-	if secs <= 0.0:
-		return
-	w.tech.tick(secs + 0.01)
-	w._apply_tech_effects()
+## ★★ 2026.10.30：科技预热已删除，点下即生效。
+## 这个函数保留为空实现，让「点完科技再调一次」的旧用例不必逐条删。
+func finish_tech_warmup(_w, _cfg) -> void:
+	pass
 
 
-## 把一条科技**立刻**变成生效（跳过预热）—— 只给「这条用例不关心预热」的旧断言用。
-## ⚠️ 想覆盖预热 / 冷却本身，请用 `finish_tech_warmup` 或新测试里的真实路径。
+## 把一条科技**立刻**变成生效（绕过名额 / 赤字等规则，只给测试断言用）。
 func instant_tech(w, id: String, faction: String = "") -> void:
 	if w == null or w.tech == null:
 		return
-	w.set_tech_active(id, true, faction)
-	w.tech.set_active(id, true, faction)
+	w.tech.activate(id, faction)
 	w._apply_tech_effects()
+
+
+## 给某一方的第一块己方区划加黄金产能 —— 科技「赤字时不能启用」的测试需要正的黄金净收入。
+func give_gold_income(w, amount: float, faction: String = "") -> void:
+	if w == null or w.zones == null:
+		return
+	var f: String = faction if faction != "" else w.my_faction
+	for z in w.zones.zones:
+		if typeof(z) != TYPE_DICTIONARY:
+			continue
+		if String((z as Dictionary).get("owner", "")) != String(f):
+			continue
+		var p: Dictionary = (z as Dictionary)["production"]
+		p["gold"] = float(p.get("gold", 0.0)) + maxf(0.0, amount)
+		w.refresh_zone_production()
+		return
 
 func ok(cond: bool, what: String) -> void:
 	if cond:

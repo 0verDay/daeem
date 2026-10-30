@@ -379,7 +379,7 @@ var player_order: bool = false
 var rescue_leader_id: String = ""        ## 正在救援哪个队长（"" = 没在救援）
 var rescue_anchor: Vector2 = Vector2.ZERO ## 倒下点（下发那一刻的快照，兜底用）
 
-## ---- 招募队列：**将领自己就是兵营**（星际争霸那套「一个在读条 + 最多四个排队」）----
+## ---- 招募队列：**将领自己就是兵营**（一次性批次：最多 5 个，一起读条、一起出兵）----
 ##
 ## ★ 为什么状态挂在单位上而不是 world 里另开一张表：
 ##   队列天然属于某个将领（它死了队列就该没），而 world.units 已经是权威列表；
@@ -388,10 +388,10 @@ var rescue_anchor: Vector2 = Vector2.ZERO ## 倒下点（下发那一刻的快�
 ##   之后将领可以自由移动 / 攻击；读条完成时在它**当前所在位置周围**生成单位。
 ##   读条会因战斗**暂停**（见 `recruit_idle_timer` 与 `cfg.recruit_combat_idle_sec`），
 ##   但不会取消、也不会清空队列。
-var train_kind: String = ""            ## 正在读条的那个兵种（空 = 没在读条）
-var train_remaining: float = 0.0       ## 这一单还剩几秒
-var train_total: float = 0.0           ## 这一单总共几秒（渲染画进度条要分母）
-var train_queue: Array[String] = []    ## 排队的兵种（最多 queue_max - 1 个）
+var train_kind: String = ""            ## 批次里显示在大格子的那个兵种（空 = 没在读条）
+var train_remaining: float = 0.0       ## **这一批**还剩几秒（同一批所有单位共用）
+var train_total: float = 0.0           ## **这一批**总共几秒（固定 recruit.batch_sec）
+var train_queue: Array[String] = []    ## 同批其余兵种（最多 queue_max - 1 个）
 ## 这一队已经花掉的粮食 / 黄金 / 人口 —— **将领阵亡要按它退款**。
 ## 用累加值而不是「查当前队列」：成本表哪天改了，退款也不会退错数目。
 var train_cost_food: float = 0.0

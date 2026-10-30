@@ -21,10 +21,6 @@
 ##   building_upgrade        tx, ty, faction           ★ 升级一栋建筑（读条，可取消退款）
 ##                                                      （右下「操作」页签里那一格）
 ##   building_upgrade_cancel tx, ty, faction           取消读条中的那次建筑升级并退款
-##   zone_specialize         zone_id, spec, faction    ★ 给一个区划做特化（读条；
-##                                                      粮食 / 黄金 / 人口，只能选一个）
-##   zone_spec_cancel        zone_id, faction          取消已完成的特化（**也要读条**，读完退款）
-##   zone_spec_bar_cancel    zone_id, faction          撤掉**读条中**的那一单特化并退款
 ##   revive         leader_id, faction              ★ 让一个**濒死**的将领「再起」
 ##                                                      （**不消耗资源**、读条 channel_sec）
 ##   revive_cancel  leader_id, faction              取消读条中的再起（免费，无退款）
@@ -86,16 +82,6 @@ static func apply(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 			return world.cancel_building_upgrade(
 				int(cmd.get("tx", -1)), int(cmd.get("ty", -1)),
 				String(cmd.get("faction", world.my_faction)))
-		"zone_specialize":
-			return world.start_zone_specialize(
-				int(cmd.get("zone_id", -1)), String(cmd.get("spec", "")),
-				String(cmd.get("faction", world.my_faction)))
-		"zone_spec_cancel":
-			return world.cancel_zone_specialize(
-				int(cmd.get("zone_id", -1)), String(cmd.get("faction", world.my_faction)))
-		"zone_spec_bar_cancel":
-			return world.cancel_zone_spec_bar(
-				int(cmd.get("zone_id", -1)), String(cmd.get("faction", world.my_faction)))
 		"revive":
 			# ★ 将领濒死 → 「再起」（免费，读条 channel_sec 秒）。
 			#   规则（能不能点 / 读条多久）全在 world.start_revive 里，

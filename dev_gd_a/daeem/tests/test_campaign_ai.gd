@@ -42,7 +42,9 @@ func _test_general_roster_profile(cfg) -> void:
 	if g == null:
 		return
 	eq(String(g.unit_type), "rider", "★ 兵种由「哪个将领」决定（这里选了骑手）")
-	eq(g.hp_max, cfg.unit_hp_of("rider"), "★ 数值按骑手那一档（与名册号 5 无关）")
+	var rider_slot: int = cfg.general_slot_of_type("rider")
+	eq(g.hp_max, cfg.general_hp_at(rider_slot),
+		"★ 数值按骑手那一档（含将领血量倍率；与名册号 5 无关）")
 	eq(int(g.general_index), cfg.general_slot_of_type("rider"),
 		"★ 单位记的将领档 = 兵种在将领表里的下标（不是名册号 5）")
 

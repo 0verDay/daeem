@@ -3076,7 +3076,9 @@ static func _owned_population_ratio(ai) -> float:
 		if String(zd.get("owner", "")) != ai.faction:
 			continue
 		total += float(zd.get("population", 0.0))
-		cap += maxf(0.0, float(zd.get("population_cap", 0.0)))
+		# ★★ 2026.10.30：人口上限要带上大本营 / 房屋的动态加成
+		#   （`population_cap_of` = 地图基础上限 + population_cap_bonus）。
+		cap += maxf(0.0, float(ai.world.zones.population_cap_of(zd)))
 	if cap <= 0.0:
 		return 0.0
 	return clampf(total / cap, 0.0, 1.0)

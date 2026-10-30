@@ -14,10 +14,17 @@
 // ★ 淡出：`INSTANCE_CUSTOM.g` 是这一实例的淡出程度（0 = 不透明，1 = 淡到 `fade_alpha`）。
 //   两者都走每实例自定义数据 ⇒ 一批共用材质、不必逐实例换材质。
 // ★★ 悬停填充：`INSTANCE_CUSTOM.b` 是这一实例的悬停进度（0 = 本体色，1 = 全填），
-//   填充色由**批次 uniform** `hover_fill_color` 给（建筑批次 = 一个 owner ⇒ 同批同色），
-//   强度 `hover_fill_alpha` 来自 config 的 render.hover_fill_alpha（0.7 ⇒ 半透明罩色）。
+//   填充色由**批次 uniform** `hover_fill_color` 给（建筑批次 = 一个 owner ⇒ 同批同色；
+//   区划中心例外：用**它所属区划**的归属色，见 building_view_3d.gd 的 `_hover_color_of`）。
+//   强度 `hover_fill_alpha` 来自 config 的 render.hover_fill_alpha（默认 1.0 = 纯色剪影）。
 //   ★ 本体色是按类型暗化过的（墙 / 石墙 / 哨塔各一档），填充色是**纯阵营色** ——
 //     两者必须分开，否则悬停时暗色墙会显得像没亮。
+// ★★ 白描边 / 选中金边在**另一个 pass**（building_hover_outline.gdshader，挂在
+//   `next_pass`），本 shader 只负责「填色 + 把淡出收回去」。
+// ★★ 悬停**或选中**时都把「3×3 内有单位 ⇒ 淡出」**收回去**：
+//   `fade` 乘 `(1 - max(hov, sel))` ⇒ 悬停进度到 1（或选中）时完全不透明；
+//   `hov` 本身按 render.hover_fill_sec（默认 0.1s）淡入 ⇒ 悬停时透明度也是
+//   0.1s 淡回；选中是即时的（`.a` = 0/1），所以选中瞬间回到不透明。
 //
 // ★★ 立体感：场景里**没有灯**，所以这里仍然 `unshaded`，光照由本 shader **自己按面法线算**
 //   （假漫反射，见 fragment 的 `shade`）：朝光的面亮、背光的面暗 ⇒ 立方体/模型不再是
@@ -27,9 +34,9 @@ shader_type spatial;
 render_mode unshaded, cull_back, depth_draw_always;
 
 uniform vec4 base_color : source_color = vec4(1.0);
-// 悬停填充色（阵营色，由 view/building_view_3d.gd 按批次设）+ 叠色强度
+// 悬停填充色（阵营色，由 view/building_view_3d.gd 按批次设）+ 混合强度
 uniform vec4 hover_fill_color : source_color = vec4(1.0);
-uniform float hover_fill_alpha : hint_range(0.0, 1.0) = 0.7;
+uniform float hover_fill_alpha : hint_range(0.0, 1.0) = 1.0;
 // 闪白峰值强度（config 的 render.hit_flash_alpha）：1 = 打到纯白，0 = 不闪
 uniform float flash_strength : hint_range(0.0, 1.0) = 0.8;
 // 有单位靠近时整栋淡到的不透明度（config 的 render.building_fade_alpha）
@@ -46,11 +53,14 @@ uniform float shade_max : hint_range(0.0, 2.0) = 1.0;
 varying float v_flash;
 varying float v_fade;
 varying float v_hover;
+// 选中状态（0 = 没选中，1 = 选中）：与悬停一样把「靠近淡出」收回去
+varying float v_selected;
 
 void vertex() {
 	v_flash = INSTANCE_CUSTOM.r;
 	v_fade = INSTANCE_CUSTOM.g;
 	v_hover = INSTANCE_CUSTOM.b;
+	v_selected = INSTANCE_CUSTOM.a;
 }
 
 void fragment() {
@@ -60,9 +70,13 @@ void fragment() {
 	float shade = mix(shade_min, shade_max, d);
 
 	float flash = clamp(v_flash * flash_strength, 0.0, 1.0);
-	float fill = clamp(v_hover * hover_fill_alpha, 0.0, 1.0);
+	float hov = clamp(v_hover, 0.0, 1.0);
+	float sel = clamp(v_selected, 0.0, 1.0);
+	float fill = hov * hover_fill_alpha;
 	vec3 col = mix(base_color.rgb, hover_fill_color.rgb, fill);
 	ALBEDO = mix(col, vec3(1.0), flash) * shade;
-	// 基础不透明度（base_color.a）× 淡出系数：v_fade = 0 → 不透明，= 1 → fade_alpha
-	ALPHA = base_color.a * mix(1.0, fade_alpha, clamp(v_fade, 0.0, 1.0));
+	// 基础不透明度（base_color.a）× 淡出系数：v_fade = 0 → 不透明，= 1 → fade_alpha；
+	// 悬停 / 选中都按 max(hov, sel) 把淡出收回 ⇒ 被指着或选中的那一栋完全可见。
+	ALPHA = base_color.a * mix(1.0, fade_alpha,
+		clamp(v_fade, 0.0, 1.0) * (1.0 - max(hov, sel)));
 }

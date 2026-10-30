@@ -144,7 +144,6 @@ var regroup_ids: Dictionary = {}
 ## 建造
 var blocked_tiles: Dictionary = {}
 var tech_attempted: Dictionary = {}
-var spec_attempted: Dictionary = {}
 
 ## 统计 / 状态（给面板与测试）
 var stats: Dictionary = {}

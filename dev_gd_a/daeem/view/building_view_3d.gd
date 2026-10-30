@@ -24,6 +24,15 @@
 ##   以建筑所在格为中心的 3x3 内有**可见单位**时，整栋淡到 `render.building_fade_alpha`，
 ##   这样单位不会被建筑挡住。★ 该 shader 写了 ALPHA（走透明管线），靠 `depth_draw_always`
 ##   强制写深度，建筑之间的前后遮挡才不会按「谁后画谁在上」乱掉。
+##   ★★ **被悬停时淡出会收回**（0.1s），**被选中时也直接收回**（即时）：
+##     见 building_flash.gdshader 的 `(1 - max(hov, sel))`。
+##
+## ★★ 悬停 / 选中高亮：
+##   · 本体：纯阵营色填充 + 淡出收回（`INSTANCE_CUSTOM.b` / `.a`）；
+##   · 外轮廓：反向壳 pass（building_hover_outline.gdshader）——悬停白色 / 选中金色；
+##   · **所有折边**：building_edge_ribbon.gd 把模型每条折边展开成面向相机的粗线带，
+##     再用 building_edge_outline.gdshader 画白 / 金（不画平面内的三角化对角线）。
+##   三种颜色 / 进度完全同源：悬停白色优先，选中金色次之。
 ##
 ## ★ 不投影阴影（用户口径）。
 extends Node3D
@@ -38,6 +47,11 @@ const SideColorRes = preload("res://view/side_color.gd")
 const FadeStampRes = preload("res://view/fade_stamp.gd")
 ## ★ 建筑材质：逐像素受击闪白（自定义 shader，见文件）
 const BUILDING_FLASH_SHADER = preload("res://view/building_flash.gdshader")
+## ★★ 外轮廓白描边 / 选中金边：反向壳 pass，挂在材质 `next_pass` 上
+const BUILDING_OUTLINE_SHADER = preload("res://view/building_hover_outline.gdshader")
+## ★★ 所有折边的粗线带：由 `building_edge_ribbon.gd` 从建筑网格生成
+const BuildingEdgeRibbonRes = preload("res://view/building_edge_ribbon.gd")
+const BUILDING_EDGE_SHADER = preload("res://view/building_edge_outline.gdshader")
 
 ## ★★ 有模型的建筑类型 → 模型路径（Blender 导出；**1 单位 = 1 格**、底边在 y = 0、铺满整格）。
 ##   游戏里按「格宽 × body_scale」**统一缩放** ⇒ 落地尺寸 = 128 × body_scale × 模型尺寸：
@@ -103,16 +117,34 @@ var faded_last_frame: int = 0
 var flag_instance_count: int = 0
 ## ★ 本帧有几栋建筑带着悬停填充（诊断，测试读它）
 var hovered_last_frame: int = 0
+## ★ 本帧有几栋建筑带着选中金边（诊断，测试读它）
+var selected_last_frame: int = 0
+## ★ 本帧画了几个「所有折边」线带实例（建筑 + 旗面；诊断，测试读它）
+var edge_instance_count: int = 0
 
-## ★★ 悬停填充（见 config.json 的 `render._hover_fill_comment`）：
-##   · `_hover_tiles` = 要被填色的**地块集合**（鼠标底下那一栋，或框选里那一批己方建筑）；
+## ★★ 悬停 / 选中高亮（见 config.json 的 `render._hover_fill_comment`）：
+##   · `_hover_tiles` = 要填充白边 + 纯阵营色的**地块集合**（悬停 / 拖框预览）；
 ##   · `_hover_anim`  = 地块 → 0..1 的淡入淡出进度（建筑不会移动 ⇒ 用格坐标当键）；
 ##   · 填充走**逐实例自定义数据** `INSTANCE_CUSTOM.b`（`.r` 闪白、`.g` 淡出），
 ##     填充色是**每批次一个 uniform**（建筑批次 = 一个 owner ⇒ 同批必然同色）。
+##   · `_selected_tiles` = 选中建筑的地块（金色描边，走 `.a`；即时开关）。
 var _hover_tiles: Dictionary = {}
 var _hover_anim: Dictionary = {}
-var _hover_fill_alpha: float = 0.7
+var _selected_tiles: Dictionary = {}
+var _hover_fill_alpha: float = 1.0
 var _hover_sec: float = 0.1
+## 外轮廓 / 选中金边的颜色 + 反向壳放大倍率（config）
+var _hover_outline: Color = Color.WHITE
+var _select_outline: Color = Color(0.949, 0.710, 0.267, 1.0)
+var _outline_scale: float = 1.02
+## 所有折边的粗线带（建筑本体 / 旗面各一套网格；类型 → 网格 / 层）
+var _edge_meshes: Dictionary = {}
+var _flag_edge_meshes: Dictionary = {}
+var _edge_layers: Dictionary = {}
+var _flag_edge_layers: Dictionary = {}
+var _edge_mat: ShaderMaterial = null
+var _edge_width: float = 0.035
+var _edge_crease_deg: float = 8.0
 ## 受击振动参数（setup 缓存）
 var _cell: float = 128.0
 var _hit_amp: float = 0.06
@@ -135,11 +167,40 @@ func setup(p_cfg: ConfigRes, p_world, p_palette) -> void:
 	_moving_meshes = {}
 	for t in BUILDING_MOVING_MODELS:
 		_moving_meshes[t] = _load_building_mesh(BUILDING_MOVING_MODELS[t])
-	# ★★ 悬停填充参数（每帧要用 ⇒ setup 缓存；0 = 立即切换）
-	_hover_fill_alpha = clampf(cfg.num("render.hover_fill_alpha", 0.7), 0.0, 1.0)
+	# ★★ 悬停 / 选中样式参数（每帧要用 ⇒ setup 缓存；0 = 立即切换）
+	_hover_fill_alpha = clampf(cfg.num("render.hover_fill_alpha", 1.0), 0.0, 1.0)
 	_hover_sec = maxf(0.0, cfg.num("render.hover_fill_sec", 0.1))
+	_hover_outline = cfg.hover_outline_color
+	# ★ 建筑选中描边与单位选中**同一个金**（用户口径：和单位被选中时一样）。
+	_select_outline = ConfigRes.parse_color(
+		cfg.str_val("render.unit_select_outline_color", "#fff2b0"))
+	_outline_scale = maxf(1.0, cfg.building_outline_scale)
+	# ★★ 所有折边的粗线带：线宽按网格最大边长缩放并夹住（旗面不会糊成一片）。
+	_edge_width = maxf(0.005, cfg.num("render.building_edge_width", 0.035))
+	_edge_crease_deg = clampf(cfg.num("render.building_edge_crease_deg", 8.0), 0.0, 179.0)
+	_edge_mat = ShaderMaterial.new()
+	_edge_mat.shader = BUILDING_EDGE_SHADER
+	_edge_mat.set_shader_parameter("hover_color", _hover_outline)
+	_edge_mat.set_shader_parameter("select_color", _select_outline)
+	# ★★ 折边层必须**晚于建筑本体**绘制（这是「上半地图有线、下半只剩外轮廓」的真因）：
+	#   本体与折边都在透明管线（都写 ALPHA），透明对象按**对象包围盒的距离**排序 ——
+	#   本体批次覆盖全地图同类建筑、折边批次的包围盒只围着当前选中/悬停的那几栋，
+	#   两者的 AABB 中心不同 ⇒ 建筑在地图上半 / 下半时先后顺序会翻。
+	#   本体后画时它（ALPHA≈1）会把先画的线带整片盖掉，只剩本体外层的反向壳描边。
+	#   `render_priority` 比距离排序优先 ⇒ 折边永远在本体之后画；
+	#   背面折边仍然靠深度测试被本体挡住（shader 里按真实视线抬 bias）。
+	_edge_mat.render_priority = 1
+	_edge_meshes = {}
+	for t in _model_meshes:
+		_edge_meshes[t] = _build_edge_mesh(_model_meshes[t])
+	_flag_edge_meshes = {}
+	for t in _moving_meshes:
+		_flag_edge_meshes[t] = _build_edge_mesh(_moving_meshes[t])
+	_edge_layers = {}
+	_flag_edge_layers = {}
 	_hover_tiles = {}
 	_hover_anim = {}
+	_selected_tiles = {}
 
 
 ## ★★ 悬停填充：`game_scene3d` 每帧把「要填色的建筑格」喂进来（手机端喂空）。
@@ -163,11 +224,31 @@ func set_hover(tiles: Array) -> void:
 			_hover_anim.erase(key)
 
 
+## ★★ 选中的建筑：`game_scene3d` 每帧把「要加金边的建筑格」喂进来。
+##   · 己方框选 / 点选的建筑（`selected_buildings`，可多栋）；
+##   · 选中的**区划中心**（`selected_zone` 反查到中心格）；
+##   · 选中的**敌方建筑**（`selected_enemy` 且 kind == "building"）。
+##   与单位选中同一个金色；悬停时白色优先（见 building_hover_outline.gdshader）。
+func set_selected(tiles: Array) -> void:
+	_selected_tiles = {}
+	for t in tiles:
+		_selected_tiles[t as Vector2i] = true
+
+
 ## 悬停填充色 = **纯阵营色**（不是 `_faction_or_type_color` 的暗化本体色；
-## 否则悬停一堵暗色墙会像"没亮"）。无主（owner == ""，如区划中心）= 中性灰，
-## 与单位立牌的中立口径一致。
-func _hover_color_of(owner: String) -> Color:
-	if owner == "":
+## 否则悬停一堵暗色墙会像"没亮"）。
+##
+## ★★ 区划中心（owner 恒为空）不能直接取 `owner`：它的「阵营色」是**所属区划**的
+##   归属色 —— 已占领 = 占领方主色、读条占领中 = 占领方主色、无主 = 中立灰。
+##   这条口径与旗面完全同源（`zone_flag_state`），两处不会出现「旗是蓝的、悬停是灰的」。
+## ★ 中立化（大本营被拆）的建筑也按中性灰，与本体色一致。
+func _hover_color_of(b, owner: String) -> Color:
+	if String(b.type) == "zone_center":
+		var st: Dictionary = zone_flag_state(b)
+		if float(st.get("progress", 0.0)) > 0.0:
+			return st.get("color", cfg.side_color_neutral)
+		return cfg.side_color_neutral
+	if owner == "" or b.neutralized:
 		return cfg.side_color_neutral
 	return SideColorRes.color(cfg, world, owner, "main")
 
@@ -197,11 +278,107 @@ func _height_of(b) -> float:
 				h = 1.35
 			"zone_center":
 				h = 0.35
+			# ★★ 资源建筑：程序化立方体占位，用高度区分类型。
+			"farm":
+				h = 0.55
+			"house":
+				h = 0.9
+			"mine":
+				h = 1.3
 			_:
 				h = 1.0
 	h = maxf(0.05, h)
 	_height_cache[t] = h
 	return h
+
+
+## 外轮廓白描边 / 选中金边的 pass（挂在材质的 `next_pass` 上）。
+## ★ 只靠 `INSTANCE_CUSTOM.b`（悬停）/ `.a`（选中）显隐 ⇒ 不新增本体批次。
+func _outline_pass(mesh: Mesh) -> ShaderMaterial:
+	var om := ShaderMaterial.new()
+	om.shader = BUILDING_OUTLINE_SHADER
+	om.set_shader_parameter("outline_scale", _outline_scale)
+	om.set_shader_parameter("outline_color", _hover_outline)
+	om.set_shader_parameter("select_color", _select_outline)
+	# 绕网格 AABB 中心放大（模型原点在底边、旗面原点在左下角，绕中心才是四边都有边）。
+	var pivot := Vector3.ZERO
+	if mesh != null:
+		pivot = mesh.get_aabb().get_center()
+	om.set_shader_parameter("outline_pivot", pivot)
+	return om
+
+
+## 从一个建筑网格生成「所有折边」的线带网格。
+## ★ 线宽按网格最大边长收窄（旗面 0.32 格 ≈ 0.016），不会被一圈粗边糊住。
+## ★ 这里只写**中心线**；面向相机展开与向相机偏移在 shader 里按每实例真实视线算
+##   （见 building_edge_ribbon.gd / building_edge_outline.gdshader 的文件头）。
+func _build_edge_mesh(mesh: Mesh) -> Mesh:
+	if mesh == null:
+		return null
+	var aabb: AABB = mesh.get_aabb()
+	var max_extent: float = maxf(aabb.size.x, maxf(aabb.size.y, aabb.size.z))
+	var w: float = clampf(minf(_edge_width, max_extent * 0.05), 0.008, 0.035)
+	return BuildingEdgeRibbonRes.build(mesh, w, _edge_crease_deg)
+
+
+## 取（或创建）某个类型的「所有折边」MultiMesh 层。
+## ★ 颜色是全局的（白 / 金），与 owner 无关 ⇒ 同一类型的所有建筑共用一个 draw call。
+func _edge_layer_for(type: String, moving: bool) -> Dictionary:
+	var cache: Dictionary = _flag_edge_layers if moving else _edge_layers
+	var hit: Variant = cache.get(type, null)
+	if hit != null:
+		return hit
+	var meshes: Dictionary = _flag_edge_meshes if moving else _edge_meshes
+	var mesh: Mesh = meshes.get(type, null)
+	if mesh == null and not moving:
+		# 方块类建筑（farm / house / mine …）没有预载模型：从 `_box` 现建一份。
+		mesh = _build_edge_mesh(_mesh_for(type))
+		meshes[type] = mesh
+	if mesh == null:
+		return {}
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	# ⚠️ `use_custom_data` 必须在 `instance_count` 之前设（同 unit_view_3d 的说明）
+	mm.use_custom_data = true
+	mm.mesh = mesh
+	mm.instance_count = 64
+	var node := MultiMeshInstance3D.new()
+	node.name = ("FlagEdges_" if moving else "BuildingEdges_") + type
+	node.multimesh = mm
+	node.material_override = _edge_mat
+	add_child(node)
+	var rec := {"node": node, "mm": mm}
+	cache[type] = rec
+	return rec
+
+
+## 把这一帧的折边实例写进各类型的 MultiMesh。
+## @param items 类型 → [{x: Transform3D, h: 悬停进度, s: 选中 0/1}]
+func _sync_edge_layers(items: Dictionary, moving: bool) -> void:
+	var cache: Dictionary = _flag_edge_layers if moving else _edge_layers
+	for type in items.keys():
+		var rec: Dictionary = _edge_layer_for(String(type), moving)
+		if rec.is_empty():
+			continue
+		var list: Array = items[type]
+		var mm: MultiMesh = rec["mm"]
+		if mm.instance_count < list.size():
+			mm.instance_count = maxi(list.size(), mm.instance_count * 2)
+		for i in list.size():
+			var it: Dictionary = list[i]
+			mm.set_instance_transform(i, it["x"])
+			# `.b` = 悬停进度（白），`.a` = 选中（金）；与本体 / 反向壳同一套通道。
+			mm.set_instance_custom_data(i, Color(0.0, 0.0,
+				float(it["h"]), float(it["s"])))
+		mm.visible_instance_count = list.size()
+		(rec["node"] as MultiMeshInstance3D).visible = true
+		edge_instance_count += list.size()
+	for type2 in cache.keys():
+		if items.has(type2):
+			continue
+		var rec2: Dictionary = cache[type2]
+		(rec2["mm"] as MultiMesh).visible_instance_count = 0
+		(rec2["node"] as MultiMeshInstance3D).visible = false
 
 
 func _batch_for(key: String, color: Color, type: String = "",
@@ -215,6 +392,8 @@ func _batch_for(key: String, color: Color, type: String = "",
 	# ★★ 悬停填充：颜色 = **本批的纯阵营色**（不是暗化过的 `color`，见 `_hover_color_of`）
 	mat.set_shader_parameter("hover_fill_color", hover_color)
 	mat.set_shader_parameter("hover_fill_alpha", _hover_fill_alpha)
+	# ★★ 外轮廓白边 / 选中金边：同一材质的第二个 pass（反向壳）
+	mat.next_pass = _outline_pass(_mesh_for(type))
 	mat.set_shader_parameter("flash_strength", cfg.num("render.hit_flash_alpha", 0.8))
 	# ★ 有单位靠近时整栋淡到的不透明度（见 building_flash.gdshader 的 depth_draw_always 说明）
 	mat.set_shader_parameter("fade_alpha", cfg.num("render.building_fade_alpha", 0.3))
@@ -246,7 +425,9 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 	flash_written_last_frame = 0
 	faded_last_frame = 0
 	hovered_last_frame = 0
+	selected_last_frame = 0
 	flag_instance_count = 0
+	edge_instance_count = 0
 	# ★ 悬停淡入淡出每帧的推进量（`render.hover_fill_sec`；= 0 表示立即切换）
 	var hover_step: float = 1.0 if _hover_sec <= 0.0 else dt / _hover_sec
 	# ★ 先把「哪些格附近有可见单位」标出来（一次 O(单位数)），建筑逐栋查表即可
@@ -255,10 +436,13 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 	#   （见 `_fade_at` 与 `view/fade_stamp.gd`）。旗面那一趟复用同一张位图。
 	var stamp: PackedByteArray = FadeStampRes.build(marked, int(world.map.cols), int(world.map.rows))
 	var buckets: Dictionary = {}
+	# 类型 → [{x, h, s}]：这一帧所有折边线带实例（与本体同一次遍历收集）
+	var edge_items: Dictionary = {}
 	# ★★ 同一批建筑在列表里通常挨在一起（玩家一口气拉的一排墙）⇒ 记住上一把键，
-	#   只有 owner / type 变了才重新拼字符串。
+	#   只有 owner / type / 悬停色变了才重新拼字符串。
 	var last_owner: String = ""
 	var last_type: String = ""
+	var last_suffix: String = ""
 	var last_key: String = ""
 	for b in world.building_list:
 		if not b.alive:
@@ -267,13 +451,25 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 		#    （判据只在 logic/fog.gd：己方 / 无主永远可见，敌方「见过就记住」）
 		if not _visible_to_me(b):
 			continue
+		var owner_s := String(b.owner)
+		var type_s := String(b.type)
+		# ★★ 为什么键里要带**悬停色**：悬停填充色是每批次一个 uniform，而区划中心的
+		#   owner 恒为空、填充色却跟着所属区划的归属走（蓝 / 黄 / 红 / 灰）。
+		#   不并进键里的话，所有区划中心会共用「第一次建批时」那一个颜色。
+		var suffix := ""
+		if type_s == "zone_center":
+			suffix = "|h" + _color_hex(_hover_color_of(b, owner_s))
+		elif b.neutralized:
+			suffix = "|hn"
 		var key: String
-		if last_key != "" and String(b.owner) == last_owner and String(b.type) == last_type:
+		if last_key != "" and owner_s == last_owner and type_s == last_type \
+				and suffix == last_suffix:
 			key = last_key
 		else:
-			last_owner = String(b.owner)
-			last_type = String(b.type)
-			key = "%s|%s" % [last_owner, last_type]
+			last_owner = owner_s
+			last_type = type_s
+			last_suffix = suffix
+			key = "%s|%s%s" % [owner_s, type_s, suffix]
 			last_key = key
 		var arr: Array = buckets.get(key, [])
 		arr.append(b)
@@ -286,14 +482,16 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 		var b0 = arr[0]
 		var owner := String(b0.owner)
 		var col: Color = _faction_or_type_color(b0, owner)
-		var rec: Dictionary = _batch_for(key, col, String(b0.type), _hover_color_of(owner))
+		var type_s := String(b0.type)
+		var rec: Dictionary = _batch_for(key, col, type_s, _hover_color_of(b0, owner))
 		var mm: MultiMesh = rec["mm"]
 		if mm.instance_count < arr.size():
 			mm.instance_count = maxi(arr.size(), mm.instance_count * 2)
 		for i in arr.size():
-			mm.set_instance_transform(i, _transform_of(arr[i]))
-			# ★ 受击闪白（.r）+ 靠近淡出（.g）+ 悬停填充（.b）：逐实例自定义数据
-			#   （建筑很少，直接每帧写，不做脏检查 —— 与闪白同一条口径）
+			var xform: Transform3D = _transform_of(arr[i])
+			mm.set_instance_transform(i, xform)
+			# ★ 受击闪白（.r）+ 靠近淡出（.g）+ 悬停填充（.b）+ 选中金边（.a）：
+			#   逐实例自定义数据（建筑很少，直接每帧写，不做脏检查）。
 			var flash: float = clampf(arr[i].hit_flash, 0.0, 1.0)
 			var fade: float = 1.0 if _fade_at(stamp, arr[i]) else 0.0
 			var tile := Vector2i(arr[i].tx, arr[i].ty)
@@ -305,13 +503,21 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 				hov = 0.0
 			else:
 				_hover_anim[tile] = hov
-			mm.set_instance_custom_data(i, Color(flash, fade, hov, 0.0))
+			# ★ 选中金边：即时开关（与单位选中同一条手感），不做过场动画。
+			var sel: float = 1.0 if _selected_tiles.has(tile) else 0.0
+			mm.set_instance_custom_data(i, Color(flash, fade, hov, sel))
 			if flash > 0.0:
 				flash_written_last_frame += 1
 			if fade > 0.0:
 				faded_last_frame += 1
 			if hov > 0.0:
 				hovered_last_frame += 1
+			if sel > 0.0:
+				selected_last_frame += 1
+			# ★ 折边线带：与本体同变换、同进度（hover/选中），另一层 MultiMesh 画。
+			var elist: Array = edge_items.get(type_s, [])
+			elist.append({"x": xform, "h": hov, "s": sel})
+			edge_items[type_s] = elist
 		mm.visible_instance_count = arr.size()
 		(rec["node"] as MultiMeshInstance3D).visible = true
 		total += arr.size()
@@ -323,6 +529,8 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 			(rec2["node"] as MultiMeshInstance3D).visible = false
 	instance_count = total
 	mesh_batch_count = used
+	# ★★ 所有折边的粗线带（与本体同一次遍历收集的变换 / 进度）
+	_sync_edge_layers(edge_items, false)
 	# ★★ 旗面（可动部件）单独一发：按占领进度摆在旗杆上（见 `_sync_flags`）
 	_sync_flags(marked, stamp)
 
@@ -361,6 +569,44 @@ func _transform_of(b) -> Transform3D:
 		shake_applied_last_frame += 1
 		xf.origin = Vector3(xf.origin.x + shake, xf.origin.y, xf.origin.z)
 	return xf
+
+
+## ★★ 建筑在**屏幕上**的包围矩形（点击 / 悬停 / 框选用）。
+##
+## ★ 为什么需要它：建筑有**高度**（大本营 1.35 格、箭塔更高），鼠标点在模型上半部分时，
+##   射线打到的地面格是**建筑后方**的地块 —— 只按 `hover_tile` 判会「点不到立着的那半截」。
+##   这里把模型 AABB 的 8 个角按实例变换投到屏幕，取包围盒。
+## ★ 只读：不参与逻辑，不改 world；没有网格 / 相机时返回空 Rect2（调用方退回地面格判定）。
+func screen_rect_of(b) -> Rect2:
+	if b == null or palette == null or palette.cam == null:
+		return Rect2()
+	var mesh: Mesh = _mesh_for(String(b.type))
+	if mesh == null:
+		return Rect2()
+	var aabb: AABB = mesh.get_aabb()
+	var xf: Transform3D = _transform_of(b)
+	var cam: Camera3D = palette.cam
+	var mn := Vector2(INF, INF)
+	var mx := Vector2(-INF, -INF)
+	for i in 8:
+		var c: Vector3 = aabb.position
+		if (i & 1) != 0:
+			c.x += aabb.size.x
+		if (i & 2) != 0:
+			c.y += aabb.size.y
+		if (i & 4) != 0:
+			c.z += aabb.size.z
+		var wp: Vector3 = xf * c
+		if cam.is_position_behind(wp):
+			continue
+		var sp: Vector2 = cam.unproject_position(wp)
+		mn.x = minf(mn.x, sp.x)
+		mn.y = minf(mn.y, sp.y)
+		mx.x = maxf(mx.x, sp.x)
+		mx.y = maxf(mx.y, sp.y)
+	if mx.x < mn.x or mx.y < mn.y:
+		return Rect2()
+	return Rect2(mn, mx - mn)
 
 
 ## `_transform_of()` 的**静态部分**（不含受击振动）——这是会被缓存的那一半。
@@ -438,6 +684,10 @@ func _flag_batch_for(key: String, color: Color, type: String) -> Dictionary:
 	var mat := ShaderMaterial.new()
 	mat.shader = BUILDING_FLASH_SHADER
 	mat.set_shader_parameter("base_color", color)
+	# ★★ 旗面也随区划中心一起「白边 + 同色填充」；填充色 = 旗色。
+	mat.set_shader_parameter("hover_fill_color", color)
+	mat.set_shader_parameter("hover_fill_alpha", _hover_fill_alpha)
+	mat.next_pass = _outline_pass(_moving_meshes.get(type, null))
 	mat.set_shader_parameter("flash_strength", cfg.num("render.hit_flash_alpha", 0.8))
 	mat.set_shader_parameter("fade_alpha", cfg.num("render.building_fade_alpha", 0.3))
 	var mm := MultiMesh.new()
@@ -465,6 +715,8 @@ func _sync_flags(marked: Dictionary, stamp: PackedByteArray = PackedByteArray())
 	if world == null or cfg == null:
 		return
 	var buckets: Dictionary = {}
+	# 旗面类型的折边实例（与旗面本体同变换 / 同进度）
+	var edge_items: Dictionary = {}
 	for b in world.building_list:
 		if not b.alive or not _uses_moving(String(b.type)):
 			continue
@@ -486,16 +738,26 @@ func _sync_flags(marked: Dictionary, stamp: PackedByteArray = PackedByteArray())
 	for key in buckets.keys():
 		var rec2: Dictionary = buckets[key]
 		var items: Array = rec2["items"]
-		var brec: Dictionary = _flag_batch_for(key, rec2["color"], String(rec2["type"]))
+		var type_s := String(rec2["type"])
+		var brec: Dictionary = _flag_batch_for(key, rec2["color"], type_s)
 		var mm: MultiMesh = brec["mm"]
 		if mm.instance_count < items.size():
 			mm.instance_count = maxi(items.size(), mm.instance_count * 2)
 		for i in items.size():
 			var b = items[i]["b"]
-			mm.set_instance_transform(i, _flag_transform(b, float(items[i]["p"])))
+			var xform: Transform3D = _flag_transform(b, float(items[i]["p"]))
+			mm.set_instance_transform(i, xform)
 			var flash: float = clampf(b.hit_flash, 0.0, 1.0)
 			var fade: float = 1.0 if _flag_fade(b, marked, stamp) else 0.0
-			mm.set_instance_custom_data(i, Color(flash, fade, 0.0, 0.0))
+			# ★ 悬停进度：主循环刚推进过同一格的 `_hover_anim`（旗面在它之后跑）
+			#   ⇒ 旗面与本体的白边 / 填充 / 透明度恢复完全同步。
+			var tile := Vector2i(b.tx, b.ty)
+			var hov: float = clampf(float(_hover_anim.get(tile, 0.0)), 0.0, 1.0)
+			var sel: float = 1.0 if _selected_tiles.has(tile) else 0.0
+			mm.set_instance_custom_data(i, Color(flash, fade, hov, sel))
+			var elist: Array = edge_items.get(type_s, [])
+			elist.append({"x": xform, "h": hov, "s": sel})
+			edge_items[type_s] = elist
 		mm.visible_instance_count = items.size()
 		(brec["node"] as MultiMeshInstance3D).visible = true
 		flag_instance_count += items.size()
@@ -504,6 +766,8 @@ func _sync_flags(marked: Dictionary, stamp: PackedByteArray = PackedByteArray())
 			var r2: Dictionary = _flag_batches[key]
 			(r2["mm"] as MultiMesh).visible_instance_count = 0
 			(r2["node"] as MultiMeshInstance3D).visible = false
+	# ★★ 旗面也有「所有折边」：与旗面同变换 / 同进度。
+	_sync_edge_layers(edge_items, true)
 
 
 ## 旗面的淡出判据：有位图就走快路径，没有就退回按字典查 9 格（语义一致）。
@@ -577,6 +841,12 @@ func _faction_or_type_color(b, owner: String) -> Color:
 			c = side.darkened(0.12)
 		"watch_tower":
 			c = side
+		"farm":
+			c = side.darkened(0.15)
+		"house":
+			c = side.lightened(0.15)
+		"mine":
+			c = side.darkened(0.35)
 		_:
 			c = side
 	_color_cache[key] = c

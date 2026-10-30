@@ -45,7 +45,8 @@ func _test_config_table(cfg) -> void:
 	ok(w.is_recruitable(KIND), "config.recruit.list 里长枪兵可招募")
 	ok(not w.is_recruitable("nope"), "表里没有的兵种不能招募")
 	eq(w.recruit_queue_max(), 5, "★ 队列上限 5 个（1 大格 + 4 小格）")
-	near(w.recruit_train_sec(KIND), 10.0, 1e-6, "★ 每个单位读条 10 秒")
+	near(w.recruit_train_sec(KIND), 10.0, 1e-6, "★ 区划招募仍读每个单位的 train_sec")
+	near(w.recruit_batch_sec(), 10.0, 1e-6, "★ 单位页批次读条固定 10 秒")
 	near(float(w.recruit_population_cost(KIND)), 1.0, 1e-6, "★ 每个单位吃 1 人口")
 	var cost: Dictionary = w.recruit_cost(KIND)
 	ok(float(cost.get("food", 0.0)) > 0.0, "★ 长枪兵要粮食（数值以 config 为准，别写死）")
@@ -198,16 +199,26 @@ func _test_train_timing_and_nearby_spawn(cfg) -> void:
 	ok(fresh.pos.distance_to(g1.pos) <= 1.5,
 		"★ 新兵生成在将领周围（距将领 %.2f 格）" % fresh.pos.distance_to(g1.pos))
 
-	ok(w.start_recruit(KIND, g1.id, "p1"), "再排两个")
-	ok(w.start_recruit(KIND, g1.id, "p1"), "（第二个进小格子）")
-	var evs: Array = _tick_collect(w, 10.1)
-	eq(w.retinue_of(g1.id).size(), before + 2, "★ 10 秒只完成一个（排队的不抢读条）")
-	near(g1.train_remaining, 10.0, 0.2, "第二个这时才刚开始读条")
-	eq(_count_events(evs, "unit_recruited"), 1, "★ 读条完成发一条 unit_recruited 事件")
-	eq(_count_events(evs, "recruit_queued"), 2, "入队事件也照样交出来（命令事件不丢）")
+	# ★★ 批次队列：中途加单不打断、也不延长读条；10 秒后**一起**生成。
+	ok(w.start_recruit(KIND, g1.id, "p1"), "再排一个")
+	_tick_secs(w, 4.0)
+	near(g1.train_remaining, 6.0, 0.1, "加单不会重置批次读条（还是同一批的剩余时间）")
+	ok(w.start_recruit(KIND, g1.id, "p1"), "再排一个（第二个进小格子）")
+	near(g1.train_remaining, 6.0, 0.1, "★ 中途加单不延长读条")
+	var evs: Array = _tick_collect(w, 6.1)
+	# before = 函数开头；前面单批已经出了 1 个，所以这一批 2 个之后是 before + 3。
+	eq(w.retinue_of(g1.id).size(), before + 3, "★ 读条结束一次性生成队列里全部 2 个单位")
+	eq(g1.train_kind, "", "批次结束：大格子清空")
+	eq(g1.train_queue.size(), 0, "批次结束：小格子清空")
+	ok(not g1.is_training(), "队列空了 → 不再是招募中")
+	eq(_count_events(evs, "unit_recruited"), 2, "★ 一次读条发 2 条 unit_recruited 事件")
+	# 第一次加单的 recruit_queued 已被前面那 4 秒的 tick 收走，这里只看到第二次加单的那条。
+	eq(_count_events(evs, "recruit_queued"), 1, "入队事件也照样交出来（命令事件不丢）")
 
+	ok(w.start_recruit(KIND, g1.id, "p1"), "批次结束后再点一次 = 开始新的一批")
+	near(g1.train_remaining, 10.0, 0.1, "★ 新批次重新读 10 秒")
 	_tick_secs(w, 10.2)
-	eq(w.retinue_of(g1.id).size(), before + 3, "第三个也生成了")
+	eq(w.retinue_of(g1.id).size(), before + 4, "新批次也正常出兵")
 
 func _test_spawn_avoids_occupied_tile(cfg) -> void:
 	var w = _quiet_world(cfg)
@@ -377,10 +388,10 @@ func _test_cancel_queue(cfg) -> void:
 	ok(w.cancel_recruit(g1.id, 0, "p1"), "★ 取消大格子成功")
 	near(float(w.resources["food"]), 1000.0 - kf, 1e-4, "第 1 单的粮退回来了")
 	eq(g1.train_kind, KIND, "★ 后面那一单前移进了大格子")
-	near(g1.train_remaining, 10.0, 1e-6,
-		"★ 前移的那个**从头读条**（不继承被取消那单的进度）")
+	near(g1.train_remaining, 4.0, 1e-6,
+		"★ 取消单格**不重置**批次读条（还是原来的 4 秒剩余）")
 	eq(g1.train_queue.size(), 0, "队列空了")
-	ok(g1.is_training(), "★ 还在招（只是换了一单）")
+	ok(g1.is_training(), "★ 还在招（只是少了一个单位）")
 
 	var before_units: int = w.retinue_of(g1.id).size()
 	_tick_secs(w, 10.2)
@@ -433,28 +444,29 @@ func _test_recruit_eta(cfg) -> void:
 	near(w.recruit_eta(null, 0), 0.0, 1e-6, "null 将领也返回 0（视图不必先判空）")
 	near(w.recruit_eta(g1, -1), 0.0, 1e-6, "负数格号返回 0")
 
-	ok(w.start_recruit(KIND, g1.id, "p1"), "排第 1 单（长枪兵，10 秒）")
-	ok(w.start_recruit(slow_kind, g1.id, "p1"), "排第 2 单（慢兵，25 秒）")
-	near(w.recruit_eta(g1, 0), 10.0, 1e-6, "★ 大格子 = 这一单自己的剩余秒（10）")
-	near(w.recruit_eta(g1, 1), 35.0, 1e-6,
-		"★ 第 1 小格 = 大格子读完 10 + **慢兵自己那 25**（不是拿 10 乘 2）")
+	ok(w.start_recruit(KIND, g1.id, "p1"), "排第 1 单（长枪兵）")
+	ok(w.start_recruit(slow_kind, g1.id, "p1"), "排第 2 单（慢兵）")
+	# ★★ 批次队列：所有单位在同一条 10 秒读条结束时一起出来。
+	near(w.recruit_eta(g1, 0), 10.0, 1e-6, "★ 大格子 = 批次剩余秒（10）")
+	near(w.recruit_eta(g1, 1), 10.0, 1e-6,
+		"★ 第 1 小格也是同一批的剩余秒（不按兵种 train_sec 累加）")
 	near(w.recruit_eta(g1, 2), 0.0, 1e-6, "空槽位是 0")
 	near(w.recruit_eta(g1, 4), 0.0, 1e-6, "最后一格空着也是 0")
 
-	ok(w.start_recruit(KIND, g1.id, "p1"), "排第 3 单（长枪兵，10 秒）")
-	near(w.recruit_eta(g1, 1), 35.0, 1e-6, "前面那格的 ETA 不变（10 + 25）")
-	near(w.recruit_eta(g1, 2), 45.0, 1e-6, "★ 第 2 小格 = 第 1 小格 + 第 1 小格那一单的 10")
+	ok(w.start_recruit(KIND, g1.id, "p1"), "排第 3 单（长枪兵）")
+	near(w.recruit_eta(g1, 1), 10.0, 1e-6, "加单不延长批次：ETA 仍是最初的 10")
+	near(w.recruit_eta(g1, 2), 10.0, 1e-6, "★ 第 2 小格同样是同一批剩余秒")
 
 	_tick_secs(w, 4.0)
 	near(w.recruit_eta(g1, 0), 6.0, 0.05, "读了 4 秒 → 大格子还剩 6 秒")
-	near(w.recruit_eta(g1, 1), 31.0, 0.05, "★ 第 1 小格跟着缩到 31（6 + 25）")
-	near(w.recruit_eta(g1, 2), 41.0, 0.05, "★ 第 2 小格跟着缩到 41（31 + 10）")
+	near(w.recruit_eta(g1, 1), 6.0, 0.05, "★ 第 1 小格跟着缩到 6（同一批）")
+	near(w.recruit_eta(g1, 2), 6.0, 0.05, "★ 第 2 小格也跟着缩到 6")
 
-	ok(w.cancel_recruit(g1.id, 0, "p1"), "取消大格子")
+	ok(w.cancel_recruit(g1.id, 0, "p1"), "取消大格子（长枪兵）")
 	eq(g1.train_kind, slow_kind, "（前提）慢兵前移进了大格子")
-	near(w.recruit_eta(g1, 0), 25.0, 0.05, "★ 前移的那一单从头读条 → 它的 ETA = 自己的 25 秒")
+	near(w.recruit_eta(g1, 0), 6.0, 0.05, "★ 前移不重置批次：仍是原来的 6 秒")
 	eq(w.recruit_kind_at(g1, 1), KIND, "（前提）原来第 2 小格的长枪兵前移到第 1 小格")
-	near(w.recruit_eta(g1, 1), 35.0, 0.05, "★ 前移之后重算：25 + 10 = 35")
+	near(w.recruit_eta(g1, 1), 6.0, 0.05, "★ 前移之后所有格子的 ETA 仍是 6")
 	near(w.recruit_eta(g1, 2), 0.0, 1e-6, "后面那格空出来了")
 
 	while g1.train_queue_size() > 0:
@@ -616,6 +628,8 @@ func _gold_of(w, kind: String) -> float:
 func _no_income(w) -> void:
 	for z in w.zones.zones:
 		z["production"] = {"food": 0.0, "gold": 0.0, "population": 0.0}
+	w.base_bonus_enabled = false
+	w.refresh_zone_production()
 
 func _kill_leader_keep_queue(cfg, w, leader) -> Array:
 	var evts: Array = []

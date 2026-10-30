@@ -17,7 +17,6 @@ const FontLoaderRes = preload("res://view/font_loader.gd")
 const UnitRes = preload("res://logic/unit.gd")
 const FactionRes = preload("res://logic/faction.gd")
 const BuildingRes = preload("res://logic/building.gd")
-const UpgradeRes = preload("res://logic/upgrade.gd")
 const CommandRes = preload("res://logic/command_processor.gd")
 const GridRes = preload("res://logic/grid.gd")
 const WorldRes = preload("res://logic/world.gd")
@@ -1542,6 +1541,8 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 	var tabs = main.hud.page_tabs
 	var card = main.hud.command_card
 	var world = main.world
+	# ★★ 科技「赤字时不能启用」：给足黄金产能，下面的科技格才点得动。
+	give_gold_income(world, 100.0)
 
 	# ★★ 整列描边：最后加的 TabsFrame 盖在页签上，但鼠标穿透。
 	var frame = tabs.get_node_or_null("TabsFrame")
@@ -1729,12 +1730,9 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 	ok(first_id != "", "第一格有 id")
 	ok(not world.is_tech_active(first_id), "开局这一条没启用")
 	g.press(0)
-	# ★★ 2026.10.29：点一格 = **进预热队列**（30 秒后才生效、且当场开始扣金）。
-	ok(not world.is_tech_active(first_id), "★ 点一格 = 进预热（还没生效）")
-	ok(world.tech.is_warming(first_id), "★ 它在预热队列里")
-	finish_tech_warmup(world, world.cfg)
+	# ★★ 2026.10.30：点一格立刻启用（预热已删除）。
+	ok(world.is_tech_active(first_id), "★ 点一格立刻启用（走 tech_toggle 命令）")
 	main.hud.refresh()           # 让九格按权威状态重画（真实游戏里每帧都会刷）
-	ok(world.is_tech_active(first_id), "★ 预热结束才算真的启用（走 tech_toggle 命令）")
 	ok(g.cell_active(0), "★ 已启用的那一格画成高亮")
 	g.press(0)
 	ok(not world.is_tech_active(first_id), "★ 再点一次 = 弃用")
@@ -1748,8 +1746,7 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 		world.apply_building_level_hp(base)
 	for k in 3:
 		g.press(k)
-	# ★ 预热中的也占名额 ⇒ 三条一点下去名额就满了（不用等 30 秒）。
-	eq(world.tech.slot_count(), 3, "★ 三条都占住了名额（含预热中的）")
+	eq(world.tech.slot_count(), 3, "★ 三条都占住了名额")
 	ok(world.tech_remaining_slots() == 0, "名额用完")
 	g.press(3)
 	ok(not world.is_tech_active(ids[3]), "★ 第 4 条没有生效（被阻止）")
@@ -1779,25 +1776,15 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 	if zone != null:
 		main.input_ctrl.select_zone(zone)
 		main.hud.refresh()
-		eq(tabs.page_count(), 2, "★ 选中区划中心有两颗页签（操作 / 招募）")
-		eq(tabs.page_id_at(0), PageTabsRes.PAGE_ORDER, "第一颗是「操作」")
-		eq(tabs.page_id_at(1), PageTabsRes.PAGE_RECRUIT, "第二颗是「招募」")
-		tabs.select_page(PageTabsRes.PAGE_ORDER)
-		eq(tabs.page(), PageTabsRes.PAGE_ORDER, "★ 停在「操作」页")
-		eq(card.entries().size(), 2, "★ 人口区划的操作页里是两格特化")
-		eq(card.cell_label(0), "粮食特化", "Q 格 = 粮食特化")
-		eq(card.cell_label(1), "黄金特化", "W 格 = 黄金特化")
-		eq(String(card.entry_at(0).get("type", "")), "zone_specialize",
-			"操作页那一项是「特化」")
-		eq(String(card.entry_at(0).get("spec", "")), "food", "第 1 格是粮食特化")
-		ok(not _entry_specs(card).has("population"),
-			"★ 人口区划**没有**人口特化那一格（需求：只能黄金 / 粮食特化）")
+		eq(tabs.page_count(), 1, "★ 选中区划中心只剩「招募」页签")
+		eq(tabs.page_id_at(0), PageTabsRes.PAGE_RECRUIT, "唯一页签是「招募」")
+		eq(tabs.page(), PageTabsRes.PAGE_RECRUIT, "★ 默认停在「招募」页")
+		eq(card.entries().size(), 9, "★★ 招募页是固定九宫格（#1-9）")
 		ok(main.hud.detail_panel.detail_text().contains("粮食"),
 			"★ 区划详情右列显示产能（实际：%s）"
 				% main.hud.detail_panel.detail_text().replace("\n", "|"))
-		tabs.button_at(1).emit_signal("pressed")
-		eq(tabs.page(), PageTabsRes.PAGE_RECRUIT, "★ 第二颗 = 招募页签")
-		eq(card.entries().size(), 9, "★★ 招募页是固定九宫格（#1-9）")
+		tabs.button_at(0).emit_signal("pressed")
+		eq(tabs.page(), PageTabsRes.PAGE_RECRUIT, "唯一页签仍是招募页")
 		var roster: Array = world.general_recruit_roster("p1")
 		eq(roster.size(), 9, "★ 固定阵容 9 位")
 		for i in 9:
@@ -1808,23 +1795,7 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 		eq(String(card.entry_at(0).get("unit_kind", "")), String(roster[0]),
 			"第 1 格 = 将领 1")
 		tabs.button_at(0).emit_signal("pressed")
-		eq(tabs.page(), PageTabsRes.PAGE_ORDER, "切回操作页")
-
-		var z_other = _zone_with_center_of_other_kind(world, zone)
-		ok(z_other != null, "（前提）地图上还有一个**种类不同**、且没特化过的区划中心")
-		if z_other != null:
-			z_other["owner"] = String(world.my_faction)
-			main.input_ctrl.select_zone(z_other)
-			main.hud.refresh()
-			tabs.select_page(PageTabsRes.PAGE_ORDER)
-			eq(_entry_specs(card), _specs_of(world, z_other),
-				"★ 改选另一个种类的区划中心 → 操作页那几档特化跟着换（期望 %s，实际 %s）"
-					% [str(_specs_of(world, z_other)), str(_entry_specs(card))])
-			ok(not _entry_specs(card).is_empty(), "（前提）这个种类的区划还有可选的档位")
-			main.input_ctrl.select_zone(zone)
-			main.hud.refresh()
-			tabs.select_page(PageTabsRes.PAGE_ORDER)
-			eq(_entry_specs(card), _specs_of(world, zone), "（收尾）选回来 → 又跟着换回来")
+		eq(tabs.page(), PageTabsRes.PAGE_RECRUIT, "唯一页签仍是招募页")
 
 	main.input_ctrl.select_units([world.unit_by_id("general-1")])
 	main.hud.refresh()
@@ -1837,13 +1808,6 @@ func _entry_types(card) -> Array:
 		out.append(String(card.entry_at(i).get("type", "")))
 	return out
 
-func _entry_specs(card) -> Array:
-	var out: Array = []
-	for i in card.entries().size():
-		var spec := String(card.entry_at(i).get("spec", ""))
-		if spec != "":
-			out.append(spec)
-	return out
 
 func _eq_tech_page(main, where: String) -> void:
 	var g = main.hud.tech_grid
@@ -1881,22 +1845,6 @@ func _ensure_own_building(world, t: String):
 				return nb
 	return null
 
-func _zone_with_center_of_other_kind(world, zone):
-	var k: String = String(world.zone_kind_of(zone))
-	for z in world.zones.zones:
-		if z["center"] == null:
-			continue
-		if world.zone_kind_of(z) == k or String(z.get("spec_done", "")) != "":
-			continue
-		return z
-	return null
-
-func _specs_of(world, zone) -> Array:
-	var out: Array = []
-	for e in world.zone_spec_choices(zone):
-		out.append(String((e as Dictionary).get("id", "")))
-	return out
-
 func _zone_with_center(world):
 	for z in world.zones.zones:
 		if z["center"] != null:
@@ -1909,6 +1857,7 @@ func _test_hover_panel(main, cfg) -> void:
 	var tabs = hud.page_tabs
 	var tip = hud.hover_tip
 	var world = main.world
+	give_gold_income(world, 100.0)
 
 	ok(tip != null, "★ HUD 里有悬停详情面板")
 	if tip == null:
@@ -1943,7 +1892,7 @@ func _test_hover_panel(main, cfg) -> void:
 
 	card.unhover(0)
 	ok(not tip.showing(), "鼠标移开 → 面板收起来")
-	card.hover(2)
+	card.hover(7)
 	ok(not tip.showing(), "★ 空格子上不弹面板（没内容就不弹一块空的）")
 
 	card.hover(0)
@@ -1966,12 +1915,8 @@ func _test_hover_panel(main, cfg) -> void:
 	ok(tip.body_text().contains("未启用"), "★ 状态那一行读的是**权威状态**（现在没启用）")
 	var first_id := String((g.entry_at(0) as Dictionary).get("id", ""))
 	g.press(0)
-	ok(not world.is_tech_active(first_id), "（前提）点一格 = 进预热，还没生效")
-	ok(tip.body_text().contains("预热中"),
-		"★ 预热期间悬停详情写着「预热中」（权威状态，不是界面自己猜）")
-	finish_tech_warmup(world, world.cfg)
+	ok(world.is_tech_active(first_id), "（前提）点一格 = 立刻启用")
 	hud.refresh()
-	ok(world.is_tech_active(first_id), "（前提）预热结束才算启用")
 	ok(tip.showing() and tip.title_text() == "粮食产量 I", "（前提）点完之后面板还是同一格")
 	ok(tip.body_text().contains("已启用"),
 		"★ 启用之后悬停详情里立刻写着「已启用」（不用移开鼠标；实际：%s）"
@@ -2017,21 +1962,8 @@ func _test_hover_panel(main, cfg) -> void:
 				% tip.body_text().replace("\n", " | "))
 		card.unhover(0)
 
-		tabs.select_page(PageTabsRes.PAGE_ORDER)
-		eq(card.cell_label(0), "粮食特化", "（前提）这个区划的操作页 Q 格 = 粮食特化")
-		card.hover(0)
-		ok(tip.showing() and tip.title_text() == "粮食特化", "★ 区域的特化有悬停详情")
-		var st: String = tip.body_text()
-		ok(st.contains("效果") and st.contains("地块"), "★ 特化详情里有效果那一行")
-		ok(st.contains("造价") and st.contains("读条"), "特化详情里有造价与读条")
-		ok(st.contains("一种"), "★ 特化详情里说明「一个区划只能选一种」")
-		card.unhover(0)
-		var cancel_d: Dictionary = hud._hover_detail("card", {
-			"type": "zone_spec_bar_cancel", "name": "取消特化",
-			"desc": "撤掉正在读条的这一单特化，全额退还已经扣掉的粮食与黄金"})
-		ok(not cancel_d.is_empty(), "★ 「取消特化」那一格也有悬停详情")
-		ok(String(cancel_d.get("title", "")) == "取消特化", "标题就是那一格的名字")
-		ok(String(cancel_d.get("body", "")).contains("退还"), "详情里说明退款")
+		eq(tabs.page_count(), 1, "★ 区划中心只剩招募页签")
+		eq(tabs.page_id_at(0), PageTabsRes.PAGE_RECRUIT, "唯一页签是招募")
 
 	var base = world.find_base_of("p1")
 	ok(base != null, "（前提）有己方大本营")
@@ -2327,9 +2259,9 @@ func _test_zone_recruit_via_card(main) -> void:
 
 	main.input_ctrl.select_zone(zone)
 	main.hud.refresh()
-	eq(main.hud.page_tabs.page_count(), 2, "★ 选中区划中心 → 操作 + 招募两颗页签")
-	main.hud.page_tabs.select_page(PageTabsRes.PAGE_RECRUIT)
-	eq(main.hud.page_tabs.page(), PageTabsRes.PAGE_RECRUIT, "★ 切到「招募」页签")
+	eq(main.hud.page_tabs.page_count(), 1, "★ 选中区划中心 → 只有招募页签")
+	eq(main.hud.page_tabs.page_id_at(0), PageTabsRes.PAGE_RECRUIT, "唯一页签是「招募」")
+	eq(main.hud.page_tabs.page(), PageTabsRes.PAGE_RECRUIT, "★ 默认就在「招募」页")
 	eq(card.entries().size(), 9, "★★ 招募页是固定九宫格（#1-9）")
 	var roster: Array = world.general_recruit_roster("p1")
 	eq(roster.size(), 9, "★ 固定阵容 9 位")
@@ -2476,54 +2408,14 @@ func _test_upgrade_via_card(main) -> void:
 		return
 	main.input_ctrl.select_zone(zone)
 	main.hud.refresh()
-	tabs.select_page(PageTabsRes.PAGE_ORDER)
-	eq(tabs.page(), PageTabsRes.PAGE_ORDER, "（前提）区划中心停在操作页")
+	eq(tabs.page_count(), 1, "（前提）区划中心只剩招募页")
+	eq(tabs.page(), PageTabsRes.PAGE_RECRUIT, "（前提）区划中心停在招募页")
 	eq(String(zone["kind"]), "population", "（前提）这块是人口区划")
-	eq(card.entries().size(), 2, "★ 没特化时操作页 = 这个种类允许的两格特化")
-	card.activate_index(0)                      # 粮食特化
-	ok(UpgradeRes.zone_is_busy(zone), "★ 点粮食特化 = 开始读条")
-	main.hud.refresh()
-	ok(q.is_bar_mode(), "★ 特化读条也走信息栏那块面板")
-	ok(q.title_text().contains("粮食"), "汇总带写着「粮食特化」（实际：%s）" % q.title_text())
-	ok(q.cell_label(0).contains("特化中"), "大格子里写着「特化中」（实际：%s）" % q.cell_label(0))
-	eq(card.entries().size(), 1, "读条中操作页只剩一格（entries=%s）" % str(_entry_types(card)))
-	eq(String(card.entry_at(0).get("type", "")), "zone_spec_bar_cancel",
-		"★ 那一格是「取消特化」（撤单）")
-	_click_control(q, UiLayoutRes.queue_cell_rect(0).get_center())
-	ok(not UpgradeRes.zone_is_busy(zone), "★ 撤掉了那一单")
-	eq(String(zone.get("spec_done", "")), "", "还没特化过")
-	main.hud.refresh()
-	eq(card.entries().size(), 2, "撤单后操作页又是两格特化")
-	card.activate_index(0)
-	world.tick(60.0)
-	main.hud.refresh()
-	main.hud.rebuild_card()      # 真实游戏里由每帧 refresh 的页签比较兜底；测试里显式刷一次
-	eq(String(zone.get("spec_done", "")), "food", "★ 读完特化生效")
-	near(UpgradeRes.zone_spec_effect(zone, world.cfg)["food_per_tile"], 0.01, 1e-6,
-		"★ 粮食特化 = 每地块每秒 +0.01 粮食")
-	eq(card.entries().size(), 1, "★ 特化后操作页只剩一格（不能再特化）")
-	eq(String(card.entry_at(0).get("type", "")), "zone_spec_cancel",
-		"★ 那一格是「取消特化」")
-	eq(card.cell_label(0), "取消特化", "格子上写着「取消特化」")
-	ok(main.hud.detail_panel.detail_text().contains("特化"),
-		"★ 区划右列保留特化状态（实际：%s）"
+	eq(card.entries().size(), 9, "★ 招募页仍是固定九宫格")
+	ok(not q.is_bar_mode(), "没有特化读条")
+	ok(main.hud.detail_panel.detail_text().contains("人口"),
+		"★ 区划右列仍显示人口产能 / 上限（实际：%s）"
 			% main.hud.detail_panel.detail_text().replace("\n", "|"))
-	card.activate_index(0)
-	ok(UpgradeRes.zone_is_busy(zone), "★ 取消特化也要读条")
-	ok(UpgradeRes.zone_spec_is_cancel(zone), "这一条是「取消特化」")
-	main.hud.refresh()
-	ok(q.is_bar_mode(), "那块面板显示取消特化的读条")
-	ok(q.title_text().contains("取消"), "汇总带写着「取消…」（实际：%s）" % q.title_text())
-	ok(q.cell_at_position(UiLayoutRes.queue_cell_rect(0).get_center()) < 0,
-		"★ 「取消特化」的读条不可再取消（点了没反应）")
-	world.tick(60.0)
-	main.hud.refresh()
-	main.hud.rebuild_card()
-	eq(String(zone.get("spec_done", "")), "", "★ 读完特化被去掉")
-	eq(card.entries().size(), 2, "★ 操作页又能选这个种类的两档特化了")
-
-	while UpgradeRes.zone_is_busy(zone):
-		world.tick(60.0)
 	for b in world.building_list:
 		if b.is_upgrading():
 			world.cancel_building_upgrade(b.tx, b.ty)
@@ -2725,16 +2617,16 @@ func _test_queue_control(cfg) -> void:
 	eq(q.queue_count(), 2, "汇总用的是「含正在读条那个」的数量（与队列上限同口径）")
 	eq(q.title_text(), "招募队列 2/%d" % w.recruit_queue_max(),
 		"★ 汇总第一行写着「招募队列 2/5」（实际：%s）" % q.title_text())
-	near(q.total_eta(), 20.0, 0.05, "★ 整条队列读完还要 20 秒（两个单位各 10 秒）")
+	near(q.total_eta(), 10.0, 0.05, "★ 整批读完只要 10 秒（同一批一起出兵）")
 	ok(q.total_text().begins_with("共") and q.total_text().ends_with("s"),
-		"★ 汇总第二行写着「共 20s」（实际：%s）" % q.total_text())
+		"★ 汇总第二行写着「共 10s」（实际：%s）" % q.total_text())
 
-	near(q.eta_of(0), 10.0, 0.05, "大格子的 ETA = 它自己的剩余秒")
-	near(q.eta_of(1), 20.0, 0.05, "★ 第 1 个小格子的 ETA = 大格子读完 + 它自己读 10 秒")
+	near(q.eta_of(0), 10.0, 0.05, "大格子的 ETA = 批次剩余秒")
+	near(q.eta_of(1), 10.0, 0.05, "★ 第 1 个小格子也是同一批的剩余秒")
 	near(q.eta_of(2), 0.0, 1e-6, "空槽位的 ETA 是 0（没排到就不报时间）")
 	ok(q.cell_label(0).contains("剩"), "大格子写着「剩 x.xs」（实际：%s）"
 		% q.cell_label(0).replace("\n", "|"))
-	ok(q.cell_label(1).contains("20s"), "★ 小格子写着「轮到我还差几秒」（实际：%s）"
+	ok(q.cell_label(1).contains("10s"), "★ 小格子写着同一批倒计时（实际：%s）"
 		% q.cell_label(1).replace("\n", "|"))
 
 	for _i in 300:
@@ -2743,8 +2635,8 @@ func _test_queue_control(cfg) -> void:
 	near(q.progress(), 5.0 / 10.0, 0.05, "★ 读条到一半 → 进度条 50%")
 	ok(q.cell_label(0).contains("s"), "大格子上写着剩余秒数（实际：%s）" % q.cell_label(0))
 	near(q.eta_of(0), 5.0, 0.05, "过半之后大格子只剩 5 秒")
-	near(q.eta_of(1), 15.0, 0.05, "★ 小格子的 ETA 跟着缩到 15 秒（视图每帧问逻辑层）")
-	ok(q.total_text().contains("15"), "汇总第二行也跟着变成「共 15s」（实际：%s）" % q.total_text())
+	near(q.eta_of(1), 5.0, 0.05, "★ 小格子的 ETA 也跟着缩到 5 秒（同一批）")
+	ok(q.total_text().contains("5"), "汇总第二行也跟着变成「共 5s」（实际：%s）" % q.total_text())
 
 	_hover_queue_cell(q, 1)
 	eq(q.hover_slot(), 1, "★ 鼠标停在第 1 个小格子上 → 认到那一格（红框 + 右上角画「×」）")
@@ -3621,15 +3513,15 @@ func _test_box_select_buildings(main) -> void:
 		ok(not main.hud._rows_text(enemy_rows).contains("现有人口"),
 			"★ 敌方 / 中立区划不显示当前人口")
 
-		var spec_zone: Dictionary = z0.duplicate(true)
-		spec_zone["spec_done"] = "food"
-		var srows: Dictionary = main.hud._zone_detail_rows(spec_zone, true)
-		var sright: Array = srows["right"]
-		ok(main.hud._rows_text(srows).contains("特化 粮食特化"),
-			"★ 已特化的区划在右列末行写「特化 粮食特化」（实际：%s）"
-				% main.hud._rows_text(srows).replace("\n", "|"))
-		eq(main.hud._row_text(sright, sright.size() - 1),
-			"- 特化 粮食特化", "★ 特化那一行是唯一的小字增益行（带「- 」前缀）")
+		var bonus_zone: Dictionary = z0.duplicate(true)
+		bonus_zone["population_growth_bonus"] = 0.5
+		var brows: Dictionary = main.hud._zone_detail_rows(bonus_zone, true)
+		var bright: Array = brows["right"]
+		ok(main.hud._rows_text(brows).contains("建筑人口加成"),
+			"★ 有大本营/建筑人口加成时右列写出来（实际：%s）"
+				% main.hud._rows_text(brows).replace("\n", "|"))
+		eq(main.hud._row_text(bright, bright.size() - 1),
+			"- 建筑人口加成 +0.5/s", "★ 这一行是唯一的小字增益行（带「- 」前缀）")
 
 		main.input_ctrl.select_zone(z0)
 		main.hud.refresh()
@@ -3724,7 +3616,7 @@ func _test_detail_basic_stats(main) -> void:
 	var gtext: String = panel.detail_text()
 	ok(gtext.contains("血量") and gtext.contains("移速"),
 		"★ 血量在左第一排、移速在右第一排（实际：%s）" % gtext.replace("\n", "|"))
-	ok(gtext.contains("攻击 ") and gtext.contains("防御 0"),
+	ok(gtext.contains("攻击 ") and gtext.contains("防御 "),
 		"★ 攻击在左第二排、防御在右第二排（实际：%s）" % gtext.replace("\n", "|"))
 	ok(gtext.contains("/") and gtext.contains("s"),
 		"★ 攻击那一行是「原始攻击力/攻击频率」（如 14/1s）")
@@ -4092,7 +3984,8 @@ func _test_enemy_selection(main) -> void:
 		ok(ic.selected_zone != null, "★ 点自己区划的中心 → 照旧打开区划详情（老行为不变）")
 		eq(ic.selected_enemy, null, "★ 这时没有「选中的敌人」")
 		hud.refresh()
-		eq(hud.page_tabs.page_count(), 2, "★ 自己区划中心仍是两颗页签（操作 + 招募）")
+		eq(hud.page_tabs.page_count(), 1, "★ 自己区划中心只剩招募页签")
+		eq(hud.page_tabs.page_id_at(0), PageTabsRes.PAGE_RECRUIT, "唯一页签是「招募」")
 		ok(hud.detail_panel.detail_text().contains("现有人口"),
 			"★ 自己 / 友军区划：右列额外显示当前人口")
 		var otxt: String = hud._zone_text(ic.selected_zone, true)

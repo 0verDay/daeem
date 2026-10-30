@@ -909,26 +909,35 @@ func _capture_area_color(owner: String) -> Color:
 ##   · 水面 `water = (y1+1) - (y1-y0+1) * v`  ⇒ v 越大 water 越小 ⇒ **往上长**；
 ##   · 逐格：整格在水面之下 ⇒ 整格填；水面穿过这一格 ⇒ 只填**水面以下那一块**
 ##     （所以一格之内是**连续**的填充，不是一个整格的跳变）；
-##   · 每格画成一个四边形（`draw_colored_polygon`），格角逐个投影 ⇒ 透视正确、
-##     边缘逐像素清晰（这正是「像 2D 一样清晰」的来源）。
+##   · 每格先拆成三角形、再由 `draw_primitive()` 直接画（不做二次三角化），
+##     格角逐个投影 ⇒ 透视正确、边缘逐像素清晰（这正是「像 2D 一样清晰」的来源）。
 ##   ⚠️ 方向写反过一次（`y0 + span*v` = 从上往下淌），症状是「越占越像退潮」。
 ##     判据：`water` 必须随 `v` **单调下降**。
 func _draw_zone_capture() -> void:
 	var items: Array = _capture_items()
+	var no_uv := PackedVector2Array()
 	capture_draw_count = 0
 	for it in items:
 		var fill: Color = it["fill"]
 		# ★★ 2026.10.27（性能）：三角在这里**已经拆好**（`_capture_items` 里做一次），
 		#    这里只负责发绘制调用 —— 原来 `_capture_items` 验一遍、这里再拆一遍，
 		#    同一格每帧要走两次三角化（桌面实测 `ov/capture_bar` 0.245 ms/帧）。
+		#
+		# ★★ 2026.10.30（用户实机报错修复）：这里改用 `draw_primitive()`，**不再**
+		#    交给 `draw_colored_polygon()` 去三角化。
+		#    原因：即使 `_valid_screen_triangle()` 已经挡掉 NaN / 退化点，极端细长的
+		#    三角形（面积刚过 0.001、或近平面附近坐标很大）仍可能让引擎的耳切返回空
+		#    索引，直接报 `Invalid polygon data, triangulation failed`。
+		#    既然我们手里已经是三角形，就没必要再让引擎猜一次：
+		#    `draw_primitive()` 对 3 个点就是画一个三角形，**不做任何三角化**。
+		var tri_cols := PackedColorArray([fill, fill, fill])
 		for tris in (it["tris"] as Array):
 			for tri in (tris as Array):
-				# ★★ 2026.10.29：最后一道保险 —— 投影退化 / NaN / 坐标爆掉时
-				#    `draw_colored_polygon()` 的三角化会直接报
-				#    "Invalid polygon data, triangulation failed"。
+				# 仍然挡 NaN / 退化点：`draw_primitive()` 不会报三角化错误，但没必要
+				# 把无效顶点送进 GPU。
 				if not _valid_screen_triangle(tri):
 					continue
-				draw_colored_polygon(tri, fill)
+				draw_primitive(tri, tri_cols, no_uv)
 			capture_draw_count += 1
 		var front_pts: PackedVector2Array = it["front"]
 		if front_pts.size() >= 2:
@@ -953,7 +962,7 @@ func _count_zone_captures() -> int:
 ##   · 水面 `water = (y1+1) - (y1-y0+1) * v`  ⇒ v 越大 water 越小 ⇒ **往上长**；
 ##   · 逐格：整格在水面之下 ⇒ 整格填；水面穿过这一格 ⇒ 只填**水面以下那一块**
 ##     （所以一格之内是**连续**的填充，不是一个整格的跳变）；
-##   · 每格一个四边形，格角逐个投影 ⇒ 透视正确、边缘逐像素清晰。
+##   · 每格先裁成四边形、拆成三角形，格角逐个投影 ⇒ 透视正确、边缘逐像素清晰。
 ##
 ## ★★ 判据是 `capture_state`，**不是** `value`：已经归属某方的区划 `progress` 是 **1.0**
 ##   （`refresh_building_ownership` / 开局归属都这么填），只按「value > 0」判会给自己
@@ -1124,7 +1133,7 @@ static func _screen_polygon_area(pts: PackedVector2Array) -> float:
 
 
 ## 把一个屏幕多边形拆成三角形（三角化失败 → 空数组，调用方直接跳过）。
-## 三角形逐个交给 `draw_colored_polygon()`，避免它再对凹/退化多边形做一次三角化。
+## 三角形由调用方用 `draw_primitive()` 直接画 —— 不再交给引擎做二次三角化。
 ##
 ## ★★ 2026.10.27（性能）：**凸多边形走扇形快路径**，不再调 `Geometry2D.triangulate_polygon()`
 ##    —— 那时候每帧每条占领进度带的每一格都要走一遍原生耳切，桌面实测 `ov/capture_bar`
@@ -1184,7 +1193,7 @@ func _screen_triangles(pts: PackedVector2Array) -> Array:
 	return out
 
 
-## 这个屏幕三角形能不能安全交给 `draw_colored_polygon()`。
+## 这个屏幕三角形能不能安全交给 `draw_primitive()`（挡 NaN / 退化点）。
 ##
 ## ★★ 2026.10.29：用户实机报 `Invalid polygon data, triangulation failed`。
 ##    三角化失败的输入不一定面积为零：**NaN / INF / 坐标爆掉**（近平面附近投影）

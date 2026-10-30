@@ -660,6 +660,9 @@ func _assemble() -> void:
 	# ★★ 悬停拾取的「压在 HUD 上就不算指着地图」判据：输入层只认这个 Callable
 	#    （它不认识 HUD；见 input_controller 的 `_hover_pick_allowed`）。
 	input_ctrl.ui_hit_test = point_hits_hud
+	# ★★ 建筑悬停 / 点选 / 手机框选按**模型屏幕包围矩形**判（高建筑的上半部分也点得中）。
+	#    没有这条时输入层只能判鼠标下方的地面格 ⇒ 大本营上半部分点不到（用户报的 bug）。
+	input_ctrl.building_screen_rect = buildings.screen_rect_of
 	# 交互核心：宿主（本场景）把已建好的东西交给它，之后每帧由它派发事件
 	interaction = InteractionRes.new()
 	interaction.setup(self)
@@ -1006,6 +1009,8 @@ func _process(dt: float) -> void:
 	# 地形装饰也用同一份「可见单位所在格」：树 / 山块靠它决定谁淡出（3×3 规则，与建筑一致）
 	terrain_props.set_fade_marked(units.fade_marked())
 	buildings.set_hover(_hover_buildings_for_view())
+	# ★★ 选中的建筑 / 区划中心 / 敌方建筑 → 金色描边（与单位选中同一个金）
+	buildings.set_selected(_selected_building_tiles_for_view())
 	buildings.sync(dt)
 	_prof_done("view/buildings", _t_build)
 	var _t_other := _prof()
@@ -1160,6 +1165,49 @@ func _hover_buildings_for_view() -> Array:
 	if touch_device and not input_ctrl.hover_from_box:
 		return []
 	return input_ctrl.hover_buildings
+
+
+## ★★ 要加**金色选中描边**的建筑格（与单位选中同一个金）。
+##   · 己方选中的建筑（框选时可能多栋）→ `selected_buildings`；
+##   · 选中的区划中心 → `selected_zone` 反查中心格（选中区划时选中集合里没有建筑）；
+##   · 选中的敌方建筑 → `selected_enemy` 且 kind == "building"。
+##   ★ 三种选中状态在 input_controller 里互斥，但这里仍去重：以后加新入口不会画两遍。
+func _selected_building_tiles_for_view() -> Array:
+	var out: Array = []
+	if input_ctrl == null:
+		return out
+	var seen: Dictionary = {}
+	for b in input_ctrl.selected_buildings:
+		_push_selected_building_tile(out, seen, b)
+	if input_ctrl.selected_zone != null:
+		_push_selected_building_tile(out, seen,
+			_zone_center_building_of(input_ctrl.selected_zone))
+	if input_ctrl.selected_enemy_kind() == "building":
+		_push_selected_building_tile(out, seen, input_ctrl.selected_enemy)
+	return out
+
+
+func _push_selected_building_tile(out: Array, seen: Dictionary, b) -> void:
+	if b == null or not b.alive:
+		return
+	var tile := Vector2i(b.tx, b.ty)
+	if seen.has(tile):
+		return
+	seen[tile] = true
+	out.append(tile)
+
+
+## 某个区划的**中心建筑**（那一格上立着的中立障碍；找不到 → null）。
+## ★ 与 view/hud.gd 的同名函数同一判据：选中区划时 `selected_buildings` 是空的，
+##   要靠区划字典的 `center` 反查。
+func _zone_center_building_of(zone):
+	if zone == null or typeof(zone) != TYPE_DICTIONARY or world == null:
+		return null
+	var c: Variant = (zone as Dictionary).get("center", null)
+	if c == null:
+		return null
+	var t: Vector2i = c
+	return world.building_at(t.x, t.y)
 
 
 ## 悬停命中 HUD 的判据（交给 input_controller 当 Callable：它自己不认 HUD）。

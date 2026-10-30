@@ -26,10 +26,6 @@ extends RefCounted
 
 const ConfigRes = preload("res://logic/config.gd")
 const FactionRes = preload("res://logic/faction.gd")
-## ★ 特化的产能效果在 logic/upgrade.gd 里（那份实现是**唯一**判据，见 `_spec_effect()`）。
-##   ⚠️ 方向是 zone → upgrade，**不能反过来**：upgrade.gd 的 `tick()` 要读 zone 的字段。
-const UpgradeRes = preload("res://logic/upgrade.gd")
-
 const ROW_LETTERS := "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 ## ★★ 区块人口的默认上限（地图编辑器里没填时的值）。
@@ -184,30 +180,12 @@ func _new_zone(zid: int, name: String, flist: Array) -> Dictionary:
 		"train_cost_food": 0.0,
 		"train_cost_gold": 0.0,
 		"train_cost_pop": 0.0,
-		# ★★ 区划**特化**（见 logic/upgrade.gd 与 config.json 的 zone_spec 段）。
-		#
-		#   需求原话：「区划中心有三个特化选项……这三个特化玩家只能选一个升级……
-		#   特化后的区块无法再次特化，但选中特化后的区块可以在操作面板中选择
-		#   『取消特化』去除其特化，同理，特化也需要读条，取消特化也需要读条」。
-		#
-		# · spec_done   = **已经生效**的特化 id（"" = 没特化过）。★ 它跟着地块走：
-		#                 区划易主时**保留**（谁占谁吃这个加成）。
-		# · spec_kind   = **正在读条**的那一单：做特化时 = 那个特化 id，
-		#                 取消特化时 = 固定的 "__cancel__"（见 upgrade.gd）
-		# · spec_cancel = 这条读条是不是「取消特化」（读完要清掉 spec_done 并退款）
-		# · spec_remaining / spec_total = 读条进度（total <= 0 = 没在读条）
-		# · spec_cost_food / gold = **当初特化扣掉的**资源（取消特化读完时按它退款）。
-		#   ⚠️ 特化**完成时不清零** —— 要留着给后来的「取消特化」退款用。
-		"spec_done": "",
-		"spec_kind": "",
-		"spec_cancel": false,
-		"spec_remaining": 0.0,
-		"spec_total": 0.0,
-		"spec_cost_food": 0.0,
-		"spec_cost_gold": 0.0,
-		# ⚠️ 这两组**目前都不进快照**（`snapshot.gd` 只发 owner / 进度 / 人口）：
-		#    单机里本地就是权威，界面直接读它。第 1 轮联机时要像 `unit.train_*`
-		#    那样补进快照，否则客机点开区划中心看不到「这个区划在造什么 / 特化成什么」。
+		# ★★ 大本营 / 资源建筑给的**动态人口加成**（每帧由 world 重算）：
+		#   · population_growth_bonus —— 本区划人口增长速度的固定加成（人口/秒）；
+		#   · population_cap_bonus    —— 本区划人口上限的固定加成。
+		#   它们**不写进地图**、不跨帧累积：每帧从建筑状态重新算一遍。
+		"population_growth_bonus": 0.0,
+		"population_cap_bonus": 0.0,
 	}
 
 
@@ -412,9 +390,23 @@ func center_zone_at_id(x: int, y: int) -> int:
 ##   ⚠️ 阵营比较走 `FactionRes.same_side`（与占领 / 资源那几处的口径一致）：
 ##      无主区划的 owner 是空串，`same_side(任何, "")` 恒为 false ⇒ 不加成。
 ##
-## ★★ 人口特化（本轮改版）：本区划人口产量 **+12.5%**（倍率 1.125，配置写 0.125，
-##   见 `_spec_effect()`）—— 与上面的科技倍率**相乘叠加**（两者是不同作用域的加成）。
-##
+## ★★ 大本营与资源建筑的**动态人口加成**（world 每帧算好传进来）。
+## @param bonus_by_zid 区划 id → {"rate": 人口/秒, "cap": 人口上限增量}
+##   · 每次都**先清后写**：加成来源消失了（建筑被拆 / 大本营被毁）必须回到 0；
+##   · 这里只写两个展示 / 逻辑都要读的字段，不碰地图给的 `population_cap`。
+func apply_population_bonuses(bonus_by_zid: Dictionary) -> void:
+	for z in zones:
+		var zid := int(z["id"])
+		var b: Variant = bonus_by_zid.get(zid, null)
+		if typeof(b) == TYPE_DICTIONARY:
+			var d: Dictionary = b
+			z["population_growth_bonus"] = maxf(0.0, float(d.get("rate", 0.0)))
+			z["population_cap_bonus"] = maxf(0.0, float(d.get("cap", 0.0)))
+		else:
+			z["population_growth_bonus"] = 0.0
+			z["population_cap_bonus"] = 0.0
+
+
 ## @param owner  享受加成的那一方（"" = 谁都不加成；单机 = world.my_faction）
 ## @param owner_mult 该方占领区划的增长倍率（1.0 = 没加成）
 func update_population(dt: float, owner: String = "", owner_mult: float = 1.0) -> void:
@@ -433,10 +425,9 @@ func update_population(dt: float, owner: String = "", owner_mult: float = 1.0) -
 ## @param owner_mults "faction" → 人口增长倍率（1.0 = 没加成；缺省 1.0）
 func update_population_multi(dt: float, owner_mults: Dictionary) -> void:
 	for z in zones:
-		var rate := float((z["production"] as Dictionary).get("population", 0.0))
-		# ★ 区划特化（本区块自己的倍率）先乘进来，再看科技的全局倍率 ——
-		#   两者是**不同作用域**的加成，所以相乘叠加（需求：与科技加成叠加）。
-		rate *= float(_spec_effect(z)["population_mult"])
+		# 基础产能（每秒绝对值）+ 大本营 / 房屋的固定速率加成。
+		var rate := float((z["production"] as Dictionary).get("population", 0.0)) \
+			+ float(z.get("population_growth_bonus", 0.0))
 		if rate <= 0.0:
 			continue
 		var own := String(z["owner"])
@@ -446,14 +437,15 @@ func update_population_multi(dt: float, owner_mults: Dictionary) -> void:
 		var pop := float(z["population"])
 		if pop >= cap:
 			continue
-		# ★★ 只乘本帧时长：`rate` 已经是「该区划每秒的人口」——基础产能是绝对值（不乘地块数），
-		#    人口特化是倍率（也不引入地块数）。见 docs/route.md 第四十四节。
+		# ★★ 只乘本帧时长：`rate` 已经是「该区划每秒的人口」。
 		z["population"] = minf(cap, pop + rate * dt)
 
 
-## 这个区划的人口上限（缺字段 / 老地图 → 默认 1；负数当 0，不让它变成「负增长」）。
+## 这个区划的人口上限 = 地图给的基础上限 + 大本营 / 房屋的动态加成。
+## 缺字段 / 老地图 → 默认 1；负数当 0，不让它变成「负增长」。
 func population_cap_of(z: Dictionary) -> float:
-	return maxf(0.0, float(z.get("population_cap", DEFAULT_POPULATION_CAP)))
+	return maxf(0.0, float(z.get("population_cap", DEFAULT_POPULATION_CAP))
+		+ float(z.get("population_cap_bonus", 0.0)))
 
 
 ## 这个区划现在的人口（浮点，权威值）。
@@ -468,16 +460,13 @@ func population_floor(z: Dictionary) -> int:
 	return floori(population_of(z))
 
 
-## 某方每秒的粮食 / 黄金产出 = 它拥有的各区划的**固定基础产能之和** + 特化的每地块加成。
+## 某方每秒的粮食 / 黄金产出 = 它拥有的各区划的**固定基础产能之和**。
 ##
 ## ★ 这是经济从「全局按占领地块数 × 固定值」改成「按区划聚合」的落点：
 ##   抢区块 = 抢产能（见 docs/route.md 第十五节）。
-## ★★ 口径（本轮变更，见 docs/route.md 第四十四节）：
-##   · **基础产能 `z["production"]` 是该区划每秒的绝对值**（不乘地块数）——
-##     一个区划不管几格，基础产出都一样；
-##   · **特化**（见 `UpgradeRes.zone_spec_effect`）仍按每地块：
-##     粮食 / 黄金特化 = **每地块每秒加产量**（+0.05），所以特化项要 × 地块数；
-##   · 人口特化 = 倍率，但它加的是**人口**（在 update_population 里生效），不进这两个数。
+## ★★ 口径：**基础产能 `z["production"]` 是该区划每秒的绝对值**（不乘地块数）——
+##   一个区划不管几格，基础产出都一样。大本营 / 资源建筑的固定产出在
+##   `world._accumulate_production()` 里加，和这里的区划产能一起乘科技百分比。
 ## @return {"food": float, "gold": float}
 func production_of(owner: String) -> Dictionary:
 	var food := 0.0
@@ -488,25 +477,9 @@ func production_of(owner: String) -> Dictionary:
 		if String(z["owner"]) != owner:
 			continue
 		var p: Dictionary = z["production"]
-		var n := float(z["tile_count"])
-		var eff := _spec_effect(z)
-		# ★★ 基础产能是**该区划每秒的绝对值**（不乘地块数，见 docs/route.md 第四十四节）；
-		#    只有**特化**仍按「每地块」× 地块数（科技那一份在 world._accumulate_production 里加）。
-		food += float(p.get("food", 0.0)) + float(eff["food_per_tile"]) * n
-		gold += float(p.get("gold", 0.0)) + float(eff["gold_per_tile"]) * n
+		food += float(p.get("food", 0.0))
+		gold += float(p.get("gold", 0.0))
 	return {"food": food, "gold": gold}
-
-
-## 这个区划的特化效果（没特化 → 加 0 / 倍率 1.0）。
-## @return {"food_per_tile": float, "gold_per_tile": float, "population_mult": float}
-##
-## ★ 走 logic/upgrade.gd 的那一份实现（**唯一**判据在那儿：spec_done 才生效、
-##   读条中不算），这里只做转发 —— 与「视图不许自己发明判定」同一条规矩，
-##   逻辑层也不该有第二份「特化到底生不生效」。
-func _spec_effect(z: Dictionary) -> Dictionary:
-	if cfg == null:
-		return {"food_per_tile": 0.0, "gold_per_tile": 0.0, "population_mult": 1.0}
-	return UpgradeRes.zone_spec_effect(z, cfg)
 
 
 ## ---- 路线 1：读地图里的区块网格（地图编辑器导出的地图）----

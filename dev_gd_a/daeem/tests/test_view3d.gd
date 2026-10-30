@@ -28,6 +28,7 @@ func _run() -> void:
 		return
 	_test_sprite_bake(cfg)
 	_test_sprite_bake_assets(cfg)
+	_test_unit_quad_sizes(cfg)
 	await process_frame
 	_test_projection_roundtrip(cfg)
 	_test_camera_invariants(cfg)
@@ -120,7 +121,8 @@ func _test_sprite_bake_assets(cfg) -> void:
 		if img == null:
 			continue
 		if tint == "art":
-			ok(_has_greyish(img), "★★ %s 是 art 档：原画的灰色留在贴图里（没被阵营色刷掉）" % t)
+			ok(_has_art_color(img, Color(0.9, 0.2, 0.2)),
+				"★★ %s 是 art 档：原画的颜色留在贴图里（没被阵营色刷掉）" % t)
 			ok(_count_near(img, Color(0.9, 0.2, 0.2), 0.08) > 10,
 				"★ %s 的 art 描边是阵营色" % t)
 		else:
@@ -132,7 +134,9 @@ func _test_sprite_bake_assets(cfg) -> void:
 		"★ 七个兵种的素材路径互不相同（%d 个）" % seen_paths.size())
 	ok(cfg.unit_sprite_tint_of(UnitRes.UNIT_TYPE_SPEARMAN) == "art", "长枪兵 = art（保留原画）")
 	ok(cfg.unit_sprite_tint_of(UnitRes.UNIT_TYPE_LONGBOWMAN) == "art", "长弓兵 = art")
-	ok(cfg.unit_sprite_tint_of(UnitRes.UNIT_TYPE_RIDER) == "faction", "骑手 = faction（单字占位）")
+	ok(cfg.unit_sprite_tint_of(UnitRes.UNIT_TYPE_RIDER) == "art", "骑手 = art（保留原画）")
+	ok(cfg.unit_sprite_tint_of(UnitRes.UNIT_TYPE_HORSE_ARCHER) == "art",
+		"马弓手 = art（保留原画）")
 	ok(cfg.unit_sprite_tint_of("general") == "art",
 		"★ 将领跟随所属兵种（general → 长枪兵 = art）")
 	var keys: Array = images.keys()
@@ -177,12 +181,62 @@ func _test_sprite_bake_assets(cfg) -> void:
 		"★ 没配素材 / 载不到 → 退回程序化剪影（同一张图）")
 
 
-## 贴图里有没有「灰阶原画色」（r≈g≈b 且够亮）——用来钉「art 档保留原画」。
-static func _has_greyish(img: Image) -> bool:
+## ★★ 立牌尺寸按兵种大类：步兵 1×1、骑兵 1×1.5、器械 2×1（1 = 基准宽 `QUAD_W`）。
+##   同时钉住「贴图画布与立牌同比例」，否则宽牌上的原画会被横向拉长。
+func _test_unit_quad_sizes(cfg) -> void:
+	var unit: float = UnitViewRes.QUAD_W
+	var inf: Vector2 = UnitViewRes.unit_quad_cells(cfg, UnitRes.UNIT_TYPE_SPEARMAN)
+	var inf2: Vector2 = UnitViewRes.unit_quad_cells(cfg, UnitRes.UNIT_TYPE_LONGBOWMAN)
+	var cav: Vector2 = UnitViewRes.unit_quad_cells(cfg, UnitRes.UNIT_TYPE_RIDER)
+	var cav2: Vector2 = UnitViewRes.unit_quad_cells(cfg, UnitRes.UNIT_TYPE_KNIGHT)
+	var cav3: Vector2 = UnitViewRes.unit_quad_cells(cfg, UnitRes.UNIT_TYPE_HORSE_ARCHER)
+	var sie: Vector2 = UnitViewRes.unit_quad_cells(cfg, UnitRes.UNIT_TYPE_GRAIN_CART)
+	var sie2: Vector2 = UnitViewRes.unit_quad_cells(cfg, UnitRes.UNIT_TYPE_CATAPULT)
+	ok(_vec_eq(inf, Vector2(unit, unit)) and _vec_eq(inf2, Vector2(unit, unit)),
+		"★★ 步兵（长枪 / 长弓）= 1×1（%.2f×%.2f）" % [inf.x, inf.y])
+	ok(_vec_eq(cav, Vector2(unit, unit * 1.5)) and _vec_eq(cav2, cav)
+		and _vec_eq(cav3, cav),
+		"★★ 骑兵（骑手 / 骑士 / 马弓手）= 1×1.5（%.2f×%.2f）" % [cav.x, cav.y])
+	ok(_vec_eq(sie, Vector2(unit * 2.0, unit)) and _vec_eq(sie2, sie),
+		"★★ 器械（粮车 / 投石车）= 2×1（%.2f×%.2f）" % [sie.x, sie.y])
+	ok(cfg.unit_class_of(UnitRes.UNIT_TYPE_GRAIN_CART) == ConfigRes.CLASS_SIEGE,
+		"★ 粮车的战斗大类 = 器械（不吃对骑兵的克制加成）")
+	# 贴图画布宽高比 = 立牌宽高比（否则 2:1 的原画会被拉长 / 压扁）。
+	_check_texture_box(cfg, UnitRes.UNIT_TYPE_SPEARMAN, inf)
+	_check_texture_box(cfg, UnitRes.UNIT_TYPE_RIDER, cav)
+	_check_texture_box(cfg, UnitRes.UNIT_TYPE_GRAIN_CART, sie)
+
+
+## 烘一张该兵种的 art 贴图，钉住画布宽高比 == 立牌宽高比。
+func _check_texture_box(cfg, type_id: String, cells: Vector2) -> void:
+	var box: Vector2 = cells / UnitViewRes.QUAD_W
+	var col := Color(0.9, 0.2, 0.2)
+	var tex: ImageTexture = SpriteRes.bake_asset(cfg.unit_sprite_of(type_id), col,
+		false, col, "art", false, Color.WHITE, false, Color.WHITE, box)
+	if tex == null or tex.get_image() == null:
+		ok(false, "%s 的立牌贴图烘不出来" % type_id)
+		return
+	var img: Image = tex.get_image()
+	var tex_ratio: float = float(img.get_width()) / float(img.get_height())
+	var want: float = box.x / box.y
+	ok(absf(tex_ratio - want) < 0.03,
+		"★★ %s 贴图画布与立牌同比例（%.2f ≈ %.2f，不会被拉变形）"
+			% [type_id, tex_ratio, want])
+
+
+static func _vec_eq(a: Vector2, b: Vector2, eps: float = 0.005) -> bool:
+	return absf(a.x - b.x) <= eps and absf(a.y - b.y) <= eps
+
+
+## 贴图里有没有「不是阵营色的不透明像素」——用来钉「art 档保留原画」。
+## ★ 原画可能是灰阶（人物）也可能是彩色（粮车 / 投石车），所以判据是
+##   「与阵营色明显不同」，而不是旧版的「必须是灰阶」。
+static func _has_art_color(img: Image, faction: Color) -> bool:
 	for y in img.get_height():
 		for x in img.get_width():
 			var c := img.get_pixel(x, y)
-			if c.a > 0.9 and absf(c.r - c.g) < 0.03 and absf(c.g - c.b) < 0.03 and c.r > 0.4:
+			if c.a > 0.9 and (absf(c.r - faction.r) > 0.08
+					or absf(c.g - faction.g) > 0.08 or absf(c.b - faction.b) > 0.08):
 				return true
 	return false
 
@@ -420,6 +474,23 @@ func _test_buildings_multimesh(cfg) -> void:
 			bottom = t.origin.y - sz.y * 0.5
 		near(bottom, 0.6, 0.01,
 			"★ 建筑底边贴地（底边 y = %.2f，类型 %s）" % [bottom, String(b0.type)])
+
+	# ★★ 建筑点选按**模型屏幕包裹矩形**：大本营上半部分也要点得中（用户报的 bug）。
+	var base_b = null
+	for b4 in w.building_list:
+		if b4.alive and String(b4.type) == "base":
+			base_b = b4
+			break
+	if base_b != null:
+		var br: Rect2 = game.buildings.screen_rect_of(base_b)
+		ok(br.size.x > 0.0 and br.size.y > 0.0,
+			"★ 大本营有屏幕包围矩形（%.0f×%.0f px）" % [br.size.x, br.size.y])
+		var top_probe := Vector2(br.get_center().x, br.position.y + br.size.y * 0.15)
+		eq(game.input_ctrl._building_at_screen(top_probe), base_b,
+			"★★ 点大本营上半部分也能命中（不再只认脚底那格）")
+		var foot_probe: Vector2 = game.buildings.palette.to_px(base_b.center())
+		eq(game.input_ctrl._building_at_screen(foot_probe), base_b,
+			"★ 点大本营脚底仍然命中")
 
 	ok(BuildingShaderRes.code.contains("depth_draw_always"),
 		"★★ 建筑 shader 写了 depth_draw_always（否则近的建筑会被远的盖住 —— 用户报的 bug）")
@@ -699,7 +770,14 @@ func _test_ground_bake(cfg) -> void:
 	# ★★ 2026.10.29：占领进度条的多边形三角化保护。
 	ok(game.overlay._valid_screen_triangle(
 			PackedVector2Array([Vector2(0, 0), Vector2(10, 0), Vector2(0, 10)])),
-		"★ 正常三角形可以交给 draw_colored_polygon")
+		"★ 正常三角形通过有效性检查")
+	# ★★ 2026.10.30（用户实机报错）：进度条已经是三角形 ⇒ 直接 draw_primitive，
+	#    不再交给 draw_colored_polygon 做三角化（极端细长三角形仍可能让耳切返回空索引）。
+	var ov_src: String = FileAccess.get_file_as_string("res://view/overlay_view_3d.gd")
+	ok(ov_src.contains("draw_primitive(tri, tri_cols, no_uv)"),
+		"★★ 进度条三角形用 draw_primitive 直接画（不做三角化）")
+	ok(not ov_src.contains("draw_colored_polygon(tri, fill)"),
+		"★★ 不再把已拆好的三角形交给 draw_colored_polygon（triangulation failed 的根因）")
 	ok(not game.overlay._valid_screen_triangle(
 			PackedVector2Array([Vector2(0, 0), Vector2(5, 5), Vector2(10, 10)])),
 		"★★ 共线三角形被挡掉（triangulation failed 的一种）")

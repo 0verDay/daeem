@@ -59,11 +59,8 @@ func _test_toggle_basics(cfg) -> void:
 	ok(not w.is_tech_active(T_FOOD), "开局 food_1 没启用")
 	ok(CommandRes.apply(w, w.cfg, {"kind": "tech_toggle", "tech_id": T_FOOD, "on": true}),
 		"★ tech_toggle(on) 命令被接受")
-	# ★★ 2026.10.29：点下去 = **进预热队列**（30 秒后才生效），但名额当场就占住。
-	ok(not w.is_tech_active(T_FOOD), "★ 预热期间还没生效")
-	ok(w.tech.is_warming(T_FOOD), "★ 它在预热队列里")
-	finish_tech_warmup(w, cfg)
-	ok(w.is_tech_active(T_FOOD), "预热结束之后是启用状态")
+	# ★★ 2026.10.30：点下即生效（预热已删除）。
+	ok(w.is_tech_active(T_FOOD), "★ 点下立刻生效")
 	eq(w.active_tech_ids().size(), 1, "启用列表里有 1 条")
 	eq(w.tech_remaining_slots(), 2, "还剩 2 个名额")
 	var act := false
@@ -83,9 +80,7 @@ func _test_toggle_basics(cfg) -> void:
 	eq(w.tech_remaining_slots(), 3, "名额全回来了")
 	ok(CommandRes.apply(w, w.cfg, {"kind": "tech_toggle", "tech_id": T_FOOD}),
 		"不带 on 的 tech_toggle = 切换（点一下格子的语义）")
-	ok(not w.is_tech_active(T_FOOD), "★ 切换之后进入预热，还没生效")
-	finish_tech_warmup(w, cfg)
-	ok(w.is_tech_active(T_FOOD), "预热结束后启用了")
+	ok(w.is_tech_active(T_FOOD), "★ 切换之后立刻启用")
 	ok(CommandRes.apply(w, w.cfg, {"kind": "tech_toggle", "tech_id": T_FOOD}),
 		"再切换一次")
 	ok(not w.is_tech_active(T_FOOD), "★ 第二次切换 = 弃用")
@@ -99,8 +94,7 @@ func _test_limit_three(cfg) -> void:
 	for id in [T_FOOD, T_FOOD2, T_GOLD]:
 		ok(CommandRes.apply(w, w.cfg, {"kind": "tech_toggle", "tech_id": id, "on": true}),
 			"启用第 %d 条" % w.tech.slot_count())
-	# ★ 预热中的也占名额 ⇒ 名额这一侧与旧版逐位一致（不用等 30 秒）
-	eq(w.tech.slot_count(), 3, "★ 三条都占住了名额（含预热中的）")
+	eq(w.tech.slot_count(), 3, "★ 三条都占住了名额")
 	eq(w.tech_remaining_slots(), 0, "名额用完")
 	ok(w.tech.can_activate(T_BUILDING) == "limit", "★ 第 4 条被规则判为 limit")
 	ok(not w.is_tech_active(T_BUILDING), "第 4 条现在没启用")
@@ -120,34 +114,30 @@ func _test_limit_three(cfg) -> void:
 
 	ok(w.set_tech_active(T_GOLD, false), "弃用中间那一条")
 	ok(w.set_tech_active(T_BUILDING, true), "★ 腾出名额之后第 4 条可以启用")
-	finish_tech_warmup(w, cfg)
 	ok(w.is_tech_active(T_BUILDING), "它现在生效")
 	eq(w.active_tech_ids().size(), 3, "又是 3 条")
 
 	w.reset()
 	eq(w.active_tech_ids().size(), 0, "★ reset() 之后一条科技都没启用")
-	eq(w.tech.warming_count(), 0, "★ reset() 也清掉预热队列")
-	eq(w.tech.cooldown_left(), 0.0, "★ reset() 也清掉断金冷却")
+	eq(w.tech.slot_count(), 0, "★ reset() 也清空启用表")
 
 func _test_food_and_gold_bonus(cfg) -> void:
 	var w = _quiet(cfg)
 	w.tick(DT)
 	w.resources["food"] = 0.0
 	w.resources["gold"] = 0.0
-	# ★★ 2026.10.29：科技从「每地块 +n」改成「**总体产能** +%」——
-	#   基数就是区划聚出来的那个数（基础产能 + 特化），所以这里直接向它取基准。
-	var base: Dictionary = w.zones.production_of(w.my_faction)
-	var f0: float = float(base["food"])
-	var g0: float = float(base["gold"])
+	# ★★ 科技加成 =「总体产能」× (1+pct)；总体产能 = 区划基础 + 大本营/资源建筑固定产出。
+	var zone_rates: Dictionary = w.zones.production_of(w.my_faction)
+	var flat: Dictionary = w._flat_resource_bonus(w.my_faction)
+	var f0: float = float(zone_rates["food"]) + float(flat["food"])
+	var g0: float = float(zone_rates["gold"]) + float(flat["gold"])
 	ok(f0 > 0.0, "开局基础粮食产能 > 0（%s/秒）" % f0)
 	if f0 <= 0.0:
 		return
-	near(w.production_food, f0, 1e-6, "没科技时产能 = 区划基础产能")
+	near(w.production_food, f0, 1e-6, "没科技时产能 = 区划基础 + 固定产出")
 
-	ok(w.set_tech_active(T_FOOD, true), "启用「粮食产量 I」（进预热队列）")
-	ok(not w.is_tech_active(T_FOOD), "★ 预热期间还没生效（点下去 ≠ 已经生效）")
-	finish_tech_warmup(w, cfg)
-	ok(w.is_tech_active(T_FOOD), "★ 预热满 30 秒之后才真正生效")
+	ok(w.set_tech_active(T_FOOD, true), "启用「粮食产量 I」")
+	ok(w.is_tech_active(T_FOOD), "★ 点下立刻生效")
 	near(w.production_food, f0 * 1.1, 1e-6, "★ 粮食产能 +10%（总体产能的百分比）")
 	near(w.production_gold, g0, 1e-6, "黄金不受影响")
 
@@ -223,6 +213,9 @@ func _test_hp_bonus(cfg) -> void:
 
 func _test_population_bonus(cfg) -> void:
 	var w = _quiet(cfg)
+	# 只验「科技倍率 × 区划基础速度」：先关掉大本营的固定人口加成。
+	w.base_bonus_enabled = false
+	w.refresh_zone_production()
 	var mine = _own_zone(w)
 	var theirs = _foreign_zone(w)
 	ok(mine != null, "有一块己方区划")
@@ -270,10 +263,8 @@ func _test_population_bonus(cfg) -> void:
 func _test_commands(cfg) -> void:
 	var w = _quiet(cfg)
 	ok(CommandRes.apply(w, w.cfg, {"kind": "tech_toggle", "tech_id": T_POP}), "切换命令")
-	ok(not w.is_tech_active(T_POP), "★ 命令只是「开始预热」，还没生效")
-	finish_tech_warmup(w, cfg)
-	ok(w.is_tech_active(T_POP), "切换 = 预热完之后启用")
-	near(w.tech_population_mult(), 1.1, 1e-6, "★ 预热结束后当帧就能读到加成")
+	ok(w.is_tech_active(T_POP), "★ 切换 = 立刻启用")
+	near(w.tech_population_mult(), 1.1, 1e-6, "★ 启用当帧就能读到加成")
 	ok(not CommandRes.apply(w, w.cfg, {"kind": "tech_toggle", "tech_id": ""}),
 		"空 id 的命令被拒")
 	ok(not CommandRes.apply(w, w.cfg, {"kind": "not_a_command"}), "未知命令被拒")
@@ -286,6 +277,9 @@ func _quiet(cfg) -> RefCounted:
 		c.combat_enabled = false
 	var w = require_world_with_escorts(c, 3)
 	_max_base(w)
+	# ★★ 科技在「黄金净收入赤字」时不允许新启用：测试世界给足黄金产能，
+	#    否则第一条 0.5 金/秒的科技就可能被赤字规则挡住。
+	give_gold_income(w, 100.0)
 	return w
 
 

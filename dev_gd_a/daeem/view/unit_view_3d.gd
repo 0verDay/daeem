@@ -34,16 +34,45 @@ const UNIT_DOWNED_SHADER = preload("res://view/unit_downed.gdshader")
 ## ★ 选中下标：脚下「绿色空心圆」贴花（逐实例透明度动画；见 selection_ring.gdshader）
 const SELECTION_RING_SHADER = preload("res://view/selection_ring.gdshader")
 
-## 立牌的世界宽度（一格的比例）
-const QUAD_W := 0.42
-## 立牌高宽比（贴图是 64×96 ⇒ 1.5）
+## 立牌**基准**的世界宽度（一格的比例）与基准高宽比（贴图 64×96 ⇒ 1.5）。
+## ★ 实际尺寸 = `QUAD_W × cfg.unit_sprite_ratio_of(unit_type)`：
+##   步兵 1×1、骑兵 1×1.5、器械 2×1（比例不是像素，见 config 的 sprite_ratio）。
+const QUAD_W := 0.5
 const QUAD_H_RATIO := 1.5
+## 立牌比例 → 尺寸（格）。静态缓存：框选 / 点选（input_controller）也读这个函数。
+static var _quad_cells_cache: Dictionary = {}
+
+
+## 某个兵种的立牌尺寸（**格**）。
+##
+## ★ 宽高比来自 config：`unit.types.<id>.sprite_ratio`，缺省按兵种大类
+##   （infantry 1×1 / cavalry 1×1.5 / siege 2×1，见 `cfg.unit_sprite_ratio_of`）。
+##   1 这个单位 = `QUAD_W` 格，所以步兵 0.5×0.5、骑兵 0.5×0.75、器械 1.0×0.5。
+## ★ 素材缺失时退回基准 1×1.5（程序化剪影的 64×96 画布就是这个比例）。
+## ★ 静态函数：`input_controller` 的点击 / 框选用的必须是同一份尺寸。
+## @param unit_type 兵种 id（将领请传它的 `unit_type`，不是 "general"）
+static func unit_quad_cells(cfg, unit_type: String) -> Vector2:
+	var ratio := Vector2(1.0, QUAD_H_RATIO)
+	if cfg != null and SpriteRes.has_sprite(cfg.unit_sprite_of(unit_type)):
+		ratio = cfg.unit_sprite_ratio_of(unit_type)
+	var key := "%.3f|%.3f" % [ratio.x, ratio.y]
+	var hit: Variant = _quad_cells_cache.get(key, null)
+	if hit != null:
+		return hit
+	var size := Vector2(QUAD_W * ratio.x, QUAD_W * ratio.y)
+	_quad_cells_cache[key] = size
+	return size
 
 var cfg: ConfigRes = null
 var world = null
 var palette = null
 
+## 基准 QuadMesh（只在 setup 时建一次；实际批次按兵种尺寸各用一块，见 `_quad_of`）
 var _quad: QuadMesh = null
+## 兵种 → 该兵种尺寸的 QuadMesh / 尺寸（格）。批次本来就把兵种写进键里，
+## 所以每块牌可以有自己的宽高（粮车/投石车是宽牌、骑手/骑士是高牌）。
+var _type_quads: Dictionary = {}
+var _type_sizes: Dictionary = {}
 ## 变体键（"阵营|是否将领|兵种|是否濒死"）→ {node, mm, capacity}
 var _batches: Dictionary = {}
 ## 变体键 → 颜色缓存
@@ -69,15 +98,21 @@ var _sel_sec: float = 0.18
 var _sel_alpha: float = 0.8
 var _sel_scale_from: float = 1.5
 
-## ★★ 悬停填充（见 config.json 的 `render._hover_fill_comment`）：
-##   · `_hover_set`   = 本帧要填色的单位 id（由 `set_hover(ids)` 喂进来）；
-##   · `_hover_anim`  = id → 0..1 的淡入淡出进度（与选中圈同一套「反向播放」思路）；
-##   · 填充走**逐实例自定义数据** `INSTANCE_CUSTOM.g`（`.r` 已经是受击闪白），
-##     填充色是**每批次一个 uniform** —— 单位批次 = 一个阵营 ⇒ 同批必然同色。
+## ★★ 悬停样式（见 config.json 的 `render._hover_fill_comment`）：
+##   · `_hover_set`  = 本帧要高亮的单位 id（由 `set_hover(ids)` 喂进来）；
+##   · `_hover_anim` = id → 0..1 的淡入淡出进度（与选中圈同一套「反向播放」思路）；
+##   · 高亮 = **纯阵营色躯体 + 一圈白描边**，烘成每个批次的第二张贴图 `hover_tex`
+##     （unit_sprite_3d.gd 的 `bake_asset(..., hover = true)`）；
+##   · 进度走**逐实例自定义数据** `INSTANCE_CUSTOM.g`（`.r` 已经是受击闪白），
+##     shader 按进度把两张图交叉混合 —— 不新增 MultiMesh 批次。
 var _hover_set: Dictionary = {}
 var _hover_anim: Dictionary = {}
-var _hover_fill_alpha: float = 0.7
 var _hover_sec: float = 0.1
+## 悬停贴图的混合强度（config: render.hover_fill_alpha；1.0 = 完全换成悬停贴图）
+var _hover_fill_alpha: float = 1.0
+## ★★ 悬停描边色（白）；悬停贴图按「批次」在 `_batch_for` 里烘一次并烘进缓存
+##   （unit_sprite_3d.gd 的静态缓存，键里带全部像素参数）。
+var _hover_outline: Color = Color.WHITE
 
 ## 诊断（只有测试读它）
 var instance_count: int = 0
@@ -130,6 +165,9 @@ func setup(p_cfg: ConfigRes, p_world, p_palette) -> void:
 	palette = p_palette
 	# ★ 换局 / 换世界 = 重新 setup ⇒ 「有没有 `render_pos_of`」的缓存必须复位（见 `_render_pos`）。
 	_render_pos_ok = -1
+	# ★ 立牌尺寸随 cell_size / config 变化 ⇒ 按兵种缓存的网格与尺寸也要作废。
+	_type_quads = {}
+	_type_sizes = {}
 	_quad = QuadMesh.new()
 	var w: float = palette.cell_size() * QUAD_W
 	_quad.size = Vector2(w, w * QUAD_H_RATIO)
@@ -143,9 +181,10 @@ func setup(p_cfg: ConfigRes, p_world, p_palette) -> void:
 	_sel_alpha = clampf(cfg.num("render.selection_ring_alpha", 0.8), 0.0, 1.0)
 	_sel_scale_from = maxf(0.1, cfg.num("render.selection_ring_scale_from", 1.5))
 	_build_selection_layer()
-	# ★★ 悬停填充参数（每帧要用 ⇒ setup 缓存；0 = 立即切换）
-	_hover_fill_alpha = clampf(cfg.num("render.hover_fill_alpha", 0.7), 0.0, 1.0)
+	# ★★ 悬停样式参数（每帧要用 ⇒ setup 缓存；0 = 立即切换）
 	_hover_sec = maxf(0.0, cfg.num("render.hover_fill_sec", 0.1))
+	_hover_fill_alpha = clampf(cfg.num("render.hover_fill_alpha", 1.0), 0.0, 1.0)
+	_hover_outline = cfg.hover_outline_color
 	_hover_set = {}
 	_hover_anim = {}
 
@@ -226,6 +265,31 @@ func _selection_ring_color(rel: String) -> Color:
 	return ConfigRes.parse_color(cfg.str_val("render.selection_ring_color", "#3ddc5a"))
 
 
+## 某个兵种的立牌尺寸（格，实例缓存）。`unit_quad_cells` 是热路径的公共判据，
+## 这里按 unit_type 再缓存一层，免得血条 / 头顶标记每帧每单位都去查 config。
+func _quad_cells_of(unit_type: String) -> Vector2:
+	var id := String(unit_type)
+	var hit: Variant = _type_sizes.get(id, null)
+	if hit != null:
+		return hit
+	var size: Vector2 = unit_quad_cells(cfg, id)
+	_type_sizes[id] = size
+	return size
+
+
+## 某个兵种的立牌 QuadMesh（世界尺寸）。批次键里已经带兵种 ⇒ 每个兵种一块网格；
+## ⚠️ billboard shader 会丢掉实例 basis，所以**不能**靠逐实例缩放来改大小。
+func _quad_of(unit_type: String) -> QuadMesh:
+	var id := String(unit_type)
+	var hit: Variant = _type_quads.get(id, null)
+	if hit != null:
+		return hit
+	var mesh := QuadMesh.new()
+	mesh.size = _quad_cells_of(id) * _cell
+	_type_quads[id] = mesh
+	return mesh
+
+
 ## 取（或创建）一个变体的批次。
 ##
 ## ★ 变体键 = `阵营|是否将领|兵种|是否选中|是否濒死`（见 `sync` 的拼法）；贴图按变体烘一张。
@@ -245,8 +309,17 @@ func _batch_for(key: String, faction: String, leader: bool, unit_type: String,
 		cfg.str_val("render.unit_select_outline_color", "#fff2b0"))
 	# ★ 兵种素材（`unit.types.<id>.sprite`）；将领的描边更粗。
 	#   素材缺失 / 没配 → `bake_asset` 内部退回程序化剪影（见 unit_sprite_3d.gd 的说明）。
+	# ★★ 贴图画布的宽高比 = 这个兵种立牌的宽高比（1 = 基准宽）：
+	#   步兵 1×1、骑兵 1×1.5、器械 2×1 —— 不传的话宽牌上的原画会被横向拉长。
+	var box: Vector2 = _quad_cells_of(unit_type) / QUAD_W
 	var tex: ImageTexture = SpriteRes.bake_asset(cfg.unit_sprite_of(unit_type), col, leader,
-		outline, tint, selected, sel_col)
+		outline, tint, selected, sel_col, false, _hover_outline, box)
+	# ★★ 悬停贴图 = **纯阵营色躯体 + 白描边**（`hover = true`），padding 沿用原 tint
+	#   ⇒ 两张图的**剪影覆盖范围**逐像素对齐，shader 里按进度交叉混合不会「胀一下」。
+	#   ★ 悬停时白色覆盖选中金边（用户口径：悬停 > 选中）。
+	var hover_tex: ImageTexture = SpriteRes.bake_asset(
+		cfg.unit_sprite_of(unit_type), col, leader, outline, tint,
+		false, sel_col, true, _hover_outline, box)
 
 	# ★★ 材质按「是否濒死」二选一：
 	#   · 正常：flash shader（写 ALPHA + scissor ⇒ **不透明管线**、深度正确）；
@@ -254,6 +327,9 @@ func _batch_for(key: String, faction: String, leader: bool, unit_type: String,
 	#   两者的 billboard 代码逐字一致，所以同一位将领站起来/倒下的朝向不会变。
 	var mat := ShaderMaterial.new()
 	mat.set_shader_parameter("albedo_tex", tex)
+	# ★ 两个 shader（正常 / 濒死）都要设，否则濒死将领在自己部队里悬停时不亮。
+	mat.set_shader_parameter("hover_tex", hover_tex)
+	mat.set_shader_parameter("hover_fill_alpha", _hover_fill_alpha)
 	if downed:
 		mat.shader = UNIT_DOWNED_SHADER
 		mat.set_shader_parameter("downed_alpha", cfg.num("render.downed_alpha", 0.4))
@@ -261,15 +337,12 @@ func _batch_for(key: String, faction: String, leader: bool, unit_type: String,
 		mat.shader = UNIT_FLASH_SHADER
 		mat.set_shader_parameter("scissor_threshold", 0.35)
 		mat.set_shader_parameter("flash_strength", cfg.num("render.hit_flash_alpha", 0.8))
-	# ★★ 悬停填充：颜色 = **本批的阵营色**（`col` 已经是 SideColorRes 的口径；
-	#   中立化单位走空阵营键 ⇒ 中性灰，与贴图 / 圈色自动一致）。
-	#   ★ 两个 shader（正常 / 濒死）都要设，否则濒死将领在自己部队里悬停时不亮。
-	mat.set_shader_parameter("hover_fill_color", col)
-	mat.set_shader_parameter("hover_fill_alpha", _hover_fill_alpha)
 
+	# ★ 每个兵种一块自己尺寸的 QuadMesh（粮车/投石车是宽牌、骑手/骑士是高牌）。
+	var mesh: QuadMesh = _quad_of(unit_type)
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
-	mm.mesh = _quad
+	mm.mesh = mesh
 	# ★⚠️ `use_custom_data` 必须在 `instance_count` **之前**设：
 	#   实测（真渲染器）在 instance_count > 0 之后再打开它会报
 	#   「Instance count must be 0 to toggle whether custom data is used」，
@@ -287,7 +360,8 @@ func _batch_for(key: String, faction: String, leader: bool, unit_type: String,
 	#   每个批次的 MultiMesh 各自一份自定义数据缓冲；共用一份全局缓存会在两个批次的
 	#   同一个下标上互相覆盖，把闪白 / 填充**卡住**。`last_uid` 是「这一槽位现在是谁」，
 	#   下标换人时必须整条重写（否则新单位继承上一任的填充）。
-	var rec := {"node": node, "mm": mm, "faction": faction, "leader": leader,
+	var rec := {"node": node, "mm": mm, "mesh": mesh, "quad_h": mesh.size.y,
+		"faction": faction, "leader": leader,
 		"last_flash": [], "last_uid": [], "last_hover": []}
 	_batches[key] = rec
 	return rec
@@ -407,7 +481,6 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 		arr.append(u)
 		buckets[key] = arr
 
-	var half_h: float = _quad.size.y * 0.5
 	var total: int = 0
 	var used: int = 0
 	var wrote: int = 0
@@ -421,6 +494,7 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 		var rec: Dictionary = _batch_for(key, String(parts[0]), int(parts[1]) == 1,
 			String(parts[2]), int(parts[3]) == 1, int(parts[4]) == 1)
 		var mm: MultiMesh = rec["mm"]
+		var half_h: float = float(rec["quad_h"]) * 0.5
 		var batch_downed: bool = int(parts[4]) == 1
 		if mm.instance_count < arr.size():
 			mm.instance_count = maxi(arr.size(), mm.instance_count * 2)
@@ -651,17 +725,25 @@ func _visible_to_me(u) -> bool:
 ##
 ## ★ 透视下这个值**随位置变化**（近大远小）⇒ 每帧按单位位置现算，
 ##   绝不要缓存成「一格 = 多少像素」（那正是老 2D 版会错的地方）。
+## ★ 宽度按**兵种**取（`_quad_cells_of`）：粮车/投石车比骑手/骑士更宽。
 func quad_screen_width(u) -> float:
 	if palette == null:
 		return 0.0
 	var rp: Vector2 = _render_pos(u)
-	var a: Vector2 = palette.to_px(rp + Vector2(-QUAD_W * 0.5, 0.0))
-	var b: Vector2 = palette.to_px(rp + Vector2(QUAD_W * 0.5, 0.0))
+	var half: float = _quad_cells_of(String(u.unit_type)).x * 0.5
+	var a: Vector2 = palette.to_px(rp + Vector2(-half, 0.0))
+	var b: Vector2 = palette.to_px(rp + Vector2(half, 0.0))
 	return a.distance_to(b)
 
 
 func quad_screen_height(u) -> float:
-	return quad_screen_width(u) * QUAD_H_RATIO
+	return quad_screen_width(u) * _quad_h_ratio(String(u.unit_type))
+
+
+## 立牌的高宽比（兵种自己的原画比例；见 `unit_quad_cells`）。
+func _quad_h_ratio(unit_type: String) -> float:
+	var cells: Vector2 = _quad_cells_of(unit_type)
+	return cells.y / maxf(cells.x, 1e-6)
 
 
 ## ★★ 立牌在屏幕上的**宽与高**，一次算完：宽要 2 次投影，高只是按比例。
@@ -669,7 +751,7 @@ func quad_screen_height(u) -> float:
 ##   （每单位多 2 次 `to_px`，1000 单位就是每帧多 2000 次）。
 func quad_screen_size(u) -> Vector2:
 	var w: float = quad_screen_width(u)
-	return Vector2(w, w * QUAD_H_RATIO)
+	return Vector2(w, w * _quad_h_ratio(String(u.unit_type)))
 
 
 ## 立牌**头顶**在屏幕上的位置（覆盖层放血条 / 字用）
@@ -677,7 +759,7 @@ func head_screen_pos(u) -> Vector2:
 	if palette == null or palette.cam == null:
 		return Vector2.ZERO
 	var w: Vector3 = palette.to_world(_render_pos(u))
-	w.y = _quad.size.y
+	w.y = _quad_cells_of(String(u.unit_type)).y * _cell
 	return palette.cam.unproject_position(w)
 
 
@@ -724,10 +806,10 @@ func set_selection(ids: Array) -> void:
 		_selection_set[String(id)] = true
 
 
-## ★★ 悬停填充：`game_scene3d` 每帧把「要填色的单位 id」喂进来
+## ★★ 悬停高亮：`game_scene3d` 每帧把「要高亮的单位 id」喂进来
 ##   （己方 = 整支部队；敌 / 友 = 单个）。手机端由 game_scene 直接喂空表。
 ##
-## ★ 填充是**纯表现**：只改 shader 的混色量，不改贴图、不加批次、不进快照。
+## ★ 高亮是**纯表现**：只改 shader 的混色量，不改贴图、不加批次、不进快照。
 ## ⚠️ 这个方法**必须有**：缺了会抛 `Nonexistent function` 并中断整个 `_process`（同 set_selection）。
 func set_hover(ids: Array) -> void:
 	# ★★ 2026.10.27（性能）：**手机端这条每帧都会以空表调用**（触摸端没有悬停），

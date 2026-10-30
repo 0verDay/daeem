@@ -45,7 +45,7 @@ func _test_class_tags(cfg) -> void:
 	# ★★ 本轮新增的四个兵种：骑兵 / 器械的标签与远近是**两维**。
 	eq(cfg.unit_class_of(UnitRes.UNIT_TYPE_KNIGHT), ConfigRes.CLASS_CAVALRY, "骑士属于骑兵")
 	eq(cfg.unit_class_of(UnitRes.UNIT_TYPE_HORSE_ARCHER), ConfigRes.CLASS_CAVALRY, "马弓手属于骑兵")
-	eq(cfg.unit_class_of(UnitRes.UNIT_TYPE_GRAIN_CART), ConfigRes.CLASS_CAVALRY, "粮车属于骑兵")
+	eq(cfg.unit_class_of(UnitRes.UNIT_TYPE_GRAIN_CART), ConfigRes.CLASS_SIEGE, "★ 粮车属于器械")
 	eq(cfg.unit_class_of(UnitRes.UNIT_TYPE_CATAPULT), ConfigRes.CLASS_SIEGE, "★ 投石车属于器械（第三个大类）")
 	ok(not cfg.unit_is_ranged(UnitRes.UNIT_TYPE_KNIGHT), "骑士是近战")
 	ok(cfg.unit_is_ranged(UnitRes.UNIT_TYPE_HORSE_ARCHER), "★ 马弓手是远程骑兵")
@@ -53,11 +53,12 @@ func _test_class_tags(cfg) -> void:
 	ok(cfg.unit_is_ranged(UnitRes.UNIT_TYPE_CATAPULT), "投石车是远程器械")
 	eq(cfg.unit_class_line(UnitRes.UNIT_TYPE_KNIGHT), "骑兵", "骑士的标签 = 骑兵")
 	eq(cfg.unit_class_line(UnitRes.UNIT_TYPE_HORSE_ARCHER), "远程骑兵", "★ 马弓手的标签 = 远程骑兵")
-	eq(cfg.unit_class_line(UnitRes.UNIT_TYPE_GRAIN_CART), "远程骑兵", "粮车的标签 = 远程骑兵")
+	eq(cfg.unit_class_line(UnitRes.UNIT_TYPE_GRAIN_CART), "器械", "★ 粮车的标签 = 器械")
 	eq(cfg.unit_class_line(UnitRes.UNIT_TYPE_CATAPULT), "器械", "★ 投石车的标签 = 器械（不写成远程器械）")
 	# 兵种玩法开关：从配置读进规范化字段。
 	near(cfg.unit_armor_of(UnitRes.UNIT_TYPE_KNIGHT), 6.0, 1e-6, "骑士固定护甲 = 6")
-	near(cfg.unit_armor_of(UnitRes.UNIT_TYPE_HORSE_ARCHER), 0.0, 1e-6, "马弓手无护甲")
+	near(cfg.unit_armor_of(UnitRes.UNIT_TYPE_HORSE_ARCHER), 1.0, 1e-6,
+		"马弓手护甲 = 1（以 config 为准）")
 	ok(not cfg.unit_can_attack(UnitRes.UNIT_TYPE_GRAIN_CART), "★ 粮车不攻击（支援单位）")
 	ok(cfg.unit_move_shoot(UnitRes.UNIT_TYPE_HORSE_ARCHER), "★ 马弓手可以移动射击")
 	ok(cfg.unit_is_siege(UnitRes.UNIT_TYPE_CATAPULT), "★ 投石车有攻城（无视远近战减伤）")

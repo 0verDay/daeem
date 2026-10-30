@@ -47,6 +47,8 @@ func _cases() -> void:
 	_test_roles(cfg)
 	_test_attack_reaction(cfg)
 	_test_tower_strategy(cfg)
+	_test_resource_buildings(cfg)
+	_test_population_cap_bonus_ratio(cfg)
 	_test_build_economy_guard(cfg)
 	_test_wall_and_upgrade(cfg)
 	_test_wall_border(cfg)
@@ -357,11 +359,19 @@ func _test_build_and_tech(cfg) -> void:
 	#   本用例只验「建造 / 科技 / 特化这条链路走得通」，所以先给足资源；
 	#   「钱不够时不乱建」由 _test_build_economy_guard / _test_build_priority 单独钉。
 	w.ai_faction_resources["F2"] = {"food": 3000.0, "gold": 3000.0}
+	# ★★ 赤字规则：AI 也要有正的黄金净收入才能启用科技。
+	give_gold_income(w, 100.0, "F2")
+	# ★ 把 AI 大本营直接拉满：本用例验的是「建造 / 科技链路」，
+	#   不让它把 25 秒全花在升本的读条上（升本本身另有专门用例）。
+	var f2b = w.find_base_of("F2")
+	if f2b != null:
+		f2b.level = cfg.upgrade_max_level("base")
+		w.apply_building_level_hp(f2b)
 	for i in 250:
 		w.tick(0.1)
 	ok(int(c.stats.get("builds", 0)) >= 1, "AI 至少建造 / 升级一次")
 	ok(int(c.stats.get("techs", 0)) >= 1, "AI 至少启用一条科技")
-	ok(int(c.stats.get("specs", 0)) >= 1, "AI 至少做一次区划特化")
+	# ★ 区域特化机制已移除：不再要求 AI 做特化。
 
 
 func _test_directives(cfg) -> void:
@@ -1030,6 +1040,75 @@ func _test_attack_reaction(cfg) -> void:
 				"★★ 侦察队受击会放弃侦察任务")
 			ok(int(c.stats.get("role_retreats", 0)) > before_scout_retreat,
 				"★★ 侦察队受击选择整队后撤，而不是反击")
+
+
+## ★★ 2026.10.30：资源建筑（粮田 / 房屋 / 矿脉）—— AI 会按缺口建、受上限约束。
+func _test_resource_buildings(cfg) -> void:
+	var w = _make_ai_test_world(cfg)
+	if w == null:
+		ok(false, "资源建筑测试世界")
+		return
+	var c = w.ai_commanders["F1"]
+	var b = w.find_base_of("F1")
+	if b != null:
+		b.level = cfg.upgrade_max_level("base")
+		w.apply_building_level_hp(b)
+		w.refresh_zone_production()
+	var bcfg: Dictionary = c.profile.get("build", {})
+	bcfg["pause_defense_when_understrength"] = false
+	bcfg["resource_buildings_enabled"] = true
+	bcfg["resource_building_hard_max"] = 6
+	bcfg["resource_building_per_zone"] = 2
+	w.ai_faction_resources["F1"] = {"food": 6000.0, "gold": 6000.0}
+	var built := 0
+	for _i in 12:
+		if AiBuildRes._try_resource_building(c):
+			built += 1
+	ok(built >= 1, "★★ AI 会主动建造资源建筑（实际 %d 座）" % built)
+	var counts: Dictionary = AiBuildRes._resource_building_counts(c)
+	eq(int(counts.get("total", 0)), built, "★ 统计与实际建造数一致")
+	ok(int(counts.get("farm", 0)) + int(counts.get("house", 0)) + int(counts.get("mine", 0)) == built,
+		"只建粮田 / 房屋 / 矿脉")
+	ok(built <= 6, "★ 不超过 resource_building_hard_max（实际 %d）" % built)
+	for z in w.zones.zones:
+		if typeof(z) != TYPE_DICTIONARY:
+			continue
+		var zd: Dictionary = z
+		if String(zd.get("owner", "")) != "F1":
+			continue
+		var in_zone: int = AiBuildRes._resource_buildings_in_zone(c, int(zd.get("id", -1)))
+		ok(in_zone <= 2, "★ 单区划资源建筑 ≤ 2（实际 %d）" % in_zone)
+
+
+## ★★ 2026.10.30：人口评估要读 `population_cap_of()`（含大本营 / 房屋的动态加成）。
+func _test_population_cap_bonus_ratio(cfg) -> void:
+	var w = _make_ai_test_world(cfg)
+	if w == null:
+		ok(false, "人口上限测试世界")
+		return
+	var c = w.ai_commanders["F1"]
+	var target = null
+	for z in w.zones.zones:
+		if typeof(z) == TYPE_DICTIONARY and String((z as Dictionary).get("owner", "")) == "F1":
+			target = z
+			break
+	ok(target != null, "（前提）F1 有己方区划")
+	if target == null:
+		return
+	for z in w.zones.zones:
+		if typeof(z) != TYPE_DICTIONARY or String((z as Dictionary).get("owner", "")) != "F1":
+			continue
+		(z as Dictionary)["population"] = 0.0
+		(z as Dictionary)["population_cap"] = 0.0
+		(z as Dictionary)["population_cap_bonus"] = 0.0
+	var zd: Dictionary = target
+	zd["population"] = 12.0
+	zd["population_cap"] = 10.0
+	zd["population_cap_bonus"] = 5.0
+	near(float(w.zones.population_cap_of(zd)), 15.0, 1e-6,
+		"（前提）有效上限 = 基础 10 + 加成 5")
+	near(AiArmyRes._owned_population_ratio(c), 12.0 / 15.0, 1e-6,
+		"★★ AI 人口比例用有效上限（12/15 = 0.8，而不是 12/10 被夹成 1.0）")
 
 
 ## ★★ 箭塔：一个区划可以多座；前线多、后方少；被入侵时靠中心；拆掉后不原地重建。

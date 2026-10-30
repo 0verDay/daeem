@@ -108,6 +108,8 @@ func _test_tech_gating(cfg) -> void:
 	var b = _base(w)
 	if b == null:
 		return
+	# ★★ 赤字规则：没有黄金产能时任何科技都会被拒，先给足。
+	give_gold_income(w, 100.0)
 	eq(w.tech_can_activate("food_1"), "", "1 级：第一行（一阶）科技可以启用")
 	eq(w.tech_can_activate("gold_1"), "",
 		"1 级：还没启用任何科技时，第一行的任意一条都能当「那一条」")
