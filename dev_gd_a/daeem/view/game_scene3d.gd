@@ -1426,6 +1426,10 @@ func _consume_events(events: Array) -> void:
 	_feed_red_dot_spawn_fx(events)
 	# ★ 本机阵营的建筑落成 → 建造音（别人的建造不播，见 `_feed_build_sfx`）。
 	_feed_build_sfx(events)
+	# ★ 本机单位的攻击 / 受击、己方建筑被命中 → 战斗音（见 `_feed_combat_sfx`）。
+	_feed_combat_sfx(events)
+	# ★ 本机招募完成 → 招募音；同一批多个单位只响一次（见 `_feed_recruit_sfx`）。
+	_feed_recruit_sfx(events)
 	if interaction != null:
 		interaction.pump(events)
 	# ★★ 胜负事件 → 结算画面。合作局两端都走这里：
@@ -1613,6 +1617,83 @@ func _feed_build_sfx(events: Array) -> void:
 		if String(b.owner) != mine:
 			continue
 		SfxRes.play_build()
+
+
+## 本机单位的攻击 / 受击、己方建筑被命中 → 近战 / 远程音效。
+##
+## ★★ 声音档位按**谁**判定（用户口径）：
+##   · `unit_attacked`：看**攻击者**的 `ranged`（远程 → bow attack，近战 → sword attack）；
+##   · `unit_hit`：看**被打的那个单位**的 `ranged`（远程单位受击 → bow hit）；
+##   · `building_hit`：建筑没有远近战之分，按**攻击者**判（箭塔这类建筑攻击算远程）。
+## ★ 只播本机阵营：这是全局音效、没有方位感，敌方 / AI 的互殴不该有声音。
+## ★ 节流在 `view/sfx.gd` 里做（同一档 0.2 秒最多一声），这里只负责翻译事件。
+func _feed_combat_sfx(events: Array) -> void:
+	if world == null:
+		return
+	var mine := String(world.my_faction)
+	if mine == "":
+		return
+	for evt in events:
+		var e: Dictionary = evt
+		var kind := String(e.get("type", ""))
+		if kind == "unit_attacked":
+			var attacker: Variant = e.get("unit", null)
+			if attacker == null or String(attacker.faction) != mine:
+				continue
+			if bool(attacker.ranged):
+				SfxRes.play_bow_attack()
+			else:
+				SfxRes.play_sword_attack()
+		elif kind == "unit_hit":
+			var victim: Variant = e.get("unit", null)
+			if victim == null or String(victim.faction) != mine:
+				continue
+			if bool(victim.ranged):
+				SfxRes.play_bow_hit()
+			else:
+				SfxRes.play_sword_hit()
+		elif kind == "building_hit":
+			var b: Variant = e.get("building", null)
+			if b == null or String(b.owner) != mine:
+				continue
+			if _hit_was_ranged(e.get("source", null)):
+				SfxRes.play_bow_hit()
+			else:
+				SfxRes.play_sword_hit()
+
+
+## 这一击是不是远程造成的？`source` 是单位就按它的 `ranged`；建筑（箭塔）没有该字段，
+## 它的攻击一律是投掷物 ⇒ 远程；来源为空时也按远程处理（投掷物是唯一无主的伤害源）。
+func _hit_was_ranged(source) -> bool:
+	if source == null:
+		return true
+	var rv: Variant = source.get("ranged")
+	if typeof(rv) == TYPE_BOOL:
+		return bool(rv)
+	return true
+
+
+## 本机阵营的招募完成 → 招募音。
+##
+## ★★ 「同一批只播一次」：一次读条结束会把队列里的多个单位**同一 tick** 生成，
+##   每个单位各推一条 `unit_recruited`（区划招募将领是 `zone_unit_recruited`）。
+##   这里只认「这一批事件里有没有我的」，有就播一声然后收工。
+func _feed_recruit_sfx(events: Array) -> void:
+	if world == null:
+		return
+	var mine := String(world.my_faction)
+	if mine == "":
+		return
+	for evt in events:
+		var e: Dictionary = evt
+		var kind := String(e.get("type", ""))
+		if kind != "unit_recruited" and kind != "zone_unit_recruited":
+			continue
+		var u: Variant = e.get("unit", null)
+		if u == null or String(u.faction) != mine:
+			continue
+		SfxRes.play_recruit()
+		return
 
 
 

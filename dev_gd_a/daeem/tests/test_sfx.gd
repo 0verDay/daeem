@@ -1,14 +1,15 @@
 ## test_sfx.gd —— 音效模块（view/sfx.gd）：菜单按下 / 菜单悬停 / 建造
 ##
-## 盯六件事：
-##   1. down / hover / build 三档素材都能载入，且都是**有效音频**（时长 > 0）——
-##      build.wav 被换过同名文件，这一项能抓到「导入缓存还是旧内容 / 文件坏了」；
+## 盯这些事：
+##   1. 所有档位（down / hover / build / 攻击 4 档 / recruit）素材都能载入，
+##      且都是**有效音频**（时长 > 0）—— 能抓到「导入缓存还是旧内容 / 文件坏了」；
 ##   2. `attach()` 幂等（fill_button 与控件自己各挂一次也只播一声）；
 ##   3. 只有菜单子树里的按钮会出声（HUD 按钮挂上也是静的）；
 ##   4. 按下接 `button_down`（按下去就响，不等松手）；禁用 / 无悬停平台不响；
 ##   5. fill_button 的按钮悬停音复用动画器那条 `mouse_entered`（不多连一条）；
 ##   6. 没有 `pressed` 信号的普通控件挂上去不报错；
-##   7. 音量档位：点击高于悬停（素材本身 hover 更响，靠这里的 dB 拉回来）。
+##   7. 音量档位：点击高于悬停（素材本身 hover 更响，靠这里的 dB 拉回来）；
+##   8. 攻击 / 受击四档各自有 0.2 秒闸门；招募不节流（一批只由调用方播一次）。
 extends "res://tests/test_case.gd"
 
 const SfxRes = preload("res://view/sfx.gd")
@@ -23,25 +24,47 @@ func _initialize() -> void:
 
 func _cases() -> void:
 	_test_streams_loaded()
+	_test_random_pick_covers_pool()
 	_test_attach_and_menu_gate()
 	_test_fill_button_hover_path()
 	_test_disabled_and_hover_off()
 	_test_attach_without_pressed_signal()
-	_test_build_sound()
+	_test_build_and_recruit_sound()
+	_test_combat_throttle()
 	_test_volume_levels()
 
 
 func _test_streams_loaded() -> void:
 	SfxRes._ensure_streams()
-	eq(SfxRes._click.size(), 1, "点击音（click_button/down.wav）载入")
-	eq(SfxRes._hover.size(), 1, "悬停音（click_button/hover.wav）载入")
-	eq(SfxRes._build.size(), 1, "建造音（build/build.wav）载入")
-	_check_audio(SfxRes._click[0] if not SfxRes._click.is_empty() else null, "点击音")
-	_check_audio(SfxRes._hover[0] if not SfxRes._hover.is_empty() else null, "悬停音")
-	_check_audio(SfxRes._build[0] if not SfxRes._build.is_empty() else null, "建造音")
+	var expected := {
+		"点击": [SfxRes._click, 1],
+		"悬停": [SfxRes._hover, 1],
+		"建造": [SfxRes._build, 1],
+		"远程攻击": [SfxRes._bow_attack, 2],
+		"远程受击": [SfxRes._bow_hit, 3],
+		"近战攻击": [SfxRes._sword_attack, 3],
+		"近战受击": [SfxRes._sword_hit, 3],
+		"招募": [SfxRes._recruit, 2],
+	}
+	for label in expected.keys():
+		var pair: Array = expected[label]
+		var pool: Array = pair[0]
+		eq(pool.size(), int(pair[1]), "%s音 %d 段都能载入" % [label, int(pair[1])])
+		for s in pool:
+			_check_audio(s, "%s音" % label)
 
 
-## ★ 同名替换 build.wav 之后，这一项验的是「导入出来的确实是新文件的有效音频」。
+## ★ 用户要求「同一音效随机播其多段素材」：验一个多段池确实每段都会被挑到。
+func _test_random_pick_covers_pool() -> void:
+	var seen: Dictionary = {}
+	for _i in 300:
+		var s = SfxRes._pick(SfxRes._sword_hit)
+		if s != null:
+			seen[s.get_instance_id()] = true
+	eq(seen.size(), SfxRes._sword_hit.size(), "★ 近战受击三段素材都会被随机挑到")
+
+
+## ★ 素材换过同名文件 / 导入缓存过期时，这一项会掉。
 func _check_audio(s, what: String) -> void:
 	ok(s is AudioStreamWAV, "%s 是 AudioStreamWAV" % what)
 	if not (s is AudioStreamWAV):
@@ -132,10 +155,32 @@ func _test_attach_without_pressed_signal() -> void:
 	c.queue_free()
 
 
-func _test_build_sound() -> void:
-	var before := SfxRes.build_play_count
+func _test_build_and_recruit_sound() -> void:
+	var b0 := SfxRes.build_play_count
 	SfxRes.play_build()
-	eq(SfxRes.build_play_count, before + 1, "★ play_build() 播一声并计数")
+	eq(SfxRes.build_play_count, b0 + 1, "★ play_build() 播一声并计数")
+
+	var r0 := SfxRes.recruit_play_count
+	SfxRes.play_recruit()
+	SfxRes.play_recruit()
+	eq(SfxRes.recruit_play_count, r0 + 2, "★ 招募不节流（一批只由调用方控制播一次）")
+
+
+## ★★ 用户拍板：攻击 / 受击同一档 0.2 秒最多一声；不同档互不影响。
+func _test_combat_throttle() -> void:
+	SfxRes._combat_last_ms.clear()
+	var bow0 := SfxRes.bow_attack_play_count
+	SfxRes.play_bow_attack()
+	SfxRes.play_bow_attack()
+	eq(SfxRes.bow_attack_play_count, bow0 + 1, "★ 同一档 0.2s 内只响一声（远程攻击）")
+
+	var sw0 := SfxRes.sword_attack_play_count
+	SfxRes.play_sword_attack()
+	eq(SfxRes.sword_attack_play_count, sw0 + 1, "★ 另一档不受影响（近战攻击）")
+
+	SfxRes._combat_last_ms.clear()
+	SfxRes.play_bow_attack()
+	eq(SfxRes.bow_attack_play_count, bow0 + 2, "★ 清掉闸门后同一档可以再响")
 
 
 ## ★ 素材本身 hover（峰值 0.345）比 down（0.154）响；音量档必须把这个关系翻过来。

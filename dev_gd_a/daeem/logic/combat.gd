@@ -678,6 +678,9 @@ static func attack_unit(world, cfg: ConfigRes, u: UnitRes, t: UnitRes) -> void:
 			u.splash_radius, u.siege)
 	else:
 		t.take_damage(cfg, world, damage, u, false, u.siege)
+	# ★ 音效事件（视图按阵营过滤后播攻击音）：每一次真正开火推一条。
+	#   ★ 远程也在**开火那一刻**推（投掷物命中另有受击事件，见 unit.take_damage）。
+	world.push_event({"type": "unit_attacked", "unit": u})
 
 
 ## 锁定一个建筑开始拆它（敌人 AI 用它拆挡路的城墙）。
@@ -749,11 +752,16 @@ static func attack_building(world, cfg: ConfigRes, u: UnitRes, b) -> void:
 	#    命中结算与 building_down 广播都在 projectile._impact 里。
 	#    ★ 2026.10.26：`u.siege` = 攻城标签 → 投掷物把它当 `ignore_reduction` 传给建筑，
 	#    于是投石车不受「建筑远程免伤 90%」影响。
+	world.push_event({"type": "unit_attacked", "unit": u})
 	if u.ranged:
 		ProjectileRes.spawn(world, cfg, String(u.faction), u, u.pos, b, true,
 			cfg.building_damage, 0.0, bool(u.siege))
-	elif b.take_damage(cfg, cfg.building_damage, u):
-		world.push_event({"type": "building_down", "building": b, "source": u})
+	else:
+		var destroyed: bool = b.take_damage(cfg, cfg.building_damage, u)
+		# ★ 受击事件（视图按阵营过滤）：这一下是否打死都要推，命中本身就该有声音。
+		world.push_event({"type": "building_hit", "building": b, "source": u})
+		if destroyed:
+			world.push_event({"type": "building_down", "building": b, "source": u})
 
 
 ## 会攻击的建筑（箭塔，以及编辑器里新加的任何 `attackable = true` 的建筑）开火：

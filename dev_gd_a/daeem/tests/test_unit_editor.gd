@@ -488,8 +488,12 @@ func _test_construction() -> void:
 	var b2 = w2.find_base_of(FactionRes.DEFAULT_FACTION)
 	ok(b2 != null, "（前提）开局有己方大本营")
 	if b2 != null:
-		ok(not b2.is_under_construction(),
-			"★★ 开局的大本营直接完工（instant，不等 5 秒）")
+		# ★★ 2026.10.31：`instant` 不再罩着大本营 —— 所有大本营都按 build_sec 起建，
+		#   这样开局能播「从地底升起」，与玩家手造的建筑同一条表现。
+		ok(b2.is_under_construction(), "★★ 开局的大本营也走读条（build_sec = 5）")
+		for i in 310:
+			w2.tick(DT)
+		ok(not b2.is_under_construction(), "★★ 5 秒之后大本营完工")
 	var tile2: Vector2i = _free_tile_near(w2, b2.tx + 4, b2.ty)
 	if tile2.x >= 0:
 		var t2 = w2.add_building("tower", tile2.x, tile2.y, FactionRes.DEFAULT_FACTION)

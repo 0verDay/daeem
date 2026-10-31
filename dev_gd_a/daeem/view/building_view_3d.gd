@@ -53,6 +53,8 @@ const BUILDING_OUTLINE_SHADER = preload("res://view/building_hover_outline.gdsha
 ## ★★ 所有折边的粗线带：由 `building_edge_ribbon.gd` 从建筑网格生成
 const BuildingEdgeRibbonRes = preload("res://view/building_edge_ribbon.gd")
 const BUILDING_EDGE_SHADER = preload("res://view/building_edge_outline.gdshader")
+## ★ 建造中的头顶进度条（3D billboard 批次，进度走每实例自定义数据）
+const BAR_SHADER = preload("res://view/building_construction_bar.gdshader")
 
 ## ★★ 有模型的建筑类型 → 模型路径（Blender 导出；**1 单位 = 1 格**、底边在 y = 0、铺满整格）。
 ##   游戏里按「格宽 × body_scale」**统一缩放** ⇒ 落地高度 = 模型高 × body_scale：
@@ -200,6 +202,23 @@ func setup(p_cfg: ConfigRes, p_world, p_palette) -> void:
 	#   背面折边仍然靠深度测试被本体挡住（shader 里按真实视线抬 bias）。
 	_edge_mat.render_priority = 1
 	_edge_meshes = {}
+	# ★★ 建造进度条：一个 billboard MultiMesh 画全部在建建筑（进度走每实例自定义数据）
+	_bar_mesh = QuadMesh.new()
+	_bar_mesh.size = Vector2(_cell * 0.52, _cell * 0.088)
+	_bar_mat = ShaderMaterial.new()
+	_bar_mat.shader = BAR_SHADER
+	_bar_mm = MultiMesh.new()
+	_bar_mm.transform_format = MultiMesh.TRANSFORM_3D
+	# ⚠️ 同建筑本体：`use_custom_data` 必须在 `instance_count` **之前**设
+	_bar_mm.use_custom_data = true
+	_bar_mm.mesh = _bar_mesh
+	_bar_mm.instance_count = BAR_CAPACITY
+	_bar_node = MultiMeshInstance3D.new()
+	_bar_node.name = "BuildProgressBars"
+	_bar_node.multimesh = _bar_mm
+	_bar_node.material_override = _bar_mat
+	_bar_node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(_bar_node)
 	for t in _model_meshes:
 		_edge_meshes[t] = _build_edge_mesh(_model_meshes[t])
 	_flag_edge_meshes = {}
@@ -433,6 +452,8 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 		return
 	shake_applied_last_frame = 0
 	flash_written_last_frame = 0
+	# ★ 建造动画 / 进度条要用本帧 dt（`_transform_of()` 的签名不动，改成读这个字段）
+	_frame_dt = dt
 	faded_last_frame = 0
 	hovered_last_frame = 0
 	selected_last_frame = 0
@@ -543,6 +564,8 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 	_sync_edge_layers(edge_items, false)
 	# ★★ 旗面（可动部件）单独一发：按占领进度摆在旗杆上（见 `_sync_flags`）
 	_sync_flags(marked, stamp)
+	# ★★ 建造表现：推进弹跳计时 + 画在建建筑的头顶进度条
+	_sync_build_bars()
 
 
 ## 一栋建筑在世界里的变换：底边贴地、尺寸 = 本体平面尺寸 × 视觉高度
@@ -561,7 +584,85 @@ var _xform_cache: Dictionary = {}
 var _xform_rev: int = -1
 
 
+## ---- 建造表现：升起 / 完成弹跳 / 头顶进度条（2026.10.31）----
+##
+## ★ 逻辑层早就有 `build_sec` 读条（`is_under_construction()` / `build_progress()`），
+##   这一层只负责**画出来**：读条期间整栋沉在地面以下匀速升起，读完那一刻弹一下再落地。
+## ★★ 为什么不能走 `_xform_cache`：那个缓存的前提是「建筑不会移动」。在建的建筑**每帧都在动**，
+##   所以 `_transform_of()` 对「在建 / 正在弹」的实例绕开缓存现算，其余照旧命中缓存。
+## ★ 全员可见性沿用 `_visible_to_me()`（战争迷雾里看不见的敌方建筑不画条）。
+const POP_UP_SEC := 0.16        ## 弹起段（秒）
+const POP_FALL_SEC := 0.14      ## 落下段（秒）
+const POP_SQUASH_SEC := 0.16    ## 落地压扁的回弹段（秒）
+const POP_CELLS := 0.16         ## 弹起高度（格）；0.16 格 ≈ 20 世界单位
+const BAR_CAPACITY := 64        ## 同时最多画多少条进度条
+
+## 上一帧这一栋是否在建（iid -> bool）：用来抓「建造完成」那一帧
+var _was_constructing: Dictionary = {}
+## 正在弹的实例：iid -> 已经过的时间（秒）
+var _pop_elapsed: Dictionary = {}
+## 本帧 dt（`sync()` 写、`_transform_of()` 读 —— 它的签名不能改，调用点很多）
+var _frame_dt: float = 0.0
+
+## 进度条批次
+var _bar_mesh: QuadMesh = null
+var _bar_mat: ShaderMaterial = null
+var _bar_mm: MultiMesh = null
+var _bar_node: MultiMeshInstance3D = null
+
+
+## 一栋建筑在建 / 弹跳时的**额外变换**（dy = 竖直偏移，sy = 纵向缩放）。
+## 返回空字典 = 没有动画（调用方走缓存）。
+func _anim_state(b) -> Dictionary:
+	var iid: int = int(b.get_instance_id())
+	if b.is_under_construction():
+		# 全程匀速跟着读条：进度 0% 整栋埋在土里，100% 刚好到地面
+		var p: float = b.build_progress()
+		return {"dy": -_world_height_of(b) * (1.0 - p)}
+	var t: Variant = _pop_elapsed.get(iid, null)
+	if t == null:
+		return {}
+	var e: float = float(t)
+	if e < POP_UP_SEC:
+		var u: float = e / POP_UP_SEC
+		return {"dy": POP_CELLS * _cell * (1.0 - (1.0 - u) * (1.0 - u))}
+	if e < POP_UP_SEC + POP_FALL_SEC:
+		var u2: float = (e - POP_UP_SEC) / POP_FALL_SEC
+		return {"dy": POP_CELLS * _cell * (1.0 - u2 * u2)}
+	var u3: float = (e - POP_UP_SEC - POP_FALL_SEC) / POP_SQUASH_SEC
+	if u3 <= 1.0:
+		# 落地压扁：0 → -10% → 0，正弦包络；模型原点在底边 ⇒ 缩放不会陷进地里
+		return {"dy": 0.0, "sy": 1.0 - 0.10 * sin(PI * u3)}
+	return {}
+
+
+## 这栋建筑在世界里有多高（世界单位）：模型类型读模型 AABB，方块类型读 `_height_of`。
+func _world_height_of(b) -> float:
+	var t := String(b.type)
+	var s: float = b.body_scale(cfg)
+	if _uses_model(t):
+		var m: Mesh = _model_meshes.get(t, null)
+		if m != null:
+			return m.get_aabb().size.y * _cell * s
+	return _cell * _height_of(b)
+
+
 func _transform_of(b) -> Transform3D:
+	# ★★ 在建 / 正在弹：现算并绕开缓存（建筑此刻每帧都在动）
+	var anim: Dictionary = _anim_state(b)
+	if not anim.is_empty():
+		var xa: Transform3D = _static_transform_of(b)
+		xa.origin.y += float(anim.get("dy", 0.0))
+		var sy: Variant = anim.get("sy", null)
+		if sy != null and _uses_model(String(b.type)):
+			var ka: float = _cell * b.body_scale(cfg)
+			xa.basis = Basis().scaled(Vector3(ka, ka * float(sy), ka))
+		if b.hit_flash > 0.0:
+			var cell_a: float = palette.cell_size()
+			var shake_a: float = HitFxRes.shake_tiles(b.hit_flash, _hit_amp, _hit_freq) * cell_a
+			shake_applied_last_frame += 1
+			xa.origin = Vector3(xa.origin.x + shake_a, xa.origin.y, xa.origin.z)
+		return xa
 	var rev: int = int(world.building_revision)
 	if _xform_rev != rev:
 		_xform_cache.clear()
@@ -579,6 +680,51 @@ func _transform_of(b) -> Transform3D:
 		shake_applied_last_frame += 1
 		xf.origin = Vector3(xf.origin.x + shake, xf.origin.y, xf.origin.z)
 	return xf
+
+
+## 建造中建筑的头顶进度条：一个 billboard MultiMesh 全画完。
+## ★ 同时负责**推进弹跳计时**与「在建 → 完工」那一刻的检测（每帧一次遍历）。
+func _sync_build_bars() -> void:
+	if _bar_mm == null or palette == null or palette.cam == null:
+		return
+	var cam_basis: Basis = palette.cam.global_transform.basis
+	var shown: int = 0
+	var seen: Dictionary = {}
+	for b in world.building_list:
+		if not b.alive:
+			continue
+		var iid: int = int(b.get_instance_id())
+		seen[iid] = true
+		var cons: bool = b.is_under_construction()
+		# 上一帧在建、这一帧完工 ⇒ 起跳
+		if _was_constructing.get(iid, false) and not cons:
+			_pop_elapsed[iid] = 0.0
+		_was_constructing[iid] = cons
+		if _pop_elapsed.has(iid):
+			var e: float = float(_pop_elapsed[iid]) + _frame_dt
+			if e > POP_UP_SEC + POP_FALL_SEC + POP_SQUASH_SEC:
+				_pop_elapsed.erase(iid)
+			else:
+				_pop_elapsed[iid] = e
+		if not cons or shown >= BAR_CAPACITY:
+			continue
+		if not _visible_to_me(b):
+			continue
+		var pos: Vector3 = palette.to_world(b.center())
+		pos.y = GROUND_LIFT + _world_height_of(b) + _cell * 0.22
+		_bar_mm.set_instance_transform(shown, Transform3D(cam_basis, pos))
+		_bar_mm.set_instance_custom_data(shown,
+			Color(clampf(b.build_progress(), 0.0, 1.0), 1.0, 0.0, 0.0))
+		shown += 1
+	# 清掉已经不存在的建筑留下的状态
+	for k in _was_constructing.keys():
+		if not seen.has(k):
+			_was_constructing.erase(k)
+	for k in _pop_elapsed.keys():
+		if not seen.has(k):
+			_pop_elapsed.erase(k)
+	_bar_mm.visible_instance_count = shown
+	_bar_node.visible = shown > 0
 
 
 ## ★★ 建筑在**屏幕上**的包围矩形（点击 / 悬停 / 框选用）。

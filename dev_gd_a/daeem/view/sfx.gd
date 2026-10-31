@@ -1,10 +1,15 @@
-## sfx.gd —— 游戏音效（菜单点击 / 菜单悬停 / 玩家建造）
+## sfx.gd —— 游戏音效（菜单点击 / 悬停、玩家建造、攻击 / 受击、招募）
 ##
-## 目前三档：
+## 目前这些档：
 ##   · `play_click()` —— 菜单页面按钮**按下**：`click_button/down.wav`；
 ##   · `play_hover()` —— 鼠标**移入**菜单按钮：`click_button/hover.wav`
 ##     （触屏没有悬停，`ThemeRes.hover_enabled()` = false 时不播）；
-##   · `play_build()` —— 本机阵营造好一栋建筑（`assets/sound/build/`）。
+##   · `play_build()` —— 本机阵营造好一栋建筑（`assets/sound/build/`）；
+##   · `play_bow_attack()` / `play_bow_hit()` —— 远程单位（兵 + 器械）攻击 / 受击；
+##   · `play_sword_attack()` / `play_sword_hit()` —— 近战单位攻击 / 受击；
+##   · `play_recruit()` —— 单位 / 将领招募完成（同一批只由调用方播一次）。
+##   ★ 攻击 / 受击四档各带 0.2 秒闸门（`ui.sfx_combat_interval_sec`）：大混战时
+##     不会几十支单位同时叠出几十声；单挑时仍每击都响。
 ##
 ## ★ 为什么是「静态工具 + 全局组标记」，而不是一条 autoload：
 ##   本作没有 autoload（见 quit_confirm.gd 文件头那条口径），而音效又必须跨页面
@@ -33,6 +38,10 @@ const ConfigRes = preload("res://logic/config.gd")
 const DEFAULT_CLICK_DB := 3.0
 const DEFAULT_HOVER_DB := -8.0
 const DEFAULT_BUILD_DB := 0.0
+const DEFAULT_COMBAT_DB := 0.0
+const DEFAULT_RECRUIT_DB := 0.0
+## 攻击 / 受击的节流窗口（秒）。同一档在这个窗口内最多响一声。
+const DEFAULT_COMBAT_INTERVAL_SEC := 0.2
 
 ## config 只读一次（与 press_fx.gd 同一种写法：运行中不改盘上的 config）。
 static var _cfg: ConfigRes = null
@@ -51,6 +60,29 @@ const HOVER_PATHS := [
 const BUILD_PATHS := [
 	"res://assets/sound/build/build.wav",
 ]
+const BOW_ATTACK_PATHS := [
+	"res://assets/sound/attack/bow/Bow Attack 1.wav",
+	"res://assets/sound/attack/bow/Bow Attack 2.wav",
+]
+const BOW_HIT_PATHS := [
+	"res://assets/sound/attack/bow/Bow Impact Hit 1.wav",
+	"res://assets/sound/attack/bow/Bow Impact Hit 2.wav",
+	"res://assets/sound/attack/bow/Bow Impact Hit 3.wav",
+]
+const SWORD_ATTACK_PATHS := [
+	"res://assets/sound/attack/sword/Sword Attack 1.wav",
+	"res://assets/sound/attack/sword/Sword Attack 2.wav",
+	"res://assets/sound/attack/sword/Sword Attack 3.wav",
+]
+const SWORD_HIT_PATHS := [
+	"res://assets/sound/attack/sword/Sword Impact Hit 1.wav",
+	"res://assets/sound/attack/sword/Sword Impact Hit 2.wav",
+	"res://assets/sound/attack/sword/Sword Impact Hit 3.wav",
+]
+const RECRUIT_PATHS := [
+	"res://assets/sound/recruit/Sword Unsheath 1.wav",
+	"res://assets/sound/recruit/Sword Unsheath 2.wav",
+]
 
 ## 播放器数量：连点 / 快速切页时不让后一声把前一声掐掉。
 const VOICE_COUNT := 6
@@ -58,13 +90,25 @@ const VOICE_COUNT := 6
 static var _click: Array = []
 static var _hover: Array = []
 static var _build: Array = []
+static var _bow_attack: Array = []
+static var _bow_hit: Array = []
+static var _sword_attack: Array = []
+static var _sword_hit: Array = []
+static var _recruit: Array = []
 static var _loaded: bool = false
 static var _voices: Array = []
 static var _voice_index: int = 0
+## 攻击 / 受击四档的节流时间戳（key = 档位名）。
+static var _combat_last_ms: Dictionary = {}
 ## 真正播出去的次数（只有测试 / 排查读；`attach()` 挂上但不在菜单里时它不该动）。
 static var click_play_count: int = 0
 static var hover_play_count: int = 0
 static var build_play_count: int = 0
+static var bow_attack_play_count: int = 0
+static var bow_hit_play_count: int = 0
+static var sword_attack_play_count: int = 0
+static var sword_hit_play_count: int = 0
+static var recruit_play_count: int = 0
 
 
 # ------------------------------------------------------------------
@@ -170,6 +214,36 @@ static func play_build() -> void:
 		build_play_count += 1
 
 
+## 远程（兵 / 器械）攻击：己方单位每一次开火（含拆建筑）。
+static func play_bow_attack() -> void:
+	if _combat_allowed("bow_attack") and _play_random(_bow_attack, combat_db()):
+		bow_attack_play_count += 1
+
+
+## 远程单位受击（含己方建筑被远程攻击命中）。
+static func play_bow_hit() -> void:
+	if _combat_allowed("bow_hit") and _play_random(_bow_hit, combat_db()):
+		bow_hit_play_count += 1
+
+
+## 近战单位攻击：己方单位每一次开火（含拆建筑）。
+static func play_sword_attack() -> void:
+	if _combat_allowed("sword_attack") and _play_random(_sword_attack, combat_db()):
+		sword_attack_play_count += 1
+
+
+## 近战单位受击（含己方建筑被近战攻击命中）。
+static func play_sword_hit() -> void:
+	if _combat_allowed("sword_hit") and _play_random(_sword_hit, combat_db()):
+		sword_hit_play_count += 1
+
+
+## 单位 / 将领招募完成。★ 同一批只该由调用方播一次（见 game_scene3d._feed_recruit_sfx）。
+static func play_recruit() -> void:
+	if _play_random(_recruit, recruit_db()):
+		recruit_play_count += 1
+
+
 ## 点击音量（dB）。默认 +3，配置键 `ui.sfx_click_db`；夹在 −30..+12 免得写坏。
 static func click_db() -> float:
 	return clampf(_num("ui.sfx_click_db", DEFAULT_CLICK_DB), -30.0, 12.0)
@@ -183,6 +257,34 @@ static func hover_db() -> float:
 ## 建造音量（dB）。默认 0，配置键 `ui.sfx_build_db`。
 static func build_db() -> float:
 	return clampf(_num("ui.sfx_build_db", DEFAULT_BUILD_DB), -30.0, 12.0)
+
+
+## 攻击 / 受击四档共用的音量（dB）。默认 0，配置键 `ui.sfx_combat_db`。
+static func combat_db() -> float:
+	return clampf(_num("ui.sfx_combat_db", DEFAULT_COMBAT_DB), -30.0, 12.0)
+
+
+## 招募音量（dB）。默认 0，配置键 `ui.sfx_recruit_db`。
+static func recruit_db() -> float:
+	return clampf(_num("ui.sfx_recruit_db", DEFAULT_RECRUIT_DB), -30.0, 12.0)
+
+
+## 攻击 / 受击的节流窗口（秒）。默认 0.2，配置键 `ui.sfx_combat_interval_sec`。
+static func combat_interval_sec() -> float:
+	return maxf(0.0, _num("ui.sfx_combat_interval_sec", DEFAULT_COMBAT_INTERVAL_SEC))
+
+
+## 这一档现在允许播吗？同一档在 `combat_interval_sec()` 内最多响一声。
+static func _combat_allowed(key: String) -> bool:
+	var sec: float = combat_interval_sec()
+	if sec <= 0.0:
+		return true
+	var now: int = Time.get_ticks_msec()
+	var last: int = int(_combat_last_ms.get(key, -1000000000))
+	if now - last < int(sec * 1000.0):
+		return false
+	_combat_last_ms[key] = now
+	return true
 
 
 static func _config() -> ConfigRes:
@@ -229,6 +331,11 @@ static func _ensure_streams() -> void:
 	_load_into(_click, CLICK_PATHS)
 	_load_into(_hover, HOVER_PATHS)
 	_load_into(_build, BUILD_PATHS)
+	_load_into(_bow_attack, BOW_ATTACK_PATHS)
+	_load_into(_bow_hit, BOW_HIT_PATHS)
+	_load_into(_sword_attack, SWORD_ATTACK_PATHS)
+	_load_into(_sword_hit, SWORD_HIT_PATHS)
+	_load_into(_recruit, RECRUIT_PATHS)
 
 
 static func _load_into(pool: Array, paths: Array) -> void:

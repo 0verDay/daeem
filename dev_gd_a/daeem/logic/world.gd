@@ -4438,7 +4438,10 @@ func add_building(type: String, tx: int, ty: int, owner: String, silent: bool = 
 	var zone_id: int = int(z["id"]) if z != null else -1
 	var b = BuildingRes.create(cfg, type, tx, ty, owner, zone_id)
 	# ★ 建造读条（config 的 build_sec；0 = 瞬发 = 与从前逐位一致）
-	if not instant:
+	# ★★ 2026.10.31：`instant` 只对「区划中心 / 开局防御阵地」这类布景生效，
+	#   **大本营一律走读条**（config 里 base.build_sec = 1）——玩家口径：
+	#   开局的大本营也算「刚开始建造」，要能看到它从地底升起。
+	if not instant or type == "base":
 		b.start_construction(cfg.building_build_sec(type))
 	buildings.set_cell(tx, ty, b)
 	_building_at[Vector2i(tx, ty)] = b

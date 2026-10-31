@@ -1876,6 +1876,10 @@ func take_damage(cfg: ConfigRes, world, amount: float, _source = null,
 	if downed:
 		return true
 	hit_flash = 1.0          # ★ 受击反应：闪白 + 左右振动（视图读它，逻辑不用）
+	# ★ 受击音效事件（视图按阵营过滤后播）：这一击是真实伤害才推。
+	#   ⚠️ `world` 允许为 null（测试里直接扣血的那条路），所以先判一下。
+	if amount > 0.0 and alive and world != null and world.has_method("push_event"):
+		world.push_event({"type": "unit_hit", "unit": self, "source": _source})
 	# ★★ 受击 ⇒ 招募脱战计时清零（用户口径：「当将领受到伤害时，读条中断」）。
 	#   放在扣血之前：哪怕这一击被护甲 / 减伤吃掉大半，也算「正在挨打」。
 	recruit_idle_timer = 0.0

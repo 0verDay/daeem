@@ -124,6 +124,8 @@ static func _impact(world, cfg: ConfigRes, p) -> void:
 		#    `p.ignore_reduction` 是攻城标签（投石车）：攻城不算远程，直接全额。
 		if p.target.take_damage(cfg, p.damage, p.source, true, p.ignore_reduction):
 			world.push_event({"type": "building_down", "building": p.target, "source": p.source})
+		# ★ 受击事件（视图按阵营过滤后播受击音）：命中即推，打死也推。
+		world.push_event({"type": "building_hit", "building": p.target, "source": p.source})
 		return
 
 	if p.splash_radius <= 0.0:

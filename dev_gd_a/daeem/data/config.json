@@ -558,11 +558,18 @@
       "   · sfx_click_db —— 菜单按钮按下（click_button/down.wav）；素材峰值只有 0.154，默认 +3。",
       "   · sfx_hover_db —— 菜单按钮悬停（click_button/hover.wav）；素材峰值 0.345 比点击还响，默认 -8。",
       "   · sfx_build_db —— 本机阵营的建筑落成（build/build.wav）；默认 0。",
-      "   ★ 三档共用同一个播放器池；配置缺失 / 写坏时用代码里的同一组默认值（夹在 -30..+12）。"
+      "   · sfx_combat_db —— 攻击 / 受击四档（attack/bow|sword）共用；默认 0。",
+      "   · sfx_recruit_db —— 单位 / 将领招募完成（recruit/）；默认 0。",
+      "   · sfx_combat_interval_sec —— 攻击 / 受击**同一档**的最短间隔（秒）；默认 0.2，",
+      "     大混战时不会几十支单位同时叠出几十声。0 = 不节流（每一击都播）。",
+      "   ★ 所有档共用同一个播放器池；配置缺失 / 写坏时用代码里的同一组默认值（夹在 -30..+12）。"
     ],
     "sfx_click_db": 3.0,
     "sfx_hover_db": -8.0,
     "sfx_build_db": 0.0,
+    "sfx_combat_db": 0.0,
+    "sfx_recruit_db": 0.0,
+    "sfx_combat_interval_sec": 0.2,
     "_mobile_refresh_comment": [
       "★ 手机端 HUD 的**调度节拍**（只在 OS.has_feature(\"mobile\") 时生效；桌面 / 测试仍每帧全刷）。",
       "  20Hz = 每 50ms 做一小块，而不是把「资源条 + 页签 + 命令卡 + 科技格 + 详细信息」",
@@ -1642,7 +1649,7 @@
     },
     "base": {
       "id": "base", "name": "大本营", "buildable": false,
-      "build_sec": 0,
+      "build_sec": 1,
       "cost": { "food": 0, "gold": 0 },
       "hp_max": 1000,
       "body_scale": 0.6,
