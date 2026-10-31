@@ -14,8 +14,9 @@
 ##       ★ 数值那一块现在**只有正文**：顶上那行「详细信息」标题按需求去掉了
 ##     阵营 / 盾徽 / 旗帜（162.5 宽，**本轮不做**，只留位置）
 ##     命令卡 3×3（每格 86.67，内容随页签实时切换）
-##     页签（**按选中对象动态显示**：选中部队 = 操作 / 单位两页；选中区划中心 = 招募；
-##           选中大本营 = 科技；选中普通建筑 = **一颗空页签**；什么都没选中 = 建筑 + 科技）
+##     页签（**按选中对象动态显示**：自己的部队 = 操作 / 单位；自己区划中心 = 招募；
+##           自己大本营 = 操作 / 科技；什么都没选中 = 建筑 + 科技；
+##           自己的无操作建筑 / 敌方 / 友方任何建筑单位 → **页签 + 命令卡整块隐藏**）
 ##     ★ 科技页的九格**不是命令卡的内容**：它由 view/tech_grid.gd 画在最上层
 ##       （同一个 3×3 几何），只有「科技」页才显示 —— 见 _refresh_tech_grid()
 ##
@@ -170,12 +171,14 @@ var _detail_troop_number: int = 0
 # ------------------------------------------------------------------
 # 右下「页签 + 命令卡」：显示哪几页**由当前选中的东西决定**
 #
-# ★★ 需求原话（这一版的核心）：
-#   · 选中部队 / 单位 → 只显示两颗页签：**操作**（对部队下达的指令）+ **单位**（招募单位的页）
-#   · **所有建筑都有一颗「操作」页**（第二十四节的需求）：大本营的操作页里是
-#     「升级大本营」、城墙 / 箭塔是「升级它们」、区划中心是粮食 / 黄金 / 人口特化
-#   · 选中区划中心   → 操作 + **招募**（九宫格的将领，点了排进这个区划的招募队列）
-#   · 选中大本营     → 操作 + **科技**（九条占位科技，点一下启用 / 再点弃用）
+# ★★ 需求原话：
+#   · 自己的部队 / 单位 → 两颗页签：**操作**（对部队下达的指令）+ **单位**（招募单位的页）
+#   · 自己的大本营     → 操作 + **科技**（升级大本营那一格在操作页；科技照旧）
+#   · 自己的区划中心   → **招募**（九宫格的将领，点了排进这个区划的招募队列）
+#   · 自己的**无操作建筑**（木墙 / 哨塔 / 资源建筑…）
+#                      → **页签 + 命令卡整块隐藏**
+#   · **敌方 / 友方任何建筑 / 单位** → **页签 + 命令卡整块隐藏**
+#     ★ 原话：「页签和命令卡都要隐藏，选中敌方/友方任何建筑/单位时，右下角标签都隐藏」。
 #   · 什么都没选中   → **建筑**（城墙 / 箭塔的建造入口）+ **科技**两页
 #     ★ 科技那颗与选中大本营时是**同一页**（同一个 PAGE_TECH、同一套九格）——
 #       需求原话：「该科技页签也会同步到选中大本营时的科技页签中」。
@@ -952,50 +955,91 @@ func _on_page_changed(_page: String) -> void:
 	_rebuild_card()
 
 
+## 「这一屏没有右下角」—— **页签列 + 命令卡整块隐藏**（不是立一颗空页签）。
+##
+## ★ 需求原话：「页签和命令卡都要隐藏，选中敌方/友方任何建筑/单位时，
+##   右下角标签都隐藏」。
+## ★ 空页列表就是唯一判据：`_sync_tabs()` 看到它就把 `page_tabs` 与 `command_card`
+##   一起 `visible = false`（页签的外框 `TabsFrame` 是它的子节点，一并收起）。
+func _hidden_command_ui_plan() -> Dictionary:
+	return {"kind": "noop", "pages": [], "default": ""}
+
+
+## 这一栋建筑现在有没有可操作项（决定右下角给不给页签）。
+##   · 大本营   → 有（`building_can_upgrade` 只对它能返回 true；操作页里是升级）
+##   · 区划中心 → 有（招募页；点中心走 `selected_zone` 那条路）
+##   · 其余建筑 → 没有（木墙 / 哨塔 / 石墙 / 警戒塔 / 粮田 / 房屋 / 矿脉…）
+##     ⇒ 选中它们时页签 + 命令卡整块隐藏。
+func _building_has_actions(b) -> bool:
+	if b == null or world == null:
+		return false
+	if String(b.type) == BuildingRes.TYPE_ZONE_CENTER:
+		return true
+	return world.building_can_upgrade(String(b.type))
+
+
+## 这一批单位是不是**全部属于本机那一方**。
+## ★ 右下角只给自己一方的对象下命令：友军（same_side 但不是自己）与敌方任何
+##   建筑 / 单位都整块隐藏（需求原话：「选中敌方/友方任何建筑/单位时，右下角标签都隐藏」）。
+func _units_all_own(units: Array) -> bool:
+	if world == null:
+		return false
+	for u in units:
+		if u == null or String(u.faction) != String(world.my_faction):
+			return false
+	return true
+
+
+## 这一批建筑是不是**全部属于本机那一方**（友军建筑同样不算「自己」）。
+func _buildings_all_own(buildings: Array) -> bool:
+	if world == null:
+		return false
+	for b in buildings:
+		if b == null or String(b.owner) != String(world.my_faction):
+			return false
+	return true
+
+
+## 这个区划是不是**本机那一方**的（友军 / 中立 / 敌方都不是）。
+func _zone_is_own(z: Dictionary) -> bool:
+	return world != null and String(z.get("owner", "")) == String(world.my_faction)
+
+
 ## 按当前选中对象算出「该显示哪几页」。
 ## ★ 需求原话见本文件上面那一段与 view/page_tabs.gd 的文件头。
 func _tab_plan() -> Dictionary:
 	if input_ctrl == null:
 		return {"kind": "none", "pages": [], "default": ""}
-	# ★★ 敌对的**单位 / 建筑**（本轮新增）：右下角**不给任何页签** ——
-	#    只立一颗**空格子**（`PAGE_NONE`：没有标签、对应的命令卡也是空的）。
-	#
-	#    需求原话：「玩家可以选中敌对单位/建筑（且只能单个选中），但其右下角不会显示
-	#              任何页签（有格子，但格子内没东西）」。
-	#    ★ 为什么是「一颗空格子」而不是「一列都不画」：
-	#      后者与「选中普通建筑」那条路是一致的（那一版也是空页签），而且实测截图里
-	#      「整列消失」看起来像界面缺了一块。`PAGE_NONE` 就是为这件事存在的常量
-	#      （见 view/page_tabs.gd 的文件头）。
-	#    ★★ 它必须排在**所有分支最前面**：敌人的大本营 / 区划中心与自己的长得一样，
-	#      落到下面那几条分支里会给出一整页「升级 / 特化 / 招募」——
+	# ★★ 敌方**任何**单位 / 建筑 → 右下角整块隐藏（页签 + 命令卡）。
+	#    需求原话（本次）：「选中敌方/友方任何建筑/单位时，右下角标签都隐藏」。
+	#    ★ 它必须排在**所有分支最前面**：敌人的大本营 / 区划中心与自己的长得一样，
+	#      落到下面那几条分支里会给出一整页「升级 / 招募」——
 	#      那是**给敌人下自己的命令**，逻辑层虽然会拒（拒因 faction / zone_owner），
 	#      但界面上摆着一颗点了必然被拒的格子，玩家只会以为功能坏了。
+	#    ★ 老需求「敌对对象保留一颗空格子」已被本次需求取代：现在页签 + 命令卡都收起。
+	#    ★★ 友军（盟友但不是我方）在输入层**也走 `selected_enemy`**（`FactionRes.same_side`
+	#      是严格的 a == b），所以这一条同时覆盖需求里的「敌方 / 友方任何建筑 / 单位」。
 	if _selected_enemy_kind() != "":
-		return {"kind": "enemy", "pages": [PageTabsRes.PAGE_NONE],
-			"default": PageTabsRes.PAGE_NONE}
-	# 区划中心（左键点中心 = 看这个区划的详情）→ 只给「招募」一页。
+		return _hidden_command_ui_plan()
+	# 区划中心（左键点中心 = 看这个区划的详情）→ **只有自己的区划**给「招募」。
 	# ★★ 2026.10.30：区域特化移除后，区划中心的操作页已经没有内容，
 	#   按需求去掉该页签；点中心默认直接停在招募页。
-	# ★★ 本次改动：**只有自己 / 友军的区划才给页签**。
-	#   `input_controller` 现在把**任何**归属的区划中心都交给 `select_zone`（用户需求：
-	#   不论敌友中立都显示区划产能，而不是显示「区划中心的血量」），所以「能不能对它
-	#   下命令」这层把关就落在这里 —— 敌方 / 中立区划只给一颗空格子（`PAGE_NONE`），
-	#   与「选中敌对建筑」那条路一致（需求：选中敌对对象只立格子、不给任何页签）。
+	# ★★ 本次需求：友军 / 中立 / 敌方区划的右下角**整块隐藏** —— 玩家不能再对
+	#   别人的区划下命令（逻辑层的 `can_recruit_zone` 仍有一道 owner 校验）。
 	if input_ctrl.selected_zone != null:
-		if not _zone_is_friendly(input_ctrl.selected_zone):
-			return {"kind": "zone_center_foreign", "pages": [PageTabsRes.PAGE_NONE],
-				"default": PageTabsRes.PAGE_NONE}
+		if not _zone_is_own(input_ctrl.selected_zone):
+			return _hidden_command_ui_plan()
 		return {"kind": "zone_center",
 			"pages": [PageTabsRes.PAGE_RECRUIT],
 			"default": PageTabsRes.PAGE_RECRUIT}
-	# ★★ 建筑：**一律有「操作」页**（需求原话：「为所有单位/建筑都添加上『操作』页签」），
-	#    默认就停在它上面 —— 升级 / 特化的入口住在那儿。
-	#      · 大本营   → 操作 + 科技（升级大本营那一格在操作页；科技照旧）
-	#      · 区划中心 → 只有招募（操作页已随区域特化一起移除）
-	#      · 城墙/箭塔 → 只有操作（升级那一格）
+	# ★★ 建筑：**友军建筑与敌人同一档**（整块隐藏）。自己的建筑里只有
+	#    大本营 / 区划中心有可操作项；其余（木墙 / 哨塔 / 石墙 / 警戒塔 /
+	#    粮田 / 房屋 / 矿脉…）同样整块隐藏。
 	#    ⚠️ 区划中心在 `_tab_plan` 前面那条 `selected_zone != null` 分支里也会命中
-	#      （点中心 = 看区划详情），那条分支同样只给「招募」。
+	#      （点中心 = 看区划详情），那条分支同样只给自己的区划「招募」。
 	if not input_ctrl.selected_buildings.is_empty():
+		if not _buildings_all_own(input_ctrl.selected_buildings):
+			return _hidden_command_ui_plan()
 		var b = _primary_building()
 		if b != null and b.type == BuildingRes.TYPE_BASE:
 			return {"kind": "base", "pages": [PageTabsRes.PAGE_ORDER, PageTabsRes.PAGE_TECH],
@@ -1003,15 +1047,17 @@ func _tab_plan() -> Dictionary:
 		if b != null and b.type == BuildingRes.TYPE_ZONE_CENTER:
 			return {"kind": "zone_center", "pages": [PageTabsRes.PAGE_RECRUIT],
 				"default": PageTabsRes.PAGE_RECRUIT}
-		# ★★ 2026.10.26：取消建筑升级后，木墙 / 哨塔 / 石墙 / 警戒塔没有任何可操作项
-		#    → 与「选中敌对建筑」同一档：立一颗空格子（PAGE_NONE）。
-		if b != null and not world.building_can_upgrade(String(b.type)):
-			return {"kind": "building", "pages": [PageTabsRes.PAGE_NONE],
-				"default": PageTabsRes.PAGE_NONE}
+		# ★★ 2026.10.31：取消建筑升级后，除大本营 / 区划中心外的建筑都没有可操作项
+		#    → 与「选中敌方 / 友军同类建筑」一致：整块隐藏。
+		if not _building_has_actions(b):
+			return _hidden_command_ui_plan()
 		return {"kind": "building", "pages": [PageTabsRes.PAGE_ORDER],
 			"default": PageTabsRes.PAGE_ORDER}
-	# 选中部队 / 单位 → 「操作」+「单位」两页（默认操作）
+	# 选中部队 / 单位 → 「操作」+「单位」两页（默认操作）。
+	# ★★ 本次需求：只有**自己的**部队才给这两页；友军单位同样整块隐藏。
 	if not _selected_troops(input_ctrl.selected_units).is_empty():
+		if not _units_all_own(input_ctrl.selected_units):
+			return _hidden_command_ui_plan()
 		return {"kind": "unit", "pages": [PageTabsRes.PAGE_ORDER, PageTabsRes.PAGE_UNIT],
 			"default": PageTabsRes.PAGE_ORDER}
 	# 什么都没选中 → 「建筑」+「科技」两页（默认建筑）。
@@ -1024,8 +1070,8 @@ func _tab_plan() -> Dictionary:
 	#   科技是「看一眼就切回来」的那种页（`_page_memory` 会记住玩家上次停在哪）。
 	#
 	# ⚠️ kind 写成 "empty" 而**不是** "none"：`_page_memory` 是按 kind 分桶记
-	#    「这一类选中上次停在哪一页」的。选中大本营那一类（kind = "base"）只有科技一页，
-	#    它在科技页上记住的 "tech" 一旦与空手这一类共用同一个桶，
+	#    「这一类选中上次停在哪一页」的。选中大本营那一类（kind = "base"）会在
+	#    「科技」页上记住 "tech"，一旦与空手这一类共用同一个桶，
 	#    就会出现「点过大本营之后，空手这一屏直接停在科技页」——
 	#    而空手时的默认页是建筑（手玩与测试都按这个前提起步）。
 	#    两类选中的页列表不一样，记忆就必须分开。
@@ -1034,12 +1080,16 @@ func _tab_plan() -> Dictionary:
 		"default": PageTabsRes.PAGE_BUILD}
 
 
-## 每帧把「该显示哪几页」推给 page_tabs。
+## 每帧把「该显示哪几页」推给 page_tabs，并同步命令卡的显隐。
 ##
 ## ★ 页列表没变（比如点完将领 1 又点将领 2）时**什么都不做** ——
 ##   玩家自己切到「单位」页之后，不该被下一帧抢回「操作」页。
 ## ★ 换了一类选中时，优先回到这一类**上次停的那一页**（`_page_memory`），
 ##   没有记录才用它自己的默认页。
+## ★★ 空页列表 = **右下角整块隐藏**（自己的无操作建筑 / 敌方 / 友方任何建筑单位）：
+##   页签列（含 `TabsFrame` 外框）与旁边的 3×3 命令卡一起收起 ——
+##   需求原话（本次）：「页签和命令卡都要隐藏，选中敌方/友方任何建筑/单位时，
+##   右下角标签都隐藏」。
 func _sync_tabs() -> void:
 	if page_tabs == null:
 		return
@@ -1050,13 +1100,27 @@ func _sync_tabs() -> void:
 		return
 	var plan := _tab_plan()
 	var pages: Array = plan["pages"]
+	# ★★ 可见性**每帧都写**：下面的 `key == _tab_key` 短路会跳过「同一类选中」的刷新，
+	#   而 visible 也可能被别的入口（观战 / 测试 / 以后的外部调用）改过。
+	var show_ui := not pages.is_empty()
+	page_tabs.visible = show_ui
+	if command_card != null:
+		command_card.visible = show_ui
 	var key := String(plan["kind"])
+	if not show_ui:
+		key += "|hidden"
 	for p in pages:
 		key += "|" + String(p)
 	if key == _tab_key:
 		return
 	_tab_kind = String(plan["kind"])
 	_tab_key = key
+	if not show_ui:
+		# 把页签内部状态也清空：下次显示另一类选中时，`set_pages()` 才不会因为
+		# 「组合没变」而留着上一批按钮 / 上一页。它会同步发 page_changed → 重建命令卡；
+		# 命令卡的 visible 已在上面关掉（页签与命令卡是同一块「右下角」）。
+		page_tabs.set_pages([], "")
+		return
 	var preferred := String(_page_memory.get(_tab_kind, plan["default"]))
 	page_tabs.set_pages(pages, preferred)
 	_rebuild_card()
@@ -1255,10 +1319,15 @@ func point_hits_ui(global_pos: Vector2) -> bool:
 	if ai_panel != null and ai_panel.visible and ai_panel.get_global_rect().has_point(global_pos):
 		return true
 	# ★★ 详细信息隐藏时，它那块区域恢复地图手势（盾徽 / 命令卡 / 页签仍然算 UI）。
+	# ★★ 右下角整块隐藏时（无操作建筑 / 敌方 / 友方任何建筑单位）卡与页签一起让路 ——
+	#    屏幕上没东西可点。
 	var detail_on := is_detail_visible()
-	if UiLayoutRes.point_hits_any(UiLayoutRes.interactive_rects(vp, detail_on), global_pos):
+	var cmd_on := _command_ui_visible()
+	if UiLayoutRes.point_hits_any(
+			UiLayoutRes.interactive_rects(vp, detail_on, cmd_on), global_pos):
 		return true
-	return UiLayoutRes.point_hits_any(UiLayoutRes.bottom_bar_rects(vp, detail_on), global_pos)
+	return UiLayoutRes.point_hits_any(
+		UiLayoutRes.bottom_bar_rects(vp, detail_on, cmd_on), global_pos)
 
 
 ## 接收一个触摸事件（由 game_scene3d 在 `_input` 里转发）。
@@ -2730,7 +2799,8 @@ func blocks_edge_scroll(global_pos: Vector2) -> bool:
 	if UiLayoutRes.in_edge_band(vp, global_pos, margin):
 		return false
 	return UiLayoutRes.point_hits_any(
-		UiLayoutRes.interactive_rects(vp, is_detail_visible()), global_pos)
+		UiLayoutRes.interactive_rects(vp, is_detail_visible(), _command_ui_visible()),
+		global_pos)
 
 
 ## 鼠标是不是停在**底栏**上（详细信息 / 阵营 / 命令卡 / 页签 —— **不含**左下小地图）。
@@ -2750,7 +2820,8 @@ func blocks_wheel_zoom(global_pos: Vector2) -> bool:
 	if ai_panel != null and ai_panel.visible and ai_panel.get_global_rect().has_point(global_pos):
 		return true
 	return UiLayoutRes.point_hits_any(
-		UiLayoutRes.bottom_bar_rects(view_size(), is_detail_visible()), global_pos)
+		UiLayoutRes.bottom_bar_rects(view_size(), is_detail_visible(), _command_ui_visible()),
+		global_pos)
 
 
 ## ★★ 当前这一屏「操作」页该画哪几格 —— 用一个**短字符串签名**表达（见 `_card_sig()`）。
@@ -2951,8 +3022,9 @@ func _refresh_shell() -> void:
 			if objective_panel.visible:
 				perf_y = objective_panel.position.y + objective_panel.size.y + 6.0
 			_perf_label.position = Vector2(6.0, perf_y)
-	# ★★ 页签先按「现在选中了什么」推上去（选中部队 = 操作/单位；选中区划中心 = 招募；
-	#    选中大本营 = 科技；选中普通建筑 = 一颗都没有；什么都没选中 = 建筑 + 科技）。
+	# ★★ 页签先按「现在选中了什么」推上去（自己的部队 = 操作/单位；自己的区划中心 = 招募；
+	#    自己的大本营 = 操作/科技；无操作建筑 / 敌方 / 友方任何建筑单位 = **页签 + 命令卡
+	#    整块隐藏**；什么都没选中 = 建筑 + 科技）。
 	#    命令卡的内容跟着页签走（page_tabs 发 page_changed → _rebuild_card）。
 	_sync_tabs()
 	# ★★ 命令卡的内容按签名比一次（见 `_card_sig()`）：页签组合没变、但
@@ -2990,6 +3062,17 @@ func has_detail_selection() -> bool:
 ## 详细信息面板现在是否可见（隐藏时它那块区域恢复地图交互，见 ui_layout 的两个 rects）。
 func is_detail_visible() -> bool:
 	return detail_panel != null and detail_panel.visible
+
+
+## 右下角「命令卡 + 页签」整块现在是否可见。
+## ★ 它不只影响画面：`point_hits_ui()` / `blocks_edge_scroll()` / `blocks_wheel_zoom()`
+##   也要按它决定「右下角还算不算 UI」—— 否则隐藏之后仍有一块看不见的死区
+##   吞手势 / 边缘滚屏 / 滚轮。
+## ★ 两个控件由 `_sync_tabs()` 一起开关；这里同时看两者，任何一边被外部关掉
+##   都不会把隐形的格子继续算成可点区域。
+func _command_ui_visible() -> bool:
+	return page_tabs != null and page_tabs.visible \
+		and command_card != null and command_card.visible
 
 
 ## 详细信息面板：敌人 → 区划 → 建筑 → 部队 四种互斥选中，一次只走一支。

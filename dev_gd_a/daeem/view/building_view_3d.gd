@@ -15,7 +15,8 @@
 ## ★★ 高度从哪来（关键：`logic/` 一格不改）：
 ##   · 方块类型：**纯表现**的常量，写在 `config.json` 的 `render.building_height.<type>`，
 ##     缺省 1.0 格（见 `_height_of`：箭塔 1.15 / 大本营 1.35 …）；
-##   · 模型类型（城墙 / 箭塔 / 大本营 / 区划中心）：由模型自带（城墙 0.55、箭塔 1.9167、大本营 2.25、旗子 0.86 格高）。
+##   · 模型类型（七种建筑 + 大本营 / 区划中心）：由模型自带 —— 木墙 0.80、石墙 0.88、
+##     哨塔 1.16、警戒塔 1.57、粮田 0.33、房屋 0.91、矿脉 0.63、大本营 1.42、旗子 0.86 格高。
 ##   它**不参与**寻路 / 碰撞 / 攻击（那些都读 `logic/building.gd`
 ##   的 `body_scale`，仍然是一格里的平面块）。
 ##   ★ 这条边界很重要：视觉上立起来 ≠ 逻辑上有高度。
@@ -54,20 +55,28 @@ const BuildingEdgeRibbonRes = preload("res://view/building_edge_ribbon.gd")
 const BUILDING_EDGE_SHADER = preload("res://view/building_edge_outline.gdshader")
 
 ## ★★ 有模型的建筑类型 → 模型路径（Blender 导出；**1 单位 = 1 格**、底边在 y = 0、铺满整格）。
-##   游戏里按「格宽 × body_scale」**统一缩放** ⇒ 落地尺寸 = 128 × body_scale × 模型尺寸：
-##     · 城墙（body_scale 1.0）：128 × 128 × 70.4（模型高 0.55）；
-##     · 箭塔 / 大本营（body_scale 0.6）：76.8 × 76.8 × 147.2 / 172.8（模型高 1.9167 / 2.25）；
+##   游戏里按「格宽 × body_scale」**统一缩放** ⇒ 落地高度 = 模型高 × body_scale：
+##     · 木墙（1.0）/ 石墙（1.0）：128 × 128 × 102.4 / 112.6（模型高 0.80 / 0.88，满格 0.98 见方）；
+##     · 哨塔 / 警戒塔 / 大本营（0.6）：76.8 × 76.8 × 149 / 200.4 / 182.4（模型高 1.94 / 2.61 / 2.37）；
+##     · 粮田 / 房屋（0.6）、矿脉（0.55）：42.2 / 116 / 80.3（模型高 0.55 / 1.51 / 1.14）；
 ##   · 区划中心（body_scale 1.0，**旗杆**）：128 × …（模型高 1.10 ⇒ 落地 140.8）。
 ##   ★ 这些类型一律用各自的模型；加载不到由 `_load_building_mesh` 报错，**不退回方块**。
 ##   ★★ 这张表是**唯一**的「哪些类型走模型」的判据（`_uses_model` / `_mesh_for` 都读它）。
+##   ★★ 2026.10.31：七种建筑全部换成 Blender 低模（木墙 / 石墙 / 哨塔 / 警戒塔 / 粮田 / 房屋 / 矿脉）。
+##     · 两种墙是**四向对称**的 —— 墙会被摆进环里，没有旋转，模型有正反面就会有一半朝里；
+##     · 两面墙都**占满整格**（0.98 见方），与「整格阻塞」的语义对齐；
+##     · 模型自带顶点色（GLB 的 COLOR_0）：rgb = 材质原色，a = 阵营色遮罩
+##       （1 = 旗 / 屋顶 / 廊柱 / 栅栏这类显眼件吃阵营色，0 = 保留原色）。
 const BUILDING_MODELS := {
 	"wall": "res://assets/models/wall_lowpoly.glb",
 	"tower": "res://assets/models/tower_lowpoly.glb",
-	# ★★ 2026.10.26：第二行建筑复用基础版的低模（靠颜色 / 名称区分）。
-	"stone_wall": "res://assets/models/wall_lowpoly.glb",
-	"watch_tower": "res://assets/models/tower_lowpoly.glb",
+	"stone_wall": "res://assets/models/stone_wall_lowpoly.glb",
+	"watch_tower": "res://assets/models/watch_tower_lowpoly.glb",
 	"base": "res://assets/models/base_lowpoly.glb",
 	"zone_center": "res://assets/models/zone_center_lowpoly.glb",
+	"farm": "res://assets/models/farm_lowpoly.glb",
+	"house": "res://assets/models/house_lowpoly.glb",
+	"mine": "res://assets/models/mine_lowpoly.glb",
 }
 
 ## ★★ 可动部件：类型 → 模型路径。这些网格**不随建筑本体固定**，而是由 `_sync_flags()` 按
@@ -278,7 +287,8 @@ func _height_of(b) -> float:
 				h = 1.35
 			"zone_center":
 				h = 0.35
-			# ★★ 资源建筑：程序化立方体占位，用高度区分类型。
+			# ★ 资源建筑：**兜底**数值。2026.10.31 起 farm / house / mine 也走模型
+			#   （见 BUILDING_MODELS），这几档只在模型缺失时才有意义。
 			"farm":
 				h = 0.55
 			"house":

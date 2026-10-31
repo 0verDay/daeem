@@ -277,6 +277,15 @@ class FillAnimator extends Control:
 	var _latched: bool = false
 	## 鼠标是否停在这颗按钮上（按下时也算「在」，否则一按下背景就退回去）。
 	var _hovered: bool = false
+	## ★★ 当前是不是**按住**这颗按钮（`button_down` 到 `button_up` 之间）。
+	##   单独记一份而不是读 `_button.is_pressed()`：引擎在指针移出时可能先把
+	##   `is_pressed()` 清掉，那样 `mouse_exited` 就不知道「这次离开发生在按住期间」。
+	var _pointer_down: bool = false
+	## ★★ 按住期间指针**离开过**按钮（`mouse_exited` 把 `_hovered` 清掉的那一下）。
+	##   松开时靠它决定「要不要把悬停钉回去」——不记这一位就会出现：
+	##   长按 → 移出按钮 → 松手 ⇒ `_on_button_up()` 无条件写 `_hovered = true`，
+	##   而此后再也没有 `mouse_exited` 来清它 ⇒ 填充永远停在满格（本次修的 bug）。
+	var _left_while_pressed: bool = false
 	## 鼠标信号连过了吗（`setup_host()` 可能被调多次：它要幂等，不然信号会连两遍）。
 	var _host_ready: bool = false
 	## 允许填充吗（被显式关掉时为 false）。⚠️ **禁用态不再是 false**：
@@ -587,19 +596,35 @@ class FillAnimator extends Control:
 
 	func _on_mouse_entered() -> void:
 		_hovered = true
+		# 指针又回到按钮上（即使还按着）⇒ 松开时应该保持悬停。
+		_left_while_pressed = false
 		# ★ 悬停音借用这一条已有的 `mouse_entered`（不给宿主再连第二条，见 sfx.attach 的说明）。
 		SfxRes.on_hover(_button)
 
 	func _on_mouse_exited() -> void:
 		_hovered = false
+		# ★★ 按住期间移出：记下这一位（松开时不能再把悬停钉回去，见字段说明）。
+		if _pointer_down:
+			_left_while_pressed = true
 
 	## 按下的一瞬间把悬停**钉住**：某些平台（触摸 / 手写笔）按下时鼠标会先「离开」，
 	##   不钉的话表现是「按下去背景反而退回去了」—— 手玩的反馈全丢了。
 	func _on_button_down() -> void:
+		_pointer_down = true
+		_left_while_pressed = false
 		_hovered = true
 
+	## 松开：**只有按住期间没离开过**才把悬停钉回 true。
+	##
+	## ★★ 本次修的 bug：旧实现在这里无条件写 `_hovered = true`。长按按钮 → 把鼠标
+	##   移到按钮外 → 松手时事件顺序是 `mouse_exited`（hover=false）→ `button_up`
+	##   （又被写回 true）⇒ 此后再没有 `mouse_exited`，填充永远停在满格。
+	##   现在移出过就保持 false，让 `_process()` 走 `DRAIN_TIME` 的反向渐出。
 	func _on_button_up() -> void:
-		_hovered = true
+		if _pointer_down:
+			_hovered = not _left_while_pressed
+		_pointer_down = false
+		_left_while_pressed = false
 
 
 	## ★★ 按钮变得**不可见于树**（页面隐藏 / CanvasLayer 收起 / 面板让路）时，悬停作废。
@@ -620,6 +645,10 @@ class FillAnimator extends Control:
 		set_process(shown)
 		if not shown:
 			_hovered = false
+			# 隐藏期间收不到 `button_up`：把按住状态一起作废，避免再次显示时
+			# 收到一个迟到的 `button_up` 把悬停钉回去（见 `_on_button_up`）。
+			_pointer_down = false
+			_left_while_pressed = false
 
 
 	## 外部显式作废悬停（`view/start_screen.gd` 的 `close()` / `open_menu()` 兜底用）。

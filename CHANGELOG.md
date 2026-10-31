@@ -7,6 +7,21 @@
 
 本版本为在godot引擎内的原型开发，仅展示完整的局内玩法
 
+### 2026.10.31 修复长按命令卡后移出按钮松手、填充一直保持的 bug
+1. 根因：`view/fill_button.gd` 的 `_on_button_up()` 无条件把 `_hovered` 写回 `true`。事件顺序是「长按 → 移出按钮（`mouse_exited` 把悬停清掉）→ 松手（`button_up` 又写回 true）」⇒ 之后再也没有 `mouse_exited` 来清它，`_goal()` 一直是 1，填充永远停在满格
+2. 修复：动画器新增 `_pointer_down` / `_left_while_pressed` 两个状态位；`mouse_exited` 只在**按住期间**记下「离开过」，`_on_button_up()` 按这一位决定是否把悬停钉回去（离开过就保持 false，走 `DRAIN_TIME` 反向渐出）
+3. 边角：按住期间移出后又移回按钮再松手 → `mouse_entered` 会清掉标记，悬停仍然成立；原地松手保持满格；按钮隐藏时把按住 / 离开标记一起作废，避免迟到的 `button_up` 把悬停钉回去
+4. 测试：`test_fill_button.gd` 新增「长按移出后松手必须渐出到空」「原地松手保持满格」「移出又移回后松手仍算悬停」三条用例（**150 项全过**）
+
+### 2026.10.31 无操作建筑 / 敌方 / 友方选中时隐藏右下角页签与命令卡
+1. `view/hud.gd` 的 `_tab_plan()` 收紧为「**只给自己的可操作对象**发页签」：自己的部队 / 单位、自己的大本营、自己的区划中心；其余一律返回**空页列表**
+2. 新增 `_units_all_own()` / `_buildings_all_own()` / `_zone_is_own()` 三个归属判据：友军单位 / 建筑、敌方任何建筑单位、非自己的区划中心都不再拿到操作入口；自己的无操作建筑（木墙 / 哨塔 / 石墙 / 警戒塔 / 粮田 / 房屋 / 矿脉…）仍由 `_building_has_actions()` 判空
+3. `_sync_tabs()`：空页列表 = **页签列 + 3×3 命令卡整块隐藏**（`page_tabs.visible = false` 连 `TabsFrame` 外框，`command_card.visible = false`）；可见性每帧写回，改选自己的部队 / 大本营 / 区划中心或空手时一起恢复
+4. 删除 `view/page_tabs.gd` 的 `PAGE_NONE` 空页签常量与 `LABELS` 项 —— 选中敌方 / 友方不再立「有格子但没东西」的占位页签
+5. `view/ui_layout.gd` 的 `interactive_rects()` / `bottom_bar_rects()` 参数改为 `command_ui_visible`（同时管命令卡与页签）；`hud.point_hits_ui()` / `blocks_edge_scroll()` / `blocks_wheel_zoom()` 按整块可见性传参 —— 隐藏后不再吞地图手势 / 边缘滚屏 / 滚轮缩放
+6. `view/page_tabs.gd` / `view/ui_layout.gd` 的文件头与注释同步新口径
+7. 测试：`test_ui.gd` 改为断言「页签 + 命令卡整块隐藏 / 0 颗 / 当前页清空」，并补「所有非大本营 / 非区划中心建筑类型的判据覆盖」「敌方单位 / 建筑 / 区划全部隐藏（友方在输入层同走 `selected_enemy`）」「隐藏后重新选自己的对象或空手能恢复」「隐藏块不再拦手势 / 滚轮」等用例（**1380 项全过**）；`test_ai_observer` / `test_settings_menu` / `test_touch` / `test_hover_fill` 保持通过
+
 ### 2026.10.29 战役菜单新增三个 ai_test 测试战役（简单 / 中等 / 困难）
 1. `data/campaigns/demo/levels/` 新增 `ai_test_easy.json` / `ai_test_normal.json` / `ai_test_hard.json`：`between_moutains` 1v1，双方各 1 名开局将领、100 粮 / 100 金；两边都写 `ai: "commander"` + `commander_ai.difficulty`（easy / normal / hard）——玩家在详情页选哪一方，运行时就把那一方的 AI 摘掉，另一边按本关难度接管
 2. `data/campaigns/demo/campaign.json` 的 `levels[]` 追加三关；`data/campaigns_menu.json` 新增 `c4` / `c5` / `c6` 三个独立战役条目，分别指向这三关

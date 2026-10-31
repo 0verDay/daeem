@@ -217,9 +217,10 @@ static func hover_rect(h: float) -> Rect2:
 	var hh: float = clampf(h, HOVER_MIN_H, HOVER_MAX_H)
 	return Rect2(CARD_RECT.position.x, HOVER_BOTTOM - hh, HOVER_W, hh)
 
-## 页签列（宽 108.333、高 260）。★ 现在是**动态页签**：选中部队时 2 颗（操作 / 单位）、
-## 选中区划中心时 1 颗（招募）、选中大本营时 1 颗（科技）、选中普通建筑时**一颗都没有**、
-## 什么都没选中时 1 颗（建筑）—— 见 view/page_tabs.gd 的文件头。
+## 页签列（宽 108.333、高 260）。★ 现在是**动态页签**：自己的部队 2 颗（操作 / 单位）、
+## 自己的区划中心 1 颗（招募）、自己的大本营 2 颗（操作 / 科技）、
+## 无操作建筑 / 敌方 / 友方任何建筑单位时**页签与命令卡一起隐藏**、
+## 什么都没选中时 2 颗（建筑 / 科技）—— 见 view/page_tabs.gd 的文件头。
 ## TABS_COUNT 只是「最多可能建几颗」（那一列最多放得下 3 颗 86.67 高的按钮）。
 ## ★ 按 13/12 等比放大：100×240 → 108.3333×260，左缘 1820 → 1811.6667。
 const TABS_RECT := Rect2(1811.6667, 820.0, 108.3333, 260.0)
@@ -825,7 +826,11 @@ static func apply_fixed_detail(c: Control) -> void:
 ##   面板**其余**的地方（右栏、左栏上半）仍然是「只有文字 → 照样滚屏」。
 ## @param detail_visible 详细信息面板是否可见。隐藏时它那块区域**不再算 UI**
 ##        （左栏网格与面板矩形都不拦输入 → 恢复地图滚轮 / 边缘滚屏 / 触摸手势）。
-static func interactive_rects(view_size: Vector2, detail_visible: bool = true) -> Array[Rect2]:
+## @param command_ui_visible 右下角「命令卡 + 页签」是否可见。选中无操作建筑 /
+##        敌方 / 友方任何建筑单位时它们**整块隐藏**（见 view/page_tabs.gd 的文件头），
+##        此时那块区域不该继续吞掉地图手势 / 边缘滚屏 —— 屏幕上根本没有东西可点。
+static func interactive_rects(view_size: Vector2, detail_visible: bool = true,
+		command_ui_visible: bool = true) -> Array[Rect2]:
 	var shift := Vector2(maxf(0.0, view_size.x - DESIGN_W), maxf(0.0, view_size.y - DESIGN_H))
 	var out: Array[Rect2] = []
 	for i in SQUAD_SLOTS:
@@ -833,14 +838,15 @@ static func interactive_rects(view_size: Vector2, detail_visible: bool = true) -
 		sr.position += shift
 		out.append(sr)
 	out.append(MAP_RECT)                                        # 左下小地图，贴左下
-	for i in CARD_SLOTS:
-		var r := card_cell_rect(i)                          # 贴右下
-		r.position += shift
-		out.append(r)
-	for i in TABS_COUNT:
-		var r2 := tab_button_rect(i)                        # 贴右下
-		r2.position += shift
-		out.append(r2)
+	if command_ui_visible:
+		for i in CARD_SLOTS:
+			var r := card_cell_rect(i)                      # 贴右下
+			r.position += shift
+			out.append(r)
+		for i in TABS_COUNT:
+			var r2 := tab_button_rect(i)                    # 贴右下
+			r2.position += shift
+			out.append(r2)
 	if detail_visible:
 		var gr := troop_grid_rect()                         # 详细信息左栏，贴左下
 		gr.position += panel_content_pos()
@@ -865,7 +871,10 @@ static func interactive_rects(view_size: Vector2, detail_visible: bool = true) -
 ## ★ 贴边：详细信息 / 阵营盾徽都贴**左**（只跟 y 走）；命令卡 / 页签贴右下（x/y 都跟）。
 ## @param detail_visible 详细信息是否可见。隐藏时只去掉它那一块 —— 盾徽 / 命令卡 / 页签
 ##       仍然算底栏（它们还在屏幕上）。
-static func bottom_bar_rects(view_size: Vector2, detail_visible: bool = true) -> Array[Rect2]:
+## @param command_ui_visible 右下角「命令卡 + 页签」是否可见。整块隐藏时它那一块
+##        也**不再算底栏**（见 `interactive_rects` 的同一参数）。
+static func bottom_bar_rects(view_size: Vector2, detail_visible: bool = true,
+		command_ui_visible: bool = true) -> Array[Rect2]:
 	var shift := Vector2(maxf(0.0, view_size.x - DESIGN_W), maxf(0.0, view_size.y - DESIGN_H))
 	var out: Array[Rect2] = []
 	if detail_visible:
@@ -875,10 +884,13 @@ static func bottom_bar_rects(view_size: Vector2, detail_visible: bool = true) ->
 	var f := FACTION_RECT
 	f.position.y += shift.y
 	out.append(f)
-	for r in [CARD_RECT, TABS_RECT]:        # 贴右下：右下都修正
-		var rr: Rect2 = r
-		rr.position += shift
-		out.append(rr)
+	if command_ui_visible:
+		var card := CARD_RECT             # 贴右下：右下都修正
+		card.position += shift
+		out.append(card)
+		var tabs := TABS_RECT
+		tabs.position += shift
+		out.append(tabs)
 	return out
 
 

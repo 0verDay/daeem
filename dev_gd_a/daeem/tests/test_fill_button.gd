@@ -20,6 +20,9 @@ func _cases() -> void:
 	_test_hover_fill()
 	_test_drain_is_gradual()
 	_test_press_holds_hover()
+	_test_press_drag_out_release_drains()
+	_test_press_release_inside_keeps_hover()
+	_test_reenter_while_pressed_keeps_hover()
 	_test_pressed_snaps_full()
 	_test_latched()
 	_test_gradient()
@@ -153,6 +156,69 @@ func _test_press_holds_hover() -> void:
 	ok(FillButtonRes.fill_progress(b) > 0.4,
 		"★ 按下的一瞬间不会把悬停抖掉（进度继续往上）")
 
+	b.queue_free()
+
+
+## ★★ 回归（用户报的 bug）：长按命令卡某一格 → 把鼠标移到按钮外 → 松手，
+##   那一格的金色填充必须渐出，**不能永远停在满格**。
+##
+## 旧实现的顺序是：`mouse_exited`（hover=false）→ `button_up`（无条件写回 true）
+##   ⇒ 之后再没有 `mouse_exited` 来清它，填充就卡住了。
+func _test_press_drag_out_release_drains() -> void:
+	var b := _new_button()
+	var anim := FillButtonRes.attach_text(b)
+	b.mouse_entered.emit()
+	_pump(anim, 40)
+	ok(FillButtonRes.fill_progress(b) >= 0.999, "（前提）悬停先填满")
+
+	b.button_down.emit()
+	b.mouse_exited.emit()
+	_pump(anim, 40)
+	ok(FillButtonRes.fill_progress(b) <= 0.001, "（前提）按住时移出 → 已渐出到空")
+
+	b.button_up.emit()
+	_pump(anim, 40)
+	ok(FillButtonRes.fill_progress(b) <= 0.001,
+		"★★ 长按后移出按钮再松手 → 填充保持为空（不再卡在满格）")
+	ok(not anim._hovered, "★ 松手时指针在外 ⇒ 不把悬停态钉回 true")
+	ok(not anim._left_while_pressed, "★ 松开后「按住期间离开过」的标记已清掉")
+
+	# 再移回来：照常重新填满（修 bug 不能把正常悬停一起弄坏）。
+	b.mouse_entered.emit()
+	_pump(anim, 40)
+	ok(FillButtonRes.fill_progress(b) >= 0.999, "★ 重新移入 → 照常填满")
+	b.queue_free()
+
+
+## 对照组：按住后**原地**松手，悬停仍然成立（填充保持满格，不能误渐出）。
+func _test_press_release_inside_keeps_hover() -> void:
+	var b := _new_button()
+	var anim := FillButtonRes.attach_text(b)
+	b.mouse_entered.emit()
+	_pump(anim, 40)
+	b.button_down.emit()
+	b.button_up.emit()
+	_pump(anim, 10)
+	ok(FillButtonRes.fill_progress(b) >= 0.999,
+		"★★ 按住后原地松手 → 悬停仍成立（填充保持满格）")
+	ok(anim._hovered, "★ 原地松手不会把悬停误清掉")
+	b.queue_free()
+
+
+## 按住期间移出、**又移回**按钮再松手：仍然算悬停（离开的标记要在重新进入时清掉）。
+func _test_reenter_while_pressed_keeps_hover() -> void:
+	var b := _new_button()
+	var anim := FillButtonRes.attach_text(b)
+	b.mouse_entered.emit()
+	_pump(anim, 40)
+	b.button_down.emit()
+	b.mouse_exited.emit()
+	b.mouse_entered.emit()
+	b.button_up.emit()
+	_pump(anim, 10)
+	ok(FillButtonRes.fill_progress(b) >= 0.999,
+		"★★ 按住 → 移出 → 又移回 → 松手：悬停仍成立")
+	ok(anim._hovered, "★ 重新进入会清掉「离开过」的标记")
 	b.queue_free()
 
 

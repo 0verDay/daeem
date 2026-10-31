@@ -348,6 +348,12 @@ func _test_hit_test() -> void:
 		UiLayoutRes.card_cell_rect(0).get_center()), "命令卡 Q 格拦边缘滚屏")
 	ok(UiLayoutRes.point_hits_any(UiLayoutRes.interactive_rects(vp),
 		UiLayoutRes.tab_button_rect(1).get_center()), "页签按钮拦边缘滚屏")
+	ok(not UiLayoutRes.point_hits_any(UiLayoutRes.interactive_rects(vp, true, false),
+		UiLayoutRes.tab_button_rect(1).get_center()),
+		"★★ 右下角整块隐藏时页签不再拦边缘滚屏（屏幕上没有可见控件）")
+	ok(not UiLayoutRes.point_hits_any(UiLayoutRes.interactive_rects(vp, true, false),
+		UiLayoutRes.card_cell_rect(0).get_center()),
+		"★★ 右下角整块隐藏时命令卡格子也不再拦边缘滚屏")
 	ok(UiLayoutRes.point_hits_any(UiLayoutRes.interactive_rects(vp),
 		UiLayoutRes.SETTINGS_RECT.get_center()), "设置按钮拦边缘滚屏")
 
@@ -379,6 +385,12 @@ func _test_hit_test() -> void:
 		"滚轮：命令卡那一格也拦")
 	ok(UiLayoutRes.point_hits_any(bar, UiLayoutRes.tab_button_rect(1).get_center()),
 		"滚轮：页签列也拦")
+	ok(not UiLayoutRes.point_hits_any(UiLayoutRes.bottom_bar_rects(vp, true, false),
+		UiLayoutRes.tab_button_rect(1).get_center()),
+		"★★ 右下角整块隐藏时滚轮也不再被页签列拦住")
+	ok(not UiLayoutRes.point_hits_any(UiLayoutRes.bottom_bar_rects(vp, true, false),
+		UiLayoutRes.card_cell_rect(0).get_center()),
+		"★★ 右下角整块隐藏时滚轮也不再被命令卡拦住")
 	ok(not UiLayoutRes.point_hits_any(bar, UiLayoutRes.MAP_RECT.get_center()),
 		"★ 滚轮：左下小地图是**地图**不是 ui 栏 —— 鼠标停在它上面时照旧缩放（「除地图外」）")
 	ok(not UiLayoutRes.point_hits_any(bar, map_middle), "滚轮：地图中间照旧缩放")
@@ -1578,6 +1590,8 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 
 	main.input_ctrl.select_units([world.unit_by_id("general-1")])
 	main.hud.refresh()
+	ok(tabs.visible, "★ 自己的部队 → 页签可见")
+	ok(card.visible, "★ 自己的部队 → 命令卡可见")
 	eq(tabs.page_count(), 2, "★ 选中部队时只有两颗页签（操作 / 单位）")
 	eq(tabs.page_id_at(0), PageTabsRes.PAGE_ORDER, "第一颗是「操作」")
 	eq(tabs.page_id_at(1), PageTabsRes.PAGE_UNIT, "第二颗是「单位」")
@@ -1690,9 +1704,10 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 	if plain_b != null:
 		main.input_ctrl.select_building(plain_b)
 		main.hud.refresh()
-		eq(tabs.page_count(), 1, "★ 选中普通建筑 → 一颗页签")
-		eq(tabs.page(), PageTabsRes.PAGE_NONE,
-			"★★ 取消升级后普通建筑没有可操作项（空格子）")
+		ok(not tabs.visible, "★★ 选中无操作的建筑（木墙）→ 右下角整块隐藏")
+		eq(tabs.page_count(), 0, "★ 页签一颗都不留（不是空页签）")
+		eq(tabs.page(), "", "★ 当前页被清空")
+		ok(not card.visible, "★★ 命令卡也隐藏")
 		eq(card.entries().size(), 0, "★ 命令卡为空")
 
 	var tower_b = _ensure_own_building(world, "tower")
@@ -1701,14 +1716,29 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 		eq(tower_b.type, "tower", "（前提）第 2 栋是哨塔")
 		main.input_ctrl.select_building(tower_b)
 		main.hud.refresh()
-		eq(tabs.page(), PageTabsRes.PAGE_NONE, "★★ 哨塔也没有升级入口（空格子）")
+		ok(not tabs.visible, "★★ 哨塔同样没有可操作项 → 右下角整块隐藏")
+		eq(tabs.page_count(), 0, "★ 哨塔也不留空格子")
+		ok(not card.visible, "★★ 哨塔的命令卡也隐藏")
 		eq(card.entries().size(), 0, "★ 哨塔的命令卡为空")
+
+	# ★★ 「无操作」判据覆盖所有非大本营 / 非区划中心的建筑类型：
+	#    资源建筑（粮田 / 房屋 / 矿脉）与防御建筑走同一条路。
+	#    这里只验判据，不必为了 UI 断言再在地图上铺五栋楼（会干扰后面的用例）。
+	var probe = BuildingRes.new()
+	for t in ["wall", "tower", "stone_wall", "watch_tower", "farm", "house", "mine"]:
+		probe.type = t
+		ok(not main.hud._building_has_actions(probe),
+			"★★ 「%s」没有可操作项 → 选中它时页签应隐藏" % t)
+	probe.type = BuildingRes.TYPE_ZONE_CENTER
+	ok(main.hud._building_has_actions(probe), "★ 区划中心有操作项（招募页）")
 
 	var base = world.find_base_of("p1")
 	ok(base != null, "有己方大本营")
 	if base != null:
 		main.input_ctrl.select_building(base)
 		main.hud.refresh()
+		ok(tabs.visible, "★★ 选中大本营 → 页签整块重新出现（隐藏态可恢复）")
+		ok(card.visible, "★★ 大本营的命令卡也恢复可见")
 		eq(tabs.page_count(), 2, "★ 大本营有两颗页签（操作 / 科技）")
 		eq(tabs.page_id_at(0), PageTabsRes.PAGE_ORDER, "第一颗是「操作」")
 		eq(tabs.page_id_at(1), PageTabsRes.PAGE_TECH, "第二颗是「科技」")
@@ -1727,6 +1757,8 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 
 	main.input_ctrl.select_units([])
 	main.hud.refresh()
+	ok(tabs.visible, "★★ 空手 → 页签整块恢复可见")
+	ok(card.visible, "★★ 空手 → 命令卡也恢复可见")
 	eq(tabs.page_count(), 2, "空手时建筑 / 科技两颗")
 	tabs.button_at(1).emit_signal("pressed")
 	eq(tabs.page(), PageTabsRes.PAGE_TECH, "点第二颗切到「科技」页")
@@ -3940,25 +3972,13 @@ func _test_enemy_selection(main) -> void:
 
 	hud.refresh()
 	var tabs = hud.page_tabs
-	eq(tabs.page_count(), 1, "★ 选中敌人时页签只有一颗（「有格子」）")
-	eq(tabs.page(), PageTabsRes.PAGE_NONE, "★ 那一颗是**空页签**（没有标签）")
-	eq(tabs.page_id_at(0), PageTabsRes.PAGE_NONE, "★ 它不指向操作 / 单位 / 建筑任何一页")
-	var tab0: Button = tabs.button_at(0)
-	ok(tab0 != null and tab0.visible, "★ 那颗格子是可见的（不是整列消失）")
-	if tab0 != null:
-		eq(tab0.text, "", "★ 格子内没有字（需求：「格子内没东西」）")
-		var sb0: StyleBox = tab0.get_theme_stylebox("normal")
-		ok(sb0 is StyleBoxFlat, "★ 空格子有一个 StyleBoxFlat 底纹")
-		if sb0 is StyleBoxFlat:
-			var f0 := sb0 as StyleBoxFlat
-			ok(f0.bg_color.a <= 0.001, "★ 底纹是**透明底**（底色交给填充层）")
-			ok(f0.border_color.r > f0.border_color.b and f0.border_width_left >= 1,
-				"★ 但**金线还在**（立在地图上看得见它是个框）")
-		ok(tab0.has_meta(FillButtonRes.META),
-			"★ 页签挂着「琥珀填充层」（悬停自下而上填琥珀 / 当前页常驻满格）")
-	ok(not tabs.is_active(0), "★ 空页签不算「当前页」（不高亮）")
+	ok(not tabs.visible, "★★ 选中敌方单位 → 右下角页签整块隐藏")
+	eq(tabs.page_count(), 0, "★ 不再立一颗空页签（整个控件收起）")
+	eq(tabs.page(), "", "★ 当前页清空")
+	ok(not hud.command_card.visible,
+		"★★ 命令卡也一起隐藏（需求：页签和命令卡都要隐藏）")
 	eq(hud.command_card.entries().size(), 0,
-		"★★ 命令卡是**空的**（一颗格子内容都没有）—— 绝不能落到「操作」页")
+		"★★ 命令卡内容为空（绝不能落到「操作」页）")
 	ok(hud.tech_grid == null or not hud.tech_grid.visible,
 		"★ 科技九格也没被翻出来（它只属于科技页）")
 
@@ -3974,6 +3994,9 @@ func _test_enemy_selection(main) -> void:
 	eq(hud.detail_panel.grid_mode(), "empty", "★ 左栏下半网格是空的（敌人进不了编组）")
 
 	ic.select_units([])
+	# ★ 先点第一栋敌对建筑（地图上通常是敌方大本营）——
+	#   本块验的是「左键能选中敌对建筑 + 详情」，以及本次需求：
+	#   敌方 / 友方**任何**建筑都隐藏右下角（大本营不再是例外）。
 	var foe_b = null
 	for b in world.building_list:
 		if b != null and b.alive and not b.is_invulnerable() \
@@ -3992,8 +4015,9 @@ func _test_enemy_selection(main) -> void:
 		ok(main._selected_buildings().has(foe_b),
 			"★ 但建筑高亮集合里**有**它（地图上要给它描金框）")
 		hud.refresh()
-		eq(hud.page_tabs.page_count(), 1, "★ 敌对建筑同样只有一颗空格子")
-		eq(hud.page_tabs.page(), PageTabsRes.PAGE_NONE, "★ 空页签")
+		ok(not hud.page_tabs.visible, "★★ 选中敌方建筑 → 右下角页签整块隐藏")
+		eq(hud.page_tabs.page_count(), 0, "★ 一颗页签都不留（大本营也不再例外）")
+		ok(not hud.command_card.visible, "★★ 命令卡也隐藏")
 		eq(hud.command_card.entries().size(), 0, "★ 命令卡空（没有「升级」那一格）")
 		eq(hud.detail_panel.unit_name_text(), foe_b.display_name(), "★ 右栏报的是那栋建筑的名字")
 		ok(hud.detail_panel.detail_text().contains("血量"),
@@ -4002,6 +4026,25 @@ func _test_enemy_selection(main) -> void:
 		ok(btxt.contains("血量"), "（文案生成器）右栏有它的血量")
 		for bad2 in ["等级", "升级", "特化", "建造中"]:
 			ok(not btxt.contains(bad2), "★ 敌对建筑详情里不出现「%s」" % bad2)
+
+	# ★★ 再挑一栋**普通**敌对建筑（木墙 / 哨塔），确保隐藏不是只对大本营生效。
+	ic.select_units([])
+	var foe_plain = null
+	for b2 in world.building_list:
+		if b2 != null and b2.alive and not b2.is_invulnerable() \
+				and not FactionRes.same_side(b2.owner, world.my_faction) \
+				and String(b2.type) != BuildingRes.TYPE_BASE \
+				and String(b2.type) != BuildingRes.TYPE_ZONE_CENTER:
+			foe_plain = b2
+			break
+	ok(foe_plain != null, "（前提）场上有一栋敌对普通建筑（城墙 / 哨塔）")
+	if foe_plain != null:
+		ic.select_enemy(foe_plain)
+		hud.refresh()
+		ok(not hud.page_tabs.visible, "★★ 选敌对木墙 / 哨塔 → 右下角页签整块隐藏")
+		eq(hud.page_tabs.page_count(), 0, "★ 不是空页签（整块都收起来了）")
+		ok(not hud.command_card.visible, "★ 命令卡同样隐藏")
+		eq(hud.command_card.entries().size(), 0, "★ 命令卡仍为空")
 
 	var foe_center_tile := Vector2i(-1, -1)
 	for z in world.zones.zones:
@@ -4020,8 +4063,10 @@ func _test_enemy_selection(main) -> void:
 		ok(ic.selected_zone != null,
 			"★★ 点**别人区划**的中心也打开区划详情（本次改口径：不论敌友中立）")
 		hud.refresh()
-		eq(hud.page_tabs.page(), PageTabsRes.PAGE_NONE,
-			"★ 但别人区划只给一颗空格子（不给特化 / 招募入口）")
+		ok(not hud.page_tabs.visible,
+			"★★ 敌人 / 中立区划中心 → 右下角整块隐藏（不再立空页签）")
+		eq(hud.page_tabs.page_count(), 0, "★ 一颗页签都不留")
+		ok(not hud.command_card.visible, "★★ 命令卡也隐藏")
 		eq(hud.command_card.entries().size(), 0, "★ 命令卡空（没有三个特化那一页）")
 		ok(hud.detail_panel.detail_text().contains("粮食")
 				and not hud.detail_panel.detail_text().contains("现有人口"),
@@ -4052,6 +4097,8 @@ func _test_enemy_selection(main) -> void:
 		ok(ic.selected_zone != null, "★ 点自己区划的中心 → 照旧打开区划详情（老行为不变）")
 		eq(ic.selected_enemy, null, "★ 这时没有「选中的敌人」")
 		hud.refresh()
+		ok(hud.page_tabs.visible, "★★ 自己区划中心 → 页签整块恢复可见")
+		ok(hud.command_card.visible, "★★ 命令卡也恢复可见")
 		eq(hud.page_tabs.page_count(), 1, "★ 自己区划中心只剩招募页签")
 		eq(hud.page_tabs.page_id_at(0), PageTabsRes.PAGE_RECRUIT, "唯一页签是「招募」")
 		ok(hud.detail_panel.detail_text().contains("现有人口"),
@@ -4066,6 +4113,8 @@ func _test_enemy_selection(main) -> void:
 		ic.select_units([g1])
 		eq(ic.selected_enemy, null, "★ 改选己方部队 → 敌人的选中被清掉")
 		hud.refresh()
+		ok(hud.page_tabs.visible, "★ 页签回到己方部队那一套（整块恢复可见）")
+		ok(hud.command_card.visible, "★ 命令卡恢复可见")
 		ok(hud.page_tabs.page() == PageTabsRes.PAGE_ORDER
 				or hud.page_tabs.page() == PageTabsRes.PAGE_UNIT,
 			"★ 页签回到己方部队那一套（操作 / 单位），实际「%s」" % hud.page_tabs.page())

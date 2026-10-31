@@ -61,7 +61,7 @@ func _run() -> void:
 		await _wait(SETTLE_FRAMES)
 		await _shoot("10_own_selected")
 
-	# 2) 敌对单位：右下角只有一颗**空格子**
+	# 2) 敌对单位：右下角页签 + 命令卡整块隐藏（友方单位走同一条 selected_enemy 路）
 	var foe = world.spawn_enemy(6, 4)
 	await _wait(SETTLE_FRAMES)
 	if foe != null:
@@ -71,7 +71,8 @@ func _run() -> void:
 		await _wait(SETTLE_FRAMES)
 		await _shoot("11_enemy_unit_selected")
 
-	# 3) 敌对建筑：同样只有一颗空格子
+	# 3) 敌对建筑：任何敌方建筑（含大本营 / 区划中心）都隐藏右下角页签 + 命令卡
+	#    （2026.10.31 口径；友方走同一条 `selected_enemy` 路）。
 	#    ⚠️ 必须挑一个**看得见**的（战争迷雾：看不见的敌方建筑点不中也选不上 ——
 	#      这是刻意的规则，别拿一个迷雾里的塔来「验」界面）。
 	var foe_b = null

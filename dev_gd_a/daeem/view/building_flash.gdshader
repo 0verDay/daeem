@@ -19,6 +19,9 @@
 //   强度 `hover_fill_alpha` 来自 config 的 render.hover_fill_alpha（默认 1.0 = 纯色剪影）。
 //   ★ 本体色是按类型暗化过的（墙 / 石墙 / 哨塔各一档），填充色是**纯阵营色** ——
 //     两者必须分开，否则悬停时暗色墙会显得像没亮。
+// ★★ 2026.10.31：本体色 = 模型顶点色（材质原色）；顶点色的 **alpha 通道当阵营色遮罩**，
+//   只有标了 1 的部分（旗 / 屋顶 / 廊柱 / 栅栏）显示阵营色，其余保留原色。
+//   悬停填充**不参与**遮罩，保持「纯阵营色剪影」。
 // ★★ 白描边 / 选中金边在**另一个 pass**（building_hover_outline.gdshader，挂在
 //   `next_pass`），本 shader 只负责「填色 + 把淡出收回去」。
 // ★★ 悬停**或选中**时都把「3×3 内有单位 ⇒ 淡出」**收回去**：
@@ -73,7 +76,14 @@ void fragment() {
 	float hov = clamp(v_hover, 0.0, 1.0);
 	float sel = clamp(v_selected, 0.0, 1.0);
 	float fill = hov * hover_fill_alpha;
-	vec3 col = mix(base_color.rgb, hover_fill_color.rgb, fill);
+	// ★★ 顶点色（GLB 的 COLOR_0）：`rgb` = 模型自带的材质色（木褐 / 石灰 / 陶瓦 / 麦金 / 青矿），
+	//   `a` = **阵营色遮罩**（1 = 这块吃阵营色，0 = 保留原色）。
+	//   只有旗 / 屋顶 / 廊柱 / 栅栏这类显眼件被标成 1 ⇒ 蓝方不会再把整栋压成青灰；
+	//   没有顶点色的老模型（区划中心 / 旗面）缺省 COLOR = (1,1,1,1) ⇒ 整栋仍是阵营色，行为不变。
+	//   悬停填充不参与其中，保持「纯阵营色剪影」。
+	float mask = clamp(COLOR.a, 0.0, 1.0);
+	vec3 body = mix(COLOR.rgb, base_color.rgb, mask);
+	vec3 col = mix(body, hover_fill_color.rgb, fill);
 	ALBEDO = mix(col, vec3(1.0), flash) * shade;
 	// 基础不透明度（base_color.a）× 淡出系数：v_fade = 0 → 不透明，= 1 → fade_alpha；
 	// 悬停 / 选中都按 max(hov, sel) 把淡出收回 ⇒ 被指着或选中的那一栋完全可见。
