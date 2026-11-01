@@ -21,10 +21,10 @@ from pathlib import Path
 if __package__ in (None, ""):        # 直接 python 这个文件时也能跑
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from unit_editor import app as app_module
-    from unit_editor.model import ConfigModel, ModelError, TECH_EFFECTS, fmt_number
+    from unit_editor.model import ConfigModel, ModelError, fmt_number
 else:
     from . import app as app_module
-    from .model import ConfigModel, ModelError, TECH_EFFECTS, fmt_number
+    from .model import ConfigModel, ModelError, fmt_number
 
 #: 仓库里的 Godot 工程目录（编辑器读它的 data/config.json）
 DEFAULT_PROJECT_DIR = Path(__file__).resolve().parents[2] / "daeem"
@@ -52,7 +52,7 @@ def selftest(project_dir: Path) -> int:
     """无头自检：读 config → 打印一遍游戏真正会读的数值 → 改一处再改回来。
 
     ★ 这一份自检的用处：**确认编辑器看到的数 = 游戏读到的数**。
-      它把「单位 / 将领 / 建筑（含每级）/ 科技」都过一遍，
+      它把「单位 / 将领 / 建筑（含每级）」都过一遍，
       任何一条路径写错（比如把 `cooldown_sec` 写成 `cooldown`）都会在这里现形。
     """
     path = project_dir / "data" / "config.json"
@@ -111,11 +111,8 @@ def selftest(project_dir: Path) -> int:
                      fmt_number(lv.cost_gold), fmt_number(lv.time_sec),
                      "　攻击：%s" % "、".join("%s=%s" % (k, fmt_number(lv.attack[k]))
                                              for k in own) if own else "　攻击沿用基础值"))
-    for tech in model.techs():
-        effects = "、".join("%s=%g" % (k, tech.effect_value(k)) for k, _l, _h in
-                            TECH_EFFECTS if tech.effect_value(k) is not None)
-        print("[tech] %-14s %-12s %s" % (tech.id, tech.name, effects or "（没有加成）"))
-    print("[tech] 同一时间最多启用 %d 条" % model.max_active())
+    # ★★ 2026.11：科技那几行已删 —— 科技只在 `tools/buff_editor` 里编辑
+    #   （`python dev_gd_a/tools/buff_editor --selftest` 会把每一页科技都过一遍）。
 
     # ---- 改一处再改回来：确认「原地最小改动」成立（文本必须逐字节回到原样）
     #
@@ -135,7 +132,7 @@ def selftest(project_dir: Path) -> int:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
-        prog="unit_editor", description="DAEEM 单位编辑器（单位 / 建筑 / 科技数值）")
+        prog="unit_editor", description="DAEEM 单位编辑器（单位 / 建筑数值）")
     parser.add_argument("config", nargs="?", help="要改的 config.json（可省 = 工程里那一份）")
     parser.add_argument("--project", default=str(DEFAULT_PROJECT_DIR),
                         help="Godot 工程目录（默认 dev_gd_a/daeem）")

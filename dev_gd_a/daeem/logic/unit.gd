@@ -104,6 +104,10 @@ var ranged: bool = false
 ##   · `ranged_damage_reduction` —— 受到**远程伤害**时的减伤（0.25 = 少受 25%）。
 ##     读的地方只有一处：`take_damage` 的第五个参数为 true 时。
 ##     「远程」按**伤害来路**判：远程单位的投掷物 + 可攻击建筑的投掷物。
+##   · `melee_damage_reduction` —— ★ 2026.11：受到**近战伤害**时的减伤（同一处，false 那一支）。
+##     「远近免伤+」= 这两条一起写（各自只在自己那一类伤害上生效，**不是**相加）。
+##   · `knockback_immune` —— ★ 2026.11：**稳定**。免疫「击退」（位移 + 眩晕）整套效果；
+##     ⚠️ 只免疫击退，**照旧被单位之间的推挤挤开**（collision 不看它）。
 ##
 ## ★ 为什么抄到单位身上（而不是每次查 config）：与 `unit_class` / `ranged` / `vision`
 ##   同一条口径 —— 伤害判定在每帧每单位的路径上，出生时读一次表、之后只读字段。
@@ -111,6 +115,9 @@ var ranged: bool = false
 ##   于是「将领 3 是骑手 ⇒ 它也有骑手那两条」自动成立，代码里没有将领特例。
 var attack_bonus_vs_class: Dictionary = {}
 var ranged_damage_reduction: float = 0.0
+var melee_damage_reduction: float = 0.0
+## ★ 稳定（免疫击退）：见上面那条说明。
+var knockback_immune: bool = false
 ## ★★ 本轮新增的战斗 / 支援字段（出生时从兵种表抄到单位身上，之后只读）：
 ##   · armor          —— 固定护甲值：每次受击**先减这么多点**伤害（再算百分比减伤）。
 ##                       最低仍会造成 1 点（不会完全免疫）。
@@ -121,6 +128,14 @@ var ranged_damage_reduction: float = 0.0
 ##   · move_shoot     —— 移动 / 行军途中可以边走边射、不停止（马弓手）。
 ##   · splash_radius  —— 范围伤害半径（格；0 = 单体）。
 ##   · morale_aura_*  —— 粮车的士气光环（半径 / 每秒士气；0 = 没有）。
+##   ★★ 2026.11 新增（同一口径：出生时抄一次、之后只读）：
+##   · knockback_distance / knockback_stun_sec —— 我打中别人时**击退**多少格 / 眩晕多少秒
+##     （0 = 不击退）。读的地方：combat.attack_unit（近战）与 projectile._impact（远程）。
+##   · pierce          —— 我的投掷物是**直线穿透弹**（扭力弩炮）。
+##   · projectile_arc  —— 我的投掷物弹道是不是抛物线（纯表现，弩矢 = false）。
+##     ⚠️ 这两个都只影响**投射物**；近战单位写了也没有任何效果。
+##   · stun_timer      —— **被**眩晕的剩余秒数（> 0 = 这一帧不能移动 / 攻击 / 索敌）。
+##     读的地方只有一处：combat.update_unit 的眩晕分支；清零在 unit.tick。
 var armor: float = 0.0
 var can_attack: bool = true
 var siege: bool = false
@@ -128,6 +143,13 @@ var move_shoot: bool = false
 var splash_radius: float = 0.0
 var morale_aura_radius: float = 0.0
 var morale_aura_rate: float = 0.0
+## ★★ 2026.11：击退（我打中别人时）/ 穿透弹 / 抛物弹道（见上面那几条说明）。
+var knockback_distance: float = 0.0
+var knockback_stun_sec: float = 0.0
+var pierce: bool = false
+var projectile_arc: bool = true
+## ★★ 2026.11：**被**眩晕的剩余秒数（> 0 = 不能移动 / 攻击 / 索敌）。
+var stun_timer: float = 0.0
 ## ★★ 将领特性（部队光环；权威定义在 config.json 的 `unit.general_traits`）。
 ##
 ## · `general_trait` —— 这位**将领自己**抽到的特性 id（非将领 / 没抽到 = ""）；
@@ -572,6 +594,15 @@ static func create(cfg: ConfigRes, p_id: String, p_name: String, tile: Vector2i,
 	var traits: Dictionary = cfg.unit_traits_of(u.unit_type)
 	u.attack_bonus_vs_class = traits.get("attack_vs_class", {})
 	u.ranged_damage_reduction = float(traits.get("ranged_reduction", 0.0))
+	# ★★ 2026.11：近战减伤（「远近免伤+」的另一半）与**稳定**（免疫击退）。
+	u.melee_damage_reduction = float(traits.get("melee_reduction", 0.0))
+	u.knockback_immune = bool(traits.get("knockback_immune", false))
+	# ★★ 2026.11：击退（我打别人）/ 穿透弹 / 弹道形状。
+	var kb: Dictionary = cfg.unit_knockback_of(u.unit_type)
+	u.knockback_distance = float(kb.get("distance", 0.0))
+	u.knockback_stun_sec = float(kb.get("stun_sec", 0.0))
+	u.pierce = cfg.unit_pierce(u.unit_type)
+	u.projectile_arc = cfg.unit_projectile_arc(u.unit_type)
 	# ★★ 本轮新增的战斗 / 支援字段：与上面同一口径，出生时抄一次。
 	#   ⚠️ 将领也走这里：它按所属兵种取，所以「骑士型将领」同样有护甲 / 攻城等。
 	u.armor = cfg.unit_armor_of(u.unit_type)
@@ -636,6 +667,14 @@ func reapply_type(cfg: ConfigRes, p_unit_type: String) -> void:
 	var traits: Dictionary = cfg.unit_traits_of(unit_type)
 	attack_bonus_vs_class = traits.get("attack_vs_class", {})
 	ranged_damage_reduction = float(traits.get("ranged_reduction", 0.0))
+	# ★★ 2026.11：与 `create()` 逐项同口径（近战减伤 / 稳定 / 击退 / 穿透 / 弹道）。
+	melee_damage_reduction = float(traits.get("melee_reduction", 0.0))
+	knockback_immune = bool(traits.get("knockback_immune", false))
+	var kb: Dictionary = cfg.unit_knockback_of(unit_type)
+	knockback_distance = float(kb.get("distance", 0.0))
+	knockback_stun_sec = float(kb.get("stun_sec", 0.0))
+	pierce = cfg.unit_pierce(unit_type)
+	projectile_arc = cfg.unit_projectile_arc(unit_type)
 	armor = cfg.unit_armor_of(unit_type)
 	if general_index >= 0:
 		# ★★ 与 `create()` 同一口径：覆盖 ⊕ 兵种，再叠将领加成。
@@ -874,10 +913,16 @@ func train_progress() -> float:
 ## ★★ 将领特性「神速」在最后乘一次（森林与光环都乘在同一个基础值上）。
 ##   ⚠️ 注意：`step_along_path()` 为了热路径把这段内联了，那里也必须乘 `aura_speed_mult`
 ##      —— 只改这里的话，面板上的移速变了、实际走的距离却没变。
-func speed(cfg: ConfigRes, map) -> float:
+## ★★ 2026.11：派系科技「速战速决」的移速加成也在最后乘一次。
+##   它按**阵营**算，所以要多收一个 `world`（不传 = 不算科技，老调用 / 测试行为不变）。
+##   ⚠️ `step_along_path()` 里那份内联同样要乘，否则「面板 +10%、实际没变」。
+func speed(cfg: ConfigRes, map, world = null) -> float:
 	var base: float = float(stat_overrides.get("speed", cfg.unit_speed_of(unit_type)))
 	var on_forest: bool = map != null and map.is_forest(tx, ty)
-	return base * (cfg.unit_forest_mult if on_forest else 1.0) * aura_speed_mult
+	var mult: float = cfg.unit_forest_mult if on_forest else 1.0
+	if world != null:
+		mult *= float(world.tech_speed_mult(String(faction)))
+	return base * mult * aura_speed_mult
 
 
 ## 该单位的战斗数值（按单位类型查 config.unit.types，见 cfg.unit_combat_of）。
@@ -1689,8 +1734,9 @@ func step_along_path(world, cfg: ConfigRes, dt: float) -> void:
 	#   只改 speed() 的话，面板上移速变快了、实际每帧走的距离却没变。
 	var base_speed: float = cfg.unit_speed_of(unit_type)
 	var on_forest: bool = map != null and map.is_forest(tx, ty)
+	# ★★ 2026.11：乘以派系科技「速战速决」的移速（与 `speed()` 同一个来源 —— 面板与实测同号）。
 	var remaining: float = base_speed * (cfg.unit_forest_mult if on_forest else 1.0) \
-		* aura_speed_mult * dt
+		* aura_speed_mult * world.tech_speed_mult(String(faction)) * dt
 
 	# recenter 与 remaining 同步消耗：到达判定要用的是**循环之后还剩多少预算**，
 	# 而不是本帧开头的预算（否则到达时又走一段，总位移会超过速度预算）。
@@ -1867,10 +1913,73 @@ func clear_settled_spot() -> void:
 ## @param ignore_reduction ★★ true = **攻城**：无视目标来自「近战 / 远程」的减伤
 ##        （兵种 traits.ranged_reduction 与将领 aura_melee/ranged_reduction）。
 ##        护甲与士气免伤**照旧生效** —— 需求只说了「不受远近战免伤影响」。
+## 击退的位移步长（格）：`apply_knockback` 一格一格试探可通行性，遇到走不过去的就停。
+const KNOCKBACK_STEP := 0.1
+
+
+## ★★ 2026.11：**击中这个单位时把它击退**（位移 + 眩晕）。由 combat / projectile 调。
+##
+## @param from_pos  击退的**来源点**（攻击者的位置 / 范围伤害的中心）——
+##                  推开的方向 = `pos - from_pos` 归一化。
+## @param distance  推开多少格（0 = 不位移）
+## @param stun_sec  眩晕多少秒（0 = 不眩晕）
+## @return true = 真的生效了（false = **稳定**免疫 / 已经死了 / 濒死 / 方向退化）
+##
+## ★★ 「稳定」（`knockback_immune`）**整套免疫**：位移与眩晕都不吃。
+##   用户口径：稳定 = 不会被击退，但**仍然会被单位之间的推挤挤开** ——
+##   所以这条只挡击退，`collision.gd` 一个字都不看它。
+##
+## ★★ 位移是**逐格试探**的（0.1 格一步，见 `KNOCKBACK_STEP`）：
+##   遇山 / 不能穿的建筑就**停在原地**（不做滑墙 —— 击退是一种「被打飞」的观感，
+##   沿墙滑过去反而像被吸走）。同时把路径与「站定落点」清掉：
+##   被打飞之后还沿着旧路线走回去，看起来就是「推了又自己走回来」。
+##
+## ⚠️ 不在这里 `sync_tile` 之后做别的收尾：站位细化（拥挤认账之类）由下一帧照旧跑。
+func apply_knockback(cfg: ConfigRes, world, from_pos: Vector2, distance: float,
+		stun_sec: float) -> bool:
+	if not alive or downed or neutralized:
+		return false
+	if knockback_immune:
+		return false
+	var dir: Vector2 = pos - from_pos
+	if dir.length() < 1e-5:
+		return false
+	dir = dir.normalized()
+	# 1) 眩晕（哪怕 distance = 0 也生效 —— 两者独立配置）。
+	if stun_sec > 0.0:
+		stun_timer = maxf(stun_timer, stun_sec)
+	# 2) 位移：一格一格试，遇到走不过去的格子就停在最后一个能站的点。
+	var step: float = KNOCKBACK_STEP
+	var moved := false
+	var want: float = maxf(0.0, distance)
+	while want > 1e-4:
+		var d: float = minf(step, want)
+		var next: Vector2 = pos + dir * d
+		var nt := Vector2i(int(floor(next.x)), int(floor(next.y)))
+		if not PathfinderRes.passable(world.map, world.buildings, cfg, nt.x, nt.y,
+				String(faction)):
+			break
+		pos = next
+		want -= d
+		moved = true
+	# 3) 位移成功 ⇒ 作废旧路线与旧落点（不然它会自己走回去，看着像没被推）。
+	if moved:
+		path = []
+		has_goal = false
+		moving = false
+		goal = Vector2.ZERO
+		clear_settled_spot()
+		jam_timer = 0.0
+		stuck_timer = 0.0
+		sync_tile(world.map)
+		if world != null and world.has_method("mark_vision_dirty"):
+			world.mark_vision_dirty()
+	return moved or stun_sec > 0.0
+
+
 ## @return 本击之后这个单位**还能不能被当作在场单位**（true = 还活着 / 或已濒死）
 func take_damage(cfg: ConfigRes, world, amount: float, _source = null,
-		incoming_ranged: bool = false, ignore_reduction: bool = false) -> bool:
-	# ★ 濒死 = 无敌：需求原话「在将领濒死期间，该将领无法被选中为攻击对象且不会受到伤害」。
+		incoming_ranged: bool = false, ignore_reduction: bool = false) -> bool:	# ★ 濒死 = 无敌：需求原话「在将领濒死期间，该将领无法被选中为攻击对象且不会受到伤害」。
 	#   ⚠️ 招募读条**不再**提供无敌 / 钉住（2026.10.24 改动）：读条中照常可以被攻击，
 	#      受击只让读条**暂停**，等脱战后继续。
 	if downed:
@@ -1886,8 +1995,14 @@ func take_damage(cfg: ConfigRes, world, amount: float, _source = null,
 	# ★★ 固定护甲（本轮新增）：**先**扣固定值，再算百分比减伤。
 	#   最低仍造成 1 点（amount > 0 时）—— 否则高护甲单位会被低级兵完全免疫，
 	#   表现成「打了半天一点伤害都没有」。护甲 0 = 这一段整段跳过。
+	#
+	# ★★ 2026.11：**防御（armor）会先乘科技倍率**（帝国「远征军」：每占领 1 个区划 +2%）。
+	#   用户口径：「防御」= 造成伤害时等额减免的那个数值，也就是这里的 armor。
 	if amount > 0.0 and armor > 0.0:
-		amount = maxf(1.0, amount - armor)
+		var eff_armor := armor
+		if world != null:
+			eff_armor *= float(world.tech_armor_mult(String(faction)))
+		amount = maxf(1.0, amount - eff_armor)
 	# ★★ 减伤口径（本轮改为「先相加、再封顶」，用户拍板）：
 	#     · 士气高位免伤（morale.damage_reduction）+ 兵种特性「对远程减伤」**相加**；
 	#     · 相加后按 `cfg.damage_reduction_cap` 夹取（默认 0.75：50% + 25% 正好到顶）；
@@ -1909,7 +2024,13 @@ func take_damage(cfg: ConfigRes, world, amount: float, _source = null,
 		if incoming_ranged:
 			reduction += ranged_damage_reduction + aura_ranged_reduction
 		else:
-			reduction += aura_melee_reduction
+			# ★★ 2026.11：兵种的「近战减伤」与将领的「近战抵抗」在**同一处**相加
+			#   （与远程那一条完全对称；两者都进同一个和、同一个封顶）。
+			reduction += melee_damage_reduction + aura_melee_reduction
+		# ★★ 2026.11：派系科技「无懈可击」的 +10% 远近免伤 —— 也进**这个和**
+		#   （与士气免伤 / 兵种减伤 / 将领抵抗同一条口径，最后一起按 75% 封顶）。
+		if world != null:
+			reduction += float(world.tech_reduction_add(String(faction), incoming_ranged))
 	if reduction > 0.0:
 		amount *= 1.0 - clampf(reduction, 0.0, cfg.damage_reduction_cap)
 	if morale <= cfg.morale_vuln_tier:

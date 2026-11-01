@@ -769,12 +769,29 @@ func _production_tick() -> void:
 
 
 ## 按编成权重抽一个兵种；过滤「没解锁 / 招不了 / 粮车已有」。
+##
+## ★★ 2026.11：编成表的**优先级** = 队伍的 `roles[role].composition` →
+##   **这一方派系的 `ai_composition`**（王朝 / 帝国各有一套，见 config 的 `clan` 段）→
+##   全局 `ai.commander.production.composition`。
+##   为什么要中间那一档：派系把兵种表整个换掉了，全局那张表里的 spearman / knight
+##   在王朝里根本招不了 ⇒ 一条都抽不中、每轮都落到「兜底第一项」。
+## ★★ 2026.11（第二轮）：**回退判据是「这张表能不能抽出人」，不是「表是不是空的」**。
+##   派系换表之后，`roles.*.composition` 里如果只剩原生兵种（longbowman / horse_archer /
+##   knight…），表并不空、却一条都抽不中 ⇒ 以前不会回退到派系表，只会落到
+##   「兜底第一个能招的」。现在按「可用」逐级回退（角色表 → 派系表 → 全局表）。
+##   ⚠️ 现状（王朝 / 帝国）两张派系表都写了 roles，所以这条**只是保险**；
+##      它防的是「以后新加一个派系、只写了 ai_composition 忘了写 roles」。
+## ★ 抽中的 `type` 是**招募 kind**（组合条目如 dy_guard 也走这里）。
 func _pick_kind(leader) -> String:
 	var pc: Dictionary = profile.get("production", {})
 	var role := team_role_of(leader)
 	var roles: Dictionary = profile.get("roles", {})
 	var rc: Dictionary = roles.get(role, {})
-	var comp: Array = rc.get("composition", pc.get("composition", []))
+	var comp: Array = rc.get("composition", [])
+	if not _comp_usable(comp):
+		comp = world.clan_ai_composition(faction)
+	if not _comp_usable(comp):
+		comp = pc.get("composition", [])
 	# ★ 远程队如果前排已经倒光：先补一个抗线兵，再继续抽远程。
 	if role == "ranged" and frontline_count(leader) <= 0:
 		var front := _first_frontline_kind(comp)
@@ -793,7 +810,7 @@ func _pick_kind(leader) -> String:
 		var w := float((item as Dictionary).get("weight", 0.0))
 		if kind == "" or w <= 0.0:
 			continue
-		if not world.is_unit_recruitable(kind):
+		if not world.is_unit_recruitable(kind, faction):
 			continue
 		if not world.unit_recruit_unlocked(faction, kind):
 			continue
@@ -803,13 +820,40 @@ func _pick_kind(leader) -> String:
 		total += w
 	if cands.is_empty() or total <= 0.0:
 		# 兜底：表里第一个已解锁的兵种（绝不「一个都不招」）
-		for item2 in world.recruit_list():
+		for item2 in world.recruit_list(faction):
 			if typeof(item2) != TYPE_DICTIONARY:
 				continue
 			var k2 := String((item2 as Dictionary).get("kind", ""))
-			if k2 != "" and world.is_unit_recruitable(k2) and world.unit_recruit_unlocked(faction, k2):
+			if k2 != "" and world.is_unit_recruitable(k2, faction) \
+					and world.unit_recruit_unlocked(faction, k2):
 				return k2
 		return ""
+	# ★★★ 2026.11（see_ai 实测踩到）：**先按「这一单现在下不下得去」筛一遍**，
+	#   再按权重抽。
+	#
+	#   为什么必须这么做：编成表里 Tier-2/3 的权重不低（王朝远程队里御林军 28%），
+	#   可它 260 粮 + 380 金 —— 中前期根本买不起。而调用方拿到「买不起」会直接
+	#   `break`（结束本轮**所有**招募）⇒ 抽中一次贵的就整轮停工，于是
+	#   「仓库里堆着 900 金、场上只有 10 个兵，而且清一色最便宜那一种」。
+	#   筛过之后：有钱就抽贵的（风味还在），没钱就抽买得起的（产能不停）。
+	#
+	#   ⚠️ 「一个都下不去」时**不筛**：那说明是全局的钱 / 区划人口不够，
+	#   要交给调用方走「攒钱 / 换下一个将领」那条路，不能在这里把候选清空。
+	var affordable: Array = []
+	for c in cands:
+		var ck := String((c as Dictionary).get("type", ""))
+		if String(world.can_recruit(ck, String(leader.id), faction)) != "":
+			continue
+		if String(world.can_afford_recruit(ck, String(leader.id))) != "":
+			continue
+		affordable.append(c)
+	if not affordable.is_empty() and affordable.size() < cands.size():
+		cands = affordable
+		total = 0.0
+		for c2 in cands:
+			total += float((c2 as Dictionary).get("weight", 0.0))
+	if total <= 0.0:
+		total = 1.0
 	production_serial += 1
 	var roll: float = float(world.unit_rand("%s|prod" % faction, production_serial)) * total
 	var acc := 0.0
@@ -822,7 +866,28 @@ func _pick_kind(leader) -> String:
 	return last
 
 
+## ★ 这一份编成表**在这一方**能不能抽出人（权重 > 0 且招得了 / 已解锁）。
+##
+## 用来判断「角色编成表该不该回退到派系编成表」：派系换过兵种表之后，
+## 角色表里塞满原生兵种 ⇒ 表不空、但一条都抽不中。
+func _comp_usable(comp: Array) -> bool:
+	for item in comp:
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		var kind := String((item as Dictionary).get("type", ""))
+		if kind == "" or float((item as Dictionary).get("weight", 0.0)) <= 0.0:
+			continue
+		if world.is_unit_recruitable(kind, faction) \
+				and world.unit_recruit_unlocked(faction, kind):
+			return true
+	return false
+
+
 ## 远程队的前排优先从编成里挑；编成里没有可招的近战，再扫全兵种表。
+##
+## ★★ 2026.11：判「近战还是远程」要用**代表兵种**（`recruit_primary_type`）——
+##   招募 kind 可能是组合条目（dy_guard），它自己不在 unit.types 里，
+##   直接 `cfg.unit_is_ranged(kind)` 会兜底成「近战」，把一组弓箭手当成前排。
 func _first_frontline_kind(comp: Array) -> String:
 	for item in comp:
 		if typeof(item) != TYPE_DICTIONARY:
@@ -830,18 +895,20 @@ func _first_frontline_kind(comp: Array) -> String:
 		var kind := String((item as Dictionary).get("type", ""))
 		if kind == "" or kind == "grain_cart":
 			continue
-		if not cfg.unit_is_ranged(kind) \
-				and world.is_unit_recruitable(kind) \
+		var ut: String = world.recruit_primary_type(kind, faction)
+		if not cfg.unit_is_ranged(ut) \
+				and world.is_unit_recruitable(kind, faction) \
 				and world.unit_recruit_unlocked(faction, kind):
 			return kind
-	for item2 in world.recruit_list():
+	for item2 in world.recruit_list(faction):
 		if typeof(item2) != TYPE_DICTIONARY:
 			continue
 		var k2 := String((item2 as Dictionary).get("kind", ""))
 		if k2 == "" or k2 == "grain_cart":
 			continue
-		if not cfg.unit_is_ranged(k2) \
-				and world.is_unit_recruitable(k2) \
+		var ut2: String = world.recruit_primary_type(k2, faction)
+		if not cfg.unit_is_ranged(ut2) \
+				and world.is_unit_recruitable(k2, faction) \
 				and world.unit_recruit_unlocked(faction, k2):
 			return k2
 	return ""

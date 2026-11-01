@@ -10,7 +10,7 @@
     "zone_list[].center：该区块的「区划中心」地块坐标；每个区块必须有且只有一个。",
     "zone_list[].kind：区划种类（food / gold / population），决定这个区划能做哪些特化。",
     "zone_list[].production：该区块的产能（每秒，绝对值；不乘地块数）：food / gold / population —— 游戏以此为准。",
-    "zone_list[].population_cap：该区块的人口上限；不写 = 默认 1（涨到上限就不再涨）。",
+    "zone_list[].population_cap：该区块的人口上限；不写 = 按区划种类取默认（人口区划 5，其余 3）。",
     "zone_centers：地块 → 中心所属的区块 id（-1 = 不是任何区块的中心），由 center 推出来。",
     "factions / faction_bases：阵营表与每个阵营的大本营（每个阵营必须有且只有一个）。",
     "id / name：这张图的标识与显示名；开场主界面的地图选择条按 name 显示（不写就用目录名）。",

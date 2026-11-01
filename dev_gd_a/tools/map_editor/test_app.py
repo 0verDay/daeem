@@ -1432,27 +1432,28 @@ def t_zone_center_and_production_ui() -> None:
         ok("／秒" in editor.status_var.get(), "状态栏按「／秒」报")
 
         # ---- 人口上限：一个输入框，作用于列表里选中的那个区块
-        eq(editor.zone_cap_var.get(), "1",
-           "★ 没填过的区块，输入框里显示生效值 1（与游戏里用的是同一个数）")
+        # ★★ 2026.11：默认值按种类分档 —— 这两个新区都是默认种类（population）⇒ 5。
+        eq(editor.zone_cap_var.get(), "5",
+           "★★ 没填过的区块显示生效值（人口区划默认 5，与游戏里用的是同一个数）")
         editor.zone_cap_var.set("10")
         editor.apply_zone_population_cap()
         eq(editor.model.zone_population_cap(a.zone_id), 10.0, "★ 人口上限写进模型")
         ok(editor.dirty, "改人口上限会把地图标记成「有未导出的改动」")
         # 换区划：输入框跟着换
         select_zone(b)
-        eq(editor.zone_cap_var.get(), "1", "★ 换区划后显示的是它自己的人口上限")
+        eq(editor.zone_cap_var.get(), "5", "★ 换区划后显示的是它自己的人口上限")
         # 非法输入：不改原值，并把输入框刷回模型里的值
         editor.zone_cap_var.set("abc")
         editor.apply_zone_population_cap()
-        eq(editor.model.zone_population_cap(b.zone_id), 1.0, "★ 乱打字不会把上限弄坏")
-        eq(editor.zone_cap_var.get(), "1", "★ 输入框被刷回模型里的值")
+        eq(editor.model.zone_population_cap(b.zone_id), 5.0, "★ 乱打字不会把上限弄坏")
+        eq(editor.zone_cap_var.get(), "5", "★ 输入框被刷回模型里的值")
         # 允许 0（那个区块永远没有人口）
         editor.zone_cap_var.set("0")
         editor.apply_zone_population_cap()
         eq(editor.model.zone_population_cap(b.zone_id), 0.0, "★ 允许填 0")
         # 撤销：改上限也要能退回去
         editor.undo()
-        eq(editor.model.zone_population_cap(b.zone_id), 1.0, "★ Ctrl+Z 能撤销「改人口上限」")
+        eq(editor.model.zone_population_cap(b.zone_id), 5.0, "★ Ctrl+Z 能撤销「改人口上限」")
         editor.redo()
         eq(editor.model.zone_population_cap(b.zone_id), 0.0, "★ 重做又回来")
         # 没选中区块时输入框禁用

@@ -20,6 +20,7 @@ import os
 import shutil
 import sys
 import tkinter as tk
+from tkinter import ttk
 from pathlib import Path
 
 HERE = Path(__file__).resolve()
@@ -61,6 +62,10 @@ def ok(cond, label: str) -> None:
 
 def eq(actual, expected, label: str) -> None:
     ok(actual == expected, "%s（实际 %r，期望 %r）" % (label, actual, expected))
+
+def near(actual, expected, label: str, tol: float = 1e-6) -> None:
+    ok(abs(float(actual) - float(expected)) <= tol,
+       "%s（实际 %r，期望 %r，容差 %g）" % (label, actual, expected, tol))
 
 
 def _copy_config() -> Path:
@@ -191,6 +196,141 @@ def t_buff_switch(app) -> None:
     eq(app.current_buff().id, "morale", "★ 点「士气」→ 当前 buff 是 morale")
 
 
+def t_tech_pages_in_app(app) -> None:
+    print("[6] 科技：列表里有科技页 / 文案能改 / 槽位能改")
+    ids = [b.id for b in app.model.buffs()]
+    ok(len(ids) > len(BUFFS), "★ 列表比注册表长（科技是现算出来的）")
+    ok("tech:global" in ids, "★ 有「科技 · 全局」")
+    # ★★ 2026.11：左栏从「一摞圆角按钮」换成了 Treeview（用户报的「下滑后按钮文字
+    #   错位 / 撕裂」——按钮 = tk.Button 上盖一层 Canvas，滚动时两个子窗口重绘错序）。
+    #   所以这里断言的是**列表里的行**，不再是按钮。
+    eq(len(app._sidebar_items), len(ids), "★ 左栏给每一页都建了一行")
+    rows = app._side_tree.get_children()
+    eq(len(rows), 2, "★ 左栏分两组（Buff / 科技）")
+    leaves = []
+    for parent in rows:
+        leaves.extend(app._side_tree.get_children(parent))
+    eq(len(leaves), len(ids), "★ 两组下的条目数 = 页数（没有漏、没有重复）")
+    ok(all(str(app._side_tree.item(i, "text")).strip() for i in leaves),
+       "★ 每一行都有文字（不是空行）")
+
+    # ---- 一条科技：文案（text）+ 效果（percent/number）
+    tech_id = next(i for i in ids if i.startswith("tech:list:"))
+    app.select_buff(tech_id)
+    tech = app.current_buff()
+    eq(tech.id, tech_id, "★ 切到科技页")
+    ok(len(app.entries) >= 4, "科技页至少 4 个输入框（名字/小字/详情/阶）")
+    ok(app.entry_for("name") is not None, "★ 有「名字」输入框")
+    old_name = app.model.value(tech, app._field_by_key["name"])
+    app.set_entry("name", "改过的科技名")
+    ok(app.commit_field("name"), "改名字提交成功")
+    eq(app.model.value(app.current_buff(), app._field_by_key["name"]),
+       "改过的科技名", "★ 数据层真的变了")
+    ok("● 未保存" in app.dirty_text(), "状态变成「未保存」")
+    ok("改过的科技名" in app.preview_text(), "★ 预览里的格子文字跟着变")
+    app.set_entry("name", old_name)
+    ok(app.commit_field("name"), "改回原名")
+
+    # 效果里的比例字段也要按百分数编辑
+    eff_keys = [f.key for f in tech.fields if f.group == "效果"]
+    ok(bool(eff_keys), "（前提）这条科技有效果字段")
+    if eff_keys:
+        key = eff_keys[0]
+        f = app._field_by_key[key]
+        old_val = app.model.value(app.current_buff(), f)
+        if f.kind == "percent":
+            app.set_entry(key, "10%")
+            ok(app.commit_field(key), "效果比例填 10% 提交成功")
+            eq(app.model.value(app.current_buff(), app._field_by_key[key]), 0.1,
+               "★ 10% 写进 config 是 0.1")
+            app.set_entry(key, display_value(f, old_val))
+            ok(app.commit_field(key), "改回原值")
+
+    # ---- 槽位页
+    slots_id = next(i for i in ids if i.startswith("tech:slots:"))
+    app.select_buff(slots_id)
+    eq(len(app.entries), 9, "★ 槽位页正好 9 个输入框")
+    first_key = sorted(app.entries, key=lambda k: int(k.split("_")[-1]))[0]
+    ok(app.entry_for(first_key).get() != "", "槽位里显示着当前的科技 id")
+    app.set_entry(first_key, "")
+    ok(app.commit_field(first_key), "把第 1 格清空")
+    eq(app.model.value(app.current_buff(), app._field_by_key[first_key]), "",
+       "★ 清空写进 config 是空串（= 空位）")
+    ok("空位" in app.preview_text(), "★ 预览把空位画成「灰框不可点」")
+    # 回到士气页，别把科技页留着影响后面的用例
+    app.select_buff("morale")
+
+
+# ======================================================================
+# [7] 左栏是 Treeview（用户报的 bug：下滑后按钮文字错位 / 撕裂）
+# ======================================================================
+
+class _Wheel:
+    """假滚轮事件（`_on_side_wheel` 只读 num / delta 两个属性）。"""
+
+    def __init__(self, delta: int = 0, num=None) -> None:
+        self.delta = delta
+        self.num = num
+
+
+def t_sidebar_tree(app) -> None:
+    print("[7] 左栏是 Treeview：不再有「画布 + 一摞圆角按钮」")
+    # ★ 那条老结构就是撕裂的根因：RButton = tk.Button 上盖一层 Canvas（两个子窗口），
+    #   塞进 Canvas 的 window item 里滚动时两个子窗口重绘顺序不同步 ⇒ 文字错位。
+    ok(not hasattr(app, "_side_canvas"), "★★ 左侧不再有 Canvas（老结构已删）")
+    ok(not hasattr(app, "_side_window"), "★★ 也没有塞在画布里的 window item")
+    ok(not hasattr(app, "_sidebar_host"), "★★ 没有「一摞按钮」那个容器")
+    ok(not hasattr(app, "_sidebar_buttons"), "★★ 左栏的按钮表也删掉了（不是留个空表）")
+    ok(isinstance(app._side_tree, ttk.Treeview) if hasattr(ttk, "Treeview") else True,
+       "★ 左栏是 Treeview")
+
+    # 滚动：Treeview 自己滚条目（不搬子窗口），滚完条目的文字还在
+    app.select_buff("morale")
+    app.root.update()
+    rows = app._side_tree.get_children()
+    ok(len(rows) == 2, "（前提）两组")
+    leaves = []
+    for parent in rows:
+        leaves.extend(app._side_tree.get_children(parent))
+    ok(len(leaves) > 10, "（前提）条目多到要滚（%d 条）" % len(leaves))
+    before = [app._side_tree.item(i, "text") for i in leaves]
+    for _ in range(8):
+        app._on_side_wheel(_Wheel(delta=-120))
+    app.root.update()
+    after = [app._side_tree.item(i, "text") for i in leaves]
+    eq(after, before, "★★ 滚了 8 格之后每一行的文字原样（不撕裂、不串行）")
+    # 滚轮只滚左栏，不该把右边的表单带着滚
+    form_before = app._canvas.yview()[0]
+    app._on_side_wheel(_Wheel(delta=-120))
+    eq(app._canvas.yview()[0], form_before, "★★ 左栏滚轮不影响右边的表单")
+
+    # 点一行 = 换页；点分组行不行（而且选中要弹回当前页）
+    app.select_buff("morale")
+    target = next(i for i in leaves if app._side_tree.item(i, "text").startswith("科"))
+    app._side_tree.selection_set(target)
+    app.root.update()
+    eq(app.current_id, target[2:], "★ 选中左栏某一行 → 切到那一页")
+    section = app._side_tree.get_children()[0]
+    app._side_tree.selection_set(section)
+    app.root.update()
+    eq(app.current_id, target[2:], "★★ 点分组标题不换页")
+    eq(app._side_tree.selection(), (target,), "★★ 选中被弹回当前页那一行")
+
+    # 改一个数值之后左栏重建，**不许跳回顶部**（滚到下面改科技时最烦这个）
+    app.select_buff(target[2:])
+    app.root.update()
+    for _ in range(6):
+        app._on_side_wheel(_Wheel(delta=-120))
+    app.root.update()
+    top = app._side_tree.yview()[0]
+    ok(top > 0.0, "（前提）先滚下去（%.3f）" % top)
+    app._build_sidebar()
+    app.root.update()
+    near(app._side_tree.yview()[0], top,
+         "★★ 重建左栏之后滚动位置不变（改一个数值不会把列表弹回顶部）", tol=0.02)
+    app.select_buff("morale")
+
+
 def main() -> int:
     print("DAEEM buff 编辑器 · 界面测试")
     print("配置文件：%s" % CONFIG)
@@ -210,6 +350,8 @@ def main() -> int:
         t_undo_redo(app, app.model)
         t_save_reload(app, app.model, path)
         t_buff_switch(app)
+        t_tech_pages_in_app(app)
+        t_sidebar_tree(app)
     finally:
         try:
             root.destroy()

@@ -13,7 +13,7 @@
     3. 下拉 / 勾选框（归属、可攻击、远程）→ 写进正确的键
     4. 将领：数值旁那个「自定 / 跟随」按钮 = 写覆盖 / 删覆盖
     5. 建筑：升级表每一级的价格 / 时间 / 血量倍率 / 逐级攻击都能改
-    6. 科技：名字与加成数值；加成可以加一条、删一条
+    6. 科技页已移除（2026.11：科技只在 tools/buff_editor 里编辑，本工具碰不到 tech.*）
     7. 撤销 / 重做 / 保存 / 重新载入
     8. 新建 / 删除兵种与建筑（对话框与确认框被换成「直接给答案」）
 
@@ -210,7 +210,7 @@ def pick(app, iid: str) -> None:
     """在左边列表里点一行（真的选中 + 触发回调）。"""
     tree = None
     for candidate in (getattr(app, "unit_tree", None), getattr(app, "general_tree", None),
-                      getattr(app, "building_tree", None), getattr(app, "tech_tree", None)):
+                      getattr(app, "building_tree", None)):
         if candidate is None:
             continue
         try:
@@ -257,7 +257,8 @@ def teardown(app) -> None:
 def t_window(app, model) -> None:
     print("\n[1] 窗口 / 页签 / 列表")
     eq(app.page, "unit", "默认停在「单位」页")
-    eq(list(app.tab_buttons.keys()), ["unit", "building", "tech"], "三个页签：单位 / 建筑 / 科技")
+    eq(list(app.tab_buttons.keys()), ["unit", "building"],
+       "★★ 两个页签：单位 / 建筑（2026.11：科技页已移除）")
     eq(app.tab_buttons["unit"].cget("fg"), app_module.UI["accent"], "当前页签是强调色")
     eq(app.tab_buttons["building"].cget("fg"), app_module.UI["text_dim"], "其它页签是暗色")
 
@@ -283,11 +284,6 @@ def t_window(app, model) -> None:
     ok("b:zone_center" not in building_rows, "建筑列表没有区划中心")
     for required_id in ("wall", "tower", "stone_wall", "watch_tower", "base"):
         ok("b:" + required_id in building_rows, "建筑列表里有「%s」" % required_id)
-    app.set_page("tech")
-    app.root.update()
-    eq(len(app.tech_tree.get_children()), 9, "科技列表：九条")
-    eq(app.tech_tree.item("t:0", "values")[2], model.tech(0).effect_label,
-       "列表里的加成那句话 = model 的 effect_label")
     app.set_page("unit")
     app.root.update()
     eq(app.selection, None, "换页签之后选中被清掉（免得看见上一页的表单）")
@@ -661,51 +657,26 @@ def t_building_form(app, model) -> None:
 
 
 # ======================================================================
-# [5] 科技表单
+# [5] 科技页 —— ★★ 2026.11 已整块移除
 # ======================================================================
 
-def t_tech_form(app, model) -> None:
-    print("\n[5] 科技表单")
-    app.set_page("tech")
+def t_tech_page_gone(app, model) -> None:
+    print("\n[5] 科技页已移除（科技只在 tools/buff_editor 里编辑）")
+    ok("tech" not in app.tab_buttons, "★★ 页签里没有「科技」")
+    eq([k for k, _l, _h in app_module.PAGES], ["unit", "building"],
+       "★★ PAGES 只剩单位 / 建筑")
+    ok(not hasattr(app, "tech_tree"), "★★ 没有科技列表")
+    ok(not hasattr(app, "max_active_var"), "★★ 没有「最多启用几条」那个输入框")
+    ok(not hasattr(app, "_build_tech_form"), "★★ 没有科技表单")
+    ok(not hasattr(app, "_build_tech_list"), "★★ 没有科技列表构建函数")
+    ok(not hasattr(app, "_commit_max_active"), "★★ 没有那个提交函数")
+    # 数据层也碰不到 tech.*
+    ok(not hasattr(model, "set_tech"), "★★ 模型层不能改科技")
+    # 单位 / 建筑两页照旧
+    app.set_page("unit")
     app.root.update()
-    pick(app, "t:0")
-    entries = sidebar_entries(app)
-    ok("名称" in entries and "第二行小字" in entries and "说明" in entries, "文案三件套")
-    ok("粮食产能" in entries, "★ 有「粮食产能」这一条加成的输入框")
-    ok("黄金产能" in entries, "★ 没有的加成也列出来（填数字 = 加上它）")
-
-    type_into(app, E(app, "名称"), "粮食产量 甲")
-    eq(data(model)["tech"]["list"][0]["name"], "粮食产量 甲", "改科技名称")
-    eq(app.tech_tree.item("t:0", "values")[0], "粮食产量 甲", "列表刷新")
-    type_into(app, sidebar_entries(app)["第二行小字"], "粮食 +++")
-    eq(data(model)["tech"]["list"][0]["line"], "粮食 +++", "改第二行小字")
-    type_into(app, sidebar_entries(app)["粮食产能"], "0.25")
-    eq(data(model)["tech"]["list"][0]["effect"]["food_production_mult"], 0.25,
-       "★ 改加成数值（总体产能 +25%）")
-    eq(app.tech_tree.item("t:0", "values")[2], "粮食产能 +0.25", "列表里的加成跟着变")
-
-    # 加一条原来没有的加成
-    type_into(app, sidebar_entries(app)["黄金产能"], "0.3")
-    eq(data(model)["tech"]["list"][0]["effect"]["gold_production_mult"], 0.3,
-       "★ 填一个数 = 加上这条加成")
-    # 删一条
-    btn = buttons(app).get("删掉这条")
-    ok(btn is not None, "有「删掉这条」按钮")
-    btn.invoke()
-    app.root.update()
-    eq(list(data(model)["tech"]["list"][0]["effect"].keys()), ["gold_production_mult"],
-       "★ 删掉第一条加成（粮食那条没了）")
-
-    # 「最多启用几条」
-    app.max_active_var.set("2")
-    app._commit_max_active()
-    app.root.update()
-    eq(data(model)["tech"]["max_active"], 2, "改「同一时间最多启用几条」")
-    app.max_active_var.set("abc")
-    app._commit_max_active()
-    app.root.update()
-    eq(data(model)["tech"]["max_active"], 2, "★ 非法输入被拒，原值不动")
-
+    ok(app.unit_tree is not None and app.building_tree is not None,
+       "★ 单位 / 建筑的列表都还在")
 
 # ======================================================================
 # [6] 撤销 / 重做 / 保存 / 重载
@@ -887,28 +858,32 @@ def t_sidebar_scroll(app, model) -> None:
 
     # ---- A. 内容装得下 → 一律钉在顶部（用户报的那个 bug）----
     #
-    # ★★ 用**科技页**那张短表单来验这一条：它是这个工具里唯一在 1080p 下装得下的
-    #    （建筑页 / 单位页那几张都装不下，拿它们验只会验出一个假红）。
-    app.set_page("tech")
+    # ★★ 2026.11：原来这里拿**科技页**那张短表单来验（它是唯一在 1080p 下装得下的）。
+    #   科技页删掉之后改用**「什么都没选」的空表单**：它比任何一张真表单都短，
+    #   而走的还是同一段滚动逻辑（`_pin_sidebar_top` / `sidebar_yview` / `_on_wheel`）。
+    app.set_page("unit")
+    app.selection = None
+    app.refresh_all()
     app.root.update()
-    if grow_until_fits("t:0", "科技 1"):
-        eq(offset(), 0.0, "科技 1：刚选中时在顶部")
-        app.sidebar_yview("scroll", 5, "units")
-        eq(offset(), 0.0, "★★ 科技 1：装得下时向下滚 → 一动不动")
-        # 向上滚：不许动 ← **这就是用户看到的「上方出现大量空白」**
-        app.sidebar_yview("scroll", -5, "units")
-        eq(offset(), 0.0, "★★ 科技 1：装得下时向上滚 → 一动不动（**用户报的那个 bug**）")
-        app.sidebar_yview("moveto", 0.9)
-        eq(offset(), 0.0, "★★ 科技 1：拖滚动条也不动")
-        app.sidebar_yview("moveto", 0.0)
-        eq(tuple(app.sidebar_scroll.get()), (0.0, 1.0),
-           "★ 科技 1：滚动条滑块铺满滑槽（看着就是不可滚）")
-        app._on_wheel(FakeEvent(cv, delta=-120))
-        eq(offset(), 0.0, "科技 1：滚轮向下也不动")
-        app._on_wheel(FakeEvent(cv, delta=120))
-        eq(offset(), 0.0, "科技 1：滚轮向上也不动")
-
-        eq(offset(), 0.0, "★★ 将领 2 滚轮向上也不动")
+    app.root.geometry("1280x1040")               # 1080p 机器能给到的最大高度
+    app.root.update()
+    ok(app.sidebar_overflow() == 0,
+       "★ 空表单（什么都没选）在 1080p 下装得下（溢出 %d px）" % app.sidebar_overflow())
+    eq(offset(), 0.0, "空表单：刚进来时在顶部")
+    app.sidebar_yview("scroll", 5, "units")
+    eq(offset(), 0.0, "★★ 空表单：装得下时向下滚 → 一动不动")
+    # 向上滚：不许动 ← **这就是用户看到的「上方出现大量空白」**
+    app.sidebar_yview("scroll", -5, "units")
+    eq(offset(), 0.0, "★★ 空表单：装得下时向上滚 → 一动不动（**用户报的那个 bug**）")
+    app.sidebar_yview("moveto", 0.9)
+    eq(offset(), 0.0, "★★ 空表单：拖滚动条也不动")
+    app.sidebar_yview("moveto", 0.0)
+    eq(tuple(app.sidebar_scroll.get()), (0.0, 1.0),
+       "★ 空表单：滚动条滑块铺满滑槽（看着就是不可滚）")
+    app._on_wheel(FakeEvent(cv, delta=-120))
+    eq(offset(), 0.0, "空表单：滚轮向下也不动")
+    app._on_wheel(FakeEvent(cv, delta=120))
+    eq(offset(), 0.0, "空表单：滚轮向上也不动")
 
     # ---- B. 内容真的装不下 → 滚动照旧可用，但**滚不出范围** ----
     app.set_page("unit")                         # 上一节停在科技页（列表是另一棵）
@@ -1016,7 +991,7 @@ def main() -> int:
         t_unit_form(app, model)
         t_general_form(app, model)
         t_building_form(app, model)
-        t_tech_form(app, model)
+        t_tech_page_gone(app, model)
         t_undo_save(app, model, path)
         t_add_remove(app, model)
         t_sidebar_scroll(app, model)

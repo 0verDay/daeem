@@ -39,7 +39,6 @@ from unit_editor.configfile import Doc, JsonError, parse_number   # noqa: E402
 from unit_editor.model import (                           # noqa: E402
     BUILTIN_BUILDINGS,
     BUILTIN_UNITS,
-    TECH_EFFECTS,
     ConfigModel,
     ModelError,
 )
@@ -686,49 +685,24 @@ def t_buildings() -> None:
 
 
 # ======================================================================
-# [5] 科技
+# [5] 科技 —— ★★ 2026.11 已搬走
 # ======================================================================
 
-def t_techs() -> None:
-    print("\n[5] 科技")
+def t_techs_moved() -> None:
+    """科技不再由本工具编辑（用户口径：「把单位编辑器中的科技编辑界面去掉」）。
+
+    这条用例不删「为什么」：它钉的是**本工具碰不到 tech.* 那几段**。
+    科技现在只在 `tools/buff_editor` 里编辑（两张表 + 每派槽位 + 全局上限 / 每阶金耗）。
+    """
+    print("\n[5] 科技已搬走：本工具不再有科技的数据层")
     model = fresh_model()
-    techs = model.techs()
-    eq(len(techs), 9, "九条科技（3×3）")
-    eq(model.max_active(), 3, "同一时间最多启用 3 条")
-    eq(techs[0].name, "粮食产量 I", "名称")
-    eq(techs[0].line, "粮食产能 +10%", "第二行小字")
-    ok(techs[0].desc, "有悬停说明")
-    near(techs[0].effect_value("food_production_mult"), 0.10, "加成数值（总体产能 +10%）")
-    eq(techs[0].effect_label, "粮食产能 +0.1", "列表里那一句话")
-    near(techs[8].effect_value("zone_population_mult"), 0.1, "人口科技是倍率 0.1")
-
-    model.set_tech(0, "name", "粮食产量 甲")
-    eq(model.doc.value(["tech", "list", 0, "name"]), "粮食产量 甲", "改名称")
-    model.set_tech(0, "line", "粮食 +++")
-    eq(model.doc.value(["tech", "list", 0, "line"]), "粮食 +++", "改小字")
-    model.set_tech(0, "desc", "说明改过了")
-    eq(model.doc.value(["tech", "list", 0, "desc"]), "说明改过了", "改说明")
-    model.set_tech_effect(0, "food_production_mult", 0.25)
-    eq(model.doc.value(["tech", "list", 0, "effect", "food_production_mult"]), 0.25,
-       "改加成数值")
-    eq(model.tech(0).effect_value("food_production_mult"), 0.25, "读回来是 0.25")
-    model.set_max_active(2)
-    eq(model.max_active(), 2, "改「最多启用几条」")
-    raises(lambda: model.set_tech(0, "id", "x"), "id 不许改（它是存档 / 引用的键）")
-    raises(lambda: model.set_tech(0, "banana", "x"), "不认识的科技字段被拒")
-    raises(lambda: model.set_tech(99, "name", "x"), "越界的科技序号被拒")
-    raises(lambda: model.set_tech_effect(0, "banana", 1), "不认识的加成被拒")
-
-    # 加成：加一条 / 删一条 / 换成另一种形状
-    m2 = fresh_model()
-    m2.set_tech_effect(0, "gold_production_mult", 0.3)
-    eq(sorted(k for k in m2.tech(0).effect if not k.startswith("_")),
-       ["food_production_mult", "gold_production_mult"], "★ 一条科技可以同时有两条加成")
-    m2.set_tech_effect(0, "food_production_mult", None)
-    eq(list(m2.tech(0).effect.keys()), ["gold_production_mult"], "删掉其中一条")
-    eq(m2.tech(0).effect_label, "黄金产能 +0.3", "列表里那句话跟着变")
-    eq(m2.tech(0).effect_value("food_production_mult"), None, "删掉之后读不到")
-    ok(TECH_EFFECTS and all(len(t) == 3 for t in TECH_EFFECTS), "加成表是（键, 名字, 说明）三件套")
+    for name in ("techs", "tech", "set_tech", "set_tech_effect",
+                 "max_active", "set_max_active"):
+        ok(not hasattr(model, name), "★★ ConfigModel 不再有 %s()" % name)
+    from unit_editor import model as model_mod
+    ok(not hasattr(model_mod, "Tech"), "★★ 模型层不再有 Tech 类")
+    ok(not hasattr(model_mod, "TECH_FIELDS"), "★★ 不再有 TECH_FIELDS")
+    ok(not hasattr(model_mod, "TECH_EFFECTS"), "★★ 不再有 TECH_EFFECTS")
 
 
 # ======================================================================
@@ -761,9 +735,34 @@ def t_game_contract() -> None:
     ok(not model.doc.has(["unit", "general", "escort"]),
        "★★ unit.general.escort 不存在（开局编制已改由战役编辑器摆放页决定）")
     ok(model.doc.has(["unit", "general", "stats"]), "unit.general.stats 存在（本轮新增）")
+    # ★★ 2026.11：**派系专属兵种**（王朝 dy_* / 帝国 dg_*）**不在**全局 `recruit.list`
+    #   里 —— 它们的招募条目挂在 `clan.list[].recruit[]` 上（见 config 的 clan 段）。
+    #   所以这里的契约从「每个兵种都在 recruit.list」放宽成：
+    #     · 在 recruit.list 里 → 那一条的字段必须齐全（world.gd 逐字段读）；
+    #     · 不在 → 必须能在**某个派系**的招募表里找到（否则它谁都招不出来，是死数据）。
+    def _clan_roster_ids() -> set:
+        out = set()
+        for item in (model.doc.value(["clan", "list"], []) or []):
+            if not isinstance(item, dict):
+                continue
+            for r in (item.get("recruit") or []):
+                if not isinstance(r, dict):
+                    continue
+                kind = str(r.get("kind", ""))
+                if kind:
+                    out.add(kind)
+                for s in (r.get("spawn") or []):
+                    if isinstance(s, dict) and str(s.get("type", "")):
+                        out.add(str(s["type"]))
+        return out
+
+    clan_roster = _clan_roster_ids()
     for uid in model.unit_ids():
         idx = model.unit(uid).recruit_index
-        ok(idx >= 0, "recruit.list 里有 %s 那一项" % uid)
+        if idx < 0:
+            ok(uid in clan_roster,
+               "★ %s 不在全局 recruit.list，但出现在某个派系的招募表里" % uid)
+            continue
         for key in ("kind", "label", "short", "desc", "train_sec", "population_cost", "cost"):
             ok(model.doc.has(["recruit", "list", idx, key]),
                "recruit.list[%d].%s 存在（world.gd 读它）" % (idx, key))
@@ -790,17 +789,9 @@ def t_game_contract() -> None:
             if i > 0:
                 for key in ("cost", "time_sec"):
                     ok(key in row, "upgrade.levels.%s[%d].%s 存在（升级代价）" % (bid, i, key))
-    for tech in model.techs():
-        ok(tech.id, "科技有 id")
-        path = ["tech", "list", tech.index]
-        for key in ("id", "name", "line", "desc", "effect"):
-            ok(model.doc.has(path + [key]), "tech.list[%d].%s 存在（tech.gd 读它）" % (tech.index, key))
-        known = [k for k, _l, _h in TECH_EFFECTS]
-        for key in tech.effect:
-            if key.startswith("_"):
-                continue
-            ok(key in known, "★ 科技 %s 的加成键 %s 在编辑器的已知形状里" % (tech.id, key))
-
+    # ★★ 2026.11：科技那一段契约检查已删 —— 科技不归本工具改了。
+    #   它现在由 `tools/buff_editor/test_model.py` 的 [4] 组验
+    #   （编辑器的效果键注册表 ↔ logic/tech.gd 的 default_effects() 双向对齐）。
 
 # ======================================================================
 # [7] 保存 / 重载（真写一次磁盘）
@@ -867,7 +858,7 @@ def main() -> int:
     t_add_remove_unit()
     t_generals()
     t_buildings()
-    t_techs()
+    t_techs_moved()
     t_game_contract()
     t_save_and_reload()
     t_bad_file()

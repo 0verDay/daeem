@@ -190,7 +190,11 @@ func _apply() -> void:
 	for i in _cells.size():
 		var cell := _cells[i]
 		var ei := _entry_index_for_cell(i)
-		var filled: bool = ei >= 0 and ei < _entries.size()
+		# ★★ 2026.11：**空槽位**（派系科技不满 9 条时那张表里的占位，`id == ""`）与
+		#   「根本没有条目」走同一条路：不显示名字、不可点、不参与填充动效
+		#   （用户口径：空位画灰框不可点）。
+		var filled: bool = ei >= 0 and ei < _entries.size() \
+			and String((_entries[ei] as Dictionary).get("id", "")) != ""
 		var active := false
 		var locked := false
 		if filled:
@@ -347,11 +351,15 @@ func entries() -> Array:
 
 
 ## 第 i **格**显示的条目（注意：格 ≠ config 下标 —— 九格是列优先转置过的）
+## ★ 空槽位返回 {}（与「没有这一格」同形）：hud 的悬停 / 点击都自带「空字典什么都不做」。
 func entry_at(i: int) -> Dictionary:
 	var ei := _entry_index_for_cell(i)
 	if ei < 0 or ei >= _entries.size():
 		return {}
-	return _entries[ei]
+	var e: Dictionary = _entries[ei]
+	if String(e.get("id", "")) == "":
+		return {}
+	return e
 
 
 func cell_at(i: int) -> Button:

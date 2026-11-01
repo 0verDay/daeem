@@ -124,7 +124,9 @@ var zones_production: Dictionary = {}
 ##   `cfg.zone_kind_default()`（= population）处理 —— 判据只在那一处。
 var zones_kinds: Dictionary = {}
 ## ★ 每个区块的**人口上限**：id → float（人）。缺字段的区块**不在这张表里** →
-## `zone.gd` 按默认 1 处理（用户需求：「每个区块都需要有人口上限，如果没有填则默认为 1」）。
+## `zone.gd` 按**区划种类**取默认（人口区划 5、其余 3；见 `zone.default_population_cap_of_kind`，
+## 权威数值在 config.json 的 `zone.population_cap_default` 与
+## `zone_kind.list[].default_population_cap`）。
 ##
 ## 与产能一样是「地图说了算」的静态数据：进游戏之后不会变，所以不进快照。
 var zones_population_caps: Dictionary = {}
@@ -392,8 +394,9 @@ func _read_zones(cfg: ConfigRes, grid_v: Variant, list_v: Variant) -> void:
 				"gold": float(pd.get("gold", 0.0)),
 				"population": float(pd.get("population", 0.0)),
 			}
-		# ★★ 人口上限：缺字段 / 不是数字 → **不登记**（zone.gd 按默认 1 处理）。
-		#    编辑器只在「不等于 1」时才写这个字段，所以正常的图里它本来就该缺。
+		# ★★ 人口上限：缺字段 / 不是数字 → **不登记**（zone.gd 按**区划种类**取默认：
+		#    人口区划 5、其余 3）。编辑器只在「不等于这一档默认值」时才写这个字段，
+		#    所以正常的图里它本来就该缺。
 		var cap: Variant = z.get("population_cap", null)
 		if typeof(cap) == TYPE_FLOAT or typeof(cap) == TYPE_INT:
 			zones_population_caps[zid] = float(cap)

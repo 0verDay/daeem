@@ -228,13 +228,7 @@ func gold_drain_per_sec(faction: String = "") -> float:
 ##   但调用方拿到的字典**每次都是新的**，不要当缓存使。
 ## ★ 只读 `active_by_faction`：启用的那几条就是全部生效项。
 func effects_of(faction: String = "") -> Dictionary:
-	var eff := {
-		"food_production_mult": 0.0,
-		"gold_production_mult": 0.0,
-		"building_hp_mult": 1.0,
-		"leader_hp_mult": 1.0,
-		"zone_population_mult": 1.0,
-	}
+	var eff := default_effects()
 	for id in active_ids(faction):
 		var e: Dictionary = entry(String(id)).get("effect", {})
 		for k in e.keys():
@@ -245,6 +239,43 @@ func effects_of(faction: String = "") -> Dictionary:
 			#    写成「倍率相乘」的话，两条 +10% 会变成 +21% 而不是 +20%。
 			eff[key] = float(eff[key]) + float(e[k])
 	return eff
+
+
+## ★★ 2026.11：全部效果键的**基数**（聚合 = 「基数 + 各条之和」）。
+##
+## 两套基数并存，别混：
+##   · 老键（2026.10）—— 倍率类基数 **1.0**（`building_hp_mult` / `leader_hp_mult` /
+##     `zone_population_mult`），百分比类基数 **0.0**（`food/gold_production_mult`）；
+##   · 新键（2026.11，派系科技）—— 一律 **0.0 的「加法增量」**，读取处写成 `1.0 + 增量`。
+##     这样「同一条键的多条科技叠加」永远是加法，也不会出现「两条 +10% 变 +21%」。
+##
+## ⚠️ 新增效果键**必须**同时改这里，否则 `effects_of()` 会把那一行当未知字段静默丢掉。
+static func default_effects() -> Dictionary:
+	return {
+		"food_production_mult": 0.0,
+		"gold_production_mult": 0.0,
+		"building_hp_mult": 1.0,
+		"leader_hp_mult": 1.0,
+		"zone_population_mult": 1.0,
+		# ---- 2026.11 派系科技（全部是加法增量；读取处一律 `1.0 + 它`）----
+		"unit_speed_mult": 0.0,
+		"capture_time_mult": 0.0,
+		"zone_population_cap_add": 0.0,
+		"unit_melee_reduction_add": 0.0,
+		"unit_ranged_reduction_add": 0.0,
+		"base_gold_per_sec_add": 0.0,
+		"building_gold_per_sec_add": 0.0,
+		"building_food_per_sec_add": 0.0,
+		"per_zone_attack_mult": 0.0,
+		"per_zone_armor_mult": 0.0,
+		"per_squad_member_attack_mult": 0.0,
+		"unit_upkeep_mult": 0.0,
+		"upkeep_idle_exempt": 0.0,
+		"recruit_tier_unlock": 0.0,
+		"recruit_gold_to_food": 0.0,
+		"zone_convert_restore": 0.0,
+		"charge_damage_mult": 0.0,
+	}
 
 
 ## 只取某一条科技自己的效果（**没启用也算**）—— 给界面画「这一格是干什么的」用。

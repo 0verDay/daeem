@@ -65,7 +65,9 @@ def selftest(project_dir: Path) -> int:
     print("[config] %s（%d 行，%d 字节）" % (
         path, model.text.count("\n") + 1, len(model.text.encode("utf-8"))))
 
-    for buff in BUFFS:
+    # ★★ 2026.11：`model.buffs()` = 注册表 + **现算出来的科技页**（科技不是写死的，
+    #   而是按 doc 里实际存在的条目生成），所以这里遍历 model 而不是 BUFFS。
+    for buff in model.buffs():
         print("[buff] %s「%s」  %s" % (buff.name, buff.icon, model.summary(buff)))
         print("       %s" % buff.intro)
         try:

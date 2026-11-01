@@ -131,7 +131,7 @@ EDITOR_COMMENT: Tuple[str, ...] = (
     "zone_list[].center：该区块的「区划中心」地块坐标；每个区块必须有且只有一个。",
     "zone_list[].kind：区划种类（food / gold / population），决定这个区划能做哪些特化。",
     "zone_list[].production：该区块的产能（每秒，绝对值；不乘地块数）：food / gold / population —— 游戏以此为准。",
-    "zone_list[].population_cap：该区块的人口上限；不写 = 默认 1（涨到上限就不再涨）。",
+    "zone_list[].population_cap：该区块的人口上限；不写 = 按区划种类取默认（人口区划 5，其余 3）。",
     "zone_centers：地块 → 中心所属的区块 id（-1 = 不是任何区块的中心），由 center 推出来。",
     "id / name：这张图的标识与显示名；开场主界面的地图选择条按 name 显示（不写就用目录名）。",
     "placeholder：true = 占位图（只为测试选择条的选项生成）；选项照样列出，但默认进的那张会跳过它。",
@@ -320,7 +320,7 @@ def _read_zone_production(model: MapModel, zone_list) -> None:
 ## 读每个区块的人口上限：`zone_list[].population_cap = 10`。
 ##
 ## 宽容点（与别处一致）：
-##   · 缺字段 → **什么都不设**（模型的 None = 游戏侧默认 1）；
+##   · 缺字段 → **什么都不设**（模型的 None = 按区划种类取默认：人口区划 5、其余 3）；
 ##   · 不是数字的值（"abc" / 空串）→ 同样当没填，**不写坏原值**
 ##     （`set_zone_population_cap` 自己会拒绝，这里不用再判一遍）；
 ##   · 负数 / 超大值由模型夹住（0~999），与界面上的输入走同一条路。
@@ -566,8 +566,10 @@ def model_to_dict(model: MapModel) -> dict:
             entry["production"] = {
                 key: _clean_number(zone.production.get(key, 0.0)) for key in PRODUCTION_KEYS
             }
-        # ★ 人口上限：**只在不是默认值 1 时才写**（与产能同一条约定）——
-        #   没填过 / 填 1 的区块，游戏侧自己按 1 处理，文件里不必留一坨默认值。
+        # ★ 人口上限：**只在不是这一档的默认值时才写**（与产能同一条约定）——
+        #   默认值按区划种类分档（人口区划 5、其余 3，见 model.DEFAULT_POPULATION_CAP /
+        #   POPULATION_CAP_BY_KIND）：没填过 / 填成默认值的区块，游戏侧自己按默认处理，
+        #   文件里不必留一坨默认值。
         if not model.zone_population_cap_is_default(zone.zone_id):
             entry[POPULATION_CAP_KEY] = _clean_number(
                 model.zone_population_cap(zone.zone_id))

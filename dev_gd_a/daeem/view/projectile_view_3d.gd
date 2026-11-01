@@ -237,10 +237,17 @@ func sync() -> void:
 
 
 ## 方块在 3D 里的位置：逻辑地面点 + 抛物线抬升（用逻辑的同一个进度 `t`）。
+##
+## ★★ 2026.11：**弹道形状由数据决定** —— `p.arc == false`（扭力弩炮的弩矢）⇒ 走直线，
+##   不抬高（只保留 `_base_h` 那点离地，免得方块一半陷进地面）。
+##   ⚠️ 抬不抬高是**纯表现**：逻辑的命中点一直是地面上的 `p.pos`，与高度无关。
 func _visual_pos(p) -> Vector3:
 	var t: float = _draw_t(p)
 	var ground: Vector2 = p.pos if t == p.t else p.start.lerp(p.end, t)
 	var w: Vector3 = palette.to_world(ground)
+	if not bool(p.get("arc")):
+		w.y = _base_h
+		return w
 	var dist: float = p.start.distance_to(p.end)
 	var arc: float = minf(dist * palette.cell_size() * _arc_ratio, _arc_max)
 	w.y = _base_h + arc * 4.0 * t * (1.0 - t)

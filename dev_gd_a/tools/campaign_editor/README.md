@@ -19,6 +19,10 @@ data/campaigns/<campaign_id>/           ← 目录名 = 战役 id（与「一个
   playable`（以及 AI / 大本营 / **起手资源 `start_food` `start_gold`** 等）。
   ★ 起手资源留空 = 不写这个键：commander AI 默认 **0**，玩家沿用 `config.json` 的
   `resource.start_food/gold`。
+* ★★ 2026.11：每项还可以有一个 **`clan`（派系）** —— 决定这一方**能招哪些兵**
+  （`config.json` 的 `clan.list[]`：原生 / 王朝 / 帝国）。③阵营页每一方多一行「派系」下拉，
+  留空 = 不写这个键 = 运行时用 `clan.default_id`（原生）。★ 派系与 `id`（阵营）是两件事：
+  `id` 管敌我，`clan` 管兵种表。
 * **`campaign.json` 不再存 `factions[]`** —— A 关卡加的阵营**不会**出现在 B 关卡；
   不同战役之间更不会互相污染。旧格式（`campaign.json` 里还有 `factions[]`）仍能读：
   载入时会把旧表**抄进每一关**，保存时就只写关卡那一份。

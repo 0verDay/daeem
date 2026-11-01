@@ -238,7 +238,7 @@ class FactionEntry:
     `reddot_ai`（按阵营覆盖）与 `spawn_region`（红点生成区域）。
     """
 
-    __slots__ = ("fid", "ai", "base", "start_food", "start_gold",
+    __slots__ = ("fid", "ai", "base", "start_food", "start_gold", "clan",
                  "attack_target", "attack_target_raw",
                  "garrison_ai", "reddot_ai", "spawn_region", "spawn_region_raw",
                  "name", "color", "playable", "playable_declared", "declared")
@@ -250,6 +250,10 @@ class FactionEntry:
         #: 这一方的起手资源；`None` = JSON 没写 / 不覆盖（引擎默认 0）。
         self.start_food: Optional[float] = None
         self.start_gold: Optional[float] = None
+        #: ★★ 2026.11：这一方的**派系**（`config.json` 的 `clan.list[].id`）。
+        #: 空串 = 不写 ⇒ 运行时用 `clan.default_id`（原生）。
+        #: ★ 派系只决定「这一方能招哪些兵」，与敌我（阵营）无关 —— 别和 `fid` 混起来。
+        self.clan: str = ""
         #: 形状 {"kind": ..., ...}；None = 没写（运行时退回「打最近的敌方区划」）。
         self.attack_target: Optional[dict] = None
         #: `attack_target` 在源 JSON 里的**原样值**（`True` 表示「这个键出现过」）。
@@ -1054,7 +1058,8 @@ class ConfigInfo:
 
     __slots__ = ("unit_types", "unit_names", "general_types",
                  "general_names", "general_caps", "building_types", "zone_kinds",
-                 "ai_garrison_cfg", "ai_reddot_cfg", "colors", "raw")
+                 "ai_garrison_cfg", "ai_reddot_cfg", "colors", "clans",
+                 "clan_default", "raw")
 
     def __init__(self) -> None:
         self.unit_types: List[str] = []
@@ -1070,6 +1075,11 @@ class ConfigInfo:
         self.ai_garrison_cfg: Dict[str, Any] = {}
         self.ai_reddot_cfg: Dict[str, Any] = {}
         self.colors: Dict[str, Any] = {}
+        #: ★★ 2026.11：**派系表**（`config.clan.list[]` 的 id + 显示名，声明顺序）。
+        #: 编辑器只拿它填下拉框；派系本身（能招什么兵）归 config / unit_editor。
+        self.clans: List[Dict[str, str]] = []
+        #: `config.clan.default_id`（没写 `clan` 的那一方实际生效的派系）。
+        self.clan_default: str = "native"
         self.raw: dict = {}
 
     def unit_name(self, type_id: str) -> str:
@@ -1122,6 +1132,23 @@ class ConfigInfo:
             if isinstance(item, dict):
                 return str(item.get("main", ""))
         return ""
+
+    # ---- ★★ 2026.11：派系（clan）--------------------------------------
+    def clan_ids(self) -> List[str]:
+        """派系 id 列表（**声明顺序**；界面下拉用）。"""
+        return [str(c.get("id", "")) for c in self.clans if str(c.get("id", ""))]
+
+    def clan_name(self, cid: str) -> str:
+        for c in self.clans:
+            if str(c.get("id", "")) == str(cid):
+                return str(c.get("name", "")) or str(cid)
+        return str(cid)
+
+    def clan_label(self, cid: str) -> str:
+        """`"王朝（dynasty）"` 这种写法（界面下拉用）。空串 = 不写（= 原生）。"""
+        if not str(cid):
+            return "（不写 = %s）" % self.clan_name(self.clan_default)
+        return "%s（%s）" % (self.clan_name(cid), cid)
 
     def __repr__(self) -> str:                          # pragma: no cover - 调试用
         return "<ConfigInfo units=%d buildings=%d>" % (len(self.unit_types),
@@ -1356,6 +1383,17 @@ def load_config(project_dir: Any) -> ConfigInfo:
     info.ai_garrison_cfg = dict(ai.get("garrison", {})) if isinstance(ai.get("garrison"), dict) else {}
     info.ai_reddot_cfg = dict(ai.get("reddot", {})) if isinstance(ai.get("reddot"), dict) else {}
     info.colors = dict(data.get("colors", {})) if isinstance(data.get("colors"), dict) else {}
+    # ★★ 2026.11：派系表（`clan.list[]`）—— 只取 id / name，给阵营那一页的下拉用。
+    clan = data.get("clan", {}) if isinstance(data.get("clan"), dict) else {}
+    info.clan_default = _as_str(clan.get("default_id", ""), "native") or "native"
+    for item in _as_list(clan.get("list")):
+        if not isinstance(item, dict):
+            continue
+        cid = _as_str(item.get("id", ""), "")
+        if not cid:
+            continue
+        info.clans.append({"id": cid,
+                           "name": _as_str(item.get("name", ""), "") or cid})
     return info
 
 
@@ -1593,6 +1631,8 @@ def _load_level_factions(raw: Any, lv: LevelModel) -> None:
         e.base = _as_point(item.get("base"))
         e.start_food = _as_optional_float(item.get("start_food"))
         e.start_gold = _as_optional_float(item.get("start_gold"))
+        # ★★ 2026.11：派系（空串 = 运行时回落到 clan.default_id）。
+        e.clan = _as_str(item.get("clan", ""), "").strip()
         spec = item.get("attack_target")
         if isinstance(spec, dict) and spec:
             e.attack_target = normalize_target(spec)
@@ -2026,6 +2066,9 @@ def _faction_to_dict(e: FactionEntry) -> dict:
         out["start_food"] = clean_number(e.start_food)
     if e.start_gold is not None:
         out["start_gold"] = clean_number(e.start_gold)
+    # ★★ 2026.11：派系只在选过的时候写（空串 = 运行时回落到原生）。
+    if e.clan:
+        out["clan"] = e.clan
     if e.attack_target:
         out["attack_target"] = _target_to_dict(e.attack_target)
     if e.garrison_ai:

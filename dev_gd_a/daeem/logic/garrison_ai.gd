@@ -878,16 +878,22 @@ static func _try_recruit(world, u, want: int) -> bool:
 ##
 ## ⚠️ 抽到的 kind 必须是**招募表里真的有的**，否则会被 world 以拒因 "kind" 挡掉并刷事件。
 ##   不在表里 → 退回表里第一条，免得「地图上摆的守将因为兵种没进招募表而永远补不了员」。
+## ★★ 2026.11：招募表**按派系**（王朝 / 帝国各有各的表），而且表里的 kind 可能是
+##    **组合条目**（dy_guard 一次出两个兵）—— `u.retinue_types` 里写的是**兵种 id**，
+##    所以要先用 `recruit_kind_for_unit` 把它翻译回「能招出这个兵种的那一条」。
+##    直接拿兵种 id 去 `is_unit_recruitable` 会得到 false，于是守军永远补不出员。
 static func _pick_recruit_kind(world, u) -> String:
+	var f := String(u.faction)
 	var kind := ""
 	var types: Array = u.retinue_types
 	if not types.is_empty():
 		# 用「当前编队人数」当抽取序号：每补一个兵都换一个序号 ⇒ 兵种会轮换着来。
-		kind = String(world.pick_weighted_type(u, types, u.retinue_size(world)))
-	if kind == "" or not world.is_unit_recruitable(kind):
-		kind = String(u.unit_type)
-	if not world.is_unit_recruitable(kind):
-		var lst: Array = world.recruit_list()
+		var want := String(world.pick_weighted_type(u, types, u.retinue_size(world)))
+		kind = world.recruit_kind_for_unit(f, want)
+	if kind == "":
+		kind = world.recruit_kind_for_unit(f, String(u.unit_type))
+	if kind == "":
+		var lst: Array = world.recruit_list(f)
 		if lst.is_empty():
 			return ""
 		kind = String((lst[0] as Dictionary).get("kind", ""))

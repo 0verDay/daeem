@@ -1,4 +1,4 @@
-﻿# Godot 版 DAEEM · 开发路线
+# Godot 版 DAEEM · 开发路线
 
 > 本文是 **Godot 移植的总纲**：先定死已经拍板的取舍，再给出多轮路线与**本轮（第 0 轮）的详细里程碑**。
 > 架构细节见 [`architecture.md`](architecture.md)，HTML → Godot 的逐模块对照见 [`porting.md`](porting.md)，
@@ -1126,9 +1126,18 @@ select_units(selected_units.duplicate() + [unit])
 | 地图编辑器（数据层） | `tools/map_editor/model.py`：`Zone.population_cap` + `zone_population_cap()` / `set_zone_population_cap()` / `zone_population_cap_is_default()` | **`None` = 设计师没填**；生效值由 `zone_population_cap()` 补成默认 **1** |
 | 地图编辑器（界面） | `app.py` 区块页签侧边栏新增「人口上限」一节（一个输入框，作用于列表里选中的区块，Enter / 失焦生效） | 与「产能」同一套交互：非法输入不改原值、负数夹 0、上限 999（只挡误输入） |
 | 地图 JSON | `zone_list[].population_cap`，**只在「不等于默认 1」时才写** | 与「只有非零产能才写 production」同一条约定 —— 没配过的地图导出后仍然干净 |
-| 游戏侧读图 | `logic/map_data.gd` 的 `zones_population_caps` → `logic/zone.gd` 的 `_apply_map_population_caps()` | 缺字段 = 不登记 → `zone.gd` 的 `DEFAULT_POPULATION_CAP`（1）兜底 |
+| 游戏侧读图 | `logic/map_data.gd` 的 `zones_population_caps` → `logic/zone.gd` 的 `_apply_map_population_caps()` | 缺字段 = 不登记 → `zone.gd` 按**区划种类**取默认（见 16.1 末尾的 2026.11 注） |
 | 增长 | `zone.update_population()` | `pop >= cap` → 这一帧不涨；否则 `min(cap, pop + gain)` |
 | 显示 | `hud._zone_text()`：`人口：%d（上限 %s）` | `%d` 来自 `zones.population_floor()`（**向下取整**，用户要求 ui 里永远是整数） |
+
+> ★★ **2026.11 口径变更（本条目的默认值改了，见 route.md 第七十七节 77.8）**：
+> 默认上限从「固定 1」改成**按区划种类分档** —— 全局 3、**人口区划 5**。
+> 权威数值在 `config.json` 的 `zone.population_cap_default` 与
+> `zone_kind.list[].default_population_cap`，读取只有一处：
+> `zone.default_population_cap_of_kind()`（编辑器侧同源：`MapModel.zone_population_cap_default()`）。
+> ⇒ 上面表格里「补成默认 1」「只在 ≠1 时才写」这两条**现在都按种类判**。
+> 下面「两条刻意的取舍」里第 2 条的理由仍然成立（「没写」与「写了等于默认值」必须落到同一个数），
+> 只是那个默认值不再是 1。
 
 **两条刻意的取舍**（改之前先读）：
 
@@ -1136,9 +1145,9 @@ select_units(selected_units.duplicate() + [unit])
    `population = min(cap, population + gain)`。理由：招募退款（将领阵亡时按记账把人口
    退回原区划）有可能把现值顶到上限之上，测试也会直接给区划塞一个大的人口值 ——
    两者都不该在下一帧被悄悄削掉。上限的语义是「自然增长到此为止」，不是「现值永远不许超过它」。
-2. **缺字段算 1，而不是 0**。产能缺档算 0（「没配就是没有产出」），上限反过来：
-   用户要的是「每个区块都必须有上限」，所以「没写」与「写了 1」必须落到同一个值上。
-   `test_map.json` 一个 `population_cap` 都没写 → 全部按 1（发布图保持原样、不动它）。
+2. **缺字段算「按种类的默认值」，而不是 0**。产能缺档算 0（「没配就是没有产出」），上限反过来：
+   用户要的是「每个区块都必须有上限」，所以「没写」与「写了等于默认值」必须落到同一个数上。
+   （2026.11 起那个默认值是 3 / 人口区划 5，不再是 1。）
 
 ### 16.2 招募扣 1 人口（这条本来就有，本轮只把它与上限钉在一起）
 
@@ -6715,6 +6724,265 @@ events = world.tick(minf(dt, cfg.sim_max_dt))
 | `view/hud.gd` | 建横幅 + `show_broadcast()` + 每帧 `_tick_broadcast()`；`upgrade_reject_text("generals")` 改读事件里的数字（不再写死 3/6） |
 | `view/game_interaction.gd` | 新增 `upgrade_started` 分支：**不过 `_is_my_event`**，只按 `world.is_commander_side()` 过滤后播报 |
 
+### 68.7 2026.11 改：三本门槛 4 将 → **3 将**，读条改成**按将领数分档**
+
+**需求原话**：「改一下底层机制，当有 3 名将领时就可以升三本，升本时间为 60s，有 4 名将领时 40s，
+有 5 名将领时 20s」。
+
+| 项 | 68.1 那版 | 现在 |
+|---|---|---|
+| 升到 3 级的门槛 `need_generals` | 4 将 | **3 将** |
+| 升到 3 级的读条 | 80 秒；≥5 将 → 60 秒（一档） | **3 将 60 / 4 将 40 / 5 将 20**（三档） |
+| 升到 2 级 | 2 将 / 40 秒 | 不变 |
+
+★ 机制上的改动：老的两个键 `time_sec_fast` + `fast_need_generals` 只表达得了**一档**
+（「≥N 将 → 更短」），写不出「3/4/5 将各一档」。所以新增
+`upgrade.levels.base[k].time_by_generals`：
+
+```json
+"need_generals": 3,
+"time_sec": 60,
+"time_by_generals": [
+  { "need": 3, "time_sec": 60 },
+  { "need": 4, "time_sec": 40 },
+  { "need": 5, "time_sec": 20 }
+]
+```
+
+* 语义：`need` = 开始升级那一刻该方**至少**几名将领，`time_sec` = 那一档的读条秒数；
+  表在 `logic/config.gd` 里归一化成**按 `need` 降序**，`world.building_upgrade_time()`
+  取「第一个满足的」= 最快那一档。都不满足（将领不够）→ 走 `time_sec` 的基准值。
+* **两个键都在时以 `time_by_generals` 为准**（它更具体），表里没匹配档才回退到老的
+  `time_sec_fast` / `fast_need_generals`（保留兼容，别的建筑/关卡仍可能用）。
+* 「按下升级那一刻定死」这条**没变**：`start_upgrade()` 仍把选档结果写进 `upgrade_total`。
+* `need_generals` 与 `max_generals` 仍是两件事：门槛 2 / 3、上限 2 / 5 / 6。
+
+落点：`data/config.json`（`upgrade.levels.base` 第 3 行 + `_comment`）、
+`logic/config.gd`（`_as_time_tiers()` / `upgrade_time_by_generals()`）、
+`logic/world.gd`（`building_upgrade_time()` 先查分档表）、
+`tests/test_upgrade.gd`（张数 / 三档数值 / 定死 / 4 将与 5 将各开一局）、
+`tests/test_base_limits.gd`（门槛 3）。
+
+⚠️ 单位编辑器**不编辑**这张表（它只认 `cost_food / cost_gold / time_sec / hp_mult`，与
+`need_generals` / 上限那几个键一样），要改分档读条得手改 config（见该工具 README 的已知取舍）。
+### 68.8 2026.11 平衡：把 see_ai（王朝 vs 帝国）的胜率调到 4:6
+
+**需求原话**：「目标是把胜率调到 4：6 左右（随便哪个阵营是 4 是 6 都行）」。
+口径：`ai_test_battle` / `between_moutains`，p1 = **王朝**、p2 = **帝国**，双方都交给 command AI
+（normal），30 局，种子 `1000 + 7919×i`，上限 900 秒。胜负 = 先达成「自己的目标区划」或拆掉对面大本营。
+
+| 版本 | 王朝胜率（30 局） | 改了什么 |
+|---|---|---|
+| 改前（协防军 150 / 将领 200-200） | **76.7%**（23:7） | —— |
+| 协防军 190 / 将领 160-160 | 46.7%（14:16） | 王朝的组合兵按「两名单位」定价；一阶将领降 40 粮 40 金 |
+| 帝国剑士 75 / 弓手 110 | 20.0%（6:23+1 平） | 帝国一阶兵降价（**过冲**，已回退） |
+| 帝国剑士 83 / 弓手 122 | 56.7%（17:13） | 同上，回退一半（仍偏离） |
+| 协防军 220 / 帝国 85-125（权重合计 1.02） | 43.3%（13:17） | 只把王朝的组合兵抬到每兵 110 粮 |
+| 协防军 220 + 权重归一到 1.00 | 40.0%（12:18） | 帝国编成权重从 1.02 收敛到 1.00（只挪了 2%） |
+| **最终：协防军 195（＝190 与 200 的中点）** | **53.3%（32:26，2 平）** | ⬅ 用户改口「越平衡越好」之后取的中点：190 与 200 两批的实测分别偏 3.3 个点、方向相反，说明这一段已经在噪声里，取中点最稳 |
+
+**最后的取值**（用户口径从「4:6」改成「越平衡越好」之后，取 190 与 200 的中点 `协防军 195`）：
+
+| 批次 | 种子 | 局数 | 王朝 | 帝国 | 平 | 王朝胜率 |
+|---|---|---|---|---|---|---|
+| A | `1000+7919i` | 30 | 15 | 14 | 1 | **50.0%** |
+| B | `500000+7919i` | 30 | 17 | 12 | 1 | 56.7% |
+| A+B | —— | 60 | 32 | 26 | 2 | **53.3%**（帝国 43.3%） |
+
+把 190 / 195 / 200 三段合并（n=120）：王朝 62 胜、帝国 55 胜、3 平 ⇒ **约 52 : 47**。
+也就是说这三个取值之间差的全是噪声 —— **这一段已经平衡到测不出来了**：
+
+
+| 项 | 改前 | 现在 | 理由 |
+|---|---|---|---|
+| `clan.dynasty.recruit[dy_guard].cost.food` | 150 | **195** | 协防军一次出 **2 名**单位，150 粮等于每兵 75 —— 比帝国「剑士 85 + 弓手 125 = 210（每兵 105）」便宜 40%。按 195 算是每兵 97.5，与帝国「剑士 85 + 弓手 125 = 210（每兵 105）」基本持平 —— 这一段实测最平衡。 |
+| `recruit.zone.list[general_1..3].cost` | 200 粮 / 200 金 | **160 / 160** | 三本门槛降到 3 将之后，第 2、3 名将领必须够得着，否则新规则是死条文（实测第 2 名将领原本要 240~470 秒才到）。 |
+| `clan.empire.ai_composition` / `roles.line` 权重 | 剑士 .38 / 弓手 .25 / 骑手 .18 / 冠军 .10 / 弩炮 .07 / 粮车 .02 | **.30 / .20 / .28 / .14 / .06 / .02**（合计 1.00） | 帝国全场囤 500~1000 金花不出去（骑手 160 金 / 冠军骑士 380 金是它唯一的金耗兵），权重往金耗兵偏一点。⚠️ 实测这一项**没有可测到的效果**（46.7 前后一致），留着是因为「金子花不出去」本身不健康。 |
+
+⚠️ 两个观察（写下来免得以后当成 bug）：
+1. **胜率对粮食单价极其敏感**：每兵差 5 粮（≈5%）就能带 ±10~30 个百分点。所以这类调参必须**多局取平均**
+   （单批 30 局的 95% 区间约 ±9 个百分点），不要拿一局定生死。
+2. **三本在 see_ai 里仍然几乎到不了**（30 局全部停在 2 级）：升 3 级要 400 粮 + 400 金 + **3 名将领**，
+   而 AI 的第 2 名将领实测在 240~470 秒，第 3 名更晚；一局平均 490 秒。想让三本的「3/4/5 将 → 60/40/20 秒」
+   真的出现在对局里，得再动经济（例如继续降一阶将领价 / 降三本造价 / 提高粮食收入）—— 这会连带改胜率，
+   所以这一轮**没有**动。
+### 68.9 2026.11 重做：三本降成 200/200 + 王朝/帝国兵种数值分流
+
+**需求原话**：「降低三本造价为和二本相同的 200 粮 200 金。考虑削弱单位数值，而非增加单位造价，
+要降低当前游戏中的单位造价，我想让王朝的军队的数值再降低些，轮换更勤，更强调兵种克制，
+帝国军也可以相应地向高质量部队的方向靠」。
+
+#### a) 三本造价
+
+`upgrade.levels.base[2].cost` 400/400 → **200/200**（与二本同价）；读条仍是分档表 3 将 60 / 4 将 40 / 5 将 20。
+
+#### b) 兵种重新定位（**降数值 + 降价格**，不再靠涨价平衡）
+
+| | 改前 | 现在 |
+|---|---|---|
+| 王朝 定位 | 沿用原生数值再叠加，比帝国略强 | **便宜 / 脆 / 克制狠 / 补得快**（轮换流） |
+| 帝国 定位 | 和王朝同量级的数值 | **少而精**：血量 / 护甲 / 攻击全面高于原生同级 |
+
+王朝（`dy_*`）：
+
+| 单位 | 血 | 护甲 | 攻 | 粮/金 | 读条 | 克制上的改动 |
+|---|---|---|---|---|---|---|
+| 协防军（2 人包） | 120 / 80 | 1 / 1 | 9 / 14 | **150** / 0 | **17s**（≈8.5s/兵） | 长枪对骑兵 **+70%**；弓手 新增 **对步兵 +35%** |
+| 斥候 | 120 | 1 | 15 | 70 / 140 | 10s | 对步兵 25% → **35%** |
+| 游侠 | 100 | 1 | 13 | 235 / 95 | 16s | — |
+| 御林军（3 人包） | 165 / 90 / 190 | 3 / 1.5 / 5 | 11 / 15 / 20 | 195 / 300 | 20s | 剑盾远近减伤 25% → **30%**；弓手对步兵 25% → **40%** |
+| 战车 | 215 | 4 | 28 | 145 / 260 | 20s | — |
+| 投石车 | 185 | 2 | 35 | 290 / 290 | 24s | — |
+
+帝国（`dg_*`）：
+
+| 单位 | 血 | 护甲 | 攻 | 粮/金 | 读条 |
+|---|---|---|---|---|---|
+| 披甲剑士 | **230**（原生 180） | 3 | 14 | **70** / 0 | 10s |
+| 铁臂弓手 | **160**（原生 115） | 1.5 | **24** | **96** / 0 | 10s |
+| 骑手 | **195** | 3 | **25** | 75 / 150 | 10s |
+| 冠军骑士 | **390**（骑士 365） | 6 | **34** | 130 / 340 | 18s |
+| 扭力弩炮 | **275** | 3 | **56** | 290 / 310 | 22s |
+
+★ 一阶将领 200/200 → 160/160 → **130/130**（三本要 3 将，得让第 2、3 名够得着）。
+
+#### c) 30+30 局实测（同一张图 / 同一套判据）
+
+| 版本 | 王朝 | 帝国 | 平 |
+|---|---|---|---|
+| 只降三本造价（单位数值未动） | 90.0% | 10.0% | 0 |
+| + 王朝降数值、帝国升数值（第一版） | 73.3% | 16.7% | 3 |
+| + 协防军读条 14→18s、帝国一阶 65/95 | 33.3% | 66.7% | 0 |
+| 回调到读条 16s、帝国 72/105 | 56.7% | 43.3% | 0 |
+| **最终：读条 17s、帝国 70/**96**（两批各 30 局）** | **43.3%（26 胜）** | **50.0%（30 胜）** | **6.7%（4 平）** |
+
+★ 判定局（去掉平局）**46.4 : 53.6**；把帝国弓手放回 102 粮的另一批 60 局是 `53.3 : 43.3`（判定局 55:45）。
+也就是说 96 与 102 之间已经**跨过 50:50**，两端各偏 3~5 个百分点 —— 这一段又是噪声了。
+
+★ 顺带观察：单位变便宜之后对局终于能摸到三本（60 局里 1 局，帝国还启用了三本科技 `dg_expedition`），
+但那仍然是极少数 —— 「3/4/5 将 → 60/40/20 秒」这张表要真正常态化出现，还得继续压经济门槛。
+
+⚠️ **为什么最后只用了一个小数字就把 30 个百分点掰回来**：`dy_guard` 一单出 **2 名**单位，
+「每兵读条」本来是 14/2 = 7 秒，而帝国每兵 10 秒 ⇒ 王朝的**产能**天生快 43%，这一项比单体数值重要得多。
+把读条抬到 17 秒（8.5 秒/兵）之后两边产能接近，数值差异才真正开始起作用。以后调这块**先看每兵读条**。
+### 68.10 2026.11 再改：二本无门槛、三本 2 将起、分档 60/40/20/0 秒、AI 升本加权
+
+**需求原话**：「升二本不需要将领限制，升三本的将领最低限制改为 2，消耗时长为 60s(2)，40s(3)，20s(4)，0s(5)，
+并提高 command ai 升本的权重」。
+
+| 项 | 68.7 那版 | 现在 |
+|---|---|---|
+| 升二本 `need_generals` | 2 将 | **0（无门槛）** |
+| 升三本 `need_generals` | 3 将 | **2 将** |
+| 升三本读条 | 3/4/5 将 → 60/40/20 秒 | **2/3/4/5 将 → 60/40/20/0 秒** |
+| `build.base_upgrade_priority` | 10.0，**且没人读（死字段）** | 14.0，**而且真的生效** |
+
+★ **0 秒是关键改动**，要动两处才成立：
+1. `logic/config.gd::_as_time_tiers()` 以前把 `time_sec <= 0` 当非法丢掉 ⇒ 现在允许 0（= 立刻完成）；
+2. `logic/world.gd::building_upgrade_time()` 以前判据里带 `sec > 0.0` ⇒ 现在只判 `count >= need`；
+3. `logic/upgrade.gd::start_upgrade()`：`secs <= 0` 时**同步收尾**（`_finish_upgrade`）。
+   ⚠️ 不能指望 tick 收尾：`is_upgrading()` 判的是 `upgrade_total > 0`，0 秒在 tick 眼里等于「没在读条」，
+   那样会永远停在「钱花了、等级没升」。
+
+★ **「提高升本权重」原来是空话**：`ai.commander.build.base_upgrade_priority` 这个键从加进去那天起
+**没有任何代码读它**。现在 `logic/ai_build.gd::_try_base_upgrade()` 真正用它：
+`priority >= 10` ⇒ 升本可以**吃进「补员预留」那部分钱**（默认口径只能花预留之外的余钱），
+因为大本营等级同时决定 将领上限 / 同时科技数 / 科技阶 / 三本兵。默认值 10 → **14**。
+
+#### 10 局实测（同一张图 / 同一判据 / 种子 1000+7919i）
+
+| | 王朝 | 帝国 | 平 | 平均时长 | 三本局数 |
+|---|---|---|---|---|---|
+| 改前（68.9 末版，60 局） | 43.3% | 50.0% | 6.7% | ~500s | 1/60 |
+| **改后（10 局）** | **20%** | **70%** | 10% | 610s | **10/10** |
+
+★ 三本从「几乎不出现」变成「局局出现」，**这是本轮最大的变化**：比赛被推到三本，
+而三本兵正好是这轮刚被削过（冠军骑士 330/32、弩炮 230/48）与刚被抬过（战车 265、投石车 235）的两种，
+再加上三本多出来的第 3 个科技槽 ⇒ 帝国在高本阶段明显更吃香。
+⚠️ 这 10 局同时含「兵种数值微调」与「升本机制 + AI 权重」两组改动，无法单独归因；
+且 10 局的 95% 区间约 ±30 个百分点 ⇒ 真实值可能落在 30~45 之间，需要更多局才能定论。
+### 68.11 2026.11 收尾：削帝国 / 强王朝，回到 47:50（30 局）
+
+**需求原话**：「可以以这个为基准继续调双方的数值平衡了，削帝国，强王朝」。
+
+#### 最终数值（这一版就是当前 config 里的值）
+
+| 帝国 | 血 | 护甲 | 攻 | | 王朝 | 血 | 护甲 | 攻 |
+|---|---|---|---|---|---|---|---|---|
+| 披甲剑士 | 232 | 3 | 15 | | 协防军·枪 | 135 | 1 | 10 |
+| 铁臂弓手 | 162 | 1.5 | 24 | | 协防军·弓 | 92 | 1 | 16 |
+| 骑手 | 200 | 3 | 25 | | 斥候 | 135 | 1 | 17 |
+| 冠军骑士 | 320 | 6 | 33 | | 游侠 | 112 | 1 | 15 |
+| 扭力弩炮 | 228 | 3 | 45 | | 御林军·剑 / 弓 / 骑 | 185 / 102 / 215 | 3 / 1.5 / 5 | 12 / 17 / 23 |
+| | | | | | 战车 | 300 | 4 | 32 |
+| | | | | | 投石车 | 265 | 2 | 40 |
+
+#### 调参轨迹（每行都是 30 局，同一批种子 `1000+7919i`）
+
+| 步骤 | 王朝 | 帝国 | 平 | 三本局 |
+|---|---|---|---|---|
+| 68.10 末版（帝国强） | 20% | 70% | 10% | 10/10 |
+| 削帝国 / 强王朝（第一刀：全部 −12% / +12%，**10 局**） | 60% | 40% | 0 | 7/10 |
+| ＋帝国一阶 +10 血（30 局） | 57% | 33% | 10% | 27/30 |
+| **＋帝国一阶/二阶再 +10~12 血、三本回到 320/33 与 228/45** | **47%** | **50%** | **3%** | **28/30** |
+
+★ 判定局（去平局）：`14 : 15` ≈ **48 : 52**。这一版就停在这里。
+
+#### 两条经验（下次调这块先看这两条）
+
+1. **三本现在是常态**（28/30 局打到 3 级）⇒ 胜负基本由**三本兵 + 第 3 个科技槽**决定，
+   调一阶二阶的血量只影响前 3 分钟，调三本才影响结局。
+2. 仍要留意**每兵读条**（协防军一单 2 人、17 秒 ⇒ 8.5 秒/兵 vs 帝国 10 秒/兵）：
+   这条产能差在「双方都到三本」的长局里会被放大，是王朝最容易「不知不觉变强」的地方。
+### 68.12 2026.11 再削帝国 + 查「前期帝国爆兵更多」
+
+**需求原话**：「降低披甲剑士，铁臂弓手的血量，降低骑手的攻击，降低冠军骑士的血量。
+我发现在前期帝国军爆的兵比王朝军还多，这不应该发生吧」。
+
+#### a) 数值（本次削的四项）
+
+| 单位 | 改前 | 现在 |
+|---|---|---|
+| 披甲剑士 | 232 血 | **210** |
+| 铁臂弓手 | 162 血 | **145** |
+| 骑手 | 25 攻 | **23** |
+| 冠军骑士 | 320 血 | **290** |
+
+#### b) 「前期帝国爆兵更多」—— 确认属实，根因是**下单粒度**，不是产能
+
+实测（8 局平均，累计生产过多少个兵）：
+
+| 时点 | 王朝 | 帝国 | 说明 |
+|---|---|---|---|
+| 60s | 2.0 | 2.0 | 打平 |
+| 120s | 3.1 | 4.0 | **帝国领先 0.9 个** ← 用户看到的就是这一段 |
+| 180s | 7.0 | 7.0 | 打平 |
+| 240s | 10.4 | 9.9 | 王朝反超 |
+| 420s | 21.8 | 16.1 | 王朝领先 5.7 个 |
+
+★ 根因不是「帝国产能高」，而是**一单的门槛**：王朝的协防军一单要 **145 粮 / 2 人口**换 2 个兵，
+凑不够就一兵不出（120 秒时存粮 30）；帝国的剑士 **65 粮 / 1 人口**就能下单，存粮 39 也能一直出。
+所以前 2 分钟帝国看着「爆兵更快」，但 180 秒就追平、240 秒之后王朝反超 —— 这是**打包 vs 单卖**的粒度差。
+
+★ 试过的办法与结论：
+* 把协防军降到 130 粮 → 前期确实追平（120s 3.6 : 4.1 → 180s 7.5 : 7.0），但**胜率直接崩到 77:13**
+  （等于给王朝白送 20% 经济），只能回退到 145；
+* 给帝国加**训练速度**（10 秒 → 8 秒）→ **完全没效果**：产能被粮食卡着，不是被读条卡着。
+
+#### c) 平衡轨迹（这一轮，n=10 的为主）
+
+| 协防军 | 帝国 剑士/弓手 | n | 王朝 | 帝国 |
+|---|---|---|---|---|
+| 145 | 72 / 90 | 10 | 80% | 10% |
+| **145** | **65 / 88** | **10** | **50%** | **50%** |
+| 150 | 62 / 86 | 30 | 23% | 60% |
+| 135 | 85 / 100 | 30 | 93% | 7% |
+
+★ 两件事要记住：
+1. **这一段是阈值式响应**：帝国一阶兵 62 → 65 粮（+5%）就能让胜率从 23% 跳到 50%，
+   因为「能不能在关键那一拍多出一个兵」会snowball。所以别指望 ±2 个百分点的精度。
+2. 按用户新口径：**普通调参一轮只跑 10 局**（10 局的 95% 区间约 ±30 个百分点，够看方向），
+   只有改机制（比如三本门槛、0 秒读条）才跑 30+ 局。
 ★ 联机**不改协议**：`net/host_session.gd::send_events()` 本来就把 `tick()` 的事件发给客机，
 `net/event_codec.gd` 只把 `building` 换成 key、标量原样带过去 ⇒ 客机收到同一条 `upgrade_started`，
 `is_commander_side()` 在客机上也成立。
@@ -7309,3 +7577,303 @@ python dev_gd_a\tools\unit_editor\test_model.py
 
 手玩：空手 → 建筑页，矿脉在第三排最右（C），第三排左/中为空；按 B/T/G/Y/U/H/M 不再进入建造模式；
 切到科技页按 Q/W/E/A/S/D/Z/X/C 与点击一致，锁定格无反应，格子左上角有键位字母。
+
+## 七十七、派系（clan）：原生 / 王朝 / 帝国（2026.11）
+
+**需求原话（摘要）**：给每个席位的玩家 / AI 一个「派系」，派系各有专属兵种；已实装的是「原生」，
+新增「王朝」「帝国」；测试场景 = `see_ai` 跳转的 `between_moutains`（p1 王朝、p2 帝国）。
+
+### 77.1 派系 ≠ 阵营（这一节最容易被搞混的一件事）
+
+| | 阵营（faction） | 派系（clan） |
+|---|---|---|
+| 取值 | `p1`…`p8` / `enemy` / `ai` | `native` / `dynasty` / `empire` |
+| 管什么 | 谁指挥这一家、谁是敌人、资源与胜负归谁 | **这一家能招哪些兵**（招募表） |
+| 存在哪 | 关卡 `players[]` / `factions[].id` | 关卡 `factions[].clan` |
+| 代码入口 | `logic/faction.gd` | `logic/config.gd` 的 `clan_*` + `logic/world.gd` 的 `clan_of()` |
+
+一个席位 = 一个阵营 = **一个**派系；一局内不会换。
+
+### 77.2 数据落点
+
+| 文件 | 改动 |
+|---|---|
+| `data/config.json` | 新增顶层 `clan` 段：`{default_id, list[{id,name,icon,recruit[],ai_composition[]}]}`。★ **原生的 `recruit` 留空** ⇒ 生效的就是顶层 `recruit.list`（7 条不抄第二遍）；王朝 7 条 / 帝国 6 条各自一份 |
+| `data/config.json` `unit.types` | 新增 14 个兵种：王朝 `dy_*`（协防军枪 / 弓、斥候、游侠、御林军剑盾 / 弓 / 着甲骑、战车、投石车）、帝国 `dg_*`（披甲剑士、铁臂弓手、骑手、冠军骑士、扭力弩炮）。★ 「使用原生 X 的素材」= `sprite` 指向同一个 png，但**兵种 id 是新的**；没素材的兵种 `sprite` 留空 ⇒ 3D 退回程序化剪影 + 图标/名牌显示 `icon` 那一个字 |
+| 同上 `unit.types.<id>.traits` | 新增两个键：`melee_reduction`（近战减伤）、`knockback_immune`（**稳定**）。★ 「远近免伤+」= `melee_reduction` + `ranged_reduction` 一起写 |
+| 同上 `unit.types.<id>` | 新增三个顶层键：`knockback{distance,stun_sec}`（谁打谁会击退）、`pierce`（直线穿透子弹）、`projectile_arc`（弹道是否抛物线，缺省 true） |
+| `data/config.json` `combat` | 新增 `pierce_half_width`（穿透判定半宽，默认 0.45 格）+ 两段 `_comment` |
+| `data/campaigns/demo/levels/ai_test_battle.json` | `factions[].clan`：p1 = `dynasty`、p2 = `empire`（see_ai 与 ai_test 共用这一关） |
+| `data/maps/between_moutains/between_moutains.json` | 只改了 `_comment` 里那句「不写 = 默认 1」的措辞（默认值改成按种类分档）；**没有一个区划写 `population_cap`** —— 全靠默认。原因见 77.8 |
+| `logic/config.gd` | `_normalize_traits` 洗四键；`_normalize_knockback`；`_cache_unit_types` 收新字段；`_cache_clans` + `clan_ids/clan_def/clan_name_of/clan_icon_of/clan_recruit_list/clan_recruit_entry/clan_ai_composition` |
+| `logic/level.gd` | `_read_level_factions` 读 `clan`；`faction_config()` 兜底含 `"clan": ""`；`_ck_level_factions` 对「派系不存在」报 **warn**（运行时会回落原生，不拦死） |
+| `logic/world.gd` | `clan_of / clan_name / recruit_list(faction) / recruit_entry(kind, faction) / recruit_tier / recruit_cost / recruit_population_cost / recruit_train_sec / is_unit_recruitable(kind, faction) / recruit_spawn_types / recruit_primary_type / recruit_kind_for_unit / clan_ai_composition`；`_spawn_from_recruit` 支持组合单位（返回数组）；`can_recruit` 的编制判据改成「装得下整包」 |
+| `logic/unit.gd` | 新字段 + `create/reapply_type` 抄值；`take_damage` 加近战减伤；新增 `apply_knockback()`（位移 + 眩晕，稳定免疫） |
+| `logic/combat.gd` | `update_unit` 的眩晕分支（计时器之后、其它逻辑之前）；`attack_unit` 传穿透/弹道/击退参数；新增 `_apply_melee_knockback()` |
+| `logic/projectile.gd` | `spawn()` 多四个参数（pierce / arc / 击退两件）；`_impact` 新增穿透分支与 `_knock` 收口；新增 `_impact_pierce()` |
+| `view/projectile_view_3d.gd` | `p.arc == false` ⇒ 走直线（不抬 y） |
+| `view/hud.gd` | 单位页读 `world.recruit_list(my_faction)`（不再写死 config 路径）；详情栏新增「击退」「直线穿透」「对近战减伤」「稳定」四行 |
+| AI（`ai_commander` / `ai_army` / `ai_economy` / `garrison_ai`） | 全部改成**问自己那一方**的招募表；`ai_commander._pick_kind` 的编成优先级 = 队伍角色 → **派系 `ai_composition`** → 全局；`_first_frontline_kind` 用 `recruit_primary_type` 判远近；`garrison_ai._pick_recruit_kind` 用 `recruit_kind_for_unit` 把「兵种 id」翻回「能招出它的那一条」 |
+| **`logic/ai_profile.gd`**（★★ 每个派系一套 commander AI） | `build(cfg, faction, roster, overrides, clan = "")` 多收一个**派系 id**，在「全局 `ai.commander`」之上、「关卡覆盖」之下深合并 `clan.list[].commander_ai`；派系块里的 `difficulty` 会被丢掉（难度不归派系管）。见 77.9 |
+| `logic/config.gd` | 派系条目多存一份 `commander_ai`（`_as_profile_dict` 过掉 `_comment`），对外是 `clan_commander_ai(id)` |
+| `logic/world.gd` | `clan_commander_ai(faction)` 转发；`_setup_ai_commanders()` 调 `AiProfileRes.build(..., clan_of(fid))` |
+| `data/config.json` `clan.list[]` | 王朝 / 帝国各写一块 `commander_ai`（roles / production / expand / economy / auto / early_* / build / idle / patrol）；**原生不写** ⇒ 行为逐位不变 |
+| `tools/campaign_editor/model.py` / `app.py` | `FactionEntry.clan`（读 / 写 / 只在非空时导出）；`ConfigInfo.clans` + `clan_ids/clan_name/clan_label`；③阵营页每方一行「派系」下拉 + `set_faction_field(fid, "clan", …)` |
+| `tools/unit_editor/test_model.py` | 契约放宽：兵种**不在** `recruit.list` 时必须出现在某个派系的招募表里（派系专属兵种不进全局表） |
+| `tests/test_clan.gd` | **新增**（122 项）：见 77.6 |
+
+### 77.3 数值口径（用户拍板）
+
+**「有同素材原生兵种就沿用其数值，再叠加需求里写明的特性；其余按同档强度设计」**。落地成两条规则：
+
+1. **数值**（`hp_max / armor / damage / range / cooldown_sec / speed / vision / upkeep_food`）
+   照抄同素材的原生兵种，只按需求里的 `+ / -` 改那几项。例：斥候 = 骑手数值 + 速度 1.5 + 视野 12；
+   冠军骑士 = 骑士数值，但血量 365 → **300**、速度 1.0 → **1.3**。
+2. **特性**照抄原生那一份，再把需求里写明的**叠加**上去；同一条特性重复出现 ⇒ 在原值上 **+0.25**。
+   例：披甲剑士 = 长枪兵（对骑兵 +25%）**且** 近战减伤 25%；
+   协防军枪兵 = 长枪兵（对骑兵 +25%）+「骑兵特攻+」⇒ **+50%**；
+   冠军骑士 = 骑士（远程减伤 25%）+「远程免伤+」⇒ **远程减伤 50%**。
+
+⚠️ 「冲锋」**本版不实装**（用户原话：「暂时没有逻辑，写注释里」）：
+战车的「冲锋造成范围伤害和击退」与冠军骑士的「冲锋再造成额外伤害」只写进 `config.json` 的兵种注释
+`_clan_types_comment`，代码里没有 charge 状态机。**击退机制本身是实装的**，由王朝投石车的
+**普通攻击**触发（`knockback{distance:0.9, stun_sec:0.5}`），所以「击退 + 眩晕」这条链路是被玩到的。
+
+### 77.4 组合单位（一次招募出多个兵）
+
+招募条目多一个可选键 `spawn: [{type: <兵种 id>}, …]`：
+
+* 队列只占 **1 格**（队列里存的是**招募 kind**，不是兵种 id）；
+* 造价 / 人口按**整包**扣（协防军 `population_cost: 2`、御林军 `3`）；
+* 一次读条结束生成**全部**子单位，名字一律取条目的 `label`（需求：两个兵都叫「协防军」）；
+* `world.recruit_spawn_types(kind, faction)` 是「这条出几个 / 出什么」的**唯一**出处。
+
+⚠️ 组合条目的 `kind`（`dy_guard` / `dy_royal`）**不是兵种 id**，`cfg.unit_*_of()` 查不到它 ——
+要兵种数值请用 `spawn[].type` 或 `world.recruit_primary_type()`。这也是 AI 判「这条是近战还是远程」
+必须先翻译的原因（否则 `unit_is_ranged("dy_guard")` 会兜底成近战）。
+
+### 77.5 击退 / 眩晕 / 穿透 / 弹道
+
+* **击退**（`unit.apply_knockback`）：沿「攻击者 → 受害者」方向逐 0.1 格试探位移，遇山 / 不能穿的建筑
+  就停；同时清掉路径与站定落点（不这么做会「推了又自己走回去」）。远程由 `projectile._impact`、
+  近战由 `combat._apply_melee_knockback` 调，两个入口同一套口径。
+* **眩晕**：`unit.stun_timer`，在 `combat.update_unit` 的**计时器之后**判 —— 不能移动 / 攻击 / 索敌，
+  但计时器照常衰减（放前面会让「醒过来还要再等一整个攻击间隔」）。
+* **稳定**（`traits.knockback_immune`）：位移与眩晕**整套免疫**；⭐ 但**不免疫**单位之间的推挤 ——
+  `collision.gd` 的权重只看「有没有移动命令」，一行都不读这个标记（用户口径）。
+* **直线穿透**（`projectile._impact_pierce`）：命中那一刻以「射手 → 落点」为轴，取 `pierce_range`
+  （= 开火者射程）长的一段，凡「沿轴投影 ∈ [0, range] 且垂距 ≤ `combat.pierce_half_width`」的
+  **敌方**单位各结算一次全额伤害（含原目标）；每个单位只算一次，友军 / 盟友跳过。
+* **弹道**：`unit.projectile_arc`（缺省 true）。投石车 / 弓箭 = 抛物，扭力弩炮 = 直线。
+  ⚠️ **纯表现**：逻辑的命中点一直是地面上的 `p.pos`，与高度无关。
+
+### 77.6 验证
+
+```
+godot --headless --path dev_gd_a/daeem --script res://tests/test_clan.gd          # 135 项
+godot --headless --path dev_gd_a/daeem --script res://tests/test_ai_test_duel.gd  # 148 项（see_ai 入口）
+godot --headless --path dev_gd_a/daeem --script res://tests/test_recruit_queue.gd # 255 项（招募没回归）
+python dev_gd_a\tools\campaign_editor\test_app.py
+python dev_gd_a\tools\unit_editor\test_model.py
+```
+
+手玩：主菜单 `see_ai` → `between_moutains`，双方 commander AI 开局。p1（王朝）的单位页是
+协防军 / 斥候 / 粮车 / 游侠 / 御林军 / 战车 / 投石车；p2（帝国）是披甲剑士 / 铁臂弓手 / 骑手 /
+粮车 / 冠军骑士 / 扭力弩炮。其余关卡一个 `clan` 都没写 ⇒ 仍然只有原生那 7 个兵种，行为逐位不变。
+
+★ 无头实测（`create_from_level` + 双方 commander，与 `start_ai_observer` 同一装配，跑 240 秒）：
+p1 出了 4 组协防军（4 × `dy_spear_guard` + 4 × `dy_archer_guard`），p2 出了 6 名 `dg_swordsman` +
+1 名 `dg_archer` —— 两个派系的兵种真的被 AI 招出来了。
+
+### 77.7 已知边界
+
+* **玩家不能选派系**（没有选边 UI）：派系只由关卡数据决定（用户口径：「目前不需要主动选中
+  王朝 / 帝国，只需要在编辑器里能配」）。
+* **将领（`general_1..9`）不分派系**：区划招将表仍是全局那一张，派系只管兵。
+* **粮车两个派系共用原生 `grain_cart`**（需求里三条描述与原生逐字一致），不另开 id。
+* 快照**不**带派系：两端载入的是同一份关卡数据，各自推得出来（`world.clan_of`）。
+* **冲锋没实装**（用户拍板：「暂时没有逻辑，写注释里」）：`config.json` 的兵种注释里记着，
+  代码里没有 charge 状态机；击退 / 眩晕是**独立机制**，由王朝投石车的普攻触发。
+
+### 77.8 为什么动了 `between_moutains` 的人口上限（★ 实现时发现的坑）
+
+组合单位一次吃 **2 / 3 人口**，而人口的规则是「**每个区划**各自有一池，涨到 `population_cap` 就停」，
+而这个字段**不写就是 1**。于是：
+
+* 协防军（2 人口）在默认区块里**永远招不出来** —— 不是钱不够，是人口上限只有 1；
+* 御林军（3 人口）同理，要等到**大本营 3 级**（`base_bonus.levels[2].zone_pop_cap = 2` ⇒ 1+2 = 3）。
+
+不改的话，`see_ai` 那一局里 **p1（王朝）一件兵都出不了**（无头实测：240 秒只站着一位开局将领），
+整张测试图就演示不了王朝。
+
+★ **最终做法（第二轮，用户随后拍板）**：不动地图，改**默认值本身** ——
+「所有区划的默认人口上限改为 3，人口区划的默认人口上限改为 5」。落地成：
+
+* `config.json` 的 `zone.population_cap_default = 3`（全局缺省）；
+* `config.json` 的 `zone_kind.list[].default_population_cap`：粮食 3 / 黄金 3 / **人口 5**；
+* 读取只有一处：`zone.default_population_cap_of_kind()` / `config.zone_population_cap_default_of_kind()`；
+  编辑器侧同源：`map_editor` 的 `DEFAULT_POPULATION_CAP` / `POPULATION_CAP_BY_KIND` /
+  `MapModel.zone_population_cap_default()`（导出时「等于这一档默认值」就不写这个键）；
+* `between_moutains` 里上一轮加的 16 个 `population_cap: 3` **已全部删掉**（现在与默认值等价，
+  留着只会让导出文件变脏）；其它地图里显式写的 2 / 3 / 6 / 8~15 **一个都没动**。
+* ⚠️ 这条规矩是**全局**的，不只影响测试图：所有「没写 `population_cap`」的旧图（dscj / ai_test /
+  between_moutains …）里的区块，上限都从 1 变成 3（人口区划 5）。原生那 7 个 1 人口兵种因此
+  出兵更快 —— 这是用户要的效果（顺带解掉「一个区划同一时刻只够招一个兵」的老限制）。
+
+### 77.9 ★★ 每个派系一套 commander AI（接在派系之后做的第二轮）
+
+**需求原话**：「相应地，command ai 需要做派系的适配，每个派系都需要有不同倾向的 command ai」。
+
+#### 合并顺序（`logic/ai_profile.gd` 的 `build()`）
+
+```
+DEFAULTS（代码兜底）
+  → config.json 的 ai.commander            ← 全局基线
+  → ★★ clan.list[].commander_ai            ← 2026.11 新增的**派系倾向**
+  → 关卡 factions[].commander_ai            ← 派对局里临时调某一家
+  → world.ai_profiles[faction]（运行时覆盖）  ← 联机 AI 队友难度等
+→ 再叠上 difficulty 的倍率（只影响收入 / 节奏 / 上限），最后拍平成一个 dict
+```
+
+* `build()` 的第 5 个参数是 `clan`（`world._setup_ai_commanders()` 传 `clan_of(fid)`）。
+  空串 / `"native"` ⇒ **整段跳过**，所以原生派系的 AI 参数与「没有派系这回事」**逐位一致**
+  （`test_clan.gd` 用 `eq()` 直接比两个 dict）。
+* 派系块里写 `difficulty` **会被丢掉**：难度是「这一局多难」，不是「这个派系的性格」。
+* 深合并：只写要覆盖的键，数组整体替换、字典逐键递归（`_merge`）。所以
+  `roles.ranged.standoff_tiles` 这种深层键也能单独改。
+
+#### 两派的倾向（`data/config.json` 的 `clan.list[].commander_ai`）
+
+| 维度 | 王朝（dynasty） | 帝国（empire） |
+|---|---|---|
+| 主题 | **重装步战 · 抱团正面推进** | **精锐骑射 · 机动袭扰 · 更早开打** |
+| `roles.cycle` | `["line","line","ranged"]`（2/3 线列） | `["ranged","guerrilla","line"]`（首位就是远程队） |
+| 线列编成 | 协防军 .40 / 御林军 .26 / 游侠 .10 / 投石车 .10 / 斥候 .06 / 粮车 .08 | 披甲剑士 .38 / 铁臂弓手 .24 / 骑手 .18 / 冠军骑士 .10 / 弩炮 .04 / 粮车 .06 |
+| 远程队 | `standoff_tiles` 4.0、`frontline_min` **2**（要两个前排才敢站住） | `standoff_tiles` **5.2**、`frontline_min` 1（站得更远、更脆但更凶） |
+| 游击队 | `max_enemy_strength` 2.4、`avoid_ratio` 0.95（**谨慎**：慢，不打没把握的） | `max_enemy_strength` **3.6**、`avoid_ratio` **1.1**（**敢咬**：骑手冲得动） |
+| 队伍规模 | 守军 9 / 外勤 7（厚） | 守军 7 / 外勤 6（精） |
+| 经济 | `target_food_income` 5 / 金 3；`reserve_food` 90、`reserve_gold` 45 | `target_food_income` 3.5 / 金 **5.5**；`reserve_food` 60、`reserve_gold` 100 |
+| 出手时机 | `auto.attack_after_sec` **55**（先把兵攒厚） | **38**（早点打） |
+| 侦察 | 默认 2 支 | `idle.max_scouts` **3**、`scout_max_distance_tiles` 24，`patrol.max_teams` 3 |
+
+为什么这么配（都是「跟着兵种表走」而不是拍脑袋）：
+
+* 王朝主力是**组合单位**（协防军一次 2 人、御林军一次 3 人），单次出兵就成型 ⇒ 守军/外勤规模给大、
+  线列职能占多数、开打晚一点攒一波；主力吃粮（协防军 150 粮 0 金）⇒ 粮食目标高、金子留得少。
+* 帝国主力是**单兵精锐 + 骑兵**（冠军骑士 380 金、弩炮 340 金、骑手 160 金）⇒ 金子目标高、
+  存金多；骑手/冠军骑士跑得快 ⇒ 游击队敢咬、侦察更远、开打更早。
+
+#### 验证
+
+`tests/test_clan.gd` 的 `_test_clan_ai_profile()` / `_test_clan_profiles_compilable()`（**+123 项**）：
+
+* 原生「不传 clan」与「传 native」两个 profile **完全相等**（`eq` 整 dict）；
+* 王朝 55 秒 / 帝国 38 秒，且 `roles.cycle` 里 line 的个数 2 vs 1；
+* 每一条编成里的 `type` 都必须是**这一派真能招的**（`cfg.clan_recruit_entry(clan, type)` 非空；
+  组合条目还要 `spawn[]` 指向真兵种）；
+* 派系块里只许写 `ai.commander` 认得的顶层键、且不许写 `difficulty`；
+* 每条编成的权重合计 ≈ 1（配漏/配重会红）；
+* 真的建一局双方 commander 的世界，断言 `ai.profile` 里就是 55 / 38（不是只测了纯函数）。
+
+### 77.10 ★★ 派系科技（第三轮：王朝 7 条 / 帝国 8 条）
+
+**需求原话（摘要）**：给两个派系各配一套特色科技，**原生保留原有 9 条**，并且
+「同样也要适配 command ai 逻辑」。
+
+#### 数据：一张池子 + 每派一张 9 槽位表
+
+```
+tech.list         ← 原生那 9 条（**一个字没改**，原生派系不写 tech ⇒ 直接用它）
+tech.clan_list    ← 派系科技池（13 条：2 条共用 + 王朝 5 + 帝国 6），按 id 查的扁平表
+clan.list[].tech  ← 这一派的**科技页槽位**：9 个 id（列优先：列1上中下→列2→列3），"" = 空位
+```
+
+* **共用两条只定义一次**：`tech_speed_rush`（速战速决）/ `tech_unbreakable`（无懈可击），
+  两派的槽位表都引用同一个 id（与「粮车」同一条口径）。
+* **槽位不能压紧**：科技页永远是 3×3、**行 = 阶**；压紧的话第 7 条会落到第一行、
+  显示的阶就和 `tier` 对不上。所以空位留占位（`{"id": "", "empty": true}`），
+  界面画灰框、不可点、不弹悬停（用户口径）。
+* 王朝空 2 格（7 条）/ 帝国空 1 格（8 条）；两派都沿用 `max_active = 3`。
+
+| 派系 | 一阶 | 二阶 | 三阶 |
+|---|---|---|---|
+| 王朝 | 速战速决（共用） / **礼乐** | **皇恩浩荡** / **军形有势** | 无懈可击（共用） / **屯田制** / **铁犁牛耕** |
+| 帝国 | 速战速决（共用） / **圈地制** | **征召民兵** / **远征军** / **骑士精神** | 无懈可击（共用） / **淘金** / **势如破竹** |
+
+#### 效果：12 个新键，全部是「加法增量」
+
+`tech.default_effects()` 是**唯一的基数表**（老键沿用 1.0 / 0.0 两套基数；
+新键一律 0.0 增量，读取处写 `1.0 + 增量`）。世界侧只有**一组**访问器可以读它们
+（`world.tech_speed_mult()` / `tech_attack_mult()` / …），免得哪一处忘了 `1.0 +`。
+
+| 键 | 用在哪条 | 落点 |
+|---|---|---|
+| `unit_speed_mult` | 速战速决 | `unit.step_along_path` + `unit.speed(cfg, map, world)` |
+| `capture_time_mult` | 速战速决 | `zones.update(..., capture_mult)` → `_advance_zone` 除它 |
+| `unit_melee/ranged_reduction_add` | 无懈可击 | `unit.take_damage` 的**同一个减免和**（仍受 75% 封顶） |
+| `recruit_tier_unlock` / `recruit_gold_to_food` | 礼乐 | `world.unit_recruit_unlocked` / `can_recruit` / `recruit_cost` |
+| `zone_population_mult` / `zone_population_cap_add` | 皇恩浩荡、征召民兵 | `tech_population_mult`（已有）/ `_zone_population_bonus_map` |
+| `per_squad_member_attack_mult` | 军形有势 | `world.tech_attack_mult()` × `squad_size_of(u)`（封顶 +20%） |
+| `upkeep_idle_exempt` | 屯田制 | `_tick_upkeep`：**脱战**的单位不计费（判据见下一条） |
+| `building_food/gold_per_sec_add` | 铁犁牛耕 / 淘金 | `_flat_resource_bonus`（每栋**非大本营**建筑） |
+| `base_gold_per_sec_add` | 圈地制 | `_flat_resource_bonus`（每座**大本营**）★ 这条科技**没有折扣**效果 |
+| `per_zone_attack_mult` / `per_zone_armor_mult` | 远征军 | `tech_attack_mult` / `tech_armor_mult`（× 己方区划数） |
+| `zone_convert_restore` | 势如破竹 | `zones.last_conversions` → `_apply_zone_conversion_restore` |
+| `charge_damage_mult` | 骑士精神 | ★ **没有读取处**：冲锋本版未实装（详情里明说「尚未实装」） |
+
+几条容易踩的口径：
+
+* **「防御」= armor**（造成伤害时**等额减免**的那个数值，用户确认）。远征军给的是
+  `armor × (1 + 2% × 区划数)`，不是免伤百分比。
+* **屯田制的「脱战」直接挪用招募那条判据**（用户确认：「脱战有明确的定义，可以挪用将领的
+  招募脱战判定」）：`world.is_out_of_combat(u)` = `u.recruit_idle_timer >= recruit.combat_idle_sec`
+  —— 连续 N 秒（默认 10）**没有单位 / 建筑目标、且没挨过打**。计时由 `_tick_recruit_idle()`
+  每帧维护、`take_damage` 会清零。
+  ★ 所以现在这个判据有**两个使用者**：① 招募读条的暂停 / 恢复；② 屯田制的免维护费。
+  ★ 旧名字 `is_out_of_combat_for_recruit()` 保留为**别名**（同一个函数），别再写第二份实现。
+  ⚠️ 一个 1 帧的滞后是设计内的：`_tick_upkeep`（第 3 步）跑在 `_tick_recruit_idle`（第 4.1 步）
+  之前，所以单位「这一帧刚锁定目标」时，那一帧的维护费仍按上一帧的计时算。
+* ★★ **圈地制没有折扣**（用户修正：这条科技只给「大本营额外出金」）。原来那一版还带一个
+  「招募 / 建造 / 升级金耗 ×0.7」的效果键 `gold_cost_mult`，**已整条删掉** ——
+  连管线一起删（`tech_gold_cost_mult()` / `cost_after_tech()` / `building_upgrade_cost()`
+  里的那次换算 / `command_processor.apply_build` 里的那次换算），所以招募 / 建造 / 升级
+  现在一律按 config 原价扣，显示价与实扣价天然同源。
+  ⚠️ 别再往那儿加「按阵营改价」：那要三条路（招募 / 建造 / 升级）同时改，而它们的显示价
+  分散在 hud / upgrade / command_processor 三处，很容易只改一半。
+* **势如破竹必须放在士气结算之后**：放在 zone 那一段的话，同一帧后面的
+  `MoraleRes.tick_all` 会立刻把刚回满的士气重新算回去（实测踩到）。
+
+#### 视图
+
+科技页按 `world.tech_entries(my_faction)` 画：空位（`id == ""`）在 `view/tech_grid.gd`
+里走「没有这一格」那条路（不可点、不参与填充动效、`entry_at()` 返回 `{}` 所以不弹悬停）。
+
+#### AI（`command ai 也要适配`）
+
+* `ai_build._try_tech` 遍历 `world.tech_list(ai.faction)`（**现在是按派系的**），
+  候选顺序 = `profile.build.tech_priority` → 表里其余；
+* `world.tech_can_activate()` **先查「这条在不在自己派系的槽位表里」**，不在就报 `unknown`
+  ⇒ AI 不会去点别派的科技（这条判定必须放在 `tech.can_activate()` **之前**，
+  否则会被误报成 `tier`）；
+* 每派的优先级写在 `clan.list[].commander_ai.build.tech_priority`：
+  · 王朝：礼乐 → 皇恩浩荡 → 军形有势 → 速战速决 → 无懈可击 → 屯田制 → 铁犁牛耕
+    （先解锁三本兵 + 人口，再叠抱团攻击）；
+  · 帝国：圈地制 → 速战速决 → 远征军 → 征召民兵 → 淘金 → 无懈可击 → 势如破竹 → 骑士精神
+    （先修经济与机动，再叠每区划攻防；骑士精神放最后，因为它现在没效果）。
+* 原生的优先级为空（沿用全局 `build.tech_priority` / 表顺序）—— **行为逐位不变**。
+
+#### 验证
+
+`tests/test_clan_tech.gd`（**258 项**）：表结构（9 槽位 / 空位 / 共用 id / 行=阶）·
+跨派系拒绝 · 13 条科技**逐条**验算（含「防御进等额减免」「脱战不耗粮」「金转粮 830 粮」
+「区划易主回满」）· 科技页喂给视图的数据（空位不可点 / 三本在一本时置灰）· AI 优先级。
+
+#### 编辑入口
+
+科技内容（两张表 + 每派 9 个槽位 + 全局上限 / 每阶金耗）在 **`tools/buff_editor`** 里改：
+它按 `tech.list` / `tech.clan_list` 里**实际存在的条目**动态生成一页页表单
+（文案 text 字段 + 阶 + 每个已写的 `effect.<键>`），另有「科技页 · 王朝 / 帝国」两页
+用来改 `clan.list[].tech` 那 9 个槽位。见 `tools/buff_editor/README.md` 第四节。
+★ 单位编辑器原来的「科技」页**已整块移除**（用户口径：「把单位编辑器中的科技编辑界面去掉」）——
+它的 `Tech` 模型、`TECH_FIELDS` / `TECH_EFFECTS`、`max_active` 的输入框、以及 `test_model`
+里那 30 多条科技断言一起删了；`test_model` / `test_app` 现在反过来钉「本工具碰不到 `tech.*`」。

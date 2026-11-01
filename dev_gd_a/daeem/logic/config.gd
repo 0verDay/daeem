@@ -370,6 +370,24 @@ var _unit_sprite_ratios: Dictionary = {}
 ##   · `general_trait_ids()` 返回**排序后**的 id 列表 —— 随机抽取按它取下标，
 ##     排序保证「同一抽签序号 → 同一特性」（不同机器的字典顺序不影响复现）。
 var _general_traits: Dictionary = {}
+## ★★ **派系**（config 的 `clan` 段，2026.11 新增）。
+##
+## 派系 ≠ 阵营（见 faction.gd）：派系只决定「这一方有哪些兵种可招」，
+## 阵营决定「谁指挥、谁是敌人」。一个席位 = 一个阵营 = 一个派系。
+##
+##   · `_clans` —— 派系 id → 洗过的条目
+##     `{id, name, icon, recruit: Array, ai_composition: Array, by_kind: Dictionary}`；
+##     `by_kind` 是 kind → 招募条目 的索引（招募校验在 AI 节拍里跑，别每次线性扫）；
+##   · `_clan_default` —— 没写派系时用哪一个（缺键 = "native"）；
+##   · `_clan_ids` —— **声明顺序**的派系 id（编辑器下拉用；顺序稳定）。
+##
+## ★★ `recruit` 为**空数组**的语义：沿用顶层 `recruit.list`（原生就是这样，
+##   于是「原生 = 当前已实装的兵种」不需要把 7 条数据抄两遍）。
+## ⚠️ 这条回落只在 `recruit` 为空时成立 —— 写了一个**非空但内容有错**的列表会被
+##   原样采用（错的 kind 在 `_cache_clans` 里就被丢掉并 push_warning，不会静默变形）。
+var _clans: Dictionary = {}
+var _clan_default: String = "native"
+var _clan_ids: Array = []
 ## ★★ 开局**没有**任何「每位将领带几个兵」的全局缺省（本轮口径变更）。
 ##
 ## 原先是 `unit.general.escort`（一个数或一个数组）+ `general_escort_count()` /
@@ -448,6 +466,11 @@ var building_damage: float = 40.0
 var projectile_speed: float = 12.0
 var projectile_min_sec: float = 0.08
 var projectile_max_sec: float = 0.6
+## ★★ 2026.11：直线穿透子弹的**半宽**（格；见 config 的 `combat._pierce_comment`）。
+##   判定 = 敌方单位圆心到「射手 → 目标」这条直线的垂直距离 ≤ 它。
+##   ★ 预计算进字段：命中那一刻要对射程内的所有单位算一次投影，
+##     不许在那时候再 `cfg.num("combat.pierce_half_width")`。
+var pierce_half_width: float = 0.45
 ## ★★ 「测试敌人」的那几个数值字段（enemy_damage / enemy_range / enemy_cooldown /
 ##    enemy_speed / enemy_hp）**本次随单位类型一起删除**（用户口径：「把所有的『敌』
 ##    这个具体单位变成『长枪兵』」）。
@@ -506,6 +529,10 @@ var upkeep_enabled: bool = true
 var tech_max_active: int = 3
 var _tech_list: Array = []
 var _tech_by_id: Dictionary = {}
+## ★★ 2026.11：**派系科技池**（`tech.clan_list`）—— 王朝 / 帝国 + 两派共用那两条的定义。
+## 它是一张扁平表（按 id 查，不排序）；「哪一派显示哪 9 个槽位、什么顺序」在
+## `clan.list[].tech` 里，由 `tech_list_for(clan)` 拼出来（空位 = `{"id": "", "empty": true}`）。
+var _tech_clan_pool: Dictionary = {}
 ## ★★ 2026.10.29：科技从「点一下永久生效」改成**持续花钱的常驻投资**（见 config.json 的 tech._comment）。
 ##   `tech_gold_per_sec` —— 下标 0/1/2 = 一/二/三阶，**每秒**扣多少金。
 ## ★★ 2026.10.30：预热与断金冷却已删除，只剩「点下即生效 + 持续扣金」。
@@ -533,6 +560,16 @@ var _upgrade_levels: Dictionary = {}
 var _zone_kind_default: String = "population"
 var _zone_kind_list: Array = []
 var _zone_kind_by_id: Dictionary = {}
+## ★★ 2026.11：**区划人口的默认上限**（地图 `zone_list[].population_cap` 没写时用）。
+##
+## 用户口径：「所有区划的默认人口上限改为 3，人口区划的默认人口上限改为 5」。
+##   · 全局缺省 = `zone.population_cap_default`（这里 = 3）；
+##   · 某一档区划可以覆盖它 —— `zone_kind.list[].default_population_cap`
+##     （人口区划写 5，粮食 / 黄金写 3）。读的地方只有 `zone_population_cap_default_of_kind()`。
+##
+## ⚠️ 只对「地图没写这个键」的区划生效；地图里显式写了的照单全收（frontier / dongzheng
+##   那些 2 / 3 / 6 的老数值一个都不动）。
+var zone_population_cap_default: float = 3.0
 
 var respawn_sec: float = 0.0
 var destructible_base: bool = false
@@ -799,6 +836,9 @@ func _cache_scalars() -> void:
 	projectile_speed = maxf(0.1, num("combat.projectile_speed", 12.0))
 	projectile_min_sec = maxf(0.0, num("combat.projectile_min_sec", 0.08))
 	projectile_max_sec = maxf(projectile_min_sec + 0.001, num("combat.projectile_max_sec", 0.6))
+	# ★★ 直线穿透子弹的半宽（格）：夹在 [0, 2] —— 0 = 只打目标那条线（几乎失效），
+	#   2 = 4 格宽的带状（已经不是「直线」了）。见 config 的 combat._pierce_comment。
+	pierce_half_width = clampf(num("combat.pierce_half_width", 0.45), 0.0, 2.0)
 
 	zone_cols = int_val("zone.zone_cols", 6)
 	zone_rows = int_val("zone.zone_rows", 4)
@@ -806,6 +846,9 @@ func _cache_scalars() -> void:
 	decay_per_sec = num("zone.decay_per_sec", 0.0625)
 	# ★ 占领半径（格）：负数当 0（只认中心格），保证 `update()` 里的邻域循环合法。
 	zone_capture_radius_tiles = maxi(0, int_val("zone.capture_radius_tiles", 1))
+	# ★★ 2026.11：区划人口的默认上限（地图没写 `population_cap` 时用它）——
+	#   用户口径「所有区划默认 3、人口区划默认 5」。夹进 [0, 999]（与地图编辑器的输入范围一致）。
+	zone_population_cap_default = clampf(num("zone.population_cap_default", 3.0), 0.0, 999.0)
 	zone_speed_max_mult = num("zone.speed_max_mult", 2.0)
 	zone_speed_curve_k = num("zone.speed_curve_k", 2.5)
 	zone_speed_curve_power = num("zone.speed_curve_power", 1.7)
@@ -885,6 +928,9 @@ func _cache_scalars() -> void:
 	# ★★ 将领特性（unit.general_traits）—— 必须在上一步之后调：
 	#   `_normalize_general_trait()` 要用 `_unit_classes` 校验 attack_vs_class 的键。
 	_cache_general_traits()
+	# ★★ 派系表（clan）—— 必须在上一步之后调：它要校验
+	#   `clan.list[].recruit[].kind / spawn[].type` 是不是真的兵种 / 招募 kind。
+	_cache_clans()
 
 
 ## 视口尺寸变了就重算投影常数（view 层在 setup 时喂一次；窗口拉伸时再喂一次）。
@@ -939,11 +985,14 @@ func _recompute_projection() -> void:
 #   kind 不该让那个单位变成 60 血的敌人 —— 那正是本项目踩过的坑（见 _combat_fallback）。
 # ------------------------------------------------------------------
 
-## ★★ 把 config 里的 `unit.types.<id>.traits` 整理成**两键固定**的字典（载入时一次）。
+## ★★ 把 config 里的 `unit.types.<id>.traits` 整理成**四键固定**的字典（载入时一次）。
 ##
 ## 输出形状（之后只读，不再判断类型）：
 ##   · `attack_vs_class`：`{ <兵种大类 id>: <比例> }` —— 打该大类的单位时伤害 ×(1+比例)；
-##   · `ranged_reduction`：受到远程伤害时的减伤比例。
+##   · `ranged_reduction`：受到远程伤害时的减伤比例；
+##   · `melee_reduction`：★ 2026.11 新增 —— 受到**近战**伤害时的减伤比例
+##     （「远近免伤+」= 这两条一起写）；
+##   · `knockback_immune`：★ 2026.11 新增 —— **稳定**：免疫击退（位移 + 眩晕）整套效果。
 ##
 ## ⚠️ 为什么要在这里「洗一遍」而不是让读的地方直接 `td.get("traits")`：
 ##   1. 手写配置可能漏键 / 写错类型 —— 载入时洗掉，运行期就只剩干净的标量；
@@ -951,7 +1000,10 @@ func _recompute_projection() -> void:
 ##      写错一个（比如 " Cavalry "）宁可当没写，也不要留一条永远匹配不上的特性；
 ##   3. 这是 `unit.create` 每次出生只读一次的东西，洗一次比每次判断类型便宜。
 func _normalize_traits(raw: Variant) -> Dictionary:
-	var out: Dictionary = {"attack_vs_class": {}, "ranged_reduction": 0.0}
+	var out: Dictionary = {
+		"attack_vs_class": {}, "ranged_reduction": 0.0,
+		"melee_reduction": 0.0, "knockback_immune": false,
+	}
 	if typeof(raw) != TYPE_DICTIONARY:
 		return out
 	var d: Dictionary = raw
@@ -968,6 +1020,47 @@ func _normalize_traits(raw: Variant) -> Dictionary:
 	var rr: Variant = d.get("ranged_reduction", 0.0)
 	if typeof(rr) == TYPE_INT or typeof(rr) == TYPE_FLOAT:
 		out["ranged_reduction"] = clampf(float(rr), 0.0, 1.0)
+	var mr: Variant = d.get("melee_reduction", 0.0)
+	if typeof(mr) == TYPE_INT or typeof(mr) == TYPE_FLOAT:
+		out["melee_reduction"] = clampf(float(mr), 0.0, 1.0)
+	out["knockback_immune"] = bool(d.get("knockback_immune", false))
+	return out
+
+
+## ★★ 把 config 里的 `unit.types.<id>.knockback` 洗成**两键固定**的字典（载入时一次）。
+##
+## 输入：`{ "distance": <格>, "stun_sec": <秒> }`（两个键都可选）。
+## 输出：`{ "distance": >=0, "stun_sec": >=0 }`；没写 / 写错 → 全 0（= 不会击退）。
+##
+## ★ 全 0 就是「没有击退」的判据 —— 读的地方只判 `distance > 0.0` 或 `stun_sec > 0.0`，
+##   不需要再判「有没有配这一节」。
+## ⚠️ 距离夹了上限（`KNOCKBACK_MAX_DISTANCE`）：写 50 格会把人推到地图外，
+##   而击退本质是「推开一点」的战术效果，不该变成传送。
+const KNOCKBACK_MAX_DISTANCE := 2.0
+const KNOCKBACK_MAX_STUN := 3.0
+
+
+## 可选的数字：是数字 → 它自己；缺键 / 类型不对 → **-1**（表示「没配」）。
+##
+## ★ 用 -1 而不是 0 当哨兵：`default_population_cap` 这种键里 0 是**有意义**的值
+##   （= 这一档区划永远没有人口），不能和「没写」混为一谈。
+func _optional_num(v: Variant) -> float:
+	if typeof(v) == TYPE_INT or typeof(v) == TYPE_FLOAT:
+		return float(v)
+	return -1.0
+
+
+func _normalize_knockback(raw: Variant) -> Dictionary:
+	var out: Dictionary = {"distance": 0.0, "stun_sec": 0.0}
+	if typeof(raw) != TYPE_DICTIONARY:
+		return out
+	var d: Dictionary = raw
+	var dist: Variant = d.get("distance", 0.0)
+	if typeof(dist) == TYPE_INT or typeof(dist) == TYPE_FLOAT:
+		out["distance"] = clampf(float(dist), 0.0, KNOCKBACK_MAX_DISTANCE)
+	var stun: Variant = d.get("stun_sec", 0.0)
+	if typeof(stun) == TYPE_INT or typeof(stun) == TYPE_FLOAT:
+		out["stun_sec"] = clampf(float(stun), 0.0, KNOCKBACK_MAX_STUN)
 	return out
 
 
@@ -1079,6 +1172,258 @@ func general_trait_effect(id: String) -> Dictionary:
 	return general_trait_def(id)
 
 
+# ------------------------------------------------------------------
+# ★★ 派系（config 的 `clan` 段）—— 见 `_clans` 那段字段说明
+#
+# 与「阵营」的分工（别混）：
+#   · 阵营（logic/faction.gd）= p1/p2/enemy/ai —— 谁指挥、谁是敌人、资源归谁；
+#   · 派系（本段）           = 这一方能招哪些兵 —— 只影响**招募表**与 AI 编成。
+# 一个席位 = 一个阵营 = 一个派系；派系挂在**关卡数据**的 `factions[].clan` 上。
+# ------------------------------------------------------------------
+
+## 载入时整理派系表（**只读**，之后别再改它）。
+##
+## ★ 必须在 `_cache_unit_types()` **之后**调：要拿 `_unit_types` 校验
+##   `spawn[].type` 是不是真的兵种。
+## ★ 这里做三件事：
+##   1. 洗条目形状（缺 name → id、缺 icon → 名字首字）；
+##   2. 丢掉**不认识**的招募条目（kind 为空 / `spawn[].type` 查不到那个兵种）
+##      —— 宁可少一个兵，也不要留一条点下去必然被 world 拒掉的卡；
+##   3. 建 `by_kind` 索引（招募校验 / 悬停文案在 AI 节拍与 HUD 里反复查它）。
+func _cache_clans() -> void:
+	_clans = {}
+	_clan_ids = []
+	_clan_default = "native"
+	if typeof(get_path_value("clan.list")) != TYPE_ARRAY:
+		# 老配置没有这一节：造一个「只有原生」的兜底，游戏照常能跑。
+		_clans["native"] = {
+			"id": "native", "name": "原生", "icon": "原",
+			"recruit": [], "ai_composition": [], "by_kind": {},
+		}
+		_clan_ids.append("native")
+		return
+	var default_id := ""
+	var raw_default: Variant = get_path_value("clan.default_id")
+	if typeof(raw_default) == TYPE_STRING:
+		default_id = String(raw_default).strip_edges()
+	if default_id == "":
+		default_id = "native"
+	for item in (get_path_value("clan.list") as Array):
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		var c: Dictionary = item
+		var cid := String(c.get("id", "")).strip_edges()
+		if cid == "" or _clans.has(cid):
+			continue
+		var entry := {
+			"id": cid,
+			"name": String(c.get("name", cid)),
+			"icon": String(c.get("icon", "")),
+			"recruit": [],
+			"ai_composition": normalize_weight_list(c.get("ai_composition", null)),
+			# ★★ 2026.11：**这一派的 commander AI 倾向**（编成 / 职能 / 进攻性 / 经济 / 建造）。
+			#   形状与 `ai.commander` 完全一样，由 `ai_profile.build()` 深合并到全局之上。
+			#   ★ 这里**不洗键**：多一个键不影响读者（控制器只读它认识的），
+			#     洗掉反而会让「配置里写了但这一版没实现」变成静默丢失。
+			"commander_ai": _as_profile_dict(c.get("commander_ai", null)),
+			# ★★ 2026.11：**这一派科技页的 9 个槽位**（列优先：列1上中下、列2上中下、列3上中下）。
+			#   元素是科技 id（定义在 `tech.clan_list`），空串 = 空槽位（界面画灰框不可点）。
+			#   ⚠️ 空 = 这一派没有专属科技 ⇒ 显示原生那 9 条（`tech.list`）。
+			"tech": _as_id_slots(c.get("tech", null)),
+			"by_kind": {},
+		}
+		if String(entry["icon"]) == "":
+			entry["icon"] = String(entry["name"]).substr(0, 1)
+		var raw_list: Variant = c.get("recruit", null)
+		if typeof(raw_list) == TYPE_ARRAY:
+			for ritem in (raw_list as Array):
+				var re := _normalize_clan_recruit(ritem, cid)
+				if re.is_empty():
+					continue
+				(entry["recruit"] as Array).append(re)
+				(entry["by_kind"] as Dictionary)[String(re["kind"])] = re
+		_clans[cid] = entry
+		_clan_ids.append(cid)
+	if _clans.is_empty():
+		_clans["native"] = {
+			"id": "native", "name": "原生", "icon": "原",
+			"recruit": [], "ai_composition": [], "by_kind": {},
+		}
+		_clan_ids.append("native")
+		_clan_default = "native"
+		return
+	_clan_default = default_id if _clans.has(default_id) else String(_clan_ids[0])
+
+
+## 洗一条派系招募条目（形状与顶层 `recruit.list[]` **完全一致**，只多一个可选的 `spawn`）。
+##
+## @return 洗好的字典；**空字典 = 这一条要丢掉**（kind 为空 / spawn 里有不存在的兵种）。
+## ★ 丢掉的理由都 push_warning：手写的 JSON 里一个拼错的兵种 id 不该静默变成
+##   「点了没反应」的卡（那样排查起来毫无线索）。
+func _normalize_clan_recruit(raw: Variant, clan_id: String) -> Dictionary:
+	if typeof(raw) != TYPE_DICTIONARY:
+		return {}
+	var d: Dictionary = raw
+	var kind := String(d.get("kind", "")).strip_edges()
+	if kind == "":
+		push_warning("clan.%s 的招募条目没有 kind，已跳过" % clan_id)
+		return {}
+	var out := {
+		"kind": kind,
+		"tier": clampi(int(d.get("tier", 1)), 1, 3),
+		"label": String(d.get("label", kind)),
+		"short": String(d.get("short", "")),
+		"desc": String(d.get("desc", "")),
+		"train_sec": maxf(0.0, float(d.get("train_sec", 0.0))),
+		"population_cost": maxf(0.0, float(d.get("population_cost", 0.0))),
+		"cost": d.get("cost", {}),
+		# ★★ 组合单位：`[{type: <兵种 id>}]`；空 = 就是 kind 那一个兵种（老形状）。
+		"spawn": [],
+	}
+	if String(out["short"]) == "":
+		out["short"] = String(out["label"]).substr(0, 1)
+	var raw_spawn: Variant = d.get("spawn", null)
+	if typeof(raw_spawn) == TYPE_ARRAY:
+		for sitem in (raw_spawn as Array):
+			var tid := ""
+			if typeof(sitem) == TYPE_DICTIONARY:
+				tid = String((sitem as Dictionary).get("type", "")).strip_edges()
+			elif typeof(sitem) == TYPE_STRING:
+				tid = String(sitem).strip_edges()
+			if tid == "":
+				continue
+			if not _unit_types.has(tid):
+				push_warning("clan.%s 的 %s 里写了一个不存在的兵种：%s（已跳过）"
+					% [clan_id, kind, tid])
+				continue
+			(out["spawn"] as Array).append({"type": tid})
+	return out
+
+
+## 全部派系 id（**声明顺序**；编辑器下拉 / 测试用）。
+func clan_ids() -> Array:
+	return _clan_ids.duplicate()
+
+
+## 默认派系 id（关卡没写 `clan` 时用它）。
+func clan_default_id() -> String:
+	return _clan_default
+
+
+## 这个派系 id 存不存在。
+func clan_exists(id: String) -> bool:
+	return _clans.has(id)
+
+
+## 一个派系洗好的条目（未知 id → 空字典）。
+func clan_def(id: String) -> Dictionary:
+	if id == "" or not _clans.has(id):
+		return {}
+	return _clans[id]
+
+
+## 派系显示名（未知 → 原样返回 id，界面不会出现空名字）。
+func clan_name_of(id: String) -> String:
+	var d := clan_def(id)
+	return String(d.get("name", id)) if not d.is_empty() else id
+
+
+## 派系的一个字图标（未知 → 名字首字）。
+func clan_icon_of(id: String) -> String:
+	var d := clan_def(id)
+	if d.is_empty():
+		return id.substr(0, 1) if id != "" else ""
+	var ic := String(d.get("icon", ""))
+	return ic if ic != "" else String(d.get("name", id)).substr(0, 1)
+
+
+## ★★ 这个派系的**单位招募表**（形状与顶层 `recruit.list[]` 一致）。
+##
+## ★★ `recruit` 为空 ⇒ 返回**顶层 `recruit.list`**（原生就是这样）。
+##   所以「原生派系 = 当前已实装的 7 个兵种」是天然成立的，数据不用抄两遍。
+##   返回值是**只读**的：不要 append / 改里面的条目（它是配置本体或同一份缓存）。
+func clan_recruit_list(id: String) -> Array:
+	var d := clan_def(id)
+	if d.is_empty():
+		return []
+	var own: Array = d.get("recruit", [])
+	if not own.is_empty():
+		return own
+	var v: Variant = get_path_value("recruit.list")
+	return v if typeof(v) == TYPE_ARRAY else []
+
+
+## 某个派系里某个招募 kind 的条目（O(1)）。未知 → 空字典。
+func clan_recruit_entry(id: String, kind: String) -> Dictionary:
+	var d := clan_def(id)
+	if d.is_empty():
+		return {}
+	var by_kind: Dictionary = d.get("by_kind", {})
+	if not by_kind.is_empty():
+		var hit: Variant = by_kind.get(kind, null)
+		return hit if typeof(hit) == TYPE_DICTIONARY else {}
+	# 没有 by_kind（= 走了「沿用顶层 recruit.list」那条）⇒ 现扫一遍顶层表。
+	for item in clan_recruit_list(id):
+		if typeof(item) == TYPE_DICTIONARY \
+				and String((item as Dictionary).get("kind", "")) == kind:
+			return item
+	return {}
+
+
+## 这个派系交给 commander AI 时的**编成权重**（`[{type, weight}]`；空 = 用全局那一张）。
+func clan_ai_composition(id: String) -> Array:
+	var d := clan_def(id)
+	if d.is_empty():
+		return []
+	var v: Variant = d.get("ai_composition", null)
+	return v if typeof(v) == TYPE_ARRAY else []
+
+
+## ★★ 2026.11：这一派的 **commander AI 倾向块**（`clan.list[].commander_ai`）。
+##
+## 形状与 `ai.commander` 完全一样（`roles` / `production` / `expand` / `economy` /
+## `defense` / `build` / `idle` / `auto` …），由 `logic/ai_profile.gd` 的 `build()`
+## 深合并到全局配置之上、关卡覆盖之下。
+##
+## ★ 返回的是**只读**的 dict（配置本体）；要改请先 duplicate。
+## ★ 原生派系故意**不写**这一块 ⇒ 它的 AI 逐位等于「没有派系这回事」的旧行为。
+func clan_commander_ai(id: String) -> Dictionary:
+	var d := clan_def(id)
+	if d.is_empty():
+		return {}
+	var v: Variant = d.get("commander_ai", null)
+	return v if typeof(v) == TYPE_DICTIONARY else {}
+
+
+## ★★ 2026.11：读一个「槽位表」（`clan.list[].tech`）：9 个字符串，空串 = 空槽位。
+## 缺键 / 类型不对 → 空数组（= 这一派没有专属科技，退回原生那张表）。
+## ⚠️ **不压紧**：位置有含义（列优先，行 = 阶），空槽位必须留在原位。
+func _as_id_slots(v: Variant) -> Array:
+	if typeof(v) != TYPE_ARRAY:
+		return []
+	var out: Array = []
+	for item in (v as Array):
+		out.append(String(item) if (typeof(item) == TYPE_STRING) else "")
+	return out
+
+
+## 把一个「AI 参数块」读成 dict（缺键 / 类型不对 → 空字典）。
+## ★ 过掉 `_` 开头的键（`_comment` 之类的注释）：它们会被深合并进 profile，
+##   读者的键是按名字取的，多一个注释键不会崩，但没必要让参数表里混进说明文字。
+## ★ 其余**一律原样保留**（不做键级清洗）：控制器只读它认识的键，
+##   多一个「这一版还没实现」的键也不影响 —— 洗掉反而会静默丢失配置。
+func _as_profile_dict(v: Variant) -> Dictionary:
+	if typeof(v) != TYPE_DICTIONARY:
+		return {}
+	var src: Dictionary = v
+	var out: Dictionary = {}
+	for k in src.keys():
+		if String(k).begins_with("_"):
+			continue
+		out[k] = src[k]
+	return out
+
+
 ## 载入时整理单位类型表（**只读**，之后别再改它）。
 func _cache_unit_types() -> void:
 	_unit_types = {}
@@ -1141,6 +1486,17 @@ func _cache_unit_types() -> void:
 				"move_shoot": bool(td.get("move_shoot", false)),
 				"siege": bool(td.get("siege", false)),
 				"splash_radius": maxf(0.0, float(td.get("splash_radius", 0.0))),
+				# ★★ 2026.11 新增：**击退**（`{distance, stun_sec}`；不写 = 不会击退）。
+				#   洗成固定两键（缺键补 0），于是 `combat` / `projectile` 读的时候不用判类型。
+				#   ⚠️ 「谁免疫击退」不在这里 —— 那是 traits.knockback_immune（**稳定**）。
+				"knockback": _normalize_knockback(td.get("knockback", null)),
+				# ★★ 2026.11 新增：**直线穿透子弹**（扭力弩炮）。
+				#   true ⇒ 命中时沿「射手 → 目标」那条直线打穿射程内的所有敌人。
+				"pierce": bool(td.get("pierce", false)),
+				# ★★ 2026.11 新增：投掷物**弹道**是不是抛物线（缺省 true）。
+				#   投石车 / 弓箭 = 抛物；扭力弩炮的弩矢 = 直线。
+				#   纯表现（视图按它决定要不要把方块抬高），逻辑层的命中与它无关。
+				"projectile_arc": bool(td.get("projectile_arc", true)),
 				# ★★ 粮车的士气光环（其它兵种不写 = 0 = 没有光环）。
 				"morale_aura_radius": maxf(0.0, float(td.get("morale_aura_radius", 0.0))),
 				"morale_aura_rate": maxf(0.0, float(td.get("morale_aura_rate", 0.0))),
@@ -1626,6 +1982,25 @@ func unit_morale_aura_radius_of(id: String) -> float:
 ## 士气光环每秒加多少士气（0 = 没有光环）。
 func unit_morale_aura_rate_of(id: String) -> float:
 	return float(unit_type_entry(id).get("morale_aura_rate", 0.0))
+
+
+## ★★ 2026.11：这个兵种的**击退**参数（载入时已洗成 `{distance, stun_sec}` 两键固定）。
+## 返回同一个字典（**只读**，别改它）；没有击退时两键都是 0。
+## 参数可以是兵种 id，也可以是 kind（将领按所属兵种取，与 unit_hp_of 同口径）。
+func unit_knockback_of(id: String) -> Dictionary:
+	var k: Variant = unit_type_entry(id).get("knockback", null)
+	return k if typeof(k) == TYPE_DICTIONARY else {"distance": 0.0, "stun_sec": 0.0}
+
+
+## ★★ 2026.11：这个兵种的投掷物是不是**直线穿透子弹**（扭力弩炮）。
+func unit_pierce(id: String) -> bool:
+	return bool(unit_type_entry(id).get("pierce", false))
+
+
+## ★★ 2026.11：这个兵种的投掷物弹道是不是**抛物线**（缺省 true；弩矢写 false）。
+## ⚠️ 纯表现：逻辑层不读它（命中判定与高度无关）。
+func unit_projectile_arc(id: String) -> bool:
+	return bool(unit_type_entry(id).get("projectile_arc", true))
 
 
 ## ★★ 某个单位类型的**兵种特性**（本轮新增；载入时已洗成两键固定，见 `_normalize_traits`）。
@@ -2157,41 +2532,93 @@ func _cache_techs() -> void:
 	_tech_list = []
 	_tech_by_id = {}
 	var raw: Variant = get_path_value("tech.list")
-	if typeof(raw) != TYPE_ARRAY:
-		return
-	for item in (raw as Array):
-		if typeof(item) != TYPE_DICTIONARY:
-			continue
-		var src: Dictionary = item
-		var id := String(src.get("id", ""))
-		if id == "":
-			continue                       # 没有 id 就没法启用 / 弃用 —— 条目直接丢掉
-		var name := String(src.get("name", id))
-		var eff: Variant = src.get("effect")
-		# ★ line 与 desc 缺省时从 name 兜底（**不**从 effect 现拼文案：
-		#   逻辑层不写 UI 文案，效果说明是数据里给的）。
-		var line := String(src.get("line", ""))
-		var desc := String(src.get("desc", ""))
-		# ★ 科技「阶」= 科技页的**行**（第一行一阶、第二行二阶、第三行三阶）。
-		#   九格是列优先转置的，所以「行」= config 顺序里的 `index % 3`。
-		var tier_raw: Variant = src.get("tier", null)
-		var tier: int = int(tier_raw) if (typeof(tier_raw) == TYPE_INT or typeof(tier_raw) == TYPE_FLOAT) \
-			else (_tech_list.size() % 3) + 1
-		var entry := {
-			"id": id,
-			"tier": clampi(tier, 1, 3),
-			"name": name,
-			"line": line,
-			"desc": desc,
-			"effect": (eff as Dictionary) if typeof(eff) == TYPE_DICTIONARY else {},
-		}
-		_tech_list.append(entry)
-		_tech_by_id[id] = entry
+	if typeof(raw) == TYPE_ARRAY:
+		for item in (raw as Array):
+			var e := _read_tech_entry(item, _tech_list.size())
+			if e.is_empty():
+				continue
+			_tech_list.append(e)
+			_tech_by_id[String(e["id"])] = e
+
+	# ★★ 2026.11：**派系科技**（王朝 / 帝国 + 两派共用）—— 统一放 `tech.clan_list`，
+	#   一张扁平表（按 id 查），而「哪个派系显示哪些、按什么顺序」由
+	#   `clan.list[].tech`（9 个槽位的 id 数组）决定。见 `_cache_clans`。
+	#   两张表共用 `_tech_by_id`：`tech_entry()` / `has_tech()` 对两者一视同仁。
+	_tech_clan_pool = {}          # id → 条目（按 id 查，不排序）
+	var raw2: Variant = get_path_value("tech.clan_list")
+	if typeof(raw2) == TYPE_ARRAY:
+		for item2 in (raw2 as Array):
+			var e2 := _read_tech_entry(item2, _tech_clan_pool.size())
+			if e2.is_empty():
+				continue
+			var id2 := String(e2["id"])
+			if _tech_by_id.has(id2):
+				continue              # 与原生重名 ⇒ 保留原生那一条（不覆盖，静默跳过）
+			_tech_clan_pool[id2] = e2
+			_tech_by_id[id2] = e2
+
+
+## 读一条科技（`tech.list` 与 `tech.clan_list` 共用）。
+## @param fallback_index 没有写 `tier` 时按「第几条」推阶（列优先：index % 3）。
+## @return 规范化后的条目；**空字典 = 这一条不可用**（没有 id）。
+func _read_tech_entry(item: Variant, fallback_index: int) -> Dictionary:
+	if typeof(item) != TYPE_DICTIONARY:
+		return {}
+	var src: Dictionary = item
+	var id := String(src.get("id", ""))
+	if id == "":
+		return {}                      # 没有 id 就没法启用 / 弃用 —— 条目直接丢掉
+	var name := String(src.get("name", id))
+	var eff: Variant = src.get("effect")
+	# ★ line 与 desc 缺省时从 name 兜底（**不**从 effect 现拼文案：
+	#   逻辑层不写 UI 文案，效果说明是数据里给的）。
+	var line := String(src.get("line", ""))
+	var desc := String(src.get("desc", ""))
+	# ★ 科技「阶」= 科技页的**行**（第一行一阶、第二行二阶、第三行三阶）。
+	#   九格是列优先转置的，所以「行」= config 顺序里的 `index % 3`。
+	var tier_raw: Variant = src.get("tier", null)
+	var tier: int = int(tier_raw) if (typeof(tier_raw) == TYPE_INT or typeof(tier_raw) == TYPE_FLOAT) \
+		else (fallback_index % 3) + 1
+	return {
+		"id": id,
+		"tier": clampi(tier, 1, 3),
+		"name": name,
+		"line": line,
+		"desc": desc,
+		"effect": (eff as Dictionary) if typeof(eff) == TYPE_DICTIONARY else {},
+	}
 
 
 ## 全部科技条目（顺序 = 命令卡九格的顺序；**只读**，别改返回的字典）
+##
+## ⚠️ 这是**原生**那一张表。要「某一方看到的科技页」请用 `tech_list_for(clan)`
+##   （派系的槽位表），运行时由 `world.tech_list(faction)` 转发。
 func tech_list() -> Array:
 	return _tech_list
+
+
+## ★★ 2026.11：**某一派系科技页的 9 个槽位**（列优先；空槽位 = `{"id": "", "empty": true}`）。
+##
+## @param clan 派系 id；空串 / 未知 / 这一派没写 `tech` ⇒ 退回原生那张表
+##        （`tech.list`，9 条，没有空位）。
+##
+## 为什么要保留空槽位而不是压紧：科技页是固定 3×3，**行 = 阶**。
+##   压紧的话「第 7 条」会落到第一行，显示出来的阶就和数据里的 tier 对不上了。
+func tech_list_for(clan: String) -> Array:
+	var d := clan_def(clan)
+	var slots: Variant = d.get("tech", null) if not d.is_empty() else null
+	if typeof(slots) != TYPE_ARRAY or (slots as Array).is_empty():
+		return _tech_list
+	var out: Array = []
+	for i in 9:
+		var id := "" if i >= (slots as Array).size() else String((slots as Array)[i])
+		if id == "" or not _tech_by_id.has(id):
+			# 空位 / 写错 id ⇒ 留一个占位，**位置不能少**（否则后面整列会挪位）
+			out.append({"id": "", "tier": (i % 3) + 1, "name": "", "line": "",
+				"desc": "", "effect": {}, "empty": true})
+			continue
+		out.append(_tech_by_id[id])
+	return out
 
 
 ## 某个科技的条目（查不到返回空字典）
@@ -2270,10 +2697,36 @@ func _cache_upgrades() -> void:
 				# 提速档（只大本营用）：任一为 0 = 没有这一档。见 upgrade._comment。
 				"time_sec_fast": maxf(0.0, float(d.get("time_sec_fast", 0.0))),
 				"fast_need_generals": maxi(0, int(d.get("fast_need_generals", 0))),
+				# ★★ 2026.11：**按将领数分档的读条表**（`time_by_generals`）。
+				#   比 `time_sec_fast` + `fast_need_generals` 那一对更通用：那张只表达
+				#   「一个门槛 + 一个时间」，这张能写「3 将 60s / 4 将 40s / 5 将 20s」。
+				#   规范化成**按 need 降序**，取「第一个满足的」= 最快那一档。
+				"time_by_generals": _as_time_tiers(d.get("time_by_generals", null)),
 				"attack": atk,
 				"limits": limits,
 			})
 		_upgrade_levels[String(type)] = table
+
+
+## 把 `time_by_generals` 读成 `[{need, time_sec}]`，**按 need 降序**（越快的那档在前）。
+## 缺键 / 类型不对 / need ≤ 0 → 丢掉。
+## ★★ 2026.11：`time_sec` 允许 **0**（= 立刻完成，三本在「5 名将领」那档就是 0 秒）。
+func _as_time_tiers(v: Variant) -> Array:
+	if typeof(v) != TYPE_ARRAY:
+		return []
+	var out: Array = []
+	for item in (v as Array):
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		var d: Dictionary = item
+		var need := int(d.get("need", 0))
+		var sec := float(d.get("time_sec", -1.0))
+		if need <= 0 or sec < 0.0:
+			continue
+		out.append({"need": need, "time_sec": sec})
+	out.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return int(a["need"]) > int(b["need"]))
+	return out
 
 
 ## 某个建筑类型有没有升级表（区划中心没有 → 它的操作页只有特化）
@@ -2332,6 +2785,18 @@ func upgrade_time_fast_to(type: String, level: int) -> float:
 func upgrade_fast_need_generals(type: String, level: int) -> int:
 	var row := upgrade_row(type, level + 1)
 	return maxi(0, int(row.get("fast_need_generals", 0)))
+
+
+## ★★ 2026.11：「从 level 升到 level+1」的**按将领数分档的读条表**。
+##
+## @return Array[Dictionary]，每项 `{need, time_sec}`，**按 need 降序**；空数组 = 没有分档表。
+##   `need` = 开始升级时这一方至少要几名将领，`time_sec` = 那一档的读条秒数。
+##   例（三本）：`[{need:5,time:20}, {need:4,time:40}, {need:3,time:60}]`
+##   ⇒ 5 将 20 秒、4 将 40 秒、3 将 60 秒、2 将走 `time_sec` 的基准值。
+func upgrade_time_by_generals(type: String, level: int) -> Array:
+	var row := upgrade_row(type, level + 1)
+	var v: Variant = row.get("time_by_generals", [])
+	return v if typeof(v) == TYPE_ARRAY else []
 
 
 ## 「升到 level+1 必须已有几名将领」（读**目标行**的 need_generals；0 = 不要求）。
@@ -2444,6 +2909,10 @@ func _cache_zone_kinds() -> void:
 				"name": String(src.get("name", id)),
 				"line": String(src.get("line", "")),
 				"production": prod_out,
+				# ★★ 2026.11：**这一档区划没写 `population_cap` 时的人口上限**（缺键 = -1）。
+				#   取值见 `zone_population_cap_default_of_kind()`：>= 0 就用它，
+				#   否则退回全局的 `zone.population_cap_default`。
+				"default_population_cap": _optional_num(src.get("default_population_cap", null)),
 			}
 			_zone_kind_list.append(entry)
 			_zone_kind_by_id[id] = entry
@@ -2471,6 +2940,22 @@ func zone_kind_list() -> Array:
 ## 地图没写 kind 的区划算哪一种（用户确认 = population）
 func zone_kind_default() -> String:
 	return _zone_kind_default
+
+
+## ★★ 2026.11：**这一档区划没写 `population_cap` 时的人口上限**。
+##
+## 取值顺序：`zone_kind.list[].default_population_cap`（>= 0 就用它）
+##           → `zone.population_cap_default`（全局缺省 3）。
+## 用户口径：所有区划默认 3，**人口区划**默认 5（写在各档的 `default_population_cap` 上）。
+##
+## ⚠️ 只影响「地图没写这个键」的区划 —— `zone._apply_map_population_caps()` 只在缺键时调它。
+func zone_population_cap_default_of_kind(kind: String) -> float:
+	var e: Variant = _zone_kind_by_id.get(kind, null)
+	if typeof(e) == TYPE_DICTIONARY:
+		var v := float((e as Dictionary).get("default_population_cap", -1.0))
+		if v >= 0.0:
+			return v
+	return zone_population_cap_default
 
 
 func has_zone_kind(id: String) -> bool:

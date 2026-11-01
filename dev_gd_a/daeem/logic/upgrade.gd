@@ -74,7 +74,8 @@ static func can_upgrade(world, b, faction: String) -> String:
 				and world.general_count_of(String(b.owner)) < need_generals:
 			return "generals"
 	var pool: Variant = world.resource_pool_for(String(b.owner))
-	if not EconomyRes.can_afford(pool, world.cfg.upgrade_cost_to(b.type, b.level)):
+	# ★ 显示价（HUD）与这里用**同一个函数**：`world.building_upgrade_cost(b)`。
+	if not EconomyRes.can_afford(pool, world.building_upgrade_cost(b)):
 		return "cost"
 	return ""
 
@@ -117,7 +118,7 @@ static func start_upgrade(world, b, faction: String) -> bool:
 			ev["have"] = int(world.general_count_of(String(b.owner)))
 		world.push_event(ev)
 		return false
-	var cost: Dictionary = world.cfg.upgrade_cost_to(b.type, b.level)
+	var cost: Dictionary = world.building_upgrade_cost(b)
 	# ★ 钱从**这栋楼的归属方**自己的池子里扣（不是写死的 world.resources）——
 	#   AI 升级自己的建筑不该掏玩家的兜。池子为 null = 那一方没有资源库（见 resource_pool_for）。
 	if not EconomyRes.spend(world.resource_pool_for(String(b.owner)), cost):
@@ -137,6 +138,12 @@ static func start_upgrade(world, b, faction: String) -> bool:
 	world.push_event({"type": "upgrade_started", "kind": "building_upgrade",
 		"building": b, "faction": String(b.owner),
 		"level": int(b.level), "target_level": int(b.level) + 1, "secs": secs})
+	# ★★ 2026.11：**0 秒 = 立刻完成**（三本在「5 名将领」那一档就是 0 秒）。
+	#   不能指望 tick 去收尾：`is_upgrading()` 判的是 `upgrade_total > 0`，
+	#   0 秒的读条在 tick 眼里等于「没在读条」⇒ 那样会永远卡在「钱花了、等级没升」。
+	#   所以在这里同步收尾（`_finish_upgrade` 会把 total/remaining 清回 0 并推 upgrade_done）。
+	if secs <= 0.0:
+		_finish_upgrade(world, b)
 	return true
 
 

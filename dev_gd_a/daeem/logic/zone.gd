@@ -30,10 +30,19 @@ const ROW_LETTERS := "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 ## ★★ 区块人口的默认上限（地图编辑器里没填时的值）。
 ##
-## 用户需求原话：「每个区块都需要有人口上限，如果没有填人口上限则默认为 1」。
-## 编辑器那边只在「不等于 1」时才把 `population_cap` 写进地图 JSON，
-## 所以**缺字段 = 1** 这条判据在两侧是同一套（map_data 不登记 → 这里补默认值）。
-const DEFAULT_POPULATION_CAP := 1.0
+## ★★ 2026.11 口径变更（用户原话）：「所有区划的默认人口上限改为 3，人口区划的默认人口上限
+##   改为 5」。于是默认值**按区划种类分档**，权威数据在 config.json：
+##     · 全局缺省 = `zone.population_cap_default`（= 3）；
+##     · 某一档覆盖 = `zone_kind.list[].default_population_cap`（人口区划 5）。
+##   读它的唯一入口是 `default_population_cap_of_kind()`。
+##
+## 编辑器那边只在「不等于默认」时才把 `population_cap` 写进地图 JSON，
+## 所以**缺字段 = 按种类取默认** 这条判据在两侧是同一套（map_data 不登记 → 这里补）。
+##
+## ⚠️ 下面两个常量只是「配置整个读不出来 / cfg == null」时的兜底（与 config.json 同值），
+##   不要在别处再写一遍这俩数字。
+const DEFAULT_POPULATION_CAP := 3.0
+const DEFAULT_POPULATION_CAP_POPULATION := 5.0
 
 ## ★★ 区划种类的**兜底值**（地图没写 `kind` / 写了个不认识的值时算哪一种）。
 ##
@@ -67,6 +76,15 @@ var rows: int = 0
 ## ⚠️ 不缓存成静态 / 不跨实例复用：测试会在同一进程里换配置建好几个世界。
 var cfg: ConfigRes = null
 
+## ★★ 2026.11：**本帧**因占领读满而换了主人的区划：`[{zone, from, to}]`。
+##
+## 谁在读：`world.tick` 在 `zones.update()` 之后立刻读它（见 `_apply_zone_conversion_restore`）。
+## 为什么用「每帧重建的旁路数组」而不是在 zone 里回掉 world：
+##   · 区划层不认识世界 / 单位 / 科技（架构铁律）；
+##   · 塞一个临时键进区划字典会被快照 / 存档带上，还会让「区划字段」多出一次性的垃圾。
+## ⚠️ 每帧开头清空 ⇒ 只有**这一帧**的转换可读，别留着当历史。
+var last_conversions: Array = []
+
 ## ★★ 2026.10.28（性能）：`update()` 每帧复用的三张临时表（键 = 区块 id）。
 ##    见 `update()` 里那段说明：原来每帧给每个区块各新建 2 个字典 + 1 个数组，
 ##    24 个区块就是每帧 72 次分配；现在只 `clear()`（原地清空，不分配）。
@@ -95,10 +113,11 @@ static func build_from_map(map, cfg: ConfigRes, factions: Array) -> RefCounted:
 	#    老图 / 手写图 / 均分区块都没有中心 ⇒ 不补的话它们永远占不了（见 `_ensure_centers`）。
 	zs._ensure_centers(map)
 	zs._apply_map_production(map)
-	# ★ 人口上限（地图给的；缺字段的区块保持默认 1）
-	zs._apply_map_population_caps(map)
 	# ★ 区划种类（地图给的；缺字段 / 手改写错 → 默认那一档，见 cfg.zone_kind_default()）
+	#   ⚠️ 必须在**人口上限之前**：上限的默认值是按种类取的（人口区划 5、其余 3）。
 	zs._apply_map_kinds(map)
+	# ★ 人口上限（地图给的；缺字段的区块按**种类**取默认，见 `default_population_cap_of_kind`）
+	zs._apply_map_population_caps(map)
 	# ★ id → 区块的索引（两条建法都走完再建；见 `zones_by_id` 的说明）
 	zs._reindex_zones()
 	return zs
@@ -149,10 +168,14 @@ func _new_zone(zid: int, name: String, flist: Array) -> Dictionary:
 		# ★ 区划人口：**每个区划各算各的**累积值，按时间涨、会被招募消耗（用户需求）。
 		#   它**不进 HUD 的资源**（那是各阵营的粮食 / 黄金），也不快照给客机（见 snapshot.gd）。
 		"population": 0.0,
-		# ★★ 人口**上限**（用户需求：「每个区块都需要有人口上限，如果没有填人口上限则默认为 1；
-		#    当人口自然增长至上限时停止增长」）。地图编辑器里没填 → 这里的默认 1。
+		# ★★ 人口**上限**（用户需求：「每个区块都需要有人口上限，当人口自然增长至上限时
+		#    停止增长」）。地图编辑器里没填 → 按**种类**取默认（人口区划 5、其余 3），
+		#    见 `default_population_cap_of_kind()`。
 		#    它和产能一样是**地图给的静态数据**，进游戏之后不会变，所以不进快照。
-		"population_cap": DEFAULT_POPULATION_CAP,
+		#    ⚠️ 这里只是建区划那一刻的**占位值**：`_apply_map_population_caps()` 会在
+		#      `_apply_map_kinds()` 之后给每个区块重新落一次（种类改了默认值也会跟着改）。
+		"population_cap": default_population_cap_of_kind(
+			cfg.zone_kind_default() if cfg != null else DEFAULT_KIND),
 		# ★★ 区划的**招募队列**（点区划中心 → 右下「招募」页签 → 招将领）。
 		#
 		# ★ 为什么挂在区划字典上（而不是像将领那样挂在单位上）：
@@ -290,23 +313,38 @@ func _apply_map_production(map) -> void:
 		(z["production"] as Dictionary)["population"] = float(p.get("population", 0.0))
 
 
-## ★ 把地图里各区块的「人口上限」读进来（缺字段 → 保持默认 1，不是 0）。
+## ★ 把地图里各区块的「人口上限」读进来（缺字段 → 按**区划种类**取默认，不是 0）。
 ##
-## 与产能那条的区别：产能缺档算 0（「没配就是没有产出」），而上限**缺字段算 1**
-## —— 因为用户要的是「每个区块都必须有上限」。编辑器只在「不等于 1」时才写这个字段，
-## 所以「没写」与「写了 1」在这里必须落到同一个值上。
+## 与产能那条的区别：产能缺档算 0（「没配就是没有产出」），而上限**缺字段要有一个默认值**
+## —— 因为用户要的是「每个区块都必须有上限」。默认值分两档（人口区划 5、其余 3），
+## 见 `default_population_cap_of_kind()`；编辑器只在「不等于默认」时才写这个字段，
+## 所以「没写」与「写了等于默认的值」在这里必须落到同一个数上。
+##
+## ⚠️ 必须在 `_apply_map_kinds()` **之后**调：默认值取决于种类。
 func _apply_map_population_caps(map) -> void:
 	var raw: Variant = map.get("zones_population_caps")
-	if typeof(raw) != TYPE_DICTIONARY:
-		return
-	var d: Dictionary = raw
+	var d: Dictionary = raw if typeof(raw) == TYPE_DICTIONARY else {}
 	for z in zones:
 		var zid := int(z["id"])
-		if not d.has(zid):
-			continue
-		# 负数当 0（那个区块永远没有人口），上限本身不设别的夹法 ——
-		# 编辑器里的 0~999 只是挡误输入，游戏侧照单全收。
-		z["population_cap"] = maxf(0.0, float(d[zid]))
+		if d.has(zid):
+			# 负数当 0（那个区块永远没有人口），上限本身不设别的夹法 ——
+			# 编辑器里的 0~999 只是挡误输入，游戏侧照单全收。
+			z["population_cap"] = maxf(0.0, float(d[zid]))
+		else:
+			# ★★ 2026.11：没写 ⇒ **按种类**取默认（人口区划 5、其余 3）。
+			z["population_cap"] = default_population_cap_of_kind(String(z.get("kind", "")))
+
+
+## ★★ 2026.11：某一档区划**没写 `population_cap`** 时的默认上限。
+##
+## 权威数据在 config.json（`zone.population_cap_default` + `zone_kind.list[].
+## default_population_cap`）；本函数只是把 `cfg` 的结论转出来，并在
+## cfg 缺失（测试 / 极端兜底）时退回同一份常量。
+func default_population_cap_of_kind(kind: String) -> float:
+	if cfg != null:
+		return cfg.zone_population_cap_default_of_kind(kind)
+	# ⚠️ 与 config.json 同值；只有 cfg == null 时才会走到这里。
+	return DEFAULT_POPULATION_CAP_POPULATION if kind == DEFAULT_KIND else DEFAULT_POPULATION_CAP
 
 
 ## ★ 把地图里各区块的「区划种类」读进来（`zone_list[].kind`）。
@@ -375,7 +413,8 @@ func center_zone_at_id(x: int, y: int) -> int:
 ## ★ 与占领**无关**：每个区块都按自己的人口产能涨（用户明确「不计入占领方的经济」）。
 ##   速率 = population 产能（**该区划每秒的绝对值**，不乘地块数，见 docs/route.md 第四十四节）。
 ## ★★ 上限（用户需求：「当人口自然增长至上限时停止增长」）：
-##   涨到 `population_cap` 就**不再涨**；上限由地图编辑器给，没填则默认 1。
+##   涨到 `population_cap` 就**不再涨**；上限由地图编辑器给，没填则**按区划种类取默认**
+##   （人口区划 5、其余 3，见 `default_population_cap_of_kind()`）。
 ## ★ 上限**不会把已经超过它的现值拉回来**：这里只夹「这一帧的增长」。
 ##   为什么不做 `population = min(cap, population + gain)`：
 ##     · 招募退款（将领阵亡时按记账把人口退回原区划）有可能把现值顶到上限之上；
@@ -441,11 +480,16 @@ func update_population_multi(dt: float, owner_mults: Dictionary) -> void:
 		z["population"] = minf(cap, pop + rate * dt)
 
 
-## 这个区划的人口上限 = 地图给的基础上限 + 大本营 / 房屋的动态加成。
-## 缺字段 / 老地图 → 默认 1；负数当 0，不让它变成「负增长」。
+## 这个区划的人口上限 = 地图给的基础上限（缺字段 → **按种类取默认**）+ 大本营 / 房屋的动态加成。
+## 负数当 0，不让它变成「负增长」。
+##
+## ★★ 2026.11：缺字段的兜底从「固定 1」改成 `default_population_cap_of_kind(kind)`
+##   （人口区划 5、其余 3）。正常路径上 `population_cap` 一定在（建区划时就落好了），
+##   这一支只服务「测试里手搓的区块字典 / 手改过的数据」。
 func population_cap_of(z: Dictionary) -> float:
-	return maxf(0.0, float(z.get("population_cap", DEFAULT_POPULATION_CAP))
-		+ float(z.get("population_cap_bonus", 0.0)))
+	var base: float = float(z["population_cap"]) if z.has("population_cap") \
+		else default_population_cap_of_kind(String(z.get("kind", "")))
+	return maxf(0.0, base + float(z.get("population_cap_bonus", 0.0)))
 
 
 ## 这个区划现在的人口（浮点，权威值）。
@@ -714,7 +758,8 @@ func refresh_building_ownership(cfg: ConfigRes, building_list: Array, factions: 
 ## ⚠️ 与更早的旧实现的区别：旧版是双方**各涨各的**、谁先满谁拿走。
 ##    现在双方同场时谁都涨不了，所以「带一队兵站在别人家里」不再能靠人多抢先，
 ##    必须先把对方清出场 —— 人多只让**读条更快**，不能让对方读不动。
-func update(cfg: ConfigRes, dt: float, units: Array, factions: Array) -> void:
+func update(cfg: ConfigRes, dt: float, units: Array, factions: Array,
+		capture_mult: Dictionary = {}) -> void:
 	var capture_time: float = maxf(0.001, cfg.capture_time_sec)
 	var decay: float = maxf(0.0, cfg.decay_per_sec)
 	var max_mult: float = maxf(1.0, cfg.zone_speed_max_mult)
@@ -722,6 +767,10 @@ func update(cfg: ConfigRes, dt: float, units: Array, factions: Array) -> void:
 	var curve_p: float = maxf(0.01, cfg.zone_speed_curve_power)
 	var flist := _capture_factions(factions)
 	var radius: int = maxi(0, int(cfg.zone_capture_radius_tiles))
+	# ★★ 2026.11：**本帧发生归属变化**的区划（`{zone, from, to}`）。
+	#   逻辑层不在这里做「回满血 / 士气」那类效果——那是 world + 科技的事，
+	#   这里只把「谁换了主人」记下来（见 world._apply_zone_conversion_restore）。
+	last_conversions = []
 
 	# ★★ 单位先按格分桶：逐区块只看它中心那 (2r+1)² 格，而不是「区块 × 全部单位」
 	#   （1000 单位 × 24 区块那样扫是每帧几万次；分桶后是 O(单位数) + O(区块数 × 9)）。
@@ -797,7 +846,7 @@ func update(cfg: ConfigRes, dt: float, units: Array, factions: Array) -> void:
 	for z in zones:
 		var zi := int(z["id"])
 		_advance_zone(z, present_by[zi], present_sides[zi], flist,
-			capture_time, decay, max_mult, curve_k, curve_p, dt)
+			capture_time, decay, max_mult, curve_k, curve_p, dt, capture_mult)
 
 
 ## 取（必要时新建）一张可复用的「区块 id → 字典」，并清空它。
@@ -907,9 +956,10 @@ static func speed_multiplier(n: int, max_mult: float, curve_k: float, curve_powe
 ##
 ## @param present       这个区块里「阵营 id → 活单位数」（**真实阵营**，用于人数加成与归属）
 ## @param present_sides 这个区块里「方 → true」（联盟折叠后，用于判「是不是只有一方」）
+## @param capture_mult  ★ 2026.11：阵营 → **占领所需时间**倍率（0.8 = 快 25%；缺省 1.0）
 func _advance_zone(z: Dictionary, present: Dictionary, present_sides: Dictionary, flist: Array,
 		capture_time: float, decay: float, max_mult: float, curve_k: float,
-		curve_p: float, dt: float) -> void:
+		curve_p: float, dt: float, capture_mult: Dictionary = {}) -> void:
 	if not z.has("progress_by"):
 		z["progress_by"] = {}
 	var by: Dictionary = z["progress_by"]
@@ -976,15 +1026,25 @@ func _advance_zone(z: Dictionary, present: Dictionary, present_sides: Dictionary
 		# ★ 人数加成：读条方在这个区块里有几个活单位（present 存的就是数目）
 		var n: int = int(present.get(reader, 0))
 		var mult: float = speed_multiplier(n, max_mult, curve_k, curve_p)
-		by[reader] = clampf(float(by[reader]) + dt / capture_time * mult, 0.0, 1.0)
+		# ★★ 2026.11：**占领时间**的派系科技加成（「速战速决」−20% ⇒ 读条乘以 1/0.8 = 快 25%）。
+		#   `capture_mult` 是「所需时间的倍率」（0.8 = 只花 80% 的时间），
+		#   所以这里除它；缺省 1.0 = 逐位不变。夹到 ≥0.05 防数据写崩。
+		var time_mult: float = 1.0
+		if capture_mult.has(reader):
+			time_mult = maxf(0.05, float(capture_mult[reader]))
+		by[reader] = clampf(float(by[reader]) + dt / (capture_time * time_mult) * mult, 0.0, 1.0)
 		if float(by[reader]) >= 1.0:
 			# 读满：易主 + 其余清零（主人那份留 1.0 作为「这是我的地」的标记）
+			var prev_owner := String(z["owner"])
 			z["owner"] = reader
 			z["claimed_by"] = "unit"
 			for f in flist:
 				by[f] = 0.0
 			by[reader] = 1.0
 			state = ""                 # 已经是它的地：不画条（底色表示归属）
+			# ★★ 2026.11：记一笔「这一帧谁换了主人」（供 world 的科技效果用）。
+			if prev_owner != reader:
+				last_conversions.append({"zone": z, "from": prev_owner, "to": reader})
 		else:
 			state = "reading"
 			bar_faction = reader

@@ -127,6 +127,8 @@ FALLBACK_ZONE_KINDS: Tuple[Dict[str, object], ...] = (
         "line": "每秒 1.5 粮食 + 0.15 人口",
         "production": {"food": 1.5, "gold": 0.0, "population": 0.15},
         "specs": ("gold", "population"),
+        # ★★ 2026.11：这一档区划**没填**人口上限时的默认值（与 config.json 同值）
+        "default_population_cap": 3.0,
     },
     {
         "id": "gold",
@@ -134,6 +136,7 @@ FALLBACK_ZONE_KINDS: Tuple[Dict[str, object], ...] = (
         "line": "每秒 1.2 黄金 + 0.15 人口",
         "production": {"food": 0.0, "gold": 1.2, "population": 0.15},
         "specs": ("food", "population"),
+        "default_population_cap": 3.0,
     },
     {
         "id": "population",
@@ -141,6 +144,7 @@ FALLBACK_ZONE_KINDS: Tuple[Dict[str, object], ...] = (
         "line": "每秒 0.8 粮食 + 0.4 人口",
         "production": {"food": 0.8, "gold": 0.0, "population": 0.4},
         "specs": ("food", "gold"),
+        "default_population_cap": 5.0,
     },
 )
 
@@ -149,11 +153,21 @@ FALLBACK_ZONE_KINDS: Tuple[Dict[str, object], ...] = (
 #: 当人口自然增长至上限时停止增长」）。
 #:
 #: · 单位是「人」，就是一个数（不是产能那种「每地块每秒」）；
-#: · 没填 = 默认 1（`DEFAULT_POPULATION_CAP`），所以**导出时只有不等于 1 的才写**
+#: · ★★ 2026.11：**默认值不再是固定的 1，而是按区划种类分档**
+#:   （用户口径：「所有区划的默认人口上限改为 3，人口区划的默认人口上限改为 5」）：
+#:     全局缺省 = `DEFAULT_POPULATION_CAP`（3）；某一档覆盖 = 种类条目里的
+#:     `default_population_cap`（人口区划 5）。与 Godot 侧
+#:     `zone.population_cap_default` / `zone_kind.list[].default_population_cap` 同一组数，
+#:     **改一处要改两处**（读取只有一处：`MapModel.zone_population_cap_default()`）；
+#: · 没填、或填的恰好等于这一档的默认值 ⇒ 导出时**不写**这个键
 #:   —— 与「只有非零产能才写 production」同一条约定，没配过的老图导出后仍然干净；
 #: · 允许填 0（该区块永远没有人口、也不能在那里招募）—— 上下限只挡误输入。
 POPULATION_CAP_KEY = "population_cap"
-DEFAULT_POPULATION_CAP = 1.0
+#: 全局缺省（= `config.json` 的 `zone.population_cap_default`）
+DEFAULT_POPULATION_CAP = 3.0
+#: 某一档种类的覆盖（= `config.json` 的 `zone_kind.list[].default_population_cap`）；
+#: 表里没有的种类 → 用 `DEFAULT_POPULATION_CAP`。
+POPULATION_CAP_BY_KIND: Dict[str, float] = {"population": 5.0}
 POPULATION_CAP_MIN = 0.0
 POPULATION_CAP_MAX = 999.0
 
@@ -326,6 +340,30 @@ def _norm_kind_production(value) -> Dict[str, float]:
     return out
 
 
+def _norm_kind_cap(value) -> float:
+    """一条 zone_kind 的 `default_population_cap`：**-1 = 没配**（用全局缺省）。"""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return -1.0
+    return float(value)
+
+
+def kind_population_cap_default(kinds: Dict[str, Dict[str, object]], kind: str) -> float:
+    """某一档区划**没填**人口上限时的默认值（= Godot 的
+    `cfg.zone_population_cap_default_of_kind`）。
+
+    取值：种类条目里的 `default_population_cap`（>= 0 就用它）→ `DEFAULT_POPULATION_CAP`。
+    """
+    entry = kinds.get(str(kind)) if isinstance(kinds, dict) else None
+    if isinstance(entry, dict):
+        try:
+            v = float(entry.get("default_population_cap", -1.0))
+        except (TypeError, ValueError):
+            v = -1.0
+        if v >= 0.0:
+            return v
+    return DEFAULT_POPULATION_CAP
+
+
 def zone_kind_table(cfg: Optional[dict] = None) -> Dict[str, Dict[str, object]]:
     """读 config.json 的 ``zone_kind`` 段 → ``{id: 条目}``（顺序 = 界面上的顺序）。
 
@@ -353,6 +391,8 @@ def zone_kind_table(cfg: Optional[dict] = None) -> Dict[str, Dict[str, object]]:
                 "line": str(item.get("line", "")),
                 "production": _norm_kind_production(item.get("production")),
                 "specs": spec_list,
+                # ★★ 2026.11：这一档区划没填人口上限时的默认值（缺键 → -1 = 用全局缺省）
+                "default_population_cap": _norm_kind_cap(item.get("default_population_cap")),
             }
     if not out:
         for item in FALLBACK_ZONE_KINDS:
@@ -1093,27 +1133,34 @@ class MapModel:
     # ---------------- 区划人口上限 ----------------
     #
     # ★★ 用户需求原话：「设计师可以在区块页签中选中任意区块为其设置人口上限，
-    #   此人口上限也会被应用到游戏中；每个区块都需要有人口上限，如果没有填人口上限
-    #   则默认为 1；当人口自然增长至上限时停止增长」。
+    #   此人口上限也会被应用到游戏中；每个区块都需要有人口上限，当人口自然增长至
+    #   上限时停止增长」。
     #
-    # ★ 数据层只存「设计师填过的值」（None = 没填）。**默认值是 1**，
-    #   由这里的 `zone_population_cap()` 补出来 —— 于是：
-    #     · 界面永远显示**生效值**（没填就是 1，设计师一眼看到的就是游戏里的数）；
-    #     · 导出只写「不等于 1」的那些，没配过的地图导出后与从前逐字节一致。
+    # ★★ 2026.11 口径变更：**默认值按区划种类分档**（用户口径「所有区划的默认人口上限
+    #   改为 3，人口区划的默认人口上限改为 5」）。数据层只存「设计师填过的值」
+    #   （None = 没填），生效值由 `zone_population_cap_default()` 按种类补出来 —— 于是：
+    #     · 界面永远显示**生效值**（没填就是 3 / 5，设计师一眼看到的就是游戏里的数）；
+    #     · 导出只写「不等于这一档默认值」的那些，没配过的地图导出后仍然干净。
+
+    def zone_population_cap_default(self, zone_id: int) -> float:
+        """这个区划**没填**上限时该用多少（按它自己的种类，见 1133 行那段说明）。"""
+        zone = self.zone(zone_id)
+        kind = zone.kind if zone is not None else self.kind_default
+        return kind_population_cap_default(self.kinds, kind)
 
     def zone_population_cap(self, zone_id: int) -> float:
-        """某个区划**生效的**人口上限（没填 → `DEFAULT_POPULATION_CAP`）。"""
+        """某个区划**生效的**人口上限（没填 → 按种类的默认值）。"""
         zone = self.zone(zone_id)
         if zone is None or zone.population_cap is None:
-            return DEFAULT_POPULATION_CAP
+            return self.zone_population_cap_default(zone_id)
         return float(zone.population_cap)
 
     def zone_population_cap_is_default(self, zone_id: int) -> bool:
-        """这个区划的上限是不是「默认值」（没填、或填的正好等于默认 1）。"""
+        """这个区划的上限是不是「默认值」（没填、或填的正好等于**这一档**的默认值）。"""
         zone = self.zone(zone_id)
         if zone is None or zone.population_cap is None:
             return True
-        return abs(float(zone.population_cap) - DEFAULT_POPULATION_CAP) < 1e-9
+        return abs(float(zone.population_cap) - self.zone_population_cap_default(zone_id)) < 1e-9
 
     def set_zone_population_cap(self, zone_id: int, value) -> bool:
         """设某个区划的人口上限。返回是否真的变了。
@@ -1123,8 +1170,9 @@ class MapModel:
           只挡误输入，不是平衡数值。
         ★ 非法输入（空串 / 乱打字）→ 返回 False 且**不改动原值**
           （免得「手滑打错一个字就把上限清零」）。
-        ★ 填成默认值 1 时**存 1**（而不是抹回 None）：行为完全一样，
-          但「我确实填过 1」这件事在界面上看得出来（输入框里就是 1）。
+        ★ 填成**这一档的默认值**时**原样存下来**（而不是抹回 None）：行为完全一样，
+          但「我确实填过这个数」这件事在界面上看得出来（输入框里就是那个数）；
+          导出时仍然**不写**（`zone_population_cap_is_default()` 只比数值）。
         """
         zone = self.zone(zone_id)
         if zone is None:

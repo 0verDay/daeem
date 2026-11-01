@@ -388,6 +388,13 @@ var _enemy_serial: int = 0
 ## 招募序号：只用来生成**永不重复**的 id（`general-1-r3`）。
 ## 为什么不用「现有附属兵数 + 1」：那个数会因为阵亡 / 离场而回退，回退就会撞名。
 var _recruit_serial: int = 0
+## ★★ 2026.11：**阵营 → 派系 id** 的缓存（见 `clan_of()`）。
+##   派系来自关卡数据的 `factions[].clan`，一局内不变 ⇒ 缓存不会过期；
+##   `reset()` 清一次（重开一局 / 换一张图必须丢掉上一局的派系）。
+##   ★ 为什么要缓存：`recruit_list` / `recruit_entry` 这些查询在 AI 节拍、
+##     HUD 每帧刷新、驻防 AI 补员里反复问，而 `level.faction_config()` 是一次
+##     线性扫 + `duplicate(true)`。
+var _clan_cache: Dictionary = {}
 ## ★★ 每位**玩家席位**的将领招募池 / 冷却（本轮新增）：
 ##   "faction" → { slots / available / cooldown / cooldown_total / cooldown_kind /
 ##                 cooldown_zone / draw_serial }
@@ -517,6 +524,9 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	_events = []
 	_objective_reported = ""
 	_enemy_serial = 0
+	# ★★ 2026.11：派系缓存也要清 —— 换一张图 / 重开一局时，
+	#   p1 上一局是「王朝」不代表这一局还是（关卡数据变了）。
+	_clan_cache = {}
 	# ★★ 将领招募池 / 冷却：重开一局必须从空开始（下面 `_reset_player_pools()` 之后重建）。
 	general_recruit_pools = {}
 	enemy_spawn_timer = 0.0
@@ -923,7 +933,8 @@ func _setup_ai_commanders() -> void:
 	for f in commander_factions():
 		var fid := String(f)
 		_prepare_commander_units(fid)
-		var profile: Dictionary = AiProfileRes.build(cfg, fid, ai_roster_cfg, ai_profiles)
+		var profile: Dictionary = AiProfileRes.build(cfg, fid, ai_roster_cfg, ai_profiles,
+			clan_of(fid))
 		# ★★ 2026.10.29：commander 默认**没有额外起手资源**；只有关卡
 		#    `factions[].start_food/start_gold` 会覆盖（见 `_apply_level_start_resources`）。
 		ai_faction_resources[fid] = {
@@ -2398,13 +2409,56 @@ func _tile_taken(tile: Vector2i, except_unit, pending: Array = []) -> bool:
 #   站位 / 扣费 / 退款全在这里 —— 第 1 轮联机时客机不挑格子、也不算钱。
 # ------------------------------------------------------------------
 
-## 可招募兵种表（config.json 的 recruit.list）—— 右下「单位」页那一张。
+## ★★ 这一方属于哪个**派系**（config 的 `clan`；见 config.gd 的 `_clans` 与 `clan` 段）。
+##
+## 派系 ≠ 阵营：派系只决定「这家能招哪些兵」。来源是**关卡数据**的
+## `factions[].clan`（每个席位一项），没写 / 写了个不存在的 id → `clan.default_id`。
+##
+## ★ 结果**缓存**在 `_clan_cache`：`recruit_list` 这类查询在 AI 节拍与 HUD 刷新里
+##   反复问，而 `level.faction_config()` 是一次线性扫 + `duplicate(true)`。
+##   派系一局内不会变 ⇒ 缓存不会过期（`reset()` 清一次就够）。
+func clan_of(faction: String) -> String:
+	var f := String(faction)
+	var hit: Variant = _clan_cache.get(f, null)
+	if hit != null:
+		return String(hit)
+	var cid := ""
+	if level != null and level.has_method("faction_config"):
+		var fc: Variant = level.faction_config(f)
+		if typeof(fc) == TYPE_DICTIONARY:
+			cid = String((fc as Dictionary).get("clan", "")).strip_edges()
+	if cid == "" or not cfg.clan_exists(cid):
+		cid = cfg.clan_default_id()
+	_clan_cache[f] = cid
+	return cid
+
+
+## 这一方的派系显示名（「原生」/「王朝」/「帝国」；界面文案用）。
+func clan_name(faction: String) -> String:
+	return cfg.clan_name_of(clan_of(faction))
+
+
+## ★★ 这一方能招的**单位招募表**（= 它那个派系的表；原生派系就是 config 的
+## `recruit.list`，见 config.clan_recruit_list 的回落规则）—— 右下「单位」页那一张。
+##
+## @param faction 问哪一方；空串 = 本机席位（`my_faction`）。
 ## ★ 表在数据里、代码里不写死兵种名 —— 以后加兵种只加 JSON，不改这里。
-func recruit_list() -> Array:
-	var v: Variant = cfg.get_path_value("recruit.list")
-	if typeof(v) != TYPE_ARRAY:
-		return []
-	return v
+## ★ AI 一定要**显式传自己的 faction**（别忘了它）：它的兵种表和玩家不是同一张。
+func recruit_list(faction: String = "") -> Array:
+	var f := faction if faction != "" else my_faction
+	return cfg.clan_recruit_list(clan_of(f))
+
+
+## ★★ 这一方交给 commander AI 时的**编成权重**（`[{type, weight}]`）。
+## 派系表里没写 → 空数组（调用方退回 `ai.commander.production.composition`）。
+func clan_ai_composition(faction: String) -> Array:
+	return cfg.clan_ai_composition(clan_of(faction))
+
+
+## ★★ 2026.11：这一方所属派系的 **commander AI 倾向块**（见 `cfg.clan_commander_ai`）。
+## 空字典 = 这一派没写（原生就是）⇒ AI 行为与「没有派系」时逐位一致。
+func clan_commander_ai(faction: String) -> Dictionary:
+	return cfg.clan_commander_ai(clan_of(faction))
 
 
 ## ★★ 区划招募表（config.json 的 recruit.zone.list）—— 点区划中心时「招募」页那一张。
@@ -2412,6 +2466,7 @@ func recruit_list() -> Array:
 ## 与上面那张是**两张独立的表**，别合并：
 ##   · `recruit.list`      → 将领当兵营：兵排进**被选中那个将领**的队列；
 ##   · `recruit.zone.list` → 区划当兵营：将领排进**那个区划**的队列（见 zone.gd 的字段说明）。
+## ★ **与派系无关**：将领名册是全局的（派系只管兵，不管将）。
 func zone_recruit_list() -> Array:
 	var v: Variant = cfg.get_path_value("recruit.zone.list")
 	if typeof(v) != TYPE_ARRAY:
@@ -2424,19 +2479,21 @@ func zone_recruit_list() -> Array:
 ## ★ 查「短名 / 消耗 / 读条」这类**显示与计费**信息时走它（两张表字段完全一样）；
 ##   判「能不能招」时**不要**用它 —— 那要先分清是「将领招兵」还是「区划招将」，
 ##   分别走 is_unit_recruitable / is_zone_recruitable（否则单位页能招出将领来）。
-func recruit_entry(kind: String) -> Dictionary:
-	for item in recruit_list():
-		if typeof(item) == TYPE_DICTIONARY and String((item as Dictionary).get("kind", "")) == kind:
-			return item
+## ★★ 2026.11：先按**派系**查单位表（同名的 kind 在不同派系里可以造价不同），
+##   查不到才落到**全局**的区划招将表（将领不属于任何派系）。
+func recruit_entry(kind: String, faction: String = "") -> Dictionary:
+	var e: Dictionary = cfg.clan_recruit_entry(clan_of(faction if faction != "" else my_faction), kind)
+	if not e.is_empty():
+		return e
 	for item in zone_recruit_list():
 		if typeof(item) == TYPE_DICTIONARY and String((item as Dictionary).get("kind", "")) == kind:
 			return item
 	return {}
 
 
-## 某个兵种能不能被**将领**招募（单位页那张表）
-func is_unit_recruitable(kind: String) -> bool:
-	for item in recruit_list():
+## 某个兵种能不能被**将领**招募（单位页那张表；按这一方的派系算）
+func is_unit_recruitable(kind: String, faction: String = "") -> bool:
+	for item in recruit_list(faction):
 		if typeof(item) == TYPE_DICTIONARY and String((item as Dictionary).get("kind", "")) == kind:
 			return true
 	return false
@@ -2452,16 +2509,72 @@ func is_zone_recruitable(kind: String) -> bool:
 
 ## 这个兵种是不是「可招募的」（两张表任意一张里有它）。
 ## ★ 视图用它决定短字怎么取：招出来的将领也走招募表的 `short`（将）。
-func is_recruitable(kind: String) -> bool:
-	return not recruit_entry(kind).is_empty()
+func is_recruitable(kind: String, faction: String = "") -> bool:
+	return not recruit_entry(kind, faction).is_empty()
+
+
+## ★★ 2026.11：一条招募条目**一次生成哪些兵种**（组合单位一次出多个）。
+##
+## @return `Array[String]` 兵种 id 列表：
+##   · 组合条目（写了 `spawn`）→ 里面每一个 `type`；
+##   · 普通条目（没写）→ `[kind]`（kind 自己就是兵种 id，与从前逐位一致）。
+## ★ 为什么在这里收口：`_spawn_from_recruit`（将领招兵）、AI 的「这条能不能招」、
+##   HUD 的悬停文案三处都要问同一件事 —— 各写一份迟早会漂开。
+func recruit_spawn_types(kind: String, faction: String = "") -> Array:
+	var out: Array = []
+	var e: Dictionary = recruit_entry(kind, faction)
+	var raw: Variant = e.get("spawn", null)
+	if typeof(raw) == TYPE_ARRAY:
+		for item in (raw as Array):
+			var tid := ""
+			if typeof(item) == TYPE_DICTIONARY:
+				tid = String((item as Dictionary).get("type", "")).strip_edges()
+			elif typeof(item) == TYPE_STRING:
+				tid = String(item).strip_edges()
+			if tid != "":
+				out.append(tid)
+	if out.is_empty():
+		out.append(kind)
+	return out
+
+
+## ★★ 一条招募条目的**「代表兵种」**（组合条目取第一个子单位）。
+## 用途：AI 判「这条是近战还是远程」（`cfg.unit_is_ranged` 要一个**兵种 id**，
+## 而组合条目的 kind 不在 unit.types 里）。
+func recruit_primary_type(kind: String, faction: String = "") -> String:
+	var list := recruit_spawn_types(kind, faction)
+	return String(list[0]) if not list.is_empty() else kind
+
+
+## ★★ 反过来：**哪个招募条目能产出这个兵种**（找不到 → 空串）。
+##
+## 用途：驻防 AI 的 `retinue_types` 里写的是**兵种 id**（步枪兵那种），
+##   而招募表里的 kind 可能是组合条目（dy_guard）—— 直接拿兵种 id 去
+##   `is_unit_recruitable` 会得到 false，于是守军永远补不出员（那句话的注释里
+##   记着同一个坑）。这里把它翻译回「能招出它的那一条」。
+func recruit_kind_for_unit(faction: String, unit_type: String) -> String:
+	if unit_type == "":
+		return ""
+	for item in recruit_list(faction):
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		var kind := String((item as Dictionary).get("kind", ""))
+		if kind == "":
+			continue
+		if kind == unit_type:
+			return kind
+		for t in recruit_spawn_types(kind, faction):
+			if String(t) == unit_type:
+				return kind
+	return ""
 
 
 ## ★★ 单位招募的**行号**（`recruit.list[].tier`；缺省 = 1）。
 ## 语义：第 N 行 = 需要大本营 N 级才能招（第 1 行 = 1 级）。
 ## ⚠️ 区划招将那一张表也有 `tier`，但那是「将领阶数」，不要混用：
 ##   本函数只该用来判 `recruit.list` 里的兵种。
-func recruit_tier(kind: String) -> int:
-	return maxi(1, int(recruit_entry(kind).get("tier", 1)))
+func recruit_tier(kind: String, faction: String = "") -> int:
+	return maxi(1, int(recruit_entry(kind, faction).get("tier", 1)))
 
 
 ## 某一方**单位招募**的当前有效等级：没有大本营时按 1 级算。
@@ -2473,8 +2586,13 @@ func unit_recruit_level(faction: String) -> int:
 
 
 ## 这个兵种在当前大本营等级下解锁了吗（单位页那一行是否可点）。
+## ★★ 2026.11：`kind` 按**这一方的派系**查（王朝的「御林军」与帝国的「冠军骑士」
+##   各有各的 tier，不能拿同一张全局表判）。
+## ★ 派系科技「礼乐」（`recruit_tier_unlock`）生效时**整条限制解除** —— 任何阶都能招。
 func unit_recruit_unlocked(faction: String, kind: String) -> bool:
-	return recruit_tier(kind) <= unit_recruit_level(faction)
+	if tech_recruit_tier_unlocked(faction):
+		return true
+	return recruit_tier(kind, faction) <= unit_recruit_level(faction)
 
 
 ## ★★ 2026.10.26：这个建筑在当前大本营等级下解锁了吗（建筑页那一行是否可点）。
@@ -2486,17 +2604,29 @@ func building_unlocked(faction: String, type: String) -> bool:
 ## 某个兵种的招募消耗。
 ## ⚠️ 招募是**无条件**扣费（不看 economy.enabled 那个总开关，它只管建造免费）——
 ##    需求要的是「每个单位消耗 50 粮食 50 黄金」，被总开关静默变成免费就没意义了。
-func recruit_cost(kind: String) -> Dictionary:
-	var c: Variant = recruit_entry(kind).get("cost", {})
-	if typeof(c) == TYPE_DICTIONARY:
-		return c
-	return {}
+## ★★ 2026.11：按派系查（组合单位是**整包**的价钱）。
+## ★★ 派系科技在这里改价 —— 目前只有一条（礼乐）：
+##   · `tech_recruit_gold_to_food`（礼乐）：金耗清零，按比例换成粮（1.5 = 1 金 → 1.5 粮）。
+##   ⚠️ **没有「折扣」**：圈地制只给大本营额外出金，不改任何价钱（用户确认）。
+func recruit_cost(kind: String, faction: String = "") -> Dictionary:
+	var c: Variant = recruit_entry(kind, faction).get("cost", {})
+	if typeof(c) != TYPE_DICTIONARY:
+		return {}
+	var out: Dictionary = (c as Dictionary).duplicate()
+	var fid := faction if faction != "" else my_faction
+	var gold := float(out.get("gold", 0.0))
+	if gold > 0.0:
+		var to_food := tech_recruit_gold_to_food(fid)
+		if to_food > 0.0:
+			out["food"] = float(out.get("food", 0.0)) + gold * to_food
+			out["gold"] = 0.0
+	return out
 
 
 ## 每个单位的读条时间（秒）—— **区划招募将领**仍然逐单使用它；
 ## 单位页（将领招募下属兵）改用一次性批次读条 `recruit_batch_sec()`。
-func recruit_train_sec(kind: String) -> float:
-	return maxf(0.0, float(recruit_entry(kind).get("train_sec", 0.0)))
+func recruit_train_sec(kind: String, faction: String = "") -> float:
+	return maxf(0.0, float(recruit_entry(kind, faction).get("train_sec", 0.0)))
 
 
 ## ★★ 单位页招募的**批次读条时长**（config.recruit.batch_sec，默认 10 秒）。
@@ -2506,8 +2636,9 @@ func recruit_batch_sec() -> float:
 
 
 ## 每个单位要占的人口（从**将领所在区划**扣）
-func recruit_population_cost(kind: String) -> float:
-	return maxf(0.0, float(recruit_entry(kind).get("population_cost", 0.0)))
+## ★★ 2026.11：组合单位写的是**整包**的人口（协防军 2 / 御林军 3），一次扣清。
+func recruit_population_cost(kind: String, faction: String = "") -> float:
+	return maxf(0.0, float(recruit_entry(kind, faction).get("population_cost", 0.0)))
 
 
 ## 队列上限（**含**正在读条的那个）：config.recruit.queue_max，默认 5
@@ -2539,8 +2670,8 @@ func recruit_eta(leader, slot: int) -> float:
 
 
 ## 信息栏格子里显示的短名（config 的 short；没配就退回 label 的第一个字）
-func recruit_short_of(kind: String) -> String:
-	var e := recruit_entry(kind)
+func recruit_short_of(kind: String, faction: String = "") -> String:
+	var e := recruit_entry(kind, faction)
 	var s := String(e.get("short", ""))
 	if s != "":
 		return s
@@ -2549,8 +2680,8 @@ func recruit_short_of(kind: String) -> String:
 
 
 ## 某个兵种的显示名（提示文案用）
-func recruit_label_of(kind: String) -> String:
-	var e := recruit_entry(kind)
+func recruit_label_of(kind: String, faction: String = "") -> String:
+	var e := recruit_entry(kind, faction)
 	var label := String(e.get("label", ""))
 	return label if label != "" else kind
 
@@ -2569,14 +2700,20 @@ func recruit_label_of(kind: String) -> String:
 ##   AI 阵营没有大本营（base_level = 0），不放行的话守军 AI 一个兵都补不出来。
 func can_recruit(kind: String, leader_id: String, faction: String,
 		ignore_tier: bool = false) -> String:
-	if not is_unit_recruitable(kind):
-		return "kind"
+	# ★★ 2026.11：招募表是**按派系**的 —— 用**队长自己那一方**的派系查，
+	#   而不是本机席位的（AI 也会下单，别拿玩家的兵种表去校验它）。
+	#   `faction` 参数是「谁在下单」（防冒充），两者通常相同、语义不同，别合并。
 	var leader = unit_by_id(leader_id)
+	var lf := String(leader.faction) if leader != null else String(faction)
+	if not is_unit_recruitable(kind, lf):
+		return "kind"
 	var reason := leader_reject_reason(leader, faction)
 	if reason != "":
 		return reason
 	# ★★ 大本营行号：第 N 行要 N 级（无大本营按 1 级算，见 unit_recruit_level）。
-	if not ignore_tier and recruit_tier(kind) > unit_recruit_level(String(leader.faction)):
+	#   ★ 派系科技「礼乐」（`recruit_tier_unlock`）生效时这一关整个跳过。
+	if not ignore_tier and recruit_tier(kind, lf) > unit_recruit_level(lf) \
+			and not tech_recruit_tier_unlocked(lf):
 		return "tier"
 	if not leader_zone_owned(leader):
 		return "zone"
@@ -2586,21 +2723,38 @@ func can_recruit(kind: String, leader_id: String, faction: String,
 	if not is_out_of_combat_for_recruit(leader):
 		return "combat"
 	# ★★ 编制上限（含已排队的那几个）：满编就拒绝再招。
-	if leader.retinue_size(self) >= effective_retinue_cap(leader):
+	#   ★ 2026.11：组合单位一次进好几个 ⇒ 必须**装得下整包**才算过
+	#     （否则会出现「招了一包 3 个兵，编制只多 1 位」的超编）。
+	#     普通单位 pack = 1 ⇒ 与旧判据 `size >= cap` 逐位等价。
+	var pack: int = maxi(1, recruit_spawn_types(kind, lf).size())
+	if leader.retinue_size(self) + pack > effective_retinue_cap(leader):
 		return "cap"
 	if leader.train_queue_size() >= recruit_queue_max():
 		return "queue_full"
 	return ""
 
 
-## 这位将领现在算不算「脱战」（招募读条允许继续 / 允许新下单）。
-## ★ 口径与守军 AI 的 `ai.garrison.combat_idle_sec` 相同：**连续 N 秒没有单位 / 建筑目标**。
-##   计时由 `_tick_recruit_idle()` 每帧为全场单位维护，受击时会额外清零
-##   （见 `unit.take_damage`）。
-func is_out_of_combat_for_recruit(u) -> bool:
+## 这个单位现在算不算「**脱战**」。
+##
+## ★★ 这是**全游戏唯一的脱战判据**，两处共用：
+##   ① 招募读条的暂停 / 恢复（`can_recruit` / `_tick_recruitment`）；
+##   ② 派系科技「屯田制」：脱战单位免维护费（`_tick_upkeep`）。
+##   口径：**连续 `recruit.combat_idle_sec` 秒没有单位 / 建筑目标**（与守军 AI 的
+##   `ai.garrison.combat_idle_sec` 同一条）；计时由 `_tick_recruit_idle()` 每帧为
+##   全场单位维护，**受击时会额外清零**（见 `unit.take_damage`）。
+##   ⇒ 「还在打」的单位不算脱战；「站够 N 秒没目标」的才算。
+##
+## ⚠️ 计时字段历史上叫 `unit.recruit_idle_timer`（最初只服务招募）；现在是**通用的
+##   脱战计时**，别再按名字理解成「招募专用」。
+func is_out_of_combat(u) -> bool:
 	if u == null:
 		return false
 	return float(u.recruit_idle_timer) >= cfg.recruit_combat_idle_sec
+
+
+## 老名字（招募那条路的调用点仍在用）—— 与 `is_out_of_combat()` **同一个判据**。
+func is_out_of_combat_for_recruit(u) -> bool:
+	return is_out_of_combat(u)
 
 
 ## 「这个单位能不能当招募对象」的公共校验（招募 / 取消招募共用）。
@@ -3109,10 +3263,11 @@ func can_afford_recruit(kind: String, leader_id: String) -> String:
 	var leader = unit_by_id(leader_id)
 	if leader == null:
 		return "leader"
-	var pool: Variant = resource_pool_for(String(leader.faction))
-	if pool != null and not EconomyRes.can_afford(pool, recruit_cost(kind)):
+	var lf := String(leader.faction)
+	var pool: Variant = resource_pool_for(lf)
+	if pool != null and not EconomyRes.can_afford(pool, recruit_cost(kind, lf)):
 		return "cost"
-	var pop := recruit_population_cost(kind)
+	var pop := recruit_population_cost(kind, lf)
 	if pop <= 0.0:
 		return ""
 	var z = zones.zone_at(leader.tx, leader.ty)
@@ -3151,14 +3306,16 @@ func start_recruit(kind: String, leader_id: String, faction: String,
 		#    （而且 AI 每帧重试 ⇒ 提示被反复续期、永远不消失。实测报回来的正是这个）。
 		# ★ 顺带带上 tier / base_level：单位页的「大本营 N 级解锁」文案直接读它们。
 		push_event({"type": "recruit_rejected", "reason": reason, "kind": kind,
-			"faction": faction, "tier": recruit_tier(kind),
+			"faction": faction, "tier": recruit_tier(kind, String(faction)),
 			"base_level": unit_recruit_level(String(faction))})
 		return false
 
 	var leader = unit_by_id(leader_id)
 	var zone = zones.zone_at(leader.tx, leader.ty)
-	var pop := recruit_population_cost(kind)
-	var cost := recruit_cost(kind)
+	# ★★ 2026.11：造价与人口按**队长那一方的派系**查（组合单位是整包的价钱）。
+	var lf := String(leader.faction)
+	var pop := recruit_population_cost(kind, lf)
+	var cost := recruit_cost(kind, lf)
 	# 免费那一档：人口与钱都不动（下面每一处扣费都看这个开关）
 	if free:
 		pop = 0.0
@@ -3307,40 +3464,61 @@ func _tick_recruitment(dt: float) -> void:
 ##
 ## ★ 仍然先 `Collision.clear_point` 把格心上的别人排开：即便挑格子时没人，
 ##   同一帧里连续生成多个兵也可能选中同一格（队列一帧读满好几单）。
-func _spawn_from_recruit(leader, kind: String) -> Variant:
-	var tile := _pick_recruit_spawn_tile(leader)
-	var center := GridRes.center_of(tile)
-	# 排开的距离：两个碰撞圆刚不重叠（与 collision 的最小圆心距同一套口径）
-	var need: float = maxf(0.0, cfg.unit_collision_radius) * 2.0
-	CollisionRes.clear_point(self, cfg, center, need, leader)
+##
+## ★★ 2026.11：**组合单位**（一条招募条目一次出多个兵，见 config 的 `clan` 段）。
+##   · 生成的是 `spawn[]` 里的**每个兵种**（普通条目就是 kind 自己那一个）；
+##   · 每个子单位各自挑落点（同一帧里连续生成会自然散到周围几格）；
+##   · **名字**：组合条目一律取这一条的 `label`（需求：协防军两个兵都叫「协防军」），
+##     普通条目仍是「兵种名 + 序号」（与从前逐位一致）；
+##   · 每个子单位各记一条 `unit_recruited` 事件（视图按它放音效 / 飘字）。
+## @return 本次真正生成出来的单位数组（普通条目 = 1 个）。
+func _spawn_from_recruit(leader, kind: String) -> Array:
+	var out: Array = []
+	var f := String(leader.faction)
+	var entry: Dictionary = recruit_entry(kind, f)
+	var types: Array = recruit_spawn_types(kind, f)
+	# ★ 组合单位：条目自己写了 spawn（**非空**）。空 spawn = 普通条目。
+	var raw_spawn: Variant = entry.get("spawn", null)
+	var composite: bool = typeof(raw_spawn) == TYPE_ARRAY and not (raw_spawn as Array).is_empty()
+	for t in types:
+		var tid := String(t)
+		var tile := _pick_recruit_spawn_tile(leader)
+		var center := GridRes.center_of(tile)
+		# 排开的距离：两个碰撞圆刚不重叠（与 collision 的最小圆心距同一套口径）
+		var need: float = maxf(0.0, cfg.unit_collision_radius) * 2.0
+		CollisionRes.clear_point(self, cfg, center, need, leader)
 
-	_recruit_serial += 1
-	var u = UnitRes.create(
-		cfg, "%s-r%d" % [leader.id, _recruit_serial],
-		"%s %d" % [cfg.unit_name_of(kind), retinue_of(leader.id, false).size() + 1],
-		tile, leader.faction, kind, "", leader.id, kind
-	)
-	# ★ 位置**显式**写一次格心：需求要的是「强制生成在中心」，
-	#   不能依赖 UnitRes.create 的实现（哪天它改成别处落点就会静默跑偏）。
-	u.pos = center
-	u.sync_tile(map)
-	# ★★ 归属区划**继承队长**（本轮新增，跟着招兵那条路一起做的）：
-	#   · 有归属的队长（驻防将领）招出来的兵 ⇒ 归同一块地：它跟着队长巡逻
-	#     （命令在 `general_ai._patrol_group` 里整队下），也因为同属一块地而受
-	#     「不追出一个区划」那条硬约束管着；
-	#   · 队长没有归属（玩家 / 阵营 AI 的将领）⇒ 兵也没有（`-1`，行为一点不变）。
-	u.garrison_zone_id = int(leader.garrison_zone_id)
-	# ⚠️ 词条已停用：新兵不再从队长继承光环。
-	units.append(u)
-	mark_vision_dirty()
-	# ★★ 新兵必须**立刻接上队伍当前命令**，否则将领在行军 / 交战时招出来的兵会原地脱队。
-	#    放在 append 之后：命令里的寻路 / 碰撞会把它当成世界里的正常单位。
-	u.inherit_orders_from(leader, self, cfg)
-	# ★ 科技「将领血量 +10%」：区划招募出来的将领**自己就是队长**，走将领那一档
-	#   （附属兵走 1.0 = 不加），与 world._apply_tech_effects 同一套判据。
-	u.apply_hp_bonus(_tech_hp_mult_for(u))
-	push_event({"type": "unit_recruited", "unit": u, "leader": leader})
-	return u
+		_recruit_serial += 1
+		var disp_name := String(entry.get("label", "")) if composite else ""
+		if disp_name == "":
+			disp_name = "%s %d" % [cfg.unit_name_of(tid),
+				retinue_of(leader.id, false).size() + 1]
+		var u = UnitRes.create(
+			cfg, "%s-r%d" % [leader.id, _recruit_serial],
+			disp_name, tile, leader.faction, tid, "", leader.id, tid
+		)
+		# ★ 位置**显式**写一次格心：需求要的是「强制生成在中心」，
+		#   不能依赖 UnitRes.create 的实现（哪天它改成别处落点就会静默跑偏）。
+		u.pos = center
+		u.sync_tile(map)
+		# ★★ 归属区划**继承队长**（本轮新增，跟着招兵那条路一起做的）：
+		#   · 有归属的队长（驻防将领）招出来的兵 ⇒ 归同一块地：它跟着队长巡逻
+		#     （命令在 `general_ai._patrol_group` 里整队下），也因为同属一块地而受
+		#     「不追出一个区划」那条硬约束管着；
+		#   · 队长没有归属（玩家 / 阵营 AI 的将领）⇒ 兵也没有（`-1`，行为一点不变）。
+		u.garrison_zone_id = int(leader.garrison_zone_id)
+		# ⚠️ 词条已停用：新兵不再从队长继承光环。
+		units.append(u)
+		mark_vision_dirty()
+		# ★★ 新兵必须**立刻接上队伍当前命令**，否则将领在行军 / 交战时招出来的兵会原地脱队。
+		#    放在 append 之后：命令里的寻路 / 碰撞会把它当成世界里的正常单位。
+		u.inherit_orders_from(leader, self, cfg)
+		# ★ 科技「将领血量 +10%」：区划招募出来的将领**自己就是队长**，走将领那一档
+		#   （附属兵走 1.0 = 不加），与 world._apply_tech_effects 同一套判据。
+		u.apply_hp_bonus(_tech_hp_mult_for(u))
+		push_event({"type": "unit_recruited", "unit": u, "leader": leader})
+		out.append(u)
+	return out
 
 
 ## 给新兵挑一格落点：将领周围 8 格里「可通行 + 没有别的单位」的优先；
@@ -4684,6 +4862,9 @@ func building_max_level(type: String) -> int:
 
 
 ## 这个建筑升到下一级要花的钱 / 读条秒数（已经满级 → 空字典 / 0）
+## ★ 显示价与实扣价都走这一个函数（HUD 用 `_cost_text(world.building_upgrade_cost(b))`，
+##   逻辑用 `UpgradeRes.start_upgrade` → 同一个函数），所以两边天然一致。
+## ★★ 2026.11：原来这里还过一遍「科技金耗折扣」；那条效果已删（圈地制不含折扣）。
 func building_upgrade_cost(b) -> Dictionary:
 	if b == null:
 		return {}
@@ -4692,17 +4873,32 @@ func building_upgrade_cost(b) -> Dictionary:
 
 ## 这个建筑升到下一级的**实际**读条秒数。
 ##
-## ★ 大本营有「将领越多读得越快」的提速档（config 的 time_sec_fast / fast_need_generals）：
-##   这里按**当前**将领数选档；`UpgradeRes.start_upgrade()` 在开始那一帧把它写进
+## ★ 大本营有「将领越多读得越快」的提速档，两种写法都支持：
+##   · **`time_by_generals`（2026.11，推荐）**：一张分档表
+##     `[{need:5,time:20},{need:4,time:40},{need:3,time:60}]` ⇒ 5 将 20s / 4 将 40s / 3 将 60s；
+##   · 老的 `time_sec_fast` + `fast_need_generals`：只表达得了一档（如 ≥5 将 → 60s）。
+##   两者都在时**以分档表为准**（它更具体），表里没有匹配档才回退到老那一档。
+## ★ 这里按**当前**将领数选档；`UpgradeRes.start_upgrade()` 在开始那一帧把它写进
 ##   `upgrade_total` ⇒ 读条中人数变化不会再改计时（定死）。
 ## ★ 视图与逻辑都走这一个函数，「看到的秒数」与「实际读条」不会分叉。
 func building_upgrade_time(b) -> float:
 	if b == null:
 		return 0.0
 	var t: float = cfg.upgrade_time_to(b.type, b.level)
+	var count := general_count_of(String(b.owner))
+	# ★★ 2026.11：分档表（按 need 降序存在 config 里 ⇒ 第一个满足的就是最快那一档）。
+	#   ⚠️ `time_sec` 可以是 **0**（= 立刻完成）—— 所以判据只要求 `count >= need`，
+	#   不能像以前那样顺手加一句 `sec > 0.0`（那会把 0 秒那一档当成「没有这一档」）。
+	for row in cfg.upgrade_time_by_generals(b.type, b.level):
+		var d: Dictionary = row
+		var need := int(d.get("need", 0))
+		var sec := float(d.get("time_sec", 0.0))
+		if need > 0 and count >= need:
+			return maxf(0.0, sec)
+	# 老的一档提速（没写分档表的建筑 / 关卡仍走这条路）
 	var fast: float = cfg.upgrade_time_fast_to(b.type, b.level)
-	var need: int = cfg.upgrade_fast_need_generals(b.type, b.level)
-	if fast > 0.0 and need > 0 and general_count_of(String(b.owner)) >= need:
+	var need_fast: int = cfg.upgrade_fast_need_generals(b.type, b.level)
+	if fast > 0.0 and need_fast > 0 and count >= need_fast:
 		return fast
 	return t
 
@@ -4902,13 +5098,16 @@ func neutralize_faction(faction: String) -> void:
 #   → command_processor → **这里**。视图不自己记「谁启用了」，每帧读这几个查询。
 # ------------------------------------------------------------------
 
-## 科技表现在有几条（= 命令卡九格的条目数；表在 config.json 的 tech.list）
-func tech_list() -> Array:
-	if tech != null:
-		return tech.list()
-	if cfg != null:
-		return cfg.tech_list()
-	return []
+## 科技表有几个槽位（= 命令卡九格的条目数）。
+##
+## ★★ 2026.11：**按派系**取表 —— 某方看到的科技页是**它自己派系**的那张槽位表
+## （`config.clan.list[].tech`，9 个槽位、空位是 `{"id": "", "empty": true}`）；
+## 派系没写 ⇒ 退回原生那一张 `tech.list`（9 条、没有空位）。
+##
+## @param faction 空 = 本地玩家（旧调用不变）
+func tech_list(faction: String = "") -> Array:
+	var clan := clan_of(_tech_faction(faction)) if cfg != null else ""
+	return cfg.tech_list_for(clan) if cfg != null else []
 
 
 ## 某个科技的条目（名字 / 第二行小字 / 悬停详情 / 效果）
@@ -4963,6 +5162,12 @@ func tech_can_activate(id: String, faction: String = "") -> String:
 	var f := _tech_faction(faction)
 	if tech.is_active(id, f):
 		return ""
+	# ★★ 2026.11：**这条科技不在自己派系的槽位表里** ⇒ 当它不存在
+	#   （王朝点不了帝国的科技；原生点不了派系的）。
+	#   ⚠️ 必须放在 `tech.can_activate()` **之前**：那一步会先报 "tier" / "limit"，
+	#     于是「别派的科技」会被误报成「阶数不够」。
+	if not _tech_in_my_list(id, f):
+		return "unknown"
 	var reason := tech.can_activate(id, f, tech_max_active(f), tech_max_tier(f))
 	if reason != "":
 		return reason
@@ -4973,6 +5178,17 @@ func tech_can_activate(id: String, faction: String = "") -> String:
 	return ""
 
 
+## 这条科技在**这一方自己的科技页**里吗（派系槽位表里的 id 才算）。
+## ★ 原生那张表没有空位，`tech_list_for("")` 直接返回它 —— 所以老路径不受影响。
+func _tech_in_my_list(id: String, faction: String) -> bool:
+	if id == "":
+		return false
+	for item in tech_list(faction):
+		if typeof(item) == TYPE_DICTIONARY and String((item as Dictionary).get("id", "")) == id:
+			return true
+	return false
+
+
 ## ★★ 科技页九格的**显示数据**（名字 / 第二行小字 / 悬停详情 / 是否已启用）。
 ##
 ## 为什么在逻辑层拼好给视图（而不是让 view 自己去查 config + 状态）：
@@ -4981,17 +5197,20 @@ func tech_can_activate(id: String, faction: String = "") -> String:
 ##   视图拿到的是纯数据（无对象引用），也顺带满足「将来要过网络」那条约束。
 ##
 ## @return Array[Dictionary]，每项 {id, name, line, desc, active}，顺序 = 九格顺序
+##   ★★ 2026.11：**空槽位**也在里面（`id == ""`、`empty == true`、`available == false`）——
+##      科技页是固定 3×3「行 = 阶」，位置不能压紧，界面靠 `empty` 画灰框。
 func tech_entries(faction: String = "") -> Array:
 	var f := _tech_faction(faction)
 	var active: Array = tech.active_ids(f) if tech != null else []
 	var out: Array = []
-	for item in tech_list():
+	for item in tech_list(f):
 		if typeof(item) != TYPE_DICTIONARY:
 			continue
 		var e: Dictionary = item
 		var id := String(e.get("id", ""))
-		var on: bool = active.has(id)
-		var reason := "" if on else tech_can_activate(id, f)
+		var is_empty: bool = bool(e.get("empty", false)) or id == ""
+		var on: bool = (not is_empty) and active.has(id)
+		var reason := "" if on else ("" if is_empty else tech_can_activate(id, f))
 		out.append({
 			"id": id,
 			"tier": int(e.get("tier", 0)),
@@ -4999,10 +5218,12 @@ func tech_entries(faction: String = "") -> Array:
 			"line": String(e.get("line", "")),
 			"desc": String(e.get("desc", "")),
 			"active": on,
+			# ★ 空槽位：界面画灰框、不可点、也不弹悬停详情。
+			"empty": is_empty,
 			# ★ 这条科技每秒要付多少金（界面在悬停 / 格子上显示「0.5 金/秒」）。
-			"gold_per_sec": cfg.tech_gold_per_sec_of(id),
+			"gold_per_sec": 0.0 if is_empty else cfg.tech_gold_per_sec_of(id),
 			# ★ 已启用的永远可点（点它 = 弃用）；未启用的看大本营等级 / 名额 / 赤字。
-			"available": on or reason == "",
+			"available": on or (not is_empty and reason == ""),
 			"reason": reason,
 			"deficit": reason == "gold_deficit",
 		})
@@ -5065,6 +5286,130 @@ func tech_population_mult(faction: String = "") -> float:
 	if typeof(eff) != TYPE_DICTIONARY:
 		eff = tech_effects
 	return float((eff as Dictionary).get("zone_population_mult", 1.0))
+
+
+# ------------------------------------------------------------------
+# ★★ 2026.11：**派系科技**的效果读取（全部是「1.0 + 加法增量」）
+#
+# 为什么集中放在这里：这些键被「每单位每帧 / 每击」的路径读（移速、护甲、免伤、攻击），
+# 读的地方一多，口径就容易漂（谁忘了 `1.0 +` 谁就变成 1% 而不是 101%）。
+# 所以**只有这一组函数**可以读这些键，其它地方一律调它。
+#
+# ⚠️ 基数见 `tech.default_effects()`：新键一律 0.0 = 加法增量。
+# ------------------------------------------------------------------
+
+## 某一方本局算好的科技效果（缺省 → 现算一份；**返回真身，别改**）。
+func _eff_for(faction: String = "") -> Dictionary:
+	var fid := _tech_faction(faction)
+	var eff: Variant = seat_tech_effects.get(fid, null)
+	if typeof(eff) == TYPE_DICTIONARY:
+		return eff
+	return tech.effects_of(fid) if tech != null else {}
+
+
+## 全单位**移动速度**倍率（速战速决：+0.10 ⇒ 1.1）
+func tech_speed_mult(faction: String = "") -> float:
+	return maxf(0.0, 1.0 + float(_eff_for(faction).get("unit_speed_mult", 0.0)))
+
+
+## **占领区划所需时间**倍率（速战速决：−0.20 ⇒ 0.8 = 快 20%）
+## ⚠️ 夹到 ≥0.05：写个 −1 也不会变成「瞬间占领」或负数除法。
+func tech_capture_time_mult(faction: String = "") -> float:
+	return maxf(0.05, 1.0 + float(_eff_for(faction).get("capture_time_mult", 0.0)))
+
+
+## **远近免伤**的额外加成（无懈可击：各 +0.10）—— 加进 take_damage 的那个和里。
+func tech_reduction_add(faction: String = "", ranged: bool = false) -> float:
+	var e := _eff_for(faction)
+	var key := "unit_ranged_reduction_add" if ranged else "unit_melee_reduction_add"
+	return maxf(0.0, float(e.get(key, 0.0)))
+
+
+## 这一方**占领的区划数**（远征军按它算加成；只数 owner 正好是它自己的）。
+func tech_zone_count(faction: String = "") -> int:
+	if zones == null:
+		return 0
+	var fid := _tech_faction(faction)
+	var n := 0
+	for z in zones.zones:
+		if String((z as Dictionary).get("owner", "")) == fid:
+			n += 1
+	return n
+
+
+## 全军**攻击**倍率（远征军「每区划 +2%」/ 军形有势「每人 +2%」都乘在这里）。
+## @param u 目标单位（要读它的队伍规模；null ⇒ 只算「每区划」那一份）
+func tech_attack_mult(u = null) -> float:
+	var fid := String(u.faction) if u != null else my_faction
+	var e := _eff_for(fid)
+	var add := float(e.get("per_zone_attack_mult", 0.0)) * float(tech_zone_count(fid))
+	if u != null:
+		var per_member := float(e.get("per_squad_member_attack_mult", 0.0))
+		if per_member > 0.0:
+			# ★ 上限 +20%：一队 10 个人封顶（否则 30 人的大编队会变成 +60%）。
+			add += minf(0.20, per_member * float(squad_size_of(u)))
+	return maxf(0.0, 1.0 + add)
+
+
+## 全军**防御**（固定减伤数值 = armor）倍率（远征军「每区划 +2%」）。
+func tech_armor_mult(faction: String = "") -> float:
+	var fid := _tech_faction(faction)
+	var add := float(_eff_for(fid).get("per_zone_armor_mult", 0.0)) * float(tech_zone_count(fid))
+	return maxf(0.0, 1.0 + add)
+
+
+## 这一方**单位维护费**（粮）倍率（全局乘数；目前没有科技用它，留给以后）
+func tech_upkeep_mult(faction: String = "") -> float:
+	return maxf(0.0, 1.0 + float(_eff_for(faction).get("unit_upkeep_mult", 0.0)))
+
+
+## ★ 屯田制：**脱战**的单位免维护费。
+##   「脱战」= `is_out_of_combat()`（**与招募读条同一条判据**：连续
+##   `recruit.combat_idle_sec` 秒没有目标、且没挨过打），不是「当前 target 为空」。
+func tech_upkeep_idle_exempt(faction: String = "") -> bool:
+	return float(_eff_for(faction).get("upkeep_idle_exempt", 0.0)) > 0.0
+
+
+## 招募的**大本营等级限制**解除了吗（礼乐）
+func tech_recruit_tier_unlocked(faction: String = "") -> bool:
+	return float(_eff_for(faction).get("recruit_tier_unlock", 0.0)) > 0.0
+
+
+## 招募的「金 → 粮」换算比例（礼乐：1.5 ⇒ 1 金改成 1.5 粮；0 = 不转换）
+func tech_recruit_gold_to_food(faction: String = "") -> float:
+	return maxf(0.0, float(_eff_for(faction).get("recruit_gold_to_food", 0.0)))
+
+
+## 招募 / 建造 / 升级的**金耗**倍率 —— ★★ 2026.11 已删除（`gold_cost_mult` 不再存在）。
+##
+## 历史：「圈地制」最初还带一个「金耗打七折」的效果，后来确认那条科技**没有折扣**
+## （只有「大本营额外出金」），于是整条折扣管线一起删掉了 —— 招募 / 建造 / 升级
+## 现在都按 config 的原价扣，显示价与实扣价天然同源。
+## ⚠️ 别再往这里加「按阵营改价」的东西：那需要三条路（招募 / 建造 / 升级）同时改，
+##   而它们的显示价分散在 hud / upgrade / command_processor 三处，很容易只改一半。
+
+## 每区划的**人口上限**增量（皇恩浩荡 +3 / 征召民兵 +2）
+func tech_zone_population_cap_add(faction: String = "") -> float:
+	return maxf(0.0, float(_eff_for(faction).get("zone_population_cap_add", 0.0)))
+
+
+## 每栋**非大本营**建筑的额外粮 / 金产能（铁犁牛耕 / 淘金）
+func tech_building_food_add(faction: String = "") -> float:
+	return maxf(0.0, float(_eff_for(faction).get("building_food_per_sec_add", 0.0)))
+
+
+func tech_building_gold_add(faction: String = "") -> float:
+	return maxf(0.0, float(_eff_for(faction).get("building_gold_per_sec_add", 0.0)))
+
+
+## 每座**大本营**的额外金产能（圈地制）
+func tech_base_gold_add(faction: String = "") -> float:
+	return maxf(0.0, float(_eff_for(faction).get("base_gold_per_sec_add", 0.0)))
+
+
+## 区划转为己方那一刻要不要回满血 / 士气（势如破竹）
+func tech_restore_on_convert(faction: String = "") -> bool:
+	return float(_eff_for(faction).get("zone_convert_restore", 0.0)) > 0.0
 
 
 ## ★★ 重算「每个玩家席位各自的科技效果」。
@@ -5211,6 +5556,12 @@ func _flat_resource_bonus(faction: String) -> Dictionary:
 	var gold := 0.0
 	if faction == "" or cfg == null:
 		return {"food": 0.0, "gold": 0.0}
+	# ★★ 2026.11：派系科技给建筑的**额外**产出（铁犁牛耕 / 淘金 / 圈地制）。
+	#   口径：大本营只吃「大本营那份」（`base_gold_per_sec_add`），
+	#        非大本营建筑只吃「建筑那份」（`building_*_per_sec_add`），互不重复。
+	var tech_food := tech_building_food_add(faction)
+	var tech_gold := tech_building_gold_add(faction)
+	var tech_base_gold := tech_base_gold_add(faction)
 	for b in building_list:
 		if b == null or not b.alive or b.neutralized:
 			continue
@@ -5218,13 +5569,14 @@ func _flat_resource_bonus(faction: String) -> Dictionary:
 			continue
 		if String(b.type) == BuildingRes.TYPE_BASE:
 			if not base_bonus_enabled:
+				gold += tech_base_gold          # 大本营加成总闸关了，科技的这一份照给
 				continue
 			var bb: Dictionary = cfg.base_bonus(int(b.level))
 			food += float(bb.get("food_per_sec", 0.0))
-			gold += float(bb.get("gold_per_sec", 0.0))
+			gold += float(bb.get("gold_per_sec", 0.0)) + tech_base_gold
 		else:
-			food += cfg.building_food_per_sec(String(b.type))
-			gold += cfg.building_gold_per_sec(String(b.type))
+			food += cfg.building_food_per_sec(String(b.type)) + tech_food
+			gold += cfg.building_gold_per_sec(String(b.type)) + tech_gold
 	return {"food": food, "gold": gold}
 
 
@@ -5262,6 +5614,24 @@ func _zone_population_bonus_map() -> Dictionary:
 			var d: Dictionary = e
 			d["rate"] = float(d.get("rate", 0.0)) + rate
 			d["cap"] = float(d.get("cap", 0.0)) + cap
+	# ★★ 2026.11：派系科技给**每个己方区划**的人口上限增量（皇恩浩荡 +3 / 征召民兵 +2）。
+	#   按区划**当前归属**给（换主人就跟着换）；没主的区划不加。
+	if zones != null:
+		for z in zones.zones:
+			var zd: Dictionary = z
+			var own := String(zd.get("owner", ""))
+			if own == "":
+				continue
+			var add := tech_zone_population_cap_add(own)
+			if add <= 0.0:
+				continue
+			var zid2 := int(zd["id"])
+			var cur: Variant = out.get(zid2, null)
+			if typeof(cur) != TYPE_DICTIONARY:
+				out[zid2] = {"rate": 0.0, "cap": add}
+			else:
+				var dd: Dictionary = cur
+				dd["cap"] = float(dd.get("cap", 0.0)) + add
 	return out
 
 
@@ -5270,6 +5640,50 @@ func _refresh_zone_population_bonuses() -> void:
 	if zones == null:
 		return
 	zones.apply_population_bonuses(_zone_population_bonus_map())
+
+
+## ★★ 2026.11：**势如破竹**（帝国三本）—— 区划**刚刚**转为己方那一刻，
+## 该区划内己方单位的**血量与士气回满**。
+##
+## 口径（数据驱动：代码不写死是哪个派系 / 哪条科技）：
+##   · 「转为己方」= `zones.last_conversions` 里 `to` 那一方**启用了** `zone_convert_restore`；
+##     由敌方 / 中立转过来都算，盟友转过来也算（需求原文「转为己方 / 友方」）；
+##   · 「该区划内」= 单位当前所在格属于那个区划（`zones.zone_at`）；
+##   · 回满 = `hp = hp_max` / `morale = morale_max`；
+##   · ⚠️ **跳过濒死（downed）的单位**：那是另一套状态机（再起冷却 / 无敌），
+##     硬把血拉满会绕过它。
+func _apply_zone_conversion_restore() -> void:
+	if zones == null or zones.last_conversions.is_empty():
+		return
+	for item in zones.last_conversions:
+		var d: Dictionary = item
+		var to := String(d.get("to", ""))
+		if to == "" or not tech_restore_on_convert(to):
+			continue
+		var zv: Variant = d.get("zone", null)
+		if typeof(zv) != TYPE_DICTIONARY:
+			continue
+		var zid := int((zv as Dictionary).get("id", -1))
+		if zid < 0:
+			continue
+		var healed := 0
+		for u in units:
+			if u == null or not u.alive or u.downed:
+				continue
+			if String(u.faction) != to:
+				continue
+			var uz = zones.zone_at(int(u.tx), int(u.ty))
+			if typeof(uz) != TYPE_DICTIONARY:
+				continue
+			if int((uz as Dictionary).get("id", -2)) != zid:
+				continue
+			u.hp = u.hp_max
+			u.morale = u.morale_max
+			healed += 1
+		if healed > 0:
+			# 事件：给界面播一句提示（视图按类型翻中文，逻辑只发数据）
+			push_event({"type": "tech_zone_restore", "zone": zid, "faction": to,
+				"count": healed})
 
 
 ## ★★ 某一方**黄金净收入**（每秒）= 产出 − 科技金耗。
@@ -5317,12 +5731,22 @@ func _tick_upkeep(dt: float) -> void:
 	_upkeep_food_rate.clear()
 	_tech_gold_rate.clear()
 	# 0) 一次分桶：阵营 → 本帧的维护费（粮/秒）。O(单位数)，不是 O(阵营数 × 单位数)。
+	# ★★ 2026.11：派系科技在这里生效（屯田制）：
+	#   · `tech_upkeep_mult` —— 这一方的全局倍率（现在没有科技用它，留给以后）；
+	#   · `tech_upkeep_idle_exempt` —— **脱战**的单位不计费。
+	#     「脱战」用的是**招募那一套判据**（`is_out_of_combat()`：连续 N 秒没有目标、
+	#     且没挨过打）—— 与「脱战才能继续招募」是同一个定义，不是另写一个。
 	var upkeep_rate: Dictionary = {}
 	for u in units:
 		if u == null or not u.alive:
 			continue
 		var uf := String(u.faction)
-		upkeep_rate[uf] = float(upkeep_rate.get(uf, 0.0)) + cfg.unit_upkeep_of(u.unit_type)
+		var per_s := cfg.unit_upkeep_of(u.unit_type) * tech_upkeep_mult(uf)
+		if per_s <= 0.0:
+			continue
+		if tech_upkeep_idle_exempt(uf) and is_out_of_combat(u):
+			continue                     # 屯田制：脱战不耗粮
+		upkeep_rate[uf] = float(upkeep_rate.get(uf, 0.0)) + per_s
 	# 1) 逐个「有钱包」的阵营结算（三条来源与加收入那一段**逐条对应**，不要多也不要少）
 	var done: Dictionary = {}
 	#   本机席位（观战者没有本地钱包 —— `resources` 只是被观察 AI 钱包的显示别名）
@@ -5484,13 +5908,16 @@ func tick(dt: float) -> Array:
 	# 1) 区块占领（占位规则）
 	var _t_zones := _prof()
 	var _t_zu := _prof()
-	zones.update(cfg, dt, units, factions)
+	# ★★ 2026.11：**占领时间**的派系科技加成（「速战速决」−20%）按阵营各传一份。
+	var capture_mults: Dictionary = {}
+	for f in seat_tech_effects.keys():
+		capture_mults[String(f)] = tech_capture_time_mult(String(f))
+	zones.update(cfg, dt, units, factions, capture_mults)
 	# ★★ 2026.10.28（诊断）：把 `zones` 这一段再拆开 —— 它包含「占领读条 / 人口累加 /
 	#   归属刷新」三件事，只看一个总数没法判断该优化哪一件。
 	_prof_done("z/update", _t_zu)
 
-	# 1.5) ★ 区划人口：每个区块各算各的，只按时间涨、不消耗（用户需求）。
-	#      与占领**无关**，也不进 HUD 的资源 —— 点开某个区划的中心能看它自己的人口。
+	# 1.5) ★ 区划人口：每个区块各算各的，只按时间涨、不消耗（用户需求）。	#      与占领**无关**，也不进 HUD 的资源 —— 点开某个区划的中心能看它自己的人口。
 	#      ★ 科技「区划人口产量 +10%」加的是**己方占领区划**的自然增长速度
 	#        （用户确认的口径：production.population × 地块数），只影响涨得多快，
 	#        上限 population_cap 不变。
@@ -5612,6 +6039,13 @@ func tick(dt: float) -> Array:
 	var _t_morale := _prof()
 	MoraleRes.tick_all(self, cfg, dt)
 	_prof_done("morale", _t_morale)
+	# ★★ 2026.11：「势如破竹」—— 区划**刚刚**转为己方的那一刻，区内己方单位血量与士气回满。
+	#   ⚠️ 必须放在**士气结算之后**：放在 zone 那一段（第 1 步）的话，这一帧后面的
+	#     `MoraleRes.tick_all` 会立刻按战场局势把「刚回满的士气」重新算回去，
+	#     表现成「回了但立刻又掉」（实测就是这样，士气断言一直红）。
+	var _t_conv := _prof()
+	_apply_zone_conversion_restore()
+	_prof_done("zone_convert", _t_conv)
 	var _t_units := _prof()
 	# ★ `profile_on` 在这里读一次：单位循环里每单位再读一次是动态属性查找（1000 单位 = 每帧 1000 次）。
 	#   细分计时（`units/combat` / `units/reclaim` / `units/step` / `u/timers` / `u/acquire`）
@@ -6317,6 +6751,22 @@ func retinue_of(leader_id: String, alive_only: bool = true) -> Array:
 			continue
 		out.append(u)
 	return out
+
+
+## ★★ 2026.11：**这个单位所在的队伍有几个人**（含队长本人；孤家寡人 = 1）。
+##
+## 用于王朝科技「军形有势」：部队中每个单位给全队 +2% 攻击 ⇒ 加成 = 人数 × 2%。
+## ★ 队长自己也吃（它数的是**整队**，不是它自己那一个）。
+## ★ 与 AI 的 `AiArmy.team_total` 不是一件事：那个是**控制器的战术视图**（含读条中的），
+##   这里是**战场事实**（只数活着的、且不含读条队列）。
+## ⚠️ 委托 `retinue_of`（O(单位数)）—— 只在**开火那一刻**调一次，不在每帧路径上。
+func squad_size_of(u) -> int:
+	if u == null:
+		return 1
+	var lid := String(u.leader_id)
+	if lid == "":
+		lid = String(u.id)           # 队长：数它自己 + 它辖下的兵
+	return 1 + retinue_of(lid, true).size()
 
 
 ## 资源文本（HUD 用；保留一位小数）

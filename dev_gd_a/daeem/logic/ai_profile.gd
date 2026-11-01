@@ -1,11 +1,14 @@
-## ai_profile.gd —— 阵营指挥官 AI 的「难度 + 配置 + 阵营覆盖」合并（纯函数）。
+## ai_profile.gd —— 阵营指挥官 AI 的「难度 + 配置 + 派系 + 阵营覆盖」合并（纯函数）。
 ##
 ## 产出是一个**扁平可读的字典**：控制器只读它，不再每帧下潜 JSON。
 ## 合并顺序（后者覆盖前者）：
 ##   1. 代码里的 DEFAULTS（防 config.json 缺键 / 老存档没有这一段）
 ##   2. config.json 的 `ai.commander`
-##   3. 关卡 / 地图那一方的 `commander_ai`
-##   4. 运行时覆盖（`world.ai_profiles[faction]`；合作 AI 队友的难度从这里进）
+##   3. ★★ 2026.11：**这一方所属派系的 `commander_ai`**（`config.clan.list[].commander_ai`）
+##      —— 「每个派系都要有一套不同倾向的 commander AI」就落在这一层：
+##      编成 / 队伍职能 / 进攻性 / 经济储备 / 建造侧重全都可以逐派系覆写。
+##   4. 关卡 / 地图那一方的 `commander_ai`
+##   5. 运行时覆盖（`world.ai_profiles[faction]`；合作 AI 队友的难度从这里进）
 ##
 ## ★ 难度是「参数包」：只改收入 / 节奏 / 上限 / 初始资源，不改单位数值。
 ## ★ 这个文件不读 world、不碰节点；测试可以直接调 `build()`。
@@ -124,7 +127,9 @@ const DEFAULTS := {
 		"wall_border_keep_slots": 16,
 		"wall_border_require_armed_generals": true,
 		"tower_frontier_bonus": 4.0,
-		"base_upgrade_priority": 10.0,
+		# ★★ 2026.11：≥ 10 ⇒ 升本可以动用「补员预留」那部分钱（见 ai_build._try_base_upgrade）。
+		#   10 -> 14：这一轮口径是「提高 command AI 升本的权重」（三本门槛已经降到 2 将）。
+		"base_upgrade_priority": 14.0,
 		"tech_priority": [],
 		# ★★ 2026.10.30：资源建筑（粮田 / 房屋 / 矿脉）。
 		#   AI 在没有光杆将领、己方区划没有被打时，会用补员预算之外的余钱补经济建筑。
@@ -280,11 +285,19 @@ const DEFAULTS := {
 
 ## 建一份「这一方这一局」的指挥官参数。
 ##
-## @param cfg          Config（读 `ai_commander_cfg()`）
+## @param cfg          Config（读 `ai_commander_cfg()` / `clan_commander_ai()`）
 ## @param faction      阵营 id（只用于报错 / 调试）
 ## @param roster       `world.ai_roster_cfg`（找这一方的 `commander_ai` 覆盖）
 ## @param overrides    `world.ai_profiles`（按阵营的运行时覆盖）
-static func build(cfg, faction: String, roster: Array, overrides: Dictionary) -> Dictionary:
+## @param clan         ★★ 2026.11：这一方所属的**派系 id**（`world.clan_of(faction)`）。
+##        空串 = 不套派系块（老调用 / 测试 / 派系表里没写给这一档时，行为逐位不变）。
+##
+## ★ 派系块的位置：**全局 config 之上、关卡覆盖之下** ——
+##   这样「派对局里临时调某一家」还是能盖掉派系倾向，而派系倾向又能盖掉全局默认。
+## ★ 派系块里**不认 `difficulty`**：难度只由 关卡/运行时覆盖 + `config.ai.commander.difficulty`
+##   决定（难度是「这一局多难」，不是「这个派系的性格」）。
+static func build(cfg, faction: String, roster: Array, overrides: Dictionary,
+		clan: String = "") -> Dictionary:
 	var base: Dictionary = _deep(DEFAULTS)
 	var raw: Dictionary = {}
 	if cfg != null and cfg.has_method("ai_commander_cfg"):
@@ -292,6 +305,14 @@ static func build(cfg, faction: String, roster: Array, overrides: Dictionary) ->
 		if typeof(v) == TYPE_DICTIONARY:
 			raw = v
 	base = _merge(base, raw)
+
+	# ★★ 2026.11：派系倾向（config.json 的 `clan.list[].commander_ai`）。
+	if clan != "" and cfg != null and cfg.has_method("clan_commander_ai"):
+		var cv: Variant = cfg.clan_commander_ai(clan)
+		if typeof(cv) == TYPE_DICTIONARY and not (cv as Dictionary).is_empty():
+			var cprof: Dictionary = (cv as Dictionary).duplicate(true)
+			cprof.erase("difficulty")      # 见上面：难度不归派系管
+			base = _merge(base, cprof)
 
 	# 关卡 / 地图那一方的覆盖
 	var entry_ov: Dictionary = {}

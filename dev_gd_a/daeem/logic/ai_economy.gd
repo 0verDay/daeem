@@ -63,16 +63,18 @@ static func float_excess(ai) -> bool:
 
 ## 当前可招兵种里最便宜的一单（food/gold 各取最小值；没有可招 → 空字典）。
 ## ★ 只用于「预算够不够」的粗判，不决定具体招谁（具体选兵在控制器里按编成权重）。
+## ★★ 2026.11：招募表**按派系**（王朝 / 帝国各有各的表）—— 必须问**自己那一方**的那张。
 static func cheapest_cost(ai) -> Dictionary:
 	var best: Dictionary = {}
 	var best_sum := INF
-	for item in ai.world.recruit_list():
+	var f := String(ai.faction)
+	for item in ai.world.recruit_list(f):
 		if typeof(item) != TYPE_DICTIONARY:
 			continue
 		var kind := String((item as Dictionary).get("kind", ""))
-		if kind == "" or not ai.world.unit_recruit_unlocked(ai.faction, kind):
+		if kind == "" or not ai.world.unit_recruit_unlocked(f, kind):
 			continue
-		var c: Dictionary = ai.world.recruit_cost(kind)
+		var c: Dictionary = ai.world.recruit_cost(kind, f)
 		var s := float(c.get("food", 0.0)) + float(c.get("gold", 0.0))
 		if s < best_sum:
 			best_sum = s

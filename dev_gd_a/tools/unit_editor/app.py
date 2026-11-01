@@ -45,15 +45,12 @@ from .model import (
     LEVEL_ATTACK_FIELDS,
     LEVEL_FIELDS,
     RECRUIT_FIELDS,
-    TECH_EFFECTS,
-    TECH_FIELDS,
     UNIT_FIELDS,
     Building,
     ConfigModel,
     Field,
     General,
     ModelError,
-    Tech,
     Unit,
     fmt_number,
 )
@@ -87,11 +84,13 @@ UI = {
     "bad": "#d64545",
 }
 
-#: 三个页签：key → （按钮文字，状态栏提示）
+#: 两个页签：key → （按钮文字，状态栏提示）
+#: ★★ 2026.11：**「科技」页已移除**（用户口径：「把单位编辑器中的科技编辑界面去掉」）——
+#:   科技的两张表（`tech.list` / `tech.clan_list`）、每派 9 个槽位（`clan.list[].tech`）、
+#:   以及 `tech.max_active` / 每阶金耗，全部在 `tools/buff_editor` 里编辑。
 PAGES: Tuple[Tuple[str, str, str], ...] = (
     ("unit", "单位", "单位页：左边上面是兵种、下面是开局三位将领；点一行改右边的数值"),
     ("building", "建筑", "建筑页：造价 / 建造时间 / 血量 / 能不能攻击 / 每一级的升级数值"),
-    ("tech", "科技", "科技页：名字与属性加成（这一版不支持新增科技）"),
 )
 
 #: 兵种列表（左上 Treeview）的列：key → （表头，列宽）。
@@ -484,7 +483,7 @@ class EditorApp:
         self.model = model
         self.project_dir = Path(project_dir) if project_dir else None
         self.page = "unit"
-        #: 当前选中的东西：("unit", id) / ("general", index) / ("building", id) / ("tech", index)
+        #: 当前选中的东西：("unit", id) / ("general", index) / ("building", id)
         self.selection: Optional[Tuple[str, Any]] = None
         self._suppress = False            # 重建期间别触发 FocusOut 提交
         self._editing = False             # 正在提交（防止递归）
@@ -864,10 +863,8 @@ class EditorApp:
         try:
             if self.page == "unit":
                 self._build_unit_lists()
-            elif self.page == "building":
-                self._build_building_list()
             else:
-                self._build_tech_list()
+                self._build_building_list()
         finally:
             self._suppress = False
         self._select_current()
@@ -976,30 +973,9 @@ class EditorApp:
         tk.Label(bar, text="（区划中心不是建筑：它是中立障碍，不在这里）", bg=UI["bg"],
                  fg=UI["text_dim"], font=("Microsoft YaHei UI", 8)).pack(side="left", padx=6)
 
-    # ---- 科技页 --------------------------------------------------------
-
-    def _build_tech_list(self) -> None:
-        head = tk.Frame(self.list_host, bg=UI["bg"])
-        head.pack(fill="x", padx=10, pady=(8, 0))
-        tk.Label(head, text="科技", bg=UI["bg"], fg=UI["accent"],
-                 font=("Microsoft YaHei UI", 10, "bold")).pack(side="left")
-        tk.Label(head, text="　同一时间最多启用", bg=UI["bg"], fg=UI["text_dim"]).pack(side="left")
-        self.max_active_var = tk.StringVar(value=str(self.model.max_active()))
-        entry = ttk.Entry(head, textvariable=self.max_active_var, width=5)
-        entry.pack(side="left", padx=4)
-        entry.bind("<Return>", lambda e: self._commit_max_active())
-        entry.bind("<FocusOut>", lambda e: self._commit_max_active())
-        tk.Label(head, text="条（3×3 九格里的名额）", bg=UI["bg"], fg=UI["text_dim"],
-                 font=("Microsoft YaHei UI", 8)).pack(side="left")
-        self.tech_tree = self._tree(self.list_host, [
-            ("name", "名称", 130), ("line", "小字", 120), ("effect", "加成", 200),
-        ], height=12)
-        for tech in self.model.techs():
-            self.tech_tree.insert("", "end", iid="t:%d" % tech.index, text=tech.id,
-                                  values=(tech.name, tech.line, tech.effect_label))
-        tk.Label(self.action_bar, text="这一版不支持新增 / 删除科技（需求：暂时不用）。",
-                 bg=UI["bg"], fg=UI["text_dim"],
-                 font=("Microsoft YaHei UI", 8)).pack(side="left")
+    # ★★ 2026.11：原来这里还有「科技页」（`_build_tech_list` / `_build_tech_form` /
+    #   `_commit_max_active`）—— 已整块删掉，用户口径：「把单位编辑器中的科技编辑界面去掉」。
+    #   科技现在只在 `tools/buff_editor` 里编辑（两张表 + 每派槽位 + 全局上限 / 每阶金耗）。
 
     # ---- 选中 ----------------------------------------------------------
 
@@ -1014,8 +990,6 @@ class EditorApp:
             tree, iid = getattr(self, "general_tree", None), "g:%d" % key
         elif kind == "building":
             tree, iid = getattr(self, "building_tree", None), "b:" + str(key)
-        elif kind == "tech":
-            tree, iid = getattr(self, "tech_tree", None), "t:%d" % key
         if tree is None or iid is None:
             self.selection = None
             return
@@ -1045,8 +1019,6 @@ class EditorApp:
             new_selection = ("general", int(iid[2:]))
         elif iid.startswith("b:"):
             new_selection = ("building", iid[2:])
-        elif iid.startswith("t:"):
-            new_selection = ("tech", int(iid[2:]))
         else:
             return
         # ★★ 重建列表时 `_select_current()` 会给 Treeview 设一次选中，而 tk 的
@@ -1096,16 +1068,11 @@ class EditorApp:
                     self._build_unit_form(self.model.unit(self.selection[1]))
                 else:
                     self._build_general_form(self.model.general(int(self.selection[1])))
-            elif self.page == "building":
+            else:
                 if not self.selection:
                     self._empty_hint("左边点一个建筑；没有想要的就在下面「＋ 新建建筑」。")
                 else:
                     self._build_building_form(self.model.building(self.selection[1]))
-            else:
-                if not self.selection:
-                    self._empty_hint("左边点一条科技，改它的名字与加成数值。")
-                else:
-                    self._build_tech_form(self.model.tech(int(self.selection[1])))
             self.sidebar.update_idletasks()
             self.sidebar_canvas.configure(scrollregion=self.sidebar_canvas.bbox("all"))
             # ★ 只有「换了内容/换了一个人」才回到顶部；改一个数值时由
@@ -1500,69 +1467,8 @@ class EditorApp:
         self._hint(parent, "= 血量 %s × %s = **%s**" % (fmt(b.hp_max), fmt(mult),
                                                       fmt(b.hp_max * mult)))
 
-    # ---- 科技表单 -------------------------------------------------------
-
-    def _build_tech_form(self, tech: Tech) -> None:
-        self._section("科技　%s" % tech.id)
-        sec = self._section("文案")
-        for field in TECH_FIELDS:
-            self._entry_row(sec, field, tech.field(field.key),
-                            lambda v, t=tech, f=field: self.model.set_tech(t.index, f.key, v))
-        esec = self._section("属性加成", "填数字 = 有这条加成；清掉 = 这条加成不要了")
-        for key, label, hint in TECH_EFFECTS:
-            field = Field(key, label, "float", hint)
-            value = tech.effect_value(key)
-            if value is None:
-                row = tk.Frame(esec, bg=UI["panel"])
-                row.pack(fill="x", pady=2)
-                tk.Label(row, text=label, bg=UI["panel"], fg=UI["text_dim"], width=13,
-                         anchor="w").pack(side="left")
-                var = tk.StringVar(value="")
-                entry = ttk.Entry(row, textvariable=var)
-                entry.pack(side="left", fill="x", expand=True, padx=(4, 0))
-                tk.Label(row, text="（没有这条）", bg=UI["panel"], fg=UI["text_dim"],
-                         font=("Microsoft YaHei UI", 8)).pack(side="left", padx=4)
-
-                def add(_event=None, t=tech, k=key, v=var):
-                    number = parse_number(v.get())
-                    if number is None:
-                        self.status("✗ %s 要填一个数字" % k)
-                        return
-                    self._mutate("加上加成 %s = %s" % (k, number),
-                                 lambda: self.model.set_tech_effect(t.index, k, number))
-
-                entry.bind("<Return>", add)
-                entry.bind("<FocusOut>", add)
-                entry.commit_action = add              # 见 _entry_row 里的说明（测试直通）
-                self._hint(esec, hint)
-            else:
-                row = tk.Frame(esec, bg=UI["panel"])
-                row.pack(fill="x", pady=2)
-                tk.Label(row, text=label, bg=UI["panel"], fg=UI["text"], width=13,
-                         anchor="w").pack(side="left")
-                var = tk.StringVar(value=fmt(value))
-                entry = ttk.Entry(row, textvariable=var)
-                entry.pack(side="left", fill="x", expand=True, padx=(4, 4))
-
-                def commit(_event=None, t=tech, k=key, v=var):
-                    number = parse_number(v.get())
-                    if number is None:
-                        self.status("✗ %s 要填一个数字 —— 原值没动" % k)
-                        return
-                    self._mutate("%s → %s" % (k, number),
-                                 lambda: self.model.set_tech_effect(t.index, k, number))
-
-                entry.bind("<Return>", commit)
-                entry.bind("<FocusOut>", commit)
-                entry.commit_action = commit           # 见 _entry_row 里的说明（测试直通）
-                self._button(row, "删掉这条", lambda t=tech, k=key: self._mutate(
-                    "删掉加成 %s" % k,
-                    lambda: self.model.set_tech_effect(t.index, k, None)),
-                    padx=6, pady=1, bg=UI["danger_btn"], fg=UI["danger_fg"],
-                    activebackground=UI["danger_btn_hover"],
-                    font=("Microsoft YaHei UI", 8)).pack(side="left")
-                self._hint(esec, hint)
-        self._hint(self.sidebar, "这一版不支持新增 / 删除科技（需求：暂时不用）。")
+    # ★★ 2026.11：科技表单（`_build_tech_form`）已删 —— 科技只在
+    #   `tools/buff_editor` 里编辑。见 PAGES 上面那条说明。
 
     # ==================================================================
     # 改动 / 撤销 / 保存
@@ -1707,23 +1613,6 @@ class EditorApp:
             self.selection = None
             self._sidebar_reset_pending = True
             self.refresh_all()
-
-    def _commit_max_active(self) -> None:
-        if self._suppress or self._editing:
-            return
-        value = parse_number(self.max_active_var.get())
-        if value is None or int(value) < 1:
-            self.status("✗ 「最多启用几条」要填一个 ≥ 1 的整数 —— 原值没动")
-            self.max_active_var.set(str(self.model.max_active()))
-            return
-        if int(value) == self.model.max_active():
-            return
-        self._editing = True
-        try:
-            self._mutate("最多同时启用 %d 条科技" % int(value),
-                         lambda: self.model.set_max_active(int(value)))
-        finally:
-            self._editing = False
 
 
 # ======================================================================

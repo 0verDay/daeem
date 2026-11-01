@@ -389,6 +389,7 @@ func faction_config(fid: String) -> Dictionary:
 	return {
 		"id": fid, "ai": AI_NONE, "base": Vector2i(-1, -1),
 		"start_food": null, "start_gold": null,
+		"clan": "",
 		"attack_target": null, "garrison_ai": null, "reddot_ai": null,
 		"spawn_region": null, "declared": false,
 	}
@@ -1274,6 +1275,17 @@ func _ck_level_factions() -> void:
 		var f2 := String((b as Dictionary).get("owner", ""))
 		if f2 != "" and not known.has(f2):
 			_add(SEV_BLOCK, "faction_unknown", "阵营「%s」没有定义" % f2)
+	# ★★ 2026.11：派系（`factions[].clan`）—— 写了一个配置里没有的 id 是**警告**而不是拦死：
+	#   运行时 `world.clan_of()` 会退回 `clan.default_id`（原生），游戏照常能开；
+	#   但那显然不是设计师想要的，所以要在关卡校验里报出来。
+	for e in faction_meta:
+		var cid := String((e as Dictionary).get("clan", "")).strip_edges()
+		if cid == "":
+			continue
+		if cfg == null or not cfg.clan_exists(cid):
+			_add(SEV_WARN, "clan_unknown",
+				"阵营「%s」的派系「%s」不存在（会退回默认派系）"
+					% [String((e as Dictionary).get("id", "")), cid])
 
 
 func _ck_attack_target(fid: String, spec: Variant) -> void:
@@ -1520,6 +1532,10 @@ static func _read_level_factions(v: Variant) -> Array:
 			#   `resource_mult` 仍然删掉（AI 没有独立的经济倍率）。
 			"start_food": _read_optional_number(d.get("start_food", null)),
 			"start_gold": _read_optional_number(d.get("start_gold", null)),
+			# ★★ 2026.11：这一方的**派系**（config 的 `clan.list[].id`）。
+			#   空串 = 没写 ⇒ 运行时用 `clan.default_id`（原生）。
+			#   ★ 派系只决定「这一方能招哪些兵」，与阵营的敌我关系无关。
+			"clan": String(d.get("clan", "")).strip_edges(),
 			# `faction_ai` / `general_ai`（旧的两套 AI 参数）已删；改成
 			# `garrison_ai`（阵地性按阵营覆盖）/ `reddot_ai`（红点性按阵营覆盖）/
 			# `spawn_region`（红点生成区域）。

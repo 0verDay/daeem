@@ -128,8 +128,18 @@ static func _try_base_upgrade(ai) -> bool:
 		return false
 	var b = pick["b"]
 	var cost: Dictionary = pick.get("cost", {})
-	# ★ 资源顺序：部队发展（生产预留）> 升本 > 其它建筑。
-	if not _defense_afford(ai, cost):
+	var build_cfg: Dictionary = ai.profile.get("build", {})
+	# ★★★ 2026.11：`build.base_upgrade_priority` 以前是**只有定义、没人读**的死字段。
+	#   现在它是真的权重，管的是「能不能动用补员预留」：
+	#     · 默认口径（`_defense_afford`）= 只花「扣完补员预算之后的余钱」；
+	#     · priority ≥ 10 ⇒ 升本**可以吃进补员预留**（只要库里的钱够），
+	#       因为大本营等级同时决定 将领上限 / 同时科技数 / 科技阶 / 三本兵 ——
+	#       晚升一级的代价比少买两个兵大得多。
+	#   ★ 只在「够不上升本」时才回退到普通口径，不会因此少花别的钱。
+	var ok_money := _defense_afford(ai, cost)
+	if not ok_money and float(build_cfg.get("base_upgrade_priority", 10.0)) >= 10.0:
+		ok_money = AiEconomyRes.can_afford(ai, cost)
+	if not ok_money:
 		return false
 	if not CommandRes.apply(ai.world, ai.cfg, {
 			"kind": "building_upgrade", "tx": b.tx, "ty": b.ty, "faction": ai.faction}):

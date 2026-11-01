@@ -1211,7 +1211,11 @@ func _rebuild_card() -> void:
 			#    不足 3 个的格子留空；不可建造的格子 `ready = false`（置灰 + 悬停写原因）。
 			entries = _build_entries()
 		PageTabsRes.PAGE_UNIT:
-			entries = _recruit_entries("recruit", "recruit.list")
+			# ★★ 2026.11：单位页读的是**这一方派系**的招募表（王朝 / 帝国与原生是两张表），
+			#    不再写死 config 的 `recruit.list`。派系解析与「原生回落」都在 world 里
+			#    （见 world.clan_of / cfg.clan_recruit_list）。
+			entries = _recruit_entries("recruit",
+				world.recruit_list(world.my_faction) if world != null else [])
 		PageTabsRes.PAGE_RECRUIT:
 			# ★★ 本轮起招募页是**池子抽出来的一手**（不是 config 里三条写死的卡）：
 			#    内容 = world.general_recruit_slots()，冷却中整页置灰。
@@ -1865,8 +1869,11 @@ func _build_entry(e: Dictionary, bid: String, tier: int) -> Dictionary:
 	}
 
 
-## 把一张招募表（recruit.list / recruit.zone.list）翻成命令卡的条目。
+## 把一张招募表（本派系的单位表 / 全局的区划招将表）翻成命令卡的条目。
 ## @param entry_type 抛给 hud._on_card_entry 的动作类型（"recruit" = 排进将领 / "zone_recruit" = 排进区划）
+## @param list       ★★ 2026.11：**表本身**由调用方给（不再让本函数自己去 config 按路径取）——
+##                   单位页要的是「这一方派系」的表（`world.recruit_list(my_faction)`），
+##                   而派系解析在 world / config 那一侧，视图不该自己拼路径。
 ##
 ## ★★ 单位页现在是**三行按大本营等级解锁**（需求）：
 ##   `tier` = 行号 = 需要的大本营等级。这里按 tier 把条目摆到
@@ -1875,11 +1882,10 @@ func _build_entry(e: Dictionary, bid: String, tier: int) -> Dictionary:
 ##
 ## ★ 为什么不在 config 的 list 里塞空占位条目：那会凭空多出「兵种」，
 ##   单位编辑器 / 招募队列 / 测试都会把它当真。空格子只在**视图这一层**存在。
-func _recruit_entries(entry_type: String, cfg_path: String) -> Array:
+func _recruit_entries(entry_type: String, list: Variant) -> Array:
 	var slots: Array = []
 	for _i in UiLayoutRes.CARD_SLOTS:
 		slots.append({})
-	var list: Variant = cfg.get_path_value(cfg_path) if cfg != null else null
 	if typeof(list) != TYPE_ARRAY:
 		return slots
 	# 每一行下一个空位（缺省 = 该行第一格）—— 同一行按 config 顺序从左到右。
@@ -1903,7 +1909,11 @@ func _recruit_entries(entry_type: String, cfg_path: String) -> Array:
 			# ★★ 悬停详情要用的字段，一并带在条目里（见 `_hover_recruit`）：
 			#   两张招募表（recruit.list / recruit.zone.list）字段名一样，
 			#   所以「单位页」与「招募页」的详情共用同一段代码，不各写一份。
-			"cost": e.get("cost", {}),
+			#   ★★ 2026.11：单位页的价钱走 `world.recruit_cost()` —— 派系科技会改价
+			#     （礼乐：金转粮 / 圈地制：金打七折），**显示价必须与实扣价同源**，
+			#     否则悬停写 50 金、实际扣 35 金。区划招将页不受科技影响，仍是原值。
+			"cost": world.recruit_cost(String(e.get("kind", "")), world.my_faction) \
+				if (world != null and entry_type == "recruit") else e.get("cost", {}),
 			"train_sec": e.get("train_sec", 0.0),
 			"population_cost": e.get("population_cost", 0),
 			"tier": tier,
@@ -3500,6 +3510,13 @@ func _attack_bonus_lines(u) -> Array[String]:
 	if float(u.morale_aura_rate) > 0.0:
 		out.append("士气光环：周围 %s 格友军 +%s/秒（多辆不叠加）" % [
 			_fmt_num(u.morale_aura_radius), _fmt_num(u.morale_aura_rate)])
+	# ★★ 2026.11：击退 / 直线穿透（王朝投石车、帝国扭力弩炮）。
+	#   两条都只在**配了**的兵种上出现（0 / false ⇒ 一个字都不加，老文案逐位不变）。
+	if float(u.knockback_distance) > 0.0 or float(u.knockback_stun_sec) > 0.0:
+		out.append("击退：命中推开 %s 格、眩晕 %s 秒（稳定免疫）" % [
+			_fmt_num(u.knockback_distance), _fmt_num(u.knockback_stun_sec)])
+	if bool(u.pierce):
+		out.append("直线穿透：沿弹道命中射程内的所有敌人（各结算一次）")
 	if not bool(u.can_attack):
 		out.append("支援单位：不攻击、不自动索敌")
 	return out
@@ -3518,6 +3535,12 @@ func _defense_bonus_lines(u) -> Array[String]:
 	# ★★ 兵种特性：对远程减伤（只有写了 traits.ranged_reduction 的兵种才有）
 	if float(u.ranged_damage_reduction) > 0.0:
 		out.append("对远程减伤 +%d%%" % int(round(float(u.ranged_damage_reduction) * 100.0)))
+	# ★★ 2026.11：对**近战**减伤（「远近免伤+」的另一半）与**稳定**。
+	#   顺序放在远程那条之后：老单位的文案数组逐位不变（它们这两条都是 0 / false）。
+	if float(u.melee_damage_reduction) > 0.0:
+		out.append("对近战减伤 +%d%%" % int(round(float(u.melee_damage_reduction) * 100.0)))
+	if bool(u.knockback_immune):
+		out.append("稳定：免疫击退与眩晕")
 	# ★★ 将领特性：近战 / 远程抵抗（两者互斥，同一单位只会有一条）。
 	#   标「（将）」是因为它们与上面那条、以及士气免伤**加算**后一起封顶。
 	if float(u.aura_melee_reduction) > 0.0:

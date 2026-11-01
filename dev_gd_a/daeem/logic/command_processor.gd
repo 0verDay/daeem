@@ -578,7 +578,10 @@ static func apply_build(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 		return false
 	var def_v = cfg.get_path_value("building.%s" % type)
 	var def: Dictionary = def_v if typeof(def_v) == TYPE_DICTIONARY else {}
-	var cost: Dictionary = def.get("cost", {})
+	# ★★ 2026.11：这里原来过一遍「科技金耗折扣」；那条效果已删（圈地制不含折扣），
+	#   建造按 config 原价扣。
+	var raw_cost: Variant = def.get("cost", {})
+	var cost: Dictionary = raw_cost if typeof(raw_cost) == TYPE_DICTIONARY else {}
 	# ★ 钱从**下单那一方**的池子里出（合作模式：客机花的不是房主的钱）。
 	#   池子为 null = 这一方没有资源库 = 资源无限（见 world.resource_pool_for）。
 	if not EconomyRes.try_spend(cfg, world.resource_pool_for(owner), cost):

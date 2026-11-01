@@ -36,9 +36,9 @@ func _test_config_table(cfg) -> void:
 	eq(cfg.upgrade_limit("base", 1, "max_generals", -1), 2, "★ 1 级最多 2 名将领")
 	eq(cfg.upgrade_limit("base", 2, "max_generals", -1), 5, "★ 2 级最多 5 名将领")
 	eq(cfg.upgrade_limit("base", 3, "max_generals", -1), 6, "★ 3 级最多 6 名将领")
-	# ★★ 门槛与上限是两件事（升 2 本 2 将 / 升 3 本 4 将），读目标行的 need_generals。
-	eq(cfg.upgrade_need_generals("base", 1), 2, "★ 升 2 本要 2 名将领")
-	eq(cfg.upgrade_need_generals("base", 2), 4, "★ 升 3 本要 4 名将领")
+	# ★★ 门槛与上限是两件事（升 2 本 0 将 / 升 3 本 2 将），读目标行的 need_generals。
+	eq(cfg.upgrade_need_generals("base", 1), 0, "★★ 升 2 本不要将领门槛（2026.11）")
+	eq(cfg.upgrade_need_generals("base", 2), 2, "★★ 升 3 本要 2 名将领（2026.11 门槛 4 → 3 → 2）")
 	eq(cfg.upgrade_need_generals("base", 3), 0, "已经满级 → 没有门槛")
 	eq(cfg.upgrade_limit("base", 1, "retinue_cap_bonus", -1), 0, "1 级编制 +0")
 	eq(cfg.upgrade_limit("base", 2, "retinue_cap_bonus", -1), 2, "★ 2 级编制 +2")

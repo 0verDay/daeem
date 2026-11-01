@@ -1405,11 +1405,12 @@ func _test_base_build_priority(cfg) -> void:
 		ok(false, "（前提）有基地")
 		return
 	# 1) 钱够：先升大本营，这一 tick 不造塔 / 墙。
-	ok(AiBuildRes._base_upgrade_candidate(c).is_empty(),
-		"★★ 将领不足 2 时 AI 不把升二本当作候选")
+	# ★★ 2026.11：二本取消将领门槛 ⇒ 1 将也能升二本；三本门槛才是 2 将。
+	ok(not AiBuildRes._base_upgrade_candidate(c).is_empty(),
+		"★★ 1 将时 AI 就把升二本当作候选（二本已无将领门槛）")
 	_ensure_ai_generals(w, "F1", 2)
 	ok(not AiBuildRes._base_upgrade_candidate(c).is_empty(),
-		"★★ 2 将后 AI 才把升二本当作候选")
+		"★★ 2 将后仍是候选")
 	w.ai_faction_resources["F1"] = {"food": 6000.0, "gold": 6000.0}
 	var towers0 := AiBuildRes._tower_count(c)
 	var walls0 := AiBuildRes._wall_count(c)

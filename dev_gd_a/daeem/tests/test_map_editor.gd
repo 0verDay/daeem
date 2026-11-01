@@ -496,7 +496,10 @@ func _test_world_with_editor_map(cfg) -> void:
 	var ze: Dictionary = w.zones.zones[1]
 	eq(String(zw["name"]), "西境", "第 0 个区块是西境")
 	near(w.zones.population_cap_of(zw), 7.0, 1e-9, "★ 地图里填的上限被读进世界（7）")
-	near(w.zones.population_cap_of(ze), 1.0, 1e-9, "★ 没填的那一块按默认 1")
+	# ★★ 2026.11：没填的区块按**区划种类**取默认（人口区划 5、其余 3）——
+	#   这一块没写 `kind`，所以它是默认种类（population）⇒ 默认上限 5。
+	near(w.zones.population_cap_of(ze), 5.0, 1e-9,
+		"★★ 没填上限的区块按种类默认（没写 kind = 人口区划 → 5）")
 	zw["production"] = {"food": 0.0, "gold": 0.0, "population": 100.0}
 	w.tick(1.0)
 	near(w.zones.population_of(zw), 7.0, 1e-6, "★ 人口涨到地图给的上限就停住")

@@ -790,12 +790,27 @@ func _test_zone_population_cap(world, cfg) -> void:
 	z["production"] = {"food": 0.0, "gold": 0.0, "population": 10.0}
 	z["population"] = 0.0
 
+	# ★★ 2026.11：默认上限**按区划种类分档**（人口区划 5、其余 3）——
+	#   用户口径「所有区划的默认人口上限改为 3，人口区划的默认人口上限改为 5」。
 	z.erase("population_cap")
-	near(w.zones.population_cap_of(z), 1.0, 1e-9, "★ 地图没填上限 → 默认 1")
+	z["kind"] = "food"
+	near(w.zones.population_cap_of(z), 3.0, 1e-9, "★ 粮食区划没填上限 → 默认 3")
+	z["kind"] = "gold"
+	near(w.zones.population_cap_of(z), 3.0, 1e-9, "★ 黄金区划没填上限 → 默认 3")
+	z["kind"] = "population"
+	near(w.zones.population_cap_of(z), 5.0, 1e-9, "★★ 人口区划没填上限 → 默认 5")
+	# 直接钉住 config 的那两个数：改配置时这里立刻变红。
+	near(cfg.zone_population_cap_default, 3.0, 1e-9, "★ config：全局默认上限 = 3")
+	near(cfg.zone_population_cap_default_of_kind("population"), 5.0, 1e-9,
+		"★★ config：人口区划的默认上限 = 5")
+	near(cfg.zone_population_cap_default_of_kind("nope"), 3.0, 1e-9,
+		"未知种类退回全局默认 3")
+
+	z["kind"] = "food"
 	w.tick(1.0)
-	near(w.zones.population_of(z), 1.0, 1e-6, "★ 人口涨到上限（1）就停住")
+	near(w.zones.population_of(z), 3.0, 1e-6, "★ 人口涨到上限（3）就停住")
 	w.tick(5.0)
-	near(w.zones.population_of(z), 1.0, 1e-6, "★ 继续跑时间也不会超过上限")
+	near(w.zones.population_of(z), 3.0, 1e-6, "★ 继续跑时间也不会超过上限")
 
 	z["population_cap"] = 0.0
 	z["population"] = 0.0

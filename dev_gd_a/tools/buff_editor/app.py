@@ -261,6 +261,14 @@ def _apply_theme(root: tk.Tk) -> ttk.Style:
     style.map("Treeview",
               background=[("selected", sel_bg), ("disabled", alt)],
               foreground=[("selected", sel_fg), ("disabled", dim)])
+    # ★★ 2026.11：左栏那一棵（buff / 科技 列表）。行矮一点、字号小一点，
+    #   26 条才装得下；底色跟面板一致，看着还是「一栏列表」而不是一个表格。
+    style.configure("Side.Treeview", background=alt, fieldbackground=alt,
+                    foreground=text, bordercolor=panel, lightcolor=panel,
+                    darkcolor=panel, rowheight=24, borderwidth=0, font=FONT_SMALL)
+    style.map("Side.Treeview",
+              background=[("selected", sel_bg)],
+              foreground=[("selected", sel_fg)])
 
     style.configure("TScrollbar", background=line, troughcolor=panel, bordercolor=panel,
                     arrowcolor=dim, relief="flat", borderwidth=0)
@@ -367,7 +375,12 @@ class BuffEditorApp:
         self._building = False
         self._undo_stack: List[str] = []
         self._redo_stack: List[str] = []
-        self._sidebar_buttons: Dict[str, RButton] = {}
+        #: ★★ 2026.11：左栏改成 Treeview 之后，页面 id → 那一行的 iid（`b:<id>`）。
+        #: 原来的 `_sidebar_buttons`（id → 圆角按钮）已删 —— 那套「按钮塞进画布」
+
+        self._sidebar_items: Dict[str, str] = {}
+        #: Treeview 的 `<<TreeviewSelect>>` 会因为我们**自己**改选中而触发 ⇒ 用它防回环
+        self._suppress_side = False
 
         self.root.title("DAEEM buff 编辑器")
         self.root.geometry("1060x780")
@@ -426,19 +439,50 @@ class BuffEditorApp:
         body = tk.Frame(self.root, bg=UI["bg"])
         body.pack(fill="both", expand=True, padx=12, pady=(0, 8))
 
-        # ---- 左：buff 列表 ----
+        # ---- 左：列表（buff + 科技，★ 26 条起步 ⇒ 必须能滚） ----
         left = tk.Frame(body, bg=UI["panel"], width=210, padx=12, pady=12)
         left.pack(side="left", fill="y")
         left.pack_propagate(False)
-        ttk.Label(left, text="Buff 列表", style="Group.TLabel").pack(anchor="w")
+        ttk.Label(left, text="Buff / 科技", style="Group.TLabel").pack(anchor="w")
         ttk.Label(left, text="点一条 → 右边改它的全部数值", style="Hint.TLabel",
                   wraplength=180).pack(anchor="w", pady=(2, 10))
-        self._sidebar_host = tk.Frame(left, bg=UI["panel"])
-        self._sidebar_host.pack(fill="x")
-        ttk.Label(left, text="本工具只编辑 config.json 里\n已经存在的键。加新 buff 仍要先在\n"
-                             "游戏侧读它（见 README 第三节）。",
+        # ★★ 2026.11：条目从 1 条变成 26 条（士气 + 科技全局 + 22 条科技 + 2 张槽位表），
+        #   左边这栏**必须可滚** —— 不然窗口一矮，后面的科技就点不到了。
+        #   ★ 结构：底部提示先 pack（side=bottom），再 pack 列表（fill both）——
+        #     反过来会把提示挤出可视区（Tk 的 pack 是先到先占）。
+        ttk.Label(left, text="本工具只编辑 config.json 里\n已经存在的键。加新 buff / 新科技\n"
+                             "仍要先在游戏侧读它（README 第三、四节）。",
                   style="Hint.TLabel", wraplength=180, justify="left").pack(
             side="bottom", anchor="w")
+        side_wrap = tk.Frame(left, bg=UI["panel"])
+        side_wrap.pack(side="top", fill="both", expand=True)
+        # ★★★ 2026.11：**左栏从「画布 + 一摞圆角按钮」换成 Treeview**（用户报的 bug：
+        #   「下滑之后按钮内的文字错位 / 撕裂」）。
+        #
+        #   原因（不是画笔的锅）：`RButton` 是 `tk.Button` 上**盖一层 Canvas**
+        #   （`_overlay.place(relwidth=1, relheight=1)`），也就是每个按钮 = 两个子窗口。
+        #   把一个装着 26 个这样的按钮的 Frame 塞进 Canvas 的 window item 里滚动时，
+        #   Windows 会先搬子窗口、再由 Tk 各自重画 —— 两者顺序不同步，于是覆盖层上的
+        #   文字会在「已经搬走的位置」和「新位置」之间撕裂一帧，滚动过程中尤其明显。
+        #   滚得越快、按钮越多，越容易看见。
+        #
+        #   Treeview 是**单个控件自己滚条目**（不搬子窗口），所以不会撕裂；
+        #   另外三个编辑器（unit / map / campaign）的左侧列表本来也都是 Treeview，
+        #   换过来反而更一致。代价是少了圆角 —— 用 `style` 配了同样的配色与选中底色。
+        self._side_tree = ttk.Treeview(side_wrap, show="tree", selectmode="browse",
+                                       style="Side.Treeview")
+        side_vsb = ttk.Scrollbar(side_wrap, orient="vertical",
+                                 command=self._side_tree.yview)
+        self._side_tree.configure(yscrollcommand=side_vsb.set)
+        side_vsb.pack(side="right", fill="y")
+        self._side_tree.pack(side="left", fill="both", expand=True)
+        self._side_tree.column("#0", width=170, stretch=True)
+        # 分组行（Buff / 科技）用强调色 + 粗一点，与下面的条目区分开
+        self._side_tree.tag_configure("section", foreground=UI["accent"], font=FONT_GROUP)
+        self._side_tree.bind("<<TreeviewSelect>>", self._on_side_select)
+        # ★ 滚轮：`_on_wheel` 是 bind_all（窗口任何地方滚都滚右边的表单），
+        #   所以这里必须在**控件级**截住（Tk 绑定顺序：控件 → 类 → 顶层 → all）。
+        self._side_tree.bind("<MouseWheel>", self._on_side_wheel)
 
         # ---- 右：内容 ----
         right = tk.Frame(body, bg=UI["panel"], padx=16, pady=12)
@@ -524,6 +568,28 @@ class BuffEditorApp:
             self._canvas.yview_scroll(delta * 2, "units")
         return "break"
 
+    def _on_side_wheel(self, event) -> str:
+        """左栏（列表）的滚轮：滚列表，**不要**带着右边的表单一起滚。
+
+        `_on_wheel` 是 `bind_all` 的（窗口任何地方滚都滚表单），而 Tk 的绑定顺序是
+        控件 → 类 → 顶层 → all，所以这里返回 "break" 就能把事件截住、不传给 all。
+        ★ 也正因为绑定在**控件级**，Treeview 自己的类级滚轮绑定不会跑（控件先于类），
+          所以这里得自己 `yview_scroll` —— 否则停在列表上滚轮会「什么都不动」。
+        """
+        tree = getattr(self, "_side_tree", None)
+        if tree is None:
+            return "break"
+        delta = 0
+        if getattr(event, "num", None) == 4:
+            delta = -1
+        elif getattr(event, "num", None) == 5:
+            delta = 1
+        elif getattr(event, "delta", 0):
+            delta = -1 if event.delta > 0 else 1
+        if delta:
+            tree.yview_scroll(delta * 2, "units")
+        return "break"
+
     # ------------------------------------------------------------------
     # 列表 / 表单
     # ------------------------------------------------------------------
@@ -541,21 +607,80 @@ class BuffEditorApp:
         self._set_status("已切换到「%s」" % self.current_buff().name)
 
     def _build_sidebar(self) -> None:
+        """把当前 doc 的条目填进左栏的 Treeview（两个分组：Buff / 科技）。
+
+        ★ 只**填条目**，不重建控件（Treeview 是一次建好的，见 `_build_body`）——
+          重建控件会丢滚动位置，也会把用户正在看的那一段弹回顶部。
+        """
+        tree = self._side_tree
+        # 先记下滚动位置：改一个数值后 `_build_sidebar` 也会跑一遍，
+        # 每次都跳回顶部的话，滚到下面改科技的时候会一直往上弹。
+        try:
+            top = float(tree.yview()[0])
+        except tk.TclError:
+            top = 0.0
         with _NoRepaint(self.root):
-            for child in self._sidebar_host.winfo_children():
-                child.destroy()
-            self._sidebar_buttons = {}
-            for buff in self.model.buffs():
-                selected = buff.id == self.current_id
-                btn = RButton(
-                    self._sidebar_host,
-                    text="%s  %s" % (buff.icon, buff.name),
-                    command=lambda bid=buff.id: self._select_buff(bid),
-                    bg="#cfe3ff" if selected else UI["panel_alt"],
-                    fg=UI["text"], anchor="w", padx=10, pady=8,
-                )
-                btn.pack(fill="x", pady=2)
-                self._sidebar_buttons[buff.id] = btn
+            self._suppress_side = True
+            try:
+                tree.delete(*tree.get_children())
+                self._sidebar_items = {}
+                parent = ""
+                last_section = ""
+                for buff in self.model.buffs():
+                    section = "科技" if buff.id.startswith("tech:") else "Buff"
+                    if section != last_section:
+                        parent = tree.insert("", "end", iid="sec:" + section,
+                                             text="  " + section, open=True,
+                                             tags=("section",))
+                        last_section = section
+                    iid = "b:" + buff.id
+                    # ★ 科技页的名字本来就叫「科技 · 建筑加固」，前面再加个「科」图标
+                    #   会读成「科 科技·建筑加固」（像重复）；分组标题已经说明了类别，
+                    #   所以只有 buff 那一段保留图标。
+                    label = buff.name if section == "科技" \
+                        else "%s  %s" % (buff.icon, buff.name)
+                    tree.insert(parent, "end", iid=iid, text=label)
+                    self._sidebar_items[buff.id] = iid
+            finally:
+                self._suppress_side = False
+            self._sync_sidebar_selection()
+            if top > 0.0:
+                tree.yview_moveto(top)
+
+    def _sync_sidebar_selection(self) -> None:
+        """把 Treeview 的选中项对回 `current_id`（重建 / 换页之后调）。"""
+        tree = getattr(self, "_side_tree", None)
+        iid = getattr(self, "_sidebar_items", {}).get(self.current_id)
+        if tree is None or not iid:
+            return
+        self._suppress_side = True
+        try:
+            tree.selection_set(iid)
+            tree.see(iid)
+        except tk.TclError:
+            pass
+        finally:
+            self._suppress_side = False
+
+    def _on_side_select(self, _event=None) -> None:
+        """左栏选中某一条 → 切过去。
+
+        ★ 分组行（`sec:`）也会被点中：那不是一页，**把选中弹回当前页**，
+          否则右边还是旧内容、左边却高亮在一个标题上。
+        """
+        tree = getattr(self, "_side_tree", None)
+        if tree is None or self._suppress_side:
+            return
+        sel = tree.selection()
+        if not sel:
+            return
+        iid = str(sel[0])
+        if not iid.startswith("b:"):
+            self._sync_sidebar_selection()
+            return
+        bid = iid[2:]
+        if bid and bid != self.current_id:
+            self._select_buff(bid)
 
     def _build_form(self, *, reset_scroll: bool = True) -> None:
         """重建整张表单。
@@ -586,7 +711,12 @@ class BuffEditorApp:
                     row.columnconfigure(3, weight=1)
                     ttk.Label(row, text=f.label, style="TLabel", width=22,
                               anchor="w").grid(row=0, column=0, sticky="w")
-                    ent = ttk.Entry(row, width=12, justify="right")
+                    # ★★ 2026.11：文字字段（科技的名字 / 小字 / 详情、槽位里的 id）要宽一点、
+                    #   左对齐 —— 数字那套「窄框 + 右对齐」套在句子上没法读。
+                    if f.kind == "text":
+                        ent = ttk.Entry(row, width=46, justify="left")
+                    else:
+                        ent = ttk.Entry(row, width=12, justify="right")
                     ent.grid(row=0, column=1, sticky="w", padx=(8, 4))
                     ttk.Label(row, text=f.unit, style="Hint.TLabel", width=4,
                               anchor="w").grid(row=0, column=2, sticky="w")

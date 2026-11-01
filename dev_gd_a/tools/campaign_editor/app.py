@@ -2463,6 +2463,10 @@ class EditorApp:
             entry.color = str(value)
         elif field == "name":
             entry.name = str(value)
+        elif field == "clan":
+            # ★★ 2026.11：**派系**（决定这一方能招哪些兵）。
+            #   空串 = 不写这个键 ⇒ 运行时回落到 `config.clan.default_id`（原生）。
+            entry.clan = str(value).strip()
         elif field in ("start_food", "start_gold"):
             if value is None:
                 setattr(entry, field, None)
@@ -2768,6 +2772,25 @@ class EditorApp:
                                      self._set_faction_optional_float(f, fl, v.get()))
                 ent.bind("<Return>", lambda _e, en=ent: en.commit_action())
                 ent.bind("<FocusOut>", lambda _e, en=ent: en.commit_action())
+            # ★★ 2026.11：这一方的**派系**（决定它能招哪些兵；空 = 原生）。
+            clan_row = tk.Frame(tsec, bg=UI["panel"])
+            clan_row.pack(side="top", fill="x", pady=(0, 4))
+            tk.Label(clan_row, text="　　派系", width=8, anchor="w", bg=UI["panel"],
+                     fg=UI["text_dim"], font=("Microsoft YaHei UI", 8)).pack(side="left")
+            clan_ids = self.config.clan_ids()
+            clan_options = ["（不写 = %s）" % self.config.clan_name(self.config.clan_default)]
+            clan_options += ["%s（%s）" % (self.config.clan_name(cid), cid)
+                             for cid in clan_ids]
+            cur_clan = self.config.clan_label(e.clan)
+            if cur_clan not in clan_options:
+                clan_options.append(cur_clan)
+            clan_var = tk.StringVar(value=cur_clan)
+            clan_cb = ttk.Combobox(clan_row, textvariable=clan_var, values=clan_options,
+                                   state="readonly", width=16)
+            clan_cb.pack(side="left", padx=(2, 6))
+            clan_cb.bind("<<ComboboxSelected>>",
+                         lambda _e, f=e.fid, v=clan_var:
+                         self.set_faction_field(f, "clan", _clan_id_from_label(v.get())))
         self._entry_cell(tsec, "加一方 id", "", self._add_level_faction, width=18)
         self._hint(tsec, "★ 加一方只会写进**这一关**；名字 / 颜色 / 可玩 / 起手粮金都在这一行改。"
                          "起手资源留空 = 不写（commander 默认 0，玩家沿用全局配置）。"
@@ -3932,6 +3955,20 @@ def _as_int(text: str, fallback: int = -1) -> int:
         return int(float(str(text).strip()))
     except ValueError:
         return fallback
+
+
+def _clan_id_from_label(label: str) -> str:
+    """派系下拉框那一行字 → **派系 id**（`"（不写 = 原生）"` → 空串）。
+
+    与 `ConfigInfo.clan_label()` 是一对：`"王朝（dynasty）"` → `"dynasty"`。
+    认不出来（手写 / 旧值）→ 原样去掉空白（宁可写一个不认识的 id，也不要静默清空它）。
+    """
+    text = str(label or "").strip()
+    if not text or text.startswith("（不写"):
+        return ""
+    if text.endswith("）") and "（" in text:
+        return text[text.rfind("（") + 1:-1].strip()
+    return text
 
 
 def _ask_new_level(root: tk.Tk, map_ids: Sequence[str],

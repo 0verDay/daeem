@@ -854,8 +854,8 @@
       "       不是最终配平，之后按玩法再调这一张表。"
     ],
     "_traits_comment": [
-      "★★ 兵种特性（本轮新增）：**只写在这里**，逻辑层不写死任何一条。",
-      "  每个兵种的 traits 只认两个键（别的键会被忽略，见 logic/config.gd 的 _cache_unit_types）：",
+      "★★ 兵种特性：**只写在这里**，逻辑层不写死任何一条。",
+      "  每个兵种的 traits 只认四个键（别的键会被忽略，见 logic/config.gd 的 _normalize_traits）：",
       "  · attack_vs_class = { <兵种大类 id>: <比例> } —— 打**该大类**的目标时伤害 ×(1+比例)。",
       "      · 大类 id 就是 unit.classes 的键（infantry / cavalry；siege 是器械）。",
       "      · 只作用于**单位**，拆建筑（建筑没有兵种）不受影响；",
@@ -866,6 +866,13 @@
       "      · 「远程」按**伤害来路**判：远程单位的投掷物 + 可攻击建筑（箭塔）的投掷物；",
       "      · 与士气高位的免伤是**加算**，再按 combat.damage_reduction_cap 封顶",
       "        （默认 0.75：25% 特性 + 50% 士气免伤 = 75%，正好到顶）。",
+      "  · melee_reduction = <比例> —— 受到**近战伤害**时减伤（2026.11 新增；",
+      "      「远近免伤+」= ranged_reduction + melee_reduction 两条一起写）。",
+      "      · 「近战」= 不走投掷物的那一击（combat.attack_unit 的即时结算）；",
+      "      · 与 ranged_reduction **互斥地**进同一个加法和、同一个封顶。",
+      "  · knockback_immune = true —— **稳定**：免疫「击退」（位移 + 眩晕）整套效果。",
+      "      · 只免疫击退，**照旧被单位之间的推挤挤开**（collision 不看它）；",
+      "      · 数据来源：unit.types.<id>.knockback（谁打谁会击退，见那段说明）。",
       "  ★ 将领（kind = general / general_N）没有自己的 traits —— 它按 unit.general.types[i]",
       "    所属的**兵种**取这里的特性，与「将领数值 = 所属兵种数值」同一条口径。",
       "  ★ 详情栏的文案由 view/hud.gd 按这张表拼：",
@@ -1014,6 +1021,325 @@
         "siege": true,
         "upkeep_food": 0.40,
         "splash_radius": 1.5,
+        "traits": {}
+      },
+
+      "_clan_types_comment": [
+        "★★ 派系（2026.11 新增）专属兵种：本段起的 `dy_*` = **王朝**、`dg_*` = **帝国**。",
+        "  · 派系怎么挂到席位上、每个派系能招什么：见顶层 `clan` 段；这里只是一张**兵种数值表**。",
+        "  · ★ 素材口径：「使用原生的 X 素材」= `sprite` 指到同一个 png，但**兵种 id 是新的**",
+        "    （数值 / 特性可以不同，所以不能复用原生那个 id）。",
+        "  · ★★ 2026.11 **派系兵种换成专属原画**：七个由占位改成真素材的兵种",
+        "    （协防军枪 / 弓、御林军剑盾 / 弓 / 着甲骑、铁臂弓手、扭力弩炮）现在都是",
+        "    `sprite` = `res://assets/units/<兵种 id>.png` + `sprite_tint = art` ——",
+        "    文件名 = **兵种 id**，一看 config 就知道是哪张图（原画放在 art_draft/units/）。",
+        "  · ★ 占位口径（**今后加没素材的兵种仍然走这条**）：`sprite` 留空 + `sprite_tint = faction`",
+        "    ⇒ 3D 立牌退回 **程序化人形剪影**，地图图标 / 名牌显示 `icon` 那一个字",
+        "    （零新增代码，见 view/unit_sprite_3d.gd 与 view/unit_icon.gd）。",
+        "  · ★★ 2026.11 **口径变更**：派系兵种不再「沿用同素材原生数值再叠加」，而是各走各的路",
+        "    —— 用户原话「削弱单位数值，而非增加单位造价；王朝军队数值再降低些、轮换更勤、更强调兵种克制；",
+        "    帝国军向高质量部队靠」。现在的分工：",
+        "      · **王朝 = 便宜 / 脆 / 克制狠 / 补得快**：单位血量和护甲都压到原生以下，价格也压到原生以下，",
+        "        但 `attack_vs_class` 的反制倍率拉到原生以上（长枪兵对骑兵 0.70、弓手对步兵 0.35/0.40、",
+        "        斥候对步兵 0.35）；协防军一次出 2 人、读条 17 秒（≈8.5 秒/兵）⇒ 靠换兵和克制打，不靠单体强度。",
+        "      · **帝国 = 少而精**：血 / 护甲 / 攻击全部高于原生同级（披甲剑士 230 血、铁臂弓手 24 攻、",
+        "        冠军骑士 390 血 34 攻），单价维持低位但每兵价值高，靠质量和小规模决战。",
+        "      · 「+」类特性（远程免伤 / 近战免伤 / 特攻 / 稳定）仍然是在**该兵种自己的基准**上叠加，",
+        "        只是基准不再等于原生兵种。",
+        "  · ★ 「冲锋」**本版不实装**（用户口径：暂时没有逻辑，写在注释里）。",
+        "    战车的「冲锋造成范围伤害和击退」与冠军骑士的「冲锋再造成额外伤害」都只在这里记录；",
+        "    战车现有的是「范围伤害 + 击退」那套**普攻**能力之外的两条静态特性（稳定 / 远程免伤+）。",
+        "  · ★ 粮车两个派系共用原生 `grain_cart`（需求里三条描述与原生逐字一致），不另开 id。"
+      ],
+
+      "dy_spear_guard": {
+        "name": "协防军",
+        "icon": "枪",
+        "sprite": "res://assets/units/dy_spear_guard.png",
+        "sprite_tint": "art",
+        "class": "infantry",
+        "ranged": false,
+        "hp_max": 135,
+        "armor": 1,
+        "speed": 0.6,
+        "damage": 10,
+        "range": 1,
+        "cooldown_sec": 1.0,
+        "radius_factor": 0.09,
+        "vision": 8,
+        "upkeep_food": 0.08,
+        "traits": {
+          "attack_vs_class": { "cavalry": 0.7 }
+        }
+      },
+      "dy_archer_guard": {
+        "name": "协防军",
+        "icon": "弓",
+        "sprite": "res://assets/units/dy_archer_guard.png",
+        "sprite_tint": "art",
+        "class": "infantry",
+        "ranged": true,
+        "hp_max": 92,
+        "armor": 1,
+        "speed": 0.5,
+        "damage": 16,
+        "range": 4.0,
+        "cooldown_sec": 1.4,
+        "radius_factor": 0.085,
+        "vision": 10,
+        "upkeep_food": 0.1,
+        "traits": {
+          "attack_vs_class": { "infantry": 0.35 }
+        }
+      },
+      "dy_scout": {
+        "name": "斥候",
+        "icon": "斥",
+        "sprite": "res://assets/test_units/Rider/rider.png",
+        "sprite_tint": "art",
+        "class": "cavalry",
+        "ranged": false,
+        "hp_max": 135,
+        "armor": 1,
+        "speed": 1.5,
+        "damage": 17,
+        "range": 1,
+        "cooldown_sec": 0.9,
+        "radius_factor": 0.105,
+        "vision": 12,
+        "upkeep_food": 0.18,
+        "traits": {
+          "attack_vs_class": { "infantry": 0.35 },
+          "ranged_reduction": 0.25
+        }
+      },
+      "dy_ranger": {
+        "name": "游侠",
+        "icon": "侠",
+        "sprite": "res://assets/test_units/HorseArcher/horse_archer.png",
+        "sprite_tint": "art",
+        "class": "cavalry",
+        "ranged": true,
+        "hp_max": 112,
+        "speed": 1.3,
+        "damage": 15,
+        "range": 3.5,
+        "cooldown_sec": 1.1,
+        "radius_factor": 0.10,
+        "vision": 10,
+        "armor": 1,
+        "move_shoot": true,
+        "upkeep_food": 0.26,
+        "traits": {
+          "ranged_reduction": 0.25
+        }
+      },
+      "dy_royal_sword": {
+        "name": "御林军",
+        "icon": "盾",
+        "sprite": "res://assets/units/dy_royal_sword.png",
+        "sprite_tint": "art",
+        "class": "infantry",
+        "ranged": false,
+        "hp_max": 185,
+        "armor": 3,
+        "speed": 0.55,
+        "damage": 12,
+        "range": 1,
+        "cooldown_sec": 0.95,
+        "radius_factor": 0.095,
+        "vision": 9,
+        "upkeep_food": 0.14,
+        "traits": {
+          "melee_reduction": 0.3,
+          "ranged_reduction": 0.3,
+          "knockback_immune": true
+        }
+      },
+      "dy_royal_archer": {
+        "name": "御林军",
+        "icon": "弓",
+        "sprite": "res://assets/units/dy_royal_archer.png",
+        "sprite_tint": "art",
+        "class": "infantry",
+        "ranged": true,
+        "hp_max": 102,
+        "armor": 1.5,
+        "speed": 0.5,
+        "damage": 17,
+        "range": 4.2,
+        "cooldown_sec": 1.3,
+        "radius_factor": 0.09,
+        "vision": 10,
+        "upkeep_food": 0.14,
+        "traits": {
+          "attack_vs_class": { "infantry": 0.4 }
+        }
+      },
+      "dy_royal_cavalry": {
+        "name": "御林军",
+        "icon": "骑",
+        "sprite": "res://assets/units/dy_royal_cavalry.png",
+        "sprite_tint": "art",
+        "class": "cavalry",
+        "ranged": false,
+        "hp_max": 215,
+        "armor": 5,
+        "speed": 1.05,
+        "damage": 23,
+        "range": 1,
+        "cooldown_sec": 1.0,
+        "radius_factor": 0.115,
+        "vision": 9,
+        "upkeep_food": 0.28,
+        "traits": {
+          "knockback_immune": true
+        }
+      },
+      "dy_chariot": {
+        "name": "战车",
+        "icon": "战",
+        "sprite_tint": "faction",
+        "class": "siege",
+        "ranged": false,
+        "hp_max": 300,
+        "armor": 4,
+        "speed": 0.5,
+        "damage": 32,
+        "range": 1,
+        "cooldown_sec": 1.6,
+        "radius_factor": 0.13,
+        "vision": 9,
+        "upkeep_food": 0.34,
+        "traits": {
+          "ranged_reduction": 0.25,
+          "knockback_immune": true
+        }
+      },
+      "dy_catapult": {
+        "name": "投石车",
+        "icon": "车",
+        "sprite": "res://assets/test_units/Catapult/catapult.png",
+        "sprite_tint": "art",
+        "class": "siege",
+        "ranged": true,
+        "hp_max": 265,
+        "speed": 0.35,
+        "damage": 40,
+        "range": 6.0,
+        "cooldown_sec": 3.0,
+        "radius_factor": 0.13,
+        "vision": 11,
+        "armor": 2,
+        "siege": true,
+        "upkeep_food": 0.4,
+        "splash_radius": 1.5,
+        "knockback": { "distance": 0.9, "stun_sec": 0.5 },
+        "traits": {}
+      },
+
+      "dg_swordsman": {
+        "name": "乂字军披甲剑士",
+        "icon": "剑",
+        "sprite": "res://assets/test_units/SpearMan/spearman.png",
+        "sprite_tint": "art",
+        "class": "infantry",
+        "ranged": false,
+        "hp_max": 210,
+        "armor": 3,
+        "speed": 0.6,
+        "damage": 15,
+        "range": 1,
+        "cooldown_sec": 1.0,
+        "radius_factor": 0.09,
+        "vision": 8,
+        "upkeep_food": 0.08,
+        "traits": {
+          "attack_vs_class": { "cavalry": 0.25 },
+          "melee_reduction": 0.25
+        }
+      },
+      "dg_archer": {
+        "name": "乂字军铁臂弓手",
+        "icon": "弓",
+        "sprite": "res://assets/units/dg_archer.png",
+        "sprite_tint": "art",
+        "class": "infantry",
+        "ranged": true,
+        "hp_max": 145,
+        "armor": 1.5,
+        "speed": 0.5,
+        "damage": 24,
+        "range": 4.0,
+        "cooldown_sec": 1.4,
+        "radius_factor": 0.085,
+        "vision": 10,
+        "upkeep_food": 0.1,
+        "traits": {
+          "attack_vs_class": { "infantry": 0.35 }
+        }
+      },
+      "dg_rider": {
+        "name": "骑手",
+        "icon": "骑",
+        "sprite": "res://assets/test_units/Rider/rider.png",
+        "sprite_tint": "art",
+        "class": "cavalry",
+        "ranged": false,
+        "hp_max": 200,
+        "armor": 3,
+        "speed": 1.5,
+        "damage": 23,
+        "range": 1,
+        "cooldown_sec": 0.9,
+        "radius_factor": 0.105,
+        "vision": 12,
+        "upkeep_food": 0.18,
+        "traits": {
+          "attack_vs_class": { "infantry": 0.25 },
+          "ranged_reduction": 0.25
+        }
+      },
+      "dg_champion": {
+        "name": "乂字军冠军骑士",
+        "icon": "冠",
+        "sprite": "res://assets/test_units/Knight/knight.png",
+        "sprite_tint": "art",
+        "class": "cavalry",
+        "ranged": false,
+        "hp_max": 290,
+        "speed": 1.3,
+        "damage": 33,
+        "range": 1,
+        "cooldown_sec": 1.0,
+        "radius_factor": 0.11,
+        "vision": 9,
+        "armor": 6,
+        "upkeep_food": 0.32,
+        "traits": {
+          "attack_vs_class": { "cavalry": 0.25 },
+          "ranged_reduction": 0.55,
+          "knockback_immune": true
+        }
+      },
+      "dg_bolt": {
+        "name": "扭力弩炮",
+        "icon": "弩",
+        "sprite": "res://assets/units/dg_bolt.png",
+        "sprite_tint": "art",
+        "class": "siege",
+        "ranged": true,
+        "hp_max": 228,
+        "armor": 3,
+        "speed": 0.4,
+        "damage": 45,
+        "range": 7.0,
+        "cooldown_sec": 2.8,
+        "radius_factor": 0.12,
+        "vision": 11,
+        "upkeep_food": 0.38,
+        "pierce": true,
+        "projectile_arc": false,
         "traits": {}
       }
     },
@@ -1222,7 +1548,15 @@
         "spearman": 0, "knight": 0,
         "longbowman": 1, "horse_archer": 1,
         "rider": 2,
-        "grain_cart": 3, "catapult": 3
+        "grain_cart": 3, "catapult": 3,
+        "dy_spear_guard": 0, "dy_royal_sword": 0, "dy_royal_cavalry": 0,
+        "dy_archer_guard": 1, "dy_ranger": 1, "dy_royal_archer": 1,
+        "dy_scout": 2,
+        "dy_chariot": 3, "dy_catapult": 3,
+        "dg_swordsman": 0, "dg_champion": 0,
+        "dg_archer": 1,
+        "dg_rider": 2,
+        "dg_bolt": 3
       },
       "tier_default": 1
     }
@@ -1344,6 +1678,27 @@
     "projectile_speed": 12.0,
     "projectile_min_sec": 0.08,
     "projectile_max_sec": 0.6,
+    "_pierce_comment": [
+      "★★ 直线穿透子弹（2026.11 新增；扭力弩炮 `unit.types.dg_bolt.pierce = true`）。",
+      "  判定：命中那一刻，从**射手**沿「射手 → 目标当前位置」方向画一条直线，",
+      "  凡是**投影在 [0, 该单位射程] 区间内、且到这条直线的垂直距离 ≤ pierce_half_width**",
+      "  的敌方单位**全部**吃全额伤害（含原来的目标自己）。",
+      "  · 单位是圆，但这里只判圆心到线的距离（按格；0.45 ≈ 窄窄一条光束）。",
+      "  · 每个单位**只结算一次**（不会因为离得近被算两遍）。",
+      "  · 只打**敌方**：友军 / 盟友一律跳过（与范围伤害同一套 `same_side_for_attack`）。",
+      "  · 穿透弹不带范围伤害、不带攻城：`splash_radius` / `siege` 各自独立。"
+    ],
+    "pierce_half_width": 0.45,
+    "_knockback_comment": [
+      "★★ 击退（2026.11 新增）：谁打谁会击退写在**兵种表**上（unit.types.<id>.knockback），",
+      "  不是全局开关 —— `{ \"distance\": 格, \"stun_sec\": 秒 }`，两条都可选。",
+      "  · 命中点 = 单体目标，或者（有 splash_radius 时）**范围里的每个敌人**；",
+      "  · 被击退者沿「攻击者 → 它自己」的方向被推开 distance 格（遇山 / 建筑就停在原地）；",
+      "  · 同时进入 stun_sec 秒**眩晕**：不能移动、不能攻击、不能索敌（见 combat.update_unit）；",
+      "  · traits.knockback_immune = true（**稳定**）⇒ 位移与眩晕**都不吃**，照旧被单位推挤。",
+      "  ★ 本版只有王朝的投石车带击退（原生投石车没有 —— 两条不同的兵种）。",
+      "  ★ 冲锋**本版不实装**（用户口径）：战车 / 冠军骑士的冲锋效果只写在兵种注释里。"
+    ],
     "_hit_flash_comment": [
       "★ 受击动效（闪白 + 左右振动）的**时长**（秒）——1 → 0 的衰减时间。",
       "  与 combat.flash_sec（旧的开火 / 受击闪光）是两件事，别混。"
@@ -1444,7 +1799,22 @@
       "  于是出生区的「站一会儿占领」玩法在那个区块里失效。第 0 轮先保持，",
       "  想关掉就把这里改成 false。"
     ],
-    "zone_owned_by_building": true
+    "zone_owned_by_building": true,
+    "_population_cap_comment": [
+      "★★ 2026.11：**区划人口的默认上限** —— 地图 `zone_list[].population_cap` **没写**时用它。",
+      "  用户口径原话：「所有区划的默认人口上限改为 3，人口区划的默认人口上限改为 5」。",
+      "  · 全局缺省 = `population_cap_default`（下面那个 3）；",
+      "  · 某一档区划可以覆盖它 —— 见 `zone_kind.list[].default_population_cap`",
+      "    （人口区划写 5，粮食 / 黄金写 3）。两者的读取都只有一处：",
+      "    `logic/config.gd` 的 `zone_population_cap_default_of_kind()`。",
+      "  ⚠️ 只对「地图没写」的区划生效：地图里显式写了的照单全收",
+      "     （frontier 的 2 / 3、dongzheng 的 6、main_test 的 8~15 一个都不动）。",
+      "  ⚠️ 地图编辑器的兜底（`tools/map_editor/model.py` 的 `DEFAULT_POPULATION_CAP` /",
+      "     `POPULATION_CAP_BY_KIND`）要与这两处保持一致：它决定「导出时写不写这个键」。",
+      "  ★ 为什么需要它：组合单位（协防军 2 人口 / 御林军 3 人口）在「上限 1」的区划里",
+      "     永远招不出来（见 docs/route.md 77.8）。"
+    ],
+    "population_cap_default": 3
   },
 
   "pvp": {
@@ -1771,7 +2141,7 @@
         "desc": "在选中将领所在格的中心生成 1 辆粮车（支援单位，不攻击）。★ 只花粮食；周围 3 格友军士气 +0.5/秒（多辆不叠加，可与其他士气来源叠加）",
         "train_sec": 12,
         "population_cost": 1,
-        "cost": { "food": 160, "gold": 0 }
+          "cost": { "food": 160, "gold": 0 }
       },
       {
         "kind": "knight",
@@ -1816,6 +2186,8 @@
         "        生成在格心会当场把人卡在建筑里。",
         "★★ 招募页现在是**固定 3×3 九宫格**：上面 list 的 9 位将领全部列出",
         "  （Q/W/E/A/S/D/Z/X/C），不再随机抽 3 张手牌。",
+        "  ★★ 2026.11：一阶将领 200/200 → **160/160**（三本门槛降到 3 将之后，第 2、3 名将领必须够得着，",
+        "    否则「3 将可升三本」是死条文：实测第 2 名将领原本要 240~470 秒才到）。二阶 / 三阶价格未动。",
         "  · 阶数 tier：1-3 号 = 1 阶、4-6 号 = 2 阶、7-9 号 = 3 阶；",
         "    只有**大本营等级 ≥ tier** 时才能招募（1 级 = 只开一阶）。",
         "  · 唯一性：每位将领**每方只能拥有一次**；已拥有 / 已招募 / 永久阵亡后都不能再招。",
@@ -1850,7 +2222,7 @@
           "train_sec": 10,
           "population_cost": 1,
           "recruit_cooldown_sec": 20,
-          "cost": { "food": 200, "gold": 200 }
+          "cost": { "food": 130, "gold": 130 }
         },
         {
           "kind": "general_2",
@@ -1861,7 +2233,7 @@
           "train_sec": 10,
           "population_cost": 1,
           "recruit_cooldown_sec": 20,
-          "cost": { "food": 200, "gold": 200 }
+          "cost": { "food": 130, "gold": 130 }
         },
         {
           "kind": "general_3",
@@ -1872,7 +2244,7 @@
           "train_sec": 10,
           "population_cost": 1,
           "recruit_cooldown_sec": 20,
-          "cost": { "food": 200, "gold": 200 }
+          "cost": { "food": 130, "gold": 130 }
         },
         {
           "kind": "general_4",
@@ -1944,6 +2316,399 @@
     }
   },
 
+  "clan": {
+    "_comment": [
+      "★★ **派系**（clan，2026.11 新增）—— 与「阵营（faction = p1/p2/enemy）」是两件事，别混：",
+      "   · 阵营 = 谁指挥这一家（玩家席位 / AI），决定敌我、资源、胜负；",
+      "   · **派系** = 这一家能招哪些兵、单位长什么样（兵种表 / 素材）。",
+      "  每个席位都有且只有一个派系；一个阵营一局内不会换派系。",
+      "",
+      "★ 派系 id 挂在**关卡数据**上：`data/campaigns/<战役>/levels/<关卡>.json` 的",
+      "  `factions[].clan`（每个席位一项）。没写 = `default_id`（= native「原生」）。",
+      "  ⇒ 换一关就换一套派系，不需要改配置、也不需要界面选择。",
+      "",
+      "★★ 本版（2026.11）的实装范围（用户拍板）：",
+      "  · 原生 = **当前已实装的全部兵种**（就是顶层 `recruit.list`，本条不重复抄一遍）；",
+      "  · 王朝 / 帝国 = 新增派系，**只给 see_ai 那一关做特例**（ai_test_battle：p1 王朝、p2 帝国）；",
+      "  · 玩家**暂时不能主动选**派系（没有选边 UI）；其它关卡一律原生，行为逐位不变。",
+      "  · 编辑器：战役编辑器的「③阵营」页可以逐席位选派系（字段名就是 `clan`）。",
+      "",
+      "★★ 列表字段（`list[]` 的每一项）：",
+      "  · id / name / icon —— 派系 id（写进关卡 data 的就是它）/ 显示名 / 一个字的图标；",
+      "  · recruit —— 这一方的**单位招募表**，字段与顶层 `recruit.list` **完全一样**",
+      "    （kind / tier / label / short / desc / train_sec / population_cost / cost），",
+      "    命令卡的三行解锁、造价、读条、悬停文案全部照旧读它；",
+      "    ⚠️ **不写 / 空数组 = 沿用顶层 `recruit.list`**（原生就靠这一条，不复制 7 条数据）；",
+      "  · ai_composition —— 这一方**交给 commander AI 时的编成权重**，`[{type, weight}]`，",
+      "    `type` 是**招募 kind**（组合单位写组合那一条，例如 dy_guard）。",
+      "    空 = 退回 `ai.commander.production.composition`（全局那一张）。",
+      "    ★ 它只回答「优先招哪些兵」；**怎么打**（队伍职能 / 进攻性 / 经济 / 建造）看下一条。",
+      "  · commander_ai —— ★★ 2026.11：**这一派的 commander AI 倾向块**（每个派系一套）。",
+      "    形状与顶层 `ai.commander` **完全一样**（roles / production / expand / economy /",
+      "    build / idle / auto …），由 `logic/ai_profile.gd` 的 `build()` **深合并**到全局之上、",
+      "    关卡 `factions[].commander_ai` 之下。只写要覆盖的键，其余全部继承。",
+      "    ★ 派系块里**不要写 difficulty**（难度归关卡 / 运行时覆盖管，写了也会被丢掉）。",
+      "    ★ 原生**故意不写**这一块 ⇒ 它的 AI 行为与「没有派系这回事」逐位一致。",
+      "",
+      "★★ 组合单位（一单出多个兵）：招募条目多一个可选键 `spawn`：",
+      "  `\"spawn\": [{\"type\": \"<兵种 id>\"}, ...]` —— 一次读条生成**全部**子单位，",
+      "  名称一律取这一条的 `label`（需求：协防军两个兵都叫「协防军」）；",
+      "  队列只占 **1 格**，造价与人口按**整包**扣（population_cost 写 2 / 3）。",
+      "  ⚠️ 组合条目的 `kind` 只是**招募 id**，不是兵种 id：它不出现在 unit.types 里，",
+      "     `cfg.unit_*_of(kind)` 查不到（要兵种数值请用 spawn[].type 的那一个）。"
+    ],
+    "default_id": "native",
+    "list": [
+      {
+        "id": "native",
+        "name": "原生",
+        "icon": "原"
+      },
+      {
+        "id": "dynasty",
+        "name": "王朝",
+        "icon": "王",
+        "ai_composition": [
+          { "type": "dy_guard", "weight": 0.38 },
+          { "type": "dy_ranger", "weight": 0.2 },
+          { "type": "dy_scout", "weight": 0.15 },
+          { "type": "dy_royal", "weight": 0.15 },
+          { "type": "dy_chariot", "weight": 0.06 },
+          { "type": "dy_catapult", "weight": 0.04 },
+          { "type": "grain_cart", "weight": 0.02 }
+        ],
+        "commander_ai": {
+          "_comment": [
+            "★★ 2026.11：**王朝的 commander AI 倾向 —— 重装步战、抱团正面推进**。",
+            "  骨架 = 协防军（枪 + 弓组合）与御林军（剑盾 + 弓 + 着甲骑组合），投石车补击退；",
+            "  队伍职能偏「线列」（cycle 里 line 占 2/3），出门晚一点、但一波更厚；",
+            "  经济：粮吃得凶、金子花得少（协防军 145 粮 0 金，主力靠粮）。",
+            "  ★ 只写要覆盖的键，其余全部继承 ai.commander（见 logic/ai_profile.gd 的深合并）。",
+            "  ★ 派系块里**不认 difficulty**（难度归关卡/运行时覆盖管，见 ai_profile.build）。"
+          ],
+          "roles": {
+            "cycle": ["line", "line", "ranged"],
+            "line": {
+              "composition": [
+                { "type": "dy_guard", "weight": 0.4 },
+                { "type": "dy_royal", "weight": 0.26 },
+                { "type": "dy_ranger", "weight": 0.1 },
+                { "type": "dy_catapult", "weight": 0.1 },
+                { "type": "dy_scout", "weight": 0.06 },
+                { "type": "grain_cart", "weight": 0.08 }
+              ]
+            },
+            "ranged": {
+              "composition": [
+                { "type": "dy_guard", "weight": 0.3 },
+                { "type": "dy_royal", "weight": 0.28 },
+                { "type": "dy_ranger", "weight": 0.14 },
+                { "type": "dy_catapult", "weight": 0.16 },
+                { "type": "dy_scout", "weight": 0.04 },
+                { "type": "grain_cart", "weight": 0.08 }
+              ],
+              "standoff_tiles": 4,
+              "frontline_min": 2
+            },
+            "guerrilla": {
+              "composition": [
+                { "type": "dy_scout", "weight": 0.5 },
+                { "type": "dy_ranger", "weight": 0.28 },
+                { "type": "dy_guard", "weight": 0.22 }
+              ],
+              "max_enemy_strength": 2.4,
+              "avoid_ratio": 0.95
+            }
+          },
+          "production": { "home_team_size": 9, "field_team_size": 7 },
+          "expand": {
+            "enemy_zone_min_units": 6,
+            "assault_units": 9,
+            "avoid_enemy_ratio": 1.25,
+            "target_food_income": 5,
+            "target_gold_income": 3
+          },
+          "economy": {
+            "reserve_food": 90,
+            "reserve_gold": 45,
+            "max_float_food": 520,
+            "max_float_gold": 360
+          },
+          "auto": { "attack_after_sec": 55 },
+          "early_explore": { "until_sec": 70 },
+          "early_game": { "until_sec": 70 },
+          "build": {
+            "base_upgrade_priority": 12,
+            "_tech_priority_comment": [
+              "★★ 朝王的科技优先级（AI 从左往右挑第一条能点的）：",
+              "  礼乐（解锁招募阶，一本就能招三本兵）→ 皇恩浩荡（人口上限 +3）",
+              "  → 军形有势（抱团加攻，正好配合重装步战的作战风格）",
+              "  → 速战速决 / 无沬可击（共用那两条）→ 屯田制 → 铁犁牛耕。",
+              "  ★ 为什么把礼乐放第一：朝王的主力是组合单位（一单 2~3 人），",
+              "    越早解锁三本兵越合算；它还免金，正好给下面两条剩钱。"
+            ],
+            "tech_priority": [
+              "dy_liyue",
+              "dy_grace",
+              "dy_formation",
+              "tech_speed_rush",
+              "tech_unbreakable",
+              "dy_farming",
+              "dy_plow"
+            ]
+          }
+        },
+        "tech": [
+          "tech_speed_rush", "dy_grace", "tech_unbreakable",
+          "dy_liyue", "dy_formation", "dy_farming",
+          "", "", "dy_plow"
+        ],
+        "recruit": [
+          {
+            "kind": "dy_guard",
+            "tier": 1,
+            "label": "协防军",
+            "short": "协",
+            "desc": "在选中将领所在格的中心生成 2 名单位（都叫「协防军」）：1 名长枪兵（近战步兵，对骑兵伤害 +70%）+ 1 名弓箭手（远程步兵）。★ 高级单位 · 组合单位：一次占 1 个队列格、扣 2 人口",
+            "train_sec": 17,
+            "population_cost": 2,
+          "cost": { "food": 145, "gold": 0 },
+            "spawn": [
+              { "type": "dy_spear_guard" },
+              { "type": "dy_archer_guard" }
+            ]
+          },
+          {
+            "kind": "dy_scout",
+            "tier": 2,
+            "label": "斥候",
+            "short": "斥",
+            "desc": "在选中将领所在格的中心生成 1 名斥候（近战骑兵）。★ 高级单位：移动速度快（1.5 格/秒）、视野 +3 格；对步兵伤害 +35%、远程减伤 25%",
+            "train_sec": 10,
+            "population_cost": 1,
+          "cost": { "food": 70, "gold": 140 }
+          },
+          {
+            "kind": "grain_cart",
+            "tier": 2,
+            "label": "粮车",
+            "short": "粮",
+            "desc": "在选中将领所在格的中心生成 1 辆粮车（支援单位，不攻击）。★ 基础单位：只花粮食；周围 3 格友军士气 +0.5/秒（多辆不叠加）",
+            "train_sec": 12,
+            "population_cost": 1,
+          "cost": { "food": 130, "gold": 0 }
+          },
+          {
+            "kind": "dy_ranger",
+            "tier": 2,
+            "label": "游侠",
+            "short": "侠",
+            "desc": "在选中将领所在格的中心生成 1 名游侠（远程骑兵）。★ 高级单位：骑射（可移动射击）、远程减伤 25%",
+            "train_sec": 16,
+            "population_cost": 1,
+          "cost": { "food": 235, "gold": 95 }
+          },
+          {
+            "kind": "dy_royal",
+            "tier": 3,
+            "label": "御林军",
+            "short": "御",
+            "desc": "在选中将领所在格的中心生成 3 名单位（都叫「御林军」）：剑盾兵（近战步兵，稳定 · 远近免伤 30%）+ 弓箭手（远程步兵，对步兵伤害 +40%）+ 着甲骑兵（近战骑兵，稳定）。★ 高级单位 · 组合单位：一次占 1 个队列格、扣 3 人口",
+            "train_sec": 20,
+            "population_cost": 3,
+          "cost": { "food": 195, "gold": 300 },
+            "spawn": [
+              { "type": "dy_royal_sword" },
+              { "type": "dy_royal_archer" },
+              { "type": "dy_royal_cavalry" }
+            ]
+          },
+          {
+            "kind": "dy_chariot",
+            "tier": 3,
+            "label": "战车",
+            "short": "战",
+            "desc": "在选中将领所在格的中心生成 1 辆战车（器械，但**造成近战伤害**）。★ 高级单位：稳定（免疫击退）、远程减伤 25%；冲锋的范围伤害与击退本版未实装",
+            "train_sec": 20,
+            "population_cost": 1,
+          "cost": { "food": 145, "gold": 260 }
+          },
+          {
+            "kind": "dy_catapult",
+            "tier": 3,
+            "label": "投石车",
+            "short": "车",
+            "desc": "在选中将领所在格的中心生成 1 辆投石车（器械，远程）。★ 高级单位：抛物线弹道、1.5 格范围伤害、**击退 + 0.5 秒眩晕**；攻城（无视目标的远近减伤）",
+            "train_sec": 24,
+            "population_cost": 1,
+          "cost": { "food": 290, "gold": 290 }
+          }
+        ]
+      },
+      {
+        "id": "empire",
+        "name": "帝国",
+        "icon": "帝",
+        "ai_composition": [
+          { "type": "dg_swordsman", "weight": 0.30 },
+          { "type": "dg_archer", "weight": 0.20 },
+          { "type": "dg_rider", "weight": 0.28 },
+          { "type": "dg_champion", "weight": 0.14 },
+          { "type": "dg_bolt", "weight": 0.06 },
+          { "type": "grain_cart", "weight": 0.02 }
+        ],
+        "commander_ai": {
+          "_comment": [
+            "★★ 2026.11：**帝国的 commander AI 倾向 —— 精锐骑射、机动袭扰、更早开打**。",
+            "  骨架 = 冠军骑士 + 骑手（游击队主体）+ 铁臂弓手 / 扭力弩炮（远程队）；",
+            "  队伍职能偏「远程 / 游击」（cycle 里 line 只占 1/3），小队更敢绕后、侦察更远；",
+            "  经济：精锐吃金（冠军骑士 380 金、弩炮 340 金）⇒ 存金多、粮食花得更快。",
+            "  ★ 只写要覆盖的键，其余全部继承 ai.commander（见 logic/ai_profile.gd 的深合并）。",
+            "  ★ 派系块里**不认 difficulty**（难度归关卡/运行时覆盖管，见 ai_profile.build）。"
+          ],
+          "roles": {
+            "cycle": ["ranged", "guerrilla", "line"],
+            "line": {
+              "composition": [
+                { "type": "dg_swordsman", "weight": 0.30 },
+                { "type": "dg_archer", "weight": 0.20 },
+                { "type": "dg_rider", "weight": 0.28 },
+                { "type": "dg_champion", "weight": 0.14 },
+                { "type": "dg_bolt", "weight": 0.04 },
+                { "type": "grain_cart", "weight": 0.04 }
+              ]
+            },
+            "ranged": {
+              "composition": [
+                { "type": "dg_archer", "weight": 0.38 },
+                { "type": "dg_bolt", "weight": 0.2 },
+                { "type": "dg_swordsman", "weight": 0.22 },
+                { "type": "dg_champion", "weight": 0.12 },
+                { "type": "grain_cart", "weight": 0.08 }
+              ],
+              "standoff_tiles": 5.2,
+              "frontline_min": 1
+            },
+            "guerrilla": {
+              "composition": [
+                { "type": "dg_rider", "weight": 0.44 },
+                { "type": "dg_champion", "weight": 0.36 },
+                { "type": "dg_swordsman", "weight": 0.2 }
+              ],
+              "max_enemy_strength": 3.6,
+              "avoid_ratio": 1.1
+            }
+          },
+          "production": { "home_team_size": 7, "field_team_size": 6 },
+          "patrol": { "max_teams": 3, "interval_sec": 4 },
+          "idle": { "max_scouts": 3, "scout_max_distance_tiles": 24 },
+          "expand": {
+            "enemy_zone_min_units": 6,
+            "assault_units": 9,
+            "avoid_enemy_ratio": 1.45,
+            "target_food_income": 3.5,
+            "target_gold_income": 5.5
+          },
+          "economy": {
+            "reserve_food": 60,
+            "reserve_gold": 100,
+            "max_float_food": 380,
+            "max_float_gold": 560
+          },
+          "build": {
+            "_tech_priority_comment": [
+              "★★ 帝国的科技优先级（AI 从左往右挑第一条能点的）：",
+              "  圈地制（大本营额外出金，帝国全是吃金的精锐）",
+              "  → 速战速决（出门快）→ 远征军（每区划 +2% 攻防，越打越强）",
+              "  → 征召民兵 / 淘金（经济）→ 无沬可击 → 势如破竹 → 骑士精神。",
+              "  ★ 骑士精神放最后：冲锋本版尚未实装，它现在没有实际效果。"
+            ],
+            "tech_priority": [
+              "dg_enclosure",
+              "tech_speed_rush",
+              "dg_expedition",
+              "dg_levy",
+              "dg_goldrush",
+              "tech_unbreakable",
+              "dg_breakthrough",
+              "dg_chivalry"
+            ]
+          },
+          "auto": { "attack_after_sec": 38 },
+          "early_explore": { "until_sec": 45, "max_distance_tiles": 26 },
+          "early_game": { "until_sec": 45 }
+        },
+        "tech": [
+          "tech_speed_rush", "dg_levy", "tech_unbreakable",
+          "dg_enclosure", "dg_expedition", "dg_goldrush",
+          "", "dg_chivalry", "dg_breakthrough"
+        ],
+        "recruit": [
+          {
+            "kind": "dg_swordsman",
+            "tier": 1,
+            "label": "乂字军披甲剑士",
+            "short": "剑",
+            "desc": "在选中将领所在格的中心生成 1 名披甲剑士（近战步兵）。★ 基础单位：只花粮食；近战减伤 25%，对骑兵伤害 +25%（帝国走「少而精」：血厚、攻高）",
+          "train_sec": 10,
+            "population_cost": 1,
+          "cost": { "food": 65, "gold": 0 }
+          },
+          {
+            "kind": "dg_archer",
+            "tier": 1,
+            "label": "乂字军铁臂弓手",
+            "short": "弓",
+            "desc": "在选中将领所在格的中心生成 1 名铁臂弓手（远程步兵）。★ 基础单位：只花粮食；对步兵伤害 +35%（帝国走「少而精」：血厚、攻高）",
+          "train_sec": 10,
+            "population_cost": 1,
+          "cost": { "food": 88, "gold": 0 }
+          },
+          {
+            "kind": "dg_rider",
+            "tier": 2,
+            "label": "骑手",
+            "short": "骑",
+            "desc": "在选中将领所在格的中心生成 1 名骑手（近战骑兵）。★ 高级单位：移动速度快（1.5 格/秒）、视野 +3 格；对步兵伤害 +25%、远程减伤 25%",
+          "train_sec": 10,
+            "population_cost": 1,
+          "cost": { "food": 75, "gold": 150 }
+          },
+          {
+            "kind": "grain_cart",
+            "tier": 2,
+            "label": "粮车",
+            "short": "粮",
+            "desc": "在选中将领所在格的中心生成 1 辆粮车（支援单位，不攻击）。★ 基础单位：只花粮食；周围 3 格友军士气 +0.5/秒（多辆不叠加）",
+            "train_sec": 12,
+            "population_cost": 1,
+          "cost": { "food": 130, "gold": 0 }
+          },
+          {
+            "kind": "dg_champion",
+            "tier": 3,
+            "label": "乂字军冠军骑士",
+            "short": "冠",
+            "desc": "在选中将领所在格的中心生成 1 名冠军骑士（近战骑兵）。★ 高级单位：稳定（免疫击退）、远程减伤 55%、对骑兵伤害 +25%、移动速度 1.3 格/秒；血量上限 290（骑士 365，比骑士更脆但更锋利）；冲锋的额外伤害本版未实装",
+          "train_sec": 18,
+            "population_cost": 1,
+          "cost": { "food": 130, "gold": 340 }
+          },
+          {
+            "kind": "dg_bolt",
+            "tier": 3,
+            "label": "扭力弩炮",
+            "short": "弩",
+            "desc": "在选中将领所在格的中心生成 1 架扭力弩炮（器械，远程）。★ 高级单位：直线穿透子弹 —— 命中时对「射手 → 目标」这条直线上、射程内的**所有敌人**各造成一次全额伤害；弹道是直线（不抛物）",
+          "train_sec": 22,
+            "population_cost": 1,
+          "cost": { "food": 290, "gold": 310 }
+          }
+        ]
+      }
+    ]
+  },
+
   "upgrade": {
     "_comment": [
       "★ 建筑升级（右下「操作」页签 → 「升级大本营」）。",
@@ -1961,11 +2726,16 @@
       "    / max_techs（最多同时启用几条科技）/ max_tech_tier（最高能启用第几阶科技）。",
       "  · cost / time_sec 是**升到下一级**要花的钱与读条秒数（本级没有 next 就是不能升）。",
       "  ★★ 本轮新增两个键，语义与 cost / time_sec 一样写在**目标那一行**上：",
-      "    need_generals —— 要升到**这一级**必须已有几名将领（缺省 0 = 不要求）。",
+      "    need_generals —— 要升到**这一级**必须已有几名将领（缺省 0 = 不要求；二本现在就是 0）。",
       "      ⚠️ 它和 max_generals 是**两件不同的事**（以前是借用当前行的 max_generals 当门槛），",
-      "        现在门槛 2 / 4、上限 2 / 5 / 6，两者不再相等，改一个不会连带改另一个。",
-      "    time_sec_fast + fast_need_generals —— 开始升级那一刻该方将领数 ≥ fast_need_generals",
-      "      就改用 time_sec_fast 这条更短的读条；任一为 0 / 缺省 = 没有提速档。",
+      "        现在门槛 0 / 2、上限 2 / 5 / 6，两者不再相等，改一个不会连带改另一个。",
+      "    time_by_generals —— **按将领数分档的读条表**（2026.11）：",
+      "      [{need,time_sec}, ...]，按 need 从大到小取「第一个满足的」档。",
+      "      三本写的是 2 将 60s / 3 将 40s / 4 将 20s / 5 将 **0s（立刻完成）**。",
+      "      缺省 / 空数组 = 没有分档表。",
+      "    time_sec_fast + fast_need_generals —— **老的单档提速**（保留兼容）：",
+      "      将领数 ≥ fast_need_generals 就改用 time_sec_fast；任一为 0 / 缺省 = 没有提速档。",
+      "      ★ 两者都在时**以 time_by_generals 为准**（它更具体），表里没匹配档才回退到这一档。",
       "      ★ 判定在**按下升级那一刻定死**：读条中人数变化不重新计时。",
       "  · 将领上限**只约束指挥官阵营**（真人席位 + command AI）：阵地性 AI / 红点性 AI 豁免，",
       "    上限对它们按 9999 算（见 world.base_max_generals）。",
@@ -1976,11 +2746,16 @@
         { "level": 1, "hp_mult": 1.0,
           "max_generals": 2, "retinue_cap_bonus": 0, "max_techs": 1, "max_tech_tier": 1 },
         { "level": 2, "hp_mult": 1.5, "cost": { "food": 200, "gold": 200 },
-          "time_sec": 40, "need_generals": 2,
+          "time_sec": 40,
           "max_generals": 5, "retinue_cap_bonus": 2, "max_techs": 2, "max_tech_tier": 2 },
-        { "level": 3, "hp_mult": 2.25, "cost": { "food": 400, "gold": 400 },
-          "time_sec": 80, "need_generals": 4,
-          "time_sec_fast": 60, "fast_need_generals": 5,
+        { "level": 3, "hp_mult": 2.25, "cost": { "food": 200, "gold": 200 },
+          "time_sec": 60, "need_generals": 2,
+          "time_by_generals": [
+            { "need": 2, "time_sec": 60 },
+            { "need": 3, "time_sec": 40 },
+            { "need": 4, "time_sec": 20 },
+            { "need": 5, "time_sec": 0 }
+          ],
           "max_generals": 6, "retinue_cap_bonus": 4, "max_techs": 3, "max_tech_tier": 3 }
       ]
     }
@@ -2016,19 +2791,22 @@
         "id": "food",
         "name": "粮食区划",
         "line": "每秒 1.5 粮食 + 0.15 人口",
-        "production": { "food": 1.5, "gold": 0, "population": 0.15 }
+        "production": { "food": 1.5, "gold": 0, "population": 0.15 },
+        "default_population_cap": 3
       },
       {
         "id": "gold",
         "name": "黄金区划",
         "line": "每秒 1.2 黄金 + 0.15 人口",
-        "production": { "food": 0, "gold": 1.2, "population": 0.15 }
+        "production": { "food": 0, "gold": 1.2, "population": 0.15 },
+        "default_population_cap": 3
       },
       {
         "id": "population",
         "name": "人口区划",
         "line": "每秒 0.8 粮食 + 0.4 人口",
-        "production": { "food": 0.8, "gold": 0, "population": 0.4 }
+        "production": { "food": 0.8, "gold": 0, "population": 0.4 },
+        "default_population_cap": 5
       }
     ]
   },
@@ -2137,6 +2915,150 @@
         "line": "人口产量 +10%",
         "desc": "玩家占领的区划人口产量 +10%",
         "effect": { "zone_population_mult": 0.1 }
+      }
+    ],
+    "_clan_list_comment": [
+      "★★ 2026.11：**派系科技池**（`clan_list`）—— 王朝 / 帝国 的专属科技，加上两派共用的两条。",
+      "  这里是一张**扁平表**（按 id 查、不排序）；「哪一派显示哪 9 个槽位、什么顺序」写在",
+      "  `clan.list[].tech`（9 个 id，列优先：列1上中下 → 列2上中下 → 列3上中下；空串 = 空槽位）。",
+      "  ★ 原生不写 `tech` ⇒ 显示上面 `tech.list` 那 9 条，行为与从前逐位一致。",
+      "  ★ 共用：`tech_speed_rush`（速战速决）与 `tech_unbreakable`（无懈可击）**只定义一次**，",
+      "    两派的槽位表都引用同一个 id —— 与「粮车」同一条口径（单一数据源）。",
+      "",
+      "★ 效果字段的口径（**除前 5 个老键外，全部是「加法增量」**，读取处一律 `1.0 + 增量`）：",
+      "  老键（默认值特殊，见 tech.gd 的 effects_of）：",
+      "    food_production_mult / gold_production_mult —— 总体产能百分比，基数 0（-0.15 = −15%）",
+      "    building_hp_mult / leader_hp_mult —— 血量倍率，基数 1.0",
+      "    zone_population_mult —— 人口自然增长速度倍率，基数 1.0（+0.2 = +20%）",
+      "  新键（基数一律 0，读成 1.0+增量）：",
+      "    unit_speed_mult                  全单位移速（+0.10 = +10%）",
+      "    capture_time_mult                占领区划所需时间（−0.20 = 快 20%）",
+      "    zone_population_cap_add          每个己方区划的人口上限（绝对值，不是百分比）",
+      "    unit_melee_reduction_add         全单位近战免伤（+0.10 = +10%，进同一个和、同一个 75% 封顶）",
+      "    unit_ranged_reduction_add        全单位远程免伤（同上）",
+      "    base_gold_per_sec_add            己方每座大本营的金/秒（绝对值）",
+      "    building_gold_per_sec_add        己方每栋**非大本营**建筑的金/秒（绝对值）",
+      "    building_food_per_sec_add        己方每栋**非大本营**建筑的粮/秒（绝对值）",
+
+      "    per_zone_attack_mult             每占领 1 个区划给全军的攻击加成（+0.02 = 每区划 +2%）",
+      "    per_zone_armor_mult              每占领 1 个区划给全军的**防御**（固定减伤数值）加成",
+      "    per_squad_member_attack_mult     部队里每 1 个单位给全队攻击加成（+0.02 = 每人 +2%）",
+      "    unit_upkeep_mult                 单位维护费（粮）的全局倍率（加分增量；目前没有科技用它）",
+      "    upkeep_idle_exempt               >0 = **脱战**的单位免维护费（屯田制）",
+      "                                     ★ 「脱战」沿用招募那条判据（world.is_out_of_combat）：",
+      "                                       连续 recruit.combat_idle_sec 秒没有目标、且没挨过打。",
+      "    recruit_tier_unlock              >0 = 解除「大本营等级」对招募阶的限制",
+      "    recruit_gold_to_food             >0 = 招募不再花金，按这个比例换成粮（1.5 = 1 金 → 1.5 粮）",
+      "    zone_convert_restore             >0 = 区划转为己方那一刻，区内己方单位血量与士气回满",
+      "    charge_damage_mult               ★ 冲锋相关（**本版冲锋未实装**，写在这里只为占位）",
+      "",
+      "⚠️ 新增效果键要同时在 `logic/tech.gd` 的 `effects_of()`（默认值表）与本文件覆盖它的地方加一条。"
+    ],
+    "clan_list": [
+      {
+        "id": "tech_speed_rush",
+        "tier": 1,
+        "name": "速战速决",
+        "line": "移速 +10% 占区 −20%",
+        "desc": "所有单位移动速度 +10%，占领区划所需时间 −20%",
+        "effect": { "unit_speed_mult": 0.1, "capture_time_mult": -0.2 }
+      },
+      {
+        "id": "tech_unbreakable",
+        "tier": 3,
+        "name": "无懈可击",
+        "line": "远近免伤 +10%",
+        "desc": "所有单位额外获得 10% 近战与远程免伤（与其它免伤相加，仍受 75% 上限约束）",
+        "effect": { "unit_melee_reduction_add": 0.1, "unit_ranged_reduction_add": 0.1 }
+      },
+      {
+        "id": "dy_liyue",
+        "tier": 1,
+        "name": "礼乐",
+        "line": "解锁招募阶 / 金转粮",
+        "desc": "解锁所有单位的大本营等级限制；招募不再消耗黄金，每 1 金改为消耗 1.5 粮食",
+        "effect": { "recruit_tier_unlock": 1, "recruit_gold_to_food": 1.5 }
+      },
+      {
+        "id": "dy_grace",
+        "tier": 2,
+        "name": "皇恩浩荡",
+        "line": "人口 +20% 上限 +3",
+        "desc": "己方所有区划的人口增长速度 +20%，每个区划的人口上限 +3",
+        "effect": { "zone_population_mult": 0.2, "zone_population_cap_add": 3 }
+      },
+      {
+        "id": "dy_formation",
+        "tier": 2,
+        "name": "军形有势",
+        "line": "每人 +2% 攻击",
+        "desc": "部队中每个单位为该部队的所有单位 +2% 攻击（含自己；单队最多 +20%）",
+        "effect": { "per_squad_member_attack_mult": 0.02 }
+      },
+      {
+        "id": "dy_farming",
+        "tier": 3,
+        "name": "屯田制",
+        "line": "脱战不耗粮",
+        "desc": "已脱战的单位不再消耗粮食维护费。★「脱战」与招募读条同一条判据：连续 10 秒（recruit.combat_idle_sec）没有攻击目标、且没有挨打",
+        "effect": { "upkeep_idle_exempt": 1 }
+      },
+      {
+        "id": "dy_plow",
+        "tier": 3,
+        "name": "铁犁牛耕",
+        "line": "建筑 +0.15 粮/秒",
+        "desc": "己方每栋建筑额外产 0.15 粮食/秒（大本营已含在自身产能里，不重复算）",
+        "effect": { "building_food_per_sec_add": 0.15 }
+      },
+      {
+        "id": "dg_levy",
+        "tier": 2,
+        "name": "征召民兵",
+        "line": "产能 −15% 人口 +25%",
+        "desc": "己方区划的粮食 / 黄金产能 −15%，但人口增长速度 +25%、每个区划人口上限 +2",
+        "effect": { "food_production_mult": -0.15, "gold_production_mult": -0.15,
+          "zone_population_mult": 0.25, "zone_population_cap_add": 2 }
+      },
+      {
+        "id": "dg_enclosure",
+        "tier": 1,
+        "name": "圈地制",
+        "line": "大本营 +0.4 金/秒",
+        "desc": "己方每座大本营额外产 0.4 黄金/秒（与自身按等级的产能相加）",
+        "effect": { "base_gold_per_sec_add": 0.4 }
+      },
+      {
+        "id": "dg_expedition",
+        "tier": 2,
+        "name": "远征军",
+        "line": "每区划 +2% 攻防",
+        "desc": "己方每占领 1 个区划，所有单位攻击 +2%、防御（固定减伤数值）+2%",
+        "effect": { "per_zone_attack_mult": 0.02, "per_zone_armor_mult": 0.02 }
+      },
+      {
+        "id": "dg_chivalry",
+        "tier": 2,
+        "name": "骑士精神",
+        "line": "冲锋 +100% 伤害",
+        "desc": "单位冲锋造成 100% 额外伤害。★ 本版尚未实装「冲锋」（见 config 的 clan 段说明），这条科技目前可以启用但暂时没有实际效果。",
+        "effect": { "charge_damage_mult": 1.0 }
+      },
+      {
+        "id": "dg_goldrush",
+        "tier": 3,
+        "name": "淘金",
+        "line": "建筑 +0.08 金/秒",
+        "desc": "己方每栋建筑额外产 0.08 黄金/秒（大本营已含在自身产能里，不重复算）",
+        "effect": { "building_gold_per_sec_add": 0.08 }
+      },
+      {
+        "id": "dg_breakthrough",
+        "tier": 3,
+        "name": "势如破竹",
+        "line": "转归属即回满",
+        "desc": "区划由敌方 / 中立转为己方（含盟友）那一刻，该区划内己方单位的血量与士气回满",
+        "effect": { "zone_convert_restore": 1 }
       }
     ]
   },

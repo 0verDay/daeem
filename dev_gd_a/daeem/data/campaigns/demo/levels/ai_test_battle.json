@@ -6,7 +6,12 @@
     "   ⇒ 不要只改这张表就想让某一方固定是 AI：随机与覆盖都在 main.gd 的 ai_test 入口。",
     "★ 两边各摆一位开局将领，保证随机到任意一方都能直接开打（不自动生成将领的关卡路径）。",
     "★★ 双方起手统一 100 粮 / 100 金：写在 factions[] 的 start_food / start_gold 上，",
-    "   commander AI 默认 0，这里是**逐方**覆盖；战役编辑器的③阵营页可以改。"
+    "   commander AI 默认 0，这里是**逐方**覆盖；战役编辑器的③阵营页可以改。",
+    "★★ 2026.11：这一关同时是 **see_ai（看海）** 的入口（同一张图、双方都交给 commander AI）。",
+    "   用户口径：「测试的场景为 see_ai 跳转的 between_moutains，p1 为王朝派系，p2 为帝国派系」。",
+    "   ⇒ `factions[].clan` 写死成 dynasty / empire；其余关卡**一个都不写**（= 原生）。",
+    "   ⚠️ 因为 ai_test 按钮也读这一关，所以那一路随机到的玩家方也会是王朝 / 帝国之一 ——",
+    "     这是有意的（正好能亲手试这两个派系的兵）。"
   ],
   "name": "ai_test_battle",
   "mode": "solo",
@@ -29,6 +34,7 @@
       ],
       "start_food": 100,
       "start_gold": 100,
+      "clan": "dynasty",
       "name": "p1",
       "color": "#ffd166",
       "playable": true
@@ -42,6 +48,7 @@
       ],
       "start_food": 100,
       "start_gold": 100,
+      "clan": "empire",
       "name": "p2",
       "color": "#5ac8ff",
       "playable": true

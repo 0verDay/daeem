@@ -44,11 +44,19 @@ func _test_config_table(cfg) -> void:
 	near(float(c1.get("food", 0.0)), 200.0, 1e-6, "升到 2 级要 200 粮食（造价 ×2）")
 	near(cfg.upgrade_time_to("base", 1), 40.0, 1e-6, "升到 2 级读条 40 秒")
 	var c2: Dictionary = cfg.upgrade_cost_to("base", 2)
-	near(float(c2.get("food", 0.0)), 400.0, 1e-6, "★ 升到 3 级更贵（400 粮食，造价 ×2）")
-	near(cfg.upgrade_time_to("base", 2), 80.0, 1e-6, "★ 升到 3 级读条更久（80 秒）")
-	# ★ 提速档：≥5 将时 60 秒（只有 2→3 这一档有）。
-	near(cfg.upgrade_time_fast_to("base", 2), 60.0, 1e-6, "★ 升 3 本的提速档 = 60 秒")
-	eq(cfg.upgrade_fast_need_generals("base", 2), 5, "★ 提速档门槛 = 5 名将领")
+	near(float(c2.get("food", 0.0)), 200.0, 1e-6,
+		"★★ 升到 3 级与 2 级同价（2026.11：200 粮食，不再是 400）")
+	near(cfg.upgrade_time_to("base", 2), 60.0, 1e-6, "★ 升到 3 级基准读条 60 秒（3 将那一档）")
+	# ★★ 2026.11：改成**按将领数分档**的表：3 将 60s / 4 将 40s / 5 将 20s。
+	var tiers: Array = cfg.upgrade_time_by_generals("base", 2)
+	eq(tiers.size(), 4, "★★ 升 3 本有 4 档读条（2 / 3 / 4 / 5 将）")
+	eq(int((tiers[0] as Dictionary).get("need", 0)), 5, "★★ 表按 need 降序（第一档 = 5 将）")
+	near(float((tiers[0] as Dictionary).get("time_sec", -1.0)), 0.0, 1e-6,
+		"★★ 5 将 = **0 秒（立刻完成）**")
+	near(float((tiers[1] as Dictionary).get("time_sec", 0.0)), 20.0, 1e-6, "★★ 4 将 = 20 秒")
+	near(float((tiers[2] as Dictionary).get("time_sec", 0.0)), 40.0, 1e-6, "★★ 3 将 = 40 秒")
+	near(float((tiers[3] as Dictionary).get("time_sec", 0.0)), 60.0, 1e-6, "★★ 2 将 = 60 秒")
+	ok(cfg.upgrade_time_by_generals("base", 1).is_empty(), "升 2 本没有分档表")
 	ok(cfg.upgrade_time_fast_to("base", 1) <= 0.0, "升 2 本没有提速档")
 	ok(cfg.upgrade_cost_to("base", 3).is_empty(), "3 级（最高级）没有 next 的价钱")
 	near(cfg.upgrade_time_to("base", 3), 0.0, 1e-6, "最高级没有 next 的读条")
@@ -144,23 +152,18 @@ func _test_base_general_gate(cfg) -> void:
 	var f := String(w.my_faction)
 	base.level = 1
 	_ensure_generals(w, 1, f)
+	eq(UpgradeRes.can_upgrade(w, base, f), "",
+		"★★ 只有 1 将也能升二本（2026.11：二本取消将领门槛）")
+	base.level = 2
+	_ensure_generals(w, 1, f)
 	eq(UpgradeRes.can_upgrade(w, base, f), "generals",
-		"★★ 只有 1 将时不能升二本")
-	ok(not w.start_building_upgrade(base.tx, base.ty, f),
-		"★★ 将领不足时升级命令被拒")
+		"★★ 只有 1 将时不能升三本（门槛 2 将）")
 	_ensure_generals(w, 2, f)
 	eq(UpgradeRes.can_upgrade(w, base, f), "",
-		"★★ 2 将后可以升二本")
-	base.level = 2
-	_ensure_generals(w, 3, f)
-	eq(UpgradeRes.can_upgrade(w, base, f), "generals",
-		"★★ 只有 3 将时不能升三本")
-	_ensure_generals(w, 4, f)
-	eq(UpgradeRes.can_upgrade(w, base, f), "",
-		"★★ 4 将后可以升三本")
+		"★★ 2 将后就可以升三本（2026.11 门槛 4 → 3 → 2）")
 
 
-## ★★ 升三本的提速档：4 将 → 80 秒；≥5 将 → 60 秒；且**开始那一刻定死**。
+## ★★ 升三本按将领数分档：3 将 → 60 秒；4 将 → 40 秒；5 将 → 20 秒；且**开始那一刻定死**。
 func _test_base_upgrade_fast_time(cfg) -> void:
 	var w = _quiet(cfg)
 	_give(w, 10000.0, 10000.0)
@@ -177,22 +180,43 @@ func _test_base_upgrade_fast_time(cfg) -> void:
 	near(base.upgrade_total, 40.0, 1e-6, "★ 升二本读条 40 秒")
 	w.cancel_building_upgrade(base.tx, base.ty, f)
 
-	# ② 升三本 · 4 将：80 秒
+	# ② 升三本 · 3 将：40 秒（★★ 2026.11 分档表：2 将 60 / 3 将 40 / 4 将 20 / 5 将 0）
 	base.level = 2
-	_ensure_generals(w, 4, f)
-	ok(w.start_building_upgrade(base.tx, base.ty, f), "（前提）4 将时开始升三本")
-	near(base.upgrade_total, 80.0, 1e-6, "★ 4 将升三本读条 80 秒")
+	_ensure_generals(w, 3, f)
+	ok(w.start_building_upgrade(base.tx, base.ty, f), "（前提）3 将时开始升三本")
+	near(base.upgrade_total, 40.0, 1e-6, "★★ 3 将升三本读条 40 秒")
 
 	# ③ 读条中补到 5 将 ⇒ 总时长**不重算**（开始时定死）
 	_ensure_generals(w, 5, f)
-	near(base.upgrade_total, 80.0, 1e-6, "★★ 读条中补到 5 将也不改总时长（定死）")
-	near(w.building_upgrade_time(base), 60.0, 1e-6,
-		"（对照）现在再问一次会选 60 秒那档 —— 但这一条读条不受影响")
+	near(base.upgrade_total, 40.0, 1e-6, "★★ 读条中补到 5 将也不改总时长（定死）")
+	near(w.building_upgrade_time(base), 0.0, 1e-6,
+		"（对照）现在再问一次会选 **0 秒**那档 —— 但这一条读条不受影响")
 	w.cancel_building_upgrade(base.tx, base.ty, f)
 
-	# ④ 5 将从头开始：60 秒
-	ok(w.start_building_upgrade(base.tx, base.ty, f), "（前提）5 将时开始升三本")
-	near(base.upgrade_total, 60.0, 1e-6, "★★ 5 将升三本读条降到 60 秒")
+	# ④ 4 将从头开始：20 秒（★ 将领只能加不能减 ⇒ 这一档换一局新的）
+	var w4 = _quiet(cfg)
+	_give(w4, 10000.0, 10000.0)
+	var f4 := String(w4.my_faction)
+	var b4 = w4.find_base_of(f4)
+	if b4 != null:
+		b4.level = 2
+		_ensure_generals(w4, 4, f4)
+		ok(w4.start_building_upgrade(b4.tx, b4.ty, f4), "（前提）4 将时开始升三本")
+		near(b4.upgrade_total, 20.0, 1e-6, "★★ 4 将升三本读条降到 20 秒")
+
+	# ⑤ 5 将从头开始：**0 秒，当场升级完**（再换一局）
+	var w5 = _quiet(cfg)
+	_give(w5, 10000.0, 10000.0)
+	var f5 := String(w5.my_faction)
+	var b5 = w5.find_base_of(f5)
+	if b5 != null:
+		b5.level = 2
+		_ensure_generals(w5, 5, f5)
+		eq(int(b5.level), 2, "（前提）5 将时大本营还是 2 级")
+		ok(w5.start_building_upgrade(b5.tx, b5.ty, f5), "（前提）5 将时开始升三本")
+		eq(int(b5.level), 3, "★★ 5 将升三本 = 0 秒 ⇒ 当场就是 3 级")
+		near(b5.upgrade_total, 0.0, 1e-6, "★★ 也没有留下读条（total 归 0）")
+		ok(not b5.is_upgrading(), "★★ 而且不算「升级中」（不会卡在读条）")
 
 
 func _test_upgrade_flow(cfg) -> void:

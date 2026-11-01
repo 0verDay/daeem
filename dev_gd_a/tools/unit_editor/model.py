@@ -1,9 +1,9 @@
-"""model.py —— 单位 / 将领 / 建筑 / 科技的**数据层**（无界面，可无头测试）。
+"""model.py —— 单位 / 将领 / 建筑的**数据层**（无界面，可无头测试）。
 
 职责边界（与地图编辑器那一套对齐）：
 
     configfile.py  「一份带注释的 JSON 文本怎么原地改几个字符」——只管文本
-    model.py       「游戏里的单位 / 建筑 / 科技是什么」——只管语义与校验
+    model.py       「游戏里的单位 / 建筑是什么」——只管语义与校验
     app.py         tkinter 界面
 
 ★ 数据只有一个来源：`daeem/data/config.json`（`logic/config.gd` 读的就是它）。
@@ -42,16 +42,10 @@ ICON_HINT = "地图上就显示这**一个字**；不写 = 用名字的第一个
 #:   提示每多折一行，就有人的表单装不下（见 test_app.py 的 [8] 那一节）。
 VISION_HINT = "战争迷雾的视野半径（格）：从单位所在的格心算起，视线被山脉挡住（其他地形不挡）"
 
-#: 科技效果的形状（`logic/tech.gd` 的 effects_of 认这几个键；数值全是单个数字）
-#: ★★ 2026.10.29：产量那两条从「每地块每秒加 n」改成「**总体产能**的百分比」——
-#:   写 0.1 表示 +10%，多条**加法叠加**（+10% +20% +30% = +60%）。
-TECH_EFFECTS: Tuple[Tuple[str, str, str], ...] = (
-    ("food_production_mult", "粮食产能", "总体产能 +比例（0.1 = +10%；基础产能与特化一起放大）"),
-    ("gold_production_mult", "黄金产能", "总体产能 +比例（0.1 = +10%）"),
-    ("building_hp_mult", "己方建筑血量上限", "倍率（1.1 = +10%），实时生效"),
-    ("leader_hp_mult", "己方将领血量上限", "倍率（1.1 = +10%），实时生效"),
-    ("zone_population_mult", "己方区划人口增长", "倍率（1.25 = +25%），只影响涨得多快"),
-)
+#: ★★ 2026.11：**科技不再由本工具编辑**（用户口径：「把单位编辑器中的科技编辑界面去掉」）——
+#:   科技的两张表（`tech.list` / `tech.clan_list`）、每派 9 个槽位（`clan.list[].tech`）、
+#:   以及 `tech.max_active` / 每阶金耗，全部搬到了 `tools/buff_editor`。
+#:   ⚠️ 别在这里重新加回来：一个键只有一处能改，才不会出现两边改法不一致。
 
 #: 内置单位 / 建筑：**不许删**（代码与测试按 id 引用它们）。删掉它们不会报错，
 #: 而是让游戏在某条路上静默走兜底值 —— 那正是 docs/pitfalls.md 反复说的坑。
@@ -211,13 +205,6 @@ LEVEL_ATTACK_FIELDS: Tuple[Field, ...] = (
     Field("damage", "攻击力", "float", minimum=0),
     Field("range", "攻击距离", "float", minimum=0),
     Field("cooldown", "攻击速度", "float", minimum=0.01),
-)
-
-#: 科技（`tech.list[]`）
-TECH_FIELDS: Tuple[Field, ...] = (
-    Field("name", "名称", "text", "九格里的第一行"),
-    Field("line", "第二行小字", "text", "格子里的效果小字（例如「粮食 +1」）"),
-    Field("desc", "说明", "text", "鼠标悬停时那块详情面板里的一句话"),
 )
 
 
@@ -504,39 +491,6 @@ class Building:
 
     def __repr__(self) -> str:                        # pragma: no cover - 调试用
         return "<Building %s %s>" % (self.id, self.name)
-
-
-class Tech:
-    """一条科技。"""
-
-    def __init__(self, index: int, data: Dict[str, Any]) -> None:
-        self.index = index
-        self.id = _s(data.get("id"), "")
-        self.name = _s(data.get("name"), self.id)
-        self.line = _s(data.get("line"), "")
-        self.desc = _s(data.get("desc"), "")
-        self.effect: Dict[str, Any] = dict(data.get("effect")) \
-            if isinstance(data.get("effect"), dict) else {}
-
-    def effect_value(self, key: str) -> Optional[float]:
-        value = self.effect.get(key)
-        return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) \
-            else None
-
-    @property
-    def effect_label(self) -> str:
-        """给列表用的一句话（第一条加成）。"""
-        for key, label, _hint in TECH_EFFECTS:
-            value = self.effect_value(key)
-            if value is not None:
-                return "%s %+g" % (label, value)
-        return "（没有加成）"
-
-    def field(self, key: str) -> Any:
-        return getattr(self, key, None)
-
-    def __repr__(self) -> str:                        # pragma: no cover - 调试用
-        return "<Tech %s %s>" % (self.id, self.name)
 
 
 # ======================================================================
@@ -1043,44 +997,10 @@ class ConfigModel:
             self.doc.remove(["upgrade", "levels", bid])
 
     # ------------------------------------------------------------------
-    # 科技
+    # 科技：★ 2026.11 已整块搬走（见文件头那条说明）
+    #
+    # 原来这里有 `techs()/tech()/set_tech()/set_tech_effect()/max_active()/set_max_active()`
+    # 与 `Tech` 类。现在科技（两张表 + 每派槽位 + 全局上限 / 每阶金耗）由
+    # `tools/buff_editor` 编辑；本工具碰都不碰 `tech.*`，所以也**不会**因为
+    # 「它不认识派系池」而把 `tech.clan_list` 写坏。
     # ------------------------------------------------------------------
-
-    def techs(self) -> List[Tech]:
-        rows = self.doc.value(["tech", "list"], [])
-        out: List[Tech] = []
-        if isinstance(rows, list):
-            for i, row in enumerate(rows):
-                if isinstance(row, dict):
-                    out.append(Tech(i, row))
-        return out
-
-    def tech(self, index: int) -> Tech:
-        techs = self.techs()
-        if not 0 <= index < len(techs):
-            raise ModelError("没有第 %d 条科技" % (index + 1))
-        return techs[index]
-
-    def set_tech(self, index: int, field: str, value: Any) -> None:
-        if field not in ("name", "line", "desc"):
-            raise ModelError("不认识的科技字段：%s" % field)
-        self.tech(index)                                    # 越界检查
-        self.doc.set(["tech", "list", index, field], value)
-
-    def set_tech_effect(self, index: int, key: str, value: Optional[float]) -> None:
-        """写 / 删一条加成（数值 = None 表示这条加成不要了）。"""
-        if key not in [k for k, _l, _h in TECH_EFFECTS]:
-            raise ModelError("不认识的科技加成：%s" % key)
-        self.tech(index)
-        path: JsonPath = ["tech", "list", index, "effect", key]
-        if value is None:
-            if self.doc.has(path):
-                self.doc.remove(path)
-            return
-        self.doc.set(path, value)
-
-    def max_active(self) -> int:
-        return int(_f(self.doc.value(["tech", "max_active"], 3), 3.0))
-
-    def set_max_active(self, value: int) -> None:
-        self.doc.set(["tech", "max_active"], int(value))

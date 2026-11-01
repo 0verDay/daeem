@@ -32,9 +32,18 @@ const FactionRes = preload("res://logic/faction.gd")
 ## @param target_is_building 目标是不是建筑（决定取 pos 还是 center()）
 ## @param splash_radius     ★ 范围伤害半径（格；0 = 单体）—— 投石车用它。
 ## @param ignore_reduction  ★ true = 攻城：命中结算时无视目标的近战 / 远程减伤。
+## @param pierce            ★★ 2026.11：**直线穿透子弹** —— 命中时沿「起点 → 落点」这条
+##        直线，对 `pierce_range` 内的**所有敌人**各结算一次全额伤害（见 `_impact`）。
+## @param arc               ★★ 2026.11：弹道是不是**抛物线**（**纯表现**，视图读它）。
+## @param knock_distance / knock_stun  ★★ 2026.11：命中时把敌人推开多少格 / 眩晕多少秒
+##        （0 = 不击退；「稳定」的单位免疫，见 unit.apply_knockback）。
+## @param pierce_range      ★ 穿透的有效距离（格）= 开火者当时的射程。
 static func spawn(world, cfg: ConfigRes, faction: String, source, start_pos: Vector2,
 		target, target_is_building: bool, damage: float,
-		splash_radius: float = 0.0, ignore_reduction: bool = false) -> RefCounted:
+		splash_radius: float = 0.0, ignore_reduction: bool = false,
+		pierce: bool = false, arc: bool = true,
+		knock_distance: float = 0.0, knock_stun: float = 0.0,
+		pierce_range: float = 0.0) -> RefCounted:
 	var p = new()
 	p.faction = faction
 	p.source = source
@@ -44,6 +53,11 @@ static func spawn(world, cfg: ConfigRes, faction: String, source, start_pos: Vec
 	p.damage = damage
 	p.splash_radius = maxf(0.0, splash_radius)
 	p.ignore_reduction = ignore_reduction
+	p.pierce = pierce
+	p.arc = arc
+	p.knock_distance = maxf(0.0, knock_distance)
+	p.knock_stun = maxf(0.0, knock_stun)
+	p.pierce_range = maxf(0.0, pierce_range)
 	p.end = _target_pos(target, target_is_building, start_pos)
 	p.pos = start_pos
 	p.t = 0.0
@@ -128,10 +142,18 @@ static func _impact(world, cfg: ConfigRes, p) -> void:
 		world.push_event({"type": "building_hit", "building": p.target, "source": p.source})
 		return
 
+	# ★★ 2026.11：**直线穿透子弹**（扭力弩炮）—— 见下面那个函数的说明。
+	#   它在范围伤害之前判：一条直线上打穿，与「命中点周围一圈」是两种不同的形状。
+	if p.pierce:
+		_impact_pierce(world, cfg, p)
+		return
+
 	if p.splash_radius <= 0.0:
 		if not _target_valid(p):
 			return
 		p.target.take_damage(cfg, world, p.damage, p.source, true, p.ignore_reduction)
+		# ★★ 2026.11：单体击退（本版只有范围击退在用，这一支是给数据留的口子）。
+		_knock(world, cfg, p, p.target.pos)
 		return
 
 	# 范围伤害：中心 = 目标当前位置（目标已消失时用最后一次刷新的落点）。
@@ -146,6 +168,61 @@ static func _impact(world, cfg: ConfigRes, p) -> void:
 		if other.pos.distance_to(center) > p.splash_radius:
 			continue
 		other.take_damage(cfg, world, p.damage, p.source, true, p.ignore_reduction)
+		# ★★ 2026.11：范围击退 + 眩晕（王朝的投石车）。来源点 = 爆炸中心。
+		_knock(world, cfg, p, center, other)
+
+
+## ★★ 2026.11：把 `p` 的击退效果作用到 `victim` 上（来源点 `from_pos`）。
+## 没有配击退（两个值都是 0）时**一行都不做** —— 绝大多数投掷物走这一支，逐位不变。
+## ⚠️ 由调用方保证 victim 是**敌方**（与伤害结算同一条筛选口径）。
+static func _knock(world, cfg: ConfigRes, p, from_pos: Vector2, victim = null) -> void:
+	if p.knock_distance <= 0.0 and p.knock_stun <= 0.0:
+		return
+	if victim == null:
+		return
+	if not victim.is_attackable():
+		return
+	victim.apply_knockback(cfg, world, from_pos, p.knock_distance, p.knock_stun)
+
+
+## ★★ 2026.11：**直线穿透**的命中结算（扭力弩炮的「直线穿透子弹」）。
+##
+## 做法：以「射手（起点）→ 落点」为轴，取 `pierce_range` 长度的一段**线段**；
+## 在这一段上，凡满足「到轴线的垂直距离 ≤ cfg.pierce_half_width」的敌方单位
+## **各结算一次**全额伤害。目标自己也在里面（它在轴上、且通常最近）。
+##
+## ★ 为什么用「起点 → 落点」而不是「起点 → 目标当前所在方向」：
+##   落点 `p.end` 本来就是每帧跟着目标刷新的（homing），所以两者是同一个方向；
+##   用落点还顺带覆盖了「目标中途消失」—— 那时 `p.end` 停在最后一次刷新的位置。
+## ★ 投影用 `clampf(t, 0, 1)` 之外**不做**任何截断：只看 `0 ≤ t ≤ pierce_range`
+##   且垂距够小 ⇒ 一个前方 7 格、侧面 0.1 格的敌人也会被打到（这就是「穿透」）。
+## ★ 每个单位**只结算一次**：这一遍遍历本身就是唯一的循环。
+static func _impact_pierce(world, cfg: ConfigRes, p) -> void:
+	var axis: Vector2 = p.end - p.start
+	if axis.length() < 1e-6:
+		# 起点与落点重合（贴脸）：退化成单体结算，别拿一个零向量去做归一化。
+		if _target_valid(p):
+			p.target.take_damage(cfg, world, p.damage, p.source, true, p.ignore_reduction)
+			_knock(world, cfg, p, p.start, p.target)
+		return
+	var dir: Vector2 = axis.normalized()
+	var reach: float = maxf(p.pierce_range, axis.length())
+	var half: float = maxf(0.0, cfg.pierce_half_width)
+	for other in world.units:
+		if not other.is_attackable():
+			continue
+		if FactionRes.same_side_for_attack(String(other.faction), p.faction):
+			continue
+		var rel: Vector2 = other.pos - p.start
+		var along: float = rel.dot(dir)
+		if along < 0.0 or along > reach:
+			continue
+		# 垂直距离 = |rel × dir|（二维叉积的模）。
+		var perp: float = absf(rel.x * dir.y - rel.y * dir.x)
+		if perp > half:
+			continue
+		other.take_damage(cfg, world, p.damage, p.source, true, p.ignore_reduction)
+		_knock(world, cfg, p, p.start, other)
 
 
 # ------------------------------------------------------------------
@@ -176,5 +253,14 @@ var damage: float = 0.0
 var splash_radius: float = 0.0
 ## ★★ true = 攻城：命中结算时无视目标的近战 / 远程减伤。
 var ignore_reduction: bool = false
+## ★★ 2026.11：直线穿透子弹（命中时沿「起点 → 落点」这条线打穿射程内的所有敌人）。
+var pierce: bool = false
+## ★★ 2026.11：弹道是不是抛物线（**纯表现**；`view/projectile_view_3d.gd` 读它）。
+var arc: bool = true
+## ★★ 2026.11：命中时的击退（推开多少格 / 眩晕多少秒；0 = 不击退）。
+var knock_distance: float = 0.0
+var knock_stun: float = 0.0
+## ★ 穿透的有效距离（格）= 开火者当时的射程；不穿透时忽略。
+var pierce_range: float = 0.0
 ## 还在飞（false = 本帧被移除）
 var alive: bool = true

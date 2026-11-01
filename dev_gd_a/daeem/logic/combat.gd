@@ -137,6 +137,18 @@ static func update_unit(world, cfg: ConfigRes, u: UnitRes, dt: float, idx: int =
 		u.leash_cd = maxf(0.0, u.leash_cd - dt)
 	_ft_end(world, "u/timers", _t_timers)
 
+	# ★★ 2026.11：**眩晕**（击退的副效果，见 unit.apply_knockback）。
+	#   这一帧什么都不做：不移动、不攻击、不索敌、不追击。
+	#   ★ 放在计时器**之后**：放最前面的话眩晕期间所有计时器都冻住，
+	#     表现为「被打晕半秒，醒过来还要再等一整个攻击间隔」。
+	#   ★ 停下移动用 `halt()`（清路径与落点），但**不清交战状态** ——
+	#     眩晕结束后它照旧打刚才那个敌人，不需要重新索敌。
+	if u.stun_timer > 0.0:
+		u.stun_timer = maxf(0.0, u.stun_timer - dt)
+		if u.moving or u.has_goal:
+			u.halt()
+		return
+
 	# ★★ 2026.10.27：**士气不再在逐单位循环里算** —— 它现在是 `world.tick` 里
 	#    单位循环**之前**的一整遍（`MoraleRes.tick_all`），见那里的说明。
 	#
@@ -668,19 +680,63 @@ static func attack_unit(world, cfg: ConfigRes, u: UnitRes, t: UnitRes) -> void:
 	#    · 没有对应特性 → `attack_multiplier_vs_class` 返回 1.0（逐位不变）；
 	#    · ⚠️ 拆建筑走 `attack_building`、不经过这里 —— 建筑没有兵种，自然不吃这条加成。
 	var damage: float = u.combat_damage(cfg) * u.attack_multiplier_vs_class(String(t.unit_class))
-	# ★★ 远程单位（长弓兵 / 远程将领 / 马弓手 / 投石车）**发一枚投掷物**，伤害改到命中那一刻结算；
-	#    近战（长枪兵 / 骑手 / 骑士）仍是即时结算 —— 逐位不变。
-	#    ★ 投石车的两件附加属性在这里随投掷物带过去：
-	#      `splash_radius` = 命中点周围 1.5 格内所有敌人全额受伤；
-	#      `siege` = 命中结算时无视目标的近战 / 远程减伤。
+	# ★★ 2026.11：**派系科技的攻击加成**（帝国「远征军」每区划 +2% / 王朝「军形有势」每队员 +2%）。
+	#   与「对某大类伤害」一样只乘一次 —— 近战即时结算、远程在**开火这一刻**把伤害烘进投掷物，
+	#   两条路都是同一个数。
+	#   ⚠️ 拆建筑走 `attack_building`、不经过这里（科技加成不作用于拆迁）。
+	damage *= float(world.tech_attack_mult(u))
+	# ★★ 远程单位（长弓兵 / 远程将领 / 马弓手 / 投石车 / 扭力弩炮）**发一枚投掷物**，
+	#    伤害改到命中那一刻结算；近战（长枪兵 / 骑手 / 骑士 / 战车）仍是即时结算。
+	#    ★ 投掷物的附加属性在这里随它带过去（全部是**兵种静态值**，出生时已抄到单位上）：
+	#      `splash_radius`   = 命中点周围 N 格内所有敌人全额受伤（投石车 1.5）；
+	#      `siege`           = 命中结算时无视目标的近战 / 远程减伤；
+	#      `pierce`+射程     = ★ 2026.11 直线穿透子弹（扭力弩炮）；
+	#      `projectile_arc`  = ★ 2026.11 弹道是不是抛物线（纯表现）；
+	#      `knockback_*`     = ★ 2026.11 命中时击退 + 眩晕（王朝投石车）。
 	if u.ranged:
 		ProjectileRes.spawn(world, cfg, String(u.faction), u, u.pos, t, false, damage,
-			u.splash_radius, u.siege)
+			u.splash_radius, u.siege,
+			u.pierce, u.projectile_arc,
+			u.knockback_distance, u.knockback_stun_sec,
+			u.combat_range(cfg))
 	else:
 		t.take_damage(cfg, world, damage, u, false, u.siege)
+		# ★★ 2026.11：近战也会击退（数据驱动；本版没有近战兵种写这一项 ——
+		#   战车 / 冠军骑士的**冲锋**击退属于「未实装」那一档，见 config 的兵种注释）。
+		#   有 `splash_radius` 时按范围推，否则只推被打中的那一个。
+		_apply_melee_knockback(world, cfg, u, t)
 	# ★ 音效事件（视图按阵营过滤后播攻击音）：每一次真正开火推一条。
 	#   ★ 远程也在**开火那一刻**推（投掷物命中另有受击事件，见 unit.take_damage）。
 	world.push_event({"type": "unit_attacked", "unit": u})
+
+
+## ★★ 2026.11：近战命中的击退结算（远程那一条在 projectile._impact 里，两边同一套口径）。
+##
+## 口径：
+##   · 攻击者的 `knockback_distance / knockback_stun_sec` 都为 0 ⇒ **什么都不做**
+##     （绝大多数兵种走这一支，逐位不变）；
+##   · 有 `splash_radius` ⇒ 范围里**每个敌人**都被推（与范围伤害同一条筛选口径）；
+##   · 没有 ⇒ 只有被打中的那一个（目标已死则跳过）。
+##   ⚠️ 击退在**伤害结算之后**：被这一下打死的人不该再被推。
+static func _apply_melee_knockback(world, cfg: ConfigRes, u: UnitRes, t: UnitRes) -> void:
+	var dist: float = u.knockback_distance
+	var stun: float = u.knockback_stun_sec
+	if dist <= 0.0 and stun <= 0.0:
+		return
+	var origin: Vector2 = u.pos
+	if u.splash_radius <= 0.0:
+		if t != null and t.alive and not t.is_downed():
+			t.apply_knockback(cfg, world, origin, dist, stun)
+		return
+	var center: Vector2 = t.pos if t != null else origin
+	for other in world.units:
+		if not other.is_attackable():
+			continue
+		if FactionRes.same_side_for_attack(String(other.faction), String(u.faction)):
+			continue
+		if other.pos.distance_to(center) > u.splash_radius:
+			continue
+		other.apply_knockback(cfg, world, center, dist, stun)
 
 
 ## 锁定一个建筑开始拆它（敌人 AI 用它拆挡路的城墙）。

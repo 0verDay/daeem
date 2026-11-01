@@ -717,15 +717,16 @@ static func pending_recruit_units(ai) -> int:
 static func _probe_recruit_kind(ai) -> String:
 	var best := ""
 	var best_sum := INF
-	for item in ai.world.recruit_list():
+	var f := String(ai.faction)
+	for item in ai.world.recruit_list(f):
 		if typeof(item) != TYPE_DICTIONARY:
 			continue
 		var kind := String((item as Dictionary).get("kind", ""))
-		if kind == "" or not ai.world.is_unit_recruitable(kind):
+		if kind == "" or not ai.world.is_unit_recruitable(kind, f):
 			continue
-		if not ai.world.unit_recruit_unlocked(ai.faction, kind):
+		if not ai.world.unit_recruit_unlocked(f, kind):
 			continue
-		var c: Dictionary = ai.world.recruit_cost(kind)
+		var c: Dictionary = ai.world.recruit_cost(kind, f)
 		var s := float(c.get("food", 0.0)) + float(c.get("gold", 0.0))
 		if s < best_sum:
 			best_sum = s
@@ -1709,7 +1710,8 @@ static func _recall_understrength_for_recruit(ai) -> void:
 			String((z as Dictionary).get("owner", "")), ai.faction)
 		if team_projected(ai, leader) >= field_size:
 			continue
-		var pop_cost := maxf(0.0, ai.world.recruit_population_cost(probe_kind))
+		var pop_cost := maxf(0.0,
+			ai.world.recruit_population_cost(probe_kind, String(ai.faction)))
 		# 已经在己方人口区：生产会选到它，不要来回跑。
 		if in_own and float((z as Dictionary).get("population", 0.0)) >= pop_cost:
 			continue

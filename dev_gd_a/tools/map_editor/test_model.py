@@ -37,6 +37,7 @@ from map_editor import model as model_module        # noqa: E402
 from map_editor.model import (                      # noqa: E402
     DEFAULT_POPULATION_CAP,
     MAX_COORD,
+    POPULATION_CAP_BY_KIND,
     POPULATION_CAP_KEY,
     POPULATION_CAP_MAX,
     TERRAIN_ORDER,
@@ -616,15 +617,20 @@ def t_zone_center_and_production() -> None:
 
 
 def t_zone_population_cap() -> None:
-    """区块人口上限（用户需求：每个区块都要有；没填 = 1；涨到上限就不再涨）。
+    """区块人口上限（用户需求：每个区块都要有；涨到上限就不再涨）。
 
     这一节钉住的是**数据层**的那几条约定：
-      · 没填 = 默认 1（`zone_population_cap()` 返回生效值，界面显示的就是它）；
+      · ★★ 2026.11：**默认值按区划种类分档** —— 全局 3、人口区划 5
+        （用户口径「所有区划的默认人口上限改为 3，人口区划的默认人口上限改为 5」）；
       · 允许 0（那个区块永远没人口）；负数夹到 0、超大值夹到上限、乱打字不改原值；
-      · **导出只在「不等于默认 1」时才写 population_cap** —— 没配过的老图导出后仍然干净；
-      · 读回来一致（往返），缺字段的地图读进来仍是「没填」（= 默认 1）。
+      · **导出只在「不等于这一档的默认值」时才写 population_cap** —— 没配过的老图导出后仍然干净；
+      · 读回来一致（往返），缺字段的地图读进来仍是「没填」（= 按种类取默认）。
     """
     print("\n[19] 区块人口上限（数据层）")
+    # ---- 两个默认值本身（与 config.json 同一组数）
+    eq(DEFAULT_POPULATION_CAP, 3.0, "★ 全局默认人口上限 = 3")
+    eq(POPULATION_CAP_BY_KIND.get("population"), 5.0, "★★ 人口区划默认人口上限 = 5")
+
     m = MapModel(0, 0)
     for y in range(2):
         for x in range(2):
@@ -634,16 +640,27 @@ def t_zone_population_cap() -> None:
     m.assign_tile(0, 0, a.zone_id)
     m.assign_tile(1, 0, a.zone_id)
     m.set_zone_center(a.zone_id, 0, 0)
+    # ⚠️ 新区的种类是默认那一档（population）⇒ 默认上限 5；这里显式改成粮食区划（默认 3），
+    #    让后面的数字好读。`apply_preset=False`：绝不动 production（它是地图的权威数字）。
+    m.set_zone_kind(a.zone_id, "food", apply_preset=False)
 
     eq(a.population_cap, None, "新区的 population_cap 是 None（= 设计师还没填）")
-    eq(m.zone_population_cap(a.zone_id), DEFAULT_POPULATION_CAP,
-       "★ 没填 → 生效值就是默认的 1")
+    eq(m.zone_population_cap_default(a.zone_id), 3.0, "★ 粮食区划没填 → 默认 3")
+    eq(m.zone_population_cap(a.zone_id), 3.0,
+       "★ 没填 → 生效值就是这一档的默认（3）")
     ok(m.zone_population_cap_is_default(a.zone_id), "没填 → 算默认（导出时不写这个字段）")
+
+    # ---- ★★ 人口区划的默认值不一样（5）
+    m.set_zone_kind(a.zone_id, "population", apply_preset=False)
+    eq(m.zone_population_cap(a.zone_id), 5.0, "★★ 人口区划没填 → 生效值 5")
+    ok(m.zone_population_cap_is_default(a.zone_id), "没填 → 仍算默认")
+    m.set_zone_kind(a.zone_id, "food", apply_preset=False)
+    eq(m.zone_population_cap(a.zone_id), 3.0, "改回粮食区划 → 又回到 3")
 
     # ---- 填值：字符串也认（与产能同一套）
     ok(m.set_zone_population_cap(a.zone_id, "10"), "填 10（字符串也认）")
     eq(m.zone_population_cap(a.zone_id), 10.0, "生效值是 10")
-    ok(not m.zone_population_cap_is_default(a.zone_id), "★ 10 ≠ 默认 1 → 导出时要写")
+    ok(not m.zone_population_cap_is_default(a.zone_id), "★ 10 ≠ 默认 3 → 导出时要写")
     ok(not m.set_zone_population_cap(a.zone_id, 10), "填同一个值 → 没变化（返回 False）")
 
     # ---- 允许 0（那个区块永远没有人口、也不能在那里招募）
@@ -662,28 +679,36 @@ def t_zone_population_cap() -> None:
     eq(m.set_zone_population_cap(a.zone_id, ""), False, "空串被拒")
     eq(m.set_zone_population_cap(999, 5), False, "没有这个区块 → 拒")
 
-    # ---- 导出：只有「不等于默认 1」的区块才写 population_cap
+    # ---- 导出：只有「不等于这一档默认值」的区块才写 population_cap
     b = m.add_zone("江陵")
     m.assign_tile(1, 1, b.zone_id)
     m.set_zone_center(b.zone_id, 1, 1)
+    m.set_zone_kind(b.zone_id, "food", apply_preset=False)
     ok(m.set_zone_population_cap(a.zone_id, 12), "东关的上限设成 12")
-    ok(m.set_zone_population_cap(b.zone_id, 1), "★ 江陵显式填 1（与默认等价，但确实填过）")
+    ok(m.set_zone_population_cap(b.zone_id, 3), "★ 江陵显式填 3（= 粮食区划的默认值）")
     d = mapfile.model_to_dict(m)
     entries = {z["id"]: z for z in d["zone_list"]}
     eq(entries[a.zone_id][POPULATION_CAP_KEY], 12, "★ 东关的上限写进 zone_list")
     ok(POPULATION_CAP_KEY not in entries[b.zone_id],
-       "★ 填 1 的区块不写 population_cap（与默认值等价，文件里不留默认值）")
-    # 整数写成整数（1 而不是 1.0）—— 与产能同一条 `_clean_number` 口径
+       "★ 填默认值（粮食区划 3）的区块不写 population_cap（文件里不留默认值）")
+    # ★★ 但同一块地换成**人口区划**时，3 就不再是默认值（默认 5）⇒ 必须写出来。
+    m.set_zone_kind(b.zone_id, "population", apply_preset=False)
+    entries = {z["id"]: z for z in mapfile.model_to_dict(m)["zone_list"]}
+    eq(entries[b.zone_id][POPULATION_CAP_KEY], 3,
+       "★★ 人口区划填 3 ≠ 默认 5 → 要写进 JSON")
+    m.set_zone_kind(b.zone_id, "food", apply_preset=False)
+    # 整数写成整数（12 而不是 12.0）—— 与产能同一条 `_clean_number` 口径
     ok(isinstance(entries[a.zone_id][POPULATION_CAP_KEY], int),
        "★ 整数上限写成整数（不是 12.0）")
 
     # ---- 往返：读回来一致
     again = mapfile.dict_to_model(json.loads(mapfile.dumps(m)), load_config(PROJECT_DIR))
     eq(again.zone_population_cap(a.zone_id), 12.0, "★ 往返：东关的上限还是 12")
-    eq(again.zone_population_cap(b.zone_id), 1.0, "往返：江陵仍是默认的 1")
+    eq(again.zone_population_cap(b.zone_id), 3.0, "往返：江陵回到「粮食区划默认 3」")
     eq(again.zone(a.zone_id).population_cap, 12.0, "读回来的是「填过的值」本身")
+    eq(again.zone(b.zone_id).population_cap, None, "填默认值的那块读回来是「没填」")
 
-    # ---- 老地图（没有这个字段）：读进来 = 没填 = 默认 1
+    # ---- 老地图（没有这个字段）：读进来 = 没填 = 按种类默认（没写 kind → population → 5）
     legacy = {
         "cols": 2, "rows": 2,
         "layout": ["..", ".."],
@@ -691,14 +716,15 @@ def t_zone_population_cap() -> None:
         "zone_list": [{"id": 0, "name": "甲"}, {"id": 1, "name": "乙"}],
     }
     old = mapfile.dict_to_model(legacy, load_config(PROJECT_DIR))
-    eq(old.zone_population_cap(0), 1.0, "★ 老地图没有 population_cap → 游戏侧默认 1")
+    eq(old.zone_population_cap(0), 5.0,
+       "★★ 老地图没有 population_cap → 没写 kind = 人口区划 → 默认 5")
     ok(old.zone_population_cap_is_default(0), "老地图的区块算「没填」")
     # 手改地图里写了非数字 → 当作没填，不许把导入弄崩
     weird = dict(legacy)
     weird["zone_list"] = [{"id": 0, "name": "甲", POPULATION_CAP_KEY: "abc"},
                           {"id": 1, "name": "乙", POPULATION_CAP_KEY: 6}]
     w2 = mapfile.dict_to_model(weird, load_config(PROJECT_DIR))
-    eq(w2.zone_population_cap(0), 1.0, "★ 手写地图里 population_cap 不是数字 → 当没填")
+    eq(w2.zone_population_cap(0), 5.0, "★ 手写地图里 population_cap 不是数字 → 当没填（5）")
     eq(w2.zone_population_cap(1), 6.0, "同一个文件里合法的那个照读")
 
 

@@ -36,6 +36,7 @@ for _stream in (sys.stdout, sys.stderr):
 from buff_editor.model import (                     # noqa: E402
     BUFFS,
     GROUP_ORDER,
+    TECH_EFFECT_BY_KEY,
     ConfigModel,
     Field,
     ModelError,
@@ -162,7 +163,13 @@ def t_fields() -> None:
         ok(f.group in GROUP_ORDER, "%s 的分组在 GROUP_ORDER 里（%s）" % (f.label, f.group))
 
     groups = field_groups(buff)
-    eq([g for g, _ in groups], list(GROUP_ORDER), "表单分组顺序 = GROUP_ORDER")
+    # ★ 2026.11：GROUP_ORDER 后面又加了科技专用的组（文案 / 效果 / 槽位），
+    #   士气只该出现前 6 组 —— 断言「等于 GROUP_ORDER 的前缀」，而不是整张表。
+    morale_groups = [g for g in GROUP_ORDER if g in {f.group for f in buff.fields}]
+    eq([g for g, _ in groups], morale_groups,
+       "表单分组顺序 = GROUP_ORDER 里属于士气的那几组（顺序不变）")
+    ok(not ({"文案", "效果", "槽位"} & set(morale_groups)),
+       "士气页不出现科技专用的分组")
     eq(sum(len(fs) for _, fs in groups), len(buff.fields), "分组后一条字段都没丢")
     eq(model.summary(buff),
        "%s / %s" % (fmt_number(model.value(buff, by_key["start"])),
@@ -263,6 +270,22 @@ def t_game_contract() -> None:
     ok("morale_regen_ally" in morale and "morale_hp_decay_zero" in morale,
        "morale.gd 读回升 / 掉血数值")
 
+    # ---- 科技：编辑器登记的效果键必须与 `logic/tech.gd` 的 `default_effects()` 一致
+    tech_gd = (PROJECT_DIR / "logic" / "tech.gd").read_text(encoding="utf-8")
+    missing: List[str] = []
+    for key in TECH_EFFECT_BY_KEY:
+        if '"%s"' % key not in tech_gd:
+            missing.append(key)
+    eq(missing, [], "★★ 编辑器登记的每个科技效果键，tech.gd 的 default_effects() 里都有")
+    # 反向：tech.gd 里登记了、编辑器却不认识的键（会让设计师看不到那一行）
+    import re
+    block = tech_gd.split("static func default_effects", 1)[-1]
+    block = block.split("}", 1)[0]
+    game_keys = set(re.findall(r'"([a-z_]+)"\s*:', block))
+    editor_keys = set(TECH_EFFECT_BY_KEY)
+    eq(sorted(game_keys - editor_keys), [],
+       "★★ tech.gd 的每个效果键，编辑器都认识（否则表单会少一行）")
+
 
 # ----------------------------------------------------------------------
 # [5] 保存 / 重载 / 撤销
@@ -298,6 +321,143 @@ def t_save_and_reload() -> None:
 
 
 # ----------------------------------------------------------------------
+# [5] 科技：动态生成的页面 / 文案与效果的读写 / 槽位 / 提示
+# ----------------------------------------------------------------------
+def t_tech_pages() -> None:
+    print("[5] 科技：页面是按 doc 现算出来的（有哪些条目就有几页）")
+    model = ConfigModel.load(_copy_config())
+    pages = model.buffs()
+    ids = [b.id for b in pages]
+    eq(len(ids), len(set(ids)), "★ 页面 id 没有重复")
+    ok("morale" in ids, "士气还在")
+    ok("tech:global" in ids, "★ 有「科技 · 全局」页")
+    ok("tech:slots:dynasty" in ids and "tech:slots:empire" in ids,
+       "★ 王朝 / 帝国各有一张槽位表页")
+    # ★ 原生没写 clan.list[].tech ⇒ 不给它生成槽位页（否则会编辑到不存在的键）
+    ok("tech:slots:native" not in ids, "★ 原生没有槽位页（它用 tech.list）")
+
+    # 条数 = 两张表里实际写了多少条
+    n_list = model.doc.size(["tech", "list"])
+    n_clan = model.doc.size(["tech", "clan_list"])
+    n_entry_pages = sum(1 for i in ids if i.startswith("tech:list:")
+                        or i.startswith("tech:clan_list:"))
+    eq(n_entry_pages, n_list + n_clan, "★ 每条科技一页（原生 %d + 派系 %d）" % (n_list, n_clan))
+    ok(n_clan >= 13, "派系池至少有 13 条（共用 2 + 王朝 5 + 帝国 6）")
+
+    # 一条科技页的字段：3 个纯文案 + 阶 + 它自己写了的每个 effect 键
+    page = model.buff("tech:clan_list:%d" % (n_clan - 1))
+    keys = [f.key for f in page.fields]
+    for k in ("name", "line", "desc", "tier"):
+        ok(k in keys, "科技页有 `%s` 字段" % k)
+    effect_keys = [k for k in keys if k not in ("name", "line", "desc", "tier")]
+    ok(effect_keys, "★ 这一条至少有一个效果字段（%s）" % ", ".join(effect_keys))
+    # 效果字段真的指向 `…effect.<key>`（这里踩过：默认路径会指到条目本身）
+    for f in page.fields:
+        if f.group != "效果":
+            continue
+        path = list(f.config_path(page))
+        eq(path[-2:], ["effect", f.key], "%s 的路径是 …effect.%s" % (f.key, f.key))
+        ok(model.doc.get(path) is not None, "%s 的路径存在" % f.key)
+
+
+def t_tech_edit() -> None:
+    print("[6] 科技：改文案 / 改数值 / 改槽位，都只动那一处")
+    path = _copy_config()
+    model = ConfigModel.load(path)
+    before = model.text
+
+    # ---- 文案（text 字段）：允许中文、允许空格、允许空串
+    page = model.buff("tech:clan_list:0")
+    by_key = {f.key: f for f in page.fields}
+    ok(by_key["name"].kind == "text", "名字是 text 字段")
+    eq(display_value(by_key["name"], "速战速决"), "速战速决", "text 原样显示（不加 %）")
+    value, note = parse_value(by_key["name"], "  改过的名字  ")
+    eq(value, "改过的名字", "★ text 会去掉首尾空格")
+    eq(note, "", "text 不夹取")
+    eq(parse_value(by_key["desc"], "")[0], "", "★ text 允许空串（详情可以留空）")
+    old_name = model.value(page, by_key["name"])
+    model.set_value(page, by_key["name"], "改过的名字")
+    ok(model.text != before, "改名字 → 文本真的变了")
+    ok('"name": "改过的名字"' in model.text, "写回的是 JSON 字符串（带引号）")
+    model.set_value(page, by_key["name"], old_name)
+    ok(model.text == before, "改回原名 → 与原文逐字节一致")
+
+    # ---- 数值（percent 字段）：50 ⇄ 0.5
+    num_page = model.buff("tech:list:0")
+    nkeys = {f.key: f for f in num_page.fields}
+    num_key = [k for k in nkeys if nkeys[k].group == "效果"][0]
+    f = nkeys[num_key]
+    old = model.value(num_page, f)
+    if f.kind == "percent":
+        shown = display_value(f, old)
+        ok(shown.endswith("%"), "比例字段显示成百分数（%s）" % shown)
+        parsed, _ = parse_value(f, shown)
+        near(parsed, old, "百分数显示 → 解析回来是同一个值")
+    model.set_value(num_page, f, float(old) + 0.01)
+    changed = model.text
+    a, b = before.splitlines(), changed.splitlines()
+    eq(len(a), len(b), "改一个科技数值不改变行数")
+    eq(len([1 for x, y in zip(a, b) if x != y]), 1, "改一个科技数值只多出 1 行 diff")
+
+    # ---- 槽位：填 / 清空
+    slots = model.buff("tech:slots:dynasty")
+    skeys = sorted(slots.fields, key=lambda x: int(x.key.split("_")[-1]))
+    eq(len(skeys), 9, "★ 槽位页有 9 个格子")
+    first = model.value(slots, skeys[0])
+    ok(isinstance(first, str), "槽位是字符串")
+    model.set_value(slots, skeys[0], "dy_plow")
+    eq(model.value(slots, skeys[0]), "dy_plow", "改槽位写进去了")
+    model.set_value(slots, skeys[0], first)
+    eq(model.value(slots, skeys[0]), first, "改回来也对")
+
+
+def t_tech_warnings() -> None:
+    print("[7] 科技：提示（只提示、不阻止保存）")
+    model = ConfigModel.load(_copy_config())
+    # 正常的科技不该有提示
+    for bid in ("tech:list:0", "tech:clan_list:0", "tech:slots:dynasty", "tech:global"):
+        eq(model.warnings(model.buff(bid)), [], "%s 没有提示" % bid)
+
+    # 槽位填了一个不存在的 id ⇒ 提示「游戏会当空位」
+    slots = model.buff("tech:slots:dynasty")
+    first = slots.fields[0]
+    old = model.value(slots, first)
+    model.set_value(slots, first, "no_such_tech")
+    warns = model.warnings(slots)
+    ok(any("找不到" in w for w in warns), "★ 槽位填了不存在的 id → 有提示")
+    # 重复摆放
+    model.set_value(slots, first, model.value(slots, slots.fields[1]))
+    ok(any("重复" in w for w in model.warnings(slots)), "★ 同一科技摆两次 → 有提示")
+    model.set_value(slots, first, old)
+    eq(model.warnings(slots), [], "改回去 → 提示消失")
+
+    # 阶与位置不符（列优先：第 1 位应该是一本）
+    page = model.buff("tech:list:0")
+    tier_field = [f for f in page.fields if f.key == "tier"][0]
+    old_tier = model.value(page, tier_field)
+    model.set_value(page, tier_field, 3)
+    ok(any("不一致" in w for w in model.warnings(page)),
+       "★ 第 1 位却填了三阶 → 有提示（行 = 阶）")
+    model.set_value(page, tier_field, old_tier)
+
+
+def t_tech_summary_preview() -> None:
+    print("[8] 科技：列表摘要 / 悬停预览")
+    model = ConfigModel.load(_copy_config())
+    page = model.buff("tech:clan_list:0")
+    summary = model.summary(page)
+    ok("本" in summary and "金/秒" in summary, "摘要写明阶与金耗（%s）" % summary)
+    preview = model.preview(page)
+    ok(model.value(page, {f.key: f for f in page.fields}["name"]) in preview,
+       "★ 预览里出现这条科技的名字（模拟格子上那一行）")
+    slots = model.buff("tech:slots:empire")
+    ok("空位" in model.preview(slots) or "第 1 格" in model.preview(slots),
+       "槽位预览逐格列出内容")
+    global_page = model.buff("tech:global")
+    ok("上限" in model.summary(global_page), "全局页摘要写了上限")
+
+
+# ----------------------------------------------------------------------
 def main() -> int:
     print("DAEEM buff 编辑器 · 数据层测试")
     print("配置文件：%s" % CONFIG)
@@ -309,6 +469,10 @@ def main() -> int:
     t_warnings_and_preview()
     t_game_contract()
     t_save_and_reload()
+    t_tech_pages()
+    t_tech_edit()
+    t_tech_warnings()
+    t_tech_summary_preview()
     ok(CONFIG.read_bytes() == real_before,
        "★★ 真配置（%s）在整个测试过程中一字未改（测试只动 .tmp_buff_editor_* 里的副本）"
        % CONFIG.name)
