@@ -581,7 +581,7 @@ func _test_panels(cfg) -> void:
 			and main.hud.detail_panel.detail_text().contains("移速"),
 		"★ 右栏两列详情：左列血量、右列移速（实际：%s）"
 			% main.hud.detail_panel.detail_text().replace("\n", "|"))
-	# ★ 词条已停用：buff 条只剩士气一条。
+	# ★ 默认配置没有将领特性：buff 条只剩士气一条。
 	eq(main.hud.detail_panel.buff_count(), 1,
 		"★ 动态 buff 槽位：只有士气一条")
 	var buff_bar = main.hud.detail_panel.buff_bar_control()
@@ -3724,7 +3724,7 @@ func _test_detail_basic_stats(main) -> void:
 	ok(not gtext.contains("编制") and not gtext.contains("状态") and not gtext.contains("兵种"),
 		"★ 不再有编制 / 状态 / 兵种")
 	ok(not gtext.contains("已选中"), "★ 不再有「已选中 N 支部队」")
-	# ★ 词条已停用：只剩「两行基础 + 一行兵种特性」。
+	# ★ 默认没有将领特性：只剩「两行基础 + 一行兵种特性」。
 	eq(gtext.split("\n").size(), 3,
 		"★ 两行基础 + 一行兵种特性（长枪兵：对骑兵伤害 +25%）")
 	ok(gtext.contains("对骑兵伤害 +25%"), "★ 攻击特性写在左列「攻击」下面（实际：%s）"
@@ -3762,7 +3762,7 @@ func _test_detail_basic_stats(main) -> void:
 			"★ 兵不显示「编制」「状态」")
 		ok(not stext.contains("兵种") and not stext.contains("已选中"),
 			"★ 兵也不显示「兵种」「已选中 N 支部队」")
-		# ★ 词条已停用：兵只剩「两行基础 + 兵种特性」。
+		# ★ 默认没有将领特性：兵只剩「两行基础 + 兵种特性」。
 		var s_left: int = main.hud._attack_bonus_lines(soldier).size()
 		var s_right: int = main.hud._defense_bonus_lines(soldier).size()
 		eq(stext.split("\n").size(), 2 + maxi(s_left, s_right),
@@ -3817,7 +3817,7 @@ func _test_buff_long_press(main) -> void:
 	main.input_ctrl.select_units([g1])
 	hud.refresh()
 	var bb = hud.detail_panel.buff_bar_control()
-	# ★ 词条已停用：buff 条只有士气一条。
+	# ★ 默认没有将领特性：buff 条只有士气一条。
 	var morale_i := -1
 	if bb != null:
 		for i in bb.count():

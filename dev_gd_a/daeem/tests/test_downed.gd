@@ -646,7 +646,7 @@ func _test_respawn_keeps_identity(cfg) -> void:
 	eq(String(g.unit_type), UnitRes.UNIT_TYPE_LONGBOWMAN, "★ 兵种保持")
 	eq(int(g.general_index), 4, "★ 将领档保持")
 	eq(String(g.hotkey), "5", "★ 快捷键保持")
-	eq(String(g.general_trait), "", "★ 词条已停用：重生后仍没有词条")
+	eq(String(g.general_trait), "", "★ 默认配置里将领没有特性：重生后仍然没有")
 	near(g.hp, g.hp_max, 1e-6, "★ 满血回归")
 
 

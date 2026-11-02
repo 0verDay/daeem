@@ -302,7 +302,7 @@ func _test_stats_are_per_type(cfg) -> void:
 	eq(s.hp_max, cfg.unit_hp_of(t), "附属兵血量走 config.unit.types.<类型>.hp_max")
 	eq(s.combat_damage(cfg), float(cfg.unit_combat_of(t)["damage"]), "附属兵伤害走 config")
 	eq(s.combat_range(cfg), float(cfg.unit_combat_of(t)["range"]), "附属兵射程走 config")
-	# ★ 词条已停用：不再继承光环，攻击间隔就是兵种基础值。
+	# ★ 默认配置没有将领特性 → 不继承光环，攻击间隔就是兵种基础值。
 	eq(s.combat_cooldown(cfg), float(cfg.unit_combat_of(t)["cooldown_sec"]),
 		"附属兵攻击间隔走 config")
 

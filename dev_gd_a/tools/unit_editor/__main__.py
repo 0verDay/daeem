@@ -66,6 +66,8 @@ def selftest(project_dir: Path) -> int:
         return 1
     print("[config] %s（%d 行，%d 字节）" % (path, model.text.count("\n") + 1,
                                             len(model.text.encode("utf-8"))))
+    #: 兵种大类 id → 界面上的说法（特性摘要里要它）
+    class_names = dict(model.class_choices())
     for unit in model.units():
         # ★★ 2026.11.2：单位不再有「招募秒」（读条由将领决定）——
         #   这里只报招募归属：自有条目（全局 / 派系表）或「随某一单整包生成」。
@@ -83,6 +85,11 @@ def selftest(project_dir: Path) -> int:
                  fmt_number(unit.cooldown_sec), fmt_number(unit.speed),
                  fmt_number(unit.cost_food), fmt_number(unit.cost_gold),
                  fmt_number(unit.population_cost), recruit))
+        # ★★ 2026.11.3：兵种特性（对某大类伤害 / 远近减伤 / 免疫击退）——
+        #   没有特性就不多打一行（免得 22 个兵种刷出 22 行空摘要）。
+        summary = unit.trait_summary(class_names)
+        if summary:
+            print("            特性：%s" % summary)
     # ★★ 2026.11.2：组合招募单（协防军 / 御林军）—— 不是兵种，单独报一行。
     for pkg in model.recruit_packages():
         print("[package] %-12s %-6s 出 %d 个 造价 %s/%s/%s 来源 %s ← %s"
@@ -92,16 +99,27 @@ def selftest(project_dir: Path) -> int:
     for gen in model.generals():
         own = [k for k in ("hp_max", "damage", "range", "cooldown_sec", "speed")
                if not gen.inherits(k)]
+        # ★★ 2026.11.3：这位将领指定的特性（`unit.general.trait_ids`）——
+        #   没指定就是「（无）」，不再随机抽。
+        trait_text = "（无）"
+        if gen.trait_id:
+            t = model.general_trait(gen.trait_id)
+            trait_text = "%s（%s）" % (t.name, t.id)
         print("[general] %d %-10s 类型 %-11s 血 %s 攻 %s 距离 %s 移速 %s 造价 %s/%s/%s"
-              " 招兵 %ss 区划读条 %ss%s"
+              " 招兵 %ss 区划读条 %ss 特性 %s%s"
               % (gen.index + 1, gen.name, gen.type_id, fmt_number(gen.effective_of("hp_max")),
                  fmt_number(gen.effective_of("damage")),
                  fmt_number(gen.effective_of("range")),
                  fmt_number(gen.effective_of("speed")),
                  fmt_number(gen.cost_food), fmt_number(gen.cost_gold),
                  fmt_number(gen.population_cost), fmt_number(gen.recruit_sec),
-                 fmt_number(gen.train_sec),
+                 fmt_number(gen.train_sec), trait_text,
                  "　单独数值：%s" % "、".join(own) if own else "　（完全跟随兵种）"))
+    # ★ 特性池（全局一份）：谁能给将领用、各自什么效果。
+    for trait in model.general_traits():
+        print("[trait] %-14s %-6s 字 %-3s %s"
+              % (trait.id, trait.name, trait.short_text or "-",
+                 trait.effect_summary(class_names)))
     # ★ 「开局护卫数」这个全局缺省已经删掉：开局带几个附属兵只能在**战役编辑器的
     #   摆放页**里一个一个摆出来（见 app.py 里那一行灰字提示）。
     print("[general] 开局附属兵：改在**战役编辑器的摆放页**里摆"

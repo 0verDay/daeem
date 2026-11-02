@@ -118,7 +118,7 @@ func _test_starting_general_zero(cfg) -> void:
 	ok(g.is_general(), "★ is_general() 为真")
 	ok(not w.general_recruit_roster("p1").has("general_0"), "★ #0 不在招募九宫格里")
 	ok(String(g.general_trait) == "" and String(g.aura_trait_id) == "",
-		"★ 词条已停用：#0 没有特性")
+		"★ 默认配置没有特性：#0 没有特性")
 
 	# 没有大本营的玩家阵营 → 不生成 #0
 	var w2 = require_world(cfg)
@@ -206,7 +206,7 @@ func _test_enqueue_pays_and_cooldown(cfg) -> void:
 	near(w.general_recruit_cooldown_left("p1"), cd, 1e-6, "★ 全局冷却 = 该将的属性")
 	eq(String(w.general_recruit_state("p1", "general_2")["reason"]), "cooldown",
 		"★ 冷却中其他未拥有的将领也显示冷却")
-	eq(String(z.get("train_trait", "")), "", "★ 词条已停用：队列里没有特性")
+	eq(String(z.get("train_trait", "")), "", "★ 默认配置没有特性：队列里没有特性")
 
 # ------------------------------------------------------------------
 # 6) 取消：退款 + 解冻 + 释放唯一名额
@@ -256,7 +256,7 @@ func _test_train_and_spawn_near_center(cfg) -> void:
 		"★ 生成在中心旁边")
 	ok(w.general_recruit_owned("p1", kind), "★ 出兵后仍然已拥有")
 	ok(String(fresh.general_trait) == "" and String(fresh.aura_trait_id) == "",
-		"★★ 词条已停用：招出来的将领没有特性")
+		"★★ 默认配置没有特性：招出来的将领没有特性")
 
 # ------------------------------------------------------------------
 # 8) 队列上限 / 取消任意一格

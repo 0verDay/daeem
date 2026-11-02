@@ -1855,6 +1855,30 @@ func general_recruit_sec(index: int) -> float:
 	return maxf(0.01, sec) if sec > 0.0 else fallback
 
 
+## ★★ 2026.11.3：第 `index` 位将领**指定的将领特性**（config 的 `unit.general.trait_ids`）。
+##
+## 口径（用户原话）：「每位将领在编辑器里指定一条特性，不再随机抽」。
+##   · 与 `types` / `caps` / `recruit_sec` 同序；`""` = 这位将领**没有**特性；
+##   · 越界 / 没写这一节 / 指向 `unit.general_traits` 里不存在的 id ⇒ 一律 `""`
+##     （= 中性，不报错 —— 与 `_normalize_general_trait` 的「写错当没写」同一条）；
+##   · 读它的地方只有两处：`world.create_general()`（开局 / 关卡摆放）与
+##     `world.general_recruit_trait_for()`（区划招募），两处都把结果交给
+##     `unit.set_general_trait()`；附属兵由 `fill_general_retinue()` 继承同一条光环。
+## ⚠️ 别在这里做「随机兜底」：随机抽是上一版的设计（已在 2026.10 停用），
+##   设计师在编辑器里选了「无」就该是真的没有。
+func general_trait_at(index: int) -> String:
+	var arr: Variant = get_path_value("unit.general.trait_ids")
+	if typeof(arr) != TYPE_ARRAY:
+		return ""
+	var items: Array = arr
+	if index < 0 or index >= items.size():
+		return ""
+	var tid := String(items[index])
+	if tid == "" or not _general_traits.has(tid):
+		return ""
+	return tid
+
+
 ## ⚠️ 这里原先还有两个「开局编制」的读法（本轮**整个删掉**）：
 ##   · `general_escort_count()`     —— `unit.general.escort` 的第一个值；
 ##   · `general_escort_at(index)`   —— 逐将那一份（下标越界按长度循环）。

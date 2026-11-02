@@ -24,7 +24,11 @@ const DEFAULTS := {
 		"army_interval_sec": 0.6,
 		"strategic_interval_sec": 2.0,
 		"build_interval_sec": 2.5,
-		"production_interval_sec": 1.0,
+		# ★★ 2026.11：招兵 tick 从 1.0s 放宽到 4.0s（× 难度 production_interval_mult
+		#   1.2 ⇒ 实际约 4.8s）。用户口径：**花钱不要太勤** —— 每 1 秒就把粮换成最便宜
+		#   的一阶兵，钱包永远贴着 0，攒不出任何一笔 200 粮的升级 / 高价兵。
+		#   单 tick 的 `production_attempts` 仍是 6，所以「有钱时一口气补满一队」不变。
+		"production_interval_sec": 4.0,
 		# ★ 2026.10.25：资源富足时一 tick 多下几单；生产永远在建造成之前。
 		"production_attempts": 6,
 		"retry_sec": 3.0,
@@ -96,6 +100,19 @@ const DEFAULTS := {
 		# ★★ 2026.10.29：资源充足（浮存 > economy.max_float_*）时，允许补到编制上限
 		#   （1 + effective_retinue_cap），而不是停在 home/field 目标规模。
 		"fill_to_cap_when_rich": true,
+		# ★★ 2026.11：**高阶兵倾斜**（用户口径 ②）——
+		#   低阶兵累计花掉 `trigger_low_spend` 之后，只要 高阶:低阶 的花费比还没到
+		#   `elite_to_low`，抽兵时就只在「高阶」里挑（买不起就照旧买便宜的，
+		#   真正的「攒钱等贵的」由 goals.elite 负责）。
+		#   ⚠️ 「高阶」= tier ≥ `elite_tier_min`（默认 3，即御林军 / 战车 / 投石车 /
+		#      弩炮 / 冠军骑士）。tier-2 的斥候 / 游侠 / 骑手算**低阶** —— 它们只要
+		#      100 粮，若算进「高阶」会让比例轻易达标，反而永远不买三阶兵（实测踩到）。
+		"elite": {
+			"elite_tier_min": 3,        # tier ≥ 这个数算「高阶兵」
+			"trigger_low_spend": 600.0, # 低阶累计花费（粮 + 2×金）到这个数才开始倾斜
+			"elite_to_low": 0.5,        # 目标比例 高阶:低阶 花费 = 0.5 ⇒ 1:2
+			"min_sec": 90.0,            # 开局这段时间内不许倾斜（先把场面铺开）
+		},
 		"composition": [
 			{"type": "spearman", "weight": 0.42},
 			{"type": "longbowman", "weight": 0.24},
@@ -104,6 +121,27 @@ const DEFAULTS := {
 			{"type": "catapult", "weight": 0.05},
 			{"type": "grain_cart", "weight": 0.05},
 		],
+	},
+	# ★★ 2026.11：**目的系统**（用户口径 ④）—— 什么时候停手攒钱、攒给谁。
+	#   `upgrade`：大本营还有下一级、差的钱能在 `reachable_sec` 秒收入里补上、
+	#              家里没被打、队伍成形率 ≥ army_ratio ⇒ 停手攒升本的钱；
+	#   `elite`  ：低阶花够、高阶占比不达标、且有一条高阶兵只差钱 ⇒ 停手攒它的钱。
+	#   攒钱最多等 max_wait_sec，超时放弃并 cooldown_sec 秒内不再尝试。
+	"goals": {
+		"enabled": true,
+		"cooldown_sec": 25.0,
+		"upgrade": {
+			"min_sec": 75.0,
+			"reachable_sec": 50.0,
+			"army_ratio": 0.5,
+			"max_wait_sec": 80.0,
+		},
+		"elite": {
+			"min_sec": 110.0,
+			"reachable_sec": 60.0,
+			"army_ratio": 0.6,
+			"max_wait_sec": 60.0,
+		},
 	},
 	"build": {
 		"tower_max": 30,

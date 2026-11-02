@@ -7969,3 +7969,129 @@ clan.list[].tech  ← 这一派的**科技页槽位**：9 个 id（列优先：�
   `_reindex_zones()`。没有邻接数据的区划（空块 / 跳号）由 `neighbors_of()` 返回空数组。
 * 关卡 `garrison_ai` 覆盖里写 `alert_*` 会经 `_ai_cfg_with_override()` 的**白名单**生效 ——
   前提是 `config.gd` 的 `_cache_ai()` 里先声明了这些键（已声明）。
+
+
+## 七十九、单位编辑器：兵种特性 + 将领特性（2026.11.3）
+
+> 需求原话：「当前项目中我无法在 unit_editor 中看到兵种和将领特性，也无法增删兵种和
+> 将领特性（如对近战免伤 25%，对步兵造成 +25% 伤害等），需要补充这个功能」。
+> 确认过的四个口径：① 将领特性「池可编辑 + **每位将领指定一条**」（不再随机抽）；
+> ② 兵种特性**直接编辑现有那 4 个键**（不做具名特性库）；③ 放**单位页表单里**，
+> 不加第三个页签；④ 兵种列表**不加**特性摘要列。
+
+### 79.1 数据：两张表各自是什么（改动前就存在，只是编辑器没接）
+
+| 表 | 位置 | 形状 |
+|---|---|---|
+| 兵种特性 | `unit.types.<id>.traits` | `attack_vs_class`（`{大类 id: 比例}`）/ `ranged_reduction` / `melee_reduction` / `knockback_immune` —— `config.gd` 的 `_normalize_traits()` 在载入时洗成这四键 |
+| 将领特性池 | `unit.general_traits.<id>` | `name` / `short` / `desc` + `speed_bonus` / `attack_speed_bonus` / `melee_reduction` / `ranged_reduction` / `attack_vs_class` —— `_normalize_general_trait()` |
+| **新增**：哪位将领用哪条 | `unit.general.trait_ids[i]`（与 `types` / `caps` / `recruit_sec` 同序） | 特性 id 或 `""`（= 没有）；缺项 / 越界 / 指向不存在的 id 一律当 `""`（`cfg.general_trait_at()`） |
+
+★ 「将领特性」在 2026.10 曾整条停用（随机抽的入口 `_roll_general_trait` / 授予点
+`set_general_trait` 全被拿掉，`general_recruit_traits()` 恒返回空）。本轮**恢复生效**，
+但口径换成**配置指定**：`world.create_general()` 出生时授给本人、
+`general_recruit_trait_for()` 决定区划招募那一位的特性、
+`fill_general_retinue()` / `_spawn_from_recruit()` 让旗下单位**继承同一条光环**。
+随机抽取的代码（`_roll_general_trait` / `_static_general_trait`）保留但**无调用点**。
+
+### 79.2 编辑器（`tools/unit_editor`）
+
+| 位置 | 能干什么 |
+|---|---|
+| 单位页 → 兵种 →「特性」 | 「对某大类伤害」一行一个大类（下拉加一条 / 每行一个「删」）；近战减伤 / 远程减伤（填比例，**清空 = 删掉那个键**）；「免疫击退（稳定）」勾选框 |
+| 单位页 → 将领 →「特性」 | 下拉选「（无）」或池里某一条；下面一行写出这条特性的效果（比例换成百分数展示） |
+| 单位页 → 左侧「将领特性池」 | 池里每一条的**名字 / 短名 / 说明 / 效果**都能改；「＋ 新建特性…」（照模板复制）与「删除特性」 |
+
+★ 写法与「视野半径 / 冲锋」同一条：**空 = 删掉那个键**，第一次编辑才把 `traits` 建出来；
+改一个**已有**的值只动一行（`test_model.py` 钉着 1 行 diff），加 / 删键会重排那一小块
+（`configfile` 往多行字典尾部插键时缩进按「最后一个子项的值」算，所以整块重写；
+`test_model.py` 用「每行偶数缩进 + 三个一级键同列」钉住排版）。
+★ 删掉一条正在被使用的特性时，`trait_ids` 里指向它的那一格会被改成 `""` ——
+不留一条永远匹配不上的 id（那是本项目最贵的一类 bug）。
+
+### 79.3 验证
+
+| 套件 | 结果 |
+|---|---|
+| `tools/unit_editor/test_model.py` | 893 项通过（新增 [1d] 兵种特性 / [1e] 将领特性池 / [1f] 键名契约） |
+| `tools/unit_editor/test_app.py` | 280 项通过（新增 [3b] 特性的界面动作：读 / 改 / 加 / 删 / 勾选 / 下拉指定 / 新建删除） |
+| `daeem/tests/test_unit_editor.gd` | 230 项通过（新增 `_test_traits()`：4 个键落到单位身上并真的减伤 / 对某大类倍率 / `trait_ids` 授予开局将领与招募档位 / 附属兵继承 / 写错当没写） |
+| `test_general_traits.gd` | 74 项通过（默认配置没有特性；手动授予仍全套工作） |
+| `test_retinue` / `test_logic` / `test_snapshot_coop` / `test_ui` | 189 / 270 / 43 / 1380 项通过 |
+
+⚠️ 本轮**没动**的既有红：`test_unit_traits`（10 项）/ `test_zone_recruit`（1 项）/
+`test_downed`（1 项）/ `test_clan`（1 项）—— 逐条在「把我的改动 stash 掉」之后复跑，
+失败数**一模一样**，是工作区里那批未提交的数值调参（护甲 / 血量 / 造价）造成的，与特性无关。
+
+---
+
+## 八十、commander AI 的「目的系统」：招兵 tick 放慢 + 高阶兵倾斜 + 攒钱升本（2026.11.3）
+
+### 80.1 问题（see_ai 实测）
+
+调了好几版造价，两家 AI 的军队**依旧清一色一阶兵**（王朝 91% 协防军、帝国 71% 披甲剑士），
+tier-3 兵 10 局出场 < 2%。逐帧诊断（每 2 秒采样、300 个采样点）给出的真实原因**不是价钱**：
+
+| 闸门 | 王朝（御林军） | 帝国（冠军骑士 / 弩炮） |
+|---|---|---|
+| 大本营等级（tier） | 30%（礼乐之前） | **82% / 69%**（77% 时间停在大本营 1 级） |
+| 不在己方区划 | 17% | 38% |
+| 钱不够 | 45%（御林军实付 350 粮，粮 p90 仅 137） | 6%（被 tier 挡在前面，实际更低） |
+| 编制 / 战斗中 / 濒死 | 3% / 2% / 2% | — / 5% / 1% |
+
+并且 `_pick_kind()` 会**先筛掉「此刻买不起的」再抽签** ⇒ 只要总有一个便宜的买得起，
+贵的就永远进不了候选池；AI **没有攒钱这个行为**（`ai_economy.can_afford_above_reserve` 零调用点）。
+
+### 80.2 四条改动（用户拍板）
+
+| # | 改动 | 落点 |
+|---|---|---|
+| ① | 招兵 tick **1.0s → 4.0s**（× 难度 `production_interval_mult` 1.2 ⇒ 实际 ≈4.8s）。单 tick 仍是 6 次尝试，所以「有钱时一口气补满一队」不变 | `config.ai.commander.intervals.production_interval_sec`、`ai_profile.DEFAULTS` |
+| ② | **高阶兵倾斜**：低阶兵累计花掉 `trigger_low_spend=600`（粮 + 2×金）之后，只要 `高阶:低阶` 花费比 < `elite_to_low=0.5`（即 1:2），抽兵时**只在高阶里挑**（买不起则照旧买便宜的） | `ai_commander._pick_kind()` / `_note_recruit_spend()` / `elite_share_push_needed()` |
+| ③ | 招兵 tick **只遍历站在己方区划里的将领** —— 底层规则（`can_recruit` 的 `zone` 判据）不变，只是提前剪枝 | `ai_commander._production_tick()` 循环里 `world.leader_zone_owned(leader)` |
+| ④ | **目的系统**：守家成军 > 升本 > 攒高阶。攒钱期间本 tick 一分钱不花（不补员、不补将），钱够 / 超时 / 目标没了就退出并冷却 | `ai_commander._update_goal / _goal_holding / _decide_goal / _upgrade_goal / _elite_goal / _affordable_within` |
+
+⚠️ 「高阶」= **tier ≥ 3**（`elite_tier_min`）。第一版按「tier ≥ 2」实测**失败**：tier-2 的
+斥候 / 游侠 / 骑手只要 100 粮，被算成「高阶」后比例轻松达标，于是三阶兵**仍然是 0**。
+这一条是看 10 局实测的 `生产构成` 才发现并改回来的。
+
+目的系统的触发条件（`config.ai.commander.goals`，全部可调）：
+
+| 目标 | 条件 | 参数 |
+|---|---|---|
+| **upgrade** | 大本营还有下一级 + 差的钱能在 `reachable_sec` 秒**收入**（扣维护 / 科技金耗）里补上 + 队伍成形率 ≥ `army_ratio` + 家里没被踩占领 | `min_sec 75 / reachable_sec 50 / army_ratio 0.5 / max_wait_sec 80` |
+| **elite** | ② 的倾斜条件成立 + 有一条 tier-3 兵**只差钱**（tier / 区划 / 脱战 / 编制 / 队列都过了）+ 队伍成形率 ≥ `army_ratio` | `min_sec 110 / reachable_sec 60 / army_ratio 0.6 / max_wait_sec 60` |
+| 都不做 | 一半以上队伍还没成形，或己方区划正在被踩占领 | — |
+
+### 80.3 实测（`tests/bench_see_ai.gd`，同 seed / 同 cap，10 局）
+
+| 指标 | 改之前 | **改之后** |
+|---|---|---|
+| 高阶兵（tier3）占生产 | < 2% | **≈ 9%**（王朝 41 投石车 + 1 队御林军；帝国 27 冠军骑士） |
+| 胜负 p1:p2 / 平 | 4 : 6 : 0 | **6 : 3 : 1**（1 局打到 20 分钟上限） |
+| 平均时长 | 10:08 | 11:17 |
+| 首次接触 | 4:05 | 3:00 |
+| 累计生产（p1 / p2） | 39.0 / 31.9 | 50.0 / 30.5 |
+| 阵亡（p1 / p2） | 28.1 / 16.0 | 38.4 / 21.9 |
+| 大本营等级（p1 / p2） | 2.2 / 2.7 | 2.6 / 2.5 |
+
+目的系统实际触发（15 分钟、seed 1 / 2）：升本目标 2~3 次、高阶目标 6~10 次；
+`高阶:低阶` 花费比收敛到 **0.39~0.48**（目标 0.5）。
+
+### 80.4 已知代价与取舍（本轮**没有**再调）
+
+* **总产量下降**：帝国 31.9 → 30.5，且更晚成型（攒钱 ≠ 造兵）；3 局帝国被打掉大本营。
+* **一局打到 20 分钟上限**（改之前 0 局）：双方都攒出高阶兵后互拆变慢。
+* 便宜的那条 tier-3 会被优先买：王朝落在**投石车**（0 粮 + 150 金；礼乐折算后 225 粮）、
+  帝国落在**冠军骑士**（100 粮 + 80 金 = 260 当量），而**御林军（350 粮）依旧很少**、
+  弩炮（300 当量）只有 1 个。想要「风味优先」应改成按编成权重挑，而不是按价钱挑。
+* 帝国在「没有大本营」的对局里**永远不会触发** elite（`_defense_critical` 先短路），这是有意的。
+
+### 80.5 测试
+
+| 跑法 | 结果 |
+|---|---|
+| `tests/test_ai_goals.gd`（新增） | **25 项**：tick 放宽、tier 分类、倾斜阈值、攒钱 hold / 放行、只在己方区划 |
+| `test_ai_commander` / `test_ai` / `test_logic` / `test_economy` / `test_recruit_queue` / `test_campaign_ai` | 348 / 61 / 270 / 90 / 272 / 63 全绿 |
+| `tools/check-syntax.ps1` | 253 文件 ALL OK |
+

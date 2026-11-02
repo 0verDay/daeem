@@ -1418,7 +1418,9 @@ func fill_general_retinue(g, count: int, weighted_types: Array) -> void:
 			continue
 		# ★ 归属区划继承队长（跟着队长巡逻、受同一个区划约束）。
 		e.garrison_zone_id = int(g.garrison_zone_id)
-		# ⚠️ 词条已停用：不再从队长继承光环（`inherit_general_aura` 保留但无调用点）。
+		# ★★ 2026.11.3：附属兵出生时**继承队长的将领光环**（同一支部队共享一条特性）。
+		#   队长没有特性 → 中性，不报错（见 unit.inherit_general_aura）。
+		e.inherit_general_aura(cfg, g)
 		units.append(e)
 		pending.append(e)
 		mark_vision_dirty()
@@ -1514,13 +1516,18 @@ func create_general(faction: String, profile: int, roster: int):
 	var hotkey: String = "1" if is_start else str(roster + 1)
 	# ★ 最后那个参数 = **将领档**：它决定套不套 unit.general.stats 里那份数值覆盖
 	#   （id 里的数字则用 `roster`）。
-	# ★★ 词条已停用：这里**不再** set_general_trait()。词条数据 / 方法仍保留，
-	#    只是生产路径不再给任何将领授予特性。
-	return UnitRes.create(cfg, "%s-%s" % [general_id_prefix(faction), tail], gname, tile,
+	# ★★ 2026.11.3：将领特性恢复**生效**，但口径从「随机抽」改成「配置指定」——
+	#   读 `unit.general.trait_ids[profile]`（编辑器里那位将领选的「特性」）。
+	#   没配 = 没有特性；随机入口 `_roll_general_trait` 保留但**无调用点**。
+	var u = UnitRes.create(cfg, "%s-%s" % [general_id_prefix(faction), tail], gname, tile,
 		faction, kind, hotkey, "", unit_type, profile)
+	if u != null:
+		u.set_general_trait(cfg, cfg.general_trait_at(profile))
+	return u
 
 
-## ★★ 从特性表里按确定性伪随机抽一条（**目前停用**：保留代码，供以后重新启用）。
+## ★★ 从特性表里按确定性伪随机抽一条（**无调用点**：2026.11.3 起特性由
+##   `unit.general.trait_ids` 指定，不再随机。保留代码供以后想恢复随机时用）。
 ## ★ 用 `unit_rand` 而不是引擎 RNG：同一局重算不漂，测试可以固定 `rand_salt` 断言。
 func _roll_general_trait(key: String) -> String:
 	var ids: Array = cfg.general_trait_ids()
@@ -3537,7 +3544,10 @@ func _spawn_from_recruit(leader, kind: String) -> Array:
 		#     「不追出一个区划」那条硬约束管着；
 		#   · 队长没有归属（玩家 / 阵营 AI 的将领）⇒ 兵也没有（`-1`，行为一点不变）。
 		u.garrison_zone_id = int(leader.garrison_zone_id)
-		# ⚠️ 词条已停用：新兵不再从队长继承光环。
+		# ★★ 2026.11.3：招进这支部队的新兵**继承队长的将领光环**
+		#   （与 `fill_general_retinue()` 摆放 / 红点那条路同一条口径：
+		#     「将领特性对将领本人及旗下所有单位生效」，见 view/hud.gd 的悬停）。
+		u.inherit_general_aura(cfg, leader)
 		units.append(u)
 		mark_vision_dirty()
 		# ★★ 新兵必须**立刻接上队伍当前命令**，否则将领在行军 / 交战时招出来的兵会原地脱队。
@@ -3773,20 +3783,27 @@ func general_recruit_state(faction: String, kind: String) -> Dictionary:
 	}
 
 
-## ⚠️ 词条已停用：接口保留（旧调用 / 测试仍可调），但恒返回空串数组。
+## ★★ 2026.11.3：招募名单各自带哪条特性（`unit.general.trait_ids`；没配 = ""）。
 func general_recruit_traits(faction: String = "") -> Array:
 	var out: Array = []
-	for _i in general_recruit_slots(faction).size():
-		out.append("")
+	for k in general_recruit_slots(faction):
+		out.append(general_recruit_trait_for(faction, String(k)))
 	return out
 
 
-## ⚠️ 词条已停用：恒返回 ""（保留接口）。
-func general_recruit_trait_for(_faction: String, _kind: String) -> String:
-	return ""
+## ★★ 2026.11.3：某一位可招募将领的特性 id（`unit.general.trait_ids[index]`）。
+## ★ 判据走 `ConfigRes.general_index_of(kind)`（`general_N` → 第 N-1 档，
+##   `general_0` → 第 9 档），与「类型 / 数值 / 编制上限」同一条映射。
+##   没配 / 池里没有 → ""（下单时记进 `zone.train_trait` 的也是这个值）。
+func general_recruit_trait_for(_faction: String, kind: String) -> String:
+	var idx := ConfigRes.general_index_of(kind)
+	if idx < 0:
+		return ""
+	return cfg.general_trait_at(idx)
 
 
-## ⚠️ 词条已停用（保留代码，当前无调用点）。
+## ⚠️ **无调用点**（2026.11.3 起特性改由 config 指定，不再随机抽）——
+## 保留它是为了「以后想恢复随机」时不用重写；真要用请先想清楚与 trait_ids 的优先级。
 ## 非池 / AI 席位用的**确定性**特性：同 (faction, kind, 卡位) 永远同一条。
 func _static_general_trait(faction: String, kind: String, i: int) -> String:
 	var ids: Array = cfg.general_trait_ids()
@@ -3864,10 +3881,10 @@ func _make_general_pool_state(faction: String) -> Dictionary:
 		_draw_general_hand(faction, st)
 	else:
 		st["slots"] = all.slice(0, mini(general_recruit_hand_size(), all.size()))
-		# ★ 词条已停用：不再给每张卡抽词条。
+		# ★★ 2026.11.3：特性 = 每位将领在 config 里指定的那一条（不再随机）。
 		var traits: Array = []
-		for _i in (st["slots"] as Array).size():
-			traits.append("")
+		for k in (st["slots"] as Array):
+			traits.append(general_recruit_trait_for(faction, String(k)))
 		st["slot_traits"] = traits
 	return st
 
@@ -3913,8 +3930,8 @@ func _draw_general_hand(faction: String, st: Dictionary) -> void:
 		var idx := clampi(int(floor(r * float(pool.size()))), 0, pool.size() - 1)
 		picked.append(String(pool[idx]))
 		pool.remove_at(idx)
-		# ★ 词条已停用：不再抽特性（保留空串以维持数组对齐）。
-		picked_traits.append("")
+		# ★★ 2026.11.3：特性跟着**将领档**走（配置指定），不是抽出来的。
+		picked_traits.append(general_recruit_trait_for(faction, String(picked[-1])))
 	st["slots"] = picked
 	st["slot_traits"] = picked_traits
 	st["draw_serial"] = serial + 1
@@ -4032,7 +4049,8 @@ func _pool_faction(faction: String) -> String:
 
 
 ## 快照用：招募池的**唯一性 + 冷却**（固定九宫格不依赖 slots / traits）。
-## ★ `s` / `t` 旧字段保留但恒为空（旧客机读到时不会崩）。
+## ★ `s` / `t` 旧字段保留：`t` = 那一手各自指定的将领特性（2026.11.3 起可能有值），
+##   客机靠它把特性一起还原；`s` 仍然是槽位 kind（视图不读它）。
 func general_pool_snapshot(faction: String) -> Dictionary:
 	var st := _general_pool_state(faction)
 	return {
@@ -4360,7 +4378,12 @@ func _spawn_zone_recruit(zone, kind: String) -> Variant:
 		recruit_label_of(kind), tile, faction, kind, "", "", "",
 		ConfigRes.general_index_of(kind)          # ★ 第几位将领（决定套不套它的数值覆盖）
 	)
-	# ⚠️ 词条已停用：`train_trait` 恒为空，不再授予（字段保留在 zone.gd 里）。
+	# ★★ 2026.11.3：这一单的特性在下单时就记进了 `zone.train_trait`
+	#   （`general_recruit_trait_for` → `_start_zone_training`），读完这里授给将领本人。
+	#   ⚠️ 必须在 `_start_next_zone_queue()` 之前读 —— 它会把 train_trait 换成下一单的。
+	var trait_id := String(zone.get("train_trait", ""))
+	if trait_id != "":
+		u.set_general_trait(cfg, trait_id)
 	units.append(u)
 	mark_vision_dirty()
 	# ★ 区划招募出来的将领自己就是队长 → 吃「将领血量 +10%」（用同一个判据函数）

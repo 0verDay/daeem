@@ -35,10 +35,14 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 
 from unit_editor import configfile                        # noqa: E402
+from unit_editor import model as model_mod                 # noqa: E402
 from unit_editor.configfile import Doc, JsonError, parse_number   # noqa: E402
 from unit_editor.model import (                           # noqa: E402
     BUILTIN_BUILDINGS,
     BUILTIN_UNITS,
+    GENERAL_TRAIT_ATTACK_KEY,
+    UNIT_TRAIT_ATTACK_KEY,
+    UNIT_TRAIT_KNOCKBACK,
     ConfigModel,
     ModelError,
 )
@@ -328,7 +332,11 @@ def t_recruit_packages() -> None:
     eq(guard.label, "协防军", "名字")
     eq(guard.count, 2, "★ 协防军一次出 2 个")
     ok("dy_spear_guard" in guard.member_text, "★ 组成里写着枪兵（%s）" % guard.member_text)
-    near(guard.cost_food, 145, "整包造价 · 粮食")
+    # ★ 粮食价**不钉死具体数字**：它天天跟着调参走（本地把 145 调成 120 是正常的），
+    #   钉死会让「改了一个平衡数值」变成编辑器测试红。这里验的是「模型读的就是
+    #   clan 表那一项」—— 与文件里那一格逐位相等。
+    near(guard.cost_food, model.doc.value(guard.path + ["cost", "food"]),
+         "整包造价 · 粮食（读的是 clan 表那一格）")
     near(guard.population_cost, 2, "整包造价 · 人口")
     ok(guard.owner.startswith("clan:"), "★ 记下了来源表（%s）" % guard.owner)
 
@@ -375,6 +383,233 @@ def t_charge_fields() -> None:
        "★★ 清空某一项 = 删掉键，读回 0")
     raises(lambda: model.set_unit("spearman", "charge.nope", 1.0),
            "不认识的冲锋字段被拒")
+
+
+def t_unit_traits() -> None:
+    """★★ 2026.11.3：兵种特性（`unit.types.<id>.traits` 的四个键）。
+
+    这一组钉三件事：
+      1. **读**：长枪兵的「对骑兵 +25%」读得出来（摘要也拼得对）；
+      2. **写**：每个键落到 game 侧 `_normalize_traits()` 认的位置；
+      3. **删**：清空 = 删掉那个键（读回 0 / false），而且加完再删**原文逐字节还原**。
+    """
+    print("\n[1d] 兵种特性（对某大类伤害 / 远近减伤 / 免疫击退）")
+    model = fresh_model()
+    names = dict(model.class_choices())
+    spear = model.unit("spearman")
+    eq(sorted(spear.traits.keys()), ["attack_vs_class"], "★ 长枪兵现在只有「对某大类」那一项")
+    eq(spear.attack_rows(names), [("cavalry", 0.25, "骑兵")],
+       "★★ 「对骑兵 +25%」读成一行 (cavalry, 0.25, 骑兵)")
+    eq(spear.trait_summary(names), "对骑兵 +25%", "摘要：对骑兵 +25%")
+    ok(spear.trait_number("ranged_reduction") is None,
+       "★★ 没写的减伤读成 None（界面空框，不是 0）")
+    eq(spear.trait_flag(UNIT_TRAIT_KNOCKBACK.key), False, "没写「稳定」→ False")
+
+    # ---- 写：标量减伤
+    before = model.text
+    model.set_unit_trait("spearman", "ranged_reduction", 0.25)
+    eq(model.doc.value(["unit", "types", "spearman", "traits", "ranged_reduction"]), 0.25,
+       "★★ 「远程减伤」落在 traits.ranged_reduction（config.gd 读这个键）")
+    eq(model.unit("spearman").trait_summary(names), "对骑兵 +25% / 远程减伤 25%",
+       "摘要带上远程减伤")
+    model.set_unit_trait("spearman", "melee_reduction", 2.0)
+    eq(model.doc.value(["unit", "types", "spearman", "traits", "melee_reduction"]), 1.0,
+       "★★ 减伤被夹到 1（写 2 = 无敌，只挡误输入）")
+    model.set_unit_trait("spearman", "melee_reduction", 0.3)
+    # 改一个**已有**的键只动一行（不整块重排）
+    mid = model.text
+    model.set_unit_trait("spearman", "melee_reduction", 0.35)
+    eq(changed_lines(mid, model.text), 1,
+       "★★ 改一个已有的特性值：全文件只有那一行变化（不整块重排）")
+
+    # ---- 写：稳定（免疫击退）
+    model.set_unit_trait("spearman", UNIT_TRAIT_KNOCKBACK.key, True)
+    eq(model.doc.value(["unit", "types", "spearman", "traits", "knockback_immune"]), True,
+       "★ 「稳定」落在 traits.knockback_immune = true")
+    model.set_unit_trait("spearman", UNIT_TRAIT_KNOCKBACK.key, False)
+    ok(not model.doc.has(["unit", "types", "spearman", "traits", "knockback_immune"]),
+       "★★ 取消勾选 = 删掉那个键（不留一个 false）")
+
+    # ---- 写：对某大类伤害（加 / 改 / 删）
+    model.add_unit_trait_attack("spearman", "infantry")
+    eq(model.doc.value(["unit", "types", "spearman", "traits", "attack_vs_class",
+                        "infantry"]), 0.25,
+       "★★ 「加一条」默认 +25%，落在 traits.attack_vs_class.infantry")
+    eq([row[0] for row in model.unit("spearman").attack_rows(names)],
+       ["cavalry", "infantry"], "★ 行的顺序 = 文件里的顺序（新加的排在后面）")
+    raises(lambda: model.add_unit_trait_attack("spearman", "infantry"),
+           "同一个大类不能加两次（改那一行的数就行）")
+    raises(lambda: model.set_unit_trait_attack("spearman", "nope", 0.1),
+           "不存在的兵种大类被拒")
+    model.set_unit_trait_attack("spearman", "infantry", 0.4)
+    eq(model.doc.value(["unit", "types", "spearman", "traits", "attack_vs_class",
+                        "infantry"]), 0.4, "改那一行")
+    model.set_unit_trait_attack("spearman", "infantry", None)
+    ok(not model.doc.has(["unit", "types", "spearman", "traits", "attack_vs_class",
+                          "infantry"]), "★★ 删掉那一行 → 键没了")
+
+    # ---- 只改一个**已有**键的值：一行 diff；改回来逐字节还原
+    rider_before = model.text
+    model.set_unit_trait("rider", "ranged_reduction", 0.35)
+    eq(changed_lines(rider_before, model.text), 1,
+       "★★ 改一个已有的特性值：全文件只有那一行变化（不整块重排）")
+    model.set_unit_trait("rider", "ranged_reduction", 0.25)
+    eq(model.text, rider_before, "★★ 改一个已有的值再改回来：文本逐字节还原")
+
+    # ---- 全删回去 = 数据回到原样
+    # ★ 注意：**加 / 删键**会重排 traits 那一块（嵌套字典被展开），这是刻意接受的 ——
+    #   承诺是「值改动只动一行」，不是「任何结构改动都不重排」。这里验数据不漂。
+    model.set_unit_trait("spearman", "ranged_reduction", None)
+    model.set_unit_trait("spearman", "melee_reduction", None)
+    eq(parse(model.text)["unit"]["types"]["spearman"]["traits"],
+       parse(before)["unit"]["types"]["spearman"]["traits"],
+       "★★ 加了一圈再全删掉：数据回到原样")
+    eq(model.unit("spearman").traits, {"attack_vs_class": {"cavalry": 0.25}},
+       "读回来只剩原来那一项")
+
+    # ---- 本来没有 traits 键的单位：加完再删**不许留下空块**
+    model.doc.remove(["unit", "types", "spearman", "traits"])
+    model.set_unit_trait("spearman", "ranged_reduction", 0.2)
+    ok(model.doc.has(["unit", "types", "spearman", "traits", "ranged_reduction"]),
+       "★ 没有 traits 块的单位：第一次编辑会把块建出来")
+    model.set_unit_trait("spearman", "ranged_reduction", None)
+    ok(not model.doc.has(["unit", "types", "spearman", "traits"]),
+       "★★ 删回空之后整块 traits 也消失（文件里不留 `{}`）")
+
+    # ---- 排版：整块写出来的缩进必须对（不能歪到嵌套字典那一列）
+    model.set_unit_trait("spearman", "ranged_reduction", 0.25)
+    model.set_unit_trait("spearman", UNIT_TRAIT_KNOCKBACK.key, True)
+    model.add_unit_trait_attack("spearman", "infantry", 0.1)
+    block = model.doc.text_of(["unit", "types", "spearman", "traits"])
+    lines = [line for line in block.split("\n") if line.strip()]
+    indents = [len(line) - len(line.lstrip(" ")) for line in lines]
+    eq(all(i % 2 == 0 for i in indents), True,
+       "★★ traits 块每一行都是偶数缩进（缩进漂移时会出现 29 这种奇数）：%s" % indents)
+    key_indents = [ind for line, ind in zip(lines, indents)
+                   if line.lstrip().startswith('"')]
+    eq(key_indents.count(min(key_indents)), 3,
+       "★★ 三个一级键（attack_vs_class / ranged_reduction / knockback_immune）同列：%s"
+       % key_indents)
+
+
+def t_general_traits() -> None:
+    """★★ 2026.11.3：将领特性池（`unit.general_traits`）+ 每位将领指定一条。"""
+    print("\n[1e] 将领特性池与「每位将领指定一条」")
+    model = fresh_model()
+    names = dict(model.class_choices())
+    eq(model.general_trait_ids(),
+       ["swift", "melee_guard", "ranged_guard", "infantry_slayer", "cavalry_slayer", "might"],
+       "★ 池里那 6 条（顺序 = config 里的顺序）")
+    swift = model.general_trait("swift")
+    eq((swift.name, swift.short, swift.desc), ("神速", "速", "移动速度 +25%"), "★ 神速的三件套")
+    eq(swift.effect_number("speed_bonus"), 0.25, "★ 神速 = 移速 +25%（比例 0.25）")
+    eq(swift.effect_summary(names), "移速 +25%", "摘要：移速 +25%")
+    ok(model.general_trait("infantry_slayer").effect_number("melee_reduction") is None,
+       "★ 没写的那项读成 None（= 这条特性没有它）")
+
+    # ---- 指定 / 取消指定
+    eq(model.general(0).trait_id, "", "默认：将领 0 没有特性（trait_ids 里是空串）")
+    model.assign_general_trait(0, "swift")
+    eq(model.doc.value(["unit", "general", "trait_ids", 0]), "swift",
+       "★★ 给将领 0 指定神速 → 写进 unit.general.trait_ids[0]")
+    eq(model.general(0).trait_id, "swift", "模型读回同一条")
+    model.assign_general_trait(0, "")
+    eq(model.general(0).trait_id, "", "★ 选「（无）」= 清空，不是删掉整个数组")
+    ok(isinstance(model.doc.value(["unit", "general", "trait_ids"]), list),
+       "trait_ids 仍是与将领同序的数组（下标不能错位）")
+    raises(lambda: model.assign_general_trait(0, "nope"), "指定一条不存在的特性被拒")
+    raises(lambda: model.assign_general_trait(99, "swift"), "越界的将领序号被拒")
+
+    # ---- 改池里的定义
+    model.set_general_trait_field("swift", "name", "疾行")
+    eq(model.doc.value(["unit", "general_traits", "swift", "name"]), "疾行", "改名字")
+    raises(lambda: model.set_general_trait_field("swift", "name", ""), "名字不能空着")
+    model.set_general_trait_field("swift", "speed_bonus", 0.4)
+    eq(model.doc.value(["unit", "general_traits", "swift", "speed_bonus"]), 0.4,
+       "★ 改移速加成 → unit.general_traits.swift.speed_bonus（config.gd 读它）")
+    model.set_general_trait_field("swift", "ranged_reduction", 1.5)
+    eq(model.doc.value(["unit", "general_traits", "swift", "ranged_reduction"]), 1.0,
+       "★ 减伤夹到 1")
+    model.set_general_trait_field("swift", "short", "")
+    ok(not model.doc.has(["unit", "general_traits", "swift", "short"]),
+       "★ 清空短名 = 删掉键（游戏侧退成名字首字）")
+    model.add_general_trait_attack("swift", "cavalry")
+    eq(model.doc.value(["unit", "general_traits", "swift", "attack_vs_class", "cavalry"]),
+       0.25, "★ 将领特性也能写「对某大类伤害 +x%」")
+    model.set_general_trait_attack("swift", "cavalry", None)
+    ok(not model.doc.has(["unit", "general_traits", "swift", "attack_vs_class"]),
+       "★ 删掉唯一一行 → 整张 attack_vs_class 表也没了")
+
+    # ---- 新建 / 删除
+    before_ids = model.general_trait_ids()
+    model.add_general_trait("brute", "蛮力", "might")
+    eq(model.general_trait_ids(), before_ids + ["brute"], "★ 新建的特性追加在池尾")
+    brute = model.general_trait("brute")
+    eq(brute.name, "蛮力", "名字用新建时填的")
+    eq(brute.attack_speed_bonus, 0.25, "★ 照模板（might）复制了效果")
+    eq(brute.short, "", "★★ 短名**不抄模板**（否则新特性顶着模板那个「神」字）")
+    raises(lambda: model.add_general_trait("brute", "又一个", "might"), "id 不许重复")
+    raises(lambda: model.add_general_trait("Bad Id", "坏", "might"), "id 只许小写 + 下划线")
+
+    # 删掉一条正在用的：必须把用它的将领一起改成「无」
+    model.assign_general_trait(0, "brute")
+    eq(model.general(0).trait_id, "brute", "（前提）将领 0 正在用 brute")
+    model.remove_general_trait("brute")
+    ok(not model.doc.has(["unit", "general_traits", "brute"]), "★★ 删掉了池里那一条")
+    eq(model.general(0).trait_id, "",
+       "★★ 正在用它的将领被改成「无」（不留一条指向空 id 的记录）")
+    raises(lambda: model.remove_general_trait("brute"), "再删一次被拒")
+
+    # ---- 读法契约：缺项 / 越界 / 坏 id 都当「没有特性」
+    model.doc.set(["unit", "general", "trait_ids", 1], "ghost")
+    eq(model.general(1).trait_id, "",
+       "★★ trait_ids 里写了一个池里没有的 id → 当成「没有特性」（写错当没写）")
+    eq(model.general(9).trait_id, "", "越界的序号 → 空串，不抛异常")
+
+    # ---- 池被删空时也能建第一条（否则「把特性全删了」会把功能锁死）
+    for tid in list(model.general_trait_ids()):
+        model.remove_general_trait(tid)
+    eq(model.general_trait_ids(), [], "（前提）池被删空了")
+    model.add_general_trait("first", "第一条", "")
+    eq(model.general_trait("first").name, "第一条", "★★ 没有模板时也能新建（只写名字）")
+    eq(model.general_trait("first").effect_summary(names), "（没有效果）", "新特性默认没有效果")
+
+
+def t_trait_game_keys() -> None:
+    """★★ 「编辑器写的键」= 「游戏读的键」 —— 这一组是跨语言契约的反向钉子。"""
+    print("\n[1f] 特性的键名契约（编辑器 ↔ logic/config.gd）")
+    model = fresh_model()
+    eq({f.key for f in model_mod.UNIT_TRAIT_FIELDS} | {UNIT_TRAIT_KNOCKBACK.key},
+       {"ranged_reduction", "melee_reduction", "knockback_immune"},
+       "★★ 兵种特性的标量/开关键 = config.gd 的 _normalize_traits() 认的那几个")
+    eq(UNIT_TRAIT_ATTACK_KEY, "attack_vs_class", "兵种特性的「对某大类」键名")
+    eq({f.key for f in model_mod.GENERAL_TRAIT_FIELDS},
+       {"speed_bonus", "attack_speed_bonus", "melee_reduction", "ranged_reduction"},
+       "★★ 将领特性的标量键 = config.gd 的 _normalize_general_trait() 认的那几个")
+    eq(GENERAL_TRAIT_ATTACK_KEY, "attack_vs_class", "将领特性的「对某大类」键名")
+    # 池里每一条的键都必须在那张白名单里（多了游戏会静默丢掉 —— 编辑器不该让人写出来）
+    allowed = ({f.key for f in model_mod.GENERAL_TRAIT_FIELDS}
+               | {f.key for f in model_mod.GENERAL_TRAIT_TEXT_FIELDS}
+               | {GENERAL_TRAIT_ATTACK_KEY})
+    for trait in model.general_traits():
+        extra = set(trait.raw.keys()) - allowed
+        eq(extra, set(), "%s 的键都在白名单里" % trait.id)
+        for cls in trait.attack_vs_class:
+            ok(cls in dict(model.class_choices()),
+               "%s 的 attack_vs_class 键 %s 是 unit.classes 里的真实大类" % (trait.id, cls))
+    # 每个兵种的 traits 也只能写那四个键
+    unit_allowed = {f.key for f in model_mod.UNIT_TRAIT_FIELDS} | {
+        UNIT_TRAIT_KNOCKBACK.key, UNIT_TRAIT_ATTACK_KEY}
+    for uid in model.unit_ids():
+        extra = set(model.unit(uid).traits.keys()) - unit_allowed
+        eq(extra, set(), "%s 的 traits 只写了白名单里的键" % uid)
+    # 每位将领的 trait_ids：要么空，要么指向池里真实存在的一条
+    arr = model.doc.value(["unit", "general", "trait_ids"], [])
+    ok(isinstance(arr, list), "★★ unit.general.trait_ids 是数组（与将领同序）")
+    eq(len(arr), model.general_count(), "★ 长度 = 将领个数（%d）" % model.general_count())
+    for i, tid in enumerate(arr):
+        ok(tid == "" or model.doc.has(["unit", "general_traits", tid]),
+           "trait_ids[%d] 要么是空串，要么指向池里真实的特性（%r）" % (i, tid))
 
 
 def t_add_remove_unit() -> None:
@@ -957,6 +1192,9 @@ def main() -> int:
     t_unit_fields()
     t_recruit_packages()
     t_charge_fields()
+    t_unit_traits()
+    t_general_traits()
+    t_trait_game_keys()
     t_add_remove_unit()
     t_generals()
     t_buildings()

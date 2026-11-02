@@ -35,6 +35,7 @@ func _run() -> void:
 	_test_config_contract()
 	_test_general_overrides()
 	_test_vision()
+	_test_traits()
 	_test_new_building()
 	_test_construction()
 	await process_frame
@@ -149,6 +150,119 @@ func _with_general_stats(stats: Array) -> RefCounted:
 	cfg.data["unit"]["general"]["stats"] = stats
 	return _reload(cfg)
 
+
+## ★★ 2026.11.3：重算**全部**缓存（`_reload` 只重算标量，够不到
+##   `unit.types.<id>.traits` 与 `unit.general_traits` —— 那两张表在
+##   `_cache_unit_types()` / `_cache_general_traits()` 里洗）。
+func _reload_full(src) -> RefCounted:
+	var cls = script_at("res://logic/config.gd")
+	var cfg = cls.new()
+	cfg.data = src.data
+	cfg._cache_scalars()
+	cfg._cache_unit_types()
+	cfg._cache_general_traits()
+	return cfg
+
+
+## ★★ 2026.11.3：**特性**（兵种 4 个键 + 将领特性池 + 每位将领指定一条）。
+##
+## 这一组是「编辑器里能改 ↔ 游戏真的读」的最后一环：
+##   · 前半段：config 里那几张表读法正确（编辑器照着写的位置）；
+##   · 中段：把编辑器**会写出来的形状**塞进 config，单位身上真的多出这些效果；
+##   · 后半段：`unit.general.trait_ids` 指定的特性在开局 / 招募 / 附属兵三条路上生效。
+func _test_traits() -> void:
+	var cfg = require_config()
+	if cfg == null:
+		return
+
+	# 1) 兵种特性：编辑器那一栏的四个键
+	var spear: Dictionary = cfg.unit_traits_of("spearman")
+	near(float((spear.get("attack_vs_class", {}) as Dictionary).get("cavalry", 0.0)), 0.25, 1e-9,
+		"★★ 长枪兵：对骑兵 +25%")
+	var rider: Dictionary = cfg.unit_traits_of("rider")
+	near(float(rider.get("ranged_reduction", 0.0)), 0.25, 1e-9, "★★ 骑手：远程减伤 25%")
+	var royal: Dictionary = cfg.unit_traits_of("dy_royal_sword")
+	near(float(royal.get("melee_reduction", 0.0)), 0.3, 1e-9,
+		"★★ 御林军剑盾：近战减伤 30%（编辑器「近战减伤」那一栏）")
+	ok(bool(cfg.unit_traits_of("dy_chariot").get("knockback_immune", false)),
+		"★★ 王朝战车：稳定（编辑器「免疫击退」那个勾）")
+	eq(cfg.unit_traits_of("spearman").size(), 4,
+		"★ 洗出来的形状固定四键（attack_vs_class / ranged_reduction / melee_reduction / knockback_immune）")
+
+	# 2) 把**编辑器会写出来的形状**塞进去：单位出生时就该带上
+	var raw = require_config()
+	raw.data["unit"]["types"]["spearman"]["traits"] = {
+		"attack_vs_class": {"infantry": 0.5},
+		"ranged_reduction": 0.4,
+		"melee_reduction": 0.6,
+		"knockback_immune": true,
+	}
+	var cfg2 = _reload_full(raw)
+	var u = UnitRes.create(cfg2, "trait_probe", "测", Vector2i.ZERO, "p1",
+		UnitRes.UNIT_TYPE_SPEARMAN, "", "", UnitRes.UNIT_TYPE_SPEARMAN, -1)
+	near(u.attack_multiplier_vs_class("infantry"), 1.5, 1e-9, "★★ 对步兵 +50% 真的进到伤害倍率里")
+	near(u.attack_multiplier_vs_class("cavalry"), 1.0, 1e-9,
+		"★ 没写的大类不受影响（对骑兵仍 ×1.0）")
+	near(u.ranged_damage_reduction, 0.4, 1e-9, "★★ 远程减伤 40%")
+	near(u.melee_damage_reduction, 0.6, 1e-9, "★★ 近战减伤 60%")
+	ok(u.knockback_immune, "★★ 稳定（免疫击退）")
+	# 受击侧真的减伤（关掉护甲 / 士气，只看特性那一条）
+	u.armor = 0.0
+	u.hp_max = 1000.0
+	u.hp = 1000.0
+	u.morale = cfg2.morale_mid_tier
+	u.take_damage(cfg2, null, 100.0, null, true)
+	near(1000.0 - u.hp, 60.0, 1e-6, "★★ 远程 100 → 吃 60（40% 减免）")
+	u.hp = 1000.0
+	u.take_damage(cfg2, null, 100.0, null, false)
+	near(1000.0 - u.hp, 40.0, 1e-6, "★★ 近战 100 → 吃 40（60% 减免）")
+
+	# 3) 将领特性：`unit.general.trait_ids` 指定的那一条
+	var raw2 = require_config()
+	var ids: Array = []
+	for i in 10:
+		ids.append("swift" if (i == 0 or i == 9) else "")
+	raw2.data["unit"]["general"]["trait_ids"] = ids
+	var cfg3 = _reload_full(raw2)
+	eq(cfg3.general_trait_at(0), "swift", "★★ 编辑器里给「将领 1」选了神速 → config 读得到")
+	eq(cfg3.general_trait_at(9), "swift", "★★ 开局将领 #0（第 10 档）也选了神速")
+	eq(cfg3.general_trait_at(3), "", "★ 没选的档位 = 没有特性（**不再随机抽**）")
+
+	var w = require_world(cfg3)
+	var g0 = w.unit_by_id("general-0")
+	ok(g0 != null, "（前提）开局将领 #0 在场")
+	if g0 != null:
+		eq(String(g0.general_trait), "swift", "★★ 开局将领 #0 拿到了配置指定的「神速」")
+		eq(String(g0.aura_trait_id), "swift", "★ 光环也应用上了")
+		near(g0.aura_speed_mult, 1.25, 1e-9, "★★ 光环：移速 ×1.25")
+		near(g0.speed(cfg3, null), cfg3.unit_speed_of("spearman") * 1.25, 1e-6,
+			"★★ 实际速度也是 ×1.25（不是只有面板好看）")
+		# 下属：摆放 / 红点那条生成路径
+		var before: int = w.units.size()
+		w.fill_general_retinue(g0, 2, [])
+		ok(w.units.size() >= before + 2, "（前提）生成了附属兵")
+		if w.units.size() > before:
+			var esc = w.units[w.units.size() - 1]
+			eq(String(esc.aura_trait_id), "swift",
+				"★★ `fill_general_retinue` 生成的附属兵继承同一条光环")
+
+	# 4) 招募：`general_N` → 第 N-1 档，下单时记的就是这条
+	eq(w.general_recruit_trait_for("p1", "general_1"), "swift",
+		"★★ 区划招募 general_1 → 将领档 0 的神速")
+	eq(w.general_recruit_trait_for("p1", "general_2"), "",
+		"★ 没配特性的将领招出来没有特性")
+	eq(w.general_recruit_trait_for("p1", "general_0"), "swift",
+		"★ general_0（第 10 档）也按同一张表映射")
+
+	# 5) 写错当没写：指向池里不存在的 id
+	var raw3 = require_config()
+	var ghost_ids: Array = ["ghost"]
+	for _i in 9:
+		ghost_ids.append("")
+	raw3.data["unit"]["general"]["trait_ids"] = ghost_ids
+	eq(_reload_full(raw3).general_trait_at(0), "",
+		"★★ trait_ids 写了池里没有的 id → 当成没有特性（不报错、不留坏 id）")
+
 func _place_enemy(w, cfg, tile: Vector2i):
 	var e = UnitRes.create(cfg, "tester-%d-%d" % [tile.x, tile.y], "长枪兵", tile,
 		FactionRes.NPC_FACTION, UnitRes.UNIT_TYPE_SPEARMAN)
@@ -204,7 +318,7 @@ func _test_general_overrides() -> void:
 		"没写的项一律跟随")
 	eq(g1.name, "西境枪将", "★ 将领名字覆盖生效（开局那三个的名字从这里来）")
 	eq(g2.name, "将领 2", "没写名字 → 原来的「将领 N」")
-	# ★ 词条已停用：速度就是兵种基础值。
+	# ★ 将领 1 没指定特性（trait_ids 里是空串）→ 速度就是兵种基础值。
 	near(g1.speed(cfg4, w.map), cfg4.unit_speed_of("spearman"), 1e-6,
 		"速度也能覆盖（这里没写）")
 	near(cfg4.general_hp_at(1), 300.0 * cfg4.general_hp_mult, 1e-6,

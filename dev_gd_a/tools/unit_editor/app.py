@@ -43,16 +43,22 @@ from .model import (
     GENERAL_CAP_FIELD,
     GENERAL_RECRUIT_FIELD,
     GENERAL_STAT_FIELDS,
+    GENERAL_TRAIT_FIELDS,
+    GENERAL_TRAIT_PICK_FIELD,
+    GENERAL_TRAIT_TEXT_FIELDS,
     ICON_HINT,
     LEVEL_ATTACK_FIELDS,
     LEVEL_FIELDS,
     PACKAGE_FIELDS,
     RECRUIT_FIELDS,
     UNIT_FIELDS,
+    UNIT_TRAIT_FIELDS,
+    UNIT_TRAIT_KNOCKBACK,
     Building,
     ConfigModel,
     Field,
     General,
+    GeneralTrait,
     ModelError,
     Unit,
     fmt_number,
@@ -568,11 +574,16 @@ class EditorApp:
 
         left = tk.Frame(body, bg=UI["bg"])
         left.pack(side="left", fill="both", expand=True)
-        self.list_host = tk.Frame(left, bg=UI["bg"])
-        self.list_host.pack(side="top", fill="both", expand=True)
+        # ★★ 2026.11.3：**先摆操作栏、再摆列表**。pack 按顺序分配空间，列表先摆的话
+        #   它的「请求高度」（四栏列表）会把操作栏 / 状态栏挤成 0 高 —— 加了第 4 栏
+        #   「将领特性池」之后实测就是「左下那四颗按钮整排消失」。
+        #   现在操作栏先占住自己的 32px，溢出只会让**列表**少显示几行（列表本来就能滚）。
         self.action_bar = tk.Frame(left, bg=UI["bg"])
         self.action_bar.pack(side="bottom", fill="x", padx=10, pady=(0, 8))
+        self.list_host = tk.Frame(left, bg=UI["bg"])
+        self.list_host.pack(side="top", fill="both", expand=True)
 
+        # ★ 状态栏也**先摆**（同一个理由：它必须永远看得见）。
         self.status_var = tk.StringVar(value="")
         tk.Label(self.root, textvariable=self.status_var, anchor="w", bg=UI["panel"],
                  fg=UI["text_dim"], padx=10, pady=4,
@@ -893,7 +904,14 @@ class EditorApp:
     def _build_unit_lists(self) -> None:
         tk.Label(self.list_host, text="兵种", bg=UI["bg"], fg=UI["accent"], anchor="w",
                  font=("Microsoft YaHei UI", 10, "bold")).pack(fill="x", padx=10, pady=(8, 0))
-        self.unit_tree = self._tree(self.list_host, UNIT_TREE_COLUMNS, height=9)
+        # ★★ 2026.11.3：左栏现在有**四张列表**（兵种 / 将领 / 将领特性池 / 组合招募单），
+        #   必须保证它们 + 操作栏 + 状态栏在默认的 1280×820 窗口里都看得见
+        #   （Tk 的 pack 是「先到先得」：请求高度总和超过窗口时，**后面那一块会被压成 0**）。
+        #   实测：每行约 27px、四个小标题共约 170px。当前取 7 / 3 / 3 / 2 行，
+        #   整窗请求高度约 780px < 820px。⚠️ 以后再往上加一栏，先打印一次
+        #   `root.winfo_reqheight()` 确认没超 —— 加「将领特性池」那一轮就是超了 100px，
+        #   表现是左下那四颗按钮整排消失（不是报错，很隐蔽）。
+        self.unit_tree = self._tree(self.list_host, UNIT_TREE_COLUMNS, height=7)
         self.unit_tree.tag_configure("builtin", foreground=UI["text"])
         for unit in self.model.units():
             cost = "%g / %g / %g" % (unit.cost_food, unit.cost_gold, unit.population_cost)
@@ -921,7 +939,7 @@ class EditorApp:
             ("dmg", "攻击", 60), ("rng", "距离", 56), ("spd", "移速", 56),
             ("vis", "视野", 50),
             ("cost", "造价 粮/金/人口", 150), ("train", "招兵秒", 64),
-        ], height=4)
+        ], height=3)
         for gen in self.model.generals():
             marked = "" if not gen.override else "（有单独数值）"
             self.general_tree.insert("", "end", iid="g:%d" % gen.index, text=gen.kind,
@@ -939,6 +957,21 @@ class EditorApp:
                                              #   （unit.general.recruit_sec，默认 10 秒）。
                                              fmt(gen.recruit_sec)))
 
+        # ★★ 2026.11.3：**将领特性池**——特性是全局一份（一族效果的定义），
+        #   将领只是「点名要池里的哪一条」。这一栏就是「增删将领特性」的入口。
+        tk.Label(self.list_host, text="将领特性池（哪些效果可供将领选）", bg=UI["bg"],
+                 fg=UI["accent"], anchor="w",
+                 font=("Microsoft YaHei UI", 10, "bold")).pack(fill="x", padx=10, pady=(10, 0))
+        self.trait_tree = self._tree(self.list_host, [
+            ("name", "名字", 110), ("short", "字", 40), ("effect", "效果", 330),
+        ], height=3)
+        names = dict(self.model.class_choices())
+        for trait in self.model.general_traits():
+            self.trait_tree.insert(
+                "", "end", iid="t:" + trait.id, text=trait.id,
+                values=(trait.name, trait.short_text or "—",
+                        trait.effect_summary(names)))
+
         # ★★ 2026.11.2：**组合招募单**（协防军 / 御林军）——它们不是 unit.types 里的兵种
         #   （没有血条 / 攻击这些数值），单位列表列不出来；但「一次要多少粮 / 扣多少人口」
         #   必须能改，所以单独给一栏（用户报的「找不到修改协防军招募消耗的条目」）。
@@ -951,7 +984,7 @@ class EditorApp:
             self.package_tree = self._tree(self.list_host, [
                 ("name", "名字", 110), ("count", "出几个", 52),
                 ("cost", "造价 粮/金/人口", 150), ("src", "来源", 96),
-            ], height=3)
+            ], height=2)
             for pkg in packages:
                 self.package_tree.insert(
                     "", "end", iid="p:" + pkg.kind, text=pkg.kind,
@@ -961,9 +994,17 @@ class EditorApp:
                             pkg.owner.replace("clan:", "")))
 
         # ---- 操作按钮
+        # ★★ 2026.11.3：多了「将领特性」这一档 —— 四个按钮**同时**摆在这里，
+        #   因为操作栏只在刷新列表时重建，而「点左边的行」只重建侧边栏
+        #   （按当前选中项动态换按钮会显示成上一步的那一组）。两个删除按钮各自
+        #   检查选中项的类型，点错了只会说一句「先在左边点一个兵种 / 特性」。
         bar = self.action_bar
         self._button(bar, "＋ 新建兵种…", self.do_new_unit, padx=12, pady=5).pack(side="left")
-        self._button(bar, "删除选中的兵种", self.do_delete_unit, padx=12, pady=5,
+        self._button(bar, "删除兵种", self.do_delete_unit, padx=12, pady=5,
+                     bg=UI["danger_btn"], fg=UI["danger_fg"],
+                     activebackground=UI["danger_btn_hover"]).pack(side="left", padx=6)
+        self._button(bar, "＋ 新建特性…", self.do_new_trait, padx=12, pady=5).pack(side="left")
+        self._button(bar, "删除特性", self.do_delete_trait, padx=12, pady=5,
                      bg=UI["danger_btn"], fg=UI["danger_fg"],
                      activebackground=UI["danger_btn_hover"]).pack(side="left", padx=6)
         tk.Label(bar, text="（开局三位将领不在这里增删）", bg=UI["bg"], fg=UI["text_dim"],
@@ -1018,6 +1059,8 @@ class EditorApp:
             tree, iid = getattr(self, "package_tree", None), "p:" + str(key)
         elif kind == "general":
             tree, iid = getattr(self, "general_tree", None), "g:%d" % key
+        elif kind == "trait":
+            tree, iid = getattr(self, "trait_tree", None), "t:" + str(key)
         elif kind == "building":
             tree, iid = getattr(self, "building_tree", None), "b:" + str(key)
         if tree is None or iid is None:
@@ -1050,6 +1093,9 @@ class EditorApp:
             new_selection = ("package", iid[2:])
         elif iid.startswith("g:"):
             new_selection = ("general", int(iid[2:]))
+        elif iid.startswith("t:"):
+            # ★★ 2026.11.3：将领特性池里的一条（iid 是 `t:<id>`）。
+            new_selection = ("trait", iid[2:])
         elif iid.startswith("b:"):
             new_selection = ("building", iid[2:])
         else:
@@ -1096,11 +1142,14 @@ class EditorApp:
                 child.destroy()
             if self.page == "unit":
                 if not self.selection:
-                    self._empty_hint("左边点一行：兵种 / 组合招募单 / 将领。")
+                    self._empty_hint("左边点一行：兵种 / 组合招募单 / 将领 / 将领特性。")
                 elif self.selection[0] == "unit":
                     self._build_unit_form(self.model.unit(self.selection[1]))
                 elif self.selection[0] == "package":
                     self._build_package_form(self.model.recruit_package(self.selection[1]))
+                elif self.selection[0] == "trait":
+                    # ★★ 2026.11.3：特性池里的一条（名字 / 短名 / 说明 / 效果 / 加删大类）
+                    self._build_trait_form(self.model.general_trait(self.selection[1]))
                 else:
                     self._build_general_form(self.model.general(int(self.selection[1])))
             else:
@@ -1277,6 +1326,75 @@ class EditorApp:
             self._hint(parent, inherited_text)
         return row
 
+    # ---- 特性行（2026.11.3）---------------------------------------------
+
+    def _trait_attack_row(self, parent, cname: str, ratio, commit: Callable[[Any], None],
+                          delete: Optional[Callable[[], None]] = None) -> tk.Frame:
+        """一行「对<大类>伤害 +x%」：标签 + 输入框 + 可选的「删」。
+
+        ★ 不复用 `_entry_row`：那个函数会顺手把 field.hint 挂到**每一行**下面，
+          六个大类就是六行重复提示，右栏本来就不够高。提示统一写在节标题上。
+        """
+        row = tk.Frame(parent, bg=UI["panel"])
+        row.pack(fill="x", pady=2)
+        label = "对%s伤害" % cname
+        tk.Label(row, text=label, bg=UI["panel"], fg=UI["text"], width=13,
+                 anchor="w").pack(side="left")
+        var = tk.StringVar(value=fmt(ratio))
+        entry = ttk.Entry(row, textvariable=var)
+        entry.pack(side="left", fill="x", expand=True, padx=(4, 4))
+        # ★ field 只借 `_commit_text` 的数字校验与夹值；label 用于状态栏那句话。
+        field = Field("attack_vs_class", label, "float", minimum=0.0, maximum=10.0)
+
+        def do_commit(_event=None):
+            self._commit_text(var, field, commit, entry, False)
+
+        entry.bind("<Return>", do_commit)
+        entry.bind("<FocusOut>", do_commit)
+        entry.commit_action = do_commit                # 测试直通，见 `_entry_row`
+        if delete is not None:
+            self._button(row, "删", delete, padx=6, pady=1,
+                         font=("Microsoft YaHei UI", 8)).pack(side="left")
+        return row
+
+    def _trait_attack_block(self, parent, rows, commit, delete, add_choices, add_commit) -> None:
+        """「对某大类伤害 +x%」整段：已有的每一行 + 末尾「加一条」。
+
+        ★ 兵种特性与将领特性用的是**同一种形状**（`{大类 id: 比例}`），所以这一段
+          两处共用一份构造代码，只是回调指向不同的 model 方法。
+
+        @param rows        `[(大类 id, 比例, 大类显示名)]`（顺序 = 文件里的顺序）
+        @param commit      `(cls, value) -> None`
+        @param delete      `(cls) -> None`
+        @param add_choices `[(cls, 显示名)]`：还没加过的大类
+        @param add_commit  `(cls) -> None`
+        """
+        for cls, ratio, cname in rows:
+            self._trait_attack_row(
+                parent, cname, ratio,
+                commit=lambda v, c=cls: commit(c, v),
+                delete=lambda c=cls: delete(c))
+        add_row = tk.Frame(parent, bg=UI["panel"])
+        add_row.pack(fill="x", pady=2)
+        tk.Label(add_row, text="加一条", bg=UI["panel"], fg=UI["text"], width=13,
+                 anchor="w").pack(side="left")
+        if not add_choices:
+            tk.Label(add_row, text="（所有大类都加过了）", bg=UI["panel"],
+                     fg=UI["text_dim"], anchor="w",
+                     font=("Microsoft YaHei UI", 8)).pack(side="left")
+            return
+        var = tk.StringVar(value=add_choices[0][1])
+        combo = ttk.Combobox(add_row, textvariable=var, state="readonly",
+                             values=[label for _c, label in add_choices])
+        combo.pack(side="left", fill="x", expand=True, padx=(4, 4))
+        by_label = {label: cid for cid, label in add_choices}
+
+        def do_add():
+            add_commit(by_label.get(var.get(), add_choices[0][0]))
+
+        self._button(add_row, "＋ 加", do_add, padx=8, pady=1,
+                     font=("Microsoft YaHei UI", 8)).pack(side="left")
+
     # ---- 单位表单 -------------------------------------------------------
 
     def _build_unit_form(self, unit: Unit) -> None:
@@ -1325,6 +1443,34 @@ class EditorApp:
                             lambda v, u=unit, f=field: self.model.set_unit(
                                 u.id, "charge." + f.key, v),
                             allow_empty=True)
+
+        # ---- 兵种特性（`unit.types.<id>.traits`，2026.11.3）
+        # ★ 写法与「冲锋」同一条：空的项 = **删掉那个键**（游戏侧读回 0），
+        #   第一次编辑时才把 traits 那一块建出来 —— 没特性的兵种文件保持原样。
+        unit_names = dict(self.model.class_choices())
+        tsec = self._section("特性", "unit.types.<id>.traits（0.25 = 25%）")
+        self._trait_attack_block(
+            tsec,
+            unit.attack_rows(unit_names),
+            commit=lambda cls, v, u=unit: self.model.set_unit_trait_attack(u.id, cls, v),
+            delete=lambda cls, u=unit, n=unit_names: self._do(
+                lambda: self.model.set_unit_trait_attack(u.id, cls, None),
+                "删掉「%s」对%s的伤害加成" % (u.id, n.get(cls, cls))),
+            add_choices=[(cid, label) for cid, label in self.model.class_choices()
+                         if cid not in unit.attack_vs_class],
+            add_commit=lambda cls, u=unit, n=unit_names: self._do(
+                lambda: self.model.add_unit_trait_attack(u.id, cls),
+                "给「%s」加一条对%s的加成" % (u.id, n.get(cls, cls))))
+        for field in UNIT_TRAIT_FIELDS:
+            self._entry_row(tsec, field, unit.trait_number(field.key),
+                            lambda v, u=unit, f=field: self.model.set_unit_trait(
+                                u.id, f.key, v),
+                            allow_empty=True)
+        self._bool_row(tsec, UNIT_TRAIT_KNOCKBACK,
+                       unit.trait_flag(UNIT_TRAIT_KNOCKBACK.key),
+                       lambda v, u=unit: self.model.set_unit_trait(
+                           u.id, UNIT_TRAIT_KNOCKBACK.key, v))
+        self._hint(tsec, "游戏侧读这几个键（_normalize_traits）；将领按所属兵种继承。")
 
         # ---- 造价与招募（recruit.list / 派系的 clan.list[].recruit[]）
         # ★★ 2026.11.2：派系兵种（王朝 dy_* / 帝国 dg_*）的条目在**派系表**里，
@@ -1431,6 +1577,24 @@ class EditorApp:
         self._hint(nsec, "生成的附属兵数量**不能超过上面的「编制上限」**；"
                          "规格（类型 + 权重 + 生成数量）在**战役编辑器的摆放页 / 红点页**里配。")
 
+        # ---- 将领特性（`unit.general.trait_ids[index]`，2026.11.3）
+        # ★ 这里只「选哪一条」；特性本身（名字 / 效果 / 加条删条）在左边的
+        #   「将领特性池」里改 —— 一处定义、多处引用，不会两边改法不一致。
+        tsec = self._section("特性", "unit.general.trait_ids")
+        self._choice_row(
+            tsec,
+            Field(GENERAL_TRAIT_PICK_FIELD.key, GENERAL_TRAIT_PICK_FIELD.label, "choice",
+                  GENERAL_TRAIT_PICK_FIELD.hint,
+                  choices=tuple(self.model.general_trait_choices())),
+            gen.trait_id,
+            lambda v, g=gen: self.model.assign_general_trait(g.index, v))
+        if gen.trait_id:
+            trait = self.model.general_trait(gen.trait_id)
+            self._hint(tsec, "「%s」＝ %s（对**本人 + 旗下所有单位**生效；附属兵出生时继承）"
+                       % (trait.name, trait.effect_summary(dict(self.model.class_choices()))))
+        else:
+            self._hint(tsec, "没有特性。要看 / 改 / 加删特性本身，点左边「将领特性池」那一栏。")
+
         # ---- 造价与招募（recruit.zone.list）
         rsec = self._section("造价与招募", "recruit.zone.list")
         for key, label in (("cost_food", "造价 · 粮食"), ("cost_gold", "造价 · 黄金"),
@@ -1485,6 +1649,55 @@ class EditorApp:
                  wraplength=380).pack(fill="x")
         self._hint(csec, "成员自己的血量 / 攻击 / 素材在「兵种」列表里改；"
                          "这里只改「这一单」的名字、说明与整包造价。")
+
+    # ---- 将领特性表单（特性池里的一条）----------------------------------
+
+    def _build_trait_form(self, trait: GeneralTrait) -> None:
+        """★★ 2026.11.3：池里一条将领特性的表单。
+
+        这里改的是**定义**（名字 / 短名 / 说明 / 效果）；「哪位将领用它」在将领表单里选。
+        """
+        head = self._section("将领特性　%s" % trait.id, "unit.general_traits")
+        tk.Label(head, text=trait.id + "　（id 是 config 的键，不能改；起错了就删掉重建）",
+                 bg=UI["panel"], fg=UI["text_dim"], anchor="w",
+                 font=("Microsoft YaHei UI", 9)).pack(fill="x")
+
+        sec = self._section("文案")
+        for field in GENERAL_TRAIT_TEXT_FIELDS:
+            self._entry_row(sec, field, trait.field(field.key),
+                            lambda v, t=trait, f=field: self.model.set_general_trait_field(
+                                t.id, f.key, v),
+                            allow_empty=(field.key != "name"))
+
+        names = dict(self.model.class_choices())
+        esec = self._section("效果", "unit.general_traits.<id>（0.25 = 25%）")
+        self._trait_attack_block(
+            esec,
+            trait.attack_rows(names),
+            commit=lambda cls, v, t=trait: self.model.set_general_trait_attack(t.id, cls, v),
+            delete=lambda cls, t=trait: self._do(
+                lambda: self.model.set_general_trait_attack(t.id, cls, None),
+                "删掉「%s」对%s的加成" % (t.id, names.get(cls, cls))),
+            add_choices=[(cid, label) for cid, label in self.model.class_choices()
+                         if cid not in trait.attack_vs_class],
+            add_commit=lambda cls, t=trait: self._do(
+                lambda: self.model.add_general_trait_attack(t.id, cls),
+                "给「%s」加一条对%s的加成" % (t.id, names.get(cls, cls))))
+        for field in GENERAL_TRAIT_FIELDS:
+            self._entry_row(esec, field, trait.effect_number(field.key),
+                            lambda v, t=trait, f=field: self.model.set_general_trait_field(
+                                t.id, f.key, v),
+                            allow_empty=True)
+        self._hint(esec, "空 = 这条特性没有那一项（键会被删掉）；减伤夹在 0~1（1 = 无敌）。")
+        self._hint(esec, "改完立刻对「选了这条特性」的将领生效（左边「将领」里选）。")
+
+        dsec = self._section("删除")
+        self._button(dsec, "删掉这条将领特性", self.do_delete_trait, padx=8, pady=4,
+                     bg=UI["danger_btn"], fg=UI["danger_fg"],
+                     activebackground=UI["danger_btn_hover"]).pack(fill="x", pady=2)
+        tk.Label(dsec, text="　正在用它的将领会被改成「无」（不会留下指向空的 id）。",
+                 bg=UI["panel"], fg=UI["text_dim"], anchor="w",
+                 font=("Microsoft YaHei UI", 8)).pack(fill="x")
 
     # ---- 建筑表单 -------------------------------------------------------
 
@@ -1696,6 +1909,38 @@ class EditorApp:
         if not messagebox.askyesno("删除兵种", "删掉「%s」？（连招募表那一项一起删）" % uid):
             return
         if self._mutate("删除兵种 %s" % uid, lambda: self.model.remove_unit(uid)):
+            self.selection = None
+            self._sidebar_reset_pending = True
+            self.refresh_all()
+
+    def do_new_trait(self) -> None:
+        """★ 2026.11.3：新建一条**将领特性**（照模板复制：连效果与排版一起抄）。"""
+        templates = [(t.id, "%s（%s）" % (t.name, t.id)) for t in self.model.general_traits()]
+        if not templates:
+            # ★ 池被删空时也要能建第一条，否则「把特性全删了」会把这个功能锁死。
+            templates = [("", "（从零开始：只有名字）")]
+        values = _ask_new_entry(self.root, "新建将领特性", "特性 id（英文小写）", templates)
+        if values is None:
+            return
+        new_id, name, template = values
+        self._mutate("新建将领特性 %s（照 %s 复制）" % (new_id, template),
+                     lambda: self.model.add_general_trait(new_id, name, template))
+        if self.model.doc.has(["unit", "general_traits", new_id]):
+            self.selection = ("trait", new_id)
+            self._sidebar_reset_pending = True
+            self.refresh_all()
+
+    def do_delete_trait(self) -> None:
+        if not self.selection or self.selection[0] != "trait":
+            self.status("先在左边点一个将领特性")
+            return
+        tid = self.selection[1]
+        if not messagebox.askyesno(
+                "删除将领特性",
+                "删掉「%s」？正在用它的将领会被改成「无」。" % tid):
+            return
+        if self._mutate("删除将领特性 %s" % tid,
+                        lambda: self.model.remove_general_trait(tid)):
             self.selection = None
             self._sidebar_reset_pending = True
             self.refresh_all()

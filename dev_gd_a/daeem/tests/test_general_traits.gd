@@ -1,14 +1,14 @@
-## test_general_traits.gd —— 将领词条：**代码保留、生产路径停用**
+## test_general_traits.gd —— 将领特性（部队光环）的数据 + 生效口径
 ##
-## 2026.10 口径：随机词条不再挂在将领 / 部队上。
-##   · config 的 6 条词条数据仍在；
-##   · `unit.set_general_trait()` / `inherit_general_aura()` / HUD 显示 / 快照 gt·ga
-##     这些代码仍保留（手动调用仍生效）；
-##   · 但 world 的所有出生 / 招募路径**不再授予词条**，招募页也不再显示词条。
+## ★★ 2026.11.3 口径变更：特性**恢复生效**，但不再是「随机抽词条」——
+##   config 的 `unit.general.trait_ids[i]` 指定第 i 位将领用哪一条（`""` = 没有）；
+##   编辑器（tools/unit_editor）的「将领」页里选，「将领特性池」里改定义 / 加删。
+##   ⚠️ 默认配置里 `trait_ids` 全是 `""`（= 谁都没有特性），所以下面「生产路径」那一组
+##      验的仍然是「默认没有」——那是**配置的结果**，不是「功能停用」。
 ##
-## 本文件因此分成两半：
-##   1) 生产路径：确认「没有任何单位自动带词条」；
-##   2) 代码保留：手动 set_general_trait 后，数值 / UI / 快照仍然工作。
+## 本文件分两半：
+##   1) 生产路径：默认配置下没有任何单位自动带特性（随机抽取已删除）；
+##   2) 代码本身：手动 set_general_trait 后，数值 / UI / 快照仍然工作。
 extends "res://tests/test_case.gd"
 
 const UnitRes = preload("res://logic/unit.gd")
@@ -36,7 +36,7 @@ func _cases() -> void:
 	_test_manual_snapshot(cfg)
 
 # ------------------------------------------------------------------
-# 1) config：六条词条的数据仍在
+# 1) config：六条特性的数据仍在
 # ------------------------------------------------------------------
 func _test_config(cfg) -> void:
 	var ids: Array = cfg.general_trait_ids()
@@ -60,7 +60,7 @@ func _test_config(cfg) -> void:
 		.get("cavalry", 0.0)), 0.25, 1e-9, "★ 骑兵特攻：对骑兵 +25%")
 
 # ------------------------------------------------------------------
-# 2) 生产路径：没有任何单位自动带词条
+# 2) 默认配置：没有任何单位自动带特性（trait_ids 全是空串）
 # ------------------------------------------------------------------
 func _test_no_auto_assignment(cfg) -> void:
 	# 自由对战 #0
@@ -72,13 +72,13 @@ func _test_no_auto_assignment(cfg) -> void:
 		eq(String(g0.aura_trait_id), "", "★ #0 没有光环")
 		ok(not g0.has_general_aura(), "has_general_aura() = false")
 
-	# 招募名单：词条接口保留但恒空
+	# 招募名单：默认没配 → 每张卡都取不到特性
 	var traits: Array = w.general_recruit_traits("p1")
 	for t in traits:
 		eq(String(t), "", "★ 招募阵容不再带词条")
 	eq(w.general_recruit_trait_for("p1", "general_1"), "", "★ 下单时也取不到词条")
 
-	# 真正招一位出来：仍然没有词条
+	# 真正招一位出来：默认仍然没有特性
 	_no_income(w)
 	_give(w, 5000.0, 5000.0)
 	var z = _own_zone(w)

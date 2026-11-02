@@ -528,6 +528,7 @@
         "patrol": "巡逻中",
         "defending": "回防",
         "producing": "补员中",
+        "saving": "攒钱中",
         "expanding": "扩张中",
         "assault": "进攻",
         "regroup": "回撤整备",
@@ -989,18 +990,21 @@
         "class": "siege",
         "ranged": true,
         "can_attack": false,
-        "hp_max": 190,
+        "hp_max": 150,
         "speed": 0.6,
         "damage": 0,
         "range": 0,
         "cooldown_sec": 1.0,
         "radius_factor": 0.10,
-        "vision": 9,
-        "armor": 2,
+        "vision": 6,
+        "armor": 4,
         "morale_aura_radius": 3.0,
         "morale_aura_rate": 0.5,
         "upkeep_food": 0.12,
-        "traits": {}
+        "traits": {
+          "ranged_reduction": 0.9,
+          "knockback_immune": true
+        }
       },
       "knight": {
         "name": "骑士",
@@ -1114,17 +1118,29 @@
         "sprite_tint": "art",
         "class": "infantry",
         "ranged": false,
-        "hp_max": 135,
+        "hp_max": 120,
         "armor": 1,
         "speed": 0.6,
         "damage": 10,
         "range": 1,
         "cooldown_sec": 1.0,
         "radius_factor": 0.09,
-        "vision": 8,
+        "vision": 6,
         "upkeep_food": 0.08,
         "traits": {
-          "attack_vs_class": { "cavalry": 0.7 }
+          "attack_vs_class": { "cavalry": 1.0 }
+        },
+                  "charge": {
+          "min_distance": 0.0,
+          "max_distance": 0.0,
+          "turn_max_deg": 0.0,
+          "speed_bonus": 0.0,
+          "damage_bonus": 0.0,
+          "knock_distance": 0.0,
+          "knock_stun_sec": 0.0,
+          "splash_radius": 0.0,
+          "splash_damage_ratio": 0.0,
+          "cooldown_sec": 0
         }
       },
       "dy_archer_guard": {
@@ -1134,17 +1150,17 @@
         "sprite_tint": "art",
         "class": "infantry",
         "ranged": true,
-        "hp_max": 92,
-        "armor": 1,
-        "speed": 0.5,
-        "damage": 16,
+        "hp_max": 90,
+        "armor": 0,
+        "speed": 0.6,
+        "damage": 12,
         "range": 4.0,
         "cooldown_sec": 1.4,
         "radius_factor": 0.085,
-        "vision": 10,
+        "vision": 8,
         "upkeep_food": 0.1,
         "traits": {
-          "attack_vs_class": { "infantry": 0.35 }
+          "attack_vs_class": { "infantry": 0.25 }
         }
       },
       "dy_scout": {
@@ -1154,17 +1170,16 @@
         "sprite_tint": "art",
         "class": "cavalry",
         "ranged": false,
-        "hp_max": 135,
-        "armor": 1,
-        "speed": 1.5,
-        "damage": 17,
+        "hp_max": 100,
+        "armor": 0,
+        "speed": 1,
+        "damage": 12,
         "range": 1,
         "cooldown_sec": 0.9,
         "radius_factor": 0.105,
         "vision": 12,
         "upkeep_food": 0.18,
         "traits": {
-          "attack_vs_class": { "infantry": 0.35 },
           "ranged_reduction": 0.25
         },
         "charge": {
@@ -1187,18 +1202,21 @@
         "sprite_tint": "art",
         "class": "cavalry",
         "ranged": true,
-        "hp_max": 112,
-        "speed": 1.3,
-        "damage": 15,
-        "range": 3.5,
-        "cooldown_sec": 1.1,
+        "hp_max": 120,
+        "speed": 0.8,
+        "damage": 16,
+        "range": 3,
+        "cooldown_sec": 1,
         "radius_factor": 0.10,
-        "vision": 10,
-        "armor": 1,
+        "vision": 8,
+        "armor": 0,
         "move_shoot": true,
         "upkeep_food": 0.26,
         "traits": {
-          "ranged_reduction": 0.25
+          "ranged_reduction": 0.25,
+          "attack_vs_class": {
+            "cavalry": 0.25
+          }
         }
       },
       "dy_royal_sword": {
@@ -1208,18 +1226,18 @@
         "sprite_tint": "art",
         "class": "infantry",
         "ranged": false,
-        "hp_max": 185,
-        "armor": 3,
-        "speed": 0.55,
-        "damage": 12,
+        "hp_max": 180,
+        "armor": 4,
+        "speed": 0.5,
+        "damage": 20,
         "range": 1,
-        "cooldown_sec": 0.95,
+        "cooldown_sec": 1,
         "radius_factor": 0.095,
-        "vision": 9,
+        "vision": 8,
         "upkeep_food": 0.14,
         "traits": {
-          "melee_reduction": 0.3,
-          "ranged_reduction": 0.3,
+          "melee_reduction": 0.25,
+          "ranged_reduction": 0.25,
           "knockback_immune": true
         }
       },
@@ -1230,17 +1248,17 @@
         "sprite_tint": "art",
         "class": "infantry",
         "ranged": true,
-        "hp_max": 102,
-        "armor": 1.5,
+        "hp_max": 100,
+        "armor": 1,
         "speed": 0.5,
-        "damage": 17,
-        "range": 4.2,
-        "cooldown_sec": 1.3,
+        "damage": 18,
+        "range": 4,
+        "cooldown_sec": 1.2,
         "radius_factor": 0.09,
         "vision": 10,
         "upkeep_food": 0.14,
         "traits": {
-          "attack_vs_class": { "infantry": 0.4 }
+          "attack_vs_class": { "infantry": 0.5 }
         }
       },
       "dy_royal_cavalry": {
@@ -1250,17 +1268,21 @@
         "sprite_tint": "art",
         "class": "cavalry",
         "ranged": false,
-        "hp_max": 215,
+        "hp_max": 220,
         "armor": 5,
-        "speed": 1.05,
-        "damage": 23,
+        "speed": 0.8,
+        "damage": 18,
         "range": 1,
-        "cooldown_sec": 1.0,
+        "cooldown_sec": 1.2,
         "radius_factor": 0.115,
-        "vision": 9,
+        "vision": 8,
         "upkeep_food": 0.28,
         "traits": {
-          "knockback_immune": true
+          "knockback_immune": true,
+          "ranged_reduction": 0.5,
+          "attack_vs_class": {
+            "cavalry": 0.25
+          }
         },
         "charge": {
           "min_distance": 3.5,
@@ -1284,7 +1306,7 @@
         "class": "siege",
         "ranged": false,
         "hp_max": 300,
-        "armor": 4,
+        "armor": 5,
         "speed": 0.5,
         "damage": 32,
         "range": 1,
@@ -1316,19 +1338,22 @@
         "sprite_tint": "art",
         "class": "siege",
         "ranged": true,
-        "hp_max": 265,
-        "speed": 0.35,
+        "hp_max": 200,
+        "speed": 0.4,
         "damage": 40,
-        "range": 6.0,
-        "cooldown_sec": 3.0,
+        "range": 6,
+        "cooldown_sec": 2.5,
         "radius_factor": 0.13,
-        "vision": 11,
-        "armor": 2,
+        "vision": 10,
+        "armor": 0,
         "siege": true,
         "upkeep_food": 0.4,
         "splash_radius": 1.5,
         "knockback": { "distance": 0.9, "stun_sec": 0.5 },
-        "traits": {}
+        "traits": {
+          "ranged_reduction": 0.9,
+          "knockback_immune": true
+        }
       },
 
       "dg_swordsman": {
@@ -1338,17 +1363,16 @@
         "sprite_tint": "art",
         "class": "infantry",
         "ranged": false,
-        "hp_max": 210,
+        "hp_max": 180,
         "armor": 3,
         "speed": 0.6,
-        "damage": 15,
+        "damage": 16,
         "range": 1,
         "cooldown_sec": 1.0,
         "radius_factor": 0.09,
-        "vision": 8,
+        "vision": 6,
         "upkeep_food": 0.08,
         "traits": {
-          "attack_vs_class": { "cavalry": 0.25 },
           "melee_reduction": 0.25
         }
       },
@@ -1359,17 +1383,17 @@
         "sprite_tint": "art",
         "class": "infantry",
         "ranged": true,
-        "hp_max": 145,
-        "armor": 1.5,
-        "speed": 0.5,
-        "damage": 24,
+        "hp_max": 120,
+        "armor": 1,
+        "speed": 0.6,
+        "damage": 20,
         "range": 4.0,
-        "cooldown_sec": 1.4,
+        "cooldown_sec": 1.2,
         "radius_factor": 0.085,
-        "vision": 10,
+        "vision": 8,
         "upkeep_food": 0.1,
         "traits": {
-          "attack_vs_class": { "infantry": 0.35 }
+          "attack_vs_class": { "infantry": 0.25 }
         }
       },
       "dg_rider": {
@@ -1379,17 +1403,16 @@
         "sprite_tint": "art",
         "class": "cavalry",
         "ranged": false,
-        "hp_max": 200,
-        "armor": 3,
-        "speed": 1.5,
-        "damage": 23,
+        "hp_max": 150,
+        "armor": 2,
+        "speed": 0.9,
+        "damage": 20,
         "range": 1,
         "cooldown_sec": 0.9,
         "radius_factor": 0.105,
-        "vision": 12,
+        "vision": 10,
         "upkeep_food": 0.18,
         "traits": {
-          "attack_vs_class": { "infantry": 0.25 },
           "ranged_reduction": 0.25
         },
         "charge": {
@@ -1412,18 +1435,18 @@
         "sprite_tint": "art",
         "class": "cavalry",
         "ranged": false,
-        "hp_max": 290,
-        "speed": 1.3,
-        "damage": 33,
+        "hp_max": 250,
+        "speed": 0.8,
+        "damage": 30,
         "range": 1,
         "cooldown_sec": 1.0,
         "radius_factor": 0.11,
-        "vision": 9,
-        "armor": 6,
+        "vision": 8,
+        "armor": 4,
         "upkeep_food": 0.32,
         "traits": {
-          "attack_vs_class": { "cavalry": 0.25 },
-          "ranged_reduction": 0.55,
+          "attack_vs_class": { "cavalry": 0.5 },
+          "ranged_reduction": 0.5,
           "knockback_immune": true
         },
         "charge": {
@@ -1446,18 +1469,21 @@
         "sprite_tint": "art",
         "class": "siege",
         "ranged": true,
-        "hp_max": 228,
-        "armor": 3,
+        "hp_max": 180,
+        "armor": 1,
         "speed": 0.4,
-        "damage": 45,
-        "range": 7.0,
-        "cooldown_sec": 2.8,
+        "damage": 40,
+        "range": 7,
+        "cooldown_sec": 2,
         "radius_factor": 0.12,
-        "vision": 11,
+        "vision": 10,
         "upkeep_food": 0.38,
         "pierce": true,
         "projectile_arc": false,
-        "traits": {}
+        "traits": {
+          "knockback_immune": true,
+          "ranged_reduction": 0.9
+        }
       }
     },
 
@@ -1556,7 +1582,19 @@
         "  ⚠️ 单位条目里的 `train_sec` **已删除**：兵种自己不再有读条时间；",
         "     区划招将（recruit.zone.list[].train_sec）不受影响，那仍是「招这位将领」的读条。"
       ],
-      "recruit_sec": [10, 10, 10, 10, 10, 10, 10, 10, 10, 10]
+      "recruit_sec": [10, 10, 10, 10, 10, 10, 10, 10, 10, 10],
+
+      "_trait_ids_comment": [
+        "★★ 2026.11.3：**将领特性 = 在这里指定**（与 types / caps / recruit_sec 同序，10 项）。",
+        "  · 每一项是 `unit.general_traits` 里的一个 id；\"\" = 这位将领**没有**特性。",
+        "  · 由 tools/unit_editor 的「单位」页 → 选中将领 →「特性」下拉来改；",
+        "    特性本身（名字 / 效果 / 加条删条）在同页的「将领特性池」那一栏里编辑。",
+        "  · 缺项 / 越界 / 指向表里不存在的 id ⇒ 没有特性（logic/config.gd 的 general_trait_at）。",
+        "  · 生效范围：将领**本人 + 旗下所有单位**（附属兵出生时继承同一条光环，",
+        "    见 world.fill_general_retinue / _spawn_from_recruit）。",
+        "  ★ 与 2026.10 停用的「随机抽词条」是两件事：那套随机代码还在，但已无调用点。"
+      ],
+      "trait_ids": ["swift", "", "", "", "", "swift", "", "swift", "", ""]
     },
 
     "_collision_comment": [
@@ -2275,7 +2313,7 @@
         "short": "粮",
         "desc": "在选中将领所在格的中心生成 1 辆粮车（支援单位，不攻击）。★ 只花粮食；周围 3 格友军士气 +0.5/秒（多辆不叠加，可与其他士气来源叠加）",
         "population_cost": 1,
-          "cost": { "food": 160, "gold": 0 }
+          "cost": { "food": 100, "gold": 0 }
       },
       {
         "kind": "knight",
@@ -2353,7 +2391,7 @@
           "train_sec": 10,
           "population_cost": 1,
           "recruit_cooldown_sec": 20,
-          "cost": { "food": 130, "gold": 130 }
+          "cost": { "food": 100, "gold": 100 }
         },
         {
           "kind": "general_2",
@@ -2364,7 +2402,7 @@
           "train_sec": 10,
           "population_cost": 1,
           "recruit_cooldown_sec": 20,
-          "cost": { "food": 130, "gold": 130 }
+          "cost": { "food": 100, "gold": 100 }
         },
         {
           "kind": "general_3",
@@ -2375,7 +2413,7 @@
           "train_sec": 10,
           "population_cost": 1,
           "recruit_cooldown_sec": 20,
-          "cost": { "food": 130, "gold": 130 }
+          "cost": { "food": 100, "gold": 100 }
         },
         {
           "kind": "general_4",
@@ -2386,7 +2424,7 @@
           "train_sec": 10,
           "population_cost": 1,
           "recruit_cooldown_sec": 25,
-          "cost": { "food": 240, "gold": 240 }
+          "cost": { "food": 150, "gold": 150 }
         },
         {
           "kind": "general_5",
@@ -2397,7 +2435,7 @@
           "train_sec": 10,
           "population_cost": 1,
           "recruit_cooldown_sec": 30,
-          "cost": { "food": 240, "gold": 280 }
+          "cost": { "food": 150, "gold": 150 }
         },
         {
           "kind": "general_6",
@@ -2408,7 +2446,7 @@
           "train_sec": 10,
           "population_cost": 1,
           "recruit_cooldown_sec": 30,
-          "cost": { "food": 240, "gold": 280 }
+          "cost": { "food": 150, "gold": 150 }
         },
         {
           "kind": "general_7",
@@ -2419,7 +2457,7 @@
           "train_sec": 10,
           "population_cost": 1,
           "recruit_cooldown_sec": 35,
-          "cost": { "food": 280, "gold": 320 }
+          "cost": { "food": 200, "gold": 200 }
         },
         {
           "kind": "general_8",
@@ -2430,7 +2468,7 @@
           "train_sec": 10,
           "population_cost": 1,
           "recruit_cooldown_sec": 40,
-          "cost": { "food": 280, "gold": 360 }
+          "cost": { "food": 200, "gold": 200 }
         },
         {
           "kind": "general_9",
@@ -2441,7 +2479,7 @@
           "train_sec": 10,
           "population_cost": 1,
           "recruit_cooldown_sec": 45,
-          "cost": { "food": 320, "gold": 400 }
+          "cost": { "food": 200, "gold": 200 }
         }
       ]
     }
@@ -2602,7 +2640,7 @@
             "short": "协",
             "desc": "在选中将领所在格的中心生成 2 名单位（都叫「协防军」）：1 名长枪兵（近战步兵，对骑兵伤害 +70%）+ 1 名弓箭手（远程步兵）。★ 高级单位 · 组合单位：一次占 1 个队列格、扣 2 人口",
             "population_cost": 2,
-          "cost": { "food": 145, "gold": 0 },
+          "cost": { "food": 100, "gold": 0 },
             "spawn": [
               { "type": "dy_spear_guard" },
               { "type": "dy_archer_guard" }
@@ -2615,7 +2653,7 @@
             "short": "斥",
             "desc": "在选中将领所在格的中心生成 1 名斥候（近战骑兵）。★ 高级单位：移动速度快（1.5 格/秒）、视野 +3 格；对步兵伤害 +35%、远程减伤 25%",
             "population_cost": 1,
-          "cost": { "food": 70, "gold": 140 }
+          "cost": { "food": 100, "gold": 0 }
           },
           {
             "kind": "grain_cart",
@@ -2633,7 +2671,7 @@
             "short": "侠",
             "desc": "在选中将领所在格的中心生成 1 名游侠（远程骑兵）。★ 高级单位：骑射（可移动射击）、远程减伤 25%",
             "population_cost": 1,
-          "cost": { "food": 235, "gold": 95 }
+          "cost": { "food": 60, "gold": 30 }
           },
           {
             "kind": "dy_royal",
@@ -2642,7 +2680,7 @@
             "short": "御",
             "desc": "在选中将领所在格的中心生成 3 名单位（都叫「御林军」）：剑盾兵（近战步兵，稳定 · 远近免伤 30%）+ 弓箭手（远程步兵，对步兵伤害 +40%）+ 着甲骑兵（近战骑兵，稳定）。★ 高级单位 · 组合单位：一次占 1 个队列格、扣 3 人口",
             "population_cost": 3,
-          "cost": { "food": 195, "gold": 300 },
+          "cost": { "food": 120, "gold": 100 },
             "spawn": [
               { "type": "dy_royal_sword" },
               { "type": "dy_royal_archer" },
@@ -2655,8 +2693,8 @@
             "label": "战车",
             "short": "战",
             "desc": "在选中将领所在格的中心生成 1 辆战车（器械，但**造成近战伤害**）。★ 高级单位：稳定（免疫击退）、远程减伤 25%；冲锋时对范围内敌人造成伤害与击退/眩晕",
-            "population_cost": 1,
-          "cost": { "food": 145, "gold": 260 }
+            "population_cost": 2,
+          "cost": { "food": 120, "gold": 40 }
           },
           {
             "kind": "dy_catapult",
@@ -2664,8 +2702,8 @@
             "label": "投石车",
             "short": "车",
             "desc": "在选中将领所在格的中心生成 1 辆投石车（器械，远程）。★ 高级单位：抛物线弹道、1.5 格范围伤害、**击退 + 0.5 秒眩晕**；攻城（无视目标的远近减伤）",
-            "population_cost": 1,
-          "cost": { "food": 290, "gold": 290 }
+            "population_cost": 2,
+          "cost": { "food": 0, "gold": 150 }
           }
         ]
       },
@@ -2775,7 +2813,7 @@
             "short": "剑",
             "desc": "在选中将领所在格的中心生成 1 名披甲剑士（近战步兵）。★ 基础单位：只花粮食；近战减伤 25%，对骑兵伤害 +25%（帝国走「少而精」：血厚、攻高）",
           "population_cost": 1,
-          "cost": { "food": 65, "gold": 0 }
+          "cost": { "food": 70, "gold": 0 }
           },
           {
             "kind": "dg_archer",
@@ -2784,7 +2822,7 @@
             "short": "弓",
             "desc": "在选中将领所在格的中心生成 1 名铁臂弓手（远程步兵）。★ 基础单位：只花粮食；对步兵伤害 +35%（帝国走「少而精」：血厚、攻高）",
           "population_cost": 1,
-          "cost": { "food": 88, "gold": 0 }
+          "cost": { "food": 70, "gold": 0 }
           },
           {
             "kind": "dg_rider",
@@ -2793,7 +2831,7 @@
             "short": "骑",
             "desc": "在选中将领所在格的中心生成 1 名骑手（近战骑兵）。★ 高级单位：移动速度快（1.5 格/秒）、视野 +3 格；对步兵伤害 +25%、远程减伤 25%",
           "population_cost": 1,
-          "cost": { "food": 75, "gold": 150 }
+          "cost": { "food": 60, "gold": 20 }
           },
           {
             "kind": "grain_cart",
@@ -2811,7 +2849,7 @@
             "short": "冠",
             "desc": "在选中将领所在格的中心生成 1 名冠军骑士（近战骑兵）。★ 高级单位：稳定（免疫击退）、远程减伤 55%、对骑兵伤害 +25%、移动速度 1.3 格/秒；血量上限 290（骑士 365，比骑士更脆但更锋利）；冲锋时造成更高的额外伤害与击退",
           "population_cost": 1,
-          "cost": { "food": 130, "gold": 340 }
+          "cost": { "food": 100, "gold": 80 }
           },
           {
             "kind": "dg_bolt",
@@ -2820,7 +2858,7 @@
             "short": "弩",
             "desc": "在选中将领所在格的中心生成 1 架扭力弩炮（器械，远程）。★ 高级单位：直线穿透子弹 —— 命中时对「射手 → 目标」这条直线上、射程内的**所有敌人**各造成一次全额伤害；弹道是直线（不抛物）",
           "population_cost": 1,
-          "cost": { "food": 290, "gold": 310 }
+          "cost": { "food": 0, "gold": 150 }
           }
         ]
       }
@@ -3980,7 +4018,7 @@
         "army_interval_sec": 1.0,
         "strategic_interval_sec": 2.0,
         "build_interval_sec": 2.5,
-        "production_interval_sec": 1.0,
+        "production_interval_sec": 4.0,
         "production_attempts": 6,
         "retry_sec": 3.0
       },
@@ -4165,6 +4203,33 @@
         "recall_cooldown_sec": 20.0,
         "hold_sec": 8.0
       },
+      "_goals_comment": [
+        "★★ 2026.11 目的系统（用户口径 ④）：AI 什么时候该「停手攒钱」，以及攒给谁。",
+        "  优先级：守家/成军 > 升本 > 高阶兵。攒钱期间不开任何新单（不补员、不补将）。",
+        "  · 守家/成军 = 一半以上队伍还没成形，或己方区划正在被踩占领 ⇒ 绝不攒钱；",
+        "  · upgrade：大本营还有下一级 + 差的钱能在 reachable_sec 秒收入里补上 +",
+        "             队伍成形率 ≥ army_ratio ⇒ 停手攒 200/200 去升二本 / 三本；",
+        "  · elite  ：低阶兵已花够 + 高阶占比不达标 + 有一条高阶兵只差钱 ⇒ 停手攒它；",
+        "  · max_wait_sec：最多等这么久（超时放弃）；cooldown_sec：放弃后冷却多久再试。",
+        "  ⚠️ 只「不花钱」，不改任何数值，也不改 world.can_recruit 的任何规则；",
+        "     钱一够就自动放行（见 logic/ai_commander.gd 的 _update_goal / _goal_holding）。"
+      ],
+      "goals": {
+        "enabled": true,
+        "cooldown_sec": 25.0,
+        "upgrade": {
+          "min_sec": 75.0,
+          "reachable_sec": 50.0,
+          "army_ratio": 0.5,
+          "max_wait_sec": 80.0
+        },
+        "elite": {
+          "min_sec": 110.0,
+          "reachable_sec": 60.0,
+          "army_ratio": 0.6,
+          "max_wait_sec": 60.0
+        }
+      },
       "production": {
         "_comment": [
           "★★ 2026.10.24：按「队」补员，不再让一支部队一路招到全族上限。",
@@ -4190,6 +4255,24 @@
         "min_garrison_replace_escorts": 1,
         "dispatch_training_home": true,
         "fill_to_cap_when_rich": true,
+        "_elite_comment": [
+          "★★ 2026.11 高阶兵倾斜（用户口径）：低阶兵累计花掉 trigger_low_spend 之后，",
+          "   只要「高阶:低阶」的花费比还没到 elite_to_low，抽兵时就只在高阶里挑。",
+          "  · elite_tier_min：tier ≥ 这个数算「高阶兵」（3 ⇒ 御林军 / 战车 / 投石车 /",
+          "    弩炮 / 冠军骑士）。⚠️ tier-2 的斥候 / 游侠 / 骑手算**低阶** —— 它们只要",
+          "    100 粮，算进高阶会让比例轻易达标，结果永远不买三阶兵（see_ai 实测踩到）；",
+          "  · trigger_low_spend：低阶累计花费（粮 + 2×金）到这个数才开始倾斜；",
+          "  · elite_to_low：目标比例，0.5 = 1:2（高阶花 1，低阶花 2）；",
+          "  · min_sec：开局这段时间内不倾斜（先把场面铺开）。",
+          "  ⚠️ 只是「在同一次买得起的那批里优先挑高阶」；买不起时仍买便宜的，",
+          "     真正停下来攒钱是 goals.elite 的事（见下面 goals 段）。"
+        ],
+        "elite": {
+          "elite_tier_min": 3,
+          "trigger_low_spend": 600.0,
+          "elite_to_low": 0.5,
+          "min_sec": 90.0
+        },
         "composition": [
           { "type": "spearman", "weight": 0.42 },
           { "type": "longbowman", "weight": 0.24 },

@@ -148,6 +148,32 @@ CHARGE_FIELDS: Tuple[Field, ...] = (
           "一次冲锋命中后多久不能再次累积（秒）", minimum=0, maximum=120),
 )
 
+#: ★★ 兵种特性（`unit.types.<id>.traits`，2026.11.3 加进编辑器）——
+#: 与 `logic/config.gd` 的 `_normalize_traits()` **一一对应**：游戏那边只认这四个键，
+#: 写别的会被静默丢掉。所以这里也只给这四样编辑入口：
+#:   · `attack_vs_class` = 对某一大类的伤害加成（一行一个大类，可加可删，见
+#:     `UNIT_TRAIT_ATTACK_KEY`）；
+#:   · 下面两条标量减伤 + 「稳定」（免疫击退）。
+#: ⚠️ 减伤写的是**比例**（0.25 = 25%），与建筑那条「远程免伤」同一个口径；
+#:   清空输入框 = **删掉这个键**（游戏侧读回 0），不会在文件里留一个 0。
+UNIT_TRAIT_FIELDS: Tuple[Field, ...] = (
+    Field("ranged_reduction", "远程减伤", "float",
+          "0.25 = 25%（挡箭 / 投掷物）；清空 = 不减免", minimum=0.0, maximum=1.0),
+    Field("melee_reduction", "近战减伤", "float",
+          "0.25 = 25%；清空 = 不减免", minimum=0.0, maximum=1.0),
+)
+
+#: 兵种特性里「对某大类伤害 +x%」那一张表的键（值是 `{大类 id: 比例}`）。
+#: ★ 值只能打**单位**；打建筑不受影响（建筑没有兵种大类）。
+UNIT_TRAIT_ATTACK_KEY = "attack_vs_class"
+
+#: 新增一行「对某大类伤害」时的缺省比例（0.25 = +25%，与需求里的例子一致）。
+UNIT_TRAIT_ATTACK_DEFAULT = 0.25
+
+#: 兵种特性的「稳定」：免疫击退（位移 + 眩晕）整套效果。
+UNIT_TRAIT_KNOCKBACK = Field("knockback_immune", "免疫击退（稳定）", "bool",
+                             "勾上 = 免疫击退（推开 + 眩晕）；碰撞挤开照旧")
+
 #: 招募（`recruit.list[]` / `clan.list[].recruit[]`，按 kind 找那一项）—— 造价与文案
 #: ★★ 2026.11.2：**读条时间不在这里**（单位条目里的 train_sec 已经从 config 里删掉）——
 #:   读条由「招它的那位将领」决定（`unit.general.recruit_sec`，默认 10），见 GENERAL_RECRUIT_FIELD。
@@ -207,6 +233,40 @@ GENERAL_STAT_FIELDS: Tuple[Field, ...] = (
     Field("speed", "移动速度", "float", minimum=0),
     Field("vision", "视野半径", "float", VISION_HINT, minimum=0),
 )
+
+#: ★★ 将领特性（`unit.general_traits.<id>`，2026.11.3 加进编辑器）的**效果**。
+#: 与 `logic/config.gd` 的 `_normalize_general_trait()` 一一对应：那边只认这五个效果键，
+#: 写别的会被静默丢掉。`attack_vs_class` 是「对某大类伤害 +x%」（与兵种特性同形状）。
+GENERAL_TRAIT_FIELDS: Tuple[Field, ...] = (
+    Field("speed_bonus", "移速加成", "float",
+          "移动速度 +比例（0.25 = +25%）；清空 = 没有这一条", minimum=0.0, maximum=10.0),
+    Field("attack_speed_bonus", "攻速加成", "float",
+          "攻击速度 +比例（0.25 = 攻击间隔 ÷1.25）；清空 = 没有这一条",
+          minimum=0.0, maximum=10.0),
+    Field("melee_reduction", "近战减伤", "float",
+          "受到近战伤害时少受的比例（0.25 = 25%）；清空 = 没有这一条",
+          minimum=0.0, maximum=1.0),
+    Field("ranged_reduction", "远程减伤", "float",
+          "受到远程伤害时少受的比例（0.25 = 25%）；清空 = 没有这一条",
+          minimum=0.0, maximum=1.0),
+)
+
+#: 将领特性里「对某大类伤害 +x%」那一张表的键 / 新加一行时的缺省比例。
+GENERAL_TRAIT_ATTACK_KEY = "attack_vs_class"
+GENERAL_TRAIT_ATTACK_DEFAULT = 0.25
+
+#: 将领特性的**文案**三件套（列表 / 悬停 / 卡牌都读它们）。
+GENERAL_TRAIT_TEXT_FIELDS: Tuple[Field, ...] = (
+    Field("name", "名字", "text", "特性名（悬停标题 / 卡牌上用）"),
+    Field("short", "短名", "text", "信息栏格子里那一个字；留空 = 名字的第一个字"),
+    Field("desc", "说明", "text", "悬停正文里的那一句"),
+)
+
+#: 将领「指定哪一条特性」：键是 `unit.general.trait_ids[index]`（`""` = 无）。
+#: 下拉选项由 `ConfigModel.general_trait_choices()` 现算（池里加了新特性它自动出现）。
+GENERAL_TRAIT_PICK_FIELD = Field(
+    "trait", "特性", "choice",
+    "这位将领的部队光环：对**本人 + 旗下所有单位**生效；「无」= 不给这位将领特性")
 
 #: 建筑（`building.<type>`）
 BUILDING_FIELDS: Tuple[Field, ...] = (
@@ -298,6 +358,21 @@ def fmt_number(value: Any) -> str:
     return str(value)
 
 
+def fmt_percent(ratio: Any) -> str:
+    """比例 → 「25%」。
+
+    ★ 只用于**给人看的摘要 / 提示**：写回文件的永远是比例（0.25），
+      不是百分数 —— 否则「界面上填 25、文件里也是 25」会让 25 倍伤害。
+    """
+    try:
+        value = float(ratio) * 100.0
+    except (TypeError, ValueError):
+        return ""
+    if abs(value - round(value)) < 1e-9:
+        return "%d%%" % int(round(value))
+    return ("%.1f%%" % value).rstrip("0").rstrip(".")
+
+
 # ======================================================================
 # 只读快照（界面列表 / 表单都读它们，不直接摸 Doc）
 # ======================================================================
@@ -338,6 +413,13 @@ class Unit:
         self.vision = _f(data.get("vision"), 0.0)
         #: ★★ 冲锋参数（`unit.types.<id>.charge`；不写 = 空字典 = 不冲锋）。
         self.charge = data.get("charge") if isinstance(data.get("charge"), dict) else {}
+        #: ★★ 兵种特性（`unit.types.<id>.traits`，2026.11.3）—— 与游戏侧
+        #: `logic/config.gd` 的 `_normalize_traits()` 同形状：四个键，没写 = 空字典。
+        self.traits = data.get("traits") if isinstance(data.get("traits"), dict) else {}
+        #: 「对某大类伤害 +x%」那张表（`traits.attack_vs_class`）；没写 = 空字典。
+        _av = self.traits.get(UNIT_TRAIT_ATTACK_KEY)
+        self.attack_vs_class: Dict[str, float] = (
+            {str(k): _f(v) for k, v in _av.items()} if isinstance(_av, dict) else {})
         self.has_recruit = recruit is not None
         self.recruit_index = recruit_index
         #: 招募条目那一行的 **JSON 路径**（`["recruit","list",i]` 或
@@ -406,8 +488,118 @@ class Unit:
         """冲锋参数的一项（`unit.types.<id>.charge.<key>`）；没写 = 0。"""
         return _f(self.charge.get(key), 0.0)
 
+    # ---- 兵种特性（`unit.types.<id>.traits`）-------------------------------
+
+    def trait_number(self, key: str) -> Optional[float]:
+        """一条标量特性（`ranged_reduction` / `melee_reduction`）的值。
+
+        ★ **没写就返回 None**（不是 0）—— 界面靠它区分「文件里没有这个键」
+          与「明确写了 0」：前者空框、后者显示 0。与 `vision` 同一条语义。
+        """
+        if key not in self.traits:
+            return None
+        value = self.traits[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value)
+
+    def trait_flag(self, key: str) -> bool:
+        """一条开关型特性（目前只有 `knockback_immune`）；没写 / 写错类型 = False。"""
+        return self.traits.get(key) is True
+
+    def attack_rows(self, names: Dict[str, str]) -> List[Tuple[str, float, str]]:
+        """「对某大类伤害 +x%」的每一行：`(大类 id, 比例, 大类显示名)`。
+
+        ★ 顺序就是文件里的顺序（不排序）：设计师按自己写的顺序看更顺，
+          也免得每改一次值列表就跳一下。
+        """
+        out: List[Tuple[str, float, str]] = []
+        for cls, ratio in self.attack_vs_class.items():
+            out.append((str(cls), float(ratio), names.get(str(cls), str(cls))))
+        return out
+
+    def trait_summary(self, names: Dict[str, str]) -> str:
+        """一行摘要（例如「对骑兵 +25% / 远程减伤 25%」）；没有特性 = 空串。"""
+        parts: List[str] = []
+        for cls, ratio, cname in self.attack_rows(names):
+            parts.append("对%s %+d%%" % (cname, int(round(ratio * 100.0))))
+        for field in UNIT_TRAIT_FIELDS:
+            value = self.trait_number(field.key)
+            if value:
+                parts.append("%s %s" % (field.label, fmt_percent(value)))
+        if self.trait_flag(UNIT_TRAIT_KNOCKBACK.key):
+            parts.append("免疫击退")
+        return " / ".join(parts)
+
     def __repr__(self) -> str:                        # pragma: no cover - 调试用
         return "<Unit %s %s>" % (self.id, self.name)
+
+
+class GeneralTrait:
+    """一条**将领特性**（`unit.general_traits.<id>`）：部队光环的文案 + 效果。
+
+    ★ 效果键与 `logic/config.gd` 的 `_normalize_general_trait()` **一一对应**：
+      `speed_bonus` / `attack_speed_bonus` / `melee_reduction` / `ranged_reduction` /
+      `attack_vs_class`。游戏那边只认这五个，写别的会被静默丢掉。
+    ★ 这是**池**里的定义（全局一份）；「哪一位将领用它」在
+      `unit.general.trait_ids[index]`（见 `ConfigModel.general_trait_at`）。
+    """
+
+    def __init__(self, tid: str, row: Dict[str, Any]) -> None:
+        self.id = tid
+        #: 原文（判「这个效果键到底写了没有」要它，不能只看取到的数）
+        self.raw: Dict[str, Any] = dict(row)
+        self.name = _s(row.get("name"), tid)
+        self.short = _s(row.get("short"), "")
+        self.desc = _s(row.get("desc"), "")
+        self.speed_bonus = _f(row.get("speed_bonus"), 0.0)
+        self.attack_speed_bonus = _f(row.get("attack_speed_bonus"), 0.0)
+        self.melee_reduction = _f(row.get("melee_reduction"), 0.0)
+        self.ranged_reduction = _f(row.get("ranged_reduction"), 0.0)
+        _av = row.get(GENERAL_TRAIT_ATTACK_KEY)
+        self.attack_vs_class: Dict[str, float] = (
+            {str(k): _f(v) for k, v in _av.items()} if isinstance(_av, dict) else {})
+
+    def field(self, key: str) -> Any:
+        return getattr(self, key, None)
+
+    @property
+    def short_text(self) -> str:
+        """信息栏格子里真正显示的那个字：短名 → 名字首字 → 空（与游戏侧同一条）。"""
+        if self.short:
+            return self.short[:1]
+        return self.name[:1] if self.name else ""
+
+    def effect_number(self, key: str) -> Optional[float]:
+        """一条标量效果的值；**没写返回 None**（界面空框 = 文件里没有这个键）。"""
+        if key not in self.raw:
+            return None
+        value = self.raw[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value)
+
+    def attack_rows(self, names: Dict[str, str]) -> List[Tuple[str, float, str]]:
+        return [(str(cls), float(ratio), names.get(str(cls), str(cls)))
+                for cls, ratio in self.attack_vs_class.items()]
+
+    def effect_summary(self, names: Dict[str, str]) -> str:
+        """一行效果摘要（列表里那一列 / 将领表单下面那句话）。"""
+        parts: List[str] = []
+        if self.speed_bonus:
+            parts.append("移速 +%s" % fmt_percent(self.speed_bonus))
+        if self.attack_speed_bonus:
+            parts.append("攻速 +%s" % fmt_percent(self.attack_speed_bonus))
+        if self.melee_reduction:
+            parts.append("近战减伤 %s" % fmt_percent(self.melee_reduction))
+        if self.ranged_reduction:
+            parts.append("远程减伤 %s" % fmt_percent(self.ranged_reduction))
+        for cls, ratio, cname in self.attack_rows(names):
+            parts.append("对%s %s" % (cname, fmt_percent(ratio)))
+        return " / ".join(parts) if parts else "（没有效果）"
+
+    def __repr__(self) -> str:                        # pragma: no cover - 调试用
+        return "<GeneralTrait %s %s>" % (self.id, self.name)
 
 
 class General:
@@ -416,11 +608,16 @@ class General:
     def __init__(self, index: int, kind: str, type_id: str, override: Dict[str, Any],
                  recruit: Optional[Dict[str, Any]], defaults: Dict[str, Any],
                  cap: int = GENERAL_CAP_DEFAULT,
-                 recruit_sec: float = GENERAL_RECRUIT_DEFAULT) -> None:
+                 recruit_sec: float = GENERAL_RECRUIT_DEFAULT,
+                 trait_id: str = "") -> None:
         self.index = index
         self.kind = kind
         self.type_id = type_id
         self.override = dict(override)
+        #: ★★ 这位将领指定的**将领特性 id**（`unit.general.trait_ids[index]`，2026.11.3）。
+        #: `""` = 没有特性。游戏侧由 `world.create_general()` 交给 `set_general_trait()`，
+        #: 旗下附属兵出生时继承同一条光环（`inherit_general_aura`）。
+        self.trait_id = trait_id
         #: ★★ 编制上限（`unit.general.caps[index]`）：这位将领的目标编队规模。
         #: 摆放 / 红点 / 阵地补员都以它封顶（见 logic/config.gd 的 general_cap_at）。
         self.cap = int(cap)
@@ -910,6 +1107,135 @@ class ConfigModel:
             return
         raise ModelError("不认识的单位字段：%s" % field)
 
+    # ------------------------------------------------------------------
+    # 兵种特性（`unit.types.<id>.traits`，2026.11.3）
+    #
+    # ★ 写法与「视野半径 / 冲锋」同一条：**空值 = 删掉那个键**（游戏侧读回 0 / 关闭），
+    #   第一次编辑时才把 `traits` 那一块建出来 —— 没特性的兵种在文件里保持不变。
+    # ------------------------------------------------------------------
+
+    def _unit_traits_path(self, uid: str) -> JsonPath:
+        unit_path: JsonPath = ["unit", "types", uid]
+        if not self.doc.has(unit_path):
+            raise ModelError("没有这个单位类型：%s" % uid)
+        return unit_path + ["traits"]
+
+    def _traits_of(self, uid: str) -> Dict[str, Any]:
+        """这个兵种现在的 traits（**一层深拷贝**：改它不会动 Doc）。"""
+        unit = self.unit(uid)
+        out: Dict[str, Any] = {}
+        for key, value in unit.traits.items():
+            out[str(key)] = dict(value) if isinstance(value, dict) else value
+        return out
+
+    def _write_unit_traits(self, uid: str, traits: Dict[str, Any]) -> None:
+        """把**整块** traits 写回去（加键 / 删键时才用它）。
+
+        ★ 为什么加 / 删键要整块写：`configfile` 往多行字典**尾部插键**时，缩进按
+          「最后一个子项的值」算 —— 而 traits 的最后一项常常是 `attack_vs_class`
+          那个嵌套字典，插出来的新键会歪到它的列上（实测，见 test_model.py 的
+          「排版」那一条）。整块写交给 `_dump` 统一排版。
+        ★ 改**已有**键的值仍然走 `doc.set(path, value)`：只动一行，diff 最小。
+        """
+        path = self._unit_traits_path(uid)
+        clean: Dict[str, Any] = {}
+        for key, value in traits.items():
+            if key == UNIT_TRAIT_ATTACK_KEY and not value:
+                continue                  # 空的加成表不写进文件（读回来等价）
+            clean[key] = value
+        if not clean:
+            # 加完又删回去：整块也不用留（`traits: {}` 与「没有这个键」在游戏里等价，
+            # 但不留空块的文件更干净 —— 与「视野半径清空 = 删掉那个键」同一条）。
+            if self.doc.has(path):
+                self.doc.remove(path)
+            return
+        self.doc.set(path, clean)
+
+    def _drop_unit_trait_key(self, uid: str, key: str) -> None:
+        """删掉 traits 里的一个键；**删的是最后一个**就整块删掉（不留 `{}`）。"""
+        path = self._unit_traits_path(uid)
+        traits = self._traits_of(uid)
+        if len(traits) <= 1:
+            self.doc.remove(path)
+            return
+        self.doc.remove(path + [key])
+
+    def set_unit_trait(self, uid: str, key: str, value: Any) -> None:
+        """写 / 删兵种的一条**标量或开关**特性。
+
+        @param key   `UNIT_TRAIT_FIELDS` 里的键，或 `knockback_immune`
+        @param value `None` = 删掉这个键（回到「没有这一条」）；数字 / 布尔 = 写入
+        """
+        if key not in [f.key for f in UNIT_TRAIT_FIELDS] + [UNIT_TRAIT_KNOCKBACK.key]:
+            raise ModelError("不认识的兵种特性：%s（只有 %s）"
+                             % (key, "、".join([f.key for f in UNIT_TRAIT_FIELDS]
+                                               + [UNIT_TRAIT_KNOCKBACK.key])))
+        traits = self._traits_of(uid)
+        if value is None:
+            if key not in traits:
+                return
+            self._drop_unit_trait_key(uid, key)
+            return
+        if key == UNIT_TRAIT_KNOCKBACK.key:
+            if not bool(value):
+                # 取消勾选 = **删掉这个键**（与「清空减伤」同一条语义：文件里不留 false）。
+                if key in traits:
+                    self._drop_unit_trait_key(uid, key)
+                return
+            new_value: Any = True
+        else:
+            new_value = max(0.0, min(1.0, float(value)))
+        if key in traits:
+            if traits[key] == new_value:
+                return                    # 值没变：一个字都不写（保住「改回来还原」）
+            self.doc.set(self._unit_traits_path(uid) + [key], new_value)
+            return
+        traits[key] = new_value
+        self._write_unit_traits(uid, traits)
+
+    def set_unit_trait_attack(self, uid: str, cls: str, value: Optional[float]) -> None:
+        """写 / 删「对某一大类伤害 +x%」（`traits.attack_vs_class.<cls>`）。
+
+        @param value 比例（0.25 = +25%）；`None` = 删掉这一行
+        """
+        allowed = [cid for cid, _label in self.class_choices()]
+        if cls not in allowed:
+            raise ModelError("没有这个兵种大类：%r（unit.classes 里是：%s）"
+                             % (cls, "、".join(allowed)))
+        traits = self._traits_of(uid)
+        raw_table = traits.get(UNIT_TRAIT_ATTACK_KEY)
+        table: Dict[str, Any] = dict(raw_table) if isinstance(raw_table, dict) else {}
+        if value is None:
+            if cls not in table:
+                return
+            path = self._unit_traits_path(uid) + [UNIT_TRAIT_ATTACK_KEY]
+            if len(table) <= 1:
+                self.doc.remove(path)          # 最后一行：整张表也删掉
+                return
+            self.doc.remove(path + [cls])
+            return
+        # ★ 游戏侧只夹下界（`maxf(0.0, ...)`），这里给个上限只挡误输入
+        #   （写成 25 会被夹到 10，状态栏会说一句）。
+        new_value = max(0.0, min(10.0, float(value)))
+        if cls in table:
+            if table[cls] == new_value:
+                return
+            self.doc.set(self._unit_traits_path(uid) + [UNIT_TRAIT_ATTACK_KEY, cls],
+                         new_value)
+            return
+        table[cls] = new_value
+        traits[UNIT_TRAIT_ATTACK_KEY] = table
+        self._write_unit_traits(uid, traits)
+
+    def add_unit_trait_attack(self, uid: str, cls: str,
+                              value: float = UNIT_TRAIT_ATTACK_DEFAULT) -> None:
+        """给一个兵种加一条「对某大类伤害 +x%」（缺省 +25%）。"""
+        unit = self.unit(uid)
+        if cls in unit.attack_vs_class:
+            raise ModelError("「%s」已经有对%s的加成了（改那一行的数就行）"
+                             % (uid, dict(self.class_choices()).get(cls, cls)))
+        self.set_unit_trait_attack(uid, cls, value)
+
     def add_recruit_entry(self, uid: str) -> None:
         """把一个**任何招募表里都没有**的单位加进全局招募表（照默认值，之后可改）。
 
@@ -1052,7 +1378,10 @@ class ConfigModel:
             v = rsecs[index]
             if isinstance(v, (int, float)) and not isinstance(v, bool) and float(v) > 0.0:
                 recruit_sec = float(v)
-        return General(index, kind, type_id, override, recruit, defaults, cap, recruit_sec)
+        # ★★ 将领特性（2026.11.3）：读 `unit.general.trait_ids[index]`
+        #   （缺省 / 越界 / 指向池里不存在的 id → ""，与游戏侧 `general_trait_at` 同一条）。
+        return General(index, kind, type_id, override, recruit, defaults, cap, recruit_sec,
+                       self.general_trait_at(index))
 
     def generals(self) -> List[General]:
         return [self.general(i) for i in range(self.general_count())]
@@ -1168,6 +1497,214 @@ class ConfigModel:
                          [GENERAL_RECRUIT_DEFAULT for _ in range(self.general_count())])
         while self.doc.size(["unit", "general", "recruit_sec"]) <= index:
             self.doc.append(["unit", "general", "recruit_sec"], GENERAL_RECRUIT_DEFAULT)
+
+    # ------------------------------------------------------------------
+    # 将领特性池（`unit.general_traits`）+ 每位将领指定哪一条
+    #   （`unit.general.trait_ids[index]`）—— 2026.11.3
+    #
+    # ★ 为什么分成两张表：特性是**全局的一份池**（一族效果的定义），
+    #   将领只是「点名要池里的哪一条」；删掉池里的一条时，正在用它的将领要一起清掉，
+    #   否则游戏侧会读到一条永远匹配不上的 id（静默没有特性，最难查的那类 bug）。
+    # ------------------------------------------------------------------
+
+    def general_trait_ids(self) -> List[str]:
+        """池里全部特性的 id（**按 config 里的顺序**，跳过 `_comment` 那类键）。"""
+        return [k for k in self.doc.keys(["unit", "general_traits"]) if not k.startswith("_")]
+
+    def general_trait(self, tid: str) -> GeneralTrait:
+        row = self.doc.value(["unit", "general_traits", tid], None)
+        if not isinstance(row, dict):
+            raise ModelError("没有这条将领特性：%s" % tid)
+        return GeneralTrait(tid, row)
+
+    def general_traits(self) -> List[GeneralTrait]:
+        return [self.general_trait(tid) for tid in self.general_trait_ids()]
+
+    def general_trait_choices(self) -> List[Tuple[str, str]]:
+        """将领表单那个下拉的选项：`（无）` + 池里每一条 `名字（id）`。"""
+        out: List[Tuple[str, str]] = [("", "（无）")]
+        for trait in self.general_traits():
+            out.append((trait.id, "%s（%s）" % (trait.name, trait.id)))
+        return out
+
+    def general_trait_at(self, index: int) -> str:
+        """第 index 位将领指定的特性 id；**没指定 / 越界 / 池里没有 → 空串**。"""
+        arr = self.doc.value(["unit", "general", "trait_ids"], [])
+        if not isinstance(arr, list) or index < 0 or index >= len(arr):
+            return ""
+        tid = _s(arr[index])
+        return tid if tid and self.doc.has(["unit", "general_traits", tid]) else ""
+
+    def _ensure_trait_ids_slot(self, index: int) -> JsonPath:
+        """保证 `unit.general.trait_ids` 存在、且补到**将领个数**（补的是「无」）。"""
+        path: JsonPath = ["unit", "general", "trait_ids"]
+        count = self.general_count()
+        if not self.doc.has(path):
+            self.doc.set(path, ["" for _ in range(count)])
+        while self.doc.size(path) < count:
+            self.doc.append(path, "")
+        if index >= self.doc.size(path):                 # pragma: no cover - 越界已先被拒
+            raise ModelError("没有第 %d 位将领" % (index + 1))
+        return path
+
+    def assign_general_trait(self, index: int, tid: Optional[str]) -> None:
+        """给一位将领指定特性；`""` / `None` = 改成「无」。"""
+        self._check_general_index(index)
+        if tid:
+            if not self.doc.has(["unit", "general_traits", tid]):
+                raise ModelError("没有这条将领特性：%s" % tid)
+        else:
+            tid = ""
+        path = self._ensure_trait_ids_slot(index)
+        self.doc.set(path + [index], tid)
+
+    def _general_trait_row(self, tid: str) -> Dict[str, Any]:
+        """池里一条特性的原文（**一层深拷贝**；不存在就报错）。"""
+        row = self.doc.value(["unit", "general_traits", tid], None)
+        if not isinstance(row, dict):
+            raise ModelError("没有这条将领特性：%s" % tid)
+        out: Dict[str, Any] = {}
+        for key, value in row.items():
+            out[str(key)] = dict(value) if isinstance(value, dict) else value
+        return out
+
+    def _write_general_trait(self, tid: str, row: Dict[str, Any]) -> None:
+        """整条特性写回去（加 / 删键时用）——理由与 `_write_unit_traits` 同一条：
+        往多行字典尾部插键会按「最后那个值」的列缩进，而最后一项常常是
+        `attack_vs_class` 那个嵌套字典。"""
+        clean: Dict[str, Any] = {}
+        for key, value in row.items():
+            if key == GENERAL_TRAIT_ATTACK_KEY and not value:
+                continue
+            clean[key] = value
+        self.doc.set(["unit", "general_traits", tid], clean)
+
+    def set_general_trait_field(self, tid: str, field: str, value: Any) -> None:
+        """改池里一条特性的**文案 / 标量效果**（`None` / 空串 = 删掉这个键）。"""
+        row = self._general_trait_row(tid)
+        text_keys = [f.key for f in GENERAL_TRAIT_TEXT_FIELDS]
+        number_keys = [f.key for f in GENERAL_TRAIT_FIELDS]
+        if field in text_keys:
+            if field == "name":
+                if not value:
+                    raise ModelError("特性的名字不能空着")
+                self.doc.set(["unit", "general_traits", tid, "name"], value)
+                return
+            # 空串 = 删掉这个键（`short` / `desc` 都是「没写也行」的）。
+            if value is None or value == "":
+                if field not in row:
+                    return
+                row.pop(field)
+                self._write_general_trait(tid, row)
+                return
+            if field in row:
+                if row[field] == value:
+                    return
+                self.doc.set(["unit", "general_traits", tid, field], value)
+                return
+            row[field] = value
+            self._write_general_trait(tid, row)
+            return
+        if field not in number_keys:
+            raise ModelError("不认识的将领特性字段：%s" % field)
+        if value is None:
+            if field not in row:
+                return
+            row.pop(field)
+            self._write_general_trait(tid, row)
+            return
+        # 减伤是「比例」，超过 1 就等于无敌 —— 与游戏侧 `clampf(..., 0, 1)` 同一条上限。
+        top = 1.0 if field.endswith("_reduction") else 10.0
+        new_value = max(0.0, min(top, float(value)))
+        if field in row:
+            if row[field] == new_value:
+                return
+            self.doc.set(["unit", "general_traits", tid, field], new_value)
+            return
+        row[field] = new_value
+        self._write_general_trait(tid, row)
+
+    def set_general_trait_attack(self, tid: str, cls: str, value: Optional[float]) -> None:
+        """写 / 删一条将领特性的「对某大类伤害 +x%」。"""
+        allowed = [cid for cid, _label in self.class_choices()]
+        if cls not in allowed:
+            raise ModelError("没有这个兵种大类：%r（unit.classes 里是：%s）"
+                             % (cls, "、".join(allowed)))
+        row = self._general_trait_row(tid)
+        raw_table = row.get(GENERAL_TRAIT_ATTACK_KEY)
+        table: Dict[str, Any] = dict(raw_table) if isinstance(raw_table, dict) else {}
+        if value is None:
+            if cls not in table:
+                return
+            table.pop(cls)
+            if table:
+                row[GENERAL_TRAIT_ATTACK_KEY] = table
+            else:
+                row.pop(GENERAL_TRAIT_ATTACK_KEY, None)
+            self._write_general_trait(tid, row)
+            return
+        new_value = max(0.0, min(10.0, float(value)))
+        if cls in table:
+            if table[cls] == new_value:
+                return
+            self.doc.set(["unit", "general_traits", tid, GENERAL_TRAIT_ATTACK_KEY, cls],
+                         new_value)
+            return
+        table[cls] = new_value
+        row[GENERAL_TRAIT_ATTACK_KEY] = table
+        self._write_general_trait(tid, row)
+
+    def add_general_trait_attack(self, tid: str, cls: str,
+                                 value: float = GENERAL_TRAIT_ATTACK_DEFAULT) -> None:
+        trait = self.general_trait(tid)
+        if cls in trait.attack_vs_class:
+            raise ModelError("「%s」已经有对%s的加成了" % (tid, dict(self.class_choices()).get(cls, cls)))
+        self.set_general_trait_attack(tid, cls, value)
+
+    def add_general_trait(self, new_id: str, name: str, template_id: str) -> None:
+        """新建一条将领特性：**照模板复制一份原文**（连排版一起抄），再改 id 与名字。
+
+        ★ 与 `add_unit` 同一条动线（「拿一个像的改几处」）。模板的 `short` 要删掉：
+          留着会顶着模板那个字（例如新特性显示成「速」），删掉 = 跟着名字首字。
+        ★ `template_id = ""`（池被删空、没有模板可抄）退成「只写名字」——
+          否则「把特性全删了」会让这个功能把自己锁死（再也建不出第一条）。
+        """
+        self._check_new_trait_id(new_id)
+        path: JsonPath = ["unit", "general_traits", new_id]
+        if not template_id:
+            self.doc.set(path, {"name": name})
+            return
+        if not self.doc.has(["unit", "general_traits", template_id]):
+            raise ModelError("模板特性不存在：%s" % template_id)
+        self.doc.insert_raw(["unit", "general_traits"], new_id,
+                            self.doc.text_of(["unit", "general_traits", template_id]))
+        self.doc.set(path + ["name"], name)
+        if self.doc.has(path + ["short"]):
+            self.doc.remove(path + ["short"])
+
+    def remove_general_trait(self, tid: str) -> None:
+        """删掉池里的一条特性，并把**正在用它的将领**改成「无」。
+
+        ★ 这一步不能省：只删池里那份，`unit.general.trait_ids` 会留下一条指向不存在
+          id 的记录 —— 游戏侧读到空特性、界面显示「无」，但数据里躺着一个坏 id。
+        """
+        if not self.doc.has(["unit", "general_traits", tid]):
+            raise ModelError("没有这条将领特性：%s" % tid)
+        self.doc.remove(["unit", "general_traits", tid])
+        arr = self.doc.value(["unit", "general", "trait_ids"], [])
+        if isinstance(arr, list):
+            for i, value in enumerate(arr):
+                if _s(value) == tid:
+                    self.doc.set(["unit", "general", "trait_ids", i], "")
+
+    def _check_new_trait_id(self, new_id: str) -> None:
+        if not new_id:
+            raise ModelError("请填特性 id（英文小写 + 下划线）")
+        if not ID_RE.match(new_id):
+            raise ModelError("特性 id 只能用**小写字母开头** + 小写字母 / 数字 / 下划线：%r"
+                             % new_id)
+        if self.doc.has(["unit", "general_traits", new_id]):
+            raise ModelError("已经有一条叫「%s」的将领特性了" % new_id)
 
     # ------------------------------------------------------------------
     # 建筑

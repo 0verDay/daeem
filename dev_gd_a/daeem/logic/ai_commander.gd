@@ -44,6 +44,22 @@ var production_timer: float = 0.0
 var strategic_timer: float = 0.0
 var retry_timer: float = 0.0
 var general_try_timer: float = 5.0
+## ---- ★★ 2026.11 目的系统（攒钱升本 / 攒钱招高阶兵）----
+##
+## 设计口径（用户拍板）：**招兵 tick 不该只是「有钱就买最便宜的那个」**。
+##   · `spend_low` / `spend_high`：本局累计花在「低阶 / 高阶」兵上的资源
+##     （食物当量 = 粮 + 2×金，见 `recruit_spend_weight`）；
+##   · `goal`：当前正在攒钱的目标 —— "" | "upgrade"（升大本营）| "elite"（高阶兵）；
+##   · 攒钱期间 `_production_tick` 直接返回（不补员、不补将），钱才会真的涨上去；
+##     `_goal_should_stop()` 负责「买得起 / 超时 / 目标没了」三种退出。
+##   ⚠️ 这只是**不花钱**，不动任何数值、不改 `can_recruit` 的任何规则。
+var spend_low: float = 0.0
+var spend_high: float = 0.0
+var goal: String = ""
+var goal_since: float = 0.0
+var goal_need: Dictionary = {}
+var goal_kind: String = ""
+var goal_cooldown_until: float = 0.0
 ## ★★ 濒死将领再起 / 召回巡检（独立于战略 tick，避免倒地后要等 2 秒才处理）。
 var revive_timer: float = 0.0
 ## ★★ 队伍粘合巡检：将领在走、某个附属兵掉队 / 停下时，**重发整队命令**。
@@ -685,6 +701,13 @@ func _refresh_zone_ownership(initial: bool) -> void:
 func _production_tick() -> void:
 	if retry_timer > 0.0:
 		return
+	# ★★ 2026.11 目的系统：先决定「这一段时间要不要攒钱」，攒钱期间不开任何新单。
+	#   ⚠️ 必须在 `ensure_garrison` / 补将之前 —— 那两步也会花钱（招将 130/130），
+	#      放在后面会让「攒 200 粮升二本」永远攒不满。
+	_update_goal()
+	if _goal_holding():
+		note_status("saving")
+		return
 	# 1) 守军轮换（补满的守军换下来、由另一支接防）。
 	AiArmyRes.ensure_garrison(self)
 	AiArmyRes.maybe_rotate_garrison(self)
@@ -724,6 +747,12 @@ func _production_tick() -> void:
 		var leader = cd.get("leader", null)
 		if leader == null or not leader.alive:
 			continue
+		# ★★ 2026.11（用户口径 ③）：招兵 tick **只遍历站在己方区划里的将领**。
+		#   「只能在己方区划招兵」是底层规则（`world.can_recruit` 的 `zone` 判据），这里
+		#   只是把它**提前剪枝**：候选表是几秒前建的，这中间将领可能已经走出去；
+		#   不剪的话会白跑一次 `_pick_kind`（加权抽样会被这一单消耗掉 rand 序列）。
+		if not world.leader_zone_owned(leader):
+			continue
 		var deficit := int(cd.get("deficit", 0))
 		if deficit <= 0:
 			continue
@@ -758,6 +787,8 @@ func _production_tick() -> void:
 			break
 		if world.start_recruit(kind, String(leader.id), faction):
 			stats["recruits"] = int(stats.get("recruits", 0)) + 1
+			# ★★ 2026.11：记账 —— 这一单算低阶还是高阶（决定之后要不要倾斜）。
+			_note_recruit_spend(kind)
 			attempts -= 1
 			if not was_training:
 				training += 1
@@ -766,6 +797,242 @@ func _production_tick() -> void:
 			stats["recruit_failures"] = int(stats.get("recruit_failures", 0)) + 1
 			retry_timer = maxf(0.5, float(profile.get("intervals", {}).get("retry_sec", 3.0)))
 			break
+
+
+# ------------------------------------------------------------------
+# ★★ 2026.11 目的系统：什么时候该「停手攒钱」，以及攒给谁
+# ------------------------------------------------------------------
+#
+# 用户口径（第四条）：AI 要有一套「目的」，而不是「有钱就买最便宜的那个」。
+#   · 偏向**升本**：大本营还有下一级、差的钱能在 N 秒收入里补上、家里没被打、
+#     队伍大致成形 → 停手攒 200/200（配置 `ai.commander.goals.upgrade`）；
+#   · 偏向**攒钱招高阶兵**：低阶兵已经花够（`production.elite.trigger_low_spend`）、
+#     高阶占比不达标（`elite_to_low`）、且确实有一条高阶兵**只差钱**
+#     （tier / 区划 / 脱战 / 编制 / 队列都过了，见 `_elite_candidate`）。
+#   优先级：守家成军 > 升本 > 高阶兵。攒钱最多等 `max_wait_sec`，超时放弃并冷却。
+#
+# ⚠️ 这里只「不花钱」：不改任何数值，也不改 `world.can_recruit` 的任何规则。
+#    钱一够 `_goal_holding()` 就自动放行，由 `_pick_kind` 按编成权重去花。
+
+func _goals_cfg() -> Dictionary:
+	var g: Variant = profile.get("goals", {})
+	return g if typeof(g) == TYPE_DICTIONARY else {}
+
+func _elite_cfg() -> Dictionary:
+	var p: Dictionary = profile.get("production", {})
+	var e: Variant = p.get("elite", {})
+	return e if typeof(e) == TYPE_DICTIONARY else {}
+
+func elite_low_tier_max() -> int:
+	return maxi(2, int(_elite_cfg().get("elite_tier_min", 3)))
+
+## 一单的「资源当量」= 粮 + 2×金（金更稀缺）。只用于记账与比较，不参与真实扣费。
+func recruit_spend_weight(kind: String) -> float:
+	var c: Dictionary = world.recruit_cost(kind, faction)
+	return float(c.get("food", 0.0)) + 2.0 * float(c.get("gold", 0.0))
+
+func _note_recruit_spend(kind: String) -> void:
+	var v := recruit_spend_weight(kind)
+	if world.recruit_tier(kind, faction) >= elite_low_tier_max():
+		spend_high += v
+	else:
+		spend_low += v
+
+## 该不该「往高阶兵倾斜」：低阶已花够，且 高阶:低阶 的花费比还没到目标。
+func elite_share_push_needed() -> bool:
+	var e := _elite_cfg()
+	if e.is_empty():
+		return false
+	if float(world.time) < float(e.get("min_sec", 90.0)):
+		return false
+	if spend_low < float(e.get("trigger_low_spend", 600.0)):
+		return false
+	return spend_high < spend_low * float(e.get("elite_to_low", 0.5))
+
+
+func _update_goal() -> void:
+	var g := _goals_cfg()
+	if not bool(g.get("enabled", true)):
+		goal = ""
+		return
+	var t := float(world.time)
+	if goal != "":
+		if _goal_should_stop(t):
+			goal = ""
+			goal_need = {}
+			goal_kind = ""
+			goal_cooldown_until = t + float(g.get("cooldown_sec", 25.0))
+		return
+	if t < goal_cooldown_until:
+		return
+	var pick := _decide_goal(t)
+	goal = String(pick.get("kind", ""))
+	if goal == "":
+		return
+	goal_since = t
+	goal_need = pick.get("need", {})
+	goal_kind = String(pick.get("recruit", ""))
+	stats["goal_%s" % goal] = int(stats.get("goal_%s" % goal, 0)) + 1
+
+## 攒钱期间：true = 这一 tick 一分钱都不花。
+func _goal_holding() -> bool:
+	if goal == "":
+		return false
+	return not AiEconomyRes.can_afford(self, goal_need)
+
+func _goal_should_stop(t: float) -> bool:
+	var g := _goals_cfg()
+	if AiEconomyRes.can_afford(self, goal_need):
+		return true
+	if goal == "upgrade":
+		var uc: Dictionary = g.get("upgrade", {})
+		if t - goal_since > float(uc.get("max_wait_sec", 80.0)):
+			return true
+		return AiBuildRes._base_upgrade_candidate(self).is_empty()
+	if goal == "elite":
+		var ec: Dictionary = g.get("elite", {})
+		if t - goal_since > float(ec.get("max_wait_sec", 60.0)):
+			return true
+		return goal_kind == "" or not world.unit_recruit_unlocked(faction, goal_kind)
+	return true
+
+func _decide_goal(t: float) -> Dictionary:
+	# 守家 / 成军优先：这时候攒钱等于自杀。
+	if _defense_critical():
+		return {}
+	var up := _upgrade_goal(t)
+	if not up.is_empty():
+		return up
+	return _elite_goal(t)
+
+func _upgrade_goal(t: float) -> Dictionary:
+	var g := _goals_cfg()
+	var uc: Dictionary = g.get("upgrade", {})
+	if t < float(uc.get("min_sec", 75.0)):
+		return {}
+	var pick := AiBuildRes._base_upgrade_candidate(self)
+	if pick.is_empty():
+		return {}
+	var cost: Dictionary = pick.get("cost", {})
+	# 买得起就交给 `ai_build` 那一侧去升，不需要停手。
+	if cost.is_empty() or AiEconomyRes.can_afford(self, cost):
+		return {}
+	if not _affordable_within(cost, float(uc.get("reachable_sec", 50.0))):
+		return {}
+	if not _army_ready_for_goal(float(uc.get("army_ratio", 0.5))):
+		return {}
+	return {"kind": "upgrade", "need": cost}
+
+func _elite_goal(t: float) -> Dictionary:
+	if not elite_share_push_needed():
+		return {}
+	var ec: Dictionary = _goals_cfg().get("elite", {})
+	if t < float(ec.get("min_sec", 110.0)):
+		return {}
+	if not _army_ready_for_goal(float(ec.get("army_ratio", 0.6))):
+		return {}
+	var best := _elite_candidate()
+	if best.is_empty():
+		return {}
+	var cost: Dictionary = best.get("cost", {})
+	if cost.is_empty() or AiEconomyRes.can_afford(self, cost):
+		return {}
+	if not _affordable_within(cost, float(ec.get("reachable_sec", 60.0))):
+		return {}
+	return {"kind": "elite", "need": cost, "recruit": String(best.get("kind", ""))}
+
+## 找一条「只差钱」的高阶兵：tier 已解锁，且**己方区划里**有将领能下这一单。
+## ★ 取**最便宜的那条**：先让高阶兵真的出现一次，再谈风味。
+func _elite_candidate() -> Dictionary:
+	var tier_min := elite_low_tier_max()
+	var leader = _zone_recruit_leader()
+	if leader == null:
+		return {}
+	var best: Dictionary = {}
+	var best_w := INF
+	for item in world.recruit_list(faction):
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		var kind := String((item as Dictionary).get("kind", ""))
+		if kind == "" or world.recruit_tier(kind, faction) < tier_min:
+			continue
+		if not world.unit_recruit_unlocked(faction, kind):
+			continue
+		# 非钱的门先过掉（tier / 区划 / 脱战 / 编制 / 队列），否则攒钱也没用。
+		if String(world.can_recruit(kind, String(leader.id), faction)) != "":
+			continue
+		var c: Dictionary = world.recruit_cost(kind, faction)
+		var w := float(c.get("food", 0.0)) + 2.0 * float(c.get("gold", 0.0))
+		if w <= 0.0:
+			continue
+		if w < best_w:
+			best_w = w
+			best = {"kind": kind, "cost": c}
+	return best
+
+## 己方区划里、现在能当招募对象的第一位将领（没有 → null）。
+func _zone_recruit_leader():
+	for u in world.units:
+		if u == null or not u.alive or String(u.faction) != faction:
+			continue
+		if u.is_downed() or not u.is_general() or String(u.leader_id) != "":
+			continue
+		if world.is_team_leader(u) and world.leader_zone_owned(u):
+			return u
+	return null
+
+## 守家 / 成军优先：true = 现在绝对不许停手攒钱。
+func _defense_critical() -> bool:
+	var teams := AiArmyRes.leader_teams(self)
+	if teams.is_empty():
+		return true
+	var min_units := AiArmyRes._min_units(self)
+	var small := 0
+	for t in teams:
+		if AiArmyRes.team_projected(self, t["leader"]) < min_units:
+			small += 1
+	if small * 2 >= teams.size():
+		return true
+	for z in world.zones.zones:
+		var zd: Dictionary = z
+		if String(zd.get("owner", "")) != faction:
+			continue
+		if String(zd.get("capture_state", "")) != "" \
+				and String(zd.get("capture_faction", "")) != faction:
+			return true
+	return false
+
+## 兵力够不够「有资格停手攒钱」：成形队伍数 ≥ 总队伍数 × ratio。
+func _army_ready_for_goal(ratio: float) -> bool:
+	var teams := AiArmyRes.leader_teams(self)
+	if teams.is_empty():
+		return false
+	var min_units := AiArmyRes._min_units(self)
+	var ready := 0
+	for t in teams:
+		if AiArmyRes.team_projected(self, t["leader"]) >= min_units:
+			ready += 1
+	return float(ready) >= float(teams.size()) * clampf(ratio, 0.0, 1.0)
+
+## 按当前收入（扣维护 / 科技金耗）估算：攒够这笔钱要 ≤ seconds 秒吗？
+func _affordable_within(cost: Dictionary, seconds: float) -> bool:
+	var inc: Dictionary = world._accumulate_production(faction, false, {})
+	var net_food := float(inc.get("food", 0.0)) \
+		- float(world._upkeep_food_rate.get(faction, 0.0))
+	var net_gold := float(inc.get("gold", 0.0)) \
+		- float(world._tech_gold_rate.get(faction, 0.0))
+	var need_food := maxf(0.0, float(cost.get("food", 0.0)) - AiEconomyRes.food(self))
+	var need_gold := maxf(0.0, float(cost.get("gold", 0.0)) - AiEconomyRes.gold(self))
+	var sec := 0.0
+	if need_food > 0.0:
+		if net_food <= 0.05:
+			return false
+		sec = maxf(sec, need_food / net_food)
+	if need_gold > 0.0:
+		if net_gold <= 0.05:
+			return false
+		sec = maxf(sec, need_gold / net_gold)
+	return sec <= seconds
 
 
 ## 按编成权重抽一个兵种；过滤「没解锁 / 招不了 / 粮车已有」。
@@ -852,6 +1119,23 @@ func _pick_kind(leader) -> String:
 		total = 0.0
 		for c2 in cands:
 			total += float((c2 as Dictionary).get("weight", 0.0))
+	# ★★ 2026.11（用户口径 ②）：**高阶兵倾斜**。
+	#   触发条件 = 低阶兵累计花费 ≥ `production.elite.trigger_low_spend`，
+	#              且 高阶:低阶 的花费比还没到 `elite_to_low`（默认 0.5 ⇒ 1:2）。
+	#   做法 = 在**这一次买得起的那批**里，只留下高阶；一个高阶都买不起就照旧买便宜的
+	#   （真正的「攒钱等贵的」由目的系统 `goal == "elite"` 负责，不在这里硬等）。
+	if elite_share_push_needed():
+		var elite_cands: Array = []
+		var tier_min := elite_low_tier_max()
+		for c3 in cands:
+			var ck3 := String((c3 as Dictionary).get("type", ""))
+			if world.recruit_tier(ck3, faction) >= tier_min:
+				elite_cands.append(c3)
+		if not elite_cands.is_empty():
+			cands = elite_cands
+			total = 0.0
+			for c4 in cands:
+				total += float((c4 as Dictionary).get("weight", 0.0))
 	if total <= 0.0:
 		total = 1.0
 	production_serial += 1

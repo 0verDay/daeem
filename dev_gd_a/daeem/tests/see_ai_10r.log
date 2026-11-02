@@ -1,0 +1,51 @@
+﻿Godot Engine v4.7.2.stable.mono.official.ed1daf0bf - https://godotengine.org
+
+[start] rounds=10 cap=1200s dt=1/60
+[round 01] 时长 15:21 结束=目标区划 胜=p2 首次接触 3:28 首杀 4:11 首次拆建筑 — 峰值单位 43
+[round 01]   p1 本营Lv3(血2250/2250 100%) 区划0 将3 兵4 粮81 金0 科技3 造68 损68 建筑损0 将领阵亡12
+[round 01]   p2 本营Lv3(血1094/2250 49%) 区划16 将6 兵36 粮151 金102 科技3 造64 损29 建筑损0 将领阵亡3
+[round 01]   目标区划：zone0=p2（p1 要） zone2=p2（p2 要） 墙钟 64.5s
+[round 01]   p1 生产构成：dy_spear_guard×24、dy_archer_guard×24、dy_ranger×7、dy_scout×4、dy_royal_sword×2、dy_royal_archer×2、dy_royal_cavalry×2、longbowman(将)×1、rider(将)×1、grain_cart×1
+[round 01]   p1 科技：dy_liyue、dy_grace、dy_formation
+[round 01]   p2 生产构成：dg_swordsman×22、dg_rider×17、dg_archer×11、dg_champion×7、spearman(将)×5、dg_bolt×2
+[round 01]   p2 科技：dg_enclosure、tech_speed_rush、dg_expedition
+[round 02] 时长 5:58 结束=基地被拆 胜=p1 首次接触 3:38 首杀 3:59 首次拆建筑 5:58 峰值单位 32
+[round 02]   p1 本营Lv3(血2250/2250 100%) 区划9 将3 兵19 粮111 金186 科技3 造21 损3 建筑损0 将领阵亡1
+[round 02]   p2 本营Lv0(血-1/-1 0%) 区划7 将2 兵11 粮69 金63 科技3 造12 损2 建筑损1 将领阵亡1
+[round 02]   目标区划：zone0=p2（p1 要） zone2=p1（p2 要） 墙钟 17.7s
+[round 02]   p1 生产构成：dy_spear_guard×8、dy_archer_guard×8、dy_ranger×2、longbowman(将)×1、rider(将)×1、grain_cart×1
+[round 02]   p1 科技：dy_liyue、dy_grace、dy_formation
+[round 02]   p2 生产构成：dg_swordsman×4、dg_archer×4、spearman(将)×2、dg_rider×2
+[round 02]   p2 科技：dg_enclosure、tech_speed_rush、dg_expedition
+[round 03] 时长 17:01 结束=基地被拆 胜=p2 首次接触 2:31 首杀 5:10 首次拆建筑 17:01 峰值单位 41
+[round 03]   p1 本营Lv0(血-1/-1 0%) 区划6 将2 兵9 粮243 金745 科技3 造94 损89 建筑损1 将领阵亡11
+[round 03]   p2 本营Lv3(血1858/2250 83%) 区划10 将5 兵26 粮70 金105 科技3 造54 损32 建筑损0 将领阵亡6
+[round 03]   目标区划：zone0=p2（p1 要） zone2=p1（p2 要） 墙钟 66.8s
+[round 03]   p1 生产构成：dy_spear_guard×32、dy_archer_guard×32、dy_ranger×9、dy_scout×7、dy_royal_sword×3、dy_royal_archer×3、dy_royal_cavalry×3、grain_cart×2、longbowman(将)×1、rider(将)×1、dy_catapult×1
+[round 03]   p1 科技：dy_liyue、dy_grace、dy_formation
+[round 03]   p2 生产构成：dg_swordsman×26、dg_archer×10、dg_rider×10、spearman(将)×4、dg_champion×4
+[round 03]   p2 科技：dg_enclosure、tech_speed_rush、dg_expedition
+[round 04] 时长 7:26 结束=目标区划 胜=p1 首次接触 3:19 首杀 3:44 首次拆建筑 4:37 峰值单位 22
+[round 04]   p1 本营Lv3(血2250/2250 100%) 区划14 将3 兵19 粮94 金329 科技3 造35 损17 建筑损0 将领阵亡2
+[round 04]   p2 本营Lv3(血886/2250 39%) 区划2 将0 兵0 粮106 金53 科技3 造15 损18 建筑损2 将领阵亡8
+[round 04]   目标区划：zone0=p1（p1 要） zone2=p1（p2 要） 墙钟 21.3s
+[round 04]   p1 生产构成：dy_spear_guard×13、dy_archer_guard×13、grain_cart×2、longbowman(将)×1、dy_scout×1、dy_royal_sword×1、dy_royal_archer×1、dy_royal_cavalry×1、rider(将)×1、dy_catapult×1
+[round 04]   p1 科技：dy_liyue、dy_grace、dy_formation
+[round 04]   p2 生产构成：dg_swordsman×6、dg_rider×4、dg_archer×3、spearman(将)×2
+[round 04]   p2 科技：dg_enclosure、tech_speed_rush、dg_expedition
+[round 05] 时长 9:33 结束=目标区划 胜=p1 首次接触 1:30 首杀 1:42 首次拆建筑 9:26 峰值单位 35
+[round 05]   p1 本营Lv3(血2250/2250 100%) 区划13 将2 兵15 粮185 金515 科技3 造39 损25 建筑损0 将领阵亡2
+[round 05]   p2 本营Lv3(血2250/2250 100%) 区划3 将4 兵11 粮87 金18 科技3 造33 损24 建筑损1 将领阵亡5
+[round 05]   目标区划：zone0=p1（p1 要） zone2=p1（p2 要） 墙钟 31.3s
+[round 05]   p1 生产构成：dy_spear_guard×13、dy_archer_guard×13、dy_ranger×7、dy_catapult×2、dy_scout×2、longbowman(将)×1、grain_cart×1
+[round 05]   p1 科技：dy_liyue、tech_speed_rush、dy_grace
+[round 05]   p2 生产构成：dg_swordsman×14、dg_archer×9、dg_rider×6、spearman(将)×3、dg_champion×1
+[round 05]   p2 科技：dg_enclosure、tech_speed_rush、dg_expedition
+[round 06] 时长 4:47 结束=目标区划 胜=p1 首次接触 2:27 首杀 2:31 首次拆建筑 — 峰值单位 26
+[round 06]   p1 本营Lv1(血1000/1000 100%) 区划10 将2 兵14 粮83 金320 科技1 造20 损7 建筑损0 将领阵亡1
+[round 06]   p2 本营Lv2(血1500/1500 100%) 区划5 将1 兵2 粮109 金164 科技2 造10 损9 建筑损0 将领阵亡2
+[round 06]   目标区划：zone0=p1（p1 要） zone2=p1（p2 要） 墙钟 12.7s
+[round 06]   p1 生产构成：dy_spear_guard×9、dy_archer_guard×9、longbowman(将)×1、grain_cart×1
+[round 06]   p1 科技：dy_liyue
+[round 06]   p2 生产构成：dg_swordsman×5、dg_archer×4、spearman(将)×1
+[round 06]   p2 科技：dg_enclosure、tech_speed_rush
