@@ -18,6 +18,11 @@
 //   完全换成悬停贴图；调低会保留一部分原画）。
 //   ★ 顺序：先悬停混合、后闪白（受击的白色反馈永远压在最上面）。
 //
+// ★★ 冲锋：`INSTANCE_CUSTOM.b` 是冲锋进度（0 = 没在冲，1 = 冲锋满值）。
+//   颜色来自批次 uniform `charge_color`（= 该阵营色），逐像素把原画往阵营色上混，
+//   于是骑兵冲刺时整块立牌会亮起来。冲锋光在闪白之下（受击白仍然最优先）。
+//   ★ `.b` 与 `.a` 之前都空闲；本轮用 `.b`，`.a` 继续留给以后。
+//
 // ★ 与原来的 StandardMaterial3D 逐条对齐（换了材质别把观感换掉）：
 //   unshaded（不投影、不吃光）/ cull_disabled（billboard 极端角度能看到背面）/
 //   ALPHA_SCISSOR_THRESHOLD = 0.35（透明区不参与混合）/ 贴图用线性 + mipmap + 各向异性。
@@ -34,11 +39,15 @@ uniform float flash_strength : hint_range(0.0, 1.0) = 0.8;
 //   只加在 hover_tex 上：原画贴图保持现有观感不变（本轮不动常态单位）。
 uniform sampler2D hover_tex : source_color, filter_linear_mipmap_anisotropic;
 uniform float hover_fill_alpha : hint_range(0.0, 1.0) = 1.0;
+// ★★ 冲锋发光：颜色 = 阵营色（按批次设），强度 = render.charge_glow_alpha。
+uniform vec4 charge_color : source_color = vec4(1.0, 1.0, 1.0, 1.0);
+uniform float charge_strength : hint_range(0.0, 1.0) = 0.45;
 
 // ⚠️ INSTANCE_CUSTOM 只在 **vertex** 里可读（实测：直接写进 fragment 会报
 //    `Unknown identifier: INSTANCE_CUSTOM`）⇒ 用 varying 传到片元。
 varying float v_flash;
 varying float v_hover;
+varying float v_charge;
 
 void vertex() {
 	// 面向相机的立牌：用相机基向量替换模型的旋转，只保留实例的平移。
@@ -47,6 +56,7 @@ void vertex() {
 		MODEL_MATRIX[3]);
 	v_flash = INSTANCE_CUSTOM.r;
 	v_hover = INSTANCE_CUSTOM.g;
+	v_charge = INSTANCE_CUSTOM.b;
 }
 
 void fragment() {
@@ -56,6 +66,9 @@ void fragment() {
 	float flash = clamp(v_flash * flash_strength, 0.0, 1.0);
 	float fill = clamp(v_hover * hover_fill_alpha, 0.0, 1.0);
 	vec3 col = mix(tex.rgb, hov.rgb, fill);
+	// ★★ 冲锋光：先于闪白混合，受击白永远压在最上面。
+	float chg = clamp(v_charge, 0.0, 1.0) * charge_strength;
+	col = mix(col, charge_color.rgb, chg);
 	ALBEDO = mix(col, vec3(1.0), flash);
 	// ★ alpha 也从原贴图混向悬停贴图：悬停贴图的描边是**满不透明**的白边
 	//   （原贴图的普通描边是 0.72），不混的话白边会显得发灰。

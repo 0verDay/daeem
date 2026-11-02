@@ -67,26 +67,40 @@ def selftest(project_dir: Path) -> int:
     print("[config] %s（%d 行，%d 字节）" % (path, model.text.count("\n") + 1,
                                             len(model.text.encode("utf-8"))))
     for unit in model.units():
+        # ★★ 2026.11.2：单位不再有「招募秒」（读条由将领决定）——
+        #   这里只报招募归属：自有条目（全局 / 派系表）或「随某一单整包生成」。
+        if unit.has_recruit:
+            recruit = unit.recruit_owner
+        elif unit.spawn_source:
+            recruit = "随「%s」" % unit.spawn_label
+        else:
+            recruit = "（不在招募表）"
         print("[unit] %-12s %-6s %-8s 字 %-3s 血 %-5s 攻 %-5s 距离 %-5s 攻速 %-5s 移速 %-5s"
-              " 造价 %s/%s/%s 招募 %ss%s"
+              " 造价 %s/%s/%s 招募 @%s"
               % (unit.id, unit.name, unit.class_label, unit.icon_char,
                  fmt_number(unit.hp_max),
                  fmt_number(unit.damage), fmt_number(unit.range),
                  fmt_number(unit.cooldown_sec), fmt_number(unit.speed),
                  fmt_number(unit.cost_food), fmt_number(unit.cost_gold),
-                 fmt_number(unit.population_cost), fmt_number(unit.train_sec),
-                 "" if unit.has_recruit else "（不在招募表）"))
+                 fmt_number(unit.population_cost), recruit))
+    # ★★ 2026.11.2：组合招募单（协防军 / 御林军）—— 不是兵种，单独报一行。
+    for pkg in model.recruit_packages():
+        print("[package] %-12s %-6s 出 %d 个 造价 %s/%s/%s 来源 %s ← %s"
+              % (pkg.kind, pkg.label, pkg.count,
+                 fmt_number(pkg.cost_food), fmt_number(pkg.cost_gold),
+                 fmt_number(pkg.population_cost), pkg.owner, pkg.member_text))
     for gen in model.generals():
         own = [k for k in ("hp_max", "damage", "range", "cooldown_sec", "speed")
                if not gen.inherits(k)]
         print("[general] %d %-10s 类型 %-11s 血 %s 攻 %s 距离 %s 移速 %s 造价 %s/%s/%s"
-              " 招募 %ss%s"
+              " 招兵 %ss 区划读条 %ss%s"
               % (gen.index + 1, gen.name, gen.type_id, fmt_number(gen.effective_of("hp_max")),
                  fmt_number(gen.effective_of("damage")),
                  fmt_number(gen.effective_of("range")),
                  fmt_number(gen.effective_of("speed")),
                  fmt_number(gen.cost_food), fmt_number(gen.cost_gold),
-                 fmt_number(gen.population_cost), fmt_number(gen.train_sec),
+                 fmt_number(gen.population_cost), fmt_number(gen.recruit_sec),
+                 fmt_number(gen.train_sec),
                  "　单独数值：%s" % "、".join(own) if own else "　（完全跟随兵种）"))
     # ★ 「开局护卫数」这个全局缺省已经删掉：开局带几个附属兵只能在**战役编辑器的
     #   摆放页**里一个一个摆出来（见 app.py 里那一行灰字提示）。

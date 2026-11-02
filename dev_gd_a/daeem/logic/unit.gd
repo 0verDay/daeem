@@ -148,6 +148,28 @@ var knockback_distance: float = 0.0
 var knockback_stun_sec: float = 0.0
 var pierce: bool = false
 var projectile_arc: bool = true
+## ★★ 2026.11：**冲锋**（被动动量）。权威定义在 config 的 `unit.types.<id>.charge`，
+##   出生时由 `load_charge_def()` 抄成扁平字段，之后每帧只读这些字段、不再查 config。
+##   · 累积只认「实际沿路径走过的距离」；方向与**起始方向**的夹角超过 turn 就清零重算。
+##   · `charge_armed` 时下一次近战接触立即变成冲锋命中（见 combat.update_combat）。
+##   · 冲锋命中后 `charge_cd` 开始冷却；冷却期间不再累积。
+var charge_enabled: bool = false
+var charge_min_dist: float = 0.0
+var charge_max_dist: float = 0.0
+var charge_turn_dot: float = 0.0
+var charge_speed_bonus: float = 0.0
+var charge_damage_bonus: float = 0.0
+var charge_knock_dist: float = 0.0
+var charge_knock_stun: float = 0.0
+var charge_splash: float = 0.0
+var charge_splash_ratio: float = 0.0
+var charge_cd_max: float = 0.0
+var charge_cd: float = 0.0
+var charge_dist: float = 0.0
+var charge_ratio: float = 0.0
+var charge_armed: bool = false
+var charge_dir: Vector2 = Vector2.ZERO
+var charge_hold: float = 0.0
 ## ★★ 2026.11：**被**眩晕的剩余秒数（> 0 = 不能移动 / 攻击 / 索敌）。
 var stun_timer: float = 0.0
 ## ★★ 将领特性（部队光环；权威定义在 config.json 的 `unit.general_traits`）。
@@ -567,6 +589,18 @@ var chase_last_pos: Vector2 = Vector2.ZERO
 var defending_center: bool = false
 ## 下一次检查「要不要无消耗招兵」还有几秒（把 O(附庸兵数) 的统计摊到几秒一次）。
 var garrison_recruit_timer: float = 0.0
+## ★★ 阵地性 AI 的**警戒唤醒**状态（2026.11，见 logic/garrison_ai.gd）。
+##
+## 需求原话：「只有当玩家 / 敌对 AI 的部队移动到自身 10 格以内，或玩家 / 敌对 AI 的
+##   区划扩张到距离自身所在区划一个区划外时，才会启动巡逻逻辑，否则静止」。
+##   · `garrison_alert_active` = 上一次判定「有威胁」的结果（**缓存**，不是每帧重算）；
+##   · `garrison_alert_next_sec` = 距离下一次重新判定的倒计时（`ai.garrison.alert_check_sec`）。
+##
+## ⚠️ 它**只管巡逻**：交战（combat.gd）、守区划中心、无消耗招兵、濒死再起都不受它影响 ——
+##   那些是「被动响应 / 不移动」的行为，把守军弄睡着反而不合需求。
+## ⚠️ 不进快照：客机不跑 AI（与 patrol_* / chasing 同一口径）。
+var garrison_alert_active: bool = false
+var garrison_alert_next_sec: float = 0.0
 
 ## ---- 纯表现的本地标志 ----
 ## selected：由 view/input_controller 写、view/overlay 与 unit_view 读。
@@ -647,7 +681,46 @@ static func create(cfg: ConfigRes, p_id: String, p_name: String, tile: Vector2i,
 		u.vision = cfg.general_vision_at(p_general_index)
 	else:
 		u.vision = cfg.unit_vision_of(u.unit_type)
+	# ★★ 冲锋参数：与护甲 / 击退同一条口径 —— 出生时从兵种表抄成扁平字段。
+	u.load_charge_def(cfg)
 	return u
+
+
+## ★★ 2026.11：把 `unit.types.<id>.charge` 抄到单位的扁平字段（同 `create()` 的口径）。
+##   `charge_enabled` 还要求**不是远程**：远程骑兵（马弓手 / 游侠）即使写了 charge 也不冲。
+func load_charge_def(cfg: ConfigRes) -> void:
+	var c: Dictionary = cfg.unit_charge_of(unit_type)
+	charge_min_dist = float(c.get("min_distance", 0.0))
+	charge_max_dist = maxf(charge_min_dist, float(c.get("max_distance", charge_min_dist)))
+	charge_turn_dot = cos(deg_to_rad(clampf(float(c.get("turn_max_deg", 0.0)), 0.0, 180.0)))
+	charge_speed_bonus = float(c.get("speed_bonus", 0.0))
+	charge_damage_bonus = float(c.get("damage_bonus", 0.0))
+	charge_knock_dist = float(c.get("knock_distance", 0.0))
+	charge_knock_stun = float(c.get("knock_stun_sec", 0.0))
+	charge_splash = float(c.get("splash_radius", 0.0))
+	charge_splash_ratio = float(c.get("splash_damage_ratio", 0.0))
+	charge_cd_max = float(c.get("cooldown_sec", 0.0))
+	charge_enabled = charge_min_dist > 0.0 and not ranged
+	if not charge_enabled:
+		clear_charge()
+		charge_cd = 0.0
+
+
+## ★★ 清空当前累积的冲锋（不碰冷却）。
+##   ⚠️ **不要**在 `halt()` 里调它：进入攻击距离时 `update_combat` 会先 halt 再攻击，
+##      清了的话冲锋永远打不出来。真正该调的只有「新命令 / 停止 / 被击退 / 到达 / 死亡」。
+func clear_charge() -> void:
+	charge_dist = 0.0
+	charge_ratio = 0.0
+	charge_armed = false
+	charge_dir = Vector2.ZERO
+	charge_hold = 0.0
+
+
+## ★★ 消耗一次冲锋：进入冷却并清空累积。
+func consume_charge() -> void:
+	charge_cd = charge_cd_max
+	clear_charge()
 
 
 ## ★★ 2026.10.27：按**权威快照里的兵种**纠正这个单位（客机专用）。
@@ -675,6 +748,8 @@ func reapply_type(cfg: ConfigRes, p_unit_type: String) -> void:
 	knockback_stun_sec = float(kb.get("stun_sec", 0.0))
 	pierce = cfg.unit_pierce(unit_type)
 	projectile_arc = cfg.unit_projectile_arc(unit_type)
+	# ★★ 冲锋与兵种一起重抄；如果新兵种不能冲锋，顺带清掉旧的累积/冷却。
+	load_charge_def(cfg)
 	armor = cfg.unit_armor_of(unit_type)
 	if general_index >= 0:
 		# ★★ 与 `create()` 同一口径：覆盖 ⊕ 兵种，再叠将领加成。
@@ -922,6 +997,9 @@ func speed(cfg: ConfigRes, map, world = null) -> float:
 	var mult: float = cfg.unit_forest_mult if on_forest else 1.0
 	if world != null:
 		mult *= float(world.tech_speed_mult(String(faction)))
+	# ★★ 2026.11：冲锋态的速度加成（与 step_along_path 里那份内联同一个口径）。
+	if charge_armed:
+		mult *= 1.0 + charge_speed_bonus
 	return base * mult * aura_speed_mult
 
 
@@ -1216,6 +1294,7 @@ func order_move(world, cfg: ConfigRes, world_pt: Vector2, player: bool = false) 
 		returning_home = false
 		returning_home_sec = 0.0
 		clear_chase()
+		clear_charge()
 	return ok
 
 
@@ -1264,6 +1343,7 @@ func order_attack_unit(world, cfg: ConfigRes, enemy, player: bool = false) -> bo
 	ordered_building = null
 	has_attack_move = false
 	clear_settled_spot()
+	clear_charge()
 	return true
 
 
@@ -1293,6 +1373,7 @@ func order_attack_building(world, cfg: ConfigRes, b, player: bool = false) -> bo
 	ordered_target = null
 	has_attack_move = false
 	clear_settled_spot()
+	clear_charge()
 	return true
 
 
@@ -1315,6 +1396,7 @@ func order_attack_move(world, cfg: ConfigRes, world_pt: Vector2, player: bool = 
 	has_attack_move = true
 	attack_move_goal = world_pt
 	clear_settled_spot()
+	clear_charge()
 	return true
 
 
@@ -1516,6 +1598,7 @@ func stop() -> void:
 	halt()
 	clear_target()
 	clear_settled_spot()
+	clear_charge()
 
 
 ## ★★ 变成中立单位：清掉一切命令与 AI 状态，之后只会站着挨打。
@@ -1541,6 +1624,8 @@ func make_neutral() -> void:
 	rescue_leader_id = ""
 	rescue_anchor = Vector2.ZERO
 	defending_center = false
+	garrison_alert_active = false
+	garrison_alert_next_sec = 0.0
 	clear_attack_fx()
 
 
@@ -1735,8 +1820,15 @@ func step_along_path(world, cfg: ConfigRes, dt: float) -> void:
 	var base_speed: float = cfg.unit_speed_of(unit_type)
 	var on_forest: bool = map != null and map.is_forest(tx, ty)
 	# ★★ 2026.11：乘以派系科技「速战速决」的移速（与 `speed()` 同一个来源 —— 面板与实测同号）。
+	#   ★★ 冲锋态再乘一次速度加成：与 `speed()` 同一口径（只改一处会出现「面板变快、实际没变」）。
+	var charge_mult: float = (1.0 + charge_speed_bonus) if charge_armed else 1.0
 	var remaining: float = base_speed * (cfg.unit_forest_mult if on_forest else 1.0) \
-		* aura_speed_mult * world.tech_speed_mult(String(faction)) * dt
+		* aura_speed_mult * world.tech_speed_mult(String(faction)) * charge_mult * dt
+
+	# 本帧起点与本帧实际走过的路径长度：冲锋累积只认「真的走了多远」，
+	# 被推挤 / 原地打转时 walked 接近 0，自然不会攒出冲锋。
+	var start_pos: Vector2 = pos
+	var walked: float = 0.0
 
 	# recenter 与 remaining 同步消耗：到达判定要用的是**循环之后还剩多少预算**，
 	# 而不是本帧开头的预算（否则到达时又走一段，总位移会超过速度预算）。
@@ -1771,6 +1863,7 @@ func step_along_path(world, cfg: ConfigRes, dt: float) -> void:
 		if remaining >= d:
 			# 走完这一段还有余量 → 落到拐点，继续走下一段
 			pos = waypoint
+			walked += d
 			remaining -= d
 			recenter = remaining
 			path.remove_at(0)
@@ -1778,10 +1871,15 @@ func step_along_path(world, cfg: ConfigRes, dt: float) -> void:
 			_sync_tile_if_changed(map)
 		else:
 			# 本帧走不完这一段 → 沿方向推进，单位停在地块之间的连续位置上
+			walked += remaining
 			pos += dir * remaining
 			remaining = 0.0
 			recenter = 0.0
 			_sync_tile_if_changed(map)
+
+	# ★★ 冲锋：用「本帧真的走了多远 + 本帧净方向」更新累积。
+	#   必须在到达判定之前 —— 到达那一帧也要把这一小段算进去，然后再由下面清空。
+	_update_charge_momentum(cfg, start_pos, walked)
 
 	# ★★ 到达判定：用**距离**，并且用**进度停滞**兜底。
 	#
@@ -1830,6 +1928,9 @@ func step_along_path(world, cfg: ConfigRes, dt: float) -> void:
 	#   兜底之后它会像 settling 一样就地落位 —— 那本来就是「备用落点」的语义。
 	var arrived: bool = path.is_empty() or dist_now <= remaining + ARRIVE_EPS
 	var gave_up: bool = stuck_timer >= cfg.unit_jam_giveup_sec
+	# ★★ 到达 / 挤不动认账 ⇒ 这一趟冲锋结束（还没打出命中就算了，不能站着保留）。
+	if arrived or gave_up:
+		clear_charge()
 	if not arrived and not gave_up:
 		return                          # 既没到、也没卡住：继续走
 
@@ -1864,6 +1965,37 @@ func step_along_path(world, cfg: ConfigRes, dt: float) -> void:
 	has_goal = false
 	moving = false
 	goal = Vector2.ZERO
+
+
+## ★★ 2026.11：冲锋累积（由 `step_along_path` 每帧调用）。
+##
+## 口径：
+##   · 只累计**实际沿路径走过的距离** `walked`（被推挤 / 原地打转时它接近 0）；
+##   · 方向用「本帧净位移」与**冲锋起始方向**比，超过 `turn_max_deg` 就清零重算；
+##     ★ 不能与上一帧方向比 —— `round_corners` 会把 90° 硬弯摊成十几帧的小角度，
+##       逐帧比永远超不过阈值，缓弯就断不了；
+##   · 冷却中 / 中立 / 死亡 / 濒死不累积。
+func _update_charge_momentum(cfg: ConfigRes, from_pos: Vector2, walked: float) -> void:
+	if not charge_enabled or walked <= 1e-9:
+		return
+	if charge_cd > 0.0 or neutralized or not alive or downed:
+		return
+	var delta: Vector2 = pos - from_pos
+	var len_sq: float = delta.length_squared()
+	if len_sq <= 1e-12:
+		return
+	var dir: Vector2 = delta / sqrt(len_sq)
+	if charge_dist <= 0.0:
+		charge_dir = dir
+	elif dir.dot(charge_dir) < charge_turn_dot:
+		# 方向偏离起始方向太多（急转或累计缓弯）⇒ 从当前方向重新起算。
+		charge_dist = 0.0
+		charge_dir = dir
+		charge_armed = false
+	charge_dist = minf(charge_max_dist, charge_dist + walked)
+	charge_ratio = clampf(charge_dist / maxf(0.001, charge_min_dist), 0.0, 1.0)
+	if not charge_armed and charge_dist >= charge_min_dist:
+		charge_armed = true
 
 
 ## 站定之后被推离落点太远 → 自己走回去。
@@ -1941,6 +2073,8 @@ func apply_knockback(cfg: ConfigRes, world, from_pos: Vector2, distance: float,
 		return false
 	if knockback_immune:
 		return false
+	# ★★ 被击退 / 眩晕 = 冲锋被打断（稳定单位在上面已经早退，冲锋不受影响）。
+	clear_charge()
 	var dir: Vector2 = pos - from_pos
 	if dir.length() < 1e-5:
 		return false

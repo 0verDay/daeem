@@ -238,3 +238,7 @@ func _apply_env_overrides(cfg) -> void:
 	var interval: String = OS.get_environment("DAEEM_GARRISON_INTERVAL")
 	if interval != "":
 		cfg.ai_garrison_cfg()["decision_interval_sec"] = maxf(0.0, float(interval))
+	# ★★ 阵地性 AI 的警戒唤醒 A/B：0 = 旧行为（一直巡逻），1 = 新行为（默认静止）。
+	var alert: String = OS.get_environment("DAEEM_GARRISON_ALERT")
+	if alert != "":
+		cfg.ai_garrison_cfg()["alert_enabled"] = int(alert) != 0

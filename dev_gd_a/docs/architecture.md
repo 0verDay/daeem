@@ -112,6 +112,9 @@ dev_gd_a/daeem/
 │   │                             #     绝对值**，不乘地块数；只有特化按每地块，见 route.md 44 / 70）
 │   │                             #   区块划分读地图的 zones 网格，老地图退回 6×4 均分占位
 │   │                             #   + ★ apply_initial_ownership()（地图写的开局归属）
+│   │                             #   + ★★ 区划**邻接表**（`neighbors_by_id` / `neighbors_of()` /
+│   │                             #      `zones_within()`）：装配期按地块四连通建一次，块形状不变
+│   │                             #      ⇒ 阵地 AI 的「区划压境」判定不用逐格扫地块（见 garrison_ai.gd）
 │   ├── economy.gd                #   资源产出 + 扣费（can_afford / spend / try_spend）
 │   │                             #   ★ 池子是 null ⇒「这一方没有资源库 = 资源无限」
 │   ├── tech.gd                   #   ★ 科技：表（config.tech.list）+ 每阵营的 **已生效 / 预热 / 冷却** 三态
@@ -148,6 +151,11 @@ dev_gd_a/daeem/
 │   │                             #     脱战满 combat_idle_sec 且不满员时**无消耗**招兵（free = true）
 │   │                             #     —— ★ 补员**兵种按将领自己的规格权重**抽（_pick_recruit_kind）；
 │   │                             #     将领濒死且血量回门槛 → **无消耗立刻再起**（_tick_revive）
+│   │                             #   ★★ 2026.11 **警戒唤醒**：默认**静止**，只有
+│   │                             #      (a) 敌方单位进入 `alert_troop_radius_tiles`（默认 10）格，或
+│   │                             #      (b) 敌方区划压到区划图 `alert_zone_gap`（默认 2）步以内
+│   │                             #      才启动巡逻（`_tick_alert` / `_has_threat`）；交战 / 守区划中心 /
+│   │                             #      脱战招兵 / 濒死再起**不受影响**（它们不是巡逻）。
 │   ├── red_dot_ai.gd             #   ★★ **红点性 AI**（本轮重做为**函数式时间表**）：
 │   │                             #     第 x 波的生成时间由 wave_time_expr（y=ax+b，分钟）给出、
 │   │                             #     将领数由 general_count_expr 给出；将领类型按 general_weights 抽；
@@ -660,6 +668,7 @@ Godot 里 DPR 由引擎处理，**但下面三条要原样继承**：
 | 单位（位置/血量/路径/目标/冷却） | `logic/unit.gd` | 唯一权威 |
 | ★★ **单位的玩法字段（护甲 / 攻城 / 移动射击 / 范围伤害 / 士气光环）** | `logic/unit.gd` 的 `armor` / `can_attack` / `siege` / `move_shoot` / `splash_radius` / `morale_aura_radius` / `morale_aura_rate` | ★ 与 `unit_class` / `ranged` / `vision` 同一条口径：**出生时**从 `data/config.json` 的 `unit.types.<id>` 抄到单位身上，之后只读。规则分别在 `combat.gd`（移动射击 / 不攻击单位）、`projectile.gd`（范围伤害 / 攻城）、`unit.take_damage`（固定护甲 / 攻城减伤）、`world._refresh_morale_aura` + `morale.gd`（粮车光环） |
 | ★★ **2026.11 新增的玩法字段（近战减伤 / 稳定 / 击退 / 穿透 / 弹道）** | `logic/unit.gd` 的 `melee_damage_reduction` / `knockback_immune` / `knockback_distance` / `knockback_stun_sec` / `pierce` / `projectile_arc` / `stun_timer` | ★ 同一口径：**出生时**从 `unit.types.<id>` 抄到单位上（`traits.melee_reduction` / `traits.knockback_immune` / `knockback` / `pierce` / `projectile_arc`），之后只读。规则：`unit.take_damage`（近战减伤进同一个和 + 同一个封顶）、`unit.apply_knockback`（位移 + 眩晕；**稳定**整套免疫）、`combat.update_unit` 的眩晕分支（不能移动/攻击/索敌）、`combat.attack_unit` + `projectile._impact`（击退的两个入口）、`projectile._impact_pierce`（直线穿透）、`view/projectile_view_3d.gd`（抛物线 / 直线弹道，**纯表现**）。详细口径见 route.md 第七十七节 |
+| ★★ **冲锋（2026.11）** | `logic/unit.gd` 的 `charge_dist` / `charge_ratio` / `charge_armed` / `charge_cd` / `charge_dir` / `charge_hold` + 出生时从 `unit.types.<id>.charge` 抄好的 `charge_*` 参数 | ★ 权威在 **unit 实例**：`unit.step_along_path()` 累计「实际直行距离」、`combat.update_unit` 推进冷却与「站住无目标」保持、`combat.update_combat` 在首次接触调 `attack_unit(..., charged=true)`、`combat._apply_charge_impact` 处理击退/范围伤害。★ 快照只带 `ch`（进度）/ `cc`（冷却）/ `ca`（是否 armed），客机据此画发光与尘环，**不结算伤害**。见 route.md 77.3 |
 | ★★ **派系（clan）** | `data/config.json` 的 `clan` 段 → `logic/config.gd` 的 `_clans` / `clan_recruit_list()` / `clan_recruit_entry()`；**每个席位一个值**，写在关卡 `data/campaigns/<id>/levels/*.json` 的 `factions[].clan` | ★ **派系 ≠ 阵营**：阵营（`p1..p8` / `enemy` / `ai`）决定敌我与资源，派系只决定「这家能招哪些兵」。`logic/world.gd` 的 `clan_of(faction)` 是唯一解析处（缓存进 `_clan_cache`，`reset()` 清空），`recruit_list(faction)` / `recruit_entry(kind, faction)` / `recruit_cost` / `recruit_population_cost` / `recruit_tier` 全部按它查表 —— **AI 必须显式传自己那一方**。没写 `factions[].clan` ⇒ `clan.default_id`（`native` 原生，此时生效的就是全局 `recruit.list`）。派系条目里的 `recruit[]` 与全局 `recruit.list[]` 同形，多一个可选 `spawn[]`（**组合单位**：一次读条出多个兵，人口按整包扣）。见 route.md 第七十七节 |
 | 招募队列（`train_kind` / `train_remaining` / `train_queue` / `train_anchor`…） | `logic/unit.gd` | ★ **将领自己就是兵营**，队列挂在它身上（它死了队列就没）；读条期间它被钉在 `train_anchor` 上，位置由 `world._pin_training_leaders()` 每帧摁回去；★ 它**和它辖下的部队**都不接玩家指令（`world.is_order_locked()` 是唯一判据） |
 | ★★ **每个派系一套 commander AI** | `clan.list[].commander_ai`（形状 = `ai.commander`）→ `logic/ai_profile.gd` 的 `build(cfg, faction, roster, overrides, clan)` 深合并；`logic/world.gd` 的 `_setup_ai_commanders()` 传 `clan_of(fid)` | ★ 合并顺序：代码 DEFAULTS → 全局 `ai.commander` → **派系块** → 关卡 `factions[].commander_ai` → 运行时覆盖（`world.ai_profiles`），最后叠 difficulty 的倍率并拍平成一个 dict（控制器只读它，不再每帧下潜 JSON）。★ `clan` 为空 / 原生 ⇒ 整段跳过，AI 参数与「没有派系」逐位一致。★ 派系块里的 `difficulty` 会被丢掉（难度归关卡 / 运行时覆盖管）。见 route.md 77.9 |

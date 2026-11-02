@@ -61,6 +61,17 @@ var zones: Array = []
 ##   （`zone_at` 被 `world.add_building` → `_spawn_zone_centers` 调到时直接终止游戏）。
 ##   这张表在 `build_from_map()` 末尾建好，`zone_at()` 只读它。
 var zones_by_id: Dictionary = {}
+## ★★ 区块 id → **相邻区块 id 数组**（四连通：共享一条边才算相邻）。
+##
+## 谁在读：`logic/garrison_ai.gd` 的「警戒唤醒」判据 —— 敌人把区划扩张到
+##   离我 `ai.garrison.alert_zone_gap` 个区划以内时，我要开始巡逻。
+## 为什么在装配期算好（而不是每次问的时候扫地块）：
+##   · 区划形状不规则，逐格扫一次 24 个区划 × 几百块 = 每次判定几千次查表；
+##     而守将的警戒判定是 2 Hz × 几十位守将的长跑路径；
+##   · 邻接关系只由地图决定，建好之后**永远不变**（区划归属会变，形状不会）。
+## ⚠️ 只认**边相邻**（上 / 下 / 左 / 右）：斜角相接的两个区划中间没有共享边，
+##   不该算「贴在一起」。
+var neighbors_by_id: Dictionary = {}
 ## 地块索引 → 区块 id（-1 = 不属于任何区块）
 var lookup: Array = []
 ## ★ 地块索引 → 「这一格是哪个区块的中心」（-1 = 不是任何区块的中心）。
@@ -128,6 +139,90 @@ func _reindex_zones() -> void:
 	zones_by_id.clear()
 	for z in zones:
 		zones_by_id[int(z["id"])] = z
+	_build_neighbor_ids()
+
+
+## ★★ 建「区块 id → 相邻区块 id」表（四连通）。
+##
+## 做法：扫一遍地块索引，只看**右**与**下**两个邻居（每一对相邻区划只会被看到一次），
+##   不同 id 就双向登记。最后把每家的邻居**排序** —— 顺序稳定，存档 / 回放 /
+##   测试断言都不会因为字典遍历顺序而漂。
+##
+## ⚠️ 空区划 / 跳号的 id 都安全：表是按 `lookup` 里真实出现的 id 建的，
+##   `neighbors_of()` 查不到就返回空数组。
+func _build_neighbor_ids() -> void:
+	neighbors_by_id.clear()
+	for z in zones:
+		neighbors_by_id[int(z["id"])] = {}
+	for y in rows:
+		for x in cols:
+			var a: int = int(lookup[y * cols + x])
+			if a < 0:
+				continue
+			if x + 1 < cols:
+				_link_neighbor_pair(a, int(lookup[y * cols + x + 1]))
+			if y + 1 < rows:
+				_link_neighbor_pair(a, int(lookup[(y + 1) * cols + x]))
+	# 字典 → 排序后的数组（每家的邻居按 id 升序）。
+	for zid in neighbors_by_id.keys():
+		var bag: Dictionary = neighbors_by_id[zid]
+		var arr: Array = bag.keys()
+		arr.sort()
+		neighbors_by_id[zid] = arr
+
+
+## 登记一对相邻区划（同一个 id / 空 id 直接忽略）。
+func _link_neighbor_pair(a: int, b: int) -> void:
+	if a < 0 or b < 0 or a == b:
+		return
+	if not neighbors_by_id.has(a) or not neighbors_by_id.has(b):
+		return
+	var da: Dictionary = neighbors_by_id[a]
+	var db: Dictionary = neighbors_by_id[b]
+	da[b] = true
+	db[a] = true
+
+
+## 某个区划的**直接相邻**区划 id（四连通；不存在的 id / 没有邻居 → 空数组）。
+func neighbors_of(zid: int) -> Array:
+	var hit: Variant = neighbors_by_id.get(zid, null)
+	if hit == null:
+		return []
+	return hit
+
+
+## ★★ 某个区划在 `gap` 步**区划图**以内的所有区划 id（含自己，BFS）。
+##
+## @param gap 0 = 只有自己；1 = 自己 + 直接相邻；2 = 再加「隔一个区划」的那一圈。
+##
+## 为什么用「区划图步数」而不是直线距离：区划形状不规则（L 形 / 跨行矩形），
+##   直线距离会把「隔着河 / 隔着别人一块地」的区划误判成近邻。
+## ⚠️ 结果按 BFS 顺序，且每层按 id 升序（确定性）；`gap` 夹到 0..8 防呆。
+func zones_within(zid: int, gap: int) -> Array:
+	var out: Array = []
+	if not zones_by_id.has(zid):
+		return out
+	var depth: int = clampi(gap, 0, 8)
+	var seen: Dictionary = {zid: true}
+	out.append(zid)
+	var frontier: Array = [zid]
+	for _step in depth:
+		var nxt: Array = []
+		for cur in frontier:
+			var ns: Array = neighbors_of(int(cur))
+			for n in ns:
+				var nid := int(n)
+				if seen.has(nid):
+					continue
+				seen[nid] = true
+				out.append(nid)
+				nxt.append(nid)
+		if nxt.is_empty():
+			break
+		nxt.sort()
+		frontier = nxt
+	return out
+
 
 
 ## 一个区块字典（两条建法共用，字段集中在这里，免得漏一个）

@@ -7634,10 +7634,20 @@ python dev_gd_a\tools\unit_editor\test_model.py
    协防军枪兵 = 长枪兵（对骑兵 +25%）+「骑兵特攻+」⇒ **+50%**；
    冠军骑士 = 骑士（远程减伤 25%）+「远程免伤+」⇒ **远程减伤 50%**。
 
-⚠️ 「冲锋」**本版不实装**（用户原话：「暂时没有逻辑，写注释里」）：
-战车的「冲锋造成范围伤害和击退」与冠军骑士的「冲锋再造成额外伤害」只写进 `config.json` 的兵种注释
-`_clan_types_comment`，代码里没有 charge 状态机。**击退机制本身是实装的**，由王朝投石车的
-**普通攻击**触发（`knockback{distance:0.9, stun_sec:0.5}`），所以「击退 + 眩晕」这条链路是被玩到的。
+★★ 2026.11：**冲锋已实装**（被动动量 + 每兵种数据驱动）：
+* 触发：单位持续移动且方向与**冲锋起始方向**的夹角不超过 `charge.turn_max_deg`，累计实际走过的直线距离
+  达到 `charge.min_distance` 后进入冲锋态；急转、停下、被击退/眩晕、新命令、到达终点都会清零。
+  **`halt()` 故意不清** —— 进入攻击距离那一下要立刻打出冲锋命中。
+* 释放：进入攻击距离的首次接触立即结算（不等普攻冷却），伤害 =
+  基础 × `(1 + charge.damage_bonus + 科技 charge_damage_mult)`；随后进入 `charge.cooldown_sec` 冷却。
+* 命中效果：战车 = 范围伤害 + 范围击退/眩晕；冠军骑士 = 更高的额外伤害 + 单体击退；
+  骑手 / 骑士 / 斥候 / 御林军骑兵 = 中等额外伤害 + 单体击退。
+* 适用：`rider / knight / dy_scout / dy_royal_cavalry / dg_rider / dg_champion / dy_chariot`；
+  远程骑兵（马弓手 / 游侠）不冲锋。
+* ★ 击退 / 眩晕本身仍是独立机制（王朝投石车的**普通攻击**也用 `knockback{distance, stun_sec}`）；
+  冲锋只是把「冲锋自己的击退值」交给同一套 `unit.apply_knockback()`。
+* 表现：立牌阵营色发光（`INSTANCE_CUSTOM.b`）+ 脚下尘环 + 命中冲击波圈 + 复用受击闪白/音效；
+  全部程序化，无新图片 / 音频素材。
 
 ### 77.4 组合单位（一次招募出多个兵）
 
@@ -7692,8 +7702,8 @@ p1 出了 4 组协防军（4 × `dy_spear_guard` + 4 × `dy_archer_guard`），p
 * **将领（`general_1..9`）不分派系**：区划招将表仍是全局那一张，派系只管兵。
 * **粮车两个派系共用原生 `grain_cart`**（需求里三条描述与原生逐字一致），不另开 id。
 * 快照**不**带派系：两端载入的是同一份关卡数据，各自推得出来（`world.clan_of`）。
-* **冲锋没实装**（用户拍板：「暂时没有逻辑，写注释里」）：`config.json` 的兵种注释里记着，
-  代码里没有 charge 状态机；击退 / 眩晕是**独立机制**，由王朝投石车的普攻触发。
+* **冲锋已实装**（2026.11，被动动量）：`unit.types.<id>.charge` 数据驱动；击退 / 眩晕仍是独立机制，
+  冲锋命中时复用 `unit.apply_knockback()`。详见 77.3。
 
 ### 77.8 为什么动了 `between_moutains` 的人口上限（★ 实现时发现的坑）
 
@@ -7819,7 +7829,7 @@ clan.list[].tech  ← 这一派的**科技页槽位**：9 个 id（列优先：�
 | `base_gold_per_sec_add` | 圈地制 | `_flat_resource_bonus`（每座**大本营**）★ 这条科技**没有折扣**效果 |
 | `per_zone_attack_mult` / `per_zone_armor_mult` | 远征军 | `tech_attack_mult` / `tech_armor_mult`（× 己方区划数） |
 | `zone_convert_restore` | 势如破竹 | `zones.last_conversions` → `_apply_zone_conversion_restore` |
-| `charge_damage_mult` | 骑士精神 | ★ **没有读取处**：冲锋本版未实装（详情里明说「尚未实装」） |
+| `charge_damage_mult` | 骑士精神 | `world.tech_charge_add()` → `combat.attack_unit(..., charged=true)`（**加法**追加到冲锋伤害，不影响普通攻击） |
 
 几条容易踩的口径：
 
@@ -7877,3 +7887,85 @@ clan.list[].tech  ← 这一派的**科技页槽位**：9 个 id（列优先：�
 ★ 单位编辑器原来的「科技」页**已整块移除**（用户口径：「把单位编辑器中的科技编辑界面去掉」）——
 它的 `Tech` 模型、`TECH_FIELDS` / `TECH_EFFECTS`、`max_active` 的输入框、以及 `test_model`
 里那 30 多条科技断言一起删了；`test_model` / `test_app` 现在反过来钉「本工具碰不到 `tech.*`」。
+
+## 七十八、阵地性 AI 的「警戒唤醒」：没威胁就静止（2026.11）
+
+> 需求原话：「对于阵地性 AI，只有当玩家 / 敌对 AI 的部队移动到自身 10 格以内，或玩家 /
+> 敌对 AI 的区划扩张到距离自身所在区划一个区划外时（即和玩家区划相隔一个区划），
+> 才会启动巡逻逻辑，否则静止」+「考虑该优化是否可以降低设备负载 / 合作模式联机负载」。
+
+### 78.1 口径
+
+* **只关「巡逻」这一件事**。交战（`combat.gd` 的索敌 / 开火 / 追击）、守自己的区划中心
+  （`_center_under_attack()`）、脱战无消耗招兵、濒死无消耗再起**照常运行**。
+  理由：它们不是「巡逻」；把守军整体睡死会出现「敌人贴脸占中心还不还手」的荒谬场面，
+  而且招兵 / 再起根本不移动、不产生联机增量。
+* **两条唤醒判据，任一成立即巡逻**：
+  1. **部队临近**：任一敌对单位（`FactionRes.same_side_for_attack` 之外）离这位守将
+     `≤ ai.garrison.alert_troop_radius_tiles`（默认 **10**，欧氏距离；平方比较，不开方）；
+  2. **区划压境**：任一**敌对已占领**区划，在「区划邻接图」里离我的归属区划
+     `≤ ai.garrison.alert_zone_gap` 步（默认 **2**）。
+     `1` = 只认直接相邻；`2` = 相邻 + 中间隔一个区划（对应需求里的「相隔一个区划」）；
+     `0` = 只认自己那块地（只靠部队判据）。**默认 2 是保守取法**：把「相邻」也算进来，
+     不会漏掉「已经贴上来」的敌人。
+* **区划图步数，不是直线距离**：区划形状不规则（L 形 / 跨行矩形），直线距离会把
+  「隔着一条河 / 隔着别人一块地」的区划误判成近邻。邻接表在 `zone.build_from_map()`
+  装配期按地块**四连通**建一次（`neighbors_by_id` / `neighbors_of()` / `zones_within()`）。
+* **复检周期** `ai.garrison.alert_check_sec`（默认 **0.5 s**）：扫全场单位是 O(单位数)，
+  不该按 10 Hz 决策周期做。中间帧直接读缓存 `unit.garrison_alert_active`；
+  最坏唤醒延迟 0.5 s（交战由 combat 实时接管，不等这个判定）。
+* **唤醒首巡错峰**：潜伏期 `patrol_timer` 保持 0；从「静止 → 警戒」翻转那一帧用
+  `patrol_interval × _phase01(unit)` 重排首巡相位 —— 一次区划易主会让整片守军同时醒来，
+  不摊开就是 2026.10.28 修过的那种几十毫秒尖峰。
+
+### 78.2 实现位置
+
+| 文件 | 改动 |
+|---|---|
+| `logic/zone.gd` | 新增 `neighbors_by_id` + `_build_neighbor_ids()`（`_reindex_zones()` 末尾建一次）+ `neighbors_of()` / `zones_within()`（BFS，确定性） |
+| `logic/unit.gd` | 新增 `garrison_alert_active` / `garrison_alert_next_sec`（**不进快照**，与 `patrol_*` 同口径）；`make_neutral()` 清理 |
+| `logic/garrison_ai.gd` | `_tick_alert()`（节流 + 缓存 + 上升沿错峰）/ `_has_threat()` / `_hostile_unit_within()` / `_hostile_zone_within()`；第 4.5 步「不 active ⇒ 清 `patrol_timer` 并跳过第 5 步」 |
+| `logic/config.gd` / `data/config.json` | `ai.garrison.alert_enabled / alert_troop_radius_tiles / alert_zone_gap / alert_check_sec`（读取与既有 `patrol_*` 同口径：**全局 config**；关卡 `garrison_ai` 覆盖目前只对 `min_retinue` 生效） |
+| `tests/test_campaign_ai.gd` | 新增 22 条断言：静默不生成路线 / 开关关掉回旧行为 / 9 格唤醒 / 12 格重新静止 / `gap=1` vs `2` / 敌对区划失去归属后重新静止 |
+| `tests/bench_garrison_alert.gd` | 新增 A/B 量尺（见 78.3） |
+| `tests/bench_dscj.gd` | 新增 `DAEEM_GARRISON_ALERT=0/1` 环境变量，真实 3D 帧下也能 A/B |
+
+### 78.3 实测（dscj 合作关：258 单位 / 34 位带队守将 / 236 个有归属区划的单位）
+
+`bench_garrison_alert.gd`，固定 1/60 逻辑步长、同 `rand_salt`、20 秒：
+
+| 模式 | tick ms/帧 | `ai/garrison` ms/帧 | 移动单位(均) | 守军移动(均) | 建了路线的守将 | 快照(全图) | 快照(客机视野) |
+|---|---|---|---|---|---|---|---|
+| alert=on（新） | **7.63** | 0.289 | **8.8** | 8.8 | 4 / 34 | **18.0 KB → 0.52 MB/s** | 7.2 KB → 0.21 MB/s |
+| alert=off（旧） | 9.54 | 0.311 | 160.5 | 160.5 | 34 / 34 | 25.9 KB → 0.74 MB/s | 7.2 KB → 0.21 MB/s |
+
+结论（分开看，别混成一句）：
+
+* **设备负载（房主 / 单机）确实下降**：`world.tick` **9.54 → 7.63 ms/帧（−20%）**。
+  因果链是「潜伏的守军不再每 4 秒重下整队行军攻击命令、不再移动」⇒ 少掉约 150 个
+  「每帧要走碰撞 / 跨格 / 刷新视野来源」的单位。`ai/garrison` 这一段几乎不变
+  （0.29 vs 0.31 ms）——**省下来的不是 A\*，是移动链**（单位步进 / 群体碰撞 /
+  区划在场扫描）。不要指望「少巡逻 = 少寻路」能省出大数字。
+* **联机负载：只在「客机看得见、但没被唤醒」的守军上有收益，不是稳赚**。
+  · 不按视野过滤时（= 上限口径）：30 Hz 增量快照 **25.9 → 18.0 KB（−30%）**，
+    因为这些单位从「x / y / fa / m」退化成「i + ut」；
+  · **按客机视野过滤时**（`snapshot.to_snapshot(..., viewer_side)`，真实合作局走这条）：
+    首 20 秒两者都是 **7.2 KB → 0.21 MB/s，基本不变**。原因很直白 —— 看不见的守军
+    本来就不发；而开局醒着的 4 位守将恰好都在客机视野之外。
+  · 也就是说：带宽收益出现在「视野半径 > 10 格」的那条窄带上（箭塔视野 12、
+    大本营 9、单位 8~10 —— 客机靠建筑能看见 10~12 格外的守军，而那些守军还没被
+    10 格判据唤醒）。玩家推上去、守军被唤醒之后，该发的增量照发。
+  · 真正的联机收益因此是**房主 CPU**（手机做房主时最值钱）与**全场移动同步量**
+    （少 95% 的移动单位 ⇒ 客机侧插值 / 合并的脏字段更少），而不是「带宽减半」。
+    要再压带宽得另做「静止单位降频 / 位姿量化」，不在本轮范围。
+
+
+### 78.4 回退 / 兼容
+
+* `ai.garrison.alert_enabled = false` ⇒ 逐位回到旧行为（永远巡逻）；`bench_dscj` 的
+  `DAEEM_GARRISON_ALERT=0` 就是这条。
+* 单位新字段**不进快照、不进协议** ⇒ 两端不必同版本；客机本来就不跑 AI。
+* 区划邻接表只由地图决定，建好后不再变；旧地图 / 均分区块两条建法都走同一个
+  `_reindex_zones()`。没有邻接数据的区划（空块 / 跳号）由 `neighbors_of()` 返回空数组。
+* 关卡 `garrison_ai` 覆盖里写 `alert_*` 会经 `_ai_cfg_with_override()` 的**白名单**生效 ——
+  前提是 `config.gd` 的 `_cache_ai()` 里先声明了这些键（已声明）。

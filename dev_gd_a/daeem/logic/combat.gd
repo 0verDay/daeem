@@ -135,6 +135,17 @@ static func update_unit(world, cfg: ConfigRes, u: UnitRes, dt: float, idx: int =
 	#    它只挡**自动索敌**，不影响任何玩家命令。
 	if u.leash_cd > 0.0:
 		u.leash_cd = maxf(0.0, u.leash_cd - dt)
+	# ★★ 2026.11：冲锋冷却与「站住但没目标」的保持时间。
+	#   `halt()` 故意不清冲锋（见 unit.clear_charge 的注释），所以这里兜一个上限：
+	#   站住后 combat.charge_hold_sec 秒还没打中任何目标，就自动清空。
+	if u.charge_cd > 0.0:
+		u.charge_cd = maxf(0.0, u.charge_cd - dt)
+	if u.charge_armed and not u.moving and u.target == null and u.target_building == null:
+		u.charge_hold += dt
+		if u.charge_hold >= cfg.charge_hold_sec:
+			u.clear_charge()
+	else:
+		u.charge_hold = 0.0
 	_ft_end(world, "u/timers", _t_timers)
 
 	# ★★ 2026.11：**眩晕**（击退的副效果，见 unit.apply_knockback）。
@@ -600,7 +611,12 @@ static func update_combat(world, cfg: ConfigRes, u: UnitRes) -> void:
 		# ★★ 已经贴上目标 ⇒ 这一段追击结束了，把参照点推到**目标身上**
 		#    （跟着打、目标边走边追时，leash 量的是「我掉队多远」而不是「我跑了多远」）。
 		_refresh_leash_anchor(u, cfg, t.pos)
-		if u.attack_cd <= 0.0:
+		# ★★ 2026.11：冲锋命中 = **首次接触立即结算**，不等普攻冷却。
+		#   `halt()` 不清冲锋，所以这一帧还在；`attack_unit(..., true)` 会在里面消耗掉。
+		#   命中后 attack_cd 会被设成正常攻击间隔，避免同一帧再补一刀。
+		if u.charge_armed:
+			attack_unit(world, cfg, u, t, true)
+		elif u.attack_cd <= 0.0:
 			attack_unit(world, cfg, u, t)
 		return
 
@@ -667,9 +683,13 @@ static func face_toward(u: UnitRes, to_pos: Vector2) -> void:
 
 
 ## 开火：单体伤害 + 冷却
-static func attack_unit(world, cfg: ConfigRes, u: UnitRes, t: UnitRes) -> void:
+## @param charged true = **冲锋命中**：额外伤害 + 冲锋击退/范围撞击，并在结算后消耗冲锋。
+##        ★ 只有近战、且兵种配了 charge 才有效；其余情况自动降级为普通攻击。
+static func attack_unit(world, cfg: ConfigRes, u: UnitRes, t: UnitRes,
+		charged: bool = false) -> void:
 	if not u.can_attack:
 		return                        # 纯支援单位（粮车）没有攻击
+	charged = charged and not u.ranged and u.charge_enabled
 	u.attack_cd = maxf(0.05, u.combat_cooldown(cfg))
 	u.attack_flash = 1.0
 	u.last_target = t
@@ -685,6 +705,11 @@ static func attack_unit(world, cfg: ConfigRes, u: UnitRes, t: UnitRes) -> void:
 	#   两条路都是同一个数。
 	#   ⚠️ 拆建筑走 `attack_building`、不经过这里（科技加成不作用于拆迁）。
 	damage *= float(world.tech_attack_mult(u))
+	# ★★ 2026.11：**冲锋额外伤害**。`charge_damage_bonus` 来自兵种，
+	#   `tech_charge_add()` 来自科技「骑士精神」—— **加法叠加**（1.0 = +100%）。
+	#   ⚠️ 只有冲锋命中才乘，普通攻击不受影响。
+	if charged:
+		damage *= 1.0 + u.charge_damage_bonus + float(world.tech_charge_add(String(u.faction)))
 	# ★★ 远程单位（长弓兵 / 远程将领 / 马弓手 / 投石车 / 扭力弩炮）**发一枚投掷物**，
 	#    伤害改到命中那一刻结算；近战（长枪兵 / 骑手 / 骑士 / 战车）仍是即时结算。
 	#    ★ 投掷物的附加属性在这里随它带过去（全部是**兵种静态值**，出生时已抄到单位上）：
@@ -701,13 +726,27 @@ static func attack_unit(world, cfg: ConfigRes, u: UnitRes, t: UnitRes) -> void:
 			u.combat_range(cfg))
 	else:
 		t.take_damage(cfg, world, damage, u, false, u.siege)
-		# ★★ 2026.11：近战也会击退（数据驱动；本版没有近战兵种写这一项 ——
-		#   战车 / 冠军骑士的**冲锋**击退属于「未实装」那一档，见 config 的兵种注释）。
-		#   有 `splash_radius` 时按范围推，否则只推被打中的那一个。
-		_apply_melee_knockback(world, cfg, u, t)
+		# ★★ 2026.11：近战击退分两条 —— 冲锋走兵种自己的 charge 数值（可范围），
+		#   普通攻击走 `knockback` 键（目前只有远程投石车用了它，近战为 0）。
+		if charged:
+			_apply_charge_impact(world, cfg, u, t, damage)
+		else:
+			_apply_melee_knockback(world, cfg, u, t)
 	# ★ 音效事件（视图按阵营过滤后播攻击音）：每一次真正开火推一条。
 	#   ★ 远程也在**开火那一刻**推（投掷物命中另有受击事件，见 unit.take_damage）。
 	world.push_event({"type": "unit_attacked", "unit": u})
+	if charged:
+		# ★★ 命中表现事件：视图据此生成阵营色冲击波；同时冲锋进入冷却并清空累积。
+		world.push_event({
+			"type": "unit_charge",
+			"unit": u,
+			"target": t,
+			"faction": String(u.faction),
+			"x": u.pos.x,
+			"y": u.pos.y,
+			"radius": u.charge_splash,
+		})
+		u.consume_charge()
 
 
 ## ★★ 2026.11：近战命中的击退结算（远程那一条在 projectile._impact 里，两边同一套口径）。
@@ -737,6 +776,38 @@ static func _apply_melee_knockback(world, cfg: ConfigRes, u: UnitRes, t: UnitRes
 		if other.pos.distance_to(center) > u.splash_radius:
 			continue
 		other.apply_knockback(cfg, world, center, dist, stun)
+
+
+## ★★ 2026.11：冲锋命中后的撞击结算。
+##
+## 口径：
+##   · `charge_splash <= 0` ⇒ 只推被打中的那一个（与普通击退一样）；
+##   · `charge_splash > 0`  ⇒ 以**主目标**为中心，范围内所有敌人一起吃
+##     `base_damage × charge_splash_ratio` 的伤害并被击退；
+##     ⚠️ 主目标**不再吃第二遍伤害**（它的伤害已经在 attack_unit 里结算过）。
+##   · 友军不误伤；已经死了的目标不再被推。
+static func _apply_charge_impact(world, cfg: ConfigRes, u: UnitRes, t: UnitRes,
+		base_damage: float) -> void:
+	var knock: float = u.charge_knock_dist
+	var stun: float = u.charge_knock_stun
+	var radius: float = u.charge_splash
+	if radius <= 0.0:
+		if t != null and t.alive and not t.is_downed():
+			t.apply_knockback(cfg, world, u.pos, knock, stun)
+		return
+	var center: Vector2 = t.pos if t != null else u.pos
+	for other in world.units:
+		if not other.is_attackable():
+			continue
+		if FactionRes.same_side_for_attack(String(other.faction), String(u.faction)):
+			continue
+		if other.pos.distance_to(center) > radius + cfg.unit_radius_of(other.unit_type):
+			continue
+		if other != t and base_damage > 0.0 and u.charge_splash_ratio > 0.0:
+			other.take_damage(cfg, world, base_damage * u.charge_splash_ratio,
+				u, false, u.siege)
+		if other.alive and not other.is_downed():
+			other.apply_knockback(cfg, world, u.pos, knock, stun)
 
 
 ## 锁定一个建筑开始拆它（敌人 AI 用它拆挡路的城墙）。

@@ -121,6 +121,24 @@
     "hit_shake_cells": 0.06,
     "hit_shake_freq": 26.0,
     "hit_flash_alpha": 0.8,
+    "_charge_fx_comment": [
+      "★★ 单位冲锋的表现（纯表现；权威状态在 unit.charge_dist / charge_ratio / charge_armed）：",
+      "   · charge_glow_alpha —— 立牌上阵营色发光的最强混合比例（0 = 不发光）；",
+      "   · charge_ring_alpha / charge_ring_size —— 脚下尘环的不透明度 / 边长（格）；",
+      "   · charge_ring_scale_to —— 冲锋满值时尘环相对初始尺寸的放大比例；",
+      "   · charge_shock_sec / charge_shock_alpha —— 命中冲击波圈的时长（秒）/ 起始不透明度；",
+      "   · charge_shock_min_radius —— 单体冲锋（radius = 0）时冲击波的最小视觉半径（格）；",
+      "   · charge_shock_from_scale —— 冲击波起始尺寸（相对最终半径）。",
+      "   ★ 全部程序化：复用 selection_ring 贴图与 unit_flash shader 的空闲通道 .b，无新图片。"
+    ],
+    "charge_glow_alpha": 0.45,
+    "charge_ring_alpha": 0.55,
+    "charge_ring_size": 0.55,
+    "charge_ring_scale_to": 1.15,
+    "charge_shock_sec": 0.28,
+    "charge_shock_alpha": 0.80,
+    "charge_shock_min_radius": 0.5,
+    "charge_shock_from_scale": 0.40,
     "_building_fade_comment": [
       "★★ 建筑「被单位挡住时淡出」的不透明度（见 view/building_flash.gdshader +",
       "   view/building_view_3d.gd）：以建筑所在格为中心的 **3x3 内有可见单位**时，",
@@ -842,6 +860,16 @@
       "       但**不**无视护甲与士气免伤。投石车用它。",
       "     · splash_radius = **范围伤害半径（格）**：命中点周围该半径内的所有敌人",
       "       都吃这一击的全额伤害（仅敌方，不误伤友军）。投石车 = 1.5。",
+      "  ★★ charge = **冲锋**（可选的近战兵种能力；不写 / min_distance = 0 = 不冲锋）：",
+      "     · min_distance / max_distance —— 连续直线移动多少格后进入冲锋态 / 累积上限（格）；",
+      "     · turn_max_deg —— 与**冲锋起始方向**的夹角超过它就中断重算（缓弯也算）；",
+      "     · speed_bonus —— 冲锋态下的移动速度加成（0.2 = +20%）；",
+      "     · damage_bonus —— 冲锋首次命中的额外伤害（0.5 = +50%）；",
+      "     · knock_distance / knock_stun_sec —— 命中时的击退距离 / 眩晕秒数；",
+      "     · splash_radius / splash_damage_ratio —— 范围撞击半径 / 副目标伤害比例；",
+      "     · cooldown_sec —— 一次冲锋命中后的冷却（秒）。",
+      "     ★ 只有**近战**单位会读它；远程骑兵（马弓手 / 游侠）不冲锋。",
+      "     ★ 科技「骑士精神」的 charge_damage_mult 会**加法**追加到 damage_bonus 上。",
       "  ★★ 粮车的士气光环写在它自己身上（其它兵种不写 = 没有）：",
       "     · morale_aura_radius = 半径（格）；morale_aura_rate = 每秒加多少士气。",
       "     · 同一支部队同时被多辆粮车覆盖时**只取最大值**（不叠加）；",
@@ -939,6 +967,18 @@
         "traits": {
           "attack_vs_class": { "infantry": 0.25 },
           "ranged_reduction": 0.25
+        },
+        "charge": {
+          "min_distance": 3.0,
+          "max_distance": 8.0,
+          "turn_max_deg": 40.0,
+          "speed_bonus": 0.20,
+          "damage_bonus": 0.35,
+          "knock_distance": 0.30,
+          "knock_stun_sec": 0.15,
+          "splash_radius": 0.0,
+          "splash_damage_ratio": 0.0,
+          "cooldown_sec": 6.0
         }
       },
       "grain_cart": {
@@ -980,6 +1020,18 @@
         "upkeep_food": 0.32,
         "traits": {
           "ranged_reduction": 0.25
+        },
+        "charge": {
+          "min_distance": 3.5,
+          "max_distance": 8.0,
+          "turn_max_deg": 35.0,
+          "speed_bonus": 0.15,
+          "damage_bonus": 0.45,
+          "knock_distance": 0.35,
+          "knock_stun_sec": 0.20,
+          "splash_radius": 0.0,
+          "splash_damage_ratio": 0.0,
+          "cooldown_sec": 7.0
         }
       },
       "horse_archer": {
@@ -1029,10 +1081,13 @@
         "  · 派系怎么挂到席位上、每个派系能招什么：见顶层 `clan` 段；这里只是一张**兵种数值表**。",
         "  · ★ 素材口径：「使用原生的 X 素材」= `sprite` 指到同一个 png，但**兵种 id 是新的**",
         "    （数值 / 特性可以不同，所以不能复用原生那个 id）。",
-        "  · ★★ 2026.11 **派系兵种换成专属原画**：七个由占位改成真素材的兵种",
-        "    （协防军枪 / 弓、御林军剑盾 / 弓 / 着甲骑、铁臂弓手、扭力弩炮）现在都是",
+        "  · ★★ 2026.11 **派系兵种换成专属原画**：八个由占位改成真素材的兵种",
+        "    （协防军枪 / 弓、御林军剑盾 / 弓 / 着甲骑、铁臂弓手、扭力弩炮、王朝战车）现在都是",
         "    `sprite` = `res://assets/units/<兵种 id>.png` + `sprite_tint = art` ——",
         "    文件名 = **兵种 id**，一看 config 就知道是哪张图（原画放在 art_draft/units/）。",
+        "  · ★ 立牌比例默认按兵种大类（步兵 1×1 / 骑兵 1×1.5 / 器械 2×1）；",
+        "    `unit.types.<id>.sprite_ratio` 可按**原画**覆盖 —— 战车 = `[2, 1.5]`",
+        "    （原画 512×384 = 4:3，正好占满 2×1.5 的牌面，不再留左右空档）。",
         "  · ★ 占位口径（**今后加没素材的兵种仍然走这条**）：`sprite` 留空 + `sprite_tint = faction`",
         "    ⇒ 3D 立牌退回 **程序化人形剪影**，地图图标 / 名牌显示 `icon` 那一个字",
         "    （零新增代码，见 view/unit_sprite_3d.gd 与 view/unit_icon.gd）。",
@@ -1046,9 +1101,9 @@
         "        冠军骑士 390 血 34 攻），单价维持低位但每兵价值高，靠质量和小规模决战。",
         "      · 「+」类特性（远程免伤 / 近战免伤 / 特攻 / 稳定）仍然是在**该兵种自己的基准**上叠加，",
         "        只是基准不再等于原生兵种。",
-        "  · ★ 「冲锋」**本版不实装**（用户口径：暂时没有逻辑，写在注释里）。",
-        "    战车的「冲锋造成范围伤害和击退」与冠军骑士的「冲锋再造成额外伤害」都只在这里记录；",
-        "    战车现有的是「范围伤害 + 击退」那套**普攻**能力之外的两条静态特性（稳定 / 远程免伤+）。",
+        "  · ★ 「冲锋」已实装（被动动量，见 unit.types.<id>.charge）：",
+        "    战车 = 范围伤害 + 范围击退/眩晕；冠军骑士 = 更高的额外伤害 + 单体击退；",
+        "    骑手 / 斥候 / 御林军骑兵 = 中等额外伤害 + 单体击退。",
         "  · ★ 粮车两个派系共用原生 `grain_cart`（需求里三条描述与原生逐字一致），不另开 id。"
       ],
 
@@ -1111,6 +1166,18 @@
         "traits": {
           "attack_vs_class": { "infantry": 0.35 },
           "ranged_reduction": 0.25
+        },
+        "charge": {
+          "min_distance": 3.0,
+          "max_distance": 8.0,
+          "turn_max_deg": 40.0,
+          "speed_bonus": 0.20,
+          "damage_bonus": 0.35,
+          "knock_distance": 0.30,
+          "knock_stun_sec": 0.15,
+          "splash_radius": 0.0,
+          "splash_damage_ratio": 0.0,
+          "cooldown_sec": 6.0
         }
       },
       "dy_ranger": {
@@ -1194,12 +1261,26 @@
         "upkeep_food": 0.28,
         "traits": {
           "knockback_immune": true
+        },
+        "charge": {
+          "min_distance": 3.5,
+          "max_distance": 8.0,
+          "turn_max_deg": 35.0,
+          "speed_bonus": 0.15,
+          "damage_bonus": 0.40,
+          "knock_distance": 0.35,
+          "knock_stun_sec": 0.20,
+          "splash_radius": 0.0,
+          "splash_damage_ratio": 0.0,
+          "cooldown_sec": 7.0
         }
       },
       "dy_chariot": {
         "name": "战车",
         "icon": "战",
-        "sprite_tint": "faction",
+        "sprite": "res://assets/units/dy_chariot.png",
+        "sprite_tint": "art",
+        "sprite_ratio": [2.0, 1.5],
         "class": "siege",
         "ranged": false,
         "hp_max": 300,
@@ -1214,6 +1295,18 @@
         "traits": {
           "ranged_reduction": 0.25,
           "knockback_immune": true
+        },
+        "charge": {
+          "min_distance": 3.0,
+          "max_distance": 8.0,
+          "turn_max_deg": 30.0,
+          "speed_bonus": 0.20,
+          "damage_bonus": 0.55,
+          "knock_distance": 0.70,
+          "knock_stun_sec": 0.40,
+          "splash_radius": 1.2,
+          "splash_damage_ratio": 0.60,
+          "cooldown_sec": 8.0
         }
       },
       "dy_catapult": {
@@ -1298,6 +1391,18 @@
         "traits": {
           "attack_vs_class": { "infantry": 0.25 },
           "ranged_reduction": 0.25
+        },
+        "charge": {
+          "min_distance": 3.0,
+          "max_distance": 8.0,
+          "turn_max_deg": 40.0,
+          "speed_bonus": 0.20,
+          "damage_bonus": 0.35,
+          "knock_distance": 0.30,
+          "knock_stun_sec": 0.15,
+          "splash_radius": 0.0,
+          "splash_damage_ratio": 0.0,
+          "cooldown_sec": 6.0
         }
       },
       "dg_champion": {
@@ -1320,6 +1425,18 @@
           "attack_vs_class": { "cavalry": 0.25 },
           "ranged_reduction": 0.55,
           "knockback_immune": true
+        },
+        "charge": {
+          "min_distance": 2.5,
+          "max_distance": 8.0,
+          "turn_max_deg": 35.0,
+          "speed_bonus": 0.25,
+          "damage_bonus": 0.60,
+          "knock_distance": 0.45,
+          "knock_stun_sec": 0.25,
+          "splash_radius": 0.0,
+          "splash_damage_ratio": 0.0,
+          "cooldown_sec": 6.0
         }
       },
       "dg_bolt": {
@@ -1427,7 +1544,19 @@
           "speed": 1.5, "vision": 10 },
 
         { "name": "将领 0" }
-      ]
+      ],
+
+      "_recruit_sec_comment": [
+        "★★ 2026.11.2：**招兵读条时间由将领决定**（`recruit_sec`，与 types 同序，现在 10 项）。",
+        "  · 语义 = 这位将领当兵营时，**一次批次读条**要几秒。",
+        "    队列长短、队列里是哪些兵种**都不影响它**：读条结束一次性生成整批单位",
+        "    （见 logic/world.gd 的 _start_training / recruit_batch_sec 的说明）。",
+        "  · 缺项 / 越界 / ≤ 0 ⇒ 退回顶层 `recruit.batch_sec`（默认 10 秒）—— 老配置逐位一致。",
+        "  · editor：tools/unit_editor 的「将领」页 → 「招兵读条」。",
+        "  ⚠️ 单位条目里的 `train_sec` **已删除**：兵种自己不再有读条时间；",
+        "     区划招将（recruit.zone.list[].train_sec）不受影响，那仍是「招这位将领」的读条。"
+      ],
+      "recruit_sec": [10, 10, 10, 10, 10, 10, 10, 10, 10, 10]
     },
 
     "_collision_comment": [
@@ -1696,9 +1825,16 @@
       "  · 被击退者沿「攻击者 → 它自己」的方向被推开 distance 格（遇山 / 建筑就停在原地）；",
       "  · 同时进入 stun_sec 秒**眩晕**：不能移动、不能攻击、不能索敌（见 combat.update_unit）；",
       "  · traits.knockback_immune = true（**稳定**）⇒ 位移与眩晕**都不吃**，照旧被单位推挤。",
-      "  ★ 本版只有王朝的投石车带击退（原生投石车没有 —— 两条不同的兵种）。",
-      "  ★ 冲锋**本版不实装**（用户口径）：战车 / 冠军骑士的冲锋效果只写在兵种注释里。"
+      "  ★ 投石车等远程单位的击退来自 `knockback` 键；战车 / 冠军骑士的冲锋击退",
+      "    走各自 `charge.knock_distance / knock_stun_sec`（见 unit._types_comment）。"
     ],
+    "_charge_hold_comment": [
+      "★ 冲锋态「站住但没目标」的保持时间（秒）。",
+      "  单位进入攻击距离时 `halt()` 会停下，但不会清冲锋 —— 这一击要在接触时打出去。",
+      "  如果它站住后 1 秒内没打中任何目标（目标被队友抢了 / 丢失），就自动清空冲锋，",
+      "  避免单位举着冲锋光效一直站着。"
+    ],
+    "charge_hold_sec": 1.0,
     "_hit_flash_comment": [
       "★ 受击动效（闪白 + 左右振动）的**时长**（秒）——1 → 0 的衰减时间。",
       "  与 combat.flash_sec（旧的开火 / 受击闪光）是两件事，别混。"
@@ -2082,12 +2218,14 @@
       "部署规则：只能招到「当前选中的将领」名下（没有选中将领只给提示，不发命令），",
       "  而且那个将领必须站在**己方区划**里（区划归属 = 它那一方）。",
       "★★ 2026.10.30：招募改成**一次性批次队列**（将领自己就是兵营）：",
-      "  · 第一次点兵种 = 开始一条固定 batch_sec（10 秒）的读条；",
+      "  · 第一次点兵种 = 开始一条读条，时长 = **这位将领的 recruit_sec**",
+      "    （unit.general.recruit_sec；没写就退回下面的 batch_sec = 10 秒）；",
       "  · 读条期间继续点兵种 = 只往队列里加，**不打断、不延长**读条；",
       "  · 队列上限 queue_max（5 个，含大格子那一个）；",
       "  · 读条结束 = **一次性生成队列里的全部单位**，然后清空队列；",
-      "    下一次点击才会重新开始 10 秒读条。",
-      "  · 每个单位的 train_sec 现在只用于区划招募将领，单位页不再逐单读条。",
+      "    下一次点击才会重新开始一条新读条。",
+      "  · ★★ 2026.11.2：**单位条目不再有 train_sec** —— 兵种自己不再决定读条时间；",
+      "    这条规则只看「招它的将领」。下面的 batch_sec 只是「将领没配 recruit_sec」时的兜底。",
       "★★ 2026.10.24 起招募不再把将领钉在原地：",
       "  · 下单时要求「将领站在己方区划里 + 已脱战」；",
       "  · 下单之后将领可随意移动 / 攻击，读条完成在它身边生成单位；",
@@ -2109,7 +2247,6 @@
         "label": "长枪兵",
         "short": "枪",
         "desc": "在选中将领所在格的中心生成 1 名长枪兵（近战步兵）。★ 低级单位：只花粮食；对骑兵伤害 +25%",
-        "train_sec": 10,
         "population_cost": 1,
         "cost": { "food": 80, "gold": 0 }
       },
@@ -2119,7 +2256,6 @@
         "label": "长弓兵",
         "short": "弓",
         "desc": "在选中将领所在格的中心生成 1 名长弓兵（远程步兵）。★ 低级单位：只花粮食；对步兵伤害 +10%",
-        "train_sec": 10,
         "population_cost": 1,
         "cost": { "food": 120, "gold": 0 }
       },
@@ -2129,7 +2265,6 @@
         "label": "骑手",
         "short": "骑",
         "desc": "在选中将领所在格的中心生成 1 名骑手（近战骑兵）。★ 高级单位：要粮食，更要黄金；对步兵伤害 +25%，远程减伤 25%",
-        "train_sec": 10,
         "population_cost": 1,
         "cost": { "food": 80, "gold": 160 }
       },
@@ -2139,7 +2274,6 @@
         "label": "粮车",
         "short": "粮",
         "desc": "在选中将领所在格的中心生成 1 辆粮车（支援单位，不攻击）。★ 只花粮食；周围 3 格友军士气 +0.5/秒（多辆不叠加，可与其他士气来源叠加）",
-        "train_sec": 12,
         "population_cost": 1,
           "cost": { "food": 160, "gold": 0 }
       },
@@ -2149,7 +2283,6 @@
         "label": "骑士",
         "short": "士",
         "desc": "在选中将领所在格的中心生成 1 名骑士（近战骑兵）。★ 少量粮食 + 大量黄金；高护甲（固定减 6 点/击）、高攻击、远程减伤 25%",
-        "train_sec": 18,
         "population_cost": 1,
         "cost": { "food": 120, "gold": 320 }
       },
@@ -2159,7 +2292,6 @@
         "label": "马弓手",
         "short": "骁",
         "desc": "在选中将领所在格的中心生成 1 名马弓手（远程骑兵）。★ 大量粮食 + 少量黄金；无护甲、远程减伤 25%；可移动射击",
-        "train_sec": 16,
         "population_cost": 1,
         "cost": { "food": 320, "gold": 120 }
       },
@@ -2169,7 +2301,6 @@
         "label": "投石车",
         "short": "车",
         "desc": "在选中将领所在格的中心生成 1 辆投石车（器械，远程）。★ 大量粮食 + 大量黄金；移动与攻击都慢，攻击为 1.5 格范围伤害；攻城（无视目标的近战/远程减伤）",
-        "train_sec": 24,
         "population_cost": 1,
         "cost": { "food": 360, "gold": 360 }
       }
@@ -2470,7 +2601,6 @@
             "label": "协防军",
             "short": "协",
             "desc": "在选中将领所在格的中心生成 2 名单位（都叫「协防军」）：1 名长枪兵（近战步兵，对骑兵伤害 +70%）+ 1 名弓箭手（远程步兵）。★ 高级单位 · 组合单位：一次占 1 个队列格、扣 2 人口",
-            "train_sec": 17,
             "population_cost": 2,
           "cost": { "food": 145, "gold": 0 },
             "spawn": [
@@ -2484,7 +2614,6 @@
             "label": "斥候",
             "short": "斥",
             "desc": "在选中将领所在格的中心生成 1 名斥候（近战骑兵）。★ 高级单位：移动速度快（1.5 格/秒）、视野 +3 格；对步兵伤害 +35%、远程减伤 25%",
-            "train_sec": 10,
             "population_cost": 1,
           "cost": { "food": 70, "gold": 140 }
           },
@@ -2494,7 +2623,6 @@
             "label": "粮车",
             "short": "粮",
             "desc": "在选中将领所在格的中心生成 1 辆粮车（支援单位，不攻击）。★ 基础单位：只花粮食；周围 3 格友军士气 +0.5/秒（多辆不叠加）",
-            "train_sec": 12,
             "population_cost": 1,
           "cost": { "food": 130, "gold": 0 }
           },
@@ -2504,7 +2632,6 @@
             "label": "游侠",
             "short": "侠",
             "desc": "在选中将领所在格的中心生成 1 名游侠（远程骑兵）。★ 高级单位：骑射（可移动射击）、远程减伤 25%",
-            "train_sec": 16,
             "population_cost": 1,
           "cost": { "food": 235, "gold": 95 }
           },
@@ -2514,7 +2641,6 @@
             "label": "御林军",
             "short": "御",
             "desc": "在选中将领所在格的中心生成 3 名单位（都叫「御林军」）：剑盾兵（近战步兵，稳定 · 远近免伤 30%）+ 弓箭手（远程步兵，对步兵伤害 +40%）+ 着甲骑兵（近战骑兵，稳定）。★ 高级单位 · 组合单位：一次占 1 个队列格、扣 3 人口",
-            "train_sec": 20,
             "population_cost": 3,
           "cost": { "food": 195, "gold": 300 },
             "spawn": [
@@ -2528,8 +2654,7 @@
             "tier": 3,
             "label": "战车",
             "short": "战",
-            "desc": "在选中将领所在格的中心生成 1 辆战车（器械，但**造成近战伤害**）。★ 高级单位：稳定（免疫击退）、远程减伤 25%；冲锋的范围伤害与击退本版未实装",
-            "train_sec": 20,
+            "desc": "在选中将领所在格的中心生成 1 辆战车（器械，但**造成近战伤害**）。★ 高级单位：稳定（免疫击退）、远程减伤 25%；冲锋时对范围内敌人造成伤害与击退/眩晕",
             "population_cost": 1,
           "cost": { "food": 145, "gold": 260 }
           },
@@ -2539,7 +2664,6 @@
             "label": "投石车",
             "short": "车",
             "desc": "在选中将领所在格的中心生成 1 辆投石车（器械，远程）。★ 高级单位：抛物线弹道、1.5 格范围伤害、**击退 + 0.5 秒眩晕**；攻城（无视目标的远近减伤）",
-            "train_sec": 24,
             "population_cost": 1,
           "cost": { "food": 290, "gold": 290 }
           }
@@ -2621,7 +2745,7 @@
               "  圈地制（大本营额外出金，帝国全是吃金的精锐）",
               "  → 速战速决（出门快）→ 远征军（每区划 +2% 攻防，越打越强）",
               "  → 征召民兵 / 淘金（经济）→ 无沬可击 → 势如破竹 → 骑士精神。",
-              "  ★ 骑士精神放最后：冲锋本版尚未实装，它现在没有实际效果。"
+              "  ★ 骑士精神放最后：它只放大冲锋命中，前期收益低于经济 / 攻防科技。"
             ],
             "tech_priority": [
               "dg_enclosure",
@@ -2650,8 +2774,7 @@
             "label": "乂字军披甲剑士",
             "short": "剑",
             "desc": "在选中将领所在格的中心生成 1 名披甲剑士（近战步兵）。★ 基础单位：只花粮食；近战减伤 25%，对骑兵伤害 +25%（帝国走「少而精」：血厚、攻高）",
-          "train_sec": 10,
-            "population_cost": 1,
+          "population_cost": 1,
           "cost": { "food": 65, "gold": 0 }
           },
           {
@@ -2660,8 +2783,7 @@
             "label": "乂字军铁臂弓手",
             "short": "弓",
             "desc": "在选中将领所在格的中心生成 1 名铁臂弓手（远程步兵）。★ 基础单位：只花粮食；对步兵伤害 +35%（帝国走「少而精」：血厚、攻高）",
-          "train_sec": 10,
-            "population_cost": 1,
+          "population_cost": 1,
           "cost": { "food": 88, "gold": 0 }
           },
           {
@@ -2670,8 +2792,7 @@
             "label": "骑手",
             "short": "骑",
             "desc": "在选中将领所在格的中心生成 1 名骑手（近战骑兵）。★ 高级单位：移动速度快（1.5 格/秒）、视野 +3 格；对步兵伤害 +25%、远程减伤 25%",
-          "train_sec": 10,
-            "population_cost": 1,
+          "population_cost": 1,
           "cost": { "food": 75, "gold": 150 }
           },
           {
@@ -2680,7 +2801,6 @@
             "label": "粮车",
             "short": "粮",
             "desc": "在选中将领所在格的中心生成 1 辆粮车（支援单位，不攻击）。★ 基础单位：只花粮食；周围 3 格友军士气 +0.5/秒（多辆不叠加）",
-            "train_sec": 12,
             "population_cost": 1,
           "cost": { "food": 130, "gold": 0 }
           },
@@ -2689,9 +2809,8 @@
             "tier": 3,
             "label": "乂字军冠军骑士",
             "short": "冠",
-            "desc": "在选中将领所在格的中心生成 1 名冠军骑士（近战骑兵）。★ 高级单位：稳定（免疫击退）、远程减伤 55%、对骑兵伤害 +25%、移动速度 1.3 格/秒；血量上限 290（骑士 365，比骑士更脆但更锋利）；冲锋的额外伤害本版未实装",
-          "train_sec": 18,
-            "population_cost": 1,
+            "desc": "在选中将领所在格的中心生成 1 名冠军骑士（近战骑兵）。★ 高级单位：稳定（免疫击退）、远程减伤 55%、对骑兵伤害 +25%、移动速度 1.3 格/秒；血量上限 290（骑士 365，比骑士更脆但更锋利）；冲锋时造成更高的额外伤害与击退",
+          "population_cost": 1,
           "cost": { "food": 130, "gold": 340 }
           },
           {
@@ -2700,8 +2819,7 @@
             "label": "扭力弩炮",
             "short": "弩",
             "desc": "在选中将领所在格的中心生成 1 架扭力弩炮（器械，远程）。★ 高级单位：直线穿透子弹 —— 命中时对「射手 → 目标」这条直线上、射程内的**所有敌人**各造成一次全额伤害；弹道是直线（不抛物）",
-          "train_sec": 22,
-            "population_cost": 1,
+          "population_cost": 1,
           "cost": { "food": 290, "gold": 310 }
           }
         ]
@@ -2950,7 +3068,7 @@
       "    recruit_tier_unlock              >0 = 解除「大本营等级」对招募阶的限制",
       "    recruit_gold_to_food             >0 = 招募不再花金，按这个比例换成粮（1.5 = 1 金 → 1.5 粮）",
       "    zone_convert_restore             >0 = 区划转为己方那一刻，区内己方单位血量与士气回满",
-      "    charge_damage_mult               ★ 冲锋相关（**本版冲锋未实装**，写在这里只为占位）",
+      "    charge_damage_mult               ★ 冲锋命中时**加法**追加的额外伤害（1.0 = +100%）",
       "",
       "⚠️ 新增效果键要同时在 `logic/tech.gd` 的 `effects_of()`（默认值表）与本文件覆盖它的地方加一条。"
     ],
@@ -3041,7 +3159,7 @@
         "tier": 2,
         "name": "骑士精神",
         "line": "冲锋 +100% 伤害",
-        "desc": "单位冲锋造成 100% 额外伤害。★ 本版尚未实装「冲锋」（见 config 的 clan 段说明），这条科技目前可以启用但暂时没有实际效果。",
+        "desc": "单位冲锋命中时额外造成 100% 伤害（与兵种自带的冲锋伤害加成相加）。",
         "effect": { "charge_damage_mult": 1.0 }
       },
       {
@@ -4210,9 +4328,23 @@
         "  · 降频后所有计时器按**累加经过的时间**推进（不是帧 dt），所以冷却/巡逻间隔不变长；",
         "  · 濒死复活（_tick_revive）**不**降频：它每步都查，只是查的是缓存下来的将领短列表。",
         "  · 参考 Rusted Warfare 的分层 AI：决策 10~30 Hz、全局规划 1~5 s。",
-        "  ⚠️ 别把它设成 0 以下：负数会被夹到 0。"
+        "  ⚠️ 别把它设成 0 以下：负数会被夹到 0。",
+        "",
+        "★★ 警戒唤醒（2026.11）：阵地性 AI **默认静止**，只有探测到威胁才开始巡逻。",
+        "  需求原话：「只有当玩家 / 敌对 AI 的部队移动到自身 10 格以内，或玩家 / 敌对 AI 的",
+        "  区划扩张到距离自身所在区划一个区划外时，才会启动巡逻逻辑，否则静止」。",
+        "  · alert_enabled：总开关。false = 旧行为（一直巡逻），用于 A/B 对比；",
+        "  · alert_troop_radius_tiles：敌方**单位**进入离守将这么多格以内 ⇒ 唤醒（默认 10）；",
+        "  · alert_zone_gap：敌方**区划**扩张到「区划图」这么多步以内 ⇒ 唤醒：",
+        "      0 = 只认自己那块地；1 = 直接相邻；2 = 相邻 + 中间隔一个区划（默认，对应「相隔一个区划」）；",
+        "  · alert_check_sec：复检周期（秒）。比决策周期慢，免得 10 Hz 地扫全场单位。",
+        "  ★ 只关「巡逻」：交战 / 守区划中心 / 脱战招兵 / 濒死再起仍照常运行。"
       ],
       "decision_interval_sec": 0.1,
+      "alert_enabled": true,
+      "alert_troop_radius_tiles": 10.0,
+      "alert_zone_gap": 2,
+      "alert_check_sec": 0.5,
       "patrol_interval_sec": 4.0,
       "patrol_leash_tiles": 1,
       "combat_idle_sec": 10.0,

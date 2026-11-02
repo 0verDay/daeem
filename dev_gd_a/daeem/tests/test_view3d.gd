@@ -41,6 +41,7 @@ func _run() -> void:
 	await _test_camera_aim(cfg)
 	await _test_order_flags(cfg)
 	await _test_selection_ring(cfg)
+	await _test_charge_fx(cfg)
 	await _test_grid_near_clip(cfg)
 	await _test_capture_area(cfg)
 	await _test_aura_range(cfg)
@@ -1255,6 +1256,61 @@ func _test_selection_ring(cfg) -> void:
 
 	game.queue_free()
 	await process_frame
+
+## ★★ 冲锋表现（2026.11）：立牌发光的通道、脚下尘环、命中冲击波对象池。
+func _test_charge_fx(cfg) -> void:
+	var game = Game3DRes.new()
+	root.add_child(game)
+	await process_frame
+	if not game.start():
+		game.queue_free()
+		return
+	await process_frame
+	await process_frame
+	var w = game.world
+	game.set_process(false)
+
+	# 1) 冲击波对象池：spawn → active → 播完归零。
+	ok(game.charge_fx != null, "★ 冲锋冲击波层已装配")
+	if game.charge_fx != null:
+		eq(game.charge_fx._slots.size(), 8, "★ 冲击波对象池 = 8 个槽位")
+		var before: int = game.charge_fx.spawn_count
+		game.charge_fx.spawn(Vector2(5.0, 5.0), 1.2, Color(0.8, 0.2, 0.2))
+		eq(game.charge_fx.spawn_count, before + 1, "★ spawn 一次计数 +1")
+		game.charge_fx.sync(0.01)
+		eq(game.charge_fx.active_count, 1, "★ 冲击波在扩散（active_count = 1）")
+		game.charge_fx.sync(1.0)
+		eq(game.charge_fx.active_count, 0, "★ 播完自动回收（active_count = 0）")
+
+	# 2) 立牌发光通道 + 脚步尘环层。
+	ok(game.units._charge_layers.size() == 4, "★★ 冲锋尘环按己/友/敌/中立分 4 层")
+	ok(game.units.get_node_or_null("ChargeRings_self") != null,
+		"★ ChargeRings_self 节点存在")
+	var u = null
+	for x in w.units:
+		if x.alive and game.units._visible_to_me(x):
+			u = x
+			break
+	if u == null:
+		ok(false, "找不到可见单位验冲锋尘环")
+		game.queue_free()
+		return
+	u.charge_ratio = 0.0
+	u.charge_armed = false
+	game.units.sync(1.0 / 60.0)
+	eq(game.units.charge_ring_count, 0, "（前提）没冲锋时没有尘环")
+	u.charge_ratio = 1.0
+	u.charge_armed = true
+	game.units.sync(1.0 / 60.0)
+	eq(game.units.charge_ring_count, 1, "★★ 冲锋进度满值时脚下出现一枚尘环")
+	u.charge_ratio = 0.0
+	u.charge_armed = false
+	game.units.sync(1.0 / 60.0)
+	eq(game.units.charge_ring_count, 0, "★ 冲锋结束后尘环消失")
+
+	game.queue_free()
+	await process_frame
+
 
 func _test_grid_near_clip(cfg) -> void:
 	var game = Game3DRes.new()

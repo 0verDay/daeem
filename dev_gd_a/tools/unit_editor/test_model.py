@@ -206,8 +206,25 @@ def t_unit_fields() -> None:
     near(u.cost_food, 80, "造价 · 粮食（来自 recruit.list，已按造价 ×2 调整）")
     near(u.cost_gold, 0, "造价 · 黄金（低级单位不要黄金）")
     near(u.population_cost, 1, "造价 · 人口")
-    near(u.train_sec, 10, "招募时间")
     ok(u.has_recruit, "它在招募表里")
+    eq(u.recruit_owner, "recruit.list", "★ 招募条目记下了来源表（原生兵种在全局表）")
+    eq(u.recruit_path, ["recruit", "list", 0], "★ 记下了条目所在的 JSON 路径")
+    # ★★ 2026.11.2：读条时间不再是兵种的属性（单位条目里的 train_sec 已删），
+    #   它由「招它的将领」决定 —— 见下面将领那一段的 recruit_sec。
+    ok(not hasattr(u, "train_sec"), "★ 兵种上没有 train_sec 这个属性了")
+    # ★★ 派系兵种（王朝）的招募条目在 clan.list[].recruit[] 里 ——
+    #   老实现只查全局表，于是把它们误判成「不在招募表」（用户报的就是这个）。
+    var_u = model.unit("dy_chariot")
+    ok(var_u.has_recruit, "★★ 派系兵种（王朝战车）**在**招募表里")
+    ok(var_u.recruit_owner.startswith("clan:"), "★ 它的招募条目来自派系表（%s）"
+       % var_u.recruit_owner)
+    ok(var_u.cost_gold > 0, "★★ 能读到派系表里的造价（战车 %s 金）" % var_u.cost_gold)
+    # ★★ 组合单位的零件（协防军枪）没有自己的条目，但**招得出来**（整包生成）——
+    #   它有 spawn_source，界面上不该说「不在招募表」。
+    part = model.unit("dy_spear_guard")
+    ok(not part.has_recruit, "（前提）协防军枪没有自己的招募条目")
+    ok(part.spawn_source is not None, "★★ 但它记着「被哪一单整包生成」")
+    eq(part.spawn_label, "协防军", "★ 那一单的显示名（协防军）")
     ok(model.unit("longbowman").ranged, "★ 长弓兵是远程的（远程 + 步兵 = 两个维度）")
     # ★ 一个**不在招募表里**的单位：has_recruit 为假。
     #   （原来这里用「测试敌人」当例子，它已被删除；而 `add_unit` 造出来的新兵种
@@ -232,7 +249,6 @@ def t_unit_fields() -> None:
             ("cost_food", 60, ["recruit", "list", 0, "cost", "food"]),
             ("cost_gold", 70, ["recruit", "list", 0, "cost", "gold"]),
             ("population_cost", 2, ["recruit", "list", 0, "population_cost"]),
-            ("train_sec", 12, ["recruit", "list", 0, "train_sec"]),
             ("desc", "说明文字", ["recruit", "list", 0, "desc"]),
     ):
         model.set_unit("spearman", field, value)
@@ -281,8 +297,8 @@ def t_unit_fields() -> None:
     ok(idx_z >= 0, "（前提）新兵种默认是有招募条目的")
     m4.doc.remove(["recruit", "list", idx_z])
     ok(not m4.unit("zombie").has_recruit, "★ 删掉招募条目之后它就不在招募表里了")
-    raises(lambda: m4.set_unit("zombie", "train_sec", 5),
-           "★ 不在招募表里的单位：改造价 / 招募时间会被拒（并提示先加进招募表）")
+    raises(lambda: m4.set_unit("zombie", "cost_food", 5),
+           "★ 不在任何招募表里的单位：改造价 / 文案会被拒（并提示先加进招募表）")
 
     # 再把它加回招募表
     before = m4.text
@@ -290,15 +306,76 @@ def t_unit_fields() -> None:
     m4.add_recruit_entry("zombie")
     eq(m4.doc.size(["recruit", "list"]), before_count + 1, "加进招募表：多了一条")
     eq(m4.unit("zombie").has_recruit, True, "加完之后它有招募数值了")
-    m4.set_unit("zombie", "train_sec", 6)
-    eq(m4.doc.value(["recruit", "list", before_count, "train_sec"]), 6,
-       "加进去之后就能改招募时间")
+    m4.set_unit("zombie", "population_cost", 3)
+    eq(m4.doc.value(["recruit", "list", before_count, "population_cost"]), 3,
+       "加进去之后就能改造价")
     ok(changed_lines(before, m4.text) > 0, "确实动了文件")
 
 
 # ======================================================================
 # [2] 新建 / 删除兵种
 # ======================================================================
+
+def t_recruit_packages() -> None:
+    """★★ 2026.11.2：组合招募单（协防军 / 御林军）—— 它们不是兵种，但造价必须能改。"""
+    print("\n[1c] 组合招募单（一次出多个兵的招募条目）")
+    model = fresh_model()
+    by_kind = {p.kind: p for p in model.recruit_packages()}
+    ok("dy_guard" in by_kind, "★★ 列出「协防军」这一单（它不是兵种，单位页列不出来）")
+    ok("dy_royal" in by_kind, "★★ 列出「御林军」这一单")
+    ok("spearman" not in by_kind, "★ 普通兵种不算组合单（不在这一栏里重复出现）")
+    guard = by_kind["dy_guard"]
+    eq(guard.label, "协防军", "名字")
+    eq(guard.count, 2, "★ 协防军一次出 2 个")
+    ok("dy_spear_guard" in guard.member_text, "★ 组成里写着枪兵（%s）" % guard.member_text)
+    near(guard.cost_food, 145, "整包造价 · 粮食")
+    near(guard.population_cost, 2, "整包造价 · 人口")
+    ok(guard.owner.startswith("clan:"), "★ 记下了来源表（%s）" % guard.owner)
+
+    # 改整包造价 → 写进 clan 表那一行（不是另建一条）
+    model.set_recruit_package("dy_guard", "cost_food", 200)
+    eq(model.doc.value(["clan", "list", 1, "recruit", 0, "cost", "food"]), 200,
+       "★★ 改「协防军」的粮价 → 写进 clan:dynasty 那一行")
+    near(model.recruit_package("dy_guard").cost_food, 200, "模型读回同一个数")
+    before = len(model.doc.value(["clan", "list", 1, "recruit"], []))
+    eq(before, 7, "★ 改价不会新增招募条目（王朝仍然是 7 条）")
+
+    # 文案也能改
+    model.set_recruit_package("dy_guard", "label", "协防营")
+    eq(model.doc.value(["clan", "list", 1, "recruit", 0, "label"]), "协防营",
+       "★ 改这一单的命令卡标题")
+
+    # 与「兵种页」不串线：改这一单不改成员自己的数值
+    spear = model.unit("dy_spear_guard")
+    ok(not spear.has_recruit, "（前提）协防军枪没有自己的招募条目")
+    raises(lambda: model.recruit_package("spearman"), "兵种不是组合单：查它会报错")
+    raises(lambda: model.set_recruit_package("dy_guard", "hp_max", 1),
+           "组合单没有 hp_max 这种字段（数值去兵种页改）")
+
+
+def t_charge_fields() -> None:
+    print("\n[1b] 冲锋字段（嵌套 unit.types.<id>.charge）")
+    model = fresh_model()
+    # 已有配置：骑手有 charge，长枪兵没有
+    eq(model.unit("rider").charge_field("min_distance"), 3.0,
+       "★ 骑手读到 charge.min_distance")
+    eq(model.unit("spearman").charge_field("min_distance"), 0.0,
+       "★ 长枪兵没配 charge → 读 0（= 不冲锋）")
+    # 第一次写：自动建 charge 块，其余项补 0
+    model.set_unit("spearman", "charge.min_distance", 3.5)
+    eq(model.unit("spearman").charge_field("min_distance"), 3.5,
+       "★★ 第一次编辑会自动建 charge 块并写入")
+    eq(model.unit("spearman").charge_field("damage_bonus"), 0.0,
+       "★ 新建的块里其余项是 0（不会凭空给数值）")
+    model.set_unit("spearman", "charge.damage_bonus", 0.4)
+    eq(model.unit("spearman").charge_field("damage_bonus"), 0.4, "★ 改冲锋伤害加成")
+    # 清空 = 删掉这一项（读回 0），但块还在
+    model.set_unit("spearman", "charge.damage_bonus", None)
+    eq(model.unit("spearman").charge_field("damage_bonus"), 0.0,
+       "★★ 清空某一项 = 删掉键，读回 0")
+    raises(lambda: model.set_unit("spearman", "charge.nope", 1.0),
+           "不认识的冲锋字段被拒")
+
 
 def t_add_remove_unit() -> None:
     print("\n[2] 新建 / 删除兵种")
@@ -314,7 +391,6 @@ def t_add_remove_unit() -> None:
     rider = model.unit("rider")
     near(u.hp_max, rider.hp_max, "血量照抄模板（骑手的 %s）" % rider.hp_max)
     eq(u.has_recruit, True, "同时建了招募表那一项")
-    near(u.train_sec, rider.train_sec, "招募时间照抄模板")
     near(u.cost_food, rider.cost_food, "造价照抄模板（骑手的 %s）" % rider.cost_food)
     near(u.cost_gold, rider.cost_gold, "黄金造价照抄模板（骑手的 %s）" % rider.cost_gold)
     eq(u.label, "马弓手", "★ 命令卡标题 = 新名字")
@@ -345,7 +421,7 @@ def t_add_remove_unit() -> None:
     ok(m2.unit("zombie").has_recruit,
        "★ 模板不在招募表 → 新兵种仍然进招募表（照默认值）")
     near(m2.unit("zombie").cost_food, 50, "默认造价 50 粮")
-    near(m2.unit("zombie").train_sec, 10, "默认招募 10 秒")
+    near(m2.unit("zombie").population_cost, 1, "默认人口 1")
 
     # id 校验
     m3 = fresh_model()
@@ -417,11 +493,13 @@ def t_generals() -> None:
     #    不是 unit.types / recruit.list 里那个兵种造价 —— 所以这里读那一份。
     zone_row = next(r for r in model.doc.value(["recruit", "zone", "list"])
                     if r["kind"] == "general_1")
-    near(g1.train_sec, zone_row["train_sec"], "招募时间（来自 recruit.zone.list）")
+    near(g1.train_sec, zone_row["train_sec"], "区划招募读条（来自 recruit.zone.list）")
     near(g1.cost_food, zone_row["cost"]["food"], "造价 · 粮食（来自 recruit.zone.list）")
     near(g1.population_cost, 1, "造价 · 人口")
     near(g1.recruit_cooldown_sec, zone_row.get("recruit_cooldown_sec", 0),
          "招募冷却（本轮新增，来自 recruit.zone.list）")
+    # ★★ 招兵读条（2026.11.2）：来自 unit.general.recruit_sec[index]，默认 10。
+    near(g0.recruit_sec, 10, "★★ 招兵读条默认 10 秒（unit.general.recruit_sec）")
 
     # 类型 / 名称 / 造价 / 招募时间
     model.set_general_type(1, "rider")
@@ -433,7 +511,16 @@ def t_generals() -> None:
     eq(model.doc.value(["recruit", "zone", "list", 1, "label"]), "西境骑将",
        "★ 名字同时写进招募卡（两处一致）")
     model.set_general(1, "train_sec", 14)
-    eq(model.doc.value(["recruit", "zone", "list", 1, "train_sec"]), 14, "招募时间")
+    eq(model.doc.value(["recruit", "zone", "list", 1, "train_sec"]), 14, "区划招募读条")
+    # ★★ 招兵读条：写 unit.general.recruit_sec[index]（与上面那条是两件事）
+    model.set_general(1, "recruit_sec", 6.5)
+    eq(model.doc.value(["unit", "general", "recruit_sec", 1]), 6.5, "★ 招兵读条写进将领属性")
+    near(model.general(1).recruit_sec, 6.5, "模型读回同一个数")
+    eq(model.doc.value(["recruit", "zone", "list", 1, "train_sec"]), 14,
+       "★★ 改招兵读条**不动**区划招募读条（两条互不干扰）")
+    model.set_general(1, "recruit_sec", None)
+    eq(model.doc.value(["unit", "general", "recruit_sec", 1]), 10,
+       "★ 清空 → 回到默认 10 秒")
     model.set_general(1, "recruit_cooldown_sec", 33)
     eq(model.doc.value(["recruit", "zone", "list", 1, "recruit_cooldown_sec"]), 33,
        "★ 招募冷却（本轮新增：招到这位之后该玩家全局锁多少秒）")
@@ -758,14 +845,27 @@ def t_game_contract() -> None:
 
     clan_roster = _clan_roster_ids()
     for uid in model.unit_ids():
-        idx = model.unit(uid).recruit_index
-        if idx < 0:
+        u = model.unit(uid)
+        if not u.has_recruit:
             ok(uid in clan_roster,
-               "★ %s 不在全局 recruit.list，但出现在某个派系的招募表里" % uid)
+               "★ %s 没有任何招募条目，但出现在某个派系的招募表里" % uid)
             continue
-        for key in ("kind", "label", "short", "desc", "train_sec", "population_cost", "cost"):
-            ok(model.doc.has(["recruit", "list", idx, key]),
-               "recruit.list[%d].%s 存在（world.gd 读它）" % (idx, key))
+        # ★★ 2026.11.2：条目可能挂在**任意**一张表里（全局 / 派系），按实际路径验字段。
+        path = u.recruit_path
+        for key in ("kind", "label", "short", "desc", "population_cost", "cost"):
+            ok(model.doc.has(path + [key]),
+               "%s.%s 存在（world.gd 读它）" % (u.recruit_owner, key))
+        # ★★ 2026.11.2 反向契约：读条时间**不再属于兵种** —— 谁把 train_sec 加回
+        #   单位条目（全局或派系都算），这里立刻变红。
+        ok(not model.doc.has(path + ["train_sec"]),
+           "★★ %s 的条目里**没有** train_sec（读条归将领：unit.general.recruit_sec）" % uid)
+    # ★★ 将领的招兵读条表：与 types 同长，每项都是正数（默认 10）。
+    rsecs = model.doc.value(["unit", "general", "recruit_sec"], [])
+    ok(isinstance(rsecs, list) and len(rsecs) >= model.general_count(),
+       "★★ unit.general.recruit_sec 覆盖到每一位将领（%s 项）" % len(rsecs))
+    for i, v in enumerate(rsecs):
+        ok(isinstance(v, (int, float)) and float(v) > 0,
+           "unit.general.recruit_sec[%d] 是正数（%r）" % (i, v))
     for bid in model.building_ids():
         path = ["building", bid]
         for key in ("id", "name", "cost", "hp_max", "body_scale"):
@@ -855,6 +955,8 @@ def main() -> int:
     real_before = CONFIG.read_bytes()
     t_text_roundtrip()
     t_unit_fields()
+    t_recruit_packages()
+    t_charge_fields()
     t_add_remove_unit()
     t_generals()
     t_buildings()

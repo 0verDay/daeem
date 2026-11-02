@@ -24,6 +24,20 @@
 ##      → 每帧扫一遍 **AI 阵营的**濒死将领（`_tick_revive()`）：只要
 ##        `revive_ready()`（血量回到门槛）且没在读条，当场 `world.start_revive()`。
 ##        无消耗是因为 AI 阵营没有资源池（`resource_pool_for()` 返回 null = 无限）。
+##   6. ★★ 「对于阵地性 ai，只有当玩家 / 敌对 ai 的部队移动到自身 10 格以内，
+##        或玩家 / 敌对 ai 的区划扩张到距离自身所在区划一个区划外时（即和玩家区划
+##        相隔一个区划），才会启动巡逻逻辑，否则静止」（2026.11 新增）
+##      → `_tick_alert()` 每 `ai.garrison.alert_check_sec` 秒复检一次，把结果缓存在
+##        `unit.garrison_alert_active`；没威胁时**只跳过巡逻**（第 5 步），
+##        交战 / 守区划中心 / 脱战招兵 / 濒死再起一概照旧 —— 那些不是「巡逻」，
+##        而且守军睡死会让「敌人贴脸还不还手」这种荒谬场面出现。
+##      → 判据两条，任一成立即唤醒：
+##        · **部队临近**：任一敌对单位（`same_side_for_attack` 之外）离这位守将
+##          ≤ `alert_troop_radius_tiles`（默认 10，欧氏距离）；
+##        · **区划压境**：任一敌对**已占领**的区划，在区划邻接图里离我的归属区划
+##          ≤ `alert_zone_gap` 步（默认 2 = 相邻那一圈 + 中间隔一个区划的那一圈）。
+##        邻接表在 `zone.build_from_map()` 装配期建好（`zones.neighbors_of()`），
+##        不逐格扫地块 —— 区划形状不规则，直线距离会判错「隔着一条河」的假近邻。
 ##
 ## ★★ 本模块是「阵地性 AI」—— 现在**所有** AI 阵营（原阵营性 + 原将领性）
 ##    都用这一套：附属于区划、巡逻、无消耗招募。红点性 AI 见 `logic/red_dot_ai.gd`。
@@ -90,6 +104,12 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 	var retarget_cd: float = float(gc["retarget_cooldown_sec"])
 	var recruit_check: float = float(gc["recruit_check_sec"])
 	var min_retinue: int = int(gc["min_retinue"])
+	# ★★ 警戒唤醒（2026.11，见文件头第 6 条）：一次决策只取一次配置，循环里不再下潜字典。
+	var alert_enabled: bool = bool(gc.get("alert_enabled", true))
+	var alert_radius: float = float(gc.get("alert_troop_radius_tiles", 10.0))
+	var alert_radius_sq: float = alert_radius * alert_radius
+	var alert_gap: int = int(gc.get("alert_zone_gap", 2))
+	var alert_check: float = float(gc.get("alert_check_sec", 0.5))
 	var orders := 0
 
 	# ★★ 每个区划里有几位「要巡逻的将领」（= 巡逻队长；见 `is_patrol_leader`）。
@@ -185,6 +205,15 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 			u.returning_home_sec = 0.0
 		var in_combat: bool = u.target != null or u.target_building != null
 
+		# ---- 0) ★★ 警戒唤醒（2026.11）：没有威胁 ⇒ 第 5 步（巡逻）不跑，其余照旧 ----
+		#
+		# ⚠️ 放在追击状态机**之前**：被唤醒 / 睡着只影响「要不要去巡逻」，
+		#    而追击中的单位本来就有目标（`in_combat`），那一段不受它管。
+		# ⚠️ 结果缓存在单位上（`garrison_alert_next_sec` 控节奏）：扫全场单位这件事
+		#    不该按 10 Hz 决策周期做；默认 0.5 秒一次，唤醒延迟最多半秒。
+		var active: bool = _tick_alert(world, u, z, step, alert_enabled,
+			alert_radius_sq, alert_gap, alert_check, patrol_interval)
+
 		# ---- 1) ★★ 追击状态机（本轮重写，用户口径）----
 		#
 		# 需求原话：「巡逻时发现敌人后向该敌人追击，当该敌人死亡或在自己的警戒范围外时，
@@ -278,7 +307,11 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 				if c != null:
 					_patrol_group(world, cfg, u, GridRes.center_of(c), retinues)
 			continue
-		u.defending_center = false
+		# ★ 只在**真的刚解除**守中心状态时清一次缓存（别每帧都清：那会让
+		#   `_tick_alert` 每帧扫一遍全场单位，反而把省下来的开销吃回去）。
+		if u.defending_center:
+			u.defending_center = false
+			u.garrison_alert_next_sec = 0.0
 
 		# ---- 4) 脱战：先看看要不要无消耗招兵，再巡逻 ----
 		# ★★ 目标编队规模（本轮口径变更）：直接读**这个将领自己的规格**
@@ -300,6 +333,15 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 					orders += 1
 					continue      # 刚下单：这一帧别再插一条巡逻命令（会把它顶掉）
 
+		# ---- 4.5) ★★ 没有威胁 ⇒ **静止**（2026.11 需求）：不插巡逻命令 ----
+		#
+		# ⚠️ 必须放在招募之后：招兵是「脱战补充」，与巡逻是两件事（见文件头第 6 条）。
+		# ⚠️ `patrol_timer` 归零：下次被唤醒时由 `_tick_alert()` 按 `_phase01` 重新错峰，
+		#    避免几十位守将在同一帧一起寻路（那正是 2026.10.28 修过的尖峰）。
+		if not active:
+			u.patrol_timer = 0.0
+			continue
+
 		# ---- 5) 巡逻：按时间间隔朝**自己路线的下一个点**走 ----
 		# ★★ 正在回家的路上（`returning_home`）：**不再插新的巡逻命令** ——
 		#    那会把返程路径顶掉，于是它一步都走不回去（本轮修的「卡边界抽搐」）。
@@ -312,6 +354,8 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 		if u.returning_home:
 			if _in_own_garrison(world, u):
 				u.returning_home = false
+				# ★ 到家了 ⇒ 下一次决策重新判威胁（见 `_tick_alert` 的例外 1）。
+				u.garrison_alert_next_sec = 0.0
 			else:
 				continue
 		# ★★ 首次巡逻错峰（性能）：`patrol_timer` 初始都是 0，旧实现会让**全部**
@@ -471,6 +515,115 @@ static func _in_own_garrison(world, u) -> bool:
 	if here == null:
 		return false
 	return int((here as Dictionary)["id"]) == int(u.garrison_zone_id)
+
+
+## ★★ 更新 / 读取「要不要启动巡逻」（2026.11 需求，见文件头第 6 条）。
+##
+## 节奏：
+##   · 每 `alert_check_sec` 秒**真的判一次**（扫一遍区划 + 敌军单位）；
+##   · 中间那些决策帧直接返回缓存的 `u.garrison_alert_active`。
+## 为什么缓存：扫全场单位是 O(单位数)，而决策是 10 Hz；几十位守将 × 256 单位
+##   × 10 Hz 会让「省下来的巡逻开销」被判定本身吃掉一半。0.5 秒的唤醒延迟
+##   在 RTS 里只相当于一次眨眼（而且交战由 combat.gd 实时接管，不等这个判定）。
+##
+## 三个「必须保持清醒」的例外（否则状态机会卡死 / 违需求）：
+##   1. `returning_home` —— 正在走回家，必须走完（第 5 步的返程分支）；
+##   2. `defending_center` —— 已经出发去守区划中心，不能半路睡着；
+##   3. `_center_under_attack()` —— 中心正被占（含 frozen）⇒ 本来就算威胁。
+##
+## @return true = 这一帧允许跑巡逻（第 5 步）
+static func _tick_alert(world, u, z, step: float, enabled: bool,
+		radius_sq: float, gap: int, check_sec: float, patrol_interval: float) -> bool:
+	if not enabled:
+		# A/B 回退开关：旧行为（永远巡逻）。
+		u.garrison_alert_active = true
+		u.garrison_alert_next_sec = 0.0
+		return true
+	if u.returning_home or u.defending_center:
+		u.garrison_alert_active = true
+		u.garrison_alert_next_sec = 0.0
+		return true
+	var next_sec: float = float(u.garrison_alert_next_sec) - step
+	if next_sec <= 0.0:
+		next_sec = check_sec
+		var was: bool = bool(u.garrison_alert_active)
+		u.garrison_alert_active = _has_threat(world, u, z, radius_sq, gap)
+		# 刚被唤醒：首巡错峰（与「首次巡逻错峰」同一套 `_phase01`）。
+		# ⚠️ 不这么做的话，一次区划易主会让整片守军在同一帧一起寻路
+		#    —— 那正是 2026.10.28 修掉的 42 ms 尖峰。
+		if u.garrison_alert_active and not was:
+			u.patrol_timer = patrol_interval * _phase01(u)
+	u.garrison_alert_next_sec = next_sec
+	return bool(u.garrison_alert_active)
+
+
+## 现在有没有威胁（三条判据，任一成立即唤醒）。
+static func _has_threat(world, u, z, radius_sq: float, gap: int) -> bool:
+	# 1) 自己的区划中心正被敌对势力占领（也算「人已经贴到脸上了」）。
+	if _center_under_attack(world, u, z):
+		return true
+	# 2) 敌对区划压境（区划图步数，不是直线距离）。
+	if _hostile_zone_within(world, u, z, gap):
+		return true
+	# 3) 敌对部队进入半径。
+	return _hostile_unit_within(world, u, radius_sq)
+
+
+## 有没有**敌对单位**在 `radius_sq`（平方距离）以内。
+##
+## ★ 判据与 combat.gd 的索敌同口径：`same_side_for_attack`（同阵营或盟友都不算敌人）。
+## ★ 跳过濒死 / 已中立化的单位：它们不构成威胁，也会让「一个倒下的敌人把整片守军
+##   吵醒」这种事发生。
+## ⚠️ 这是 O(单位数) 的扫描，但只在 `alert_check_sec` 到点时跑一次（见 `_tick_alert`）。
+static func _hostile_unit_within(world, u, radius_sq: float) -> bool:
+	var f := String(u.faction)
+	var px: float = u.pos.x
+	var py: float = u.pos.y
+	for other in world.units:
+		if other == null or other == u or not other.alive:
+			continue
+		if bool(other.neutralized) or other.is_downed():
+			continue
+		if FactionRes.same_side_for_attack(f, String(other.faction)):
+			continue
+		var dx: float = float(other.pos.x) - px
+		var dy: float = float(other.pos.y) - py
+		if dx * dx + dy * dy <= radius_sq:
+			return true
+	return false
+
+
+## 有没有**敌对区划**在「区划邻接图」的 `gap` 步以内。
+##
+## ★ 为什么用区划图而不是直线距离：区划形状不规则（L 形 / 跨行矩形），
+##   直线距离会把「隔着一条河 / 隔着别人一块地」的区划误判成近邻。
+## ★ 邻接表在 `zone.build_from_map()` 装配期建好（`neighbors_of()`），这里只做小 BFS。
+## ★ 只认**已占领**的区划（owner 非空）：无主地不是威胁。
+## ⚠️ 自己的区划**不参与**判定（需求说的是「敌人扩张到我的近邻」）；
+##   自己那块地若已被敌人拿走，占领读条 / combat 那两条路会接管。
+static func _hostile_zone_within(world, u, z, gap: int) -> bool:
+	if world == null or world.zones == null or z == null:
+		return false
+	if gap <= 0:
+		return false
+	var zid := int((z as Dictionary).get("id", -1))
+	if zid < 0:
+		return false
+	var f := String(u.faction)
+	var near: Array = world.zones.zones_within(zid, gap)
+	for nid in near:
+		var n := int(nid)
+		if n == zid:
+			continue
+		var oz: Variant = world.zones.zones_by_id.get(n, null)
+		if oz == null:
+			continue
+		var owner := String((oz as Dictionary).get("owner", ""))
+		if owner == "":
+			continue
+		if not FactionRes.same_side_for_attack(owner, f):
+			return true
+	return false
 
 
 ## 它现在算不算「追出自己那个区划了」。

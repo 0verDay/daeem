@@ -26,6 +26,7 @@ func _cases() -> void:
 	_test_config_table(cfg)
 	_test_zone_restriction(cfg)
 	_test_enqueue_pays(cfg)
+	_test_leader_recruit_sec(cfg)
 	_test_reject_reasons(cfg)
 	_test_queue_cap(cfg)
 	_test_train_timing_and_nearby_spawn(cfg)
@@ -45,8 +46,11 @@ func _test_config_table(cfg) -> void:
 	ok(w.is_recruitable(KIND), "config.recruit.list 里长枪兵可招募")
 	ok(not w.is_recruitable("nope"), "表里没有的兵种不能招募")
 	eq(w.recruit_queue_max(), 5, "★ 队列上限 5 个（1 大格 + 4 小格）")
-	near(w.recruit_train_sec(KIND), 10.0, 1e-6, "★ 区划招募仍读每个单位的 train_sec")
-	near(w.recruit_batch_sec(), 10.0, 1e-6, "★ 单位页批次读条固定 10 秒")
+	# ★★ 2026.11.2：兵种自己**不再有** read 条时间（train_sec 已从单位条目里删除）；
+	#   单位页的读条时长 = 招兵那位将领的 recruit_sec（默认 10，见 leader_recruit_sec）。
+	eq(w.recruit_train_sec(KIND), 0.0,
+		"★ 兵种自己**没有**读条时间（读条归将领决定）")
+	near(w.recruit_batch_sec(), 10.0, 1e-6, "★ 将领没配 recruit_sec 时的兜底读条 = 10 秒")
 	near(float(w.recruit_population_cost(KIND)), 1.0, 1e-6, "★ 每个单位吃 1 人口")
 	var cost: Dictionary = w.recruit_cost(KIND)
 	ok(float(cost.get("food", 0.0)) > 0.0, "★ 长枪兵要粮食（数值以 config 为准，别写死）")
@@ -110,6 +114,52 @@ func _test_enqueue_pays(cfg) -> void:
 	eq(g1.train_queue.size(), 1, "第二个排进小格子")
 	eq(g1.train_queue_size(), 2, "队列里一共 2 个")
 	near(g1.train_remaining, 10.0, 1e-6, "★ 正在读条的还是第一个（排队的不会抢读条）")
+
+## ★★ 2026.11.2：单位页读条**由将领决定**（`unit.general.recruit_sec`，默认 10）——
+##   队列长短 / 队列里是什么兵种都不影响它（用户口径）。
+func _test_leader_recruit_sec(cfg) -> void:
+	var c = require_config()
+	if c == null:
+		return
+	var w = require_world(c)
+	_no_income(w)
+	_give(w, 1000.0, 1000.0)
+	var g1 = _first_general(w)
+	ok(g1 != null, "有开局将领")
+	if g1 == null:
+		return
+	w.zones.zone_at(g1.tx, g1.ty)["population"] = 10.0
+
+	# ① 默认：config 里没动过 ⇒ 10 秒（= recruit.batch_sec 兜底）
+	near(w.leader_recruit_sec(g1), 10.0, 1e-6, "★ 将领没配 recruit_sec ⇒ 默认 10 秒")
+	near(w.leader_recruit_sec(null), 10.0, 1e-6, "★ 没有将领时退回同一个默认值")
+
+	# ② 改这位将领的招兵读条 ⇒ 读条跟着变（现读 JSON，不需要重新载入配置）
+	var idx := int(g1.general_index)
+	if idx < 0:
+		idx = ConfigRes.general_index_of(String(g1.kind))
+	ok(idx >= 0, "（前提）开局将领有名册序号")
+	var arr: Variant = c.get_path_value("unit.general.recruit_sec")
+	ok(typeof(arr) == TYPE_ARRAY and idx < (arr as Array).size(),
+		"（前提）config 里有 unit.general.recruit_sec，且覆盖到这位将领")
+	if typeof(arr) != TYPE_ARRAY or idx >= (arr as Array).size():
+		return
+	(arr as Array)[idx] = 6.5
+	near(w.leader_recruit_sec(g1), 6.5, 1e-6,
+		"★★ 把这位将领的招兵读条改成 6.5 → 读条时长跟着变")
+
+	ok(w.start_recruit(KIND, g1.id, "p1"), "排第 1 单（长枪兵）")
+	near(g1.train_total, 6.5, 1e-6, "★★ 读条总时长 = 将领的 6.5 秒（不是兵种的）")
+	near(float(w.recruit_eta(g1, 0)), 6.5, 1e-6, "ETA 也是 6.5")
+
+	ok(w.start_recruit("longbowman", g1.id, "p1"), "队列里再排一个**别的兵种**")
+	near(g1.train_total, 6.5, 1e-6,
+		"★ 加单不改变读条：队列里的兵种 / 队列长度都不影响它")
+	near(float(w.recruit_eta(g1, 1)), 6.5, 1e-6, "★ 小格子也是同一批的 6.5 秒")
+	eq(g1.train_queue_size(), 2, "（前提）队列里确实有两个不同兵种")
+	(arr as Array)[idx] = 10
+	near(w.leader_recruit_sec(g1), 10.0, 1e-6, "改回 10 秒（不影响已经开着的这条读条）")
+	near(g1.train_total, 6.5, 1e-6, "★ 已在读的那一批保留自己的总时长（不中途重算）")
 
 func _test_reject_reasons(cfg) -> void:
 	var w = require_world(cfg)

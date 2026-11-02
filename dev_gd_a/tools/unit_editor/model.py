@@ -123,16 +123,56 @@ UNIT_FIELDS: Tuple[Field, ...] = (
     Field("vision", "视野半径", "float", VISION_HINT, minimum=0),
 )
 
-#: 招募（`recruit.list[]`，按 kind 找那一项）—— 造价与读条
+#: ★★ 冲锋（`unit.types.<id>.charge`）—— 全部可留空；不写 / min_distance = 0 = 不冲锋。
+#: 口径与 logic/config.gd 的 `_normalize_charge()` 一致（这里只是编辑入口，不做玩法夹取）。
+CHARGE_FIELDS: Tuple[Field, ...] = (
+    Field("min_distance", "冲锋距离", "float",
+          "连续直线移动多少格后进入冲锋态；0 / 留空 = 不冲锋", minimum=0, maximum=40),
+    Field("max_distance", "冲锋累积上限", "float",
+          "冲锋距离最多累计到这里（格）；留空按 min_distance 处理", minimum=0, maximum=40),
+    Field("turn_max_deg", "最大转向角", "float",
+          "与冲锋起始方向的夹角超过它就中断重算（度）", minimum=0, maximum=180),
+    Field("speed_bonus", "冲锋移速加成", "float",
+          "冲锋态下移速 +x（0.2 = +20%）", minimum=0, maximum=2),
+    Field("damage_bonus", "冲锋伤害加成", "float",
+          "冲锋首次命中的额外伤害（0.5 = +50%）", minimum=0, maximum=5),
+    Field("knock_distance", "冲锋击退距离", "float",
+          "命中时把目标推开多少格（0 = 不击退）", minimum=0, maximum=2),
+    Field("knock_stun_sec", "冲锋眩晕", "float",
+          "命中时目标眩晕多少秒（0 = 不眩晕）", minimum=0, maximum=3),
+    Field("splash_radius", "范围撞击半径", "float",
+          "冲锋命中的范围半径（格；0 = 单体）", minimum=0, maximum=3),
+    Field("splash_damage_ratio", "副目标伤害比例", "float",
+          "范围内其他敌人吃主伤害的几成（0.6 = 60%）", minimum=0, maximum=1),
+    Field("cooldown_sec", "冲锋冷却", "float",
+          "一次冲锋命中后多久不能再次累积（秒）", minimum=0, maximum=120),
+)
+
+#: 招募（`recruit.list[]` / `clan.list[].recruit[]`，按 kind 找那一项）—— 造价与文案
+#: ★★ 2026.11.2：**读条时间不在这里**（单位条目里的 train_sec 已经从 config 里删掉）——
+#:   读条由「招它的那位将领」决定（`unit.general.recruit_sec`，默认 10），见 GENERAL_RECRUIT_FIELD。
 RECRUIT_FIELDS: Tuple[Field, ...] = (
     Field("cost_food", "造价 · 粮食", "float", minimum=0),
     Field("cost_gold", "造价 · 黄金", "float", minimum=0),
     Field("population_cost", "造价 · 人口", "float",
           "扣的是**将领所在区划**的人口（不是全局人口）", minimum=0),
-    Field("train_sec", "招募时间", "float", "每个单位的读条秒数", minimum=0),
     Field("label", "命令卡名字", "text", "右下「单位」页那一格的标题（默认跟名称同步）"),
     Field("short", "命令卡方框字", "text", "格子里那个方框写的字（一般一个字）"),
     Field("desc", "命令卡说明", "text", "悬停详情里的一句话"),
+)
+
+#: ★★ 组合招募单（2026.11.2 新增）：`kind` **不是**一个兵种 id、靠 `spawn` 一次生成
+#: 好几个单位的招募条目（「协防军」= 枪 + 弓，「御林军」= 剑盾 + 弓 + 着甲骑）。
+#: 它们没有 `unit.types.<kind>`，所以**单位页里根本列不出来** —— 造价必须在这里改，
+#: 否则「协防军 / 御林军 一次要多少粮」在编辑器里无处可改。
+PACKAGE_FIELDS: Tuple[Field, ...] = (
+    Field("label", "名字", "text", "右下「单位」页那一格的标题"),
+    Field("short", "命令卡方框字", "text", "格子里那个方框写的字（一般一个字）"),
+    Field("desc", "命令卡说明", "text", "悬停详情里的一句话"),
+    Field("cost_food", "造价 · 粮食", "float", "这一单「整包」的粮食价", minimum=0),
+    Field("cost_gold", "造价 · 黄金", "float", "这一单「整包」的黄金价", minimum=0),
+    Field("population_cost", "造价 · 人口", "float",
+          "这一单「整包」扣多少人口（扣的是将领所在区划的人口）", minimum=0),
 )
 
 #: ★★ 编制上限的默认值（`config.json` 的 `unit.general.caps` 缺省 / 越界都用它）。
@@ -145,6 +185,15 @@ GENERAL_CAP_DEFAULT = 11
 GENERAL_CAP_FIELD = Field("cap", "编制上限", "int",
                           "这位将领的目标编队规模：摆放时开局生成到它、阵地 AI 脱战补到它、"
                           "红点将领的附属兵也以它封顶（生成数量 ≤ 它）", minimum=1)
+
+#: ★★ 招兵读条（`unit.general.recruit_sec[index]`）—— 2026.11.2 新增。
+#: 语义：这位将领当兵营时，**一次批次读条**几秒；队列长短 / 队列里的兵种都不影响它
+#: （见 logic/world.gd 的 leader_recruit_sec / _start_training）。
+#: 缺项 / 越界 / ≤ 0 ⇒ 游戏退回 config 的 `recruit.batch_sec`（默认也是 10）。
+GENERAL_RECRUIT_DEFAULT = 10.0
+GENERAL_RECRUIT_FIELD = Field("recruit_sec", "招兵读条", "float",
+                              "这位将领招兵时「整批」读条几秒（与队列长短 / 兵种无关；"
+                              "默认 10，清空 = 回到默认）", minimum=0.01)
 
 #: 将领的数值覆盖（`unit.general.stats[i]`；没写的键 = 跟随所属兵种）
 GENERAL_STAT_FIELDS: Tuple[Field, ...] = (
@@ -254,11 +303,19 @@ def fmt_number(value: Any) -> str:
 # ======================================================================
 
 class Unit:
-    """一个单位类型 + 它在招募表里的那一项（没有就是 has_recruit = False）。"""
+    """一个单位类型 + 它在**任意一张招募表**里的那一项（没有就是 has_recruit = False）。
+
+    ★★ 2026.11.2：招募条目不再只认全局 `recruit.list` —— 派系兵种（王朝 dy_* / 帝国 dg_*）
+    的条目挂在 `clan.list[].recruit[]` 上。所以这里记的是**那一行的路径**（`recruit_path`）
+    与它属于哪张表（`recruit_owner`），`set_unit` 照着路径写，界面照着 owner 显示来源。
+    """
 
     def __init__(self, uid: str, data: Dict[str, Any],
                  recruit: Optional[Dict[str, Any]], recruit_index: int,
-                 fog_default: float = 0.0) -> None:
+                 fog_default: float = 0.0,
+                 recruit_path: Optional[JsonPath] = None,
+                 recruit_owner: str = "",
+                 spawn_source: Optional[Tuple[JsonPath, str, str]] = None) -> None:
         self.id = uid
         #: 这一条在 JSON 里的**原文**（判「哪个键真的写了」要它，不能只看取到的数）
         self.raw: Dict[str, Any] = dict(data)
@@ -279,14 +336,25 @@ class Unit:
         #: ★ 视野半径（格）—— 战争迷雾。**读的是「写了的那个数」**：
         #: 没写 = 0，界面上得显示 `vision_effective`（免得看着像「这个兵是瞎子」）。
         self.vision = _f(data.get("vision"), 0.0)
+        #: ★★ 冲锋参数（`unit.types.<id>.charge`；不写 = 空字典 = 不冲锋）。
+        self.charge = data.get("charge") if isinstance(data.get("charge"), dict) else {}
         self.has_recruit = recruit is not None
         self.recruit_index = recruit_index
+        #: 招募条目那一行的 **JSON 路径**（`["recruit","list",i]` 或
+        #: `["clan","list",ci,"recruit",ri]`）；没有条目就是 None。
+        self.recruit_path: Optional[JsonPath] = list(recruit_path) if recruit_path else None
+        #: 条目属于哪张表：`"recruit.list"` / `"clan:<派系 id>"`（界面用它说明来源）。
+        self.recruit_owner = recruit_owner
+        #: ★★ 这个兵种**没有自己的招募条目**、但会被某张「组合单」一起生成时记这里：
+        #: `(那一单的路径, 表名, 那一单的显示名)`。例如 dy_spear_guard 由「协防军」生成。
+        #: 有它 ⇒ 界面上不该说「不在招募表」（它确实招得出来，只是不单独占一格）。
+        self.spawn_source = spawn_source
+        self.spawn_label = spawn_source[2] if spawn_source else ""
         rec = recruit or {}
         cost = rec.get("cost") if isinstance(rec.get("cost"), dict) else {}
         self.cost_food = _f(cost.get("food"), 0.0)
         self.cost_gold = _f(cost.get("gold"), 0.0)
         self.population_cost = _f(rec.get("population_cost"), 0.0)
-        self.train_sec = _f(rec.get("train_sec"), 0.0)
         self.label = _s(rec.get("label"), self.name)
         self.short = _s(rec.get("short"), "")
         self.desc = _s(rec.get("desc"), "")
@@ -334,6 +402,10 @@ class Unit:
     def field(self, key: str) -> Any:
         return getattr(self, key, None)
 
+    def charge_field(self, key: str) -> float:
+        """冲锋参数的一项（`unit.types.<id>.charge.<key>`）；没写 = 0。"""
+        return _f(self.charge.get(key), 0.0)
+
     def __repr__(self) -> str:                        # pragma: no cover - 调试用
         return "<Unit %s %s>" % (self.id, self.name)
 
@@ -343,7 +415,8 @@ class General:
 
     def __init__(self, index: int, kind: str, type_id: str, override: Dict[str, Any],
                  recruit: Optional[Dict[str, Any]], defaults: Dict[str, Any],
-                 cap: int = GENERAL_CAP_DEFAULT) -> None:
+                 cap: int = GENERAL_CAP_DEFAULT,
+                 recruit_sec: float = GENERAL_RECRUIT_DEFAULT) -> None:
         self.index = index
         self.kind = kind
         self.type_id = type_id
@@ -351,6 +424,9 @@ class General:
         #: ★★ 编制上限（`unit.general.caps[index]`）：这位将领的目标编队规模。
         #: 摆放 / 红点 / 阵地补员都以它封顶（见 logic/config.gd 的 general_cap_at）。
         self.cap = int(cap)
+        #: ★★ 招兵读条秒数（`unit.general.recruit_sec[index]`，2026.11.2）：
+        #: 这位将领当兵营时整批读条多久。没写 = GENERAL_RECRUIT_DEFAULT（10）。
+        self.recruit_sec = _f(recruit_sec, GENERAL_RECRUIT_DEFAULT)
         rec = recruit or {}
         cost = rec.get("cost") if isinstance(rec.get("cost"), dict) else {}
         self.has_recruit = recruit is not None
@@ -386,6 +462,50 @@ class General:
 
     def __repr__(self) -> str:                        # pragma: no cover - 调试用
         return "<General %d %s>" % (self.index + 1, self.type_id)
+
+
+class RecruitPackage:
+    """★ 一张**组合招募单**：一次下单生成好几个单位（`spawn` 列表）。
+
+    例：王朝的 `dy_guard`（协防军）= `dy_spear_guard` + `dy_archer_guard`；
+    `dy_royal`（御林军）= `dy_royal_sword` + `dy_royal_archer` + `dy_royal_cavalry`。
+
+    ★★ 为什么单独一个类：它的 `kind` **不是** `unit.types` 里的兵种（没有血条 / 攻击
+    这些数值），所以单位页列不出来；但它的**造价 / 人口 / 命令卡文案**必须能改，
+    否则「协防军一次要多少粮」在编辑器里无处可改（2026.11.2 用户报的）。
+    """
+
+    def __init__(self, kind: str, row: Dict[str, Any], path: JsonPath, owner: str,
+                 members: Sequence[Tuple[str, str]]) -> None:
+        self.kind = kind
+        self.path = list(path)
+        self.owner = owner
+        #: `[(兵种 id, 显示名)]` —— 这一单会生成谁（只读展示，数值去单位页改）
+        self.members = list(members)
+        self.label = _s(row.get("label"), kind)
+        self.short = _s(row.get("short"), "")
+        self.desc = _s(row.get("desc"), "")
+        self.tier = int(row.get("tier", 1)) if isinstance(row.get("tier"), (int, float)) else 1
+        cost = row.get("cost") if isinstance(row.get("cost"), dict) else {}
+        self.cost_food = _f(cost.get("food"), 0.0)
+        self.cost_gold = _f(cost.get("gold"), 0.0)
+        self.population_cost = _f(row.get("population_cost"), 0.0)
+
+    @property
+    def count(self) -> int:
+        """一次出几个（`spawn` 的条数）。"""
+        return len(self.members)
+
+    @property
+    def member_text(self) -> str:
+        """给人看的一行：`协防军枪（dy_spear_guard） + 协防军弓（dy_archer_guard）`。"""
+        return " + ".join("%s（%s）" % (name, tid) for tid, name in self.members)
+
+    def field(self, key: str) -> Any:
+        return getattr(self, key, None)
+
+    def __repr__(self) -> str:                        # pragma: no cover - 调试用
+        return "<RecruitPackage %s %s>" % (self.kind, self.label)
 
 
 class Level:
@@ -584,19 +704,129 @@ class ConfigModel:
         rows = self.doc.value(["recruit", "list"], [])
         return rows if isinstance(rows, list) else []
 
+    def _recruit_locations(self) -> List[Tuple[JsonPath, str]]:
+        """**所有**招募条目：全局表 + 每个派系的表（`clan.list[].recruit[]`）。
+
+        @return `[(那一行的 JSON 路径, 表名)]`；表名给界面说明「这条在哪儿」。
+        ★★ 2026.11.2：派系兵种（王朝 dy_* / 帝国 dg_*）的招募条目**只**存在于 clan 表里。
+          只查全局表的老实现会把它们误判成「不在招募表」，造价 / 文案都改不了
+          （用户报的就是这个）。
+        """
+        out: List[Tuple[JsonPath, str]] = []
+        for i in range(len(self._recruit_rows())):
+            out.append((["recruit", "list", i], "recruit.list"))
+        clans = self.doc.value(["clan", "list"], [])
+        if isinstance(clans, list):
+            for ci in range(len(clans)):
+                rows = self.doc.value(["clan", "list", ci, "recruit"], [])
+                if not isinstance(rows, list):
+                    continue
+                cid = _s(self.doc.value(["clan", "list", ci, "id"], ""))
+                owner = ("clan:%s" % cid) if cid else ("clan[%d]" % ci)
+                for ri in range(len(rows)):
+                    out.append((["clan", "list", ci, "recruit", ri], owner))
+        return out
+
+    def _recruit_location(self, kind: str) -> Optional[Tuple[JsonPath, str]]:
+        """这个 kind 的招募条目在哪一行（全局表优先，再按派系顺序找）。"""
+        for path, owner in self._recruit_locations():
+            row = self.doc.value(path, None)
+            if isinstance(row, dict) and _s(row.get("kind")) == kind:
+                return path, owner
+        return None
+
     def _recruit_index(self, kind: str) -> int:
+        """这个 kind 在**全局** `recruit.list` 里的下标（不在那张表里 = -1）。"""
         for i, row in enumerate(self._recruit_rows()):
             if isinstance(row, dict) and _s(row.get("kind")) == kind:
                 return i
         return -1
 
+    def _spawn_source(self, uid: str) -> Optional[Tuple[JsonPath, str, str]]:
+        """哪个招募条目会「顺带生成」这个兵种（组合单位的零件，如 dy_spear_guard）。
+
+        @return `(那一单的路径, 表名, 那一单的显示名)`；没有任何单会生成它 → None。
+        ★ 有它的兵种**不是**「不在招募表」：它跟那一单一起出，只是不单独占一格、
+          也没有自己的一份造价（造价在那一单上）。
+        """
+        for path, owner in self._recruit_locations():
+            row = self.doc.value(path, None)
+            if not isinstance(row, dict):
+                continue
+            for s in (row.get("spawn") or []):
+                if isinstance(s, dict) and _s(s.get("type")) == uid:
+                    label = _s(row.get("label"), _s(row.get("kind")))
+                    return path, owner, label
+        return None
+
     def unit(self, uid: str) -> Unit:
         data = self.doc.value(["unit", "types", uid], None)
         if not isinstance(data, dict):
             raise ModelError("没有这个单位类型：%s" % uid)
-        idx = self._recruit_index(uid)
-        recruit = self._recruit_rows()[idx] if idx >= 0 else None
-        return Unit(uid, data, recruit, idx, self.fog_vision_default())
+        loc = self._recruit_location(uid)
+        path, owner = loc if loc is not None else (None, "")
+        row = self.doc.value(path, None) if path is not None else None
+        return Unit(uid, data, row if isinstance(row, dict) else None,
+                    self._recruit_index(uid), self.fog_vision_default(),
+                    path, owner, self._spawn_source(uid))
+
+    # ------------------------------------------------------------------
+    # ★★ 组合招募单（`kind` 不是兵种 id、靠 spawn 一次出好几个的招募条目）
+    # ------------------------------------------------------------------
+
+    def _unit_name(self, uid: str) -> str:
+        data = self.doc.value(["unit", "types", uid], None)
+        return _s(data.get("name"), uid) if isinstance(data, dict) else uid
+
+    def recruit_packages(self) -> List[RecruitPackage]:
+        """所有**组合招募单**（`kind` 不是一个兵种 id 的招募条目），按数据里的顺序。
+
+        ★ 典型例子：王朝的「协防军」（dy_guard）/「御林军」（dy_royal）。
+        ★ 判据就是「kind 在不在 unit.types 里」——**不**看有没有 spawn：
+          将来若出现「一单只出一个非兵种单位」，它同样需要这一页来改造价。
+        """
+        types = set(self.unit_ids())
+        out: List[RecruitPackage] = []
+        for path, owner in self._recruit_locations():
+            row = self.doc.value(path, None)
+            if not isinstance(row, dict):
+                continue
+            kind = _s(row.get("kind"))
+            if not kind or kind in types:
+                continue
+            members: List[Tuple[str, str]] = []
+            for s in (row.get("spawn") or []):
+                if not isinstance(s, dict):
+                    continue
+                tid = _s(s.get("type"))
+                if tid:
+                    members.append((tid, self._unit_name(tid)))
+            out.append(RecruitPackage(kind, row, path, owner, members))
+        return out
+
+    def recruit_package(self, kind: str) -> RecruitPackage:
+        for pkg in self.recruit_packages():
+            if pkg.kind == kind:
+                return pkg
+        raise ModelError("没有这张组合招募单：%s" % kind)
+
+    def _write_recruit_field(self, path: JsonPath, field: str, value: Any) -> None:
+        """把「造价 / 文案」写进**那一条招募行的实际路径**（单位页与组合单页共用）。"""
+        if not self.doc.has(path + ["cost"]):
+            self.doc.set(path + ["cost"], {})
+        if field == "cost_food":
+            self.doc.set(path + ["cost", "food"], value)
+        elif field == "cost_gold":
+            self.doc.set(path + ["cost", "gold"], value)
+        else:
+            self.doc.set(path + [field], value)
+
+    def set_recruit_package(self, kind: str, field: str, value: Any) -> None:
+        """改一张组合招募单的 文案 / 造价。`field` 见 PACKAGE_FIELDS。"""
+        if field not in {f.key for f in PACKAGE_FIELDS}:
+            raise ModelError("不认识的组合单字段：%s" % field)
+        pkg = self.recruit_package(kind)
+        self._write_recruit_field(pkg.path, field, value)
 
     def fog_vision_default(self) -> float:
         """config 的 `fog.vision_default`（没写 `vision` 的**兵种**实际生效的视野半径）。
@@ -648,29 +878,45 @@ class ConfigModel:
             self.doc.set(unit_path + [field], value)
             # ★ 名称与招募卡的名字**同步**：设计师改一次名字，不该还要记得改第二处
             #   （两处不一致时，界面上会同时出现两个名字，看着像 bug）。
-            if field == "name" and self.doc.has(["recruit", "list"]):
-                idx = self._recruit_index(uid)
-                if idx >= 0:
-                    self.doc.set(["recruit", "list", idx, "label"], value)
+            #   ★★ 2026.11.2：按**条目实际所在的那张表**同步（派系兵种在 clan 表里）。
+            if field == "name":
+                loc = self._recruit_location(uid)
+                if loc is not None:
+                    self.doc.set(loc[0] + ["label"], value)
             return
-        if field in ("cost_food", "cost_gold", "population_cost", "train_sec",
+        if field in ("cost_food", "cost_gold", "population_cost",
                      "label", "short", "desc"):
-            idx = self._recruit_index(uid)
-            if idx < 0:
-                raise ModelError("「%s」不在招募表（recruit.list）里：先在下面的"
-                                 "「加入招募表」按一下，才能改造价 / 招募时间" % uid)
-            if field == "cost_food":
-                self.doc.set(["recruit", "list", idx, "cost", "food"], value)
-            elif field == "cost_gold":
-                self.doc.set(["recruit", "list", idx, "cost", "gold"], value)
-            else:
-                self.doc.set(["recruit", "list", idx, field], value)
+            loc = self._recruit_location(uid)
+            if loc is None:
+                raise ModelError("「%s」不在任何招募表里（recruit.list / clan.list[].recruit）："
+                                 "先在下面的「加入招募表」按一下，才能改造价 / 文案" % uid)
+            self._write_recruit_field(loc[0], field, value)
+            return
+        # ★★ 冲锋（嵌套在 `unit.types.<id>.charge` 里）：
+        #   · 空值 = **删掉这一项**（读的时候按 0 处理）；
+        #   · 第一次编辑时先建 charge 块（全 0），再写目标项 —— 与「不写 = 不冲锋」兼容。
+        if field.startswith("charge."):
+            sub = field.split(".", 1)[1]
+            if sub not in {f.key for f in CHARGE_FIELDS}:
+                raise ModelError("不认识的冲锋字段：%s" % sub)
+            charge_path: JsonPath = unit_path + ["charge"]
+            if value is None:
+                if self.doc.has(charge_path + [sub]):
+                    self.doc.remove(charge_path + [sub])
+                return
+            if not self.doc.has(charge_path):
+                self.doc.set(charge_path, {f.key: 0.0 for f in CHARGE_FIELDS})
+            self.doc.set(charge_path + [sub], value)
             return
         raise ModelError("不认识的单位字段：%s" % field)
 
     def add_recruit_entry(self, uid: str) -> None:
-        """把一个**不在招募表里**的单位加进招募表（照默认值，之后可改）。"""
-        if self._recruit_index(uid) >= 0:
+        """把一个**任何招募表里都没有**的单位加进全局招募表（照默认值，之后可改）。
+
+        ★★ 2026.11.2：已经在某个派系表（`clan.list[].recruit[]`）里的单位**不再**加一条 ——
+          它本来就招得出来，再加一条全局条目等于让它对所有派系都出现。
+        """
+        if self._recruit_location(uid) is not None:
             return
         unit = self.unit(uid)
         self.doc.append(["recruit", "list"], {
@@ -678,7 +924,6 @@ class ConfigModel:
             "label": unit.name,
             "short": unit.name[:1],
             "desc": "招募 1 名%s" % unit.name,
-            "train_sec": 10,
             "population_cost": 1,
             "cost": {"food": 50, "gold": 50},
         })
@@ -702,11 +947,10 @@ class ConfigModel:
         #   删掉 = **跟着名字的第一个字**（马弓手 → 马），设计师想换再自己填。
         if self.doc.has(["unit", "types", new_id, "icon"]):
             self.doc.remove(["unit", "types", new_id, "icon"])
-        # 2) 招募表那一项：模板有就抄，没有就照默认值新建
-        src = self._recruit_index(template_id)
-        if src >= 0:
-            self.doc.append_raw(["recruit", "list"],
-                                self.doc.text_of(["recruit", "list", src]))
+        # 2) 招募表那一项：模板有就抄（不论它在全局表还是派系表里），没有就照默认值新建
+        loc = self._recruit_location(template_id)
+        if loc is not None:
+            self.doc.append_raw(["recruit", "list"], self.doc.text_of(loc[0]))
             idx = len(self._recruit_rows()) - 1
             self.doc.set(["recruit", "list", idx, "kind"], new_id)
             self.doc.set(["recruit", "list", idx, "label"], name)
@@ -719,9 +963,10 @@ class ConfigModel:
         """删一个兵种（内置的不许删）。"""
         self._check_removable_unit(uid)
         self.doc.remove(["unit", "types", uid])
-        idx = self._recruit_index(uid)
-        if idx >= 0:
-            self.doc.remove(["recruit", "list", idx])
+        # ★★ 2026.11.2：招募条目可能挂在**任何**一张表里（全局 / 派系），按实际路径删。
+        loc = self._recruit_location(uid)
+        if loc is not None:
+            self.doc.remove(loc[0])
         # 将领如果正用着它，改成第一个还存在的兵种（否则游戏会退回兜底数值）
         types = self.doc.value(["unit", "general", "types"], [])
         if isinstance(types, list):
@@ -800,7 +1045,14 @@ class ConfigModel:
         if isinstance(caps, list) and index < len(caps) \
                 and isinstance(caps[index], (int, float)):
             cap = max(0, int(caps[index]))
-        return General(index, kind, type_id, override, recruit, defaults, cap)
+        # ★★ 招兵读条：读 `unit.general.recruit_sec[index]`（缺省 / 越界 / ≤ 0 → 10）。
+        recruit_sec = GENERAL_RECRUIT_DEFAULT
+        rsecs = self.doc.value(["unit", "general", "recruit_sec"], [])
+        if isinstance(rsecs, list) and index < len(rsecs):
+            v = rsecs[index]
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and float(v) > 0.0:
+                recruit_sec = float(v)
+        return General(index, kind, type_id, override, recruit, defaults, cap, recruit_sec)
 
     def generals(self) -> List[General]:
         return [self.general(i) for i in range(self.general_count())]
@@ -822,7 +1074,7 @@ class ConfigModel:
             raise ModelError("没有第 %d 位将领（现在有 %d 位）" % (index + 1, self.general_count()))
 
     def set_general(self, index: int, field: str, value: Any) -> None:
-        """改将领的 名称 / 造价 / 招募时间 / 招募冷却（名称同时写进覆盖与招募卡）。"""
+        """改将领的 名称 / 招兵读条 / 造价 / 区划招募读条 / 招募冷却。"""
         self._check_general_index(index)
         kind = self._general_kind(index)
         self._ensure_general_slot(index)
@@ -837,6 +1089,16 @@ class ConfigModel:
             # ★★ 编制上限：写 `unit.general.caps[index]`（≥ 1）。
             self._ensure_caps_slot(index)
             self.doc.set(["unit", "general", "caps", index], max(1, int(value)))
+            return
+        if field == "recruit_sec":
+            # ★★ 招兵读条（2026.11.2）：写 `unit.general.recruit_sec[index]`。
+            #   清空（None）= 删掉这一项 → 回到 GENERAL_RECRUIT_DEFAULT（10 秒）。
+            self._ensure_recruit_sec_slot(index)
+            path = ["unit", "general", "recruit_sec", index]
+            if value is None:
+                self.doc.set(path, GENERAL_RECRUIT_DEFAULT)
+            else:
+                self.doc.set(path, max(0.01, float(value)))
             return
         if field == "name":
             self.doc.set(["unit", "general", "stats", index, "name"], value)
@@ -894,6 +1156,18 @@ class ConfigModel:
                          [GENERAL_CAP_DEFAULT for _ in range(self.general_count())])
         while self.doc.size(["unit", "general", "caps"]) <= index:
             self.doc.append(["unit", "general", "caps"], GENERAL_CAP_DEFAULT)
+
+    def _ensure_recruit_sec_slot(self, index: int) -> None:
+        """保证 `unit.general.recruit_sec` 存在、且补到**将领个数**。
+
+        ★ 缺省值用 `GENERAL_RECRUIT_DEFAULT`（= 引擎 `general_recruit_sec` 的兜底），
+          补出来的那几位与「没写」在游戏里完全等价（都是 10 秒）。
+        """
+        if not self.doc.has(["unit", "general", "recruit_sec"]):
+            self.doc.set(["unit", "general", "recruit_sec"],
+                         [GENERAL_RECRUIT_DEFAULT for _ in range(self.general_count())])
+        while self.doc.size(["unit", "general", "recruit_sec"]) <= index:
+            self.doc.append(["unit", "general", "recruit_sec"], GENERAL_RECRUIT_DEFAULT)
 
     # ------------------------------------------------------------------
     # 建筑

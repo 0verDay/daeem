@@ -238,7 +238,7 @@ TECH_EFFECT_KEYS: Tuple[TechEffectKey, ...] = (
     TechEffectKey("zone_convert_restore", "易主即回满", "number", 0.0, 1.0, "",
                   ">0 = 区划转为己方那一刻，区内己方单位血量+士气回满"),
     TechEffectKey("charge_damage_mult", "冲锋额外伤害", "percent", 0.0, 5.0, "%",
-                  "★ 冲锋本版未实装 ⇒ 写了也没有效果（占位键）"),
+                  "冲锋命中时**加法**追加的额外伤害（1.0 = +100%；与兵种自带 charge.damage_bonus 相加，不影响普通攻击）"),
 )
 
 #: key → 元信息（查不到 = 不认识的键）

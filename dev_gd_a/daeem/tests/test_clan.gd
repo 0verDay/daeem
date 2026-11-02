@@ -309,7 +309,8 @@ func _test_composite_recruit(cfg) -> void:
 				"★ %s 一次扣整包人口（%.0f）" % [kind, pop_cost])
 
 		# 推进到读条结束（批次读条 + 一点余量）。
-		var secs: float = w.recruit_batch_sec() + 0.5
+		# ★ 2026.11.2：读条时长由**招兵的这位将领**决定（默认 10，见 leader_recruit_sec）。
+		var secs: float = w.leader_recruit_sec(leader) + 0.5
 		var frames := int(ceil(secs / DT))
 		for _i in frames:
 			leader.recruit_idle_timer = 99999.0

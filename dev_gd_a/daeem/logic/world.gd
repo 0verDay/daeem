@@ -2623,16 +2623,44 @@ func recruit_cost(kind: String, faction: String = "") -> Dictionary:
 	return out
 
 
-## 每个单位的读条时间（秒）—— **区划招募将领**仍然逐单使用它；
-## 单位页（将领招募下属兵）改用一次性批次读条 `recruit_batch_sec()`。
+## 每个单位的读条时间（秒）—— **只用于区划招募将领**（单位页不再逐单读条，见下一条）。
+## ★★ 2026.11.2：单位条目里已经没有 `train_sec` 了（兵种自己不再有读条时间），
+##   所以对**兵种**调它会得到 0；能拿到非 0 的只有 `recruit.zone.list[]` 里的将领。
+##   单位页要问「读条多久」请用 `leader_recruit_sec(leader)`。
 func recruit_train_sec(kind: String, faction: String = "") -> float:
 	return maxf(0.0, float(recruit_entry(kind, faction).get("train_sec", 0.0)))
 
 
-## ★★ 单位页招募的**批次读条时长**（config.recruit.batch_sec，默认 10 秒）。
-## 一次读条结束会把整个队列里的单位一起生成；中途加单不延长它。
+## ★★ 单位页招募的默认读条时长（config.recruit.batch_sec，默认 10 秒）。
+## ★★ 2026.11.2 起它是**兜底**，不是权威值：真正的时长是 `leader_recruit_sec(leader)`
+##    （= 招兵那位将领的 `unit.general.recruit_sec`）。将领没配 / 配了非法值时才落回这里。
 func recruit_batch_sec() -> float:
 	return maxf(0.01, float(cfg.num("recruit.batch_sec", 10.0)))
+
+
+## ★★ 某位将领当兵营时的**批次读条时长**（秒）—— 单位页招募的唯一权威来源。
+##
+## 口径（2026.11.2，用户原话）：「无论队列长短、队列中的单位类型如何，招募时间始终由
+## 招募单位的将领的属性决定，默认 10」。
+##   · 将领 → 它的名册序号（`unit.general_index`；没有就用 kind 反推，
+##     这样「测试 / 关卡递进来的假队长字典」也能算）；
+##   · 非将领 / 查不到序号 ⇒ 退回 `recruit_batch_sec()`（旧行为，10 秒）。
+## ⚠️ 只影响**新开**的那一条读条：已经在读的批次保留它自己的 `train_total`
+##    （队列中途换将 / 改配置都不会把在读的读条重算 —— 与「加单不延长」同一条规矩）。
+func leader_recruit_sec(leader) -> float:
+	if leader == null:
+		return recruit_batch_sec()
+	# ★ 将领对象与「测试递进来的假队长字典」两种都收（与 recruit_eta 的写法一致）。
+	var is_dict := typeof(leader) == TYPE_DICTIONARY
+	var gi := int((leader as Dictionary).get("general_index", -1)) if is_dict \
+		else int(leader.general_index)
+	var kind := String((leader as Dictionary).get("kind", "")) if is_dict \
+		else String(leader.kind)
+	if gi < 0:
+		gi = ConfigRes.general_index_of(kind)
+	if gi < 0:
+		return recruit_batch_sec()
+	return cfg.general_recruit_sec(gi)
 
 
 ## 每个单位要占的人口（从**将领所在区划**扣）
@@ -3366,8 +3394,10 @@ func start_recruit(kind: String, leader_id: String, faction: String,
 ##    （`start_recruit` 直接 append 到队列），所以已有读条的剩余时间不会被重置。
 func _start_training(leader, kind: String) -> void:
 	leader.train_kind = kind
-	# ★★ 2026.10.30：单位页是**批次读条**（固定 recruit.batch_sec），不再按兵种 train_sec。
-	leader.train_total = recruit_batch_sec()
+	# ★★ 2026.10.30：单位页是**批次读条**（整批一次读完，不按兵种逐单累加）。
+	# ★★ 2026.11.2：时长由**招兵的这位将领**决定（`unit.general.recruit_sec`，默认 10），
+	#    与队列长短 / 队列里是什么兵种都无关 —— 见 leader_recruit_sec 的口径说明。
+	leader.train_total = leader_recruit_sec(leader)
 	leader.train_remaining = leader.train_total
 	# ★★ 开始读条 ⇒ 把「上一次开火的渲染残留」清掉（历史 bug 的修法）。
 	#    症状：**有概率**有一条攻击线一直连在被攻击对象上。
@@ -5310,6 +5340,13 @@ func _eff_for(faction: String = "") -> Dictionary:
 ## 全单位**移动速度**倍率（速战速决：+0.10 ⇒ 1.1）
 func tech_speed_mult(faction: String = "") -> float:
 	return maxf(0.0, 1.0 + float(_eff_for(faction).get("unit_speed_mult", 0.0)))
+
+
+## ★★ 2026.11：**冲锋额外伤害**的加法项（帝国「骑士精神」：+1.0 = 冲锋伤害再 +100%）。
+## ★ 这是**加法**：单位最终冲锋伤害 = 基础 × (1 + charge.damage_bonus + 本函数)。
+##   所以它只影响冲锋命中，不影响普通攻击 / 移速 / 防御。
+func tech_charge_add(faction: String = "") -> float:
+	return maxf(0.0, float(_eff_for(faction).get("charge_damage_mult", 0.0)))
 
 
 ## **占领区划所需时间**倍率（速战速决：−0.20 ⇒ 0.8 = 快 20%）

@@ -210,6 +210,7 @@ def pick(app, iid: str) -> None:
     """在左边列表里点一行（真的选中 + 触发回调）。"""
     tree = None
     for candidate in (getattr(app, "unit_tree", None), getattr(app, "general_tree", None),
+                      getattr(app, "package_tree", None),
                       getattr(app, "building_tree", None)):
         if candidate is None:
             continue
@@ -299,8 +300,13 @@ def t_unit_form(app, model) -> None:
     eq(app.selection, ("unit", "spearman"), "选中长枪兵")
     entries = sidebar_entries(app)
     for label in ("名称", "血量", "攻击力", "攻击距离", "攻击速度", "移动速度", "身体半径",
-                  "造价 · 粮食", "造价 · 黄金", "造价 · 人口", "招募时间"):
+                  "造价 · 粮食", "造价 · 黄金", "造价 · 人口"):
         ok(label in entries, "表单里有「%s」那一行" % label)
+    # ★★ 2026.11.2：兵种自己**不再有**「招募时间」这一行（读条归将领决定）——
+    #   反过来钉住「入口没了」+「原地留了一句指向将领页的提示」。
+    ok("招募时间" not in entries, "★★ 单位表单里不再有「招募时间」这一行（读条归将领）")
+    ok(any("招它的将领" in t for t in sidebar_labels(app)),
+       "★ 原地留了一行灰字提示：读条由招它的将领决定")
     eq(E(app, "血量").get(), ("%d" % model.unit("spearman").hp_max
                               if float(model.unit("spearman").hp_max).is_integer()
                               else str(model.unit("spearman").hp_max)),
@@ -324,8 +330,22 @@ def t_unit_form(app, model) -> None:
     eq(data(model)["recruit"]["list"][0]["cost"]["gold"], 70, "改造价 · 黄金")
     type_into(app, sidebar_entries(app)["造价 · 人口"], "2")
     eq(data(model)["recruit"]["list"][0]["population_cost"], 2, "改造价 · 人口")
-    type_into(app, sidebar_entries(app)["招募时间"], "12")
-    eq(data(model)["recruit"]["list"][0]["train_sec"], 12, "改招募时间")
+    # ★★ 2026.11.2 反向契约：单位条目里**不许再有** train_sec（读条归将领）。
+    ok("train_sec" not in data(model)["recruit"]["list"][0],
+       "★★ 单位条目里没有 train_sec（读条由将领决定）")
+
+    # ★★ 冲锋字段（嵌套 unit.types.<id>.charge）
+    for label in ("冲锋距离", "冲锋伤害加成", "冲锋冷却"):
+        ok(label in entries, "表单里有「%s」那一行" % label)
+    type_into(app, sidebar_entries(app)["冲锋距离"], "3.5")
+    eq(data(model)["unit"]["types"]["spearman"]["charge"]["min_distance"], 3.5,
+       "★★ 改冲锋距离 → unit.types.spearman.charge.min_distance")
+    type_into(app, sidebar_entries(app)["冲锋伤害加成"], "0.4")
+    eq(data(model)["unit"]["types"]["spearman"]["charge"]["damage_bonus"], 0.4,
+       "★ 改冲锋伤害加成")
+    type_into(app, sidebar_entries(app)["冲锋伤害加成"], "")
+    ok("damage_bonus" not in data(model)["unit"]["types"]["spearman"]["charge"],
+       "★★ 清空冲锋伤害加成 = 删掉那个键")
 
     # 打错字：原值不动
     before = model.text
@@ -423,6 +443,26 @@ def t_unit_form(app, model) -> None:
     eq(len(data(model)["recruit"]["list"]), before_recruits + 1, "点一下 → 加进招募表")
     eq(data(model)["recruit"]["list"][-1]["kind"], "skeleton", "新那一条的 kind = skeleton")
 
+    # ★★ 2026.11.2：派系兵种的招募条目在 clan.list[].recruit[] 里 ——
+    #   列表要显示造价、详情页要能改建价（用户报的「不在招募表」就是这个 bug）。
+    pick(app, "u:dy_chariot")
+    cell = app.unit_tree.item("u:dy_chariot", "values")[ucols["cost"]]
+    ok("不在招募表" not in cell, "★★ 王朝战车：造价列不再写「不在招募表」（%s）" % cell)
+    type_into(app, E(app, "造价 · 黄金"), "321")
+    dyn = next(c for c in data(model)["clan"]["list"] if c["id"] == "dynasty")
+    row = next(r for r in dyn["recruit"] if r["kind"] == "dy_chariot")
+    eq(row["cost"]["gold"], 321, "★★ 改建价 → 写进 clan:dynasty 那一张表")
+
+    # ★★ 组合单位的零件：没有自己的条目，但**招得出来**（整包生成）——
+    #   不能谎报「不在招募表」，也不该给一组改不动的输入框。
+    pick(app, "u:dy_spear_guard")
+    cell = app.unit_tree.item("u:dy_spear_guard", "values")[ucols["cost"]]
+    ok("协防军" in cell, "★★ 协防军枪：造价列写「随「协防军」」（%s）" % cell)
+    ok(any("组合生成" in t for t in sidebar_labels(app)),
+       "★ 详情页说清它由「协防军」整包生成")
+    ok("造价 · 粮食" not in sidebar_entries(app),
+       "★ 组合零件没有「造价」输入框（造价在那一单上）")
+
 
 # ======================================================================
 # [3] 将领表单
@@ -475,6 +515,44 @@ def set_optional(app, label: str, text: str) -> None:
 
 def follow_optional(app, label: str) -> None:
     follow_optional_at(app, "数值", label)
+
+
+def t_package_form(app, model) -> None:
+    """★★ 2026.11.2：组合招募单（协防军 / 御林军）—— 它们不是兵种，单独一栏一页。"""
+    print("\n[2b] 组合招募单表单")
+    rows = list(app.package_tree.get_children())
+    ok("p:dy_guard" in rows, "★★ 左边有「协防军」这一行（用户报的：找不到改它造价的地方）")
+    ok("p:dy_royal" in rows, "★★ 左边有「御林军」这一行")
+
+    pick(app, "p:dy_guard")
+    eq(app.selection, ("package", "dy_guard"), "选中组合单")
+    for label in ("名字", "命令卡方框字", "命令卡说明",
+                  "造价 · 粮食", "造价 · 黄金", "造价 · 人口"):
+        ok(label in sidebar_entries(app), "表单里有「%s」那一行" % label)
+    ok(any("整包" in t for t in sidebar_labels(app)),
+       "★ 页面说明这是「整包」造价（不是每个人）")
+    ok(any("dy_spear_guard" in t for t in sidebar_labels(app)),
+       "★ 组成栏里写着它由哪些兵种生成")
+
+    # 改整包粮价 → 写进 clan:dynasty 那一行
+    type_into(app, E(app, "造价 · 粮食"), "210")
+    dyn = next(c for c in data(model)["clan"]["list"] if c["id"] == "dynasty")
+    row = next(r for r in dyn["recruit"] if r["kind"] == "dy_guard")
+    eq(row["cost"]["food"], 210, "★★ 改「协防军」粮价 → 写进 clan:dynasty 那一单")
+    eq(app.package_tree.item("p:dy_guard", "values")[2].split(" / ")[0], "210",
+       "★ 左侧列表的造价跟着刷新")
+
+    # 改文案
+    type_into(app, E(app, "名字"), "协防营")
+    dyn = next(c for c in data(model)["clan"]["list"] if c["id"] == "dynasty")
+    row = next(r for r in dyn["recruit"] if r["kind"] == "dy_guard")
+    eq(row["label"], "协防营", "改这一单的命令卡标题")
+
+    # 它跟「兵种」页不串线：协防军枪仍然没有自己的招募条目
+    pick(app, "u:dy_spear_guard")
+    eq(app.selection, ("unit", "dy_spear_guard"), "选中零件兵种")
+    ok("造价 · 粮食" not in sidebar_entries(app),
+       "★ 零件的详情页仍然没有造价输入框（造价在组合单那一页）")
 
 
 def t_general_form(app, model) -> None:
@@ -531,12 +609,15 @@ def t_general_form(app, model) -> None:
     eq(data(model)["unit"]["general"]["stats"][0]["damage"], 30,
        "★ 自己填过的项不跟着类型走")
 
-    # 名字 / 造价 / 招募时间
+    # 名字 / 造价 / 区划招募读条 / 招兵读条
     type_into(app, E(app, "名字"), "西境骑将")
     eq(data(model)["unit"]["general"]["stats"][0]["name"], "西境骑将", "改将领名字")
     eq(data(model)["recruit"]["zone"]["list"][0]["label"], "西境骑将", "★ 招募卡标题同步")
-    type_into(app, E(app, "招募时间"), "14")
-    eq(data(model)["recruit"]["zone"]["list"][0]["train_sec"], 14, "改将领招募时间")
+    type_into(app, E(app, "区划招募读条"), "14")
+    eq(data(model)["recruit"]["zone"]["list"][0]["train_sec"], 14, "改区划招募读条")
+    # ★★ 2026.11.2：招兵读条 = 这位将领当兵营时的整批读条（unit.general.recruit_sec）
+    type_into(app, E(app, "招兵读条"), "7")
+    eq(data(model)["unit"]["general"]["recruit_sec"][0], 7, "★★ 改招兵读条")
     type_into(app, E(app, "造价 · 粮食"), "88")
     eq(data(model)["recruit"]["zone"]["list"][0]["cost"]["food"], 88, "改将领造价")
     # ★★ 「开局护卫数」那一行输入控件**已经删掉**（产品决策：开局带几个附属兵不再由
@@ -989,6 +1070,7 @@ def main() -> int:
     try:
         t_window(app, model)
         t_unit_form(app, model)
+        t_package_form(app, model)
         t_general_form(app, model)
         t_building_form(app, model)
         t_tech_page_gone(app, model)

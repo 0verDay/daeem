@@ -39,11 +39,14 @@ from . import model as model_mod
 from .configfile import JsonError, parse_number
 from .model import (
     BUILDING_FIELDS,
+    CHARGE_FIELDS,
     GENERAL_CAP_FIELD,
+    GENERAL_RECRUIT_FIELD,
     GENERAL_STAT_FIELDS,
     ICON_HINT,
     LEVEL_ATTACK_FIELDS,
     LEVEL_FIELDS,
+    PACKAGE_FIELDS,
     RECRUIT_FIELDS,
     UNIT_FIELDS,
     Building,
@@ -109,7 +112,6 @@ UNIT_TREE_COLUMNS: Tuple[Tuple[str, str, int], ...] = (
     ("cd", "攻速", 56),
     ("vision", "视野", 50),
     ("cost", "造价 粮/金/人口", 150),
-    ("train", "招募秒", 64),
 )
 
 #: 建筑列表（左下 Treeview）的列 —— 与 `UNIT_TREE_COLUMNS` 同一个理由提成常量
@@ -896,7 +898,11 @@ class EditorApp:
         for unit in self.model.units():
             cost = "%g / %g / %g" % (unit.cost_food, unit.cost_gold, unit.population_cost)
             if not unit.has_recruit:
-                cost = "—（不在招募表）"
+                # ★★ 2026.11.2：组合单位的零件（协防军枪 / 弓、御林军剑盾 / 弓 / 骑）
+                #   没有自己的招募条目，但**招得出来**（跟着那一单一起出）——
+                #   不能写「不在招募表」，那是假的。
+                cost = ("随「%s」" % unit.spawn_label) if unit.spawn_source \
+                    else "—（不在招募表）"
             self.unit_tree.insert("", "end", iid="u:" + unit.id, text=unit.id,
                                   values=(unit.icon_char, unit.name, unit.class_label,
                                           fmt(unit.hp_max), fmt(unit.damage), fmt(unit.range),
@@ -904,8 +910,7 @@ class EditorApp:
                                           # ★ 视野：显示**实际生效值**（没写那个键的兵种
                                           #   吃 config 的 fog.vision_default）——
                                           #   免得一列 0 让人以为这些兵都是瞎子。
-                                          fmt(unit.vision_effective), cost,
-                                          fmt(unit.train_sec) if unit.has_recruit else "—"),
+                                          fmt(unit.vision_effective), cost),
                                   tags=() if not unit.builtin else ("builtin",))
 
         tk.Label(self.list_host, text="将领（开局三位；也可以在这里单独给数值）",
@@ -915,7 +920,7 @@ class EditorApp:
             ("name", "名字", 100), ("type", "类型", 110), ("hp", "血量", 60),
             ("dmg", "攻击", 60), ("rng", "距离", 56), ("spd", "移速", 56),
             ("vis", "视野", 50),
-            ("cost", "造价 粮/金/人口", 150), ("train", "招募秒", 64),
+            ("cost", "造价 粮/金/人口", 150), ("train", "招兵秒", 64),
         ], height=4)
         for gen in self.model.generals():
             marked = "" if not gen.override else "（有单独数值）"
@@ -930,7 +935,30 @@ class EditorApp:
                                              fmt(gen.effective_of("vision")),
                                              "%g / %g / %g" % (gen.cost_food, gen.cost_gold,
                                                                gen.population_cost),
-                                             fmt(gen.train_sec)))
+                                             # ★★ 2026.11.2：这一列是**这位将领招兵**的读条
+                                             #   （unit.general.recruit_sec，默认 10 秒）。
+                                             fmt(gen.recruit_sec)))
+
+        # ★★ 2026.11.2：**组合招募单**（协防军 / 御林军）——它们不是 unit.types 里的兵种
+        #   （没有血条 / 攻击这些数值），单位列表列不出来；但「一次要多少粮 / 扣多少人口」
+        #   必须能改，所以单独给一栏（用户报的「找不到修改协防军招募消耗的条目」）。
+        packages = self.model.recruit_packages()
+        self.package_tree = None          # ★ 重建列表时先作废旧控件（没有组合单就没有这一栏）
+        if packages:
+            tk.Label(self.list_host, text="组合招募单（一次出多个兵）", bg=UI["bg"],
+                     fg=UI["accent"], anchor="w",
+                     font=("Microsoft YaHei UI", 10, "bold")).pack(fill="x", padx=10, pady=(10, 0))
+            self.package_tree = self._tree(self.list_host, [
+                ("name", "名字", 110), ("count", "出几个", 52),
+                ("cost", "造价 粮/金/人口", 150), ("src", "来源", 96),
+            ], height=3)
+            for pkg in packages:
+                self.package_tree.insert(
+                    "", "end", iid="p:" + pkg.kind, text=pkg.kind,
+                    values=(pkg.label, pkg.count,
+                            "%g / %g / %g" % (pkg.cost_food, pkg.cost_gold,
+                                              pkg.population_cost),
+                            pkg.owner.replace("clan:", "")))
 
         # ---- 操作按钮
         bar = self.action_bar
@@ -986,6 +1014,8 @@ class EditorApp:
         iid = None
         if kind == "unit":
             tree, iid = getattr(self, "unit_tree", None), "u:" + str(key)
+        elif kind == "package":
+            tree, iid = getattr(self, "package_tree", None), "p:" + str(key)
         elif kind == "general":
             tree, iid = getattr(self, "general_tree", None), "g:%d" % key
         elif kind == "building":
@@ -1015,6 +1045,9 @@ class EditorApp:
         iid = picked[0]
         if iid.startswith("u:"):
             new_selection = ("unit", iid[2:])
+        elif iid.startswith("p:"):
+            # ★★ 2026.11.2：组合招募单（协防军 / 御林军）—— 它不是兵种，单独一档选中项。
+            new_selection = ("package", iid[2:])
         elif iid.startswith("g:"):
             new_selection = ("general", int(iid[2:]))
         elif iid.startswith("b:"):
@@ -1063,9 +1096,11 @@ class EditorApp:
                 child.destroy()
             if self.page == "unit":
                 if not self.selection:
-                    self._empty_hint("左边点一行：上面是兵种，下面是开局三位将领。")
+                    self._empty_hint("左边点一行：兵种 / 组合招募单 / 将领。")
                 elif self.selection[0] == "unit":
                     self._build_unit_form(self.model.unit(self.selection[1]))
+                elif self.selection[0] == "package":
+                    self._build_package_form(self.model.recruit_package(self.selection[1]))
                 else:
                     self._build_general_form(self.model.general(int(self.selection[1])))
             else:
@@ -1283,21 +1318,48 @@ class EditorApp:
                 self._entry_row(sec, field, unit.field(field.key),
                                 lambda v, u=unit, f=field: self.model.set_unit(u.id, f.key, v))
 
-        # ---- 造价与招募（在 recruit.list 里）
-        rsec = self._section("造价与招募", "recruit.list")
+        # ---- 冲锋（嵌套在 unit.types.<id>.charge；全部可留空 = 不冲锋）
+        csec = self._section("冲锋", "unit.types.<id>.charge；min_distance = 0 / 留空 = 不冲锋")
+        for field in CHARGE_FIELDS:
+            self._entry_row(csec, field, unit.charge_field(field.key),
+                            lambda v, u=unit, f=field: self.model.set_unit(
+                                u.id, "charge." + f.key, v),
+                            allow_empty=True)
+
+        # ---- 造价与招募（recruit.list / 派系的 clan.list[].recruit[]）
+        # ★★ 2026.11.2：派系兵种（王朝 dy_* / 帝国 dg_*）的条目在**派系表**里，
+        #   这里按条目实际所在的那张表显示来源，不再一律写 recruit.list。
+        #   组合单位的零件（没有自己的条目、由某一单整包生成）显示成「随某一单」，
+        #   既不谎报「不在招募表」，也不再给一组改不动的输入框。
+        rsec = self._section("造价与招募", unit.recruit_owner if unit.has_recruit
+                             else ("随「%s」" % unit.spawn_label if unit.spawn_source
+                                   else "recruit.list"))
         if not unit.has_recruit:
-            tk.Label(rsec, text="「%s」不在招募表里（它出现在地图上，但不是造出来的）。"
-                                % unit.id, bg=UI["panel"], fg=UI["text_dim"], anchor="w",
-                     justify="left", wraplength=380).pack(fill="x")
-            self._button(rsec, "把它加进招募表（照默认值）",
-                         lambda u=unit: self._do(lambda: self.model.add_recruit_entry(u.id),
-                                                 "已把 %s 加进招募表" % u.id),
-                         padx=8, pady=4).pack(fill="x", pady=4)
+            if unit.spawn_source:
+                tk.Label(rsec, text="「%s」由「%s」这一单组合生成（一次出整包）：\n"
+                                    "它不单独占队列格、也没有自己的一份造价 —— 要改造价 / 文案，"
+                                    "请改「%s」那一单（同一张表里）。"
+                                    % (unit.id, unit.spawn_label, unit.spawn_label),
+                         bg=UI["panel"], fg=UI["text_dim"], anchor="w",
+                         justify="left", wraplength=380).pack(fill="x")
+            else:
+                tk.Label(rsec, text="「%s」不在任何招募表里（它出现在地图上，但不是造出来的）。"
+                                    % unit.id, bg=UI["panel"], fg=UI["text_dim"], anchor="w",
+                         justify="left", wraplength=380).pack(fill="x")
+                self._button(rsec, "把它加进招募表（照默认值）",
+                             lambda u=unit: self._do(lambda: self.model.add_recruit_entry(u.id),
+                                                     "已把 %s 加进招募表" % u.id),
+                             padx=8, pady=4).pack(fill="x", pady=4)
         else:
             for field in RECRUIT_FIELDS:
                 self._entry_row(rsec, field, unit.field(field.key),
                                 lambda v, u=unit, f=field: self.model.set_unit(u.id, f.key, v))
             tk.Label(rsec, text="　提示：改「名称」会连命令卡标题一起改（两处不一致看着像 bug）。",
+                     bg=UI["panel"], fg=UI["text_dim"], anchor="w", justify="left",
+                     wraplength=380, font=("Microsoft YaHei UI", 8)).pack(fill="x")
+            # ★★ 2026.11.2：读条时间不再属于兵种 —— 它是**招它的将领**的属性。
+            tk.Label(rsec, text="　读条时间由「招它的将领」决定（将领页 →「招兵读条」，默认 10 秒），"
+                                "与队列长短 / 兵种无关。",
                      bg=UI["panel"], fg=UI["text_dim"], anchor="w", justify="left",
                      wraplength=380, font=("Microsoft YaHei UI", 8)).pack(fill="x")
 
@@ -1343,6 +1405,12 @@ class EditorApp:
         self._entry_row(sec, GENERAL_CAP_FIELD, gen.cap,
                         lambda v, g=gen: self.model.set_general(g.index, "cap", v))
 
+        # ★★ 招兵读条（2026.11.2）：这位将领**招兵**时整批读条几秒（默认 10）。
+        #   清空输入框 = 回到默认 10 秒（与「视野半径」同一条语义）。
+        self._entry_row(sec, GENERAL_RECRUIT_FIELD, gen.recruit_sec,
+                        lambda v, g=gen: self.model.set_general(g.index, "recruit_sec", v),
+                        allow_empty=True)
+
         # ---- 数值（跟随兵种 / 自己填）
         nsec = self._section("数值", "没改过的项跟着上面的类型走")
         for field in GENERAL_STAT_FIELDS:
@@ -1366,13 +1434,57 @@ class EditorApp:
         # ---- 造价与招募（recruit.zone.list）
         rsec = self._section("造价与招募", "recruit.zone.list")
         for key, label in (("cost_food", "造价 · 粮食"), ("cost_gold", "造价 · 黄金"),
-                           ("population_cost", "造价 · 人口"), ("train_sec", "招募时间"),
+                           ("population_cost", "造价 · 人口"),
+                           # ★★ 2026.11.2：这一条是「**区划**招募这位将领」的读条，
+                           #   与上面「招兵读条」（这位将领当兵营时招兵的读条）是两件事。
+                           ("train_sec", "区划招募读条"),
                            ("recruit_cooldown_sec", "招募冷却（秒）")):
             field = Field(key, label, "float", minimum=0)
             self._entry_row(rsec, field, gen.field(key),
                             lambda v, g=gen, k=key: self.model.set_general(g.index, k, v))
-        self._hint(rsec, "区划中心招将领时用的钱、人口与读条秒数（与兵种那套同一口径）；"
+        self._hint(rsec, "区划中心招将领时用的钱、人口与读条秒数；"
                          "招募冷却 = 招到之后**该玩家全局**锁多少秒。")
+
+    # ---- 组合招募单表单 ------------------------------------------------
+
+    def _build_package_form(self, pkg) -> None:
+        """★★ 组合招募单（协防军 / 御林军）：一次下单生成好几个单位。
+
+        ★ 为什么需要这一页：它的 `kind` 不是 `unit.types` 里的兵种（没有血条 / 攻击），
+          单位页根本列不出来 —— 没有这一页，「一次要多少粮 / 扣多少人口」就无处可改。
+        ★ 成员自己的数值（血量 / 攻击…）仍然去**兵种**列表里改；这里只管这一单的
+          文案与**整包**造价。
+        """
+        self._section("组合招募单　%s" % pkg.label, pkg.owner)
+        tk.Label(self.sidebar, text="%s（%s）" % (pkg.kind, pkg.owner),
+                 bg=UI["panel"], fg=UI["text_dim"], anchor="w",
+                 font=("Microsoft YaHei UI", 9)).pack(fill="x", padx=12)
+        self._hint(self.sidebar, "一次下单生成 %d 个单位、占 1 个队列格；"
+                                 "下面的造价是「整包」的（不是每个人）。" % pkg.count)
+
+        # ---- 招募卡文案
+        sec = self._section("招募卡", "右下「单位」页那一格")
+        for field in PACKAGE_FIELDS[:3]:
+            self._entry_row(sec, field, pkg.field(field.key),
+                            lambda v, p=pkg, f=field: self.model.set_recruit_package(
+                                p.kind, f.key, v))
+
+        # ---- 造价（整包）
+        rsec = self._section("造价", pkg.owner)
+        for field in PACKAGE_FIELDS[3:]:
+            self._entry_row(rsec, field, pkg.field(field.key),
+                            lambda v, p=pkg, f=field: self.model.set_recruit_package(
+                                p.kind, f.key, v))
+        self._hint(rsec, "入队即扣整包的钱 + 整包人口（扣的是将领所在区划的人口）；"
+                         "读条由招它的将领决定，与这一单的兵种构成无关。")
+
+        # ---- 组成（只读）
+        csec = self._section("组成", "整包生成这些单位")
+        tk.Label(csec, text=pkg.member_text or "（这一单没有 spawn 列表）",
+                 bg=UI["panel"], fg=UI["text"], anchor="w", justify="left",
+                 wraplength=380).pack(fill="x")
+        self._hint(csec, "成员自己的血量 / 攻击 / 素材在「兵种」列表里改；"
+                         "这里只改「这一单」的名字、说明与整包造价。")
 
     # ---- 建筑表单 -------------------------------------------------------
 

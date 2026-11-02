@@ -7,6 +7,7 @@
 ##   · `play_build()` —— 本机阵营造好一栋建筑（`assets/sound/build/`）；
 ##   · `play_bow_attack()` / `play_bow_hit()` —— 远程单位（兵 + 器械）攻击 / 受击；
 ##   · `play_sword_attack()` / `play_sword_hit()` —— 近战单位攻击 / 受击；
+##   · `play_charge()` —— 冲锋命中（复用近战受击素材，音量略高；见 game_scene3d 的事件层）；
 ##   · `play_recruit()` —— 单位 / 将领招募完成（同一批只由调用方播一次）。
 ##   ★ 攻击 / 受击四档各带 0.2 秒闸门（`ui.sfx_combat_interval_sec`）：大混战时
 ##     不会几十支单位同时叠出几十声；单挑时仍每击都响。
@@ -108,6 +109,7 @@ static var bow_attack_play_count: int = 0
 static var bow_hit_play_count: int = 0
 static var sword_attack_play_count: int = 0
 static var sword_hit_play_count: int = 0
+static var charge_play_count: int = 0
 static var recruit_play_count: int = 0
 
 
@@ -236,6 +238,13 @@ static func play_sword_attack() -> void:
 static func play_sword_hit() -> void:
 	if _combat_allowed("sword_hit") and _play_random(_sword_hit, combat_db()):
 		sword_hit_play_count += 1
+
+
+## ★★ 2026.11：冲锋命中。复用近战受击素材（没有专用号角素材），音量 +3 dB 让它压过普通攻击。
+## ★ 走独立的节流档 `"charge"`：同一次接触只响一声，也不会把普通近战音挤掉。
+static func play_charge() -> void:
+	if _combat_allowed("charge") and _play_random(_sword_hit, clampf(combat_db() + 3.0, -30.0, 12.0)):
+		charge_play_count += 1
 
 
 ## 单位 / 将领招募完成。★ 同一批只该由调用方播一次（见 game_scene3d._feed_recruit_sfx）。

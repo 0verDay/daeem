@@ -25,6 +25,7 @@ func _cases() -> void:
 		return
 	_test_garrison(cfg)
 	_test_garrison_defends_center(cfg)
+	_test_garrison_alert_gating(cfg)
 	_test_reddot_cfg(cfg)
 	_test_reddot_march_tiles(cfg)
 	_test_none_and_player(cfg)
@@ -122,6 +123,162 @@ func _test_garrison_defends_center(cfg) -> void:
 	GarrisonAiRes.force_next(w)
 	GarrisonAiRes.update(w, cfg, 1.0 / 60.0)
 	ok(not g.defending_center, "★ 威胁解除 → 退出「守中心」，恢复正常巡逻")
+
+## ★★ 警戒唤醒（2026.11）：阵地性 AI 默认静止；只有敌军进入 10 格 / 敌对区划压境才巡逻。
+##
+## 三条用例各自造一个干净世界（互不污染巡逻路线 / 计时器）：
+##   1. 静默：没有威胁时跑三个巡逻间隔也不生成路线；关掉开关则回到旧行为；
+##   2. 部队临近：把敌对单位放到 9 格内 ⇒ 唤醒并开始巡逻；挪到 12 格 ⇒ 再次静止；
+##   3. 区划压境：直接相邻 / 隔一个区划两种距离，配 `alert_zone_gap` 1 vs 2 对照。
+func _test_garrison_alert_gating(cfg) -> void:
+	var gc: Dictionary = cfg.ai_garrison_cfg()
+	var saved_gap: int = int(gc.get("alert_zone_gap", 2))
+	var saved_enabled: bool = bool(gc.get("alert_enabled", true))
+
+	# ---- 1) 静默 + A/B 回退开关 ----
+	var w1 = _alert_world(cfg, "alert_dormant")
+	if w1 != null:
+		var g1 = _first_patrol_leader(w1)
+		ok(g1 != null, "（前提）静默世界有一位带队守将")
+		if g1 != null:
+			_clear_zone_owners(w1)
+			_tick_ai(w1, cfg, 1.0)
+			ok(not bool(g1.garrison_alert_active), "★ 没有威胁 ⇒ 不进入警戒")
+			_tick_ai(w1, cfg, 6.0)
+			ok(not bool(g1.garrison_alert_active), "★ 静默期一直保持静止")
+			ok(g1.patrol_points.is_empty(), "★★ 静默期不生成巡逻路线（= 没启动巡逻）")
+			ok(g1.patrol_timer <= 0.0, "★ 静默期巡逻计时器保持归零")
+			# A/B：关掉开关 = 旧行为（一定会巡逻）。
+			gc["alert_enabled"] = false
+			_tick_ai(w1, cfg, 6.0)
+			ok(not g1.patrol_points.is_empty(), "★ 关掉 alert_enabled ⇒ 回到旧行为（会巡逻）")
+			gc["alert_enabled"] = saved_enabled
+
+	# ---- 2) 部队临近（10 格）----
+	var w2 = _alert_world(cfg, "alert_troop")
+	if w2 != null:
+		var g2 = _first_patrol_leader(w2)
+		ok(g2 != null, "（前提）部队临近世界有一位带队守将")
+		if g2 != null:
+			_clear_zone_owners(w2)
+			_tick_ai(w2, cfg, 0.6)
+			ok(not bool(g2.garrison_alert_active), "（前提）附近没有敌军 ⇒ 静止")
+			var e = _hostile_at(w2, g2, 9.0)
+			ok(e != null, "（前提）刷出一个敌对单位")
+			_tick_ai(w2, cfg, 0.6)
+			ok(bool(g2.garrison_alert_active), "★★ 敌军进入 9 格 ⇒ 唤醒")
+			_tick_ai(w2, cfg, 5.0)
+			ok(not g2.patrol_points.is_empty() or not g2.path.is_empty(),
+				"★★ 唤醒后真的开始巡逻（有路线 / 有路径）")
+			# 敌人退到 12 格 ⇒ 下一次复检应当再次静止。
+			e.pos = g2.pos + Vector2(12.0, 0.0)
+			e.sync_tile(w2.map)
+			_tick_ai(w2, cfg, 1.0)
+			ok(not bool(g2.garrison_alert_active), "★★ 敌军退出 10 格 ⇒ 重新静止")
+
+	# ---- 3) 区划压境（区划图步数）----
+	var w3 = _alert_world(cfg, "alert_zone")
+	if w3 != null:
+		var g3 = _first_patrol_leader(w3)
+		ok(g3 != null, "（前提）区划压境世界有一位带队守将")
+		if g3 != null:
+			_clear_zone_owners(w3)
+			var zid: int = int(g3.garrison_zone_id)
+			var near1: Array = w3.zones.neighbors_of(zid)
+			ok(not near1.is_empty(), "★★ 区划邻接表已建好（有直接相邻区划）")
+			# 邻接表必须是**真的共享一条边**（不能只靠包围盒 / 斜角）。
+			var adj_ok := true
+			for nid in near1:
+				var nz: Variant = w3.zones.zones_by_id.get(int(nid), null)
+				if nz == null:
+					adj_ok = false
+					continue
+				var touch := false
+				for t in (nz as Dictionary)["tiles"]:
+					var tv: Vector2i = t
+					for d in GridRes.DIRS4:
+						var oz: Variant = w3.zones.zone_at(tv.x + d.x, tv.y + d.y)
+						if oz != null and int((oz as Dictionary)["id"]) == zid:
+							touch = true
+							break
+					if touch:
+						break
+				if not touch:
+					adj_ok = false
+			ok(adj_ok, "★★ 邻接表里的每一对区划都真的共享一条边（不是包围盒 / 斜角）")
+			var within2: Array = w3.zones.zones_within(zid, 2)
+			ok(within2.has(zid) and within2.size() > near1.size(),
+				"★★ zones_within(2) 比直接相邻多出一圈")
+			var far2: int = -1
+			for nid in within2:
+				var n := int(nid)
+				if n != zid and not near1.has(n):
+					far2 = n
+					break
+			ok(far2 >= 0, "（前提）存在「隔一个区划」的区划")
+			if far2 >= 0:
+				var z2: Dictionary = w3.zones.zones_by_id[far2]
+				z2["owner"] = "enemy"
+				# 判据层：gap=1 看不到「隔一个区划」，gap=2 看得到。
+				var z_self: Dictionary = w3.zones.zones_by_id[zid]
+				ok(not GarrisonAiRes._hostile_zone_within(w3, g3, z_self, 1),
+					"★ gap=1：隔一个区划的敌人不算压境")
+				ok(GarrisonAiRes._hostile_zone_within(w3, g3, z_self, 2),
+					"★★ gap=2：隔一个区划的敌人算压境")
+				# 决策层：用配置切 gap，确认守将真的从「静止」翻成「警戒」。
+				gc["alert_zone_gap"] = 1
+				_tick_ai(w3, cfg, 1.0)
+				ok(not bool(g3.garrison_alert_active),
+					"★ gap=1 时守将保持静止（隔一个区划不唤醒）")
+				gc["alert_zone_gap"] = 2
+				_tick_ai(w3, cfg, 1.0)
+				ok(bool(g3.garrison_alert_active),
+					"★★ gap=2 时守将被唤醒（区划压境）")
+				# 敌人那格变回无主 ⇒ 应当再次静止。
+				z2["owner"] = ""
+				_tick_ai(w3, cfg, 1.0)
+				ok(not bool(g3.garrison_alert_active), "★★ 敌对区划失去归属 ⇒ 重新静止")
+	gc["alert_zone_gap"] = saved_gap
+	gc["alert_enabled"] = saved_enabled
+
+
+func _alert_world(cfg, name: String):
+	return _world(cfg, name, {"factions": [{
+		"id": "E1", "ai": "garrison", "base": [18, 18]}],
+		"start_units": [{"faction": "E1", "kind": "general", "unit_type": "spearman",
+			"x": 17, "y": 16, "ai": "garrison", "zone": 9}]})
+
+
+func _first_patrol_leader(w):
+	for u in w.units:
+		if u.alive and String(u.faction) == "E1" and int(u.garrison_zone_id) >= 0 \
+				and GarrisonAiRes.is_patrol_leader(w, u):
+			return u
+	return null
+
+
+func _clear_zone_owners(w) -> void:
+	for z in w.zones.zones:
+		(z as Dictionary)["owner"] = ""
+
+
+## 在离守将 `dist` 格处放一个敌对单位（只改坐标，不跑 tick —— 判定只看 pos）。
+func _hostile_at(w, g, dist: float):
+	var e = w.spawn_enemy(g.tx, g.ty)
+	if e == null:
+		return null
+	e.pos = g.pos + Vector2(dist, 0.0)
+	e.sync_tile(w.map)
+	return e
+
+
+## 手动推进守军 AI：每次 force_next 让决策不被节流掉（与 test 里其它地方同一做法）。
+func _tick_ai(w, cfg, seconds: float, dt: float = 0.1) -> void:
+	var n: int = maxi(1, int(round(seconds / dt)))
+	for i in n:
+		GarrisonAiRes.force_next(w)
+		GarrisonAiRes.update(w, cfg, dt)
+
 
 func _test_reddot_cfg(cfg) -> void:
 	var w = _world(cfg, "reddot", {"factions": [{

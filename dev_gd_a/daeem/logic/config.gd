@@ -460,6 +460,10 @@ var flash_sec_safe: float = 0.22
 var hit_flash_sec: float = 0.18
 ## 预计算：受击衰减那句在「每单位每帧」的路径上，别每次算 maxf(0.01, ...)。
 var hit_flash_sec_safe: float = 0.18
+## ★★ 冲锋态「站住但没目标」的保持时间（秒；见 combat._charge_hold_comment）。
+##   进入攻击距离的 `halt()` 不清冲锋 —— 这一击要在接触时打出去；
+##   站住超过这个时间还没打中任何目标，才自动清空，避免举着光效一直站着。
+var charge_hold_sec: float = 1.0
 var building_damage: float = 40.0
 ## ★★ 射箭投掷物（远程单位 / 可攻击建筑）的飞行速度与时长夹取（见 logic/projectile.gd）。
 ## ★ 预计算进字段：它们在「每枚投掷物每帧」的路径上，不许用 `cfg.num("combat....")`。
@@ -830,6 +834,7 @@ func _cache_scalars() -> void:
 	flash_sec_safe = maxf(0.01, flash_sec)
 	hit_flash_sec = maxf(0.01, num("combat.hit_flash_sec", 0.18))
 	hit_flash_sec_safe = maxf(0.01, hit_flash_sec)
+	charge_hold_sec = maxf(0.0, num("combat.charge_hold_sec", 1.0))
 	building_damage = num("combat.building_damage", 40.0)
 	# ★★ 投掷物飞行（见 logic/projectile.gd）。速度必须 > 0，否则时长会除零；
 	#   时长的上下夹取保证「贴脸也看得见飞一下」且「远距离不飞太久」。
@@ -1039,6 +1044,14 @@ func _normalize_traits(raw: Variant) -> Dictionary:
 const KNOCKBACK_MAX_DISTANCE := 2.0
 const KNOCKBACK_MAX_STUN := 3.0
 
+## ★★ 冲锋参数的上限（见 `_normalize_charge`）。
+##   与击退同理：写个 50 格 / 500% 会把单位变成传送或一击秒杀，载入时就夹住。
+const CHARGE_MAX_DISTANCE := 40.0
+const CHARGE_MAX_SPEED_BONUS := 2.0
+const CHARGE_MAX_DAMAGE_BONUS := 5.0
+const CHARGE_MAX_SPLASH := 3.0
+const CHARGE_MAX_COOLDOWN := 120.0
+
 
 ## 可选的数字：是数字 → 它自己；缺键 / 类型不对 → **-1**（表示「没配」）。
 ##
@@ -1061,6 +1074,67 @@ func _normalize_knockback(raw: Variant) -> Dictionary:
 	var stun: Variant = d.get("stun_sec", 0.0)
 	if typeof(stun) == TYPE_INT or typeof(stun) == TYPE_FLOAT:
 		out["stun_sec"] = clampf(float(stun), 0.0, KNOCKBACK_MAX_STUN)
+	return out
+
+
+## ★★ 把 config 里的 `unit.types.<id>.charge` 洗成**固定十键**的字典（载入时一次）。
+##
+## 输入：`{ min_distance, max_distance, turn_max_deg, speed_bonus, damage_bonus,
+##          knock_distance, knock_stun_sec, splash_radius, splash_damage_ratio,
+##          cooldown_sec }`（全部可选）。
+## 输出：同键、全部夹到安全范围。`min_distance <= 0` ⇒ 整块视为关闭（其余键也归零），
+##       于是读的地方只判 `min_distance > 0`，不需要再判「有没有配这一节」。
+func _normalize_charge(raw: Variant) -> Dictionary:
+	var out: Dictionary = {
+		"min_distance": 0.0,
+		"max_distance": 0.0,
+		"turn_max_deg": 0.0,
+		"speed_bonus": 0.0,
+		"damage_bonus": 0.0,
+		"knock_distance": 0.0,
+		"knock_stun_sec": 0.0,
+		"splash_radius": 0.0,
+		"splash_damage_ratio": 0.0,
+		"cooldown_sec": 0.0,
+	}
+	if typeof(raw) != TYPE_DICTIONARY:
+		return out
+	var d: Dictionary = raw
+	var min_d: Variant = d.get("min_distance", 0.0)
+	if typeof(min_d) != TYPE_INT and typeof(min_d) != TYPE_FLOAT:
+		return out
+	var min_dist := clampf(float(min_d), 0.0, CHARGE_MAX_DISTANCE)
+	if min_dist <= 0.0:
+		return out
+	out["min_distance"] = min_dist
+	var max_d: Variant = d.get("max_distance", min_dist)
+	var max_dist := clampf(float(max_d), 0.0, CHARGE_MAX_DISTANCE) \
+		if typeof(max_d) == TYPE_INT or typeof(max_d) == TYPE_FLOAT else min_dist
+	out["max_distance"] = maxf(min_dist, max_dist)
+	var turn: Variant = d.get("turn_max_deg", 40.0)
+	if typeof(turn) == TYPE_INT or typeof(turn) == TYPE_FLOAT:
+		out["turn_max_deg"] = clampf(float(turn), 0.0, 180.0)
+	var spd: Variant = d.get("speed_bonus", 0.0)
+	if typeof(spd) == TYPE_INT or typeof(spd) == TYPE_FLOAT:
+		out["speed_bonus"] = clampf(float(spd), 0.0, CHARGE_MAX_SPEED_BONUS)
+	var dmg: Variant = d.get("damage_bonus", 0.0)
+	if typeof(dmg) == TYPE_INT or typeof(dmg) == TYPE_FLOAT:
+		out["damage_bonus"] = clampf(float(dmg), 0.0, CHARGE_MAX_DAMAGE_BONUS)
+	var kd: Variant = d.get("knock_distance", 0.0)
+	if typeof(kd) == TYPE_INT or typeof(kd) == TYPE_FLOAT:
+		out["knock_distance"] = clampf(float(kd), 0.0, KNOCKBACK_MAX_DISTANCE)
+	var ks: Variant = d.get("knock_stun_sec", 0.0)
+	if typeof(ks) == TYPE_INT or typeof(ks) == TYPE_FLOAT:
+		out["knock_stun_sec"] = clampf(float(ks), 0.0, KNOCKBACK_MAX_STUN)
+	var sr: Variant = d.get("splash_radius", 0.0)
+	if typeof(sr) == TYPE_INT or typeof(sr) == TYPE_FLOAT:
+		out["splash_radius"] = clampf(float(sr), 0.0, CHARGE_MAX_SPLASH)
+	var sdr: Variant = d.get("splash_damage_ratio", 0.0)
+	if typeof(sdr) == TYPE_INT or typeof(sdr) == TYPE_FLOAT:
+		out["splash_damage_ratio"] = clampf(float(sdr), 0.0, 1.0)
+	var cd: Variant = d.get("cooldown_sec", 0.0)
+	if typeof(cd) == TYPE_INT or typeof(cd) == TYPE_FLOAT:
+		out["cooldown_sec"] = clampf(float(cd), 0.0, CHARGE_MAX_COOLDOWN)
 	return out
 
 
@@ -1490,6 +1564,9 @@ func _cache_unit_types() -> void:
 				#   洗成固定两键（缺键补 0），于是 `combat` / `projectile` 读的时候不用判类型。
 				#   ⚠️ 「谁免疫击退」不在这里 —— 那是 traits.knockback_immune（**稳定**）。
 				"knockback": _normalize_knockback(td.get("knockback", null)),
+				# ★★ 2026.11 新增：**冲锋**（固定十键；不写 / min_distance = 0 = 不冲锋）。
+				#   出生时由 unit.load_charge_def() 抄到单位的扁平字段，运行期不再查这里。
+				"charge": _normalize_charge(td.get("charge", null)),
 				# ★★ 2026.11 新增：**直线穿透子弹**（扭力弩炮）。
 				#   true ⇒ 命中时沿「射手 → 目标」那条直线打穿射程内的所有敌人。
 				"pierce": bool(td.get("pierce", false)),
@@ -1577,6 +1654,11 @@ func _cache_unit_types() -> void:
 					nm = String(d["name"])
 			_general_stats.append(ov)
 			_general_names.append(nm)
+
+	# 3.55) ★★ 将领的「招兵读条」`unit.general.recruit_sec` **不在这里缓存**：
+	#   它只在「开一条新读条」时读一次（每批次一次，不在每帧路径上），
+	#   所以和 `recruit.list` 那几张招募表同一条口径 —— **现读 JSON**，改了立刻生效，
+	#   也省掉「缓存数组与 JSON 两份真相」的对账（见 general_recruit_sec）。
 
 	# 3.6) ★★ 将领的全局成长（`unit.general.hp_mult / armor_bonus / damage_mult`）。
 	#   夹取：倍数 ≥0.1（写 0 会让将领血量归零 / 攻击归零），加成 ≥0。
@@ -1748,6 +1830,29 @@ func general_cap_at(i: int) -> int:
 	if i < 0 or i >= _general_caps.size():
 		return GENERAL_CAP_DEFAULT
 	return int(_general_caps[i])
+
+
+## ★★ 第 index 位将领（0 起）的**招兵读条**秒数（config.json 的 `unit.general.recruit_sec`）。
+##
+## 口径（2026.11.2，用户原话）：「招募时间由将领决定 —— 无论队列长短、队列里是什么兵种，
+## 读条始终是招它的那位将领的属性，默认 10 秒」。
+##   · 读这个数的地方只有一处：`world.leader_recruit_sec()`（`_start_training` 用它开读条）；
+##   · 缺项 / 越界 / ≤ 0（含没写这一段）⇒ 退回 `recruit.batch_sec`（默认 10）——
+##     于是老配置、以及「只想全局改 10 秒」的调法都还能工作；
+##   · 与 `general_cap_at` 同一条写法：越界不报错、给兜底，免得渲染 / AI 那条路径上抛异常。
+func general_recruit_sec(index: int) -> float:
+	var fallback := maxf(0.01, num("recruit.batch_sec", 10.0))
+	var arr: Variant = get_path_value("unit.general.recruit_sec")
+	if typeof(arr) != TYPE_ARRAY:
+		return fallback
+	var items: Array = arr
+	if index < 0 or index >= items.size():
+		return fallback
+	var v: Variant = items[index]
+	if typeof(v) != TYPE_INT and typeof(v) != TYPE_FLOAT:
+		return fallback
+	var sec := float(v)
+	return maxf(0.01, sec) if sec > 0.0 else fallback
 
 
 ## ⚠️ 这里原先还有两个「开局编制」的读法（本轮**整个删掉**）：
@@ -1990,6 +2095,23 @@ func unit_morale_aura_rate_of(id: String) -> float:
 func unit_knockback_of(id: String) -> Dictionary:
 	var k: Variant = unit_type_entry(id).get("knockback", null)
 	return k if typeof(k) == TYPE_DICTIONARY else {"distance": 0.0, "stun_sec": 0.0}
+
+
+## ★★ 2026.11：这个兵种的**冲锋**参数（载入时已洗成固定十键；见 `_normalize_charge`）。
+## 返回同一个字典（**只读**，别改它）；不冲锋时 `min_distance` 为 0、其余也是 0。
+## ★ 只在 unit.create() / reapply_type() 里读一次（结果抄到单位的扁平字段），
+##   不在每帧路径上 —— 所以这里返回字典、不预先算标量是可以的。
+func unit_charge_of(id: String) -> Dictionary:
+	var c: Variant = unit_type_entry(id).get("charge", null)
+	if typeof(c) != TYPE_DICTIONARY:
+		return _normalize_charge(null)
+	return c
+
+
+## 这个兵种会不会冲锋（= `charge.min_distance > 0`）。
+func unit_has_charge(id: String) -> bool:
+	return float(unit_charge_of(id).get("min_distance", 0.0)) > 0.0
+
 
 
 ## ★★ 2026.11：这个兵种的投掷物是不是**直线穿透子弹**（扭力弩炮）。
@@ -3067,6 +3189,17 @@ func _cache_ai() -> void:
 		"patrol_spread_tiles": maxf(1.0, num("ai.garrison.patrol_spread_tiles", 3.0)),
 		# ★★ 巡逻**带兵**：附属兵离带队将领超过这么多格就会被重新叫上。
 		"patrol_retinue_leash_tiles": maxf(1.0, num("ai.garrison.patrol_retinue_leash_tiles", 3.0)),
+		# ★★ 警戒唤醒（2026.11）：阵地性 AI 默认**静止**，只有探测到威胁才开始巡逻。
+		#   · `alert_enabled`：总开关（false = 旧行为，永远巡逻；A/B 用）；
+		#   · `alert_troop_radius_tiles`：敌方**单位**进入离守将这么多格以内 ⇒ 唤醒；
+		#   · `alert_zone_gap`：敌方**区划**扩张到「区划图」这么多步以内 ⇒ 唤醒。
+		#       0 = 只认自己所在区划；1 = 直接相邻；2 = 相邻 + 隔一个区划（默认）。
+		#   · `alert_check_sec`：唤醒判定的复检周期（秒）。它比决策周期慢，
+		#       因为「扫一遍全场单位」不该 10 Hz 地做。
+		"alert_enabled": bool(num("ai.garrison.alert_enabled", 1.0) != 0.0),
+		"alert_troop_radius_tiles": maxf(0.0, num("ai.garrison.alert_troop_radius_tiles", 10.0)),
+		"alert_zone_gap": maxi(0, int(num("ai.garrison.alert_zone_gap", 2.0))),
+		"alert_check_sec": maxf(0.05, num("ai.garrison.alert_check_sec", 0.5)),
 	}
 	# ★★ 红点 AI 的函数式时间表与随机规格（本轮新增）。全部**宽容读取**：
 	#   读不出来一律退回默认（'x' / 空表），决不让一份坏数据把这一局卡死。

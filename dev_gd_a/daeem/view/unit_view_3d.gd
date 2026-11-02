@@ -36,7 +36,8 @@ const SELECTION_RING_SHADER = preload("res://view/selection_ring.gdshader")
 
 ## 立牌**基准**的世界宽度（一格的比例）与基准高宽比（贴图 64×96 ⇒ 1.5）。
 ## ★ 实际尺寸 = `QUAD_W × cfg.unit_sprite_ratio_of(unit_type)`：
-##   步兵 1×1、骑兵 1×1.5、器械 2×1（比例不是像素，见 config 的 sprite_ratio）。
+##   步兵 1×1、骑兵 1×1.5、器械 2×1（比例不是像素，见 config 的 sprite_ratio）；
+##   战车按原画覆盖成 2×1.5（512×384 = 4:3，牌面正好占满）。
 const QUAD_W := 0.5
 const QUAD_H_RATIO := 1.5
 ## 立牌比例 → 尺寸（格）。静态缓存：框选 / 点选（input_controller）也读这个函数。
@@ -46,7 +47,8 @@ static var _quad_cells_cache: Dictionary = {}
 ## 某个兵种的立牌尺寸（**格**）。
 ##
 ## ★ 宽高比来自 config：`unit.types.<id>.sprite_ratio`，缺省按兵种大类
-##   （infantry 1×1 / cavalry 1×1.5 / siege 2×1，见 `cfg.unit_sprite_ratio_of`）。
+##   （infantry 1×1 / cavalry 1×1.5 / siege 2×1，见 `cfg.unit_sprite_ratio_of`；
+##   战车显式覆盖成 2×1.5）。
 ##   1 这个单位 = `QUAD_W` 格，所以步兵 0.5×0.5、骑兵 0.5×0.75、器械 1.0×0.5。
 ## ★ 素材缺失时退回基准 1×1.5（程序化剪影的 64×96 画布就是这个比例）。
 ## ★ 静态函数：`input_controller` 的点击 / 框选用的必须是同一份尺寸。
@@ -98,6 +100,18 @@ var _sel_sec: float = 0.18
 var _sel_alpha: float = 0.8
 var _sel_scale_from: float = 1.5
 
+## ★★ 冲锋表现（2026.11）：
+##   · `_charge_glow_alpha` —— 立牌发光的混合强度（shader 的 charge_strength）；
+##   · `_charge_ring_*` —— 脚下尘环的不透明度 / 初始边长（格）/ 满值放大比例；
+##   · `_charge_layers` —— 按己/友/敌分层的尘环（与选中圈同一套 shader / 贴图）；
+##   · `_charge_quad` —— 尘环用的平放面片。
+var _charge_glow_alpha: float = 0.45
+var _charge_ring_alpha: float = 0.55
+var _charge_ring_size: float = 0.55
+var _charge_ring_scale_to: float = 1.15
+var _charge_quad: PlaneMesh = null
+var _charge_layers: Dictionary = {}
+
 ## ★★ 悬停样式（见 config.json 的 `render._hover_fill_comment`）：
 ##   · `_hover_set`  = 本帧要高亮的单位 id（由 `set_hover(ids)` 喂进来）；
 ##   · `_hover_anim` = id → 0..1 的淡入淡出进度（与选中圈同一套「反向播放」思路）；
@@ -133,6 +147,8 @@ var downed_count: int = 0
 var decal_count: int = 0
 ## ★ 本帧画了几个「选中下标」（诊断，测试读它）
 var selection_ring_count: int = 0
+## ★★ 本帧画了几个「冲锋尘环」（诊断，测试读它）
+var charge_ring_count: int = 0
 ## ★ 本帧有几个实例带着悬停填充（诊断，测试读它）
 var hover_instance_count: int = 0
 ## ★ 本帧**第一个**选中下标的缩放 / 不透明度（诊断，测试读它）。
@@ -152,6 +168,7 @@ var _fade_marked: Dictionary = {}
 ## ★★ 单次遍历时顺带收集的两张小表（都很少），避免 decal / 选中圈各再扫一遍 `world.units`。
 var _vis_generals: Array = []      # 本帧可见的将领（贴花用）
 var _vis_sel: Array = []           # 本帧可见且「被选中 / 正在做选中动效」的单位（脚圈用）
+var _vis_charge: Array = []        # 本帧可见且正在冲锋的单位（冲锋尘环用）
 
 
 ## 本帧可见单位的 3×3 邻格（`building_view_3d` / `game_scene3d` 取用；见 `_fade_marked`）。
@@ -181,6 +198,12 @@ func setup(p_cfg: ConfigRes, p_world, p_palette) -> void:
 	_sel_alpha = clampf(cfg.num("render.selection_ring_alpha", 0.8), 0.0, 1.0)
 	_sel_scale_from = maxf(0.1, cfg.num("render.selection_ring_scale_from", 1.5))
 	_build_selection_layer()
+	# ★★ 冲锋表现参数（setup 缓存；`.b` 通道 / 尘环每帧都要用，别在里面 cfg.num）
+	_charge_glow_alpha = clampf(cfg.num("render.charge_glow_alpha", 0.45), 0.0, 1.0)
+	_charge_ring_alpha = clampf(cfg.num("render.charge_ring_alpha", 0.55), 0.0, 1.0)
+	_charge_ring_size = maxf(0.05, cfg.num("render.charge_ring_size", 0.55))
+	_charge_ring_scale_to = maxf(0.1, cfg.num("render.charge_ring_scale_to", 1.15))
+	_build_charge_layer()
 	# ★★ 悬停样式参数（每帧要用 ⇒ setup 缓存；0 = 立即切换）
 	_hover_sec = maxf(0.0, cfg.num("render.hover_fill_sec", 0.1))
 	_hover_fill_alpha = clampf(cfg.num("render.hover_fill_alpha", 1.0), 0.0, 1.0)
@@ -246,6 +269,34 @@ func _build_selection_layer() -> void:
 		node.material_override = smat
 		add_child(node)
 		_sel_layers[String(rel)] = {"mm": mm, "node": node}
+
+
+## ★★ 冲锋尘环层：与选中下标同一套「平放小面片 + 空心圆贴图 + 逐实例 alpha」，
+##   只是颜色跟「本机视角的己 / 友 / 敌」走，并且只在 `charge_ratio > 0` 时出现。
+##   ★ 纯表现：只读单位的 `charge_ratio`，不改逻辑、不进快照。
+func _build_charge_layer() -> void:
+	var cell: float = palette.cell_size() * _charge_ring_size
+	_charge_quad = PlaneMesh.new()
+	_charge_quad.size = Vector2(cell, cell)
+	_charge_quad.orientation = PlaneMesh.FACE_Y
+	_charge_layers = {}
+	for rel in [SideColorRes.SELF, SideColorRes.ALLY, SideColorRes.ENEMY, SideColorRes.NEUTRAL]:
+		var smat := ShaderMaterial.new()
+		smat.shader = SELECTION_RING_SHADER
+		smat.set_shader_parameter("albedo_tex", SpriteRes.selection_ring_texture())
+		smat.set_shader_parameter("ring_color", _selection_ring_color(String(rel)))
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		# ⚠️ `use_custom_data` 必须在 `instance_count` **之前**设（同 unit_flash 那条约束）
+		mm.use_custom_data = true
+		mm.mesh = _charge_quad
+		mm.instance_count = 64
+		var node := MultiMeshInstance3D.new()
+		node.name = "ChargeRings_" + String(rel)
+		node.multimesh = mm
+		node.material_override = smat
+		add_child(node)
+		_charge_layers[String(rel)] = {"mm": mm, "node": node}
 
 
 ## 选中圈的颜色：己方 / 友军 / 敌人三档。
@@ -330,6 +381,11 @@ func _batch_for(key: String, faction: String, leader: bool, unit_type: String,
 	# ★ 两个 shader（正常 / 濒死）都要设，否则濒死将领在自己部队里悬停时不亮。
 	mat.set_shader_parameter("hover_tex", hover_tex)
 	mat.set_shader_parameter("hover_fill_alpha", _hover_fill_alpha)
+	# ★★ 冲锋发光：颜色 = 本批次阵营色（同一批次共享），强度来自 config。
+	#   ★ 濒死 shader 没有 charge_color / charge_strength，只在正常批次设，避免无谓告警。
+	if not downed:
+		mat.set_shader_parameter("charge_color", col)
+		mat.set_shader_parameter("charge_strength", _charge_glow_alpha)
 	if downed:
 		mat.shader = UNIT_DOWNED_SHADER
 		mat.set_shader_parameter("downed_alpha", cfg.num("render.downed_alpha", 0.4))
@@ -362,7 +418,7 @@ func _batch_for(key: String, faction: String, leader: bool, unit_type: String,
 	#   下标换人时必须整条重写（否则新单位继承上一任的填充）。
 	var rec := {"node": node, "mm": mm, "mesh": mesh, "quad_h": mesh.size.y,
 		"faction": faction, "leader": leader,
-		"last_flash": [], "last_uid": [], "last_hover": []}
+		"last_flash": [], "last_uid": [], "last_hover": [], "last_charge": []}
 	_batches[key] = rec
 	return rec
 
@@ -399,6 +455,7 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 	_fade_marked.clear()
 	_vis_generals.clear()
 	_vis_sel.clear()
+	_vis_charge.clear()
 	_vis_ids.clear()
 	visibility_frame = -1 if world == null else int(world.frame_serial)
 	if world == null or palette == null or _quad == null:
@@ -407,6 +464,7 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 	flash_written_last_frame = 0
 	downed_count = 0
 	hover_instance_count = 0
+	charge_ring_count = 0
 	var buckets: Dictionary = {}
 	# ★★ 有没有「选中 / 正在做动效」的单位？没有就整段跳过每单位的 `String(id)` 与两次字典查询
 	#    （1000 单位常态下选中为空 —— 这是每帧 1000 次字符串转换 + 2000 次查表）。
@@ -458,6 +516,9 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 			if picked or _sel_anim.has(uid):
 				_vis_sel.append(u)
 		var downed: bool = u.is_downed()
+		# ★★ 副产品④：正在冲锋的单位（尘环层用）。阈值很小，避免「刚起步的 0.001」也画一圈。
+		if u.charge_ratio > 0.01:
+			_vis_charge.append(u)
 		# ★★ 变体键 = 阵营 | 是否将领 | 兵种 | 是否选中 | 是否濒死：各自决定用哪张图 / 哪个材质。
 		var key: String
 		if u.faction == last_fac and u.unit_type == last_type \
@@ -518,36 +579,42 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 				mm.set_instance_transform(i, Transform3D(Basis(), w))
 				_slot_set(i, w, key)
 				wrote += 1
-			# ★★ 逐实例自定义数据：`.r` = 受击闪白，`.g` = 悬停填充进度。
+			# ★★ 逐实例自定义数据：`.r` = 受击闪白，`.g` = 悬停填充进度，`.b` = 冲锋进度。
 			#   ★★ 脏检查必须**带上「这个槽位上现在是哪个单位」**：
 			#     MultiMesh 的自定义数据是按**实例下标**存的，而下标每帧都可能换人
 			#     （选中态要换批次 / 阵亡 / 被迷雾挡住 / 新兵入列）。只给「当前悬停候选」
 			#     写值的话，新占位的单位会**继承上一任留下的填充** ——
 			#     实测症状（用户报的 bug）：取消选中一支部队后，该队突然整片变蓝
 			#     （蓝 = 自己方阵营色），因为那几个下标上还留着框选预览写的 1。
-			#   ★ 单位没换槽、且三个值都没变时才跳过写入（省引擎调用）。
+			#   ★ 单位没换槽、且四个值都没变时才跳过写入（省引擎调用）。
 			var flash: float = clampf(u.hit_flash, 0.0, 1.0)
 			var hov: float = _hover_tick(u.id, dt) if track_hover else 0.0
+			var chg: float = clampf(u.charge_ratio, 0.0, 1.0)
 			var lf: Array = rec["last_flash"]
 			var lu: Array = rec["last_uid"]
 			var lh: Array = rec["last_hover"]
+			var lc: Array = rec["last_charge"]
 			var pf: Variant = lf[i] if i < lf.size() else null
 			var pu: Variant = lu[i] if i < lu.size() else null
 			var ph: Variant = lh[i] if i < lh.size() else null
+			var pc: Variant = lc[i] if i < lc.size() else null
 			var same_uid: bool = pu != null and pu == u.id
 			# 诊断按「现在带着填充的实例数」算，与有没有触发写入无关
 			if hov > 0.0:
 				hover_instance_count += 1
 			if not same_uid or pf == null or float(pf) != flash \
-					or ph == null or float(ph) != hov:
-				mm.set_instance_custom_data(i, Color(flash, hov, 0.0, 0.0))
+					or ph == null or float(ph) != hov \
+					or pc == null or float(pc) != chg:
+				mm.set_instance_custom_data(i, Color(flash, hov, chg, 0.0))
 				while lu.size() <= i:
 					lf.append(null)
 					lu.append(null)
 					lh.append(null)
+					lc.append(null)
 				lu[i] = u.id
 				lf[i] = flash
 				lh[i] = hov
+				lc[i] = chg
 				if flash > 0.0:
 					flash_written_last_frame += 1
 		mm.visible_instance_count = arr.size()
@@ -566,6 +633,7 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 	instance_writes_last_frame = wrote
 	_sync_decals(_vis_generals)
 	_sync_selection_rings(_vis_sel, dt)
+	_sync_charge_rings(_vis_charge)
 
 
 ## ★★ 推进一个单位的悬停填充进度（0..1）：目标 = 它在 `_hover_set` 里 ? 1 : 0。
@@ -698,6 +766,42 @@ func _sync_selection_rings(units_list: Array, dt: float) -> void:
 		var n: int = int(counts.get(String(rel2), 0))
 		(layer2["mm"] as MultiMesh).visible_instance_count = n
 		(layer2["node"] as MultiMeshInstance3D).visible = n > 0
+
+
+## ★★ 冲锋尘环：颜色按「本机视角的己 / 友 / 敌」分层，逐实例 alpha = charge_ratio。
+##   尺寸从 1.0 倍长到 `charge_ring_scale_to`，`y = 0.9`（略低于选中圈，避免共面闪烁）。
+func _sync_charge_rings(units_list: Array) -> void:
+	charge_ring_count = 0
+	if _charge_layers.is_empty() or world == null or palette == null:
+		return
+	var counts: Dictionary = {}
+	for rel in _charge_layers.keys():
+		counts[String(rel)] = 0
+	for u in units_list:
+		var ratio: float = clampf(u.charge_ratio, 0.0, 1.0)
+		if ratio <= 0.01:
+			continue
+		var rel2: String = SideColorRes.NEUTRAL if u.neutralized \
+			else SideColorRes.relation(world, String(u.faction))
+		if not _charge_layers.has(rel2):
+			rel2 = SideColorRes.ENEMY
+		var layer: Dictionary = _charge_layers[rel2]
+		var mm: MultiMesh = layer["mm"]
+		var i: int = int(counts[rel2])
+		if mm.instance_count <= i:
+			mm.instance_count = maxi(i + 1, mm.instance_count * 2)
+		var w: Vector3 = palette.to_world(_render_pos(u))
+		w.y = 0.9
+		var s: float = lerpf(1.0, _charge_ring_scale_to, ratio)
+		mm.set_instance_transform(i, Transform3D(Basis().scaled(Vector3(s, 1.0, s)), w))
+		mm.set_instance_custom_data(i, Color(_charge_ring_alpha * ratio, 0.0, 0.0, 0.0))
+		counts[rel2] = i + 1
+		charge_ring_count += 1
+	for rel3 in _charge_layers.keys():
+		var layer3: Dictionary = _charge_layers[rel3]
+		var n: int = int(counts.get(String(rel3), 0))
+		(layer3["mm"] as MultiMesh).visible_instance_count = n
+		(layer3["node"] as MultiMeshInstance3D).visible = n > 0
 
 
 ## 写一槽的缓存（下标越界时按需扩容）

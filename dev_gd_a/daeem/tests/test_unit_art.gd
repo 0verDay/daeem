@@ -1,7 +1,7 @@
 ## test_unit_art.gd —— **派系兵种的立牌素材**：换了图之后还能不能用、糊不糊、会不会又退回占位
 ##
 ## 背景（2026.11）：王朝 / 帝国那 14 个派系兵种一开始全是**占位**（`sprite` 留空 +
-## `sprite_tint = faction` ⇒ 3D 立牌退回程序化剪影 / 单字）。本轮把其中七个换成了
+## `sprite_tint = faction` ⇒ 3D 立牌退回程序化剪影 / 单字）。本轮把其中八个换成了
 ## `art_draft/units/` 里的**真原画**，落到 `assets/units/<兵种 id>.png`。
 ##
 ## 这套用例守的就是那一步的**验收口径**（都是「一眼能看出坏没坏」的硬条件）：
@@ -22,12 +22,19 @@ extends "res://tests/test_case.gd"
 const ConfigRes = preload("res://logic/config.gd")
 const SpriteRes = preload("res://view/unit_sprite_3d.gd")
 
-## 本轮换成真原画的七个派系兵种（顺序 = config 里的定义顺序）。
+## 本轮换成真原画的八个派系兵种（顺序 = config 里的定义顺序）。
 const CLAN_ART_TYPES := [
 	"dy_spear_guard", "dy_archer_guard", "dy_royal_sword",
-	"dy_royal_archer", "dy_royal_cavalry", "dg_archer", "dg_bolt",
+	"dy_royal_archer", "dy_royal_cavalry", "dy_chariot",
+	"dg_archer", "dg_bolt",
 ]
 const ART_DIR := "res://assets/units/"
+
+## 兵种自己的 `sprite_ratio` **覆盖**了大类默认值的（其余一律按兵种大类走）。
+## 战车 = 2×1.5：原画 512×384 正好 4:3，装进 2:1.5 的牌面刚好占满、左右不留空档。
+const RATIO_OVERRIDES := {
+	"dy_chariot": Vector2(2.0, 1.5),
+}
 
 func _initialize() -> void:
 	_case_name = "test_unit_art"
@@ -58,14 +65,17 @@ func _test_clan_art_wiring(cfg) -> void:
 			"★★ %s 的素材被导入过（%s）—— 只写路径不导入 = 静默退回剪影" % [id, path])
 		eq(cfg.unit_sprite_tint_of(id), "art",
 			"★★ %s 是 art 档（保留原画；faction 档会把原画刷成色块）" % id)
-		# 立牌比例：与兵种大类一致（步兵 1×1 / 骑兵 1×1.5 / 器械 2×1）
+		# 立牌比例：默认与兵种大类一致（步兵 1×1 / 骑兵 1×1.5 / 器械 2×1）；
+		# `sprite_ratio` 显式覆盖的按覆盖值（战车 2×1.5）。
 		var box: Vector2 = cfg.unit_sprite_ratio_of(id)
 		var cls: String = cfg.unit_class_of(id)
-		var want: Vector2 = Vector2(1.0, 1.0)
-		if cls == ConfigRes.CLASS_CAVALRY:
-			want = Vector2(1.0, 1.5)
-		elif cls == ConfigRes.CLASS_SIEGE:
-			want = Vector2(2.0, 1.0)
+		var want: Vector2 = RATIO_OVERRIDES.get(id, Vector2.ZERO)
+		if want == Vector2.ZERO:
+			want = Vector2(1.0, 1.0)
+			if cls == ConfigRes.CLASS_CAVALRY:
+				want = Vector2(1.0, 1.5)
+			elif cls == ConfigRes.CLASS_SIEGE:
+				want = Vector2(2.0, 1.0)
 		v2_near(box, want, 1e-6, "★ %s（%s）的立牌比例 = %.2f×%.2f" % [id, cls, want.x, want.y])
 
 ## ② 烘图：有实质像素、两两不同（否则还是「长得一样」）
@@ -96,7 +106,7 @@ func _test_clan_art_bakes(cfg) -> void:
 		near(float(img.get_height()), 64.0 * box.y, 1.0,
 			"★ %s 贴图高 = 64 × 比例（%d）" % [id, img.get_height()])
 		images[id] = img
-	eq(images.size(), CLAN_ART_TYPES.size(), "七个派系兵种都烘出了贴图")
+	eq(images.size(), CLAN_ART_TYPES.size(), "八个派系兵种都烘出了贴图")
 	var ids: Array = images.keys()
 	var same := 0
 	for i in ids.size():
@@ -104,7 +114,7 @@ func _test_clan_art_bakes(cfg) -> void:
 			if (images[ids[i]] as Image).get_data() == (images[ids[j]] as Image).get_data():
 				same += 1
 				printerr("  [FAIL] %s 与 %s 的贴图完全相同" % [ids[i], ids[j]])
-	eq(same, 0, "★★ 七个派系兵种的贴图两两不同（否则等于没换素材）")
+	eq(same, 0, "★★ 八个派系兵种的贴图两两不同（否则等于没换素材）")
 
 ## ③ 原生七个兵种的素材别被这轮改动带歪（老口径仍然成立）
 func _test_native_art_untouched(cfg) -> void:

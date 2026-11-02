@@ -28,6 +28,10 @@ const BuildingViewRes = preload("res://view/building_view_3d.gd")
 const ProjectileViewRes = preload("res://view/projectile_view_3d.gd")
 ## ★ 右键指令的 3D 旗子（移动 = 绿 / 行军 = 黄；无碰撞）
 const OrderFlagRes = preload("res://view/order_flag_view_3d.gd")
+## ★★ 冲锋命中冲击波（对象池；见 view/charge_fx_view_3d.gd）
+const ChargeFxRes = preload("res://view/charge_fx_view_3d.gd")
+## 阵营色（冲锋冲击波用；与选中圈 / 旗帜同一套口径）
+const SideColorRes = preload("res://view/side_color.gd")
 const Overlay3DRes = preload("res://view/overlay_view_3d.gd")
 const InputControllerRes = preload("res://view/input_controller.gd")
 const HudRes = preload("res://view/hud.gd")
@@ -91,6 +95,8 @@ var buildings = null
 var projectiles = null
 ## ★ 右键指令的 3D 旗子（移动 = 绿 / 行军 = 黄）：由 `_on_command` 插 / 收，纯表现
 var order_flags = null
+## ★★ 冲锋命中冲击波层（纯表现；只读 `unit_charge` 事件）
+var charge_fx = null
 var overlay = null
 ## ★★ 本局的编队槽位表（见 `view/team_slots.gd`）；地图 / 右栏 / 数字键共用同一份。
 var team_slots = null
@@ -627,6 +633,12 @@ func _assemble() -> void:
 	add_child(order_flags)
 	order_flags.setup(cfg, palette)
 
+	# ★★ 冲锋命中冲击波（对象池）：事件驱动，暂停时冻结
+	charge_fx = ChargeFxRes.new()
+	charge_fx.name = "ChargeFx3D"
+	add_child(charge_fx)
+	charge_fx.setup(cfg, palette)
+
 	# 覆盖层（选中圈 / 移动与攻击标记 / 建造预览 / 拖框）：屏幕空间，用 palette 定位
 	var layer := CanvasLayer.new()
 	layer.name = "OverlayLayer"
@@ -1019,6 +1031,8 @@ func _process(dt: float) -> void:
 	projectiles.sync()
 	# ★ 插旗动效由这里推进：暂停时传 0 ⇒ 动效跟着冻结（不会在暂停里偷偷播完）
 	order_flags.sync(dt if running else 0.0)
+	# ★★ 冲锋冲击波同理：暂停时冻结
+	charge_fx.sync(dt if running else 0.0)
 	# 地图边界金线的**扫描**（纯表现：只推一个 shader uniform）；暂停时照旧走
 	map_border.sync(dt)
 	_prof_done("view/other", _t_other)
@@ -1428,6 +1442,9 @@ func _consume_events(events: Array) -> void:
 	_feed_build_sfx(events)
 	# ★ 本机单位的攻击 / 受击、己方建筑被命中 → 战斗音（见 `_feed_combat_sfx`）。
 	_feed_combat_sfx(events)
+	# ★★ 冲锋命中 → 冲击波 + 冲锋音（见 `_feed_charge_fx` / `_feed_charge_sfx`）。
+	_feed_charge_fx(events)
+	_feed_charge_sfx(events)
 	# ★ 本机招募完成 → 招募音；同一批多个单位只响一次（见 `_feed_recruit_sfx`）。
 	_feed_recruit_sfx(events)
 	if interaction != null:
@@ -1617,6 +1634,39 @@ func _feed_build_sfx(events: Array) -> void:
 		if String(b.owner) != mine:
 			continue
 		SfxRes.play_build()
+
+
+## ★★ 冲锋命中 → 贴地冲击波圈（纯表现；只在事件里带 `unit_charge` 时生成）。
+##   颜色 = 冲锋单位的阵营色；半径 = 事件里的 `radius`（战车范围撞击更大）。
+func _feed_charge_fx(events: Array) -> void:
+	if charge_fx == null or world == null or cfg == null:
+		return
+	for evt in events:
+		var e: Dictionary = evt
+		if String(e.get("type", "")) != "unit_charge":
+			continue
+		var pos := Vector2(float(e.get("x", 0.0)), float(e.get("y", 0.0)))
+		var radius := float(e.get("radius", 0.0))
+		var color: Color = SideColorRes.color(cfg, world, String(e.get("faction", "")), "main")
+		charge_fx.spawn(pos, radius, color)
+
+
+## ★★ 本机单位冲锋命中 → 冲锋音；同一批事件只播一声（与招募音同一条口径）。
+func _feed_charge_sfx(events: Array) -> void:
+	if world == null:
+		return
+	var mine := String(world.my_faction)
+	if mine == "":
+		return
+	for evt in events:
+		var e: Dictionary = evt
+		if String(e.get("type", "")) != "unit_charge":
+			continue
+		var u: Variant = e.get("unit", null)
+		if u == null or String(u.faction) != mine:
+			continue
+		SfxRes.play_charge()
+		return
 
 
 ## 本机单位的攻击 / 受击、己方建筑被命中 → 近战 / 远程音效。

@@ -1635,7 +1635,7 @@ func _hover_recruit(entry: Dictionary) -> Dictionary:
 	var train: float = float(entry.get("train_sec", 0.0))
 	if train > 0.0:
 		lines.append("读条 %s 秒%s" % [_fmt_num(train),
-			"" if is_zone else "（挂在将领名下，读条期间它不能动）"])
+			"" if is_zone else "（由**招兵的将领**决定，整批一次读完）"])
 	# ★★ 招募冷却（本轮新增）：先写**这位将领的属性**，再写**现在还剩多少**。
 	#   · 属性 = 招完他之后整方锁多久（全局冷却，见 world 的「将领招募池」段）；
 	#   · 剩余 = 权威状态的倒计时，0 时不写（不占一行）。
@@ -1869,6 +1869,16 @@ func _build_entry(e: Dictionary, bid: String, tier: int) -> Dictionary:
 	}
 
 
+## ★★ 单位页那一页的「读条 X 秒」= **招兵这位将领**的招兵读条（见 world.leader_recruit_sec）：
+##   2026.11.2 起兵种自己不再有读条时间，队列长短 / 兵种构成都不影响它。
+## 没选中将领 / 没有 world ⇒ 退回 `leader_recruit_sec(null)` 的默认值（10 秒）。
+func _unit_recruit_sec() -> float:
+	if world == null:
+		return 0.0
+	var leader = input_ctrl.first_selected_leader() if input_ctrl != null else null
+	return world.leader_recruit_sec(leader)
+
+
 ## 把一张招募表（本派系的单位表 / 全局的区划招将表）翻成命令卡的条目。
 ## @param entry_type 抛给 hud._on_card_entry 的动作类型（"recruit" = 排进将领 / "zone_recruit" = 排进区划）
 ## @param list       ★★ 2026.11：**表本身**由调用方给（不再让本函数自己去 config 按路径取）——
@@ -1914,7 +1924,10 @@ func _recruit_entries(entry_type: String, list: Variant) -> Array:
 			#     否则悬停写 50 金、实际扣 35 金。区划招将页不受科技影响，仍是原值。
 			"cost": world.recruit_cost(String(e.get("kind", "")), world.my_faction) \
 				if (world != null and entry_type == "recruit") else e.get("cost", {}),
-			"train_sec": e.get("train_sec", 0.0),
+			# ★★ 2026.11.2：单位页的读条时长**不是兵种的属性**，而是「招兵那位将领」的
+			#   招兵读条（world.leader_recruit_sec）。区划招将页才读条目自己的 train_sec。
+			"train_sec": _unit_recruit_sec() if entry_type == "recruit" \
+				else e.get("train_sec", 0.0),
 			"population_cost": e.get("population_cost", 0),
 			"tier": tier,
 		}

@@ -7,6 +7,41 @@
 
 本版本为在godot引擎内的原型开发，仅展示完整的局内玩法
 
+### 2026.11.2 阵地性 AI 警戒唤醒：没威胁就静止（降设备 / 联机负载）
+1. **需求**：阵地性 AI 只在「玩家 / 敌对 AI 的部队进入自身 10 格内」或「敌对 AI 的区划扩张到离自身区划一个区划外（相隔一个区划）」时启动巡逻，否则静止。**只关巡逻** —— 交战 / 守区划中心 / 脱战无消耗招兵 / 濒死无消耗再起照常运行
+2. **判据**：① 任一敌对单位（`same_side_for_attack` 之外）离守将 ≤ `ai.garrison.alert_troop_radius_tiles`（默认 **10**，平方距离）；② 任一敌对**已占领**区划在**区划邻接图**里离我的归属区划 ≤ `ai.garrison.alert_zone_gap`（默认 **2** = 相邻 + 隔一个区划；`1` = 只相邻）。复检周期 `alert_check_sec` 默认 **0.5 s**，结果缓存在 `unit.garrison_alert_active`（不进快照）
+3. **区划邻接表**：`logic/zone.gd` 装配期按地块四连通建一次（`neighbors_by_id` / `neighbors_of()` / `zones_within()`），阵地 AI 判定不逐格扫地块；区划形状不规则，直线距离会判错「隔着一条河」的假近邻
+4. **唤醒首巡错峰**：静止期 `patrol_timer` 保持 0，上升沿用 `patrol_interval × _phase01(unit)` 重排 —— 一次区划易主不会让整片守军同帧寻路（复用 2026.10.28 的错峰机制）
+5. **回退**：`ai.garrison.alert_enabled = false` 逐位回到旧行为；`tests/bench_dscj.gd` 新增 `DAEEM_GARRISON_ALERT=0/1` A/B 开关
+6. **实测（dscj，258 单位 / 34 位带队守将，20 秒）**：`world.tick` **9.54 → 7.63 ms/帧（−20%）**；平均移动单位 **160.5 → 8.8**；30 Hz 增量快照（不按视野过滤的上限口径）**25.9 → 18.0 KB（−30%，0.74 → 0.52 MB/s）**。★ **按客机视野过滤时**（真实合作局口径）首 20 秒两者都是 **7.2 KB / 0.21 MB/s，基本不变** —— 看不见的守军本来就不发，而开局醒着的几位都在客机视野外；带宽收益只出现在「客机看得见、但还没进 10 格」的窄带（箭塔视野 12 格 > 唤醒半径 10 格）。所以**真正稳赚的是房主 CPU**，联机侧是「少 95% 移动单位 ⇒ 客机插值 / 合并的脏字段更少」；`ai/garrison` 本身几乎不变（0.311 → 0.289 ms）—— 省的是**移动链**（单位步进 / 群体碰撞 / 区划在场扫描），不是 A*
+7. **测试**：`test_campaign_ai` 新增 22 条（静默不生成路线 / 开关关掉回旧行为 / 9 格唤醒 / 12 格重新静止 / `gap=1` vs `2` / 敌对区划失去归属后重新静止）；新增量尺 `tests/bench_garrison_alert.gd`（全图与客机视野两条快照口径）
+
+### 2026.11.2 招募读条改由将领决定 + 单位编辑器修好「派系兵种不在招募表」
+1. **数据**：新增 `unit.general.recruit_sec`（与 `unit.general.types` 同序，10 项，默认 **10 秒**）= 这位将领当兵营时**整批**读条几秒；`recruit.list[]` 与 `clan.list[].recruit[]` 里的 `train_sec` **全部删除**（共 20 条 —— 兵种自己不再有读条时间）
+2. **逻辑**：`world.leader_recruit_sec(leader)`（真实对象 / 假队长字典都收）→ `_start_training` 用它开读条；`config.general_recruit_sec(i)` 现读 JSON，缺项 / 越界 / ≤0 退回 `recruit.batch_sec`（仍是 10 秒，老配置行为不变）。口径 = 用户原话：「无论队列长短、队列中的单位类型如何，招募时间始终由招募单位的将领决定，默认 10」
+3. **HUD**：单位页悬停的「读条 X 秒」改成显示**招兵那位将领**的值（`_unit_recruit_sec()`）；区划招将页仍读 `recruit.zone.list[].train_sec`（那是「招这位将领出来」的读条，另一件事）
+4. **单位编辑器（修 bug）**：招募条目定位从「只查全局 `recruit.list`」改成「全局 + `clan.list[].recruit[]`」—— 王朝 / 帝国的派系兵种现在**能读出造价**、也能直接改（写回它实际所在的那张表，标题会写 `clan:dynasty` 这样的来源），不再误报「不在招募表」
+5. **单位编辑器（组合单位）**：协防军枪 / 弓、御林军剑盾 / 弓 / 着甲骑这 5 个**零件**没有自己的招募条目（由「协防军」/「御林军」整包 `spawn`），现在列表显示「随「协防军」」、详情页说明「整包生成、造价在那一单上」，既不谎报也没有改不动的输入框
+6. **单位编辑器（读条）**：单位页的「招募秒」整栏移除；将领页新增 **「招兵读条」**（写 `unit.general.recruit_sec[i]`，清空 = 回默认 10），将领列表那一列改成「招兵秒」；原「招募时间」改名为「区划招募读条」以免和它混淆
+7. **单位编辑器（新增一栏）**：左下多了 **「组合招募单（一次出多个兵）」** —— 协防军（`dy_guard`）/ 御林军（`dy_royal`）的 `kind` **不是** `unit.types` 里的兵种，单位页永远列不出来，于是它们的**整包造价之前无处可改**（用户报的「找不到修改协防军招募消耗的条目」）。现在能改 名字 / 方框字 / 说明 / **整包**粮·金·人口，并只读显示「这一单会生成谁」；判据是「kind 在不在 `unit.types` 里」，以后再加这种单会自动出现
+8. **测试**：`test_recruit_queue` 新增 `_test_leader_recruit_sec`（默认 10 / 改将领后跟着变 / 加单与兵种都不影响 / 已在读的批次不重算，**272 项**）；`test_unit_types` / `test_retinue` / `test_clan` 改用 `leader_recruit_sec` 等；编辑器 `test_model` **789 项** / `test_app` **238 项**（新增派系兵种造价读写、组合零件显示、组合招募单整包造价三组）
+
+### 2026.11.2 王朝战车换成专属原画（第八个由占位转真素材的派系兵种）
+1. `data/config.json`：`unit.types.dy_chariot` 从**占位**（`sprite` 留空 + `sprite_tint = faction`）改为**专属原画** —— 新增 `sprite = res://assets/units/dy_chariot.png`、`sprite_tint` 改为 `art`；数值 / 特性 / 冲锋参数一行未动
+2. 素材来自 `art_draft/units/王朝战车.png`（512×384），按既有约定落到 `assets/units/<兵种 id>.png`，并由 Godot 真正导入（`dy_chariot.png.import`，`compress/mode=0`，与其余兵种原画同参）—— 只写路径不导入会让渲染层**静默退回剪影**
+3. **立牌尺寸按用户口径显式覆盖**：单兵 1×1 ⇒ 战车 `sprite_ratio = [2, 1.5]`（器械大类默认是 2×1）。画布变成 128×96，原画 4:3 正好占满 —— 实测内容 118×84、占牌宽 **92%**、底边贴地，既没有拉伸变形，也没有 2×1 时那圈左右空档
+4. `tests/test_unit_art.gd` 的 `CLAN_ART_TYPES` 加入 `dy_chariot`（七个 → 八个），并新增 `RATIO_OVERRIDES` 表把「显式覆盖比例」与「按大类默认」区分开：路径 / 导入 / art 档 / 文件名 = 兵种 id / 立牌比例 / 烘图有实质像素 / 两两不同全部覆盖（**112 项**）；`config.json`、`view/unit_sprite_3d.gd`、`view/unit_view_3d.gd` 的注释同步成「八个 / 战车 2×1.5」
+5. 地图单字仍显示 `icon`（战），悬停白边 / 选中金边的口径不变 —— 三档描边都是运行时按阵营烘的，不需要新素材
+
+### 2026.11.2 单位冲锋（被动动量）实装
+1. 新增 `unit.types.<id>.charge` 数据块：`min_distance / max_distance / turn_max_deg / speed_bonus / damage_bonus / knock_distance / knock_stun_sec / splash_radius / splash_damage_ratio / cooldown_sec`
+2. 7 个近战骑兵 / 战车获得冲锋：骑手 / 骑士 / 斥候 / 御林军骑兵 / 帝国骑手 / 冠军骑士 / 战车；远程骑兵（马弓手 / 游侠）不冲锋
+3. 触发 = 连续直线移动达到阈值；急转、停下、被击退/眩晕、新命令、到达终点清零；`halt()` 故意不清（保证接触瞬间打出冲锋）
+4. 首次近战接触立即结算额外伤害 + 击退；战车额外有范围伤害 / 范围击退；帝国科技「骑士精神」`charge_damage_mult` 加法追加 +100%
+5. 表现：阵营色立牌发光（`INSTANCE_CUSTOM.b`）+ 脚下尘环 + 命中冲击波圈 + 复用受击闪白/音效；无新图片 / 音频素材
+6. `unit_editor` 单位页新增「冲锋」section；`buff_editor` 的 `charge_damage_mult` 说明改为真实语义
+7. 新增 `tests/test_charge.gd`（52 项）；`test_clan_tech` / `test_unit_editor` / 编辑器测试全过；`test_view3d` 有一条**既有**的建筑贴地断言失败（改动前基线同样失败，与冲锋无关）
+
 ### 2026.10.31 修复长按命令卡后移出按钮松手、填充一直保持的 bug
 1. 根因：`view/fill_button.gd` 的 `_on_button_up()` 无条件把 `_hovered` 写回 `true`。事件顺序是「长按 → 移出按钮（`mouse_exited` 把悬停清掉）→ 松手（`button_up` 又写回 true）」⇒ 之后再也没有 `mouse_exited` 来清它，`_goal()` 一直是 1，填充永远停在满格
 2. 修复：动画器新增 `_pointer_down` / `_left_while_pressed` 两个状态位；`mouse_exited` 只在**按住期间**记下「离开过」，`_on_button_up()` 按这一位决定是否把悬停钉回去（离开过就保持 false，走 `DRAIN_TIME` 反向渐出）

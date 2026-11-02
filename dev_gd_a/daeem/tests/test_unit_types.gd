@@ -189,7 +189,10 @@ func _test_recruit_list(cfg) -> void:
 		ok(w.is_recruitable(tt), "★ %s 在 config.recruit.list 里" % tt)
 		ok(w.recruit_short_of(tt) != "", "%s 有短名（信息栏格子要写）" % tt)
 		ok(w.recruit_label_of(tt) != tt, "%s 有显示名" % tt)
-		ok(w.recruit_train_sec(tt) > 0.0, "%s 有读条时间" % tt)
+		# ★★ 2026.11.2：兵种自己**不再有**读条时间 —— 读条由「招它的将领」决定
+		#   （config.unit.general.recruit_sec，默认 10；见 world.leader_recruit_sec）。
+		eq(w.recruit_train_sec(tt), 0.0,
+			"★ %s 自己**没有**读条时间（读条归将领）" % tt)
 
 	var before: int = w.retinue_of(g1.id).size()
 	for tt in want:
@@ -198,7 +201,8 @@ func _test_recruit_list(cfg) -> void:
 		#   这里只验「七种兵都能被正确生成」，行号门槛在 test_base_limits 里单独验。
 		ok(w.start_recruit(k, g1.id, "p1", true), "排 %s 进队列" % k)
 		# 一单一单等它读完：队列上限 5，七单连着排会撞上限。
-		var secs: float = w.recruit_train_sec(k) + 0.2
+		# ★ 2026.11.2：读条时长 = **招兵这位将领**的属性（leader_recruit_sec）。
+		var secs: float = w.leader_recruit_sec(g1) + 0.2
 		for _i in int(ceil(secs / DT)):
 			w.tick(DT)
 	eq(w.retinue_of(g1.id).size(), before + want.size(), "★ 七单都读完了（名下多 7 个）")

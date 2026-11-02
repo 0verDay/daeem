@@ -489,7 +489,7 @@ func _test_expedition(cfg) -> void:
 
 
 # ==================================================================
-# 12) 骑士精神：可启用但当前无效果（冲锋未实装）
+# 12) 骑士精神：冲锋命中额外 +100% 伤害
 # ==================================================================
 
 func _test_chivalry(cfg) -> void:
@@ -499,16 +499,19 @@ func _test_chivalry(cfg) -> void:
 	_pump_gold(w)
 	var e: Dictionary = cfg.tech_entry("dg_chivalry")
 	ok(not e.is_empty(), "★ 骑士精神在表里")
-	ok(String(e.get("desc", "")).contains("尚未实装"), "★★ 详情里写清了「冲锋尚未实装」")
+	ok(not String(e.get("desc", "")).contains("尚未实装"),
+		"★★ 详情里不再写「冲锋尚未实装」")
 	ok(w.set_tech_active("dg_chivalry", true, "p2"), "★ 能启用（不报错）")
 	var eff: Dictionary = w.tech.effects_of("p2")
 	near(float(eff.get("charge_damage_mult", 0.0)), 1.0, 1e-9,
-		"★ 聚合里有 charge_damage_mult（占位）")
-	# 但**没有任何读取处**：攻击 / 防御 / 移速都不受影响
+		"★ 聚合里有 charge_damage_mult = 1.0")
+	near(w.tech_charge_add("p2"), 1.0, 1e-9,
+		"★★ 骑士精神提供 +1.0 的冲锋伤害（加法）")
+	# 只作用于冲锋命中：攻击 / 防御 / 移速都不受影响
 	var u = _mk_unit(w, cfg, "ch_u", "dg_champion", "p2")
 	if u == null:
 		return
-	near(w.tech_attack_mult(u), 1.0, 1e-9, "★★ 攻击不受影响（冲锋还没实装）")
+	near(w.tech_attack_mult(u), 1.0, 1e-9, "★★ 普通攻击不受影响")
 	near(w.tech_armor_mult("p2"), 1.0, 1e-9, "★★ 防御不受影响")
 	near(w.tech_speed_mult("p2"), 1.0, 1e-9, "★★ 移速不受影响")
 

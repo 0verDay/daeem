@@ -435,7 +435,8 @@ func _test_recruit(cfg) -> void:
 			"kind": "recruit", "unit_kind": other, "leader_id": g2.id, "faction": "p1"}),
 			"将领 2 名下也能排 %s" % other)
 		# 一单一单等它读完（队列上限 5；七单一起排会撞上限）。
-		for _j in int(ceil((float(w.recruit_train_sec(other)) + 0.2) / DT)):
+		# ★ 2026.11.2：读条时长 = 招兵这位将领的属性（不再是兵种的 train_sec）。
+		for _j in int(ceil((float(w.leader_recruit_sec(g2)) + 0.2) / DT)):
 			w.tick(DT)
 	eq(w.retinue_of(g2.id).size(), per + unit_kinds.size(),
 		"★ 七个兵种各招一个之后，名下多了 %d 个" % unit_kinds.size())

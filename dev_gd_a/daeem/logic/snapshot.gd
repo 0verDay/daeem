@@ -79,6 +79,12 @@ static func _unit_fields(u) -> Dictionary:
 		#   缺字段 = 老快照 ⇒ 保持本地现状（与其它字段同一条约定）。
 		"gt": u.general_trait if u.general_trait != "" else null,
 		"ga": u.aura_trait_id if u.aura_trait_id != "" else null,
+		# ★★ 冲锋（2026.11）：客机不 tick 逻辑，但要用 `ch` 画立牌发光 / 脚下尘环。
+		#   `cc` = 冷却剩余秒，`ca` = 是否已进入冲锋态（便于客机做「命中那一帧」的兜底表现）。
+		#   ★ 这三项都是**纯表现 / 状态回显**：客机不据此结算伤害（伤害在房主侧算）。
+		"ch": round2(u.charge_ratio),
+		"cc": round2(u.charge_cd),
+		"ca": 1 if u.charge_armed else 0,
 	}
 
 
@@ -164,6 +170,16 @@ static func _unit_delta(u, prev: Dictionary) -> Dictionary:
 	var ga: Variant = u.aura_trait_id if u.aura_trait_id != "" else null
 	if prev["ga"] != ga:
 		out["ga"] = ga
+	# ★★ 冲锋表现状态：`ch` 是连续值（每帧都可能变），`ca` 是布尔，`cc` 是冷却。
+	var ch := round2(u.charge_ratio)
+	if prev["ch"] != ch:
+		out["ch"] = ch
+	var cc := round2(u.charge_cd)
+	if prev["cc"] != cc:
+		out["cc"] = cc
+	var ca := 1 if u.charge_armed else 0
+	if prev["ca"] != ca:
+		out["ca"] = ca
 	return out
 
 
@@ -511,6 +527,16 @@ static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void:
 			u.morale = clampf(float(su["mo"]), 0.0, u.morale_max)
 		if su.has("nz"):
 			u.neutralized = int(su["nz"]) != 0
+		# ★★ 冲锋表现状态：缺字段 = 老快照 ⇒ 保持本地现状（与其它字段同一条约定）。
+		if su.has("ch"):
+			u.charge_ratio = clampf(float(su["ch"]), 0.0, 1.0)
+		if su.has("cc"):
+			u.charge_cd = maxf(0.0, float(su["cc"]))
+		if su.has("ca"):
+			u.charge_armed = int(su["ca"]) != 0
+		elif su.has("ch"):
+			# 只带进度没带 armed 的快照（兼容口径）：满进度视为已进入冲锋态。
+			u.charge_armed = u.charge_ratio >= 0.999
 		u.moving = bool(su.get("m", 0))
 		# 队长 id：缺字段就保持本地现状（同上，别把「没有队长」当成默认值覆盖掉）
 		var ld: Variant = su.get("ld", null)

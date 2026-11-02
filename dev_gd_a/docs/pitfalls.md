@@ -359,6 +359,22 @@ SCRIPT ERROR: Invalid assignment of property or key 'selected' ... on a base obj
 新加这类「逻辑对象上的表现字段」时，记得两件事：
 在 `logic/` 里声明它（写上「这不是权威状态」的注释），并在 `test_view.gd` 里覆盖到。
 
+### 2.8 ★★ 冲锋：`halt()` 不能清冲锋、速度有两份、转向必须对比起始方向
+
+2026.11 实装被动冲锋时踩到的四条（都写进了 `logic/unit.gd` / `combat.gd` 的注释）：
+
+1. **`halt()` 绝对不能调 `clear_charge()`**：`combat.update_combat()` 进入攻击距离时是
+   「先 `halt()` 站住 → 再 `attack_unit()`」。在 halt 里清冲锋 ⇒ 冲刺到脸上的那一帧永远
+   打不出冲锋。清冲锋只放在：新命令、`stop()`、被击退/眩晕、到达终点、死亡/濒死。
+2. **移速有两份**：`unit.speed()` 与 `step_along_path()` 里内联的那份。冲锋速度加成
+   （`1 + charge.speed_bonus`）必须两处同时乘，否则「面板变快、实际没变」。
+3. **转向判定要对比「冲锋起始方向」**，不能对比上一帧方向：`pathfinder.round_corners()`
+   会把 90° 硬弯摊到十几帧里，每帧只转几度，逐帧比较永远超不过 `turn_max_deg` ⇒ 缓弯断不了。
+4. **MultiMesh 的 `.b` 通道与写入顺序**：冲锋进度走 `INSTANCE_CUSTOM.b`（`.r` 闪白 / `.g` 悬停），
+   `use_custom_data = true` 必须在 `instance_count` **之前**设；`.b` 只能在 vertex 读
+   （`INSTANCE_CUSTOM` 在 fragment 里不存在）。新增自定义数据字段时，脏检查数组
+   （`last_flash / last_uid / last_hover / last_charge`）要同步加，否则槽位换人会继承上一任的值。
+
 ---
 
 ## 三、从 HTML 版继承的坑（不要重犯）
