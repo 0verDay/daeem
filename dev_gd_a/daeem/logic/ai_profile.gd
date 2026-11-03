@@ -112,6 +112,10 @@ const DEFAULTS := {
 			"trigger_low_spend": 600.0, # 低阶累计花费（粮 + 2×金）到这个数才开始倾斜
 			"elite_to_low": 0.5,        # 目标比例 高阶:低阶 花费 = 0.5 ⇒ 1:2
 			"min_sec": 90.0,            # 开局这段时间内不许倾斜（先把场面铺开）
+			# ★★ 2026.11（第二轮）：**前排成型**才允许把高阶钱花在「后排」（投石车 / 弩炮）
+			#   上。判据：前排数量 ≥ frontline_ready_min 且 前排占比 ≥ frontline_ready_ratio。
+			"frontline_ready_min": 4,
+			"frontline_ready_ratio": 0.55,
 		},
 		"composition": [
 			{"type": "spearman", "weight": 0.42},

@@ -17,10 +17,13 @@ signal see_ai_pressed
 signal quit_requested
 signal page_changed(page: String)
 signal map_open_changed(open: bool)
+## ★★ 备战页开 / 关：给 start_screen 用（左侧雕版轮播要跟着渐隐 / 恢复）。
+signal prepare_open_changed(open: bool)
 
 const LayoutRes = preload("res://view/menu_deck_layout.gd")
 const ThemeRes = preload("res://view/theme.gd")
 const MainPanelRes = preload("res://view/main_menu_panel.gd")
+const PreparePanelRes = preload("res://view/prepare_panel.gd")
 const CampaignPanelRes = preload("res://view/campaign_map_panel.gd")
 const CampaignDetailRes = preload("res://view/campaign_detail_panel.gd")
 const CoopStartRes = preload("res://view/coop_start_panel.gd")
@@ -31,6 +34,7 @@ const SessionRes = preload("res://view/coop_session.gd")
 const TextButtonRes = preload("res://view/menu_text_button.gd")
 
 const PAGE_MAIN := "main"
+const PAGE_PREPARE := "prepare"
 const PAGE_CAMPAIGN := "campaign"
 const PAGE_DETAIL := "detail"
 const PAGE_COOP_START := "coop_start"
@@ -45,6 +49,7 @@ var cfg = null
 var font: Font = null
 
 var _main = null
+var _prepare = null
 var _campaign = null
 var _detail = null
 var _coop_start = null
@@ -86,6 +91,15 @@ func setup(p_cfg, p_font: Font) -> void:
 	var ww := LayoutRes.wide_w(size.x)
 	var h := size.y
 
+	# ★★ 备战页必须**先于**主面板加进树：主面板上滑之后，剩下的那条动作条
+	#    要压在备战页之上；子节点顺序就是绘制顺序（后加的在上）。
+	_prepare = PreparePanelRes.new()
+	add_child(_prepare)
+	_prepare.position = Vector2.ZERO
+	_prepare.size = size
+	_prepare.setup(cfg, font)
+	_prepare.back_pressed.connect(close_prepare)
+
 	_main = MainPanelRes.new()
 	add_child(_main)
 	_main.position = Vector2(size.x - sw, 0.0)
@@ -94,6 +108,7 @@ func setup(p_cfg, p_font: Font) -> void:
 	_main.campaign_pressed.connect(goto_campaign)
 	_main.coop_pressed.connect(goto_coop_start)
 	_main.quit_pressed.connect(func(): quit_requested.emit())
+	_main.prepare_pressed.connect(goto_prepare)
 
 	var test_label := String(cfg.str_val(
 		"menu.deck.main.ai_test_button", DEFAULT_AI_TEST_BUTTON)).strip_edges()
@@ -209,6 +224,10 @@ func menu_main():
 	return _main
 
 
+func prepare_panel():
+	return _prepare
+
+
 func campaign_panel():
 	return _campaign
 
@@ -278,6 +297,13 @@ func reset_to_main(instant: bool = true) -> void:
 		_session.leave_all()
 	if _coop_start != null:
 		_coop_start.set_ai_joined(false)
+	var was_prepare: bool = _page == PAGE_PREPARE or (_prepare != null and _prepare.visible)
+	if _prepare != null:
+		_prepare.stop_breathing()
+		_prepare.visible = false
+		_prepare.set_glows(false, false)
+	if _main != null:
+		_main.set_prepare_latched(false)
 	_map_open = false
 	_map_picker.visible = false
 	_map_picker.set_glows(false, false)
@@ -292,6 +318,8 @@ func reset_to_main(instant: bool = true) -> void:
 	_main.set_content_alpha(1.0)
 	_main.set_logo_visible(true)
 	_main.set_sidebar_dimmed(false, instant)
+	if was_prepare:
+		prepare_open_changed.emit(false)
 	page_changed.emit(_page)
 
 
@@ -310,6 +338,52 @@ func goto_main() -> void:
 	if _coop_start != null and _coop_start.visible:
 		moves.append(_move(_coop_start, _coop_start.position.x, size.x, false))
 	moves.append(_move(_main, _main.position.x, size.x - LayoutRes.side_w(size.x), false))
+	_animate(moves, PAGE_MAIN)
+
+
+## ★★ 主菜单 → 备战页。
+##
+## 三件事同时发生（用户口径）：
+##   ① 主菜单整体**上滑**，只留下底部那条「自定义 / 备战」；
+##   ② 备战页淡入（返回条 / 两块面板 / 右侧两枚按钮）；
+##   ③ 左侧雕版轮播图渐隐（start_screen 收到 prepare_open_changed 后执行）。
+## 备战按钮的金色填充在按下时就由 panel 锁成常驻，因此上滑全程保持金色。
+func goto_prepare() -> void:
+	if _busy or _page == PAGE_PREPARE or _prepare == null:
+		return
+	var sw := LayoutRes.side_w(size.x)
+	var top_y: float = -(size.y - LayoutRes.PREP_HEADER_H)
+	_prepare.visible = true
+	_prepare.position = Vector2.ZERO
+	_prepare.modulate.a = 0.0
+	_prepare.start_breathing()
+	_prepare.reset_scroll()
+	_main.set_prepare_latched(true)
+	prepare_open_changed.emit(true)
+	var moves: Array = [
+		_move(_main, _main.position.x, size.x - sw, false, _main.position.y, top_y),
+		_move(_prepare, 0.0, 0.0, true, 0.0, 0.0),
+	]
+	_animate(moves, PAGE_PREPARE)
+
+
+## ★★ 备战页 → 主菜单：主菜单滑回原位、备战页淡出、轮播图重新渐显、
+## 备战按钮解除常驻（金色在 0.08s 内反向渐出）。
+func close_prepare() -> void:
+	if _busy or _page != PAGE_PREPARE:
+		return
+	# ★ 不在这里停呼吸 / 不在这里解除「备战」的金色常驻：
+	#   · 呼吸早停会把字瞬间拉回全亮，而页面正在淡出 —— 看着像闪一下；
+	#   · 金色在返回途中继续保持，等主菜单落回原位的那一拍才反向渐出
+	#     （见 `_finish_moves()`）。
+	prepare_open_changed.emit(false)
+	var out := _move(_prepare, 0.0, 0.0, false, 0.0, 0.0)
+	out["fade_out"] = true
+	var moves: Array = [
+		_move(_main, _main.position.x, size.x - LayoutRes.side_w(size.x), false,
+			_main.position.y, 0.0),
+		out,
+	]
 	_animate(moves, PAGE_MAIN)
 
 
@@ -481,6 +555,8 @@ func back() -> bool:
 		close_map_picker()
 		return true
 	match _page:
+		PAGE_PREPARE:
+			close_prepare()
 		PAGE_CAMPAIGN:
 			goto_main()
 		PAGE_DETAIL:
@@ -566,8 +642,10 @@ func _on_map_confirmed(entry: Dictionary) -> void:
 # 转场 / 布局
 # ------------------------------------------------------------------
 
-func _move(panel: Control, from_x: float, to_x: float, fade: bool) -> Dictionary:
-	return {"panel": panel, "from": from_x, "to": to_x, "fade": fade}
+func _move(panel: Control, from_x: float, to_x: float, fade: bool,
+		from_y: float = 0.0, to_y: float = 0.0) -> Dictionary:
+	return {"panel": panel, "from": from_x, "to": to_x, "fade": fade,
+		"from_y": from_y, "to_y": to_y}
 
 
 func _animate(moves: Array, page: String, delay: float = 0.0) -> void:
@@ -587,7 +665,8 @@ func _animate(moves: Array, page: String, delay: float = 0.0) -> void:
 	for m in moves:
 		var p: Control = m["panel"]
 		p.visible = true
-		p.position.x = float(m["from"])
+		p.position = Vector2(float(m["from"]), float(m.get("from_y", 0.0)))
+		# fade = 整块从 0 渐显；fade_out = 从 1 渐隐；两者都从 0/1 起。
 		p.modulate.a = 0.0 if bool(m["fade"]) else 1.0
 	_apply_dims(page)
 	_sync_glows(page, true, moves)
@@ -599,8 +678,13 @@ func _animate(moves: Array, page: String, delay: float = 0.0) -> void:
 		var p: Control = m["panel"]
 		tw.tween_property(p, "position:x", float(m["to"]), sec) \
 			.set_trans(Tween.TRANS_QUINT).set_ease(Tween.EASE_IN_OUT)
+		if not is_equal_approx(float(m.get("from_y", 0.0)), float(m.get("to_y", 0.0))):
+			tw.tween_property(p, "position:y", float(m["to_y"]), sec) \
+				.set_trans(Tween.TRANS_QUINT).set_ease(Tween.EASE_IN_OUT)
 		if bool(m["fade"]):
 			tw.tween_property(p, "modulate:a", 1.0, FADE_SEC)
+		elif bool(m.get("fade_out", false)):
+			tw.tween_property(p, "modulate:a", 0.0, FADE_SEC)
 	_tween = tw
 	tw.chain().tween_callback(func():
 		_tween = null
@@ -613,6 +697,12 @@ func _animate(moves: Array, page: String, delay: float = 0.0) -> void:
 
 func _finish_moves(_moves: Array, page: String) -> void:
 	_page = page
+	if page != PAGE_PREPARE:
+		if _prepare != null:
+			_prepare.stop_breathing()
+		# 离开备战页的落点才解除「备战」的常驻金：返回途中它仍是当前页签。
+		if _main != null:
+			_main.set_prepare_latched(false)
 	_refresh_ai_test_btn(page)
 	_refresh_see_ai_btn(page)
 	var keep: Array = _visible_for(page)
@@ -626,6 +716,8 @@ func _visible_for(page: String) -> Array:
 	match page:
 		PAGE_MAIN:
 			return [_main]
+		PAGE_PREPARE:
+			return [_prepare, _main]
 		PAGE_CAMPAIGN:
 			return [_main, _campaign]
 		PAGE_DETAIL:
@@ -641,7 +733,7 @@ func _visible_for(page: String) -> Array:
 
 
 func _hide_all_except(keep: Array) -> void:
-	for p in [_main, _campaign, _detail, _coop_start, _coop_room, _coop_ready]:
+	for p in [_prepare, _main, _campaign, _detail, _coop_start, _coop_room, _coop_ready]:
 		if p != null and not keep.has(p):
 			p.visible = false
 
@@ -651,6 +743,7 @@ func _apply_layout(page: String, instant: bool) -> void:
 	var ww := LayoutRes.wide_w(size.x)
 	var h := size.y
 	_main.size = Vector2(sw, h)
+	_prepare.size = size
 	_campaign.size = Vector2(ww, h)
 	_detail.size = Vector2(sw, h)
 	_coop_start.size = Vector2(ww, h)
@@ -662,6 +755,12 @@ func _apply_layout(page: String, instant: bool) -> void:
 		PAGE_MAIN:
 			_main.position = Vector2(size.x - sw, 0.0)
 			_main.visible = true
+		PAGE_PREPARE:
+			# 主菜单整体上滑，只留下最后 MAIN_BOTTOM_H 高的底部动作条。
+			_main.position = Vector2(size.x - sw, -(h - LayoutRes.PREP_HEADER_H))
+			_main.visible = true
+			_prepare.position = Vector2.ZERO
+			_prepare.visible = true
 		PAGE_CAMPAIGN:
 			_main.position = Vector2(0.0, 0.0)
 			_main.visible = true
@@ -717,7 +816,9 @@ func _active_for(page: String) -> int:
 
 func _apply_dims(page: String) -> void:
 	if _main != null:
-		_main.set_sidebar_dimmed(page != PAGE_MAIN, false)
+		# ★ 备战页的主菜单虽然左移/上滑了，但它露出来的那条动作条必须是**亮**的：
+		#   既不加灰层，也不许清掉「备战」的常驻金（见 main_menu_panel.set_prepare_latched）。
+		_main.set_sidebar_dimmed(page != PAGE_MAIN and page != PAGE_PREPARE, false)
 	if _campaign != null:
 		_campaign.set_sidebar_dimmed(page == PAGE_DETAIL, false)
 	if _coop_start != null:
@@ -756,6 +857,8 @@ func _sync_glows(page: String, animate: bool, moves: Array = []) -> void:
 ## 这一页是「前景页」：其余可见面板都退成侧栏。
 func _focused_panel_for(page: String) -> Control:
 	match page:
+		PAGE_PREPARE:
+			return _prepare
 		PAGE_CAMPAIGN:
 			return _campaign
 		PAGE_DETAIL:
@@ -771,7 +874,7 @@ func _focused_panel_for(page: String) -> Control:
 
 
 func _all_panels() -> Array:
-	return [_main, _campaign, _detail, _coop_start, _coop_room, _coop_ready]
+	return [_main, _prepare, _campaign, _detail, _coop_start, _coop_room, _coop_ready]
 
 
 func _on_resized() -> void:

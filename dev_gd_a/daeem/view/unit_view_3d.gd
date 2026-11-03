@@ -867,6 +867,29 @@ func head_screen_pos(u) -> Vector2:
 	return palette.cam.unproject_position(w)
 
 
+## ★★ 立牌**头顶**的世界坐标（3D 标记用，如「指定攻击」头顶的行军图标）。
+## 与 `head_screen_pos()` **同一个口径**，只是不投到屏幕；位置走 `_render_pos`，
+## 所以客机 9Hz 快照下图标会和立牌一起平滑移动，不会一帧一跳。
+func head_world_of(u) -> Vector3:
+	if palette == null:
+		return Vector3.ZERO
+	var w: Vector3 = palette.to_world(_render_pos(u))
+	w.y = _quad_cells_of(String(u.unit_type)).y * _cell
+	return w
+
+
+## 立牌的**落地脚印宽度**（格，= 立牌宽）：攻击标记的脚下圆环按它放大。
+## ★ 器械类（投石车）宽 2 格 ⇒ 圈也更大；骑兵 1 格宽、只是更高，圈不跟着变高。
+func footprint_of(u) -> float:
+	return _quad_cells_of(String(u.unit_type)).x
+
+
+## 这个单位现在该不该画（迷雾口径）。给别的视图（如攻击标记）复用，
+## 免得把 `_visible_to_me` 的判据再抄一份、抄漏「己方永远可见」。
+func visible_to_me(u) -> bool:
+	return _visible_to_me(u)
+
+
 ## 这个单位**这一帧该画在哪**（格）——房主 / 单机 = `u.pos`；客机 = 两条快照之间插值。
 ##
 ## ★★ 2026.10.27：视图层一律走这一个入口，不要直接读 `u.pos` ——

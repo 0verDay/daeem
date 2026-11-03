@@ -101,6 +101,60 @@ python tools/bake_unit_sprites.py --src <素材目录> --out <输出目录> --ar
 改了 `art_draft/test_assets` 的源图、`art_draft/` 根目录的原画、或改了某个兵种的 `icon` 之后重跑一次即可；
 跑完让 Godot 导入（`--headless --import`）再进游戏。
 
+## bake_unit_card_icon.py —— 烘命令卡 / 科技格的**图标蒙版**（兵种 / 建筑 / 科技）
+
+```powershell
+python tools/bake_unit_card_icon.py                        # 出对比图（不写 assets/）
+python tools/bake_unit_card_icon.py --only rider,catapult --ascii
+python tools/bake_unit_card_icon.py --commit --style etch
+```
+
+一次烘**三套**东西，产物都在 `assets/ui/card_icon/`（384×384）：
+
+| 前缀 | 来源 | 画法 |
+|---|---|---|
+| `<原画文件名>` | 兵种的 2D 原画 | 抠黑描边 → **细化成中线** → 加粗 |
+| `combo_<条目 kind>` | 一次出 2/3 个兵的组合条目 | 小人在各自格子里单独取线，摆成「o o」/「o + o o」 |
+| `building_<建筑类型>` | `view/building_view_3d.gd` 的 `BUILDING_MODELS`（.glb） | 抽折角边 + z-buffer 消隐 → **等轴测线稿** |
+| `tech_<科技 id>` | 没有原画，按名字手画 | `TECH_SHAPES` 里的矢量占位图形 + 阶数点 |
+
+- **源清单不写死**：兵种读 `data/config.json` 里所有非空 `sprite`（现在 15 张），
+  建筑读 `BUILDING_MODELS`（现在 8 个可建造的），科技读 `tech.list` + `tech.clan_list`（22 条）。
+  加了兵种 / 建筑 / 科技，脚本自动跟上。
+- **组合条目也自动跟上**：config 里带 `spawn`（≥2 个兵种）的招募条目会额外烘一张
+  `combo_<条目 kind>.png` —— 2 个排成「o o」、3 个排成「o」在上「o o」在下，
+  每个小人按自己的格子缩放、竖直居中，整块仍留 6% 外边距（`combo_boxes()`）。
+- **三版风格**：`relief`（实心金浮雕）、`flat`（纯剪影 + 亮边）、
+  `etch`（**金线线稿，当前采用**：把黑描边细化成一根中线再加粗，87px 下仍连续）。
+  `etch` 的两个关键点写在脚本的 ETCH_* 旁边：黑边阈值 0.16、连通域必须用 **8 连通**
+  （4 连通会把斜线判成碎点，整条线被当噪点删掉 —— 这就是「线断成一节一节」的成因）。
+- **建筑不是「描 3D 渲染图」**：脚本直接读 .glb 的顶点 / 三角，按折角阈值取边，
+  再用 z-buffer 做消隐，等轴测投影（方位 42°、俯角 28°）之后画线。三个坑都写在
+  `_visible_edges` / `_zbuffer` / `bake_building` 旁边：**薄壳的边界边要无条件保留**
+  （否则墙像被切掉一半）、**深度方向别写反**（写反只剩几根线）、**空像素要单独判**
+  （zb 是 inf 时 `zz <= inf` 恒真，背后看不见的边会漏画成悬空线）。
+  另外每条边按采样点判可见，**短缺口会被补齐**（≤6 个采样点）—— 这是「割裂感」的正解。
+- **科技是占位**：`TECH_SHAPES` 里一条科技一组折线，右下角点数 = 阶数。
+  以后有真原画，换掉同名 png 即可，运行时不用改。
+- **产物约定**（`--commit`）：
+  · `relief` / `flat`：**RGB = 明暗 / A = 形状**；
+  · `etch`：**RGB = 白 / A = 线覆盖率**（乘主题金就是纯金线）。
+  运行时不加 shader，直接 `draw_texture_rect(tex, rect, false, ink)` —— `ink`（主题金）
+  乘上去就上色，换皮肤不用重烘，锁灰档与悬停压金翻面自动继承（见 `view/unit_card_icon.gd`）。
+- **`.import` 里要开 mipmap**（`mipmaps/generate=true`）：384 → 86.67 的缩量很大，
+  不开 mipmap 细线会闪。`--commit` 会**自动**把它打开（`_ensure_mipmaps()`），不用手改。
+  运行时的图标层用 `TEXTURE_FILTER_LINEAR_WITH_MIPMAPS`。
+- **`--preview`** 写到仓库根 `art_draft/card_icon/`：`preview_<style>.png`（220px 大图）、
+  `preview_small.png`（**真实格子尺寸 87px**，判断辨识度看这张）、`contact_sheet.png`，
+  另外 `preview_buildings.png` / `preview_techs.png` 是建筑与科技的单行大图。
+  ⚠️ 大图那几张必须**先把子图缩到格子大小再贴**（`_scaled()`）—— 早先直接贴 384px 原图会
+  互相压盖、右下被裁，「预览里有的单位只剩一角」就是那一步的锅，不是蒙版坏了。
+
+> ⚠️ 换了素材 / 改了风格要重跑 `--commit`，再 `--headless --import`。
+> 缺 `.import` 时 `ResourceLoader.exists()` 为 false，运行时会**静默退回矢量金线兜底** ——
+> 症状是「改了素材但画面没变」（与 `setup-font.ps1` 那个坑同一类）。
+
+
 ## 引擎路径
 
 `C:\D\GodotEngine\...` 只在本机成立。脚本允许用 `$env:GODOT_EXE` 覆盖，

@@ -49,6 +49,9 @@ const SquadPanelRes = preload("res://view/squad_panel.gd")
 const DetailPanelRes = preload("res://view/detail_panel.gd")
 const TroopGridRes = preload("res://view/troop_grid.gd")
 const CommandCardRes = preload("res://view/command_card.gd")
+## ★★ 命令卡格子里的**金线图标**（单位页不再写兵种名字，改画它）。
+##   hud 这一层只做「条目 → 兵种 id → 图形 role」的翻译，画法在 view/unit_card_icon.gd。
+const UnitCardIconRes = preload("res://view/unit_card_icon.gd")
 const PageTabsRes = preload("res://view/page_tabs.gd")
 const TechGridRes = preload("res://view/tech_grid.gd")
 const HoverTipRes = preload("res://view/hover_tip.gd")
@@ -1257,7 +1260,18 @@ func _rebuild_card() -> void:
 func _refresh_tech_grid(visible: bool) -> void:
 	if tech_grid == null or world == null:
 		return
-	tech_grid.set_entries(world.tech_entries())
+	# ★★ 给每条科技补上**图标路径**（`tech_<id>.png`，见 tools/bake_unit_card_icon.py 的
+	#   科技那一段：没有原画，是按名字画的占位金线图形）。
+	#   ★ 在这里补而不是让 tech_grid 自己查：与命令卡同一条边界 ——
+	#     格子控件只收路径字符串，不认识「兵种 / 建筑 / 科技 / 蒙版目录」这些事。
+	#   ★ 每个 dict 都 `duplicate()`：`world.tech_entries()` 返回的是逻辑层的字典，
+	#     直接往里塞键等于从视图改逻辑数据。
+	var list: Array = []
+	for item in world.tech_entries():
+		var e: Dictionary = (item as Dictionary).duplicate()
+		e["icon_mask"] = UnitCardIconRes.mask_for_tech(String(e.get("id", "")))
+		list.append(e)
+	tech_grid.set_entries(list)
 	tech_grid.set_visible_page(visible)
 
 
@@ -1858,12 +1872,15 @@ func _build_entries() -> Array:
 	return slots
 
 
-## 建筑页的一格（名字 / 说明 / tier）；具体落在哪一格由 `_build_entries()` 决定。
+## 建筑页的一格（名字 / 说明 / tier / 图标）；具体落在哪一格由 `_build_entries()` 决定。
 func _build_entry(e: Dictionary, bid: String, tier: int) -> Dictionary:
 	return {
 		"type": "build",
 		"build_type": bid,
 		"name": String(e.get("name", "")),
+		# ★★ 建筑图标：从 .glb 抽边线烘出来的等轴测线稿（见 tools/bake_unit_card_icon.py
+		#   的「建筑」那一段）。格子排版和单位页一致：图标 + 一行名字，说明进悬停面板。
+		"icon_mask": UnitCardIconRes.mask_for_building(bid),
 		"desc": "%s（也可点这一格）" % String(e.get("desc", "")),
 		"tier": tier,
 	}
@@ -1911,10 +1928,24 @@ func _recruit_entries(entry_type: String, list: Variant) -> Array:
 		if col < row_start or col >= row_start + 3 or col >= UiLayoutRes.CARD_SLOTS:
 			continue
 		next_slot[tier] = col + 1
+		var icon_type := _recruit_icon_type(e)
+		# ★★ 组合条目（一次出 2 / 3 个兵）用**它自己那张**蒙版：几个小人已经按
+		#   「o o」/「o + o o」摆好烘在图里了（见 tools/bake_unit_card_icon.py 的
+		#   `combo_boxes()`）。没有组合蒙版时退回「第一个兵种」那张单兵图。
+		var combo_mask := UnitCardIconRes.mask_for_combo(String(e.get("kind", "")))
 		slots[col] = {
 			"type": entry_type,
 			"unit_kind": String(e.get("kind", "")),
 			"name": String(e.get("label", e.get("kind", ""))),
+			# ★★ 这一格画哪张**图标**（需求：「招募单位的按钮内的文字改为图标」）。
+			#   主路径是 `icon_mask`（该兵种原画烘出来的金线蒙版，见
+			#   view/unit_card_icon.gd 与 tools/bake_unit_card_icon.py）；
+			#   `icon_role` 是蒙版缺失时的矢量兜底。
+			#   ★ 两张都由本层算好再塞进条目：命令卡不认识「兵种 / 原画 / 蒙版目录」
+			#     这三件事，它只收路径字符串。
+			"icon_mask": combo_mask if combo_mask != "" \
+				else UnitCardIconRes.mask_for_unit(cfg, icon_type),
+			"icon_role": UnitCardIconRes.role_of(cfg, icon_type),
 			"desc": String(e.get("desc", "")),
 			# ★★ 悬停详情要用的字段，一并带在条目里（见 `_hover_recruit`）：
 			#   两张招募表（recruit.list / recruit.zone.list）字段名一样，
@@ -1943,6 +1974,23 @@ func _recruit_entries(entry_type: String, list: Variant) -> Array:
 		if not bool(d["ready"]):
 			d["lock_reason"] = "tier"
 	return slots
+
+
+## 招募条目 → 拿哪个**兵种 id** 去取图标。
+##
+## ★ 组合条目（协防军一包 2 人 / 御林军一包 3 人）取**第一个生成兵种**的图形当作
+##   这一包的「脸」；整包到底出哪几个兵写在悬停详情面板里（见 `_hover_recruit`）。
+##   ⚠️ 不能直接拿 `kind`：`dy_guard` / `dy_royal` 是**组合条目的 id**，不是兵种 id
+##      （`cfg.unit_type_of("dy_guard")` 会退到兜底兵种，画出来的图标就是错的）。
+func _recruit_icon_type(e: Dictionary) -> String:
+	var spawn: Variant = e.get("spawn")
+	if typeof(spawn) == TYPE_ARRAY and not (spawn as Array).is_empty():
+		var first: Variant = (spawn as Array)[0]
+		if typeof(first) == TYPE_DICTIONARY:
+			var t := String((first as Dictionary).get("type", ""))
+			if t != "":
+				return t
+	return String(e.get("kind", ""))
 
 
 ## ★★ 招募页的内容：**固定九宫格**（#1-9）+ 每位将领的阶数 / 已拥有 / 冷却状态。

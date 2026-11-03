@@ -202,6 +202,10 @@ func coop_ready_panel():
 	return _menu_deck.coop_ready_panel() if _menu_deck != null else null
 
 
+func prepare_panel():
+	return _menu_deck.prepare_panel() if _menu_deck != null else null
+
+
 # ------------------------------------------------------------------
 # 输入
 # ------------------------------------------------------------------
@@ -319,11 +323,12 @@ func art():
 ## 否则两条补间会互相打架）。
 ##
 ## @param sec 时长；动效关掉或 sec <= 0 时**瞬间到位**（状态照常切）。
+## @param stop_after 淡出结束后是否停表（备战页会长时间盖住左区，停掉省电）。
 ##
 ## ★★ 曲线必须与 `menu_page.fade_glows()` **完全一致**（SINE / EASE_IN_OUT）：
 ##    入场那一下是「四角泛光与雕版同时渐显」，两条补间只要 easing 不同，
 ##    同一时刻两者的透明度就不一样 —— 用户看到的是「一个先亮」。
-func _fade_art(to: float, sec: float) -> void:
+func _fade_art(to: float, sec: float, stop_after: bool = false) -> void:
 	if _art == null or not is_instance_valid(_art):
 		return
 	if _art_tween != null and _art_tween.is_valid():
@@ -332,10 +337,33 @@ func _fade_art(to: float, sec: float) -> void:
 	to = clampf(to, 0.0, 1.0)
 	if not ThemeRes.animations_enabled() or sec <= 0.0:
 		_art.modulate.a = to
+		if stop_after:
+			_art.set_running(false)
 		return
 	_art_tween = create_tween()
 	_art_tween.tween_property(_art, "modulate:a", to, sec) \
 		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	if stop_after:
+		_art_tween.tween_callback(func():
+			if _art != null and is_instance_valid(_art):
+				_art.set_running(false))
+
+
+## 备战页开 / 关：左侧雕版轮播图渐隐 / 渐显。
+##
+## ★ 用户口径是「轮播图渐隐」而不是滑走：进入备战时主菜单只做**上滑**，
+##   左侧那块画不跟着横移，只是把透明度压到 0；返回时从 0 淡回来（不重启扫描，
+##   免得看起来像「又重头扫了一遍」）。
+func _on_prepare_open_changed(open: bool) -> void:
+	if _art == null or not is_instance_valid(_art):
+		return
+	var sec: float = cfg.num("menu.deck.prepare.art_fade_sec", 0.35) \
+		if cfg != null else 0.35
+	if open:
+		_fade_art(0.0, sec, true)
+	else:
+		_art.set_running(true)
+		_fade_art(1.0, sec)
 
 
 ## 左侧雕版在「面板完全显现之后」淡入的时长。
@@ -428,6 +456,7 @@ func _build_deck() -> void:
 	_menu_deck.ai_test_pressed.connect(func(): ai_test_pressed.emit())
 	_menu_deck.see_ai_pressed.connect(func(): see_ai_pressed.emit())
 	_menu_deck.quit_requested.connect(func(): quit_requested.emit())
+	_menu_deck.prepare_open_changed.connect(_on_prepare_open_changed)
 
 
 func _build_rule(parent: Control, node_name: String, y: float) -> Control:

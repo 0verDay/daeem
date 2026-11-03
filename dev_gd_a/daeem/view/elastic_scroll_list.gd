@@ -22,6 +22,12 @@
 ##   本文件不写死任何时长 / 阈值。下面那几个 DEFAULT_ 只用于「配置读不出来」时。
 extends Control
 
+## ★★ 拖动判定成立的那一刻发一次（松手 / 回弹之前不会再发）。
+## 给「列表项本身是 Button」的调用方用：鼠标按下已经被按钮吃掉，抬起又被
+## `_drag_overlay` 截住，按钮内部会留下 `is_pressed = true` 的残留 ——
+## 监听这个信号就可以把那个按钮按下态显式清掉（见 prepare_roster_list.gd）。
+signal drag_started
+
 const ConfigRes = preload("res://logic/config.gd")
 const ThemeRes = preload("res://view/theme.gd")
 
@@ -316,6 +322,7 @@ func _input(event: InputEvent) -> void:
 		if not _is_scrolling and absf(dy_t) >= _drag_min_px:
 			_is_scrolling = true
 			_attach_drag_overlay()
+			drag_started.emit()
 		if _is_scrolling:
 			_logical_offset = _start_offset - dy_t
 			_apply_offset()
@@ -359,6 +366,7 @@ func _input(event: InputEvent) -> void:
 		if not _is_scrolling and absf(dy) >= _drag_min_px:
 			_is_scrolling = true
 			_attach_drag_overlay()
+			drag_started.emit()
 		if _is_scrolling:
 			_logical_offset = _start_offset - dy
 			_apply_offset()

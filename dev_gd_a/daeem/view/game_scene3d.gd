@@ -28,6 +28,8 @@ const BuildingViewRes = preload("res://view/building_view_3d.gd")
 const ProjectileViewRes = preload("res://view/projectile_view_3d.gd")
 ## ★ 右键指令的 3D 旗子（移动 = 绿 / 行军 = 黄；无碰撞）
 const OrderFlagRes = preload("res://view/order_flag_view_3d.gd")
+## ★★ 「指定攻击」的目标标记（头顶行军图标 + 脚底红圈；见 view/attack_mark_view_3d.gd）
+const AttackMarkRes = preload("res://view/attack_mark_view_3d.gd")
 ## ★★ 冲锋命中冲击波（对象池；见 view/charge_fx_view_3d.gd）
 const ChargeFxRes = preload("res://view/charge_fx_view_3d.gd")
 ## 阵营色（冲锋冲击波用；与选中圈 / 旗帜同一套口径）
@@ -95,6 +97,8 @@ var buildings = null
 var projectiles = null
 ## ★ 右键指令的 3D 旗子（移动 = 绿 / 行军 = 黄）：由 `_on_command` 插 / 收，纯表现
 var order_flags = null
+## ★★ 「指定攻击」的目标标记（头顶行军图标 + 脚底红圈）：同样由 `_on_command` 上 / 收
+var attack_marks = null
 ## ★★ 冲锋命中冲击波层（纯表现；只读 `unit_charge` 事件）
 var charge_fx = null
 var overlay = null
@@ -633,6 +637,13 @@ func _assemble() -> void:
 	add_child(order_flags)
 	order_flags.setup(cfg, palette)
 
+	# ★★ 「指定攻击」的目标标记（头顶行军图标 + 脚底红圈）：右键**敌方建筑 / 单位**时出现，
+	#    每帧跟着目标走（单位的插值与建筑的模型顶边都由单位 / 建筑两层提供）
+	attack_marks = AttackMarkRes.new()
+	attack_marks.name = "AttackMarks3D"
+	add_child(attack_marks)
+	attack_marks.setup(cfg, palette, world, units, buildings)
+
 	# ★★ 冲锋命中冲击波（对象池）：事件驱动，暂停时冻结
 	charge_fx = ChargeFxRes.new()
 	charge_fx.name = "ChargeFx3D"
@@ -1031,6 +1042,8 @@ func _process(dt: float) -> void:
 	projectiles.sync()
 	# ★ 插旗动效由这里推进：暂停时传 0 ⇒ 动效跟着冻结（不会在暂停里偷偷播完）
 	order_flags.sync(dt if running else 0.0)
+	# ★★ 指定攻击的目标标记同理：每帧跟随目标，暂停时冻结
+	attack_marks.sync(dt if running else 0.0)
 	# ★★ 冲锋冲击波同理：暂停时冻结
 	charge_fx.sync(dt if running else 0.0)
 	# 地图边界金线的**扫描**（纯表现：只推一个 shader uniform）；暂停时照旧走
@@ -2021,21 +2034,50 @@ func _on_command(cmd: Dictionary) -> void:
 		hud.ai_panel.sync()
 
 
-## ★★ 右键指令的提示：在**目标点插一面 3D 旗子**（移动 = 绿 / 行军 = 黄）；
-##    `attack`（点名打某个目标）/ `stop` 不是「到点」指令 ⇒ 收掉旗子。
+## ★★ 右键指令的提示，两种形态：
+##   · `move` / `attack_move` → 在**目标点插一面 3D 旗子**（移动 = 绿 / 行军 = 黄）；
+##   · `attack`（**指定攻击**）→ 在**被点的敌方建筑 / 单位**身上打标记：
+##     头顶浮起**行军图标**（与插旗图标共用素材）、脚底泛一圈**红圈**
+##     （移动绿 / 行军黄 / 指定攻击红，同一张圆环贴图，见 view/command_mark_fx.gd）；
+##   · `stop` → 两种提示都收掉。
 ##
 ## ★ 只认「本机发出去的命令」（`command_issued` 只来自 input_controller），所以不会
-##   因为 AI / 事件的命令而插旗。旗子是**一次性插旗动效**（下落 / 波纹 / 缩放 / 渐隐），
-##   播完自己消失 —— **不**再按「部队是否到达」决定收旗。
+##   因为 AI / 事件的命令而插旗 / 打标记。两种提示都是**一次性动效**，播完自己消失 ——
+##   **不**再按「部队是否到达」决定收起。
 func _update_order_flag(cmd: Dictionary) -> void:
-	if order_flags == null:
-		return
 	var kind := String(cmd.get("kind", ""))
 	if kind == "move" or kind == "attack_move":
-		order_flags.plant(kind,
-			Vector2(float(cmd.get("x", 0.0)), float(cmd.get("y", 0.0))))
-	elif kind == "attack" or kind == "stop":
-		order_flags.clear()
+		if order_flags != null:
+			order_flags.plant(kind,
+				Vector2(float(cmd.get("x", 0.0)), float(cmd.get("y", 0.0))))
+		# 新命令替换旧标记：旗子 / 标记永远只留最新那一个
+		if attack_marks != null:
+			attack_marks.clear()
+	elif kind == "attack":
+		# ★ 指定攻击**不插旗**（命令里没有「目标点」，只有一个目标对象）
+		if order_flags != null:
+			order_flags.clear()
+		_mark_attack_target(cmd)
+	elif kind == "stop":
+		if order_flags != null:
+			order_flags.clear()
+		if attack_marks != null:
+			attack_marks.clear()
+
+
+## 指定攻击的**目标解析**：命令里只有可序列化的 `target_id`（单位）或 `tx/ty`（建筑），
+## 这里按同一条规则从 world 拿回对象 —— 命令里不放对象引用，联机两条路才一致。
+## （右键与操作页「攻击」格发的是**同一种**命令，所以两条入口都会走到这里。）
+func _mark_attack_target(cmd: Dictionary) -> void:
+	if attack_marks == null or world == null:
+		return
+	var target = null
+	if cmd.has("target_id"):
+		target = world.unit_by_id(String(cmd.get("target_id", "")))
+	elif cmd.has("tx") and cmd.has("ty"):
+		target = world.building_at(int(cmd.get("tx", 0)), int(cmd.get("ty", 0)))
+	if target != null:
+		attack_marks.mark("attack", target)
 
 
 ## 本地 UI 变了（选中 / 悬停 / 面板页签）：**只需要重画，不碰逻辑**。

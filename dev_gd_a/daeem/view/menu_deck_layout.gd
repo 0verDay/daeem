@@ -206,6 +206,98 @@ static func main_bottom_half(w: float, h: float, index: int) -> Rect2:
 
 
 # ------------------------------------------------------------------
+# 备战页（全屏 1920×1080）
+#
+# 版式（只参考比例，不锁死像素）：
+#   顶部一条 = 主菜单被**整体上滑**之后露出来的底部动作条（自定义 / 备战），
+#              高 = MAIN_BOTTOM_H；它左边的整段是「点此返回主菜单」的返回区。
+#      ┌──────────────── 返回区（左 2/3）────────────────┬──自定义──┬──备战──┐
+#      ├────────────────────────────────────────────────┴──────────┴────────┘
+#      │  面板 1（宽）            │   面板 2（窄）  │   王朝（白）   │
+#      │                          │                │   帝国（金）   │
+#      └──────────────────────────┴────────────────┴───────────────┘
+#   右侧两枚竖排按钮贴住屏幕右缘、上下均分，左边**不画框**（只靠右→左的泛光收边）。
+#
+# ★ 返回区宽度取 `w - side_w(w)`：正好是主菜单左缘以左的全部区域，与滑上来的
+#   动作条严丝合缝；两块面板再按设计稿比例往里收。
+# ------------------------------------------------------------------
+
+## 备战页顶部条的高度 = 主菜单底部动作条的高度（滑上来正好只剩这一条）。
+const PREP_HEADER_H := MAIN_BOTTOM_H
+## 设计稿 1920×1080 上的比例（140/1920、500/1920、200/1920、50/1920、30/1920…）。
+const PREP_LEFT_RATIO := 0.0729
+const PREP_PANEL2_RATIO := 0.2604
+const PREP_FACTION_RATIO := 0.1042
+const PREP_PANEL_GAP_RATIO := 0.0260
+const PREP_RIGHT_GAP_RATIO := 0.0156
+const PREP_TOP_RATIO := 0.0602
+
+
+## 顶部返回区：从屏幕左缘到主菜单左缘。
+static func prepare_back(w: float, h: float) -> Rect2:
+	return Rect2(0.0, 0.0, maxf(0.0, w - side_w(w)), PREP_HEADER_H)
+
+
+## 右侧两枚派系按钮的宽度（设计 200；窄屏收一点、宽屏不无限放大）。
+static func prepare_faction_w(w: float) -> float:
+	return clampf(round(w * PREP_FACTION_RATIO), 128.0, 240.0)
+
+
+static func prepare_left(w: float) -> float:
+	return clampf(round(w * PREP_LEFT_RATIO), 20.0, 180.0)
+
+
+static func prepare_panel2_w(w: float) -> float:
+	return clampf(round(w * PREP_PANEL2_RATIO), 240.0, 620.0)
+
+
+static func prepare_panel_gap(w: float) -> float:
+	return clampf(round(w * PREP_PANEL_GAP_RATIO), 12.0, 64.0)
+
+
+static func prepare_right_gap(w: float) -> float:
+	return clampf(round(w * PREP_RIGHT_GAP_RATIO), 8.0, 40.0)
+
+
+## 两块面板的上/下边（设计 215 / 1015；高度固定 1080 的界面里按屏高比例收边）。
+static func prepare_panel_top(w: float, h: float) -> float:
+	return PREP_HEADER_H + clampf(round(h * PREP_TOP_RATIO), 24.0, 80.0)
+
+
+static func prepare_panel_bottom(w: float, h: float) -> float:
+	return h - clampf(round(h * PREP_TOP_RATIO), 24.0, 80.0)
+
+
+## 右侧两枚按钮的顶边 = 顶部条的下沿（设计稿里白框就是紧贴黑条底边的，不留缝）。
+static func prepare_faction_top(w: float, h: float) -> float:
+	return PREP_HEADER_H
+
+
+## index 0 = 上面那枚（王朝），1 = 下面那枚（帝国）。
+static func prepare_faction(w: float, h: float, index: int) -> Rect2:
+	var fw := prepare_faction_w(w)
+	var top := prepare_faction_top(w, h)
+	var half: float = maxf(1.0, (h - top) * 0.5)
+	return Rect2(w - fw, top + half * float(index), fw, half)
+
+
+## index 0 = 左侧宽面板，1 = 右侧窄面板。
+static func prepare_panel(w: float, h: float, index: int) -> Rect2:
+	var left := prepare_left(w)
+	var gap := prepare_panel_gap(w)
+	var p2w := prepare_panel2_w(w)
+	var right_gap := prepare_right_gap(w)
+	var fw := prepare_faction_w(w)
+	var x2: float = w - fw - right_gap - p2w
+	var top := prepare_panel_top(w, h)
+	var bottom := prepare_panel_bottom(w, h)
+	if index == 0:
+		var w1: float = maxf(80.0, x2 - gap - left)
+		return Rect2(left, top, w1, bottom - top)
+	return Rect2(x2, top, p2w, bottom - top)
+
+
+# ------------------------------------------------------------------
 # 战役地图（宽栏 1280×1080）
 # ------------------------------------------------------------------
 

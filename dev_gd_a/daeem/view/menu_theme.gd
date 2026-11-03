@@ -338,3 +338,35 @@ static func bottom_button() -> StyleBoxFlat:
 ## 左侧灰层：中性灰半透明，压在面板内容之上。
 static func sidebar_dim_color() -> Color:
 	return Color(0.10, 0.10, 0.11, 0.66)
+
+
+# ------------------------------------------------------------------
+# 备战页（view/prepare_panel.gd）
+# ------------------------------------------------------------------
+
+## ★★ 备战页左上那块「点此返回主菜单」。
+##
+## 与 deck_panel 同一套画法（暗底 + 金线 + 2px 圆角），只把底压到 0.94：
+## 它是一整条**可点的横幅**，底下就是正在淡出的左侧轮播图，透出来会花。
+static func prepare_back() -> StyleBoxFlat:
+	var s := deck_panel()
+	s.bg_color = ThemeRes.with_alpha(ThemeRes.bg_bottom(), 0.94)
+	return s
+
+
+## 返回区悬停：只把线提亮一档 + 一层几乎看不见的金底（不铺整块金）。
+static func prepare_back_hover() -> StyleBoxFlat:
+	var s := prepare_back()
+	s.bg_color = ThemeRes.with_alpha(ThemeRes.bg_top(), 0.94)
+	s.border_color = ThemeRes.with_alpha(ThemeRes.accent_bright(), 0.85)
+	return s
+
+
+## 备战页里那两块占位面板。比 deck_block 实一点：设计稿上是整块黑，
+## 完全铺满会盖住背景的渐变层次，所以取 0.82 的暗底 + 更清楚的金线。
+static func prepare_panel() -> StyleBoxFlat:
+	var s := deck_block()
+	s.bg_color = ThemeRes.with_alpha(ThemeRes.bg_bottom(), 0.82)
+	s.border_color = ThemeRes.with_alpha(ThemeRes.line(), 0.95)
+	return s
+

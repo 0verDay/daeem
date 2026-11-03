@@ -55,6 +55,18 @@ static func bg_empty() -> Color:
 	return ThemeRes.panel_alpha_color(ThemeRes.PANEL_EMPTY_ALPHA, false)
 
 
+## ★★ 格子**名字底条**的颜色：略黑的半透明横条，垫在图标与名字之间。
+##
+## 需求原话：「图标不需要考虑文字的位置，文字用一个略黑的底条作为容器」。
+## ★ 取色口径：用面板底色再压暗一档 + 0.78 alpha ——
+##   · 太淡（alpha < 0.5）：压在金线上仍然看不清字；
+##   · 太黑（不透明）：像在图标下面贴了一块黑板，把格子切成两截。
+##   0.78 这一档实测：字清楚、图标压着的那一块也还看得见线。
+static func name_bar() -> Color:
+	var c := ThemeRes.panel_alpha_color(ThemeRes.PANEL_EMPTY_ALPHA, false)
+	return Color(c.r * 0.62, c.g * 0.62, c.b * 0.62, 0.78)
+
+
 static func line() -> Color:
 	return ThemeRes.line()
 

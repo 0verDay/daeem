@@ -22,35 +22,23 @@
 ##
 ## ★ 动画由 `sync(dt)` 推进（`game_scene3d._process` 每帧调；暂停时传 0 ⇒ 动效冻结），
 ##   不用 Tween：这样测试可以逐帧推进并断言每个阶段。
+##
+## ★★ 本轮改动：图标 / 波纹两张贴图与三种指令的**环色**都挪进了
+##   `view/command_mark_fx.gd` —— 「指定攻击」目标头顶的图标、脚下的红圈复用的就是这里
+##   那两张图（用户口径「共用素材」）。本文件的 `icon_texture()` / `ripple_texture()`
+##   保留成**转发**：既有测试与调用方不用改，但真正烘图的地方只有一处。
 extends Node3D
 
 const ConfigRes = preload("res://logic/config.gd")
+## ★ 指令标记的共用素材（图标 / 圆环贴图 + 三色环色表）
+const CommandFxRes = preload("res://view/command_mark_fx.gd")
 
-## 图标与波纹贴图的像素边长（正方形；SDF 光栅化，边缘自带抗锯齿）
-const TEX_SIZE := 128
-## 波纹贴图里圆环的半径（占贴图边长的比例）
-const RIPPLE_RADIUS_RATIO := 0.42
-## 波纹环的半厚（占贴图边长的比例）
-const RIPPLE_HALF_RATIO := 0.028
-## 波纹的软边（像素）
-const RIPPLE_SOFT_PX := 2.0
+## 波纹贴图里圆环的半径（占贴图边长的比例）—— 与「指定攻击」脚底红圈共用
+const RIPPLE_RADIUS_RATIO := CommandFxRes.RING_RADIUS_RATIO
 ## 波纹贴地高度（世界单位；抬高一点避免与地面共面）
 const RIPPLE_Y := 1.0
 ## 旗杆颜色（渐隐时只改 alpha）
 const POLE_COLOR := Color(0.92, 0.92, 0.95, 1.0)
-
-## 红色交叉图标的**矢量线段**（归一化坐标：x 向右、y 向下，与贴图行方向一致）。
-## 两条长对角线 + 下方两端各一条平行短斜线（程序化画出来，不依赖图片素材）。
-const ICON_SEGMENTS := [
-	[Vector2(0.02, 0.02), Vector2(0.98, 0.98)],
-	[Vector2(0.98, 0.02), Vector2(0.02, 0.98)],
-	[Vector2(0.04, 0.72), Vector2(0.23, 0.91)],
-	[Vector2(0.96, 0.72), Vector2(0.77, 0.91)],
-]
-
-## 生成图贴的缓存（线宽 → ImageTexture；圆环只一张）
-static var _icon_cache: Dictionary = {}
-static var _ripple_cache: ImageTexture = null
 
 var cfg: ConfigRes = null
 var palette = null
@@ -406,9 +394,10 @@ func _ripple_t_reset() -> void:
 	ripple_color_last = Color.WHITE
 
 
-## 落地波纹。移动 = 当前旗色（绿）；行军 = **黄色**（用户口径：行军只做黄旗 + 红图标 + 黄波纹）。
+## 落地波纹。移动 = 绿；行军 = **黄色**（用户口径：行军只做黄旗 + 红图标 + 黄波纹）。
+## ★ 颜色走 `command_mark_fx.gd` 的**三色表** —— 与「指定攻击」脚底红圈同一处取值。
 func _spawn_ripple() -> void:
-	var c: Color = _attack_color if kind == "attack_move" else _current_color()
+	var c: Color = CommandFxRes.ring_color(cfg, kind)
 	ripple_color_last = c
 	_ripple_mat.albedo_color = Color(c.r, c.g, c.b, _ripple_alpha)
 	_ripple.scale = Vector3.ONE * 0.12
@@ -454,62 +443,17 @@ static func _smooth(k: float) -> float:
 
 
 # ------------------------------------------------------------------
-# 程序化贴图（矢量线段 / 圆环 → SDF 光栅化）
+# 程序化贴图（转发到 command_mark_fx.gd —— 「指定攻击」标记共用同一张）
 # ------------------------------------------------------------------
 
 ## 行军图标的贴图：白剪影 + alpha（红色由材质 albedo 乘上去）。
-## ★ 四条线段写在 `ICON_SEGMENTS` 里；`stroke_ratio` = 线宽 ÷ 图标边长。
+## ★ 实体实现已经挪到 `view/command_mark_fx.gd`（与「指定攻击」头顶图标**同一张**）；
+##   这里保留同名函数，既有测试 / 调用方不用改。
 static func icon_texture(stroke_ratio: float = 0.05) -> ImageTexture:
-	var stroke: float = clampf(stroke_ratio, 0.01, 0.2)
-	var key: String = "%.4f" % stroke
-	var hit: Variant = _icon_cache.get(key, null)
-	if hit != null:
-		return hit
-	var n := TEX_SIZE
-	var img := Image.create(n, n, false, Image.FORMAT_RGBA8)
-	var half_px: float = maxf(1.0, stroke * float(n) * 0.5)
-	for y in n:
-		for x in n:
-			var pp := Vector2(float(x) + 0.5, float(y) + 0.5)
-			var best := 1.0e9
-			for seg in ICON_SEGMENTS:
-				var sa: Vector2 = seg[0] * float(n)
-				var sb: Vector2 = seg[1] * float(n)
-				best = minf(best, _segment_dist(pp, sa, sb))
-			var a: float = clampf(half_px + 0.5 - best, 0.0, 1.0)
-			img.set_pixel(x, y, Color(1.0, 1.0, 1.0, a))
-	img.generate_mipmaps()
-	var tex := ImageTexture.create_from_image(img)
-	_icon_cache[key] = tex
-	return tex
+	return CommandFxRes.march_icon_texture(stroke_ratio)
 
 
 ## 落地波纹的贴图：白圆环 + alpha（颜色由材质 albedo 乘上去）。
+## ★ 实体实现同样挪到了 `command_mark_fx.gd`（与「指定攻击」脚底红圈**同一张**）。
 static func ripple_texture() -> ImageTexture:
-	if _ripple_cache != null:
-		return _ripple_cache
-	var n := TEX_SIZE
-	var img := Image.create(n, n, false, Image.FORMAT_RGBA8)
-	var c := Vector2(float(n) * 0.5, float(n) * 0.5)
-	var r: float = float(n) * RIPPLE_RADIUS_RATIO
-	var half_px: float = maxf(1.0, float(n) * RIPPLE_HALF_RATIO)
-	for y in n:
-		for x in n:
-			var d: float = (Vector2(float(x) + 0.5, float(y) + 0.5) - c).length()
-			var a: float = clampf(
-				(half_px + RIPPLE_SOFT_PX - absf(d - r)) / RIPPLE_SOFT_PX,
-				0.0, 1.0)
-			img.set_pixel(x, y, Color(1.0, 1.0, 1.0, a))
-	img.generate_mipmaps()
-	_ripple_cache = ImageTexture.create_from_image(img)
-	return _ripple_cache
-
-
-## 点到线段的距离（像素空间；带圆头端点的胶囊距离）。
-static func _segment_dist(p: Vector2, a: Vector2, b: Vector2) -> float:
-	var ab: Vector2 = b - a
-	var denom: float = ab.length_squared()
-	if denom <= 0.0:
-		return p.distance_to(a)
-	var t: float = clampf((p - a).dot(ab) / denom, 0.0, 1.0)
-	return p.distance_to(a + ab * t)
+	return CommandFxRes.ring_texture()

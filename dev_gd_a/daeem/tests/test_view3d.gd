@@ -14,6 +14,8 @@ const BuildingShaderRes = preload("res://view/building_flash.gdshader")
 const UnitDownedShaderRes = preload("res://view/unit_downed.gdshader")
 const Overlay3DRes = preload("res://view/overlay_view_3d.gd")
 const OrderFlagRes = preload("res://view/order_flag_view_3d.gd")
+## ★ 指令标记的共用素材（行军图标 / 圆环贴图）—— 本轮「指定攻击」标记要验证它俩是同一张
+const CommandFxRes = preload("res://view/command_mark_fx.gd")
 ## ★★ 局内敌/友/己三色（本轮新增）
 const SideColorRes = preload("res://view/side_color.gd")
 
@@ -40,6 +42,7 @@ func _run() -> void:
 	await _test_ground_bake(cfg)
 	await _test_camera_aim(cfg)
 	await _test_order_flags(cfg)
+	await _test_attack_marks(cfg)
 	await _test_selection_ring(cfg)
 	await _test_charge_fx(cfg)
 	await _test_grid_near_clip(cfg)
@@ -1186,6 +1189,199 @@ func _test_order_flags(cfg) -> void:
 
 	game.queue_free()
 	await process_frame
+
+func _test_attack_marks(cfg) -> void:
+	# ★ 这组要看到**敌方单位**（单位只在视野内才可见）⇒ 关掉本局迷雾，见下面 game.cfg 那两行。
+	var game = Game3DRes.new()
+	root.add_child(game)
+	await process_frame
+	if not game.start():
+		game.queue_free()
+		return
+	await process_frame
+	await process_frame
+	# ★★ `game.start()` 自己载入一份 config（不是上面那份 `cfg`）⇒ 迷雾开关要改**游戏里**这份：
+	#   标记 / 单位层每帧读的都是 `game.cfg.fog_enabled`（关掉 = 全图可见，测试才看得到敌人）。
+	game.cfg.fog_enabled = false
+	var w = game.world
+	var am = game.attack_marks
+	ok(am != null, "★★ 3D 场景建了「指定攻击」目标标记视图（attack_marks）")
+	if am == null:
+		game.queue_free()
+		return
+	game.set_process(false)
+
+	var cell: float = cfg.cell_px
+	var red: Color = ConfigRes.parse_color(cfg.str_val("render.attack_mark_ring_color", "#e5383b"))
+	var sec: float = maxf(0.05, cfg.num("render.attack_mark_sec", 1.4))
+	var fade_out: float = maxf(0.001, cfg.num("render.attack_mark_fade_out_sec", 0.35))
+	var ring_sec: float = maxf(0.05, cfg.num("render.attack_mark_ring_sec", 0.5))
+	var ring_alpha_cfg: float = clampf(cfg.num("render.attack_mark_ring_alpha", 0.85), 0.0, 1.0)
+	var gap: float = cell * cfg.num("render.attack_mark_icon_gap", 0.18)
+	var stroke: float = cfg.num("render.attack_mark_icon_stroke", 0.05)
+
+	# ---- ★★ 共用素材：头顶图标 = 插旗图标、脚底圆环 = 插旗波纹（都是**同一张**贴图）----
+	ok(CommandFxRes.march_icon_texture(stroke) == OrderFlagRes.icon_texture(stroke),
+		"★★ 目标头顶的图标与行军插旗图标**共用同一张**贴图")
+	ok(CommandFxRes.ring_texture() == OrderFlagRes.ripple_texture(),
+		"★★ 目标脚底的圆环与插旗落地波纹**共用同一张**贴图")
+	# 三色表：移动绿 / 行军黄 / 指定攻击红
+	var move_c: Color = ConfigRes.parse_color(cfg.str_val("render.flag_move_color", "#4cd964"))
+	var march_c: Color = ConfigRes.parse_color(cfg.str_val("render.flag_attack_color", "#e6c200"))
+	ok(CommandFxRes.ring_color(cfg, "move").is_equal_approx(move_c), "★ 移动的环色 = 绿")
+	ok(CommandFxRes.ring_color(cfg, "attack_move").is_equal_approx(march_c), "★ 行军的环色 = 黄")
+	ok(CommandFxRes.ring_color(cfg, "attack").is_equal_approx(red), "★ 指定攻击的环色 = 红")
+
+	# ---- 单位目标 ----
+	var mine = null
+	for x in w.units:
+		if x.alive and String(x.faction) == String(w.my_faction):
+			mine = x
+			break
+	var foe = null
+	for x in w.units:
+		if x.alive and String(x.faction) != String(w.my_faction):
+			foe = x
+			break
+	if foe == null:
+		# ★ 这张测试图开局只有玩家单位（没有敌方部队）⇒ 现场造一个敌方单位来验
+		#   「右键点敌方单位」。append 之后必须 tick 一步：`unit_by_id` 走的是
+		#   本帧的 id 索引（`_tick_lookup`），不重建就找不到它。
+		foe = UnitRes.create(cfg, "foe_attack_mark", "敌将", Vector2i(3, 3), "enemy", "general")
+		if foe != null:
+			w.units.append(foe)
+			w.tick(1.0 / 60.0)
+			foe.pos = Vector2(3.5, 3.5)
+			foe.prev_pos = foe.pos
+	if foe == null:
+		ok(false, "找不到 / 造不出敌方单位来验「指定攻击」标记")
+		game.queue_free()
+		return
+	var head: Vector3 = game.units.head_world_of(foe)
+	var feet: Vector3 = game.palette.to_world(foe.pos)
+	ok(am.mark("attack", foe), "★ 右键指定攻击敌方单位 → 标记打上了")
+	eq(am.target_kind, "unit", "★ 标记的目标类型是单位")
+	eq(am.kind, "attack", "★ 标记的指令类型是 attack")
+	ok(am.active and am.phase == "in", "★ 标记一开始处于渐入阶段")
+	ok(am.ring_color_last.is_equal_approx(red),
+		"★★ 脚底圆环是**红色**（config.attack_mark_ring_color）")
+	v2_near(Vector2(am.ring_world_last.x, am.ring_world_last.z), Vector2(feet.x, feet.z), 0.01,
+		"★ 红环在目标**脚底**（x/z 与单位位置一致）")
+	ok(am.ring_world_last.y > 0.5 and am.ring_world_last.y < 1.5,
+		"★ 红环贴地（y ≈ 1，%.2f）" % am.ring_world_last.y)
+	ok(am.icon_world_last.y > head.y + gap * 0.5,
+		"★★ 头顶图标浮在单位头顶之上（头顶 %.1f → 图标 %.1f）" % [head.y, am.icon_world_last.y])
+	v2_near(Vector2(am.icon_world_last.x, am.icon_world_last.z), Vector2(head.x, head.z), 0.01,
+		"★ 图标在目标**正上方**（x/z 与头顶一致）")
+	ok(not am.icon_visible_last and am.icon_alpha_last == 0.0, "★ 图标从透明开始渐入")
+
+	# ★★ 脚下的圈是**一次性外泛波纹**（与移动 / 行军的插旗波纹同一套）：
+	#    刚下令时是极小的一圈（12%），随后向外扩 + 淡出；最终半径来自目标脚印。
+	var r_start: float = am.ring_radius_last
+	ok(r_start > 0.0 and r_start <= am.ring_radius_final_last * 0.2,
+		"★★ 红圈从很小的一圈开始（%.1f / 最终 %.1f）" % [r_start, am.ring_radius_final_last])
+	am.sync(ring_sec * 0.35)
+	ok(am.ring_radius_last > r_start,
+		"★★ 红圈**向外扩散**（%.1f → %.1f）" % [r_start, am.ring_radius_last])
+	ok(am.ring_alpha_last > 0.0 and am.ring_alpha_last < ring_alpha_cfg,
+		"★ 扩散的同时淡出（%.3f）" % am.ring_alpha_last)
+	ok(am.icon_visible_last and am.icon_alpha_last > 0.5,
+		"★ 头顶图标已经亮起来（%.3f）" % am.icon_alpha_last)
+
+	# ---- 目标会走：**圈不跟随**（波纹钉在下令那一刻的脚下）；头顶图标跟随 ----
+	var x0: float = am.ring_world_last.x
+	foe.pos = foe.pos + Vector2(1.0, 0.0)
+	am.sync(0.0)
+	ok(absf(am.ring_world_last.x - x0) < 0.001,
+		"★★ 红圈不跟随单位（仍在下令点：%.1f）" % am.ring_world_last.x)
+	var head2: Vector3 = game.units.head_world_of(foe)
+	v2_near(Vector2(am.icon_world_last.x, am.icon_world_last.z), Vector2(head2.x, head2.z), 0.01,
+		"★★ 头顶图标跟着目标走")
+
+	# ---- 波纹是一次性的：泛完就收，图标还在（不能变成常驻圈）----
+	am.sync(maxf(0.0, ring_sec + 0.02 - am.elapsed_last))
+	ok(am.ring_alpha_last == 0.0 and not am._ring.visible,
+		"★★ 波纹泛完后自己收掉（不变成常驻圈）")
+	ok(am.active and am.icon_visible_last, "★ 此时标记本身还在（只剩头顶图标）")
+
+	am.sync(sec + 0.2)
+	ok(not am.active and am.phase == "done", "★ 标记动效走完自动收掉")
+	ok(not am.icon_visible_last, "★ 动画结束后图标也收起")
+
+	# ---- ★★ 真·右键单击敌方单位（走 input_controller 的 `_on_right_click`）----
+	# ★ 建筑那条路要用 `get_global_mouse_position()` 判模型包围盒，无头测试造不出来，
+	#   所以建筑只在下面用「命令字典」验（右键与命令卡发的本来就是同一种命令）。
+	if mine != null:
+		var ic = game.input_ctrl
+		ic.select_units([mine])
+		ic.mouse_world = foe.pos
+		ic.hover_tile = Vector2i(int(floorf(foe.pos.x)), int(floorf(foe.pos.y)))
+		ic._on_right_click(false)
+		ok(am.active and am.target_kind == "unit" and am.target_id == String(foe.id),
+			"★★ 真·右键单击敌方单位 → 触发「指定攻击」并打出标记")
+
+	# ---- 建筑目标 ----
+	var bld = null
+	for b in w.building_list:
+		if b.alive and String(b.owner) != "" \
+				and not FactionRes.same_side_for_attack(String(b.owner), String(w.my_faction)):
+			bld = b
+			break
+	if bld != null:
+		ok(am.mark("attack", bld), "★ 右键指定攻击敌方建筑 → 标记打上了")
+		eq(am.target_kind, "building", "★ 标记的目标类型是建筑")
+		var bhead: Vector3 = game.buildings.head_world_of(bld)
+		ok(am.icon_world_last.y > bhead.y,
+			"★★ 建筑头顶的图标在模型顶边之上（顶边 %.1f → 图标 %.1f）" % [bhead.y, am.icon_world_last.y])
+		ok(am.ring_radius_final_last >= bld.body_half(cfg) * cell,
+			"★★ 建筑的圈按**本体边长**放大（%.1f ≥ %.1f）" % [am.ring_radius_final_last, bld.body_half(cfg) * cell])
+		var bfeet: Vector3 = game.palette.to_world(bld.center())
+		v2_near(Vector2(am.ring_world_last.x, am.ring_world_last.z), Vector2(bfeet.x, bfeet.z), 0.01,
+			"★ 建筑的红环在建筑正下方（本体中心）")
+		# 建筑塌了 → 图标立刻渐出；波纹会先泛完，两者一起收起
+		bld.alive = false
+		am.sync(fade_out * 0.1)
+		eq(am.phase, "out", "★★ 目标建筑没了 → 标记进入渐出（不把废墟留在屏幕上）")
+		am.sync(ring_sec + 0.1)
+		ok(not am.active, "★★ 建筑目标消失后标记自己收掉")
+		ok(not am.mark("attack", bld), "★ 已经塌掉的建筑打不上标记")
+
+	# ---- 命令接线（真实入口：`_on_command`；右键与操作页「攻击」格发的都是这种命令）----
+	var foe2 = null
+	for x in w.units:
+		if x.alive and String(x.faction) != String(w.my_faction):
+			foe2 = x
+			break
+	if mine != null and foe2 != null:
+		game._on_command({"kind": "attack", "ids": [mine.id], "target_id": foe2.id,
+			"faction": w.my_faction})
+		ok(am.active and am.target_id == String(foe2.id),
+			"★★ 右键点敌方单位（attack 命令）→ 标记打在那个单位上")
+		game._on_command({"kind": "move", "ids": [mine.id],
+			"x": mine.pos.x, "y": mine.pos.y, "faction": w.my_faction})
+		ok(not am.active, "★ 新的移动命令替换掉指定攻击标记")
+		game._on_command({"kind": "attack", "ids": [mine.id], "target_id": foe2.id,
+			"faction": w.my_faction})
+		game._on_command({"kind": "stop", "ids": [mine.id], "faction": w.my_faction})
+		ok(not am.active, "★ 停止命令收掉指定攻击标记")
+		# 建筑命令带的是 tx/ty（命令里不放对象引用）
+		var bld2 = null
+		for b in w.building_list:
+			if b.alive and String(b.owner) != "" \
+					and not FactionRes.same_side_for_attack(String(b.owner), String(w.my_faction)):
+				bld2 = b
+				break
+		if bld2 != null:
+			game._on_command({"kind": "attack", "ids": [mine.id],
+				"tx": int(bld2.tx), "ty": int(bld2.ty), "faction": w.my_faction})
+			ok(am.active and am.target_kind == "building",
+				"★★ 右键点敌方建筑（attack 命令带 tx/ty）→ 标记打在建筑上")
+
+	ok(am.marks_shown >= 3, "★ 至少打了 3 个标记（诊断 %d）" % am.marks_shown)
+
+	game.queue_free()
+	await process_frame
+
 
 func _test_selection_ring(cfg) -> void:
 	var rt: ImageTexture = SpriteRes.selection_ring_texture()

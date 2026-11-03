@@ -2099,6 +2099,14 @@ func _test_card_keys(main) -> void:
 	tabs.select_page(PageTabsRes.PAGE_BUILD)
 	eq(tabs.page(), PageTabsRes.PAGE_BUILD, "（前提）没选中东西 → 停在建筑页")
 
+	# ★★ 建筑页的图标：每格带一张蒙版（从 .glb 抽边线烘出来的等轴测线稿），
+	#   且**名字那一行照旧显示**（需求：「图标 + 一行名字，描述进悬停面板」）。
+	ok(card.cell_icon_path(0) != "", "★ 建筑页第 1 格有图标蒙版")
+	ok(card.cell_icon_path(0).ends_with("building_wall.png"),
+		"★ 木墙用的就是 building_wall.png")
+	ok(card.cell_label_visible(0), "★ 建筑页有图标的格子仍然显示名字")
+	eq(card.cell_label(0), "木墙", "★ 木墙那格名字照旧")
+
 	# ★★ 2026.10.30：建筑的单独字母快捷键已移除，只认九宫格键位。
 	ok(not main.cfg.building_def("wall").has("hotkey"),
 		"★★ config 里不再有 building.wall.hotkey")
@@ -2179,6 +2187,14 @@ func _test_tech_keys(main) -> void:
 	eq(tabs.page(), PageTabsRes.PAGE_TECH, "（前提）切到科技页")
 	main.hud.refresh()
 	ok(g.visible, "（前提）科技九格显示出来")
+
+	# ★★ 科技页的图标：每格一张（按名字画的占位金线图形），名字压在最下面一行。
+	#   这里只钉「第 1 格确实拿到了一张 tech_*.png」+「名字没被吃掉」——
+	#   具体是哪条科技对应哪个 id 由 test_unit_card_icon 逐条点名。
+	ok(g.cell_icon_path(0) != "", "★ 科技页第 1 格有图标蒙版")
+	ok(g.cell_icon_path(0).ends_with(".png"), "★ 第 1 格的图标是一张 png")
+	eq(g.cell_name(0), String((world.tech_entries()[0] as Dictionary).get("name", "")),
+		"★ 第 1 格的名字照旧读得到（图标 + 一行名字）")
 
 	# 视觉第 1/2/3 格 = Q/W/E = entry 0/3/6（九格是列优先转置的）。
 	var keys := [KEY_Q, KEY_W, KEY_E]

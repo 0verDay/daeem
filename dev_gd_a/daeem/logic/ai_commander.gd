@@ -60,6 +60,9 @@ var goal_since: float = 0.0
 var goal_need: Dictionary = {}
 var goal_kind: String = ""
 var goal_cooldown_until: float = 0.0
+## 编成权重缓存：`kind → 权重`（profile 是固定的，建一次就够）。
+## ★ 只给「挑哪条高阶兵」用，不参与抽签。
+var _comp_weight_cache: Dictionary = {}
 ## ★★ 濒死将领再起 / 召回巡检（独立于战略 tick，避免倒地后要等 2 秒才处理）。
 var revive_timer: float = 0.0
 ## ★★ 队伍粘合巡检：将领在走、某个附属兵掉队 / 停下时，**重发整队命令**。
@@ -942,14 +945,20 @@ func _elite_goal(t: float) -> Dictionary:
 	return {"kind": "elite", "need": cost, "recruit": String(best.get("kind", ""))}
 
 ## 找一条「只差钱」的高阶兵：tier 已解锁，且**己方区划里**有将领能下这一单。
-## ★ 取**最便宜的那条**：先让高阶兵真的出现一次，再谈风味。
+##
+## ★★ 2026.11（第二轮，用户口径）：**按编成权重挑，并且看前排成型没有**。
+##   · 旧做法「挑最便宜的那条」把王朝惯成清一色投石车、帝国惯成冠军骑士 ——
+##     价钱最优，但不是编成表想要的味道；
+##   · 新做法：候选按 `composition_weight_of()`（角色表 → 派系表 → 全局表里这一条
+##     的权重）从高到低挑；**前排没成型时不许挑后排**（`is_backline_kind()`）——
+##     「只有在前排成型时，才考虑增加后排的占比」。
 func _elite_candidate() -> Dictionary:
 	var tier_min := elite_low_tier_max()
 	var leader = _zone_recruit_leader()
 	if leader == null:
 		return {}
-	var best: Dictionary = {}
-	var best_w := INF
+	var front_cands: Array = []
+	var back_cands: Array = []
 	for item in world.recruit_list(faction):
 		if typeof(item) != TYPE_DICTIONARY:
 			continue
@@ -965,10 +974,107 @@ func _elite_candidate() -> Dictionary:
 		var w := float(c.get("food", 0.0)) + 2.0 * float(c.get("gold", 0.0))
 		if w <= 0.0:
 			continue
-		if w < best_w:
-			best_w = w
-			best = {"kind": kind, "cost": c}
-	return best
+		var entry := {
+			"kind": kind, "cost": c, "weight": composition_weight_of(kind),
+			"back": is_backline_kind(kind),
+		}
+		if bool(entry["back"]):
+			back_cands.append(entry)
+		else:
+			front_cands.append(entry)
+	var pool: Array = front_cands
+	if _frontline_ready() and not back_cands.is_empty():
+		# 前排成型 ⇒ 前后排都能挑（仍然按编成权重，后排不占便宜）
+		pool = front_cands.duplicate()
+		pool.append_array(back_cands)
+	elif front_cands.is_empty():
+		# 一条能用的前排都没有（比如三阶前排还没解锁）⇒ 退回全部，别把攒钱卡死
+		pool = back_cands
+	if pool.is_empty():
+		return {}
+	pool.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		var wa := float(a.get("weight", 0.0))
+		var wb := float(b.get("weight", 0.0))
+		if absf(wa - wb) > 1e-6:
+			return wa > wb
+		var ca: Dictionary = a.get("cost", {})
+		var cb: Dictionary = b.get("cost", {})
+		var va := float(ca.get("food", 0.0)) + 2.0 * float(ca.get("gold", 0.0))
+		var vb := float(cb.get("food", 0.0)) + 2.0 * float(cb.get("gold", 0.0))
+		return va < vb)
+	return pool[0]
+
+## 这一方**当前部队**的前排 / 后排构成（不含粮车 / 濒死）。
+func army_split() -> Dictionary:
+	var front := 0
+	var back := 0
+	for u in world.units:
+		if u == null or not u.alive or String(u.faction) != faction:
+			continue
+		if u.is_downed():
+			continue
+		var ut := String(u.unit_type)
+		if ut == "grain_cart":
+			continue
+		if cfg.unit_is_ranged(ut):
+			back += 1
+		else:
+			front += 1
+	return {"front": front, "back": back}
+
+## 前排成型了吗（纯函数，便于测试）：前排数量 ≥ min 且 前排占比 ≥ ratio。
+func frontline_ready_from(front: int, back: int) -> bool:
+	var e := _elite_cfg()
+	var total := front + back
+	if total <= 0:
+		return false
+	if front < maxi(1, int(e.get("frontline_ready_min", 4))):
+		return false
+	return float(front) / float(total) >= float(e.get("frontline_ready_ratio", 0.55))
+
+func _frontline_ready() -> bool:
+	var split := army_split()
+	return frontline_ready_from(int(split["front"]), int(split["back"]))
+
+## 这条招募 kind 是「后排」吗（远程 / 攻城）。
+func is_backline_kind(kind: String) -> bool:
+	var ut := String(world.recruit_primary_type(kind, faction))
+	if ut == "":
+		ut = kind
+	return cfg.unit_is_ranged(ut)
+
+## 这一条招募 kind 在**编成表**里的权重（角色表 → 派系表 → 全局表，取最大）。
+## ★ 只用于「挑哪一条高阶兵」，不参与抽签（抽签仍走 `_pick_kind`）。
+func composition_weight_of(kind: String) -> float:
+	if _comp_weight_cache.is_empty():
+		var roles: Dictionary = profile.get("roles", {})
+		var keys: Array = roles.keys()
+		keys.append("")            # "" = 不看角色，用派系表 / 全局表兜底
+		for role in keys:
+			for item in _comp_for(String(role)):
+				if typeof(item) != TYPE_DICTIONARY:
+					continue
+				var k := String((item as Dictionary).get("type", ""))
+				if k == "":
+					continue
+				var w := float((item as Dictionary).get("weight", 0.0))
+				if w > float(_comp_weight_cache.get(k, 0.0)):
+					_comp_weight_cache[k] = w
+	return float(_comp_weight_cache.get(kind, 0.0))
+
+## 编成表解析（角色表 → 派系表 → 全局表；「能不能抽出人」逐级回退）。
+func _comp_for(role: String) -> Array:
+	var pc: Dictionary = profile.get("production", {})
+	var roles: Dictionary = profile.get("roles", {})
+	var rc: Dictionary = {}
+	if role != "" and typeof(roles.get(role, {})) == TYPE_DICTIONARY:
+		rc = roles.get(role, {})
+	var comp: Array = rc.get("composition", [])
+	if not _comp_usable(comp):
+		comp = world.clan_ai_composition(faction)
+	if not _comp_usable(comp):
+		comp = pc.get("composition", [])
+	return comp
 
 ## 己方区划里、现在能当招募对象的第一位将领（没有 → null）。
 func _zone_recruit_leader():
@@ -1050,15 +1156,8 @@ func _affordable_within(cost: Dictionary, seconds: float) -> bool:
 ##      它防的是「以后新加一个派系、只写了 ai_composition 忘了写 roles」。
 ## ★ 抽中的 `type` 是**招募 kind**（组合条目如 dy_guard 也走这里）。
 func _pick_kind(leader) -> String:
-	var pc: Dictionary = profile.get("production", {})
 	var role := team_role_of(leader)
-	var roles: Dictionary = profile.get("roles", {})
-	var rc: Dictionary = roles.get(role, {})
-	var comp: Array = rc.get("composition", [])
-	if not _comp_usable(comp):
-		comp = world.clan_ai_composition(faction)
-	if not _comp_usable(comp):
-		comp = pc.get("composition", [])
+	var comp: Array = _comp_for(role)
 	# ★ 远程队如果前排已经倒光：先补一个抗线兵，再继续抽远程。
 	if role == "ranged" and frontline_count(leader) <= 0:
 		var front := _first_frontline_kind(comp)
@@ -1127,10 +1226,19 @@ func _pick_kind(leader) -> String:
 	if elite_share_push_needed():
 		var elite_cands: Array = []
 		var tier_min := elite_low_tier_max()
+		# ★★ 2026.11（第二轮）：前排没成型时，**不许把这次的钱花在「后排精英」上**
+		#   （投石车 / 弩炮）—— 先把线站住再加远程。只有当前排一条都挑不出来时才放开。
+		var front_ready := _frontline_ready()
 		for c3 in cands:
 			var ck3 := String((c3 as Dictionary).get("type", ""))
-			if world.recruit_tier(ck3, faction) >= tier_min:
-				elite_cands.append(c3)
+			if world.recruit_tier(ck3, faction) < tier_min:
+				continue
+			if not front_ready and is_backline_kind(ck3):
+				continue
+			elite_cands.append(c3)
+		if elite_cands.is_empty() and not cands.is_empty():
+			# 全是后排精英、前排又没成型 ⇒ 这一轮不倾斜（照旧买便宜的）
+			elite_cands = []
 		if not elite_cands.is_empty():
 			cands = elite_cands
 			total = 0.0

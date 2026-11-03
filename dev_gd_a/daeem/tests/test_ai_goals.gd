@@ -31,6 +31,7 @@ func _run() -> void:
 	_test_elite_ratio(cfg)
 	_test_goal_hold(cfg)
 	_test_zone_only(cfg)
+	_test_frontline_first(cfg)
 	print("[CASE] %s -> 通过 %d 项，失败 %d 项" % [_case_name, _pass, _fail])
 	if _fail > 0:
 		for n in _failed_names:
@@ -40,7 +41,7 @@ func _run() -> void:
 		quit(0)
 
 
-func _make_world(cfg, seed_value: int = 4321):
+func _make_world(cfg, seed_value: int = 4321, ai_factions: Array = ["p2"]):
 	var camp = CampaignRes.load_campaign(DEMO_DIR, cfg)
 	if camp == null:
 		return null
@@ -48,8 +49,13 @@ func _make_world(cfg, seed_value: int = 4321):
 	if lv == null:
 		return null
 	var seats: Array = lv.seats()
+	var overrides := {}
+	var profiles := {}
+	for fid in ai_factions:
+		overrides[String(fid)] = LevelRes.AI_COMMANDER
+		profiles[String(fid)] = {"difficulty": "normal"}
 	return WorldRes.create_from_level(cfg, lv, String(seats[0]), seats, true,
-		{"p2": LevelRes.AI_COMMANDER}, {"p2": {"difficulty": "normal"}}, seed_value)
+		overrides, profiles, seed_value)
 
 
 func _commander(w):
@@ -176,3 +182,50 @@ func _test_zone_only(cfg) -> void:
 		g.tx = int(mine.tx)
 		g.ty = int(mine.ty)
 		ok(w.leader_zone_owned(g), "★ 回到己方区划后又能下单了")
+
+
+# ---- ②b 前排优先：前排没成型不许买后排精英；挑精英按编成权重而不是最便宜 ----
+func _test_frontline_first(cfg) -> void:
+	var w = _make_world(cfg, 4321, ["p1", "p2"])
+	ok(w != null, "（前提）双方都交给 commander 的世界")
+	if w == null:
+		return
+	var c = w.ai_commanders.get("p2", null)
+	ok(c != null, "（前提）p2 commander")
+	if c == null:
+		return
+	# 前排判据（纯函数）：数量 ≥ 4 且 占比 ≥ 55%
+	ok(c.frontline_ready_from(4, 2), "★ 前排 4 / 后排 2 ⇒ 成型（占比 0.67）")
+	ok(not c.frontline_ready_from(2, 6), "★ 前排 2 / 后排 6 ⇒ 没成型（数量不够）")
+	ok(not c.frontline_ready_from(3, 3), "★ 前排 3（少于 4）⇒ 没成型")
+	ok(not c.frontline_ready_from(5, 5), "★ 前排占比 50% 低于 55% ⇒ 没成型")
+	# 前后排分类
+	ok(c.is_backline_kind("dg_bolt"), "★ 弩炮算后排")
+	ok(not c.is_backline_kind("dg_champion"), "★ 冠军骑士算前排")
+	var c1 = w.ai_commanders.get("p1", null)
+	if c1 != null:
+		ok(c1.is_backline_kind("dy_catapult"), "★ 投石车算后排")
+		ok(not c1.is_backline_kind("dy_royal"), "★ 御林军算前排")
+		var wr: float = c1.composition_weight_of("dy_royal")
+		var wc: float = c1.composition_weight_of("dy_catapult")
+		var wch: float = c1.composition_weight_of("dy_chariot")
+		ok(wr > wc, "★★ 编成权重：御林军(%.2f) 高于 投石车(%.2f)" % [wr, wc])
+		ok(wr > wch, "★★ 编成权重：御林军(%.2f) 高于 战车(%.2f)" % [wr, wch])
+	# 解锁三阶（直接把大本营写成 3 级）⇒ 看挑出来的精英是前排还是后排
+	var b1 = w.find_base_of("p1")
+	var b2 = w.find_base_of("p2")
+	if b1 != null:
+		(b1 as Object).level = 3
+	if b2 != null:
+		(b2 as Object).level = 3
+	if c1 != null:
+		var pick1: Dictionary = c1._elite_candidate()
+		ok(not pick1.is_empty(), "★★ 王朝能挑出一条高阶兵")
+		if not pick1.is_empty():
+			eq(String(pick1["kind"]), "dy_royal",
+				"★★ 王朝挑的是御林军（编成权重最高），不是投石车")
+	var pick2: Dictionary = c._elite_candidate()
+	ok(not pick2.is_empty(), "★★ 帝国能挑出一条高阶兵")
+	if not pick2.is_empty():
+		eq(String(pick2["kind"]), "dg_champion",
+			"★★ 帝国挑的是冠军骑士（前排），不是弩炮")

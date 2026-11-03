@@ -13,9 +13,17 @@
 ##
 ## ★ 为什么单独一个控件、而不是把科技塞进 command_card 的九格里：
 ##   命令卡那九格是「页签的另一套内容」（操作 / 单位 / 建筑 / 招募），它只认 `entries`；
-##   科技格需要**自己的三态样式**（已启用 / 未启用 / 悬停）、两行文字与悬停详情。
+##   科技格需要**自己的三态样式**（已启用 / 未启用 / 悬停）与悬停详情。
 ##   塞进去会让命令卡同时认识三种数据形状。这里复用**它的几何**（card_cell_local），
 ##   于是两套内容在屏幕上完全重合 —— 换页时看不出是换了控件。
+##
+## ★★ 格子排版（2026.11）与命令卡统一：「**图标 + 一行名字**」。
+##   · 图标 = `tech_<id>.png` 金线蒙版（按名字画的占位图形，见
+##     tools/bake_unit_card_icon.py 的 TECH_SHAPES），**铺满整格**；
+##   · 名字叠在最下面那条**略黑底条**上（金色填充扫上来时底条淡出）；
+##   · **效果 / 造价 / 拒因**全部进悬停面板（`hud._hover_detail`）。
+##   · 旧那版在格子里挤两行字（名字 + 效果）已经作废。
+##   图标路径由 hud 塞在条目里（`icon_mask`）—— 本控件不认识「科技 id → 图片」这件事。
 ##
 ## ★ 点击走 `cell_activated(id)` → hud → input_controller 发 `tech_toggle` 命令，
 ##   本控件**从不改逻辑状态**（架构铁律：view 只读 + 发命令）。
@@ -40,10 +48,18 @@ const FillButtonRes = preload("res://view/fill_button.gd")
 ## 格子里那两行小字的字号（80×80 的格子：名字一行 + 效果一行）
 const FS_NAME := 13
 const FS_LINE := 11
+## 名字那条底条的高度（与命令卡 `NAME_BAR_H` 同口径：名字就压在这条上）
+const NAME_BAR_H := 15.0
+## 图标层（画烘好的金线蒙版，与单位 / 建筑页同一套）
+const UnitCardIconRes = preload("res://view/unit_card_icon.gd")
 
 var _cells: Array[Button] = []
 var _name_labels: Array[Label] = []
 var _line_labels: Array[Label] = []
+## 每格的图标层（画烘好的金线蒙版；见 `unit_card_icon.IconView`）
+var _icon_views: Array = []
+## 每格的**名字底条**（略黑半透明横条，名字压在它上面；空格子 / 没图标时隐藏）
+var _name_bars: Array[ColorRect] = []
 ## ★★ 每格左上角的键位字母（与命令卡同一套 QWE / ASD / ZXC）。
 var _key_labels: Array[Label] = []
 ## 上一次喂进来的条目（测试与调试读它；也是点击回调的 id 来源）
@@ -85,18 +101,37 @@ func setup() -> void:
 		FillButtonRes.set_prefer_light(cell, true)
 		add_child(cell)
 
-		# 第一行：科技名（居中偏上，给第二行留出位置）
+		# ★★ 图标：和单位 / 建筑页同一套（`unit_card_icon.IconView` 画烘好的金线蒙版）。
+		#    **铺满整格**、不考虑文字位置；名字叠在最下面那条底条上（与命令卡同口径）。
+		var cell_size: Vector2 = UiLayoutRes.card_cell_local(i).size
+		var icon_view := UnitCardIconRes.IconView.new()
+		icon_view.name = "TechIcon%d" % (i + 1)
+		cell.add_child(icon_view)
+		icon_view.bind(cell)
+
+		# ★ 名字底条（略黑半透明横条）：压在图标上，保证名字读得清。
+		var name_bar := ColorRect.new()
+		name_bar.name = "TechNameBar%d" % (i + 1)
+		name_bar.color = UiStyleRes.name_bar()
+		name_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		name_bar.position = Vector2(0.0, cell_size.y - NAME_BAR_H)
+		name_bar.size = Vector2(cell_size.x, NAME_BAR_H)
+		name_bar.visible = false
+		cell.add_child(name_bar)
+
+		# 第一行：科技名（压在最下面那条底条上，字号小一档）
 		var name_label := Label.new()
 		name_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		name_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-		name_label.add_theme_font_size_override("font_size", FS_NAME)
-		var cell_size: Vector2 = UiLayoutRes.card_cell_local(i).size
-		name_label.size = Vector2(cell_size.x, cell_size.y * 0.56)
-		name_label.position = Vector2(0.0, cell_size.y * 0.12)
+		name_label.clip_text = true
+		name_label.add_theme_font_size_override("font_size", FS_LINE)
+		name_label.size = Vector2(cell_size.x - 2.0, NAME_BAR_H)
+		name_label.position = Vector2(1.0, cell_size.y - NAME_BAR_H)
 		cell.add_child(name_label)
 
-		# 第二行：效果小字（「粮食 +1」「建筑血量 +10%」）
+		# 第二行：效果小字 —— **不再显示**（描述进悬停面板）。控件保留：
+		#   填充层的文字登记按对象走，删掉的话 `on_fill_text` 那张表要另记一份。
 		var line_label := Label.new()
 		line_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		line_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -104,6 +139,7 @@ func setup() -> void:
 		line_label.add_theme_font_size_override("font_size", FS_LINE)
 		line_label.size = Vector2(cell_size.x, cell_size.y * 0.34)
 		line_label.position = Vector2(0.0, cell_size.y * 0.58)
+		line_label.visible = false
 		cell.add_child(line_label)
 
 		# ★★ 键位字母（与命令卡 / 页签同一套）：画在左上角。
@@ -124,6 +160,8 @@ func setup() -> void:
 		_name_labels.append(name_label)
 		_line_labels.append(line_label)
 		_key_labels.append(key_label)
+		_name_bars.append(name_bar)
+		_icon_views.append(icon_view)
 
 	set_entries([])
 
@@ -186,6 +224,53 @@ func _entry_index_for_cell(cell: int) -> int:
 		+ int(cell / UiLayoutRes.CARD_COLS)
 
 
+## 第 i 格的图标层换图（空串 = 没图、只剩名字）。
+## `locked` = 这一格现在不能启用（阶数不够 / 名额满）⇒ 图标画暗一档，与命令卡同口径。
+func _set_icon(i: int, path: String, locked: bool) -> void:
+	if i < 0 or i >= _icon_views.size():
+		return
+	var v = _icon_views[i]
+	if v == null or not is_instance_valid(v):
+		return
+	v.set_mask(path)
+	v.set_ready(not locked)
+
+
+## 第 i 格现在画的是哪张图标蒙版（空串 = 没图）。测试用。
+func cell_icon_path(i: int) -> String:
+	if i < 0 or i >= _icon_views.size():
+		return ""
+	var v = _icon_views[i]
+	if v == null or not is_instance_valid(v):
+		return ""
+	return String(v.mask_path())
+
+
+## 第 i 格的名字底条显示 / 隐藏（有科技的格子才垫这条）。
+func _set_bar(i: int, on: bool) -> void:
+	if i < 0 or i >= _name_bars.size():
+		return
+	var b := _name_bars[i]
+	if b != null and is_instance_valid(b):
+		b.visible = on
+
+
+## ★ 底条跟着金色填充淡出（理由同命令卡：填充从下往上，底条在最下面，
+##   金色盖上来之后字会翻成压金暗色，深底 + 深字就读不出来了）。每帧 9 格，开销可忽略。
+func _process(_dt: float) -> void:
+	if not is_visible_in_tree():
+		return
+	for i in _name_bars.size():
+		var bar: ColorRect = _name_bars[i]
+		if bar == null or not is_instance_valid(bar) or not bar.visible:
+			continue
+		if i >= _cells.size():
+			continue
+		var p: float = clampf(FillButtonRes.fill_progress(_cells[i]), 0.0, 1.0)
+		var c := UiStyleRes.name_bar()
+		bar.color = Color(c.r, c.g, c.b, c.a * (1.0 - p))
+
+
 func _apply() -> void:
 	for i in _cells.size():
 		var cell := _cells[i]
@@ -205,6 +290,10 @@ func _apply() -> void:
 			locked = not active and not bool(e.get("available", true))
 			_name_labels[i].text = String(e.get("name", ""))
 			_line_labels[i].text = String(e.get("line", ""))
+			# ★★ 图标：蒙版路径由 hud 塞在条目里（`tech_<id>.png`，缺图时为空串，
+			#   这一格就只剩名字 —— 不会画错、也不会崩）。
+			_set_icon(i, String(e.get("icon_mask", "")), locked)
+			_set_bar(i, true)
 			cell.disabled = false             # 保持可悬停（悬停要能解释原因）
 			# ★★ 走「登记原色」的接口，而不是直接写 font_color override：
 			#   填充动效每帧都按「原色 + 当前填充进度」重算（见 fill_button._sync_text）。
@@ -225,6 +314,8 @@ func _apply() -> void:
 		else:
 			_name_labels[i].text = ""
 			_line_labels[i].text = ""
+			_set_icon(i, "", false)
+			_set_bar(i, false)
 			cell.disabled = true              # 空格子点了不做事（也不吃键盘）
 			FillButtonRes.set_base_font_color(cell, UiStyleRes.text_faint())
 			FillButtonRes.on_fill_text(cell, _line_labels[i], UiStyleRes.text_faint())

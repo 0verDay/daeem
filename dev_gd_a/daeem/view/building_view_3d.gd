@@ -647,6 +647,17 @@ func _world_height_of(b) -> float:
 	return _cell * _height_of(b)
 
 
+## ★★ 建筑**头顶**的世界坐标（3D 标记用，如「指定攻击」头顶的行军图标）。
+## ★ 与在建进度条（`_sync_build_bars`）同一个口径：地面抬升 + 模型高度；
+##   所以图标不会插进屋顶、也不会浮得太高。
+func head_world_of(b) -> Vector3:
+	if palette == null or b == null:
+		return Vector3.ZERO
+	var p: Vector3 = palette.to_world(b.center())
+	p.y = GROUND_LIFT + _world_height_of(b)
+	return p
+
+
 func _transform_of(b) -> Transform3D:
 	# ★★ 在建 / 正在弹：现算并绕开缓存（建筑此刻每帧都在动）
 	var anim: Dictionary = _anim_state(b)

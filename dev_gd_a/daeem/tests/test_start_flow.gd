@@ -79,14 +79,25 @@ func _test_main_layout() -> void:
 	ok(campaign != null and not campaign.visible, "主菜单页战役面板隐藏")
 	ok(coop != null and not coop.visible, "主菜单页合作面板隐藏")
 
-	# 演义 / 自定义 / 备战：不跳转
+	# 演义：仍不跳转；自定义：仍不跳转；备战：进备战页、主菜单上滑，返回后回主菜单
 	mp.main_buttons()[2].pressed.emit()
 	await process_frame
 	eq(int(screen.page()), 1, "演义按钮不跳转")
 	mp.bottom_buttons()[0].pressed.emit()
-	mp.bottom_buttons()[1].pressed.emit()
 	await process_frame
-	eq(int(screen.page()), 1, "自定义/备战不跳转")
+	eq(int(screen.page()), 1, "自定义按钮不跳转")
+	eq(screen.menu_deck().current_page(), "main", "自定义按钮仍停在主菜单")
+	mp.bottom_buttons()[1].pressed.emit()
+	await _wait_until(func(): return screen.menu_deck().current_page() == "prepare" and not screen.menu_deck().is_busy())
+	eq(screen.menu_deck().current_page(), "prepare", "备战按钮进入备战页")
+	near(mp.position.y, -(mp.size.y - 120.0), 1.0,
+		"备战页：主菜单整体上滑，只留底部动作条")
+	ok(screen.prepare_panel() != null and screen.prepare_panel().visible, "备战页显示")
+	ok(screen.handle_back(), "备战页返回被受理")
+	await _wait_until(func(): return screen.menu_deck().current_page() == "main" and not screen.menu_deck().is_busy())
+	eq(screen.menu_deck().current_page(), "main", "从备战页返回主菜单")
+	near(mp.position.y, 0.0, 1.0, "返回后主菜单落回原位")
+	ok(not screen.prepare_panel().visible, "返回后备战页隐藏")
 
 	ok(mp.corner_glow() != null, "主菜单右上角有泛光层")
 	ok(mp.exit_button().get_theme_stylebox("normal") is StyleBoxEmpty, "退出按钮没有边框")
@@ -131,13 +142,10 @@ func _test_campaign_entry() -> void:
 	ok(mp.is_sidebar_dimmed(), "左移的主菜单进入灰层状态")
 	ok(mp.sidebar_dim() != null and mp.sidebar_dim().mouse_filter == Control.MOUSE_FILTER_STOP,
 		"灰层用 STOP 挡住侧栏点击")
-	eq(campaign.chapter_buttons().size(), 3, "右侧 I/II/III 三个章节按钮")
-	campaign.chapter_buttons()[1].pressed.emit()
-	await process_frame
-	eq(campaign.selected_chapter(), 1, "章节按钮只切换选中高亮")
+	ok(campaign.flag_buttons().size() >= 1, "战役地图上至少有一面真实战役旗")
 	eq(mp.active_index(), 0, "战役页左侧「战役」按钮保持满金选中")
 
-	var flag = campaign.flag_button()
+	var flag = campaign.flag_buttons()[0]
 	ok(flag != null, "战役地图中央有旗帜")
 	flag.pressed.emit()
 	await _wait_until(func(): return screen.menu_deck().current_page() == "detail")
