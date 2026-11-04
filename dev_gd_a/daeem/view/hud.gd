@@ -810,6 +810,9 @@ func _build_settings_button() -> void:
 	#     `set_prefer_light` 那行是**历史遗留**（开关已作废）：白字压金读不出来，
 	#     正是用户报的「字被金色填充遮挡」，别把它当成「要白字」的口径。
 	FillButtonRes.attach_text(settings_button)
+	# ★★ 设置按钮有自己的点击反馈（面板打开 = 选中填满、关闭 = 退回）——
+	#   关掉「点击闪光」，否则两边会抢同一份 `_fill`。
+	FillButtonRes.set_click_flash(settings_button, false)
 	FillButtonRes.set_prefer_light(settings_button, true)
 	FillButtonRes.set_base_font_color(settings_button, UiStyleRes.text())
 	_root.add_child(settings_button)
@@ -1877,6 +1880,10 @@ func _build_entry(e: Dictionary, bid: String, tier: int) -> Dictionary:
 	return {
 		"type": "build",
 		"build_type": bid,
+		# ★★ 2026.11.5：建造模式是「选中了这条建造命令」——
+		#   命令卡对应那格要**金色填满**（与页签 / 科技启用同一条选中口径）。
+		#   权威状态是 input_ctrl.build_type；这里只读它，不自己记。
+		"active": input_ctrl != null and String(input_ctrl.build_type) == bid,
 		"name": String(e.get("name", "")),
 		# ★★ 建筑图标：从 .glb 抽边线烘出来的等轴测线稿（见 tools/bake_unit_card_icon.py
 		#   的「建筑」那一段）。格子排版和单位页一致：图标 + 一行名字，说明进悬停面板。
@@ -1950,10 +1957,12 @@ func _recruit_entries(entry_type: String, list: Variant) -> Array:
 			# ★★ 悬停详情要用的字段，一并带在条目里（见 `_hover_recruit`）：
 			#   两张招募表（recruit.list / recruit.zone.list）字段名一样，
 			#   所以「单位页」与「招募页」的详情共用同一段代码，不各写一份。
-			#   ★★ 2026.11：单位页的价钱走 `world.recruit_cost()` —— 派系科技会改价
-			#     （礼乐：金转粮 / 圈地制：金打七折），**显示价必须与实扣价同源**，
-			#     否则悬停写 50 金、实际扣 35 金。区划招将页不受科技影响，仍是原值。
-			"cost": world.recruit_cost(String(e.get("kind", "")), world.my_faction) \
+			#   ★★ 2026.11：单位页的价钱走 `world.recruit_cost_for()` —— 派系科技会改价
+			#     （礼乐：金转粮 / 圈地制：金打七折），**将领光环的「招募骑兵 -25%」也在这里**，
+			#     **显示价必须与实扣价同源**，否则悬停写 50 金、实际扣 37.5 金。
+			#     区划招将页不受这些影响，仍是原值。
+			"cost": world.recruit_cost_for(String(e.get("kind", "")), world.my_faction,
+					input_ctrl.first_selected_leader() if input_ctrl != null else null) \
 				if (world != null and entry_type == "recruit") else e.get("cost", {}),
 			# ★★ 2026.11.2：单位页的读条时长**不是兵种的属性**，而是「招兵那位将领」的
 			#   招兵读条（world.leader_recruit_sec）。区划招将页才读条目自己的 train_sec。
@@ -2910,6 +2919,11 @@ func _card_sig() -> String:
 	if input_ctrl == null or page_tabs == null or world == null:
 		return ""
 	var parts: Array[String] = [String(page_tabs.page())]
+	# ★★ 2026.11.5：建筑页的「当前选中哪条建造命令」也要进签名 ——
+	#   点一格进入 / 再点一次退出 / Esc / 右键取消，都会改 `build_type`；
+	#   不进签名的话，命令卡不会重建，那一格的金色填充就不会跟着变。
+	if String(page_tabs.page()) == PageTabsRes.PAGE_BUILD:
+		parts.append("bt:%s" % String(input_ctrl.build_type))
 	# ① 选中的建筑（选中区划时用「它的中心建筑」代替 —— 与 `_building_order_entries` 同一条判据）
 	var b = _primary_building()
 	if b == null and input_ctrl.selected_zone != null:
@@ -3517,9 +3531,13 @@ func _unit_detail_rows(shown) -> Dictionary:
 	for line in _attack_bonus_lines(shown):
 		left.append(_small_row("- %s" % line))
 	# ★★ 将领特性（部队光环）的名字：效果行由上下两列按类型分别显示，
-	#    这里单独写一条名字，让玩家知道「这些（将）字增益来自哪一条特性」。
+	#    这里单独写一条名字，让玩家知道「这些（将）字增益来自哪几条特性」。
+	#    ★★ 2026.11：一位将领可以带多条 ⇒ 用「、」连起来。
 	if shown.has_method("has_general_aura") and shown.has_general_aura():
-		left.append(_small_row("- 特性 %s" % cfg.general_trait_name(String(shown.aura_trait_id))))
+		var names: Array = []
+		for tid in shown.aura_traits:
+			names.append(cfg.general_trait_name(String(tid)))
+		left.append(_small_row("- 特性 %s" % "、".join(names)))
 
 	# ---- 右列第二排起：防御力 + 防御增益 ----
 	# ★★ 「防御」现在就是**固定护甲值**（本轮新增）：每次受击先减这么多点。
@@ -3711,18 +3729,20 @@ func _buffs_for(u) -> Array:
 	var ratio: float = clampf(float(u.morale_ratio()), 0.0, 1.0)
 	var m: int = int(round(u.morale))
 	var mm: int = int(round(u.morale_max))
-	# ★★ 将领特性（部队光环）：一个「将」字方块，悬停说明这一条具体是什么。
+	# ★★ 将领特性（部队光环）：**一条特性一个「将」字方块**，悬停说明这一条具体是什么。
 	#   梯队顺序：特性在前、士气在后（特性是「这支部队为什么强」的由来）。
+	#   ★★ 2026.11：一位将领可以带多条 ⇒ 这里逐个列（id 带特性 id，便于排查）。
 	if u.has_method("has_general_aura") and u.has_general_aura():
-		var tid := String(u.aura_trait_id)
-		out.append({
-			"id": "general_trait",
-			"text": cfg.general_trait_short(tid),
-			"color": UiStyleRes.accent(),
-			"name": "将领特性：%s" % cfg.general_trait_name(tid),
-			"tip_title": cfg.general_trait_name(tid),
-			"tip_body": "%s\n来自将领，对将领本人及旗下所有单位生效。" % cfg.general_trait_desc(tid),
-		})
+		for tid_v in u.aura_traits:
+			var tid := String(tid_v)
+			out.append({
+				"id": "general_trait:%s" % tid,
+				"text": cfg.general_trait_short(tid),
+				"color": UiStyleRes.accent(),
+				"name": "将领特性：%s" % cfg.general_trait_name(tid),
+				"tip_title": cfg.general_trait_name(tid),
+				"tip_body": "%s\n来自将领，对将领本人及旗下所有单位生效。" % cfg.general_trait_desc(tid),
+			})
 	# 悬停浮窗里写清楚「现在多少 + 各档效果」，与 logic/morale.gd 的口径一致。
 	var body := "当前 %d / %d\n≥%s：快速回血，受到伤害 -%d%%\n≥%s：缓慢回血\n≤%s：受到伤害 +%d%%\n≤%s：缓慢失去生命（0 时加快）" % [
 		m, mm,

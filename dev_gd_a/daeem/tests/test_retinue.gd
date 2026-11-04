@@ -307,13 +307,13 @@ func _test_stats_are_per_type(cfg) -> void:
 		"附属兵攻击间隔走 config")
 
 	eq(String(s.unit_type), String(g1.unit_type), "（前提）附属兵与将领同类型")
-	# ★★ 2026.10.29：将领比同类型附属兵**更抗打**（血量 × 倍率、护甲 + 加成），
-	#    攻击按 `general_damage_mult`（默认 1.0 ⇒ 与附属兵相同）。
-	near(g1.hp_max, s.hp_max * cfg.general_hp_mult, 1e-6,
-		"★ 将领血量 = 同类型附属兵 × 将领倍率")
-	near(g1.combat_damage(cfg), s.combat_damage(cfg) * cfg.general_damage_mult, 1e-6,
-		"★ 将领伤害 = 同类型附属兵 × 将领攻击倍率")
-	ok(g1.armor > s.armor, "★ 将领护甲比附属兵高（+%s）" % cfg.general_armor_bonus)
+	# ★★ 2026.11：将领全局倍率已删除 —— 将领与同类型附属兵的攻击 / 血量 / 护甲完全一致
+	#    （区别只剩「描边更粗 + 它是队长 + 可能带一条将领特性」）。
+	near(g1.hp_max, s.hp_max, 1e-6,
+		"★ 将领血量 = 同类型附属兵（不再乘倍率）")
+	near(g1.combat_damage(cfg), s.combat_damage(cfg), 1e-6,
+		"★ 将领伤害 = 同类型附属兵")
+	near(g1.armor, s.armor, 1e-6, "★ 将领护甲 = 同类型附属兵（不再 +1）")
 	eq(g1.combat_range(cfg), s.combat_range(cfg), "★ 将领射程 = 同类型附属兵的射程")
 
 	ok(cfg.unit_radius_of(t) > 0.0, "附属兵体积是正数")

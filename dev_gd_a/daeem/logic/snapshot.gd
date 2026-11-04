@@ -73,12 +73,14 @@ static func _unit_fields(u) -> Dictionary:
 		# ★★ 中立化（大本营被拆后的停摆状态）：1 = 已中立化。
 		#   缺字段 = 老快照 ⇒ 保持本地现状。
 		"nz": 1 if u.neutralized else 0,
-		# ★★ 将领特性（部队光环）：gt = 将领自己抽到的特性（决定属下继承谁），
-		#   ga = 这个单位实际享受的光环（附属兵必然与队长相同）。两个都要发：
+		# ★★ 将领特性（部队光环）：gts = 将领自己带的**全部**特性（决定属下继承谁），
+		#   gas = 这个单位实际享受的**全部**光环（附属兵必然与队长相同）。两个都要发：
 		#   客机重建单位的顺序不保证「队长先于附属兵」，靠查队长推导会漏。
+		#   ★★ 2026.11：一位将领可以带多条 ⇒ 发的是数组（老字段 gt / ga 是单条字符串，
+		#     接收侧仍然认，只用于兼容旧快照）。
 		#   缺字段 = 老快照 ⇒ 保持本地现状（与其它字段同一条约定）。
-		"gt": u.general_trait if u.general_trait != "" else null,
-		"ga": u.aura_trait_id if u.aura_trait_id != "" else null,
+		"gts": u.general_traits if not u.general_traits.is_empty() else null,
+		"gas": u.aura_traits if not u.aura_traits.is_empty() else null,
 		# ★★ 冲锋（2026.11）：客机不 tick 逻辑，但要用 `ch` 画立牌发光 / 脚下尘环。
 		#   `cc` = 冷却剩余秒，`ca` = 是否已进入冲锋态（便于客机做「命中那一帧」的兜底表现）。
 		#   ★ 这三项都是**纯表现 / 状态回显**：客机不据此结算伤害（伤害在房主侧算）。
@@ -164,12 +166,12 @@ static func _unit_delta(u, prev: Dictionary) -> Dictionary:
 	var nz := 1 if u.neutralized else 0
 	if prev["nz"] != nz:
 		out["nz"] = nz
-	var gt: Variant = u.general_trait if u.general_trait != "" else null
-	if prev["gt"] != gt:
-		out["gt"] = gt
-	var ga: Variant = u.aura_trait_id if u.aura_trait_id != "" else null
-	if prev["ga"] != ga:
-		out["ga"] = ga
+	var gts: Variant = u.general_traits if not u.general_traits.is_empty() else null
+	if prev["gts"] != gts:
+		out["gts"] = gts
+	var gas: Variant = u.aura_traits if not u.aura_traits.is_empty() else null
+	if prev["gas"] != gas:
+		out["gas"] = gas
 	# ★★ 冲锋表现状态：`ch` 是连续值（每帧都可能变），`ca` 是布尔，`cc` 是冷却。
 	var ch := round2(u.charge_ratio)
 	if prev["ch"] != ch:
@@ -509,6 +511,12 @@ static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void:
 				u.reapply_type(cfg, ut_fix)
 				if not is_equal_approx(float(u.vision), old_vision):
 					world.mark_vision_dirty()
+		# ★★ 2026.11.5：0 阶将领的**大本营成长**要按快照里的阵营重算一次 ——
+		#   `reapply_type()` 会把 hp_max 重置成「基础值」，成长是加值，不重算就丢了。
+		#   ⚠️ 必须放在下面 `mh` / `h` 那两行**之前**：上限与当前血量以权威快照为准，
+		#     这里只负责让「攻击加成 / 上限公式」与主机同源（两端读的是同一份 config）。
+		if u.general_index >= 0:
+			u.apply_general_growth(cfg, world.base_level_of(String(su.get("f", u.faction))))
 		var was_alive: bool = bool(u.alive)
 		u.alive = true
 		if not was_alive:
@@ -542,16 +550,25 @@ static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void:
 		var ld: Variant = su.get("ld", null)
 		if typeof(ld) == TYPE_STRING:
 			u.leader_id = ld
-		# ★★ 将领特性：有 gt ⇒ 这是将领本人，连同自己的光环一起恢复；
-		#   否则有 ga ⇒ 附属兵 / 客机侧直接恢复它享受的那条光环。
+		# ★★ 将领特性：有 gts ⇒ 这是将领本人，连同自己的光环一起恢复；
+		#   否则有 gas ⇒ 附属兵 / 客机侧直接恢复它享受的那几条光环。
 		#   两个都缺 = 老快照 ⇒ 保持本地现状（不把已有光环清掉）。
-		var gt: Variant = su.get("gt", null)
-		if typeof(gt) == TYPE_STRING:
-			u.set_general_trait(cfg, String(gt))
+		#   ★ 更老的字段 gt / ga 是单条字符串，仍然认（读一次当成长度 1 的数组）。
+		var gts: Variant = su.get("gts", null)
+		if typeof(gts) == TYPE_ARRAY:
+			u.set_general_traits(cfg, gts)
 		else:
-			var ga: Variant = su.get("ga", null)
-			if typeof(ga) == TYPE_STRING:
-				u.apply_aura_trait(cfg, String(ga))
+			var gt_old: Variant = su.get("gt", null)
+			if typeof(gt_old) == TYPE_STRING:
+				u.set_general_traits(cfg, [String(gt_old)])
+			else:
+				var gas: Variant = su.get("gas", null)
+				if typeof(gas) == TYPE_ARRAY:
+					u.apply_aura_traits(cfg, gas)
+				else:
+					var ga_old: Variant = su.get("ga", null)
+					if typeof(ga_old) == TYPE_STRING:
+						u.apply_aura_traits(cfg, [String(ga_old)])
 		# 朝向：新格式是 [x, y]；**缺字段就保持本地现状**（不要把数组默认成 0，
 		# 那会让所有远端单位突然朝向零向量，见 docs/pitfalls.md 3.6 的同类教训）
 		var fa: Variant = su.get("fa", null)

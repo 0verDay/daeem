@@ -498,8 +498,10 @@ def t_general_traits() -> None:
     model = fresh_model()
     names = dict(model.class_choices())
     eq(model.general_trait_ids(),
-       ["swift", "melee_guard", "ranged_guard", "infantry_slayer", "cavalry_slayer", "might"],
-       "★ 池里那 6 条（顺序 = config 里的顺序）")
+       ["swift", "melee_guard", "ranged_guard", "infantry_slayer", "cavalry_slayer", "might",
+        "steadfast", "arrow_wall", "formation_breaker", "capture_expert",
+        "call_to_arms", "new_knighthood", "crushing_blow"],
+       "★ 池里那 13 条（6 基础 + 7 条新特性；每条只做一件事）")
     swift = model.general_trait("swift")
     eq((swift.name, swift.short, swift.desc), ("神速", "速", "移动速度 +25%"), "★ 神速的三件套")
     eq(swift.effect_number("speed_bonus"), 0.25, "★ 神速 = 移速 +25%（比例 0.25）")
@@ -509,21 +511,30 @@ def t_general_traits() -> None:
 
     # ---- 指定 / 取消指定
     # ★ 2026.11.4：设计师已经给几位将领指定了特性，所以这里不再假设「默认全空」，
-    #   改成「每一位要么空串、要么是池里真实存在的一条」——这才是配置合法性的判据。
+    #   改成「每一位要么空数组、要么是池里真实存在的若干条」——这才是配置合法性的判据。
     ids = model.doc.value(["unit", "general", "trait_ids"], [])
     ok(isinstance(ids, list) and len(ids) == model.general_count(),
        "trait_ids 与将领同序同长")
-    for i, tid in enumerate(ids if isinstance(ids, list) else []):
-        ok(tid == "" or model.general_trait_ids().count(tid) == 1,
-           "第 %d 位将领的特性要么空、要么在池里（实际 %r）" % (i + 1, tid))
+    for i, entry in enumerate(ids if isinstance(ids, list) else []):
+        picks = [entry] if isinstance(entry, str) else list(entry or [])
+        ok(all(isinstance(t, str) and model.general_trait_ids().count(t) == 1 for t in picks),
+           "第 %d 位将领的特性都在池里（实际 %r）" % (i + 1, entry))
     model.assign_general_trait(0, "")
-    eq(model.general(0).trait_id, "", "（前提）清空将领 0 的特性")
+    eq(model.general(0).trait_ids, [], "（前提）清空将领 0 的特性")
     model.assign_general_trait(0, "swift")
-    eq(model.doc.value(["unit", "general", "trait_ids", 0]), "swift",
-       "★★ 给将领 0 指定神速 → 写进 unit.general.trait_ids[0]")
-    eq(model.general(0).trait_id, "swift", "模型读回同一条")
+    eq(model.doc.value(["unit", "general", "trait_ids", 0]), ["swift"],
+       "★★ 给将领 0 指定神速 → 写进 unit.general.trait_ids[0]（数组）")
+    eq(model.general(0).trait_ids, ["swift"], "模型读回同一条")
+    # ★★ 2026.11：一个将领可以有**多条**特性
+    model.add_general_trait_to(0, "steadfast")
+    eq(model.general(0).trait_ids, ["swift", "steadfast"],
+       "★★ 再给它加一条「稳定」→ 两条并存（用户口径：一个将领可以有多个特性）")
+    eq(model.general(0).trait_id, "swift", "★ trait_id 兼容字段 = 第一条")
+    raises(lambda: model.add_general_trait_to(0, "steadfast"), "同一条不能加两次")
+    model.remove_general_trait_from(0, "swift")
+    eq(model.general(0).trait_ids, ["steadfast"], "★ 移除一条，其余保留")
     model.assign_general_trait(0, "")
-    eq(model.general(0).trait_id, "", "★ 选「（无）」= 清空，不是删掉整个数组")
+    eq(model.general(0).trait_ids, [], "★ 指定「无」= 清空，不是删掉整个数组")
     ok(isinstance(model.doc.value(["unit", "general", "trait_ids"]), list),
        "trait_ids 仍是与将领同序的数组（下标不能错位）")
     raises(lambda: model.assign_general_trait(0, "nope"), "指定一条不存在的特性被拒")
@@ -560,20 +571,21 @@ def t_general_traits() -> None:
     raises(lambda: model.add_general_trait("brute", "又一个", "might"), "id 不许重复")
     raises(lambda: model.add_general_trait("Bad Id", "坏", "might"), "id 只许小写 + 下划线")
 
-    # 删掉一条正在用的：必须把用它的将领一起改成「无」
+    # 删掉一条正在用的：必须把用它的将领身上那一条去掉（别的特性保留）
     model.assign_general_trait(0, "brute")
-    eq(model.general(0).trait_id, "brute", "（前提）将领 0 正在用 brute")
+    model.add_general_trait_to(0, "steadfast")
+    eq(model.general(0).trait_ids, ["brute", "steadfast"], "（前提）将领 0 同时带 brute + 稳定")
     model.remove_general_trait("brute")
     ok(not model.doc.has(["unit", "general_traits", "brute"]), "★★ 删掉了池里那一条")
-    eq(model.general(0).trait_id, "",
-       "★★ 正在用它的将领被改成「无」（不留一条指向空 id 的记录）")
+    eq(model.general(0).trait_ids, ["steadfast"],
+       "★★ 只把这一条从将领身上去掉，另一条保留（不留指向空 id 的记录）")
     raises(lambda: model.remove_general_trait("brute"), "再删一次被拒")
 
-    # ---- 读法契约：缺项 / 越界 / 坏 id 都当「没有特性」
-    model.doc.set(["unit", "general", "trait_ids", 1], "ghost")
-    eq(model.general(1).trait_id, "",
+    # ---- 读法契约：缺项 / 越界 / 坏 id 都当「没有那一条」
+    model.doc.set(["unit", "general", "trait_ids", 1], ["ghost"])
+    eq(model.general(1).trait_ids, [],
        "★★ trait_ids 里写了一个池里没有的 id → 当成「没有特性」（写错当没写）")
-    eq(model.general(9).trait_id, "", "越界的序号 → 空串，不抛异常")
+    eq(model.general(9).trait_ids, [], "越界的序号 → 空数组，不抛异常")
 
     # ---- 池被删空时也能建第一条（否则「把特性全删了」会把功能锁死）
     for tid in list(model.general_trait_ids()):
@@ -593,13 +605,16 @@ def t_trait_game_keys() -> None:
        "★★ 兵种特性的标量/开关键 = config.gd 的 _normalize_traits() 认的那几个")
     eq(UNIT_TRAIT_ATTACK_KEY, "attack_vs_class", "兵种特性的「对某大类」键名")
     eq({f.key for f in model_mod.GENERAL_TRAIT_FIELDS},
-       {"speed_bonus", "attack_speed_bonus", "melee_reduction", "ranged_reduction"},
+       {"speed_bonus", "attack_speed_bonus", "melee_reduction", "ranged_reduction",
+        "capture_speed_bonus", "recruit_cavalry_discount", "charge_damage_bonus"},
        "★★ 将领特性的标量键 = config.gd 的 _normalize_general_trait() 认的那几个")
     eq(GENERAL_TRAIT_ATTACK_KEY, "attack_vs_class", "将领特性的「对某大类」键名")
     # 池里每一条的键都必须在那张白名单里（多了游戏会静默丢掉 —— 编辑器不该让人写出来）
     allowed = ({f.key for f in model_mod.GENERAL_TRAIT_FIELDS}
                | {f.key for f in model_mod.GENERAL_TRAIT_TEXT_FIELDS}
-               | {GENERAL_TRAIT_ATTACK_KEY})
+               | {GENERAL_TRAIT_ATTACK_KEY}
+               | {UNIT_TRAIT_KNOCKBACK.key}
+               | {"melee_splash"})
     for trait in model.general_traits():
         extra = set(trait.raw.keys()) - allowed
         eq(extra, set(), "%s 的键都在白名单里" % trait.id)
@@ -612,13 +627,16 @@ def t_trait_game_keys() -> None:
     for uid in model.unit_ids():
         extra = set(model.unit(uid).traits.keys()) - unit_allowed
         eq(extra, set(), "%s 的 traits 只写了白名单里的键" % uid)
-    # 每位将领的 trait_ids：要么空，要么指向池里真实存在的一条
+    # 每位将领的 trait_ids：每一项都是数组，里面的 id 指向池里真实存在的一条
     arr = model.doc.value(["unit", "general", "trait_ids"], [])
     ok(isinstance(arr, list), "★★ unit.general.trait_ids 是数组（与将领同序）")
     eq(len(arr), model.general_count(), "★ 长度 = 将领个数（%d）" % model.general_count())
-    for i, tid in enumerate(arr):
-        ok(tid == "" or model.doc.has(["unit", "general_traits", tid]),
-           "trait_ids[%d] 要么是空串，要么指向池里真实的特性（%r）" % (i, tid))
+    for i, entry in enumerate(arr):
+        ok(isinstance(entry, list),
+           "★★ trait_ids[%d] 是**数组**（一位将领可以带多条；用户口径 2026.11）" % i)
+        for tid in (entry if isinstance(entry, list) else []):
+            ok(model.doc.has(["unit", "general_traits", tid]),
+               "trait_ids[%d] 里的 %r 指向池里真实的特性" % (i, tid))
 
 
 def t_upkeep() -> None:
@@ -893,6 +911,125 @@ def t_generals() -> None:
 
 
 # ======================================================================
+# [3b] 将领的阶 / 派系归属 / 0 阶成长 / 「加将领」
+# ======================================================================
+
+def t_general_tier_faction_growth() -> None:
+    """★★ 2026.11.5：三件新东西的**数据层契约**。
+
+    1. `unit.general.tiers[i]`   —— 阶（0~3，与 types 同序；以前写在招募表里）；
+    2. `unit.general.factions[i]`—— 派系归属（一位可属多派；备战页按它过滤）；
+    3. `unit.general.growth`     —— 0 阶将领的大本营成长（每级加多少血 / 攻）。
+
+    另外验「加将领」：追加在名册末尾、七张同序表一起变长、**不进**招募九宫格。
+    """
+    print("\n[3b] 将领的阶 / 派系归属 / 0 阶成长 / 加将领")
+    model = fresh_model()
+
+    # ---- 阶：默认与「加 tiers 之前」逐位一致
+    eq(model.general_tier(0), 1, "将领 1 默认一阶")
+    eq(model.general_tier(3), 2, "将领 4 默认二阶")
+    eq(model.general_tier(6), 3, "将领 7 默认三阶")
+    eq(model.general_tier(9), 0, "★★ 开局将领 #0 默认零阶")
+    eq(model.general(9).tier, 0, "★ General 对象也带 tier")
+    eq(model.general(9).kind, "general_0", "★ 第 10 档的 kind 是 general_0（不是 general_10）")
+    model.set_general_tier(0, 0)
+    eq(model.doc.value(["unit", "general", "tiers", 0]), 0,
+       "★ 改阶写 unit.general.tiers[0]")
+    eq(model.general_tier(0), 0, "模型读回同一个数")
+    model.set_general_tier(0, 9)
+    eq(model.general_tier(0), 3, "★ 阶被夹到 3")
+    model.set_general_tier(0, -5)
+    eq(model.general_tier(0), 0, "★ 阶被夹到 0")
+    # 老配置：没有 tiers 这一栏 ⇒ 退回招募表里的 tier（兼容）
+    old = parse(model.text)
+    del old["unit"]["general"]["tiers"]
+    m_old = ConfigModel.from_text(json.dumps(old, ensure_ascii=False, indent=2))
+    eq(m_old.general_tier(0), 1, "★ 没有 tiers 段 → 退回招募表的 tier（1）")
+    eq(m_old.general_tier(9), 0, "…开局 #0 仍是 0 阶")
+    m_old.set_general_tier(9, 1)
+    eq(m_old.general_tier(9), 1, "★ 没 tiers 段时写一次 → 自动补出整段并写对位置")
+
+    # ---- 派系归属：默认三派全勾；可多选；空 = 哪个都不显示
+    eq(model.general_faction_ids(), ["native", "dynasty", "empire"],
+       "派系选项来自 clan.list（原生 / 王朝 / 帝国）")
+    eq(model.faction_choices(), [("native", "原生"), ("dynasty", "王朝"), ("empire", "帝国")],
+       "派系下拉的 id → 名字")
+    eq(model.general_factions(0), ["native", "dynasty", "empire"],
+       "★★ 默认三派全勾（一位将领可属多个派系）")
+    eq(model.general(0).factions, ["native", "dynasty", "empire"], "★ General 对象也带 factions")
+    model.set_general_faction(0, "empire", False)
+    eq(model.general_factions(0), ["native", "dynasty"], "取消一个派系")
+    eq(model.doc.value(["unit", "general", "factions", 0]), ["native", "dynasty"],
+       "★ 写进 unit.general.factions[0]")
+    model.set_general_faction(0, "empire", True)
+    eq(model.general_factions(0), ["native", "dynasty", "empire"],
+       "★★ 重新勾上 → 按 clan.list 的声明顺序写回（勾选顺序不影响文件）")
+    for cid, _name in model.faction_choices():
+        model.set_general_faction(0, cid, False)
+    eq(model.general_factions(0), [], "全取消 = 空数组（哪个派系都不显示）")
+    raises(lambda: model.set_general_faction(0, "no_such_clan", True),
+           "不认识的派系被拒")
+    # 老配置：没有 factions 这一栏 ⇒ 全部派系都算
+    old2 = parse(model.text)
+    del old2["unit"]["general"]["factions"]
+    m_old2 = ConfigModel.from_text(json.dumps(old2, ensure_ascii=False, indent=2))
+    eq(m_old2.general_factions(0), ["native", "dynasty", "empire"],
+       "★★ 没有 factions 段 → 三派全算（老配置行为不变）")
+
+    # ---- 0 阶成长（`unit.general.growth`，全局一份）
+    growth = model.general_growth()
+    near(growth["hp_max_per_level"], 30, "0 阶成长 · 血量 / 级 = 30（占位）")
+    near(growth["damage_per_level"], 3, "0 阶成长 · 攻击 / 级 = 3（占位）")
+    model.set_general_growth("hp_max_per_level", 50)
+    eq(model.doc.value(["unit", "general", "growth", "hp_max_per_level"]), 50.0,
+       "★ 改成长写 unit.general.growth.hp_max_per_level")
+    near(model.general_growth()["hp_max_per_level"], 50, "模型读回同一个数")
+    model.set_general_growth("damage_per_level", -5)
+    eq(model.doc.value(["unit", "general", "growth", "damage_per_level"]), 0.0,
+       "★ 成长被夹到 ≥ 0")
+    raises(lambda: model.set_general_growth("no_such_key", 1), "不认识的成长字段被拒")
+    old3 = parse(model.text)
+    del old3["unit"]["general"]["growth"]
+    m_old3 = ConfigModel.from_text(json.dumps(old3, ensure_ascii=False, indent=2))
+    near(m_old3.general_growth()["hp_max_per_level"], 0,
+         "★ 没有 growth 段 → 0（老配置不会静默变强）")
+
+    # ---- 加将领：追加在末尾，七张同序表一起变长，不进招募九宫格
+    m = fresh_model()
+    before = m.general_count()
+    idx = m.add_general("将领 10", "spearman", 0)
+    eq(idx, before, "add_general 返回末尾下标")
+    eq(m.general_count(), before + 1, "★ 名册多了一位")
+    ng = m.general(idx)
+    eq(ng.name, "将领 10", "名字来自对话框")
+    own = "spearman_lord_%d" % (before + 1)
+    eq(ng.type_id, own, "★★ 类型 = 复制出来的**独立兵种**（模板 spearman）")
+    ok(m.doc.has(["unit", "types", own]), "…unit.types 里多了这一条")
+    eq(m.doc.value(["unit", "types", own, "name"]), "将领 10",
+       "…独立兵种的名字 = 将领名")
+    eq(ng.tier, 0, "阶来自对话框（默认零阶）")
+    eq(ng.kind, "general_%d" % (before + 1),
+       "★★ 新将领的 kind = general_<下标+1>（general_10 永不存在）")
+    eq(ng.factions, ["native", "dynasty", "empire"], "★ 派系默认三派全勾")
+    ok(not ng.has_recruit, "★★ 加出来的将领不进招募九宫格（没有招募条目）")
+    ok(not any(r.get("kind") == "general_11"
+               for r in m.doc.value(["recruit", "zone", "list"], [])),
+       "…recruit.zone.list 里没有它")
+    for key in ("types", "stats", "caps", "recruit_sec", "trait_ids", "tiers", "factions"):
+        eq(m.doc.size(["unit", "general", key]), before + 1,
+           "★★ 同序表 %s 一起变长" % key)
+    idx2 = m.add_general("将领 11", "longbowman", 1)
+    eq(m.general(idx2).kind, "general_%d" % (before + 2), "★ 再加一位 → kind 继续递增")
+    eq(m.general(idx2).tier, 1, "…阶也可以是 1（对话框里选的）")
+    eq(m.general(idx2).name, "将领 11", "…名字各是各的")
+    raises(lambda: m.add_general("", "spearman"), "空名字被拒")
+    raises(lambda: m.add_general("某人", "no_such_type"), "不存在的兵种被拒")
+    # 开局将领 #0 的位置不能被新加的顶掉
+    eq(m.general(9).kind, "general_0", "★★ 开局将领仍然在第 10 档（kind = general_0）")
+
+
+# ======================================================================
 # [4] 建筑：造价 / 建造时间 / 血量 / 攻击 / 每一级
 # ======================================================================
 
@@ -1148,11 +1285,14 @@ def t_game_contract() -> None:
         return out
 
     clan_roster = _clan_roster_ids()
+    # ★★ 2026.11：新将领的专属兵种（`dy_lord_*` / `dg_lord_*`）**没有招募条目**，
+    #   它们由 `unit.general.types[]` 引用 —— 这也算「活着的数据」。
+    general_types = set(model.doc.value(["unit", "general", "types"], []) or [])
     for uid in model.unit_ids():
         u = model.unit(uid)
         if not u.has_recruit:
-            ok(uid in clan_roster,
-               "★ %s 没有任何招募条目，但出现在某个派系的招募表里" % uid)
+            ok(uid in clan_roster or uid in general_types,
+               "★ %s 没有任何招募条目，但被某个派系的招募表或某位将领引用" % uid)
             continue
         # ★★ 2026.11.2：条目可能挂在**任意**一张表里（全局 / 派系），按实际路径验字段。
         path = u.recruit_path
@@ -1267,6 +1407,7 @@ def main() -> int:
     t_upkeep()
     t_add_remove_unit()
     t_generals()
+    t_general_tier_faction_growth()
     t_buildings()
     t_techs_moved()
     t_game_contract()

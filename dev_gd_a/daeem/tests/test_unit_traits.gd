@@ -137,6 +137,9 @@ func _test_melee_attack(cfg) -> void:
 	spear.morale = 90.0
 	rider.morale = 90.0
 	bow.morale = 90.0
+	# 固定护甲会先削掉 2 点伤害：本节只验「对某大类」的倍率，先把护甲清零隔离。
+	rider.armor = 0.0
+	bow.armor = 0.0
 
 	var hp0: float = rider.hp
 	CombatRes.attack_unit(null, cfg, spear, rider)
@@ -167,6 +170,7 @@ func _test_ranged_reduction(cfg) -> void:
 	rider.hp_max = 1000.0
 	rider.hp = 1000.0
 	rider.morale = cfg.morale_mid_tier        # 中间档：士气不参与
+	rider.armor = 0.0                         # 只验减伤那一条，护甲清零隔离
 
 	rider.take_damage(cfg, null, 100.0, null, true)
 	var trait_red: float = rider.ranged_damage_reduction
@@ -213,6 +217,7 @@ func _test_ranged_reduction(cfg) -> void:
 	var spear = _mk(cfg, "r_spear", UnitRes.UNIT_TYPE_SPEARMAN, "p2")
 	spear.hp_max = 1000.0
 	spear.hp = 1000.0
+	spear.armor = 0.0
 	spear.morale = cfg.morale_high_tier
 	spear.take_damage(cfg, null, 100.0, null, true)
 	var spear_red: float = minf(morale_red, cfg.damage_reduction_cap)
@@ -230,27 +235,29 @@ func _test_ranged_impact(cfg) -> void:
 	var bow = _mk(cfg, "p_bow", UnitRes.UNIT_TYPE_LONGBOWMAN, "p1")
 	bow.morale = 90.0
 	var rider = _mk(cfg, "p_rider", UnitRes.UNIT_TYPE_RIDER, "p2")
-	rider.morale = 90.0
+	rider.morale = cfg.morale_mid_tier      # 中间档：只验「远程」这一条，别叠士气免伤
 	rider.hp_max = 1000.0
 	rider.hp = 1000.0
+	rider.armor = 0.0
 
 	var p = ProjectileRes.new()
 	p.target = rider
 	p.source = bow
-	p.damage = bow.combat_damage(cfg)   # 24：长弓兵打骑兵没有加成
+	p.damage = bow.combat_damage(cfg)   # 长弓兵打骑兵没有加成
 	p.target_is_building = false
 	ProjectileRes._impact(w, cfg, p)
-	near(1000.0 - rider.hp, 24.0 * 0.75, 1e-3,
-		"★ 投掷物命中骑手：按远程结算（24 × 0.75）")
+	near(1000.0 - rider.hp, bow.combat_damage(cfg) * 0.75, 1e-3,
+		"★ 投掷物命中骑手：按远程结算（伤害 × 0.75）")
 
 	var spear = _mk(cfg, "p_spear", UnitRes.UNIT_TYPE_SPEARMAN, "p2")
-	spear.morale = 90.0
+	spear.morale = cfg.morale_mid_tier
 	spear.hp_max = 1000.0
 	spear.hp = 1000.0
+	spear.armor = 0.0
 	p.target = spear
 	p.damage = bow.combat_damage(cfg) * bow.attack_multiplier_vs_class(String(spear.unit_class))
 	ProjectileRes._impact(w, cfg, p)
-	near(1000.0 - spear.hp, 24.0 * 1.10, 1e-3,
+	near(1000.0 - spear.hp, bow.combat_damage(cfg) * 1.10, 1e-3,
 		"★ 投掷物命中步兵：长弓兵的 +10% 已算在投掷物伤害里")
 
 	# ★★ 真正的装配路径（不是手算）：attack_unit 生成投掷物时，`damage` 字段里

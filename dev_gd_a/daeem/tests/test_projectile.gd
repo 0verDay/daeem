@@ -55,6 +55,8 @@ func _test_ranged_delayed_hit(cfg) -> void:
 	if e == null:
 		return
 	e.hp = 100000.0
+	# 长枪兵现在有 2 点护甲：本文件只验「投掷物何时结算」，先把护甲清零隔离。
+	e.armor = 0.0
 	_place(w, e, shooter.pos + Vector2(3.0, 0.0))
 	var hp0: float = e.hp
 
@@ -85,6 +87,7 @@ func _test_guaranteed_hit_moving(cfg) -> void:
 		ok(false, "（前提）远程单位与敌人都在")
 		return
 	e.hp = 100000.0
+	e.armor = 0.0
 	_place(w, e, shooter.pos + Vector2(4.0, 0.0))
 	var hp0: float = e.hp
 
@@ -109,6 +112,7 @@ func _test_melee_instant(cfg) -> void:
 	if e == null:
 		return
 	e.hp = 100000.0
+	e.armor = 0.0
 	_place(w, e, m.pos + Vector2(1.0, 0.0))
 	var hp0: float = e.hp
 	CombatRes.attack_unit(w, cfg, m, e)
@@ -137,6 +141,7 @@ func _test_tower_projectile(cfg) -> void:
 	if e == null:
 		return
 	e.hp = 100000.0
+	e.armor = 0.0
 	_place(w, e, tower.center() + Vector2(2.0, 0.0))
 	var hp0: float = e.hp
 
@@ -209,6 +214,8 @@ func _ranged_hit_frames(cfg) -> int:
 	if shooter == null or e == null:
 		return -1
 	e.hp = 100000.0
+	# 长枪兵现在有 2 点护甲：本文件只验「投掷物何时结算」，先把护甲清零隔离。
+	e.armor = 0.0
 	_place(w, e, shooter.pos + Vector2(3.0, 0.0))
 	CombatRes.attack_unit(w, cfg, shooter, e)
 	return _advance_until_landed(w, cfg, 900)

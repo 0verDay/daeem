@@ -2120,14 +2120,52 @@ func _test_card_keys(main) -> void:
 
 	ok(card.handle_key(_key(KEY_Q)), "建筑页的 Q 被命令卡吃掉")
 	eq(main.input_ctrl.build_type, "wall", "★ 建筑页按 Q = 木墙")
+	# ★★ 2026.11.5：进入建造模式 = 选中这条建造命令 → 命令卡对应那格金色填满。
+	main.hud.refresh()
+	var wall_cell: Button = card.cell_at(0)
+	var wall_anim = FillButtonRes.animator_of(wall_cell)
+	ok(FillButtonRes.is_latched(wall_cell),
+		"★★ 进入木墙建造模式 → 命令卡木墙那格视为「已选中」")
+	ok(not FillButtonRes.click_flash_enabled(wall_cell),
+		"★★ 建造格不参与点击闪光（选中填充本身就是反馈）")
+	wall_anim._process(0.2)
+	ok(FillButtonRes.fill_progress(wall_cell) >= 0.999,
+		"★★ 木墙那一格金色填满")
+
 	ok(card.handle_key(_key(KEY_W)), "建筑页的 W 被命令卡吃掉")
 	eq(main.input_ctrl.build_type, "tower", "★ 建筑页按 W = 哨塔（W 已不再平移镜头）")
+	main.hud.refresh()
+	var tower_cell: Button = card.cell_at(1)
+	var tower_anim = FillButtonRes.animator_of(tower_cell)
+	ok(FillButtonRes.is_latched(tower_cell), "★★ 切到哨塔 → 哨塔那格视为选中")
+	tower_anim._process(0.2)
+	ok(FillButtonRes.fill_progress(tower_cell) >= 0.999, "★★ 哨塔那格金色填满")
+	wall_anim._process(0.2)
+	ok(not FillButtonRes.is_latched(wall_cell)
+			and FillButtonRes.fill_progress(wall_cell) <= 0.001,
+		"★★ 木墙那格取消选中 → 金色退回")
+
 	ok(card.handle_key(_key(KEY_W)), "再按一次 W")
 	eq(main.input_ctrl.build_type, "", "再按一次同一格 = 退出建造模式")
+	main.hud.refresh()
+	tower_anim._process(0.2)
+	ok(not FillButtonRes.is_latched(tower_cell)
+			and FillButtonRes.fill_progress(tower_cell) <= 0.001,
+		"★★ 退出建造模式 → 哨塔那格金色退回")
 
 	card.cell_at(0).emit_signal("pressed")
 	eq(main.input_ctrl.build_type, "wall", "点 Q 格 = 进木墙建造模式")
+	main.hud.refresh()
+	wall_anim._process(0.2)
+	ok(FillButtonRes.is_latched(wall_cell)
+			and FillButtonRes.fill_progress(wall_cell) >= 0.999,
+		"★★ 点击木墙格 → 那格金色填满")
 	main.input_ctrl.set_build_type("")
+	main.hud.refresh()
+	wall_anim._process(0.2)
+	ok(not FillButtonRes.is_latched(wall_cell)
+			and FillButtonRes.fill_progress(wall_cell) <= 0.001,
+		"★★ 清掉建造模式（Esc / 右键）→ 金色退回")
 
 	main.input_ctrl.select_units([g1])
 	main.hud.refresh()
@@ -2242,6 +2280,12 @@ func _test_recruit_via_card(main) -> void:
 	main.hud.refresh()
 	main.hud.page_tabs.select_page(PageTabsRes.PAGE_UNIT)
 	eq(main.hud.page_tabs.page(), PageTabsRes.PAGE_UNIT, "（前提）切到单位页")
+	# ★★ 2026.11.5（用户口径）：局内的单位按钮点击后**不要金色填充闪过**。
+	var unit_cell: Button = card.cell_at(0)
+	ok(not FillButtonRes.click_flash_enabled(unit_cell),
+		"★★ 单位页的招募格不挂点击闪光（点一下不闪金）")
+	ok(not FillButtonRes.is_latched(unit_cell),
+		"★ 单位按钮也没有选中态（不会点完停在满格）")
 	var queue = main.hud.detail_panel.queue_control()
 	ok(queue != null, "详细信息右栏里有招募队列控件")
 	ok(not queue.showing(), "★ 没在招募时五个格子收起来（需求：将领开始招募时才出现）")

@@ -333,18 +333,30 @@ var _general_combat: Array = []
 ##   红点将领的附属兵数也以它封顶（见 logic/expr.gd 与 tools/unit_editor）。
 ##   ★ 缺省 / 越界一律 11（与界面那个常量 UNIT_CAP 同值，但两者暂时各自独立）。
 var _general_caps: Array = []
-## ★★ 2026.10.29：**将领比兵种更抗打**的三个全局旋钮（`unit.general.*`）。
-##   · `general_hp_mult`     —— 血量上限 ×它（config 里写 1.5；**缺键时中性值 1.0**）
-##   · `general_armor_bonus` —— 护甲**加成**（config 里 +1；缺键 0）
-##   · `general_damage_mult` —— 攻击 ×它（config 里 1.0）
-##   ★ 三者都作用在「这一位将领的基准值」上（基准 = stats 覆盖 ⊕ 所属兵种），
-##     所以下面是**唯一的**「将领强度」口径，unit.gd 不自己再写一份。
-##   ⚠️ 只对 `is_general()` 的单位生效；普通兵只吃兵种表。
-##   ⚠️ 缺键时给**中性值**（1.0 / 0.0 / 1.0）而不是 config 里那一档 ——
-##     否则「一份没有这几个键的老配置 / 测试配置」会静默变强。
-var general_hp_mult: float = 1.0
-var general_armor_bonus: float = 0.0
-var general_damage_mult: float = 1.0
+## ★★ 2026.11.5：将领的**阶**（config.json 的 `unit.general.tiers`，与 types 同序，0~3）。
+##   · 阶 = 备战页分组的行 + 「大本营升到几级才招得到」的门槛（0 阶不参与区划招募）；
+##   · 0 阶将领吃 `unit.general.growth` 那一份**大本营成长**（见 general_growth_bonus）；
+##   · 缺项 / 越界 ⇒ 开局那一档（下标 9）按 0 阶、其余按 1 阶 —— 老配置逐位一致。
+##   ★ 这个数**只在这里**（`recruit.zone.list[].tier` 里那 9 份已经删掉了，一个数只有一处）。
+var _general_tiers: Array = []
+## ★★ 2026.11.5：将领的**派系归属**（config.json 的 `unit.general.factions`，与 types 同序）。
+##   · 每位一个 id 数组（一位将领可以同时属于多个派系）；
+##   · 空数组 / 缺项 ⇒ **全部派系都算**（`general_factions_at` 在访问时展开，
+##     因为 `_clan_ids` 要等 `_cache_clans()` 才就绪 —— 它排在本函数之后）；
+##   · 备战页用它过滤「将领」那一节（view/prepare_roster_list.gd）。
+var _general_factions: Array = []
+## ★★ 2026.11.5：**0 阶将领的大本营成长**（config.json 的 `unit.general.growth`）。
+##   · 加成 = 每级值 × **当前大本营等级**（用户口径：1 级就给）；
+##   · 只作用于 0 阶将领（`general_tier_at(i) == 0`），其它阶一点不吃；
+##   · 缺键 ⇒ 两个 0（老配置 / 测试配置不会静默变强）。
+var general_growth_hp_per_level: float = 0.0
+var general_growth_damage_per_level: float = 0.0
+## ★★ 2026.11：**将领全局倍率已删除**（`hp_mult` / `armor_bonus` / `damage_mult`）。
+##   用户口径：「把这个多余的规则去掉，所有将领的属性都是单位编辑器和游戏内相同的」——
+##   于是将领的血量 / 护甲 / 攻击**直接等于**它所属兵种（或 `stats` 覆盖），
+##   `unit.gd` 的 create / refresh / combat 三条路径也不再各乘一次。
+##   ⚠️ 0 阶将领的「大本营成长」（`general_growth_bonus`）**不在此列**，那是明确需求。
+##   ⚠️ 老配置里若还写着这三个键，现在是**没人读的死键**（不报错、不生效）。
 ## 单位类型 id → 地图上显示的那**一个字**（config 的 `unit.types.<id>.icon`）。
 ## ★ 空串 = 配置里没写（`unit_icon_of` 退成名字的第一个字）。
 ## ★★ 它是**数据**而不是美术：设计师在单位编辑器里给每个兵种挑一个字，
@@ -1144,6 +1156,10 @@ func _normalize_charge(raw: Variant) -> Dictionary:
 ##   · speed_bonus / attack_speed_bonus：比例（0.25 = +25% / 攻击间隔 ÷1.25）；
 ##   · melee_reduction / ranged_reduction：减伤比例（夹 0..1）；
 ##   · attack_vs_class：`{ <兵种大类 id>: <比例> }`，键必须是真实存在的大类。
+##   · ★★ 2026.11 新增四个「只给新将领用」的效果（见 config.json 的 _general_traits_comment）：
+##     `knockback_immune`（稳定）、`capture_speed_bonus`（占领速度 +比例）、
+##     `recruit_cavalry_discount`（招募骑兵打折，夹 0..1）、
+##     `charge_damage_bonus`（近战骑兵冲锋额外伤害 +比例）。
 ##
 ## ⚠️ 与 `_normalize_traits()` 同一套理由：手写配置可能漏键 / 写错类型 / 写错大类，
 ##   载入时洗一遍，运行期就只剩干净的标量；写错的大类宁可当没写，也不要留一条
@@ -1159,6 +1175,13 @@ func _normalize_general_trait(id: String, raw: Variant) -> Dictionary:
 		"melee_reduction": 0.0,
 		"ranged_reduction": 0.0,
 		"attack_vs_class": {},
+		"knockback_immune": false,
+		"capture_speed_bonus": 0.0,
+		"recruit_cavalry_discount": 0.0,
+		"charge_damage_bonus": 0.0,
+		# ★★ 2026.11：一个特性也可以是一组「同一件事」的数值（横扫 = 范围伤害 + 击退）——
+		#   形状 `{radius, knockback, stun_sec}`；三个都是 0 时整键不写。
+		"melee_splash": {},
 	}
 	if typeof(raw) != TYPE_DICTIONARY:
 		return out
@@ -1190,6 +1213,36 @@ func _normalize_general_trait(id: String, raw: Variant) -> Dictionary:
 			var v: Variant = (av as Dictionary)[cls]
 			if typeof(v) == TYPE_INT or typeof(v) == TYPE_FLOAT:
 				out["attack_vs_class"][key] = maxf(0.0, float(v))
+	# ★★ 2026.11：四个新效果键。`bool(...)` 对 0 / "" / null 都是 false，
+	#   所以「写错类型」最坏只是没效果，不会抛。
+	out["knockback_immune"] = bool(d.get("knockback_immune", false))
+	var cs: Variant = d.get("capture_speed_bonus", 0.0)
+	if typeof(cs) == TYPE_INT or typeof(cs) == TYPE_FLOAT:
+		out["capture_speed_bonus"] = clampf(float(cs), 0.0, 10.0)
+	var rd: Variant = d.get("recruit_cavalry_discount", 0.0)
+	if typeof(rd) == TYPE_INT or typeof(rd) == TYPE_FLOAT:
+		# 折扣夹 0..1：1.0 = 免费，写更大没有意义（别让配置让招募倒贴）。
+		out["recruit_cavalry_discount"] = clampf(float(rd), 0.0, 1.0)
+	var cb: Variant = d.get("charge_damage_bonus", 0.0)
+	if typeof(cb) == TYPE_INT or typeof(cb) == TYPE_FLOAT:
+		out["charge_damage_bonus"] = maxf(0.0, float(cb))
+	# ★★ 2026.11：横扫（攻击附带范围伤害 + 击退）。三个数都夹到安全范围；
+	#   全 0 ⇒ 不算这一条（下游只看 `melee_splash` 是否非空）。
+	var ms: Variant = d.get("melee_splash", null)
+	if typeof(ms) == TYPE_DICTIONARY:
+		var m: Dictionary = ms
+		var rad_v: Variant = m.get("radius", 0.0)
+		var kb_v: Variant = m.get("knockback", 0.0)
+		var st_v: Variant = m.get("stun_sec", 0.0)
+		var rad := float(rad_v) if (typeof(rad_v) == TYPE_INT or typeof(rad_v) == TYPE_FLOAT) else 0.0
+		var kb := float(kb_v) if (typeof(kb_v) == TYPE_INT or typeof(kb_v) == TYPE_FLOAT) else 0.0
+		var st := float(st_v) if (typeof(st_v) == TYPE_INT or typeof(st_v) == TYPE_FLOAT) else 0.0
+		if rad > 0.0 or kb > 0.0 or st > 0.0:
+			out["melee_splash"] = {
+				"radius": clampf(rad, 0.0, 6.0),
+				"knockback": clampf(kb, 0.0, 6.0),
+				"stun_sec": clampf(st, 0.0, 5.0),
+			}
 	return out
 
 
@@ -1444,6 +1497,28 @@ func clan_recruit_entry(id: String, kind: String) -> Dictionary:
 	return {}
 
 
+## ★★ 2026.11：**合作模式专用招募表**（`recruit.zone.coop_list`）。
+##
+## 用户口径：新将领「不进当前对战模式和战役中的招募表」—— 所以这 4 位**不在**
+## `recruit.zone.list` 里，只有合作模式（本机备战页选中的将领）才会用到这张表。
+## 对战 / 战役 / AI 的区划招募仍然只读 `zone.list`，行为逐位不变。
+## ★ 返回只读配置本体，调用方不要改。
+func coop_recruit_list() -> Array:
+	var v: Variant = get_path_value("recruit.zone.coop_list")
+	return v if typeof(v) == TYPE_ARRAY else []
+
+
+## 合作招募表里某个 kind 的条目（找不到 → 空字典）。
+func coop_recruit_entry(kind: String) -> Dictionary:
+	if kind == "":
+		return {}
+	for item in coop_recruit_list():
+		if typeof(item) == TYPE_DICTIONARY \
+				and String((item as Dictionary).get("kind", "")) == kind:
+			return item
+	return {}
+
+
 ## 这个派系交给 commander AI 时的**编成权重**（`[{type, weight}]`；空 = 用全局那一张）。
 func clan_ai_composition(id: String) -> Array:
 	var d := clan_def(id)
@@ -1610,6 +1685,17 @@ func _cache_unit_types() -> void:
 			var sid := String(item)
 			if _unit_types.has(sid):
 				_general_types.append(sid)
+			else:
+				# ★★ 2026.11.5：**写错的类型 id 也要占一格**。
+				#   原来的写法是「跳过它」⇒ 后面所有将领的序号整体前移一位，
+				#   而 caps / stats / tiers / factions 都是**按下标**对齐的数组 ——
+				#   一个拼错的兵种 id 会让第 4 位将领悄悄用上第 3 位的数值。
+				#   这里把它退成第一个还存在的兵种（与「查不到类型」那条兜底一致），
+				#   下标对齐比「猜作者想写哪个兵种」重要得多。
+				push_warning("unit.general.types 第 %d 项不是兵种 id：%s（按兜底兵种占位）"
+					% [_general_types.size(), sid])
+				_general_types.append(UNIT_TYPE_SPEARMAN if _unit_types.has(UNIT_TYPE_SPEARMAN)
+					else (String(_unit_types.keys()[0]) if not _unit_types.is_empty() else sid))
 	if _general_types.is_empty() and _unit_types.has(UNIT_TYPE_SPEARMAN):
 		_general_types.append(UNIT_TYPE_SPEARMAN)
 
@@ -1621,6 +1707,34 @@ func _cache_unit_types() -> void:
 		for item in (caps_raw as Array):
 			if typeof(item) == TYPE_INT or typeof(item) == TYPE_FLOAT:
 				_general_caps.append(maxi(0, int(item)))
+
+	# 3.3) ★★ 将领的**阶**（config.json 的 `unit.general.tiers`，2026.11.5）。
+	#   与 types 同序，0~3；越界 / 非数字在 `general_tier_at()` 里统一兜底。
+	#   ⚠️ 这里**只收数字**：写成 "2" 的字符串会被丢掉（并在读取时退回兜底），
+	#      免得 `int("二")` 这类事在渲染路径上炸。
+	_general_tiers = []
+	var tiers_raw: Variant = get_path_value("unit.general.tiers")
+	if typeof(tiers_raw) == TYPE_ARRAY:
+		for item in (tiers_raw as Array):
+			if typeof(item) == TYPE_INT or typeof(item) == TYPE_FLOAT:
+				_general_tiers.append(clampi(int(item), 0, 3))
+
+	# 3.4) ★★ 将领的**派系归属**（config.json 的 `unit.general.factions`，2026.11.5）。
+	#   每位一个 id 数组；这里只收**字符串**，未知 id 留给访问时与 `_clan_ids` 对账
+	#   （`_cache_clans()` 排在本函数之后，此刻还看不到派系表）。
+	_general_factions = []
+	var fac_raw: Variant = get_path_value("unit.general.factions")
+	if typeof(fac_raw) == TYPE_ARRAY:
+		for item in (fac_raw as Array):
+			var ids: Array = []
+			if typeof(item) == TYPE_ARRAY:
+				for one in (item as Array):
+					if typeof(one) == TYPE_STRING and String(one) != "":
+						ids.append(String(one))
+			elif typeof(item) == TYPE_STRING and String(item) != "":
+				# ★ 宽容写法：只勾一个派系时直接写字符串，不写单元素数组。
+				ids.append(String(item))
+			_general_factions.append(ids)
 
 	# ⚠️ 这里**不再读** `unit.general.escort`：本轮把「全局开局编制」整个删掉了
 	#    （开局有几个附属兵 = 关卡 `start_units[].escort_of` 摆了几个，
@@ -1660,12 +1774,16 @@ func _cache_unit_types() -> void:
 	#   所以和 `recruit.list` 那几张招募表同一条口径 —— **现读 JSON**，改了立刻生效，
 	#   也省掉「缓存数组与 JSON 两份真相」的对账（见 general_recruit_sec）。
 
-	# 3.6) ★★ 将领的全局成长（`unit.general.hp_mult / armor_bonus / damage_mult`）。
-	#   夹取：倍数 ≥0.1（写 0 会让将领血量归零 / 攻击归零），加成 ≥0。
-	#   ⚠️ 缺键用**中性值**，与字段声明的默认一致（见字段说明）。
-	general_hp_mult = maxf(0.1, num("unit.general.hp_mult", 1.0))
-	general_damage_mult = maxf(0.1, num("unit.general.damage_mult", 1.0))
-	general_armor_bonus = maxf(0.0, num("unit.general.armor_bonus", 0.0))
+	# 3.6) ★★ 2026.11：**将领全局倍率已删除**（见 `general_hp_mult` 那一段说明）。
+	#   配置里若还留着 `unit.general.hp_mult / armor_bonus / damage_mult`，
+	#   这里是**故意**不去读的 —— 一个死键比一条会偷偷改数值的规则安全。
+
+	# 3.7) ★★ 2026.11.5：**0 阶将领的大本营成长**（`unit.general.growth`）。
+	#   两个数都是「每级加多少」，加成 = 每级值 × 当前大本营等级（1 级就给）。
+	#   ★ 夹 ≥0：负成长会让升级**变弱**，那不是这一版要的东西；
+	#     缺键 ⇒ 0（老配置 / 测试配置不会静默变强）。
+	general_growth_hp_per_level = maxf(0.0, num("unit.general.growth.hp_max_per_level", 0.0))
+	general_growth_damage_per_level = maxf(0.0, num("unit.general.growth.damage_per_level", 0.0))
 
 	# 4) 兜底值（来自同一张表，不再是第二份配置）
 	#
@@ -1679,7 +1797,7 @@ func _cache_unit_types() -> void:
 
 	# 5) ★ 每位将领预拼一份 combat 字典：`unit_combat_of()` 的契约是「返回**共享的只读字典**」
 	#    （每帧每单位都要读，不新建），所以覆盖也要在载入时拼好。
-	#    没覆盖的那几位**直接共享所属兵种那一份** —— 一个字典都不多建。
+	#    ★★ 2026.11：全局攻击倍率删除后，**没覆盖的那几位重新直接共享兵种那一份**。
 	_general_combat = []
 	for i in _general_types.size():
 		var ov: Dictionary = _general_stats[i] if i < _general_stats.size() else {}
@@ -1689,19 +1807,12 @@ func _cache_unit_types() -> void:
 			base = (_unit_types[tid] as Dictionary)["combat"]
 		if ov.has("damage") or ov.has("range") or ov.has("cooldown_sec"):
 			_general_combat.append({
-				"damage": float(ov.get("damage", base["damage"])) * general_damage_mult,
+				"damage": float(ov.get("damage", base["damage"])),
 				"range": float(ov.get("range", base["range"])),
 				"cooldown_sec": float(ov.get("cooldown_sec", base["cooldown_sec"])),
 			})
 		else:
-			# ★★ 2026.10.29：没覆盖的那几位**不能**再共享兵种那一份了 ——
-			#   将领要乘 `general_damage_mult`（默认 1.0 时数值完全一样，但仍是独立一份，
-			#   免得以后调倍率时漏掉这几档）。每人一份只在载入时建一次，开销可忽略。
-			_general_combat.append({
-				"damage": float(base["damage"]) * general_damage_mult,
-				"range": float(base["range"]),
-				"cooldown_sec": float(base["cooldown_sec"]),
-			})
+			_general_combat.append(base)
 
 
 ## 某个 kind 对应的**单位类型 id**。
@@ -1832,6 +1943,88 @@ func general_cap_at(i: int) -> int:
 	return int(_general_caps[i])
 
 
+## ★★ 名册里**开局将领 #0** 的下标（名册现在 10 位：0-8 = 可招募 #1-9，9 = #0）。
+##
+## ★ 为什么是个常量而不是 `count - 1`：编辑器新加的将领**追加在 #0 之后**
+##   （下标 10、11…，kind = general_11 / general_12 …），#0 永远在第 10 档。
+##   这样 `general_index_of("general_0") == 9` 这条静态映射不用变成「看配置才知道」——
+##   `unit.is_general()` 是**没有 cfg 实例**也要能调的（渲染 / 单测），别动它。
+const GENERAL_START_INDEX := 9
+
+
+## ★★ 2026.11.5：第 `index` 位将领（0 起）的**阶**（config `unit.general.tiers`，0~3）。
+##
+## 口径：
+##   · 阶 = 备战页分组的行 + 「大本营升到几级才招得到」的门槛（0 阶不参与区划招募）；
+##   · 缺项 / 越界 / 非数字 ⇒ 开局那一档（`GENERAL_START_INDEX`）按 **0** 阶、其余按 **1** 阶
+##     —— 与「加这一栏之前」逐位一致（那时候 0 阶只有开局将领）。
+## ★ 读者：`world.general_recruit_tier()`（招将门槛）、备战页的
+##   `view/prepare_roster_list.gd` / `prepare_detail_view.gd`（分组与详情）、
+##   `general_growth_bonus()`（0 阶才吃成长）。
+func general_tier_at(index: int) -> int:
+	if index >= 0 and index < _general_tiers.size():
+		return int(_general_tiers[index])
+	return 0 if index == GENERAL_START_INDEX else 1
+
+
+## ★ 这位将领是不是 **0 阶**（= 吃大本营成长的只有它们）。
+func general_is_zero_tier(index: int) -> bool:
+	return general_tier_at(index) == 0
+
+
+## ★★ 2026.11.5：第 `index` 位将领的**派系归属**（config `unit.general.factions`）。
+##
+## @return 派系 id 数组（**只读副本**）；没写 / 缺项 ⇒ 返回**全部派系**
+##   （与「加这一栏之前」一致：哪个派系看到的都是同一份将领）。
+## ★ 未知 id（配置拼错 / 派系被删）在这里被过滤掉 —— 免得备战页拿一个查不到的 id
+##   去过滤，结果是一位将领都不显示（那种「静静地少了东西」最难查）。
+## ★ 空数组是**有意义**的：那位将领哪个派系都不显示（设计师的明确选择）。
+func general_factions_at(index: int) -> Array:
+	var declared := false
+	var ids: Array = []
+	if index >= 0 and index < _general_factions.size():
+		declared = true
+		ids = (_general_factions[index] as Array).duplicate()
+	if not declared:
+		# 没写这一栏 ⇒ 全部派系都算（含将来新加的派系）。
+		return _clan_ids.duplicate() if not _clan_ids.is_empty() else ["native"]
+	var out: Array = []
+	for cid in ids:
+		if _clan_ids.is_empty() or _clan_ids.has(String(cid)):
+			out.append(String(cid))
+	return out
+
+
+## ★ 第 `index` 位将领属不属于 `clan_id` 这一个派系（备战页过滤用）。
+func general_in_faction(index: int, clan_id: String) -> bool:
+	if clan_id == "":
+		return true
+	return general_factions_at(index).has(String(clan_id))
+
+
+## ★★ 2026.11.5：第 `index` 位将领在**大本营等级 base_level** 下拿到的成长加成。
+##
+## 口径（用户拍板：**每级固定加值、1 级就给**）：
+##   `bonus = 每级值 × 当前大本营等级`，只作用于 0 阶将领；
+##   1~3 阶、以及没有大本营（level ≤ 0）⇒ 全 0。
+## @return `{"hp_max": float, "damage": float}`（永远两个键，方便调用方直接加）
+## ★ 读它的地方只有 `unit.apply_general_growth()`（出生 / 快照重建 / 升级重算三条路）。
+func general_growth_bonus(index: int, base_level: int) -> Dictionary:
+	var zero: Dictionary = {"hp_max": 0.0, "damage": 0.0}
+	if base_level <= 0 or not general_is_zero_tier(index):
+		return zero
+	var lv := float(base_level)
+	return {
+		"hp_max": general_growth_hp_per_level * lv,
+		"damage": general_growth_damage_per_level * lv,
+	}
+
+
+## ★ 名册一共几位（= `unit.general.types` 的条数；编辑器「加将领」之后会变长）。
+func general_count() -> int:
+	return _general_types.size()
+
+
 ## ★★ 第 index 位将领（0 起）的**招兵读条**秒数（config.json 的 `unit.general.recruit_sec`）。
 ##
 ## 口径（2026.11.2，用户原话）：「招募时间由将领决定 —— 无论队列长短、队列里是什么兵种，
@@ -1855,28 +2048,45 @@ func general_recruit_sec(index: int) -> float:
 	return maxf(0.01, sec) if sec > 0.0 else fallback
 
 
-## ★★ 2026.11.3：第 `index` 位将领**指定的将领特性**（config 的 `unit.general.trait_ids`）。
+## ★★ 2026.11：第 `index` 位将领的**全部**特性 id（config 的 `unit.general.trait_ids`）。
 ##
-## 口径（用户原话）：「每位将领在编辑器里指定一条特性，不再随机抽」。
-##   · 与 `types` / `caps` / `recruit_sec` 同序；`""` = 这位将领**没有**特性；
-##   · 越界 / 没写这一节 / 指向 `unit.general_traits` 里不存在的 id ⇒ 一律 `""`
-##     （= 中性，不报错 —— 与 `_normalize_general_trait` 的「写错当没写」同一条）；
-##   · 读它的地方只有两处：`world.create_general()`（开局 / 关卡摆放）与
-##     `world.general_recruit_trait_for()`（区划招募），两处都把结果交给
-##     `unit.set_general_trait()`；附属兵由 `fill_general_retinue()` 继承同一条光环。
+## 口径：
+##   · 与 `types` / `caps` / `recruit_sec` 同序；`unit.general.trait_ids[index]` 是**数组**；
+##   · 兼容老配置：那一项写成字符串 `"swift"` 也认（= 只有一条）；
+##   · 空数组 / 越界 / 没写这一节 ⇒ 没有特性；
+##   · 数组里的 id 必须存在于 `unit.general_traits`，**不存在 / 重复**的会被丢掉
+##     （顺序保留 —— 界面按这个顺序列）。
+##
 ## ⚠️ 别在这里做「随机兜底」：随机抽是上一版的设计（已在 2026.10 停用），
-##   设计师在编辑器里选了「无」就该是真的没有。
-func general_trait_at(index: int) -> String:
+##   设计师在编辑器里没选就该是真的没有。
+func general_traits_at(index: int) -> Array:
+	var out: Array = []
 	var arr: Variant = get_path_value("unit.general.trait_ids")
 	if typeof(arr) != TYPE_ARRAY:
-		return ""
+		return out
 	var items: Array = arr
 	if index < 0 or index >= items.size():
-		return ""
-	var tid := String(items[index])
-	if tid == "" or not _general_traits.has(tid):
-		return ""
-	return tid
+		return out
+	var raw: Variant = items[index]
+	var ids: Array = []
+	if typeof(raw) == TYPE_ARRAY:
+		ids = raw
+	elif typeof(raw) == TYPE_STRING:
+		# 老配置：一项就是一个字符串。
+		ids = [raw]
+	for v in ids:
+		var tid := String(v).strip_edges()
+		if tid == "" or not _general_traits.has(tid) or out.has(tid):
+			continue
+		out.append(tid)
+	return out
+
+
+## 第一条特性 id（兼容旧调用点：HUD 徽章 / 快照的老字段）。
+## ★ 多特性的完整列表用 `general_traits_at()`。
+func general_trait_at(index: int) -> String:
+	var ids := general_traits_at(index)
+	return String(ids[0]) if not ids.is_empty() else ""
 
 
 ## ★★ 2026.11.4：第 `index` 位将领的**持久消耗**（每秒吃粮）。
@@ -1948,13 +2158,12 @@ func general_combat_at(index: int) -> Dictionary:
 
 ## 第 index 位将领的**生效血量 / 速度**（覆盖 ⊕ 所属兵种）。
 ## ★ 给悬停详情与编辑器对照用；单位自己那边在 create 时就把值抄走了（见 unit.gd）。
-## ★★ 2026.10.29：血量再乘 `general_hp_mult`（「将领比兵种更抗打」那一条），
-##   否则界面会显示 180 而单位其实有 270。
+## ★★ 2026.11：全局血量倍率已删除 ⇒ 这里就是「编辑器的数 = 游戏内的数」。
 func general_hp_at(index: int) -> float:
 	var ov: Dictionary = general_stat_overrides(index)
 	var type_id := general_type_at(index)
 	var base: float = float(ov["hp_max"]) if ov.has("hp_max") else unit_hp_of(type_id)
-	return maxf(1.0, base * general_hp_mult)
+	return maxf(1.0, base)
 
 
 func general_speed_at(index: int) -> float:
@@ -1963,6 +2172,15 @@ func general_speed_at(index: int) -> float:
 	if ov.has("speed"):
 		return float(ov["speed"])
 	return unit_speed_of(type_id)
+
+
+## ★★ 2026.11：第 index 位将领的**生效护甲**（覆盖 ⊕ 所属兵种）。
+##   全局护甲加成删除后，这里就是「编辑器 = 游戏内」的那一个数（unit.gd 的 create 同源）。
+func general_armor_at(index: int) -> float:
+	var ov: Dictionary = general_stat_overrides(index)
+	if ov.has("armor"):
+		return maxf(0.0, float(ov["armor"]))
+	return unit_armor_of(general_type_at(index))
 
 
 ## ★★ 第 index 位将领的**生效视野半径**（覆盖 ⊕ 所属兵种）。

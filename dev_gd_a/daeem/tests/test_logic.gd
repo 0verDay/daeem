@@ -72,18 +72,20 @@ func _test_world_setup(world, cfg) -> void:
 		eq(String(g0.faction), "p1", "将领属于 player")
 
 	var want_types: Array = cfg.general_types()
-	eq(want_types.size(), 10,
-		"配置里给了十位将领类型（#0 + 可招募 #1-9）")
+	eq(want_types.size(), 14,
+		"配置里给了十四位将领类型（#0 + 可招募 #1-9 + 4 位新将领）")
 	for g in generals:
 		var want := String(want_types[int(g.general_index)])
 		eq(String(g.unit_type), want,
 			"★ %s 是 %s" % [g.id, cfg.unit_name_of(want)])
-		# ★★ 2026.10.29：将领 = 所属类型 × 全局将领倍率（血量 / 攻击各乘一次）。
-		eq(g.hp_max, cfg.unit_hp_of(want) * cfg.general_hp_mult,
-			"★ 将领血量 = 所属类型血量 × 将领倍率（%s）" % cfg.general_hp_mult)
+		# ★★ 2026.11：将领全局倍率已删除 —— 血量 / 攻击 = 所属兵种（或 stats 覆盖）。
+		# ★★ 2026.11.5：#0 是 **0 阶**，再叠一份大本营成长（占位 30 血 / 3 攻，1 级 = 1 份）。
+		var grow: Dictionary = cfg.general_growth_bonus(int(g.general_index), 1)
+		eq(g.hp_max, cfg.unit_hp_of(want) + float(grow.get("hp_max", 0.0)),
+			"★ 将领血量 = 所属类型血量 + 0 阶成长")
 		eq(g.combat_damage(cfg),
-			float(cfg.unit_combat_of(want)["damage"]) * cfg.general_damage_mult,
-			"将领伤害 = 所属类型伤害 × 将领攻击倍率")
+			float(cfg.unit_combat_of(want)["damage"]) + float(grow.get("damage", 0.0)),
+			"将领伤害 = 所属类型伤害 + 0 阶成长")
 		eq(g.combat_range(cfg), float(cfg.unit_combat_of(want)["range"]),
 			"将领射程也走所属类型")
 		ok(g.is_general(), "★ is_general() 认得出将领")

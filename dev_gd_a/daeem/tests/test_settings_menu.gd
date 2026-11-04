@@ -108,11 +108,17 @@ func _test_hud_options_structure() -> void:
 	hud.set_settings_menu_open(true)
 	await _wait_sec(0.28)
 	ok(op.overlay.visible, "（前提）选项页再次打开")
+	ok(FillButtonRes.is_latched(hud.settings_button),
+		"★★ 选项页打开 → 右上角按钮「已选中」")
+	ok(FillButtonRes.fill_progress(hud.settings_button) >= 0.999,
+		"★★ 打开后金色填充满格（切换时播填充动画）")
 	await _click_at(op.resume_button.get_global_rect().get_center())
 	await _wait_sec(0.28)
 	ok(not op.overlay.visible, "★ 「继续」关闭选项页")
 	ok(not FillButtonRes.is_latched(hud.settings_button),
-		"★ 关闭后右上角按钮不再常驻满格（overlay 自己关也不会把按钮锁死）")
+		"★ 关闭后右上角按钮不再选中（overlay 自己关也不会把按钮锁死）")
+	ok(FillButtonRes.fill_progress(hud.settings_button) <= 0.01,
+		"★★ 关闭后金色填充反向退回")
 	await _dispose(main)
 
 
@@ -156,7 +162,9 @@ func _test_touch_release_clears_hud_hover() -> void:
 	var btn: Button = hud.settings_button
 	await _hover_at(btn.get_global_rect().get_center())
 	await _wait_sec(0.35)
-	ok(FillButtonRes.fill_progress(btn) > 0.9, "（前提）鼠标停上去之后它填满了")
+	ok(FillButtonRes.glow_progress(btn) > 0.9, "（前提）鼠标停上去之后它泛光了")
+	ok(FillButtonRes.fill_progress(btn) < 0.05,
+		"★★ 只是悬停 → 不填金（填充只表示选中）")
 
 	var ev := InputEventScreenTouch.new()
 	ev.index = 0
@@ -164,9 +172,10 @@ func _test_touch_release_clears_hud_hover() -> void:
 	ev.position = btn.get_global_rect().get_center()
 	hud.handle_touch(ev)
 	await _wait_sec(0.45)
-	ok(FillButtonRes.fill_progress(btn) < 0.05,
+	ok(FillButtonRes.glow_progress(btn) < 0.05,
 		"★★ 手指抬起 → 游戏内按钮的悬停也作废（当前 %.2f）"
-		% FillButtonRes.fill_progress(btn))
+		% FillButtonRes.glow_progress(btn))
+	ok(FillButtonRes.fill_progress(btn) < 0.05, "★ 全程没有金色填充")
 	await _dispose(main)
 
 

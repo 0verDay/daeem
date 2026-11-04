@@ -135,6 +135,9 @@ func _test_game_hotkeys(cfg) -> void:
 	# 先停掉产出：否则等待两帧的收入会让「正好 +1000」这条断言漂。
 	for z in game.world.zones.zones:
 		z["production"] = {"food": 0.0, "gold": 0.0, "population": 0.0}
+	# ★ 区划产出停了还不够：大本营本身也有逐帧基础产出。键位在 `_unhandled_input` 里处理，
+	#   停 `_process` 不影响它 —— 这样「+1000」才能精确对账。
+	game.set_process(false)
 	var food0: float = float(game.world.resources["food"])
 	var gold0: float = float(game.world.resources["gold"])
 	await _press_ctrl_key(KEY_1)
@@ -145,6 +148,7 @@ func _test_game_hotkeys(cfg) -> void:
 	ok(game.hud.notice_text().contains("1000"),
 		"★ 加资源时给一句开发者提示（实际：%s）" % game.hud.notice_text())
 	ok(not game.outcome_open(), "Ctrl+1 不会触发结算（只是加资源）")
+	game.set_process(true)
 
 	# ---- Ctrl+3 = 本机阵营大本营立即升到 3 级 ----
 	var base = game.world.find_base_of(game.world.my_faction)

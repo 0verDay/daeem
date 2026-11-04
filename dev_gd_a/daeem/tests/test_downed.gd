@@ -460,10 +460,13 @@ func _test_revive_channel_and_cancel(cfg) -> void:
 	ok(g.revive_progress() > 0.3 and g.revive_progress() < 0.7,
 		"★ 读条进度与秒数对得上（约 40%%~60%%，实测 %.2f）" % g.revive_progress())
 
+	# ★ 对账用「取消前后」的差：2 秒读条里大本营的基础产出会照常进账（与再起费用无关）。
+	var food_before: float = float(w.resources["food"])
+	var gold_before: float = float(w.resources["gold"])
 	ok(w.cancel_revive(g.id, MY), "★ 取消读条成功")
 	ok(not g.is_reviving(), "★ 不再是读条状态")
-	near(w.resources["food"], 1000.0, 1e-6, "★★ 再起免费，取消也不会退钱")
-	near(w.resources["gold"], 1000.0, 1e-6, "★★ 黄金同样不变")
+	near(w.resources["food"], food_before, 1e-6, "★★ 再起免费，取消也不会退钱")
+	near(w.resources["gold"], gold_before, 1e-6, "★★ 黄金同样不变")
 	ok(g.is_downed(), "★ 它仍然是濒死的（取消 ≠ 死亡，也 ≠ 复活）")
 	ok(not w.cancel_revive(g.id, MY), "★ 没在读条时再取消：返回 false")
 

@@ -41,7 +41,7 @@ signal cell_unhovered(index: int)
 
 const UiLayoutRes = preload("res://view/ui_layout.gd")
 const UiStyleRes = preload("res://view/ui_style.gd")
-## ★★ 悬停时「金色自下而上填进来」+「启用后常驻满格并增亮」的那套动效
+## ★★ 悬停「四边泛光」+「已启用 = 金色填充满格（切换时播动画）」的那套动效
 ##   （见 view/fill_button.gd）。
 const FillButtonRes = preload("res://view/fill_button.gd")
 
@@ -64,6 +64,9 @@ var _name_bars: Array[ColorRect] = []
 var _key_labels: Array[Label] = []
 ## 上一次喂进来的条目（测试与调试读它；也是点击回调的 id 来源）
 var _entries: Array = []
+## ★★ 2026.11.5：这一格**第一次拿到内容**时同步的「已启用」直接满格（不播动画）；
+##   之后玩家点启用 / 弃用才播填充 / 退回。
+var _primer_done: bool = false
 
 ## ★★ 手机端：按住某一格期间由 hud 置 true —— 忽略「按下」带来的模拟 mouse_entered，
 ##    悬停详情只在长按够久之后由 hud 调 `hover()` 弹出（与 view/command_card.gd 同一条）。
@@ -91,8 +94,11 @@ func setup() -> void:
 		#      entry，自然什么都不弹（`entry_at` 越界返回 {}）。
 		cell.mouse_entered.connect(_on_cell_mouse_entered.bind(i))
 		cell.mouse_exited.connect(_on_cell_mouse_exited.bind(i))
-		# ★★ 悬停填充 + 启用常驻（一行挂上，见 view/fill_button.gd）
+		# ★★ 悬停泛光 + 启用填充（一行挂上，见 view/fill_button.gd）
 		FillButtonRes.attach_text(cell)
+		# ★★ 科技格有自己的点击反馈（启用 = 填满、弃用 = 退回）——
+		#   关掉「点击闪光」，否则两边会抢同一份 `_fill`。
+		FillButtonRes.set_click_flash(cell, false)
 		# ★★ 常驻灰底：底纹（`tech_fill*`）是全透明的，灰底画在填充层里、
 		#   金的下层 —— 悬停 / 启用时灰底不消失，金只是盖上去。
 		FillButtonRes.set_base_bg(cell, UiStyleRes.bg_empty())
@@ -272,6 +278,11 @@ func _process(_dt: float) -> void:
 
 
 func _apply() -> void:
+	# ★★ 第一次拿到内容（含「全是未启用」）时，已启用的格子**直接满格**；
+	#   不可见时（科技页没开）也直接到位 —— 没人看着的时候不该「攒」一段动画，
+	#   否则下次打开科技页会先看到一格从空填上来。
+	#   之后玩家点启用 / 弃用才播填充 / 退回（见 view/fill_button.gd）。
+	var instant: bool = not _primer_done or not is_visible_in_tree()
 	for i in _cells.size():
 		var cell := _cells[i]
 		var ei := _entry_index_for_cell(i)
@@ -297,18 +308,19 @@ func _apply() -> void:
 			cell.disabled = false             # 保持可悬停（悬停要能解释原因）
 			# ★★ 走「登记原色」的接口，而不是直接写 font_color override：
 			#   填充动效每帧都按「原色 + 当前填充进度」重算（见 fill_button._sync_text）。
-			FillButtonRes.set_base_font_color(cell,
-				UiStyleRes.text_on_accent() if active else UiStyleRes.text())
+			#   ★★ 2026.11.5：已启用的格子**也登记亮色**（不再用近黑的 text_on_accent）——
+			#     选中要播填充动画，若一上来就把字设成近黑，动画头 0.1 秒里
+			#     「黑字压黑底」读不出来。亮色会在金扫到它时由翻面自动变黑。
+			FillButtonRes.set_base_font_color(cell, UiStyleRes.text())
 			FillButtonRes.on_fill_text(cell, _line_labels[i],
 				Color(1.0, 1.0, 1.0, 0.85) if active else UiStyleRes.text_dim())
 			FillButtonRes.on_fill_text(cell, _key_labels[i],
-				UiStyleRes.text_on_accent() if active
-					else (UiStyleRes.text_faint() if locked else UiStyleRes.text()))
-			# ★★ 已启用 = 常驻满格 + 更亮那一档金（需求：点击启用后亮度稍微变大）
-			FillButtonRes.set_latched(cell, active)
-			# ★★ 这一格「有科技」⇒ 参与填充动效。
-			#   不能启用的格子**也参与**，只是把填充换成灰色（用户口径：
-			#   「灰色填充代替金色填充 + 点击后无效果」，不是实心灰按钮）。
+				UiStyleRes.text_faint() if locked else UiStyleRes.text())
+			# ★★ 已启用 = 金色填充满格（切换时播动画；建出来那一下直接满格）
+			FillButtonRes.set_latched(cell, active, instant)
+			# ★★ 这一格「有科技」⇒ 参与悬停泛光。
+			#   不能启用的格子**也参与**，只是把泛光换成灰色（用户口径：
+			#   「灰色代替金色 + 点击后无效果」，不是实心灰按钮）。
 			FillButtonRes.set_available(cell, true)
 			FillButtonRes.set_grey(cell, locked)
 		else:
@@ -322,17 +334,19 @@ func _apply() -> void:
 			FillButtonRes.on_fill_text(cell, _key_labels[i], UiStyleRes.text_faint())
 			FillButtonRes.set_latched(cell, false)
 			FillButtonRes.set_grey(cell, false)
-			# ★ 空格子**不参与填充**：它连「科技」都没有，填起来会让人以为这一格能点。
+			# ★ 空格子**不参与任何动效**：它连「科技」都没有，亮起来会让人以为这一格能点。
 			FillButtonRes.set_available(cell, false)
 		_style_cell(cell, filled, active, locked)
+	if not _entries.is_empty():
+		_primer_done = true
 
 
 ## 三个状态各自一套样式。
 ##
 ## ★★ 本版把「未启用」与「已启用」的底色**交给填充层**（`tech_fill()` / `tech_latched()`：
 ##    底透明、只留描边）—— 旧那版是不透明实底（`tech_normal()` / `tech_active()`），
-##    它会把画在底纹**下面**的填充金整个盖住，于是「悬停自下而上填金」根本看不见。
-##   ⇒ 现在：没悬停 = 空框；悬停 = 金从下往上填；已启用 = 常驻满格且更亮一档。
+##    它会把画在底纹**下面**的填充金整个盖住，于是「选中的金色填充」根本看不见。
+##   ⇒ 现在：未启用 = 空框；悬停 = 四边泛光；已启用 = 金色填充满格（切换时播动画）。
 ##   ⚠️ 空格子（`filled = false`）仍用 `tech_disabled()` 的实底 —— 它不是按钮，
 ##      它是「这里没有科技」的一块底板，本来就该是死的。
 func _style_cell(cell: Button, filled: bool, active: bool, locked: bool = false) -> void:

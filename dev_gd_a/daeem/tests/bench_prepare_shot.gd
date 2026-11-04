@@ -93,6 +93,19 @@ func _run() -> void:
 	await _wait_sec(0.35)
 	await _shoot("14_faction_dynasty")
 
+	# ★★ 2026.11：带多条特性的将领（子刹 = 铁壁 + 稳定 + 横扫），看名字 / 说明的字号与颜色。
+	for b in pp.roster().general_buttons():
+		if pp.roster().tile_label(b) == "子刹":
+			b.pressed.emit()
+			await _wait_sec(0.3)
+			# 三条特性 + 前面的段落会超出一屏：滚到底看全三条。
+			var d = pp.detail()
+			if d != null and d._scroll != null:
+				d._scroll.scroll_vertical = 10000
+				await _wait_sec(0.2)
+			await _shoot("12i_detail_general_multi")
+			break
+
 	# 王朝组合单位详情（御林军：编成三行）
 	pp.roster().scroll_to(600.0)
 	await _wait_sec(0.15)

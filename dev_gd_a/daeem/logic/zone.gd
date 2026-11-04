@@ -102,6 +102,10 @@ var last_conversions: Array = []
 var _present_counts: Dictionary = {}     # zid → {阵营 id: 活单位数}
 var _present_sides: Dictionary = {}      # zid → {方: true}
 var _present_here: Dictionary = {}       # zid → Array（该区块邻域里的活单位）
+## ★★ 2026.11：zid → {阵营 id: 在场单位里最大的「占领速度 +比例」光环}
+##   只在**光环单位本人（或旗下单位）站在中心邻域里**时才给那一方加成；
+##   同一方多人取最大值（不叠加，避免「多带几个 +40%」变成秒占）。
+var _present_capture_aura: Dictionary = {}
 
 
 static func build_from_map(map, cfg: ConfigRes, factions: Array) -> RefCounted:
@@ -287,12 +291,13 @@ func _new_zone(zid: int, name: String, flist: Array) -> Dictionary:
 		"train_total": 0.0,
 		"train_queue": [],
 		# ★★ 每一单的**将领特性**（本轮新增）：与 train_kind / train_queue **一一对应**。
-		#   · train_trait  = 正在读条那一单的特性 id（跟着这一单一起出兵）；
-		#   · train_traits = 排队各单的特性 id（与 train_queue 同下标）。
+		#   · train_trait  = 正在读条那一单的**特性 id 数组**（跟着这一单一起出兵）；
+		#   · train_traits = 排队各单的特性 id 数组（与 train_queue 同下标）。
 		#   ⚠️ 两个数组必须同步 append / pop_front / remove_at —— 错位一次就会「招到别人的特性」。
 		#   ★ 下单那一刻从「当前手牌」固化下来（见 world.start_zone_recruit）：
 		#     手牌之后重抽不会影响已经排进队列的这一单。
-		"train_trait": "",
+		#   ★★ 2026.11：一位将领可以带多条特性 ⇒ 这里是**数组的数组**。
+		"train_trait": [],
 		"train_traits": [],
 		"train_faction": "",
 		"train_cost_food": 0.0,
@@ -920,6 +925,7 @@ func update(cfg: ConfigRes, dt: float, units: Array, factions: Array,
 		_fill_units_in_capture_area(z, head, nxt, units, radius, here)
 		var counts: Dictionary = _scratch_map(present_by, zid)
 		var sides: Dictionary = _scratch_map(present_sides, zid)
+		var aura: Dictionary = _scratch_map(_present_capture_aura, zid)
 		for u in here:
 			# ★ 中立化单位不再参与占领：既不读条，也不冻结别人的进度。
 			if u.neutralized:
@@ -927,6 +933,11 @@ func update(cfg: ConfigRes, dt: float, units: Array, factions: Array,
 			var fid := String(u.faction)
 			counts[fid] = int(counts.get(fid, 0)) + 1
 			sides[FactionRes.side_of(fid)] = true
+			# ★★ 2026.11：「占领速度 +40%」将领光环 —— 只记在**这一方**名下，
+			#   同一方取最大值；读条时再折算成时间倍率（见 `_advance_zone`）。
+			var cap_bonus := float(u.aura_capture_speed_bonus)
+			if cap_bonus > 0.0 and cap_bonus > float(aura.get(fid, 0.0)):
+				aura[fid] = cap_bonus
 		# ★ 主人那一方**只要有人在场**，就把 owner 也登记成「一方」：这样「邻域里只有
 		#   主人那一方的人」不会被当成本区块里还有外来者（结成盟友时靠它兜住）。
 		#   ⚠️ 它**不进** `counts`：人数加成不该把主人的兵算进读条那一方的人头里。
@@ -941,7 +952,8 @@ func update(cfg: ConfigRes, dt: float, units: Array, factions: Array,
 	for z in zones:
 		var zi := int(z["id"])
 		_advance_zone(z, present_by[zi], present_sides[zi], flist,
-			capture_time, decay, max_mult, curve_k, curve_p, dt, capture_mult)
+			capture_time, decay, max_mult, curve_k, curve_p, dt, capture_mult,
+			_present_capture_aura[zi])
 
 
 ## 取（必要时新建）一张可复用的「区块 id → 字典」，并清空它。
@@ -1052,9 +1064,11 @@ static func speed_multiplier(n: int, max_mult: float, curve_k: float, curve_powe
 ## @param present       这个区块里「阵营 id → 活单位数」（**真实阵营**，用于人数加成与归属）
 ## @param present_sides 这个区块里「方 → true」（联盟折叠后，用于判「是不是只有一方」）
 ## @param capture_mult  ★ 2026.11：阵营 → **占领所需时间**倍率（0.8 = 快 25%；缺省 1.0）
+## @param capture_aura  ★★ 2026.11：阵营 → 在场单位里最大的「占领速度 +比例」光环（缺省 0）
 func _advance_zone(z: Dictionary, present: Dictionary, present_sides: Dictionary, flist: Array,
 		capture_time: float, decay: float, max_mult: float, curve_k: float,
-		curve_p: float, dt: float, capture_mult: Dictionary = {}) -> void:
+		curve_p: float, dt: float, capture_mult: Dictionary = {},
+		capture_aura: Dictionary = {}) -> void:
 	if not z.has("progress_by"):
 		z["progress_by"] = {}
 	var by: Dictionary = z["progress_by"]
@@ -1127,6 +1141,11 @@ func _advance_zone(z: Dictionary, present: Dictionary, present_sides: Dictionary
 		var time_mult: float = 1.0
 		if capture_mult.has(reader):
 			time_mult = maxf(0.05, float(capture_mult[reader]))
+		# ★★ 2026.11：**将领光环「占领速度 +40%」**（帝国骑手）。
+		#   光环值 = 比例（0.4 = +40%）⇒ 所需时间 ÷(1+0.4)。缺省 0 = 逐位不变。
+		#   ⚠️ 只有「光环单位在场」才会有这个键（见 `update()` 的计数段）。
+		if capture_aura.has(reader):
+			time_mult /= 1.0 + maxf(0.0, float(capture_aura[reader]))
 		by[reader] = clampf(float(by[reader]) + dt / (capture_time * time_mult) * mult, 0.0, 1.0)
 		if float(by[reader]) >= 1.0:
 			# 读满：易主 + 其余清零（主人那份留 1.0 作为「这是我的地」的标记）

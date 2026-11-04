@@ -401,6 +401,11 @@ var _clan_cache: Dictionary = {}
 ## ★ 它是**玩法状态**（谁现在能招、手牌是哪三位、还要等几秒），不是界面状态：
 ##   `can_recruit_zone` 在这里校验，界面只读它画卡。详见下面「将领招募池」那一段。
 var general_recruit_pools: Dictionary = {}
+## ★★ 2026.11：**合作模式的出战将领池**（`阵营 → [general_kind...]`）。
+##   · 空 = 没设过 ⇒ 所有模式都按 config 的 `recruit.zone.list`（老行为逐位不变）；
+##   · 合作模式开局时由 `game_scene3d` 按备战页的选择写入（每席位一份）；
+##   · 它只决定「九宫格里列谁」，**不改**将领本身的数值 / 特性 / 阶层。
+var general_pool_by_faction: Dictionary = {}
 var enemy_spawn_timer: float = 0.0
 var debug_auto_spawn: bool = false
 
@@ -461,7 +466,8 @@ static func create(p_cfg: ConfigRes, map_path: String = MapLibraryRes.FALLBACK_M
 static func create_from_level(cfg: ConfigRes, level, my_faction: String,
 		roster: Array = [], with_ai: bool = true,
 		ai_overrides: Dictionary = {}, ai_profiles: Dictionary = {},
-		seed_value: int = -1, observer_mode: bool = false) -> RefCounted:
+		seed_value: int = -1, observer_mode: bool = false,
+		general_pool: Dictionary = {}) -> RefCounted:
 	if level == null:
 		push_error("World.create_from_level：level 是 null（请改用 create()）")
 		return null
@@ -479,6 +485,9 @@ static func create_from_level(cfg: ConfigRes, level, my_faction: String,
 	w.ai_profiles = ai_profiles.duplicate(true)
 	w.fixed_rand_salt = seed_value
 	w.observer_mode = observer_mode
+	# ★★ 2026.11：合作模式的「出战将领池」（阵营 → 九宫格的 kind 列表）。
+	#   必须在 `reset()` 之前写：`_reset_general_recruit_pools()` 会按它建每席位的池状态。
+	w.general_pool_by_faction = general_pool.duplicate(true) if typeof(general_pool) == TYPE_DICTIONARY else {}
 	# ★★ 关卡覆盖层在这里**先合并出地图**（返回新对象，不改关卡自己那份 `level.map`）：
 	#    于是 `reset()` 里那一段「建基地 / 分地 / 摆建筑」读到的都是合并后的数据，
 	#    而**覆盖规则的实现仍然只有一处**（`logic/level.gd` 的 `merge_over_map`）。
@@ -1335,6 +1344,12 @@ func _place_faction_units(fid: String, placed: Array) -> void:
 				pu.hold_position = false
 		units.append(pu)
 		mark_vision_dirty()
+		# ★★ 2026.11.5：关卡摆放的将领也吃**0 阶大本营成长**。
+		#   ⚠️ 必须有这一句：上面「作者自己写了 unit_type」那条会**重建**一个单位
+		#     （新对象，`create_general()` 里那次成长已经跟着旧对象丢了）。
+		#     这里是幂等的，普通单位 / 已经算过的将领再算一次结果一样。
+		if pu.is_general():
+			pu.apply_general_growth(cfg, base_level_of(fid))
 		# ★★ 将领的附属单位规格（写进单位 + 当场生成满编随机附属兵）。
 		if is_placed_general and pu != null:
 			pu.retinue_target = int(ud.get("escort_count", -1))
@@ -1522,7 +1537,13 @@ func create_general(faction: String, profile: int, roster: int):
 	var u = UnitRes.create(cfg, "%s-%s" % [general_id_prefix(faction), tail], gname, tile,
 		faction, kind, hotkey, "", unit_type, profile)
 	if u != null:
-		u.set_general_trait(cfg, cfg.general_trait_at(profile))
+		u.set_general_traits(cfg, cfg.general_traits_at(profile))
+		# ★★ 2026.11.5：0 阶将领的大本营成长在**出生那一刻**按当时等级算一次。
+		#   1~3 阶将领这里拿到的是 0（`cfg.general_growth_bonus` 按阶判），
+		#   所以对既有将领逐位不变；0 阶的开局将领 #0 会随大本营等级变强。
+		#   ⚠️ 升级完成时由 `_finish_upgrade` → `refresh_general_growth()` 重算，
+		#     这里只是「新造出来的那一位」的起点。
+		u.apply_general_growth(cfg, base_level_of(String(faction)))
 	return u
 
 
@@ -2495,6 +2516,13 @@ func recruit_entry(kind: String, faction: String = "") -> Dictionary:
 	for item in zone_recruit_list():
 		if typeof(item) == TYPE_DICTIONARY and String((item as Dictionary).get("kind", "")) == kind:
 			return item
+	# ★★ 2026.11：合作模式专用表兜底（新加的四位将领不在 `recruit.zone.list` 里，
+	#   只有合作里被选中时才会被问到）。
+	#   ⚠️ 必须**先看这一方的九宫格里有没有它**：否则普通对局里走通用的
+	#      `recruit_entry()` 也能读到一份用不上的造价（界面 / AI 都可能被带偏）。
+	var f2 := faction if faction != "" else my_faction
+	if general_recruit_roster(f2).has(kind):
+		return cfg.coop_recruit_entry(kind)
 	return {}
 
 
@@ -2507,11 +2535,14 @@ func is_unit_recruitable(kind: String, faction: String = "") -> bool:
 
 
 ## 某个兵种能不能被**区划**招募（区划中心「招募」页那张表）
-func is_zone_recruitable(kind: String) -> bool:
-	for item in zone_recruit_list():
-		if typeof(item) == TYPE_DICTIONARY and String((item as Dictionary).get("kind", "")) == kind:
-			return true
-	return false
+## ★★ 2026.11：先看「**这一方**现在的九宫格」—— 合作模式可能只列选中的几位，
+##   没被选中的将领即使配置里有条目也不能招（它根本不在招募页上）。
+##   `faction` 缺省 = 本机席位（视图那条路）；AI 盟友传自己那一方。
+func is_zone_recruitable(kind: String, faction: String = "") -> bool:
+	var f := faction if faction != "" else my_faction
+	if not general_recruit_roster(f).has(kind):
+		return false
+	return not recruit_entry(kind, f).is_empty()
 
 
 ## 这个兵种是不是「可招募的」（两张表任意一张里有它）。
@@ -2674,6 +2705,43 @@ func leader_recruit_sec(leader) -> float:
 ## ★★ 2026.11：组合单位写的是**整包**的人口（协防军 2 / 御林军 3），一次扣清。
 func recruit_population_cost(kind: String, faction: String = "") -> float:
 	return maxf(0.0, float(recruit_entry(kind, faction).get("population_cost", 0.0)))
+
+
+## ★★ 2026.11：**将领光环「招募骑兵 -25% 资源」后的实际造价**。
+##
+## 用户口径（阿吉诃德）：「招募骑兵单位时获得 +25% 资源折扣」。
+##   · 只作用于**骑兵大类**的招募条目（组合单看第一个兵种，见 `_recruit_is_cavalry`）；
+##   · 只有「用这位将领当兵营」下单时才吃（也就是它自己的队列），友军 / 别的将领不吃；
+##   · 折的是**资源**（粮食 / 黄金），人口不打折；
+##   · `recruit_cost()` 里那条派系科技改价先算，再打折 —— 与实扣完全同源。
+## ★ 视图（HUD 单位页的悬停价格）与扣费（can_afford_recruit / start_recruit）**都走这里**，
+##   所以不会出现「悬停写 50、实际扣 37.5」。
+func recruit_cost_for(kind: String, faction: String = "", leader = null) -> Dictionary:
+	var out := recruit_cost(kind, faction)
+	if leader == null:
+		return out
+	var d := float(leader.aura_recruit_cavalry_discount)
+	if d <= 0.0:
+		return out
+	var fid := faction if faction != "" else String(leader.faction)
+	if not _recruit_is_cavalry(kind, fid):
+		return out
+	var keep := 1.0 - clampf(d, 0.0, 1.0)
+	out["food"] = float(out.get("food", 0.0)) * keep
+	out["gold"] = float(out.get("gold", 0.0)) * keep
+	return out
+
+
+## 这条招募条目是不是「骑兵单位」（看**第一个**生成兵种的大类）。
+##
+## ★ 为什么只看第一个：组合单（协防军 / 御林军）里可能混着步兵，整包按「主体」算，
+##   免得「带一个骑兵的组合单」被整包打折 —— 那会让折扣远超需求。
+func _recruit_is_cavalry(kind: String, faction: String) -> bool:
+	var types := recruit_spawn_types(kind, faction)
+	var tid := kind
+	if not types.is_empty():
+		tid = String(types[0])
+	return String(cfg.unit_class_of(tid)) == "cavalry"
 
 
 ## 队列上限（**含**正在读条的那个）：config.recruit.queue_max，默认 5
@@ -3300,7 +3368,7 @@ func can_afford_recruit(kind: String, leader_id: String) -> String:
 		return "leader"
 	var lf := String(leader.faction)
 	var pool: Variant = resource_pool_for(lf)
-	if pool != null and not EconomyRes.can_afford(pool, recruit_cost(kind, lf)):
+	if pool != null and not EconomyRes.can_afford(pool, recruit_cost_for(kind, lf, leader)):
 		return "cost"
 	var pop := recruit_population_cost(kind, lf)
 	if pop <= 0.0:
@@ -3350,7 +3418,7 @@ func start_recruit(kind: String, leader_id: String, faction: String,
 	# ★★ 2026.11：造价与人口按**队长那一方的派系**查（组合单位是整包的价钱）。
 	var lf := String(leader.faction)
 	var pop := recruit_population_cost(kind, lf)
-	var cost := recruit_cost(kind, lf)
+	var cost := recruit_cost_for(kind, lf, leader)
 	# 免费那一档：人口与钱都不动（下面每一处扣费都看这个开关）
 	if free:
 		pop = 0.0
@@ -3701,7 +3769,18 @@ func general_recruit_cooldown_of(kind: String) -> float:
 
 
 ## 池里的全部将领 kind（= `recruit.zone.list` 的 kind，按配置顺序、去重）。
-func _general_pool_kinds() -> Array:
+##
+## ★★ 2026.11：**合作模式**会给每个玩家席位一份「出战将领池」（备战页选中的那些），
+##   存在 `general_pool_by_faction` 里；有就用它，没有就退回配置那 9 位。
+##   于是「合作里只列我选中的将领」与「其它模式照旧」是同一处判据。
+##   ⚠️ 判据是**这个席位有没有被显式设置过**（`has`），不是「数组非空」：
+##      玩家把某一阶全取消掉是合法状态，那时九宫格就该少几格，不该偷偷退回默认 9 位。
+func _general_pool_kinds(faction: String = "") -> Array:
+	var f := _pool_faction(faction)
+	if general_pool_by_faction.has(f):
+		var own: Variant = general_pool_by_faction[f]
+		if typeof(own) == TYPE_ARRAY:
+			return (own as Array).duplicate()
 	var out: Array = []
 	for item in zone_recruit_list():
 		if typeof(item) != TYPE_DICTIONARY:
@@ -3712,26 +3791,42 @@ func _general_pool_kinds() -> Array:
 	return out
 
 
+## 本机现在用的将领池（快照 / 客机重建用：`{阵营: [kind...]}`）。
+##   ★ 值为空数组 = 这个席位**显式**没有可选将领（与「没有覆盖」不同）。
+func general_pool_map() -> Dictionary:
+	return general_pool_by_faction.duplicate(true)
+
+
 ## 视图 / 测试读「这一手是哪三位」（顺序就是命令卡 Q/W/E 的顺序）。
 ## ★ 池没启用 → 退回 `recruit.zone.list` 的前 hand_size 条（旧行为）。
 ## ★ 非本机玩家席位（AI）→ 同样给静态前几条（AI 不参与抽池）。
 func general_recruit_slots(faction: String = "") -> Array:
 	var f := _pool_faction(faction)
 	if not player_seats.has(f) or not general_recruit_pool_enabled():
-		var all := _general_pool_kinds()
+		var all := _general_pool_kinds(f)
 		return all.slice(0, mini(general_recruit_hand_size(), all.size()))
 	return (_general_pool_state(f).get("slots", []) as Array).duplicate()
 
 
 ## ★★ 招募页的**固定阵容**：`recruit.zone.list` 的 9 位将领（config 顺序）。
 ## 视图 / 测试都读它；不再有「随机抽 3 张手牌」。
-func general_recruit_roster(_faction: String = "") -> Array:
-	return _general_pool_kinds()
+## ★★ 合作模式：这个席位有「出战将领池」时用它（见 `_general_pool_kinds`）。
+func general_recruit_roster(faction: String = "") -> Array:
+	return _general_pool_kinds(faction)
 
 
-## 某位可招募将领的**阶数**（`recruit.zone.list[].tier`；缺省 1）。
+## 某位可招募将领的**阶数**（`unit.general.tiers[序号]`，0~3；招将门槛用它）。
+##
+## ★★ 2026.11.5：数据源从 `recruit.zone.list[].tier` 搬到 `unit.general.tiers`
+##   （与 types 同序）—— 这样「编辑器新加的将领」与「原来那 9 位」是同一份数据。
+##   招募表里那 9 个 tier 已经删掉（一个数只有一处）。
+## ★ 夹到 **≥ 1**：0 阶 = 不吃区划招募（开局将领 #0 就不在这张表里），
+##   万一有人把可招募将领的阶写成 0，也不该让它变成「永远解锁」。
 func general_recruit_tier(kind: String) -> int:
-	return maxi(1, int(recruit_entry(kind).get("tier", 1)))
+	var idx := ConfigRes.general_index_of(kind)
+	if idx < 0:
+		return 1
+	return maxi(1, cfg.general_tier_at(idx))
 
 
 ## 本阵营是否已经拥有 / 招过这位将领（永久唯一；阵亡也不释放）。
@@ -3783,23 +3878,31 @@ func general_recruit_state(faction: String, kind: String) -> Dictionary:
 	}
 
 
-## ★★ 2026.11.3：招募名单各自带哪条特性（`unit.general.trait_ids`；没配 = ""）。
+## ★★ 2026.11.3 / 2026.11：招募名单各自带哪**几条**特性（`unit.general.trait_ids`）。
+## ★ 返回的是「每一格一个数组」—— 与 `general_recruit_slots()` 同序、同长。
+##   改名历史：以前一格只有一条（字符串），现在一位将领可以有多条。
 func general_recruit_traits(faction: String = "") -> Array:
 	var out: Array = []
 	for k in general_recruit_slots(faction):
-		out.append(general_recruit_trait_for(faction, String(k)))
+		out.append(general_recruit_traits_for(faction, String(k)))
 	return out
 
 
-## ★★ 2026.11.3：某一位可招募将领的特性 id（`unit.general.trait_ids[index]`）。
+## ★★ 某一位可招募将领的**全部**特性 id（`unit.general.trait_ids[index]`）。
 ## ★ 判据走 `ConfigRes.general_index_of(kind)`（`general_N` → 第 N-1 档，
 ##   `general_0` → 第 9 档），与「类型 / 数值 / 编制上限」同一条映射。
-##   没配 / 池里没有 → ""（下单时记进 `zone.train_trait` 的也是这个值）。
-func general_recruit_trait_for(_faction: String, kind: String) -> String:
+##   没配 / 池里没有 → `[]`（下单时记进 `zone.train_traits` 的也是这个值）。
+func general_recruit_traits_for(_faction: String, kind: String) -> Array:
 	var idx := ConfigRes.general_index_of(kind)
 	if idx < 0:
-		return ""
-	return cfg.general_trait_at(idx)
+		return []
+	return cfg.general_traits_at(idx)
+
+
+## 第一条特性（兼容旧调用点：队列格子的短名 / 徽章）。多特性的完整列表用上面那个。
+func general_recruit_trait_for(faction: String, kind: String) -> String:
+	var ids := general_recruit_traits_for(faction, kind)
+	return String(ids[0]) if not ids.is_empty() else ""
 
 
 ## ⚠️ **无调用点**（2026.11.3 起特性改由 config 指定，不再随机抽）——
@@ -3874,7 +3977,7 @@ func _make_general_pool_state(faction: String) -> Dictionary:
 		"cooldown_zone": -1,         # 在哪个区划触发的
 		"draw_serial": 0,
 	}
-	var all := _general_pool_kinds()
+	var all := _general_pool_kinds(faction)
 	# 旧手牌逻辑保留但不驱动界面（config 里 pool.enabled 已设为 false）。
 	if general_recruit_pool_enabled():
 		st["available"] = all.duplicate()
@@ -3909,7 +4012,7 @@ func _player_seat_factions() -> Array:
 func _draw_general_hand(faction: String, st: Dictionary) -> void:
 	if not general_recruit_pool_enabled():
 		return
-	var all := _general_pool_kinds()
+	var all := _general_pool_kinds(faction)
 	if all.is_empty():
 		st["slots"] = []
 		return
@@ -4078,7 +4181,15 @@ func apply_general_pool_snapshot(faction: String, data: Variant) -> void:
 	if typeof(tv) == TYPE_ARRAY:
 		var traits: Array = []
 		for k in (tv as Array):
-			traits.append(String(k))
+			# ★★ 2026.11：一位将领可以带多条 ⇒ 收到的是「每个卡位一个数组」；
+			#   老快照是字符串，也认（转成长度 1 的数组）。
+			if typeof(k) == TYPE_ARRAY:
+				var ids: Array = []
+				for v in (k as Array):
+					ids.append(String(v))
+				traits.append(ids)
+			else:
+				traits.append(String(k))
 		st["slot_traits"] = traits
 	# ★★ 唯一性：客机的九宫格靠它判断「已拥有」。
 	var kv: Variant = d.get("tak", null)
@@ -4159,19 +4270,27 @@ func zone_recruit_kind_at(zone, slot: int) -> String:
 	return String(q[k])
 
 
-## ★★ 某一格上那一单的**将领特性**（"" = 没有 / 老区划状态缺字段）。
+## ★★ 某一格上那一单的**将领特性 id 数组**（`[]` = 没有 / 老区划状态缺字段）。
 ## 与 `zone_recruit_kind_at` 完全同签名、同下标：0 = 正在读条的大格子，1.. = 排队格。
-func zone_recruit_trait_at(zone, slot: int) -> String:
+func zone_recruit_traits_at(zone, slot: int) -> Array:
 	if typeof(zone) != TYPE_DICTIONARY or slot < 0:
-		return ""
+		return []
 	var d: Dictionary = zone
 	if slot == 0:
-		return String(d.get("train_trait", ""))
+		var raw: Variant = d.get("train_trait", [])
+		return raw.duplicate() if typeof(raw) == TYPE_ARRAY else []
 	var q: Array = d.get("train_traits", [])
 	var k := slot - 1
 	if k < 0 or k >= q.size():
-		return ""
-	return String(q[k])
+		return []
+	var v: Variant = q[k]
+	return (v as Array).duplicate() if typeof(v) == TYPE_ARRAY else []
+
+
+## 第一条特性（兼容旧调用点：队列格子的短名）。多特性的完整列表用上面那个。
+func zone_recruit_trait_at(zone, slot: int) -> String:
+	var ids := zone_recruit_traits_at(zone, slot)
+	return String(ids[0]) if not ids.is_empty() else ""
 
 
 ## 第 slot 格**还要等多久**才轮到自己出人（秒）—— 与 recruit_eta 逐条同义。
@@ -4204,7 +4323,7 @@ func zone_recruit_eta(zone, slot: int) -> float:
 ##    的拒因（「将领不站在己方区划里」），两者的中文提示完全不同 ——
 ##    挤在同一个码上会让玩家看到一句驴唇不对马嘴的红字。
 func can_recruit_zone(kind: String, zone_id: int, faction: String) -> String:
-	if not is_zone_recruitable(kind):
+	if not is_zone_recruitable(kind, faction):
 		return "kind"
 	var z = _zone_by_id(zone_id)
 	if z == null:
@@ -4286,14 +4405,14 @@ func start_zone_recruit(kind: String, zone_id: int, faction: String) -> bool:
 	z["train_cost_pop"] = float(z.get("train_cost_pop", 0.0)) + pop
 	# ★★ 先把「这一位当前手牌上的特性」固化下来（**必须在上面的池收口之前**：
 	#   `_general_pool_on_recruited()` 会立刻重抽下一手，那之后就查不到这一张了）。
-	var trait_id := general_recruit_trait_for(faction, kind)
+	var trait_ids := general_recruit_traits_for(faction, kind)
 	if String(z.get("train_kind", "")) == "":
 		# 队列原本是空的 → 这一单立刻开读条，并**记下招募方**（读完按它出兵）
 		z["train_faction"] = faction
-		_start_zone_training(z, kind, trait_id)
+		_start_zone_training(z, kind, trait_ids)
 	else:
 		(z["train_queue"] as Array).append(kind)
-		(z["train_traits"] as Array).append(trait_id)
+		(z["train_traits"] as Array).append(trait_ids.duplicate())
 	# ★★ 池 / 冷却收口（本轮新增）：招走的那位从本次「盒」里拿掉、起全局冷却、
 	#    重抽下一手。⚠️ 必须在「队列真的排上了」之后 —— 被拒的单不能消耗池子。
 	_general_pool_on_recruited(faction, kind, zone_id)
@@ -4302,9 +4421,9 @@ func start_zone_recruit(kind: String, zone_id: int, faction: String) -> bool:
 
 
 ## 让某个兵种进区划的「大格子」开始读条（特性跟着这一单走）。
-func _start_zone_training(zone, kind: String, trait_id: String = "") -> void:
+func _start_zone_training(zone, kind: String, trait_ids: Array = []) -> void:
 	zone["train_kind"] = kind
-	zone["train_trait"] = trait_id
+	zone["train_trait"] = trait_ids.duplicate()
 	zone["train_total"] = recruit_train_sec(kind)
 	zone["train_remaining"] = zone["train_total"]
 
@@ -4316,15 +4435,18 @@ func _start_next_zone_queue(zone) -> void:
 	var traits: Array = zone.get("train_traits", [])
 	if q.is_empty():
 		zone["train_kind"] = ""
-		zone["train_trait"] = ""
+		zone["train_trait"] = []
 		zone["train_remaining"] = 0.0
 		zone["train_total"] = 0.0
 		return
 	var next := String(q.pop_front())
-	var next_trait := String(traits.pop_front()) if not traits.is_empty() else ""
+	var next_traits: Array = []
+	if not traits.is_empty():
+		var head: Variant = traits.pop_front()
+		next_traits = head if typeof(head) == TYPE_ARRAY else [String(head)]
 	zone["train_queue"] = q
 	zone["train_traits"] = traits
-	_start_zone_training(zone, next, next_trait)
+	_start_zone_training(zone, next, next_traits)
 
 
 ## 每帧推进各区划的招募读条（world.tick 里跟在将领招募后面）。
@@ -4379,15 +4501,20 @@ func _spawn_zone_recruit(zone, kind: String) -> Variant:
 		ConfigRes.general_index_of(kind)          # ★ 第几位将领（决定套不套它的数值覆盖）
 	)
 	# ★★ 2026.11.3：这一单的特性在下单时就记进了 `zone.train_trait`
-	#   （`general_recruit_trait_for` → `_start_zone_training`），读完这里授给将领本人。
+	#   （`general_recruit_traits_for` → `_start_zone_training`），读完这里授给将领本人。
+	#   ★★ 2026.11：现在是**一组** id（一位将领可以带多条）。
 	#   ⚠️ 必须在 `_start_next_zone_queue()` 之前读 —— 它会把 train_trait 换成下一单的。
-	var trait_id := String(zone.get("train_trait", ""))
-	if trait_id != "":
-		u.set_general_trait(cfg, trait_id)
+	var raw_trait: Variant = zone.get("train_trait", [])
+	var trait_ids: Array = raw_trait if typeof(raw_trait) == TYPE_ARRAY else [String(raw_trait)]
+	if not trait_ids.is_empty():
+		u.set_general_traits(cfg, trait_ids)
 	units.append(u)
 	mark_vision_dirty()
 	# ★ 区划招募出来的将领自己就是队长 → 吃「将领血量 +10%」（用同一个判据函数）
 	u.apply_hp_bonus(_tech_hp_mult_for(u))
+	# ★★ 2026.11.5：0 阶将领的大本营成长（正常配置里区划招的都是 1~3 阶 ⇒ 这里是 0，
+	#   但「有人把可招将领写成 0 阶」时也不该少这一份）。
+	u.apply_general_growth(cfg, base_level_of(faction))
 	push_event({"type": "zone_unit_recruited", "zone_id": int(zone["id"]), "unit": u})
 	return u
 
@@ -4761,6 +4888,10 @@ func remove_building(b, force: bool = false) -> bool:
 	# ★ 建筑离场 ⇒ 它提供的固定产出 / 人口加成必须当场消失。
 	if zones != null:
 		refresh_zone_production()
+	# ★★ 2026.11.5：大本营没了 ⇒ 那一方**不再有等级** ⇒ 0 阶将领的成长归零。
+	#   （只在拆掉的是大本营时做；普通建筑离场跟将领成长无关。）
+	if b.type == BuildingRes.TYPE_BASE:
+		refresh_general_growth(String(b.owner))
 	return true
 
 
@@ -5014,6 +5145,28 @@ func refresh_zone_production() -> void:
 func base_level_of(faction: String) -> int:
 	var b = find_base_of(String(faction))
 	return int(b.level) if b != null else 0
+
+
+## ★★ 2026.11.5：重算将领的**大本营成长**（0 阶将领：血量 + 攻击随大本营等级涨）。
+##
+## @param faction 只重算这一方（大本营升级完成时用）；"" = **全部阵营**（快照重建 / 读档）
+##
+## 口径：每位将领按**它自己那一方**当前的大本营等级算（`general_growth_bonus` 里再做
+##   「只有 0 阶吃」这一步判断）。所以：
+##   · 没有大本营（等级 0）⇒ 加成为 0（AI / 红点 / 大本营被拆掉的那一方）；
+##   · 一次升级只影响**这一方**的将领（别的阵营的大本营没动）。
+## ★ 调用点：`upgrade._finish_upgrade()`（升级完成）、大本营**建好**（`_tick_construction`）
+##   与**被拆**（`remove_building`）；`apply_snapshot()` 里是逐单位重算同一个函数。
+##   出生 / 摆放 / 区划招募那三条路在各自的建单位处直接调。**不用**每帧调 ——
+##   等级只在升级那一刻变。
+func refresh_general_growth(faction: String = "") -> void:
+	for u in units:
+		if u == null or not u.alive or not u.is_general():
+			continue
+		var f := String(u.faction)
+		if faction != "" and f != String(faction):
+			continue
+		u.apply_general_growth(cfg, base_level_of(f))
 
 
 func base_limit(faction: String, key: String, default: int) -> int:
@@ -5944,6 +6097,11 @@ func _tick_construction(dt: float) -> void:
 		if b.build_remaining <= 0.0:
 			b.finish_construction()
 			push_event({"type": "building_ready", "building": b})
+			# ★★ 2026.11.5：大本营从「建造中」变成「已完工」= 这一方才**真的有**等级
+			#   （`base_level_of` 只看在场的大本营对象，等级 1 从创建那一刻就有）——
+			#   0 阶将领的成长按 1 级补上（开局那一位建好之后就是 +1 份）。
+			if b.is_base():
+				refresh_general_growth(String(b.owner))
 
 
 func tick(dt: float) -> Array:

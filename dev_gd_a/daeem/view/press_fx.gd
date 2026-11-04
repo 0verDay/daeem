@@ -27,6 +27,10 @@ const ThemeRes = preload("res://view/theme.gd")
 
 const META := "press_fx"
 const NODE_NAME := "PressFx"
+## ★★ 2026.11：这颗宿主不要「按下缩放」（`scale` 由调用方自己驱动）。
+##   备战页的将领磁贴用长按动画（逐渐缩小 → 反弹）顶替这一套，两套同时写 `scale` 会抖。
+const META_SCALE := "press_fx_scale_enabled"
+
 
 enum Phase { IDLE, DOWN, HELD, UP }
 
@@ -89,15 +93,6 @@ static func overshoot() -> float:
 	return clampf(_num("ui.press_overshoot", 1.004), 1.0, 1.03)
 
 
-## 给 fill_button 的「确认满格」用：从当前填充快速补到 100% 的时长 / 满格保持时长。
-static func snap_sec() -> float:
-	return maxf(0.01, _num("ui.press_snap_sec", 0.07))
-
-
-static func snap_hold_sec() -> float:
-	return maxf(0.0, _num("ui.press_snap_hold_sec", 0.06))
-
-
 # ------------------------------------------------------------------
 # 挂载 / 查询
 # ------------------------------------------------------------------
@@ -145,6 +140,22 @@ static func cancel(host: Control) -> void:
 		fx.cancel_now()
 
 
+## ★★ 2026.11：关掉某颗宿主的「按下缩放」（默认开着）。
+##   · 只影响 `scale` 与亮边；调用点自己负责视觉反馈（见 prepare_roster_list 的长按）；
+##   · 幂等，随时可开回来。
+static func set_scale_enabled(host: Control, on: bool) -> void:
+	if host == null or not is_instance_valid(host):
+		return
+	host.set_meta(META_SCALE, bool(on))
+
+
+static func scale_enabled(host: Control) -> bool:
+	if host == null or not is_instance_valid(host) or not host.has_meta(META_SCALE):
+		return true
+	return bool(host.get_meta(META_SCALE))
+
+
+
 # ------------------------------------------------------------------
 # 生命周期
 # ------------------------------------------------------------------
@@ -187,6 +198,10 @@ func _on_down() -> void:
 	if _host is Button and (_host as Button).disabled:
 		return
 	if _held:
+		return
+	# ★★ 2026.11：宿主自己驱动缩放（备战页长按）⇒ 本模块完全不参与。
+	#   注意这里连亮边也不画：长按那套动画本身就是反馈，两份叠在一起反而吵。
+	if not scale_enabled(_host):
 		return
 	var was_idle: bool = _phase == Phase.IDLE
 	_held = true

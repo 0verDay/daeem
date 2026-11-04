@@ -21,10 +21,11 @@ from pathlib import Path
 if __package__ in (None, ""):        # 直接 python 这个文件时也能跑
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from unit_editor import app as app_module
-    from unit_editor.model import ConfigModel, ModelError, fmt_number
+    from unit_editor.model import (ConfigModel, GENERAL_START_INDEX, ModelError,
+                                   fmt_number)
 else:
     from . import app as app_module
-    from .model import ConfigModel, ModelError, fmt_number
+    from .model import ConfigModel, GENERAL_START_INDEX, ModelError, fmt_number
 
 #: 仓库里的 Godot 工程目录（编辑器读它的 data/config.json）
 DEFAULT_PROJECT_DIR = Path(__file__).resolve().parents[2] / "daeem"
@@ -107,9 +108,15 @@ def selftest(project_dir: Path) -> int:
         if gen.trait_id:
             t = model.general_trait(gen.trait_id)
             trait_text = "%s（%s）" % (t.name, t.id)
-        print("[general] %d %-10s 类型 %-11s 血 %s 攻 %s 距离 %s 移速 %s 造价 %s/%s/%s"
+        # ★★ 2026.11.5：摘要里也带上「阶」与「派系归属」（备战页就是按它们分组的）。
+        fac_names = [name for cid, name in model.faction_choices() if cid in gen.factions]
+        num_text = "0" if gen.index == GENERAL_START_INDEX else str(gen.index + 1)
+        print("[general] %-3s %-10s 类型 %-11s 阶 %d 派系 %-20s"
+              " 血 %s 攻 %s 距离 %s 移速 %s 造价 %s/%s/%s"
               " 招兵 %ss 区划读条 %ss 特性 %s 耗粮 %s/秒%s%s"
-              % (gen.index + 1, gen.name, gen.type_id, fmt_number(gen.effective_of("hp_max")),
+              % (num_text, gen.name, gen.type_id, gen.tier,
+                 "、".join(fac_names) if fac_names else "（无）",
+                 fmt_number(gen.effective_of("hp_max")),
                  fmt_number(gen.effective_of("damage")),
                  fmt_number(gen.effective_of("range")),
                  fmt_number(gen.effective_of("speed")),

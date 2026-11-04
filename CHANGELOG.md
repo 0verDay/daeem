@@ -7,6 +7,28 @@
 
 本版本为在godot引擎内的原型开发，仅展示完整的局内玩法
 
+### 2026.11.5 按钮动效重做：悬停 / 长按泛光，选中才填充
+
+1. **需求**：鼠标悬停 / 移动端按住时按钮**内泛光**；只有**点击切换选中**的按钮（页签当前页 / 科技已启用 / 备战磁贴 / 面板已打开）才播**金色填充**，选中填满、取消选中退回。
+2. **拆成三条动效**（`view/fill_button.gd`）：`_glow` 管悬停（四边向中心、不改字色），`_fill` 管选中（金色自下而上），`_flash_*` 管点击（快速填满再退回）。悬停不再产生金色填充；旧的「确认按下瞬间补满」（`press_snap`）删除，由第 8 条的「点击闪光」接替。
+3. **泛光画法**：四条边各一张向内渐隐的 alpha 斜坡（1px `GradientTexture2D`，全项目共用），四角两条带子叠加 ⇒ 角上最亮、中心不亮，与主菜单四角按钮的泛光同一观感；颜色可点 = 金、禁用 = 灰；强度 / 宽度 / 时长读 `ui.hover_glow_*`（**0.50 / 0.22 / 0.08s / 0.12s**；★ 按用户反馈把强度 0.34 → 0.50、「开始泛光」0.18s → 0.08s）。
+4. **选中填充**：`set_latched(b, on, instant)` —— 默认播填充动画，`instant = true` 给「打开界面时已经选中」（直接满格）；页签 / 科技格用 `_primer_done` 只在第一次同步时 instant。逐字翻面去掉「latched 立刻翻黑」的捷径（否则选中动画头 0.1 秒是黑字压黑底），科技格已启用的原色也改回亮色。
+5. **备战磁贴**：选中从「2px 金线描边」改成**金色填充满格**（图标按填充进度自动反色、名字条淡出、名字翻成压金暗色），按用户口径**不再额外加描边**。
+6. **测试**：`test_fill_button` 重写为 **200 项**；`test_prepare` **261 项**、`test_settings_menu` **59 项**；`test_ui` / `test_press_fx` / `test_tech` / `test_hover_fill` / `test_sfx` 全绿；`tools/check-syntax.ps1` 266 文件 ALL OK。
+7. **配置**：`ui` 新增 `hover_glow_alpha` / `hover_glow_band` / `hover_glow_sec` / `hover_glow_out_sec`；删除 `press_snap_sec` / `press_snap_hold_sec`。
+8. **点击闪光（按用户反馈追加）**：「按下时整颗缩一下」不算点击反馈 —— 普通动作按钮（命令卡的操作格 / 招募将领格、战役合作列表行、选项页 / 结算页、地图选择、战役阵营）点一下**快速闪一次金**：0.06s 填满 → 0.02s 保持 → 0.10s 退回，**不翻字色**（避免满格那两帧文字闪黑）。页签 / 科技启用 / 备战磁贴 / 面板已打开有自己的选中填充，不闪；裸按钮（AI 指令面板 / 返回箭头 / 四角图标 / 纯文字大按钮）本轮不接。配置 `ui.click_flash_sec` / `click_flash_hold_sec` / `click_flash_out_sec`。
+9. **建造命令的选中填充**：建筑命令卡里点一格建筑 = **选中这条建造命令**，那一格**金色填满**（与页签 / 科技启用同一条选中口径，字色跟着金的前沿翻）。点另一栋 → 旧格反向退回、新格填满；再点同一格 / Esc / 右键退出建造模式 → 当前格退回；放置建筑后模式仍在，填充保持。实现走 `hud._build_entry()` 的 `active` + `_card_sig()` 的 `bt:<id>` + `command_card` 的 `set_latched`；建造格不再「点击一闪」（选中填充就是反馈），其它页格子照旧闪。`test_ui` 1387 → **1395 项**。
+10. **单位按钮不闪金（按用户反馈）**：局内**单位页的招募格**点击后**不再金色填充闪过**（用户原话「局内的单位按钮，点击后不需要金色填充闪过」）—— 点一下排进招募队列，右侧队列 / 红字就是反馈；该格也没有选中态。`command_card` 对 `recruit` 条目关掉点击闪光（建造格见第 9 条；操作页 / 招募将领页照旧闪）。`test_ui` 1395 → **1398 项**。
+
+### 2026.11.5 将领：派系归属 / 阶 / 0 阶大本营成长 / 加将领按钮
+
+1. **需求**：① 单位编辑器的将领要加**派系归属**（原生 / 王朝 / 帝国，一位可属多个），运行时按该派系在**备战界面**显示；② 0 阶将领要加「成长」选项，所有 0 阶将领随**局内大本营升级**获得加成（占位：加血量 / 攻击力）；③ 单位编辑器要有**加将领的按钮**。
+2. **数据**（`data/config.json` 的 `unit.general`）：新增 `tiers`（与 `types` 同序，0~3；开局 #0 = 0 阶）、`factions`（一个 id 数组，可多派；缺项 = 三派全算）、`growth`（`hp_max_per_level` 30 / `damage_per_level` 3，只作用于 0 阶）；**删掉** `recruit.zone.list[].tier` 那 9 份（阶只留一处：`unit.general.tiers`）。
+3. **逻辑**：`config.gd` 新增 `general_tier_at / general_is_zero_tier / general_factions_at / general_in_faction / general_growth_bonus / general_count`；`unit.gd` 新增 `apply_general_growth()`（上限 = 基础 × 科技倍率 + 成长，当前血量按增量带过去）与 `general_growth_damage`（`combat_damage()` 最后加）；`world.create_general()` 出生算一次、`refresh_general_growth()` 在大本营**升级完成 / 建好 / 被拆**时重算（场上已有的 0 阶将领当场涨）；`snapshot` 重建将领后也重算一次。
+4. **视图**：备战页「将领」一节改成按当前派系过滤（`prepare_roster_list`），详情页显示「派系归属」与「成长（0 阶）」（`prepare_detail_view`）。★ 右面板仍然只有王朝 / 帝国两枚按钮 ⇒ **只勾「原生」的将领不上备战页**（用户拍板）。
+5. **单位编辑器**：将领列表加「阶 / 派系」两列；将领表单加阶下拉、三派复选框、0 阶专属「成长（0 阶）」一栏；操作栏加 **「＋ 新建将领…」**（名字 / 类型 / 阶）—— 只追加 `unit.general.*` 同序表，**不进招募九宫格**；新将领 kind 从 `general_11` 起（`general_10` 永远不存在，第 10 档是 `general_0`）。将领仍**不能删 / 不能插队**。
+6. **测试**：`test_model` 977 项 / `test_app` 320 项 / `test_unit_editor.gd` 286 项 / `test_prepare.gd` 253 项；`test_logic` 270、`test_smoke` 132、`test_ui` 1387、`test_recruit_queue` 272、`test_snapshot_coop` 43、`test_upgrade` 165 全绿。⚠️ `test_zone_recruit` / `test_general_traits` / `test_downed` 在本轮之前就有断言与当前默认配置不符（用 `git worktree` 在 HEAD 上复现过），不是本次引入的。
+
 ### 2026.11.2 阵地性 AI 警戒唤醒：没威胁就静止（降设备 / 联机负载）
 1. **需求**：阵地性 AI 只在「玩家 / 敌对 AI 的部队进入自身 10 格内」或「敌对 AI 的区划扩张到离自身区划一个区划外（相隔一个区划）」时启动巡逻，否则静止。**只关巡逻** —— 交战 / 守区划中心 / 脱战无消耗招兵 / 濒死无消耗再起照常运行
 2. **判据**：① 任一敌对单位（`same_side_for_attack` 之外）离守将 ≤ `ai.garrison.alert_troop_radius_tiles`（默认 **10**，平方距离）；② 任一敌对**已占领**区划在**区划邻接图**里离我的归属区划 ≤ `ai.garrison.alert_zone_gap`（默认 **2** = 相邻 + 隔一个区划；`1` = 只相邻）。复检周期 `alert_check_sec` 默认 **0.5 s**，结果缓存在 `unit.garrison_alert_active`（不进快照）

@@ -243,22 +243,32 @@ func _test_liyue(cfg) -> void:
 	# 1 级大本营时「御林军」（三本）本该锁着
 	ok(not w.unit_recruit_unlocked("p1", "dy_royal"),
 		"（前提）1 级大本营招不了三本兵")
+	# ★ 基础价从当前 config 读（会随平衡调整），别在测试里写死具体的粮/金数。
+	var base: Dictionary = w.recruit_cost("dy_royal", "p1")
+	var base_food: float = float(base.get("food", 0.0))
+	var base_gold: float = float(base.get("gold", 0.0))
+	var dg_base: Dictionary = w.recruit_cost("dg_champion", "p2")
+	ok(base_gold > 0.0, "（前提）御林军要金（%.0f）" % base_gold)
 	ok(w.set_tech_active("dy_liyue", true, "p1"), "★ 启用礼乐")
 	ok(w.tech_recruit_tier_unlocked("p1"), "★★ 招募阶限制解除")
 	ok(w.unit_recruit_unlocked("p1", "dy_royal"), "★★ 三本兵也能招了")
 	eq(w.can_recruit("dy_royal", "", "p1"), "leader", "★ 剩下的拒因只跟将领有关")
-	# 金 → 粮：御林军 300 金 ⇒ 粮 += 300 × 1.5（2026.11 单价下调）
+	# 金 → 粮：御林军的金全部按 1 金 = 1.5 粮折成粮（2026.11 单价下调）
 	var cost: Dictionary = w.recruit_cost("dy_royal", "p1")
 	eq(float(cost.get("gold", -1.0)), 0.0, "★★ 招募不再花金")
-	near(float(cost.get("food", 0.0)), 195.0 + 300.0 * 1.5, 1e-4,
-		"★★ 300 金全部按 1 金 = 1.5 粮折成粮（195 + 450 = 645）")
+	near(float(cost.get("food", 0.0)), base_food + base_gold * 1.5, 1e-4,
+		"★★ %.0f 金全部按 1 金 = 1.5 粮折成粮（%.0f + %.0f = %.0f）"
+		% [base_gold, base_food, base_gold * 1.5, base_food + base_gold * 1.5])
 	# 帝国没有礼乐 ⇒ 价钱不变
 	var dg_cost: Dictionary = w.recruit_cost("dg_champion", "p2")
-	near(float(dg_cost.get("gold", 0.0)), 340.0, 1e-6, "★★ 帝国这边价钱不变（冠军骑士 340 金）")
+	near(float(dg_cost.get("gold", 0.0)), float(dg_base.get("gold", 0.0)), 1e-6,
+		"★★ 帝国这边价钱不变（冠军骑士 %.0f 金）" % float(dg_base.get("gold", 0.0)))
+	near(float(dg_cost.get("food", 0.0)), float(dg_base.get("food", 0.0)), 1e-6,
+		"★ 粮也不动（冠军骑士 %.0f）" % float(dg_base.get("food", 0.0)))
 	# 弃用之后一切复原
 	w.set_tech_active("dy_liyue", false, "p1")
-	near(float(w.recruit_cost("dy_royal", "p1").get("food", 0.0)), 195.0, 1e-6,
-		"★ 弃用后粮耗回到 195")
+	near(float(w.recruit_cost("dy_royal", "p1").get("food", 0.0)), base_food, 1e-6,
+		"★ 弃用后粮耗回到 %.0f" % base_food)
 
 
 # ==================================================================
@@ -434,13 +444,17 @@ func _test_enclosure(cfg) -> void:
 		return
 	_pump_gold(w)
 	var gold0: float = float(w._flat_resource_bonus("p2").get("gold", 0.0))
+	# ★ 原价从当前 config 读（会随平衡调整），而不是写死 340 / 130。
+	var before: Dictionary = w.recruit_cost("dg_champion", "p2")
 	ok(w.set_tech_active("dg_enclosure", true, "p2"), "★ 启用圈地制")
 	near(float(w._flat_resource_bonus("p2").get("gold", 0.0)), gold0 + 0.4, 1e-6,
 		"★★ 大本营多产 0.4 金/秒")
 	# ★★ 用户确认：圈地制**没有折扣**内容 —— 招募 / 建造 / 升级一律原价。
 	var cost: Dictionary = w.recruit_cost("dg_champion", "p2")
-	near(float(cost.get("gold", 0.0)), 340.0, 1e-6, "★★ 招募金耗不打折（就是 340）")
-	near(float(cost.get("food", 0.0)), 130.0, 1e-6, "★ 粮也不动（冠军骑士 130）")
+	near(float(cost.get("gold", 0.0)), float(before.get("gold", 0.0)), 1e-6,
+		"★★ 招募金耗不打折（就是 %.0f）" % float(before.get("gold", 0.0)))
+	near(float(cost.get("food", 0.0)), float(before.get("food", 0.0)), 1e-6,
+		"★ 粮也不动（冠军骑士 %.0f）" % float(before.get("food", 0.0)))
 	# 数据里也不许再有那个键（删干净了，不是「留着但没人读」）
 	var eff: Dictionary = cfg.tech_entry("dg_enclosure").get("effect", {})
 	ok(not eff.has("gold_cost_mult"), "★★ 圈地制的 effect 里没有 gold_cost_mult")

@@ -585,16 +585,17 @@ def t_general_form(app, model) -> None:
        "★★ 兵种那一档没被动过")
     set_optional(app, "攻击力", "30")
     eq(data(model)["unit"]["general"]["stats"][0]["damage"], 30, "改将领自己的攻击力")
-    eq(app.general_tree.item("g:0", "values")[0], "将领 1（有单独数值）",
+    # ★★ 2026.11.5：将领列表的前两列现在是「阶」「派系」（name 在第 3 列、血量在第 5 列）。
+    eq(app.general_tree.item("g:0", "values")[2], "将领 1（有单独数值）",
        "将领列表标出「有单独数值」")
-    eq(app.general_tree.item("g:0", "values")[2], "260", "列表里显示生效血量")
+    eq(app.general_tree.item("g:0", "values")[4], "260", "列表里显示生效血量")
 
     # 「跟随」按钮：删掉覆盖
     eq(row_button_at(app, "数值", "血量").cget("text"), "跟随", "自己填之后按钮写着「跟随」")
     follow_optional(app, "血量")
     ok("hp_max" not in data(model)["unit"]["general"]["stats"][0], "★ 点「跟随」→ 覆盖被删掉")
     eq(E(app, "血量").get(), inherited, "回到跟随类型：显示 %s" % inherited)
-    eq(app.general_tree.item("g:0", "values")[2], inherited, "列表里也回到类型数值")
+    eq(app.general_tree.item("g:0", "values")[4], inherited, "列表里也回到类型数值")
 
     # 类型下拉
     combo = sidebar_combos(app)["类型"]
@@ -636,6 +637,81 @@ def t_general_form(app, model) -> None:
     ok(bool(hints),
        "★ 原地留了一行只读灰字提示，指向「战役编辑器的摆放页」（读者不会被坑第二次）：%s"
        % (hints or "（一句都没有）"))
+
+    # ---- 阶 / 派系归属 / 0 阶成长（2026.11.5）
+    # ★ 阶下拉显示的档位文案与 GENERAL_TIER_CHOICES 一致；列表第一列也是阶。
+    eq(sidebar_combos(app)["阶"].get(), "一阶", "阶下拉显示当前值（一阶）")
+    eq(app.general_tree.item("g:0", "values")[0], "1", "★★ 列表第一列是「阶」")
+    sidebar_combos(app)["阶"].set("零阶")
+    sidebar_combos(app)["阶"].event_generate("<<ComboboxSelected>>")
+    app.root.update()
+    eq(data(model)["unit"]["general"]["tiers"][0], 0,
+       "★★ 选「零阶」→ 写 unit.general.tiers[0]")
+    eq(app.general_tree.item("g:0", "values")[0], "0", "列表里的阶跟着变")
+    # ★★ 0 阶才出现「成长（0 阶）」那一栏（1~3 阶不给输入框 —— 改了也没用）
+    ok("血量 / 级" in sidebar_entries(app), "★★ 0 阶将领多出「成长（0 阶）」那一栏")
+    type_into(app, E(app, "血量 / 级"), "45")
+    eq(data(model)["unit"]["general"]["growth"]["hp_max_per_level"], 45.0,
+       "★ 改 0 阶成长 · 血量 / 级")
+    type_into(app, E(app, "攻击力 / 级"), "4")
+    eq(data(model)["unit"]["general"]["growth"]["damage_per_level"], 4.0,
+       "★ 改 0 阶成长 · 攻击力 / 级")
+    # 派系复选框：勾 / 取消都写 unit.general.factions[i]（顺序按 clan.list）
+    checks = sidebar_checks(app)
+    for cname in ("原生", "王朝", "帝国"):
+        ok(cname in checks, "派系复选框有「%s」" % cname)
+    eq(app.general_tree.item("g:0", "values")[1], "原生 / 王朝 / 帝国",
+       "★★ 列表第二列是派系（默认三派全勾）")
+    checks["帝国"].invoke()
+    app.root.update()
+    eq(data(model)["unit"]["general"]["factions"][0], ["native", "dynasty"],
+       "★★ 取消「帝国」→ 写 unit.general.factions[0]")
+    eq(app.general_tree.item("g:0", "values")[1], "原生 / 王朝", "列表里的派系跟着变")
+    sidebar_checks(app)["帝国"].invoke()
+    app.root.update()
+    eq(data(model)["unit"]["general"]["factions"][0], ["native", "dynasty", "empire"],
+       "★ 再勾上 → 回到三派")
+    # 改回一阶 ⇒ 成长栏收起
+    sidebar_combos(app)["阶"].set("一阶")
+    sidebar_combos(app)["阶"].event_generate("<<ComboboxSelected>>")
+    app.root.update()
+    ok("血量 / 级" not in sidebar_entries(app),
+       "★★ 非 0 阶不显示「成长（0 阶）」那一栏")
+
+
+def t_add_general(app, model) -> None:
+    """★★ 2026.11.5：「＋ 新建将领…」真的能加一位（只追加数值档、不进招募九宫格）。"""
+    print("\n[3b] 加将领（追加在名册末尾 / 不进招募九宫格）")
+    before = model.general_count()
+    original = app_module._ask_new_general
+    app_module._ask_new_general = lambda *a, **k: ("将领 10", "spearman", 0)
+    try:
+        app.do_new_general()
+        app.root.update()
+    finally:
+        app_module._ask_new_general = original
+
+    eq(model.general_count(), before + 1, "★★ 名册多了一位")
+    eq(app.selection, ("general", before), "★★ 加完自动选中新将领")
+    ok(app.general_tree.exists("g:%d" % before), "左边列表里出现新行")
+    if app.general_tree.exists("g:%d" % before):
+        eq(app.general_tree.item("g:%d" % before, "text"), "general_%d" % (before + 1),
+           "★★ kind = general_<下标+1>（general_10 永不存在）")
+        eq(app.general_tree.item("g:%d" % before, "values")[0], "0", "…阶显示 0")
+        # ★ 列表会给「写了 stats 覆盖」的将领加一个尾巴（名字本身是「将领 10」）。
+        ok(str(app.general_tree.item("g:%d" % before, "values")[2]).startswith("将领 10"),
+           "…名字是「将领 10」：%s" % app.general_tree.item("g:%d" % before, "values")[2])
+    ok("阶" in sidebar_combos(app), "右侧表单有「阶」")
+    ok("血量 / 级" in sidebar_entries(app), "★★ 新将领默认 0 阶 → 有成长栏")
+    ok("造价 · 粮食" not in sidebar_entries(app),
+       "★★ 没有招募条目 → 不给造价输入框（只留一行说明）")
+    hints = [t for t in sidebar_labels(app) if "不在招募九宫格" in t]
+    ok(bool(hints), "…改成一行灰字说明它在招募九宫格之外：%s" % (hints or "（没有）"))
+
+    # 撤销：这一笔也能撤掉（与其它「新建」同一条动线）
+    app.do_undo()
+    app.root.update()
+    eq(model.general_count(), before, "★★ 撤销 → 名册回到原来的长度")
 
 
 def t_traits(app, model) -> None:
@@ -743,37 +819,49 @@ def t_traits(app, model) -> None:
     eq(app.selection, ("trait", "brute"), "★ 建完自动选中它")
     ok(app.trait_tree.exists("t:brute"), "★ 列表里立刻出现")
 
-    # ---------------- 给将领指定一条 ----------------
+    # ---------------- 给将领加特性（可以加多条）----------------
     pick(app, "g:0")
-    combo = sidebar_combos(app)["特性"]
-    ok("（无）" in combo.cget("values"), "★ 将领表单的「特性」下拉里有「（无）」")
-    combo.set("蛮力（brute）")
-    combo.event_generate("<<ComboboxSelected>>")
+    # 默认配置里将领 1 带「神速」—— 先用「移除」清干净，后面从零开始数。
+    for tid in list(data(model)["unit"]["general"]["trait_ids"][0]):
+        row_button_at(app, "特性（可多条）", model.general_trait(tid).name).invoke()
+        app.root.update()
+    eq(data(model)["unit"]["general"]["trait_ids"][0], [],
+       "（前提）将领 0 现在没有特性（数组）")
+    sidebar_combos(app)["加一条特性"].set("蛮力（brute）")
+    buttons(app)["＋ 加特性"].invoke()
     app.root.update()
-    eq(data(model)["unit"]["general"]["trait_ids"][0], "brute",
-       "★★ 给将领 0 选「蛮力」→ unit.general.trait_ids[0] = brute（游戏侧 general_trait_at 读它）")
+    eq(data(model)["unit"]["general"]["trait_ids"][0], ["brute"],
+       "★★ 给将领 0 选「蛮力」→ unit.general.trait_ids[0] = [brute]（游戏侧 general_traits_at 读它）")
     ok(any("蛮力" in t for t in sidebar_labels(app)),
        "★ 表单上写明了这条特性是什么（%s）"
        % [t for t in sidebar_labels(app) if "蛮力" in t])
-    sidebar_combos(app)["特性"].set("（无）")
-    sidebar_combos(app)["特性"].event_generate("<<ComboboxSelected>>")
+    # ★★ 2026.11：一个将领可以有多个特性
+    sidebar_combos(app)["加一条特性"].set("步兵特攻（infantry_slayer）")
+    buttons(app)["＋ 加特性"].invoke()
     app.root.update()
-    eq(data(model)["unit"]["general"]["trait_ids"][0], "", "★ 选「（无）」= 清空")
+    eq(data(model)["unit"]["general"]["trait_ids"][0], ["brute", "infantry_slayer"],
+       "★★ 再加一条 → 两条并存（用户口径：一个将领可以有多个特性）")
+    # 移除其中一条（另一条必须留着）
+    row_button_at(app, "特性（可多条）", "蛮力").invoke()
+    app.root.update()
+    eq(data(model)["unit"]["general"]["trait_ids"][0], ["infantry_slayer"],
+       "★ 「移除」只拿掉那一条，另一条保留")
 
     # ---------------- 删掉一条正在用的特性：不留坏 id ----------------
     pick(app, "g:0")
-    sidebar_combos(app)["特性"].set("蛮力（brute）")
-    sidebar_combos(app)["特性"].event_generate("<<ComboboxSelected>>")
+    sidebar_combos(app)["加一条特性"].set("蛮力（brute）")
+    buttons(app)["＋ 加特性"].invoke()
     app.root.update()
-    eq(data(model)["unit"]["general"]["trait_ids"][0], "brute", "（前提）将领 0 正在用 brute")
+    eq(data(model)["unit"]["general"]["trait_ids"][0], ["infantry_slayer", "brute"],
+       "（前提）将领 0 又带上了 brute")
     app_module.messagebox.askyesno = lambda *a, **k: True
     pick(app, "t:brute")
     app.do_delete_trait()
     app.root.update()
     ok("brute" not in data(model)["unit"]["general_traits"],
        "★★ 「删除特性」把池里那条删掉了")
-    eq(data(model)["unit"]["general"]["trait_ids"][0], "",
-       "★★ 正在用它的将领被改成「无」（不留一条指向空 id 的记录）")
+    eq(data(model)["unit"]["general"]["trait_ids"][0], ["infantry_slayer"],
+       "★★ 只把这一条从将领身上去掉，别的特性保留（不留指向空 id 的记录）")
     ok(not app.trait_tree.exists("t:brute"), "列表里也没了")
 
 
@@ -1222,9 +1310,11 @@ def t_layout_fits(app, model) -> None:
     ok(bar.winfo_height() >= bar.winfo_reqheight(),
        "★★ 操作栏没被挤没（高 %d / 需要 %d）" % (bar.winfo_height(), bar.winfo_reqheight()))
     buttons = [w for w in walk(bar) if isinstance(w, tk.Button)]
-    ok(len(buttons) >= 4,
-       "★ 操作栏有四颗按钮（新建兵种 / 删除兵种 / 新建特性 / 删除特性）：%s"
+    ok(len(buttons) >= 5,
+       "★ 操作栏有五颗按钮（新建兵种 / 删除兵种 / 新建将领 / 新建特性 / 删除特性）：%s"
        % [b.cget("text") for b in buttons])
+    ok("＋ 新建将领…" in [b.cget("text") for b in buttons],
+       "★★ 上面那五颗里确实有「＋ 新建将领…」（本轮需求）")
 
     status = None
     for widget in app.root.winfo_children():
@@ -1315,6 +1405,7 @@ def main() -> int:
         t_unit_form(app, model)
         t_package_form(app, model)
         t_general_form(app, model)
+        t_add_general(app, model)
         t_traits(app, model)
         t_building_form(app, model)
         t_tech_page_gone(app, model)

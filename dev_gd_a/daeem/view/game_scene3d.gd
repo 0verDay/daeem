@@ -46,6 +46,8 @@ const InteractionRes = preload("res://view/game_interaction.gd")
 const OutcomeOverlayRes = preload("res://view/outcome_overlay.gd")
 const CommandRes = preload("res://logic/command_processor.gd")
 const LevelRes = preload("res://logic/level.gd")
+## ★★ 2026.11：备战页的出战配置（派系 + 将领）—— 合作模式开局时写进关卡数据。
+const LoadoutRes = preload("res://logic/loadout.gd")
 const HostSessionRes = preload("res://net/host_session.gd")
 const ClientSessionRes = preload("res://net/client_session.gd")
 ## ★★ 手机端触摸手势识别（单指拖视野 / 单击 / 双击 / 双指框选）—— 见那个文件的文件头
@@ -417,7 +419,14 @@ func start_coop_solo(level, ai_setup: Dictionary) -> bool:
 	var profiles := {
 		ai_seat: {"difficulty": String(ai_setup.get("difficulty", "normal"))},
 	}
-	world = WorldRes.create_from_level(cfg, level, host_seat, seats, true, overrides, profiles)
+	# ★★ 2026.11：把备战页的出战配置写进这一关（本机席位的派系 + 开局将领），
+	#   并把「九宫格将领池」交给世界（AI 席位保持关卡原样）。
+	LoadoutRes.ensure_defaults(cfg)
+	var my_loadout := LoadoutRes.payload_for(LoadoutRes.faction(), cfg)
+	LoadoutRes.apply_to_level(level, host_seat, my_loadout)
+	var pools: Dictionary = {host_seat: my_loadout.get("pool", [])}
+	world = WorldRes.create_from_level(cfg, level, host_seat, seats, true, overrides, profiles,
+		-1, false, pools)
 	if world == null:
 		push_error("合作 AI 队友局装配失败（地图 = %s）" % String(level.map_id))
 		return false
@@ -445,7 +454,18 @@ func start_coop_host(campaign, level, transport) -> bool:
 		return false
 	var host_seat := String(seats[0])
 	var guest_seat := String(seats[1])
-	world = WorldRes.create_from_level(cfg, level, host_seat, seats, true)
+	# ★★ 2026.11：两个席位各自的出战配置 —— 房主用本机选择，客机用房主收到的 `loadout`。
+	#   两边的派系 / 开局将领都写进**同一份 level**，再一起发给客机（见 host_session.start_game）。
+	LoadoutRes.ensure_defaults(cfg)
+	var host_loadout := LoadoutRes.payload_for(LoadoutRes.faction(), cfg)
+	LoadoutRes.apply_to_level(level, host_seat, host_loadout)
+	var guest_loadout: Dictionary = LoadoutRes.remote_for("guest")
+	if not guest_loadout.is_empty():
+		LoadoutRes.apply_to_level(level, guest_seat, guest_loadout)
+	var pools: Dictionary = {host_seat: host_loadout.get("pool", [])}
+	if not guest_loadout.is_empty():
+		pools[guest_seat] = guest_loadout.get("pool", [])
+	world = WorldRes.create_from_level(cfg, level, host_seat, seats, true, {}, {}, -1, false, pools)
 	if world == null:
 		push_error("合作关装配失败（地图 = %s）" % String(level.map_id))
 		return false
@@ -497,7 +517,11 @@ func start_coop_guest(payload: Dictionary, transport) -> bool:
 	var my_seat := String(payload.get("guest_seat", ""))
 	if my_seat == "":
 		my_seat = String(seats[1])
-	world = WorldRes.create_from_level(cfg, level, my_seat, seats, false)
+	# ★★ 2026.11：房主已经把两个席位的出战配置写进 level_data（派系 / 开局将领），
+	#   这里只需要恢复「九宫格将领池」。缺字段 = 老房主 ⇒ 空字典 = 配置那 9 位。
+	var pools: Variant = payload.get("general_pool", {})
+	world = WorldRes.create_from_level(cfg, level, my_seat, seats, false, {}, {}, -1, false,
+		pools if typeof(pools) == TYPE_DICTIONARY else {})
 	if world == null:
 		push_error("客机世界装配失败（地图 = %s）" % String(level.map_id))
 		return false

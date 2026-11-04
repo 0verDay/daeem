@@ -34,6 +34,7 @@ func _initialize() -> void:
 func _run() -> void:
 	_test_config_contract()
 	_test_general_overrides()
+	_test_general_factions_and_growth()
 	_test_vision()
 	_test_traits()
 	_test_upkeep()
@@ -302,12 +303,14 @@ func _test_traits() -> void:
 	near(1000.0 - u.hp, 40.0, 1e-6, "★★ 近战 100 → 吃 40（60% 减免）")
 
 	# 3) 将领特性：`unit.general.trait_ids` 指定的那一条
+	# ★ 这里故意写成**老格式（字符串）**：新代码认数组，也要继续认老配置。
 	var raw2 = require_config()
 	var ids: Array = []
 	for i in 10:
 		ids.append("swift" if (i == 0 or i == 9) else "")
 	raw2.data["unit"]["general"]["trait_ids"] = ids
 	var cfg3 = _reload_full(raw2)
+	eq(cfg3.general_traits_at(0), ["swift"], "★★ 老格式（字符串）也读成「一条特性」")
 	eq(cfg3.general_trait_at(0), "swift", "★★ 编辑器里给「将领 1」选了神速 → config 读得到")
 	eq(cfg3.general_trait_at(9), "swift", "★★ 开局将领 #0（第 10 档）也选了神速")
 	eq(cfg3.general_trait_at(3), "", "★ 没选的档位 = 没有特性（**不再随机抽**）")
@@ -347,6 +350,24 @@ func _test_traits() -> void:
 	eq(_reload_full(raw3).general_trait_at(0), "",
 		"★★ trait_ids 写了池里没有的 id → 当成没有特性（不报错、不留坏 id）")
 
+	# 6) ★★ 2026.11：一位将领可以带**多条**特性（数组格式）
+	var raw4 = require_config()
+	var multi_ids: Array = []
+	for i in raw4.general_count():
+		multi_ids.append(["swift", "steadfast"] if i == 0 else [])
+	raw4.data["unit"]["general"]["trait_ids"] = multi_ids
+	var cfg4 = _reload_full(raw4)
+	eq(cfg4.general_traits_at(0), ["swift", "steadfast"], "★★ 两条都读得到")
+	eq(cfg4.general_traits_at(1), [], "★ 没写的档位 = 空数组")
+	var w4 = require_world(cfg4)
+	ok(w4 != null, "（前提）世界能建出来")
+	var gm = w4.create_general("p1", 0, 1) if w4 != null else null
+	ok(gm != null, "（前提）按第 1 档造一位将领")
+	if gm != null:
+		eq(gm.general_traits, ["swift", "steadfast"], "★★ 单位身上也是两条")
+		near(gm.aura_speed_mult, 1.25, 1e-9, "…神速生效")
+		ok(gm.aura_knockback_immune, "…稳定生效")
+
 func _place_enemy(w, cfg, tile: Vector2i):
 	var e = UnitRes.create(cfg, "tester-%d-%d" % [tile.x, tile.y], "长枪兵", tile,
 		FactionRes.NPC_FACTION, UnitRes.UNIT_TYPE_SPEARMAN)
@@ -366,16 +387,18 @@ func _test_general_overrides() -> void:
 		return
 
 	eq(cfg.general_stat_overrides(0), {}, "★ 默认没有覆盖（stats[0] = {}）")
-	near(cfg.general_hp_at(0), cfg.unit_hp_of("spearman") * cfg.general_hp_mult, 1e-6,
-		"将领 1 的血量 = 长枪兵那一档 × 将领倍率")
+	near(cfg.general_hp_at(0), cfg.unit_hp_of("spearman"), 1e-6,
+		"将领 1 的血量 = 长枪兵那一档（全局倍率已删除）")
 	near(cfg.general_speed_at(2), cfg.unit_speed_of("rider"), 1e-6,
 		"将领 3 的移速 = 骑手那一档")
 	eq(cfg.general_name_at(0), "", "默认没有名字覆盖（调用方兜底「将领 N」）")
 	var w0 = require_world(cfg)
 	var g0 = w0.unit_by_id("general-0")
 	ok(g0 != null, "开局将领 #0 在场")
-	near(g0.hp_max, cfg.unit_hp_of("spearman") * cfg.general_hp_mult, 1e-6,
-		"开局将领 #0 的血量 = 兵种表 × 将领倍率")
+	# ★★ 2026.11：全局倍率删除后，#0 的血量 = 兵种表 + 0 阶成长（占位 30 血 / 级）。
+	var g0_growth: float = float(cfg.general_growth_bonus(9, 1).get("hp_max", 0.0))
+	near(g0.hp_max, cfg.unit_hp_of("spearman") + g0_growth, 1e-6,
+		"★★ 开局将领 #0 的血量 = 兵种表 + 0 阶成长（1 级 = +%s）" % str(g0_growth))
 	eq(g0.general_index, 9, "★ #0 是名册第 10 项（index 9）")
 
 	var cfg4 = _reload(_with_general_stats([
@@ -387,17 +410,17 @@ func _test_general_overrides() -> void:
 	var g1 = w.unit_by_id("general-1")
 	var g2 = w.unit_by_id("general-2")
 	var g3 = w.unit_by_id("general-3")
-	# ★★ 2026.10.29：覆盖值是**基准**，再乘 `general_hp_mult`（默认 1.5）。
-	near(g1.hp_max, 260.0 * cfg4.general_hp_mult, 1e-6, "★★ 将领 1 用自己的血量 260 × 倍率")
-	near(g2.hp_max, 300.0 * cfg4.general_hp_mult, 1e-6,
-		"★★ 将领 2 用自己的血量 300（不是 260！）× 倍率")
-	near(g3.hp_max, cfg4.unit_hp_of("rider") * cfg4.general_hp_mult, 1e-6,
-		"★★ 将领 3 没写覆盖 → 跟随骑手，再乘将领倍率")
-	near(g2.combat_damage(cfg4), 40.0 * cfg4.general_damage_mult, 1e-6,
-		"将领 2 用自己的攻击力 40（× 将领攻击倍率）")
+	# ★★ 2026.11：覆盖值就是**最终值**（全局倍率已删除）。
+	near(g1.hp_max, 260.0, 1e-6, "★★ 将领 1 用自己的血量 260")
+	near(g2.hp_max, 300.0, 1e-6,
+		"★★ 将领 2 用自己的血量 300（不是 260！）")
+	near(g3.hp_max, cfg4.unit_hp_of("rider"), 1e-6,
+		"★★ 将领 3 没写覆盖 → 跟随骑手")
+	near(g2.combat_damage(cfg4), 40.0, 1e-6,
+		"将领 2 用自己的攻击力 40")
 	near(g1.combat_damage(cfg4),
-		float(cfg4.unit_combat_of("spearman")["damage"]) * cfg4.general_damage_mult, 1e-6,
-		"★ 将领 1 没写攻击力 → 跟随长枪兵（× 将领攻击倍率）")
+		float(cfg4.unit_combat_of("spearman")["damage"]), 1e-6,
+		"★ 将领 1 没写攻击力 → 跟随长枪兵")
 	near(g1.combat_range(cfg4), cfg4.unit_combat_of("spearman")["range"], 1e-6,
 		"没写的项一律跟随")
 	eq(g1.name, "西境枪将", "★ 将领名字覆盖生效（开局那三个的名字从这里来）")
@@ -405,9 +428,9 @@ func _test_general_overrides() -> void:
 	# ★ 将领 1 没指定特性（trait_ids 里是空串）→ 速度就是兵种基础值。
 	near(g1.speed(cfg4, w.map), cfg4.unit_speed_of("spearman"), 1e-6,
 		"速度也能覆盖（这里没写）")
-	near(cfg4.general_hp_at(1), 300.0 * cfg4.general_hp_mult, 1e-6,
+	near(cfg4.general_hp_at(1), 300.0, 1e-6,
 		"查询口（悬停详情用）与单位身上的值一致")
-	near(g1.hp, 260.0 * cfg4.general_hp_mult, 1e-6, "当前血量也跟着上限走（开局满血）")
+	near(g1.hp, 260.0, 1e-6, "当前血量也跟着上限走（开局满血）")
 
 	var esc: Array = w.retinue_of(g1.id)
 	ok(esc.size() > 0, "将领 1 带着附属兵")
@@ -425,6 +448,108 @@ func _test_general_overrides() -> void:
 	ok(cfg6 != null, "★ 残留的 escort 键不影响载入（静默忽略，不报错）")
 	eq(cfg6.general_type_at(0), cfg4.general_type_at(0),
 		"★ 而且它一个字段都影响不到（将领类型照旧走 types）")
+
+## ★★ 2026.11.5：**将领的阶 / 派系归属 / 0 阶大本营成长**。
+##
+## 三件事各自「编辑器写的位置 ↔ 游戏读到的值」：
+##   1. `unit.general.factions[i]` —— 备战页按派系过滤（一位可属多派）；
+##   2. `unit.general.tiers[i]`   —— 阶（0~3；0 = 零阶），也是招将门槛的数据源；
+##   3. `unit.general.growth`     —— 0 阶将领随大本营等级拿到的血量 / 攻击加值。
+func _test_general_factions_and_growth() -> void:
+	var cfg = require_config()
+	if cfg == null:
+		return
+
+	# 1) 阶：默认 1-3 阶 + 开局 #0 = 0 阶（与这一栏加进来之前逐位一致）
+	eq(cfg.general_tier_at(0), 1, "将领 1 = 一阶")
+	eq(cfg.general_tier_at(3), 2, "将领 4 = 二阶")
+	eq(cfg.general_tier_at(6), 3, "将领 7 = 三阶")
+	eq(cfg.general_tier_at(9), 0, "★★ 开局将领 #0 = 零阶")
+	ok(cfg.general_is_zero_tier(9), "…而且 general_is_zero_tier 认得出来")
+	ok(not cfg.general_is_zero_tier(0), "一阶将领不是 0 阶")
+	# 写进 tiers[] ⇒ 游戏读到（编辑器「阶」那一栏写的就是这个键）
+	var raw_tier = require_config()
+	raw_tier.data["unit"]["general"]["tiers"][0] = 0
+	var cfg_t = _reload(raw_tier)
+	eq(cfg_t.general_tier_at(0), 0, "★★ 编辑器把将领 1 改成 0 阶 → 游戏读到 0 阶")
+	ok(cfg_t.general_is_zero_tier(0), "…于是它也吃成长了")
+
+	# 2) 派系：默认三派全算（一位将领可以同时属于多个派系）
+	eq(cfg.general_factions_at(0).size(), 3, "★★ 默认三派全勾（原生 / 王朝 / 帝国）")
+	ok(cfg.general_in_faction(0, "native"), "…原生算")
+	ok(cfg.general_in_faction(0, "dynasty"), "…王朝算")
+	ok(cfg.general_in_faction(0, "empire"), "…帝国算")
+	# 只勾王朝 ⇒ 备战页只在王朝那一页出现
+	var raw = require_config()
+	raw.data["unit"]["general"]["factions"][0] = ["dynasty"]
+	var cfg2 = _reload(raw)
+	eq(cfg2.general_factions_at(0), ["dynasty"],
+		"★★ 编辑器写 factions[0] = [\"dynasty\"] → 游戏读到只有王朝")
+	ok(cfg2.general_in_faction(0, "dynasty"), "…王朝：显示")
+	ok(not cfg2.general_in_faction(0, "empire"), "★★ …帝国：不显示（备战页就是这么过滤的）")
+	ok(not cfg2.general_in_faction(0, "native"), "…原生：不显示")
+	ok(cfg2.general_in_faction(1, "empire"), "★ 别的将领不受影响（将领 2 仍在帝国里）")
+	# 空数组 = 哪个派系都不显示（设计师的明确选择）
+	var raw_empty = require_config()
+	raw_empty.data["unit"]["general"]["factions"][0] = []
+	var cfg_empty = _reload(raw_empty)
+	eq(cfg_empty.general_factions_at(0).size(), 0, "★ factions[0] = [] → 哪个派系都不显示")
+	ok(not cfg_empty.general_in_faction(0, "dynasty"), "…王朝也不显示")
+	# 缺项（老配置）⇒ 三派全算 —— 与「加这一栏之前」逐位一致
+	var raw_missing = require_config()
+	raw_missing.data["unit"]["general"].erase("factions")
+	var cfg_missing = _reload(raw_missing)
+	eq(cfg_missing.general_factions_at(0).size(), 3, "★★ 没写 factions 这一栏 → 三派全算")
+
+	# 3) 成长：只作用于 0 阶
+	var no_bonus: Dictionary = cfg.general_growth_bonus(0, 3)
+	near(float(no_bonus.get("hp_max", -1.0)), 0.0, 1e-9,
+		"★★ 一阶将领不吃成长（3 级大本营血量加成仍是 0）")
+	near(float(no_bonus.get("damage", -1.0)), 0.0, 1e-9, "…攻击加成也是 0")
+	var bonus2: Dictionary = cfg.general_growth_bonus(9, 2)
+	near(float(bonus2.get("hp_max", 0.0)), 30.0 * 2.0, 1e-6,
+		"★★ 0 阶将领 2 级大本营 = 30 × 2 血")
+	near(float(bonus2.get("damage", 0.0)), 3.0 * 2.0, 1e-6,
+		"★★ 0 阶将领 2 级大本营 = 3 × 2 攻")
+	var bonus0: Dictionary = cfg.general_growth_bonus(9, 0)
+	near(float(bonus0.get("hp_max", -1.0)), 0.0, 1e-9,
+		"★ 没有大本营（等级 0）⇒ 不加成")
+
+	# 4) 单位身上：数值真的加上去了（开局 #0 就是 0 阶）
+	var w = require_world(cfg)
+	var g0 = w.unit_by_id("general-0")
+	if g0 != null:
+		var base_dmg: float = float(cfg.unit_combat_of("spearman")["damage"])
+		near(g0.combat_damage(cfg), base_dmg + 3.0, 1e-6,
+			"★★ 开局将领 #0 的攻击 = 兵种 + 3（1 级大本营）")
+
+	# 5) 大本营升级完成 ⇒ 0 阶将领当场涨（升级过程真的走一遍）
+	var raw3 = require_config()
+	var rows: Array = raw3.data["upgrade"]["levels"]["base"]
+	if rows.size() < 2:
+		ok(false, "（前提）大本营有第二级")
+		return
+	(rows[1] as Dictionary)["cost"] = {"food": 0, "gold": 0}
+	(rows[1] as Dictionary)["time_sec"] = 0.05
+	(rows[1] as Dictionary)["need_generals"] = 0
+	var cfg3 = _reload(raw3)
+	var w2 = require_world(cfg3)
+	var b = w2.find_base_of("p1")
+	var g = w2.unit_by_id("general-0")
+	if b == null or g == null:
+		ok(false, "（前提）p1 有大本营 + 开局将领 #0")
+		return
+	b.finish_construction()                       # 开局大本营在建造读条里
+	w2.refresh_general_growth("p1")               # 建好之后先按 1 级算一遍
+	var hp1: float = g.hp_max
+	var dmg1: float = g.combat_damage(cfg3)
+	ok(w2.start_building_upgrade(b.tx, b.ty, "p1"), "（前提）大本营能开始升级")
+	for _i in 20:
+		w2.tick(DT)
+	eq(b.level, 2, "（前提）大本营升到 2 级")
+	near(g.hp_max, hp1 + 30.0, 1e-6, "★★ 升级完成 → 0 阶将领血量当场 +30")
+	near(g.combat_damage(cfg3), dmg1 + 3.0, 1e-6, "★★ 升级完成 → 0 阶将领攻击当场 +3")
+
 
 func _test_vision() -> void:
 	var cfg = require_config()

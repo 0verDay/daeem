@@ -465,7 +465,9 @@ func _test_buildings_multimesh(cfg) -> void:
 			b0 = b
 			break
 	if b0 != null:
-		var t: Transform3D = game.buildings._transform_of(b0)
+		# ★★ 用**静态**变换：开局的大本营可能还在「建造中」（整栋埋在地下，`dy = -高度`），
+		#   那是入场动画，不是摆放错误 —— 这一条验的是「落地后底边贴地」。
+		var t: Transform3D = game.buildings._static_transform_of(b0)
 		var sz: Vector3 = t.basis.get_scale()
 		var expect_w: float = game.buildings.palette.cell_size() * b0.body_scale(cfg)
 		near(sz.x, expect_w, 0.01,

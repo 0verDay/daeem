@@ -118,6 +118,8 @@ func _test_tiers(cfg) -> void:
 func _test_damage_mult(cfg) -> void:
 	var u = _mk(cfg, "general", "p1", "d1")
 	u.hp_max = 1000.0
+	# 长枪兵现在有 2 点固定护甲：这一节只验士气那一个乘数，先把护甲清零隔离。
+	u.armor = 0.0
 
 	u.morale = cfg.morale_high_tier
 	u.hp = 1000.0

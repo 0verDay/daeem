@@ -95,15 +95,17 @@ func _test_class_tags(cfg) -> void:
 func _test_general_types(cfg) -> void:
 	var w = require_world_with_escorts(cfg, ESCORTS_PER_GENERAL)
 	var types: Array = cfg.general_types()
-	eq(types.size(), 10, "配置里给了十位将领的类型（#0 + 可招募 #1-9）")
+	eq(types.size(), 14, "配置里给了十四位将领的类型（#0 + 可招募 #1-9 + 4 位新将领）")
 
 	var expect: Array = [
 		UnitRes.UNIT_TYPE_SPEARMAN, UnitRes.UNIT_TYPE_LONGBOWMAN, UnitRes.UNIT_TYPE_RIDER,
 		UnitRes.UNIT_TYPE_SPEARMAN, UnitRes.UNIT_TYPE_LONGBOWMAN, UnitRes.UNIT_TYPE_RIDER,
 		UnitRes.UNIT_TYPE_SPEARMAN, UnitRes.UNIT_TYPE_LONGBOWMAN, UnitRes.UNIT_TYPE_RIDER,
 		UnitRes.UNIT_TYPE_SPEARMAN,     # 第 10 项 = 开局将领 #0
+		# ★★ 2026.11：新加的四位将领 = 各自的独立兵种对象（不再是「共用兵种 + 覆盖」）。
+		"dy_lord_ranger", "dy_lord_zisha", "dg_lord_rider", "dg_lord_ajikede",
 	]
-	eq(types, expect, "★ 九位招募将领按长枪兵 / 长弓兵 / 骑手循环，#0 是长枪兵")
+	eq(types, expect, "★ 九位招募将领按长枪兵 / 长弓兵 / 骑手循环，#0 是长枪兵；新 4 位是专属兵种")
 
 	for i in 3:
 		var g = w.unit_by_id("general-%d" % (i + 1))
@@ -114,11 +116,11 @@ func _test_general_types(cfg) -> void:
 		eq(g.kind, UnitRes.KIND_GENERAL, "将领的 kind 仍是 general（队伍 / 招募都按它判）")
 		eq(String(g.unit_type), want, "★ general-%d 的类型是 %s" % [i + 1, want])
 		ok(g.is_general(), "★ is_general() 为真（描边加粗与将领科技共用这条判据）")
-		# ★★ 2026.10.29：将领 = 类型基准 × `general_hp_mult`（将领比兵种更抗打）。
-		near(g.hp_max, cfg.unit_hp_of(want) * cfg.general_hp_mult, 1e-6,
-			"将领血量 = 类型血量 × 将领倍率")
-		near(g.combat_damage(cfg), float(cfg.unit_combat_of(want)["damage"]) * cfg.general_damage_mult,
-			1e-6, "将领伤害 = 类型伤害 × 将领攻击倍率")
+		# ★★ 2026.11：将领全局倍率删除 ⇒ 血量 / 伤害直接等于所属兵种（或 stats 覆盖）。
+		near(g.hp_max, cfg.unit_hp_of(want), 1e-6,
+			"将领血量 = 类型血量")
+		near(g.combat_damage(cfg), float(cfg.unit_combat_of(want)["damage"]),
+			1e-6, "将领伤害 = 类型伤害")
 		near(g.combat_range(cfg), float(cfg.unit_combat_of(want)["range"]), 1e-6, "将领射程 = 类型射程")
 		# ★ 开局将领带一条随机特性：「神力」会把间隔缩短（×0.8）。
 		#   所以期望 = 类型间隔 × 这位将领自己的光环倍率（没抽到神力时它就是 1.0）。

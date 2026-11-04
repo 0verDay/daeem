@@ -99,12 +99,15 @@ func _test_catapult_splash(cfg) -> void:
 	var near_hp: float = near.hp
 	var far_hp: float = far.hp
 	var ally_hp: float = ally.hp
-	ProjectileRes.spawn(w, cfg, "p1", cat, cat.pos, main, false,
-		cfg.unit_combat_of(UnitRes.UNIT_TYPE_CATAPULT)["damage"], 1.5, true)
+	# 数值从 cfg 读（投石车伤害会随平衡调整）；护甲清零，只看「圈内全额」这一条。
+	var cat_dmg: float = float(cfg.unit_combat_of(UnitRes.UNIT_TYPE_CATAPULT).get("damage", 0.0))
+	main.armor = 0.0
+	near.armor = 0.0
+	ProjectileRes.spawn(w, cfg, "p1", cat, cat.pos, main, false, cat_dmg, 1.5, true)
 	eq(w.projectiles.size(), 1, "生成一枚投石车投掷物")
 	ProjectileRes.update(w, cfg, 10.0)
-	near(main.hp, main_hp - 60.0, 1e-6, "★ 主目标吃全额 60")
-	near(near.hp, near_hp - 60.0, 1e-6, "★ 半径内另一个敌人也吃全额 60")
+	near(main.hp, main_hp - cat_dmg, 1e-6, "★ 主目标吃全额 %.0f" % cat_dmg)
+	near(near.hp, near_hp - cat_dmg, 1e-6, "★ 半径内另一个敌人也吃全额 %.0f" % cat_dmg)
 	near(far.hp, far_hp, 1e-6, "圈外敌人不受伤")
 	near(ally.hp, ally_hp, 1e-6, "★ 友军不受伤（仅敌方）")
 

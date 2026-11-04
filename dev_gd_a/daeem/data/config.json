@@ -593,9 +593,9 @@
       "   · press_overshoot —— 回弹过冲比例（默认 1.004；1.0 = 不过冲）。",
       "   · press_edge_px / press_edge_alpha —— 按下亮边的宽度（像素，默认 2）与不透明度（默认 0.55）。",
       "   · press_brighten_alpha —— 按下时整体提亮的 alpha（默认 0.03，0 = 不提亮）。",
-      "   · press_snap_sec / press_snap_hold_sec —— 「确认按下」时填充金的快速补满时长 / 满格保持时长",
-      "     （默认 0.07 / 0.06s；补满由 fill_button 执行，不再一帧硬跳）。",
-      "   ★ 动效总开关关掉时：不缩放、不播补间；按住只留静态亮边，松手立刻清掉。"
+      "   ★ 动效总开关关掉时：不缩放、不播补间；按住只留静态亮边，松手立刻清掉。",
+      "   ★★ 2026.11.5：原来还有 press_snap_sec / press_snap_hold_sec（确认按下瞬间补满金），",
+      "     那一条已删除 —— 金色填充现在只表示「已选中」，普通按钮按一下不再补满。"
     ],
     "press_scale": 0.975,
     "press_down_sec": 0.07,
@@ -604,8 +604,33 @@
     "press_edge_px": 2.0,
     "press_edge_alpha": 0.55,
     "press_brighten_alpha": 0.03,
-    "press_snap_sec": 0.07,
-    "press_snap_hold_sec": 0.06,
+    "_glow_comment": [
+      "★★ 悬停 / 移动端按住的「四边向中心泛光」（见 view/fill_button.gd 的 Tuning）。",
+      "   · hover_glow_alpha —— 边缘那一圈的最强不透明度（默认 0.50；0 = 完全不泛光）。",
+      "   · hover_glow_band —— 泛光带宽度 = min(按钮宽, 高) × 这个比例（默认 0.22；",
+      "     真实像素再夹到 8~26px，免得窄按钮看不见、大按钮糊成一块）。",
+      "   · hover_glow_sec / hover_glow_out_sec —— 亮起 / 熄灭时长（默认 0.08 / 0.12s；",
+      "     亮起比熄灭快 = 一按下就亮，移开时稍缓一点不至于闪）。",
+      "   ★ 泛光只提亮按钮四周，不改文字颜色；金色填充只表示「已选中 / 已启用」，",
+      "     选中才有填充动画（页签当前页 / 已启用科技 / 备战磁贴 / 面板已打开）。"
+    ],
+    "hover_glow_alpha": 0.5,
+    "hover_glow_band": 0.22,
+    "hover_glow_sec": 0.08,
+    "hover_glow_out_sec": 0.12,
+    "_click_flash_comment": [
+      "★★ 普通动作按钮点一下的「金色一闪」（见 view/fill_button.gd 的 _on_pressed_flash）。",
+      "   只给**没有自己点击反馈**的按钮：命令卡九格、战役/合作列表行、选项页 / 结算页按钮、",
+      "   地图选择行、战役阵营按钮……（按下时的整体缩放不算点击反馈）。",
+      "   ★ 有自己点击反馈的按钮不闪：页签 / 科技启用 / 备战磁贴 / 面板已打开。",
+      "   · click_flash_sec —— 从空填到满格的时长（默认 0.06s）；",
+      "   · click_flash_hold_sec —— 满格保持（默认 0.02s）；",
+      "   · click_flash_out_sec —— 反向退回的时长（默认 0.10s）。",
+      "   ★ 闪光只填金、**不翻字色**（避免满格那一两帧文字由白闪黑再闪回来）。"
+    ],
+    "click_flash_sec": 0.06,
+    "click_flash_hold_sec": 0.02,
+    "click_flash_out_sec": 0.1,
     "_sfx_comment": [
       "★★ 菜单 / 建造音效的音量（dB；0 = 素材原始音量，负值更小）。见 view/sfx.gd。",
       "   · sfx_click_db —— 菜单按钮按下（click_button/down.wav）；素材峰值只有 0.154，默认 +3。",
@@ -783,15 +808,20 @@
 
     "_general_traits_comment": [
       "★★ 将领特性（部队光环）：**只写在这里**，逻辑层不写死任何一条。",
-      "  每张可招募将领卡刷新时随机抽一条（见 world._draw_general_hand）。",
-      "  效果对**将领本人 + 其旗下所有单位**（leader_id 指向它）生效。",
-      "  每条只认下面这些键（别的键会被忽略，见 logic/config.gd 的 _normalize_general_trait）：",
+      "  ★★ 2026.11：**一个特性 = 一个特性名 = 一个效果**（不再有「一条特性里塞好几个不相干效果」）。",
+      "     所以一条特性只写下面**一个**键（外加文案）；一位将领可以同时在 trait_ids 里带多条。",
       "  · speed_bonus          —— 移动速度 +比例（0.25 = +25%）。",
       "  · attack_speed_bonus   —— 攻击速度 +比例（0.25 = 攻击间隔 ÷1.25）。",
       "  · melee_reduction      —— 受到**近战**伤害时的减伤比例。",
       "  · ranged_reduction     —— 受到**远程**伤害时的减伤比例。",
       "  · attack_vs_class      —— { <兵种大类 id>: <比例> }，打该大类时伤害 ×(1+比例)。",
-      "  ★ 两条减伤与士气免伤、兵种特性是**加算**，再按 combat.damage_reduction_cap 封顶。",
+      "  · knockback_immune     —— true = **稳定**：免疫击退 + 眩晕（光环内所有单位）。",
+      "  · capture_speed_bonus  —— 占领速度 +比例（0.4 = 读条快 40%）；只在这个光环的单位",
+      "    站在区划中心邻域里时生效（zone.update 按「在场光环」取最大值，不叠加）。",
+      "  · recruit_cavalry_discount —— 用这位将领当兵营招募**骑兵大类**单位时资源打折（0.25 = -25%）。",
+      "  · charge_damage_bonus  —— 部队里的**近战骑兵**冲锋命中时额外伤害 +比例（1.0 = +100%）。",
+      "  ★ 多条特性叠在同一个单位上时：比例**相加**（两条减伤 / 两条速度），免疫类取「或」，",
+      "    折扣 / 占领取最大值，冲锋加成相加；减伤最后仍按 combat.damage_reduction_cap 封顶。",
       "  ★ short 是信息栏格子里那个字（与兵种 short 同一档），name / desc 给卡牌与悬停说明。"
     ],
     "general_traits": {
@@ -830,6 +860,48 @@
         "short": "神",
         "desc": "攻击速度 +25%（攻击间隔 ÷1.25）",
         "attack_speed_bonus": 0.25
+      },
+      "steadfast": {
+        "name": "稳定",
+        "short": "稳",
+        "desc": "免疫击退（与眩晕）",
+        "knockback_immune": true
+      },
+      "arrow_wall": {
+        "name": "铁壁",
+        "short": "壁",
+        "desc": "受到远程伤害 -50%",
+        "ranged_reduction": 0.5
+      },
+      "formation_breaker": {
+        "name": "破阵",
+        "short": "破",
+        "desc": "对步兵伤害 +50%",
+        "attack_vs_class": { "infantry": 0.5 }
+      },
+      "capture_expert": {
+        "name": "占领专家",
+        "short": "占",
+        "desc": "占领速度 +40%",
+        "capture_speed_bonus": 0.4
+      },
+      "call_to_arms": {
+        "name": "一呼百应",
+        "short": "呼",
+        "desc": "招募骑兵单位时资源 -25%",
+        "recruit_cavalry_discount": 0.25
+      },
+      "new_knighthood": {
+        "name": "新骑士精神",
+        "short": "锋",
+        "desc": "部队里的近战骑兵冲锋额外伤害 +100%",
+        "charge_damage_bonus": 1.0
+      },
+      "crushing_blow": {
+        "name": "横扫",
+        "short": "扫",
+        "desc": "攻击造成范围伤害（半径 1 格）并把命中的敌人击退",
+        "melee_splash": { "radius": 1.0, "knockback": 0.5, "stun_sec": 0.25 }
       }
     },
 
@@ -1162,9 +1234,9 @@
         "vision": 6,
         "upkeep_food": 0.08,
         "traits": {
-          "attack_vs_class": { "cavalry": 1.0 }
+          "attack_vs_class": { "cavalry": 0.7 }
         },
-                  "charge": {
+        "charge": {
           "min_distance": 0.0,
           "max_distance": 0.0,
           "turn_max_deg": 0.0,
@@ -1206,7 +1278,7 @@
         "ranged": false,
         "hp_max": 100,
         "armor": 0,
-        "speed": 1,
+        "speed": 1.5,
         "damage": 12,
         "range": 1,
         "cooldown_sec": 0.9,
@@ -1214,6 +1286,7 @@
         "vision": 12,
         "upkeep_food": 0.18,
         "traits": {
+          "attack_vs_class": { "infantry": 0.35 },
           "ranged_reduction": 0.25
         },
         "charge": {
@@ -1270,8 +1343,8 @@
         "vision": 8,
         "upkeep_food": 0.14,
         "traits": {
-          "melee_reduction": 0.25,
-          "ranged_reduction": 0.25,
+          "melee_reduction": 0.3,
+          "ranged_reduction": 0.3,
           "knockback_immune": true
         }
       },
@@ -1407,6 +1480,7 @@
         "vision": 6,
         "upkeep_food": 0.08,
         "traits": {
+          "attack_vs_class": { "cavalry": 0.25 },
           "melee_reduction": 0.25
         }
       },
@@ -1469,18 +1543,18 @@
         "sprite_tint": "art",
         "class": "cavalry",
         "ranged": false,
-        "hp_max": 250,
-        "speed": 0.8,
-        "damage": 30,
+        "hp_max": 290,
+        "speed": 1.3,
+        "damage": 32,
         "range": 1,
         "cooldown_sec": 1.0,
         "radius_factor": 0.11,
         "vision": 8,
-        "armor": 4,
+        "armor": 6,
         "upkeep_food": 0.32,
         "traits": {
-          "attack_vs_class": { "cavalry": 0.5 },
-          "ranged_reduction": 0.5,
+          "attack_vs_class": { "cavalry": 0.25 },
+          "ranged_reduction": 0.55,
           "knockback_immune": true
         },
         "charge": {
@@ -1518,17 +1592,145 @@
           "knockback_immune": true,
           "ranged_reduction": 0.9
         }
+      },
+
+      "_lord_types_comment": [
+        "★★ 2026.11：**新将领 = 独立兵种对象**（用户口径：「将领应当是单独的单位，有独立的对象」，",
+        "  「只让新加的独立，后续要加新将领也独立，原有的 10 位不用」）。",
+        "  · 每个 `*_lord_*` 只被一位将领使用（unit.general.types[i] 指向它），",
+        "    数值 / 贴图 / 冲锋都写在**这一条**上。",
+        "    ★ 2026.11：将领的「能力」一律走**特性**（远程免伤、稳定、横扫、占领速度、招募折扣、",
+        "    冲锋加成都在 `unit.general_traits` 里，由 `unit.general.trait_ids[i]` 点名）；",
+        "    子刹的「攻击造成范围伤害 + 击退」现在由特性「横扫」(crushing_blow) 提供，",
+        "    不再写在这个兵种的 `splash_radius` / `knockback` 上（一名一效、且对旗下部队生效）。",
+        "  · 贴图按需求复用现有素材：王朝游侠 = 游侠（马弓手 png）、子刹 = 御林军骑兵、",
+        "    帝国骑手 = 骑手、阿吉诃德 = 冠军骑士。",
+        "  · 数值是**最终值**：`unit.general.hp_mult / armor_bonus / damage_mult` 已删除，",
+        "    游戏内显示 = 这里的数 = 单位编辑器里的数。",
+        "  · 王朝游侠的射程 = 3（与游侠一致，需求没给射程；远程骑兵必须有射程）。"
+      ],
+      "dy_lord_ranger": {
+        "name": "王朝游侠",
+        "icon": "侠",
+        "sprite": "res://assets/test_units/HorseArcher/horse_archer.png",
+        "sprite_tint": "art",
+        "class": "cavalry",
+        "ranged": true,
+        "hp_max": 180,
+        "armor": 1,
+        "speed": 0.7,
+        "damage": 16,
+        "range": 3,
+        "cooldown_sec": 1.2,
+        "radius_factor": 0.1,
+        "vision": 10,
+        "move_shoot": true,
+        "upkeep_food": 0.26,
+        "traits": {}
+      },
+      "dy_lord_zisha": {
+        "name": "子刹",
+        "icon": "刹",
+        "sprite": "res://assets/units/dy_royal_cavalry.png",
+        "sprite_tint": "art",
+        "class": "cavalry",
+        "ranged": false,
+        "hp_max": 1000,
+        "armor": 7,
+        "speed": 0.8,
+        "damage": 50,
+        "range": 1,
+        "cooldown_sec": 1,
+        "radius_factor": 0.115,
+        "vision": 12,
+        "upkeep_food": 0.28,
+        "traits": {},
+        "charge": {
+          "min_distance": 3.5,
+          "max_distance": 8.0,
+          "turn_max_deg": 35.0,
+          "speed_bonus": 0.15,
+          "damage_bonus": 0.4,
+          "knock_distance": 0.5,
+          "knock_stun_sec": 0.25,
+          "splash_radius": 1.0,
+          "splash_damage_ratio": 0.6,
+          "cooldown_sec": 7.0
+        }
+      },
+      "dg_lord_rider": {
+        "name": "帝国骑手",
+        "icon": "骑",
+        "sprite": "res://assets/test_units/Rider/rider.png",
+        "sprite_tint": "art",
+        "class": "cavalry",
+        "ranged": false,
+        "hp_max": 200,
+        "armor": 2,
+        "speed": 1.0,
+        "damage": 22,
+        "range": 1,
+        "cooldown_sec": 0.8,
+        "radius_factor": 0.105,
+        "vision": 12,
+        "upkeep_food": 0.18,
+        "traits": {},
+        "charge": {
+          "min_distance": 3.0,
+          "max_distance": 8.0,
+          "turn_max_deg": 40.0,
+          "speed_bonus": 0.2,
+          "damage_bonus": 0.35,
+          "knock_distance": 0.3,
+          "knock_stun_sec": 0.15,
+          "splash_radius": 0.0,
+          "splash_damage_ratio": 0.0,
+          "cooldown_sec": 6.0
+        }
+      },
+      "dg_lord_ajikede": {
+        "name": "阿吉诃德",
+        "icon": "阿",
+        "sprite": "res://assets/test_units/Knight/knight.png",
+        "sprite_tint": "art",
+        "class": "cavalry",
+        "ranged": false,
+        "hp_max": 350,
+        "armor": 5,
+        "speed": 0.8,
+        "damage": 30,
+        "range": 1,
+        "cooldown_sec": 1,
+        "radius_factor": 0.11,
+        "vision": 9,
+        "upkeep_food": 0.32,
+        "traits": {},
+        "charge": {
+          "min_distance": 2.5,
+          "max_distance": 8.0,
+          "turn_max_deg": 35.0,
+          "speed_bonus": 0.25,
+          "damage_bonus": 0.6,
+          "knock_distance": 0.45,
+          "knock_stun_sec": 0.25,
+          "splash_radius": 0.0,
+          "splash_damage_ratio": 0.0,
+          "cooldown_sec": 6.0
+        }
       }
     },
 
     "_general_comment": [
       "★★ 将领（本轮改写）：**将领不是一种兵种，而是「带类型的队长」**。",
       "  · types：将领**名册**的兵种（第 N 项 = 第 N 位将领的兵种）。",
-      "  ★★ 名册现在 **10 位**：",
+      "  ★★ 名册现在 **10 位**（可以用单位编辑器的「＋ 新建将领…」**在末尾追加**）：",
       "     · 下标 0-8 = 可招募的将领 #1-9（kind = general_1..general_9）；",
-      "       #1-3 = 1 阶、#4-6 = 2 阶、#7-9 = 3 阶（阶数写在 recruit.zone.list[].tier）；",
+      "       #1-3 = 1 阶、#4-6 = 2 阶、#7-9 = 3 阶；",
+      "       ★★ 2026.11.5：**阶现在写在 `tiers`**（见下面那一段），不在招募表里了。",
       "     · 下标 9 = **开局将领 #0**（kind = general_0，长枪兵型，名字「将领 0」），",
       "       不可招募、不在招募九宫格里；自由对战只给「有大本营的玩家阵营」各一位。",
+      "     · 下标 10 起 = 编辑器新加的将领（kind = general_11 / general_12 …，",
+      "       ⚠️ **没有 general_10**：第 10 档就是 general_0；新加的只进数值档，不进招募九宫格）。",
       "  · 数值不在这里：将领的血量 / 攻击 / 射程 / 速度**完全等于它所属类型那一套**",
       "    （用户确认「完全按对应兵种数值」）—— 长弓兵将领因此是远程的、",
       "    骑手将领跑得更快。将领与普通单位的差别只剩「描边更粗 + 它是队长」。",
@@ -1539,34 +1741,84 @@
         "spearman", "longbowman", "rider",
         "spearman", "longbowman", "rider",
         "spearman", "longbowman", "rider",
-        "spearman"
+        "spearman",
+        "dy_lord_ranger", "dy_lord_zisha", "dg_lord_rider", "dg_lord_ajikede"
+      ],
+
+      "_tiers_comment": [
+        "★★ 2026.11.5：**将领的阶**（`unit.general.tiers`，与 types 同序，0~3；0 = 零阶）。",
+        "  · 阶决定备战页右面板把它画在「零阶 / 一阶 / 二阶 / 三阶」哪一行，",
+        "    也决定「大本营升到几级才招得到」（区划招将的门槛 = 阶；0 阶不参与区划招募）。",
+        "  · 1-9 号沿用原来的 1 / 2 / 3 阶 —— 这个数原来写在 `recruit.zone.list[].tier` 里，",
+        "    ★★ 本轮搬到**这里**：一个数只有一处（招募表那 9 条里的 tier 已经删掉）。",
+        "  · 下标 9 = 开局将领 #0，恒为 **0 阶**；0 阶将领吃下面 `growth` 那一份大本营成长。",
+        "  · 缺项 / 越界 ⇒ 开局那一档按 0 阶、其余按 1 阶（老配置逐位一致）。",
+        "  · 编辑器：tools/unit_editor →「单位」页 → 选中将领 →「阶」。"
+      ],
+      "tiers": [1, 1, 1, 2, 2, 2, 3, 3, 3, 0, 1, 3, 1, 3],
+
+      "_factions_comment": [
+        "★★ 2026.11.5：**将领的派系归属**（`unit.general.factions`，与 types 同序）。",
+        "  · 每一项是一个 id 数组，取值来自 `clan.list[].id`（现在 native 原生 / dynasty 王朝 / empire 帝国）。",
+        "  · **一位将领可以同时属于多个派系**（写在数组里的都算）；空数组 = 哪个派系都不显示。",
+        "  · 运行时：备战页按右面板选中的派系过滤「将领」这一节（view/prepare_roster_list.gd）——",
+        "    只有勾了这个派系的将领才出现在那一页。「原生」目前没有按钮，所以**只勾原生的将领不上备战页**。",
+        "  · 没写 / 缺项 ⇒ **三派全算**（与「加这一栏之前」逐位一致：两派看到的是同一份）。",
+        "  · 编辑器：tools/unit_editor →「单位」页 → 选中将领 →「派系归属」（三派多选）。"
+      ],
+      "factions": [
+        ["native", "dynasty", "empire"],
+        ["native", "dynasty", "empire"],
+        ["native", "dynasty", "empire"],
+        ["native", "dynasty", "empire"],
+        ["native", "dynasty", "empire"],
+        ["native", "dynasty", "empire"],
+        ["native", "dynasty", "empire"],
+        ["native", "dynasty", "empire"],
+        ["native", "dynasty", "empire"],
+        ["native", "dynasty", "empire"],
+        ["dynasty"],
+        ["dynasty"],
+        ["empire"],
+        ["empire"]
       ],
 
       "_general_growth_comment": [
-      "★★ 2026.10.29：**将领比它的兵种更抗打**的三个旋钮（全局，对 10 位将领先生效再叠覆盖）。",
-      "  口径（三者都作用在「这一位将领的基准值」上；基准 = 它自己的 stats 覆盖，没写就跟随兵种）：",
-      "  · hp_mult      —— 血量上限 ×这个倍率（默认 1.5）。",
-      "    ★ 与兵种血量叠加：长枪兵 180 → 将领型长枪兵 270。",
-      "  · armor_bonus  —— **加成**护甲（默认 +1）。护甲是「每次受击先减固定值」，",
-      "    所以 +1 对低攻单位（长枪兵 11）相对更值钱，对投石车（46）几乎无感 —— 这是有意的。",
-      "  · damage_mult  —— 攻击 ×这个倍率（默认 1.0 = 保持绝对值）。",
-      "    ★ 兵种攻击这一版整体降了 ~25%，将领不降 ⇒ 将领**相对**更疼，符合「队长是精锐」。",
-      "  ⚠️ 只作用于 `is_general()` 的单位；普通兵只吃兵种表。",
-      "  ⚠️ 三个值都夹过（mult ≥ 0.1、bonus ≥ 0），写 0 不会让将领变纸片或无敌。"
+      "★★ 2026.11：**将领全局倍率已删除**（用户口径：「为什么系统会给将领血量x1.5、护甲+1，",
+      "  把这个多余的规则去掉，所有将领的属性都是单位编辑器和游戏内相同的」）。",
+      "  · 原来的 `hp_mult` / `armor_bonus` / `damage_mult` 三个键（以及 logic/config.gd、unit.gd",
+      "    里的三条计算路径）一起删掉；将领的血量 / 护甲 / 攻击**直接等于**它所属兵种（或 stats 覆盖）。",
+      "  · 0 阶将领的「大本营成长」不在此列 —— 那是明确需求，见下面的 `growth`。",
+      "  · 代价（预期内）：原有 10 位占位将领的实际强度下降（例如将领 #1 270 → 180 血、3 → 2 甲）。"
     ],
-    "hp_mult": 1.5,
-    "armor_bonus": 1.0,
-    "damage_mult": 1.0,
+    "_growth_comment": [
+      "★★ 2026.11.5：**0 阶将领的大本营成长**（占位数值 —— 调平衡只改这两个数）。",
+      "  · 只作用于 `tiers[i] == 0` 的将领（开局将领 #0，以及设计师在编辑器里新加 / 改成 0 阶的将领）；",
+      "    1~3 阶将领一点不吃。",
+      "  · 加成 = 每级值 × **当前大本营等级**（用户口径：1 级就给 —— 2 本 = 2 份，3 本 = 3 份）。",
+      "  · hp_max_per_level —— 血量上限 +N / 级（当前血量按**增量**同步加，不会把满血变成半血）；",
+      "    damage_per_level —— 攻击力 +N / 级。",
+      "  · 生效时机：开局 / 摆放 / 招募出来那一刻按当时等级算；**大本营升级完成时**当场重算",
+      "    （world.refresh_general_growth()），场上已有的 0 阶将领也一起涨。",
+      "  · 没有大本营（等级 0）⇒ 不加成（AI / 红点 / 大本营被拆掉的那一方）。",
+      "  · 编辑器：tools/unit_editor →「单位」页 → 选中 0 阶将领 →「成长（0 阶）」那一栏。",
+      "  ⚠️ 这是**占位**：以后要按阶数分档 / 换成长曲线，把这一块换成表即可，读法只有一处",
+      "     （logic/config.gd 的 general_growth_bonus）。"
+    ],
+    "growth": {
+      "hp_max_per_level": 30,
+      "damage_per_level": 3
+    },
     "_caps_comment": [
         "★★ 编制上限：**每位将领一个值**，与 types 同序（现在 10 项）。",
         "  · 语义 = 「这位将领的目标编队规模」：摆放的将领开局就生成到它，",
         "    阵地上 AI 脱战后也补到它；红点将领的附属兵数同样以它封顶。",
-        "  · 单位编辑器（tools/unit_editor）的「将领」页可改这 10 个数。",
+        "  · 单位编辑器（tools/unit_editor）的「将领」页可改这些数（加将领时自动补一项）。",
         "  · 读的地方只有一处：logic/config.gd 的 general_cap_at()（缺省 11）。",
         "  ⚠️ 界面右栏那个「x/11」目前仍是 view/ui_layout.gd 的常量 UNIT_CAP，",
         "     与这里的数**暂时**各自独立（本版没改界面显示）。"
       ],
-      "caps": [11, 11, 11, 11, 11, 11, 11, 11, 11, 11],
+      "caps": [11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11],
 
       "_stats_comment": [
         "★★ 将领的**数值覆盖**（本轮新增；editor：tools/unit_editor 的「单位」页 → 将领）。",
@@ -1582,6 +1834,7 @@
         "     两处都是**原有的**兜底，写在这里才会盖掉。",
         "  ★★ 下标 0-2 = #1-3（一阶）；3-5 = #4-6（二阶）；6-8 = #7-9（三阶）；",
         "     9 = #0 开局将领（名字「将领 0」，其余全部跟随长枪兵）。",
+        "     ★★ 2026.11.5 起编辑器还能在**末尾追加**将领（下标 10+），这里同样跟着变长。",
         "  ⚠️ 前 3 位保持 `{}`，名字沿用「将领 N」的旧兜底；#0 显式写 name。"
       ],
       "stats": [
@@ -1603,7 +1856,12 @@
         { "name": "将领 9", "hp_max": 150, "damage": 34, "range": 1, "cooldown_sec": 0.75,
           "speed": 1.5, "vision": 10 },
 
-        { "name": "将领 0" }
+        { "name": "将领 0" },
+
+        { "name": "王朝游侠" },
+        { "name": "子刹" },
+        { "name": "帝国骑手" },
+        { "name": "阿吉诃德" }
       ],
 
       "_recruit_sec_comment": [
@@ -1616,19 +1874,27 @@
         "  ⚠️ 单位条目里的 `train_sec` **已删除**：兵种自己不再有读条时间；",
         "     区划招将（recruit.zone.list[].train_sec）不受影响，那仍是「招这位将领」的读条。"
       ],
-      "recruit_sec": [10, 10, 10, 10, 10, 10, 10, 10, 10, 10],
+      "recruit_sec": [10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 8, 10, 10, 8],
 
       "_trait_ids_comment": [
-        "★★ 2026.11.3：**将领特性 = 在这里指定**（与 types / caps / recruit_sec 同序，10 项）。",
-        "  · 每一项是 `unit.general_traits` 里的一个 id；\"\" = 这位将领**没有**特性。",
-        "  · 由 tools/unit_editor 的「单位」页 → 选中将领 →「特性」下拉来改；",
-        "    特性本身（名字 / 效果 / 加条删条）在同页的「将领特性池」那一栏里编辑。",
-        "  · 缺项 / 越界 / 指向表里不存在的 id ⇒ 没有特性（logic/config.gd 的 general_trait_at）。",
-        "  · 生效范围：将领**本人 + 旗下所有单位**（附属兵出生时继承同一条光环，",
+        "★★ 2026.11：**每位将领可以带多条特性**（用户口径：「一个将领可以有多个特性」）。",
+        "  · 每一项是一个**数组**：`[]` = 这位将领没有特性；`[\"swift\", \"steadfast\"]` = 两条。",
+        "  · 数组里每个 id 必须是 `unit.general_traits` 的键；重复 / 不存在的 id 会被忽略（载入时去重）。",
+        "  · 兼容老配置：这一项直接写成字符串 `\"swift\"` 也认（= 只有一条），新写入一律用数组。",
+        "  · 由 tools/unit_editor 的「单位」页 → 选中将领 →「特性」那一段来改（可加可删）；",
+        "    特性本身（名字 / 效果）在同页的「将领特性池」那一栏里编辑。",
+        "  · 缺项 / 越界 / 指向表里不存在的 id ⇒ 那一条不算（logic/config.gd 的 general_traits_at）。",
+        "  · 生效范围：将领**本人 + 旗下所有单位**（附属兵出生时继承**全部**光环，",
         "    见 world.fill_general_retinue / _spawn_from_recruit）。",
         "  ★ 与 2026.10 停用的「随机抽词条」是两件事：那套随机代码还在，但已无调用点。"
       ],
-      "trait_ids": ["swift", "", "", "", "", "swift", "", "swift", "", ""],
+      "trait_ids": [
+        ["swift"], [], [], [], [], ["swift"], [], ["swift"], [], [],
+        ["ranged_guard", "formation_breaker"],
+        ["arrow_wall", "steadfast", "crushing_blow"],
+        ["capture_expert"],
+        ["call_to_arms", "new_knighthood"]
+      ],
       "_upkeep_override_comment": [
         "★★ 2026.11.4：将领的**持久消耗覆盖**（每秒吃粮）—— 稀疏对象，键 = 将领序号的字符串。",
         "  · 没写的序号 = **跟随所属兵种**（unit.types.<type>.upkeep_food，再往上是 unit.classes.<class>）；",
@@ -2400,8 +2666,10 @@
         "  （Q/W/E/A/S/D/Z/X/C），不再随机抽 3 张手牌。",
         "  ★★ 2026.11：一阶将领 200/200 → **160/160**（三本门槛降到 3 将之后，第 2、3 名将领必须够得着，",
         "    否则「3 将可升三本」是死条文：实测第 2 名将领原本要 240~470 秒才到）。二阶 / 三阶价格未动。",
-        "  · 阶数 tier：1-3 号 = 1 阶、4-6 号 = 2 阶、7-9 号 = 3 阶；",
-        "    只有**大本营等级 ≥ tier** 时才能招募（1 级 = 只开一阶）。",
+        "  · 阶数：1-3 号 = 1 阶、4-6 号 = 2 阶、7-9 号 = 3 阶；",
+        "    ★★ 2026.11.5：这个数**不在这一条里**了 —— 搬到 `unit.general.tiers`（与 types 同序），",
+        "      这样「阶」对「可招募的将领」与「编辑器新加的将领」是同一份数据（一个数只有一处）。",
+        "    只有**大本营等级 ≥ 阶** 时才能招募（1 级 = 只开一阶）。",
         "  · 唯一性：每位将领**每方只能拥有一次**；已拥有 / 已招募 / 永久阵亡后都不能再招。",
         "    取消队列里的那一单会释放名额（可以重新招）。",
         "  · 关卡开局摆放的 general_1..9 自动视为「已拥有」。",
@@ -2427,7 +2695,6 @@
       "list": [
         {
           "kind": "general_1",
-          "tier": 1,
           "label": "将领 1",
           "short": "将",
           "desc": "在本区划中心旁生成 1 名占位将领（长枪兵型，读条 10 秒，招募冷却 20 秒）",
@@ -2438,7 +2705,6 @@
         },
         {
           "kind": "general_2",
-          "tier": 1,
           "label": "将领 2",
           "short": "将",
           "desc": "在本区划中心旁生成 1 名占位将领（长弓兵型，读条 10 秒，招募冷却 20 秒）",
@@ -2449,7 +2715,6 @@
         },
         {
           "kind": "general_3",
-          "tier": 1,
           "label": "将领 3",
           "short": "将",
           "desc": "在本区划中心旁生成 1 名占位将领（骑手型，读条 10 秒，招募冷却 20 秒）",
@@ -2460,7 +2725,6 @@
         },
         {
           "kind": "general_4",
-          "tier": 2,
           "label": "将领 4",
           "short": "将",
           "desc": "在本区划中心旁生成 1 名占位将领（重装长枪兵型，读条 10 秒，招募冷却 25 秒）",
@@ -2471,7 +2735,6 @@
         },
         {
           "kind": "general_5",
-          "tier": 2,
           "label": "将领 5",
           "short": "将",
           "desc": "在本区划中心旁生成 1 名占位将领（精准长弓兵型，读条 10 秒，招募冷却 30 秒）",
@@ -2482,7 +2745,6 @@
         },
         {
           "kind": "general_6",
-          "tier": 2,
           "label": "将领 6",
           "short": "将",
           "desc": "在本区划中心旁生成 1 名占位将领（轻骑突袭型，读条 10 秒，招募冷却 30 秒）",
@@ -2493,7 +2755,6 @@
         },
         {
           "kind": "general_7",
-          "tier": 3,
           "label": "将领 7",
           "short": "将",
           "desc": "在本区划中心旁生成 1 名占位将领（重甲枪盾型，读条 10 秒，招募冷却 35 秒）",
@@ -2504,7 +2765,6 @@
         },
         {
           "kind": "general_8",
-          "tier": 3,
           "label": "将领 8",
           "short": "将",
           "desc": "在本区划中心旁生成 1 名占位将领（神射长弓型，读条 10 秒，招募冷却 40 秒）",
@@ -2515,7 +2775,6 @@
         },
         {
           "kind": "general_9",
-          "tier": 3,
           "label": "将领 9",
           "short": "将",
           "desc": "在本区划中心旁生成 1 名占位将领（重装突骑型，读条 10 秒，招募冷却 45 秒）",
@@ -2523,6 +2782,59 @@
           "population_cost": 1,
           "recruit_cooldown_sec": 45,
           "cost": { "food": 200, "gold": 200 }
+        }
+      ],
+
+      "_coop_list_comment": [
+        "★★ 2026.11：**合作模式专用招募表**（用户口径：新将领「不进当前对战模式和战役中的招募表」）。",
+        "  · 字段与 `list[]` 完全一样，但**只有合作模式**（start_coop_solo / start_coop_host / guest）",
+        "    会用：备战页选中哪些将领，合作里的九宫格就只列哪些；其中没有 `list[]` 条目的",
+        "    （就是这 4 位新将领）从这里取造价 / 人口 / 读条 / 冷却。",
+        "  · 对战 / 战役 / AI 的区划招募**完全不看这一张**（world.zone_recruit_list() 仍然只读 list）。",
+        "  · 阶不在条目里（`unit.general.tiers` 是唯一来源）；读条 = 在区划中心把这位将领本人招出来的秒数，",
+        "    与「招兵读条」（unit.general.recruit_sec）是两件事。",
+        "  · 新将领的独立兵种对象见 unit.types 的 dy_lord_* / dg_lord_*。"
+      ],
+      "coop_list": [
+        {
+          "kind": "general_11",
+          "label": "王朝游侠",
+          "short": "侠",
+          "desc": "在区划中心旁生成王朝游侠（远程骑兵）。★ 招募时间 8 秒 · 视野 10 · 远程免伤 25% · 对步兵伤害 +50%",
+          "train_sec": 10,
+          "population_cost": 1,
+          "recruit_cooldown_sec": 20,
+          "cost": { "food": 100, "gold": 100 }
+        },
+        {
+          "kind": "general_12",
+          "label": "子刹",
+          "short": "刹",
+          "desc": "在区划中心旁生子刹（近战骑兵）。★ 招募时间 10 秒 · 视野 12 · 远程免伤 50% · 稳定 · 攻击造成范围伤害和击退",
+          "train_sec": 10,
+          "population_cost": 1,
+          "recruit_cooldown_sec": 45,
+          "cost": { "food": 300, "gold": 300 }
+        },
+        {
+          "kind": "general_13",
+          "label": "帝国骑手",
+          "short": "骑",
+          "desc": "在区划中心旁生成帝国骑手（近战骑兵）。★ 招募时间 10 秒 · 视野 12 · 占领速度 +40%",
+          "train_sec": 10,
+          "population_cost": 1,
+          "recruit_cooldown_sec": 20,
+          "cost": { "food": 100, "gold": 100 }
+        },
+        {
+          "kind": "general_14",
+          "label": "阿吉诃德",
+          "short": "阿",
+          "desc": "在区划中心旁生成阿吉诃德（近战骑兵）。★ 招募时间 8 秒 · 视野 9 · 招募骑兵 -25% 资源 · 部队近战骑兵冲锋额外伤害 +100%",
+          "train_sec": 10,
+          "population_cost": 1,
+          "recruit_cooldown_sec": 45,
+          "cost": { "food": 250, "gold": 250 }
         }
       ]
     }
@@ -2696,7 +3008,7 @@
             "short": "斥",
             "desc": "在选中将领所在格的中心生成 1 名斥候（近战骑兵）。★ 高级单位：移动速度快（1.5 格/秒）、视野 +3 格；对步兵伤害 +35%、远程减伤 25%",
             "population_cost": 1,
-          "cost": { "food": 100, "gold": 0 }
+            "cost": { "food": 100, "gold": 30 }
           },
           {
             "kind": "grain_cart",
@@ -3422,6 +3734,12 @@
         "faction_text_size": 40,
         "faction_line_gap": 8,
         "default_faction": "empire",
+        "_deploy_comment": [
+          "★★ 2026.11：备战页「长按将领磁贴 = 设为出战」的阈值（秒）。",
+          "  按住时磁贴逐渐缩小，到这个时间后切换出战 + 反弹放大 + 倒三角出现。",
+          "  名额（零阶 1 / 一阶 3 / 二阶 3 / 三阶 3）是产品规则，写在 logic/loadout.gd 的 QUOTA，不在这里。"
+        ],
+        "deploy_hold_sec": 0.6,
         "art_fade_sec": 0.35,
         "section_generals": "将领——",
         "section_units": "单位——",

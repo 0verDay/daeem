@@ -24,6 +24,8 @@ const SfxRes = preload("res://view/sfx.gd")
 const FactionBtnRes = preload("res://view/prepare_faction_button.gd")
 const RosterListRes = preload("res://view/prepare_roster_list.gd")
 const DetailViewRes = preload("res://view/prepare_detail_view.gd")
+## ★★ 2026.11：出战配置（每派系 1 / 3 / 3 / 3 位；当前派系 = 合作模式扮演的派系）。
+const LoadoutRes = preload("res://logic/loadout.gd")
 
 ## 与设计稿一致：上 = 王朝，下 = 帝国。
 const FACTIONS := ["dynasty", "empire"]
@@ -126,6 +128,8 @@ func setup(p_cfg, p_font: Font) -> void:
 
 	var default_id := String(cfg.str_val("menu.deck.prepare.default_faction", "empire")) \
 		if cfg != null else "empire"
+	# ★★ 2026.11：默认勾满「现有将领」（零阶 1 + 每阶前 3）—— 不改任何东西时合作行为不变。
+	LoadoutRes.ensure_defaults(cfg)
 	set_faction(default_id, true)
 
 
@@ -177,6 +181,8 @@ func set_faction(faction_id: String, instant: bool = false) -> void:
 		faction_id = "empire"
 		idx = FACTIONS.find(faction_id)
 	_selected = faction_id
+	# ★★ 2026.11：当前选中的派系**就是**合作模式里扮演的派系（出战派系）。
+	LoadoutRes.set_faction(_selected)
 	for i in _factions.size():
 		_factions[i].set_selected(i == idx, instant)
 	# 右面板的三节内容跟着派系走（王朝 / 帝国各自的单位与科技；将领两派相同）。
@@ -199,6 +205,8 @@ func reset_scroll() -> void:
 func reset_selection() -> void:
 	if _roster != null:
 		_roster.clear_selection()
+		# ★★ 2026.11：倒三角是「出战配置」的状态，不是临时选中 —— 只刷新，不清掉。
+		_roster.refresh_deploy_marks()
 	if _detail != null:
 		_detail.clear()
 

@@ -25,6 +25,10 @@ const T_JOIN_ROOM := "join_room"
 const T_ROOM_STATE := "room_state"
 const T_READY := "ready"
 const T_ROOM_CFG := "room_cfg"
+## ★★ 2026.11：客机把自己的**出战配置**（派系 + 将领）发给房主。
+##   中继不解析 body、原样转发（见 server/daeem_relay.py 的 _forward）；
+##   老房主收到不认识的消息类型会忽略（lobby._on_message 的 `_` 分支），不会崩。
+const T_LOADOUT := "loadout"
 const T_START := "start"
 const T_CMD := "cmd"
 const T_SNAP := "snap"

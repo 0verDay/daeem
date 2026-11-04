@@ -14,6 +14,8 @@ signal connected
 signal room_state_changed(state: Dictionary)
 ## 房主选好地图之后发给客机；客机收到后刷新房间面板。
 signal room_config_changed(config: Dictionary)
+## ★★ 2026.11：客机发来的出战配置（房主用它给客机那个席位选派系 / 开局将领）。
+signal loadout_received(payload: Dictionary)
 signal guest_started(payload: Dictionary, transport)
 signal error(code: String, msg: String)
 signal closed(reason: String)
@@ -73,6 +75,14 @@ func ready(value: bool = true) -> void:
 ## ★ 中继不解析 body，原样转发；客机只读。
 func send_room_config(config: Dictionary) -> void:
 	_send(ProtocolRes.T_ROOM_CFG, config.duplicate(true))
+
+
+## ★★ 2026.11：客机把自己的出战配置发给房主（`{clan, starter, pool}`）。
+##   ★ 只允许客机发：房主自己的配置在本机就够用了，不需要走网络。
+func send_loadout(payload: Dictionary) -> void:
+	if my_role != "guest":
+		return
+	_send(ProtocolRes.T_LOADOUT, payload.duplicate(true))
 
 
 ## 退出房间：先发 bye 让中继清理，再关掉 transport（房主退出 = 解散房间）。
@@ -160,6 +170,8 @@ func _on_message(text: String) -> void:
 			room_state_changed.emit(room)
 		"room_cfg":
 			room_config_changed.emit(body.duplicate(true))
+		"loadout":
+			loadout_received.emit(body.duplicate(true))
 		"start":
 			# Guest: the host is starting; hand the live transport to the game scene.
 			var t2 = take_transport()

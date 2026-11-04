@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -243,6 +244,43 @@ GENERAL_RECRUIT_FIELD = Field("recruit_sec", "招兵读条", "float",
                               "这位将领招兵时「整批」读条几秒（与队列长短 / 兵种无关；"
                               "默认 10，清空 = 回到默认）", minimum=0.01)
 
+#: ★★ 2026.11.5：**将领的阶**（`unit.general.tiers[index]`，0~3）。
+#:   · 阶 = 备战页分组的行 + 「大本营升到几级才招得到」（0 阶不参与区划招募）；
+#:   · 0 阶将领吃 `unit.general.growth` 那一份**大本营成长**（见 GENERAL_GROWTH_FIELDS）；
+#:   · 这个数以前写在 `recruit.zone.list[].tier` 里，本轮搬到 unit.general.tiers
+#:     （一个数只有一处；新加的将领不在招募表里，也就只有这里能记阶）。
+GENERAL_START_INDEX = 9                 # 名册第 10 档 = 开局将领 #0（kind = general_0）
+GENERAL_TIER_DEFAULT = 1
+GENERAL_TIER_CHOICES: Tuple[Tuple[str, str], ...] = (
+    ("0", "零阶"), ("1", "一阶"), ("2", "二阶"), ("3", "三阶"),
+)
+GENERAL_TIER_FIELD = Field(
+    "tier", "阶", "choice",
+    "备战页的分组 + 招将门槛；**0 阶**会吃下面「成长（0 阶）」那一份大本营加成",
+    choices=GENERAL_TIER_CHOICES)
+
+#: ★★ 2026.11.5：**将领的派系归属**（`unit.general.factions[index]`）——
+#: 一位将领可以同时属于多个派系。选项来自 config 的 `clan.list`（现在原生 / 王朝 / 帝国）。
+#: ★ 只勾「原生」的将领**不会**出现在备战页：右面板只有王朝 / 帝国两枚按钮。
+GENERAL_FACTION_FIELD = Field(
+    "factions", "派系归属", "text",
+    "可以多选：备战页按选中的派系过滤将领；「原生」没有按钮 ⇒ 只勾原生的将领不上备战页")
+
+#: 配置里**没有** `clan.list` 时的派系兜底（与 data/config.json 的三派同名）。
+#: ★ 只在「这份配置根本没有派系表」时用 —— 正常配置一律读 `clan.list`。
+GENERAL_FACTION_DEFAULT_IDS: Tuple[str, ...] = ("native", "dynasty", "empire")
+
+#: ★★ 2026.11.5：**0 阶将领的大本营成长**（`unit.general.growth`）。
+#: 数值是「每级加多少」，加成 = 每级值 × 当前大本营等级（1 级就给）。
+#: ★ 这是**全局一份**（所有 0 阶将领共享），不是逐位将领的字段 ——
+#:   所以它在任何一位 0 阶将领的表单里都能改，改的是同一个键。
+GENERAL_GROWTH_FIELDS: Tuple[Field, ...] = (
+    Field("hp_max_per_level", "血量 / 级", "float",
+          "大本营每升 1 级给 0 阶将领加多少**血量上限**（占位：30）", minimum=0),
+    Field("damage_per_level", "攻击力 / 级", "float",
+          "大本营每升 1 级给 0 阶将领加多少**攻击力**（占位：3）", minimum=0),
+)
+
 #: 将领的数值覆盖（`unit.general.stats[i]`；没写的键 = 跟随所属兵种）
 GENERAL_STAT_FIELDS: Tuple[Field, ...] = (
     Field("hp_max", "血量", "float", minimum=1),
@@ -271,7 +309,22 @@ GENERAL_TRAIT_FIELDS: Tuple[Field, ...] = (
     Field("ranged_reduction", "远程减伤", "float",
           "受到远程伤害时少受的比例（0.25 = 25%）；清空 = 没有这一条",
           minimum=0.0, maximum=1.0),
+    # ★★ 2026.11：新将领的三条「只给合作模式将领用」的效果。
+    Field("capture_speed_bonus", "占领速度加成", "float",
+          "占领速度 +比例（0.4 = 读条快 40%）；只在这个光环的单位站在区划中心邻域时生效",
+          minimum=0.0, maximum=10.0),
+    Field("recruit_cavalry_discount", "招募骑兵折扣", "float",
+          "用这位将领当兵营招募**骑兵**单位时的资源折扣（0.25 = -25%；夹 0~1）",
+          minimum=0.0, maximum=1.0),
+    Field("charge_damage_bonus", "近战骑兵冲锋加成", "float",
+          "部队里的**近战骑兵**冲锋额外伤害 +比例（1.0 = +100%）",
+          minimum=0.0, maximum=10.0),
 )
+
+#: 将领特性里的**开关**（写 `true` / 不写）。
+GENERAL_TRAIT_KNOCKBACK = Field(
+    "knockback_immune", "稳定（免疫击退）", "bool",
+    "光环里的单位免疫击退 + 眩晕（子刹用这一条）")
 
 #: 将领特性里「对某大类伤害 +x%」那一张表的键 / 新加一行时的缺省比例。
 GENERAL_TRAIT_ATTACK_KEY = "attack_vs_class"
@@ -283,12 +336,6 @@ GENERAL_TRAIT_TEXT_FIELDS: Tuple[Field, ...] = (
     Field("short", "短名", "text", "信息栏格子里那一个字；留空 = 名字的第一个字"),
     Field("desc", "说明", "text", "悬停正文里的那一句"),
 )
-
-#: 将领「指定哪一条特性」：键是 `unit.general.trait_ids[index]`（`""` = 无）。
-#: 下拉选项由 `ConfigModel.general_trait_choices()` 现算（池里加了新特性它自动出现）。
-GENERAL_TRAIT_PICK_FIELD = Field(
-    "trait", "特性", "choice",
-    "这位将领的部队光环：对**本人 + 旗下所有单位**生效；「无」= 不给这位将领特性")
 
 #: 建筑（`building.<type>`）
 BUILDING_FIELDS: Tuple[Field, ...] = (
@@ -601,6 +648,14 @@ class GeneralTrait:
         self.attack_speed_bonus = _f(row.get("attack_speed_bonus"), 0.0)
         self.melee_reduction = _f(row.get("melee_reduction"), 0.0)
         self.ranged_reduction = _f(row.get("ranged_reduction"), 0.0)
+        # ★★ 2026.11：稳定 + 三条新效果（键不存在 = 没有）。
+        self.knockback_immune = bool(row.get("knockback_immune", False))
+        self.capture_speed_bonus = _f(row.get("capture_speed_bonus"), 0.0)
+        self.recruit_cavalry_discount = _f(row.get("recruit_cavalry_discount"), 0.0)
+        self.charge_damage_bonus = _f(row.get("charge_damage_bonus"), 0.0)
+        #: ★★ 2026.11：横扫（攻击附带范围伤害 + 击退），形状 `{radius, knockback, stun_sec}`。
+        self.melee_splash = dict(row.get("melee_splash")) \
+            if isinstance(row.get("melee_splash"), dict) else {}
         _av = row.get(GENERAL_TRAIT_ATTACK_KEY)
         self.attack_vs_class: Dict[str, float] = (
             {str(k): _f(v) for k, v in _av.items()} if isinstance(_av, dict) else {})
@@ -639,6 +694,16 @@ class GeneralTrait:
             parts.append("近战减伤 %s" % fmt_percent(self.melee_reduction))
         if self.ranged_reduction:
             parts.append("远程减伤 %s" % fmt_percent(self.ranged_reduction))
+        if self.knockback_immune:
+            parts.append("稳定")
+        if self.capture_speed_bonus:
+            parts.append("占领速度 +%s" % fmt_percent(self.capture_speed_bonus))
+        if self.recruit_cavalry_discount:
+            parts.append("招募骑兵 -%s" % fmt_percent(self.recruit_cavalry_discount))
+        if self.charge_damage_bonus:
+            parts.append("近战骑兵冲锋 +%s" % fmt_percent(self.charge_damage_bonus))
+        if self.melee_splash:
+            parts.append("范围伤害 %s 格 + 击退" % fmt_number(self.melee_splash.get("radius", 0.0)))
         for cls, ratio, cname in self.attack_rows(names):
             parts.append("对%s %s" % (cname, fmt_percent(ratio)))
         return " / ".join(parts) if parts else "（没有效果）"
@@ -654,17 +719,28 @@ class General:
                  recruit: Optional[Dict[str, Any]], defaults: Dict[str, Any],
                  cap: int = GENERAL_CAP_DEFAULT,
                  recruit_sec: float = GENERAL_RECRUIT_DEFAULT,
-                 trait_id: str = "",
+                 trait_ids: Optional[Sequence[str]] = None,
                  upkeep_override: Optional[float] = None,
-                 inherited_upkeep: float = 0.0) -> None:
+                 inherited_upkeep: float = 0.0,
+                 tier: int = GENERAL_TIER_DEFAULT,
+                 factions: Optional[Sequence[str]] = None,
+                 coop_recruit: bool = False) -> None:
         self.index = index
         self.kind = kind
         self.type_id = type_id
         self.override = dict(override)
-        #: ★★ 这位将领指定的**将领特性 id**（`unit.general.trait_ids[index]`，2026.11.3）。
-        #: `""` = 没有特性。游戏侧由 `world.create_general()` 交给 `set_general_trait()`，
-        #: 旗下附属兵出生时继承同一条光环（`inherit_general_aura`）。
-        self.trait_id = trait_id
+        #: ★★ 2026.11.5：这位将领的**阶**（`unit.general.tiers[index]`，0~3）。
+        #: 0 阶 = 吃大本营成长（血量 / 攻击随局内大本营等级涨），也是备战页的「零阶」那一行。
+        self.tier = max(0, min(3, int(tier)))
+        #: ★★ 2026.11.5：**派系归属**（`unit.general.factions[index]`，可多个）。
+        #: 顺序按 config 的 `clan.list`；空列表 = 哪个派系都不显示（设计师的明确选择）。
+        self.factions: List[str] = list(factions or [])
+        #: ★★ 2026.11：这位将领带的**全部**将领特性 id（`unit.general.trait_ids[index]`）。
+        #: 空列表 = 没有特性。游戏侧由 `world.create_general()` 交给 `set_general_traits()`，
+        #: 旗下附属兵出生时继承**全部**光环（`inherit_general_aura`）。
+        self.trait_ids: List[str] = list(trait_ids or [])
+        #: 第一条的兼容字段（老代码 / 老测试读它；多特性的完整列表看 `trait_ids`）。
+        self.trait_id = self.trait_ids[0] if self.trait_ids else ""
         #: ★★ 这位将领自己的**持久消耗覆盖**（`unit.general.upkeep_override[<index>]`，
         #: 2026.11.4）：粮/秒。None = 跟随所属兵种（与 hp / armor 那套「不写就跟随」同语义）。
         self.upkeep_override = upkeep_override
@@ -679,6 +755,9 @@ class General:
         rec = recruit or {}
         cost = rec.get("cost") if isinstance(rec.get("cost"), dict) else {}
         self.has_recruit = recruit is not None
+        #: ★★ 2026.11：这条招募条目来自 `recruit.zone.coop_list`（**合作模式专用**），
+        #:   还是常规的 `recruit.zone.list`。新将领不进对战 / 战役的招募表。
+        self.coop_recruit = bool(coop_recruit)
         self.name = _s(self.override.get("name"), _s(rec.get("label"), "将领 %d" % (index + 1)))
         self.label = _s(rec.get("label"), self.name)
         self.cost_food = _f(cost.get("food"), 0.0)
@@ -1435,15 +1514,35 @@ class ConfigModel:
         return len(types) if isinstance(types, list) else 0
 
     def _general_kind(self, index: int) -> str:
-        """第 index 位将领在**招募卡**里的 kind（`general_1` / `general_2` / `general_3`）。
+        """第 index 位将领在**招募卡**里的 kind（`general_1` / `general_2` / …）。
 
-        ⚠️ 开局那三位在游戏里 kind 都是 `general`（见 world.create_generals），
-           而区划招募出来的是 `general_1/2/3`；两边**共用同一个数值槽位**
-           （config.gd 的 general_index_of 把 `general` 与 `general_N` 都映射到同一个序号，
-           见 unit.general._stats_comment）。招募卡那三条才是设计师看得见的名字，
-           所以这里按它取。
+        ★★ 2026.11.5：名册的下标与 kind 的对应关系现在**两种**：
+          · 下标 9（`GENERAL_START_INDEX`）= 开局将领 #0 → kind `general_0`；
+          · 其余下标 N → kind `general_<N+1>`。
+        于是编辑器在末尾「加将领」得到的下标 10/11… 对应 `general_11` / `general_12` ——
+        **`general_10` 这个 kind 永远不存在**（第 10 档已经叫 `general_0` 了）。
+        这与运行时 `ConfigRes.general_index_of()` 是同一套映射（那边是静态函数）。
         """
+        if index == GENERAL_START_INDEX:
+            return "general_0"
         return "general_%d" % (index + 1)
+
+    def _general_recruit_slot(self, kind: str) -> Tuple[Tuple[str, ...], int]:
+        """第 `kind` 位将领的招募条目在哪张表、第几条。
+
+        ★★ 2026.11：两张表 **`recruit.zone.list`（对战 / 战役）** 与
+        **`recruit.zone.coop_list`（合作专用）**。先查常规表，再查合作表；
+        都没有 → `((), -1)`。`general()` 与 `set_general()` 共用这一处，
+        免得「读的是 A 表、写的是 B 表」。
+        """
+        for table in (("recruit", "zone", "list"), ("recruit", "zone", "coop_list")):
+            rows = self.doc.value(list(table), [])
+            if not isinstance(rows, list):
+                continue
+            for i, row in enumerate(rows):
+                if isinstance(row, dict) and _s(row.get("kind")) == kind:
+                    return table, i
+        return (), -1
 
     def general(self, index: int) -> General:
         types = self.doc.value(["unit", "general", "types"], [])
@@ -1455,12 +1554,13 @@ class ConfigModel:
             and isinstance(stats[index], dict) else {}
         kind = self._general_kind(index)
         recruit = None
-        rows = self.doc.value(["recruit", "zone", "list"], [])
-        if isinstance(rows, list):
-            for row in rows:
-                if isinstance(row, dict) and _s(row.get("kind")) == kind:
-                    recruit = row
-                    break
+        recruit_path: Tuple[str, ...] = ()
+        table, ridx = self._general_recruit_slot(kind)
+        if ridx >= 0:
+            rows = self.doc.value(list(table), [])
+            recruit = rows[ridx]
+            recruit_path = table
+        coop_recruit = bool(recruit_path) and recruit_path[-1] == "coop_list"
         defaults: Dict[str, Any] = {}
         if self.doc.has(["unit", "types", type_id]):
             u = self.unit(type_id)
@@ -1496,10 +1596,232 @@ class ConfigModel:
         if self.doc.has(["unit", "types", type_id]):
             inherited_upkeep = self.unit(type_id).upkeep_effective
         return General(index, kind, type_id, override, recruit, defaults, cap, recruit_sec,
-                       self.general_trait_at(index), uph, inherited_upkeep)
+                       self.general_traits_at(index), uph, inherited_upkeep,
+                       self.general_tier(index), self.general_factions(index),
+                       coop_recruit)
 
     def generals(self) -> List[General]:
         return [self.general(i) for i in range(self.general_count())]
+
+    # ------------------------------------------------------------------
+    # 将领的阶 / 派系归属 / 大本营成长（2026.11.5）
+    # ------------------------------------------------------------------
+
+    def general_tier(self, index: int) -> int:
+        """第 index 位将领的**阶**（`unit.general.tiers[index]`，0~3）。
+
+        ★ 口径与游戏侧 `config.general_tier_at()` **逐条一致**：
+          1. `unit.general.tiers[index]` 有数字 → 用它；
+          2. 没写这一栏 → 退回老的 `recruit.zone.list[].tier`（兼容老配置）；
+          3. 都没有 → 开局那一档（下标 9）是 0，其余是 1。
+        """
+        tiers = self.doc.value(["unit", "general", "tiers"], [])
+        if isinstance(tiers, list) and 0 <= index < len(tiers) \
+                and isinstance(tiers[index], (int, float)) and not isinstance(tiers[index], bool):
+            return max(0, min(3, int(tiers[index])))
+        kind = self._general_kind(index)
+        rows = self.doc.value(["recruit", "zone", "list"], [])
+        if isinstance(rows, list):
+            for row in rows:
+                if isinstance(row, dict) and _s(row.get("kind")) == kind:
+                    v = row.get("tier")
+                    if isinstance(v, (int, float)) and not isinstance(v, bool):
+                        return max(0, min(3, int(v)))
+        return 0 if index == GENERAL_START_INDEX else GENERAL_TIER_DEFAULT
+
+    def set_general_tier(self, index: int, tier: Any) -> None:
+        """改第 index 位将领的**阶**（写 `unit.general.tiers[index]`，夹到 0~3）。
+
+        ★ 只写这一个键：招募表里那份旧的 `tier` 已经删掉了（一个数只有一处），
+          所以「阶」对「可招募将领」与「编辑器新加的将领」是同一份数据。
+        """
+        self._check_general_index(index)
+        value = 0 if tier is None else int(tier)
+        value = max(0, min(3, value))
+        self._ensure_general_array("tiers", lambda i: self.general_tier(i))
+        self.doc.set(["unit", "general", "tiers", index], value)
+
+    def general_faction_ids(self) -> List[str]:
+        """`clan.list` 里的全部派系 id（**声明顺序**；没有 clan 段时退回三派常量）。"""
+        ids: List[str] = []
+        rows = self.doc.value(["clan", "list"], [])
+        if isinstance(rows, list):
+            for row in rows:
+                if isinstance(row, dict):
+                    cid = _s(row.get("id"))
+                    if cid and cid not in ids:
+                        ids.append(cid)
+        return ids or list(GENERAL_FACTION_DEFAULT_IDS)
+
+    def faction_choices(self) -> List[Tuple[str, str]]:
+        """派系复选框的选项：`(id, 名字)`（名字来自 `clan.list[].name`）。"""
+        out: List[Tuple[str, str]] = []
+        names: Dict[str, str] = {}
+        rows = self.doc.value(["clan", "list"], [])
+        if isinstance(rows, list):
+            for row in rows:
+                if isinstance(row, dict):
+                    cid = _s(row.get("id"))
+                    if cid:
+                        names[cid] = _s(row.get("name"), cid)
+        for cid in self.general_faction_ids():
+            out.append((cid, names.get(cid, cid)))
+        return out
+
+    def general_factions(self, index: int) -> List[str]:
+        """第 index 位将领的**派系归属**（`unit.general.factions[index]`）。
+
+        ★ 口径与游戏侧 `config.general_factions_at()` 一致：
+          · 这一项**没写** ⇒ 返回**全部派系**（= 哪个派系都显示它，老配置行为不变）；
+          · 写了（哪怕是 `[]`）⇒ 就是写的那几个（`[]` = 哪个派系都不显示）。
+        """
+        all_ids = self.general_faction_ids()
+        arr = self.doc.value(["unit", "general", "factions"], None)
+        if not isinstance(arr, list) or not (0 <= index < len(arr)):
+            return list(all_ids)
+        raw = arr[index]
+        ids: List[str] = []
+        if isinstance(raw, list):
+            ids = [_s(v) for v in raw if isinstance(v, str) and _s(v) != ""]
+        elif isinstance(raw, str) and raw != "":
+            ids = [raw]
+        else:
+            return []                                   # 显式写了空 = 哪个派系都不显示
+        # 未知 id（派系被删 / 拼错）在这里过滤掉，免得界面出现一个查不到的勾。
+        return [cid for cid in ids if cid in all_ids]
+
+    def set_general_faction(self, index: int, cid: str, on: bool) -> None:
+        """勾 / 取消一个派系归属（写 `unit.general.factions[index]`，**保持顺序**）。"""
+        self._check_general_index(index)
+        if cid not in self.general_faction_ids():
+            raise ModelError("没有这个派系：%s" % cid)
+        ids = self.general_factions(index)
+        if on and cid not in ids:
+            ids.append(cid)
+        elif not on and cid in ids:
+            ids.remove(cid)
+        else:
+            return
+        self._ensure_general_array("factions", lambda i: self.general_factions(i))
+        # ★ 顺序按 `clan.list` 的声明顺序写回：勾选顺序不影响文件（免得撤销 / 重做 diff 抖动）。
+        order = {c: i for i, c in enumerate(self.general_faction_ids())}
+        ids.sort(key=lambda c: order.get(c, 999))
+        self.doc.set(["unit", "general", "factions", index], list(ids))
+
+    def add_general(self, name: str, type_id: str, tier: int = 0) -> int:
+        """★ 2026.11.5：**在名册末尾加一位将领**（`unit.general.*` 每张同序表一起变长）。
+
+        @return 新将领的名册下标（0 起）
+
+        口径（用户拍板：「只加数值档，不进招募九宫格」）：
+          · 只在 `unit.general.*` 那几张表里追加，**不动** `recruit.zone.list`
+            ⇒ 这位将领不会被区划招募出来；它由关卡摆放 / 开局获得；
+          · 类型 / 名字 / 阶由对话框给；编制上限 / 招兵读条 / 特性 / 成长按缺省补；
+          · 派系归属默认**全部派系**（与「没写这一项」等价，改名 / 改归属在侧栏里做）。
+
+        ★★ 2026.11（用户口径：「将领应当是单独的单位，有独立的对象……后续要加新将领也独立」）：
+          `type_id` 现在是**模板**——会先复制出一条**只属于这位将领**的新兵种
+          （id = `<模板>_lord_<序号>`，名字 / 图标取将领的名字），再让 `unit.general.types`
+          指向它。之后改这位将领的数值 = 改它自己的兵种，不会连带改到模板 / 别的将领。
+
+        ★ 为什么必须「先把每张表补齐、再一起追加」：这几张表是**按下标对齐**的，
+          少补一张就会出现「第 11 位将领读到了别的东西」——那是最难查的一类 bug。
+        """
+        name = (name or "").strip()
+        if not name:
+            raise ModelError("将领名字不能空着")
+        if not self.doc.has(["unit", "types", type_id]):
+            raise ModelError("没有这个单位类型：%s" % type_id)
+        idx = self.general_count()
+        if idx <= GENERAL_START_INDEX:
+            # 名册不足 10 档时「追加」会占掉开局将领 #0 的位置（下标 9）——先修 types。
+            raise ModelError("名册只有 %d 档（至少要 %d 档：0-8 可招募 + 第 10 档开局将领），"
+                             "先把 unit.general.types 补全" % (idx, GENERAL_START_INDEX + 1))
+        # ① 现有各表补齐到「当前将领数」，保证追加后仍是同长的
+        self._ensure_general_slot(idx - 1)
+        self._ensure_caps_slot(idx - 1)
+        self._ensure_recruit_sec_slot(idx - 1)
+        self._ensure_trait_ids_slot(idx - 1)
+        self._ensure_general_array("tiers", lambda i: self.general_tier(i))
+        self._ensure_general_array("factions", lambda i: self.general_factions(i))
+        # ①.5 ★★ 复制出一条「只属于这位将领」的兵种（独立对象）
+        own_type = self._clone_lord_type(type_id, name, idx + 1)
+        # ② 七张同序表各追加一项
+        self.doc.append(["unit", "general", "types"], own_type)
+        self.doc.append(["unit", "general", "stats"], {"name": name})
+        self.doc.append(["unit", "general", "caps"], GENERAL_CAP_DEFAULT)
+        self.doc.append(["unit", "general", "recruit_sec"], GENERAL_RECRUIT_DEFAULT)
+        self.doc.append(["unit", "general", "trait_ids"], [])
+        self.doc.append(["unit", "general", "tiers"], max(0, min(3, int(tier))))
+        self.doc.append(["unit", "general", "factions"], list(self.general_faction_ids()))
+        return idx
+
+    def _clone_lord_type(self, template_id: str, name: str, ordinal: int) -> str:
+        """复制一条**只属于某位将领**的兵种（`unit.types.<新 id>`），返回新 id。
+
+        ★★ 2026.11 用户口径：「将领应当是单独的单位，有独立的对象；后续要加新将领也独立」。
+          · 复制模板的**全部**字段（贴图 / 大类 / 远近 / 血量 / 攻击 / 特性 / 冲锋…）；
+          · 名字 = 将领名，图标 = 名字首字（没写时会跟着名字走，也就不用手填了）；
+          · id = `<模板>_lord_<序号>`，撞了就往后加数字 —— 序号只增不减，稳定可读。
+        """
+        src = self.doc.value(["unit", "types", template_id], None)
+        if not isinstance(src, dict):
+            raise ModelError("没有这个单位类型：%s" % template_id)
+        row = json.loads(json.dumps(src, ensure_ascii=False))
+        row["name"] = name
+        row["icon"] = name[:1]
+        base = "%s_lord" % template_id
+        cand = "%s_%d" % (base, ordinal)
+        n = ordinal
+        while self.doc.has(["unit", "types", cand]):
+            n += 1
+            cand = "%s_%d" % (base, n)
+        self.doc.set(["unit", "types", cand], row)
+        return cand
+
+    def general_growth(self) -> Dict[str, float]:
+        """**0 阶将领的大本营成长**（`unit.general.growth`，全局一份）。
+
+        ★ 缺省 0：老配置 / 测试配置不会静默变强（与游戏侧 `num(...)` 的兜底一致）。
+        """
+        row = self.doc.value(["unit", "general", "growth"], {})
+        row = row if isinstance(row, dict) else {}
+        return {
+            "hp_max_per_level": _f(row.get("hp_max_per_level"), 0.0),
+            "damage_per_level": _f(row.get("damage_per_level"), 0.0),
+        }
+
+    def set_general_growth(self, key: str, value: Any) -> None:
+        """改 0 阶成长的一个键（`unit.general.growth.<key>`，夹 ≥ 0）。"""
+        keys = [f.key for f in GENERAL_GROWTH_FIELDS]
+        if key not in keys:
+            raise ModelError("不认识的将领成长字段：%s" % key)
+        v = max(0.0, _f(value, 0.0))
+        if not self.doc.has(["unit", "general", "growth"]):
+            self.doc.set(["unit", "general", "growth"], {})
+        self.doc.set(["unit", "general", "growth", key], v)
+
+    def _ensure_general_array(self, key: str, default_of) -> None:
+        """保证 `unit.general.<key>` 是一个**补到将领个数**的数组。
+
+        @param default_of `default_of(i) -> 第 i 项的缺省值`
+          （`tiers` 用「现在读到的那一阶」，`factions` 用「现在读到的那些派系」）
+        ★ 只在缺项时补：已经写了的那几项一个都不动（老配置保存后的 diff 只有新项）。
+        ★ 缺省值必须在**写数组之前**算好：`default_of()` 读的就是这个路径，
+          先 set 一个空数组再逐项问「缺省是什么」会读到刚写进去的空壳。
+        """
+        path: JsonPath = ["unit", "general", key]
+        count = self.general_count()
+        cur = self.doc.value(path, None)
+        if not isinstance(cur, list):
+            cur = []
+        if len(cur) >= count:
+            return
+        if not isinstance(self.doc.value(path, None), list):
+            self.doc.set(path, [default_of(i) for i in range(count)])
+            return
+        for i in range(len(cur), count):
+            self.doc.append(path, default_of(i))
 
     def set_general_type(self, index: int, type_id: str) -> None:
         self._check_general_index(index)
@@ -1508,10 +1830,13 @@ class ConfigModel:
         self.doc.set(["unit", "general", "types", index], type_id)
 
     def _check_general_index(self, index: int) -> None:
-        """将领的**个数**由 unit.general.types 定（开局三位），编辑器不增删将领。
+        """将领的**个数**由 unit.general.types 定。
 
-        ⚠️ 所以越界的序号必须当场拒掉：`_ensure_general_slot` 会「顺手补一条」，
-           不拦的话 `set_general(9, ...)` 会真的写出第 10 条覆盖记录，
+        ★★ 2026.11.5：编辑器现在**能加将领**（`add_general`，只追加在末尾），
+           但**不能删 / 不能插队**：删掉中间一位会让后面所有将领的序号前移，
+           而存档 / 关卡 JSON / 招募表都按序号引用它们（那是不可逆的数据损坏）。
+        ⚠️ 越界的序号必须当场拒掉：`_ensure_general_slot` 会「顺手补一条」，
+           不拦的话 `set_general(99, ...)` 会真的写出第 100 条覆盖记录，
            而游戏只读 types 那么多个 —— 数据里躺着一份谁也读不到的东西。
         """
         if not 0 <= index < self.general_count():
@@ -1522,13 +1847,7 @@ class ConfigModel:
         self._check_general_index(index)
         kind = self._general_kind(index)
         self._ensure_general_slot(index)
-        rows = self.doc.value(["recruit", "zone", "list"], [])
-        ridx = -1
-        if isinstance(rows, list):
-            for i, row in enumerate(rows):
-                if isinstance(row, dict) and _s(row.get("kind")) == kind:
-                    ridx = i
-                    break
+        table, ridx = self._general_recruit_slot(kind)
         if field == "cap":
             # ★★ 编制上限：写 `unit.general.caps[index]`（≥ 1）。
             self._ensure_caps_slot(index)
@@ -1547,19 +1866,19 @@ class ConfigModel:
         if field == "name":
             self.doc.set(["unit", "general", "stats", index, "name"], value)
             if ridx >= 0:
-                self.doc.set(["recruit", "zone", "list", ridx, "label"], value)
+                self.doc.set(list(table) + [ridx, "label"], value)
             return
         if field in ("cost_food", "cost_gold", "population_cost", "train_sec",
                      "recruit_cooldown_sec"):
             if ridx < 0:
-                raise ModelError("将领 %d 不在 recruit.zone.list 里，改不了造价 / 招募时间 / 招募冷却"
-                                 % (index + 1))
+                raise ModelError("将领 %d 不在任何招募表里（recruit.zone.list / coop_list），"
+                                 "改不了造价 / 招募时间 / 招募冷却" % (index + 1))
             if field == "cost_food":
-                self.doc.set(["recruit", "zone", "list", ridx, "cost", "food"], value)
+                self.doc.set(list(table) + [ridx, "cost", "food"], value)
             elif field == "cost_gold":
-                self.doc.set(["recruit", "zone", "list", ridx, "cost", "gold"], value)
+                self.doc.set(list(table) + [ridx, "cost", "gold"], value)
             else:
-                self.doc.set(["recruit", "zone", "list", ridx, field], value)
+                self.doc.set(list(table) + [ridx, field], value)
             return
         raise ModelError("不认识的将领字段：%s" % field)
 
@@ -1656,42 +1975,88 @@ class ConfigModel:
         return [self.general_trait(tid) for tid in self.general_trait_ids()]
 
     def general_trait_choices(self) -> List[Tuple[str, str]]:
-        """将领表单那个下拉的选项：`（无）` + 池里每一条 `名字（id）`。"""
-        out: List[Tuple[str, str]] = [("", "（无）")]
+        """池里每一条 `名字（id）`（多特性 UI 的「＋ 添加特性」下拉用）。"""
+        out: List[Tuple[str, str]] = []
         for trait in self.general_traits():
             out.append((trait.id, "%s（%s）" % (trait.name, trait.id)))
         return out
 
-    def general_trait_at(self, index: int) -> str:
-        """第 index 位将领指定的特性 id；**没指定 / 越界 / 池里没有 → 空串**。"""
+    def general_traits_at(self, index: int) -> List[str]:
+        """第 index 位将领带的**全部**特性 id（无效 / 不存在 / 重复的已过滤）。
+
+        ★ 兼容老配置：`unit.general.trait_ids[index]` 写成字符串时当成「只有一条」。
+        """
         arr = self.doc.value(["unit", "general", "trait_ids"], [])
         if not isinstance(arr, list) or index < 0 or index >= len(arr):
-            return ""
-        tid = _s(arr[index])
-        return tid if tid and self.doc.has(["unit", "general_traits", tid]) else ""
+            return []
+        raw = arr[index]
+        if isinstance(raw, str):
+            ids = [raw]
+        elif isinstance(raw, list):
+            ids = raw
+        else:
+            return []
+        out: List[str] = []
+        for v in ids:
+            tid = _s(v)
+            if tid and tid not in out and self.doc.has(["unit", "general_traits", tid]):
+                out.append(tid)
+        return out
+
+    def general_trait_at(self, index: int) -> str:
+        """第一条特性 id（兼容旧调用点）；**没指定 / 越界 / 池里没有 → 空串**。"""
+        ids = self.general_traits_at(index)
+        return ids[0] if ids else ""
 
     def _ensure_trait_ids_slot(self, index: int) -> JsonPath:
-        """保证 `unit.general.trait_ids` 存在、且补到**将领个数**（补的是「无」）。"""
+        """保证 `unit.general.trait_ids` 存在、补到**将领个数**，且每一项都是**数组**。
+
+        ★ 老配置里可能是字符串（一条）—— 这里就地升成 `[\"...\"]`，之后写回一律是数组。
+        """
         path: JsonPath = ["unit", "general", "trait_ids"]
         count = self.general_count()
         if not self.doc.has(path):
-            self.doc.set(path, ["" for _ in range(count)])
+            self.doc.set(path, [[] for _ in range(count)])
         while self.doc.size(path) < count:
-            self.doc.append(path, "")
+            self.doc.append(path, [])
         if index >= self.doc.size(path):                 # pragma: no cover - 越界已先被拒
             raise ModelError("没有第 %d 位将领" % (index + 1))
+        arr = self.doc.value(path, [])
+        if isinstance(arr, list):
+            for i, value in enumerate(arr):
+                if isinstance(value, str):
+                    self.doc.set(path + [i], [value] if value else [])
         return path
 
     def assign_general_trait(self, index: int, tid: Optional[str]) -> None:
-        """给一位将领指定特性；`""` / `None` = 改成「无」。"""
+        """把一位将领的特性**整组替换**成 `[tid]`；`""` / `None` = 改成「无」。"""
         self._check_general_index(index)
+        ids: List[str] = []
         if tid:
             if not self.doc.has(["unit", "general_traits", tid]):
                 raise ModelError("没有这条将领特性：%s" % tid)
-        else:
-            tid = ""
+            ids = [tid]
         path = self._ensure_trait_ids_slot(index)
-        self.doc.set(path + [index], tid)
+        self.doc.set(path + [index], ids)
+
+    def add_general_trait_to(self, index: int, tid: str) -> None:
+        """给一位将领**再加**一条特性（用户口径：「一个将领可以有多个特性」）。"""
+        self._check_general_index(index)
+        if not self.doc.has(["unit", "general_traits", tid]):
+            raise ModelError("没有这条将领特性：%s" % tid)
+        ids = self.general_traits_at(index)
+        if tid in ids:
+            raise ModelError("这位将领已经有「%s」了" % tid)
+        ids.append(tid)
+        path = self._ensure_trait_ids_slot(index)
+        self.doc.set(path + [index], ids)
+
+    def remove_general_trait_from(self, index: int, tid: str) -> None:
+        """把某一条特性从一位将领身上拿掉（其余保持原顺序）。"""
+        self._check_general_index(index)
+        ids = [t for t in self.general_traits_at(index) if t != tid]
+        path = self._ensure_trait_ids_slot(index)
+        self.doc.set(path + [index], ids)
 
     def _general_trait_row(self, tid: str) -> Dict[str, Any]:
         """池里一条特性的原文（**一层深拷贝**；不存在就报错）。"""
@@ -1716,6 +2081,19 @@ class ConfigModel:
 
     def set_general_trait_field(self, tid: str, field: str, value: Any) -> None:
         """改池里一条特性的**文案 / 标量效果**（`None` / 空串 = 删掉这个键）。"""
+        # ★★ 2026.11：稳定是**开关**（写 true / 删键），与数值项分开处理。
+        if field == GENERAL_TRAIT_KNOCKBACK.key:
+            row = self._general_trait_row(tid)
+            if value:
+                if row.get(field) is True:
+                    return
+                row[field] = True
+            else:
+                if field not in row:
+                    return
+                row.pop(field, None)
+            self._write_general_trait(tid, row)
+            return
         row = self._general_trait_row(tid)
         text_keys = [f.key for f in GENERAL_TRAIT_TEXT_FIELDS]
         number_keys = [f.key for f in GENERAL_TRAIT_FIELDS]
@@ -1748,8 +2126,9 @@ class ConfigModel:
             row.pop(field)
             self._write_general_trait(tid, row)
             return
-        # 减伤是「比例」，超过 1 就等于无敌 —— 与游戏侧 `clampf(..., 0, 1)` 同一条上限。
-        top = 1.0 if field.endswith("_reduction") else 10.0
+        # 减伤 / 折扣是「比例」，超过 1 就等于无敌 / 免费 —— 与游戏侧 clampf 同一条上限。
+        top = 1.0 if (field.endswith("_reduction")
+                      or field == "recruit_cavalry_discount") else 10.0
         new_value = max(0.0, min(top, float(value)))
         if field in row:
             if row[field] == new_value:
@@ -1818,10 +2197,11 @@ class ConfigModel:
             self.doc.remove(path + ["short"])
 
     def remove_general_trait(self, tid: str) -> None:
-        """删掉池里的一条特性，并把**正在用它的将领**改成「无」。
+        """删掉池里的一条特性，并把**正在用它的将领**身上的那一条去掉。
 
         ★ 这一步不能省：只删池里那份，`unit.general.trait_ids` 会留下一条指向不存在
           id 的记录 —— 游戏侧读到空特性、界面显示「无」，但数据里躺着一个坏 id。
+        ★★ 2026.11：一位将领可以带多条 ⇒ 只把这一条从它的数组里拿掉，别的保留。
         """
         if not self.doc.has(["unit", "general_traits", tid]):
             raise ModelError("没有这条将领特性：%s" % tid)
@@ -1829,8 +2209,13 @@ class ConfigModel:
         arr = self.doc.value(["unit", "general", "trait_ids"], [])
         if isinstance(arr, list):
             for i, value in enumerate(arr):
-                if _s(value) == tid:
-                    self.doc.set(["unit", "general", "trait_ids", i], "")
+                if isinstance(value, str):
+                    if value == tid:
+                        self.doc.set(["unit", "general", "trait_ids", i], [])
+                    continue
+                if isinstance(value, list) and tid in value:
+                    self.doc.set(["unit", "general", "trait_ids", i],
+                                 [t for t in value if _s(t) != tid])
 
     def _check_new_trait_id(self, new_id: str) -> None:
         if not new_id:

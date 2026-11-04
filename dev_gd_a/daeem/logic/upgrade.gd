@@ -238,6 +238,11 @@ static func _finish_upgrade(world, b) -> void:
 	world.apply_building_level_hp(b)
 	# ★★ 大本营等级决定资源加成 / 所在区划的人口加成 ⇒ 当场刷新产出与人口上限。
 	world.refresh_zone_production()
+	# ★★ 2026.11.5：**0 阶将领的大本营成长**也吃这一级 —— 升级一完成就重算这一方的将领
+	#   （场上已有的也当场涨，不用等复活 / 重招）。只对大本营有意义：
+	#   别的建筑没有升级（`can_upgrade` 只放行 base），这里的判据与它同一条。
+	if b.is_base():
+		world.refresh_general_growth(String(b.owner))
 	world.push_event({"type": "upgrade_done", "kind": "building_upgrade",
 		"building": b, "level": b.level})
 

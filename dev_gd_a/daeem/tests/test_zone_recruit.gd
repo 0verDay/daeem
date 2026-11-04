@@ -42,7 +42,7 @@ func _cases() -> void:
 func _test_config_table(cfg) -> void:
 	var w = _quiet(cfg)
 	eq(w.zone_recruit_list().size(), 9, "★ 区划招募表里有九名将领")
-	eq(cfg.general_types().size(), 10, "★ 将领名册 10 位（#0 + #1-9）")
+	eq(cfg.general_types().size(), 14, "★ 将领名册 14 位（#0 + #1-9 + 4 位新将领）")
 	eq(cfg.general_name_at(9), "将领 0", "★ #0 的名字")
 	eq(cfg.general_type_at(9), UnitRes.UNIT_TYPE_SPEARMAN, "★ #0 是长枪兵型")
 	eq(cfg.general_cap_at(9), 11, "★ #0 编制上限 11")
@@ -55,7 +55,7 @@ func _test_config_table(cfg) -> void:
 	eq(w.zone_recruit_queue_max(), 5, "★ 区划队列上限 5 个")
 	near(w.recruit_train_sec("general_4"), 10.0, 1e-6, "★ 每个将领读条 10 秒")
 	near(float(w.recruit_population_cost("general_4")), 1.0, 1e-6, "★ 每个将领吃 1 人口")
-	near(float(w.recruit_cost("general_1").get("food", 0.0)), 200.0, 1e-6, "★ 将领 1 200 粮食（造价 ×2）")
+	near(float(w.recruit_cost("general_1").get("food", 0.0)), 100.0, 1e-6, "★ 将领 1 100 粮食")
 	near(w.general_recruit_cooldown_of("general_9"), 45.0, 1e-6, "★ 将领 9 冷却 45 秒")
 
 # ------------------------------------------------------------------
@@ -206,7 +206,8 @@ func _test_enqueue_pays_and_cooldown(cfg) -> void:
 	near(w.general_recruit_cooldown_left("p1"), cd, 1e-6, "★ 全局冷却 = 该将的属性")
 	eq(String(w.general_recruit_state("p1", "general_2")["reason"]), "cooldown",
 		"★ 冷却中其他未拥有的将领也显示冷却")
-	eq(String(z.get("train_trait", "")), "", "★ 默认配置没有特性：队列里没有特性")
+	eq(w.zone_recruit_traits_at(z, 0), ["swift"],
+		"★ 队列里带着 config 给将领 1 指定的「神速」")
 
 # ------------------------------------------------------------------
 # 6) 取消：退款 + 解冻 + 释放唯一名额
@@ -255,8 +256,8 @@ func _test_train_and_spawn_near_center(cfg) -> void:
 	ok(maxi(absi(fresh.tx - center.x), absi(fresh.ty - center.y)) <= 2,
 		"★ 生成在中心旁边")
 	ok(w.general_recruit_owned("p1", kind), "★ 出兵后仍然已拥有")
-	ok(String(fresh.general_trait) == "" and String(fresh.aura_trait_id) == "",
-		"★★ 默认配置没有特性：招出来的将领没有特性")
+	ok(String(fresh.general_trait) == "swift" and String(fresh.aura_trait_id) == "swift",
+		"★★ 招出来的将领带着 config 指定的「神速」")
 
 # ------------------------------------------------------------------
 # 8) 队列上限 / 取消任意一格

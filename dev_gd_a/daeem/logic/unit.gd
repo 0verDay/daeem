@@ -88,6 +88,17 @@ var unit_type: String = ""
 ##    否则三位将领的 kind 相同，会一起被第 0 位覆盖掉（一个很安静的错）。
 var general_index: int = -1
 var stat_overrides: Dictionary = {}
+## ★★ 2026.11.5：**0 阶将领的大本营成长**（config 的 `unit.general.growth`）。
+##
+##   · `general_growth_hp`     —— 血量上限上的**加值**（不是倍率：每级值 × 大本营等级）；
+##   · `general_growth_damage` —— 攻击力上的**加值**（`combat_damage()` 最后加）。
+##   · 只有 0 阶将领（`cfg.general_tier_at(index) == 0`）会拿到非 0 值；
+##     1~3 阶 / 普通兵永远是 0（见 `apply_general_growth`）。
+##   ★ 为什么落在单位身上：`combat_damage()` 是每帧每单位的热路径，
+##     而它**拿不到 world**（也就拿不到大本营等级）—— 与 `stat_overrides` 同一条口径。
+##   ★ 大本营升级完成时由 `world.refresh_general_growth()` 重算这些字段（当场生效）。
+var general_growth_hp: float = 0.0
+var general_growth_damage: float = 0.0
 ## 兵种大类（infantry / cavalry）与「是不是远程」。
 ##
 ## ★★ 为什么要**存在单位上**而不是每次查表：这两个字段就是「后续按兵种做额外伤害」
@@ -174,23 +185,43 @@ var charge_hold: float = 0.0
 var stun_timer: float = 0.0
 ## ★★ 将领特性（部队光环；权威定义在 config.json 的 `unit.general_traits`）。
 ##
-## · `general_trait` —— 这位**将领自己**抽到的特性 id（非将领 / 没抽到 = ""）；
-## · `aura_trait_id`  —— 我正在享受的将领特性 id：将领 = 自己那条，
-##   附属兵 = 出生时从队长抄来的那一条（"" = 没有光环）；
-## · 下面几个 `aura_*` 是**算好的数值**，出生 / 授予时写一次、之后只读 ——
-##   与 `attack_bonus_vs_class` / `vision` 同一条口径：每帧每单位都要读，
-##   不查 config、不查 world。
+## ★★ 2026.11：**一个将领可以同时带多条特性**（用户口径），每条特性只做一件事。
+##   · `general_traits` —— 这位**将领自己**带的全部特性 id（非将领 / 没有 = `[]`）；
+##   · `general_trait`  —— 第一条的兼容字段（老界面 / 老快照读它）；
+##   · `aura_traits`    —— 我正在享受的**全部**特性 id：将领 = 自己那几条，
+##     附属兵 = 出生时从队长抄来的那几条（`[]` = 没有光环）；
+##   · `aura_trait_id`  —— 第一条的兼容字段；
+##   · 下面几个 `aura_*` 是**算好的数值**（多条特性已经在这里合并），
+##     出生 / 授予时写一次、之后只读 —— 与 `attack_bonus_vs_class` / `vision` 同一条口径：
+##     每帧每单位都要读，不查 config、不查 world。
 ##
 ## ★ 为什么不每帧沿着 `leader_id` 去查队长：那是每帧每单位一次 O(n) 的列表查找，
 ##   而本工程从来没有「改绑队长」这条机制 —— 光环在出生那一刻绑定就够了。
 ##   （将领倒下 / 阵亡后已有光环仍然保留，这是本次的明确口径。）
 var general_trait: String = ""
+var general_traits: Array = []
 var aura_trait_id: String = ""
+var aura_traits: Array = []
 var aura_speed_mult: float = 1.0
 var aura_cooldown_mult: float = 1.0
 var aura_melee_reduction: float = 0.0
 var aura_ranged_reduction: float = 0.0
 var aura_attack_vs_class: Dictionary = {}
+## ★★ 2026.11：新将领特性带来的四个光环效果（同样「出生时写一次、之后只读」）。
+##   · aura_knockback_immune        —— 稳定：免疫击退 + 眩晕（本人 + 旗下单位）；
+##   · aura_capture_speed_bonus     —— 占领速度 +比例；zone.update 按「在场光环」取最大；
+##   · aura_recruit_cavalry_discount—— 用这位将领当兵营招骑兵时的资源折扣（0.25 = -25%）；
+##   · aura_charge_damage_bonus     —— 部队里**近战骑兵**冲锋额外伤害 +比例。
+var aura_knockback_immune: bool = false
+var aura_capture_speed_bonus: float = 0.0
+var aura_recruit_cavalry_discount: float = 0.0
+var aura_charge_damage_bonus: float = 0.0
+## ★★ 2026.11：**横扫**（攻击附带范围伤害 + 击退）——同样「出生时写一次、之后只读」。
+##   与兵种自身的 `splash_radius` / `knockback_*` 取**最大值**（不叠加），
+##   所以「兵种本来就会溅射」的单位带上这条特性不会被翻倍。
+var aura_splash_radius: float = 0.0
+var aura_knockback_distance: float = 0.0
+var aura_knockback_stun: float = 0.0
 ## ★★ 视野半径（**格**）—— 战争迷雾用（见 logic/fog.gd）。
 ##
 ## ★ 与 hp_max / unit_class 同一个口径：**生出来那一刻就把 config 里的数抄到身上**，
@@ -652,10 +683,8 @@ static func create(cfg: ConfigRes, p_id: String, p_name: String, tile: Vector2i,
 	u.general_index = p_general_index
 	if p_general_index >= 0:
 		u.stat_overrides = cfg.general_stat_overrides(p_general_index)
-		# ★★ 2026.10.29：将领的**护甲** = (覆盖值 ⊕ 所属兵种) **+ 将领加成**。
-		#   基础护甲在更上面已经按兵种抄过一次，这里只补「将领那一份」。
-		#   ⚠️ 加成放在覆盖之后：给某位将领写 `armor` 是「它的底子」，不是「连加成一起换掉」。
-		u.armor = maxf(0.0, float(u.stat_overrides.get("armor", u.armor))) + cfg.general_armor_bonus
+		# ★★ 2026.11：全局护甲加成删除 ⇒ 将领护甲 = 覆盖 ⊕ 所属兵种（这里只补覆盖）。
+		u.armor = maxf(0.0, float(u.stat_overrides.get("armor", u.armor)))
 	u.pos = GridRes.center_of(tile)
 	u.prev_pos = u.pos          # ★ 插值起点 = 出生点（否则第一帧会从世界原点滑过来）
 	u.tx = tile.x
@@ -664,11 +693,8 @@ static func create(cfg: ConfigRes, p_id: String, p_name: String, tile: Vector2i,
 	#    加了第三种兵种之后那个二元判断会**静默把新兵种当成测试敌人**（60 血）。
 	#    现在每个单位类型都在 config.unit.types 里明确定义，查不到才用兜底值。
 	# ★★ 将领的**数值覆盖**在这里落地（没写的键 = 跟随所属兵种那一档）。
-	# ★★ 2026.10.29：将领再乘一次**全局血量倍率**（`unit.general.hp_mult`）——
-	#   所以「覆盖 ⊕ 兵种」是基准，倍率是「将领比兵更抗打」那一层，两者不互相吞掉。
+	# ★★ 2026.11：全局血量倍率删除 ⇒ 覆盖值就是最终值（编辑器 = 游戏内）。
 	var hp_base: float = float(u.stat_overrides.get("hp_max", cfg.unit_hp_of(u.unit_type)))
-	if p_general_index >= 0:
-		hp_base *= cfg.general_hp_mult
 	u.hp_max = maxf(1.0, hp_base)
 	u.base_hp_max = u.hp_max
 	u.hp = u.hp_max
@@ -752,24 +778,57 @@ func reapply_type(cfg: ConfigRes, p_unit_type: String) -> void:
 	load_charge_def(cfg)
 	armor = cfg.unit_armor_of(unit_type)
 	if general_index >= 0:
-		# ★★ 与 `create()` 同一口径：覆盖 ⊕ 兵种，再叠将领加成。
-		armor = maxf(0.0, float(stat_overrides.get("armor", armor))) + cfg.general_armor_bonus
+		# ★★ 与 `create()` 同一口径：覆盖 ⊕ 兵种（全局护甲加成已于 2026.11 删除）。
+		armor = maxf(0.0, float(stat_overrides.get("armor", armor)))
 	can_attack = cfg.unit_can_attack(unit_type)
 	siege = cfg.unit_is_siege(unit_type)
 	move_shoot = cfg.unit_move_shoot(unit_type)
 	splash_radius = cfg.unit_splash_radius_of(unit_type)
 	morale_aura_radius = cfg.unit_morale_aura_radius_of(unit_type)
 	morale_aura_rate = cfg.unit_morale_aura_rate_of(unit_type)
-	# 血量上限 / 视野与 `create()` 同一口径：将领仍吃自己的数值覆盖（再乘全局将领倍率）。
+	# 血量上限 / 视野与 `create()` 同一口径：将领仍吃自己的数值覆盖（不再乘全局倍率）。
 	var new_max: float = float(stat_overrides.get("hp_max", cfg.unit_hp_of(unit_type)))
-	if general_index >= 0:
-		new_max *= cfg.general_hp_mult
 	base_hp_max = maxf(1.0, new_max)
 	hp_max = base_hp_max
 	if general_index >= 0:
 		vision = cfg.general_vision_at(general_index)
 	else:
 		vision = cfg.unit_vision_of(unit_type)
+
+
+## ★★ 2026.11.5：把**0 阶将领的大本营成长**算到单位身上（出生 / 快照重建 / 升级完成）。
+##
+## @param base_level 这一方**当前**的大本营等级（没有大本营 = 0 ⇒ 不加成）
+##
+## 口径（config 的 `unit.general.growth`，用户拍板「每级固定加值、1 级就给」）：
+##   `加成 = 每级值 × base_level`，只作用于 `cfg.general_tier_at(general_index) == 0`。
+##
+## ★ 血量：上限按 **基础 × 科技倍率 + 成长** 重算（唯一公式与 `apply_hp_bonus` 同源），
+##   当前血量按**增量**带过去 —— 满血的涨完还是满血，残血的不会被压成半血。
+## ★ 攻击：只写 `general_growth_damage`，由 `combat_damage()` 在最后加（面板与实际同源）。
+## ★ 幂等：重复调用（同一等级）不会把血量越加越多 —— 每次都是从公式重算上限。
+func apply_general_growth(cfg: ConfigRes, base_level: int) -> void:
+	var add_hp := 0.0
+	var add_dmg := 0.0
+	if cfg != null and general_index >= 0:
+		var bonus: Dictionary = cfg.general_growth_bonus(general_index, base_level)
+		add_hp = float(bonus.get("hp_max", 0.0))
+		add_dmg = float(bonus.get("damage", 0.0))
+	general_growth_hp = add_hp
+	general_growth_damage = add_dmg
+	# ★ 兵种不能攻击 / 没有血条的单位（理论上不会出现在这里）也照同一条公式走。
+	var new_max := maxf(1.0, base_hp_max * tech_hp_mult + general_growth_hp)
+	var old_max := hp_max
+	if is_equal_approx(old_max, new_max):
+		return
+	hp_max = new_max
+	var delta := new_max - old_max
+	if downed:
+		# ★ 濒死者**只改上限**（与 apply_hp_bonus 同一口径）：当前血量 / 回复记账一概不动，
+		#   否则「回复期间血量只增不减」那条需求会被这次加血悄悄绕过。
+		hp = clampf(hp, 0.0, hp_max)
+		return
+	hp = clampf(hp + maxf(0.0, delta), 0.0, hp_max)
 
 
 ## 这个单位是不是**将领**（开局的 general，或区划招募出来的 general_N）。
@@ -801,57 +860,159 @@ func attack_multiplier_vs_class(cls: String) -> float:
 # ★★ 将领特性（部队光环）—— 授予 / 继承 / 快照重建
 # ------------------------------------------------------------------
 
-## 给一位将领授予特性：记下自己的 id，并让自己先吃上自己的光环。
+## 给一位将领授予**一组**特性：记下自己的 id，并让自己先吃上自己的光环。
 ## （需求口径：部队 buff 对「该将领旗下的所有单位」生效 —— 将领本人也算。)
+func set_general_traits(cfg: ConfigRes, ids: Array) -> void:
+	var clean: Array = []
+	for v in ids:
+		var tid := String(v).strip_edges()
+		if tid == "" or clean.has(tid):
+			continue
+		# 池里没有的 id 不记（与配置层「写错当没写」同一条）。
+		if cfg == null or cfg.general_trait_effect(tid).is_empty():
+			continue
+		clean.append(tid)
+	general_traits = clean
+	general_trait = String(clean[0]) if not clean.is_empty() else ""
+	_apply_aura_set(cfg, clean)
+
+
+## 单条版本的兼容入口（老调用点 / 老快照）。
 func set_general_trait(cfg: ConfigRes, trait_id: String) -> void:
-	general_trait = trait_id
-	_apply_aura(cfg, trait_id)
+	set_general_traits(cfg, [trait_id] if trait_id != "" else [])
 
 
 ## 附属兵出生时从队长继承光环（队长没有特性 → 中性，不报错）。
+## ★★ 2026.11：拷贝的是队长**正在享受的全部光环**（`aura_traits`）——
+##   这样「将领 → 附属兵 → 附属兵的附属兵」这条链上都不会漏。
 func inherit_general_aura(cfg: ConfigRes, leader) -> void:
 	if leader == null:
-		_apply_aura(cfg, "")
+		_apply_aura_set(cfg, [])
 		return
-	_apply_aura(cfg, String(leader.general_trait))
+	var ids: Array = []
+	if leader is Object:
+		var own: Variant = leader.get("aura_traits")
+		if typeof(own) == TYPE_ARRAY and not (own as Array).is_empty():
+			ids = own
+		else:
+			var carried: Variant = leader.get("general_traits")
+			if typeof(carried) == TYPE_ARRAY and not (carried as Array).is_empty():
+				ids = carried
+			else:
+				var one := String(leader.get("general_trait"))
+				if one != "":
+					ids = [one]
+	_apply_aura_set(cfg, ids)
 
 
-## 快照重建 / 客机侧：直接应用某条光环（不碰 `general_trait`）。
+## 快照重建 / 客机侧：直接应用一组光环（不碰 `general_traits`）。
+func apply_aura_traits(cfg: ConfigRes, ids: Array) -> void:
+	_apply_aura_set(cfg, ids)
+
+
+## 单条版本的兼容入口。
 func apply_aura_trait(cfg: ConfigRes, trait_id: String) -> void:
-	_apply_aura(cfg, trait_id)
+	_apply_aura_set(cfg, [trait_id] if trait_id != "" else [])
 
 
-## 把一条特性的效果写进 `aura_*` 字段（没有特性 / 未知 id → 全部回到中性）。
+## 把一条特性的效果写进 `aura_*` 字段（兼容入口）。
+func _apply_aura(cfg: ConfigRes, trait_id: String) -> void:
+	_apply_aura_set(cfg, [trait_id] if trait_id != "" else [])
+
+
+## 把**一组**特性的效果合并写进 `aura_*` 字段（没有特性 / 未知 id → 全部回到中性）。
+##
+## ★ 合并口径（多条特性同时生效时）：
+##   · 比例类（移速 / 攻速 / 近战减伤 / 远程减伤 / 对某大类伤害 / 冲锋加成）**相加**；
+##   · 免疫类（稳定）**取或**；占领速度 / 招募折扣**取最大**（它们是「这一方的一个值」，
+##     同一位将领身上出现两条也只算一次）；
+##   · 减伤在这里夹到 0~1；真正用的时候还会再按 `combat.damage_reduction_cap` 封顶。
 ##
 ## ★ 这段是**唯一**把配置比例换算成玩法数值的地方：
 ##   · 攻速 +25% ⇒ 攻击间隔 ×(1 / 1.25) = ×0.8（不是 ×0.75 —— 「速度」与「间隔」是倒数）；
 ##   · 减伤与攻击加成都是「比例」，直接存下来，在使用点相加。
-func _apply_aura(cfg: ConfigRes, trait_id: String) -> void:
+func _apply_aura_set(cfg: ConfigRes, ids: Array) -> void:
 	aura_trait_id = ""
+	aura_traits = []
 	aura_speed_mult = 1.0
 	aura_cooldown_mult = 1.0
 	aura_melee_reduction = 0.0
 	aura_ranged_reduction = 0.0
 	aura_attack_vs_class = {}
-	if trait_id == "":
+	aura_knockback_immune = false
+	aura_capture_speed_bonus = 0.0
+	aura_recruit_cavalry_discount = 0.0
+	aura_charge_damage_bonus = 0.0
+	aura_splash_radius = 0.0
+	aura_knockback_distance = 0.0
+	aura_knockback_stun = 0.0
+	if ids.is_empty():
 		return
-	var e: Dictionary = cfg.general_trait_effect(trait_id)
-	if e.is_empty():
+	var speed := 0.0
+	var atk_speed := 0.0
+	var melee := 0.0
+	var ranged := 0.0
+	var vs: Dictionary = {}
+	var charge := 0.0
+	for v in ids:
+		var tid := String(v).strip_edges()
+		if tid == "" or aura_traits.has(tid):
+			continue
+		var e: Dictionary = cfg.general_trait_effect(tid)
+		if e.is_empty():
+			continue
+		aura_traits.append(tid)
+		speed += float(e.get("speed_bonus", 0.0))
+		atk_speed += float(e.get("attack_speed_bonus", 0.0))
+		melee += float(e.get("melee_reduction", 0.0))
+		ranged += float(e.get("ranged_reduction", 0.0))
+		var av: Variant = e.get("attack_vs_class", {})
+		if typeof(av) == TYPE_DICTIONARY:
+			for k in (av as Dictionary):
+				var cls := String(k)
+				vs[cls] = float(vs.get(cls, 0.0)) + float((av as Dictionary)[k])
+		aura_knockback_immune = aura_knockback_immune or bool(e.get("knockback_immune", false))
+		aura_capture_speed_bonus = maxf(aura_capture_speed_bonus,
+			maxf(0.0, float(e.get("capture_speed_bonus", 0.0))))
+		aura_recruit_cavalry_discount = maxf(aura_recruit_cavalry_discount,
+			clampf(float(e.get("recruit_cavalry_discount", 0.0)), 0.0, 1.0))
+		charge += maxf(0.0, float(e.get("charge_damage_bonus", 0.0)))
+		var ms: Variant = e.get("melee_splash", {})
+		if typeof(ms) == TYPE_DICTIONARY and not (ms as Dictionary).is_empty():
+			var md: Dictionary = ms
+			aura_splash_radius = maxf(aura_splash_radius, float(md.get("radius", 0.0)))
+			aura_knockback_distance = maxf(aura_knockback_distance,
+				float(md.get("knockback", 0.0)))
+			aura_knockback_stun = maxf(aura_knockback_stun, float(md.get("stun_sec", 0.0)))
+	if aura_traits.is_empty():
 		return
-	aura_trait_id = trait_id
-	aura_speed_mult = 1.0 + float(e.get("speed_bonus", 0.0))
-	var atk_speed_bonus := float(e.get("attack_speed_bonus", 0.0))
-	aura_cooldown_mult = 1.0 / (1.0 + atk_speed_bonus)
-	aura_melee_reduction = clampf(float(e.get("melee_reduction", 0.0)), 0.0, 1.0)
-	aura_ranged_reduction = clampf(float(e.get("ranged_reduction", 0.0)), 0.0, 1.0)
-	var av: Variant = e.get("attack_vs_class", {})
-	if typeof(av) == TYPE_DICTIONARY:
-		aura_attack_vs_class = av
+	aura_trait_id = String(aura_traits[0])
+	aura_speed_mult = 1.0 + maxf(0.0, speed)
+	aura_cooldown_mult = 1.0 / (1.0 + maxf(0.0, atk_speed))
+	aura_melee_reduction = clampf(melee, 0.0, 1.0)
+	aura_ranged_reduction = clampf(ranged, 0.0, 1.0)
+	aura_attack_vs_class = vs
+	aura_charge_damage_bonus = charge
 
 
 ## 是否正在享受一条将领光环（界面 / 测试读它）。
 func has_general_aura() -> bool:
-	return aura_trait_id != ""
+	return not aura_traits.is_empty()
+
+
+## ★★ 2026.11：**攻击的生效范围伤害半径** = 兵种自身 ⊕ 光环（取最大，不叠加）。
+##   近战攻击 / 击退筛选都用这一个数，避免「一个说 1.0、一个说 0」的两套判据。
+func melee_splash_radius() -> float:
+	return maxf(splash_radius, aura_splash_radius)
+
+
+## 近战攻击的生效击退距离 / 眩晕（兵种 ⊕ 光环，取最大）。
+func melee_knock_distance() -> float:
+	return maxf(knockback_distance, aura_knockback_distance)
+
+
+func melee_knock_stun() -> float:
+	return maxf(knockback_stun_sec, aura_knockback_stun)
 
 
 ## 是否正在等待复活（单机永远 false —— 死亡即离场）
@@ -1008,11 +1169,11 @@ func speed(cfg: ConfigRes, map, world = null) -> float:
 ##    没填的**不比**、直接走兵种那一档（`get(键, 兵种值)` 一句就表达了「跟随」）。
 func combat_damage(cfg: ConfigRes) -> float:
 	var d := float(stat_overrides.get("damage", cfg.unit_combat_of(unit_type)["damage"]))
-	# ★★ 2026.10.29：将领再乘 `unit.general.damage_mult`（默认 1.0）。
-	#   兵种攻击这一版整体降了 ~25%，将领保持绝对值 ⇒ 相对更疼。
-	if is_general():
-		d *= cfg.general_damage_mult
-	return d
+	# ★★ 2026.11：全局攻击倍率删除 ⇒ 将领攻击 = 覆盖 ⊕ 兵种。
+	# ★★ 2026.11.5：**0 阶将领的大本营成长**是最后那一点**加值**（不是倍率）——
+	#   放在最后加，所以「+3 攻击 / 级」就是实打实的 3 点。
+	#   非 0 阶 / 普通兵这个字段恒为 0（见 apply_general_growth）。
+	return d + general_growth_damage
 
 
 func combat_range(cfg: ConfigRes) -> float:
@@ -2071,7 +2232,7 @@ func apply_knockback(cfg: ConfigRes, world, from_pos: Vector2, distance: float,
 		stun_sec: float) -> bool:
 	if not alive or downed or neutralized:
 		return false
-	if knockback_immune:
+	if knockback_immune or aura_knockback_immune:
 		return false
 	# ★★ 被击退 / 眩晕 = 冲锋被打断（稳定单位在上面已经早退，冲锋不受影响）。
 	clear_charge()
@@ -2567,12 +2728,14 @@ func apply_hp_bonus(mult: float) -> void:
 		return
 	# ★ 上限**从基础值重新算**（`base_hp_max × 倍率`），不是在旧上限上再乘一次 ——
 	#   见 `base_hp_max` 的说明（弃用之后要能精确回到原值）。
+	# ★★ 2026.11.5：0 阶将领的大本营成长是**加值**，在倍率之后再加
+	#   （与 apply_general_growth 同一条公式，两处别写成两个口径）。
 	if downed:
-		hp_max = base_hp_max * m
+		hp_max = base_hp_max * m + general_growth_hp
 		return
 	var ratio: float = 1.0
 	if hp_max > 0.0:
 		ratio = clampf(hp / hp_max, 0.0, 1.0)
-	hp_max = base_hp_max * m
+	hp_max = base_hp_max * m + general_growth_hp
 	hp = hp_max * ratio
 

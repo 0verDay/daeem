@@ -27,6 +27,8 @@ const INFO_LABEL_FONT := 14
 const INFO_VALUE_FONT := 20
 const ROW_NAME_FONT := 20
 const ROW_DETAIL_FONT := 17
+## ★★ 2026.11：特性条目的**名字**用更大的字号 + 金色，详细信息用普通字（用户口径）。
+const ENTRY_NAME_FONT := 26
 
 var cfg = null
 var font: Font = null
@@ -177,29 +179,64 @@ func _build_general(id: String) -> Dictionary:
 	var idx := ConfigRes.general_index_of(id)
 	if idx < 0:
 		return {}
+	var is_start: bool = idx == ConfigRes.GENERAL_START_INDEX
 	var gname := String(cfg.general_name_at(idx)).strip_edges()
 	if gname == "":
-		gname = "将领 %s" % ("0" if idx == 9 else str(idx + 1))
+		gname = "将领 %s" % ("0" if is_start else str(idx + 1))
 	var type: String = cfg.general_type_at(idx)
 	var type_name: String = cfg.unit_name_of(type)
 	var entry := _find_general(id)
-	var tier := 0 if idx == 9 else int(entry.get("tier", 1))
+	# ★★ 2026.11：新将领的招募条目在**合作专用表**里（对战 / 战役的招募页不列它们）——
+	#   备战详情仍然要把造价 / 读条写清楚，否则玩家不知道自己要花多少。
+	var coop_only := false
+	if entry.is_empty():
+		entry = cfg.coop_recruit_entry(id)
+		coop_only = not entry.is_empty()
+	# ★★ 2026.11.5：阶走 `unit.general.tiers`（编辑器可改；新加的将领也能是 0 阶）。
+	var tier: int = cfg.general_tier_at(idx)
 	var subtitle := "%s · %s" % [_tier_name(tier), type_name]
-	if idx == 9:
+	if is_start:
 		subtitle += " · 开局将领"
 
 	var cap: int = cfg.general_cap_at(idx)
 	var sec: float = cfg.general_recruit_sec(idx)
 	var body := ""
-	if idx == 9:
+	if is_start:
 		body = "开局即拥有的%s型将领，不参与区划招募。统兵上限 %d。" % [type_name, cap]
+	elif coop_only:
+		body = "合作模式专用将领（%s型）。备战页把它设为出战后，它会出现在区划招募九宫格；" \
+			% type_name \
+			+ "统兵上限 %d；招募读条 %s 秒。对战 / 战役的招募页不列它。" % [cap, _fmt(sec)]
+	elif entry.is_empty():
+		# ★ 编辑器新加的将领**可以没有区划招募条目**（「只加数值档」那一种）——
+		#   别在这里谎报「可招募」，否则玩家在区划里找不到它。
+		body = "%s型将领。没有区划招募条目（不在招募九宫格里），由关卡摆放 / 开局获得。统兵上限 %d。" \
+			% [type_name, cap]
 	else:
 		var cd := float(entry.get("recruit_cooldown_sec", 0.0))
 		body = "可招募的%s型将领。统兵上限 %d；招募读条 %s 秒，冷却 %s 秒。" \
 			% [type_name, cap, _fmt(sec), _fmt(cd)]
 
 	var sections: Array = [{"title": "说明", "text": body}]
+	# ★★ 2026.11.5：派系归属（一位将领可属多个派系；空 = 哪个派系都不显示）。
+	var fac_names: Array = []
+	for cid in cfg.general_factions_at(idx):
+		var nm := String(cfg.clan_name_of(String(cid))).strip_edges()
+		fac_names.append(nm if nm != "" else String(cid))
+	if not fac_names.is_empty():
+		sections.append({"title": "派系归属", "text": " / ".join(fac_names)})
+	else:
+		sections.append({"title": "派系归属",
+			"text": "（无）—— 哪个派系的备战页都不会列出这位将领"})
 	sections.append({"title": "属性", "grid": _general_stats(idx, type)})
+
+	# ★★ 2026.11.5：0 阶将领随**局内大本营等级**成长（占位数在 config 的 unit.general.growth）。
+	if tier == 0 and (cfg.general_growth_hp_per_level > 0.0
+			or cfg.general_growth_damage_per_level > 0.0):
+		sections.append({"title": "成长（0 阶）", "text":
+			"大本营每升 1 级：血量 +%s、攻击 +%s（1 级就有；升级当场生效）。"
+			% [_fmt(cfg.general_growth_hp_per_level),
+			   _fmt(cfg.general_growth_damage_per_level)]})
 
 	var cost: Variant = entry.get("cost", {})
 	var has_cost := not entry.is_empty() and typeof(cost) == TYPE_DICTIONARY
@@ -207,21 +244,29 @@ func _build_general(id: String) -> Dictionary:
 		["粮", _fmt((cost as Dictionary).get("food", 0.0)) if has_cost else "—"],
 		["金", _fmt((cost as Dictionary).get("gold", 0.0)) if has_cost else "—"],
 		["人口", str(int(entry.get("population_cost", 0))) if not entry.is_empty() else "—"],
-		["读条", "%s 秒" % _fmt(sec) if idx != 9 else "—"],
+		["读条", "%s 秒" % _fmt(sec) if not entry.is_empty() else "—"],
 		["冷却", "%s 秒" % _fmt(float(entry.get("recruit_cooldown_sec", 0.0))) if not entry.is_empty() else "—"],
 		["统兵", str(cap)],
 	]
 	sections.append({"title": "造价 / 招募", "grid": info, "columns": 4})
 
-	var tid: String = cfg.general_trait_at(idx)
-	if tid != "":
-		var tname: String = cfg.general_trait_name(tid)
-		var tdesc: String = cfg.general_trait_desc(tid)
-		sections.append({"title": "特性", "text": "%s\n%s" % [tname, tdesc]})
+	# ★★ 2026.11：一位将领可以带多条特性 —— 每条「名字（大字金色）+ 说明（普通字）」。
+	var tids: Array = cfg.general_traits_at(idx)
+	if not tids.is_empty():
+		var tentries: Array = []
+		for tid_v in tids:
+			var tid := String(tid_v)
+			tentries.append({"name": cfg.general_trait_name(tid),
+				"text": cfg.general_trait_desc(tid)})
+		sections.append({"title": "特性", "entries": tentries})
 
+	# ★★ 2026.11：将领也有图像素材了 —— 暂时用**所属兵种**的图标占位
+	#   （与备战页磁贴同一个蒙版来源；以后换成将领专属素材时只改这里 + 磁贴）。
+	var gmask := IconRes.mask_for_unit(cfg, type)
 	return {
 		"kind": "general", "id": id, "title": gname, "subtitle": subtitle,
-		"icon_mask": "", "icon_text": _general_number(id), "tier": tier, "sections": sections,
+		"icon_mask": gmask, "icon_text": "" if gmask != "" else _general_number(id),
+		"tier": tier, "sections": sections,
 	}
 
 
@@ -330,11 +375,13 @@ func _unit_stats(type: String) -> Array:
 	]
 
 
-func _general_stats(idx: int, type: String) -> Array:
+func _general_stats(idx: int, _type: String) -> Array:
 	if cfg == null:
 		return []
 	var combat: Dictionary = cfg.general_combat_at(idx)
-	var armor: float = cfg.unit_armor_of(type) + cfg.num("unit.general.armor_bonus", 0.0)
+	# ★★ 2026.11：护甲走 `general_armor_at()`（覆盖 ⊕ 兵种）—— 全局 +1 加成已删除，
+	#   这里若还按「兵种 + 加成」算，就会和单位身上真实的护甲对不上。
+	var armor: float = cfg.general_armor_at(idx)
 	return [
 		["生命", _fmt(cfg.general_hp_at(idx))],
 		["攻击", _fmt(combat.get("damage", 0.0))],
@@ -519,6 +566,17 @@ func _make_section(s: Dictionary) -> Control:
 			ThemeRes.accent() if bool(s.get("accent", false)) else ThemeRes.text_dim())
 		box.add_child(body)
 
+	if s.has("entries"):
+		var entries := VBoxContainer.new()
+		entries.name = "SectionEntries"
+		entries.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		entries.add_theme_constant_override("separation", 12)
+		box.add_child(entries)
+		for e in (s.get("entries", []) as Array):
+			if typeof(e) != TYPE_DICTIONARY:
+				continue
+			entries.add_child(_make_entry(e as Dictionary))
+
 	if s.has("grid"):
 		var cols := int(s.get("columns", 3))
 		var grid := GridContainer.new()
@@ -544,6 +602,40 @@ func _make_section(s: Dictionary) -> Control:
 			rows.add_child(_make_row(r as Dictionary))
 
 	return box
+
+
+## ★★ 2026.11：一条「大号金字标题 + 普通灰字说明」——将领特性用。
+##   · 名字：`ENTRY_NAME_FONT`（比正文大）+ 金色（与节标题同一套强调色）；
+##   · 说明：`BODY_FONT` 普通字 + 正文灰（与「说明」那一段同档）。
+func _make_entry(e: Dictionary) -> Control:
+	var col := VBoxContainer.new()
+	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.add_theme_constant_override("separation", 2)
+
+	var name := Label.new()
+	name.name = "EntryName"
+	name.text = String(e.get("name", ""))
+	name.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	if font != null:
+		name.add_theme_font_override("font", font)
+	name.add_theme_font_size_override("font_size", ENTRY_NAME_FONT)
+	name.add_theme_color_override("font_color", ThemeRes.accent())
+	col.add_child(name)
+
+	var body := RichTextLabel.new()
+	body.name = "EntryText"
+	body.bbcode_enabled = false
+	body.fit_content = true
+	body.scroll_active = false
+	body.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.text = String(e.get("text", ""))
+	if font != null:
+		body.add_theme_font_override("normal_font", font)
+	body.add_theme_font_size_override("normal_font_size", BODY_FONT)
+	body.add_theme_color_override("default_color", ThemeRes.text_dim())
+	col.add_child(body)
+	return col
 
 
 func _make_stat_cell(caption: String, value: String, wide: bool) -> Control:

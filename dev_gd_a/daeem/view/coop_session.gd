@@ -21,6 +21,7 @@ const RelayTransportRes = preload("res://net/relay_transport.gd")
 const ProtocolRes = preload("res://net/protocol.gd")
 const RoomDirectoryRes = preload("res://net/room_directory.gd")
 const CoopCatalogRes = preload("res://logic/coop_catalog.gd")
+const LoadoutRes = preload("res://logic/loadout.gd")
 
 const MODE_IDLE := "idle"
 const MODE_AI := "ai"
@@ -45,6 +46,8 @@ var _http_busy: bool = false
 var _rooms: Array = []
 var _room_timer: Timer = null
 var _relay_override: String = ""
+## ★★ 2026.11：本局客机的出战配置是不是已经发给房主了（每个房间只发一次）。
+var _loadout_sent: bool = false
 
 
 func setup(p_cfg) -> void:
@@ -312,6 +315,7 @@ func _ensure_lobby() -> bool:
 	_lobby.connected.connect(_on_lobby_connected)
 	_lobby.room_state_changed.connect(_on_room_state)
 	_lobby.room_config_changed.connect(_on_room_config)
+	_lobby.loadout_received.connect(_on_loadout_received)
 	_lobby.error.connect(_on_lobby_error)
 	_lobby.closed.connect(_on_lobby_closed)
 	_lobby.guest_started.connect(_on_guest_started)
@@ -397,6 +401,30 @@ func _on_room_state(state: Dictionary) -> void:
 	room_state_changed.emit(state)
 	if is_host() and bool(state.get("guest", false)):
 		_broadcast_room_cfg()
+	# ★★ 2026.11：客机进房后把**自己的出战配置**发给房主（房主开局时写进客机席位）。
+	if is_guest():
+		_send_my_loadout()
+
+
+## 客机的出战配置（派系 + 将领）—— 每个房间只发一次；重连 / 换房会重置。
+func _send_my_loadout() -> void:
+	if _loadout_sent or _lobby == null or cfg == null or not is_guest():
+		return
+	# ★ 兜底：玩家从没打开过备战页时也要有一份默认配置（= 现在这 10 位 + 默认派系）。
+	LoadoutRes.ensure_defaults(cfg)
+	_lobby.send_loadout(LoadoutRes.payload_for(LoadoutRes.faction(), cfg))
+	_loadout_sent = true
+	status_changed.emit("已同步出战配置：%s" % String(cfg.clan_name_of(LoadoutRes.faction())))
+
+
+func _on_loadout_received(payload: Dictionary) -> void:
+	# 房主侧：记下客机的选择，开局时交给 game_scene3d 写进客机席位。
+	# ★★ 客机发来的东西是**对端数据**：只认两个真实派系，别把关卡派系写坏
+	#   （旧版本 / 手改包可能带任意字符串；`starter` / `pool` 只影响它自己那一席，
+	#   就算不认识也只会退化成「关卡原样」）。
+	if not LoadoutRes.FACTIONS.has(String(payload.get("clan", ""))):
+		return
+	LoadoutRes.set_remote("guest", payload)
 
 
 func _on_room_config(config: Dictionary) -> void:
@@ -480,6 +508,7 @@ func _reset_network() -> void:
 	_lobby = null
 	_pending_action = {}
 	_fake_guest = false
+	_loadout_sent = false
 
 
 func debug_fake_guest() -> bool:

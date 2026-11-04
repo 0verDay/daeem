@@ -142,14 +142,15 @@ func _test_enter_and_layout() -> void:
 		ok(hs[1].get_global_rect().position.y < hs[2].get_global_rect().position.y,
 			"单位分节在科技之上")
 
-		# 将领：零阶 0 → 一阶 1..3 → 二阶 4..6 → 三阶 7..9
-		eq(roster.general_buttons().size(), 10, "10 位将领（0 + 9 可招募）")
+		# 将领：零阶 0 → 一阶 1..3 + 帝国骑手 → 二阶 4..6 → 三阶 7..9 + 阿吉诃德
+		eq(roster.general_buttons().size(), 12, "12 位将领（帝国：0 + 9 可招募 + 2 位新将领）")
 		eq(roster.tile_label(roster.general_buttons()[0]), "将领 0", "零阶是开局将领 0")
-		eq(roster.tile_label(roster.general_buttons()[9]), "将领 9", "最后是三阶将领 9")
+		eq(roster.tile_label(roster.general_buttons()[4]), "帝国骑手", "一阶第 4 位是新将领")
+		eq(roster.tile_label(roster.general_buttons()[11]), "阿吉诃德", "最后是三阶新将领")
 		eq(roster.tile_tier(roster.general_buttons()[0]), 0, "将领 0 零阶")
 		eq(roster.tile_tier(roster.general_buttons()[1]), 1, "将领 1 一阶")
-		eq(roster.tile_tier(roster.general_buttons()[4]), 2, "将领 4 二阶")
-		eq(roster.tile_tier(roster.general_buttons()[7]), 3, "将领 7 三阶")
+		eq(roster.tile_tier(roster.general_buttons()[5]), 2, "将领 4 二阶")
+		eq(roster.tile_tier(roster.general_buttons()[8]), 3, "将领 7 三阶")
 
 		# 阶小标题：将领 4 个（零/一/二/三），单位 3 个，科技 3 个
 		var th: Array = roster.tier_headers()
@@ -177,18 +178,49 @@ func _test_enter_and_layout() -> void:
 		var r4: Rect2 = g4.get_global_rect()
 		ok(r0.position.y < r1.position.y - 1.0, "零阶单独一行在最上")
 		near(r1.position.y, r2.position.y, 0.5, "一阶三格同一行")
-		near(r2.position.y, r3.position.y, 0.5, "一阶三格同一行")
-		ok(r4.position.y > r1.position.y + 1.0, "二阶换行")
-		near(r4.position.x, r1.position.x, 0.5, "二阶回到第一列")
+		near(r2.position.y, r3.position.y, 0.5, "一阶前三格同一行")
+		ok(r4.position.y > r3.position.y + 1.0, "一阶第 4 位换到下一行（不挤在同一排）")
+		near(r4.position.x, r1.position.x, 0.5, "…回到第一列")
+		var r5: Rect2 = roster.general_buttons()[5].get_global_rect()
+		ok(r5.position.y > r4.position.y + 1.0, "二阶在一阶（两行）之后换行")
+		near(r5.position.x, r1.position.x, 0.5, "二阶回到第一列")
 		near(r0.position.x, r1.position.x, 0.5, "零阶与一阶左对齐")
 		ok(r1.end.x < r2.position.x and r2.end.x < r3.position.x, "三列从左到右不重叠")
 
 		# 将领没有图标 → 编号占位；单位 / 科技用金线蒙版
-		eq(roster.tile_placeholder(g0), "0", "开局将领的占位编号")
-		eq(roster.tile_placeholder(roster.general_buttons()[9]), "9", "三阶将领的占位编号")
-		ok(roster.tile_icon_mask(g0) == "", "将领没有图标蒙版")
-		ok(g0.has_node("PlaceholderIcon"), "将领磁贴用文字占位图标")
-		ok(not g0.has_node("Icon"), "将领磁贴不画金线图标")
+		# ★★ 2026.11：将领也有图像素材了 —— 暂时用**所属兵种**的图标占位
+		eq(roster.tile_placeholder(g0), "", "★★ 将领磁贴不再用编号占位")
+		ok(roster.tile_icon_mask(g0) != "", "★★ 将领磁贴有图标蒙版（兵种图标占位）")
+		ok(roster.tile_icon_mask(roster.general_buttons()[9]) != "",
+			"…三阶将领也有")
+		ok(g0.has_node("Icon"), "…画的是金线图标")
+		ok(not g0.has_node("PlaceholderIcon"), "…不再用文字占位图标")
+
+		# ★★ 2026.11：长按将领磁贴 = 设为 / 取消出战（倒三角指示）。
+		var hold_tile: Button = roster.general_buttons()[0]     # 将领 0（默认勾满 → 已出战）
+		ok(roster.deploy_mark_of(hold_tile) != null, "★★ 将领磁贴带一枚出战倒三角")
+		ok(roster.is_tile_deployed(hold_tile), "★★ 默认勾满：将领 0 已设为出战")
+		ok(not roster.is_tile_deployed(roster.general_buttons()[4]),
+			"…新加的「帝国骑手」默认没勾（不在现有 10 位里）")
+		ok(hold_tile.has_node("DeployMark"), "倒三角是磁贴的子节点（嵌在按钮里）")
+		# 短按 = 打开详情（下面的用例还会验一遍）；长按 = 切换出战、不打开详情。
+		roster.clear_selection()
+		pp.detail().clear()
+		hold_tile.button_down.emit()
+		await _wait_sec(0.35)
+		ok(hold_tile.scale.x < 0.98, "按住时磁贴开始缩小（%.3f）" % hold_tile.scale.x)
+		await _wait_sec(0.75)
+		ok(not roster.is_tile_deployed(hold_tile), "★★ 长按到阈值 → 取消出战（倒三角消失）")
+		hold_tile.button_up.emit()
+		await _wait_sec(0.25)
+		ok(not pp.detail().has_detail(), "★★ 长按触发后松手不打开左侧详情")
+		ok(absf(hold_tile.scale.x - 1.0) <= 0.02, "…磁贴回弹到原大小")
+		# 再长按一次 → 又设为出战
+		hold_tile.button_down.emit()
+		await _wait_sec(0.75)
+		ok(roster.is_tile_deployed(hold_tile), "★★ 再长按一次 → 重新设为出战")
+		hold_tile.button_up.emit()
+		await _wait_sec(0.25)
 
 		# 单位 / 科技：与当前派系（默认帝国）的数据逐条对齐
 		var empire_units: Array = cfg.clan_recruit_list("empire")
@@ -208,31 +240,35 @@ func _test_enter_and_layout() -> void:
 			ok(nm.strip_edges() != "", "科技按钮没有空名字")
 			ok(roster.tile_icon_mask(b) != "", "帝国科技有图标蒙版：%s" % nm)
 
-		# ---- 点磁贴 → 左面板详情 + 选中金边 ----
+		# ---- 点磁贴 → 左面板详情 + 选中金色填充 ----
 		var d = pp.detail()
 		ok(d != null, "详情卡存在")
 		roster.scroll_to(0.0)
 		await _click_at(g1.get_global_rect().get_center())
-		await _wait_sec(0.15)
+		await _wait_sec(0.3)
 		ok(d.has_detail(), "点将领后左面板有详情")
 		eq(d.title_text(), "将领 1", "详情标题 = 将领 1")
 		ok(d.subtitle_text().find("一阶") >= 0, "详情副标题含一阶")
 		eq(String(d.last_item().get("kind", "")), "general", "详情类型 = general")
 		eq(roster.selected_tile(), g1, "被点的将领磁贴保持选中")
-		eq((g1.get_theme_stylebox("normal") as StyleBoxFlat).border_width_left, 2,
-			"选中磁贴是 2px 金边")
+		ok(FillRes.is_latched(g1), "★★ 选中的磁贴是「已选中」态")
+		ok(FillRes.fill_progress(g1) > 0.9, "★★ 选中 = 金色填充满格（不再只加 2px 描边）")
+		eq((g1.get_theme_stylebox("normal") as StyleBoxFlat).border_width_left, 1,
+			"★ 磁贴底纹仍是常态那一条 1px 金线（选中态完全由填充表达）")
 		var gtitles := _section_titles(d)
 		ok(gtitles.has("说明") and gtitles.has("属性") and gtitles.has("造价 / 招募"),
 			"将领详情含说明 / 属性 / 造价")
 
 		var ub: Button = roster.unit_buttons()[0]
 		ub.pressed.emit()
-		await _wait_sec(0.1)
+		await _wait_sec(0.3)
 		eq(String(d.last_item().get("kind", "")), "unit", "点单位后详情切到 unit")
 		eq(d.title_text(), roster.tile_label(ub), "单位详情标题")
 		eq(roster.selected_tile(), ub, "单位磁贴变为选中")
-		eq((g1.get_theme_stylebox("normal") as StyleBoxFlat).border_width_left, 1,
-			"上一枚磁贴恢复 1px")
+		ok(FillRes.is_latched(ub) and FillRes.fill_progress(ub) > 0.9,
+			"★★ 新的磁贴填满")
+		ok(not FillRes.is_latched(g1) and FillRes.fill_progress(g1) < 0.1,
+			"★★ 上一枚磁贴取消选中 → 填充退回")
 		var utitles := _section_titles(d)
 		ok(utitles.has("说明") and utitles.has("造价 / 招募"), "单位详情含说明 / 造价")
 
@@ -320,33 +356,69 @@ func _test_enter_and_layout() -> void:
 			"向上拖动列表确实滚动了（%.0f px）" % roster.logical_offset())
 		eq(deck.current_page(), "prepare", "拖动列表不跳页")
 		ok(not drag_btn.is_pressed(), "拖动后原按钮不再停在按下态")
-		ok(FillRes.fill_progress(drag_btn) < 0.1, "拖动后原按钮的金色已退回")
+		ok(FillRes.fill_progress(drag_btn) < 0.1, "拖动后原按钮没有被误选中（没有填充）")
 		near(drag_btn.scale.x, 1.0, 0.01, "拖动后按下缩放已复位")
 		roster.scroll_to(0.0)
 
-		# 列表项可点：悬停有金填充、移开退回；点击不跳页、不改派系
+		# 列表项：悬停只泛光（不再填金）；点击选中才填满，再点别的旧的退回
 		var gb: Button = roster.general_buttons()[0]
-		ok(FillRes.animator_of(gb) != null, "列表项挂了填充动效")
+		ok(FillRes.animator_of(gb) != null, "列表项挂了动效")
 		gb.mouse_entered.emit()
-		await _wait_sec(0.2)
-		ok(FillRes.fill_progress(gb) > 0.9, "悬停列表项时金色填充")
+		await _wait_sec(0.25)
+		ok(FillRes.glow_progress(gb) > 0.9, "★★ 悬停列表项时四边泛光")
+		ok(FillRes.fill_progress(gb) < 0.05, "★★ 悬停不再填金（只有选中才填）")
 		gb.mouse_exited.emit()
-		await _wait_sec(0.2)
-		ok(FillRes.fill_progress(gb) < 0.1, "移开后金色退回")
+		await _wait_sec(0.25)
+		ok(FillRes.glow_progress(gb) < 0.1, "移开后泛光退回")
 		await _click_at(gb.get_global_rect().get_center())
-		await _wait_sec(0.15)
+		await _wait_sec(0.3)
 		eq(deck.current_page(), "prepare", "点列表项不跳页（暂无点击逻辑）")
 		eq(pp.selected_faction(), "dynasty", "点列表项不改派系")
+		ok(FillRes.is_latched(gb), "★★ 选中的磁贴是「已选中」态")
+		ok(FillRes.fill_progress(gb) > 0.9, "★★ 选中 = 金色填充满格")
+		var gb2: Button = roster.general_buttons()[1]
+		await _click_at(gb2.get_global_rect().get_center())
+		await _wait_sec(0.3)
+		ok(FillRes.is_latched(gb2) and FillRes.fill_progress(gb2) > 0.9,
+			"★★ 点另一枚磁贴 → 新的那枚填满")
+		ok(not FillRes.is_latched(gb) and FillRes.fill_progress(gb) < 0.1,
+			"★★ 旧的磁贴取消选中 → 填充退回")
+
+	# ★★ 2026.11.5：**将领按派系归属过滤**（一位将领可以属于多个派系）。
+	#   默认三派全勾 ⇒ 两派看到的是同一份；这里把将领 1 改成只属王朝，
+	#   帝国那一页就该少一位、王朝那一页还是 10 位。
+	cfg.data["unit"]["general"]["factions"][0] = ["dynasty"]
+	cfg._cache_scalars()                        # 重算缓存的唯一入口（测试里也走它）
+	if roster != null:
+		roster.set_faction("empire", true)
+		eq(roster.general_buttons().size(), 11, "★★ 只勾王朝的将领不出现在帝国备战页")
+		var empire_labels: Array = []
+		for b in roster.general_buttons():
+			empire_labels.append(roster.tile_label(b))
+		ok(not empire_labels.has("将领 1"), "…帝国页里没有「将领 1」")
+		ok(empire_labels.has("将领 2"), "…但将领 2 还在（它三派全勾）")
+		roster.set_faction("dynasty", true)
+		eq(roster.general_buttons().size(), 12, "★★ 王朝页里 12 位都在")
+		var dyn_labels: Array = []
+		for b in roster.general_buttons():
+			dyn_labels.append(roster.tile_label(b))
+		ok(dyn_labels.has("将领 1"), "…王朝页里有「将领 1」")
+	# 还原（后面的用例还要按默认配置看详情 / 返回）
+	cfg.data["unit"]["general"]["factions"][0] = ["native", "dynasty", "empire"]
+	cfg._cache_scalars()
+	if roster != null:
+		roster.set_faction(pp.selected_faction(), true)
 
 	# ---- 左侧轮播图：已渐隐并停表 ----
 	near(screen.art().modulate.a, 0.0, 0.01, "备战页：左侧轮播图已渐隐")
 	ok(not screen.art().is_running(), "备战页：轮播图停表（不再空转）")
 
-	# ---- 备战按钮：金色常驻 ----
+	# ---- 备战按钮：选中（金色填充）----
 	var btn: Button = mp.bottom_button(1)
-	ok(FillRes.is_latched(btn), "备战按钮锁成常驻金")
-	ok(FillRes.fill_progress(btn) >= 0.999, "备战按钮填满")
-	ok(not FillRes.is_latched(mp.bottom_button(0)), "自定义按钮不常驻")
+	ok(FillRes.is_latched(btn), "备战按钮是选中态")
+	await _wait_sec(0.3)
+	ok(FillRes.fill_progress(btn) >= 0.999, "★★ 备战按钮金色填充满格（切换时播填充）")
+	ok(not FillRes.is_latched(mp.bottom_button(0)), "自定义按钮不选中")
 
 	main.queue_free()
 	await process_frame
@@ -371,7 +443,7 @@ func _test_back() -> void:
 	near(screen.art().modulate.a, 1.0, 0.01, "左侧轮播图恢复")
 	ok(screen.art().is_running(), "轮播图恢复走表")
 	var btn: Button = mp.bottom_button(1)
-	ok(not FillRes.is_latched(btn), "返回后解除常驻金")
+	ok(not FillRes.is_latched(btn), "返回后解除选中")
 	await _wait_sec(0.3)
 	ok(FillRes.fill_progress(btn) <= 0.01, "金色填充已反向渐出")
 

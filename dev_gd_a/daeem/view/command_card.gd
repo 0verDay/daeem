@@ -108,6 +108,8 @@ func setup() -> void:
 		#      当年它代表「填满时仍用白字」，而白字压金**读不出来** ——
 		#      那正是用户报的「3×3 的字被金色填充遮挡」，别再把它当成有效开关。
 		FillButtonRes.set_prefer_light(cell, true)
+		# ★ 建出来先当「空槽」：不参与泛光 / 点击闪光，等 `set_entries()` 说有内容再打开。
+		FillButtonRes.set_available(cell, false)
 		add_child(cell)
 
 		# ★★ 金线图标层：**铺满整格**、不吃鼠标。
@@ -251,6 +253,19 @@ func set_entries(list: Array) -> void:
 				UiStyleRes.text() if ready else UiStyleRes.text_faint())
 			_cell_style(cell, ready)
 			cell.disabled = not ready
+			# ★ 有内容 ⇒ 参与动效（从空槽变成有内容的那一帧要把它重新打开）。
+			FillButtonRes.set_available(cell, true)
+			# ★★ 建造命令的「选中」：build 条目带 `active`（= 权威的 build_type 就是它）
+			#   ⇒ 金色填满，与页签当前页 / 科技启用同一条选中口径。
+			#   ★ 建造格不再要「点击一闪」：选中填充本身就是点击反馈。
+			#   ★★ 单位页的招募格也不要「点击一闪」（用户口径：局内的单位按钮
+			#     「点击后不需要金色填充闪过」）—— 它排进队列，右侧队列 / 红字就是反馈。
+			#   其它页（操作 / 招募将领）的格子照旧闪。
+			var kind := String(e2.get("type", ""))
+			var is_build: bool = kind == "build"
+			var is_unit: bool = kind == "recruit"
+			FillButtonRes.set_latched(cell, bool(e2.get("active", false)))
+			FillButtonRes.set_click_flash(cell, not (is_build or is_unit))
 			# ★★ 置灰的格子**照旧有悬停反馈**，只是填的是**灰**（见 view/fill_button.gd）：
 			#   填充层自己看 `disabled` 换档，所以这里**不要**再 `set_available(false)`
 			#   —— 那会把动效整个关掉，鼠标停上去一点反应都没有（与需求的「灰色填充」相反）。
@@ -263,6 +278,12 @@ func set_entries(list: Array) -> void:
 			FillButtonRes.on_fill_text(cell, _key_labels[i], UiStyleRes.text_faint())
 			_cell_style(cell, false)
 			cell.disabled = false
+			# ★★ 2026.11.5：**空格子不参与任何动效**（与科技格同一条口径）——
+			#   它没有内容、点了也不做事（`activate_index` 直接 false），
+			#   泛光 / 点击闪光都会让它看起来像个「能按的按钮」。
+			FillButtonRes.set_latched(cell, false)
+			FillButtonRes.set_click_flash(cell, true)
+			FillButtonRes.set_available(cell, false)
 
 
 ## 第 i 格**名字那一行**的排版：有图标 → 压到最下面一窄条、字号小一档；

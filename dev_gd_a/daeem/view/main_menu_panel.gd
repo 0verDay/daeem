@@ -120,6 +120,10 @@ func setup(p_cfg, p_font: Font) -> void:
 		var b := make_block_button("BottomBtn%d" % i, String(bottoms[i]), 30,
 			MenuThemeRes.bottom_button())
 		b.pressed.connect(_on_bottom_pressed.bind(i))
+		# ★★ 「备战」（第 1 颗）有自己的点击反馈（打开备战页 = 选中填满、返回 = 退回）——
+		#   关掉「点击闪光」，否则两边会抢同一份 `_fill`。
+		if i == 1:
+			FillButtonRes.set_click_flash(b, false)
 		_bottom_bar.add_child(b)
 		_bottom_buttons.append(b)
 
@@ -206,14 +210,14 @@ func _on_bottom_pressed(index: int) -> void:
 			pass
 
 
-## ★★ 备战页打开 / 关闭时，把「备战」锁成 / 解除常驻满金。
+## ★★ 备战页打开 / 关闭时，把「备战」锁成 / 解除「已选中」。
 ##
-## 锁定时 FillAnimator 会把进度钉在 1 并换更亮的一档金（见 fill_button.gd），
+## 锁定时播一次金色填充到满格（0.12s，与其它「选中」按钮同一条口径；见 fill_button.gd），
 ## 于是主菜单整体上滑、只剩顶部动作条时，备战那一半仍是金色的 —— 用户口径
 ## 「备战按钮的金色填充保持」。清锁时走 0.08s 的反向渐出，回到普通态。
 ##
 ## ★ 清锁前先显式作废悬停：主面板是被补间拖着上下移动的，指针未必会收到
-## `mouse_exited`；那条过期的悬停态会让金色退不下去。
+## `mouse_exited`；那条过期的悬停态会让泛光退不下去。
 func set_prepare_latched(on: bool) -> void:
 	if _bottom_buttons.size() <= 1:
 		return

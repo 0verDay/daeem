@@ -1,4 +1,8 @@
-## test_fill_button.gd —— ★★ 「按钮悬停：琥珀自下而上填充 + 渐出 + 启用常驻增亮」的用例
+## test_fill_button.gd —— ★★ 按钮两种动效的用例（2026.11.5 重做）：
+##   · 悬停 / 按住 → **四边向中心泛光**（不再填金、不改字色）；
+##   · 点击切换选中 → **金色自下而上填满**，取消选中 → 反向退回；
+##   · 打开界面时已经选中 → 直接满格（`instant = true`）；
+##   · 普通按钮按下不再「瞬间补满」（旧 press_snap 已删除）。
 extends "res://tests/test_case.gd"
 
 const FillButtonRes = preload("res://view/fill_button.gd")
@@ -17,19 +21,22 @@ func _initialize() -> void:
 func _cases() -> void:
 	_test_attach()
 	_test_fill_layer_is_behind_host()
-	_test_hover_fill()
-	_test_drain_is_gradual()
-	_test_press_holds_hover()
+	_test_glow_params()
+	_test_hover_glows_not_fills()
+	_test_glow_drains()
+	_test_press_holds_glow()
 	_test_press_drag_out_release_drains()
-	_test_press_release_inside_keeps_hover()
-	_test_reenter_while_pressed_keeps_hover()
-	_test_pressed_snaps_full()
-	_test_latched()
+	_test_press_release_inside_keeps_glow()
+	_test_reenter_while_pressed_keeps_glow()
+	_test_click_flash()
+	_test_click_flash_skips()
+	_test_latched_animates()
+	_test_latched_instant()
 	_test_gradient()
 	_test_text_on_fill()
 	_test_host_text_flip_ignores_container_position()
 	_test_legible_across_animation()
-	_test_disabled_fills_grey()
+	_test_disabled_glows_grey()
 	_test_animation_switch()
 	_test_text_reverts_after_drain()
 	_test_fill_underlay_is_transparent()
@@ -46,13 +53,14 @@ func _test_attach() -> void:
 	ok(anim != null, "attach_text() 返回了动画器")
 	ok(b.has_meta(FillButtonRes.META), "★ 动画器记在按钮的元数据里（画的时候就是靠它找回来）")
 	ok(anim == FillButtonRes.animator_of(b), "animator_of() 取回的是同一个动画器")
-	eq(FillButtonRes.fill_progress(b), 0.0, "刚开始是**空的**（需求：由空到……）")
-	ok(not FillButtonRes.is_latched(b), "刚开始不是「已启用」")
+	eq(FillButtonRes.fill_progress(b), 0.0, "刚开始**没被选中**（没有金色填充）")
+	eq(FillButtonRes.glow_progress(b), 0.0, "刚开始也**没有泛光**")
+	ok(not FillButtonRes.is_latched(b), "刚开始不是「已选中」")
 
 	var again := FillButtonRes.attach_text(b)
 	ok(again == anim, "★ 重复 attach_text() 不会挂第二层（同一个动画器）")
 	eq(b.get_node_or_null("FillAnimator") == anim, true, "按钮下面只有一层 FillAnimator")
-	eq(b.get_meta("fill_draw"), true, "★ 自绘填充的钩子只接一次")
+	eq(b.get_meta("fill_draw"), true, "★ 自绘层的钩子只接一次")
 
 	eq(b.mouse_entered.get_connections().size(), 1, "★ mouse_entered 只连了一次")
 	eq(b.mouse_exited.get_connections().size(), 1, "★ mouse_exited 只连了一次")
@@ -64,217 +72,297 @@ func _test_fill_layer_is_behind_host() -> void:
 	b.text = "test"
 	var anim := FillButtonRes.attach_text(b)
 
-	eq(anim.get_parent(), b, "★ 填充层是宿主按钮的**子节点**（子节点才有自己的绘制期）")
+	eq(anim.get_parent(), b, "★ 动效层是宿主按钮的**子节点**（子节点才有自己的绘制期）")
 	ok(anim.show_behind_parent,
-		"★★ 填充层 `show_behind_parent` —— 画在宿主底纹 / 文字**之前**，"
-		+ "否则那片琥珀会把底纹和文字一起糊掉（用户报的那个 bug）")
+		"★★ 动效层 `show_behind_parent` —— 画在宿主底纹 / 文字**之前**，"
+		+ "否则金色会把底纹和文字一起糊掉（历史 bug）")
 	eq(b.draw.get_connections().size(), 0,
-		"★★ 宿主**没有**接 `draw` 信号（接那里 = 画在文字之后 = 旧的那条 bug）")
-	ok(b.has_meta("fill_draw"), "★ 仍然记着「这颗按钮挂了填充层」")
+		"★★ 宿主**没有**接 `draw` 信号（接那里 = 画在文字之后）")
+	ok(b.has_meta("fill_draw"), "★ 仍然记着「这颗按钮挂了动效层」")
 	ok(is_equal_approx(anim.anchor_left, 0.0) and is_equal_approx(anim.anchor_right, 1.0)
 			and is_equal_approx(anim.anchor_top, 0.0) and is_equal_approx(anim.anchor_bottom, 1.0),
-		"★ 填充层铺满宿主（锚点铺满 = 与按钮同一块矩形）")
+		"★ 动效层铺满宿主（锚点铺满 = 与按钮同一块矩形）")
 	eq(anim.mouse_filter, Control.MOUSE_FILTER_IGNORE,
-		"★ 填充层不吃鼠标（点按钮还是点在宿主编上）")
+		"★ 动效层不吃鼠标（点按钮还是点在宿主上）")
 
 	b.queue_free()
 
-func _test_host_text_flip_ignores_container_position() -> void:
-	var b := _new_button()
-	b.size = Vector2(120.0, 40.0)
-	b.position = Vector2(0.0, 300.0)
-	var anim := FillButtonRes.attach_text(b)
-	FillButtonRes.set_base_font_color(b, BASE_TEXT)
+## ★★ 泛光的四张边光贴图与参数（「四边向中心泛光」的原料）。
+func _test_glow_params() -> void:
+	ok(FillButtonRes.glow_alpha() > 0.0, "泛光有不透明度（%.2f）" % FillButtonRes.glow_alpha())
+	var share := FillButtonRes.glow_band_share()
+	ok(share >= 0.05 and share <= 0.45, "泛光带比例在可用区间（%.2f）" % share)
+	ok(FillButtonRes.glow_in_sec() > 0.0, "亮起时长 > 0（%.2f）" % FillButtonRes.glow_in_sec())
+	ok(FillButtonRes.glow_out_sec() > 0.0, "熄灭时长 > 0（%.2f）" % FillButtonRes.glow_out_sec())
 
-	near(FillButtonRes.FillAnimator.coverage_of(b, b, 0.2), 0.4, 0.001,
-		"★★ 宿主那行字的覆盖度按**本地中心**算（不再受 `position.y` 影响）")
-	near(FillButtonRes.FillAnimator.coverage_of(b, b, 0.5), 1.0, 0.001,
-		"★ 琥珀盖到字心时覆盖度 = 1.0")
+	var expected_from := [Vector2(0.0, 0.0), Vector2(0.0, 1.0), Vector2(0.0, 0.0), Vector2(1.0, 0.0)]
+	for e in 4:
+		var tex := FillButtonRes.glow_texture(e)
+		ok(tex is GradientTexture2D, "第 %d 条边的贴图是渐变（不是一块死色）" % e)
+		var gt := tex as GradientTexture2D
+		if gt != null and gt.gradient != null:
+			eq(gt.fill_from, expected_from[e], "★★ 第 %d 条边从**自己的边**往中心衰减" % e)
+			var at_edge: Color = gt.gradient.sample(0.0)
+			var at_center: Color = gt.gradient.sample(1.0)
+			near(at_edge.a, 1.0, 0.01, "★ 边上是满的（第 %d 条）" % e)
+			near(at_center.a, 0.0, 0.01, "★★ 到中心衰减到 0（四边向中心）")
+	ok(FillButtonRes.glow_texture(0) == FillButtonRes.glow_texture(0),
+		"★ 同一张边光贴图只烘一次（静态缓存）")
 
-	anim.set_fill(0.2)
-	eq(b.get_theme_color("font_color"), BASE_TEXT,
-		"★★ 蓝只填到 20% 时字仍是原色（不会「蓝还没扫到、字先变黑」）")
-	anim.set_fill(0.5)
-	ok(b.get_theme_color("font_color") != BASE_TEXT,
-		"★ 琥珀盖过字心之后才翻到填充档（白 → 黑，与页签栏同一条口径）")
-
-	b.position = Vector2.ZERO
-	near(FillButtonRes.FillAnimator.coverage_of(b, b, 0.5), 1.0, 0.001,
-		"★ 挪到 (0,0) 之后覆盖度不变（这条口径只认按钮自己的高度）")
-
-	b.queue_free()
-
-func _test_hover_fill() -> void:
+func _test_hover_glows_not_fills() -> void:
 	var b := _new_button()
 	var anim := FillButtonRes.attach_text(b)
 
 	b.mouse_entered.emit()
 	eq(FillButtonRes.fill_progress(b), 0.0,
-		"★ 悬停信号本身不立刻改进度（改的是**目标**，进度由动画逐帧追）")
+		"★★ 悬停**不再**产生金色填充（需求：只有点击切换选中才填）")
+	eq(FillButtonRes.glow_progress(b), 0.0,
+		"★ 悬停信号本身不立刻变亮（改的是**目标**，强度由动画逐帧追）")
 
-	anim._process(DT * 6.0)
-	var mid := FillButtonRes.fill_progress(b)
+	anim._process(DT * 3.0)
+	var mid := FillButtonRes.glow_progress(b)
 	ok(mid > 0.0 and mid < 1.0,
-		"★ 半程时进度在中间（%.2f）—— 是**填上去的过程**，不是一帧跳满" % mid)
+		"★ 半程时泛光在中间（%.2f）—— 是**渐亮**，不是一帧跳到最亮" % mid)
+	eq(FillButtonRes.fill_progress(b), 0.0, "★ 半程也一点金都没有")
 
-	var frames: int = _pump(anim, 40)
-	ok(FillButtonRes.fill_progress(b) >= 0.999, "★ 鼠标停上去 → 填到满格（%d 帧内）" % frames)
+	var frames: int = _pump_glow(anim, 60)
+	ok(FillButtonRes.glow_progress(b) >= 0.999,
+		"★ 鼠标停上去 → 泛光到最亮（%d 帧内）" % frames)
 	anim._process(DT)
-	ok(FillButtonRes.fill_progress(b) >= 0.999, "★ 填满之后就停在满格（不会溢出去）")
+	ok(FillButtonRes.glow_progress(b) >= 0.999, "★ 亮到最亮就停住（不会溢出去）")
+	eq(FillButtonRes.fill_progress(b), 0.0, "★★ 全程不产生金色填充")
 
 	b.queue_free()
 
-func _test_drain_is_gradual() -> void:
+func _test_glow_drains() -> void:
 	var b := _new_button()
 	var anim := FillButtonRes.attach_text(b)
 	b.mouse_entered.emit()
-	_pump(anim, 40)
-	ok(FillButtonRes.fill_progress(b) >= 0.999, "（前提）先填满")
+	_pump_glow(anim, 60)
+	ok(FillButtonRes.glow_progress(b) >= 0.999, "（前提）先亮到最亮")
 
 	b.mouse_exited.emit()
 	anim._process(DT)                          # 只走一帧
-	var after_one := FillButtonRes.fill_progress(b)
+	var after_one := FillButtonRes.glow_progress(b)
 	ok(after_one < 0.999 and after_one > 0.0,
-		"★★ 移开一帧之后**还在退**（%.2f）—— 是渐出，不是瞬间清零" % after_one)
+		"★★ 移开一帧之后**还在退**（%.2f）—— 是渐暗，不是瞬间熄灭" % after_one)
 
-	var frames: int = _pump(anim, 40)
-	ok(FillButtonRes.fill_progress(b) <= 0.001, "★ 渐出到头 = 空（再用 %d 帧）" % frames)
+	var frames: int = _pump_glow(anim, 60)
+	ok(FillButtonRes.glow_progress(b) <= 0.001, "★ 渐暗到头 = 全灭（再用 %d 帧）" % frames)
 
-	ok(FillButtonRes.DRAIN_TIME < FillButtonRes.FILL_TIME,
-		"★ 渐出时长比填充短（%.2f < %.2f）" % [FillButtonRes.DRAIN_TIME, FillButtonRes.FILL_TIME])
+	ok(FillButtonRes.glow_in_sec() < FillButtonRes.glow_out_sec(),
+		"★ 亮起比熄灭快（%.2f < %.2f）—— 一按下就亮，移开稍缓一点不至于闪"
+		% [FillButtonRes.glow_in_sec(), FillButtonRes.glow_out_sec()])
 
 	b.queue_free()
 
-func _test_press_holds_hover() -> void:
+func _test_press_holds_glow() -> void:
 	var b := _new_button()
 	var anim := FillButtonRes.attach_text(b)
-	anim.set_fill(0.4)
+	b.mouse_entered.emit()
+	_pump_glow(anim, 60)
 
 	b.mouse_exited.emit()
 	b.button_down.emit()
 	anim._process(DT)
-	ok(FillButtonRes.fill_progress(b) > 0.4,
-		"★ 按下的一瞬间不会把悬停抖掉（进度继续往上）")
+	ok(FillButtonRes.glow_progress(b) > 0.9,
+		"★ 按下的一瞬间不会把泛光抖掉（指针钉在按钮上）")
 
 	b.queue_free()
 
 
-## ★★ 回归（用户报的 bug）：长按命令卡某一格 → 把鼠标移到按钮外 → 松手，
-##   那一格的金色填充必须渐出，**不能永远停在满格**。
+## ★★ 回归（用户报过的 bug）：长按某一格 → 把鼠标移到按钮外 → 松手，
+##   那一格的光必须渐暗，**不能永远亮着**。
 ##
 ## 旧实现的顺序是：`mouse_exited`（hover=false）→ `button_up`（无条件写回 true）
-##   ⇒ 之后再没有 `mouse_exited` 来清它，填充就卡住了。
+##   ⇒ 之后再没有 `mouse_exited` 来清它，光就卡住了。
 func _test_press_drag_out_release_drains() -> void:
 	var b := _new_button()
 	var anim := FillButtonRes.attach_text(b)
 	b.mouse_entered.emit()
-	_pump(anim, 40)
-	ok(FillButtonRes.fill_progress(b) >= 0.999, "（前提）悬停先填满")
+	_pump_glow(anim, 60)
+	ok(FillButtonRes.glow_progress(b) >= 0.999, "（前提）悬停先亮到底")
 
 	b.button_down.emit()
 	b.mouse_exited.emit()
-	_pump(anim, 40)
-	ok(FillButtonRes.fill_progress(b) <= 0.001, "（前提）按住时移出 → 已渐出到空")
+	_pump_glow(anim, 60)
+	ok(FillButtonRes.glow_progress(b) <= 0.001, "（前提）按住时移出 → 已渐暗到全灭")
 
 	b.button_up.emit()
-	_pump(anim, 40)
-	ok(FillButtonRes.fill_progress(b) <= 0.001,
-		"★★ 长按后移出按钮再松手 → 填充保持为空（不再卡在满格）")
+	_pump_glow(anim, 60)
+	ok(FillButtonRes.glow_progress(b) <= 0.001,
+		"★★ 长按后移出按钮再松手 → 光保持全灭（不再卡在最亮）")
 	ok(not anim._hovered, "★ 松手时指针在外 ⇒ 不把悬停态钉回 true")
 	ok(not anim._left_while_pressed, "★ 松开后「按住期间离开过」的标记已清掉")
 
-	# 再移回来：照常重新填满（修 bug 不能把正常悬停一起弄坏）。
+	# 再移回来：照常重新亮起（修 bug 不能把正常悬停一起弄坏）。
 	b.mouse_entered.emit()
-	_pump(anim, 40)
-	ok(FillButtonRes.fill_progress(b) >= 0.999, "★ 重新移入 → 照常填满")
+	_pump_glow(anim, 60)
+	ok(FillButtonRes.glow_progress(b) >= 0.999, "★ 重新移入 → 照常亮起")
+	eq(FillButtonRes.fill_progress(b), 0.0, "★ 而且仍然没有金色填充")
 	b.queue_free()
 
 
-## 对照组：按住后**原地**松手，悬停仍然成立（填充保持满格，不能误渐出）。
-func _test_press_release_inside_keeps_hover() -> void:
+## 对照组：按住后**原地**松手，悬停仍然成立（光保持最亮，不能误渐暗）。
+func _test_press_release_inside_keeps_glow() -> void:
 	var b := _new_button()
 	var anim := FillButtonRes.attach_text(b)
 	b.mouse_entered.emit()
-	_pump(anim, 40)
+	_pump_glow(anim, 60)
 	b.button_down.emit()
 	b.button_up.emit()
-	_pump(anim, 10)
-	ok(FillButtonRes.fill_progress(b) >= 0.999,
-		"★★ 按住后原地松手 → 悬停仍成立（填充保持满格）")
+	_pump_glow(anim, 10)
+	ok(FillButtonRes.glow_progress(b) >= 0.999,
+		"★★ 按住后原地松手 → 悬停仍成立（光保持最亮）")
 	ok(anim._hovered, "★ 原地松手不会把悬停误清掉")
 	b.queue_free()
 
 
 ## 按住期间移出、**又移回**按钮再松手：仍然算悬停（离开的标记要在重新进入时清掉）。
-func _test_reenter_while_pressed_keeps_hover() -> void:
+func _test_reenter_while_pressed_keeps_glow() -> void:
 	var b := _new_button()
 	var anim := FillButtonRes.attach_text(b)
 	b.mouse_entered.emit()
-	_pump(anim, 40)
+	_pump_glow(anim, 60)
 	b.button_down.emit()
 	b.mouse_exited.emit()
 	b.mouse_entered.emit()
 	b.button_up.emit()
-	_pump(anim, 10)
-	ok(FillButtonRes.fill_progress(b) >= 0.999,
+	_pump_glow(anim, 10)
+	ok(FillButtonRes.glow_progress(b) >= 0.999,
 		"★★ 按住 → 移出 → 又移回 → 松手：悬停仍成立")
 	ok(anim._hovered, "★ 重新进入会清掉「离开过」的标记")
 	b.queue_free()
 
 
-## ★★ 兜底（用户要求）：**确认按下**（`pressed` 信号）的那一下，背景必须补到满格。
-##
-## 为什么要这条：正向填充是 FILL_TIME（本版 0.12s）。快速点按 / 触摸时可能刚填到一半就抬手，
-##   玩家「明明按了」却看不到满格反馈。这一下把当前值补到 1.0，保证「按了就有反馈」；
-##   之后该锁的锁、该渐出的渐出（由 `_goal()` 决定，本函数不改目标）。
-## ★ 本版不再一帧硬跳：走 `ui.press_snap_sec`（默认 0.07s）快速补满，
-##   再保持 `ui.press_snap_hold_sec`（默认 0.06s）后才按目标回落。
-func _test_pressed_snaps_full() -> void:
+## ★★ 点击闪光：普通动作按钮点一下 → 金色**快速填满再退回**（一次性反馈，不是选中）。
+func _test_click_flash() -> void:
 	var b := _new_button()
 	var anim := FillButtonRes.attach_text(b)
-	# 先让它停在「按下去、动画只跑了一半」的位置
-	anim.set_fill(0.35)
+	FillButtonRes.set_base_font_color(b, BASE_TEXT)
+
+	ok(not FillButtonRes.is_flashing(b), "（前提）刚开始没有闪光")
 	b.pressed.emit()
-	ok(FillButtonRes.fill_progress(b) < 0.999,
-		"★★ 确认按下不再一帧硬跳（当前 %.2f）" % FillButtonRes.fill_progress(b))
-	anim._process(0.03)
+	ok(FillButtonRes.is_flashing(b), "★★ 点击（pressed）触发闪光")
+	eq(FillButtonRes.fill_progress(b), 0.0, "★ 闪光从当前值（空）开始涨")
+
+	anim._process(DT)
 	var mid := FillButtonRes.fill_progress(b)
-	ok(mid > 0.35 and mid < 1.0,
-		"★ 正在快速补满（%.2f）" % mid)
-	anim._process(0.1)
+	ok(mid > 0.0 and mid < 1.0, "★ 半程在中间（%.2f）—— 是快速填上去的过程" % mid)
+
+	var frames := 0
+	while FillButtonRes.fill_progress(b) < 0.999 and frames < 60:
+		anim._process(DT)
+		frames += 1
 	ok(FillButtonRes.fill_progress(b) >= 0.999,
-		"★★ 极短时间内补到满格（当前 %.2f）" % FillButtonRes.fill_progress(b))
-	# 兜底不改目标：没有悬停 / 没有 latched ⇒ 之后开始反向渐出
-	ok(anim._goal() == 0.0, "★ 兜底只补当前值，不改目标（该渐出还是会渐出）")
+		"★ 很快填到满格（%d 帧，%.2fs）"
+		% [frames, FillButtonRes.click_flash_in_sec()])
+	eq(b.get_theme_color("font_color"), BASE_TEXT,
+		"★★ 闪光期间**不翻字色**（避免满格那一两帧文字闪黑）")
+
+	var tail := 0
+	while FillButtonRes.is_flashing(b) and tail < 60:
+		anim._process(DT)
+		tail += 1
+	ok(not FillButtonRes.is_flashing(b), "★★ 闪完自动结束（再用 %d 帧）" % tail)
+	ok(FillButtonRes.fill_progress(b) <= 0.001, "★★ 反向退回空（不是停在满格）")
+	eq(b.get_theme_color("font_color"), BASE_TEXT, "★ 退回后字色仍是原色")
+
+	ok(FillButtonRes.click_flash_in_sec() > 0.0
+			and FillButtonRes.click_flash_out_sec() > 0.0,
+		"★ 两个时长都读到了配置（%.2f / %.2f）"
+		% [FillButtonRes.click_flash_in_sec(), FillButtonRes.click_flash_out_sec()])
+
 	b.queue_free()
 
-func _test_latched() -> void:
+
+## 哪些按钮**不**闪：自己有点击反馈的（latched）、禁用的、关掉动效的、显式关掉闪光的。
+func _test_click_flash_skips() -> void:
+	var b := _new_button()
+	var anim := FillButtonRes.attach_text(b)
+
+	# ① 已选中：本来就是满格，闪不起来
+	FillButtonRes.set_latched(b, true, true)
+	b.pressed.emit()
+	ok(not FillButtonRes.is_flashing(b), "★★ 已选中的按钮点击不闪（避免和选中填充打架）")
+	ok(FillButtonRes.fill_progress(b) >= 0.999, "★ 选中态仍然是满格")
+	FillButtonRes.set_latched(b, false, true)
+
+	# ② 禁用
+	b.disabled = true
+	b.pressed.emit()
+	ok(not FillButtonRes.is_flashing(b), "★★ 禁用按钮点击不闪")
+	b.disabled = false
+
+	# ③ 显式关掉（页签 / 科技启用 / 备战磁贴 / 面板已打开会这么设）
+	FillButtonRes.set_click_flash(b, false)
+	b.pressed.emit()
+	ok(not FillButtonRes.is_flashing(b), "★★ set_click_flash(false) 之后不闪")
+	FillButtonRes.set_click_flash(b, true)
+
+	# ④ 关掉动效总开关
+	ThemeRes.set_animations_enabled(false)
+	b.pressed.emit()
+	ok(not FillButtonRes.is_flashing(b), "★★ 动效总开关关掉时不闪（没有过渡可看）")
+	ThemeRes.set_animations_enabled(true)
+
+	# ⑤ 关掉之后（重新打开）仍然能闪 —— 别把开关做成一次性的
+	b.pressed.emit()
+	ok(FillButtonRes.is_flashing(b), "★ 重新打开之后照常能闪")
+	anim.set_click_flash(false)
+	ok(not FillButtonRes.is_flashing(b), "★ 关掉开关会把正在跑的闪光一起取消")
+	b.queue_free()
+
+func _test_latched_animates() -> void:
 	var b := _new_button()
 	var anim := FillButtonRes.attach_text(b)
 
 	FillButtonRes.set_latched(b, true)
-	ok(FillButtonRes.is_latched(b), "★ set_latched(true) 之后是锁定态")
-	var frames: int = _pump(anim, 40)
+	ok(FillButtonRes.is_latched(b), "★ set_latched(true) 之后是选中态")
+	eq(FillButtonRes.fill_progress(b), 0.0,
+		"★★ 选中**不立刻满格**（要播填充动画；这是本版与旧版的关键差别）")
+	anim._process(DT * 2.0)
+	var mid := FillButtonRes.fill_progress(b)
+	ok(mid > 0.0 and mid < 1.0, "★ 半程时填充在中间（%.2f）" % mid)
+
+	var frames: int = _pump_fill(anim, 60)
 	ok(FillButtonRes.fill_progress(b) >= 0.999,
-		"★ 锁定态自己填到满格（%d 帧）——「点了启用就一直亮着」" % frames)
+		"★★ 选中 → 金色填到满格（%d 帧）——「点了就一直亮着」" % frames)
 
 	b.mouse_exited.emit()
-	_pump(anim, 10)
-	ok(FillButtonRes.fill_progress(b) >= 0.999, "★★ 鼠标移开也不回落（已启用 = 常驻）")
+	_pump_fill(anim, 10)
+	ok(FillButtonRes.fill_progress(b) >= 0.999, "★★ 鼠标移开也不回落（已选中 = 常驻）")
 
 	var normal_lum: float = ThemeRes.fill_bottom().get_luminance()
 	var latched_lum: float = ThemeRes.fill_bottom_latched().get_luminance()
 	ok(latched_lum > normal_lum + 0.05,
-		"★★ 已启用那一档明显更亮（%.3f → %.3f）——需求：点击启用时亮度稍微变大"
+		"★★ 选中那一档明显更亮（%.3f → %.3f）——「点击启用时亮度变大」"
 		% [normal_lum, latched_lum])
 	ok(ThemeRes.fill_top_latched().get_luminance() > ThemeRes.fill_top().get_luminance(),
 		"★ 渐变的两端都跟着亮（不是只有底边）")
 
 	FillButtonRes.set_latched(b, false)
-	ok(not FillButtonRes.is_latched(b), "set_latched(false) 之后不是锁定态")
-	_pump(anim, 40)
-	ok(FillButtonRes.fill_progress(b) <= 0.001, "★ 弃用之后渐出退回空")
+	ok(not FillButtonRes.is_latched(b), "set_latched(false) 之后不是选中态")
+	_pump_fill(anim, 60)
+	ok(FillButtonRes.fill_progress(b) <= 0.001, "★ 取消选中 → 反向退回空")
 
+	b.queue_free()
+
+## ★★ 打开界面时已经选中的按钮：直接满格，不播动画（`instant = true`）。
+func _test_latched_instant() -> void:
+	var b := _new_button()
+	var anim := FillButtonRes.attach_text(b)
+	FillButtonRes.set_base_font_color(b, BASE_TEXT)
+
+	FillButtonRes.set_latched(b, true, true)
+	eq(FillButtonRes.fill_progress(b), 1.0,
+		"★★ instant = true：不跑 `_process` 也已经是满格（无头 / 首帧读到的是真值）")
+	ok(b.get_theme_color("font_color") != BASE_TEXT,
+		"★ 满格那一帧字色就已经翻到压金档（不需要等下一帧）")
+
+	FillButtonRes.set_latched(b, false, true)
+	eq(FillButtonRes.fill_progress(b), 0.0, "★ 取消选中也可以直接清空")
+	eq(b.get_theme_color("font_color"), BASE_TEXT, "★ 字色当场回到原色")
 	b.queue_free()
 
 func _test_gradient() -> void:
@@ -293,14 +381,14 @@ func _test_gradient() -> void:
 			ok(top != bottom,
 				"★ 两端颜色**不同**（顶 %s / 底 %s）" % [str(top), str(bottom)])
 			ok(bottom.get_luminance() > top.get_luminance(),
-				"★ 底下那一端更亮（琥珀自下而上填进来，底边最实）")
+				"★ 底下那一端更亮（金自下而上填进来，底边最实）")
 		ok(gt.fill_from.y > gt.fill_to.y,
 			"★ 渐变方向是**竖直**的（fill_from 在下、fill_to 在上）")
 
 	var before: Color = (anim.ramp_texture() as GradientTexture2D).gradient.sample(0.0)
 	anim.set_latched(true)
 	var after: Color = (anim.ramp_texture() as GradientTexture2D).gradient.sample(0.0)
-	ok(after != before, "★ 切到锁定态时渐变**换了一对颜色**（不是同一张纹理）")
+	ok(after != before, "★ 切到选中态时渐变**换了一对颜色**（不是同一张纹理）")
 	ok(after.get_luminance() > before.get_luminance(), "★ 而且新那一对更亮")
 
 	anim.set_fill(0.0)
@@ -319,7 +407,7 @@ func _test_text_on_fill() -> void:
 
 	var fill := ThemeRes.fill_bottom()
 	var naked := _contrast(BASE_TEXT, fill)
-	ok(naked < 2.5, "（前提）暖白字直接压在那片琥珀上读不出来（对比度 %.2f）" % naked)
+	ok(naked < 2.5, "（前提）暖白字直接压在那片金上读不出来（对比度 %.2f）" % naked)
 
 	anim.set_fill(1.0)
 	var on_fill := b.get_theme_color("font_color")
@@ -352,13 +440,12 @@ func _test_text_on_fill() -> void:
 	var dark_a := ThemeRes.text_on_fill(false, ThemeRes.accent())
 	var dark_b := ThemeRes.text_on_fill(false, ThemeRes.text())
 	near(dark_a.get_luminance(), dark_b.get_luminance(), 0.01,
-		"★ 不同原色压完**一样深**（琥珀键位字母 0x%s vs 暖白名字）"
-		% ThemeRes.accent().to_html(false))
+		"★ 不同原色压完**一样深**（金色键位字母 vs 暖白名字）")
 
 	var latched_fill := ThemeRes.fill_bottom_latched()
 	var latched_text := ThemeRes.text_on_fill(true, BASE_TEXT)
 	ok(_contrast(latched_text, latched_fill) >= 3.0,
-		"★★ 启用（更亮的蓝）那一档的字也够对比（%.2f）"
+		"★★ 选中（更亮的金）那一档的字也够对比（%.2f）"
 		% _contrast(latched_text, latched_fill))
 
 	var child := Label.new()
@@ -368,6 +455,31 @@ func _test_text_on_fill() -> void:
 	anim.set_fill(1.0)
 	ok(_contrast(child.get_theme_color("font_color"), fill) >= 4.0,
 		"★ 子 Label 的字色也被压暗了（不是只管按钮自己的字）")
+
+	b.queue_free()
+
+func _test_host_text_flip_ignores_container_position() -> void:
+	var b := _new_button()
+	b.size = Vector2(120.0, 40.0)
+	b.position = Vector2(0.0, 300.0)
+	var anim := FillButtonRes.attach_text(b)
+	FillButtonRes.set_base_font_color(b, BASE_TEXT)
+
+	near(FillButtonRes.FillAnimator.coverage_of(b, b, 0.2), 0.4, 0.001,
+		"★★ 宿主那行字的覆盖度按**本地中心**算（不再受 `position.y` 影响）")
+	near(FillButtonRes.FillAnimator.coverage_of(b, b, 0.5), 1.0, 0.001,
+		"★ 金盖到字心时覆盖度 = 1.0")
+
+	anim.set_fill(0.2)
+	eq(b.get_theme_color("font_color"), BASE_TEXT,
+		"★★ 金只填到 20% 时字仍是原色（不会「金还没扫到、字先变黑」）")
+	anim.set_fill(0.5)
+	ok(b.get_theme_color("font_color") != BASE_TEXT,
+		"★ 金盖过字心之后才翻到填充档（白 → 黑，与页签栏同一条口径）")
+
+	b.position = Vector2.ZERO
+	near(FillButtonRes.FillAnimator.coverage_of(b, b, 0.5), 1.0, 0.001,
+		"★ 挪到 (0,0) 之后覆盖度不变（这条口径只认按钮自己的高度）")
 
 	b.queue_free()
 
@@ -391,12 +503,12 @@ func _test_legible_across_animation() -> void:
 			worst = ratio
 			worst_at = f
 	ok(worst >= 2.8,
-		"★★ 整条填充动画里，字与底最差也有 %.2f:1（在 fill=%.2f）—— 不会「看不见」"
+		"★★ 整条选中填充动画里，字与底最差也有 %.2f:1（在 fill=%.2f）—— 不会「看不见」"
 		% [worst, worst_at])
 
 	anim.set_fill(1.0)
 	var full := _contrast(b.get_theme_color("font_color"), ThemeRes.fill_bottom())
-	ok(full >= 4.5, "★★ 满格时字与琥珀有 %.2f:1（正文级）" % full)
+	ok(full >= 4.5, "★★ 满格时字与金有 %.2f:1（正文级）" % full)
 
 	anim.set_fill(0.0)
 	eq(b.get_theme_color("font_color"), ThemeRes.text(),
@@ -404,38 +516,35 @@ func _test_legible_across_animation() -> void:
 
 	b.queue_free()
 
-func _test_disabled_fills_grey() -> void:
+## ★★ 禁用 / 不可点的按钮：悬停**泛灰光**（不是填灰，也不是完全不亮）。
+func _test_disabled_glows_grey() -> void:
 	var b := _new_button()
 	var anim := FillButtonRes.attach_text(b)
 	FillButtonRes.set_base_font_color(b, ThemeRes.text())
 
 	b.mouse_entered.emit()
-	_pump(anim, 40)
-	var gold: Color = anim.ramp_texture().gradient.sample(0.0)
-	ok(gold.r > gold.b, "（前提）可点的时候填的是**琥珀金**（R > B，0x%s）" % gold.to_html(false))
+	_pump_glow(anim, 60)
+	var gold: Color = anim._glow_color()
+	ok(gold.r > gold.b, "（前提）可点的时候泛的是**金色**（R > B，0x%s）" % gold.to_html(false))
 
 	b.mouse_exited.emit()
-	_pump(anim, 40)
+	_pump_glow(anim, 60)
 	b.disabled = true
 	b.mouse_entered.emit()
-	_pump(anim, 40)
-	ok(FillButtonRes.fill_progress(b) >= 0.999,
-		"★★ 禁用按钮也有悬停反馈（停上去照样填起来）")
-	var grey: Color = anim.ramp_texture().gradient.sample(0.0)
+	_pump_glow(anim, 60)
+	ok(FillButtonRes.glow_progress(b) >= 0.999,
+		"★★ 禁用按钮也有悬停反馈（停上去照样泛光）")
+	var grey: Color = anim._glow_color()
 	ok(absf(grey.r - grey.b) < 0.06,
-		"★★ 但填的是**灰**（R≈B，0x%s）—— 一眼看出不是「能点」的蓝" % grey.to_html(false))
+		"★★ 但泛的是**灰光**（R≈B，0x%s）—— 一眼看出不是「能点」的那一档"
+		% grey.to_html(false))
 	ok(grey.r >= 0.25 and grey.r <= 0.65,
 		"★ 灰要够亮：与深色面板分得开（L=%.2f）" % grey.get_luminance())
+	eq(FillButtonRes.fill_progress(b), 0.0, "★★ 禁用态悬停**不填金**（只泛灰光）")
 
 	b.mouse_exited.emit()
-	_pump(anim, 40)
-	ok(FillButtonRes.fill_progress(b) <= 0.001, "★ 鼠标移开就退回去（不是常驻）")
-
-	b.mouse_entered.emit()
-	_pump(anim, 40)
-	var glyph: Color = b.get_theme_color("font_color")
-	ok(_contrast(glyph, grey) >= 3.0,
-		"★★ 灰底上的字也有 %.2f:1" % _contrast(glyph, grey))
+	_pump_glow(anim, 60)
+	ok(FillButtonRes.glow_progress(b) <= 0.001, "★ 鼠标移开就退回去（不是常驻）")
 
 	b.queue_free()
 
@@ -448,27 +557,32 @@ func _test_animation_switch() -> void:
 	ok(not ThemeRes.animations_enabled(), "能关掉")
 	b.mouse_entered.emit()
 	anim._process(DT)
-	ok(FillButtonRes.fill_progress(b) >= 0.999,
-		"★★ 关掉之后一帧就填满（不播过渡：fill=%.2f）" % FillButtonRes.fill_progress(b))
+	ok(FillButtonRes.glow_progress(b) >= 0.999,
+		"★★ 关掉之后一帧就亮到最亮（不播过渡：%.2f）"
+		% FillButtonRes.glow_progress(b))
+	eq(FillButtonRes.fill_progress(b), 0.0, "★ 但悬停仍然不填金")
+
 	b.mouse_exited.emit()
 	anim._process(DT)
-	ok(FillButtonRes.fill_progress(b) <= 0.001,
-		"★★ 移开也是一帧退回去（状态照常切换，只是没有过渡）")
+	ok(FillButtonRes.glow_progress(b) <= 0.001,
+		"★★ 移开也是一帧熄灭（状态照常切换，只是没有过渡）")
+
+	FillButtonRes.set_latched(b, true)
+	anim._process(DT)
+	ok(FillButtonRes.fill_progress(b) >= 0.999,
+		"★★ 关掉动效时「选中」一帧到位（状态不受影响）")
+	FillButtonRes.set_latched(b, false)
+	anim._process(DT)
+	ok(FillButtonRes.fill_progress(b) <= 0.001, "★ 取消选中也是一帧退空")
 
 	ThemeRes.set_animations_enabled(true)
 	b.mouse_entered.emit()
 	anim._process(DT)
-	var partial := FillButtonRes.fill_progress(b)
+	var partial := FillButtonRes.glow_progress(b)
 	ok(partial > 0.0 and partial < 1.0,
 		"★ 打开之后又变成逐帧推进（半程 %.2f）" % partial)
-	_pump(anim, 40)
-	ok(FillButtonRes.fill_progress(b) >= 0.999, "★ 照样能填满")
-
-	FillButtonRes.set_latched(b, true)
-	ThemeRes.set_animations_enabled(false)
-	ok(FillButtonRes.is_latched(b) and FillButtonRes.fill_progress(b) >= 0.999,
-		"★ 关掉动效不影响「已启用」这个状态")
-	ThemeRes.set_animations_enabled(true)
+	_pump_glow(anim, 60)
+	ok(FillButtonRes.glow_progress(b) >= 0.999, "★ 照样能亮到最亮")
 
 	b.queue_free()
 
@@ -485,23 +599,23 @@ func _test_text_reverts_after_drain() -> void:
 	var child_original := child.get_theme_color("font_color")
 	eq(original, BASE_TEXT, "（前提）起手是原色")
 
-	b.mouse_entered.emit()
-	_pump(anim, 40)
+	FillButtonRes.set_latched(b, true)
+	_pump_fill(anim, 60)
 	ok(FillButtonRes.fill_progress(b) >= 0.999, "（前提）填满了")
 	ok(b.get_theme_color("font_color") != original,
 		"★ 填满时字色换成了填充档（暗字）—— 否则这条回归没意义")
 
-	b.mouse_exited.emit()
-	_pump(anim, 40)
+	FillButtonRes.set_latched(b, false)
+	_pump_fill(anim, 60)
 	ok(FillButtonRes.fill_progress(b) <= 0.001, "（前提）退回到空")
 	eq(b.get_theme_color("font_color"), original,
-		"★★ 移开之后按钮字色回到原色（用户报的「颜色不反回来」）")
+		"★★ 取消选中之后按钮字色回到原色（历史 bug「颜色不反回来」）")
 	eq(child.get_theme_color("font_color"), child_original,
 		"★★ 子 Label 的字色也回到原色")
 
-	_pump(anim, 10)
+	_pump_fill(anim, 10)
 	eq(b.get_theme_color("font_color"), original,
-		"★ 停在外面时颜色稳定（每帧同步是幂等的，不会漂）")
+		"★ 停在空的时候颜色稳定（每帧同步是幂等的，不会漂）")
 
 	for slot in ["font_hover_color", "font_pressed_color", "font_disabled_color"]:
 		eq(b.get_theme_color(slot), original, "★ %s 也还原了" % slot)
@@ -528,18 +642,17 @@ func _test_fill_underlay_is_transparent() -> void:
 		ok(sb.bg_color.a <= 0.001,
 			"★★ %s 的底纹是**全透明**（实底会把填充盖住 → 看起来像「填充在文字上」）"
 			% tag)
-		# ★★ 三层配色之后：**状态边**（悬停 / 选中 / 启用）走琥珀强调色，
+		# ★★ 三层配色之后：**状态边**（悬停 / 选中 / 启用）走金色强调色，
 		#   常态边是暗金细线 —— 两者同色系、但亮度差一大截，主行动才跳出来。
-		#   （有的档是从主题色再派生一档亮度，所以断言「明显带色相」而不是精确相等。）
 		var bc := sb.border_color
 		ok(absf(bc.r - bc.b) >= 0.04,
-			"★ %s 的描边仍有颜色（暗金 / 琥珀，不是被填充盖住的灰）x=0x%s"
+			"★ %s 的描边仍有颜色（暗金 / 亮金，不是被填充盖住的灰）x=0x%s"
 			% [tag, bc.to_html(false)])
 
 	ok(UiStyleRes.tab_normal().bg_color.a > 0.2,
 		"★ 没有填充层的那一档（tab_normal）仍要有底色")
 	ok(UiStyleRes.accent_button().bg_color.a > 0.9,
-		"★ accent_button（实心蓝那一档）仍是实底 —— 它给没挂填充的按钮用")
+		"★ accent_button（实心金那一档）仍是实底 —— 它给没挂填充的按钮用")
 
 func _test_prefer_light() -> void:
 	var b := _new_button()
@@ -563,7 +676,7 @@ func _test_prefer_light() -> void:
 		"★ 而且不会比填充档更暗")
 	anim.set_fill(1.0)
 	ok(b.get_theme_color("font_color") != BASE_TEXT,
-		"★ 满格时到填充档（琥珀盖满，白字必须让位）")
+		"★ 满格时到填充档（金盖满，白字必须让位）")
 
 	b.queue_free()
 
@@ -588,7 +701,7 @@ func _test_char_text() -> void:
 	eq(l0.get_theme_color("font_color"), BASE_TEXT, "★ 没填充时是原色")
 	anim.set_fill(1.0)
 	ok(l0.get_theme_color("font_color") != BASE_TEXT,
-		"★ 填满时变成填充档（琥珀盖过之后才变）")
+		"★ 填满时变成填充档（金盖过之后才变）")
 
 	anim.set_fill(0.5)
 	ok(absf(l0.get_theme_color("font_color").get_luminance()
@@ -602,44 +715,49 @@ func _test_available_off() -> void:
 	var anim := FillButtonRes.attach_text(b)
 
 	b.mouse_entered.emit()
-	_pump(anim, 40)
-	ok(FillButtonRes.fill_progress(b) >= 0.999, "（前提）开着的时候能填满")
+	_pump_glow(anim, 60)
+	ok(FillButtonRes.glow_progress(b) >= 0.999, "（前提）开着的时候能亮到底")
+	eq(FillButtonRes.fill_progress(b), 0.0, "★ 而且不填金")
 
 	FillButtonRes.set_available(b, false)
-	var frames: int = _pump(anim, 40)
-	ok(FillButtonRes.fill_progress(b) <= 0.001,
-		"★ set_available(false) → 退回空（用了 %d 帧）" % frames)
+	var frames: int = _pump_glow(anim, 60)
+	ok(FillButtonRes.glow_progress(b) <= 0.001,
+		"★ set_available(false) → 光退回全灭（用了 %d 帧）" % frames)
 
 	b.mouse_exited.emit()
 	b.mouse_entered.emit()
-	_pump(anim, 20)
-	ok(FillButtonRes.fill_progress(b) <= 0.001,
-		"★★ 关掉的按钮，鼠标停上去也**一点不填**（空槽不能看着像能点）")
+	_pump_glow(anim, 20)
+	ok(FillButtonRes.glow_progress(b) <= 0.001,
+		"★★ 关掉的按钮，鼠标停上去也**一点不亮**（空槽不能看着像能点）")
 
 	FillButtonRes.set_available(b, true)
 	b.disabled = true
 	b.mouse_exited.emit()
 	b.mouse_entered.emit()
-	_pump(anim, 40)
-	ok(FillButtonRes.fill_progress(b) >= 0.999,
-		"★★ `disabled = true` 的按钮照样能填（用来做灰色悬停反馈）")
+	_pump_glow(anim, 60)
+	ok(FillButtonRes.glow_progress(b) >= 0.999,
+		"★★ `disabled = true` 的按钮照样泛光（用来做灰色悬停反馈）")
 
 	b.queue_free()
 
-## ★★ 宿主不可见时悬停作废 —— 修「点按钮进游戏、再返回主菜单，那片琥珀还留着」。
+## ★★ 宿主不可见时悬停作废 —— 修「点按钮进游戏、再返回主菜单，那层光还留着」。
 func _test_hide_clears_hover() -> void:
 	var b := _new_button()
 	var anim := FillButtonRes.attach_text(b)
 	b.mouse_entered.emit()
-	anim.set_fill(1.0)
+	_pump_glow(anim, 60)
 	ok(anim._hovered, "（前提）悬停中是「hovered」")
 	# 宿主不可见 = 页面隐藏 / CanvasLayer 收起 → 悬停必须作废
 	b.visible = false
 	ok(not anim._hovered,
-		"★★ 宿主不可见时悬停作废（修「点按钮进游戏、返回主菜单后那片琥珀还留着」）")
+		"★★ 宿主不可见时悬停作废（修「点按钮进游戏、返回主菜单后那层光还留着」）")
+	_pump_glow(anim, 60)
+	ok(FillButtonRes.glow_progress(b) <= 0.001, "★ 光也跟着退干净")
 	b.visible = true
 	ok(not anim._hovered,
 		"★★ 重新可见**不会**自己恢复悬停（只有真实 mouse_entered 才会）")
+	_pump_glow(anim, 20)
+	ok(FillButtonRes.glow_progress(b) <= 0.001, "★ 仍然不亮")
 	b.queue_free()
 
 
@@ -657,12 +775,12 @@ func _test_clear_hover_in() -> void:
 	holder.queue_free()
 
 
-## ★★ 流程层的另一条兜底：递归解除整棵子树的「常驻满格（latched）」。
+## ★★ 流程层的另一条兜底：递归解除整棵子树的「选中（latched）」。
 ##
 ## 与 `clear_hover_in` 刻意分开：
 ##   · 悬停 = 「鼠标 / 手指还在上面」；
-##   · 常驻 = 「这块面板现在被打开 / 被选中」。
-## 主界面点开面板时入口按钮要**锁住**（不然面板还开着琥珀就退了），收起时才解除 ——
+##   · 选中 = 「这块面板现在被打开 / 被选中」。
+## 主界面点开面板时入口按钮要**锁住**（不然面板还开着金就退了），收起时才解除 ——
 ## 这里验「解除会递归生效」，而且解除之后目标是 0（下一次 `_process` 走反向渐出）。
 func _test_clear_latched_in() -> void:
 	var holder := Control.new()
@@ -675,11 +793,11 @@ func _test_clear_latched_in() -> void:
 	FillButtonRes.attach_text(b)
 	aa.set_latched(true)
 	FillButtonRes.set_latched(b, true)
-	ok(FillButtonRes.is_latched(a) and FillButtonRes.is_latched(b), "（前提）两颗都是常驻满格")
+	ok(FillButtonRes.is_latched(a) and FillButtonRes.is_latched(b), "（前提）两颗都是选中态")
 	FillButtonRes.clear_latched_in(holder)
-	ok(not FillButtonRes.is_latched(a), "★★ clear_latched_in() 递归解除常驻（左）")
-	ok(not FillButtonRes.is_latched(b), "★★ clear_latched_in() 递归解除常驻（右）")
-	ok(aa._goal() == 0.0, "★ 解除之后目标为空（走 DRAIN_TIME 那条反向渐出，不是瞬间清零）")
+	ok(not FillButtonRes.is_latched(a), "★★ clear_latched_in() 递归解除选中（左）")
+	ok(not FillButtonRes.is_latched(b), "★★ clear_latched_in() 递归解除选中（右）")
+	ok(aa._fill_goal() == 0.0, "★ 解除之后目标是空（走 DRAIN_TIME 那条反向渐出，不是瞬间清零）")
 	holder.queue_free()
 
 
@@ -689,13 +807,25 @@ func _new_button() -> Button:
 	root.add_child(b)
 	return b
 
-func _pump(anim, budget: int) -> int:
+## 推进填充直到它不再变化（返回用了多少帧）。
+func _pump_fill(anim, budget: int) -> int:
 	var n := 0
 	while n < budget:
 		var before: float = anim.fill()
 		anim._process(DT)
 		n += 1
 		if is_equal_approx(before, float(anim.fill())):
+			break
+	return n
+
+## 推进泛光直到它不再变化（返回用了多少帧）。
+func _pump_glow(anim, budget: int) -> int:
+	var n := 0
+	while n < budget:
+		var before: float = anim.glow()
+		anim._process(DT)
+		n += 1
+		if is_equal_approx(before, float(anim.glow())):
 			break
 	return n
 

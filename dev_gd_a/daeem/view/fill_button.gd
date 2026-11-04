@@ -1,13 +1,28 @@
-## fill_button.gd —— ★★ 按钮的「金色自下而上填充」动效（悬停填充 / 反向渐出 / 启用常驻）
+## fill_button.gd —— ★★ 按钮的三种动效：悬停「四边泛光」 / 选中「金色填充」 / 点击「金色一闪」
+##
+## ★★ 2026.11.5 重做（用户口径）：
+##   · 鼠标悬停 / 移动端按住 → 按钮**四边发亮、向中心渐隐的泛光**（不再是从下往上填金）；
+##   · **只有点击切换选中**的按钮才播「金色自下而上填满」，取消选中时反向退回：
+##       页签当前页 / 科技九宫格里已启用的格子 / 备战页磁贴 / 「面板已打开」类按钮；
+##   · 打开界面时**已经选中**的按钮（第一页 / 已启用科技）**直接满格**，不播动画
+##     —— 由 `set_latched(b, on, instant = true)` 表达；
+##   · **没有自己点击反馈**的普通动作按钮（开始 / 确定 / 删除 / 命令卡的动作）点一下 →
+##     金色**快速填满再退回**（`_on_pressed_flash`）；按下时的整体缩放不算点击反馈。
+##   · 有自己点击反馈的按钮（页签 / 科技启用 / 备战磁贴 / 面板已打开）不闪 ——
+##     它们的选中填充就是点击反馈，叠一次闪光会先闪一下再进入选中态。
 ##
 ## ★★ 按下动效（压缩 / 回弹 / 亮边）**不在这里**：由 view/press_fx.gd 统一处理；
 ##   `attach()` 会自动把它挂到每颗 Button 上，所有按钮共用同一份按下逻辑。
 ##
-## 需求原话：
-##   「当玩家鼠标悬停在任何按钮上时，按钮背景都会由空到由下往上填充金色背景，
-##     需要做渐变效果和悬停结束时的反向渐出效果」；
-##   「当某按钮被点击切换启用时（如游戏内右下角的页签和科技的九个按钮），
-##     需要特殊处理，当点击启用时将其亮度稍微变大」。
+## ------------------------------------------------------------------
+## 泛光长什么样（需求：「类似于主菜单的泛光按钮，按钮的四边向中心泛光」）
+## ------------------------------------------------------------------
+## 四条边各画一条**向内渐隐**的 alpha 斜坡（`glow_texture()` 烘的四张 1 像素贴图：
+## 上 / 下 / 左 / 右各一张，全项目共用），四角天然叠成最亮 —— 与主菜单四角按钮那团
+## `menu_corner_glow.gd` 的观感一致，只是这里四条边都亮、中心不亮。
+##   · 颜色：可点 = 金色（`accent_bright`）；禁用 = 灰（`fill_disabled_bottom`）；
+##   · 强度 / 宽度 / 时长读 config 的 `ui.hover_glow_*`（见 data/config.json）；
+##   · 泛光**不改字色**：它只落在四边，字仍在中心，不需要翻面。
 ##
 ## ------------------------------------------------------------------
 ## 为什么是「子节点动画器 + 宿主自己 _draw」，而不是一个自定义 Button 子类
@@ -20,8 +35,8 @@
 ## `const FillButtonRes = preload(...)` 再 `.new()`，八处各抄一遍 preload。
 ##
 ## 所以这里换一种接法：**按钮仍然是 `Button`**，只是
-##   ① `attach_text(button)` 往它身上挂一个**子节点动画器**（推进进度 + 自己画那片金）；
-##   ② 那片金由**动画器自己的 `_draw()`** 画，并 `show_behind_parent` 排在宿主下面
+##   ① `attach_text(button)` 往它身上挂一个**子节点动画器**（推进进度 + 自己画那层光）；
+##   ② 那层光由**动画器自己的 `_draw()`** 画，并 `show_behind_parent` 排在宿主下面
 ##      （层次与理由见下一节）——于是同样不需要按钮子类。
 ##   ⇒ 调用点只多一行 `FillButtonRes.attach_text(cell)`，其余代码一个字都不用动。
 ##
@@ -49,7 +64,7 @@
 ##   「填充层画在底纹**下面**」）。
 ##
 ## ⚠️ 代价（调用点要配合）：底纹一旦自己铺了**实底**，那片金就被它盖住了。
-##   所以「悬停 / 已启用时要看见金」的那几档底纹必须是**透明的**
+##   所以「选中时要看见金」的那几档底纹必须是**透明的**
 ##   （`ui_style` 的 `*_clear` / `*_fill` 那一批，测试里有断言盯着）。
 ## 换成「拿 StyleBoxFlat 当填充」做不到 —— StyleBoxFlat 只有单色，没有渐变，
 ## 而且每帧新建 StyleBox 就是一帧一次资源分配（这个控件每帧都在动）。
@@ -74,6 +89,8 @@
 extends Control
 
 const ThemeRes = preload("res://view/theme.gd")
+## ★★ UI 参数（泛光强度 / 宽度 / 时长）读 config 的 `ui.hover_glow_*`。
+const ConfigRes = preload("res://logic/config.gd")
 ## ★★ 所有 Button 统一的「按下压缩 / 回弹 / 亮边」由它负责（见 view/press_fx.gd）。
 const PressFxRes = preload("res://view/press_fx.gd")
 ## ★★ 菜单按钮的点击 / 悬停音效（非菜单按钮挂上也静音，见 view/sfx.gd）。
@@ -84,10 +101,30 @@ const SfxRes = preload("res://view/sfx.gd")
 ##   没有地方能声明那个字段（见文件头那段）。
 const META := "fill_animator"
 
-## 填充 / 渐出的时长（秒）。★ 本版按需求**调快**：0.18 → 0.12、0.13 → 0.08。
-##   填充仍比渐出长一点：移开时玩家要的是「快点让开」。
+## 填充 / 渐出的时长（秒）。★ 只给**选中 / 取消选中**用（悬停改走泛光，不填）。
 const FILL_TIME := 0.12
 const DRAIN_TIME := 0.08
+
+## ★★ 悬停泛光：四边向内渐隐的那层光（config 缺键时的占位值）。
+##   · GLOW_ALPHA      —— 边缘最强不透明度（2026.11.5 按用户反馈 0.34 → 0.50）；
+##   · GLOW_BAND_SHARE —— 泛光带宽度 = min(按钮宽, 高) × 这个比例
+##     （真实像素再夹到 `Tuning.BAND_MIN ~ Tuning.BAND_MAX`，见那个内层类）；
+##   · GLOW_IN/OUT     —— 亮起 / 熄灭时长（亮起 0.18 → 0.08：「开始泛光」要快）。
+## ★ 真实值在 data/config.json 的 `ui.hover_glow_*`，这里只是兜底（老配置 / 测试配置）。
+const GLOW_ALPHA := 0.50
+const GLOW_BAND_SHARE := 0.22
+const GLOW_IN_TIME := 0.08
+const GLOW_OUT_TIME := 0.12
+
+## ★★ 点击闪光：**没有自己点击反馈**的普通动作按钮，点一下「金色快速填满再退回」。
+##   · FLASH_IN   —— 从空填到满格的时长；
+##   · FLASH_HOLD —— 满格保持；
+##   · FLASH_OUT  —— 反向退回的时长。
+## ★ 真实值在 data/config.json 的 `ui.click_flash_*`，这里只是兜底。
+## ★ 闪光是「一次性的点击反馈」，不是选中态：**不改文字颜色**（见 `_sync_text`）。
+const FLASH_IN_TIME := 0.06
+const FLASH_HOLD_TIME := 0.02
+const FLASH_OUT_TIME := 0.10
 
 ## ★★ 逐字「翻面」的两个阈值（覆盖率）。
 ##
@@ -239,6 +276,50 @@ static func contrast(a: Color, b: Color) -> float:
 
 
 # ------------------------------------------------------------------
+# 悬停泛光：对外的只读入口（真正的实现在内层类 `Tuning` 里）
+#
+# ★ 为什么参数与贴图都塞进内层类：`FillAnimator` 是内层类，**看不到外层脚本的
+#   静态函数与常量**（见文件头 FLIP_LO 那条）。同层的 `Tuning` 则能被它引用，
+#   于是「读 config / 烘贴图」只写一份，外面这几行只是给测试与调用点的转发。
+# ------------------------------------------------------------------
+
+static func glow_alpha() -> float:
+	return Tuning.alpha()
+
+
+## 泛光带占「短边」的比例（真实像素宽 = min(宽,高) × 它，再夹到 8~26px）。
+static func glow_band_share() -> float:
+	return Tuning.band_share()
+
+
+static func glow_in_sec() -> float:
+	return Tuning.in_sec()
+
+
+static func glow_out_sec() -> float:
+	return Tuning.out_sec()
+
+
+## 四条边的 alpha 斜坡（全项目共用四张 1 像素高的贴图；只烘一次）。
+## @param edge 0 = 上边、1 = 下边、2 = 左边、3 = 右边
+static func glow_texture(edge: int) -> Texture2D:
+	return Tuning.texture(edge)
+
+
+## 点击闪光的三个时长（测试 / 排查读）。
+static func click_flash_in_sec() -> float:
+	return Tuning.flash_in_sec()
+
+
+static func click_flash_hold_sec() -> float:
+	return Tuning.flash_hold_sec()
+
+
+static func click_flash_out_sec() -> float:
+	return Tuning.flash_out_sec()
+
+
+# ------------------------------------------------------------------
 # 绘制（唯一碰 draw_* 的地方）
 # ------------------------------------------------------------------
 
@@ -257,10 +338,101 @@ static func draw_fill(b: Button) -> void:
 
 
 # ------------------------------------------------------------------
+# 动效参数 / 贴图（内层类 `FillAnimator` 与外部都能读）
+# ------------------------------------------------------------------
+
+## 按钮动效的通用参数（悬停泛光 + 点击闪光）与四张边光贴图。
+##
+## ★ 单独做成一个内层类，是因为 `FillAnimator` 是内层类，**看不到外层的静态函数
+##   与常量**（GDScript 的限制，见文件头 FLIP_LO 那条）；同层的这个类它看得到。
+## ★ `_cfg` 只读一次：`ui.hover_glow_*` / `ui.click_flash_*` 在运行中不会变
+##   （与 press_fx 同一条口径）。
+class Tuning:
+	static var _cfg: ConfigRes = null
+	static var _tex: Dictionary = {}
+
+	## 泛光带的像素夹取：太窄看不见，太宽会把整颗按钮糊成一块。
+	const BAND_MIN := 8.0
+	const BAND_MAX := 26.0
+
+	static func _num(path: String, fallback: float) -> float:
+		if _cfg == null:
+			_cfg = ConfigRes.load_default()
+		if _cfg == null:
+			return fallback
+		return _cfg.num(path, fallback)
+
+	## 点击闪光：从空填到满格 / 满格保持 / 反向退回的时长。
+	static func flash_in_sec() -> float:
+		return maxf(0.01, _num("ui.click_flash_sec", FLASH_IN_TIME))
+
+	static func flash_hold_sec() -> float:
+		return maxf(0.0, _num("ui.click_flash_hold_sec", FLASH_HOLD_TIME))
+
+	static func flash_out_sec() -> float:
+		return maxf(0.01, _num("ui.click_flash_out_sec", FLASH_OUT_TIME))
+
+	static func alpha() -> float:
+		return clampf(_num("ui.hover_glow_alpha", GLOW_ALPHA), 0.0, 0.9)
+
+	## 泛光带占「短边」的比例（真实像素宽 = min(宽,高) × 它，再夹到 8~26px）。
+	static func band_share() -> float:
+		return clampf(_num("ui.hover_glow_band", GLOW_BAND_SHARE), 0.05, 0.45)
+
+	static func in_sec() -> float:
+		return maxf(0.01, _num("ui.hover_glow_sec", GLOW_IN_TIME))
+
+	static func out_sec() -> float:
+		return maxf(0.01, _num("ui.hover_glow_out_sec", GLOW_OUT_TIME))
+
+	## 四条边的 alpha 斜坡（全项目共用四张 1 像素高的贴图；只烘一次）。
+	## @param edge 0 = 上边、1 = 下边、2 = 左边、3 = 右边
+	##
+	## ★ 为什么不用 shader：本项目的 2D UI 一律 `draw_*` 现画（见 view/text_marks.gd
+	##   那条「shader 在无头测试里更难断言」的口径）；四条渐变带用贴图就够，
+	##   而且不依赖按钮尺寸（宽度由 `draw_glow_now()` 按短边算）。
+	static func texture(edge: int) -> Texture2D:
+		var e: int = clampi(edge, 0, 3)
+		if _tex.has(e):
+			return _tex[e]
+		# alpha 从边（1）向内衰减到 0；中途再插一个点让衰减更像「一层光」而不是直线。
+		var g := Gradient.new()
+		g.set_color(0, Color(1.0, 1.0, 1.0, 1.0))
+		g.set_color(1, Color(1.0, 1.0, 1.0, 0.0))
+		g.add_point(0.42, Color(1.0, 1.0, 1.0, 0.30))
+		var tex := GradientTexture2D.new()
+		tex.gradient = g
+		tex.repeat = GradientTexture2D.REPEAT_NONE
+		match e:
+			0:
+				tex.width = 1
+				tex.height = 64
+				tex.fill_from = Vector2(0.0, 0.0)       # 上边最亮
+				tex.fill_to = Vector2(0.0, 1.0)
+			1:
+				tex.width = 1
+				tex.height = 64
+				tex.fill_from = Vector2(0.0, 1.0)       # 下边最亮
+				tex.fill_to = Vector2(0.0, 0.0)
+			2:
+				tex.width = 64
+				tex.height = 1
+				tex.fill_from = Vector2(0.0, 0.0)       # 左边最亮
+				tex.fill_to = Vector2(1.0, 0.0)
+			_:
+				tex.width = 64
+				tex.height = 1
+				tex.fill_from = Vector2(1.0, 0.0)       # 右边最亮
+				tex.fill_to = Vector2(0.0, 0.0)
+		_tex[e] = tex
+		return tex
+
+
+# ------------------------------------------------------------------
 # 动画器
 # ------------------------------------------------------------------
 
-## 一颗按钮的填充状态 + 那片金的**绘制者**。它是个 `Control`，挂在宿主按钮下面
+## 一颗按钮的「选中填充 + 悬停泛光」状态 + 绘制者。它是个 `Control`，挂在宿主按钮下面
 ##   （`_process` 才有地方跑、`_draw` 才有地方画），并且 `show_behind_parent = true`
 ##   ⇒ 它画的东西排在宿主的底纹 / 文字**之前**（层次见文件头那一节）。
 class FillAnimator extends Control:
@@ -268,12 +440,20 @@ class FillAnimator extends Control:
 	##   一次 —— 同一条 `res://` 只会载入一份资源，不是又建一个播放器池。
 	const SfxRes = preload("res://view/sfx.gd")
 
-	## 已经填了多少（0 = 空，1 = 满）。★ 只读用途请走 `host` 上的静态接口。
+	## 选中填了多少（0 = 没选中，1 = 选中满格）。★ 只读用途请走 `host` 上的静态接口。
+	## ★★ 悬停 / 按住**不再**驱动它 —— 那条走下面的 `_glow`。
 	var _fill: float = 0.0
-	## ★ 确认按下后的「快速补满」剩余时间 / 满格保持时间（见 `_on_pressed_snap`）。
-	var _snap_left: float = 0.0
-	var _snap_hold: float = 0.0
-	## 目标：0（鼠标不在）/ 1（鼠标在）/ 1（已启用 —— 锁定态不会退回 0）。
+	## 悬停 / 按住的泛光强度（0 = 不亮，1 = 最亮）。只影响四边那层光，不影响字色。
+	var _glow: float = 0.0
+	## ★★ 点击闪光（普通动作按钮的一次性反馈）：允许吗？有自己点击反馈的按钮
+	##   （页签 / 科技启用 / 备战磁贴 / 面板已打开）由调用点设成 false。
+	var _flash_enabled: bool = true
+	## 闪光现在是否在跑；`_flash_left` = 填满阶段剩余，`_flash_hold` = 满格保持剩余。
+	var _flash_active: bool = false
+	var _flash_left: float = 0.0
+	var _flash_hold: float = 0.0
+	## 这一颗是不是**已选中 / 已启用**（页签当前页 / 已启用科技 / 备战磁贴 / 面板已打开）。
+	## ★ 只有它驱动 `_fill`（金色填充）；悬停只驱动 `_glow`。
 	var _latched: bool = false
 	## 鼠标是否停在这颗按钮上（按下时也算「在」，否则一按下背景就退回去）。
 	var _hovered: bool = false
@@ -284,16 +464,16 @@ class FillAnimator extends Control:
 	## ★★ 按住期间指针**离开过**按钮（`mouse_exited` 把 `_hovered` 清掉的那一下）。
 	##   松开时靠它决定「要不要把悬停钉回去」——不记这一位就会出现：
 	##   长按 → 移出按钮 → 松手 ⇒ `_on_button_up()` 无条件写 `_hovered = true`，
-	##   而此后再也没有 `mouse_exited` 来清它 ⇒ 填充永远停在满格（本次修的 bug）。
+	##   而此后再也没有 `mouse_exited` 来清它 ⇒ 泛光永远亮着（修过的 bug）。
 	var _left_while_pressed: bool = false
 	## 鼠标信号连过了吗（`setup_host()` 可能被调多次：它要幂等，不然信号会连两遍）。
 	var _host_ready: bool = false
-	## 允许填充吗（被显式关掉时为 false）。⚠️ **禁用态不再是 false**：
-	##   需求要「禁用按钮也有悬停反馈，只是填灰的」，所以禁用走 `_goal()` 里的灰档，
+	## 允许填充 / 泛光吗（被显式关掉时为 false）。⚠️ **禁用态不再是 false**：
+	##   需求要「禁用按钮也有反馈，只是灰的」，所以禁用走 `_glow_color()` 的灰档，
 	##   这个字段留给「空槽 / 压根不是一个可交互动效」的场合。
 	var _available: bool = true
 	## ★ 是否强制走**灰档**（按钮本身仍可交互）。合作大厅客机的地图预览要
-	##   “能悬停 / 能按、填灰、但点了没逻辑”，就是靠这个。
+	##   “能悬停 / 能按、泛灰光、但点了没逻辑”，就是靠这个。
 	var _grey: bool = false
 	## ★★ 「上一帧这颗按钮吃不到鼠标（`mouse_filter == IGNORE`）」——
 	##   用来在**过滤器被还原的那一帧**按真实鼠标位置重算悬停态，见 `_sync_hover_filter()`。
@@ -382,12 +562,14 @@ class FillAnimator extends Control:
 		_refresh_colors()
 
 
-	## 动画器自己的绘制：**常驻底色 + 那片金都在这一层画出来的**。
+	## 动画器自己的绘制：**常驻底色 + 选中金 + 悬停泛光都在这一层画出来**。
 	func _draw() -> void:
-		# ★★ 先铺常驻底色，再让金盖上去 —— 这就是「灰底一直存在、悬停时金往上填」。
+		# ★★ 先铺常驻底色，再让金盖上去 —— 这就是「灰底一直存在、选中时金往上填」。
 		if _base_bg.a > 0.001 and _button != null and is_instance_valid(_button):
 			draw_rect(Rect2(Vector2.ZERO, _button.size), _base_bg, true)
 		draw_fill_now()
+		# ★★ 泛光画在填充**之后**：已经选中的按钮悬停时，四边还要再亮一层。
+		draw_glow_now()
 
 
 	## 画当前进度下的那一片金（`_draw()` 与静态入口 `FillButtonRes.draw_fill()` 都走它）。
@@ -434,6 +616,43 @@ class FillAnimator extends Control:
 			draw_rect(Rect2(region.position.x, region.position.y,
 				region.size.x, 1.0), Color(1.0, 0.97, 0.86, 0.22), true)
 
+	## ★★ 画悬停 / 按住的那层**四边向中心**的泛光（`_draw()` 里、填充之后调）。
+	##
+	## 四条边各一条向内渐隐的 alpha 斜坡；四角因为两条带子叠加，天然最亮 ——
+	##   与主菜单四角按钮那团光同一观感（需求原话：「按钮的四边向中心泛光」）。
+	## ⚠️ 只在 `_glow > 0` 时画：绝大多数按钮的绝大多数帧一个 draw 调用都不多。
+	func draw_glow_now() -> void:
+		if not _available or _glow <= 0.001:
+			return
+		if _button == null or not is_instance_valid(_button):
+			return
+		var w: float = _button.size.x
+		var h: float = _button.size.y
+		if w <= 2.0 or h <= 2.0:
+			return
+		# 带子宽度跟着**短边**走（窄条按钮也有光），再夹到一个可读的像素区间。
+		var band: float = clampf(minf(w, h) * Tuning.band_share(), Tuning.BAND_MIN, Tuning.BAND_MAX)
+		band = minf(band, minf(w, h) * 0.45)
+		var col := _glow_color()
+		var tint := Color(col.r, col.g, col.b, col.a * Tuning.alpha() * _glow)
+		draw_texture_rect(Tuning.texture(0), Rect2(0.0, 0.0, w, band), false, tint)
+		draw_texture_rect(Tuning.texture(1), Rect2(0.0, h - band, w, band), false, tint)
+		draw_texture_rect(Tuning.texture(2), Rect2(0.0, 0.0, band, h), false, tint)
+		draw_texture_rect(Tuning.texture(3), Rect2(w - band, 0.0, band, h), false, tint)
+
+	## 泛光的颜色：能点 = 金；禁用 / 强制灰 = 灰（用户口径：禁用按钮也泛光，只是灰的）。
+	## ★ 灰档在 `fill_disabled_bottom` 上再提亮 40%：那一档本来是给**实心填充**定的暗灰，
+	##   直接拿来做边缘光会暗到几乎看不见（实测截图里几乎是一条黑边）。
+	## ★ 已经选中（满金）的按钮再用亮一档的金：`accent_bright` 压在满金上几乎看不出来，
+	##   而「悬停要有反馈」在选中态同样成立 —— 提亮一档既不换色相又看得见。
+	func _glow_color() -> Color:
+		if is_grey():
+			return ThemeRes.fill_disabled_bottom().lightened(0.4)
+		if _fill > 0.5:
+			return ThemeRes.accent_bright().lightened(0.35)
+		return ThemeRes.accent_bright()
+
+
 	## 接上鼠标信号（**幂等**：第二次调用只刷新颜色，不再连一遍信号 ——
 	## 连两遍的表现是「移开鼠标后进度还是 1」那种查不出来的怪事）。
 	func setup_host() -> void:
@@ -446,57 +665,55 @@ class FillAnimator extends Control:
 			b.mouse_exited.connect(_on_mouse_exited)
 			b.button_down.connect(_on_button_down)
 			b.button_up.connect(_on_button_up)
-			# ★★ 兜底：**确认按下**（`pressed` 信号）的那一下，背景瞬间填满。
-			b.pressed.connect(_on_pressed_snap)
+			# ★★ 点击闪光挂在 `pressed`（松手那一下 =「点击完成」）：
+			#   只在按钮**没有自己点击反馈**时才会真的跑（见 `_flash_enabled`）。
+			b.pressed.connect(_on_pressed_flash)
 		_refresh_colors()
 
 
-	## ★★ 「确认按下了」的兜底（用户要求）：这一下背景必须**在极短时间内**补到满格，
-	## 不等正向悬停动画慢慢跑完。★ 但不再是一帧硬跳：由 `_advance_snap()` 在
-	## `ui.press_snap_sec`（默认 0.07s）内补满，再保持 `ui.press_snap_hold_sec`
-	## （默认 0.06s）后才按正常目标回落 —— 这样「按了有反馈」和「不闪一下」同时成立。
+	## 点击完成：没有自己点击反馈的普通动作按钮，金色**快速填满再退回**。
 	##
-	## 为什么需要：正向填充是 `FILL_TIME`（本版 0.12s）。快速点按 / 触摸时手指可能刚填到
-	##   一半就抬起 —— 玩家「明明按了」却看不到满格。确认按下这一下补成满格，
-	##   保证「按了就有反馈」；之后该锁的锁（菜单面板）、该渐出的渐出（一次性按钮）。
-	## ⚠️ 只在**可点**的按钮上做（`_available = false` 的空槽 / 占位格不参与）。
-	## ⚠️ 它不改变 `_goal()`：不改变「按完之后该停在满格还是退回空」的判断。
-	func _on_pressed_snap() -> void:
-		if not _available:
+	## 跳过的情况（都有别的地方给反馈，再叠一下会打架）：
+	##   · `_flash_enabled == false`：页签 / 科技启用 / 备战磁贴 / 面板已打开；
+	##   · 已选中（`_latched`）：它本来就是满格，闪不起来；
+	##   · 禁用 / 不可用：点了也不该有反馈；
+	##   · 动效总开关关掉：没有过渡可看，直接不做（避免一帧亮）。
+	func _on_pressed_flash() -> void:
+		if not _flash_enabled or not _available:
+			return
+		if _button == null or not is_instance_valid(_button) or _button.disabled:
+			return
+		if _latched:
 			return
 		if not ThemeRes.animations_enabled():
-			# 关掉动效 = 立刻到位（与 hover 动画同一条口径）
-			_fill = 1.0
-			_snap_left = 0.0
-			_snap_hold = 0.0
-			_sync_text()
-			queue_redraw()
 			return
-		if _fill >= 0.999:
-			_fill = 1.0
-			_snap_hold = maxf(_snap_hold, PressFxRes.snap_hold_sec())
-		else:
-			_snap_left = maxf(_snap_left, PressFxRes.snap_sec())
-		_sync_text()
-		queue_redraw()
+		_flash_active = true
+		_flash_left = Tuning.flash_in_sec()
+		_flash_hold = 0.0
 
 
-	## 推进「确认按下」的补满 / 保持。
-	func _advance_snap(dt: float) -> void:
-		if _snap_left > 0.0:
-			_fill = move_toward(_fill, 1.0, dt / PressFxRes.snap_sec())
-			_snap_left -= dt
+	## 推进点击闪光（返回这一帧是否动了）。
+	func _advance_flash(dt: float) -> bool:
+		if _flash_left > 0.0:
+			_fill = move_toward(_fill, 1.0, dt / maxf(0.001, Tuning.flash_in_sec()))
+			_flash_left -= dt
 			if _fill >= 0.999:
 				_fill = 1.0
-				_snap_left = 0.0
-				_snap_hold = PressFxRes.snap_hold_sec()
-			elif _snap_left <= 0.0:
-				# 时间到了还没到 1（大 dt / 低帧率）：直接落到满格，别停在 0.99
-				_fill = 1.0
-				_snap_hold = PressFxRes.snap_hold_sec()
-		elif _snap_hold > 0.0:
+				_flash_left = 0.0
+				_flash_hold = Tuning.flash_hold_sec()
+			return true
+		if _flash_hold > 0.0:
 			_fill = 1.0
-			_snap_hold -= dt
+			_flash_hold -= dt
+			return true
+		# 退回：目标就是「选中填充」该到的位置（普通按钮是 0）。
+		var goal := _fill_goal()
+		_fill = move_toward(_fill, goal, dt / maxf(0.001, Tuning.flash_out_sec()))
+		if is_equal_approx(_fill, goal):
+			_fill = goal
+			_flash_active = false
+		return true
+
 
 	func _process(dt: float) -> void:
 		if _button == null or not is_instance_valid(_button):
@@ -511,39 +728,52 @@ class FillAnimator extends Control:
 		# ★ `_text_dirty` 是「登记过字色、但还没同步过」那一档（见 `_sync_text()`）。
 		if _text_dirty or not _dirty.is_empty():
 			_sync_text()
-		# ★ 确认按下后的快速补满优先于普通目标；补满/保持期间不做回落。
-		if _snap_left > 0.0 or _snap_hold > 0.0:
-			_advance_snap(dt)
-			_sync_text()
-			queue_redraw()
-			if _snap_left > 0.0 or _snap_hold > 0.0:
-				return
-		var goal := _goal()
-		if is_equal_approx(_fill, goal):
-			# ★★ 已经到目标：仍然把字色同步一遍。
-			#   ⚠️ 这一句是**必须的**（用户报的「移出后颜色不反回来」）：进度停在
-			#     目标值时下面那条 `_sync_text()` 不会跑，于是「最后一帧的字色」会
-			#     永久留在屏幕上 —— 而那一帧恰好是填充刚到满格（暗字）、或者刚退到空
-			#     （亮字）的那一帧。只要中途有任何一次没同步上，颜色就卡住了。
-			#   ★ 它是幂等的（每次都从原色算起），每帧调也不会「越压越黑」；
-			#     真正的开销只有「每帧一次字典遍历 + 几次颜色比较」，可忽略。
-			_sync_text()
-			return
-		# ★★ 动效总开关：关掉 = 一步到位（不播过渡），状态照旧。
-		var step := 1.0
-		if ThemeRes.animations_enabled():
-			step = dt / maxf(0.001, FILL_TIME if goal > _fill else DRAIN_TIME)
-		_fill = move_toward(_fill, goal, step)
+		var glow_goal := _glow_goal()
+		var moved := false
+		if _flash_active:
+			# ★★ 闪光优先：它自己从 0 推到 1、保持、再退回目标（普通按钮 = 0）。
+			moved = _advance_flash(dt)
+		else:
+			var fill_goal := _fill_goal()
+			# ★★ 动效总开关：关掉 = 一步到位（不播过渡），状态照旧。
+			if not is_equal_approx(_fill, fill_goal):
+				var step := 1.0
+				if ThemeRes.animations_enabled():
+					step = dt / maxf(0.001, FILL_TIME if fill_goal > _fill else DRAIN_TIME)
+				_fill = move_toward(_fill, fill_goal, step)
+				moved = true
+		if not is_equal_approx(_glow, glow_goal):
+			var step := 1.0
+			if ThemeRes.animations_enabled():
+				step = dt / maxf(0.001,
+					Tuning.in_sec() if glow_goal > _glow else Tuning.out_sec())
+			_glow = move_toward(_glow, glow_goal, step)
+			moved = true
+		# ★★ 已经到目标：仍然把字色同步一遍。
+		#   ⚠️ 这一句是**必须的**（用户报的「移出后颜色不反回来」）：进度停在
+		#     目标值时下面那条 `_sync_text()` 不会跑，于是「最后一帧的字色」会
+		#     永久留在屏幕上 —— 而那一帧恰好是填充刚到满格（暗字）、或者刚退到空
+		#     （亮字）的那一帧。它是幂等的，每帧调也不会「越压越黑」。
 		_sync_text()
-		queue_redraw()
+		if moved or _glow > 0.0001:
+			queue_redraw()
 
-	## 这一帧该填到多少。
+	## 这一帧**选中填充**该到多少。
 	##
-	## ★★ 三条档位（本版）：**禁用 = 灰**（需求：不可点的按钮也要有悬停反馈，
-	##   只是填灰的）、**启用 = 金且常驻**、**悬停 = 金**。
-	## ★ 与被 `set_available(false)` 关掉的那个字段分开记：关掉 = 这个按钮不参与
-	##   悬停动效（空槽 / 压根不是按钮），禁用 = 参与，但填灰。
-	func _goal() -> float:
+	## ★★ 只有 `_latched` 会驱动它 —— 悬停 / 按住走 `_glow_goal()`，两者彻底分开。
+	## ★ `_available = false`（空槽 / 压根不该有动效）⇒ 不填。
+	func _fill_goal() -> float:
+		if not _available or _button == null or not is_instance_valid(_button):
+			return 0.0
+		return 1.0 if _latched else 0.0
+
+	## 这一帧**悬停泛光**该到多少。
+	##
+	## ★ 桌面听 `_hovered`；移动端没有悬停（按下的模拟 enter 等不到 exit），
+	##   改成「按住 = 泛光」，松手就退回去（用户口径：按下即泛光）。
+	## ★ 禁用按钮**照样泛光**（颜色由 `_glow_color()` 换成灰）：
+	##   「不可点的按钮也要有反馈，只是灰的」。
+	func _glow_goal() -> float:
 		if not _available or _button == null or not is_instance_valid(_button):
 			return 0.0
 		var usable: bool = _button.mouse_filter != Control.MOUSE_FILTER_IGNORE
@@ -551,18 +781,10 @@ class FillAnimator extends Control:
 		if ThemeRes.hover_enabled():
 			can_hover = _hovered and usable
 		else:
-			# ★ 移动端没有悬停（按下的模拟 enter 等不到 exit，按钮会一直满金）：
-			#   改成「按住 = 悬停」，松手就退回去。
 			can_hover = _button.is_pressed() and usable
-		if _button.disabled:
-			# 禁用态：只有鼠标停上来才填（灰），移开就退回去；不算「已启用」。
-			return 1.0 if can_hover else 0.0
-		if _latched or can_hover:
-			return 1.0
-		return 0.0
+		return 1.0 if can_hover else 0.0
 
-	## 这一帧是不是灰档（禁用 + 已经填起来了一点点）。★ 用「已经填了多少」而不是
-	## 「现在禁不禁用」判断：否则「从禁用变成可用」的途中颜色会**中途跳一次金**。
+	## 这一帧是不是灰档（禁用 / 强制灰）。★ 只影响**泛光颜色**与「万一被选中时的填色」。
 	func is_grey() -> bool:
 		return _grey or (_button != null and is_instance_valid(_button) and _button.disabled)
 
@@ -645,6 +867,18 @@ class FillAnimator extends Control:
 		set_process(shown)
 		if not shown:
 			_hovered = false
+			# ★★ 泛光**当场清零**（它只表示「鼠标在不在上面」，不是状态）：
+			#   否则隐藏期间 `_process` 停着、`_glow` 仍停在 1，再显示时会先亮一下
+			#   再渐暗（0.12s 的假反馈）。选中填充不这样处理 —— 那是真状态，要保留。
+			_glow = 0.0
+			# ★ 点击闪光也作废：按钮都藏了，没必要在再显示时补播一次；
+			#   没选中的按钮把进度一起归零（选中态保留，它本来就是满的）。
+			_flash_active = false
+			_flash_left = 0.0
+			_flash_hold = 0.0
+			if not _latched:
+				_fill = 0.0
+			queue_redraw()
 			# 隐藏期间收不到 `button_up`：把按住状态一起作废，避免再次显示时
 			# 收到一个迟到的 `button_up` 把悬停钉回去（见 `_on_button_up`）。
 			_pointer_down = false
@@ -662,8 +896,8 @@ class FillAnimator extends Control:
 	##   留一片可点的洞，见 view/panel_expand.gd）。**吃不到鼠标就收不到 `mouse_exited`**
 	##   ⇒ `_hovered` 永远停在 true；而转场结束把过滤器还原成 STOP 时**没有人补发 enter/exit**，
 	##   于是那片金一直填着 —— 哪怕鼠标早就挪到右上角去点「返回」了。
-	##   （`_goal()` 里那句 `mouse_filter != IGNORE` 只保证「压着的时候退回去」，
-	##     还原之后它会照着那个**过期的** `_hovered` 又填回来。）
+	##   （`_glow_goal()` 里那句 `mouse_filter != IGNORE` 只保证「压着的时候退回去」，
+	##     还原之后它会照着那个**过期的** `_hovered` 又亮回来。）
 	##
 	## 修法：把「吃不到鼠标」当成悬停态的**失效信号**：
 	##   · 压着的时候直接清掉（吃不到鼠标，不可能处于悬停态）；
@@ -703,6 +937,21 @@ class FillAnimator extends Control:
 		return _fill
 
 
+	## 这一颗现在的泛光强度（0 = 不亮）。测试 / 排查读它。
+	func glow() -> float:
+		return _glow
+
+
+	## 这一颗现在是不是正在播「点击闪光」。测试 / 排查读它。
+	func flashing() -> bool:
+		return _flash_active
+
+
+	## 这一颗允许点击闪光吗（测试 / 排查读）。
+	func flash_enabled() -> bool:
+		return _flash_enabled
+
+
 	func latched() -> bool:
 		return _latched
 
@@ -717,38 +966,57 @@ class FillAnimator extends Control:
 	## 立刻把进度设成一个值（动画会从那里继续）。测试与「不必动画」的场合用它。
 	func set_fill(v: float) -> void:
 		_fill = clampf(v, 0.0, 1.0)
-		# ★ 外部显式设值 = 取消「确认按下」的补满 / 保持，避免测试或调用点被顶回去
-		_snap_left = 0.0
-		_snap_hold = 0.0
 		_sync_text()
 		queue_redraw()
 
 
-	## 启用 / 弃用。★ 锁定态**常驻满格**（不回落），并与悬停档分开取色（更亮）。
+	## 选中 / 取消选中。
 	##
-	## ⚠️ 打开锁定时**当场把进度钉到 1**：那一档本来就是「一直亮着」的常驻态，
-	##   让它从 0 淡入等于「点了启用还要等两帧才满」——而且**依赖帧**：
-	##   无头 / 刚建好还没进 `_process` 的时候，读到的进度就是 0
-	##   （实测：战役页关卡行一开始就选中，断言读到 fill=0 而画面其实该是满的）。
-	##   关掉的时候不钉（那一下要的就是「渐渐退回去」，见文件头的需求③）。
+	## ★★ 2026.11.5：选中 = **播一次金色填充到满格**，取消 = 反向退回；
+	##   `instant = true` 用于「打开界面时已经选中」的那一档（直接满格，不播动画）。
+	##   ⚠️ 旧版把「选中」当场钉到 1，现在必须让调用方明确要不要动画 ——
+	##     否则首帧 / 无头测试里读到的进度会取决于帧数（那正是旧注释里那个坑）。
 	## ★ 无论值有没有变，**都要重取色 + 同步字色**：调用点常常每帧重复设同一个值，
 	##   而「值没变」并不代表颜色是对的（换档发生在别处时尤其如此）。
-	func set_latched(v: bool) -> void:
-		var changed := _latched != v
+	func set_latched(v: bool, instant: bool = false) -> void:
 		_latched = v
-		if changed and v:
-			_fill = 1.0
+		# ★ 选中态优先于一次性闪光：切选中时把正在跑的闪光取消，免得两边抢 `_fill`。
+		_flash_active = false
+		_flash_left = 0.0
+		_flash_hold = 0.0
+		if instant:
+			_fill = 1.0 if v else 0.0
+			_synced_fill = -1.0                  # 强制下面那次同步重新选一遍字色
 		_refresh_colors()
+		_force_sync_text()
 		queue_redraw()
 
 
-	## 允许 / 禁止填充。
+	## 允许 / 禁止填充与泛光。
 	##
-	## ⚠️ **禁用态不要用它**：需求要的是「禁用按钮悬停时填**灰**」，那条走
-	##   `_goal()` 里的 `_button.disabled` 分支（自动生效）。
+	## ⚠️ **禁用态不要用它**：需求要的是「禁用按钮悬停时泛**灰光**」，那条走
+	##   `_glow_color()` 里的 `is_grey()` 分支（自动生效）。
 	##   这个接口留给「空槽 / 压根不该有动效」的场合。
 	func set_available(v: bool) -> void:
 		_available = v
+		if not v:
+			_flash_active = false
+			_flash_left = 0.0
+			_flash_hold = 0.0
+		queue_redraw()
+
+
+	## 这颗按钮点一下要不要「金色一闪」。
+	##
+	## ★ 默认要（普通动作按钮）。有自己点击反馈的按钮（页签 / 科技启用 / 备战磁贴 /
+	##   面板已打开）由调用点关掉 —— 否则会和它们的选中填充抢同一份 `_fill`。
+	## ★ 关掉时正在跑的闪光也一并取消（不会闪到一半停住）。
+	func set_click_flash(v: bool) -> void:
+		_flash_enabled = v
+		if not v:
+			_flash_active = false
+			_flash_left = 0.0
+			_flash_hold = 0.0
 		queue_redraw()
 
 
@@ -830,15 +1098,15 @@ class FillAnimator extends Control:
 		_dirty.append(n)
 
 
-	## 换填色档位：锁定 = 更亮的金；禁用 = 灰；其余 = 普通的金。
-	## ★ 只在**换态**（普通 / 锁定 / 禁用）时调 —— 不是每帧。
+	## 换填色档位：禁用 = 灰；选中 = 更亮的金；其余（正在退回）= 普通的金。
+	## ★ 只在**换态**（选中 / 取消 / 禁用）时调 —— 不是每帧。
 	func _refresh_colors() -> void:
-		if _latched:
-			_bottom = ThemeRes.fill_bottom_latched()
-			_top = ThemeRes.fill_top_latched()
-		elif is_grey():
+		if is_grey():
 			_bottom = ThemeRes.fill_disabled_bottom()
 			_top = ThemeRes.fill_disabled_top()
+		elif _latched:
+			_bottom = ThemeRes.fill_bottom_latched()
+			_top = ThemeRes.fill_top_latched()
 		else:
 			_bottom = ThemeRes.fill_bottom()
 			_top = ThemeRes.fill_top()
@@ -906,13 +1174,17 @@ class FillAnimator extends Control:
 			#   决定它**整块**是用原色还是填充档 —— 中间不插值（插值会变成看不见的灰）。
 			#   ⚠️ 只在「原色比填充档亮」时才翻；本来就暗的（科技格已启用那档）
 			#      保持原色，不然会把它弄浅。
-			if base.get_luminance() > on_fill.get_luminance():
+			# ★★ 2026.11.5：**去掉「只要 latched 就直接翻」那条捷径** ——
+			#   现在选中要播填充动画，刚点下去时金还在底部；按 latched 立刻翻黑
+			#   会让最上面那几行字在头 0.1 秒里「黑字压黑底」。
+			#   翻面只认 `_coverage()`：金扫到哪里，字才变到哪里（满格时覆盖率 = 1）。
+			# ★★ 点击闪光期间**不翻**：那是一次性的「金色一闪」，峰顶只停一两帧，
+			#   翻黑再翻回来会变成文字抽动。闪光很短，白字压金的对比度问题可忽略。
+			if base.get_luminance() > on_fill.get_luminance() and not _flash_active:
 				var cov := _coverage(n)
 				var was: bool = bool(_flipped.get(n, false))
 				var now := was
-				if _latched:
-					now = true
-				elif was:
+				if was:
 					now = cov > FLIP_LO * 0.5      # 迟滞：翻过之后要退得更多才翻回来
 				else:
 					now = cov >= FLIP_HI
@@ -1153,6 +1425,12 @@ static func fill_progress(b: Button) -> float:
 	return 0.0 if a == null else a.fill()
 
 
+## 这颗按钮现在的**悬停泛光**强度（0 = 不亮，1 = 最亮）。测试 / 排查读它。
+static func glow_progress(b: Button) -> float:
+	var a := animator_of(b)
+	return 0.0 if a == null else a.glow()
+
+
 ## 立刻设进度（测试 / 不需要动画的场合）。
 static func set_fill(b: Button, v: float) -> void:
 	var a := animator_of(b)
@@ -1160,17 +1438,42 @@ static func set_fill(b: Button, v: float) -> void:
 		a.set_fill(v)
 
 
-## 这颗按钮是不是「已启用」的常驻态（页签当前页 / 科技九格里启用的那几格）。
+## 这颗按钮是不是「已选中 / 已启用」（页签当前页 / 科技九格里启用的那几格 / 备战磁贴）。
 static func is_latched(b: Button) -> bool:
 	var a := animator_of(b)
 	return a != null and a.latched()
 
 
-## 置 / 撤「已启用」。★ 锁定态不回落，且取更亮的那一档金 + 更暗的字（需求：亮度变大）。
-static func set_latched(b: Button, on: bool) -> void:
+## 这颗按钮现在是不是正在播**点击闪光**（测试 / 排查读）。
+static func is_flashing(b: Button) -> bool:
+	var a := animator_of(b)
+	return a != null and a.flashing()
+
+
+## 这颗按钮允许点击闪光吗（测试 / 排查读）。
+static func click_flash_enabled(b: Button) -> bool:
+	var a := animator_of(b)
+	return a == null or a.flash_enabled()
+
+
+## 这颗按钮点一下要不要「金色一闪」。
+##
+## ★ 默认要（普通动作按钮）。有自己点击反馈的按钮（页签 / 科技启用 / 备战磁贴 /
+##   面板已打开）在调用点关掉 —— 否则闪光的「填满→退回」会和它们的选中填充抢 `_fill`。
+static func set_click_flash(b: Button, on: bool) -> void:
 	var a := animator_of(b)
 	if a != null:
-		a.set_latched(on)
+		a.set_click_flash(on)
+
+
+## 置 / 撤「已选中」。
+##
+## ★★ 2026.11.5：默认**播填充动画**（选中 = 金色填到满，取消 = 反向退回）；
+##   `instant = true` 给「打开界面时已经选中」的那一档（直接满格，不播动画）。
+static func set_latched(b: Button, on: bool, instant: bool = false) -> void:
+	var a := animator_of(b)
+	if a != null:
+		a.set_latched(on, instant)
 
 
 ## 强制灰档但保持可点击 / 可悬停（合作大厅客机的地图预览）。

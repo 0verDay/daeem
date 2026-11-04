@@ -36,7 +36,7 @@ signal page_changed(page: String)
 
 const UiLayoutRes = preload("res://view/ui_layout.gd")
 const UiStyleRes = preload("res://view/ui_style.gd")
-## ★★ 悬停「金色自下而上填进来」+「当前页常驻满格并增亮」（见 view/fill_button.gd）。
+## ★★ 悬停「四边泛光」+「选中页金色填充满格」（见 view/fill_button.gd）。
 const FillButtonRes = preload("res://view/fill_button.gd")
 
 ## 页 id（也是给 hud 用的常量；中文标签在下面 LABELS 里）
@@ -77,6 +77,9 @@ var _char_labels: Array = []
 var _char_h: Array[float] = []
 ## 上一轮「是不是当前页」：变了要重排逐字标签的颜色（当前页用近黑底字）。
 var _was_active: Array[bool] = []
+## ★★ 2026.11.5：第一轮 `_apply_styles()` 是「建出来时的初始状态」——
+##   当前页那一下要**直接满格**（不播填充动画），之后切页才播。
+var _primer_done: bool = false
 
 
 func setup() -> void:
@@ -90,10 +93,13 @@ func setup() -> void:
 		b.text = ""
 		b.focus_mode = Control.FOCUS_NONE              # 别让空格 / 回车又触发一次
 		b.add_theme_font_size_override("font_size", UiStyleRes.FS_TITLE)
-		# ★★ 悬停填充 + 当前页常驻（一行挂上，见 view/fill_button.gd）。
+		# ★★ 悬停泛光 + 选中填充（一行挂上，见 view/fill_button.gd）。
 		#   ⚠️ 在这之后**不要**再直接写 `add_theme_color_override("font_color", …)`：
 		#      填充动效每帧按「原色 + 进度」重算字色，直接写会被盖掉。
 		FillButtonRes.attach_text(b)
+		# ★★ 页签有自己的点击反馈（切页时金色填充 / 反向退回）——
+		#   关掉「点击闪光」，否则闪光的填满→退回会和选中填充抢同一份进度。
+		FillButtonRes.set_click_flash(b, false)
 		# ★★ 常驻灰底：底纹（`tab_plain*`）必须保持全透明，否则会把填充金盖住；
 		#   所以灰底交给填充动画器画在**金的下层** —— 悬停时灰底不消失，金只是往上盖。
 		FillButtonRes.set_base_bg(b, UiStyleRes.bg_empty())
@@ -264,26 +270,26 @@ func cycle_page(dir: int = 1) -> bool:
 ## 普通态的底色（`tab_normal` / `tab_hover` 那一档）**留给没挂填充的场合**；
 ## 页签自己走下面这一对：底透明、只留描边 —— 底色交给填充层。
 ##   · 没悬停：一条金线（+ 这一列自己的底板）；
-##   · 悬停：金自下而上填进来；
-##   · 当前页：常驻满格（**不**再额外提亮 —— 那一档的金已经够亮，
-##     再亮白字就彻底读不出来了，见下面那条口径）。
+##   · **悬停 / 按住：四边向中心泛光**（2026.11.5 起，不再是从下往上填金）；
+##   · **当前页：金色填充满格**（点击切换时才播填充动画；第一页直接满格）。
 ##
-## ★★ 字色口径（两轮需求叠出来的结果，别再各改一半）：
+## ★★ 字色口径（别再各改一半）：
 ##   · **所有**页签的字都从**暖白**起步（用户：「页签按钮文字要白色」）；
 ##   · 金色填充往上扫时，字**跟着那条前沿**由白变黑（用户：
 ##     「白字也需要添加由下往上的由白变黑特效，需要和金色填充线同步」）
 ##     —— 这条由 `fill_button` 的**逐字翻面**实现（金扫到哪个字，那个字才变色）。
 ##   · 所以当前页**不用**单独把字设成近黑：它整块金是满的，翻面自然把
-##     每个字都推到黑（`_latched` 时进度钉死 1）。
+##     每个字都推到黑（填充到 1 时覆盖率 = 1）。
 ##   ⚠️ 这条口径**就是全项目的口径**（用户后来要求「所有被金压住的字一律照页签栏这么做」）：
 ##     白字压金是读不出来的，不许有任何一处例外 —— 包括那个已经作废的
 ##     `prefer_light` 开关（它现在只是个记录用的字段，见 view/fill_button.gd）。
 func _apply_styles() -> void:
+	var instant := not _primer_done
 	for i in _buttons.size():
 		var b := _buttons[i]
 		var on := is_active(i)
 		FillButtonRes.set_prefer_light(b, true)
-		FillButtonRes.set_latched(b, on)
+		FillButtonRes.set_latched(b, on, instant)
 		FillButtonRes.set_base_font_color(b, UiStyleRes.text())
 		if on:
 			b.add_theme_stylebox_override("normal", UiStyleRes.tab_latched())
@@ -301,6 +307,7 @@ func _apply_styles() -> void:
 			_was_active[i] = on
 			if _chars[i] != "":
 				_rebuild_chars(i, _chars[i])
+	_primer_done = true
 
 
 # ------------------------------------------------------------------

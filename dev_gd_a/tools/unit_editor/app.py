@@ -42,10 +42,14 @@ from .model import (
     CHARGE_FIELDS,
     CLASS_UPKEEP_FIELD,
     GENERAL_CAP_FIELD,
+    GENERAL_FACTION_FIELD,
+    GENERAL_GROWTH_FIELDS,
     GENERAL_RECRUIT_FIELD,
+    GENERAL_START_INDEX,
     GENERAL_STAT_FIELDS,
+    GENERAL_TIER_FIELD,
     GENERAL_TRAIT_FIELDS,
-    GENERAL_TRAIT_PICK_FIELD,
+    GENERAL_TRAIT_KNOCKBACK,
     GENERAL_TRAIT_TEXT_FIELDS,
     GENERAL_UPKEEP_FIELD,
     ICON_HINT,
@@ -934,19 +938,29 @@ class EditorApp:
                                           fmt(unit.vision_effective), cost),
                                   tags=() if not unit.builtin else ("builtin",))
 
-        tk.Label(self.list_host, text="将领（开局三位；也可以在这里单独给数值）",
+        tk.Label(self.list_host, text="将领（可加；阶 / 派系归属 / 数值都在这改）",
                  bg=UI["bg"], fg=UI["accent"], anchor="w",
                  font=("Microsoft YaHei UI", 10, "bold")).pack(fill="x", padx=10, pady=(10, 0))
+        # ★★ 2026.11.5：多了两列 ——「阶」（unit.general.tiers）与「派系」（unit.general.factions）。
+        #   原来这里是「开局三位」，现在名册可以加长（＋ 新建将领…），所以列宽压了一点。
         self.general_tree = self._tree(self.list_host, [
-            ("name", "名字", 100), ("type", "类型", 110), ("hp", "血量", 60),
-            ("dmg", "攻击", 60), ("rng", "距离", 56), ("spd", "移速", 56),
-            ("vis", "视野", 50),
-            ("cost", "造价 粮/金/人口", 150), ("train", "招兵秒", 64),
+            ("tier", "阶", 40), ("fac", "派系", 74),
+            ("name", "名字", 96), ("type", "类型", 96), ("hp", "血量", 54),
+            ("dmg", "攻击", 54), ("rng", "距离", 50), ("spd", "移速", 50),
+            ("vis", "视野", 46),
+            ("cost", "造价 粮/金/人口", 132), ("train", "招兵秒", 58),
         ], height=3)
+        faction_names = dict(self.model.faction_choices())
         for gen in self.model.generals():
             marked = "" if not gen.override else "（有单独数值）"
             self.general_tree.insert("", "end", iid="g:%d" % gen.index, text=gen.kind,
-                                     values=(gen.name + marked, self._type_label(gen.type_id),
+                                     values=(
+                                             # ★ 阶：0 = 零阶（吃大本营成长）
+                                             ("%d" % gen.tier),
+                                             # 派系：一个都没勾时给一个显眼的「（无）」
+                                             " / ".join(faction_names.get(c, c)
+                                                        for c in gen.factions) or "（无）",
+                                             gen.name + marked, self._type_label(gen.type_id),
                                              fmt(gen.effective_of("hp_max")),
                                              fmt(gen.effective_of("damage")),
                                              fmt(gen.effective_of("range")),
@@ -1006,11 +1020,15 @@ class EditorApp:
         self._button(bar, "删除兵种", self.do_delete_unit, padx=12, pady=5,
                      bg=UI["danger_btn"], fg=UI["danger_fg"],
                      activebackground=UI["danger_btn_hover"]).pack(side="left", padx=6)
-        self._button(bar, "＋ 新建特性…", self.do_new_trait, padx=12, pady=5).pack(side="left")
+        # ★★ 2026.11.5：**加将领**（需求：「单位编辑器中需要有加将领的按钮」）。
+        #   只追加在名册末尾（开局将领 #0 固定第 10 档），不进区划招募九宫格。
+        self._button(bar, "＋ 新建将领…", self.do_new_general, padx=12, pady=5).pack(side="left")
+        self._button(bar, "＋ 新建特性…", self.do_new_trait, padx=12, pady=5).pack(side="left", padx=6)
         self._button(bar, "删除特性", self.do_delete_trait, padx=12, pady=5,
                      bg=UI["danger_btn"], fg=UI["danger_fg"],
-                     activebackground=UI["danger_btn_hover"]).pack(side="left", padx=6)
-        tk.Label(bar, text="（开局三位将领不在这里增删）", bg=UI["bg"], fg=UI["text_dim"],
+                     activebackground=UI["danger_btn_hover"]).pack(side="left")
+        tk.Label(bar, text="（将领只加在末尾；开局将领 #0 固定第 10 档）",
+                 bg=UI["bg"], fg=UI["text_dim"],
                  font=("Microsoft YaHei UI", 8)).pack(side="left", padx=6)
 
     def _type_label(self, type_id: str) -> str:
@@ -1398,6 +1416,59 @@ class EditorApp:
         self._button(add_row, "＋ 加", do_add, padx=8, pady=1,
                      font=("Microsoft YaHei UI", 8)).pack(side="left")
 
+    # ---- 将领特性列表（一位将领可以带多条）-----------------------------
+
+    def _general_trait_block(self, parent, gen: General) -> None:
+        """★★ 2026.11：「一个将领可以有多个特性」—— 一行一条 + 末尾「＋ 加一条」。
+
+        每条只显示 名字 + 效果摘要（详细文案在左边的特性池里改）；
+        「移除」只把这一条从这位将领的数组里拿掉，不影响别的将领 / 特性本身。
+        """
+        names = dict(self.model.class_choices())
+        for tid in gen.trait_ids:
+            trait = self.model.general_trait(tid)
+            row = tk.Frame(parent, bg=UI["panel"])
+            row.pack(fill="x", pady=2)
+            tk.Label(row, text=trait.name, bg=UI["panel"], fg=UI["text"], width=10,
+                     anchor="w").pack(side="left")
+            tk.Label(row, text=trait.effect_summary(names), bg=UI["panel"],
+                     fg=UI["text_dim"], anchor="w", font=("Microsoft YaHei UI", 8)
+                     ).pack(side="left", fill="x", expand=True)
+
+            def do_remove(t=tid, g=gen):
+                self._do(lambda: self.model.remove_general_trait_from(g.index, t),
+                         "把「%s」从 %s 身上拿掉" % (t, g.name))
+
+            self._button(row, "移除", do_remove, padx=6, pady=1,
+                         font=("Microsoft YaHei UI", 8)).pack(side="left")
+        if not gen.trait_ids:
+            self._hint(parent, "没有特性（可以带多条，每条只做一件事）。")
+
+        picks = [(cid, label) for cid, label in self.model.general_trait_choices()
+                 if cid not in gen.trait_ids]
+        add_row = tk.Frame(parent, bg=UI["panel"])
+        add_row.pack(fill="x", pady=2)
+        tk.Label(add_row, text="加一条特性", bg=UI["panel"], fg=UI["text"], width=10,
+                 anchor="w").pack(side="left")
+        if not picks:
+            tk.Label(add_row, text="（池里的特性都带上了）", bg=UI["panel"],
+                     fg=UI["text_dim"], anchor="w",
+                     font=("Microsoft YaHei UI", 8)).pack(side="left")
+            return
+        var = tk.StringVar(value=picks[0][1])
+        combo = ttk.Combobox(add_row, textvariable=var, state="readonly",
+                             values=[label for _c, label in picks])
+        combo.pack(side="left", fill="x", expand=True, padx=(4, 4))
+        by_label = {label: cid for cid, label in picks}
+
+        def do_add():
+            tid = by_label.get(var.get(), picks[0][0])
+            self._do(lambda: self.model.add_general_trait_to(gen.index, tid),
+                     "给 %s 加上「%s」" % (gen.name, tid))
+
+        self._button(add_row, "＋ 加特性", do_add, padx=8, pady=1,
+                     font=("Microsoft YaHei UI", 8)).pack(side="left")
+
     # ---- 单位表单 -------------------------------------------------------
 
     def _build_unit_form(self, unit: Unit) -> None:
@@ -1543,8 +1614,20 @@ class EditorApp:
     # ---- 将领表单 -------------------------------------------------------
 
     def _build_general_form(self, gen: General) -> None:
-        self._section("将领 %d" % (gen.index + 1), gen.kind)
+        # ★ 开局将领 #0 是名册第 10 档，别把它显示成「将领 10」。
+        var_num = "0" if gen.index == GENERAL_START_INDEX else str(gen.index + 1)
+        self._section("将领 %s" % var_num, gen.kind)
         sec = self._section("基本")
+
+        # ★★ 2026.11.5：**阶**（`unit.general.tiers[index]`，0~3）。0 阶 = 吃大本营成长。
+        self._choice_row(
+            sec,
+            GENERAL_TIER_FIELD,
+            str(gen.tier),
+            lambda v, g=gen: self.model.set_general_tier(g.index, int(v)))
+        self._hint(sec, "阶决定备战页的分组，也是「大本营升到几级才招得到」的门槛；"
+                        "0 阶将领额外吃下面「成长（0 阶）」那一份加成。")
+
         row = tk.Frame(sec, bg=UI["panel"])
         row.pack(fill="x", pady=2)
         tk.Label(row, text="类型", bg=UI["panel"], fg=UI["text"], width=13,
@@ -1567,6 +1650,25 @@ class EditorApp:
 
         self._entry_row(sec, Field("name", "名字", "text"), gen.name,
                         lambda v, g=gen: self.model.set_general(g.index, "name", v))
+
+        # ---- 派系归属（`unit.general.factions[index]`，2026.11.5）
+        # ★ 一位将领可以**同时属于多个派系**；备战页按选中的派系过滤将领。
+        #   ⚠️ 「原生」现在没有按钮 ⇒ 只勾原生的将领不上备战页（用户拍板的口径）。
+        fsec = self._section("派系归属", "unit.general.factions")
+        frow = tk.Frame(fsec, bg=UI["panel"])
+        frow.pack(fill="x", pady=2)
+        tk.Label(frow, text=GENERAL_FACTION_FIELD.label, bg=UI["panel"], fg=UI["text"],
+                 width=13, anchor="w").pack(side="left")
+        chosen = list(gen.factions)
+        for cid, cname in self.model.faction_choices():
+            iv = tk.IntVar(value=1 if cid in chosen else 0)
+            chk = ttk.Checkbutton(
+                frow, text=cname, variable=iv,
+                command=lambda c=cid, v=iv, g=gen: self._mutate(
+                    "将领 %s 的派系「%s」→ %s" % (var_num, c, "勾上" if v.get() else "取消"),
+                    lambda: self.model.set_general_faction(g.index, c, bool(v.get()))))
+            chk.pack(side="left", padx=(4, 0))
+        self._hint(fsec, GENERAL_FACTION_FIELD.hint)
 
         # ★★ 编制上限（本轮新增）：这位将领的目标编队规模。
         self._entry_row(sec, GENERAL_CAP_FIELD, gen.cap,
@@ -1598,23 +1700,14 @@ class EditorApp:
         self._hint(nsec, "生成的附属兵数量**不能超过上面的「编制上限」**；"
                          "规格（类型 + 权重 + 生成数量）在**战役编辑器的摆放页 / 红点页**里配。")
 
-        # ---- 将领特性（`unit.general.trait_ids[index]`，2026.11.3）
-        # ★ 这里只「选哪一条」；特性本身（名字 / 效果 / 加条删条）在左边的
+        # ---- 将领特性（`unit.general.trait_ids[index]`，2026.11.3 / 2026.11）
+        # ★ 这里只「带哪几条」；特性本身（名字 / 效果 / 加条删条）在左边的
         #   「将领特性池」里改 —— 一处定义、多处引用，不会两边改法不一致。
-        tsec = self._section("特性", "unit.general.trait_ids")
-        self._choice_row(
-            tsec,
-            Field(GENERAL_TRAIT_PICK_FIELD.key, GENERAL_TRAIT_PICK_FIELD.label, "choice",
-                  GENERAL_TRAIT_PICK_FIELD.hint,
-                  choices=tuple(self.model.general_trait_choices())),
-            gen.trait_id,
-            lambda v, g=gen: self.model.assign_general_trait(g.index, v))
-        if gen.trait_id:
-            trait = self.model.general_trait(gen.trait_id)
-            self._hint(tsec, "「%s」＝ %s（对**本人 + 旗下所有单位**生效；附属兵出生时继承）"
-                       % (trait.name, trait.effect_summary(dict(self.model.class_choices()))))
-        else:
-            self._hint(tsec, "没有特性。要看 / 改 / 加删特性本身，点左边「将领特性池」那一栏。")
+        # ★★ 2026.11：用户口径「一个将领可以有多个特性」，所以是一行一条 + 末尾加一条。
+        tsec = self._section("特性（可多条）", "unit.general.trait_ids")
+        self._general_trait_block(tsec, gen)
+        self._hint(tsec, "每条特性只做一件事；对**本人 + 旗下所有单位**生效（附属兵出生时继承全部）。")
+        self._hint(tsec, "要看 / 改 / 加删特性本身，点左边「将领特性池」那一栏。")
 
         # ---- 持久消耗（将领自己的覆盖，2026.11.4）
         # ★ 没写 = 跟随所属兵种（兵种没写再跟大类）。所以这里只显示「跟随谁、多少」，
@@ -1628,19 +1721,46 @@ class EditorApp:
                       ("跟随兵种「%s」" % gen.type_id) if gen.inherits_upkeep
                       else "这位将领自己写的"))
 
+        # ---- 成长（0 阶专属，2026.11.5）
+        # ★★ 需求：「0 阶将领要加额外的成长选项，所有 0 阶将领随局内大本营升级获得加成」。
+        #   · 只有 tier == 0 才显示这一栏（其它阶不吃，所以不给输入框免得改了个没用的数）；
+        #   · 数值是**全局一份**（`unit.general.growth`）—— 在任何一位 0 阶将领这里改，
+        #     改的都是同一个键（所有 0 阶将领一起变）。
+        if gen.tier == 0:
+            gsec = self._section("成长（0 阶）", "unit.general.growth")
+            growth = self.model.general_growth()
+            for field in GENERAL_GROWTH_FIELDS:
+                self._entry_row(gsec, field, growth.get(field.key, 0.0),
+                                lambda v, f=field: self.model.set_general_growth(f.key, v))
+            self._hint(gsec, "所有 **0 阶**将领共享这两个数：加成 = 每级值 × 当前大本营等级"
+                             "（1 级就给；大本营升级完成时当场生效，场上已有的也涨）。"
+                             "1~3 阶将领一点不吃。")
+
         # ---- 造价与招募（recruit.zone.list）
         rsec = self._section("造价与招募", "recruit.zone.list")
-        for key, label in (("cost_food", "造价 · 粮食"), ("cost_gold", "造价 · 黄金"),
-                           ("population_cost", "造价 · 人口"),
-                           # ★★ 2026.11.2：这一条是「**区划**招募这位将领」的读条，
-                           #   与上面「招兵读条」（这位将领当兵营时招兵的读条）是两件事。
-                           ("train_sec", "区划招募读条"),
-                           ("recruit_cooldown_sec", "招募冷却（秒）")):
-            field = Field(key, label, "float", minimum=0)
-            self._entry_row(rsec, field, gen.field(key),
-                            lambda v, g=gen, k=key: self.model.set_general(g.index, k, v))
-        self._hint(rsec, "区划中心招将领时用的钱、人口与读条秒数；"
-                         "招募冷却 = 招到之后**该玩家全局**锁多少秒。")
+        if not gen.has_recruit:
+            # ★★ 「＋ 新建将领…」加出来的是**纯数值档**（用户拍板：不进招募九宫格）——
+            #   没有招募条目，自然也没有「造价 / 读条 / 冷却」可改。别给一组改不动的输入框。
+            self._hint(rsec, "这位将领**没有区划招募条目**（不在招募九宫格里）："
+                             "只能由关卡摆放 / 开局获得，不能用区划中心招出来。"
+                             "想让它可招募，得手工往 recruit.zone.list 加一条（本工具不代写）。")
+        else:
+            for key, label in (("cost_food", "造价 · 粮食"), ("cost_gold", "造价 · 黄金"),
+                               ("population_cost", "造价 · 人口"),
+                               # ★★ 2026.11.2：这一条是「**区划**招募这位将领」的读条，
+                               #   与上面「招兵读条」（这位将领当兵营时招兵的读条）是两件事。
+                               ("train_sec", "区划招募读条"),
+                               ("recruit_cooldown_sec", "招募冷却（秒）")):
+                field = Field(key, label, "float", minimum=0)
+                self._entry_row(rsec, field, gen.field(key),
+                                lambda v, g=gen, k=key: self.model.set_general(g.index, k, v))
+            self._hint(rsec, "区划中心招将领时用的钱、人口与读条秒数；"
+                             "招募冷却 = 招到之后**该玩家全局**锁多少秒。")
+            if gen.coop_recruit:
+                # ★★ 2026.11：新将领的条目在 `recruit.zone.coop_list`（合作专用）。
+                self._hint(rsec, "★ 这一条在 **recruit.zone.coop_list（合作专用）** 里："
+                                 "只有合作模式、且这位将领被备战页选中时才会出现在招募九宫格；"
+                                 "对战 / 战役的招募页完全不看这张表。")
 
     # ---- 组合招募单表单 ------------------------------------------------
 
@@ -1721,7 +1841,15 @@ class EditorApp:
                             lambda v, t=trait, f=field: self.model.set_general_trait_field(
                                 t.id, f.key, v),
                             allow_empty=True)
-        self._hint(esec, "空 = 这条特性没有那一项（键会被删掉）；减伤夹在 0~1（1 = 无敌）。")
+        # ★★ 2026.11：稳定是**开关**，不是数值（写 true / 删键）。
+        self._bool_row(esec, GENERAL_TRAIT_KNOCKBACK,
+                       trait.knockback_immune,
+                       lambda v, t=trait: self.model.set_general_trait_field(
+                           t.id, GENERAL_TRAIT_KNOCKBACK.key, v))
+        self._hint(esec, "空 = 这条特性没有那一项（键会被删掉）；减伤 / 招募折扣夹在 0~1。")
+        if trait.melee_splash:
+            self._hint(esec, "横扫：攻击附带范围伤害 %s 格 + 击退（这一项目前只能在 config.json 里改）"
+                       % fmt(trait.melee_splash.get("radius", 0.0)))
         self._hint(esec, "改完立刻对「选了这条特性」的将领生效（左边「将领」里选）。")
 
         dsec = self._section("删除")
@@ -1946,6 +2074,32 @@ class EditorApp:
             self._sidebar_reset_pending = True
             self.refresh_all()
 
+    def do_new_general(self) -> None:
+        """★★ 2026.11.5：**在名册末尾加一位将领**（需求：「需要有加将领的按钮」）。
+
+        ★ 只追加数值档（`unit.general.*` 那几张同序表一起变长），**不进**区划招募九宫格 ——
+          用户拍板的口径。加完立刻选中它，右侧就是它的表单（阶 / 派系 / 数值 / 成长）。
+        ★ 默认名用「将领 10」起：0-9 已经被现有的 10 位占了（#0 是第 10 档）。
+        """
+        index = self.model.general_count()
+        default_name = "将领 %d" % index
+        types = [(u.id, "%s（%s）" % (u.name, u.id)) for u in self.model.units()]
+        if not types:
+            self.status("一个兵种都没有，先建一个兵种再将领")
+            return
+        values = _ask_new_general(self.root, default_name, types)
+        if values is None:
+            return
+        name, type_id, tier = values
+        before = self.model.general_count()
+        if not self._mutate("新建将领「%s」（照 %s 复制出独立兵种，%d 阶）" % (name, type_id, tier),
+                            lambda: self.model.add_general(name, type_id, tier)):
+            return
+        if self.model.general_count() > before:
+            self.selection = ("general", before)
+            self._sidebar_reset_pending = True
+            self.refresh_all()
+
     def do_new_trait(self) -> None:
         """★ 2026.11.3：新建一条**将领特性**（照模板复制：连效果与排版一起抄）。"""
         templates = [(t.id, "%s（%s）" % (t.name, t.id)) for t in self.model.general_traits()]
@@ -2080,6 +2234,92 @@ def _ask_new_entry(root: tk.Tk, title: str, id_label: str,
         messagebox.showwarning(title, "一个可以照抄的模板都没有，先检查配置文件。", parent=root)
         return None
     return _NewEntryDialog(root, title, id_label, templates).result
+
+
+class _NewGeneralDialog:
+    """★★ 2026.11.5：「＋ 新建将领…」的对话框：名字 + 类型 + 阶。
+
+    ★ 为什么不像兵种那样也填 id：将领的 id / kind 是**由名册下标推出来的**
+      （`general_<下标+1>`，第 10 档是 `general_0`），不是设计师起的名字 ——
+      让人填 id 只会填出一个和下标对不上的键。
+
+    ★ 「阶」默认 **零阶**：这个按钮本来就是为「0 阶将领 + 大本营成长」这条需求加的；
+      加出来之后右侧表单里能改阶，也能改派系归属与数值。
+    """
+
+    def __init__(self, root: tk.Tk, default_name: str,
+                 types: List[Tuple[str, str]]) -> None:
+        self.result: Optional[Tuple[str, str, int]] = None
+        self.top = tk.Toplevel(root)
+        self.top.title("新建将领")
+        self.top.configure(bg=UI["bg"])
+        self.top.transient(root)
+        self.top.resizable(False, False)
+        body = tk.Frame(self.top, bg=UI["bg"])
+        body.pack(fill="both", expand=True, padx=14, pady=12)
+
+        tk.Label(body, text="名字（显示在备战页 / 部队列表里）", bg=UI["bg"], fg=UI["text"],
+                 anchor="w").pack(fill="x")
+        self.name_var = tk.StringVar(value=default_name)
+        entry = ttk.Entry(body, textvariable=self.name_var, width=34)
+        entry.pack(fill="x", pady=(0, 8))
+
+        tk.Label(body, text="模板兵种（会复制出一条只属于这位将领的独立兵种）",
+                 bg=UI["bg"], fg=UI["text"], anchor="w").pack(fill="x")
+        self.type_var = tk.StringVar(value=types[0][1] if types else "")
+        combo = ttk.Combobox(body, textvariable=self.type_var, state="readonly", width=32,
+                             values=[label for _cid, label in types])
+        combo.pack(fill="x", pady=(0, 8))
+        self._by_label = {label: cid for cid, label in types}
+
+        tk.Label(body, text="阶（0 阶会随大本营升级获得血量 / 攻击成长）",
+                 bg=UI["bg"], fg=UI["text"], anchor="w").pack(fill="x")
+        self.tier_var = tk.StringVar(value=GENERAL_TIER_FIELD.choices[0][1])
+        tcombo = ttk.Combobox(body, textvariable=self.tier_var, state="readonly", width=32,
+                              values=[label for _cid, label in GENERAL_TIER_FIELD.choices])
+        tcombo.pack(fill="x", pady=(0, 10))
+        self._tier_by_label = {label: int(cid) for cid, label in GENERAL_TIER_FIELD.choices}
+
+        tk.Label(body, text="（加出来的将领 = 独立兵种对象；不进区划招募九宫格）",
+                 bg=UI["bg"], fg=UI["text_dim"], anchor="w",
+                 font=("Microsoft YaHei UI", 8)).pack(fill="x", pady=(0, 6))
+
+        row = tk.Frame(body, bg=UI["bg"])
+        row.pack(fill="x")
+        RButton(row, text="取消", command=self._cancel, bg=UI["panel_alt"], fg=UI["text"],
+                activebackground=UI["hover"], relief="flat", takefocus=0,
+                padx=12, pady=5).pack(side="right")
+        RButton(row, text="创建", command=self._ok, bg=UI["accent_btn"], fg=UI["accent_fg"],
+                activebackground=UI["accent_btn_hover"], relief="flat", takefocus=0,
+                padx=16, pady=5).pack(side="right", padx=6)
+        entry.focus_set()
+        self.top.bind("<Return>", lambda e: self._ok())
+        self.top.bind("<Escape>", lambda e: self._cancel())
+        self.top.grab_set()
+        self.top.wait_window()
+
+    def _ok(self) -> None:
+        name = self.name_var.get().strip()
+        type_id = self._by_label.get(self.type_var.get(), "")
+        tier = self._tier_by_label.get(self.tier_var.get(), 0)
+        if not name or not type_id:
+            messagebox.showwarning("还差一点", "名字与类型都要填。", parent=self.top)
+            return
+        self.result = (name, type_id, tier)
+        self.top.destroy()
+
+    def _cancel(self) -> None:
+        self.result = None
+        self.top.destroy()
+
+
+def _ask_new_general(root: tk.Tk, default_name: str,
+                     types: List[Tuple[str, str]]) -> Optional[Tuple[str, str, int]]:
+    if not types:
+        messagebox.showwarning("新建将领", "一个兵种都没有 —— 将领需要挂在一个兵种上。",
+                               parent=root)
+        return None
+    return _NewGeneralDialog(root, default_name, types).result
 
 
 def run(config_path: Path, project_dir: Optional[Path] = None) -> int:

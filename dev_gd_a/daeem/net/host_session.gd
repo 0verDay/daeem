@@ -1,4 +1,4 @@
-﻿## host_session.gd —— 房主侧会话：校验客机命令、按配置频率发快照、转发事件。
+## host_session.gd —— 房主侧会话：校验客机命令、按配置频率发快照、转发事件。
 ##
 ## 房主**跑整个世界**（tick / AI / 目标都在 game_scene 那一侧）；本文件只做三件事：
 ##   1. 收客机的 `cmd`，按 `by` / `faction` / `seq` 校验后交给 `command_processor`；
@@ -151,6 +151,9 @@ func start_game(campaign_id: String, level_id: String) -> void:
 	var seats: Array = []
 	if world != null:
 		seats = world.player_seats.duplicate()
+	var pool: Dictionary = {}
+	if world != null and world.has_method("general_pool_map"):
+		pool = world.general_pool_map()
 	_send("start", {
 		"campaign": campaign_id,
 		"level_id": level_id,
@@ -158,6 +161,8 @@ func start_game(campaign_id: String, level_id: String) -> void:
 		"seats": seats,
 		"host_seat": host_seat,
 		"guest_seat": guest_seat,
+		# ★★ 2026.11：合作模式的出战将领池（阵营 → 九宫格 kind）；客机据此还原同一个招募页。
+		"general_pool": pool,
 		"build": ProtocolRes.BUILD,
 	})
 

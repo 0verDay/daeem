@@ -704,12 +704,21 @@ static func attack_unit(world, cfg: ConfigRes, u: UnitRes, t: UnitRes,
 	#   与「对某大类伤害」一样只乘一次 —— 近战即时结算、远程在**开火这一刻**把伤害烘进投掷物，
 	#   两条路都是同一个数。
 	#   ⚠️ 拆建筑走 `attack_building`、不经过这里（科技加成不作用于拆迁）。
-	damage *= float(world.tech_attack_mult(u))
+	#   ★ 测试 / 工具会传 world = null（只验伤害公式）：这时跳过科技加成，别炸。
+	if world != null:
+		damage *= float(world.tech_attack_mult(u))
 	# ★★ 2026.11：**冲锋额外伤害**。`charge_damage_bonus` 来自兵种，
 	#   `tech_charge_add()` 来自科技「骑士精神」—— **加法叠加**（1.0 = +100%）。
 	#   ⚠️ 只有冲锋命中才乘，普通攻击不受影响。
+	#   ★★ 2026.11：将领光环 `aura_charge_damage_bonus`（阿吉诃德：部队中的**近战骑兵**
+	#     冲锋再 +100% 额外伤害）只放大「额外伤害」这一部分，不放大基础伤害；
+	#     远程骑兵即使有光环也不吃（它根本不冲锋，`charged` 在上面已经被降级）。
 	if charged:
-		damage *= 1.0 + u.charge_damage_bonus + float(world.tech_charge_add(String(u.faction)))
+		var tech_charge: float = float(world.tech_charge_add(String(u.faction))) if world != null else 0.0
+		var extra: float = u.charge_damage_bonus + tech_charge
+		if String(u.unit_class) == "cavalry" and not u.ranged and u.aura_charge_damage_bonus > 0.0:
+			extra *= 1.0 + u.aura_charge_damage_bonus
+		damage *= 1.0 + extra
 	# ★★ 远程单位（长弓兵 / 远程将领 / 马弓手 / 投石车 / 扭力弩炮）**发一枚投掷物**，
 	#    伤害改到命中那一刻结算；近战（长枪兵 / 骑手 / 骑士 / 战车）仍是即时结算。
 	#    ★ 投掷物的附加属性在这里随它带过去（全部是**兵种静态值**，出生时已抄到单位上）：
@@ -728,25 +737,57 @@ static func attack_unit(world, cfg: ConfigRes, u: UnitRes, t: UnitRes,
 		t.take_damage(cfg, world, damage, u, false, u.siege)
 		# ★★ 2026.11：近战击退分两条 —— 冲锋走兵种自己的 charge 数值（可范围），
 		#   普通攻击走 `knockback` 键（目前只有远程投石车用了它，近战为 0）。
+		#   ★★ 2026.11：**近战范围伤害**（子刹：攻击造成范围伤害和击退）——
+		#     与远程溅射同一口径：主目标已经吃过一次，范围内其它敌人再吃一次
+		#     **全额伤害**（半径 = `splash_radius`，友军不误伤）。
+		#     ⚠️ 只有普通攻击走这里；冲锋的溅射在 `_apply_charge_impact` 里按
+		#     `charge.splash_damage_ratio` 另算，不会重复。
+		if u.melee_splash_radius() > 0.0:
+			_apply_melee_splash(world, cfg, u, t, damage)
 		if charged:
 			_apply_charge_impact(world, cfg, u, t, damage)
 		else:
 			_apply_melee_knockback(world, cfg, u, t)
 	# ★ 音效事件（视图按阵营过滤后播攻击音）：每一次真正开火推一条。
 	#   ★ 远程也在**开火那一刻**推（投掷物命中另有受击事件，见 unit.take_damage）。
-	world.push_event({"type": "unit_attacked", "unit": u})
+	if world != null:
+		world.push_event({"type": "unit_attacked", "unit": u})
 	if charged:
 		# ★★ 命中表现事件：视图据此生成阵营色冲击波；同时冲锋进入冷却并清空累积。
-		world.push_event({
-			"type": "unit_charge",
-			"unit": u,
-			"target": t,
-			"faction": String(u.faction),
-			"x": u.pos.x,
-			"y": u.pos.y,
-			"radius": u.charge_splash,
-		})
+		if world != null:
+			world.push_event({
+				"type": "unit_charge",
+				"unit": u,
+				"target": t,
+				"faction": String(u.faction),
+				"x": u.pos.x,
+				"y": u.pos.y,
+				"radius": u.charge_splash,
+			})
 		u.consume_charge()
+
+
+## ★★ 2026.11：**近战范围伤害**（子刹「攻击造成范围伤害和击退」）。
+##
+## 口径与远程溅射（projectile._impact）一致：主目标在调用方已经吃过一次全额伤害，
+## 这里只补「以主目标为中心、`splash_radius` 内的**其它**敌人」，每人再吃一次**全额**伤害。
+##   · 友军 / 自己人不误伤；已经倒下的（濒死）不算可攻击目标；
+##   · 半径判定与 `_apply_melee_knockback` 完全同一条（中心到单位边缘距离）；
+##   · 击退不在这里 —— 紧接着的 `_apply_melee_knockback` 会用同一个半径推一遍。
+static func _apply_melee_splash(world, cfg: ConfigRes, u: UnitRes, t: UnitRes,
+		damage: float) -> void:
+	var radius: float = u.melee_splash_radius()
+	if radius <= 0.0 or damage <= 0.0:
+		return
+	var center: Vector2 = t.pos if t != null else u.pos
+	for other in world.units:
+		if other == t or not other.is_attackable():
+			continue
+		if FactionRes.same_side_for_attack(String(other.faction), String(u.faction)):
+			continue
+		if other.pos.distance_to(center) > radius + cfg.unit_radius_of(other.unit_type):
+			continue
+		other.take_damage(cfg, world, damage, u, false, u.siege)
 
 
 ## ★★ 2026.11：近战命中的击退结算（远程那一条在 projectile._impact 里，两边同一套口径）。
@@ -758,12 +799,13 @@ static func attack_unit(world, cfg: ConfigRes, u: UnitRes, t: UnitRes,
 ##   · 没有 ⇒ 只有被打中的那一个（目标已死则跳过）。
 ##   ⚠️ 击退在**伤害结算之后**：被这一下打死的人不该再被推。
 static func _apply_melee_knockback(world, cfg: ConfigRes, u: UnitRes, t: UnitRes) -> void:
-	var dist: float = u.knockback_distance
-	var stun: float = u.knockback_stun_sec
+	var dist: float = u.melee_knock_distance()
+	var stun: float = u.melee_knock_stun()
 	if dist <= 0.0 and stun <= 0.0:
 		return
 	var origin: Vector2 = u.pos
-	if u.splash_radius <= 0.0:
+	var radius: float = u.melee_splash_radius()
+	if radius <= 0.0:
 		if t != null and t.alive and not t.is_downed():
 			t.apply_knockback(cfg, world, origin, dist, stun)
 		return
@@ -773,7 +815,7 @@ static func _apply_melee_knockback(world, cfg: ConfigRes, u: UnitRes, t: UnitRes
 			continue
 		if FactionRes.same_side_for_attack(String(other.faction), String(u.faction)):
 			continue
-		if other.pos.distance_to(center) > u.splash_radius:
+		if other.pos.distance_to(center) > radius:
 			continue
 		other.apply_knockback(cfg, world, center, dist, stun)
 
