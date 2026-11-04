@@ -1241,6 +1241,63 @@ def t_layout_fits(app, model) -> None:
     app.root.withdraw()
 
 
+def near(actual, expected, label: str, tol: float = 1e-9) -> None:
+    ok(abs(float(actual) - float(expected)) <= tol,
+       "%s（实际 %r，期望 %r）" % (label, actual, expected))
+
+
+def t_upkeep(app, model) -> None:
+    """★★ 2026.11.4：持久消耗（upkeep_food）在界面上的读 / 改 / 清空。
+
+    用户报的：「编辑器里没有暴露持久消耗」。这里验三处入口：
+      · 兵种页「每秒耗粮」（空 = 跟随大类）；
+      · 兵种页「<大类> 默认」（改它影响同大类里没单独写的兵种）；
+      · 将领页「每秒耗粮」（空 = 跟随所属兵种）。
+    ⚠️ 大类名 / 大类默认值都**从模型现取**：前面的用例改过长枪兵的归属（步兵 → 骑兵）
+       且没还原，写死「步兵」会让这一节变成顺序依赖的假红。
+    """
+    print("\n[3c] 持久消耗（upkeep_food）")
+    app.set_page("unit")
+    pick(app, "u:spearman")
+    spear = model.unit("spearman")
+    cls = spear.unit_class
+    cls_label = "%s 默认" % spear.class_label
+    base_cls = model.class_upkeep(cls)
+
+    ents = sidebar_entries(app)
+    ok("每秒耗粮" in ents, "★★ 兵种页有「每秒耗粮」输入框")
+    ok(cls_label in ents, "★ 兵种页还有「%s」那一行" % cls_label)
+
+    type_into(app, ents["每秒耗粮"], "0.15")
+    near(model.unit("spearman").upkeep_own, 0.15, "★ 改兵种维护费 ⇒ 模型读到 0.15")
+    near(json.loads(model.text)["unit"]["types"]["spearman"]["upkeep_food"], 0.15,
+         "…也写进了 unit.types.spearman.upkeep_food")
+
+    # 清空 = 删键 = 跟随大类
+    type_into(app, sidebar_entries(app)["每秒耗粮"], "")
+    ok(not model.doc.has(["unit", "types", "spearman", "upkeep_food"]),
+       "★★ 清空输入框 = 删掉这个键（跟随大类）")
+    ok(model.unit("spearman").inherits_upkeep, "…模型上变成「跟随大类」")
+
+    # 大类默认
+    type_into(app, sidebar_entries(app)[cls_label], "0.22")
+    near(model.class_upkeep(cls), 0.22, "★★ 改大类默认 ⇒ 写进 unit.classes.%s" % cls)
+    near(model.unit("spearman").upkeep_effective, 0.22,
+         "…跟着大类的兵种生效值立刻变成 0.22")
+    type_into(app, sidebar_entries(app)[cls_label], "%g" % base_cls)
+    near(model.class_upkeep(cls), base_cls, "改回原来的 %g" % base_cls)
+
+    # 将领：自己的覆盖 / 清空回跟随
+    pick(app, "g:0")
+    ents = sidebar_entries(app)
+    ok("每秒耗粮" in ents, "★★ 将领页也有「每秒耗粮」")
+    type_into(app, ents["每秒耗粮"], "0.4")
+    near(model.general(0).upkeep_override, 0.4, "★ 将领覆盖 ⇒ 模型读到 0.4")
+    ok(not model.general(0).inherits_upkeep, "…而且不再是「跟随兵种」")
+    type_into(app, sidebar_entries(app)["每秒耗粮"], "")
+    ok(model.general(0).inherits_upkeep, "★★ 将领清空 ⇒ 回到「跟随所属兵种」")
+
+
 def main() -> int:
     print("DAEEM 单位编辑器 · 界面测试")
     print("配置文件：%s（改的是 .tmp_unit_editor_app_test 里的副本）" % CONFIG)
@@ -1265,6 +1322,7 @@ def main() -> int:
         t_add_remove(app, model)
         t_sidebar_scroll(app, model)
         t_refresh_keeps_scroll(app, model)
+        t_upkeep(app, model)
         t_layout_fits(app, model)
     finally:
         teardown(app)

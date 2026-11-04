@@ -508,7 +508,16 @@ def t_general_traits() -> None:
        "★ 没写的那项读成 None（= 这条特性没有它）")
 
     # ---- 指定 / 取消指定
-    eq(model.general(0).trait_id, "", "默认：将领 0 没有特性（trait_ids 里是空串）")
+    # ★ 2026.11.4：设计师已经给几位将领指定了特性，所以这里不再假设「默认全空」，
+    #   改成「每一位要么空串、要么是池里真实存在的一条」——这才是配置合法性的判据。
+    ids = model.doc.value(["unit", "general", "trait_ids"], [])
+    ok(isinstance(ids, list) and len(ids) == model.general_count(),
+       "trait_ids 与将领同序同长")
+    for i, tid in enumerate(ids if isinstance(ids, list) else []):
+        ok(tid == "" or model.general_trait_ids().count(tid) == 1,
+           "第 %d 位将领的特性要么空、要么在池里（实际 %r）" % (i + 1, tid))
+    model.assign_general_trait(0, "")
+    eq(model.general(0).trait_id, "", "（前提）清空将领 0 的特性")
     model.assign_general_trait(0, "swift")
     eq(model.doc.value(["unit", "general", "trait_ids", 0]), "swift",
        "★★ 给将领 0 指定神速 → 写进 unit.general.trait_ids[0]")
@@ -610,6 +619,66 @@ def t_trait_game_keys() -> None:
     for i, tid in enumerate(arr):
         ok(tid == "" or model.doc.has(["unit", "general_traits", tid]),
            "trait_ids[%d] 要么是空串，要么指向池里真实的特性（%r）" % (i, tid))
+
+
+def t_upkeep() -> None:
+    """★★ 2026.11.4：持久消耗（`upkeep_food`，粮/秒）。
+
+    钉四件事：
+      1. **读**：兵种自己的值 / 大类的默认值 / 实际生效值（写了用写的，没写跟大类）；
+      2. **写**：落到 `unit.types.<id>.upkeep_food` 与 `unit.classes.<cls>.upkeep_food`；
+      3. **删**：清空 = 删键 ⇒ 立刻变成「跟随大类」，改大类会跟着动；
+      4. **将领**：`unit.general.upkeep_override[<index>]` 是稀疏对象，写了用写的、
+         清空就删掉那一项（回到跟随所属兵种），负数 / 越界都当场拒掉。
+    """
+    print("\n[1g] 持久消耗（upkeep_food）")
+    model = fresh_model()
+    spear = model.unit("spearman")
+    near(spear.upkeep_own, 0.08, "读得出兵种自己的维护费")
+    ok(not spear.inherits_upkeep, "写了自己的值 ⇒ 不是「跟随大类」")
+    near(spear.upkeep_effective, 0.08, "生效值 = 自己写的")
+    near(model.class_upkeep("infantry"), 0.08, "读得出步兵大类的默认维护费")
+
+    # 删键 ⇒ 跟随大类；改大类 ⇒ 立刻跟着动（游戏侧 unit_type_entry 也是这么合并的）
+    model.set_unit_upkeep("spearman", None)
+    ok(not model.doc.has(["unit", "types", "spearman", "upkeep_food"]),
+       "★★ 清空 = 删掉这个键（不是写 0）")
+    ok(model.unit("spearman").inherits_upkeep, "删了就变成「跟随大类」")
+    near(model.unit("spearman").upkeep_effective, model.class_upkeep("infantry"),
+         "跟随大类 ⇒ 生效值 = 大类默认")
+    model.set_class_upkeep("infantry", 0.12)
+    near(model.unit("spearman").upkeep_effective, 0.12,
+         "★★ 跟随时改大类，兵种的生效值立刻跟着变")
+    model.set_class_upkeep("infantry", 0.08)
+    model.set_unit_upkeep("spearman", 0.08)
+    near(parse(model.text)["unit"]["types"]["spearman"]["upkeep_food"], 0.08,
+         "★ 写回同一个值 ⇒ 解析回来还是 0.08")
+
+    # 负数不许
+    raises(lambda: model.set_unit_upkeep("spearman", -0.1), "兵种维护费不能是负数")
+    raises(lambda: model.set_class_upkeep("infantry", -1.0), "大类默认不能是负数")
+    # 大类默认写进去也读得回来
+    model.set_class_upkeep("cavalry", 0.2)
+    near(model.class_upkeep("cavalry"), 0.2, "大类默认写进去读得回来")
+    model.set_class_upkeep("cavalry", 0.18)
+
+    # ---- 将领：自己的覆盖 + 跟随 ----
+    model.set_general_upkeep(0, None)                    # 先确保干净
+    g0 = model.general(0)
+    ok(g0.inherits_upkeep, "将领默认「跟随所属兵种」")
+    near(g0.upkeep_effective, model.unit(g0.type_id).upkeep_effective,
+         "跟随 ⇒ 生效值 = 所属兵种的生效值")
+    model.set_general_upkeep(0, 0.5)
+    eq(model.general(0).upkeep_override, 0.5, "★ 写了覆盖 ⇒ 读回来是 0.5")
+    ok(not model.general(0).inherits_upkeep, "…而且不再是跟随")
+    near(parse(model.text)["unit"]["general"]["upkeep_override"]["0"], 0.5,
+         "★★ 写进稀疏对象 unit.general.upkeep_override[\"0\"]")
+    model.set_general_upkeep(0, None)
+    ok(not model.doc.has(["unit", "general", "upkeep_override", "0"]),
+       "★★ 清空 ⇒ 稀疏对象里那一项被删掉（不留 null / 0）")
+    ok(model.general(0).inherits_upkeep, "…于是回到跟随")
+    raises(lambda: model.set_general_upkeep(0, -2.0), "将领维护费也不能是负数")
+    raises(lambda: model.set_general_upkeep(99, 1.0), "越界的将领序号被拒")
 
 
 def t_add_remove_unit() -> None:
@@ -1195,6 +1264,7 @@ def main() -> int:
     t_unit_traits()
     t_general_traits()
     t_trait_game_keys()
+    t_upkeep()
     t_add_remove_unit()
     t_generals()
     t_buildings()

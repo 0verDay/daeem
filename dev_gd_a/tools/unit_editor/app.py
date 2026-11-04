@@ -40,12 +40,14 @@ from .configfile import JsonError, parse_number
 from .model import (
     BUILDING_FIELDS,
     CHARGE_FIELDS,
+    CLASS_UPKEEP_FIELD,
     GENERAL_CAP_FIELD,
     GENERAL_RECRUIT_FIELD,
     GENERAL_STAT_FIELDS,
     GENERAL_TRAIT_FIELDS,
     GENERAL_TRAIT_PICK_FIELD,
     GENERAL_TRAIT_TEXT_FIELDS,
+    GENERAL_UPKEEP_FIELD,
     ICON_HINT,
     LEVEL_ATTACK_FIELDS,
     LEVEL_FIELDS,
@@ -54,6 +56,7 @@ from .model import (
     UNIT_FIELDS,
     UNIT_TRAIT_FIELDS,
     UNIT_TRAIT_KNOCKBACK,
+    UNIT_UPKEEP_FIELD,
     Building,
     ConfigModel,
     Field,
@@ -1509,6 +1512,24 @@ class EditorApp:
                      bg=UI["panel"], fg=UI["text_dim"], anchor="w", justify="left",
                      wraplength=380, font=("Microsoft YaHei UI", 8)).pack(fill="x")
 
+        # ---- 持久消耗（`unit.types.<id>.upkeep_food` + 大类默认，2026.11.4）
+        # ★ 用户报的：「编辑器里没有暴露持久消耗」。维护费 = 每个存活单位每秒吃的粮
+        #   （world._tick_upkeep 按人口累加），改它等于改「养兵成本」。
+        # ★ 空输入 = 删键 = 跟随大类 —— 与视野 / 特性的「清空就是不要这个键」同一条语义。
+        usec = self._section("持久消耗", "unit.types.<id>.upkeep_food（粮/秒）")
+        self._entry_row(usec, UNIT_UPKEEP_FIELD, unit.upkeep_own,
+                        lambda v, u=unit: self.model.set_unit_upkeep(u.id, v),
+                        allow_empty=True)
+        cls_field = Field("class_upkeep", "%s 默认" % unit.class_label, "float",
+                          CLASS_UPKEEP_FIELD.hint, minimum=0.0, maximum=10.0)
+        self._entry_row(usec, cls_field, unit.class_upkeep,
+                        lambda v, u=unit: self.model.set_class_upkeep(u.unit_class, v),
+                        allow_empty=True)
+        self._hint(usec, "当前生效 %s 粮/秒（%s）。总闸是 economy.upkeep_enabled；"
+                         "「屯田制」科技还能让脱战的单位免维护。"
+                   % (fmt(unit.upkeep_effective),
+                      "跟随大类默认" if unit.inherits_upkeep else "本兵种自己写的"))
+
         # ---- 危险操作
         if not unit.builtin:
             dsec = self._section("删除")
@@ -1594,6 +1615,18 @@ class EditorApp:
                        % (trait.name, trait.effect_summary(dict(self.model.class_choices()))))
         else:
             self._hint(tsec, "没有特性。要看 / 改 / 加删特性本身，点左边「将领特性池」那一栏。")
+
+        # ---- 持久消耗（将领自己的覆盖，2026.11.4）
+        # ★ 没写 = 跟随所属兵种（兵种没写再跟大类）。所以这里只显示「跟随谁、多少」，
+        #   想改兵种那一档去单位页改那个兵种 / 那个大类。
+        usec = self._section("持久消耗", "unit.general.upkeep_override")
+        self._entry_row(usec, GENERAL_UPKEEP_FIELD, gen.upkeep_override,
+                        lambda v, g=gen: self.model.set_general_upkeep(g.index, v),
+                        allow_empty=True)
+        self._hint(usec, "当前生效 %s 粮/秒（%s）。"
+                   % (fmt(gen.upkeep_effective),
+                      ("跟随兵种「%s」" % gen.type_id) if gen.inherits_upkeep
+                      else "这位将领自己写的"))
 
         # ---- 造价与招募（recruit.zone.list）
         rsec = self._section("造价与招募", "recruit.zone.list")

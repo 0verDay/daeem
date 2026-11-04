@@ -78,13 +78,15 @@ def selftest(project_dir: Path) -> int:
         else:
             recruit = "（不在招募表）"
         print("[unit] %-12s %-6s %-8s 字 %-3s 血 %-5s 攻 %-5s 距离 %-5s 攻速 %-5s 移速 %-5s"
-              " 造价 %s/%s/%s 招募 @%s"
+              " 造价 %s/%s/%s 招募 @%s　耗粮 %s/秒%s"
               % (unit.id, unit.name, unit.class_label, unit.icon_char,
                  fmt_number(unit.hp_max),
                  fmt_number(unit.damage), fmt_number(unit.range),
                  fmt_number(unit.cooldown_sec), fmt_number(unit.speed),
                  fmt_number(unit.cost_food), fmt_number(unit.cost_gold),
-                 fmt_number(unit.population_cost), recruit))
+                 fmt_number(unit.population_cost), recruit,
+                 fmt_number(unit.upkeep_effective),
+                 "（跟随大类）" if unit.inherits_upkeep else ""))
         # ★★ 2026.11.3：兵种特性（对某大类伤害 / 远近减伤 / 免疫击退）——
         #   没有特性就不多打一行（免得 22 个兵种刷出 22 行空摘要）。
         summary = unit.trait_summary(class_names)
@@ -106,7 +108,7 @@ def selftest(project_dir: Path) -> int:
             t = model.general_trait(gen.trait_id)
             trait_text = "%s（%s）" % (t.name, t.id)
         print("[general] %d %-10s 类型 %-11s 血 %s 攻 %s 距离 %s 移速 %s 造价 %s/%s/%s"
-              " 招兵 %ss 区划读条 %ss 特性 %s%s"
+              " 招兵 %ss 区划读条 %ss 特性 %s 耗粮 %s/秒%s%s"
               % (gen.index + 1, gen.name, gen.type_id, fmt_number(gen.effective_of("hp_max")),
                  fmt_number(gen.effective_of("damage")),
                  fmt_number(gen.effective_of("range")),
@@ -114,6 +116,8 @@ def selftest(project_dir: Path) -> int:
                  fmt_number(gen.cost_food), fmt_number(gen.cost_gold),
                  fmt_number(gen.population_cost), fmt_number(gen.recruit_sec),
                  fmt_number(gen.train_sec), trait_text,
+                 fmt_number(gen.upkeep_effective),
+                 "（跟随兵种）" if gen.inherits_upkeep else "",
                  "　单独数值：%s" % "、".join(own) if own else "　（完全跟随兵种）"))
     # ★ 特性池（全局一份）：谁能给将领用、各自什么效果。
     for trait in model.general_traits():

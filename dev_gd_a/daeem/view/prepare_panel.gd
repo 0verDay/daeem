@@ -3,7 +3,8 @@
 ## 版式（见 view/menu_deck_layout.gd 的 PREP_*）：
 ##   · 最左上一条 = **返回主菜单的点击区**，内部居中呼吸显隐「——点此返回主菜单——」；
 ##   · 右侧两枚竖排按钮 = 王朝 / 帝国（右→左泛光、左边无框、互斥选中）；
-##   · 其余两块 = 面板占位（本轮不需要逻辑与内容，只画空底板）。
+##   · 左面板 = 详情卡（点右侧磁贴后显示说明/属性/造价）；
+##   · 右面板 = 按阶分组的「将领 / 单位 / 科技」磁贴列表（可上下拖拽 / 过拉回弹）。
 ##
 ## ★ 顶部那两颗「自定义 / 备战」**不在这里建**：它们是主菜单自己的底部动作条，
 ##   进入备战时由 menu_deck 把主菜单整体上滑，露出这一条 —— 所以备战按钮的金色
@@ -22,6 +23,7 @@ const LayoutRes = preload("res://view/menu_deck_layout.gd")
 const SfxRes = preload("res://view/sfx.gd")
 const FactionBtnRes = preload("res://view/prepare_faction_button.gd")
 const RosterListRes = preload("res://view/prepare_roster_list.gd")
+const DetailViewRes = preload("res://view/prepare_detail_view.gd")
 
 ## 与设计稿一致：上 = 王朝，下 = 帝国。
 const FACTIONS := ["dynasty", "empire"]
@@ -39,6 +41,7 @@ var _back_label: Label = null
 var _panels: Array = []
 var _factions: Array = []
 var _roster = null
+var _detail = null
 var _selected: String = ""
 var _breath_tween: Tween = null
 var _glow_alpha: float = 1.0
@@ -82,7 +85,7 @@ func setup(p_cfg, p_font: Font) -> void:
 	_back_label.add_theme_color_override("font_color", ThemeRes.text())
 	_back.add_child(_back_label)
 
-	# ② 两块面板：左面板保持空底板，右面板装「将领 / 单位 / 科技」弹性列表。
+	# ② 两块面板：左面板 = 详情卡，右面板 = 「将领 / 单位 / 科技」弹性列表。
 	for i in 2:
 		var p := Panel.new()
 		p.name = "Panel%d" % i
@@ -95,6 +98,12 @@ func setup(p_cfg, p_font: Font) -> void:
 	_roster.name = "RosterList"
 	_panels[1].add_child(_roster)
 	_roster.setup(cfg, font)
+	_roster.item_selected.connect(_on_roster_item_selected)
+
+	_detail = DetailViewRes.new()
+	_detail.name = "DetailView"
+	_panels[0].add_child(_detail)
+	_detail.setup(cfg, font)
 
 	# ③ 右侧两枚竖排按钮：上王朝、下帝国。
 	var fs: int = int(cfg.num("menu.deck.prepare.faction_text_size", 40.0)) \
@@ -147,6 +156,10 @@ func _layout() -> void:
 			maxf(1.0, pr.x - ROSTER_PAD_X * 2.0),
 			maxf(1.0, pr.y - ROSTER_PAD_Y * 2.0))
 
+	if _detail != null:
+		_detail.position = Vector2.ZERO
+		_detail.size = _panels[0].size
+
 	for i in _factions.size():
 		var r := LayoutRes.prepare_faction(w, h, i)
 		_factions[i].position = r.position
@@ -167,14 +180,33 @@ func set_faction(faction_id: String, instant: bool = false) -> void:
 	for i in _factions.size():
 		_factions[i].set_selected(i == idx, instant)
 	# 右面板的三节内容跟着派系走（王朝 / 帝国各自的单位与科技；将领两派相同）。
+	# 换派系后旧的单位/科技详情可能已不存在 —— 清掉选中与左面板，回到提示态。
 	if _roster != null:
+		_roster.clear_selection()
 		_roster.set_faction(_selected)
+	if _detail != null:
+		_detail.set_faction(_selected)
+		_detail.clear()
 
 
 ## 重新进入备战页时让列表回到顶部（不改变当前派系）。
 func reset_scroll() -> void:
 	if _roster != null:
 		_roster.scroll_to(0.0)
+
+
+## 重新进入备战页时清掉选中项与左侧详情（用户口径：默认空白提示）。
+func reset_selection() -> void:
+	if _roster != null:
+		_roster.clear_selection()
+	if _detail != null:
+		_detail.clear()
+
+
+## 右面板点开一项 → 左面板显示对应详情。
+func _on_roster_item_selected(kind: String, id: String) -> void:
+	if _detail != null:
+		_detail.show_item(kind, id)
 
 
 func selected_faction() -> String:
@@ -294,3 +326,8 @@ func faction_buttons() -> Array:
 ## 右面板里的弹性列表（测试 / 截图用）。
 func roster():
 	return _roster
+
+
+## 左面板里的详情卡（测试 / 截图用）。
+func detail():
+	return _detail

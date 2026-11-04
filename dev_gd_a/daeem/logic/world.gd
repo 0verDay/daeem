@@ -5801,7 +5801,13 @@ func _tick_upkeep(dt: float) -> void:
 		if u == null or not u.alive:
 			continue
 		var uf := String(u.faction)
-		var per_s := cfg.unit_upkeep_of(u.unit_type) * tech_upkeep_mult(uf)
+		# ★★ 2026.11.4：将领可以有自己的**持久消耗覆盖**
+		#   （`unit.general.upkeep_override[<index>]`）；没写就跟所属兵种。
+		#   非将领（附属兵 / 普通兵）仍然只读兵种表 —— 与血量 / 护甲同一条「先类型后覆盖」。
+		var unit_up := cfg.unit_upkeep_of(u.unit_type)
+		if int(u.general_index) >= 0:
+			unit_up = cfg.general_upkeep_at(int(u.general_index), u.unit_type)
+		var per_s := unit_up * tech_upkeep_mult(uf)
 		if per_s <= 0.0:
 			continue
 		if tech_upkeep_idle_exempt(uf) and is_out_of_combat(u):

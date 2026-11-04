@@ -123,6 +123,28 @@ UNIT_FIELDS: Tuple[Field, ...] = (
     Field("vision", "视野半径", "float", VISION_HINT, minimum=0),
 )
 
+#: ★★ 持久消耗（`unit.types.<id>.upkeep_food`，粮/秒）—— 2026.11.4 加进编辑器。
+#: 口径：**每个存活单位每秒吃多少粮**，由 `world._tick_upkeep()` 按存活单位累加；
+#:   清空输入框 = 删掉这个键 = 跟随大类（`unit.classes.<class>.upkeep_food`）。
+UNIT_UPKEEP_FIELD = Field(
+    "upkeep_food", "每秒耗粮", "float",
+    "每个存活单位每秒吃多少粮（0 = 不耗粮）；清空 = 跟随大类默认",
+    minimum=0.0, maximum=10.0)
+
+#: 大类的默认持久消耗（`unit.classes.<class>.upkeep_food`）——
+#: 同大类里**没单独写** `upkeep_food` 的兵种都跟它（游戏侧载入时合并进每个兵种）。
+CLASS_UPKEEP_FIELD = Field(
+    "class_upkeep", "大类默认", "float",
+    "同大类里没单独写的兵种都跟这个；清空 = 不加这个键（按 0 算）",
+    minimum=0.0, maximum=10.0)
+
+#: 将领自己的持久消耗覆盖（`unit.general.upkeep_override[<index>]`，2026.11.4）。
+#: 清空 = 删掉这条覆盖 = 跟随所属兵种（与 hp / armor 那套「不写就跟随」同语义）。
+GENERAL_UPKEEP_FIELD = Field(
+    "upkeep_food", "每秒耗粮", "float",
+    "这位将领每秒吃多少粮；清空 = 跟随所属兵种",
+    minimum=0.0, maximum=10.0)
+
 #: ★★ 冲锋（`unit.types.<id>.charge`）—— 全部可留空；不写 / min_distance = 0 = 不冲锋。
 #: 口径与 logic/config.gd 的 `_normalize_charge()` 一致（这里只是编辑入口，不做玩法夹取）。
 CHARGE_FIELDS: Tuple[Field, ...] = (
@@ -390,7 +412,8 @@ class Unit:
                  fog_default: float = 0.0,
                  recruit_path: Optional[JsonPath] = None,
                  recruit_owner: str = "",
-                 spawn_source: Optional[Tuple[JsonPath, str, str]] = None) -> None:
+                 spawn_source: Optional[Tuple[JsonPath, str, str]] = None,
+                 class_upkeep: float = 0.0) -> None:
         self.id = uid
         #: 这一条在 JSON 里的**原文**（判「哪个键真的写了」要它，不能只看取到的数）
         self.raw: Dict[str, Any] = dict(data)
@@ -440,6 +463,12 @@ class Unit:
         self.label = _s(rec.get("label"), self.name)
         self.short = _s(rec.get("short"), "")
         self.desc = _s(rec.get("desc"), "")
+        #: ★★ 持久消耗（`unit.types.<id>.upkeep_food`，粮/秒）—— 2026.11.4 加进编辑器。
+        #: **没写就是 None**（不是 0）：界面靠它区分「继承大类」与「明确写了 0（免费）」。
+        self.upkeep_own: Optional[float] = (
+            _f(data.get("upkeep_food"), 0.0) if "upkeep_food" in data else None)
+        #: 所属大类的默认维护费（`unit.classes.<class>.upkeep_food`）。
+        self.class_upkeep = _f(class_upkeep, 0.0)
 
     @property
     def builtin(self) -> bool:
@@ -480,6 +509,22 @@ class Unit:
     def inherits_vision(self) -> bool:
         """视野是不是「没写、吃全局兜底」的（界面要标出来）。"""
         return "vision" not in self.raw
+
+    # ---- 持久消耗（`unit.types.<id>.upkeep_food`，2026.11.4）----------------
+
+    @property
+    def inherits_upkeep(self) -> bool:
+        """维护费是不是「没写、跟随大类」的（界面要标出来）。"""
+        return self.upkeep_own is None
+
+    @property
+    def upkeep_effective(self) -> float:
+        """**实际生效**的每秒维护费。
+
+        ★ 与游戏侧 `logic/config.gd` 的 `unit_upkeep_of()` 同一条规则：类型自己写了
+          就用它，没写就用大类的默认值（载入时合并好的那一份）。
+        """
+        return self.class_upkeep if self.upkeep_own is None else self.upkeep_own
 
     def field(self, key: str) -> Any:
         return getattr(self, key, None)
@@ -609,7 +654,9 @@ class General:
                  recruit: Optional[Dict[str, Any]], defaults: Dict[str, Any],
                  cap: int = GENERAL_CAP_DEFAULT,
                  recruit_sec: float = GENERAL_RECRUIT_DEFAULT,
-                 trait_id: str = "") -> None:
+                 trait_id: str = "",
+                 upkeep_override: Optional[float] = None,
+                 inherited_upkeep: float = 0.0) -> None:
         self.index = index
         self.kind = kind
         self.type_id = type_id
@@ -618,6 +665,11 @@ class General:
         #: `""` = 没有特性。游戏侧由 `world.create_general()` 交给 `set_general_trait()`，
         #: 旗下附属兵出生时继承同一条光环（`inherit_general_aura`）。
         self.trait_id = trait_id
+        #: ★★ 这位将领自己的**持久消耗覆盖**（`unit.general.upkeep_override[<index>]`，
+        #: 2026.11.4）：粮/秒。None = 跟随所属兵种（与 hp / armor 那套「不写就跟随」同语义）。
+        self.upkeep_override = upkeep_override
+        #: 所属兵种实际生效的维护费（覆盖时不看它，但界面要显示「跟随类型：0.08」）。
+        self.inherited_upkeep = _f(inherited_upkeep, 0.0)
         #: ★★ 编制上限（`unit.general.caps[index]`）：这位将领的目标编队规模。
         #: 摆放 / 红点 / 阵地补员都以它封顶（见 logic/config.gd 的 general_cap_at）。
         self.cap = int(cap)
@@ -650,6 +702,18 @@ class General:
 
     def inherits(self, stat: str) -> bool:
         return stat not in self.override or not isinstance(self.override[stat], (int, float))
+
+    # ---- 持久消耗（`unit.general.upkeep_override[<index>]`，2026.11.4）----
+
+    @property
+    def inherits_upkeep(self) -> bool:
+        """维护费是不是「没写、跟随所属兵种」的。"""
+        return self.upkeep_override is None
+
+    @property
+    def upkeep_effective(self) -> float:
+        """**实际生效**的每秒维护费 = 自己的覆盖 ⊕ 所属兵种。"""
+        return self.inherited_upkeep if self.upkeep_override is None else self.upkeep_override
 
     def effective_of(self, stat: str) -> float:
         return _f(self.effective.get(stat), 0.0)
@@ -897,6 +961,45 @@ class ConfigModel:
     def unit_ids(self) -> List[str]:
         return [k for k in self.doc.keys(["unit", "types"]) if not k.startswith("_")]
 
+    def class_upkeep(self, cls: str) -> float:
+        """某个大类的**默认**持久消耗（`unit.classes.<class>.upkeep_food`，粮/秒）。
+
+        ★ 这是「兵种没写 upkeep_food 时」的兜底值；游戏侧在载入时把它并进每个兵种
+          （`logic/config.gd` 的 `unit_type_entry`），所以两边读到的是同一个数。
+        """
+        entry = self.doc.value(["unit", "classes", cls], None)
+        if isinstance(entry, dict):
+            return _f(entry.get("upkeep_food"), 0.0)
+        return 0.0
+
+    def set_unit_upkeep(self, uid: str, value: Optional[float]) -> None:
+        """写兵种的持久消耗（粮/秒）。`None` = **删键**（跟随大类）。"""
+        path: JsonPath = ["unit", "types", uid]
+        if not self.doc.has(path):
+            raise ModelError("没有这个单位类型：%s" % uid)
+        if value is None:
+            if self.doc.has(path + ["upkeep_food"]):
+                self.doc.remove(path + ["upkeep_food"])
+            return
+        v = float(value)
+        if v < 0.0:
+            raise ModelError("持久消耗不能是负数：%r" % (value,))
+        self.doc.set(path + ["upkeep_food"], v)
+
+    def set_class_upkeep(self, cls: str, value: Optional[float]) -> None:
+        """写大类的默认持久消耗（`unit.classes.<cls>.upkeep_food`）。`None` = 删键。"""
+        path: JsonPath = ["unit", "classes", cls]
+        if not self.doc.has(path):
+            raise ModelError("没有这个兵种大类：%s" % cls)
+        if value is None:
+            if self.doc.has(path + ["upkeep_food"]):
+                self.doc.remove(path + ["upkeep_food"])
+            return
+        v = float(value)
+        if v < 0.0:
+            raise ModelError("持久消耗不能是负数：%r" % (value,))
+        self.doc.set(path + ["upkeep_food"], v)
+
     def _recruit_rows(self) -> List[Dict[str, Any]]:
         rows = self.doc.value(["recruit", "list"], [])
         return rows if isinstance(rows, list) else []
@@ -965,7 +1068,8 @@ class ConfigModel:
         row = self.doc.value(path, None) if path is not None else None
         return Unit(uid, data, row if isinstance(row, dict) else None,
                     self._recruit_index(uid), self.fog_vision_default(),
-                    path, owner, self._spawn_source(uid))
+                    path, owner, self._spawn_source(uid),
+                    self.class_upkeep(_s(data.get("class"), "infantry")))
 
     # ------------------------------------------------------------------
     # ★★ 组合招募单（`kind` 不是兵种 id、靠 spawn 一次出好几个的招募条目）
@@ -1380,8 +1484,19 @@ class ConfigModel:
                 recruit_sec = float(v)
         # ★★ 将领特性（2026.11.3）：读 `unit.general.trait_ids[index]`
         #   （缺省 / 越界 / 指向池里不存在的 id → ""，与游戏侧 `general_trait_at` 同一条）。
+        # ★★ 持久消耗（2026.11.4）：`unit.general.upkeep_override[str(index)]`；
+        #   没写 = 跟随所属兵种（`unit_upkeep_of(type_id)`）。
+        uph: Optional[float] = None
+        ov = self.doc.value(["unit", "general", "upkeep_override"], None)
+        if isinstance(ov, dict):
+            raw = ov.get(str(index), None)
+            if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+                uph = max(0.0, float(raw))
+        inherited_upkeep = 0.0
+        if self.doc.has(["unit", "types", type_id]):
+            inherited_upkeep = self.unit(type_id).upkeep_effective
         return General(index, kind, type_id, override, recruit, defaults, cap, recruit_sec,
-                       self.general_trait_at(index))
+                       self.general_trait_at(index), uph, inherited_upkeep)
 
     def generals(self) -> List[General]:
         return [self.general(i) for i in range(self.general_count())]
@@ -1461,6 +1576,26 @@ class ConfigModel:
                 self.doc.remove(path)
             return
         self.doc.set(path, value)
+
+    def set_general_upkeep(self, index: int, value: Optional[float]) -> None:
+        """写 / 删**将领自己的**持久消耗覆盖（`unit.general.upkeep_override[<index>]`）。
+
+        `None` = 删掉这一项 → 跟随所属兵种（与 hp / armor 那套覆盖同一条语义）。
+        ★ 这一项是**稀疏对象**（键 = 将领序号的字符串），不是数组：
+          缺项就是「跟随类型」，不需要往文件里写 null。
+        """
+        self._check_general_index(index)
+        root: JsonPath = ["unit", "general", "upkeep_override"]
+        if value is None:
+            if self.doc.has(root + [str(index)]):
+                self.doc.remove(root + [str(index)])
+            return
+        v = float(value)
+        if v < 0.0:
+            raise ModelError("持久消耗不能是负数：%r" % (value,))
+        if not self.doc.has(root):
+            self.doc.set(root, {})
+        self.doc.set(root + [str(index)], v)
 
     def _ensure_general_slot(self, index: int) -> None:
         """保证 `unit.general.stats[index]` 存在（老配置里可能整段都没有）。

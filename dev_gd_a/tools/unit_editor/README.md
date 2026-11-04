@@ -95,6 +95,8 @@ Python + tkinter，**零第三方依赖**，与地图编辑器同一套界面风
 | **冲锋**（2026.11） | `unit.types.<id>.charge.<键>` —— 近战兵种的被动冲锋：`min_distance`（连续直行多少格进入冲锋态）/ `max_distance` / `turn_max_deg`（与起始方向的最大夹角）/ `speed_bonus` / `damage_bonus` / `knock_distance` / `knock_stun_sec` / `splash_radius` / `splash_damage_ratio` / `cooldown_sec`。**不写 / `min_distance = 0` = 不冲锋**；清空某一项 = 删掉那个键（读回 0）。远程骑兵即使写了也不冲锋 |
 | 造价（粮食 / 黄金 / 人口） | `recruit.list[kind = <id>].cost.food` / `.cost.gold` / `.population_cost`（派系兵种在 `clan.list[].recruit[kind = <id>]`，工具会自动写对位置） |
 | 命令卡名字 / 方框字 / 说明 | `recruit.list[kind = <id>].label` / `.short` / `.desc`（同上：按条目实际所在的表写） |
+| **持久消耗 — 每秒耗粮**（2026.11.4） | `unit.types.<id>.upkeep_food`（**粮/秒**）。每个**存活**单位每秒吃这么多粮（`world._tick_upkeep()` 按存活单位累加）。**清空输入框 = 删掉这个键** → 跟随下面那一行「大类默认」 |
+| **持久消耗 — 大类默认** | `unit.classes.<class>.upkeep_food` —— 同大类里**没单独写**的兵种都跟它。改它会影响这一类里所有没覆盖的兵种（界面上那一行的标签会写明是哪一类，例如「步兵 默认」） |
 
 **攻击速度**填的是**两次攻击之间的间隔秒数**（越小越快）—— 数据里就叫 `cooldown_sec`。
 
@@ -187,6 +189,7 @@ Python + tkinter，**零第三方依赖**，与地图编辑器同一套界面风
 | **编制上限** | `unit.general.caps[i]`（与 `types` 同序；缺省 / 越界 → 11）——「这位将领的目标编队规模」：战役编辑器里配的**附属单位生成数量不能超过它**，阵地 AI 脱战后也补到它，红点将领的附属兵同样以它封顶。**读它的只有一处**：`logic/config.gd` 的 `general_cap_at()` |
 | **招兵读条**（2026.11.2） | `unit.general.recruit_sec[i]`（与 `types` 同序；缺省 / 越界 / ≤0 → `recruit.batch_sec`，默认 **10** 秒）—— 这位将领当兵营时，**整批**读条几秒。队列长短 / 队列里的兵种都不影响它。清空输入框 = 回到默认 10 秒。**读它的只有一处**：`logic/world.gd` 的 `leader_recruit_sec()` |
 | 数值（血量 / 攻击力 / 距离 / 攻速 / 移速 / **视野半径**） | `unit.general.stats[i].<同名键>` —— **没写的键 = 跟随所属兵种**（那个「自定 / 跟随」按钮就是在写 / 删这个键） |
+| **持久消耗 — 每秒耗粮**（2026.11.4） | `unit.general.upkeep_override["<i>"]`（**稀疏对象**，键 = 将领序号的字符串）—— 这位将领每秒吃多少粮。**清空输入框 = 删掉那一项** → 跟随所属兵种（兵种再跟大类）。没写的序号不会往文件里塞 `null` / `0`。读它的只有 `logic/config.gd` 的 `general_upkeep_at()`（唯一结算点是 `world._tick_upkeep()`，维护费总闸与屯田制照旧生效） |
 | 造价（粮食 / 黄金 / 人口）、**区划招募读条**、**招募冷却** | `recruit.zone.list[kind = general_<i+1>].…`（读条键 = `train_sec`，是「在区划中心把这位将领招出来」的读条；冷却键 = `recruit_cooldown_sec`，招到这位之后**该玩家全局**锁多少秒） |
 | ~~开局护卫数~~ | **已移除**：`unit.general.escort` 这个**全局缺省**已经删掉 —— 开局附属单位现在由**战役编辑器**给每位将领（或红点）配一份「**规格**」（类型 + 权重 + 生成数量），运行时**当场随机生成**（`world.fill_general_retinue`）。这里只留一行灰字提示指向那边 |
 

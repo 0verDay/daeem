@@ -358,6 +358,7 @@ func goto_prepare() -> void:
 	_prepare.modulate.a = 0.0
 	_prepare.start_breathing()
 	_prepare.reset_scroll()
+	_prepare.reset_selection()
 	_main.set_prepare_latched(true)
 	prepare_open_changed.emit(true)
 	var moves: Array = [

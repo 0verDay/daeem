@@ -1628,7 +1628,16 @@
         "    见 world.fill_general_retinue / _spawn_from_recruit）。",
         "  ★ 与 2026.10 停用的「随机抽词条」是两件事：那套随机代码还在，但已无调用点。"
       ],
-      "trait_ids": ["swift", "", "", "", "", "swift", "", "swift", "", ""]
+      "trait_ids": ["swift", "", "", "", "", "swift", "", "swift", "", ""],
+      "_upkeep_override_comment": [
+        "★★ 2026.11.4：将领的**持久消耗覆盖**（每秒吃粮）—— 稀疏对象，键 = 将领序号的字符串。",
+        "  · 没写的序号 = **跟随所属兵种**（unit.types.<type>.upkeep_food，再往上是 unit.classes.<class>）；",
+        "  · 写了就按这里的数结算（0 = 这位将领不耗粮）；",
+        "  · 编辑器：tools/unit_editor →「单位」页 → 选中将领 →「持久消耗」（清空 = 跟随兵种）。",
+        "  · 结算点只有 world._tick_upkeep() 一处 ⇒ 维护费总闸（economy.upkeep_enabled）",
+        "    与屯田制的「脱战免维护」仍然生效。"
+      ],
+      "upkeep_override": {}
     },
 
     "_collision_comment": [
@@ -3416,7 +3425,8 @@
         "art_fade_sec": 0.35,
         "section_generals": "将领——",
         "section_units": "单位——",
-        "section_techs": "科技——"
+        "section_techs": "科技——",
+        "tier_names": ["零阶", "一阶", "二阶", "三阶"]
       },
       "titles": {
         "campaign": "战役",

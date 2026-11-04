@@ -1,4 +1,4 @@
-﻿## test_prepare.gd —— 备战页：主菜单上滑、返回区、两块空面板、王朝/帝国竖排按钮。
+## test_prepare.gd —— 备战页：主菜单上滑、返回区、两块空面板、王朝/帝国竖排按钮。
 ##
 ## 只测「版式对、点得到、状态对」：
 ##   · 进入：主菜单上滑到只剩 120 高的底部动作条，左侧轮播图渐隐，备战按钮常驻金；
@@ -115,7 +115,11 @@ func _test_enter_and_layout() -> void:
 	near(p0.end.y, h - panel_inset, 1.0, "面板底边离屏幕底同样的留白")
 	near(p0.end.y, p1.end.y, 0.5, "两块面板同底")
 	ok(not p0.intersects(p1), "两块面板不重叠")
-	eq(pp.panels()[0].get_child_count(), 0, "左面板仍是空底板")
+	eq(pp.panels()[0].get_child_count(), 1, "左面板装了详情卡")
+	ok(pp.detail() != null, "左面板详情卡存在")
+	if pp.detail() != null:
+		ok(not pp.detail().has_detail(), "默认没有选中项")
+		ok(pp.detail().hint_visible(), "默认显示「点击右侧查看详情」提示")
 	ok(pp.panels()[1].get_child_count() >= 1, "右面板装了内容")
 
 	# ---- 右面板：将领 / 单位 / 科技 弹性列表 ----
@@ -138,33 +142,50 @@ func _test_enter_and_layout() -> void:
 		ok(hs[1].get_global_rect().position.y < hs[2].get_global_rect().position.y,
 			"单位分节在科技之上")
 
-		# 将领：9 名可招募 + 开局将领 0
-		eq(roster.general_buttons().size(), 10, "10 位将领（9 可招募 + 开局 0）")
-		eq(roster.tile_label(roster.general_buttons()[0]), "将领 1", "第一位是可招募将领 1")
-		eq(roster.tile_label(roster.general_buttons()[9]), "将领 0", "最后一位是开局将领 0")
+		# 将领：零阶 0 → 一阶 1..3 → 二阶 4..6 → 三阶 7..9
+		eq(roster.general_buttons().size(), 10, "10 位将领（0 + 9 可招募）")
+		eq(roster.tile_label(roster.general_buttons()[0]), "将领 0", "零阶是开局将领 0")
+		eq(roster.tile_label(roster.general_buttons()[9]), "将领 9", "最后是三阶将领 9")
+		eq(roster.tile_tier(roster.general_buttons()[0]), 0, "将领 0 零阶")
+		eq(roster.tile_tier(roster.general_buttons()[1]), 1, "将领 1 一阶")
+		eq(roster.tile_tier(roster.general_buttons()[4]), 2, "将领 4 二阶")
+		eq(roster.tile_tier(roster.general_buttons()[7]), 3, "将领 7 三阶")
 
-		# 磁贴：一排三个、约 146×110，图标在上 / 名字在下
+		# 阶小标题：将领 4 个（零/一/二/三），单位 3 个，科技 3 个
+		var th: Array = roster.tier_headers()
+		eq(th.size(), 10, "4 + 3 + 3 个阶小标题")
+		var want_tiers := ["零阶", "一阶", "二阶", "三阶",
+			"一阶", "二阶", "三阶", "一阶", "二阶", "三阶"]
+		for i in want_tiers.size():
+			eq(th[i].text, want_tiers[i], "阶小标题顺序：%d" % i)
+
+		# 磁贴：一排三个、约 150×110，图标在上 / 名字在下
 		eq(roster.tile_columns(), 3, "一排三个磁贴")
 		var g0: Button = roster.general_buttons()[0]
 		var g1: Button = roster.general_buttons()[1]
 		var g2: Button = roster.general_buttons()[2]
 		var g3: Button = roster.general_buttons()[3]
+		var g4: Button = roster.general_buttons()[4]
 		var tile_w: float = (lr.size.x - 2.0 * 8.0) / 3.0
 		near(g0.size.y, roster.tile_height(), 1.0, "磁贴高 %.0f" % roster.tile_height())
-		near(g0.size.x, tile_w, 1.5, "磁贴宽按三列均分")
+		near(g0.size.x, tile_w, 1.5, "零阶单格与满行同宽（补空位）")
+		near(g1.size.x, tile_w, 1.5, "磁贴宽按三列均分")
 		var r0: Rect2 = g0.get_global_rect()
 		var r1: Rect2 = g1.get_global_rect()
 		var r2: Rect2 = g2.get_global_rect()
 		var r3: Rect2 = g3.get_global_rect()
-		near(r0.position.y, r1.position.y, 0.5, "前三个同一行")
-		near(r1.position.y, r2.position.y, 0.5, "前三个同一行")
-		ok(r3.position.y > r0.position.y + 1.0, "第四个换行")
-		near(r3.position.x, r0.position.x, 0.5, "第四回第一列")
-		ok(r0.end.x < r1.position.x and r1.end.x < r2.position.x, "三列从左到右不重叠")
+		var r4: Rect2 = g4.get_global_rect()
+		ok(r0.position.y < r1.position.y - 1.0, "零阶单独一行在最上")
+		near(r1.position.y, r2.position.y, 0.5, "一阶三格同一行")
+		near(r2.position.y, r3.position.y, 0.5, "一阶三格同一行")
+		ok(r4.position.y > r1.position.y + 1.0, "二阶换行")
+		near(r4.position.x, r1.position.x, 0.5, "二阶回到第一列")
+		near(r0.position.x, r1.position.x, 0.5, "零阶与一阶左对齐")
+		ok(r1.end.x < r2.position.x and r2.end.x < r3.position.x, "三列从左到右不重叠")
 
 		# 将领没有图标 → 编号占位；单位 / 科技用金线蒙版
-		eq(roster.tile_placeholder(g0), "1", "将领 1 的占位编号")
-		eq(roster.tile_placeholder(roster.general_buttons()[9]), "0", "开局将领的占位编号")
+		eq(roster.tile_placeholder(g0), "0", "开局将领的占位编号")
+		eq(roster.tile_placeholder(roster.general_buttons()[9]), "9", "三阶将领的占位编号")
 		ok(roster.tile_icon_mask(g0) == "", "将领没有图标蒙版")
 		ok(g0.has_node("PlaceholderIcon"), "将领磁贴用文字占位图标")
 		ok(not g0.has_node("Icon"), "将领磁贴不画金线图标")
@@ -186,6 +207,43 @@ func _test_enter_and_layout() -> void:
 			ok(empire_tech_names.has(nm), "帝国科技名：%s" % nm)
 			ok(nm.strip_edges() != "", "科技按钮没有空名字")
 			ok(roster.tile_icon_mask(b) != "", "帝国科技有图标蒙版：%s" % nm)
+
+		# ---- 点磁贴 → 左面板详情 + 选中金边 ----
+		var d = pp.detail()
+		ok(d != null, "详情卡存在")
+		roster.scroll_to(0.0)
+		await _click_at(g1.get_global_rect().get_center())
+		await _wait_sec(0.15)
+		ok(d.has_detail(), "点将领后左面板有详情")
+		eq(d.title_text(), "将领 1", "详情标题 = 将领 1")
+		ok(d.subtitle_text().find("一阶") >= 0, "详情副标题含一阶")
+		eq(String(d.last_item().get("kind", "")), "general", "详情类型 = general")
+		eq(roster.selected_tile(), g1, "被点的将领磁贴保持选中")
+		eq((g1.get_theme_stylebox("normal") as StyleBoxFlat).border_width_left, 2,
+			"选中磁贴是 2px 金边")
+		var gtitles := _section_titles(d)
+		ok(gtitles.has("说明") and gtitles.has("属性") and gtitles.has("造价 / 招募"),
+			"将领详情含说明 / 属性 / 造价")
+
+		var ub: Button = roster.unit_buttons()[0]
+		ub.pressed.emit()
+		await _wait_sec(0.1)
+		eq(String(d.last_item().get("kind", "")), "unit", "点单位后详情切到 unit")
+		eq(d.title_text(), roster.tile_label(ub), "单位详情标题")
+		eq(roster.selected_tile(), ub, "单位磁贴变为选中")
+		eq((g1.get_theme_stylebox("normal") as StyleBoxFlat).border_width_left, 1,
+			"上一枚磁贴恢复 1px")
+		var utitles := _section_titles(d)
+		ok(utitles.has("说明") and utitles.has("造价 / 招募"), "单位详情含说明 / 造价")
+
+		var tb: Button = roster.tech_buttons()[0]
+		tb.pressed.emit()
+		await _wait_sec(0.1)
+		eq(String(d.last_item().get("kind", "")), "tech", "点科技后详情切到 tech")
+		eq(d.title_text(), roster.tile_label(tb), "科技详情标题")
+		eq(roster.selected_tile(), tb, "科技磁贴变为选中")
+		var ttitles := _section_titles(d)
+		ok(ttitles.has("说明") and ttitles.has("效果"), "科技详情含说明 / 效果")
 
 		# 可过度拖拽：内容超过视口，越界量被阻尼吃掉
 		var limit: float = roster.max_scroll()
@@ -241,6 +299,16 @@ func _test_enter_and_layout() -> void:
 			var nm: String = roster.tile_label(b)
 			ok(dyn_tech.has(nm), "王朝科技名：%s" % nm)
 		near(roster.logical_offset(), 0.0, 1.0, "换派系后列表回到顶部")
+		ok(not pp.detail().has_detail(), "切派系清空左侧详情")
+		ok(pp.detail().hint_visible(), "切派系回到提示态")
+		eq(roster.selected_tile(), null, "切派系清空磁贴选中")
+		# 王朝的组合单位（协防军）详情要显示「编成」而不是单兵属性
+		var dyn_ub: Button = roster.unit_buttons()[0]
+		dyn_ub.pressed.emit()
+		await _wait_sec(0.1)
+		eq(String(pp.detail().last_item().get("kind", "")), "unit", "王朝组合单位详情")
+		ok(_section_titles(pp.detail()).has("编成"), "组合单位详情含编成")
+		ok(_section_titles(pp.detail()).has("说明"), "组合单位详情含说明")
 
 		# 真拖一下：向上拖 = 内容往下滚；拖动松手不会顺手点掉列表项
 		roster.scroll_to(0.0)
@@ -316,6 +384,10 @@ func _test_back() -> void:
 	# 列表滚动位置不跨页保留：离开前滚到中段，再进来回到顶部
 	deck.goto_prepare()
 	ok(await _wait_page(deck, "prepare"), "第三次进入备战页")
+	ok(not pp.detail().has_detail(), "重新进入时详情默认空白")
+	pp.roster().general_buttons()[0].pressed.emit()
+	await _wait_sec(0.1)
+	ok(pp.detail().has_detail(), "重新进入后点磁贴能出详情")
 	pp.roster().scroll_to(420.0)
 	await _wait_sec(0.1)
 	screen.handle_back()
@@ -323,6 +395,9 @@ func _test_back() -> void:
 	deck.goto_prepare()
 	ok(await _wait_page(deck, "prepare"), "第四次进入备战页")
 	near(pp.roster().logical_offset(), 0.0, 1.0, "重新进入时列表回到顶部")
+	ok(not pp.detail().has_detail(), "重新进入时详情被清空")
+	ok(pp.detail().hint_visible(), "重新进入时回到提示态")
+	eq(pp.roster().selected_tile(), null, "重新进入时磁贴选中被清空")
 	screen.handle_back()
 	ok(await _wait_page(deck, "main"), "收尾回到主菜单")
 
@@ -372,6 +447,15 @@ func _tech_names(cfg, clan: String) -> Array:
 		var nm := String(d.get("name", "")).strip_edges()
 		if nm != "":
 			out.append(nm)
+	return out
+
+
+## 详情卡里各分节的标题（测试用）。
+func _section_titles(detail) -> Array:
+	var out: Array = []
+	for s in detail.last_item().get("sections", []):
+		if typeof(s) == TYPE_DICTIONARY:
+			out.append(String((s as Dictionary).get("title", "")))
 	return out
 
 

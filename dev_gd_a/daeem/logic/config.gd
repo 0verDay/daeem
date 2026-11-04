@@ -1879,6 +1879,27 @@ func general_trait_at(index: int) -> String:
 	return tid
 
 
+## ★★ 2026.11.4：第 `index` 位将领的**持久消耗**（每秒吃粮）。
+##
+## 口径：`unit.general.upkeep_override[str(index)]` 有就用它，没有就跟随所属兵种
+##   （`unit_upkeep_of(kind)`；兵种自己又跟着大类走 —— 与血量 / 护甲同一条「先类型后覆盖」）。
+## ★ 稀疏对象而不是数组：没写 = 跟随类型，不需要往 config 里塞 null / 0；
+##   编辑器（tools/unit_editor 将领页 →「持久消耗」）写的就是这个键。
+## ★ 读它的只有 `world._tick_upkeep()` 一处，所以「维护费总闸」与屯田制的
+##   「脱战免维护」都仍然生效。
+func general_upkeep_at(index: int, kind: String = "") -> float:
+	var base := unit_upkeep_of(kind) if kind != "" else 0.0
+	if index < 0:
+		return base
+	var ov: Variant = get_path_value("unit.general.upkeep_override")
+	if typeof(ov) != TYPE_DICTIONARY:
+		return base
+	var v: Variant = (ov as Dictionary).get(str(index), null)
+	if typeof(v) == TYPE_INT or typeof(v) == TYPE_FLOAT:
+		return maxf(0.0, float(v))
+	return base
+
+
 ## ⚠️ 这里原先还有两个「开局编制」的读法（本轮**整个删掉**）：
 ##   · `general_escort_count()`     —— `unit.general.escort` 的第一个值；
 ##   · `general_escort_at(index)`   —— 逐将那一份（下标越界按长度循环）。

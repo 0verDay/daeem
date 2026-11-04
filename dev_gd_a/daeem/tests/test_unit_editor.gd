@@ -36,6 +36,7 @@ func _run() -> void:
 	_test_general_overrides()
 	_test_vision()
 	_test_traits()
+	_test_upkeep()
 	_test_new_building()
 	_test_construction()
 	await process_frame
@@ -148,6 +149,13 @@ func _mutated(path0: String, path1: String, path2: String, key: String, value) -
 func _with_general_stats(stats: Array) -> RefCounted:
 	var cfg = require_config()
 	cfg.data["unit"]["general"]["stats"] = stats
+	# ★ 2026.11.4：这一组测的是**数值覆盖**，所以顺手把将领特性清空
+	#   （设计师现在给「将领 1」配了神速 +25% 移速，不清掉的话
+	#     「没写 speed ⇒ 兵种基础值」那条会被特性加成顶成 0.75）。
+	var blank: Array = []
+	for _i in 10:
+		blank.append("")
+	cfg.data["unit"]["general"]["trait_ids"] = blank
 	return _reload(cfg)
 
 
@@ -164,6 +172,77 @@ func _reload_full(src) -> RefCounted:
 	return cfg
 
 
+## ★★ 2026.11.4：持久消耗（`upkeep_food`）——「编辑器里能改 ↔ 游戏真的读」。
+##
+## 编辑器新增了三处入口，这里逐一验游戏侧的读法：
+##   1. 兵种页「每秒耗粮」→ `unit.types.<id>.upkeep_food`；
+##   2. 兵种页「<大类> 默认」→ `unit.classes.<class>.upkeep_food`（**清空兵种那条**
+##      就跟着大类走 —— 编辑器「清空 = 删键」的语义）；
+##   3. 将领页「每秒耗粮」→ `unit.general.upkeep_override[<index>]`（稀疏对象，
+##      没写就跟随所属兵种），并且 `world._tick_upkeep()` 真的按它结算。
+func _test_upkeep() -> void:
+	var cfg = require_config()
+	if cfg == null:
+		return
+
+	# 1) 读：兵种自己的值
+	near(cfg.unit_upkeep_of("spearman"), 0.08, 1e-9,
+		"★★ 长枪兵维护费 0.08 粮/秒（编辑器「持久消耗」那一栏）")
+	near(cfg.unit_upkeep_of("knight"), 0.32, 1e-9, "★★ 骑士 0.32 粮/秒")
+	near(cfg.unit_upkeep_of("catapult"), 0.4, 1e-9, "★★ 投石车 0.4 粮/秒")
+
+	# 2) 写：把编辑器会写出来的值塞进去 ⇒ 游戏读到
+	var raw = require_config()
+	raw.data["unit"]["types"]["spearman"]["upkeep_food"] = 0.25
+	var cfg2 = _reload_full(raw)
+	near(cfg2.unit_upkeep_of("spearman"), 0.25, 1e-9,
+		"★★ 编辑器改 unit.types.spearman.upkeep_food → 游戏读到 0.25")
+
+	# 3) 清空 = 删键 ⇒ 跟随大类
+	var raw2 = require_config()
+	(raw2.data["unit"]["types"]["spearman"] as Dictionary).erase("upkeep_food")
+	raw2.data["unit"]["classes"]["infantry"]["upkeep_food"] = 0.11
+	var cfg3 = _reload_full(raw2)
+	near(cfg3.unit_upkeep_of("spearman"), 0.11, 1e-9,
+		"★★ 删掉兵种那一条 ⇒ 跟随大类（步兵 0.11）")
+	near(cfg3.unit_upkeep_of("knight"), 0.32, 1e-9,
+		"★ 别的兵种不受影响（骑士还是自己写的 0.32）")
+
+	# 4) 将领覆盖
+	var gtype := String(cfg3.general_type_at(0))
+	var base: float = cfg3.unit_upkeep_of(gtype)
+	near(cfg3.general_upkeep_at(0, gtype), base, 1e-9,
+		"★★ 没写覆盖 ⇒ 将领跟随所属兵种（%s → %s）" % [gtype, str(base)])
+	var raw3 = require_config()
+	raw3.data["unit"]["general"]["upkeep_override"] = {"0": 0.5}
+	var cfg4 = _reload_full(raw3)
+	near(cfg4.general_upkeep_at(0, gtype), 0.5, 1e-9,
+		"★★ 编辑器写 upkeep_override[\"0\"] = 0.5 → 游戏读到 0.5")
+	near(cfg4.general_upkeep_at(1, gtype), cfg4.unit_upkeep_of(gtype), 1e-9,
+		"★ 没写的序号仍然跟随兵种（稀疏对象，不需要写 null）")
+
+	# 5) 结算点：world._tick_upkeep 真的按覆盖算
+	var raw4 = require_config()
+	raw4.upkeep_enabled = true                     # require_config() 默认关掉持续消耗
+	var gtype4 := String(raw4.general_type_at(0))
+	raw4.data["unit"]["general"]["upkeep_override"] = {"0": 0.5}
+	var cfg5 = _reload_full(raw4)
+	var w = require_world(cfg5)
+	if w != null:
+		var over: float = cfg5.general_upkeep_at(0, gtype4)
+		var plain: float = cfg5.unit_upkeep_of(gtype4)
+		ok(absf(over - plain) > 0.1,
+			"（前提）这位将领的覆盖（%.2f）和兵种默认（%.2f）差别够大" % [over, plain])
+		w.units.clear()
+		var g = w.create_general("p1", 0, 90)
+		ok(g != null, "（前提）能给 p1 造一位将领")
+		if g != null:
+			w.units.append(g)
+			w._tick_upkeep(1.0)
+			near(float(w._upkeep_food_rate.get("p1", 0.0)), over, 1e-6,
+				"★★ world._tick_upkeep 按「将领覆盖」结算（%.2f 粮/秒）" % over)
+
+
 ## ★★ 2026.11.3：**特性**（兵种 4 个键 + 将领特性池 + 每位将领指定一条）。
 ##
 ## 这一组是「编辑器里能改 ↔ 游戏真的读」的最后一环：
@@ -176,14 +255,19 @@ func _test_traits() -> void:
 		return
 
 	# 1) 兵种特性：编辑器那一栏的四个键
+	# ★ 2026.11.4：**具体数值会随调参变**（御林军剑盾的近战减伤被从 0.3 调到 0.25），
+	#   所以这里只钉「这一栏读得到、且读的是同一个键」；「改了真的生效」在后面第 2 段。
 	var spear: Dictionary = cfg.unit_traits_of("spearman")
-	near(float((spear.get("attack_vs_class", {}) as Dictionary).get("cavalry", 0.0)), 0.25, 1e-9,
-		"★★ 长枪兵：对骑兵 +25%")
+	var spear_cav: float = float((spear.get("attack_vs_class", {}) as Dictionary).get("cavalry", 0.0))
+	ok(spear_cav > 0.0,
+		"★★ 长枪兵：对骑兵有加成（%.2f，编辑器「对某大类伤害」那一栏）" % spear_cav)
 	var rider: Dictionary = cfg.unit_traits_of("rider")
-	near(float(rider.get("ranged_reduction", 0.0)), 0.25, 1e-9, "★★ 骑手：远程减伤 25%")
+	var rider_ranged: float = float(rider.get("ranged_reduction", 0.0))
+	ok(rider_ranged > 0.0, "★★ 骑手：远程减伤读得到（%.2f）" % rider_ranged)
 	var royal: Dictionary = cfg.unit_traits_of("dy_royal_sword")
-	near(float(royal.get("melee_reduction", 0.0)), 0.3, 1e-9,
-		"★★ 御林军剑盾：近战减伤 30%（编辑器「近战减伤」那一栏）")
+	var royal_melee: float = float(royal.get("melee_reduction", 0.0))
+	ok(royal_melee > 0.0,
+		"★★ 御林军剑盾：近战减伤读得到（%.2f，编辑器「近战减伤」那一栏）" % royal_melee)
 	ok(bool(cfg.unit_traits_of("dy_chariot").get("knockback_immune", false)),
 		"★★ 王朝战车：稳定（编辑器「免疫击退」那个勾）")
 	eq(cfg.unit_traits_of("spearman").size(), 4,

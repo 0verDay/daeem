@@ -8167,4 +8167,45 @@ tier-3 兵 10 局出场 < 2%。逐帧诊断（每 2 秒采样、300 个采样点
 | `tests/bench_card_icon_shot.gd`（开窗） | `shots/card_icon_{ingame,zoom,hover,unlocked}.png` 人工验收 |
 | `tools/check-syntax.ps1` | 全 OK |
 
+---
+
+## 八十二、单位编辑器：持久消耗（upkeep_food）可编辑（2026.11.4）
+
+### 82.1 问题
+
+用户报的：**编辑器里没有暴露「持久消耗」**。维护费是 `world._tick_upkeep()` 每秒按
+**存活单位**累加的粮耗（`cfg.unit_upkeep_of(type)`），数值早就在 config 里
+（`unit.types.<id>.upkeep_food` + `unit.classes.<class>.upkeep_food`），但编辑器一个入口
+都没有 —— 改「养兵成本」只能手改 JSON。将领那一档更是连键都没有（一直只按兵种继承）。
+
+### 82.2 三处入口
+
+| 界面 | 写哪里 | 语义 |
+|---|---|---|
+| 单位页 →「持久消耗」→ **每秒耗粮** | `unit.types.<id>.upkeep_food`（粮/秒） | 清空 = **删键** ⇒ 跟随大类默认 |
+| 单位页 →「持久消耗」→ **<大类> 默认** | `unit.classes.<class>.upkeep_food` | 同大类里没单独写的兵种都跟它 |
+| 将领页 →「持久消耗」→ **每秒耗粮** | `unit.general.upkeep_override["<i>"]`（**稀疏对象**） | 清空 = 删掉那一项 ⇒ 跟随所属兵种；没写的序号不塞 `null` / `0` |
+
+* 三行都显示「当前生效 X 粮/秒（跟随大类 / 跟随兵种 / 自己写的）」—— 设计师不用猜。
+* 负数当场拒（`ModelError`），越界的将领序号也拒（与 `caps` / `recruit_sec` 同一条）。
+* 游戏侧新增 `config.gd` 的 `general_upkeep_at(index, kind)`；`world._tick_upkeep()`
+  **只在这一处**把将领的覆盖接上去（非将领仍只读兵种表）—— 所以「维护费总闸」
+  （`economy.upkeep_enabled`）与屯田制的「脱战免维护」照旧生效。
+* 编辑器摘要（`--selftest`）里兵种 / 将领都多了一列「耗粮 X/秒」。
+
+### 82.3 测试
+
+| 跑法 | 结果 |
+|---|---|
+| `tools/unit_editor/test_model.py` | **925 项**（新增 `[1g]`：读 / 写 / 删键跟随 / 大类联动 / 将领稀疏覆盖 / 负数与越界拒绝） |
+| `tools/unit_editor/test_app.py` | **293 项**（新增 `[3c]`：三处输入框真的写进模型与 JSON、清空回跟随） |
+| `daeem/tests/test_unit_editor.gd` | **248 项**（新增 `_test_upkeep()`：`unit_upkeep_of` 读法、删键跟大类、`general_upkeep_at`，以及 `world._tick_upkeep` 真的按覆盖结算） |
+| `test_economy` / `test_logic` / `test_snapshot_coop` | 90 / 270 / 43 全绿 |
+| `tools/check-syntax.ps1` | 266 文件 ALL OK |
+
+⚠️ 顺手修了两条**因为设计师调参而假红**的旧断言（与本次改动无关）：
+`_with_general_stats()` 现在先清空 `trait_ids`（将领 1 配了神速 +25% 移速，会让
+「没写 speed ⇒ 兵种基础值」变成 0.75）；御林军剑盾的近战减伤断言从写死 0.3 改成
+「读得到且 > 0」（实际已被编辑器调到 0.25）。
+
 

@@ -42,8 +42,31 @@ func _run() -> void:
 	await _wait_sec(0.45)
 	await _shoot("12_prepare")
 
-	# 右面板列表：拖到中段，确认分节与滚动裁剪
+	# 左面板详情：将领 / 单位 / 科技各一张
 	var pp = screen.prepare_panel()
+	if pp.roster() != null and pp.detail() != null:
+		var rt = pp.roster()
+		rt.general_buttons()[0].pressed.emit()
+		await _wait_sec(0.25)
+		await _shoot("12h_detail_general_zero")
+		rt.general_buttons()[1].pressed.emit()
+		await _wait_sec(0.25)
+		await _shoot("12e_detail_general")
+		rt.scroll_to(rt.max_scroll() * 0.55)
+		await _wait_sec(0.15)
+		rt.unit_buttons()[0].pressed.emit()
+		await _wait_sec(0.25)
+		await _shoot("12f_detail_unit")
+		rt.scroll_to(rt.max_scroll())
+		await _wait_sec(0.15)
+		rt.tech_buttons()[0].pressed.emit()
+		await _wait_sec(0.25)
+		await _shoot("12g_detail_tech")
+		pp.reset_selection()
+		rt.scroll_to(0.0)
+		await _wait_sec(0.15)
+
+	# 右面板列表：拖到中段，确认分节与滚动裁剪
 	if pp.roster() != null:
 		pp.roster().scroll_to(560.0)
 		await _wait_sec(0.2)
@@ -69,6 +92,13 @@ func _run() -> void:
 	await _click_at(pp.faction_buttons()[0].get_global_rect().get_center())
 	await _wait_sec(0.35)
 	await _shoot("14_faction_dynasty")
+
+	# 王朝组合单位详情（御林军：编成三行）
+	pp.roster().scroll_to(600.0)
+	await _wait_sec(0.15)
+	pp.roster().unit_buttons()[4].pressed.emit()
+	await _wait_sec(0.25)
+	await _shoot("14b_detail_combo")
 
 	# 返回：中途 + 落定
 	await _click_at(pp.back_area().get_global_rect().get_center())

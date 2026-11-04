@@ -5,20 +5,24 @@
 ## 防止松手顺手点掉一个磁贴）。
 ##
 ## 版式（用户口径）：
-##   · 每个分节 = 金色标题 + **一排三个的长方形磁贴**（约 146×110，随面板宽度均分）；
-##   · 磁贴内「图标在上、名字一行在下」；
+##   · 每个分节 = 金色大标题 + 按阶的小标题（零阶/一阶/二阶/三阶）+ 三列长方形磁贴；
+##   · 磁贴约 150×110（随面板宽度均分），图标在上、名字一行在下；
 ##   · 单位 / 科技用现成的金线蒙版（`unit_card_icon.gd` 的 mask_for_unit / mask_for_combo /
 ##     mask_for_tech）；将领没有图标，用**将领编号**当占位图标（用户指定）。
 ##
 ## 内容按当前派系重建（王朝 / 帝国）：
-##   · 将领 —— 全局 9 名可招募将领（将领 1..9）+ 开局将领 0，共 10 个；
+##   · 将领 —— 零阶 = 开局将领 0；一阶 = 1..3；二阶 = 4..6；三阶 = 7..9。
 ##     ★ 配置里将领不分派系（`docs/route.md` 77.x 也写着），所以两派看到的是同一份。
 ##   · 单位 —— `cfg.clan_recruit_list(派系)`；组合条目优先 `combo_<kind>`，没有就取
-##     第一个生成兵种的蒙版。
-##   · 科技 —— `cfg.tech_list_for(派系)` 里**非空槽**，按阶 1→2→3 排列。
+##     第一个生成兵种的蒙版；阶取条目自己的 tier。
+##   · 科技 —— `cfg.tech_list_for(派系)` 里**非空槽**；阶取科技自己的 tier。
 ##
-## 磁贴可点：悬停金色自下而上填、按下回弹、点击音；**不保持选中、不接任何跳转**。
+## 磁贴可点：悬停金色填充、按下回弹、点击音；点开后**保留 2px 金色描边**（选中态），
+## 并发出 `item_selected(kind, id)`，由备战页把详情送进左面板。
 extends "res://view/elastic_scroll_list.gd"
+
+## 点开一枚磁贴（kind = "general" / "unit" / "tech"；id = general_N / 招募条目 kind / 科技 id）。
+signal item_selected(kind: String, id: String)
 
 const MenuThemeRes = preload("res://view/menu_theme.gd")
 const FillButtonRes = preload("res://view/fill_button.gd")
@@ -27,6 +31,7 @@ const IconRes = preload("res://view/unit_card_icon.gd")
 
 ## 三个分节的标题（用户指定的字面文案；config 可覆盖）。
 const DEFAULT_SECTIONS := ["将领——", "单位——", "科技——"]
+const DEFAULT_TIERS := ["零阶", "一阶", "二阶", "三阶"]
 
 ## 磁贴版式（尺寸只服务于本面板，不进 config）。
 const COLUMNS := 3
@@ -37,10 +42,12 @@ const TILE_FONT := 16
 const NUMBER_FONT := 44
 const PLACEHOLDER_FONT := 34
 
-## 分节排版。
+## 分节 / 分阶排版。
 const HEADER_H := 36.0
+const SUB_HEADER_H := 30.0
 const SECTION_GAP := 18.0
 const HEADER_FONT := 26
+const SUB_HEADER_FONT := 18
 const ITEM_GAP := 6
 
 ## 当前派系（"" = 还没建）。
@@ -49,11 +56,13 @@ var cfg = null
 var font: Font = null
 
 var _headers: Array = []
+var _tier_headers: Array = []
 var _generals: Array = []
 var _units: Array = []
 var _techs: Array = []
 ## 三节所有磁贴的扁平列表（`_process` 淡名字底条 / 拖动清按下态用）。
 var _all_tiles: Array = []
+var _selected_tile: Button = null
 
 
 func setup(p_cfg, p_font: Font) -> void:
@@ -80,8 +89,7 @@ func _process(_dt: float) -> void:
 		bar.color = Color(c.r, c.g, c.b, c.a * (1.0 - p))
 
 
-## 拖动一开始就清掉磁贴上被「按下→抬起被遮罩吃掉」留下的残留：
-## 否则那枚磁贴会一直停在 pressed（实机上就是 2px 亮边 + 按下缩放不回来）。
+## 拖动一开始就清掉磁贴上被「按下→抬起被遮罩吃掉」留下的残留。
 func _on_drag_started() -> void:
 	for b in _all_tiles:
 		if b == null or not is_instance_valid(b):
@@ -108,6 +116,41 @@ func faction_id() -> String:
 
 
 # ------------------------------------------------------------------
+# 选中
+# ------------------------------------------------------------------
+
+func _on_tile_pressed(tile: Button, kind: String, id: String) -> void:
+	if _selected_tile != tile:
+		_apply_tile_selected(_selected_tile, false)
+		_selected_tile = tile
+		_apply_tile_selected(tile, true)
+	item_selected.emit(kind, id)
+
+
+## 选中 = 2px 金线描边（不填满；填满会盖掉图标）。
+func _apply_tile_selected(tile: Button, on: bool) -> void:
+	if tile == null or not is_instance_valid(tile):
+		return
+	if on:
+		tile.add_theme_stylebox_override("normal", MenuThemeRes.button_fill_latched())
+		tile.add_theme_stylebox_override("hover", MenuThemeRes.button_fill_latched())
+		tile.add_theme_stylebox_override("pressed", MenuThemeRes.button_fill_latched())
+	else:
+		tile.add_theme_stylebox_override("normal", MenuThemeRes.button_normal())
+		tile.add_theme_stylebox_override("hover", MenuThemeRes.button_hover_clear())
+		tile.add_theme_stylebox_override("pressed", MenuThemeRes.button_fill_latched())
+
+
+func clear_selection() -> void:
+	_apply_tile_selected(_selected_tile, false)
+	_selected_tile = null
+
+
+func selected_tile() -> Button:
+	return _selected_tile
+
+
+# ------------------------------------------------------------------
 # 重建
 # ------------------------------------------------------------------
 
@@ -118,10 +161,12 @@ func _rebuild() -> void:
 		box.remove_child(c)
 		c.queue_free()
 	_headers.clear()
+	_tier_headers.clear()
 	_generals.clear()
 	_units.clear()
 	_techs.clear()
 	_all_tiles.clear()
+	_selected_tile = null
 
 	var titles := _section_titles()
 	_add_section(box, String(titles[0]), _general_entries(), "Gen", _generals)
@@ -133,7 +178,7 @@ func _rebuild() -> void:
 	scroll_to(0.0)
 
 
-## 一节 = 金色标题 + 三列磁贴网格；节与节之间留一段空白。
+## 一节 = 金色大标题 + 若干「阶小标题 + 三列磁贴网格」。
 func _add_section(box: VBoxContainer, title: String, entries: Array,
 		name_prefix: String, out_tiles: Array, tail_gap: bool = true) -> void:
 	var section := VBoxContainer.new()
@@ -165,24 +210,53 @@ func _add_section(box: VBoxContainer, title: String, entries: Array,
 	header_wrap.add_child(header)
 	_headers.append(header)
 
-	var grid := GridContainer.new()
-	grid.name = "Grid_%s" % name_prefix
-	grid.columns = COLUMNS
-	grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	grid.add_theme_constant_override("h_separation", TILE_GAP)
-	grid.add_theme_constant_override("v_separation", TILE_GAP)
-	section.add_child(grid)
-
-	for i in entries.size():
-		var e: Dictionary = entries[i]
-		var label := String(e.get("label", "")).strip_edges()
-		if label == "":
-			continue
-		var tile := _make_tile("%s_%d" % [name_prefix, i], label,
-			String(e.get("mask", "")), String(e.get("number", "")))
-		grid.add_child(tile)
-		out_tiles.append(tile)
-		_all_tiles.append(tile)
+	# 按阶分组（升序）；没有条目的阶不画小标题。
+	var groups: Dictionary = {}
+	for e in entries:
+		var t := int((e as Dictionary).get("tier", 0))
+		if not groups.has(t):
+			groups[t] = []
+		(groups[t] as Array).append(e)
+	var tiers: Array = groups.keys()
+	tiers.sort()
+	for ti in tiers.size():
+		var tier := int(tiers[ti])
+		_add_tier_header(section, tier, name_prefix)
+		var grid := GridContainer.new()
+		grid.name = "Grid_%s_%d" % [name_prefix, tier]
+		grid.columns = COLUMNS
+		grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		grid.add_theme_constant_override("h_separation", TILE_GAP)
+		grid.add_theme_constant_override("v_separation", TILE_GAP)
+		section.add_child(grid)
+		var group: Array = groups[tier]
+		var added := 0
+		for i in group.size():
+			var e: Dictionary = group[i]
+			var label := String(e.get("label", "")).strip_edges()
+			if label == "":
+				continue
+			var tile := _make_tile("%s_%d_%d" % [name_prefix, tier, i], e)
+			grid.add_child(tile)
+			out_tiles.append(tile)
+			_all_tiles.append(tile)
+			added += 1
+		# 补齐空位：每个阶的网格都占满 3 的倍数，列宽才与满行一致
+		# （否则只有 1 个磁贴的网格会把 468 均分成 156，和满行的 150.67 对不齐）。
+		var missing := (COLUMNS - (added % COLUMNS)) % COLUMNS
+		for _p in missing:
+			var pad := Control.new()
+			pad.name = "TilePad_%s_%d_%d" % [name_prefix, tier, _p]
+			pad.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			pad.custom_minimum_size = Vector2(0.0, TILE_H)
+			pad.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			grid.add_child(pad)
+		if ti < tiers.size() - 1:
+			var gap := Control.new()
+			gap.name = "TierGap_%s_%d" % [name_prefix, tier]
+			gap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			gap.custom_minimum_size = Vector2(0.0, 8.0)
+			section.add_child(gap)
 
 	if tail_gap:
 		var spacer := Control.new()
@@ -192,8 +266,48 @@ func _add_section(box: VBoxContainer, title: String, entries: Array,
 		box.add_child(spacer)
 
 
+## 阶的小标题：18px 暖灰字 + 一条细线拉到右边。
+func _add_tier_header(section: VBoxContainer, tier: int, name_prefix: String) -> void:
+	var row := HBoxContainer.new()
+	row.name = "TierHeader_%s_%d" % [name_prefix, tier]
+	row.custom_minimum_size = Vector2(0.0, SUB_HEADER_H)
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_theme_constant_override("separation", 8)
+	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	section.add_child(row)
+
+	var label := Label.new()
+	label.name = "TierLabel_%s_%d" % [name_prefix, tier]
+	label.text = _tier_name(tier)
+	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	label.custom_minimum_size = Vector2(0.0, SUB_HEADER_H)
+	if font != null:
+		label.add_theme_font_override("font", font)
+	label.add_theme_font_size_override("font_size", SUB_HEADER_FONT)
+	label.add_theme_color_override("font_color", ThemeRes.text_dim())
+	row.add_child(label)
+	_tier_headers.append(label)
+
+	var line := ColorRect.new()
+	line.name = "TierLine_%s_%d" % [name_prefix, tier]
+	line.color = ThemeRes.line_soft()
+	line.custom_minimum_size = Vector2(0.0, 1.0)
+	line.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	line.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	line.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_child(line)
+
+
 ## 一枚长方形磁贴：图标区（金线蒙版 / 编号占位）+ 底部名字条。
-func _make_tile(node_name: String, label: String, mask: String, number: String) -> Button:
+func _make_tile(node_name: String, entry: Dictionary) -> Button:
+	var label := String(entry.get("label", "")).strip_edges()
+	var mask := String(entry.get("mask", ""))
+	var number := String(entry.get("number", ""))
+	var kind := String(entry.get("kind", ""))
+	var id := String(entry.get("id", ""))
+
 	var b := Button.new()
 	b.name = node_name
 	b.focus_mode = Control.FOCUS_NONE
@@ -203,6 +317,10 @@ func _make_tile(node_name: String, label: String, mask: String, number: String) 
 	b.set_meta("label", label)
 	b.set_meta("mask", mask)
 	b.set_meta("number", number)
+	b.set_meta("kind", kind)
+	b.set_meta("id", id)
+	b.set_meta("tier", int(entry.get("tier", 0)))
+	b.pressed.connect(_on_tile_pressed.bind(b, kind, id))
 
 	# ★ 与其它菜单按钮同一条接法：填充层 + 字色翻面 + 点击音 + 按下回弹都在 attach_text 里。
 	FillButtonRes.attach_text(b)
@@ -303,7 +421,7 @@ func _layout_tile(tile: Button) -> void:
 
 
 # ------------------------------------------------------------------
-# 数据 → 磁贴条目（label / mask / number）
+# 数据 → 磁贴条目（label / mask / number / tier / kind / id）
 # ------------------------------------------------------------------
 
 func _section_titles() -> Array:
@@ -318,11 +436,26 @@ func _section_titles() -> Array:
 	return out
 
 
-## 9 名可招募将领 + 开局将领 0。名字优先取区划招将表的 label（将领 1..9），
-## 再取 `unit.general.stats[].name`，都没有才兜底「将领 N」；编号取 kind 的后缀。
+func _tier_name(tier: int) -> String:
+	if cfg != null:
+		var names: Variant = cfg.get_path_value("menu.deck.prepare.tier_names")
+		if typeof(names) == TYPE_ARRAY and tier >= 0 and tier < (names as Array).size():
+			var s := String((names as Array)[tier]).strip_edges()
+			if s != "":
+				return s
+	if tier >= 0 and tier < DEFAULT_TIERS.size():
+		return DEFAULT_TIERS[tier]
+	return ""
+
+
+## 零阶 = 开局将领 0；一阶 1..3、二阶 4..6、三阶 7..9（阶取区划招将表）。
 func _general_entries() -> Array:
-	var out: Array = []
-	var has_zero := false
+	var out: Array = [{
+		"label": _general_name(9, "将领 0"),
+		"mask": "", "number": "0", "tier": 0,
+		"kind": "general", "id": "general_0",
+	}]
+	var have: Dictionary = {"general_0": true}
 	if cfg != null:
 		var zone: Variant = cfg.get_path_value("recruit.zone.list")
 		if typeof(zone) == TYPE_ARRAY:
@@ -331,23 +464,29 @@ func _general_entries() -> Array:
 					continue
 				var d: Dictionary = item
 				var kind := String(d.get("kind", ""))
-				if not kind.begins_with("general_"):
+				if not kind.begins_with("general_") or kind == "general_0":
 					continue
-				var num := kind.substr(8)
 				var label := String(d.get("label", "")).strip_edges()
-				if num == "0":
-					has_zero = true
-					continue
-				if label != "":
-					out.append({"label": label, "mask": "", "number": num})
-	# 数据被裁掉 / 读坏时仍列出 9 位，别让分节空白。
-	if out.is_empty():
-		for i in 9:
-			out.append({"label": _general_name(i, "将领 %d" % (i + 1)),
-				"mask": "", "number": str(i + 1)})
-	# 开局将领 #0 在 general 名册下标 9（不在区划招将表里）。
-	if not has_zero or out.size() < 10:
-		out.append({"label": _general_name(9, "将领 0"), "mask": "", "number": "0"})
+				if label == "":
+					label = _general_name(ConfigRes.general_index_of(kind),
+						"将领 %s" % kind.substr(8))
+				out.append({
+					"label": label, "mask": "", "number": kind.substr(8),
+					"tier": int(d.get("tier", 1)),
+					"kind": "general", "id": kind,
+				})
+				have[kind] = true
+	# 数据被裁掉时补齐 1..9，别让分节缺行。
+	for i in range(1, 10):
+		var id := "general_%d" % i
+		if have.has(id):
+			continue
+		out.append({
+			"label": _general_name(i - 1, "将领 %d" % i),
+			"mask": "", "number": str(i),
+			"tier": 1 if i <= 3 else (2 if i <= 6 else 3),
+			"kind": "general", "id": id,
+		})
 	return out
 
 
@@ -379,7 +518,11 @@ func _unit_entries() -> Array:
 				if typeof(first) == TYPE_DICTIONARY:
 					unit_type = String((first as Dictionary).get("type", kind))
 			mask = IconRes.mask_for_unit(cfg, unit_type)
-		out.append({"label": label, "mask": mask, "number": ""})
+		out.append({
+			"label": label, "mask": mask, "number": "",
+			"tier": int(d.get("tier", 1)),
+			"kind": "unit", "id": kind,
+		})
 	return out
 
 
@@ -407,6 +550,9 @@ func _tech_entries() -> Array:
 			"label": nm,
 			"mask": IconRes.mask_for_tech(id),
 			"number": "",
+			"tier": tier,
+			"kind": "tech",
+			"id": id,
 		})
 	var tiers: Array = by_tier.keys()
 	tiers.sort()
@@ -421,6 +567,10 @@ func _tech_entries() -> Array:
 
 func section_headers() -> Array:
 	return _headers
+
+
+func tier_headers() -> Array:
+	return _tier_headers
 
 
 func general_buttons() -> Array:
@@ -457,3 +607,15 @@ func tile_icon_mask(tile: Button) -> String:
 
 func tile_placeholder(tile: Button) -> String:
 	return String(tile.get_meta("number", "")) if tile != null else ""
+
+
+func tile_kind(tile: Button) -> String:
+	return String(tile.get_meta("kind", "")) if tile != null else ""
+
+
+func tile_id(tile: Button) -> String:
+	return String(tile.get_meta("id", "")) if tile != null else ""
+
+
+func tile_tier(tile: Button) -> int:
+	return int(tile.get_meta("tier", 0)) if tile != null else 0
