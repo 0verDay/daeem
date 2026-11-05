@@ -109,6 +109,10 @@ static func is_building_type(cfg: ConfigRes, type: String) -> bool:
 var type: String = TYPE_WALL
 var tx: int = 0
 var ty: int = 0
+## ★★ 2026.11：**不是独立归属** —— 除大本营外，它由 `world.refresh_ownership()`
+##   每帧从所在区划的 `owner` 同步过来；区划易主时这栋楼跟着换边。
+##   （区划中心是中立布景，永远 ""；大本营保留自己的归属。）
+##   ⚠️ 读它没问题；**不要**把它当成第二个真相来源去改区划归属。
 var owner: String = FactionRes.DEFAULT_FACTION
 var zone_id: int = -1
 var hp: float = 300.0
@@ -227,6 +231,43 @@ func is_invulnerable() -> bool:
 ## 是不是大本营（重生队列 / 升级阻塞都只针对它）。
 func is_base() -> bool:
 	return type == TYPE_BASE
+
+
+## ★★ 这一栋的归属是不是**跟随所在区划**（2026.11 口径）。
+##
+## 用户口径：「建筑没有本身的归属属性，而是跟随区划分配归属」；
+## 例外是**大本营**（它保留自己的归属，区划易主也不会跟着换主）与**区划中心**
+## （中立无敌的布景，永远无主）。
+##
+## ⚠️ 这只是「该不该同步」的判据；真正的同步在 `world.refresh_ownership()`。
+func follows_zone_owner() -> bool:
+	return type != TYPE_BASE and type != TYPE_ZONE_CENTER
+
+
+## 是不是**资源建筑**（粮田 / 房屋 / 矿脉这类给食物 / 黄金 / 人口的建筑）。
+##
+## ★ 判据从配置读（不从类型名硬编码）：只要它非大本营、非防御建筑、非城墙，
+##   并且配置里给了任意一项资源产出，就算资源建筑。
+##   —— 这样设计师在编辑器里新加一栋「渔场」也会自动获得「不自动索敌」的待遇。
+func is_resource_building(cfg: ConfigRes) -> bool:
+	if cfg == null or is_base() or type == TYPE_ZONE_CENTER:
+		return false
+	if is_wall_building() or is_defense_building(cfg):
+		return false
+	return cfg.building_food_per_sec(type) > 0.0 \
+		or cfg.building_gold_per_sec(type) > 0.0 \
+		or cfg.building_population_rate(type) > 0.0 \
+		or cfg.building_population_cap(type) > 0.0
+
+
+## 是不是**防御建筑**（哨塔 / 警戒塔，以及编辑器里任何 `attackable = true` 的非大本营建筑）。
+func is_defense_building(cfg: ConfigRes) -> bool:
+	return cfg != null and not is_base() and type != TYPE_ZONE_CENTER and is_attackable(cfg)
+
+
+## 是不是**墙类建筑**（木墙 / 石墙；也认编辑器里 type 带 "wall" 的新墙）。
+func is_wall_building() -> bool:
+	return type == TYPE_WALL or type == TYPE_STONE_WALL or type.contains("wall")
 
 
 func is_neutralized() -> bool:

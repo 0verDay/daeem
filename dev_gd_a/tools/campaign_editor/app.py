@@ -158,7 +158,7 @@ PAGES: Tuple[Tuple[str, str, str], ...] = (
     ("level", "关卡", "关卡页：当前关的名字 / 模式 / 地图 / 目标 / 额外失败条件"),
     ("factions", "阵营", "阵营页：敌友（边）+ 每一方一行；大本营去 ④ 摆放页摆（AI 不在编辑器里改，见 README）"),
     ("place", "摆放", "摆放页：画布上点一下放将领/单位/建筑；右键删；滚轮缩放；中键或空格+左键拖动"),
-    ("zone", "区划", "区划页：开局每一块地归哪个阵营（关卡覆盖地图的 zone_list[].owner）"),
+    ("zone", "区划", "区划页：开局归属 + 画布涂「禁行区」（阵地性 AI 不巡逻进去）"),
     ("reddot", "红点", "红点页：画布点击模式（生成地块 / 行军目标）/ 生成频率与将领数（函数表达式）/ 将领类型权重 / 共享附属单位规格"),
     ("check", "校验与导出", "校验页：跑全部硬拦截 + 警告；有拦截时不许写文件"),
 )
@@ -170,6 +170,11 @@ CANVAS_HINT = ("地形 / 区划 / 中心是从地图读出来画成**背景**的
 #: 红点页画布上方那句话（红点页复用同一块画布，但手势含义不同）。
 REDDOT_CANVAS_HINT = ("左键点一个**空地格** = 把它加进 / 移出「红点生成地块」"
                       "（游戏里这些格子的外观**不会有任何区别**）；右键点 = 移出。")
+
+#: ★★ 区划页画布上方那句话（区划页也复用同一块画布：左栏画地图，右栏管归属与禁行区）。
+ZONE_CANVAS_HINT = ("先在右侧点某条区划的「涂刷」，再在画布上左键涂 / 右键擦**禁行格**"
+                    "（红=已禁行，深红=当前正在涂的那条区划）；"
+                    "禁行区只影响**阵地性 AI 的巡逻目标点**，游戏里不可见。")
 
 #: 按住空格时印在状态栏上的话（`on_space_down` 用；测试也读它，别在测试里再拼一遍）。
 PAN_MODE_HINT = ("平移模式：按住空格 + 左键拖动 = 移动视野（松开空格回到「放东西 / 选中」；"
@@ -202,6 +207,8 @@ C = {
     "water": "#2e4f66",
     "zone_line": "#5c6066",
     "center": "#ff8adf",
+    #: ★ 区划**禁行格**（只在区划页画；游戏里不可见）。
+    "no_go": "#e5484d",
     "grid": "#2a2c30",
     "text": "#f0f0f0",
     "dim": "#9aa0a8",
@@ -601,6 +608,10 @@ class EditorApp:
         self.reddot_faction: str = ""
         #: ★★ 红点页的画布点击模式：`"spawn"` = 编辑生成地块 / `"march"` = 编辑行军目标。
         self.reddot_click_mode: str = "spawn"
+        #: ★★ 区划页正在涂哪条区划的**禁行格**（-1 = 没在涂；>= 0 = 区划 id）。
+        #:   点右侧某一行的「涂刷」进入，点「停止」/ 换页签 / 换关卡退出。
+        #:   ⚠️ 它只影响**画布点击落到哪儿**，不改任何数据（数据在 `lv.zone_no_go`）。
+        self.zone_paint_zone: int = -1
         #: 画布视口（与 map_editor 同一套：zoom + ox/oy 像素偏移）。
         self.zoom = 1.0
         self.ox = 0.0
@@ -986,6 +997,8 @@ class EditorApp:
         self.selection = None
         self._reset_sides()                         # 敌友边重新从当前关的数据里读
         self.reddot_faction = ""                    # 红点页当前编辑的那一方
+        # ★★ 区划页的涂刷目标属于上一关的区划编号 —— 换关后一律退出涂刷。
+        self.zone_paint_zone = -1
         self._pan_anchor = None
         self._left_down_at = None
         self.space_held = False
@@ -1076,6 +1089,9 @@ class EditorApp:
             return
         self.page = key
         self.selection = None
+        # ★★ 换页签 = 退出「涂禁行格」模式：别的页签的画布点击有别的含义，
+        #    留着 `zone_paint_zone` 会让用户回来时莫名其妙还在涂（而且那一页不再画高亮）。
+        self.zone_paint_zone = -1
         # ★ 换页签 = 丢掉上一页的「正在拖 / 按着空格」状态：画布会被整块重建，
         #   留着锚点会让新画布一进来就跟着鼠标跑（`_pan_anchor` 指着一个不存在的按下）。
         self._pan_anchor = None
@@ -1124,7 +1140,7 @@ class EditorApp:
         for key, btn in self.tab_buttons.items():
             btn.configure(fg=(UI["accent"] if key == self.page else UI["text_dim"]),
                           bg=(UI["panel_alt"] if key == self.page else UI["panel"]))
-        if self.page in ("place", "reddot"):
+        if self.page in ("place", "reddot", "zone"):
             self._build_canvas_page()
         elif self.page == "check":
             self._build_check_page()
@@ -1143,8 +1159,6 @@ class EditorApp:
             child.destroy()
         if self.page == "campaign":
             self._build_campaign_page()
-        elif self.page == "zone":
-            self._build_zone_page()
         else:
             self._build_level_page()
 
@@ -1340,7 +1354,8 @@ class EditorApp:
 
         head = tk.Frame(self.canvas_host, bg=UI["bg"])
         head.pack(side="top", fill="x", padx=10, pady=(6, 2))
-        hint = CANVAS_HINT if self.page == "place" else REDDOT_CANVAS_HINT
+        hint = CANVAS_HINT if self.page == "place" else (
+            REDDOT_CANVAS_HINT if self.page == "reddot" else ZONE_CANVAS_HINT)
         tk.Label(head, text=hint, bg=UI["bg"], fg=UI["warn"], justify="left",
                  font=("Microsoft YaHei UI", 9)).pack(side="left")
         self._button(head, "打开地图编辑器", self.open_map_editor,
@@ -1373,8 +1388,11 @@ class EditorApp:
         if self.page == "place":
             bar_hint = ("左键放 / 选　右键删（大本营也能右键删）　"
                         "中键或空格+左键拖动平移　滚轮缩放　Esc 取消选中")
-        else:
+        elif self.page == "reddot":
             bar_hint = ("左键点格 = 加/移出「生成地块 / 行军目标」（右侧切换）　右键 = 移出　"
+                        "中键或空格+左键拖动平移　滚轮缩放")
+        else:
+            bar_hint = ("先在右侧选一条区划点「涂刷」；左键涂 / 右键擦禁行格　"
                         "中键或空格+左键拖动平移　滚轮缩放")
         tk.Label(bar, text=bar_hint, bg=UI["bg"], fg=UI["text_dim"],
                  font=("Microsoft YaHei UI", 8)).pack(side="left", padx=10)
@@ -1462,7 +1480,7 @@ class EditorApp:
 
     def redraw(self) -> None:
         self._redraw_job = None
-        if not hasattr(self, "canvas") or self.page not in ("place", "reddot"):
+        if not hasattr(self, "canvas") or self.page not in ("place", "reddot", "zone"):
             return
         try:
             self.canvas.delete("all")
@@ -1502,12 +1520,16 @@ class EditorApp:
                 if zid < 0:
                     continue
                 sx, sy = self.cell_origin(x, y)
+                # ★ 区划页：正在涂的那条区划，边界换成强调色（一眼看出在涂哪一块）。
+                painting = self.page == "zone" and int(zid) == int(self.zone_paint_zone)
+                line_color = UI["accent"] if painting else C["zone_line"]
+                line_width = 3 if painting else 2
                 if x + 1 < info.cols and info.zone_of(x + 1, y) != zid:
                     self.canvas.create_line(sx + size, sy, sx + size, sy + size,
-                                            fill=C["zone_line"], width=2)
+                                            fill=line_color, width=line_width)
                 if y + 1 < info.rows and info.zone_of(x, y + 1) != zid:
                     self.canvas.create_line(sx, sy + size, sx + size, sy + size,
-                                            fill=C["zone_line"], width=2)
+                                            fill=line_color, width=line_width)
         if size >= 22:
             for zid in info.zone_ids:
                 label = info.zone_name(zid)
@@ -1521,6 +1543,10 @@ class EditorApp:
                 sx, sy = self.cell_origin(cx, cy)
                 self.canvas.create_text(sx + size / 2, sy + size * 0.2, text=label,
                                         fill=C["dim"], font=("Microsoft YaHei UI", 8))
+
+        # ---- ★ 区划禁行格（只在区划页画；游戏里不可见）----
+        if self.page == "zone" and lv is not None:
+            self._draw_no_go(info, lv)
 
         # ---- 目标区划高亮 ----
         if lv is not None:
@@ -1626,6 +1652,28 @@ class EditorApp:
         self.canvas.create_text(8, 8, anchor="nw", fill=UI["text_dim"],
                                 text="%s　缩放 %.0f%%" % (info.map_id, self.zoom * 100),
                                 font=("Microsoft YaHei UI", 8))
+
+    def _draw_no_go(self, info: MapInfo, lv: LevelModel) -> None:
+        """画各条区划的**禁行格**（只在区划页；游戏里这些格子外观没有任何区别）。
+
+        ★ 当前正在涂的那条用更实的网点 + 红描边 + 「禁」字，其余用淡网点：
+          用户要一眼分清「这条区划的禁行区」和「别的区划的」。
+        """
+        size = self.tile_px()
+        for zid in lv.zone_no_go_zids():
+            selected = int(zid) == int(self.zone_paint_zone)
+            for (tx, ty) in lv.zone_no_go_tiles(zid):
+                if not info.tile_exists(tx, ty):
+                    continue            # 换图后的脏数据：校验会拦，这里不画到地图外
+                sx, sy = self.cell_origin(tx, ty)
+                self.canvas.create_rectangle(
+                    sx + 1, sy + 1, sx + size - 1, sy + size - 1,
+                    fill=C["no_go"], stipple=("gray50" if selected else "gray25"),
+                    outline=(C["no_go"] if selected else ""))
+                if selected and size >= 20:
+                    self.canvas.create_text(sx + size / 2, sy + size / 2, text="禁",
+                                            fill="#ffffff",
+                                            font=("Microsoft YaHei UI", 8, "bold"))
 
     def _draw_cell_marker(self, point: Tuple[int, int], glyph: str, color: str,
                           tag: Tuple[str, int], corner: str = "") -> None:
@@ -1757,7 +1805,7 @@ class EditorApp:
 
     def on_left_down(self, event) -> None:
         """左键按下：空格按住 → 武装一次平移；否则记下起点，等松手时再决定「点 / 拖」。"""
-        if self.page not in ("place", "reddot"):
+        if self.page not in ("place", "reddot", "zone"):
             return
         self._left_down_at = (event.x, event.y)
         try:
@@ -1838,11 +1886,15 @@ class EditorApp:
         ⚠️ `on_left_down` 里已经拦掉了「空格 + 拖动」：走到这里的都已经不是平移，
            所以这里只看「目标模式 / 选中 / 放东西」三件事。
         """
-        if self.page not in ("place", "reddot"):
+        if self.page not in ("place", "reddot", "zone"):
             return
         cell = self.screen_to_cell(event.x, event.y)
         if self.page == "reddot":
             self._toggle_reddot_tile(cell)
+            return
+        if self.page == "zone":
+            # ★ 区划页：左键 = 涂禁行格（没在涂刷模式时由 `_toggle_zone_no_go` 提示先选区划）。
+            self._toggle_zone_no_go(cell)
             return
         info = self.map_info()
         lv = self.level()
@@ -1861,11 +1913,16 @@ class EditorApp:
         self.place_at(cell)
 
     def on_right_click(self, event) -> None:
-        if self.page not in ("place", "reddot"):
+        if self.page not in ("place", "reddot", "zone"):
             return
         cell = self.screen_to_cell(event.x, event.y)
         if self.page == "reddot":
             self._toggle_reddot_tile(cell, force_remove=True)
+            self._focus_canvas()
+            return
+        if self.page == "zone":
+            # ★ 区划页：右键 = 擦掉这一格的禁行标记（本来就没有 → 什么都不做）。
+            self._toggle_zone_no_go(cell, force_remove=True)
             self._focus_canvas()
             return
         # ★ 大本营先在关卡层找 —— 它不在 start_units / start_buildings 里。
@@ -1927,6 +1984,7 @@ class EditorApp:
             self.status("(%d,%d)" % cell)
             return
         zid = info.zone_of(x, y)
+        no_go = lv is not None and zid >= 0 and lv.has_zone_no_go(zid, x, y)
         terrain = {".": "草地", "^": "森林", "#": "山地"}.get(info.terrain_at(x, y), "?")
         what: List[str] = []
         if lv is not None:
@@ -1944,9 +2002,10 @@ class EditorApp:
             for e in lv.factions:
                 if e.base == cell:
                     what.append("%s 的大本营（关卡）" % e.fid)
-        self.status("(%d,%d)　地形 %s　%s　%s"
+        self.status("(%d,%d)　地形 %s　%s%s　%s"
                     % (x, y, terrain,
                        ("区划 %s" % info.zone_label(zid)) if zid >= 0 else "不属于任何区划",
+                       "（禁行）" if no_go else "",
                        "　".join(what) if what else "（空的）"))
 
     # ---- 放置 / 删除 / 选中改字段 ----
@@ -2694,6 +2753,9 @@ class EditorApp:
         # ★★ 换地图 = 区划表按新地图**整张重建**（旧地图的区划号对新地图没有意义）。
         #    战役编辑器不再有「（用地图的）」，所以这里必须把新地图的 owner 抄成显式值。
         lv.ensure_zone_owners(self.maps.get(str(lv.map_id)), force=True)
+        # ★ 换图连**禁行区**一起清掉了（`ensure_zone_owners(force=True)`），
+        #   涂刷目标也必须退出 —— 否则「正在涂 c3」会指向新图上碰巧同号的区划。
+        self.zone_paint_zone = -1
         # 换地图 = 画布内容整张换了：重新适应视图（这是用户预期的「换了一张图」）。
         self._fit_pending = True
         self._after_change()
@@ -3356,56 +3418,6 @@ class EditorApp:
         # 正常载入后每一块地都有显式值；None 只可能是旧/外部数据 → 按「无主」显示
         return "（清空 = 无主）" if cur is None or cur == "" else str(cur)
 
-    def _build_zone_page(self) -> None:
-        """区划页：一张表 —— 每一块地开局归哪个阵营（写 `zones[].owner`）。
-
-        ★★ 每一块地都**必须**有显式归属：阵营 id，或空串 = 无主。
-          不再有「不写这个键 = 用地图的」那一档（地图编辑器不编辑归属）。
-        """
-        for child in self.action_bar.winfo_children():
-            child.destroy()
-        host = self.list_host
-        for child in host.winfo_children():
-            child.destroy()
-        info = self.map_info()
-        lv = self.level()
-        if info is None or lv is None:
-            tk.Label(host, text="这一关还没有地图（或地图不存在）：去「关卡」页选一张",
-                     bg=UI["bg"], fg=UI["warn"]).pack(anchor="w", padx=10, pady=10)
-            return
-        head = tk.Frame(host, bg=UI["bg"])
-        head.pack(side="top", fill="x", padx=10, pady=(8, 2))
-        tk.Label(head, text="开局区划归属", bg=UI["bg"], fg=UI["accent"],
-                 font=("Microsoft YaHei UI", 10, "bold")).pack(side="left")
-        tk.Label(head, text="　（每一块地都要选：阵营 / 「清空 = 无主」）",
-                 bg=UI["bg"], fg=UI["text_dim"],
-                 font=("Microsoft YaHei UI", 8)).pack(side="left")
-
-        rows = tk.Frame(host, bg=UI["bg"])
-        rows.pack(side="top", fill="both", expand=True, padx=10, pady=4)
-        canvas = tk.Canvas(rows, bg=UI["bg"], highlightthickness=0, bd=0)
-        sb = ttk.Scrollbar(rows, orient="vertical", command=canvas.yview)
-        inner = tk.Frame(canvas, bg=UI["bg"])
-        inner.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=inner, anchor="nw")
-        canvas.configure(yscrollcommand=sb.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
-
-        choices = self._owner_choices()
-        for zid in info.zone_ids:
-            r = tk.Frame(inner, bg=UI["bg"])
-            r.pack(side="top", fill="x", pady=1)
-            name = info.zone_name(zid)
-            tk.Label(r, text="%s　%s" % (info.zone_label(zid), name), width=24, anchor="w",
-                     bg=UI["bg"], fg=UI["text"]).pack(side="left")
-            var = tk.StringVar(value=self._zone_choice_label(lv, zid))
-            combo = ttk.Combobox(r, textvariable=var, values=list(choices), width=18,
-                                 state="readonly")
-            combo.pack(side="left")
-            combo.bind("<<ComboboxSelected>>",
-                       lambda _e, z=int(zid), v=var: self._set_zone_choice(z, v.get()))
-
     def _set_zone_choice(self, zid: int, label: str) -> None:
         lv = self.level()
         if lv is None:
@@ -3419,18 +3431,148 @@ class EditorApp:
         self.refresh_all()
 
     def _sidebar_zone(self) -> None:
+        """区划页右栏：**每一块地的归属** + **每块地的禁行区**（左栏画布负责涂）。
+
+        ★ 页签说明：以前这一页只有一张归属表；现在它同时是「禁行区」的编辑页 ——
+          用户口径是「禁行区要可以用战役编辑器编辑」，而禁行区是按区划分的，
+          放在「区划」页最顺（归属与禁行区都挂在同一份 `zones[]` 上）。
+        """
         lv = self.level()
         info = self.map_info()
-        sec = self._section("区划归属", "左边那一列就是本关的全部区划；在右边选归属")
         if lv is None or info is None:
-            self._hint(sec, "这一关还没有地图：先到「关卡」页选一张。")
+            sec = self._section("区划", "这一关还没有地图")
+            self._hint(sec, "先去「关卡」页选一张地图，再回来配归属与禁行区。")
             return
-        self._hint(sec, "★ 归属属于**关卡层**（`zones[]`）：每块地都显式写阵营 id，"
-                        "「清空 = 无主」写空串。地图编辑器不编辑区块归属，所以这里"
-                        "没有「（用地图的）」——地图的 owner 只在新建 / 换图时初始化一次。"
-                        "地形 / 区划形状要改请点摆放页的『打开地图编辑器』。")
+
+        sec = self._section("区划归属", "每一块地都显式写阵营 id（空串 = 无主）")
+        self._hint(sec, "★ 归属属于**关卡层**（`zones[]`）：地图编辑器不编辑区块归属，"
+                        "所以这里没有「（用地图的）」——地图的 owner 只在新建 / 换图时"
+                        "初始化一次。地形 / 区划形状要改请点『打开地图编辑器』。")
         self._hint(sec, "地图「%s」共 %d 块地；本关已写 %d 块。"
                    % (info.map_id, len(info.zone_ids), len(lv.zone_owners)))
+        choices = self._owner_choices()
+        for zid in info.zone_ids:
+            self._zone_owner_row(sec, lv, info, zid, choices)
+
+        sec2 = self._section("区划禁行区",
+                             "阵地性 AI **不会巡逻至**其区划的禁行格")
+        self._hint(sec2, "★ 只影响**巡逻目标点**：不挡走路、不影响追击 / 守中心 / 攻城警报，"
+                         "游戏里也看不见（只在编辑器里显示）。")
+        self._hint(sec2, "点某条区划的「涂刷」→ 在左边画布上左键涂 / 右键擦。"
+                         "区划中心与「整块区划都禁行」会被当场拦住。")
+        for zid in info.zone_ids:
+            self._zone_no_go_row(sec2, lv, info, zid)
+
+    def _zone_owner_row(self, parent, lv: LevelModel, info: MapInfo, zid: int,
+                        choices: Sequence[str]) -> None:
+        """区划页每一行：`区划名 | 开局归属下拉`。"""
+        row = tk.Frame(parent, bg=UI["panel"])
+        row.pack(side="top", fill="x", pady=1)
+        painting = int(zid) == int(self.zone_paint_zone)
+        tk.Label(row, text=info.zone_label(zid), width=9, anchor="w", bg=UI["panel"],
+                 fg=(UI["accent"] if painting else UI["text"]),
+                 font=("Microsoft YaHei UI", 9, "bold" if painting else "normal")).pack(side="left")
+        var = tk.StringVar(value=self._zone_choice_label(lv, zid))
+        combo = ttk.Combobox(row, textvariable=var, values=list(choices), width=12,
+                             state="readonly")
+        combo.pack(side="left")
+        combo.bind("<<ComboboxSelected>>",
+                   lambda _e, z=int(zid), v=var: self._set_zone_choice(z, v.get()))
+
+    def _zone_no_go_row(self, parent, lv: LevelModel, info: MapInfo, zid: int) -> None:
+        """区划页每一行：`区划名 | 禁行 N 格 | 涂刷/停止 | 清空`。"""
+        row = tk.Frame(parent, bg=UI["panel"])
+        row.pack(side="top", fill="x", pady=1)
+        painting = int(zid) == int(self.zone_paint_zone)
+        count = lv.zone_no_go_count(zid)
+        tk.Label(row, text=info.zone_label(zid), width=9, anchor="w", bg=UI["panel"],
+                 fg=(UI["accent"] if painting else UI["text"]),
+                 font=("Microsoft YaHei UI", 9, "bold" if painting else "normal")).pack(side="left")
+        tk.Label(row, text="禁行 %d 格" % count, width=9, anchor="w", bg=UI["panel"],
+                 fg=(C["no_go"] if count else UI["text_dim"]),
+                 font=("Microsoft YaHei UI", 8)).pack(side="left")
+        self._button(row, "停止" if painting else "涂刷",
+                     lambda z=int(zid), cur=painting: self.set_zone_paint_zone(-1 if cur else z),
+                     padx=6, pady=2, font=("Microsoft YaHei UI", 8)).pack(side="left", padx=2)
+        if count:
+            self._button(row, "清空", lambda z=int(zid): self.clear_zone_no_go(z),
+                         padx=6, pady=2, font=("Microsoft YaHei UI", 8)).pack(side="left", padx=2)
+
+    def set_zone_paint_zone(self, zid: int) -> None:
+        """进入 / 退出「涂某条区划的禁行格」模式（-1 = 退出）。"""
+        self.zone_paint_zone = int(zid)
+        info = self.map_info()
+        if self.zone_paint_zone >= 0:
+            label = info.zone_label(self.zone_paint_zone) if info is not None \
+                else "c%d" % self.zone_paint_zone
+            self.status("涂刷模式：%s —— 左键涂 / 右键擦「禁行格」（区划中心与整块禁行会被拦）"
+                        % label)
+        else:
+            self.status("退出涂刷模式")
+        self.refresh_all()
+
+    def clear_zone_no_go(self, zid: int) -> None:
+        """清空某条区划的全部禁行格（只动这一条，不动别的区划）。"""
+        lv = self.level()
+        if lv is None:
+            return
+        info = self.map_info()
+        label = info.zone_label(zid) if info is not None else "c%d" % int(zid)
+        if lv.clear_zone_no_go(zid):
+            self.status("清空了 %s 的禁行区" % label)
+        else:
+            self.status("%s 本来就没有禁行区" % label)
+        self.refresh_all()
+
+    def _toggle_zone_no_go(self, cell: Tuple[int, int],
+                           force_remove: bool = False) -> None:
+        """画布左 / 右键：把一格加进 / 移出**当前涂刷的那条区划**的禁行格。
+
+        四条拒绝（都在**点下去的那一刻**拦，而不是等导出时才报）：
+          · 没在涂刷模式 / 这一格不属于正在涂的那条区划；
+          · 地图外 / 不能站人的格子（山地 / 水域）——禁行区只对「巡逻可能去的格子」有意义；
+          · **区划中心**——守中心的逻辑要往那儿走，用户明确说不会盖住中心；
+          · **整块区划都禁行**——至少留一格能站人的地（否则守将无处巡逻）。
+        """
+        lv = self.level()
+        info = self.map_info()
+        if lv is None or info is None:
+            return
+        zid = int(self.zone_paint_zone)
+        if zid < 0:
+            self.status("先在右侧点某条区划的「涂刷」，再在画布上涂禁行格")
+            return
+        x, y = int(cell[0]), int(cell[1])
+        label = info.zone_label(zid)
+        if not info.tile_exists(x, y):
+            self.status("(%d,%d) 在地图外，不能设为禁行格" % (x, y))
+            return
+        if info.zone_of(x, y) != zid:
+            self.status("(%d,%d) 不属于 %s：禁行格只能画在它自己的区划里"
+                        % (x, y, label))
+            return
+        if not info.walkable_at(x, y):
+            self.status("(%d,%d) 是山地 / 水域（站不了人）：禁行区只对能站的格子有意义"
+                        % (x, y))
+            return
+        center = info.zone_centers.get(zid)
+        if center is not None and tuple(center) == (x, y):
+            self.status("%s 的中心格不能设为禁行区（守中心还要回那里）" % label)
+            return
+        already = lv.has_zone_no_go(zid, x, y)
+        if force_remove and not already:
+            return                          # 本来就不是禁行格：右键什么都不做
+        if not already:
+            # ★ 「整块区划都禁行」按**巡逻候选格**算：能站人 − 中心（中心上立着障碍
+            #   建筑，它是守中心的目标，不是巡逻点）。全禁掉 = 这一区无处巡逻。
+            patrol = info.zone_patrol_tiles(zid)
+            if patrol and len(lv.zone_no_go_tiles(zid)) + 1 >= len(patrol):
+                self.status("不能把 %s 整块都设成禁行区（至少留一格能巡逻的地）" % label)
+                return
+        now = lv.toggle_zone_no_go(zid, x, y, force_remove=force_remove)
+        self.status("(%d,%d)：%s %s 的禁行格（现在 %d 格）"
+                    % (x, y, "加入" if now else "移出", label, lv.zone_no_go_count(zid)))
+        self.refresh_all()
 
     # ==================================================================
     # ★★ 红点页：生成配置（挂在当前红点阵营的 `reddot_ai` 上）

@@ -471,6 +471,14 @@ static func acquire_target(world, cfg: ConfigRes, u: UnitRes, idx: int = -1) -> 
 	return true
 
 
+## ★★ 2026.11：自动选建筑目标的三档优先级（越小越先打）。
+##   · HIGH = 防御建筑 / 大本营；WALL = 墙与认不出的建筑；SKIP = 资源建筑（只能手动打）。
+const BLD_PRIO_HIGH := 0
+const BLD_PRIO_WALL := 1
+const BLD_PRIO_NONE := 2
+const BLD_PRIO_SKIP := 99
+
+
 ## ★★ 建筑空间索引的格子边长（逻辑格）：一格 8×8。
 ##    `aggro_range` 默认 4 ⇒ `reach = ceil(4)+2 = 6 ≤ 8` ⇒ 每个单位最多查 3×3 个格子即可覆盖。
 const BGRID_SHIFT := 3
@@ -503,7 +511,16 @@ static func rebuild_building_grid(world) -> void:
 	world._bgrid_revision = world.building_revision
 
 
-## 警戒半径内最近的敌方建筑（距离按「到本体表面」算，与单位同口径）。
+## 警戒半径内**该优先打的**敌方建筑（距离按「到本体表面」算，与单位同口径）。
+##
+## ★★ 2026.11 目标优先级（用户口径）：
+##   1. **防御建筑 / 大本营**（哨塔 / 警戒塔 / 大本营）—— 最高优先；
+##   2. **墙类建筑**（木墙 / 石墙）—— 只有在附近没有防御建筑 / 大本营时才考虑；
+##   3. **资源建筑**（粮田 / 房屋 / 矿脉）—— **永远不自动索敌**，只能由玩家手动指定；
+##   4. 其它认不出的建筑按墙那一档处理（仍然可打，但不是高价值目标）。
+##
+##   ⚠️ 这条规则同时管「自动索敌」与「行军攻击」：两者都走 `acquire_target()`，
+##      而资源建筑在下面直接被跳过 ⇒ 不点名就永远不打它。
 ##
 ## ★★ 性能（本轮）：原来是「每个空闲单位扫一遍整张 `building_list`」——
 ##    1000 单位待命时实测 **~2.9 ms/帧**（单是这一个函数）。现在改成查**粗网格**
@@ -530,6 +547,7 @@ static func nearest_enemy_building(world, cfg: ConfigRes, u: UnitRes, aggro: flo
 	var c1y: int = (int(u.ty) + reach) >> BGRID_SHIFT
 	var best = null
 	var best_d := INF
+	var best_prio := BLD_PRIO_NONE
 	for cy in range(c0y, c1y + 1):
 		for cx in range(c0x, c1x + 1):
 			var arr: Variant = world._bgrid.get(cy * BGRID_KEY + cx, null)
@@ -543,11 +561,34 @@ static func nearest_enemy_building(world, cfg: ConfigRes, u: UnitRes, aggro: flo
 					continue
 				if FactionRes.same_side_for_attack(b.owner, u.faction):
 					continue
+				var prio := building_auto_priority(cfg, b)
+				if prio == BLD_PRIO_SKIP:
+					continue                       # 资源建筑：只能手动指定
 				var d: float = u.pos.distance_to(b.center()) - b.body_half(cfg)
-				if d <= aggro and d < best_d:
+				if d > aggro:
+					continue
+				# ★ 先比优先级、再比距离：防御建筑/大本营永远排在墙前面。
+				if prio < best_prio or (prio == best_prio and d < best_d):
 					best_d = d
+					best_prio = prio
 					best = b
 	return best
+
+
+## 自动索敌的建筑优先级（越小越先打；`BLD_PRIO_SKIP` = 永不自动打）。
+##
+## ⚠️ 这是**唯一**的归类处：`nearest_enemy_building()` 与以后任何「自动选建筑目标」
+##    都必须读它，别在别处再写一遍 `type == "tower"`。
+static func building_auto_priority(cfg: ConfigRes, b) -> int:
+	if b == null or b.is_invulnerable():
+		return BLD_PRIO_SKIP
+	if b.is_resource_building(cfg):
+		return BLD_PRIO_SKIP
+	if b.is_base() or b.is_defense_building(cfg):
+		return BLD_PRIO_HIGH
+	if b.is_wall_building():
+		return BLD_PRIO_WALL
+	return BLD_PRIO_WALL               # 认不出的建筑按低价值目标处理
 
 
 ## 该不该为「走向 to_pos」重算一次路径？
@@ -915,22 +956,32 @@ static func attack_building(world, cfg: ConfigRes, u: UnitRes, b) -> void:
 	# ⚠️ 拆建筑用的伤害是**共用的** combat.building_damage（40），不是该单位打人的伤害。
 	#    节奏仍沿用该单位自己的 cooldown（敌人 40/1.2s ≈ 33 dps，一堵 300 血的墙约 9.6 秒）
 	#
+	# ★★ 2026.11：**攻城器械对建筑 +200%**（投石车 / 扭力弩炮）——
+	#    倍率来自 `combat.siege_building_damage_mult`（默认 3.0），普通单位仍是 40。
+	#    ⚠️ 这是「拆建筑」这一条路专用的加成，不作用于打单位。
+	#
 	# ⚠️ take_damage 返回的是「**本击是否造成摧毁**」，所以这里只在首次摧毁时广播。
 	#    否则同一帧里几个单位围着同一堵墙，会广播出好几条重复的 building_down。
 	# ★★ 远程单位拆建筑也走投掷物（伤害仍用共用的 building_damage）——
 	#    命中结算与 building_down 广播都在 projectile._impact 里。
 	#    ★ 2026.10.26：`u.siege` = 攻城标签 → 投掷物把它当 `ignore_reduction` 传给建筑，
 	#    于是投石车不受「建筑远程免伤 90%」影响。
+	var dmg: float = cfg.building_damage
+	if u.siege:
+		dmg *= cfg.siege_building_damage_mult
 	world.push_event({"type": "unit_attacked", "unit": u})
 	if u.ranged:
 		ProjectileRes.spawn(world, cfg, String(u.faction), u, u.pos, b, true,
-			cfg.building_damage, 0.0, bool(u.siege))
+			dmg, 0.0, bool(u.siege))
 	else:
-		var destroyed: bool = b.take_damage(cfg, cfg.building_damage, u)
+		var destroyed: bool = b.take_damage(cfg, dmg, u)
 		# ★ 受击事件（视图按阵营过滤）：这一下是否打死都要推，命中本身就该有声音。
 		world.push_event({"type": "building_hit", "building": b, "source": u})
 		if destroyed:
 			world.push_event({"type": "building_down", "building": b, "source": u})
+		# ★★ 2026.11：区内建筑挨打 ⇒ 通知阵地性 AI（攻城单位触发时会让守军出击）。
+		if world.has_method("on_building_attacked"):
+			world.on_building_attacked(b, u)
 
 
 ## 会攻击的建筑（箭塔，以及编辑器里新加的任何 `attackable = true` 的建筑）开火：

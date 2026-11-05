@@ -1322,10 +1322,12 @@ func _try_general_recruit() -> void:
 	#    前线招出来的将领一开始没有兵，由 `_avoid_bad_fights()` 的「未成形队伍」规则
 	#    在遇敌时整队后撤。
 	for zid in _general_recruit_zones():
-		for item in world.zone_recruit_list():
-			if typeof(item) != TYPE_DICTIONARY:
-				continue
-			var kind := String((item as Dictionary).get("kind", ""))
+		# ★★ 2026.11：用**这一方的将领池**而不是全局 9 位 ——
+		#   ai_test 的敌方 AI 会被随机分配一套备战配置（含新四位将领），
+		#   只读 `zone_recruit_list()` 的话那套配置里的新将领永远不会被 AI 尝试。
+		#   没有池时 `general_recruit_roster()` 自动退回全局 9 位，行为与从前一致。
+		for kind_v in world.general_recruit_roster(faction):
+			var kind := String(kind_v)
 			if kind == "":
 				continue
 			if String(world.can_recruit_zone(kind, zid, faction)) != "":

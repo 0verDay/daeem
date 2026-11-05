@@ -477,6 +477,11 @@ var hit_flash_sec_safe: float = 0.18
 ##   站住超过这个时间还没打中任何目标，才自动清空，避免举着光效一直站着。
 var charge_hold_sec: float = 1.0
 var building_damage: float = 40.0
+## ★★ 2026.11：**攻城器械对建筑的伤害倍率**（用户口径「器械伤害对建筑造成伤害有 200% 加成」）。
+##   · 普通单位拆建筑仍用 `building_damage`；
+##   · `unit.siege == true`（投石车 / 扭力弩炮）时乘这个倍率；
+##   · 默认 3.0 = 在基础伤害上 **+200%**（40 → 120）。
+var siege_building_damage_mult: float = 3.0
 ## ★★ 射箭投掷物（远程单位 / 可攻击建筑）的飞行速度与时长夹取（见 logic/projectile.gd）。
 ## ★ 预计算进字段：它们在「每枚投掷物每帧」的路径上，不许用 `cfg.num("combat....")`。
 var projectile_speed: float = 12.0
@@ -848,6 +853,8 @@ func _cache_scalars() -> void:
 	hit_flash_sec_safe = maxf(0.01, hit_flash_sec)
 	charge_hold_sec = maxf(0.0, num("combat.charge_hold_sec", 1.0))
 	building_damage = num("combat.building_damage", 40.0)
+	# ★★ 攻城器械拆建筑倍率：负数 / 0 会让「打建筑反而回血」，夹到 ≥1。
+	siege_building_damage_mult = maxf(1.0, num("combat.siege_building_damage_mult", 3.0))
 	# ★★ 投掷物飞行（见 logic/projectile.gd）。速度必须 > 0，否则时长会除零；
 	#   时长的上下夹取保证「贴脸也看得见飞一下」且「远距离不飞太久」。
 	projectile_speed = maxf(0.1, num("combat.projectile_speed", 12.0))
@@ -3463,6 +3470,11 @@ func _cache_ai() -> void:
 		"alert_troop_radius_tiles": maxf(0.0, num("ai.garrison.alert_troop_radius_tiles", 10.0)),
 		"alert_zone_gap": maxi(0, int(num("ai.garrison.alert_zone_gap", 2.0))),
 		"alert_check_sec": maxf(0.05, num("ai.garrison.alert_check_sec", 0.5)),
+		# ★★ 2026.11：**攻城警报**（区内目标被投石车 / 弩炮打中 ⇒ 整队出击）。
+		#   · `siege_alert_sec`：一次警报最多追多久（秒；超时自动收队，防止跨全图追一个目标）；
+		#   · `siege_alert_repath_tiles`：攻击者挪出这么多格才重下一道行军攻击命令。
+		"siege_alert_sec": maxf(1.0, num("ai.garrison.siege_alert_sec", 20.0)),
+		"siege_alert_repath_tiles": maxf(0.25, num("ai.garrison.siege_alert_repath_tiles", 1.0)),
 	}
 	# ★★ 红点 AI 的函数式时间表与随机规格（本轮新增）。全部**宽容读取**：
 	#   读不出来一律退回默认（'x' / 空表），决不让一份坏数据把这一局卡死。

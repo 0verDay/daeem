@@ -10,7 +10,8 @@
 ##                     "attack_target": {"kind": "zone", "zone": 2},
 ##                     "faction_ai": {"generals": 2, "attack_repeat_sec": 12.0}}],
 ##       "allies":   [["E1", "E2"]]        ← 不写就用地图的
-##       "zones":    [{"id": 4, "owner": "F1"}]   ← 开局的区块归属（覆盖地图的）
+##       "zones":    [{"id": 4, "owner": "F1",
+##                     "no_go": [[3, 4], [4, 4]]}]   ← 归属 + **禁行格**（可省略）
 ##       "start_units":     [{"faction": "E1", "kind": "enemy", "x": 11, "y": 4, "hold": true},
 ##                           {"faction": "p1", "kind": "spearman", "x": 6, "y": 5,
 ##                            "escort_of": 2}]   ← ★ 附属兵：归第 **2** 位将领（1 起）
@@ -25,6 +26,12 @@
 ##   · `factions[].base` 同上；
 ##   · `allies` 写了就用关卡的，**一个字都没写**才用地图的；
 ##   · `zones[].owner` 覆盖地图 `zone_list[].owner` 的开局归属；
+##   · ★★ `zones[].no_go` = 这一区划的**禁行格**（地块坐标数组，可任意形状）。
+##     用户口径：「阵地性 AI 不会巡逻至其区划的禁行区」——所以它**只**影响
+##     巡逻目标点的挑选（`zone._build_route` 那一路），**不**改寻路 / 不挡走路，
+##     也**不**影响追击、守中心、攻城警报这些「有明确目标」的行为。
+##     ⚠️ 地图 JSON **没有**这个字段（它属于关卡层，每关可以不一样）；因此自由对战
+##        （没有关卡）天然没有禁行区，老关卡不写这个字段时行为逐位不变。
 ##   · ★★ `start_units[].escort_of`：**附属兵**（本轮口径）—— 整数、**1 起**、
 ##     与 `general_index` 同一套编号，指向**同阵营**的第几位将领。
 ##     缺省 = 不是附属兵（普通摆放单位，行为与加这个字段之前一字不差）。
@@ -191,6 +198,7 @@ static func from_data(data: Dictionary, cfg: ConfigRes = null, campaign = null,
 	lv.allies_declared = data.has("allies")
 	lv.allies = _read_allies(data.get("allies", null))
 	lv.zone_owners = _read_zone_owners(data.get("zones", null))
+	lv.zone_no_go = _read_zone_no_go(data.get("zones", null))
 	lv.start_units = _read_start_units(data.get("start_units", null))
 	lv.start_buildings = _read_start_buildings(data.get("start_buildings", null))
 	lv.objectives = _read_objectives(data.get("objectives", null))
@@ -257,6 +265,17 @@ var allies_declared: bool = false
 var allies: Array = []
 ## 开局的区块归属覆盖：区划 id → 阵营 id
 var zone_owners: Dictionary = {}
+## ★★ 每个区划的**禁行格**：区划 id → `Array[Vector2i]`（关卡 `zones[].no_go`）。
+##
+## 语义（用户口径）：**阵地性 AI 不会巡逻至其区划的禁行区** —— 守将挑巡逻点时
+## 跳过这些格子；它不挡走路、不影响追击 / 守中心 / 攻城警报。
+## 每块地可以有自己的禁行格（形状任意），所以这里是「区划 id → 格子数组」而不是
+## 一张全局格子表。空 `{}` = 这一关没有禁行区（老关卡 / 自由对战，行为不变）。
+##
+## ⚠️ 与 `zone_owners` 同一条宽容度：区划 id / 格子坐标在这里**不做存在性校验**，
+##    由 `check()` 的 `zone_no_go_*` 那几条报（编辑器导出前会拦）；
+##    运行时 `zone.apply_no_go()` 再挡一道（认不出来的一律忽略，不崩）。
+var zone_no_go: Dictionary = {}
 ## 开局就在场的单位（**追加**在地图 `units` 之后）
 var start_units: Array = []
 ## 开局就在场的建筑（**追加**在地图 `buildings` 之后）
@@ -762,6 +781,7 @@ func check(config_ai: Array = []) -> Array:
 	_ck_players()
 	_ck_allies()
 	_ck_objectives()
+	_ck_zone_no_go()
 	_ck_ai_assign(config_ai)
 	_ck_start_units()
 	_ck_reddot()
@@ -1041,6 +1061,68 @@ func _ck_objectives() -> void:
 				_add(SEV_BLOCK, "fail_zone_is_objective",
 					"额外失败条件的区划不能就是目标区划（重复配置是笔误）")
 				break
+
+
+## ★★ 21) 区划的**禁行格**（`zones[].no_go`）必须落在自己的区划里、不盖中心、不整块禁行。
+##
+## 四条（每条都对应用户口径里的一条硬要求）：
+##   1. **区划得存在**：写了一个地图上没有的区划号 = 换图后的脏数据，读完就没人用；
+##   2. **格子得在那一区里**：禁行格是「某区划自己的禁行区」，写到别人的地上没有意义，
+##      而且会让人误以为「那一格对那个守将生效」（实际不会）；
+##   3. **不能盖住区划中心**：守中心的逻辑要往中心走（`garrison_ai._center_under_attack`），
+##      而禁行区只管巡逻 —— 两者叠在一起就是自相矛盾的配置；
+##   4. **不能整块区划都禁行**：那样这一区的守将一个巡逻点都选不出来（会原地待命），
+##      等于「配了禁行区就把这块地的巡逻关了」——用户明确说不做这种配置。
+##
+## ⚠️ 第 3/4 条在这里是**硬拦截（block）**而不是警告：编辑器画布在点下去的那一刻就会
+##    拦住（见 `tools/campaign_editor/app.py` 的 `_toggle_zone_no_go`），这里是
+##    手改 JSON 时的第二道。运行时的第三道在 `zone.apply_no_go()`（认不出来就忽略）。
+##
+## ⚠️ 地图不存在时整段跳过（第 1 条 `map_missing_field` 已经拦了，不必刷屏）。
+func _ck_zone_no_go() -> void:
+	if map == null or zone_no_go.is_empty():
+		return
+	for zid_v in zone_no_go.keys():
+		var zid := int(zid_v)
+		var tiles: Array = zone_no_go[zid_v]
+		# ★ 只认「地块网格里有没有这一区」——**不**用 `_zone_exists()`（它还要求地图
+		#   给了中心）。老图 / 手写图可以没有中心（`zone._ensure_centers()` 会在装配时补），
+		#   拿「没有中心」当成「区划不存在」会误拦一条完全合理的禁行区配置。
+		if _zone_tile_count(zid) <= 0:
+			_add(SEV_BLOCK, "zone_no_go_zone_missing",
+				"区划 c%d 的禁行区指向一个不存在的区划（换图后的旧数据？）" % zid)
+			continue
+		var center: Variant = map.zones_centers.get(zid, null)
+		# ★ 可能被选成**巡逻点**的格子 = 能站人 − 中心（中心上立着障碍建筑，
+		#   它是「守中心」的目标，不是巡逻点）。「整块都被禁」按这一份算。
+		var patrol := _zone_walkable_set(zid)
+		if center != null:
+			patrol.erase(center as Vector2i)
+		var covered: int = 0
+		for t in tiles:
+			var p: Vector2i = t
+			if not map.tile_exists(p.x, p.y):
+				_add(SEV_BLOCK, "zone_no_go_tile_invalid",
+					"区划 %s 的禁行格 (%d,%d) 在地图外" % [_zone_label(zid), p.x, p.y])
+				continue
+			var owner_zid := _zone_tile_of(p.x, p.y)
+			if owner_zid != zid:
+				_add(SEV_BLOCK, "zone_no_go_tile_not_in_zone",
+					"区划 %s 的禁行格 (%d,%d) 不属于它（属于 %s）"
+					% [_zone_label(zid), p.x, p.y,
+					   _zone_label(owner_zid) if owner_zid >= 0 else "无主地块"])
+			if patrol.has(p):
+				covered += 1
+			if center != null and (center as Vector2i) == p:
+				_add(SEV_BLOCK, "zone_no_go_center",
+					"区划 %s 的禁行区盖住了它的中心 (%d,%d)：守中心还要往那里走"
+					% [_zone_label(zid), p.x, p.y])
+		# ★ 「整块区划都被禁行」按**巡逻候选格**算：山地不算（本来就不能站），
+		#   中心也不算（它是守中心的目标）。全禁掉 = 这一区再也没有巡逻点。
+		if not patrol.is_empty() and covered >= patrol.size():
+			_add(SEV_BLOCK, "zone_no_go_all",
+				("区划 %s 除中心外能站人的 %d 格全被设为禁行区：这一区的守将将无处巡逻"
+				 + "（至少留一格）") % [_zone_label(zid), patrol.size()])
 
 
 ## 4/10/12/13/14/15) AI 指派、进攻目标、摆放里的将领性 AI
@@ -1422,6 +1504,46 @@ func _zone_tile_count(zid: int) -> int:
 	return n
 
 
+## 某一格属于哪个区划（`zones_grid`；地图外 / 不属于任何区划 → -1）。
+##
+## ★ 与 `_zone_tile_count` 同一套宽容读法（字符串行 / 短行都认），两处不要各写一份。
+func _zone_tile_of(x: int, y: int) -> int:
+	if map == null:
+		return -1
+	if y < 0 or y >= map.zones_grid.size():
+		return -1
+	var row: Variant = map.zones_grid[y]
+	if typeof(row) == TYPE_ARRAY:
+		var arr: Array = row
+		if x < 0 or x >= arr.size():
+			return -1
+		return int(arr[x])
+	if typeof(row) == TYPE_STRING:
+		var parts := String(row).replace(",", " ").split(" ", false)
+		if x < 0 or x >= parts.size():
+			return -1
+		return int(parts[x])
+	return -1
+
+
+## 某条区划里**能站人**的格子集合（`{Vector2i: true}`；禁行区那条校验用它）。
+##
+## ★ 与巡逻的「能不能站」不是同一个判据：这里只问**地形**（山地 / 水域挡人），
+##   不问建筑 —— 校验层不想为了「这一格上有没有塔」再走一遍世界状态。
+##   建筑占格由运行时 `_can_stand()` 挡，不影响这里的「整块都被禁」判断方向。
+func _zone_walkable_set(zid: int) -> Dictionary:
+	var out: Dictionary = {}
+	if map == null:
+		return out
+	for y in map.rows:
+		for x in map.cols:
+			if _zone_tile_of(x, y) != zid:
+				continue
+			if map.terrain_walkable(x, y):
+				out[Vector2i(x, y)] = true
+	return out
+
+
 ## 某个区划的**开局归属**（关卡覆盖 → 地图），无主 / 不认识 → ""。
 func _initial_zone_owner(zid: int) -> String:
 	if zone_owners.has(zid):
@@ -1618,6 +1740,48 @@ static func _read_zone_owners(v: Variant) -> Dictionary:
 		if zid < 0:
 			continue
 		out[zid] = String(d.get("owner", "")).strip_edges()
+	return out
+
+
+## `zones[].no_go`：每个区划的**禁行格**（`[[x, y], ...]`）。
+##
+## 宽容读法与 `_read_zone_owners` 一致：
+##   · 不是数组 / 项不是字典 / id < 0 → 跳过那一项；
+##   · `no_go` 缺字段 / 不是数组 → 这个区划**没有**禁行格（不是错误）；
+##   · 单个格子认 `[x, y]` 与 `{"x":…, "y":…}`（与 `_read_point` 同一套）；
+##     认不出来（`_read_point` 返回 (-1,-1)）→ 跳过那一格；
+##   · **同一格写两遍只算一次**（去重）：运行时按「格子集合」用，重复计数会让
+##     「整块区划都被禁行」那条校验误判。
+##
+## ⚠️ 这里**不按地图裁剪**：地图可能不存在（`map == null`），而「这格属于哪个区划」
+##    要等地图载入后才问得出来 —— 那件事在 `_ck_zone_no_go()` 与 `zone.apply_no_go()`
+##    里做。读入层只保证「形状对、能反复读写」。
+static func _read_zone_no_go(v: Variant) -> Dictionary:
+	var out: Dictionary = {}
+	if typeof(v) != TYPE_ARRAY:
+		return out
+	for item in (v as Array):
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		var d: Dictionary = item
+		var zid := int(d.get("id", -1))
+		if zid < 0:
+			continue
+		var raw: Variant = d.get("no_go", null)
+		if typeof(raw) != TYPE_ARRAY:
+			continue
+		var tiles: Array = []
+		var seen: Dictionary = {}
+		for t in (raw as Array):
+			var p := _read_point(t)
+			if p.x < 0 or p.y < 0:
+				continue
+			if seen.has(p):
+				continue
+			seen[p] = true
+			tiles.append(p)
+		if not tiles.is_empty():
+			out[zid] = tiles
 	return out
 
 

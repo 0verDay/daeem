@@ -21,9 +21,6 @@
     {
       "id": "p1",
       "ai": "commander",
-      "commander_ai": {
-        "difficulty": "hard"
-      },
       "base": [
         28,
         30
@@ -37,9 +34,6 @@
     {
       "id": "p2",
       "ai": "commander",
-      "commander_ai": {
-        "difficulty": "hard"
-      },
       "base": [
         8,
         1

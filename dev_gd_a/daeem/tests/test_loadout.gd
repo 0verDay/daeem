@@ -33,6 +33,7 @@ func _cases() -> void:
 	_test_new_generals(cfg)
 	_test_quota_fifo(cfg)
 	_test_payload(cfg)
+	_test_random_payload(cfg)
 	_test_apply_to_level(cfg)
 	_test_coop_recruit_pool(cfg)
 	_test_aura_traits(cfg)
@@ -213,6 +214,34 @@ func _test_payload(cfg) -> void:
 	eq(String(pool[0]), "general_1", "…第一位是一阶将领 1")
 	eq(String(pool[8]), "general_9", "…第九位是三阶将领 9")
 	ok(not pool.has("general_0"), "★ 零阶不进九宫格")
+
+## ★★ 2026.11：ai_test 敌方 AI 的「随机一套备战配置」。
+func _test_random_payload(cfg) -> void:
+	for fid in LoadoutRes.FACTIONS:
+		var before := LoadoutRes.selected(fid)
+		var a: Dictionary = LoadoutRes.random_payload_for(fid, cfg, 20261105)
+		var b: Dictionary = LoadoutRes.random_payload_for(fid, cfg, 20261105)
+		eq(a, b, "★★ %s：同一 seed 的随机配置可复现" % fid)
+		eq(String(a.get("clan", "")), fid, "★ %s：派系写对" % fid)
+		var starter := String(a.get("starter", ""))
+		var si := ConfigRes.general_index_of(starter)
+		ok(si >= 0 and cfg.general_in_faction(si, fid), "★ %s：零阶将领属于本派系" % fid)
+		eq(cfg.general_tier_at(si), 0, "★ %s：starter 是零阶" % fid)
+		var pool: Array = a.get("pool", [])
+		eq(pool.size(), 9, "★★ %s：随机池 = 9 位" % fid)
+		var per_tier: Dictionary = {1: 0, 2: 0, 3: 0}
+		for k in pool:
+			var idx := ConfigRes.general_index_of(String(k))
+			ok(idx >= 0 and cfg.general_in_faction(idx, fid),
+				"★ %s：池里 %s 属于本派系" % [fid, String(k)])
+			if idx >= 0:
+				var t: int = cfg.general_tier_at(idx)
+				per_tier[t] = int(per_tier.get(t, 0)) + 1
+		for t2 in [1, 2, 3]:
+			eq(int(per_tier.get(t2, 0)), 3, "★★ %s：%d 阶随机 3 位" % [fid, t2])
+		# 不污染玩家自己的备战选择。
+		eq(LoadoutRes.selected(fid), before, "★ %s：随机配置不改玩家 _sel" % fid)
+
 
 # ------------------------------------------------------------------
 # 4) 写进关卡：派系 + 开局将领

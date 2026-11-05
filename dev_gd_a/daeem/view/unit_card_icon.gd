@@ -13,7 +13,7 @@
 ##
 ## ① 兵种：`assets/ui/card_icon/<原画文件名>.png` 那 15 张**离线烘**的线稿蒙版
 ##   （tools/bake_unit_card_icon.py 的 `--style etch`）。命名 = **原画文件名**，
-##   所以多个兵种复用同一张原画时（dy_scout→rider、dg_champion→knight …）天然共用一张。
+##   所以多个兵种复用同一张原画时（dg_champion→knight、dy_ranger→horse_archer …）天然共用一张。
 ##   · RGB = **纯白**，A = **线的覆盖率** ⇒ 运行时 `ink`（主题金）乘上去就是纯金线；
 ##   · 运行时只做 `draw_texture_rect(tex, r, false, ink)` —— 换皮肤不用重烘，
 ##     锁灰档与悬停压金翻面也自动继承（见 `ink()`）。
@@ -116,7 +116,6 @@ const ROLE_BY_TYPE := {
 	# 王朝
 	"dy_spear_guard": ROLE_SPEAR,
 	"dy_archer_guard": ROLE_BOW,
-	"dy_scout": ROLE_HORSE,
 	"dy_ranger": ROLE_HORSE_BOW,
 	"dy_royal_sword": ROLE_SWORD_SHIELD,
 	"dy_royal_archer": ROLE_BOW,

@@ -1206,14 +1206,14 @@
         "    帝国军向高质量部队靠」。现在的分工：",
         "      · **王朝 = 便宜 / 脆 / 克制狠 / 补得快**：单位血量和护甲都压到原生以下，价格也压到原生以下，",
         "        但 `attack_vs_class` 的反制倍率拉到原生以上（长枪兵对骑兵 0.70、弓手对步兵 0.35/0.40、",
-        "        斥候对步兵 0.35）；协防军一次出 2 人、读条 17 秒（≈8.5 秒/兵）⇒ 靠换兵和克制打，不靠单体强度。",
+        "        游侠对步兵 0.35）；协防军一次出 2 人、读条 17 秒（≈8.5 秒/兵）⇒ 靠换兵和克制打，不靠单体强度。",
         "      · **帝国 = 少而精**：血 / 护甲 / 攻击全部高于原生同级（披甲剑士 230 血、铁臂弓手 24 攻、",
         "        冠军骑士 390 血 34 攻），单价维持低位但每兵价值高，靠质量和小规模决战。",
         "      · 「+」类特性（远程免伤 / 近战免伤 / 特攻 / 稳定）仍然是在**该兵种自己的基准**上叠加，",
         "        只是基准不再等于原生兵种。",
         "  · ★ 「冲锋」已实装（被动动量，见 unit.types.<id>.charge）：",
         "    战车 = 范围伤害 + 范围击退/眩晕；冠军骑士 = 更高的额外伤害 + 单体击退；",
-        "    骑手 / 斥候 / 御林军骑兵 = 中等额外伤害 + 单体击退。",
+        "    骑手 / 游侠 / 御林军骑兵 = 中等额外伤害 + 单体击退。",
         "  · ★ 粮车两个派系共用原生 `grain_cart`（需求里三条描述与原生逐字一致），不另开 id。"
       ],
 
@@ -1267,39 +1267,6 @@
         "upkeep_food": 0.1,
         "traits": {
           "attack_vs_class": { "infantry": 0.25 }
-        }
-      },
-      "dy_scout": {
-        "name": "斥候",
-        "icon": "斥",
-        "sprite": "res://assets/test_units/Rider/rider.png",
-        "sprite_tint": "art",
-        "class": "cavalry",
-        "ranged": false,
-        "hp_max": 100,
-        "armor": 0,
-        "speed": 1.5,
-        "damage": 12,
-        "range": 1,
-        "cooldown_sec": 0.9,
-        "radius_factor": 0.105,
-        "vision": 12,
-        "upkeep_food": 0.18,
-        "traits": {
-          "attack_vs_class": { "infantry": 0.35 },
-          "ranged_reduction": 0.25
-        },
-        "charge": {
-          "min_distance": 3.0,
-          "max_distance": 8.0,
-          "turn_max_deg": 40.0,
-          "speed_bonus": 0.20,
-          "damage_bonus": 0.35,
-          "knock_distance": 0.30,
-          "knock_stun_sec": 0.15,
-          "splash_radius": 0.0,
-          "splash_damage_ratio": 0.0,
-          "cooldown_sec": 6.0
         }
       },
       "dy_ranger": {
@@ -1577,6 +1544,7 @@
         "sprite_tint": "art",
         "class": "siege",
         "ranged": true,
+        "siege": true,
         "hp_max": 180,
         "armor": 1,
         "speed": 0.4,
@@ -2027,7 +1995,6 @@
         "grain_cart": 3, "catapult": 3,
         "dy_spear_guard": 0, "dy_royal_sword": 0, "dy_royal_cavalry": 0,
         "dy_archer_guard": 1, "dy_ranger": 1, "dy_royal_archer": 1,
-        "dy_scout": 2,
         "dy_chariot": 3, "dy_catapult": 3,
         "dg_swordsman": 0, "dg_champion": 0,
         "dg_archer": 1,
@@ -2142,6 +2109,12 @@
     "chase_direct_range": 8.0,
     "flash_sec": 0.22,
     "building_damage": 40,
+    "_siege_building_comment": [
+      "★★ 2026.11：攻城器械（投石车 / 扭力弩炮）对**建筑**的伤害倍率。",
+      "   普通单位拆建筑仍用 building_damage（40）；器械乘这一项 = 40 × 3 = 120。",
+      "   用户口径：「器械伤害对建筑造成伤害有 200% 加成」⇒ 3.0 = 基础 + 200%。"
+    ],
+    "siege_building_damage_mult": 3.0,
     "_projectile_comment": [
       "★★ 射箭投掷物的飞行参数（本轮新增，见 logic/projectile.gd）。",
       "   · projectile_speed = 飞行速度（格/秒）—— 飞行时长 = 距离 / 速度。",
@@ -2894,8 +2867,7 @@
         "icon": "王",
         "ai_composition": [
           { "type": "dy_guard", "weight": 0.38 },
-          { "type": "dy_ranger", "weight": 0.2 },
-          { "type": "dy_scout", "weight": 0.15 },
+          { "type": "dy_ranger", "weight": 0.35 },
           { "type": "dy_royal", "weight": 0.15 },
           { "type": "dy_chariot", "weight": 0.06 },
           { "type": "dy_catapult", "weight": 0.04 },
@@ -2916,9 +2888,8 @@
               "composition": [
                 { "type": "dy_guard", "weight": 0.4 },
                 { "type": "dy_royal", "weight": 0.26 },
-                { "type": "dy_ranger", "weight": 0.1 },
-                { "type": "dy_catapult", "weight": 0.1 },
-                { "type": "dy_scout", "weight": 0.06 },
+                { "type": "dy_ranger", "weight": 0.13 },
+                { "type": "dy_catapult", "weight": 0.13 },
                 { "type": "grain_cart", "weight": 0.08 }
               ]
             },
@@ -2926,9 +2897,8 @@
               "composition": [
                 { "type": "dy_guard", "weight": 0.3 },
                 { "type": "dy_royal", "weight": 0.28 },
-                { "type": "dy_ranger", "weight": 0.14 },
-                { "type": "dy_catapult", "weight": 0.16 },
-                { "type": "dy_scout", "weight": 0.04 },
+                { "type": "dy_ranger", "weight": 0.16 },
+                { "type": "dy_catapult", "weight": 0.18 },
                 { "type": "grain_cart", "weight": 0.08 }
               ],
               "standoff_tiles": 4,
@@ -2936,9 +2906,8 @@
             },
             "guerrilla": {
               "composition": [
-                { "type": "dy_scout", "weight": 0.5 },
-                { "type": "dy_ranger", "weight": 0.28 },
-                { "type": "dy_guard", "weight": 0.22 }
+                { "type": "dy_ranger", "weight": 0.58 },
+                { "type": "dy_guard", "weight": 0.42 }
               ],
               "max_enemy_strength": 2.4,
               "avoid_ratio": 0.95
@@ -3000,15 +2969,6 @@
               { "type": "dy_spear_guard" },
               { "type": "dy_archer_guard" }
             ]
-          },
-          {
-            "kind": "dy_scout",
-            "tier": 2,
-            "label": "斥候",
-            "short": "斥",
-            "desc": "在选中将领所在格的中心生成 1 名斥候（近战骑兵）。★ 高级单位：移动速度快（1.5 格/秒）、视野 +3 格；对步兵伤害 +35%、远程减伤 25%",
-            "population_cost": 1,
-            "cost": { "food": 100, "gold": 30 }
           },
           {
             "kind": "grain_cart",
@@ -4635,7 +4595,7 @@
           "★★ 2026.11 高阶兵倾斜（用户口径）：低阶兵累计花掉 trigger_low_spend 之后，",
           "   只要「高阶:低阶」的花费比还没到 elite_to_low，抽兵时就只在高阶里挑。",
           "  · elite_tier_min：tier ≥ 这个数算「高阶兵」（3 ⇒ 御林军 / 战车 / 投石车 /",
-          "    弩炮 / 冠军骑士）。⚠️ tier-2 的斥候 / 游侠 / 骑手算**低阶** —— 它们只要",
+          "    弩炮 / 冠军骑士）。⚠️ tier-2 的游侠 / 骑手算**低阶** —— 它们只要",
           "    100 粮，算进高阶会让比例轻易达标，结果永远不买三阶兵（see_ai 实测踩到）；",
           "  · trigger_low_spend：低阶累计花费（粮 + 2×金）到这个数才开始倾斜；",
           "  · elite_to_low：目标比例，0.5 = 1:2（高阶花 1，低阶花 2）；",
@@ -4818,7 +4778,15 @@
       "min_retinue": 3,
       "patrol_points": 3,
       "patrol_spread_tiles": 3,
-      "patrol_retinue_leash_tiles": 3
+      "patrol_retinue_leash_tiles": 3,
+      "_siege_alert_comment": [
+        "★★ 2026.11：区划内的建筑 / 单位被攻城单位（投石车 / 扭力弩炮）打中时，",
+        "  该区划的阵地性 AI 会**整队行军攻击**到攻击者处（允许离开区划）。",
+        "  · siege_alert_sec：一次警报最多追这么久（秒），超时收队回巡逻；",
+        "  · siege_alert_repath_tiles：攻击者挪出这么多格才重下一道命令（避免每帧重算路径）。"
+      ],
+      "siege_alert_sec": 20.0,
+      "siege_alert_repath_tiles": 1.0
     },
     "reddot": {
       "_comment": [

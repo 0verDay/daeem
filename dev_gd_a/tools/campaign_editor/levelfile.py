@@ -179,7 +179,11 @@ def campaign_payload(model: CampaignModel) -> dict:
 #:   `units[].escort_of` 指的是**第几位将领**（按将领自己的 `general_index`），
 #:   不是「数组里的第几项」，所以排序之后语义不变。
 UNORDERED_KEYS: Tuple[str, ...] = ("zones", "factions", "start_units", "start_buildings",
-                                   "fail_conditions", "briefing")
+                                   "fail_conditions", "briefing",
+                                   # ★★ `zones[].no_go` = 禁行格的**集合**：顺序没有任何语义
+                                   #   （编辑器导出时按 (y,x) 排序，手写 JSON 可能乱序），
+                                   #   所以「逐字段一致」也不该把顺序算成差异。
+                                   "no_go")
 
 
 def canonical_payload(value: Any, key: str = "") -> Any:

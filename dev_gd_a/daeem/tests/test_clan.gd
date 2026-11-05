@@ -2,7 +2,7 @@
 ##
 ## 这一套验的是「派系」这条新玩法链路（与 `test_alliance.gd` 那种「阵营关系」不同）：
 ##   1. **config**：派系表能不能读出来；原生**沿用顶层 recruit.list**（不抄两份数据）；
-##      王朝 7 条 / 帝国 6 条；组合条目的 spawn 形状；
+##      王朝 6 条 / 帝国 6 条；组合条目的 spawn 形状；
 ##   2. **新兵种数值**：远近免伤 / 稳定（免疫击退）/ 击退 / 直线穿透 / 弹道形状，
 ##      以及「同素材沿用原生数值 + 叠加需求特性」那条口径的两个代表；
 ##   3. **关卡 → 世界**：`factions[].clan` 落到 `world.clan_of()`（see_ai 那一关
@@ -89,7 +89,7 @@ func _test_config_table(cfg) -> void:
 	# ★ 王朝 / 帝国是**自己的表**，与原生不同。
 	var dy: Array = cfg.clan_recruit_list("dynasty")
 	var dg: Array = cfg.clan_recruit_list("empire")
-	eq(dy.size(), 7, "★ 王朝有 7 条招募条目")
+	eq(dy.size(), 6, "★ 王朝有 6 条招募条目")
 	eq(dg.size(), 6, "★ 帝国有 6 条招募条目")
 	ok(dy != native_list, "王朝的表不是原生那张（各自独立）")
 
@@ -113,14 +113,9 @@ func _test_config_table(cfg) -> void:
 # 2) 新兵种的数值 / 特性
 # ------------------------------------------------------------------
 func _test_new_unit_types(cfg) -> void:
-	# 「同素材沿用原生数值」的两个代表：斥候 = 骑手数值 + 移速 / 视野。
-	ok(cfg.unit_hp_of("dy_scout") < cfg.unit_hp_of(UnitRes.UNIT_TYPE_RIDER),
-		"★★ 斥候比骑手血更少（2026.11：王朝改走「便宜 / 脆 / 轮换勤」，不再沿用原生血量）")
-	ok(cfg.unit_speed_of("dy_scout") > cfg.unit_speed_of(UnitRes.UNIT_TYPE_RIDER),
-		"★ 斥候比骑手快（移动速度+）")
-	ok(cfg.unit_vision_of("dy_scout") > cfg.unit_vision_of(UnitRes.UNIT_TYPE_RIDER),
-		"★ 斥候视野更大（视野范围+）")
-	eq(cfg.unit_class_of("dy_scout"), ConfigRes.CLASS_CAVALRY, "斥候是骑兵")
+	# 王朝游侠：远程骑兵，射程 / 视野都要有。
+	eq(cfg.unit_class_of("dy_ranger"), ConfigRes.CLASS_CAVALRY, "游侠是骑兵")
+	ok(cfg.unit_vision_of("dy_ranger") > 0.0, "游侠有视野")
 
 	# 冠军骑士：骑士的护甲 / 攻击，但**血更少**、更快。
 	near(cfg.unit_armor_of("dg_champion"), cfg.unit_armor_of(UnitRes.UNIT_TYPE_KNIGHT), 1e-9,
@@ -247,15 +242,15 @@ func _test_rosters(cfg) -> void:
 		"★ 粮车两个派系都能招（共用原生兵种）")
 
 	# 表长度 / 首项：与 config 一致（读取路径没有偷偷换表）。
-	eq(w.recruit_list("p1").size(), 7, "world.recruit_list(p1) = 王朝的 7 条")
+	eq(w.recruit_list("p1").size(), 6, "world.recruit_list(p1) = 王朝的 6 条")
 	eq(w.recruit_list("p2").size(), 6, "world.recruit_list(p2) = 帝国的 6 条")
 
 	# tier / cost / 人口都按派系查。
 	eq(w.recruit_tier("dy_royal", "p1"), 3, "御林军在三本（第 3 行）")
 	near(float(w.recruit_population_cost("dy_guard", "p1")), 2.0, 1e-9,
 		"协防军的人口按整包算")
-	var c1: Dictionary = w.recruit_cost("dy_scout", "p1")
-	ok(float(c1.get("gold", 0.0)) > 0.0, "斥候要黄金（高级单位）")
+	var c1: Dictionary = w.recruit_cost("dy_ranger", "p1")
+	ok(float(c1.get("gold", 0.0)) > 0.0, "游侠要黄金（高级单位）")
 	# 区划招将表是**全局**的（将领不属于任何派系）。
 	ok(w.is_zone_recruitable("general_1"), "★ 区划招将不受派系影响")
 

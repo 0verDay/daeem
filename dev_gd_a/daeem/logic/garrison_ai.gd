@@ -205,6 +205,17 @@ static func update(world, cfg: ConfigRes, dt: float) -> void:
 			u.returning_home_sec = 0.0
 		var in_combat: bool = u.target != null or u.target_building != null
 
+		# ---- 0.0) ★★ 攻城警报（2026.11）：区内目标被投石车 / 弩炮打中 ⇒ 整队出击 ----
+		#
+		# 用户口径：「区划内的建筑 / 单位被攻城单位攻击后，阵地性 AI 会主动出击
+		# 行军攻击至该攻城单位处」。
+		#
+		# ⚠️ 放在**追击状态机之前**：这一支的优先级高于巡逻 / 追击 / 招兵，
+		#    而且它会清掉当前交战对象、改下「行军攻击到攻击者」的整队命令。
+		#    已经锁上的那个攻城单位交给 combat.gd 正常打（这里只跳过 AI 指挥）。
+		if _tick_siege_alert(world, cfg, u, retinues):
+			continue
+
 		# ---- 0) ★★ 警戒唤醒（2026.11）：没有威胁 ⇒ 第 5 步（巡逻）不跑，其余照旧 ----
 		#
 		# ⚠️ 放在追击状态机**之前**：被唤醒 / 睡着只影响「要不要去巡逻」，
@@ -474,6 +485,81 @@ static func _garrison_zone(world, u) -> Variant:
 	if u.garrison_zone_id < 0 or world.zones == null:
 		return null
 	return world.zone_by_id(u.garrison_zone_id)
+
+
+## ★★ 2026.11：登记一次「攻城警报」——把某区划内的所有巡逻队长记进 `world`。
+##
+## 由 `world._alert_garrison_siege()` 在建筑 / 单位被**攻城单位**打中时调用。
+## 只登记念头、不直接下命令：真正下达命令的地方是 `_tick_siege_alert()`，
+## 这样「谁有权指挥守军」仍然只有 garrison_ai 一处（与巡逻 / 返程同一条教训）。
+##
+## @param zid 被打目标所在的区划 id（建筑读 `zone_id`，单位读当前所在格）
+## @param attacker 攻城单位（必须带 `siege` 标签；调用方已筛过）
+static func alert_siege_attack(world, cfg: ConfigRes, zid: int, attacker) -> void:
+	if world == null or attacker == null or not is_instance_valid(attacker):
+		return
+	if not bool(attacker.alive) or not attacker.is_attackable():
+		return
+	if not bool(attacker.get("siege")):
+		return
+	var now := float(world.time)
+	var af := String(attacker.faction)
+	for u in world.units:
+		if u == null or not u.alive or u.is_downed() or u.neutralized:
+			continue
+		if int(u.garrison_zone_id) != zid:
+			continue
+		if FactionRes.same_side_for_attack(String(u.faction), af):
+			continue                       # 打的是自己人：这不是敌袭
+		if not is_patrol_leader(world, u):
+			continue                       # 附属兵跟着队长走，不单独记警报
+		world.garrison_siege_alerts[String(u.id)] = {
+			"target": attacker,
+			"started_at": now,
+			"pos": attacker.pos,
+		}
+
+
+## 这一帧要不要执行「攻城警报」：整队行军攻击到攻城单位处。
+##
+## @return true = 已经接管这一帧（调用方 `continue`，不再巡逻 / 招兵 / 守中心）
+##
+## 终止条件（任一条成立就收队）：
+##   · 攻击者死亡 / 倒地 / 离场；
+##   · 超过 `ai.garrison.siege_alert_sec`（防止追一个风筝目标追到地图另一头）。
+## ★ 已经和**这个**攻城单位交战时**返回 true 但不重下命令**：交给 combat.gd 打，
+##   否则每帧重下命令会把路径一帧一帧重置（与巡逻 / 返程同一条教训）。
+static func _tick_siege_alert(world, cfg: ConfigRes, u, retinues: Dictionary) -> bool:
+	var lid := String(u.id)
+	var raw: Variant = world.garrison_siege_alerts.get(lid, null)
+	if typeof(raw) != TYPE_DICTIONARY:
+		return false
+	var a: Dictionary = raw
+	var t = a.get("target", null)
+	if t == null or not is_instance_valid(t) or not bool(t.alive) \
+			or not t.is_attackable():
+		world.garrison_siege_alerts.erase(lid)
+		return false
+	var gc: Dictionary = cfg.ai_garrison_cfg()
+	var timeout: float = float(gc.get("siege_alert_sec", 20.0))
+	if float(world.time) - float(a.get("started_at", world.time)) > timeout:
+		world.garrison_siege_alerts.erase(lid)
+		return false
+	# ★ 已经锁上这个攻城单位：交给 combat.gd（它会追击 / 开火），AI 这一帧不插手。
+	if u.target == t:
+		a["pos"] = t.pos
+		return true
+	# ★ 正在打别人：攻城单位优先。清掉旧交战，改下整队行军攻击。
+	if u.target != null or u.target_building != null:
+		u.drop_engagement()
+		u.clear_chase()
+	var repath: float = float(gc.get("siege_alert_repath_tiles", 1.0))
+	var already: bool = bool(u.has_attack_move) and bool(u.moving) \
+		and (u.attack_move_goal as Vector2).distance_to(t.pos) <= repath
+	if not already:
+		_patrol_group(world, cfg, u, t.pos, retinues)
+	a["pos"] = t.pos
+	return true
 
 
 ## 这个区划的中心是不是**正被敌对势力占领**（见 `update()` 第 3.5 步）。
@@ -855,6 +941,16 @@ static func _ensure_route(world, cfg: ConfigRes, u, z, zone_count: int) -> void:
 ##   2. **段内随机**：在自己那一段里用**由单位 id 派生的固定种子**随机挑锚点，再在
 ##      `patrol_spread_tiles` 格内挑其余的点 —— 于是路线看起来是乱的、不是整齐划一。
 ##
+## ★★ 2026.11：**先剔掉禁行格**（关卡 `zones[].no_go`，用户需求「阵地性 AI 不会巡逻至
+##    其区划的禁行区」）。判据只有一条：`self.garrison_zone_id` 那条区划的禁行格
+##    （见 `zone.is_no_go`）—— 别的区划的禁行格与这位守将无关。
+##    ⚠️ 必须在**切扇区之前**剔：先切再剔的话，某个扇区可能一格不剩（那位守将会
+##       退回「整个区划」再挑 —— 于是又挑到禁行格里），而且扇区大小会随禁行区
+##       凭空变窄，同一区划的几个人分布会跳。
+##    ⚠️ 剔完一格不剩（手改数据把整块区划都禁了）→ 返回空数组：
+##       调用方退回 `_patrol_fallback_tile()`，它也不会给出禁行格里的点，
+##       最终就是「这位守将原地待命」。编辑器与 `level._ck_zone_no_go()` 都会拦这种配置。
+##
 ## ⚠️ 一格都挑不出来（扇区里全是山地 / 建筑）→ 退回**整个区划**再挑一次；
 ##    再挑不出来就返回空数组，调用方退回老口径（区划中心 / 大本营）。
 static func _build_route(world, cfg: ConfigRes, u, z, zone_count: int) -> Array[Vector2i]:
@@ -864,19 +960,41 @@ static func _build_route(world, cfg: ConfigRes, u, z, zone_count: int) -> Array[
 	var tiles: Array = (z as Dictionary).get("tiles", [])
 	if tiles.is_empty():
 		return out
+	# ★★ 禁行格先剔掉（见上；这一步在切扇区之前）。
+	var pool: Array = _patrol_pool(world, u, z, tiles)
+	if pool.is_empty():
+		return out
 	var rng := RandomNumberGenerator.new()
 	rng.seed = _route_seed(String(u.id), String(u.faction))
 	var want: int = maxi(1, int(cfg.ai_garrison_cfg().get("patrol_points", 3)))
 	var spread: float = maxf(1.0, float(cfg.ai_garrison_cfg().get("patrol_spread_tiles", 3.0)))
 
 	# 1) 先在自己那个扇区里挑（扇区序号由 **id 稳定派生**，见下）
-	var slice: Array = _sector_tiles(tiles, zone_count, _sector_of(u, zone_count))
+	var slice: Array = _sector_tiles(pool, zone_count, _sector_of(u, zone_count))
 	if not slice.is_empty():
 		out = _pick_points(world, cfg, u, slice, rng, want, spread)
 	# 2) 扇区里挑不出来（全是障碍 / 扇区太小）→ 退回整个区划挑一次，
 	#    免得那位守将彻底不巡逻（它是「有归属区划但不走」的静默失败）
 	if out.is_empty():
-		out = _pick_points(world, cfg, u, tiles, rng, want, spread)
+		out = _pick_points(world, cfg, u, pool, rng, want, spread)
+	return out
+
+
+## ★★ 「这位守将**可以去**的巡逻候选格」= 自己区划的地块 − 禁行格。
+##
+## 只剔**自己那条区划**的禁行格（禁行区不跨区生效）；没有配禁行区的关卡
+## （`no_go_by_id` 为空）直接把原数组还回去 —— 不分配、不改老行为。
+## ⚠️ 返回的是**新数组**（调用方会切片 / 遍历，不能让它改到区划自己的 `tiles`）。
+static func _patrol_pool(world, u, z, tiles: Array) -> Array:
+	if world == null or world.zones == null or world.zones.no_go_by_id.is_empty():
+		return tiles
+	var zid := int((z as Dictionary).get("id", int(u.garrison_zone_id)))
+	var out: Array = []
+	for t in tiles:
+		var p: Vector2i = t
+		if world.zones.is_no_go(zid, p.x, p.y):
+			continue
+		out.append(p)
 	return out
 
 
@@ -988,15 +1106,34 @@ static func _phase01(u) -> float:
 
 
 ## 路线算不出来时的兜底：老口径 —— 区划中心，其次区划第一格，最后大本营。
+##
+## ★★ 2026.11：兜底**也不能落在禁行格里**（「不会巡逻至禁行区」是硬约束）：
+##   · 中心没被禁（编辑器 / 校验保证不盖中心）→ 照旧用中心；
+##   · 中心被禁（手改坏数据）→ 找这一区**第一个不在禁行区**的格子；
+##   · 整条区划都被禁 → 返回 `(-1, -1)`：调用方 `_patrol_leader()` 会当成
+##     「这一帧没有可去的点」直接收队（守将原地待命），而不是走进去。
+##   ⚠️ 最后那条「大本营」只对**没有归属区划**的单位生效（老口径），
+##      不属于任何禁行区，所以不用过滤。
 static func _patrol_fallback_tile(world, u, z) -> Vector2i:
 	if z != null:
+		var zid := int((z as Dictionary).get("id", int(u.garrison_zone_id)))
 		var c: Variant = (z as Dictionary).get("center", null)
-		if c != null:
+		if c != null and not _no_go_at(world, zid, c):
 			return c
 		var tiles: Array = (z as Dictionary).get("tiles", [])
-		if not tiles.is_empty():
-			return tiles[0]
+		for t in tiles:
+			var tile: Vector2i = t
+			if not _no_go_at(world, zid, tile):
+				return tile
+		return Vector2i(-1, -1)
 	return world.home_base_of(u.faction)
+
+
+## 这一格是不是该区划的禁行格（`world` 还没建好区划时一律 false）。
+static func _no_go_at(world, zid: int, t: Vector2i) -> bool:
+	if world == null or world.zones == null:
+		return false
+	return world.zones.is_no_go(zid, t.x, t.y)
 
 
 ## 脱战满员检查 + 无消耗招兵。

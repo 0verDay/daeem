@@ -5,6 +5,8 @@
 ##   · 名额按**派系各算一套**（王朝 / 帝国互不影响）；当前选中的派系 = 出战派系；
 ##   · 某一阶已满时再选一位 ⇒ **顶掉该阶最早选中的那一位**（FIFO）；
 ##   · 合作模式里：零阶那位 = 开局将领，一 / 二 / 三阶选中的 9 位 = 区划招募九宫格；
+##   · ★★ 2026.11：主菜单 ai_test 也读这一份 —— 玩家席位用选中的派系 / 将领，
+##     敌方从王朝 / 帝国独立随机，并用 `random_payload_for()` 抽一套对手配置；
 ##   · 只在本次运行内保存（项目没有存档系统，关掉游戏回到默认）。
 ##
 ## ★★ 为什么是 static var 而不是 autoload：
@@ -199,6 +201,55 @@ static func payload_for(faction_id: String, cfg) -> Dictionary:
 		"starter": starter_kind(faction_id, cfg),
 		"pool": recruit_kinds(faction_id, cfg),
 	}
+
+
+## ★★ 2026.11：为某一派系**随机抽一套出战配置**（ai_test 的敌方 AI 用）。
+##
+## 形状与 `payload_for()` 完全一致，因此可以直接走 `apply_to_level()`。
+## 规则与备战页的默认名额相同：零阶 1 位、一 / 二 / 三阶各最多 3 位；
+## 只从**这个派系能用的将领**里抽（`general_in_faction`），抽中哪几位完全随机。
+##
+## @param seed_value ≥0 时固定随机种子（测试 / 复现用）；<0 = 每次重新播种。
+## ★ 为什么单独一个纯函数：它**不改** `_sel`（玩家自己的备战选择），
+##   否则开一局 ai_test 会把玩家在备战页勾好的阵容洗掉。
+static func random_payload_for(faction_id: String, cfg, seed_value: int = -1) -> Dictionary:
+	var fid := faction_id if FACTIONS.has(faction_id) else DEFAULT_FACTION
+	if cfg == null:
+		return {"clan": fid, "starter": "", "pool": []}
+	var rng := RandomNumberGenerator.new()
+	if seed_value >= 0:
+		rng.seed = seed_value
+	else:
+		rng.randomize()
+	var starters: Array = []
+	var by_tier: Dictionary = {1: [], 2: [], 3: []}
+	for idx in cfg.general_count():
+		if not cfg.general_in_faction(idx, fid):
+			continue
+		var t: int = cfg.general_tier_at(idx)
+		if t == 0:
+			starters.append(idx)
+		elif by_tier.has(t):
+			(by_tier[t] as Array).append(idx)
+	_shuffle(starters, rng)
+	var starter := kind_of(int(starters[0])) if not starters.is_empty() else ""
+	var pool: Array = []
+	for t2 in [1, 2, 3]:
+		var cand: Array = by_tier[t2]
+		_shuffle(cand, rng)
+		var take: int = mini(quota(t2), cand.size())
+		for i in take:
+			pool.append(kind_of(int(cand[i])))
+	return {"clan": fid, "starter": starter, "pool": pool}
+
+
+## 就地洗牌（Fisher–Yates）—— 用传进来的 rng，保证 seed 能复现。
+static func _shuffle(arr: Array, rng: RandomNumberGenerator) -> void:
+	for i in range(arr.size() - 1, 0, -1):
+		var j: int = rng.randi_range(0, i)
+		var tmp: Variant = arr[i]
+		arr[i] = arr[j]
+		arr[j] = tmp
 
 
 static func set_remote(faction_id: String, payload: Dictionary) -> void:

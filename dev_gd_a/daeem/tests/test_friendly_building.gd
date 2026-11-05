@@ -84,6 +84,10 @@ func _run() -> void:
 	var ebt := _free_tile_near(w, cfg, u, "F2")
 	ok(ebt.x >= 0, "（前提）再找一格放敌方建筑")
 	if ebt.x >= 0:
+		# 建筑跟随区划归属：先把那格判给敌方，否则箭塔会归到区划主人（F2）名下。
+		var ez = w.zones.zone_at(ebt.x, ebt.y)
+		if ez != null:
+			(ez as Dictionary)["owner"] = "sj"
 		var foe_b = w.add_building("tower", ebt.x, ebt.y, "sj", true, true)
 		ok(foe_b != null, "（前提）敌方箭塔放好了")
 		game.input_ctrl.hover_tile = ebt

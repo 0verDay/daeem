@@ -53,6 +53,7 @@ const GameSceneRes = preload("res://view/game_scene3d.gd")
 ## ★ 单人战役的占位页（`view/campaign_test.gd`）与「地图选择条 + test」那一套已经删掉：
 ##   它们的功能被上面两条入口取代（用户要求：旧三件套从「战役」面板移除）。
 const CampaignLibraryRes = preload("res://logic/campaign_library.gd")
+const LoadoutRes = preload("res://logic/loadout.gd")
 ## ★★ 战役过渡画面（view/level_transition.gd）：缩略图 + 简报 + 多阵营选择 + 进度 + 点击进入。
 ##   只有单人关走它；合作关仍直接进（合作大厅那一路有自己的流程）。
 const LevelTransitionRes = preload("res://view/level_transition.gd")
@@ -338,6 +339,8 @@ func _on_see_ai_button_pressed() -> void:
 ##   · 没被掷中的那一方交给 `start_level_vs_commander()` 做运行时 AI 覆盖，
 ##     由 commander AI 全权操作 —— 关卡 JSON 里两边都写 `ai: none`，
 ##     「这一局谁由 AI 开」是运行时决定，不写死进数据。
+##   · ★★ 2026.11：**备战配置接入** —— 玩家席位用备战页选中的派系 / 将领；
+##     敌方派系从王朝 / 帝国独立随机，并随机抽一套该派系的备战配置。
 func _on_ai_test_duel_requested(campaign_id: String, level_id: String) -> void:
 	if game != null:
 		return
@@ -365,10 +368,21 @@ func _on_ai_test_duel_requested(campaign_id: String, level_id: String) -> void:
 			ai_faction = String(fid)
 			break
 
+	# ★★ 2026.11：备战系统接入 ai_test。
+	#   · 玩家那一方 = 备战页当前选中的派系 + 零阶开局将领 + 一/二/三阶九宫格池；
+	#   · 敌方 = 从王朝 / 帝国里**独立随机**一个派系，并随机抽一套该派系的备战配置；
+	#   · 两边都允许抽到同一个派系（用户口径：可以相同，不强制错开）。
+	LoadoutRes.ensure_defaults(cfg)
+	var loadouts: Dictionary = {}
+	if player_faction != "":
+		loadouts[player_faction] = LoadoutRes.payload_for(LoadoutRes.faction(), cfg)
+	if ai_faction != "":
+		loadouts[ai_faction] = LoadoutRes.random_payload_for(_roll_enemy_clan(), cfg)
+
 	game = GameSceneRes.new()
 	game.name = "GameScene"
 	add_child(game)
-	if not game.start_level_vs_commander(campaign, level, player_faction, ai_faction):
+	if not game.start_level_vs_commander(campaign, level, player_faction, ai_faction, loadouts):
 		game.queue_free()
 		game = null
 		return
@@ -386,6 +400,12 @@ func _roll_ai_test_faction(playable: Array) -> String:
 	if playable.is_empty():
 		return ""
 	return String(playable[randi() % playable.size()])
+
+
+## ★★ 2026.11：ai_test 敌方派系独立随机（王朝 / 帝国；允许和玩家选中派系相同）。
+## ★ 单独抽出来是为了测试能反复调用、断言两边都出现（见 tests/test_ai_test_duel.gd）。
+func _roll_enemy_clan() -> String:
+	return _roll_ai_test_faction(LoadoutRes.FACTIONS)
 
 
 ## ★★ 主界面「ai_test / ai_test_2」按钮：载入演示战役对应关卡，AI 接管被观察方，玩家观战。

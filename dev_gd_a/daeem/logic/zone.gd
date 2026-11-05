@@ -72,6 +72,21 @@ var zones_by_id: Dictionary = {}
 ## ⚠️ 只认**边相邻**（上 / 下 / 左 / 右）：斜角相接的两个区划中间没有共享边，
 ##   不该算「贴在一起」。
 var neighbors_by_id: Dictionary = {}
+## ★★ 每条区划的**禁行格**（关卡 `zones[].no_go`，用户需求「阵地性 AI 不会巡逻至
+##    其区划的禁行区」）：区划 id → `{格子索引: true}`。
+##
+## 为什么是「区划 id → 集合」而不是一张全局网格：
+##   · 禁行区是**某一条区划自己的**（同一格在别的区划里没有意义），
+##     而区划形状任意 ⇒ 只能按「这一格属不属于这条区划」存；
+##   · 查询在守将挑巡逻点时是热路径（每次重算路线都会问几十上百次），
+##     所以装配期一次性折成 `y * cols + x` 的集合，查询是 O(1) 字典命中。
+##
+## ⚠️ 它**不进快照**：与区划产能 / 中心 / 种类一样是「地图 + 关卡给的静态数据」，
+##   一局之内不会变（客机拿到的 `level_data` 里也带着同一份 `no_go`，见 level.gd）。
+## ⚠️ 只影响**巡逻目标点**（`garrison_ai._build_route`）。它**不**是寻路障碍：
+##   用户口径是「不会巡逻至」，而不是「走路要绕开」——所以追击 / 守中心 /
+##   攻城警报的路径一概不受它影响（那些行为有明确目标，绕路反而会让 AI 不去）。
+var no_go_by_id: Dictionary = {}
 ## 地块索引 → 区块 id（-1 = 不属于任何区块）
 var lookup: Array = []
 ## ★ 地块索引 → 「这一格是哪个区块的中心」（-1 = 不是任何区块的中心）。
@@ -225,6 +240,86 @@ func zones_within(zid: int, gap: int) -> Array:
 			break
 		nxt.sort()
 		frontier = nxt
+	return out
+
+
+## ★★ 把关卡给的**禁行格**（`level.zone_no_go`，形状 `{区划 id: [Vector2i, ...]}`）
+## 装配成查询表。只在 `world.reset()` 里建完区划之后调一次。
+##
+## 宽容读法（运行时是第三道防线，前两道是编辑器与 `level._ck_zone_no_go()`）：
+##   · 区划 id 在 `zones_by_id` 里找不到 → **整条跳过**（换图后的旧数据，不崩）；
+##   · 格子越界 / 那一格不属于这条区划 → **跳过那一格**（绝不让「别人的地」
+##     变成这条区划的禁行格，否则守将会在自己区划里挑不到点却不知道为什么）；
+##   · 单项不是 `Vector2i` / `[x, y]` → 跳过（手改 JSON 的脏数据）。
+##
+## 为什么不在读关卡时做这些校验：那时地图还没载入（`level.zone_no_go` 只是形状对的
+## 原始数据），「这格属于哪个区划」只有区划建好之后才问得出来 —— 就是这里。
+func apply_no_go(raw: Dictionary) -> void:
+	no_go_by_id.clear()
+	if raw.is_empty():
+		return
+	for zid_v in raw.keys():
+		var zid := int(zid_v)
+		if not zones_by_id.has(zid):
+			continue
+		var list: Variant = raw[zid_v]
+		if typeof(list) != TYPE_ARRAY:
+			continue
+		var bag: Dictionary = {}
+		for t in (list as Array):
+			var p: Variant = _no_go_point(t)
+			if p == null:
+				continue
+			var tile: Vector2i = p
+			if tile.x < 0 or tile.y < 0 or tile.x >= cols or tile.y >= rows:
+				continue
+			var idx: int = tile.y * cols + tile.x
+			if int(lookup[idx]) != zid:
+				continue
+			bag[idx] = true
+		if not bag.is_empty():
+			no_go_by_id[zid] = bag
+
+
+## `apply_no_go()` 的单格读法：认 `Vector2i` 与 `[x, y]`（其余 → null）。
+func _no_go_point(v: Variant) -> Variant:
+	if typeof(v) == TYPE_VECTOR2I:
+		return v
+	if typeof(v) == TYPE_ARRAY and (v as Array).size() >= 2:
+		var a: Array = v as Array
+		return Vector2i(int(a[0]), int(a[1]))
+	return null
+
+
+## 这一格是不是**某条区划的禁行格**（越界 / 没配 → false）。
+##
+## ★ 守将只问「**我自己那条**区划的禁行格」（`u.garrison_zone_id`）——
+##   禁行区不跨区生效，所以这里必须带 zid，不能做成「全图禁行格」。
+func is_no_go(zid: int, x: int, y: int) -> bool:
+	if x < 0 or y < 0 or x >= cols or y >= rows:
+		return false
+	var bag: Variant = no_go_by_id.get(zid, null)
+	if bag == null:
+		return false
+	return (bag as Dictionary).has(y * cols + x)
+
+
+## 某条区划的**全部禁行格**（按 (y, x) 排序；只给测试 / 编辑器预览用）。
+##
+## ⚠️ 运行时挑巡逻点**不要**走这个函数（它每次都要建一个数组）——那条热路径用
+##    `is_no_go()` 逐格问，才是 O(1)。
+func no_go_tiles_of(zid: int) -> Array:
+	var out: Array = []
+	var bag: Variant = no_go_by_id.get(zid, null)
+	if bag == null:
+		return out
+	for key in (bag as Dictionary).keys():
+		var idx := int(key)
+		out.append(Vector2i(idx % cols, idx / cols))
+	out.sort_custom(func(a, b):
+		var pa: Vector2i = a
+		var pb: Vector2i = b
+		return pa.y < pb.y or (pa.y == pb.y and pa.x < pb.x))
 	return out
 
 

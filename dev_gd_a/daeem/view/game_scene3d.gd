@@ -260,8 +260,11 @@ func start(map_path: String = MAP_PATH) -> bool:
 ##   **关卡数据**抬到**运行时**。主菜单 ai_test 的随机对局就是靠它：同一份关卡数据里
 ##   两边都写 `ai: none`，按下按钮后由 `main.gd` 随机选边、把另一方覆盖成 commander。
 ##   ⚠️ 不传 = 空字典 ⇒ 行为与加这两个参数之前**逐位一致**（所有老调用点都不受影响）。
+## @param loadouts 可选：`阵营 → LoadoutRes.payload_for()`。只给 ai_test 这类
+##        “带备战配置开一局”的入口用；空字典 = 关卡原样（老行为）。
 func start_level(campaign, level, my_faction: String,
-		ai_overrides: Dictionary = {}, ai_profiles: Dictionary = {}) -> bool:
+		ai_overrides: Dictionary = {}, ai_profiles: Dictionary = {},
+		loadouts: Dictionary = {}) -> bool:
 	cfg = ConfigRes.load_default()
 	if cfg == null:
 		push_error("配置载入失败：%s" % ConfigRes.last_error)
@@ -273,13 +276,27 @@ func start_level(campaign, level, my_faction: String,
 		float(ProjectSettings.get_setting("display/window/size/viewport_width", 1920)),
 		float(ProjectSettings.get_setting("display/window/size/viewport_height", 1080)))
 
+	# ★★ 2026.11：备战配置（可选）——把派系 / 开局将领写进关卡，并收集九宫格池。
+	#   只影响调用方明确传了 loadouts 的入口（主菜单 ai_test），其它关卡完全不变。
+	var pools: Dictionary = {}
+	if not loadouts.is_empty():
+		for seat_k in loadouts.keys():
+			var seat := String(seat_k)
+			var payload_v = loadouts[seat_k]
+			if seat == "" or typeof(payload_v) != TYPE_DICTIONARY:
+				continue
+			var payload: Dictionary = payload_v
+			LoadoutRes.apply_to_level(level, seat, payload)
+			var pool_v: Variant = payload.get("pool", [])
+			if typeof(pool_v) == TYPE_ARRAY:
+				pools[seat] = (pool_v as Array).duplicate()
 	# ★★ `roster` 的拼法走 `logic/level.gd:build_roster()` —— 战役席位规则**只有这一份实现**。
 	#    那段逻辑里藏着好几条踩出来的契约（「两个可玩阵营都要有家」
 	#    「我选的那一方必须排第一 —— `objective.setup()` 拿第一个席位决定打哪条目标」
 	#    「真正的 NPC 敌人不进 roster」），所以它属于逻辑层，不属于任何视图。
 	var roster: Array = level.build_roster(cfg, my_faction)
 	world = WorldRes.create_from_level(cfg, level, my_faction, roster, true,
-		ai_overrides, ai_profiles)
+		ai_overrides, ai_profiles, -1, false, pools)
 	if world == null:
 		push_error("关卡装配失败（地图 = %s）" % String(level.map_id))
 		return false
@@ -305,13 +322,13 @@ func start_level(campaign, level, my_faction: String,
 ## ⚠️ 关卡数据里两边都写着 `ai: none` 也能用：覆盖就是用来盖掉关卡那一份的
 ##   （与「合作 AI 队友把第二席位改成 commander」同一个机制）。
 func start_level_vs_commander(campaign, level, my_faction: String,
-		ai_faction: String) -> bool:
+		ai_faction: String, loadouts: Dictionary = {}) -> bool:
 	var overrides: Dictionary = {}
 	var profiles: Dictionary = {}
 	if ai_faction != "" and ai_faction != my_faction:
 		overrides[ai_faction] = LevelRes.AI_COMMANDER
 		profiles[ai_faction] = {"difficulty": "normal"}
-	return start_level(campaign, level, my_faction, overrides, profiles)
+	return start_level(campaign, level, my_faction, overrides, profiles, loadouts)
 
 
 ## ★★ 观战模式：`ai_test` / `ai_test_2` 关卡由 commander AI 接管被观察方，玩家只看。

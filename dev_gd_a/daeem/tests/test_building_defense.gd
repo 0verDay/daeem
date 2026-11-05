@@ -97,5 +97,6 @@ func _test_attack_building_path(cfg) -> void:
 		var cp = w.projectiles[w.projectiles.size() - 1]
 		ok(bool(cp.ignore_reduction), "★★ 投石车的投掷物带攻城标签")
 		ProjectileRes._impact(w, cfg, cp)
-		near(base.hp_max - base.hp, float(cfg.building_damage), 1e-4,
-			"★★ 投石车对建筑仍是全额 building_damage")
+		near(base.hp_max - base.hp,
+			float(cfg.building_damage) * float(cfg.siege_building_damage_mult), 1e-4,
+			"★★ 2026.11：投石车对建筑 = building_damage × 攻城倍率（40 → 120）")

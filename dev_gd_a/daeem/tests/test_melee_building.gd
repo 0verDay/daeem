@@ -35,6 +35,9 @@ func _test_acquire_clears_settle(cfg) -> void:
 	ok(tt.x >= 0, "（前提）旁边找得到一格建敌方建筑")
 	if tt.x < 0:
 		return
+	var z1 = w.zones.zone_at(tt.x, tt.y)
+	if z1 != null:
+		(z1 as Dictionary)["owner"] = "p2"      # 建筑跟随区划：先把那格判给敌方
 	var tower = w.add_building("tower", tt.x, tt.y, "p2", false, true)
 	ok(tower != null, "（前提）敌方箭塔建好了")
 	m.settled_goal = m.pos
@@ -56,6 +59,9 @@ func _test_no_pacing(cfg) -> void:
 	ok(tt.x >= 0, "（前提）找得到建塔的空格")
 	if tt.x < 0:
 		return
+	var z2 = w.zones.zone_at(tt.x, tt.y)
+	if z2 != null:
+		(z2 as Dictionary)["owner"] = "p2"      # 建筑跟随区划：先把那格判给敌方
 	var tower = w.add_building("tower", tt.x, tt.y, "p2", false, true)
 	ok(tower != null, "（前提）敌方箭塔建好了")
 	if tower == null:

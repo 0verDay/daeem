@@ -54,9 +54,16 @@ var map: MapDataRes = null
 var buildings: GridRes = null
 var building_list: Array = []
 var _building_at: Dictionary = {}
-## 建造 / 拆除时 +1，用于「按需重算区块归属」而不是每帧算
+## 建造 / 拆除 / **归属变化**时 +1，用于让建筑空间索敌网格按需重建。
 var building_revision: int = 0
-var last_ownership_revision: int = -1
+## ★★ 2026.11：**阵地性 AI 的「攻城警报」**（阵地性 AI 专用，不进快照）。
+##
+## 键 = 巡逻队长的单位 id；值 = `{"target": <攻城单位>, "started_at": <秒>, "pos": Vector2}`。
+## 触发：区划内的建筑 / 单位被**攻城单位（投石车 / 弩炮）**打中（见 `on_building_attacked` /
+## `on_unit_attacked`）。守军在 `garrison_ai.update()` 里读这张表，整队行军攻击到攻击者处。
+## ⚠️ 它只是**念头**，不是命令：命令仍然走 `order_group_attack_move`，所以玩家 / 别的 AI
+##    随时可以覆盖；目标死亡 / 超时 / 队长离场就从这里清掉。
+var garrison_siege_alerts: Dictionary = {}
 ## ★★ 建筑空间索引（粗网格：一格 8×8 逻辑格 → 建筑数组）—— 给「最近敌建筑」索敌用。
 ##    只按 `building_revision` 重建（建筑增删才变），使 `combat.nearest_enemy_building`
 ##    不必对每个空闲单位扫一遍整张 `building_list`（1000 单位下实测 ~2.9 ms/帧）。
@@ -514,11 +521,11 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	building_list = []
 	_building_at = {}
 	building_revision = 0
-	last_ownership_revision = -1
 	_bgrid = {}
 	_bgrid_revision = -1
 	units = []
 	projectiles = []
+	garrison_siege_alerts = {}
 	morale_aura_bonus = {}
 	_morale_aura_timer = 0.0
 	# ★★ 断粮标记：每帧重算的临时状态，重开一局必须从「没人挨饿」开始。
@@ -691,6 +698,14 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	#    会被 `refresh_building_ownership` 按「无主区块 + 玩家建筑」而收给玩家
 	#    （见 zone.gd 的 apply_initial_ownership）。
 	zones.apply_initial_ownership(map, factions)
+	# ★★ 关卡给的**区划禁行格**（`zones[].no_go`）：阵地性 AI 挑巡逻点时跳过它们。
+	#    · 只有关卡才有这张表（战役编辑器写）；自由对战 / 老关卡 → `level == null`
+	#      或表为空 ⇒ 什么都不做，行为与加这个功能之前逐位一致；
+	#    · 必须在 `build_from_map` 之后（要查「这一格属于哪个区划」），
+	#      但**不**依赖归属，所以放在 `apply_initial_ownership` 前后都行 ——
+	#      放这儿是为了让「静态数据」都挨在一起；
+	#    · 它只影响巡逻目标点，不改寻路 / 不挡路（见 `zone.no_go_by_id` 的说明）。
+	zones.apply_no_go(level.zone_no_go if level != null else {})
 
 	# ★★ 只有**本机在操作的玩家方**才建大本营（本轮口径：AI 没有大本营）。
 	#    AI 阵营照旧算出生点（faction_spawns / faction_bases 点位，将领站位要用），
@@ -3039,6 +3054,10 @@ func unit_has_active_team_order(u) -> bool:
 func on_unit_attacked(victim, attacker) -> bool:
 	if victim == null or attacker == null:
 		return false
+	# ★★ 2026.11：**攻城单位打中区划内的单位 ⇒ 阵地性 AI 整队出击**。
+	#   ⚠️ 放在反击开关之前：即使全局反击被关掉，这条「守家」规则也该生效
+	#      （它不是复仇反击，而是阵地性 AI 的主动防御）。
+	_alert_garrison_siege(victim, attacker)
 	if not cfg.retaliation_enabled or not cfg.combat_enabled:
 		return false
 	if not victim.alive or victim.is_downed():
@@ -3066,6 +3085,65 @@ func on_unit_attacked(victim, attacker) -> bool:
 	if unit_has_active_team_order(victim):
 		return false
 	return bool(victim.order_retaliate(self, cfg, attacker))
+
+
+## ★★ 2026.11：建筑挨打的入口（战斗层在命中时调）。
+##
+## 与 `on_unit_attacked` 分开是因为建筑没有 `is_downed()` 那一套单位状态：
+## 这里只做「阵地性 AI 的攻城警报」，**不**处理单位的复仇反击。
+func on_building_attacked(victim, attacker) -> void:
+	if victim == null or attacker == null:
+		return
+	_alert_garrison_siege(victim, attacker)
+
+
+## ★★ 2026.11：把「攻城单位袭击区划内目标」记进 `garrison_siege_alerts`。
+##
+## 触发条件（全部成立）：
+##   1. 攻击者是**单位**、活着、敌对，且带 `siege` 标签（投石车 / 扭力弩炮）；
+##   2. 被打的目标（单位或建筑）能定位到一个**区划**：
+##        · 建筑读它出生时记下的 `zone_id`（区划中心也有，但它无敌、打不动）；
+##        · 单位读它**当前所在格**的区划（被打时它就在那里）。
+##   3. 那个区划里有**阵地性 AI 的巡逻队长**（`garrison_zone_id` 相同）。
+##
+## 只登记「念头」不直接下命令：命令由 `garrison_ai.update()` 统一发，
+## 这样「谁有权指挥这支守军」仍然只有一处（见 `garrison_siege_alerts` 的说明）。
+func _alert_garrison_siege(victim, attacker) -> void:
+	if cfg == null or not cfg.combat_enabled:
+		return
+	if attacker == null or not is_instance_valid(attacker):
+		return
+	if not attacker.has_method("is_downed") or not bool(attacker.alive):
+		return
+	if not bool(attacker.get("siege")):
+		return
+	var zid := -1
+	var bz: Variant = victim.get("zone_id")
+	if typeof(bz) == TYPE_INT or typeof(bz) == TYPE_FLOAT:
+		zid = int(bz)
+	if zid < 0 and zones != null:
+		var tv: Variant = victim.get("tx")
+		var tyv: Variant = victim.get("ty")
+		if typeof(tv) == TYPE_INT and typeof(tyv) == TYPE_INT:
+			var uz = zones.zone_at(int(tv), int(tyv))
+			if uz != null:
+				zid = int((uz as Dictionary).get("id", -1))
+	if zid < 0:
+		return
+	# 被袭击的一方：单位读 faction，建筑读 owner（两者只会有一个存在）。
+	var victim_faction := ""
+	var vf: Variant = victim.get("faction")
+	if typeof(vf) == TYPE_STRING:
+		victim_faction = String(vf)
+	if victim_faction == "":
+		var vo: Variant = victim.get("owner")
+		if typeof(vo) == TYPE_STRING:
+			victim_faction = String(vo)
+	if victim_faction == "":
+		return
+	if FactionRes.same_side_for_attack(String(attacker.faction), victim_faction):
+		return
+	GarrisonAiRes.alert_siege_attack(self, cfg, zid, attacker)
 
 
 ## 把「挨打」事件交给同方的指挥官 AI；由它决定整队反击 / 继续撤退。
@@ -4794,7 +4872,19 @@ func add_building(type: String, tx: int, ty: int, owner: String, silent: bool = 
 		return null
 	var z = zones.zone_at(tx, ty)
 	var zone_id: int = int(z["id"]) if z != null else -1
-	var b = BuildingRes.create(cfg, type, tx, ty, owner, zone_id)
+	# ★★ 2026.11「建筑跟随区划归属」：
+	#   · 落在**无主区划**里 ⇒ 这栋楼先把区划收归自己（开局大本营 / 地图预置据点靠它）；
+	#   · 区划已经有主 ⇒ **非大本营建筑一律跟随区划**（传进来的 owner 被忽略）；
+	#   · 大本营保留自己的归属（用户口径：区划易主时大本营不跟着换主）。
+	var owner_eff: String = owner
+	if z != null and type != BuildingRes.TYPE_ZONE_CENTER:
+		var zone_owner := String((z as Dictionary).get("owner", ""))
+		if zone_owner == "" and owner_eff != "" and cfg.zone_owned_by_building:
+			_claim_zone_for(z, owner_eff)
+			zone_owner = owner_eff
+		if type != BuildingRes.TYPE_BASE and zone_owner != "":
+			owner_eff = zone_owner
+	var b = BuildingRes.create(cfg, type, tx, ty, owner_eff, zone_id)
 	# ★ 建造读条（config 的 build_sec；0 = 瞬发 = 与从前逐位一致）
 	# ★★ 2026.10.31：`instant` 只对「区划中心 / 开局防御阵地」这类布景生效，
 	#   **大本营一律走读条**（config 里 base.build_sec = 1）——玩家口径：
@@ -4809,11 +4899,12 @@ func add_building(type: String, tx: int, ty: int, owner: String, silent: bool = 
 	# ★ 科技的「建筑血量 +10%」在这里就地补上（**粘性**：倍率没变时是空操作）。
 	#   为什么落在这里而不是每帧刷：新建的建筑必须当场带上加成，
 	#   否则「刚造好的墙比开局那座脆」——那是玩家一眼就看得出的不一致。
-	# ★ 按**这栋楼的 owner**取科技血量倍率（合作时不能把房主的加成贴到客机的楼上）。
-	var owner_eff: Variant = seat_tech_effects.get(String(owner), null)
-	if typeof(owner_eff) != TYPE_DICTIONARY:
-		owner_eff = tech.effects_of(String(owner)) if tech != null else {}
-	b.apply_hp_bonus(float((owner_eff as Dictionary).get("building_hp_mult", 1.0)))
+	# ★ 按**这栋楼的实际 owner**取科技血量倍率（合作时不能把房主的加成贴到客机的楼上）。
+	#   ⚠️ 用 `owner_eff` 而不是传进来的 `owner`：建筑跟随区划之后，两者可能不是同一个阵营。
+	var tech_eff: Variant = seat_tech_effects.get(String(owner_eff), null)
+	if typeof(tech_eff) != TYPE_DICTIONARY:
+		tech_eff = tech.effects_of(String(owner_eff)) if tech != null else {}
+	b.apply_hp_bonus(float((tech_eff as Dictionary).get("building_hp_mult", 1.0)))
 	# ★ 新建建筑一律是 1 级：等级倍率显式落一次（`apply_level_mult` 是粘性的，
 	#   不落的话它会停在默认的 1.0，与配置里 1 级的倍率不一致时就错了）。
 	b.apply_level_mult(b.level_mult_from(cfg))
@@ -4970,12 +5061,66 @@ func zone_allows_build(tx: int, ty: int, faction: String) -> bool:
 	return accepts_owner(String(z.get("owner", "")), faction)
 
 
-## 建筑归属变了就重算区块归属（不每帧算）
-func refresh_ownership() -> void:
-	if building_revision == last_ownership_revision:
+## ★★ 2026.11：把某个**无主区划**收归某一方（建筑落成 / 开局大本营用）。
+##
+## 这是「建筑跟随区划」的唯一例外：**无主时由建筑先占区划**（用户确认的口径）。
+## 之后建筑就不再有自己的归属，全部读区划的 owner。
+func _claim_zone_for(z: Dictionary, faction: String) -> void:
+	if faction == "" or String(z.get("owner", "")) != "":
 		return
-	last_ownership_revision = building_revision
-	zones.refresh_building_ownership(cfg, building_list, factions)
+	z["owner"] = faction
+	var by: Variant = z.get("progress_by", null)
+	if typeof(by) == TYPE_DICTIONARY:
+		(by as Dictionary)[faction] = 1.0
+	z["progress"] = 1.0
+	z["claimed_by"] = "building"
+
+
+## ★★ 每帧收口建筑归属（2026.11 口径：**建筑跟随所在区划**）。
+##
+## 两件事，顺序不能反：
+##   1. **无主区划 + 有主建筑** ⇒ 区划先被建筑收归（只在这一步建筑「反向」影响区划）；
+##   2. 区划已有主 ⇒ 除大本营 / 区划中心外的建筑 owner 一律改成区划 owner。
+##
+## ⚠️ 区划易主时这一步必须在 `zones.update()` **之后**跑，否则建筑会晚一帧才换边
+##    （表现：刚被占领的塔还在打新主人）。
+## ⚠️ owner 变化要 `building_revision += 1`：建筑索敌网格按它重建，否则
+##    「刚变成敌方」的建筑不会被待命单位看见。
+func refresh_ownership() -> void:
+	if zones == null:
+		return
+	var changed := false
+	# 1) 无主区划：由区内第一栋有主建筑认领（认领顺序按 building_list，稳定）。
+	for b in building_list:
+		if b == null or not b.alive or b.type == BuildingRes.TYPE_ZONE_CENTER:
+			continue
+		var z = zones.zone_at(int(b.tx), int(b.ty))
+		if z == null:
+			continue
+		if String((z as Dictionary).get("owner", "")) != "":
+			continue
+		if String(b.owner) == "":
+			continue
+		if not cfg.zone_owned_by_building:
+			continue
+		_claim_zone_for(z, String(b.owner))
+		changed = true
+	# 2) 有主区划：建筑跟随区划（大本营 / 区划中心除外）。
+	for b2 in building_list:
+		if b2 == null or not b2.alive or not b2.follows_zone_owner():
+			continue
+		var z2 = zones.zone_at(int(b2.tx), int(b2.ty))
+		if z2 == null:
+			continue                       # 地图缝隙 / 区块外：保留它自己的归属
+		var want := String((z2 as Dictionary).get("owner", ""))
+		if want == "":
+			continue                       # 无主区划已在第 1 步被区内建筑认领
+		if String(b2.owner) != want:
+			b2.owner = want
+			changed = true
+	if changed:
+		building_revision += 1
+		mark_vision_dirty()
 
 
 ## ★★ 客机：应用完快照之后，把「只在 tick 里算」的派生数据补一遍。

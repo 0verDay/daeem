@@ -10,6 +10,8 @@
 extends "res://tests/test_case.gd"
 
 const CampaignRes = preload("res://logic/campaign.gd")
+const ConfigRes = preload("res://logic/config.gd")
+const LoadoutRes = preload("res://logic/loadout.gd")
 const GameSceneRes = preload("res://view/game_scene3d.gd")
 const MainScene := preload("res://view/main.tscn")
 
@@ -28,6 +30,10 @@ func _run() -> void:
 		return
 	root.size = Vector2i(1920, 1080)
 	await process_frame
+	# ★★ 2026.11：ai_test 会读备战静态状态。固定成「王朝」，断言才有确定答案。
+	LoadoutRes.reset()
+	LoadoutRes.ensure_defaults(cfg)
+	LoadoutRes.set_faction("dynasty")
 
 	var camp = CampaignRes.load_campaign(DEMO_DIR, cfg)
 	var level = camp.level(LEVEL_ID) if camp != null else null
@@ -70,8 +76,8 @@ func _run() -> void:
 	# ---- 2b) 玩家当 p2 ----
 	await _check_one_side(cfg, camp, level, "p2", "p1")
 
-	# ---- 2c) 主菜单按钮的真实入口（随机 + 装配接在一起）----
-	await _check_menu_entry()
+	# ---- 2c) 主菜单按钮的真实入口（随机 + 备战配置接在一起）----
+	await _check_menu_entry(cfg)
 	# ---- 2d) 新增 see_ai：同一张图，双方 commander AI，玩家看海 ----
 	await _check_see_ai_entry()
 
@@ -146,7 +152,7 @@ func _check_one_side(cfg, camp, level, player_faction: String, ai_faction: Strin
 	await process_frame
 
 
-func _check_menu_entry() -> void:
+func _check_menu_entry(cfg) -> void:
 	var main = MainScene.instantiate()
 	root.add_child(main)
 	await process_frame
@@ -180,6 +186,24 @@ func _check_menu_entry() -> void:
 	if w.commander_factions().size() == 1:
 		var ai := String(w.commander_factions()[0])
 		ok(ai != player, "★★ 被 AI 接管的不是玩家那一方（玩家 %s / AI %s）" % [player, ai])
+		# ★★ 2026.11：玩家锁备战派系；敌方独立随机王朝 / 帝国。
+		eq(w.clan_of(player), LoadoutRes.faction(),
+			"★★ 玩家派系 = 备战页选中的出战派系")
+		ok(LoadoutRes.FACTIONS.has(w.clan_of(ai)),
+			"★★ 敌方派系来自王朝 / 帝国（实际 %s）" % w.clan_of(ai))
+		var pp: Variant = LoadoutRes.payload_for(LoadoutRes.faction(), cfg).get("pool", [])
+		var player_pool: Array = pp if typeof(pp) == TYPE_ARRAY else []
+		eq(w.general_recruit_roster(player), player_pool,
+			"★★ 玩家的九宫格 = 备战选中的 9 位")
+		var ai_roster: Array = w.general_recruit_roster(ai)
+		eq(ai_roster.size(), 9, "★★ 敌方也带了一套 9 位随机将领池")
+		var bad_clan := ""
+		for kind in ai_roster:
+			var idx := ConfigRes.general_index_of(String(kind))
+			if idx < 0 or not cfg.general_in_faction(idx, w.clan_of(ai)):
+				bad_clan = String(kind)
+				break
+		eq(bad_clan, "", "★★ 敌方将领池全部属于它随机到的派系")
 	ok(main.start_screen != null and not main.start_screen.visible,
 		"进游戏后主菜单整层隐藏")
 	main.queue_free()
@@ -238,5 +262,14 @@ func _check_random() -> void:
 	ok(seen.has("p1") and seen.has("p2"),
 		"★★ 多次随机后 p1 / p2 两边都出现过（%s）" % str(seen.keys()))
 	eq(String(main._roll_ai_test_faction([])), "", "空可玩表返回空串")
+
+	# ★★ 2026.11：敌方派系从王朝 / 帝国独立随机，两边都要能出现。
+	var clans := {}
+	for i in 64:
+		var cid := String(main._roll_enemy_clan())
+		ok(LoadoutRes.FACTIONS.has(cid), "敌方派系只可能是王朝 / 帝国（实际 %s）" % cid)
+		clans[cid] = true
+	ok(clans.has("dynasty") and clans.has("empire"),
+		"★★ 多次随机后王朝 / 帝国都出现过（%s）" % str(clans.keys()))
 	main.queue_free()
 	await process_frame

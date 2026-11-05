@@ -1332,11 +1332,13 @@ def t_zone_owner_explicit(app, model) -> None:
        "★★ 缺的区划补成地图 owner（无主 = 空串）")
     lv.zone_owners[missing_zid] = saved_value
 
-    # ---- 界面：下拉里没有「（用地图的）」；最后一项是「清空 = 无主」----
+    # ---- 界面：下拉在**右栏**（区划页现在是「左画布 + 右归属/禁行区」）；----
+    #      ⚠️ 不能 `walk(app.work)`：区划页已经不再用左边那张列表，
+    #      而旧页面的控件还留在 `list_host` 里（unpack 了但没销毁），会被一起遍历到。
     app.set_page("zone")
     app.root.update()
-    combos = [w for w in walk(app.work) if isinstance(w, ttk.Combobox)]
-    ok(bool(combos), "★ 区划页有归属下拉")
+    combos = [w for w in walk(app.sidebar) if isinstance(w, ttk.Combobox)]
+    ok(bool(combos), "★ 区划页右栏有归属下拉")
     if combos:
         values = list(combos[0].cget("values"))
         ok("（用地图的）" not in values, "★★ 下拉里**没有**「（用地图的）」")
@@ -1371,6 +1373,79 @@ def t_zone_owner_explicit(app, model) -> None:
     lv.zone_owners = orig_zones
     app.refresh_all()
     app.root.update()
+
+
+def t_zone_no_go_ui(app, model) -> None:
+    """★★ 区划页**禁行区**：右栏涂刷 + 画布点击 + 三条当场拒绝（中心 / 别人地 / 整块）。
+
+    只动内存里的模型，结束前原样复原（样例关卡一个字节都不该被这套测试改掉）。
+    """
+    print("\n[4h] ★★ 区划禁行区：涂刷 / 点击 / 中心与整块被拦")
+    lv = level(app)
+    info = app.map_info()
+    if lv is None or info is None:
+        ok(False, "（前提）当前关有地图")
+        return
+    orig = {z: set(t) for z, t in lv.zone_no_go.items()}
+    orig_paint = app.zone_paint_zone
+    try:
+        app.set_page("zone")
+        app.root.update()
+        ok(app.page == "zone", "区划页能进")
+        ok(hasattr(app, "canvas") and app.canvas.winfo_exists(),
+           "★★ 区划页也有画布（左栏画地图、右栏管归属与禁行区）")
+
+        zid = int(info.zone_ids[0])
+        patrol = info.zone_patrol_tiles(zid)
+        ok(bool(patrol), "（前提）z%d 有可巡逻的格子" % zid)
+        if not patrol:
+            return
+        tile = patrol[0]
+        center = info.zone_centers.get(zid)
+
+        app.set_zone_paint_zone(zid)
+        eq(app.zone_paint_zone, zid, "★ 点「涂刷」→ 进入涂刷模式（这一区）")
+        app._toggle_zone_no_go(tile)
+        ok(lv.has_zone_no_go(zid, tile[0], tile[1]), "★★ 画布左键 → 这一格进禁行区")
+        eq(lv.zone_no_go_count(zid), 1, "★ 计数 = 1")
+        ok("加入" in app.status_var.get(), "★ 状态栏说「加入」")
+
+        app._toggle_zone_no_go(tile)
+        ok(not lv.has_zone_no_go(zid, tile[0], tile[1]), "★ 再点一次 → 移出")
+        eq(lv.zone_no_go_count(zid), 0, "★ 计数回到 0")
+
+        if center is not None:
+            app._toggle_zone_no_go(center)
+            ok(not lv.has_zone_no_go(zid, center[0], center[1]),
+               "★★ 区划中心不能设为禁行格（当场拒绝）")
+            ok("中心" in app.status_var.get(), "★ 状态栏说明了原因（中心）")
+
+        other_zid = next((z for z in info.zone_ids if int(z) != zid), None)
+        if other_zid is not None:
+            other_patrol = info.zone_patrol_tiles(other_zid)
+            if other_patrol:
+                app._toggle_zone_no_go(other_patrol[0])
+                ok(not lv.has_zone_no_go(zid, other_patrol[0][0], other_patrol[0][1]),
+                   "★★ 别的区划的格子画不进这一区（当场拒绝）")
+                ok("不属于" in app.status_var.get(), "★ 状态栏说明了原因（不属于）")
+
+        # 整块：把巡逻候选填到只剩一格，再加最后一格 → 拒绝
+        lv.set_zone_no_go_tiles(zid, patrol[:-1])
+        app.refresh_all()
+        app.root.update()
+        app._toggle_zone_no_go(patrol[-1])
+        ok(not lv.has_zone_no_go(zid, patrol[-1][0], patrol[-1][1]),
+           "★★ 不能把整块区划都禁行（最后一格被拒）")
+        ok("整块" in app.status_var.get(), "★ 状态栏说明了原因（整块）")
+
+        # 「清空」按钮走的那条路
+        app.clear_zone_no_go(zid)
+        eq(lv.zone_no_go_count(zid), 0, "★ 「清空」清掉这一区的禁行区")
+    finally:
+        lv.zone_no_go = orig
+        app.zone_paint_zone = orig_paint
+        app.refresh_all()
+        app.root.update()
 
 
 def t_refresh_keeps_view(app, model) -> None:
@@ -1477,6 +1552,7 @@ def main() -> int:
         t_faction_start_resources(app, model)
         t_level_switch_state(app, model)
         t_zone_owner_explicit(app, model)
+        t_zone_no_go_ui(app, model)
         t_escort_placement(app, model)
         t_refresh_keeps_view(app, model)
         t_export_blocked(app, model)

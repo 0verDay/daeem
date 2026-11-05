@@ -420,9 +420,9 @@ class LevelModel:
     """
 
     __slots__ = ("level_id", "name", "mode", "map_id", "players", "factions", "allies",
-                 "allies_declared", "zone_owners", "start_units", "start_buildings",
-                 "objectives", "fail_conditions", "briefing", "preserved",
-                 "file", "briefing_declared", "_declared", "campaign_id")
+                 "allies_declared", "zone_owners", "zone_no_go", "start_units",
+                 "start_buildings", "objectives", "fail_conditions", "briefing",
+                 "preserved", "file", "briefing_declared", "_declared", "campaign_id")
 
     def __init__(self, level_id: str = "", map_id: str = "") -> None:
         self.level_id = level_id
@@ -438,6 +438,14 @@ class LevelModel:
         self.allies_declared = False
         #: 开局的区划归属覆盖：区划 id → 阵营 id（**空串 = 显式清空**，见逻辑层说明）。
         self.zone_owners: Dict[int, str] = {}
+        #: ★★ 每条区划的**禁行格**（`zones[].no_go`）：区划 id → 格子集合。
+        #:
+        #: 语义（用户口径）：阵地性 AI **不会巡逻至其区划的禁行区** —— 只影响巡逻目标点，
+        #: 不挡走路、不影响追击 / 守中心 / 攻城警报。形状任意（格子的集合，不是矩形）。
+        #: ⚠️ 用 `set` 存：涂刷时要去重、要 O(1) 判断「这一格是不是已经禁行」；
+        #:   导出时排序成 `[[x, y], ...]`（确定性：同样的集合永远写出同样的顺序）。
+        #: ⚠️ 它属于**关卡层**（每关可不同）；地图 JSON 没有这个字段。
+        self.zone_no_go: Dict[int, Set[Tuple[int, int]]] = {}
         self.start_units: List[UnitEntry] = []
         self.start_buildings: List[BuildingEntry] = []
         self.objectives: List[dict] = []
@@ -635,6 +643,11 @@ class LevelModel:
             filled = {int(z): str(info.zone_owners.get(int(z), "")) for z in info.zone_ids}
             changed = filled != self.zone_owners
             self.zone_owners = filled
+            # ★★ 换图 / 新建关卡：旧地图的区划号对新地图没有意义，禁行格一并清掉
+            #    （与 owner 同一条口径：**不要**把上一张图的禁行区背到新地图上）。
+            if self.zone_no_go:
+                self.zone_no_go = {}
+                changed = True
         else:
             known = {int(z) for z in info.zone_ids}
             # 地图里已经不存在的区划号：留着只会变成脏数据（换图 / 地图改区划之后）
@@ -642,6 +655,13 @@ class LevelModel:
             for z in stale:
                 del self.zone_owners[z]
             changed = bool(stale)
+            # 禁行格里同样「地图已经没有的区划」→ 清掉（与 owner 保持一致；
+            # 同一区划里被地图改掉的**格子**不动，交给 `zone_no_go_*` 校验去报）。
+            stale_no_go = [z for z in self.zone_no_go if int(z) not in known]
+            for z in stale_no_go:
+                del self.zone_no_go[z]
+            if stale_no_go:
+                changed = True
             for z in info.zone_ids:
                 zid = int(z)
                 if zid in self.zone_owners:
@@ -651,6 +671,68 @@ class LevelModel:
         if changed:
             self.mark_declared("zones")
         return changed
+
+    # ---- 禁行区（`zones[].no_go`）----
+    #
+    # ★ 这一组只做「数据怎么放」，**不做**「中心不能禁 / 不能整块禁」那两条业务判断：
+    #   · 那两条在界面层（`app._toggle_zone_no_go`）负责**当场拦住**，
+    #     在数据层由 `_ck_zone_no_go()` 负责**导出前拦住**；
+    #   · 本层如果也偷偷改数据，导入 → 导出的往返就不再是「原样带回」
+    #     （手改 JSON 写错的配置会被编辑器悄悄洗掉，作者永远不知道）。
+
+    def zone_no_go_tiles(self, zid: int) -> List[Tuple[int, int]]:
+        """某区划的禁行格，按 `(y, x)` 排序（导出 / 画布 / 测试都读它）。"""
+        return sorted(self.zone_no_go.get(int(zid), set()), key=lambda p: (p[1], p[0]))
+
+    def zone_no_go_count(self, zid: int) -> int:
+        return len(self.zone_no_go.get(int(zid), ()))
+
+    def has_zone_no_go(self, zid: int, x: int, y: int) -> bool:
+        """这一格是不是该区划的禁行格。"""
+        return (int(x), int(y)) in self.zone_no_go.get(int(zid), set())
+
+    def zone_no_go_zids(self) -> List[int]:
+        """哪些区划配了禁行格（升序；空 = 本关没有禁行区）。"""
+        return sorted(self.zone_no_go)
+
+    def set_zone_no_go_tiles(self, zid: int, tiles: Sequence[Tuple[int, int]]) -> None:
+        """整条替换某区划的禁行格（空列表 = 清空这一区）。"""
+        zid = int(zid)
+        bag = {(int(x), int(y)) for x, y in tiles}
+        if bag:
+            self.zone_no_go[zid] = bag
+        else:
+            self.zone_no_go.pop(zid, None)
+        self.mark_declared("zones")
+
+    def toggle_zone_no_go(self, zid: int, x: int, y: int,
+                          force_remove: bool = False) -> bool:
+        """把一格加进 / 移出某区划的禁行格。
+
+        @return 改完之后这一格**是不是**禁行格（`force_remove=True` 且本来就没有 → False）
+        """
+        zid = int(zid)
+        tile = (int(x), int(y))
+        bag = self.zone_no_go.get(zid)
+        if bag is None:
+            bag = set()
+            self.zone_no_go[zid] = bag
+        if tile in bag:
+            bag.discard(tile)
+            now = False
+        elif force_remove:
+            now = False
+        else:
+            bag.add(tile)
+            now = True
+        if not bag:
+            self.zone_no_go.pop(zid, None)
+        self.mark_declared("zones")
+        return now
+
+    def clear_zone_no_go(self, zid: int) -> bool:
+        """清空某区划的禁行格；@return 原来有没有。"""
+        return bool(self.zone_no_go.pop(int(zid), None))
 
     def playable_ids(self) -> List[str]:
         """本关**可玩**阵营（`factions[].playable == true`）。
@@ -756,9 +838,20 @@ class LevelModel:
         if self.allies_declared:
             out["allies"] = [[str(a), str(b)] for a, b in self.allies]
 
-        if self.zone_owners or "zones" in self._declared:
-            out["zones"] = [{"id": int(z), "owner": str(self.zone_owners[z])}
-                            for z in sorted(self.zone_owners)]
+        # ★★ `zones[]` 一项同时带归属与禁行格：`no_go` **只在非空时才写**
+        #    （与 `population_cap` 那条「等于默认值就不写」同一个手法：
+        #    正常关卡不该多出一个空数组，读入侧也把它当「没配」）。
+        zone_ids = set(self.zone_owners) | set(self.zone_no_go)
+        if zone_ids or "zones" in self._declared:
+            zones = []
+            for z in sorted(zone_ids):
+                item: Dict[str, Any] = {"id": int(z),
+                                        "owner": str(self.zone_owners.get(int(z), ""))}
+                no_go = self.zone_no_go_tiles(z)
+                if no_go:
+                    item["no_go"] = [[int(x), int(y)] for x, y in no_go]
+                zones.append(item)
+            out["zones"] = zones
 
         if self.start_units or "start_units" in self._declared:
             out["start_units"] = [_unit_to_dict(u) for u in ordered_start_units(self)]
@@ -1041,6 +1134,41 @@ class MapInfo:
         if zid in self.zone_centers:
             return True
         return zid in self.zone_ids
+
+    def zone_tiles(self, zid: int) -> List[Tuple[int, int]]:
+        """这一区在地块网格里的全部格子（顺序 = 网格遍历顺序，稳定）。"""
+        zid = int(zid)
+        return [p for p, z in self.zone_grid.items() if int(z) == zid]
+
+    def zone_tile_count(self, zid: int) -> int:
+        """这一区有多少格（`zone_no_go_all` 那条校验与画布涂刷都用它）。"""
+        zid = int(zid)
+        return sum(1 for z in self.zone_grid.values() if int(z) == zid)
+
+    def zone_walkable_tiles(self, zid: int) -> List[Tuple[int, int]]:
+        """这一区**能站人**的格子（存在 + 地形可通行）。
+
+        ★ 编辑器把禁行格限制在「能站人的格子」里：禁行区的意义是「守将别巡逻到那儿」，
+          而山地本来就不是巡逻候选点（`garrison_ai._can_stand` 会挡），
+          再把它标成禁行只是噪音，还会让「整块区划都被禁行」那条判断失真。
+        """
+        return [p for p in self.zone_tiles(zid) if self.walkable_at(*p)]
+
+    def zone_patrol_tiles(self, zid: int) -> List[Tuple[int, int]]:
+        """这一区**可能被选成巡逻点**的格子 = 能站人的格子 − 区划中心。
+
+        ★ 为什么还要扣掉中心：中心格上立着一栋中立障碍建筑
+          （`world._spawn_zone_centers`），巡逻的 `_can_stand()` 本来就不会选它 ——
+          它只是「守中心」时的目标点。所以「整块区划都禁行」要按**这一份**算：
+          把中心以外的可站地全禁掉，守将就真的无处巡逻了。
+        """
+        center = self.zone_centers.get(int(zid))
+        out = []
+        for p in self.zone_walkable_tiles(zid):
+            if center is not None and tuple(center) == p:
+                continue
+            out.append(p)
+        return out
 
     def faction_base(self, fid: str) -> Optional[Tuple[int, int]]:
         return self.faction_bases.get(str(fid))
@@ -1677,6 +1805,19 @@ def _load_zone_owners(raw: Any, lv: LevelModel) -> None:
         if zid < 0:
             continue
         lv.zone_owners[zid] = _as_str(item.get("owner", ""), "")
+        # ★★ 禁行格（`zones[].no_go`）：**原样收下**，不按地图裁剪 ——
+        #    「这一格属不属于这个区划」「是不是中心」由 `_ck_zone_no_go()` 报，
+        #    这里裁掉就变成「编辑器把作者的配置悄悄洗了」（导入 → 导出不再原样）。
+        bag: Set[Tuple[int, int]] = set()
+        for t in _as_list(item.get("no_go")):
+            tp = _tile_of(t)
+            if tp is None:
+                continue
+            if tp[0] < 0 or tp[1] < 0:
+                continue
+            bag.add(tp)
+        if bag:
+            lv.zone_no_go[zid] = bag
 
 
 def _load_start_units(raw: Any, lv: LevelModel) -> None:
@@ -2340,6 +2481,9 @@ def validate_level(model: CampaignModel, lv: LevelModel, maps: Dict[str, MapInfo
     # ---- 9) 目标恰好一项 + 额外失败条件 ----
     _ck_objectives(add, lv, info)
 
+    # ---- ★ 21) 区划禁行格（`zones[].no_go`）----
+    _ck_zone_no_go(add, lv, info)
+
     # ---- 10/14/15/16) 进攻目标 + allies + overload ----
     _ck_attack_targets(add, model, lv, info)
 
@@ -2611,6 +2755,53 @@ def _ck_sides(add, model: CampaignModel, lv: LevelModel, info: MapInfo) -> None:
         for x in pair:
             if str(x) not in known:
                 add(SEV_WARN, "ally_unknown", "盟友表里有未定义的阵营「%s」" % str(x))
+
+
+def _ck_zone_no_go(add, lv: LevelModel, info: Optional[MapInfo]) -> None:
+    """★ 21) 区划**禁行格**（`zones[].no_go`）：在不在自己区划里、盖没盖中心、是不是整块。
+
+    code 与 `logic/level.gd` 的 `_ck_zone_no_go()` **逐字一致**（编辑器 / 测试 / 运行时
+    对暗号）。四条：
+      · `zone_no_go_zone_missing`：指向一个地图上不存在的区划（换图后的脏数据）；
+      · `zone_no_go_tile_invalid`：格子在地图外；
+      · `zone_no_go_tile_not_in_zone`：格子不属于这条区划（写到别人的地上去了）；
+      · `zone_no_go_center`：盖住了区划中心（守中心还要往那儿走，自相矛盾）；
+      · `zone_no_go_all`：整块区划都被禁行（守将无处巡逻）。
+    """
+    if info is None:
+        return
+    for zid in lv.zone_no_go_zids():
+        tiles = lv.zone_no_go_tiles(zid)
+        if not info.has_zone(zid):
+            add(SEV_BLOCK, "zone_no_go_zone_missing",
+                "区划 c%d 的禁行区指向一个不存在的区划（换图后的旧数据？）" % zid)
+            continue
+        center = info.zone_centers.get(int(zid))
+        patrol = set(info.zone_patrol_tiles(zid))
+        covered = 0
+        for x, y in tiles:
+            if not info.tile_exists(x, y):
+                add(SEV_BLOCK, "zone_no_go_tile_invalid",
+                    "区划 %s 的禁行格 (%d,%d) 在地图外" % (info.zone_label(zid), x, y))
+                continue
+            owner_zid = info.zone_of(x, y)
+            if owner_zid != int(zid):
+                add(SEV_BLOCK, "zone_no_go_tile_not_in_zone",
+                    "区划 %s 的禁行格 (%d,%d) 不属于它（属于 %s）"
+                    % (info.zone_label(zid), x, y,
+                       info.zone_label(owner_zid) if owner_zid >= 0 else "无主地块"))
+            if (x, y) in patrol:
+                covered += 1
+            if center is not None and tuple(center) == (x, y):
+                add(SEV_BLOCK, "zone_no_go_center",
+                    "区划 %s 的禁行区盖住了它的中心 (%d,%d)：守中心还要往那里走"
+                    % (info.zone_label(zid), x, y))
+        # ★ 按**可能被选成巡逻点的格子**算「整块」（能站人 − 中心；中心是守中心的目标，
+        #   不是巡逻点）。全禁掉 = 这一区再也没有巡逻候选点。
+        if patrol and covered >= len(patrol):
+            add(SEV_BLOCK, "zone_no_go_all",
+                "区划 %s 除中心外能站人的 %d 格全被设为禁行区：这一区的守将将无处巡逻"
+                "（至少留一格）" % (info.zone_label(zid), len(patrol)))
 
 
 def _ck_objectives(add, lv: LevelModel, info: Optional[MapInfo]) -> None:

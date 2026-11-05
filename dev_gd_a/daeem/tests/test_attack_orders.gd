@@ -86,6 +86,11 @@ func _test_chase_direct_line(cfg) -> void:
 	ok(u.moving and u.has_goal, "追击后进入移动状态")
 
 	var wall_tile := Vector2i(spot.x + 1, spot.y)
+	# ★ 2026.11：建筑跟随区划归属 —— 要造一堵**敌方**墙，先把那格所在区划判给敌方，
+	#   否则 add_building 会把这堵墙归到区划主人（本用例里是 p1）名下。
+	var wz = w.zones.zone_at(wall_tile.x, wall_tile.y)
+	if wz != null:
+		(wz as Dictionary)["owner"] = "enemy"
 	var wall = w.add_building("wall", wall_tile.x, wall_tile.y, "enemy")
 	ok(wall != null, "在中间放一堵敌方的城墙")
 	ok(not PathfinderRes.passable(w.map, w.buildings, cfg, wall_tile.x, wall_tile.y, u.faction),
@@ -251,6 +256,12 @@ func _test_attack_move_resumes(cfg) -> void:
 	g.stop()
 	g.pos = GridRes.center_of(Vector2i(4, 13))
 	g.sync_tile(w.map)
+
+	# ★ 2026.11：先清掉地图上的敌方预置建筑 —— 新索敌优先级会优先打哨塔 / 大本营，
+	#   这条路线上原本的敌塔会让单位半路停下来，测不到「打完之后继续走」。
+	for b in w.building_list.duplicate():
+		if String(b.owner) != String(w.my_faction):
+			w.remove_building(b, true)
 
 	var blocker = w.spawn_enemy(7, 13)
 	var goal := GridRes.center_of(Vector2i(12, 13))

@@ -140,6 +140,9 @@ static func _impact(world, cfg: ConfigRes, p) -> void:
 			world.push_event({"type": "building_down", "building": p.target, "source": p.source})
 		# ★ 受击事件（视图按阵营过滤后播受击音）：命中即推，打死也推。
 		world.push_event({"type": "building_hit", "building": p.target, "source": p.source})
+		# ★★ 2026.11：建筑挨打 ⇒ 让区划守军知道（攻城单位会触发主动出击）。
+		if world.has_method("on_building_attacked"):
+			world.on_building_attacked(p.target, p.source)
 		return
 
 	# ★★ 2026.11：**直线穿透子弹**（扭力弩炮）—— 见下面那个函数的说明。

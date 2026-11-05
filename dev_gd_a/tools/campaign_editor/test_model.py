@@ -685,6 +685,107 @@ def t_zone_owner_materialization() -> None:
            "★ 载入补齐 c%d = 地图 owner / 空串" % zid)
 
 
+def t_zone_no_go() -> None:
+    """★★ 区划**禁行区**（`zones[].no_go`）：读写 / 排序 / 校验 / 换图清空。
+
+    语义（用户口径）：「阵地性 AI 不会巡逻至其区划的禁行区」——只影响巡逻目标点，
+    所以「整块都被禁」按**巡逻候选格**（能站人 − 中心）算，而不是按全部地块。
+    """
+    print("\n[1d] ★★ 区划禁行区：读写 / 校验 / 换图清空")
+    f = FACTS
+    info = f.info
+    zid = 4                                  # 合成图里 3×3 全是草地的一区（中心 (3,3)）
+    eq(info.zone_centers.get(zid), (3, 3), "（前提）z4 的中心是 (3,3)")
+
+    lv = M.LevelModel("nog", f.map_id)
+    lv.name = "nog"
+    lv.ensure_zone_owners(info, force=True)
+    eq(lv.zone_no_go, {}, "★ 新关卡没有禁行区")
+    eq(lv.zone_no_go_zids(), [], "★ 没配时 zone_no_go_zids 为空")
+
+    # ---- 写：去重 + 排序（导出顺序必须确定）----
+    lv.set_zone_no_go_tiles(zid, [(5, 5), (4, 4), (4, 4)])
+    eq(lv.zone_no_go_tiles(zid), [(4, 4), (5, 5)], "★★ 去重 + 按 (y,x) 排序")
+    eq(lv.zone_no_go_count(zid), 2, "★ 计数 = 2")
+    ok(lv.has_zone_no_go(zid, 4, 4), "★ has_zone_no_go 查得到")
+    ok(not lv.has_zone_no_go(zid, 6, 6), "★ 没写的那一格是 false")
+
+    # ---- 导出：只给有禁行格的区划写 no_go ----
+    out = lv.to_dict()
+    by_zid = {int(e["id"]): e for e in out["zones"]}
+    eq(by_zid[zid].get("no_go"), [[4, 4], [5, 5]], "★★ 导出 no_go = [[x,y],...]（排序后）")
+    ok(all("no_go" not in e for z, e in by_zid.items() if z != zid),
+       "★★ 没配禁行区的区划**不写**这个键（不是空数组）")
+
+    # ---- 导入：原样读回（导出 → 读入逐位一致）----
+    lv2 = M.LevelModel("nog2", f.map_id)
+    M._load_zone_owners(out["zones"], lv2)
+    eq(lv2.zone_no_go_tiles(zid), [(4, 4), (5, 5)], "★★ 导出 → 读入 原样带回")
+    # 手改的脏点：负坐标 / 不是数组 → 丢；同一个点两遍 → 只算一次
+    M._load_zone_owners([{"id": zid, "owner": "",
+                          "no_go": [[1, 2], [1, 2], [-1, 3], "x"]}], lv2)
+    eq(lv2.zone_no_go_tiles(zid), [(1, 2)], "★ 脏点丢掉、重复点只算一次")
+
+    # ---- 涂刷：toggle / 右键 / 清空 ----
+    lv.set_zone_no_go_tiles(zid, [(4, 4)])
+    ok(lv.toggle_zone_no_go(zid, 5, 4), "★ toggle 加入 → 返回 True")
+    ok(lv.has_zone_no_go(zid, 5, 4), "★ 加入后查得到")
+    ok(not lv.toggle_zone_no_go(zid, 5, 4), "★ 再 toggle 一次 → 移出（返回 False）")
+    ok(not lv.has_zone_no_go(zid, 5, 4), "★ 移出后查不到")
+    ok(not lv.toggle_zone_no_go(zid, 6, 6, force_remove=True),
+       "★ 右键擦一个本来没有的格子 → 不报错、返回 False")
+    ok(lv.toggle_zone_no_go(zid, 6, 6, force_remove=True) is False
+       and not lv.has_zone_no_go(zid, 6, 6), "★ force_remove 不会把它加进去")
+    ok(lv.clear_zone_no_go(zid), "★ 清空某区 → 返回 True")
+    eq(lv.zone_no_go_count(zid), 0, "★ 清空后计数 0")
+    ok(not lv.clear_zone_no_go(zid), "★ 再清一次 → 返回 False（本来就没有）")
+
+    # ---- 换图 / 换关卡：禁行区跟着重建（旧地图的区划号没有意义）----
+    lv.set_zone_no_go_tiles(zid, [(4, 4)])
+    ok(lv.ensure_zone_owners(info, force=True), "★★ 换图 force=True → 清空禁行区算有改动")
+    eq(lv.zone_no_go, {}, "★★ 换图后禁行区整张清掉（不把旧图的配置背过去）")
+    # 非 force：只清「地图里已经没有的区划号」，已有的保留
+    lv.set_zone_no_go_tiles(999999, [(1, 1)])
+    lv.set_zone_no_go_tiles(zid, [(4, 4)])
+    lv.ensure_zone_owners(info)
+    ok(999999 not in lv.zone_no_go, "★★ 地图里不存在的区划号 → 清掉（与 owner 同口径）")
+    eq(lv.zone_no_go_tiles(zid), [(4, 4)], "★ 地图里**还有**的区划 → 保留")
+
+    # ---- 校验：五个 code ----
+    def zones_with(spec: dict) -> list:
+        out_zones = [{"id": f.obj_zone, "owner": f.player},
+                     {"id": f.attack_zone, "owner": ""}]
+        for z, tiles in spec.items():
+            out_zones.append({"id": int(z), "owner": "",
+                              "no_go": [[int(x), int(y)] for x, y in tiles]})
+        return out_zones
+
+    good = check(base_level(zones=zones_with({zid: [(4, 4)]})))
+    ok(not any(i.code.startswith("zone_no_go_") for i in good),
+       "★★ 合法禁行区不报任何 zone_no_go_*（实际：%s）"
+       % [i.code for i in good if i.code.startswith("zone_no_go_")])
+
+    issues = check(base_level(zones=zones_with({zid: [(3, 3)]})))
+    ok(has(issues, "zone_no_go_center"), "★★ 盖住区划中心 → zone_no_go_center")
+    issues = check(base_level(zones=zones_with({zid: [(0, 0)]})))
+    ok(has(issues, "zone_no_go_tile_not_in_zone"),
+       "★★ 格子不属于这条区划 → zone_no_go_tile_not_in_zone")
+    issues = check(base_level(zones=zones_with({zid: [(99, 99)]})))
+    ok(has(issues, "zone_no_go_tile_invalid"), "★★ 格子在地图外 → zone_no_go_tile_invalid")
+    issues = check(base_level(zones=zones_with({999: [(0, 0)]})))
+    ok(has(issues, "zone_no_go_zone_missing"), "★★ 指向不存在的区划 → zone_no_go_zone_missing")
+    # 整块：巡逻候选 = 能站人 − 中心 ⇒ 把 z4 除 (3,3) 外的 8 格全禁
+    all_patrol = [p for p in info.zone_patrol_tiles(zid)]
+    eq(len(all_patrol), 8, "（前提）z4 除中心外有 8 格可站人的地")
+    issues = check(base_level(zones=zones_with({zid: all_patrol})))
+    ok(has(issues, "zone_no_go_all"), "★★ 巡逻候选全被禁 → zone_no_go_all")
+    # ★ 反例：山地 / 水域不算巡逻候选 —— 把它们（连同中心）排除后，剩下的格子
+    #   全禁才算「整块」；只禁山地不该报（z0 有 (1,0) 山地 + (2,0) 水域）。
+    mountain_only = check(base_level(zones=zones_with({f.obj_zone: [(1, 0)]})))
+    ok(not has(mountain_only, "zone_no_go_all"),
+       "★ 只禁一格山地不算「整块都禁行」（山地本来就不是巡逻点）")
+
+
 def t_config_and_maps() -> None:
     print("\n[1b] 地图列表 / config 只读快照")
     info = levelfile.load_config(TMP_PROJECT)
@@ -1559,6 +1660,7 @@ def main() -> int:
         t_faction_start_resources()
         t_override_rules()
         t_zone_owner_materialization()
+        t_zone_no_go()
         t_config_and_maps()
         t_validation_pass()
         t_validation_map()
