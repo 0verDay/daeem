@@ -499,8 +499,8 @@ func _test_panels(cfg) -> void:
 	main.input_ctrl.select_units([])
 
 	for path in ["HudRoot/SquadPanel", "HudRoot/MapPlaceholder", "HudRoot/DetailPanel",
-			"HudRoot/FactionPlaceholder", "HudRoot/CommandCard", "HudRoot/PageTabs",
-			"HudRoot/SettingsButton", "HudRoot/ResourceBar"]:
+			"HudRoot/FactionPlaceholder", "HudRoot/DetailPanelV2", "HudRoot/CommandCard",
+			"HudRoot/PageTabs", "HudRoot/SettingsButton", "HudRoot/ResourceBar"]:
 		ok(main.hud.get_node_or_null(path) != null, "节点树里有 %s" % path)
 
 	_test_resource_bar(main)
@@ -526,8 +526,14 @@ func _test_panels(cfg) -> void:
 		"地图占位落在 (0, 680)")
 	v2_near(main.hud.map_placeholder.size, UiLayoutRes.MAP_RECT.size, 1.0,
 		"地图占位实际尺寸 = 400×400")
-	v2_near(main.hud.faction_placeholder.position, UiLayoutRes.FACTION_RECT.position, 1.0,
-		"★★ 阵营盾徽落在 (400, 820)，紧贴地图、在详细信息左侧")
+	v2_near(main.hud.detail_v2.position, UiLayoutRes.DETAIL_V2_RECT.position, 1.0,
+		"★★ 新版详细信息在 (400, 820)")
+	v2_near(main.hud.detail_v2.size, UiLayoutRes.DETAIL_V2_RECT.size, 1.0,
+		"★★ 新版详细信息仍是 616.5×260")
+	v2_near(main.hud.faction_placeholder.position, UiLayoutRes.FACTION_V2_RECT.position, 1.0,
+		"★★ 默认态阵营盾徽在左列 (402, 820)")
+	v2_near(main.hud.faction_placeholder.size, UiLayoutRes.FACTION_V2_RECT.size, 1.0,
+		"★★ 阵营盾徽与列表/资源条同宽 185")
 	v2_near(main.hud.command_card.position, UiLayoutRes.CARD_RECT.position, 1.0,
 		"命令卡落在 (1551.67, 820)")
 	v2_near(main.hud.page_tabs.position, UiLayoutRes.TABS_RECT.position, 1.0,
@@ -565,7 +571,6 @@ func _test_panels(cfg) -> void:
 	_test_detail_basic_stats(main)
 	_test_detail_two_columns(main)
 	_test_detail_vertical_fit(main)
-	_test_buff_long_press(main)
 	_test_clicked_unit_detail(main)
 	_test_enemy_selection(main)
 	_test_settings_inert(main)
@@ -581,12 +586,8 @@ func _test_panels(cfg) -> void:
 			and main.hud.detail_panel.detail_text().contains("移速"),
 		"★ 右栏两列详情：左列血量、右列移速（实际：%s）"
 			% main.hud.detail_panel.detail_text().replace("\n", "|"))
-	# ★ 默认配置没有将领特性：buff 条只剩士气一条。
-	eq(main.hud.detail_panel.buff_count(), 1,
-		"★ 动态 buff 槽位：只有士气一条")
-	var buff_bar = main.hud.detail_panel.buff_bar_control()
-	ok(buff_bar != null and String(buff_bar.entry(0).get("id", "")) == "morale",
-		"★ 那条 buff 的 id = morale（文字「士」，底色随士气）")
+	eq(main.hud.detail_panel.buff_count(), 0,
+		"★ 士气系统移除后，动态 buff 槽位为空")
 	ok(main.hud.detail_panel.unit_name_text() != "", "右栏写着单位名称")
 
 	main.input_ctrl.select_units([])
@@ -605,6 +606,16 @@ func _test_panels(cfg) -> void:
 	ok(main.hud.blocks_edge_scroll(card0.get_center()), "鼠标在命令卡上 → 不滚屏")
 	ok(not main.hud.blocks_edge_scroll(UiLayoutRes.panel_content_pos() + Vector2(8.0, 8.0)),
 		"★ 鼠标在详细信息面板**只有文字**的地方 → 照样滚屏（不然底边滚不动）")
+	# 新版：点部队（队长）不出详情；换一个具体建筑让详情可见，再验网格拦滚屏。
+	var edge_b = null
+	for b in main.world.building_list:
+		if FactionRes.same_side(String(b.owner), main.world.my_faction):
+			edge_b = b
+			break
+	if edge_b != null:
+		main.input_ctrl.select_building(edge_b)
+		main.hud.refresh()
+	ok(main.hud.is_detail_visible(), "（前提）具体建筑选中后详情可见")
 	ok(main.hud.blocks_edge_scroll(UiLayoutRes.troop_cell_global_rect(0).get_center()),
 		"★ 鼠标在部队 / 单位网格上 → 不滚屏（那能点 / 能拖）")
 	ok(not main.hud.blocks_edge_scroll(Vector2(vp.x * 0.5, vp.y * 0.5)), "鼠标在地图中间 → 滚屏")
@@ -635,8 +646,8 @@ func _test_resource_bar(main) -> void:
 	if bar == null:
 		return
 
-	v2_near(bar.position, UiLayoutRes.RES_BAR_RECT.position, 1.0, "资源面板落在 (400, 764)")
-	v2_near(bar.size, UiLayoutRes.RES_BAR_RECT.size, 1.0, "资源面板尺寸 = 162.5×56（两行竖排）")
+	v2_near(bar.position, UiLayoutRes.RES_BAR_RECT.position, 1.0, "资源面板落在 (402, 764)")
+	v2_near(bar.size, UiLayoutRes.RES_BAR_RECT.size, 1.0, "资源面板尺寸 = 185×56（与左列列表同宽）")
 	# ★★ 本版：资源栏整体描边加厚到 2px，并用看得清的 line()。
 	var rsb: StyleBoxFlat = bar.get_theme_stylebox("panel")
 	ok(rsb != null, "资源栏有整体底板 / 描边")
@@ -644,24 +655,22 @@ func _test_resource_bar(main) -> void:
 		eq(rsb.border_width_left, 2, "★★ 资源栏整体描边 2px")
 		eq(rsb.border_color, UiStyleRes.line(),
 			"★★ 资源栏描边用 line()（不再用几乎看不见的 line_soft）")
-	eq(UiLayoutRes.RES_BAR_RECT.size.x, UiLayoutRes.FACTION_RECT.size.x,
-		"★★ 资源条宽度 = 阵营盾徽宽度（162.5）")
+	eq(UiLayoutRes.RES_BAR_RECT.size.x, 185.0,
+		"★★ 资源条宽度 = 左列列表宽度（185）")
+	eq(UiLayoutRes.RES_BAR_RECT.position.x, UiLayoutRes.DETAIL_V2_RECT.position.x + 2.0,
+		"★★ 资源条左缘对齐左列列表（x=402）")
 	eq(UiLayoutRes.RES_BAR_RECT.position.x + UiLayoutRes.RES_BAR_RECT.size.x,
-		UiLayoutRes.FACTION_RECT.position.x + UiLayoutRes.FACTION_RECT.size.x,
-		"★★ 资源条右缘与盾徽右缘平齐（562.5）")
-	eq(UiLayoutRes.RES_BAR_RECT.position.x, UiLayoutRes.MAP_RECT.size.x,
-		"★ 资源面板仍从地图右缘开始（x=400，紧贴地图）")
-	eq(UiLayoutRes.RES_BAR_RECT.position.x, UiLayoutRes.FACTION_RECT.position.x,
-		"★ 资源面板在阵营盾徽正上方")
+		UiLayoutRes.DETAIL_V2_RECT.position.x + 2.0 + 185.0,
+		"★★ 资源条右缘与左列列表右缘平齐（587）")
 	ok(UiLayoutRes.RES_BAR_RECT.size.x < UiLayoutRes.DETAIL_RECT.size.x,
 		"★ 资源面板**不再铺满整宽**（%.0f < %.0f）—— 需求：面板不需要那么长" % [
 			UiLayoutRes.RES_BAR_RECT.size.x, UiLayoutRes.DETAIL_RECT.size.x])
 	eq(UiLayoutRes.RES_BAR_RECT.position.y + UiLayoutRes.RES_BAR_RECT.size.y,
-		UiLayoutRes.DETAIL_RECT.position.y,
-		"★ 资源面板下缘正好压在详细信息面板顶边（%.0f）—— 这就是「紧贴」" % [
-			UiLayoutRes.DETAIL_RECT.position.y])
+		UiLayoutRes.DETAIL_V2_RECT.position.y,
+		"★ 资源面板下缘正好压在新版详细信息面板顶边（%.0f）—— 这就是「紧贴」" % [
+			UiLayoutRes.DETAIL_V2_RECT.position.y])
 	ok(not UiLayoutRes.MAP_RECT.intersects(UiLayoutRes.RES_BAR_RECT),
-		"★ 资源面板与左下小地图不重叠（左缘 x=400 = 小地图右缘）")
+		"★ 资源面板与左下小地图不重叠（左缘 x=402 > 小地图右缘 400）")
 	ok(UiLayoutRes.RES_BAR_RECT.position.y >= 0.0
 			and UiLayoutRes.RES_BAR_RECT.position.y + UiLayoutRes.RES_BAR_RECT.size.y
 				<= UiLayoutRes.DESIGN_H,
@@ -870,8 +879,6 @@ func _test_anchors(main) -> void:
 	near(main.hud.detail_panel.queue_position_x(),
 		UiLayoutRes.detail_queue_x(UiLayoutRes.DETAIL_RIGHT_W), 1.0,
 		"★ 超宽窗口：招募队列位置固定（右栏 603 下的 286）")
-	v2_near(main.hud.faction_placeholder.position, UiLayoutRes.FACTION_RECT.position, 1.0,
-		"★ 超宽窗口：阵营盾徽仍贴地图右缘（x = 400）")
 	v2_near(main.hud.squad_panel.position,
 		Vector2(UiLayoutRes.SQUAD_RECT.position.x + 640.0, UiLayoutRes.SQUAD_RECT.position.y), 1.0,
 		"超宽窗口：将领列表仍贴右上")
@@ -990,65 +997,6 @@ func _test_avatar_text_fit(cfg) -> void:
 	await process_frame
 	ok(panel.avatar_draw_count() > before, "★ 头像那一块真的画了一帧（_draw 跑过）")
 
-	eq(panel.buff_count(), 0, "（前提）动态 buff 槽位默认是空的（不再有写死的占位）")
-	var empty_bar = panel.buff_bar_control()
-	eq(empty_bar.mouse_filter, Control.MOUSE_FILTER_IGNORE,
-		"★ 没有 buff 时槽位不吃鼠标（不挡底下的东西）")
-	panel.set_buffs([
-		{
-			"id": "morale", "text": "士", "color": UiStyleRes.morale_plate(0.5, true),
-			"name": "士气 50/100", "tip_title": "士气",
-			"tip_body": "当前 50 / 100\n≥100：快速回血，受到伤害 -50%\n≤50：受到伤害 +50%",
-		},
-	])
-	eq(panel.buff_count(), 1, "★ 动态 buff 槽位能加条目")
-	var bb = panel.buff_bar_control()
-	eq(bb.mouse_filter, Control.MOUSE_FILTER_STOP,
-		"★ 有 buff 时槽位收鼠标，才能收到悬停")
-	eq(String(bb.entry(0).get("text", "")), "士", "★ 士气 buff 的方块字是「士」")
-	var br: Rect2 = bb.buff_rect(0)
-	eq(br.size, Vector2(UiLayoutRes.BUFF_SIZE, UiLayoutRes.BUFF_SIZE),
-		"★ 每个 buff 是 40×40 的方块")
-	ok(br.position.x >= 0.0 and br.position.x + br.size.x <= bb.size.x + 0.01,
-		"★ 第 1 个 buff 落在槽位可用宽之内")
-
-	# ★★ 悬停浮窗：与命令卡那块悬停面板同一套（标题 + 多行正文，向下长）
-	bb.hover_at(0)
-	await process_frame
-	ok(bb.tip_showing(), "★ 鼠标停在 buff 上 → 悬停浮窗出现")
-	eq(bb.hover_index(), 0, "★ 当前悬停的是第 0 个 buff")
-	eq(bb.tip_title_text(), "士气", "★ 浮窗标题 = buff 名")
-	ok(bb.tip_body_text().contains("当前 50 / 100"),
-		"★ 浮窗正文第一行是当前值（实际：%s）" % bb.tip_body_text().replace("\n", "|"))
-	ok(bb.tip_body_text().contains("≥100") and bb.tip_body_text().contains("≤50"),
-		"★ 浮窗正文列出各档效果")
-	var tip = bb.tip_control()
-	eq(tip.position.x, br.position.x, "★ 浮窗左缘 = 那个 buff 方块的左缘")
-	eq(tip.position.y, UiLayoutRes.BUFF_SIZE + UiLayoutRes.BUFF_TIP_GAP,
-		"★ 浮窗贴在 buff 方块下缘（向下长）")
-	eq(tip.size.x, UiLayoutRes.BUFF_TIP_W, "★ 浮窗宽固定 230")
-	ok(tip.size.y > 0.0, "★ 浮窗高度按内容算（> 0）")
-	ok(bb.position.y + tip.position.y + tip.size.y <= UiLayoutRes.DETAIL_CONTENT_H + 0.01,
-		"★ 浮窗不越出右栏内容高（%.0f ≤ %.0f）" % [
-			bb.position.y + tip.position.y + tip.size.y, UiLayoutRes.DETAIL_CONTENT_H])
-	bb.clear_hover()
-	ok(not bb.tip_showing(), "★ 鼠标移开 → 浮窗收起")
-	eq(bb.hover_index(), -1, "★ 悬停下标清空")
-
-	# 没给 tip_title / tip_body 时退回 name（其它系统以后加 buff 不必强制写说明）
-	panel.set_buffs([
-		{"id": "x", "text": "X", "color": UiStyleRes.morale_plate(0.5, true),
-			"name": "测试 buff"},
-	])
-	bb.hover_at(0)
-	await process_frame
-	eq(bb.tip_title_text(), "测试 buff", "★ 没写 tip_title 时退回 name")
-	eq(bb.tip_body_text(), "", "★ 没有 tip_body 时正文为空")
-	bb.clear_hover()
-
-	panel.set_buffs([])
-	eq(panel.buff_count(), 0, "★ 传空数组 = 槽位清空")
-	eq(bb.mouse_filter, Control.MOUSE_FILTER_IGNORE, "★ 清空后又回到不吃鼠标")
 	panel.queue_free()
 	await process_frame
 
@@ -1071,16 +1019,6 @@ func _test_hp_bars(cfg) -> void:
 	var hi := UiStyleRes.hp_high()
 	var lo := UiStyleRes.hp_low()
 	ok(hi.g > hi.r and lo.r > lo.g, "★ 绿档偏绿、红档偏红（一眼分得出快死了）")
-
-	# ②b 士气填充色：满士气偏绿 → 零士气偏红（部队图标的背景，见 view/morale_fill.gd）
-	var mp_full := UiStyleRes.morale_plate(1.0)
-	var mp_zero := UiStyleRes.morale_plate(0.0)
-	ok(mp_full.g > mp_full.r, "★ 满士气填充 → 偏绿")
-	ok(mp_zero.r > mp_zero.g, "★ 零士气填充 → 偏红")
-	near(UiStyleRes.morale_plate(1.0, true).a, UiStyleRes.MORALE_ALPHA_STRONG, 1e-6,
-		"★ 部队图标的士气填充用较实的 alpha（MORALE_ALPHA_STRONG）")
-	near(UiStyleRes.morale_plate(1.0, false).a, UiStyleRes.MORALE_ALPHA_NORMAL, 1e-6,
-		"★ 普通档 alpha 仍在（给需要更淡的地方用）")
 
 	# ③ 网格：血条真的画了 + 绑定单位血量
 	var font: Font = FontLoaderRes.load_font(cfg)
@@ -1116,12 +1054,7 @@ func _test_hp_bars(cfg) -> void:
 	# 血量变了 → 比例跟着变（绑定不是画一次就定格）
 	u.hp = 10.0
 	near(grid._hp_ratio_at(0), 0.1, 0.001, "★ 掉血后比例跟着变（10/100 = 0.1）")
-	# 单个单位**不再有士气背景**（本版需求：只有部队图标才有士气填充）
-	u.morale = u.morale_max * 0.25
-	eq(grid._morale_ratio_at(0), 1.0,
-		"★ 单个单位格子不再画士气背景（只有部队格才有）")
-
-	# ③b 部队图标：序号 + 士气填充（整支部队共享的一个值）
+	# ③b 部队图标：序号
 	eq(IconBadgeRes.troop_number_text(1), "1", "★ 部队序号：第 1 支写 1")
 	eq(IconBadgeRes.troop_number_text(9), "9", "★ 部队序号：第 9 支写 9")
 	eq(IconBadgeRes.troop_number_text(10), "0",
@@ -1130,12 +1063,9 @@ func _test_hp_bars(cfg) -> void:
 	leader.name = "测试队长"
 	leader.hp = 100.0
 	leader.hp_max = 100.0
-	leader.morale_max = 100.0
-	leader.morale = 50.0
 	grid.set_troops([{"leader": leader, "number": 3, "units": [leader]}])
 	eq(grid.cell_kind(0), "troop", "★ 多选部队时格子是部队格")
 	eq(grid.cell_short(0), "3", "★★ 部队图标 = 序号（不是将领名字首字）")
-	near(grid._morale_ratio_at(0), 0.5, 0.001, "★ 部队图标的士气比例绑定部队士气（50%）")
 
 	# ③c 横向滑动：11 个单位 = 4 列，可见 3 列 ⇒ 能滑一列
 	var many: Array = []
@@ -1184,7 +1114,7 @@ func _test_hp_bars(cfg) -> void:
 	eq(grid.scroll_x(), 100.0, "★ 松手后停在拖到的位置（自由滑）")
 	grid.queue_free()
 
-	# ④ 右栏大头像：show 时才画血条；**没有士气背景板**（本版需求）
+	# ④ 右栏大头像：show 时才画血条
 	var panel = DetailPanelRes.new()
 	root.add_child(panel)
 	await process_frame
@@ -1200,8 +1130,6 @@ func _test_hp_bars(cfg) -> void:
 	panel._unit_avatar.queue_redraw()
 	await process_frame
 	eq(panel.avatar_bar_draw_count(), ab2, "★ show=false（区划 / 未选中）时不画头像血条")
-	ok(not panel.has_method("set_unit_avatar_morale"),
-		"★ 右栏头像不再有士气背景板（单位 / 建筑只有图标 + 血条）")
 	panel.queue_free()
 	await process_frame
 
@@ -1487,33 +1415,34 @@ func _test_squad_rows(main) -> void:
 
 
 ## ★★ 详细信息栏的显隐：没有可查看的选中对象时整块隐藏；
-##   己方部队 / 建筑 / 区划 / 敌方单位都算「能查看」。
-##   隐藏后它那块区域恢复地图交互（滚轮 / 手势），而盾徽始终显示。
+##   部队（队长 / 批量）→ 不显示详情，左列用阵营盾徽；
+##   具体单位 / 建筑 / 区划 / 敌方 → 显示详情。
 func _test_detail_visibility(main) -> void:
 	var hud = main.hud
-	var panel = hud.detail_panel
+	var panel = hud.detail_v2
+	var faction = hud.faction_placeholder
 	var world = main.world
-	var detail_center: Vector2 = UiLayoutRes.DETAIL_RECT.get_center()
+	var detail_center: Vector2 = UiLayoutRes.DETAIL_V2_RECT.get_center()
+	var faction_center: Vector2 = UiLayoutRes.FACTION_V2_RECT.get_center()
 
-	# ① 没有任何选中 → 隐藏
+	# ① 没有任何选中 → 详情隐藏、盾徽显示
 	main.input_ctrl.select_units([])
 	hud.refresh()
 	ok(not panel.visible, "★★ 没有选中任何东西 → 详细信息栏隐藏")
-	ok(hud.faction_placeholder.visible, "★ 盾徽始终显示（不跟详情栏一起隐藏）")
+	ok(faction.visible, "★★ 默认态显示阵营盾徽")
 	ok(not hud.blocks_wheel_zoom(detail_center), "★ 隐藏后详情栏区域不再拦滚轮缩放")
 	ok(not hud.point_hits_ui(detail_center), "★ 隐藏后详情栏区域恢复地图手势")
-	ok(hud.blocks_wheel_zoom(UiLayoutRes.FACTION_RECT.get_center()),
-		"★ 盾徽自己仍然拦滚轮")
-	ok(hud.point_hits_ui(UiLayoutRes.FACTION_RECT.get_center()),
-		"★ 盾徽自己仍然算 UI")
+	ok(hud.blocks_wheel_zoom(faction_center), "★ 默认态盾徽自己拦滚轮")
+	ok(hud.point_hits_ui(faction_center), "★ 默认态盾徽自己算 UI")
 
-	# ② 选中己方部队 → 显示
+	# ② 选中己方部队（队长）→ 显示详情、盾徽让位
 	var g1 = world.unit_by_id("general-1")
 	main.input_ctrl.select_units([g1])
 	hud.refresh()
-	ok(panel.visible, "★★ 选中己方部队 → 详细信息栏显示")
-	ok(hud.blocks_wheel_zoom(detail_center), "★ 显示时详情栏区域重新拦滚轮")
-	ok(hud.point_hits_ui(detail_center), "★ 显示时详情栏区域重新算 UI")
+	ok(panel.visible, "★★ 选中己方部队（队长）→ 显示右侧详细信息")
+	ok(not faction.visible, "★★ 部队详情显示时盾徽隐藏")
+	ok(hud.blocks_wheel_zoom(detail_center), "★ 详情显示时详情中心拦滚轮")
+	ok(hud.point_hits_ui(detail_center), "★ 详情显示时详情中心算 UI")
 
 	# ③ 选中己方建筑 → 显示
 	var own_b = null
@@ -1525,6 +1454,9 @@ func _test_detail_visibility(main) -> void:
 		main.input_ctrl.select_building(own_b)
 		hud.refresh()
 		ok(panel.visible, "★★ 选中己方建筑 → 详细信息栏显示")
+		ok(not faction.visible, "★★ 详情显示时盾徽隐藏")
+		ok(hud.blocks_wheel_zoom(detail_center), "★ 详情显示时详情中心拦滚轮")
+		ok(hud.point_hits_ui(detail_center), "★ 详情显示时详情中心算 UI")
 
 	# ④ 选中区划 → 显示
 	var zone = _zone_with_center(world)
@@ -1532,6 +1464,7 @@ func _test_detail_visibility(main) -> void:
 		main.input_ctrl.select_zone(zone)
 		hud.refresh()
 		ok(panel.visible, "★★ 选中区划 → 详细信息栏显示")
+		ok(not faction.visible, "★★ 区划详情显示时盾徽隐藏")
 
 	# ⑤ 选中敌方建筑 → 显示（敌人也能看详细信息）
 	var foe_b = null
@@ -1543,11 +1476,13 @@ func _test_detail_visibility(main) -> void:
 		main.input_ctrl.select_enemy(foe_b)
 		hud.refresh()
 		ok(panel.visible, "★★ 选中敌方建筑 → 详细信息栏显示")
+		ok(not faction.visible, "★★ 敌方详情显示时盾徽隐藏")
 
 	# ⑥ 再清空 → 重新隐藏
 	main.input_ctrl.select_units([])
 	hud.refresh()
 	ok(not panel.visible, "★★ 清空选中 → 详细信息栏重新隐藏")
+	ok(faction.visible, "★★ 清空选中 → 阵营盾徽重新显示")
 
 
 func _test_page_tabs_and_card(main, cfg) -> void:
@@ -3028,9 +2963,7 @@ func _test_box_select(main) -> void:
 			"★ 写着「现有单位数/编制上限」（y = 编制上限 11）")
 		eq(roster.icon_text(), "1",
 			"★★ 部队图标 = **序号**（第 1 支写 1），不再是将领名字首字")
-		eq(roster.kind(), "troop", "★ 这一格是部队格（有士气填充）")
-		ok(roster.morale_ratio() >= 0.0 and roster.morale_ratio() <= 1.0,
-			"★ 部队图标的士气比例在 0..1（实际 %.2f）" % roster.morale_ratio())
+		eq(roster.kind(), "troop", "★ 这一格是部队格")
 		eq(roster.short_name(t1[0]), "将", "★ 单位图标仍用「将」字（没有头像，用字代替）")
 		eq(roster.short_name(t1[1]), "枪",
 			"★ 附属兵仍用 config.recruit.list 里的 short（长枪兵 = 枪）")
@@ -3551,7 +3484,7 @@ func _test_box_select_buildings(main) -> void:
 	eq(panel.grid_mode(), "buildings", "★ 选中建筑时左栏下半是**建筑模式**")
 	ok(roster.visible, "★ 左栏左上那一格出现（主选中那个建筑）")
 	eq(roster.leader_name(), expect[0].display_name(), "★ 左上那一格写主选中建筑的名字")
-	eq(roster.kind(), "building", "★ 这一格是建筑格（**没有士气填充**）")
+	eq(roster.kind(), "building", "★ 这一格是建筑格")
 	eq(roster.icon_text(), expect[0].display_name().substr(0, 1), "方框里写名字首字")
 	ok(roster.shows_hp(), "★ 建筑图标底部有血条")
 	eq(roster.count_text(), "%d/%d" % [int(round(expect[0].hp)), int(round(expect[0].hp_max))],
@@ -3574,7 +3507,6 @@ func _test_box_select_buildings(main) -> void:
 	eq(grid.cell_name(0), expect[1].display_name(), "格子里写着建筑名")
 	ok(grid.cell_is_building(0), "那一格是建筑格（不是单位格）")
 	eq(grid.cell_short(0), expect[1].display_name().substr(0, 1), "建筑格方框里写名字首字")
-	eq(grid._morale_ratio_at(0), 1.0, "★ 建筑格不画士气背景（只有部队才有）")
 	eq(grid.cell_sub_text(0), "%d/%d" % [int(round(expect[1].hp)), int(round(expect[1].hp_max))],
 		"★ 建筑格第二行是血量 x/y")
 
@@ -3786,27 +3718,10 @@ func _test_detail_basic_stats(main) -> void:
 	ok(not gtext.contains("已选中"), "★ 不再有「已选中 N 支部队」")
 	# ★ 默认没有将领特性：只剩「两行基础 + 一行兵种特性」。
 	eq(gtext.split("\n").size(), 3,
-		"★ 两行基础 + 一行兵种特性（长枪兵：对骑兵伤害 +25%）")
-	ok(gtext.contains("对骑兵伤害 +25%"), "★ 攻击特性写在左列「攻击」下面（实际：%s）"
+		"★ 两行基础 + 一行兵种特性（长枪兵：对骑兵 +25%）")
+	ok(gtext.contains("对骑兵 +25%"), "★ 攻击特性写在左列「攻击」下面（实际：%s）"
 		% gtext.replace("\n", "|"))
 	ok(not gtext.contains("特性 "), "★ 不再有将领词条行")
-
-	# 防御增益：士气免伤 / 易伤（只有这一套数据）
-	var old_morale: float = g1.morale
-	g1.morale = g1.morale_max
-	main.hud.refresh()
-	ok(panel.detail_right_text().contains("士气免伤 +%d%%"
-			% int(round(main.cfg.morale_damage_reduction * 100.0))),
-		"★ 士气高昂 → 右列防御增益「士气免伤 +50%%」（实际：%s）"
-			% panel.detail_right_text().replace("\n", "|"))
-	g1.morale = 20.0
-	main.hud.refresh()
-	ok(panel.detail_right_text().contains("士气易伤 +%d%%"
-			% int(round(main.cfg.morale_vulnerability * 100.0))),
-		"★ 士气低落 → 右列防御增益「士气易伤 +50%%」（实际：%s）"
-			% panel.detail_right_text().replace("\n", "|"))
-	g1.morale = old_morale
-	main.hud.refresh()
 
 	var retinue: Array = world.retinue_of(g1.id)
 	ok(retinue.size() > 0, "（前提）1 号将领带着附属兵（%d 个）" % retinue.size())
@@ -3827,7 +3742,7 @@ func _test_detail_basic_stats(main) -> void:
 		var s_right: int = main.hud._defense_bonus_lines(soldier).size()
 		eq(stext.split("\n").size(), 2 + maxi(s_left, s_right),
 			"★ 兵也是两行基础 + 兵种特性行")
-		ok(stext.contains("伤害 +"), "★ 兵的详情同样显示它自己的特性（实际：%s）"
+		ok(stext.contains("对骑兵 +25%"), "★ 兵的详情同样显示它自己的特性（实际：%s）"
 			% stext.replace("\n", "|"))
 
 	var foe = world.spawn_enemy(g1.tx + 5, g1.ty)
@@ -3869,63 +3784,6 @@ func _sorted_keys(d: Dictionary) -> Array:
 	var out: Array = d.keys()
 	out.sort()
 	return out
-
-func _test_buff_long_press(main) -> void:
-	var hud = main.hud
-	var world = main.world
-	var g1 = world.unit_by_id("general-1")
-	main.input_ctrl.select_units([g1])
-	hud.refresh()
-	var bb = hud.detail_panel.buff_bar_control()
-	# ★ 默认没有将领特性：buff 条只有士气一条。
-	var morale_i := -1
-	if bb != null:
-		for i in bb.count():
-			if String(bb.entry(i).get("id", "")) == "morale":
-				morale_i = i
-				break
-	ok(bb != null and morale_i >= 0, "（前提）选中单位有一条士气 buff")
-	if bb == null or morale_i < 0:
-		return
-	var pos: Vector2 = bb.buff_global_rect(morale_i).get_center()
-
-	# ① 按下：不立刻弹（手机端要长按）
-	var press := InputEventScreenTouch.new()
-	press.pressed = true
-	press.position = pos
-	hud.handle_touch(press)
-	eq(hud._lp_src, "buff", "★ 手机按在 buff 上 → 进入 buff 长按监视")
-	ok(not bb.tip_showing(), "★ 按下的瞬间不弹（要等长按）")
-	hud._tick_long_press()
-	ok(not bb.tip_showing(), "★ 还没到 touch.long_press_sec → 不弹")
-
-	# ② 把按下时间往前拨，模拟长按到点
-	hud._lp_press_ms -= int(main.cfg.touch_long_press_sec * 1000.0) + 10
-	hud._tick_long_press()
-	ok(bb.tip_showing(), "★ 长按到点 → 弹出 buff 浮窗")
-	eq(bb.tip_title_text(), "士气", "★ 长按浮窗内容与鼠标悬停同一套")
-	ok(bb.tip_body_text().contains("当前"), "★ 长按浮窗也写当前士气")
-	# 长按期间模拟鼠标的抖动 / 移出不应该把浮窗收掉（手指还按着）
-	bb._on_mouse_exited()
-	ok(bb.tip_showing(), "★ 长按期间模拟鼠标移出不会收浮窗")
-
-	# ③ 松手：收起，并恢复鼠标悬停
-	var release := InputEventScreenTouch.new()
-	release.pressed = false
-	release.position = pos
-	hud.handle_touch(release)
-	ok(not bb.tip_showing(), "★ 松手 → 浮窗收起")
-	ok(not bb.touch_suppress_hover, "★ 松手后恢复鼠标悬停")
-
-	# ④ 按住后滑动超过阈值：取消长按，不弹
-	hud.handle_touch(press)
-	var drag := InputEventScreenDrag.new()
-	drag.position = pos + Vector2(main.cfg.touch_pan_min_px + 20.0, 0.0)
-	hud.handle_touch_drag(drag)
-	ok(not hud._lp_active, "★ 按住后滑动超过阈值 → 取消长按")
-	ok(not bb.tip_showing(), "★ 取消之后不弹")
-	hud.handle_touch(release)
-
 
 func _test_clicked_unit_detail(main) -> void:
 	var world = main.world

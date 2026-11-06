@@ -1,0 +1,52 @@
+{
+  "_comment": [
+    "★★ 新手教程 1：ce_xs_1_a →（剧本扩图）ce_xs_1_b。",
+    "  · 玩家固定 p1 = 王朝；开局没有大本营，c0 无主。",
+    "  · 目标 / 胜负由 logic/story/campaigns/tutorial.gd 逐段给出，因此 objectives 为空。",
+    "  · c0 初始人口 10 / 上限 12：够招 5 队协防军（每队 2 人口）。",
+    "  · map_path 直接指向 ce_xs_1 目录里的 A 图（同目录还放着 B 图）。"
+  ],
+  "name": "ce_xs_1",
+  "mode": "solo",
+  "map": "ce_xs_1_a",
+  "map_path": "res://data/maps/ce_xs_1/ce_xs_1_a.json",
+  "players": [
+    {
+      "faction": "p1"
+    }
+  ],
+  "factions": [
+    {
+      "id": "p1",
+      "ai": "none",
+      "clan": "dynasty",
+      "name": "王朝",
+      "color": "#ffd166",
+      "playable": true,
+      "start_food": 0,
+      "start_gold": 0
+    },
+    {
+      "id": "enemy",
+      "ai": "none",
+      "name": "敌军",
+      "color": "#ff5a5a",
+      "playable": false
+    }
+  ],
+  "allies": [],
+  "zones": [
+    {
+      "id": 0,
+      "owner": "",
+      "population": 10,
+      "population_cap": 12
+    }
+  ],
+  "start_units": [],
+  "start_buildings": [],
+  "objectives": [],
+  "fail_conditions": [],
+  "story_driven": true,
+  "no_player_base": true
+}

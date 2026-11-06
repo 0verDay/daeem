@@ -60,6 +60,13 @@ var _name_bars: Array[ColorRect] = []
 ## ★★ 每格的**单位剪影浮雕**层（`view/unit_card_icon.gd` 的 `IconView`）。
 ##   与 `_name_labels` 一一对应、同一序号；空串 = 这一格不画图标。
 var _icon_views: Array = []
+## ★★ 招募数量角标（同种多个时显示在格子右下角）。
+var _count_labels: Array[Label] = []
+## ★★ 演出呼吸高亮：要亮的招募 kind（空 = 不亮）+ 每格的描边层 + 向外扩散的方形波纹。
+var glow_kind: String = ""
+var _glow_panels: Array[Panel] = []
+var _glow_ripples: Array[Panel] = []
+var _glow_t: float = 0.0
 
 ## ★★ 手机端：按住某一格期间由 hud 置 true —— 「按下」产生的模拟鼠标会让这一格**立刻**
 ##    收到 mouse_entered，那是「悬停」，而需求是「长按才悬停」⇒ 按住期间忽略鼠标进入。
@@ -165,11 +172,58 @@ func setup() -> void:
 		FillButtonRes.on_fill_text(cell, key_label, UiStyleRes.text_faint())
 		FillButtonRes.on_fill_text(cell, name_label, UiStyleRes.text_faint())
 
+		# ★★ 招募数量角标：右下角的小牌子（只显示 ×N，不遮名字）。
+		var count_label := Label.new()
+		count_label.name = "CardCount%d" % (i + 1)
+		count_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		count_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		count_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		count_label.add_theme_font_size_override("font_size", UiStyleRes.FS_TINY)
+		count_label.add_theme_color_override("font_color", UiStyleRes.accent())
+		var cb := StyleBoxFlat.new()
+		cb.bg_color = Color(0.047, 0.071, 0.102, 0.92)
+		cb.border_color = UiStyleRes.accent()
+		cb.set_border_width_all(1)
+		cb.set_content_margin_all(1.0)
+		count_label.add_theme_stylebox_override("normal", cb)
+		count_label.size = Vector2(24.0, 16.0)
+		count_label.position = Vector2(cell_size.x - 27.0, cell_size.y - 19.0)
+		count_label.visible = false
+		cell.add_child(count_label)
+
+		# ★★ 教程用：某一类招募格的呼吸描边。边框很细、不吃鼠标，画在格子最上层。
+		var glow := Panel.new()
+		glow.name = "CardGlow%d" % (i + 1)
+		glow.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		glow.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		var gsb := StyleBoxFlat.new()
+		gsb.bg_color = Color(0, 0, 0, 0)
+		gsb.border_color = UiStyleRes.accent()
+		gsb.set_border_width_all(2)
+		glow.add_theme_stylebox_override("panel", gsb)
+		glow.visible = false
+		cell.add_child(glow)
+		_glow_panels.append(glow)
+
+		# 方形波纹：从格子中心向外扩，透明度一路降到 0（参考右键目标的圆圈波纹）。
+		var ripple := Panel.new()
+		ripple.name = "CardGlowRipple%d" % (i + 1)
+		ripple.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		var rsb := StyleBoxFlat.new()
+		rsb.bg_color = Color(0, 0, 0, 0)
+		rsb.border_color = UiStyleRes.accent()
+		rsb.set_border_width_all(2)
+		ripple.add_theme_stylebox_override("panel", rsb)
+		ripple.visible = false
+		cell.add_child(ripple)
+		_glow_ripples.append(ripple)
+
 		_cells.append(cell)
 		_key_labels.append(key_label)
 		_name_labels.append(name_label)
 		_name_bars.append(name_bar)
 		_icon_views.append(icon_view)
+		_count_labels.append(count_label)
 
 	# ★★ 整组 2px 外框：九格自己的 1px 描边只勾出格子，外框把整块命令卡和地图分开。
 	#    ★ 最后加（画在九格之上）+ IGNORE（铺满整块，STOP 会吞掉所有格子点击）。
@@ -221,6 +275,13 @@ func set_entries(list: Array) -> void:
 			var role := String(e2.get("icon_role", ""))
 			var mask := String(e2.get("icon_mask", ""))
 			_set_icon(i, role, mask, ready)
+			# ★★ 招募批次进度 / 同种数量角标（整条队列共享一个读条，见 world._tick_recruitment）。
+			if i < _icon_views.size() and _icon_views[i] != null:
+				_icon_views[i].set_progress(float(e2.get("queue_progress", 0.0)))
+			if i < _count_labels.size() and _count_labels[i] != null:
+				var qc := int(e2.get("queue_count", 0))
+				_count_labels[i].text = "×%d" % qc if qc > 1 else ""
+				_count_labels[i].visible = qc > 1
 			# ★★ 有图标时：名字**照样显示**，只是压到格子最下面那一行（需求：
 			#    「图标 + 一行名字，描述全进悬停面板」——单位和建筑都要这样）。
 			#    没有图标时（操作页那种）名字照旧居中、用大一号的字。
@@ -273,6 +334,11 @@ func set_entries(list: Array) -> void:
 			_name_labels[i].text = ""
 			_name_labels[i].visible = true
 			_set_icon(i, "", "")
+			if i < _icon_views.size() and _icon_views[i] != null:
+				_icon_views[i].set_progress(0.0)
+			if i < _count_labels.size() and _count_labels[i] != null:
+				_count_labels[i].text = ""
+				_count_labels[i].visible = false
 			_apply_name_layout(i, false)
 			FillButtonRes.set_base_font_color(cell, UiStyleRes.text_faint())
 			FillButtonRes.on_fill_text(cell, _key_labels[i], UiStyleRes.text_faint())
@@ -309,13 +375,82 @@ func _apply_name_layout(i: int, has_icon: bool) -> void:
 		label.add_theme_font_size_override("font_size", UiStyleRes.FS_BODY)
 
 
+## ★★ 每帧同步招募批次的读条与数量（不重建命令卡）。
+##   进度是连续变化的，不能塞进 `_card_sig()`（会每帧重建九格）。
+func set_recruit_queue(progress: float, counts: Dictionary) -> void:
+	var p := clampf(progress, 0.0, 1.0)
+	for i in _cells.size():
+		if i >= _entries.size():
+			continue
+		var e: Dictionary = _entries[i]
+		if String(e.get("type", "")) != "recruit":
+			continue
+		var kind := String(e.get("unit_kind", ""))
+		var c := int(counts.get(kind, 0))
+		if i < _icon_views.size() and _icon_views[i] != null:
+			_icon_views[i].set_progress(p if c > 0 else 0.0)
+		if i < _count_labels.size() and _count_labels[i] != null:
+			_count_labels[i].text = "×%d" % c if c > 1 else ""
+			_count_labels[i].visible = c > 1
+
+
 ## ★★ 底条要**跟着金色填充淡出**（每帧一次，只有 9 格）：
 ##   填充是从下往上扫的，而底条正好在最下面 —— 金色一盖上来，那段字就该翻成
 ##   「压金暗色」（填充层管这件事），此时底条若还是深的，就是**深字压深底**、读不出来
 ##   （实测踩过：悬停时那一格的名字几乎看不见）。所以底条透明度 = 1 - 填充进度。
-func _process(_dt: float) -> void:
+## ★★ 让某一类格子（`unit_kind`）呼吸高亮；空串 = 关闭。
+##   教程「让协防军按钮呼吸高亮」用。高亮状态会一直保留，直到剧本显式关掉。
+func set_glow_kind(kind: String) -> void:
+	var k := kind.strip_edges()
+	if k == glow_kind:
+		return
+	glow_kind = k
+	_glow_t = 0.0
+	_update_glow_panels()
+
+
+func _update_glow_panels() -> void:
+	var pulse := 0.2 + 0.8 * (0.5 - 0.5 * cos(_glow_t * TAU / 1.4))
+	var rip_t := fmod(_glow_t, 1.4) / 1.4
+	var rip_e := 1.0 - (1.0 - rip_t) * (1.0 - rip_t)
+	for i in _glow_panels.size():
+		var panel: Panel = _glow_panels[i]
+		if panel == null or not is_instance_valid(panel):
+			continue
+		var hit := false
+		if glow_kind != "" and i < _entries.size() and not (_entries[i] as Dictionary).is_empty():
+			var e: Dictionary = _entries[i]
+			hit = String(e.get("unit_kind", e.get("kind", ""))) == glow_kind
+		panel.visible = hit
+		if hit:
+			var sb: StyleBoxFlat = panel.get_theme_stylebox("panel") as StyleBoxFlat
+			if sb != null:
+				var c := UiStyleRes.accent()
+				sb.border_color = Color(c.r, c.g, c.b, 0.35 + 0.6 * pulse)
+				sb.bg_color = Color(c.r, c.g, c.b, 0.05 + 0.10 * pulse)
+		# 方形波纹：只在匹配的格子上从内向外扩。
+		if i < _glow_ripples.size():
+			var rip: Panel = _glow_ripples[i]
+			if rip == null or not is_instance_valid(rip):
+				continue
+			rip.visible = hit
+			if hit:
+				var cell: Vector2 = UiLayoutRes.card_cell_local(i).size
+				var s := lerpf(cell.x * 0.32, cell.x * 1.18, rip_e)
+				rip.position = (cell - Vector2(s, s)) * 0.5
+				rip.size = Vector2(s, s)
+				var rsb: StyleBoxFlat = rip.get_theme_stylebox("panel") as StyleBoxFlat
+				if rsb != null:
+					var rc := UiStyleRes.accent()
+					rsb.border_color = Color(rc.r, rc.g, rc.b, (1.0 - rip_t) * 0.9)
+
+
+func _process(dt: float) -> void:
 	if not is_visible_in_tree():
 		return
+	_glow_t += maxf(0.0, dt)
+	if glow_kind != "":
+		_update_glow_panels()
 	for i in _name_bars.size():
 		var bar: ColorRect = _name_bars[i]
 		if bar == null or not is_instance_valid(bar) or not bar.visible:

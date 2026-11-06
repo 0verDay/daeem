@@ -1,12 +1,12 @@
 ## test_unit_traits.gd —— 兵种特性（长枪兵 / 长弓兵 / 骑手）
 ##
 ## 覆盖：config 的 traits 解析（含写错的键）/ 单位出生时抄到身上 / 近战与远程两条伤害路
-##       （攻击加成、对远程减伤、与士气免伤的加算与封顶）/ 详情栏两列的文案行 / 将领继承。
+##       （攻击加成、对远程减伤、与其它减伤的加算与封顶）/ 详情栏两列的文案行 / 将领继承。
 ##
 ## ★ 需求原文：
-##   长枪兵：对骑兵伤害 +25%（攻击）
-##   长弓兵：对步兵伤害 +10%（攻击）
-##   骑手：  对步兵伤害 +25%（攻击）、对远程减伤 +25%（防御）
+##   长枪兵：对骑兵 +25%（攻击）
+##   长弓兵：对步兵 +10%（攻击）
+##   骑手：  对步兵 +25%（攻击）、远程减伤 +25%（防御）
 extends "res://tests/test_case.gd"
 
 const UnitRes = preload("res://logic/unit.gd")
@@ -58,22 +58,22 @@ func _test_config(cfg) -> void:
 	var spear: Dictionary = cfg.unit_traits_of(UnitRes.UNIT_TYPE_SPEARMAN)
 	var spear_atk: Dictionary = spear.get("attack_vs_class", {})
 	eq(int(float(spear_atk.get("cavalry", 0.0)) * 100.0), 25,
-		"★ 长枪兵：对骑兵伤害 +25%")
+		"★ 长枪兵：对骑兵 +25%")
 	ok(not spear_atk.has("infantry"), "长枪兵对步兵没有加成")
 	near(float(spear.get("ranged_reduction", 0.0)), 0.0, 1e-9, "长枪兵没有对远程减伤")
 
 	var bow: Dictionary = cfg.unit_traits_of(UnitRes.UNIT_TYPE_LONGBOWMAN)
 	eq(int(float((bow.get("attack_vs_class", {}) as Dictionary).get("infantry", 0.0)) * 100.0), 10,
-		"★ 长弓兵：对步兵伤害 +10%")
+		"★ 长弓兵：对步兵 +10%")
 	near(float(bow.get("ranged_reduction", 0.0)), 0.0, 1e-9, "长弓兵没有对远程减伤")
 
 	var rider: Dictionary = cfg.unit_traits_of(UnitRes.UNIT_TYPE_RIDER)
 	eq(int(float((rider.get("attack_vs_class", {}) as Dictionary).get("infantry", 0.0)) * 100.0), 25,
-		"★ 骑手：对步兵伤害 +25%")
+		"★ 骑手：对步兵 +25%")
 	near(float(rider.get("ranged_reduction", 0.0)), 0.25, 1e-9,
-		"★ 骑手：对远程减伤 +25%")
+		"★ 骑手：远程减伤 +25%")
 
-	near(cfg.damage_reduction_cap, 0.75, 1e-9, "减伤封顶默认 75%（50% 士气 + 25% 特性）")
+	near(cfg.damage_reduction_cap, 0.75, 1e-9, "减伤封顶默认 75%")
 	ok(cfg.damage_reduction_cap > 0.0 and cfg.damage_reduction_cap < 1.0, "封顶在 (0, 1)")
 
 	# ★ 大类 id → 显示名（HUD 拼「对骑兵伤害」用的就是这一条，参数是大类 id 本身）
@@ -134,9 +134,6 @@ func _test_melee_attack(cfg) -> void:
 	var spear = _mk(cfg, "a_spear", UnitRes.UNIT_TYPE_SPEARMAN, "p1")
 	var rider = _mk(cfg, "d_rider", UnitRes.UNIT_TYPE_RIDER, "p2")
 	var bow = _mk(cfg, "d_bow", UnitRes.UNIT_TYPE_LONGBOWMAN, "p2")
-	spear.morale = 90.0
-	rider.morale = 90.0
-	bow.morale = 90.0
 	# 固定护甲会先削掉 2 点伤害：本节只验「对某大类」的倍率，先把护甲清零隔离。
 	rider.armor = 0.0
 	bow.armor = 0.0
@@ -152,9 +149,7 @@ func _test_melee_attack(cfg) -> void:
 		"长枪兵打步兵：伤害不加成")
 
 	var bow2 = _mk(cfg, "a_bow", UnitRes.UNIT_TYPE_LONGBOWMAN, "p1")
-	bow2.morale = 90.0
 	var spear2 = _mk(cfg, "d_spear", UnitRes.UNIT_TYPE_SPEARMAN, "p2")
-	spear2.morale = 90.0
 	# 远程单位走投掷物；这里只验算「投掷物里的伤害」= 伤害 × 对步兵的倍率，
 	# 命中结算由下面 _test_ranged_impact 单独验。
 	near(bow2.combat_damage(cfg) * bow2.attack_multiplier_vs_class(String(spear2.unit_class)),
@@ -163,13 +158,12 @@ func _test_melee_attack(cfg) -> void:
 
 
 # ------------------------------------------------------------------
-# 4) 受击：对远程减伤（含与士气免伤的加算 / 封顶 / 易伤）
+# 4) 受击：对远程减伤 / 与其它减伤的加算 / 封顶
 # ------------------------------------------------------------------
 func _test_ranged_reduction(cfg) -> void:
 	var rider = _mk(cfg, "r_rider", UnitRes.UNIT_TYPE_RIDER, "p2")
 	rider.hp_max = 1000.0
 	rider.hp = 1000.0
-	rider.morale = cfg.morale_mid_tier        # 中间档：士气不参与
 	rider.armor = 0.0                         # 只验减伤那一条，护甲清零隔离
 
 	rider.take_damage(cfg, null, 100.0, null, true)
@@ -181,48 +175,35 @@ func _test_ranged_reduction(cfg) -> void:
 	rider.take_damage(cfg, null, 100.0, null, false)
 	near(1000.0 - rider.hp, 100.0, 1e-3, "★ 同一击按近战结算：不减伤（特性只挡远程）")
 
-	# 加算 + 封顶：士气高位免伤 + 特性，按 combat.damage_reduction_cap 截断
-	# ★ 数值全部从 cfg 读：buff 编辑器改了士气免伤 / 封顶之后，这条用例不该跟着红。
-	var morale_red: float = cfg.morale_damage_reduction
-	var combined: float = minf(morale_red + trait_red, cfg.damage_reduction_cap)
+	# 加算 + 封顶：将领远程抵抗 + 兵种特性，按 combat.damage_reduction_cap 截断
+	# ★ 数值从 cfg 读：改了封顶之后这条用例不该跟着红。
+	rider.aura_ranged_reduction = 0.5
+	var combined: float = minf(0.5 + trait_red, cfg.damage_reduction_cap)
 	rider.hp = 1000.0
-	rider.morale = cfg.morale_high_tier
 	rider.take_damage(cfg, null, 100.0, null, true)
 	near(1000.0 - rider.hp, 100.0 * (1.0 - combined), 1e-3,
-		"★ 士气免伤 %d%% + 对远程 %d%% = %d%%（封顶 %d%%）：受到 %.1f 点"
-		% [roundi(morale_red * 100.0), roundi(trait_red * 100.0),
-			roundi(combined * 100.0), roundi(cfg.damage_reduction_cap * 100.0),
-			100.0 * (1.0 - combined)])
+		"★ 将领远程抵抗 50%% + 对远程 %d%% = %d%%（封顶 %d%%）：受到 %.1f 点"
+		% [roundi(trait_red * 100.0), roundi(combined * 100.0),
+			roundi(cfg.damage_reduction_cap * 100.0), 100.0 * (1.0 - combined)])
 
 	# 把封顶调低 → 两条来源相加后按封顶截断（证明 cap 真的被读）
 	var old_cap: float = cfg.damage_reduction_cap
 	cfg.damage_reduction_cap = 0.5
-	var capped: float = minf(morale_red + trait_red, 0.5)
+	var capped: float = minf(0.5 + trait_red, 0.5)
 	rider.hp = 1000.0
 	rider.take_damage(cfg, null, 100.0, null, true)
 	near(1000.0 - rider.hp, 100.0 * (1.0 - capped), 1e-3,
 		"★ 封顶调成 50%% 后，叠加被截到 %d%%" % roundi(capped * 100.0))
 	cfg.damage_reduction_cap = old_cap
+	rider.aura_ranged_reduction = 0.0
 
-	# 易伤不进加法：先吃远程减伤，再 ×(1 + 易伤)
-	rider.hp = 1000.0
-	rider.morale = cfg.morale_vuln_tier
-	rider.take_damage(cfg, null, 100.0, null, true)
-	near(1000.0 - rider.hp,
-		100.0 * (1.0 - minf(trait_red, cfg.damage_reduction_cap))
-			* (1.0 + cfg.morale_vulnerability), 1e-3,
-		"★ 低士气（易伤）：对远程减伤照吃，易伤再乘一次")
-
-	# 非骑手：远程减伤为 0，只有士气那一条
+	# 非骑手：远程减伤为 0，照吃全额
 	var spear = _mk(cfg, "r_spear", UnitRes.UNIT_TYPE_SPEARMAN, "p2")
 	spear.hp_max = 1000.0
 	spear.hp = 1000.0
 	spear.armor = 0.0
-	spear.morale = cfg.morale_high_tier
 	spear.take_damage(cfg, null, 100.0, null, true)
-	var spear_red: float = minf(morale_red, cfg.damage_reduction_cap)
-	near(1000.0 - spear.hp, 100.0 * (1.0 - spear_red), 1e-3,
-		"长枪兵：远程也只吃士气免伤（%d%%）" % roundi(spear_red * 100.0))
+	near(1000.0 - spear.hp, 100.0, 1e-3, "长枪兵：没有远程减伤，照吃 100 点")
 
 
 # ------------------------------------------------------------------
@@ -233,9 +214,7 @@ func _test_ranged_impact(cfg) -> void:
 	if w == null:
 		return
 	var bow = _mk(cfg, "p_bow", UnitRes.UNIT_TYPE_LONGBOWMAN, "p1")
-	bow.morale = 90.0
 	var rider = _mk(cfg, "p_rider", UnitRes.UNIT_TYPE_RIDER, "p2")
-	rider.morale = cfg.morale_mid_tier      # 中间档：只验「远程」这一条，别叠士气免伤
 	rider.hp_max = 1000.0
 	rider.hp = 1000.0
 	rider.armor = 0.0
@@ -250,7 +229,6 @@ func _test_ranged_impact(cfg) -> void:
 		"★ 投掷物命中骑手：按远程结算（伤害 × 0.75）")
 
 	var spear = _mk(cfg, "p_spear", UnitRes.UNIT_TYPE_SPEARMAN, "p2")
-	spear.morale = cfg.morale_mid_tier
 	spear.hp_max = 1000.0
 	spear.hp = 1000.0
 	spear.armor = 0.0
@@ -264,7 +242,6 @@ func _test_ranged_impact(cfg) -> void:
 	#    已经乘过了「对目标兵种大类」的倍率 —— 这是「攻击侧一处收口」的落点。
 	w.projectiles.clear()
 	var bow2 = _mk(cfg, "p_bow2", UnitRes.UNIT_TYPE_LONGBOWMAN, "p1")
-	bow2.morale = 90.0
 	CombatRes.attack_unit(w, cfg, bow2, spear)
 	eq(w.projectiles.size(), 1, "★ 远程开火生成一枚投掷物（装配路径）")
 	if not w.projectiles.is_empty():
@@ -282,30 +259,22 @@ func _test_detail_rows(cfg) -> void:
 	var spear = _mk(cfg, "h_spear", UnitRes.UNIT_TYPE_SPEARMAN)
 	var bow = _mk(cfg, "h_bow", UnitRes.UNIT_TYPE_LONGBOWMAN)
 	var rider = _mk(cfg, "h_rider", UnitRes.UNIT_TYPE_RIDER)
-	spear.morale = cfg.morale_mid_tier
-	bow.morale = cfg.morale_mid_tier
-	rider.morale = cfg.morale_mid_tier
 
-	eq(hud._attack_bonus_lines(spear), ["对骑兵伤害 +25%"], "★ 左列：长枪兵「对骑兵伤害 +25%」")
-	eq(hud._attack_bonus_lines(bow), ["对步兵伤害 +10%"], "★ 左列：长弓兵「对步兵伤害 +10%」")
-	eq(hud._attack_bonus_lines(rider), ["对步兵伤害 +25%"], "★ 左列：骑手「对步兵伤害 +25%」")
+	eq(hud._attack_bonus_lines(spear), ["对骑兵 +25%"], "★ 左列：长枪兵「对骑兵 +25%」")
+	eq(hud._attack_bonus_lines(bow), ["对步兵 +10%"], "★ 左列：长弓兵「对步兵 +10%」")
+	eq(hud._attack_bonus_lines(rider), ["对步兵 +25%"], "★ 左列：骑手「对步兵 +25%」")
 
-	eq(hud._defense_bonus_lines(spear), [], "右列：长枪兵没有防御特性（士气中档）")
-	var trait_line: String = "对远程减伤 +%d%%" % roundi(rider.ranged_damage_reduction * 100.0)
+	eq(hud._defense_bonus_lines(spear), [], "右列：长枪兵没有防御特性")
+	var trait_line: String = "远程减伤 +%d%%" % roundi(rider.ranged_damage_reduction * 100.0)
 	eq(hud._defense_bonus_lines(rider), [trait_line],
 		"★ 右列：骑手「%s」" % trait_line)
-
-	rider.morale = cfg.morale_high_tier
-	var morale_line: String = "士气免伤 +%d%%" % roundi(cfg.morale_damage_reduction * 100.0)
-	eq(hud._defense_bonus_lines(rider), [trait_line, morale_line],
-		"★ 右列：特性在前、士气在后（两条都显示）")
 
 	var rows: Dictionary = hud._unit_detail_rows(rider)
 	var left_txt: String = hud._rows_text({"left": rows["left"], "right": []})
 	var right_txt: String = hud._rows_text({"left": [], "right": rows["right"]})
-	ok(left_txt.contains("对步兵伤害 +25%"), "★ 详细信息左列有攻击特性（%s）" % left_txt.replace("\n", "|"))
-	ok(right_txt.contains("对远程减伤 +25%"), "★ 详细信息右列有防御特性（%s）" % right_txt.replace("\n", "|"))
-	ok(left_txt.find("攻击") < left_txt.find("对步兵伤害 +25%"),
+	ok(left_txt.contains("对步兵 +25%"), "★ 详细信息左列有攻击特性（%s）" % left_txt.replace("\n", "|"))
+	ok(right_txt.contains("远程减伤 +25%"), "★ 详细信息右列有防御特性（%s）" % right_txt.replace("\n", "|"))
+	ok(left_txt.find("攻击") < left_txt.find("对步兵 +25%"),
 		"★ 攻击特性排在「攻击」那一行下面（当前位置 = 攻击增益）")
 
 	hud.free()
@@ -332,7 +301,7 @@ func _test_general_traits(cfg) -> void:
 		"★ 将领 2（长弓兵）：对步兵 +10%")
 	near(g3.attack_multiplier_vs_class(ConfigRes.CLASS_INFANTRY), 1.25, 1e-9,
 		"★ 将领 3（骑手）：对步兵 +25%")
-	near(g3.ranged_damage_reduction, 0.25, 1e-9, "★ 将领 3（骑手）：对远程减伤 +25%")
+	near(g3.ranged_damage_reduction, 0.25, 1e-9, "★ 将领 3（骑手）：远程减伤 +25%")
 
 	# 附属兵也与将领同类型 ⇒ 同一套特性
 	var ret: Array = w.retinue_of(g3.id)

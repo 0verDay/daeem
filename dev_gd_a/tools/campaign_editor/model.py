@@ -296,7 +296,7 @@ class UnitEntry:
 
     __slots__ = ("faction", "kind", "general_index", "general_profile", "unit_type",
                  "x", "y",
-                 "ai", "zone", "hold", "name", "escort_of",
+                 "ai", "zone", "hold", "name", "tag", "escort_of",
                  "escort_count", "escort_types", "declared")
 
     def __init__(self, faction: str = "", kind: str = "", x: int = 0, y: int = 0) -> None:
@@ -317,6 +317,9 @@ class UnitEntry:
         self.zone = -1
         self.hold = False
         self.name = ""
+        #: ★ 演出系统用的作者标签（logic/level.gd 的 `start_units[].tag`）。
+        #:   编辑器**不显示**这个字段，只在导入 / 导出时原样保留。
+        self.tag = ""
         #: ★★ 这个兵**属于第几位将领**（1 起，见 `ESCORT_OF_KEY`）；`-1` = 不是附属兵。
         #:   运行时靠它填 `unit.leader_id` —— 于是它在游戏里真的是那位将领的**部队**
         #:   （点一个兵选中整队 / 将领濒死时它去集结 / 将领死了它算「部队没了」）。
@@ -360,13 +363,15 @@ class UnitEntry:
 class BuildingEntry:
     """`start_buildings[]` 的一行（**追加**在地图 `buildings` 之后，与它同构）。"""
 
-    __slots__ = ("type", "x", "y", "owner")
+    __slots__ = ("type", "x", "y", "owner", "tag")
 
     def __init__(self, type_id: str = "", x: int = 0, y: int = 0, owner: str = "") -> None:
         self.type = type_id
         self.x = x
         self.y = y
         self.owner = owner
+        #: ★ 演出系统用的作者标签（编辑器不显示，只读写保留）。
+        self.tag = ""
 
     def point(self) -> Tuple[int, int]:
         return (int(self.x), int(self.y))
@@ -1841,6 +1846,7 @@ def _load_start_units(raw: Any, lv: LevelModel) -> None:
         u.zone = _as_int(item.get("zone"), -1)
         u.hold = bool(item.get("hold", False))
         u.name = _as_str(item.get("name", ""), "")
+        u.tag = _as_str(item.get("tag", ""), "")
         # ★★ 归属将领：**1 起**；坏值 / 缺省一律当 -1（= 不是附属兵）。
         #    宽容度与逻辑层一致：宁可当「没写」，也不要在运行时造出一个找不到队长的兵。
         u.escort_of = _as_int(item.get(ESCORT_OF_KEY), -1)
@@ -1862,9 +1868,11 @@ def _load_start_buildings(raw: Any, lv: LevelModel) -> None:
         type_id = _as_str(item.get("type", ""), "")
         if not type_id:
             continue
-        lv.start_buildings.append(BuildingEntry(
+        b = BuildingEntry(
             type_id, _as_int(item.get("x"), 0), _as_int(item.get("y"), 0),
-            _as_str(item.get("owner", ""), "")))
+            _as_str(item.get("owner", ""), ""))
+        b.tag = _as_str(item.get("tag", ""), "")
+        lv.start_buildings.append(b)
 
 
 def _load_objectives(raw: Any, lv: LevelModel) -> None:
@@ -2279,6 +2287,9 @@ def _unit_to_dict(u: UnitEntry) -> dict:
         out["hold"] = True
     if u.name:
         out["name"] = u.name
+    # ★ 演出标签：值非空，或源文件里本来就有这个键（空串也原样保留）。
+    if u.tag or u.has("tag"):
+        out["tag"] = u.tag
     # ★★ 归属将领：只有真的是附属部队时才写（-1 = 普通摆放单位，不写这个键）。
     if u.is_escort():
         out[ESCORT_OF_KEY] = int(u.escort_of)
@@ -2306,6 +2317,9 @@ def _building_to_dict(b: BuildingEntry) -> dict:
     out: Dict[str, Any] = {"type": b.type, "x": int(b.x), "y": int(b.y)}
     if b.owner:
         out["owner"] = b.owner
+    # ★ 演出标签：值非空就写；源里出现过的空串也保留（由 declared 机制管）。
+    if b.tag:
+        out["tag"] = b.tag
     return out
 
 

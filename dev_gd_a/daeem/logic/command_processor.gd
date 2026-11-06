@@ -13,6 +13,7 @@
 ##                                                      （入队即扣 50 粮 / 50 金 / 1 人口，读条 10 秒）
 ##   recruit_cancel leader_id, slot, faction            取消招募队列里的某一格并退款
 ##                                                      （slot 0 = 正在读条的大格子，1..4 = 排队的小格子）
+##   recruit_cancel_all leader_id, faction              ★ 清空整条招募队列并全额退款（停招）
 ##   zone_recruit   unit_kind, zone_id, faction         ★ 把将领排进某个**区划**的招募队列
 ##                                                      （点区划中心 → 右下「招募」页签）
 ##   zone_recruit_cancel zone_id, slot, faction         取消区划招募队列里的某一格并退款
@@ -68,6 +69,10 @@ static func apply(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 			return apply_recruit(world, cfg, cmd)
 		"recruit_cancel":
 			return apply_recruit_cancel(world, cfg, cmd)
+		"recruit_cancel_all":
+			return world.cancel_recruit_all(
+				String(cmd.get("leader_id", "")),
+				String(cmd.get("faction", world.my_faction)))
 		"zone_recruit":
 			return apply_zone_recruit(world, cfg, cmd)
 		"zone_recruit_cancel":

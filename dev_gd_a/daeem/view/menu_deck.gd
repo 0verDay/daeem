@@ -14,6 +14,9 @@ signal ai_test_pressed
 ## ★★ 2026.10.29：ai_test 下面那颗「看海」按钮 —— 同一张 between_moutains 地图，
 ##    但双方都由 commander AI 操作，玩家只观战。
 signal see_ai_pressed
+## ★★ 新手教程测试入口（主菜单左上角，接在 see_ai 下面）。
+signal ce_xs_1_pressed
+signal ce_xs_2_pressed
 signal quit_requested
 signal page_changed(page: String)
 signal map_open_changed(open: bool)
@@ -44,6 +47,8 @@ const PAGE_COOP_READY := "coop_ready"
 const FADE_SEC := 0.28
 const DEFAULT_AI_TEST_BUTTON := "ai_test"
 const DEFAULT_SEE_AI_BUTTON := "see_ai"
+const DEFAULT_CE_XS_1_BUTTON := "ce_xs_1"
+const DEFAULT_CE_XS_2_BUTTON := "ce_xs_2"
 
 var cfg = null
 var font: Font = null
@@ -64,6 +69,9 @@ var _busy: bool = false
 var _ai_test_btn: Control = null
 ## ★★ 2026.10.29：ai_test 正下方那颗「看海」入口（同一张图，双方 commander AI）。
 var _see_ai_btn: Control = null
+## ★★ 新手教程测试入口：ce_xs_1 / ce_xs_2。
+var _ce_xs_1_btn: Control = null
+var _ce_xs_2_btn: Control = null
 var _intro_pending: bool = true
 var _map_open: bool = false
 var _ready_source: String = "coop_start"
@@ -131,6 +139,28 @@ func setup(p_cfg, p_font: Font) -> void:
 	_see_ai_btn.setup(font, see_label, 32)
 	_see_ai_btn.pressed.connect(func(): see_ai_pressed.emit())
 	add_child(_see_ai_btn)
+
+	var xs1_label := String(cfg.str_val(
+		"menu.deck.main.ce_xs_1_button", DEFAULT_CE_XS_1_BUTTON)).strip_edges()
+	if xs1_label == "":
+		xs1_label = DEFAULT_CE_XS_1_BUTTON
+	_ce_xs_1_btn = TextButtonRes.new()
+	_ce_xs_1_btn.name = "CeXs1Btn"
+	_ce_xs_1_btn.visible = false
+	_ce_xs_1_btn.setup(font, xs1_label, 32)
+	_ce_xs_1_btn.pressed.connect(func(): ce_xs_1_pressed.emit())
+	add_child(_ce_xs_1_btn)
+
+	var xs2_label := String(cfg.str_val(
+		"menu.deck.main.ce_xs_2_button", DEFAULT_CE_XS_2_BUTTON)).strip_edges()
+	if xs2_label == "":
+		xs2_label = DEFAULT_CE_XS_2_BUTTON
+	_ce_xs_2_btn = TextButtonRes.new()
+	_ce_xs_2_btn.name = "CeXs2Btn"
+	_ce_xs_2_btn.visible = false
+	_ce_xs_2_btn.setup(font, xs2_label, 32)
+	_ce_xs_2_btn.pressed.connect(func(): ce_xs_2_pressed.emit())
+	add_child(_ce_xs_2_btn)
 
 	_campaign = CampaignPanelRes.new()
 	add_child(_campaign)
@@ -287,6 +317,8 @@ func finish_intro(with_glows: bool = true) -> void:
 	_intro_pending = false
 	_refresh_ai_test_btn(_page)
 	_refresh_see_ai_btn(_page)
+	_refresh_ce_xs_1_btn(_page)
+	_refresh_ce_xs_2_btn(_page)
 
 
 func reset_to_main(instant: bool = true) -> void:
@@ -654,6 +686,10 @@ func _animate(moves: Array, page: String, delay: float = 0.0) -> void:
 		_ai_test_btn.visible = false
 	if _see_ai_btn != null and page != PAGE_MAIN:
 		_see_ai_btn.visible = false
+	if _ce_xs_1_btn != null and page != PAGE_MAIN:
+		_ce_xs_1_btn.visible = false
+	if _ce_xs_2_btn != null and page != PAGE_MAIN:
+		_ce_xs_2_btn.visible = false
 	var sec: float = 0.46
 	if cfg != null:
 		sec = maxf(0.0, cfg.num("menu.deck.transition_sec", 0.46))
@@ -706,6 +742,8 @@ func _finish_moves(_moves: Array, page: String) -> void:
 			_main.set_prepare_latched(false)
 	_refresh_ai_test_btn(page)
 	_refresh_see_ai_btn(page)
+	_refresh_ce_xs_1_btn(page)
+	_refresh_ce_xs_2_btn(page)
 	var keep: Array = _visible_for(page)
 	_hide_all_except(keep)
 	for p in keep:
@@ -795,8 +833,12 @@ func _apply_layout(page: String, instant: bool) -> void:
 		_main.set_active(_active_for(page))
 	_layout_ai_test_btn()
 	_layout_see_ai_btn()
+	_layout_ce_xs_1_btn()
+	_layout_ce_xs_2_btn()
 	_refresh_ai_test_btn(page)
 	_refresh_see_ai_btn(page)
+	_refresh_ce_xs_1_btn(page)
+	_refresh_ce_xs_2_btn(page)
 	if instant:
 		_main.background().modulate.a = 1.0
 		_main.set_content_alpha(1.0)
@@ -881,6 +923,8 @@ func _all_panels() -> Array:
 func _on_resized() -> void:
 	_layout_ai_test_btn()
 	_layout_see_ai_btn()
+	_layout_ce_xs_1_btn()
+	_layout_ce_xs_2_btn()
 	if _busy:
 		return
 	_apply_layout(_page, true)
@@ -904,6 +948,22 @@ func _layout_see_ai_btn() -> void:
 	_see_ai_btn.size = r.size
 
 
+func _layout_ce_xs_1_btn() -> void:
+	if _ce_xs_1_btn == null:
+		return
+	var r := LayoutRes.screen_ce_xs_1_button(size.x, size.y)
+	_ce_xs_1_btn.position = r.position
+	_ce_xs_1_btn.size = r.size
+
+
+func _layout_ce_xs_2_btn() -> void:
+	if _ce_xs_2_btn == null:
+		return
+	var r := LayoutRes.screen_ce_xs_2_button(size.x, size.y)
+	_ce_xs_2_btn.position = r.position
+	_ce_xs_2_btn.size = r.size
+
+
 ## 测试入口只在主菜单页出现；开场转场期间也隐藏，避免干扰正常 UI。
 func _refresh_ai_test_btn(page: String) -> void:
 	if _ai_test_btn == null:
@@ -915,6 +975,18 @@ func _refresh_see_ai_btn(page: String) -> void:
 	if _see_ai_btn == null:
 		return
 	_see_ai_btn.visible = (page == PAGE_MAIN) and not _intro_pending
+
+
+func _refresh_ce_xs_1_btn(page: String) -> void:
+	if _ce_xs_1_btn == null:
+		return
+	_ce_xs_1_btn.visible = (page == PAGE_MAIN) and not _intro_pending
+
+
+func _refresh_ce_xs_2_btn(page: String) -> void:
+	if _ce_xs_2_btn == null:
+		return
+	_ce_xs_2_btn.visible = (page == PAGE_MAIN) and not _intro_pending
 
 
 func _unhandled_input(event: InputEvent) -> void:

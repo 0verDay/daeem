@@ -1,0 +1,19 @@
+{
+  "_comment": [
+    "★★ 新手教程战役：只放 ce_xs_1 一关（教程 2 目前只有菜单按钮，没有关卡）。",
+    "  它不在 campaigns_menu.json 里，所以不会出现在「战役」地图上；",
+    "  入口是主菜单左上角的 ce_xs_1 按钮（view/main.gd）。",
+    "  胜负由 logic/story/campaigns/tutorial.gd 的剧本判定，不走 objectives[]。"
+  ],
+  "name": "新手教程",
+  "description": "新手教程测试用战役。",
+  "default_mode": "solo",
+  "levels": [
+    {
+      "id": "ce_xs_1",
+      "file": "levels/ce_xs_1.json",
+      "name": "ce_xs_1"
+    }
+  ],
+  "unlock": "in_order"
+}

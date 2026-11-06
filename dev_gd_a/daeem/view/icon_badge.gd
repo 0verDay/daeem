@@ -6,17 +6,15 @@
 ##   否则同一个兵在左栏和右栏会长得不一样。
 ##
 ## ★★ 本版按需求定下的两种画法（别再混）：
-##   · **部队**（kind = "troop"）：图标 = **序号**（1..9、第 10 个写 0），
-##     背后是**士气填充**（view/morale_fill.gd：自下而上、越低越矮、绿→红）；
-##   · **单个单位 / 建筑 / 区划**（其它 kind）：**没有纯色背景填充**，
-##     只有图标字 + 底部血条（血条由 `show_hp` 决定画不画）。
+##   · **部队**（kind = "troop"）：图标 = **序号**（1..9、第 10 个写 0）；
+##   · **单个单位 / 建筑 / 区划**（其它 kind）：图标字 + 底部血条
+##     （血条由 `show_hp` 决定画不画）。
 ##
 ## ★ 纯画：不读 world、不碰状态。边框颜色 / 线宽由调用方给（悬停 / 交战要换色）。
 extends RefCounted
 
 const UiStyleRes = preload("res://view/ui_style.gd")
 const HpBarRes = preload("res://view/hp_bar.gd")
-const MoraleFillRes = preload("res://view/morale_fill.gd")
 
 
 ## 部队序号怎么写：槽位现在是 1..6，原样写；`% 10` 只是兜底（与右侧部队列表同一口径）。
@@ -28,19 +26,16 @@ static func troop_number_text(number: int) -> String:
 
 
 ## 画一个图标方块。
-##   @param kind      "troop" = 部队（序号 + 士气填充）；其它 = 单位 / 建筑（无填充）
+##   @param kind      "troop" = 部队（序号）；其它 = 单位 / 建筑
 ##   @param text      方块里那个字（部队 = 序号；单位 / 建筑 = 名字首字）
-##   @param morale    士气比例（只有 kind == "troop" 时用）
 ##   @param hp_ratio  血量比例（`show_hp` 为 true 时画在图标底部）
 ##   @param show_hp   要不要画底部血条
 ##   @param font_size 方块里那个字的字号
 ##   @param border    边框色（悬停 / 交战由调用方换成强调色 / 红）
 static func draw(ci: CanvasItem, f: Font, icon: Rect2, kind: String, text: String,
-		morale: float, hp_ratio: float, show_hp: bool, font_size: int,
+		hp_ratio: float, show_hp: bool, font_size: int,
 		border: Color, border_w: float = 1.0) -> void:
-	if kind == "troop":
-		MoraleFillRes.draw(ci, icon, morale)
-	# ★ 单个单位 / 建筑 / 区划：这里**什么都不填**（需求：没有纯色背景填充）
+	# ★ 单位 / 建筑 / 区划：只画图标字 + 血条，没有纯色背景填充。
 	ci.draw_rect(icon, border, false, border_w)
 	if text != "" and f != null:
 		_draw_centered(ci, f, text, icon, UiStyleRes.text(), font_size)

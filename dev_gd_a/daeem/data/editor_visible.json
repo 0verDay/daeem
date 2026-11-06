@@ -9,7 +9,9 @@
     "main_test",
     "ai_test_2",
     "dscj",
-    "between_moutains"
+    "between_moutains",
+    "cs_xs_1",
+    "ce_xs_2"
   ],
   "campaigns": [
     "demo"

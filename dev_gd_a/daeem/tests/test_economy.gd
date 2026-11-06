@@ -7,16 +7,14 @@
 ## 覆盖六件事：
 ##   1. 维护费按阶分档、高阶更贵（一阶 枪 0.08 / 弓 0.10；二阶 骑手 0.18 / 粮车 0.12；
 ##      三阶 骑士 0.32 / 马弓 0.26 / 投石车 0.40）；
-##   2. 每帧扣粮 = Σ 维护费，且「粮够」时不算断粮；
-##   3. 断粮 ⇒ 全军每秒多掉 `morale.starve_drain`，且这个数与粮车光环**等速**；
-##   4. 科技的 30 秒**预热**（点下去 ≠ 生效，但名额当场就占住）；
-##   5. 科技的**每秒扣金**（按阶 0.5 / 1.0 / 2.0，预热期间照样扣）；
-##   6. 断金 ⇒ 全部科技弃用 + 全科技 30 秒冷却，冷却结束后能重新点；
-##   7. 科技是「总体产能 ×(1+百分比)」且**加法叠加**。
+##   2. 每帧扣粮 = Σ 维护费，付不起就扣到 0（不欠账）；
+##   3. 科技的 30 秒**预热**（点下去 ≠ 生效，但名额当场就占住）；
+##   4. 科技的**每秒扣金**（按阶 0.5 / 1.0 / 2.0，预热期间照样扣）；
+##   5. 断金 ⇒ 全部科技弃用 + 全科技 30 秒冷却，冷却结束后能重新点；
+##   6. 科技是「总体产能 ×(1+百分比)」且**加法叠加**。
 extends "res://tests/test_case.gd"
 
 const WorldRes = preload("res://logic/world.gd")
-const MoraleRes = preload("res://logic/morale.gd")
 
 const T_FOOD := "food_1"
 const T_FOOD2 := "food_2"
@@ -41,7 +39,6 @@ func _cases() -> void:
 	_test_base_resource_bonus(cfg)
 	_test_resource_buildings(cfg)
 	_test_upkeep_deducts_food(cfg)
-	_test_starving_morale(cfg)
 	_test_tech_warmup(cfg)
 	_test_tech_gold_drain(cfg)
 	_test_tech_shortfall(cfg)
@@ -192,58 +189,10 @@ func _test_upkeep_deducts_food(cfg) -> void:
 	w.tick(1.0)
 	near(float(w.resources["food"]), 100.0 - rate, 1e-3,
 		"★ 一秒正好扣掉 Σ 维护费（%s）" % rate)
-	ok(not bool(w.is_starving(f)), "粮够 ⇒ 不算断粮")
-
-	# 断粮边界：刚好不够一帧的量 ⇒ 扣到 0 并标记断粮
+	# 刚好不够一帧的量 ⇒ 扣到 0
 	w.resources["food"] = rate * 0.5
 	w.tick(1.0)
 	near(float(w.resources["food"]), 0.0, 1e-6, "★ 付不起就扣到 0（不欠账、不变负）")
-	ok(bool(w.is_starving(f)), "★ 付不起 ⇒ 断粮标记")
-
-
-# ------------------------------------------------------------------
-# 3) 断粮士气
-# ------------------------------------------------------------------
-
-func _test_starving_morale(cfg) -> void:
-	var w = _make(cfg)
-	_no_production(w)
-	var f: String = String(w.my_faction)
-	var u = _first_leader(w, f)
-	ok(u != null, "（前提）有一名己方将领（士气的锚）")
-	if u == null:
-		return
-
-	# ① 端到端：同一位置、同一秒，断粮时的士气必须**低于**没断粮时。
-	#    ⚠️ 站在己方区划时基础回士气是 +1.5/秒，断粮只减 0.5 ⇒ 绝对值仍会上升，
-	#    所以这里比的是「同样条件下断粮 vs 不断粮」，而不是「必须下降」。
-	w.resources["food"] = 0.0
-	u.morale = 80.0
-	w.tick(1.0)
-	ok(bool(w.is_starving(f)), "★ 粮为 0 ⇒ 断粮")
-	var starving_morale: float = u.morale
-	w.resources["food"] = 10000.0
-	u.morale = 80.0
-	w.tick(1.0)
-	ok(starving_morale < u.morale,
-		"★ 断粮时士气低于同位置不断粮（%.3f < %.3f）" % [starving_morale, u.morale])
-
-	# ② 精确：同一个人、同一个位置，**只切换断粮标记**，速率差必须正好是 starve_drain。
-	#    （不走 tick：移动 / 换区划会把区划速率也换掉，那样比出来的差就不是 0.5 了）
-	w.resources["food"] = 10000.0
-	w.tick(DT)                                  # 清掉断粮标记
-	u = _first_leader(w, f)
-	var r_ok: float = MoraleRes._zone_morale_rate(w, cfg, u)
-	w.starving_factions[f] = true
-	var r_bad: float = MoraleRes._zone_morale_rate(w, cfg, u)
-	w.starving_factions.erase(f)
-	near(r_ok - r_bad, float(cfg.morale_starve_drain), 1e-9,
-		"★ 断粮让每秒速率正好多掉 morale.starve_drain（%s）" % cfg.morale_starve_drain)
-
-	# 用户口径：断粮的下降速度 = 粮车使士气上升的速度（一辆粮车刚好抵消）。
-	var cart_rate: float = cfg.num("unit.types.grain_cart.morale_aura_rate", 0.5)
-	near(float(cfg.morale_starve_drain), cart_rate, 1e-9,
-		"★ 断粮速率 == 粮车光环速率（%s/秒）：一辆粮车刚好抵消断粮" % cart_rate)
 
 
 # ------------------------------------------------------------------
@@ -414,12 +363,3 @@ func _upkeep_rate(w, cfg, faction: String) -> float:
 		if u != null and u.alive and String(u.faction) == faction:
 			total += float(cfg.unit_upkeep_of(u.unit_type))
 	return total
-
-
-## 取一名「士气锚」——leader_id 为空、还活着的那一个（通常是主将）。
-func _first_leader(w, faction: String):
-	for u in w.units:
-		if u != null and u.alive and String(u.faction) == faction \
-				and String(u.leader_id) == "" and not u.is_downed():
-			return u
-	return null

@@ -40,9 +40,6 @@ static func _unit_fields(u) -> Dictionary:
 		# ★ 血量上限（科技 / 等级加成之后的值）：客机画血条比例要用；
 		#   缺字段 = 保持本地现状（老快照没有这一项）。
 		"mh": int(round(u.hp_max)),
-		# ★★ 士气（本轮新增）：整支部队共享的权威状态，客机不发详情栏就画不出背景板颜色。
-		#    沿用「缺字段 = 保持本地现状」的规矩（见 apply 那一段）。
-		"mo": int(round(u.morale)),
 		"m": 1 if u.moving else 0,
 		# 朝向是**向量**（八方向之后 ±1 不够用了）。
 		# ⚠️ 字段名仍是最短的 "fa"，但类型从 int 变成了 [x, y] 两元数组 ——
@@ -119,9 +116,6 @@ static func _unit_delta(u, prev: Dictionary) -> Dictionary:
 	var mh := int(round(u.hp_max))
 	if prev["mh"] != mh:
 		out["mh"] = mh
-	var mo := int(round(u.morale))
-	if prev["mo"] != mo:
-		out["mo"] = mo
 	var m := 1 if u.moving else 0
 	if prev["m"] != m:
 		out["m"] = m
@@ -502,7 +496,7 @@ static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void:
 		#    用户实测「一端看到一堆骑兵、另一端看到一堆步兵」：客机按自己的 config /
 		#    旧包建出来的单位类型与房主不同，而旧代码只在新单位创建时读 ut。
 		#    `reapply_type()` 会把 hp_max / unit_class / 护甲 / 射程等**由兵种派生**的
-		#    字段一起重算；随后的 mh / h 会覆盖血量，位置 / 士气 / 队列等运行状态不动。
+		#    字段一起重算；随后的 mh / h 会覆盖血量，位置 / 队列等运行状态不动。
 		if su.has("ut"):
 			var ut_fix := String(su.get("ut", ""))
 			if ut_fix != "":
@@ -530,9 +524,6 @@ static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void:
 		u.hp = float(su.get("h", u.hp))
 		if u.hp_max > 0.0:
 			u.hp = clampf(u.hp, 0.0, u.hp_max)
-		# ★ 士气：缺字段（老快照）就保持本地现状；有就夹到本地上限里写回。
-		if su.has("mo"):
-			u.morale = clampf(float(su["mo"]), 0.0, u.morale_max)
 		if su.has("nz"):
 			u.neutralized = int(su["nz"]) != 0
 		# ★★ 冲锋表现状态：缺字段 = 老快照 ⇒ 保持本地现状（与其它字段同一条约定）。

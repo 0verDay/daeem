@@ -61,6 +61,16 @@ const ARRIVE_EPS := 1e-4
 
 var id: String = ""
 var name: String = ""
+## ★ 演出系统用的**作者标签**（关卡 `start_units[].tag`）。
+## 空 = 没有标签；运行时的 `id` 仍由世界生成，两者不是一回事。
+var tag: String = ""
+## ★ 演出系统的**呼吸泛光**状态（空字典 = 不发光）。
+##   键：color(hex / "faction")、period、start、until、strength、id。
+##   只由 `logic/story/story_actions.gd` 写；视图只读。
+var story_glow: Dictionary = {}
+## ★★ 演出期的**控制权锁**：true = 本机玩家暂时不能选中 / 指挥它。
+##   只影响输入层；逻辑层仍把它当作该阵营的单位（不会因此变成中立 / 敌人）。
+var story_locked: bool = false
 var kind: String = KIND_GENERAL
 ## ★★ 单位类型（兵种）：长枪兵 / 长弓兵 / 骑手。
 ##
@@ -138,7 +148,7 @@ var knockback_immune: bool = false
 ##   · siege          —— 这一击无视目标的近战 / 远程减伤（投石车）。
 ##   · move_shoot     —— 移动 / 行军途中可以边走边射、不停止（马弓手）。
 ##   · splash_radius  —— 范围伤害半径（格；0 = 单体）。
-##   · morale_aura_*  —— 粮车的士气光环（半径 / 每秒士气；0 = 没有）。
+##   · heal_aura_*    —— 粮车的回血光环（半径 / 每秒回血；0 = 没有）。
 ##   ★★ 2026.11 新增（同一口径：出生时抄一次、之后只读）：
 ##   · knockback_distance / knockback_stun_sec —— 我打中别人时**击退**多少格 / 眩晕多少秒
 ##     （0 = 不击退）。读的地方：combat.attack_unit（近战）与 projectile._impact（远程）。
@@ -152,8 +162,8 @@ var can_attack: bool = true
 var siege: bool = false
 var move_shoot: bool = false
 var splash_radius: float = 0.0
-var morale_aura_radius: float = 0.0
-var morale_aura_rate: float = 0.0
+var heal_aura_radius: float = 0.0
+var heal_aura_rate: float = 0.0
 ## ★★ 2026.11：击退（我打中别人时）/ 穿透弹 / 抛物弹道（见上面那几条说明）。
 var knockback_distance: float = 0.0
 var knockback_stun_sec: float = 0.0
@@ -277,13 +287,6 @@ var ty: int = 0
 var hp: float = 200.0
 var hp_max: float = 200.0
 var alive: bool = true
-
-## ---- ★★ 士气（整支部队共享一个值；见 logic/morale.gd）----
-## ★ 「部队共享」的落地方式：**锚**（队长；没有存活队长时自己当锚）持有权威值，
-##   队员每帧 `morale = 锚.morale`（镜像）—— 所以同一支部队里每个单位读到的都一样。
-## ★ 它是玩法值：影响回血 / 掉血与受到的伤害（`take_damage`）；只在详细信息栏显示。
-var morale: float = 90.0
-var morale_max: float = 100.0
 
 ## 上一次施加的**科技血量倍率**（1.0 = 没加成）。
 ## ★ 它只服务于 `apply_hp_bonus()` 的「粘性」：倍率没变就什么都不做 ——
@@ -675,8 +678,8 @@ static func create(cfg: ConfigRes, p_id: String, p_name: String, tile: Vector2i,
 	u.siege = cfg.unit_is_siege(u.unit_type)
 	u.move_shoot = cfg.unit_move_shoot(u.unit_type)
 	u.splash_radius = cfg.unit_splash_radius_of(u.unit_type)
-	u.morale_aura_radius = cfg.unit_morale_aura_radius_of(u.unit_type)
-	u.morale_aura_rate = cfg.unit_morale_aura_rate_of(u.unit_type)
+	u.heal_aura_radius = cfg.unit_heal_aura_radius_of(u.unit_type)
+	u.heal_aura_rate = cfg.unit_heal_aura_rate_of(u.unit_type)
 	u.faction = p_faction
 	u.hotkey = p_hotkey
 	u.leader_id = p_leader_id
@@ -698,9 +701,6 @@ static func create(cfg: ConfigRes, p_id: String, p_name: String, tile: Vector2i,
 	u.hp_max = maxf(1.0, hp_base)
 	u.base_hp_max = u.hp_max
 	u.hp = u.hp_max
-	# ★ 士气：整支部队共享，初始值 / 上限取自 config（见 logic/morale.gd）。
-	u.morale_max = cfg.morale_max
-	u.morale = clampf(cfg.morale_start, 0.0, u.morale_max)
 	# ★ 视野半径同样在出生那一刻定下来（战争迷雾只读它，见上面 `vision` 的说明）。
 	#   将领走 general_vision_at（覆盖 ⊕ 所属兵种），普通单位走 unit_vision_of。
 	if p_general_index >= 0:
@@ -755,7 +755,7 @@ func consume_charge() -> void:
 ## 但 `apply_snapshot` 原来**只在新单位创建时读 ut**，已有单位即使本地兵种不同也
 ## 不会纠正 —— 于是「客机开局按自己的 config / 旧包建出来的类型」会一直留着。
 ##
-## 只重算「出生时从兵种表抄下来」的那批字段；位置 / 血量 / 士气 / 招募队列 / 队长 /
+## 只重算「出生时从兵种表抄下来」的那批字段；位置 / 血量 / 招募队列 / 队长 /
 ## 濒死等运行状态**不动**（紧接着由快照的其它字段覆盖）。
 func reapply_type(cfg: ConfigRes, p_unit_type: String) -> void:
 	if p_unit_type == "" or p_unit_type == unit_type:
@@ -784,8 +784,8 @@ func reapply_type(cfg: ConfigRes, p_unit_type: String) -> void:
 	siege = cfg.unit_is_siege(unit_type)
 	move_shoot = cfg.unit_move_shoot(unit_type)
 	splash_radius = cfg.unit_splash_radius_of(unit_type)
-	morale_aura_radius = cfg.unit_morale_aura_radius_of(unit_type)
-	morale_aura_rate = cfg.unit_morale_aura_rate_of(unit_type)
+	heal_aura_radius = cfg.unit_heal_aura_radius_of(unit_type)
+	heal_aura_rate = cfg.unit_heal_aura_rate_of(unit_type)
 	# 血量上限 / 视野与 `create()` 同一口径：将领仍吃自己的数值覆盖（不再乘全局倍率）。
 	var new_max: float = float(stat_overrides.get("hp_max", cfg.unit_hp_of(unit_type)))
 	base_hp_max = maxf(1.0, new_max)
@@ -2205,7 +2205,7 @@ func clear_settled_spot() -> void:
 ##        只在这一条路上生效，见下面那段减伤口径。
 ## @param ignore_reduction ★★ true = **攻城**：无视目标来自「近战 / 远程」的减伤
 ##        （兵种 traits.ranged_reduction 与将领 aura_melee/ranged_reduction）。
-##        护甲与士气免伤**照旧生效** —— 需求只说了「不受远近战免伤影响」。
+##        护甲与其它减伤**照旧生效** —— 需求只说了「不受远近战免伤影响」。
 ## 击退的位移步长（格）：`apply_knockback` 一格一格试探可通行性，遇到走不过去的就停。
 const KNOCKBACK_STEP := 0.1
 
@@ -2298,23 +2298,18 @@ func take_damage(cfg: ConfigRes, world, amount: float, _source = null,
 		if world != null:
 			eff_armor *= float(world.tech_armor_mult(String(faction)))
 		amount = maxf(1.0, amount - eff_armor)
-	# ★★ 减伤口径（本轮改为「先相加、再封顶」，用户拍板）：
-	#     · 士气高位免伤（morale.damage_reduction）+ 兵种特性「对远程减伤」**相加**；
-	#     · 相加后按 `cfg.damage_reduction_cap` 夹取（默认 0.75：50% + 25% 正好到顶）；
-	#     · 易伤（士气低位）**不参与**这个加法，而是减伤之后再乘一次（×1+vulnerability）——
-	#       两者本来就互斥（高位阈值 100 / 低位阈值 50，一个单位不可能同时满足）。
+	# ★★ 减伤口径（「先相加、再封顶」）：
+	#     · 兵种特性「对远程减伤」/「近战减伤」/ 将领抵抗等**相加**；
+	#     · 相加后按 `cfg.damage_reduction_cap` 夹取。
 	# ★ 近战（combat.attack_unit）与远程（projectile._impact）两条路都走这个收口，
 	#   区别只是远程那条传 `incoming_ranged = true`。
 	#
 	# ★★ 将领特性（本轮新增）：近战抵抗只加在近战那条路、远程抵抗只加在远程那条路，
 	#   两者同样**加进这个和**、再一起按 `damage_reduction_cap` 封顶 ——
-	#   与士气 / 兵种远程减伤是同一套口径（不另开一次乘算）。
+	#   与兵种远程减伤是同一套口径（不另开一次乘算）。
 	#
-	# ★★ 攻城（ignore_reduction = true）：只跳过**按远近区分**的那几项，
-	#   士气高位免伤照旧相加 —— 它是士气效果，不是「远近战免伤」。
+	# ★★ 攻城（ignore_reduction = true）：只跳过**按远近区分**的那几项。
 	var reduction := 0.0
-	if morale >= cfg.morale_high_tier:
-		reduction += cfg.morale_damage_reduction
 	if not ignore_reduction:
 		if incoming_ranged:
 			reduction += ranged_damage_reduction + aura_ranged_reduction
@@ -2323,13 +2318,11 @@ func take_damage(cfg: ConfigRes, world, amount: float, _source = null,
 			#   （与远程那一条完全对称；两者都进同一个和、同一个封顶）。
 			reduction += melee_damage_reduction + aura_melee_reduction
 		# ★★ 2026.11：派系科技「无懈可击」的 +10% 远近免伤 —— 也进**这个和**
-		#   （与士气免伤 / 兵种减伤 / 将领抵抗同一条口径，最后一起按 75% 封顶）。
+		#   （与兵种减伤 / 将领抵抗同一条口径，最后一起按 75% 封顶）。
 		if world != null:
 			reduction += float(world.tech_reduction_add(String(faction), incoming_ranged))
 	if reduction > 0.0:
 		amount *= 1.0 - clampf(reduction, 0.0, cfg.damage_reduction_cap)
-	if morale <= cfg.morale_vuln_tier:
-		amount *= 1.0 + cfg.morale_vulnerability
 	hp = maxf(0.0, hp - amount)
 	if hp <= 0.0 and alive:
 		# ★★ 将领先走「濒死」这条路：world 决定它到底是倒下去还是当场阵亡
@@ -2554,7 +2547,7 @@ func cancel_revive() -> void:
 ##
 ## ★★ **不改血量**（用户拍板：「再起时该将领血量是多少，再起后就是多少」）——
 ##   所以这里一个 hp 赋值都没有。脱险之后它照旧从当前这点血开始，
-##   靠己方领地的缓慢回血（combat.gd 那一条）慢慢恢复。
+##   靠己方领地的缓慢回血（world._tick_healing）慢慢恢复。
 func _finish_revive(world) -> void:
 	downed = false
 	revive_pending = false
@@ -2685,13 +2678,6 @@ func hp_ratio() -> float:
 	if hp_max <= 0.0:
 		return 0.0
 	return clampf(hp / hp_max, 0.0, 1.0)
-
-
-## 士气比例（0..1）—— 详细信息栏图标的背景板按它由绿变红（见 view/ui_style.gd）。
-func morale_ratio() -> float:
-	if morale_max <= 0.0:
-		return 0.0
-	return clampf(morale / morale_max, 0.0, 1.0)
 
 
 # ------------------------------------------------------------------

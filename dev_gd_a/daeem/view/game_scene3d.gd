@@ -23,6 +23,8 @@ const GroundViewRes = preload("res://view/ground_view.gd")
 const TerrainPropsRes = preload("res://view/terrain_props_view.gd")
 ## ★ 地图边界的金线（见 view/map_border_view.gd）：纯表现，只读 world.map 的尺寸
 const MapBorderViewRes = preload("res://view/map_border_view.gd")
+## ★ 演出呼吸泛光（地面光环 + 建筑外壳 + 单位本体由 unit_flash 处理）
+const StoryGlowViewRes = preload("res://view/story_glow_view.gd")
 const UnitViewRes = preload("res://view/unit_view_3d.gd")
 const BuildingViewRes = preload("res://view/building_view_3d.gd")
 const ProjectileViewRes = preload("res://view/projectile_view_3d.gd")
@@ -46,6 +48,10 @@ const InteractionRes = preload("res://view/game_interaction.gd")
 const OutcomeOverlayRes = preload("res://view/outcome_overlay.gd")
 const CommandRes = preload("res://logic/command_processor.gd")
 const LevelRes = preload("res://logic/level.gd")
+## ★★ 战役演出系统（导演 + 目标解析 + 动作类别）。
+const StoryDirectorRes = preload("res://logic/story/story_director.gd")
+const StoryActionsRes = preload("res://logic/story/story_actions.gd")
+const StoryConstsRes = preload("res://logic/story/story_consts.gd")
 ## ★★ 2026.11：备战页的出战配置（派系 + 将领）—— 合作模式开局时写进关卡数据。
 const LoadoutRes = preload("res://logic/loadout.gd")
 const HostSessionRes = preload("res://net/host_session.gd")
@@ -54,6 +60,7 @@ const ClientSessionRes = preload("res://net/client_session.gd")
 const TouchControllerRes = preload("res://view/touch_controller.gd")
 ## ★★ 音效（`building_built` → 建造音；菜单点击音也在同一模块，见 view/sfx.gd）。
 const SfxRes = preload("res://view/sfx.gd")
+const ThemeRes = preload("res://view/theme.gd")
 const MAP_PATH := MapLibraryRes.FALLBACK_MAP_PATH
 
 ## 相机距离倍率的上下限（= 视野的两端）—— **唯一**的取值处（`fit_to_map` / `zoom_at` 都读它）。
@@ -90,6 +97,11 @@ var ground = null
 var terrain_props = null
 ## ★ 地图边界的金线（只在对战场景画一层；读 border_tiles 看它画在哪一格）
 var map_border = null
+## ★ 演出呼吸泛光层（纯表现；读 Unit.story_glow / Building.story_glow）
+var story_glow = null
+## ★★ 教程引导状态（没选中部队时高亮己方部队 / 高亮单位页签）。
+##   {spec, tab, id, period, strength, unit_on, tab_on}
+var story_guide: Dictionary = {}
 var units = null
 ## ★ unit_view 是**别名**：2D 版叫这个名字，界面/测试按它读「单位那一层」。
 ##    3D 版内部叫 units（一个 MultiMesh 层）—— 两个名字都给，省得调用方各记一套。
@@ -155,6 +167,35 @@ var zoom: float = 0.3
 ##   · 目标阵亡也自动取消。
 ##   ★ 跟随自身**不走** `center_on_tile_precise()`（那条会取消跟随），直接 `_place_camera_looking_at()`。
 var follow_target = null
+
+# ------------------------------------------------------------------
+# 演出系统（story_director.gd）的宿主状态
+# ------------------------------------------------------------------
+## 导演（null = 本局不跑演出：自由对战 / 合作 / 观战 / ai_test）。
+var story = null
+## 这一局是不是「单人战役」且允许演出（由 start_level 的 enable_story 决定）。
+var _story_enable_pending: bool = false
+var _story_campaign_id: String = ""
+## 当前正在等 HUD 回报的对话 token（导演的 token，不是 HUD 自己的 id）。
+var _story_dialogue_token: int = -1
+## 演出镜头锁：true 时玩家不能手动动镜头（强制移动 / 跟随不受影响）。
+var story_camera_locked: bool = false
+## 演出跟随目标（原始 target 描述，每帧解析；单位会移动）。
+var _story_camera_follow_spec: Variant = null
+## 强制镜头移动的插值状态。
+var _story_cam_active: bool = false
+var _story_cam_from: Vector2 = Vector2.ZERO
+var _story_cam_to: Vector2 = Vector2.ZERO
+var _story_cam_t: float = 0.0
+var _story_cam_sec: float = 0.0
+var _story_cam_zoom_from: float = 1.0
+var _story_cam_zoom_to: float = 1.0
+var _story_cam_ease: String = "cubic"
+## 换图状态（null = 没在换图）：{token, map_id, phase, t, fade_out, fade_in, opts}
+var _story_map_expand: Variant = null
+## 黑屏转场层（换图用）。
+var _story_fade_layer: CanvasLayer = null
+var _story_fade_rect: ColorRect = null
 
 ## ---- 相机输入状态（边缘滚屏 / Space 加速 / 夹取都要这几样）----
 ## 缺一个的症状是「滚不动 / 拖到地图外」——正是用户报回来过的问题
@@ -234,6 +275,7 @@ func _build_camera() -> void:
 
 
 func start(map_path: String = MAP_PATH) -> bool:
+	_story_enable_pending = false
 	cfg = ConfigRes.load_default()
 	if cfg == null:
 		push_error("配置载入失败：%s" % ConfigRes.last_error)
@@ -264,7 +306,7 @@ func start(map_path: String = MAP_PATH) -> bool:
 ##        “带备战配置开一局”的入口用；空字典 = 关卡原样（老行为）。
 func start_level(campaign, level, my_faction: String,
 		ai_overrides: Dictionary = {}, ai_profiles: Dictionary = {},
-		loadouts: Dictionary = {}) -> bool:
+		loadouts: Dictionary = {}, enable_story: bool = true) -> bool:
 	cfg = ConfigRes.load_default()
 	if cfg == null:
 		push_error("配置载入失败：%s" % ConfigRes.last_error)
@@ -306,6 +348,10 @@ func start_level(campaign, level, my_faction: String,
 	# ★ 两处都写：交互核心里那份（供共用逻辑读）+ 本场景上那份（供界面与测试读）。
 	interaction_pending_campaign = campaign
 	interaction_pending_level = level
+	# ★★ 演出只给**单人战役**：合作 / 观战 / ai_test 都不启用（见 docs/dev_plan_15.md）。
+	_story_enable_pending = enable_story and String(level.mode) != "coop"
+	story_guide = {}
+	_story_campaign_id = String(campaign.id) if campaign != null else String(level.campaign_id)
 
 	_assemble()
 	return true
@@ -328,7 +374,7 @@ func start_level_vs_commander(campaign, level, my_faction: String,
 	if ai_faction != "" and ai_faction != my_faction:
 		overrides[ai_faction] = LevelRes.AI_COMMANDER
 		profiles[ai_faction] = {"difficulty": "normal"}
-	return start_level(campaign, level, my_faction, overrides, profiles, loadouts)
+	return start_level(campaign, level, my_faction, overrides, profiles, loadouts, false)
 
 
 ## ★★ 观战模式：`ai_test` / `ai_test_2` 关卡由 commander AI 接管被观察方，玩家只看。
@@ -342,6 +388,7 @@ func start_level_vs_commander(campaign, level, my_faction: String,
 ## `reveal_all = true`（ai_test_2）时只给**玩家显示**开全图；AI 逻辑仍读正常迷雾。
 func start_ai_observer(level, allow_ai_orders: bool = false,
 		reveal_all: bool = false) -> bool:
+	_story_enable_pending = false
 	cfg = ConfigRes.load_default()
 	if cfg == null:
 		push_error("配置载入失败：%s" % ConfigRes.last_error)
@@ -413,6 +460,7 @@ func start_ai_observer(level, allow_ai_orders: bool = false,
 ## 第二席位在运行时被改成 `commander`（不改关卡 JSON）；它的基地 / 开局部队仍然来自
 ## 合作关现成的 `players[]` / `start_units[]`，所以 AI 一进关就有一支自己的军队。
 func start_coop_solo(level, ai_setup: Dictionary) -> bool:
+	_story_enable_pending = false
 	cfg = ConfigRes.load_default()
 	if cfg == null:
 		push_error("配置载入失败：%s" % ConfigRes.last_error)
@@ -460,6 +508,7 @@ func start_coop_solo(level, ai_setup: Dictionary) -> bool:
 
 ## ★★ 合作房主：房主跑唯一权威世界；`transport` 已由大厅交出来。
 func start_coop_host(campaign, level, transport) -> bool:
+	_story_enable_pending = false
 	if not _coop_load_cfg(level, transport):
 		return false
 	if String(level.mode) != "coop":
@@ -507,6 +556,7 @@ func start_coop_host(campaign, level, transport) -> bool:
 
 ## ★★ 合作客机：用房主发来的 `level_data` 建**同一个**世界壳，不 tick、不跑 AI。
 func start_coop_guest(payload: Dictionary, transport) -> bool:
+	_story_enable_pending = false
 	if transport == null:
 		push_error("start_coop_guest：transport 是 null")
 		return false
@@ -666,6 +716,12 @@ func _assemble() -> void:
 	add_child(buildings)
 	buildings.setup(cfg, world, palette)
 
+	# ★ 演出呼吸泛光：地面光环 + 建筑外壳（单位本体在 unit_flash.gdshader 里）
+	story_glow = StoryGlowViewRes.new()
+	story_glow.name = "StoryGlowView3D"
+	add_child(story_glow)
+	story_glow.setup(cfg, world, palette, buildings)
+
 	# 射箭投掷物（小方块 + 拖尾）：只读 world.projectiles（索敌与命中结算都在逻辑层）
 	projectiles = ProjectileViewRes.new()
 	projectiles.name = "ProjectileView3D"
@@ -741,6 +797,20 @@ func _assemble() -> void:
 	level_playing = interaction.level_playing
 	level_campaign = interaction.level_campaign
 
+	# ★★ 演出系统：建黑屏转场层 + 导演。只有 start_level(enable_story=true) 才会真的启用。
+	_build_story_fade_layer()
+	if hud != null and hud.has_signal("dialogue_finished"):
+		hud.dialogue_finished.connect(_on_hud_dialogue_finished)
+	if _story_enable_pending:
+		story = StoryDirectorRes.new()
+		var ok_story: bool = story.setup(self, world, _story_campaign_id,
+			String(level_playing.id) if level_playing != null else "")
+		if not ok_story:
+			story = null
+		elif input_ctrl != null:
+			input_ctrl.action_gate = _story_action_allowed
+	_story_enable_pending = false
+
 	# 开场把镜头对准**地图中心**（而不是大本营）
 	#
 	# ★ 为什么不是大本营：大本营在地图一角，对准它会让整张地图偏到画面一角
@@ -757,6 +827,374 @@ func _assemble() -> void:
 	#   清一次，让「进游戏第一眼 = 未选中」这条契约不依赖 setup 的副作用。
 	if input_ctrl != null:
 		input_ctrl.select_units([])
+
+
+# ------------------------------------------------------------------
+# 演出宿主的对外接口（story_director 通过 has_method 调用）
+# ------------------------------------------------------------------
+
+func _story_action_allowed(action: String) -> bool:
+	return story == null or story.is_input_allowed(action)
+
+
+## 玩家**手动动镜头**现在允不允许（演出强锁 / allowlist 里的 camera 被禁）。
+func _camera_player_input_allowed() -> bool:
+	if story_camera_locked:
+		return false
+	return story == null or story.is_input_allowed(StoryConstsRes.ACT_CAMERA)
+
+
+func _story_skip_keycode() -> int:
+	var s := String(cfg.str_val("story.skip.key", "Escape")).strip_edges().to_lower()
+	match s:
+		"space":
+			return KEY_SPACE
+		"enter", "return":
+			return KEY_ENTER
+		"q":
+			return KEY_Q
+	return KEY_ESCAPE
+
+
+func story_show_dialogue(token: int, text: String, opts: Dictionary) -> void:
+	_story_dialogue_token = token
+	if hud != null:
+		hud.show_dialogue(text, opts)
+
+
+func story_clear_dialogue() -> void:
+	_story_dialogue_token = -1
+	if hud != null:
+		hud.clear_dialogue()
+
+
+## 导演 / 剧本请求「立刻推进当前对话」。
+func story_advance_dialogue() -> void:
+	if hud != null:
+		hud.advance_dialogue()
+
+
+func _on_hud_dialogue_finished(_hud_id: int) -> void:
+	var token := _story_dialogue_token
+	_story_dialogue_token = -1
+	if story != null and token >= 0:
+		story.on_dialogue_finished(token)
+
+
+func story_resource_gain(food: float, gold: float) -> void:
+	if hud != null:
+		hud.show_resource_gain(food, gold)
+
+
+## 剧情判胜 / 判负：与开发者快捷键同一条结算链路（状态写 world.objective_state，
+## 再走 `_consume_events` 弹结算画面）。
+func story_outcome(result: String) -> void:
+	_force_outcome(result)
+
+
+## 命令卡某一类格子的呼吸高亮（教程「协防军」按钮）。
+func story_glow_command_card(kind: String) -> void:
+	if hud != null and hud.has_method("set_command_card_glow"):
+		hud.set_command_card_glow(kind)
+
+
+## ★★ 教程引导：没选中部队时高亮己方部队；没停在指定页签时高亮该页签。
+## 步骤字段：`targets`（缺省 = 本机全部友军）、`tab`（如 "unit"）、`id`、
+##          `period`、`strength`。
+func story_guide_selection(step: Dictionary) -> void:
+	if world == null:
+		return
+	story_guide_clear()
+	var spec: Variant = step.get("targets", {"faction": String(world.my_faction)})
+	story_guide = {
+		"spec": spec,
+		"tab": String(step.get("tab", "")).strip_edges(),
+		"id": String(step.get("id", "__story_guide")).strip_edges(),
+		"period": maxf(0.1, float(step.get("period", 1.2))),
+		"strength": clampf(float(step.get("strength", 1.0)), 0.0, 1.0),
+		"unit_on": false,
+		"tab_on": false,
+	}
+	if String(story_guide["id"]) == "":
+		story_guide["id"] = "__story_guide"
+	_sync_story_guide()
+
+
+## 关掉引导（高亮 + 页签 attention）。`id` 非空时只关同名那一组。
+func story_guide_clear(id: String = "") -> void:
+	if story_guide.is_empty():
+		return
+	if id != "" and String(story_guide.get("id", "")) != id:
+		return
+	var gid := String(story_guide.get("id", ""))
+	if gid != "":
+		StoryActionsRes.stop_glow(world, {"id": gid})
+	if hud != null and hud.has_method("set_page_tab_attention"):
+		hud.set_page_tab_attention("")
+	story_guide = {}
+
+
+func _sync_story_guide() -> void:
+	if story_guide.is_empty() or world == null:
+		return
+	var sel_empty: bool = input_ctrl == null or input_ctrl.selected_units.is_empty()
+	var gid := String(story_guide.get("id", ""))
+	if sel_empty:
+		var units: Array = StoryActionsRes.resolve_units(world, story_guide.get("spec", {}))
+		StoryActionsRes.ensure_unit_glow(world, units, gid,
+			float(story_guide.get("period", 1.2)),
+			float(story_guide.get("strength", 1.0)))
+		story_guide["unit_on"] = true
+	elif bool(story_guide.get("unit_on", false)):
+		StoryActionsRes.stop_glow(world, {"id": gid})
+		story_guide["unit_on"] = false
+
+	var tab := String(story_guide.get("tab", ""))
+	var tab_ok := true
+	if tab != "":
+		var tabs = hud.page_tabs if hud != null else null
+		var has_tab: bool = tabs != null and tabs.has_method("has_page") and tabs.has_page(tab)
+		tab_ok = has_tab and tabs != null and String(tabs.page()) == tab
+		if has_tab and not tab_ok:
+			if hud != null and hud.has_method("set_page_tab_attention"):
+				hud.set_page_tab_attention(tab)
+			story_guide["tab_on"] = true
+		elif bool(story_guide.get("tab_on", false)):
+			if hud != null and hud.has_method("set_page_tab_attention"):
+				hud.set_page_tab_attention("")
+			story_guide["tab_on"] = false
+
+	# 两个条件都满足 = 玩家已经知道该做什么，引导自动收掉。
+	if not sel_empty and tab_ok:
+		story_guide_clear()
+
+
+## 强制镜头移动到某个**逻辑格坐标**（不是像素）。
+func story_camera_move(point: Vector2, sec: float, zoom_target: float, ease: String) -> void:
+	story_camera_locked = true
+	follow_target = null
+	_story_camera_follow_spec = null
+	_story_cam_from = _story_current_look()
+	_story_cam_to = point
+	_story_cam_t = 0.0
+	_story_cam_sec = maxf(0.0, sec)
+	_story_cam_ease = ease
+	_story_cam_zoom_from = zoom
+	_story_cam_zoom_to = zoom if zoom_target < 0.0 else clampf(zoom_target, ZOOM_MIN, ZOOM_MAX)
+	if _story_cam_sec <= 0.0 or not ThemeRes.animations_enabled():
+		zoom = _story_cam_zoom_to
+		_place_camera_looking_at(_story_point_to_world(point))
+		clamp_look_point()
+		_story_cam_active = false
+	else:
+		_story_cam_active = true
+
+
+func story_camera_lock(on: bool) -> void:
+	story_camera_locked = bool(on)
+	if on:
+		follow_target = null
+	else:
+		_story_cam_active = false
+		_story_camera_follow_spec = null
+
+
+## 跟随目标描述（由导演每帧解析；单位会移动）。
+func story_camera_follow(target_spec: Variant) -> void:
+	_story_camera_follow_spec = target_spec
+	story_camera_locked = true
+	_story_cam_active = false
+	follow_target = null
+
+
+func story_refresh_boundary() -> void:
+	if map_border != null and map_border.has_method("rebuild"):
+		map_border.rebuild()
+	if hud != null and hud.minimap != null:
+		hud.minimap.queue_redraw()
+
+
+## 导演请求换图；真正流程分两段黑屏，在 `_tick_story_map_expand()` 里推进。
+func story_expand_map(map_id: String, opts: Dictionary, token: int) -> void:
+	if _story_map_expand != null:
+		if story != null:
+			story.on_map_expanded(token, false)
+		return
+	var dir := "%s/%s" % [MapLibraryRes.MAPS_DIR, map_id]
+	var path: String = String(opts.get("path", "")).strip_edges()
+	if path == "":
+		path = MapLibraryRes.find_map_file(dir, map_id)
+	if path == "":
+		push_error("演出换图：找不到地图「%s」" % map_id)
+		if story != null:
+			story.on_map_expanded(token, false)
+		return
+	var fade: float = float(opts.get("fade_sec", -1.0))
+	var fade_out := fade
+	var fade_in := fade
+	if fade < 0.0:
+		fade_out = maxf(0.0, cfg.num("story.map_expand.fade_out_sec", 0.5))
+		fade_in = maxf(0.0, cfg.num("story.map_expand.fade_in_sec", 0.5))
+	_story_map_expand = {
+		"token": token,
+		"path": path,
+		"map_id": map_id,
+		"opts": opts.duplicate(true),
+		"phase": "out",
+		"t": 0.0,
+		"fade_out": fade_out,
+		"fade_in": fade_in,
+		"ok": false,
+	}
+	if _story_fade_rect != null:
+		_story_fade_rect.visible = true
+		_story_fade_rect.modulate = Color(1, 1, 1, 0)
+
+
+func _build_story_fade_layer() -> void:
+	_story_fade_layer = CanvasLayer.new()
+	_story_fade_layer.name = "StoryFadeLayer"
+	_story_fade_layer.layer = 100
+	add_child(_story_fade_layer)
+	_story_fade_rect = ColorRect.new()
+	_story_fade_rect.name = "StoryFade"
+	_story_fade_rect.color = Color(0, 0, 0, 1)
+	_story_fade_rect.mouse_filter = Control.MOUSE_FILTER_STOP
+	_story_fade_rect.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_story_fade_rect.visible = false
+	_story_fade_layer.add_child(_story_fade_rect)
+
+
+## 换图两段黑屏状态机。返回 true = 本帧仍然被换图占用（冻结输入 / 逻辑）。
+func _tick_story_map_expand(dt: float) -> bool:
+	if _story_map_expand == null:
+		return false
+	var st: Dictionary = _story_map_expand
+	var t := float(st.get("t", 0.0)) + maxf(0.0, dt)
+	st["t"] = t
+	if String(st.get("phase", "out")) == "out":
+		var fo := maxf(0.0, float(st.get("fade_out", 0.0)))
+		var a := 1.0 if fo <= 0.0 else clampf(t / fo, 0.0, 1.0)
+		if _story_fade_rect != null:
+			_story_fade_rect.modulate = Color(1, 1, 1, a)
+		if fo <= 0.0 or t >= fo:
+			# ---- 黑屏最深处：真正换图 ----
+			var ok: bool = world != null and world.swap_map(String(st.get("path", "")))
+			st["ok"] = ok
+			if ok:
+				_rebuild_map_views()
+				_apply_story_expand_opts(st.get("opts", {}))
+			else:
+				push_error("演出换图失败：%s" % String(st.get("map_id", "")))
+			st["phase"] = "in"
+			st["t"] = 0.0
+		return true
+	# phase = in
+	var fi := maxf(0.0, float(st.get("fade_in", 0.0)))
+	var a2 := 0.0 if fi <= 0.0 else 1.0 - clampf(t / fi, 0.0, 1.0)
+	if _story_fade_rect != null:
+		_story_fade_rect.modulate = Color(1, 1, 1, a2)
+	if fi <= 0.0 or t >= fi:
+		if _story_fade_rect != null:
+			_story_fade_rect.visible = false
+		var token := int(st.get("token", -1))
+		var ok2 := bool(st.get("ok", false))
+		_story_map_expand = null
+		if story != null:
+			story.on_map_expanded(token, ok2)
+	return true
+
+
+func _apply_story_expand_opts(opts: Dictionary) -> void:
+	if world == null or world.map == null:
+		return
+	var b: Variant = opts.get("boundary", null)
+	if b != null:
+		if typeof(b) == TYPE_STRING and String(b) == "full":
+			world.reset_boundary()
+		else:
+			var r: Rect2i = StoryActionsRes.parse_rect(b)
+			if r.size.x > 0 and r.size.y > 0:
+				world.set_boundary(r)
+	if hud != null:
+		if hud.minimap != null:
+			hud.minimap.on_map_changed()
+		hud.refresh()
+	# 边界可能在 swap 之后才设置：金线要按最终的 active_rect 重建。
+	story_refresh_boundary()
+	var focus: Variant = opts.get("focus", null)
+	if focus != null:
+		var p: Vector2 = StoryActionsRes.resolve_point(world, focus)
+		if p.x >= 0.0:
+			_story_cam_active = false
+			_place_camera_looking_at(_story_point_to_world(p))
+			clamp_look_point()
+
+
+## 换图后重建把地图尺寸烘进几何 / 贴图的三层。
+func _rebuild_map_views() -> void:
+	for old in [ground, terrain_props, map_border]:
+		if old != null and is_instance_valid(old):
+			old.queue_free()
+	ground = GroundViewRes.new()
+	ground.name = "GroundView3D"
+	add_child(ground)
+	ground.setup(cfg, world, palette)
+
+	terrain_props = TerrainPropsRes.new()
+	terrain_props.name = "TerrainPropsView3D"
+	add_child(terrain_props)
+	terrain_props.setup(cfg, world, palette)
+
+	map_border = MapBorderViewRes.new()
+	map_border.name = "MapBorderView3D"
+	add_child(map_border)
+	map_border.setup(cfg, world, palette)
+
+	if overlay != null:
+		# 重新 setup：换图后静态投影缓存（网格 / 区划轮廓）必须作废。
+		overlay.setup(cfg, world, palette, units, ground, team_slots)
+
+
+func _story_current_look() -> Vector2:
+	if palette == null:
+		return Vector2.ZERO
+	return palette.world_to_logic(_ground_under_screen(_view_center()))
+
+
+func _story_point_to_world(p: Vector2) -> Vector3:
+	var cell: float = palette.cell_size() if palette != null else 1.0
+	return Vector3(p.x * cell, 0.0, p.y * cell)
+
+
+## 返回 true = 这一帧的镜头由演出接管（跳过玩家输入）。
+func _story_camera_tick(dt: float) -> bool:
+	if _story_cam_active:
+		_story_cam_t += maxf(0.0, dt)
+		var sec := maxf(0.0001, _story_cam_sec)
+		var p := clampf(_story_cam_t / sec, 0.0, 1.0)
+		var e := _story_cam_ease_value(p)
+		var lp: Vector2 = _story_cam_from.lerp(_story_cam_to, e)
+		zoom = lerpf(_story_cam_zoom_from, _story_cam_zoom_to, e)
+		_place_camera_looking_at(_story_point_to_world(lp))
+		if p >= 1.0:
+			_story_cam_active = false
+		clamp_look_point()
+		return true
+	if story_camera_locked:
+		if _story_camera_follow_spec != null:
+			var p2: Vector2 = StoryActionsRes.resolve_point(world, _story_camera_follow_spec)
+			if p2.x >= 0.0:
+				_place_camera_looking_at(_story_point_to_world(p2))
+		clamp_look_point()
+		return true
+	return false
+
+
+func _story_cam_ease_value(p: float) -> float:
+	if _story_cam_ease == "linear":
+		return p
+	return 1.0 - pow(1.0 - p, 3.0)
 
 
 ## 相机替身：`input_controller` 只用到 `center_on_px` 这一个方法。
@@ -891,6 +1329,8 @@ func center_on_screen(screen_px: Vector2) -> void:
 ## ★★ 做法：保持相机姿态与高度不变，只把「它看向的地面点」搬到目标格。
 ##   于是「格 → 屏幕」的中心映射恒定 —— 这就是「相机在同一高度」的实现方式。
 func center_on_tile(logic_pos: Vector2) -> void:
+	if not _camera_player_input_allowed():
+		return
 	stop_follow()                      # 手动跳镜头 = 退出跟随
 	if cam == null or palette == null:
 		return
@@ -982,6 +1422,10 @@ func _process(dt: float) -> void:
 	#       「结算画面后面部队还在走 / 相机还在滚动」。
 	if outcome_frozen:
 		return
+	# ★★ 演出换图：黑屏期间冻结输入 / 逻辑 / 视图同步（只推进黑屏状态机）。
+	if _story_map_expand != null:
+		_tick_story_map_expand(dt)
+		return
 	# ① 输入：轮询鼠标（只有 input_controller 允许读鼠标）
 	var _t_input := _prof()
 	# ★ 触摸端镜像：输入层据此选「框选预览的判定口径」以及「要不要出光标悬停」
@@ -1052,6 +1496,12 @@ func _process(dt: float) -> void:
 			coop_host_session.tick(dt)
 			coop_host_session.send_events(events)
 	_consume_events(events)
+	# ★★ 演出导演：在逻辑 tick 之后、视图同步之前推进（它可能改世界状态）。
+	if story != null and running:
+		story.tick(dt, events)
+	if hud != null and story != null:
+		# 对话模态 / UI 锁：盾由 HUD 持有（通知栈 z 更高，不会被盾挡住）。
+		hud.set_story_shield(hud.has_dialogue() or not story.is_input_allowed(StoryConstsRes.ACT_UI))
 	# ★★ 编队槽位：每帧补登记新将领（招募 / 重生），并更新阵亡对象的引用。
 	#    `team_slots` 只认 id，已经分配过的槽位永不变；这里只是「发现新 id」。
 	if team_slots != null:
@@ -1089,6 +1539,13 @@ func _process(dt: float) -> void:
 	charge_fx.sync(dt if running else 0.0)
 	# 地图边界金线的**扫描**（纯表现：只推一个 shader uniform）；暂停时照旧走
 	map_border.sync(dt)
+	# 演出呼吸泛光（纯表现；按 world.time 呼吸，暂停时冻结）。
+	# ★ 只有本局真的启用了演出才扫描（自由对战 / 合作 / 观战不付这份成本）。
+	if story_glow != null and story != null:
+		story_glow.sync(dt)
+	# ★★ 教程引导：没选中部队时让己方部队发光；没停在指定页签时让页签呼吸。
+	if story != null and not story_guide.is_empty():
+		_sync_story_guide()
 	_prof_done("view/other", _t_other)
 	# ④ 覆盖层：纯本地 UI 状态塞进去，它只画
 	var _t_overlay := _prof()
@@ -1299,6 +1756,13 @@ func point_hits_hud(screen: Vector2) -> bool:
 func _camera_update(dt: float) -> void:
 	if cam == null or palette == null:
 		return
+	# ★★ 演出：强制移动 / 镜头锁 / 跟随目标。接管时跳过所有玩家镜头输入。
+	if _story_camera_tick(dt):
+		return
+	# allowlist 里 camera 被禁：边缘滚屏 / 方向键也一起停（它们不经过 input_controller）。
+	if story != null and not story.is_input_allowed(StoryConstsRes.ACT_CAMERA):
+		clamp_look_point()
+		return
 	# ① 先把「鼠标在不在窗口内 / 有没有压着可点控件」问清楚（与 2D 同一条判据）
 	var mouse_screen: Vector2 = get_viewport().get_mouse_position()
 	var in_window: bool = Rect2(Vector2.ZERO, get_viewport().get_visible_rect().size).has_point(mouse_screen)
@@ -1433,6 +1897,8 @@ func visible_extent() -> Rect2:
 
 ## F 键：把镜头拉到「最远视野」并居中整张地图（与 2D 的 `fit_to_map()` 同一意图）
 func fit_to_map() -> void:
+	if not _camera_player_input_allowed():
+		return
 	zoom = ZOOM_MAX
 	center_on_tile(Vector2(float(world.map.cols) * 0.5, float(world.map.rows) * 0.5))
 
@@ -1465,6 +1931,8 @@ func set_ui_dragging(v: bool) -> void:
 ##   这里改成**直接按格算相机位置**：先摆相机、再回读「屏幕中心现在对着哪一格」，
 ##   差多少就补多少（一步牛顿迭代，透视下收敛很快）。
 func center_on_tile_precise(logic_pos: Vector2) -> void:
+	if not _camera_player_input_allowed():
+		return
 	center_on_tile(logic_pos)
 	# ★★ `force_update_transform()` 是这一段的关键（我实测踩到）：
 	#    Godot 的节点变换是**惰性更新**的，`project_ray_normal` 读到的是
@@ -1803,6 +2271,8 @@ func _feed_recruit_sfx(events: Array) -> void:
 
 ## 滚轮缩放：以**光标下的地面点**为锚点（缩放前后它留在同一屏幕位置）
 func zoom_at(screen_pos: Vector2, factor: float) -> void:
+	if not _camera_player_input_allowed():
+		return
 	stop_follow()                      # 手动缩放 = 退出跟随
 	if palette == null or cam == null:
 		return
@@ -1859,6 +2329,8 @@ func _ground_under_screen(screen_px: Vector2) -> Vector3:
 ## ★ 用「屏幕像素 → 地面位移」的换算：把屏幕中心与「中心 + delta」两点都反算成格，
 ##   两者之差就是这一步该走的地面位移 ⇒ 手感与缩放无关。
 func pan_screen(screen_delta: Vector2) -> void:
+	if not _camera_player_input_allowed():
+		return
 	stop_follow()                      # 手动平移 = 退出跟随
 	if palette == null or cam == null or screen_delta == Vector2.ZERO:
 		return
@@ -1950,11 +2422,26 @@ func _unhandled_input(event: InputEvent) -> void:
 	# ★★ 开发者快捷键 Ctrl+1 / Ctrl+3 / Ctrl+W / Ctrl+L 要在**所有别的按键处理之前**：
 	#   命令卡的 W 格子 / 数字键必须放行带修饰键的组合（见 command_card.handle_key 的注释），
 	#   但这里仍然先判一遍，免得将来某条输入路径把这几颗组合键吃掉。
-	if _handle_dev_hotkey(event):
-		get_viewport().set_input_as_handled()
-		return
+	if story == null or story.is_input_allowed(StoryConstsRes.ACT_UI):
+		if _handle_dev_hotkey(event):
+			get_viewport().set_input_as_handled()
+			return
 	# 结算画面开着：键盘 / 鼠标一概不再进游戏（GUI 的按钮点击在更早的 GUI 阶段已经处理）。
 	if outcome_frozen:
+		get_viewport().set_input_as_handled()
+		return
+	# ★★ 演出：Esc = 跳过当前演出（可跳过时）；不可跳过时吞掉。
+	if story != null and event is InputEventKey:
+		var k := event as InputEventKey
+		if k.pressed and not k.echo and k.keycode == _story_skip_keycode() and story.has_active():
+			story.request_skip()
+			get_viewport().set_input_as_handled()
+			return
+	# ★★ 对话模态：空格 / 回车推进；其它键盘输入一律吞掉（鼠标由全屏盾挡）。
+	if story != null and hud != null and hud.has_dialogue() and event is InputEventKey:
+		if hud.handle_key(event):
+			get_viewport().set_input_as_handled()
+			return
 		get_viewport().set_input_as_handled()
 		return
 	if input_ctrl == null:
@@ -2006,12 +2493,21 @@ func _input(event: InputEvent) -> void:
 	# 结算画面开着：手势状态机整段停掉（点任意处 / 点按钮都走 GUI，不经过这里）。
 	if outcome_frozen:
 		return
+	# ★★ 对话模态（触摸端）：点任意处推进对话，不让触摸手势漏到地图上。
+	if event is InputEventScreenTouch and story != null and hud != null and hud.has_dialogue():
+		var st := event as InputEventScreenTouch
+		if st.pressed:
+			hud.fast_forward_dialogue()
+		return
 	# ★★ Tab = 切换右下角页签：必须在 **GUI 之前**拦 —— Tab 同时是 Godot 的焦点导航键，
 	#   等 `_unhandled_input` 时可能已经被 GUI 吃掉，焦点还会乱跑。
 	#   只有真的切了页才 set_input_as_handled；选项页开着 / 只有一页时让事件照常走 GUI。
 	if event is InputEventKey:
 		var key := event as InputEventKey
 		if key.pressed and not key.echo and key.keycode == KEY_TAB:
+			if story != null and not story.is_input_allowed(StoryConstsRes.ACT_UI):
+				get_viewport().set_input_as_handled()
+				return
 			if hud != null and hud.handle_tab_key(key):
 				get_viewport().set_input_as_handled()
 			return
@@ -2059,6 +2555,12 @@ func _is_wheel(event: InputEventMouseButton) -> bool:
 func _on_command(cmd: Dictionary) -> void:
 	if world == null:
 		return
+	# ★ 演出：先按动作类别过闸门，再把命令转给导演（用于 on_command 触发器）。
+	if story != null:
+		var act := _story_command_action(String(cmd.get("kind", "")))
+		if act != "" and not story.is_input_allowed(act):
+			return
+		story.notify_command(cmd)
 	# 观战：默认所有玩法命令（移动 / 攻击 / 招募 / 建造 / AI 指令）一律丢弃。
 	# ai_test_2（observer_can_command）只额外放行 AI 面板的 `ai_order`，部队命令仍然丢弃。
 	# 选择 / 相机 / 小地图不经过这里，仍可自由查看。
@@ -2073,6 +2575,24 @@ func _on_command(cmd: Dictionary) -> void:
 	_update_order_flag(cmd)
 	if hud != null and hud.ai_panel != null:
 		hud.ai_panel.sync()
+
+
+## 命令 kind → 演出动作类别（空 = 不参与闸门）。
+func _story_command_action(kind: String) -> String:
+	match kind:
+		"move", "attack", "attack_move", "stop":
+			return StoryConstsRes.ACT_ORDER
+		"build", "demolish":
+			return StoryConstsRes.ACT_BUILD
+		"recruit", "recruit_cancel", "recruit_cancel_all", "zone_recruit", "zone_recruit_cancel":
+			return StoryConstsRes.ACT_RECRUIT
+		"tech_toggle":
+			return StoryConstsRes.ACT_TECH
+		"building_upgrade", "building_upgrade_cancel":
+			return StoryConstsRes.ACT_UPGRADE
+		"revive", "revive_cancel", "recall":
+			return StoryConstsRes.ACT_REVIVE
+	return StoryConstsRes.ACT_UI
 
 
 ## ★★ 右键指令的提示，两种形态：

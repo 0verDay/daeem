@@ -266,17 +266,6 @@ var side_color_neutral: Color = Color(0.620, 0.650, 0.690, 1.0) # #9ea6b0 灰
 ## ---- 碰撞（★ 每帧每单位都会读；原先走 num() 每次都要 split(".") + 逐层下潜）----
 var unit_collision_enabled: bool = true
 var unit_collision_backend: String = "csharp"
-## ★★ 2026.10.27：**单位循环（`combat.update_unit`）跑在哪一边**。
-##
-## · "gdscript"（默认，永远是回退路径）：现行实现，逐单位 GDScript；
-## · "csharp"：整个 `update_unit` 的决策下沉到 `logic/unit/UnitKernel.cs`。
-##
-## ★ 为什么是「整个 update_unit」而不是「士气 / 计时器各来一个内核」：
-##   单位循环是**逐个交错**的 —— A 的士气 → A 的战斗（可能打伤 B）→ B 的士气 → B 的战斗。
-##   把任何一段抽出来批量算，都会改变这个顺序（等价性当场断）；
-##   而只批量算「数值」又不划算：打包 256 个单位的状态本身就要 ~1µs/单位，
-##   而士气全程才 2.4µs/单位。⇒ 只有把决策整体搬过去才可能赢。
-var unit_sim_backend: String = "gdscript"
 var unit_collision_radius: float = 0.18
 var unit_overlap_allowance: float = 0.7
 var unit_collision_iterations: int = 3
@@ -433,13 +422,9 @@ var aggro_range: float = 4.0
 var leash_factor: float = 1.8
 ## ★★ **减伤封顶**（本轮新增；config.combat.damage_reduction_cap，默认 0.75）。
 ##
-## 口径（用户拍板）：所有**减伤来源相加**，再夹到这个上限 —— 现在只有两条来源：
-##   · 士气高位的免伤 `morale.damage_reduction`（50%）；
-##   · 骑手的兵种特性「对远程减伤」（`unit.types.rider.traits.ranged_reduction`，25%）。
-## 于是 50% + 25% = 75%，恰好等于默认上限；以后再加减伤来源时改**这一个数**就能封顶，
-## 不用去每个来源里各写一份夹取。
-## ⚠️ 易伤（士气低位）**不进**这个加法：它是减伤之后再乘一次（×1.5），
-##    而且与高位免伤互斥（100 / 50 两个阈值不可能同时满足）。
+## 口径（用户拍板）：所有**减伤来源相加**，再夹到这个上限。
+## 来源包括兵种特性「对远程减伤 / 近战减伤」、将领抵抗、科技减伤等。
+## 以后再加减伤来源时改**这一个数**就能封顶，不用去每个来源里各写一份夹取。
 var damage_reduction_cap: float = 0.75
 ## ★★ 因为追击上限（leash）放弃之后，多久**不许再自动锁定单位**（秒）。
 ##
@@ -616,37 +601,9 @@ var revive_regen_cap_ratio: float = 0.2
 var revive_respawn_sec: float = 20.0
 var revive_recall_respawn_sec: float = 10.0
 
-## ---- ★★ 士气（见 config.json 的 morale 段、logic/morale.gd）----
-## 整支部队共享一个值；作用范围 = 场上所有单位（含 AI / 敌方）。
-## 档位是**并列判定**（0 士气同时吃「易伤」与「快速掉血」）。载入时算好（每帧每单位都要读）。
-var morale_max: float = 100.0
-var morale_start: float = 90.0
-var morale_regen_ally: float = 2.0
-var morale_decay_enemy: float = 0.4
-var morale_decay_surrounded: float = 0.4
-## ★★ 2026.10.29：主将**濒死（倒地）**期间，其整支部队的士气额外下降速率（点/秒）。
-##    这是**叠加**在区划速率 / 粮车光环之上的固定值（增加和减少都算），
-##    只在 `unit.is_downed()` 期间生效；再起后按当前值恢复正常规则。
-var morale_leader_down_drain: float = 3.0
-## ★★ 2026.10.29：**断粮**惩罚 —— 这一方本帧付不起单位维护费时，全军每秒掉多少士气。
-##   与粮车光环（`unit.types.grain_cart.morale_aura_rate` = 0.5）**等速**是有意的：
-##   一辆粮车刚好把断粮惩罚抵消掉（用户口径：「下降速度等于粮车使士气上升的速度」）。
-##   它**叠加**在区划速率与粮车光环之上，因此站在敌方区划上断粮 = 0.5(疲惫) + 0.5(断粮)。
-var morale_starve_drain: float = 0.5
-var morale_high_tier: float = 100.0
-var morale_mid_tier: float = 90.0
-var morale_vuln_tier: float = 50.0
-var morale_low_tier: float = 25.0
-var morale_hp_regen_high: float = 8.0
-var morale_hp_regen_mid: float = 2.0
-var morale_hp_decay_low: float = 0.75
-var morale_hp_decay_zero: float = 2.0
-var morale_hp_floor: float = 1.0
-var morale_damage_reduction: float = 0.5
-var morale_vulnerability: float = 0.5
-var morale_boost_kill: float = 5.0
-var morale_boost_leader: float = 10.0
-var morale_boost_capture: float = 10.0
+## ---- 回血 ----
+## 单位站在**己方 / 友方**区划内时，每秒恢复多少血。
+var heal_zone_regen: float = 1.0
 
 ## 一帧最多按多少秒推进逻辑（防止「帧慢→dt 大→活更多→更慢」的死亡螺旋）
 var sim_max_dt: float = 0.05
@@ -807,7 +764,6 @@ func _cache_scalars() -> void:
 
 	unit_collision_enabled = bool_val("unit.collision_enabled", true)
 	unit_collision_backend = str_val("unit.collision_backend", "csharp")
-	unit_sim_backend = str_val("unit.sim_backend", "gdscript")
 	unit_collision_radius = num("unit.collision_radius", 0.18)
 	unit_overlap_allowance = num("unit.overlap_allowance", 0.7)
 	unit_collision_iterations = int_val("unit.collision_iterations", 3)
@@ -914,31 +870,8 @@ func _cache_scalars() -> void:
 	revive_respawn_sec = maxf(0.0, num("revive.respawn_sec", 20.0))
 	revive_recall_respawn_sec = minf(
 		maxf(0.0, num("revive.recall_respawn_sec", 10.0)), revive_respawn_sec)
-
-	# ★★ 士气（logic/morale.gd 读这几个字段；整支部队共享一个值）。
-	#   夹取：血量下限 ≥0；减免夹到 [0, 1) —— 写成 1 会让「免伤 100% = 无敌」。
-	morale_max = maxf(1.0, num("morale.max", 100.0))
-	morale_start = clampf(num("morale.start", 90.0), 0.0, morale_max)
-	morale_regen_ally = maxf(0.0, num("morale.regen_ally", 2.0))
-	morale_decay_enemy = maxf(0.0, num("morale.decay_enemy", 0.4))
-	morale_decay_surrounded = maxf(0.0, num("morale.decay_surrounded", 0.4))
-	morale_leader_down_drain = maxf(0.0, num("morale.leader_down_drain", 3.0))
-	# ★★ 断粮（本轮新增）：付不起维护费时全军每秒掉多少士气；夹到 ≥0。
-	morale_starve_drain = maxf(0.0, num("morale.starve_drain", 0.5))
-	morale_high_tier = num("morale.high_tier", 100.0)
-	morale_mid_tier = num("morale.mid_tier", 90.0)
-	morale_vuln_tier = num("morale.vuln_tier", 50.0)
-	morale_low_tier = num("morale.low_tier", 25.0)
-	morale_hp_regen_high = maxf(0.0, num("morale.hp_regen_high", 8.0))
-	morale_hp_regen_mid = maxf(0.0, num("morale.hp_regen_mid", 2.0))
-	morale_hp_decay_low = maxf(0.0, num("morale.hp_decay_low", 0.75))
-	morale_hp_decay_zero = maxf(0.0, num("morale.hp_decay_zero", 2.0))
-	morale_hp_floor = maxf(0.0, num("morale.hp_floor", 1.0))
-	morale_damage_reduction = clampf(num("morale.damage_reduction", 0.5), 0.0, 0.999)
-	morale_vulnerability = maxf(0.0, num("morale.vulnerability", 0.5))
-	morale_boost_kill = maxf(0.0, num("morale.boost_kill", 5.0))
-	morale_boost_leader = maxf(0.0, num("morale.boost_leader", 10.0))
-	morale_boost_capture = maxf(0.0, num("morale.boost_capture", 10.0))
+	# 区划内回血（与粮车光环相加）
+	heal_zone_regen = maxf(0.0, num("heal.zone_regen", 1.0))
 
 	_cache_techs()
 	_cache_upgrades()
@@ -1656,9 +1589,9 @@ func _cache_unit_types() -> void:
 				#   投石车 / 弓箭 = 抛物；扭力弩炮的弩矢 = 直线。
 				#   纯表现（视图按它决定要不要把方块抬高），逻辑层的命中与它无关。
 				"projectile_arc": bool(td.get("projectile_arc", true)),
-				# ★★ 粮车的士气光环（其它兵种不写 = 0 = 没有光环）。
-				"morale_aura_radius": maxf(0.0, float(td.get("morale_aura_radius", 0.0))),
-				"morale_aura_rate": maxf(0.0, float(td.get("morale_aura_rate", 0.0))),
+				# ★★ 粮车的**回血光环**（其它兵种不写 = 0 = 没有光环）。
+				"heal_aura_radius": maxf(0.0, float(td.get("heal_aura_radius", 0.0))),
+				"heal_aura_rate": maxf(0.0, float(td.get("heal_aura_rate", 0.0))),
 				# ★★ 2026.10.29：**单位维护费**（粮/秒/存活单位）。
 				#   取值优先 `unit.types.<id>.upkeep_food`，没写就用它那个大类（unit.classes）的值。
 				#   ⚠️ 载入时就算成标量：这条在「每个单位每帧」的路径上（world._tick_upkeep），
@@ -2349,14 +2282,14 @@ func unit_splash_radius_of(id: String) -> float:
 	return float(unit_type_entry(id).get("splash_radius", 0.0))
 
 
-## 士气光环半径（格；0 = 没有光环）。
-func unit_morale_aura_radius_of(id: String) -> float:
-	return float(unit_type_entry(id).get("morale_aura_radius", 0.0))
+## 回血光环半径（格；0 = 没有光环）。
+func unit_heal_aura_radius_of(id: String) -> float:
+	return float(unit_type_entry(id).get("heal_aura_radius", 0.0))
 
 
-## 士气光环每秒加多少士气（0 = 没有光环）。
-func unit_morale_aura_rate_of(id: String) -> float:
-	return float(unit_type_entry(id).get("morale_aura_rate", 0.0))
+## 回血光环每秒恢复多少血（0 = 没有光环）。
+func unit_heal_aura_rate_of(id: String) -> float:
+	return float(unit_type_entry(id).get("heal_aura_rate", 0.0))
 
 
 ## ★★ 2026.11：这个兵种的**击退**参数（载入时已洗成 `{distance, stun_sec}` 两键固定）。

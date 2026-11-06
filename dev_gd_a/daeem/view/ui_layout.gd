@@ -117,10 +117,13 @@ const DETAIL_RIGHT_W := 603.0
 ## 阵营 / 盾徽 / 旗帜：**贴在详细信息栏左侧、紧贴地图**（用户本版需求）。
 ## ★ 左缘 = 地图占位右缘 400，右缘 562.5 = 详细信息左缘；两块严丝合缝。
 ## ★ 尺寸沿用 13/12 等比放大那版（162.5×260），只换位置。
+## ⚠️ 旧 162.5 宽只留给旧 bottom_bar_rects / 兼容测试。
 const FACTION_RECT := Rect2(400.0, 820.0, 162.5, 260.0)
+## 新版：详情栏隐藏时，左列位置由阵营盾徽面板顶上（与列表/资源条同宽 185）。
+const FACTION_V2_RECT := Rect2(402.0, 820.0, 185.0, 260.0)
 
 ## ------------------------------------------------------------------
-## 资源面板（粮食 / 黄金）—— 按需求新增
+## 资源面板（粮食 / 黄金）—— 宽度与左列列表一致（185），左缘对齐列表 x=402
 ##
 ## 需求原话（第一版）：「在详细信息界面上方紧贴地图的地方加上资源显示面板，
 ##                     只需要显示粮食和黄金两个资源，横着显示」；
@@ -138,7 +141,7 @@ const FACTION_RECT := Rect2(400.0, 820.0, 162.5, 260.0)
 ##      Label 会按兜底字体算一次最小高度并把 set_size 夹掉 —— 实测踩过）。
 ##   ⚠️ 它**不进** `interactive_rects`（见那个函数）：整块只有字和色块、点不动，
 ##      鼠标停上去照样允许边缘滚屏 —— 与「详细信息面板只有文字的地方让路」同一条规矩。
-const RES_BAR_RECT := Rect2(400.0, 764.0, 162.5, 56.0)
+const RES_BAR_RECT := Rect2(402.0, 764.0, 185.0, 56.0)
 ## 色块（粮食 / 黄金各一个 20×20）边长
 const RES_ICON := 20.0
 ## 两行的 y（相对资源面板自身）：第一行 5、行距 26 ⇒ 第二行 31，下缘 31+20 = 51 ≤ 56
@@ -253,7 +256,7 @@ const SETTINGS_RECT := Rect2(1840.0, 0.0, 80.0, 160.0)
 ##
 ##   ★★ 下方 3×3 是「3 行 × 3 列」的**可见窗口**，内容按**列**向右延伸
 ##      （列优先，见 `troop_cell_rect`）；一列 = 3 个格子。
-##   ★★ 部队图标 = **序号**（1..9、第 10 个写 0）+ 士气填充；
+##   ★★ 部队图标 = **序号**（1..9、第 10 个写 0）；
 ##      单个单位 / 建筑没有纯色背景，只画图标 + 底部血条（见 view/icon_badge.gd）。
 ##
 ## ⚠️ 单位编制上限（手玩原话：「y 是该将领的编制上限，目前所有将领的编制上限都暂时为 11」）
@@ -871,19 +874,41 @@ static func interactive_rects(view_size: Vector2, detail_visible: bool = true,
 ## ★ 贴边：详细信息 / 阵营盾徽都贴**左**（只跟 y 走）；命令卡 / 页签贴右下（x/y 都跟）。
 ## @param detail_visible 详细信息是否可见。隐藏时只去掉它那一块 —— 盾徽 / 命令卡 / 页签
 ##       仍然算底栏（它们还在屏幕上）。
+## D6 新版详情面板的命中矩形（左移后 x=400，视觉宽 616.5；旧的 988 只留给兼容测试）。
+const DETAIL_V2_RECT := Rect2(400.0, 820.0, 616.5, 260.0)
+
+
+## 新版底栏命中：详情用 616.5 宽，且**不再登记已删除的阵营占位**。
+## ★ HUD 的命中判定用这一份；旧函数保持 988 + 阵营，现有几何测试不受影响。
+static func bottom_bar_rects_v2(view_size: Vector2, detail_visible: bool = true,
+		command_ui_visible: bool = true) -> Array[Rect2]:
+	var out := bottom_bar_rects(view_size, false, command_ui_visible, false)
+	var shift := Vector2(maxf(0.0, view_size.x - DESIGN_W), maxf(0.0, view_size.y - DESIGN_H))
+	if detail_visible:
+		var d := DETAIL_V2_RECT
+		d.position.y += shift.y
+		out.push_front(d)
+	else:
+		var f := FACTION_V2_RECT
+		f.position.y += shift.y
+		out.push_front(f)
+	return out
+
+
 ## @param command_ui_visible 右下角「命令卡 + 页签」是否可见。整块隐藏时它那一块
 ##        也**不再算底栏**（见 `interactive_rects` 的同一参数）。
 static func bottom_bar_rects(view_size: Vector2, detail_visible: bool = true,
-		command_ui_visible: bool = true) -> Array[Rect2]:
+		command_ui_visible: bool = true, faction_visible: bool = true) -> Array[Rect2]:
 	var shift := Vector2(maxf(0.0, view_size.x - DESIGN_W), maxf(0.0, view_size.y - DESIGN_H))
 	var out: Array[Rect2] = []
 	if detail_visible:
 		var d := DETAIL_RECT
 		d.position.y += shift.y
 		out.append(d)
-	var f := FACTION_RECT
-	f.position.y += shift.y
-	out.append(f)
+	if faction_visible:
+		var f := FACTION_RECT
+		f.position.y += shift.y
+		out.append(f)
 	if command_ui_visible:
 		var card := CARD_RECT             # 贴右下：右下都修正
 		card.position += shift

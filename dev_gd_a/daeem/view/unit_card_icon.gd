@@ -564,6 +564,8 @@ class IconView extends Control:
 	var _ink: Color = Color(1, 1, 1, 1)
 	## 上一帧的「压金」判定（换档才重画）。
 	var _covered: bool = false
+	## ★★ 招募批次进度（0~1；0 = 不在招募）。画在图标下面，自下而上。
+	var _progress: float = 0.0
 
 	func _init() -> void:
 		mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -625,6 +627,14 @@ class IconView extends Control:
 		_ink = IconRes.ink(_covered, _ready)
 		queue_redraw()
 
+	## ★★ 招募队列的批次进度：与部队图标同步（整条队列共用一个读条）。
+	func set_progress(p: float) -> void:
+		var v := clampf(p, 0.0, 1.0)
+		if is_equal_approx(v, _progress):
+			return
+		_progress = v
+		queue_redraw()
+
 	func role() -> String:
 		return _role
 
@@ -651,6 +661,13 @@ class IconView extends Control:
 
 	func _draw() -> void:
 		var rect := Rect2(Vector2.ZERO, size)
+		# ★★ 批次进度：深金填充 + 顶部亮线，压在图标下面（不遮图标线稿）。
+		if _progress > 0.0:
+			var fh: float = size.y * _progress
+			var fill_c := Color(0.31, 0.235, 0.086, 0.92)
+			draw_rect(Rect2(0.0, size.y - fh, size.x, fh), fill_c, true)
+			draw_line(Vector2(0.0, size.y - fh), Vector2(size.x, size.y - fh),
+				Color(1.0, 0.85, 0.54, 0.9), 1.0)
 		if _tex != null:
 			IconRes.draw_mask(self, _tex, rect, _ink)
 			return

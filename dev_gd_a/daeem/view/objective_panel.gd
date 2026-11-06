@@ -16,6 +16,7 @@ extends Control
 
 const UiLayoutRes = preload("res://view/ui_layout.gd")
 const UiStyleRes = preload("res://view/ui_style.gd")
+const ThemeRes = preload("res://view/theme.gd")
 const ObjectiveRes = preload("res://logic/objective.gd")
 
 const MEASURE_H := 4096.0
@@ -34,6 +35,20 @@ var _desc: Label = null
 var _sig: String = ""
 ## 刷新过几次（测试读；替代旧版的 `draw_count`）。
 var refresh_count: int = 0
+
+## ★★ 打字机：新目标出现时逐字显示；布局按**完整文本**量，所以不会边打边跳。
+var _full_title: String = ""
+var _full_desc: String = ""
+var _text_sig: String = ""
+var _typing: bool = false
+var _type_t: float = 0.0
+var _type_sec: float = 0.035
+## ★★ 完成划去：状态变 won 时一条线从左往右划过标题 / 描述。
+var _striking: bool = false
+var _strike_t: float = 0.0
+var _strike_sec: float = 0.32
+var _struck_state: String = ""
+var _strike_layer = null
 
 
 func setup(p_cfg, p_world, font: Font) -> void:
@@ -65,6 +80,17 @@ func setup(p_cfg, p_world, font: Font) -> void:
 	_desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	add_child(_desc)
 
+	# 划去动效的绘制层（放在文字之后 = 画在文字之上；不接收鼠标）。
+	_strike_layer = StrikeLayer.new()
+	_strike_layer.name = "ObjectiveStrike"
+	_strike_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_strike_layer.labels = [_title, _desc]
+	_strike_layer.line_color = UiStyleRes.accent()
+	_strike_layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	add_child(_strike_layer)
+	_type_sec = maxf(0.0, cfg.num("story.objective.type_sec", 0.035))
+	_strike_sec = maxf(0.01, cfg.num("story.objective.strike_sec", 0.32))
+
 	visible = false
 	_sync_visibility()
 	_relayout()
@@ -76,14 +102,117 @@ func sync() -> void:
 		return
 	refresh_count += 1
 	var st: Dictionary = _state()
-	var sig := "%s|%s|%s|%s" % [String(st.get("state", "")), desc_text(),
-		title_text(), str(visible)]
+	var title := title_text()
+	var desc := desc_text()
+	var state := String(st.get("state", ""))
+	var sig := "%s|%s|%s|%s" % [state, desc, title, str(visible)]
 	if sig == _sig:
 		return
 	_sig = sig
-	_title.text = title_text()
-	_desc.text = desc_text()
+
+	# 文本真的变了才重新打字（状态变 won 时文本不变，只触发划去）。
+	var text_sig := title + "\u0001" + desc
+	if text_sig != _text_sig:
+		_text_sig = text_sig
+		_full_title = title
+		_full_desc = desc
+		_title.text = title
+		_desc.text = desc
+		_striking = false
+		_strike_t = 0.0
+		_struck_state = ""
+		_start_typewriter()
+
+	if state == ObjectiveRes.STATE_WON and _struck_state != ObjectiveRes.STATE_WON:
+		_finish_typing_now()
+		_striking = true
+		_strike_t = 0.0 if ThemeRes.animations_enabled() else 1.0
+		_struck_state = state
+		if _strike_layer != null:
+			_strike_layer.progress = _strike_t
+			_strike_layer.queue_redraw()
+	elif state != ObjectiveRes.STATE_WON and _struck_state != "":
+		_striking = false
+		_strike_t = 0.0
+		_struck_state = state
+		if _strike_layer != null:
+			_strike_layer.progress = 0.0
+			_strike_layer.queue_redraw()
 	_relayout()
+
+
+func _start_typewriter() -> void:
+	_typing = (_full_title.length() + _full_desc.length()) > 0 \
+		and ThemeRes.animations_enabled() and _type_sec > 0.0
+	_type_t = 0.0
+	if not _typing:
+		_finish_typing_now()
+	else:
+		_title.visible_characters = 0
+		_desc.visible_characters = 0
+
+
+func _finish_typing_now() -> void:
+	_typing = false
+	_title.visible_characters = -1
+	_desc.visible_characters = -1
+
+
+func _apply_typewriter() -> void:
+	var total := _full_title.length() + _full_desc.length()
+	var n := int(_type_t / maxf(0.0001, _type_sec))
+	if n >= total:
+		_finish_typing_now()
+		return
+	var tl := _full_title.length()
+	_title.visible_characters = mini(n, tl)
+	_desc.visible_characters = clampi(n - tl, 0, _full_desc.length())
+
+
+func _process(dt: float) -> void:
+	if not visible:
+		return
+	# 动画总开关关掉时：打字 / 划线都直接到终点。
+	if not ThemeRes.animations_enabled():
+		if _typing:
+			_finish_typing_now()
+		if _striking and _strike_t < 1.0:
+			_strike_t = 1.0
+			if _strike_layer != null:
+				_strike_layer.progress = 1.0
+				_strike_layer.queue_redraw()
+		return
+	if _typing:
+		_type_t += maxf(0.0, dt)
+		_apply_typewriter()
+	if _striking and _strike_t < 1.0:
+		_strike_t = minf(1.0, _strike_t + maxf(0.0, dt) / _strike_sec)
+		if _strike_layer != null:
+			_strike_layer.progress = _strike_t
+			_strike_layer.queue_redraw()
+
+
+## 目标文字上的划去层：逐行画横线，`progress` 从左往右推进。
+class StrikeLayer extends Control:
+	var labels: Array = []
+	var progress: float = 0.0
+	var line_color: Color = Color.WHITE
+
+	func _draw() -> void:
+		if progress <= 0.0:
+			return
+		for lbl in labels:
+			if lbl == null or not is_instance_valid(lbl) or not lbl.visible or lbl.text == "":
+				continue
+			var lines: int = maxi(1, int(lbl.get_line_count())) if lbl.has_method("get_line_count") else 1
+			var lh: float = maxf(1.0, float(lbl.get_line_height())) if lbl.has_method("get_line_height") else maxf(1.0, lbl.size.y)
+			for i in lines:
+				var y: float = lbl.position.y + lh * (float(i) + 0.5)
+				var x0: float = lbl.position.x
+				var w: float = lbl.size.x * progress
+				if w <= 0.0:
+					continue
+				draw_line(Vector2(x0, y), Vector2(x0 + w, y), line_color, 2.0)
 
 
 # ------------------------------------------------------------------
@@ -99,6 +228,10 @@ func title_text() -> String:
 	var st: Dictionary = _state()
 	if st.is_empty():
 		return String(cfg.str_val("coop.objective.title_prefix", "※")) + "目标"
+	# 剧情目标：标题由剧本直接给。
+	var story_title := String(st.get("title", "")).strip_edges()
+	if story_title != "":
+		return String(cfg.str_val("coop.objective.title_prefix", "※")) + story_title
 	var short := ""
 	if world != null and world.level != null and world.level.has_method("objective_short"):
 		short = String(world.level.objective_short(_fid())).strip_edges()
@@ -118,6 +251,17 @@ func desc_text() -> String:
 	var st: Dictionary = _state()
 	if st.is_empty():
 		return ""
+	var prefix := "- " if cfg == null else String(cfg.str_val("coop.objective.desc_prefix", "- "))
+	# 剧情目标：直接显示剧本给的描述；已完成时在末尾补一句状态。
+	var is_story := String(st.get("kind", "")) == "story" \
+		or String(st.get("title", "")).strip_edges() != ""
+	var story_desc := String(st.get("desc", "")).strip_edges()
+	if is_story:
+		# 完成状态由划去动效表达，文字本身不再追加「（已完成）」——
+		# 否则状态一变文本就变，会重新触发打字机。
+		if story_desc == "":
+			return ""
+		return prefix + story_desc
 	var raw := _raw_desc()
 	var text := ""
 	if raw != "":
@@ -127,7 +271,6 @@ func desc_text() -> String:
 		text = _auto_desc(st)
 	if text == "":
 		return ""
-	var prefix := "- " if cfg == null else String(cfg.str_val("coop.objective.desc_prefix", "- "))
 	return prefix + text
 
 
@@ -207,6 +350,8 @@ func _relayout() -> void:
 	_desc.position = Vector2(UiLayoutRes.OBJECTIVE_PAD,
 		UiLayoutRes.OBJECTIVE_PAD + title_h + gap)
 	_desc.size = Vector2(inner_w, maxf(desc_h, 1.0))
+	if _strike_layer != null:
+		_strike_layer.queue_redraw()
 
 
 ## 一个 Label 在 `w` 宽下把所有行画出来需要多高（与 hover_tip 同一套读数）。
@@ -245,6 +390,11 @@ func _sync_visibility() -> bool:
 func _state() -> Dictionary:
 	if world == null:
 		return {}
+	# ★ 剧情目标优先：教程的四段目标是顺序出现的，不属于 objective_state 那套
+	#   「守住 / 攻占」结算；剧本写进 `world.story_objective` 就显示它。
+	var so: Variant = world.story_objective
+	if typeof(so) == TYPE_DICTIONARY and not (so as Dictionary).is_empty():
+		return so
 	var st: Variant = world.objective_state
 	return st if typeof(st) == TYPE_DICTIONARY else {}
 

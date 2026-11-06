@@ -17,6 +17,8 @@ const PaletteRes = preload("res://view/palette.gd")
 const FontLoaderRes = preload("res://view/font_loader.gd")
 ## ★★ 局内「敌 / 友 / 己」三色（本轮新增）：占领条 / 占领触发区 / 血条都走它
 const SideColorRes = preload("res://view/side_color.gd")
+## ★ 演出区划呼吸高亮：曲线与颜色解析和单位 / 建筑共用同一份逻辑。
+const StoryGlowRes = preload("res://logic/story/story_glow.gd")
 ## ★★ HUD 的皮肤（暗色面板 + 暗金细线 + 琥珀强调）：头顶标识与右栏数字块共用同一套色。
 ##   ★ 本文件只读它的静态取色函数，不持有主题实例（见 view/theme.gd 的说明）。
 const ThemeRes = preload("res://view/theme.gd")
@@ -32,7 +34,7 @@ const HP_BACK_COLOR := Color(0, 0, 0, 0.55)
 #
 # 口径（与右栏「部队 1~10」的数字块同一套视觉语言）：
 #   · 未选中：只画一个**键帽**（深色底 + 暗金细线 + 底边阵营色），回答「这是第几支」；
-#   · 选中：换成**名牌**（键帽 + 兵种字 + 名字 + 编制 + 士气条），回答「这是谁」；
+#   · 选中：换成**名牌**（键帽 + 兵种字 + 名字 + 编制），回答「这是谁」；
 #   · 倒地：整体压暗，名牌的编制位置改成「再起 / 倒地」；
 #   · 编号口径不变：`world.units` 里「存活 + 同方 + 队长」数到第几个——
 #     与左栏 / 数字键选中的是**同一支部队**（见 `_draw_team_markers`）。
@@ -100,7 +102,7 @@ var move_marks: Array[Vector2] = []
 var attack_marks: Array[Vector2] = []
 var drag_active: bool = false
 var drag_rect: Rect2 = Rect2()
-## ★★ 粮车光环范围（只在该粮车被选中时画）：屏幕像素细线宽 / 采样段数。
+## ★★ 粮车回血光环范围（只在该粮车被选中时画）：屏幕像素细线宽 / 采样段数。
 ##   细分段数够多，透视下才会是一圈顺滑的**地面椭圆**，而不是多边形。
 const AURA_RANGE_SEGMENTS := 96
 const AURA_RANGE_WIDTH := 1.25
@@ -117,7 +119,7 @@ var draw_count: int = 0
 var unit_ui_seen: int = 0
 var unit_ui_visible: int = 0
 var unit_ui_bars: int = 0
-## ★ 最近一次 `_draw()` 画了几个粮车光环圈（单位是「被选中的粮车数」；测试读它）
+## ★ 最近一次 `_draw()` 画了几个粮车回血光环圈（测试读它）
 var aura_range_draw_count: int = 0
 ## ★★ 最近一次 `_draw()` 画了几个**键帽** / 几张**名牌**（测试 / 排查读它）。
 ##   选中且名牌成功放下的将领只算名牌、不算键帽（两者是互斥的两种状态）。
@@ -363,12 +365,14 @@ func _draw_impl() -> void:
 	# ★★ 2026.10.27（性能）：**静态三件套（网格 / 区划轮廓 / 占领触发区）不在这里画** ——
 	#    它们搬到了独立子节点 `OverlayStatic`（见 `_build_static_layer()` 与
 	#    `view/overlay_layer.gd`），只随相机 / 视口 / 归属变化重录。
-	#    本节点现在每帧只重录**动态**部分：粮车光环 / 占领进度条 / AI 目标环 /
+	#    本节点现在每帧只重录**动态**部分：粮车回血光环 / 占领进度条 / AI 目标环 /
 	#    血条 / 建造预览 / 拖框 / 编队标识。
 	# ★ 顺序即层次（后画的在上面）：地面上的东西 → 单位头上的 UI → 最顶上的编队标识。
 	var _d0 := _pt()
 	_draw_aura_ranges()
 	_pd("ov/aura", _d0)
+	# ★ 演出区划呼吸高亮：画在地面反馈的最底层（在占领进度条之下）。
+	_draw_story_zone_glow()
 	var _d1b := _pt()
 	_draw_zone_capture()
 	_pd("ov/capture_bar", _d1b)
@@ -713,59 +717,6 @@ func _build_zone_segments() -> Array:
 
 
 # ------------------------------------------------------------------
-# ★★ 粮车光环范围（只在**被选中**时显示）
-# ------------------------------------------------------------------
-##
-## 需求：为粮车的生效范围加底部范围显示；只有粮车被选中时才显示；
-##      范围紧贴地面、用细线标识。
-##
-## 做法：
-##   · 范围 = `unit.morale_aura_radius`（逻辑层同一个字段，见 config.unit.types.grain_cart）；
-##   · 沿圆周采样 `AURA_RANGE_SEGMENTS` 个点，**逐点**走 `palette.to_px()` 投到 y=0 地面
-##     —— 所以透视下它是一圈贴地的椭圆，而不是飘在单位周围的屏幕圆；
-##   · 只画 `_selection` 里的单位：没选中 / 选中别的兵都不画；
-##   · 细线：1.25 屏幕像素（与区划轮廓 2.5 / 网格 2.0 同一套屏幕空间线宽）。
-##
-## ★ 为什么把「算几何」和「画」拆开（`_aura_range_loops()` / `_draw_aura_ranges()`）：
-##   与网格 / 区划轮廓 / 占领触发区同一个理由 —— 测试在无头下不能调 `draw_*`，
-##   但可以调纯函数量点数、验投影。
-func _aura_range_loops() -> Array:
-	var out: Array = []
-	if cfg == null or world == null or palette == null or _selection.is_empty():
-		return out
-	for u in world.units:
-		if u == null or not u.alive:
-			continue
-		if not _selection.has(String(u.id)):
-			continue
-		var radius: float = float(u.morale_aura_radius)
-		if radius <= 0.0:
-			continue
-		var pts := PackedVector2Array()
-		for i in AURA_RANGE_SEGMENTS + 1:     # +1：闭合（最后一点回到起点）
-			var ang: float = TAU * float(i) / float(AURA_RANGE_SEGMENTS)
-			var world_pos: Vector2 = u.pos + Vector2(cos(ang), sin(ang)) * radius
-			pts.append(palette.to_px(world_pos))
-		var c: Color = SideColorRes.color(cfg, world, String(u.faction), "main")
-		c.a = AURA_RANGE_ALPHA
-		out.append({
-			"unit_id": String(u.id),
-			"radius": radius,
-			"points": pts,
-			"color": c,
-		})
-	return out
-
-
-func _draw_aura_ranges() -> void:
-	aura_range_draw_count = 0
-	for entry in _aura_range_loops():
-		draw_polyline(entry["points"], entry["color"], AURA_RANGE_WIDTH, true)
-		aura_range_draw_count += 1
-		draw_count += 1
-
-
-# ------------------------------------------------------------------
 # ★★ 占领触发区（区划中心邻域）的**内向渐变描边**（本轮新增）
 # ------------------------------------------------------------------
 ##
@@ -894,6 +845,43 @@ func _capture_area_color(owner: String) -> Color:
 	return SideColorRes.color(cfg, world, owner, "main")
 
 
+## 粮车回血光环范围：选中粮车时，把它的 `heal_aura_radius` 投影成贴地椭圆。
+func _aura_range_loops() -> Array:
+	var out: Array = []
+	if cfg == null or world == null or palette == null or _selection.is_empty():
+		return out
+	for u in world.units:
+		if u == null or not u.alive:
+			continue
+		if not _selection.has(String(u.id)):
+			continue
+		var radius: float = float(u.heal_aura_radius)
+		if radius <= 0.0:
+			continue
+		var pts := PackedVector2Array()
+		for i in AURA_RANGE_SEGMENTS + 1:     # +1：闭合（最后一点回到起点）
+			var ang: float = TAU * float(i) / float(AURA_RANGE_SEGMENTS)
+			var world_pos: Vector2 = u.pos + Vector2(cos(ang), sin(ang)) * radius
+			pts.append(palette.to_px(world_pos))
+		var c: Color = SideColorRes.color(cfg, world, String(u.faction), "main")
+		c.a = AURA_RANGE_ALPHA
+		out.append({
+			"unit_id": String(u.id),
+			"radius": radius,
+			"points": pts,
+			"color": c,
+		})
+	return out
+
+
+func _draw_aura_ranges() -> void:
+	aura_range_draw_count = 0
+	for entry in _aura_range_loops():
+		draw_polyline(entry["points"], entry["color"], AURA_RANGE_WIDTH, true)
+		aura_range_draw_count += 1
+		draw_count += 1
+
+
 ## 占领进度条：**由下往上升起**的一块填充 + 前沿一条亮线（全部屏幕空间矢量）。
 ##
 ## ★★ 口径（用户原话）：「当开始占领时，区划由下往上升起一个进度条，
@@ -913,6 +901,65 @@ func _capture_area_color(owner: String) -> Color:
 ##     格角逐个投影 ⇒ 透视正确、边缘逐像素清晰（这正是「像 2D 一样清晰」的来源）。
 ##   ⚠️ 方向写反过一次（`y0 + span*v` = 从上往下淌），症状是「越占越像退潮」。
 ##     判据：`water` 必须随 `v` **单调下降**。
+## ★★ 演出区划呼吸高亮：占领范围整块淡淡填充 + 区划边界亮线。
+##   状态在 `world.story_zone_glow`（区划 id → 与 Unit.story_glow 同形的字典）。
+##   曲线 / 颜色统一走 `logic/story/story_glow.gd`，与单位光环同一条呼吸。
+func _draw_story_zone_glow() -> void:
+	if world == null or world.zones == null or palette == null:
+		return
+	var zglow: Dictionary = world.story_zone_glow
+	if zglow.is_empty():
+		return
+	var now := float(world.time)
+	var no_uv := PackedVector2Array()
+	for zid_v in zglow.keys():
+		var g: Dictionary = zglow[zid_v]
+		var a: float = StoryGlowRes.dict_value(g, now)
+		if a <= 0.001:
+			continue
+		var z: Variant = world.zones.zones_by_id.get(int(zid_v), null)
+		if z == null:
+			continue
+		var col := ConfigRes.parse_color(StoryGlowRes.dict_color(g, world))
+		var fill := Color(col.r, col.g, col.b, 0.17 * a)
+		var line := Color(col.r, col.g, col.b, 0.95 * a)
+		var cols := PackedColorArray([fill, fill, fill])
+		for t in (z.get("tiles", []) as Array):
+			var tile: Vector2i = t
+			var poly: PackedVector2Array = palette.tile_poly(tile.x, tile.y)
+			if poly.size() != 4:
+				continue
+			# 两个三角形铺满整格（逐点投影 ⇒ 透视正确）。
+			var t1 := PackedVector2Array([poly[0], poly[1], poly[2]])
+			var t2 := PackedVector2Array([poly[0], poly[2], poly[3]])
+			if _valid_screen_triangle(t1):
+				draw_primitive(t1, cols, no_uv)
+			if _valid_screen_triangle(t2):
+				draw_primitive(t2, cols, no_uv)
+			# 只画「离开这一区」的边（相邻格属同一区就不画），得到区划轮廓。
+			var mask := 15
+			if ground != null and ground.has_method("zone_edge_mask"):
+				mask = int(ground.zone_edge_mask(tile.x, tile.y))
+			if mask == 0:
+				continue
+			var x0 := float(tile.x)
+			var y0 := float(tile.y)
+			var edges: Array = []
+			if (mask & 1) != 0:   # 上
+				edges.append([Vector2(x0, y0), Vector2(x0 + 1.0, y0)])
+			if (mask & 2) != 0:   # 右
+				edges.append([Vector2(x0 + 1.0, y0), Vector2(x0 + 1.0, y0 + 1.0)])
+			if (mask & 4) != 0:   # 下
+				edges.append([Vector2(x0 + 1.0, y0 + 1.0), Vector2(x0, y0 + 1.0)])
+			if (mask & 8) != 0:   # 左
+				edges.append([Vector2(x0, y0 + 1.0), Vector2(x0, y0)])
+			for e in edges:
+				var seg: Array = e
+				var pts: PackedVector2Array = _project_segments(seg)
+				if pts.size() >= 2:
+					draw_multiline(pts, line, 3.2)
+
+
 func _draw_zone_capture() -> void:
 	var items: Array = _capture_items()
 	var no_uv := PackedVector2Array()
@@ -1343,7 +1390,7 @@ func _draw_units_ui() -> void:
 ##   · 己方（本机操作）→ 固定槽位编号（1..9、第 10 支写 0）；
 ##   · 合作队友 → 「友」；敌人 → 「敌」；观战 → 以被观战方为「友」，另一方「敌」。
 ## 名牌：
-##   · 只有**己方**选中的将领出名牌（敌 / 友按需求只出键帽，不泄露编制 / 士气）；
+##   · 只有**己方**选中的将领出名牌（敌 / 友按需求只出键帽，不泄露编制）；
 ##   · 多个名牌互相压住时**不再退回键帽**，而是围绕各自的头顶找空位（上下为主，
 ##     必要时左右让），保证展开的标签栏彼此不重叠；被让开的标签画一条细引线。
 ##
@@ -1595,7 +1642,7 @@ func _nameplate_rect(e: Dictionary, vp_size: Vector2) -> Rect2:
 	return Rect2(Vector2(x, y), Vector2(w, NAMEPLATE_H))
 
 
-## 选中名牌：`[键帽] 兵种字 名字        编制`，底边一条士气条。
+## 选中名牌：`[键帽] 兵种字 名字        编制`。
 func _draw_nameplate(e: Dictionary) -> void:
 	var u = e["u"]
 	var r: Rect2 = e["plate"]
@@ -1620,9 +1667,9 @@ func _draw_nameplate(e: Dictionary) -> void:
 	draw_string(font, Vector2(key.position.x + (key.size.x - kw) * 0.5, kb), ktxt,
 		HORIZONTAL_ALIGNMENT_LEFT, -1, kf, kcol)
 
-	# 文本行：整体略偏上，给底部 2px 士气条留位置。
+	# 文本行垂直居中。
 	var baseline: float = (r.position.y + r.size.y * 0.5
-		+ font.get_ascent(NAMEPLATE_FONT) * 0.5 - 2.5)
+		+ font.get_ascent(NAMEPLATE_FONT) * 0.5)
 	var x: float = key.end.x + NAMEPLATE_KEY_GAP
 	var type_txt: String = String(e.get("type_txt", ""))
 	if type_txt != "":
@@ -1644,19 +1691,6 @@ func _draw_nameplate(e: Dictionary) -> void:
 	fcol.a *= alpha
 	draw_string(font, Vector2(r.end.x - NAMEPLATE_PAD - form_w, baseline), form_txt,
 		HORIZONTAL_ALIGNMENT_LEFT, -1, NAMEPLATE_FORM_FONT, fcol)
-
-	# 士气条：绿 → 红，与图标里的士气填充同一套端点色。
-	var bar := Rect2(r.position.x + NAMEPLATE_PAD, r.end.y - 3.5,
-		r.size.x - NAMEPLATE_PAD * 2.0, 2.0)
-	var bg: Color = ThemeRes.line_soft()
-	bg.a *= 0.55 * alpha
-	draw_rect(bar, bg, true)
-	var ratio := 0.0
-	if u.has_method("morale_ratio"):
-		ratio = clampf(float(u.morale_ratio()), 0.0, 1.0)
-	var fill: Color = ThemeRes.morale_low().lerp(ThemeRes.morale_high(), ratio)
-	fill.a *= alpha
-	draw_rect(Rect2(bar.position, Vector2(bar.size.x * ratio, bar.size.y)), fill, true)
 
 	nameplate_draw_count += 1
 	draw_count += 1

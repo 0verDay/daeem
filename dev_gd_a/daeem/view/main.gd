@@ -71,6 +71,10 @@ const MENU_FONT_SIZE := 32
 const AI_TEST_CAMPAIGN := "demo"
 const AI_TEST_LEVEL := "ai_test_battle"
 
+## ★★ 新手教程测试入口：ce_xs_1 按钮直接进教程战役的 ce_xs_1 关（玩家固定 p1 王朝）。
+const TUTORIAL_CAMPAIGN := "tutorial"
+const TUTORIAL_LEVEL := "ce_xs_1"
+
 ## ★★ 进入游戏的黑屏转场（只用于战役过渡画面点「进入」；见 `_on_level_transition_enter`）：
 ##   `enter_fade_sec`    = 画面推成全黑的时长；
 ##   `enter_fade_in_sec` = 游戏场景首帧就绪后，从全黑里淡出来的时长。
@@ -146,6 +150,8 @@ func _build_start_screen() -> void:
 	start_screen.campaign_level_chosen.connect(_on_menu_campaign_level_chosen)
 	start_screen.ai_test_pressed.connect(_on_ai_test_button_pressed)
 	start_screen.see_ai_pressed.connect(_on_see_ai_button_pressed)
+	start_screen.ce_xs_1_pressed.connect(_on_ce_xs_1_button_pressed)
+	start_screen.ce_xs_2_pressed.connect(_on_ce_xs_2_button_pressed)
 	start_screen.coop_host_started.connect(_on_coop_host_started)
 	start_screen.coop_guest_started.connect(_on_coop_guest_started)
 	start_screen.coop_solo_started.connect(_on_coop_solo_started)
@@ -329,6 +335,39 @@ func _on_ai_test_button_pressed() -> void:
 ## `reveal_all = true`：看海的玩家**显示全图**；AI 逻辑视野仍是正常迷雾（不会开天眼）。
 func _on_see_ai_button_pressed() -> void:
 	_on_ai_test_requested(AI_TEST_CAMPAIGN, AI_TEST_LEVEL, false, true)
+
+
+## ★★ 新手教程 1：主菜单 ce_xs_1 按钮。固定玩家 = p1（王朝），直接开局。
+func _on_ce_xs_1_button_pressed() -> void:
+	if game != null:
+		return
+	var option := _find_campaign_option(TUTORIAL_CAMPAIGN)
+	if option.is_empty():
+		push_warning("教程战役不存在：%s" % TUTORIAL_CAMPAIGN)
+		return
+	var campaign = CampaignLibraryRes.load_campaign_by_option(option, cfg)
+	if campaign == null:
+		push_warning("教程战役载入失败：%s" % TUTORIAL_CAMPAIGN)
+		return
+	var level = campaign.level(TUTORIAL_LEVEL) if campaign.has_method("level") else null
+	if level == null:
+		push_warning("教程关卡不存在：%s / %s" % [TUTORIAL_CAMPAIGN, TUTORIAL_LEVEL])
+		return
+	game = GameSceneRes.new()
+	game.name = "GameScene"
+	add_child(game)
+	if not game.start_level(campaign, level, "p1"):
+		game.queue_free()
+		game = null
+		return
+	start_screen.close()
+	game.fullscreen_toggled.connect(toggle_fullscreen)
+	game.return_to_menu_requested.connect(return_to_menu)
+
+
+## ★★ 新手教程 2：按钮可点，但暂无逻辑（用户口径）。
+func _on_ce_xs_2_button_pressed() -> void:
+	pass
 
 
 ## ★★ ai_test_battle：跳过战役过渡画面，**随机**让玩家当 p1 或 p2，另一个席位由 command AI 接管。

@@ -321,6 +321,16 @@ func _height_of(b) -> float:
 	return h
 
 
+## ★ 演出泛光用：取某类型建筑的网格（与本体同一份，避免复制 / 尺寸漂移）。
+func story_glow_mesh_for(type: String) -> Mesh:
+	return _mesh_for(type)
+
+
+## ★ 演出泛光用：某栋建筑的静态变换（与本体同一套坐标 / 缩放；不含受击抖动）。
+func story_glow_transform_of(b) -> Transform3D:
+	return _static_transform_of(b)
+
+
 ## 外轮廓白描边 / 选中金边的 pass（挂在材质的 `next_pass` 上）。
 ## ★ 只靠 `INSTANCE_CUSTOM.b`（悬停）/ `.a`（选中）显隐 ⇒ 不新增本体批次。
 func _outline_pass(mesh: Mesh) -> ShaderMaterial:

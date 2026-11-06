@@ -42,12 +42,16 @@ uniform float hover_fill_alpha : hint_range(0.0, 1.0) = 1.0;
 // ★★ 冲锋发光：颜色 = 阵营色（按批次设），强度 = render.charge_glow_alpha。
 uniform vec4 charge_color : source_color = vec4(1.0, 1.0, 1.0, 1.0);
 uniform float charge_strength : hint_range(0.0, 1.0) = 0.45;
+// ★★ 演出呼吸泛光：颜色固定金色（批次级），强度 = 每实例 `.a` × 这个系数。
+uniform vec4 story_glow_color : source_color = vec4(1.0, 0.82, 0.4, 1.0);
+uniform float story_glow_strength : hint_range(0.0, 1.0) = 0.65;
 
 // ⚠️ INSTANCE_CUSTOM 只在 **vertex** 里可读（实测：直接写进 fragment 会报
 //    `Unknown identifier: INSTANCE_CUSTOM`）⇒ 用 varying 传到片元。
 varying float v_flash;
 varying float v_hover;
 varying float v_charge;
+varying float v_glow;
 
 void vertex() {
 	// 面向相机的立牌：用相机基向量替换模型的旋转，只保留实例的平移。
@@ -57,6 +61,7 @@ void vertex() {
 	v_flash = INSTANCE_CUSTOM.r;
 	v_hover = INSTANCE_CUSTOM.g;
 	v_charge = INSTANCE_CUSTOM.b;
+	v_glow = INSTANCE_CUSTOM.a;
 }
 
 void fragment() {
@@ -69,6 +74,9 @@ void fragment() {
 	// ★★ 冲锋光：先于闪白混合，受击白永远压在最上面。
 	float chg = clamp(v_charge, 0.0, 1.0) * charge_strength;
 	col = mix(col, charge_color.rgb, chg);
+	// ★★ 演出呼吸泛光：在冲锋光之后、闪白之前混入金色。
+	float glw = clamp(v_glow, 0.0, 1.0) * story_glow_strength;
+	col = mix(col, story_glow_color.rgb, glw);
 	ALBEDO = mix(col, vec3(1.0), flash);
 	// ★ alpha 也从原贴图混向悬停贴图：悬停贴图的描边是**满不透明**的白边
 	//   （原贴图的普通描边是 0.72），不混的话白边会显得发灰。

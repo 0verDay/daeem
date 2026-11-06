@@ -1627,13 +1627,13 @@ func _test_capture_area(cfg) -> void:
 	await process_frame
 
 
-## ★★ 粮车光环范围：只在选中时画、按地面投影、半径来自逻辑字段。
+## ★★ 粮车回血光环范围：只在选中时画、按地面投影、半径来自逻辑字段。
 func _test_aura_range(cfg) -> void:
 	var game = Game3DRes.new()
 	root.add_child(game)
 	await process_frame
 	if not game.start():
-		ok(false, "3D 场景起不来，光环范围断言无从谈起")
+		ok(false, "3D 场景起不来，回血光环范围断言无从谈起")
 		game.queue_free()
 		return
 	await process_frame
@@ -1660,34 +1660,30 @@ func _test_aura_range(cfg) -> void:
 	game.cam.force_update_transform()
 
 	ov.set_selection([])
-	eq(ov._aura_range_loops().size(), 0, "★ 没选中粮车 → 不画光环范围")
+	eq(ov._aura_range_loops().size(), 0, "★ 没选中粮车 → 不画回血范围")
 	ov.set_selection([g.id])
 	eq(ov._aura_range_loops().size(), 0, "★ 选中别的单位 → 不画粮车范围")
 
 	ov.set_selection([cart.id])
 	var loops: Array = ov._aura_range_loops()
-	eq(loops.size(), 1, "★ 选中粮车 → 画一圈范围")
+	eq(loops.size(), 1, "★ 选中粮车 → 画一圈回血范围")
 	if loops.is_empty():
 		game.queue_free()
 		await process_frame
 		return
 	var loop: Dictionary = loops[0]
-	near(float(loop["radius"]), 3.0, 1e-6, "半径来自粮车的 morale_aura_radius = 3 格")
+	near(float(loop["radius"]), 3.0, 1e-6, "半径来自粮车的 heal_aura_radius = 3 格")
 	var pts: PackedVector2Array = loop["points"]
 	eq(pts.size(), Overlay3DRes.AURA_RANGE_SEGMENTS + 1, "★ 圆周采样 + 闭合点")
 	if pts.size() >= 2:
 		v2_near(pts[0], pts[pts.size() - 1], 0.01, "★ 首尾闭合（画出来是一整圈）")
-	# 任取一个采样角：它必须是**地面点的投影**，不是屏幕空间的正圆。
 	var idx := 7
 	var ang: float = TAU * float(idx) / float(Overlay3DRes.AURA_RANGE_SEGMENTS)
 	var expected: Vector2 = ov.palette.to_px(
 		cart.pos + Vector2(cos(ang), sin(ang)) * float(loop["radius"]))
 	v2_near(pts[idx], expected, 0.01, "★ 每个采样点都走地面投影（贴地椭圆）")
-	near((loop["color"] as Color).a, Overlay3DRes.AURA_RANGE_ALPHA, 1e-6,
-		"细线带固定透明度")
-
-	ov.set_selection([cart.id, g.id])
-	eq(ov._aura_range_loops().size(), 1, "★ 多选时每辆粮车各一圈（别的单位不多画）")
+	near((loop["color"] as Color).a, Overlay3DRes.AURA_RANGE_ALPHA, 1e-6, "细线带固定透明度")
+	eq(ov.aura_range_draw_count, 0, "（前提）还没重画，绘制计数为 0")
 
 	game.queue_free()
 	await process_frame

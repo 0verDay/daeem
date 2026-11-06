@@ -8589,4 +8589,76 @@ tier-3 兵 10 局出场 < 2%。逐帧诊断（每 2 秒采样、300 个采样点
   工作区里 `config.json` 有未提交改动（14 个将领档位 / 8 种建筑），同样与本功能无关。
 
 
+## 八十七、战役演出系统（前置框架）
+
+> 需求：可复用的演出模块，在战役代码里写死，不暴露编辑器。完整计划 / 实现状态见
+> [`dev_plan_15.md`](dev_plan_15.md)。本轮只做系统 + 测试，不接具体关卡内容。
+
+### 87.1 口径
+
+* 只在**单人战役**启用（`start_level(..., enable_story = true)`）；合作 / 观战 / ai_test /
+  自由对战全部关闭。
+* 一个战役一个剧本：`logic/story/campaigns/<campaign_id>.gd`，由
+  `logic/story/story_registry.gd` 显式 preload。
+* 触发器：开局 / 时间点 / 区划归属 / 世界事件 / 单位死亡 / 建筑被毁 / 玩家命令 / 自定义条件。
+* 效果：输入锁（动作类别 allowlist）、强制镜头（可锁定 / 跟随）、玩法边界、换更大的一整张
+  地图、给资源、强制击杀 / 摧毁、左下对话、生成红点 / 单位 / 建筑、呼吸泛光。
+* 跳过：默认 `Esc`（`story.skip.key` 可配）；`skippable=false` / 换图中 / 不可跳过的
+  `wait_until` 会拒绝。
+
+### 87.2 关键实现
+
+* `logic/story/story_director.gd`：纯 `RefCounted`，不碰 Node / 输入 / 视图；视图交互全部走
+  `host.story_*()`，所以能用 fake host 无头单跑。
+* `view/notice_stack.gd`：播报 + 对话同一套栈；`view/broadcast_banner.gd` 保留为兼容子类。
+* `game_scene3d`：输入闸门（`input_ctrl.action_gate`）、镜头接管、HUD 对话框 / 全屏盾、
+  资源飘字、换图黑屏与视图重建。
+* `logic/map_data.gd: active_rect`：玩法边界。`Pathfinder.passable()` 与 `can_build_at()`
+  遵守；边界不是整图时绕过 C# 寻路内核。金线画在 `active_rect` 上。
+* `world.swap_map(path)`：**原地**换到更大的地图；严格校验（两维更大、旧区域地形 / exists
+  逐格一致、旧区划 id 都存在、旧区域区划网格 / 中心位置一致）；保留单位 / 建筑 / 区划状态 /
+  资源 / 科技 / 目标 / AI / 时间；
+  重建建筑索引 / 区划 / 迷雾 / 碰撞缓存，补建新区划中心与新区域预置建筑。
+* `tag`：`start_units[].tag` / `start_buildings[].tag` → `Unit.tag` / `Building.tag`；
+  编辑器不显示、只读写保留。
+* 生成：`spawn_red_dot`（复用红点「将领 + 满编附属兵」生成器，推 `red_dot_wave`，下整队
+  行军攻击）、`spawn_unit`（普通 / 将领，支持 tag / 附属兵 / 静默）、`spawn_building`
+  （默认瞬间生成、跳过读条）。
+* 呼吸泛光：状态挂 `Unit.story_glow` / `Building.story_glow`；曲线统一在
+  `logic/story/story_glow.gd`。视图 = 地面光环（选中圈同一张环贴图）+ **向外扩散的波纹层** +
+  建筑反向壳外壳 + 单位本体金色混合（`unit_flash.gdshader` 的空闲 `.a` 通道）。
+  波纹从内向外扩、先快后慢并淡出，与右键目标圆圈同一套手感。
+* 区划呼吸高亮：`world.story_zone_glow`（区划 id → 同形状态），覆盖层
+  `view/overlay_view_3d.gd` 逐格填色 + 区划边界亮线；区划中心同时挂 `Building.story_glow`
+  （于是中心也有光环 / 波纹）。
+* 剧情目标：`world.story_objective`；`view/objective_panel.gd` 优先显示它，支持
+  `title` / `desc` / `state=won`。新目标**逐字打字机**（先标题后描述，布局按完整文本量，
+  不会边打边跳）；完成时一条线从左往右**划过每一行文字**。
+* 对话：点击对话行 = **一步快速通过**（补全打字 + 立即退场）；退场先向上移动 48px 淡出，
+  退场完成后才发 `dialogue_finished` / 起下一条，所以不会被下一条盖住。
+* 教程引导（`guide_selection` / `guide_clear`）：没选中部队时让己方部队呼吸发光；
+  没停在指定页签时让页签描边 + 方形波纹呼吸。玩家选中部队 / 切到单位页后自动收掉。
+  页签「单位」只在选中单位时存在，所以“没选单位”阶段先亮部队，选中后才亮页签。
+* 教程 1：`data/campaigns/tutorial/` +
+  `logic/story/campaigns/tutorial.gd`。c0 开局无主、玩家无大本营（`no_player_base`），
+  关卡数据把 c0 人口设为 10 / 上限 12；`map_path` 直接指向 `ce_xs_1_a.json`，
+  `map_expand` 用 `path` 指向 `ce_xs_1_b.json`。整段流程是一条 `on_start` 顺序演出，
+  用 `wait_until` 等「占领 / 招满 / 击败 / 再占领」，最后 `outcome win`。
+* 主菜单：`ce_xs_1` / `ce_xs_2` 两个按钮接在 `see_ai` 下方；`ce_xs_1` 直接进教程，
+  `ce_xs_2` 只有按钮、暂无逻辑（用户口径）。
+
+### 87.3 测试
+
+* `test_story_director` 70、`test_story_dialogue` 31、`test_story_scene` 20、
+  `test_story_tags` 9、`test_story_spawn` 38、`test_story_glow` 21、
+  `test_tutorial` 53、`test_tutorial_scene` 37、
+  `test_map_expand` 23、`test_map_expand_scene` 9，全绿。
+* `test_base_broadcast` 67、`test_ui` 1360、`test_view3d` 335、`test_logic` 270、
+  `test_path_feel` 36、`test_crowd_path` 12、`test_ai` 61、`test_campaign` 312、
+  `test_friendly_building` 14、`test_smoke` 132、`test_coop_game_scene` 18 未回归。
+* 已知**与本轮无关**的既有红：`test_ai_test_campaigns` 11 条（工作区关卡数据去掉了
+  `commander_ai.difficulty`，测试仍按旧数据断言）；`test_model` 2 条（`config.json`
+  的 14 将领档 / 8 建筑，测试仍按旧的 10 / 5 断言）。
+
+
 

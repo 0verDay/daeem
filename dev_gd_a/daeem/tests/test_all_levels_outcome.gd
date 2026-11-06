@@ -39,6 +39,9 @@ func _run() -> void:
 			ok(lv != null, "关卡可载入：%s 第 %d 关" % [String(c.id), i])
 			if lv == null:
 				continue
+			# 剧情关（教程）：胜负由剧本逐段判定，不走 objectives[]；这里跳过。
+			if bool(lv.story_driven):
+				continue
 			var seats: Array = lv.playable_ids()
 			ok(not seats.is_empty(), "关卡 %s/%s 有可玩阵营" % [String(c.id), String(lv.id)])
 			for seat in seats:

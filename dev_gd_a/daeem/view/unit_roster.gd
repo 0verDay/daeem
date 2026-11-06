@@ -1,10 +1,9 @@
 ## unit_roster.gd —— 详细信息左栏**上半**：左上那一格（当前聚焦 / 唯一选中的部队或建筑）
 ##
-## ★★ 本版按需求改成「**部队图标 = 序号 + 士气背景**」：
-##   · 选中部队时，这一格不再画将领名字的首字，而是写**部队序号**
-##     （1..9、第 10 支写 0，与右侧部队列表同一口径），背后是士气填充
-##     （view/morale_fill.gd：自下而上、越低越矮、绿→红）；
-##   · 选中建筑时，这一格仍画建筑名的首字，**没有纯色背景填充**（只有图标 + 血条）；
+## ★★ 「部队图标 = 序号」：
+##   · 选中部队时，这一格写**部队序号**（1..9、第 10 支写 0，与右侧部队列表同一口径）；
+##   · 选中建筑时，这一格画建筑名的首字；两者都只有图标 + 血条；
+
 ##   · 右边那两行字（名字 / 编制）保留。
 ##
 ## ★ 纯表现：只读 `world.units` 与单位上的渲染标志（selected / target / hp），
@@ -23,7 +22,7 @@ var font: Font = null
 var _troop: Dictionary = {}
 ## 这一格现在画的内容（**通用**：部队 / 建筑都由外面组装成这个字典递进来）：
 ##   {"kind": "troop"/"building", "icon": 方块里的字, "name": 第一行, "sub": 第二行,
-##    "morale": 士气比例(只有部队用), "hp": 血量比例, "show_hp": 画不画血条,
+##    "hp": 血量比例, "show_hp": 画不画血条,
 ##    "highlight": 要不要点亮描边}
 ## 空字典 = 这一格收起来。
 var _entry: Dictionary = {}
@@ -70,18 +69,10 @@ func set_troop(troop, leader_name_text: String = "", cap: int = -1) -> void:
 		"icon": icon,
 		"name": label_text(),
 		"sub": _troop_count_text(),
-		"morale": _leader_morale_ratio(l),
 		"hp": _leader_hp_ratio(l),
 		"show_hp": true,
 		"highlight": bool(l.selected),
 	})
-
-
-## 队长当前士气比例（没有 morale_ratio 的老对象 → 满士气）。
-func _leader_morale_ratio(l) -> float:
-	if l != null and l.has_method("morale_ratio"):
-		return float(l.morale_ratio())
-	return 1.0
 
 
 ## 队长当前血量比例（没有 hp_ratio 的老对象 → 满血）。
@@ -149,11 +140,6 @@ func kind() -> String:
 	return String(_entry.get("kind", ""))
 
 
-## 部队图标的士气比例（建筑 / 空 → 1.0）
-func morale_ratio() -> float:
-	return float(_entry.get("morale", 1.0))
-
-
 ## 图标底部血条的填充比例（没有血条时也返回 1.0）
 func hp_ratio() -> float:
 	return float(_entry.get("hp", 1.0))
@@ -199,7 +185,7 @@ func _draw() -> void:
 ## 左边那一格：40×40 图标 + 右边**两行**字（名字 / x÷y）。
 ##
 ## ★ 图标本身交给 view/icon_badge.gd 统一画：
-##   部队 = 序号 + 士气填充；建筑 = 首字、无填充。两者都带底部血条。
+##   部队 = 序号；建筑 = 首字。两者都带底部血条。
 func _draw_leader_cell(f: Font) -> void:
 	if _entry.is_empty():
 		return
@@ -207,7 +193,7 @@ func _draw_leader_cell(f: Font) -> void:
 	var border: Color = UiStyleRes.accent() if bool(_entry.get("highlight", false)) \
 		else UiStyleRes.line()
 	IconBadgeRes.draw(self, f, av, kind(), icon_text(),
-		morale_ratio(), hp_ratio(), shows_hp(),
+		hp_ratio(), shows_hp(),
 		UiStyleRes.FS_TITLE, border, 1.0)
 	# 两行都用 FS_SMALL（13 号字、汉字约 15px 高）—— 与下面 9 个格子同一套字号。
 	draw_string(f, Vector2(UiLayoutRes.ROSTER_CELL_TEXT_X, UiLayoutRes.ROSTER_ID_Y),

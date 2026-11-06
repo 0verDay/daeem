@@ -49,6 +49,14 @@ var camera_rig = null
 var palette = null
 ## ★★ 稳定编队槽位（见 view/team_slots.gd）：数字键按它选人；为 null 时退回存活顺序。
 var team_slots = null
+## ★★ 演出输入闸门：`Callable(action:String) -> bool`。空 = 不限制。
+##   由 `game_scene3d` 接到 `story.is_input_allowed()`；输入层只问「这个动作现在能不能做」。
+var action_gate: Callable = Callable()
+
+
+## 这一动作现在允不允许。没有接闸门 = 全部允许（老路径 / 测试不受影响）。
+func _action_ok(action: String) -> bool:
+	return not action_gate.is_valid() or bool(action_gate.call(action))
 
 # ------------------------------------------------------------------
 # ★★ 将领标签 / 数字键的**统一手势状态机**（单击反选 / 长按跟随 / 双击快速选中+跳镜头）
@@ -508,6 +516,8 @@ func handle_key(event: InputEventKey) -> bool:
 		var code: int = KEY_1 + i
 		if k != code:
 			continue
+		if not _action_ok("select"):
+			return true
 		var slot: int = i + 1
 		if event.pressed:
 			gesture_press(GESTURE_KEY, slot)
@@ -526,19 +536,31 @@ func handle_key(event: InputEventKey) -> bool:
 	match k:
 		KEY_ESCAPE:
 			if build_type != "":
+				if not _action_ok("build"):
+					return true
 				set_build_type("")
 			elif order_mode != "":
+				if not _action_ok("order"):
+					return true
 				set_order_mode("")          # 命令模式：Esc = 放弃这次指令
 			elif _drag_pending or drag_active:
+				if not _action_ok("select"):
+					return true
 				_cancel_drag()          # 拖到一半按 Esc = 放弃这次框选（不动已有选中）
 			else:
+				if not _action_ok("select"):
+					return true
 				select_units([])
 			return true
 		KEY_N:
+			if not _action_ok("ui"):
+				return true
 			show_zone_names = not show_zone_names
 			local_ui_changed.emit()
 			return true
 		KEY_P:
+			if not _action_ok("pause"):
+				return true
 			if not pause_allowed:
 				toast.emit("合作模式不能暂停")
 				return true
@@ -546,17 +568,25 @@ func handle_key(event: InputEventKey) -> bool:
 			toast.emit("已暂停" if paused else "继续")
 			return true
 		KEY_E:
+			if not _action_ok("ui"):
+				return true
 			# 调试：刷一个测试敌人（命令流走 spawn_enemy，与联机同一条路）
 			command_issued.emit({"kind": "spawn_enemy", "faction": FactionRes.NPC_FACTION})
 			return true
 		KEY_G:
+			if not _action_ok("ui"):
+				return true
 			debug_aim = not debug_aim
 			toast.emit("坐标准星：开" if debug_aim else "坐标准星：关")
 			return true
 		KEY_F:
+			if not _action_ok("camera"):
+				return true
 			camera_rig.fit_to_map()
 			return true
 		KEY_HOME:
+			if not _action_ok("camera"):
+				return true
 			camera_rig.center_on_home(world)
 			return true
 	return false
@@ -570,6 +600,8 @@ func handle_mouse_button(event: InputEventMouseButton) -> bool:
 	#   原来这里开头就 `if not event.pressed: return false` —— 那会把左键抬起直接漏掉，
 	#   框永远结束不了（表现是「框选根本没反应」）。
 	if event.button_index == MOUSE_BUTTON_LEFT:
+		if not (_action_ok("select") or _action_ok("build")):
+			return true
 		if event.pressed:
 			_begin_drag(event)
 			# 单击行为照旧**在按下那一刻**发生（不改老手感、老测试）：
@@ -581,6 +613,8 @@ func handle_mouse_button(event: InputEventMouseButton) -> bool:
 	# ★★ 中键：按住拖动 = 平移视角（`handle_mouse_motion` 里算位移）。
 	#   按下的那一刻只记状态，松开就结束 —— 与左键那条框选状态机完全无关。
 	if event.button_index == MOUSE_BUTTON_MIDDLE:
+		if not _action_ok("camera"):
+			return true
 		_pan_pending = event.pressed
 		if event.pressed:
 			_pan_last_screen = event.position
@@ -599,12 +633,18 @@ func handle_mouse_button(event: InputEventMouseButton) -> bool:
 	var step: float = cfg.num("camera.zoom_step", 1.12)
 	match event.button_index:
 		MOUSE_BUTTON_WHEEL_UP:
+			if not _action_ok("camera"):
+				return true
 			camera_rig.zoom_at(event.position, step)
 			return true
 		MOUSE_BUTTON_WHEEL_DOWN:
+			if not _action_ok("camera"):
+				return true
 			camera_rig.zoom_at(event.position, 1.0 / step)
 			return true
 		MOUSE_BUTTON_RIGHT:
+			if not _action_ok("order"):
+				return true
 			# ★ 双击 = 行军攻击（Godot 自己带双击判定，不用手写计时器）
 			_on_right_click(event.double_click)
 			return true
@@ -627,6 +667,8 @@ func handle_mouse_motion(event: InputEventMouseMotion) -> bool:
 	#   位移用**事件自己的屏幕坐标**差分（`event.relative` 在无头测试里造不出来），
 	#   与框选那条一样，不依赖全局鼠标状态。
 	if _pan_pending:
+		if not _action_ok("camera"):
+			return true
 		var pan_delta: Vector2 = event.position - _pan_last_screen
 		_pan_last_screen = event.position
 		# ★ 取负号 = 「抓着地图拖」：光标右移 → 地图跟着右移（相机往左走）。
@@ -770,6 +812,8 @@ func box_select(start: Vector2, end_pos: Vector2, additive: bool = false) -> int
 	for u in world.units:
 		if not u.alive:
 			continue
+		if bool(u.story_locked):
+			continue
 		if not FactionRes.same_side(u.faction, world.my_faction):
 			continue
 		if rect.has_point(u.pos):
@@ -819,6 +863,8 @@ func box_select_screen(screen_rect: Rect2, additive: bool = false) -> int:
 	var picked: Array = []
 	for u in world.units:
 		if not u.alive:
+			continue
+		if bool(u.story_locked):
 			continue
 		if not FactionRes.same_side(u.faction, world.my_faction):
 			continue
@@ -1001,6 +1047,8 @@ func has_active_gesture() -> bool:
 ##    直到玩家选中其他部队 / 取消选中部队为止」）。改选 / 取消选中走别的入口：
 ##    双指框选（框到别的部队 / 空框取消）、左侧部队列表、Esc。
 func touch_tap(world_pos: Vector2) -> void:
+	if not _action_ok("select") and not _action_ok("order") and not _action_ok("build"):
+		return
 	mouse_world = world_pos
 	_sync_hover_from_mouse()
 	if hover_tile.x < 0:
@@ -1020,6 +1068,8 @@ func touch_tap(world_pos: Vector2) -> void:
 ## 手机端双击：**行军攻击**（`attack_move`，路上遇敌就打）。
 ## 不满足条件（建造 / 命令模式 / 没有选中）时退化成一次普通单击。
 func touch_double_tap(world_pos: Vector2) -> void:
+	if not _action_ok("order"):
+		return
 	if build_type != "" or order_mode != "" or selected_units.is_empty():
 		touch_tap(world_pos)
 		return
@@ -1039,6 +1089,8 @@ func touch_double_tap(world_pos: Vector2) -> void:
 ##     远端会缩进 —— 于是那两个角离手指一截（用户报的 bug）。屏幕矩形没有这个问题。
 func touch_box_set(corner_a: Vector2, corner_b: Vector2,
 		screen_a: Variant = null, screen_b: Variant = null) -> void:
+	if not _action_ok("select"):
+		return
 	drag_start_world = corner_a
 	drag_current_world = corner_b
 	if screen_a != null and screen_b != null:
@@ -1052,6 +1104,11 @@ func touch_box_set(corner_a: Vector2, corner_b: Vector2,
 
 
 func touch_box_end() -> void:
+	if not _action_ok("select"):
+		drag_active = false
+		drag_screen_valid = false
+		_drag_freeze_cam = false
+		return
 	var start := drag_start_world
 	var end_pos := drag_current_world
 	var screen_rect := drag_screen_box
@@ -1070,12 +1127,17 @@ func touch_box_end() -> void:
 
 ## 手机端单指拖动视野中（由 view/touch_controller.gd 置位）——并进 `is_panning()`。
 func set_touch_panning(on: bool) -> void:
+	if on and not _action_ok("camera"):
+		_touch_panning = false
+		return
 	_touch_panning = on
 
 
 
 ## 左键：建造模式下放置；否则选中单位 / 建筑
 func _on_left_click(additive: bool) -> void:
+	if not _action_ok("select") and not _action_ok("build"):
+		return
 	if world == null or hover_tile.x < 0:
 		return
 	if build_type != "":
@@ -1165,6 +1227,8 @@ func _on_left_click(additive: bool) -> void:
 ##   · **双击任意位置** → 行军攻击到该点（`attack_move`，等价于 SC2 的按 A 攻击）
 ##   · 单击空地        → 普通移动（`move`，遇敌不停）
 func _on_right_click(double_click: bool = false) -> void:
+	if not _action_ok("order"):
+		return
 	if observer_mode:
 		# 观战授权（ai_test_2）：右键 = 取消 AI 面板的选点。
 		if observer_ai_orders and (order_mode == "ai_march" or order_mode == "ai_mass"):
@@ -1177,6 +1241,11 @@ func _on_right_click(double_click: bool = false) -> void:
 	#   否则「反悔」会变成「又下了一条命令」。
 	if order_mode != "":
 		set_order_mode("")
+		return
+	# ★★ 教程 / 演出输入策略：只挡**单击右键**（移动 + 点敌攻击），
+	#   双击右键（行军攻击）在上面已经处理过，不受影响。
+	if not double_click and world != null \
+			and bool(world.story_input.get("block_single_right_click", false)):
 		return
 	if selected_units.is_empty() or hover_tile.x < 0:
 		return
@@ -1288,7 +1357,12 @@ func clear_marks() -> void:
 ##    不是「在地图上点了某一个单位」。不清的话右栏会一直停在上次点到的那个兵身上。
 ##    ⚠️ 唯一的例外是 `_on_left_click`：它先调这里、再自己把 `clicked_unit` 写回去。
 func select_units(units: Array) -> void:
-	selected_units = world.expand_to_groups(units)
+	var expanded: Array = world.expand_to_groups(units)
+	# ★ 演出锁定中的单位暂时不可选中（教程：先把将领交给玩家之前）。
+	selected_units = []
+	for u in expanded:
+		if u != null and not bool(u.story_locked):
+			selected_units.append(u)
 	selected_building = null
 	selected_buildings = []
 	selected_zone = null
@@ -1581,14 +1655,20 @@ func _follow_general(slot: int) -> void:
 
 ## 对外薄封装（标签栏 / 其它 UI 也可以直接用）
 func toggle_general(slot: int) -> bool:
+	if not _action_ok("select"):
+		return false
 	return _toggle_team(_resolve_general(slot))
 
 
 func quick_select_general(slot: int) -> void:
+	if not _action_ok("select"):
+		return
 	_quick_select_team(_resolve_general(slot))
 
 
 func follow_general(slot: int) -> void:
+	if not _action_ok("camera"):
+		return
 	_follow_general(slot)
 
 
@@ -1635,6 +1715,8 @@ func _live_selection(snapshot: Array) -> Array:
 
 
 func set_build_type(t: String) -> void:
+	if t != "" and not _action_ok("build"):
+		return
 	if observer_mode:
 		return
 	build_type = t
@@ -1654,6 +1736,8 @@ func set_build_type(t: String) -> void:
 ##        （★ 「停止」没有目标，不走这里 —— 见 `request_stop()`）
 ## @return 进入之后当前是不是这个模式（false = 这次是「退出」）
 func set_order_mode(m: String) -> bool:
+	if m != "" and not _action_ok("order"):
+		return false
 	if observer_mode:
 		# 观战授权（ai_test_2）：仍然允许 Esc / 右键取消 AI 选点。
 		if observer_ai_orders and (order_mode == "ai_march" or order_mode == "ai_mass"):
@@ -1719,6 +1803,8 @@ func _commandable_selected() -> Array:
 ## 「停止」：**立刻**对当前选中的部队下达 `stop`（它不需要点地图选目标）。
 ## @return true = 命令已发出（选中里有活着的单位）
 func request_stop() -> bool:
+	if not _action_ok("order"):
+		return false
 	var ids: Array = []
 	for u in _commandable_selected():
 		if u.alive:
@@ -1887,6 +1973,8 @@ func _pick_recruit_leader(kind: String, leaders: Array):
 ##
 ## @return true = 命令已发出（不代表已经入队/招出来，落成与否看逻辑层）
 func request_recruit(kind: String) -> bool:
+	if not _action_ok("recruit"):
+		return false
 	var leaders := selected_leaders()
 	if leaders.is_empty():
 		toast.emit("先选中一个将领，才能把新兵排到它名下")
@@ -1908,6 +1996,8 @@ func request_recruit(kind: String) -> bool:
 ## @param slot 0 = 正在读条的大格子；1..4 = 排队的四个小格子（从前往后）
 ## ★ 与招募一样只发命令：退多少钱、后方的队列怎么前移，都由权威侧算。
 func request_recruit_cancel(slot: int) -> bool:
+	if not _action_ok("recruit"):
+		return false
 	var leader = first_selected_leader()
 	if leader == null:
 		toast.emit("先选中一个将领，才能取消它的招募队列")
@@ -1921,12 +2011,32 @@ func request_recruit_cancel(slot: int) -> bool:
 	return true
 
 
+## 清空当前选中将领的整条招募队列（「停招」按钮）。
+## ★ 与 `request_recruit_cancel` 一样只发命令；退款由权威侧算。
+func request_recruit_cancel_all() -> bool:
+	if not _action_ok("recruit"):
+		return false
+	var leader = first_selected_leader()
+	if leader == null:
+		toast.emit("先选中一个将领，才能停止它的招募队列")
+		return false
+	if not leader.is_training() and leader.train_queue.is_empty():
+		return false
+	command_issued.emit({
+		"kind": "recruit_cancel_all", "leader_id": leader.id,
+		"faction": world.my_faction,
+	})
+	return true
+
+
 ## ★★ 区划招募（点区划中心 → 右下「招募」页签 → 点某一格）：把将领排进**那个区划**的队列。
 ##
 ## ★ 与 `request_recruit` 的唯一区别是「兵营是谁」：那边把命令发给选中将领，
 ##   这边发给 `selected_zone`（区划排的是将领，见 world 的区划招募那一段）。
 ## ★ 没有选中区划时不发命令（命令里必须带 zone_id），返回 false 由调用方给提示。
 func request_zone_recruit(kind: String) -> bool:
+	if not _action_ok("recruit"):
+		return false
 	var z = selected_zone
 	if z == null:
 		toast.emit("先点一个区划中心，才能在这个区划里招募")
@@ -1945,6 +2055,8 @@ func request_zone_recruit(kind: String) -> bool:
 ##
 ## @param slot 0 = 正在读条的大格子；1..4 = 排队的四个小格子（从前往后）
 func request_zone_recruit_cancel(slot: int) -> bool:
+	if not _action_ok("recruit"):
+		return false
 	var z = selected_zone
 	if z == null or world == null:
 		toast.emit("先点一个区划中心，才能取消它的招募队列")
@@ -1993,6 +2105,8 @@ func notify_unit_recruited(leader, unit) -> void:
 ##   给一句提示 —— 与 `request_recruit` 同一条理由：硬发只会被逻辑层拒掉，
 ##   而玩家看不到任何反馈。
 func request_revive() -> bool:
+	if not _action_ok("revive"):
+		return false
 	var leader = first_selected_leader()
 	if leader == null:
 		return false
@@ -2004,6 +2118,8 @@ func request_revive() -> bool:
 
 ## 取消读条中的「再起」（再起免费，所以没有退款）。★ 读条中再点一次 = 取消。
 func request_revive_cancel() -> bool:
+	if not _action_ok("revive"):
+		return false
 	var leader = first_selected_leader()
 	if leader == null:
 		return false
@@ -2016,6 +2132,8 @@ func request_revive_cancel() -> bool:
 ## 召回：静默击杀旗下部队，将领阵亡后进入大本营重生队列（比正常阵亡更短）。
 ## ★ 只发意图；是否濒死 / 归属校验在 world.recall_general 里。
 func request_recall() -> bool:
+	if not _action_ok("revive"):
+		return false
 	var leader = first_selected_leader()
 	if leader == null:
 		return false
@@ -2040,6 +2158,8 @@ func request_recall() -> bool:
 ##
 ## @return true = 命令已发出（不代表逻辑层接受了 —— 满 3 条时逻辑层会拒并给提示）
 func request_tech_toggle(id: String, on: bool) -> bool:
+	if not _action_ok("tech"):
+		return false
 	if world == null or world.tech == null:
 		return false
 	if id == "":
@@ -2061,6 +2181,8 @@ func request_tech_toggle(id: String, on: bool) -> bool:
 
 ## 升级某一栋建筑（按**地块**定位：命令里不带对象引用，第 1 轮要过网络）。
 func request_building_upgrade(b) -> bool:
+	if not _action_ok("upgrade"):
+		return false
 	if world == null or b == null:
 		return false
 	command_issued.emit({
@@ -2072,6 +2194,8 @@ func request_building_upgrade(b) -> bool:
 
 ## 取消读条中的那次建筑升级（全额退款）。
 func request_building_upgrade_cancel(b) -> bool:
+	if not _action_ok("upgrade"):
+		return false
 	if world == null or b == null:
 		return false
 	command_issued.emit({
@@ -2189,6 +2313,8 @@ func _pick_any_unit_at(world_pos: Vector2, max_dist: float = -1.0) -> Variant:
 	for u in world.units:
 		if not u.alive:
 			continue
+		if bool(u.story_locked):
+			continue
 		if max_dist > 0.0 and u.pos.distance_squared_to(world_pos) > max_dist * max_dist:
 			continue
 		var mine: bool = FactionRes.same_side(u.faction, world.my_faction)
@@ -2219,6 +2345,8 @@ func _pick_unit_at(world_pos: Vector2) -> Variant:
 	var click_px: Vector2 = palette.to_px(world_pos) if palette != null else Vector2.ZERO
 	for u in world.units:
 		if not u.alive:
+			continue
+		if bool(u.story_locked):
 			continue
 		if not FactionRes.same_side(u.faction, world.my_faction):
 			continue
@@ -2275,7 +2403,15 @@ func _pick_foe_unit_at(world_pos: Vector2) -> Variant:
 ##    两种没有共同基类的 RefCounted，用一个函数接两种参数就只能靠 duck typing 猜，
 ##    猜错的代价是「静默走错分支」（拿建筑去查单位视野 → 永远返回 false → 点不动）。
 func _foe_unit_visible(u) -> bool:
-	if world == null or world.fog == null or cfg == null:
+	if u == null:
+		return false
+	if world == null:
+		return true
+	# ★ 友军（盟友）按需求可见/可选中，和敌军一样看详细信息；
+	#   战争迷雾只该盖敌人，不该把盟友也盖掉。
+	if FactionRes.same_side_for_attack(String(u.faction), String(world.my_faction)):
+		return u.alive
+	if world.fog == null or cfg == null:
 		return true
 	if not cfg.fog_enabled:
 		return true
@@ -2283,7 +2419,13 @@ func _foe_unit_visible(u) -> bool:
 
 
 func _foe_building_visible(b) -> bool:
-	if world == null or world.fog == null or cfg == null:
+	if b == null:
+		return false
+	if world == null:
+		return true
+	if FactionRes.same_side_for_attack(String(b.owner), String(world.my_faction)):
+		return b.alive
+	if world.fog == null or cfg == null:
 		return true
 	if not cfg.fog_enabled:
 		return true

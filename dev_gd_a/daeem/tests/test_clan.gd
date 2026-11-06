@@ -461,11 +461,9 @@ func _test_melee_reduction(cfg) -> void:
 	var plain = _mk_unit(w, cfg, "mr_plain", "dg_archer", "p1")
 	if sword == null or plain == null:
 		return
-	# 中层士气：不让士气免伤参与，只看兵种特性。
 	for u in [sword, plain]:
 		u.hp = 1000.0
 		u.hp_max = 1000.0
-		u.morale = cfg.morale_mid_tier
 		u.armor = 0.0
 	# 近战那一击：披甲剑士少吃 25%，弓箭手照吃全额。
 	sword.take_damage(cfg, w, 100.0, null, false)
@@ -485,7 +483,6 @@ func _test_melee_reduction(cfg) -> void:
 	if royal != null:
 		royal.hp = 1000.0
 		royal.hp_max = 1000.0
-		royal.morale = cfg.morale_mid_tier
 		royal.armor = 0.0
 		royal.take_damage(cfg, w, 100.0, null, false)
 		near(1000.0 - royal.hp, 70.0, 1e-6, "★★ 御林军：近战也减 30%")

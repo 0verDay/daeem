@@ -198,18 +198,26 @@ static func from_data(data: Dictionary, cfg: ConfigRes = null, campaign = null,
 	lv.allies_declared = data.has("allies")
 	lv.allies = _read_allies(data.get("allies", null))
 	lv.zone_owners = _read_zone_owners(data.get("zones", null))
+	lv.zone_population = _read_zone_population(data.get("zones", null))
 	lv.zone_no_go = _read_zone_no_go(data.get("zones", null))
 	lv.start_units = _read_start_units(data.get("start_units", null))
 	lv.start_buildings = _read_start_buildings(data.get("start_buildings", null))
 	lv.objectives = _read_objectives(data.get("objectives", null))
 	lv.fail_conditions = _read_fail_conditions(data.get("fail_conditions", null))
 	lv.briefing = _read_strings(data.get("briefing", null))
+	lv.story_driven = bool(data.get("story_driven", false))
+	lv.no_player_base = bool(data.get("no_player_base", false))
 	lv.issues = []
 
 	# ---- 地图 ----
 	lv.map = null
 	lv.map_path = ""
-	if lv.map_id != "":
+	var explicit_map := String(data.get("map_path", "")).strip_edges()
+	if explicit_map != "":
+		# ★ 教程这类「一个目录里放多张同名前缀地图」的关卡直接写文件路径。
+		lv.map_path = explicit_map
+		lv.map = MapDataRes.load_from(explicit_map, cfg)
+	elif lv.map_id != "":
 		lv.map_path = "%s/%s" % [MapLibraryRes.MAPS_DIR, lv.map_id]
 		var found := MapLibraryRes.find_map_file(lv.map_path, lv.map_id)
 		if found != "":
@@ -265,6 +273,14 @@ var allies_declared: bool = false
 var allies: Array = []
 ## 开局的区块归属覆盖：区划 id → 阵营 id
 var zone_owners: Dictionary = {}
+## ★★ 关卡给的区划**人口初值 / 上限**：区划 id → {population?, population_cap?}。
+##   只在世界建好区划后写一次（见 `world._apply_level_zone_population`）。
+var zone_population: Dictionary = {}
+## ★★ 这一关的胜负由**剧情脚本**决定（不配 `objectives[]`，也不走 objective 结算）。
+##   教程用；校验器见到它就不再要求「至少一条目标」。
+var story_driven: bool = false
+## ★★ 不给玩家席位建大本营（教程：开局只有一位将领，先演示「占领第一个区划」）。
+var no_player_base: bool = false
 ## ★★ 每个区划的**禁行格**：区划 id → `Array[Vector2i]`（关卡 `zones[].no_go`）。
 ##
 ## 语义（用户口径）：**阵地性 AI 不会巡逻至其区划的禁行区** —— 守将挑巡逻点时
@@ -860,6 +876,9 @@ func _ck_players() -> void:
 		var pfid := String(fid2)
 		if pfid == "" or _has_base_for(pfid):
 			continue
+		# ★ 剧情关（教程）：玩家可以没有大本营（胜负与招募都由剧本负责）。
+		if story_driven:
+			continue
 		_add(SEV_BLOCK, "faction_no_base",
 			"可玩阵营「%s」没有大本营 —— 在「摆放」页给它摆一个" % pfid)
 
@@ -1012,6 +1031,9 @@ func _ck_allies() -> void:
 ## 9/11) 目标恰好 1 项 + 额外失败条件的区划存在且不是目标区划
 func _ck_objectives() -> void:
 	if objectives.is_empty():
+		# 剧情关（教程）：目标由剧本逐段给出，不要求静态 objectives[]。
+		if story_driven:
+			return
 		_add(SEV_BLOCK, "objective_empty", "这一关没有目标")
 	# ★★ 一关可以有多条目标 —— 但**只在「按阵营分开」时**（每条都点名 `for`）。
 	#    两条都不点名的话，运行时按谁的都说不清（`objective_for` 只会取第一条），
@@ -1743,6 +1765,29 @@ static func _read_zone_owners(v: Variant) -> Dictionary:
 	return out
 
 
+## `zones[].population` / `zones[].population_cap`：只收关卡明确写了的字段。
+## 形状：区划 id → {population?: float, population_cap?: float}
+static func _read_zone_population(v: Variant) -> Dictionary:
+	var out: Dictionary = {}
+	if typeof(v) != TYPE_ARRAY:
+		return out
+	for item in (v as Array):
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		var d: Dictionary = item
+		var zid := int(d.get("id", -1))
+		if zid < 0:
+			continue
+		var entry: Dictionary = {}
+		if d.has("population"):
+			entry["population"] = maxf(0.0, _num(d.get("population"), 0.0))
+		if d.has("population_cap"):
+			entry["population_cap"] = maxf(0.0, _num(d.get("population_cap"), 0.0))
+		if not entry.is_empty():
+			out[zid] = entry
+	return out
+
+
 ## `zones[].no_go`：每个区划的**禁行格**（`[[x, y], ...]`）。
 ##
 ## 宽容读法与 `_read_zone_owners` 一致：
@@ -1833,6 +1878,8 @@ static func _read_start_units(v: Variant) -> Array:
 			"zone": int(d.get("zone", -1)),
 			"hold": bool(d.get("hold", false)),
 			"name": String(d.get("name", "")).strip_edges(),
+			# ★ 演出系统用的作者标签（可选）。编辑器不显示，只读写保留。
+			"tag": String(d.get("tag", "")).strip_edges(),
 		})
 	return out
 
@@ -1871,6 +1918,8 @@ static func _read_start_buildings(v: Variant) -> Array:
 			"x": int(d.get("x", -1)),
 			"y": int(d.get("y", -1)),
 			"owner": String(d.get("owner", "")).strip_edges(),
+			# ★ 演出系统用的作者标签（可选）。编辑器不显示，只读写保留。
+			"tag": String(d.get("tag", "")).strip_edges(),
 		})
 	return out
 

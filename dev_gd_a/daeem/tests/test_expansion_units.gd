@@ -5,14 +5,12 @@
 ##   · 攻城（投石车）无视目标的近战 / 远程减伤，但不无视护甲；
 ##   · 投石车的范围伤害（仅敌方、全额、按 1.5 格判定）；
 ##   · 马弓手的移动射击（边走边打、不停止）；
-##   · 粮车的士气光环（半径 3 格、+0.5/秒、多辆不叠加、只影响友方）；
 ##   · 粮车是纯支援单位（不索敌、不攻击）。
 extends "res://tests/test_case.gd"
 
 const UnitRes = preload("res://logic/unit.gd")
 const CombatRes = preload("res://logic/combat.gd")
 const ProjectileRes = preload("res://logic/projectile.gd")
-const MoraleRes = preload("res://logic/morale.gd")
 
 const DT := 1.0 / 60.0
 
@@ -30,7 +28,6 @@ func _run() -> void:
 	_test_armor_and_siege(cfg)
 	_test_catapult_splash(cfg)
 	_test_move_shoot(cfg)
-	_test_cart_aura(cfg)
 	_test_cart_cannot_attack(cfg)
 	print("[CASE] %s -> 通过 %d 项，失败 %d 项" % [_case_name, _pass, _fail])
 	if _fail > 0:
@@ -133,40 +130,6 @@ func _test_move_shoot(cfg) -> void:
 	ok(archer.attack_cd > 0.0, "★ 这一帧确实开火了（攻击进入冷却）")
 	eq(w.projectiles.size(), 1, "★ 射出一枚投掷物")
 	ok(archer.path.size() > 0, "移动路径还在")
-
-
-## 粮车光环：半径 3 格、+0.5/秒；多辆取最大值；只给同一边。
-func _test_cart_aura(cfg) -> void:
-	var w = require_world(cfg)
-	if w == null:
-		return
-	w.units = []
-	var cart = _mk(cfg, "aura-cart", "p1", UnitRes.UNIT_TYPE_GRAIN_CART, Vector2i(5, 5))
-	cart.pos = Vector2(5.5, 5.5)
-	var mate = _mk(cfg, "aura-mate", "p1", UnitRes.UNIT_TYPE_SPEARMAN, Vector2i(6, 5))
-	mate.pos = Vector2(6.5, 5.5)
-	var foe = _mk(cfg, "aura-foe", "p2", UnitRes.UNIT_TYPE_SPEARMAN, Vector2i(6, 6))
-	foe.pos = Vector2(6.5, 6.5)
-	w.units = [cart, mate, foe]
-	w._refresh_morale_aura(cfg)
-	ok(w.morale_aura_bonus.has(cart.id), "★ 粮车覆盖自己（在圈内）")
-	ok(w.morale_aura_bonus.has(mate.id), "★ 粮车覆盖 3 格内友军")
-	ok(not w.morale_aura_bonus.has(foe.id), "★ 不覆盖敌人")
-	near(float(w.morale_aura_bonus.get(mate.id, 0.0)), 0.5, 1e-6, "光环 +0.5/秒")
-
-	# 第二辆粮车叠在同一片区域：仍然只算 0.5（不叠加）。
-	var cart2 = _mk(cfg, "aura-cart2", "p1", UnitRes.UNIT_TYPE_GRAIN_CART, Vector2i(5, 6))
-	cart2.pos = Vector2(5.5, 6.5)
-	w.units.append(cart2)
-	w._refresh_morale_aura(cfg)
-	near(float(w.morale_aura_bonus.get(mate.id, 0.0)), 0.5, 1e-6,
-		"★ 两辆粮车对同一支部队不叠加")
-
-	# 实测士气：把 zones 拿掉（没有区划升降），只留光环 → 1 秒 +0.5。
-	w.zones = null
-	mate.morale = 50.0
-	MoraleRes.tick_unit(w, cfg, mate, 1.0)
-	near(mate.morale, 50.5, 1e-6, "★ 1 秒后士气 +0.5（与其它来源相加）")
 
 
 ## 粮车不攻击：警戒索敌 / 直接开火都不该产生伤害。

@@ -151,6 +151,18 @@ static func create() -> RefCounted:
 
 
 ## 换地图 / 重开一局时清掉与地图绑定的缓存。
+## ★★ 演出换图：清掉「和地图尺寸 / 地形绑定」的缓存，但**保留**：
+##   · `_sighted`（见过的敌方建筑 —— 换图不该让玩家忘掉已经看见的据点）；
+##   · `_display_reveal`（观战 / 调试的开全图状态）。
+## 新区域的视野下一帧按新地图正常重算。
+func on_map_changed() -> void:
+	var sighted_keep: Dictionary = _sighted
+	var reveal_keep: Dictionary = _display_reveal
+	reset_cache()
+	_sighted = sighted_keep
+	_display_reveal = reveal_keep
+
+
 func reset_cache() -> void:
 	sight = {}
 	_sighted = {}

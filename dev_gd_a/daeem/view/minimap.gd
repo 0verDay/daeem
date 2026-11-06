@@ -190,6 +190,16 @@ func setup(p_cfg: ConfigRes, p_world, p_camera_rig, p_palette) -> void:
 		stagger_redraw(0.37)
 
 
+## ★★ 演出换图 / 边界变化后：地图尺寸变了，迷雾缓存与地形缓存作废，重画一次。
+func on_map_changed() -> void:
+	_color_cache = {}
+	_fog_mask = PackedByteArray()
+	_fog_cols = -1
+	_fog_rows = -1
+	_red_dot_fx = []
+	queue_redraw()
+
+
 # ------------------------------------------------------------------
 # 几何：世界（格） ↔ 小地图（局部像素）
 # ------------------------------------------------------------------

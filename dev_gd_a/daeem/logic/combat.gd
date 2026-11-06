@@ -39,8 +39,6 @@ const TOWER_RETARGET_SEC := 0.2
 const CrowdBridgeRes = preload("res://logic/crowd/crowd_bridge.gd")
 ## ★ 射箭投掷物（远程单位 / 可攻击建筑）。projectile.gd 只 preload config，无循环依赖。
 const ProjectileRes = preload("res://logic/projectile.gd")
-## ★★ 士气（整支部队共享，见 logic/morale.gd）。morale.gd 不 preload unit.gd / combat.gd，无循环依赖。
-const MoraleRes = preload("res://logic/morale.gd")
 
 ## ★ 诊断计数器：本帧真正算了多少次「追击寻路」。只在基准里读，逻辑不依赖它。
 ##   用途：把「重寻路次数太多」和「单次寻路太贵」这两种可能分开 —— 实测实机行军攻击
@@ -159,19 +157,6 @@ static func update_unit(world, cfg: ConfigRes, u: UnitRes, dt: float, idx: int =
 		if u.moving or u.has_goal:
 			u.halt()
 		return
-
-	# ★★ 2026.10.27：**士气不再在逐单位循环里算** —— 它现在是 `world.tick` 里
-	#    单位循环**之前**的一整遍（`MoraleRes.tick_all`），见那里的说明。
-	#
-	# 为什么必须挪出去（这两条是同一个决定的两面）：
-	#   1. **性能**：士气的开销是「查区划 + 判同方 + 判包围 + 查粮车光环 + 回血档位」，
-	#      全是逐单位的查表与算术 —— 正好是能整段下沉到 C# 的那种活。
-	#      而「批量」的前提是它不能和战斗交替：交错着算就永远只能逐单位调内核（跨语言开销反而更大）。
-	#   2. **语义**：挪出去之后所有单位都在**同一时刻**结算士气/回复，再统一结算战斗 ——
-	#      这本来就是「一个 tick」更自然的读法（不再依赖 `world.units` 的遍历顺序）。
-	#    ⚠️ 行为上确实有一处差别：满血单位在同一帧既回血又挨打时，先回血再挨打
-	#      （原来取决于它在列表里的位置）。差一个 `regen*dt` 的量级，肉眼不可见；
-	#      `tests/test_unit_backend_equiv.gd` 会钉住「重构前后与两个后端都一致」。
 
 	# ★★ 移动射击（马弓手）：有移动 / 行军命令、正在沿路走时，**不停下来**，
 	#    只对射程内的敌人开火。没有移动命令（站定）时走下面的普通战斗分支，

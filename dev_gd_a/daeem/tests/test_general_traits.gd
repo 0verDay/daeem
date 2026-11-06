@@ -204,7 +204,6 @@ func _test_manual_aura_effects(cfg) -> void:
 	mg.armor = 0.0
 	mg.hp_max = 1000.0
 	mg.hp = 1000.0
-	mg.morale = cfg.morale_mid_tier
 	mg.set_general_trait(cfg, "melee_guard")
 	mg.take_damage(cfg, null, 100.0, null, false)
 	near(1000.0 - mg.hp, 75.0, 1e-6, "★ 近战抵抗：近战 100 → 75")
@@ -216,7 +215,6 @@ func _test_manual_aura_effects(cfg) -> void:
 	rg.armor = 0.0
 	rg.hp_max = 1000.0
 	rg.hp = 1000.0
-	rg.morale = cfg.morale_mid_tier
 	rg.set_general_trait(cfg, "ranged_guard")
 	rg.take_damage(cfg, null, 100.0, null, true)
 	near(1000.0 - rg.hp, 75.0, 1e-6, "★ 远程抵抗：远程 100 → 75")
@@ -292,7 +290,6 @@ func _test_manual_ui(cfg) -> void:
 	var hud = HudRes.new()
 	hud.cfg = cfg
 	var u = _mk(cfg, "ui_slayer", UnitRes.UNIT_TYPE_SPEARMAN)
-	u.morale = cfg.morale_mid_tier
 	u.set_general_trait(cfg, "infantry_slayer")
 
 	var buffs: Array = hud._buffs_for(u)
@@ -304,11 +301,10 @@ func _test_manual_ui(cfg) -> void:
 
 	var rows: Dictionary = hud._unit_detail_rows(u)
 	var left_txt: String = hud._rows_text({"left": rows["left"], "right": []})
-	ok(left_txt.contains("对步兵伤害 +25%（将）"), "左列有将领特攻行")
+	ok(left_txt.contains("对步兵 +25%（将）"), "左列有将领特攻行")
 	ok(left_txt.contains("特性 步兵特攻"), "左列写着词条名字")
 
 	var guard = _mk(cfg, "ui_guard", UnitRes.UNIT_TYPE_SPEARMAN)
-	guard.morale = cfg.morale_mid_tier
 	guard.set_general_trait(cfg, "melee_guard")
 	eq(hud._defense_bonus_lines(guard), ["近战减伤 +25%（将）"], "右列：近战抵抗")
 	guard.set_general_trait(cfg, "ranged_guard")
@@ -316,7 +312,6 @@ func _test_manual_ui(cfg) -> void:
 
 	# ★★ 2026.11：多条特性 → 多个「将」字方块 + 名字用「、」连起来
 	var multi = _mk(cfg, "ui_multi", UnitRes.UNIT_TYPE_SPEARMAN)
-	multi.morale = cfg.morale_mid_tier
 	multi.set_general_traits(cfg, ["swift", "infantry_slayer"])
 	var mb: Array = hud._buffs_for(multi)
 	var trait_ids: Array = []

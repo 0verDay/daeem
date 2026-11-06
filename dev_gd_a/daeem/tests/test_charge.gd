@@ -346,7 +346,7 @@ func _mk_unit(w, cfg, id: String, unit_type: String, faction: String, tile: Vect
 	return u
 
 
-## 目标单位调成「无护甲 / 无减伤 / 士气中间档」，让伤害断言只受冲锋公式影响。
+## 目标单位调成「无护甲 / 无减伤」，让伤害断言只受冲锋公式影响。
 func _prepare_target(cfg, u) -> void:
 	u.hp_max = 100000.0
 	u.hp = u.hp_max
@@ -355,7 +355,6 @@ func _prepare_target(cfg, u) -> void:
 	u.ranged_damage_reduction = 0.0
 	u.aura_melee_reduction = 0.0
 	u.aura_ranged_reduction = 0.0
-	u.morale = cfg.morale_vuln_tier + 1.0
 
 
 ## 同一行上连续 `len` 格可通行（不考虑区划归属，只要地形可走且没有建筑）。

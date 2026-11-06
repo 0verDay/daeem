@@ -123,12 +123,6 @@ func consume_events(events: Array) -> void:
 			"tech_rejected":
 				if _is_my_event(evt):
 					hud.show_notice(hud.tech_reject_text(String(evt.get("reason", ""))))
-			"starving_started":
-				# ★★ 2026.10.29 断粮：只在「刚开始挨饿」那一帧推一次（恢复时不推，免得边缘反复刷）。
-				#    资源条上的 `(+n)` 会变红，但「士气为什么在掉」必须用一句话解释清楚。
-				if _is_my_event(evt):
-					hud.show_notice("粮食不够养兵：全军士气正在下降（每秒 −%s，粮车可以抵消）" % [
-						String.num(float(evt.get("drain", 0.5)), 1)])
 			"upgrade_rejected":
 				# ★ 整个事件传进去：`busy` 那条文案要点名是哪个对象
 				if _is_my_event(evt):

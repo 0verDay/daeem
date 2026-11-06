@@ -136,15 +136,6 @@ static func hp_low() -> Color:
 	return ThemeRes.hp_low()
 
 
-## ★★ 士气背景板的两个端点色（见 morale_plate）。
-static func morale_high() -> Color:
-	return ThemeRes.morale_high()
-
-
-static func morale_low() -> Color:
-	return ThemeRes.morale_low()
-
-
 ## 血量比例 → 血条填充色（≥50% 绿 / ≥25% 黄 / 其余红）。
 const HP_BAR_HIGH_MIN := 0.5
 const HP_BAR_MID_MIN := 0.25
@@ -161,21 +152,6 @@ static func hp_bar_color(ratio: float) -> Color:
 ## 血量条的深底（与地图血条的 `HP_BACK_COLOR` 同款：黑，半透明）。
 static func hp_bar_bg() -> Color:
 	return Color(0.0, 0.0, 0.0, 0.55)
-
-
-## ★★ 士气填充色（详细信息栏里的**部队**图标用）：士气比例 → 绿(高) … 红(低)。
-##
-## ★ 只换**色相**、沿用现有面板 alpha：`strong` = 0.95（部队图标用这一档）、
-##   普通档 = 0.55（留着给需要更淡的调用点）。填充的**高度**由 view/morale_fill.gd
-##   按士气比例算（自下而上，越低越矮）；单个单位 / 建筑不画士气（需求原话）。
-const MORALE_ALPHA_STRONG := 0.95
-const MORALE_ALPHA_NORMAL := 0.55
-
-
-static func morale_plate(ratio: float, strong: bool = false) -> Color:
-	var c: Color = morale_high().lerp(morale_low(), 1.0 - clampf(ratio, 0.0, 1.0))
-	c.a = MORALE_ALPHA_STRONG if strong else MORALE_ALPHA_NORMAL
-	return c
 
 
 ## 字号（旧参考图是 1920×1080 的稿子，这里的字号按那个尺度定）

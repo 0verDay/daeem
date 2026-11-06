@@ -10,7 +10,7 @@
 ##   左栏（350 宽）
 ##     ├─ 上半：**当前聚焦 / 唯一选中的那支部队（或建筑）的图标格**（view/unit_roster.gd）
 ##     │        左边 40×40 图标 + 右边两行「名字 / x÷y」
-##     │        ★ 部队图标 = **序号 + 士气填充**；建筑 = 首字、无填充
+##     │        ★ 部队图标 = **序号**；建筑 = 首字
 ##     └─ 下半：**3 行 × 3 列的可见窗口**（view/troop_grid.gd），三种语义共用：
 ##               · **选中多支部队** → 画**其余**选中部队的序号图标（聚焦的那支不重复出现）；
 ##                 点一格 = 把聚焦的部队换成它（同时右栏切到它的将领）。
@@ -21,7 +21,7 @@
 ##
 ##   右栏（603 宽，本版重排成「顶带 + 下半并排 + 提示带」）
 ##     y   0.. 96  顶带：选中单位的**头像**（72×72）+「单位名称」+
-##                 一行**动态 buff 槽位**（40×40；当前士气系统挂一条「士」）
+##                 一行**动态 buff 槽位**（40×40；目前没有系统挂条目）
 ##     y 100..216  下半：**详细信息框（282 宽）+ 4px 缝 + 招募队列（313 宽）** 并排
 ##                 · 详情框 = 两列表格（血量/攻击 | 移速/防御；区划中心 = 类型/大小 | 产能）
 ##                 · 招募队列与详情框**上下缘齐平**（本版按需求从顶带搬下来）
@@ -40,11 +40,10 @@
 ##   · 玩家**鼠标单击**选中某个单位 → 默认显示**玩家点到的那个单位**。
 ##
 ## ★ 按需求砍掉的东西（别再默默加回来）：
-##   · **旧的单栏数值正文**（血量 / 士气 / 攻击力 / 攻击距离那一整段）—— 本版换成
+##   · **旧的单栏数值正文**（血量 / 攻击力 / 攻击距离那一整段）—— 本版换成
 ##     两列表格；旧的 7 行区划文案也不再使用（见 hud 的 `_*_detail_rows`）。
 ##   · **三个写死的 buff 占位**（「buff1/2/3」）—— 换成 view/buff_bar.gd 的动态槽位。
-##   · **单位 / 建筑图标的纯色背景填充** —— 现在只有「图标 + 底部血条」，没有士气底色；
-##     士气只画在**部队**图标上（序号 + 自下而上的士气填充，见 view/icon_badge.gd）。
+##   · **单位 / 建筑图标的纯色背景填充** —— 现在只有「图标 + 底部血条」。
 ##   · **「阵营 + 粮食 + 黄金」那一行资源 —— 本轮按参考图删掉了**
 ##   · **选中单位的那些汇总文字**（队伍人数 / 合计生命 / 指定攻击 / 状态）—— 一并删掉。
 ##   · **数值区顶上那行「详细信息」标题**（用户原话：「把所有的详细信息栏的『详细信息』字样去除」）。
@@ -224,7 +223,7 @@ func _build_right(cols: HBoxContainer, world, font: Font) -> void:
 	right.add_child(_unit_name)
 
 	# ★★ 动态 buff 槽位（本版去掉三个写死的占位）：
-	#   由 HUD 每帧 `set_buffs([{id, text, color, name}])` 喂；当前至少会有一条「士气」。
+	#   由 HUD 每帧 `set_buffs([{id, text, color, name}])` 喂；没有条目时整块收起来。
 	_buff_bar = BuffBarRes.new()
 	right.add_child(_buff_bar)
 	_buff_bar.setup(font)
@@ -391,7 +390,7 @@ func set_buildings(entries: Array, primary) -> void:
 			_roster.set_entry(null)
 		else:
 			# ★ 左上那一格与部队共用同一个落点（`unit_roster.set_entry`）：
-			#   建筑 = 首字图标 + 底部血条，**没有士气填充**。
+			#   建筑 = 首字图标 + 底部血条。
 			var e: Dictionary = (main_entry as Dictionary).duplicate()
 			var ref = e.get("ref", null)
 			e["kind"] = "building"
@@ -428,7 +427,7 @@ func set_unit_name(text: String) -> void:
 
 
 ## 右栏：**动态 buff 槽位**。每条 `{id, text, color, name}`（空数组 = 一个都不画）。
-## ★ 当前至少会有士气系统给单位挂的一条「士」；以后别的系统直接往数组里追加。
+## ★ 目前没有系统挂条目；以后别的系统直接往数组里追加。
 func set_buffs(entries: Array) -> void:
 	if _buff_bar != null:
 		_buff_bar.set_buffs(entries)
@@ -542,10 +541,10 @@ func _draw_unit_avatar() -> void:
 	var r := Rect2(Vector2.ZERO, Vector2(side, side))
 	var f: Font = _unit_avatar.get_theme_default_font()
 	var fs: int = _avatar_font_size(f) if f != null else UiStyleRes.FS_TITLE
-	# ★★ 本版按需求：头像**没有纯色背景填充**（原来的士气背景板已去掉），
+	# 头像只有图标字 + 血条，没有纯色背景填充。
 	#   只画边框 + 字 + 底部血条。
 	#   （交战中 / 选中的强调不在这里做：右栏头像只表示「现在看的是谁」。）
-	IconBadgeRes.draw(_unit_avatar, f, r, "unit", _avatar_text, 1.0,
+	IconBadgeRes.draw(_unit_avatar, f, r, "unit", _avatar_text,
 		_avatar_hp_ratio, _avatar_hp_visible, fs, UiStyleRes.line(), 1.0)
 	if _avatar_hp_visible:
 		_avatar_bar_draws += 1

@@ -35,6 +35,7 @@ func _cases() -> void:
 	_test_damage_pauses_training(cfg)
 	_test_retinue_not_locked_while_training(cfg)
 	_test_cancel_queue(cfg)
+	_test_cancel_all(cfg)
 	_test_recruit_eta(cfg)
 	_test_cancel_then_death(cfg)
 	_test_death_refund(cfg)
@@ -470,6 +471,28 @@ func _test_cancel_queue(cfg) -> void:
 		"★ 被拒的取消各发一条带拒因的事件（空格子 / 越界 ×2 / 队长不存在 / 防冒充）")
 	eq(_count_reason(evts, "recruit_cancelled", "cancelled"), 1,
 		"（这一帧只交出了之前那次**成功**取消的事件）")
+
+## ★ 新增「停招」：清空整条队列（含读条中的）并全额退款。
+func _test_cancel_all(cfg) -> void:
+	var w = require_world_with_escorts(cfg, ESCORTS_PER_GENERAL)
+	_give(w, 1000.0, 1000.0)
+	var g1 = w.unit_by_id("general-1")
+	var z = w.zones.zone_at(g1.tx, g1.ty)
+	z["population"] = 20.0
+	var food0: float = float(w.resources["food"])
+	var gold0: float = float(w.resources["gold"])
+	var pop0: float = float(z["population"])
+	for i in 3:
+		ok(w.start_recruit(KIND, g1.id, "p1"), "停招用例：排第 %d 单" % (i + 1))
+	eq(g1.train_queue_size(), 3, "停招前队列里有 3 个")
+	ok(w.cancel_recruit_all(g1.id, "p1"), "★ 停招成功")
+	eq(g1.train_queue_size(), 0, "★ 整条队列清空")
+	ok(not g1.is_training(), "★ 不再处于招募状态")
+	near(float(w.resources["food"]), food0, 1e-4, "★ 粮食全额退回")
+	near(float(w.resources["gold"]), gold0, 1e-4, "★ 黄金全额退回")
+	near(float(z["population"]), pop0, 1e-4, "★ 人口全额退回")
+	ok(not w.cancel_recruit_all(g1.id, "p1"), "没有队列时再点停招 → false")
+
 
 func _test_recruit_eta(cfg) -> void:
 	var c = require_config()

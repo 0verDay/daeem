@@ -246,6 +246,23 @@
     "selection_ring_alpha": 0.8,
     "selection_ring_sec": 0.18,
     "selection_ring_scale_from": 1.5,
+    "_story_glow_comment": [
+      "★★ 演出呼吸泛光（logic/story/story_actions.gd 的 glow_object）：",
+      "  · color = 默认金色；剧本可写 \"faction\" 或 #rrggbb；",
+      "  · strength = 单位本体的金色混合强度；",
+      "  · unit/building_ring_size = 地面光环的直径（格）；ring_alpha = 光环峰值透明度；",
+      "  · shell_scale / shell_alpha = 建筑外壳放大倍率 / 峰值透明度（区划中心只画光环）。"
+    ],
+    "story_glow_color": "#ffd166",
+    "story_glow_strength": 0.9,
+    "story_glow_unit_ring_size": 0.9,
+    "story_glow_building_ring_size": 1.3,
+    "story_glow_ring_alpha": 1.0,
+    "story_glow_shell_scale": 1.06,
+    "story_glow_shell_alpha": 0.7,
+    "story_glow_ripple_alpha": 0.9,
+    "story_glow_ripple_scale_from": 0.35,
+    "story_glow_ripple_scale_to": 2.1,
     "_unit_outline_comment": [
       "★★ 单位立牌的描边（见 view/unit_sprite_3d.gd 的 bake_asset）：",
       "   · sprite_tint = art 的立牌（保留原画）：默认描边 = **阵营色**（3px / 将领 5px）；",
@@ -964,7 +981,7 @@
       "       对射程内的敌人开火但**不停止**；没有移动命令时与普通远程一样停下打。",
       "     · siege = true：**攻城** —— 这一击无视目标来自「近战 / 远程」的减伤",
       "       （兵种 traits.ranged_reduction 与将领的 melee/ranged_reduction），",
-      "       但**不**无视护甲与士气免伤。投石车用它。",
+      "       但**不**无视护甲与减伤。投石车用它。",
       "     · splash_radius = **范围伤害半径（格）**：命中点周围该半径内的所有敌人",
       "       都吃这一击的全额伤害（仅敌方，不误伤友军）。投石车 = 1.5。",
       "  ★★ charge = **冲锋**（可选的近战兵种能力；不写 / min_distance = 0 = 不冲锋）：",
@@ -977,10 +994,9 @@
       "     · cooldown_sec —— 一次冲锋命中后的冷却（秒）。",
       "     ★ 只有**近战**单位会读它；远程骑兵（马弓手 / 游侠）不冲锋。",
       "     ★ 科技「骑士精神」的 charge_damage_mult 会**加法**追加到 damage_bonus 上。",
-      "  ★★ 粮车的士气光环写在它自己身上（其它兵种不写 = 没有）：",
-      "     · morale_aura_radius = 半径（格）；morale_aura_rate = 每秒加多少士气。",
-      "     · 同一支部队同时被多辆粮车覆盖时**只取最大值**（不叠加）；",
-      "       与区划回士气、击杀 / 掠地加士气等其它来源正常相加。",
+      "  ★★ 粮车的回血光环写在它自己身上（其它兵种不写 = 没有）：",
+      "     · heal_aura_radius = 半径（格）；heal_aura_rate = 每秒回多少血。",
+      "     · 多辆粮车覆盖同一单位时**相加**（不取最大值），并与区划回血叠加。",
       "  ★★ 资源层级（本次经济调参定的，招募价那一段照它排）：",
       "     粮食 = 低级资源，黄金 = 高级资源，人口 = 通用资源（谁都要）。",
       "     长枪兵 / 长弓兵 = **低级单位，只花粮食**；骑手 / 粮车 / 骑士 / 马弓手 /",
@@ -999,8 +1015,7 @@
       "      · 比例是 0.25 = +25%，与将领的数值覆盖**相乘**（将领的伤害先按覆盖算，再乘特性）。",
       "  · ranged_reduction = <比例> —— 受到**远程伤害**时减伤（0.25 = 少受 25%）。",
       "      · 「远程」按**伤害来路**判：远程单位的投掷物 + 可攻击建筑（箭塔）的投掷物；",
-      "      · 与士气高位的免伤是**加算**，再按 combat.damage_reduction_cap 封顶",
-      "        （默认 0.75：25% 特性 + 50% 士气免伤 = 75%，正好到顶）。",
+      "      · 与其它减伤来源**加算**，再按 combat.damage_reduction_cap 封顶。",
       "  · melee_reduction = <比例> —— 受到**近战伤害**时减伤（2026.11 新增；",
       "      「远近免伤+」= ranged_reduction + melee_reduction 两条一起写）。",
       "      · 「近战」= 不走投掷物的那一击（combat.attack_unit 的即时结算）；",
@@ -1104,9 +1119,9 @@
         "radius_factor": 0.10,
         "vision": 6,
         "armor": 4,
-        "morale_aura_radius": 3.0,
-        "morale_aura_rate": 0.5,
         "upkeep_food": 0.12,
+        "heal_aura_radius": 3.0,
+        "heal_aura_rate": 2.0,
         "traits": {
           "ranged_reduction": 0.9,
           "knockback_immune": true
@@ -1896,17 +1911,6 @@
     ],
     "collision_enabled": true,
     "collision_backend": "csharp",
-    "_sim_backend_comment": [
-      "★★ 2026.10.27：单位循环的后端。",
-      "  gdscript = 现行实现（永远是回退路径）；csharp = 逐段下沉到 logic/unit/*.cs 的内核。",
-      "  【当前已下沉】士气 + 回血/掉血（UnitMoraleKernel.cs）。",
-      "    等价性由 tests/test_unit_backend_equiv.gd 盯着：同种子世界跑两个后端、",
-      "    逐字段完全相等（不是容差）；dscj 256 单位实测 tick 10.77 → 9.89 ms/帧（-8%）。",
-      "  【为什么是「整段」而不是零碎几刀】单位循环是逐个交错的（A 士气→A 战斗→B 士气→B 战斗），",
-      "    抽一段出来批量算会改顺序；而打包成本实测 0.2~0.7 µs/单位，碎刀会被组包开销吃掉。",
-      "  ⚠️ 内核加载不到（普通版 Godot / 没编译程序集）时自动回退 gdscript，world.unit_sim_used 会如实写 gdscript。"
-    ],
-    "sim_backend": "csharp",
     "collision_radius": 0.18,
     "overlap_allowance": 0.7,
     "collision_iterations": 3,
@@ -2054,11 +2058,8 @@
     "retaliation_enabled": true,
     "_damage_reduction_comment": [
       "★★ 减伤封顶（本轮新增）：所有**减伤来源相加**之后，最多只减到这里。",
-      "  当前来源只有两条：士气高位免伤（morale.damage_reduction，默认 50%）+",
-      "  骑手的「对远程减伤」（unit.types.rider.traits.ranged_reduction，默认 25%）。",
-      "  加算口径 = 50% + 25% = 75% ⇒ 恰好等于默认上限；调低这个值会让叠加提前封顶。",
-      "  ⚠️ 易伤（士气低位）**不**参与这个加法：它是在减伤之后再乘一次（×1.5），",
-      "    两者本来就互斥（高位阈值 100 / 低位阈值 50，一个单位不可能同时满足）。"
+      "  来源包括兵种特性「对远程 / 近战减伤」、将领抵抗与科技减伤；",
+      "  所有来源相加后按这个上限夹取。"
     ],
     "damage_reduction_cap": 0.75,
     "_leash_comment": [
@@ -2593,7 +2594,7 @@
         "tier": 2,
         "label": "粮车",
         "short": "粮",
-        "desc": "在选中将领所在格的中心生成 1 辆粮车（支援单位，不攻击）。★ 只花粮食；周围 3 格友军士气 +0.5/秒（多辆不叠加，可与其他士气来源叠加）",
+        "desc": "在选中将领所在格的中心生成 1 辆粮车。★ 只花粮食",
         "population_cost": 1,
           "cost": { "food": 100, "gold": 0 }
       },
@@ -2975,7 +2976,7 @@
             "tier": 2,
             "label": "粮车",
             "short": "粮",
-            "desc": "在选中将领所在格的中心生成 1 辆粮车（支援单位，不攻击）。★ 基础单位：只花粮食；周围 3 格友军士气 +0.5/秒（多辆不叠加）",
+            "desc": "在选中将领所在格的中心生成 1 辆粮车。★ 基础单位：只花粮食",
             "population_cost": 1,
           "cost": { "food": 130, "gold": 0 }
           },
@@ -3153,7 +3154,7 @@
             "tier": 2,
             "label": "粮车",
             "short": "粮",
-            "desc": "在选中将领所在格的中心生成 1 辆粮车（支援单位，不攻击）。★ 基础单位：只花粮食；周围 3 格友军士气 +0.5/秒（多辆不叠加）",
+            "desc": "在选中将领所在格的中心生成 1 辆粮车。★ 基础单位：只花粮食",
             "population_cost": 1,
           "cost": { "food": 130, "gold": 0 }
           },
@@ -3420,7 +3421,7 @@
       "                                       连续 recruit.combat_idle_sec 秒没有目标、且没挨过打。",
       "    recruit_tier_unlock              >0 = 解除「大本营等级」对招募阶的限制",
       "    recruit_gold_to_food             >0 = 招募不再花金，按这个比例换成粮（1.5 = 1 金 → 1.5 粮）",
-      "    zone_convert_restore             >0 = 区划转为己方那一刻，区内己方单位血量与士气回满",
+      "    zone_convert_restore             >0 = 区划转为己方那一刻，区内己方单位血量回满",
       "    charge_damage_mult               ★ 冲锋命中时**加法**追加的额外伤害（1.0 = +100%）",
       "",
       "⚠️ 新增效果键要同时在 `logic/tech.gd` 的 `effects_of()`（默认值表）与本文件覆盖它的地方加一条。"
@@ -3528,57 +3529,22 @@
         "tier": 3,
         "name": "势如破竹",
         "line": "转归属即回满",
-        "desc": "区划由敌方 / 中立转为己方（含盟友）那一刻，该区划内己方单位的血量与士气回满",
+        "desc": "区划由敌方 / 中立转为己方（含盟友）那一刻，该区划内己方单位的血量回满",
         "effect": { "zone_convert_restore": 1 }
       }
     ]
   },
 
-  "morale": {
+
+  "heal": {
     "_comment": [
-      "★★ 士气（玩法见 docs/architecture.md）：**整支部队共享一个值**（队长 + 附属兵同一个 morale）。",
-      "  作用范围 = 场上所有单位（含 AI / 敌方）；初始上限 max、初始值 start。",
-      "  档位是**并列判定**，不是互斥挡：0 士气同时吃「≤vuln_tier 易伤」与「==0 快速掉血」。",
-      "  · ≥high_tier：生命 +hp_regen_high /s，受到伤害 ×(1-damage_reduction)（近距离与远程都走 take_damage）；",
-      "  · ≥mid_tier ：生命 +hp_regen_mid /s；",
-      "  · ≤vuln_tier：受到伤害 ×(1+vulnerability)（50 以下的各档继续保留）；",
-      "  · ≤low_tier ：生命 -hp_decay_low /s，止于 hp_floor（不致死）；",
-      "  · ==0       ：生命 -hp_decay_zero /s，止于 hp_floor（不致死）。",
-      "  区划联动：站己方/友方区划 → +regen_ally /s；站敌方区划（疲惫）→ -decay_enemy /s；",
-      "  站被包围的己方区划（疲惫）→ -decay_surrounded /s；中立区划**也算疲惫**（同 decay_enemy）。",
-      "  ★ 下降速度本轮调慢到原先的 1/5（2.0 → 0.4 /s）：decay_enemy / decay_surrounded 都是 0.4。",
-      "  ★ 低士气的**掉血**速度本轮调慢到原先的 1/4（hp_decay_low 3.0→0.75、hp_decay_zero 8.0→2.0 /s）。",
-      "  ★★ 主将濒死（倒地）期间：其整支部队额外 -leader_down_drain /s（默认 3）。",
-      "  ★★ 2026.10.29 断粮：该方**这一帧付不起单位维护费**（见 world._tick_upkeep）时，",
-      "     全军额外 **-starve_drain /s**（默认 0.5）。它**叠加**在上面的区划速率与粮车光环之上，",
-      "     而粮车光环正好是 +0.5/s ⇒ **一辆粮车刚好抵消断粮惩罚**（用户口径：两者等速）。",
-      "     ⚠️ 这个下降是每帧判定的：只要这一方还在断粮就一直掉，掉到 0 之后走 ==0 那一档掉血。",
-      "     这个固定下降**叠加**在区划速率与粮车光环之上（增加和减少都算）；",
-      "     再起后按当前值恢复正常规则（不额外补偿）。",
-      "  瞬间加成：破敌（杀敌单位）boost_kill、斩将（杀敌将领）boost_leader、",
-      "  掠地（所在区划转己方/友方）boost_capture —— 都加到击杀者 / 区内单位所在部队的士气上。"
+      "★★ 回血：单位在**己方 / 友方区划**内时，每秒恢复 zone_regen 点生命。",
+      "  粮车另有**回血光环**（写在它自己的 unit.types.grain_cart 上）：",
+      "  heal_aura_radius = 半径（格），heal_aura_rate = 每秒回多少血。",
+      "  ★ 所有来源相加：区划回血 + 每辆粮车的光环都可叠加，血量封顶 hp_max。",
+      "  ★ 只治疗存活且未濒死的**单位**，不治疗建筑；多个粮车不取最大值。"
     ],
-    "max": 100,
-    "start": 90,
-    "regen_ally": 1.5,
-    "decay_enemy": 0.5,
-    "decay_surrounded": 1,
-    "leader_down_drain": 3.0,
-    "starve_drain": 0.5,
-    "high_tier": 100,
-    "mid_tier": 90,
-    "vuln_tier": 50,
-    "low_tier": 25,
-    "hp_regen_high": 5,
-    "hp_regen_mid": 1,
-    "hp_decay_low": 0.5,
-    "hp_decay_zero": 3,
-    "hp_floor": 1.0,
-    "damage_reduction": 0.25,
-    "vulnerability": 0.25,
-    "boost_kill": 5.0,
-    "boost_leader": 10.0,
-    "boost_capture": 10.0
+    "zone_regen": 1.0
   },
 
   "theme": {
@@ -3600,7 +3566,7 @@
       "",
       "★ 面板底是**半透明**的：HUD 底栏占屏幕下方一大块，不透明会把地图遮死",
       "  （这条是旧主题就有的约束，别顺手改成 1.0）。",
-      "★ 语义色（hp_* / morale_*）**不跟主色走**：血量三档必须一眼分得出绿黄红；",
+      "★ 语义色（hp_*）**不跟主色走**：血量三档必须一眼分得出绿黄红；",
       "  hp_mid 特意留在琥珀档，与强调色同族但不同值。"
     ],
     "palette": {
@@ -3620,9 +3586,7 @@
       "warning": "#e5484d",
       "hp_high": "#7ab06a",
       "hp_mid": "#e0b04a",
-      "hp_low": "#c9593f",
-      "morale_high": "#7ab06a",
-      "morale_low": "#c9593f"
+      "hp_low": "#c9593f"
     }
   },
 
@@ -3683,6 +3647,8 @@
         "buttons": ["战役", "合作", "演义"],
         "ai_test_button": "ai_test",
         "see_ai_button": "see_ai",
+        "ce_xs_1_button": "ce_xs_1",
+        "ce_xs_2_button": "ce_xs_2",
         "bottom_buttons": ["自定义", "备战"]
       },
       "prepare": {
@@ -4938,6 +4904,50 @@
         "  ⚠️ 键名必须与 ai.factions[].id **逐字一致**，否则会退回 palette 的兜底色。"
       ],
       "ai": { "main": "#ff8a4a", "sel": "#ffd0b0", "bar": "#ff8a4a", "line": [255, 138, 74] }
+    }
+  },
+
+  "story": {
+    "_comment": [
+      "★★ 战役演出系统（logic/story/ 与 view/notice_stack.gd）。",
+      "  剧本在 logic/story/campaigns/<campaign_id>.gd 里写死，编辑器不暴露。",
+      "  这里只放**表现 / 时长**的可调数值；演出内容本身不在这里。",
+      "  · dialogue.*：左下对话框（和播报同一套栈，对话出现时播报上移）。",
+      "    type_sec = 每字打字机间隔；auto_sec = 逐字完成后自动推进的等待（<=0 不自动）。",
+      "  · camera.*：强制移动镜头的默认时长 / 缓动（剧本可以逐步覆盖）。",
+      "  · map_expand.*：黑屏换图的两段时长。",
+      "  · resource_float.*：给资源时资源条旁边的上浮数字。"
+    ],
+    "dialogue": {
+      "type_sec": 0.03,
+      "auto_sec": 4.0,
+      "history_max": 5,
+      "min_height": 64.0,
+      "max_height": 220.0,
+      "font_size": 18,
+      "pad_x": 16.0,
+      "pad_y": 12.0,
+      "exit_rise": 48.0
+    },
+    "objective": {
+      "type_sec": 0.035,
+      "strike_sec": 0.32
+    },
+    "skip": {
+      "key": "Escape"
+    },
+    "camera": {
+      "move_sec": 1.2,
+      "ease": "cubic"
+    },
+    "map_expand": {
+      "fade_out_sec": 0.5,
+      "fade_in_sec": 0.5
+    },
+    "resource_float": {
+      "sec": 1.2,
+      "rise_px": 36.0,
+      "font_size": 18
     }
   },
 

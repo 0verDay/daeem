@@ -47,6 +47,11 @@ var terrain: GridRes = null
 var exists: GridRes = null
 var cols: int = 0
 var rows: int = 0
+## ★★ 演出系统的**玩法边界**（单位 / 建筑可活动范围，格）。
+##   默认 = 整张地图；`world.set_boundary()` 会改它。
+##   放在 MapData 上是因为 `Pathfinder.passable()` 只拿得到 map，拿不到 world；
+##   MapData 是每局一份的运行时对象，改它不会写回磁盘地图数据。
+var active_rect: Rect2i = Rect2i()
 ## ★★ 视野「贡献集合」版本号（单调递增）。谁改了它：
 ##   · `unit.sync_tile()` / `unit._sync_tile_if_changed()` —— **只有真的跨格**才 +1（格粒度，
 ##     与迷雾的判定粒度一致；碰撞每帧推挤但没换格时不会触发）；
@@ -171,6 +176,7 @@ func _load(path: String, cfg: ConfigRes) -> bool:
 
 	cols = int(d.get("cols", cfg.cols))
 	rows = int(d.get("rows", cfg.rows))
+	active_rect = Rect2i(0, 0, cols, rows)
 	terrain = GridRes.new(cols, rows, TERRAIN_GRASS)
 	# 先假定处处存在，再按 exists 覆盖 —— 老地图没有这个字段时就是「整张矩形」
 	exists = GridRes.new(cols, rows, true)
@@ -504,7 +510,11 @@ func _read_buildings(v: Variant) -> Array[Dictionary]:
 		if x < 0 or y < 0 or x >= cols or y >= rows:
 			push_warning("地图预置建筑越界，已跳过：(%d, %d) %s" % [x, y, t])
 			continue
-		out.append({"type": t, "x": x, "y": y, "owner": String(b.get("owner", "enemy"))})
+		out.append({
+			"type": t, "x": x, "y": y,
+			"owner": String(b.get("owner", "enemy")),
+			"tag": String(b.get("tag", "")).strip_edges(),
+		})
 	return out
 
 
@@ -613,6 +623,37 @@ func flood_fill_terrain(from: Vector2i) -> Dictionary:
 			seen[ni] = true
 			queue.append(Vector2i(nx, ny))
 	return seen
+
+
+## ★★ 演出边界：设置单位 / 建筑可活动矩形（格）。传空矩形 / 越界会自动夹到地图内。
+func set_active_rect(r: Rect2i) -> void:
+	var x0: int = clampi(r.position.x, 0, maxi(0, cols - 1))
+	var y0: int = clampi(r.position.y, 0, maxi(0, rows - 1))
+	var x1: int = clampi(r.position.x + r.size.x, x0 + 1, cols)
+	var y1: int = clampi(r.position.y + r.size.y, y0 + 1, rows)
+	active_rect = Rect2i(x0, y0, x1 - x0, y1 - y0)
+
+
+## 恢复整张地图（= 不限制）。
+func reset_active_rect() -> void:
+	active_rect = Rect2i(0, 0, cols, rows)
+
+
+## 这个格在不在当前玩法边界里。
+func in_active_rect(x: int, y: int) -> bool:
+	if not terrain.has(x, y):
+		return false
+	if active_rect.size.x <= 0 or active_rect.size.y <= 0:
+		return true
+	return active_rect.has_point(Vector2i(x, y))
+
+
+## 当前玩法边界是不是整张地图（给寻路决定「能不能用 C# 内核」）。
+func active_rect_is_full() -> bool:
+	if active_rect.size.x <= 0 or active_rect.size.y <= 0:
+		return true
+	return active_rect.position == Vector2i.ZERO \
+		and active_rect.size == Vector2i(cols, rows)
 
 
 ## 这个格子在不在地图里（编辑器里的虚线格 = 不存在）。

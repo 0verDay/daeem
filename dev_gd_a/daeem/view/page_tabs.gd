@@ -81,6 +81,13 @@ var _was_active: Array[bool] = []
 ##   当前页那一下要**直接满格**（不播填充动画），之后切页才播。
 var _primer_done: bool = false
 
+## ★★ 教程引导：让某一页签「呼吸高亮」（不改变当前页）。
+##   每颗按钮各带一层描边 + 一层向外扩散的方形波纹；只有 `_attention_page` 那颗显示。
+var _attention_page: String = ""
+var _attention_t: float = 0.0
+var _attention_borders: Array[Panel] = []
+var _attention_ripples: Array[Panel] = []
+
 
 func setup() -> void:
 	name = "PageTabs"
@@ -112,6 +119,32 @@ func setup() -> void:
 		_char_labels.append([])
 		_char_h.append(0.0)
 		_was_active.append(false)
+
+		# 引导描边 + 向外扩散的方形波纹（默认隐藏，只有 `set_attention()` 指定的页显示）。
+		var ab := Panel.new()
+		ab.name = "AttentionBorder"
+		ab.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		ab.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		var absb := StyleBoxFlat.new()
+		absb.bg_color = Color(0, 0, 0, 0)
+		absb.border_color = UiStyleRes.accent()
+		absb.set_border_width_all(2)
+		ab.add_theme_stylebox_override("panel", absb)
+		ab.visible = false
+		b.add_child(ab)
+		_attention_borders.append(ab)
+
+		var ar := Panel.new()
+		ar.name = "AttentionRipple"
+		ar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		var arsb := StyleBoxFlat.new()
+		arsb.bg_color = Color(0, 0, 0, 0)
+		arsb.border_color = UiStyleRes.accent()
+		arsb.set_border_width_all(2)
+		ar.add_theme_stylebox_override("panel", arsb)
+		ar.visible = false
+		b.add_child(ar)
+		_attention_ripples.append(ar)
 
 	# ★★ 整列描边：一条外框把这一列页签整体圈起来。
 	#    ★ 必须**最后加**（子节点按顺序画，后加的在上）：页签各自的描边在边缘处会盖住
@@ -329,6 +362,61 @@ func page_id_at(i: int) -> String:
 	if i < 0 or i >= _page_ids.size():
 		return ""
 	return _page_ids[i]
+
+
+## 这一屏里有没有这一页（教程引导用：没有「单位」页时不该硬亮一个不存在的按钮）。
+func has_page(page_id: String) -> bool:
+	return _page_ids.has(String(page_id))
+
+
+## ★★ 教程引导：让某一页签呼吸高亮；空串 = 关掉。
+##   不改变当前页，也不触发 `page_changed`。
+func set_attention(page_id: String) -> void:
+	var p := String(page_id).strip_edges()
+	if p == _attention_page:
+		return
+	_attention_page = p
+	_attention_t = 0.0
+	_update_attention()
+
+
+func _update_attention() -> void:
+	var pulse := 0.2 + 0.8 * (0.5 - 0.5 * cos(_attention_t * TAU / 1.4))
+	var rip_t := fmod(_attention_t, 1.4) / 1.4
+	var rip_e := 1.0 - (1.0 - rip_t) * (1.0 - rip_t)
+	for i in _buttons.size():
+		var hit: bool = _attention_page != "" and i < _page_ids.size() \
+			and _page_ids[i] == _attention_page
+		if i < _attention_borders.size():
+			var ab: Panel = _attention_borders[i]
+			if ab != null and is_instance_valid(ab):
+				ab.visible = hit
+				if hit:
+					var sb: StyleBoxFlat = ab.get_theme_stylebox("panel") as StyleBoxFlat
+					if sb != null:
+						var c := UiStyleRes.accent()
+						sb.border_color = Color(c.r, c.g, c.b, 0.35 + 0.65 * pulse)
+						sb.bg_color = Color(c.r, c.g, c.b, 0.05 + 0.10 * pulse)
+		if i < _attention_ripples.size():
+			var ar: Panel = _attention_ripples[i]
+			if ar == null or not is_instance_valid(ar):
+				continue
+			ar.visible = hit
+			if hit:
+				var sz: Vector2 = _buttons[i].size
+				var s := lerpf(sz.x * 0.28, sz.x * 1.12, rip_e)
+				ar.position = (sz - Vector2(s, s)) * 0.5
+				ar.size = Vector2(s, s)
+				var rsb: StyleBoxFlat = ar.get_theme_stylebox("panel") as StyleBoxFlat
+				if rsb != null:
+					var rc := UiStyleRes.accent()
+					rsb.border_color = Color(rc.r, rc.g, rc.b, (1.0 - rip_t) * 0.9)
+
+
+func _process(dt: float) -> void:
+	if _attention_page != "":
+		_attention_t += maxf(0.0, dt)
+		_update_attention()
 
 
 ## 第 i 颗按钮（越界 = null）

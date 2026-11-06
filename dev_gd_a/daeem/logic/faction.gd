@@ -11,7 +11,7 @@
 ##   'enemy'   NPC / 调试用的测试敌人
 ##
 ## ★★ 两条对称规则，方向相反，**别搞混**：
-##   is_player_faction(f) —— 这个阵营是不是「玩家控制的一方」？决定它是否索敌 / 占区块 / 回血
+##   is_player_faction(f) —— 这个阵营是不是「玩家控制的一方」？决定它是否索敌 / 占区块
 ##   same_side(a, b)      —— 这两者是不是「同一方」？决定是否互相攻击、城墙是否放行
 ##
 ## ★ 为什么没有 'player' 了（改过一版）：原来单机用 'player'、联机用 'p1'…'p8'，
@@ -54,7 +54,7 @@ const SINGLE_PLAYER_ROSTER: Array[String] = [DEFAULT_FACTION]
 
 ## 玩家席位集合（给 is_player_faction 做 O(1) 查表用）。
 ## ★ 为什么要字典而不是 `f in FACTION_ROSTER`：后者是**数组线性查找 + 字符串比较**，
-##   而 is_player_faction 在「每帧每单位」的路径上（回血判定、索敌分支）。
+##   而 is_player_faction 在「每帧每单位」的路径上（索敌 / 占区块分支）。
 ##   1000 单位下就是每秒 6 万次最多 8 个字符串的比较。
 ## ⚠️ 必须是 `static var`：下面的 is_player_faction 是静态函数，读不了实例变量。
 static var _PLAYER_SET: Dictionary = {
@@ -68,7 +68,7 @@ static var _PLAYER_SET: Dictionary = {
 ## 两种「玩家方」的区分（别搞混）：
 ##   DEFAULT_FACTION（'p1'）+ FACTION_ROSTER（'p1'..'p8'）→ 是玩家方
 ##   NPC_FACTION（'enemy'）→ 不是
-## 只有玩家方才会自动索敌、占区块、在自家领地回血。
+## 只有玩家方才会自动索敌、占区块。
 static func is_player_faction(f: String) -> bool:
 	return _PLAYER_SET.has(f)
 

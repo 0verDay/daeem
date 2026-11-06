@@ -27,8 +27,6 @@ const BuildingRes = preload("res://logic/building.gd")
 const UnitRes = preload("res://logic/unit.gd")
 const ZoneRes = preload("res://logic/zone.gd")
 const EconomyRes = preload("res://logic/economy.gd")
-## ★★ 士气（整支部队共享，见 logic/morale.gd）。morale.gd 只 preload faction.gd，无循环依赖。
-const MoraleRes = preload("res://logic/morale.gd")
 
 ## ★★ 救援到位半径（格）：附属兵离倒下点这么近就算「已经护住了」，结束救援意图。
 ## 与 `unit.order_attack_move` 的「到点了就算完成」（0.5 格）同源，稍放大一点 ——
@@ -49,6 +47,8 @@ const ProjectileRes = preload("res://logic/projectile.gd")
 
 var cfg: ConfigRes = null
 var map: MapDataRes = null
+## 当前地图文件的路径（换图后会更新；排查 / 后续扩图要用）。
+var map_path: String = ""
 
 ## 建筑：Grid 存「每格最多一个」+ 数组存权威列表 + (tx,ty) → Building 查询
 var buildings: GridRes = null
@@ -72,39 +72,6 @@ var _bgrid: Dictionary = {}
 var _bgrid_revision: int = -1
 
 var zones: ZoneRes = null
-## ★★ 士气联动的区划图（见 logic/morale.gd 与下面的 `_build_zone_adjacency` /
-##    `refresh_zone_connectivity` / `_tick_zone_morale`）：
-##   · `_zone_adj`        —— 区划 id → 邻接区划 id 数组（地块 4 邻域相接即相邻，构建一次）；
-##   · `_surrounded`      —— 被包围的区划 id 集合（对该区划的 owner 而言，不与大本营区划连通）；
-##   · `_zone_owner_prev` —— 上一帧各区划的 owner（diff 出「掠地」的归属变化）。
-var _zone_adj: Dictionary = {}
-var _surrounded: Dictionary = {}
-var _zone_owner_prev: Dictionary = {}
-## ★★ 本帧「粮车士气光环」的结算表：**士气锚 id → 每秒加成**。
-##
-## 由 `_refresh_morale_aura(cfg)` 在单位循环之前算好，`morale.tick_unit` 直接读。
-## 为什么是「锚 id → 数值」而不是给每个单位挂一个字段：
-##   士气本来就是**整支部队共享**（见 morale.gd 的锚模型），所以同一个值只要给锚加一次；
-##   字典的键天然去重 —— 多辆粮车覆盖同一支部队时只会留下**最大值**（需求：不可叠加）。
-var morale_aura_bonus: Dictionary = {}
-## ★★ 粮车光环的重算间隔（秒）：光环是「缓慢提升」，没必要每帧做 O(粮车 × 单位) 的扫描。
-##    0.25 秒的延迟在士气这种慢变量上完全看不出来，但把每帧开销压到 1/15。
-const MORALE_AURA_REFRESH_SEC := 0.25
-var _morale_aura_timer: float = 0.0
-
-## ★★ 2026.10.29：**断粮阵营**表（阵营 id → true）。
-##
-## 「断粮」= 这一帧**付不起全额单位维护费**（见 `_tick_upkeep`）。它只管一件事：
-## 让 `morale._zone_morale_rate` 给这一方**所有单位**额外扣 `morale.starve_drain`（=0.5 点/秒，
-## 与粮车光环等速 ⇒ 一辆粮车刚好抵消）。
-## ★ 每帧重算、只保留当前帧的状态（不跨帧累积），所以字典里出现的键永远只有「正在挨饿」的那几方。
-## ⚠️ 只有**有资源池**的阵营会进来：阵地性 / 红点性 AI 资源无限，永远不会断粮。
-var starving_factions: Dictionary = {}
-
-
-## 这一方现在是不是在断粮（士气那边每帧每锚都会问一次）。
-func is_starving(faction: String) -> bool:
-	return bool(starving_factions.get(faction, false))
 
 
 ## ★★ 2026.10.29：**每秒消耗**的两个缓存（阵营 → 每秒扣多少）。
@@ -367,10 +334,8 @@ func render_pos_of(u) -> Vector2:
 
 ## ★★ 2026.10.27：**本帧单位循环实际跑在哪个后端**（"gdscript" / "csharp"）。
 ##
-## 读的是「实际」，不是 `cfg.unit_sim_backend`（那个是「想要」）：
 ## 内核没实装 / 加载不到 / 抛异常时必须如实写 "gdscript"，
 ## 否则 `tests/test_unit_backend_equiv.gd` 会以为下沉生效了，拿两条 GDScript 路径去"等价"。
-var unit_sim_used: String = "gdscript"
 
 ## ★★ 战争迷雾（logic/fog.gd）：**按阵营算「谁能看见哪一格」** + 「见过一次的敌方建筑」。
 ##
@@ -395,6 +360,20 @@ var _enemy_serial: int = 0
 ## 招募序号：只用来生成**永不重复**的 id（`general-1-r3`）。
 ## 为什么不用「现有附属兵数 + 1」：那个数会因为阵亡 / 离场而回退，回退就会撞名。
 var _recruit_serial: int = 0
+## ★ 演出系统生成单位 / 红点时的**唯一序号**（每局重置）。id 只用于区分对象。
+var story_serial: int = 0
+## ★ 本局有没有出现过「呼吸泛光」。没有时单位层 / 泛光层可以整段跳过扫描。
+var story_glow_active: bool = false
+## ★★ 演出剧本的**临时变量**（`set_var` 步骤写、剧本里的条件读）。
+##   每局重置；换图不会清空。教程用它记录「红点已出现」这类进度。
+var story_vars: Dictionary = {}
+## ★★ 剧情目标（教程用）：非空时左上角目标面板**优先显示它**。
+##   形状：{kind:"story", zone:int, title:String, desc:String, state:"running"/"won"}
+var story_objective: Dictionary = {}
+## ★★ 区划呼吸高亮：区划 id → 与 Unit.story_glow 同形的状态字典。
+var story_zone_glow: Dictionary = {}
+## ★★ 演出期的输入策略（如 `block_single_right_click`）。
+var story_input: Dictionary = {}
 ## ★★ 2026.11：**阵营 → 派系 id** 的缓存（见 `clan_of()`）。
 ##   派系来自关卡数据的 `factions[].clan`，一局内不变 ⇒ 缓存不会过期；
 ##   `reset()` 清一次（重开一局 / 换一张图必须丢掉上一局的派系）。
@@ -435,6 +414,7 @@ static func create(p_cfg: ConfigRes, map_path: String = MapLibraryRes.FALLBACK_M
 	# ★ 迷雾对象先建出来（哪怕地图载入失败）：view/ 每帧都会问它「这一格看得见吗」，
 	#   留一个 null 就等于让每个调用点都要判空（那种判空迟早会漏一处）。
 	w.fog = FogRes.create()
+	w.map_path = map_path
 	w.map = MapDataRes.load_from(map_path, p_cfg)
 	if w.map == null:
 		push_error("World.create：地图载入失败（%s）" % map_path)
@@ -501,6 +481,7 @@ static func create_from_level(cfg: ConfigRes, level, my_faction: String,
 	var merged: Dictionary = level.merge_over_map(cfg.ai_factions())
 	w._merged = merged
 	w.map = merged["map"]
+	w.map_path = String(level.map_path)
 	if w.map == null:
 		push_error("World.create_from_level：地图载入失败（%s）" % String(level.map_path))
 		return null
@@ -526,10 +507,7 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	units = []
 	projectiles = []
 	garrison_siege_alerts = {}
-	morale_aura_bonus = {}
-	_morale_aura_timer = 0.0
 	# ★★ 断粮标记：每帧重算的临时状态，重开一局必须从「没人挨饿」开始。
-	starving_factions = {}
 	# ★★ 每秒消耗的缓存同理（上一局的维护费 / 科技金耗不能带到下一局）。
 	_upkeep_food_rate = {}
 	_tech_gold_rate = {}
@@ -540,6 +518,12 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	_events = []
 	_objective_reported = ""
 	_enemy_serial = 0
+	story_serial = 0
+	story_glow_active = false
+	story_vars = {}
+	story_objective = {}
+	story_zone_glow = {}
+	story_input = {}
 	# ★★ 2026.11：派系缓存也要清 —— 换一张图 / 重开一局时，
 	#   p1 上一局是「王朝」不代表这一局还是（关卡数据变了）。
 	_clan_cache = {}
@@ -706,14 +690,20 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	#      放这儿是为了让「静态数据」都挨在一起；
 	#    · 它只影响巡逻目标点，不改寻路 / 不挡路（见 `zone.no_go_by_id` 的说明）。
 	zones.apply_no_go(level.zone_no_go if level != null else {})
+	# ★★ 关卡给的区划**人口初值 / 上限**（教程用：把第一个区划的人口调到够招五队）。
+	_apply_level_zone_population()
 
 	# ★★ 只有**本机在操作的玩家方**才建大本营（本轮口径：AI 没有大本营）。
 	#    AI 阵营照旧算出生点（faction_spawns / faction_bases 点位，将领站位要用），
 	#    但**不建任何建筑**（apply_faction_layout 的 with_base=false）。
 	var primary: String = factions[0] if factions.size() > 0 else my_faction
+	var skip_player_base: bool = level != null and bool(level.no_player_base)
 	for f in factions:
 		# ★★ commander 也要建大本营（它要经营）；garrison / reddot 仍然不建。
 		var with_base := player_factions.has(String(f)) or _is_commander_ai(String(f))
+		# ★ 教程：玩家席位不建大本营（否则大本营会让整个区划瞬间归玩家）。
+		if skip_player_base and player_factions.has(String(f)):
+			with_base = false
 		apply_faction_layout(String(f), primary, with_base)
 	# 地图上**预置**的建筑（对家据点这类固定摆设，坐标写在 `data/maps/<id>/map.json`
 	# 的 "buildings" 里）。
@@ -725,7 +715,8 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 		#    （只保留玩家席位的那一座）。其余预置建筑（箭塔 / 城墙 / 区划中心）照旧。
 		if btype == BuildingRes.TYPE_BASE and not player_factions.has(bowner):
 			continue
-		add_building(btype, int(p["x"]), int(p["y"]), bowner, true, true)
+		add_building(btype, int(p["x"]), int(p["y"]), bowner, true, true,
+			String(p.get("tag", "")))
 	# ★★ 区划中心（地图编辑器给每个区块指定的那一格）：**中立障碍建筑**。
 	#    ⚠️⚠️ 必须在**任何单位出生之前**建好（顺序踩过一次，实测）：
 	#       单位出生找站位时会避开建筑（`_ring_tile` 里那条 `building_at() != null`），
@@ -834,12 +825,8 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 			defend = [my_faction]
 		objective_state = ObjectiveRes.setup(self, level, defend, my_faction)
 
-	# ★★ 士气联动的区划图收口（与上面 fog / objective 同一处「reset 结束 = 一切是热的」）：
 	#    邻接图构建一次；连通性（被包围）先算一次；owner 快照一次 ——
 	#    于是第一帧 tick 不会把「开局就有的归属」误判成「掠地」。
-	_build_zone_adjacency()
-	refresh_zone_connectivity()
-	_snapshot_zone_owners()
 
 	# ★★ 指挥官 AI 的收口（与 fog / objective / 区划图同一处「reset 结束 = 一切是热的」）：
 	#    必须在所有单位 / 建筑 / 目标都就位之后 —— 控制器 setup 要读基地与将领。
@@ -857,6 +844,209 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	# ★★ 2026.10.29：关卡 `factions[]` 的逐阵营起手资源 —— 放在最后，
 	#    玩家池 / commander 池 / 观战别名都已就位。
 	_apply_level_start_resources()
+
+
+## ★★ 演出系统：**原地换到一张更大的地图**。
+##
+## 口径（见 docs/dev_plan_15.md 第 8 节）：
+##   · 只允许扩大：新地图两维都不小于旧图，且至少一维严格变大；
+##   · 旧区域的地形 / 存在格必须逐格一致；
+##   · 旧地图的每个区划 id 必须在新地图里仍然存在（旧区划状态按 id 恢复）；
+##   · 单位 / 建筑 / 资源 / 科技 / 目标 / AI 控制器全部保留（同一个 World 对象）；
+##   · 只重建地图相关结构（建筑网格 / 区划 / 迷雾缓存 / 碰撞缓存），
+##     视图层的重建由 `game_scene3d` 负责。
+##
+## @return true = 换图成功；false = 校验失败（**旧地图与旧状态一字未动**）
+func swap_map(new_map_path: String) -> bool:
+	if map == null or cfg == null:
+		return false
+	var new_map = MapDataRes.load_from(new_map_path, cfg)
+	if new_map == null:
+		return false
+
+	# ---- 1) 严格校验（失败就返回，不改任何状态）----
+	var old_cols: int = int(map.cols)
+	var old_rows: int = int(map.rows)
+	if int(new_map.cols) < old_cols or int(new_map.rows) < old_rows:
+		push_error("演出换图被拒绝：新地图比旧地图小（旧 %dx%d，新 %dx%d）"
+			% [old_cols, old_rows, int(new_map.cols), int(new_map.rows)])
+		return false
+	if int(new_map.cols) == old_cols and int(new_map.rows) == old_rows:
+		push_error("演出换图被拒绝：新地图没有变大（%dx%d）" % [old_cols, old_rows])
+		return false
+	for y in old_rows:
+		for x in old_cols:
+			if String(new_map.terrain.get_cell(x, y)) != String(map.terrain.get_cell(x, y)):
+				push_error("演出换图被拒绝：旧区域地形不一致（%d,%d）" % [x, y])
+				return false
+			if bool(new_map.exists.get_cell(x, y)) != bool(map.exists.get_cell(x, y)):
+				push_error("演出换图被拒绝：旧区域存在格不一致（%d,%d）" % [x, y])
+				return false
+
+	var old_zone_state: Dictionary = _capture_zone_state()
+	var new_zones = ZoneRes.build_from_map(new_map, cfg, factions)
+	for zid in old_zone_state.keys():
+		if not new_zones.zones_by_id.has(int(zid)):
+			push_error("演出换图被拒绝：旧区划 c%d 在新地图里不存在" % int(zid))
+			return false
+	# 旧区域的区划**形状 / 中心**也必须一致：否则旧建筑 / 占领状态会挂到错误的地块上。
+	for zid in old_zone_state.keys():
+		var oldz: Variant = zones.zones_by_id.get(int(zid), null)
+		var newz: Variant = new_zones.zones_by_id.get(int(zid), null)
+		if oldz != null and newz != null and oldz.get("center", null) != newz.get("center", null):
+			push_error("演出换图被拒绝：旧区划 c%d 的中心位置变了" % int(zid))
+			return false
+	for y in old_rows:
+		for x in old_cols:
+			var old_idx: int = y * old_cols + x
+			var new_idx: int = y * int(new_map.cols) + x
+			if int(new_zones.lookup[new_idx]) != int(zones.lookup[old_idx]):
+				push_error("演出换图被拒绝：旧区域区划归属不一致（%d,%d）" % [x, y])
+				return false
+
+	# ---- 2) 换地图 ----
+	map = new_map
+	map_path = new_map_path
+	_merged = {}
+
+	# ---- 3) 建筑网格按新尺寸重建（建筑对象本身不动）----
+	buildings = GridRes.new(map.cols, map.rows, null)
+	_building_at = {}
+	for b in building_list:
+		if b == null or not b.alive:
+			continue
+		buildings.set_cell(int(b.tx), int(b.ty), b)
+		_building_at[Vector2i(int(b.tx), int(b.ty))] = b
+	building_revision += 1
+	_bgrid = {}
+	_bgrid_revision = -1
+
+	# ---- 4) 区划：新地图的结构 + 旧区划状态按 id 覆盖 ----
+	zones = new_zones
+	# 新区划先吃新地图自己的开局归属；旧区划随后被下面的状态覆盖。
+	zones.apply_initial_ownership(map, factions)
+	_restore_zone_state(old_zone_state)
+	if level != null:
+		zones.apply_no_go(level.zone_no_go)
+
+	# ---- 5) 新区域：补区划中心 / 预置建筑（旧区域不重复）----
+	var old_area := Rect2i(0, 0, old_cols, old_rows)
+	_spawn_missing_zone_centers()
+	for p in map.prefab_buildings:
+		var ptype := String(p.get("type", ""))
+		if ptype == BuildingRes.TYPE_BASE:
+			continue
+		var px := int(p.get("x", -1))
+		var py := int(p.get("y", -1))
+		if old_area.has_point(Vector2i(px, py)):
+			continue
+		add_building(ptype, px, py, String(p.get("owner", "")), true, true,
+			String(p.get("tag", "")))
+
+	# ---- 6) 地图相关缓存作废 ----
+	if fog != null:
+		fog.on_map_changed()
+	if crowd != null:
+		crowd.reset_cache()
+	mark_vision_dirty()
+
+	# ---- 7) 收口 ----
+	refresh_ownership()
+	refresh_zone_production()
+	_refresh_zone_population_bonuses()
+	if fog != null:
+		fog.update(self)
+	return true
+
+
+## ★★ 关卡 `zones[]` 里的 `population` / `population_cap`：在区划建好、归属应用之后写进去。
+##   · 只写关卡明确给了的字段（没写 = 保留地图 / 默认值）；
+##   · 教程用它把 c0 的初始人口与上限调够「五队协防军」（10 人口）；
+##   · 换图时 `_capture_zone_state()` 会把它一起保存 / 还原。
+func _apply_level_zone_population() -> void:
+	if level == null or zones == null:
+		return
+	var table: Dictionary = level.zone_population
+	for zid_v in table.keys():
+		var z = zones.zones_by_id.get(int(zid_v), null)
+		if z == null:
+			continue
+		var d: Dictionary = table[zid_v]
+		if d.has("population"):
+			z["population"] = maxf(0.0, float(d["population"]))
+		if d.has("population_cap"):
+			z["population_cap"] = maxf(0.0, float(d["population_cap"]))
+
+
+## 换图前保存每个区划的**动态状态**（按 id）。只保存会被换图打断的东西：
+## 归属 / 占领进度 / 人口 / 产能 / 种类 / 人口加成。
+func _capture_zone_state() -> Dictionary:
+	var out: Dictionary = {}
+	if zones == null:
+		return out
+	for z in zones.zones:
+		if typeof(z) != TYPE_DICTIONARY:
+			continue
+		var zd: Dictionary = z
+		var zid := int(zd.get("id", -1))
+		if zid < 0:
+			continue
+		out[zid] = {
+			"owner": String(zd.get("owner", "")),
+			"progress": float(zd.get("progress", 0.0)),
+			"progress_by": (zd.get("progress_by", {}) as Dictionary).duplicate(true),
+			"capture_faction": String(zd.get("capture_faction", "")),
+			"capture_state": String(zd.get("capture_state", "")),
+			"population": float(zd.get("population", 0.0)),
+			"production": (zd.get("production", {}) as Dictionary).duplicate(true),
+			"kind": String(zd.get("kind", "")),
+			"population_cap": float(zd.get("population_cap", 0.0)),
+			"population_growth_bonus": float(zd.get("population_growth_bonus", 0.0)),
+			"population_cap_bonus": float(zd.get("population_cap_bonus", 0.0)),
+		}
+	return out
+
+
+## 把 `_capture_zone_state()` 的数据按 id 写回当前（新地图的）区划。
+func _restore_zone_state(state: Dictionary) -> void:
+	if zones == null:
+		return
+	for z in zones.zones:
+		if typeof(z) != TYPE_DICTIONARY:
+			continue
+		var zd: Dictionary = z
+		var zid := int(zd.get("id", -1))
+		var saved: Variant = state.get(zid, null)
+		if typeof(saved) != TYPE_DICTIONARY:
+			continue
+		var s: Dictionary = saved
+		zd["owner"] = String(s.get("owner", ""))
+		zd["progress"] = float(s.get("progress", 0.0))
+		zd["progress_by"] = (s.get("progress_by", {}) as Dictionary).duplicate(true)
+		zd["capture_faction"] = String(s.get("capture_faction", ""))
+		zd["capture_state"] = String(s.get("capture_state", ""))
+		zd["population"] = float(s.get("population", 0.0))
+		zd["production"] = (s.get("production", {}) as Dictionary).duplicate(true)
+		zd["kind"] = String(s.get("kind", ""))
+		zd["population_cap"] = float(s.get("population_cap", 0.0))
+		zd["population_growth_bonus"] = float(s.get("population_growth_bonus", 0.0))
+		zd["population_cap_bonus"] = float(s.get("population_cap_bonus", 0.0))
+
+
+## 换图后只给**还没有中心建筑**的区划补中心（旧区域的中心已经存在，不重复建）。
+func _spawn_missing_zone_centers() -> void:
+	if zones == null:
+		return
+	for z in zones.zones:
+		var c: Variant = z["center"]
+		if c == null:
+			continue
+		var t: Vector2i = c
+		if building_at(t.x, t.y) != null:
+			continue
+		if add_building(BuildingRes.TYPE_ZONE_CENTER, t.x, t.y, "", true, true) == null:
+			push_warning("换图后区划「%s」的中心 (%d, %d) 建不出来：那一格已经被占了"
+				% [String(z["name"]), t.x, t.y])
 
 
 ## 把地图里每个区块的「区划中心」落成一栋中立障碍建筑（无血量 / 无敌 / 无攻击）。
@@ -1242,7 +1432,7 @@ func _apply_level_placement() -> void:
 	for b in level.start_buildings:
 		var bd: Dictionary = b
 		add_building(String(bd["type"]), int(bd["x"]), int(bd["y"]),
-			String(bd["owner"]), true, true)
+			String(bd["owner"]), true, true, String(bd.get("tag", "")))
 
 	# ==============================================================
 	# ★★ 关卡摆放（本轮口径变更：附属单位**按规格随机生成**，不再逐兵摆放）
@@ -1340,6 +1530,8 @@ func _place_faction_units(fid: String, placed: Array) -> void:
 				tile, fid, kind, "", "", String(ud.get("unit_type", "")), gi
 			)
 		pu.hold_position = bool(ud.get("hold", false))
+		# ★ 演出标签（可选）：关卡 `start_units[].tag`。
+		pu.tag = String(ud.get("tag", "")).strip_edges()
 		var gz := int(ud.get("zone", -1))
 		if gz >= 0:
 			pu.garrison_zone_id = gz
@@ -1804,6 +1996,47 @@ func resource_pool_for(faction: String) -> Variant:
 		return resources
 	# ★★ 其余每一方（NPC / garrison / reddot）→ null = 资源无限。
 	return null
+
+
+## ★★ 演出系统：直接给某一方加粮食 / 黄金。
+##
+## ★ 走 `resource_pool_for()`，所以：
+##   · 本机玩家席位加进**那个席位自己的钱包**；
+##   · 指挥官 AI 加进它自己的池子；
+##   · 没有资源池的阵营（garrison / reddot）加不动（它们本来就资源无限）。
+## @return 实际加进去的池子（没有池子 → null）
+func grant_resources(faction: String, food: float, gold: float) -> Variant:
+	var pool: Variant = resource_pool_for(faction)
+	if typeof(pool) != TYPE_DICTIONARY:
+		return null
+	var p: Dictionary = pool
+	p["food"] = float(p.get("food", 0.0)) + maxf(0.0, food)
+	p["gold"] = float(p.get("gold", 0.0)) + maxf(0.0, gold)
+	return p
+
+
+## ★★ 演出系统：设置**玩法边界**（单位 / 建筑可活动矩形，格）。
+##   传空矩形 / 越界会被 `MapData.set_active_rect()` 夹到地图内。
+func set_boundary(r: Rect2i) -> void:
+	if map == null:
+		return
+	map.set_active_rect(r)
+	# 边界不影响地形 / 视野，但会影响寻路；C# 内核在边界非整图时会被绕过
+	# （见 pathfinder.gd），所以这里只需要让下一次决策按新边界走。
+	mark_vision_dirty()
+
+
+## 恢复整张地图的玩法边界。
+func reset_boundary() -> void:
+	if map == null:
+		return
+	map.reset_active_rect()
+	mark_vision_dirty()
+
+
+## 这个格在不在当前玩法边界里（演出 / AI / 视图都能问）。
+func tile_in_boundary(tx: int, ty: int) -> bool:
+	return map != null and map.in_active_rect(tx, ty)
 
 
 ## 建立 / 重建「某一方」的基地与部队。
@@ -3349,7 +3582,7 @@ func recall_general(leader_id: String, faction: String = "") -> bool:
 
 
 ## ★★ 静默击杀旗下所有部队：**不走 `_die` / 清理段**，因此不触发任何死亡效果
-##   （不 push `kill`、不加士气、不算击杀、不退招募）。
+##   （不 push `kill`、不算击杀、不退招募）。
 ##
 ## ★ 直接从 `world.units` 移除（"立即"生效）。若只置 `alive = false` 交给每帧清理，
 ##   清理段会对它们调 `_release_recruit` 并 push 事件 —— 那正是需求禁止的「死亡效果」。
@@ -4754,6 +4987,23 @@ func cancel_recruit(leader_id: String, slot: int, faction: String) -> bool:
 	return true
 
 
+## 清空一位将领的**整条**招募队列（含正在读条的那一单），并全额退款。
+##
+## ★ 需求原话：「点击停招后清空该部队的招募队列；全额退资源」。
+## ★ 复用 `_release_recruit`：它会把 `train_cost_food/gold/pop` 一次退回，
+##   正好等于整批已扣的钱与人口 —— 不需要逐单调用 `cancel_recruit`。
+func cancel_recruit_all(leader_id: String, faction: String) -> bool:
+	var leader = unit_by_id(leader_id)
+	var reason := leader_reject_reason(leader, faction)
+	if reason != "":
+		push_event({"type": "recruit_cancel_rejected", "reason": reason, "slot": -1})
+		return false
+	if not leader.is_training() and leader.train_queue.is_empty():
+		return false
+	_release_recruit(leader, true, "cancel_all")
+	return true
+
+
 ## 按 id 找区划（退款要还回**当初扣人口的那个**区划）
 func _zone_by_id(zid: int) -> Variant:
 	for z in zones.zones:
@@ -4865,7 +5115,7 @@ func _first_passable_spawn(hint: Vector2i, faction: String, max_cols: int = 8) -
 ##   ★ 为什么要有这个参数：`building.<type>.build_sec` 是**玩家建造**的读条时间
 ##     （编辑器里那一栏），开局摆好的东西不该等几秒才生效。
 func add_building(type: String, tx: int, ty: int, owner: String, silent: bool = false,
-		instant: bool = false) -> Variant:
+		instant: bool = false, tag: String = "") -> Variant:
 	if not map.terrain.has(tx, ty):
 		return null
 	if buildings.get_cell(tx, ty) != null:
@@ -4885,6 +5135,8 @@ func add_building(type: String, tx: int, ty: int, owner: String, silent: bool = 
 		if type != BuildingRes.TYPE_BASE and zone_owner != "":
 			owner_eff = zone_owner
 	var b = BuildingRes.create(cfg, type, tx, ty, owner_eff, zone_id)
+	# ★ 演出标签（可选）：关卡 / 地图数据里的 `tag`。
+	b.tag = tag.strip_edges()
 	# ★ 建造读条（config 的 build_sec；0 = 瞬发 = 与从前逐位一致）
 	# ★★ 2026.10.31：`instant` 只对「区划中心 / 开局防御阵地」这类布景生效，
 	#   **大本营一律走读条**（config 里 base.build_sec = 1）——玩家口径：
@@ -4945,6 +5197,60 @@ func rebuild_building_index() -> void:
 			_building_at[Vector2i(b.tx, b.ty)] = b
 
 
+## ★★ 演出系统：强制击杀一个单位。
+##
+## @param silent false = 走正常死亡流程（`kill` 事件、将领重生队列、胜负判定）；
+##               true  = 直接离场，不推任何事件。
+## @return 是否真的处理了（已经死的返回 false）
+func story_kill_unit(u, silent: bool = false) -> bool:
+	if u == null or not u.alive:
+		return false
+	if not silent:
+		u.die_now(cfg, self, "story")
+		return true
+	# 静默：不触发 `_die`（它会推 kill / 进重生队列 / 可能中立化）。
+	u.alive = false
+	u.downed = false
+	u.hp = 0.0
+	u.stop()
+	u.path.clear()
+	u.has_goal = false
+	u.moving = false
+	u.target = null
+	u.target_building = null
+	var i: int = units.find(u)
+	if i >= 0:
+		units.remove_at(i)
+	mark_vision_dirty()
+	return true
+
+
+## ★★ 演出系统：强制摧毁一栋建筑。
+##
+## @param silent false = 走正常摧毁流程（`building_down` 事件 + 大本营中立化 + 收尸）；
+##               true  = 直接移除，不推事件、不触发中立化。
+## @return 是否真的处理了（区划中心 / 大本营 / 已经死的返回 false）
+func story_destroy_building(b, silent: bool = false) -> bool:
+	if b == null or not b.alive:
+		return false
+	# ★ 用户口径：可以保证不会强制摧毁大本营；代码仍然兜底拒绝，
+	#   避免以后误写剧本把整局直接打崩。
+	if String(b.type) == BuildingRes.TYPE_BASE:
+		push_error("演出系统拒绝强制摧毁大本营：(%d, %d) owner=%s"
+			% [int(b.tx), int(b.ty), String(b.owner)])
+		return false
+	if b.is_invulnerable():
+		return false
+	if not silent:
+		var destroyed: bool = b.take_damage(cfg, b.hp + 1.0, null, false, true)
+		if not destroyed:
+			return false
+		push_event({"type": "building_down", "building": b, "source": null})
+		_collect_destroyed_buildings()
+		return true
+	return remove_building(b, true)
+
+
 ## 把建筑从地图上摘掉（战斗摧毁、玩家拆除都走这里）。
 ##
 ## @param force 是否允许移除**大本营**。
@@ -4996,6 +5302,9 @@ func remove_building(b, force: bool = false) -> bool:
 ##   随手立一栋楼、把那一整块地「立即变成自己的」，也就是本次要修的 bug。
 func can_build_at(tx: int, ty: int, faction: String = "") -> bool:
 	if not map.terrain.has(tx, ty):
+		return false
+	# ★ 演出边界：边界外不能建。
+	if not map.in_active_rect(tx, ty):
 		return false
 	if not map.terrain_walkable(tx, ty):
 		return false
@@ -5765,7 +6074,7 @@ func tech_base_gold_add(faction: String = "") -> float:
 	return maxf(0.0, float(_eff_for(faction).get("base_gold_per_sec_add", 0.0)))
 
 
-## 区划转为己方那一刻要不要回满血 / 士气（势如破竹）
+## 区划转为己方那一刻要不要回满血（势如破竹）
 func tech_restore_on_convert(faction: String = "") -> bool:
 	return float(_eff_for(faction).get("zone_convert_restore", 0.0)) > 0.0
 
@@ -6000,14 +6309,52 @@ func _refresh_zone_population_bonuses() -> void:
 	zones.apply_population_bonuses(_zone_population_bonus_map())
 
 
+## 每帧回血：**己方 / 友方区划内** + 所有**粮车回血光环**。
+##
+## 口径：
+##   · 只治疗**存活且未濒死**的单位，不治疗建筑；
+##   · 区划回血 = cfg.heal_zone_regen /秒，条件是单位所在区划的 owner 与它同一方；
+##   · 粮车光环 = 车自身的 heal_aura_rate /秒，半径 heal_aura_radius 格，只治同一边；
+##   · **所有来源相加**：多个粮车 + 区划可以叠；每帧按 dt 结算，血量封顶 hp_max。
+func _tick_healing(cfg, dt: float) -> void:
+	if dt <= 0.0 or cfg == null or units.is_empty():
+		return
+	# 先把所有会治疗的粮车挑出来（其余单位不参与 O(单位 × 单位) 的内层循环）。
+	var carts: Array = []
+	for c in units:
+		if c == null or not c.alive or c.downed:
+			continue
+		if float(c.heal_aura_radius) > 0.0 and float(c.heal_aura_rate) > 0.0:
+			carts.append(c)
+	var zone_rate: float = maxf(0.0, float(cfg.heal_zone_regen))
+	for u in units:
+		if u == null or not u.alive or u.downed:
+			continue
+		var rate := 0.0
+		if zone_rate > 0.0 and zones != null:
+			var z = zones.zone_at(int(u.tx), int(u.ty))
+			if typeof(z) == TYPE_DICTIONARY:
+				var owner := String((z as Dictionary).get("owner", ""))
+				if owner != "" and FactionRes.same_side_for_attack(owner, String(u.faction)):
+					rate += zone_rate
+		for c in carts:
+			if not FactionRes.same_side_for_attack(String(c.faction), String(u.faction)):
+				continue
+			var r: float = float(c.heal_aura_radius)
+			if c.pos.distance_squared_to(u.pos) <= r * r:
+				rate += float(c.heal_aura_rate)
+		if rate > 0.0 and u.hp < u.hp_max:
+			u.hp = minf(u.hp_max, u.hp + rate * dt)
+
+
 ## ★★ 2026.11：**势如破竹**（帝国三本）—— 区划**刚刚**转为己方那一刻，
-## 该区划内己方单位的**血量与士气回满**。
+## 该区划内己方单位的**血量回满**。
 ##
 ## 口径（数据驱动：代码不写死是哪个派系 / 哪条科技）：
 ##   · 「转为己方」= `zones.last_conversions` 里 `to` 那一方**启用了** `zone_convert_restore`；
 ##     由敌方 / 中立转过来都算，盟友转过来也算（需求原文「转为己方 / 友方」）；
 ##   · 「该区划内」= 单位当前所在格属于那个区划（`zones.zone_at`）；
-##   · 回满 = `hp = hp_max` / `morale = morale_max`；
+##   · 回满 = `hp = hp_max`；
 ##   · ⚠️ **跳过濒死（downed）的单位**：那是另一套状态机（再起冷却 / 无敌），
 ##     硬把血拉满会绕过它。
 func _apply_zone_conversion_restore() -> void:
@@ -6036,7 +6383,6 @@ func _apply_zone_conversion_restore() -> void:
 			if int((uz as Dictionary).get("id", -2)) != zid:
 				continue
 			u.hp = u.hp_max
-			u.morale = u.morale_max
 			healed += 1
 		if healed > 0:
 			# 事件：给界面播一句提示（视图按类型翻中文，逻辑只发数据）
@@ -6068,20 +6414,16 @@ func gold_net_per_sec(faction: String = "") -> float:
 ##     玩家是否能再启用新科技由「黄金净收入赤字」判定把关（见 `tech_can_activate`）。
 ##   · 维护费：每个**存活**单位按兵种每秒扣粮（`cfg.unit_upkeep_of`：枪 0.03 / 骑 0.06 /
 ##     器械与粮车 0.10）。扣到 0 为止 —— **不欠账、不掉血、不阻止招募**。
-##   · 断粮：这一帧付不起全额维护费 ⇒ `starving_factions[f] = true`，
-##     全军士气按 `morale.starve_drain` 掉（morale 那边每帧读 `is_starving`）。
 ##
 ## ★ 为什么「付不起」判成「余额清 0 + 标记」而不是让余额变负：
 ##   负数会污染 HUD，也会让「先欠着再还」变成一条更优策略（本版不做信贷）。
 ## ★ 只对**有资源池**的阵营收：与 `resource_pool_for()` 的「null = 资源无限」同一条语义。
-## ⚠️ 必须在士气（`MoraleRes.tick_all`）之前跑 —— 否则断粮晚一帧才生效。
 func _tick_upkeep(dt: float) -> void:
 	if dt <= 0.0 or cfg == null:
 		return
 	# ★★ 总闸（`economy.upkeep_enabled`）：关掉时两样都不扣，也不留断粮标记。
 	#   正常游戏恒为 true；旧测试靠它维持「精确对账」的语义（见 config.json 的说明）。
 	if not cfg.upkeep_enabled:
-		starving_factions.clear()
 		_upkeep_food_rate.clear()
 		_tech_gold_rate.clear()
 		return
@@ -6136,13 +6478,7 @@ func _tick_upkeep(dt: float) -> void:
 			continue
 		_charge_upkeep(cid, q, dt, float(upkeep_rate.get(cid, 0.0)))
 		done[cid] = true
-	# 2) 没有钱包的阵营永远不算断粮（顺手清掉上一帧可能留下的痕迹）
-	for f2 in starving_factions.keys():
-		if not done.has(String(f2)):
-			starving_factions.erase(f2)
-
-
-## 给一方扣「科技金 + 单位维护粮」，并写下断粮标记。口径见 `_tick_upkeep`。
+## 给一方扣「科技金 + 单位维护粮」。口径见 `_tick_upkeep`。
 func _charge_upkeep(fid: String, pool: Variant, dt: float, food_rate: float) -> void:
 	if typeof(pool) != TYPE_DICTIONARY:
 		return
@@ -6158,27 +6494,10 @@ func _charge_upkeep(fid: String, pool: Variant, dt: float, food_rate: float) -> 
 		var have_g: float = maxf(0.0, float(p.get("gold", 0.0)))
 		p["gold"] = maxf(0.0, have_g - need_g)
 	# ── 2) 单位维护费（扣到 0 为止，不欠账）──
-	var was_starving := bool(starving_factions.get(fid, false))
-	var starving := false
 	if food_rate > 0.0:
 		var need_f: float = food_rate * dt
 		var have_f: float = maxf(0.0, float(p.get("food", 0.0)))
-		if have_f + 1e-6 < need_f:
-			p["food"] = 0.0
-			starving = true
-		else:
-			p["food"] = have_f - need_f
-	if starving:
-		starving_factions[fid] = true
-	else:
-		starving_factions.erase(fid)
-	# ★★ 只在「刚开始断粮」的那一帧推一条事件 —— 界面给一句红字解释士气为什么在掉。
-	#    ⚠️ 恢复时不推（否则「刚好够 / 刚好不够」会在边缘反复刷提示）。
-	if starving and not was_starving:
-		push_event({
-			"type": "starving_started", "faction": fid,
-			"drain": float(cfg.morale_starve_drain),
-		})
+		p["food"] = maxf(0.0, have_f - need_f)
 
 
 # ------------------------------------------------------------------
@@ -6305,17 +6624,6 @@ func tick(dt: float) -> Array:
 	_prof_done("z/ownership", _t_own)
 	_prof_done("zones", _t_zones)
 
-	# 2.5) ★★ 士气联动的区划变化：归属变化（掠地）+ 连通性（包围）刷新。
-	#      ⚠️ 必须在单位循环（第 4 步）**之前** —— 那一步里 morale.tick_unit 要用最新的
-	#         「被包围」集合来判断「疲惫」。
-	_tick_zone_morale(cfg)
-	# ★★ 粮车光环：也在单位循环之前算好（morale.tick_unit 要读这张表）。
-	#    每 0.25 秒重算一次即可（见 MORALE_AURA_REFRESH_SEC 的说明）。
-	_morale_aura_timer -= dt
-	if _morale_aura_timer <= 0.0:
-		_morale_aura_timer = MORALE_AURA_REFRESH_SEC
-		_refresh_morale_aura(cfg)
-
 	# 3) 资源：★ 按**占领方拥有的各区划**聚合（产能 × 该区划地块数）。
 	#    旧实现是「全局按占领地块数 × 1/秒」—— 现在产能由地图数据（地图编辑器）说了算，
 	#    所以「抢区块 = 抢产能」。
@@ -6371,7 +6679,6 @@ func tick(dt: float) -> Array:
 		}, cpos)
 	# ★★ 2026.10.29：**先加收入、再收两笔持续消耗**（科技金 / 单位维护粮）。
 	#    顺序很重要：玩家这一帧的收入必须先到账，才谈得上「付不付得起」。
-	#    ⚠️ 必须在士气（下面第 4 步的 `MoraleRes.tick_all`）之前 —— 断粮要当帧生效。
 	_tick_upkeep(dt)
 	_prof_done("economy", _t_econ)
 
@@ -6399,22 +6706,14 @@ func tick(dt: float) -> Array:
 	#    ★ 先按需重建建筑空间索引（只在 building_revision 变了才真的重建）：
 	#      本帧要给上千个空闲单位做「最近敌建筑」查询，见 combat.nearest_enemy_building。
 	CombatRes.rebuild_building_grid(self)
-	# ★★ 2026.10.27：**士气 + 回血/掉血整段在单位循环之前结算一次**。
-	#    原来是逐单位夹在 `update_unit` 里（士气 → 战斗 → 下一个单位）。
-	#    挪出来之后：所有单位同一时刻结算，且这一整段可以下沉到 C#（见 morale.tick_all）。
-	#    ⚠️ `unit_sim_used` 在**这里**复位：本帧实际的执行路径由下面几步各自往上写
-	#      （士气内核 → "csharp(morale)"；将来整段循环 → "csharp(units)"）。
-	unit_sim_used = "gdscript"
-	var _t_morale := _prof()
-	MoraleRes.tick_all(self, cfg, dt)
-	_prof_done("morale", _t_morale)
-	# ★★ 2026.11：「势如破竹」—— 区划**刚刚**转为己方的那一刻，区内己方单位血量与士气回满。
-	#   ⚠️ 必须放在**士气结算之后**：放在 zone 那一段（第 1 步）的话，这一帧后面的
-	#     `MoraleRes.tick_all` 会立刻按战场局势把「刚回满的士气」重新算回去，
-	#     表现成「回了但立刻又掉」（实测就是这样，士气断言一直红）。
+	# ★★ 2026.11：「势如破竹」—— 区划刚刚转为己方的那一刻，区内己方单位血量回满。
 	var _t_conv := _prof()
 	_apply_zone_conversion_restore()
 	_prof_done("zone_convert", _t_conv)
+	# ★★ 回血：区划内缓慢回血 + 粮车光环（多辆叠加）。在单位循环之前结算。
+	var _t_heal := _prof()
+	_tick_healing(cfg, dt)
+	_prof_done("healing", _t_heal)
 	var _t_units := _prof()
 	# ★ `profile_on` 在这里读一次：单位循环里每单位再读一次是动态属性查找（1000 单位 = 每帧 1000 次）。
 	#   细分计时（`units/combat` / `units/reclaim` / `units/step` / `u/timers` / `u/acquire`）
@@ -6424,15 +6723,6 @@ func tick(dt: float) -> Array:
 	#   `cfg.hit_flash_sec_safe` 方法调用 + 两次除法（256 单位 = 每帧 512 次）。
 	var dt_flash: float = dt / cfg.flash_sec_safe
 	var dt_hit: float = dt / cfg.hit_flash_sec_safe
-	# ★★ 本帧击杀事件从哪个下标开始 —— 循环后据此扫出「破敌 / 斩将」的士气加成。
-	var morale_ev_start := _events.size()
-	# ★★ 2026.10.27：**单位循环的后端**（见 config.gd 的 `unit_sim_backend`）。
-	#    `unit_sim_used` 是**实际跑的是哪一个**，不是配置想要哪一个 ——
-	#    内核没实装 / 加载不到时必须如实写 "gdscript"，否则等价测试会以为下沉生效了。
-	#    ⚠️ 复位在**士气那一遍之前**（见上面），这里不能再写一次 ——
-	#      写了就会把士气内核刚写下的 "csharp(morale)" 覆盖掉（实测踩到）。
-	#    ⚠️ 下一刀（整段 `update_unit`）接在这里：`if UnitKernelRes.tick_units(...)`
-	#      之后 `unit_sim_used = "csharp(units)"` 并跳过下面的逐个循环。
 	for ui in units.size():
 		var u: UnitRes = units[ui]
 		if not u.alive:
@@ -6454,13 +6744,6 @@ func tick(dt: float) -> Array:
 	# ★★ 4.1) 招募的「脱战计时」：必须在**单位逻辑之后**更新 ——
 	#    这一帧刚锁上的目标 / 刚挨的打要立刻反映到计时里（受击清零在 take_damage）。
 	_tick_recruit_idle(dt)
-	# ★★ 破敌 / 斩将：本帧的击杀事件 → 击杀者所在部队士气上升（死的是将领则加得更多）。
-	#    ⚠️ 在这一处统一扫，而不是塞进 unit._die —— 那里在 unit.gd 里，改它会把
-	#       「谁击杀谁」的语义散到两个文件（事件本身已经是唯一收口了）。
-	for ei in range(morale_ev_start, _events.size()):
-		var evt = _events[ei]
-		if typeof(evt) == TYPE_DICTIONARY and String(evt.get("type", "")) == "kill":
-			MoraleRes.boost_kill(self, cfg, evt.get("unit", null), evt.get("source", null))
 	# ★★ 4.5) 濒死救援的收口（本次修 bug）：清掉失效的救援意图、把还没到位的
 	#   附属兵重新叫回倒下点。必须在**单位循环之后**跑 —— 它判「在不在赶路」用的
 	#   是这一帧刚更新完的状态（`u.moving` / `u.path`）。
@@ -6617,7 +6900,6 @@ func tick(dt: float) -> Array:
 ## ★★ 仅在一次 `world.tick` 内有效的 id → 单位索引（性能）。
 ##
 ## `unit_by_id()` 原来是**线性扫描**。每帧有大量「按 id 找队长 / 找目标」的调用：
-##   · 士气锚点：每个单位每帧一次（`MoraleRes.anchor_of` → `team_leader` → `unit_by_id`）；
 ##   · AI 编组 / 濒死救援 / 扩张任务按 id 找队伍；
 ##   · 战斗 / 事件 / 投掷物按 id 找目标。
 ## 256 单位时这是 O(n²)（dscj 实测 `units/combat` 3.2ms 里的一大部分）。
@@ -6811,171 +7093,6 @@ func home_base_of(faction: String) -> Vector2i:
 
 
 # ------------------------------------------------------------------
-# ★★ 士气联动的区划图（见 logic/morale.gd）
-#
-#   需求：「包围」= 己方区划不连续（不与大本营所在区划连通）时，区内己方单位陷疲惫；
-#         「掠地」= 单位所处区划由敌方 / 中立转为己方 / 友方时，士气立即上升。
-#   做法：
-#     ① 区划**邻接图**（地块 4 邻域相接即相邻）—— 区划重建后构建一次；
-#     ② 从大本营所在区划沿「己方（含盟友）且相邻」的区划做**可达性洪泛**，
-#        不可达的己方区划 = 被包围（无大本营的阵营跳过）；
-#     ③ 每帧 diff 区划 owner，抓「归属变化」触发掠地。
-#   ⚠️ 单位只有几十~百个、区划只有十几个，代价可忽略；不节流。
-# ------------------------------------------------------------------
-
-## 构建区划邻接图 `_zone_adj`（区划重建后调用一次）。
-func _build_zone_adjacency() -> void:
-	_zone_adj = {}
-	if zones == null:
-		return
-	var cols: int = zones.cols
-	var rows: int = zones.rows
-	# 先用 Dictionary 当 set（去重），最后再转成数组（读口保持数组）。
-	for z in zones.zones:
-		_zone_adj[int(z["id"])] = {}
-	# ★★ 只朝**右 / 下**扫一次就够（每条相邻边会被两端各看到一次），但必须**两个方向都记**
-	#    —— 这是**无向**图。⚠️ 只记「当前区划 → 邻居」的话，总处在共享边**右下侧**的那个
-	#    区划一条边都记不到、邻接表为空（实测：地图右下角的基地区划邻接表 = []）。
-	#    后果：从基地出发的洪泛谁也到不了 ⇒ 占领任何中立区划后它都算「被包围」、士气一直掉。
-	for z in zones.zones:
-		var zid: int = int(z["id"])
-		for t in z["tiles"]:
-			var tv: Vector2i = t
-			for d in [Vector2i(1, 0), Vector2i(0, 1)]:
-				var n: Vector2i = tv + d
-				if n.x < 0 or n.y < 0 or n.x >= cols or n.y >= rows:
-					continue
-				var oid: int = int(zones.lookup[n.y * cols + n.x])
-				if oid < 0 or oid == zid:
-					continue
-				(_zone_adj[zid] as Dictionary)[oid] = true
-				(_zone_adj[oid] as Dictionary)[zid] = true
-	for zid in _zone_adj.keys():
-		_zone_adj[zid] = (_zone_adj[zid] as Dictionary).keys()
-
-
-## 重算 `_surrounded`（被包围的区划 id 集合，对该区划的 owner 而言）。归属变化后调用。
-func refresh_zone_connectivity() -> void:
-	_surrounded = {}
-	if zones == null:
-		return
-	for f in spawned_factions():
-		var ff := String(f)
-		# ★★ 「无大本营的阵营无视该效果」：判据是**真的有大本营建筑**（find_base_of），
-		#    **不是** `faction_bases` —— 后者对 AI / NPC 阵营也有一份**默认占位坐标**（0,0），
-		#    拿它当锚会把盟友（同一边）的己方区划误判成「被包围」
-		#    （实测：玩家 F1 唯一那块含大本营的区划，因为盟友 sj 的占位大本营而被标成被包围
-		#     → 站在自己地盘里士气也一直掉）。
-		if find_base_of(ff) == null:
-			continue
-		var base: Vector2i = home_base_of(ff)
-		var start: Variant = zones.zone_at(base.x, base.y)
-		if start == null:
-			continue
-		var reachable: Dictionary = {}
-		var queue: Array = [int(start["id"])]
-		reachable[int(start["id"])] = true
-		while not queue.is_empty():
-			var zid: int = queue.pop_back()
-			for nb in _zone_adj.get(zid, []):
-				var nid: int = int(nb)
-				if reachable.has(nid):
-					continue
-				var nz: Variant = zone_by_id(nid)
-				# 只沿「同一阵营（含盟友）」的区划走：中立 / 敌方会把己方区划切断。
-				if nz != null and FactionRes.same_side_for_attack(ff, String(nz.get("owner", ""))):
-					reachable[nid] = true
-					queue.append(nid)
-		# 只标**该阵营自己**的、不可达的区划 = 被包围。
-		# ⚠️ 不标盟友的区划：盟友的连通性由盟友自己那一轮算，否则 A 的洪泛会把 B 的区划误标。
-		for z in zones.zones:
-			var zid2: int = int(z["id"])
-			if String(z.get("owner", "")) != ff:
-				continue
-			if not reachable.has(zid2):
-				_surrounded[zid2] = true
-
-
-## 某区划现在是不是「被包围」（对该区划的 owner 而言）。morale.gd 读它判「疲惫」。
-func zone_is_surrounded(zid: int) -> bool:
-	return _surrounded.has(zid)
-
-
-## 快照一次各区划 owner（reset 里调，避免第一帧把开局归属误判成掠地）。
-func _snapshot_zone_owners() -> void:
-	_zone_owner_prev = {}
-	if zones == null:
-		return
-	for z in zones.zones:
-		_zone_owner_prev[int(z["id"])] = String(z.get("owner", ""))
-
-
-## 每帧的「掠地」检测 + 连通性刷新（在 zones.update / refresh_ownership 之后调）。
-func _tick_zone_morale(cfg) -> void:
-	if zones == null:
-		return
-	var changed := false
-	for z in zones.zones:
-		var zid: int = int(z["id"])
-		var owner := String(z.get("owner", ""))
-		if owner == String(_zone_owner_prev.get(zid, "")):
-			continue
-		changed = true
-		_zone_owner_prev[zid] = owner
-		# 由敌方 / 中立 → 现在有人占了：对**站在该区划里**、与新区主同一边的单位加士气
-		# （「敌方→己方」与「中立→己方」两类转换都会触发，按需求两者可叠加）。
-		if owner != "":
-			MoraleRes.boost_capture(self, cfg, z)
-	if changed:
-		refresh_zone_connectivity()
-
-
-## ★★ 粮车士气光环：算出本帧「哪些士气锚正在被粮车覆盖」以及**每秒加多少**。
-##
-## 需求：粮车持续为周围友方单位缓慢提升士气；多辆粮车**不可叠加**，
-## 但可以和其他士气上升效果（区划回复 / 击杀 / 掠地）叠加。
-##
-## 落地：
-##   · 候选 = 所有「有 morale_aura_radius」的存活单位（目前只有粮车）；
-##   · 对半径内**同一边**的每个单位，找到它所属部队的**士气锚**（morale.anchor_of），
-##     把这个锚记进字典 —— 字典键天然去重，所以同一支部队被 N 辆粮车覆盖也只算一次；
-##   · 同一锚被不同粮车覆盖时取**最大速率**（不累加）。
-##
-## ⚠️ 为什么不在 `morale.tick_unit` 里对每个单位各扫一遍：
-##   那是「单位数 × 单位数」的每帧开销；而这里只对**粮车**扫（通常 0~几辆），
-##   再把结果摊给整支部队的锚。`morale.tick_unit` 读一个字典就够。
-func _refresh_morale_aura(p_cfg) -> void:
-	morale_aura_bonus.clear()
-	var carts: Array = []
-	for u in units:
-		if not u.alive or u.neutralized:
-			continue
-		if u.morale_aura_radius <= 0.0 or u.morale_aura_rate <= 0.0:
-			continue
-		carts.append(u)
-	if carts.is_empty():
-		return
-	for c in carts:
-		var radius: float = float(c.morale_aura_radius)
-		var rate: float = float(c.morale_aura_rate)
-		for other in units:
-			if not other.alive or other.neutralized:
-				continue
-			if not other.is_attackable():
-				continue
-			if not FactionRes.same_side_for_attack(String(other.faction), String(c.faction)):
-				continue
-			# 与索敌同口径：允许「半个身子」进圈。
-			if c.pos.distance_to(other.pos) > radius + p_cfg.unit_radius_of(other.unit_type):
-				continue
-			var anchor = MoraleRes.anchor_of(self, other)
-			if anchor == null:
-				continue
-			var prev: float = float(morale_aura_bonus.get(anchor.id, 0.0))
-			if rate > prev:
-				morale_aura_bonus[anchor.id] = rate
-
-
 # ------------------------------------------------------------------
 # 事件（逻辑 → 表现的唯一通道）
 # ------------------------------------------------------------------

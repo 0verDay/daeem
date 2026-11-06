@@ -33,6 +33,10 @@ const CORNER_SEGMENTS := 8
 static func passable(map, buildings, cfg: ConfigRes, x: int, y: int, faction: String) -> bool:
 	if not map.terrain.has(x, y):
 		return false
+	# ★★ 演出边界：边界外一律不可通行（寻路 / 可达性 / 直线移动 / 击退共用这一处）。
+	#   `has_method` 兜底：老测试 / 工具可能传一个只实现 terrain/buildings 的替身地图。
+	if map.has_method("in_active_rect") and not map.in_active_rect(x, y):
+		return false
 	if not map.terrain_walkable(x, y):
 		return false
 	var b = buildings.get_cell(x, y)
@@ -244,7 +248,9 @@ static func find_path(map, buildings, cfg: ConfigRes, from: Vector2i, to: Vector
 ##    内核版是同一套通行规则的 C# 实现，**有专门的回归测试逐格比对两者**
 ##    （tests/test_crowd_path.gd 的 _test_reachable_matches）。
 static func reachable_tiles(map, buildings, cfg: ConfigRes, from: Vector2i, faction: String, crowd = null) -> Variant:
-	if crowd != null and crowd.kernel != null:
+	# ★★ 演出边界：C# 内核不知道 `active_rect`，边界不是整图时必须退回 GDScript BFS。
+	if crowd != null and crowd.kernel != null \
+			and (not map.has_method("active_rect_is_full") or map.active_rect_is_full()):
 		var mask: PackedByteArray = crowd.reachable_mask_here(cfg, from, faction)
 		if not mask.is_empty():
 			return mask
@@ -335,7 +341,10 @@ static func segment_clear(map, buildings, cfg: ConfigRes, a: Vector2, b: Vector2
 	#    每格要三层函数调用（约 3.7 µs/格）——一条 57 格的直线 0.21 ms，
 	#    1000 个单位群编就是 210 ms（命令帧的最大单项）。
 	#    内核版是同一套规则的 C# 实现，有回归测试盯着（tests/test_pathfinder_cs）。
-	if crowd != null and crowd.kernel != null:
+	# ★★ 演出边界：C# 内核不知道 `active_rect`。边界不是整图时走下面的 GDScript DDA
+	#    （它逐格问 `passable()`，所以边界会生效）。
+	if crowd != null and crowd.kernel != null \
+			and (not map.has_method("active_rect_is_full") or map.active_rect_is_full()):
 		var r = crowd.segment_clear_here(cfg, a, b, faction)
 		if r != null:
 			return r

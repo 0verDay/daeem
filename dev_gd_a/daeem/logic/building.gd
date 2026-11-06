@@ -107,6 +107,11 @@ static func is_building_type(cfg: ConfigRes, type: String) -> bool:
 	return type != TYPE_ZONE_CENTER and cfg != null and cfg.has_building_type(type)
 
 var type: String = TYPE_WALL
+## ★ 演出系统用的**作者标签**（关卡 `start_buildings[].tag` / 地图 `buildings[].tag`）。
+## 空 = 没有标签；建筑没有运行时 id，演出按 tag / 类型+坐标+阵营找它。
+var tag: String = ""
+## ★ 演出系统的**呼吸泛光**状态（空字典 = 不发光）。键见 `logic/unit.gd` 的同名字段。
+var story_glow: Dictionary = {}
 var tx: int = 0
 var ty: int = 0
 ## ★★ 2026.11：**不是独立归属** —— 除大本营外，它由 `world.refresh_ownership()`

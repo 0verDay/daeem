@@ -197,6 +197,19 @@ static func screen_see_ai_button(w: float, h: float) -> Rect2:
 		above.size.x, above.size.y)
 
 
+## 教程测试入口：继续向下堆叠（与 ai_test / see_ai 同尺寸、同左边距）。
+static func screen_ce_xs_1_button(w: float, h: float) -> Rect2:
+	var above := screen_see_ai_button(w, h)
+	return Rect2(above.position.x, above.position.y + above.size.y + 12.0,
+		above.size.x, above.size.y)
+
+
+static func screen_ce_xs_2_button(w: float, h: float) -> Rect2:
+	var above := screen_ce_xs_1_button(w, h)
+	return Rect2(above.position.x, above.position.y + above.size.y + 12.0,
+		above.size.x, above.size.y)
+
+
 static func main_bottom(w: float, h: float) -> Rect2:
 	return Rect2(0.0, h - MAIN_BOTTOM_H, w, MAIN_BOTTOM_H)
 

@@ -63,8 +63,6 @@ func _test_class_tags(cfg) -> void:
 	ok(cfg.unit_move_shoot(UnitRes.UNIT_TYPE_HORSE_ARCHER), "★ 马弓手可以移动射击")
 	ok(cfg.unit_is_siege(UnitRes.UNIT_TYPE_CATAPULT), "★ 投石车有攻城（无视远近战减伤）")
 	near(cfg.unit_splash_radius_of(UnitRes.UNIT_TYPE_CATAPULT), 1.5, 1e-6, "投石车范围半径 1.5 格")
-	near(cfg.unit_morale_aura_radius_of(UnitRes.UNIT_TYPE_GRAIN_CART), 3.0, 1e-6, "粮车光环半径 3 格")
-	near(cfg.unit_morale_aura_rate_of(UnitRes.UNIT_TYPE_GRAIN_CART), 0.5, 1e-6, "粮车光环 +0.5 士气/秒")
 
 	eq(cfg.unit_class_name(UnitRes.UNIT_TYPE_RIDER), "骑兵", "大类显示名 = 骑兵")
 	eq(cfg.unit_class_line(UnitRes.UNIT_TYPE_SPEARMAN), "步兵", "近战步兵的标签就是「步兵」")
@@ -226,7 +224,6 @@ func _test_recruit_list(cfg) -> void:
 			cart = u
 	if cart != null:
 		ok(not cart.can_attack, "★ 招出来的粮车不攻击")
-		near(cart.morale_aura_rate, 0.5, 1e-6, "★ 招出来的粮车带 0.5/秒士气光环")
 	cfg.combat_enabled = true
 
 func _test_icons(cfg) -> void:

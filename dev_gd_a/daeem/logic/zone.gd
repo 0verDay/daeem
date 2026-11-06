@@ -1,4 +1,4 @@
-## zone.gd —— 区块（领地）系统【占位逻辑】（对应 HTML 版 js/zone.js）
+﻿## zone.gd —— 区块（领地）系统【占位逻辑】（对应 HTML 版 js/zone.js）
 ##
 ## 需求原话：「一大片的地块会归属在一个『区块』下，己方单位站在区块内持续一段时间后，
 ##            这个区块会转为己方。具体的区块划分后续在地图编辑时给出，现在自由写占位逻辑。」
@@ -963,7 +963,7 @@ func update(cfg: ConfigRes, dt: float, units: Array, factions: Array,
 	var flist := _capture_factions(factions)
 	var radius: int = maxi(0, int(cfg.zone_capture_radius_tiles))
 	# ★★ 2026.11：**本帧发生归属变化**的区划（`{zone, from, to}`）。
-	#   逻辑层不在这里做「回满血 / 士气」那类效果——那是 world + 科技的事，
+	#   逻辑层不在这里做「回满血」那类效果——那是 world + 科技的事，
 	#   这里只把「谁换了主人」记下来（见 world._apply_zone_conversion_restore）。
 	last_conversions = []
 

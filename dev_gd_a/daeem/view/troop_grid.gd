@@ -8,8 +8,8 @@
 ##      · 鼠标滚轮 = **整页（9 格 = 3 列）**翻页；
 ##      · 内容不足 3 列时不能滑。
 ##
-##   ② **部队图标 = 序号 + 士气背景**（view/icon_badge.gd）：
-##      数字 1..9 / 第 10 支写 0，背景自下而上按士气填充、越低越矮、绿→红。
+##   ② **部队图标 = 序号**（view/icon_badge.gd）：
+##      数字 1..9 / 第 10 支写 0。
 ##      单个单位 / 建筑**没有纯色背景填充**，只有图标 + 底部血条。
 ##
 ##   ③ 多选部队与多选建筑**共用同一套逻辑**：
@@ -177,7 +177,7 @@ func clear() -> void:
 func _apply(next: Array) -> void:
 	# ★★ 内容没变就不重画：HUD 的详细信息槽位每 100ms 会把同一批格子重新喂进来，
 	#    无条件 `queue_redraw()` 会让这 9 格每 100ms 重排/重画一次（手机上就是尖峰）。
-	#    ⚠️ 血量 / 士气不在字典里（绘制时从 `ref` 现读），所以也必须参与比较，
+	#    ⚠️ 血量不在字典里（绘制时从 `ref` 现读），所以也必须参与比较，
 	#       否则掉血后血条会停在旧值上。
 	var sig := _cells_signature(next)
 	if sig == _cells_sig:
@@ -205,7 +205,7 @@ func _apply(next: Array) -> void:
 
 ## 这一批格子「画出来会是什么样」的快照。
 ##
-## ★ 必须把**实时读出来的血量 / 士气 / 编制数**也拼进去：它们不在字典里，
+## ★ 必须把**实时读出来的血量 / 编制数**也拼进去：它们不在字典里，
 ##   而是绘制时从 `ref` 现读。只比字典字段的话，掉血后同一个 `ref` 前后「相等」，
 ##   血条就会停在旧值上（实测被 test_ui 抓到）。
 func _cells_signature(next: Array) -> String:
@@ -216,7 +216,6 @@ func _cells_signature(next: Array) -> String:
 		var ref = a.get("ref", null)
 		var hp := -1.0
 		var hp_max := -1.0
-		var morale := -1.0
 		if ref != null:
 			var v = ref.get("hp")
 			if v != null:
@@ -224,15 +223,13 @@ func _cells_signature(next: Array) -> String:
 			var vm = ref.get("hp_max")
 			if vm != null:
 				hp_max = float(vm)
-			if ref.has_method("morale_ratio"):
-				morale = float(ref.morale_ratio())
-		parts[i] = "%s|%d|%s|%s|%s|%d|%d|%.4f|%.4f|%.4f" % [
+		parts[i] = "%s|%d|%s|%s|%s|%d|%d|%.4f|%.4f" % [
 			String(a.get("kind", "")),
 			ref.get_instance_id() if ref != null else 0,
 			String(a.get("icon", "")), String(a.get("name", "")),
 			String(a.get("sub", "")), int(a.get("number", 0)),
 			(a.get("units", []) as Array).size(),
-			hp, hp_max, morale]
+			hp, hp_max]
 	return "\n".join(parts)
 
 
@@ -524,7 +521,7 @@ func _draw() -> void:
 ## 一格：左边 40×40 图标 + 右边**两行**字（与图标垂直居中）
 ##
 ## ★ 图标本身交给 view/icon_badge.gd：
-##   部队 = 序号 + 士气填充；单位 / 建筑 = 首字、**无背景填充**。两者都带底部血条。
+##   部队 = 序号；单位 / 建筑 = 首字。两者都带底部血条。
 func _draw_cell(i: int, f: Font) -> void:
 	var origin := UiLayoutRes.troop_cell_rect(i).position - Vector2(_scroll_x, 0.0)
 	var av := Rect2(origin, Vector2(UiLayoutRes.TROOP_AVATAR, UiLayoutRes.TROOP_AVATAR))
@@ -537,7 +534,7 @@ func _draw_cell(i: int, f: Font) -> void:
 		edge = UiStyleRes.accent_dim()
 	# 部队序号比单位首字稍大一号（数字要一眼认出是哪一支）
 	var font_size: int = UiStyleRes.FS_TITLE if kind == "troop" else UiStyleRes.FS_BODY
-	IconBadgeRes.draw(self, f, av, kind, cell_short(i), _morale_ratio_at(i),
+	IconBadgeRes.draw(self, f, av, kind, cell_short(i),
 		_hp_ratio_at(i), true, font_size, edge,
 		2.0 if edge != UiStyleRes.line() else 1.0)
 	bar_draw_count += 1
@@ -569,17 +566,6 @@ func _hp_ratio_at(i: int) -> float:
 	if r == null:
 		return 1.0
 	return float(r.hp_ratio())
-
-
-## 第 i 格图标的**士气**比例（0..1）——只有部队格会用（单位 / 建筑不画背景）。
-## 部队的士气是整支部队共享的，取队长身上的值；拿不到对象 → 1.0。
-func _morale_ratio_at(i: int) -> float:
-	if not cell_filled(i) or cell_kind(i) != "troop":
-		return 1.0
-	var r = _cells[i].get("ref", null)
-	if r == null or not r.has_method("morale_ratio"):
-		return 1.0
-	return float(r.morale_ratio())
 
 
 ## 第二行小字：部队格写「x/y」（现有单位数/编制上限）；

@@ -33,6 +33,8 @@ const UNIT_FLASH_SHADER = preload("res://view/unit_flash.gdshader")
 const UNIT_DOWNED_SHADER = preload("res://view/unit_downed.gdshader")
 ## ★ 选中下标：脚下「绿色空心圆」贴花（逐实例透明度动画；见 selection_ring.gdshader）
 const SELECTION_RING_SHADER = preload("res://view/selection_ring.gdshader")
+## ★ 演出呼吸泛光（单位本体）：曲线与光环共用 logic/story/story_glow.gd。
+const StoryGlowRes = preload("res://logic/story/story_glow.gd")
 
 ## 立牌**基准**的世界宽度（一格的比例）与基准高宽比（贴图 64×96 ⇒ 1.5）。
 ## ★ 实际尺寸 = `QUAD_W × cfg.unit_sprite_ratio_of(unit_type)`：
@@ -106,6 +108,9 @@ var _sel_scale_from: float = 1.5
 ##   · `_charge_layers` —— 按己/友/敌分层的尘环（与选中圈同一套 shader / 贴图）；
 ##   · `_charge_quad` —— 尘环用的平放面片。
 var _charge_glow_alpha: float = 0.45
+## 演出泛光：本体金色混合的强度（颜色固定金）。
+var _story_glow_color: Color = Color(1.0, 0.82, 0.4)
+var _story_glow_strength: float = 0.65
 var _charge_ring_alpha: float = 0.55
 var _charge_ring_size: float = 0.55
 var _charge_ring_scale_to: float = 1.15
@@ -200,6 +205,9 @@ func setup(p_cfg: ConfigRes, p_world, p_palette) -> void:
 	_build_selection_layer()
 	# ★★ 冲锋表现参数（setup 缓存；`.b` 通道 / 尘环每帧都要用，别在里面 cfg.num）
 	_charge_glow_alpha = clampf(cfg.num("render.charge_glow_alpha", 0.45), 0.0, 1.0)
+	_story_glow_color = ConfigRes.parse_color(
+		cfg.str_val("render.story_glow_color", "#ffd166"))
+	_story_glow_strength = clampf(cfg.num("render.story_glow_strength", 0.9), 0.0, 1.0)
 	_charge_ring_alpha = clampf(cfg.num("render.charge_ring_alpha", 0.55), 0.0, 1.0)
 	_charge_ring_size = maxf(0.05, cfg.num("render.charge_ring_size", 0.55))
 	_charge_ring_scale_to = maxf(0.1, cfg.num("render.charge_ring_scale_to", 1.15))
@@ -386,6 +394,8 @@ func _batch_for(key: String, faction: String, leader: bool, unit_type: String,
 	if not downed:
 		mat.set_shader_parameter("charge_color", col)
 		mat.set_shader_parameter("charge_strength", _charge_glow_alpha)
+		mat.set_shader_parameter("story_glow_color", _story_glow_color)
+		mat.set_shader_parameter("story_glow_strength", _story_glow_strength)
 	if downed:
 		mat.shader = UNIT_DOWNED_SHADER
 		mat.set_shader_parameter("downed_alpha", cfg.num("render.downed_alpha", 0.4))
@@ -418,7 +428,8 @@ func _batch_for(key: String, faction: String, leader: bool, unit_type: String,
 	#   下标换人时必须整条重写（否则新单位继承上一任的填充）。
 	var rec := {"node": node, "mm": mm, "mesh": mesh, "quad_h": mesh.size.y,
 		"faction": faction, "leader": leader,
-		"last_flash": [], "last_uid": [], "last_hover": [], "last_charge": []}
+		"last_flash": [], "last_uid": [], "last_hover": [], "last_charge": [],
+		"last_glow": []}
 	_batches[key] = rec
 	return rec
 
@@ -590,31 +601,41 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 			var flash: float = clampf(u.hit_flash, 0.0, 1.0)
 			var hov: float = _hover_tick(u.id, dt) if track_hover else 0.0
 			var chg: float = clampf(u.charge_ratio, 0.0, 1.0)
+			# ★ 演出呼吸泛光：与地面光环同一条曲线（logic/story/story_glow.gd）。
+			#   `world.story_glow_active` 为 false 时（自由对战 / 合作）整段跳过。
+			var glw: float = 0.0
+			if world.story_glow_active:
+				glw = StoryGlowRes.value(u, float(world.time))
 			var lf: Array = rec["last_flash"]
 			var lu: Array = rec["last_uid"]
 			var lh: Array = rec["last_hover"]
 			var lc: Array = rec["last_charge"]
+			var lg: Array = rec["last_glow"]
 			var pf: Variant = lf[i] if i < lf.size() else null
 			var pu: Variant = lu[i] if i < lu.size() else null
 			var ph: Variant = lh[i] if i < lh.size() else null
 			var pc: Variant = lc[i] if i < lc.size() else null
+			var pg: Variant = lg[i] if i < lg.size() else null
 			var same_uid: bool = pu != null and pu == u.id
 			# 诊断按「现在带着填充的实例数」算，与有没有触发写入无关
 			if hov > 0.0:
 				hover_instance_count += 1
 			if not same_uid or pf == null or float(pf) != flash \
 					or ph == null or float(ph) != hov \
-					or pc == null or float(pc) != chg:
-				mm.set_instance_custom_data(i, Color(flash, hov, chg, 0.0))
+					or pc == null or float(pc) != chg \
+					or pg == null or float(pg) != glw:
+				mm.set_instance_custom_data(i, Color(flash, hov, chg, glw))
 				while lu.size() <= i:
 					lf.append(null)
 					lu.append(null)
 					lh.append(null)
 					lc.append(null)
+					lg.append(null)
 				lu[i] = u.id
 				lf[i] = flash
 				lh[i] = hov
 				lc[i] = chg
+				lg[i] = glw
 				if flash > 0.0:
 					flash_written_last_frame += 1
 		mm.visible_instance_count = arr.size()

@@ -63,16 +63,23 @@ func setup(p_cfg: ConfigRes, p_world, p_palette) -> void:
 	cfg = p_cfg
 	world = p_world
 	palette = p_palette
-	_mesh = MeshInstance3D.new()
-	_mesh.name = "MapBorderMesh"
-	_mesh.mesh = _build_mesh()
 	_scan_period = maxf(0.1, cfg.num("render.map_border_scan_sec", 7.0))
 	_scan_half = maxf(0.0, cfg.num("render.map_border_scan_tiles", 4.0)) \
 		* palette.cell_size() * 0.5
 	_mat = _make_material()
+	rebuild()
+
+
+## ★★ 重建金线（边界变化 / 换图后调用）。只重建网格，不重建节点本身。
+func rebuild() -> void:
+	if _mesh != null and is_instance_valid(_mesh):
+		_mesh.queue_free()
+	_mesh = MeshInstance3D.new()
+	_mesh.name = "MapBorderMesh"
+	_mesh.mesh = _build_mesh()
 	_mesh.material_override = _mat
 	add_child(_mesh)
-	sync(0.0)                      # 开局把扫掠带摆在上沿：第一遍从上往下扫
+	sync(0.0)
 
 
 ## 每帧推进扫描（纯表现：只改 shader uniform，不动网格、不重建材质）。
@@ -101,8 +108,10 @@ func sync(dt: float) -> void:
 ##    哪怕 fade 给得比 offset 还大。要在图上看到渐变就往里挪 offset，别指望它翻过边界。
 func _build_mesh() -> ArrayMesh:
 	var cell: float = palette.cell_size()
-	var cols: float = float(world.map.cols)
-	var rows: float = float(world.map.rows)
+	# ★★ 金线画在**当前玩法边界**上（演出 `map_boundary` / `map_expand` 后跟着变）。
+	var ar: Rect2i = world.map.active_rect
+	if ar.size.x <= 0 or ar.size.y <= 0:
+		ar = Rect2i(0, 0, int(world.map.cols), int(world.map.rows))
 	var off: float = maxf(0.0, cfg.num("render.map_border_offset", 2.0))
 	var half: float = maxf(0.1, cfg.num("render.map_border_width", 6.0)) * 0.5
 	var fade: float = maxf(0.0, cfg.num("render.map_border_fade_tiles", 0.5)) * cell
@@ -110,10 +119,14 @@ func _build_mesh() -> ArrayMesh:
 	var t_out: float = off * cell + half
 	var t_mid: float = maxf(0.0, off * cell - half)
 	var t_in: float = maxf(0.0, t_mid - fade)
-	border_tiles = Rect2(Vector2(-off, -off), Vector2(cols + off * 2.0, rows + off * 2.0))
+	border_tiles = Rect2(
+		Vector2(float(ar.position.x) - off, float(ar.position.y) - off),
+		Vector2(float(ar.size.x) + off * 2.0, float(ar.size.y) + off * 2.0))
 	# 扫描的两端 = 线最靠上 / 最靠下的那条边（世界 z）
-	_z_top = -t_out
-	_z_bottom = rows * cell + t_out
+	var y0: float = float(ar.position.y) * cell
+	var y1: float = float(ar.position.y + ar.size.y) * cell
+	_z_top = y0 - t_out
+	_z_bottom = y1 + t_out
 
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
@@ -126,10 +139,16 @@ func _build_mesh() -> ArrayMesh:
 
 ## 「离地图 rect 外沿 `t` 个世界单位」的那一圈矩形的四个角（世界 XZ；y 由 `BORDER_Y` 统一给）。
 func _rect_corners(t: float) -> PackedVector2Array:
-	var right: float = float(world.map.cols) * palette.cell_size() + t
-	var bottom: float = float(world.map.rows) * palette.cell_size() + t
+	var cell: float = palette.cell_size()
+	var ar: Rect2i = world.map.active_rect
+	if ar.size.x <= 0 or ar.size.y <= 0:
+		ar = Rect2i(0, 0, int(world.map.cols), int(world.map.rows))
+	var left: float = float(ar.position.x) * cell - t
+	var top: float = float(ar.position.y) * cell - t
+	var right: float = float(ar.position.x + ar.size.x) * cell + t
+	var bottom: float = float(ar.position.y + ar.size.y) * cell + t
 	return PackedVector2Array([
-		Vector2(-t, -t), Vector2(right, -t), Vector2(right, bottom), Vector2(-t, bottom),
+		Vector2(left, top), Vector2(right, top), Vector2(right, bottom), Vector2(left, bottom),
 	])
 
 

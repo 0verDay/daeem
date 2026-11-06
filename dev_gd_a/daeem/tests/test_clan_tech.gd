@@ -214,10 +214,9 @@ func _test_unbreakable(cfg) -> void:
 	ok(w.set_tech_active("tech_unbreakable", true, "p1"), "★ 启用无懈可击")
 	near(w.tech_reduction_add("p1", true), 0.1, 1e-9, "★★ 远程免伤 +10%")
 	near(w.tech_reduction_add("p1", false), 0.1, 1e-9, "★★ 近战免伤 +10%")
-	# 真的算进伤害：同一击，扣血更少（士气放在高低两档之间 = 士气不影响这一次结算）
+	# 真的算进伤害：同一击，扣血更少
 	var cfg2 = cfg
 	u.armor = 0.0                        # 关掉固定护甲，只看免伤那一份
-	u.morale = cfg.morale_vuln_tier + 1.0
 	u.hp = u.hp_max
 	u.take_damage(cfg2, w, 100.0, null, true, false)
 	var with_tech: float = u.hp_max - u.hp
@@ -496,7 +495,6 @@ func _test_expedition(cfg) -> void:
 	#   ⚠️ 把兵种自带的「近战免伤」（披甲剑士 25%）清零，否则那 25% 会把结果再乘一次。
 	u.armor = 2.0
 	u.melee_damage_reduction = 0.0
-	u.morale = cfg.morale_vuln_tier + 1.0       # 士气放在高低两档之间 = 不影响这次结算
 	u.hp = u.hp_max
 	u.take_damage(cfg, w, 100.0, null, false, false)
 	near(u.hp_max - u.hp, 100.0 - 2.08, 1e-4, "★★ 防御加成进了「等额减免」那一步")
@@ -555,7 +553,6 @@ func _test_breakthrough(cfg) -> void:
 	u.pos = GridRes.center_of(center)
 	u.sync_tile(w.map)
 	u.hp = u.hp_max * 0.4
-	u.morale = 20.0
 	# 把进度推到差一帧读满
 	z["progress_by"]["p2"] = 0.995
 	var frames := 0
@@ -564,7 +561,6 @@ func _test_breakthrough(cfg) -> void:
 		frames += 1
 	eq(String(z["owner"]), "p2", "（前提）区划被占下来了")
 	near(u.hp, u.hp_max, 1e-6, "★★ 转为己方那一刻血量回满")
-	near(u.morale, u.morale_max, 1e-6, "★★ 士气也回满")
 	# 别的阵营（王朝）没有这条科技 ⇒ 转换不回满
 	ok(not w.tech_restore_on_convert("p1"), "★ 王朝没有这条科技")
 

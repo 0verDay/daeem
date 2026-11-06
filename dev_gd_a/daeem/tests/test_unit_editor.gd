@@ -291,11 +291,10 @@ func _test_traits() -> void:
 	near(u.ranged_damage_reduction, 0.4, 1e-9, "★★ 远程减伤 40%")
 	near(u.melee_damage_reduction, 0.6, 1e-9, "★★ 近战减伤 60%")
 	ok(u.knockback_immune, "★★ 稳定（免疫击退）")
-	# 受击侧真的减伤（关掉护甲 / 士气，只看特性那一条）
+	# 受击侧真的减伤（关掉护甲，只看特性那一条）
 	u.armor = 0.0
 	u.hp_max = 1000.0
 	u.hp = 1000.0
-	u.morale = cfg2.morale_mid_tier
 	u.take_damage(cfg2, null, 100.0, null, true)
 	near(1000.0 - u.hp, 60.0, 1e-6, "★★ 远程 100 → 吃 60（40% 减免）")
 	u.hp = 1000.0
