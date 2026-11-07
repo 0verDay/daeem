@@ -146,6 +146,20 @@ func _run() -> void:
 	panel._process(0.1)
 	ok(panel._title.visible_characters > 0 or panel._desc.visible_characters > 0,
 		"★★ 打字机逐字推进")
+	# ★★ 实时计数目标：quiet = true 时直接显示完整文本，计数变化不重播打字机。
+	game.world.story_objective = {
+		"kind": "story", "zone": 0,
+		"title": "建立防御0/6 建造粮田0/2",
+		"desc": "在建筑页签中选择哨塔/木墙/粮田进行建造",
+		"state": "running", "quiet": true,
+	}
+	panel.sync()
+	ok(not panel._typing, "★★ 计数目标出现时不播打字机")
+	eq(panel._title.text, "※建立防御0/6 建造粮田0/2", "★★ 计数标题完整显示")
+	game.world.story_objective["title"] = "建立防御1/6 建造粮田0/2"
+	panel.sync()
+	ok(not panel._typing, "★★ 计数变化不重播打字机")
+	eq(panel._title.text, "※建立防御1/6 建造粮田0/2", "★★ 计数标题实时更新")
 	game.world.story_objective["state"] = "won"
 	panel.sync()
 	ok(panel._striking, "★★ 目标完成触发划去动效")

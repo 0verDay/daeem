@@ -9,6 +9,7 @@ const ObjectiveRes = preload("res://logic/objective.gd")
 const ObjectivePanelRes = preload("res://view/objective_panel.gd")
 const UiLayoutRes = preload("res://view/ui_layout.gd")
 const FontLoaderRes = preload("res://view/font_loader.gd")
+const ThemeRes = preload("res://view/theme.gd")
 
 const DEMO_DIR := "res://data/campaigns/demo"
 const LEVEL_ID := "02_twin_line"
@@ -26,6 +27,7 @@ func _run() -> void:
 	root.size = Vector2i(int(UiLayoutRes.DESIGN_W), int(UiLayoutRes.DESIGN_H))
 	await process_frame
 	await _test_panel_data(cfg)
+	await _test_strike_geometry(cfg)
 	await _test_mt_capture_pending(cfg)
 	await _test_hud_wiring(cfg)
 
@@ -110,6 +112,68 @@ func _test_panel_data(cfg) -> void:
 	ok(not panel.visible, "没有 objective_state 时目标条隐藏")
 
 	panel.queue_free()
+
+
+## ★★ 回归（用户 2026.11.07 报的 bug）：
+##   1. 完成后的划去线只到**文字末尾**，不能一路划到面板尾部；
+##   2. 新目标出现后，旧目标的划去线立刻消失（不能划在新文字上）。
+func _test_strike_geometry(cfg) -> void:
+	var w = require_world(cfg)
+	if w == null:
+		return
+	w.story_objective = {
+		"kind": "story", "zone": 0, "title": "占领区划",
+		"desc": "先把部队开进目标区划，然后等占领读条走完",
+		"state": "running",
+	}
+	var panel = ObjectivePanelRes.new()
+	root.add_child(panel)
+	panel.setup(cfg, w, FontLoaderRes.load_font(cfg))
+	await process_frame
+	panel.sync()
+	await process_frame
+
+	var prev_anim := ThemeRes.animations_enabled()
+	ThemeRes.set_animations_enabled(false)
+	w.story_objective["state"] = "won"
+	panel.sync()
+	await process_frame
+	ok(panel._strike_t >= 1.0 and float(panel._strike_layer.progress) >= 1.0,
+		"★★ 目标完成时划去线满格")
+
+	var segs: Array = panel._strike_layer.line_segments(panel._title)
+	ok(segs.size() >= 1, "★★ 标题能量出划线")
+	if segs.size() >= 1:
+		var seg: Dictionary = segs[0]
+		var line_w: float = float(seg["x1"]) - float(seg["x0"])
+		var last: Rect2 = panel._title.get_character_bounds(panel._title.text.length() - 1)
+		ok(line_w <= last.end.x + 2.0,
+			"★★ 划线贴住标题文字，不超出去（线 %.1f / 文字 %.1f）" % [line_w, last.end.x])
+		ok(line_w < panel._title.size.x - 20.0,
+			"★★ 划线没有一路划到面板尾部（线 %.1f / 内宽 %.1f）" % [line_w, panel._title.size.x])
+
+	var dsegs: Array = panel._strike_layer.line_segments(panel._desc)
+	ok(dsegs.size() >= 1, "★★ 描述能量出划线")
+	var all_inside := true
+	for d in dsegs:
+		if float(d["x1"]) > panel._desc.position.x + panel._desc.size.x + 0.5:
+			all_inside = false
+	ok(all_inside, "★★ 每一行描述的划线都不出面板")
+
+	# 新目标出现：旧划线必须立刻消失。
+	w.story_objective = {
+		"kind": "story", "zone": 0, "title": "新的目标",
+		"desc": "这是下一件事", "state": "running",
+	}
+	panel.sync()
+	eq(float(panel._strike_layer.progress), 0.0,
+		"★★ 新目标出现后划线立刻清掉（progress=0）")
+	ok(not panel._striking, "★★ 新目标不再处于划去状态")
+	await process_frame
+
+	ThemeRes.set_animations_enabled(prev_anim)
+	panel.queue_free()
+	await process_frame
 
 
 ## ★★ 回归（用户报的 bug）：main_test（`demo` 的 `mt`）选 **F2** 时，目标条一进关就写「已占领」。

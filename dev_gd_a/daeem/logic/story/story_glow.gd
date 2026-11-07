@@ -41,18 +41,38 @@ static func dict_value(g: Dictionary, now: float) -> float:
 	if not dict_active(g, now):
 		return 0.0
 	var start := float(g.get("start", now))
-	var until := float(g.get("until", 0.0))
 	var period := maxf(0.05, float(g.get("period", 1.6)))
+	var age := maxf(0.0, now - start)
+	var phase := fmod(age / period, 1.0)
+	# 0.35 是暗端、1.0 是亮端（纯 sin 会从 0 开始，看起来像闪一下）。
+	var pulse := 0.35 + 0.65 * (0.5 - 0.5 * cos(phase * TAU))
+	return dict_envelope(g, now) * pulse
+
+
+## 0..1 的**包络**强度：只含 0.25s 淡入 / 淡出，不含呼吸脉冲（已过期 → 0）。
+##
+## ★★ 给「持续向外扩散的圆环」用：圆环自身的节奏已经是连续的，再乘一次
+##   呼吸脉冲会变成一圈一顿（用户 2026.11.07 要求的「持续有圈向外泛」）。
+##   单位本体 / 建筑外壳 / 区划填充仍走 `value()`，保留呼吸。
+static func envelope(obj, now: float) -> float:
+	if obj == null:
+		return 0.0
+	return dict_envelope(obj.story_glow, now)
+
+
+## 状态字典版。
+static func dict_envelope(g: Dictionary, now: float) -> float:
+	if not dict_active(g, now):
+		return 0.0
+	var start := float(g.get("start", now))
+	var until := float(g.get("until", 0.0))
 	var strength := clampf(float(g.get("strength", 0.8)), 0.0, 1.0)
 	var age := maxf(0.0, now - start)
 	var fade_in := clampf(age / FADE_SEC, 0.0, 1.0)
 	var fade_out := 1.0
 	if until > 0.0:
 		fade_out = clampf((until - now) / FADE_SEC, 0.0, 1.0)
-	var phase := fmod(age / period, 1.0)
-	# 0.35 是暗端、1.0 是亮端（纯 sin 会从 0 开始，看起来像闪一下）。
-	var pulse := 0.35 + 0.65 * (0.5 - 0.5 * cos(phase * TAU))
-	return strength * fade_in * fade_out * pulse
+	return strength * fade_in * fade_out
 
 
 ## 解析颜色：空 / 缺省 → config 的金色；`"faction"` → 该对象所属阵营色。

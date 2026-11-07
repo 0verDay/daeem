@@ -799,8 +799,6 @@ func _assemble() -> void:
 
 	# ★★ 演出系统：建黑屏转场层 + 导演。只有 start_level(enable_story=true) 才会真的启用。
 	_build_story_fade_layer()
-	if hud != null and hud.has_signal("dialogue_finished"):
-		hud.dialogue_finished.connect(_on_hud_dialogue_finished)
 	if _story_enable_pending:
 		story = StoryDirectorRes.new()
 		var ok_story: bool = story.setup(self, world, _story_campaign_id,
@@ -881,6 +879,15 @@ func _on_hud_dialogue_finished(_hud_id: int) -> void:
 		story.on_dialogue_finished(token)
 
 
+## ★★ 点击左侧对话框 = 跳过对话（用户 2026.11.07）：
+##   有演出时由导演把这一波里的对话一起跨过；没有导演 / 不能跳时退回单条快速通过。
+func _on_hud_dialogue_skip_requested(_hud_id: int) -> void:
+	if story != null and story.has_method("skip_dialogue_chain") and story.skip_dialogue_chain():
+		return
+	if hud != null:
+		hud.fast_forward_dialogue()
+
+
 func story_resource_gain(food: float, gold: float) -> void:
 	if hud != null:
 		hud.show_resource_gain(food, gold)
@@ -932,6 +939,18 @@ func story_guide_clear(id: String = "") -> void:
 	if hud != null and hud.has_method("set_page_tab_attention"):
 		hud.set_page_tab_attention("")
 	story_guide = {}
+
+
+## 有没有「高亮部队」的引导正在生效（只高亮页签时不算）。
+func _story_unit_guide_focus() -> bool:
+	return not story_guide.is_empty() and bool(story_guide.get("unit_on", false))
+
+
+## ★ 给导演的公开查询：对话锁要不要放开 `order`（移动 / 攻击）。
+##   ★ 只在**对话开始那一刻**问一次：玩家选中高亮部队后引导会收掉，
+##   但这一条对话期间仍应能继续移动部队。
+func story_guide_unit_focus() -> bool:
+	return _story_unit_guide_focus()
 
 
 func _sync_story_guide() -> void:
@@ -1501,7 +1520,13 @@ func _process(dt: float) -> void:
 		story.tick(dt, events)
 	if hud != null and story != null:
 		# 对话模态 / UI 锁：盾由 HUD 持有（通知栈 z 更高，不会被盾挡住）。
-		hud.set_story_shield(hud.has_dialogue() or not story.is_input_allowed(StoryConstsRes.ACT_UI))
+		# ★★ 2026.11.07（手感）：高亮部队期间开的对话不锁选中 / 移动，整屏盾也撤掉。
+		#   注意选中高亮部队后引导会立刻收掉；这时仍要看对话锁是否放开 order，
+		#   否则「选完人盾又盖上」会让人觉得移动还是被锁着。
+		var guide_focus := _story_unit_guide_focus()
+		var gameplay_open: bool = guide_focus or story.is_input_allowed(StoryConstsRes.ACT_ORDER)
+		var ui_blocked: bool = story.is_ui_blocked_except_dialogue()
+		hud.set_story_shield(ui_blocked or (hud.has_dialogue() and not gameplay_open))
 	# ★★ 编队槽位：每帧补登记新将领（招募 / 重生），并更新阵亡对象的引用。
 	#    `team_slots` 只认 id，已经分配过的槽位永不变；这里只是「发现新 id」。
 	if team_slots != null:
@@ -2385,6 +2410,12 @@ func _build_hud() -> void:
 	#   —— 匿名 lambda 接上去会让这条断言失败（看着像「信号没接」）。
 	hud.fullscreen_toggled.connect(_on_fullscreen_toggled)
 	hud.return_to_menu_requested.connect(_on_return_to_menu_requested)
+	# ★★ 演出对话：HUD 只负责显示；推进 / 跳过都回到导演。
+	#   放在 HUD 建好这里（而不是 start_level）—— 自由对战 / 测试里手动挂导演也能接上。
+	if hud.has_signal("dialogue_finished"):
+		hud.dialogue_finished.connect(_on_hud_dialogue_finished)
+	if hud.has_signal("dialogue_skip_requested"):
+		hud.dialogue_skip_requested.connect(_on_hud_dialogue_skip_requested)
 	# ★★ 合作 AI 队友的浮动面板：只发信号，命令仍由 `_on_command` 统一走 command_processor。
 	if hud.ai_panel != null:
 		hud.ai_panel.order_requested.connect(_on_ai_order_requested)

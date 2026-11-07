@@ -156,6 +156,9 @@ dev_gd_a/daeem/
 │   │                             #      (b) 敌方区划压到区划图 `alert_zone_gap`（默认 2）步以内
 │   │                             #      才启动巡逻（`_tick_alert` / `_has_threat`）；交战 / 守区划中心 /
 │   │                             #      脱战招兵 / 濒死再起**不受影响**（它们不是巡逻）。
+│   │                             #   ★ 自动索敌建筑只认自己 `garrison_zone_id` 内的
+│   │                             #      （`combat.nearest_enemy_building`）：区划外的玩家塔 / 墙 / 基地
+│   │                             #      不会把守军勾出去；区划边带可用 `zones[].no_go` 限制巡逻点。
 │   ├── red_dot_ai.gd             #   ★★ **红点性 AI**（本轮重做为**函数式时间表**）：
 │   │                             #     第 x 波的生成时间由 wave_time_expr（y=ax+b，分钟）给出、
 │   │                             #     将领数由 general_count_expr 给出；将领类型按 general_weights 抽；
@@ -879,12 +882,15 @@ func ok(cond: bool, what: String) -> void:
   `story_expand_map` / `story_resource_gain` / `story_refresh_boundary`；导演只通过
   `has_method` 调它们，所以能在无头测试里用 fake host 单跑。
 - **通知栈**：`view/notice_stack.gd` 统一播报与对话；`view/broadcast_banner.gd` 是它的
-  兼容子类。对话模态、打字机、点击 / 空格推进、定时自动推进、排队、播报上移。
+  兼容子类。对话模态、打字机、点击（跳过这一波）/ 空格（逐条）推进、定时自动推进、排队、播报上移。
+  高亮部队引导生效时撤掉全屏盾，并允许 `select` / `order`，玩家能直接点选并移动高亮单位。
 - **玩法边界**：`MapData.active_rect`（默认整图）；`Pathfinder.passable()` / 可建造 /
   生成点都遵守。边界不是整图时，C# 寻路内核被绕过（它不知道 `active_rect`）。
   金线 `view/map_border_view.gd` 画在 `active_rect` 上。
 - **地图扩展**：`world.swap_map(path)` **原地**换到更大的地图：
-  - 严格校验新图两维更大、旧区域地形 / exists 逐格一致、旧区划 id 都存在；
+  - 严格校验新图两维更大、旧区域地形 / exists / 区划逐格一致、旧区划 id 都存在；
+  - 旧图**不必贴新图左上角**：自动搜索唯一偏移（先试 0,0），再把单位坐标 / 路径 /
+    目标、建筑、弹道整体平移；`ce_xs_2_a` 就是 `ce_xs_2_b` 中 (14,13) 起的一块；
   - 保留单位 / 建筑 / 区划状态 / 资源 / 科技 / 目标 / AI 控制器 / 时间；
   - 重建建筑索引、区划、迷雾缓存、碰撞缓存；补建新区划中心 / 新区域预置建筑；
   - 视图侧由 `game_scene3d._rebuild_map_views()` 重建 `ground` / `terrain_props` /
@@ -895,8 +901,10 @@ func ok(cond: bool, what: String) -> void:
   - `spawn_red_dot`：复用 `red_dot_ai` 的「将领 + 满编附属兵」生成器，推
     `red_dot_wave` 事件，再下整队行军攻击；不额外挂 reddot AI 状态；
   - `spawn_unit`：普通单位 / 将领（将领可带档位、名字、附属兵、`tag`）；
+    可传 `zone` 绑阵地 AI 的 `garrison_zone_id`，`escort_list` 精确指定附属兵配比；
   - `spawn_building`：默认瞬间生成、跳过建造读条（大本营会当场完成读条）。
 - **呼吸泛光**：状态挂 `Unit.story_glow` / `Building.story_glow`；曲线唯一实现在
-  `logic/story/story_glow.gd`。表现 = `view/story_glow_view.gd` 的地面光环 +
+  `logic/story/story_glow.gd`。表现 = `view/story_glow_view.gd` 的**持续向外扩散圆环**
+  （无常驻光环；`envelope()` 不含呼吸脉冲，`value()` 仍给单位本体 / 外壳 / 区划填充）+
   建筑反向壳外壳 + `unit_flash.gdshader` 的单位本体金色混合（空闲 `.a` 通道）。
   默认持续到显式 `stop_glow`，可传 `duration`；按迷雾正常隐藏。

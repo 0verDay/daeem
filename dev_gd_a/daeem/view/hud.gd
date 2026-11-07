@@ -70,6 +70,8 @@ const AiOrderPanelRes = preload("res://view/ai_order_panel.gd")
 const FillButtonRes = preload("res://view/fill_button.gd")
 
 signal dialogue_finished(id: int)
+## 玩家点击左侧对话框、请求跳过对话（由 `game_scene3d` 接给演出导演）。
+signal dialogue_skip_requested(id: int)
 
 var cfg: ConfigRes = null
 var world = null
@@ -688,6 +690,8 @@ func _build_broadcast_banner() -> void:
 		broadcast_banner.dialogue_started.connect(_on_dialogue_started)
 	if broadcast_banner.has_signal("dialogue_finished"):
 		broadcast_banner.dialogue_finished.connect(_on_dialogue_finished)
+	if broadcast_banner.has_signal("skip_requested"):
+		broadcast_banner.skip_requested.connect(_on_dialogue_skip_requested)
 
 
 func _on_dialogue_started(_id: int) -> void:
@@ -697,6 +701,14 @@ func _on_dialogue_started(_id: int) -> void:
 func _on_dialogue_finished(id: int) -> void:
 	set_story_shield(false)
 	dialogue_finished.emit(id)
+
+
+## 点击对话框 → 请演出跳过这一波对话；没有宿主接时退回「一步快速通过」。
+func _on_dialogue_skip_requested(id: int) -> void:
+	if dialogue_skip_requested.get_connections().is_empty():
+		fast_forward_dialogue()
+		return
+	dialogue_skip_requested.emit(id)
 
 
 ## 演出模态盾（对话 / 锁 UI）。盾本身只挡 GUI；细粒度动作锁在 input_controller。
@@ -719,6 +731,11 @@ func advance_dialogue() -> bool:
 ## ★ 点击 / 触摸：一步快速通过当前对话（补全打字 + 立即退场）。
 func fast_forward_dialogue() -> bool:
 	return broadcast_banner != null and broadcast_banner.fast_forward_dialogue()
+
+
+## 请求跳过对话（有演出时由 `game_scene3d` 跳过这一波；没有则退回一步快速通过）。
+func skip_dialogue() -> bool:
+	return broadcast_banner != null and broadcast_banner.request_skip_dialogue()
 
 
 func clear_dialogue() -> void:

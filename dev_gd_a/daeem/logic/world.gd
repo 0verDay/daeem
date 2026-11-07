@@ -225,6 +225,9 @@ var objective_state: Dictionary = {}
 ## ★ 这一局有没有建阵营 AI（`create()` 的 `with_ai`，见那里的说明）。
 ## ⚠️ 它只在 `reset()` 里读一次 —— 中途改它不会补建 / 拆掉已经建好的 AI 阵营。
 var with_ai: bool = true
+## ★★ 2026.11.07：本局允不允许「建筑占区」（无主区划被区内有主建筑收归）。
+##   默认 true = 其他关 / 自由对战行为不变；ce_xs_2 通过关卡字段关掉。
+var zone_claim_by_building: bool = true
 var owned_tiles: int = 0
 ## ★ 当前每秒产出（按占领的区划产能聚合出来；HUD 用来显示「+n/秒」）。
 ## 每帧在 tick() 里刷新 —— 纯展示用，不参与任何判定。
@@ -676,6 +679,9 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	_setup_ai_factions()
 
 	zones = ZoneRes.build_from_map(map, cfg, factions)
+	# ★★ 2026.11.07：关卡级「建筑不占区」。默认 true（其他关 / 自由对战不变）
+	#   —— ce_xs_2 开局 c0 无主，基地放下后必须仍是无主，靠部队打下来。
+	zone_claim_by_building = not (level != null and bool(level.no_building_zone_claim))
 
 	# ★★ 地图给的**开局归属**（`zone_list[].owner`，本轮新增）：NPC / AI 阵营一开始
 	#    就有的地。⚠️ 必须排在各阵营的基地之前 —— 否则大本营落地时那一块还算无主，
@@ -874,17 +880,16 @@ func swap_map(new_map_path: String) -> bool:
 	if int(new_map.cols) == old_cols and int(new_map.rows) == old_rows:
 		push_error("演出换图被拒绝：新地图没有变大（%dx%d）" % [old_cols, old_rows])
 		return false
-	for y in old_rows:
-		for x in old_cols:
-			if String(new_map.terrain.get_cell(x, y)) != String(map.terrain.get_cell(x, y)):
-				push_error("演出换图被拒绝：旧区域地形不一致（%d,%d）" % [x, y])
-				return false
-			if bool(new_map.exists.get_cell(x, y)) != bool(map.exists.get_cell(x, y)):
-				push_error("演出换图被拒绝：旧区域存在格不一致（%d,%d）" % [x, y])
-				return false
+	# ★★ 2026.11.07：换图不再要求旧地图必须贴在新地图**左上角**。
+	#   `ce_xs_2_a` 就是 `ce_xs_2_b` 中从 (14,13) 开始的一块；这里先找出偏移，
+	#   校验通过后再把单位 / 建筑 / 路径整体平移过去。
+	var new_zones = ZoneRes.build_from_map(new_map, cfg, factions)
+	var offset := _find_swap_offset(new_map, new_zones, old_cols, old_rows)
+	if offset.x < 0:
+		push_error("演出换图被拒绝：旧区域地形 / exists / 区划在新地图里对不上")
+		return false
 
 	var old_zone_state: Dictionary = _capture_zone_state()
-	var new_zones = ZoneRes.build_from_map(new_map, cfg, factions)
 	for zid in old_zone_state.keys():
 		if not new_zones.zones_by_id.has(int(zid)):
 			push_error("演出换图被拒绝：旧区划 c%d 在新地图里不存在" % int(zid))
@@ -893,21 +898,26 @@ func swap_map(new_map_path: String) -> bool:
 	for zid in old_zone_state.keys():
 		var oldz: Variant = zones.zones_by_id.get(int(zid), null)
 		var newz: Variant = new_zones.zones_by_id.get(int(zid), null)
-		if oldz != null and newz != null and oldz.get("center", null) != newz.get("center", null):
+		if oldz == null or newz == null:
+			continue
+		var oc: Variant = (oldz as Dictionary).get("center", null)
+		var nc: Variant = (newz as Dictionary).get("center", null)
+		if oc != null and nc != null and (nc as Vector2i) != (oc as Vector2i) + offset:
 			push_error("演出换图被拒绝：旧区划 c%d 的中心位置变了" % int(zid))
 			return false
 	for y in old_rows:
 		for x in old_cols:
 			var old_idx: int = y * old_cols + x
-			var new_idx: int = y * int(new_map.cols) + x
+			var new_idx: int = (y + offset.y) * int(new_map.cols) + (x + offset.x)
 			if int(new_zones.lookup[new_idx]) != int(zones.lookup[old_idx]):
 				push_error("演出换图被拒绝：旧区域区划归属不一致（%d,%d）" % [x, y])
 				return false
 
-	# ---- 2) 换地图 ----
+	# ---- 2) 换地图 + 平移旧世界 ----
 	map = new_map
 	map_path = new_map_path
 	_merged = {}
+	_shift_world_by_offset(offset)
 
 	# ---- 3) 建筑网格按新尺寸重建（建筑对象本身不动）----
 	buildings = GridRes.new(map.cols, map.rows, null)
@@ -930,7 +940,7 @@ func swap_map(new_map_path: String) -> bool:
 		zones.apply_no_go(level.zone_no_go)
 
 	# ---- 5) 新区域：补区划中心 / 预置建筑（旧区域不重复）----
-	var old_area := Rect2i(0, 0, old_cols, old_rows)
+	var old_area := Rect2i(offset, Vector2i(old_cols, old_rows))
 	_spawn_missing_zone_centers()
 	for p in map.prefab_buildings:
 		var ptype := String(p.get("type", ""))
@@ -957,6 +967,90 @@ func swap_map(new_map_path: String) -> bool:
 	if fog != null:
 		fog.update(self)
 	return true
+
+
+## 旧地图在新地图里的偏移（旧地图左上角在新地图的哪一格）。
+##
+## ★★ 2026.11.07：`ce_xs_2_a` 是 `ce_xs_2_b` 中 (14,13) 起的一块，不再贴左上角。
+##   · 先试 (0,0)（保持所有老图的行为逐位不变）；
+##   · 再全图搜索，**必须唯一命中**；多个同样匹配的位置 → 拒绝（避免猜错）。
+##   · 只比较地形 / exists / 区划归属；区划中心由 `swap_map` 再按 id 校验。
+func _find_swap_offset(new_map, new_zones, old_cols: int, old_rows: int) -> Vector2i:
+	var max_x: int = int(new_map.cols) - old_cols
+	var max_y: int = int(new_map.rows) - old_rows
+	if max_x < 0 or max_y < 0:
+		return Vector2i(-1, -1)
+	var found := Vector2i(-1, -1)
+	var found_count := 0
+	for oy in range(max_y + 1):
+		for ox in range(max_x + 1):
+			if not _map_region_matches(new_map, new_zones, ox, oy, old_cols, old_rows):
+				continue
+			# 左上角命中 = 老行为，优先且不参与歧义判断。
+			if ox == 0 and oy == 0:
+				return Vector2i.ZERO
+			if found_count == 0:
+				found = Vector2i(ox, oy)
+			found_count += 1
+			if found_count > 1:
+				return Vector2i(-1, -1)
+	return found if found_count == 1 else Vector2i(-1, -1)
+
+
+func _map_region_matches(new_map, new_zones, ox: int, oy: int,
+		old_cols: int, old_rows: int) -> bool:
+	var new_cols: int = int(new_map.cols)
+	for y in old_rows:
+		for x in old_cols:
+			if String(new_map.terrain.get_cell(x + ox, y + oy)) \
+					!= String(map.terrain.get_cell(x, y)):
+				return false
+			if bool(new_map.exists.get_cell(x + ox, y + oy)) \
+					!= bool(map.exists.get_cell(x, y)):
+				return false
+			var old_idx: int = y * int(map.cols) + x
+			var new_idx: int = (y + oy) * new_cols + (x + ox)
+			if int(new_zones.lookup[new_idx]) != int(zones.lookup[old_idx]):
+				return false
+	return true
+
+
+## 把旧世界里的单位 / 建筑 / 弹道整体平移 `off` 格（换图时旧地图不再贴左上角）。
+##
+## 只动**坐标**；区划 / 归属 / 目标引用都按 id 或对象引用保留，不在这里改。
+func _shift_world_by_offset(off: Vector2i) -> void:
+	if off == Vector2i.ZERO:
+		return
+	var dv := Vector2(float(off.x), float(off.y))
+	for u in units:
+		if u == null:
+			continue
+		u.pos += dv
+		u.prev_pos += dv
+		u.tx += off.x
+		u.ty += off.y
+		u.goal += dv
+		u.settled_goal += dv
+		u.attack_move_goal += dv
+		if u.last_repath_to.x > -90000.0:
+			u.last_repath_to += dv
+		for i in u.path.size():
+			u.path[i] = (u.path[i] as Vector2) + dv
+	for b in building_list:
+		if b == null:
+			continue
+		b.tx += off.x
+		b.ty += off.y
+	for p in projectiles:
+		if p == null:
+			continue
+		p.start += dv
+		p.end += dv
+		p.pos += dv
+	for key in garrison_siege_alerts.keys():
+		var rec: Variant = garrison_siege_alerts[key]
+		if rec is Dictionary and (rec as Dictionary).has("pos"):
+			(rec as Dictionary)["pos"] = ((rec as Dictionary)["pos"] as Vector2) + dv
 
 
 ## ★★ 关卡 `zones[]` 里的 `population` / `population_cap`：在区划建好、归属应用之后写进去。
@@ -1623,12 +1717,21 @@ func escort_target_of(fid: String, index: int) -> int:
 ##   「排开」逻辑，所以不会几个兵叠在一格）。
 ## ★ 随机种子由 `(将领 id, 序号 k)` 派生（确定性伪随机，见 `unit_rand`）：
 ##   同一局每次重跑结果一致（测试可断言），不同将领 / 不同序号又各不相同。
-func fill_general_retinue(g, count: int, weighted_types: Array) -> void:
+## `forced_types`：可选，按顺序指定每个附属兵的兵种（长度不足的部分仍按权重抽）。
+## 教程的「1 将 + 3 枪 + 3 弓」用它保证精确配比。
+func fill_general_retinue(g, count: int, weighted_types: Array,
+		forced_types: Array = []) -> void:
 	if g == null or count <= 0:
 		return
 	var pending: Array = [g]
 	for k in count:
-		var pick := pick_weighted_type(g, weighted_types, k)
+		var pick := ""
+		if k < forced_types.size():
+			pick = String(forced_types[k])
+			if not cfg.has_unit_type(pick):
+				pick = ""
+		if pick == "":
+			pick = pick_weighted_type(g, weighted_types, k)
 		if pick == "":
 			pick = String(g.unit_type)
 		var etile: Vector2i = _ring_tile(g, String(g.faction), k + 1, pending)
@@ -5129,7 +5232,8 @@ func add_building(type: String, tx: int, ty: int, owner: String, silent: bool = 
 	var owner_eff: String = owner
 	if z != null and type != BuildingRes.TYPE_ZONE_CENTER:
 		var zone_owner := String((z as Dictionary).get("owner", ""))
-		if zone_owner == "" and owner_eff != "" and cfg.zone_owned_by_building:
+		if zone_owner == "" and owner_eff != "" and cfg.zone_owned_by_building \
+				and zone_claim_by_building:
 			_claim_zone_for(z, owner_eff)
 			zone_owner = owner_eff
 		if type != BuildingRes.TYPE_BASE and zone_owner != "":
@@ -5400,20 +5504,22 @@ func refresh_ownership() -> void:
 		return
 	var changed := false
 	# 1) 无主区划：由区内第一栋有主建筑认领（认领顺序按 building_list，稳定）。
-	for b in building_list:
-		if b == null or not b.alive or b.type == BuildingRes.TYPE_ZONE_CENTER:
-			continue
-		var z = zones.zone_at(int(b.tx), int(b.ty))
-		if z == null:
-			continue
-		if String((z as Dictionary).get("owner", "")) != "":
-			continue
-		if String(b.owner) == "":
-			continue
-		if not cfg.zone_owned_by_building:
-			continue
-		_claim_zone_for(z, String(b.owner))
-		changed = true
+	#    ★ 关卡级开关：ce_xs_2 关掉这一步，基地放下后 c0 仍无主。
+	if zone_claim_by_building:
+		for b in building_list:
+			if b == null or not b.alive or b.type == BuildingRes.TYPE_ZONE_CENTER:
+				continue
+			var z = zones.zone_at(int(b.tx), int(b.ty))
+			if z == null:
+				continue
+			if String((z as Dictionary).get("owner", "")) != "":
+				continue
+			if String(b.owner) == "":
+				continue
+			if not cfg.zone_owned_by_building:
+				continue
+			_claim_zone_for(z, String(b.owner))
+			changed = true
 	# 2) 有主区划：建筑跟随区划（大本营 / 区划中心除外）。
 	for b2 in building_list:
 		if b2 == null or not b2.alive or not b2.follows_zone_owner():

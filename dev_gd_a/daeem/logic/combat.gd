@@ -546,6 +546,13 @@ static func nearest_enemy_building(world, cfg: ConfigRes, u: UnitRes, aggro: flo
 					continue
 				if FactionRes.same_side_for_attack(b.owner, u.faction):
 					continue
+				# ★★ 2026.11.07：阵地性 AI **不自动索敌自己区划外的建筑**。
+				#   守军的职责是守自己那块区划；玩家在后方（别的区划）盖的塔 / 墙 / 大本营
+				#   不应该把守军从驻地勾出去。禁行区只约束巡逻点，这里必须再挡一层目标。
+				#   ⚠️ 只挡「自动索敌」；玩家手动点名 / 同区建筑仍可打。
+				if u.is_garrison() and int(u.garrison_zone_id) >= 0 \
+						and int(b.zone_id) != int(u.garrison_zone_id):
+					continue
 				var prio := building_auto_priority(cfg, b)
 				if prio == BLD_PRIO_SKIP:
 					continue                       # 资源建筑：只能手动指定

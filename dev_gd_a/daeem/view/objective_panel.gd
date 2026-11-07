@@ -33,6 +33,9 @@ var _title: Label = null
 var _desc: Label = null
 ## 上一帧的内容签名：只在「显示的字变了」时重排 / 重绘。
 var _sig: String = ""
+## 上一帧的目标字典**身份**：剧情目标是整个替换字典的，所以换了字典 = 换了目标
+## （即使标题 / 描述字面相同，也要清掉旧的划线）。
+var _state_ref: Variant = null
 ## 刷新过几次（测试读；替代旧版的 `draw_count`）。
 var refresh_count: int = 0
 
@@ -102,6 +105,12 @@ func sync() -> void:
 		return
 	refresh_count += 1
 	var st: Dictionary = _state()
+	# ★★ 剧情目标每次 `objective_set` 都**整个换一个字典**；字典身份变了 = 新目标。
+	#   放在 `_sig` 提前返回之前：否则新旧目标标题 / 描述完全相同时会漏掉。
+	var new_objective := not is_same(st, _state_ref)
+	_state_ref = st
+	if new_objective:
+		_clear_strike()
 	var title := title_text()
 	var desc := desc_text()
 	var state := String(st.get("state", ""))
@@ -118,10 +127,16 @@ func sync() -> void:
 		_full_desc = desc
 		_title.text = title
 		_desc.text = desc
-		_striking = false
-		_strike_t = 0.0
-		_struck_state = ""
-		_start_typewriter()
+		# ★★ 新目标出现：旧目标的划线必须**立刻消失**（否则会划在新文字上）。
+		#   这里不能只清 `_striking` —— `_relayout()` 里会 queue_redraw，而绘制层
+		#   还留着上一目标的 progress=1.0，看上去就是「新目标也被划掉了」。
+		_clear_strike()
+		# ★★ 2026.11.07：实时计数目标用 `quiet: true` —— 数字每变一次都重播
+		#   打字机会闪个不停；这种目标直接显示完整文本。
+		if bool(st.get("quiet", false)):
+			_finish_typing_now()
+		else:
+			_start_typewriter()
 
 	if state == ObjectiveRes.STATE_WON and _struck_state != ObjectiveRes.STATE_WON:
 		_finish_typing_now()
@@ -139,6 +154,17 @@ func sync() -> void:
 			_strike_layer.progress = 0.0
 			_strike_layer.queue_redraw()
 	_relayout()
+
+
+## 清掉划去动效。★ `progress` 必须一起归零：绘制层是独立节点，
+##   只清 `_striking` 的话它还会按旧进度把线画在新文字上。
+func _clear_strike() -> void:
+	_striking = false
+	_strike_t = 0.0
+	_struck_state = ""
+	if _strike_layer != null:
+		_strike_layer.progress = 0.0
+		_strike_layer.queue_redraw()
 
 
 func _start_typewriter() -> void:
@@ -193,10 +219,14 @@ func _process(dt: float) -> void:
 
 
 ## 目标文字上的划去层：逐行画横线，`progress` 从左往右推进。
+##
+## ★★ 线的长度**按文字实际占用来量**（`Label.get_character_bounds()`），不是
+##   `lbl.size.x` —— 后者是面板内宽，原来会把线一直划到面板尾部（用户 2026.11.07 报的 bug）。
 class StrikeLayer extends Control:
 	var labels: Array = []
 	var progress: float = 0.0
 	var line_color: Color = Color.WHITE
+	var line_width: float = 2.0
 
 	func _draw() -> void:
 		if progress <= 0.0:
@@ -204,15 +234,56 @@ class StrikeLayer extends Control:
 		for lbl in labels:
 			if lbl == null or not is_instance_valid(lbl) or not lbl.visible or lbl.text == "":
 				continue
-			var lines: int = maxi(1, int(lbl.get_line_count())) if lbl.has_method("get_line_count") else 1
-			var lh: float = maxf(1.0, float(lbl.get_line_height())) if lbl.has_method("get_line_height") else maxf(1.0, lbl.size.y)
-			for i in lines:
-				var y: float = lbl.position.y + lh * (float(i) + 0.5)
-				var x0: float = lbl.position.x
-				var w: float = lbl.size.x * progress
-				if w <= 0.0:
+			for seg in line_segments(lbl):
+				var x0: float = float(seg["x0"])
+				var y: float = float(seg["y"])
+				var w: float = (float(seg["x1"]) - x0) * progress
+				if w <= 0.5:
 					continue
-				draw_line(Vector2(x0, y), Vector2(x0 + w, y), line_color, 2.0)
+				draw_line(Vector2(x0, y), Vector2(x0 + w, y), line_color, line_width)
+
+	## 逐行返回文字实际占用的横向范围（坐标已换算到本层）。
+	##
+	## `get_character_bounds(i)` 用的是 **Label 自己的排版结果**（换行 / 断词都算好了），
+	## 所以中英文混排、自动换行都能逐行贴住文字；宽度上限再夹到 Label 宽度
+	## （`clip_text` 打开时超出的字不显示，线也不该越界）。
+	func line_segments(lbl: Label) -> Array:
+		var out: Array = []
+		var text: String = lbl.text
+		var n: int = text.length()
+		if n <= 0:
+			return out
+		var by_line: Dictionary = {}   # 行顶 y（量化） -> {x0, x1, y_center}
+		for i in n:
+			var ch: String = text[i]
+			if ch == "\n" or ch == "\r":
+				continue
+			var r: Rect2 = lbl.get_character_bounds(i)
+			if r.size.x <= 0.0 or r.size.y <= 0.0:
+				continue
+			# 同一行的 y 完全相同；量化一下避免浮点噪声把一行拆成两行。
+			var key: int = roundi(r.position.y * 4.0)
+			if not by_line.has(key):
+				by_line[key] = {
+					"x0": r.position.x,
+					"x1": r.end.x,
+					"y": r.position.y + r.size.y * 0.5,
+				}
+			else:
+				var rec: Dictionary = by_line[key]
+				rec["x0"] = minf(float(rec["x0"]), r.position.x)
+				rec["x1"] = maxf(float(rec["x1"]), r.end.x)
+		var keys: Array = by_line.keys()
+		keys.sort()
+		var limit_x: float = maxf(0.0, lbl.size.x)
+		for k in keys:
+			var rec2: Dictionary = by_line[k]
+			var x0: float = lbl.position.x + maxf(0.0, float(rec2["x0"]))
+			var x1: float = lbl.position.x + minf(limit_x, float(rec2["x1"]))
+			if x1 - x0 <= 0.5:
+				continue
+			out.append({"x0": x0, "x1": x1, "y": lbl.position.y + float(rec2["y"])})
+		return out
 
 
 # ------------------------------------------------------------------

@@ -268,6 +268,54 @@ func request_skip() -> bool:
 	return true
 
 
+## 玩家点击左侧对话框 = **跳过这一波对话**。
+##
+## 当前这条立刻关掉；后面同一波里的 `dialogue` 步骤也不再弹出（不显示文字 / 不等点击），
+## 其它步骤（objective_set / spawn / glow…）照常执行。一旦演出真正停下来
+## （`wait` / `wait_until` / `wait_map` / 必须看的对话），就恢复正常：后面的新对话照常弹。
+## 返回 false = 当前没有在等对话（或这一步 `skippable=false`，必须看）。
+func skip_dialogue_chain() -> bool:
+	if _active == null:
+		return false
+	var a: Dictionary = _active
+	if String(a.get("waiting", "")) != "dialogue":
+		return false
+	var steps: Array = a.get("steps", [])
+	var idx := int(a.get("index", 0))
+	if idx < 0 or idx >= steps.size():
+		return false
+	var cur: Dictionary = steps[idx]
+	if cur.has("skippable") and not bool(cur.get("skippable", true)):
+		return false
+	# 对话框由宿主清掉（HUD.clear_dialogue），否则会继续停在这一条上。
+	if _has_host("story_clear_dialogue"):
+		host.story_clear_dialogue()
+	_remove_lock("__dialogue__")
+	a["waiting"] = ""
+	a["dialogue_token"] = -1
+	a["index"] = idx + 1
+	a["step_data"] = {}
+	a["skip_dialogue_chain"] = true
+	# 立刻往后跑：连续的对话会在 `_step_dialogue` 里被直接跨过。
+	_advance_active(0.0)
+	return true
+
+
+## UI 是否被**除对话模态以外**的锁挡住。
+##
+## ★ 对话锁只允许「推进 / 跳过 / 选中」。HUD 的整屏模态盾需要区分：
+##   只剩对话锁时，高亮部队期间不该整屏挡住地图（玩家要能点选高亮单位）。
+func is_ui_blocked_except_dialogue() -> bool:
+	for it in _locks:
+		var lock: Dictionary = it
+		if String(lock.get("id", "")) == "__dialogue__":
+			continue
+		var allow: Dictionary = lock.get("allow", {})
+		if not bool(allow.get(Consts.ACT_UI, false)):
+			return true
+	return false
+
+
 # ------------------------------------------------------------------
 # 内部：演出队列 / 步骤
 # ------------------------------------------------------------------
@@ -330,6 +378,10 @@ func _advance_active(dt: float) -> void:
 			return
 		var step: Dictionary = steps[idx]
 		var res: String = _execute_step(a, step)
+		# ★ 「跳过对话」只跨过**这一波**：遇到真正让演出停下来的步骤
+		#   （计时 / 等条件 / 换图 / 必须看的对话）就恢复正常，后面的新对话照常弹。
+		if res != "continue" and bool(a.get("skip_dialogue_chain", false)):
+			a["skip_dialogue_chain"] = false
 		if res == "end":
 			_finish_active(false)
 			return
@@ -607,10 +659,21 @@ func _step_map_expand(a: Dictionary, step: Dictionary) -> String:
 
 func _step_dialogue(a: Dictionary, step: Dictionary) -> String:
 	var text := String(step.get("text", ""))
+	# ★ 玩家点过「跳过对话」：这一波里后面的对话不再弹出，直接跨过去。
+	if bool(a.get("skip_dialogue_chain", false)):
+		if step.has("skippable") and not bool(step.get("skippable", true)):
+			a["skip_dialogue_chain"] = false   # 这一步必须看，恢复显示
+		else:
+			return "continue"
 	_serial += 1
 	var token := _serial
-	# 对话是模态：只允许「推进对话 / 跳过演出」。
-	lock_input("__dialogue__", [Consts.ACT_DIALOGUE, Consts.ACT_SKIP], true)
+	# 对话是模态：默认只允许「推进对话 / 跳过演出 / 选中」。
+	# ★ 2026.11.07：正在高亮部队时也放开**移动 / 攻击指令**（order）——
+	#   玩家要能直接选中高亮部队并让它走两步；命令类里的招募 / 建造等仍被挡住。
+	var allow: Array = [Consts.ACT_DIALOGUE, Consts.ACT_SKIP, Consts.ACT_SELECT]
+	if _has_host("story_guide_unit_focus") and bool(host.story_guide_unit_focus()):
+		allow.append(Consts.ACT_ORDER)
+	lock_input("__dialogue__", allow, true)
 	a["waiting"] = "dialogue"
 	a["dialogue_token"] = token
 	if not _has_host("story_show_dialogue"):

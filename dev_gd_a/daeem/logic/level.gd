@@ -207,6 +207,9 @@ static func from_data(data: Dictionary, cfg: ConfigRes = null, campaign = null,
 	lv.briefing = _read_strings(data.get("briefing", null))
 	lv.story_driven = bool(data.get("story_driven", false))
 	lv.no_player_base = bool(data.get("no_player_base", false))
+	# ★★ 2026.11.07：本关**不让建筑自动占区**（教程 ce_xs_2 用）。
+	#   基地 / 塔 / 墙放在无主区划里时不会把区划收归自己，必须靠单位占领。
+	lv.no_building_zone_claim = bool(data.get("no_building_zone_claim", false))
 	lv.issues = []
 
 	# ---- 地图 ----
@@ -281,6 +284,8 @@ var zone_population: Dictionary = {}
 var story_driven: bool = false
 ## ★★ 不给玩家席位建大本营（教程：开局只有一位将领，先演示「占领第一个区划」）。
 var no_player_base: bool = false
+## ★★ 2026.11.07：本关禁止「建筑占区」——建筑落在无主区划里不会自动收区。
+var no_building_zone_claim: bool = false
 ## ★★ 每个区划的**禁行格**：区划 id → `Array[Vector2i]`（关卡 `zones[].no_go`）。
 ##
 ## 语义（用户口径）：**阵地性 AI 不会巡逻至其区划的禁行区** —— 守将挑巡逻点时

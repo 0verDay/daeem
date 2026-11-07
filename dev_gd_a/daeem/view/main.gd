@@ -74,6 +74,7 @@ const AI_TEST_LEVEL := "ai_test_battle"
 ## ★★ 新手教程测试入口：ce_xs_1 按钮直接进教程战役的 ce_xs_1 关（玩家固定 p1 王朝）。
 const TUTORIAL_CAMPAIGN := "tutorial"
 const TUTORIAL_LEVEL := "ce_xs_1"
+const TUTORIAL_LEVEL_2 := "ce_xs_2"
 
 ## ★★ 进入游戏的黑屏转场（只用于战役过渡画面点「进入」；见 `_on_level_transition_enter`）：
 ##   `enter_fade_sec`    = 画面推成全黑的时长；
@@ -339,6 +340,15 @@ func _on_see_ai_button_pressed() -> void:
 
 ## ★★ 新手教程 1：主菜单 ce_xs_1 按钮。固定玩家 = p1（王朝），直接开局。
 func _on_ce_xs_1_button_pressed() -> void:
+	_start_tutorial_level(TUTORIAL_LEVEL)
+
+
+## ★★ 新手教程 2：主菜单 ce_xs_2 按钮。同一教程战役的第二关。
+func _on_ce_xs_2_button_pressed() -> void:
+	_start_tutorial_level(TUTORIAL_LEVEL_2)
+
+
+func _start_tutorial_level(level_id: String) -> void:
 	if game != null:
 		return
 	var option := _find_campaign_option(TUTORIAL_CAMPAIGN)
@@ -349,9 +359,9 @@ func _on_ce_xs_1_button_pressed() -> void:
 	if campaign == null:
 		push_warning("教程战役载入失败：%s" % TUTORIAL_CAMPAIGN)
 		return
-	var level = campaign.level(TUTORIAL_LEVEL) if campaign.has_method("level") else null
+	var level = campaign.level(level_id) if campaign.has_method("level") else null
 	if level == null:
-		push_warning("教程关卡不存在：%s / %s" % [TUTORIAL_CAMPAIGN, TUTORIAL_LEVEL])
+		push_warning("教程关卡不存在：%s / %s" % [TUTORIAL_CAMPAIGN, level_id])
 		return
 	game = GameSceneRes.new()
 	game.name = "GameScene"
@@ -363,11 +373,6 @@ func _on_ce_xs_1_button_pressed() -> void:
 	start_screen.close()
 	game.fullscreen_toggled.connect(toggle_fullscreen)
 	game.return_to_menu_requested.connect(return_to_menu)
-
-
-## ★★ 新手教程 2：按钮可点，但暂无逻辑（用户口径）。
-func _on_ce_xs_2_button_pressed() -> void:
-	pass
 
 
 ## ★★ ai_test_battle：跳过战役过渡画面，**随机**让玩家当 p1 或 p2，另一个席位由 command AI 接管。

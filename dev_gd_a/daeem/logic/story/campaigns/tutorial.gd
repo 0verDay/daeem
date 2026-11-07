@@ -34,9 +34,23 @@ const RED_GENERAL_TAG := "tut_red_general"
 const RED_ARCHER_TAG := "tut_red_archer"
 const HERO_TAG := "tut_hero"
 const BACK_MAP_PATH := "res://data/maps/ce_xs_1/ce_xs_1_b.json"
+## ★★ 新手教程 2（ce_xs_2）。
+const TUT2_LOCK := "tut2_intro_lock"
+const TUT2_BACK_MAP_PATH := "res://data/maps/ce_xs_2/ce_xs_2_b.json"
+const TUT2_ENEMY_ZONES := [1, 2, 3]
+const TUT2_ZONE_CENTERS := [[18, 2], [39, 21], [2, 21]]
 
 
+## 按关卡分派：同一个教程战役里 ce_xs_1 / ce_xs_2 是两条独立剧本。
 static func build(director, world) -> void:
+	var lid := String(world.level.id) if world != null and world.level != null else ""
+	if lid == "ce_xs_2":
+		_build_ce_xs_2(director, world)
+	else:
+		_build_ce_xs_1(director, world)
+
+
+static func _build_ce_xs_1(director, world) -> void:
 	director.on_start([
 		# 1) 地图左侧生成将领：玩家阵营、暂时锁定、快捷键 1 = 部队 1。
 		{"kind": "spawn_unit", "faction": "p1", "general": 11, "name": "将领",
@@ -172,3 +186,193 @@ static func _defeated(world, tag: String) -> bool:
 
 static func _red_wave_cleared(world) -> bool:
 	return _defeated(world, RED_GENERAL_TAG) and _defeated(world, RED_ARCHER_TAG)
+
+
+# ------------------------------------------------------------------
+# 新手教程 2（ce_xs_2）：夺下 c0 → 建设 → 扩图 → 占领三个区划
+# ------------------------------------------------------------------
+
+static func _build_ce_xs_2(director, world) -> void:
+	var steps: Array = [
+		# 1) 开局锁所有输入；基地由剧本摆在 (5,7)，建筑不占区（关卡字段）。
+		{"kind": "lock_input", "id": TUT2_LOCK},
+		{"kind": "spawn_building", "faction": "p1", "type": "base",
+			"spawn": {"tile": [5, 7]}, "tag": "tut2_base"},
+
+		# 2) 己方 10 个单位：2 将 + 4 枪 + 4 弓；全部自动攻击行军到 c0 中心。
+		{"kind": "spawn_unit", "faction": "p1", "general": 1,
+			"unit_type": "dy_spear_guard", "name": "协防军枪将",
+			"spawn": {"tile": [2, 6]}, "attack_move": {"tile": [8, 8]}},
+		{"kind": "spawn_unit", "faction": "p1", "general": 2,
+			"unit_type": "dy_archer_guard", "name": "协防军弓将",
+			"spawn": {"tile": [2, 8]}, "attack_move": {"tile": [8, 8]}},
+		{"kind": "spawn_unit", "faction": "p1", "unit_type": "dy_spear_guard",
+			"count": 2, "spawn": {"tile": [1, 5]}, "attack_move": {"tile": [8, 8]}},
+		{"kind": "spawn_unit", "faction": "p1", "unit_type": "dy_spear_guard",
+			"count": 2, "spawn": {"tile": [3, 5]}, "attack_move": {"tile": [8, 8]}},
+		{"kind": "spawn_unit", "faction": "p1", "unit_type": "dy_archer_guard",
+			"count": 2, "spawn": {"tile": [3, 9]}, "attack_move": {"tile": [8, 8]}},
+		{"kind": "spawn_unit", "faction": "p1", "unit_type": "dy_archer_guard",
+			"count": 2, "spawn": {"tile": [4, 9]}, "attack_move": {"tile": [8, 8]}},
+
+		# 2b) 敌方 3 个单位：枪将 + 枪 + 弓；同样攻击行军到中心。
+		{"kind": "spawn_unit", "faction": "enemy", "general": 1,
+			"unit_type": "dy_spear_guard", "name": "协防军枪将",
+			"spawn": {"tile": [11, 6]}, "attack_move": {"tile": [8, 8]}},
+		{"kind": "spawn_unit", "faction": "enemy", "unit_type": "dy_spear_guard",
+			"spawn": {"tile": [11, 7]}, "attack_move": {"tile": [8, 8]}},
+		{"kind": "spawn_unit", "faction": "enemy", "unit_type": "dy_archer_guard",
+			"spawn": {"tile": [11, 8]}, "attack_move": {"tile": [8, 8]}},
+
+		# 3) 玩家方拿下 c0 中心 → 解锁输入。
+		{"kind": "wait_until", "condition": func(): return _zone_owner(world, 0) == "p1"},
+		{"kind": "unlock_input", "id": TUT2_LOCK},
+
+		# 4) 对话 + 5) 资源
+		{"kind": "dialogue", "text": "我们终于拿下了这个地方，现在是时候休养生息了"},
+		{"kind": "grant_resources", "food": 1000, "gold": 1000},
+
+		# 6) 建设目标：6 个木墙 / 哨塔 + 2 个粮田；计数实时刷新、不重播打字机。
+		{"kind": "objective_set", "title": "建立防御0/6 建造粮田0/2",
+			"desc": "在建筑页签中选择哨塔/木墙/粮田进行建造", "quiet": true},
+		{"kind": "wait_until", "condition": func(): return _tut2_build_goal(world)},
+		{"kind": "objective_done"},
+
+		# 7) 扩图到 b；随后把其余三个区划给敌人并各放 1 将 + 6 兵（阵地 AI）。
+		{"kind": "map_expand", "map": "ce_xs_2_b", "path": TUT2_BACK_MAP_PATH,
+			"fade_sec": 0.6, "focus": {"zone": 0}, "boundary": "full"},
+		# 7b) 在 c1/c2/c3 靠 c0 的两格宽边带设置阵地 AI 禁行区；并在索敌层
+		#     禁止守军自动打自己区划外的建筑（见 combat.nearest_enemy_building）。
+		{"kind": "call", "fn": func(): _tut2_apply_border_no_go(world)},
+		{"kind": "call", "fn": func(): _tut2_assign_enemy_zones(world)},
+	]
+	# 三个区划各一个枪将 + 6 个协防军（3 枪 3 弓），绑到该区划的阵地 AI。
+	for i in TUT2_ENEMY_ZONES.size():
+		var zid: int = int(TUT2_ENEMY_ZONES[i])
+		steps.append({
+			"kind": "spawn_unit", "faction": "enemy", "general": 1,
+			"unit_type": "dy_spear_guard", "name": "协防军枪将",
+			"spawn": {"tile": TUT2_ZONE_CENTERS[i]}, "zone": zid,
+			"escort_count": 6,
+			"escort_list": [
+				"dy_spear_guard", "dy_spear_guard", "dy_spear_guard",
+				"dy_archer_guard", "dy_archer_guard", "dy_archer_guard",
+			],
+			"escort_types": [
+				{"type": "dy_spear_guard", "weight": 3},
+				{"type": "dy_archer_guard", "weight": 3},
+			],
+		})
+	# 8) 对话 + 9) 占领任务与胜利
+	steps.append_array([
+		{"kind": "dialogue", "text": "现在我们兵精粮足，正式勃勃生机万物竞发之时，扩大战果！"},
+		{"kind": "objective_set", "title": "占领剩余区划0/3", "desc": "", "quiet": true},
+		{"kind": "wait_until", "condition": func(): return _tut2_capture_goal(world)},
+		{"kind": "objective_done"},
+		{"kind": "outcome", "result": "win"},
+	])
+	director.on_start(steps, {"skippable": false})
+
+
+## 在三个敌区**靠 c0 的两格宽边带**设置禁行区（用户 2026.11.07）。
+##
+## 判据：敌区地块到 c0 任意地块的切比雪夫距离 ≤ 2。对 c1 是底部两行，
+## 对 c2/c3 是左右两列 —— 形状由地图决定，不写死坐标。禁行区只约束巡逻点；
+## “不索敌玩家建筑”由 combat.nearest_enemy_building 的守军区划过滤保证。
+static func _tut2_apply_border_no_go(world) -> void:
+	if world == null or world.zones == null:
+		return
+	var c0 = world.zone_by_id(0)
+	if c0 == null:
+		return
+	var c0_set := {}
+	for t in (c0.get("tiles", []) as Array):
+		c0_set[t] = true
+	var raw := {}
+	for zid in TUT2_ENEMY_ZONES:
+		var z = world.zone_by_id(int(zid))
+		if z == null:
+			continue
+		var band: Array = []
+		for t in (z.get("tiles", []) as Array):
+			var p: Vector2i = t
+			var near := false
+			for dy in range(-2, 3):
+				if near:
+					break
+				for dx in range(-2, 3):
+					if c0_set.has(Vector2i(p.x + dx, p.y + dy)):
+						near = true
+						break
+			if near:
+				band.append(p)
+		if not band.is_empty():
+			raw[int(zid)] = band
+	world.zones.apply_no_go(raw)
+
+
+## 把 c1/c2/c3 直接判给敌人（不是建筑占区；本关该机制已关闭）。
+static func _tut2_assign_enemy_zones(world) -> void:
+	if world == null or world.zones == null:
+		return
+	for zid in TUT2_ENEMY_ZONES:
+		var z = world.zone_by_id(int(zid))
+		if z == null:
+			continue
+		var zd: Dictionary = z
+		zd["owner"] = "enemy"
+		var by: Variant = zd.get("progress_by", null)
+		if by is Dictionary:
+			for k in (by as Dictionary).keys():
+				(by as Dictionary)[k] = 0.0
+			(by as Dictionary)["enemy"] = 1.0
+		zd["progress"] = 1.0
+		zd["capture_faction"] = ""
+		zd["capture_state"] = ""
+		zd["claimed_by"] = "story"
+	world.refresh_ownership()
+	world.refresh_zone_production()
+	world.mark_vision_dirty()
+
+
+## 建设目标：返回 true = 两项都完成；同时把 0/6、0/2 的实时计数写进目标标题。
+static func _tut2_build_goal(world) -> bool:
+	var walls := _tut2_count_buildings(world, ["wall", "tower"])
+	var farms := _tut2_count_buildings(world, ["farm"])
+	_tut2_set_title(world, "建立防御%d/6 建造粮田%d/2"
+		% [mini(walls, 6), mini(farms, 2)])
+	return walls >= 6 and farms >= 2
+
+
+## 占领目标：只数剩余三个区划（c1/c2/c3）。
+static func _tut2_capture_goal(world) -> bool:
+	var n := 0
+	for zid in TUT2_ENEMY_ZONES:
+		if _zone_owner(world, int(zid)) == "p1":
+			n += 1
+	_tut2_set_title(world, "占领剩余区划%d/3" % n)
+	return n >= 3
+
+
+static func _tut2_count_buildings(world, types: Array) -> int:
+	if world == null:
+		return 0
+	var n := 0
+	for b in world.building_list:
+		if b == null or not b.alive:
+			continue
+		if String(b.owner) != String(world.my_faction):
+			continue
+		if b.is_under_construction():
+			continue
+		if types.has(String(b.type)):
+			n += 1
+	return n
+
+
+static func _tut2_set_title(world, title: String) -> void:
+	if world == null:
+		return
+	var o: Variant = world.story_objective
+	if o is Dictionary and not (o as Dictionary).is_empty():
+		(o as Dictionary)["title"] = title

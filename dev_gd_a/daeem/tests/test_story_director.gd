@@ -21,6 +21,8 @@ class FakeHost extends RefCounted:
 	var boundary_refresh: int = 0
 	var expand_calls: Array = []
 	var resource_gains: Array = []
+	## 模拟「高亮部队」引导是否正在生效（导演据此决定对话锁放不放开 order）。
+	var guide_focus: bool = false
 
 	func _init(p_cfg = null) -> void:
 		cfg = p_cfg
@@ -30,6 +32,9 @@ class FakeHost extends RefCounted:
 
 	func story_clear_dialogue() -> void:
 		cleared += 1
+
+	func story_guide_unit_focus() -> bool:
+		return guide_focus
 
 	func story_camera_move(point: Vector2, sec: float, zoom: float, ease: String) -> void:
 		camera_moves.append({"point": point, "sec": sec, "zoom": zoom, "ease": ease})
@@ -63,6 +68,7 @@ func _cases() -> void:
 	_test_locks(cfg)
 	_test_skip(cfg)
 	_test_dialogue_modal(cfg)
+	_test_skip_dialogue_chain(cfg)
 	_test_actions(cfg)
 	_test_boundary(cfg)
 	_test_camera_steps(cfg)
@@ -192,11 +198,72 @@ func _test_dialogue_modal(cfg) -> void:
 	d.tick(0.0, [])
 	eq(host.dialogues.size(), 1, "★ 对话交给宿主")
 	ok(d.is_input_allowed("dialogue"), "★ 对话期间允许推进")
+	ok(d.is_input_allowed("select"), "★★ 对话期间允许选中（高亮部队时能点选）")
 	ok(not d.is_input_allowed("order"), "★★ 对话是模态：order 被禁止")
+	ok(not d.is_ui_blocked_except_dialogue(), "★★ 只剩对话锁时不算 UI 被挡（高亮期间撤盾）")
 	var token := int((host.dialogues[0] as Dictionary).get("token", -1))
 	d.on_dialogue_finished(token)
 	ok(not d.has_active(), "对话结束后演出继续到结束")
 	ok(d.is_input_allowed("order"), "对话结束后模态锁释放")
+
+	# ★★ 高亮部队期间开的对话：不仅允许选中，还放开移动 / 攻击指令（order）。
+	var host2 = FakeHost.new(cfg)
+	host2.guide_focus = true
+	var d2 = StoryDirectorRes.new()
+	d2.host = host2
+	d2.world = w
+	d2.on_start([{"kind": "dialogue", "text": "高亮对话"}])
+	d2.tick(0.0, [])
+	ok(d2.is_input_allowed("select"), "★★ 高亮部队的对话允许选中")
+	ok(d2.is_input_allowed("order"), "★★ 高亮部队的对话不锁移动 / 攻击")
+	ok(not d2.is_input_allowed("recruit"), "★★ 招募仍被对话锁挡住")
+
+
+## ★★ 2026.11.07：点击左侧对话框 = 跳过这一串连续对话。
+func _test_skip_dialogue_chain(cfg) -> void:
+	var w = require_world(cfg)
+	if w == null:
+		return
+	var host = FakeHost.new(cfg)
+	var d = StoryDirectorRes.new()
+	d.host = host
+	d.world = w
+	var calls: Array = []
+	d.on_start([
+		{"kind": "dialogue", "text": "第一句"},
+		{"kind": "dialogue", "text": "第二句"},
+		{"kind": "dialogue", "text": "第三句"},
+		{"kind": "call", "fn": func() -> void: calls.append("after")},
+	])
+	d.tick(0.0, [])
+	eq(host.dialogues.size(), 1, "（前提）只弹出第一句")
+	ok(d.skip_dialogue_chain(), "★★ 点击对话框跳过这一波对话")
+	eq(host.cleared, 1, "★★ 宿主收到清对话回调")
+	eq(host.dialogues.size(), 1, "★★ 后面紧接着的对话不再弹出")
+	eq(calls, ["after"], "★★ 跳到非对话步骤后正常继续")
+	ok(not d.has_active(), "跳过对话后这一段演出正常结束")
+	ok(d.is_input_allowed("order"), "★★ 跳过对话后输入锁释放")
+
+	# 跳过只覆盖「这一波」：遇到 wait 就恢复，后面的新对话照常弹。
+	var host2 = FakeHost.new(cfg)
+	var d2 = StoryDirectorRes.new()
+	d2.host = host2
+	d2.world = w
+	d2.on_condition(func() -> bool: return true, [
+		{"kind": "dialogue", "text": "开头对话"},
+		{"kind": "dialogue", "text": "同一波的第二句"},
+		{"kind": "wait", "sec": 0.5},
+		{"kind": "dialogue", "text": "等待之后的新对话"},
+	])
+	d2.tick(0.0, [])
+	eq(host2.dialogues.size(), 1, "（前提）第一句弹出")
+	ok(d2.skip_dialogue_chain(), "★★ 跳过这一波对话")
+	eq(host2.dialogues.size(), 1, "★★ 同一波的第二句不再弹出")
+	d2.tick(0.6, [])
+	eq(host2.dialogues.size(), 2, "★★ wait 结束后的新对话照常弹出")
+	if host2.dialogues.size() >= 2:
+		eq(String((host2.dialogues[1] as Dictionary).get("text", "")), "等待之后的新对话",
+			"★★ 恢复后弹出的是 wait 之后那条")
 
 
 # ------------------------------------------------------------------

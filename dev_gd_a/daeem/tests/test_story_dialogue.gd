@@ -22,6 +22,7 @@ func _cases() -> void:
 	ThemeRes.set_animations_enabled(true)
 	_test_typewriter_click(cfg)
 	_test_fast_forward_click(cfg)
+	_test_skip_request(cfg)
 	_test_auto_advance(cfg)
 	_test_queue(cfg)
 	_test_broadcast_moves_up(cfg)
@@ -61,6 +62,30 @@ func _test_fast_forward_click(cfg) -> void:
 	eq(finished, [id], "★★ 点击后对话 finished")
 	ok(not s.has_dialogue(), "点击后没有活跃对话")
 	_free_stack(s)
+
+
+## ★★ 2026.11.07：点击左侧对话框 = 请求「跳过对话」。
+##   有宿主接 `skip_requested` 时交给宿主跳过这一波；没有宿主时退化为一步快速通过。
+func _test_skip_request(cfg) -> void:
+	var s = _stack(cfg)
+	if s == null:
+		return
+	var asked: Array = []
+	s.skip_requested.connect(func(id: int) -> void: asked.append(id))
+	var id: int = s.push_dialogue("跳过这一条", {"type_sec": 0.01, "auto_sec": -1.0})
+	eq(s.request_skip_dialogue(), true, "★★ 点击对话框会发出跳过请求")
+	eq(asked, [id], "★★ 宿主收到 skip_requested(id)")
+	ok(s.has_dialogue(), "交给宿主后由宿主清对话（这里仍激活）")
+	s.free()
+
+	# 没有宿主 → 自己一步快速通过（保证点击永远有反馈）。
+	var s2 = _stack(cfg)
+	if s2 == null:
+		return
+	s2.push_dialogue("没有宿主也要能跳过", {"type_sec": 0.01, "auto_sec": -1.0})
+	eq(s2.request_skip_dialogue(), true, "★★ 没有宿主时也返回 true")
+	ok(not s2.has_dialogue(), "★★ 没有宿主时退化为一步快速通过")
+	s2.free()
 
 
 func _test_auto_advance(cfg) -> void:

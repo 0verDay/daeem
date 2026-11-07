@@ -8644,14 +8644,20 @@ tier-3 兵 10 局出场 < 2%。逐帧诊断（每 2 秒采样、300 个采样点
   关卡数据把 c0 人口设为 10 / 上限 12；`map_path` 直接指向 `ce_xs_1_a.json`，
   `map_expand` 用 `path` 指向 `ce_xs_1_b.json`。整段流程是一条 `on_start` 顺序演出，
   用 `wait_until` 等「占领 / 招满 / 击败 / 再占领」，最后 `outcome win`。
-* 主菜单：`ce_xs_1` / `ce_xs_2` 两个按钮接在 `see_ai` 下方；`ce_xs_1` 直接进教程，
-  `ce_xs_2` 只有按钮、暂无逻辑（用户口径）。
+* 教程 2：同一战役的 `ce_xs_2` 关。`ce_xs_2_a` c0 无主，基地 (5,7)，本关
+  `no_building_zone_claim` 关闭建筑占区；开局锁输入，10 vs 3 自动打 c0；占领后
+  解锁、对话、1000 资源；建设目标实时计数 6 防御 + 2 粮田；完成后偏移扩图到
+  `ce_xs_2_b`（a 是 b 中 (14,13) 起的一块，`swap_map` 自动平移），c1–c3 给敌人，
+  每区 1 将 + 6 兵阵地 AI；三敌区靠 c0 的两格边带设禁行区，守军不自动索敌区划外玩家建筑；
+  占领三区胜利。
+* 主菜单：`ce_xs_1` / `ce_xs_2` 两个按钮接在 `see_ai` 下方；两个都直接进教程战役
+  （`main.gd::_start_tutorial_level`）。
 
 ### 87.3 测试
 
 * `test_story_director` 70、`test_story_dialogue` 31、`test_story_scene` 20、
   `test_story_tags` 9、`test_story_spawn` 38、`test_story_glow` 21、
-  `test_tutorial` 53、`test_tutorial_scene` 37、
+  `test_tutorial` 53、`test_tutorial_scene` 41、`test_tutorial_ce_xs_2` 80、
   `test_map_expand` 23、`test_map_expand_scene` 9，全绿。
 * `test_base_broadcast` 67、`test_ui` 1360、`test_view3d` 335、`test_logic` 270、
   `test_path_feel` 36、`test_crowd_path` 12、`test_ai` 61、`test_campaign` 312、

@@ -1,0 +1,54 @@
+{
+  "_comment": [
+    "★★ 新手教程 2：ce_xs_2_a →（剧本扩图）ce_xs_2_b。",
+    "  · 玩家固定 p1 = 王朝；开局 c0 无主，基地由剧本摆在 (5,7)。",
+    "  · no_building_zone_claim：本关建筑**不占区** —— 基地 / 粮田 / 墙放在无主 c0 里，",
+    "    c0 仍要靠部队在中心占领；这是用户 2026.11.07 明确的口径。",
+    "  · 所有单位 / 目标 / 胜负都由 logic/story/campaigns/tutorial.gd 的 ce_xs_2 分支给出。",
+    "  · map_path 指向 ce_xs_2 目录里的 A 图；剧本扩图时换到同目录的 B 图（自动识别偏移）。"
+  ],
+  "name": "ce_xs_2",
+  "mode": "solo",
+  "map": "ce_xs_2_a",
+  "map_path": "res://data/maps/ce_xs_2/ce_xs_2_a.json",
+  "players": [
+    {
+      "faction": "p1"
+    }
+  ],
+  "factions": [
+    {
+      "id": "p1",
+      "ai": "none",
+      "clan": "dynasty",
+      "name": "王朝",
+      "color": "#ffd166",
+      "playable": true,
+      "start_food": 0,
+      "start_gold": 0
+    },
+    {
+      "id": "enemy",
+      "ai": "garrison",
+      "name": "敌军",
+      "color": "#ff5a5a",
+      "playable": false
+    }
+  ],
+  "allies": [],
+  "zones": [
+    {
+      "id": 0,
+      "owner": "",
+      "population": 20,
+      "population_cap": 40
+    }
+  ],
+  "start_units": [],
+  "start_buildings": [],
+  "objectives": [],
+  "fail_conditions": [],
+  "story_driven": true,
+  "no_player_base": true,
+  "no_building_zone_claim": true
+}

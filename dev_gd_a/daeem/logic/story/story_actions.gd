@@ -206,8 +206,10 @@ static func destroy_buildings(world, targets: Variant, silent: bool = false) -> 
 ##   name         显示名（缺省按兵种 / 将领档）
 ##   tag          可选作者标签
 ##   escort_count / escort_types  将领的附属兵（缺省 0）
+##   escort_list  可选：按顺序精确指定附属兵兵种（如 3 枪 + 3 弓；长度不足走权重）
 ##   hotkey       快捷键（教程用 "1" 表示「部队 1」）
 ##   locked       true = 玩家暂时不能选中 / 指挥（见 `Unit.story_locked`）
+##   zone         可选：绑到某个区划（阵地性 AI 的 `garrison_zone_id`；队长会带动附属兵）
 ##   attack_move  可选目标描述：生成后整队向该点行军攻击
 ##   red_dot_wave true = 推一条 `red_dot_wave`（小地图红点生成动效）
 ##   announce     true = 推一条 `unit_recruited`（默认静默）
@@ -296,6 +298,11 @@ static func _create_story_unit(world, faction: String, step: Dictionary,
 	if u == null:
 		return null
 	u.tag = String(step.get("tag", "")).strip_edges()
+	# ★★ 2026.11.07：把生成单位绑到某个区划（阵地性 AI 用）。附属兵会继承队长的区划。
+	var gz := int(step.get("zone", -1))
+	if gz >= 0:
+		u.garrison_zone_id = gz
+		u.hold_position = true
 	world.units.append(u)
 	world.mark_vision_dirty()
 	if is_leader:
@@ -303,8 +310,13 @@ static func _create_story_unit(world, faction: String, step: Dictionary,
 		var etypes: Variant = step.get("escort_types", [])
 		u.retinue_target = ec
 		u.retinue_types = etypes if typeof(etypes) == TYPE_ARRAY else []
+		var forced: Array = []
+		var elist: Variant = step.get("escort_list", null)
+		if typeof(elist) == TYPE_ARRAY:
+			for t in (elist as Array):
+				forced.append(String(t))
 		if ec > 0:
-			world.fill_general_retinue(u, ec, u.retinue_types)
+			world.fill_general_retinue(u, ec, u.retinue_types, forced)
 	return u
 
 
@@ -585,7 +597,8 @@ static func _zone_center_building(world, zid: int):
 # ------------------------------------------------------------------
 
 ## 设置左上角目标面板显示的**剧情目标**。
-## 字段：`title`、`desc`、`state`（缺省 running）、`zone`（缺省 0，仅占位）。
+## 字段：`title`、`desc`、`state`（缺省 running）、`zone`（缺省 0，仅占位）、
+##       `quiet`（true = 文案变化时不重播打字机，用于实时计数）。
 static func set_story_objective(world, step: Dictionary) -> void:
 	if world == null:
 		return
@@ -598,6 +611,7 @@ static func set_story_objective(world, step: Dictionary) -> void:
 		"title": String(step.get("title", "")).strip_edges(),
 		"desc": String(step.get("desc", "")).strip_edges(),
 		"state": String(step.get("state", "running")).strip_edges(),
+		"quiet": bool(step.get("quiet", false)),
 	}
 
 

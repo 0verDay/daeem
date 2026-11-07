@@ -1,4 +1,4 @@
-# dev_plan_15 —— 战役演出系统（前置框架）
+﻿# dev_plan_15 —— 战役演出系统（前置框架）
 
 > 状态：**已实现（2026-11-06）**。实现与本文的差异见文末「实现状态」。
 > 目标：做一个**可复用、不暴露编辑器**的演出模块；剧本在战役代码里写死。
@@ -14,12 +14,12 @@
 |---|---|
 | 触发方式 | **B：事件触发**（时间点、区划易主、单位死亡、建筑被毁、目标进度、玩家命令等）。触发后跑一段线性演出。 |
 | 合作模式 | **A：只做单人战役**。合作模式不跑演出。 |
-| 输入锁粒度 | 按**动作类别** allowlist：`camera / select / order / recruit / build / tech / upgrade / revive / ui / pause`；对话额外有 `dialogue / skip`。 |
+| 输入锁粒度 | 按**动作类别** allowlist：`camera / select / order / recruit / build / tech / upgrade / revive / ui / pause`；对话额外有 `dialogue / skip / select`（高亮部队时再加 `order`，能选中并直接移动）。 |
 | 跳过演出 | 允许。点击对话继续算允许输入。**必须玩家操作才能结束的演出不可跳过**。 |
 | 镜头 | 目标支持格 / 单位 / 建筑 / 区划中心；要时长、缓动、缩放；移动后可选「继续锁定」或「跟随目标」。镜头锁定时小地图、F、Home、边缘滚屏全部禁用。 |
 | 地图边界 | **B + D**：B = 单位 / 建筑可活动范围；D = 真正的**换一张更大的地图**（旧状态保留，黑屏转场，只允许扩大）。 |
 | 目标引用 | 接受在 `start_units` / `start_buildings` 里加可选 `tag`，编辑器**不显示**但读写原样保留。击杀 / 摧毁支持正常流程 / 静默流程。**不强制摧毁大本营**。 |
-| 对话 | 点击 / 空格继续；脚本推进；默认定时自动推进；打字机，点击第一次跳过逐字、第二次跳过整条；多条排队；和播报同一套栈，对话出现时播报上移；**模态**。 |
+| 对话 | 点击左侧对话框 = **跳过这一波对话**（不弹后续 `dialogue`，其它步骤照常执行，遇到 wait 恢复）；空格 / 回车逐条推进（先补全逐字、再推进）；脚本推进；默认定时自动推进；多条排队；和播报同一套栈，对话出现时播报上移；**模态**。 |
 | 资源 | 只给**本机玩家**；只给粮食 / 黄金；直接加资源池；要飘字 + 播报。 |
 | 代码组织 | **一个战役一个剧本文件**；本轮做到 B（全部效果 + 测试，不接关卡）。 |
 | 测试 | 无头单测；不做截图测试。 |
@@ -157,14 +157,14 @@ static func build(d, world) -> void:
 | `camera_follow` | `target` | 移动结束后继续跟随目标 |
 | `map_boundary` | `rect: [x,y,w,h]` 或 `full: true` | 设置**玩法边界**（单位 / 建筑可活动范围） |
 | `map_boundary_expand` | `rect` | 只允许**包含旧边界**的新矩形；否则报错不执行 |
-| `map_expand` | `map: "<map_id>"`, `path?`, `fade_sec?`, `focus?`, `boundary?` | 黑屏换到更大的地图；`path` 可直接指定地图文件 |
+| `map_expand` | `map: "<map_id>"`, `path?`, `fade_sec?`, `focus?`, `boundary?` | 黑屏换到更大的地图；`path` 可直接指定地图文件；旧图在新图里**任意唯一位置**都可以（自动识别偏移并平移） |
 | `grant_resources` | `food?`, `gold?` | **只给本机玩家**；直接加资源池（`faction` 保留键但会被忽略） |
 | `kill_units` | `targets: [目标], silent?: bool` | 强制击杀 |
 | `destroy_buildings` | `targets: [目标], silent?: bool` | 强制摧毁（大本营会被拒绝） |
 | `spawn_red_dot` | `faction`, `spawn`, `target`, `count?`, `general?`, `general_weights?`, `escort_count?`, `escort_types?`, `name?`, `tag?`, `wave?` | 生成红点将领（默认满编附属兵）并向 target 行军攻击；推 `red_dot_wave` |
-| `spawn_unit` | `faction`, `unit_type`, `count?`, `spawn`, `general?`, `name?`, `tag?`, `escort_count?`, `escort_types?`, `hotkey?`, `locked?`, `attack_move?`, `red_dot_wave?`, `announce?` | 生成普通单位 / 将领；默认静默；可锁定控制权 / 生成后行军 |
+| `spawn_unit` | `faction`, `unit_type`, `count?`, `spawn`, `general?`, `name?`, `tag?`, `zone?`, `escort_count?`, `escort_types?`, `escort_list?`, `hotkey?`, `locked?`, `attack_move?`, `red_dot_wave?`, `announce?` | 生成普通单位 / 将领；默认静默；`zone` 绑阵地 AI 区划；`escort_list` 精确指定附属兵；可锁定控制权 / 生成后行军 |
 | `spawn_building` | `faction`, `type`, `spawn`, `tag?`, `announce?` | 生成建筑；默认跳过建造读条、静默 |
-| `glow_object` | `targets`, `color?`, `period?`, `duration?`, `strength?`, `id?` | 给单位 / 建筑 / 区划中心加呼吸泛光（金色外轮廓 + 地面光环 + 向外波纹） |
+| `glow_object` | `targets`, `color?`, `period?`, `duration?`, `strength?`, `id?` | 给单位 / 建筑 / 区划中心加呼吸泛光（金色外轮廓 + **持续向外扩散的圆环**；无常驻光环） |
 | `glow_zone` | `zone`/`zones`, `color?`, `period?`, `duration?`, `strength?`, `id?` | 给整个区划的占领范围 + 区划中心加呼吸高亮 |
 | `stop_glow` | `targets?`, `zones?`, `id?` | 停止泛光；都不写 = 清掉全场 |
 | `glow_command_card` | `unit_kind` | 让命令卡中对应兵种格呼吸高亮（描边 + 方形波纹；空串 = 关闭） |
@@ -176,7 +176,7 @@ static func build(d, world) -> void:
 | `unit_control` | `targets`, `locked?` | 暂时锁定 / 放开玩家对单位的控制 |
 | `set_var` | `key`, `value` | 写剧本临时变量（`world.story_vars`） |
 | `outcome` | `result: "win"/"lose"`, `reason?` | 剧情判胜 / 判负（走正常结算） |
-| `dialogue` | `text`, `auto_sec?`, `type_sec?`, `skippable?` | 弹出对话并等待推进 |
+| `dialogue` | `text`, `auto_sec?`, `type_sec?`, `skippable?` | 弹出对话并等待推进；点击对话框可跳过这一波对话 |
 | `wait_until` | `condition: Callable`, `skippable?: bool` | 等玩家操作 / 条件成立；可标记不可跳过 |
 | `call` | `fn: Callable` | 调一段战役专属逻辑 |
 | `end` | — | 立即结束当前演出 |
@@ -193,7 +193,7 @@ static func build(d, world) -> void:
 
 - `Esc` = 请求跳过当前演出。
 - 演出 `skippable: false`，或当前步骤是 `wait_until` 且 `skippable: false` → 忽略跳过请求。
-- 对话正在逐字 → **第一次点击 / 空格**补全整条；**第二次**推进下一条。
+- 对话正在逐字 → **点击**直接跳过这一波对话；**空格 / 回车**仍是两步（先补全、再推进下一条）。
 - `Esc` 不参与「补全逐字」，它直接请求跳过整段演出（可跳过时）。
 - 不可跳过的演出可以给玩家一个允许输入（例如 `allow: ["select", "order"]`）去完成条件。
 
@@ -239,8 +239,9 @@ skip     Esc 跳过演出
 - HUD 按钮：`ui` 不被允许时，在 HUD 上方显示一层全屏 `StoryShield`（`MOUSE_FILTER_STOP`），
   挡住所有 GUI；`ui` 被允许时，按钮能点，但最终命令仍会在 `input_controller` 的动作闸门被拦。
 - 暂停：`pause` 不被允许时，`P` / `Esc` 暂停被吃掉。
-- 对话模态：对话显示期间自动压入一把 `{allow: ["dialogue", "skip"]}` 的锁 + 全屏盾；
-  对话框自身在盾之上，接收点击 / 空格推进。
+- 对话模态：对话显示期间自动压入一把 `{allow: ["dialogue", "skip", "select"]}` 的锁；
+  如果这条对话是在**高亮部队引导**期间开的，再加 `order`（允许选中后直接移动 / 攻击），
+  并且整条对话期间都撤掉全屏盾 —— 即使选中后引导收掉，也不重新盖上。
 
 > ⚠️ 全屏盾只负责「连 HUD 按钮也点不到」；细粒度 allowlist 仍由动作闸门负责。
 > 两者不能互相替代。
@@ -319,6 +320,9 @@ func reset_active_rect() -> void
 - `map_boundary` 只改 `active_rect`，不换地图。
 - `map_expand` 换到更大的地图后，默认 `active_rect = 新地图整图`；
   也可以在步骤里再给 `boundary` 指定一个更小的矩形。
+- ★ 旧地图**不必贴在新地图左上角**：`swap_map` 会搜索旧图区域在新图里的唯一位置
+  （先试 0,0 保持老图行为），再把单位 / 建筑 / 路径整体平移。`ce_xs_2_a` 就是
+  `ce_xs_2_b` 中 (14,13) 起的一块。
 - `map_boundary_expand` 只允许新矩形**包含旧矩形**；否则 `push_error` 并跳过该步骤。
 
 ---
@@ -439,9 +443,10 @@ row = {
 ```
 
 - 布局从下往上：最新一行在最下面；每行高度不同，按累计高度重排。
-- 播报行 `mouse_filter = IGNORE`；对话行 `MOUSE_FILTER_STOP`，点击 / 空格推进。
+- 播报行 `mouse_filter = IGNORE`；对话行 `MOUSE_FILTER_STOP`，**点击 = 跳过这一波对话**，空格 / 回车逐条推进。
 - 对话出现时，已有播报**整体上移**（和现在新播报顶旧播报同一套 reflow）。
-- 对话是**模态**：显示期间通知栈 `z_index = 310`，全屏盾 `z_index = 300`。
+- 对话是**模态**：显示期间通知栈 `z_index = 310`，全屏盾 `z_index = 300`；
+  高亮部队引导生效时撤盾，并允许 `select` / `order`（见 5. 输入锁）。
 - 队列：同一时刻只显示一条**未读**对话；推进后它上浮淡出，下一条从下方出现，
   旧对话 / 播报继续上移。最多保留 `story.dialogue.history_max` 条历史行。
 
@@ -450,11 +455,12 @@ row = {
 ```
 出现 → 逐字（type_sec/字）
      → 逐字完成
-     → 等待：点击 / 空格 / 脚本推进 / auto_sec 到期
+     → 等待：点击（跳过这一波） / 空格（逐条推进） / 脚本推进 / auto_sec 到期
      → 推进：当前行上浮淡出，下一条（或结束）
 ```
 
-- 点击 / 空格：
+- 点击：跳过这一波对话（跳过当前行 + 这一波里后续的 `dialogue`；遇到 wait 恢复）。
+- 空格 / 回车：
   - 逐字未完成 → **补全整条**；
   - 逐字已完成 → **推进下一条**。
 - `auto_sec` 从**逐字完成**开始计时；`auto_sec <= 0` = 不自动推进。
@@ -547,7 +553,7 @@ row = {
 | `story.dialogue.pad_y` | `12` | 对话上下内边距 |
 | `story.skip.key` | `"Escape"` | 跳过演出的按键（`space` / `enter` / `q` 也认） |
 | `story.camera.move_sec` | `1.2` | 默认镜头移动时长 |
-| `render.story_glow_*` | 见 config | 呼吸泛光的颜色 / 本体强度 / 光环尺寸 / 外壳倍率（`_story_glow_comment`） |
+| `render.story_glow_*` | 见 config | 呼吸泛光的颜色 / 本体强度 / 圆环尺寸 / 扩散节奏 / 外壳倍率（`_story_glow_comment`） |
 | `story.camera.ease` | `"cubic"` | 缓动（`linear` / `cubic`） |
 | `story.map_expand.fade_out_sec` | `0.5` | 换图黑屏淡出 |
 | `story.map_expand.fade_in_sec` | `0.5` | 换图黑屏淡入 |
@@ -574,7 +580,7 @@ row = {
 | `logic/story/story_consts.gd` | 动作 / 步骤 / 事件常量 |
 | `logic/story/campaigns/demo.gd` | 样例剧本骨架（本轮不接内容） |
 | `view/notice_stack.gd` | 播报 + 对话通用栈 |
-| `view/story_glow_view.gd` | 呼吸泛光：地面光环 + 建筑外壳 |
+| `view/story_glow_view.gd` | 呼吸泛光：持续向外扩散的圆环 + 建筑外壳（**无常驻光环**） |
 | `view/story_glow_shell.gdshader` | 建筑泛光外壳（反向壳） |
 | （HUD 内）`StoryShield` | 模态 / UI 锁全屏盾（建在 `view/hud.gd` 里，不单独成文件） |
 | `tests/test_story_director.gd` | 触发器 / 队列 / 锁 / 跳过 / 资源 / 击杀 / 摧毁 / 边界 |
@@ -584,8 +590,9 @@ row = {
 | `tests/test_story_spawn.gd` | 红点 / 单位 / 将领 / 建筑生成 + 导演步骤分发 |
 | `tests/test_story_glow.gd` | 泛光状态 / 曲线 / 停止 / 时长 |
 | `tests/test_tutorial.gd` | 教程 1 数据 / 剧本 / 21 步纯逻辑流程 |
-| `tests/test_tutorial_scene.gd` | 教程 1 与 3D 场景 / HUD / 目标面板接线 |
-| `tests/test_map_expand.gd` | `world.swap_map` 校验与状态保留 |
+| `tests/test_tutorial_scene.gd` | 教程 1 与 3D 场景 / HUD / 目标面板接线（含 quiet 计数） |
+| `tests/test_tutorial_ce_xs_2.gd` | 教程 2 数据 / 剧本 / 初始 10 vs 3 / 建设计数 / 偏移扩图 / 三区守军 / 胜利 |
+| `tests/test_map_expand.gd` | `world.swap_map` 校验与状态保留（含偏移换图） |
 | `tests/test_map_expand_scene.gd` | 换图后视图层重建冒烟 |
 
 ### 修改
@@ -628,11 +635,12 @@ row = {
 ### 13.2 `test_story_dialogue.gd`
 
 - 播报 / 对话共用栈；新行在下、旧行上移；
-- 对话逐字：`type_sec` 推进；点击第一次补全、第二次推进；
+- 对话逐字：`type_sec` 推进；点击跳过这一波、空格 / 回车逐条推进；
 - `auto_sec` 到期自动推进；
 - 多条对话排队：同一时刻只有一条未读；
 - 对话出现时播报上移；
-- 模态：对话期间 `is_input_allowed("order") == false`，`"dialogue" == true`；
+- 模态：普通对话期间 `is_input_allowed("order") == false`，`"dialogue" == true`；
+  高亮部队期间开的对话额外允许 `select` / `order`；
 - 脚本 `advance_dialogue()` 立刻推进；
 - 关闭动画时直接完成，不留下半透明行。
 
@@ -658,6 +666,7 @@ row = {
 在测试里临时写两张小地图 JSON（`user://` 或 `tests/` 临时目录）：
 
 - 小图 6×6 → 大图 8×8，旧区域地形 / exists 一致；
+- 旧图不贴左上角时，按唯一偏移平移单位 / 建筑 / 路径（`ce_xs_2_a` → `ce_xs_2_b` 的 (14,13)）；
 - 放单位、建筑、区划归属、资源、科技、时间；
 - `swap_map()` 后：地图尺寸变大、旧区域逐格一致、单位 / 建筑 / 区划 / 资源 / 科技 / 时间保留；
 - 新区域区划中心补建、旧中心不重复；
@@ -727,9 +736,9 @@ row = {
 
 | 项 | 状态 |
 |---|---|
-| 导演 / 触发器 / 队列 / 输入锁 / 跳过 | ✅ `logic/story/story_director.gd`；`test_story_director.gd` 70 项（新步骤分发自 `test_story_spawn.gd`） |
-| 播报 + 对话通知栈 | ✅ `view/notice_stack.gd`；`broadcast_banner.gd` 保留为兼容子类；`test_base_broadcast.gd` 67 项 + `test_story_dialogue.gd` **31** 项 |
-| 场景 / HUD 接线 | ✅ `game_scene3d` 的 `story_*` 宿主方法、输入闸门、镜头、黑屏；`test_story_scene.gd` **20** 项 |
+| 导演 / 触发器 / 队列 / 输入锁 / 跳过 | ✅ `logic/story/story_director.gd`；`test_story_director.gd` 88 项（新步骤分发自 `test_story_spawn.gd`） |
+| 播报 + 对话通知栈 | ✅ `view/notice_stack.gd`；`broadcast_banner.gd` 保留为兼容子类；`test_base_broadcast.gd` 67 项 + `test_story_dialogue.gd` **36** 项 |
+| 场景 / HUD 接线 | ✅ `game_scene3d` 的 `story_*` 宿主方法、输入闸门、镜头、黑屏；`test_story_scene.gd` **35** 项 |
 | 给资源 / 击杀 / 摧毁 / tag 目标解析 | ✅ `logic/story/story_actions.gd` + `world.story_*`；`test_story_tags.gd` 9 项 |
 | 红点 / 单位 / 将领 / 建筑生成 | ✅ `spawn_red_dot` / `spawn_unit` / `spawn_building`；`test_story_spawn.gd` 38 项 |
 | 呼吸泛光 | ✅ `story_glow.gd` + `view/story_glow_view.gd` + `unit_flash.gdshader`；`test_story_glow.gd` 21 项 |
@@ -737,8 +746,8 @@ row = {
 | 地图扩展（D） | ✅ `world.swap_map` + 视图重建 + 黑屏；`test_map_expand.gd` 23 项 + `test_map_expand_scene.gd` 9 项 |
 | 配置 | ✅ `data/config.json` 的 `story` 段（含 `objective` / `dialogue.exit_rise`） |
 | 编辑器 tag 保留 | ✅ `tools/campaign_editor/model.py` 读写 `tag`（不显示 UI） |
-| **新手教程 1** | ✅ `data/campaigns/tutorial/` + `logic/story/campaigns/tutorial.gd`；21 步完整流程；`test_tutorial.gd` 53 项 + `test_tutorial_scene.gd` **37** 项 |
-| **新手教程 2** | ⏳ 只有主菜单 `ce_xs_2` 按钮，点击无逻辑（用户口径） |
+| **新手教程 1** | ✅ `data/campaigns/tutorial/` + `logic/story/campaigns/tutorial.gd`；21 步完整流程；`test_tutorial.gd` 53 项 + `test_tutorial_scene.gd` **41** 项 |
+| **新手教程 2** | ✅ 同一教程战役的 ce_xs_2 关：c0 无主 / 建筑不占区 → 初始 10 vs 3 → 建设 6+2 → 偏移扩图 → 三区守军 → 占领三区胜利；`test_tutorial_ce_xs_2.gd` 80 项 |
 
 ### 17.1 新手教程 1（ce_xs_1）
 
@@ -754,21 +763,25 @@ row = {
   - 红点「行军目标 = 出生点」用 `spawn_unit.attack_move` 实现
   - 第 16 步用 `input_policy.block_single_right_click` 只挡单击右键，保留双击行军
 - 主菜单入口：`view/menu_deck.gd` / `start_screen.gd` / `main.gd`
-  - `ce_xs_1` 直接进教程；`ce_xs_2` 只有按钮、暂无逻辑
+  - `ce_xs_1` / `ce_xs_2` 都直接进教程战役；`main.gd` 用 `_start_tutorial_level(level_id)` 共用开局
 
 ### 17.2 2026-11-06 追加的演出表现
 
 - **呼吸泛光加强**：
-  - 单位 / 建筑地面圆环：亮度呼吸 + **由内向外扩散的圆环波纹**（参考右键目标圆环）
+  - 单位 / 建筑：**不再画常驻地面光环**，只保留由内向外扩散的圆环 ——
+    默认 **1 圈 / 2.4 秒一次**（`ripple_count` / `ripple_sec` 可调；2026-11-07 按用户要求从 3 圈降到 1 圈）
   - 命令卡 / 页签的方形按钮：描边 + 淡金底呼吸 + **向外扩散的方形波纹**
   - 区划范围：填充 / 边界增亮
-  - 配置：`render.story_glow_strength` / `story_glow_ripple_*` / `story_glow_ring_alpha`
+  - 配置：`render.story_glow_strength` / `story_glow_ripple_scale_from|to` /
+    `story_glow_ripple_sec` / `story_glow_ripple_count` / `story_glow_ripple_alpha`
 - **目标面板**：
   - 新目标逐字打字机（标题 → 描述；布局按完整文本量，不跳）
-  - 完成时一条线从左往右划过每一行文字
+  - 完成时一条线从左往右划过每一行文字，**长度按该行文字实际宽度**（不再划到面板尾部）
+  - **新目标出现时旧划线立刻清掉**（2026-11-07 修）
+  - `quiet: true` 的计数目标：标题实时更新时**不重播打字机**
   - 配置：`story.objective.type_sec` / `strike_sec`
 - **对话**：
-  - 点击对话行 = 一步快速通过（补全打字 + 立即退场）
+  - 点击对话行 = **跳过这一波对话**（同一波后续对话不再弹；遇到 `wait` / `wait_until` 恢复，`空格/回车` 仍是逐条推进）
   - 退场上移 48px；下一条等旧对话完全退场后才出现（不再覆盖）
   - 配置：`story.dialogue.exit_rise`
 - **教程引导**：
@@ -778,10 +791,34 @@ row = {
   - 选中部队 + 切到单位页后自动收掉
   - 说明：「单位」页签只在选中单位后存在，所以没选单位时先亮部队
 
+### 17.3 新手教程 2（ce_xs_2，2026-11-07）
+
+- 地图：`ce_xs_2_a`（14×11，c0 中心 8,7）→（剧本扩图）`ce_xs_2_b`（42×24，4 个区划）。
+- **偏移扩图**：`ce_xs_2_a` 恰好是 `ce_xs_2_b` 从 (14,13) 开始的一块；
+  `world.swap_map` 现在会先找旧图在新图里的**唯一**偏移（先试 0,0 保持老图行为），
+  再把单位坐标 / 路径 / 目标、建筑、弹道整体平移；区划状态仍按 id 保留。
+  `test_tutorial_ce_xs_2` 钉住 `c0 中心 (8,7) → (22,20)`、基地 `(5,7) → (19,20)`。
+- 关卡：`data/campaigns/tutorial/levels/ce_xs_2.json`
+  - 玩家固定 `p1` = 王朝；`no_player_base: true`，基地由剧本摆在 (5,7)
+  - **`no_building_zone_claim: true`**：本关基地 / 粮田 / 墙放在无主 c0 里也不会把 c0 收归自己
+  - `enemy` 阵营 `ai: "garrison"`，开局没有自动单位；三个守军由剧本生成
+- 流程：
+  1. 锁输入；基地 (5,7)；己方 10 个单位（2 将 + 4 枪 + 4 弓）、敌方 3 个（枪将 + 枪 + 弓），双方行军到 c0 中心附近（8,8，中心格被区划中心建筑占住）
+  2. 玩家占领 c0 → 解锁输入
+  3. 对话「我们终于拿下了这个地方，现在是时候休养生息了」→ 1000 粮 / 1000 金
+  4. 目标「建立防御0/6 建造粮田0/2」：`quiet` 实时计数；6 个木墙 / 哨塔 + 2 个粮田
+  5. 完成后偏移扩图到 b；c1/c2/c3 判给 enemy；每区生成 1 个协防军枪将 + 6 个协防军（3 枪 3 弓），`garrison_zone_id` 绑该区
+     - 同时把三敌区**靠 c0 的两格宽边带**设为 `no_go`（c1 底部两行、c2/c3 左右两列，按切比雪夫距离 ≤2 计算）
+     - `combat.nearest_enemy_building` 对**阵地守军**只认自己 `garrison_zone_id` 内的建筑：玩家在 c0 的塔 / 墙 / 基地不会被守军自动索敌（手动点名仍可打）
+  6. 对话「现在我们兵精粮足，正式勃勃生机万物竞发之时，扩大战果！」→ 目标「占领剩余区划0/3」
+  7. 占领 c1/c2/c3 → 胜利
+- 目标面板：新增 `objective_set.quiet`；为 true 时文本变化（计数）不再重播打字机。
+- 生成单位：`spawn_unit.zone` 可绑 `garrison_zone_id`（阵地 AI），附属兵自动继承队长的区划。
+- 其他关 / 自由对战的「建筑占区」规则不变（`zone_owned_by_building` 仍是全局默认 true）。
+
 **已知未覆盖 / 后续：**
 
 - 合作模式不启用演出（本轮口径）。
 - 编辑器里的演出编辑器 / 触发器 UI 不做。
-- 教程 2 只有按钮、没有关卡 / 剧本。
 - AI 控制器内部状态：原地换图保留同一个 `World` 与 AI 对象；没有做「换图前后 AI 行为的专项回归」，由实际关卡验收。
 - 对话头像 / 说话人立绘 / 语音 / 分支选项不做。

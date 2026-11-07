@@ -20,6 +20,9 @@ extends Control
 
 signal dialogue_started(id: int)
 signal dialogue_finished(id: int)
+## 玩家点击对话框、请求「跳过对话」。HUD / 演出接走就跳过这一波；
+## 没有连接时本组件退回 `fast_forward_dialogue()`（一步快速通过）。
+signal skip_requested(id: int)
 
 const UiLayoutRes = preload("res://view/ui_layout.gd")
 const UiStyleRes = preload("res://view/ui_style.gd")
@@ -213,6 +216,20 @@ func fast_forward_dialogue() -> bool:
 	if not bool(row.get("type_done", true)):
 		_complete_typing(row)
 	_finish_dialogue_row(row)
+	return true
+
+
+## 点击对话行 / 宿主请求「跳过对话」。
+##
+## ★ 有 HUD / 演出接 `skip_requested` 时交给它们跳过这一波（同一波里的几句一起没）；
+##   没有宿主时退回本组件的一步快速通过，保证点击永远有反馈。
+func request_skip_dialogue() -> bool:
+	if _active_dialogue == null:
+		return false
+	if skip_requested.get_connections().is_empty():
+		return fast_forward_dialogue()
+	var id := int((_active_dialogue as Dictionary).get("id", -1))
+	skip_requested.emit(id)
 	return true
 
 
@@ -656,12 +673,17 @@ func _trim_dialogue_history() -> void:
 			break
 
 
-func _on_dialogue_gui_input(event: InputEvent, row: Dictionary) -> void:
+func _on_dialogue_gui_input(event: InputEvent, row: Control) -> void:
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
 		if mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
-			if row == _active_dialogue:
-				fast_forward_dialogue()
+			# ★ 2026.11.07：这里绑定的是**行控件**（`row`），不是行字典。
+			#   原来参数写成 `Dictionary` + 拿 `row` 和 `_active_dialogue` 比，
+			#   点击时 Godot 直接报「Cannot convert argument 2 from Object to Dictionary」，
+			#   所以对话框怎么点都没反应；改成按控件身份找当前活跃行。
+			if _active_dialogue != null and row == (_active_dialogue as Dictionary).get("row"):
+				# 点击左侧对话框 = 跳过这一波对话。
+				request_skip_dialogue()
 				accept_event()
 				return
 

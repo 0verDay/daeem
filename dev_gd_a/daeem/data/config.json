@@ -250,17 +250,21 @@
       "★★ 演出呼吸泛光（logic/story/story_actions.gd 的 glow_object）：",
       "  · color = 默认金色；剧本可写 \"faction\" 或 #rrggbb；",
       "  · strength = 单位本体的金色混合强度；",
-      "  · unit/building_ring_size = 地面光环的直径（格）；ring_alpha = 光环峰值透明度；",
-      "  · shell_scale / shell_alpha = 建筑外壳放大倍率 / 峰值透明度（区划中心只画光环）。"
+      "  · unit/building_ring_size = 向外扩散圆环的基准直径（格）；",
+      "  · ripple_sec = 一个圆环从中心扩到最大的时长（秒）；ripple_count = 同时存在几圈（相位均分；默认 1 圈 / 2.4s 一次，调大更密）",
+      "  · ripple_alpha = 圆环峰值透明度；ripple_scale_from/to = 扩散起止倍率；",
+      "  · shell_scale / shell_alpha = 建筑外壳放大倍率 / 峰值透明度（区划中心只画圆环）。",
+      "  ★ 2026.11.07：不再画常驻地面光环，只保留持续向外扩散的圆环。"
     ],
     "story_glow_color": "#ffd166",
     "story_glow_strength": 0.9,
     "story_glow_unit_ring_size": 0.9,
     "story_glow_building_ring_size": 1.3,
-    "story_glow_ring_alpha": 1.0,
     "story_glow_shell_scale": 1.06,
     "story_glow_shell_alpha": 0.7,
-    "story_glow_ripple_alpha": 0.9,
+    "story_glow_ripple_alpha": 0.7,
+    "story_glow_ripple_sec": 2.4,
+    "story_glow_ripple_count": 1,
     "story_glow_ripple_scale_from": 0.35,
     "story_glow_ripple_scale_to": 2.1,
     "_unit_outline_comment": [
@@ -2254,7 +2258,8 @@
       "区块内只要存在己方建筑就直接归己方。",
       "★ 副作用（照搬 HTML 版，可玩性以后再说）：大本营会让**整个区块瞬间**归己方，",
       "  于是出生区的「站一会儿占领」玩法在那个区块里失效。第 0 轮先保持，",
-      "  想关掉就把这里改成 false。"
+      "  想关掉就把这里改成 false。",
+      "  ★ 关卡级：level JSON 写 `no_building_zone_claim: true` 只关这一关（ce_xs_2 用）。"
     ],
     "zone_owned_by_building": true,
     "_population_cap_comment": [
