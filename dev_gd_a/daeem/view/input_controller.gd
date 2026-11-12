@@ -23,6 +23,8 @@ const ConfigRes = preload("res://logic/config.gd")
 const PaletteRes = preload("res://view/palette.gd")
 const CommandRes = preload("res://logic/command_processor.gd")
 const FactionRes = preload("res://logic/faction.gd")
+## ★ O4：拖建时按格预扣费用（与 command_processor.apply_build 同一个 `EconomyRes`）。
+const EconomyRes = preload("res://logic/economy.gd")
 ## ★ 只为 `TYPE_ZONE_CENTER`：点中区划中心时走「看区划详情」那条路。
 const BuildingRes = preload("res://logic/building.gd")
 ## ★ 数字键 1..N 的 N（= 右栏槽数）：只在这里读一次，别再写死循环次数。
@@ -252,6 +254,27 @@ var _drag_press_screen: Vector2 = Vector2.ZERO
 ##    相机一动它就会在屏幕上漂 —— 那就是「右上角起点自己跑」的根因。
 var _drag_freeze_cam: bool = false
 
+## ★★ O4：城墙拖建（仅 `wall` / `stone_wall`；由 config 的 `building.<type>.drag_build` 开关）。
+##   · 按下：记起点，**不立刻建**；
+##   · 拖动：按 Bresenham 直线逐格预览（`overlay` 读 `build_drag_tiles()`）；
+##   · 松手：从起点到终点逐格下发 `build`，资源不足就停（后面的格不再发）。
+var build_drag_active: bool = false
+var build_drag_start: Vector2i = Vector2i(-1, -1)
+var build_drag_current: Vector2i = Vector2i(-1, -1)
+var _build_drag_tiles: Array[Vector2i] = []
+## 一条拖建最多下发多少格（防止一拖 300 格把命令帧塞爆）。
+const BUILD_DRAG_MAX_TILES := 64
+
+## ★★ S1：左键**按下那一刻**的选中快照（拖框取消时恢复）。
+##
+## 为什么需要它：左键的单击行为在**按下**就发生了（这是跟手的关键），
+## 而拖框要等松手才生效。于是「按下 → 开始拖 → 按 Esc 反悔」时，
+## 按下那一下可能已经把原来的选中改掉 / 清空了；`_cancel_drag()` 只清拖框状态
+## 是恢复不了的（旧注释写「不动已有选中」，实际做不到）。
+## 现在按下时存一份完整快照，Esc 取消时按原样恢复。
+var _press_sel_snapshot: Dictionary = {}
+var _press_sel_saved: bool = false
+
 ## ★★ 鼠标**中键拖拽平移**视角（按住中键拖动 = 抓着地图拖）。
 ##   · 与框选那条状态机**互斥**（不同按键），优先级见 `handle_mouse_motion`；
 ##   · 拖拽期间要压住**边缘滚屏**，否则鼠标拖到屏幕边缘时两者会抢同一台相机
@@ -304,6 +327,9 @@ func setup(p_cfg: ConfigRes, p_world, p_camera_rig, p_palette = null,
 	_drag_freeze_cam = false
 	_pan_pending = false
 	_touch_panning = false
+	_press_sel_snapshot = {}
+	_press_sel_saved = false
+	_clear_build_drag()
 	reset_general_gestures()
 
 
@@ -543,7 +569,7 @@ func handle_key(event: InputEventKey) -> bool:
 				if not _action_ok("order"):
 					return true
 				set_order_mode("")          # 命令模式：Esc = 放弃这次指令
-			elif _drag_pending or drag_active:
+			elif _drag_pending or drag_active or build_drag_active:
 				if not _action_ok("select"):
 					return true
 				_cancel_drag()          # 拖到一半按 Esc = 放弃这次框选（不动已有选中）
@@ -606,7 +632,9 @@ func handle_mouse_button(event: InputEventMouseButton) -> bool:
 			_begin_drag(event)
 			# 单击行为照旧**在按下那一刻**发生（不改老手感、老测试）：
 			# 越过阈值之后，松手那一下会用框选结果覆盖掉它。
-			_on_left_click(event.shift_pressed)
+			# ★ O4：城墙拖建按下时**不建**，等松手按整条线一起下发。
+			if not build_drag_active:
+				_on_left_click(event.shift_pressed)
 		else:
 			_finish_drag()
 		return true
@@ -663,6 +691,15 @@ func handle_mouse_button(event: InputEventMouseButton) -> bool:
 ##    表现就是用户报的「**右上角的起点自己跑了**」。
 ##    ⇒ 拖框一开始就冻住相机，直到松手（见 `_drag_freeze_cam` 与 `_end_drag`）。
 func handle_mouse_motion(event: InputEventMouseMotion) -> bool:
+	# ★★ O4：城墙拖建优先（它和框选 / 中键互斥：建造模式下根本不起框）。
+	if build_drag_active:
+		mouse_world = _screen_to_logic(event.position)
+		_sync_hover_from_mouse()
+		if hover_tile.x >= 0 and hover_tile != build_drag_current:
+			build_drag_current = hover_tile
+			_rebuild_build_drag_tiles()
+			local_ui_changed.emit()
+		return true
 	# ★★ 中键拖拽优先于框选：按住中键时的鼠标移动 = 平移视角。
 	#   位移用**事件自己的屏幕坐标**差分（`event.relative` 在无头测试里造不出来），
 	#   与框选那条一样，不依赖全局鼠标状态。
@@ -734,6 +771,16 @@ func _begin_drag(event: InputEventMouseButton) -> void:
 	drag_start_world = _screen_to_logic(event.position)
 	mouse_world = drag_start_world
 	_sync_hover_from_mouse()
+	# ★★ O4：城墙拖建 —— 按下只记起点，松手才按整条线一起下发。
+	if build_type != "" and _is_wall_drag_type(build_type):
+		if hover_tile.x >= 0:
+			_begin_build_drag(hover_tile)
+		else:
+			_clear_build_drag()
+		_drag_pending = false
+		drag_active = false
+		return
+	_clear_build_drag()
 	# 建造模式：这一下是「放置建筑」，不起框。
 	# ★ 命令模式（操作页的移动 / 攻击 / 行军）同理：这一下是「下达指令」，
 	#   更不能在松手时被一次拖拽框选**改掉选中**（那样命令就发给了另一批单位）。
@@ -742,6 +789,8 @@ func _begin_drag(event: InputEventMouseButton) -> void:
 		drag_active = false
 		return
 	_drag_pending = true
+	# ★★ S1：在**按下那一下改变选中之前**存快照（`_on_left_click` 紧随其后）。
+	_save_selection_snapshot()
 	_drag_additive = event.shift_pressed
 	_drag_press_screen = event.position
 	drag_current_world = drag_start_world
@@ -763,6 +812,12 @@ func _sync_hover_from_mouse() -> void:
 
 ## 左键松开：真的拖出过框 → 按框选处理；否则什么都不做（单击在按下时已经处理过了）。
 func _finish_drag() -> void:
+	# ★★ O4：城墙拖建松手 = 按整条线逐格下发（不是一次框选）。
+	if build_drag_active:
+		_commit_build_drag()
+		_clear_build_drag()
+		local_ui_changed.emit()
+		return
 	if not _drag_pending:
 		return
 	var active := drag_active
@@ -775,6 +830,9 @@ func _finish_drag() -> void:
 	drag_active = false
 	drag_screen_valid = false
 	_drag_freeze_cam = false
+	# 松手 = 这次手势已经落地（单击或框选），快照不再需要。
+	_press_sel_saved = false
+	_press_sel_snapshot = {}
 	if not active:
 		return
 	# ★★ 与手机端**同一条口径**：判定走屏幕矩形（`box_select_screen`），
@@ -994,13 +1052,178 @@ func drag_box() -> Rect2:
 	return Rect2(drag_start_world, drag_current_world - drag_start_world).abs()
 
 
+## ★★ S1：存一份「按下前」的完整选中快照。
+## 为什么不是只存 `selected_units`：按下那一下可能选中的是建筑 / 区划 / 敌人，
+## 只恢复单位会让「我点了一栋建筑又拖框反悔」变成空选中。
+func _save_selection_snapshot() -> void:
+	var kind := "none"
+	if not selected_units.is_empty():
+		kind = "units"
+	elif not selected_buildings.is_empty():
+		kind = "buildings"
+	elif selected_zone != null:
+		kind = "zone"
+	elif selected_enemy != null:
+		kind = "enemy"
+	_press_sel_snapshot = {
+		"kind": kind,
+		"units": selected_units.duplicate(),
+		"buildings": selected_buildings.duplicate(),
+		"zone": selected_zone,
+		"enemy": selected_enemy,
+		"clicked_unit": clicked_unit,
+		"selection_origin": selection_origin,
+	}
+	_press_sel_saved = true
+
+
+## ★★ S1：恢复按下前的选中（拖框取消 / Esc）。
+## 恢复一律走既有的 `select_*` 入口 —— 它们负责清掉其它三种选中、同步 `u.selected`。
+func _restore_selection_snapshot() -> void:
+	if not _press_sel_saved:
+		return
+	var s: Dictionary = _press_sel_snapshot
+	_press_sel_saved = false
+	_press_sel_snapshot = {}
+	match String(s.get("kind", "none")):
+		"units":
+			select_units(s.get("units", []))
+			# `select_units()` 会清掉这两项（它是批量入口），恢复时要按原样写回。
+			clicked_unit = s.get("clicked_unit", null)
+			selection_origin = String(s.get("selection_origin", "drag"))
+		"buildings":
+			select_buildings(s.get("buildings", []))
+		"zone":
+			select_zone(s.get("zone", null))
+		"enemy":
+			var e = s.get("enemy", null)
+			if e != null and is_instance_valid(e) and bool(e.get("alive", true)):
+				select_enemy(e)
+			else:
+				select_units([])
+		_:
+			select_units([])
+	local_ui_changed.emit()
+
+
 ## 放弃这次框选（Esc）——**不动已有的选中**：拖到一半反悔不该把队伍丢了。
+## ★★ S1：按下时已经存了快照，这里真的恢复它（旧实现只清拖框状态，恢复不了）。
 func _cancel_drag() -> void:
+	if build_drag_active:
+		_clear_build_drag()
 	_drag_pending = false
 	drag_active = false
 	drag_screen_valid = false
 	_drag_freeze_cam = false
+	_restore_selection_snapshot()
 	local_ui_changed.emit()
+
+
+# ------------------------------------------------------------------
+# ★★ O4：城墙拖建
+# ------------------------------------------------------------------
+
+## 这个建造类型支不支持拖建（config.json 的 `building.<type>.drag_build`）。
+func _is_wall_drag_type(t: String) -> bool:
+	if t == "" or cfg == null:
+		return false
+	return bool(cfg.bool_val("building.%s.drag_build" % t, false))
+
+
+func _begin_build_drag(t: Vector2i) -> void:
+	build_drag_active = true
+	build_drag_start = t
+	build_drag_current = t
+	_rebuild_build_drag_tiles()
+
+
+func _clear_build_drag() -> void:
+	build_drag_active = false
+	build_drag_start = Vector2i(-1, -1)
+	build_drag_current = Vector2i(-1, -1)
+	_build_drag_tiles = []
+
+
+func _rebuild_build_drag_tiles() -> void:
+	_build_drag_tiles = _line_tiles(build_drag_start, build_drag_current)
+	if _build_drag_tiles.size() > BUILD_DRAG_MAX_TILES:
+		_build_drag_tiles.resize(BUILD_DRAG_MAX_TILES)
+
+
+## 给 `overlay_view_3d` 画预览用（只读副本；不要在调用方改它）。
+func build_drag_tiles() -> Array[Vector2i]:
+	return _build_drag_tiles
+
+
+## Bresenham 直线（含起点与终点）。城墙是 8 方向可连的，所以斜线也成立。
+static func _line_tiles(a: Vector2i, b: Vector2i) -> Array[Vector2i]:
+	var out: Array[Vector2i] = []
+	var x0: int = a.x
+	var y0: int = a.y
+	var x1: int = b.x
+	var y1: int = b.y
+	var dx: int = absi(x1 - x0)
+	var sx: int = 1 if x0 < x1 else -1
+	var dy: int = -absi(y1 - y0)
+	var sy: int = 1 if y0 < y1 else -1
+	var err: int = dx + dy
+	# 兜底上限：即使有人传进来一个疯掉的坐标，也不会在这里死循环。
+	for _i in 4096:
+		out.append(Vector2i(x0, y0))
+		if x0 == x1 and y0 == y1:
+			break
+		var e2: int = 2 * err
+		if e2 >= dy:
+			err += dy
+			x0 += sx
+		if e2 <= dx:
+			err += dx
+			y0 += sy
+	return out
+
+
+## 这一格现在能不能真的建（与 `apply_build` 的判据同源；费用另算）。
+func _build_tile_ok(t: Vector2i) -> bool:
+	if world == null or build_type == "":
+		return false
+	if not world.map.terrain.has(t.x, t.y):
+		return false
+	if not world.can_build_at(t.x, t.y, world.my_faction):
+		return false
+	if not world.zone_allows_build(t.x, t.y, world.my_faction):
+		return false
+	if not world.building_unlocked(world.my_faction, build_type):
+		return false
+	return true
+
+
+## 松手：从起点到终点逐格下发 `build`。
+## ★ 费用预扣：`command_issued` 在单机是同步处理的，所以下一格看到的是扣完后的池子；
+##   合作模式本地池子不会立刻扣，多发的几格由房主拒绝（F2 会给一次红字 / 红环）。
+func _commit_build_drag() -> void:
+	if world == null or build_type == "":
+		return
+	var owner_f: String = String(world.my_faction)
+	var cost: Dictionary = {}
+	var cost_v: Variant = cfg.get_path_value("building.%s.cost" % build_type)
+	if typeof(cost_v) == TYPE_DICTIONARY:
+		cost = cost_v
+	var pool = world.resource_pool_for(owner_f)
+	var emitted := false
+	for t in _build_drag_tiles:
+		if not _build_tile_ok(t):
+			continue
+		# ★ 第一格即使钱不够也照发：让 `apply_build` 走正常的 `build_rejected`，
+		#   F2 才能给出「资源不足」的红字 / 红环。后面几格钱不够就安静停下。
+		if emitted and not EconomyRes.can_afford(pool, cost):
+			break
+		command_issued.emit({
+			"kind": "build", "build_type": build_type,
+			"tx": t.x, "ty": t.y, "faction": owner_f,
+		})
+		emitted = true
+		if not EconomyRes.can_afford(pool, cost):
+			break
 
 
 ## ★★ 框选期间相机是不是被冻住了（由 game_scene 每帧读它、喂给 `camera_rig`）。
@@ -1028,7 +1251,7 @@ func is_panning() -> bool:
 ##   见 `game_scene3d._input` 的说明。
 ##   ⚠️ 判据只在这里维护一处：`_input` 不许自己读 `_drag_pending`（那是私有状态）。
 func has_active_gesture() -> bool:
-	return _drag_pending or drag_active or _pan_pending or _touch_panning
+	return _drag_pending or drag_active or _pan_pending or _touch_panning or build_drag_active
 
 
 # ------------------------------------------------------------------
@@ -1719,6 +1942,7 @@ func set_build_type(t: String) -> void:
 		return
 	if observer_mode:
 		return
+	_clear_build_drag()
 	build_type = t
 	if t != "":
 		order_mode = ""                 # 两种「模式」互斥（同一个左键不能既放建筑又下指令）

@@ -13,7 +13,7 @@
     3. 下拉 / 勾选框（归属、可攻击、远程）→ 写进正确的键
     4. 将领：数值旁那个「自定 / 跟随」按钮 = 写覆盖 / 删覆盖
     5. 建筑：升级表每一级的价格 / 时间 / 血量倍率 / 逐级攻击都能改
-    6. 科技页已移除（2026.11：科技只在 tools/buff_editor 里编辑，本工具碰不到 tech.*）
+    6. 科技页已移除（2026.11：科技只在 tools/tech_editor 里编辑，本工具碰不到 tech.*）
     7. 撤销 / 重做 / 保存 / 重新载入
     8. 新建 / 删除兵种与建筑（对话框与确认框被换成「直接给答案」）
 
@@ -210,7 +210,8 @@ def pick(app, iid: str) -> None:
     """在左边列表里点一行（真的选中 + 触发回调）。"""
     tree = None
     for candidate in (getattr(app, "unit_tree", None), getattr(app, "general_tree", None),
-                      getattr(app, "trait_tree", None),
+                      getattr(app, "unit_trait_tree", None),
+                      getattr(app, "general_trait_tree", None),
                       getattr(app, "package_tree", None),
                       getattr(app, "building_tree", None)):
         if candidate is None:
@@ -259,8 +260,9 @@ def teardown(app) -> None:
 def t_window(app, model) -> None:
     print("\n[1] 窗口 / 页签 / 列表")
     eq(app.page, "unit", "默认停在「单位」页")
-    eq(list(app.tab_buttons.keys()), ["unit", "building"],
-       "★★ 两个页签：单位 / 建筑（2026.11：科技页已移除）")
+    eq(list(app.tab_buttons.keys()),
+       ["unit", "unit_trait", "general_trait", "building"],
+       "★★ 四个页签：单位 / 单位特性 / 将领特性 / 建筑（特性各自独立成页）")
     eq(app.tab_buttons["unit"].cget("fg"), app_module.UI["accent"], "当前页签是强调色")
     eq(app.tab_buttons["building"].cget("fg"), app_module.UI["text_dim"], "其它页签是暗色")
 
@@ -715,113 +717,173 @@ def t_add_general(app, model) -> None:
 
 
 def t_traits(app, model) -> None:
-    """★★ 2026.11.3：特性 —— 兵种那四个键 + 将领特性池（可增删）+ 每位将领指定一条。"""
-    print("\n[3b] 特性")
-    app.set_page("unit")
+    """★★ 2026.11：特性拆成**两张池 + 各自独立页签**；兵种 / 将领只负责挂标签。
+
+    覆盖：
+      1. 「单位特性」页：池列表 / 改定义（攻击加成、减伤、稳定）/ 增删；
+      2. 「单位」页：兵种挂 / 摘单位特性标签（可多条）；
+      3. 「将领特性」页：池列表 / 改定义 / 增删；将领挂 / 摘（可多条）；
+      4. 删掉池里一条时，正在挂它的兵种 / 将领自动摘掉（不留坏 id）。
+    """
+    print("\n[3b] 特性（单位特性池 + 将领特性池，各自一页）")
+
+    # ================= 单位特性页：池本身 =================
+    app.set_page("unit_trait")
     app.root.update()
+    eq(list(app.unit_trait_tree.get_children()),
+       ["ut:" + tid for tid in model.unit_trait_ids()],
+       "★★ 「单位特性」页列出池里的每一条")
+    cols = {"name": 0, "short": 1, "effect": 2}
+    eq(app.unit_trait_tree.item("ut:vs_cavalry_25", "values")[cols["name"]], "骑兵特攻",
+       "★ 名字来自 config（unit.unit_traits）")
+    ok("25%" in app.unit_trait_tree.item("ut:vs_cavalry_25", "values")[cols["effect"]],
+       "★ 效果摘要里有 25%%（%s）"
+       % app.unit_trait_tree.item("ut:vs_cavalry_25", "values")[cols["effect"]])
+    pick(app, "ut:vs_cavalry_25")
+    eq(app.selection, ("unit_trait", "vs_cavalry_25"),
+       "★ 点一行 → 右边是这条单位特性")
+    ok(("效果", "对骑兵伤害") in sectioned(app),
+       "★★ 单位特性表单里有「对骑兵伤害」那一行")
 
-    # ---------------- 兵种特性（unit.types.<id>.traits）----------------
-    pick(app, "u:spearman")
-    rows = sectioned(app)
-    ok(("特性", "对骑兵伤害") in rows,
-       "★★ 兵种表单里有「对骑兵伤害」那一行（长枪兵自带的对骑兵 +25%）")
-    eq(E_in(app, "特性", "对骑兵伤害").get(), "0.25",
-       "★ 读到 0.25（比例；= +25%）")
-    eq(E_in(app, "特性", "远程减伤").get(), "",
-       "★★ 没写的减伤是**空框**（不是 0）—— 与「视野半径」同一条语义")
-    ok("免疫击退（稳定）" in sidebar_checks(app), "★ 有「免疫击退」勾选框")
-
-    # 改一个已有的比例
-    type_into(app, E_in(app, "特性", "对骑兵伤害"), "0.4")
-    eq(data(model)["unit"]["types"]["spearman"]["traits"]["attack_vs_class"]["cavalry"], 0.4,
-       "★★ 改「对骑兵伤害」→ traits.attack_vs_class.cavalry（config.gd 读这个键）")
-
-    # 删掉那一行
-    row_button_at(app, "特性", "对骑兵伤害").invoke()
-    app.root.update()
-    ok("cavalry" not in (data(model)["unit"]["types"]["spearman"].get("traits", {})
-                         .get("attack_vs_class", {})),
-       "★★ 点那一行的「删」→ 这条加成没了")
-    ok(("特性", "对骑兵伤害") not in sectioned(app), "那一行从表单上消失了")
-
-    # 加一条：下拉里只剩没加过的大类
-    combo = sidebar_combos(app)["加一条"]
-    ok("步兵" in combo.cget("values"), "★ 「加一条」下拉里有步兵")
-    combo.set("步兵")
-    row_button_at(app, "特性", "加一条").invoke()
-    app.root.update()
-    eq(data(model)["unit"]["types"]["spearman"]["traits"]["attack_vs_class"]["infantry"],
-       0.25, "★★ 加一条 → 默认 +25%，落在 traits.attack_vs_class.infantry")
-
-    # 减伤：写入 → 清空 = 删掉那个键
-    type_into(app, E_in(app, "特性", "远程减伤"), "0.25")
-    eq(data(model)["unit"]["types"]["spearman"]["traits"]["ranged_reduction"], 0.25,
-       "★★ 「远程减伤」落在 traits.ranged_reduction")
-    type_into(app, E_in(app, "特性", "远程减伤"), "")
-    ok("ranged_reduction" not in data(model)["unit"]["types"]["spearman"]["traits"],
+    # 改定义：攻击加成
+    type_into(app, E_in(app, "效果", "对骑兵伤害"), "0.4")
+    eq(data(model)["unit"]["unit_traits"]["vs_cavalry_25"]["attack_vs_class"]["cavalry"],
+       0.4, "★★ 改「对骑兵伤害」→ unit.unit_traits.<id>.attack_vs_class.cavalry")
+    # 改定义：减伤（写入 → 清空 = 删键）
+    type_into(app, E_in(app, "效果", "远程减伤"), "0.2")
+    eq(data(model)["unit"]["unit_traits"]["vs_cavalry_25"]["ranged_reduction"], 0.2,
+       "★★ 「远程减伤」落在 unit_traits.<id>.ranged_reduction")
+    type_into(app, E_in(app, "效果", "远程减伤"), "")
+    ok("ranged_reduction" not in data(model)["unit"]["unit_traits"]["vs_cavalry_25"],
        "★★ 清空输入框 = 删掉那个键（不写一个 0 进文件）")
-
-    # 稳定：勾上 / 取消
-    checks = sidebar_checks(app)
-    checks["免疫击退（稳定）"].invoke()
-    app.root.update()
-    eq(data(model)["unit"]["types"]["spearman"]["traits"]["knockback_immune"], True,
-       "★ 勾上「免疫击退」→ traits.knockback_immune = true")
+    # 勾「稳定」
+    ok("免疫击退（稳定）" in sidebar_checks(app), "★ 有「免疫击退」勾选框")
     sidebar_checks(app)["免疫击退（稳定）"].invoke()
     app.root.update()
-    ok("knockback_immune" not in data(model)["unit"]["types"]["spearman"]["traits"],
-       "★★ 取消勾选 = 删掉那个键")
+    eq(data(model)["unit"]["unit_traits"]["vs_cavalry_25"].get("knockback_immune"), True,
+       "★ 勾上 → unit_traits.<id>.knockback_immune = true")
+    sidebar_checks(app)["免疫击退（稳定）"].invoke()
+    app.root.update()
+    ok("knockback_immune" not in data(model)["unit"]["unit_traits"]["vs_cavalry_25"],
+       "★ 再点一下 → 删掉那个键（不留 false）")
+    # 文案
+    type_into(app, E_in(app, "文案", "说明"), "对骑兵大类的单位伤害 +40%")
+    eq(data(model)["unit"]["unit_traits"]["vs_cavalry_25"]["desc"],
+       "对骑兵大类的单位伤害 +40%", "★ 说明也写进池里")
 
-    # ---------------- 将领特性池（unit.general_traits）----------------
-    eq(list(app.trait_tree.get_children()),
-       ["t:" + tid for tid in model.general_trait_ids()],
-       "★★ 左边有「将领特性池」那一栏，列出池里的每一条")
-    trait_cols = {"name": 0, "short": 1, "effect": 2}
-    eq(app.trait_tree.item("t:swift", "values")[trait_cols["name"]], "神速",
-       "★ 池列表里有名字")
-    ok("25%" in app.trait_tree.item("t:swift", "values")[trait_cols["effect"]],
-       "★ 池列表里有「效果」摘要（%s）"
-       % app.trait_tree.item("t:swift", "values")[trait_cols["effect"]])
+    # ================= 单位页：兵种挂 / 摘标签 =================
+    app.set_page("unit")
+    app.root.update()
+    pick(app, "u:spearman")
+    ok("骑兵特攻" in sidebar_labels(app),
+       "★★ 兵种表单里显示挂着的「骑兵特攻」标签")
+    ok("加一条特性" in sidebar_combos(app), "★ 有「加一条特性」下拉")
 
-    pick(app, "t:swift")
-    eq(app.selection, ("trait", "swift"), "★ 点一行 → 右边是这条特性")
-    eq(E_in(app, "文案", "名字").get(), "神速", "★ 表单读到了名字")
-    eq(E_in(app, "效果", "移速加成").get(), "0.25", "★ 表单读到了移速加成 0.25")
+    row_button_at(app, "特性（可多条）", "骑兵特攻").invoke()
+    app.root.update()
+    ok("trait_ids" not in data(model)["unit"]["types"]["spearman"],
+       "★★ 摘掉最后一条 → 连 trait_ids 键一起删（不留空数组）")
+
+    sidebar_combos(app)["加一条特性"].set("骑兵特攻（vs_cavalry_25）")
+    buttons(app)["＋ 加特性"].invoke()
+    app.root.update()
+    eq(data(model)["unit"]["types"]["spearman"]["trait_ids"], ["vs_cavalry_25"],
+       "★★ 挂回「骑兵特攻」→ unit.types.spearman.trait_ids = [vs_cavalry_25]")
+
+    sidebar_combos(app)["加一条特性"].set("稳定（steady）")
+    buttons(app)["＋ 加特性"].invoke()
+    app.root.update()
+    eq(data(model)["unit"]["types"]["spearman"]["trait_ids"], ["vs_cavalry_25", "steady"],
+       "★★ 一个兵种可以挂多条（用户口径：为任意单位灵活设置特性）")
+    row_button_at(app, "特性（可多条）", "稳定").invoke()
+    app.root.update()
+    eq(data(model)["unit"]["types"]["spearman"]["trait_ids"], ["vs_cavalry_25"],
+       "★ 摘掉其中一条，其余保留")
+
+    # ================= 新建 / 删除单位特性 =================
+    app.set_page("unit_trait")
+    app.root.update()
+    before = len(model.unit_trait_ids())
+    original = app_module._ask_new_entry
+    app_module._ask_new_entry = lambda *a, **k: ("taunt", "嘲讽", "vs_cavalry_25")
+    try:
+        app.do_new_unit_trait()
+        app.root.update()
+    finally:
+        app_module._ask_new_entry = original
+    eq(len(model.unit_trait_ids()), before + 1, "★★ 「＋ 新建单位特性」真的加进池里")
+    eq(app.selection, ("unit_trait", "taunt"), "★ 建完自动选中它")
+    ok(app.unit_trait_tree.exists("ut:taunt"), "★ 列表里立刻出现")
+
+    app.set_page("unit")
+    app.root.update()
+    pick(app, "u:spearman")
+    sidebar_combos(app)["加一条特性"].set("嘲讽（taunt）")
+    buttons(app)["＋ 加特性"].invoke()
+    app.root.update()
+    ok("taunt" in data(model)["unit"]["types"]["spearman"]["trait_ids"],
+       "（前提）长枪兵挂上了新建的「嘲讽」")
+
+    app.set_page("unit_trait")
+    app.root.update()
+    pick(app, "ut:taunt")
+    app_module.messagebox.askyesno = lambda *a, **k: True
+    app.do_delete_unit_trait()
+    app.root.update()
+    ok("taunt" not in data(model)["unit"]["unit_traits"],
+       "★★ 「删除单位特性」把池里那条删掉了")
+    ok("taunt" not in data(model)["unit"]["types"]["spearman"]["trait_ids"],
+       "★★ 删特性时自动从兵种身上摘掉（不留指向空 id 的记录）")
+    ok(not app.unit_trait_tree.exists("ut:taunt"), "列表里也没了")
+
+    # ================= 将领特性页：池本身 =================
+    app.set_page("general_trait")
+    app.root.update()
+    eq(list(app.general_trait_tree.get_children()),
+       ["gt:" + tid for tid in model.general_trait_ids()],
+       "★★ 「将领特性」页列出池里的每一条")
+    eq(app.general_trait_tree.item("gt:swift", "values")[cols["name"]], "神速",
+       "★ 名字来自 config（unit.general_traits）")
+    pick(app, "gt:swift")
+    eq(app.selection, ("general_trait", "swift"), "★ 点一行 → 右边是这条将领特性")
+
     type_into(app, E_in(app, "效果", "移速加成"), "0.3")
     eq(data(model)["unit"]["general_traits"]["swift"]["speed_bonus"], 0.3,
-       "★★ 改移速加成 → unit.general_traits.swift.speed_bonus（config.gd 读它）")
+       "★★ 改移速加成 → unit.general_traits.swift.speed_bonus")
     type_into(app, E_in(app, "文案", "说明"), "移动速度 +30%")
     eq(data(model)["unit"]["general_traits"]["swift"]["desc"], "移动速度 +30%",
-       "★ 改说明")
+       "★ 说明也写进去")
 
     # 将领特性也能加「对某大类伤害」
-    pick(app, "t:infantry_slayer")
     sidebar_combos(app)["加一条"].set("骑兵")
     row_button_at(app, "效果", "加一条").invoke()
     app.root.update()
-    eq(data(model)["unit"]["general_traits"]["infantry_slayer"]
-       ["attack_vs_class"].get("cavalry"), 0.25,
+    eq(data(model)["unit"]["general_traits"]["swift"]["attack_vs_class"]["cavalry"], 0.25,
        "★★ 将领特性也能加一条「对骑兵 +25%」")
     row_button_at(app, "效果", "对骑兵伤害").invoke()
     app.root.update()
-    ok("cavalry" not in data(model)["unit"]["general_traits"]["infantry_slayer"]
-       ["attack_vs_class"], "★ 也能删掉那一行")
+    ok("attack_vs_class" not in data(model)["unit"]["general_traits"]["swift"],
+       "★ 删掉那一行 → 整张表也不留")
 
-    # ---------------- 新建 / 删除特性 ----------------
-    app_module._ask_new_entry = lambda *a, **k: ("brute", "蛮力", "might")
+    # 新建 / 删除将领特性
     n_before = len(data(model)["unit"]["general_traits"])
-    app.do_new_trait()
-    app.root.update()
+    app_module._ask_new_entry = lambda *a, **k: ("brute", "蛮力", "might")
+    try:
+        app.do_new_general_trait()
+        app.root.update()
+    finally:
+        app_module._ask_new_entry = original
     pool = data(model)["unit"]["general_traits"]
-    eq(len(pool), n_before + 1, "★★ 「＋ 新建特性」真的加进池里")
+    eq(len(pool), n_before + 1, "★★ 「＋ 新建将领特性」真的加进池里")
     eq(pool["brute"]["name"], "蛮力", "★ 新特性用填的名字")
-    eq(pool["brute"]["attack_speed_bonus"], 0.25, "★ 照模板（神力）复制了效果")
-    eq(app.selection, ("trait", "brute"), "★ 建完自动选中它")
-    ok(app.trait_tree.exists("t:brute"), "★ 列表里立刻出现")
+    eq(app.selection, ("general_trait", "brute"), "★ 建完自动选中它")
+    ok(app.general_trait_tree.exists("gt:brute"), "★ 列表里立刻出现")
 
-    # ---------------- 给将领加特性（可以加多条）----------------
+    # ================= 将领挂 / 摘（可多条） =================
+    app.set_page("unit")
+    app.root.update()
     pick(app, "g:0")
-    # 默认配置里将领 1 带「神速」—— 先用「移除」清干净，后面从零开始数。
+    # 先清空将领 0 现有的特性（数组可能非空）
     for tid in list(data(model)["unit"]["general"]["trait_ids"][0]):
         row_button_at(app, "特性（可多条）", model.general_trait(tid).name).invoke()
         app.root.update()
@@ -831,38 +893,34 @@ def t_traits(app, model) -> None:
     buttons(app)["＋ 加特性"].invoke()
     app.root.update()
     eq(data(model)["unit"]["general"]["trait_ids"][0], ["brute"],
-       "★★ 给将领 0 选「蛮力」→ unit.general.trait_ids[0] = [brute]（游戏侧 general_traits_at 读它）")
-    ok(any("蛮力" in t for t in sidebar_labels(app)),
-       "★ 表单上写明了这条特性是什么（%s）"
-       % [t for t in sidebar_labels(app) if "蛮力" in t])
-    # ★★ 2026.11：一个将领可以有多个特性
+       "★★ 给将领 0 选「蛮力」→ unit.general.trait_ids[0] = [brute]")
     sidebar_combos(app)["加一条特性"].set("步兵特攻（infantry_slayer）")
     buttons(app)["＋ 加特性"].invoke()
     app.root.update()
     eq(data(model)["unit"]["general"]["trait_ids"][0], ["brute", "infantry_slayer"],
-       "★★ 再加一条 → 两条并存（用户口径：一个将领可以有多个特性）")
-    # 移除其中一条（另一条必须留着）
+       "★★ 再加一条 → 两条并存（一个将领可以带多个特性）")
     row_button_at(app, "特性（可多条）", "蛮力").invoke()
     app.root.update()
     eq(data(model)["unit"]["general"]["trait_ids"][0], ["infantry_slayer"],
-       "★ 「移除」只拿掉那一条，另一条保留")
+       "★ 移除一条，其余保留")
 
-    # ---------------- 删掉一条正在用的特性：不留坏 id ----------------
-    pick(app, "g:0")
+    # 删掉一条正在用的将领特性 → 将领身上自动摘掉
     sidebar_combos(app)["加一条特性"].set("蛮力（brute）")
     buttons(app)["＋ 加特性"].invoke()
     app.root.update()
     eq(data(model)["unit"]["general"]["trait_ids"][0], ["infantry_slayer", "brute"],
        "（前提）将领 0 又带上了 brute")
+    app.set_page("general_trait")
+    app.root.update()
+    pick(app, "gt:brute")
     app_module.messagebox.askyesno = lambda *a, **k: True
-    pick(app, "t:brute")
-    app.do_delete_trait()
+    app.do_delete_general_trait()
     app.root.update()
     ok("brute" not in data(model)["unit"]["general_traits"],
-       "★★ 「删除特性」把池里那条删掉了")
+       "★★ 「删除将领特性」把池里那条删掉了")
     eq(data(model)["unit"]["general"]["trait_ids"][0], ["infantry_slayer"],
        "★★ 只把这一条从将领身上去掉，别的特性保留（不留指向空 id 的记录）")
-    ok(not app.trait_tree.exists("t:brute"), "列表里也没了")
+    ok(not app.general_trait_tree.exists("gt:brute"), "列表里也没了")
 
 
 # ======================================================================
@@ -970,10 +1028,11 @@ def t_building_form(app, model) -> None:
 # ======================================================================
 
 def t_tech_page_gone(app, model) -> None:
-    print("\n[5] 科技页已移除（科技只在 tools/buff_editor 里编辑）")
+    print("\n[5] 科技页已移除（科技只在 tools/tech_editor 里编辑）")
     ok("tech" not in app.tab_buttons, "★★ 页签里没有「科技」")
-    eq([k for k, _l, _h in app_module.PAGES], ["unit", "building"],
-       "★★ PAGES 只剩单位 / 建筑")
+    eq([k for k, _l, _h in app_module.PAGES],
+       ["unit", "unit_trait", "general_trait", "building"],
+       "★★ PAGES = 单位 / 单位特性 / 将领特性 / 建筑（没有科技）")
     ok(not hasattr(app, "tech_tree"), "★★ 没有科技列表")
     ok(not hasattr(app, "max_active_var"), "★★ 没有「最多启用几条」那个输入框")
     ok(not hasattr(app, "_build_tech_form"), "★★ 没有科技表单")
@@ -1310,24 +1369,28 @@ def t_layout_fits(app, model) -> None:
     ok(bar.winfo_height() >= bar.winfo_reqheight(),
        "★★ 操作栏没被挤没（高 %d / 需要 %d）" % (bar.winfo_height(), bar.winfo_reqheight()))
     buttons = [w for w in walk(bar) if isinstance(w, tk.Button)]
-    ok(len(buttons) >= 5,
-       "★ 操作栏有五颗按钮（新建兵种 / 删除兵种 / 新建将领 / 新建特性 / 删除特性）：%s"
+    ok(len(buttons) >= 3,
+       "★ 操作栏有三颗按钮（新建兵种 / 删除兵种 / 新建将领；特性按钮搬到各自页签了）：%s"
        % [b.cget("text") for b in buttons])
     ok("＋ 新建将领…" in [b.cget("text") for b in buttons],
-       "★★ 上面那五颗里确实有「＋ 新建将领…」（本轮需求）")
+       "★★ 上面那三颗里确实有「＋ 新建将领…」（本轮需求）")
 
+    # ★ UI 改版后状态栏是「bar 容器 + Label」，不再是 root 的直接子控件，
+    #   所以这里改成整棵树里找（判的还是同一件事：它真的在窗口里、没被挤扁）。
     status = None
-    for widget in app.root.winfo_children():
+    for widget in walk(app.root):
         if isinstance(widget, tk.Label) and str(widget.cget("textvariable")) == str(app.status_var):
             status = widget
+            break
     ok(status is not None, "找得到状态栏那个 Label")
     if status is not None:
         ok(status.winfo_height() >= status.winfo_reqheight(),
            "★★ 状态栏没被挤成一条线（高 %d / 需要 %d）"
            % (status.winfo_height(), status.winfo_reqheight()))
-        ok(status.winfo_y() + status.winfo_height() <= app.root.winfo_height() + 1,
+        bottom = status.winfo_rooty() - app.root.winfo_rooty() + status.winfo_height()
+        ok(bottom <= app.root.winfo_height() + 1,
            "★ 状态栏整个在窗口里（底边 %d ≤ 窗口高 %d）"
-           % (status.winfo_y() + status.winfo_height(), app.root.winfo_height()))
+           % (bottom, app.root.winfo_height()))
     app.root.withdraw()
 
 

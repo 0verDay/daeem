@@ -116,6 +116,13 @@ func consume_events(events: Array) -> void:
 			"order_rejected":
 				if _is_my_event(evt):
 					hud.show_notice(hud.order_reject_text(String(evt.get("reason", ""))))
+					_reject_feedback(evt)
+			"build_rejected":
+				# ★★ F2：这条事件以前**没有任何界面反馈**（点下去只看到没建成）。
+				#    现在与 order_rejected 同一条通道：红字 + 命令卡闪红 + 地面红环。
+				if _is_my_event(evt):
+					hud.show_notice(hud.build_reject_text(String(evt.get("reason", ""))))
+					_reject_feedback(evt)
 			"ai_order_rejected":
 				# ★ 事件带 `faction = 下单方`，所以只给下单的那位看。
 				if _is_my_event(evt):
@@ -162,6 +169,17 @@ func consume_events(events: Array) -> void:
 				if host.input_ctrl != null:
 					host.input_ctrl.notify_unit_recruited(
 						evt.get("leader", null), evt.get("unit", null))
+
+
+## ★★ F2：命令被拒的**统一表现反馈**（红字已由调用方显示）。
+## 宿主（3D 场景）有 `on_reject_feedback` 就交给它画地面红环；2D / 测试没有就跳过。
+func _reject_feedback(evt: Dictionary) -> void:
+	if host == null:
+		return
+	if host.hud != null:
+		host.hud.flash_reject()
+	if host.has_method("on_reject_feedback"):
+		host.on_reject_feedback(evt)
 
 
 ## ★★ 这条事件是**本机玩家这一方**产生的吗？

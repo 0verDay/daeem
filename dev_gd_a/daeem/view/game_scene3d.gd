@@ -34,11 +34,17 @@ const OrderFlagRes = preload("res://view/order_flag_view_3d.gd")
 const AttackMarkRes = preload("res://view/attack_mark_view_3d.gd")
 ## ★★ 冲锋命中冲击波（对象池；见 view/charge_fx_view_3d.gd）
 const ChargeFxRes = preload("res://view/charge_fx_view_3d.gd")
+## ★★ M3：单位阵亡的贴地烟尘（对象池；见 view/death_fx_view_3d.gd）
+const DeathFxRes = preload("res://view/death_fx_view_3d.gd")
 ## 阵营色（冲锋冲击波用；与选中圈 / 旗帜同一套口径）
 const SideColorRes = preload("res://view/side_color.gd")
 const Overlay3DRes = preload("res://view/overlay_view_3d.gd")
 const InputControllerRes = preload("res://view/input_controller.gd")
 const HudRes = preload("res://view/hud.gd")
+## ★★ F1：自绘主题光标（金圈 + 状态图标；见 view/cursor_view.gd）
+const CursorViewRes = preload("res://view/cursor_view.gd")
+## 光标「悬停敌人 = 攻击」判定要问阵营关系。
+const FactionRes = preload("res://logic/faction.gd")
 ## ★★ 稳定的编队槽位（1..10）：阵亡 / 复活后编号不变；地图键帽、右栏、数字键共用。
 const TeamSlotsRes = preload("res://view/team_slots.gd")
 const FontLoaderRes = preload("res://view/font_loader.gd")
@@ -115,11 +121,18 @@ var order_flags = null
 var attack_marks = null
 ## ★★ 冲锋命中冲击波层（纯表现；只读 `unit_charge` 事件）
 var charge_fx = null
+## ★★ M3：阵亡烟尘层（纯表现；只读 `kill` 事件）
+var death_fx = null
 var overlay = null
 ## ★★ 本局的编队槽位表（见 `view/team_slots.gd`）；地图 / 右栏 / 数字键共用同一份。
 var team_slots = null
 var input_ctrl = null
 var hud: CanvasLayer = null
+## ★★ F1：自绘光标（null = 用系统光标：触摸设备 / 无头 / `ui.custom_cursor = false`）。
+var cursor_view = null
+## 系统光标是否已经被我们藏起来（只在状态变化时切 `Input.mouse_mode`，避免每帧抖动）。
+var _cursor_hidden: bool = false
+var _cursor_inside: bool = false
 ## ★★ 手机端触摸手势识别（见 view/touch_controller.gd）：由本场景在 `_input` 里喂事件
 var touch_ctrl = null
 ## ★★ 触摸设备（手机 / 平板）：地图这一侧**完全不认鼠标** —— 连 `emulate_mouse_from_touch`
@@ -160,6 +173,35 @@ var interaction_pending_level = null
 ## ★ 开局值 = ZOOM_MAX（0.3）：一进游戏就停在**最远**视野，之后只能往近处缩。
 ##   它必须落在 [ZOOM_MIN, ZOOM_MAX] 内，否则滚轮一滚就会被夹到区间边上。
 var zoom: float = 0.3
+
+# ------------------------------------------------------------------
+# ★★ 2026.11 手感：相机缓动（只影响**程序性移动**与**缩放**，拖拽仍 1:1）
+#
+#   为什么单独一层：
+#     · 跟随镜头每帧直接读 `follow_target.pos` —— 移动端 30Hz 逻辑下会一跳一跳；
+#     · 双击将领 / 小地图跳转是**瞬移**，长距离很容易丢失方向感；
+#     · 滚轮缩放是硬切档位。
+#   这三件事都只改「镜头怎么到达」，不改「镜头最终对准哪一格」。
+#
+#   ⚠️ 无头测试默认关闭（`camera_glide_enabled` / `camera_zoom_smooth_enabled`）：
+#      既有断言大量依赖「调用后立刻对准 / 立刻缩到目标」，缓动会让它们变成
+#      「还没到」——那不是行为回归，是测试姿势不同。真实桌面 / 手机默认开启。
+# ------------------------------------------------------------------
+## 程序性跳转（双击 / 小地图 / 演出）的缓动状态。
+var _cam_glide_active: bool = false
+var _cam_glide_from: Vector2 = Vector2.ZERO   # 地面点（格）
+var _cam_glide_to: Vector2 = Vector2.ZERO
+var _cam_glide_t: float = 0.0
+var _cam_glide_sec: float = 0.0
+## 是否允许「程序性跳转」缓动（无头默认关；测试可显式打开）。
+var camera_glide_enabled: bool = true
+
+## 缩放缓动状态：`zoom` 向 `_zoom_target` 逼近，每帧重新保锚点。
+var _zoom_target: float = 0.3
+var _zoom_anchor_logic: Vector2 = Vector2.ZERO
+var _zoom_anim_active: bool = false
+## 是否允许缩放缓动（无头默认关；测试可显式打开）。
+var camera_zoom_smooth_enabled: bool = true
 
 ## ★★ 跟随镜头（长按将领标签 / 长按数字键触发）：为 null = 不跟随。
 ##   · 每帧在 `_camera_update()` 里把镜头中心摆到该将领身上（单位会移动）；
@@ -260,6 +302,12 @@ func _prof_done(key: String, t0: int) -> void:
 	if t0 == 0:
 		return
 	profile_us[key] = int(profile_us.get(key, 0)) + (Time.get_ticks_usec() - t0)
+
+
+## 这一局是不是无头（测试 / 基准）。相机缓动、固定步长在无头下都退回「调用即到位」，
+## 否则 120 个既有测试里那些「调完立刻断言」的用例会全部变成「还没到」。
+static func _is_headless() -> bool:
+	return DisplayServer.get_name() == "headless"
 
 
 ## 建相机（拆出来是为了让「先建相机、再造投影助手」这条顺序显式可见）
@@ -642,6 +690,13 @@ func _disable_coop_pause() -> void:
 func _assemble() -> void:
 	_build_camera()
 	palette = PaletteRes.create(cfg, cam)
+	# ★★ 相机缓动默认只在**真实窗口**里开：无头测试大量依赖「调用即到位」。
+	#   测试想验缓动时可以直接把这两个字段改回 true，再逐帧推进 `_camera_update`。
+	camera_glide_enabled = not _is_headless()
+	camera_zoom_smooth_enabled = not _is_headless()
+	_cam_glide_active = false
+	_zoom_anim_active = false
+	_zoom_target = zoom
 
 	# ★★ 手机端：把 3D 渲染分辨率按比例降下来（把 GPU 从「分辨率 / 填充率」里救出来）。
 	#    `Viewport.scaling_3d_scale` 让 3D 按「视口 × 比例」渲染再放大回全屏；
@@ -682,9 +737,16 @@ func _assemble() -> void:
 	# ★ 客机不 tick，这个值对它无意义（但保持一致，免得 `_process` 里出现两套判断）。
 	_logic_accum = 0.0
 	_logic_alpha_on = false
+	# ★★ 2026.11（P1）：桌面默认 60Hz 固定步长（`sim.step_sec = 1/60`）。
+	#   手机仍然优先用 `sim.mobile_step_sec`（30Hz）——它比桌面那条更省。
+	#   ⚠️ 无头测试保持 0（每渲染帧一步）：120 个既有套件里有大量「推进 N 帧 =
+	#      N 个逻辑步」的断言，固定步长在无头下会让它们变成「还没走完」。
+	#      测试要验固定步长请显式设 `game.logic_step_sec`（`test_time_step` 已有）。
 	logic_step_sec = cfg.sim_step_sec
-	if logic_step_sec <= 0.0 and touch_device:
+	if touch_device and cfg.sim_mobile_step_sec > 0.0:
 		logic_step_sec = cfg.sim_mobile_step_sec
+	if _is_headless():
+		logic_step_sec = 0.0
 
 	ground = GroundViewRes.new()
 	ground.name = "GroundView3D"
@@ -747,6 +809,12 @@ func _assemble() -> void:
 	add_child(charge_fx)
 	charge_fx.setup(cfg, palette)
 
+	# ★★ M3：阵亡烟尘（对象池）：事件驱动，暂停时冻结
+	death_fx = DeathFxRes.new()
+	death_fx.name = "DeathFx3D"
+	add_child(death_fx)
+	death_fx.setup(cfg, palette)
+
 	# 覆盖层（选中圈 / 移动与攻击标记 / 建造预览 / 拖框）：屏幕空间，用 palette 定位
 	var layer := CanvasLayer.new()
 	layer.name = "OverlayLayer"
@@ -775,6 +843,8 @@ func _assemble() -> void:
 	input_ctrl.local_ui_changed.connect(_on_local_ui_changed)
 
 	_build_hud()
+	# ★★ F1：自绘光标（依赖 HUD 的 `point_hits_ui` 判「现在是不是在 UI 上」）。
+	_build_cursor()
 	# ★★ 手机端触摸识别：HUD 建好之后才能判「起点是不是在 UI 上」（`hud.point_hits_ui`）。
 	#    相机替身与 HUD 用的是同一个 —— 它只用到 `pan_screen`。
 	touch_ctrl = TouchControllerRes.new()
@@ -993,6 +1063,9 @@ func story_camera_move(point: Vector2, sec: float, zoom_target: float, ease: Str
 	story_camera_locked = true
 	follow_target = null
 	_story_camera_follow_spec = null
+	# 演出镜头接管：取消玩家的跳转 / 缩放缓动，避免两套插值抢相机。
+	_cancel_camera_glide()
+	_zoom_anim_active = false
 	_story_cam_from = _story_current_look()
 	_story_cam_to = point
 	_story_cam_t = 0.0
@@ -1240,7 +1313,9 @@ class CameraFacade:
 	func center_on_px(screen_px: Vector2) -> void:
 		if scene == null:
 			return
-		scene.center_on_screen_precise(screen_px)
+		# ★ 玩家入口走**平滑**版（C2）；无头 / `camera_glide_enabled = false` 时
+		#   它内部会退回精确的立即版，既有断言不受影响。
+		scene.center_on_screen_smooth(screen_px)
 
 	## ★★ 鼠标**中键拖拽平移**：`input_controller` 按**屏幕像素增量**喂进来
 	##   （负号已在输入层取过 —— 那是「抓着地图拖」的手感）。
@@ -1272,7 +1347,7 @@ class CameraFacade:
 	##   所以出界点会自动被夹到地图边上。
 	func center_on_tile(tile: Vector2) -> void:
 		if scene != null:
-			scene.center_on_tile_precise(tile)
+			scene.center_on_tile_smooth(tile)
 
 	## ★★ 滚轮缩放：`input_controller` 的滚轮走 `camera_rig.zoom_at(...)`，
 	##    而 3D 版的缩放在**场景**上（`game_scene3d.zoom_at`：改相机距离并保持锚点不动）。
@@ -1343,16 +1418,75 @@ func center_on_screen(screen_px: Vector2) -> void:
 	center_on_screen_precise(screen_px)
 
 
+## 当前镜头**看向的地面点**（格）——缓动与锚点校正共用这一个口径。
+func _look_point_logic() -> Vector2:
+	return palette.world_to_logic(_ground_under_screen(_view_center()))
+
+
+## 取消「程序性跳转」缓动（手动拖拽 / 缩放 / 跟随都会取消）。
+func _cancel_camera_glide() -> void:
+	_cam_glide_active = false
+
+
+## 取消缩放缓动（把目标钉在当前值）。
+func _cancel_zoom_anim() -> void:
+	_zoom_anim_active = false
+	_zoom_target = zoom
+
+
+## ★★ 平滑跳镜头（C2）：只给**程序性移动**用。
+##
+## 做法：先用 `center_on_tile_precise()` 算出「精确的最终看向点」（含夹取），
+## 再把相机在同一帧内拨回起点、开始缓动。这样：
+##   · 最终落点仍然精确（小地图那套牛顿迭代没被绕过）；
+##   · 中间过程是 ease-out，不会瞬移；
+##   · 同一帧内拨回不会渲染出去（`_process` 里改完才画）。
+func center_on_tile_smooth(logic_pos: Vector2) -> void:
+	if not _camera_player_input_allowed():
+		return
+	stop_follow()
+	if cam == null or palette == null:
+		return
+	if not camera_glide_enabled or cfg.cam_jump_sec <= 0.0:
+		center_on_tile_precise(logic_pos)
+		return
+	var from: Vector2 = _look_point_logic()
+	center_on_tile_precise(logic_pos)          # 顺带取消旧缓动 / 缩放缓动
+	var to: Vector2 = _look_point_logic()
+	_place_camera_looking_at(palette.to_world(from))
+	if from.distance_to(to) < 1e-3:
+		_place_camera_looking_at(palette.to_world(to))
+		return
+	_cam_glide_from = from
+	_cam_glide_to = to
+	_cam_glide_t = 0.0
+	_cam_glide_sec = maxf(0.001, cfg.cam_jump_sec)
+	_cam_glide_active = true
+
+
+## 平滑跳镜头（屏幕像素版）：先把屏幕点解成格，再走 `center_on_tile_smooth`。
+func center_on_screen_smooth(screen_px: Vector2) -> void:
+	if palette == null:
+		return
+	var lg = palette.to_logic(screen_px)
+	if lg == null:
+		return
+	center_on_tile_smooth(lg)
+
+
 ## 把镜头中心移到某个**格**
 ##
 ## ★★ 做法：保持相机姿态与高度不变，只把「它看向的地面点」搬到目标格。
 ##   于是「格 → 屏幕」的中心映射恒定 —— 这就是「相机在同一高度」的实现方式。
+## ★ 这是**立即**版本（测试 / 基准 / 精确对准用）；玩家入口走 `center_on_tile_smooth`。
 func center_on_tile(logic_pos: Vector2) -> void:
 	if not _camera_player_input_allowed():
 		return
 	stop_follow()                      # 手动跳镜头 = 退出跟随
 	if cam == null or palette == null:
 		return
+	_cancel_camera_glide()
+	_cancel_zoom_anim()
 	var target: Vector3 = palette.to_world(logic_pos)
 	_place_camera_looking_at(target)
 
@@ -1385,11 +1519,22 @@ func _place_camera_looking_at(target: Vector3) -> void:
 #     中键拖拽 / 触摸拖拽最终都经过 `pan_screen()`。
 # ------------------------------------------------------------------
 
+## 跟随镜头要看的**渲染位置**（C1）：
+## 固定步长（手机 30Hz / 桌面 60Hz）下 `u.pos` 每步才更新一次，而画面每帧都在插值。
+## 直接读 `u.pos` 会让镜头「停两帧、跳一下」——必须跟 `render_pos_of()` 同源。
+func _follow_pos(u) -> Vector2:
+	if world != null and world.has_method("render_pos_of"):
+		return world.render_pos_of(u)
+	return u.pos
+
+
 func follow_unit(u) -> void:
 	if u == null or cam == null or palette == null:
 		return
+	_cancel_camera_glide()
+	_cancel_zoom_anim()
 	follow_target = u
-	_place_camera_looking_at(palette.to_world(u.pos))
+	_place_camera_looking_at(palette.to_world(_follow_pos(u)))
 
 
 func stop_follow() -> void:
@@ -1453,6 +1598,8 @@ func _process(dt: float) -> void:
 	# ★★ 将领标签 / 数字键的长按计时：桌面与手机都靠这一句推进
 	#   （手机端 squad_panel 自己的 `_process` 被 HUD 关掉了，不能放那里）。
 	input_ctrl.poll_gestures()
+	# ★★ F1：自绘光标（状态依赖 `poll_mouse()` 刚刷新的悬停字段）。
+	_update_cursor()
 	_prof_done("input", _t_input)
 	# ①.5 联机收包：房主 / 客机都要在推进逻辑之前把 transport 里的消息收掉。
 	if coop_host_session != null:
@@ -1562,6 +1709,9 @@ func _process(dt: float) -> void:
 	attack_marks.sync(dt if running else 0.0)
 	# ★★ 冲锋冲击波同理：暂停时冻结
 	charge_fx.sync(dt if running else 0.0)
+	# ★★ M3：阵亡烟尘同理：暂停时冻结
+	if death_fx != null:
+		death_fx.sync(dt if running else 0.0)
 	# 地图边界金线的**扫描**（纯表现：只推一个 shader uniform）；暂停时照旧走
 	map_border.sync(dt)
 	# 演出呼吸泛光（纯表现；按 world.time 呼吸，暂停时冻结）。
@@ -1577,6 +1727,8 @@ func _process(dt: float) -> void:
 	overlay.hover_tile = input_ctrl.hover_tile
 	overlay.hover_valid = input_ctrl.hover_valid
 	overlay.build_type = input_ctrl.build_type
+	# ★★ O4：城墙拖建预览（空数组 = 只画光标那一格）
+	overlay.build_drag_tiles = input_ctrl.build_drag_tiles()
 	overlay.move_marks = input_ctrl.move_marks
 	overlay.attack_marks = input_ctrl.attack_marks
 	overlay.drag_active = input_ctrl.drag_active
@@ -1587,6 +1739,8 @@ func _process(dt: float) -> void:
 	overlay.mouse_world = input_ctrl.mouse_world
 	# ★ 复用上面算好的同一份选中列表（见 ③ 开头那条注释）
 	overlay.set_selection(sel)
+	# ★★ F2：拒绝红环的寿命（暂停时冻住，与插旗 / 攻击标记同一条口径）。
+	overlay.tick_rejects(dt if running else 0.0)
 	overlay.sync()
 	_prof_done("view/overlay", _t_overlay)
 	# ⑤a ★★ 迷雾：**每帧**检查一次掩码变没变（整块 memcmp，O(格数)，可忽略）。
@@ -1788,6 +1942,24 @@ func _camera_update(dt: float) -> void:
 	if story != null and not story.is_input_allowed(StoryConstsRes.ACT_CAMERA):
 		clamp_look_point()
 		return
+	# ⓪ 程序性跳转缓动（C2）：接管这一小段（默认 0.15s），避免长距离瞬移。
+	#    ★ 只在这段时间里 return：拖拽 / 方向键 / 边缘滚屏都不受影响。
+	if _cam_glide_active:
+		_cam_glide_t += dt
+		var gp: float = clampf(_cam_glide_t / maxf(0.001, _cam_glide_sec), 0.0, 1.0)
+		# ease-out cubic：起步快、收尾稳（与演出镜头的缓动同一手感）。
+		var ge: float = 1.0 - pow(1.0 - gp, 3.0)
+		_place_camera_looking_at(
+			palette.to_world(_cam_glide_from.lerp(_cam_glide_to, ge)))
+		if gp >= 1.0:
+			_cam_glide_active = false
+		clamp_look_point()
+		return
+	# ⓪.5 缩放缓动（C4）：只改 `zoom`，每帧重新把光标锚点钉回原屏幕位置。
+	if _zoom_anim_active:
+		_tick_zoom_anim(dt)
+		clamp_look_point()
+		return
 	# ① 先把「鼠标在不在窗口内 / 有没有压着可点控件」问清楚（与 2D 同一条判据）
 	var mouse_screen: Vector2 = get_viewport().get_mouse_position()
 	var in_window: bool = Rect2(Vector2.ZERO, get_viewport().get_visible_rect().size).has_point(mouse_screen)
@@ -1848,7 +2020,8 @@ func _camera_update(dt: float) -> void:
 		if not follow_target.alive:
 			follow_target = null
 		else:
-			_place_camera_looking_at(palette.to_world(follow_target.pos))
+			# ★★ C1：跟**渲染位置**（插值后），不是逻辑位置 —— 否则固定步长下镜头会一跳一跳。
+			_place_camera_looking_at(palette.to_world(_follow_pos(follow_target)))
 
 	# ④ 夹取：镜头看向的地面点必须落在**允许区间**里（可见区域不越出「地图 + margin 格」，
 	#    且中心仍留在图内 —— 两条的完整口径见 clamp_look_point）。
@@ -1925,7 +2098,9 @@ func fit_to_map() -> void:
 	if not _camera_player_input_allowed():
 		return
 	zoom = ZOOM_MAX
-	center_on_tile(Vector2(float(world.map.cols) * 0.5, float(world.map.rows) * 0.5))
+	_zoom_target = ZOOM_MAX
+	_zoom_anim_active = false
+	center_on_tile_smooth(Vector2(float(world.map.cols) * 0.5, float(world.map.rows) * 0.5))
 
 
 ## 边缘滚屏开关（2D 有 `toggle_edge_scroll`；HUD / 快捷键可能用它）
@@ -1992,6 +2167,8 @@ func _consume_events(events: Array) -> void:
 	# ★★ 冲锋命中 → 冲击波 + 冲锋音（见 `_feed_charge_fx` / `_feed_charge_sfx`）。
 	_feed_charge_fx(events)
 	_feed_charge_sfx(events)
+	# ★★ M3：单位阵亡 → 贴地烟尘（只给当前可见的阵亡播）。
+	_feed_death_fx(events)
 	# ★ 本机招募完成 → 招募音；同一批多个单位只响一次（见 `_feed_recruit_sfx`）。
 	_feed_recruit_sfx(events)
 	if interaction != null:
@@ -2100,6 +2277,11 @@ func _show_outcome(result: String, _reason: String = "") -> void:
 		return
 	outcome_frozen = true
 	outcome_result = result
+	# ★★ 结算层要能点：把自绘光标收掉、系统光标还回去（否则玩家看不见鼠标）。
+	if _cursor_hidden:
+		_set_system_cursor_hidden(false)
+	if cursor_view != null:
+		cursor_view.visible = false
 	if hud != null and is_instance_valid(hud):
 		hud.visible = false
 		# 结算期间 HUD 不再刷新（世界已经冻结；隐藏之后它没有任何要显示的东西）。
@@ -2196,6 +2378,37 @@ func _feed_charge_fx(events: Array) -> void:
 		var radius := float(e.get("radius", 0.0))
 		var color: Color = SideColorRes.color(cfg, world, String(e.get("faction", "")), "main")
 		charge_fx.spawn(pos, radius, color)
+
+
+## ★★ M3：单位阵亡 → 贴地烟尘（纯表现；只读 `kill` 事件里的位置 / 阵营）。
+## ★ 迷雾里的阵亡不播：先用「上一帧是否可见」判，再退回迷雾查询。
+func _feed_death_fx(events: Array) -> void:
+	if death_fx == null or world == null or cfg == null:
+		return
+	for evt in events:
+		var e: Dictionary = evt
+		if String(e.get("type", "")) != "kill":
+			continue
+		var u: Variant = e.get("unit", null)
+		if u == null:
+			continue
+		if not _unit_visible_for_fx(u):
+			continue
+		var color: Color = SideColorRes.color(cfg, world, String(u.faction), "main")
+		death_fx.spawn(u.pos, color)
+
+
+func _unit_visible_for_fx(u) -> bool:
+	if world == null:
+		return false
+	if units != null and units.has_method("is_visible_this_frame") \
+			and units.is_visible_this_frame(u):
+		return true
+	if String(u.faction) == String(world.my_faction):
+		return true
+	if world.fog == null or cfg == null or not cfg.fog_enabled:
+		return true
+	return world.fog.unit_visible(world.my_faction, u)
 
 
 ## ★★ 本机单位冲锋命中 → 冲锋音；同一批事件只播一声（与招募音同一条口径）。
@@ -2295,20 +2508,56 @@ func _feed_recruit_sfx(events: Array) -> void:
 
 
 ## 滚轮缩放：以**光标下的地面点**为锚点（缩放前后它留在同一屏幕位置）
+##
+## ★★ 2026.11（C4）：不再硬切 `zoom`，而是设一个 `_zoom_target`，
+##   由 `_tick_zoom_anim()` 每帧逼近并重新保锚点。
+##   无头 / `camera_zoom_smooth_enabled = false` 时仍走原来的立即版（测试依赖它）。
 func zoom_at(screen_pos: Vector2, factor: float) -> void:
 	if not _camera_player_input_allowed():
 		return
 	stop_follow()                      # 手动缩放 = 退出跟随
+	_cancel_camera_glide()             # 缩放优先于未完成的跳转
 	if palette == null or cam == null:
 		return
 	var anchor = palette.to_logic(screen_pos)
 	if anchor == null:
 		return
-	var before: Vector2 = palette.to_px(anchor)
-	zoom = clampf(zoom * factor, ZOOM_MIN, ZOOM_MAX)
+	# ★ 以**目标值**为基准累加：连续拨两格滚轮时不会丢掉第一格。
+	var base: float = _zoom_target if _zoom_anim_active else zoom
+	_zoom_target = clampf(base * factor, ZOOM_MIN, ZOOM_MAX)
+	_zoom_anchor_logic = anchor
+	if not camera_zoom_smooth_enabled or cfg.cam_zoom_lerp_sec <= 0.0 \
+			or absf(_zoom_target - zoom) < 1e-6:
+		# 立即版（与改造前逐位一致）：先记锚点屏幕位置，再改 zoom，再平移补回来。
+		var before: Vector2 = palette.to_px(anchor)
+		zoom = _zoom_target
+		_zoom_anim_active = false
+		_place_camera_looking_at(_ground_under_screen(_view_center()))
+		var after: Vector2 = palette.to_px(anchor)
+		pan_screen(before - after, false)
+		return
+	_zoom_anim_active = true
+
+
+## 缩放缓动的一帧：`zoom` 向目标逼近，然后按锚点做一次「改 zoom → 补屏幕位移」。
+##
+## ⚠️ `pan_screen(..., false)` 的第二个参数是「不要取消缩放缓动」——
+##    这个补位移本身就是缩放动画的一部分，不能把它自己取消掉。
+func _tick_zoom_anim(dt: float) -> void:
+	if palette == null or cam == null:
+		_zoom_anim_active = false
+		return
+	var sec: float = maxf(0.001, cfg.cam_zoom_lerp_sec)
+	# 指数逼近：一开始快、越接近目标越慢；`sec` 是「大约收敛到 95%」的时间尺度。
+	var k: float = 1.0 - exp(-dt / sec)
+	zoom = lerpf(zoom, _zoom_target, clampf(k, 0.0, 1.0))
+	if absf(zoom - _zoom_target) <= 0.0005:
+		zoom = _zoom_target
+		_zoom_anim_active = false
+	var before: Vector2 = palette.to_px(_zoom_anchor_logic)
 	_place_camera_looking_at(_ground_under_screen(_view_center()))
-	var after: Vector2 = palette.to_px(anchor)
-	pan_screen(before - after)
+	var after: Vector2 = palette.to_px(_zoom_anchor_logic)
+	pan_screen(before - after, false)
 
 
 ## ★★ **真实视口中心**（像素）。所有「屏幕中心对着哪一格」的查询都必须用它。
@@ -2353,10 +2602,15 @@ func _ground_under_screen(screen_px: Vector2) -> Vector3:
 ##
 ## ★ 用「屏幕像素 → 地面位移」的换算：把屏幕中心与「中心 + delta」两点都反算成格，
 ##   两者之差就是这一步该走的地面位移 ⇒ 手感与缩放无关。
-func pan_screen(screen_delta: Vector2) -> void:
+## @param cancel_zoom 手动平移 = true（顺带取消缩放缓动）；
+##        `_tick_zoom_anim()` 的锚点补位移传 false —— 那一步不能把自己取消掉。
+func pan_screen(screen_delta: Vector2, cancel_zoom: bool = true) -> void:
 	if not _camera_player_input_allowed():
 		return
 	stop_follow()                      # 手动平移 = 退出跟随
+	_cancel_camera_glide()             # 手动平移 = 放弃未完成的程序性跳转
+	if cancel_zoom:
+		_cancel_zoom_anim()
 	if palette == null or cam == null or screen_delta == Vector2.ZERO:
 		return
 	var c: Vector2 = _view_center()
@@ -2390,6 +2644,105 @@ func pan_screen(screen_delta: Vector2) -> void:
 ##
 ## ★ 移动量用相机自己的 right / forward 分解到地面上：这样方向键「上」永远
 ##   对应画面上的「向上走」，而水平位移本身不影响投影（俯角与高度都不变）。
+
+
+# ------------------------------------------------------------------
+# ★★ F1：自绘主题光标
+#
+#   只在「真实窗口 + 非触摸 + ui.custom_cursor」时创建；创建后把系统光标藏起来，
+#   由本层每帧画「金圈 + 状态图标」。状态只表达**点下去会发生什么**：
+#     normal / attack / build / invalid / order / ui
+#   纯表现层：不参与任何玩法判定，也不读鼠标位置（由 `_update_cursor` 喂）。
+# ------------------------------------------------------------------
+
+func _build_cursor() -> void:
+	if touch_device or _is_headless() or not cfg.custom_cursor_enabled:
+		return
+	var layer := CanvasLayer.new()
+	layer.name = "CursorLayer"
+	layer.layer = 100
+	add_child(layer)
+	cursor_view = CursorViewRes.new()
+	cursor_view.name = "Cursor"
+	layer.add_child(cursor_view)
+	cursor_view.setup(cfg)
+	cursor_view.visible = false
+	_cursor_inside = false
+	_cursor_hidden = false
+
+
+## 每帧刷光标：先判「在不在视口里」（不在就把系统光标还回去），再判状态。
+func _update_cursor() -> void:
+	if cursor_view == null or input_ctrl == null:
+		return
+	var mouse: Vector2 = get_viewport().get_mouse_position()
+	var vp: Vector2 = get_viewport().get_visible_rect().size
+	# 窗口失焦（Alt+Tab）时把系统光标还回去，否则桌面上会「没有鼠标」。
+	var inside: bool = DisplayServer.window_is_focused() \
+		and Rect2(Vector2.ZERO, vp).has_point(mouse)
+	if inside != _cursor_inside:
+		_cursor_inside = inside
+		_set_system_cursor_hidden(inside)
+	cursor_view.visible = inside
+	if not inside:
+		return
+	cursor_view.set_cursor_pos(mouse)
+	cursor_view.set_mode(_cursor_mode(mouse))
+
+
+## 只切一次 `Input.mouse_mode`（每帧切会在窗口边缘抖）。
+func _set_system_cursor_hidden(hide_it: bool) -> void:
+	if hide_it == _cursor_hidden:
+		return
+	_cursor_hidden = hide_it
+	Input.mouse_mode = Input.MOUSE_MODE_HIDDEN if hide_it else Input.MOUSE_MODE_VISIBLE
+
+
+## 当前光标状态。判定顺序与左键 / 右键那条**尽量同源**：
+##   UI > 建造 > 命令模式 > 悬停敌人 > 普通。
+func _cursor_mode(mouse: Vector2) -> String:
+	var over_ui: bool = hud != null and hud.point_hits_ui(mouse)
+	return cursor_mode_of(over_ui, input_ctrl.build_type, input_ctrl.hover_valid,
+		input_ctrl.order_mode, _hover_enemy())
+
+
+## ★★ F1 的纯判定（抽成静态函数：测试可以不起整个场景直接钉状态机）。
+static func cursor_mode_of(over_ui: bool, build_type: String, build_valid: bool,
+		order_mode: String, hover_enemy: bool) -> String:
+	if over_ui:
+		return "ui"
+	if build_type != "":
+		return "build" if build_valid else "invalid"
+	if order_mode != "":
+		if order_mode == "attack" and hover_enemy:
+			return "attack"
+		return "order"
+	if hover_enemy:
+		return "attack"
+	return "normal"
+
+
+## 鼠标底下是不是「右键点下去会打」的敌人（单位或建筑）。
+func _hover_enemy() -> bool:
+	if world == null or input_ctrl == null:
+		return false
+	var hu = input_ctrl.hover_unit
+	if hu != null:
+		if not FactionRes.same_side_for_attack(String(hu.faction), world.my_faction):
+			return true
+	for t in input_ctrl.hover_buildings:
+		var b = world.building_at(int(t.x), int(t.y))
+		if b != null and b.alive and not b.is_invulnerable() \
+				and not FactionRes.same_side_for_attack(String(b.owner), world.my_faction):
+			return true
+	return false
+
+
+func _exit_tree() -> void:
+	# 场景被拆掉（回主菜单 / 换关）时一定把系统光标还回去，否则菜单里没有鼠标。
+	if _cursor_hidden:
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+		_cursor_hidden = false
 
 
 ## 把 HUD 挂进 3D 场景。
@@ -2579,6 +2932,22 @@ func _is_wheel(event: InputEventMouseButton) -> bool:
 		MOUSE_BUTTON_WHEEL_LEFT, MOUSE_BUTTON_WHEEL_RIGHT:
 			return true
 	return false
+
+
+## ★★ F2：命令被拒时在落点画一个红环（`game_interaction` 按阵营过滤后调进来）。
+##   · `build_rejected` 事件带 `tile`：就画在那格；
+##   · `order_rejected` 没有坐标：画在玩家最后一次点的地方（`input_ctrl.mouse_world`）。
+func on_reject_feedback(evt: Dictionary) -> void:
+	if overlay == null:
+		return
+	var pos: Vector2 = Vector2.ZERO
+	if input_ctrl != null:
+		pos = input_ctrl.mouse_world
+	var tile_v: Variant = evt.get("tile", null)
+	if tile_v != null:
+		var t: Vector2i = tile_v
+		pos = Vector2(float(t.x) + 0.5, float(t.y) + 0.5)
+	overlay.add_reject(pos)
 
 
 ## ★ **唯一改逻辑状态的地方**：把界面发出的命令交给 command_processor。

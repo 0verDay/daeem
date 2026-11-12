@@ -1065,6 +1065,33 @@ public partial class CrowdKernel : RefCounted
         return PassableTile(y * _cols + x, f);
     }
 
+    /// <summary>
+    /// ★★ P2：批量检查「整条折线平移 (ox, oy) 之后」是否全部可通行。
+    /// 阵型移动时每个单位都要验证自己那条平移路线；逐点走 GDScript→C# 是
+    /// 命令帧的大头，这里一次跨语言调用把整条折线查完。
+    /// </summary>
+    public bool AllShiftedPassable(int f, Vector2[] pts, double ox, double oy)
+    {
+        if (pts == null)
+        {
+            return false;
+        }
+        for (int i = 0; i < pts.Length; i++)
+        {
+            int x = (int)System.Math.Floor(pts[i].X + ox);
+            int y = (int)System.Math.Floor(pts[i].Y + oy);
+            if (!InBounds(x, y))
+            {
+                return false;
+            }
+            if (!PassableTile(y * _cols + x, f))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /// <summary>排查用：内核眼里的对角守卫结果。d 用两个 int 传，避免 Vector2i 依赖。</summary>
     public bool DebugDiagonal(int x, int y, int dx, int dy, int f)
     {

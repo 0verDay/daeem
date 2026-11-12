@@ -6,6 +6,7 @@ const WorldRes = preload("res://logic/world.gd")
 const UnitRes = preload("res://logic/unit.gd")
 const CombatRes = preload("res://logic/combat.gd")
 const FactionRes = preload("res://logic/faction.gd")
+const PathfinderRes = preload("res://logic/pathfinder.gd")
 
 const N := 1000
 const DT := 1.0 / 60.0
@@ -47,6 +48,40 @@ func _cases() -> void:
 	_test_targeting_matches_gdscript(cfg)
 	_test_targeting_with_filtered_units(cfg)
 	_test_no_friendly_fire(cfg)
+	_test_all_shifted_passable(cfg)
+
+
+## ★★ P2：`AllShiftedPassable`（C# 批量）必须与 GDScript 逐点 `pathfinder.passable()` 同口径。
+func _test_all_shifted_passable(cfg) -> void:
+	var w = require_world(cfg)
+	if w.crowd == null or not w.crowd.available():
+		ok(false, "C# 内核可用（批量可通行接口）")
+		return
+	var faction := String(w.my_faction)
+	var pts := PackedVector2Array()
+	var want := true
+	for i in 20:
+		var t := Vector2i(3 + i, 4)
+		pts.append(Vector2(float(t.x) + 0.5, float(t.y) + 0.5))
+		if not PathfinderRes.passable(w.map, w.buildings, cfg, t.x, t.y, faction):
+			want = false
+	var r = w.crowd.all_shifted_passable_here(cfg, pts, 0.0, 0.0, faction)
+	ok(r != null, "★ P2：批量可通行接口可用")
+	eq(bool(r), want, "★ P2：批量可通行与 GDScript 逐点结果一致")
+
+	var blocked := Vector2i(-1, -1)
+	for y in int(w.map.rows):
+		for x in int(w.map.cols):
+			if not PathfinderRes.passable(w.map, w.buildings, cfg, x, y, faction):
+				blocked = Vector2i(x, y)
+				break
+		if blocked.x >= 0:
+			break
+	if blocked.x >= 0:
+		var one := PackedVector2Array([
+			Vector2(float(blocked.x) + 0.5, float(blocked.y) + 0.5)])
+		eq(bool(w.crowd.all_shifted_passable_here(cfg, one, 0.0, 0.0, faction)), false,
+			"★ P2：批量可通行能识别障碍格")
 
 func _test_no_friendly_fire(cfg) -> void:
 	var w = require_world(cfg)

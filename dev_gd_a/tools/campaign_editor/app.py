@@ -64,6 +64,23 @@ from editor_catalog import add_campaign as catalog_add_campaign
 from editor_catalog import campaign_ids as catalog_campaign_ids
 from editor_catalog import map_ids as catalog_map_ids
 
+# ★ 2026.11 UI 改造：共用暗色主题 / 圆角卡片 / 圆角按钮。
+from editor_ui import CheckBox
+from editor_ui import dpi
+from editor_ui import default_preset as _default_tokens
+from editor_ui import FONT_BODY, FONT_BRAND, FONT_SMALL
+from editor_ui import GAP
+from editor_ui import EditorShell
+from editor_ui import PillButton
+from editor_ui import RoundedPanel
+from editor_ui import ThinScrollbar
+from editor_ui import list_card as _shared_list_card
+from editor_ui import apply_theme as _shared_apply_theme
+from editor_ui import is_dark as _shared_is_dark
+from editor_ui import make_card as _shared_make_card
+from editor_ui import set_ui as _set_editor_ui
+from editor_ui import shade as _shared_shade
+
 from . import levelfile
 from . import model as model_mod
 from .model import (
@@ -126,31 +143,11 @@ def _fmt_num(v: Any) -> str:
     return str(int(f)) if f == int(f) else str(f)
 
 
-#: 界面配色（与另两个编辑器同一套 —— 三个工具看起来是一家的）。
+#: 界面配色（四个编辑器同一套 —— 看起来是一家的）。
 #:
-#: ★ 「浅色（白）+ 极简」：`bg` = 页面底（顶栏 / 画布外圈），`panel` = 卡片 / 侧栏面（白），
-#:   `panel_alt` = 输入框 / 按钮 / 列表行，`line` = 发丝分隔线。
-UI = {
-    "bg": "#f3f4f6",
-    "panel": "#ffffff",
-    "panel_alt": "#eef0f3",
-    "line": "#d9dce1",
-    "text": "#1f2329",
-    "text_dim": "#6b7280",
-    "accent": "#2f7fe0",
-    "accent_btn": "#2f7fe0",
-    "accent_btn_hover": "#4a91e6",
-    "accent_fg": "#ffffff",
-    "danger_btn": "#d9534f",
-    "danger_btn_hover": "#e26864",
-    "danger_fg": "#ffffff",
-    "hover": "#e6e9ee",
-    "pressed": "#d9dde3",
-    "ok": "#1f9d55",
-    "warn": "#b7791f",
-    "bad": "#d64545",
-    "canvas_bg": "#e7eaee",
-}
+#: ★ 2026.11：暗色游戏工具（A 方向），token 在 `tools/editor_ui/tokens.py`。
+UI = dict(_default_tokens())
+_set_editor_ui(UI)
 
 #: 七个页签：key → （按钮文字，状态栏提示）。
 PAGES: Tuple[Tuple[str, str, str], ...] = (
@@ -263,234 +260,12 @@ def _rounded_rect(canvas, x1: float, y1: float, x2: float, y2: float, r: float, 
     return canvas.create_polygon(pts, smooth=True, splinesteps=12, **kw)
 
 
-class RButton(tk.Button):
-    """**圆角按钮**：本体还是 `tk.Button`，上面盖一层 Canvas 把方角画成圆角。
-
-    ★ 为什么这么做：`invoke` / `cget` / `configure` / `pack` 全是**原生**语义，
-      调用方与测试一行都不用改；盖层只负责画面，本体负责量尺寸与「点击 → invoke()」。
-      四角填成父容器底色，于是看起来就是一枚圆角按钮。
-    """
-
-    RADIUS = 8.0
-
-    def __init__(self, master=None, **kw):
-        kw.setdefault("relief", "flat")
-        kw.setdefault("bd", 0)
-        kw.setdefault("highlightthickness", 0)
-        kw.setdefault("takefocus", 0)
-        kw.setdefault("activebackground", UI["panel_alt"])
-        kw.setdefault("activeforeground", UI["text"])
-        super().__init__(master, **kw)
-        try:
-            surround = str(self.master.cget("bg"))
-        except (tk.TclError, AttributeError):
-            surround = ""
-        self._surround = surround or UI["panel"]
-        self._hover = False
-        self._active = False
-        self._overlay = tk.Canvas(self, highlightthickness=0, bd=0, takefocus=0,
-                                  bg=self._surround)
-        self._overlay.place(x=0, y=0, relwidth=1, relheight=1)
-        for seq, fn in (("<Enter>", self._on_enter), ("<Leave>", self._on_leave),
-                        ("<ButtonPress-1>", self._on_press),
-                        ("<ButtonRelease-1>", self._on_release)):
-            self._overlay.bind(seq, fn)
-        self.bind("<Configure>", lambda _e: self._redraw())
-        self._redraw()
-
-    def configure(self, cnf=None, **kw):
-        if isinstance(cnf, str):
-            return super().configure(cnf)
-        result = super().configure(cnf, **kw)
-        self._redraw()
-        return result
-
-    config = configure
-
-    def _disabled(self) -> bool:
-        try:
-            return str(self.cget("state")) == "disabled"
-        except tk.TclError:
-            return False
-
-    def _on_enter(self, _e=None):
-        self._hover = True
-        self._redraw()
-
-    def _on_leave(self, _e=None):
-        self._hover = False
-        self._active = False
-        self._redraw()
-
-    def _on_press(self, _e=None):
-        if not self._disabled():
-            self._active = True
-            self._redraw()
-
-    def _on_release(self, _e=None):
-        fire = self._active and not self._disabled()
-        self._active = False
-        self._hover = True
-        self._redraw()
-        if fire:
-            try:
-                self.invoke()
-            except tk.TclError:
-                pass
-
-    def _fill(self) -> str:
-        base = str(self.cget("bg"))
-        if self._disabled():
-            return base
-        if self._active:
-            return _shade(base, -0.12)
-        if self._hover:
-            return _shade(base, -0.06)
-        return base
-
-    def _text_color(self) -> str:
-        if self._disabled():
-            return UI["text_dim"]
-        return str(self.cget("fg"))
-
-    def _redraw(self):
-        overlay = getattr(self, "_overlay", None)
-        if overlay is None:
-            return
-        try:
-            overlay.delete("all")
-            w = max(1, self.winfo_width())
-            h = max(1, self.winfo_height())
-            if w <= 1 or h <= 1:
-                return
-            fill = self._fill()
-            _rounded_rect(overlay, 0, 0, w, h, min(self.RADIUS, h / 2.0),
-                          fill=fill, outline=fill)
-            text = str(self.cget("text"))
-            if not text:
-                return
-            try:
-                padx = max(0, int(self.cget("padx")))
-            except (tk.TclError, ValueError):
-                padx = 6
-            anchor = str(self.cget("anchor"))
-            font = self.cget("font")
-            color = self._text_color()
-            if anchor in ("w", "e"):
-                x = padx + 2 if anchor == "w" else w - padx - 2
-                overlay.create_text(x, h / 2, text=text, fill=color, font=font,
-                                    anchor=anchor)
-            else:
-                overlay.create_text(w / 2, h / 2, text=text, fill=color, font=font)
-        except tk.TclError:
-            pass
+RButton = PillButton
 
 
 def _apply_theme(root: tk.Tk) -> ttk.Style:
-    """把 clam 主题里**所有会漏出浅色**的地方都压回深色（下拉 readonly / 勾选框 / 悬停…）。
-
-    ★ 这是「下拉框选中后变全白」「勾选框一块白」「划过变白」的根因修法：clam 默认在
-      `readonly` / `active` / `disabled` 这些状态下会落到浅灰，光 `configure` 压不住状态色。
-    """
-    style = ttk.Style(root)
-    try:
-        style.theme_use("clam")
-    except tk.TclError:
-        pass
-    panel, alt, bg = UI["panel"], UI["panel_alt"], UI["bg"]
-    line, text, dim, accent = UI["line"], UI["text"], UI["text_dim"], UI["accent"]
-    hover, pressed = UI["hover"], UI["pressed"]
-    sel_bg, sel_fg = "#cfe3ff", text
-
-    style.configure(".", background=panel, foreground=text, fieldbackground=alt,
-                    bordercolor=line, lightcolor=panel, darkcolor=panel, focuscolor=accent)
-    style.configure("TFrame", background=panel)
-    style.configure("Bar.TFrame", background=bg)
-    style.configure("TLabel", background=panel, foreground=text)
-    style.configure("Bar.TLabel", background=bg, foreground=text)
-    style.configure("Dim.TLabel", background=panel, foreground=dim)
-    style.configure("Title.TLabel", background=panel, foreground=accent,
-                    font=("Microsoft YaHei UI", 10, "bold"))
-    style.configure("Hint.TLabel", background=panel, foreground=dim,
-                    font=("Microsoft YaHei UI", 8))
-
-    style.configure("TEntry", fieldbackground=alt, foreground=text, insertcolor=text,
-                    bordercolor=line, lightcolor=alt, darkcolor=alt, padding=(6, 4))
-    style.map("TEntry",
-              fieldbackground=[("readonly", alt), ("disabled", panel)],
-              foreground=[("disabled", dim)],
-              selectbackground=[("!disabled", sel_bg)],
-              selectforeground=[("!disabled", sel_fg)],
-              bordercolor=[("focus", accent)], lightcolor=[("focus", accent)],
-              darkcolor=[("focus", accent)])
-
-    style.configure("TCombobox", fieldbackground=alt, background=alt, foreground=text,
-                    arrowcolor=dim, bordercolor=line, lightcolor=alt, darkcolor=alt,
-                    padding=(6, 4))
-    style.map("TCombobox",
-              fieldbackground=[("readonly", alt), ("disabled", panel)],
-              background=[("readonly", alt), ("active", alt), ("disabled", panel)],
-              foreground=[("readonly", text), ("disabled", dim)],
-              arrowcolor=[("readonly", dim), ("active", text)],
-              selectbackground=[("readonly", alt), ("!disabled", sel_bg)],
-              selectforeground=[("readonly", text), ("!disabled", sel_fg)],
-              bordercolor=[("focus", accent)], lightcolor=[("focus", accent)],
-              darkcolor=[("focus", accent)])
-    for pattern, value in (("*TCombobox*Listbox.background", alt),
-                           ("*TCombobox*Listbox.foreground", text),
-                           ("*TCombobox*Listbox.selectBackground", sel_bg),
-                           ("*TCombobox*Listbox.selectForeground", sel_fg),
-                           ("*TCombobox*Listbox.borderWidth", "0"),
-                           ("*TCombobox*Listbox.highlightThickness", "0")):
-        root.option_add(pattern, value, "interactive")
-
-    style.configure("Treeview", background=alt, fieldbackground=alt, foreground=text,
-                    bordercolor=line, lightcolor=panel, darkcolor=panel, rowheight=26,
-                    borderwidth=0)
-    style.map("Treeview",
-              background=[("selected", sel_bg), ("disabled", alt)],
-              foreground=[("selected", sel_fg), ("disabled", dim)])
-    style.configure("Treeview.Heading", background=panel, foreground=dim, relief="flat",
-                    borderwidth=0, padding=(6, 5))
-    style.map("Treeview.Heading",
-              background=[("active", hover), ("pressed", pressed)],
-              foreground=[("active", text)])
-
-    style.configure("TScrollbar", background=line, troughcolor=panel, bordercolor=panel,
-                    arrowcolor=dim, relief="flat", borderwidth=0)
-    style.map("TScrollbar",
-              background=[("active", "#b9bfc9"), ("pressed", "#a6adba")],
-              arrowcolor=[("active", text)])
-
-    for name in ("TCheckbutton", "TRadiobutton"):
-        style.configure(name, background=panel, foreground=text, focuscolor=panel,
-                        indicatorbackground=alt, indicatorforeground=accent,
-                        upperbordercolor=line, lowerbordercolor=line)
-        style.map(name,
-                  background=[("active", panel)],
-                  foreground=[("disabled", dim)],
-                  indicatorbackground=[("selected", accent), ("active", hover),
-                                       ("disabled", panel)],
-                  indicatorforeground=[("selected", "#ffffff")])
-
-    style.configure("TButton", background=alt, foreground=text, bordercolor=line,
-                    focuscolor=alt, padding=(10, 5), borderwidth=0)
-    style.map("TButton",
-              background=[("active", hover), ("pressed", pressed), ("disabled", panel)],
-              foreground=[("disabled", dim)])
-    style.configure("Accent.TButton", background=UI["accent_btn"],
-                    foreground=UI["accent_fg"])
-    style.map("Accent.TButton", background=[("active", UI["accent_btn_hover"])])
-
-    style.configure("TNotebook", background=bg, borderwidth=0)
-    style.configure("TNotebook.Tab", background=panel, foreground=dim, padding=(16, 7),
-                    borderwidth=0)
-    style.map("TNotebook.Tab",
-              background=[("selected", alt), ("active", hover)],
-              foreground=[("selected", accent)])
-    style.configure("TSeparator", background=line)
-    style.configure("TScale", background=panel, troughcolor=alt)
-    return style
+    """ttk 主题统一交给 tools/editor_ui/theme.py。"""
+    return _shared_apply_theme(root, UI)
 
 
 class _NoRepaint:
@@ -716,64 +491,54 @@ class EditorApp:
             pass
 
     def _build_widgets(self) -> None:
-        # ---- 顶栏：左页签 + 右文件按钮 ----
-        top = tk.Frame(self.root, bg=UI["bg"])
-        top.pack(side="top", fill="x")
-        tk.Label(top, text="战役编辑器", bg=UI["bg"], fg=UI["accent"],
-                 font=("Microsoft YaHei UI", 11, "bold")).pack(side="left", padx=(10, 14), pady=6)
-        self.tab_buttons: Dict[str, tk.Button] = {}
-        for key, label, _hint in PAGES:
-            btn = self._button(top, label, lambda k=key: self.set_page(k),
-                               bg=UI["panel"], fg=UI["text_dim"],
-                               activebackground=UI["panel_alt"], activeforeground=UI["accent"],
-                               font=("Microsoft YaHei UI", 10), padx=14, pady=5)
-            btn.pack(side="left", padx=2)
-            self.tab_buttons[key] = btn
+        # ---- 外壳：品牌 + 金色下划线页签 + 右侧「路径 / 重新载入 / 保存」
+        self.shell = EditorShell(
+            self.root,
+            title="DAEEM 战役编辑器",
+            brand="战役编辑器",
+            tabs=[(key, label) for key, label, _hint in PAGES],
+            on_tab=self.set_page,
+            geometry="1340x860",
+            minsize=(1060, 660),
+            status_hint="Ctrl+S 保存 · F5 重新载入 · Esc 取消当前操作",
+        )
+        self.tabs = self.shell.tabs
+        self.tab_buttons = self.shell.tab_buttons
+        self.status_var = self.shell.status_var
+        self.file_label = self.shell.add_file_label()
+        self.file_buttons = {
+            "reload": self.shell.add_button("reload", "重新载入", self.do_reload),
+            "save": self.shell.add_button("save", "保存", self.do_save, primary=True),
+        }
 
-        right = tk.Frame(top, bg=UI["bg"])
-        right.pack(side="right", padx=8)
-        self.file_label = tk.Label(right, text="", bg=UI["bg"], fg=UI["text_dim"],
-                                   font=("Microsoft YaHei UI", 9))
-        self.file_label.pack(side="left", padx=(0, 8))
-        self.file_buttons: Dict[str, tk.Button] = {}
-        for key, text, cmd in (("save", "保存", self.do_save),
-                               ("reload", "重新载入", self.do_reload)):
-            btn = self._button(right, text, cmd, padx=12, pady=5)
-            btn.pack(side="left", padx=3)
-            self.file_buttons[key] = btn
-        self.file_buttons["save"].configure(bg=UI["accent_btn"], fg=UI["accent_fg"],
-                                            activebackground=UI["accent_btn_hover"])
-
-        # ---- 主体：左工作区 + 右侧边栏 ----
-        body = tk.Frame(self.root, bg=UI["bg"])
-        body.pack(side="top", fill="both", expand=True)
-
+        # ---- 主体：左工作区 + 右侧边栏
+        body = self.shell.content
         self.work = tk.Frame(body, bg=UI["bg"])
-        self.work.pack(side="left", fill="both", expand=True)
+        # ★ 先 pack 侧栏、再 pack 主工作区：Treeview 的「请求宽度」是各列宽度之和
+        #   （这里 ~1150px），它先占位的话会把固定宽度的侧栏挤成一条缝 ——
+        #   原来侧栏里的输入框被裁成「战役名」那一条，根因就是这里。
+        #   pack 是「先到先得」，所以固定宽度的那一侧必须先摆。
         self.canvas_host = tk.Frame(self.work, bg=UI["bg"])
         self.list_host = tk.Frame(self.work, bg=UI["bg"])
         self.action_bar = tk.Frame(self.work, bg=UI["bg"])
-        self.action_bar.pack(side="bottom", fill="x", padx=10, pady=(0, 8))
+        self.action_bar.pack(side="bottom", fill="x", pady=(10, 0))
 
-        self.status_var = tk.StringVar(value="")
-        tk.Label(self.root, textvariable=self.status_var, anchor="w", bg=UI["panel"],
-                 fg=UI["text_dim"], padx=10, pady=4,
-                 font=("Microsoft YaHei UI", 9)).pack(side="bottom", fill="x")
-
-        # ---- 侧边栏（可滚：「阵营与 AI」那一页很长）----
-        side_wrap = tk.Frame(body, bg=UI["panel"], width=430)
-        side_wrap.pack(side="right", fill="y")
+        # ---- 侧边栏（可滚：「阵营与 AI」那一页很长）
+        # ★ 侧栏是「井」：底色 = bg；卡片才是 panel。
+        side_wrap = tk.Frame(body, bg=UI["bg"], width=dpi.px(476))
+        side_wrap.pack(side="right", fill="y", padx=(GAP, 0))
         side_wrap.pack_propagate(False)
-        self.sidebar_scroll = ttk.Scrollbar(side_wrap, orient="vertical",
-                                            command=self.sidebar_yview)
-        self.sidebar_canvas = tk.Canvas(side_wrap, bg=UI["panel"], width=414,
+        self.work.pack(side="left", fill="both", expand=True)
+        self.sidebar_scroll = ThinScrollbar(side_wrap, command=self.sidebar_yview,
+                                            trough=UI["bg"], width=8)
+        self.sidebar_canvas = tk.Canvas(side_wrap, bg=UI["bg"], width=dpi.px(460),
                                         highlightthickness=0, bd=0, takefocus=0,
                                         yscrollcommand=self.on_sidebar_yscroll)
-        self.sidebar_scroll.pack(side="right", fill="y")
+        self.sidebar_scroll.pack(side="right", fill="y", padx=(2, 0))
         self.sidebar_canvas.pack(side="left", fill="both", expand=True)
-        self.sidebar = tk.Frame(self.sidebar_canvas, bg=UI["panel"], width=414)
+        self.sidebar = tk.Frame(self.sidebar_canvas, bg=UI["bg"], width=dpi.px(460))
         self._sidebar_item = self.sidebar_canvas.create_window((0, 0), window=self.sidebar,
-                                                               anchor="nw", width=414)
+                                                               anchor="nw", width=dpi.px(460))
         self.sidebar.bind("<Configure>", self._on_sidebar_configure)
         self.sidebar_canvas.bind("<Configure>", self.on_sidebar_canvas_configure)
         # ★ 滚轮绑在 root 上：tk 的事件沿 bindtags 往上走，绑在容器上收不到
@@ -1101,9 +866,17 @@ class EditorApp:
         self._sidebar_reset_pending = True
         self._fit_pending = True
         self.refresh_all()
+        try:
+            self.tabs.select(key, animate_indicator=False)
+        except (AttributeError, tk.TclError):
+            pass
         for k, _label, hint in PAGES:
             if k == key:
                 self.status(hint)
+        try:
+            self.shell.reveal()
+        except (AttributeError, tk.TclError):
+            pass
 
     def refresh_all(self) -> None:
         """整窗重建（数据变了就走它）。
@@ -1137,9 +910,12 @@ class EditorApp:
                 child.destroy()
         self.canvas_host.pack_forget()
         self.list_host.pack_forget()
-        for key, btn in self.tab_buttons.items():
-            btn.configure(fg=(UI["accent"] if key == self.page else UI["text_dim"]),
-                          bg=(UI["panel_alt"] if key == self.page else UI["panel"]))
+        for _key, btn in self.tab_buttons.items():
+            btn.configure(bg=UI["bar"])
+        try:
+            self.tabs.select(self.page, animate_indicator=False)
+        except (AttributeError, tk.TclError):
+            pass
         if self.page in ("place", "reddot", "zone"):
             self._build_canvas_page()
         elif self.page == "check":
@@ -1162,26 +938,34 @@ class EditorApp:
         else:
             self._build_level_page()
 
-    def _tree(self, parent, columns: Sequence[Tuple[str, str, int]], height: int = 12):
-        wrap = tk.Frame(parent, bg=UI["bg"])
-        wrap.pack(side="top", fill="both", expand=True, padx=10, pady=(8, 0))
+    def _tree(self, parent, columns: Sequence[Tuple[str, str, int]], height: int = 12,
+              title: str = "", kicker: str = ""):
+        """造一张「表格卡片」，返回 Treeview 本体（调用方照旧 insert / 读 selection）。"""
+        panel = _shared_list_card(parent, title, kicker=kicker)
+        panel.pack(side="top", fill="both", expand=True)
+        wrap = tk.Frame(panel.body, bg=UI["panel"])
+        wrap.pack(fill="both", expand=True, padx=12, pady=(8, 10))
         names = [c[0] for c in columns]
         tree = ttk.Treeview(wrap, columns=names, show="headings", height=height,
                             selectmode="browse")
         for key, header, width in columns:
             tree.heading(key, text=header)
-            tree.column(key, width=width, anchor="w")
+            tree.column(key, width=dpi.px(width), anchor="w")
+        # 列宽之和可能超出卡片宽度 → 给一条横向细滚动条（比裁掉「文件」列诚实）。
+        hbar = ThinScrollbar(wrap, orient="horizontal", command=tree.xview,
+                             trough=UI["panel"])
+        vbar = ThinScrollbar(wrap, command=tree.yview, trough=UI["panel"], width=8)
+        tree.configure(xscrollcommand=hbar.set, yscrollcommand=vbar.set)
+        hbar.pack(side="bottom", fill="x", pady=(6, 0))
+        vbar.pack(side="right", fill="y", padx=(6, 0))
         tree.pack(side="left", fill="both", expand=True)
-        bar = ttk.Scrollbar(wrap, orient="vertical", command=tree.yview)
-        tree.configure(yscrollcommand=bar.set)
-        bar.pack(side="right", fill="y")
         return tree
 
     def _build_campaign_page(self) -> None:
         self.level_tree = self._tree(self.list_host, (
             ("no", "序", 40), ("id", "关卡 id", 190), ("name", "名字", 210),
             ("mode", "模式", 80), ("map", "地图", 110), ("summary", "目标", 260),
-            ("file", "文件", 240)))
+            ("file", "文件", 240)), title="关卡", kicker="顺序就是 play 顺序")
         levels = self._visible_levels()
         for i, lv in enumerate(levels):
             self.level_tree.insert("", "end", iid="lv:%s" % lv.level_id,
@@ -1220,8 +1004,9 @@ class EditorApp:
         tk.Label(outer, text=lv.summary(), bg=UI["bg"], fg=UI["text_dim"]).pack(anchor="w",
                                                                                pady=(2, 8))
 
-        box = tk.Frame(outer, bg=UI["panel"])
-        box.pack(side="top", fill="both", expand=True)
+        panel = RoundedPanel(outer, fill=UI["panel"], outline=UI["line"], bg=UI["bg"])
+        panel.pack(side="top", fill="both", expand=True)
+        box = panel.body
         form = tk.Frame(box, bg=UI["panel"])
         form.pack(side="left", fill="y", padx=12, pady=10)
 
@@ -1248,8 +1033,8 @@ class EditorApp:
                                       height=5, selectmode="browse")
         self.fail_tree.heading("kind", text="种类")
         self.fail_tree.heading("zone", text="区划")
-        self.fail_tree.column("kind", width=120)
-        self.fail_tree.column("zone", width=120)
+        self.fail_tree.column("kind", width=dpi.px(120))
+        self.fail_tree.column("zone", width=dpi.px(120))
         self.fail_tree.pack(side="top", fill="x")
         for i, f in enumerate(lv.fail_conditions):
             self.fail_tree.insert("", "end", iid="fail:%d" % i,
@@ -1268,7 +1053,7 @@ class EditorApp:
         tk.Label(row, text=label, width=12, anchor="w", bg=UI["panel"],
                  fg=UI["text"]).pack(side="left")
         entry = ttk.Entry(row, textvariable=var, width=26)
-        entry.pack(side="left")
+        entry.pack(side="left", fill="x", expand=True, padx=(0, 2))
         entry.commit_action = commit                # type: ignore[attr-defined]
         entry.bind("<Return>", lambda e: commit())
         entry.bind("<FocusOut>", lambda e: commit())
@@ -1282,7 +1067,7 @@ class EditorApp:
                  fg=UI["text"]).pack(side="left")
         combo = ttk.Combobox(row, textvariable=var, values=list(choices), width=24,
                              state="readonly")
-        combo.pack(side="left")
+        combo.pack(side="left", fill="x", expand=True, padx=(0, 2))
         combo.commit_action = commit                # type: ignore[attr-defined]
         combo.bind("<<ComboboxSelected>>", lambda e: commit())
         return combo
@@ -2101,26 +1886,44 @@ class EditorApp:
         for child in self.action_bar.winfo_children():
             child.destroy()
         outer = tk.Frame(self.list_host, bg=UI["bg"])
-        outer.pack(side="top", fill="both", expand=True, padx=10, pady=8)
-        head = tk.Frame(outer, bg=UI["bg"])
-        head.pack(side="top", fill="x")
-        tk.Label(head, text="导出前的硬拦截清单（dev_plan_7 2.5 那 16 条 + 风险 4 的过载提示）",
-                 bg=UI["bg"], fg=UI["accent"], font=("Microsoft YaHei UI", 10, "bold")).pack(side="left")
+        outer.pack(side="top", fill="both", expand=True)
+        panel = RoundedPanel(outer, fill=UI["panel"], outline=UI["line"], bg=UI["bg"])
+        panel.pack(side="top", fill="both", expand=True)
+        body = panel.body
+
+        head = tk.Frame(body, bg=UI["panel"])
+        head.pack(side="top", fill="x", padx=16, pady=(12, 0))
+        tk.Label(head, text="导出前的硬拦截清单", bg=UI["panel"], fg=UI["text"],
+                 font=("Microsoft YaHei UI", 10, "bold")).pack(side="left")
+        tk.Label(head, text="dev_plan_7 2.5 那 16 条 + 风险 4 的过载提示",
+                 bg=UI["panel"], fg=UI["text_dim"],
+                 font=("Microsoft YaHei UI", 9)).pack(side="left", padx=(10, 0), pady=(1, 0))
         self._button(head, "重新校验", self.run_checks, padx=10).pack(side="right")
         self._button(head, "打开地图编辑器（当前关的地图）", self.open_map_editor,
                      padx=10).pack(side="right", padx=6)
+        tk.Frame(body, bg=UI["line_soft"], height=1).pack(fill="x", padx=16, pady=(9, 0))
 
-        self.check_summary = tk.Label(outer, text="", bg=UI["bg"], fg=UI["text_dim"],
-                                      justify="left")
-        self.check_summary.pack(side="top", anchor="w", pady=(6, 4))
+        self.check_summary = tk.Label(body, text="", bg=UI["panel"], fg=UI["text_dim"],
+                                      justify="left", anchor="w",
+                                      font=("Microsoft YaHei UI", 9))
+        self.check_summary.pack(side="top", fill="x", padx=16, pady=(8, 6))
 
-        self.issue_tree = ttk.Treeview(outer, columns=("sev", "code", "where", "msg"),
+        table_wrap = tk.Frame(body, bg=UI["panel"])
+        table_wrap.pack(side="top", fill="both", expand=True, padx=(12, 8), pady=(0, 12))
+        self.issue_tree = ttk.Treeview(table_wrap, columns=("sev", "code", "where", "msg"),
                                        show="headings", selectmode="browse")
         for key, header, width in (("sev", "结果", 60), ("code", "code", 190),
                                    ("where", "位置", 240), ("msg", "说明", 560)):
             self.issue_tree.heading(key, text=header)
-            self.issue_tree.column(key, width=width, anchor="w")
-        self.issue_tree.pack(side="top", fill="both", expand=True)
+            self.issue_tree.column(key, width=dpi.px(width), anchor="w")
+        hbar = ThinScrollbar(table_wrap, orient="horizontal",
+                             command=self.issue_tree.xview, trough=UI["panel"])
+        vbar = ThinScrollbar(table_wrap, command=self.issue_tree.yview,
+                             trough=UI["panel"], width=8)
+        self.issue_tree.configure(xscrollcommand=hbar.set, yscrollcommand=vbar.set)
+        hbar.pack(side="bottom", fill="x", pady=(6, 0))
+        vbar.pack(side="right", fill="y", padx=(6, 0))
+        self.issue_tree.pack(side="left", fill="both", expand=True)
         self.issue_tree.tag_configure(SEV_BLOCK, foreground=UI["bad"])
         self.issue_tree.tag_configure(SEV_WARN, foreground=UI["warn"])
         self.issue_tree.tag_configure("pass", foreground=UI["ok"])
@@ -2185,6 +1988,13 @@ class EditorApp:
         try:
             self.last_written = levelfile.save_campaign(self.model)
             catalog_add_campaign(self.project_dir, self.model.campaign_id)
+            # `last_written` 可能是**一串**文件（关卡文件 + 战役文件），取第一个当提示。
+            written = self.last_written
+            first = written[0] if isinstance(written, (list, tuple)) and written else written
+            try:
+                self.shell.toast("已写回 %s" % Path(first).name)
+            except (AttributeError, tk.TclError, TypeError):
+                pass
         except (ModelError, OSError) as exc:
             messagebox.showerror("写文件失败", str(exc))
             self.status("写文件失败：%s" % exc)
@@ -2596,18 +2406,9 @@ class EditorApp:
                 pass
 
     def _section(self, title: str, hint: str = "") -> tk.Frame:
-        wrap = tk.Frame(self.sidebar, bg=UI["panel"])
-        wrap.pack(side="top", fill="x", padx=10, pady=(10, 0))
-        head = tk.Frame(wrap, bg=UI["panel"])
-        head.pack(side="top", fill="x")
-        tk.Label(head, text=title, bg=UI["panel"], fg=UI["accent"],
-                 font=("Microsoft YaHei UI", 10, "bold")).pack(side="left")
-        frame = tk.Frame(wrap, bg=UI["panel"])
-        frame.pack(side="top", fill="x")
-        wrap.section_title = title                 # type: ignore[attr-defined]
-        if hint:
-            tk.Label(frame, text=hint, bg=UI["panel"], fg=UI["text_dim"], justify="left",
-                     wraplength=390, font=("Microsoft YaHei UI", 8)).pack(side="top", anchor="w")
+        # ★ 2026.11：分区改成圆角卡片（共享 `make_card`）；返回值仍是内容 frame。
+        frame = _shared_make_card(self.sidebar, title, hint=hint, wrap=390)
+        frame.section_title = title                # 兼容既有测试的定位方式
         return frame
 
     def _entry_cell(self, parent, label: str, value: str, commit: Callable[[str], None],
@@ -2618,7 +2419,7 @@ class EditorApp:
                  fg=UI["text"]).pack(side="left")
         var = tk.StringVar(value=value)
         entry = ttk.Entry(row, textvariable=var, width=width)
-        entry.pack(side="left")
+        entry.pack(side="left", fill="x", expand=True, padx=(0, 2))
         entry.commit_action = lambda: commit(var.get())      # type: ignore[attr-defined]
         entry.bind("<Return>", lambda e: entry.commit_action())
         entry.bind("<FocusOut>", lambda e: entry.commit_action())
@@ -2641,14 +2442,14 @@ class EditorApp:
     def _check_cell(self, parent, label: str, value: bool,
                     commit: Callable[[bool], None]) -> ttk.Checkbutton:
         var = tk.BooleanVar(value=bool(value))
-        chk = ttk.Checkbutton(parent, text=label, variable=var,
+        chk = CheckBox(parent, text=label, variable=var,
                               command=lambda: commit(bool(var.get())))
         chk.pack(side="top", anchor="w", pady=1)
         return chk
 
     def _hint(self, parent, text: str) -> None:
         tk.Label(parent, text=text, bg=UI["panel"], fg=UI["text_dim"], justify="left",
-                 wraplength=390, font=("Microsoft YaHei UI", 8)).pack(side="top", anchor="w",
+                 wraplength=dpi.px(390), font=("Microsoft YaHei UI", 8)).pack(side="top", anchor="w",
                                                                      pady=(2, 0))
 
     # ---- ① 战役页侧栏 ----
@@ -2810,7 +2611,7 @@ class EditorApp:
             ce.bind("<Return>", lambda _e, en=ce: en.commit_action())
             ce.bind("<FocusOut>", lambda _e, en=ce: en.commit_action())
             play_var = tk.BooleanVar(value=e.playable)
-            ttk.Checkbutton(row, text="可玩", variable=play_var,
+            CheckBox(row, text="可玩", variable=play_var,
                             command=lambda f=e.fid, v=play_var:
                             self.set_faction_field(f, "playable", bool(v.get()))
                             ).pack(side="left", padx=(0, 3))
@@ -3029,7 +2830,7 @@ class EditorApp:
         if not sides:
             tk.Label(parent, text="还没有边 —— 点下面的「＋ 新建一条边」开一条。",
                      bg=UI["panel"], fg=UI["text_dim"], anchor="w", justify="left",
-                     wraplength=260).pack(fill="x")
+                     wraplength=dpi.px(260)).pack(fill="x")
         for i, group in enumerate(sides):
             row = tk.Frame(parent, bg=UI["panel"])
             row.pack(side="top", fill="x", pady=1)
@@ -3037,7 +2838,7 @@ class EditorApp:
                      bg=UI["panel"], fg=UI["text"]).pack(side="left")
             text = ("、".join("%s %s" % (f, self.faction_name(f)) for f in group)
                     if group else "（空）")
-            tk.Label(row, text=text, anchor="w", justify="left", wraplength=210,
+            tk.Label(row, text=text, anchor="w", justify="left", wraplength=dpi.px(210),
                      bg=UI["panel"],
                      fg=(UI["text"] if group else UI["text_dim"])).pack(
                          side="left", fill="x", expand=True)
@@ -3140,7 +2941,7 @@ class EditorApp:
         for key, header, width in (("what", "什么", 110), ("who", "归属/种类", 130),
                                    ("pos", "位置", 90)):
             self.entry_tree.heading(key, text=header)
-            self.entry_tree.column(key, width=width, anchor="w")
+            self.entry_tree.column(key, width=dpi.px(width), anchor="w")
         self.entry_tree.pack(side="top", fill="x")
         for i, u in enumerate(lv.start_units):
             self.entry_tree.insert("", "end", iid="unit:%d" % i,
@@ -3475,7 +3276,8 @@ class EditorApp:
         var = tk.StringVar(value=self._zone_choice_label(lv, zid))
         combo = ttk.Combobox(row, textvariable=var, values=list(choices), width=12,
                              state="readonly")
-        combo.pack(side="left")
+        # 卡片有富余宽度，下拉就铺满剩下的那一截（原来只有 12 字符宽，右边一大片空）
+        combo.pack(side="left", fill="x", expand=True, padx=(0, 2))
         combo.bind("<<ComboboxSelected>>",
                    lambda _e, z=int(zid), v=var: self._set_zone_choice(z, v.get()))
 
@@ -4163,6 +3965,7 @@ def run(campaign_dir: Any, project_dir: Any, config: Optional[ConfigInfo] = None
     except ModelError as exc:
         print("[error] %s" % exc)
         try:
+            dpi.enable_high_dpi()
             root = tk.Tk()
             root.withdraw()
             messagebox.showerror("载入失败", str(exc))
@@ -4170,6 +3973,7 @@ def run(campaign_dir: Any, project_dir: Any, config: Optional[ConfigInfo] = None
         except tk.TclError:
             pass
         return 2
+    dpi.enable_high_dpi()
     root = tk.Tk()
     app = EditorApp(root, model, project_dir, config, maps)
     root.mainloop()

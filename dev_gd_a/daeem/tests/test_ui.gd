@@ -3318,10 +3318,12 @@ func _test_box_select(main) -> void:
 	main.input_ctrl.handle_mouse_button(down)
 	main.input_ctrl.handle_mouse_motion(move)
 	ok(main.input_ctrl.drag_active, "（前提）又起了一个框")
-	var kept := _sorted_ids(main.input_ctrl.selected_units)
 	main.input_ctrl.handle_key(_key(KEY_ESCAPE))
 	ok(not main.input_ctrl.drag_active, "★ Esc 放弃这次框选")
-	eq(_sorted_ids(main.input_ctrl.selected_units), kept, "★ 放弃框选不会动已有的选中")
+	# ★★ S1：按下那一下可能已经把选中清掉；Esc 取消拖框要恢复**按下前**的选中，
+	#    而不是「按下之后、松手之前」那份（旧断言把 bug 当成预期了）。
+	eq(_sorted_ids(main.input_ctrl.selected_units), _sorted_keys(expect),
+		"★ Esc 取消拖框 = 恢复按下前的选中（S1）")
 	main.input_ctrl.select_units([g1])
 	main.hud.refresh()
 

@@ -140,7 +140,8 @@ static func in_menu(node: Node) -> bool:
 ##   靠 META 挡住第二遍 —— 重复连接的表现是**一声点击播两遍**（相位错开，很难听）。
 ## ★★ 按下那一刻出声，所以 `BaseButton` 接的是 `button_down`（`pressed` 要等松手，
 ##   按住不放 / 拖走时就没有声音了）。自绘控件（menu_text_button / menu_banner /
-##   menu_corner_hit）本来就是在 `_gui_input` 的**按下**分支里发 `pressed`，照旧接它。
+##   menu_corner_hit）由各自的 `_gui_input` 决定何时发 `pressed` ——
+##   `menu_text_button` 从 2026.11.12 起是**松手确认**，声音也跟着落在松手那一下。
 ## ★★ `connect_hover = false`：这把控件已经有**自己的** `mouse_entered` 消费者
 ##   （`fill_button` 的动画器就是那样接的）。再连一条就成了同一帧两条悬停回调，
 ##   而且 `tests/test_fill_button.gd` 用「mouse_entered 只连一次」钉住那条口径 ——

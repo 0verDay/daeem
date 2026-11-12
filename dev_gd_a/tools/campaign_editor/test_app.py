@@ -1509,8 +1509,16 @@ def t_catalog_filter() -> None:
         ok(not app.level_tree.exists("lv:02_twin_line"), "★ 隐藏 02_twin_line")
         ok(not app.level_tree.exists("lv:ai_test"), "★ 隐藏 ai_test")
         eq(app.current_level_id, "mt", "★ 默认当前关 = 第一个可见关卡")
-        eq(app._map_choice_ids(), ["main_test", "ai_test_2", "dscj", "between_moutains"],
-           "★ 地图下拉 = 有用表里的那几张")
+        # ★ 有用表是**数据**，后来又加过图（ce_xs_2），所以这里不再写死四张：
+        #   断言「表里每一张存在的图都在下拉里，且下拉里没有表外的图（当前关除外）」。
+        from editor_catalog import map_ids as catalog_map_ids
+        visible = [m for m in catalog_map_ids(TMP_PROJECT)
+                   if (TMP_PROJECT / "data" / "maps" / m).is_dir()]
+        choices = app._map_choice_ids()
+        cur_map = app.level().map_id if app.level() is not None else ""
+        ok(all(m in choices for m in visible), "★ 地图下拉包含有用表里的每一张图")
+        ok(all(m in visible or m == cur_map for m in choices),
+           "★ 地图下拉里没有表外的图（当前关正在用的那张除外）")
     finally:
         root.destroy()
 

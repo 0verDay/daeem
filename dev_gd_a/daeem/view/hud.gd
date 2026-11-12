@@ -133,6 +133,9 @@ var _root: Control = null
 ## ★ 它不是被删掉的日志栏：只显示**最近一次**被拒的一句话，不保留历史。
 var _notice_timer: float = 0.0
 
+## ★★ F2：命令被拒时命令卡短暂染红（秒；0 = 不在闪）。
+var _reject_flash_left: float = 0.0
+
 ## ★★ 手机端 HUD 刷新节流（桌面 / 无头恒为 0 = 每帧；见 config 的 ui._mobile_refresh_comment）。
 ##   `refresh()` 每帧要全表扫一遍单位 + 重拼详情文案，手机上不必 60Hz。
 var _refresh_interval: float = 0.0
@@ -337,6 +340,7 @@ func _process(dt: float) -> void:
 		else:
 			refresh()
 	_tick_notice(dt)
+	_tick_reject_flash(dt)
 	_tick_broadcast(dt)
 	_tick_resource_floats(dt)
 	_tick_long_press()
@@ -2864,6 +2868,29 @@ func _tick_notice(dt: float) -> void:
 			detail_v2.set_notice("")
 
 
+## ★★ F2：命令被拒 → 命令卡短暂染红（与左栏红字、地面红环同一条反馈）。
+## 只染 `command_card` 这一层，不动页签 / 详细信息；0.18 秒后恢复。
+func flash_reject(sec: float = 0.18) -> void:
+	_reject_flash_left = maxf(_reject_flash_left, sec)
+	if command_card != null:
+		command_card.modulate = Color(1.0, 0.55, 0.55, 1.0)
+
+
+func _tick_reject_flash(dt: float) -> void:
+	if _reject_flash_left <= 0.0:
+		return
+	_reject_flash_left -= dt
+	if _reject_flash_left <= 0.0:
+		_reject_flash_left = 0.0
+		if command_card != null:
+			command_card.modulate = Color.WHITE
+
+
+## 命令卡正在闪红吗（测试读它）
+func reject_flash_active() -> bool:
+	return _reject_flash_left > 0.0
+
+
 ## 提示还在不在（测试读它；游戏里没人读）
 func notice_active() -> bool:
 	return _notice_timer > 0.0
@@ -2959,6 +2986,23 @@ func order_reject_text(reason: String) -> String:
 		"neutralized":
 			return "这个大本营已经被摧毁：该阵营的单位已失去指挥，不能再行动或攻击"
 	return "这条指令现在下不了"
+
+
+## ★★ 建造被拒（`build_rejected` 的 reason → 中文；F2 之前这条事件**根本没有界面反馈**）。
+## 码见 logic/command_processor.gd 的 `apply_build()`。
+func build_reject_text(reason: String) -> String:
+	match reason:
+		"base_level":
+			return "需要更高等级的大本营才能建造这个"
+		"occupied_or_terrain":
+			return "这里不能建造（地形不可建 / 已有建筑）"
+		"not_in_zone":
+			return "只能在己方区划内建造"
+		"under_capture":
+			return "这个区划正在被占领，暂时不能建造"
+		"cost":
+			return "资源不足，建不了"
+	return "这里建不了"
 
 
 ## ★★ AI 队友指令被拒（`ai_order_rejected` 的 reason → 中文）。

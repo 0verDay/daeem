@@ -105,6 +105,17 @@ var rows: int = 16
 ##   两处各写一个 44 就会出现「看着能滚、其实被控件拦住」这种错位。
 var camera_edge_size: float = 44.0
 
+## ---- ★★ 2026.11 相机缓动（见 config.json 的 camera._comment）----
+## 只作用于**程序性移动**与**缩放**的到达过程；拖拽 / 方向键 / 边缘滚屏仍然 1:1。
+##   0 = 回到瞬移 / 硬切（无头测试与「不想要缓动」的玩家都可以用）。
+var cam_jump_sec: float = 0.15
+var cam_zoom_lerp_sec: float = 0.1
+
+## ---- ★★ 2026.11 自绘光标（F1；见 view/cursor_view.gd）----
+## `custom_cursor = false` = 回到系统光标（排查 / 兼容用）。
+var custom_cursor_enabled: bool = true
+var cursor_scale: float = 1.0
+
 ## ---- 框选：左键移动超过多少像素才算「拖框」（见 config.json 的 ui._comment）----
 var drag_select_min_px: float = 6.0
 ## ★★ 框选时给**单位立牌**四周加的容差（屏幕像素；2026.10.22 按玩家反馈调松）。
@@ -365,6 +376,12 @@ var _unit_sprite_tints: Dictionary = {}
 ##   · 不写就按兵种大类：infantry = 1×1、cavalry = 1×1.5、siege = 2×1；
 ##   · 想给某个兵种单独改视觉尺寸时，在它自己的条目里写这一项即可。
 var _unit_sprite_ratios: Dictionary = {}
+## ★★ 单位特性表（config 的 `unit.unit_traits`，2026.11）。
+##   · 键 = 单位特性 id；值 = `_normalize_unit_trait()` 洗过的固定形状字典；
+##   · 兵种只在自己的 `unit.types.<id>.trait_ids` 里点名要哪几条（与将领特性同一个套路）；
+##   · 载入时洗一次，之后只读；`unit_traits_of()` 把「内嵌 traits + 这里被点名的标签」合并。
+##   ⚠️ 与 `_general_traits` 是**两张不同的池**：单位特性只作用于单位，将领特性只作用于将领。
+var _unit_traits: Dictionary = {}
 ## ★★ 将领特性表（config 的 `unit.general_traits`，部队光环）。
 ##   · 键 = 特性 id；值 = `_normalize_general_trait()` 洗过的固定形状字典；
 ##   · 载入时洗一次（与兵种 traits 同一条口径），之后只读；
@@ -616,8 +633,10 @@ var sim_max_dt: float = 0.05
 ##   固定步长把逻辑钉在 `sim_step_sec` 上，渲染多快都不增加逻辑成本；
 ##   两次逻辑步之间由 `world.render_pos_of()` 插值，画面仍然连续。
 ##
-## ★ 桌面默认 0（手感不变）；`sim_mobile_step_sec` 只在移动平台生效。
-var sim_step_sec: float = 0.0
+## ★★ 2026.11（P1）：桌面默认 1/60（固定 60Hz）；`sim_mobile_step_sec` 在移动平台优先。
+##   ⚠️ 无头测试会在 `game_scene3d._assemble()` 里强制回到 0（每帧一步），
+##      否则「推进 N 帧 = N 个逻辑步」的既有断言会全部变成「还没走完」。
+var sim_step_sec: float = 0.0166667
 ## 移动平台的逻辑步长（`sim.mobile_step_sec`，默认 1/30 秒）。
 var sim_mobile_step_sec: float = 0.0333333
 ## 一帧最多补几步（防止长时间卡顿后「一次补一大堆」把帧拖死）。
@@ -683,6 +702,10 @@ func _cache_scalars() -> void:
 	#     —— 它是全工程的依赖，一旦解析失败**所有**测试文件都变成 "Compilation failed"。
 	#     教训：改动长函数时，替换块的两端要落在**函数边界**上，别停在函数体中间。
 	camera_edge_size = num("camera.edge_size", 44.0)
+	cam_jump_sec = maxf(0.0, num("camera.jump_sec", 0.15))
+	cam_zoom_lerp_sec = maxf(0.0, num("camera.zoom_lerp_sec", 0.1))
+	custom_cursor_enabled = bool_val("ui.custom_cursor", true)
+	cursor_scale = clampf(num("ui.cursor_scale", 1.0), 0.5, 2.0)
 	drag_select_min_px = num("ui.drag_select_min_px", 6.0)
 	# ★ 框选给立牌留的容差（屏幕像素；0 = 选框必须真的压到牌）
 	box_select_pad_px = maxf(0.0, num("ui.box_select_pad_px", 5.0))
@@ -849,7 +872,7 @@ func _cache_scalars() -> void:
 	sim_max_dt = num("sim.max_dt", 0.05)
 	# ★★ 固定逻辑步长（0 = 关闭；见 `sim_step_sec` 的说明）。
 	#   夹在 [0, sim_max_dt]：比 max_dt 还大的步长没有意义（那样一帧只走得了一步半步）。
-	sim_step_sec = clampf(num("sim.step_sec", 0.0), 0.0, sim_max_dt)
+	sim_step_sec = clampf(num("sim.step_sec", 0.0166667), 0.0, sim_max_dt)
 	sim_mobile_step_sec = clampf(num("sim.mobile_step_sec", 0.0333333), 0.0, sim_max_dt)
 	sim_step_max_steps = maxi(1, int(num("sim.step_max_steps", 4.0)))
 
@@ -882,6 +905,9 @@ func _cache_scalars() -> void:
 	# ★★ 单位类型表（unit.types / unit.classes / unit.general）—— 必须在其它
 	#   单位字段之后调：它拿 unit_speed / unit_hp_max / unit_radius_factor 当兜底值。
 	_cache_unit_types()
+	# ★★ 单位特性（unit.unit_traits）—— 必须在上一步之后调：
+	#   `_normalize_unit_trait()` 要用 `_unit_classes` 校验 attack_vs_class 的键。
+	_cache_unit_traits()
 	# ★★ 将领特性（unit.general_traits）—— 必须在上一步之后调：
 	#   `_normalize_general_trait()` 要用 `_unit_classes` 校验 attack_vs_class 的键。
 	_cache_general_traits()
@@ -982,6 +1008,122 @@ func _normalize_traits(raw: Variant) -> Dictionary:
 		out["melee_reduction"] = clampf(float(mr), 0.0, 1.0)
 	out["knockback_immune"] = bool(d.get("knockback_immune", false))
 	return out
+
+
+## ★★ 把 `unit.types.<id>.trait_ids` 洗成**字符串数组**（载入时一次）。
+##
+## 空串 / 重复 / 非字符串项一律丢掉 —— 与 `_normalize_traits()` 同一条口径：
+## 手写配置写错一个 id，宁可当没写，也不要在运行期留一条查表失败的引用。
+## ⚠️ 这里**不查池子**：池子（unit_traits）在 `_cache_unit_traits()` 里才整理好，
+##   而本函数在 `_cache_unit_types()` 里就要用；「池里有没有」由 `unit_traits_of()` 判。
+func _normalize_trait_ids(raw: Variant) -> Array:
+	var out: Array = []
+	if typeof(raw) != TYPE_ARRAY:
+		return out
+	for v in (raw as Array):
+		var tid := String(v).strip_edges()
+		if tid == "" or out.has(tid):
+			continue
+		out.append(tid)
+	return out
+
+
+## ★★ 把 config 里的 `unit.unit_traits.<id>` 洗成**固定形状**的一条单位特性（载入时一次）。
+##
+## 形状与 `_normalize_traits()` 完全一致（战斗只读那四个效果键）+ 文案三件套：
+##   · attack_vs_class / ranged_reduction / melee_reduction / knockback_immune；
+##   · name / short / desc 只给界面（编辑器 / 将来的详情栏）用。
+##
+## ⚠️ 与 `_normalize_general_trait()` 是**两张表**：单位特性没有 speed_bonus /
+##   attack_speed_bonus / capture_speed_bonus / recruit_cavalry_discount /
+##   charge_damage_bonus / melee_splash 这些「将领光环」专属的效果键 —— 写在这里会被忽略。
+func _normalize_unit_trait(id: String, raw: Variant) -> Dictionary:
+	var out: Dictionary = {
+		"id": id,
+		"name": id,
+		"short": "",
+		"desc": "",
+		"attack_vs_class": {},
+		"ranged_reduction": 0.0,
+		"melee_reduction": 0.0,
+		"knockback_immune": false,
+	}
+	if typeof(raw) != TYPE_DICTIONARY:
+		return out
+	var d: Dictionary = raw
+	if typeof(d.get("name", null)) == TYPE_STRING:
+		out["name"] = String(d["name"])
+	if typeof(d.get("short", null)) == TYPE_STRING:
+		out["short"] = String(d["short"])
+	if typeof(d.get("desc", null)) == TYPE_STRING:
+		out["desc"] = String(d["desc"])
+	var av: Variant = d.get("attack_vs_class", null)
+	if typeof(av) == TYPE_DICTIONARY:
+		for cls in (av as Dictionary).keys():
+			var key := String(cls)
+			# 只认已经定义过的大类（与 `_normalize_traits` 同一条）。
+			if not _unit_classes.has(key):
+				continue
+			var v: Variant = (av as Dictionary)[cls]
+			if typeof(v) == TYPE_INT or typeof(v) == TYPE_FLOAT:
+				out["attack_vs_class"][key] = maxf(0.0, float(v))
+	var rr: Variant = d.get("ranged_reduction", 0.0)
+	if typeof(rr) == TYPE_INT or typeof(rr) == TYPE_FLOAT:
+		out["ranged_reduction"] = clampf(float(rr), 0.0, 1.0)
+	var mr: Variant = d.get("melee_reduction", 0.0)
+	if typeof(mr) == TYPE_INT or typeof(mr) == TYPE_FLOAT:
+		out["melee_reduction"] = clampf(float(mr), 0.0, 1.0)
+	out["knockback_immune"] = bool(d.get("knockback_immune", false))
+	return out
+
+
+## 载入时整理单位特性池（**只读**，之后别再改它）。
+## ★ 必须在 `_cache_unit_types()` **之后**调：`_normalize_unit_trait()` 要用
+##   `_unit_classes` 校验 `attack_vs_class` 的键。
+func _cache_unit_traits() -> void:
+	_unit_traits = {}
+	var raw: Variant = get_path_value("unit.unit_traits")
+	if typeof(raw) != TYPE_DICTIONARY:
+		return
+	for tid in (raw as Dictionary).keys():
+		var id := String(tid)
+		if id.begins_with("_"):
+			continue                     # `_comment` 之类的说明键，不是特性
+		_unit_traits[id] = _normalize_unit_trait(id, (raw as Dictionary)[tid])
+
+
+## 全部单位特性 id（**排序后**；稳定顺序让界面 / 测试不随字典顺序漂）。
+func unit_trait_ids() -> Array:
+	var ids: Array = _unit_traits.keys()
+	ids.sort()
+	return ids
+
+
+## 一条单位特性的洗好定义（未知 id → 空字典，调用方用 `.get(k, 0)`）。
+func unit_trait_def(id: String) -> Dictionary:
+	if id == "" or not _unit_traits.has(id):
+		return {}
+	return _unit_traits[id]
+
+
+## 单位特性的显示名（未知 → 空串）。
+func unit_trait_name(id: String) -> String:
+	return String(unit_trait_def(id).get("name", ""))
+
+
+## 单位特性的短名（没配 → 退回名字首字）。
+func unit_trait_short(id: String) -> String:
+	var d := unit_trait_def(id)
+	var s := String(d.get("short", ""))
+	if s != "":
+		return s
+	var n := String(d.get("name", ""))
+	return n.substr(0, 1) if n != "" else ""
+
+
+## 单位特性的说明（未知 → 空串）。
+func unit_trait_desc(id: String) -> String:
+	return String(unit_trait_def(id).get("desc", ""))
 
 
 ## ★★ 把 config 里的 `unit.types.<id>.knockback` 洗成**两键固定**的字典（载入时一次）。
@@ -1563,7 +1705,11 @@ func _cache_unit_types() -> void:
 				"vision": maxf(0.0, float(td.get("vision", fog_vision_default))),
 				# ★★ 兵种特性（本轮新增）：见 config.json 的 unit._traits_comment。
 				#   载入时就整理成**两键固定**的字典（缺键补 0），于是读的地方不用判断类型。
+				#   ★ 2026.11：这仍是**老写法**（内嵌四键）；新数据写在下面的 trait_ids 里。
 				"traits": _normalize_traits(td.get("traits", null)),
+				# ★★ 2026.11：兵种挂的**单位特性标签**（unit.unit_traits 的 id 数组）。
+				#   `unit_traits_of()` 把它与上面的内嵌 traits 合并成同一份四键形状。
+				"trait_ids": _normalize_trait_ids(td.get("trait_ids", null)),
 				# ★★ 本轮新增的五个玩法键（都可选；不写 = 关闭）：
 				#   · armor：固定护甲（每次受击先减这么多点）；
 				#   · can_attack：false = 纯支援单位（粮车）；
@@ -2328,16 +2474,45 @@ func unit_projectile_arc(id: String) -> bool:
 	return bool(unit_type_entry(id).get("projectile_arc", true))
 
 
-## ★★ 某个单位类型的**兵种特性**（本轮新增；载入时已洗成两键固定，见 `_normalize_traits`）。
+## ★★ 某个单位类型的**兵种特性**（本轮新增；载入时已洗成四键固定，见 `_normalize_traits`）。
 ##
-## 返回 `{ "attack_vs_class": { <大类 id>: <比例> }, "ranged_reduction": <比例> }`。
+## 返回 `{ "attack_vs_class": { <大类 id>: <比例> }, "ranged_reduction": <比例>,
+##        "melee_reduction": <比例>, "knockback_immune": <bool> }`。
 ## 参数可以是兵种 id，也可以是 kind（将领会被换算成它所属的类型，与 unit_hp_of 同口径）。
+##
+## ★★ 2026.11：结果 = **老式内嵌 `traits`** ⊕ **`trait_ids` 点名的单位特性标签**。
+##   · attack_vs_class 按大类**相加**；两条减伤**相加**（再夹 0~1）；免疫取「或」；
+##   · 池里不存在的 id 直接跳过（与「写错当没写」同一条）；
+##   · 于是老配置（只写 traits）逐位不变，新配置（只写 trait_ids）也读得到。
 ## ⚠️ 查不到的类型返回**空字典**（不是造一份默认值）：`unit.create` 会按缺键走 0，
 ##    这样「未知类型没有特性」是天然成立的，不必再判一次。
-## ★ 只在单位出生时读一次（结果抄到单位的两个字段上）—— 它不在每帧路径上。
+## ★ 只在单位出生时读一次（结果抄到单位的几个字段上）—— 它不在每帧路径上。
 func unit_traits_of(id: String) -> Dictionary:
-	var t: Variant = unit_type_entry(id).get("traits", null)
-	return t if typeof(t) == TYPE_DICTIONARY else {}
+	var entry: Dictionary = unit_type_entry(id)
+	var out: Dictionary = _normalize_traits(entry.get("traits", null))
+	var ids: Variant = entry.get("trait_ids", null)
+	if typeof(ids) != TYPE_ARRAY:
+		return out
+	for v in (ids as Array):
+		var tid := String(v).strip_edges()
+		var tdef := unit_trait_def(tid)
+		if tdef.is_empty():
+			continue
+		var av: Variant = tdef.get("attack_vs_class", {})
+		if typeof(av) == TYPE_DICTIONARY:
+			for cls in (av as Dictionary).keys():
+				var key := String(cls)
+				var cur := float(out["attack_vs_class"].get(key, 0.0))
+				out["attack_vs_class"][key] = cur + float((av as Dictionary)[cls])
+		out["ranged_reduction"] = clampf(
+			float(out["ranged_reduction"]) + float(tdef.get("ranged_reduction", 0.0)),
+			0.0, 1.0)
+		out["melee_reduction"] = clampf(
+			float(out["melee_reduction"]) + float(tdef.get("melee_reduction", 0.0)),
+			0.0, 1.0)
+		var immune := bool(tdef.get("knockback_immune", false))
+		out["knockback_immune"] = bool(out["knockback_immune"]) or immune
+	return out
 
 
 ## 大类的显示名（步兵 / 骑兵）—— 不带远近

@@ -1,7 +1,11 @@
-## fill_button.gd —— ★★ 按钮的三种动效：悬停「四边泛光」 / 选中「金色填充」 / 点击「金色一闪」
+## fill_button.gd —— ★★ 按钮的三种动效：悬停「瞄准框」 / 选中「金色填充」 / 点击「金色一闪」
 ##
-## ★★ 2026.11.5 重做（用户口径）：
-##   · 鼠标悬停 / 移动端按住 → 按钮**四边发亮、向中心渐隐的泛光**（不再是从下往上填金）；
+## ★★ 2026.11.12 重做（悬停与按下换语言；选中 / 金闪保持原语义）：
+##   · 鼠标悬停 / 移动端按住 → 按钮四角出现 **L 形括号 + 底边细线**（瞄准框），
+##     按下时括号**向内一扣**、补 1px 内框，松手在按钮外扩一圈**回声环**；
+##   · 括号由 `view/button_reticle.gd` 画在按钮**上面**（不是本动画器里）——
+##     动画器 `show_behind_parent`，画在按钮底纹之下会被不透明的 normal 底纹盖住；
+##   · 旧的「四边泛光」保留为 `ui.button_style = "glow"` 的排查档（`draw_glow_now`）；
 ##   · **只有点击切换选中**的按钮才播「金色自下而上填满」，取消选中时反向退回：
 ##       页签当前页 / 科技九宫格里已启用的格子 / 备战页磁贴 / 「面板已打开」类按钮；
 ##   · 打开界面时**已经选中**的按钮（第一页 / 已启用科技）**直接满格**，不播动画
@@ -11,18 +15,18 @@
 ##   · 有自己点击反馈的按钮（页签 / 科技启用 / 备战磁贴 / 面板已打开）不闪 ——
 ##     它们的选中填充就是点击反馈，叠一次闪光会先闪一下再进入选中态。
 ##
-## ★★ 按下动效（压缩 / 回弹 / 亮边）**不在这里**：由 view/press_fx.gd 统一处理；
+## ★★ 按下动效（压缩 / 回弹 / 四角内扣）**不在这里**：由 view/press_fx.gd 统一处理；
 ##   `attach()` 会自动把它挂到每颗 Button 上，所有按钮共用同一份按下逻辑。
 ##
 ## ------------------------------------------------------------------
-## 泛光长什么样（需求：「类似于主菜单的泛光按钮，按钮的四边向中心泛光」）
+## 瞄准框长什么样（2026.11.12）
 ## ------------------------------------------------------------------
-## 四条边各画一条**向内渐隐**的 alpha 斜坡（`glow_texture()` 烘的四张 1 像素贴图：
-## 上 / 下 / 左 / 右各一张，全项目共用），四角天然叠成最亮 —— 与主菜单四角按钮那团
-## `menu_corner_glow.gd` 的观感一致，只是这里四条边都亮、中心不亮。
-##   · 颜色：可点 = 金色（`accent_bright`）；禁用 = 灰（`fill_disabled_bottom`）；
-##   · 强度 / 宽度 / 时长读 config 的 `ui.hover_glow_*`（见 data/config.json）；
-##   · 泛光**不改字色**：它只落在四边，字仍在中心，不需要翻面。
+## 四角各一个 L 形括号，线宽 1.5px、臂长 14px，画在按钮**内侧** 4px：
+##   · 内侧而不是外侧：贴屏幕边缘的按钮（主菜单底部动作条、HUD 底栏）外侧没有像素可画；
+##   · 纯几何、不占按钮中心 —— 不会像旧泛光那样为了可见把整块压亮、跟文字抢对比度；
+##   · 颜色：可点 = 金色（`accent_bright`）；禁用 = 灰（`fill_disabled_bottom` 提亮）；
+##   · 宽扁列表行（宽 ≥ 高×4）改画左缘竖条 + 底边细线（四角括号在 56px 高的行上像噪点）。
+##   · 参数读 config 的 `ui.reticle_*`（见 data/config.json）。
 ##
 ## ------------------------------------------------------------------
 ## 为什么是「子节点动画器 + 宿主自己 _draw」，而不是一个自定义 Button 子类
@@ -93,6 +97,8 @@ const ThemeRes = preload("res://view/theme.gd")
 const ConfigRes = preload("res://logic/config.gd")
 ## ★★ 所有 Button 统一的「按下压缩 / 回弹 / 亮边」由它负责（见 view/press_fx.gd）。
 const PressFxRes = preload("res://view/press_fx.gd")
+## ★★ 悬停「瞄准框」：单独一层画在按钮**上面**（理由见 button_reticle.gd 文件头）。
+const ReticleRes = preload("res://view/button_reticle.gd")
 ## ★★ 菜单按钮的点击 / 悬停音效（非菜单按钮挂上也静音，见 view/sfx.gd）。
 const SfxRes = preload("res://view/sfx.gd")
 
@@ -125,6 +131,16 @@ const GLOW_OUT_TIME := 0.12
 const FLASH_IN_TIME := 0.06
 const FLASH_HOLD_TIME := 0.02
 const FLASH_OUT_TIME := 0.10
+
+## ★★ 2026.11.12「瞄准框」按钮语言（默认；见文件头那节）：
+##   · 悬停不再铺一层模糊的四边泛光，改成**四角 L 形括号**从按钮外侧收进来 +
+##     底边一条从中心向两侧生长的细线；
+##   · 按下时括号**向内一扣**（gap 2 → -1）、线宽 1.5 → 2，再叠一圈 1px 内框；
+##   · 宽扁的列表行（宽 ≥ 高 × 3）不画四角括号（太吵），改成**左缘竖条 + 底边细线**；
+##   · 松手在按钮外扩一圈 1px 的**回声环**（0.34s），点击的确认感从「金闪」之外再加一拍。
+## ★ 金色填充仍然只表示「已选中 / 已启用」（这条口径没变，别把悬停又做成填充）。
+## ★ 松手回声环的时长（瞄准框层自己画；见 view/button_reticle.gd）。
+const PULSE_SEC := 0.34
 
 ## ★★ 逐字「翻面」的两个阈值（覆盖率）。
 ##
@@ -311,6 +327,11 @@ static func click_flash_in_sec() -> float:
 	return Tuning.flash_in_sec()
 
 
+## `true` = 当前用的是新的「瞄准框」悬停语言（见文件头）。
+static func reticle_style() -> bool:
+	return Tuning.reticle_enabled()
+
+
 static func click_flash_hold_sec() -> float:
 	return Tuning.flash_hold_sec()
 
@@ -362,6 +383,13 @@ class Tuning:
 			return fallback
 		return _cfg.num(path, fallback)
 
+	static func _str(path: String, fallback: String) -> String:
+		if _cfg == null:
+			_cfg = ConfigRes.load_default()
+		if _cfg == null:
+			return fallback
+		return String(_cfg.str_val(path, fallback))
+
 	## 点击闪光：从空填到满格 / 满格保持 / 反向退回的时长。
 	static func flash_in_sec() -> float:
 		return maxf(0.01, _num("ui.click_flash_sec", FLASH_IN_TIME))
@@ -384,6 +412,10 @@ class Tuning:
 
 	static func out_sec() -> float:
 		return maxf(0.01, _num("ui.hover_glow_out_sec", GLOW_OUT_TIME))
+
+	## ★ 按钮悬停视觉：`true` = 新的「瞄准框」（默认），`false` = 旧的四边泛光。
+	static func reticle_enabled() -> bool:
+		return _str("ui.button_style", "reticle").strip_edges() != "glow"
 
 	## 四条边的 alpha 斜坡（全项目共用四张 1 像素高的贴图；只烘一次）。
 	## @param edge 0 = 上边、1 = 下边、2 = 左边、3 = 右边
@@ -445,6 +477,11 @@ class FillAnimator extends Control:
 	var _fill: float = 0.0
 	## 悬停 / 按住的泛光强度（0 = 不亮，1 = 最亮）。只影响四边那层光，不影响字色。
 	var _glow: float = 0.0
+	## ★★ 按住进度（0 = 没按，1 = 按到底）：驱动瞄准框「向内一扣」。
+	var _press: float = 0.0
+	## ★★ 松手回声环：`_pulse_t` 从 0 走到 1，画一圈外扩淡出的 1px 框。
+	var _pulse_active: bool = false
+	var _pulse_t: float = 0.0
 	## ★★ 点击闪光（普通动作按钮的一次性反馈）：允许吗？有自己点击反馈的按钮
 	##   （页签 / 科技启用 / 备战磁贴 / 面板已打开）由调用点设成 false。
 	var _flash_enabled: bool = true
@@ -491,6 +528,8 @@ class FillAnimator extends Control:
 	var _row_text_nodes: Dictionary = {}
 	## 宿主按钮（退了 → 自己收摊）。
 	var _button: Button = null
+	## ★★ 画在按钮上面的「瞄准框 / 回声环」层（见 button_reticle.gd）。
+	var _reticle = null
 	## 渐变纹理（只有换色时才重建）。
 	var _ramp: GradientTexture2D = null
 	## 当前档位的**填色两端**（缓存下来：`_sync_text` 每帧要拿它算对比度，
@@ -553,6 +592,12 @@ class FillAnimator extends Control:
 		# ⚠️ 枚举名是 `REPEAT_NONE`（4.7 实测）：**没有** REPEAT_CLAMP / REPEAT_DISABLED 这两个名字。
 		_ramp.repeat = GradientTexture2D.REPEAT_NONE
 		set_colors(ThemeRes.fill_top(), ThemeRes.fill_bottom())
+		# ★★ 瞄准框层：挂在按钮上（不是本动画器里）—— 动画器画在按钮底下，
+		#   而括号画在按钮内侧，必须排在底纹之后才看得见。
+		if Tuning.reticle_enabled():
+			_reticle = ReticleRes.new()
+			b.add_child(_reticle)
+			_reticle.setup(b)
 		b.resized.connect(queue_redraw)
 		# ★★ 不可见了就把悬停清掉（见 `_on_visibility_changed`）——
 		#    修「点按钮进游戏、再返回主菜单，那片金还留在按钮上」。
@@ -562,14 +607,17 @@ class FillAnimator extends Control:
 		_refresh_colors()
 
 
-	## 动画器自己的绘制：**常驻底色 + 选中金 + 悬停泛光都在这一层画出来**。
+	## 动画器自己的绘制：**常驻底色 + 选中金 + 悬停瞄准框 + 回声环都在这一层画出来**。
 	func _draw() -> void:
 		# ★★ 先铺常驻底色，再让金盖上去 —— 这就是「灰底一直存在、选中时金往上填」。
 		if _base_bg.a > 0.001 and _button != null and is_instance_valid(_button):
 			draw_rect(Rect2(Vector2.ZERO, _button.size), _base_bg, true)
 		draw_fill_now()
-		# ★★ 泛光画在填充**之后**：已经选中的按钮悬停时，四边还要再亮一层。
-		draw_glow_now()
+		# ★★ 悬停 / 按住：新语言由「按钮上面那一层」画（button_reticle.gd）；
+		#   旧语言仍走动画器自己的四边泛光（config 可切回）。
+		if not Tuning.reticle_enabled():
+			draw_glow_now()
+		# 回声环也由瞄准框层画（它是普通子节点，不会被底纹盖住）。
 
 
 	## 画当前进度下的那一片金（`_draw()` 与静态入口 `FillButtonRes.draw_fill()` 都走它）。
@@ -640,6 +688,18 @@ class FillAnimator extends Control:
 		draw_texture_rect(Tuning.texture(2), Rect2(0.0, 0.0, band, h), false, tint)
 		draw_texture_rect(Tuning.texture(3), Rect2(w - band, 0.0, band, h), false, tint)
 
+	## 开始一次回声环（松手确认）。
+	func _start_pulse() -> void:
+		if not _available or _button == null or not is_instance_valid(_button):
+			return
+		if _button.disabled:
+			return
+		if not ThemeRes.animations_enabled():
+			return
+		_pulse_active = true
+		_pulse_t = 0.0
+		set_process(true)
+
 	## 泛光的颜色：能点 = 金；禁用 / 强制灰 = 灰（用户口径：禁用按钮也泛光，只是灰的）。
 	## ★ 灰档在 `fill_disabled_bottom` 上再提亮 40%：那一档本来是给**实心填充**定的暗灰，
 	##   直接拿来做边缘光会暗到几乎看不见（实测截图里几乎是一条黑边）。
@@ -668,6 +728,8 @@ class FillAnimator extends Control:
 			# ★★ 点击闪光挂在 `pressed`（松手那一下 =「点击完成」）：
 			#   只在按钮**没有自己点击反馈**时才会真的跑（见 `_flash_enabled`）。
 			b.pressed.connect(_on_pressed_flash)
+			# ★★ 回声环与闪光分开：所有可点按钮松手都有一圈（选中按钮也适用）。
+			b.pressed.connect(_on_pressed_pulse)
 		_refresh_colors()
 
 
@@ -690,6 +752,11 @@ class FillAnimator extends Control:
 		_flash_active = true
 		_flash_left = Tuning.flash_in_sec()
 		_flash_hold = 0.0
+
+
+	## 松手确认：起一圈回声环（见 `draw_pulse_now`）。
+	func _on_pressed_pulse() -> void:
+		_start_pulse()
 
 
 	## 推进点击闪光（返回这一帧是否动了）。
@@ -749,13 +816,35 @@ class FillAnimator extends Control:
 					Tuning.in_sec() if glow_goal > _glow else Tuning.out_sec())
 			_glow = move_toward(_glow, glow_goal, step)
 			moved = true
+		# ★★ 按住进度：只驱动瞄准框「向内一扣」，不碰布局、不碰填充。
+		var press_goal: float = 0.0
+		if _button.mouse_filter != Control.MOUSE_FILTER_IGNORE \
+				and (_pointer_down or _button.is_pressed()):
+			press_goal = 1.0
+		if not is_equal_approx(_press, press_goal):
+			var pstep: float = 1.0
+			if ThemeRes.animations_enabled():
+				pstep = dt / 0.07
+			_press = move_toward(_press, press_goal, pstep)
+			moved = true
+		# ★★ 回声环推进（与按住进度无关，松手后自己走完）。
+		if _pulse_active:
+			_pulse_t += dt / PULSE_SEC
+			if _pulse_t >= 1.0:
+				_pulse_t = 0.0
+				_pulse_active = false
+			moved = true
+		# ★★ 把状态喂给「按钮上面那一层」瞄准框（它只画四角 / 边缘，不碰文字）。
+		if _reticle != null and is_instance_valid(_reticle):
+			_reticle.sync(_glow, _press, _pulse_t if _pulse_active else -1.0,
+				_fill, is_grey(), _available)
 		# ★★ 已经到目标：仍然把字色同步一遍。
 		#   ⚠️ 这一句是**必须的**（用户报的「移出后颜色不反回来」）：进度停在
 		#     目标值时下面那条 `_sync_text()` 不会跑，于是「最后一帧的字色」会
 		#     永久留在屏幕上 —— 而那一帧恰好是填充刚到满格（暗字）、或者刚退到空
 		#     （亮字）的那一帧。它是幂等的，每帧调也不会「越压越黑」。
 		_sync_text()
-		if moved or _glow > 0.0001:
+		if moved or _glow > 0.0001 or _pulse_active or _press > 0.0001:
 			queue_redraw()
 
 	## 这一帧**选中填充**该到多少。
@@ -870,7 +959,10 @@ class FillAnimator extends Control:
 			# ★★ 泛光**当场清零**（它只表示「鼠标在不在上面」，不是状态）：
 			#   否则隐藏期间 `_process` 停着、`_glow` 仍停在 1，再显示时会先亮一下
 			#   再渐暗（0.12s 的假反馈）。选中填充不这样处理 —— 那是真状态，要保留。
+			_pulse_active = false
+			_pulse_t = 0.0
 			_glow = 0.0
+			_press = 0.0
 			# ★ 点击闪光也作废：按钮都藏了，没必要在再显示时补播一次；
 			#   没选中的按钮把进度一起归零（选中态保留，它本来就是满的）。
 			_flash_active = false
@@ -945,6 +1037,16 @@ class FillAnimator extends Control:
 	## 这一颗现在是不是正在播「点击闪光」。测试 / 排查读它。
 	func flashing() -> bool:
 		return _flash_active
+
+
+	## 这一颗现在的「按住」进度（0~1）。测试 / 排查读它。
+	func press_amount() -> float:
+		return _press
+
+
+	## 回声环现在走到哪儿（0 = 没在播）。
+	func pulse_amount() -> float:
+		return _pulse_t if _pulse_active else 0.0
 
 
 	## 这一颗允许点击闪光吗（测试 / 排查读）。

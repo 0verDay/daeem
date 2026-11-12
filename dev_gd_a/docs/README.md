@@ -15,6 +15,7 @@
 | 代码放哪、谁依赖谁、状态存在哪、测试怎么写 | [`architecture.md`](architecture.md) |
 | HTML 版的哪个文件搬到 Godot 的哪里 | [`porting.md`](porting.md) |
 | 已经踩过/一定会踩的坑（含**本轮实测**的第五节） | [`pitfalls.md`](pitfalls.md) |
+| **UI 光标与按钮交互（2026.11.12，PC）** | [`ui_interaction_system.md`](ui_interaction_system.md) |
 
 ## 当前状态
 
@@ -73,8 +74,8 @@
 | 与 HTML 版的有意偏离 | ✅ **5 处**（八方向 / 禁止对角穿角 / 拐角圆化 / 单位软分离 / 建筑本体阻挡），都有开关，见 [`route.md`](route.md) 第七节 |
 | **地图编辑器** | ✅ **已完成** —— `dev_gd_a/tools/map_editor/`（Python + tkinter，零依赖）：画地形 / 划区块 / 设区划中心 / **选区划种类** / 配产能 / 定各阵营大本营，导出 Godot 直接读的地图 JSON。见 [`../tools/map_editor/README.md`](../tools/map_editor/README.md) |
 | **战争迷雾 + 单位 / 建筑的视野范围（最新一轮）** | ✅ **本轮新增**：`logic/fog.gd`（按**阵营**算「谁能看见哪一格」）+ `view/fog_view.gd`（**灰色遮罩**）。口径全部按确认写死：**地形永远可见**（只有「有视野 / 没视野」两种区域，**没有「未探索 = 全黑」那一档**）；敌方**建筑**「**看见过一次就永久显示**，只有被摧毁才消失」；敌方**单位**只显示当前视野内的（不保留记忆）；视线被**山脉**阻断（其他地形不阻断）；迷雾里的敌人**不能被选中 / 不能被点名攻击**；**小地图套同一份迷雾**。视野半径是**数值**，且**单位与建筑各有一张「每类型一个值」的表**（`unit.types.<id>.vision` 长枪兵 8 / 长弓兵 10 / 骑手 9 / 敌人 7，将领可被 `unit.general.stats[i].vision` 覆盖；`building.<type>.vision` 城墙 5 / **箭塔 12** / 大本营 9；没写那个键各自退回 `fog.vision_default` / `fog.vision_building`），**两张表都同步进了单位编辑器**。见 [`route.md`](route.md) 第三十二节（32.9 是建筑那张表） |
-| **buff 编辑器（本轮新增）** | ✅ **已完成** —— `dev_gd_a/tools/buff_editor/`（Python + tkinter，零依赖，双击 `buff_editor.bat` 进入）：编辑游戏内**所有 buff 数值**（当前 = **士气** 的 19 个 `morale.*` 键 + 共用的减伤封顶 `combat.damage_reduction_cap`，共 20 项）。左栏 buff 列表、右栏按「基础 / 阈值 / 生命 / 伤害 / 区划 / 战果」分组的表单；百分数字段显示 / 输入都是 `50%`、写回 config 仍是 `0.5`；改完 Enter 生效、打错字不写坏数据、数字超范围夹取；**悬停浮窗预览**直接显示游戏里那条文案；跨字段组合（档位顺序反了 / 初始 > 上限 / 免伤 > 封顶）给黄色提示但不阻止保存。沿用单位编辑器的「原地最小改动 JSON」：没改就逐字节原样，改一个数只多一行 diff。加新 buff 只需在 `model.py` 的 `BUFFS` 注册表加一条。断言 `test_model.py` **131 项** + `test_app.py` **46 项**（真数据一字未改）；`--selftest` 可无头核对游戏侧读的键。见 [`../tools/buff_editor/README.md`](../tools/buff_editor/README.md) 与 [`route.md`](route.md) 第五十六节 |
-| **单位编辑器（本轮新增「编制上限」）** | ✅ **已完成** —— `dev_gd_a/tools/unit_editor/`（Python + tkinter，零依赖，双击 `unit_editor.bat` 进入）：三个页签 **单位 / 建筑 / 科技**，改的是 `data/config.json`。★ 本轮在「将领」页新增 **编制上限**（`unit.general.caps[i]`，默认 11）：战役编辑器里配的附属单位生成数量以它封顶、阵地 AI 也补到它。单位（归属·名称·**地图上的字**·血量·攻击三件套·移速·造价粮/金/人口·招募时间·**视野半径**）、**将领 1/2/3 各自一套数值（含视野）**、建筑（造价·**建造时间**·名称·血量·**是否可攻击**·逐级价格/时间/血量/攻击）、科技（名称·加成数值），**可新建兵种与建筑**。为了让这些字段真的生效，游戏侧同步改成数据驱动（建筑定义从 `building.gd` 的 DEFS 搬进 config、建造读条、通用 attackable、逐级攻击、单位图标可选、**视野半径**）。右侧属性面板「装得下就不许滚」（用户报的过度滚动见 [`route.md`](route.md) 第三十一节与 [`pitfalls.md`](pitfalls.md) 5.55）。见 [`route.md`](route.md) 第二十八节与 [`../tools/unit_editor/README.md`](../tools/unit_editor/README.md) |
+| **科技编辑器（2026.11 由 buff_editor 改名）** | ✅ **已完成** —— `dev_gd_a/tools/tech_editor/`（Python + tkinter，零依赖，双击 `tech_editor.bat` 进入）：编辑**当前已有的全部科技**（`tech.list` 原生 9 条 + `tech.clan_list` 派系池 13 条 + `tech.max_active` / `tech.gold_per_sec_by_tier` + 每派 9 个槽位 `clan.list[].tech`）。左栏按「全局 / 原生科技 / 派系科技 / 科技页」四组列出**按 config 现算**的每一页；右栏是文案 / 基础 / 效果的表单；百分数字段显示 / 输入都是 `50%`、写回 config 仍是 `0.5`；改完 Enter 生效、打错字不写坏数据、数字超范围夹取；**游戏里的样子**（科技格 / 悬停说明）直接预览；跨字段组合（阶与位置不符 / 槽位填错 id / 效果键不在注册表）给黄色提示但不阻止保存。沿用单位编辑器的「原地最小改动 JSON」：没改就逐字节原样，改一个数只多一行 diff。★ 原 `buff_editor` 打不开（它依赖的 `morale` 段已从 config 删除），本轮改成**只编辑科技**的 `tech_editor`。断言 `test_model.py` **95 项** + `test_app.py` **80 项**（真数据一字未改）；`--selftest` 可无头核对游戏侧读的键。见 [`../tools/tech_editor/README.md`](../tools/tech_editor/README.md) |
+| **单位编辑器（本轮新增「特性标签化」）** | ✅ **已完成** —— `dev_gd_a/tools/unit_editor/`（Python + tkinter，零依赖，双击 `unit_editor.bat` 进入）：四个页签 **单位 / 单位特性 / 将领特性 / 建筑**，改的是 `data/config.json`。★ 2026.11：**特性拆成两张池**（`unit.unit_traits` 只给单位、`unit.general_traits` 只给将领），兵种与将领都能自由挂多条第标签；现有兵种的特性已全部从内嵌 `traits` 迁成 `trait_ids`（游戏侧仍兼容老写法）。★ 本轮也保留 **编制上限**（`unit.general.caps[i]`，默认 11）、单位（归属·名称·**地图上的字**·血量·攻击三件套·移速·造价·**视野半径**）、**将领 1..N 各自一套数值（含视野）/ 阶 / 派系 / 0 阶成长**、建筑（造价·**建造时间**·名称·血量·**是否可攻击**·逐级价格/时间/血量/攻击）、**可新建兵种 / 建筑 / 将领 / 特性**。右侧属性面板「装得下就不许滚」（见 [`pitfalls.md`](pitfalls.md) 5.55）。见 [`../tools/unit_editor/README.md`](../tools/unit_editor/README.md) |
 | **开场地图选择条（本轮新增）** | ✅ **本轮新增**：主界面上 test 按钮**上方**多了一条地图选择条，开局进哪张图由它决定。★ 选项**不是配置里列的清单**：`logic/map_library.gd` 扫描 `data/maps/` 下每个目录里的地图 JSON，**有几张图就有几个选项**（地图 json 的 `name` 当显示名，没写就用目录名）—— 所以**加一张地图 = 往 `data/maps/` 放一个新目录**，代码与 `config.json` 一个字都不用改。地图从 `data/test_map.json` 搬到 `data/maps/frontier/map.json`（一个地图一个目录），另加一张占位图 `data/maps/arena/map.json` 专门证明「多一个目录 = 多一个选项」（由 `tools/map_editor/gen_arena_map.py` 生成，删掉目录即可不要它）。★ 选择条本身是 `view/map_select.gd`（**自己画的按钮 + 自己的 PopupMenu**，不是引擎的 `OptionButton` —— 手玩报过「点开列表后按钮上那行字会变空白」，换成自绘之后那行字不再依赖引擎的重画时机；顺带把列表的底色/宽度/间距也修好看了）。见 [`route.md`](route.md) 第三十三、三十四节 |
 | **设置二级菜单（已被选项页取代）** | ✅ **本轮新增**：游戏内右上角的**设置**按钮不再「点不动」——点它弹出二级菜单，两颗按钮：**全屏 / 窗口化**（按当前窗口状态显示，按一下切过去；与 `Ctrl+Q` 共用同一份实现）与**返回主菜单**（拆掉这一局、把开场页放回**主界面**那一页，*地图选择条还留着上次选的那张*；再按 test 就能开一局新的，来回切两次都成立）。面板挂在设置按钮**正下方**、整块吃鼠标。文案在 `config.json` 的 `settings` 段、几何在 `ui_layout.gd` 的 `SETTINGS_MENU_*`。见 [`route.md`](route.md) 第三十五节 |
 | **阵营归属 / 盟友（最新一轮）** | ✅ **本轮新增**：地图 JSON 多了一个可选的 **`allies`** 字段（形如 `[["enemy","ai"]]`），表示这几方是**同方**。★ `边关`（`data/maps/frontier/map.json`）用它把**两个 NPC**（`enemy` 地图对家·红 与 `ai` 阵营 AI·橙）结成一方 —— 按需求：**不互相攻击**（自动索敌 / 箭塔开火 / 手动点名 / AI 的行军目标全都认这一套）**且不争夺同一区划**（盟友的兵同处一区算一方、站上盟友的地不读条、盟友的建筑不会把对方的地翻走）。**玩家与两边仍然互为敌人**。★ 关系是**地图数据**（不是全局配置）：只有写了 `allies` 的那张图友善，别的图照旧；`FactionRes` 的盟友表在 `world.reset()` 里**先清后写**，所以换图不会带着上一张的关系。⚠️ 它**不**改「建筑通行」：盟友的城墙照样挡盟友的军队（用户只要求不互相攻击）。见 [`route.md`](route.md) 第三十六节 |
@@ -184,12 +185,12 @@ dev_gd_a/daeem/
 `map_editor --map <当前关的地图 id>`）。说明见
 [`../tools/campaign_editor/README.md`](../tools/campaign_editor/README.md)。
 
-**buff 编辑器**（本轮新增）同样不在游戏包里：`dev_gd_a/tools/buff_editor/`（双击
-`buff_editor.bat`，或 `python dev_gd_a/tools/buff_editor`），它改的是
-`daeem/data/config.json` 里与 buff 有关的键（目前 = `morale.*` 19 个 + 共用的
-`combat.damage_reduction_cap`）。带悬停文案预览与跨字段提示；加新 buff 只在
-`model.py` 的 `BUFFS` 注册表加一条。说明见
-[`../tools/buff_editor/README.md`](../tools/buff_editor/README.md)。
+**科技编辑器**（2026.11 由 buff_editor 改名）同样不在游戏包里：
+`dev_gd_a/tools/tech_editor/`（双击 `tech_editor.bat`，或
+`python dev_gd_a/tools/tech_editor`），它改的是 `daeem/data/config.json` 里
+`tech.*` 那一块（原生 9 条 + 派系池 13 条 + 全局上限 / 每阶金耗 + 每派 9 个槽位）。
+带「游戏里的样子」预览与跨字段提示。说明见
+[`../tools/tech_editor/README.md`](../tools/tech_editor/README.md)。
 
 ## 操作方式（与 HTML 版一致）
 

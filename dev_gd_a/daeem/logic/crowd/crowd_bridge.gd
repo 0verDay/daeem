@@ -106,6 +106,12 @@ var _targets_serial: int = -1
 const FIELD_CACHE_MAX := 4
 var _field_cache: Dictionary = {}
 var _field_order: Array = []
+## ★★ P2：`DescendPath` 的**单命令缓存**（同一起点格 / 同一条场只算一次）。
+## 为什么有用：阵型移动时一格里常常站着好几个兵（0.35 格间距 ≈ 一格 8 个），
+## 它们的「起点 → 全队目标格」路线完全相同；不缓存就要对同一个起点重复下降。
+## 键里带 `building_revision`，建筑一变 `_sync_tables` 会清空整张缓存。
+const DESCEND_CACHE_MAX := 512
+var _descend_cache: Dictionary = {}
 ## ★ 诊断计数器（只有基准读）：建场次数 / 建场累计微秒。见 _field_for 的注释。
 var field_builds: int = 0
 var field_build_us: int = 0
@@ -387,6 +393,7 @@ func _sync_tables(world, cfg: ConfigRes) -> void:
 		_build_move_cost(world)
 		_field_cache = {}
 		_field_order = []
+		_descend_cache = {}
 	if world.building_revision != _revision:
 		_revision = world.building_revision
 		_build_faction_tiles(world, cfg)
@@ -394,6 +401,7 @@ func _sync_tables(world, cfg: ConfigRes) -> void:
 		_build_pathing_buildings(world, cfg)
 		_field_cache = {}                   # 建筑变了 → 旧的距离场作废
 		_field_order = []
+		_descend_cache = {}                 # 下降路径也依赖建筑通行，一并作废
 
 
 ## 阵营 → 下标（`_faction_index`）。**碰撞 / 通行 / 搬运**用这一套。
@@ -644,6 +652,23 @@ func faction_index(f: String) -> int:
 	return int(_faction_index.get(f, -1))
 
 
+## ★★ P2：带缓存的 `DescendPath`。
+## 同一个「阵营 + 起点格 + 目标格 + building_revision」只下降一次 ——
+## 阵型移动时一格里常站好几个兵，它们的前半段路线完全相同。
+func _descend_path(fi: int, field: PackedFloat64Array, from_idx: int,
+		goal_idx: int, guard: int) -> PackedInt32Array:
+	var key := "%d:%d:%d:%d" % [fi, from_idx, goal_idx, _revision]
+	if _descend_cache.has(key):
+		var cached: PackedInt32Array = _descend_cache[key]
+		return cached
+	kernel.SetDescendFaction(fi)
+	var path: PackedInt32Array = kernel.DescendPath(field, from_idx, goal_idx, guard)
+	if _descend_cache.size() >= DESCEND_CACHE_MAX:
+		_descend_cache.clear()
+	_descend_cache[key] = path
+	return path
+
+
 ## 团队移动的地块路线：走距离场（一次建场全队共用），内核不可用时回退 A*。
 ##
 ## @return Array[Vector2i]（不含起点、含终点）/ 空数组（原地）/ null（不可达）
@@ -664,11 +689,9 @@ func tile_path(world, cfg: ConfigRes, from: Vector2i, to: Vector2i, faction: Str
 
 	var goal_idx: int = map.terrain.idx(to.x, to.y)
 	var field := _field_for(fi, goal_idx, world)
-	kernel.SetDescendFaction(fi)
-	var idxs: PackedInt32Array = kernel.DescendPath(
-		field, map.terrain.idx(from.x, from.y), goal_idx,
-		4 * (map.cols + map.rows) + 8
-	)
+	var idxs: PackedInt32Array = _descend_path(
+		fi, field, map.terrain.idx(from.x, from.y), goal_idx,
+		4 * (map.cols + map.rows) + 8)
 	if idxs.is_empty():
 		return null
 	var cols: int = map.cols
@@ -707,19 +730,19 @@ func tile_path_via(world, cfg: ConfigRes, from: Vector2i, to: Vector2i,
 	var anchor_idx: int = map.terrain.idx(field_tile.x, field_tile.y)
 	var goal_idx: int = map.terrain.idx(to.x, to.y)
 	var field := _field_for(fi, anchor_idx, world)
-	kernel.SetDescendFaction(fi)
 	var cols: int = map.cols
 	var guard: int = 4 * (map.cols + map.rows) + 8
 
 	var out: Array[Vector2i] = []
 	if from != field_tile:
-		var head: PackedInt32Array = kernel.DescendPath(field, map.terrain.idx(from.x, from.y), anchor_idx, guard)
+		var head: PackedInt32Array = _descend_path(
+			fi, field, map.terrain.idx(from.x, from.y), anchor_idx, guard)
 		if head.is_empty():
 			return null
 		for i in head:
 			out.append(Vector2i(i % cols, i / cols))
 	if to != field_tile:
-		var tail: PackedInt32Array = kernel.DescendPath(field, goal_idx, anchor_idx, guard)
+		var tail: PackedInt32Array = _descend_path(fi, field, goal_idx, anchor_idx, guard)
 		if tail.is_empty():
 			return null
 		# 反向：从全队目标点走出去到自己的槽位。末尾那个 anchor 与前半段的末点重合，跳过。
@@ -766,6 +789,22 @@ func reachable_mask(world, cfg: ConfigRes, from: Vector2i, faction: String) -> P
 	if fi < 0:
 		return PackedByteArray()
 	return kernel.ReachableMask(fi, world.map.terrain.idx(from.x, from.y))
+
+
+## ★★ P2：批量检查「整条折线」是否全部可通行（一次跨语言调用）。
+## @return true / false；null = 内核不可用，调用方退回逐点 `pathfinder.passable()`。
+func all_shifted_passable_here(cfg: ConfigRes, pts: PackedVector2Array,
+		ox: float, oy: float, faction: String) -> Variant:
+	if kernel == null or not _use_csharp(cfg):
+		return null
+	var w = world_here()
+	if w == null:
+		return null
+	_sync_tables(w, cfg)
+	var fi: int = faction_index(faction)
+	if fi < 0:
+		return null
+	return kernel.AllShiftedPassable(fi, pts, ox, oy)
 
 
 ## 直线是否全程可切（对应 pathfinder.segment_clear）。

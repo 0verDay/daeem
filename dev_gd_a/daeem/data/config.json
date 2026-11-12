@@ -121,6 +121,27 @@
     "hit_shake_cells": 0.06,
     "hit_shake_freq": 26.0,
     "hit_flash_alpha": 0.8,
+    "_walk_bob_comment": [
+      "★★ 2026.11 手感：立牌行走微动（纯表现，不改 u.pos）。",
+      "   · walk_bob_ratio —— 纵向压缩/拉伸的幅度（0.018 = ±1.8% 高度；0 = 关掉）；",
+      "   · walk_bob_hz —— 起伏频率（每秒几次；2.2 接近步兵步频）。",
+      "   ★ 只对 `u.moving == true` 的单位生效；停下立刻回到 1.0，不会一直抖。",
+      "   ★ 底边始终贴地：用的是「缩放 Y + 中心抬到半高×sy」，不是整体上下漂。"
+    ],
+    "walk_bob_ratio": 0.018,
+    "walk_bob_hz": 2.2,
+    "_death_fx_comment": [
+      "★★ 2026.11 手感：单位阵亡的贴地烟尘（纯表现；监听逻辑事件 `kill`）。",
+      "   · death_fx_sec —— 一团烟尘的寿命（秒）；",
+      "   · death_fx_size —— 最终直径（格）；",
+      "   · death_fx_alpha —— 最实时的透明度；",
+      "   · death_fx_from_scale —— 初始直径相对最终直径的比例（0.35 = 从一小团涨开）。",
+      "   ★ 颜色 = 灰尘灰 + 阵亡方阵营色 35%；只给**当前可见**的阵亡播（迷雾里的不播）。"
+    ],
+    "death_fx_sec": 0.32,
+    "death_fx_size": 1.1,
+    "death_fx_alpha": 0.5,
+    "death_fx_from_scale": 0.35,
     "_charge_fx_comment": [
       "★★ 单位冲锋的表现（纯表现；权威状态在 unit.charge_dist / charge_ratio / charge_armed）：",
       "   · charge_glow_alpha —— 立牌上阵营色发光的最强混合比例（0 = 不发光）；",
@@ -399,7 +420,11 @@
       "     把 min_scale 降到 fit 需要的约 0.52 以下即可。",
       "  ★★ 2.5D（render.screen_squash = 0.7）对这里的影响：**横向一概不变**（zoom 是等比的），",
       "     纵向可见格数变成原来的 1/0.7 = 1.43 倍 —— 所以这三个 scale 一个都不用改，",
-      "     要改的只有 camera_rig.map_size() 的纵向（它已经跟着 cell_h 走了）。"
+      "     要改的只有 camera_rig.map_size() 的纵向（它已经跟着 cell_h 走了）。",
+      "  ★★ 2026.11 手感：jump_sec / zoom_lerp_sec 只影响**程序性移动**（双击 / 小地图 / F）",
+      "     与**滚轮缩放**的到达过程；拖拽 / 方向键 / 边缘滚屏仍然 1:1。",
+      "     jump_sec = 0 或 zoom_lerp_sec = 0 = 回到瞬移 / 硬切。",
+      "  ★ zoom_step 从 1.12 细化到 1.07：同样区间从约 10 档变成约 16 档，滚轮更跟手。"
     ],
     "min_scale": 0.8,
     "max_scale": 1.6,
@@ -408,7 +433,9 @@
     "edge_scroll": true,
     "edge_size": 44,
     "edge_max_speed": 1500,
-    "zoom_step": 1.12
+    "zoom_step": 1.07,
+    "jump_sec": 0.15,
+    "zoom_lerp_sec": 0.1
   },
 
   "resource": {
@@ -596,6 +623,34 @@
         "low_funds": "资源不足"
       }
     },
+    "custom_cursor": true,
+    "cursor_scale": 1.0,
+    "_menu_cursor_comment": [
+      "★★ 菜单光标（view/menu_cursor.gd；2026.11.12）：",
+      "  平时 = 主题金箭头（与系统指针同量级），鼠标底下是**可交互控件**时 = 金圈 + 圆点。",
+      "  判定走 Viewport.gui_get_hovered_control()：BaseButton（未禁用）/ 自声明手型光标的控件 / 文本输入。",
+      "  · menu_cursor_scale —— 菜单光标的整体缩放（1.0 = 18px 箭头 / 7px 圈）；",
+      "  · 关掉 ui.custom_cursor 会连菜单一起回到系统光标（排查用）。"
+    ],
+    "menu_cursor_scale": 1.0,
+    "_button_style_comment": [
+      "★★ 按钮悬停 / 按下的「瞄准框」语言（view/fill_button.gd；2026.11.12）：",
+      "  悬停 = 四角 L 形括号 + 底边细线；按下 = 括号向内扣 + 1px 内框；松手 = 外扩回声环。",
+      "  金色填充仍然只表示「已选中 / 已启用」，悬停不再填金。",
+      "  · button_style = reticle（默认）/ glow（旧的四边泛光，排查用）；",
+      "  · reticle_arm —— 括号臂长（像素，6~28；实际还会被按钮短边夹住）；",
+      "  · reticle_gap —— 括号离边框的基准（像素；实际内缩 = 本值 + 2，按下收到 1）；小方块固定贴边框 1px；",
+      "  · reticle_width —— 静息线宽（按下自动 +0.5）；",
+      "  · reticle_alpha —— 括号最亮不透明度；",
+      "  · reticle_underline —— 底边细线最大长度占按钮宽度的比例（0 = 不画）。",
+      "  ★ 宽扁列表行（宽 ≥ 高×4）自动改画「左缘竖条 + 底边细线」，避免四角括号变成噪点。"
+    ],
+    "button_style": "reticle",
+    "reticle_arm": 14.0,
+    "reticle_gap": 2.0,
+    "reticle_width": 1.5,
+    "reticle_alpha": 0.85,
+    "reticle_underline": 0.30,
     "drag_select_min_px": 6.0,
     "box_select_pad_px": 5.0,
     "scroll_resistance": 0.55,
@@ -829,6 +884,8 @@
 
     "_general_traits_comment": [
       "★★ 将领特性（部队光环）：**只写在这里**，逻辑层不写死任何一条。",
+      "  ★★ 2026.11：单位专用的特性在下面的 `unit_traits`（与这张表**互不相通**）——",
+      "    将领特性只作用于将领本人 + 旗下部队；兵种自己的特性只走 unit_traits + trait_ids。",
       "  ★★ 2026.11：**一个特性 = 一个特性名 = 一个效果**（不再有「一条特性里塞好几个不相干效果」）。",
       "     所以一条特性只写下面**一个**键（外加文案）；一位将领可以同时在 trait_ids 里带多条。",
       "  · speed_bonus          —— 移动速度 +比例（0.25 = +25%）。",
@@ -926,6 +983,100 @@
       }
     },
 
+    "unit_traits": {
+      "_comment": [
+        "★★ 2026.11：**单位特性池**（单位专用的「标签」；将领用下面的 general_traits）。",
+        "  · 这里只定义「一条特性是什么」；哪个兵种带哪些标签写在其 unit.types.<id>.trait_ids 里。",
+        "  · 一个特性 = 一个特性名 = 一个效果（与将领特性同一条口径）：一条只写下面**一个**效果键。",
+        "    · attack_vs_class = { <兵种大类 id>: <比例> } —— 打该大类时伤害 ×(1+比例)，只作用于单位；",
+        "    · ranged_reduction = <比例> —— 受到**远程**伤害时的减伤（只挡投掷物 / 箭）；",
+        "    · melee_reduction = <比例> —— 受到**近战**伤害时的减伤；",
+        "    · knockback_immune = true —— **稳定**：免疫击退（位移 + 眩晕）整套效果。",
+        "  · 多个标签同时生效时：attack_vs_class / 两条减伤**相加**（减伤最终仍按 combat.damage_reduction_cap 封顶），",
+        "    免疫类取「或」；游戏侧在 config.gd 的 unit_traits_of() 里合并（inline traits + 这里的标签）。",
+        "  · 编辑器：tools/unit_editor →「单位特性」页（增删 / 改效果），再去「单位」页给兵种挂标签。",
+        "  · 兼容：unit.types.<id>.traits 这种「内嵌四键」写法仍然会被读（老配置不会坏），但新数据一律走标签。"
+      ],
+      "vs_cavalry_25": {
+        "name": "骑兵特攻",
+        "short": "骑",
+        "desc": "对骑兵大类的单位伤害 +25%（拆建筑不生效）",
+        "attack_vs_class": { "cavalry": 0.25 }
+      },
+      "vs_cavalry_70": {
+        "name": "骑兵特攻·强",
+        "short": "骑",
+        "desc": "对骑兵大类的单位伤害 +70%（拆建筑不生效）",
+        "attack_vs_class": { "cavalry": 0.7 }
+      },
+      "vs_infantry_10": {
+        "name": "步兵特攻",
+        "short": "步",
+        "desc": "对步兵大类的单位伤害 +10%（拆建筑不生效）",
+        "attack_vs_class": { "infantry": 0.1 }
+      },
+      "vs_infantry_25": {
+        "name": "步兵特攻·强",
+        "short": "步",
+        "desc": "对步兵大类的单位伤害 +25%（拆建筑不生效）",
+        "attack_vs_class": { "infantry": 0.25 }
+      },
+      "vs_infantry_50": {
+        "name": "步兵特攻·极",
+        "short": "步",
+        "desc": "对步兵大类的单位伤害 +50%（拆建筑不生效）",
+        "attack_vs_class": { "infantry": 0.5 }
+      },
+      "ranged_guard_25": {
+        "name": "远程抵抗",
+        "short": "远",
+        "desc": "受到远程伤害 -25%（只挡投掷物 / 箭）",
+        "ranged_reduction": 0.25
+      },
+      "ranged_guard_30": {
+        "name": "远程抵抗·强",
+        "short": "远",
+        "desc": "受到远程伤害 -30%（只挡投掷物 / 箭）",
+        "ranged_reduction": 0.3
+      },
+      "ranged_guard_50": {
+        "name": "铁壁",
+        "short": "壁",
+        "desc": "受到远程伤害 -50%（只挡投掷物 / 箭）",
+        "ranged_reduction": 0.5
+      },
+      "ranged_guard_55": {
+        "name": "铁壁·强",
+        "short": "壁",
+        "desc": "受到远程伤害 -55%（只挡投掷物 / 箭）",
+        "ranged_reduction": 0.55
+      },
+      "ranged_guard_90": {
+        "name": "箭雨不侵",
+        "short": "盾",
+        "desc": "受到远程伤害 -90%（只挡投掷物 / 箭）",
+        "ranged_reduction": 0.9
+      },
+      "melee_guard_25": {
+        "name": "近战抵抗",
+        "short": "近",
+        "desc": "受到近战伤害 -25%",
+        "melee_reduction": 0.25
+      },
+      "melee_guard_30": {
+        "name": "近战抵抗·强",
+        "short": "近",
+        "desc": "受到近战伤害 -30%",
+        "melee_reduction": 0.3
+      },
+      "steady": {
+        "name": "稳定",
+        "short": "稳",
+        "desc": "免疫击退（位移 + 眩晕）；碰撞挤开照旧",
+        "knockback_immune": true
+      }
+    },
+
     "_types_comment": [
       "★★ 单位类型表（本轮新增）：**所有单位类型的唯一定义处**，键 = 类型 id。",
       "  · 普通单位的 `kind` 就是这里的 id；将领的 kind 是 general / general_N，",
@@ -1009,29 +1160,14 @@
       "       不是最终配平，之后按玩法再调这一张表。"
     ],
     "_traits_comment": [
-      "★★ 兵种特性：**只写在这里**，逻辑层不写死任何一条。",
-      "  每个兵种的 traits 只认四个键（别的键会被忽略，见 logic/config.gd 的 _normalize_traits）：",
-      "  · attack_vs_class = { <兵种大类 id>: <比例> } —— 打**该大类**的目标时伤害 ×(1+比例)。",
-      "      · 大类 id 就是 unit.classes 的键（infantry / cavalry；siege 是器械）。",
-      "      · 只作用于**单位**，拆建筑（建筑没有兵种）不受影响；",
-      "      · 没写的键 = 0 ⇒ 打不到该大类。现有兵种只写 infantry / cavalry，",
-      "        所以器械（siege）天然不吃任何「对骑兵步兵」加成 —— 这是需求口径。",
-      "      · 比例是 0.25 = +25%，与将领的数值覆盖**相乘**（将领的伤害先按覆盖算，再乘特性）。",
-      "  · ranged_reduction = <比例> —— 受到**远程伤害**时减伤（0.25 = 少受 25%）。",
-      "      · 「远程」按**伤害来路**判：远程单位的投掷物 + 可攻击建筑（箭塔）的投掷物；",
-      "      · 与其它减伤来源**加算**，再按 combat.damage_reduction_cap 封顶。",
-      "  · melee_reduction = <比例> —— 受到**近战伤害**时减伤（2026.11 新增；",
-      "      「远近免伤+」= ranged_reduction + melee_reduction 两条一起写）。",
-      "      · 「近战」= 不走投掷物的那一击（combat.attack_unit 的即时结算）；",
-      "      · 与 ranged_reduction **互斥地**进同一个加法和、同一个封顶。",
-      "  · knockback_immune = true —— **稳定**：免疫「击退」（位移 + 眩晕）整套效果。",
-      "      · 只免疫击退，**照旧被单位之间的推挤挤开**（collision 不看它）；",
-      "      · 数据来源：unit.types.<id>.knockback（谁打谁会击退，见那段说明）。",
-      "  ★ 将领（kind = general / general_N）没有自己的 traits —— 它按 unit.general.types[i]",
-      "    所属的**兵种**取这里的特性，与「将领数值 = 所属兵种数值」同一条口径。",
-      "  ★ 详情栏的文案由 view/hud.gd 按这张表拼：",
-      "    攻击特性写在左列「攻击」下面的小字行，远程减伤写在右列「防御」下面的小字行；",
-      "    大类的显示名取自 unit.classes（代码里不写「骑兵」这种中文字面量）。"
+      "★★ 2026.11：兵种特性改成**标签制** —— 兵种只记自己要哪几层「单位特性」：",
+      "  · unit.types.<id>.trait_ids = [<单位特性 id>…]（顺序 = 界面上的顺序，重复 / 不存在的会被忽略）；",
+      "  · 特性本身（名字 / 短名 / 说明 / 效果）在 unit.unit_traits 那张池子里定义；",
+      "  · 编辑入口：tools/unit_editor 的「单位特性」页（池）+「单位」页 → 选中兵种 →「特性（可多条）」。",
+      "  · 老写法 unit.types.<id>.traits = {…四个键…} **仍然生效**（config.gd 会把它一起合并），",
+      "    但编辑器不再写它；迁移时已经把现有兵种全部换成了 trait_ids。",
+      "  · 将领（kind = general / general_N）按 unit.general.types[i] 所属兵种继承这些标签；",
+      "    将领**自己的**额外特性用「将领特性」池（unit.general_traits + unit.general.trait_ids）。"
     ],
     "types": {
       "spearman": {
@@ -1050,9 +1186,7 @@
         "radius_factor": 0.09,
         "vision": 8,
         "upkeep_food": 0.08,
-        "traits": {
-          "attack_vs_class": { "cavalry": 0.25 }
-        }
+        "trait_ids": ["vs_cavalry_25"]
       },
       "longbowman": {
         "name": "长弓兵",
@@ -1070,9 +1204,7 @@
         "radius_factor": 0.085,
         "vision": 10,
         "upkeep_food": 0.10,
-        "traits": {
-          "attack_vs_class": { "infantry": 0.10 }
-        }
+        "trait_ids": ["vs_infantry_10"]
       },
       "rider": {
         "name": "骑手",
@@ -1090,10 +1222,7 @@
         "radius_factor": 0.105,
         "vision": 9,
         "upkeep_food": 0.18,
-        "traits": {
-          "attack_vs_class": { "infantry": 0.25 },
-          "ranged_reduction": 0.25
-        },
+        "trait_ids": ["vs_infantry_25", "ranged_guard_25"],
         "charge": {
           "min_distance": 3.0,
           "max_distance": 8.0,
@@ -1126,10 +1255,7 @@
         "upkeep_food": 0.12,
         "heal_aura_radius": 3.0,
         "heal_aura_rate": 2.0,
-        "traits": {
-          "ranged_reduction": 0.9,
-          "knockback_immune": true
-        }
+        "trait_ids": ["ranged_guard_90", "steady"]
       },
       "knight": {
         "name": "骑士",
@@ -1147,9 +1273,7 @@
         "vision": 9,
         "armor": 6,
         "upkeep_food": 0.32,
-        "traits": {
-          "ranged_reduction": 0.25
-        },
+        "trait_ids": ["ranged_guard_25"],
         "charge": {
           "min_distance": 3.5,
           "max_distance": 8.0,
@@ -1180,9 +1304,7 @@
         "armor": 1,
         "move_shoot": true,
         "upkeep_food": 0.26,
-        "traits": {
-          "ranged_reduction": 0.25
-        }
+        "trait_ids": ["ranged_guard_25"]
       },
       "catapult": {
         "name": "投石车",
@@ -1201,8 +1323,7 @@
         "armor": 2,
         "siege": true,
         "upkeep_food": 0.40,
-        "splash_radius": 1.5,
-        "traits": {}
+        "splash_radius": 1.5
       },
 
       "_clan_types_comment": [
@@ -1252,9 +1373,7 @@
         "radius_factor": 0.09,
         "vision": 6,
         "upkeep_food": 0.08,
-        "traits": {
-          "attack_vs_class": { "cavalry": 0.7 }
-        },
+        "trait_ids": ["vs_cavalry_70"],
         "charge": {
           "min_distance": 0.0,
           "max_distance": 0.0,
@@ -1284,9 +1403,7 @@
         "radius_factor": 0.085,
         "vision": 8,
         "upkeep_food": 0.1,
-        "traits": {
-          "attack_vs_class": { "infantry": 0.25 }
-        }
+        "trait_ids": ["vs_infantry_25"]
       },
       "dy_ranger": {
         "name": "游侠",
@@ -1305,12 +1422,7 @@
         "armor": 0,
         "move_shoot": true,
         "upkeep_food": 0.26,
-        "traits": {
-          "ranged_reduction": 0.25,
-          "attack_vs_class": {
-            "cavalry": 0.25
-          }
-        }
+        "trait_ids": ["ranged_guard_25", "vs_cavalry_25"]
       },
       "dy_royal_sword": {
         "name": "御林军",
@@ -1328,11 +1440,7 @@
         "radius_factor": 0.095,
         "vision": 8,
         "upkeep_food": 0.14,
-        "traits": {
-          "melee_reduction": 0.3,
-          "ranged_reduction": 0.3,
-          "knockback_immune": true
-        }
+        "trait_ids": ["melee_guard_30", "ranged_guard_30", "steady"]
       },
       "dy_royal_archer": {
         "name": "御林军",
@@ -1350,9 +1458,7 @@
         "radius_factor": 0.09,
         "vision": 10,
         "upkeep_food": 0.14,
-        "traits": {
-          "attack_vs_class": { "infantry": 0.5 }
-        }
+        "trait_ids": ["vs_infantry_50"]
       },
       "dy_royal_cavalry": {
         "name": "御林军",
@@ -1370,13 +1476,7 @@
         "radius_factor": 0.115,
         "vision": 8,
         "upkeep_food": 0.28,
-        "traits": {
-          "knockback_immune": true,
-          "ranged_reduction": 0.5,
-          "attack_vs_class": {
-            "cavalry": 0.25
-          }
-        },
+        "trait_ids": ["steady", "ranged_guard_50", "vs_cavalry_25"],
         "charge": {
           "min_distance": 3.5,
           "max_distance": 8.0,
@@ -1407,10 +1507,7 @@
         "radius_factor": 0.13,
         "vision": 9,
         "upkeep_food": 0.34,
-        "traits": {
-          "ranged_reduction": 0.25,
-          "knockback_immune": true
-        },
+        "trait_ids": ["ranged_guard_25", "steady"],
         "charge": {
           "min_distance": 3.0,
           "max_distance": 8.0,
@@ -1443,10 +1540,7 @@
         "upkeep_food": 0.4,
         "splash_radius": 1.5,
         "knockback": { "distance": 0.9, "stun_sec": 0.5 },
-        "traits": {
-          "ranged_reduction": 0.9,
-          "knockback_immune": true
-        }
+        "trait_ids": ["ranged_guard_90", "steady"]
       },
 
       "dg_swordsman": {
@@ -1465,10 +1559,7 @@
         "radius_factor": 0.09,
         "vision": 6,
         "upkeep_food": 0.08,
-        "traits": {
-          "attack_vs_class": { "cavalry": 0.25 },
-          "melee_reduction": 0.25
-        }
+        "trait_ids": ["vs_cavalry_25", "melee_guard_25"]
       },
       "dg_archer": {
         "name": "乂字军铁臂弓手",
@@ -1486,9 +1577,7 @@
         "radius_factor": 0.085,
         "vision": 8,
         "upkeep_food": 0.1,
-        "traits": {
-          "attack_vs_class": { "infantry": 0.25 }
-        }
+        "trait_ids": ["vs_infantry_25"]
       },
       "dg_rider": {
         "name": "骑手",
@@ -1506,9 +1595,7 @@
         "radius_factor": 0.105,
         "vision": 10,
         "upkeep_food": 0.18,
-        "traits": {
-          "ranged_reduction": 0.25
-        },
+        "trait_ids": ["ranged_guard_25"],
         "charge": {
           "min_distance": 3.0,
           "max_distance": 8.0,
@@ -1538,11 +1625,7 @@
         "vision": 8,
         "armor": 6,
         "upkeep_food": 0.32,
-        "traits": {
-          "attack_vs_class": { "cavalry": 0.25 },
-          "ranged_reduction": 0.55,
-          "knockback_immune": true
-        },
+        "trait_ids": ["vs_cavalry_25", "ranged_guard_55", "steady"],
         "charge": {
           "min_distance": 2.5,
           "max_distance": 8.0,
@@ -1575,10 +1658,7 @@
         "upkeep_food": 0.38,
         "pierce": true,
         "projectile_arc": false,
-        "traits": {
-          "knockback_immune": true,
-          "ranged_reduction": 0.9
-        }
+        "trait_ids": ["steady", "ranged_guard_90"]
       },
 
       "_lord_types_comment": [
@@ -1612,8 +1692,7 @@
         "radius_factor": 0.1,
         "vision": 10,
         "move_shoot": true,
-        "upkeep_food": 0.26,
-        "traits": {}
+        "upkeep_food": 0.26
       },
       "dy_lord_zisha": {
         "name": "子刹",
@@ -1631,7 +1710,6 @@
         "radius_factor": 0.115,
         "vision": 12,
         "upkeep_food": 0.28,
-        "traits": {},
         "charge": {
           "min_distance": 3.5,
           "max_distance": 8.0,
@@ -1661,7 +1739,6 @@
         "radius_factor": 0.105,
         "vision": 12,
         "upkeep_food": 0.18,
-        "traits": {},
         "charge": {
           "min_distance": 3.0,
           "max_distance": 8.0,
@@ -1691,7 +1768,6 @@
         "radius_factor": 0.11,
         "vision": 9,
         "upkeep_food": 0.32,
-        "traits": {},
         "charge": {
           "min_distance": 2.5,
           "max_distance": 8.0,
@@ -2032,14 +2108,17 @@
       "★ 单位是秒：0.0333333 = 30 Hz 逻辑（RTS 常规），0.0166667 = 60 Hz（与桌面旧手感一致）。",
       "★ 逻辑变慢后画面靠插值补平（`world.render_pos_of` 在两次逻辑步之间线性插值），",
       "  所以 30 Hz 逻辑 + 60 Hz 渲染仍是连续移动，不会一格一格跳。",
-      "★ 桌面默认 0（手感不变）；手机读下面的 mobile_step_sec。",
-      "★ 想让桌面也走固定步长：把 step_sec 设成 0.0166667（逻辑速度不变，只是与帧率解耦）。"
+      "★★ 2026.11（P1）：**桌面默认 0.0166667（60Hz）** —— 高刷屏不再多跑逻辑步、",
+      "   跨机器逻辑频率一致；配合相机跟随的 `render_pos_of` 插值，60Hz 逻辑在 144Hz 屏上仍然连续。",
+      "   ⚠️ 无头测试会在 `game_scene3d._assemble()` 里强制回到 0（每帧一步）——",
+      "   120 个既有套件里有大量「推进 N 帧 = N 个逻辑步」的断言，不能在这里改它们。",
+      "★ 设 0 = 回到旧行为（每个渲染帧推进一次逻辑）。"
     ],
-    "step_sec": 0.0,
+    "step_sec": 0.0166667,
     "_mobile_step_comment": [
-      "★ 手机端的逻辑步长（仅在 OS.has_feature(\"mobile\") 且 step_sec == 0 时生效）。",
+      "★ 手机端的逻辑步长（只要 > 0 就优先于桌面 step_sec；见 `_assemble`）。",
       "0.0333333 = 30 Hz。若某台机器仍吃力，可调到 0.05（20 Hz，仍比旧行为省一半以上）。",
-      "设 0 = 手机也回到旧行为（每帧 tick）。"
+      "设 0 = 手机跟随桌面 step_sec。"
     ],
     "mobile_step_sec": 0.0333333
   },
@@ -2376,7 +2455,7 @@
     ],
 
     "wall": {
-      "id": "wall", "name": "木墙", "buildable": true,
+      "id": "wall", "name": "木墙", "buildable": true, "drag_build": true,
       "tier": 1, "ranged_reduction": 0.9,
       "build_sec": 4,
       "cost": { "food": 50, "gold": 0 },
@@ -2420,7 +2499,7 @@
       "desc": "资源建筑：建在己方区划内，为全阵营提供粮食 +0.5/秒"
     },
     "stone_wall": {
-      "id": "stone_wall", "name": "石墙", "buildable": true,
+      "id": "stone_wall", "name": "石墙", "buildable": true, "drag_build": true,
       "tier": 2, "ranged_reduction": 0.9,
       "build_sec": 5,
       "cost": { "food": 120, "gold": 120 },

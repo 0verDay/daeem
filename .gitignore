@@ -24,3 +24,6 @@ dev_gd_a/daeem/exports/
 
 # UI 看样子的截图（tests/bench_menu_shot.gd 生成，看完整理掉即可）
 dev_gd_a/daeem/shots/
+
+# Godot 截图脚本（tests/capture_*.gd）的输出
+dev_gd_a/daeem/_shot_*

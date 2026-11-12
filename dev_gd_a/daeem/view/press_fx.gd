@@ -14,7 +14,9 @@
 ##
 ## ★ 只改两样东西：
 ##   · `host.scale` / `host.pivot_offset` —— **纯视觉缩放**，不改 size / position、不进布局；
-##   · 本节点自己画的一层亮边（画在按钮边缘外侧一半，尽量不盖住按钮文字）。
+##   · 本节点自己画的一层**四角内扣短角**（2026.11.12 起；之前是一整圈亮边）——
+##     与 `button_reticle.gd` 的外侧 / 内侧括号同一套语言：悬停是括号，按下是扣住。
+##     只画在四角，不盖住居中的文字。
 ##   不碰主题样式、不碰 world、不碰任何玩法状态。
 ##
 ## ★ 动效总开关 `ThemeRes.animations_enabled()` 关掉时：
@@ -374,13 +376,28 @@ func _draw() -> void:
 	if _brighten_alpha > 0.0:
 		draw_rect(Rect2(Vector2.ZERO, size),
 			Color(1.0, 0.955, 0.83, _brighten_alpha * _edge), true)
-	# 2px 亮边：一半在按钮内、一半在外 —— 不盖住居中的文字
-	var w: float = _edge_px
+	# ★★ 2026.11.12：按下不再画「整圈亮边」（它会把悬停的瞄准框盖成一个大方块），
+	#   改成**四角向内扣的 L 形短角** —— 与 fill_button 的瞄准框同一套几何语言：
+	#   悬停时括号在按钮外侧，按下时内侧的这四条短角亮起 =「扣住了」。
+	var w: float = size.x
+	var h: float = size.y
+	var arm: float = minf(12.0, minf(w, h) * 0.30)
+	var inset: float = 1.5 + (1.0 - _edge) * 1.5
 	var col: Color = ThemeRes.accent_bright()
-	var a: float = _edge_alpha * _edge
-	var edge_col := Color(col.r, col.g, col.b, a)
-	var inset: float = w * 0.5
-	draw_rect(Rect2(Vector2(-inset, -inset), size + Vector2(w, w)), edge_col, false, w)
+	col.a = _edge_alpha * _edge
+	var lw: float = _edge_px
+	var x0: float = inset
+	var y0: float = inset
+	var x1: float = w - inset
+	var y1: float = h - inset
+	draw_line(Vector2(x0, y0 + arm), Vector2(x0, y0), col, lw, true)
+	draw_line(Vector2(x0, y0), Vector2(x0 + arm, y0), col, lw, true)
+	draw_line(Vector2(x1, y0 + arm), Vector2(x1, y0), col, lw, true)
+	draw_line(Vector2(x1, y0), Vector2(x1 - arm, y0), col, lw, true)
+	draw_line(Vector2(x0, y1 - arm), Vector2(x0, y1), col, lw, true)
+	draw_line(Vector2(x0, y1), Vector2(x0 + arm, y1), col, lw, true)
+	draw_line(Vector2(x1, y1 - arm), Vector2(x1, y1), col, lw, true)
+	draw_line(Vector2(x1, y1), Vector2(x1 - arm, y1), col, lw, true)
 
 
 # ------------------------------------------------------------------

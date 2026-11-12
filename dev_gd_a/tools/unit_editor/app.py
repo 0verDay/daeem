@@ -35,6 +35,27 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+_TOOLS_DIR = Path(__file__).resolve().parent.parent
+if str(_TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(_TOOLS_DIR))
+
+# ★ 2026.11 UI 改造：共用暗色主题 / 圆角卡片 / 圆角按钮。
+from editor_ui import CheckBox
+from editor_ui import dpi
+from editor_ui import default_preset as _default_tokens
+from editor_ui import FONT_BODY, FONT_BRAND, FONT_SMALL
+from editor_ui import GAP, CARD_PAD
+from editor_ui import PillButton
+from editor_ui import ThinScrollbar
+from editor_ui import EditorShell
+from editor_ui import ScrollColumn
+from editor_ui import apply_theme as _shared_apply_theme
+from editor_ui import is_dark as _shared_is_dark
+from editor_ui import list_card as _shared_list_card
+from editor_ui import make_card as _shared_make_card
+from editor_ui import set_ui as _set_editor_ui
+from editor_ui import shade as _shared_shade
+
 from . import model as model_mod
 from .configfile import JsonError, parse_number
 from .model import (
@@ -60,6 +81,7 @@ from .model import (
     UNIT_FIELDS,
     UNIT_TRAIT_FIELDS,
     UNIT_TRAIT_KNOCKBACK,
+    UNIT_TRAIT_TEXT_FIELDS,
     UNIT_UPKEEP_FIELD,
     Building,
     ConfigModel,
@@ -68,44 +90,31 @@ from .model import (
     GeneralTrait,
     ModelError,
     Unit,
+    UnitTrait,
     fmt_number,
 )
 
 #: 界面里到处都在用的短名字（数字 → 文字）
 fmt = fmt_number
 
-#: 界面配色（与地图编辑器 / 战役编辑器同一套 —— 三个工具看起来是一家的）。
-#:
-#: ★ 这是「浅色（白）+ 极简」的一套：页面底、卡片面、输入面三层灰，配一条冷色强调色。
-#:   分工固定：`bg` = 页面底（顶栏 / 画布外圈），`panel` = 卡片 / 侧栏面（白），
-#:   `panel_alt` = 输入框 / 按钮 / 列表行（比卡片灰一档），`line` = 发丝分隔线。
-UI = {
-    "bg": "#f3f4f6",
-    "panel": "#ffffff",
-    "panel_alt": "#eef0f3",
-    "line": "#d9dce1",
-    "text": "#1f2329",
-    "text_dim": "#6b7280",
-    "accent": "#2f7fe0",
-    "accent_btn": "#2f7fe0",
-    "accent_btn_hover": "#4a91e6",
-    "accent_fg": "#ffffff",
-    "danger_btn": "#d9534f",
-    "danger_btn_hover": "#e26864",
-    "danger_fg": "#ffffff",
-    "hover": "#e6e9ee",
-    "pressed": "#d9dde3",
-    "ok": "#1f9d55",
-    "warn": "#b7791f",
-    "bad": "#d64545",
-}
+#: 界面配色（四个编辑器同一套 —— 看起来是一家的）。
+#: ★ 2026.11：暗色游戏工具（A 方向），token 在 `tools/editor_ui/tokens.py`。
+UI = dict(_default_tokens())
+_set_editor_ui(UI)
 
-#: 两个页签：key → （按钮文字，状态栏提示）
+#: 四个页签：key → （按钮文字，状态栏提示）
 #: ★★ 2026.11：**「科技」页已移除**（用户口径：「把单位编辑器中的科技编辑界面去掉」）——
 #:   科技的两张表（`tech.list` / `tech.clan_list`）、每派 9 个槽位（`clan.list[].tech`）、
-#:   以及 `tech.max_active` / 每阶金耗，全部在 `tools/buff_editor` 里编辑。
+#:   以及 `tech.max_active` / 每阶金耗，全部在 `tools/tech_editor` 里编辑。
+#: ★★ 2026.11：**单位特性 / 将领特性各自独立成一页**（用户口径：「把所有单位特性与
+#:   将领特性打包为单独的标签；将领特性仅适用于将领，单位特性仅适用于单位」）——
+#:   「单位」页只负责给兵种 / 将领**挂**标签，定义（名字 / 效果 / 增删）在各自那一页。
 PAGES: Tuple[Tuple[str, str, str], ...] = (
-    ("unit", "单位", "单位页：左边上面是兵种、下面是开局三位将领；点一行改右边的数值"),
+    ("unit", "单位", "单位页：左边上面是兵种、下面是将领；点一行改右边的数值 / 挂特性"),
+    ("unit_trait", "单位特性",
+     "单位特性页：定义「单位专用」的特性（效果 / 文案 / 增删）；兵种在「单位」页挂它们"),
+    ("general_trait", "将领特性",
+     "将领特性页：定义「将领专用」的特性（光环效果 / 文案 / 增删）；将领在「单位」页挂它们"),
     ("building", "建筑", "建筑页：造价 / 建造时间 / 血量 / 能不能攻击 / 每一级的升级数值"),
 )
 
@@ -175,241 +184,12 @@ def _rounded_rect(canvas, x1: float, y1: float, x2: float, y2: float, r: float, 
     return canvas.create_polygon(pts, smooth=True, splinesteps=12, **kw)
 
 
-class RButton(tk.Button):
-    """**圆角按钮**：本体还是 `tk.Button`，上面盖一层 Canvas 把方角画成圆角。
-
-    ★ 为什么这么做（而不是自己写一个 Canvas 控件）：`invoke` / `cget` / `configure`
-      / `pack` 全都是**原生** `tk.Button` 语义 —— 调用方与测试一行都不用改；
-      盖层只负责「画面」，本体只负责「量尺寸」与「点击 → invoke()」。
-      四角填成**父容器底色**，所以看起来就是一枚圆角按钮。
-    """
-
-    RADIUS = 8.0
-
-    def __init__(self, master=None, **kw):
-        kw.setdefault("relief", "flat")
-        kw.setdefault("bd", 0)
-        kw.setdefault("highlightthickness", 0)
-        kw.setdefault("takefocus", 0)
-        kw.setdefault("activebackground", UI["panel_alt"])
-        kw.setdefault("activeforeground", UI["text"])
-        super().__init__(master, **kw)
-        try:
-            surround = str(self.master.cget("bg"))
-        except (tk.TclError, AttributeError):
-            surround = ""
-        self._surround = surround or UI["panel"]
-        self._hover = False
-        self._active = False
-        self._overlay = tk.Canvas(self, highlightthickness=0, bd=0, takefocus=0,
-                                  bg=self._surround)
-        self._overlay.place(x=0, y=0, relwidth=1, relheight=1)
-        for seq, fn in (("<Enter>", self._on_enter), ("<Leave>", self._on_leave),
-                        ("<ButtonPress-1>", self._on_press),
-                        ("<ButtonRelease-1>", self._on_release)):
-            self._overlay.bind(seq, fn)
-        self.bind("<Configure>", lambda _e: self._redraw())
-        self._redraw()
-
-    # ---- 原生 configure / cget 照旧，只是改完重画一次盖层 ----
-    def configure(self, cnf=None, **kw):
-        if isinstance(cnf, str):
-            return super().configure(cnf)
-        result = super().configure(cnf, **kw)
-        self._redraw()
-        return result
-
-    config = configure
-
-    # ---- 盖层盖住了本体：悬停 / 按下 / 点击都得自己转发 ----
-    def _disabled(self) -> bool:
-        try:
-            return str(self.cget("state")) == "disabled"
-        except tk.TclError:
-            return False
-
-    def _on_enter(self, _e=None):
-        self._hover = True
-        self._redraw()
-
-    def _on_leave(self, _e=None):
-        self._hover = False
-        self._active = False
-        self._redraw()
-
-    def _on_press(self, _e=None):
-        if not self._disabled():
-            self._active = True
-            self._redraw()
-
-    def _on_release(self, _e=None):
-        fire = self._active and not self._disabled()
-        self._active = False
-        self._hover = True
-        self._redraw()
-        if fire:
-            try:
-                self.invoke()
-            except tk.TclError:
-                pass
-
-    # ---- 画 ----
-    def _fill(self) -> str:
-        base = str(self.cget("bg"))
-        if self._disabled():
-            return base
-        if self._active:
-            return _shade(base, -0.12)
-        if self._hover:
-            return _shade(base, -0.06)
-        return base
-
-    def _text_color(self) -> str:
-        if self._disabled():
-            return UI["text_dim"]
-        return str(self.cget("fg"))
-
-    def _redraw(self):
-        overlay = getattr(self, "_overlay", None)
-        if overlay is None:
-            return
-        try:
-            overlay.delete("all")
-            w = max(1, self.winfo_width())
-            h = max(1, self.winfo_height())
-            if w <= 1 or h <= 1:
-                return
-            fill = self._fill()
-            _rounded_rect(overlay, 0, 0, w, h, min(self.RADIUS, h / 2.0),
-                          fill=fill, outline=fill)
-            text = str(self.cget("text"))
-            if not text:
-                return
-            try:
-                padx = max(0, int(self.cget("padx")))
-            except (tk.TclError, ValueError):
-                padx = 6
-            anchor = str(self.cget("anchor"))
-            font = self.cget("font")
-            color = self._text_color()
-            if anchor in ("w", "e"):
-                x = padx + 2 if anchor == "w" else w - padx - 2
-                overlay.create_text(x, h / 2, text=text, fill=color, font=font,
-                                    anchor=anchor)
-            else:
-                overlay.create_text(w / 2, h / 2, text=text, fill=color, font=font)
-        except tk.TclError:
-            pass
+RButton = PillButton
 
 
 def _apply_theme(root: tk.Tk) -> ttk.Style:
-    """把 clam 主题里**所有会漏出浅色**的地方都压回深色。
-
-    ★ 这一步是「下拉框选中后变全白」「勾选框一块白」「鼠标划过变白」的根因修法：
-      clam 默认在 `readonly` / `active` / `disabled` 这些状态下会落到浅灰
-      （实测：下拉框 readonly 的 fieldbackground = `#dcdad5`，勾选框底 = `#ffffff`，
-      悬停 = `#eeebe7`）—— 光 `style.configure` 是压不住状态色的，必须 `style.map`。
-    """
-    style = ttk.Style(root)
-    try:
-        style.theme_use("clam")
-    except tk.TclError:
-        pass
-    panel, alt, bg = UI["panel"], UI["panel_alt"], UI["bg"]
-    line, text, dim, accent = UI["line"], UI["text"], UI["text_dim"], UI["accent"]
-    hover, pressed = UI["hover"], UI["pressed"]
-    sel_bg, sel_fg = "#cfe3ff", text
-
-    style.configure(".", background=panel, foreground=text, fieldbackground=alt,
-                    bordercolor=line, lightcolor=panel, darkcolor=panel, focuscolor=accent)
-    style.configure("TFrame", background=panel)
-    style.configure("Bar.TFrame", background=bg)
-    style.configure("TLabel", background=panel, foreground=text)
-    style.configure("Bar.TLabel", background=bg, foreground=text)
-    style.configure("Dim.TLabel", background=panel, foreground=dim)
-    style.configure("Title.TLabel", background=panel, foreground=accent,
-                    font=("Microsoft YaHei UI", 10, "bold"))
-    style.configure("Hint.TLabel", background=panel, foreground=dim,
-                    font=("Microsoft YaHei UI", 8))
-
-    style.configure("TEntry", fieldbackground=alt, foreground=text, insertcolor=text,
-                    bordercolor=line, lightcolor=alt, darkcolor=alt, padding=(6, 4))
-    style.map("TEntry",
-              fieldbackground=[("readonly", alt), ("disabled", panel)],
-              foreground=[("disabled", dim)],
-              selectbackground=[("!disabled", sel_bg)],
-              selectforeground=[("!disabled", sel_fg)],
-              bordercolor=[("focus", accent)], lightcolor=[("focus", accent)],
-              darkcolor=[("focus", accent)])
-
-    style.configure("TCombobox", fieldbackground=alt, background=alt, foreground=text,
-                    arrowcolor=dim, bordercolor=line, lightcolor=alt, darkcolor=alt,
-                    padding=(6, 4))
-    style.map("TCombobox",
-              fieldbackground=[("readonly", alt), ("disabled", panel)],
-              background=[("readonly", alt), ("active", alt), ("disabled", panel)],
-              foreground=[("readonly", text), ("disabled", dim)],
-              arrowcolor=[("readonly", dim), ("active", text)],
-              selectbackground=[("readonly", alt), ("!disabled", sel_bg)],
-              selectforeground=[("readonly", text), ("!disabled", sel_fg)],
-              bordercolor=[("focus", accent)], lightcolor=[("focus", accent)],
-              darkcolor=[("focus", accent)])
-    # 下拉展开的那张列表是普通 tk Listbox（不走 ttk 样式），只能走 option 库
-    for pattern, value in (("*TCombobox*Listbox.background", alt),
-                           ("*TCombobox*Listbox.foreground", text),
-                           ("*TCombobox*Listbox.selectBackground", sel_bg),
-                           ("*TCombobox*Listbox.selectForeground", sel_fg),
-                           ("*TCombobox*Listbox.borderWidth", "0"),
-                           ("*TCombobox*Listbox.highlightThickness", "0")):
-        root.option_add(pattern, value, "interactive")
-
-    style.configure("Treeview", background=alt, fieldbackground=alt, foreground=text,
-                    bordercolor=line, lightcolor=panel, darkcolor=panel, rowheight=26,
-                    borderwidth=0)
-    style.map("Treeview",
-              background=[("selected", sel_bg), ("disabled", alt)],
-              foreground=[("selected", sel_fg), ("disabled", dim)])
-    style.configure("Treeview.Heading", background=panel, foreground=dim, relief="flat",
-                    borderwidth=0, padding=(6, 5))
-    style.map("Treeview.Heading",
-              background=[("active", hover), ("pressed", pressed)],
-              foreground=[("active", text)])
-
-    style.configure("TScrollbar", background=line, troughcolor=panel, bordercolor=panel,
-                    arrowcolor=dim, relief="flat", borderwidth=0)
-    style.map("TScrollbar",
-              background=[("active", "#b9bfc9"), ("pressed", "#a6adba")],
-              arrowcolor=[("active", text)])
-
-    for name in ("TCheckbutton", "TRadiobutton"):
-        style.configure(name, background=panel, foreground=text, focuscolor=panel,
-                        indicatorbackground=alt, indicatorforeground=accent,
-                        upperbordercolor=line, lowerbordercolor=line)
-        style.map(name,
-                  background=[("active", panel)],
-                  foreground=[("disabled", dim)],
-                  indicatorbackground=[("selected", accent), ("active", hover),
-                                       ("disabled", panel)],
-                  indicatorforeground=[("selected", "#ffffff")])
-
-    style.configure("TButton", background=alt, foreground=text, bordercolor=line,
-                    focuscolor=alt, padding=(10, 5), borderwidth=0)
-    style.map("TButton",
-              background=[("active", hover), ("pressed", pressed), ("disabled", panel)],
-              foreground=[("disabled", dim)])
-    style.configure("Accent.TButton", background=UI["accent_btn"],
-                    foreground=UI["accent_fg"])
-    style.map("Accent.TButton", background=[("active", UI["accent_btn_hover"])])
-
-    style.configure("TNotebook", background=bg, borderwidth=0)
-    style.configure("TNotebook.Tab", background=panel, foreground=dim, padding=(16, 7),
-                    borderwidth=0)
-    style.map("TNotebook.Tab",
-              background=[("selected", alt), ("active", hover)],
-              foreground=[("selected", accent)])
-    style.configure("TSeparator", background=line)
-    style.configure("TScale", background=panel, troughcolor=alt)
-    return style
+    """ttk 主题统一交给 tools/editor_ui/theme.py。"""
+    return _shared_apply_theme(root, UI)
 
 
 class _NoRepaint:
@@ -523,8 +303,6 @@ class EditorApp:
     def _setup_window(self) -> None:
         self.root.title("DAEEM 单位编辑器")
         self.root.configure(bg=UI["bg"])
-        self.root.geometry("1280x820")
-        self.root.minsize(1020, 640)
         _apply_theme(self.root)
 
     def _button(self, parent, text: str, command: Callable[[], None], **kw) -> RButton:
@@ -545,71 +323,53 @@ class EditorApp:
         return RButton(parent, text=text, command=command, **kw)
 
     def _build_widgets(self) -> None:
-        # ---- 顶栏：左页签 + 右文件按钮
-        top = tk.Frame(self.root, bg=UI["bg"])
-        top.pack(side="top", fill="x")
-        tk.Label(top, text="单位编辑器", bg=UI["bg"], fg=UI["accent"],
-                 font=("Microsoft YaHei UI", 11, "bold")).pack(side="left", padx=(10, 14), pady=6)
-        self.tab_buttons: Dict[str, tk.Button] = {}
-        for key, label, _hint in PAGES:
-            btn = self._button(top, label, lambda k=key: self.set_page(k),
-                               bg=UI["panel"], fg=UI["text_dim"],
-                               activebackground=UI["panel_alt"], activeforeground=UI["accent"],
-                               font=("Microsoft YaHei UI", 10), padx=16, pady=5)
-            btn.pack(side="left", padx=2)
-            self.tab_buttons[key] = btn
+        # ---- 外壳：顶栏（品牌 + 金色下划线页签 + 右侧动作）+ 内容区 + 状态栏
+        self.shell = EditorShell(
+            self.root,
+            title="DAEEM 单位编辑器",
+            brand="单位编辑器",
+            tabs=[(key, label) for key, label, _hint in PAGES],
+            on_tab=self.set_page,
+            geometry="1280x820",
+            minsize=(1020, 640),
+            status_hint="Ctrl+S 保存 · Ctrl+Z 撤销 · F5 重新载入",
+        )
+        self.tabs = self.shell.tabs
+        self.tab_buttons = self.shell.tab_buttons
+        self.status_var = self.shell.status_var
+        self.file_label = self.shell.add_file_label()
+        self.file_buttons = {
+            "save": self.shell.add_button("save", "保存", self.do_save, primary=True),
+            "reload": self.shell.add_button("reload", "重新载入", self.do_reload),
+            "save_as": self.shell.add_button("save_as", "另存为…", self.do_save_as),
+        }
 
-        right = tk.Frame(top, bg=UI["bg"])
-        right.pack(side="right", padx=8)
-        self.file_label = tk.Label(right, text="", bg=UI["bg"], fg=UI["text_dim"],
-                                   font=("Microsoft YaHei UI", 9))
-        self.file_label.pack(side="left", padx=(0, 8))
-        self.file_buttons: Dict[str, tk.Button] = {}
-        for key, text, cmd, tip in (
-                ("save", "保存", self.do_save, "写回 data/config.json（Ctrl+S）"),
-                ("reload", "重新载入", self.do_reload, "丢掉改动、从磁盘重读（F5）"),
-                ("save_as", "另存为…", self.do_save_as, "想留一份对照时用")):
-            btn = self._button(right, text, cmd, padx=12, pady=5)
-            btn.pack(side="left", padx=3)
-            self.file_buttons[key] = btn
-        self.file_buttons["save"].configure(bg=UI["accent_btn"], fg=UI["accent_fg"],
-                                            activebackground=UI["accent_btn_hover"])
-
-        # ---- 主体：左列表 + 右侧边栏
-        body = tk.Frame(self.root, bg=UI["bg"])
-        body.pack(side="top", fill="both", expand=True)
-
+        # ---- 主体：左列表（卡片）+ 右侧边栏（卡片堆在「井」里）
+        body = self.shell.content
         left = tk.Frame(body, bg=UI["bg"])
         left.pack(side="left", fill="both", expand=True)
-        # ★★ 2026.11.3：**先摆操作栏、再摆列表**。pack 按顺序分配空间，列表先摆的话
-        #   它的「请求高度」（四栏列表）会把操作栏 / 状态栏挤成 0 高 —— 加了第 4 栏
-        #   「将领特性池」之后实测就是「左下那四颗按钮整排消失」。
-        #   现在操作栏先占住自己的 32px，溢出只会让**列表**少显示几行（列表本来就能滚）。
+        # ★ 操作栏先占住自己的高度，再让列表吃剩余空间 —— pack 是「先到先得」，
+        #   反过来摆的话列表的请求高度会把按钮排挤成 0 高（历史上真踩过）。
         self.action_bar = tk.Frame(left, bg=UI["bg"])
-        self.action_bar.pack(side="bottom", fill="x", padx=10, pady=(0, 8))
-        self.list_host = tk.Frame(left, bg=UI["bg"])
+        self.action_bar.pack(side="bottom", fill="x", pady=(10, 0))
+        self.list_host = ScrollColumn(left, bg=UI["bg"])
         self.list_host.pack(side="top", fill="both", expand=True)
 
-        # ★ 状态栏也**先摆**（同一个理由：它必须永远看得见）。
-        self.status_var = tk.StringVar(value="")
-        tk.Label(self.root, textvariable=self.status_var, anchor="w", bg=UI["panel"],
-                 fg=UI["text_dim"], padx=10, pady=4,
-                 font=("Microsoft YaHei UI", 9)).pack(side="bottom", fill="x")
-
         # ---- 侧边栏（可滚：建筑页那一堆升级数值会很长）
-        side_wrap = tk.Frame(body, bg=UI["panel"], width=420)
-        side_wrap.pack(side="right", fill="y")
+        # ★ 侧栏是「井」：底色 = bg；卡片才是 panel；滚动条换成 6px 细条。
+        side_wrap = tk.Frame(body, bg=UI["bg"], width=dpi.px(384))
+        side_wrap.pack(side="right", fill="y", padx=(GAP, 0))
         side_wrap.pack_propagate(False)
-        self.sidebar_scroll = ttk.Scrollbar(side_wrap, orient="vertical",
-                                            command=self.sidebar_yview)
-        self.sidebar_canvas = tk.Canvas(side_wrap, bg=UI["panel"], width=404,
+        self.sidebar_scroll = ThinScrollbar(side_wrap, command=self.sidebar_yview,
+                                            trough=UI["bg"], width=8)
+        self.sidebar_scroll.pack(side="right", fill="y", padx=(2, 0))
+        self.sidebar_canvas = tk.Canvas(side_wrap, bg=UI["bg"], width=dpi.px(370),
                                         highlightthickness=0, bd=0, takefocus=0,
                                         yscrollcommand=self.on_sidebar_yscroll)
-        self.sidebar_scroll.pack(side="right", fill="y")
         self.sidebar_canvas.pack(side="left", fill="both", expand=True)
-        self.sidebar = tk.Frame(self.sidebar_canvas, bg=UI["panel"], width=404)
+        self.sidebar = tk.Frame(self.sidebar_canvas, bg=UI["bg"], width=dpi.px(370))
         self._sidebar_item = self.sidebar_canvas.create_window((0, 0), window=self.sidebar,
-                                                              anchor="nw", width=404)
+                                                              anchor="nw", width=dpi.px(370))
         self.sidebar.bind("<Configure>", self._on_sidebar_configure)
         # ★ 滚动容器自己的尺寸变了（拉窗口）也要重夹一次纵偏移，见那个函数的说明
         self.sidebar_canvas.bind("<Configure>", self.on_sidebar_canvas_configure)
@@ -724,13 +484,22 @@ class EditorApp:
         self.clamp_sidebar_view()
 
     def _on_wheel(self, event):
-        """滚轮：指针在侧边栏里 → 滚侧边栏（走唯一的那个入口）；否则放行。"""
-        if not self._in_sidebar(getattr(event, "widget", None)):
+        """滚轮：指针在侧边栏 / 列表列里 → 滚那一块；否则放行。"""
+        widget = getattr(event, "widget", None)
+        if self._in_sidebar(widget):
+            delta = getattr(event, "delta", 0)
+            if delta:
+                self.sidebar_yview("scroll", -1 if delta > 0 else 1, "units")
+                return "break"
             return None
-        delta = getattr(event, "delta", 0)
-        if delta:
-            self.sidebar_yview("scroll", -1 if delta > 0 else 1, "units")
-            return "break"
+        # 表格自己有滚轮行为，别抢（只在卡片头 / 空白处滚整列）。
+        if isinstance(widget, ttk.Treeview):
+            return None
+        if self.list_host.contains(widget):
+            delta = getattr(event, "delta", 0)
+            if delta:
+                self.list_host.scroll(-1 if delta > 0 else 1)
+                return "break"
         return None
 
     def _in_sidebar(self, widget) -> bool:
@@ -834,13 +603,18 @@ class EditorApp:
         mark = " *" if self.model.dirty else ""
         self.root.title("DAEEM 单位编辑器 —— %s%s" % (self.model.path.name
                                                      if self.model.path else "未命名", mark))
+        # ★ 顶栏右侧只有这一处状态文字：干净时不额外加字，脏了才补「● 未保存」。
         self.file_label.configure(text=self._path_text() + ("　● 未保存" if self.model.dirty
-                                                            else "　已保存"),
+                                                            else ""),
                                   fg=(UI["warn"] if self.model.dirty else UI["text_dim"]))
 
     def status(self, message: str, ok: Optional[bool] = None) -> None:
         self.status_var.set(message)
-        del ok                                          # 颜色留给以后（现在统一文本色）
+        try:
+            self.shell.set_status_tone("ok" if ok is True else
+                                       "bad" if ok is False else "normal")
+        except (AttributeError, tk.TclError):
+            pass
 
     # ==================================================================
     # 页签与列表
@@ -853,9 +627,17 @@ class EditorApp:
         self.selection = None
         self._sidebar_reset_pending = True
         self.refresh_all()
+        try:
+            self.tabs.select(key, animate_indicator=False)
+        except (AttributeError, tk.TclError):
+            pass
         for k, _label, hint in PAGES:
             if k == key:
                 self.status(hint)
+        try:
+            self.shell.reveal()
+        except (AttributeError, tk.TclError):
+            pass
 
     def refresh_all(self) -> None:
         # ★★ 重建不等于「回到初始位置」：重建前拍快照、重建后恢复滚动/焦点。
@@ -872,17 +654,29 @@ class EditorApp:
                 self._pin_sidebar_top()
 
     def _rebuild_list(self) -> None:
-        for child in self.list_host.winfo_children():
+        # 滚动列里的卡片 + 直接铺在列上的「单表卡片」都要清掉（canvas / 滚动条留着）。
+        for child in self.list_host.inner.winfo_children():
             child.destroy()
+        for child in self.list_host.winfo_children():
+            if child not in (self.list_host.canvas, self.list_host.bar):
+                child.destroy()
         for child in self.action_bar.winfo_children():
             child.destroy()
-        for key, btn in self.tab_buttons.items():
-            btn.configure(fg=(UI["accent"] if key == self.page else UI["text_dim"]),
-                          bg=(UI["panel_alt"] if key == self.page else UI["panel"]))
+        # 页签状态交给下划线控件（它负责金色文字 + 指示条滑到位）
+        for _key, btn in self.tab_buttons.items():
+            btn.configure(bg=UI["bar"])
+        try:
+            self.tabs.select(self.page, animate_indicator=False)
+        except (AttributeError, tk.TclError):
+            pass
         self._suppress = True
         try:
             if self.page == "unit":
                 self._build_unit_lists()
+            elif self.page == "unit_trait":
+                self._build_unit_trait_list()
+            elif self.page == "general_trait":
+                self._build_general_trait_list()
             else:
                 self._build_building_list()
         finally:
@@ -891,34 +685,53 @@ class EditorApp:
 
     # ---- 单位页：上面兵种、下面将领 -------------------------------------
 
-    def _tree(self, parent, columns: List[Tuple[str, str, int]], height: int = 10):
-        wrap = tk.Frame(parent, bg=UI["bg"])
-        wrap.pack(fill="both", expand=True, padx=10, pady=(8, 0))
+    def _tree(self, parent, columns: List[Tuple[str, str, int]], height: int = 10,
+              title: str = "", hint: str = "", kicker: str = "", fill: bool = False):
+        """造一张「表格卡片」：卡片头（标题 + 计数/说明）+ 细线 + 表格 + 细滚动条。
+
+        ★ 返回值仍是 Treeview 本体 —— 调用方 insert / 读 selection 的代码不用改。
+        """
+        # ★ 一页只有一张表（建筑 / 特性池）时，卡片用 place 盖住整列吃满高度
+        #   （pack 不行：滚动列的 canvas 已经 expand 吃掉了全部空间，后摆的会被挤成 0）；
+        #   一页三张表（单位页）时塞进 inner，按行数钉住高度、超出就滚。
+        host = self.list_host if fill else getattr(parent, "inner", parent)
+        panel = _shared_list_card(host, title, kicker=kicker, hint=hint)
+        if fill:
+            panel.place(x=0, y=0, relwidth=1.0, relheight=1.0)
+        else:
+            panel.pack(fill="x", pady=(0, 6))
+        wrap = tk.Frame(panel.body, bg=UI["panel"])
+        wrap.pack(fill="both", expand=True, padx=12, pady=(8, 10))
         tree = ttk.Treeview(wrap, columns=[c[0] for c in columns], show="tree headings",
                             height=height, selectmode="browse")
         tree.heading("#0", text="id")
-        tree.column("#0", width=130, anchor="w", stretch=False)
+        tree.column("#0", width=dpi.px(130), anchor="w", stretch=False)
         for key, label, width in columns:
             tree.heading(key, text=label)
-            tree.column(key, width=width, anchor="e" if width <= 70 else "w", stretch=False)
-        scroll = ttk.Scrollbar(wrap, orient="vertical", command=tree.yview)
-        tree.configure(yscrollcommand=scroll.set)
+            tree.column(key, width=dpi.px(width), anchor="e" if width <= 70 else "w", stretch=False)
+        hbar = ThinScrollbar(wrap, orient="horizontal", command=tree.xview,
+                             trough=UI["panel"])
+        scroll = ThinScrollbar(wrap, command=tree.yview, trough=UI["panel"], width=8)
+        tree.configure(xscrollcommand=hbar.set, yscrollcommand=scroll.set)
+        hbar.pack(side="bottom", fill="x", pady=(6, 0))
+        scroll.pack(side="right", fill="y", padx=(6, 0))
         tree.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
         tree.bind("<<TreeviewSelect>>", self._on_list_select)
+        if not fill:
+            # 卡片高度按「行数」钉住，三张表才不会互相抢空间。
+            panel.fit_to_content()
+            panel.after_idle(panel.fit_to_content)
         return tree
 
     def _build_unit_lists(self) -> None:
-        tk.Label(self.list_host, text="兵种", bg=UI["bg"], fg=UI["accent"], anchor="w",
-                 font=("Microsoft YaHei UI", 10, "bold")).pack(fill="x", padx=10, pady=(8, 0))
-        # ★★ 2026.11.3：左栏现在有**四张列表**（兵种 / 将领 / 将领特性池 / 组合招募单），
+        # ★★ 2026.11：这一页有**三张列表**（兵种 / 将领 / 组合招募单）——
+        #   两张特性池已经搬到自己的页签，所以这里比 2026.11.3 那版少了一栏。
         #   必须保证它们 + 操作栏 + 状态栏在默认的 1280×820 窗口里都看得见
         #   （Tk 的 pack 是「先到先得」：请求高度总和超过窗口时，**后面那一块会被压成 0**）。
-        #   实测：每行约 27px、四个小标题共约 170px。当前取 7 / 3 / 3 / 2 行，
-        #   整窗请求高度约 780px < 820px。⚠️ 以后再往上加一栏，先打印一次
-        #   `root.winfo_reqheight()` 确认没超 —— 加「将领特性池」那一轮就是超了 100px，
-        #   表现是左下那四颗按钮整排消失（不是报错，很隐蔽）。
-        self.unit_tree = self._tree(self.list_host, UNIT_TREE_COLUMNS, height=7)
+        #   ⚠️ 以后再往上加一栏，先打印一次 `root.winfo_reqheight()` 确认没超 ——
+        #   加「将领特性池」那一轮就是超了 100px，表现是左下那排按钮整排消失（很隐蔽）。
+        self.unit_tree = self._tree(self.list_host, UNIT_TREE_COLUMNS, height=5,
+                                    title="兵种")
         self.unit_tree.tag_configure("builtin", foreground=UI["text"])
         for unit in self.model.units():
             cost = "%g / %g / %g" % (unit.cost_food, unit.cost_gold, unit.population_cost)
@@ -938,9 +751,6 @@ class EditorApp:
                                           fmt(unit.vision_effective), cost),
                                   tags=() if not unit.builtin else ("builtin",))
 
-        tk.Label(self.list_host, text="将领（可加；阶 / 派系归属 / 数值都在这改）",
-                 bg=UI["bg"], fg=UI["accent"], anchor="w",
-                 font=("Microsoft YaHei UI", 10, "bold")).pack(fill="x", padx=10, pady=(10, 0))
         # ★★ 2026.11.5：多了两列 ——「阶」（unit.general.tiers）与「派系」（unit.general.factions）。
         #   原来这里是「开局三位」，现在名册可以加长（＋ 新建将领…），所以列宽压了一点。
         self.general_tree = self._tree(self.list_host, [
@@ -949,7 +759,7 @@ class EditorApp:
             ("dmg", "攻击", 54), ("rng", "距离", 50), ("spd", "移速", 50),
             ("vis", "视野", 46),
             ("cost", "造价 粮/金/人口", 132), ("train", "招兵秒", 58),
-        ], height=3)
+        ], height=3, title="将领", kicker="可加；阶 / 派系归属 / 数值都在这改")
         faction_names = dict(self.model.faction_choices())
         for gen in self.model.generals():
             marked = "" if not gen.override else "（有单独数值）"
@@ -974,34 +784,17 @@ class EditorApp:
                                              #   （unit.general.recruit_sec，默认 10 秒）。
                                              fmt(gen.recruit_sec)))
 
-        # ★★ 2026.11.3：**将领特性池**——特性是全局一份（一族效果的定义），
-        #   将领只是「点名要池里的哪一条」。这一栏就是「增删将领特性」的入口。
-        tk.Label(self.list_host, text="将领特性池（哪些效果可供将领选）", bg=UI["bg"],
-                 fg=UI["accent"], anchor="w",
-                 font=("Microsoft YaHei UI", 10, "bold")).pack(fill="x", padx=10, pady=(10, 0))
-        self.trait_tree = self._tree(self.list_host, [
-            ("name", "名字", 110), ("short", "字", 40), ("effect", "效果", 330),
-        ], height=3)
-        names = dict(self.model.class_choices())
-        for trait in self.model.general_traits():
-            self.trait_tree.insert(
-                "", "end", iid="t:" + trait.id, text=trait.id,
-                values=(trait.name, trait.short_text or "—",
-                        trait.effect_summary(names)))
-
         # ★★ 2026.11.2：**组合招募单**（协防军 / 御林军）——它们不是 unit.types 里的兵种
         #   （没有血条 / 攻击这些数值），单位列表列不出来；但「一次要多少粮 / 扣多少人口」
         #   必须能改，所以单独给一栏（用户报的「找不到修改协防军招募消耗的条目」）。
         packages = self.model.recruit_packages()
         self.package_tree = None          # ★ 重建列表时先作废旧控件（没有组合单就没有这一栏）
         if packages:
-            tk.Label(self.list_host, text="组合招募单（一次出多个兵）", bg=UI["bg"],
-                     fg=UI["accent"], anchor="w",
-                     font=("Microsoft YaHei UI", 10, "bold")).pack(fill="x", padx=10, pady=(10, 0))
             self.package_tree = self._tree(self.list_host, [
                 ("name", "名字", 110), ("count", "出几个", 52),
                 ("cost", "造价 粮/金/人口", 150), ("src", "来源", 96),
-            ], height=2)
+            ], height=2, title="组合招募单",
+                kicker="一次出多个兵（不是兵种本身，别去兵种表里找）")
             for pkg in packages:
                 self.package_tree.insert(
                     "", "end", iid="p:" + pkg.kind, text=pkg.kind,
@@ -1011,10 +804,7 @@ class EditorApp:
                             pkg.owner.replace("clan:", "")))
 
         # ---- 操作按钮
-        # ★★ 2026.11.3：多了「将领特性」这一档 —— 四个按钮**同时**摆在这里，
-        #   因为操作栏只在刷新列表时重建，而「点左边的行」只重建侧边栏
-        #   （按当前选中项动态换按钮会显示成上一步的那一组）。两个删除按钮各自
-        #   检查选中项的类型，点错了只会说一句「先在左边点一个兵种 / 特性」。
+        # ★★ 2026.11：特性池**搬到自己的页签**了，这里的按钮只剩兵种 / 将领。
         bar = self.action_bar
         self._button(bar, "＋ 新建兵种…", self.do_new_unit, padx=12, pady=5).pack(side="left")
         self._button(bar, "删除兵种", self.do_delete_unit, padx=12, pady=5,
@@ -1023,11 +813,59 @@ class EditorApp:
         # ★★ 2026.11.5：**加将领**（需求：「单位编辑器中需要有加将领的按钮」）。
         #   只追加在名册末尾（开局将领 #0 固定第 10 档），不进区划招募九宫格。
         self._button(bar, "＋ 新建将领…", self.do_new_general, padx=12, pady=5).pack(side="left")
-        self._button(bar, "＋ 新建特性…", self.do_new_trait, padx=12, pady=5).pack(side="left", padx=6)
-        self._button(bar, "删除特性", self.do_delete_trait, padx=12, pady=5,
-                     bg=UI["danger_btn"], fg=UI["danger_fg"],
-                     activebackground=UI["danger_btn_hover"]).pack(side="left")
         tk.Label(bar, text="（将领只加在末尾；开局将领 #0 固定第 10 档）",
+                 bg=UI["bg"], fg=UI["text_dim"],
+                 font=("Microsoft YaHei UI", 8)).pack(side="left", padx=6)
+
+    # ---- 单位特性页（池）-------------------------------------------------
+
+    def _build_unit_trait_list(self) -> None:
+        """★★ 2026.11：**单位特性池**单独一页 —— 增删 / 改定义都在这里。"""
+        self.unit_trait_tree = self._tree(self.list_host, [
+            ("name", "名字", 110), ("short", "字", 40), ("effect", "效果", 330),
+        ], height=16, title="单位特性", fill=True,
+           hint="兵种可挂的标签。只作用于单位（将领按所属兵种继承）；"
+                "将领自己的额外特性在「将领特性」页。")
+        names = dict(self.model.class_choices())
+        for trait in self.model.unit_traits():
+            self.unit_trait_tree.insert(
+                "", "end", iid="ut:" + trait.id, text=trait.id,
+                values=(trait.name, trait.short_text or "—",
+                        trait.effect_summary(names)))
+
+        bar = self.action_bar
+        self._button(bar, "＋ 新建单位特性…", self.do_new_unit_trait,
+                     padx=12, pady=5).pack(side="left")
+        self._button(bar, "删除单位特性", self.do_delete_unit_trait, padx=12, pady=5,
+                     bg=UI["danger_btn"], fg=UI["danger_fg"],
+                     activebackground=UI["danger_btn_hover"]).pack(side="left", padx=6)
+        tk.Label(bar, text="（一条特性只做一件事；删掉时正在挂它的兵种会自动摘掉）",
+                 bg=UI["bg"], fg=UI["text_dim"],
+                 font=("Microsoft YaHei UI", 8)).pack(side="left", padx=6)
+
+    # ---- 将领特性页（池）-------------------------------------------------
+
+    def _build_general_trait_list(self) -> None:
+        """★★ 2026.11：**将领特性池**单独一页 —— 与单位特性分开。"""
+        self.general_trait_tree = self._tree(self.list_host, [
+            ("name", "名字", 110), ("short", "字", 40), ("effect", "效果", 330),
+        ], height=16, title="将领特性", fill=True,
+           hint="将领可挂的光环标签。只作用于将领本人 + 旗下所有单位；"
+                "单位自己的特性在「单位特性」页。")
+        names = dict(self.model.class_choices())
+        for trait in self.model.general_traits():
+            self.general_trait_tree.insert(
+                "", "end", iid="gt:" + trait.id, text=trait.id,
+                values=(trait.name, trait.short_text or "—",
+                        trait.effect_summary(names)))
+
+        bar = self.action_bar
+        self._button(bar, "＋ 新建将领特性…", self.do_new_general_trait,
+                     padx=12, pady=5).pack(side="left")
+        self._button(bar, "删除将领特性", self.do_delete_general_trait, padx=12, pady=5,
+                     bg=UI["danger_btn"], fg=UI["danger_fg"],
+                     activebackground=UI["danger_btn_hover"]).pack(side="left", padx=6)
+        tk.Label(bar, text="（删掉时正在用它的将领自动改成「无」）",
                  bg=UI["bg"], fg=UI["text_dim"],
                  font=("Microsoft YaHei UI", 8)).pack(side="left", padx=6)
 
@@ -1040,9 +878,8 @@ class EditorApp:
     # ---- 建筑页 --------------------------------------------------------
 
     def _build_building_list(self) -> None:
-        tk.Label(self.list_host, text="建筑", bg=UI["bg"], fg=UI["accent"], anchor="w",
-                 font=("Microsoft YaHei UI", 10, "bold")).pack(fill="x", padx=10, pady=(8, 0))
-        self.building_tree = self._tree(self.list_host, BUILDING_TREE_COLUMNS, height=14)
+        self.building_tree = self._tree(self.list_host, BUILDING_TREE_COLUMNS, height=14,
+                                        title="建筑", fill=True)
         for b in self.model.buildings():
             atk = "—"
             if b.attackable:
@@ -1065,7 +902,7 @@ class EditorApp:
 
     # ★★ 2026.11：原来这里还有「科技页」（`_build_tech_list` / `_build_tech_form` /
     #   `_commit_max_active`）—— 已整块删掉，用户口径：「把单位编辑器中的科技编辑界面去掉」。
-    #   科技现在只在 `tools/buff_editor` 里编辑（两张表 + 每派槽位 + 全局上限 / 每阶金耗）。
+    #   科技现在只在 `tools/tech_editor` 里编辑（两张表 + 每派槽位 + 全局上限 / 每阶金耗）。
 
     # ---- 选中 ----------------------------------------------------------
 
@@ -1080,8 +917,10 @@ class EditorApp:
             tree, iid = getattr(self, "package_tree", None), "p:" + str(key)
         elif kind == "general":
             tree, iid = getattr(self, "general_tree", None), "g:%d" % key
-        elif kind == "trait":
-            tree, iid = getattr(self, "trait_tree", None), "t:" + str(key)
+        elif kind == "unit_trait":
+            tree, iid = getattr(self, "unit_trait_tree", None), "ut:" + str(key)
+        elif kind == "general_trait":
+            tree, iid = getattr(self, "general_trait_tree", None), "gt:" + str(key)
         elif kind == "building":
             tree, iid = getattr(self, "building_tree", None), "b:" + str(key)
         if tree is None or iid is None:
@@ -1114,9 +953,12 @@ class EditorApp:
             new_selection = ("package", iid[2:])
         elif iid.startswith("g:"):
             new_selection = ("general", int(iid[2:]))
-        elif iid.startswith("t:"):
-            # ★★ 2026.11.3：将领特性池里的一条（iid 是 `t:<id>`）。
-            new_selection = ("trait", iid[2:])
+        elif iid.startswith("ut:"):
+            # ★★ 2026.11：单位特性池里的一条（iid 是 `ut:<id>`）。
+            new_selection = ("unit_trait", iid[3:])
+        elif iid.startswith("gt:"):
+            # ★★ 2026.11：将领特性池里的一条（iid 是 `gt:<id>`）。
+            new_selection = ("general_trait", iid[3:])
         elif iid.startswith("b:"):
             new_selection = ("building", iid[2:])
         else:
@@ -1138,20 +980,9 @@ class EditorApp:
     # ==================================================================
 
     def _section(self, title: str, hint: str = "") -> tk.Frame:
-        head = tk.Frame(self.sidebar, bg=UI["panel"])
-        head.pack(fill="x", padx=10, pady=(12, 2))
-        tk.Label(head, text=title, bg=UI["panel"], fg=UI["accent"], anchor="w",
-                 font=("Microsoft YaHei UI", 10, "bold")).pack(side="left")
-        if hint:
-            tk.Label(head, text="　" + hint, bg=UI["panel"], fg=UI["text_dim"], anchor="w",
-                     font=("Microsoft YaHei UI", 8)).pack(side="left")
-        frame = tk.Frame(self.sidebar, bg=UI["panel"])
-        frame.pack(fill="x", padx=10)
-        # ★ 记下这一节叫什么。用途之一是**定位控件**：同一页里「血量倍率」会出现三次
-        #   （1/2/3 级各一行），只按标签找永远找到第一级那一行 ——
-        #   无头测试要的是「升到 2 级那一节里的血量倍率」（见 test_app.py 的 E_in）。
-        frame.section_title = title
-        return frame
+        # ★ 2026.11：分区改成圆角卡片（共享 `make_card`）；返回值仍是内容 frame。
+        #   `make_card` 会在卡片与内容 frame 上都挂 `section_title`，既有测试照旧能定位。
+        return _shared_make_card(self.sidebar, title, hint=hint, wrap=316)
 
     def _rebuild_sidebar(self, reset_scroll: Optional[bool] = None) -> None:
         if reset_scroll is None:
@@ -1163,16 +994,29 @@ class EditorApp:
                 child.destroy()
             if self.page == "unit":
                 if not self.selection:
-                    self._empty_hint("左边点一行：兵种 / 组合招募单 / 将领 / 将领特性。")
+                    self._empty_hint("左边点一行：兵种 / 组合招募单 / 将领。\n"
+                                     "特性本身在「单位特性」/「将领特性」两页里改。")
                 elif self.selection[0] == "unit":
                     self._build_unit_form(self.model.unit(self.selection[1]))
                 elif self.selection[0] == "package":
                     self._build_package_form(self.model.recruit_package(self.selection[1]))
-                elif self.selection[0] == "trait":
-                    # ★★ 2026.11.3：特性池里的一条（名字 / 短名 / 说明 / 效果 / 加删大类）
-                    self._build_trait_form(self.model.general_trait(self.selection[1]))
-                else:
+                elif self.selection[0] == "general":
                     self._build_general_form(self.model.general(int(self.selection[1])))
+                else:
+                    self.selection = None
+                    self._empty_hint("这一页只放兵种 / 组合招募单 / 将领。"
+                                     "特性在「单位特性」/「将领特性」页里改。")
+            elif self.page == "unit_trait":
+                if not self.selection or self.selection[0] != "unit_trait":
+                    self._empty_hint("左边点一条单位特性（或下面「＋ 新建单位特性」）。")
+                else:
+                    self._build_unit_trait_form(self.model.unit_trait(self.selection[1]))
+            elif self.page == "general_trait":
+                if not self.selection or self.selection[0] != "general_trait":
+                    self._empty_hint("左边点一条将领特性（或下面「＋ 新建将领特性」）。")
+                else:
+                    self._build_general_trait_form(
+                        self.model.general_trait(self.selection[1]))
             else:
                 if not self.selection:
                     self._empty_hint("左边点一个建筑；没有想要的就在下面「＋ 新建建筑」。")
@@ -1188,8 +1032,10 @@ class EditorApp:
             self._suppress = False
 
     def _empty_hint(self, text: str) -> None:
-        tk.Label(self.sidebar, text=text, bg=UI["panel"], fg=UI["text_dim"], anchor="w",
-                 justify="left", wraplength=370).pack(fill="x", padx=10, pady=12)
+        body = _shared_make_card(self.sidebar, "从这里开始")
+        tk.Label(body, text=text, bg=UI["panel"], fg=UI["text_dim"], anchor="w",
+                 justify="left", wraplength=dpi.px(312),
+                 font=("Microsoft YaHei UI", 9)).pack(fill="x", pady=2)
 
     # ---- 通用行构造 -----------------------------------------------------
 
@@ -1260,7 +1106,7 @@ class EditorApp:
 
     def _hint(self, parent, text: str) -> None:
         tk.Label(parent, text="　　" + text, bg=UI["panel"], fg=UI["text_dim"], anchor="w",
-                 justify="left", wraplength=380,
+                 justify="left", wraplength=dpi.px(380),
                  font=("Microsoft YaHei UI", 8)).pack(fill="x")
 
     def _bool_row(self, parent, field: Field, value: bool,
@@ -1268,7 +1114,7 @@ class EditorApp:
         row = tk.Frame(parent, bg=UI["panel"])
         row.pack(fill="x", pady=2)
         var = tk.IntVar(value=1 if value else 0)
-        chk = ttk.Checkbutton(row, text=field.label, variable=var,
+        chk = CheckBox(row, text=field.label, variable=var,
                               command=lambda: self._mutate(
                                   "%s → %s" % (field.label, "是" if var.get() else "否"),
                                   lambda: commit(bool(var.get()))))
@@ -1416,6 +1262,66 @@ class EditorApp:
         self._button(add_row, "＋ 加", do_add, padx=8, pady=1,
                      font=("Microsoft YaHei UI", 8)).pack(side="left")
 
+    # ---- 单位特性标签（一个兵种可以挂多条）-----------------------------
+
+    def _unit_trait_block(self, parent, unit: Unit) -> None:
+        """★★ 2026.11：兵种挂的**单位特性标签** —— 一行一条 + 末尾「＋ 加一条」。
+
+        每条显示 名字 + 效果摘要（详细定义在「单位特性」页改）；
+        「移除」只把这个标签从这位兵种身上摘掉，不影响别的兵种 / 特性本身。
+        """
+        names = dict(self.model.class_choices())
+        # ★ 用 `unit_traits_at()` 而不是 `unit.trait_ids`：手改配置写了一个池里
+        #   不存在的 id 时，前者会把坏 id 过滤掉（游戏侧也是这么读的），
+        #   否则这里 `unit_trait(tid)` 会抛错、整个兵种表单打不开。
+        assigned = self.model.unit_traits_at(unit.id)
+        for tid in assigned:
+            trait = self.model.unit_trait(tid)
+            row = tk.Frame(parent, bg=UI["panel"])
+            row.pack(fill="x", pady=2)
+            tk.Label(row, text=trait.name, bg=UI["panel"], fg=UI["text"], width=10,
+                     anchor="w").pack(side="left")
+            tk.Label(row, text=trait.effect_summary(names), bg=UI["panel"],
+                     fg=UI["text_dim"], anchor="w", font=("Microsoft YaHei UI", 8)
+                     ).pack(side="left", fill="x", expand=True)
+
+            def do_remove(t=tid, u=unit):
+                self._do(lambda: self.model.remove_unit_trait_from(u.id, t),
+                         "把「%s」从「%s」身上摘掉" % (t, u.id))
+
+            self._button(row, "移除", do_remove, padx=6, pady=1,
+                         font=("Microsoft YaHei UI", 8)).pack(side="left")
+        if not assigned:
+            self._hint(parent, "没有特性（可以挂多条，每条只做一件事）。")
+
+        picks = [(cid, label) for cid, label in self.model.unit_trait_choices()
+                 if cid not in assigned]
+        add_row = tk.Frame(parent, bg=UI["panel"])
+        add_row.pack(fill="x", pady=2)
+        tk.Label(add_row, text="加一条特性", bg=UI["panel"], fg=UI["text"], width=10,
+                 anchor="w").pack(side="left")
+        if not picks:
+            empty_pool = not self.model.unit_trait_choices()
+            tk.Label(add_row,
+                     text=("（池里还没有单位特性 —— 去「单位特性」页新建一条）"
+                           if empty_pool else "（池里的单位特性都挂上了）"),
+                     bg=UI["panel"], fg=UI["text_dim"], anchor="w",
+                     font=("Microsoft YaHei UI", 8)).pack(side="left")
+            return
+        var = tk.StringVar(value=picks[0][1])
+        combo = ttk.Combobox(add_row, textvariable=var, state="readonly",
+                             values=[label for _c, label in picks])
+        combo.pack(side="left", fill="x", expand=True, padx=(4, 4))
+        by_label = {label: cid for cid, label in picks}
+
+        def do_add():
+            tid = by_label.get(var.get(), picks[0][0])
+            self._do(lambda: self.model.add_unit_trait_to(unit.id, tid),
+                     "给「%s」挂上「%s」" % (unit.id, tid))
+
+        self._button(add_row, "＋ 加特性", do_add, padx=8, pady=1,
+                     font=("Microsoft YaHei UI", 8)).pack(side="left")
+
     # ---- 将领特性列表（一位将领可以带多条）-----------------------------
 
     def _general_trait_block(self, parent, gen: General) -> None:
@@ -1451,8 +1357,11 @@ class EditorApp:
         tk.Label(add_row, text="加一条特性", bg=UI["panel"], fg=UI["text"], width=10,
                  anchor="w").pack(side="left")
         if not picks:
-            tk.Label(add_row, text="（池里的特性都带上了）", bg=UI["panel"],
-                     fg=UI["text_dim"], anchor="w",
+            empty_pool = not self.model.general_trait_choices()
+            tk.Label(add_row,
+                     text=("（池里还没有将领特性 —— 去「将领特性」页新建一条）"
+                           if empty_pool else "（池里的特性都带上了）"),
+                     bg=UI["panel"], fg=UI["text_dim"], anchor="w",
                      font=("Microsoft YaHei UI", 8)).pack(side="left")
             return
         var = tk.StringVar(value=picks[0][1])
@@ -1518,33 +1427,18 @@ class EditorApp:
                                 u.id, "charge." + f.key, v),
                             allow_empty=True)
 
-        # ---- 兵种特性（`unit.types.<id>.traits`，2026.11.3）
-        # ★ 写法与「冲锋」同一条：空的项 = **删掉那个键**（游戏侧读回 0），
-        #   第一次编辑时才把 traits 那一块建出来 —— 没特性的兵种文件保持原样。
+        # ---- 特性标签（`unit.types.<id>.trait_ids`，2026.11）
+        # ★ 兵种只记「挂哪几条」；定义（名字 / 效果 / 增删）在「单位特性」页。
         unit_names = dict(self.model.class_choices())
-        tsec = self._section("特性", "unit.types.<id>.traits（0.25 = 25%）")
-        self._trait_attack_block(
-            tsec,
-            unit.attack_rows(unit_names),
-            commit=lambda cls, v, u=unit: self.model.set_unit_trait_attack(u.id, cls, v),
-            delete=lambda cls, u=unit, n=unit_names: self._do(
-                lambda: self.model.set_unit_trait_attack(u.id, cls, None),
-                "删掉「%s」对%s的伤害加成" % (u.id, n.get(cls, cls))),
-            add_choices=[(cid, label) for cid, label in self.model.class_choices()
-                         if cid not in unit.attack_vs_class],
-            add_commit=lambda cls, u=unit, n=unit_names: self._do(
-                lambda: self.model.add_unit_trait_attack(u.id, cls),
-                "给「%s」加一条对%s的加成" % (u.id, n.get(cls, cls))))
-        for field in UNIT_TRAIT_FIELDS:
-            self._entry_row(tsec, field, unit.trait_number(field.key),
-                            lambda v, u=unit, f=field: self.model.set_unit_trait(
-                                u.id, f.key, v),
-                            allow_empty=True)
-        self._bool_row(tsec, UNIT_TRAIT_KNOCKBACK,
-                       unit.trait_flag(UNIT_TRAIT_KNOCKBACK.key),
-                       lambda v, u=unit: self.model.set_unit_trait(
-                           u.id, UNIT_TRAIT_KNOCKBACK.key, v))
-        self._hint(tsec, "游戏侧读这几个键（_normalize_traits）；将领按所属兵种继承。")
+        tsec = self._section("特性（可多条）", "unit.types.<id>.trait_ids")
+        self._unit_trait_block(tsec, unit)
+        self._hint(tsec, "一条特性只做一件事；标签本身在「单位特性」页定义。"
+                         "将领按所属兵种继承这些特性。")
+        if unit.has_legacy_traits():
+            self._hint(tsec, "⚠ 这个兵种还写着老式内嵌 traits（%s）：游戏会把它一起合并，"
+                             "但本工具不再编辑它 —— 想统一就去「单位特性」页建标签，"
+                             "再把文件里那个 traits 键删掉。"
+                       % unit.legacy_trait_summary(unit_names))
 
         # ---- 造价与招募（recruit.list / 派系的 clan.list[].recruit[]）
         # ★★ 2026.11.2：派系兵种（王朝 dy_* / 帝国 dg_*）的条目在**派系表**里，
@@ -1561,11 +1455,11 @@ class EditorApp:
                                     "请改「%s」那一单（同一张表里）。"
                                     % (unit.id, unit.spawn_label, unit.spawn_label),
                          bg=UI["panel"], fg=UI["text_dim"], anchor="w",
-                         justify="left", wraplength=380).pack(fill="x")
+                         justify="left", wraplength=dpi.px(380)).pack(fill="x")
             else:
                 tk.Label(rsec, text="「%s」不在任何招募表里（它出现在地图上，但不是造出来的）。"
                                     % unit.id, bg=UI["panel"], fg=UI["text_dim"], anchor="w",
-                         justify="left", wraplength=380).pack(fill="x")
+                         justify="left", wraplength=dpi.px(380)).pack(fill="x")
                 self._button(rsec, "把它加进招募表（照默认值）",
                              lambda u=unit: self._do(lambda: self.model.add_recruit_entry(u.id),
                                                      "已把 %s 加进招募表" % u.id),
@@ -1576,12 +1470,12 @@ class EditorApp:
                                 lambda v, u=unit, f=field: self.model.set_unit(u.id, f.key, v))
             tk.Label(rsec, text="　提示：改「名称」会连命令卡标题一起改（两处不一致看着像 bug）。",
                      bg=UI["panel"], fg=UI["text_dim"], anchor="w", justify="left",
-                     wraplength=380, font=("Microsoft YaHei UI", 8)).pack(fill="x")
+                     wraplength=dpi.px(380), font=("Microsoft YaHei UI", 8)).pack(fill="x")
             # ★★ 2026.11.2：读条时间不再属于兵种 —— 它是**招它的将领**的属性。
             tk.Label(rsec, text="　读条时间由「招它的将领」决定（将领页 →「招兵读条」，默认 10 秒），"
                                 "与队列长短 / 兵种无关。",
                      bg=UI["panel"], fg=UI["text_dim"], anchor="w", justify="left",
-                     wraplength=380, font=("Microsoft YaHei UI", 8)).pack(fill="x")
+                     wraplength=dpi.px(380), font=("Microsoft YaHei UI", 8)).pack(fill="x")
 
         # ---- 持久消耗（`unit.types.<id>.upkeep_food` + 大类默认，2026.11.4）
         # ★ 用户报的：「编辑器里没有暴露持久消耗」。维护费 = 每个存活单位每秒吃的粮
@@ -1662,7 +1556,7 @@ class EditorApp:
         chosen = list(gen.factions)
         for cid, cname in self.model.faction_choices():
             iv = tk.IntVar(value=1 if cid in chosen else 0)
-            chk = ttk.Checkbutton(
+            chk = CheckBox(
                 frow, text=cname, variable=iv,
                 command=lambda c=cid, v=iv, g=gen: self._mutate(
                     "将领 %s 的派系「%s」→ %s" % (var_num, c, "勾上" if v.get() else "取消"),
@@ -1799,13 +1693,68 @@ class EditorApp:
         csec = self._section("组成", "整包生成这些单位")
         tk.Label(csec, text=pkg.member_text or "（这一单没有 spawn 列表）",
                  bg=UI["panel"], fg=UI["text"], anchor="w", justify="left",
-                 wraplength=380).pack(fill="x")
+                 wraplength=dpi.px(380)).pack(fill="x")
         self._hint(csec, "成员自己的血量 / 攻击 / 素材在「兵种」列表里改；"
                          "这里只改「这一单」的名字、说明与整包造价。")
 
-    # ---- 将领特性表单（特性池里的一条）----------------------------------
+    # ---- 单位特性表单（单位特性池里的一条）------------------------------
 
-    def _build_trait_form(self, trait: GeneralTrait) -> None:
+    def _build_unit_trait_form(self, trait: UnitTrait) -> None:
+        """★★ 2026.11：单位特性池里一条的定义（名字 / 短名 / 说明 / 效果）。
+
+        这里改的是**定义**；「哪个兵种挂它」在「单位」页的兵种表单里选。
+        """
+        head = self._section("单位特性　%s" % trait.id, "unit.unit_traits")
+        tk.Label(head, text=trait.id + "　（id 是 config 的键，不能改；起错了就删掉重建）",
+                 bg=UI["panel"], fg=UI["text_dim"], anchor="w",
+                 font=("Microsoft YaHei UI", 9)).pack(fill="x")
+
+        sec = self._section("文案")
+        for field in UNIT_TRAIT_TEXT_FIELDS:
+            self._entry_row(sec, field, trait.field(field.key),
+                            lambda v, t=trait, f=field: self.model.set_unit_trait_field(
+                                t.id, f.key, v),
+                            allow_empty=(field.key != "name"))
+
+        names = dict(self.model.class_choices())
+        esec = self._section("效果", "unit.unit_traits.<id>（0.25 = 25%）")
+        self._trait_attack_block(
+            esec,
+            trait.attack_rows(names),
+            commit=lambda cls, v, t=trait: self.model.set_unit_trait_attack(t.id, cls, v),
+            delete=lambda cls, t=trait: self._do(
+                lambda: self.model.set_unit_trait_attack(t.id, cls, None),
+                "删掉「%s」对%s的加成" % (t.id, names.get(cls, cls))),
+            add_choices=[(cid, label) for cid, label in self.model.class_choices()
+                         if cid not in trait.attack_vs_class],
+            add_commit=lambda cls, t=trait: self._do(
+                lambda: self.model.add_unit_trait_attack(t.id, cls),
+                "给「%s」加一条对%s的加成" % (t.id, names.get(cls, cls))))
+        for field in UNIT_TRAIT_FIELDS:
+            self._entry_row(esec, field, trait.effect_number(field.key),
+                            lambda v, t=trait, f=field: self.model.set_unit_trait_field(
+                                t.id, f.key, v),
+                            allow_empty=True)
+        # ★ 稳定是**开关**，不是数值（写 true / 删键）。
+        self._bool_row(esec, UNIT_TRAIT_KNOCKBACK,
+                       trait.knockback_immune,
+                       lambda v, t=trait: self.model.set_unit_trait_field(
+                           t.id, UNIT_TRAIT_KNOCKBACK.key, v))
+        self._hint(esec, "一条特性只写**一个**效果键（与将领特性同一条口径）；"
+                         "空 = 没有那一项（键会被删掉），减伤夹在 0~1。")
+        self._hint(esec, "改完立刻对「挂了这条特性」的兵种生效（「单位」页 → 兵种 → 特性）。")
+
+        dsec = self._section("删除")
+        self._button(dsec, "删掉这条单位特性", self.do_delete_unit_trait, padx=8, pady=4,
+                     bg=UI["danger_btn"], fg=UI["danger_fg"],
+                     activebackground=UI["danger_btn_hover"]).pack(fill="x", pady=2)
+        tk.Label(dsec, text="　正在挂它的兵种会被自动摘掉（不会留下指向空的 id）。",
+                 bg=UI["panel"], fg=UI["text_dim"], anchor="w",
+                 font=("Microsoft YaHei UI", 8)).pack(fill="x")
+
+    # ---- 将领特性表单（将领特性池里的一条）------------------------------
+
+    def _build_general_trait_form(self, trait: GeneralTrait) -> None:
         """★★ 2026.11.3：池里一条将领特性的表单。
 
         这里改的是**定义**（名字 / 短名 / 说明 / 效果）；「哪位将领用它」在将领表单里选。
@@ -1853,7 +1802,7 @@ class EditorApp:
         self._hint(esec, "改完立刻对「选了这条特性」的将领生效（左边「将领」里选）。")
 
         dsec = self._section("删除")
-        self._button(dsec, "删掉这条将领特性", self.do_delete_trait, padx=8, pady=4,
+        self._button(dsec, "删掉这条将领特性", self.do_delete_general_trait, padx=8, pady=4,
                      bg=UI["danger_btn"], fg=UI["danger_fg"],
                      activebackground=UI["danger_btn_hover"]).pack(fill="x", pady=2)
         tk.Label(dsec, text="　正在用它的将领会被改成「无」（不会留下指向空的 id）。",
@@ -1905,13 +1854,13 @@ class EditorApp:
             tk.Label(lsec, text="木墙 / 哨塔 / 石墙 / 警戒塔没有升级机制。"
                                 "只有大本营保留 upgrade.levels.base。",
                      bg=UI["panel"], fg=UI["text_dim"], anchor="w", justify="left",
-                     wraplength=380).pack(fill="x")
+                     wraplength=dpi.px(380)).pack(fill="x")
             return
         if not b.levels:
             lsec = self._section("升级", "还没有升级表")
             tk.Label(lsec, text="这个建筑没有 upgrade.levels 表：游戏里不能升级。",
                      bg=UI["panel"], fg=UI["text_dim"], anchor="w", justify="left",
-                     wraplength=380).pack(fill="x")
+                     wraplength=dpi.px(380)).pack(fill="x")
             self._button(lsec, "给它加一张 3 级升级表（照默认值）",
                          lambda bb=b: self._do(
                              lambda: self.model.doc.set(["upgrade", "levels", bb.id],
@@ -1954,7 +1903,7 @@ class EditorApp:
                                                       fmt(b.hp_max * mult)))
 
     # ★★ 2026.11：科技表单（`_build_tech_form`）已删 —— 科技只在
-    #   `tools/buff_editor` 里编辑。见 PAGES 上面那条说明。
+    #   `tools/tech_editor` 里编辑。见 PAGES 上面那条说明。
 
     # ==================================================================
     # 改动 / 撤销 / 保存
@@ -2015,6 +1964,10 @@ class EditorApp:
             return
         self.status("✓ 已写回 %s" % target)
         self.refresh_all()
+        try:
+            self.shell.toast("已写回 %s" % Path(target).name)
+        except (AttributeError, tk.TclError):
+            pass
 
     def do_save_as(self) -> None:
         initial = str(self.model.path) if self.model.path else "config.json"
@@ -2100,7 +2053,40 @@ class EditorApp:
             self._sidebar_reset_pending = True
             self.refresh_all()
 
-    def do_new_trait(self) -> None:
+    def do_new_unit_trait(self) -> None:
+        """★★ 2026.11：新建一条**单位特性**（照模板复制：连效果与排版一起抄）。"""
+        templates = [(t.id, "%s（%s）" % (t.name, t.id)) for t in self.model.unit_traits()]
+        if not templates:
+            # ★ 池被删空时也要能建第一条，否则「把特性全删了」会把这个功能锁死。
+            templates = [("", "（从零开始：只有名字）")]
+        values = _ask_new_entry(self.root, "新建单位特性", "特性 id（英文小写）", templates)
+        if values is None:
+            return
+        new_id, name, template = values
+        if not self._mutate("新建单位特性 %s（照 %s 复制）" % (new_id, template),
+                            lambda: self.model.add_unit_trait(new_id, name, template)):
+            return
+        if self.model.doc.has(["unit", "unit_traits", new_id]):
+            self.selection = ("unit_trait", new_id)
+            self._sidebar_reset_pending = True
+            self.refresh_all()
+
+    def do_delete_unit_trait(self) -> None:
+        if not self.selection or self.selection[0] != "unit_trait":
+            self.status("先在左边点一个单位特性")
+            return
+        tid = self.selection[1]
+        if not messagebox.askyesno(
+                "删除单位特性",
+                "删掉「%s」？正在挂它的兵种会被自动摘掉。" % tid):
+            return
+        if self._mutate("删除单位特性 %s" % tid,
+                        lambda: self.model.remove_unit_trait(tid)):
+            self.selection = None
+            self._sidebar_reset_pending = True
+            self.refresh_all()
+
+    def do_new_general_trait(self) -> None:
         """★ 2026.11.3：新建一条**将领特性**（照模板复制：连效果与排版一起抄）。"""
         templates = [(t.id, "%s（%s）" % (t.name, t.id)) for t in self.model.general_traits()]
         if not templates:
@@ -2110,15 +2096,16 @@ class EditorApp:
         if values is None:
             return
         new_id, name, template = values
-        self._mutate("新建将领特性 %s（照 %s 复制）" % (new_id, template),
-                     lambda: self.model.add_general_trait(new_id, name, template))
+        if not self._mutate("新建将领特性 %s（照 %s 复制）" % (new_id, template),
+                            lambda: self.model.add_general_trait(new_id, name, template)):
+            return
         if self.model.doc.has(["unit", "general_traits", new_id]):
-            self.selection = ("trait", new_id)
+            self.selection = ("general_trait", new_id)
             self._sidebar_reset_pending = True
             self.refresh_all()
 
-    def do_delete_trait(self) -> None:
-        if not self.selection or self.selection[0] != "trait":
+    def do_delete_general_trait(self) -> None:
+        if not self.selection or self.selection[0] != "general_trait":
             self.status("先在左边点一个将领特性")
             return
         tid = self.selection[1]
@@ -2332,6 +2319,8 @@ def run(config_path: Path, project_dir: Optional[Path] = None) -> int:
         messagebox.showerror("打不开配置", str(exc))
         root.destroy()
         return 2
+    # ★ 声明 DPI 感知要在 tk.Tk() 之前：150% 缩放下文字才不会被系统位图拉糊。
+    dpi.enable_high_dpi()
     root = tk.Tk()
     EditorApp(root, model, config_path, project_dir)
     root.mainloop()

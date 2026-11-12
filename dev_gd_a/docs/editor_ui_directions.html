@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>DAEEM 编辑器 UI 方向参考</title>
+<style>
+  :root{
+    --page:#0b0f14;
+    --page-text:#e7ecf2;
+    --muted:#8b97a6;
+    --card:#111821;
+    --card-line:#24303d;
+    --radius:14px;
+    --font:"Segoe UI","Microsoft YaHei UI","PingFang SC",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;padding:34px 38px 44px;background:
+      radial-gradient(1200px 600px at 12% -10%, #1a2a3d 0%, transparent 55%),
+      radial-gradient(900px 500px at 95% 0%, #2a1f10 0%, transparent 50%),
+      var(--page);
+    color:var(--page-text);font-family:var(--font);
+  }
+  h1{font-size:22px;font-weight:650;letter-spacing:.2px;margin:0 0 6px}
+  .sub{color:var(--muted);font-size:13px;line-height:1.7;margin:0 0 26px;max-width:980px}
+  .grid{display:grid;grid-template-columns:repeat(3,minmax(360px,1fr));gap:22px}
+  .col{min-width:0}
+  .col-head{display:flex;align-items:baseline;gap:9px;margin:0 0 10px}
+  .tag{font-size:11px;font-weight:700;letter-spacing:.08em;color:#0b0f14;background:#f2b544;border-radius:6px;padding:3px 7px}
+  .col h2{font-size:15px;margin:0;font-weight:650}
+  .col p{font-size:12px;line-height:1.6;color:var(--muted);margin:0 0 10px;min-height:58px}
+  .refs{font-size:11px;line-height:1.8;color:#9fb0c2;margin:10px 0 0}
+  .refs b{color:#dbe6f2;font-weight:600}
+
+  /* ---------- shared mini app ---------- */
+  .app{
+    border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;
+    background:var(--bg);box-shadow:0 18px 50px rgba(0,0,0,.35);
+    font-size:12px;color:var(--text);height:486px;display:flex;flex-direction:column;
+    transform:translateZ(0);
+  }
+  .top{display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--line);background:var(--top)}
+  .brand{font-size:13px;font-weight:700;color:var(--accent);letter-spacing:.2px}
+  .tabs{display:flex;gap:4px;margin-left:6px}
+  .tab{padding:5px 10px;border-radius:6px;color:var(--dim);font-size:11.5px}
+  .tab.on{background:var(--tab-on);color:var(--accent);font-weight:600}
+  .spacer{flex:1}
+  .btn{padding:5px 10px;border-radius:6px;border:1px solid var(--line);background:var(--btn);color:var(--text);font-size:11.5px}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-fg);font-weight:600}
+  .body{display:flex;flex:1;min-height:0}
+  .canvas{flex:1;position:relative;background:var(--canvas);overflow:hidden}
+  .canvas:after{
+    content:"";position:absolute;inset:0;
+    background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);
+    background-size:22px 22px;opacity:.65;
+  }
+  .tiles{position:absolute;inset:24px 20px 44px 20px;display:grid;grid-template-columns:repeat(9,1fr);grid-template-rows:repeat(6,1fr);gap:2px;z-index:1}
+  .tile{border-radius:2px;background:var(--tile);opacity:.9}
+  .tile.water{background:var(--water)}
+  .tile.forest{background:var(--forest)}
+  .tile.zone{outline:1.5px solid var(--zone);outline-offset:-1px;background:var(--zone-fill)}
+  .tile.center{background:var(--center);border-radius:50%;transform:scale(.62)}
+  .canvas-label{position:absolute;left:12px;bottom:10px;z-index:2;font-size:10.5px;color:var(--dim);background:var(--chip);padding:3px 7px;border-radius:5px;border:1px solid var(--line)}
+  .side{width:188px;border-left:1px solid var(--line);background:var(--side);padding:10px 11px;overflow:hidden}
+  .side h3{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--accent);margin:0 0 8px;font-weight:700}
+  .field{margin:0 0 8px}
+  .field label{display:block;font-size:10.5px;color:var(--dim);margin:0 0 3px}
+  .input{height:26px;border:1px solid var(--line);border-radius:5px;background:var(--input);display:flex;align-items:center;padding:0 8px;color:var(--text);font-size:11px}
+  .input.sel:after{content:"⌄";margin-left:auto;color:var(--dim)}
+  .row{display:flex;gap:6px}
+  .row .input{flex:1}
+  .chips{display:flex;gap:5px;flex-wrap:wrap;margin:2px 0 10px}
+  .chip{padding:3px 7px;border-radius:999px;font-size:10px;border:1px solid var(--line);color:var(--dim);background:var(--chip)}
+  .chip.on{background:var(--accent);border-color:var(--accent);color:var(--accent-fg);font-weight:600}
+  .legend{display:flex;gap:6px;align-items:center;font-size:10.5px;color:var(--dim);margin:4px 0}
+  .sw{width:9px;height:9px;border-radius:2px;background:var(--accent)}
+  .status{height:24px;border-top:1px solid var(--line);display:flex;align-items:center;padding:0 12px;font-size:10.5px;color:var(--dim);background:var(--top)}
+
+  /* ---------- A · dark game tool ---------- */
+  .a{
+    --bg:#0e141b;--top:#0e141b;--side:#111923;--canvas:#0a0f15;--line:#24303d;
+    --text:#e7ecf2;--dim:#8b97a6;--accent:#f2b544;--accent-fg:#17120a;
+    --tab-on:#1b2632;--btn:#18222d;--input:#0d141c;--chip:#16202b;--grid:#1b2835;
+    --tile:#1d2a36;--water:#16324a;--forest:#1d3326;--zone:#f2b544;--zone-fill:rgba(242,181,68,.12);
+    --center:#d24bc4;
+  }
+  /* ---------- B · light notion/figma ---------- */
+  .b{
+    --bg:#f7f7f5;--top:#fbfbfa;--side:#ffffff;--canvas:#eef0f3;--line:#e3e3df;
+    --text:#37352f;--dim:#787774;--accent:#2f7fe0;--accent-fg:#ffffff;
+    --tab-on:#eef4ff;--btn:#f2f2ef;--input:#ffffff;--chip:#f2f2ef;--grid:#dfe3e8;
+    --tile:#e7ebef;--water:#cfe4f5;--forest:#d9e7d2;--zone:#2f7fe0;--zone-fill:rgba(47,127,224,.10);
+    --center:#c026a3;
+    box-shadow:0 16px 40px rgba(30,40,55,.14);
+  }
+  /* ---------- C · neutral shadcn ---------- */
+  .c{
+    --bg:#ffffff;--top:#fafafa;--side:#ffffff;--canvas:#f4f4f5;--line:#e4e4e7;
+    --text:#18181b;--dim:#71717a;--accent:#2563eb;--accent-fg:#ffffff;
+    --tab-on:#eff6ff;--btn:#f4f4f5;--input:#ffffff;--chip:#f4f4f5;--grid:#e4e4e7;
+    --tile:#e9e9ec;--water:#dbeafe;--forest:#dcfce7;--zone:#2563eb;--zone-fill:rgba(37,99,235,.08);
+    --center:#c026a3;
+    box-shadow:0 16px 40px rgba(20,24,32,.12);
+  }
+</style>
+</head>
+<body>
+  <h1>DAEEM 编辑器 · 三个 Web UI 方向</h1>
+  <p class="sub">
+    共同骨架不变（顶栏 + 页签 + 画布 + 右侧属性栏 + 状态栏），只换「字体层级 / 间距 / 卡片与描边 / 控件质感」。
+    每张图都是按现有编辑器信息密度缩小的 mockup，不是最终像素稿。
+  </p>
+
+  <div class="grid">
+    <!-- A -->
+    <div class="col">
+      <div class="col-head"><span class="tag">A</span><h2>暗色游戏工具</h2></div>
+      <p>和游戏内 60/30/10 配色统一：深蓝黑底、蓝灰面板、琥珀金强调。紧凑、低对比、长时间盯着不累，最像「游戏自带工具」。</p>
+      <div class="app a">
+        <div class="top">
+          <span class="brand">地图编辑器</span>
+          <div class="tabs"><span class="tab on">地块</span><span class="tab">区块</span></div>
+          <span class="spacer"></span>
+          <span class="btn">可见地图 · 边关</span>
+          <span class="btn primary">导出 JSON</span>
+        </div>
+        <div class="body">
+          <div class="canvas">
+            <div class="tiles">
+              <div class="tile forest"></div><div class="tile"></div><div class="tile"></div><div class="tile zone"></div><div class="tile zone"></div><div class="tile"></div><div class="tile water"></div><div class="tile water"></div><div class="tile"></div>
+              <div class="tile"></div><div class="tile forest"></div><div class="tile"></div><div class="tile zone"></div><div class="tile center"></div><div class="tile zone"></div><div class="tile"></div><div class="tile water"></div><div class="tile"></div>
+              <div class="tile"></div><div class="tile"></div><div class="tile forest"></div><div class="tile zone"></div><div class="tile zone"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div>
+              <div class="tile water"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile forest"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div>
+              <div class="tile water"></div><div class="tile water"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile forest"></div><div class="tile"></div><div class="tile"></div>
+              <div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div>
+            </div>
+            <span class="canvas-label">左键建地块 · Shift+拖拽框选 · 滚轮缩放</span>
+          </div>
+          <div class="side">
+            <h3>区划 · 边关 c1</h3>
+            <div class="field"><label>区划种类</label><div class="chips"><span class="chip on">粮食</span><span class="chip">黄金</span><span class="chip">人口</span></div></div>
+            <div class="field"><label>粮食产能 / 秒</label><div class="input">1.50</div></div>
+            <div class="field"><label>黄金产能 / 秒</label><div class="input">0.00</div></div>
+            <div class="field"><label>人口上限</label><div class="input">12</div></div>
+            <div class="legend"><span class="sw"></span> 当前归属：p1</div>
+            <div class="legend"><span class="sw" style="background:#d24bc4"></span> 区划中心</div>
+          </div>
+        </div>
+        <div class="status">就绪 · 27×22 · 地块 4 / 区块 2</div>
+      </div>
+      <p class="refs"><b>参考：</b>Linear、Vercel Dashboard、Raycast、shadcn/ui Dark</p>
+    </div>
+
+    <!-- B -->
+    <div class="col">
+      <div class="col-head"><span class="tag" style="background:#2f7fe0;color:#fff">B</span><h2>浅色 Notion / Figma</h2></div>
+      <p>保留现在的浅色底，但把「白卡片 + 灰底 + 发丝线」做得更松弛：更大圆角、更明显的层级、更柔和的阴影。适合长时间填表。</p>
+      <div class="app b">
+        <div class="top">
+          <span class="brand">战役编辑器</span>
+          <div class="tabs"><span class="tab on">战役</span><span class="tab">关卡</span><span class="tab">阵营</span><span class="tab">摆放</span></div>
+          <span class="spacer"></span>
+          <span class="btn">重新载入</span>
+          <span class="btn primary">保存</span>
+        </div>
+        <div class="body">
+          <div class="canvas">
+            <div class="tiles">
+              <div class="tile forest"></div><div class="tile"></div><div class="tile"></div><div class="tile zone"></div><div class="tile zone"></div><div class="tile"></div><div class="tile water"></div><div class="tile water"></div><div class="tile"></div>
+              <div class="tile"></div><div class="tile forest"></div><div class="tile"></div><div class="tile zone"></div><div class="tile center"></div><div class="tile zone"></div><div class="tile"></div><div class="tile water"></div><div class="tile"></div>
+              <div class="tile"></div><div class="tile"></div><div class="tile forest"></div><div class="tile zone"></div><div class="tile zone"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div>
+              <div class="tile water"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile forest"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div>
+              <div class="tile water"></div><div class="tile water"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile forest"></div><div class="tile"></div><div class="tile"></div>
+              <div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div>
+            </div>
+            <span class="canvas-label">点击放置 · 右键删除 · 中键 / 空格拖动画布</span>
+          </div>
+          <div class="side">
+            <h3>关卡 · main_test</h3>
+            <div class="field"><label>关卡名称</label><div class="input">渡口</div></div>
+            <div class="field"><label>地图</label><div class="input sel">between_moutains</div></div>
+            <div class="field"><label>模式</label><div class="chips"><span class="chip on">单人</span><span class="chip">合作</span></div></div>
+            <div class="field"><label>目标区划</label><div class="input sel">中场 · c1</div></div>
+            <div class="legend"><span class="sw"></span> 可玩阵营：p1 / p2</div>
+            <div class="legend"><span class="sw" style="background:#1f9d55"></span> 校验通过</div>
+          </div>
+        </div>
+        <div class="status">已保存 · demo / levels / main_test.json</div>
+      </div>
+      <p class="refs"><b>参考：</b>Notion、Figma、Framer、Craft</p>
+    </div>
+
+    <!-- C -->
+    <div class="col">
+      <div class="col-head"><span class="tag" style="background:#2563eb;color:#fff">C</span><h2>中性 shadcn/ui</h2></div>
+      <p>最「标准 Web 后台」：1px 冷灰描边、6px 圆角、清晰的状态标签与数据行。信息密度最高，适合单位 / 科技这种大量字段的编辑器。</p>
+      <div class="app c">
+        <div class="top">
+          <span class="brand">单位编辑器</span>
+          <div class="tabs"><span class="tab on">单位</span><span class="tab">单位特性</span><span class="tab">将领特性</span><span class="tab">建筑</span></div>
+          <span class="spacer"></span>
+          <span class="btn">导入</span>
+          <span class="btn primary">保存</span>
+        </div>
+        <div class="body">
+          <div class="canvas">
+            <div class="tiles">
+              <div class="tile forest"></div><div class="tile"></div><div class="tile"></div><div class="tile zone"></div><div class="tile zone"></div><div class="tile"></div><div class="tile water"></div><div class="tile water"></div><div class="tile"></div>
+              <div class="tile"></div><div class="tile forest"></div><div class="tile"></div><div class="tile zone"></div><div class="tile center"></div><div class="tile zone"></div><div class="tile"></div><div class="tile water"></div><div class="tile"></div>
+              <div class="tile"></div><div class="tile"></div><div class="tile forest"></div><div class="tile zone"></div><div class="tile zone"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div>
+              <div class="tile water"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile forest"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div>
+              <div class="tile water"></div><div class="tile water"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile forest"></div><div class="tile"></div><div class="tile"></div>
+              <div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div><div class="tile"></div>
+            </div>
+            <span class="canvas-label">左栏选条目 · 右栏改字段 · Enter 生效</span>
+          </div>
+          <div class="side">
+            <h3>长枪兵 · spearman</h3>
+            <div class="field"><label>名称</label><div class="input">长枪兵</div></div>
+            <div class="row"><div class="field" style="flex:1"><label>血量</label><div class="input">180</div></div><div class="field" style="flex:1"><label>护甲</label><div class="input">2</div></div></div>
+            <div class="row"><div class="field" style="flex:1"><label>伤害</label><div class="input">11</div></div><div class="field" style="flex:1"><label>攻速</label><div class="input">1.0s</div></div></div>
+            <div class="field"><label>特性标签</label><div class="chips"><span class="chip on">骑兵特攻</span><span class="chip">稳定</span></div></div>
+            <div class="legend"><span class="sw"></span> 地图上的字：枪</div>
+          </div>
+        </div>
+        <div class="status">config.json · 已载入 · 未修改</div>
+      </div>
+      <p class="refs"><b>参考：</b>shadcn/ui Dashboard、Radix Themes、Tailwind UI Application Shell</p>
+    </div>
+  </div>
+</body>
+</html>

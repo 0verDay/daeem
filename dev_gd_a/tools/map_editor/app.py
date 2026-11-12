@@ -47,6 +47,23 @@ if str(_TOOLS_DIR) not in sys.path:
 from editor_catalog import add_map as catalog_add_map
 from editor_catalog import map_ids as catalog_map_ids
 
+# ★ 2026.11 UI 改造：四个编辑器共用的暗色主题 / 卡片分区 / 圆角控件。
+#   `editor_ui` 放在 tools/ 下（与 editor_catalog 同级），由上面那行 sys.path 找到。
+from editor_ui import CheckBox
+from editor_ui import dpi
+from editor_ui import default_preset as _default_tokens
+from editor_ui import FONT_BODY, FONT_BRAND, FONT_SMALL
+from editor_ui import GAP, RADIUS_L
+from editor_ui import EditorShell
+from editor_ui import PillButton
+from editor_ui import RoundedPanel
+from editor_ui import ThinScrollbar
+from editor_ui import apply_theme as _shared_apply_theme
+from editor_ui import is_dark as _shared_is_dark
+from editor_ui import make_card as _shared_make_card
+from editor_ui import set_ui as _set_editor_ui
+from editor_ui import shade as _shared_shade
+
 from . import mapfile
 from .model import (
     DEFAULT_COLORS,
@@ -68,32 +85,13 @@ from .model import (
     zone_kind_table,
 )
 
-#: 编辑器自己的界面配色（与游戏里的画面无关）。与另两个编辑器同一套。
+#: 编辑器自己的界面配色（与游戏里的画面无关）。
 #:
-#: ★ 「浅色（白）+ 极简」：`bg` = 页面底 / 顶栏，`panel` = 卡片 / 侧栏面（白），
-#:   `panel_alt` = 输入框 / 按钮 / 列表行，`line` = 发丝分隔线；
-#:   `canvas_bg` 是画布那一片的底色（比页面底再灰一档，让地图跳出来）。
-UI = {
-    "bg": "#f3f4f6",
-    "panel": "#ffffff",
-    "panel_alt": "#eef0f3",
-    "line": "#d9dce1",
-    "text": "#1f2329",
-    "text_dim": "#6b7280",
-    "accent": "#2f7fe0",
-    "accent_btn": "#2f7fe0",
-    "accent_btn_hover": "#4a91e6",
-    "accent_fg": "#ffffff",
-    "danger_btn": "#d9534f",
-    "danger_btn_hover": "#e26864",
-    "danger_fg": "#ffffff",
-    "hover": "#e6e9ee",
-    "pressed": "#d9dde3",
-    "canvas_bg": "#e9ebee",
-    "empty": "#f1f2f4",
-    "empty_line": "#c3c8d0",
-    "center": "#c026a3",        # 区划中心标记（品红：与地形、区块底色都拉得开）
-}
+#: ★ 2026.11：改成**暗色游戏工具**（A 方向）——深蓝黑底 + 蓝灰面板 + 琥珀金强调，
+#:   与游戏内 60/30/10 配色统一。三套 preset 都在 `tools/editor_ui/tokens.py`，
+#:   想切浅色 / 中性风只改这里一行。
+UI = dict(_default_tokens())
+_set_editor_ui(UI)
 
 UNDO_LIMIT = 200
 
@@ -103,6 +101,9 @@ CELL_PX = 36.0
 
 #: 一屏虚线格超过这个数量就不画虚线格了（缩得太远时）：一是没必要，二是 tkinter 会卡。
 EMPTY_CELL_LIMIT = 6000
+
+#: 重绘时在视野外**多画几格**：平移靠 move 图元，露出的边就靠这几格顶着
+OVERSCAN = 3
 #: 虚线格小于这么小（像素）就干脆不画格子 —— 缩到很远时格子会变成一片糊，
 #: 而且数量爆炸。实测（1280×800 窗口）：
 #:   格子 14px → 一屏 1824 格、光画格子就要 8.6 ms；格子 11px → 约 2900 格。
@@ -194,234 +195,15 @@ def _rounded_rect(canvas, x1: float, y1: float, x2: float, y2: float, r: float, 
     return canvas.create_polygon(pts, smooth=True, splinesteps=12, **kw)
 
 
-class RButton(tk.Button):
-    """**圆角按钮**：本体还是 `tk.Button`，上面盖一层 Canvas 把方角画成圆角。
-
-    ★ 为什么这么做：`invoke` / `cget` / `configure` / `pack` 全是**原生**语义，
-      调用方与测试一行都不用改；盖层只负责画面，本体负责量尺寸与「点击 → invoke()」。
-      四角填成父容器底色，于是看起来就是一枚圆角按钮。
-    """
-
-    RADIUS = 8.0
-
-    def __init__(self, master=None, **kw):
-        kw.setdefault("relief", "flat")
-        kw.setdefault("bd", 0)
-        kw.setdefault("highlightthickness", 0)
-        kw.setdefault("takefocus", 0)
-        kw.setdefault("activebackground", UI["panel_alt"])
-        kw.setdefault("activeforeground", UI["text"])
-        super().__init__(master, **kw)
-        try:
-            surround = str(self.master.cget("bg"))
-        except (tk.TclError, AttributeError):
-            surround = ""
-        self._surround = surround or UI["panel"]
-        self._hover = False
-        self._active = False
-        self._overlay = tk.Canvas(self, highlightthickness=0, bd=0, takefocus=0,
-                                  bg=self._surround)
-        self._overlay.place(x=0, y=0, relwidth=1, relheight=1)
-        for seq, fn in (("<Enter>", self._on_enter), ("<Leave>", self._on_leave),
-                        ("<ButtonPress-1>", self._on_press),
-                        ("<ButtonRelease-1>", self._on_release)):
-            self._overlay.bind(seq, fn)
-        self.bind("<Configure>", lambda _e: self._redraw())
-        self._redraw()
-
-    def configure(self, cnf=None, **kw):
-        if isinstance(cnf, str):
-            return super().configure(cnf)
-        result = super().configure(cnf, **kw)
-        self._redraw()
-        return result
-
-    config = configure
-
-    def _disabled(self) -> bool:
-        try:
-            return str(self.cget("state")) == "disabled"
-        except tk.TclError:
-            return False
-
-    def _on_enter(self, _e=None):
-        self._hover = True
-        self._redraw()
-
-    def _on_leave(self, _e=None):
-        self._hover = False
-        self._active = False
-        self._redraw()
-
-    def _on_press(self, _e=None):
-        if not self._disabled():
-            self._active = True
-            self._redraw()
-
-    def _on_release(self, _e=None):
-        fire = self._active and not self._disabled()
-        self._active = False
-        self._hover = True
-        self._redraw()
-        if fire:
-            try:
-                self.invoke()
-            except tk.TclError:
-                pass
-
-    def _fill(self) -> str:
-        base = str(self.cget("bg"))
-        if self._disabled():
-            return base
-        if self._active:
-            return _shade(base, -0.12)
-        if self._hover:
-            return _shade(base, -0.06)
-        return base
-
-    def _text_color(self) -> str:
-        if self._disabled():
-            return UI["text_dim"]
-        return str(self.cget("fg"))
-
-    def _redraw(self):
-        overlay = getattr(self, "_overlay", None)
-        if overlay is None:
-            return
-        try:
-            overlay.delete("all")
-            w = max(1, self.winfo_width())
-            h = max(1, self.winfo_height())
-            if w <= 1 or h <= 1:
-                return
-            fill = self._fill()
-            _rounded_rect(overlay, 0, 0, w, h, min(self.RADIUS, h / 2.0),
-                          fill=fill, outline=fill)
-            text = str(self.cget("text"))
-            if not text:
-                return
-            try:
-                padx = max(0, int(self.cget("padx")))
-            except (tk.TclError, ValueError):
-                padx = 6
-            anchor = str(self.cget("anchor"))
-            font = self.cget("font")
-            color = self._text_color()
-            if anchor in ("w", "e"):
-                x = padx + 2 if anchor == "w" else w - padx - 2
-                overlay.create_text(x, h / 2, text=text, fill=color, font=font,
-                                    anchor=anchor)
-            else:
-                overlay.create_text(w / 2, h / 2, text=text, fill=color, font=font)
-        except tk.TclError:
-            pass
+RButton = PillButton
 
 
 def _apply_theme(root: tk.Tk) -> ttk.Style:
-    """把 clam 主题里**所有会漏出浅色**的地方都压回深色（下拉 readonly / 勾选框 / 悬停…）。
+    """ttk 主题统一交给 tools/editor_ui/theme.py（暗色 / 浅色 / 中性三套 preset）。
 
-    ★ 这是「下拉框选中后变全白」「勾选框一块白」「划过变白」的根因修法：clam 默认在
-      `readonly` / `active` / `disabled` 这些状态下会落到浅灰，光 `configure` 压不住状态色。
+    ★ 本文件只保留这个薄封装：既有调用点与测试仍然认 app._apply_theme。
     """
-    style = ttk.Style(root)
-    try:
-        style.theme_use("clam")
-    except tk.TclError:
-        pass
-    panel, alt, bg = UI["panel"], UI["panel_alt"], UI["bg"]
-    line, text, dim, accent = UI["line"], UI["text"], UI["text_dim"], UI["accent"]
-    hover, pressed = UI["hover"], UI["pressed"]
-    sel_bg, sel_fg = "#cfe3ff", text
-
-    style.configure(".", background=panel, foreground=text, fieldbackground=alt,
-                    bordercolor=line, lightcolor=panel, darkcolor=panel, focuscolor=accent)
-    style.configure("TFrame", background=panel)
-    style.configure("Bar.TFrame", background=bg)
-    style.configure("TLabel", background=panel, foreground=text)
-    style.configure("Bar.TLabel", background=bg, foreground=text)
-    style.configure("Dim.TLabel", background=panel, foreground=dim)
-    style.configure("Title.TLabel", background=panel, foreground=accent,
-                    font=("Microsoft YaHei UI", 10, "bold"))
-    style.configure("Hint.TLabel", background=panel, foreground=dim,
-                    font=("Microsoft YaHei UI", 8))
-
-    style.configure("TEntry", fieldbackground=alt, foreground=text, insertcolor=text,
-                    bordercolor=line, lightcolor=alt, darkcolor=alt, padding=(6, 4))
-    style.map("TEntry",
-              fieldbackground=[("readonly", alt), ("disabled", panel)],
-              foreground=[("disabled", dim)],
-              selectbackground=[("!disabled", sel_bg)],
-              selectforeground=[("!disabled", sel_fg)],
-              bordercolor=[("focus", accent)], lightcolor=[("focus", accent)],
-              darkcolor=[("focus", accent)])
-
-    style.configure("TCombobox", fieldbackground=alt, background=alt, foreground=text,
-                    arrowcolor=dim, bordercolor=line, lightcolor=alt, darkcolor=alt,
-                    padding=(6, 4))
-    style.map("TCombobox",
-              fieldbackground=[("readonly", alt), ("disabled", panel)],
-              background=[("readonly", alt), ("active", alt), ("disabled", panel)],
-              foreground=[("readonly", text), ("disabled", dim)],
-              arrowcolor=[("readonly", dim), ("active", text)],
-              selectbackground=[("readonly", alt), ("!disabled", sel_bg)],
-              selectforeground=[("readonly", text), ("!disabled", sel_fg)],
-              bordercolor=[("focus", accent)], lightcolor=[("focus", accent)],
-              darkcolor=[("focus", accent)])
-    for pattern, value in (("*TCombobox*Listbox.background", alt),
-                           ("*TCombobox*Listbox.foreground", text),
-                           ("*TCombobox*Listbox.selectBackground", sel_bg),
-                           ("*TCombobox*Listbox.selectForeground", sel_fg),
-                           ("*TCombobox*Listbox.borderWidth", "0"),
-                           ("*TCombobox*Listbox.highlightThickness", "0")):
-        root.option_add(pattern, value, "interactive")
-
-    style.configure("Treeview", background=alt, fieldbackground=alt, foreground=text,
-                    bordercolor=line, lightcolor=panel, darkcolor=panel, rowheight=26,
-                    borderwidth=0)
-    style.map("Treeview",
-              background=[("selected", sel_bg), ("disabled", alt)],
-              foreground=[("selected", sel_fg), ("disabled", dim)])
-    style.configure("Treeview.Heading", background=panel, foreground=dim, relief="flat",
-                    borderwidth=0, padding=(6, 5))
-    style.map("Treeview.Heading",
-              background=[("active", hover), ("pressed", pressed)],
-              foreground=[("active", text)])
-
-    style.configure("TScrollbar", background=line, troughcolor=panel, bordercolor=panel,
-                    arrowcolor=dim, relief="flat", borderwidth=0)
-    style.map("TScrollbar",
-              background=[("active", "#b9bfc9"), ("pressed", "#a6adba")],
-              arrowcolor=[("active", text)])
-
-    for name in ("TCheckbutton", "TRadiobutton"):
-        style.configure(name, background=panel, foreground=text, focuscolor=panel,
-                        indicatorbackground=alt, indicatorforeground=accent,
-                        upperbordercolor=line, lowerbordercolor=line)
-        style.map(name,
-                  background=[("active", panel)],
-                  foreground=[("disabled", dim)],
-                  indicatorbackground=[("selected", accent), ("active", hover),
-                                       ("disabled", panel)],
-                  indicatorforeground=[("selected", "#ffffff")])
-
-    style.configure("TButton", background=alt, foreground=text, bordercolor=line,
-                    focuscolor=alt, padding=(10, 5), borderwidth=0)
-    style.map("TButton",
-              background=[("active", hover), ("pressed", pressed), ("disabled", panel)],
-              foreground=[("disabled", dim)])
-    style.configure("Accent.TButton", background=UI["accent_btn"],
-                    foreground=UI["accent_fg"])
-    style.map("Accent.TButton", background=[("active", UI["accent_btn_hover"])])
-
-    style.configure("TNotebook", background=bg, borderwidth=0)
-    style.configure("TNotebook.Tab", background=panel, foreground=dim, padding=(16, 7),
-                    borderwidth=0)
-    style.map("TNotebook.Tab",
-              background=[("selected", alt), ("active", hover)],
-              foreground=[("selected", accent)])
-    style.configure("TSeparator", background=line)
-    style.configure("TScale", background=panel, troughcolor=alt)
-    return style
+    return _shared_apply_theme(root, UI)
 
 
 class _NoRepaint:
@@ -556,6 +338,8 @@ class EditorApp:
         self.max_zoom = 8.0
 
         self._pan_anchor: Optional[Tuple[float, float]] = None
+        self._pan_shift: float = 0.0     # 平移累计位移（够 2 格才补一次真重绘）
+        self._bg_item = None             # 画布底色矩形（平移时重新铺满）
         self._hover_job: Optional[str] = None
         self._suppress_zone_event = False
         #: 正在重建侧边栏（防止「重建 → 选区事件 → 又重建」的死循环，见 refresh_sidebar）
@@ -634,75 +418,52 @@ class EditorApp:
         _apply_theme(self.root)
 
     def _build_widgets(self) -> None:
-        # ---- 顶部页签栏
-        top = tk.Frame(self.root, bg=UI["bg"])
-        top.pack(side="top", fill="x")
-        tk.Label(top, text="地图编辑器", bg=UI["bg"], fg=UI["accent"],
-                 font=("Microsoft YaHei UI", 11, "bold")).pack(side="left", padx=(10, 14), pady=6)
+        # ---- 外壳：品牌 + 页签（地块 / 区块）+ 右侧「可见地图 / 导出 / 新建」
+        self.shell = EditorShell(
+            self.root,
+            title="DAEEM 地图编辑器",
+            brand="地图编辑器",
+            tabs=[("tile", "地块"), ("zone", "区块")],
+            on_tab=self.set_page,
+            geometry="1280x820",
+            minsize=(900, 600),
+            status_hint="左键建地块 · Shift+拖拽框选 · 空格拖动画面",
+        )
+        self.tabs = self.shell.tabs
+        self.tab_buttons = self.shell.tab_buttons
+        self.status_var = self.shell.status_var
+        self.file_label = self.shell.add_file_label()
 
-        self.tab_buttons: Dict[str, tk.Button] = {}
-        for key, label, hint in (("tile", "地块", "左键建地块 / 看属性，Shift+拖拽框选批量改"),
-                                 ("zone", "区块", "选中区块后左键点地块来划分")):
-            # ⚠️ 一律走 _button()：它保证 takefocus=0 且点完把键盘焦点交还画布 ——
-            #    否则按钮会拿住焦点，而**空格在 tk 里是「激活焦点按钮」**，
-            #    于是「按住空格拖画面」会变成「反复点最后按过的那个页签」
-            #    （用户看到的症状：点页签有时像没反应、页面自己乱跳）。
-            btn = self._button(top, label, lambda k=key: self.set_page(k),
-                               padx=16, pady=5,
-                               bg=UI["panel"], fg=UI["text_dim"],
-                               activebackground=UI["panel_alt"], activeforeground=UI["accent"],
-                               font=("Microsoft YaHei UI", 10))
-            btn.pack(side="left", padx=2)
-            self.tab_buttons[key] = btn
-
-        # 地图文件三件套（导入 / 导出）。放最右上角，并配一个分组标题 ——
+        right = self.shell.right
+        # 地图文件三件套（选择 / 导出 / 新建）。放最右上角，并配一个分组标题 ——
         # 需求原话是「在编辑器里加导入导出按钮」，所以这里要一眼看得见、找得到。
-        right = tk.Frame(top, bg=UI["bg"])
-        right.pack(side="right", padx=8)
-        # 分组标题 + 三颗按钮，整体当一组排在右上角
-        tk.Label(right, text="可见地图", bg=UI["bg"], fg=UI["text_dim"],
-                 font=("Microsoft YaHei UI", 9)).pack(side="left", padx=(0, 4))
-        self.visible_map_picker = tk.Menubutton(
-            right, text="选择地图…", relief="flat",
-            bg=UI["panel_alt"], fg=UI["text"],
-            activebackground=UI["hover"], activeforeground=UI["accent"],
-            padx=10, pady=4, font=("Microsoft YaHei UI", 9))
-        self.visible_map_menu = tk.Menu(self.visible_map_picker, tearoff=0)
-        self.visible_map_picker.configure(menu=self.visible_map_menu)
-        self.visible_map_picker.pack(side="left", padx=(0, 12))
+        tk.Label(right, text="可见地图", bg=UI["bar"], fg=UI["text_dim"],
+                 font=FONT_SMALL).pack(side="left", padx=(0, 6), pady=(0, 9))
+        self.visible_map_menu = tk.Menu(self.root, tearoff=0)
+        self.visible_map_picker = PillButton(
+            right, text="选择地图 ▾", command=self._post_map_menu,
+            bg=UI["surface2"], fg=UI["text"], padx=10, pady=5, font=FONT_SMALL)
+        self.visible_map_picker.pack(side="left", padx=(0, 12), pady=(0, 8))
         self._refresh_visible_map_menu()
-        tk.Label(right, text="地图文件", bg=UI["bg"], fg=UI["text_dim"],
-                 font=("Microsoft YaHei UI", 9)).pack(side="left", padx=(0, 6))
-        self.file_buttons: Dict[str, tk.Button] = {}
-        for key, text, cmd, tip in (
-                ("export", "导出 JSON", self.do_export, "把当前地图写成 JSON（Ctrl+S）"),
-                ("new", "新建地图…", self.do_new, "重开一张空白画布（Ctrl+N）")):
-            btn = self._button(right, text, cmd, padx=12, pady=5,
-                               bg=UI["panel_alt"], fg=UI["text"],
-                               activebackground=UI["hover"], activeforeground=UI["accent"],
-                               font=("Microsoft YaHei UI", 9))
-            btn.pack(side="left", padx=3)
-            self.file_buttons[key] = btn
-        # 「导出」用强调色：多数时候打开编辑器就是为了导出一张图
-        self.file_buttons["export"].configure(bg=UI["accent_btn"], fg=UI["accent_fg"],
-                                              activebackground=UI["accent_btn_hover"])
 
-        # ---- 主体：画布 + 侧边栏
-        body = tk.Frame(self.root, bg=UI["bg"])
-        body.pack(side="top", fill="both", expand=True)
+        tk.Label(right, text="地图文件", bg=UI["bar"], fg=UI["text_dim"],
+                 font=FONT_SMALL).pack(side="left", padx=(0, 6), pady=(0, 9))
+        self.file_buttons = {}
+        self.file_buttons["new"] = self.shell.add_button(
+            "new", "新建地图…", self.do_new)
+        self.file_buttons["export"] = self.shell.add_button(
+            "export", "导出 JSON", self.do_export, primary=True)
 
-        canvas_wrap = tk.Frame(body, bg=UI["canvas_bg"])
-        canvas_wrap.pack(side="left", fill="both", expand=True)
+        # ---- 主体：画布（圆角面板）+ 侧边栏
+        body = self.shell.content
+        canvas_panel = RoundedPanel(body, radius=RADIUS_L, pad=8,
+                                    fill=UI["canvas_bg"], outline=UI["line"],
+                                    bg=UI["bg"])
+        canvas_panel.pack(side="left", fill="both", expand=True)
 
-        self.canvas = tk.Canvas(canvas_wrap, bg=UI["canvas_bg"], highlightthickness=0,
-                                bd=0)
-        self.canvas.pack(side="left", fill="both", expand=True)
-
-        self.status_var = tk.StringVar(value="")
-        status = tk.Label(self.root, textvariable=self.status_var, anchor="w",
-                          bg=UI["panel"], fg=UI["text_dim"], padx=10, pady=4,
-                          font=("Microsoft YaHei UI", 9))
-        status.pack(side="bottom", fill="x")
+        self.canvas = tk.Canvas(canvas_panel.body, bg=UI["canvas_bg"],
+                                highlightthickness=0, bd=0)
+        self.canvas.pack(fill="both", expand=True)
 
         self.zone_page_var = tk.StringVar(value="区块页：先选一个区块")
 
@@ -712,27 +473,27 @@ class EditorApp:
         #   区划中心 / **区划种类** / 产能 / 人口上限 / 图例（14 行）/ 整张地图——
         #   在 1280×800 下内容高 **1491px**，而侧边栏只有 **754px**：
         #   不可滚的话「人口上限」与「图例」整块够不着。
-        #   （加「区划种类」那一栏之前就已经溢出，只是溢出得少一点。）
         # ★ 滚轮路由见 `on_any_wheel()`：指针在侧边栏里 → 滚侧边栏；在画布上 → 照旧缩放。
-        side_wrap = tk.Frame(body, bg=UI["panel"], width=336)
-        side_wrap.pack(side="right", fill="y")
+        # ★ 侧栏是「井」：底色 = bg；卡片才是 panel。两者不同，圆角才看得出来。
+        side_wrap = tk.Frame(body, bg=UI["bg"], width=dpi.px(384))
+        side_wrap.pack(side="right", fill="y", padx=(GAP, 0))
         side_wrap.pack_propagate(False)
-        self.sidebar_scroll = ttk.Scrollbar(side_wrap, orient="vertical")
-        self.sidebar_canvas = tk.Canvas(side_wrap, bg=UI["panel"], width=320,
+        self.sidebar_scroll = ThinScrollbar(side_wrap, command=None,
+                                            trough=UI["bg"], width=8)
+        self.sidebar_canvas = tk.Canvas(side_wrap, bg=UI["bg"], width=dpi.px(370),
                                         highlightthickness=0, bd=0, takefocus=0,
                                         yscrollcommand=self.sidebar_scroll.set)
         self.sidebar_scroll.configure(command=self.sidebar_canvas.yview)
-        self.sidebar_scroll.pack(side="right", fill="y")
+        self.sidebar_scroll.pack(side="right", fill="y", padx=(2, 0))
         self.sidebar_canvas.pack(side="left", fill="both", expand=True)
-        self.sidebar = tk.Frame(self.sidebar_canvas, bg=UI["panel"], width=320)
+        self.sidebar = tk.Frame(self.sidebar_canvas, bg=UI["bg"], width=dpi.px(370))
         self._sidebar_item = self.sidebar_canvas.create_window(
-            (0, 0), window=self.sidebar, anchor="nw", width=320)
+            (0, 0), window=self.sidebar, anchor="nw", width=dpi.px(370))
         self.sidebar.bind("<Configure>", self.on_sidebar_content_configure)
         self.sidebar_canvas.bind("<Configure>", self.on_sidebar_canvas_configure)
         # ★ 滚轮绑在 **root** 上（不是只绑侧边栏那个容器）：tk 的事件沿 bindtags
         #   往上走（widget → class → **toplevel** → all），绑在 root 上才收得到
-        #   「指针停在某个 Label / Entry 上」时发出的滚轮事件 —— 只绑容器会漏掉它们
-        #   （与 Shift 那条「只绑 canvas 会静默失效」是同一类坑）。
+        #   「指针停在某个 Label / Entry 上」时发出的滚轮事件。
         self.root.bind("<MouseWheel>", self.on_any_wheel, add="+")
         self._build_sidebar()
 
@@ -754,10 +515,16 @@ class EditorApp:
         self.canvas.bind("<KeyPress-space>", self.on_space_down)
         self.canvas.bind("<KeyRelease-space>", self.on_space_up)
         # ★ Shift 也要跟着键盘事件走（不能只看鼠标事件的 state 位，见 shift_is_held）。
-        #   左右两个 Shift 都绑：用户按哪个都算。
-        #   ⚠️ 绑在 **root + canvas 两处**，见 `_bind_shift_keys()` 里那段注释
-        #      （只绑 canvas 是这一条 bug 的根源：焦点不在画布上时 Shift 根本到不了）。
         self._bind_shift_keys()
+
+    def _post_map_menu(self) -> None:
+        """点「选择地图 ▾」时把菜单弹在按钮下面（PillButton 没有 menu 选项）。"""
+        try:
+            x = self.visible_map_picker.winfo_rootx()
+            y = self.visible_map_picker.winfo_rooty() + self.visible_map_picker.winfo_height() + 4
+            self.visible_map_menu.tk_popup(x, y)
+        except tk.TclError:
+            pass
 
     # ------------------------------------------------------------------
     # 侧边栏
@@ -907,11 +674,9 @@ class EditorApp:
         self.on_sidebar_content_configure()
 
     def _section(self, parent, title: str) -> tk.Frame:
-        tk.Label(parent, text=title, bg=UI["panel"], fg=UI["accent"], anchor="w",
-                 font=("Microsoft YaHei UI", 10, "bold")).pack(fill="x", padx=10, pady=(10, 2))
-        frame = tk.Frame(parent, bg=UI["panel"])
-        frame.pack(fill="x", padx=10)
-        return frame
+        # ★ 2026.11：分区改成「带 1px 描边的卡片」——标题行 + 内容 frame。
+        #   返回值仍是内容 frame，所有既有 `_build_*_sidebar()` 一行都不用改。
+        return _shared_make_card(parent, title, wrap=300)
 
     def _build_tile_sidebar(self) -> None:
         """地块页的侧边栏（**只在需要时**才走到这里，见 refresh_tile_panel）。
@@ -934,12 +699,12 @@ class EditorApp:
                                "（点虚线格 = 先把地块建出来，再在这里选地形）\n"
                                "Shift + 拖拽 = 框选一片，批量刷地形（空白格会一并建出来）/ 归属",
                      bg=UI["panel"], fg=UI["text_dim"], anchor="w",
-                     justify="left", wraplength=280).pack(fill="x")
+                     justify="left", wraplength=dpi.px(280)).pack(fill="x")
             return
 
         x, y = self.inspect
         self.coord_label = tk.Label(sec, text="", bg=UI["panel"], fg=UI["text"], anchor="w",
-                                    justify="left", wraplength=290)
+                                    justify="left", wraplength=dpi.px(290))
         self.coord_label.pack(fill="x", pady=(0, 4))
 
         terrain_label = tk.Label(sec, text="地形", bg=UI["panel"], fg=UI["text_dim"],
@@ -1038,7 +803,7 @@ class EditorApp:
         if blank:
             tk.Label(sec, text="★ 会把这 %d 个空白格也建出来" % blank, bg=UI["panel"],
                      fg=UI["text_dim"], anchor="w", justify="left",
-                     wraplength=280).pack(fill="x")
+                     wraplength=dpi.px(280)).pack(fill="x")
 
         if tiles:
             # ---- 归属区块（同样按「是不是同一个值」显示）
@@ -1066,8 +831,8 @@ class EditorApp:
         else:
             tk.Label(self.sidebar,
                      text="这一片还没有地块 —— 点上面的地形就能把空白格建出来。",
-                     bg=UI["panel"], fg=UI["text_dim"], anchor="w",
-                     justify="left", wraplength=280).pack(fill="x", padx=10, pady=(6, 0))
+                     bg=UI["bg"], fg=UI["text_dim"], anchor="w",
+                     justify="left", wraplength=dpi.px(280)).pack(fill="x", padx=10, pady=(6, 0))
 
         # ---- 取消框选（两种情况下都有）
         csec = self._section(self.sidebar, "框选")
@@ -1241,7 +1006,7 @@ class EditorApp:
             tk.Label(sec, text="矩形里没有已建的地块（虚线格不参与）。\n"
                                "要连空白一起弄，切到「地块」页签用「框选刷地形 / 建出来」。",
                      bg=UI["panel"], fg=UI["text_dim"], anchor="w", justify="left",
-                     wraplength=280).pack(fill="x")
+                     wraplength=dpi.px(280)).pack(fill="x")
         else:
             zsec = self._section(self.sidebar, "划给区块（改选中的 %d 格）" % len(tiles))
             names = ["（不属于任何区块）"] + [z.name for z in
@@ -1265,7 +1030,7 @@ class EditorApp:
             tk.Label(zsec, text="下拉框默认是列表里选中的那个区块；选「（不属于任何区块）」\n"
                                 "＝ 把这些地块从各自的区块里摘出来。",
                      bg=UI["panel"], fg=UI["text_dim"], anchor="w", justify="left",
-                     wraplength=280).pack(fill="x", pady=(4, 0))
+                     wraplength=dpi.px(280)).pack(fill="x", pady=(4, 0))
 
         csec = self._section(self.sidebar, "框选")
         self._button(csec, "取消框选（Esc）", self.clear_selection, padx=8, pady=4,
@@ -1285,8 +1050,8 @@ class EditorApp:
                                       height=8, selectmode="browse")
         self.zone_tree.heading("#0", text="名字")
         self.zone_tree.heading("tiles", text="地块")
-        self.zone_tree.column("#0", width=190, anchor="w")
-        self.zone_tree.column("tiles", width=60, anchor="e")
+        self.zone_tree.column("#0", width=dpi.px(190), anchor="w")
+        self.zone_tree.column("tiles", width=dpi.px(60), anchor="e")
         scroll = ttk.Scrollbar(wrap, orient="vertical", command=self.zone_tree.yview)
         self.zone_tree.configure(yscrollcommand=scroll.set)
         self.zone_tree.pack(side="left", fill="both", expand=True)
@@ -1314,7 +1079,7 @@ class EditorApp:
         # ---- 区划中心（每个区块恰好一个）
         csec = self._section(self.sidebar, "区划中心")
         self.zone_center_label = tk.Label(csec, text="", bg=UI["panel"], fg=UI["text"],
-                                          anchor="w", justify="left", wraplength=290)
+                                          anchor="w", justify="left", wraplength=dpi.px(290))
         self.zone_center_label.pack(fill="x", pady=(4, 0))
         self.zone_center_btn = self._button(csec, "", self.toggle_zone_center,
                                             padx=8, pady=4,
@@ -1324,7 +1089,7 @@ class EditorApp:
         tk.Label(csec, text="先在列表里选中区划 → 左键点它自己的一个地块 → 按上面的按钮。\n"
                             "再按一次（或按在别处）＝ 把中心挪过去。中心必须是该区划自己的地块。",
                  bg=UI["panel"], fg=UI["text_dim"], anchor="w", justify="left",
-                 wraplength=290).pack(fill="x", pady=(4, 0))
+                 wraplength=dpi.px(290)).pack(fill="x", pady=(4, 0))
 
         # ---- 区划种类（本轮新增：粮食 / 黄金 / 人口三种）
         #
@@ -1338,7 +1103,7 @@ class EditorApp:
         tk.Label(ksec, text="点一下会把下面的产能数字同步成该种类的预设值；\n"
                             "之后可以接着手改数字 —— 游戏以数字为准。",
                  bg=UI["panel"], fg=UI["text_dim"], anchor="w", justify="left",
-                 wraplength=290).pack(fill="x", pady=(0, 4))
+                 wraplength=dpi.px(290)).pack(fill="x", pady=(0, 4))
         self.zone_kind_var = tk.StringVar(value="")
         self._zone_kind_buttons: Dict[str, tk.Radiobutton] = {}
         for kind_id, kind_entry in self.zone_kinds.items():
@@ -1355,11 +1120,11 @@ class EditorApp:
                 bg=UI["panel"], fg=UI["text"], selectcolor=UI["panel_alt"],
                 activebackground=UI["panel"], activeforeground=UI["text"],
                 anchor="w", justify="left", takefocus=0, bd=0,
-                highlightthickness=0, wraplength=270)
+                highlightthickness=0, wraplength=dpi.px(270))
             btn.pack(fill="x")
             self._zone_kind_buttons[kind_id] = btn
         self.zone_kind_hint = tk.Label(ksec, text="", bg=UI["panel"], fg=UI["text_dim"],
-                                       anchor="w", justify="left", wraplength=290)
+                                       anchor="w", justify="left", wraplength=dpi.px(290))
         self.zone_kind_hint.pack(fill="x", pady=(2, 0))
 
         # ---- 产能（**资源 / 秒**：该区划整体的每秒产出；**绝对值，不乘地块数**）
@@ -1371,7 +1136,7 @@ class EditorApp:
         psec = self._section(self.sidebar, "产能")
         tk.Label(psec, text="该区划每秒的产出（绝对值；不随地块数变化）：",
                  bg=UI["panel"], fg=UI["text_dim"], anchor="w", justify="left",
-                 wraplength=290).pack(fill="x", pady=(0, 4))
+                 wraplength=dpi.px(290)).pack(fill="x", pady=(0, 4))
         self._zone_prod_vars: Dict[str, tk.StringVar] = {}
         self._zone_prod_entries: Dict[str, ttk.Entry] = {}
         for key in PRODUCTION_KEYS:
@@ -1406,7 +1171,7 @@ class EditorApp:
                             "填 0 = 这个区块永远没有人口（也就不能在那里招募）。\n"
                             "游戏里招募一个单位会从将领所在区块扣 1 人口。",
                  bg=UI["panel"], fg=UI["text_dim"], anchor="w", justify="left",
-                 wraplength=290).pack(fill="x", pady=(4, 0))
+                 wraplength=dpi.px(290)).pack(fill="x", pady=(4, 0))
 
         self._button(zsec, "清空这个区块的地块", self.clear_selected_zone_tiles,
                      padx=8, pady=4, bg=UI["panel_alt"], fg=UI["text"],
@@ -1661,20 +1426,20 @@ class EditorApp:
                            "兜底边界 ±%d 格（内存上限，不是地图的限制）。"
                            % MAX_COORD,
                  bg=UI["panel"], fg=UI["text_dim"], anchor="w", justify="left",
-                 wraplength=290).pack(fill="x", pady=(4, 0))
+                 wraplength=dpi.px(290)).pack(fill="x", pady=(4, 0))
 
         # ---- ★★ 战役专用图（`hidden: true`）：不进自由对战的选择条
         tk.Frame(sec, bg=UI["line"], height=1).pack(fill="x", pady=(8, 0))
         self.map_hidden_var = tk.BooleanVar(
             value=bool(self.model.extra.get(mapfile.KEY_HIDDEN, False)))
-        ttk.Checkbutton(sec, text="★ 战役专用图（不进自由对战选择条）",
+        CheckBox(sec, text="★ 战役专用图（不进自由对战选择条）",
                         variable=self.map_hidden_var,
                         command=self.apply_map_hidden).pack(anchor="w", pady=(6, 0))
         tk.Label(sec, text="勾上 = 导出时写 \"hidden\": true —— 主菜单那条地图选择条\n"
                            "**不再列出它**、也不拿它当默认图；战役关卡照样按 id 引用它。\n"
                            "（从战役编辑器点「打开地图编辑器」进来的会自动勾上。）",
                  bg=UI["panel"], fg=UI["text_dim"], anchor="w", justify="left",
-                 wraplength=290).pack(fill="x", pady=(2, 0))
+                 wraplength=dpi.px(290)).pack(fill="x", pady=(2, 0))
 
     def apply_map_hidden(self) -> None:
         """勾选框：给地图写 / 去掉 `hidden`（导出时它决定「进不进自由对战选择条」）。"""
@@ -1830,7 +1595,7 @@ class EditorApp:
     # 绘制
     # ==================================================================
 
-    def visible_tile_range(self) -> Tuple[int, int, int, int]:
+    def visible_tile_range(self, extra: int = 0) -> Tuple[int, int, int, int]:
         """当前视野覆盖的**数组下标**范围（含边界外一圈）。
 
         ★ 不再夹到地图范围内：编辑器上的画布是**无限**的，视野里永远有格子
@@ -1840,10 +1605,11 @@ class EditorApp:
         """
         size = self.tile_px()
         cw, ch = self.canvas.winfo_width(), self.canvas.winfo_height()
-        x0 = int((0 - self.ox) // size) - 1
-        y0 = int((0 - self.oy) // size) - 1
-        x1 = int((cw - self.ox) // size) + 1
-        y1 = int((ch - self.oy) // size) + 1
+        pad = 1 + max(0, int(extra))
+        x0 = int((0 - self.ox) // size) - pad
+        y0 = int((0 - self.oy) // size) - pad
+        x1 = int((cw - self.ox) // size) + pad
+        y1 = int((ch - self.oy) // size) + pad
         return (x0, y0, x1, y1)
 
     def redraw(self) -> None:
@@ -1859,7 +1625,8 @@ class EditorApp:
         c.delete("all")
         size = self.tile_px()
         cw, ch = self.canvas.winfo_width(), self.canvas.winfo_height()
-        vx0, vy0, vx1, vy1 = self.visible_tile_range()
+        # ★ 多画 OVERSCAN 格：平移时直接 move 图元，不必每帧重画（露不出空白边）
+        vx0, vy0, vx1, vy1 = self.visible_tile_range(OVERSCAN)
         grass_rgb = parse_color(self.color_cfg.get("grass", DEFAULT_COLORS["grass"]))
         grass_alt_rgb = parse_color(self.color_cfg.get("grass_alt", DEFAULT_COLORS["grass_alt"]))
         forest_rgb = parse_color(self.color_cfg.get("forest", DEFAULT_COLORS["forest"]))
@@ -1867,7 +1634,8 @@ class EditorApp:
         water_rgb = parse_color(self.color_cfg.get("water", DEFAULT_COLORS["water"]))
 
         # 0) 底色：整块画布一个色，**不做棋盘格**（背景上不该有任何线条/花纹）
-        c.create_rectangle(0, 0, cw, ch, fill=UI["canvas_bg"], outline="")
+        self._bg_item = c.create_rectangle(-24, -24, cw + 24, ch + 24,
+                                           fill=UI["canvas_bg"], outline="")
 
         # 1) 虚线格：一张铺满视野的虚线网格，就是「这里可以点一下建地块」的暗示。
         #    ⚠️ 每一格单独一个虚线方框（不是一条大网格线）：只有方框才是「虚线格子」，
@@ -2040,6 +1808,37 @@ class EditorApp:
     def blend_hex(self, bg_hex: str, top, k: float) -> str:
         return to_hex(blend(parse_color(bg_hex), parse_color(top), k))
 
+    def pan_step(self, dx: int, dy: int) -> None:
+        """平移一格（拖画面）。
+
+        ★★ 这里是「不卡」的关键：早先每帧都 `redraw()`（重建 2000 个图元 ≈13ms），
+          拖起来一顿一顿。现在只 `move("all")`（一次性挪图元，~1ms），
+          攒够 2 格的距离才补一次真重绘把新露出的边补上。
+          重绘本身带 `OVERSCAN` 格余量，所以挪动过程中看不到空白。
+        """
+        if not dx and not dy:
+            return
+        self.ox += dx
+        self.oy += dy
+        self._pan_shift += max(abs(dx), abs(dy))
+        try:
+            self.canvas.move("all", dx, dy)
+            if self._bg_item is not None:
+                cw, ch = self.canvas.winfo_width(), self.canvas.winfo_height()
+                self.canvas.coords(self._bg_item, -24, -24, cw + 24, ch + 24)
+                self.canvas.tag_lower(self._bg_item)
+        except tk.TclError:
+            self.redraw()
+            return
+        if self._pan_shift >= self.tile_px() * 2:
+            self._pan_shift = 0.0
+            self.redraw()
+
+    def pan_finish(self) -> None:
+        """松开鼠标：补一次完整重绘（视野边缘 / 区块边界要回到准确位置）。"""
+        self._pan_shift = 0.0
+        self.redraw()
+
     def request_redraw(self) -> None:
         """请求重画 —— 同一帧里的多次请求只做一次。
 
@@ -2125,10 +1924,10 @@ class EditorApp:
             return
         if self._pan_anchor is None:
             return
-        self.ox += event.x - self._pan_anchor[0]
-        self.oy += event.y - self._pan_anchor[1]
+        dx = event.x - self._pan_anchor[0]
+        dy = event.y - self._pan_anchor[1]
         self._pan_anchor = (event.x, event.y)
-        self.request_redraw()
+        self.pan_step(dx, dy)
 
     def on_left_up(self, event) -> None:
         if self._select_drag is not None:
@@ -2157,6 +1956,8 @@ class EditorApp:
             return
         was_panning = self._pan_anchor is not None
         self._pan_anchor = None
+        if was_panning:
+            self.pan_finish()
         start = self._left_down_at
         self._left_down_at = None
         if was_panning:
@@ -2358,13 +2159,11 @@ class EditorApp:
         if self._pan_anchor is not None:
             dx = event.x - self._pan_anchor[0]
             dy = event.y - self._pan_anchor[1]
-            self.ox += dx
-            self.oy += dy
             self._pan_anchor = (event.x, event.y)
             # 拖动一开始就把「光标下的格子」清掉：平移时鼠标下面的格子一直在换，
             # 留着不放会在拖动过程中画出一个**跟不上手**的高亮方框（看着就是「闪/顿」）。
             self.hover = None
-            self.request_redraw()
+            self.pan_step(dx, dy)
             self.update_status(self.screen_to_tile(event.x, event.y))
             return
         tile = self.screen_to_tile(event.x, event.y)
@@ -2409,13 +2208,15 @@ class EditorApp:
         if self._pan_anchor is None:
             self._pan_anchor = (event.x, event.y)
             return
-        self.ox += event.x - self._pan_anchor[0]
-        self.oy += event.y - self._pan_anchor[1]
+        dx = event.x - self._pan_anchor[0]
+        dy = event.y - self._pan_anchor[1]
         self._pan_anchor = (event.x, event.y)
-        self.request_redraw()
+        self.pan_step(dx, dy)
 
     def on_middle_up(self, event) -> None:
-        self._pan_anchor = None
+        if self._pan_anchor is not None:
+            self._pan_anchor = None
+            self.pan_finish()
         self._set_cursor("")
 
     def on_space_down(self, event) -> None:
@@ -2629,12 +2430,18 @@ class EditorApp:
             self.selected_zone = self.model.zones[0].zone_id
             self.refresh_zone_panel()
         self.redraw()
+        try:
+            self.shell.reveal()
+        except (AttributeError, tk.TclError):
+            pass
 
     def sync_tabs(self) -> None:
-        for key, btn in self.tab_buttons.items():
-            active = (key == self.page)
-            btn.configure(bg=UI["panel_alt"] if active else UI["panel"],
-                          fg=UI["accent"] if active else UI["text_dim"])
+        for _key, btn in self.tab_buttons.items():
+            btn.configure(bg=UI["bar"])
+        try:
+            self.tabs.select(self.page, animate_indicator=False)
+        except (AttributeError, tk.TclError):
+            pass
 
     # ==================================================================
     # 编辑动作
@@ -3123,6 +2930,10 @@ class EditorApp:
         self.dirty = False
         self.update_title()
         self._sync_catalog_after_export(Path(saved))
+        try:
+            self.shell.toast("已导出 %s" % Path(saved).name)
+        except (AttributeError, tk.TclError):
+            pass
         self.status("已导出到 %s（%d 个地块 / %d 个区块）%s"
                     % (saved, self.model.existing_count(), len(self.model.zones),
                        "　★ 战役专用（hidden）" if self.model.extra.get(mapfile.KEY_HIDDEN)
@@ -3292,6 +3103,7 @@ class EditorApp:
 def run(project_dir: Path, model: Optional[MapModel] = None,
         current_path: Optional[Path] = None, campaign_map: bool = False) -> int:
     """打开编辑器窗口（阻塞到窗口关闭）。"""
+    dpi.enable_high_dpi()
     root = tk.Tk()
     EditorApp(root, project_dir, model, current_path, campaign_map)
     try:

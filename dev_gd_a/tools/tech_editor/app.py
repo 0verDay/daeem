@@ -1,17 +1,17 @@
-"""app.py —— buff 编辑器界面（tkinter，零第三方依赖）。
+"""app.py —— 科技编辑器界面（tkinter，零第三方依赖）。
 
 布局（与 unit_editor / map_editor 同一套浅色主题）：
 
     ┌──────────────────────────────────────────────────────────────┐
-    │ DAEEM buff 编辑器        config.json   ● 未保存  [重载] [保存] │
+    │ DAEEM 科技编辑器        config.json   ● 未保存  [重载] [保存] │
     ├──────────────┬───────────────────────────────────────────────┤
-    │ Buff 列表     │ 士气「士」  90 / 100                           │
-    │  ▸ 士气 士    │ 整支部队共享的士气……                          │
+    │ 科技          │ 科技 · 建筑加固  二本 · 1 条效果 · 1 金/秒      │
+    │  ▾ 全局       │ 原生科技里的第 7 条……                          │
+    │  ▾ 原生科技   ├───────────────────────────────────────────────┤
+    │  ▾ 派系科技   │ 文案 / 基础 / 效果 各组                        │
+    │  ▾ 科技页     │ 每个数值一行：名称 [输入框] 单位  说明          │
     │              ├───────────────────────────────────────────────┤
-    │ （以后新增）  │ 基础 / 阈值 / 生命 / 伤害 / 区划 / 战果 各组   │
-    │              │ 每个数值一行：名称 [输入框] 单位  说明          │
-    │              ├───────────────────────────────────────────────┤
-    │              │ 悬停浮窗预览（游戏里「士」上鼠标停住时显示）    │
+    │              │ 游戏里的样子（科技格 / 悬停说明预览）          │
     │              │ 提示：跨字段不合理的组合（只提示，不阻止保存）  │
     ├──────────────┴───────────────────────────────────────────────┤
     │ 状态栏：上一次操作的结果 · 文件路径                            │
@@ -24,7 +24,7 @@
     · Ctrl+S 保存 · Ctrl+Z / Ctrl+Y 撤销 / 重做 · F5 从磁盘重读；
     · 百分数字段显示 / 输入都是**百分数**（50 = 50%），写回文件仍是 0.5。
 
-★ 表单是「整块重建」而不是就地改值：字段只有 20 个，重建 ~10 ms，
+★ 表单是「整块重建」而不是就地改值：一页最多十几个字段，重建 ~10 ms，
   换来「界面永远等于数据」——不用维护控件与字段的对应关系。
 """
 
@@ -36,11 +36,24 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import model as model_mod
+_TOOLS_DIR = Path(__file__).resolve().parent.parent
+if str(_TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(_TOOLS_DIR))
+
+# ★ 2026.11 UI 改造：共用暗色主题 / 圆角按钮。
+from editor_ui import dpi
+from editor_ui import default_preset as _default_tokens
+from editor_ui import Card, EditorShell, PillButton, RoundedPanel, ThinScrollbar
+from editor_ui import RADIUS_L, RADIUS_M
+from editor_ui import apply_theme as _shared_apply_theme
+from editor_ui import is_dark as _shared_is_dark
+from editor_ui import set_ui as _set_editor_ui
+from editor_ui import shade as _shared_shade
+
+from . import model as model_mod  # noqa: F401 - 测试会从这里拿 model 模块
 from .configfile import JsonError
 from .model import (
-    BUFFS,
-    Buff,
+    TechPage,
     ConfigModel,
     Field,
     ModelError,
@@ -50,25 +63,10 @@ from .model import (
     parse_value,
 )
 
-#: 界面配色（与 unit_editor / map_editor / campaign_editor **同一套**：
-#: 三个工具看起来是一家的。这是深色方案里的浅色版 —— 页面底 / 卡片面 / 输入面三层灰）。
-UI = {
-    "bg": "#f3f4f6",
-    "panel": "#ffffff",
-    "panel_alt": "#eef0f3",
-    "line": "#d9dce1",
-    "text": "#1f2329",
-    "text_dim": "#6b7280",
-    "accent": "#2f7fe0",
-    "accent_btn": "#2f7fe0",
-    "accent_btn_hover": "#4a91e6",
-    "accent_fg": "#ffffff",
-    "hover": "#e6e9ee",
-    "pressed": "#d9dde3",
-    "ok": "#1f9d55",
-    "warn": "#b7791f",
-    "bad": "#d64545",
-}
+#: 界面配色（四个编辑器同一套 —— 看起来是一家的）。
+#: ★ 2026.11：暗色游戏工具（A 方向），token 在 `tools/editor_ui/tokens.py`。
+UI = dict(_default_tokens())
+_set_editor_ui(UI)
 
 #: 字体：Windows 自带；别的系统给 Tk 的默认字体兜底（Tk 会自己换）。
 FONT = ("Microsoft YaHei UI", 10)
@@ -107,183 +105,12 @@ def _rounded_rect(canvas, x1: float, y1: float, x2: float, y2: float, r: float, 
     return canvas.create_polygon(pts, smooth=True, splinesteps=12, **kw)
 
 
-class RButton(tk.Button):
-    """圆角按钮（与 unit_editor 的 RButton 同一份做法：本体是 tk.Button，
-    上面盖一层 Canvas 只负责画圆角，invoke / configure / pack 全是原生语义）。"""
-
-    RADIUS = 8.0
-
-    def __init__(self, master=None, **kw):
-        kw.setdefault("relief", "flat")
-        kw.setdefault("bd", 0)
-        kw.setdefault("highlightthickness", 0)
-        kw.setdefault("takefocus", 0)
-        kw.setdefault("font", FONT_SMALL)
-        kw.setdefault("activebackground", UI["panel_alt"])
-        kw.setdefault("activeforeground", UI["text"])
-        super().__init__(master, **kw)
-        try:
-            surround = str(self.master.cget("bg"))
-        except (tk.TclError, AttributeError):
-            surround = ""
-        self._surround = surround or UI["panel"]
-        self._hover = False
-        self._active = False
-        self._overlay = tk.Canvas(self, highlightthickness=0, bd=0, takefocus=0,
-                                  bg=self._surround)
-        self._overlay.place(x=0, y=0, relwidth=1, relheight=1)
-        for seq, fn in (("<Enter>", self._on_enter), ("<Leave>", self._on_leave),
-                        ("<ButtonPress-1>", self._on_press),
-                        ("<ButtonRelease-1>", self._on_release)):
-            self._overlay.bind(seq, fn)
-        self.bind("<Configure>", lambda _e: self._redraw())
-        self._redraw()
-
-    def configure(self, cnf=None, **kw):
-        if isinstance(cnf, str):
-            return super().configure(cnf)
-        result = super().configure(cnf, **kw)
-        self._redraw()
-        return result
-
-    config = configure
-
-    def _disabled(self) -> bool:
-        try:
-            return str(self.cget("state")) == "disabled"
-        except tk.TclError:
-            return False
-
-    def _on_enter(self, _e=None):
-        self._hover = True
-        self._redraw()
-
-    def _on_leave(self, _e=None):
-        self._hover = False
-        self._active = False
-        self._redraw()
-
-    def _on_press(self, _e=None):
-        if not self._disabled():
-            self._active = True
-            self._redraw()
-
-    def _on_release(self, _e=None):
-        fire = self._active and not self._disabled()
-        self._active = False
-        self._hover = True
-        self._redraw()
-        if fire:
-            try:
-                self.invoke()
-            except tk.TclError:
-                pass
-
-    def _fill(self) -> str:
-        base = str(self.cget("bg"))
-        if self._disabled():
-            return base
-        if self._active:
-            return _shade(base, -0.12)
-        if self._hover:
-            return _shade(base, -0.06)
-        return base
-
-    def _redraw(self):
-        overlay = getattr(self, "_overlay", None)
-        if overlay is None:
-            return
-        try:
-            overlay.delete("all")
-            w = max(1, self.winfo_width())
-            h = max(1, self.winfo_height())
-            if w <= 1 or h <= 1:
-                return
-            fill = self._fill()
-            _rounded_rect(overlay, 0, 0, w, h, min(self.RADIUS, h / 2.0),
-                          fill=fill, outline=fill)
-            text = str(self.cget("text"))
-            if not text:
-                return
-            try:
-                padx = max(0, int(self.cget("padx")))
-            except (tk.TclError, ValueError):
-                padx = 6
-            overlay.create_text(w / 2, h / 2, text=text,
-                                fill=UI["text_dim"] if self._disabled() else str(self.cget("fg")),
-                                font=self.cget("font"))
-        except tk.TclError:
-            pass
+RButton = PillButton
 
 
 def _apply_theme(root: tk.Tk) -> ttk.Style:
-    """把 clam 主题会漏出的浅灰压回这套配色（与 unit_editor 的做法一致）。"""
-    style = ttk.Style(root)
-    try:
-        style.theme_use("clam")
-    except tk.TclError:
-        pass
-    panel, alt, bg = UI["panel"], UI["panel_alt"], UI["bg"]
-    line, text, dim, accent = UI["line"], UI["text"], UI["text_dim"], UI["accent"]
-    hover, pressed = UI["hover"], UI["pressed"]
-    sel_bg, sel_fg = "#cfe3ff", text
-
-    style.configure(".", background=panel, foreground=text, fieldbackground=alt,
-                    bordercolor=line, lightcolor=panel, darkcolor=panel, focuscolor=accent)
-    style.configure("TFrame", background=panel)
-    style.configure("Bar.TFrame", background=bg)
-    style.configure("TLabel", background=panel, foreground=text, font=FONT)
-    style.configure("Bar.TLabel", background=bg, foreground=text, font=FONT)
-    style.configure("Dim.TLabel", background=panel, foreground=dim, font=FONT_SMALL)
-    style.configure("BarDim.TLabel", background=bg, foreground=dim, font=FONT_SMALL)
-    style.configure("Title.TLabel", background=panel, foreground=accent, font=FONT_TITLE)
-    style.configure("Name.TLabel", background=panel, foreground=text, font=FONT_TITLE)
-    style.configure("Group.TLabel", background=panel, foreground=accent, font=FONT_GROUP)
-    style.configure("Hint.TLabel", background=panel, foreground=dim, font=FONT_SMALL)
-    style.configure("AltHint.TLabel", background=alt, foreground=dim, font=FONT_SMALL)
-    style.configure("Warn.TLabel", background=panel, foreground=UI["warn"], font=FONT_SMALL)
-    style.configure("Bad.TLabel", background=panel, foreground=UI["bad"], font=FONT_SMALL)
-
-    style.configure("TEntry", fieldbackground=alt, foreground=text, insertcolor=text,
-                    bordercolor=line, lightcolor=alt, darkcolor=alt, padding=(6, 4),
-                    font=FONT)
-    style.map("TEntry",
-              fieldbackground=[("readonly", alt), ("disabled", panel)],
-              foreground=[("disabled", dim)],
-              selectbackground=[("!disabled", sel_bg)],
-              selectforeground=[("!disabled", sel_fg)],
-              bordercolor=[("focus", accent)], lightcolor=[("focus", accent)],
-              darkcolor=[("focus", accent)])
-
-    style.configure("Treeview", background=alt, fieldbackground=alt, foreground=text,
-                    bordercolor=line, lightcolor=panel, darkcolor=panel, rowheight=26,
-                    borderwidth=0)
-    style.map("Treeview",
-              background=[("selected", sel_bg), ("disabled", alt)],
-              foreground=[("selected", sel_fg), ("disabled", dim)])
-    # ★★ 2026.11：左栏那一棵（buff / 科技 列表）。行矮一点、字号小一点，
-    #   26 条才装得下；底色跟面板一致，看着还是「一栏列表」而不是一个表格。
-    style.configure("Side.Treeview", background=alt, fieldbackground=alt,
-                    foreground=text, bordercolor=panel, lightcolor=panel,
-                    darkcolor=panel, rowheight=24, borderwidth=0, font=FONT_SMALL)
-    style.map("Side.Treeview",
-              background=[("selected", sel_bg)],
-              foreground=[("selected", sel_fg)])
-
-    style.configure("TScrollbar", background=line, troughcolor=panel, bordercolor=panel,
-                    arrowcolor=dim, relief="flat", borderwidth=0)
-    style.map("TScrollbar",
-              background=[("active", "#b9bfc9"), ("pressed", "#a6adba")],
-              arrowcolor=[("active", text)])
-    style.configure("TButton", background=alt, foreground=text, bordercolor=line,
-                    focuscolor=alt, padding=(10, 5), borderwidth=0, font=FONT_SMALL)
-    style.map("TButton",
-              background=[("active", hover), ("pressed", pressed), ("disabled", panel)],
-              foreground=[("disabled", dim)])
-    style.configure("Accent.TButton", background=UI["accent_btn"],
-                    foreground=UI["accent_fg"])
-    style.map("Accent.TButton", background=[("active", UI["accent_btn_hover"])])
-    return style
+    """ttk 主题统一交给 tools/editor_ui/theme.py。"""
+    return _shared_apply_theme(root, UI)
 
 
 class _NoRepaint:
@@ -359,8 +186,8 @@ class _NoRepaint:
 # 主界面
 # ======================================================================
 
-class BuffEditorApp:
-    """buff 编辑器窗口。测试可以只建 `tk.Tk()` + 这个类（不调 mainloop）。"""
+class TechEditorApp:
+    """科技编辑器窗口。测试可以只建 `tk.Tk()` + 这个类（不调 mainloop）。"""
 
     def __init__(self, root: tk.Tk, model: ConfigModel,
                  config_path: Optional[Path] = None,
@@ -369,7 +196,7 @@ class BuffEditorApp:
         self.model = model
         self.config_path = Path(config_path) if config_path else model.path
         self.project_dir = project_dir
-        self.current_id: str = BUFFS[0].id if BUFFS else ""
+        self.current_id: str = ""
         self.entries: Dict[str, ttk.Entry] = {}
         self._field_by_key: Dict[str, Field] = {}
         self._building = False
@@ -382,7 +209,7 @@ class BuffEditorApp:
         #: Treeview 的 `<<TreeviewSelect>>` 会因为我们**自己**改选中而触发 ⇒ 用它防回环
         self._suppress_side = False
 
-        self.root.title("DAEEM buff 编辑器")
+        self.root.title("DAEEM 科技编辑器")
         self.root.geometry("1060x780")
         self.root.minsize(900, 640)
         self.root.configure(bg=UI["bg"])
@@ -398,144 +225,140 @@ class BuffEditorApp:
         self._build_body()
         self._build_statusbar()
         self._bind_shortcuts()
-        self._select_buff(self.current_id)
+        pages = self.model.pages()
+        self.current_id = pages[0].id if pages else ""
+        self._select_page(self.current_id)
         self._refresh_dirty()
 
     # ------------------------------------------------------------------
     # 构建：顶栏 / 主体 / 状态栏
     # ------------------------------------------------------------------
     def _build_topbar(self) -> None:
-        bar = ttk.Frame(self.root, style="Bar.TFrame", padding=(14, 10))
-        bar.pack(fill="x")
-        ttk.Label(bar, text="DAEEM buff 编辑器", style="Bar.TLabel",
-                  font=("Microsoft YaHei UI", 13, "bold")).pack(side="left")
-        #: config 路径（太长就只显示尾部；鼠标停上去能看全）
+        # ---- 外壳：品牌 + 右侧「路径 / 未保存 / 撤销 重做 重载 保存」+ 状态栏
+        self.shell = EditorShell(
+            self.root,
+            title="DAEEM 科技编辑器",
+            brand="科技编辑器",
+            geometry="1060x780",
+            minsize=(900, 640),
+            status_hint="Ctrl+S 保存 · Ctrl+Z 撤销 · F5 重载",
+        )
+        self.status_var = self.shell.status_var
         path_text = str(self.config_path) if self.config_path else "（未指定文件）"
-        shown = path_text if len(path_text) <= 58 else "…" + path_text[-57:]
-        self.path_label = ttk.Label(bar, text=shown, style="BarDim.TLabel")
-        self.path_label.pack(side="left", padx=(14, 8))
-        self.dirty_label = ttk.Label(bar, textvariable=self.dirty_var,
-                                     style="BarDim.TLabel")
-        self.dirty_label.pack(side="left")
-
-        save = RButton(bar, text="保存  Ctrl+S", command=self.save,
-                       bg=UI["accent_btn"], fg=UI["accent_fg"], padx=12, pady=5)
-        save.pack(side="right", padx=(6, 0))
-        reload_btn = RButton(bar, text="重载  F5", command=self.reload_from_disk,
-                             bg=UI["panel_alt"], fg=UI["text"], padx=12, pady=5)
-        reload_btn.pack(side="right", padx=(6, 0))
-        redo = RButton(bar, text="重做  Ctrl+Y", command=self.redo,
-                       bg=UI["panel_alt"], fg=UI["text"], padx=10, pady=5)
-        redo.pack(side="right", padx=(6, 0))
-        undo = RButton(bar, text="撤销  Ctrl+Z", command=self.undo,
-                       bg=UI["panel_alt"], fg=UI["text"], padx=10, pady=5)
-        undo.pack(side="right")
-        self._save_button = save
-        self._reload_button = reload_btn
-        self._undo_button = undo
-        self._redo_button = redo
+        # ★ 这个窗口只有 1060 宽，路径按「尾巴」截断，别把右边那排按钮挤出去。
+        shown = path_text if len(path_text) <= 40 else "…" + path_text[-39:]
+        self.path_label = self.shell.add_file_label()
+        self.path_label.configure(text=shown)
+        #: 「● 未保存 / 已保存」——沿用 ttk.Label，测试读 `dirty_text()` 不受影响
+        self.dirty_label = tk.Label(self.shell.right, textvariable=self.dirty_var,
+                                    bg=UI["bar"], fg=UI["text_dim"], font=FONT_SMALL)
+        self.dirty_label.pack(side="left", padx=(0, 10), pady=(0, 9))
+        self._undo_button = self.shell.add_button("undo", "撤销", self.undo)
+        self._redo_button = self.shell.add_button("redo", "重做", self.redo)
+        self._reload_button = self.shell.add_button("reload", "重载", self.reload_from_disk)
+        self._save_button = self.shell.add_button("save", "保存", self.save, primary=True)
 
     def _build_body(self) -> None:
-        body = tk.Frame(self.root, bg=UI["bg"])
-        body.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+        body = self.shell.content
 
-        # ---- 左：列表（buff + 科技，★ 26 条起步 ⇒ 必须能滚） ----
-        left = tk.Frame(body, bg=UI["panel"], width=210, padx=12, pady=12)
+        # ---- 左：科技目录（一张卡片，整列可滚）
+        left = RoundedPanel(body, radius=RADIUS_L, fill=UI["panel"],
+                            outline=UI["line"], bg=UI["bg"])
         left.pack(side="left", fill="y")
+        left.configure(width=dpi.px(252))
         left.pack_propagate(False)
-        ttk.Label(left, text="Buff / 科技", style="Group.TLabel").pack(anchor="w")
-        ttk.Label(left, text="点一条 → 右边改它的全部数值", style="Hint.TLabel",
-                  wraplength=180).pack(anchor="w", pady=(2, 10))
-        # ★★ 2026.11：条目从 1 条变成 26 条（士气 + 科技全局 + 22 条科技 + 2 张槽位表），
-        #   左边这栏**必须可滚** —— 不然窗口一矮，后面的科技就点不到了。
-        #   ★ 结构：底部提示先 pack（side=bottom），再 pack 列表（fill both）——
-        #     反过来会把提示挤出可视区（Tk 的 pack 是先到先占）。
-        ttk.Label(left, text="本工具只编辑 config.json 里\n已经存在的键。加新 buff / 新科技\n"
-                             "仍要先在游戏侧读它（README 第三、四节）。",
-                  style="Hint.TLabel", wraplength=180, justify="left").pack(
-            side="bottom", anchor="w")
-        side_wrap = tk.Frame(left, bg=UI["panel"])
-        side_wrap.pack(side="top", fill="both", expand=True)
-        # ★★★ 2026.11：**左栏从「画布 + 一摞圆角按钮」换成 Treeview**（用户报的 bug：
-        #   「下滑之后按钮内的文字错位 / 撕裂」）。
-        #
-        #   原因（不是画笔的锅）：`RButton` 是 `tk.Button` 上**盖一层 Canvas**
-        #   （`_overlay.place(relwidth=1, relheight=1)`），也就是每个按钮 = 两个子窗口。
-        #   把一个装着 26 个这样的按钮的 Frame 塞进 Canvas 的 window item 里滚动时，
-        #   Windows 会先搬子窗口、再由 Tk 各自重画 —— 两者顺序不同步，于是覆盖层上的
-        #   文字会在「已经搬走的位置」和「新位置」之间撕裂一帧，滚动过程中尤其明显。
-        #   滚得越快、按钮越多，越容易看见。
-        #
-        #   Treeview 是**单个控件自己滚条目**（不搬子窗口），所以不会撕裂；
-        #   另外三个编辑器（unit / map / campaign）的左侧列表本来也都是 Treeview，
-        #   换过来反而更一致。代价是少了圆角 —— 用 `style` 配了同样的配色与选中底色。
-        self._side_tree = ttk.Treeview(side_wrap, show="tree", selectmode="browse",
-                                       style="Side.Treeview")
-        side_vsb = ttk.Scrollbar(side_wrap, orient="vertical",
-                                 command=self._side_tree.yview)
+
+        head = tk.Frame(left.body, bg=UI["panel"])
+        head.pack(fill="x", padx=14, pady=(12, 0))
+        tk.Label(head, text="科技", bg=UI["panel"], fg=UI["text"],
+                 font=FONT_GROUP).pack(side="left")
+        tk.Label(left.body, text="点一条 → 右边改它的全部数值",
+                 bg=UI["panel"], fg=UI["text_dim"], font=FONT_SMALL,
+                 anchor="w", wraplength=dpi.px(212)).pack(fill="x", padx=dpi.px(14), pady=(dpi.px(3), dpi.px(8)))
+        tk.Frame(left.body, bg=UI["line_soft"], height=1).pack(fill="x", padx=14)
+
+        # ★ 提示先摆（side=bottom），列表后摆 —— pack 是先到先得，
+        #   反过来摆的话窗口一矮，底部提示会被挤出可视区。
+        tk.Label(left.body,
+                 text="本工具只编辑 config.json 里已经存在的键。\n"
+                      "加新科技 / 新效果键仍要先在游戏侧读它\n（README 第四节）。",
+                 bg=UI["panel"], fg=UI["text_dim"], font=FONT_SMALL,
+                 anchor="w", justify="left", wraplength=dpi.px(212)).pack(
+            side="bottom", anchor="w", padx=14, pady=(6, 12))
+
+        side_wrap = tk.Frame(left.body, bg=UI["panel"])
+        side_wrap.pack(side="top", fill="both", expand=True, padx=(10, 6), pady=(8, 4))
+        # ★ 左栏用 Treeview（单控件自己滚条目，不搬子窗口 → 不会出现文字撕裂）
+        self._side_tree = ttk.Treeview(side_wrap, show="tree", selectmode="browse")
+        side_vsb = ThinScrollbar(side_wrap, command=self._side_tree.yview,
+                                 trough=UI["panel"])
         self._side_tree.configure(yscrollcommand=side_vsb.set)
-        side_vsb.pack(side="right", fill="y")
+        side_vsb.pack(side="right", fill="y", padx=(4, 0))
         self._side_tree.pack(side="left", fill="both", expand=True)
-        self._side_tree.column("#0", width=170, stretch=True)
-        # 分组行（Buff / 科技）用强调色 + 粗一点，与下面的条目区分开
+        self._side_tree.column("#0", width=dpi.px(190), stretch=True)
         self._side_tree.tag_configure("section", foreground=UI["accent"], font=FONT_GROUP)
         self._side_tree.bind("<<TreeviewSelect>>", self._on_side_select)
         # ★ 滚轮：`_on_wheel` 是 bind_all（窗口任何地方滚都滚右边的表单），
         #   所以这里必须在**控件级**截住（Tk 绑定顺序：控件 → 类 → 顶层 → all）。
         self._side_tree.bind("<MouseWheel>", self._on_side_wheel)
 
-        # ---- 右：内容 ----
-        right = tk.Frame(body, bg=UI["panel"], padx=16, pady=12)
-        right.pack(side="left", fill="both", expand=True, padx=(8, 0))
+        # ---- 右：内容卡片
+        right = RoundedPanel(body, radius=RADIUS_L, fill=UI["panel"],
+                             outline=UI["line"], bg=UI["bg"])
+        right.pack(side="left", fill="both", expand=True, padx=(12, 0))
 
-        head = tk.Frame(right, bg=UI["panel"])
-        head.pack(fill="x")
-        self._icon_canvas = tk.Canvas(head, width=48, height=48, bg=UI["panel"],
-                                      highlightthickness=0)
+        head = tk.Frame(right.body, bg=UI["panel"])
+        head.pack(fill="x", padx=16, pady=(12, 0))
+        self._icon_canvas = tk.Canvas(head, width=44, height=44, bg=UI["panel"],
+                                      highlightthickness=0, bd=0, takefocus=0)
         self._icon_canvas.pack(side="left", anchor="n")
         name_box = tk.Frame(head, bg=UI["panel"])
-        name_box.pack(side="left", fill="x", expand=True, padx=(10, 0))
-        ttk.Label(name_box, textvariable=self.summary_var, style="Name.TLabel").pack(anchor="w")
-        ttk.Label(name_box, textvariable=self.intro_var, style="Hint.TLabel",
-                  wraplength=720, justify="left").pack(anchor="w", pady=(4, 0))
+        name_box.pack(side="left", fill="x", expand=True, padx=(12, 0))
+        tk.Label(name_box, textvariable=self.summary_var, bg=UI["panel"],
+                 fg=UI["text"], font=FONT_GROUP, anchor="w").pack(anchor="w")
+        tk.Label(name_box, textvariable=self.intro_var, bg=UI["panel"],
+                 fg=UI["text_dim"], font=FONT_SMALL, wraplength=dpi.px(640),
+                 justify="left", anchor="w").pack(anchor="w", pady=(3, 0))
 
-        # ---- 表单（可滚动） ----
-        form_wrap = tk.Frame(right, bg=UI["panel"])
-        form_wrap.pack(fill="both", expand=True, pady=(8, 6))
-        self._canvas = tk.Canvas(form_wrap, bg=UI["panel"], highlightthickness=0,
-                                 bd=0)
-        vsb = ttk.Scrollbar(form_wrap, orient="vertical", command=self._canvas.yview)
+        tk.Frame(right.body, bg=UI["line_soft"], height=1).pack(
+            fill="x", padx=16, pady=(10, 0))
+
+        # ---- 表单（可滚动）
+        form_wrap = tk.Frame(right.body, bg=UI["panel"])
+        form_wrap.pack(fill="both", expand=True, padx=(12, 8), pady=(8, 4))
+        self._canvas = tk.Canvas(form_wrap, bg=UI["panel"], highlightthickness=0, bd=0)
+        vsb = ThinScrollbar(form_wrap, command=self._canvas.yview, trough=UI["panel"])
         self._canvas.configure(yscrollcommand=vsb.set)
-        vsb.pack(side="right", fill="y")
+        vsb.pack(side="right", fill="y", padx=(4, 0))
         self._canvas.pack(side="left", fill="both", expand=True)
-        self._inner = ttk.Frame(self._canvas, style="TFrame")
+        self._inner = tk.Frame(self._canvas, bg=UI["panel"])
         self._inner_id = self._canvas.create_window((0, 0), window=self._inner, anchor="nw")
         self._inner.bind("<Configure>", self._on_inner_configure)
         self._canvas.bind("<Configure>", self._on_canvas_configure)
         self._canvas.bind_all("<MouseWheel>", self._on_wheel)
 
-        # ---- 悬停浮窗预览（固定在下半，不跟着表单滚） ----
-        preview_card = tk.Frame(right, bg=UI["panel_alt"], padx=12, pady=8)
-        preview_card.pack(fill="x", pady=(2, 4))
-        ttk.Label(preview_card, text="悬停浮窗预览（游戏里鼠标停在 buff 方块上显示这段）",
-                  style="AltHint.TLabel").pack(anchor="w")
-        self._preview_label = tk.Label(preview_card, textvariable=self.preview_var,
+        # ---- 游戏里的样子（固定在下方，不跟着表单滚）
+        preview_card = Card(right.body, radius=RADIUS_M, fill=UI["panel_alt"],
+                            outline=UI["line"], bg=UI["panel"])
+        preview_card.pack(fill="x", padx=16, pady=(6, 6))
+        tk.Label(preview_card.body, text="游戏里的样子（科技格 / 悬停说明预览）",
+                 bg=UI["panel_alt"], fg=UI["text_dim"], font=FONT_SMALL,
+                 anchor="w").pack(fill="x", padx=12, pady=(9, 0))
+        self._preview_label = tk.Label(preview_card.body, textvariable=self.preview_var,
                                        bg=UI["panel_alt"], fg=UI["text"],
                                        font=FONT_SMALL, justify="left", anchor="w",
-                                       wraplength=760)
-        self._preview_label.pack(anchor="w", pady=(2, 0))
+                                       wraplength=dpi.px(720))
+        self._preview_label.pack(fill="x", padx=12, pady=(2, 9))
 
-        # ---- 跨字段提示 ----
-        self._warning_label = ttk.Label(right, textvariable=self.warning_var,
-                                        style="Warn.TLabel", justify="left",
-                                        wraplength=900)
-        self._warning_label.pack(fill="x", anchor="w")
+        # ---- 跨字段提示
+        self._warning_label = tk.Label(right.body, textvariable=self.warning_var,
+                                       bg=UI["panel"], fg=UI["warn"], font=FONT_SMALL,
+                                       justify="left", anchor="w", wraplength=dpi.px(860))
+        self._warning_label.pack(fill="x", padx=16, pady=(0, 10))
 
     def _build_statusbar(self) -> None:
-        bar = ttk.Frame(self.root, style="Bar.TFrame", padding=(14, 6))
-        bar.pack(fill="x")
-        ttk.Label(bar, textvariable=self.status_var, style="Bar.TLabel").pack(side="left")
-        ttk.Label(bar, textvariable=self.dirty_var, style="BarDim.TLabel").pack(side="right")
+        """状态栏由 `EditorShell` 建好了（左边状态文字 / 右边快捷键提示）。"""
+        return None
 
     def _bind_shortcuts(self) -> None:
         self.root.bind("<Control-s>", lambda _e: (self.save(), "break")[1])
@@ -593,21 +416,25 @@ class BuffEditorApp:
     # ------------------------------------------------------------------
     # 列表 / 表单
     # ------------------------------------------------------------------
-    def current_buff(self) -> Buff:
-        return self.model.buff(self.current_id)
+    def current_page(self) -> TechPage:
+        return self.model.page(self.current_id)
 
-    def select_buff(self, buff_id: str) -> None:
-        self._select_buff(buff_id)
+    def select_page(self, page_id: str) -> None:
+        self._select_page(page_id)
 
-    def _select_buff(self, buff_id: str) -> None:
-        self.current_id = buff_id
+    def _select_page(self, page_id: str) -> None:
+        self.current_id = page_id
         self._build_sidebar()
         self._build_form()
         self._refresh_preview()
-        self._set_status("已切换到「%s」" % self.current_buff().name)
+        self._set_status("已切换到「%s」" % self.current_page().name)
+        try:
+            self.shell.reveal()
+        except (AttributeError, tk.TclError):
+            pass
 
     def _build_sidebar(self) -> None:
-        """把当前 doc 的条目填进左栏的 Treeview（两个分组：Buff / 科技）。
+        """把当前 doc 的条目填进左栏的 Treeview（四个分组：全局 / 原生 / 派系 / 科技页）。
 
         ★ 只**填条目**，不重建控件（Treeview 是一次建好的，见 `_build_body`）——
           重建控件会丢滚动位置，也会把用户正在看的那一段弹回顶部。
@@ -626,21 +453,21 @@ class BuffEditorApp:
                 self._sidebar_items = {}
                 parent = ""
                 last_section = ""
-                for buff in self.model.buffs():
-                    section = "科技" if buff.id.startswith("tech:") else "Buff"
+                for page in self.model.pages():
+                    section = _page_section(page.id)
                     if section != last_section:
                         parent = tree.insert("", "end", iid="sec:" + section,
                                              text="  " + section, open=True,
                                              tags=("section",))
                         last_section = section
-                    iid = "b:" + buff.id
+                    iid = "b:" + page.id
                     # ★ 科技页的名字本来就叫「科技 · 建筑加固」，前面再加个「科」图标
-                    #   会读成「科 科技·建筑加固」（像重复）；分组标题已经说明了类别，
-                    #   所以只有 buff 那一段保留图标。
-                    label = buff.name if section == "科技" \
-                        else "%s  %s" % (buff.icon, buff.name)
-                    tree.insert(parent, "end", iid=iid, text=label)
-                    self._sidebar_items[buff.id] = iid
+                    #   会读成「科 科技·建筑加固」（像重复）；分组标题已经说明了类别。
+                    text = page.name
+                    if section in ("全局", "科技页"):
+                        text = "%s  %s" % (page.icon, page.name)
+                    tree.insert(parent, "end", iid=iid, text=text)
+                    self._sidebar_items[page.id] = iid
             finally:
                 self._suppress_side = False
             self._sync_sidebar_selection()
@@ -680,7 +507,7 @@ class BuffEditorApp:
             return
         bid = iid[2:]
         if bid and bid != self.current_id:
-            self._select_buff(bid)
+            self._select_page(bid)
 
     def _build_form(self, *, reset_scroll: bool = True) -> None:
         """重建整张表单。
@@ -688,7 +515,7 @@ class BuffEditorApp:
         ★ 撤销/重做只改数值时 `reset_scroll=False`：保留用户正在看的位置，
           不再每次都把表单滚回顶部（用户报的「所有 UI 回到初始位置」）。
         """
-        buff = self.current_buff()
+        page = self.current_page()
         try:
             old_offset = self._canvas.canvasy(0.0)
         except tk.TclError:
@@ -698,10 +525,10 @@ class BuffEditorApp:
             for child in self._inner.winfo_children():
                 child.destroy()
             self.entries = {}
-            self._field_by_key = {f.key: f for f in buff.fields}
+            self._field_by_key = {f.key: f for f in page.fields}
 
             row_i = 0
-            for group, fields in field_groups(buff):
+            for group, fields in field_groups(page):
                 header = ttk.Label(self._inner, text=group, style="Group.TLabel")
                 header.grid(row=row_i, column=0, sticky="w", padx=4, pady=(12, 4))
                 row_i += 1
@@ -714,16 +541,20 @@ class BuffEditorApp:
                     # ★★ 2026.11：文字字段（科技的名字 / 小字 / 详情、槽位里的 id）要宽一点、
                     #   左对齐 —— 数字那套「窄框 + 右对齐」套在句子上没法读。
                     if f.kind == "text":
-                        ent = ttk.Entry(row, width=46, justify="left")
+                        ent = ttk.Entry(row, width=42, justify="left")
                     else:
                         ent = ttk.Entry(row, width=12, justify="right")
                     ent.grid(row=0, column=1, sticky="w", padx=(8, 4))
                     ttk.Label(row, text=f.unit, style="Hint.TLabel", width=4,
                               anchor="w").grid(row=0, column=2, sticky="w")
+                    # ★ 帮助文字放到**下一行**、和输入框左对齐：
+                    #   挤在同一行时，窄页面（槽位 / 科技页）里 wraplength 比可用宽度大，
+                    #   文字会直接冲出卡片右边被裁掉（实测）。
                     ttk.Label(row, text=f.help, style="Hint.TLabel",
-                              wraplength=420, justify="left").grid(
-                        row=0, column=3, sticky="w", padx=(8, 0))
-                    ent.insert(0, display_value(f, self.model.value(buff, f)))
+                              wraplength=dpi.px(560), justify="left").grid(
+                        row=1, column=1, columnspan=3, sticky="w", padx=(8, 0),
+                        pady=(1, 3))
+                    ent.insert(0, display_value(f, self.model.value(page, f)))
                     ent.bind("<Return>", lambda _e, key=f.key: self._commit_and_break(key))
                     ent.bind("<FocusOut>", lambda _e, key=f.key: self.commit_field(key))
                     ent.bind("<Escape>", lambda _e, key=f.key: self._reset_entry(key))
@@ -753,13 +584,13 @@ class BuffEditorApp:
                       font=("Microsoft YaHei UI", 18, "bold"))
 
     def _refresh_preview(self) -> None:
-        buff = self.current_buff()
-        self._draw_icon(buff.icon)
-        self.summary_var.set("%s「%s」  %s" % (buff.name, buff.icon,
-                                              self.model.summary(buff)))
-        self.intro_var.set(buff.intro)
-        self.preview_var.set(self.model.preview(buff))
-        warns = self.model.warnings(buff)
+        page = self.current_page()
+        self._draw_icon(page.icon)
+        self.summary_var.set("%s「%s」  %s" % (page.name, page.icon,
+                                              self.model.summary(page)))
+        self.intro_var.set(page.intro)
+        self.preview_var.set(self.model.preview(page))
+        warns = self.model.warnings(page)
         self.warning_var.set(("⚠ " + "\n⚠ ".join(warns)) if warns else "")
 
     # ------------------------------------------------------------------
@@ -771,7 +602,7 @@ class BuffEditorApp:
         if field is None or ent is None:
             return "break"
         ent.delete(0, "end")
-        ent.insert(0, display_value(field, self.model.value(self.current_buff(), field)))
+        ent.insert(0, display_value(field, self.model.value(self.current_page(), field)))
         self._set_status("已放弃「%s」这一格的改动" % field.label)
         return "break"
 
@@ -785,7 +616,7 @@ class BuffEditorApp:
             return False
         field = self._field_by_key.get(key)
         ent = self.entries.get(key)
-        buff = self.current_buff()
+        page = self.current_page()
         if field is None or ent is None:
             return False
         text = ent.get()
@@ -795,14 +626,14 @@ class BuffEditorApp:
             self._set_status("「%s」没改成：%s（原值保留）" % (field.label, exc), bad=True)
             self._reset_entry_silent(key)
             return False
-        old = self.model.value(buff, field)
+        old = self.model.value(page, field)
         if value == old and not note:
             ent.delete(0, "end")
             ent.insert(0, display_value(field, old))
             self._set_status("「%s」没有变化（%s）" % (field.label, display_value(field, old)))
             return True
         self._push_undo()
-        self.model.set_value(buff, field, value)
+        self.model.set_value(page, field, value)
         ent.delete(0, "end")
         ent.insert(0, display_value(field, value))
         self._redo_stack.clear()
@@ -810,7 +641,7 @@ class BuffEditorApp:
         self._refresh_dirty()
         shown = display_value(field, value)
         self._set_status("已修改「%s · %s」= %s%s（还没保存）"
-                         % (buff.name, field.label, shown,
+                         % (page.name, field.label, shown,
                             "；" + note if note else ""))
         return True
 
@@ -820,7 +651,7 @@ class BuffEditorApp:
         if field is None or ent is None:
             return
         ent.delete(0, "end")
-        ent.insert(0, display_value(field, self.model.value(self.current_buff(), field)))
+        ent.insert(0, display_value(field, self.model.value(self.current_page(), field)))
 
     def _push_undo(self) -> None:
         self._undo_stack.append(self.model.text)
@@ -860,6 +691,10 @@ class BuffEditorApp:
             return
         self._refresh_dirty()
         self._set_status("已保存 → %s" % target, ok=True)
+        try:
+            self.shell.toast("已保存 %s" % Path(target).name)
+        except (AttributeError, tk.TclError):
+            pass
 
     def reload_from_disk(self, ask: bool = True) -> None:
         if ask and self.model.dirty:
@@ -901,7 +736,7 @@ class BuffEditorApp:
 
     def _refresh_dirty(self) -> None:
         self.dirty_var.set("● 未保存" if self.model.dirty else "已保存")
-        self.root.title("DAEEM buff 编辑器%s" % (" *" if self.model.dirty else ""))
+        self.root.title("DAEEM 科技编辑器%s" % (" *" if self.model.dirty else ""))
 
     # 测试读口（不碰私有变量）
     def status_text(self) -> str:
@@ -927,11 +762,29 @@ class BuffEditorApp:
         ent.insert(0, text)
 
 
+def _page_section(page_id: str) -> str:
+    """左栏分组：全局 / 原生科技 / 派系科技 / 科技页。
+
+    ★ 只影响「怎么摆」，不参与任何数据判断 —— 页面 id 是 `tech:` 开头的那一套
+      （见 `model.ConfigModel.tech_pages()`）。
+    """
+    if page_id == "tech:global":
+        return "全局"
+    if page_id.startswith("tech:slots:"):
+        return "科技页"
+    if page_id.startswith("tech:list:"):
+        return "原生科技"
+    if page_id.startswith("tech:clan_list:"):
+        return "派系科技"
+    return "其他"
+
+
 def run(config_path: Path, project_dir: Optional[Path] = None) -> int:
     """打开编辑器主窗口（调用方负责 mainloop 之外的一切）。"""
     model = ConfigModel.load(Path(config_path))
+    dpi.enable_high_dpi()
     root = tk.Tk()
     _apply_theme(root)
-    BuffEditorApp(root, model, config_path, project_dir)
+    TechEditorApp(root, model, config_path, project_dir)
     root.mainloop()
     return 0

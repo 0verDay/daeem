@@ -34,6 +34,8 @@ const FillButtonRes = preload("res://view/fill_button.gd")
 const SfxRes = preload("res://view/sfx.gd")
 const LayoutRes = preload("res://view/menu_deck_layout.gd")
 const PlateCycleRes = preload("res://view/menu_art/plate_cycle.gd")
+## ★★ 菜单光标（箭头 / 点两档；见 view/menu_cursor.gd）。
+const MenuCursorRes = preload("res://view/menu_cursor.gd")
 
 const PAGE_INTRO := 0
 const PAGE_MENU := 1
@@ -68,6 +70,8 @@ var _shine_tween: Tween = null
 
 var _boot_fade: ColorRect = null
 var _boot_tween: Tween = null
+## ★ 菜单光标层（挂在 main 上、layer=500；菜单隐藏时一起下线）。
+var _cursor = null
 
 
 func setup(p_cfg: ConfigRes, p_font: Font) -> void:
@@ -87,6 +91,7 @@ func setup(p_cfg: ConfigRes, p_font: Font) -> void:
 	_build_art()
 	_build_intro()
 	_build_deck()
+	_build_cursor()
 	_build_boot_fade()
 	show_page(PAGE_INTRO)
 	_play_boot_fade_in()
@@ -126,6 +131,8 @@ func close() -> void:
 	_stop_title_shine()
 	_cancel_intro_morph()
 	_finish_boot_fade()
+	if _cursor != null and is_instance_valid(_cursor):
+		_cursor.set_active(false)
 	# 进游戏之后把左侧那幅画停掉：它每帧都在重建几何，没必要在战斗里空转。
 	if _art != null:
 		_art.set_running(false)
@@ -138,6 +145,8 @@ func open_menu() -> void:
 	show_page(PAGE_MENU)
 	_finish_boot_fade()
 	set_menu_input_blocked(false)
+	if _cursor != null and is_instance_valid(_cursor):
+		_cursor.set_active(true)
 	if _menu_deck != null:
 		_menu_deck.reset_to_main(true)
 		_menu_deck.finish_intro(true)
@@ -462,6 +471,38 @@ func _build_deck() -> void:
 	_menu_deck.ce_xs_2_pressed.connect(func(): ce_xs_2_pressed.emit())
 	_menu_deck.quit_requested.connect(func(): quit_requested.emit())
 	_menu_deck.prepare_open_changed.connect(_on_prepare_open_changed)
+
+
+## ★★ 菜单光标：挂在 **main**（start_screen 的父节点）上、layer=500。
+##
+## 为什么不挂在本层（start_screen 是 layer=100 的 CanvasLayer）：
+##   · 退出确认浮层是 layer=200，本层的光标会被它盖住 —— 而那时系统光标是藏着的，
+##     玩家会看到「鼠标不见了」；
+##   · 子 CanvasLayer 不跟着父层 `hide()`，进游戏后可能残留一个光标。
+## 挂到 main 上、由 `close()` / `open_menu()` 显式开关，两条路都不会漏。
+func _build_cursor() -> void:
+	if not MenuCursorRes.supported(cfg):
+		return
+	_cursor = MenuCursorRes.new()
+	var host: Node = get_parent()
+	if host == null:
+		host = self
+	host.add_child(_cursor)
+	_cursor.setup(cfg)
+	_cursor.set_active(true)
+
+
+## 菜单整层被销毁（退出游戏）：系统光标一定要还回去。
+func _exit_tree() -> void:
+	if _cursor != null and is_instance_valid(_cursor):
+		_cursor.set_active(false)
+		_cursor.queue_free()
+	_cursor = null
+
+
+## 给测试 / 排查：当前菜单光标（没有则是 null）。
+func menu_cursor():
+	return _cursor
 
 
 func _build_rule(parent: Control, node_name: String, y: float) -> Control:

@@ -398,6 +398,11 @@ func _bench_micro(w, cfg) -> void:
 	pts = PathfinderRes.round_corners(map, w.buildings, cfg, pts, w.my_faction)
 	var us_round := Time.get_ticks_usec() - t0
 
+	# ★ P2 诊断：生产路径传了 `crowd`（segment_clear 走 C#），与上面不传的 GDScript 版对比。
+	t0 = Time.get_ticks_usec()
+	var pts_cs = PathfinderRes.smooth_path(map, w.buildings, cfg, raw, w.my_faction, w.crowd)
+	var us_smooth_cs := Time.get_ticks_usec() - t0
+
 	t0 = Time.get_ticks_usec()
 	var slot = PathfinderRes.nearest_reachable(map, w.buildings, cfg, from, to, w.my_faction)
 	var us_near := Time.get_ticks_usec() - t0
@@ -407,6 +412,7 @@ func _bench_micro(w, cfg) -> void:
 	print("[BENCH]   reachable_tiles (C# kernel)    %8.3f ms   (mask %d bytes)" % [float(us_bfs_cs) / 1000.0, (mask as PackedByteArray).size()])
 	print("[BENCH]     其中首次建表（改建筑后的顿卡） %8.3f ms" % [float(us_warm - us_bfs_cs) / 1000.0])
 	print("[BENCH]   smooth_path                 %8.3f ms" % [float(us_smooth) / 1000.0])
+	print("[BENCH]   smooth_path (crowd/C#)      %8.3f ms" % [float(us_smooth_cs) / 1000.0])
 	print("[BENCH]   round_corners               %8.3f ms" % [float(us_round) / 1000.0])
 	print("[BENCH]   nearest_reachable           %8.3f ms" % [float(us_near) / 1000.0])
 
@@ -505,7 +511,15 @@ func _bench_command(w, cfg, n: int, goal: Vector2) -> void:
 	for u in w.units:
 		ids.append(u.id)
 
-	var chunk := 100
+	var chunk := maxi(1, _env_int("DAEEM_BENCH_CHUNK", 100))
+	UnitRes.profile_move_to = true
+	CommandRes.profile_cmd = true
+	CommandRes.cmd_us_slots = 0
+	CommandRes.cmd_us_index = 0
+	UnitRes.move_to_us_path = 0
+	UnitRes.move_to_us_smooth = 0
+	UnitRes.move_to_us_congest = 0
+	UnitRes.move_to_us_rest = 0
 	var t_all := Time.get_ticks_usec()
 	print("[BENCH] -- command phase (group move, %d units) --" % n)
 	var done := 0
@@ -528,6 +542,17 @@ func _bench_command(w, cfg, n: int, goal: Vector2) -> void:
 			with_path += 1
 	print("[BENCH]   TOTAL %.1f ms  (%.3f ms/unit) ; %d/%d got a path"
 		% [total_ms, total_ms / float(n), with_path, n])
+	print("[BENCH]     breakdown: path=%.1f ms  smooth=%.1f ms  congest=%.1f ms  rest=%.1f ms"
+		% [float(UnitRes.move_to_us_path) / 1000.0,
+			float(UnitRes.move_to_us_smooth) / 1000.0,
+			float(UnitRes.move_to_us_congest) / 1000.0,
+			float(UnitRes.move_to_us_rest) / 1000.0])
+	print("[BENCH]     cmd breakdown: slots=%.1f ms  index=%.1f ms  orders=%.1f ms"
+		% [float(CommandRes.cmd_us_slots) / 1000.0,
+			float(CommandRes.cmd_us_index) / 1000.0,
+			(total_ms - float(CommandRes.cmd_us_slots + CommandRes.cmd_us_index) / 1000.0)])
+	CommandRes.profile_cmd = false
+	UnitRes.profile_move_to = false
 
 
 # ------------------------------------------------------------------

@@ -632,6 +632,9 @@ static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void:
 		# ★ 快照里「没有了」= 视野来源少了一个。
 		world.mark_vision_dirty()
 	world.units = keep
+	# ★★ P2：`unit_by_id()` 现在会惰性缓存 id→单位；整表替换后必须让它作废，
+	#    否则客机会继续用旧索引返回「快照里已经删掉」的阵亡单位。
+	world.invalidate_unit_lookup()
 	# 重建索引（去掉本帧阵亡的），投掷物解析目标 / 来源时复用同一份。
 	unit_index.clear()
 	for u in world.units:

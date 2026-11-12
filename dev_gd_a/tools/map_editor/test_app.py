@@ -838,24 +838,20 @@ def t_redraw_coalescing() -> None:
         ok(pending <= 4, "★ 128 个拖动事件只触发了 %d 次重绘（合并生效）" % pending)
         eq((editor.ox, editor.oy), (home[0] + 127, home[1] + 127), "拖动把视野移到位了")
 
-        # 停手之后那次重绘必须真的执行（画面不能停在旧样子）。
-        # ⚠️ 两件事别踩：① after 回调里存的是「请求重绘那一刻」的 self.redraw（原来的绑定方法），
-        #    所以换掉 self.redraw 拦不住它 —— 要看画布内容；
-        #    ② after 要等**真实时间**过去才跑，root.update() 只处理待办事件、不推进定时器，
-        #    所以这里要 sleep 一下再 update（这也是实测踩出来的）。
+        # 停手之后画面必须立刻是完整的（不能停在旧样子）。
+        # ★ 2026.11 起：平移改成「拖动时 move 图元、松手同步补一次完整重绘」，
+        #   所以**不用再等 after 定时器**——松手那一刻画布就该是满的。
+        #   （旧断言是「清空画布 → sleep 等排队的重绘」，那是按旧实现写的。）
         editor.hover = None
-        editor.canvas.delete("all")           # 清空 → 如果补跑的那次重绘没执行，画布就空着
-        for _ in range(20):
-            time.sleep(0.02)
-            root.update()
-            if editor.canvas.find_all():
-                break
-        ok(len(editor.canvas.find_all()) > 0, "★ 扫尾的那次重绘真的执行了（画布不是空的）")
+        ok(len(editor.canvas.find_all()) > 0,
+           "★ 松手之后画布立刻是完整的（同步补绘，不用等定时器）")
+        eq((editor.ox, editor.oy), (home[0] + 127, home[1] + 127),
+           "★ 松手不会把视野弹回原处")
 
         # 重绘之后画布内容是对的（虚线格盖满视野）
         editor.hover = None
         real()
-        vx0, vy0, vx1, vy1 = editor.visible_tile_range()
+        vx0, vy0, vx1, vy1 = editor.visible_tile_range(app_module.OVERSCAN)
         dashed = [i for i in editor.canvas.find_all()
                   if editor.canvas.type(i) == "rectangle" and editor.canvas.itemcget(i, "dash")]
         eq(len(dashed), (vx1 - vx0 + 1) * (vy1 - vy0 + 1), "重绘之后的虚线格数量仍然正确")
@@ -883,7 +879,7 @@ def t_zoom_out_keeps_it_fast() -> None:
         # 1:1：格子够大 → 该画；数量 = 视野里的格子数
         editor.zoom = 1.0
         before = dashed_count()
-        vx0, vy0, vx1, vy1 = editor.visible_tile_range()
+        vx0, vy0, vx1, vy1 = editor.visible_tile_range(app_module.OVERSCAN)
         eq(before, (vx1 - vx0 + 1) * (vy1 - vy0 + 1),
            "1:1 时视野里每格一个虚线框（%d 个）" % before)
         ok(before > 0, "1:1 时确实画了虚线格")
@@ -895,7 +891,7 @@ def t_zoom_out_keeps_it_fast() -> None:
            "缩到很远时图元很少（%d 个）" % len(editor.canvas.find_all()))
 
         # 但已经画出来的地块还得看得见：拿一个在视野正中的格子来画
-        vx0, vy0, vx1, vy1 = editor.visible_tile_range()
+        vx0, vy0, vx1, vy1 = editor.visible_tile_range(app_module.OVERSCAN)
         target = editor.view_to_world((vx0 + vx1) // 2, (vy0 + vy1) // 2)
         editor.zoom = 1.0
         click_at(editor, *target)
@@ -1186,7 +1182,7 @@ def t_canvas_only_has_dashed_cells() -> None:
         solids = [i for i in _content_rectangles(editor) if not editor.canvas.itemcget(i, "dash")]
         ok(len(solids) <= 2, "★ 非虚线的方框只有高亮/选中框（实际 %d 个）" % len(solids))
         # 虚线格的数量 = 视野里的格子数（每一格一个虚线框）
-        vx0, vy0, vx1, vy1 = editor.visible_tile_range()
+        vx0, vy0, vx1, vy1 = editor.visible_tile_range(app_module.OVERSCAN)
         eq(len(dashed), (vx1 - vx0 + 1) * (vy1 - vy0 + 1),
            "★ 视野里每一格都画了一个虚线框（%d 格）" % len(dashed))
 
@@ -1283,7 +1279,8 @@ def t_file_buttons_wired() -> None:
             ok(btn.winfo_manager() == "pack", "「%s」按钮真的被排进了工具栏" % expected)
         ok("import" not in buttons, "★ 工具栏不再有手动导入按钮")
 
-        # 「可见地图」菜单只列有用表三张
+        # 「可见地图」菜单 = 有用表里列出的图（**读表**对比，别把张数写死：
+        #   表是数据，2026.11 之后又加过几张，写死会在数据更新后变成假失败）
         menu = getattr(editor, "visible_map_menu", None)
         ok(menu is not None, "工具栏有「可见地图」菜单")
         labels = []
@@ -1291,7 +1288,10 @@ def t_file_buttons_wired() -> None:
             end = menu.index("end")
             if end is not None:
                 labels = [menu.entrycget(i, "label") for i in range(int(end) + 1)]
-        eq(labels, ["main_test", "ai_test_2", "dscj"], "★ 可见地图菜单只列三张有用图")
+        visible = json.loads(
+            (PROJECT_DIR / "data" / "editor_visible.json").read_text(encoding="utf-8-sig"))
+        eq(labels, list(visible.get("maps") or []),
+           "★ 可见地图菜单 = 有用表里的地图（不多不少）")
 
         # 点「导出 JSON」：替换掉文件对话框，确认它真的写出文件
         target = tmpdir / "from_button.json"

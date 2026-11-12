@@ -46,6 +46,12 @@ const BuildingRes = preload("res://logic/building.gd")
 const EconomyRes = preload("res://logic/economy.gd")
 const FactionRes = preload("res://logic/faction.gd")
 
+## ★ P2 诊断：命令帧的三段耗时（只在基准里打开）。
+static var profile_cmd: bool = false
+static var cmd_us_slots: int = 0
+static var cmd_us_index: int = 0
+static var cmd_us_orders: int = 0
+
 
 ## 统一入口。返回 true = 命令被接受（不代表效果已达成）。
 ##
@@ -213,12 +219,20 @@ static func _collect_units(world, ids: Array, owner_faction: String,
 ## @param player true = 玩家命令（受击反击不能打断它；见 unit.order_move）
 static func order_group_formation(world, cfg: ConfigRes, group: Array, click: Vector2,
 		player: bool = false) -> bool:
+	var _ts: int = Time.get_ticks_usec() if profile_cmd else 0
 	var slots := formation_slots(world, cfg, group, click)
+	if _ts != 0:
+		cmd_us_slots += Time.get_ticks_usec() - _ts
+		_ts = Time.get_ticks_usec()
+	# ★★ P2：整队下令只建**一次**「其它单位」空间索引，供每个单位的到达判定查附近几格。
+	var settled := _settled_index(world, group)
+	if _ts != 0:
+		cmd_us_index += Time.get_ticks_usec() - _ts
 	if slots.is_empty():
 		# 排不出阵（比如点击点在地图外）→ 退回「所有人都走到点击点」
 		var any_fallback := false
 		for u in group:
-			if u.order_move(world, cfg, click, player):
+			if u.order_move(world, cfg, click, player, settled):
 				any_fallback = true
 		return any_fallback
 
@@ -230,7 +244,7 @@ static func order_group_formation(world, cfg: ConfigRes, group: Array, click: Ve
 	if not PathfinderRes.passable(world.map, world.buildings, cfg, anchor.x, anchor.y, group[0].faction):
 		var any2 := false
 		for u in group:
-			if u.order_move(world, cfg, click, player):
+			if u.order_move(world, cfg, click, player, settled):
 				any2 = true
 		return any2
 
@@ -239,9 +253,34 @@ static func order_group_formation(world, cfg: ConfigRes, group: Array, click: Ve
 		var u = group[i]
 		# ★ 把槽位相对点击点的偏移也传下去：unit 会用它把「到点击格的路线」整体平移，
 		#   于是全队走出平行的路线、**行进中也保持阵型**（不再先汇聚到点击点再散开）。
-		if u.order_move_via_field(world, cfg, slots[i], anchor, slots[i] - click, player):
+		if u.order_move_via_field(world, cfg, slots[i], anchor, slots[i] - click, player, settled):
 			any = true
 	return any
+
+
+## ★★ P2：把「**不在这次命令里的**存活单位」按格建索引（`tile_key → Array[Unit]`）。
+##
+## 为什么排除本次命令的队伍：它们马上都要走，不该被当成「占着落点的人」。
+## 其余单位（待命 / 别人正在走）都收进来；具体某个函数要不要跳过 `moving`，
+## 由 `unit._arrival_congested()` / `_slot_ok()` 自己判（两者口径不同）。
+##
+## 键公式必须与 `unit.gd` 的 `tile_key()` 完全一致（x * 4096 + y）。
+static func _settled_index(world, group: Array) -> Dictionary:
+	var skip: Dictionary = {}
+	for u in group:
+		if u != null:
+			skip[String(u.id)] = true
+	var idx: Dictionary = {}
+	for other in world.units:
+		if other == null or not other.alive:
+			continue
+		if skip.has(String(other.id)):
+			continue
+		var k: int = int(other.tx) * 4096 + int(other.ty)
+		if not idx.has(k):
+			idx[k] = []
+		(idx[k] as Array).append(other)
+	return idx
 
 
 ## 给一群单位排槽位：返回与 group **一一对应**的落点数组（格坐标点）。
@@ -280,16 +319,32 @@ static func formation_slots(world, cfg: ConfigRes, group: Array, click: Vector2)
 	var cols: int = maxi(1, int(ceil(sqrt(float(slot_count) * cfg.formation_aspect))))
 
 	# 部队顺序：各部队按「成员横向质心」升序（tiebreak 用部队 id，保证确定性）。
+	#
+	# ★★ P2：把「每个单位的部队 id / 横向投影」**各算一次**存表，再拿去排序。
+	#   旧实现让 sort_custom 的比较器反复调 `_troop_id()` + 扫成员数组求平均 ——
+	#   1000 单位时比较器要跑约一万次，命令帧实测 67 ms 全花在这里。
+	var troop_of: Array = []
+	var side_pos: Array = []
+	for i in n:
+		troop_of.append(_troop_id(world, group[i]))
+		side_pos.append((group[i].pos as Vector2).dot(side))
 	var troop_members: Dictionary = {}
 	for i in n:
-		var tid := _troop_id(world, group[i])
+		var tid: String = troop_of[i]
 		if not troop_members.has(tid):
 			troop_members[tid] = []
 		(troop_members[tid] as Array).append(i)
+	var troop_avg: Dictionary = {}
+	for tid in troop_members.keys():
+		var arr: Array = troop_members[tid]
+		var s := 0.0
+		for i in arr:
+			s += float(side_pos[i])
+		troop_avg[tid] = s / float(arr.size())
 	var troop_order: Array = troop_members.keys()
 	troop_order.sort_custom(func(a, b) -> bool:
-		var sa := _troop_side_avg(troop_members[a], group, side)
-		var sb := _troop_side_avg(troop_members[b], group, side)
+		var sa: float = float(troop_avg[a])
+		var sb: float = float(troop_avg[b])
 		if absf(sa - sb) > 1e-6:
 			return sa < sb
 		return String(a) < String(b))
@@ -325,12 +380,12 @@ static func formation_slots(world, cfg: ConfigRes, group: Array, click: Vector2)
 	for t in tier_keys:
 		var members: Array = (tiers[t] as Array).duplicate()
 		members.sort_custom(func(a, b) -> bool:
-			var ta: int = troop_rank[_troop_id(world, group[a])]
-			var tb: int = troop_rank[_troop_id(world, group[b])]
+			var ta: int = int(troop_rank[troop_of[a]])
+			var tb: int = int(troop_rank[troop_of[b]])
 			if ta != tb:
 				return ta < tb
-			var pa: float = (group[a].pos as Vector2).dot(side)
-			var pb: float = (group[b].pos as Vector2).dot(side)
+			var pa: float = float(side_pos[a])
+			var pb: float = float(side_pos[b])
 			if absf(pa - pb) > 1e-6:
 				return pa < pb
 			return String(group[a].id) < String(group[b].id))
@@ -365,16 +420,6 @@ static func _troop_id(world, u) -> String:
 	if world != null and world.has_method("leader_of"):
 		return String(world.leader_of(u))
 	return String(u.leader_id) if u.leader_id != "" else String(u.id)
-
-
-## 一组单位（下标数组）在当前横向轴上的平均投影。
-static func _troop_side_avg(indices: Array, group: Array, side: Vector2) -> float:
-	if indices.is_empty():
-		return 0.0
-	var s := 0.0
-	for i in indices:
-		s += (group[i].pos as Vector2).dot(side)
-	return s / float(indices.size())
 
 
 ## 槽位落点微调：那一格不可通行时，往周围挪到最近的可通行格；实在没有就退回点击点。
@@ -565,21 +610,24 @@ static func apply_build(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 	#    UI 的格子会置灰，这里是权威侧兜底（命令仍然可能来自键盘 / 联机 / 测试）。
 	if not world.building_unlocked(owner, type):
 		world.push_event({"type": "build_rejected", "tile": Vector2i(tx, ty),
-			"reason": "base_level"})
+			"reason": "base_level", "faction": owner})
 		return false
 	if not world.can_build_at(tx, ty):
-		world.push_event({"type": "build_rejected", "tile": Vector2i(tx, ty), "reason": "occupied_or_terrain"})
+		world.push_event({"type": "build_rejected", "tile": Vector2i(tx, ty),
+			"reason": "occupied_or_terrain", "faction": owner})
 		return false
 	# ★★ 只能在自己的区划里建造（本轮新增）：中立 / 敌方区划一律拒绝。
 	#    否则玩家能在中立地上立一栋楼，让那一整块地**立即归己**（既成事实扩张）——
 	#    那正是本次要修的 bug。判据只有 `world.zone_allows_build` 一处。
 	if not world.zone_allows_build(tx, ty, owner):
-		world.push_event({"type": "build_rejected", "tile": Vector2i(tx, ty), "reason": "not_in_zone"})
+		world.push_event({"type": "build_rejected", "tile": Vector2i(tx, ty),
+			"reason": "not_in_zone", "faction": owner})
 		return false
 	# ★★ 2026.10.25：敌方单位已经进入区划中心 3×3 占领区 ⇒ 整块区划禁止建造。
 	if world.has_method("zone_capture_blocks_build") \
 			and world.zone_capture_blocks_build(tx, ty, owner):
-		world.push_event({"type": "build_rejected", "tile": Vector2i(tx, ty), "reason": "under_capture"})
+		world.push_event({"type": "build_rejected", "tile": Vector2i(tx, ty),
+			"reason": "under_capture", "faction": owner})
 		return false
 	var def_v = cfg.get_path_value("building.%s" % type)
 	var def: Dictionary = def_v if typeof(def_v) == TYPE_DICTIONARY else {}
@@ -590,7 +638,8 @@ static func apply_build(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 	# ★ 钱从**下单那一方**的池子里出（合作模式：客机花的不是房主的钱）。
 	#   池子为 null = 这一方没有资源库 = 资源无限（见 world.resource_pool_for）。
 	if not EconomyRes.try_spend(cfg, world.resource_pool_for(owner), cost):
-		world.push_event({"type": "build_rejected", "tile": Vector2i(tx, ty), "reason": "cost"})
+		world.push_event({"type": "build_rejected", "tile": Vector2i(tx, ty),
+			"reason": "cost", "faction": owner})
 		return false
 	return world.add_building(type, tx, ty, owner) != null
 

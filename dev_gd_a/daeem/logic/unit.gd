@@ -116,7 +116,8 @@ var general_growth_damage: float = 0.0
 ##    伤害判定在每帧每单位的路径上，创建时算好、之后只读，比每次下潜 JSON 便宜。
 var unit_class: String = CLASS_INFANTRY
 var ranged: bool = false
-## ★★ 兵种特性（本轮新增；权威定义在 config.json 的 `unit.types.<id>.traits`）。
+## ★★ 兵种特性（本轮新增；权威定义在 config.json 的 `unit.unit_traits` 池 +
+##   `unit.types.<id>.trait_ids`；老配置的 `unit.types.<id>.traits` 仍然会被合并）。
 ##
 ##   · `attack_bonus_vs_class` —— 打某个**兵种大类**时的伤害加成（0.25 = +25%）。
 ##     键是 `unit.classes` 的 id（infantry / cavalry），空字典 = 没有攻击特性。
@@ -134,6 +135,8 @@ var ranged: bool = false
 ##   同一条口径 —— 伤害判定在每帧每单位的路径上，出生时读一次表、之后只读字段。
 ## ★ 为什么归**单位**而不是**将领**：将领按所属兵种取特性（见上面 `unit_type` 的说明），
 ##   于是「将领 3 是骑手 ⇒ 它也有骑手那两条」自动成立，代码里没有将领特例。
+##   ★★ 2026.11：单位特性池与将领特性池是**两张表** —— 前者只作用于单位（含将领作为单位
+##   的那一份），后者是「将领本人 + 旗下部队」的光环（见下面的 `aura_*`）。
 var attack_bonus_vs_class: Dictionary = {}
 var ranged_damage_reduction: float = 0.0
 var melee_damage_reduction: float = 0.0
@@ -1225,8 +1228,14 @@ func leash_range(cfg: ConfigRes) -> float:
 ##
 ##    挑空位本身是对的 —— 它是为「玩家点一个点、一群人都要走过去站好」服务的
 ##    （见 `_arrival_congested` 的注释）。所以这里是**分流**，不是删功能。
-func move_to(world, cfg: ConfigRes, world_pt: Vector2, settle: bool = true) -> bool:
+## @param settled_index 可选的「已站定单位」空间索引（`tile_key → Array[Unit]`）。
+##        `command_processor.order_group_formation` 整队下令时只建**一次**，
+##        把 `_arrival_congested` / `_slot_ok` 从 O(n²) 降到 O(附近几格)。
+##        null = 老路径（单单位下令 / AI / 追击），逐条扫 `world.units`，行为不变。
+func move_to(world, cfg: ConfigRes, world_pt: Vector2, settle: bool = true,
+		settled_index: Variant = null) -> bool:
 	move_to_calls += 1
+	var _t0: int = Time.get_ticks_usec() if profile_move_to else 0
 	var map = world.map
 	var from := Vector2i(tx, ty)
 
@@ -1284,12 +1293,21 @@ func move_to(world, cfg: ConfigRes, world_pt: Vector2, settle: bool = true) -> b
 			raw[k] += _field_offset
 		# ★ 平移可能把路点推进山 / 墙 / 敌方建筑：逐点校验，一旦有点不可通行就整条
 		#   退回普通的「汇聚 + 散开」路线，保证不会把单位指进障碍。
+		# ★★ P2：整条平移路线一次批量校验（C# 内核），不再逐点跨语言调用。
+		#   内核不可用时才退回逐点 `pathfinder.passable()`。
 		var shifted_ok := true
-		for k in range(1, raw.size()):
-			if not PathfinderRes.passable(world.map, world.buildings, cfg,
-					floori(raw[k].x), floori(raw[k].y), faction):
-				shifted_ok = false
-				break
+		var batch_ok: Variant = null
+		if world.crowd != null:
+			batch_ok = world.crowd.all_shifted_passable_here(
+				cfg, PackedVector2Array(raw), 0.0, 0.0, faction)
+		if batch_ok != null:
+			shifted_ok = bool(batch_ok)
+		else:
+			for k in range(1, raw.size()):
+				if not PathfinderRes.passable(world.map, world.buildings, cfg,
+						floori(raw[k].x), floori(raw[k].y), faction):
+					shifted_ok = false
+					break
 		if not shifted_ok:
 			formation_shift = false
 			tile_path = world.crowd.tile_path_via(world, cfg, from, dest_tile, _field_tile, faction)
@@ -1312,6 +1330,9 @@ func move_to(world, cfg: ConfigRes, world_pt: Vector2, settle: bool = true) -> b
 		#    格宽 64px 时 0.001 格 = 0.064px，用 EPS 兜底既不影响手感，又不会漏掉微调。
 		raw.append(dest_pt)
 
+	if _t0 != 0:
+		move_to_us_path += Time.get_ticks_usec() - _t0
+		_t0 = Time.get_ticks_usec()
 	# ★ 第一步：把折线拉直。开阔地带只剩一条直线，遇到山 / 城墙才保留拐点。
 	var pts := PathfinderRes.smooth_path(map, world.buildings, cfg, raw, faction, world.crowd)
 	# ★ 第二步：把拉直后剩下的硬拐角圆化。
@@ -1319,6 +1340,9 @@ func move_to(world, cfg: ConfigRes, world_pt: Vector2, settle: bool = true) -> b
 	#   （实测直角弯单帧转角 63°）。圆化把转向摊到十几帧里。
 	#   安全性：圆角曲线落在折线的凸包内，且结果里每一段都过 segment_clear 兜底。
 	pts = PathfinderRes.round_corners(map, world.buildings, cfg, pts, faction, world.crowd)
+	if _t0 != 0:
+		move_to_us_smooth += Time.get_ticks_usec() - _t0
+		_t0 = Time.get_ticks_usec()
 	# 丢掉第一个点（那是当前位置，不需要走）
 	var trimmed: Array[Vector2] = []
 	for i in range(1, pts.size()):
@@ -1335,11 +1359,15 @@ func move_to(world, cfg: ConfigRes, world_pt: Vector2, settle: bool = true) -> b
 	# 期望落点：目标被占时会换成一个空位（见 step_along_path 的到达处理）
 	# ★ settle = false（追击）时整段跳过 —— 理由见 move_to 的 @param。
 	var settled_here := false
-	if settle and _arrival_congested(world, cfg, dest_pt):
-		var alt_slot = _find_arrival_slot(world, cfg, dest_pt, faction, from)
+	if settle and _arrival_congested(world, cfg, dest_pt, settled_index):
+		var alt_slot = _find_arrival_slot(world, cfg, dest_pt, faction, from,
+			0.0, settled_index)
 		if alt_slot != null:
 			dest_pt = alt_slot
 			settled_here = true
+	if _t0 != 0:
+		move_to_us_congest += Time.get_ticks_usec() - _t0
+		_t0 = Time.get_ticks_usec()
 
 	goal = dest_pt
 	has_goal = true
@@ -1355,6 +1383,8 @@ func move_to(world, cfg: ConfigRes, world_pt: Vector2, settle: bool = true) -> b
 	#    如果 move_to 里把它清掉，回位动作就会**自己把计数器清零**，
 	#    于是「最多回位 3 次」永远不生效 —— 实测直接就退化成 12 个单位永远 moving=true。
 	#    真正的「新命令」由 order_move() 负责清零。
+	if _t0 != 0:
+		move_to_us_rest += Time.get_ticks_usec() - _t0
 	return true
 
 
@@ -1418,10 +1448,11 @@ func _tile_path(world, cfg: ConfigRes, from: Vector2i, to: Vector2i) -> Variant:
 ## ★ `offset`（本轮新增）：落点相对点击点 field_tile 的偏移。非零时 → move_to 走
 ##   「平移路线」（保持阵型）；为零时 → 走旧的「汇聚 + 散开」（行军攻击用）。
 func order_move_via_field(world, cfg: ConfigRes, dest_pt: Vector2, field_tile: Vector2i,
-		offset: Vector2 = Vector2.ZERO, player: bool = false) -> bool:
+		offset: Vector2 = Vector2.ZERO, player: bool = false,
+		settled_index: Variant = null) -> bool:
 	_field_tile = field_tile
 	_field_offset = offset
-	var ok := order_move(world, cfg, dest_pt, player)
+	var ok := order_move(world, cfg, dest_pt, player, settled_index)
 	_field_tile = Vector2i(-1, -1)
 	_field_offset = Vector2.ZERO
 	return ok
@@ -1433,12 +1464,13 @@ func order_move_via_field(world, cfg: ConfigRes, dest_pt: Vector2, field_tile: V
 ## @param player true = **玩家**命令（由 command_processor 传 true）。
 ##        ★ 程序命令（巡逻 / 救援 / 受击反击）在 `is_retaliating()` 期间会被拒绝 ——
 ##          受击反击必须能打断它们（需求），而玩家命令始终可以覆盖反击。
-func order_move(world, cfg: ConfigRes, world_pt: Vector2, player: bool = false) -> bool:
+func order_move(world, cfg: ConfigRes, world_pt: Vector2, player: bool = false,
+		settled_index: Variant = null) -> bool:
 	if neutralized:
 		return false                       # 大本营没了：不再接受任何命令
 	if is_retaliating() and not player:
 		return false
-	var ok := move_to(world, cfg, world_pt)
+	var ok := move_to(world, cfg, world_pt, true, settled_index)
 	if ok:
 		retaliate_target = null           # 新命令（玩家或程序）作废这次反击
 		player_order = false              # 由 command_processor 在玩家命令后置真
@@ -1635,12 +1667,28 @@ func min_unit_distance(cfg: ConfigRes) -> float:
 ##    1000 个单位下一个命令就是 100 万次「属性访问 + 开方」。
 ##    最小圆心距只有 0.252 格，所以「格差 > 1」的人根本不可能落在半径内，
 ##    一次整数比较就能挡掉。实测这一条把命令帧砍掉一大截。
-func _arrival_congested(world, cfg: ConfigRes, p: Vector2) -> bool:
+func _arrival_congested(world, cfg: ConfigRes, p: Vector2,
+		settled_index: Variant = null) -> bool:
 	var need: float = min_unit_distance(cfg)
 	if need <= 0.0:
 		return false
 	var t := Vector2i(floori(p.x), floori(p.y))
 	var near_tiles := 1 if need < 1.0 else int(ceilf(need)) + 1
+	# ★★ P2：整队下令时只查「附近几格」的已站定单位（索引由 command_processor 建一次）。
+	if settled_index != null:
+		var idx: Dictionary = settled_index
+		for dx in range(-near_tiles, near_tiles + 1):
+			for dy in range(-near_tiles, near_tiles + 1):
+				var arr = idx.get(tile_key(t.x + dx, t.y + dy), null)
+				if arr == null:
+					continue
+				for other in (arr as Array):
+					if other == self or not other.alive or other.moving:
+						continue
+					if other.pos.distance_to(p) < need:
+						return true
+		return false
+	# 老路径（单单位 / AI / 追击）：逐条扫 world.units，行为与改造前逐位一致。
 	for other in world.units:
 		if other == self or not other.alive:
 			continue
@@ -1653,6 +1701,11 @@ func _arrival_congested(world, cfg: ConfigRes, p: Vector2) -> bool:
 	return false
 
 
+## 「已站定单位」空间索引的键（x 先乘 4096；地图最大 4096 格，够用）。
+static func tile_key(x: int, y: int) -> int:
+	return x * 4096 + y
+
+
 ## 目标点被别人占着时，在附近找一个「可通行 + 没别人 + 走得到」的空位。
 ##
 ## 搜索顺序：先沿「目标 → 自己」这条线往回退（不会跑到墙另一边），
@@ -1660,7 +1713,8 @@ func _arrival_congested(world, cfg: ConfigRes, p: Vector2) -> bool:
 ##
 ## @param reach 本帧还剩的移动预算（格）。有它的话可以选得**离目标更近**的候选，
 ##        而不是死板地按搜索顺序取第一个。
-func _find_arrival_slot(world, cfg: ConfigRes, want: Vector2, faction: String, from: Vector2i, reach: float = 0.0) -> Variant:
+func _find_arrival_slot(world, cfg: ConfigRes, want: Vector2, faction: String, from: Vector2i,
+		reach: float = 0.0, settled_index: Variant = null) -> Variant:
 	var need: float = min_unit_distance(cfg)
 	if need <= 0.0:
 		return null
@@ -1686,7 +1740,7 @@ func _find_arrival_slot(world, cfg: ConfigRes, want: Vector2, faction: String, f
 			var p := want + back * step * float(k)
 			if p.distance_to(want) > horizon:
 				break
-			if _slot_ok(world, cfg, p, faction, region, need):
+			if _slot_ok(world, cfg, p, faction, region, need, settled_index):
 				cands.append(p)
 	for ring in range(1, 5):
 		for i in 12:
@@ -1694,7 +1748,7 @@ func _find_arrival_slot(world, cfg: ConfigRes, want: Vector2, faction: String, f
 			var p2 := want + Vector2(cos(ang), sin(ang)) * step * float(ring)
 			if p2.distance_to(want) > horizon:
 				continue
-			if _slot_ok(world, cfg, p2, faction, region, need):
+			if _slot_ok(world, cfg, p2, faction, region, need, settled_index):
 				cands.append(p2)
 	if cands.is_empty():
 		return null
@@ -1705,7 +1759,8 @@ func _find_arrival_slot(world, cfg: ConfigRes, want: Vector2, faction: String, f
 	return best
 
 
-func _slot_ok(world, cfg: ConfigRes, p: Vector2, faction: String, region, need: float) -> bool:
+func _slot_ok(world, cfg: ConfigRes, p: Vector2, faction: String, region, need: float,
+		settled_index: Variant = null) -> bool:
 	var t := Vector2i(floori(p.x), floori(p.y))
 	if not world.map.terrain.has(t.x, t.y):
 		return false
@@ -1718,6 +1773,19 @@ func _slot_ok(world, cfg: ConfigRes, p: Vector2, faction: String, region, need: 
 		return false
 	# ★ 同 _arrival_congested：先用格差筛，再算距离（最小间距远小于一格）
 	var near_tiles := 1 if need < 1.0 else int(ceilf(need)) + 1
+	if settled_index != null:
+		var idx: Dictionary = settled_index
+		for dx in range(-near_tiles, near_tiles + 1):
+			for dy in range(-near_tiles, near_tiles + 1):
+				var arr = idx.get(tile_key(t.x + dx, t.y + dy), null)
+				if arr == null:
+					continue
+				for other in (arr as Array):
+					if other == self or not other.alive:
+						continue
+					if other.pos.distance_to(p) < need:
+						return false
+		return true
 	for other in world.units:
 		if other == self or not other.alive:
 			continue
@@ -1953,6 +2021,12 @@ static var move_to_calls: int = 0
 ##   用途：`Array.remove_at(0)` 是 O(n) 前移，文档里曾把单位循环的成本归因于它 ——
 ##   这个计数直接回答「每帧到底 pop 了几个路点」，别再靠猜。
 static var path_pops: int = 0
+## ★ P2 诊断：把 move_to 拆成「拼路径 / 拉直圆角 / 拥挤判定」三段（只在基准里打开）。
+static var profile_move_to: bool = false
+static var move_to_us_path: int = 0
+static var move_to_us_smooth: int = 0
+static var move_to_us_congest: int = 0
+static var move_to_us_rest: int = 0
 
 
 func step_guard(map) -> int:

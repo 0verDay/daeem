@@ -1,13 +1,13 @@
-"""入口：``python dev_gd_a/tools/buff_editor``。
+"""入口：``python dev_gd_a/tools/tech_editor``。
 
 命令行：
 
-    python dev_gd_a/tools/buff_editor                    # 改工程里的 data/config.json
-    python dev_gd_a/tools/buff_editor 别的配置.json       # 改另一份（路径相对工程目录或当前目录都行）
-    python dev_gd_a/tools/buff_editor --selftest         # 不开窗口，跑一遍数据层自检
+    python dev_gd_a/tools/tech_editor                    # 改工程里的 data/config.json
+    python dev_gd_a/tools/tech_editor 别的配置.json       # 改另一份（路径相对工程目录或当前目录都行）
+    python dev_gd_a/tools/tech_editor --selftest         # 不开窗口，跑一遍数据层自检
 
 ★ 默认目标与 unit_editor 一样是**一条固定路径**：`<工程>/data/config.json`。
-  buff 数值只有这一份 —— 打开编辑器就是为了改它，不设「打开文件」这一步。
+  科技数值只有这一份 —— 打开编辑器就是为了改它，不设「打开文件」这一步。
 """
 
 from __future__ import annotations
@@ -18,11 +18,11 @@ from pathlib import Path
 
 if __package__ in (None, ""):        # 直接 python 这个文件时也能跑
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from buff_editor import app as app_module
-    from buff_editor.model import BUFFS, ConfigModel, ModelError, display_value, fmt_number
+    from tech_editor import app as app_module
+    from tech_editor.model import ConfigModel, ModelError, display_value
 else:
     from . import app as app_module
-    from .model import BUFFS, ConfigModel, ModelError, display_value, fmt_number
+    from .model import ConfigModel, ModelError, display_value
 
 #: 仓库里的 Godot 工程目录（编辑器读它的 data/config.json）
 DEFAULT_PROJECT_DIR = Path(__file__).resolve().parents[2] / "daeem"
@@ -47,7 +47,7 @@ def resolve_config(arg: str, project_dir: Path) -> Path:
 
 
 def selftest(project_dir: Path) -> int:
-    """无头自检：读 config → 打印游戏真正会读的 buff 数值 → 改一处再改回来。
+    """无头自检：读 config → 逐页打印科技的全部数值 → 改一处再改回来。
 
     ★ 用处与 unit_editor 的 `--selftest` 相同：**确认编辑器看到的数 = 游戏读到的数**。
       每条字段的 config 路径都会读一遍（缺键会当场报出来），并验一遍
@@ -65,37 +65,41 @@ def selftest(project_dir: Path) -> int:
     print("[config] %s（%d 行，%d 字节）" % (
         path, model.text.count("\n") + 1, len(model.text.encode("utf-8"))))
 
-    # ★★ 2026.11：`model.buffs()` = 注册表 + **现算出来的科技页**（科技不是写死的，
-    #   而是按 doc 里实际存在的条目生成），所以这里遍历 model 而不是 BUFFS。
-    for buff in model.buffs():
-        print("[buff] %s「%s」  %s" % (buff.name, buff.icon, model.summary(buff)))
-        print("       %s" % buff.intro)
+    # ★ 页面是**现算**的（按 doc 里实际存在的条目 / 槽位），所以这里遍历 model，
+    #   而不是任何写死的注册表。
+    pages = model.pages()
+    if not pages:
+        print("[error] config 里没有 tech 段（或没有任何可编辑的科技）")
+        return 1
+    for page in pages:
+        print("[tech] %s  %s" % (page.name, model.summary(page)))
+        print("       %s" % page.intro)
         try:
-            values = model.values(buff)
+            values = model.values(page)
         except ModelError as exc:
             print("[error] %s" % exc)
             return 1
-        for field in buff.fields:
-            cfg_path = ".".join(str(p) for p in field.config_path(buff))
+        for field in page.fields:
+            cfg_path = ".".join(str(p) for p in field.config_path(page))
             print("       - %-24s %-38s %s" % (
                 field.label, cfg_path, display_value(field, values[field.key])))
-        warnings = model.warnings(buff)
+        warnings = model.warnings(page)
         for w in warnings:
             print("[warn] %s" % w)
-        print("[tip] 悬停文案：")
-        for line in model.preview(buff).split("\n"):
+        print("[tip] 游戏里的样子：")
+        for line in model.preview(page).split("\n"):
             print("       %s" % line)
 
     # ---- 改一处再改回来：确认「原地最小改动」成立
-    buff = BUFFS[0]
-    field = buff.fields[0]
-    path_keys = list(field.config_path(buff))
+    page = pages[0]
+    field = page.fields[0]
+    path_keys = list(field.config_path(page))
     before = model.text
     original = model.doc.value(path_keys)
-    if not isinstance(original, (int, float)):
+    if not isinstance(original, (int, float)) or isinstance(original, bool):
         print("[roundtrip] FAILED：%s 不是数字" % field.key)
         return 1
-    model.set_value(buff, field, original + 1)
+    model.set_value(page, field, original + 1)
     changed = model.text != before
     model.doc.set(path_keys, original)
     restored = model.text == before
@@ -106,7 +110,7 @@ def selftest(project_dir: Path) -> int:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
-        prog="buff_editor", description="DAEEM buff 编辑器（士气等 buff 的全部数值）")
+        prog="tech_editor", description="DAEEM 科技编辑器（所有已存在科技的数值 / 文案 / 槽位）")
     parser.add_argument("config", nargs="?", help="要改的 config.json（可省 = 工程里那一份）")
     parser.add_argument("--project", default=str(DEFAULT_PROJECT_DIR),
                         help="Godot 工程目录（默认 dev_gd_a/daeem）")

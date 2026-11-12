@@ -88,6 +88,10 @@ func _test_config(cfg) -> void:
 	#      后面的用例就全乱了（这条踩过一次，别写成 `cfg2.data = cfg.data`）。
 	var cfg2 = ConfigRes.new()
 	cfg2.data = cfg.data.duplicate(true)
+	# ★★ 2026.11：兵种现在挂的是 unit_traits 标签（spearman → vs_cavalry_25）。
+	#   本节只验「内嵌 traits 的坏键被洗掉」，所以先把标签清空 —— 否则合并进来的
+	#   那 25% 会让「写错的键应当被丢掉」这条断言看不出问题。
+	cfg2.data["unit"]["types"]["spearman"]["trait_ids"] = []
 	cfg2.data["unit"]["types"]["spearman"]["traits"] = {
 		"attack_vs_class": {"nope": 0.5, "cavalry": "x"},
 		"ranged_reduction": "0.9",

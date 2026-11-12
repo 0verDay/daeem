@@ -7024,6 +7024,12 @@ func _rebuild_tick_lookup() -> void:
 		_tick_lookup[u.id] = u
 
 
+## ★★ 外部整表替换 `world.units` 之后调用（客机 `apply_snapshot`）：
+## 让 `unit_by_id()` 下一次查询时按新的单位表重建，避免返回已经被删掉的旧单位。
+func invalidate_unit_lookup() -> void:
+	_tick_lookup.clear()
+
+
 ## 给子阶段累加微秒（只有 profile_on 时会被调用，见 unit.tick_frame）
 func profile_sub(key: String, us: int) -> void:
 	profile_us[key] = int(profile_us.get(key, 0)) + us
@@ -7234,9 +7240,18 @@ func drop_unit_ids(ids: Array) -> void:
 
 
 ## 按 id 找单位
+##
+## ★★ P2：命令是在**两次 tick 之间**跑的，而 `_tick_lookup` 在 tick 末尾被清空 ——
+##   旧实现于是退回「每个 id 扫一遍全部单位」：1000 单位的一条命令 = 100 万次比较，
+##   实测命令帧里有约 80 ms 花在这里。
+##   现在查不到索引就**惰性重建一次**（O(n) 一次），后续 id 全是字典命中。
+##   重建后仍查不到（命令后新招出来的兵 / 已删除的兵）才退回线性扫描，保证语义不变。
 func unit_by_id(id: String) -> Variant:
-	if not _tick_lookup.is_empty():
-		return _tick_lookup.get(id, null)
+	if _tick_lookup.is_empty():
+		_rebuild_tick_lookup()
+	var hit: Variant = _tick_lookup.get(id, null)
+	if hit != null:
+		return hit
 	for u in units:
 		if u.id == id:
 			return u

@@ -100,6 +100,32 @@ func _draw() -> void:
 			_draw_settings(box, c)
 		_:
 			_draw_close(box, c)
+	# ★★ 悬停 / 按住时，在图标外面补四角括号（与按钮的新瞄准框语言同源）。
+	#   只有「真的亮着」才画：静息时四个图标仍然只有纯几何图形，不加框。
+	if is_lit():
+		_draw_brackets(box, c)
+
+
+## 图标外框的四个 L 形角：按下时向内收 4px（读作「扣住了」）。
+func _draw_brackets(box: Rect2, c: Color) -> void:
+	var pressed: bool = is_pressed() and ThemeRes.hover_enabled()
+	var gap: float = 5.0 if not pressed else 1.0
+	var arm: float = 8.0
+	var r := Rect2(box.position - Vector2(gap, gap), box.size + Vector2(gap, gap) * 2.0)
+	var col := Color(c.r, c.g, c.b, 0.9 if not pressed else 1.0)
+	var lw: float = 1.2 if not pressed else 1.8
+	var x0: float = r.position.x
+	var y0: float = r.position.y
+	var x1: float = r.end.x
+	var y1: float = r.end.y
+	draw_line(Vector2(x0, y0 + arm), Vector2(x0, y0), col, lw, true)
+	draw_line(Vector2(x0, y0), Vector2(x0 + arm, y0), col, lw, true)
+	draw_line(Vector2(x1, y0 + arm), Vector2(x1, y0), col, lw, true)
+	draw_line(Vector2(x1, y0), Vector2(x1 - arm, y0), col, lw, true)
+	draw_line(Vector2(x0, y1 - arm), Vector2(x0, y1), col, lw, true)
+	draw_line(Vector2(x0, y1), Vector2(x0 + arm, y1), col, lw, true)
+	draw_line(Vector2(x1, y1 - arm), Vector2(x1, y1), col, lw, true)
+	draw_line(Vector2(x1, y1), Vector2(x1 - arm, y1), col, lw, true)
 
 
 ## 单位坐标（0..1，相对内缩框）→ 像素。

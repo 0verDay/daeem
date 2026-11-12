@@ -88,11 +88,19 @@ def selftest(project_dir: Path) -> int:
                  fmt_number(unit.population_cost), recruit,
                  fmt_number(unit.upkeep_effective),
                  "（跟随大类）" if unit.inherits_upkeep else ""))
-        # ★★ 2026.11.3：兵种特性（对某大类伤害 / 远近减伤 / 免疫击退）——
-        #   没有特性就不多打一行（免得 22 个兵种刷出 22 行空摘要）。
-        summary = unit.trait_summary(class_names)
-        if summary:
-            print("            特性：%s" % summary)
+        # ★★ 2026.11：兵种只挂 `trait_ids`（单位特性池里的标签）—— 没有标签就不多打一行
+        #   （免得 22 个兵种刷出 22 行空摘要）。★ 用 `unit_traits_at()`：坏 id 会被
+        #   过滤掉（与游戏侧同一条口径），不会因为手改配置写错一个 id 就崩。
+        assigned = model.unit_traits_at(unit.id)
+        if assigned:
+            parts = []
+            for tid in assigned:
+                t = model.unit_trait(tid)
+                parts.append("%s（%s）" % (t.name, t.effect_summary(class_names)))
+            print("            单位特性：%s" % "；".join(parts))
+        if unit.has_legacy_traits():
+            print("            ⚠ 还写着老式内嵌 traits：%s（游戏会合并，本工具只读）"
+                  % unit.legacy_trait_summary(class_names))
     # ★★ 2026.11.2：组合招募单（协防军 / 御林军）—— 不是兵种，单独报一行。
     for pkg in model.recruit_packages():
         print("[package] %-12s %-6s 出 %d 个 造价 %s/%s/%s 来源 %s ← %s"
@@ -126,9 +134,13 @@ def selftest(project_dir: Path) -> int:
                  fmt_number(gen.upkeep_effective),
                  "（跟随兵种）" if gen.inherits_upkeep else "",
                  "　单独数值：%s" % "、".join(own) if own else "　（完全跟随兵种）"))
-    # ★ 特性池（全局一份）：谁能给将领用、各自什么效果。
+    # ★★ 2026.11：两张特性池（全局各一份）—— 单位特性只给兵种挂，将领特性只给将领挂。
+    for trait in model.unit_traits():
+        print("[unit_trait] %-16s %-8s 字 %-3s %s"
+              % (trait.id, trait.name, trait.short_text or "-",
+                 trait.effect_summary(class_names)))
     for trait in model.general_traits():
-        print("[trait] %-14s %-6s 字 %-3s %s"
+        print("[general_trait] %-16s %-8s 字 %-3s %s"
               % (trait.id, trait.name, trait.short_text or "-",
                  trait.effect_summary(class_names)))
     # ★ 「开局护卫数」这个全局缺省已经删掉：开局带几个附属兵只能在**战役编辑器的
@@ -154,8 +166,8 @@ def selftest(project_dir: Path) -> int:
                      fmt_number(lv.cost_gold), fmt_number(lv.time_sec),
                      "　攻击：%s" % "、".join("%s=%s" % (k, fmt_number(lv.attack[k]))
                                              for k in own) if own else "　攻击沿用基础值"))
-    # ★★ 2026.11：科技那几行已删 —— 科技只在 `tools/buff_editor` 里编辑
-    #   （`python dev_gd_a/tools/buff_editor --selftest` 会把每一页科技都过一遍）。
+    # ★★ 2026.11：科技那几行已删 —— 科技只在 `tools/tech_editor` 里编辑
+    #   （`python dev_gd_a/tools/tech_editor --selftest` 会把每一页科技都过一遍）。
 
     # ---- 改一处再改回来：确认「原地最小改动」成立（文本必须逐字节回到原样）
     #

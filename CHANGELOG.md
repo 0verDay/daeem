@@ -7,6 +7,27 @@
 
 本版本为在godot引擎内的原型开发，仅展示完整的局内玩法
 
+### 2026.11.12 主菜单光标 + 按钮「瞄准框」交互（PC）
+
+1. **需求 ①**：把游戏内的自绘光标用到主菜单 —— 平时是**主题金箭头**（热点在尖端），鼠标底下是**可交互控件**时才变成**金圈点**；按住整体收 14%。系统光标只在菜单显示期间隐藏，进游戏 / 窗口失焦 / 指针移出都会立刻还原。
+2. **判定**：`view/menu_cursor.gd` 用 `Viewport.gui_get_hovered_control()` + 四条收口（STOP / BaseButton 未禁用 / 自绘手型 / 文本输入）；被禁用按钮和铺满屏幕的遮罩不会误判成「可点」。
+3. **需求 ②**：所有按钮的悬停 / 按下换成统一的**瞄准框**语言 —— 悬停 = 四角 L 形括号 + 底边细线；按下 = 括号向内扣 + 1px 内框；松开 = 外扩回声环。宽扁列表行改「左缘竖条 + 底边细线」，文字导航改 `|— 战役 —|`，图标按钮在图标外补括号。
+4. **落点**：新增 `view/button_reticle.gd`（画在按钮**上面**的一层，避免被不透明底纹盖住）、`view/menu_cursor.gd`；`fill_button.gd` 每帧喂状态、旧四边泛光保留为 `ui.button_style = "glow"`；`press_fx.gd` 改画四角内扣；`menu_text_button.gd` 改成**松手确认**并加两端竖线 / 选中亮金；`menu_corner_button.gd` / `menu_back_button.gd` 补括号。
+5. **配置**：`ui.button_style / reticle_arm / reticle_gap / reticle_width / reticle_alpha / reticle_underline / menu_cursor_scale`，全部进 `data/config.json`。
+6. **测试**：新增 `test_button_style` 16 / `test_menu_cursor` 13；`test_fill_button` 200、`test_start_flow` 61、`test_menu_deck` 39、`test_menu_hover_touch` 21、`test_menu_corner_buttons` 105、`test_hover_fill` 120、`test_press_fx` 35 全过；全量套件结果见 [`dev_gd_a/docs/ui_interaction_system.md`](dev_gd_a/docs/ui_interaction_system.md)。
+7. **文档与渲染图**：新增 `dev_gd_a/docs/ui_interaction_system.md` + `ui_button_states.png` / `ui_cursor_states.png` / `ui_menu_after.png`。
+
+### 2026.11.9 特性标签化（单位 / 将领分池）+ buff_editor → tech_editor
+
+1. **需求 ①**：「把所有『单位特性』与『将领特性』打包为单独的标签（将领特性仅适用于将领，单位特性仅适用于单位），并相应地更改单位编辑器中的逻辑，为任意当前的单位 / 将领灵活设置特殊的特性」。
+2. **数据**（`data/config.json`）：新增 **`unit.unit_traits`** 池（13 条：对骑兵 +25%/+70%、对步兵 +10%/+25%/+50%、远程减伤 25/30/50/55/90%、近战减伤 25/30%、稳定）；每个兵种从 `unit.types.<id>.traits`（内嵌四键）改成 **`trait_ids`** 数组；老式内嵌 `traits` 仍然被读。
+3. **逻辑**（`logic/config.gd`）：新增 `_cache_unit_traits()` / `_normalize_unit_trait()` / `unit_trait_ids()` / `unit_trait_def()` / `unit_trait_name()` / `unit_trait_short()` / `unit_trait_desc()`；`unit_traits_of()` 现在 = **内嵌 traits ⊕ trait_ids 点名的标签**（attack_vs_class / 两条减伤相加、免疫取或），`unit.create()` / `reapply_type()` 的读取点不变。`unit.gd` 只加了注释。
+4. **单位编辑器**：页签从 2 个变 4 个 —— **单位 / 单位特性 / 将领特性 / 建筑**。两个特性页是各自的**池**（列表 + 增删 + 名字 / 短名 / 说明 / 效果表单），「单位」页只负责给兵种 / 将领**挂多条标签**（一行一条 + 「＋ 加特性」下拉 + 每行「移除」）。删掉池里一条时，挂着它的兵种 / 将领自动摘掉；老式内嵌 traits 在兵种表单里给一行 ⚠ 只读提示。
+5. **需求 ②**：「buff_editor 似乎无法打开了，将 buff_editor 改为 tech_editor，需要编辑当前已有的所有科技的数值属性」。
+6. **tech_editor**：`tools/buff_editor` → **`tools/tech_editor`**（`buff_editor.bat` → `tech_editor.bat`，README / 测试 / 文档同步）。原因：原工具读 `morale.max` 等键，而 2026.11.5 砍士气时把 `morale` 段整段删了 ⇒ 一打开就抛 `config 里缺少 morale.max`。现在它只编辑 `tech.*`：全局上限 / 每阶金耗、`tech.list` 9 条、`tech.clan_list` 13 条、每派 9 个槽位；左栏按「全局 / 原生科技 / 派系科技 / 科技页」分组，全部页面按 config **现算**。
+7. **测试**：`tools/unit_editor/test_model.py` **1113 项**、`test_app.py` **328 项**；`tools/tech_editor/test_model.py` **95 项**、`test_app.py` **80 项**；`daeem/tests/test_unit_editor.gd` 的 `_test_traits` 重写（池 / trait_ids / 老式合并 / 未知 id），`test_unit_traits.gd` 在「洗坏键」那一节先清掉 `trait_ids` 以隔离老写法。⚠️ 本机没有 Godot 可执行文件，GDScript 侧只做了静态核对（未跑）。
+8. **文档**：`README.md` / `dev_gd_a/docs/README.md` / `dev_gd_a/docs/route.md` / `tools/*/README.md` 全部改到新路径与新特性模型；`tools/buff_editor/` 已删除。
+
 ### 2026.11.5 阵地性 AI：区划禁行区（战役编辑器可编辑）
 
 1. **需求**：「为游戏中的阵地性 ai 添加区划禁行区，阵地性ai不会巡逻至其区划的禁行区，禁行区要可以用战役编辑器编辑」。

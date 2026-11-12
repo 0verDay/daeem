@@ -2,9 +2,10 @@
 chcp 65001 >nul
 setlocal
 rem =====================================================================
-rem  DAEEM buff 编辑器 —— 双击本文件即可打开（不用敲命令行）
+rem  DAEEM 科技编辑器 —— 双击本文件即可打开（不用敲命令行）
 rem
-rem  它改的是 daeem/data/config.json：buff（士气等）的数值。
+rem  它改的是 daeem/data/config.json：tech.* 那一块（所有已存在科技的文案 / 数值，
+rem  以及每派科技页的 9 个槽位、同时启用上限、每阶每秒扣金）。
 rem
 rem  可选：把一份 config.json 拖到本文件上 -> 改那一份（做对照 / 试验用）。
 rem
@@ -15,7 +16,7 @@ rem      （控制台一退出，GUI 进程被连坐）—— 表现就是「双
 rem      `start "" pythonw ...` 起的是独立进程：黑框闪一下就没，窗口留得住。
 rem   2. 路径里不能留 `..`：用 for %%~fI 规范化。带 `..` 的路径会被 Python 的
 rem      pathlib 当成「真的叫 .. 的目录」，配置文件打不开、窗口一闪就没。
-rem   3. 目录层级别数错：本文件在 dev_gd_a/tools/buff_editor/，
+rem   3. 目录层级别数错：本文件在 dev_gd_a/tools/tech_editor/，
 rem      工程在 dev_gd_a/daeem/，所以工程目录是 `..\..\daeem`。
 rem      ⚠️ 默认那份 config.json 是**由 Python 自己按 __file__ 算出来的**
 rem         （见 __main__.py 的 DEFAULT_PROJECT_DIR），这里不重复拼一遍路径 ——
@@ -105,7 +106,7 @@ echo ============================================================
 echo   找不到配置文件：
 echo     %PROJDIR%\data\config.json
 echo.
-echo   本文件应该在 dev_gd_a\tools\buff_editor\ 里
+echo   本文件应该在 dev_gd_a\tools\tech_editor\ 里
 echo   （工程在 dev_gd_a\daeem\）。目录被搬过的话就会走到这里。
 echo ============================================================
 echo.

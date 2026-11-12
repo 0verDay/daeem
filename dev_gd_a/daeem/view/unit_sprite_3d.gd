@@ -364,6 +364,26 @@ static func decal_texture() -> ImageTexture:
 	return _decal_cache
 
 
+## ★★ M3：死亡烟尘用的**软圆**贴图（白剪影 + alpha，边缘二次衰减）。
+## 与 decal / selection_ring 一样是程序化烘一张、全局复用；颜色由材质 albedo 决定。
+static var _soft_circle_cache: ImageTexture = null
+
+static func soft_circle_texture() -> ImageTexture:
+	if _soft_circle_cache != null:
+		return _soft_circle_cache
+	var n := DECAL_SIZE
+	var img := Image.create(n, n, false, Image.FORMAT_RGBA8)
+	var c := Vector2(float(n) * 0.5, float(n) * 0.5)
+	var r := float(n) * 0.5
+	for y in n:
+		for x in n:
+			var d: float = (Vector2(float(x) + 0.5, float(y) + 0.5) - c).length() / r
+			var a: float = clampf(1.0 - d, 0.0, 1.0)
+			img.set_pixel(x, y, Color(1.0, 1.0, 1.0, a * a))
+	_soft_circle_cache = ImageTexture.create_from_image(img)
+	return _soft_circle_cache
+
+
 ## 选中下标用的**空心圆**贴图（白剪影 + alpha）：一个圆环，中间是空的。
 ## ★ 一张图复用到任意被选中的单位；颜色走材质 uniform（绿），透明度走逐实例数据（动画）。
 static func selection_ring_texture() -> ImageTexture:

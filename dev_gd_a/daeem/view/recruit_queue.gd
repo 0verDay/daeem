@@ -77,6 +77,19 @@ var _hover_slot: int = -1
 var draw_count: int = 0
 
 
+## ★★ F5：读条 / 队列在两次 HUD 刷新之间**本地重画**。
+##
+## 为什么需要它：手机端 HUD 是 10Hz 分槽刷新（`ui.mobile_hud_refresh_hz`），
+## 而 `_draw()` 里的 `progress()` 是**现场问逻辑层**的 —— 只要多画几帧，
+## 读条就是连续推进，不会一格格跳。桌面 / 无头本来每帧全刷，这里多一次
+## `queue_redraw()` 也只是把同一份数据再录一遍（只在有队列 / 读条时）。
+func _process(_dt: float) -> void:
+	if not visible:
+		return
+	if _bar_active or _holder != null:
+		queue_redraw()
+
+
 func setup(p_world) -> void:
 	world = p_world
 	name = "RecruitQueue"

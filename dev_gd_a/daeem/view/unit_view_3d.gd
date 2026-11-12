@@ -167,6 +167,14 @@ var _cell: float = 128.0
 var _hit_amp: float = 0.06
 var _hit_freq: float = 26.0
 
+## ★★ M1：行走微动（纯表现）。立牌按「压缩 / 拉伸」做极轻的上下起伏，
+##   底边始终贴地（不是整体上下漂），所以不会看起来像在飞。
+var _walk_bob_ratio: float = 0.018
+var _walk_bob_hz: float = 2.2
+var _anim_time: float = 0.0
+## 单位 id → 行走相位（只算一次；1000 个移动单位每帧不做字符串 hash）。
+var _walk_phase: Dictionary = {}
+
 ## ★★ 本帧「可见单位的 3×3 邻格」集合 —— 在 sync() 的**单次遍历**里顺带标出，
 ##    供 `building_view_3d` 算「哪些建筑该淡出」（它原先自己再扫一遍全部单位 + 迷雾）。
 var _fade_marked: Dictionary = {}
@@ -197,6 +205,11 @@ func setup(p_cfg: ConfigRes, p_world, p_palette) -> void:
 	_cell = palette.cell_size()
 	_hit_amp = cfg.num("render.hit_shake_cells", 0.06)
 	_hit_freq = cfg.num("render.hit_shake_freq", 26.0)
+	# ★★ M1：行走微动参数（0 = 关掉；每帧每单位都要用，setup 缓存一次）
+	_walk_bob_ratio = clampf(cfg.num("render.walk_bob_ratio", 0.018), 0.0, 0.08)
+	_walk_bob_hz = maxf(0.0, cfg.num("render.walk_bob_hz", 2.2))
+	_anim_time = 0.0
+	_walk_phase = {}
 	_build_decal_layer()
 	# 选中下标动画参数（每帧要用 ⇒ setup 缓存）
 	_sel_sec = maxf(0.01, cfg.num("render.selection_ring_sec", 0.18))
@@ -447,6 +460,9 @@ func _batch_for(key: String, faction: String, leader: bool, unit_type: String,
 ##   ★ 判据：`bench_fps_3d.gd` 的 `_process` 分项 —— 优化前后对比。
 var _last_pos: Array = []          # 下标 → 上一次写的世界位置（Vector3）
 var _last_slot_key: Array = []     # 下标 → 上一次写的「桶键」（变了就必须重写）
+## ★★ M1：下标 → 上一次写入的纵向缩放（行走微动）。与位置一起做脏检查，
+##   否则「站着不动但正在呼吸」的单位不会被重写，动画就冻住了。
+var _last_sy: Array = []
 ## ★★ 2026.10.27：本帧**可见单位 id**（迷雾判据已经在这一趟里算过）。
 ##    overlay 的血条 / 小地图 / 其它视图直接查它，不再对 256 个单位各查一次迷雾。
 ##    `visibility_frame` 与 `world.frame_serial` 对齐；不相等（测试直接调 _draw）时
@@ -460,6 +476,31 @@ func is_visible_this_frame(u) -> bool:
 	return u != null and _vis_ids.has(u.id)
 
 
+## 取（或算一次）某个单位的行走相位。
+func _walk_phase_of(uid: String) -> float:
+	var p: Variant = _walk_phase.get(uid, null)
+	if p != null:
+		return float(p)
+	var ph: float = float(absi(uid.hash()) % 628) * 0.01
+	_walk_phase[uid] = ph
+	return ph
+
+
+## ★★ M1：行走微动的纯函数（测试直接调，不依赖场景）。
+##   · `moving = false` → 恒 1.0（停下立刻归位，不会一直呼吸）；
+##   · 相位由单位 id 派生：同一支部队不会整齐划一地上下（看起来像心跳）。
+## @param phase 可选：单位 id 派生的相位（-1 = 现场算）。`sync()` 会缓存它，
+##        避免 1000 个移动单位每帧都做一次字符串 hash。
+static func walk_scale(uid: String, moving: bool, t: float, ratio: float, hz: float,
+		phase: float = -1.0) -> float:
+	if not moving or ratio <= 0.0 or hz <= 0.0:
+		return 1.0
+	var ph: float = phase
+	if ph < 0.0:
+		ph = float(absi(uid.hash()) % 628) * 0.01
+	return 1.0 + sin(t * hz + ph) * ratio
+
+
 func sync(dt: float = 1.0 / 60.0) -> void:
 	# ★★ 三张小表在**这一次遍历**里一起产出（见下面循环里的三条注释）。
 	#    ⚠️ 必须在早退之前清空：否则早退那一帧会留下上一帧的旧值。
@@ -471,6 +512,9 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 	visibility_frame = -1 if world == null else int(world.frame_serial)
 	if world == null or palette == null or _quad == null:
 		return
+	# ★★ M1：行走微动的时间轴（纯表现；暂停时 dt 仍会推进，但单位 `moving` 不变，
+	#   所以最多是「原地轻轻呼吸」——比冻住更自然，也不会影响任何逻辑）。
+	_anim_time += dt
 	shake_applied_last_frame = 0
 	flash_written_last_frame = 0
 	downed_count = 0
@@ -579,16 +623,26 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 			if u.hit_flash > 0.0:
 				w.x += HitFxRes.shake_tiles(u.hit_flash, _hit_amp, _hit_freq) * _cell
 				shake_applied_last_frame += 1
-			# 立牌原点在**中心** ⇒ 抬到「底边贴地」
-			w.y = half_h
+			# ★★ M1：行走微动 —— 极轻的纵向压缩/拉伸，底边始终贴地。
+			#   用「缩放 Y」而不是「整体抬 Y」：抬 Y 会让脚离地，看起来像在飘。
+			var sy: float = 1.0
+			if _walk_bob_ratio > 0.0 and _walk_bob_hz > 0.0 and bool(u.moving):
+				var uid: String = String(u.id)
+				sy = walk_scale(uid, true, _anim_time, _walk_bob_ratio,
+					_walk_bob_hz, _walk_phase_of(uid))
+			# 立牌原点在**中心** ⇒ 抬到「底边贴地」（缩放后中心 = 半高 × sy）
+			w.y = half_h * sy
 			# ★ 优化①：位置与所在批次都没变 ⇒ **跳过这次写入**
 			#   （`set_instance_transform` 要走引擎调用，1000 次/帧是实打实的开销）
 			var cached_pos: Variant = _last_pos[i] if i < _last_pos.size() else null
 			var cached_key: Variant = _last_slot_key[i] if i < _last_slot_key.size() else null
+			var cached_sy: Variant = _last_sy[i] if i < _last_sy.size() else null
 			if cached_key == null or String(cached_key) != key or cached_pos == null \
-					or (cached_pos as Vector3) != w:
-				mm.set_instance_transform(i, Transform3D(Basis(), w))
-				_slot_set(i, w, key)
+					or (cached_pos as Vector3) != w or cached_sy == null \
+					or absf(float(cached_sy) - sy) > 1e-4:
+				mm.set_instance_transform(i,
+					Transform3D(Basis().scaled(Vector3(1.0, sy, 1.0)), w))
+				_slot_set(i, w, key, sy)
 				wrote += 1
 			# ★★ 逐实例自定义数据：`.r` = 受击闪白，`.g` = 悬停填充进度，`.b` = 冲锋进度。
 			#   ★★ 脏检查必须**带上「这个槽位上现在是哪个单位」**：
@@ -826,12 +880,14 @@ func _sync_charge_rings(units_list: Array) -> void:
 
 
 ## 写一槽的缓存（下标越界时按需扩容）
-func _slot_set(i: int, w: Vector3, key: String) -> void:
+func _slot_set(i: int, w: Vector3, key: String, sy: float = 1.0) -> void:
 	while _last_pos.size() <= i:
 		_last_pos.append(null)
 		_last_slot_key.append(null)
+		_last_sy.append(null)
 	_last_pos[i] = w
 	_last_slot_key[i] = key
+	_last_sy[i] = sy
 
 
 func _visible_to_me(u) -> bool:

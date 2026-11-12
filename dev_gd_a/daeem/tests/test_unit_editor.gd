@@ -161,14 +161,16 @@ func _with_general_stats(stats: Array) -> RefCounted:
 
 
 ## ★★ 2026.11.3：重算**全部**缓存（`_reload` 只重算标量，够不到
-##   `unit.types.<id>.traits` 与 `unit.general_traits` —— 那两张表在
-##   `_cache_unit_types()` / `_cache_general_traits()` 里洗）。
+##   `unit.types.<id>.traits` / `unit.unit_traits` 与 `unit.general_traits` ——
+##   那几张表在 `_cache_unit_types()` / `_cache_unit_traits()` /
+##   `_cache_general_traits()` 里洗）。
 func _reload_full(src) -> RefCounted:
 	var cls = script_at("res://logic/config.gd")
 	var cfg = cls.new()
 	cfg.data = src.data
 	cfg._cache_scalars()
 	cfg._cache_unit_types()
+	cfg._cache_unit_traits()
 	cfg._cache_general_traits()
 	return cfg
 
@@ -244,64 +246,99 @@ func _test_upkeep() -> void:
 				"★★ world._tick_upkeep 按「将领覆盖」结算（%.2f 粮/秒）" % over)
 
 
-## ★★ 2026.11.3：**特性**（兵种 4 个键 + 将领特性池 + 每位将领指定一条）。
+## ★★ 2026.11.3 / 2026.11：**特性**（单位特性池 + 将领特性池 + 各自指定）。
 ##
 ## 这一组是「编辑器里能改 ↔ 游戏真的读」的最后一环：
-##   · 前半段：config 里那几张表读法正确（编辑器照着写的位置）；
-##   · 中段：把编辑器**会写出来的形状**塞进 config，单位身上真的多出这些效果；
-##   · 后半段：`unit.general.trait_ids` 指定的特性在开局 / 招募 / 附属兵三条路上生效。
+##   · 前半段：config 里那两张**池子**读法正确（编辑器照着写的位置）；
+##   · 中段：把编辑器**会写出来的形状**（`trait_ids`）塞进 config，单位身上真的多出这些效果；
+##   · 后半段：`unit.general.trait_ids` 指定的将领特性在开局 / 招募 / 附属兵三条路上生效。
 func _test_traits() -> void:
 	var cfg = require_config()
 	if cfg == null:
 		return
 
-	# 1) 兵种特性：编辑器那一栏的四个键
-	# ★ 2026.11.4：**具体数值会随调参变**（御林军剑盾的近战减伤被从 0.3 调到 0.25），
-	#   所以这里只钉「这一栏读得到、且读的是同一个键」；「改了真的生效」在后面第 2 段。
+	# 1) 单位特性池：编辑器「单位特性」页读的就是这张表
+	eq(cfg.unit_trait_ids().size(), 13, "★★ 单位特性池 13 条（迁移后的标签数）")
+	ok(cfg.unit_trait_ids().has("vs_cavalry_25"), "★★ 池里有 vs_cavalry_25（编辑器建的那一条）")
+	var cav_def: Dictionary = cfg.unit_trait_def("vs_cavalry_25")
+	eq(String(cav_def.get("name", "")), "骑兵特攻", "★ 特性名字读得到（编辑器「名字」那一栏）")
+	near(float((cav_def.get("attack_vs_class", {}) as Dictionary).get("cavalry", 0.0)),
+		0.25, 1e-9, "★ 池里那条效果 = 对骑兵 +25%")
+	eq(String(cfg.unit_trait_desc("steady")), "免疫击退（位移 + 眩晕）；碰撞挤开照旧",
+		"★ 说明也读得到")
+
+	# 2) 兵种只记 `trait_ids`；合并出来的四键形状 = 老接口（unit.create 直接抄）
 	var spear: Dictionary = cfg.unit_traits_of("spearman")
 	var spear_cav: float = float((spear.get("attack_vs_class", {}) as Dictionary).get("cavalry", 0.0))
-	ok(spear_cav > 0.0,
-		"★★ 长枪兵：对骑兵有加成（%.2f，编辑器「对某大类伤害」那一栏）" % spear_cav)
+	near(spear_cav, 0.25, 1e-9,
+		"★★ 长枪兵 = 挂了「骑兵特攻」标签 → 对骑兵 +25%")
 	var rider: Dictionary = cfg.unit_traits_of("rider")
-	var rider_ranged: float = float(rider.get("ranged_reduction", 0.0))
-	ok(rider_ranged > 0.0, "★★ 骑手：远程减伤读得到（%.2f）" % rider_ranged)
+	ok(float(rider.get("ranged_reduction", 0.0)) > 0.0,
+		"★★ 骑手：远程减伤读得到（标签）")
+	ok(float((rider.get("attack_vs_class", {}) as Dictionary).get("infantry", 0.0)) > 0.0,
+		"★★ 骑手：对步兵加成也读得到（两条标签并存）")
 	var royal: Dictionary = cfg.unit_traits_of("dy_royal_sword")
-	var royal_melee: float = float(royal.get("melee_reduction", 0.0))
-	ok(royal_melee > 0.0,
-		"★★ 御林军剑盾：近战减伤读得到（%.2f，编辑器「近战减伤」那一栏）" % royal_melee)
-	ok(bool(cfg.unit_traits_of("dy_chariot").get("knockback_immune", false)),
-		"★★ 王朝战车：稳定（编辑器「免疫击退」那个勾）")
+	ok(float(royal.get("melee_reduction", 0.0)) > 0.0,
+		"★★ 御林军剑盾：近战减伤读得到（标签）")
+	ok(bool(royal.get("knockback_immune", false)), "★★ 御林军剑盾：稳定（标签）")
 	eq(cfg.unit_traits_of("spearman").size(), 4,
 		"★ 洗出来的形状固定四键（attack_vs_class / ranged_reduction / melee_reduction / knockback_immune）")
 
-	# 2) 把**编辑器会写出来的形状**塞进去：单位出生时就该带上
+	# 3) 把**编辑器会写出来的形状**（trait_ids 数组）塞进去：单位出生时就该带上
 	var raw = require_config()
-	raw.data["unit"]["types"]["spearman"]["traits"] = {
-		"attack_vs_class": {"infantry": 0.5},
-		"ranged_reduction": 0.4,
-		"melee_reduction": 0.6,
-		"knockback_immune": true,
-	}
-	var cfg2 = _reload_full(raw)
-	var u = UnitRes.create(cfg2, "trait_probe", "测", Vector2i.ZERO, "p1",
+	raw.data["unit"]["types"]["spearman"]["trait_ids"] = [
+		"vs_infantry_50", "ranged_guard_50", "melee_guard_30", "steady"]
+	var cfg_tag = _reload_full(raw)
+	var u = UnitRes.create(cfg_tag, "trait_probe", "测", Vector2i.ZERO, "p1",
 		UnitRes.UNIT_TYPE_SPEARMAN, "", "", UnitRes.UNIT_TYPE_SPEARMAN, -1)
-	near(u.attack_multiplier_vs_class("infantry"), 1.5, 1e-9, "★★ 对步兵 +50% 真的进到伤害倍率里")
+	near(u.attack_multiplier_vs_class("infantry"), 1.5, 1e-9,
+		"★★ 对步兵 +50% 真的进到伤害倍率里")
 	near(u.attack_multiplier_vs_class("cavalry"), 1.0, 1e-9,
-		"★ 没写的大类不受影响（对骑兵仍 ×1.0）")
-	near(u.ranged_damage_reduction, 0.4, 1e-9, "★★ 远程减伤 40%")
-	near(u.melee_damage_reduction, 0.6, 1e-9, "★★ 近战减伤 60%")
+		"★ 换掉标签之后对骑兵不再有加成")
+	near(u.ranged_damage_reduction, 0.5, 1e-9, "★★ 远程减伤 50%")
+	near(u.melee_damage_reduction, 0.3, 1e-9, "★★ 近战减伤 30%")
 	ok(u.knockback_immune, "★★ 稳定（免疫击退）")
 	# 受击侧真的减伤（关掉护甲，只看特性那一条）
 	u.armor = 0.0
 	u.hp_max = 1000.0
 	u.hp = 1000.0
-	u.take_damage(cfg2, null, 100.0, null, true)
-	near(1000.0 - u.hp, 60.0, 1e-6, "★★ 远程 100 → 吃 60（40% 减免）")
+	u.take_damage(cfg_tag, null, 100.0, null, true)
+	near(1000.0 - u.hp, 50.0, 1e-6, "★★ 远程 100 → 吃 50（50% 减免）")
 	u.hp = 1000.0
-	u.take_damage(cfg2, null, 100.0, null, false)
-	near(1000.0 - u.hp, 40.0, 1e-6, "★★ 近战 100 → 吃 40（60% 减免）")
+	u.take_damage(cfg_tag, null, 100.0, null, false)
+	near(1000.0 - u.hp, 70.0, 1e-6, "★★ 近战 100 → 吃 70（30% 减免）")
 
-	# 3) 将领特性：`unit.general.trait_ids` 指定的那一条
+	# 4) 老写法 `traits` 仍然生效，并且与标签**相加**（迁移期 / 手改配置的兜底）
+	var raw_legacy = require_config()
+	raw_legacy.data["unit"]["types"]["spearman"]["trait_ids"] = ["vs_cavalry_25"]
+	raw_legacy.data["unit"]["types"]["spearman"]["traits"] = {
+		"attack_vs_class": {"infantry": 0.5},
+		"ranged_reduction": 0.4,
+		"melee_reduction": 0.6,
+		"knockback_immune": true,
+	}
+	var cfg_legacy = _reload_full(raw_legacy)
+	var t_legacy: Dictionary = cfg_legacy.unit_traits_of("spearman")
+	near(float(t_legacy.get("ranged_reduction", 0.0)), 0.4, 1e-9,
+		"★★ 内嵌 traits 的远程减伤仍然读得到")
+	near(float(t_legacy.get("melee_reduction", 0.0)), 0.6, 1e-9,
+		"★★ 内嵌 traits 的近战减伤仍然读得到")
+	near(float((t_legacy.get("attack_vs_class", {}) as Dictionary).get("cavalry", 0.0)),
+		0.25, 1e-9, "★★ 标签那份（对骑兵）也在 —— 两边合并")
+	near(float((t_legacy.get("attack_vs_class", {}) as Dictionary).get("infantry", 0.0)),
+		0.5, 1e-9, "★★ 内嵌 traits 那份（对步兵）也在")
+	ok(bool(t_legacy.get("knockback_immune", false)), "★★ 免疫取「或」")
+
+	# 5) 写错当没写：trait_ids 指向池里不存在的 id
+	var raw_ghost = require_config()
+	raw_ghost.data["unit"]["types"]["catapult"]["trait_ids"] = ["ghost"]
+	var cfg_ghost = _reload_full(raw_ghost)
+	near(float(cfg_ghost.unit_traits_of("catapult").get("ranged_reduction", 0.0)), 0.0, 1e-9,
+		"★★ trait_ids 写了池里没有的 id → 当成没有特性（不报错、不留坏 id）")
+	eq(cfg_ghost.unit_traits_of("catapult").get("attack_vs_class", {}), {},
+		"…攻击加成表也是空的")
+
+	# 6) 将领特性：`unit.general.trait_ids` 指定的那一条
 	# ★ 这里故意写成**老格式（字符串）**：新代码认数组，也要继续认老配置。
 	var raw2 = require_config()
 	var ids: Array = []
@@ -332,7 +369,7 @@ func _test_traits() -> void:
 			eq(String(esc.aura_trait_id), "swift",
 				"★★ `fill_general_retinue` 生成的附属兵继承同一条光环")
 
-	# 4) 招募：`general_N` → 第 N-1 档，下单时记的就是这条
+	# 7) 招募：`general_N` → 第 N-1 档，下单时记的就是这条
 	eq(w.general_recruit_trait_for("p1", "general_1"), "swift",
 		"★★ 区划招募 general_1 → 将领档 0 的神速")
 	eq(w.general_recruit_trait_for("p1", "general_2"), "",
@@ -340,7 +377,7 @@ func _test_traits() -> void:
 	eq(w.general_recruit_trait_for("p1", "general_0"), "swift",
 		"★ general_0（第 10 档）也按同一张表映射")
 
-	# 5) 写错当没写：指向池里不存在的 id
+	# 8) 写错当没写：将领特性指向池里不存在的 id
 	var raw3 = require_config()
 	var ghost_ids: Array = ["ghost"]
 	for _i in 9:
@@ -349,7 +386,7 @@ func _test_traits() -> void:
 	eq(_reload_full(raw3).general_trait_at(0), "",
 		"★★ trait_ids 写了池里没有的 id → 当成没有特性（不报错、不留坏 id）")
 
-	# 6) ★★ 2026.11：一位将领可以带**多条**特性（数组格式）
+	# 9) ★★ 2026.11：一位将领可以带**多条**特性（数组格式）
 	var raw4 = require_config()
 	var multi_ids: Array = []
 	for i in raw4.general_count():

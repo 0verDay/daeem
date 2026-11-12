@@ -98,8 +98,14 @@ var _style_key_downed: StyleBoxFlat = null
 var hover_tile: Vector2i = Vector2i(-1, -1)
 var hover_valid: bool = false
 var build_type: String = ""
+## ★★ O4：城墙拖建时整条线的预览（空 = 只画 `hover_tile` 那一格）。
+var build_drag_tiles: Array = []
 var move_marks: Array[Vector2] = []
 var attack_marks: Array[Vector2] = []
+## ★★ F2：命令被拒的落点红环（纯表现；`{pos: Vector2, t: float, dur: float}`）。
+## 由 `game_scene3d.on_reject_feedback()` 写入，`tick_rejects()` 每帧推进。
+var reject_marks: Array = []
+var reject_draw_count: int = 0
 var drag_active: bool = false
 var drag_rect: Rect2 = Rect2()
 ## ★★ 粮车回血光环范围（只在该粮车被选中时画）：屏幕像素细线宽 / 采样段数。
@@ -185,6 +191,35 @@ func sync() -> void:
 	queue_redraw()
 	# 静态层：只在相机 / 视口 / 归属变化时重录 —— 相机静止时这一段是 0 成本
 	poll_static_dirty()
+
+
+## ★★ F2：在落点插一个红色短环（命令被拒的「看得见的回应」）。
+## 纯表现：只存格坐标 + 剩余时间，不读 world、不改任何逻辑状态。
+func add_reject(logic_pos: Vector2, dur: float = 0.28) -> void:
+	# 同一点连续点两次时不叠成一坨：刷新那一条即可。
+	for m in reject_marks:
+		if (m as Dictionary).get("pos", Vector2.ZERO).distance_to(logic_pos) < 0.35:
+			(m as Dictionary)["t"] = dur
+			(m as Dictionary)["dur"] = dur
+			queue_redraw()
+			return
+	reject_marks.append({"pos": logic_pos, "t": dur, "dur": dur})
+	if reject_marks.size() > 8:
+		reject_marks.pop_front()
+	queue_redraw()
+
+
+## 每帧推进红环寿命（由 `game_scene3d._process` 调；暂停时传 0 = 冻住）。
+func tick_rejects(dt: float) -> void:
+	if reject_marks.is_empty():
+		return
+	var keep: Array = []
+	for m in reject_marks:
+		var d: Dictionary = m
+		d["t"] = float(d.get("t", 0.0)) - dt
+		if float(d["t"]) > 0.0:
+			keep.append(d)
+	reject_marks = keep
 
 
 ## 静态层要重画了：**只算几何**，绘制由 `view/overlay_layer.gd` 的 `_draw_static()` 发。
@@ -385,6 +420,7 @@ func _draw_impl() -> void:
 	# ★ 移动 / 行军目标点不再在这里画圈 —— 改成 3D 旗子（view/order_flag_view_3d.gd）
 	_draw_build_preview()
 	_draw_drag_box()
+	_draw_reject_marks()
 	# ★★ 编队标识最后画：它在**所有世界物件与其它覆盖层之上**（不会被建筑 / 地形 / 单位
 	#    遮挡）；同时它在拖框之上，框选时编号 / 名牌仍然读得清。
 	var _d4 := _pt()
@@ -1816,20 +1852,45 @@ func _draw_move_marks() -> void:
 		draw_count += 1
 
 
-## 建造预览：**沿地块的四个角投出来的四边形**（透视下是梯形，不是矩形）
+## ★★ F2：命令被拒的落点红环 —— 由小扩大 + 淡出（0.28s）。
+## 画在拖框之后、编队标识之前；不依赖 `move_marks` / `attack_marks`（那两套是别的语义）。
+func _draw_reject_marks() -> void:
+	reject_draw_count = 0
+	for m in reject_marks:
+		var d: Dictionary = m
+		var p: Vector2 = palette.to_px(d.get("pos", Vector2.ZERO))
+		var dur: float = maxf(0.001, float(d.get("dur", 0.28)))
+		var k: float = clampf(1.0 - float(d.get("t", 0.0)) / dur, 0.0, 1.0)
+		var r: float = lerpf(10.0, 26.0, k)
+		var c := Color(0.95, 0.32, 0.30, (1.0 - k) * 0.9)
+		draw_arc(p, r, 0.0, TAU, 24, c, 2.4, true)
+		draw_arc(p, r * 0.55, 0.0, TAU, 20, Color(c.r, c.g, c.b, c.a * 0.6), 1.4, true)
+		reject_draw_count += 1
+
+
+## 建造预览：**沿地块的四个角投出来的四边形**（透视下是梯形，不是矩形）。
+## ★★ O4：城墙拖建时 `build_drag_tiles` 非空 ⇒ 整条线逐格画（每格自己的绿 / 红）。
 func _draw_build_preview() -> void:
-	if build_type == "" or hover_tile.x < 0:
+	if build_type == "":
 		return
-	var ok: bool = world.can_build_at(hover_tile.x, hover_tile.y, world.my_faction)
-	var c := Color(0.45, 1.0, 0.5, 0.55) if ok else Color(1.0, 0.4, 0.4, 0.55)
-	var quad := _tile_screen_quad(hover_tile)
-	if quad.size() < 4:
-		return
-	draw_colored_polygon(quad, Color(c.r, c.g, c.b, 0.18))
-	var closed := quad.duplicate()
-	closed.append(quad[0])
-	draw_polyline(closed, c, 2.5)
-	draw_count += 1
+	var tiles: Array = []
+	if not build_drag_tiles.is_empty():
+		tiles = build_drag_tiles
+	elif hover_tile.x >= 0:
+		tiles = [hover_tile]
+	for tv in tiles:
+		var t: Vector2i = tv
+		var ok: bool = world.can_build_at(t.x, t.y, world.my_faction) \
+			and world.zone_allows_build(t.x, t.y, world.my_faction)
+		var c := Color(0.45, 1.0, 0.5, 0.55) if ok else Color(1.0, 0.4, 0.4, 0.55)
+		var quad := _tile_screen_quad(t)
+		if quad.size() < 4:
+			continue
+		draw_colored_polygon(quad, Color(c.r, c.g, c.b, 0.18))
+		var closed := quad.duplicate()
+		closed.append(quad[0])
+		draw_polyline(closed, c, 2.5)
+		draw_count += 1
 
 
 ## 一个格在屏幕上的四个角（顺序：左上 → 右上 → 右下 → 左下）

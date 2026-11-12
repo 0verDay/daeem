@@ -7883,10 +7883,12 @@ clan.list[].tech  ← 这一派的**科技页槽位**：9 个 id（列优先：�
 
 #### 编辑入口
 
-科技内容（两张表 + 每派 9 个槽位 + 全局上限 / 每阶金耗）在 **`tools/buff_editor`** 里改：
+科技内容（两张表 + 每派 9 个槽位 + 全局上限 / 每阶金耗）在 **`tools/tech_editor`** 里改
+（2026.11 由 `buff_editor` 改名：原工具读的 `morale` 段已被删掉，打开就抛
+「config 里缺少 morale.max」；现在它只编辑 `tech.*`）：
 它按 `tech.list` / `tech.clan_list` 里**实际存在的条目**动态生成一页页表单
 （文案 text 字段 + 阶 + 每个已写的 `effect.<键>`），另有「科技页 · 王朝 / 帝国」两页
-用来改 `clan.list[].tech` 那 9 个槽位。见 `tools/buff_editor/README.md` 第四节。
+用来改 `clan.list[].tech` 那 9 个槽位。见 `tools/tech_editor/README.md` 第三节。
 ★ 单位编辑器原来的「科技」页**已整块移除**（用户口径：「把单位编辑器中的科技编辑界面去掉」）——
 它的 `Tech` 模型、`TECH_FIELDS` / `TECH_EFFECTS`、`max_active` 的输入框、以及 `test_model`
 里那 30 多条科技断言一起删了；`test_model` / `test_app` 现在反过来钉「本工具碰不到 `tech.*`」。
@@ -8666,5 +8668,77 @@ tier-3 兵 10 局出场 < 2%。逐帧诊断（每 2 秒采样、300 个采样点
   `commander_ai.difficulty`，测试仍按旧数据断言）；`test_model` 2 条（`config.json`
   的 14 将领档 / 8 建筑，测试仍按旧的 10 / 5 断言）。
 
+## 八十八、特性标签化（单位 / 将领分池）+ buff_editor → tech_editor（2026.11）
 
+> 需求原话：「检查当前目录下的项目，将其中的所有『单位特性』与『将领特性』打包为单独的
+> 标签（将领特性仅适用于将领，单位特性仅使用于单位），并相应地更改单位编辑器中的逻辑，
+> 我需要可以在单位编辑器中为任意当前的单位/将领敏捷设置特殊的特性」+
+> 「当前的 buff_editor 似乎无法打开了，将 buff_editor 改为 tech_editor，我需要可以在
+> tech_editor 中编辑当前已有的所有科技的数值属性」。
+
+### 88.1 口径
+
+* **单位特性** = 兵种可挂的标签（`unit.unit_traits` 池 + `unit.types.<id>.trait_ids`）。
+  只作用于单位；将领按**所属兵种**继承（与「将领数值 = 所属兵种数值」同一条口径）。
+* **将领特性** = 将领可挂的光环标签（`unit.general_traits` 池 + `unit.general.trait_ids[i]`）。
+  只作用于将领本人 + 旗下部队（原口径不变）。
+* 两张池**互不相通**：编辑器的「单位特性」「将领特性」两个页签各自增删 / 改定义；
+  「单位」页给具体对象挂标签时，下拉里只出现**本类**池的条目。
+* 一个特性 = 一个特性名 = 一个效果（沿用 2026.11.3 的口径）。
+
+### 88.2 数据迁移
+
+* 新增 `unit.unit_traits`：13 条（按效果去重）。原来 19 个兵种的内嵌 `traits` 逐条拆成标签：
+  `attack_vs_class.<cls>=v → vs_<cls>_<pct>`、`ranged_reduction → ranged_guard_<pct>`、
+  `melee_reduction → melee_guard_<pct>`、`knockback_immune → steady`。
+* `unit.types.<id>.traits` 全部换成 `"trait_ids": [...]`（没有特性的兵种连键都不留）；
+  `unit._traits_comment` 同步改写。
+* **兼容**：`config.gd` 的 `unit_traits_of()` 仍然先把内嵌 `traits` 洗成四键，再把
+  `trait_ids` 指到的标签合并进去（attack_vs_class / 两条减伤**相加**、免疫取「或」）。
+  于是老配置（只写 traits）逐位不变，新配置（只写标签）也读得到。
+
+### 88.3 游戏侧
+
+* `config.gd`：新增 `_unit_traits` 缓存 + `_cache_unit_traits()`（在
+  `_cache_unit_types()` 之后、`_cache_general_traits()` 之前调，因为要拿 `_unit_classes`
+  校验大类键）、`_normalize_unit_trait()`（与 `_normalize_traits()` 同四键 + 文案三件套）、
+  `unit_trait_ids()` / `unit_trait_def()` / `unit_trait_name()` / `unit_trait_short()` /
+  `unit_trait_desc()`；`_cache_unit_types()` 里多缓存一份 `trait_ids`。
+* `unit.gd` / `combat.gd` **不改读取点**：它们本来就读 `unit_traits_of()` 洗好的四键。
+* `hud.gd` 的「单位特性」文案本来就按数值拼（不按名字），所以自动跟着合并结果走。
+
+### 88.4 单位编辑器
+
+* 页签：`单位 / 单位特性 / 将领特性 / 建筑`。
+* 两个特性页 = 池：列表（名字 / 短名 / 效果摘要）+ 选中后的表单（文案 + 效果 + 删除）+
+  「＋ 新建…」（照模板复制）。删除时自动清掉所有引用。
+* 「单位」页：兵种表单多一栏「特性（可多条）」—— 一行一条标签（名字 + 效果摘要 + 移除），
+  末尾「加一条特性」下拉只列**还没挂过**的单位特性；将领表单的「特性（可多条）」同理，
+  用将领特性池。
+* 老式内嵌 `traits` 在兵种表单里给一行 ⚠ 只读提示（游戏仍会合并，但本工具不写）。
+
+### 88.5 buff_editor → tech_editor
+
+* 打不开的原因：`model.py` 的 `BUFFS` 注册表里那条「士气」读 `morale.max` 等 19 个键，
+  而 2026.11.5 砍士气时把 `config.json` 的 `morale` 段整段删了 ⇒ 一打开就
+  `ModelError: config 里缺少 morale.max（士气 这一项）`（界面在构造表单时抛，窗口起不来）。
+* 处理：整目录改名 **`tools/tech_editor`**（`tech_editor.bat`），删掉 `Buff` 注册表 /
+  `MORALE_FIELDS` / 士气相关的 warnings / summary / preview 分支；页面只由
+  `tech_pages()` 现算（全局 + 每条科技 + 每派槽位），左栏按四组展示。
+* 顺带修了 `_tech_warnings()` 里「单条科技的 id」：原来读的是表单值（`v.get("id")`，
+  永远空），现在从 `doc.value(page.path + ["id"])` 读，重复 id 的提示才真的会出现。
+
+### 88.6 测试
+
+* `tools/unit_editor/test_model.py`：`[1d]` 重写为单位特性池 + 挂标签（读 / 写 / 夹取 /
+  挂摘 / 删池清引用 / 新建 / 排版）；`[6]` 的「不认识的键」改成检查两张池的白名单 +
+  「兵种不再写老式 traits」。
+* `tools/unit_editor/test_app.py`：新增两个页签的断言；`t_traits` 重写（池的读改增删 +
+  兵种挂两条 + 删池自动摘 + 将领挂两条）。
+* `tools/tech_editor/test_model.py` / `test_app.py`：按科技重写（页数 = 条目数、槽位 9 格、
+  阶与位置不一致的提示、左栏四组 Treeview）。
+* `daeem/tests/test_unit_editor.gd`：`_test_traits` 重写（13 条池 / `trait_ids` 出生生效 /
+  老式 traits 与标签合并 / 未知 id 当没写）；`_reload_full()` 补 `_cache_unit_traits()`。
+* `daeem/tests/test_unit_traits.gd`：`[1]` 那一节先清 `trait_ids`，隔离「洗坏键」这条断言。
+* ⚠️ 本机没有 Godot 可执行文件，GDScript 侧未实跑（只做了静态核对）。
 
