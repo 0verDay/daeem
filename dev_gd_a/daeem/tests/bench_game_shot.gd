@@ -16,6 +16,7 @@ const MainScene := preload("res://view/main.tscn")
 const FactionRes = preload("res://logic/faction.gd")
 ## ★ 缩放档位的**唯一取值处**（`game_scene3d.ZOOM_MIN/MAX`）——别在这里另写 0.1 / 0.3。
 const Game3DRes = preload("res://view/game_scene3d.gd")
+const PageTabsRes = preload("res://view/page_tabs.gd")
 
 const OUT_DIR := "res://shots"
 const SETTLE_FRAMES := 20
@@ -60,6 +61,31 @@ func _run() -> void:
 		_aim(ic, mine.tx, mine.ty)
 		await _wait(SETTLE_FRAMES)
 		await _shoot("10_own_selected")
+		# ★★ V2 HUD 回归图：切页应以当前页的真实内容重组成手牌，不留灰色空牌。
+		if game.hud != null and game.hud.page_tabs != null:
+			game.hud.page_tabs.select_page(PageTabsRes.PAGE_UNIT)
+			await _wait(SETTLE_FRAMES)
+			await _shoot("10b_recruit_hand")
+			game.hud.page_tabs.select_page(PageTabsRes.PAGE_ORDER)
+
+		# ★★ 多部队详情卡回归图：焦点队伍在上，其他已选队伍出现在下方序号格。
+		var own_leaders: Array = [mine]
+		for u in world.units:
+			if u == mine or not u.alive or not world.is_team_leader(u) \
+					or not FactionRes.same_side(u.faction, world.my_faction):
+				continue
+			own_leaders.append(u)
+			if own_leaders.size() >= 2:
+				break
+		if own_leaders.size() < 2:
+			var second = world.create_general(String(world.my_faction), 0, 1)
+			if second != null:
+				world.units.append(second)
+				own_leaders.append(second)
+		if own_leaders.size() >= 2:
+			ic.select_units(own_leaders)
+			await _wait(SETTLE_FRAMES)
+			await _shoot("10c_multiple_troops")
 
 	# 2) 敌对单位：右下角页签 + 命令卡整块隐藏（友方单位走同一条 selected_enemy 路）
 	var foe = world.spawn_enemy(6, 4)

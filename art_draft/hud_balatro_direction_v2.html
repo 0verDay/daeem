@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DAEEM HUD · 指挥牌组方向稿 V2</title>
+<style>
+:root{--night:#10171f;--navy:#18212c;--steel:#263442;--gold:#f2b544;--pale:#ffd98a;--brass:#8a7540;--ink:#0a1017;--paper:#e8e3d5;--muted:#a9b2bd;--blue:#5ac8ff;--green:#7ab06a;--red:#e5484d}
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#080d12;color:var(--paper);font-family:"Microsoft YaHei UI","PingFang SC",system-ui,sans-serif}
+.stage{position:absolute;width:1920px;height:1080px;left:50%;top:50%;transform:translate(-50%,-50%) scale(.5);transform-origin:center;overflow:hidden;background:#35443a}
+/* The board is a quiet battlefield, not a dashboard canvas. */
+.land{position:absolute;inset:0;background:radial-gradient(ellipse at 52% 43%,#61704b 0 20%,transparent 20.5%),radial-gradient(ellipse at 16% 78%,#263e31 0 12%,transparent 12.5%),radial-gradient(ellipse at 81% 62%,#314632 0 14%,transparent 14.5%),linear-gradient(160deg,#64724e,#46563f 52%,#34463b)}
+.haze{position:absolute;inset:0;background:linear-gradient(180deg,#0a111650,transparent 22% 70%,#0a111644);pointer-events:none}
+.territory{position:absolute;left:270px;top:105px;width:1290px;height:745px;transform:skewY(-5deg);border:2px solid #ded6bf88;box-shadow:0 0 0 1px #161d1988,inset 0 0 70px #d9d0aa0a}
+.territory:before{content:"";position:absolute;left:50%;top:0;bottom:0;border-left:1px solid #eee5cc66}
+.wood{position:absolute;width:270px;height:165px;left:830px;top:268px;background:radial-gradient(circle at 10% 40%,#203d2a 0 22px,transparent 23px),radial-gradient(circle at 27% 25%,#2e5235 0 25px,transparent 26px),radial-gradient(circle at 47% 43%,#26472f 0 26px,transparent 27px),radial-gradient(circle at 65% 28%,#31583a 0 25px,transparent 26px),radial-gradient(circle at 82% 52%,#203e2c 0 23px,transparent 24px),radial-gradient(circle at 29% 72%,#27482f 0 23px,transparent 24px),radial-gradient(circle at 61% 78%,#24432e 0 25px,transparent 26px);filter:drop-shadow(0 16px 10px #1118)}
+.army{position:absolute;left:1070px;top:430px;display:flex;gap:20px;transform:rotate(-8deg)}.soldier{width:24px;height:34px;position:relative;border:1px solid #edcf86;border-radius:7px 7px 4px 4px;background:linear-gradient(#e6dbc1 0 23%,#658395 24%);box-shadow:0 5px 10px #1119}.soldier:before{content:"";position:absolute;width:10px;height:10px;left:6px;top:-6px;border-radius:50%;background:#e8ddc2;border:1px solid #574f3e}
+/* Punched mission ticket, with a clipped silhouette rather than app-card padding. */
+.mission{position:absolute;left:34px;top:30px;width:420px;height:145px;padding:16px 22px 14px 28px;background:linear-gradient(135deg,#1c2933f5,#111922f0);clip-path:polygon(0 0,100% 0,100% 89%,94% 100%,0 100%);border-left:5px solid var(--gold);box-shadow:0 10px 24px #070b0dcc}
+.mission:after{content:"";position:absolute;left:9px;top:10px;bottom:10px;width:1px;background:#d8ba6b66}.eyebrow{font-size:11px;letter-spacing:.22em;color:var(--pale)}.mission h1{font-size:23px;letter-spacing:.06em;margin:9px 0 4px;text-shadow:0 2px #000}.mission p{font-size:13px;color:#c4c6bd;margin:0}.progress{position:absolute;left:28px;right:34px;bottom:13px;height:4px;background:#080d13;border:1px solid #54472d}.progress i{display:block;width:62%;height:100%;background:linear-gradient(90deg,#a87322,var(--pale));box-shadow:0 0 12px #f2b54470}
+/* Resource counters as stamped tokens, lifted off the map. */
+.resources{position:absolute;right:125px;top:27px;display:flex;gap:18px;align-items:center}.token{height:66px;min-width:194px;position:relative;display:flex;align-items:center;padding:5px 17px 5px 12px;gap:12px;background:linear-gradient(110deg,#111922ed,#1c2833ed);border:2px solid #75613a;box-shadow:0 7px 0 #090f14,0 10px 18px #070b0dbb;clip-path:polygon(0 0,92% 0,100% 50%,92% 100%,0 100%,5% 50%)}
+.token-icon{width:45px;height:45px;display:grid;place-items:center;border-radius:50%;border:2px solid var(--gold);background:radial-gradient(circle at 32% 28%,#394451,#11171e 68%);box-shadow:inset 0 0 0 3px #0b1118,0 0 0 1px #d6b76355;color:var(--pale);font:20px Georgia,serif}.token small{display:block;color:var(--muted);font-size:10px;letter-spacing:.14em}.token strong{display:block;color:var(--paper);font:22px Georgia,serif;margin-top:2px}.token em{font:11px system-ui;color:var(--green);font-style:normal;margin-left:5px}
+/* Formation selector: not a rectangular list; each squad is a little command card. */
+.formations{position:absolute;right:26px;top:178px;width:238px;display:flex;flex-direction:column;gap:1px;transform:perspective(800px) rotateY(-5deg)}
+.formation{height:82px;position:relative;display:flex;align-items:center;padding:8px 12px 8px 18px;background:linear-gradient(115deg,#101820eF,#202b35ee);border:1px solid #675735;box-shadow:0 5px 0 #0b1116,0 8px 12px #080c10aa;clip-path:polygon(0 0,94% 0,100% 50%,94% 100%,0 100%,3% 50%);margin-left:14px}
+.formation:nth-child(even){margin-left:25px}.formation.selected{height:94px;margin-left:0;z-index:2;transform:translateX(-10px) rotate(-2deg);background:linear-gradient(110deg,#70501f,#27313a 75%);border:2px solid var(--pale);box-shadow:0 7px 0 #302616,0 12px 20px #080b0dcc,inset 0 0 0 3px #f2b54433}
+.seal{flex:none;width:51px;height:55px;display:grid;place-items:center;margin-right:12px;background:#10171e;border:1px solid var(--brass);border-radius:50%;box-shadow:inset 0 -3px var(--green),0 2px 3px #0008;color:var(--pale);font:26px Georgia,serif}.selected .seal{background:var(--gold);border:2px solid #ffe3a1;color:#191208;box-shadow:inset 0 -3px #9d6b1c,0 0 12px #f2b54466}.formation b{font-size:14px;letter-spacing:.03em}.formation small{display:block;color:#b2b4ae;font-size:11px;margin-top:5px}.formation .digit{position:absolute;right:18px;bottom:9px;color:var(--pale);font:13px Georgia,serif}
+/* Recon lens / minimap frame, with a physical brass lip. */
+.recon{position:absolute;left:27px;bottom:25px;width:328px;height:284px;padding:11px;background:linear-gradient(145deg,#4c4634,#151c21 35%,#090f15);clip-path:polygon(0 0,95% 0,100% 8%,100% 100%,5% 100%,0 92%);box-shadow:0 8px 20px #070b0dcc}
+.recon-inner{height:100%;position:relative;overflow:hidden;border:2px solid #a88a4b;background:radial-gradient(ellipse at 48% 48%,#65764b 0 26%,transparent 27%),radial-gradient(ellipse at 18% 76%,#26452f 0 15%,transparent 16%),radial-gradient(ellipse at 80% 25%,#2b4c34 0 13%,transparent 14%),linear-gradient(135deg,#64724e,#354b3c)}
+.recon-inner:before{content:"";position:absolute;left:15%;top:16%;width:68%;height:64%;border:2px solid #ede1be;box-shadow:0 0 0 1px #16201a}.recon-inner:after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,#08101833 1px,transparent 1px),linear-gradient(#08101833 1px,transparent 1px);background-size:28px 28px}
+.lens-label{position:absolute;left:10px;top:10px;z-index:2;padding:4px 8px;background:#111922d9;border-left:2px solid var(--gold);font-size:10px;letter-spacing:.16em}.blip{position:absolute;z-index:3;width:9px;height:9px;border-radius:50%;background:var(--blue);box-shadow:0 0 12px var(--blue)}.b1{left:59%;top:48%}.b2{left:30%;top:68%;background:var(--red);box-shadow:0 0 12px var(--red)}.b3{left:74%;top:31%;background:var(--gold);box-shadow:0 0 12px var(--gold)}
+/* Selected unit: a tall collectible/character card with a stack peeking behind it. */
+.hero-stack{position:absolute;left:395px;bottom:26px;width:377px;height:260px;filter:drop-shadow(0 9px 12px #080b0dcc)}
+.hero-stack:before,.hero-stack:after{content:"";position:absolute;inset:8px 0 0 12px;background:#17212a;border:2px solid #675735;clip-path:polygon(0 0,96% 0,100% 7%,100% 100%,4% 100%,0 94%);transform:rotate(2deg)}
+.hero-stack:after{inset:4px 5px 0 5px;transform:rotate(-1deg);background:#1c2730}
+.hero{position:absolute;inset:0;z-index:1;padding:12px 15px;background:linear-gradient(145deg,#26333d,#121a22 75%);border:2px solid #a4874a;clip-path:polygon(0 0,96% 0,100% 7%,100% 100%,4% 100%,0 94%);}
+.hero:before{content:"";position:absolute;inset:6px;border:1px solid #ddbe6a4d;pointer-events:none}
+.hero-head{display:flex;gap:12px;align-items:center;height:79px;border-bottom:1px solid #897244}.portrait{width:63px;height:69px;display:grid;place-items:center;flex:none;background:radial-gradient(circle,#3a4850,#0d141b 70%);border:2px solid var(--gold);box-shadow:inset 0 0 0 4px #111920;color:var(--pale);font:40px Georgia,serif;clip-path:polygon(0 0,100% 0,100% 78%,50% 100%,0 78%)}
+.hero-head h2{font-size:18px;margin:0 0 4px;letter-spacing:.04em}.hero-head small{font-size:11px;color:var(--muted)}.rank{margin-left:auto;align-self:flex-start;color:var(--pale);font:11px Georgia,serif;letter-spacing:.13em}
+.hero-stats{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-top:11px}.hero-stat{height:49px;padding:5px 8px;background:#0e151c;border:1px solid #51482f;box-shadow:inset 0 -2px #070c11}.hero-stat small{display:block;font-size:9px;color:var(--muted);letter-spacing:.14em}.hero-stat b{font:18px Georgia,serif;color:var(--paper)}.hero-stat:first-child b{color:var(--green)}
+.mini-roster{display:flex;gap:6px;margin-top:10px}.mini-roster span{width:34px;height:34px;display:grid;place-items:center;background:#10171e;border:1px solid #665936;color:#d7c794;font-size:14px}.mini-roster span.on{background:#60471e;border:2px solid var(--pale);color:#fff0c6;transform:translateY(-3px)}.traits{position:absolute;right:15px;bottom:16px;display:flex;gap:5px}.traits i{font-style:normal;font-size:10px;padding:4px 7px;background:#332918;border:1px solid #a18445;color:var(--pale)}
+/* Cards are literally a hand of commands: overlap, curve, shadows, print grain. */
+.hand-area{position:absolute;left:796px;bottom:2px;width:842px;height:277px;display:flex;align-items:flex-end;justify-content:center;padding:0 0 22px;isolation:isolate}
+.hand-glow{position:absolute;left:5%;right:5%;bottom:0;height:64px;background:radial-gradient(ellipse,#e7a52e35,transparent 72%);filter:blur(14px);z-index:-1}
+.hand-label{position:absolute;left:50%;top:6px;transform:translateX(-50%);color:#d6c799;font-size:10px;letter-spacing:.26em;text-shadow:0 2px #000}
+.command{position:relative;flex:none;width:142px;height:206px;margin-left:-51px;overflow:hidden;padding:10px 9px 12px;background:linear-gradient(145deg,#2b3943,#111921 60%,#0b1118);border:2px solid #74613b;border-radius:11px 11px 8px 8px;box-shadow:0 7px 0 #0b1014,0 12px 14px #070b0dcc,inset 0 1px #fff3;transform-origin:50% 110%;transition:transform .16s}
+.command:nth-of-type(2){margin-left:0;transform:rotate(-13deg) translateY(15px)}.command:before{content:"";position:absolute;inset:5px;border:1px solid #d4b65b55;border-radius:7px;pointer-events:none}.command:after{content:"";position:absolute;inset:0;background:repeating-linear-gradient(135deg,#fff0 0 5px,#ffffff06 6px,#fff0 8px);pointer-events:none}
+.command:nth-of-type(3){transform:rotate(-10deg) translateY(8px)}.command:nth-of-type(4){transform:rotate(-7deg) translateY(3px)}.command:nth-of-type(5){transform:rotate(-3deg)}.command:nth-of-type(6){transform:rotate(2deg)}.command:nth-of-type(7){transform:rotate(7deg) translateY(4px)}.command:nth-of-type(8){transform:rotate(11deg) translateY(10px)}.command:nth-of-type(9){transform:rotate(14deg) translateY(17px)}.command:nth-of-type(10){transform:rotate(17deg) translateY(25px)}
+.command:hover{z-index:10;transform:translateY(-22px) rotate(0deg)}.command.selected{z-index:8;height:225px;transform:translateY(-19px) rotate(0deg);background:linear-gradient(145deg,#805b20,#3a2b18 72%);border:3px solid var(--pale);box-shadow:0 8px 0 #382813,0 17px 22px #05080dcc,0 0 22px #f2b54466,inset 0 0 0 3px #f2b5443b}
+.command .key{position:absolute;left:10px;top:8px;z-index:2;font:13px Georgia,serif;color:#d9c993}.command.selected .key{color:#fff0c9}.command .art{position:absolute;left:15px;right:15px;top:30px;height:118px;display:grid;place-items:center;border-bottom:1px solid #887044;color:#c9a658;font:62px Georgia,serif;text-shadow:0 4px 5px #05080b;transform:rotate(-3deg)}.command.selected .art{color:#ffe2a0;font-size:70px;border-color:#d6b45d}.command .name{position:absolute;left:8px;right:8px;bottom:31px;text-align:center;color:#f0e6cb;font-size:13px;letter-spacing:.07em;text-shadow:0 2px #080b0e}.command .cost{position:absolute;bottom:9px;left:0;right:0;text-align:center;color:#aab2b4;font-size:9px;letter-spacing:.09em}.command.empty{opacity:.42;filter:saturate(.45)}.command.empty .art{color:#75818a}.command.empty .name{color:#9ba2a2}
+.page-tags{position:absolute;right:26px;bottom:72px;display:flex;gap:8px;transform:rotate(-4deg)}.page-tag{width:73px;height:94px;display:grid;place-content:center;text-align:center;clip-path:polygon(0 0,100% 0,100% 79%,50% 100%,0 79%);background:linear-gradient(145deg,#1c2832,#0b1219);border:1px solid #8a7540;color:#a9b2bd;font-size:13px;letter-spacing:.14em;box-shadow:0 5px 8px #0009}.page-tag.on{background:linear-gradient(145deg,#88601e,#3e2d17);border:2px solid #f7d17a;color:#fff0c9;transform:translateY(-9px);box-shadow:0 7px 0 #302414,0 10px 14px #000b}
+.help{position:absolute;left:795px;bottom:289px;color:#e0d3a9;font-size:10px;letter-spacing:.15em;text-shadow:0 2px #000}.help b{color:var(--pale);font-weight:500}
+ .settings{position:absolute;right:34px;top:33px;width:54px;height:54px;display:grid;place-items:center;border-radius:50%;color:var(--pale);font:24px Georgia,serif;background:radial-gradient(circle at 33% 28%,#3a4548,#10171e 70%);border:2px solid #8a7540;box-shadow:0 4px 0 #090f14,0 8px 12px #0009}
+ .watermark{position:absolute;left:786px;bottom:316px;font:10px Georgia,serif;letter-spacing:.32em;color:#e7dfc1a8}
+ .preview-mode{position:absolute;left:590px;top:26px;z-index:5;padding:7px 11px;background:#111922d9;border:1px solid #78643a;border-left:3px solid var(--gold);color:#d8d1bc;font-size:11px;letter-spacing:.06em;cursor:pointer}.preview-mode b{color:var(--bright);font-weight:500}
+ .hero-selection{height:100%;position:relative;z-index:2;display:flex;flex-direction:column;padding:10px 12px}.selection-head{display:flex;align-items:center;gap:10px;height:58px;border-bottom:1px solid #897244}.selection-number{width:49px;height:49px;flex:none;display:grid;place-items:center;background:#0d151c;border:2px solid var(--gold);box-shadow:inset 0 -3px var(--green);color:var(--pale);font:25px Georgia,serif}.selection-head h2{font-size:15px;margin:0 0 4px;letter-spacing:.03em}.selection-head small{font-size:10px;color:var(--muted)}.selection-count{margin-left:auto;align-self:flex-start;color:var(--pale);font:10px Georgia,serif;white-space:nowrap}
+ .section-cap{margin:7px 0 5px;color:#d6c799;font-size:9px;letter-spacing:.15em}.members-row{display:flex;gap:5px}.member{width:32px;height:31px;display:grid;place-items:center;background:#10171e;border:1px solid #665936;color:#d7c794;font-size:12px}.member.leader{border-color:#ad8b48;color:var(--bright)}
+ .other-grid{display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(3,34px);grid-auto-flow:column;gap:3px}.other-team{height:34px;min-width:0;display:flex;align-items:center;gap:4px;padding:2px 3px;background:#111921;border:1px solid #51482f;box-shadow:inset 0 -2px #080e13}.other-team .team-num{width:26px;height:28px;display:grid;place-items:center;flex:none;background:#0a1117;border:1px solid var(--brass);color:var(--bright);font:15px Georgia,serif}.other-team b{font-size:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.other-team small{display:block;color:var(--dim);font-size:8px;margin-top:2px;white-space:nowrap}.empty-note{color:var(--muted);font-size:10px;margin-top:8px}
+ .hand-cards{position:absolute;inset:0;display:flex;align-items:flex-end;justify-content:center;padding:0 0 22px;isolation:isolate}.hand-cards .command{cursor:pointer}.command .cost{font-size:9px}.command.selected{z-index:8}
+ .page-tag{font-family:inherit;cursor:pointer}.page-tag:focus-visible{outline:2px solid var(--bright);outline-offset:2px}
+</style>
+</head>
+<body><main class="stage">
+  <div class="land"></div><div class="territory"></div><div class="wood"></div><div class="army"><i class="soldier"></i><i class="soldier"></i><i class="soldier"></i><i class="soldier"></i></div><div class="haze"></div>
+  <section class="mission"><div class="eyebrow">东境战役　/　第 03 章</div><h1>守住中部粮仓</h1><p>控制中部区划，阻止敌军突破防线</p><div class="progress"><i></i></div></section>
+  <div class="resources"><div class="token"><div class="token-icon">粮</div><div><small>军粮</small><strong>1,240<em>+12</em></strong></div></div><div class="token"><div class="token-icon">金</div><div><small>军费</small><strong>860<em>+4</em></strong></div></div></div>
+  <div class="settings">⋯</div>
+  <aside class="formations">
+    <div class="formation selected"><div class="seal">1</div><div><b>子剡 · 羽林营</b><small>将领编制　5 / 11</small></div><span class="digit">5</span></div>
+    <div class="formation"><div class="seal">2</div><div><b>阿吉 · 弓骑队</b><small>将领编制　4 / 11</small></div><span class="digit">4</span></div>
+    <div class="formation"><div class="seal">3</div><div><b>李牧 · 前锋</b><small>将领编制　6 / 11</small></div><span class="digit">6</span></div>
+    <div class="formation"><div class="seal">4</div><div><b>待命编队</b><small>点击快速选中</small></div><span class="digit">—</span></div>
+    <div class="formation"><div class="seal">5</div><div><b>待命编队</b><small>编队尚未部署</small></div><span class="digit">—</span></div>
+  </aside>
+  <section class="recon"><div class="recon-inner"><span class="lens-label">斥候 · 战场缩影</span><i class="blip b1"></i><i class="blip b2"></i><i class="blip b3"></i></div></section>
+  <div class="hero-stack" id="selectionPanel"></div>
+  <button class="preview-mode" id="selectionToggle" type="button">选择状态预览　<b>多队 ×3　· 点击切换单队</b></button>
+  <div class="watermark">DAEEM　·　EASTERN MARCH</div>
+  <div class="help"><b>Q W E　A S D　Z X C</b>　快捷键随页签切换</div>
+  <section class="hand-area"><div class="hand-glow"></div><div class="hand-label" id="handLabel">战术指令</div><div class="hand-cards" id="handCards"></div></section>
+  <nav class="page-tags"><button class="page-tag on" data-page="order" type="button">操<br>作</button><button class="page-tag" data-page="unit" type="button">单<br>位</button></nav>
+</main><script>
+const stage=document.querySelector('.stage');function fitStage(){const s=Math.min(innerWidth/1920,innerHeight/1080);stage.style.transform=`translate(-50%,-50%) scale(${s})`}addEventListener('resize',fitStage);fitStage();
+
+const pageData={
+  order:{label:'战术指令',cards:[
+    {key:'Q',icon:'➤',name:'移动',desc:'点地图下达移动命令'},
+    {key:'W',icon:'⚔',name:'攻击',desc:'指定敌方目标'},
+    {key:'E',icon:'⟿',name:'行军',desc:'沿途遇敌则交战'},
+    {key:'A',icon:'Ⅱ',name:'停止',desc:'取消当前命令'}
+  ],active:1},
+  unit:{label:'征募兵种',cards:[
+    {key:'Q',icon:'枪',name:'长枪兵',desc:'粮食 80'},
+    {key:'W',icon:'弓',name:'长弓兵',desc:'粮食 120'},
+    {key:'E',icon:'骑',name:'骑手',desc:'粮食 80 · 黄金 160'},
+    {key:'A',icon:'车',name:'粮车',desc:'粮食 100 · 黄金 100'}
+  ],active:1}
+};
+let currentPage='order';let multiSelect=true;let pickedCard=1;
+function renderHand(page){
+  currentPage=page;const data=pageData[page];const hand=document.getElementById('handCards');
+  document.getElementById('handLabel').textContent=data.label;hand.replaceChildren();
+  document.querySelectorAll('.page-tag').forEach(t=>t.classList.toggle('on',t.dataset.page===page));
+  data.cards.forEach((item,index)=>{
+    const card=document.createElement('div');card.className='command'+(index===pickedCard?' selected':'');
+    card.innerHTML=`<span class="key">${item.key}</span><span class="art">${item.icon}</span><span class="name">${item.name}</span><span class="cost">${item.desc}</span>`;
+    const mid=(data.cards.length-1)/2;const offset=index-mid;
+    card.style.marginLeft=index===0?'0px':'-38px';
+    if(index!==pickedCard)card.style.transform=`rotate(${offset*7}deg) translateY(${Math.abs(offset)*5}px)`;
+    card.style.zIndex=String(index===pickedCard?8:index+1);
+    card.addEventListener('click',()=>{pickedCard=index;renderHand(currentPage)});
+    card.addEventListener('mouseenter',()=>card.style.transform='translateY(-20px) rotate(0deg)');
+    card.addEventListener('mouseleave',()=>{if(index!==pickedCard)card.style.transform=`rotate(${offset*7}deg) translateY(${Math.abs(offset)*5}px)`});
+    hand.appendChild(card);
+  });
+}
+function renderSelection(){
+  const box=document.getElementById('selectionPanel');
+  const toggle=document.getElementById('selectionToggle');
+  toggle.innerHTML=multiSelect?'选择状态预览　<b>多队 ×3　· 点击切换单队</b>':'选择状态预览　<b>单队　· 点击切换多队</b>';
+  const focus=`<div class="selection-head"><div class="selection-number">1</div><div><h2>子剡的部队</h2><small>当前聚焦　·　5 / 11</small></div><span class="selection-count">${multiSelect?'已选 3 队':'单队'}</span></div>`;
+  const rest=multiSelect?`<div class="section-cap">当前部队成员　·　将领排首位</div><div class="members-row"><span class="member leader">将</span><span class="member">盾</span><span class="member">弓</span><span class="member">车</span><span class="member">枪</span></div><div class="section-cap">其他已选部队　·　点序号切换焦点</div><div class="other-grid"><div class="other-team"><span class="team-num">2</span><div><b>阿吉 · 弓骑队</b><small>4 / 11</small></div></div><div class="other-team"><span class="team-num">3</span><div><b>李牧 · 前锋</b><small>6 / 11</small></div></div></div>`:`<div class="section-cap">当前部队单位　·　5 个在编</div><div class="other-grid"><div class="other-team"><span class="team-num">将</span><div><b>子剡 · 将领</b><small>HP 920</small></div></div><div class="other-team"><span class="team-num">盾</span><div><b>剑盾兵</b><small>HP 84%</small></div></div><div class="other-team"><span class="team-num">弓</span><div><b>御林弓手</b><small>HP 100%</small></div></div><div class="other-team"><span class="team-num">车</span><div><b>投石车</b><small>HP 67%</small></div></div><div class="other-team"><span class="team-num">枪</span><div><b>长枪兵</b><small>HP 100%</small></div></div></div>`;
+  box.innerHTML=`<section class="hero"><div class="hero-selection">${focus}${rest}</div></section>`;
+}
+document.querySelectorAll('.page-tag').forEach(t=>t.addEventListener('click',()=>{pickedCard=1;renderHand(t.dataset.page)}));
+document.getElementById('selectionToggle').addEventListener('click',()=>{multiSelect=!multiSelect;renderSelection()});
+renderSelection();renderHand(currentPage);
+</script></body></html>

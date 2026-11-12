@@ -99,8 +99,6 @@ const ConfigRes = preload("res://logic/config.gd")
 const PressFxRes = preload("res://view/press_fx.gd")
 ## ★★ 悬停「瞄准框」：单独一层画在按钮**上面**（理由见 button_reticle.gd 文件头）。
 const ReticleRes = preload("res://view/button_reticle.gd")
-## ★★ 菜单按钮的点击 / 悬停音效（非菜单按钮挂上也静音，见 view/sfx.gd）。
-const SfxRes = preload("res://view/sfx.gd")
 
 ## 进度存在按钮身上的元数据键（`attach()` 写、`draw()` 读）。
 ## ★ 用元数据而不是「给 Button 加个字段」：调用点建的是**真 Button**，
@@ -185,10 +183,6 @@ static func attach(b: Button) -> FillAnimator:
 	var old: Variant = b.get_meta(META) if b.has_meta(META) else null
 	# ★★ 按下动效也在这里统一挂上：调用点不需要第二行 attach。
 	PressFxRes.attach(b)
-	# ★★ 点击音效同样统一挂上（只有菜单子树里的按钮会真的出声，见 sfx.gd）。
-	#   ⚠️ `false` = 悬停音**不在这里连**：本按钮的 `mouse_entered` 已经归动画器
-	#   （`setup_host`），由动画器的回调调 `SfxRes.on_hover()` —— 同一帧不接两条。
-	SfxRes.attach(b, false)
 	if old != null and is_instance_valid(old):
 		return old
 	var anim := FillAnimator.new()
@@ -468,10 +462,6 @@ class Tuning:
 ##   （`_process` 才有地方跑、`_draw` 才有地方画），并且 `show_behind_parent = true`
 ##   ⇒ 它画的东西排在宿主的底纹 / 文字**之前**（层次见文件头那一节）。
 class FillAnimator extends Control:
-	## ★ 内层类看不到外层的常量（见文件头 FLIP_LO 那条），所以音效模块在这里再 preload
-	##   一次 —— 同一条 `res://` 只会载入一份资源，不是又建一个播放器池。
-	const SfxRes = preload("res://view/sfx.gd")
-
 	## 选中填了多少（0 = 没选中，1 = 选中满格）。★ 只读用途请走 `host` 上的静态接口。
 	## ★★ 悬停 / 按住**不再**驱动它 —— 那条走下面的 `_glow`。
 	var _fill: float = 0.0
@@ -544,6 +534,8 @@ class FillAnimator extends Control:
 	##      灰底就只能和填充金一起画在这一层：灰先画、金后画。
 	##      于是页签的 `tab_plain*` 可以继续保持**全透明**（那条约束不能破）。
 	var _base_bg: Color = Color(0, 0, 0, 0)
+	## 少数徽章按钮（如 HUD 右上设置币）使用圆形底色 / 填充；普通按钮仍是矩形。
+	var _circle_shape: bool = false
 	## 每一条按钮上文字 / 子 Label 的**原色**（`_sync_text()` 每次都从它算，可重入）。
 	var _text: Dictionary = {}
 	## ★★ 已经真正写进控件的「节点 → {槽位: 颜色}」。
@@ -611,7 +603,10 @@ class FillAnimator extends Control:
 	func _draw() -> void:
 		# ★★ 先铺常驻底色，再让金盖上去 —— 这就是「灰底一直存在、选中时金往上填」。
 		if _base_bg.a > 0.001 and _button != null and is_instance_valid(_button):
-			draw_rect(Rect2(Vector2.ZERO, _button.size), _base_bg, true)
+			if _circle_shape:
+				draw_circle(_button.size * 0.5, minf(_button.size.x, _button.size.y) * 0.5, _base_bg)
+			else:
+				draw_rect(Rect2(Vector2.ZERO, _button.size), _base_bg, true)
 		draw_fill_now()
 		# ★★ 悬停 / 按住：新语言由「按钮上面那一层」画（button_reticle.gd）；
 		#   旧语言仍走动画器自己的四边泛光（config 可切回）。
@@ -628,6 +623,11 @@ class FillAnimator extends Control:
 			return
 		var fill: float = _fill
 		if fill <= 0.0001:
+			return
+		if _circle_shape:
+			var radius := minf(_button.size.x, _button.size.y) * 0.5
+			var fill_color := _bottom.lerp(_top, 0.35)
+			draw_circle(_button.size * 0.5, radius * sqrt(fill), fill_color)
 			return
 
 		# ① 这块按钮的**本地**矩形。
@@ -683,6 +683,10 @@ class FillAnimator extends Control:
 		band = minf(band, minf(w, h) * 0.45)
 		var col := _glow_color()
 		var tint := Color(col.r, col.g, col.b, col.a * Tuning.alpha() * _glow)
+		if _circle_shape:
+			draw_arc(Vector2(w * 0.5, h * 0.5), minf(w, h) * 0.5 - 2.0,
+				0.0, TAU, 48, tint, maxf(1.0, band * 0.35), true)
+			return
 		draw_texture_rect(Tuning.texture(0), Rect2(0.0, 0.0, w, band), false, tint)
 		draw_texture_rect(Tuning.texture(1), Rect2(0.0, h - band, w, band), false, tint)
 		draw_texture_rect(Tuning.texture(2), Rect2(0.0, 0.0, band, h), false, tint)
@@ -909,8 +913,6 @@ class FillAnimator extends Control:
 		_hovered = true
 		# 指针又回到按钮上（即使还按着）⇒ 松开时应该保持悬停。
 		_left_while_pressed = false
-		# ★ 悬停音借用这一条已有的 `mouse_entered`（不给宿主再连第二条，见 sfx.attach 的说明）。
-		SfxRes.on_hover(_button)
 
 	func _on_mouse_exited() -> void:
 		_hovered = false
@@ -1366,6 +1368,11 @@ class FillAnimator extends Control:
 		queue_redraw()
 
 
+	func set_circle_shape(on: bool) -> void:
+		_circle_shape = on
+		queue_redraw()
+
+
 	## 当前常驻底色（测试 / 排查读）。
 	func base_bg() -> Color:
 		return _base_bg
@@ -1619,6 +1626,13 @@ static func set_base_bg(b: Button, c: Color) -> void:
 	var a := animator_of(b)
 	if a != null:
 		a.set_base_bg(c)
+
+
+## 徽章按钮专用：将底色 / 填充 / 泛光裁成圆形。
+static func set_circle_shape(b: Button, on: bool) -> void:
+	var a := animator_of(b)
+	if a != null:
+		a.set_circle_shape(on)
 
 
 ## 这颗按钮的常驻底色（没挂动画器 → 全透明）。

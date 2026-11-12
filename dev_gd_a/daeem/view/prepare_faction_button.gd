@@ -18,7 +18,6 @@
 extends Button
 
 const ThemeRes = preload("res://view/theme.gd")
-const SfxRes = preload("res://view/sfx.gd")
 const PressFxRes = preload("res://view/press_fx.gd")
 
 ## 渐变贴图的横向采样数（只烘一次，所有按钮共用）。
@@ -73,7 +72,6 @@ func setup(p_font: Font, display: String, faction_id: String,
 	_label.add_theme_color_override("font_color", ThemeRes.text())
 	add_child(_label)
 
-	SfxRes.attach(self)
 	PressFxRes.attach(self)
 	mouse_entered.connect(_on_hover.bind(true))
 	mouse_exited.connect(_on_hover.bind(false))

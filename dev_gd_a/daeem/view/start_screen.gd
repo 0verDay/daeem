@@ -30,8 +30,6 @@ const MenuEmblemRes = preload("res://view/menu_emblem.gd")
 const TextMarksRes = preload("res://view/text_marks.gd")
 const MenuDeckRes = preload("res://view/menu_deck.gd")
 const FillButtonRes = preload("res://view/fill_button.gd")
-## ★★ 菜单点击音效：整层标记成「菜单」，里面的按钮才会出声（见 view/sfx.gd）。
-const SfxRes = preload("res://view/sfx.gd")
 const LayoutRes = preload("res://view/menu_deck_layout.gd")
 const PlateCycleRes = preload("res://view/menu_art/plate_cycle.gd")
 ## ★★ 菜单光标（箭头 / 点两档；见 view/menu_cursor.gd）。
@@ -79,7 +77,6 @@ func setup(p_cfg: ConfigRes, p_font: Font) -> void:
 	_font = p_font
 	layer = 100
 	# ★ 标记整层菜单（含 MenuDeck 的所有页面）：按钮点击时据此决定要不要播点击音。
-	SfxRes.mark_menu(self)
 
 	_root = Control.new()
 	_root.name = "StartRoot"
@@ -253,10 +250,7 @@ func _on_page_gui_input(event: InputEvent) -> void:
 	if _page != PAGE_INTRO:
 		return
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
-		# 入场页的「点击任意处」也是菜单交互的一环：与菜单按钮同一套点击音。
-		# ★ 只有真的切进去了才响（落位动画进行中的连点不该再补一声）。
-		if dismiss_intro():
-			SfxRes.play_click()
+		dismiss_intro()
 
 
 # ------------------------------------------------------------------

@@ -11,8 +11,6 @@ extends Control
 
 signal pressed
 
-const SfxRes = preload("res://view/sfx.gd")
-
 const ThemeRes = preload("res://view/theme.gd")
 
 var _kind: String = "level"
@@ -27,7 +25,6 @@ var _sub_label: Label = null
 
 
 func setup(p_font: Font, kind: String, title: String, subtitle: String = "") -> void:
-	SfxRes.attach(self)
 	_font = p_font
 	_kind = kind
 	_title = title

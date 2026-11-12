@@ -12,7 +12,6 @@ extends Button
 
 const ThemeRes = preload("res://view/theme.gd")
 const LayoutRes = preload("res://view/menu_deck_layout.gd")
-const SfxRes = preload("res://view/sfx.gd")
 
 const ICON_CLOSE := 0
 const ICON_LOAD := 1
@@ -50,7 +49,6 @@ func setup(p_kind: int = ICON_CLOSE, p_tip: String = "",
 	mouse_exited.connect(queue_redraw)
 	button_down.connect(queue_redraw)
 	button_up.connect(queue_redraw)
-	SfxRes.attach(self)
 
 
 ## 图标落位（局部坐标）。四角按钮的控件框是 180×180，图标只占其中 56×56。

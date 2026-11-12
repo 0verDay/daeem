@@ -39,19 +39,24 @@ const FillButtonRes = preload("res://view/fill_button.gd")
 ##   没有这两个键的页面（操作 / 建筑 / 科技）照旧只有字。
 const UnitCardIconRes = preload("res://view/unit_card_icon.gd")
 
-## 某一格被激活（鼠标点 / 键盘按）时发出，原样带上那一条目
+## 某一格被快捷键激活时发出，原样带上那一条目（鼠标操作改为上拖松手）。
 signal entry_activated(entry: Dictionary)
+## 手牌拖起 / 移动 / 松手；屏幕位置是视口像素坐标。
+signal card_drag_started(entry: Dictionary, screen_pos: Vector2)
+signal card_drag_moved(entry: Dictionary, screen_pos: Vector2)
+signal card_drag_finished(entry: Dictionary, screen_pos: Vector2, index: int)
 
 ## ★★ 某一格被**鼠标悬停**（进入 / 离开）时发出，带上格子序号。
 ##   hud 收到后会弹「悬停详情面板」（见 view/hover_tip.gd 与 hud._hover_detail）。
 ##   ★ 只报序号、不报内容：内容是 hud 按**当前的 entries** 取的 ——
-##     与点击那条路（`activate_index`）同一套判据，界面不会出现
+##     与快捷键激活那条路（`activate_index`）同一套判据，界面不会出现
 ##     「点的是这一格、说明写的是上一页那一格」这种错位。
 signal cell_hovered(index: int)
 signal cell_unhovered(index: int)
 
 var _entries: Array = []
 var _cells: Array[Button] = []
+var _card_faces: Array[Panel] = []
 var _key_labels: Array[Label] = []
 var _name_labels: Array[Label] = []
 ## ★★ 每格的**名字底条**（略黑半透明横条，名字压在它上面）。
@@ -62,11 +67,22 @@ var _name_bars: Array[ColorRect] = []
 var _icon_views: Array = []
 ## ★★ 招募数量角标（同种多个时显示在格子右下角）。
 var _count_labels: Array[Label] = []
+## 纯动作页的大图形符号（招募/建筑/科技仍优先使用剪影蒙版）。
+var _glyph_labels: Array[Label] = []
 ## ★★ 演出呼吸高亮：要亮的招募 kind（空 = 不亮）+ 每格的描边层 + 向外扩散的方形波纹。
 var glow_kind: String = ""
 var _glow_panels: Array[Panel] = []
 var _glow_ripples: Array[Panel] = []
 var _glow_t: float = 0.0
+## 点击牌组切页时的新牌从牌手下方错落升起；鼠标向上拖牌时跟随指针。
+const DRAG_LIFT_THRESHOLD := 10.0
+const DRAG_RETURN_SEC := 0.20
+var _drag_index: int = -1
+var _drag_start_global := Vector2.ZERO
+var _dragging_card: bool = false
+var _deck_tween: Tween = null
+var _drag_tween: Tween = null
+var _drag_fade_tween: Tween = null
 
 ## ★★ 手机端：按住某一格期间由 hud 置 true —— 「按下」产生的模拟鼠标会让这一格**立刻**
 ##    收到 mouse_entered，那是「悬停」，而需求是「长按才悬停」⇒ 按住期间忽略鼠标进入。
@@ -76,9 +92,9 @@ var touch_suppress_hover: bool = false
 
 ## ★★ 格子里的**名字底条**高度（设计像素 @86.67 的格子）。名字就压在这条上。
 ## 0 / 1 的取舍：够高才装得下 11px 的字，又要尽量少盖图标 —— 15px 是实测折中。
-const NAME_BAR_H := 15.0
+const NAME_BAR_H := 22.0
 ## 有图标时名字那一行的字号（`ui_style.FS_TINY`：86.67px 的格子里一行放得下 7 个汉字）。
-const NAME_ON_ICON_FS := 11
+const NAME_ON_ICON_FS := 13
 
 
 func setup() -> void:
@@ -87,9 +103,26 @@ func setup() -> void:
 	UiLayoutRes.apply_rect(self, UiLayoutRes.CARD_RECT, true, true)
 
 	for i in UiLayoutRes.CARD_SLOTS:
+		var face := Panel.new()
+		face.name = "CardFace%d" % (i + 1)
+		face.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		var face_style := StyleBoxFlat.new()
+		face_style.bg_color = UiStyleRes.bg()
+		face_style.border_color = UiStyleRes.line()
+		face_style.set_border_width_all(2)
+		face_style.set_corner_radius_all(10)
+		face_style.shadow_color = Color(0.0, 0.0, 0.0, 0.76)
+		face_style.shadow_size = 7
+		face_style.shadow_offset = Vector2(0.0, 6.0)
+		face.add_theme_stylebox_override("panel", face_style)
+		face.visible = false
+		add_child(face)
+		_card_faces.append(face)
+
 		var cell := Button.new()
 		cell.name = "CardSlot%d" % (i + 1)
 		cell.focus_mode = Control.FOCUS_NONE
+		cell.clip_contents = true
 		# ★★ 本版**不用** Godot 原生的 `tooltip_text` 了：说明改由「命令卡正上方的
 		#    悬停详情面板」画（需求要的是那块面板）。两个一起挂会同时冒出两个提示框。
 		#   ⚠️ `desc` 这个**数据字段**照旧留着（文案的出处是 config / 逻辑层），
@@ -97,6 +130,7 @@ func setup() -> void:
 		_cell_style(cell, false)
 		UiLayoutRes.apply_rect(cell, UiLayoutRes.card_cell_local(i))
 		cell.pressed.connect(_on_cell_pressed.bind(i))
+		cell.gui_input.connect(_on_cell_gui_input.bind(i))
 		# ★ 悬停：Godot 的 Control 自带这两个信号（不需要自己算鼠标位置）。
 		#   子 Label 全是 IGNORE，所以事件一定落在 Button 自己身上。
 		#   ⚠️ 填充动效**也用这两个信号**（它自己连的，见 fill_button.setup_host）——
@@ -107,7 +141,7 @@ func setup() -> void:
 		FillButtonRes.attach_text(cell)
 		# ★★ 每格都带常驻灰底（空格子也不例外）：底纹是全透明的，
 		#   灰底画在填充层里、金的上方；这样悬停时灰底不会消失（用户报的 bug）。
-		FillButtonRes.set_base_bg(cell, UiStyleRes.bg_empty())
+		FillButtonRes.set_base_bg(cell, UiStyleRes.bg())
 		# ★★ 字色的**统一口径**（用户要求）：「3×3 里的文字都由下往上由白变黑，
 		#   与金色填充线同步」。
 		#   ⇒ 一律走「原色 + 跟着金色前沿翻面」那条路（`_sync_text()` 里唯一的规则）。
@@ -132,6 +166,16 @@ func setup() -> void:
 		cell.add_child(icon_view)
 		# ★ `bind(cell)` 铺满整格（图标自己按正方形居中，见 `IconView` / `mask_rect`）。
 		icon_view.bind(cell)
+		var glyph := Label.new()
+		glyph.name = "CardGlyph%d" % (i + 1)
+		glyph.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		glyph.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		glyph.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		glyph.add_theme_font_size_override("font_size", 58)
+		glyph.add_theme_color_override("font_color", UiStyleRes.accent_bright())
+		glyph.visible = false
+		cell.add_child(glyph)
+		_glyph_labels.append(glyph)
 
 		# 键位字母贴左上角（参考图就是这样：字母小、名字居中）
 		var key_label := Label.new()
@@ -225,13 +269,15 @@ func setup() -> void:
 		_icon_views.append(icon_view)
 		_count_labels.append(count_label)
 
-	# ★★ 整组 2px 外框：九格自己的 1px 描边只勾出格子，外框把整块命令卡和地图分开。
-	#    ★ 最后加（画在九格之上）+ IGNORE（铺满整块，STOP 会吞掉所有格子点击）。
+	# 扇形牌不再使用九宫格外框；每张牌的双层描边与投影构成牌堆轮廓。
 	var frame := Panel.new()
 	frame.name = "CardFrame"
 	frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	frame.set_anchors_preset(Control.PRESET_FULL_RECT)
-	frame.add_theme_stylebox_override("panel", UiStyleRes.outline_style(UiStyleRes.line(), 2))
+	var frame_style := StyleBoxFlat.new()
+	frame_style.bg_color = Color(0.0, 0.0, 0.0, 0.0)
+	frame_style.set_border_width_all(0)
+	frame.add_theme_stylebox_override("panel", frame_style)
 	add_child(frame)
 
 	set_entries([])
@@ -249,6 +295,14 @@ func setup() -> void:
 ##      会出现『再起』按钮」——**玩家要能看见它在等什么**（一次都不画的话，
 ##      玩家只会以为这个功能不存在）。所以画灰 + 悬停说明才是对的做法。
 func set_entries(list: Array) -> void:
+	if _deck_tween != null and _deck_tween.is_running():
+		_deck_tween.kill()
+	if _drag_tween != null and _drag_tween.is_running():
+		_drag_tween.kill()
+	if _drag_fade_tween != null and _drag_fade_tween.is_running():
+		_drag_fade_tween.kill()
+	_drag_index = -1
+	_dragging_card = false
 	_entries = []
 	for i in list.size():
 		if i >= UiLayoutRes.CARD_SLOTS:
@@ -263,9 +317,20 @@ func set_entries(list: Array) -> void:
 		var filled: bool = i < _entries.size() and not (_entries[i] as Dictionary).is_empty()
 		var cell := _cells[i]
 		if filled:
+			cell.visible = true
+			cell.modulate.a = 1.0
+			_card_faces[i].visible = true
+			_card_faces[i].modulate.a = 1.0
 			var e2: Dictionary = _entries[i]
 			var ready: bool = bool(e2.get("ready", true))
 			_name_labels[i].text = String(e2.get("name", ""))
+			if String(e2.get("type", "")) == "recruit_cancel_all":
+				_key_labels[i].text = "ESC"
+			elif _has_recruit_progress_entry():
+				_key_labels[i].text = String(UiLayoutRes.CARD_KEYS[i - 1]) if i > 0 \
+					else ""
+			else:
+				_key_labels[i].text = String(UiLayoutRes.CARD_KEYS[i])
 			# ★★ 条目带 `icon_mask` / `icon_role` ⇒ 这一格画**图标**、把名字那行字藏起来
 			#    （需求：「招募单位的按钮内的文字改为图标」）。
 			#   `icon_mask` 是主路径（该兵种原画的剪影浮雕）；`icon_role` 是兜底
@@ -275,6 +340,12 @@ func set_entries(list: Array) -> void:
 			var role := String(e2.get("icon_role", ""))
 			var mask := String(e2.get("icon_mask", ""))
 			_set_icon(i, role, mask, ready)
+			if i < _glyph_labels.size():
+				var glyph := _glyph_labels[i]
+				glyph.text = String(e2.get("icon_glyph", ""))
+				glyph.visible = glyph.text != "" and role == "" and mask == ""
+				glyph.add_theme_font_size_override("font_size",
+					int(clampf(cell.size.x * 0.42, 34.0, 58.0)))
 			# ★★ 招募批次进度 / 同种数量角标（整条队列共享一个读条，见 world._tick_recruitment）。
 			if i < _icon_views.size() and _icon_views[i] != null:
 				_icon_views[i].set_progress(float(e2.get("queue_progress", 0.0)))
@@ -286,7 +357,8 @@ func set_entries(list: Array) -> void:
 			#    「图标 + 一行名字，描述全进悬停面板」——单位和建筑都要这样）。
 			#    没有图标时（操作页那种）名字照旧居中、用大一号的字。
 			#   ⚠️ 名字**永远写进 Label**：`cell_label()` 是测试与排查的语义出口。
-			var has_icon: bool = role != "" or mask != ""
+			var has_icon: bool = role != "" or mask != "" \
+				or String(e2.get("icon_glyph", "")) != ""
 			_name_labels[i].visible = true
 			_apply_name_layout(i, has_icon)
 			# ★ 置灰那一档的**文字也一起变暗**：只把按钮禁掉而名字照旧是亮白的话，
@@ -324,13 +396,15 @@ func set_entries(list: Array) -> void:
 			#   其它页（操作 / 招募将领）的格子照旧闪。
 			var kind := String(e2.get("type", ""))
 			var is_build: bool = kind == "build"
-			var is_unit: bool = kind == "recruit"
+			var is_unit: bool = kind == "recruit" or kind == "recruit_cancel_all"
 			FillButtonRes.set_latched(cell, bool(e2.get("active", false)))
-			FillButtonRes.set_click_flash(cell, not (is_build or is_unit))
+			FillButtonRes.set_click_flash(cell, false)
 			# ★★ 置灰的格子**照旧有悬停反馈**，只是填的是**灰**（见 view/fill_button.gd）：
 			#   填充层自己看 `disabled` 换档，所以这里**不要**再 `set_available(false)`
 			#   —— 那会把动效整个关掉，鼠标停上去一点反应都没有（与需求的「灰色填充」相反）。
 		else:
+			cell.visible = false
+			_card_faces[i].visible = false
 			_name_labels[i].text = ""
 			_name_labels[i].visible = true
 			_set_icon(i, "", "")
@@ -350,6 +424,381 @@ func set_entries(list: Array) -> void:
 			FillButtonRes.set_latched(cell, false)
 			FillButtonRes.set_click_flash(cell, true)
 			FillButtonRes.set_available(cell, false)
+			if i < _glyph_labels.size():
+				_glyph_labels[i].text = ""
+				_glyph_labels[i].visible = false
+	_layout_fan()
+
+
+## 仅把当前页有内容的格子摆成扇形；未用的槽位不显示、不参与鼠标命中。
+func _layout_fan() -> void:
+	var visible_indices: Array[int] = []
+	for i in _cells.size():
+		if i < _entries.size() and not (_entries[i] as Dictionary).is_empty():
+			visible_indices.append(i)
+	var count := visible_indices.size()
+	for ordinal in count:
+		var i := visible_indices[ordinal]
+		var cell := _cells[i]
+		var r := UiLayoutRes.card_fan_local(ordinal, count)
+		var face := _card_faces[i]
+		face.position = r.position
+		face.size = r.size
+		face.rotation = UiLayoutRes.card_fan_rotation(ordinal, count)
+		face.z_index = ordinal * 2
+		cell.position = r.position
+		cell.size = r.size
+		cell.rotation = UiLayoutRes.card_fan_rotation(ordinal, count)
+		cell.z_index = ordinal * 2 + 1
+		if i < _name_bars.size():
+			_name_bars[i].position = Vector2(0.0, r.size.y - NAME_BAR_H)
+			_name_bars[i].size = Vector2(r.size.x, NAME_BAR_H)
+		if i < _key_labels.size():
+			_key_labels[i].position = Vector2(8.0, 6.0)
+		if i < _count_labels.size():
+			_count_labels[i].position = Vector2(r.size.x - 30.0, 8.0)
+		_apply_name_layout(i,
+			String((_entries[i] as Dictionary).get("icon_role", "")) != "" \
+			or String((_entries[i] as Dictionary).get("icon_mask", "")) != "" \
+			or String((_entries[i] as Dictionary).get("icon_glyph", "")) != "")
+		if i < _glyph_labels.size():
+			var glyph := _glyph_labels[i]
+			glyph.position = Vector2(6.0, 22.0)
+			glyph.size = Vector2(maxf(0.0, r.size.x - 12.0), maxf(0.0, r.size.y - NAME_BAR_H - 25.0))
+
+
+func _raise_card(i: int, raised: bool) -> void:
+	if i < 0 or i >= _cells.size() or not _cells[i].visible:
+		return
+	var ordinal := 0
+	for j in i:
+		if j < _entries.size() and not (_entries[j] as Dictionary).is_empty():
+			ordinal += 1
+	var count := 0
+	for e in _entries:
+		if e is Dictionary and not (e as Dictionary).is_empty():
+			count += 1
+	var cell := _cells[i]
+	var base := UiLayoutRes.card_fan_local(ordinal, count)
+	if raised:
+		cell.rotation = 0.0
+		cell.position.y = base.position.y - 20.0
+		cell.z_index = UiLayoutRes.CARD_SLOTS * 2 + 2
+		_card_faces[i].rotation = 0.0
+		_card_faces[i].position.y = base.position.y - 20.0
+		_card_faces[i].z_index = UiLayoutRes.CARD_SLOTS * 2 + 1
+	else:
+		cell.rotation = UiLayoutRes.card_fan_rotation(ordinal, count)
+		cell.position.y = base.position.y
+		cell.z_index = ordinal * 2 + 1
+		_card_faces[i].rotation = UiLayoutRes.card_fan_rotation(ordinal, count)
+		_card_faces[i].position.y = base.position.y
+		_card_faces[i].z_index = ordinal * 2
+
+
+## 切换页签后对新手牌做一次短促的「从牌手里抽出」入场。
+func animate_deck_in() -> void:
+	if _deck_tween != null and _deck_tween.is_running():
+		_deck_tween.kill()
+	var visible_indices: Array[int] = []
+	for i in _cells.size():
+		if _cells[i].visible:
+			visible_indices.append(i)
+	var count := visible_indices.size()
+	if count <= 0 or not is_visible_in_tree():
+		return
+	for ordinal in count:
+		var i := visible_indices[ordinal]
+		var target := UiLayoutRes.card_fan_local(ordinal, count)
+		var target_rotation := UiLayoutRes.card_fan_rotation(ordinal, count)
+		_cells[i].modulate.a = 0.0
+		_cells[i].position = target.position + Vector2(0.0, 40.0)
+		_cells[i].rotation = target_rotation * 1.5
+		_card_faces[i].modulate.a = 0.0
+		_card_faces[i].position = _cells[i].position
+		_card_faces[i].rotation = _cells[i].rotation
+	_deck_tween = create_tween()
+	_deck_tween.set_parallel(true)
+	for ordinal in count:
+		var i := visible_indices[ordinal]
+		var target := UiLayoutRes.card_fan_local(ordinal, count)
+		var delay := float(ordinal) * 0.025
+		_deck_tween.tween_property(_cells[i], "position", target.position, 0.22) \
+			.set_delay(delay).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+		_deck_tween.tween_property(_cells[i], "rotation",
+			UiLayoutRes.card_fan_rotation(ordinal, count), 0.22) \
+			.set_delay(delay).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+		_deck_tween.tween_property(_cells[i], "modulate:a", 1.0, 0.16).set_delay(delay)
+		_deck_tween.tween_property(_card_faces[i], "position", target.position, 0.22) \
+			.set_delay(delay).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+		_deck_tween.tween_property(_card_faces[i], "rotation",
+			UiLayoutRes.card_fan_rotation(ordinal, count), 0.22) \
+			.set_delay(delay).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+		_deck_tween.tween_property(_card_faces[i], "modulate:a", 1.0, 0.16).set_delay(delay)
+
+
+func _on_cell_gui_input(event: InputEvent, i: int) -> void:
+	if OS.has_feature("mobile") or touch_suppress_hover:
+		return # 触屏由 HUD 的长按 / 拖牌路径处理，不抢模拟鼠标事件。
+	if event is InputEventMouseButton and (event as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
+		var mb := event as InputEventMouseButton
+		if mb.pressed:
+			_drag_index = i
+			_drag_start_global = get_viewport().get_mouse_position()
+			_dragging_card = false
+		elif _drag_index == i:
+			_finish_card_drag(i, get_viewport().get_mouse_position())
+		return
+	if event is InputEventMouseMotion and _drag_index == i:
+		var mm := event as InputEventMouseMotion
+		if (mm.button_mask & MOUSE_BUTTON_MASK_LEFT) == 0:
+			return
+		_update_drag_position(i, get_viewport().get_mouse_position())
+		if _dragging_card:
+			accept_event()
+
+
+func _update_drag_position(i: int, viewport_pos: Vector2) -> void:
+	if i < 0 or i >= _cells.size():
+		return
+	var delta := viewport_pos - _drag_start_global
+	if not _dragging_card and delta.y <= -DRAG_LIFT_THRESHOLD:
+		_dragging_card = true
+		if _deck_tween != null and _deck_tween.is_running():
+			_deck_tween.kill()
+		if _drag_tween != null and _drag_tween.is_running():
+			_drag_tween.kill()
+		_cells[i].z_index = UiLayoutRes.CARD_SLOTS * 2 + 4
+		_card_faces[i].z_index = UiLayoutRes.CARD_SLOTS * 2 + 3
+		if String(entry_at(i).get("type", "")) == "build":
+			# 建筑牌上拖时快速淡至全透明，避免遮挡红 / 绿建造提示与 3D 虚影。
+			if _drag_fade_tween != null and _drag_fade_tween.is_running():
+				_drag_fade_tween.kill()
+			_cells[i].modulate.a = 1.0
+			_card_faces[i].modulate.a = 1.0
+			_drag_fade_tween = create_tween().set_parallel(true)
+			_drag_fade_tween.tween_property(_cells[i], "modulate:a", 0.0, 0.09)
+			_drag_fade_tween.tween_property(_card_faces[i], "modulate:a", 0.0, 0.09)
+		card_drag_started.emit(entry_at(i), viewport_pos)
+	if not _dragging_card:
+		return
+	var local: Vector2 = get_global_transform_with_canvas().affine_inverse() * viewport_pos
+	_cells[i].rotation = 0.0
+	_cells[i].position = local - _cells[i].size * 0.5
+	_card_faces[i].rotation = 0.0
+	_card_faces[i].position = _cells[i].position
+	card_drag_moved.emit(entry_at(i), viewport_pos)
+
+
+func _finish_card_drag(i: int, viewport_pos: Vector2 = Vector2.ZERO) -> void:
+	if _dragging_card:
+		# 鼠标牌只能由向上拖起并松手触发；普通点按不激活。
+		card_drag_finished.emit(entry_at(i), viewport_pos, i)
+		cell_unhovered.emit(i)
+	_drag_index = -1
+	_dragging_card = false
+
+
+## HUD 的触屏路径调用：触摸按下只登记一个拖牌候选；短点不打出手牌。
+func begin_touch_drag(i: int, viewport_pos: Vector2) -> void:
+	_drag_index = i
+	_drag_start_global = viewport_pos
+	_dragging_card = false
+
+
+## HUD 的触屏拖动路径；只有向上越过阈值才抬牌。@return 当前是否已进入拖拽。
+func move_touch_drag(i: int, viewport_pos: Vector2) -> bool:
+	if i != _drag_index:
+		return false
+	_update_drag_position(i, viewport_pos)
+	return _dragging_card
+
+
+## HUD 在触摸释放时调用；只有已经上拖的牌才发出 drag-finished 动作。
+func finish_touch_drag(i: int) -> void:
+	var pos: Vector2 = get_viewport().get_mouse_position() if get_viewport() != null else Vector2.ZERO
+	_finish_card_drag(i, pos)
+
+
+func _animate_card_back(i: int) -> void:
+	var ordinal := 0
+	for j in i:
+		if j < _entries.size() and not (_entries[j] as Dictionary).is_empty():
+			ordinal += 1
+	var count := 0
+	for e in _entries:
+		if e is Dictionary and not (e as Dictionary).is_empty():
+			count += 1
+	if count <= 0:
+		return
+	var target := UiLayoutRes.card_fan_local(ordinal, count)
+	var rot := UiLayoutRes.card_fan_rotation(ordinal, count)
+	if _drag_tween != null and _drag_tween.is_running():
+		_drag_tween.kill()
+	if _drag_fade_tween != null and _drag_fade_tween.is_running():
+		_drag_fade_tween.kill()
+	_drag_tween = create_tween().set_parallel(true)
+	_drag_tween.tween_property(_cells[i], "position", target.position, DRAG_RETURN_SEC) \
+		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	_drag_tween.tween_property(_cells[i], "rotation", rot, DRAG_RETURN_SEC) \
+		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	_drag_tween.tween_property(_card_faces[i], "position", target.position, DRAG_RETURN_SEC) \
+		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	_drag_tween.tween_property(_card_faces[i], "rotation", rot, DRAG_RETURN_SEC) \
+		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	_drag_tween.tween_property(_cells[i], "modulate:a", 1.0, 0.12)
+	_drag_tween.tween_property(_card_faces[i], "modulate:a", 1.0, 0.12)
+	_cells[i].z_index = ordinal * 2 + 1
+	_card_faces[i].z_index = ordinal * 2
+
+
+func animate_card_back(i: int) -> void:
+	_animate_card_back(i)
+
+
+## 队列开始后，取消牌从左侧滑入，普通招募牌向右错位；打出的兵种从下方补回。
+func animate_queue_insert(old_entries: Array, played_kind: String = "",
+		played_screen_pos: Vector2 = Vector2.ZERO) -> void:
+	if _deck_tween != null and _deck_tween.is_running():
+		_deck_tween.kill()
+	var old_positions: Dictionary = {}
+	var old_visible: Array[int] = []
+	for i in old_entries.size():
+		if old_entries[i] is Dictionary and not (old_entries[i] as Dictionary).is_empty():
+			old_visible.append(i)
+	var old_count := old_visible.size()
+	for ordinal in old_count:
+		old_positions[old_visible[ordinal]] = UiLayoutRes.card_fan_local(ordinal, old_count).position
+
+	var new_visible: Array[int] = []
+	for i in _cells.size():
+		if _cells[i].visible:
+			new_visible.append(i)
+	var count := new_visible.size()
+	if count == 0:
+		return
+	var played_index := -1
+	if played_kind != "":
+		for i in new_visible:
+			var e: Dictionary = _entries[i]
+			if String(e.get("type", "")) == "recruit" \
+					and String(e.get("unit_kind", "")) == played_kind:
+				played_index = i
+				break
+
+	for ordinal in count:
+		var i := new_visible[ordinal]
+		var target := UiLayoutRes.card_fan_local(ordinal, count)
+		var rot := UiLayoutRes.card_fan_rotation(ordinal, count)
+		if i == 0:
+			_cells[i].position = target.position + Vector2(-_cells[i].size.x - 30.0, 0.0)
+			_cells[i].modulate.a = 0.0
+			_card_faces[i].position = _cells[i].position
+			_card_faces[i].modulate.a = 0.0
+			_cells[i].rotation = rot * 1.3
+			_card_faces[i].rotation = rot * 1.3
+		elif i == played_index:
+			var local: Vector2 = get_global_transform_with_canvas().affine_inverse() * played_screen_pos
+			_cells[i].position = local - _cells[i].size * 0.5
+			_cells[i].rotation = 0.0
+			_cells[i].modulate.a = 1.0
+			_card_faces[i].position = _cells[i].position
+			_card_faces[i].rotation = 0.0
+			_card_faces[i].modulate.a = 1.0
+		else:
+			var old_i := i - 1
+			var from: Vector2 = old_positions.get(old_i, target.position)
+			var old_ordinal := old_visible.find(old_i)
+			_cells[i].position = from
+			_cells[i].rotation = UiLayoutRes.card_fan_rotation(old_ordinal, old_count) \
+				if old_count > 0 and old_ordinal >= 0 else rot
+			_cells[i].modulate.a = 1.0
+			_card_faces[i].position = from
+			_card_faces[i].rotation = _cells[i].rotation
+			_card_faces[i].modulate.a = 1.0
+
+	_deck_tween = create_tween().set_parallel(true)
+	for ordinal in count:
+		var i := new_visible[ordinal]
+		var target := UiLayoutRes.card_fan_local(ordinal, count)
+		var rot := UiLayoutRes.card_fan_rotation(ordinal, count)
+		if i == played_index:
+			continue
+		var delay := 0.0 if i == 0 else 0.025
+		_deck_tween.tween_property(_cells[i], "position", target.position, 0.20) \
+			.set_delay(delay).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		_deck_tween.tween_property(_cells[i], "rotation", rot, 0.20) \
+			.set_delay(delay).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		_deck_tween.tween_property(_cells[i], "modulate:a", 1.0, 0.14).set_delay(delay)
+		_deck_tween.tween_property(_card_faces[i], "position", target.position, 0.20) \
+			.set_delay(delay).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		_deck_tween.tween_property(_card_faces[i], "rotation", rot, 0.20) \
+			.set_delay(delay).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		_deck_tween.tween_property(_card_faces[i], "modulate:a", 1.0, 0.14).set_delay(delay)
+		_cells[i].z_index = ordinal * 2 + 1
+		_card_faces[i].z_index = ordinal * 2
+	if played_index >= 0:
+		call_deferred("_animate_played_recruit_card", played_index, played_screen_pos)
+
+
+func animate_played_card(unit_kind: String, screen_pos: Vector2) -> void:
+	if unit_kind == "":
+		return
+	for i in _cells.size():
+		if i >= _entries.size() or not _cells[i].visible:
+			continue
+		var e: Dictionary = _entries[i]
+		if String(e.get("type", "")) == "recruit" \
+				and String(e.get("unit_kind", "")) == unit_kind:
+			call_deferred("_animate_played_recruit_card", i, screen_pos)
+			return
+
+
+func _animate_played_recruit_card(i: int, screen_pos: Vector2) -> void:
+	if i < 0 or i >= _cells.size() or not _cells[i].visible:
+		return
+	var ordinal := 0
+	var count := 0
+	for j in _cells.size():
+		if _cells[j].visible:
+			if j < i:
+				ordinal += 1
+			count += 1
+	var target := UiLayoutRes.card_fan_local(ordinal, count)
+	var local: Vector2 = get_global_transform_with_canvas().affine_inverse() * screen_pos
+	_cells[i].position = local - _cells[i].size * 0.5
+	_cells[i].rotation = 0.0
+	_cells[i].modulate.a = 1.0
+	_card_faces[i].position = _cells[i].position
+	_card_faces[i].rotation = 0.0
+	_card_faces[i].modulate.a = 1.0
+	var out := create_tween().set_parallel(true)
+	out.tween_property(_cells[i], "position:y", _cells[i].position.y - 46.0, 0.10) \
+		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	out.tween_property(_cells[i], "modulate:a", 0.0, 0.10)
+	out.tween_property(_card_faces[i], "position:y", _card_faces[i].position.y - 46.0, 0.10) \
+		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	out.tween_property(_card_faces[i], "modulate:a", 0.0, 0.10)
+	await out.finished
+	if not is_instance_valid(self) or i >= _cells.size() or not _cells[i].visible:
+		return
+	_cells[i].position = target.position + Vector2(0.0, 42.0)
+	_cells[i].rotation = 0.0
+	_cells[i].modulate.a = 0.0
+	_card_faces[i].position = _cells[i].position
+	_card_faces[i].rotation = 0.0
+	_card_faces[i].modulate.a = 0.0
+	var incoming := create_tween().set_parallel(true)
+	incoming.tween_property(_cells[i], "position", target.position, 0.18) \
+		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	incoming.tween_property(_cells[i], "rotation", UiLayoutRes.card_fan_rotation(ordinal, count), 0.18) \
+		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	incoming.tween_property(_cells[i], "modulate:a", 1.0, 0.14)
+	incoming.tween_property(_card_faces[i], "position", target.position, 0.18) \
+		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	incoming.tween_property(_card_faces[i], "rotation", UiLayoutRes.card_fan_rotation(ordinal, count), 0.18) \
+		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	incoming.tween_property(_card_faces[i], "modulate:a", 1.0, 0.14)
 
 
 ## 第 i 格**名字那一行**的排版：有图标 → 压到最下面一窄条、字号小一档；
@@ -362,13 +811,14 @@ func _apply_name_layout(i: int, has_icon: bool) -> void:
 	if i < 0 or i >= _name_labels.size():
 		return
 	var label: Label = _name_labels[i]
-	var cell_size: Vector2 = UiLayoutRes.card_cell_local(i).size
+	var cell_size: Vector2 = _cells[i].size if i < _cells.size() else Vector2.ZERO
 	if i < _name_bars.size() and _name_bars[i] != null and is_instance_valid(_name_bars[i]):
 		(_name_bars[i] as ColorRect).visible = has_icon
 	if has_icon:
 		label.position = Vector2(1.0, cell_size.y - NAME_BAR_H)
 		label.size = Vector2(cell_size.x - 2.0, NAME_BAR_H)
-		label.add_theme_font_size_override("font_size", NAME_ON_ICON_FS)
+		label.add_theme_font_size_override("font_size",
+			NAME_ON_ICON_FS if cell_size.x >= 130.0 else UiStyleRes.FS_TINY)
 	else:
 		label.position = Vector2.ZERO
 		label.size = cell_size
@@ -383,15 +833,18 @@ func set_recruit_queue(progress: float, counts: Dictionary) -> void:
 		if i >= _entries.size():
 			continue
 		var e: Dictionary = _entries[i]
-		if String(e.get("type", "")) != "recruit":
+		var entry_type := String(e.get("type", ""))
+		if entry_type != "recruit" and entry_type != "recruit_cancel_all":
 			continue
 		var kind := String(e.get("unit_kind", ""))
 		var c := int(counts.get(kind, 0))
 		if i < _icon_views.size() and _icon_views[i] != null:
-			_icon_views[i].set_progress(p if c > 0 else 0.0)
+			_icon_views[i].set_progress(p if entry_type == "recruit_cancel_all" and c > 0 \
+				else 0.0)
 		if i < _count_labels.size() and _count_labels[i] != null:
-			_count_labels[i].text = "×%d" % c if c > 1 else ""
-			_count_labels[i].visible = c > 1
+			var count := maxi(c, int(e.get("queue_count", 0)))
+			_count_labels[i].text = "×%d" % count if count > 1 else ""
+			_count_labels[i].visible = count > 1
 
 
 ## ★★ 底条要**跟着金色填充淡出**（每帧一次，只有 9 格）：
@@ -488,17 +941,25 @@ func _set_icon(i: int, role: String, mask: String, ready: bool = true) -> void:
 
 
 func _on_cell_pressed(i: int) -> void:
-	activate_index(i)
+	# 鼠标点按刻意不激活：手牌统一通过向上拖起并松手打出。
+	# 快捷键仍直接走 handle_key() -> activate_index()。
+	return
 
 
 ## 鼠标进入 / 离开第 i 格 —— **只转发序号**（内容由 hud 现取，见上面那两个信号的说明）
 func _on_cell_mouse_entered(i: int) -> void:
+	if _dragging_card:
+		return
 	if touch_suppress_hover:
 		return                       # 手机端按住期间不弹（长按到点后由 hud 调 hover()）
+	_raise_card(i, true)
 	cell_hovered.emit(i)
 
 
 func _on_cell_mouse_exited(i: int) -> void:
+	if _dragging_card:
+		return
+	_raise_card(i, false)
 	cell_unhovered.emit(i)
 
 
@@ -541,14 +1002,24 @@ func handle_key(event: InputEventKey) -> bool:
 	if event.ctrl_pressed or event.alt_pressed or event.meta_pressed:
 		return false
 	var slot: int = int(UiLayoutRes.CARD_KEY_TO_SLOT.get(event.keycode, -1))
+	if _has_recruit_progress_entry():
+		slot += 1 # 读条牌展示在最左，但不占单位牌的 Q/W/... 快捷键序号。
 	if slot < 0 or slot >= _entries.size():
 		return false
 	if (_entries[slot] as Dictionary).is_empty():
 		return false                     # 空格子不吃按键（让给别的绑定）
 	if not bool((_entries[slot] as Dictionary).get("ready", true)):
 		return false
+	if String((_entries[slot] as Dictionary).get("type", "")) == "recruit_cancel_all":
+		return false # 取消队列固定使用 Esc，不占用 Q/W/... 牌位快捷键。
 	activate_index(slot)
 	return true
+
+
+func _has_recruit_progress_entry() -> bool:
+	return not _entries.is_empty() and _entries[0] is Dictionary \
+		and String((_entries[0] as Dictionary).get("type", "")) == "recruit_cancel_all" \
+		and bool((_entries[0] as Dictionary).get("queue_card", false))
 
 
 # ------------------------------------------------------------------

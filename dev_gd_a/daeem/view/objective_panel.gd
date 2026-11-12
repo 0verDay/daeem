@@ -20,9 +20,9 @@ const ThemeRes = preload("res://view/theme.gd")
 const ObjectiveRes = preload("res://logic/objective.gd")
 
 const MEASURE_H := 4096.0
-const TITLE_FS := 16
-const DESC_FS := 14
-const TITLE_GAP := 4.0
+const TITLE_FS := 17
+const DESC_FS := 13
+const TITLE_GAP := 5.0
 
 var cfg = null
 var world = null
@@ -67,8 +67,12 @@ func setup(p_cfg, p_world, font: Font) -> void:
 	_bg = Panel.new()
 	_bg.name = "ObjectiveBg"
 	_bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_bg.add_theme_stylebox_override("panel",
-		UiStyleRes.panel_style(UiStyleRes.bg(), UiStyleRes.line()))
+	var mission_style := UiStyleRes.panel_style(UiStyleRes.bg(), UiStyleRes.line())
+	mission_style.set_corner_radius_all(8)
+	mission_style.shadow_color = Color(0.0, 0.0, 0.0, 0.72)
+	mission_style.shadow_size = 8
+	mission_style.shadow_offset = Vector2(0.0, 6.0)
+	_bg.add_theme_stylebox_override("panel", mission_style)
 	add_child(_bg)
 
 	_accent = ColorRect.new()
@@ -414,7 +418,7 @@ func _relayout() -> void:
 	_bg.position = Vector2.ZERO
 	_bg.size = size
 	_accent.position = Vector2.ZERO
-	_accent.size = Vector2(3.0, size.y)
+	_accent.size = Vector2(5.0, size.y)
 
 	_title.position = Vector2(UiLayoutRes.OBJECTIVE_PAD, UiLayoutRes.OBJECTIVE_PAD)
 	_title.size = Vector2(inner_w, maxf(title_h, 1.0))

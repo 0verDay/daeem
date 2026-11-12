@@ -31,6 +31,11 @@ const UiStyleRes = preload("res://view/ui_style.gd")
 const FactionRes = preload("res://logic/faction.gd")
 const TroopRowRes = preload("res://view/troop_row.gd")
 
+## 空槽（还没分配将领）的两行文案 —— 照方向稿的「待命编队 / 尚未部署」。
+## ★ `slot_text()` 对空槽仍然返回「…」（那是给测试的短口径），这里只管画面。
+const EMPTY_SLOT_NAME := "待命编队"
+const EMPTY_SLOT_SUB := "尚未部署"
+
 var cfg = null
 var world = null
 var input_ctrl = null
@@ -102,14 +107,14 @@ func setup(p_cfg, p_world, p_input, p_font: Font = null, p_team_slots = null) ->
 		_dead.append(false)
 		_numbers.append(str(i + 1))
 
-	# ★★ 整列 2px 外框（左 / 上 / 下；**右边留 0**）：右边那条是最右竖线 + 泛光起点，
-	#   盖上外框会把选中时的亮金线压掉。最后一格加、IGNORE，不吃行点击。
+	# V2 编队牌各自带外缘与投影；保留兼容节点但不再给整列套一个大矩形框。
 	var frame := Panel.new()
 	frame.name = "SquadFrame"
 	frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	frame.set_anchors_preset(Control.PRESET_FULL_RECT)
-	var fs := UiStyleRes.outline_style(UiStyleRes.line(), 2)
-	fs.border_width_right = 0
+	var fs := StyleBoxFlat.new()
+	fs.bg_color = Color(0.0, 0.0, 0.0, 0.0)
+	fs.set_border_width_all(0)
 	frame.add_theme_stylebox_override("panel", fs)
 	add_child(frame)
 
@@ -153,12 +158,15 @@ func refresh() -> void:
 			var leader = team[0]
 			_teams[i] = team
 			var cap := _formation_cap(leader, team.size())
-			row.set_data(_numbers[i], String(leader.name), "%d/%d" % [team.size(), cap], true)
+			row.set_data(_numbers[i], String(leader.name), "编制 %d/%d" % [team.size(), cap], true,
+				str(team.size()))
+			row.set_hp(_hp_ratio_of(leader))
 			row.set_selected(input_ctrl.selected_units.has(leader))
 			row.set_following(followed != null and followed == leader)
 		else:
 			_teams[i] = []
-			row.set_data(_numbers[i], "…", "--/--", false)
+			row.set_data(_numbers[i], EMPTY_SLOT_NAME, EMPTY_SLOT_SUB, false)
+			row.set_hp(0.0)
 			row.set_selected(false)
 			row.set_following(false)
 
@@ -178,7 +186,8 @@ func _refresh_from_slots(followed = null) -> void:
 		if not team_slots.has_slot(slot):
 			_teams[i] = []
 			_dead[i] = false
-			row.set_data(_numbers[i], "…", "--/--", false)
+			row.set_data(_numbers[i], EMPTY_SLOT_NAME, EMPTY_SLOT_SUB, false)
+			row.set_hp(0.0)
 			row.set_selected(false)
 			row.set_following(false)
 			continue
@@ -194,6 +203,7 @@ func _refresh_from_slots(followed = null) -> void:
 			if st == "":
 				st = "阵亡"
 			row.set_data(_numbers[i], nm, st, false)
+			row.set_hp(0.0)
 			row.set_selected(false)
 			row.set_following(false)
 			continue
@@ -201,7 +211,8 @@ func _refresh_from_slots(followed = null) -> void:
 		if u == null:
 			_teams[i] = []
 			_dead[i] = false
-			row.set_data(_numbers[i], "…", "--/--", false)
+			row.set_data(_numbers[i], EMPTY_SLOT_NAME, EMPTY_SLOT_SUB, false)
+			row.set_hp(0.0)
 			row.set_selected(false)
 			row.set_following(false)
 			continue
@@ -211,7 +222,9 @@ func _refresh_from_slots(followed = null) -> void:
 		_teams[i] = team
 		_dead[i] = false
 		var cap := _formation_cap(u, team.size())
-		row.set_data(_numbers[i], String(u.name), "%d/%d" % [team.size(), cap], true)
+		row.set_data(_numbers[i], String(u.name), "编制 %d/%d" % [team.size(), cap], true,
+			str(team.size()))
+		row.set_hp(_hp_ratio_of(u))
 		row.set_selected(input_ctrl.selected_units.has(u))
 		row.set_following(followed != null and followed == u)
 
@@ -233,6 +246,13 @@ func _collect_teams() -> Array:
 		if out.size() >= UiLayoutRes.SQUAD_SLOTS:
 			break
 	return out
+
+
+## 序号章盘底那条血条要的比例（没有血量接口的替身 → 满血）。
+func _hp_ratio_of(u) -> float:
+	if u == null or not u.has_method("hp_ratio"):
+		return 1.0
+	return clampf(float(u.hp_ratio()), 0.0, 1.0)
 
 
 ## 编制上限：该将领的 `general_index` 对应的上限（默认 11）。

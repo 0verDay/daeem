@@ -60,34 +60,33 @@ func _test_layout_against_reference(cfg) -> void:
 	eq(UiLayoutRes.BAR_H, 260.0, "底栏高 260（右下组按 13/12 放大到与详细信息平齐）")
 	eq(UiLayoutRes.BAR_TOP, 820.0, "底栏顶边 820")
 
-	eq(UiLayoutRes.SQUAD_RECT.size.x, 240.0, "将领列表宽 240（改到右侧）")
-	eq(UiLayoutRes.SQUAD_RECT.position.y, 180.0, "将领列表从 y=180 开始（避开右上角设置按钮）")
+	eq(UiLayoutRes.SQUAD_RECT.size.x, 238.0, "将领编队牌宽 238，与右侧留 26px 边距")
+	eq(UiLayoutRes.SQUAD_RECT.position.y, 178.0, "将领编队牌从 y=178 开始")
 	eq(UiLayoutRes.SQUAD_RECT.position.x + UiLayoutRes.SQUAD_RECT.size.x,
-		UiLayoutRes.DESIGN_W, "将领列表紧贴屏幕右边缘")
+		UiLayoutRes.DESIGN_W - 26.0, "将领编队牌右缘留 26px 外边距")
 	eq(UiLayoutRes.SQUAD_SLOTS, 6, "★ 6 个槽位（部队1 ~ 部队6）")
-	eq(UiLayoutRes.SQUAD_ROW_H, 88.0, "★ 每行 88 高（手机端触摸命中高度，原 56）")
-	eq(UiLayoutRes.SQUAD_RECT.size.y, 6.0 * 88.0, "6 行合计 528 高")
+	eq(UiLayoutRes.SQUAD_ROW_H, 82.0, "★ V2 编队牌高 82")
+	eq(UiLayoutRes.SQUAD_RECT.size.y,
+		6.0 * 82.0 + 5.0 * UiLayoutRes.SQUAD_ROW_GAP, "6 张编队牌之间留 V2 间距")
 	ok(UiLayoutRes.SQUAD_RECT.position.y + UiLayoutRes.SQUAD_RECT.size.y <= UiLayoutRes.BAR_TOP,
 		"★ 加高之后仍不压底栏（面板底 ≤ %s）" % UiLayoutRes.BAR_TOP)
 
-	eq(UiLayoutRes.MAP_RECT.size.x, 400.0, "地图占位宽 400")
-	eq(UiLayoutRes.MAP_RECT.size.y, 400.0, "地图占位高 400")
-	eq(UiLayoutRes.MAP_RECT.position.y + UiLayoutRes.MAP_RECT.size.y, UiLayoutRes.DESIGN_H,
-		"地图占位贴住屏幕下沿")
+	eq(UiLayoutRes.MAP_RECT, Rect2(27.0, 771.0, 328.0, 284.0), "V2 侦察镜小地图尺寸与边距")
+	eq(UiLayoutRes.DESIGN_H - (UiLayoutRes.MAP_RECT.position.y + UiLayoutRes.MAP_RECT.size.y), 25.0,
+		"小地图下缘留 25px")
 
 	eq(UiLayoutRes.CARD_SLOTS, 9, "命令卡 9 格")
-	eq(UiLayoutRes.CARD_RECT.size.x, 260.0, "命令卡 260 宽（3 × 86.67）")
-	eq(UiLayoutRes.CARD_RECT.size.y, 260.0, "命令卡 260 高（3 × 86.67）")
-	near(UiLayoutRes.card_cell_local(0).size.x, 260.0 / 3.0, 1e-4, "Q 格宽 = 260/3")
-	near(UiLayoutRes.card_cell_local(4).position.x, 260.0 / 3.0, 1e-4, "S 格在正中（行优先）")
-	near(UiLayoutRes.card_cell_local(8).position.y, 2.0 * 260.0 / 3.0, 1e-4, "C 格在右下")
+	eq(UiLayoutRes.CARD_RECT, Rect2(796.0, 803.0, 842.0, 277.0), "V2 扇形指令牌区尺寸")
+	near(UiLayoutRes.card_fan_local(0, 4).size.x, 142.0, 1e-4, "四张常用指令牌采用 142px 卡宽")
+	ok(UiLayoutRes.card_fan_local(0, 4).position.x
+		< UiLayoutRes.card_fan_local(3, 4).position.x, "指令牌按扇形从左向右展开")
+	ok(UiLayoutRes.card_fan_local(8, 9).position.x + UiLayoutRes.card_fan_local(8, 9).size.x
+		<= UiLayoutRes.CARD_RECT.size.x + 0.01, "九张科技牌也收在牌区内")
 	eq(String(UiLayoutRes.CARD_KEYS[0]), "Q", "第一格是 Q")
 	eq(String(UiLayoutRes.CARD_KEYS[8]), "C", "第九格是 C")
 
-	near(UiLayoutRes.HOVER_W, UiLayoutRes.CARD_RECT.size.x + UiLayoutRes.TABS_RECT.size.x,
-		0.01, "★ 悬停面板宽 = 命令卡 + 页签列（368.333）")
-	near(UiLayoutRes.HOVER_W, 368.3333, 0.01, "面板实宽 368.333")
-	near(UiLayoutRes.hover_rect(100.0).size.x, 368.3333, 0.01, "hover_rect 的宽也是 368.333")
+	near(UiLayoutRes.HOVER_W, 1098.0, 0.01, "悬停说明横跨牌区与页签")
+	near(UiLayoutRes.hover_rect(100.0).size.x, 1098.0, 0.01, "hover_rect 使用 V2 牌区宽度")
 	eq(UiLayoutRes.hover_rect(100.0).position.x, UiLayoutRes.CARD_RECT.position.x,
 		"悬停面板左缘与命令卡左缘对齐")
 	near(UiLayoutRes.hover_rect(100.0).position.x + UiLayoutRes.HOVER_W,
@@ -95,7 +94,7 @@ func _test_layout_against_reference(cfg) -> void:
 		0.01, "★ 悬停面板右缘与**页签列右缘**齐平")
 	eq(UiLayoutRes.HOVER_BOTTOM, UiLayoutRes.CARD_RECT.position.y - UiLayoutRes.HOVER_GAP,
 		"★ 面板**下缘**落在命令卡顶边上方 HOVER_GAP")
-	eq(UiLayoutRes.HOVER_BOTTOM, 812.0, "★ 右下组放大后浮窗下缘上移到 812")
+	eq(UiLayoutRes.HOVER_BOTTOM, 795.0, "★ 悬停说明下缘停在牌手上方")
 	ok(UiLayoutRes.HOVER_GAP > 0.0, "★ 与命令卡之间留了缝")
 	eq(UiLayoutRes.hover_rect(120.0).position.y + UiLayoutRes.hover_rect(120.0).size.y,
 		UiLayoutRes.HOVER_BOTTOM, "★ 下缘钉住 ⇒ 面板变高是**向上长**")
@@ -107,14 +106,11 @@ func _test_layout_against_reference(cfg) -> void:
 	ok(UiLayoutRes.hover_rect(99999.0).position.y >= 0.0,
 		"文案长到离谱时面板也不许顶出屏幕上沿")
 
-	near(UiLayoutRes.TABS_RECT.size.x, 108.3333, 0.01, "页签列宽 108.333（13/12 放大）")
-	near(UiLayoutRes.tab_button_local(2).position.y, 2.0 * 260.0 / 3.0, 1e-4,
-		"第三颗按钮从 173.33 开始（3×86.67）")
-	near(UiLayoutRes.tab_button_local(0, 2).size.y, 130.0, 0.01,
-		"★ 页签是**动态**的：两颗时每颗 130 高（260 ÷ 2）")
-	near(UiLayoutRes.tab_button_local(1, 1).size.y, 260.0, 0.01,
-		"★ 只有一颗时它铺满整列（260）")
-	eq(UiLayoutRes.SETTINGS_RECT, Rect2(1840, 0, 80, 160), "设置按钮 80×160 在右上角（参考图）")
+	eq(UiLayoutRes.TABS_RECT, Rect2(1740.0, 914.0, 154.0, 94.0), "V2 右下牌签尺寸")
+	eq(UiLayoutRes.tab_button_local(0, 2), Rect2(0.0, 0.0, 73.0, 94.0), "第一个页签牌")
+	eq(UiLayoutRes.tab_button_local(1, 2), Rect2(81.0, 0.0, 73.0, 94.0), "第二个页签牌与第一个留 8px")
+	eq(UiLayoutRes.tab_button_local(0, 1), Rect2(81.0, 0.0, 73.0, 94.0), "单页签靠右对齐")
+	eq(UiLayoutRes.SETTINGS_RECT, Rect2(1832, 33, 54, 54), "右上圆形设置币")
 
 	eq(UiLayoutRes.QUEUE_SLOTS, 5, "★ 招募队列 5 个格子（1 大 + 4 小，需求原话）")
 	eq(UiLayoutRes.QUEUE_INFO_W, 141.0, "汇总带宽 141（表格子段左边那一条）")
@@ -199,25 +195,22 @@ func _test_queue_info_text_fit(cfg) -> void:
 		"★ 小格子两行 13 号字（%.0f×2）装得进 40 高（放大前是 30 高装两行 11 号）"
 			% font.get_height(fs_small))
 
-	eq(UiLayoutRes.FACTION_RECT.position.x, UiLayoutRes.MAP_RECT.size.x,
-		"★★ 阵营盾徽紧贴地图右缘（x=400）")
-	near(UiLayoutRes.FACTION_RECT.position.x + UiLayoutRes.FACTION_RECT.size.x,
-		UiLayoutRes.DETAIL_RECT.position.x, 0.01, "★★ 盾徽右边缘接上详细信息面板（x=562.5）")
-	eq(UiLayoutRes.DETAIL_RECT.position.x + UiLayoutRes.DETAIL_RECT.size.x, 1550.5,
-		"详细信息右缘 1550.5")
-	ok(UiLayoutRes.DETAIL_RECT.position.x + UiLayoutRes.DETAIL_RECT.size.x
-			< UiLayoutRes.CARD_RECT.position.x,
-		"★ 详细信息右缘在命令卡左缘左边（约 1.17px 缝，不重叠）")
-	near(UiLayoutRes.FACTION_RECT.position.y + UiLayoutRes.FACTION_RECT.size.y,
-		UiLayoutRes.DESIGN_H, 0.01, "盾徽贴住屏幕下沿")
-	eq(UiLayoutRes.FACTION_RECT.position.y, UiLayoutRes.BAR_TOP, "盾徽顶边在 820")
+	eq(UiLayoutRes.DETAIL_V2_RECT.position.x, 395.0, "V2 详情卡从 x=395 开始")
+	eq(UiLayoutRes.DETAIL_V2_RECT.position.x + UiLayoutRes.DETAIL_V2_RECT.size.x,
+		772.0, "详情卡右缘与手牌之间留 24px")
+	ok(UiLayoutRes.DETAIL_V2_RECT.position.x + UiLayoutRes.DETAIL_V2_RECT.size.x
+		<= UiLayoutRes.CARD_RECT.position.x + 0.01,
+		"扇形牌从详情卡右缘开始，不遮挡详情")
+	eq(UiLayoutRes.DESIGN_H - (UiLayoutRes.DETAIL_V2_RECT.position.y + UiLayoutRes.DETAIL_V2_RECT.size.y),
+		26.0, "详情卡下缘留 26px")
 	near(UiLayoutRes.CARD_RECT.position.x + UiLayoutRes.CARD_RECT.size.x,
-		UiLayoutRes.TABS_RECT.position.x, 0.01, "命令卡右边缘接上页签列")
-	near(UiLayoutRes.TABS_RECT.position.x + UiLayoutRes.TABS_RECT.size.x, UiLayoutRes.DESIGN_W,
-		0.01, "页签列贴住屏幕右边缘")
-	for r in [UiLayoutRes.DETAIL_RECT, UiLayoutRes.FACTION_RECT, UiLayoutRes.CARD_RECT, UiLayoutRes.TABS_RECT]:
-		eq(r.position.y + r.size.y, UiLayoutRes.DESIGN_H, "底栏各块都贴住屏幕下沿")
-		eq(r.position.y, UiLayoutRes.BAR_TOP, "底栏各块顶边都在 820（与详细信息平齐）")
+		1638.0, 0.01, "扇形手牌牌区右缘留出页签间距")
+	near(UiLayoutRes.TABS_RECT.position.x + UiLayoutRes.TABS_RECT.size.x,
+		UiLayoutRes.DESIGN_W - 26.0, 0.01, "页签牌区保留 26px 右边距")
+	eq(UiLayoutRes.CARD_RECT.position.y + UiLayoutRes.CARD_RECT.size.y,
+		UiLayoutRes.DESIGN_H, "扇形手牌主体贴住屏幕下沿")
+	near(UiLayoutRes.TABS_RECT.position.y + UiLayoutRes.TABS_RECT.size.y,
+		UiLayoutRes.DESIGN_H - 72.0, 0.01, "页签牌底边离屏幕下缘 72px")
 
 	_test_left_column_geometry()
 
@@ -338,9 +331,11 @@ func _test_hit_test() -> void:
 		UiLayoutRes.FACTION_RECT.get_center()),
 		"阵营占位面板同样不拦")
 
-	ok(UiLayoutRes.point_hits_any(UiLayoutRes.interactive_rects(vp),
-		UiLayoutRes.troop_cell_global_rect(0).get_center()),
-		"★ 详细信息左栏下半那块网格拦边缘滚屏（它能点 / 能拖）")
+	# ★★ V2 的详情牌**不再整块登记**：能点的只有成员格那几颗小方块，
+	#   由控件自己算（detail_v2.interactive_rects），所以整块面板不能拦边缘滚屏。
+	ok(not UiLayoutRes.point_hits_any(UiLayoutRes.interactive_rects(vp),
+		UiLayoutRes.DETAIL_V2_RECT.get_center()),
+		"★ 详情牌整块不再拦边缘滚屏（能点的只有里面的成员格）")
 
 	ok(UiLayoutRes.point_hits_any(UiLayoutRes.interactive_rects(vp),
 		UiLayoutRes.squad_slot_rect(2).get_center()), "部队第 3 行拦边缘滚屏（它是可点的）")
@@ -376,20 +371,18 @@ func _test_hit_test() -> void:
 	ok(not UiLayoutRes.in_edge_band(vp, Vector2(6.0, 300.0), 0.0),
 		"margin = 0 时整条规则关掉（可配置）")
 
-	var bar := UiLayoutRes.bottom_bar_rects(vp)
-	ok(UiLayoutRes.point_hits_any(bar, UiLayoutRes.panel_content_pos() + Vector2(8.0, 8.0)),
-		"★ 滚轮：详细信息面板里只有文字的地方也拦（与边缘滚屏那条规则相反）")
-	ok(UiLayoutRes.point_hits_any(bar, UiLayoutRes.FACTION_RECT.get_center()),
-		"滚轮：阵营占位面板也拦")
-	ok(UiLayoutRes.point_hits_any(bar, UiLayoutRes.card_cell_rect(0).get_center()),
-		"滚轮：命令卡那一格也拦")
-	ok(UiLayoutRes.point_hits_any(bar, UiLayoutRes.tab_button_rect(1).get_center()),
-		"滚轮：页签列也拦")
-	ok(not UiLayoutRes.point_hits_any(UiLayoutRes.bottom_bar_rects(vp, true, false),
-		UiLayoutRes.tab_button_rect(1).get_center()),
+	var bar := UiLayoutRes.bottom_bar_rects_v2(vp, true, true)
+	ok(UiLayoutRes.point_hits_any(bar, UiLayoutRes.DETAIL_V2_RECT.get_center()),
+		"★ 滚轮：详细信息卡整块拦截缩放")
+	ok(UiLayoutRes.point_hits_any(bar, UiLayoutRes.CARD_RECT.get_center()),
+		"滚轮：扇形手牌区域也拦")
+	ok(UiLayoutRes.point_hits_any(bar, UiLayoutRes.tab_button_rect(1, 2).get_center()),
+		"滚轮：页签牌也拦")
+	ok(not UiLayoutRes.point_hits_any(UiLayoutRes.bottom_bar_rects_v2(vp, true, false),
+		UiLayoutRes.tab_button_rect(1, 2).get_center()),
 		"★★ 右下角整块隐藏时滚轮也不再被页签列拦住")
-	ok(not UiLayoutRes.point_hits_any(UiLayoutRes.bottom_bar_rects(vp, true, false),
-		UiLayoutRes.card_cell_rect(0).get_center()),
+	ok(not UiLayoutRes.point_hits_any(UiLayoutRes.bottom_bar_rects_v2(vp, true, false),
+		UiLayoutRes.CARD_RECT.get_center()),
 		"★★ 右下角整块隐藏时滚轮也不再被命令卡拦住")
 	ok(not UiLayoutRes.point_hits_any(bar, UiLayoutRes.MAP_RECT.get_center()),
 		"★ 滚轮：左下小地图是**地图**不是 ui 栏 —— 鼠标停在它上面时照旧缩放（「除地图外」）")
@@ -398,25 +391,17 @@ func _test_hit_test() -> void:
 		"滚轮：左侧部队列表不在「下方 ui 栏」里 → 不拦")
 	ok(not UiLayoutRes.point_hits_any(bar, UiLayoutRes.SETTINGS_RECT.get_center()),
 		"滚轮：右上角设置按钮也不拦（需求只说下方那一条）")
-	var bar_wide := UiLayoutRes.bottom_bar_rects(wide)
-	var card_wide := UiLayoutRes.card_cell_rect(0)
-	card_wide.position.x += wide.x - UiLayoutRes.DESIGN_W
+	var bar_wide := UiLayoutRes.bottom_bar_rects_v2(wide, true, true)
+	var shift_x: float = wide.x - UiLayoutRes.DESIGN_W
+	var card_wide := UiLayoutRes.CARD_RECT
+	card_wide.position.x += shift_x
 	ok(UiLayoutRes.point_hits_any(bar_wide, card_wide.get_center()),
-		"★ 超宽窗口：命令卡的新位置仍然拦滚轮（判定跟着贴边走）")
-	# ★★ 本版：手机端不再把详细信息面板横向拉伸 —— 固定 988×260，右侧留白。
-	#    旧命令卡位置落在面板右侧的空白里，**不再**被底栏覆盖。
-	ok(not UiLayoutRes.point_hits_any(bar_wide, UiLayoutRes.card_cell_rect(0).get_center()),
-		"★ 超宽窗口：详细信息面板固定宽度 ⇒ 旧命令卡位置在面板外的留白里（不再相连）")
-
+		"★ 超宽窗口：扇形手牌继续贴在右下组并拦缩放")
 	var d_wide: Rect2 = bar_wide[0]
-	eq(d_wide.size, UiLayoutRes.DETAIL_RECT.size,
-		"★ 超宽窗口：详细信息面板尺寸仍是 988×260（不拉伸）")
-	eq(d_wide.position.x, UiLayoutRes.DETAIL_RECT.position.x,
-		"★ 超宽窗口：详细信息贴左（不跟着右边漂）")
-	eq(bar_wide[1].position.x, UiLayoutRes.FACTION_RECT.position.x,
-		"★ 超宽窗口：阵营盾徽仍贴地图右缘（x=400）")
-	eq(UiLayoutRes.bottom_bar_rects(vp)[0].size.x, UiLayoutRes.DETAIL_RECT.size.x,
-		"1920 基准下详细信息面板宽度仍是 988")
+	eq(d_wide.size, UiLayoutRes.DETAIL_V2_RECT.size,
+		"★ 超宽窗口：详情卡尺寸保持不变")
+	eq(d_wide.position.x, UiLayoutRes.DETAIL_V2_RECT.position.x,
+		"★ 超宽窗口：详情卡贴左，不跟着右边漂")
 
 	# 右栏动态宽度函数在基准宽度处必须与写死的常量逐位一致（否则 1920 下会走样）。
 	var rw: float = UiLayoutRes.DETAIL_RIGHT_W
@@ -499,9 +484,11 @@ func _test_panels(cfg) -> void:
 	main.input_ctrl.select_units([])
 
 	for path in ["HudRoot/SquadPanel", "HudRoot/MapPlaceholder", "HudRoot/DetailPanel",
-			"HudRoot/FactionPlaceholder", "HudRoot/DetailPanelV2", "HudRoot/CommandCard",
+			"HudRoot/DetailPanelV2", "HudRoot/CommandCard",
 			"HudRoot/PageTabs", "HudRoot/SettingsButton", "HudRoot/ResourceBar"]:
 		ok(main.hud.get_node_or_null(path) != null, "节点树里有 %s" % path)
+	ok(main.hud.get_node_or_null("HudRoot/FactionPlaceholder") == null,
+		"HUD 默认左列不再创建阵营盾徽旗帜占位牌")
 
 	_test_resource_bar(main)
 
@@ -523,33 +510,30 @@ func _test_panels(cfg) -> void:
 		ok(qc.size_flags_horizontal != Control.SIZE_EXPAND_FILL,
 			"队列控件不抢横向空间（正文才该被拉伸）")
 	v2_near(main.hud.map_placeholder.position, UiLayoutRes.MAP_RECT.position, 1.0,
-		"地图占位落在 (0, 680)")
+		"侦察镜地图位于左下并留屏幕边距")
 	v2_near(main.hud.map_placeholder.size, UiLayoutRes.MAP_RECT.size, 1.0,
-		"地图占位实际尺寸 = 400×400")
+		"地图占位实际尺寸 = 328×284")
 	v2_near(main.hud.detail_v2.position, UiLayoutRes.DETAIL_V2_RECT.position, 1.0,
 		"★★ 新版详细信息在 (400, 820)")
 	v2_near(main.hud.detail_v2.size, UiLayoutRes.DETAIL_V2_RECT.size, 1.0,
 		"★★ 新版详细信息仍是 616.5×260")
-	v2_near(main.hud.faction_placeholder.position, UiLayoutRes.FACTION_V2_RECT.position, 1.0,
-		"★★ 默认态阵营盾徽在左列 (402, 820)")
-	v2_near(main.hud.faction_placeholder.size, UiLayoutRes.FACTION_V2_RECT.size, 1.0,
-		"★★ 阵营盾徽与列表/资源条同宽 185")
+	ok(main.hud.faction_placeholder == null, "阵营盾徽旗帜兼容字段保持 null")
 	v2_near(main.hud.command_card.position, UiLayoutRes.CARD_RECT.position, 1.0,
-		"命令卡落在 (1551.67, 820)")
+		"扇形指令手牌落在详情区右侧")
 	v2_near(main.hud.page_tabs.position, UiLayoutRes.TABS_RECT.position, 1.0,
-		"页签列落在 (1811.67, 820)")
+		"页签牌落在右下角")
 	v2_near(main.hud.settings_button.position, UiLayoutRes.SETTINGS_RECT.position, 1.0,
-		"设置按钮落在 (1840, 0)")
+		"圆形设置币落在右上角")
 	v2_near(main.hud.settings_button.size, UiLayoutRes.SETTINGS_RECT.size, 1.0,
-		"设置按钮实际尺寸 = 80×160")
+		"设置币实际尺寸 = 54×54")
 	v2_near(main.hud.squad_panel.position, UiLayoutRes.SQUAD_RECT.position, 1.0,
 		"将领列表紧贴右侧")
 	v2_near(main.hud.squad_panel.size, UiLayoutRes.SQUAD_RECT.size, 1.0,
-		"将领列表实际尺寸 = 240×560")
+		"将领编队牌列实际尺寸 = 238×492")
 
 	_test_squad_rows(main)
 	_test_detail_visibility(main)
-	_test_page_tabs_and_card(main, cfg)
+	await _test_page_tabs_and_card(main, cfg)
 	_test_hover_panel(main, cfg)
 	await _test_hover_tip_control(cfg)
 	_test_card_keys(main)
@@ -616,8 +600,20 @@ func _test_panels(cfg) -> void:
 		main.input_ctrl.select_building(edge_b)
 		main.hud.refresh()
 	ok(main.hud.is_detail_visible(), "（前提）具体建筑选中后详情可见")
-	ok(main.hud.blocks_edge_scroll(UiLayoutRes.troop_cell_global_rect(0).get_center()),
-		"★ 鼠标在部队 / 单位网格上 → 不滚屏（那能点 / 能拖）")
+	# ★★ V2 详情牌里只有**成员格 / 部队格**那几颗小方块能点：
+	#   单选一个对象时没有格子（也就不该拦边缘滚屏），多选 / 多单位时才登记。
+	var cell_hits: Array = main.hud._detail_hit_rects()
+	ok(cell_hits.is_empty(),
+		"★ 只选中一栋建筑时详情牌没有可点的格子（整块只有文字 → 不拦边缘滚屏）")
+	# 多选两支部队：下方「其他已选部队」那几格是能点的
+	main.input_ctrl.select_units([main.world.unit_by_id("general-1"),
+		main.world.unit_by_id("general-2")])
+	main.hud.refresh()
+	var chip_hits: Array = main.hud._detail_hit_rects()
+	ok(not chip_hits.is_empty(), "★ 多选部队时「其他已选部队」那几格能点")
+	if not chip_hits.is_empty():
+		ok(main.hud.blocks_edge_scroll((chip_hits[0] as Rect2).get_center()),
+			"★ 鼠标在那些格子上 → 不滚屏（那能点）")
 	ok(not main.hud.blocks_edge_scroll(Vector2(vp.x * 0.5, vp.y * 0.5)), "鼠标在地图中间 → 滚屏")
 
 	var row_center := UiLayoutRes.squad_slot_rect(2).get_center()
@@ -636,9 +632,75 @@ func _test_panels(cfg) -> void:
 		"★ config 里的 range / range_edge 配色也一起删了（不留死数据）")
 
 	await _test_anchors(main)
+	await _test_card_build_drag(main)
 
 	root_node.queue_free()
 	await process_frame
+
+
+func _test_card_build_drag(main) -> void:
+	var world = main.world
+	var hud = main.hud
+	main.input_ctrl.select_units([])
+	hud.refresh()
+	hud.page_tabs.select_page(PageTabsRes.PAGE_BUILD)
+	var card = hud.command_card
+	var cell: Control = card.cell_at(0)
+	var tile := Vector2i(-1, -1)
+	var screen_pos := Vector2.ZERO
+	for ty in world.map.rows:
+		for tx in world.map.cols:
+			if not world.can_build_at(tx, ty, world.my_faction) \
+					or not world.zone_allows_build(tx, ty, world.my_faction):
+				continue
+			var p: Vector2 = main.palette.to_px(Vector2(float(tx) + 0.5, float(ty) + 0.5))
+			if hud.point_hits_ui(p):
+				continue
+			tile = Vector2i(tx, ty)
+			screen_pos = p
+			break
+		if tile.x >= 0:
+			break
+	ok(tile.x >= 0, "（前提）找到可建造且不被 HUD 覆盖的地图格")
+	if tile.x < 0:
+		return
+	world.resources["food"] = 100000.0
+	world.resources["gold"] = 100000.0
+	var drag_start := screen_pos + Vector2(0.0, 24.0)
+	card._drag_index = 0
+	card._drag_start_global = drag_start
+	card._update_drag_position(0, screen_pos)
+	ok(hud.drag_build_active, "★★ 拖起建筑牌后进入地面预览")
+	eq(hud.drag_build_tile, tile, "★★ 建筑虚影跟随鼠标投影到对应地块")
+	ok(card._drag_fade_tween != null and card._drag_fade_tween.is_running(),
+		"★★ 建筑牌上拖时启动淡出")
+	for _i in 20:
+		await process_frame
+	near(cell.modulate.a, 0.0, 0.001, "★★ 建筑牌在上拖过程中淡至全透明")
+	ok(hud._card_build_tile_valid("wall", tile), "★★ 可建造地块判为绿色/有效")
+	main._sync_build_card_ghost()
+	ok(main._build_card_ghost.visible and main._build_card_ghost_material.albedo_color.g
+		> main._build_card_ghost_material.albedo_color.r,
+		"★★ 有效建造位置显示绿色半透明建筑模型")
+	var blocked_tile := Vector2i(-1, -1)
+	var blocked_pos := Vector2.ZERO
+	for b in world.building_list:
+		var p: Vector2 = main.palette.to_px(b.center())
+		if not hud.point_hits_ui(p):
+			blocked_tile = Vector2i(b.tx, b.ty)
+			blocked_pos = p
+			break
+	if blocked_tile.x >= 0:
+		card._update_drag_position(0, blocked_pos)
+		main._sync_build_card_ghost()
+		ok(not hud._card_build_tile_valid("wall", blocked_tile), "（前提）占用格无效")
+		ok(main._build_card_ghost.visible and main._build_card_ghost_material.albedo_color.r
+			> main._build_card_ghost_material.albedo_color.g,
+			"★★ 无效建造位置显示红色半透明建筑模型")
+		card._update_drag_position(0, screen_pos)
+	card._finish_card_drag(0, screen_pos)
+	ok(not hud.drag_build_active, "松手后结束建筑牌拖拽态")
+	ok(world.building_at(tile.x, tile.y) != null, "★★ 有效地块松手后实际建造建筑")
 
 func _test_resource_bar(main) -> void:
 	var bar = main.hud.resource_bar
@@ -646,31 +708,16 @@ func _test_resource_bar(main) -> void:
 	if bar == null:
 		return
 
-	v2_near(bar.position, UiLayoutRes.RES_BAR_RECT.position, 1.0, "资源面板落在 (402, 764)")
-	v2_near(bar.size, UiLayoutRes.RES_BAR_RECT.size, 1.0, "资源面板尺寸 = 185×56（与左列列表同宽）")
-	# ★★ 本版：资源栏整体描边加厚到 2px，并用看得清的 line()。
+	v2_near(bar.position, UiLayoutRes.RES_BAR_RECT.position, 1.0, "V2 资源筹码组位于屏幕右上")
+	v2_near(bar.size, UiLayoutRes.RES_BAR_RECT.size, 1.0, "资源筹码组尺寸 406×66")
 	var rsb: StyleBoxFlat = bar.get_theme_stylebox("panel")
-	ok(rsb != null, "资源栏有整体底板 / 描边")
+	ok(rsb != null, "资源牌容器保持透明，不额外套一层大面板")
 	if rsb != null:
-		eq(rsb.border_width_left, 2, "★★ 资源栏整体描边 2px")
-		eq(rsb.border_color, UiStyleRes.line(),
-			"★★ 资源栏描边用 line()（不再用几乎看不见的 line_soft）")
-	eq(UiLayoutRes.RES_BAR_RECT.size.x, 185.0,
-		"★★ 资源条宽度 = 左列列表宽度（185）")
-	eq(UiLayoutRes.RES_BAR_RECT.position.x, UiLayoutRes.DETAIL_V2_RECT.position.x + 2.0,
-		"★★ 资源条左缘对齐左列列表（x=402）")
-	eq(UiLayoutRes.RES_BAR_RECT.position.x + UiLayoutRes.RES_BAR_RECT.size.x,
-		UiLayoutRes.DETAIL_V2_RECT.position.x + 2.0 + 185.0,
-		"★★ 资源条右缘与左列列表右缘平齐（587）")
-	ok(UiLayoutRes.RES_BAR_RECT.size.x < UiLayoutRes.DETAIL_RECT.size.x,
-		"★ 资源面板**不再铺满整宽**（%.0f < %.0f）—— 需求：面板不需要那么长" % [
-			UiLayoutRes.RES_BAR_RECT.size.x, UiLayoutRes.DETAIL_RECT.size.x])
-	eq(UiLayoutRes.RES_BAR_RECT.position.y + UiLayoutRes.RES_BAR_RECT.size.y,
-		UiLayoutRes.DETAIL_V2_RECT.position.y,
-		"★ 资源面板下缘正好压在新版详细信息面板顶边（%.0f）—— 这就是「紧贴」" % [
-			UiLayoutRes.DETAIL_V2_RECT.position.y])
+		eq(rsb.border_width_left, 0, "资源容器不另加外框")
+	eq(UiLayoutRes.RES_BAR_RECT.size.x, 406.0, "两枚资源牌并排")
+	eq(UiLayoutRes.RES_BAR_RECT.position.x, 1388.0, "资源牌靠右上，给右上设置币留间距")
 	ok(not UiLayoutRes.MAP_RECT.intersects(UiLayoutRes.RES_BAR_RECT),
-		"★ 资源面板与左下小地图不重叠（左缘 x=402 > 小地图右缘 400）")
+		"资源筹码与小地图不重叠")
 	ok(UiLayoutRes.RES_BAR_RECT.position.y >= 0.0
 			and UiLayoutRes.RES_BAR_RECT.position.y + UiLayoutRes.RES_BAR_RECT.size.y
 				<= UiLayoutRes.DESIGN_H,
@@ -680,51 +727,49 @@ func _test_resource_bar(main) -> void:
 	var gold := bar.get_node_or_null("ResText_金") as Label
 	ok(food != null, "★ 资源面板里有「粮食」那一项")
 	ok(gold != null, "★ 资源面板里有「黄金」那一项")
-	eq(bar.get_child_count(), 4, "★ 整块正好 4 个控件 = 2 个色块 + 2 个数字（只显示两种资源）")
+	eq(bar.get_child_count(), 10, "两枚资源牌 + 两枚徽章 + 标题/库存/净额三档文字")
+	var food_token := bar.get_node_or_null("ResourceToken_粮") as Panel
+	var gold_token := bar.get_node_or_null("ResourceToken_金") as Panel
+	ok(food_token != null and gold_token != null, "粮食与黄金各有独立的筹码底牌")
 	if food != null and gold != null:
-		ok(gold.position.y > food.position.y, "★ 黄金排在粮食**下面**（%.0f > %.0f）—— 竖着排" % [
-			gold.position.y, food.position.y])
-		eq(food.position.x, gold.position.x, "★ 两项**左边对齐**（同一列）")
-		eq(food.position.y, UiLayoutRes.RES_ROW_Y, "★ 粮食那一行的 y = RES_ROW_Y")
-		eq(gold.position.y, UiLayoutRes.RES_ROW2_Y, "★ 黄金那一行的 y = RES_ROW2_Y")
-		ok(UiLayoutRes.RES_ROW2_Y >= UiLayoutRes.RES_ROW_Y + UiLayoutRes.RES_ICON,
-			"★ 两行不重叠（第二行 y %.0f ≥ 第一行下缘 %.0f）" % [
-				UiLayoutRes.RES_ROW2_Y, UiLayoutRes.RES_ROW_Y + UiLayoutRes.RES_ICON])
+		eq(gold.position.y, food.position.y, "粮食与黄金筹码位于同一行")
+		ok(gold.position.x > food.position.x, "黄金资源牌在粮食牌右侧")
+		eq(food.position.y, 24.0, "库存数字位于资源标题下方")
 		ok(gold.position.y + gold.size.y <= UiLayoutRes.RES_BAR_RECT.size.y + 0.01,
-			"★ 黄金那一行不越出面板下缘（%.0f ≤ %.0f）" % [
-				gold.position.y + gold.size.y, UiLayoutRes.RES_BAR_RECT.size.y])
-		ok(food.position.x + food.size.x <= UiLayoutRes.RES_BAR_RECT.size.x + 0.01,
-			"★ 文字不越出面板右缘（%.0f ≤ %.0f）" % [
-				food.position.x + food.size.x, UiLayoutRes.RES_BAR_RECT.size.x])
+			"黄金文字没有越出资源牌区域")
+		ok(gold.position.x + gold.size.x <= UiLayoutRes.RES_BAR_RECT.size.x + 0.01,
+			"第二枚资源牌没有越出容器右缘")
 		var icon_food := bar.get_node_or_null("ResIcon_粮") as Label
 		var icon_gold := bar.get_node_or_null("ResIcon_金") as Label
 		ok(icon_food != null and icon_gold != null, "★ 两个色块都在")
 		if icon_food != null and icon_gold != null:
 			eq(icon_food.size, Vector2(UiLayoutRes.RES_ICON, UiLayoutRes.RES_ICON),
-				"色块 20×20（没有图标素材，用色块 + 一个字顶上）")
+				"资源徽章 45×45")
 			ok(icon_food.position.x < food.position.x and icon_gold.position.x < gold.position.x,
-				"★ 色块排在各自数字**左边**")
-			eq(icon_food.position.y, food.position.y, "★ 色块与同一行的数字**同一 y**（一行一组）")
-			eq(icon_gold.position.y, gold.position.y, "★ 第二行同理")
+				"资源徽章位于库存数值左侧")
+			ok(icon_food.position.y < food.position.y, "粮食圆章与标题/库存纵向错层")
+			ok(icon_gold.position.y < gold.position.y, "黄金圆章与标题/库存纵向错层")
 
 	if food != null and gold != null:
 		main.world.resources["food"] = 120.6
 		main.world.resources["gold"] = 80.2
 		main.hud.refresh()
-		ok(food.text.begins_with("粮食 121"),
+		ok(food.text == "121",
 			"★ 粮食取整显示（120.6 → 121），实际：%s" % food.text)
-		ok(gold.text.begins_with("黄金 80"),
+		ok(gold.text == "80",
 			"★ 黄金取整显示（80.2 → 80），实际：%s" % gold.text)
 		# ★★ 2026.10.29：数字后面跟一个「(+n)」= **每秒净增长**（产能 − 维护费 − 科技金耗）。
-		ok(food.text.contains("(") and food.text.ends_with(")"),
-			"★ 数字区域带「(+n)」：每秒净增长（实际：%s）" % food.text)
-		ok(gold.text.contains("(") and gold.text.ends_with(")"),
-			"★ 黄金那一行同样带「(+n)」（实际：%s）" % gold.text)
+		var food_rate := bar.get_node_or_null("ResRate_粮") as Label
+		var gold_rate := bar.get_node_or_null("ResRate_金") as Label
+		ok(food_rate.text.contains("(") and food_rate.text.ends_with(")"),
+			"★ 粮食牌单独显示净增长（实际：%s）" % food_rate.text)
+		ok(gold_rate.text.contains("(") and gold_rate.text.ends_with(")"),
+			"★ 黄金牌单独显示净增长（实际：%s）" % gold_rate.text)
 		main.world.resources["food"] = 7.0
 		main.world.resources["gold"] = 0.0
 		main.hud.refresh()
-		ok(food.text.begins_with("粮食 7"), "★ 整数资源不带小数点")
-		ok(gold.text.begins_with("黄金 0"), "★ 0 也照实显示")
+		eq(food.text, "7", "★ 整数资源不带小数点")
+		eq(gold.text, "0", "★ 0 也照实显示")
 
 		# ★★ 2026.10.29：「(+n)」的写法（带正负号、1 位小数、0 附近不许出 "(+-0.0)"）
 		eq(main.hud._rate_text(3.24), "(+3.2)", "净增长带 + 号、保留 1 位小数")
@@ -741,12 +786,16 @@ func _test_resource_bar(main) -> void:
 		if font != null:
 			# ★★ 2026.10.29：这一行现在是「粮食 12345(+12.3)」，字号降到 FS_SMALL(13)。
 			#   最坏的现实组合 = **5 位数 + 负的两位数**（金色那行）≈ 130px ≤ 134。
-			for pair in [[food, "粮食 12345(+3.2)"], [gold, "黄金 12345(-12.3)"]]:
+			for pair in [[food, "12345", 20], [gold, "12345", 20]]:
 				var w: float = font.get_string_size(String(pair[1]),
-					HORIZONTAL_ALIGNMENT_LEFT, -1, UiStyleRes.FS_SMALL).x
+					HORIZONTAL_ALIGNMENT_LEFT, -1, int(pair[2])).x
 				ok(w <= (pair[0] as Label).size.x + 0.01,
-					"★ 「%s」宽 %.0f ≤ 可写 %.0f（5 位数 + (+n) 也不被裁）" % [
-						pair[1], w, (pair[0] as Label).size.x])
+					"★ 库存「%s」宽 %.0f ≤ 可写 %.0f" % [pair[1], w, (pair[0] as Label).size.x])
+			for pair in [[food_rate, "(+3.2)"], [gold_rate, "(-12.3)"]]:
+				var rate_w: float = font.get_string_size(String(pair[1]), HORIZONTAL_ALIGNMENT_LEFT,
+					-1, UiStyleRes.FS_TINY).x
+				ok(rate_w <= (pair[0] as Label).size.x + 0.01,
+					"★ 净额「%s」宽 %.0f ≤ 可写 %.0f" % [pair[1], rate_w, (pair[0] as Label).size.x])
 			ok(font.get_height(UiStyleRes.FS_SMALL) <= UiLayoutRes.RES_ICON + 0.01,
 				"★ 13 号字的行高 %.0f 装得进 %.0f 高那一行" % [
 					font.get_height(UiStyleRes.FS_SMALL), UiLayoutRes.RES_ICON])
@@ -865,10 +914,10 @@ func _test_anchors(main) -> void:
 	root.size = Vector2i(2560, 1080)                      # 超宽：多出来的 640px 留在中间
 	await process_frame
 	await process_frame
-	v2_near(main.hud.command_card.position, Vector2(UiLayoutRes.CARD_RECT.position.x + 640.0, 820.0), 1.0,
-		"★ 超宽窗口：命令卡仍贴右下角")
-	v2_near(main.hud.page_tabs.position, Vector2(UiLayoutRes.TABS_RECT.position.x + 640.0, 820.0), 1.0,
-		"超宽窗口：页签列仍贴右下角")
+	v2_near(main.hud.command_card.position, Vector2(UiLayoutRes.CARD_RECT.position.x + 640.0,
+		UiLayoutRes.CARD_RECT.position.y), 1.0, "★ 超宽窗口：扇形牌区仍贴右侧工作区")
+	v2_near(main.hud.page_tabs.position, Vector2(UiLayoutRes.TABS_RECT.position.x + 640.0,
+		UiLayoutRes.TABS_RECT.position.y), 1.0, "超宽窗口：页签牌跟随右边距")
 	v2_near(main.hud.detail_panel.position, UiLayoutRes.DETAIL_RECT.position, 1.0,
 		"超宽窗口：详细信息仍贴左（x = 562.5）")
 	# ★★ 本版：手机端不再横向拉伸 —— 固定 988 宽，右侧留白，不需要与页签相连。
@@ -882,8 +931,9 @@ func _test_anchors(main) -> void:
 	v2_near(main.hud.squad_panel.position,
 		Vector2(UiLayoutRes.SQUAD_RECT.position.x + 640.0, UiLayoutRes.SQUAD_RECT.position.y), 1.0,
 		"超宽窗口：将领列表仍贴右上")
-	v2_near(main.hud.settings_button.position, Vector2(1840.0 + 640.0, 0.0), 1.0,
-		"超宽窗口：设置仍贴右上角")
+	v2_near(main.hud.settings_button.position,
+		Vector2(UiLayoutRes.SETTINGS_RECT.position.x + 640.0, UiLayoutRes.SETTINGS_RECT.position.y), 1.0,
+		"超宽窗口：设置币仍贴右上角")
 	ok(main.hud.blocks_edge_scroll(Vector2(UiLayoutRes.CARD_RECT.position.x + 640.0 + 40.0, 880.0)),
 		"超宽窗口：命令卡的新位置仍然拦边缘滚屏（判定跟着贴边走）")
 
@@ -1139,15 +1189,15 @@ func _test_squad_rows(main) -> void:
 	var world = main.world
 
 	eq(panel.slot_count(), UiLayoutRes.SQUAD_SLOTS, "部队列表有 6 个槽")
-	# ★★ 整列外框：左 / 上 / 下 2px，右边留 0（不压最右金线 / 泛光起点）。
+	# V2 每张编队牌独立描边，整列不再套外框。
 	var sframe = panel.get_node_or_null("SquadFrame")
-	ok(sframe != null, "★★ 将领标签栏整体外框存在")
+	ok(sframe != null, "V2 编队牌容器兼容节点存在")
 	if sframe != null:
 		eq(sframe.mouse_filter, Control.MOUSE_FILTER_IGNORE, "★ 外框不吞标签点击")
 		var ssb: StyleBoxFlat = sframe.get_theme_stylebox("panel")
 		if ssb != null:
-			eq(ssb.border_width_left, 2, "★★ 标签栏外框加厚到 2px")
-			eq(ssb.border_width_right, 0, "★ 右边不留外框（不压最右金线）")
+			eq(ssb.border_width_left, 0, "编队牌列没有额外矩形外框")
+			eq(ssb.border_width_right, 0, "编队牌列右边不加外框")
 	var teams := 0
 	for u in world.units:
 		if u.alive and world.is_team_leader(u) and FactionRes.same_side(u.faction, world.my_faction):
@@ -1414,33 +1464,29 @@ func _test_squad_rows(main) -> void:
 	main.input_ctrl.select_units([world.unit_by_id("general-1")])
 
 
-## ★★ 详细信息栏的显隐：没有可查看的选中对象时整块隐藏；
-##   部队（队长 / 批量）→ 不显示详情，左列用阵营盾徽；
-##   具体单位 / 建筑 / 区划 / 敌方 → 显示详情。
+## ★★ 详细信息栏的显隐：没有可查看的选中对象时整块隐藏；任何有效选中均显示详情。
 func _test_detail_visibility(main) -> void:
 	var hud = main.hud
 	var panel = hud.detail_v2
-	var faction = hud.faction_placeholder
 	var world = main.world
 	var detail_center: Vector2 = UiLayoutRes.DETAIL_V2_RECT.get_center()
-	var faction_center: Vector2 = UiLayoutRes.FACTION_V2_RECT.get_center()
 
-	# ① 没有任何选中 → 详情隐藏、盾徽显示
+	# ① 没有任何选中 → 详情隐藏，左下角不留盾徽占位
 	main.input_ctrl.select_units([])
 	hud.refresh()
 	ok(not panel.visible, "★★ 没有选中任何东西 → 详细信息栏隐藏")
-	ok(faction.visible, "★★ 默认态显示阵营盾徽")
+	ok(hud.faction_placeholder == null, "★★ 空选中时不显示阵营盾徽旗帜")
 	ok(not hud.blocks_wheel_zoom(detail_center), "★ 隐藏后详情栏区域不再拦滚轮缩放")
 	ok(not hud.point_hits_ui(detail_center), "★ 隐藏后详情栏区域恢复地图手势")
-	ok(hud.blocks_wheel_zoom(faction_center), "★ 默认态盾徽自己拦滚轮")
-	ok(hud.point_hits_ui(faction_center), "★ 默认态盾徽自己算 UI")
+	ok(not hud.blocks_wheel_zoom(detail_center), "★ 删除占位后不留下隐藏滚轮拦截区")
 
-	# ② 选中己方部队（队长）→ 显示详情、盾徽让位
+	# ② 选中己方部队（队长）→ 详情快速滑入
 	var g1 = world.unit_by_id("general-1")
 	main.input_ctrl.select_units([g1])
 	hud.refresh()
-	ok(panel.visible, "★★ 选中己方部队（队长）→ 显示右侧详细信息")
-	ok(not faction.visible, "★★ 部队详情显示时盾徽隐藏")
+	ok(panel.visible, "★★ 选中己方单位 → 显示左下详细信息")
+	ok(hud._detail_slide_tween != null and hud._detail_slide_tween.is_running(),
+		"★★ 详情首次显示时启动快速左向右滑入")
 	ok(hud.blocks_wheel_zoom(detail_center), "★ 详情显示时详情中心拦滚轮")
 	ok(hud.point_hits_ui(detail_center), "★ 详情显示时详情中心算 UI")
 
@@ -1454,7 +1500,6 @@ func _test_detail_visibility(main) -> void:
 		main.input_ctrl.select_building(own_b)
 		hud.refresh()
 		ok(panel.visible, "★★ 选中己方建筑 → 详细信息栏显示")
-		ok(not faction.visible, "★★ 详情显示时盾徽隐藏")
 		ok(hud.blocks_wheel_zoom(detail_center), "★ 详情显示时详情中心拦滚轮")
 		ok(hud.point_hits_ui(detail_center), "★ 详情显示时详情中心算 UI")
 
@@ -1464,7 +1509,6 @@ func _test_detail_visibility(main) -> void:
 		main.input_ctrl.select_zone(zone)
 		hud.refresh()
 		ok(panel.visible, "★★ 选中区划 → 详细信息栏显示")
-		ok(not faction.visible, "★★ 区划详情显示时盾徽隐藏")
 
 	# ⑤ 选中敌方建筑 → 显示（敌人也能看详细信息）
 	var foe_b = null
@@ -1476,13 +1520,12 @@ func _test_detail_visibility(main) -> void:
 		main.input_ctrl.select_enemy(foe_b)
 		hud.refresh()
 		ok(panel.visible, "★★ 选中敌方建筑 → 详细信息栏显示")
-		ok(not faction.visible, "★★ 敌方详情显示时盾徽隐藏")
 
 	# ⑥ 再清空 → 重新隐藏
 	main.input_ctrl.select_units([])
 	hud.refresh()
 	ok(not panel.visible, "★★ 清空选中 → 详细信息栏重新隐藏")
-	ok(faction.visible, "★★ 清空选中 → 阵营盾徽重新显示")
+	ok(hud.faction_placeholder == null, "★★ 清空选中后仍无盾徽占位")
 
 
 func _test_page_tabs_and_card(main, cfg) -> void:
@@ -1492,16 +1535,16 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 	# ★★ 科技「赤字时不能启用」：给足黄金产能，下面的科技格才点得动。
 	give_gold_income(world, 100.0)
 
-	# ★★ 整列描边：最后加的 TabsFrame 盖在页签上，但鼠标穿透。
+	# ★★ 扇形牌签各自带边框；保留透明 frame 兼容节点，但不再套整列矩形框。
 	var frame = tabs.get_node_or_null("TabsFrame")
 	ok(frame != null, "★★ 页签栏整体描边（TabsFrame）存在")
 	if frame != null:
 		eq(frame.mouse_filter, Control.MOUSE_FILTER_IGNORE, "★ 描边不吞页签点击")
 		var fsb: StyleBoxFlat = frame.get_theme_stylebox("panel")
-		ok(fsb != null, "★ 描边用一个透明底的 StyleBoxFlat")
+		ok(fsb != null, "牌签兼容 frame 使用透明 StyleBoxFlat")
 		if fsb != null:
-			eq(fsb.border_width_left, 2, "★★ 页签整列外框加厚到 2px")
-		v2_near(frame.size, UiLayoutRes.TABS_RECT.size, 1.0, "★ 描边覆盖整列页签")
+			eq(fsb.border_width_left, 0, "牌签组没有外围矩形框")
+		v2_near(frame.size, UiLayoutRes.TABS_RECT.size, 1.0, "frame 覆盖牌签安全区")
 
 	# ★★ 所有页签按钮都自带**常驻灰底**（画在填充金下面，悬停时金只是往上盖）。
 	eq(UiStyleRes.panel_style().border_width_left, 2,
@@ -1514,14 +1557,14 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 		ok(nsb.bg_color.a <= 0.001,
 			"★ 页签底纹仍全透明（灰底画在填充层，金才盖得上去）")
 
-	# ★★ 命令卡整组外框（2px，不吃点击）。
+	# ★ 扇形手牌由每张牌自身的金边与阴影构成，不使用九宫格外框。
 	var cframe = main.hud.command_card.get_node_or_null("CardFrame")
 	ok(cframe != null, "★★ 命令卡整组外框存在")
 	if cframe != null:
 		eq(cframe.mouse_filter, Control.MOUSE_FILTER_IGNORE, "★ 命令卡外框不吞格子点击")
 		var csb: StyleBoxFlat = cframe.get_theme_stylebox("panel")
 		if csb != null:
-			eq(csb.border_width_left, 2, "★★ 命令卡外框加厚到 2px")
+			eq(csb.border_width_left, 0, "扇形手牌不套整块矩形框")
 
 	main.input_ctrl.select_units([world.unit_by_id("general-1")])
 	main.hud.refresh()
@@ -1532,17 +1575,48 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 	eq(tabs.page_id_at(1), PageTabsRes.PAGE_UNIT, "第二颗是「单位」")
 	eq(tabs.page(), PageTabsRes.PAGE_ORDER, "★ 默认停在「操作」页")
 	eq(card.entries().size(), 4, "★ 操作页有四格（移动 / 攻击 / 行军 / 停止）")
+	for i in UiLayoutRes.CARD_SLOTS:
+		eq(card.cell_at(i).visible, i < 4, "操作页只铺实际有内容的牌槽 %d" % i)
+	var drag_cell: Control = card.cell_at(0)
+	var drag_origin: Vector2 = drag_cell.get_global_transform_with_canvas() * (drag_cell.size * 0.5)
+	card._drag_index = 0
+	card._drag_start_global = drag_origin
+	card._update_drag_position(0, drag_origin - Vector2(0.0, 24.0))
+	ok(card._dragging_card, "★★ 手牌向上拖过阈值后进入拖拽状态")
+	eq(drag_cell.rotation, 0.0, "★★ 被拖起的牌转正并跟随指针")
+	card._finish_card_drag(0)
+	ok(not card._dragging_card, "松手后拖拽状态正确结束")
+	eq(main.input_ctrl.order_mode, "move", "★★ 上拖松手会打出命令牌")
+	main.input_ctrl.set_order_mode("")
+	var touch_cell: Control = card.cell_at(0)
+	var touch_origin: Vector2 = touch_cell.get_global_transform_with_canvas() * (touch_cell.size * 0.5)
+	var touch_down := InputEventScreenTouch.new()
+	touch_down.pressed = true
+	touch_down.position = touch_origin
+	main.hud.handle_touch(touch_down)
+	var touch_move := InputEventScreenDrag.new()
+	touch_move.position = touch_origin - Vector2(0.0, 28.0)
+	touch_move.relative = Vector2(0.0, -28.0)
+	main.hud.handle_touch_drag(touch_move)
+	ok(main.hud._lp_card_dragging, "★★ 触屏向上拖动手牌进入打出状态")
+	var touch_up := InputEventScreenTouch.new()
+	touch_up.pressed = false
+	touch_up.position = touch_move.position
+	main.hud.handle_touch(touch_up)
+	await process_frame
+	eq(main.input_ctrl.order_mode, "move", "★★ 触屏上拖松手也触发同一命令牌动作")
+	main.input_ctrl.set_order_mode("")
 
-	# ★★ 命令卡每一格（含空格子）都有常驻灰底；底纹本身仍全透明，
-	#   所以悬停不会「灰底消失再填金」——灰底在填充层、金的下层。
+	# ★★ 只显示当前页真实存在的牌；空槽隐藏而非置灰占位。
 	for i in UiLayoutRes.CARD_SLOTS:
 		var cc = card.cell_at(i)
-		ok(FillButtonRes.base_bg(cc).a > 0.2,
-			"★★ 命令卡第 %d 格自带常驻灰底" % (i + 1))
+		if i < 4:
+			ok(cc.visible, "本页真实操作牌 %d 可见" % (i + 1))
+		else:
+			ok(not cc.visible, "未使用的键位 %d 隐藏，不画灰牌" % (i + 1))
 		var ns: StyleBoxFlat = cc.get_theme_stylebox("normal")
-		var hs: StyleBoxFlat = cc.get_theme_stylebox("hover")
-		ok(ns.bg_color.a <= 0.001 and hs.bg_color.a <= 0.001,
-			"★★ 命令卡第 %d 格 normal/hover 底纹全透明（灰由填充层给）" % (i + 1))
+		ok(ns.corner_radius_top_left >= 8,
+			"牌面 %d 使用卡片圆角金边" % (i + 1))
 	var tech_cell0 = main.hud.tech_grid.cell_at(0)
 	ok(FillButtonRes.base_bg(tech_cell0).a > 0.2, "★★ 科技格也带常驻灰底")
 	eq(String(card.entry_at(0).get("type", "")), "order", "操作页那一项是「部队指令」")
@@ -1563,17 +1637,25 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 
 	tabs.button_at(1).emit_signal("pressed")
 	eq(tabs.page(), PageTabsRes.PAGE_UNIT, "点第二颗切到「单位」页")
-	eq(card.entries().size(), 9, "★ 单位页固定九格（三行；空位也是格子）")
+	ok(card._deck_tween != null and card._deck_tween.is_running(),
+		"★★ 切换命令牌组会启动错落入场动效")
+	eq(card.entries().size(), 9, "单位页数据仍保留九个键位映射")
 	eq(String(card.entry_at(0).get("type", "")), "recruit", "单位页那一项是「招募」")
 	eq(card.cell_label(0), "长枪兵", "单位页 Q 格 = 长枪兵（第 1 行）")
 	eq(card.cell_label(1), "长弓兵", "单位页 W 格 = 长弓兵（第 1 行）")
-	eq(card.cell_label(2), "", "单位页 E 格空着（第 1 行只有两个兵）")
+	eq(card.cell_label(2), "", "单位页 E 槽无兵种")
+	ok(not card.cell_at(2).visible, "单位页空 E 槽不显示灰牌")
 	eq(card.cell_label(3), "骑手", "★ 骑手挪到第 2 行第 1 格（A）")
 	eq(card.cell_label(4), "粮车", "★ 第 2 行第 2 格 = 粮车（S）")
 	eq(card.cell_label(5), "", "第 2 行第 3 格空着")
 	eq(card.cell_label(6), "骑士", "★ 第 3 行第 1 格 = 骑士（Z）")
 	eq(card.cell_label(7), "马弓手", "★ 第 3 行第 2 格 = 马弓手（X）")
 	eq(card.cell_label(8), "投石车", "★ 第 3 行第 3 格 = 投石车（C）")
+	var recruit_cards := 0
+	for i in UiLayoutRes.CARD_SLOTS:
+		if card.cell_at(i).visible:
+			recruit_cards += 1
+	eq(recruit_cards, 7, "单位页只显示 7 张真实招募牌，不画 2 张灰色空牌")
 	eq(String(card.entry_at(0).get("unit_kind", "")), UnitRes.UNIT_TYPE_SPEARMAN,
 		"Q 格要招的是长枪兵")
 	eq(int(card.entry_at(3).get("tier", 0)), 2, "第 2 行 = 大本营 2 级解锁")
@@ -1610,16 +1692,11 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 	ok(not bool(card.entry_at(4).get("ready", true)), "★★ 警戒塔 1 级时置灰")
 	ok(not main.hud.tech_grid.visible, "★ 不是科技页时九格收起来（命令卡照常画）")
 
-	# ★★ 回归（手玩报的「刚进游戏时右下角『建筑』按钮错位」）：
-	#    进游戏那一刻 hud 建的是**1 颗**页签（铺满整列 240 高，「建筑」两个字就是按
-	#    240 建的），第一帧 refresh 才把它换成「建筑 + 科技」**两颗**（各 120 高）——
-	#    文案一个字没变，变的只是**按钮高度**。而逐字 Label 的高度是**建它那一刻**从
-	#    按钮取的 ⇒ 高度变了必须重建；只比文案的话这一颗会留着 240、字按 240 居中，
-	#    就沉到按钮下缘（与「科技」的交界处）。
+	# 动态页签改为固定尺寸的纵向牌签；单页时靠右对齐，不拉伸占满整列。
 	var fresh = PageTabsRes.new()
 	main.hud.add_child(fresh)
 	fresh.setup()                                   # setup 内部就是「1 颗建筑页」那一刻
-	eq(fresh.button_at(0).size.y, 260.0, "★ 进游戏那一刻：一颗页签铺满整列（260 高）")
+	eq(fresh.button_at(0).size, Vector2(73.0, 94.0), "★ 单个页签仍是固定牌签尺寸")
 	fresh.set_pages([PageTabsRes.PAGE_BUILD, PageTabsRes.PAGE_TECH])
 	eq(fresh.label_at(0), "建筑", "★ 换成两颗后第一颗的**文案没变**（旧判据正是漏了这一种）")
 	for i in 2:
@@ -1627,9 +1704,8 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 		var fcls: Array = fresh.char_labels_at(i)
 		ok(not fcls.is_empty(), "「%s」页签有逐字 Label" % fresh.label_at(i))
 		for l in fcls:
-			eq(float((l as Control).size.y), float(ftb.size.y),
-				"★★ 「%s」的逐字 Label 按**当前**按钮高度排版（Label %s / 按钮 %s）"
-					% [fresh.label_at(i), str((l as Control).size), str(ftb.size)])
+			ok((l as Control).size.y <= ftb.size.y,
+				"牌签文字行高不超过按钮高度（%s / %s）" % [str((l as Control).size), str(ftb.size)])
 	main.hud.remove_child(fresh)
 	fresh.queue_free()
 
@@ -1724,6 +1800,7 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 	g.press(3)
 	ok(not world.is_tech_active(ids[3]), "★ 第 4 条没有生效（被阻止）")
 	# ★ 新版口径：不能启用的格子**置灰不可点**（点了什么都不发生），原因写在悬停里。
+	main.hud._tick_notice(main.cfg.num("ui.notice_sec", 2.0) + 0.1)
 	ok(not main.hud.notice_active(), "置灰格点了不弹红字（悬停才说明原因）")
 	var locked_cell = g.cell_at(3)
 	ok(locked_cell != null and not locked_cell.disabled,
@@ -1787,6 +1864,10 @@ func _eq_tech_page(main, where: String) -> void:
 	var card = main.hud.command_card
 	ok(g.visible, "%s：★ 科技九格显示出来了" % where)
 	eq(g.entries().size(), 9, "%s：★ 九格铺满（9 条占位科技）" % where)
+	for i in UiLayoutRes.CARD_SLOTS:
+		var entry: Dictionary = g.entry_at(i)
+		eq(g.cell_at(i).visible, not entry.is_empty(),
+			"%s：科技牌 %d 的可见状态只由真实科技项决定" % [where, i])
 	eq(card.entries().size(), 0, "%s：命令卡在科技页是空的（内容由科技那一层画）" % where)
 	eq(g.cell_name(0), "粮食产量 I", "%s：第 1 格 = 粮食产量 I" % where)
 	eq(g.cell_line(0), "粮食产能 +10%", "%s：第 1 格第二行写效果" % where)
@@ -1798,10 +1879,10 @@ func _eq_tech_page(main, where: String) -> void:
 	eq(g.cell_name(5), "将领强化", "%s：第 6 格 = 将领强化" % where)
 	eq(g.cell_name(8), "区划人口", "%s：第 9 格 = 区划人口" % where)
 	eq(g.cell_name(9), "", "%s：越界格（第 10 格）读不到东西" % where)
-	var c0: Rect2 = UiLayoutRes.card_cell_rect(0)
+	var c0: Rect2 = UiLayoutRes.CARD_RECT
 	var g_rect: Rect2 = g.get_global_rect()
 	v2_near(g_rect.position, c0.position, 1.0,
-		"%s：★ 科技九格的左上角与命令卡重合" % where)
+		"%s：★ 科技牌手与命令牌手占据同一牌区" % where)
 
 ## 找一栋**己方**的普通建筑（木墙 / 哨塔）；没有就现造一栋 —— 开局不再自动在大本营旁
 ## 生成防御阵地了，所以「地图上有一栋己方木墙 / 哨塔」这件事得自己保证。
@@ -1854,8 +1935,8 @@ func _test_hover_panel(main, cfg) -> void:
 	var card_rect: Rect2 = card.get_global_rect()
 	var tabs_rect: Rect2 = tabs.get_global_rect()
 	var tip_rect: Rect2 = tip.get_global_rect()
-	eq(tip_rect.size.x, card_rect.size.x + tabs_rect.size.x,
-		"★ 宽度 = 命令卡 + 页签列那一整段（需求补充）")
+	eq(tip_rect.size.x, tabs_rect.position.x + tabs_rect.size.x - card_rect.position.x,
+		"★ 悬停说明从牌手左缘一直对齐到页签牌区右缘")
 	near(tip_rect.position.x, card_rect.position.x, 1.0, "左缘与命令卡对齐")
 	near(tip_rect.position.x + tip_rect.size.x,
 		tabs_rect.position.x + tabs_rect.size.x, 1.0,
@@ -2001,7 +2082,9 @@ func _test_hover_tip_control(cfg) -> void:
 		"★ 正文每一行都画得出来（%d / %d 行）—— 少了就是面板高度量错了"
 			% [tip.body_visible_lines(), tip.body_lines()])
 
-	var long_line := "本区块每地块每秒额外产出 0.5 粮食，一个区划只能选一种特化；取消特化也要读条，读完才真的撤掉，并且把当初花掉的粮食与黄金全额退回来"
+	var long_line := "本区块每地块每秒额外产出 0.5 粮食，一个区划只能选一种特化；取消特化也要读条，读完才真的撤掉，并且把当初花掉的粮食与黄金全额退回来。" \
+		+ "本区块每地块每秒额外产出 0.5 粮食，一个区划只能选一种特化；取消特化也要读条，读完才真的撤掉，并且把当初花掉的粮食与黄金全额退回来。" \
+		+ "本区块每地块每秒额外产出 0.5 粮食，一个区划只能选一种特化；取消特化也要读条，读完才真的撤掉，并且把当初花掉的粮食与黄金全额退回来。"
 	tip.show_text("粮食特化", long_line)
 	var inner_w: float = UiLayoutRes.HOVER_W - 2.0 * UiLayoutRes.HOVER_PAD
 	var raw_w: float = font.get_string_size(long_line, HORIZONTAL_ALIGNMENT_LEFT, -1,
@@ -2080,27 +2163,33 @@ func _test_card_keys(main) -> void:
 			and FillButtonRes.fill_progress(wall_cell) <= 0.001,
 		"★★ 木墙那格取消选中 → 金色退回")
 
-	ok(card.handle_key(_key(KEY_W)), "再按一次 W")
-	eq(main.input_ctrl.build_type, "", "再按一次同一格 = 退出建造模式")
+	ok(card.handle_key(_key(KEY_W)), "建造模式中重复按 W 不作为取消键")
+	eq(main.input_ctrl.build_type, "tower", "★ 重复按 W 仍保持建造模式")
+	ok(main.input_ctrl.handle_key(_key(KEY_ESCAPE)), "★★ Esc 是取消建造模式的固定快捷键")
+	eq(main.input_ctrl.build_type, "", "Esc 退出建造模式")
 	main.hud.refresh()
 	tower_anim._process(0.2)
 	ok(not FillButtonRes.is_latched(tower_cell)
 			and FillButtonRes.fill_progress(tower_cell) <= 0.001,
-		"★★ 退出建造模式 → 哨塔那格金色退回")
+		"★★ Esc 退出建造模式 → 哨塔那格金色退回")
 
 	card.cell_at(0).emit_signal("pressed")
-	eq(main.input_ctrl.build_type, "wall", "点 Q 格 = 进木墙建造模式")
+	eq(main.input_ctrl.build_type, "", "★ 普通点按不再打出建筑牌")
+	ok(card.handle_key(_key(KEY_Q)), "★ Q 快捷键仍可进入木墙建造模式")
+	eq(main.input_ctrl.build_type, "wall", "按 Q = 进木墙建造模式")
 	main.hud.refresh()
 	wall_anim._process(0.2)
 	ok(FillButtonRes.is_latched(wall_cell)
 			and FillButtonRes.fill_progress(wall_cell) >= 0.999,
 		"★★ 点击木墙格 → 那格金色填满")
-	main.input_ctrl.set_build_type("")
+	ok(card.handle_key(_key(KEY_Q)), "★★ 重复按 Q 不取消建造")
+	eq(main.input_ctrl.build_type, "wall", "★★ 建造取消不绑定到 Q")
+	ok(main.input_ctrl.handle_key(_key(KEY_ESCAPE)), "★★ Esc 退出建筑牌建造模式")
 	main.hud.refresh()
 	wall_anim._process(0.2)
 	ok(not FillButtonRes.is_latched(wall_cell)
 			and FillButtonRes.fill_progress(wall_cell) <= 0.001,
-		"★★ 清掉建造模式（Esc / 右键）→ 金色退回")
+		"★★ Esc 清掉建造模式 → 金色退回")
 
 	main.input_ctrl.select_units([g1])
 	main.hud.refresh()
@@ -2110,8 +2199,8 @@ func _test_card_keys(main) -> void:
 	eq(main.input_ctrl.order_mode, "move", "★ 操作页按 Q = 进入移动模式")
 	ok(card.handle_key(_key(KEY_Q)), "再按一次 Q")
 	eq(main.input_ctrl.order_mode, "", "★ 再按一次同一格 = 退出命令模式")
-	card.cell_at(2).emit_signal("pressed")
-	eq(main.input_ctrl.order_mode, "attack_move", "点 E 格 = 进入行军模式")
+	ok(card.handle_key(_key(KEY_E)), "★ E 快捷键仍可进入行军模式")
+	eq(main.input_ctrl.order_mode, "attack_move", "按 E = 进入行军模式")
 	main.input_ctrl.set_order_mode("")
 	eq(main.input_ctrl.order_mode, "", "（收尾）退出命令模式")
 
@@ -2129,8 +2218,8 @@ func _test_card_keys(main) -> void:
 			"x": float(free.x) + 0.5, "y": float(free.y) + 0.5, "faction": "p1"}),
 			"（前提）先让将领 1 走起来")
 		ok(g1.moving, "（前提）它正在移动")
-		card.cell_at(3).emit_signal("pressed")          # A 格 = 停止
-		ok(not g1.moving, "★ 点「停止」格 → 当场停下")
+		ok(card.handle_key(_key(KEY_A)), "★ A 快捷键触发停止")
+		ok(not g1.moving, "★ 按「停止」快捷键 → 当场停下")
 		eq(main.input_ctrl.order_mode, "", "★ 停止不进命令模式（点一下就够了）")
 
 	ok(not card.handle_key(_key(KEY_Q, true)),
@@ -2158,8 +2247,22 @@ func _test_tech_keys(main) -> void:
 	main.hud.refresh()
 	tabs.select_page(PageTabsRes.PAGE_TECH)
 	eq(tabs.page(), PageTabsRes.PAGE_TECH, "（前提）切到科技页")
+	ok(g._deck_tween != null and g._deck_tween.is_running(),
+		"★★ 切换科技牌组也会启动入场动效")
 	main.hud.refresh()
 	ok(g.visible, "（前提）科技九格显示出来")
+	var drag_tech_id := String((g.entry_at(0) as Dictionary).get("id", ""))
+	var tech_before: bool = world.is_tech_active(drag_tech_id)
+	g.cell_at(0).emit_signal("pressed")
+	eq(world.is_tech_active(drag_tech_id), tech_before, "★ 科技牌普通点按不激活")
+	var tech_cell: Control = g.cell_at(0)
+	var tech_drag_origin: Vector2 = tech_cell.get_global_transform_with_canvas() * (tech_cell.size * 0.5)
+	g.begin_touch_drag(0, tech_drag_origin)
+	g.move_touch_drag(0, tech_drag_origin - Vector2(0.0, 24.0))
+	g.finish_touch_drag(0)
+	eq(world.is_tech_active(drag_tech_id), not tech_before, "★★ 科技牌上拖松手触发启用/弃用")
+	if world.is_tech_active(drag_tech_id):
+		g.press(0) # 还原，让后面的快捷键测试从未启用状态开始。
 
 	# ★★ 科技页的图标：每格一张（按名字画的占位金线图形），名字压在最下面一行。
 	#   这里只钉「第 1 格确实拿到了一张 tech_*.png」+「名字没被吃掉」——
@@ -2243,7 +2346,11 @@ func _test_recruit_via_card(main) -> void:
 	world.resources["food"] = 200.0
 	world.resources["gold"] = 200.0
 	world.zones.zone_at(g1.tx, g1.ty)["population"] = 5.0
-	card.activate_index(0)
+	var played_pos: Vector2 = card.cell_at(0).get_global_transform_with_canvas() \
+		* (card.cell_at(0).size * 0.5)
+	card._drag_index = 0
+	card._dragging_card = true
+	card._finish_card_drag(0, played_pos)
 	ok(g1.is_training(), "★ 点单位页的 Q 格 → 排进招募队列")
 	eq(g1.train_kind, UnitRes.UNIT_TYPE_SPEARMAN, "大格子里是刚排进去的那个")
 	var sf: float = float((world.recruit_cost(UnitRes.UNIT_TYPE_SPEARMAN) as Dictionary).get("food", 0.0))
@@ -2253,6 +2360,16 @@ func _test_recruit_via_card(main) -> void:
 
 	main.hud.refresh()
 	ok(queue.showing(), "★ 信息栏里出现五个格子")
+	eq(String(card.entry_at(0).get("type", "")), "recruit_cancel_all",
+		"★★ 招募开始后，手牌最左侧插入读条/取消牌")
+	eq(String(card.entry_at(0).get("unit_kind", "")), UnitRes.UNIT_TYPE_SPEARMAN,
+		"读条牌显示刚刚排入队列的兵种")
+	eq(String(card.entry_at(1).get("unit_kind", "")), UnitRes.UNIT_TYPE_SPEARMAN,
+		"普通兵种牌向右移一格，补回原牌")
+	eq(card._key_labels[0].text, "ESC", "★★ 读条牌标示 Esc，而不占用 Q 快捷键")
+	eq(card._key_labels[1].text, "Q", "★★ 右移后的首张单位牌仍标记为 Q")
+	ok(card._deck_tween != null and card._deck_tween.is_running(),
+		"★★ 读条牌从左滑入并推动手牌错位")
 	eq(queue.slot_count(), 5, "★ 一共五个格子")
 	ok(queue.cell_filled(0), "大格子填上了（正在读条的那个）")
 	ok(not queue.cell_filled(1), "小格子还是空的")
@@ -2260,17 +2377,39 @@ func _test_recruit_via_card(main) -> void:
 		"大格子里写着兵种短名（实际：%s）" % queue.cell_label(0))
 	near(queue.progress(), 0.0, 1e-6, "刚入队时读条是 0")
 
-	ok(card.handle_key(_key(KEY_Q)), "单位页的 Q 被命令卡吃掉")
+	ok(card.handle_key(_key(KEY_Q)), "★★ Q 仍招募第一种单位，不会取消队列")
 	main.hud.refresh()
 	eq(g1.train_queue.size(), 1, "★ 第二次招募排进小格子（不抢读条）")
 	ok(queue.cell_filled(1), "第 2 个格子（小格）填上了")
 	near(queue.progress(), 0.0, 0.05, "★ 排队的不影响正在读条那个的进度")
 
 	eq(main.hud.page_tabs.page_count(), 2, "（前提）选中部队时只有两颗页签")
+	main.hud.page_tabs.select_page(PageTabsRes.PAGE_ORDER)
+	var order_has_stop := false
+	for e in card.entries():
+		if e is Dictionary and String((e as Dictionary).get("type", "")) == "recruit_cancel_all":
+			order_has_stop = true
+	ok(not order_has_stop, "★★ 操作页不再单独显示停招；由手牌读条牌替代")
+	main.hud.page_tabs.select_page(PageTabsRes.PAGE_UNIT)
 	main.hud.page_tabs.select_page(PageTabsRes.PAGE_BUILD)
 	eq(main.hud.page_tabs.page(), PageTabsRes.PAGE_UNIT,
 		"★ 不在这一屏里的页（建筑）切不过去")
 	eq(g1.train_queue_size(), 2, "切页不会改变队列")
+	var cancel_pos: Vector2 = card.cell_at(0).get_global_transform_with_canvas() \
+		* (card.cell_at(0).size * 0.5)
+	card._drag_index = 0
+	card._dragging_card = true
+	card._finish_card_drag(0, cancel_pos)
+	ok(not g1.is_training() and g1.train_queue_size() == 0,
+		"★★ 打出最左读条牌会清空当前将领的整条招募队列")
+	ok(main.input_ctrl.request_recruit(UnitRes.UNIT_TYPE_SPEARMAN), "为 Esc 取消路径重新排入一单")
+	main.hud.refresh()
+	var queued_before_q: int = g1.train_queue_size()
+	ok(card.handle_key(_key(KEY_Q)), "★★ Q 仍映射到第一张单位牌，不会取消读条")
+	eq(g1.train_queue_size(), queued_before_q + 1, "★★ Q 新增一单而不是取消招募")
+	ok(main.input_ctrl.handle_key(_key(KEY_ESCAPE)), "★★ Esc 可取消当前将领的全部招募")
+	ok(not g1.is_training() and g1.train_queue_size() == 0,
+		"Esc 取消后招募队列清空")
 
 	main.input_ctrl.select_units([])
 	main.hud.refresh()
@@ -2944,6 +3083,16 @@ func _test_box_select(main) -> void:
 		"框选是「选中单位」这一种，建筑 / 区划的选中被清掉")
 
 	main.hud.refresh()
+	var compact_rows: Array = main.hud.detail_v2.list._rows
+	eq(String((compact_rows[0] as Dictionary).get("kind", "")), "focus",
+		"V2 多选栏先显示当前聚焦编队")
+	eq(int((compact_rows[0] as Dictionary).get("number", 0)), 1,
+		"V2 多选焦点保留 1 号编队")
+	var other_chips := 0
+	for row in compact_rows:
+		if String((row as Dictionary).get("kind", "")) == "troop_chip":
+			other_chips += 1
+	eq(other_chips, 1, "V2 多选栏只显示其余实际选中的 2 号编队，不补空位")
 	eq(main.hud.squad_panel.slot_active(0), true, "★ 左侧「部队 1」显示为选中")
 	eq(main.hud.squad_panel.slot_active(1), true, "★ 左侧「部队 2」也显示为选中")
 	if g3 != null:

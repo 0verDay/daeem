@@ -2455,7 +2455,7 @@
     ],
 
     "wall": {
-      "id": "wall", "name": "木墙", "buildable": true, "drag_build": true,
+      "id": "wall", "name": "木墙", "buildable": true,
       "tier": 1, "ranged_reduction": 0.9,
       "build_sec": 4,
       "cost": { "food": 50, "gold": 0 },
@@ -2499,7 +2499,7 @@
       "desc": "资源建筑：建在己方区划内，为全阵营提供粮食 +0.5/秒"
     },
     "stone_wall": {
-      "id": "stone_wall", "name": "石墙", "buildable": true, "drag_build": true,
+      "id": "stone_wall", "name": "石墙", "buildable": true,
       "tier": 2, "ranged_reduction": 0.9,
       "build_sec": 5,
       "cost": { "food": 120, "gold": 120 },

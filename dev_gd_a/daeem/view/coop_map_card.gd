@@ -2,7 +2,6 @@
 extends Button
 
 const UiStyleRes = preload("res://view/ui_style.gd")
-const SfxRes = preload("res://view/sfx.gd")
 const MapThumbRes = preload("res://view/map_thumb.gd")
 const CARD_W := 176.0
 const CARD_H := 200.0
@@ -18,7 +17,6 @@ var _font: Font = null
 
 
 func setup(cfg, entry: Dictionary, map_data, font: Font) -> void:
-	SfxRes.attach(self)
 	_entry = entry
 	_font = font
 	focus_mode = Control.FOCUS_NONE

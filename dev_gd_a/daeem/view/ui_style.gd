@@ -279,13 +279,17 @@ static func row_empty() -> StyleBoxFlat:
 ##   自己铺实底会把画在底纹下面的填充金盖住（用户报的「悬停时灰底消失 / 点击后看不见金」）。
 static func card_normal(filled: bool = true) -> StyleBoxFlat:
 	var s := StyleBoxFlat.new()
-	s.bg_color = Color(0.0, 0.0, 0.0, 0.0)
+	s.bg_color = bg()
 	s.border_color = line()
-	s.set_border_width_all(1)
-	s.content_margin_left = 2.0
-	s.content_margin_right = 2.0
-	s.content_margin_top = 2.0
-	s.content_margin_bottom = 2.0
+	s.set_border_width_all(2)
+	s.set_corner_radius_all(9)
+	s.shadow_color = Color(0.0, 0.0, 0.0, 0.72)
+	s.shadow_size = 7
+	s.shadow_offset = Vector2(0.0, 6.0)
+	s.content_margin_left = 5.0
+	s.content_margin_right = 5.0
+	s.content_margin_top = 5.0
+	s.content_margin_bottom = 5.0
 	return s
 
 
@@ -298,7 +302,8 @@ static func card_normal(filled: bool = true) -> StyleBoxFlat:
 static func card_hover() -> StyleBoxFlat:
 	var s := card_normal(true)
 	s.bg_color = Color(0.0, 0.0, 0.0, 0.0)
-	s.border_color = accent_dim()
+	s.border_color = ThemeRes.accent_bright()
+	s.set_border_width_all(2)
 	return s
 
 
@@ -307,8 +312,8 @@ static func card_hover() -> StyleBoxFlat:
 static func card_pressed() -> StyleBoxFlat:
 	var s := card_normal(true)
 	s.bg_color = Color(0.0, 0.0, 0.0, 0.0)
-	s.border_color = accent()
-	s.set_border_width_all(2)
+	s.border_color = ThemeRes.accent_bright()
+	s.set_border_width_all(3)
 	return s
 
 
@@ -452,7 +457,11 @@ static func tab_plain() -> StyleBoxFlat:
 	var s := StyleBoxFlat.new()
 	s.bg_color = Color(0.0, 0.0, 0.0, 0.0)
 	s.border_color = line()
-	s.set_border_width_all(1)
+	s.set_border_width_all(2)
+	s.set_corner_radius_all(10)
+	s.shadow_color = Color(0.0, 0.0, 0.0, 0.72)
+	s.shadow_size = 5
+	s.shadow_offset = Vector2(0.0, 4.0)
 	return s
 
 
@@ -467,7 +476,7 @@ static func tab_plain_hover() -> StyleBoxFlat:
 static func tab_latched() -> StyleBoxFlat:
 	var s := tab_plain()
 	s.border_color = ThemeRes.accent_bright()
-	s.set_border_width_all(2)
+	s.set_border_width_all(3)
 	return s
 
 
@@ -476,7 +485,11 @@ static func tech_fill() -> StyleBoxFlat:
 	var s := StyleBoxFlat.new()
 	s.bg_color = Color(0.0, 0.0, 0.0, 0.0)
 	s.border_color = line()
-	s.set_border_width_all(1)
+	s.set_border_width_all(2)
+	s.set_corner_radius_all(9)
+	s.shadow_color = Color(0.0, 0.0, 0.0, 0.72)
+	s.shadow_size = 7
+	s.shadow_offset = Vector2(0.0, 6.0)
 	s.set_content_margin_all(2.0)
 	return s
 

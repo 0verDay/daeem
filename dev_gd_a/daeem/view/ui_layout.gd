@@ -34,8 +34,8 @@ const DESIGN_H := 1080.0
 ## ★ 只有「这一局有目标」时才显示（老路径 / 自由对战没有 objective_state ⇒ 整块隐藏）。
 ## ★ 它**不**进 `interactive_rects`：整块只有字、点不动，鼠标停上去照样允许边缘滚屏。
 ## ------------------------------------------------------------------
-const OBJECTIVE_RECT := Rect2(20.0, 16.0, 560.0, 96.0)
-const OBJECTIVE_PAD := 12.0
+const OBJECTIVE_RECT := Rect2(34.0, 30.0, 420.0, 145.0)
+const OBJECTIVE_PAD := 22.0
 
 
 # ------------------------------------------------------------------
@@ -49,20 +49,24 @@ const SQUAD_SLOTS := 6
 ## ★ 行高 = 手机端的**触摸命中高度**：整行都是按钮，56 在手机上太难点中，
 ##   加高到 88（6 行合计 528，面板底 708，仍与底栏 820 留出 112 的间隙）。
 ##   数字块 / 分隔线 / 两行文字都按行高居中（见 troop_row.gd），改这一个数即可整体伸缩。
-const SQUAD_ROW_H := 88.0
-const SQUAD_RECT := Rect2(1680.0, 180.0, 240.0, SQUAD_SLOTS * SQUAD_ROW_H)
+const SQUAD_ROW_H := 82.0
+## ★ 牌距 3px：方向稿里那列编队牌几乎是**叠在一起**的（`gap:1px`），牌与牌之间
+##   只有那道「牌厚」（见 troop_row 的 LIFT）当缝。3px 正好放得下那一条。
+const SQUAD_ROW_GAP := 3.0
+const SQUAD_RECT := Rect2(1656.0, 178.0, 238.0,
+	SQUAD_SLOTS * SQUAD_ROW_H + (SQUAD_SLOTS - 1) * SQUAD_ROW_GAP)
 ## 单行内部（相对行自身）：
 ##   数字块 44×44 贴右；最右竖线 = 泛光起点；数字左边的灰线 = 分隔线；
 ##   左侧文字两行 = 将领名 / 当前编制。
-const SQUAD_NUM_SIZE := 44.0
-const SQUAD_NUM_X := 186.0
-const SQUAD_DIVIDER_X := 178.0
-const SQUAD_EDGE_X := 238.0
-const SQUAD_TEXT_X := 8.0
-const SQUAD_TEXT_W := 164.0
+const SQUAD_NUM_SIZE := 51.0
+const SQUAD_NUM_X := 12.0
+const SQUAD_DIVIDER_X := 70.0
+const SQUAD_EDGE_X := 234.0
+const SQUAD_TEXT_X := 76.0
+const SQUAD_TEXT_W := 144.0
 
 ## 左下小地图（x 0..399、贴屏幕下沿）。里面的地图按比例缩放并居中，见 view/minimap.gd。
-const MAP_RECT := Rect2(0.0, 680.0, 400.0, 400.0)
+const MAP_RECT := Rect2(27.0, 771.0, 328.0, 284.0)
 
 ## 底栏（详细信息 / 阵营 / 命令卡 / 页签都住在这一条里）
 ## ★ 2026.10.20：右下整组按 13/12 等比放大到 260 高，顶边从 840 抬到 820；
@@ -114,13 +118,10 @@ const DETAIL_LEFT_W := 350.0
 ## 右栏 = 968 − 350 − 15 = 603（968 = 988 − 2×10）。
 const DETAIL_RIGHT_W := 603.0
 
-## 阵营 / 盾徽 / 旗帜：**贴在详细信息栏左侧、紧贴地图**（用户本版需求）。
-## ★ 左缘 = 地图占位右缘 400，右缘 562.5 = 详细信息左缘；两块严丝合缝。
-## ★ 尺寸沿用 13/12 等比放大那版（162.5×260），只换位置。
-## ⚠️ 旧 162.5 宽只留给旧 bottom_bar_rects / 兼容测试。
+## 旧阵营盾徽的兼容几何（新版 HUD 已移除对应占位牌；仅旧 bottom_bar_rects 可读取）。
 const FACTION_RECT := Rect2(400.0, 820.0, 162.5, 260.0)
-## 新版：详情栏隐藏时，左列位置由阵营盾徽面板顶上（与列表/资源条同宽 185）。
-const FACTION_V2_RECT := Rect2(402.0, 820.0, 185.0, 260.0)
+## 旧 V2 盾徽占位几何，仅为旧测试 / 布局兼容保留，新版 HUD 不命中此矩形。
+const FACTION_V2_RECT := Rect2(395.0, 794.0, 185.0, 260.0)
 
 ## ------------------------------------------------------------------
 ## 资源面板（粮食 / 黄金）—— 宽度与左列列表一致（185），左缘对齐列表 x=402
@@ -141,12 +142,12 @@ const FACTION_V2_RECT := Rect2(402.0, 820.0, 185.0, 260.0)
 ##      Label 会按兜底字体算一次最小高度并把 set_size 夹掉 —— 实测踩过）。
 ##   ⚠️ 它**不进** `interactive_rects`（见那个函数）：整块只有字和色块、点不动，
 ##      鼠标停上去照样允许边缘滚屏 —— 与「详细信息面板只有文字的地方让路」同一条规矩。
-const RES_BAR_RECT := Rect2(402.0, 764.0, 185.0, 56.0)
+const RES_BAR_RECT := Rect2(1388.0, 27.0, 406.0, 66.0)
 ## 色块（粮食 / 黄金各一个 20×20）边长
-const RES_ICON := 20.0
+const RES_ICON := 45.0
 ## 两行的 y（相对资源面板自身）：第一行 5、行距 26 ⇒ 第二行 31，下缘 31+20 = 51 ≤ 56
-const RES_ROW_Y := 5.0
-const RES_ROW2_Y := 31.0
+const RES_ROW_Y := 10.0
+const RES_ROW2_Y := 10.0
 ## 颜色那一行字：左边（= 色块 20 + 缝 6）与可写宽（「粮食 1234」15 号字实测 78px）。
 ## ★ 资源条宽度锁死在 162.5（与右侧阵营盾徽左右平齐，见上面那条），所以文字区
 ##   26 + 134 = 160，右侧只留 2.5px 边距 —— **这是硬上限，别再往上加**。
@@ -154,15 +155,20 @@ const RES_ROW2_Y := 31.0
 ##   （见 view/hud.gd 的 `_build_resource_bar`）。实测（SimHei 13px）：
 ##   「粮食 12345(+3.2)」≈122px、「黄金 12345(-12.3)」≈130px ≤ 134 ✓；
 ##   15 号字时 5 位数要 149px，装不下。
-const RES_TEXT_X := 26.0
-const RES_TEXT_W := 134.0
+const RES_TEXT_X := 58.0
+const RES_TEXT_W := 70.0
+const RES_RATE_X := 130.0
+const RES_RATE_W := 55.0
 
 ## 命令卡：3×3，每格 260/3 ≈ 86.6667 —— 内容随右侧页签实时切换
 ## ★ 按 13/12 等比放大：240×240 → 260×260，左缘 1580 → 1551.6667。
-const CARD_RECT := Rect2(1551.6667, 820.0, 260.0, 260.0)
+const CARD_RECT := Rect2(796.0, 803.0, 842.0, 277.0)
 const CARD_COLS := 3
 const CARD_ROWS := 3
 const CARD_SLOTS := CARD_COLS * CARD_ROWS
+const CARD_FAN_MAX_SIZE := Vector2(142.0, 206.0)
+const CARD_FAN_BASELINE := 56.0
+const CARD_FAN_OVERLAP_RATIO := 0.15
 ## 九个格子的键位：按参考图排（上排 QWE / 中排 ASD / 下排 ZXC）
 const CARD_KEYS := ["Q", "W", "E", "A", "S", "D", "Z", "X", "C"]
 ## ★ 键位 → **视觉格子序号**（0..8）。命令卡与科技九格共用同一套。
@@ -203,7 +209,8 @@ const CARD_KEY_TO_SLOT := {
 ## ------------------------------------------------------------------
 ## 368.3333：命令卡左缘 → 页签列右缘（= 屏幕右缘）那一整段。⚠️ 写成 `DESIGN_W − 左缘`
 ## 而不是 `CARD_RECT.size.x`：右缘钉的是**页签列的右缘**，不是命令卡右缘。
-const HOVER_W := DESIGN_W - CARD_RECT.position.x
+const HOVER_RIGHT := 1894.0
+const HOVER_W := HOVER_RIGHT - CARD_RECT.position.x
 const HOVER_GAP := 8.0                          # 与命令卡顶边的竖直距离（需求里说「自己定」）
 const HOVER_PAD := 8.0                          # 文字离面板四边的留白
 const HOVER_TITLE_GAP := 5.0                    # 标题与正文之间的缝
@@ -226,11 +233,11 @@ static func hover_rect(h: float) -> Rect2:
 ## 什么都没选中时 2 颗（建筑 / 科技）—— 见 view/page_tabs.gd 的文件头。
 ## TABS_COUNT 只是「最多可能建几颗」（那一列最多放得下 3 颗 86.67 高的按钮）。
 ## ★ 按 13/12 等比放大：100×240 → 108.3333×260，左缘 1820 → 1811.6667。
-const TABS_RECT := Rect2(1811.6667, 820.0, 108.3333, 260.0)
-const TABS_COUNT := 3
+const TABS_RECT := Rect2(1740.0, 914.0, 154.0, 94.0)
+const TABS_COUNT := 2
 
 ## 设置按钮
-const SETTINGS_RECT := Rect2(1840.0, 0.0, 80.0, 160.0)
+const SETTINGS_RECT := Rect2(1832.0, 33.0, 54.0, 54.0)
 
 ## ★★ 选项页是**居中的模态 overlay**（view/options_panel.gd），不再有「贴按钮下方」的
 ##   下拉菜单，所以这里不再有 SETTINGS_MENU_RECT / ITEM_H / GAP / SLOTS。
@@ -663,7 +670,7 @@ const QUEUE_Y := DETAIL_BODY_Y
 
 ## 部队列表第 i 槽（相对面板）
 static func squad_slot_local(i: int) -> Rect2:
-	return Rect2(0.0, float(i) * SQUAD_ROW_H, SQUAD_RECT.size.x, SQUAD_ROW_H)
+	return Rect2(0.0, float(i) * (SQUAD_ROW_H + SQUAD_ROW_GAP), SQUAD_RECT.size.x, SQUAD_ROW_H)
 
 
 ## 部队列表第 i 槽（设计空间，给边缘滚屏的判定用）
@@ -688,15 +695,36 @@ static func card_cell_rect(i: int) -> Rect2:
 	return r
 
 
-## 页签第 i 个按钮（相对面板）。
-##
-## ★ 页签**个数是变的**（选中部队 2 颗 / 选中区划中心 1 颗 / 选中建筑 0 颗 ——
-##   见 view/page_tabs.gd 的文件头），所以高度 = 260 ÷ 当前页数；
-##   `count` 缺省取满列 3 颗（那是「最多可能有几颗」，interactive_rects 与老测试用它）。
+## 手持式指令牌：可见牌按当前页实际条目数居中展开，不为缺项保留灰牌。
+## 单牌最大 142×206；数量增加时按重叠比例缩窄，九张牌仍收在牌区内。
+static func card_fan_local(visible_index: int, visible_count: int) -> Rect2:
+	var n := maxi(1, mini(visible_count, CARD_SLOTS))
+	var w := minf(CARD_FAN_MAX_SIZE.x,
+		CARD_RECT.size.x / (float(n) - float(n - 1) * CARD_FAN_OVERLAP_RATIO))
+	var overlap := w * CARD_FAN_OVERLAP_RATIO if n > 1 else 0.0
+	var total := float(n) * w - float(n - 1) * overlap
+	var x := (CARD_RECT.size.x - total) * 0.5 + float(visible_index) * (w - overlap)
+	var mid := (float(n) - 1.0) * 0.5
+	var y := CARD_RECT.size.y - CARD_FAN_BASELINE - CARD_FAN_MAX_SIZE.y \
+		+ absf(float(visible_index) - mid) * 5.0
+	return Rect2(x, y, w, CARD_FAN_MAX_SIZE.y)
+
+
+static func card_fan_rotation(visible_index: int, visible_count: int) -> float:
+	var n := maxi(1, mini(visible_count, CARD_SLOTS))
+	var mid := (float(n) - 1.0) * 0.5
+	return deg_to_rad(clampf((float(visible_index) - mid) * 8.0, -14.0, 14.0))
+
+
+## 页签第 i 个牌签（相对面板）：靠右下角并排错开；单个页签也靠右对齐。
 static func tab_button_local(i: int, count: int = TABS_COUNT) -> Rect2:
 	var n: int = maxi(1, mini(count, TABS_COUNT))
-	var h := TABS_RECT.size.y / float(n)
-	return Rect2(0.0, float(i) * h, TABS_RECT.size.x, h)
+	var w := 73.0
+	var h := 94.0
+	var gap := 8.0
+	var total := float(n) * w + float(n - 1) * gap
+	var x := TABS_RECT.size.x - total + float(i) * (w + gap)
+	return Rect2(x, 0.0, w, h)
 
 
 ## 页签第 i 个按钮（设计空间）
@@ -807,9 +835,8 @@ static func apply_fixed_detail(c: Control) -> void:
 
 ## 可交互控件的矩形（设计空间，已按当前设计空间大小做了贴边修正）。
 ##
-## ★ 只有**真正能点**的控件才让路（右侧部队行 / 命令卡格 / 页签 / 设置 / 小地图 /
-##   详细信息左栏下方的**将领头像网格**）。
-##   详细信息面板的其余部分只有文字与方块，鼠标停在上面照样允许边缘滚屏 ——
+## ★ 只有**真正能点**的控件才让路（右侧将领牌 / 命令卡格 / 页签 / 设置 / 小地图）。
+##   贴底的那些面板只有文字与方块，鼠标停在上面照样允许边缘滚屏 ——
 ##   否则底栏把屏幕下沿整个盖住，鼠标永远滚不到地图下方（这条是踩过的坑）。
 ##
 ## ★★ 小地图是**后加进这份名单**的（它现在真的能点：左键点击 = 移动镜头、按住拖动 = 视角跟手）。
@@ -820,20 +847,18 @@ static func apply_fixed_detail(c: Control) -> void:
 ##   ★ 拖动那一段由 camera_rig.set_ui_dragging() 额外压住（例外区里的那次抖动）——
 ##     见 view/minimap.gd 文件末尾与 docs/route.md 19.4。
 ##
-## ★★ 网格是**能点 / 能拖动**的：整块（可见 3×3）都进「可点控件」名单。
-##   本版下方 3×3 改成可左右滑动后，不能再按 9 个固定格子登记 ——
-##   滚动之后「第 i 个格子现在在哪」是控件自己的事（见 view/troop_grid.gd），
-##   这里只登记**可见区**那一个矩形。
-##   它整块都在详细信息面板里，所以「让路」的副作用是把面板中间那一大片也拦掉了 ——
-##   这是有意的：鼠标停在能点的格子上时不该同时被边缘推着滚屏（与小地图同一条理由）。
-##   面板**其余**的地方（右栏、左栏上半）仍然是「只有文字 → 照样滚屏」。
-## @param detail_visible 详细信息面板是否可见。隐藏时它那块区域**不再算 UI**
-##        （左栏网格与面板矩形都不拦输入 → 恢复地图滚轮 / 边缘滚屏 / 触摸手势）。
+## ★★ 左下角的详情牌（V2）**不在这份名单里**：它不是「一整块方格阵列」，能点的只有
+##   成员格 / 「其他已选部队」那几颗 34×34 的小方块，而它们的位置随内容变
+##   （见 view/detail_list.gd 的 `interactive_rects()`）。所以那几颗由 HUD 每次现算
+##   （`hud._detail_hit_rects()`），整块登记会把面板里「只有文字」的地方也拦掉。
+## @param detail_visible 详细信息面板是否可见。★ 现在只影响 `bottom_bar_rects_v2()`
+##        （滚轮缩放）——`interactive_rects()` 里不再有它的整块矩形，这个参数保留是为了
+##        调用点 / 旧测试的签名不变。
 ## @param command_ui_visible 右下角「命令卡 + 页签」是否可见。选中无操作建筑 /
 ##        敌方 / 友方任何建筑单位时它们**整块隐藏**（见 view/page_tabs.gd 的文件头），
 ##        此时那块区域不该继续吞掉地图手势 / 边缘滚屏 —— 屏幕上根本没有东西可点。
 static func interactive_rects(view_size: Vector2, detail_visible: bool = true,
-		command_ui_visible: bool = true) -> Array[Rect2]:
+		command_ui_visible: bool = true, tabs_count: int = TABS_COUNT) -> Array[Rect2]:
 	var shift := Vector2(maxf(0.0, view_size.x - DESIGN_W), maxf(0.0, view_size.y - DESIGN_H))
 	var out: Array[Rect2] = []
 	for i in SQUAD_SLOTS:
@@ -842,26 +867,25 @@ static func interactive_rects(view_size: Vector2, detail_visible: bool = true,
 		out.append(sr)
 	out.append(MAP_RECT)                                        # 左下小地图，贴左下
 	if command_ui_visible:
-		for i in CARD_SLOTS:
-			var r := card_cell_rect(i)                      # 贴右下
-			r.position += shift
-			out.append(r)
-		for i in TABS_COUNT:
-			var r2 := tab_button_rect(i)                    # 贴右下
+		var hand := CARD_RECT
+		hand.position += shift
+		out.append(hand)
+		for i in mini(TABS_COUNT, maxi(0, tabs_count)):
+			var r2 := tab_button_rect(i, mini(TABS_COUNT, maxi(1, tabs_count))) # 实际牌签
 			r2.position += shift
 			out.append(r2)
-	if detail_visible:
-		var gr := troop_grid_rect()                         # 详细信息左栏，贴左下
-		gr.position += panel_content_pos()
-		out.append(gr)
+	# ★★ 左下详情牌**不在这里**（V2 之后）：它不再是「一整块都能点」的方格阵列，
+	#   真正能点的只有成员格 / 其他部队格那几颗小方块（由控件自己算，
+	#   见 detail_v2.interactive_rects() → hud 的 `blocks_edge_scroll`）。
+	#   整块登记的话，底边那 377px 会永远滚不动（面板只有文字的地方也该让路）。
 	var s := SETTINGS_RECT
 	s.position.x += shift.x                                     # 贴右上
 	out.append(s)
 	return out
 
 
-## 底栏那几块面板的矩形（设计空间，贴边修正与 interactive_rects 同一套口径）：
-## 详细信息 / 阵营 / 命令卡 / 页签。
+## 底栏命中矩形（设计空间，贴边修正与 interactive_rects 同一套口径）：
+## 详细信息 / 命令卡 / 页签；阵营盾徽占位已从新版 HUD 移除。
 ##
 ## ★★ 这是**另一份名单**，别和 interactive_rects 合并 —— 两者判的是两件事：
 ##   · `interactive_rects` = 「**能点的**控件」→ 用来拦**边缘滚屏**。只能收能点的东西：
@@ -871,11 +895,10 @@ static func interactive_rects(view_size: Vector2, detail_visible: bool = true,
 ##     玩家正在看底栏的时候，那一下滚动不该把地图拉走 —— 与那一块能不能点无关。
 ##
 ## ★ 左下小地图**不在**名单里：它是地图本身（不是 ui 栏），鼠标停在上面时滚轮照旧缩放地图。
-## ★ 贴边：详细信息 / 阵营盾徽都贴**左**（只跟 y 走）；命令卡 / 页签贴右下（x/y 都跟）。
-## @param detail_visible 详细信息是否可见。隐藏时只去掉它那一块 —— 盾徽 / 命令卡 / 页签
-##       仍然算底栏（它们还在屏幕上）。
+## ★ 贴边：详细信息贴左（只跟 y 走）；命令卡 / 页签贴右下（x/y 都跟）。
+## @param detail_visible 详细信息是否可见。隐藏时只去掉详情区域；没有左列盾徽占位。
 ## D6 新版详情面板的命中矩形（左移后 x=400，视觉宽 616.5；旧的 988 只留给兼容测试）。
-const DETAIL_V2_RECT := Rect2(400.0, 820.0, 616.5, 260.0)
+const DETAIL_V2_RECT := Rect2(395.0, 794.0, 377.0, 260.0)
 
 
 ## 新版底栏命中：详情用 616.5 宽，且**不再登记已删除的阵营占位**。
@@ -888,10 +911,6 @@ static func bottom_bar_rects_v2(view_size: Vector2, detail_visible: bool = true,
 		var d := DETAIL_V2_RECT
 		d.position.y += shift.y
 		out.push_front(d)
-	else:
-		var f := FACTION_V2_RECT
-		f.position.y += shift.y
-		out.push_front(f)
 	return out
 
 

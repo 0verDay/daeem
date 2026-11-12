@@ -91,7 +91,7 @@ var _attention_ripples: Array[Panel] = []
 
 func setup() -> void:
 	name = "PageTabs"
-	mouse_filter = Control.MOUSE_FILTER_STOP
+	mouse_filter = Control.MOUSE_FILTER_IGNORE # 只由实际牌签按钮吃输入，周围空隙让地图透过
 	UiLayoutRes.apply_rect(self, UiLayoutRes.TABS_RECT, true, true)
 
 	for i in UiLayoutRes.TABS_COUNT:
@@ -99,7 +99,7 @@ func setup() -> void:
 		b.name = "TabButton%d" % (i + 1)
 		b.text = ""
 		b.focus_mode = Control.FOCUS_NONE              # 别让空格 / 回车又触发一次
-		b.add_theme_font_size_override("font_size", UiStyleRes.FS_TITLE)
+		b.add_theme_font_size_override("font_size", UiStyleRes.FS_BODY)
 		# ★★ 悬停泛光 + 选中填充（一行挂上，见 view/fill_button.gd）。
 		#   ⚠️ 在这之后**不要**再直接写 `add_theme_color_override("font_color", …)`：
 		#      填充动效每帧按「原色 + 进度」重算字色，直接写会被盖掉。
@@ -146,19 +146,15 @@ func setup() -> void:
 		b.add_child(ar)
 		_attention_ripples.append(ar)
 
-	# ★★ 整列描边：一条外框把这一列页签整体圈起来。
-	#    ★ 必须**最后加**（子节点按顺序画，后加的在上）：页签各自的描边在边缘处会盖住
-	#      父节点的 `_draw()`，所以用一个 `mouse_filter = IGNORE` 的 Panel 压在最上层。
-	#    ⚠️ IGNORE 是必须的：它铺满整列，STOP 会把所有页签点击吞掉。
+	# 牌签独立成组，不再给整列套矩形外框；保留透明覆盖节点供旧的节点查询兼容。
 	var frame := Panel.new()
 	frame.name = "TabsFrame"
 	frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	frame.set_anchors_preset(Control.PRESET_FULL_RECT)
-	var fs := StyleBoxFlat.new()
-	fs.bg_color = Color(0, 0, 0, 0)
-	fs.border_color = UiStyleRes.line()
-	fs.set_border_width_all(2)                       # ★ 本版：外框加厚到 2px
-	frame.add_theme_stylebox_override("panel", fs)
+	var frame_style := StyleBoxFlat.new()
+	frame_style.bg_color = Color(0.0, 0.0, 0.0, 0.0)
+	frame_style.set_border_width_all(0)
+	frame.add_theme_stylebox_override("panel", frame_style)
 	add_child(frame)
 
 	set_pages([PAGE_BUILD])
@@ -256,11 +252,27 @@ func _rebuild_chars(i: int, text: String) -> void:
 	if text == "":
 		b.text = ""
 		return
-	# 字号照按钮自己的那一档取（与 add_theme_font_size_override 设的一致）
+	# V2 牌签：短标签纵向排字（「操 / 作」），每个字仍由填充动画独立翻色。
 	var fs: int = b.get_theme_font_size("font_size")
 	var f: Font = b.get_theme_font("font")
-	var labels := FillButtonRes.attach_char_text(b, text, f, fs, UiStyleRes.text())
-	_char_labels[i] = labels
+	var line_h := 24.0
+	var top := (b.size.y - float(text.length()) * line_h) * 0.5
+	for ci in text.length():
+		var l := Label.new()
+		l.name = "Char%d" % ci
+		l.text = text.substr(ci, 1)
+		l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		l.position = Vector2(0.0, top + float(ci) * line_h)
+		l.size = Vector2(b.size.x, line_h)
+		l.add_theme_font_size_override("font_size", fs)
+		l.add_theme_color_override("font_color", UiStyleRes.text())
+		if f != null:
+			l.add_theme_font_override("font", f)
+		b.add_child(l)
+		_char_labels[i].append(l)
+		FillButtonRes.on_fill_text(b, l, UiStyleRes.text())
 	# ★ 记下「这次是按哪一档建的」：`_apply_styles` 靠它判断要不要重建。
 	_was_active[i] = is_active(i)
 

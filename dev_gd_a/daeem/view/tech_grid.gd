@@ -2,12 +2,12 @@
 ##
 ## ★★ 需求原话：
 ##   「当前占位用科技有 9 个，铺满右下角科技页签的 3x3 格子」；
-##   「玩家同一时间仅可启用三个占位科技，玩家需要通过点击科技以启用科技，
+##   「玩家同一时间仅可启用三个占位科技，玩家需要通过拖牌或快捷键启用科技，
 ##     当玩家启用的科技数到 3 时，玩家再启用科技会被阻止并提示，
-##     玩家可以点击已启用的科技以弃用科技」。
+##     玩家可以拖出已启用的科技以弃用科技」。
 ##
 ## 分工（与 command_card.gd 同一条边界）：
-##   · 本控件只做三件事：摆九格、按权威状态画「已启用 / 没启用」、把点击抛出去；
+##   · 本控件只做三件事：摆九格、按权威状态画「已启用 / 没启用」、把拖牌/快捷键抛出去；
 ##   · 「最多 3 个」这条规则**不在这里**（在 logic/tech.gd + world.set_tech_active）；
 ##   · 「点一下到底是启用还是弃用」由 hud 按**权威状态**取反决定（`_on_card_entry`）。
 ##
@@ -25,12 +25,15 @@
 ##   · 旧那版在格子里挤两行字（名字 + 效果）已经作废。
 ##   图标路径由 hud 塞在条目里（`icon_mask`）—— 本控件不认识「科技 id → 图片」这件事。
 ##
-## ★ 点击走 `cell_activated(id)` → hud → input_controller 发 `tech_toggle` 命令，
+## ★ 上拖松手 / 快捷键走 `cell_activated(id)` → hud → input_controller 发 `tech_toggle` 命令，
 ##   本控件**从不改逻辑状态**（架构铁律：view 只读 + 发命令）。
 extends Control
 
-## 某一格被点：带上那一条科技的 id
+## 某一格被拖起并松手 / 快捷键激活：带上那一条科技的 id
 signal cell_activated(id: String)
+signal cell_drag_started(id: String, screen_pos: Vector2)
+signal cell_drag_moved(id: String, screen_pos: Vector2)
+signal cell_drag_finished(id: String, screen_pos: Vector2, index: int)
 
 ## ★★ 某一格被**鼠标悬停**（进入 / 离开）：带上格子序号。
 ##   hud 收到后弹「悬停详情面板」（与命令卡共用同一块，见 view/hover_tip.gd）——
@@ -49,7 +52,7 @@ const FillButtonRes = preload("res://view/fill_button.gd")
 const FS_NAME := 13
 const FS_LINE := 11
 ## 名字那条底条的高度（与命令卡 `NAME_BAR_H` 同口径：名字就压在这条上）
-const NAME_BAR_H := 15.0
+const NAME_BAR_H := 20.0
 ## 图标层（画烘好的金线蒙版，与单位 / 建筑页同一套）
 const UnitCardIconRes = preload("res://view/unit_card_icon.gd")
 
@@ -62,11 +65,16 @@ var _icon_views: Array = []
 var _name_bars: Array[ColorRect] = []
 ## ★★ 每格左上角的键位字母（与命令卡同一套 QWE / ASD / ZXC）。
 var _key_labels: Array[Label] = []
-## 上一次喂进来的条目（测试与调试读它；也是点击回调的 id 来源）
+## 上一次喂进来的条目（测试与调试读它；也是拖牌 / 快捷键回调的 id 来源）
 var _entries: Array = []
 ## ★★ 2026.11.5：这一格**第一次拿到内容**时同步的「已启用」直接满格（不播动画）；
 ##   之后玩家点启用 / 弃用才播填充 / 退回。
 var _primer_done: bool = false
+var _deck_tween: Tween = null
+var _drag_tween: Tween = null
+var _drag_index: int = -1
+var _drag_start_pos := Vector2.ZERO
+var _dragging: bool = false
 
 ## ★★ 手机端：按住某一格期间由 hud 置 true —— 忽略「按下」带来的模拟 mouse_entered，
 ##    悬停详情只在长按够久之后由 hud 调 `hover()` 弹出（与 view/command_card.gd 同一条）。
@@ -86,9 +94,12 @@ func setup() -> void:
 		cell.name = "TechCell%d" % (i + 1)
 		cell.focus_mode = Control.FOCUS_NONE
 		cell.clip_text = true
+		cell.clip_contents = true
+		cell.visible = false
 		_style_cell(cell, false, false)
 		UiLayoutRes.apply_rect(cell, UiLayoutRes.card_cell_local(i))
 		cell.pressed.connect(_on_cell_pressed.bind(i))
+		cell.gui_input.connect(_on_cell_gui_input.bind(i))
 		# ★ 悬停信号（与命令卡同一套，见文件头那个信号块）。
 		#   ⚠️ 空格子（`disabled = true`）也照样发 mouse_entered —— hud 那一侧取不到
 		#      entry，自然什么都不弹（`entry_at` 越界返回 {}）。
@@ -193,6 +204,12 @@ func set_entries(list: Array) -> void:
 		clean.append(item)
 	if _same_entries(clean):
 		return
+	if _deck_tween != null and _deck_tween.is_running():
+		_deck_tween.kill()
+	if _drag_tween != null and _drag_tween.is_running():
+		_drag_tween.kill()
+	for cell in _cells:
+		cell.modulate.a = 1.0
 	_entries = clean
 	_apply()
 
@@ -337,8 +354,36 @@ func _apply() -> void:
 			# ★ 空格子**不参与任何动效**：它连「科技」都没有，亮起来会让人以为这一格能点。
 			FillButtonRes.set_available(cell, false)
 		_style_cell(cell, filled, active, locked)
+		cell.visible = filled
+	_layout_fan()
 	if not _entries.is_empty():
 		_primer_done = true
+
+
+## 科技页沿用同一扇形牌区；空配置槽隐藏，locked 仍是实际科技项，保留灰化状态。
+func _layout_fan() -> void:
+	var visible_cells: Array[int] = []
+	for i in _cells.size():
+		var ei := _entry_index_for_cell(i)
+		if ei >= 0 and ei < _entries.size() \
+				and String((_entries[ei] as Dictionary).get("id", "")) != "":
+			visible_cells.append(i)
+	var count := visible_cells.size()
+	for ordinal in count:
+		var i := visible_cells[ordinal]
+		var cell := _cells[i]
+		var r := UiLayoutRes.card_fan_local(ordinal, count)
+		cell.position = r.position
+		cell.size = r.size
+		cell.rotation = UiLayoutRes.card_fan_rotation(ordinal, count)
+		cell.z_index = ordinal
+		_key_labels[i].position = Vector2(8.0, 6.0)
+		_name_bars[i].position = Vector2(0.0, r.size.y - NAME_BAR_H)
+		_name_bars[i].size = Vector2(r.size.x, NAME_BAR_H)
+		_name_labels[i].position = Vector2(1.0, r.size.y - NAME_BAR_H)
+		_name_labels[i].size = Vector2(r.size.x - 2.0, NAME_BAR_H)
+		_line_labels[i].size = Vector2(r.size.x, r.size.y * 0.34)
+		_line_labels[i].position = Vector2(0.0, r.size.y * 0.58)
 
 
 ## 三个状态各自一套样式。
@@ -377,6 +422,11 @@ func _style_cell(cell: Button, filled: bool, active: bool, locked: bool = false)
 
 
 func _on_cell_pressed(i: int) -> void:
+	# 鼠标点按不打出科技牌；鼠标牌统一向上拖起并松手，键盘走 handle_key。
+	return
+
+
+func _activate_cell(i: int) -> void:
 	var ei := _entry_index_for_cell(i)
 	if ei < 0 or ei >= _entries.size():
 		return
@@ -386,9 +436,110 @@ func _on_cell_pressed(i: int) -> void:
 	cell_activated.emit(String(e.get("id", "")))
 
 
+func _on_cell_gui_input(event: InputEvent, i: int) -> void:
+	if OS.has_feature("mobile") or touch_suppress_hover:
+		return # 触屏由 HUD 的长按 / 拖牌识别统一路由。
+	if event is InputEventMouseButton and (event as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
+		var mb := event as InputEventMouseButton
+		if mb.pressed:
+			_drag_index = i
+			_drag_start_pos = get_viewport().get_mouse_position()
+			_dragging = false
+		elif _drag_index == i:
+			_finish_touch_drag(i, get_viewport().get_mouse_position())
+		return
+	if event is InputEventMouseMotion and _drag_index == i:
+		var mm := event as InputEventMouseMotion
+		if (mm.button_mask & MOUSE_BUTTON_MASK_LEFT) == 0:
+			return
+		_update_drag(i, get_viewport().get_mouse_position())
+		if _dragging:
+			accept_event()
+
+
+func _update_drag(i: int, viewport_pos: Vector2) -> bool:
+	if i < 0 or i >= _cells.size():
+		return false
+	var ei := _entry_index_for_cell(i)
+	if ei < 0 or ei >= _entries.size():
+		return false
+	var entry: Dictionary = _entries[ei]
+	if not bool(entry.get("active", false)) and not bool(entry.get("available", true)):
+		return false
+	if not _dragging and viewport_pos.y - _drag_start_pos.y <= -10.0:
+		_dragging = true
+		if _deck_tween != null and _deck_tween.is_running():
+			_deck_tween.kill()
+		if _drag_tween != null and _drag_tween.is_running():
+			_drag_tween.kill()
+		_cells[i].z_index = UiLayoutRes.CARD_SLOTS + 4
+		cell_drag_started.emit(String(entry.get("id", "")), viewport_pos)
+	if not _dragging:
+		return false
+	var local: Vector2 = get_global_transform_with_canvas().affine_inverse() * viewport_pos
+	_cells[i].rotation = 0.0
+	_cells[i].position = local - _cells[i].size * 0.5
+	cell_drag_moved.emit(String(entry.get("id", "")), viewport_pos)
+	return true
+
+
+func _finish_touch_drag(i: int, viewport_pos: Vector2) -> void:
+	if i >= 0 and i < _cells.size() and _dragging:
+		cell_drag_finished.emit(entry_id_at(i), viewport_pos, i)
+		_animate_card_back(i)
+	_dragging = false
+	_drag_index = -1
+
+
+func begin_touch_drag(i: int, viewport_pos: Vector2) -> void:
+	_drag_index = i
+	_drag_start_pos = viewport_pos
+	_dragging = false
+
+
+func move_touch_drag(i: int, viewport_pos: Vector2) -> bool:
+	if i != _drag_index:
+		return false
+	return _update_drag(i, viewport_pos)
+
+
+func finish_touch_drag(i: int) -> void:
+	var pos: Vector2 = get_viewport().get_mouse_position() if get_viewport() != null else Vector2.ZERO
+	_finish_touch_drag(i, pos)
+
+
+func entry_id_at(i: int) -> String:
+	var ei := _entry_index_for_cell(i)
+	if ei < 0 or ei >= _entries.size():
+		return ""
+	return String((_entries[ei] as Dictionary).get("id", ""))
+
+
+func _animate_card_back(i: int) -> void:
+	if i < 0 or i >= _cells.size():
+		return
+	var visible_cells: Array[int] = []
+	for ci in _cells.size():
+		if _cells[ci].visible:
+			visible_cells.append(ci)
+	var ordinal := visible_cells.find(i)
+	if ordinal < 0:
+		return
+	var target := UiLayoutRes.card_fan_local(ordinal, visible_cells.size())
+	var rot := UiLayoutRes.card_fan_rotation(ordinal, visible_cells.size())
+	if _drag_tween != null and _drag_tween.is_running():
+		_drag_tween.kill()
+	_drag_tween = create_tween().set_parallel(true)
+	_drag_tween.tween_property(_cells[i], "position", target.position, 0.18) \
+		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	_drag_tween.tween_property(_cells[i], "rotation", rot, 0.18) \
+		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	_cells[i].z_index = ordinal
+
+
 ## ★★ 键盘：科技页的九格快捷键（Q/W/E/A/S/D/Z/X/C）。
 ##
-## ★ 与点击**完全同一条路**：键位映射到视觉格 → `_on_cell_pressed()` →
+## ★ 与上拖松手**完全同一条路**：键位映射到视觉格 → `_activate_cell()` →
 ##   `cell_activated` → hud → `tech_toggle` 命令。这里不自己改任何逻辑状态。
 ## ★ 空格 / 置灰格**不吃按键**（与 `command_card.handle_key()` 同一条约定），
 ##   让这几个字母继续走别的绑定。
@@ -407,19 +558,48 @@ func handle_key(event: InputEventKey) -> bool:
 	var e: Dictionary = _entries[ei]
 	if not bool(e.get("active", false)) and not bool(e.get("available", true)):
 		return false
-	_on_cell_pressed(slot)
+	_activate_cell(slot)
 	return true
 
 
 ## 鼠标进入 / 离开第 i 格 —— 只转发序号（内容由 hud 现取，与命令卡同一条约定）
 func _on_cell_mouse_entered(i: int) -> void:
+	if _dragging:
+		return
 	if touch_suppress_hover:
 		return                       # 手机端按住期间不弹（长按到点后由 hud 调 hover()）
+	_raise_card(i, true)
 	cell_hovered.emit(i)
 
 
 func _on_cell_mouse_exited(i: int) -> void:
+	if _dragging:
+		return
+	_raise_card(i, false)
 	cell_unhovered.emit(i)
+
+
+func _raise_card(i: int, raised: bool) -> void:
+	if i < 0 or i >= _cells.size() or not _cells[i].visible:
+		return
+	var visible_cells: Array[int] = []
+	for ci in _cells.size():
+		var ei := _entry_index_for_cell(ci)
+		if ei >= 0 and ei < _entries.size() \
+				and String((_entries[ei] as Dictionary).get("id", "")) != "":
+			visible_cells.append(ci)
+	var ordinal := visible_cells.find(i)
+	if ordinal < 0:
+		return
+	var r := UiLayoutRes.card_fan_local(ordinal, visible_cells.size())
+	if raised:
+		_cells[i].rotation = 0.0
+		_cells[i].position.y = r.position.y - 20.0
+		_cells[i].z_index = UiLayoutRes.CARD_SLOTS + 2
+	else:
+		_cells[i].rotation = UiLayoutRes.card_fan_rotation(ordinal, visible_cells.size())
+		_cells[i].position.y = r.position.y
+		_cells[i].z_index = ordinal
 
 
 ## 模拟悬停第 i 格 / 离开它（测试用；与 `press()` 一样走引擎同一条信号）。
@@ -445,6 +625,39 @@ func set_visible_page(on: bool) -> void:
 	#    （鼠标滚轮缩放的判据只看底栏几何、不看控件，所以这条只影响点击）。
 	for c in _cells:
 		c.mouse_filter = Control.MOUSE_FILTER_STOP if on else Control.MOUSE_FILTER_IGNORE
+
+
+## 翻到科技页时，实际科技牌从牌手下缘错落升起；空配置槽不参与动效。
+func animate_deck_in() -> void:
+	if _deck_tween != null and _deck_tween.is_running():
+		_deck_tween.kill()
+	var visible_cells: Array[int] = []
+	for i in _cells.size():
+		if _cells[i].visible:
+			visible_cells.append(i)
+	var count := visible_cells.size()
+	if count == 0 or not visible:
+		return
+	for ordinal in count:
+		var i := visible_cells[ordinal]
+		_cells[i].modulate.a = 1.0
+		var target := UiLayoutRes.card_fan_local(ordinal, count)
+		var rot := UiLayoutRes.card_fan_rotation(ordinal, count)
+		_cells[i].modulate.a = 0.0
+		_cells[i].position = target.position + Vector2(0.0, 40.0)
+		_cells[i].rotation = rot * 1.5
+		_cells[i].z_index = ordinal
+	_deck_tween = create_tween().set_parallel(true)
+	for ordinal in count:
+		var i := visible_cells[ordinal]
+		var target := UiLayoutRes.card_fan_local(ordinal, count)
+		var rot := UiLayoutRes.card_fan_rotation(ordinal, count)
+		var delay := float(ordinal) * 0.025
+		_deck_tween.tween_property(_cells[i], "position", target.position, 0.22) \
+			.set_delay(delay).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+		_deck_tween.tween_property(_cells[i], "rotation", rot, 0.22) \
+			.set_delay(delay).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+		_deck_tween.tween_property(_cells[i], "modulate:a", 1.0, 0.16).set_delay(delay)
 
 
 # ------------------------------------------------------------------
@@ -502,6 +715,6 @@ func cell_active(i: int) -> bool:
 	return bool((_entries[ei] as Dictionary).get("active", false))
 
 
-## 模拟点第 i 格（测试用；等价于玩家点那一下）
+## 测试辅助：直接触发有效科技牌（真实鼠标操作需上拖松手）。
 func press(i: int) -> void:
-	_on_cell_pressed(i)
+	_activate_cell(i)

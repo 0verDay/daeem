@@ -64,8 +64,6 @@ const HostSessionRes = preload("res://net/host_session.gd")
 const ClientSessionRes = preload("res://net/client_session.gd")
 ## ★★ 手机端触摸手势识别（单指拖视野 / 单击 / 双击 / 双指框选）—— 见那个文件的文件头
 const TouchControllerRes = preload("res://view/touch_controller.gd")
-## ★★ 音效（`building_built` → 建造音；菜单点击音也在同一模块，见 view/sfx.gd）。
-const SfxRes = preload("res://view/sfx.gd")
 const ThemeRes = preload("res://view/theme.gd")
 const MAP_PATH := MapLibraryRes.FALLBACK_MAP_PATH
 
@@ -113,6 +111,10 @@ var units = null
 ##    3D 版内部叫 units（一个 MultiMesh 层）—— 两个名字都给，省得调用方各记一套。
 var unit_view = null
 var buildings = null
+var _build_card_ghost: MeshInstance3D = null
+var _build_card_ghost_material: StandardMaterial3D = null
+var _build_card_ghost_type := ""
+var _build_card_ghost_tile := Vector2i(-1, -1)
 ## ★ 射箭投掷物层（本轮新增，见 view/projectile_view_3d.gd）：只读 world.projectiles
 var projectiles = null
 ## ★ 右键指令的 3D 旗子（移动 = 绿 / 行军 = 黄）：由 `_on_command` 插 / 收，纯表现
@@ -777,6 +779,17 @@ func _assemble() -> void:
 	buildings.name = "BuildingView3D"
 	add_child(buildings)
 	buildings.setup(cfg, world, palette)
+	_build_card_ghost = MeshInstance3D.new()
+	_build_card_ghost.name = "BuildCardGhost"
+	_build_card_ghost.visible = false
+	_build_card_ghost.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_build_card_ghost_material = StandardMaterial3D.new()
+	_build_card_ghost_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	_build_card_ghost_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	_build_card_ghost_material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	_build_card_ghost_material.albedo_color = Color(0.4, 1.0, 0.45, 0.52)
+	_build_card_ghost.material_override = _build_card_ghost_material
+	add_child(_build_card_ghost)
 
 	# ★ 演出呼吸泛光：地面光环 + 建筑外壳（单位本体在 unit_flash.gdshader 里）
 	story_glow = StoryGlowViewRes.new()
@@ -1726,9 +1739,8 @@ func _process(dt: float) -> void:
 	var _t_overlay := _prof()
 	overlay.hover_tile = input_ctrl.hover_tile
 	overlay.hover_valid = input_ctrl.hover_valid
-	overlay.build_type = input_ctrl.build_type
-	# ★★ O4：城墙拖建预览（空数组 = 只画光标那一格）
-	overlay.build_drag_tiles = input_ctrl.build_drag_tiles()
+	var card_building: bool = hud != null and hud.drag_build_active
+	overlay.build_type = "" if card_building else input_ctrl.build_type
 	overlay.move_marks = input_ctrl.move_marks
 	overlay.attack_marks = input_ctrl.attack_marks
 	overlay.drag_active = input_ctrl.drag_active
@@ -1742,6 +1754,7 @@ func _process(dt: float) -> void:
 	# ★★ F2：拒绝红环的寿命（暂停时冻住，与插旗 / 攻击标记同一条口径）。
 	overlay.tick_rejects(dt if running else 0.0)
 	overlay.sync()
+	_sync_build_card_ghost()
 	_prof_done("view/overlay", _t_overlay)
 	# ⑤a ★★ 迷雾：**每帧**检查一次掩码变没变（整块 memcmp，O(格数)，可忽略）。
 	#
@@ -1766,6 +1779,30 @@ func _process(dt: float) -> void:
 	_camera_update(dt)
 	_prof_done("camera", _t_cam)
 	_mobile_scale_tick(dt)
+
+
+func _sync_build_card_ghost() -> void:
+	if _build_card_ghost == null or hud == null or buildings == null:
+		return
+	var type := String(hud.drag_build_type)
+	var tile: Vector2i = hud.drag_build_tile
+	if not hud.drag_build_active or type == "" or tile.x < 0:
+		_build_card_ghost.visible = false
+		return
+	var transform_changed := _build_card_ghost_type != type or _build_card_ghost_tile != tile
+	if _build_card_ghost_type != type:
+		_build_card_ghost.mesh = buildings.preview_mesh(type)
+		_build_card_ghost_type = type
+	if _build_card_ghost.mesh == null:
+		_build_card_ghost.visible = false
+		return
+	if transform_changed:
+		_build_card_ghost.global_transform = buildings.preview_transform(type, tile)
+		_build_card_ghost_tile = tile
+	var valid: bool = hud._card_build_tile_valid(type, tile)
+	_build_card_ghost_material.albedo_color = Color(0.36, 1.0, 0.42, 0.52) if valid \
+		else Color(1.0, 0.30, 0.29, 0.52)
+	_build_card_ghost.visible = true
 
 
 ## ★★ 2026.10.27：移动端自适应 3D 分辨率（只改 3D，不改 UI / 命中判定）。
@@ -2160,17 +2197,10 @@ func _consume_events(events: Array) -> void:
 	# ★★ 红点刷兵 → 小地图的「生成动效」（事件里带 `spawns`：本波每位将领的出生格）。
 	#    先于 `interaction.pump` 也可以：这里只往小地图记一笔，不改任何玩法状态。
 	_feed_red_dot_spawn_fx(events)
-	# ★ 本机阵营的建筑落成 → 建造音（别人的建造不播，见 `_feed_build_sfx`）。
-	_feed_build_sfx(events)
-	# ★ 本机单位的攻击 / 受击、己方建筑被命中 → 战斗音（见 `_feed_combat_sfx`）。
-	_feed_combat_sfx(events)
-	# ★★ 冲锋命中 → 冲击波 + 冲锋音（见 `_feed_charge_fx` / `_feed_charge_sfx`）。
+	# ★★ 冲锋命中 → 贴地冲击波（纯视觉效果）。
 	_feed_charge_fx(events)
-	_feed_charge_sfx(events)
-	# ★★ M3：单位阵亡 → 贴地烟尘（只给当前可见的阵亡播）。
+	# ★★ M3：单位阵亡 → 贴地烟尘（只给当前可见的阵亡绘制）。
 	_feed_death_fx(events)
-	# ★ 本机招募完成 → 招募音；同一批多个单位只响一次（见 `_feed_recruit_sfx`）。
-	_feed_recruit_sfx(events)
 	if interaction != null:
 		interaction.pump(events)
 	# ★★ 胜负事件 → 结算画面。合作局两端都走这里：
@@ -2337,34 +2367,6 @@ func _feed_red_dot_spawn_fx(events: Array) -> void:
 			mm.note_red_dot_spawns(pts)
 
 
-## 本机阵营的建筑**落成** → 建造音。
-##
-## ★ 只认 `building_built`（`world.add_building` 里推：玩家 / AI 的真实建造都会推；
-##   开局预置的建筑走 `silent` 分支不推 ⇒ 进关时不会响一串）。
-## ★★ 只播**本机阵营**的：这是全局音效，没有方位感 —— 把双方 AI 的建造也播出来，
-##   玩家会听到一堆不知道从哪来的声音（而且 AI 一直在建）。
-## ★ 合作局两端都经过 `_consume_events()`：客机收到的 `building` 已由 event_codec
-##   按坐标查回本地对象（见 net/event_codec.gd），所以客机自己的建造同样会响。
-## ⚠️ 建造有读条时（`building.<type>.build_sec > 0`），事件仍然是**放下那一刻**推的；
-##   这里跟事件走，不另外等读条结束。
-func _feed_build_sfx(events: Array) -> void:
-	if world == null:
-		return
-	var mine := String(world.my_faction)
-	if mine == "":
-		return
-	for evt in events:
-		var e: Dictionary = evt
-		if String(e.get("type", "")) != "building_built":
-			continue
-		var b: Variant = e.get("building", null)
-		if b == null:
-			continue
-		if String(b.owner) != mine:
-			continue
-		SfxRes.play_build()
-
-
 ## ★★ 冲锋命中 → 贴地冲击波圈（纯表现；只在事件里带 `unit_charge` 时生成）。
 ##   颜色 = 冲锋单位的阵营色；半径 = 事件里的 `radius`（战车范围撞击更大）。
 func _feed_charge_fx(events: Array) -> void:
@@ -2409,102 +2411,6 @@ func _unit_visible_for_fx(u) -> bool:
 	if world.fog == null or cfg == null or not cfg.fog_enabled:
 		return true
 	return world.fog.unit_visible(world.my_faction, u)
-
-
-## ★★ 本机单位冲锋命中 → 冲锋音；同一批事件只播一声（与招募音同一条口径）。
-func _feed_charge_sfx(events: Array) -> void:
-	if world == null:
-		return
-	var mine := String(world.my_faction)
-	if mine == "":
-		return
-	for evt in events:
-		var e: Dictionary = evt
-		if String(e.get("type", "")) != "unit_charge":
-			continue
-		var u: Variant = e.get("unit", null)
-		if u == null or String(u.faction) != mine:
-			continue
-		SfxRes.play_charge()
-		return
-
-
-## 本机单位的攻击 / 受击、己方建筑被命中 → 近战 / 远程音效。
-##
-## ★★ 声音档位按**谁**判定（用户口径）：
-##   · `unit_attacked`：看**攻击者**的 `ranged`（远程 → bow attack，近战 → sword attack）；
-##   · `unit_hit`：看**被打的那个单位**的 `ranged`（远程单位受击 → bow hit）；
-##   · `building_hit`：建筑没有远近战之分，按**攻击者**判（箭塔这类建筑攻击算远程）。
-## ★ 只播本机阵营：这是全局音效、没有方位感，敌方 / AI 的互殴不该有声音。
-## ★ 节流在 `view/sfx.gd` 里做（同一档 0.2 秒最多一声），这里只负责翻译事件。
-func _feed_combat_sfx(events: Array) -> void:
-	if world == null:
-		return
-	var mine := String(world.my_faction)
-	if mine == "":
-		return
-	for evt in events:
-		var e: Dictionary = evt
-		var kind := String(e.get("type", ""))
-		if kind == "unit_attacked":
-			var attacker: Variant = e.get("unit", null)
-			if attacker == null or String(attacker.faction) != mine:
-				continue
-			if bool(attacker.ranged):
-				SfxRes.play_bow_attack()
-			else:
-				SfxRes.play_sword_attack()
-		elif kind == "unit_hit":
-			var victim: Variant = e.get("unit", null)
-			if victim == null or String(victim.faction) != mine:
-				continue
-			if bool(victim.ranged):
-				SfxRes.play_bow_hit()
-			else:
-				SfxRes.play_sword_hit()
-		elif kind == "building_hit":
-			var b: Variant = e.get("building", null)
-			if b == null or String(b.owner) != mine:
-				continue
-			if _hit_was_ranged(e.get("source", null)):
-				SfxRes.play_bow_hit()
-			else:
-				SfxRes.play_sword_hit()
-
-
-## 这一击是不是远程造成的？`source` 是单位就按它的 `ranged`；建筑（箭塔）没有该字段，
-## 它的攻击一律是投掷物 ⇒ 远程；来源为空时也按远程处理（投掷物是唯一无主的伤害源）。
-func _hit_was_ranged(source) -> bool:
-	if source == null:
-		return true
-	var rv: Variant = source.get("ranged")
-	if typeof(rv) == TYPE_BOOL:
-		return bool(rv)
-	return true
-
-
-## 本机阵营的招募完成 → 招募音。
-##
-## ★★ 「同一批只播一次」：一次读条结束会把队列里的多个单位**同一 tick** 生成，
-##   每个单位各推一条 `unit_recruited`（区划招募将领是 `zone_unit_recruited`）。
-##   这里只认「这一批事件里有没有我的」，有就播一声然后收工。
-func _feed_recruit_sfx(events: Array) -> void:
-	if world == null:
-		return
-	var mine := String(world.my_faction)
-	if mine == "":
-		return
-	for evt in events:
-		var e: Dictionary = evt
-		var kind := String(e.get("type", ""))
-		if kind != "unit_recruited" and kind != "zone_unit_recruited":
-			continue
-		var u: Variant = e.get("unit", null)
-		if u == null or String(u.faction) != mine:
-			continue
-		SfxRes.play_recruit()
-		return
-
 
 
 ## 滚轮缩放：以**光标下的地面点**为锚点（缩放前后它留在同一屏幕位置）

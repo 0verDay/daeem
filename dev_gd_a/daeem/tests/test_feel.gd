@@ -6,13 +6,11 @@
 ##   · F2 拒绝红环的生命周期 + 拒绝文案；
 ##   · M1 行走微动（纯静态函数）；
 ##   · M3 死亡烟尘（对象池 spawn / sync / clear）；
-##   · O4 城墙拖建的直线与类型开关；
 ##   · P1 桌面默认 60Hz 的配置值；
 ##   · P2 `_settled_index` 的「排除本次队伍」与 `tile_key` 一致性。
 extends "res://tests/test_case.gd"
 
 const Game3DRes = preload("res://view/game_scene3d.gd")
-const InputCtrlRes = preload("res://view/input_controller.gd")
 const Overlay3DRes = preload("res://view/overlay_view_3d.gd")
 const HudRes = preload("res://view/hud.gd")
 const DeathFxRes = preload("res://view/death_fx_view_3d.gd")
@@ -43,7 +41,6 @@ func _run() -> void:
 	_test_walk_bob(cfg)
 	_test_reject_fx()
 	_test_death_fx(cfg, world)
-	_test_wall_drag(cfg)
 	_test_settled_index(world)
 
 	print("[CASE] %s -> 通过 %d 项，失败 %d 项" % [_case_name, _pass, _fail])
@@ -152,38 +149,7 @@ func _test_death_fx(cfg, world) -> void:
 
 
 # ------------------------------------------------------------------
-# 5) O4 城墙拖建
-# ------------------------------------------------------------------
-func _test_wall_drag(cfg) -> void:
-	ok(bool(cfg.bool_val("building.wall.drag_build", false)), "★ O4：木墙允许拖建")
-	ok(bool(cfg.bool_val("building.stone_wall.drag_build", false)), "★ O4：石墙允许拖建")
-	ok(not bool(cfg.bool_val("building.tower.drag_build", false)), "★ O4：哨塔不拖建（避免误放一排）")
-
-	var line = InputCtrlRes._line_tiles(Vector2i(2, 3), Vector2i(5, 3))
-	eq(line.size(), 4, "★ O4：水平直线 4 格")
-	eq(line[0], Vector2i(2, 3), "★ O4：直线含起点")
-	eq(line[3], Vector2i(5, 3), "★ O4：直线含终点")
-	var diag = InputCtrlRes._line_tiles(Vector2i(0, 0), Vector2i(3, 3))
-	eq(diag.size(), 4, "★ O4：对角直线 4 格")
-
-	var ic = InputCtrlRes.new()
-	root.add_child(ic)
-	ic.setup(cfg, null, null)
-	ok(ic._is_wall_drag_type("wall"), "★ O4：wall 走拖建")
-	ok(ic._is_wall_drag_type("stone_wall"), "★ O4：stone_wall 走拖建")
-	ok(not ic._is_wall_drag_type("tower"), "★ O4：tower 不走拖建")
-	ic.build_type = "wall"
-	ic.build_drag_start = Vector2i(1, 1)
-	ic.build_drag_current = Vector2i(4, 1)
-	ic._rebuild_build_drag_tiles()
-	eq(ic.build_drag_tiles().size(), 4, "★ O4：拖建预览拿到整条线")
-	ic._clear_build_drag()
-	eq(ic.build_drag_tiles().size(), 0, "★ O4：清掉拖建状态")
-	ic.queue_free()
-
-
-# ------------------------------------------------------------------
-# 6) P2 空间索引
+# 5) P2 空间索引
 # ------------------------------------------------------------------
 func _test_settled_index(world) -> void:
 	var alive: Array = []

@@ -39,6 +39,7 @@
 extends Node3D
 
 const ConfigRes = preload("res://logic/config.gd")
+const BuildingRes = preload("res://logic/building.gd")
 const PaletteRes = preload("res://view/palette.gd")
 const HitFxRes = preload("res://view/hit_fx.gd")
 ## ★★ 局内「敌 / 友 / 己」三色（本轮新增；判据只在 view/side_color.gd）
@@ -1127,6 +1128,19 @@ func _mesh_for(type: String) -> Mesh:
 	if _uses_model(type):
 		return _model_meshes.get(type, null)
 	return _box
+
+
+## 被拖建筑牌的预览网格（与实际建筑使用同一份合并模型 / 方块网格）。
+func preview_mesh(type: String) -> Mesh:
+	return _mesh_for(type)
+
+
+## 建筑牌预览的世界变换与真实建筑完全同源，避免影子尺寸 / 落地高度不一致。
+func preview_transform(type: String, tile: Vector2i) -> Transform3D:
+	if cfg == null or world == null or palette == null:
+		return Transform3D.IDENTITY
+	var ghost = BuildingRes.create(cfg, type, tile.x, tile.y, String(world.my_faction))
+	return _static_transform_of(ghost)
 
 
 ## 载入一个建筑模型；失败返回 null 并 `push_error`（**不退回方块**）。

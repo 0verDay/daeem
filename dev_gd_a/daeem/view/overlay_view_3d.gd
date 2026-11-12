@@ -98,8 +98,6 @@ var _style_key_downed: StyleBoxFlat = null
 var hover_tile: Vector2i = Vector2i(-1, -1)
 var hover_valid: bool = false
 var build_type: String = ""
-## ★★ O4：城墙拖建时整条线的预览（空 = 只画 `hover_tile` 那一格）。
-var build_drag_tiles: Array = []
 var move_marks: Array[Vector2] = []
 var attack_marks: Array[Vector2] = []
 ## ★★ F2：命令被拒的落点红环（纯表现；`{pos: Vector2, t: float, dur: float}`）。
@@ -1868,15 +1866,12 @@ func _draw_reject_marks() -> void:
 		reject_draw_count += 1
 
 
-## 建造预览：**沿地块的四个角投出来的四边形**（透视下是梯形，不是矩形）。
-## ★★ O4：城墙拖建时 `build_drag_tiles` 非空 ⇒ 整条线逐格画（每格自己的绿 / 红）。
+## 建造模式预览：**沿地块的四个角投出来的四边形**（透视下是梯形，不是矩形）。
 func _draw_build_preview() -> void:
 	if build_type == "":
 		return
 	var tiles: Array = []
-	if not build_drag_tiles.is_empty():
-		tiles = build_drag_tiles
-	elif hover_tile.x >= 0:
+	if hover_tile.x >= 0:
 		tiles = [hover_tile]
 	for tv in tiles:
 		var t: Vector2i = tv

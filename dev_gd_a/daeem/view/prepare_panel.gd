@@ -20,7 +20,6 @@ signal faction_selected(faction_id: String)
 const ThemeRes = preload("res://view/theme.gd")
 const MenuThemeRes = preload("res://view/menu_theme.gd")
 const LayoutRes = preload("res://view/menu_deck_layout.gd")
-const SfxRes = preload("res://view/sfx.gd")
 const FactionBtnRes = preload("res://view/prepare_faction_button.gd")
 const RosterListRes = preload("res://view/prepare_roster_list.gd")
 const DetailViewRes = preload("res://view/prepare_detail_view.gd")
@@ -68,8 +67,7 @@ func setup(p_cfg, p_font: Font) -> void:
 	_back.add_theme_stylebox_override("disabled", MenuThemeRes.prepare_back())
 	_back.pressed.connect(func(): back_pressed.emit())
 	# ★ 返回区是一整条 1280×120 的横幅：不挂 PressFx（0.975 的按下缩放会把整条
-	#   抽掉三十多像素，看着像页面在抖），只保留点击音与悬停描边。
-	SfxRes.attach(_back)
+	#   抽掉三十多像素，看着像页面在抖），只保留悬停描边。
 	add_child(_back)
 
 	var text := String(cfg.str_val("menu.deck.prepare.back_text", DEFAULT_BACK_TEXT)) \
