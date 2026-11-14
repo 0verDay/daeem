@@ -1,4 +1,4 @@
-## troop_row.gd —— 右侧「部队 1~6」的一条将领标签（参考 art_draft/hud_balatro_direction_v2.html）
+## troop_row.gd —— 右侧「部队 1~5」的一条将领标签（参考 art_draft/hud_balatro_direction_v2.html）
 ##
 ## 版式（V2 方向稿的「编队牌」）：
 ##   ┌─ 左缘内凹 ─┐                                  ┌ 右缘尖角
@@ -316,11 +316,10 @@ func _draw_plate(w: float, h: float) -> void:
 		draw_polyline(_shape(5.0, w - 5.0, 6.0, h - 6.0),
 			Color(UiStyleRes.accent(), 0.22), 1.0, true)
 
-	# ⑥ 右缘尖角的「肩线」：结构分割线，不再是泛光起点（泛光已改成左暖右冷）
-	var shoulder := w - CHEV + 1.0
-	var seam: Color = UiStyleRes.accent_dim() if (_selected or _hover) \
-		else Color(UiStyleRes.text_faint(), 0.35)
-	draw_line(Vector2(shoulder, h * 0.22), Vector2(shoulder, h * 0.78), seam, 1.0)
+	# ★★ 2026.11.14（用户口径）：「将领标签右侧的竖线可以去掉」——
+	#   原来这里画的是右缘尖角前的那条「肩线」（`x = w − CHEV + 1` 的 1px 竖线）。
+	#   ⚠️ 别把它加回来：那条线在牌面渐变上只是一道突兀的断口，
+	#     右缘的尖角本身已经够表达「牌头」了（形状由 `_shape()` 负责）。
 
 
 ## 牌面在 x 处的颜色：左端（t=0）暖，往右按 `pow(1-t,1.6)` 衰减回底色。

@@ -424,6 +424,9 @@
       "  ★★ 2026.11 手感：jump_sec / zoom_lerp_sec 只影响**程序性移动**（双击 / 小地图 / F）",
       "     与**滚轮缩放**的到达过程；拖拽 / 方向键 / 边缘滚屏仍然 1:1。",
       "     jump_sec = 0 或 zoom_lerp_sec = 0 = 回到瞬移 / 硬切。",
+      "  ★★ 2026.11.14 边缘滚屏的收手缓动（edge_stop_sec）：用户报「停下太硬，像急刹」——",
+      "     抬手后速度按指数衰减，0.08s 基本归零（帧率无关）。起步仍是瞬间给满。",
+      "     0 = 回到旧的硬刹；越大越柔，但收手后多滑的距离也越长（满速 1500 × 0.08 ≈ 40~60px）。",
       "  ★ zoom_step 从 1.12 细化到 1.07：同样区间从约 10 档变成约 16 档，滚轮更跟手。"
     ],
     "min_scale": 0.8,
@@ -433,6 +436,7 @@
     "edge_scroll": true,
     "edge_size": 44,
     "edge_max_speed": 1500,
+    "edge_stop_sec": 0.08,
     "zoom_step": 1.07,
     "jump_sec": 0.15,
     "zoom_lerp_sec": 0.1
@@ -3303,7 +3307,7 @@
           "max_generals": 2, "retinue_cap_bonus": 0, "max_techs": 1, "max_tech_tier": 1 },
         { "level": 2, "hp_mult": 1.5, "cost": { "food": 200, "gold": 200 },
           "time_sec": 40,
-          "max_generals": 5, "retinue_cap_bonus": 2, "max_techs": 2, "max_tech_tier": 2 },
+          "max_generals": 4, "retinue_cap_bonus": 2, "max_techs": 2, "max_tech_tier": 2 },
         { "level": 3, "hp_mult": 2.25, "cost": { "food": 200, "gold": 200 },
           "time_sec": 60, "need_generals": 2,
           "time_by_generals": [
@@ -3312,7 +3316,7 @@
             { "need": 4, "time_sec": 20 },
             { "need": 5, "time_sec": 0 }
           ],
-          "max_generals": 6, "retinue_cap_bonus": 4, "max_techs": 3, "max_tech_tier": 3 }
+          "max_generals": 5, "retinue_cap_bonus": 4, "max_techs": 3, "max_tech_tier": 3 }
       ]
     }
   },

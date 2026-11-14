@@ -49,8 +49,9 @@ func _test_hud_options_structure() -> void:
 		return
 	ok(op.overlay != null and op.panel != null, "选项页有 overlay + 居中面板")
 	ok(not op.overlay.visible, "★ 刚进游戏时选项页是收着的")
-	eq(hud.settings_button.text, hud.cfg.str_val("settings.title", "选项"),
-		"★ 右上角按钮写着「选项」（不再是「设置」）")
+	# ★★ 2026.11.14 第三轮（用户口径）：「把选项按钮删除，相应的打开菜单逻辑接到 esc 下」
+	ok(hud.get_node_or_null("HudRoot/SettingsButton") == null,
+		"★★ 屏幕上没有选项按钮了（入口改成 Esc / 安卓返回键）")
 	eq(hud.settings_panel, op.overlay, "★ 兼容字段 settings_panel 指向 overlay")
 	eq(op.resume_button.text, hud.cfg.str_val("settings.continue_text", "继续"),
 		"一级第一项文案来自 config（游戏内「继续」）")
@@ -59,10 +60,13 @@ func _test_hud_options_structure() -> void:
 	eq(op.exit_button.text, hud.cfg.str_val("settings.menu_text", "返回主菜单"),
 		"一级第三项是「返回主菜单」")
 
-	var btn_center: Vector2 = hud.settings_button.get_global_rect().get_center()
-	await _click_at(btn_center)
+	# ★★ Esc：什么都没选中时按 Esc = 开选项页（`input_controller` 的 Esc 级联最后一档）
+	main.game.input_ctrl.select_units([])
+	hud.set_settings_menu_open(false)
+	await _wait_sec(0.1)
+	await _press_esc()
 	await _wait_sec(0.28)
-	ok(op.overlay.visible, "★ 点「选项」→ overlay 弹出来")
+	ok(op.overlay.visible, "★★ 按 Esc（无选中时）→ overlay 弹出来")
 	ok(op.panel.visible, "居中面板可见")
 	ok(not op.is_settings_page_open(), "刚打开时停在一级菜单")
 	ok(hud.blocks_edge_scroll(Vector2(600.0, 540.0)),
@@ -108,17 +112,18 @@ func _test_hud_options_structure() -> void:
 	hud.set_settings_menu_open(true)
 	await _wait_sec(0.28)
 	ok(op.overlay.visible, "（前提）选项页再次打开")
-	ok(FillButtonRes.is_latched(hud.settings_button),
-		"★★ 选项页打开 → 右上角按钮「已选中」")
-	ok(FillButtonRes.fill_progress(hud.settings_button) >= 0.999,
-		"★★ 打开后金色填充满格（切换时播填充动画）")
+	ok(op.overlay.visible, "（前提）选项页再次打开")
+	# ★★ Esc 也能**关**（开着的 modal 优先吃掉 Esc，见 hud.handle_key）
+	await _press_esc()
+	await _wait_sec(0.28)
+	ok(not op.overlay.visible, "★★ 选项页开着时按 Esc → 关闭")
+	# 「继续」那一档照旧
+	hud.set_settings_menu_open(true)
+	await _wait_sec(0.28)
+	ok(op.overlay.visible, "（前提）选项页第三次打开")
 	await _click_at(op.resume_button.get_global_rect().get_center())
 	await _wait_sec(0.28)
 	ok(not op.overlay.visible, "★ 「继续」关闭选项页")
-	ok(not FillButtonRes.is_latched(hud.settings_button),
-		"★ 关闭后右上角按钮不再选中（overlay 自己关也不会把按钮锁死）")
-	ok(FillButtonRes.fill_progress(hud.settings_button) <= 0.01,
-		"★★ 关闭后金色填充反向退回")
 	await _dispose(main)
 
 
@@ -159,7 +164,13 @@ func _test_touch_release_clears_hud_hover() -> void:
 	var hud = main.game.hud
 	hud.set_settings_menu_open(false)
 	await process_frame
-	var btn: Button = hud.settings_button
+	# ★★ 2026.11.14 第三轮：选项按钮删了 ⇒ 换成命令卡第一格（同样是挂了填充层的按钮，
+	#   而且它**不是**选中态 —— 页签里当前那一页是 latched 的，拿来测「只悬停不填金」不成立）
+	var btn: Button = hud.command_card._cells[0]
+	ok(btn != null, "（前提）命令卡第一格在")
+	if btn == null:
+		await _dispose(main)
+		return
 	await _hover_at(btn.get_global_rect().get_center())
 	await _wait_sec(0.35)
 	ok(FillButtonRes.glow_progress(btn) > 0.9, "（前提）鼠标停上去之后它泛光了")
@@ -280,6 +291,22 @@ func _click_at(pos: Vector2) -> void:
 	up.position = pos
 	root.push_input(up, true)
 	await process_frame
+	await process_frame
+
+
+## 推一个 Esc（走 HUD / 输入控制器那条真实链路，不是直接调 open/close）。
+func _press_esc() -> void:
+	var ev := InputEventKey.new()
+	ev.keycode = KEY_ESCAPE
+	ev.physical_keycode = KEY_ESCAPE
+	ev.pressed = true
+	root.push_input(ev, true)
+	await process_frame
+	var up := InputEventKey.new()
+	up.keycode = KEY_ESCAPE
+	up.physical_keycode = KEY_ESCAPE
+	up.pressed = false
+	root.push_input(up, true)
 	await process_frame
 
 

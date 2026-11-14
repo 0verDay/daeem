@@ -42,18 +42,25 @@ const OBJECTIVE_PAD := 22.0
 # 几何常量
 # ------------------------------------------------------------------
 
-## 右侧「部队 1 ~ 6」整块面板（**紧贴屏幕右边缘**）
-## ★ 槽数 = 6：与大本营 3 级的将领上限（config 的 max_generals 2/5/6）对上，
-##   数字键也只到 6（见 input_controller.handle_key）。
-const SQUAD_SLOTS := 6
+## 右侧「部队 1 ~ 5」整块面板（**紧贴屏幕右边缘**）
+## ★★ 2026.11.14（用户口径）：「最大部队数改为 5 个」——
+##   槽数 6 → **5**，与大本营 3 级的将领上限（config 的 max_generals **2/4/5**）对上，
+##   数字键也只到 5（见 input_controller.handle_key）。
+##   ⚠️ 这三个数必须同源：`SQUAD_SLOTS` / config 的 `upgrade.levels[].max_generals` /
+##      `team_slots` 的槽位上限。少改一个的症状是「招出来第 6 位将领没牌子也没数字键」。
+const SQUAD_SLOTS := 5
 ## ★ 行高 = 手机端的**触摸命中高度**：整行都是按钮，56 在手机上太难点中，
-##   加高到 88（6 行合计 528，面板底 708，仍与底栏 820 留出 112 的间隙）。
+##   加高到 88（5 行合计 422，面板底 684，与底栏 820 留出 136 的间隙）。
 ##   数字块 / 分隔线 / 两行文字都按行高居中（见 troop_row.gd），改这一个数即可整体伸缩。
 const SQUAD_ROW_H := 82.0
 ## ★ 牌距 3px：方向稿里那列编队牌几乎是**叠在一起**的（`gap:1px`），牌与牌之间
 ##   只有那道「牌厚」（见 troop_row 的 LIFT）当缝。3px 正好放得下那一条。
 const SQUAD_ROW_GAP := 3.0
-const SQUAD_RECT := Rect2(1656.0, 178.0, 238.0,
+## ★★ 2026.11.14：顶边三度下移，给越来越大的小地图让位 ——
+##   178 → 262（第二轮，地图 238×148 → 300×225）→ 311（第三轮，地图 275）
+##   → **386**（第四轮，地图 350）。5 行合计 422，底边 808；
+##   页签列顶边 914，中间还留 106 —— 这是**最后的下限**，再加高就会压到页签。
+const SQUAD_RECT := Rect2(1656.0, 386.0, 238.0,
 	SQUAD_SLOTS * SQUAD_ROW_H + (SQUAD_SLOTS - 1) * SQUAD_ROW_GAP)
 ## 单行内部（相对行自身）：
 ##   数字块 44×44 贴右；最右竖线 = 泛光起点；数字左边的灰线 = 分隔线；
@@ -65,8 +72,46 @@ const SQUAD_EDGE_X := 234.0
 const SQUAD_TEXT_X := 76.0
 const SQUAD_TEXT_W := 144.0
 
-## 左下小地图（x 0..399、贴屏幕下沿）。里面的地图按比例缩放并居中，见 view/minimap.gd。
-const MAP_RECT := Rect2(27.0, 771.0, 328.0, 284.0)
+## 小地图（**右上角**；里面的地图按比例缩放并居中，见 view/minimap.gd）。
+##
+## ★★ 2026.11.14（用户口径）：「将地图面板放到屏幕右上角，地图左侧放一列 ui，
+##   分别为选项按钮，粮食数，黄金数」；同轮随后又说「小地图变大一些」，
+##   再后来「地图在竖直方向上扩大一些 / 还需要扩大一些」。
+##
+## 尺寸演进：238×148 → 300×225 → 300×275 → **430×350**（本版）。
+##
+## ★★ 2026.11.14 第四轮（用户口径）：「地图在竖直方向上还需要扩大一些」。
+##   这里有个**几何事实**必须先讲清楚：小地图是「整张地图按比例缩放塞进面板」
+##   （见 view/minimap.gd 的 `map_rect()`），所以
+##     · 只加高 = 只有上下多出两条黑边，**地形一点没变大**；
+##     · 地形要真的变大，就得让**面板的宽高比 ≈ 地图的宽高比**（27 : 22 ≈ 1.23）。
+##   ⇒ 为了让「加高」真的等于「地图变大」，宽度跟着一起涨到 **430**
+##     （430 / 350 = 1.229 ≈ 27 / 22），于是地形**铺满整个面板**、一像素黑边都没有，
+##     线性尺寸比上一版（300×244）大 **43%**。
+##   ⚠️ 如果只想要「面板更高但地图不变大」，把宽改回 300 即可（会多出上下黑边）。
+##
+##   · 宽 430：右缘仍贴 1894，左缘因此到 **1464**；资源卡跟着挪到 1338..1458
+##     （右缘 = 地图左缘 − 6）。
+##   · 高 350：上缘 26、下缘 **376**；将领列从 **386** 起（5 行到 808，
+##     离页签列顶边 914 还有 106，不打架）。
+##
+## ⚠️ 再加高就会挤到将领列 / 页签列 —— 将领牌是**高频点击**的控件，
+##   地图是「看一眼 / 点一下」的控件，让路的是地图。
+const MAP_RECT := Rect2(1464.0, 26.0, 430.0, 350.0)
+
+## ★★ 右上角那一列（地图左侧）：**只剩资源大卡**（选项按钮已删，见下）。
+##
+## ★★ 2026.11.14 第三轮（用户口径）：「把选项按钮删除，相应的打开菜单逻辑接到 esc 下」。
+##   ⇒ 这一列不再有圆币，SETTINGS_RECT / SETTINGS_RADIUS 一起删掉；
+##     打开选项页走 Esc（PC）/ 安卓返回键（见 hud.handle_key / main._on_android_back）。
+## ★★ 第四轮（用户口径）：「粮食和黄金面板在水平方向上太大了，缩小一些，
+##   只要最多支持四位数即可」—— 宽 **194 → 120**，并**贴着小地图**右对齐
+##   （右缘 = 地图左缘 − 6）。
+## ★★ 第五轮（用户口径）：「粮食和黄金面板在水平方向上的距离再小一些」—— 再收到 **100**。
+##   100 的账：最宽那一行是数字（26 号字 4 位数 ≈ 56px），两侧各还有 22px 的气；
+##   圆章 45、标题「粮食」13 号 ≈ 26 —— 都装得下（`test_ui` 里按字体量算过）。
+const TOP_COLUMN_X := 1358.0
+const TOP_COLUMN_W := 100.0
 
 ## 底栏（详细信息 / 阵营 / 命令卡 / 页签都住在这一条里）
 ## ★ 2026.10.20：右下整组按 13/12 等比放大到 260 高，顶边从 840 抬到 820；
@@ -142,27 +187,42 @@ const FACTION_V2_RECT := Rect2(395.0, 794.0, 185.0, 260.0)
 ##      Label 会按兜底字体算一次最小高度并把 set_size 夹掉 —— 实测踩过）。
 ##   ⚠️ 它**不进** `interactive_rects`（见那个函数）：整块只有字和色块、点不动，
 ##      鼠标停上去照样允许边缘滚屏 —— 与「详细信息面板只有文字的地方让路」同一条规矩。
-const RES_BAR_RECT := Rect2(1388.0, 27.0, 406.0, 66.0)
-## 色块（粮食 / 黄金各一个 20×20）边长
+##
+## ★★ 2026.11.14 第三轮（用户口径）：「将资源面板改为竖直排列，竖直方向为：
+##   图标，文本，数字，增长数字」+「合并成一张大卡，中间分隔」。
+##   ⇒ 两块资源不再是两张独立筹码，而是**一张大卡**（宽度见 TOP_COLUMN_W），
+##     上半 = 粮食、下半 = 黄金，中间一条分隔线；每一块内部**竖排**四行：
+##       圆章图标 → 文本（粮食 / 黄金）→ 数字（库存）→ 增长数字（(+1.2)）
+##
+## ★ 高度 = 与小地图**同高**（350），两块各 175 ——
+##   四行内容合计 45+3+18+2+34+2+16 = 120，在 175 里上下各留 27~28 的呼吸。
+##   这样右列「资源卡 + 地图」上下缘完全齐平，看起来是一整块方块。
+const RES_HALF_H := 175.0
+## 一块资源的四行 y（相对**这一块**的顶边；四行内容在 175 里垂直居中）
+const RES_ICON_Y := 27.0
+const RES_TITLE_Y := 75.0
+const RES_VALUE_Y := 93.0
+const RES_RATE_Y := 131.0
+## 中间那条分隔线（相对大卡顶边；= 第一块的下缘）
+const RES_DIVIDER_Y := RES_HALF_H
+## 大卡本体：右缘贴着小地图（地图左缘 − 6），上缘与地图同一条 26，高 = 地图高。
+const RES_BAR_RECT := Rect2(TOP_COLUMN_X, MAP_RECT.position.y, TOP_COLUMN_W,
+	RES_HALF_H * 2.0)
+## 圆章（粮食 / 黄金各一个）边长
 const RES_ICON := 45.0
-## 两行的 y（相对资源面板自身）：第一行 5、行距 26 ⇒ 第二行 31，下缘 31+20 = 51 ≤ 56
-const RES_ROW_Y := 10.0
-const RES_ROW2_Y := 10.0
-## 颜色那一行字：左边（= 色块 20 + 缝 6）与可写宽（「粮食 1234」15 号字实测 78px）。
-## ★ 资源条宽度锁死在 162.5（与右侧阵营盾徽左右平齐，见上面那条），所以文字区
-##   26 + 134 = 160，右侧只留 2.5px 边距 —— **这是硬上限，别再往上加**。
-## ★★ 2026.10.29：数字后面多了一段「(+n)」每秒净增长，于是这一行改成 13 号字
-##   （见 view/hud.gd 的 `_build_resource_bar`）。实测（SimHei 13px）：
-##   「粮食 12345(+3.2)」≈122px、「黄金 12345(-12.3)」≈130px ≤ 134 ✓；
-##   15 号字时 5 位数要 149px，装不下。
-const RES_TEXT_X := 58.0
-const RES_TEXT_W := 70.0
-const RES_RATE_X := 130.0
-const RES_RATE_W := 55.0
+## 大卡内部的横向留白（分隔线两端各缩进这么多，不顶到圆角上）
+const RES_PAD_X := 12.0
 
-## 命令卡：3×3，每格 260/3 ≈ 86.6667 —— 内容随右侧页签实时切换
-## ★ 按 13/12 等比放大：240×240 → 260×260，左缘 1580 → 1551.6667。
-const CARD_RECT := Rect2(796.0, 803.0, 842.0, 277.0)
+## 手牌（命令卡）区：3×3 的格子尺寸 + 扇形牌的排布范围。
+##
+## ★★ 2026.11.14（用户口径）：「手牌放至屏幕底部中央」——
+##   左缘 **796 → 539** = `(1920 − 842) / 2`，即整块在屏幕里**水平居中**；
+##   竖直方向不动（仍是贴底 803..1080）。
+##   ⚠️ 它是**居中对齐**，不是「贴右」：宽窗口下必须跟着屏幕中心走，
+##     所以摆放走 `apply_bottom_center()`，命中区走 `interactive_rects` 里的
+##     `center_shift`（只吃半个 `shift.x`）。写错成贴右 / 全 shift 的症状是
+##     「窗口一拉宽，手牌还停在 1920 设计空间的中间、点它没反应」。
+const CARD_RECT := Rect2(539.0, 803.0, 842.0, 277.0)
 const CARD_COLS := 3
 const CARD_ROWS := 3
 const CARD_SLOTS := CARD_COLS * CARD_ROWS
@@ -204,17 +264,16 @@ const CARD_KEY_TO_SLOT := {
 ##   底边钉住不动，所以既不会压住命令卡，也不会掉出屏幕（与详细信息面板
 ##   「贴下沿、向上长」是同一条思路）。
 ##
-## ★ 贴右下角：`apply_rect(..., anchor_right = true, anchor_bottom = true)` ——
-##   窗口变宽 / 变高时它跟着命令卡走，永远停在命令卡**正上方**、右缘永远与页签列齐平。
-## ------------------------------------------------------------------
-## 368.3333：命令卡左缘 → 页签列右缘（= 屏幕右缘）那一整段。⚠️ 写成 `DESIGN_W − 左缘`
-## 而不是 `CARD_RECT.size.x`：右缘钉的是**页签列的右缘**，不是命令卡右缘。
-const HOVER_RIGHT := 1894.0
-const HOVER_W := HOVER_RIGHT - CARD_RECT.position.x
+## ★★ 2026.11.14 第二轮：手牌移到**屏幕底部中央**（见 CARD_RECT）之后，
+##   「右缘与页签列齐平」这条口径**不再成立**（页签还在最右边，中间隔着一大段空白）。
+##   ⇒ 悬停面板改成**与手牌同宽、同中心**：宽度 = `CARD_RECT.size.x`，
+##     水平位置跟着手牌一起居中。这样它永远压在手牌正上方，
+##     不会横穿整个屏幕去够右侧页签。
+##   ⚠️ 摆放走 `apply_bottom_center()`（见 hover_tip.gd），不是贴右。
+const HOVER_W := CARD_RECT.size.x
 const HOVER_GAP := 8.0                          # 与命令卡顶边的竖直距离（需求里说「自己定」）
 const HOVER_PAD := 8.0                          # 文字离面板四边的留白
 const HOVER_TITLE_GAP := 5.0                    # 标题与正文之间的缝
-## 812：命令卡顶边 820 − 8。右下组放大后浮窗整体上移 20px。
 const HOVER_BOTTOM := CARD_RECT.position.y - HOVER_GAP
 const HOVER_MIN_H := 32.0                       # 兜底下限（只有一行标题时也不会薄成一条线）
 ## 兜底上限：面板再高也不许顶出屏幕上沿（文案长到离谱时裁掉，而不是画到看不见的地方）
@@ -236,8 +295,34 @@ static func hover_rect(h: float) -> Rect2:
 const TABS_RECT := Rect2(1740.0, 914.0, 154.0, 94.0)
 const TABS_COUNT := 2
 
-## 设置按钮
-const SETTINGS_RECT := Rect2(1832.0, 33.0, 54.0, 54.0)
+## ------------------------------------------------------------------
+## ★★ 选项页不再有「屏幕上的按钮」（2026.11.14 第三轮，用户口径：
+##   「把选项按钮删除，相应的打开菜单逻辑接到 esc 下」）。
+##   入口改成纯键盘 / 系统手势：
+##     · PC：`Esc`（`input_controller.handle_key` 的 Esc 级联最后一档，
+##       什么都没取消掉时才开菜单；菜单开着时 Esc 关闭 —— 见 `hud.handle_key`）
+##     · 安卓：返回键（`main._on_android_back`：菜单开着 → 关；否则 → 开）
+##   ⇒ 原来这里的 `SETTINGS_RECT` / `SETTINGS_RADIUS` 常量已删除。
+##     别再为了「有个可见入口」把按钮加回来：那是用户明确要求删掉的。
+## ------------------------------------------------------------------
+
+## ------------------------------------------------------------------
+## ★★ 播报 / 对话栈的锚（2026.11.14；第二轮改到详情栏上方）
+##
+## 原来它贴在**左下小地图的上沿**（`MAP_RECT.y - gap`）。地图挪到右上角之后，
+## 那个位置就空了 —— 但播报不该跟着搬到右上（会压住地图与将领列），
+## 所以给它自己的锚。
+##
+## ★★ 第二轮：**详情栏**按用户要求往左靠到 x=27（DETAIL_V2_RECT），于是
+##   左下角那一整块被它占了 —— 播报栈再贴屏幕底就压在一起。
+##   ⇒ 播报栈改成**压在详情栏顶边之上**（下沿 786 = 794 − 8），高度按内容向上长：
+##     左列从下往上是「详情栏（贴底）→ 播报栏」。
+##   ★ x / 宽度沿用原来那 328 宽（见 NOTICE_W），文字排版完全不变。
+## ------------------------------------------------------------------
+const NOTICE_X := 27.0
+const NOTICE_W := 328.0
+## 播报栈的**下沿**（设计空间 y；= 详情栏顶边 794 − 8 的缝）
+const NOTICE_BOTTOM := 786.0
 
 ## ★★ 选项页是**居中的模态 overlay**（view/options_panel.gd），不再有「贴按钮下方」的
 ##   下拉菜单，所以这里不再有 SETTINGS_MENU_RECT / ITEM_H / GAP / SLOTS。
@@ -823,6 +908,30 @@ static func apply_top_center(c: Control, r: Rect2) -> void:
 	c.offset_bottom = r.position.y + r.size.y
 
 
+## 底部居中（手牌）：左右锚点钉在 50%，**竖直贴底**。
+##
+## ★★ 2026.11.14（用户口径）：「手牌放至屏幕底部中央」。
+## ★ 与 `apply_top_center` 同一套思路，只是竖直方向取「贴下沿」（anchor_bottom = 1）
+##   —— 窗口变高时手牌仍然贴底，不会被拉到屏幕中间。
+static func apply_bottom_center(c: Control, r: Rect2) -> void:
+	c.anchor_left = 0.5
+	c.anchor_right = 0.5
+	c.offset_left = r.position.x - DESIGN_W * 0.5
+	c.offset_right = c.offset_left + r.size.x
+	c.anchor_top = 1.0
+	c.anchor_bottom = 1.0
+	c.offset_top = r.position.y - DESIGN_H
+	c.offset_bottom = r.position.y - DESIGN_H + r.size.y
+
+
+## 底部居中控件的**命中区修正量**：只要半个横向富余。
+## ★ 贴左的控件 +0、贴右的控件 +完整 `shift.x`、居中的控件 +`shift.x / 2`
+##   —— 三种锚法必须各用各的，混用就是「看得见但点不中」。
+static func center_shift(view_size: Vector2) -> Vector2:
+	return Vector2(maxf(0.0, view_size.x - DESIGN_W) * 0.5,
+		maxf(0.0, view_size.y - DESIGN_H))
+
+
 ## ★★ 详细信息面板：**固定贴左、贴底**（988×260）。
 ## 不再做「右缘钉到阵营列」的拉伸 —— 手机端不需要和右侧页签相连，尺寸恰好即可。
 static func apply_fixed_detail(c: Control) -> void:
@@ -865,10 +974,19 @@ static func interactive_rects(view_size: Vector2, detail_visible: bool = true,
 		var sr := squad_slot_rect(i)                        # 贴右上：跟着视口右边走
 		sr.position += shift
 		out.append(sr)
-	out.append(MAP_RECT)                                        # 左下小地图，贴左下
+	# ★★ 2026.11.14：小地图从「左下」搬到「右上」⇒ 它现在**也贴右边**，
+	#   必须同样吃 `shift.x`（窗口变宽时跟着右移）。
+	#   ⚠️ 原来这里是一句裸的 `out.append(MAP_RECT)`（左下角不需要横向修正）——
+	#     照抄会把命中区留在屏幕左边，症状是「点地图没反应、右边那一片却挡着滚屏」。
+	var map_r := MAP_RECT
+	map_r.position += shift
+	out.append(map_r)
 	if command_ui_visible:
+		# ★★ 2026.11.14：手牌改成**底部居中** ⇒ 命中区只吃**半个**横向富余
+		#   （见 `center_shift`）。这里曾经用贴右那一套 `shift`，窗口一拉宽
+		#   命中区就会整块偏到右边去。
 		var hand := CARD_RECT
-		hand.position += shift
+		hand.position += center_shift(view_size)
 		out.append(hand)
 		for i in mini(TABS_COUNT, maxi(0, tabs_count)):
 			var r2 := tab_button_rect(i, mini(TABS_COUNT, maxi(1, tabs_count))) # 实际牌签
@@ -878,9 +996,8 @@ static func interactive_rects(view_size: Vector2, detail_visible: bool = true,
 	#   真正能点的只有成员格 / 其他部队格那几颗小方块（由控件自己算，
 	#   见 detail_v2.interactive_rects() → hud 的 `blocks_edge_scroll`）。
 	#   整块登记的话，底边那 377px 会永远滚不动（面板只有文字的地方也该让路）。
-	var s := SETTINGS_RECT
-	s.position.x += shift.x                                     # 贴右上
-	out.append(s)
+	# ★★ 2026.11.14 第三轮：选项按钮删掉 ⇒ 这里不再追加 SETTINGS_RECT
+	#   （它曾经是「鼠标停在右上圆币上时要拦住边缘滚屏」的那一条）。
 	return out
 
 
@@ -897,8 +1014,14 @@ static func interactive_rects(view_size: Vector2, detail_visible: bool = true,
 ## ★ 左下小地图**不在**名单里：它是地图本身（不是 ui 栏），鼠标停在上面时滚轮照旧缩放地图。
 ## ★ 贴边：详细信息贴左（只跟 y 走）；命令卡 / 页签贴右下（x/y 都跟）。
 ## @param detail_visible 详细信息是否可见。隐藏时只去掉详情区域；没有左列盾徽占位。
-## D6 新版详情面板的命中矩形（左移后 x=400，视觉宽 616.5；旧的 988 只留给兼容测试）。
-const DETAIL_V2_RECT := Rect2(395.0, 794.0, 377.0, 260.0)
+## D6 新版详情面板的命中矩形（**贴左**：x 27..404、y 794..1054）。
+##
+## ★★ 2026.11.14 第二轮（用户口径）：「将部队详细信息栏往屏幕左侧靠」——
+##   左缘 395 → **27**（与其它贴左面板同一条留白），宽度 377 不变。
+##   ⚠️ 它是 `detail_v2.gd` 真正的摆放几何（`apply_rect` 用的就是这个常量）：
+##     以前 detail_v2 里还抄了一份 `PANEL_RECT`，改一处忘一处就会「看得见但点不中」，
+##     现在**只留这一份**，detail_v2 直接引用。
+const DETAIL_V2_RECT := Rect2(27.0, 794.0, 377.0, 260.0)
 
 
 ## 新版底栏命中：详情用 616.5 宽，且**不再登记已删除的阵营占位**。
@@ -929,8 +1052,9 @@ static func bottom_bar_rects(view_size: Vector2, detail_visible: bool = true,
 		f.position.y += shift.y
 		out.append(f)
 	if command_ui_visible:
-		var card := CARD_RECT             # 贴右下：右下都修正
-		card.position += shift
+		# ★★ 2026.11.14：手牌是**底部居中**的 ⇒ 只吃半个横向富余（见 center_shift）。
+		var card := CARD_RECT
+		card.position += center_shift(view_size)
 		out.append(card)
 		var tabs := TABS_RECT
 		tabs.position += shift

@@ -14,7 +14,7 @@ func _initialize() -> void:
 
 
 func _cases() -> void:
-	# 槽位现在是 1..6，原样写；`% 10` 只作兜底（10 → 0）。
+	# 槽位现在是 1..5，原样写；`% 10` 只作兜底（10 → 0）。
 	eq(OverlayRes.badge_text(1), "1", "★ 第 1 支写 1")
 	eq(OverlayRes.badge_text(6), "6", "★ 第 6 支写 6")
 	eq(OverlayRes.badge_text(10), "0", "★ 兜底：10 按 %10 写 0")

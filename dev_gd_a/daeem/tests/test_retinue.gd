@@ -407,9 +407,10 @@ func _test_recruit(cfg) -> void:
 	ok(CommandRes.apply(w, cfg, {
 		"kind": "recruit", "unit_kind": kind, "leader_id": g2.id, "faction": "p1"}),
 		"选中将领 2 之后，招募命令被接受（入队）")
-	eq(g2.train_kind, kind, "★ 队列排在将领 2 名下")
+	# ★★ 2026.11.14（用户口径）：招募即时化 ⇒ 招到**将领 2 名下**，而且当场就出兵
+	eq(w.retinue_of(g2.id).size(), per + 1, "★★ 兵招到了将领 2 名下，并且当场就出来了")
 	ok(not g1.is_training(), "★ 将领 1 名下没有队列（没招错人）")
-	eq(w.retinue_of(g2.id).size(), per, "★ 入队不会立刻生成单位（要读条 10 秒）")
+	eq(g2.train_queue_size(), 0, "★ 没有队列（即时招募）")
 
 	for _i in 601:
 		w.tick(DT)

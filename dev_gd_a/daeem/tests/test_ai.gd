@@ -108,7 +108,9 @@ func _test_garrison_free_recruit(cfg) -> void:
 	g.garrison_recruit_timer = 0.0
 	var before_pop := float(z.get("population", 0.0))
 	GarrisonAiRes.update(w, cfg, 0.05)
-	ok(g.is_training() or g.train_queue_size() > 0, "★ 脱战满员不足 → 无消耗招兵（进入读条）")
+	# ★★ 2026.11.14：招募即时化 ⇒ 免费招兵也是当场出兵（没有读条/队列了）
+	ok(not g.is_training() and g.train_queue_size() == 0,
+		"★ 脱战满员不足 → 无消耗招兵，且是**当场出兵**（没有读条）")
 	near(float(z.get("population", 0.0)), before_pop, 1e-6, "★ 免费招兵不动人口")
 
 func _test_garrison_revive(cfg) -> void:

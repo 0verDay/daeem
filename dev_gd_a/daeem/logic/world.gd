@@ -3183,8 +3183,8 @@ func can_recruit(kind: String, leader_id: String, faction: String,
 	var pack: int = maxi(1, recruit_spawn_types(kind, lf).size())
 	if leader.retinue_size(self) + pack > effective_retinue_cap(leader):
 		return "cap"
-	if leader.train_queue_size() >= recruit_queue_max():
-		return "queue_full"
+	# ★★ 2026.11.14：招募即时化之后没有队列了 ⇒「队列已满」这一关整个删掉。
+	#   编制上限那一关（上面 `cap`）仍然在，它才是真正管「能招几个兵」的东西。
 	return ""
 
 
@@ -3856,24 +3856,14 @@ func start_recruit(kind: String, leader_id: String, faction: String,
 	# 2) 扣人口（**同一个区划**：将领站在哪就从哪扣）
 	if zone != null and pop > 0.0:
 		zone["population"] = maxf(0.0, float(zone["population"]) - pop)
-	# 3) 记账：将领阵亡时按这三个数退款（不看「当前队列还在不在」）
-	leader.train_cost_food += float(cost.get("food", 0.0))
-	leader.train_cost_gold += float(cost.get("gold", 0.0))
-	leader.train_cost_pop += pop
-	leader.train_zone_id = int(zone["id"]) if zone != null else -1
-	# 4) 入队：大格子空着就直接开始读条，否则排到小格子里
-	if leader.train_kind == "":
-		_start_training(leader, kind)
-	else:
-		leader.train_queue.append(kind)
-	# 5) ★★ 不再钉住 / 不再收队（2026.10.24 改动，用户口径）：
-	#    「可以在己方区划内把单位放进招募队列，随后该部队可随意移动，
-	#      读条读完在将领周围生成单位」。
-	#    ⇒ 这里**不调** `leader.stop()`，也不清附属兵的命令；将领边打边招、
-	#      边走边招都是允许的（战斗只会让读条暂停，见 `_tick_recruitment`）。
-	#    ★ `train_anchor` 保留为「最后一次下单的位置」，但不再参与任何位移逻辑。
+	# ★★ 2026.11.14（用户口径）：「单位招募时不需要队列了，招募变为即时的，
+	#   只要拖拽单位牌生效就是招募完成」+「训练时长 train_sec」也不再需要。
+	#   ⇒ 不再记账 `train_cost_*`（没有队列可退）、不再入队、不再读条：
+	#     扣完钱就地生成（走与「读条完成」**同一条**出生路径 `_spawn_from_recruit`，
+	#     所以出生位置 / 组合单位 / 继承命令 / 光环那一整套一点没变）。
+	#   ⚠️ 顺序仍是「先校验 → 再扣费 → 最后生成」：反过来会出现「钱扣了、兵没出来」。
+	_spawn_from_recruit(leader, kind)
 	leader.train_anchor = leader.pos
-	push_event({"type": "recruit_queued", "leader": leader, "kind": kind})
 	return true
 
 
@@ -4227,6 +4217,21 @@ func general_recruit_slots(faction: String = "") -> Array:
 ## ★★ 合作模式：这个席位有「出战将领池」时用它（见 `_general_pool_kinds`）。
 func general_recruit_roster(faction: String = "") -> Array:
 	return _general_pool_kinds(faction)
+
+
+## ★★ 2026.11.14（用户口径）：「当将领被招募后，将领招募页的该将领牌会消失」。
+##
+## 招募页原来列的是**固定的 9 位**（`general_recruit_roster`），招走之后只是变灰占位。
+## 现在给界面一个「还没被招走」的清单：已拥有的直接从列表里去掉，牌位自然收起来。
+## ⚠️ `general_recruit_roster()` **不改**（它是「九宫格有哪些将领」的权威清单，
+##   测试 / 编辑器 / AI 都还在按它看全局），这里只是给它加一层过滤。
+func general_recruit_available(faction: String = "") -> Array:
+	var out: Array = []
+	for k in general_recruit_roster(faction):
+		if general_recruit_owned(faction, String(k)):
+			continue
+		out.append(k)
+	return out
 
 
 ## 某位可招募将领的**阶数**（`unit.general.tiers[序号]`，0~3；招将门槛用它）。
@@ -4820,17 +4825,14 @@ func start_zone_recruit(kind: String, zone_id: int, faction: String) -> bool:
 	# ★★ 先把「这一位当前手牌上的特性」固化下来（**必须在上面的池收口之前**：
 	#   `_general_pool_on_recruited()` 会立刻重抽下一手，那之后就查不到这一张了）。
 	var trait_ids := general_recruit_traits_for(faction, kind)
-	if String(z.get("train_kind", "")) == "":
-		# 队列原本是空的 → 这一单立刻开读条，并**记下招募方**（读完按它出兵）
-		z["train_faction"] = faction
-		_start_zone_training(z, kind, trait_ids)
-	else:
-		(z["train_queue"] as Array).append(kind)
-		(z["train_traits"] as Array).append(trait_ids.duplicate())
-	# ★★ 池 / 冷却收口（本轮新增）：招走的那位从本次「盒」里拿掉、起全局冷却、
-	#    重抽下一手。⚠️ 必须在「队列真的排上了」之后 —— 被拒的单不能消耗池子。
+	# ★★ 池 / 冷却收口：招走的那位从本次「盒」里拿掉、起全局冷却、重抽下一手。
+	#    必须在真正出兵**之前**（`_general_pool_on_recruited()` 会立刻重抽下一手，
+	#    之后 `general_recruit_traits_for()` 就查不到这一张了）。
 	_general_pool_on_recruited(faction, kind, zone_id)
-	push_event({"type": "zone_recruit_queued", "zone_id": zone_id, "kind": kind})
+	# ★★ 2026.11.14（用户口径）：「区划招将领也一起即时化」——
+	#   不再入队 / 不再读条，付完钱当场把将领放到区划中心旁边
+	#   （走与「读条完成」同一条出生路径 `_spawn_zone_recruit`）。
+	_spawn_zone_recruit(z, kind, faction, trait_ids)
 	return true
 
 
@@ -4895,8 +4897,13 @@ func _tick_zone_recruitment(dt: float) -> void:
 ## ★ 生成的是**一条新单位**，而且它 `leader_id` 为空 ⇒ 它自己就是队长：
 ##   会作为新的一支部队出现在左侧部队列表里，之后也能拿它当招募对象
 ##   （需求要的是「招募将领」，不是一个挂在别人名下的兵）。
-func _spawn_zone_recruit(zone, kind: String) -> Variant:
-	var faction := String(zone.get("train_faction", ""))
+## @param faction  下单方（即时招募显式传进来；留空则读队列那套旧字段）
+## @param trait_ids 这一位的特性（同上；留空则读 `zone.train_trait`）
+func _spawn_zone_recruit(zone, kind: String, faction_in: String = "",
+		trait_in: Array = []) -> Variant:
+	var faction := faction_in
+	if faction == "":
+		faction = String(zone.get("train_faction", ""))
 	if faction == "":
 		faction = String(zone["owner"])
 	if faction == "":
@@ -4918,7 +4925,7 @@ func _spawn_zone_recruit(zone, kind: String) -> Variant:
 	#   （`general_recruit_traits_for` → `_start_zone_training`），读完这里授给将领本人。
 	#   ★★ 2026.11：现在是**一组** id（一位将领可以带多条）。
 	#   ⚠️ 必须在 `_start_next_zone_queue()` 之前读 —— 它会把 train_trait 换成下一单的。
-	var raw_trait: Variant = zone.get("train_trait", [])
+	var raw_trait: Variant = trait_in if not trait_in.is_empty() else zone.get("train_trait", [])
 	var trait_ids: Array = raw_trait if typeof(raw_trait) == TYPE_ARRAY else [String(raw_trait)]
 	if not trait_ids.is_empty():
 		u.set_general_traits(cfg, trait_ids)
@@ -6792,10 +6799,10 @@ func tick(dt: float) -> Array:
 	#      ⚠️ 必须跑在下面的「清理离场单位」之前：单机不复活，阵亡的将领会在
 	#         同一帧被摘出 world.units，那时退款就找不到它了（见 _release_recruit）。
 	var _t_recruit := _prof()
-	_tick_recruitment(dt)
-	# ★ 区划招募（区划 = 兵营，招将领）走同一段预算：与上面那条一样，
-	#   必须在「清理离场单位」之前跑完（它要在本帧内把读完的那一单落成单位）。
-	_tick_zone_recruitment(dt)
+	# ★★ 2026.11.14：招募（兵种 / 区划招将领）都改成**即时**了 ——
+	#   没有队列、没有读条，所以这里不再推进 `_tick_recruitment` / `_tick_zone_recruitment`。
+	#   这两个函数连同 `_start_training` / `_start_zone_training` / `_start_next_zone_queue`
+	#   已经删掉（留着就是死代码，而且它们都在读 queue 字段）。
 	# ★★ 将领招募冷却（本轮新增）：纯倒计时，不依赖读条 —— 放在招募后面一起算。
 	_tick_general_recruit_cooldowns(dt)
 	# ★★ 建筑升级 + 区划特化的读条（读完在**本帧内**落效果：等级 +1 / 特化生效）。

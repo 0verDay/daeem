@@ -188,10 +188,16 @@ func _on_quit_confirmed() -> void:
 
 ## ★★ 安卓返回键（`project.godot` 已把 `config/quit_on_go_back` 关掉，引擎不会先撤）。
 ##
-## 三档（用户拍板的口径）：
+## 四档（2026.11.14 第三轮调整过第 3 档：选项按钮删掉后，返回键就是局内菜单的入口）：
 ##   1. 退出确认已经开着 → 再按返回 = **取消**它；
-##   2. 局内选项页开着 → 先关选项页（返回键的第一层语义是「退出当前浮层」）；
-##   3. 其余（主菜单 / 入场页 / 局内无浮层）→ 弹退出确认。
+##   2. 战役过渡中 → 吞掉（不可取消）；
+##   3. 局内 → **选项页开着就关、关着就开**（= PC 的 Esc，见 input_controller 的 Esc 级联）；
+##   4. 其余（主菜单 / 入场页）→ 弹退出确认。
+##
+## ⚠️ 第 3 档以前是「选项页开着 → 关；否则 → 弹退出确认」。改成「否则 → 开选项页」的原因：
+##   屏幕上那颗选项按钮已被用户要求删除，而安卓没有 Esc —— 不改的话手机端
+##   就再也进不去设置页（全屏 / 返回主菜单都在里面）。
+##   退游戏的路径因此变成「返回键 → 选项页 → 返回主菜单」。
 func _on_android_back() -> void:
 	if _quit_confirm != null and is_instance_valid(_quit_confirm) and _quit_confirm.is_open():
 		_quit_confirm.cancel()
@@ -201,10 +207,10 @@ func _on_android_back() -> void:
 		return
 	if game != null and is_instance_valid(game):
 		var hud = game.hud
-		if hud != null and is_instance_valid(hud) \
-				and hud.options_panel != null and is_instance_valid(hud.options_panel) \
-				and hud.options_panel.is_open():
-			hud.options_panel.close()
+		if hud != null and is_instance_valid(hud) and hud.options_panel != null \
+				and is_instance_valid(hud.options_panel):
+			# ★ toggle：开着就关、关着就开（与 Esc 同一条语义）
+			hud.toggle_settings_menu()
 			return
 	if start_screen != null and start_screen.handle_back():
 		return

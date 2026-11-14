@@ -41,6 +41,11 @@ signal toast(text: String)
 ##   由右栏标签的单击 / 双击与数字键的统一手势逻辑发出；HUD 接它去刷详情面板。
 ##   （原来这条信号长在 squad_panel 上，只有鼠标点标签会发；现在键盘 / 触摸也走同一条。）
 signal general_focused(number: int)
+## ★★ 2026.11.14 第三轮（用户口径：「把选项按钮删除，相应的打开菜单逻辑接到 esc 下」）：
+##   Esc 一路取消到底、**没东西可取消**时，由这里请求「开选项页」。
+##   ⚠️ 本控制器不认识 HUD / 选项页（同其它信号一样只报意图）——
+##     接的是 `hud._on_open_menu_requested()`。
+signal open_menu_requested()
 
 var cfg: ConfigRes = null
 var world = null
@@ -188,6 +193,16 @@ var observer_ai_orders: bool = false
 var hover_tile: Vector2i = Vector2i(-1, -1)
 var hover_valid: bool = false
 var mouse_world: Vector2 = Vector2.ZERO
+## ★★ 2026.11.14（操作牌改「拖出选点」）：一次性覆盖「这一单指令打在哪个点上」。
+##
+## 操作牌拖出手牌松手时（`issue_order_at()`），落点来自**拖拽松手的位置**，不是鼠标当前位置
+## —— `_issue_order_click()` 原来只认 `mouse_world` / `get_global_mouse_position()`。
+## 这里放一个「本单有效」的覆盖字典 `{world: Vector2, screen: Vector2}`，那条共用路径里的
+## `_order_world()` / `_order_screen()` 会优先用它；为空 = 走鼠标那套（点地图那一路不变）。
+var _order_point: Variant = null
+## 上一次「拖出下达」的拒因（"" = 成功；"no_units" / "no_target" / "observer"）。
+## ★ 只给 `issue_order_at()` 的调用方（hud）用来决定提示文案，点击那条路不读它。
+var order_reject: String = ""
 ## ★★ 悬停高亮（桌面端；手机端由 `game_scene3d` 整体关掉）：
 ##   · `hover_unit`      = 鼠标底下的单位（敌 / 友 / 己都算；只认「活着 + 看得见 + 非濒死」，
 ##                         判据与左键点选同一条）
@@ -244,25 +259,42 @@ var drag_current_world: Vector2 = Vector2.ZERO
 ##      它只负责「框到哪些单位」（`box_select` 的判定），显示与判定各用各的口径。
 var drag_screen_box: Rect2 = Rect2()
 var drag_screen_valid: bool = false
-## 左键按下之后、还没判定成「点击还是拖框」的那一段
+## 左键按下之后、还没判定成「点击还是拖拽平移」的那一段
 var _drag_pending: bool = false
-## 这次拖框是不是追加（Shift + 左键拖）
-var _drag_additive: bool = false
 ## 按下的屏幕坐标（只用来算「移动了多少像素」——阈值是像素口径，与相机缩放无关）
 var _drag_press_screen: Vector2 = Vector2.ZERO
-## ★★ 框选期间冻住相机（见 is_dragging_box() 的说明）：起点是格坐标，
-##    相机一动它就会在屏幕上漂 —— 那就是「右上角起点自己跑」的根因。
+## ★★ 2026.11.14：这一次左键手势**已经变成拖拽平移**了（越过阈值）。
+##   松手时按它决定「起不起惯性滑行」。
+var _drag_pan_active: bool = false
+## 平移中「上一帧的屏幕坐标」（算每帧差量）与「整段手势走过的像素」（判是不是真拖了）。
+var _drag_pan_last: Vector2 = Vector2.ZERO
+var _drag_pan_moved: float = 0.0
+## ★★ 2026.11.14：**只剩手机端**还在用的「框选期间冻住相机」。
+##   PC 的左键拖框已经取消（改成平移），但手机双指框选还在（`touch_box_set` /
+##   `touch_box_end` → `box_select_screen`），那一路仍要冻相机：
+##   框的起点是格坐标，相机一动它就漂（「右上角起点自己跑」的根因）。
 var _drag_freeze_cam: bool = false
 
-## ★★ S1：左键**按下那一刻**的选中快照（拖框取消时恢复）。
+## ★★ 2026.11.14（用户口径）：「拖拽移动时不需要取消选中」。
 ##
-## 为什么需要它：左键的单击行为在**按下**就发生了（这是跟手的关键），
-## 而拖框要等松手才生效。于是「按下 → 开始拖 → 按 Esc 反悔」时，
-## 按下那一下可能已经把原来的选中改掉 / 清空了；`_cancel_drag()` 只清拖框状态
-## 是恢复不了的（旧注释写「不动已有选中」，实际做不到）。
-## 现在按下时存一份完整快照，Esc 取消时按原样恢复。
+## 为什么需要这一份快照：左键**按下那一下**就已经执行了「单击」（选中 / 清空选中，
+## 这是跟手的关键），而「这一下其实是拖拽平移」要等越过阈值才知道。
+## 不恢复的话，玩家在空地上拖一下地图，选中的队伍就没了 —— 正是用户报的现象。
+## ⇒ 按下时存一份完整快照，真的转成平移时按原样恢复（`_restore_selection_snapshot()`）。
 var _press_sel_snapshot: Dictionary = {}
 var _press_sel_saved: bool = false
+##   · `_pan_vel`   —— 拖动中指数平滑出来的屏幕速度（像素/秒），松手那一刻的初速；
+##   · `_pan_fling` —— 正在滑行的速度向量（每帧衰减，见 `tick_pan_fling()`）；
+##   · 任何新的相机输入都会 `_cancel_pan_fling()`（按下 / 滚轮 / 中键 / 键盘 / 触屏）。
+var _pan_vel: Vector2 = Vector2.ZERO
+var _pan_fling: Vector2 = Vector2.ZERO
+var _pan_fling_active: bool = false
+## 滑行速度上限（像素/秒）：快速一甩不至于把镜头甩出几屏
+const PAN_FLING_MAX := 2600.0
+## 低于这个速度就不滑了（像素/秒）——否则会有肉眼看不出的「永久微飘」
+const PAN_FLING_MIN := 60.0
+## 滑行衰减时间常数（秒）：0.16 ⇒ 约 0.5 秒滑完
+const PAN_FLING_TAU := 0.16
 
 ## ★★ 鼠标**中键拖拽平移**视角（按住中键拖动 = 抓着地图拖）。
 ##   · 与框选那条状态机**互斥**（不同按键），优先级见 `handle_mouse_motion`；
@@ -309,15 +341,15 @@ func setup(p_cfg: ConfigRes, p_world, p_camera_rig, p_palette = null,
 	hover_from_box = false
 	_hover_touch_tick = 0
 	order_mode = ""
-	# 框选那条状态机也归零（重开一局时别留着上一局的半个框）
+	# 左键手势 / 平移那条状态机也归零（重开一局时别留着上一局的一半手势）
 	_drag_pending = false
 	drag_active = false
 	drag_screen_valid = false
-	_drag_freeze_cam = false
+	_drag_pan_active = false
+	_drag_pan_moved = 0.0
 	_pan_pending = false
 	_touch_panning = false
-	_press_sel_snapshot = {}
-	_press_sel_saved = false
+	_cancel_pan_fling()
 	reset_general_gestures()
 
 
@@ -341,7 +373,12 @@ func poll_gestures(now_ms: int = -1) -> void:
 
 
 ## 每帧更新一次「鼠标在哪、指向哪个地块、指着谁」——渲染要用，且**只有这里**读鼠标位置
-func poll_mouse() -> void:
+##
+## ★★ 2026.11.14：顺手推进「松手后的惯性滑行」（`tick_pan_fling`）。
+##   放这里是因为它每帧都被 `game_scene3d._process` 调一次、而且拿得到 dt；
+##   暂停时调用方传 dt = 0 ⇒ 滑行冻结（与其它计时同一口径）。
+func poll_mouse(dt: float = 0.0) -> void:
+	tick_pan_fling(dt)
 	if world == null:
 		return
 	# ★ 鼠标位置一帧只读一次（地块判定与悬停拾取共用同一个点）
@@ -520,7 +557,7 @@ func handle_key(event: InputEventKey) -> bool:
 		return false
 	var k := event.keycode
 
-	# 1..6：与右栏标签**完全同一套手势**（槽位上限 = UiLayoutRes.SQUAD_SLOTS）。
+	# 1..5：与右栏标签**完全同一套手势**（槽位上限 = UiLayoutRes.SQUAD_SLOTS）。
 	#   · 按下 → 开始计时（长按到阈值 = 跟随该将领）；
 	#   · 抬起 → 单击 / 双击判定（反选 / 快速选中 + 跳镜头）。
 	# ★ 槽位由 `view/team_slots.gd` 分配：首次按开局顺序 1..N，之后阵亡 / 复活都不改号；
@@ -566,7 +603,14 @@ func handle_key(event: InputEventKey) -> bool:
 			else:
 				if not _action_ok("select"):
 					return true
-				select_units([])
+				# ★★ 2026.11.14 第三轮：**什么都没得取消时，Esc = 开选项页**
+				#   （屏幕上那颗选项按钮已经按用户要求删掉，Esc / 安卓返回键是唯一入口）。
+				#   ⚠️ 顺序不能反：先清选中、再开菜单 —— 玩家按 Esc 的手感是
+				#     「一层层退出来」，而选项页是最外层。
+				if _nothing_selected():
+					open_menu_requested.emit()
+				else:
+					select_units([])
 			return true
 		KEY_N:
 			if not _action_ok("ui"):
@@ -619,18 +663,20 @@ func handle_mouse_button(event: InputEventMouseButton) -> bool:
 		if not (_action_ok("select") or _action_ok("build")):
 			return true
 		if event.pressed:
+			_cancel_pan_fling()
 			_begin_drag(event)
-			# 单击行为照旧**在按下那一刻**发生（不改老手感、老测试）：
-			# 越过阈值之后，松手那一下会用框选结果覆盖掉它。
-			_on_left_click(event.shift_pressed)
+			# 单击行为照旧**在按下那一刻**发生；越过阈值之后这一下手势变成**拖拽平移**，
+			# 松手时不会再改选中（框选已取消，见 `_finish_drag()`）。
+			_on_left_click(false)
 		else:
 			_finish_drag()
 		return true
 	# ★★ 中键：按住拖动 = 平移视角（`handle_mouse_motion` 里算位移）。
-	#   按下的那一刻只记状态，松开就结束 —— 与左键那条框选状态机完全无关。
+	#   按下的那一刻只记状态，松开就结束 —— 与左键那条手势状态机完全无关。
 	if event.button_index == MOUSE_BUTTON_MIDDLE:
 		if not _action_ok("camera"):
 			return true
+		_cancel_pan_fling()
 		_pan_pending = event.pressed
 		if event.pressed:
 			_pan_last_screen = event.position
@@ -651,37 +697,42 @@ func handle_mouse_button(event: InputEventMouseButton) -> bool:
 		MOUSE_BUTTON_WHEEL_UP:
 			if not _action_ok("camera"):
 				return true
+			_cancel_pan_fling()
 			camera_rig.zoom_at(event.position, step)
 			return true
 		MOUSE_BUTTON_WHEEL_DOWN:
 			if not _action_ok("camera"):
 				return true
+			_cancel_pan_fling()
 			camera_rig.zoom_at(event.position, 1.0 / step)
 			return true
 		MOUSE_BUTTON_RIGHT:
-			if not _action_ok("order"):
-				return true
-			# ★ 双击 = 行军攻击（Godot 自己带双击判定，不用手写计时器）
-			_on_right_click(event.double_click)
+			# ★★ 2026.11.14（用户口径）：「右键取消掉移动/行军/攻击指令，完全由出牌代替」+
+			#   「右键完全空着」⇒ 对**玩家**而言右键不再做任何事（发指令、退出模式、
+			#   取消选统统没有；退出靠 Esc 与再点同一格，见 handle_key / set_build_type）。
+			#   ⚠️ 唯一保留的一支是**观战授权**（ai_test_2）里「右键 = 取消 AI 面板选点」——
+			#      那不是下达命令，而且去掉了 test_ai_observer 会失去唯一的取消入口。
+			if observer_mode and observer_ai_orders \
+					and (order_mode == "ai_march" or order_mode == "ai_mass"):
+				set_order_mode("")
 			return true
 	return false
 
 
-## 鼠标移动：只用来推进框选那条状态机（悬停由 `poll_mouse()` 每帧刷）。
+## 鼠标移动：推进「左键手势」状态机 —— 越过阈值就变成**拖拽平移**（悬停由 `poll_mouse()` 每帧刷）。
+##
+## ★★ 2026.11.14（用户口径）：「左键拖拽改为移动视角，取消掉拖拽选框」。
+##   ⇒ 左键这条手势不再有「框选」这一档：按下 → 动够阈值 → 变成平移（抓着地图拖），
+##     松手 → 带一点惯性滑行（`_pan_fling`）。
+##   · 平移量与中键那条**完全同一口径**：`camera_rig.pan_screen(-delta)`，1:1 跟手；
+##   · 阈值仍走 `ui.drag_select_min_px`（沿用旧配置，不再改 key 名）——
+##     「点一下算选中、拖出一点算平移」这条分界不能没有，否则单击会带着几像素抖动。
 ##
 ## ★ 位置换算走 `_screen_to_logic(event.position)`（引擎的画布变换，与
 ##   `get_global_mouse_position()` 内部同一条路）——见那个函数的注释。
-## ★ 阈值判据用的是**屏幕像素**（`event.position`），所以「拖多远才算框选」与缩放无关。
-##
-## ★★ 拖框期间**不准相机再动**（本轮修 bug）：起点 `drag_start_world` 是一个**格坐标**，
-##    每帧都要重新投影回屏幕才能画出那个框。只要相机在拖框中动了（边缘滚屏、
-##    方向键、小地图拖动都算），同一个格坐标就会落到屏幕的另一个位置 ——
-##    表现就是用户报的「**右上角的起点自己跑了**」。
-##    ⇒ 拖框一开始就冻住相机，直到松手（见 `_drag_freeze_cam` 与 `_end_drag`）。
+## ★ 位移用**事件自己的屏幕坐标**差分（`event.relative` 在无头测试里造不出来）。
 func handle_mouse_motion(event: InputEventMouseMotion) -> bool:
-	# ★★ 中键拖拽优先于框选：按住中键时的鼠标移动 = 平移视角。
-	#   位移用**事件自己的屏幕坐标**差分（`event.relative` 在无头测试里造不出来），
-	#   与框选那条一样，不依赖全局鼠标状态。
+	# ★★ 中键拖拽优先：按住中键时的鼠标移动 = 平移视角。
 	if _pan_pending:
 		if not _action_ok("camera"):
 			return true
@@ -693,20 +744,28 @@ func handle_mouse_motion(event: InputEventMouseMotion) -> bool:
 	if not _drag_pending:
 		return false
 	var moved: float = _drag_press_screen.distance_to(event.position)
-	if not drag_active:
+	if not _drag_pan_active:
 		if moved < _drag_threshold_px():
 			return false
-		drag_active = true
-		# ★ 越过阈值、正式成为「拖框」的那一刻才冻相机：
-		#   单击（没越过阈值）不该影响边缘滚屏的老手感。
-		_drag_freeze_cam = true
-	drag_current_world = _screen_to_logic(event.position)
-	# ★★ 屏幕矩形也一起记：判定与绘制都用它（与手机端同一条口径，见 box_select_screen）。
-	#   鼠标框选的画面从此也是**屏幕矩形**，不再是「世界矩形的投影四边形」——
-	#   这样「画出来的框」与「判定的区域」是同一份数据。
-	drag_screen_box = Rect2(_drag_press_screen, event.position - _drag_press_screen).abs()
-	drag_screen_valid = true
-	local_ui_changed.emit()
+		_drag_pan_active = true
+		_drag_pan_last = event.position
+		_pan_vel = Vector2.ZERO
+		_drag_pan_moved = 0.0
+		# ★★ 2026.11.14（用户口径）：「拖拽移动时不需要取消选中」——
+		#   这一下从「单击」转成了「平移」，把按下那一下改掉的选中**还原回去**。
+		_restore_selection_snapshot()
+		return true
+	var d: Vector2 = event.position - _drag_pan_last
+	_drag_pan_last = event.position
+	_drag_pan_moved += d.length()
+	if d != Vector2.ZERO and _action_ok("camera"):
+		camera_rig.pan_screen(-d)
+		# ★ 惯性速度用**指数平滑**（不是「最后一帧的瞬时速度」）：鼠标事件的间隔忽大忽小，
+		#   取最后一帧会在松手时突然跳一下；平滑之后滑行速度与看得见的拖速一致。
+		#   时间常数 0.06s ≈ 3~4 个事件，够跟手又不会一路拖着旧值。
+		var fps: float = maxf(1.0, Engine.get_frames_per_second())
+		var inst: Vector2 = d * fps
+		_pan_vel = _pan_vel.lerp(inst, 0.55)
 	return true
 
 
@@ -739,34 +798,33 @@ func _drag_threshold_px() -> float:
 	return maxf(0.0, cfg.drag_select_min_px)
 
 
-## 左键按下：对齐「鼠标在哪」，再记下框选的起点。建造模式下不起框（那一下是「放置建筑」）。
+## 左键按下：对齐「鼠标在哪」，并开始这一下手势（可能变成拖拽平移）。
 ##
 ## ★ 为什么这里要顺手把 `mouse_world` / `hover_tile` 对齐到**这一个事件**上：
 ##   按下那一刻的点击判定（`_on_left_click`：选中单位 / 建筑 / 区划、放置建筑）读的是
 ##   这两个字段，而它们平时由 `poll_mouse()` **每帧**刷 —— 两次刷之间按下鼠标时，
-##   判定用的就是上一帧的位置（最多差一帧的移动距离）。用事件自己的坐标更准，
-##   而且这样「框选的起点」与「这一次点击的落点」永远是同一个点。
+##   判定用的就是上一帧的位置（最多差一帧的移动距离）。用事件自己的坐标更准。
+##
+## ★★ 2026.11.14：这一档不再记「框选起点」，只记**手势起点**（判阈值 + 平移差量）。
 func _begin_drag(event: InputEventMouseButton) -> void:
 	drag_start_world = _screen_to_logic(event.position)
 	mouse_world = drag_start_world
 	_sync_hover_from_mouse()
-	# 建造模式：这一下是「放置建筑」，不起框。
-	# ★ 命令模式（操作页的移动 / 攻击 / 行军）同理：这一下是「下达指令」，
-	#   更不能在松手时被一次拖拽框选**改掉选中**（那样命令就发给了另一批单位）。
+	# 建造模式：这一下是「放置建筑」，不算拖拽平移。
+	# ★ 命令模式（AI 面板的选点）同理：这一下是「下达指令」。
 	if build_type != "" or order_mode != "":
 		_drag_pending = false
-		drag_active = false
+		_drag_pan_active = false
 		return
 	_drag_pending = true
-	# ★★ S1：在**按下那一下改变选中之前**存快照（`_on_left_click` 紧随其后）。
-	_save_selection_snapshot()
-	_drag_additive = event.shift_pressed
+	_drag_pan_active = false
+	_drag_pan_moved = 0.0
 	_drag_press_screen = event.position
-	drag_current_world = drag_start_world
-	drag_active = false
-	# 还没越过阈值：屏幕矩形先清空（越过阈值那一刻才在 `handle_mouse_motion` 里建）
-	drag_screen_box = Rect2(event.position, Vector2.ZERO)
-	drag_screen_valid = false
+	_drag_pan_last = event.position
+	_pan_vel = Vector2.ZERO
+	# ★★ 2026.11.14：**在按下那一下改变选中之前**存快照（`_on_left_click` 紧随其后）。
+	#   真的转成平移时用它还原（见 `handle_mouse_motion` 里那一句）。
+	_save_selection_snapshot()
 
 
 ## 按当前 `mouse_world` 重算 `hover_tile`（口径与 `poll_mouse()` 里那两行**完全一致**：
@@ -779,34 +837,61 @@ func _sync_hover_from_mouse() -> void:
 	hover_tile = t if world.map.terrain.has(t.x, t.y) else Vector2i(-1, -1)
 
 
-## 左键松开：真的拖出过框 → 按框选处理；否则什么都不做（单击在按下时已经处理过了）。
+## 左键松开：这一下手势如果是**拖拽平移**，就交给惯性去滑行；否则什么都不做
+## （单击在按下时已经处理过了）。
+##
+## ★★ 2026.11.14（用户口径）：「取消掉拖拽选框」——这里不再调 `box_select*`。
+##   框选函数本身（`box_select()` / `box_select_screen()`）**保留**：手机端
+##   仍然用它（见 view/touch_controller.gd），只是 PC 的鼠标拖拽不再走这条。
 func _finish_drag() -> void:
 	if not _drag_pending:
 		return
-	var active := drag_active
-	var start := drag_start_world
-	var end := drag_current_world
-	var screen_rect := drag_screen_box
-	var had_screen := drag_screen_valid
-	var additive := _drag_additive
+	var was_pan := _drag_pan_active
+	var moved := _drag_pan_moved
 	_drag_pending = false
-	drag_active = false
-	drag_screen_valid = false
-	_drag_freeze_cam = false
-	# 松手 = 这次手势已经落地（单击或框选），快照不再需要。
-	_press_sel_saved = false
-	_press_sel_snapshot = {}
-	if not active:
-		return
-	# ★★ 与手机端**同一条口径**：判定走屏幕矩形（`box_select_screen`），
-	#   判的是「立牌图标的屏幕矩形」而不是脚底锚点。PC 以前用世界矩形 + 锚点，
-	#   于是「框住了牌的上半身」同样会漏 —— 这一轮两端统一。
-	#   没有屏幕矩形（老路径 / 无头造不出视口）才退回世界矩形。
-	if had_screen and (screen_rect.size.x > 0.0 or screen_rect.size.y > 0.0):
-		box_select_screen(screen_rect, additive)
+	_drag_pan_active = false
+	_drag_pan_moved = 0.0
+	if was_pan and moved > 0.0 and _action_ok("camera"):
+		_start_pan_fling()
 	else:
-		box_select(start, end, additive)
-	local_ui_changed.emit()
+		_pan_vel = Vector2.ZERO
+
+
+## 松手后的滑行：把「拖的快慢」变成一段减速的位移（用户口径：「带惯性滑行」）。
+##
+## ★ 速度取 smoothed `_pan_vel`（屏幕像素/秒），指数衰减 `exp(-dt/τ)`：
+##   τ = 0.16s ⇒ 约 0.5 秒内滑完，观感是「松手后还会滑一小段」而不是「一直飘」；
+##   起步速度夹在 `PAN_FLING_MAX` 以内，避免快速一甩把镜头甩出几屏。
+## ★ 任何新的相机输入（按下鼠标 / 滚轮 / 中键 / 键盘 / 触屏）都会先 `_cancel_pan_fling()`。
+func _start_pan_fling() -> void:
+	var v: Vector2 = _pan_vel
+	if v.length() < PAN_FLING_MIN:
+		return
+	if v.length() > PAN_FLING_MAX:
+		v = v.normalized() * PAN_FLING_MAX
+	_pan_fling = v
+	_pan_fling_active = true
+
+
+## 掐掉正在进行的滑行（新输入来了）。
+func _cancel_pan_fling() -> void:
+	_pan_fling_active = false
+	_pan_fling = Vector2.ZERO
+	_pan_vel = Vector2.ZERO
+
+
+## 每帧推进滑行（由 `poll_mouse()` 带 dt 调；暂停时 dt = 0 ⇒ 冻住）。
+func tick_pan_fling(dt: float) -> void:
+	if not _pan_fling_active:
+		return
+	if dt <= 0.0:
+		return
+	if _pan_fling.length() <= PAN_FLING_MIN or camera_rig == null or world == null:
+		_cancel_pan_fling()
+		return
+	# 位移 = 速度 × dt（取负号，与拖动同一条「抓着地图」口径）
+	camera_rig.pan_screen(-_pan_fling * dt)
+	_pan_fling *= exp(-dt / PAN_FLING_TAU)
 
 
 ## ★★ 框选本体：把矩形（世界坐标，两个角随便哪个在前）里的**己方存活单位**收集起来，
@@ -1015,9 +1100,27 @@ func drag_box() -> Rect2:
 	return Rect2(drag_start_world, drag_current_world - drag_start_world).abs()
 
 
-## ★★ S1：存一份「按下前」的完整选中快照。
+## 放弃这次左键手势（Esc）。
+##
+## ★★ 2026.11.14：框选取消之后，这里只剩「把状态机归零 + 掐掉惯性滑行」。
+##   选中不需要恢复 —— 这一下**本来就没改过选中**：越过阈值就变成平移，
+##   松手也不再调 `box_select*`（见 `_finish_drag()`）。
+func _cancel_drag() -> void:
+	_drag_pending = false
+	drag_active = false
+	drag_screen_valid = false
+	_drag_pan_active = false
+	_drag_pan_moved = 0.0
+	_cancel_pan_fling()
+	# 松手 = 这次手势已经落地（单击或平移），快照不再需要。
+	_press_sel_saved = false
+	_press_sel_snapshot = {}
+	local_ui_changed.emit()
+
+
+## ★★ 2026.11.14：存一份「按下前」的完整选中快照（见 `_press_sel_snapshot` 的说明）。
 ## 为什么不是只存 `selected_units`：按下那一下可能选中的是建筑 / 区划 / 敌人，
-## 只恢复单位会让「我点了一栋建筑又拖框反悔」变成空选中。
+## 只恢复单位会让「我点了一栋建筑再拖地图」变成空选中。
 func _save_selection_snapshot() -> void:
 	var kind := "none"
 	if not selected_units.is_empty():
@@ -1040,7 +1143,7 @@ func _save_selection_snapshot() -> void:
 	_press_sel_saved = true
 
 
-## ★★ S1：恢复按下前的选中（拖框取消 / Esc）。
+## ★★ 2026.11.14：还原按下前的选中（「这一下其实是拖地图」时用）。
 ## 恢复一律走既有的 `select_*` 入口 —— 它们负责清掉其它三种选中、同步 `u.selected`。
 func _restore_selection_snapshot() -> void:
 	if not _press_sel_saved:
@@ -1053,7 +1156,7 @@ func _restore_selection_snapshot() -> void:
 			select_units(s.get("units", []))
 			# `select_units()` 会清掉这两项（它是批量入口），恢复时要按原样写回。
 			clicked_unit = s.get("clicked_unit", null)
-			selection_origin = String(s.get("selection_origin", "drag"))
+			selection_origin = String(s.get("selection_origin", "click"))
 		"buildings":
 			select_buildings(s.get("buildings", []))
 		"zone":
@@ -1069,32 +1172,18 @@ func _restore_selection_snapshot() -> void:
 	local_ui_changed.emit()
 
 
-## 放弃这次框选（Esc）——**不动已有的选中**：拖到一半反悔不该把队伍丢了。
-## ★★ S1：按下时已经存了快照，这里真的恢复它（旧实现只清拖框状态，恢复不了）。
-func _cancel_drag() -> void:
-	_drag_pending = false
-	drag_active = false
-	drag_screen_valid = false
-	_drag_freeze_cam = false
-	_restore_selection_snapshot()
-	local_ui_changed.emit()
-
-
-## ★★ 框选期间相机是不是被冻住了（由 game_scene 每帧读它、喂给 `camera_rig`）。
+## ★★ 相机此刻是不是被输入**直接驱动**（拖拽平移 / 惯性滑行）。
 ##
-## 为什么必须冻：框的起点存的是**格坐标**，画的时候每帧要重新投影回屏幕。
-##   相机一动，同一个格坐标就落到屏幕的另一个位置 —— 玩家看到的就是
-##   「右上角的起点自己跑了」（本轮报回来的 bug）。
-##   ★ 与 `minimap.is_dragging()` 那条是同一个机制、同一个出口
-##     （`camera_rig.set_ui_dragging`），两处并列即可。
+## ★ 名字保留 `is_dragging_box()`（game_scene 每帧读它喂 `camera_rig.set_ui_dragging`）：
+##   它现在的语义是「输入正抓着相机」——拖框那条路已经取消，判据换成了平移。
 func is_dragging_box() -> bool:
-	return _drag_freeze_cam
+	return _drag_freeze_cam or _drag_pan_active or _pan_pending or _touch_panning or _pan_fling_active
 
 
-## ★★ 中键拖拽是否正在进行（game_scene 每帧读它，压住边缘滚屏）。
-##   与 `is_dragging_box()` 并列：两者都是「此刻相机由输入直接驱动 ⇒ 别的自动行为让路」。
+## ★★ 中键拖拽 / 左键拖拽 / 惯性滑行是否正在进行（game_scene 每帧读它，压住边缘滚屏）。
+##   与 `is_dragging_box()` 同一档语义：相机由输入直接驱动时，别的自动行为让路。
 func is_panning() -> bool:
-	return _pan_pending or _touch_panning
+	return _pan_pending or _touch_panning or _drag_pan_active or _pan_fling_active
 
 
 ## ★★ 有没有一条**正在进行中**的鼠标手势（框选待定 / 正在拖框 / 中键平移中）。
@@ -1117,9 +1206,12 @@ func has_active_gesture() -> bool:
 #   这些规则一条都不用重写。
 # ------------------------------------------------------------------
 
-## 手机端单击：**没有选中 → 选中**；**已有选中 → 一律下命令**（敌人 / 敌方建筑 = 攻击，其余 = 移动）。
+## 手机端单击：**没有选中 → 选中**；**已有选中 → 移动 / 攻击到这一点**。
 ##
-## ★ 与桌面右键那条路的分派完全一致（`_on_right_click(false)` 自己就会「敌人→攻击、空地→移动」）。
+## ★★ 2026.11.14：桌面右键那条路已经**空掉**（「右键取消掉移动/行军/攻击指令，
+##   完全由出牌代替」），所以这里不能再转调 `_on_right_click(false)`—— 那会让手机端
+##   单击变成「什么都不发生」。改成直接走新出口 `issue_order_at()`（与操作牌同一条
+##   下达路径、同一份命令字典），于是手机端的手感一点没变。
 ## ★★ 已有选中时**绝不改选**（需求原话：「选中单位后点击的逻辑应当一直是移动 / 行军，
 ##    直到玩家选中其他部队 / 取消选中部队为止」）。改选 / 取消选中走别的入口：
 ##    双指框选（框到别的部队 / 空框取消）、左侧部队列表、Esc。
@@ -1138,8 +1230,23 @@ func touch_tap(world_pos: Vector2) -> void:
 	if selected_units.is_empty():
 		_on_left_click(false)
 		return
-	# ★★ 已有选中：单击**只下命令**，绝不改选（敌人 / 敌方建筑 = 攻击，其余 = 移动）。
-	_on_right_click(false)
+	# ★★ 已有选中：按「手指底下是谁」选移动还是攻击（敌人 / 敌方建筑 = 攻击）
+	var mode := "attack" if _tap_order_is_attack() else "move"
+	issue_order_at(mode, palette.to_px(world_pos) if palette != null else Vector2.ZERO)
+
+
+## 手指底下这一点是不是「该打的东西」（敌方单位 / 可攻击的敌方建筑）。
+## ★ 判据与 `_issue_order_click()` 的攻击分支**逐条一致**：活着、看得见、不同阵营、非无敌。
+func _tap_order_is_attack() -> bool:
+	if world == null:
+		return false
+	var foe = _pick_foe_unit_at(mouse_world)
+	if foe != null:
+		return true
+	var fb = _building_at_screen(get_global_mouse_position())
+	return fb != null and fb.alive and not fb.is_invulnerable() \
+		and not FactionRes.same_side_for_attack(fb.owner, world.my_faction) \
+		and _foe_building_visible(fb)
 
 
 ## 手机端双击：**行军攻击**（`attack_move`，路上遇敌就打）。
@@ -1152,7 +1259,9 @@ func touch_double_tap(world_pos: Vector2) -> void:
 		return
 	mouse_world = world_pos
 	_sync_hover_from_mouse()
-	_on_right_click(true)
+	# ★★ 2026.11.14：桌面右键不再下令，所以双指双击也不能再转调 `_on_right_click(true)`；
+	#   直接走新出口（行军攻击 = 到这个点，路上遇敌就打）。
+	issue_order_at("attack_move", palette.to_px(world_pos) if palette != null else Vector2.ZERO)
 
 
 ## 手机端双指框选：驱动**桌面那台一模一样**的框选状态机 ——
@@ -1270,17 +1379,18 @@ func _on_left_click(additive: bool) -> void:
 		if not FactionRes.same_side(hit_unit.faction, world.my_faction):
 			select_enemy(hit_unit)
 			return
-		var next: Array = selected_units.duplicate() if additive else []
-		if additive and next.has(hit_unit):
-			next.erase(hit_unit)
-		elif not next.has(hit_unit):
-			next.append(hit_unit)
-		# ★ 玩家在地图上点到的那个单位（右栏要按它显示）——
-		#   必须在 select_units 之后写：那个函数会把 clicked_unit 清掉（见它的注释）。
-		#   顺手把 origin 记成 "click"：右栏的显示规则按「拖拽还是单击」分，
-		#   见 `selection_origin` 的注释与 view/hud.gd 的 _right_unit。
-		select_units(next)
-		clicked_unit = hit_unit if not additive else null
+		# ★★ 2026.11.14（用户口径）：「取消掉单击取消选中的逻辑，只能通过右侧标签栏
+		#   和点击部队选中/退选」——
+		#   ① 点**已经选中的这一队**（含它旗下的附属兵）= 退选；
+		#   ② 点别的己方部队 = 换成那一队（`select_units` 内部会把整队展开）。
+		#   ③ 点空地**什么都不做**（见函数末尾那一句），所以队伍不会因为随手点一下地图就没了。
+		if selected_units.has(hit_unit):
+			select_units([])
+			clicked_unit = null
+			selection_origin = "click"
+			return
+		select_units([hit_unit])
+		clicked_unit = hit_unit
 		selection_origin = "click"
 		return
 
@@ -1295,96 +1405,27 @@ func _on_left_click(additive: bool) -> void:
 		select_building(hit_building)
 		return
 
-	if not additive:
-		select_units([])
+	# ★★ 2026.11.14（用户口径）：「取消掉单击取消选中的逻辑」——
+	#   点到空地**不动选中**。退选只有两条路：右侧标签栏点同一支部队，或再点一次这支部队；
+	#   Esc 也仍然能退（`handle_key` 那条「没选中 → 开菜单 / 有选中 → 清选中」的级联）。
+	return
 
 
-## 右键：
-##   · **单击敌人 / 建筑** → 优先攻击它（`attack` 命令）
-##   · **双击任意位置** → 行军攻击到该点（`attack_move`，等价于 SC2 的按 A 攻击）
-##   · 单击空地        → 普通移动（`move`，遇敌不停）
-func _on_right_click(double_click: bool = false) -> void:
-	if not _action_ok("order"):
-		return
-	if observer_mode:
-		# 观战授权（ai_test_2）：右键 = 取消 AI 面板的选点。
-		if observer_ai_orders and (order_mode == "ai_march" or order_mode == "ai_mass"):
-			set_order_mode("")
-		return
-	if build_type != "":
-		set_build_type("")
-		return
-	# ★ 命令模式下右键 = 退出这个模式（与建造模式一致）——不顺手再下一条移动命令，
-	#   否则「反悔」会变成「又下了一条命令」。
-	if order_mode != "":
+## 右键：**玩家这一侧不再做任何事**。
+##
+## ★★ 2026.11.14（用户口径）：「右键取消掉移动/行军/攻击指令，完全由出牌代替」
+##   +「右键完全空着」。
+##   ⇒ 单击 / 双击右键都不再发命令、也不退出建造 / 命令模式（那两条走 Esc 或再点同一格）。
+##     这条改动是**故意的**：手牌上的操作牌（移动 / 攻击 / 行军 / 停止）现在是唯一的
+##     下达入口，右键留着一条便道会让「操作牌 + 3 秒冷却」那套设计失去意义。
+## ★ 唯一保留的一支：**观战授权**（`observer_ai_orders`，ai_test_2 的 AI 面板选点）——
+##   那不是下达玩家命令，而且它是那个模式下唯一的取消入口（test_ai_observer 在用）。
+##   ⚠️ 保留这个函数（而不是删掉）是因为测试与手机端的旧入口还在调它：
+##      让它成为一个**明确的空实现**，比让调用点各自判断「要不要调」清楚得多。
+func _on_right_click(_double_click: bool = false) -> void:
+	if observer_mode and observer_ai_orders \
+			and (order_mode == "ai_march" or order_mode == "ai_mass"):
 		set_order_mode("")
-		return
-	# ★★ 教程 / 演出输入策略：只挡**单击右键**（移动 + 点敌攻击），
-	#   双击右键（行军攻击）在上面已经处理过，不受影响。
-	if not double_click and world != null \
-			and bool(world.story_input.get("block_single_right_click", false)):
-		return
-	if selected_units.is_empty() or hover_tile.x < 0:
-		return
-	var ids: Array = []
-	for u in selected_units:
-		if u.alive:
-			ids.append(u.id)
-	if ids.is_empty():
-		return
-
-	# ★ 双击：行军攻击（到点，路上遇敌就打）
-	if double_click:
-		command_issued.emit({
-			"kind": "attack_move", "ids": ids,
-			"x": mouse_world.x, "y": mouse_world.y,
-			"faction": world.my_faction,
-		})
-		clear_marks()
-		if not selection_locked():
-			attack_marks = [mouse_world]
-		local_ui_changed.emit()
-		return
-
-	# 单击：鼠标底下是敌对单位 → 点名打它
-	var foe = _pick_foe_unit_at(mouse_world)
-	if foe != null:
-		command_issued.emit({
-			"kind": "attack", "ids": ids, "target_id": foe.id,
-			"faction": world.my_faction,
-		})
-		clear_marks()
-		local_ui_changed.emit()
-		return
-
-	# 单击：鼠标底下是敌对建筑 → 点名拆它（命令里只带地块，不带对象引用）
-	# ⚠️ 无敌建筑（区划中心）不算「敌对建筑」：它是中立障碍，右点点它应该走「普通移动」
-	#    （单位走到旁边站住），而不是发一条会被逻辑层拒掉的攻击命令。
-	# ★★ 判据必须是 `same_side_for_attack`（同阵营 **或盟友**），不能是严格的 `same_side`：
-	#    友军的建筑不是敌人 —— 用 `same_side` 会发出一条 `attack`，而逻辑层按
-	#    `same_side_for_attack` 又会拒掉它 ⇒ 表现就是「右键友军建筑完全没反应」。
-	var foe_b = _building_at_screen(get_global_mouse_position())
-	if foe_b != null and foe_b.alive and not foe_b.is_invulnerable() \
-			and not FactionRes.same_side_for_attack(foe_b.owner, world.my_faction) \
-			and _foe_building_visible(foe_b):
-		command_issued.emit({
-			"kind": "attack", "ids": ids, "tx": int(foe_b.tx), "ty": int(foe_b.ty),
-			"faction": world.my_faction,
-		})
-		clear_marks()
-		local_ui_changed.emit()
-		return
-
-	# 否则就是普通移动：点到哪走到哪（**遇敌不停**，这是它和行军攻击的区别）
-	command_issued.emit({
-		"kind": "move", "ids": ids,
-		"x": mouse_world.x, "y": mouse_world.y,
-		"faction": world.my_faction,
-	})
-	clear_marks()
-	if not selection_locked():
-		move_marks = [mouse_world]
-	local_ui_changed.emit()
 
 
 ## 选中的单位是不是**全都被招募锁住了**（将领正在招募 → 它和它辖下的部队都不接指令）。
@@ -1433,6 +1474,16 @@ func clear_marks() -> void:
 ## ★★ 顺手清掉 `clicked_unit`：能走到这里的一律是「批量选中」（或者清空选中），
 ##    不是「在地图上点了某一个单位」。不清的话右栏会一直停在上次点到的那个兵身上。
 ##    ⚠️ 唯一的例外是 `_on_left_click`：它先调这里、再自己把 `clicked_unit` 写回去。
+## 现在是不是「什么都没选中」—— Esc 级联的最后一档用它二选一：
+##   有选中 → 清选中（旧行为，一层层退出来）；没有 → 开选项页（2026.11.14 新增）。
+##
+## ★ 五种选中来源都要看：单位 / 建筑（单体 + 多选）/ 区划 / 敌方对象。
+##   漏一种的症状是「选着区划按 Esc，菜单直接盖上来」，玩家会以为卡了。
+func _nothing_selected() -> bool:
+	return selected_units.is_empty() and selected_buildings.is_empty() \
+		and selected_building == null and selected_zone == null and selected_enemy == null
+
+
 func select_units(units: Array) -> void:
 	var expanded: Array = world.expand_to_groups(units)
 	# ★ 演出锁定中的单位暂时不可选中（教程：先把将领交给玩家之前）。
@@ -1925,40 +1976,43 @@ func _issue_order_click() -> void:
 		local_ui_changed.emit()
 		return
 	if observer_mode:
+		order_reject = "observer"
 		return
 	var ids: Array = []
 	for u in _commandable_selected():
 		if u.alive:
 			ids.append(u.id)
 	if ids.is_empty():
+		order_reject = "no_units"
 		toast.emit("这不是你的部队，不能下令" if not selected_units.is_empty()
 			else "先选中一支部队，才能下达指令")
 		set_order_mode("")
 		return
 
+	var wpos: Vector2 = _order_world()
 	match order_mode:
 		"move":
 			command_issued.emit({
 				"kind": "move", "ids": ids,
-				"x": mouse_world.x, "y": mouse_world.y,
+				"x": wpos.x, "y": wpos.y,
 				"faction": world.my_faction,
 			})
 			clear_marks()
 			if not selection_locked():
-				move_marks = [mouse_world]
+				move_marks = [wpos]
 			set_order_mode("")
 		"attack_move":
 			command_issued.emit({
 				"kind": "attack_move", "ids": ids,
-				"x": mouse_world.x, "y": mouse_world.y,
+				"x": wpos.x, "y": wpos.y,
 				"faction": world.my_faction,
 			})
 			clear_marks()
 			if not selection_locked():
-				attack_marks = [mouse_world]
+				attack_marks = [wpos]
 			set_order_mode("")
 		"attack":
-			var foe = _pick_foe_unit_at(mouse_world)
+			var foe = _pick_foe_unit_at(wpos)
 			if foe != null:
 				command_issued.emit({
 					"kind": "attack", "ids": ids, "target_id": foe.id,
@@ -1967,7 +2021,7 @@ func _issue_order_click() -> void:
 				clear_marks()
 				set_order_mode("")
 				return
-			var foe_b = _building_at_screen(get_global_mouse_position())
+			var foe_b = _building_at_screen(_order_screen())
 			if foe_b != null and foe_b.alive and not foe_b.is_invulnerable() \
 					and not FactionRes.same_side_for_attack(foe_b.owner, world.my_faction) \
 					and _foe_building_visible(foe_b):
@@ -1979,10 +2033,56 @@ func _issue_order_click() -> void:
 				clear_marks()
 				set_order_mode("")
 				return
+			order_reject = "no_target"
 			toast.emit("这里没有敌人：左键点敌方单位或建筑（右键 / Esc 取消）")
 		_:
 			set_order_mode("")
 	local_ui_changed.emit()
+
+
+## 这一单指令打在**哪个世界点**上：拖出松手时用覆盖值，点地图那一路用鼠标。
+func _order_world() -> Vector2:
+	if _order_point is Dictionary:
+		return (_order_point as Dictionary).get("world", mouse_world)
+	return mouse_world
+
+
+## 这一单指令对应的**屏幕点**（攻击要拿它做建筑命中：高建筑的上半部分也能点中）。
+func _order_screen() -> Vector2:
+	if _order_point is Dictionary:
+		return (_order_point as Dictionary).get("screen", get_global_mouse_position())
+	return get_global_mouse_position()
+
+
+## ★★ 2026.11.14（用户口径）：「操作牌拖出后，可在地图上选择落点……拖出并松手后，
+## 落点处即为操作点」——在**指定屏幕点**下达一道操作命令。
+##
+## ★ 走的就是 `_issue_order_click()` 那条**共用**路径（发同样的命令字典），
+##   只是把「落点」换成传进来的这个点；命令模式本身**不进**（拖完不留后遗症）。
+## @return "" = 已下达；否则是拒因（"no_units" / "no_target" / "observer" / "bad_point"）
+func issue_order_at(mode: String, screen_pos: Vector2) -> String:
+	if world == null or palette == null:
+		return "bad_point"
+	var saved_mode: String = order_mode
+	var saved_ai: String = ai_order_faction
+	var wpos: Variant = _to_logic(screen_pos)
+	if wpos == null:
+		return "bad_point"
+	_order_point = {"world": wpos, "screen": screen_pos}
+	order_reject = ""
+	order_mode = mode
+	_issue_order_click()
+	var reason: String = order_reject
+	_order_point = null
+	order_mode = saved_mode
+	ai_order_faction = saved_ai
+	return reason
+
+
+## 「停止」那种**不需要落点**的操作（拖出松手就地生效）。
+## ★ 与 `issue_order_at()` 分开：它不走选点路径，直接调 `request_stop()`。
+func issue_stop_order() -> bool:
+	return request_stop()
 
 
 # ------------------------------------------------------------------
@@ -2043,15 +2143,18 @@ func _pick_recruit_leader(kind: String, leaders: Array):
 		return null
 	var fallback = leaders[0]
 	var best = null
-	var best_queue := 1 << 30
+	var best_size := 1 << 30
 	for u in leaders:
 		if world.can_recruit(kind, String(u.id), String(world.my_faction)) != "":
 			continue
 		if world.can_afford_recruit(kind, String(u.id)) != "":
 			continue
-		var q: int = int(u.train_queue_size())
-		if q < best_queue:
-			best_queue = q
+		# ★★ 2026.11.14：招募即时化之后**没有队列了**，原来按「队列最短」摊单的判据失效
+		#   （队列恒为 0 ⇒ 永远挑第一支）。改成按**队伍人数**摊：谁的人少就给谁，
+		#   多选连点几下会自然在几支部队之间轮流补人，与旧手感同一个意图。
+		var n: int = int(u.retinue_size(world))
+		if n < best_size:
+			best_size = n
 			best = u
 	return best if best != null else fallback
 

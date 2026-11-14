@@ -307,7 +307,9 @@ func _test_main_wiring() -> void:
 	main._on_android_back()            # 收掉，别留给后面的用例
 	await process_frame
 
-	# ---- 局内：返回键先关选项页，第二次才弹退出确认 ----
+	# ---- 局内：返回键 = 选项页开关（2026.11.14 第三轮改的口径） ----
+	#   ★ 选项按钮删掉后，返回键就是局内菜单的**入口**：
+	#     开着 → 关；关着 → 开。退游戏走「返回键 → 选项页 → 返回主菜单」。
 	main._on_test_pressed(String(MapLibraryRes.default_map_path()))
 	await process_frame
 	ok(main.game != null, "（前提）能进一局")
@@ -320,14 +322,16 @@ func _test_main_wiring() -> void:
 			ok(hud.options_panel.is_open(), "（前提）选项页开着")
 			main._on_android_back()
 			await process_frame
-			ok(not hud.options_panel.is_open(), "★★ 局内第一次返回：先关选项页")
+			ok(not hud.options_panel.is_open(), "★★ 选项页开着时按返回：先关掉它")
 			ok(not qc.is_open(), "★ 这一下**不**弹退出确认")
 			main._on_android_back()
 			await process_frame
-			ok(qc.is_open(), "★★ 选项页已经关了，再按返回才弹退出确认")
+			ok(hud.options_panel.is_open(),
+				"★★ 关着时再按返回：**重新打开**选项页（不是弹退出确认）")
+			ok(not qc.is_open(), "★ 局内返回键不再直接弹退出确认")
 			main._on_android_back()
 			await process_frame
-			ok(not qc.is_open(), "再按一次返回 = 取消浮层")
+			ok(not hud.options_panel.is_open(), "再按一次返回 = 关掉选项页")
 
 	ok(is_instance_valid(main), "★ 整条安卓返回链路走完，main 仍然活着（没误退出）")
 	main.queue_free()

@@ -67,7 +67,7 @@ static func can_upgrade(world, b, faction: String) -> String:
 	if b.level >= world.cfg.upgrade_max_level(b.type):
 		return "max_level"
 	# ★★ 大本营升级的将领挡位：读**目标行**的 `need_generals`（升 2 本 2 将 / 升 3 本 4 将）。
-	#   ⚠️ 不要回头借用 `max_generals`（上限 2/5/6）—— 门槛与上限是两件事，见 config 注释。
+	#   ⚠️ 不要回头借用 `max_generals`（上限 2/4/5）—— 门槛与上限是两件事，见 config 注释。
 	if b.is_base():
 		var need_generals: int = int(world.cfg.upgrade_need_generals(b.type, int(b.level)))
 		if need_generals > 0 \

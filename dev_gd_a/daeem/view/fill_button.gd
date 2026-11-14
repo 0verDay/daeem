@@ -104,6 +104,10 @@ const ReticleRes = preload("res://view/button_reticle.gd")
 ## ★ 用元数据而不是「给 Button 加个字段」：调用点建的是**真 Button**，
 ##   没有地方能声明那个字段（见文件头那段）。
 const META := "fill_animator"
+## ★★ 2026.11.14：`set_reticle()` / `set_hover_fill()` 在 attach 之前调时的「意图暂存键」。
+##   （见 `attach()` 里读它们的那两行）
+const META_NO_RETICLE := "fill_no_reticle"
+const META_HOVER_FILL := "fill_hover_fill"
 
 ## 填充 / 渐出的时长（秒）。★ 只给**选中 / 取消选中**用（悬停改走泛光，不填）。
 const FILL_TIME := 0.12
@@ -187,6 +191,10 @@ static func attach(b: Button) -> FillAnimator:
 		return old
 	var anim := FillAnimator.new()
 	anim.name = "FillAnimator"
+	# ★★ 2026.11.14：`set_reticle()` / `set_hover_fill()` 允许在 attach **之前**调 ——
+	#   那时还没有动画器，意图先记在按钮的 meta 上，这里读回来。
+	anim._reticle_off = bool(b.get_meta(META_NO_RETICLE)) if b.has_meta(META_NO_RETICLE) else false
+	anim._hover_fill = bool(b.get_meta(META_HOVER_FILL)) if b.has_meta(META_HOVER_FILL) else false
 	anim._attach(b)
 	b.add_child(anim)
 	b.set_meta(META, anim)
@@ -507,6 +515,8 @@ class FillAnimator extends Control:
 	var _filter_was_blocked: bool = false
 	## 上一帧是不是灰档（换档时要重取渐变颜色，见 `_process`）。
 	var _was_grey: bool = false
+	## ★★ 2026.11.14：「亮起（选中 / 悬停填金）」这一档的上一帧值 —— 变了要换金档取色。
+	var _was_lit: bool = false
 	## 与文件顶部的 `FLIP_LO / FLIP_HI` **同值**（内层类读不到外层的常量，只能再写一份）。
 	const FLIP_LO := 0.62
 	const FLIP_HI := 0.78
@@ -534,6 +544,26 @@ class FillAnimator extends Control:
 	##      灰底就只能和填充金一起画在这一层：灰先画、金后画。
 	##      于是页签的 `tab_plain*` 可以继续保持**全透明**（那条约束不能破）。
 	var _base_bg: Color = Color(0, 0, 0, 0)
+	## ★★ 2026.11.14：常驻底色的**圆角**版本（见 `_draw()` 里那条注释）。
+	var _base_style: StyleBoxFlat = null
+	## 宿主按钮的圆角半径缓存（`-1` = 还没算过；`_radius_key` 是算的时候用的那份底纹）。
+	##
+	## ★ 为什么要缓存：本动画器每帧都可能重画（填充 / 泛光 / 按下缩放），
+	##   而「取一个 StyleBox」是 theme 查表 —— 界面上几十颗按钮 × 每帧就是白花的毫秒
+	##   （与 `_sync_text()` 那条静息快路径同一条教训）。
+	##   ⇒ 只在**底纹对象换了**（换档 / 换页）时重取一次。
+	var _radius_cache: float = -1.0
+	var _radius_key: StyleBox = null
+	## ★★ 2026.11.14：宿主 StyleBox 的**投影**搬到本层来画（见 `_ensure_shadow()`）。
+	var _shadow_style: StyleBoxFlat = null
+	var _shadow_key: StyleBox = null
+	var _shadow_size: float = 0.0
+	var _shadow_off: Vector2 = Vector2.ZERO
+	var _shadow_color: Color = Color(0.0, 0.0, 0.0, 0.0)
+	## ★★ 2026.11.14：这颗按钮**不画悬停四角括号**（用户口径：手牌 / 科技牌 / 页签不要）。
+	var _reticle_off: bool = false
+	## ★★ 2026.11.14：悬停也**填金**（用户口径：页签栏的悬停效果改成金色填充）。
+	var _hover_fill: bool = false
 	## 少数徽章按钮（如 HUD 右上设置币）使用圆形底色 / 填充；普通按钮仍是矩形。
 	var _circle_shape: bool = false
 	## 每一条按钮上文字 / 子 Label 的**原色**（`_sync_text()` 每次都从它算，可重入）。
@@ -586,7 +616,9 @@ class FillAnimator extends Control:
 		set_colors(ThemeRes.fill_top(), ThemeRes.fill_bottom())
 		# ★★ 瞄准框层：挂在按钮上（不是本动画器里）—— 动画器画在按钮底下，
 		#   而括号画在按钮内侧，必须排在底纹之后才看得见。
-		if Tuning.reticle_enabled():
+		#   ★★ 2026.11.14：`_reticle_off` 的按钮（手牌 / 科技牌 / 页签）**不建这一层**，
+		#      见 `set_reticle()` 的说明。
+		if Tuning.reticle_enabled() and not _reticle_off:
 			_reticle = ReticleRes.new()
 			b.add_child(_reticle)
 			_reticle.setup(b)
@@ -596,23 +628,152 @@ class FillAnimator extends Control:
 		b.visibility_changed.connect(_on_visibility_changed)
 		# ★ 记得「初始是哪个档」（可点 = 金档），否则第一帧会误判成换档、白刷一次。
 		_was_grey = is_grey()
+		_was_lit = _is_lit()
 		_refresh_colors()
 
 
-	## 动画器自己的绘制：**常驻底色 + 选中金 + 悬停瞄准框 + 回声环都在这一层画出来**。
+	## ★★ 2026.11.14：宿主按钮的**圆角半径**（读当前底纹那一份）。
+	##
+	## 为什么需要它（用户报的原话：「右下角的页签栏似乎底板为矩形的，它的圆角被底板
+	## 影响到了」）：本动画器画在宿主**背后**，而它画的两样东西——常驻底色与金色填充——
+	## 原来都是**矩形**（`draw_rect` / `draw_texture_rect_region`），
+	## 于是方角从宿主的圆角描边外面顶出来，看上去就是「方底板压着圆角按钮」。
+	## ⇒ 两者都按这个半径裁成圆角，与描边的圆角对齐。
+	##
+	## ⚠️ 取四角里的**最大值**：页签 / 卡片 / 设置币这一档都是四角同值，
+	##   真出现单角不同的按钮时，用最大值至少不会留下方角。
+	## ⚠️ 只在**底纹对象换了**的时候重算（见 `_radius_cache` 那段）。
+	func _host_radius() -> float:
+		if _button == null or not is_instance_valid(_button):
+			return 0.0
+		var sb: StyleBox = _button.get_theme_stylebox("normal")
+		if sb != null and sb == _radius_key and _radius_cache >= 0.0:
+			return _radius_cache
+		_radius_key = sb
+		_radius_cache = 0.0
+		for state in ["normal", "hover", "pressed", "disabled"]:
+			var st: StyleBox = _button.get_theme_stylebox(state)
+			if st is StyleBoxFlat:
+				var f: StyleBoxFlat = st
+				_radius_cache = float(maxi(
+					maxi(f.corner_radius_top_left, f.corner_radius_top_right),
+					maxi(f.corner_radius_bottom_left, f.corner_radius_bottom_right)))
+				break
+		return _radius_cache
+
+
+	## 圆角矩形的顶点（顺时针，从左上角起）。`r` = 圆角半径，`steps` = 每个角的段数。
+	##
+	## ★ 只用来**裁**填充与常驻底色：宿主的描边（2~3px）还压在它上面，
+	##   所以 6 段已经足够平滑（折角全部落在描边下面）。
+	## ★ 半径 <= 0（方角底纹）时直接返回 4 个角，行为与旧版逐像素一致。
+	func _rounded_rect(rect: Rect2, r: float, steps: int = 6) -> PackedVector2Array:
+		var out := PackedVector2Array()
+		var rr: float = minf(maxf(0.0, r), minf(rect.size.x, rect.size.y) * 0.5)
+		if rr <= 0.5:
+			out.append(rect.position)
+			out.append(rect.position + Vector2(rect.size.x, 0.0))
+			out.append(rect.position + rect.size)
+			out.append(rect.position + Vector2(0.0, rect.size.y))
+			return out
+		var corners := [
+			[rect.position + Vector2(rr, rr), PI, PI * 1.5],                 # 左上
+			[rect.position + Vector2(rect.size.x - rr, rr), PI * 1.5, TAU],  # 右上
+			[rect.position + rect.size - Vector2(rr, rr), 0.0, PI * 0.5],    # 右下
+			[rect.position + Vector2(rr, rect.size.y - rr), PI * 0.5, PI],   # 左下
+		]
+		for c in corners:
+			var center: Vector2 = c[0]
+			var a0: float = c[1]
+			var a1: float = c[2]
+			for k in steps + 1:
+				var a: float = lerpf(a0, a1, float(k) / float(steps))
+				out.append(center + Vector2(cos(a), sin(a)) * rr)
+		return out
+
+
+	## 动画器自己的绘制：**投影 + 常驻底色 + 选中金 + 悬停瞄准框 + 回声环都在这一层画出来**。
 	func _draw() -> void:
-		# ★★ 先铺常驻底色，再让金盖上去 —— 这就是「灰底一直存在、选中时金往上填」。
-		if _base_bg.a > 0.001 and _button != null and is_instance_valid(_button):
+		if _button == null or not is_instance_valid(_button):
+			return
+		# ★★ 2026.11.14（用户报的两条同一根因）：
+		#   「科技卡牌的底色与其他卡牌不同」+「页签栏的黑色似乎在金色的上面」
+		#   —— 根因是 **StyleBoxFlat 的投影画在按钮自己那一层**，而填充层在它**下面**：
+		#     底纹一透明（页签 / 科技格就是透明底），投影就直接压在金色上，把金压成黑。
+		#   ⇒ 投影改由这里画（在底色与金**之下**），宿主的 StyleBox 投影被清掉。
+		#     （见 `_ensure_shadow()` 的说明）
+		_ensure_shadow()
+		_draw_shadow()
+		# ★★ 再铺常驻底色，然后让金盖上去 —— 这就是「灰底一直存在、选中时金往上填」。
+		if _base_bg.a > 0.001:
 			if _circle_shape:
 				draw_circle(_button.size * 0.5, minf(_button.size.x, _button.size.y) * 0.5, _base_bg)
 			else:
-				draw_rect(Rect2(Vector2.ZERO, _button.size), _base_bg, true)
+				# ★★ 2026.11.14：方角底板会把宿主的圆角「补回成直角」（用户报的页签栏）。
+				#   改用圆角 StyleBox 铺，半径与宿主描边对齐。
+				if _base_style == null:
+					_base_style = StyleBoxFlat.new()
+				_base_style.bg_color = _base_bg
+				_base_style.shadow_size = 0
+				_base_style.set_border_width_all(0)
+				_base_style.set_corner_radius_all(int(round(_host_radius())))
+				draw_style_box(_base_style, Rect2(Vector2.ZERO, _button.size))
 		draw_fill_now()
 		# ★★ 悬停 / 按住：新语言由「按钮上面那一层」画（button_reticle.gd）；
 		#   旧语言仍走动画器自己的四边泛光（config 可切回）。
 		if not Tuning.reticle_enabled():
 			draw_glow_now()
 		# 回声环也由瞄准框层画（它是普通子节点，不会被底纹盖住）。
+
+
+	## 把宿主 StyleBox 的**投影**搬到动画器这一层来画（用户报的「金色被黑色压住」）。
+	##
+	## ★ 为什么要搬：本动画器画在宿主**背后**（`show_behind_parent`），
+	##   而 StyleBoxFlat 的绘制顺序是「投影 → 底 → 描边」，全都画在宿主那一层 ⇒
+	##   投影**盖在金上面**。底纹有实底时看不出来（底把投影挡住了），
+	##   可页签 / 科技格这一类是**透明底**（为了不让金被盖住），于是投影直接把金压黑：
+	##   症状就是「页签的金色填充不显眼」「科技卡比别的卡黑一档」。
+	##
+	## ★ 做法：读一次宿主 `normal` 那一档的投影参数存到自己身上，然后把四档底纹的
+	##   投影清成 0（**复制一份再改** —— 主题里的 StyleBox 可能是多颗按钮共享的，
+	##   原地改会把别人的投影也弄没）。缓存按「底纹对象」比对，换档 / 换页时重取。
+	func _ensure_shadow() -> void:
+		var normal: StyleBox = _button.get_theme_stylebox("normal")
+		if normal == _shadow_key:
+			return
+		_shadow_key = normal
+		if normal is StyleBoxFlat:
+			var f: StyleBoxFlat = normal
+			_shadow_size = f.shadow_size
+			_shadow_off = f.shadow_offset
+			_shadow_color = f.shadow_color
+		else:
+			_shadow_size = 0
+		if _shadow_size <= 0.0:
+			return
+		for state in ["normal", "hover", "pressed", "disabled"]:
+			var st: StyleBox = _button.get_theme_stylebox(state)
+			if st is StyleBoxFlat and (st as StyleBoxFlat).shadow_size > 0:
+				var cp: StyleBoxFlat = (st as StyleBoxFlat).duplicate()
+				cp.shadow_size = 0
+				_button.add_theme_stylebox_override(state, cp)
+		# 换过之后 `normal` 已经是那份复制品：把缓存的键更新成它，下一帧不再重做。
+		_shadow_key = _button.get_theme_stylebox("normal")
+
+
+	## 画投影（在底色与金之下）。圆形按钮不画（那是「圆币」，没有投影）。
+	func _draw_shadow() -> void:
+		if _shadow_size <= 0.001 or _circle_shape:
+			return
+		if _shadow_style == null:
+			_shadow_style = StyleBoxFlat.new()
+			_shadow_style.bg_color = Color(0.0, 0.0, 0.0, 0.0)
+			_shadow_style.set_border_width_all(0)
+		_shadow_style.shadow_color = _shadow_color
+		_shadow_style.shadow_size = int(round(_shadow_size))
+		_shadow_style.shadow_offset = _shadow_off
+		_shadow_style.set_corner_radius_all(int(round(_host_radius())))
+		draw_style_box(_shadow_style, Rect2(Vector2.ZERO, _button.size))
 
 
 	## 画当前进度下的那一片金（`_draw()` 与静态入口 `FillButtonRes.draw_fill()` 都走它）。
@@ -647,22 +808,45 @@ class FillAnimator extends Control:
 		var h: float = r.size.y * fill
 		if h < 1.0:
 			return
-		var region := Rect2(r.position.x, r.position.y + r.size.y - h, r.size.x, h)
 
-		# ③ 纹理按「整块按钮的高度」来配：于是 USED_RECT 一缩，
-		#    这一段金就从**整个渐变的最底端**往上截 —— 渐变**不会跟着进度跑**，
-		#    底边永远是最深的那一档（要的就是这个：进度只改「露出多少」）。
-		var used := Rect2(0.0, 1.0 - fill, 1.0, fill)
-		# ★ 这里用局部变量取一次纹理，而不是把 `_ramp` 直接写进调用：
-		#   `draw_texture_rect_region()` 那一格要的是 `Texture2D` 类型。
-		var ramp: Texture2D = _ramp
-		draw_texture_rect_region(ramp, region, used)
+		# ★★ 2026.11.14：填充**按宿主的圆角裁形**（用户报的「圆角被矩形底板影响」）。
+		#
+		#   旧版是一整块矩形贴图（`draw_texture_rect_region`）⇒ 满格时四个方角
+		#   从宿主的圆角描边外面顶出来 ——「操作 / 单位」那两颗页签上一眼就能看见。
+		#   现在改成**圆角多边形 + 逐顶点 uv**：贴图仍是原来那条竖向渐变
+		#   （`_ramp`，uv.y 按整块按钮的高度取），所以**颜色分布一个像素都没变**，
+		#   变的只是轮廓。
+		#
+		#   · 顶边随进度上移：把顶部的顶点**钳到 `y_top`** 即可（圆心角仍在，轮廓不会被破坏）；
+		#   · 进度到 1 时钳制量为 0 ⇒ 自然变成完整的圆角矩形。
+		var radius := _host_radius()
+		var y_top: float = r.position.y + r.size.y - h
+		var poly := _rounded_rect(r, radius)
+		var uvs := PackedVector2Array()
+		var cols := PackedColorArray()
+		uvs.resize(poly.size())
+		cols.resize(poly.size())
+		var inv_h: float = 1.0 / maxf(1.0, r.size.y)
+		for k in poly.size():
+			var px: Vector2 = poly[k]
+			var cy: float = clampf(px.y, y_top, r.position.y + r.size.y)
+			poly[k] = Vector2(px.x, cy)
+			# v = 0 是贴图上边、1 是下边（`set_colors()` 里 fill_from 在下方）
+			uvs[k] = Vector2(0.5, clampf((cy - r.position.y) * inv_h, 0.0, 1.0))
+			cols[k] = Color(1.0, 1.0, 1.0, 1.0)
+		draw_polygon(poly, cols, uvs, _ramp)
 
 		# ④ 那一条「金色的前沿」：填充还没走完时，在顶边上压一条极淡的亮线。
 		#    没有它，截止线看着像一块被裁掉色块；有了它才像「一条亮线在往上推」。
+		#   ★ 圆角那一段要跟着收进来，否则亮线会从轮廓外面探出去几个像素。
 		if fill < 0.995:
-			draw_rect(Rect2(region.position.x, region.position.y,
-				region.size.x, 1.0), Color(1.0, 0.97, 0.86, 0.22), true)
+			var inset_x := 0.0
+			var dy: float = radius - (y_top - r.position.y)
+			if radius > 0.5 and dy > 0.0:
+				inset_x = radius - sqrt(maxf(0.0, radius * radius - dy * dy))
+			var line_w: float = maxf(0.0, r.size.x - 2.0 * inset_x)
+			draw_rect(Rect2(r.position.x + inset_x, y_top, line_w, 1.0),
+				Color(1.0, 0.97, 0.86, 0.22), true)
 
 	## ★★ 画悬停 / 按住的那层**四边向中心**的泛光（`_draw()` 里、填充之后调）。
 	##
@@ -796,6 +980,12 @@ class FillAnimator extends Control:
 		if is_grey() != _was_grey:
 			_was_grey = is_grey()
 			_refresh_colors()
+		# ★★ 2026.11.14：「亮起」这一档变了也要重取色 —— 页签的**悬停填金**
+		#   要和「当前页」用同一套**亮金**（`fill_top_latched`），
+		#   否则悬停出来的那片金比当前页暗一档（实测 182,129,37 vs 240,191,96）。
+		if _is_lit() != _was_lit:
+			_was_lit = _is_lit()
+			_refresh_colors()
 		# ★ `_text_dirty` 是「登记过字色、但还没同步过」那一档（见 `_sync_text()`）。
 		if _text_dirty or not _dirty.is_empty():
 			_sync_text()
@@ -851,14 +1041,29 @@ class FillAnimator extends Control:
 		if moved or _glow > 0.0001 or _pulse_active or _press > 0.0001:
 			queue_redraw()
 
+	## 「亮起」= 这片金现在应该用**亮金那一档**调色（选中 / 当前页 / 悬停填金）。
+	## ★ 只有它变了才重取色（见 `_process` 里那条 `_was_lit` 比较）。
+	func _is_lit() -> bool:
+		return _latched or (_hover_fill and _hovered)
+
+
 	## 这一帧**选中填充**该到多少。
 	##
-	## ★★ 只有 `_latched` 会驱动它 —— 悬停 / 按住走 `_glow_goal()`，两者彻底分开。
+	## ★★ 只有 `_latched`（以及 `_hover_fill` 打开时的悬停）会驱动它 ——
+	##   普通按钮的悬停 / 按住仍然只走 `_glow_goal()`，两条路彻底分开。
 	## ★ `_available = false`（空槽 / 压根不该有动效）⇒ 不填。
+	##
+	## ★★ 2026.11.14（用户口径）：「页签栏的鼠标悬停效果改为金色填充」——
+	##   页签这一类（`set_hover_fill(b, true)`）悬停时**填满**，移开退回；
+	##   当前页仍然靠 `_latched` 常驻满格。两种来源都归到「1.0」，谁都不会把谁压掉。
 	func _fill_goal() -> float:
 		if not _available or _button == null or not is_instance_valid(_button):
 			return 0.0
-		return 1.0 if _latched else 0.0
+		if _latched:
+			return 1.0
+		if _hover_fill and _hovered:
+			return 1.0
+		return 0.0
 
 	## 这一帧**悬停泛光**该到多少。
 	##
@@ -1208,7 +1413,7 @@ class FillAnimator extends Control:
 		if is_grey():
 			_bottom = ThemeRes.fill_disabled_bottom()
 			_top = ThemeRes.fill_disabled_top()
-		elif _latched:
+		elif _is_lit():
 			_bottom = ThemeRes.fill_bottom_latched()
 			_top = ThemeRes.fill_top_latched()
 		else:
@@ -1327,7 +1532,7 @@ class FillAnimator extends Control:
 	##
 	## ⚠️⚠️ 猜法有两个实测踩到的坑，所以**能显式给就显式给**：
 	##   ① 只看 `normal` 不行：按钮 `disabled` 时引擎画的是 `disabled` 那一格
-	##      （`card_normal(false)` = `bg_empty()` 是实底，与 normal 的全透明完全不同）；
+	##      （那一档可能是实底，与 `normal` 的全透明完全不同）；
 	##   ② 按「第一个有底的」扫也不行：那可能会扫到**画面上根本没用到**的那一格
 	##      （实测：下拉选择条的 `pressed` 是实心金，于是空鼠标时也按「金字底」算，
 	##       字色当场选错 —— 用户看到的就是「字变灰了」）。
@@ -1370,6 +1575,26 @@ class FillAnimator extends Control:
 
 	func set_circle_shape(on: bool) -> void:
 		_circle_shape = on
+
+
+	## ★★ 2026.11.14（用户口径）：不要悬停四角括号（手牌 / 科技牌 / 页签）。
+	##
+	## ★ 已经把那一层建出来了就直接整层收起来（`sync()` 每帧会被喂状态，
+	##   只把 visible 设 false 会在下一帧被它自己改回来 —— 所以干脆 _reticle 置 null）。
+	func set_reticle(on: bool) -> void:
+		_reticle_off = not on
+		if _reticle_off and _reticle != null and is_instance_valid(_reticle):
+			_reticle.visible = false
+			_reticle.queue_free()
+			_reticle = null
+
+
+	## ★★ 2026.11.14（用户口径）：悬停就填金（页签栏）。
+	func set_hover_fill(on: bool) -> void:
+		if _hover_fill == on:
+			return
+		_hover_fill = on
+		queue_redraw()
 		queue_redraw()
 
 
@@ -1626,6 +1851,40 @@ static func set_base_bg(b: Button, c: Color) -> void:
 	var a := animator_of(b)
 	if a != null:
 		a.set_base_bg(c)
+
+
+## ★★ 2026.11.14（用户口径）：「手牌不需要有悬停时的四个角显示了，页签栏也不需要」。
+##
+## 关掉这颗按钮的**悬停四角括号 / 按下内扣 / 松手回声环**（整层 `button_reticle` 都不建）。
+## ★ 手牌 / 科技牌 / 页签用得上：它们的反馈已经由「抬起 + 描边渐变 + 金色填充」给足了，
+##   再叠一层括号，在扇形手牌这种密集排布里只会显得乱。
+## ⚠️ 必须在 `attach*()` **之前**调（那一步才决定建不建这一层）；挂了之后的调用只会被忽略。
+static func set_reticle(b: Button, on: bool) -> void:
+	if b == null:
+		return
+	var a := animator_of(b)
+	if a != null:
+		a.set_reticle(on)
+		return
+	# 还没挂动画器：先记意图（见 `attach()`），`on = true` 时把这个键删掉。
+	if on:
+		if b.has_meta(META_NO_RETICLE):
+			b.remove_meta(META_NO_RETICLE)
+	else:
+		b.set_meta(META_NO_RETICLE, true)
+
+
+## ★★ 2026.11.14（用户口径）：「页签栏的鼠标悬停效果改为金色填充」——
+##   这颗按钮**悬停即填满**（移开退回），与「选中 / 当前页」的常驻满格并存。
+## ⚠️ 比 `attach*()` 早调也行（动画器在 attach 那一刻才读得到它）。
+static func set_hover_fill(b: Button, on: bool) -> void:
+	if b == null:
+		return
+	var a := animator_of(b)
+	if a != null:
+		a.set_hover_fill(on)
+		return
+	b.set_meta(META_HOVER_FILL, on)
 
 
 ## 徽章按钮专用：将底色 / 填充 / 泛光裁成圆形。

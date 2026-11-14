@@ -17,7 +17,7 @@ const UiStyleRes = preload("res://view/ui_style.gd")
 const HpBarRes = preload("res://view/hp_bar.gd")
 
 
-## 部队序号怎么写：槽位现在是 1..6，原样写；`% 10` 只是兜底（与右侧部队列表同一口径）。
+## 部队序号怎么写：槽位现在是 1..5，原样写；`% 10` 只是兜底（与右侧部队列表同一口径）。
 ## 编号 <= 0（拿不到编号）→ 空串，由调用方退回别的图标字。
 static func troop_number_text(number: int) -> String:
 	if number <= 0:

@@ -53,6 +53,8 @@ const FS_NAME := 13
 const FS_LINE := 11
 ## 名字那条底条的高度（与命令卡 `NAME_BAR_H` 同口径：名字就压在这条上）
 const NAME_BAR_H := 20.0
+## 「打出一张牌」飞出那一段的时长（秒；飞回那段用 `_animate_card_back` 的 0.18）
+const PLAYED_OUT_SEC := 0.16
 ## 图标层（画烘好的金线蒙版，与单位 / 建筑页同一套）
 const UnitCardIconRes = preload("res://view/unit_card_icon.gd")
 
@@ -72,6 +74,8 @@ var _entries: Array = []
 var _primer_done: bool = false
 var _deck_tween: Tween = null
 var _drag_tween: Tween = null
+## ★★ 2026.11.14：「打出一张牌」那一段单独一条 tween（见 `_animate_played_out()`）
+var _played_tween: Tween = null
 var _drag_index: int = -1
 var _drag_start_pos := Vector2.ZERO
 var _dragging: bool = false
@@ -87,14 +91,19 @@ func setup() -> void:
 	#   ⚠️ 隐藏时**必须**是 IGNORE：Godot 里隐藏的 Control 不吃事件，
 	#      但万一哪天改成「半透明可见」，STOP 会把下面命令卡的点击全吞掉。
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
-	UiLayoutRes.apply_rect(self, UiLayoutRes.CARD_RECT, true, true)
+	# ★★ 2026.11.14：与命令卡**逐像素重合** ⇒ 手牌改成底部居中后这里也要一起改，
+	#   否则科技九格会留在原来的位置（换页时整块跳走）。
+	UiLayoutRes.apply_bottom_center(self, UiLayoutRes.CARD_RECT)
 
 	for i in UiLayoutRes.CARD_SLOTS:
 		var cell := Button.new()
 		cell.name = "TechCell%d" % (i + 1)
 		cell.focus_mode = Control.FOCUS_NONE
 		cell.clip_text = true
-		cell.clip_contents = true
+		# ★★ 2026.11.14：**不要**裁剪子节点 —— 投影现在由填充层（show_behind_parent 的子节点）
+#   画在卡身下面（见 view/fill_button.gd 的 _ensure_shadow()），clip_contents = true
+#   会把它裁在卡框里，于是卡看起来「没有投影」（用户报的科技卡那条）。
+#   卡里的图标 / 名字条本来就都摆在框内，解除裁剪不会溢出。
 		cell.visible = false
 		_style_cell(cell, false, false)
 		UiLayoutRes.apply_rect(cell, UiLayoutRes.card_cell_local(i))
@@ -105,14 +114,20 @@ func setup() -> void:
 		#      entry，自然什么都不弹（`entry_at` 越界返回 {}）。
 		cell.mouse_entered.connect(_on_cell_mouse_entered.bind(i))
 		cell.mouse_exited.connect(_on_cell_mouse_exited.bind(i))
-		# ★★ 悬停泛光 + 启用填充（一行挂上，见 view/fill_button.gd）
+		# ★★ 2026.11.14：悬停泛光 + 启用填充（一行挂上，见 view/fill_button.gd）
 		FillButtonRes.attach_text(cell)
+		# ★★ 2026.11.14（用户口径）：「手牌不需要有悬停时的四个角显示了」——
+		#   科技牌同样在扇形手牌里，也不画四角括号。
+		FillButtonRes.set_reticle(cell, false)
 		# ★★ 科技格有自己的点击反馈（启用 = 填满、弃用 = 退回）——
 		#   关掉「点击闪光」，否则两边会抢同一份 `_fill`。
 		FillButtonRes.set_click_flash(cell, false)
 		# ★★ 常驻灰底：底纹（`tech_fill*`）是全透明的，灰底画在填充层里、
 		#   金的下层 —— 悬停 / 启用时灰底不消失，金只是盖上去。
-		FillButtonRes.set_base_bg(cell, UiStyleRes.bg_empty())
+		#   ★★ 2026.11.14（用户口径）：「科技卡牌的底色与其他卡牌不同」——
+		#     原来这里是 `bg_empty()`（0.55 半透明）⇒ 科技牌比命令卡暗一大截。
+		#     现在与命令卡**同一个底**（`bg()`），两边的卡身逐像素一致。
+		FillButtonRes.set_base_bg(cell, UiStyleRes.bg())
 		# ★ 与命令卡同一口径：字色走「跟着金色前沿由白变黑」那条统一规则
 		#   （`set_prefer_light` 是历史遗留的作废开关，见 fill_button 里的说明）。
 		FillButtonRes.set_prefer_light(cell, true)
@@ -485,10 +500,63 @@ func _update_drag(i: int, viewport_pos: Vector2) -> bool:
 
 func _finish_touch_drag(i: int, viewport_pos: Vector2) -> void:
 	if i >= 0 and i < _cells.size() and _dragging:
+		# ★★ 2026.11.14（用户口径）：「被拖拽往上生效后，该卡牌将以金色填充形态放回手牌中，
+		#   取消启用科技则是将启用的科技牌**打出**」。
+		#   ⇒ 松手前先记下「这张牌本来是不是启用着」，用来决定回手的动画：
+		#     · 刚才未启用 → 现在启用：飞回手牌（填充金由 `set_latched` 现场播）
+		#     · 刚才启用着 → 现在取消：先「打出去」，再飞回手牌
+		var was_active := false
+		var ei := _entry_index_for_cell(i)
+		if ei >= 0 and ei < _entries.size():
+			was_active = bool((_entries[ei] as Dictionary).get("active", false))
+		var from_pos: Vector2 = _cells[i].position
+		var from_rot: float = _cells[i].rotation
 		cell_drag_finished.emit(entry_id_at(i), viewport_pos, i)
-		_animate_card_back(i)
+		# ⚠️ 上面这一句会让 hud `refresh()` → `_refresh_tech_grid()` → `_layout_fan()`，
+		#   把这张牌**直接摆回扇位**（于是后面的「飞回去」变成原地淡入，看不出动作）。
+		#   所以这里把位置还原成松手那一刻，动画才是从手上飞回去的。
+		if i < _cells.size() and is_instance_valid(_cells[i]):
+			_cells[i].position = from_pos
+			_cells[i].rotation = from_rot
+		if was_active:
+			_animate_played_out(i)
+		else:
+			_animate_card_back(i)
 	_dragging = false
 	_drag_index = -1
+
+
+## 「打出」一张牌：向上飞 + 淡出，然后从上方飞回手牌、淡入（= 取消启用时的过场）。
+##
+## ★ 为什么是「飞出去再飞回来」而不是直接退填：用户口径要的就是「打出一张牌」的动作感，
+##   同时这张科技仍然是手牌里的一张（不能真删），所以出去之后必须回来。
+## ★ 飞出用 ease-out（起步快），飞回用 `_animate_card_back()`（它已经是 0.18s 的
+##   TRANS_BACK，落位时有一点回弹，和命令卡那边同一套手感）。
+func _animate_played_out(i: int) -> void:
+	if i < 0 or i >= _cells.size():
+		return
+	var cell := _cells[i]
+	if not is_instance_valid(cell):
+		return
+	if _played_tween != null and _played_tween.is_running():
+		_played_tween.kill()
+	if _drag_tween != null and _drag_tween.is_running():
+		_drag_tween.kill()
+	# ★ 用**单独一条** tween：它跑完要回调 `_animate_card_back()`，而那一条会 kill
+	#   `_drag_tween`——如果共用一条，会把自己 kill 掉、飞回那一段永远不播（实测过）。
+	_played_tween = create_tween().set_parallel(true)
+	_played_tween.tween_property(cell, "position", cell.position + Vector2(0.0, -170.0),
+		PLAYED_OUT_SEC).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	_played_tween.tween_property(cell, "rotation", 0.0, PLAYED_OUT_SEC) \
+		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	_played_tween.tween_property(cell, "modulate:a", 0.0, PLAYED_OUT_SEC)
+	_played_tween.finished.connect(func() -> void:
+		if not is_instance_valid(cell) or not is_instance_valid(self):
+			return
+		# 淡到 0 之后立刻从扇位淡回来（`_animate_card_back` 里带了 modulate → 1）
+		cell.modulate.a = 0.0
+		_animate_card_back(i)
+	)
 
 
 func begin_touch_drag(i: int, viewport_pos: Vector2) -> void:
@@ -534,6 +602,9 @@ func _animate_card_back(i: int) -> void:
 		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	_drag_tween.tween_property(_cells[i], "rotation", rot, 0.18) \
 		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	# ★★ 2026.11.14：回手时把**卡面**也淡回来 ——「打出」那一段会把它淡到 0，
+	#   这里不带 modulate 的话那张牌就永远看不见了（实测：取消启用后牌消失）。
+	_drag_tween.tween_property(_cells[i], "modulate:a", 1.0, 0.18)
 	_cells[i].z_index = ordinal
 
 

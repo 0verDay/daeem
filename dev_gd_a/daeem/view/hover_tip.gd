@@ -11,7 +11,7 @@
 ##   · 几何（宽度 / 下缘 / 留白）全部来自 `view/ui_layout.gd`，本文件不写坐标字面量。
 ##
 ## ★ 高度是**算出来的**，这是「动态缩放」那一条的落点：
-##   宽 = `HOVER_W`（340 = 命令卡 + 右边那一列页签那一整段，见 ui_layout 的 HOVER_W 注释），
+##   宽 = `HOVER_W`（= 手牌宽度 842；2026.11.14「手牌居中」之后，悬停面板与手牌**同宽同中心**），
 ##   下缘 = `HOVER_BOTTOM`（命令卡顶边 − 8px），
 ##   高度 = 上下留白 + 标题实际高度 + 缝 + **正文折行后的实际高度** ⇒ 文字越多越高，
 ##   而且是**向上长**（下缘钉住），所以永远不会盖住命令卡、也不会掉出屏幕下沿。
@@ -122,9 +122,10 @@ func _relayout() -> void:
 	var gap: float = UiLayoutRes.HOVER_TITLE_GAP if (title_h > 0.0 and body_h > 0.0) else 0.0
 	_content_h = 2.0 * UiLayoutRes.HOVER_PAD + title_h + gap + body_h
 
-	# 贴右下角（anchor_right / anchor_bottom）：改窗口大小它跟着命令卡走
+	# ★★ 2026.11.14：手牌/科技九格改成**底部居中** ⇒ 悬停面板也跟着居中，
+	#   宽度与手牌相同（见 ui_layout 的 HOVER_W）。别再走「贴右下」。
 	var r: Rect2 = UiLayoutRes.hover_rect(_content_h)
-	UiLayoutRes.apply_rect(self, r, true, true)
+	UiLayoutRes.apply_bottom_center(self, r)
 
 	# ⚠️ 面板可能被 HOVER_MAX_H 夹过（文案长到离谱）⇒ 正文 Label 也要跟着夹，
 	#    否则字会画到面板底板之外（`clip_contents` 是第二道保险）。

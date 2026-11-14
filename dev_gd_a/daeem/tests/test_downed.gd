@@ -663,17 +663,21 @@ func _test_recruit_queue_cleared(cfg) -> void:
 
 	var kind := "spearman"
 	var rcost: float = float((w.recruit_cost(kind) as Dictionary).get("food", 0.0))
-	ok(w.start_recruit(kind, g.id, "p1"), "（前提）将领开始招募")
-	ok(g.train_queue_size() > 0, "（前提）它确实在读条")
+	ok(w.start_recruit(kind, g.id, "p1"), "（前提）将领招了一个兵")
+	# ★★ 2026.11.14（用户口径）：招募即时 ⇒ 没有队列、没有读条，
+	#   所以「濒死时作废队列 / 全额退款」这条路**已经不存在**了（钱是当场花掉的）。
+	eq(g.train_queue_size(), 0, "（前提）没有队列（即时招募）")
 	near(float(w.resources["food"]), 1000.0 - rcost, 1e-4, "（前提）已经扣了一单的粮（= config 定价）")
 	near(float(z["population"]), 9.0, 1e-4, "（前提）已经扣了 1 人口")
 
 	_smash(cfg, w, g)
 	ok(g.is_downed(), "★★ 它进了濒死")
-	eq(g.train_queue_size(), 0, "★★★ 招募队列**整个作废**（不留任何一单）")
-	near(float(w.resources["food"]), 1000.0, 1e-4, "★★ 已扣的粮食**全额退还**")
-	near(float(w.resources["gold"]), 1000.0, 1e-4, "★★ 黄金也全额退还")
-	near(float(z["population"]), 10.0, 1e-4, "★★ 人口也退回去了")
+	eq(g.train_queue_size(), 0, "★★★ 依然没有队列可作废（即时招募）")
+	# ★★ 2026.11.14（用户口径）：招募即时化 ⇒ **钱是当场花掉的**，将领濒死也不退。
+	near(float(w.resources["food"]), 1000.0 - rcost, 1e-4,
+		"★★ 花掉的粮食不退（兵已经真的出来了）")
+	near(float(w.resources["gold"]), 1000.0, 1e-4, "★★ 黄金本来就没花（长枪兵不吃金）")
+	near(float(z["population"]), 9.0, 1e-4, "★★ 人口也不退（兵已经站在场上）")
 	eq(w.can_recruit(kind, g.id, MY), "downed",
 		"★★ 濒死期间不能再下单（拒因码 downed）")
 

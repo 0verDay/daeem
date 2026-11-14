@@ -250,6 +250,15 @@ var _mouse_pos: Vector2 = Vector2.ZERO
 var _space_held: bool = false
 var _ui_dragging_camera: bool = false
 var _edge_scroll_on: bool = true
+## ★★ 2026.11.14：边缘滚屏的**当前速度**（归一化功率向量，0..1；见 `_edge_power()`）。
+##
+## 用户原话：「鼠标移动到屏幕边缘滚屏时移动视角，需要（处理）停下时的过度移动」
+##   → 追问后确认是「停下太硬，像急刹」。所以：
+##     · 起步：鼠标一进边缘带就 `_edge_vel = e`（**瞬间给满**，不拖泥带水）；
+##     · 抬手：`_edge_vel` 按指数衰减到 0（时长 = `cfg.cam_edge_stop_sec`）。
+##   ⚠️ 不要把它变成「每帧都对 e 做 lerp」——那会把**起步**也变软，
+##      手感立刻变成「推到边缘要等一下才开始动」（这是 2D 版就定过的手感）。
+var _edge_vel: Vector2 = Vector2.ZERO
 ## ★★ 地面**区划**重烘的节流（见 `_process` 里的 ⑤b）：每 N 帧查一次。
 ##    迷雾**不在这里**：它每帧做一次整块掩码比较（`ground.rebake_fog()`，O(格数) 的
 ##    memcmp），重烘频率由 `cfg.fog_rebake_min_sec`（默认 0.1s）合并 —— 见 ⑤a。
@@ -1607,7 +1616,8 @@ func _process(dt: float) -> void:
 	var _t_input := _prof()
 	# ★ 触摸端镜像：输入层据此选「框选预览的判定口径」以及「要不要出光标悬停」
 	input_ctrl.touch_mode = touch_device
-	input_ctrl.poll_mouse()
+	# ★★ 2026.11.14：带 dt（左键拖拽松手后的**惯性滑行**靠它推进；暂停时 dt = 0 ⇒ 冻结）。
+	input_ctrl.poll_mouse(dt)
 	# ★★ 将领标签 / 数字键的长按计时：桌面与手机都靠这一句推进
 	#   （手机端 squad_panel 自己的 `_process` 被 HUD 关掉了，不能放那里）。
 	input_ctrl.poll_gestures()
@@ -1755,6 +1765,7 @@ func _process(dt: float) -> void:
 	overlay.tick_rejects(dt if running else 0.0)
 	overlay.sync()
 	_sync_build_card_ghost()
+	_sync_order_ghost()
 	_prof_done("view/overlay", _t_overlay)
 	# ⑤a ★★ 迷雾：**每帧**检查一次掩码变没变（整块 memcmp，O(格数)，可忽略）。
 	#
@@ -1779,6 +1790,20 @@ func _process(dt: float) -> void:
 	_camera_update(dt)
 	_prof_done("camera", _t_cam)
 	_mobile_scale_tick(dt)
+
+
+## ★★ 2026.11.14：把 hud 那份「操作牌旗帜虚影」状态抄给 overlay（纯表现，不碰逻辑）。
+##
+## ★ 为什么状态放在 hud：落点要算「最近敌人」（要 `world` + `palette` 的投影），
+##   而 hud 已经在做同类的活（`_update_build_drag_preview()`）；这里只是一帧一次的三行赋值。
+## ★ 与 `_sync_build_card_ghost()` 并列调用：两者都是「拖牌时地图上的预览」。
+func _sync_order_ghost() -> void:
+	if overlay == null or hud == null:
+		return
+	overlay.order_ghost_active = hud.order_ghost_active
+	overlay.order_ghost_world = hud.order_ghost_world
+	overlay.order_ghost_color = hud.order_ghost_color
+	overlay.order_ghost_snapped = hud.order_ghost_snapped
 
 
 func _sync_build_card_ghost() -> void:
@@ -1973,10 +1998,14 @@ func _camera_update(dt: float) -> void:
 	if cam == null or palette == null:
 		return
 	# ★★ 演出：强制移动 / 镜头锁 / 跟随目标。接管时跳过所有玩家镜头输入。
+	#   ⚠️ 这两种「整段接管」的分支要顺手把边缘滚屏的残速清掉（下面 `_edge_vel` 那段）：
+	#     否则演出结束后的头 0.08 秒会带着演出前的速度再滑一下。
 	if _story_camera_tick(dt):
+		_edge_vel = Vector2.ZERO
 		return
 	# allowlist 里 camera 被禁：边缘滚屏 / 方向键也一起停（它们不经过 input_controller）。
 	if story != null and not story.is_input_allowed(StoryConstsRes.ACT_CAMERA):
+		_edge_vel = Vector2.ZERO
 		clamp_look_point()
 		return
 	# ⓪ 程序性跳转缓动（C2）：接管这一小段（默认 0.15s），避免长距离瞬移。
@@ -2033,12 +2062,13 @@ func _camera_update(dt: float) -> void:
 	# ③ 边缘滚屏（越贴边滚得越快：归一化后取平方，与 2D / HTML 版同一手感）
 	#   ★ 跟随期间跳过：否则鼠标只要停在屏幕边缘，跟随就会在下一帧被自己踢掉。
 	#     方向键仍然会走 ② 的 `pan_screen()` —— 那是明确的「手动动镜头」，照常取消跟随。
-	if _edge_scroll_on and _mouse_inside and not _space_held and not _ui_dragging_camera \
-			and not is_following():
+	var max_speed: float = cfg.num("camera.edge_max_speed", 1500.0)
+	var can_scroll: bool = _edge_scroll_on and _mouse_inside and not _space_held \
+		and not _ui_dragging_camera and not is_following()
+	var e := Vector2.ZERO
+	if can_scroll:
 		var margin: float = cfg.camera_edge_size
-		var max_speed: float = cfg.num("camera.edge_max_speed", 1500.0)
 		var vp: Vector2 = get_viewport().get_visible_rect().size
-		var e := Vector2.ZERO
 		if _mouse_pos.x < margin:
 			e.x = -_edge_power(margin - _mouse_pos.x, margin)
 		elif _mouse_pos.x > vp.x - margin:
@@ -2047,8 +2077,19 @@ func _camera_update(dt: float) -> void:
 			e.y = -_edge_power(margin - _mouse_pos.y, margin)
 		elif _mouse_pos.y > vp.y - margin:
 			e.y = _edge_power(_mouse_pos.y - (vp.y - margin), margin)
-		if e.length_squared() > 0.0:
-			pan_screen(e * max_speed * dt)
+	# ★★ 2026.11.14（用户口径「停下太硬，像急刹」）：起步瞬间给满、抬手指数衰减。
+	#   · `e != 0`            → 正在贴边：速度直接等于目标（**不做起步缓动**）；
+	#   · `not can_scroll`    → 鼠标进 UI / 开始拖拽 / 跟随：**立刻让位**，
+	#     否则衰减中的残速会和「小地图拖动 / 框选 / 跟随」抢同一台相机（画面发抖）；
+	#   · 其余（鼠标离开边缘带）→ 让速度衰减到 0，镜头**缓停**而不是硬刹。
+	if e.length_squared() > 0.0:
+		_edge_vel = e
+	elif not can_scroll:
+		_edge_vel = Vector2.ZERO
+	else:
+		_edge_vel = _decay_edge_velocity(_edge_vel, dt)
+	if _edge_vel.length_squared() > 0.0:
+		pan_screen(_edge_vel * max_speed * dt)
 
 	# ③.5 跟随镜头：目标还活着就每帧把画面中心摆到它身上。
 	#   目标阵亡 → 自动取消（与「手动动镜头取消」并列的第二种结束条件）。
@@ -2069,6 +2110,28 @@ func _camera_update(dt: float) -> void:
 func _edge_power(depth: float, margin: float) -> float:
 	var tt: float = clampf(depth / maxf(1.0, margin), 0.0, 1.0)
 	return tt * tt
+
+
+## 把边缘滚屏的速度按**指数衰减**收干 —— 抬手时的「缓停」（见 `_edge_vel` 那段说明）。
+##
+## ★ 为什么用指数而不是线性 `move_toward`：
+##   · 线性衰减到 0 时，最后一帧的速度是「阶梯式」掉下来的，眼睛能看出一个硬拐角；
+##     指数曲线是连续收敛的，手感才真的像「滑行一小段停住」。
+##   · `1 - exp(-dt/τ)` 这个权重让**帧率无关**：60Hz / 90Hz / 120Hz 下轨迹一致
+##     （直接用 `v * (1 - dt*k)` 会在高刷屏上停得更快 —— 那正是「同一个动作不同手感」）。
+## ★ τ = `edge_stop_sec / 3`：指数曲线 3τ 之后只剩 5%，
+##   于是配置里那个数就是「肉眼看已经停住」的时间。0 = 立刻停（旧行为）。
+## ★ 残速 < 1% 满速时直接归零：否则会以「永远走不到 1px」的速度无限滑下去，
+##   每帧还要白调一次 `pan_screen()`（它会重算投影）。
+func _decay_edge_velocity(v: Vector2, dt: float) -> Vector2:
+	if cfg == null or cfg.cam_edge_stop_sec <= 0.0:
+		return Vector2.ZERO
+	var tau: float = maxf(0.001, cfg.cam_edge_stop_sec / 3.0)
+	var k: float = clampf(1.0 - exp(-maxf(0.0, dt) / tau), 0.0, 1.0)
+	var out: Vector2 = v.lerp(Vector2.ZERO, k)
+	if out.length() < 0.01:
+		return Vector2.ZERO
+	return out
 
 
 ## 把「镜头看向的地面点」夹进**允许区间**：镜头中心可以到达**地图矩形内的任意一点**，
@@ -2763,7 +2826,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 	elif event is InputEventMouseMotion:
 		input_ctrl.poll_mouse()
-		# ★ 框选那条状态机也要吃移动事件（越过阈值才算「在拖框」）
+		# ★ 左键手势那条状态机也要吃移动事件（越过阈值才算「在拖拽平移」）
 		input_ctrl.handle_mouse_motion(event)
 
 

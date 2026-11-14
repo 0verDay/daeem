@@ -93,7 +93,10 @@ func setup(p_cfg, font: Font) -> void:
 func _read_config() -> void:
 	if cfg == null:
 		return
-	_width = maxf(120.0, UiLayoutRes.MAP_RECT.size.x)
+	# ★★ 2026.11.14：宽度**不再**跟着小地图走 —— 小地图搬到右上角并缩小到 238 宽，
+	#   而播报文字按 328 排过版（见 `line_height` / 对话框的换行），
+	#   跟着缩会突然出现「一句话被折成两行」。所以宽度改成自己的常量。
+	_width = maxf(120.0, UiLayoutRes.NOTICE_W)
 	# 播报
 	_bottom_gap = maxf(0.0, cfg.num("ui.broadcast.bottom_gap", 8.0))
 	_line_h = maxf(20.0, cfg.num("ui.broadcast.line_height", 44.0))
@@ -117,12 +120,17 @@ func _read_config() -> void:
 	_d_exit_rise = maxf(0.0, cfg.num("story.dialogue.exit_rise", 48.0))
 
 
-## 贴左下角、底边压在小地图上沿之上 `_bottom_gap`。
+## 贴左下角、底边压在设计空间下沿之上 24px（几何见 `UiLayoutRes.NOTICE_*`）。
+##
+## ★★ 2026.11.14：原来这里锚的是**左下小地图的上沿**（`MAP_RECT.y - gap`）。
+##   地图搬到右上角之后那个位置空了，而播报不该跟着搬（右上角是地图 + 将领列，
+##   塞不下 328 宽的横幅）⇒ 改成「屏幕左下角的一个自带锚点的栈」，
+##   高度按内容**向上长**（`apply_rect(..., false, true)` 仍然是贴下沿）。
 func _layout_self() -> void:
 	var h := _stack_height()
 	var r := Rect2(
-		UiLayoutRes.MAP_RECT.position.x,
-		UiLayoutRes.MAP_RECT.position.y - _bottom_gap - h,
+		UiLayoutRes.NOTICE_X,
+		UiLayoutRes.NOTICE_BOTTOM - _bottom_gap - h,
 		_width, h)
 	UiLayoutRes.apply_rect(self, r, false, true)
 

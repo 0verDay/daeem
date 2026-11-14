@@ -30,6 +30,7 @@ extends Control
 
 const UiLayoutRes = preload("res://view/ui_layout.gd")
 const UiStyleRes = preload("res://view/ui_style.gd")
+const ThemeRes = preload("res://view/theme.gd")
 ## ★★ 悬停时「金色自下而上填进来」的那套动效（见 view/fill_button.gd）。
 const FillButtonRes = preload("res://view/fill_button.gd")
 ## ★★ 格子里那枚**单位剪影浮雕图**（见 view/unit_card_icon.gd）。
@@ -65,6 +66,9 @@ var _name_bars: Array[ColorRect] = []
 ## ★★ 每格的**单位剪影浮雕**层（`view/unit_card_icon.gd` 的 `IconView`）。
 ##   与 `_name_labels` 一一对应、同一序号；空串 = 这一格不画图标。
 var _icon_views: Array = []
+## ★★ 2026.11.14：操作牌冷却的「遮罩」（**填充式**：一张暗纱从牌顶往下盖住，
+## 随冷却推进从下往上退开，底边就是冷却前沿）。见 `set_order_cooldown()`。
+var _cd_veils: Array = []
 ## ★★ 招募数量角标（同种多个时显示在格子右下角）。
 var _count_labels: Array[Label] = []
 ## 纯动作页的大图形符号（招募/建筑/科技仍优先使用剪影蒙版）。
@@ -77,12 +81,41 @@ var _glow_t: float = 0.0
 ## 点击牌组切页时的新牌从牌手下方错落升起；鼠标向上拖牌时跟随指针。
 const DRAG_LIFT_THRESHOLD := 10.0
 const DRAG_RETURN_SEC := 0.20
+## ★★ 2026.11.14：拖拽中「卡面显示 / 淡出」的过渡时长，以及手牌区判据向下放宽多少。
+##   （见 `_set_drag_face_alpha()`：拖回手牌就淡回来，拖到地图上就淡掉）
+const DRAG_FACE_FADE_SEC := 0.12
+const DRAG_FACE_SLACK := 40.0
+## ★★ 2026.11.14：操作牌拖拽时，牌底边距指针的余量（像素）——
+##   让牌底下留出**旗杆（40）+ 旗面**的位置（见 `_update_drag_position()`）。
+const ORDER_DRAG_LIFT := 70.0
+## ★★ 2026.11.14：操作牌拖拽时的整体不透明度（半透明 = 看得见牌下面的旗帜虚影）。
+const ORDER_DRAG_ALPHA := 0.72
+## ★★ 2026.11.14（用户口径）：「卡牌在静止到悬停态时需要有缓动效果」——
+##   抬起 / 摆正原来是**一帧到位**（`cell.position.y -= 20` + `rotation = 0`），
+##   鼠标一扫过手牌，每张牌都在瞬间跳一下。现在走 0.14s 的 ease-out：
+##   起步快、收尾稳，抬起与落回**同一档**（落回也缓动，不会「啪」地掉下去）。
+##   ⚠️ 时长与 `DRAG_RETURN_SEC` / 入场 0.20s 同一档手感，别调得更长 ——
+##      手牌是**每隔几帧就要扫过一张**的高频交互，慢了会觉得「跟不上鼠标」。
+const HOVER_RAISE_SEC := 0.14
+## 悬停时整张牌向上抬多少（设计像素）。
+const HOVER_RAISE_PX := 20.0
 var _drag_index: int = -1
 var _drag_start_global := Vector2.ZERO
 var _dragging_card: bool = false
 var _deck_tween: Tween = null
 var _drag_tween: Tween = null
 var _drag_fade_tween: Tween = null
+## 每格当前挂着的「悬停抬起」Tween（再次悬停 / 收手 / 换页时先杀掉，
+## 否则两条 Tween 会抢同一个 `position:y`，表现是牌在原地抽搐）。
+var _hover_tweens: Array = []
+## 每格**常驻**的那份 StyleBox（悬停时只改它的颜色，不换对象 —— 见 `_cell_style`）。
+var _cell_styles: Array = []
+## 每格的「常态底色 / 常态描边色」（插值起点）与「上一帧已经写进去的泛光进度」。
+var _cell_bg0: Array = []
+var _cell_border0: Array = []
+var _cell_glow_applied: Array = []
+## 拖拽中这张牌当前的「卡面可见度」目标（-1 = 还没有拖过；见 `_set_drag_face_alpha`）。
+var _drag_face_alpha: float = -1.0
 
 ## ★★ 手机端：按住某一格期间由 hud 置 true —— 「按下」产生的模拟鼠标会让这一格**立刻**
 ##    收到 mouse_entered，那是「悬停」，而需求是「长按才悬停」⇒ 按住期间忽略鼠标进入。
@@ -100,7 +133,10 @@ const NAME_ON_ICON_FS := 13
 func setup() -> void:
 	name = "CommandCard"
 	mouse_filter = Control.MOUSE_FILTER_STOP
-	UiLayoutRes.apply_rect(self, UiLayoutRes.CARD_RECT, true, true)
+	# ★★ 2026.11.14（用户口径）：「手牌放至屏幕底部中央」——锚点从「贴右下」
+	#   改成「贴底 + 水平居中」，所以走 `apply_bottom_center()`。
+	#   ⚠️ 别改回 apply_rect(..., true, true)：那样窗口一拉宽，手牌会贴到右边去。
+	UiLayoutRes.apply_bottom_center(self, UiLayoutRes.CARD_RECT)
 
 	for i in UiLayoutRes.CARD_SLOTS:
 		var face := Panel.new()
@@ -122,12 +158,15 @@ func setup() -> void:
 		var cell := Button.new()
 		cell.name = "CardSlot%d" % (i + 1)
 		cell.focus_mode = Control.FOCUS_NONE
-		cell.clip_contents = true
+		# ★★ 2026.11.14：**不要**裁剪子节点 —— 投影现在由填充层（show_behind_parent 的子节点）
+#   画在卡身下面（见 view/fill_button.gd 的 _ensure_shadow()），clip_contents = true
+#   会把它裁在卡框里，于是卡看起来「没有投影」（用户报的科技卡那条）。
+#   卡里的图标 / 名字条本来就都摆在框内，解除裁剪不会溢出。
 		# ★★ 本版**不用** Godot 原生的 `tooltip_text` 了：说明改由「命令卡正上方的
 		#    悬停详情面板」画（需求要的是那块面板）。两个一起挂会同时冒出两个提示框。
 		#   ⚠️ `desc` 这个**数据字段**照旧留着（文案的出处是 config / 逻辑层），
 		#      只是不再塞给 Button 的原生 tooltip —— 见 hud._hover_detail。
-		_cell_style(cell, false)
+		_cell_style(i, cell, false)
 		UiLayoutRes.apply_rect(cell, UiLayoutRes.card_cell_local(i))
 		cell.pressed.connect(_on_cell_pressed.bind(i))
 		cell.gui_input.connect(_on_cell_gui_input.bind(i))
@@ -139,6 +178,9 @@ func setup() -> void:
 		cell.mouse_exited.connect(_on_cell_mouse_exited.bind(i))
 		# ★★ 悬停填充：一行挂上「自绘填充（画在底纹下面）+ 鼠标跟随 + 填满时把字压成暖黑」
 		FillButtonRes.attach_text(cell)
+		# ★★ 2026.11.14（用户口径）：「手牌不需要有悬停时的四个角显示了」——
+		#   手牌的悬停反馈 = 抬起 + 描边渐变 + 填充，不再叠四角括号。
+		FillButtonRes.set_reticle(cell, false)
 		# ★★ 每格都带常驻灰底（空格子也不例外）：底纹是全透明的，
 		#   灰底画在填充层里、金的上方；这样悬停时灰底不会消失（用户报的 bug）。
 		FillButtonRes.set_base_bg(cell, UiStyleRes.bg())
@@ -262,6 +304,35 @@ func setup() -> void:
 		cell.add_child(ripple)
 		_glow_ripples.append(ripple)
 
+		# ★★ 2026.11.14（用户口径）：「拖出生效并回到手牌后，牌面会出现进度条提示其冷却」
+		#   → 后来改口径：「进度条还是需要改为**填充**而不是一根条」。
+		#   ⇒ 一张**暗纱**（Panel + 圆角 StyleBox）盖在牌面上：高度 = 剩余冷却比例，
+		#     贴牌顶往下长；随冷却推进，纱的下沿一路往上退（牌面一点点露出来），
+		#     下沿那条 2px 亮线就是「冷却前沿」。
+		#   · 用 Panel 而不是 ColorRect：圆角跟着牌走，不会在牌角外顶出方角
+		#     （卡片已经关掉 `clip_contents`，见那些格子创建处）；
+		#   · 下沿用 StyleBox 的 `border_width_bottom` 画，不必再加一个节点；
+		#   · 放最上层（最后 add_child）——它要盖住图标和名字。
+		var veil := Panel.new()
+		veil.name = "CdVeil%d" % (i + 1)
+		veil.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		var vsb := StyleBoxFlat.new()
+		vsb.bg_color = Color(0.02, 0.03, 0.05, 0.55)
+		# ★★ 2026.11.14（用户口径）：「冷却的进度条是底边的形状，不需要贴合底边，
+		#   只需要是直线即可」——
+		#   只给**上面两个角**圆角（贴住牌顶的圆角），下面两个角是 0 ⇒ 暗纱的下沿
+		#   （冷却前沿）是一条**水平直线**，不再顺着牌底那条圆角拐弯。
+		vsb.set_corner_radius_all(0)
+		vsb.corner_radius_top_left = 9
+		vsb.corner_radius_top_right = 9
+		vsb.set_border_width_all(0)
+		vsb.border_width_bottom = 2
+		vsb.border_color = ThemeRes.with_alpha(UiStyleRes.accent(), 0.75)
+		veil.add_theme_stylebox_override("panel", vsb)
+		veil.visible = false
+		cell.add_child(veil)
+		_cd_veils.append(veil)
+
 		_cells.append(cell)
 		_key_labels.append(key_label)
 		_name_labels.append(name_label)
@@ -323,6 +394,13 @@ func set_entries(list: Array) -> void:
 			_card_faces[i].modulate.a = 1.0
 			var e2: Dictionary = _entries[i]
 			var ready: bool = bool(e2.get("ready", true))
+			# ★★ 2026.11.14：换页时先把**冷却遮罩**收掉。
+			#   命令卡这九颗按钮是**跨页复用**的：在操作页盖过的暗纱，切到建筑页
+			#   会留在同一颗按钮上（用户报的「我的单位移动时，建筑牌也有进度条」）。
+			#   `set_order_cooldown()` 每帧也会按条目类型收回它，但那是**下一帧**的事 ——
+			#   这一句让「切页那一帧」就是干净的。
+			if i < _cd_veils.size() and _cd_veils[i] != null:
+				_cd_veils[i].visible = false
 			_name_labels[i].text = String(e2.get("name", ""))
 			if String(e2.get("type", "")) == "recruit_cancel_all":
 				_key_labels[i].text = "ESC"
@@ -384,7 +462,7 @@ func set_entries(list: Array) -> void:
 				UiStyleRes.text() if ready else UiStyleRes.text_faint())
 			FillButtonRes.on_fill_text(cell, _key_labels[i],
 				UiStyleRes.text() if ready else UiStyleRes.text_faint())
-			_cell_style(cell, ready)
+			_cell_style(i, cell, ready)
 			cell.disabled = not ready
 			# ★ 有内容 ⇒ 参与动效（从空槽变成有内容的那一帧要把它重新打开）。
 			FillButtonRes.set_available(cell, true)
@@ -416,7 +494,7 @@ func set_entries(list: Array) -> void:
 			_apply_name_layout(i, false)
 			FillButtonRes.set_base_font_color(cell, UiStyleRes.text_faint())
 			FillButtonRes.on_fill_text(cell, _key_labels[i], UiStyleRes.text_faint())
-			_cell_style(cell, false)
+			_cell_style(i, cell, false)
 			cell.disabled = false
 			# ★★ 2026.11.5：**空格子不参与任何动效**（与科技格同一条口径）——
 			#   它没有内容、点了也不做事（`activate_index` 直接 false），
@@ -432,6 +510,9 @@ func set_entries(list: Array) -> void:
 
 ## 仅把当前页有内容的格子摆成扇形；未用的槽位不显示、不参与鼠标命中。
 func _layout_fan() -> void:
+	# ★ 重新摆牌 = 直接写 `position` / `rotation` ⇒ 先把悬停 Tween 撤掉，
+	#   否则它会在接下来几十毫秒里把牌又拽回旧姿势（换页瞬间的「牌在抽」就是这么来的）。
+	_kill_hover_tweens()
 	var visible_indices: Array[int] = []
 	for i in _cells.size():
 		if i < _entries.size() and not (_entries[i] as Dictionary).is_empty():
@@ -480,24 +561,67 @@ func _raise_card(i: int, raised: bool) -> void:
 			count += 1
 	var cell := _cells[i]
 	var base := UiLayoutRes.card_fan_local(ordinal, count)
+	var target_y: float = base.position.y - HOVER_RAISE_PX if raised else base.position.y
+	var target_rot: float = 0.0 if raised else UiLayoutRes.card_fan_rotation(ordinal, count)
+	# ★ 层次**立刻**定下来：抬起的那张要压住邻居与右侧页签。
+	#   等 Tween 结束再改的话，抬起过程中会被邻居盖住一截。
 	if raised:
-		cell.rotation = 0.0
-		cell.position.y = base.position.y - 20.0
 		cell.z_index = UiLayoutRes.CARD_SLOTS * 2 + 2
-		_card_faces[i].rotation = 0.0
-		_card_faces[i].position.y = base.position.y - 20.0
 		_card_faces[i].z_index = UiLayoutRes.CARD_SLOTS * 2 + 1
 	else:
-		cell.rotation = UiLayoutRes.card_fan_rotation(ordinal, count)
-		cell.position.y = base.position.y
 		cell.z_index = ordinal * 2 + 1
-		_card_faces[i].rotation = UiLayoutRes.card_fan_rotation(ordinal, count)
-		_card_faces[i].position.y = base.position.y
 		_card_faces[i].z_index = ordinal * 2
+	_ease_card_pose(i, target_y, target_rot)
+
+
+## 把第 i 张牌缓动到「抬起 / 落回」的姿势（`_raise_card` 的唯一落地点）。
+##
+## ★ 为什么用 Tween 而不是每帧 `move_toward`：拖动 / 换页 / 入场那几条路已经在用
+##   Tween 写同样的属性（`position` / `rotation`），
+##   两条 Tween 会互相覆盖 —— 所以这里**先杀掉自己上一条**，并且只在
+##   「没在拖牌 / 没在播牌组动画」时才写。
+## ★ `animations_enabled() == false`（无头测试 / 玩家关动效）时**直接到位**：
+##   既有断言依赖「调完 `_raise_card` 之后牌就在目标位置」。
+func _ease_card_pose(i: int, target_y: float, target_rot: float) -> void:
+	while _hover_tweens.size() <= i:
+		_hover_tweens.append(null)
+	var old = _hover_tweens[i]
+	if old != null and is_instance_valid(old) and (old as Tween).is_running():
+		(old as Tween).kill()
+	_hover_tweens[i] = null
+	var cell := _cells[i]
+	var face := _card_faces[i]
+	if _dragging_card or not ThemeRes.animations_enabled() or HOVER_RAISE_SEC <= 0.0:
+		cell.position.y = target_y
+		cell.rotation = target_rot
+		face.position.y = target_y
+		face.rotation = target_rot
+		return
+	var tw := create_tween().set_parallel(true)
+	tw.tween_property(cell, "position:y", target_y, HOVER_RAISE_SEC) \
+		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	tw.tween_property(cell, "rotation", target_rot, HOVER_RAISE_SEC) \
+		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	tw.tween_property(face, "position:y", target_y, HOVER_RAISE_SEC) \
+		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	tw.tween_property(face, "rotation", target_rot, HOVER_RAISE_SEC) \
+		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	_hover_tweens[i] = tw
+
+
+## 杀掉所有「悬停抬起」Tween。换页 / 重新摆牌 / 开始拖牌之前必须调 ——
+## 那几条路会直接写 `position` / `rotation`，留着 Tween 就会被它拽回去。
+func _kill_hover_tweens() -> void:
+	for tw in _hover_tweens:
+		if tw != null and is_instance_valid(tw) and (tw as Tween).is_running():
+			(tw as Tween).kill()
+	_hover_tweens.clear()
 
 
 ## 切换页签后对新手牌做一次短促的「从牌手里抽出」入场。
 func animate_deck_in() -> void:
+	# ★ 入场动画自己写 `position` / `rotation` ⇒ 先把悬停 Tween 撤掉。
+	_kill_hover_tweens()
 	if _deck_tween != null and _deck_tween.is_running():
 		_deck_tween.kill()
 	var visible_indices: Array[int] = []
@@ -540,6 +664,12 @@ func animate_deck_in() -> void:
 func _on_cell_gui_input(event: InputEvent, i: int) -> void:
 	if OS.has_feature("mobile") or touch_suppress_hover:
 		return # 触屏由 HUD 的长按 / 拖牌路径处理，不抢模拟鼠标事件。
+	# ★★ 2026.11.14（用户报的「操作牌冷却没有生效」）：
+	#   `cell.disabled = true` 只挡得住 `pressed`，**挡不住 `gui_input`** ——
+	#   Control 是先发 `gui_input` 信号再走 `_gui_input` 虚函数，所以置灰的牌
+	#   照样能被拖起来、照样能下达命令。冷却/置灰必须在**拖拽这条路**上自己判一次。
+	if not _card_ready(i):
+		return
 	if event is InputEventMouseButton and (event as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
 		var mb := event as InputEventMouseButton
 		if mb.pressed:
@@ -563,7 +693,15 @@ func _update_drag_position(i: int, viewport_pos: Vector2) -> void:
 		return
 	var delta := viewport_pos - _drag_start_global
 	if not _dragging_card and delta.y <= -DRAG_LIFT_THRESHOLD:
+		# ★★ 置灰的牌（操作牌冷却中 / 建筑没解锁）**拖不起来**。
+		#   见 `_on_cell_gui_input` 那段说明：`disabled` 挡不住 gui_input 这条路。
+		if not _card_ready(i):
+			_drag_index = -1
+			return
 		_dragging_card = true
+		# ★ 拖牌接管这张牌的位置：悬停 Tween 必须先撤，否则它和 `card_drag_moved` 抢。
+		_kill_hover_tweens()
+		_drag_face_alpha = -1.0
 		if _deck_tween != null and _deck_tween.is_running():
 			_deck_tween.kill()
 		if _drag_tween != null and _drag_tween.is_running():
@@ -572,22 +710,69 @@ func _update_drag_position(i: int, viewport_pos: Vector2) -> void:
 		_card_faces[i].z_index = UiLayoutRes.CARD_SLOTS * 2 + 3
 		if String(entry_at(i).get("type", "")) == "build":
 			# 建筑牌上拖时快速淡至全透明，避免遮挡红 / 绿建造提示与 3D 虚影。
+			# ★★ 2026.11.14（用户口径）：「当卡牌没有被打出并被玩家拖回手牌时，
+			#   应当再逐渐显示其卡面」—— 淡出只是「离开手牌」时的事，拖回手牌范围
+			#   就要淡回来（见下面 `_set_drag_face_alpha()`），否则玩家拖回来时
+			#   手上什么都没有，像牌被吞了。
 			if _drag_fade_tween != null and _drag_fade_tween.is_running():
 				_drag_fade_tween.kill()
 			_cells[i].modulate.a = 1.0
 			_card_faces[i].modulate.a = 1.0
-			_drag_fade_tween = create_tween().set_parallel(true)
-			_drag_fade_tween.tween_property(_cells[i], "modulate:a", 0.0, 0.09)
-			_drag_fade_tween.tween_property(_card_faces[i], "modulate:a", 0.0, 0.09)
+			_set_drag_face_alpha(i, false)
 		card_drag_started.emit(entry_at(i), viewport_pos)
+		# ★★ 2026.11.14：操作牌拖拽时**半透明** —— 落点的旗帜虚影画在 overlay 层
+		#   （在 HUD 之下），牌不透明就会把旗子盖住；而吸附到敌人时「牌的位置」和
+		#   「旗的位置」本来就不重合（旗贴在敌人身上），更要能看见。
+		if String(entry_at(i).get("type", "")) == "order":
+			_cells[i].modulate.a = ORDER_DRAG_ALPHA
+			_card_faces[i].modulate.a = ORDER_DRAG_ALPHA
 	if not _dragging_card:
 		return
 	var local: Vector2 = get_global_transform_with_canvas().affine_inverse() * viewport_pos
 	_cells[i].rotation = 0.0
-	_cells[i].position = local - _cells[i].size * 0.5
+	# ★★ 2026.11.14：**操作牌**要端在指针**上方**，别压在指针上 ——
+	#   落点那里会画一面「旗帜虚影」（hud + overlay_view_3d），而牌是 216×206 的，
+	#   居中跟手会把整面旗盖住，玩家看不见自己指哪儿（实测截图就是一片牌面）。
+	#   上抬量 = 牌高 + 旗杆高（overlay 里 34px）+ 一点余量。
+	var hold: Vector2 = _cells[i].size * 0.5
+	if String(entry_at(i).get("type", "")) == "order":
+		hold = Vector2(_cells[i].size.x * 0.5, _cells[i].size.y + ORDER_DRAG_LIFT)
+	_cells[i].position = local - hold
 	_card_faces[i].rotation = 0.0
 	_card_faces[i].position = _cells[i].position
+	# ★ 拖回手牌范围 ⇒ 卡面逐渐显示出来（拖到地图上 ⇒ 逐渐淡掉，让出建造预览）
+	if String(entry_at(i).get("type", "")) == "build":
+		_set_drag_face_alpha(i, true)
 	card_drag_moved.emit(entry_at(i), viewport_pos)
+
+
+## 建筑牌在拖拽中的「卡面可见度」：**手牌范围内可见、拖到地图上淡出**。
+##
+## ★★ 2026.11.14（用户口径）：「当卡牌没有被打出并被玩家拖回手牌时，应当再逐渐显示其卡面」。
+##   旧版只有「拖起来那一下淡到 0」这一条单向的 —— 玩家把牌拖回手牌时，手上是空的，
+##   卡面要等到松手后的 `_animate_card_back()` 才回来（中间那几秒像牌被吞了）。
+##   现在改成按「牌中心在不在手牌区」双向驱：回到手牌就 0.12s 淡回来。
+##
+## ★ 判据在**本控件的本地坐标**里：`_cells[i].position` 是相对 `command_card`
+##   （它自己就摆在 `CARD_RECT` 那个位置上），所以「手牌区」= `(0,0)..CARD_RECT.size`
+##   再向外放宽 `DRAG_FACE_SLACK`。⚠️ 别再拿 `CARD_RECT` 直接 `has_point()`——
+##   那是**屏幕**坐标，和本地坐标差着整个手牌的位置（实测：怎么拖都判成「不在手牌」）。
+func _set_drag_face_alpha(i: int, follow_pointer: bool) -> void:
+	if i < 0 or i >= _cells.size():
+		return
+	var target := 1.0
+	if follow_pointer:
+		var rect := Rect2(Vector2.ZERO, UiLayoutRes.CARD_RECT.size).grow(DRAG_FACE_SLACK)
+		var center: Vector2 = _cells[i].position + _cells[i].size * 0.5
+		target = 1.0 if rect.has_point(center) else 0.0
+	if _drag_face_alpha >= 0.0 and absf(_drag_face_alpha - target) < 0.001:
+		return
+	_drag_face_alpha = target
+	if _drag_fade_tween != null and _drag_fade_tween.is_running():
+		_drag_fade_tween.kill()
+	_drag_fade_tween = create_tween().set_parallel(true)
+	_drag_fade_tween.tween_property(_cells[i], "modulate:a", target, DRAG_FACE_FADE_SEC)
+	_drag_fade_tween.tween_property(_card_faces[i], "modulate:a", target, DRAG_FACE_FADE_SEC)
 
 
 func _finish_card_drag(i: int, viewport_pos: Vector2 = Vector2.ZERO) -> void:
@@ -597,6 +782,7 @@ func _finish_card_drag(i: int, viewport_pos: Vector2 = Vector2.ZERO) -> void:
 		cell_unhovered.emit(i)
 	_drag_index = -1
 	_dragging_card = false
+	_drag_face_alpha = -1.0
 
 
 ## HUD 的触屏路径调用：触摸按下只登记一个拖牌候选；短点不打出手牌。
@@ -615,9 +801,16 @@ func move_touch_drag(i: int, viewport_pos: Vector2) -> bool:
 
 
 ## HUD 在触摸释放时调用；只有已经上拖的牌才发出 drag-finished 动作。
-func finish_touch_drag(i: int) -> void:
-	var pos: Vector2 = get_viewport().get_mouse_position() if get_viewport() != null else Vector2.ZERO
-	_finish_card_drag(i, pos)
+##
+## ★★ 2026.11.14：`pos` 是**松手的位置**（触摸那条路必须传进来）。
+##   旧版固定取 `get_viewport().get_mouse_position()` —— 触屏时那是上一次鼠标的位置，
+##   于是「操作牌拖出松手 → 落点即操作点」会打在屏幕上的一个莫名其妙的地方。
+##   不传（`Vector2.INF`）= 仍然按鼠标走（桌面 / 旧调用点）。
+func finish_touch_drag(i: int, pos: Vector2 = Vector2.INF) -> void:
+	var at: Vector2 = pos
+	if not at.is_finite() or at == Vector2.INF:
+		at = get_viewport().get_mouse_position() if get_viewport() != null else Vector2.ZERO
+	_finish_card_drag(i, at)
 
 
 func _animate_card_back(i: int) -> void:
@@ -847,6 +1040,39 @@ func set_recruit_queue(progress: float, counts: Dictionary) -> void:
 			_count_labels[i].visible = count > 1
 
 
+## ★★ 每帧同步**操作牌冷却**的进度条（不重建命令卡）。
+##
+## 用户口径：「部队的操作牌有三秒冷却……拖出生效并回到手牌后，牌面会出现进度条
+##   以提示其冷却」。进度是连续变化的，不能塞进 `_card_sig()`（会每帧重建九格），
+## 所以这里只改一个 Panel 的尺寸。
+## @param left  剩余秒数（<= 0 = 没有冷却，遮罩藏起来）
+## @param total 总时长（用来算比例）
+## ⚠️ 别改成「传已过比例」：0 既表示「刚开始」又表示「没冷却」，两种状态分不开
+##    （实测踩到：冷却结束后牌面还盖着一层纱）。
+##
+## ★★ 2026.11.14：**每一格都要处理**（不只是 `type == "order"` 的格子）——
+##   命令卡的九颗按钮是**跨页复用**的：在操作页盖过的纱，切到建筑页后会留在
+##   同一颗按钮上（用户报的「我的单位移动时，建筑牌也会有进度条」就是它）。
+##   所以非 order 条目一律把纱藏起来。
+func set_order_cooldown(left: float, total: float) -> void:
+	var cooling: bool = left > 0.001 and total > 0.0
+	var v: float = 0.0 if not cooling else clampf(1.0 - left / total, 0.0, 1.0)
+	var remain: float = 1.0 - v                 # 纱的高度 = 剩余比例
+	for i in _cells.size():
+		if i >= _cd_veils.size() or _cd_veils[i] == null:
+			continue
+		var cell: Button = _cells[i]
+		var veil: Panel = _cd_veils[i]
+		var is_order: bool = i < _entries.size() \
+			and String((_entries[i] as Dictionary).get("type", "")) == "order"
+		var show: bool = is_order and cooling and cell.visible
+		veil.visible = show
+		if not show:
+			continue
+		veil.position = Vector2.ZERO
+		veil.size = Vector2(cell.size.x, cell.size.y * remain)
+
+
 ## ★★ 底条要**跟着金色填充淡出**（每帧一次，只有 9 格）：
 ##   填充是从下往上扫的，而底条正好在最下面 —— 金色一盖上来，那段字就该翻成
 ##   「压金暗色」（填充层管这件事），此时底条若还是深的，就是**深字压深底**、读不出来
@@ -904,6 +1130,10 @@ func _process(dt: float) -> void:
 	_glow_t += maxf(0.0, dt)
 	if glow_kind != "":
 		_update_glow_panels()
+	for i in _cells.size():
+		# ★★ 2026.11.14：描边 / 底色跟着**泛光进度**缓动（见 `_sync_cell_style`）。
+		#   与下面那段名字底条同一个循环，省一次 9 格遍历。
+		_sync_cell_style(i)
 	for i in _name_bars.size():
 		var bar: ColorRect = _name_bars[i]
 		if bar == null or not is_instance_valid(bar) or not bar.visible:
@@ -915,12 +1145,74 @@ func _process(dt: float) -> void:
 		bar.color = Color(c.r, c.g, c.b, c.a * (1.0 - p))
 
 
-func _cell_style(cell: Button, filled: bool) -> void:
-	cell.add_theme_stylebox_override("normal", UiStyleRes.card_normal(filled))
-	cell.add_theme_stylebox_override("hover", UiStyleRes.card_hover())
+## 给第 i 格套上**一份常驻底纹**（`_cell_styles[i]`），只有颜色会随悬停进度变。
+##
+## ★★ 2026.11.14（用户口径）：「卡牌在静止到悬停态时需要有缓动效果……描边与填充也跟着缓动」。
+##   原来四档是**四个不同的 StyleBox**（normal / hover / pressed / disabled），
+##   鼠标一进就由引擎整块换掉 ⇒ 描边颜色当场从暗金跳成亮金（没有任何过渡）。
+##   现在 normal / hover / disabled **共用同一份** StyleBox，颜色由
+##   `_sync_cell_style()` 按 `fill_button` 的**泛光进度**逐帧插值（那个进度本身就是缓动的），
+##   于是描边与底色都跟着「抬起」一起渐变；只有按下（`pressed`）仍然是瞬时换档 ——
+##   按下是**点击反馈**，本来就不该慢。
+##
+## ⚠️ `filled` 只影响「常态长什么样」（空格子的底色略淡），它不改变缓动逻辑。
+func _cell_style(i: int, cell: Button, filled: bool) -> void:
+	while _cell_styles.size() <= i:
+		_cell_styles.append(null)
+		_cell_bg0.append(Color(0, 0, 0, 0))
+		_cell_border0.append(Color(0, 0, 0, 0))
+		_cell_glow_applied.append(-1.0)
+	var sb: StyleBoxFlat = _cell_styles[i]
+	var base: StyleBoxFlat = UiStyleRes.card_normal(filled)
+	if sb == null:
+		sb = base.duplicate() as StyleBoxFlat
+		_cell_styles[i] = sb
+	# ★ 把「常态那一档」的形状参数抄过来（圆角 / 阴影 / 内容边距），颜色单独记。
+	sb.set_corner_radius_all(base.corner_radius_top_left)
+	sb.shadow_color = base.shadow_color
+	sb.shadow_size = base.shadow_size
+	sb.shadow_offset = base.shadow_offset
+	sb.content_margin_left = base.content_margin_left
+	sb.content_margin_right = base.content_margin_right
+	sb.content_margin_top = base.content_margin_top
+	sb.content_margin_bottom = base.content_margin_bottom
+	sb.set_border_width_all(base.border_width_top)
+	sb.bg_color = base.bg_color
+	sb.border_color = base.border_color
+	_cell_bg0[i] = base.bg_color
+	_cell_border0[i] = base.border_color
+	_cell_glow_applied[i] = -1.0          # 强制下一帧按当前进度重算一次
+	cell.add_theme_stylebox_override("normal", sb)
+	cell.add_theme_stylebox_override("hover", sb)      # 与常态同一份 ⇒ 引擎换档不再跳色
+	cell.add_theme_stylebox_override("disabled", sb)
 	cell.add_theme_stylebox_override("pressed", UiStyleRes.card_pressed())
-	cell.add_theme_stylebox_override("disabled", UiStyleRes.card_normal(filled))
 	cell.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+
+
+## 按**泛光进度**把第 i 格的描边 / 底色插值到「悬停档」。
+##
+## 进度来自 `fill_button` 的 `_glow`（悬停 0→1，时长 `ui.hover_in_sec`），
+## 所以它和四边泛光 / 瞄准框**同一个节拍**：牌抬起的同时，描边也在变亮。
+## ⚠️ 只在进度真的变了的时候写 StyleBox（每帧无脑写会触发表格重绘）。
+func _sync_cell_style(i: int) -> void:
+	if i < 0 or i >= _cell_styles.size() or i >= _cells.size():
+		return
+	var sb: StyleBoxFlat = _cell_styles[i]
+	if sb == null:
+		return
+	var cell: Button = _cells[i]
+	if not cell.visible:
+		return
+	var g: float = clampf(FillButtonRes.glow_progress(cell), 0.0, 1.0)
+	if absf(g - float(_cell_glow_applied[i])) < 0.002:
+		return
+	_cell_glow_applied[i] = g
+	# 置灰（不可点）的格子：往「暗金」那档靠，不要变成亮金（那看起来像能点）
+	var hot: Color = UiStyleRes.accent_dim() if cell.disabled else UiStyleRes.accent_bright()
+	var bc0: Color = _cell_border0[i]
+	var bg0: Color = _cell_bg0[i]
+	sb.border_color = bc0.lerp(hot, g)
+	sb.bg_color = Color(bg0.r, bg0.g, bg0.b, bg0.a * (1.0 - g))
 
 
 ## 给第 i 格换图标（`mask` 为空且 `role` 也为空 = 这一格不画图标）。
@@ -1034,6 +1326,13 @@ func entry_at(i: int) -> Dictionary:
 	if i < 0 or i >= _entries.size():
 		return {}
 	return _entries[i]
+
+
+## 这一格现在**能不能拖 / 能不能点**（`ready = false` = 置灰：冷却中、没解锁）。
+## ★★ 2026.11.14：拖拽这条路以前完全没看这个字段 —— 置灰的牌照样拖得起来、
+##   照样能在松手时下达（用户报的「操作牌冷却没有生效」就是这个）。
+func _card_ready(i: int) -> bool:
+	return bool(entry_at(i).get("ready", true))
 
 
 func cell_at(i: int) -> Button:

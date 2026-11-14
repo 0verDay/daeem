@@ -3,7 +3,7 @@
 ## 规则（config.json 的 upgrade.levels.base）：
 ##   1 级：2 将 / 编制 +0 / 1 条科技 / 仅一阶
 ##   2 级：5 将 / 编制 +2 / 2 条科技 / 一二阶
-##   3 级：6 将 / 编制 +4 / 3 条科技 / 一二三阶
+##   3 级：5 将 / 编制 +4 / 3 条科技 / 一二三阶（2026.11.14 上限 6 → 5）
 ## ★ 将领上限只约束**指挥官阵营**（真人 + command AI）；阵地性 / 红点性 AI 豁免。
 extends "res://tests/test_case.gd"
 
@@ -34,8 +34,8 @@ func _cases() -> void:
 
 func _test_config_table(cfg) -> void:
 	eq(cfg.upgrade_limit("base", 1, "max_generals", -1), 2, "★ 1 级最多 2 名将领")
-	eq(cfg.upgrade_limit("base", 2, "max_generals", -1), 5, "★ 2 级最多 5 名将领")
-	eq(cfg.upgrade_limit("base", 3, "max_generals", -1), 6, "★ 3 级最多 6 名将领")
+	eq(cfg.upgrade_limit("base", 2, "max_generals", -1), 4, "★ 2 级最多 4 名将领（2026.11.14：上限改 2/4/5）")
+	eq(cfg.upgrade_limit("base", 3, "max_generals", -1), 5, "★ 3 级最多 5 名将领（= 部队面板 5 个槽位）")
 	# ★★ 门槛与上限是两件事（升 2 本 0 将 / 升 3 本 2 将），读目标行的 need_generals。
 	eq(cfg.upgrade_need_generals("base", 1), 0, "★★ 升 2 本不要将领门槛（2026.11）")
 	eq(cfg.upgrade_need_generals("base", 2), 2, "★★ 升 3 本要 2 名将领（2026.11 门槛 4 → 3 → 2）")
@@ -83,13 +83,13 @@ func _test_level_values(cfg) -> void:
 
 	_set_level(w, b, 2)
 	eq(w.base_level_of("p1"), 2, "升到 2 级")
-	eq(w.base_max_generals("p1"), 5, "★ 2 级将领上限 5")
+	eq(w.base_max_generals("p1"), 4, "★ 2 级将领上限 4")
 	eq(w.base_retinue_bonus("p1"), 2, "★ 2 级编制 +2")
 	eq(w.tech_max_active("p1"), 2, "★ 2 级最多 2 条科技")
 	eq(w.tech_max_tier("p1"), 2, "★ 2 级到二阶")
 
 	_set_level(w, b, 3)
-	eq(w.base_max_generals("p1"), 6, "★ 3 级将领上限 6")
+	eq(w.base_max_generals("p1"), 5, "★ 3 级将领上限 5")
 	eq(w.base_retinue_bonus("p1"), 4, "★ 3 级编制 +4")
 	eq(w.tech_max_active("p1"), 3, "★ 3 级最多 3 条科技")
 	eq(w.tech_max_tier("p1"), 3, "★ 3 级到三阶")
@@ -173,23 +173,23 @@ func _test_general_count_cap(cfg) -> void:
 	eq(w.can_recruit_zone(kind, zid, "p1"), "",
 		"★ 升到 2 级（上限 5）：可以继续招将")
 	_set_level(w, b, 3)
-	eq(w.base_max_generals("p1"), 6, "3 级上限 6")
+	eq(w.base_max_generals("p1"), 5, "3 级上限 5")
 
 	# ★★ 阵地性 / 红点性 AI 不吃将领上限；**本机正在操作的那一方永远受限**
 	#    （关卡数据里可玩阵营也可能写着 ai: garrison，那是给没被选中的一方用的）。
 	var saved_me := String(w.my_faction)
 	w.ai_kind_overrides["p1"] = LevelRes.AI_GARRISON
-	eq(w.base_max_generals("p1"), 6,
+	eq(w.base_max_generals("p1"), 5,
 		"★★ 本机在操作 p1 → 就算关卡写着 garrison 也照常受限")
 	w.my_faction = ""
 	eq(w.base_max_generals("p1"), 9999, "★ 真的交给阵地性 AI → 豁免（9999）")
 	w.ai_kind_overrides["p1"] = LevelRes.AI_REDDOT
 	eq(w.base_max_generals("p1"), 9999, "★ 红点性 AI → 豁免（9999）")
 	w.ai_kind_overrides["p1"] = LevelRes.AI_COMMANDER
-	eq(w.base_max_generals("p1"), 6, "★ command AI 照常受上限约束（3 级 = 6）")
+	eq(w.base_max_generals("p1"), 5, "★ command AI 照常受上限约束（3 级 = 5）")
 	w.ai_kind_overrides.erase("p1")
 	w.my_faction = saved_me
-	eq(w.base_max_generals("p1"), 6, "恢复本机阵营后照旧受限")
+	eq(w.base_max_generals("p1"), 5, "恢复本机阵营后照旧受限")
 
 # ------------------------------------------------------------------
 # 编制上限硬拦截
@@ -311,7 +311,7 @@ func _test_debug_upgrade_base(cfg) -> void:
 	eq(int(b.level), 3, "★ 等级当场变成 3")
 	ok(not b.is_upgrading(), "★ 原来那条升级读条被撤掉")
 	eq(w.base_level_of("p1"), 3, "★ 大本营等级查询当场读到 3")
-	eq(w.base_max_generals("p1"), 6, "★ 3 级限制（6 将）当场生效")
+	eq(w.base_max_generals("p1"), 5, "★ 3 级限制（5 将）当场生效")
 	near(b.hp_max, b.base_hp_max * cfg.upgrade_hp_mult("base", 3), 1e-6,
 		"★ 血量上限按 3 级的 hp_mult 重算")
 	eq(w.debug_upgrade_base_to_level(3, "p1"), "already", "已经是 3 级 → already")

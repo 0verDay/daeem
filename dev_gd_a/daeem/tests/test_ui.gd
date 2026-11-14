@@ -61,22 +61,44 @@ func _test_layout_against_reference(cfg) -> void:
 	eq(UiLayoutRes.BAR_TOP, 820.0, "底栏顶边 820")
 
 	eq(UiLayoutRes.SQUAD_RECT.size.x, 238.0, "将领编队牌宽 238，与右侧留 26px 边距")
-	eq(UiLayoutRes.SQUAD_RECT.position.y, 178.0, "将领编队牌从 y=178 开始")
+	eq(UiLayoutRes.SQUAD_RECT.position.y, 386.0,
+		"★ 将领编队牌从 y=386 开始（2026.11.14 第四轮：再往下让位给加高的小地图）")
 	eq(UiLayoutRes.SQUAD_RECT.position.x + UiLayoutRes.SQUAD_RECT.size.x,
 		UiLayoutRes.DESIGN_W - 26.0, "将领编队牌右缘留 26px 外边距")
-	eq(UiLayoutRes.SQUAD_SLOTS, 6, "★ 6 个槽位（部队1 ~ 部队6）")
+	eq(UiLayoutRes.SQUAD_SLOTS, 5, "★ 5 个槽位（部队1 ~ 部队5；用户口径「最大部队数改为 5 个」）")
 	eq(UiLayoutRes.SQUAD_ROW_H, 82.0, "★ V2 编队牌高 82")
 	eq(UiLayoutRes.SQUAD_RECT.size.y,
-		6.0 * 82.0 + 5.0 * UiLayoutRes.SQUAD_ROW_GAP, "6 张编队牌之间留 V2 间距")
+		5.0 * 82.0 + 4.0 * UiLayoutRes.SQUAD_ROW_GAP, "5 张编队牌之间留 V2 间距")
 	ok(UiLayoutRes.SQUAD_RECT.position.y + UiLayoutRes.SQUAD_RECT.size.y <= UiLayoutRes.BAR_TOP,
 		"★ 加高之后仍不压底栏（面板底 ≤ %s）" % UiLayoutRes.BAR_TOP)
+	ok(UiLayoutRes.SQUAD_RECT.position.y >= UiLayoutRes.MAP_RECT.position.y
+			+ UiLayoutRes.MAP_RECT.size.y,
+		"★ 将领列在小地图**下方**（地图先占右上角，牌列接在它下面）")
 
-	eq(UiLayoutRes.MAP_RECT, Rect2(27.0, 771.0, 328.0, 284.0), "V2 侦察镜小地图尺寸与边距")
-	eq(UiLayoutRes.DESIGN_H - (UiLayoutRes.MAP_RECT.position.y + UiLayoutRes.MAP_RECT.size.y), 25.0,
-		"小地图下缘留 25px")
+	# ★★ 2026.11.14：小地图从**左下角**搬到**右上角**（用户口径：「将地图面板放到屏幕
+	#   右上角，地图左侧放一列 ui」）；同轮随后「小地图变大一些」⇒ 238×148 → **300×225**。
+	# ★★ 2026.11.14 第四轮：地图「竖直方向再扩大」⇒ 430×350
+	#   （宽高比 1.229 ≈ 地图的 27:22 ⇒ 地形铺满面板、没有黑边）
+	eq(UiLayoutRes.MAP_RECT, Rect2(1464.0, 26.0, 430.0, 350.0),
+		"V2 侦察镜小地图在右上角（430×350）")
+	near(UiLayoutRes.DESIGN_W - (UiLayoutRes.MAP_RECT.position.x + UiLayoutRes.MAP_RECT.size.x),
+		26.0, 1e-4, "★ 小地图右缘留 26px（与将领列对齐）")
+	near(UiLayoutRes.MAP_RECT.position.y, 26.0, 1e-4, "★ 小地图贴上沿 26px")
+	ok(UiLayoutRes.MAP_RECT.position.y + UiLayoutRes.MAP_RECT.size.y
+			<= UiLayoutRes.SQUAD_RECT.position.y,
+		"★ 小地图下缘不压将领列（地图整体在将领牌上方）")
+	ok(UiLayoutRes.MAP_RECT.position.x + UiLayoutRes.MAP_RECT.size.x
+			== UiLayoutRes.SQUAD_RECT.position.x + UiLayoutRes.SQUAD_RECT.size.x,
+		"★ 小地图与将领列右缘齐平（同一条竖带）")
 
 	eq(UiLayoutRes.CARD_SLOTS, 9, "命令卡 9 格")
-	eq(UiLayoutRes.CARD_RECT, Rect2(796.0, 803.0, 842.0, 277.0), "V2 扇形指令牌区尺寸")
+	# ★★ 2026.11.14（用户口径）：「手牌放至屏幕底部中央」——左缘 796 → 539，
+	#   即 `(1920 − 842) / 2`；竖直方向仍贴底。
+	eq(UiLayoutRes.CARD_RECT, Rect2(539.0, 803.0, 842.0, 277.0), "V2 扇形指令牌区尺寸")
+	near(UiLayoutRes.CARD_RECT.position.x + UiLayoutRes.CARD_RECT.size.x * 0.5,
+		UiLayoutRes.DESIGN_W * 0.5, 1e-4, "★ 手牌在屏幕**水平居中**")
+	near(UiLayoutRes.CARD_RECT.position.y + UiLayoutRes.CARD_RECT.size.y,
+		UiLayoutRes.DESIGN_H, 1e-4, "★ 手牌仍贴屏幕下沿")
 	near(UiLayoutRes.card_fan_local(0, 4).size.x, 142.0, 1e-4, "四张常用指令牌采用 142px 卡宽")
 	ok(UiLayoutRes.card_fan_local(0, 4).position.x
 		< UiLayoutRes.card_fan_local(3, 4).position.x, "指令牌按扇形从左向右展开")
@@ -85,13 +107,16 @@ func _test_layout_against_reference(cfg) -> void:
 	eq(String(UiLayoutRes.CARD_KEYS[0]), "Q", "第一格是 Q")
 	eq(String(UiLayoutRes.CARD_KEYS[8]), "C", "第九格是 C")
 
-	near(UiLayoutRes.HOVER_W, 1098.0, 0.01, "悬停说明横跨牌区与页签")
-	near(UiLayoutRes.hover_rect(100.0).size.x, 1098.0, 0.01, "hover_rect 使用 V2 牌区宽度")
+	# ★★ 2026.11.14：手牌居中之后，悬停面板改成**与手牌同宽同中心**
+	#   （原来「右缘够到页签列」那条口径不再成立：页签在最右边，中间是空的）。
+	near(UiLayoutRes.HOVER_W, UiLayoutRes.CARD_RECT.size.x, 0.01, "悬停说明与手牌**同宽**")
+	near(UiLayoutRes.hover_rect(100.0).size.x, UiLayoutRes.CARD_RECT.size.x, 0.01,
+		"hover_rect 使用手牌宽度")
 	eq(UiLayoutRes.hover_rect(100.0).position.x, UiLayoutRes.CARD_RECT.position.x,
-		"悬停面板左缘与命令卡左缘对齐")
+		"悬停面板左缘与手牌左缘对齐")
 	near(UiLayoutRes.hover_rect(100.0).position.x + UiLayoutRes.HOVER_W,
-		UiLayoutRes.TABS_RECT.position.x + UiLayoutRes.TABS_RECT.size.x,
-		0.01, "★ 悬停面板右缘与**页签列右缘**齐平")
+		UiLayoutRes.CARD_RECT.position.x + UiLayoutRes.CARD_RECT.size.x,
+		0.01, "★ 悬停面板右缘与**手牌右缘**齐平（不再横穿到右侧页签）")
 	eq(UiLayoutRes.HOVER_BOTTOM, UiLayoutRes.CARD_RECT.position.y - UiLayoutRes.HOVER_GAP,
 		"★ 面板**下缘**落在命令卡顶边上方 HOVER_GAP")
 	eq(UiLayoutRes.HOVER_BOTTOM, 795.0, "★ 悬停说明下缘停在牌手上方")
@@ -110,7 +135,20 @@ func _test_layout_against_reference(cfg) -> void:
 	eq(UiLayoutRes.tab_button_local(0, 2), Rect2(0.0, 0.0, 73.0, 94.0), "第一个页签牌")
 	eq(UiLayoutRes.tab_button_local(1, 2), Rect2(81.0, 0.0, 73.0, 94.0), "第二个页签牌与第一个留 8px")
 	eq(UiLayoutRes.tab_button_local(0, 1), Rect2(81.0, 0.0, 73.0, 94.0), "单页签靠右对齐")
-	eq(UiLayoutRes.SETTINGS_RECT, Rect2(1832, 33, 54, 54), "右上圆形设置币")
+	# ★★ 2026.11.14 第三轮（用户口径）：「把选项按钮删除，相应的打开菜单逻辑接到 esc 下」
+	#   ⇒ 屏幕上的选项圆币没了，`SETTINGS_RECT` / `SETTINGS_RADIUS` 常量也一起删除。
+	#   这里改断言「这一列只剩资源大卡，且它不压地图」。
+	eq(UiLayoutRes.RES_BAR_RECT.position.x + UiLayoutRes.RES_BAR_RECT.size.x,
+		1458.0, "★ 资源大卡右缘 1458（= 地图左缘 1464 − 6px 缝）")
+	eq(UiLayoutRes.RES_BAR_RECT.position.x, 1358.0, "★ 资源卡左缘 1358（= 1458 − 100）")
+	ok(UiLayoutRes.RES_BAR_RECT.position.x + UiLayoutRes.RES_BAR_RECT.size.x
+			<= UiLayoutRes.MAP_RECT.position.x,
+		"★ 资源大卡在地图左侧（不压地图）")
+	ok(not UiLayoutRes.RES_BAR_RECT.intersects(UiLayoutRes.MAP_RECT),
+		"★ 资源大卡与小地图不重叠")
+	eq(UiLayoutRes.RES_BAR_RECT.position.y + UiLayoutRes.RES_BAR_RECT.size.y,
+		UiLayoutRes.MAP_RECT.position.y + UiLayoutRes.MAP_RECT.size.y,
+		"★ 资源大卡下缘与小地图下缘**齐平**（右列看起来是一整块）")
 
 	eq(UiLayoutRes.QUEUE_SLOTS, 5, "★ 招募队列 5 个格子（1 大 + 4 小，需求原话）")
 	eq(UiLayoutRes.QUEUE_INFO_W, 141.0, "汇总带宽 141（表格子段左边那一条）")
@@ -195,16 +233,22 @@ func _test_queue_info_text_fit(cfg) -> void:
 		"★ 小格子两行 13 号字（%.0f×2）装得进 40 高（放大前是 30 高装两行 11 号）"
 			% font.get_height(fs_small))
 
-	eq(UiLayoutRes.DETAIL_V2_RECT.position.x, 395.0, "V2 详情卡从 x=395 开始")
+	# ★★ 2026.11.14 第二轮（用户口径）：「将部队详细信息栏往屏幕左侧靠」
+	#   ⇒ 左缘 395 → 27（贴左留白与其它面板一致），宽度仍是 377。
+	eq(UiLayoutRes.DETAIL_V2_RECT.position.x, 27.0, "V2 详情卡贴屏幕左边（x=27）")
 	eq(UiLayoutRes.DETAIL_V2_RECT.position.x + UiLayoutRes.DETAIL_V2_RECT.size.x,
-		772.0, "详情卡右缘与手牌之间留 24px")
+		404.0, "详情卡右缘 = 27 + 377")
 	ok(UiLayoutRes.DETAIL_V2_RECT.position.x + UiLayoutRes.DETAIL_V2_RECT.size.x
 		<= UiLayoutRes.CARD_RECT.position.x + 0.01,
-		"扇形牌从详情卡右缘开始，不遮挡详情")
+		"★ 手牌在详情卡右侧（居中后两者不叠）")
 	eq(UiLayoutRes.DESIGN_H - (UiLayoutRes.DETAIL_V2_RECT.position.y + UiLayoutRes.DETAIL_V2_RECT.size.y),
 		26.0, "详情卡下缘留 26px")
-	near(UiLayoutRes.CARD_RECT.position.x + UiLayoutRes.CARD_RECT.size.x,
-		1638.0, 0.01, "扇形手牌牌区右缘留出页签间距")
+	# ★ 手牌居中后右缘不再「留出页签间距」，改成断言它**以屏幕中心为中点**
+	near(UiLayoutRes.CARD_RECT.position.x + UiLayoutRes.CARD_RECT.size.x * 0.5,
+		UiLayoutRes.DESIGN_W * 0.5, 0.01, "★ 手牌水平居中（底部中央）")
+	ok(UiLayoutRes.CARD_RECT.position.x > UiLayoutRes.DETAIL_V2_RECT.position.x
+			+ UiLayoutRes.DETAIL_V2_RECT.size.x,
+		"★ 手牌左缘在详情卡右缘右侧（不压详情卡）")
 	near(UiLayoutRes.TABS_RECT.position.x + UiLayoutRes.TABS_RECT.size.x,
 		UiLayoutRes.DESIGN_W - 26.0, 0.01, "页签牌区保留 26px 右边距")
 	eq(UiLayoutRes.CARD_RECT.position.y + UiLayoutRes.CARD_RECT.size.y,
@@ -324,7 +368,10 @@ func _test_hit_test() -> void:
 	ok(not UiLayoutRes.point_hits_any(UiLayoutRes.interactive_rects(vp), map_middle),
 		"地图空白处不拦鼠标（点击要能落到地图上）")
 
-	var detail_text_spot := UiLayoutRes.panel_content_pos() + Vector2(8.0, 8.0)
+	# ★★ 2026.11.14：详情牌已贴到屏幕左边（DETAIL_V2_RECT x=27）；
+	#   原来那个「文字点」是按旧 DETAIL_RECT 算的，现在正好落在**居中的手牌**上，
+	#   所以改成直接取 DETAIL_V2_RECT 里的一点。
+	var detail_text_spot := UiLayoutRes.DETAIL_V2_RECT.position + Vector2(60.0, 40.0)
 	ok(not UiLayoutRes.point_hits_any(UiLayoutRes.interactive_rects(vp), detail_text_spot),
 		"★ 详细信息面板里只有文字的地方不拦边缘滚屏（否则底边永远滚不动）")
 	ok(not UiLayoutRes.point_hits_any(UiLayoutRes.interactive_rects(vp),
@@ -349,17 +396,19 @@ func _test_hit_test() -> void:
 	ok(not UiLayoutRes.point_hits_any(UiLayoutRes.interactive_rects(vp, true, false),
 		UiLayoutRes.card_cell_rect(0).get_center()),
 		"★★ 右下角整块隐藏时命令卡格子也不再拦边缘滚屏")
-	ok(UiLayoutRes.point_hits_any(UiLayoutRes.interactive_rects(vp),
-		UiLayoutRes.SETTINGS_RECT.get_center()), "设置按钮拦边缘滚屏")
+	# ★★ 2026.11.14 第三轮：选项按钮删除 ⇒ 右上角不再有可点控件拦滚屏
+	ok(not UiLayoutRes.point_hits_any(UiLayoutRes.interactive_rects(vp),
+		UiLayoutRes.RES_BAR_RECT.get_center()), "资源大卡只有字和色块 → 不拦边缘滚屏")
 
 	var wide := Vector2(2560.0, 1080.0)
+	# ★★ 2026.11.14：手牌是**底部居中**的 ⇒ 宽窗口下只平移半个富余（见 center_shift）
 	var shifted := UiLayoutRes.card_cell_rect(0)
-	shifted.position.x += 2560.0 - UiLayoutRes.DESIGN_W
+	shifted.position += UiLayoutRes.center_shift(wide)
 	ok(UiLayoutRes.point_hits_any(UiLayoutRes.interactive_rects(wide), shifted.get_center()),
-		"窗口变宽时命令卡跟着贴右边缘（不然点不到）")
+		"窗口变宽时手牌跟着**屏幕中心**走（不是贴右；否则点不到）")
 	ok(not UiLayoutRes.point_hits_any(UiLayoutRes.interactive_rects(wide),
 		UiLayoutRes.card_cell_rect(0).get_center()),
-		"窗口变宽后原位置不再算作命令卡")
+		"窗口变宽后原位置不再算作手牌")
 
 	var m: float = 44.0
 	ok(UiLayoutRes.in_edge_band(vp, Vector2(6.0, 300.0), m),
@@ -389,8 +438,8 @@ func _test_hit_test() -> void:
 	ok(not UiLayoutRes.point_hits_any(bar, map_middle), "滚轮：地图中间照旧缩放")
 	ok(not UiLayoutRes.point_hits_any(bar, UiLayoutRes.squad_slot_rect(2).get_center()),
 		"滚轮：左侧部队列表不在「下方 ui 栏」里 → 不拦")
-	ok(not UiLayoutRes.point_hits_any(bar, UiLayoutRes.SETTINGS_RECT.get_center()),
-		"滚轮：右上角设置按钮也不拦（需求只说下方那一条）")
+	ok(not UiLayoutRes.point_hits_any(bar, UiLayoutRes.RES_BAR_RECT.get_center()),
+		"滚轮：右上角资源大卡也不拦（需求只说下方那一条）")
 	var bar_wide := UiLayoutRes.bottom_bar_rects_v2(wide, true, true)
 	var shift_x: float = wide.x - UiLayoutRes.DESIGN_W
 	var card_wide := UiLayoutRes.CARD_RECT
@@ -485,7 +534,7 @@ func _test_panels(cfg) -> void:
 
 	for path in ["HudRoot/SquadPanel", "HudRoot/MapPlaceholder", "HudRoot/DetailPanel",
 			"HudRoot/DetailPanelV2", "HudRoot/CommandCard",
-			"HudRoot/PageTabs", "HudRoot/SettingsButton", "HudRoot/ResourceBar"]:
+			"HudRoot/PageTabs", "HudRoot/ResourceBar"]:
 		ok(main.hud.get_node_or_null(path) != null, "节点树里有 %s" % path)
 	ok(main.hud.get_node_or_null("HudRoot/FactionPlaceholder") == null,
 		"HUD 默认左列不再创建阵营盾徽旗帜占位牌")
@@ -522,10 +571,9 @@ func _test_panels(cfg) -> void:
 		"扇形指令手牌落在详情区右侧")
 	v2_near(main.hud.page_tabs.position, UiLayoutRes.TABS_RECT.position, 1.0,
 		"页签牌落在右下角")
-	v2_near(main.hud.settings_button.position, UiLayoutRes.SETTINGS_RECT.position, 1.0,
-		"圆形设置币落在右上角")
-	v2_near(main.hud.settings_button.size, UiLayoutRes.SETTINGS_RECT.size, 1.0,
-		"设置币实际尺寸 = 54×54")
+	# ★★ 2026.11.14 第三轮：选项按钮已删除（入口改成 Esc / 安卓返回键）
+	ok(main.hud.get_node_or_null("HudRoot/SettingsButton") == null,
+		"★★ 屏幕上没有选项按钮了（用户要求删除）")
 	v2_near(main.hud.squad_panel.position, UiLayoutRes.SQUAD_RECT.position, 1.0,
 		"将领列表紧贴右侧")
 	v2_near(main.hud.squad_panel.size, UiLayoutRes.SQUAD_RECT.size, 1.0,
@@ -550,7 +598,7 @@ func _test_panels(cfg) -> void:
 	_test_foreign_reject_notice_filter(main)
 	_test_right_click_orders(main)
 	await _test_box_select(main)
-	await _test_box_select_icon_body(main)
+	await _test_drag_pan(main)
 	_test_drag_over_ui(main)
 	_test_detail_basic_stats(main)
 	_test_detail_two_columns(main)
@@ -585,10 +633,10 @@ func _test_panels(cfg) -> void:
 		"★ 不再显示快捷键提示")
 
 	var card0 := UiLayoutRes.card_cell_rect(0)
-	card0.position.x += maxf(0.0, vp.x - UiLayoutRes.DESIGN_W)
-	card0.position.y += maxf(0.0, vp.y - UiLayoutRes.DESIGN_H)
+	card0.position += UiLayoutRes.center_shift(vp)
 	ok(main.hud.blocks_edge_scroll(card0.get_center()), "鼠标在命令卡上 → 不滚屏")
-	ok(not main.hud.blocks_edge_scroll(UiLayoutRes.panel_content_pos() + Vector2(8.0, 8.0)),
+	ok(not main.hud.blocks_edge_scroll(
+		UiLayoutRes.DETAIL_V2_RECT.position + Vector2(60.0, 40.0)),
 		"★ 鼠标在详细信息面板**只有文字**的地方 → 照样滚屏（不然底边滚不动）")
 	# 新版：点部队（队长）不出详情；换一个具体建筑让详情可见，再验网格拦滚屏。
 	var edge_b = null
@@ -612,8 +660,16 @@ func _test_panels(cfg) -> void:
 	var chip_hits: Array = main.hud._detail_hit_rects()
 	ok(not chip_hits.is_empty(), "★ 多选部队时「其他已选部队」那几格能点")
 	if not chip_hits.is_empty():
-		ok(main.hud.blocks_edge_scroll((chip_hits[0] as Rect2).get_center()),
-			"★ 鼠标在那些格子上 → 不滚屏（那能点）")
+		# ★★ 2026.11.14：详情牌贴到屏幕左边（x=27）之后，成员格基本都压在
+		#   「最外圈 44px 边缘带」里 —— 那一条**全局放行**滚屏（见 in_edge_band）。
+		#   所以这里按位置逐颗对账：**带外必须拦、带内按全局规矩放行**，
+		#   而不是无条件要求「拦」（那会让屏幕最左/最下那 44px 永远滚不动）。
+		for r in chip_hits:
+			var c: Vector2 = (r as Rect2).get_center()
+			var in_band: bool = UiLayoutRes.in_edge_band(vp, c, 44.0)
+			eq(main.hud.blocks_edge_scroll(c), not in_band,
+				"★ 成员格拦滚屏 = 「不在最外圈边带里」（%s，带内=%s）"
+					% [str(c), str(in_band)])
 	ok(not main.hud.blocks_edge_scroll(Vector2(vp.x * 0.5, vp.y * 0.5)), "鼠标在地图中间 → 滚屏")
 
 	var row_center := UiLayoutRes.squad_slot_rect(2).get_center()
@@ -708,47 +764,99 @@ func _test_resource_bar(main) -> void:
 	if bar == null:
 		return
 
-	v2_near(bar.position, UiLayoutRes.RES_BAR_RECT.position, 1.0, "V2 资源筹码组位于屏幕右上")
-	v2_near(bar.size, UiLayoutRes.RES_BAR_RECT.size, 1.0, "资源筹码组尺寸 406×66")
+	v2_near(bar.position, UiLayoutRes.RES_BAR_RECT.position, 1.0, "资源大卡位于屏幕右上")
+	v2_near(bar.size, UiLayoutRes.RES_BAR_RECT.size, 1.0, "资源大卡 100×350")
+	# ★★ 2026.11.14 第三轮（用户口径）：「将资源面板改为竖直排列，竖直方向为：
+	#   图标，文本，数字，增长数字」+「合并成一张大卡，中间分隔」。
+	#   ⇒ 现在是**一张**大卡（不再是两块独立筹码），卡内两块各竖排四行。
 	var rsb: StyleBoxFlat = bar.get_theme_stylebox("panel")
-	ok(rsb != null, "资源牌容器保持透明，不额外套一层大面板")
+	ok(rsb != null, "★ 大卡自己就是底纹（一张卡）")
 	if rsb != null:
-		eq(rsb.border_width_left, 0, "资源容器不另加外框")
-	eq(UiLayoutRes.RES_BAR_RECT.size.x, 406.0, "两枚资源牌并排")
-	eq(UiLayoutRes.RES_BAR_RECT.position.x, 1388.0, "资源牌靠右上，给右上设置币留间距")
+		eq(rsb.border_width_left, 2, "★ 大卡有 2px 描边（与其它面板同一套）")
+		ok(rsb.corner_radius_top_left >= 12, "★ 大卡是圆角（12）")
+	eq(UiLayoutRes.RES_BAR_RECT.size.x, 100.0,
+		"★ 资源卡宽 100（2026.11.14 第五轮：再收一档，仍只装 4 位数）")
+	eq(UiLayoutRes.RES_BAR_RECT.size.y, UiLayoutRes.RES_HALF_H * 2.0,
+		"★ 大卡高 = 两块 × 175 = 350（每块四行竖排，与地图同高）")
+	eq(UiLayoutRes.RES_BAR_RECT.position.x, UiLayoutRes.TOP_COLUMN_X,
+		"★ 资源卡贴右上角那一列的左缘")
+	# ★★ 2026.11.14 第四轮：宽度只保证「4 位数」装得下（用户口径）
+	var num_font: Font = bar.get_theme_font("font", "Label")
+	if num_font != null:
+		var w4: float = num_font.get_string_size("9999", HORIZONTAL_ALIGNMENT_LEFT, -1, 26).x
+		ok(w4 <= UiLayoutRes.TOP_COLUMN_W - 8.0,
+			"★ 4 位数（26 号字 %.0fpx）装得进 100 宽的卡（可写 %.0f）"
+				% [w4, UiLayoutRes.TOP_COLUMN_W - 8.0])
+		var w5: float = num_font.get_string_size("99999", HORIZONTAL_ALIGNMENT_LEFT, -1, 26).x
+		ok(w5 > w4, "（对照组）5 位数更宽 ⇒ 卡宽就是按 4 位数定的")
 	ok(not UiLayoutRes.MAP_RECT.intersects(UiLayoutRes.RES_BAR_RECT),
-		"资源筹码与小地图不重叠")
+		"资源卡与小地图不重叠")
 	ok(UiLayoutRes.RES_BAR_RECT.position.y >= 0.0
 			and UiLayoutRes.RES_BAR_RECT.position.y + UiLayoutRes.RES_BAR_RECT.size.y
 				<= UiLayoutRes.DESIGN_H,
 		"★ 资源面板整个在设计空间里（不掉出屏幕）")
+	# 中间那条分隔线
+	var divider := bar.get_node_or_null("ResDivider") as ColorRect
+	ok(divider != null, "★ 两块之间有一条分隔线")
+	if divider != null:
+		near(divider.position.y, UiLayoutRes.RES_DIVIDER_Y, 1.0, "★ 分隔线在两块的交界处（y=137）")
+		ok(divider.size.x <= UiLayoutRes.TOP_COLUMN_W,
+			"★ 分隔线不越出卡片宽度")
 
 	var food := bar.get_node_or_null("ResText_粮") as Label
 	var gold := bar.get_node_or_null("ResText_金") as Label
 	ok(food != null, "★ 资源面板里有「粮食」那一项")
 	ok(gold != null, "★ 资源面板里有「黄金」那一项")
-	eq(bar.get_child_count(), 10, "两枚资源牌 + 两枚徽章 + 标题/库存/净额三档文字")
-	var food_token := bar.get_node_or_null("ResourceToken_粮") as Panel
-	var gold_token := bar.get_node_or_null("ResourceToken_金") as Panel
-	ok(food_token != null and gold_token != null, "粮食与黄金各有独立的筹码底牌")
+	# 2 圆章 + 2 标题 + 2 数字 + 2 增长 + 1 分隔线 = 9
+	eq(bar.get_child_count(), 9, "两枚圆章 + 标题/库存/增长三档 ×2 + 分隔线")
+	ok(bar.get_node_or_null("ResourceToken_粮") == null,
+		"★ 不再有「每块一张筹码」的中间层（合并成一张大卡）")
 	if food != null and gold != null:
-		eq(gold.position.y, food.position.y, "粮食与黄金筹码位于同一行")
-		ok(gold.position.x > food.position.x, "黄金资源牌在粮食牌右侧")
-		eq(food.position.y, 24.0, "库存数字位于资源标题下方")
-		ok(gold.position.y + gold.size.y <= UiLayoutRes.RES_BAR_RECT.size.y + 0.01,
-			"黄金文字没有越出资源牌区域")
-		ok(gold.position.x + gold.size.x <= UiLayoutRes.RES_BAR_RECT.size.x + 0.01,
-			"第二枚资源牌没有越出容器右缘")
-		var icon_food := bar.get_node_or_null("ResIcon_粮") as Label
-		var icon_gold := bar.get_node_or_null("ResIcon_金") as Label
-		ok(icon_food != null and icon_gold != null, "★ 两个色块都在")
-		if icon_food != null and icon_gold != null:
-			eq(icon_food.size, Vector2(UiLayoutRes.RES_ICON, UiLayoutRes.RES_ICON),
-				"资源徽章 45×45")
-			ok(icon_food.position.x < food.position.x and icon_gold.position.x < gold.position.x,
-				"资源徽章位于库存数值左侧")
-			ok(icon_food.position.y < food.position.y, "粮食圆章与标题/库存纵向错层")
-			ok(icon_gold.position.y < gold.position.y, "黄金圆章与标题/库存纵向错层")
+		var f_title := bar.get_node_or_null("ResTitle_粮") as Label
+		var g_title := bar.get_node_or_null("ResTitle_金") as Label
+		var f_rate := bar.get_node_or_null("ResRate_粮") as Label
+		var g_rate := bar.get_node_or_null("ResRate_金") as Label
+		var f_icon := bar.get_node_or_null("ResIcon_粮") as Label
+		var g_icon := bar.get_node_or_null("ResIcon_金") as Label
+		var f_row := [f_icon, f_title, food, f_rate]
+		var g_row := [g_icon, g_title, gold, g_rate]
+		# ★ 竖排顺序：图标 → 文本 → 数字 → 增长（y 严格递增）
+		ok(f_row[0].position.y <= UiLayoutRes.RES_ICON_Y + 0.01,
+			"★ 粮食：圆章在最上面")
+		ok(f_row[0].position.y < f_row[1].position.y
+				and f_row[1].position.y < f_row[2].position.y
+				and f_row[2].position.y < f_row[3].position.y,
+			"★★ 粮食四行竖排：图标 → 文本 → 数字 → 增长（y 递增：%s / %s / %s / %s）" % [
+				str(f_row[0].position.y), str(f_row[1].position.y),
+				str(f_row[2].position.y), str(f_row[3].position.y)])
+		ok(g_row[0].position.y < g_row[1].position.y
+				and g_row[1].position.y < g_row[2].position.y
+				and g_row[2].position.y < g_row[3].position.y,
+			"★★ 黄金四行同样竖排")
+		# 两块之间纵向错开一整块高
+		near(g_row[0].position.y - f_row[0].position.y, UiLayoutRes.RES_HALF_H, 0.01,
+			"★ 黄金整块在粮食下面，错开 137")
+		# 四行水平居中：都在卡片宽度内、且水平方向居中
+		for pair in [[f_row, "粮食"], [g_row, "黄金"]]:
+			var row: Array = pair[0]
+			var tag: String = String(pair[1])
+			for n in row:
+				var lab: Label = n
+				ok(lab.position.x >= -0.01
+						and lab.position.x + lab.size.x <= UiLayoutRes.TOP_COLUMN_W + 0.01,
+					"★ %s 的「%s」没有越出卡片左右缘" % [tag, lab.text])
+				near(lab.position.x + lab.size.x * 0.5, UiLayoutRes.TOP_COLUMN_W * 0.5, 0.01,
+					"★ %s 的「%s」水平居中" % [tag, lab.text])
+		# 数字最显眼：字号比文本 / 增长都大
+		ok(food.get_theme_font_size("font_size") > f_title.get_theme_font_size("font_size"),
+			"★ 数字比文本大（26 > 13）")
+		ok(food.get_theme_font_size("font_size") > f_rate.get_theme_font_size("font_size"),
+			"★ 数字比增长数字大")
+
+
+	if food != null and gold != null:
+		eq(gold.position.x, food.position.x, "★ 两块的四行都用同一条居中轴（x 一致）")
+		ok(gold.position.y > food.position.y, "黄金在粮食牌**下方**")
 
 	if food != null and gold != null:
 		main.world.resources["food"] = 120.6
@@ -914,8 +1022,10 @@ func _test_anchors(main) -> void:
 	root.size = Vector2i(2560, 1080)                      # 超宽：多出来的 640px 留在中间
 	await process_frame
 	await process_frame
-	v2_near(main.hud.command_card.position, Vector2(UiLayoutRes.CARD_RECT.position.x + 640.0,
-		UiLayoutRes.CARD_RECT.position.y), 1.0, "★ 超宽窗口：扇形牌区仍贴右侧工作区")
+	# ★★ 2026.11.14：手牌是**底部居中**的 ⇒ 超宽窗口下只平移**半个**富余（320px），
+	#   不是贴右那套 640px（见 `center_shift`）。
+	v2_near(main.hud.command_card.position, Vector2(UiLayoutRes.CARD_RECT.position.x + 320.0,
+		UiLayoutRes.CARD_RECT.position.y), 1.0, "★ 超宽窗口：手牌仍停在屏幕中央")
 	v2_near(main.hud.page_tabs.position, Vector2(UiLayoutRes.TABS_RECT.position.x + 640.0,
 		UiLayoutRes.TABS_RECT.position.y), 1.0, "超宽窗口：页签牌跟随右边距")
 	v2_near(main.hud.detail_panel.position, UiLayoutRes.DETAIL_RECT.position, 1.0,
@@ -931,9 +1041,9 @@ func _test_anchors(main) -> void:
 	v2_near(main.hud.squad_panel.position,
 		Vector2(UiLayoutRes.SQUAD_RECT.position.x + 640.0, UiLayoutRes.SQUAD_RECT.position.y), 1.0,
 		"超宽窗口：将领列表仍贴右上")
-	v2_near(main.hud.settings_button.position,
-		Vector2(UiLayoutRes.SETTINGS_RECT.position.x + 640.0, UiLayoutRes.SETTINGS_RECT.position.y), 1.0,
-		"超宽窗口：设置币仍贴右上角")
+	v2_near(main.hud.resource_bar.position,
+		Vector2(UiLayoutRes.RES_BAR_RECT.position.x + 640.0, UiLayoutRes.RES_BAR_RECT.position.y), 1.0,
+		"超宽窗口：资源大卡仍贴右上")
 	ok(main.hud.blocks_edge_scroll(Vector2(UiLayoutRes.CARD_RECT.position.x + 640.0 + 40.0, 880.0)),
 		"超宽窗口：命令卡的新位置仍然拦边缘滚屏（判定跟着贴边走）")
 
@@ -1225,7 +1335,7 @@ func _test_squad_rows(main) -> void:
 
 	ok(panel.slot_filled(2), "第 3 槽有队伍")
 	ok(not panel.slot_filled(3), "第 4 槽是空的")
-	eq(panel.slot_number(5), "6", "★ 第 6 条标签的数字显示 6")
+	eq(panel.slot_number(4), "5", "★ 第 5 条标签的数字显示 5（槽位上限改成 5）")
 	for i in range(3, UiLayoutRes.SQUAD_SLOTS):
 		eq(panel.slot_text(i), "…", "空槽第 %d 行显示「…」" % (i + 1))
 
@@ -1241,7 +1351,7 @@ func _test_squad_rows(main) -> void:
 	ok(panel.slot_active(2), "当前选中的队伍在列表里高亮")
 
 	var sel_before: int = main.input_ctrl.selected_units.size()
-	_click_slot(main, panel, 5)
+	_click_slot(main, panel, UiLayoutRes.SQUAD_SLOTS - 1)
 	eq(main.input_ctrl.selected_units.size(), sel_before, "★ 空槽点了没有反应")
 
 	# ★★ 反选（本轮需求「点击代表反选」）：
@@ -1577,17 +1687,97 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 	eq(card.entries().size(), 4, "★ 操作页有四格（移动 / 攻击 / 行军 / 停止）")
 	for i in UiLayoutRes.CARD_SLOTS:
 		eq(card.cell_at(i).visible, i < 4, "操作页只铺实际有内容的牌槽 %d" % i)
+	# ★★ 2026.11.14（用户口径）：操作牌改成「拖出 → 地图上有旗帜虚影 → 松手即下达」，
+	#   不再「进命令模式 → 再点一下地图」。这里顺着这条新链路走一遍。
+	var got: Array = []
+	var spy := func(cmd: Dictionary) -> void: got.append(cmd)
+	main.input_ctrl.command_issued.connect(spy)
+	# ★ 前面的用例可能已经发过 move/stop 命令（冷却由 `command_issued` 触发），
+	#   这里先清干净再验「拖出 → 虚影 → 下达」这条主链。
+	main.hud._order_cd.clear()
+	main.hud.refresh()
 	var drag_cell: Control = card.cell_at(0)
 	var drag_origin: Vector2 = drag_cell.get_global_transform_with_canvas() * (drag_cell.size * 0.5)
 	card._drag_index = 0
 	card._drag_start_global = drag_origin
 	card._update_drag_position(0, drag_origin - Vector2(0.0, 24.0))
 	ok(card._dragging_card, "★★ 手牌向上拖过阈值后进入拖拽状态")
+	ok(not main.hud.order_ghost_active,
+		"★ 刚拖起时指针还压在手牌上 ⇒ 不显示落点（那一下松手就是取消）")
+	# 找一个「一定在地图上」的松手点：测试视口比设计空间小，写死的像素可能正好压在面板上
+	# （`point_hits_ui` 会把那种点判成 UI，于是虚影不出、松手变成取消）。
+	var map_pt := Vector2(960.0, 420.0)
+	for cand in [Vector2(960.0, 420.0), Vector2(700.0, 380.0), Vector2(1200.0, 520.0), Vector2(500.0, 300.0)]:
+		if not main.hud.point_hits_ui(cand) and main.palette.to_logic(cand) != null:
+			map_pt = cand
+			break
+	ok(not main.hud.point_hits_ui(map_pt), "（前提）测试用的松手点确实在地图上")
+	# 挪到地图上：虚影出现
+	card._update_drag_position(0, map_pt)
+	ok(main.hud.order_ghost_active, "★★ 拖到地图上 → 出现旗帜虚影")
+	eq(main.hud._order_drag_mode, "move", "★ 虚影跟着这张「移动」牌")
+	ok(not main.hud.order_ghost_snapped, "★ 移动牌不吸附")
 	eq(drag_cell.rotation, 0.0, "★★ 被拖起的牌转正并跟随指针")
-	card._finish_card_drag(0)
+	# 松手在地图上：落点即操作点
+	card._finish_card_drag(0, map_pt)
 	ok(not card._dragging_card, "松手后拖拽状态正确结束")
-	eq(main.input_ctrl.order_mode, "move", "★★ 上拖松手会打出命令牌")
-	main.input_ctrl.set_order_mode("")
+	ok(not main.hud.order_ghost_active, "★★ 松手后旗帜虚影收起")
+	eq(main.input_ctrl.order_mode, "", "★★ 拖出松手直接下达，不再进命令模式")
+	var move_cmds: Array = got.filter(func(c): return String(c.get("kind", "")) == "move")
+	ok(move_cmds.size() >= 1, "★★ 松手处就是操作点：发出了一条 move 命令")
+	ok(main.hud._order_cd_left() > 0.0, "★★ 下达成功后该部队进入 3 秒冷却")
+	# 冷却中：四格都不可用（变灰、拖不起来），并且带进度条
+	main.hud.refresh()
+	var cd_entries: Array = main.hud._order_entries()
+	ok(not bool(cd_entries[0].get("ready", true)), "★★ 冷却中操作牌不可用")
+	ok(float(cd_entries[0].get("queue_progress", -1.0)) >= 0.0, "★★ 冷却中牌面带进度条")
+	# ★★ 冷却中**拖不起来**（用户报的「冷却没有生效」的真因）：
+	#   `Button.disabled` 只挡 `pressed`，`gui_input` 照样派发 —— 拖拽这条路必须自己判。
+	var cmds_before: int = got.size()
+	card._drag_index = 0
+	card._drag_start_global = drag_origin
+	card._update_drag_position(0, Vector2(1000.0, 560.0))
+	ok(not card._dragging_card, "★★ 冷却中操作牌拖不起来")
+	card._finish_card_drag(0, Vector2(1000.0, 560.0))
+	eq(got.size(), cmds_before, "★★ 冷却中松手也下达不了")
+	main.hud._tick_order_cooldown(0.0)     # 只推一次牌面进度条（不推进计时）
+	ok(main.hud.command_card._cd_veils[0].visible, "★★ 冷却中牌面被暗纱盖住（填充式提示）")
+	# 走一半（3 秒的一半）⇒ 进度条到 50%，仍然不可用
+	main.hud._tick_order_cooldown(1.5)
+	cd_entries = main.hud._order_entries()
+	ok(not bool(cd_entries[0].get("ready", true)), "★ 冷却过半仍然不可用")
+	ok(absf(float(cd_entries[0].get("queue_progress", 0.0)) - 0.5) < 0.06,
+		"★★ 冷却进度条按时间走（过半 ≈ 50%%，实际 %.2f）"
+			% float(cd_entries[0].get("queue_progress", 0.0)))
+	var veil_h: float = main.hud.command_card._cd_veils[0].size.y
+	var cell_h: float = main.hud.command_card.cell_at(0).size.y
+	ok(veil_h > 0.0 and veil_h < cell_h,
+		"★★ 暗纱按剩余冷却收窄（牌面从下往上露出来，%.0f / %.0f）" % [veil_h, cell_h])
+	# 再走 2 秒 ⇒ 3 秒到，牌恢复可用
+	main.hud._tick_order_cooldown(2.0)
+	cd_entries = main.hud._order_entries()
+	ok(bool(cd_entries[0].get("ready", false)), "★★ 3 秒后操作牌恢复可用")
+	ok(main.hud._order_cd_left() <= 0.0, "★ 冷却清零")
+
+	# ★ 冷却清零后要让命令卡**重建一次**（`ready` 是建卡那一刻取的值），
+	#   否则这一格还是「置灰」的旧状态 —— 拖拽这条路现在会照着它拒绝。
+	main.hud.refresh()
+	# ★★ 拖回手牌松手 = 取消：不下达、不进冷却（与建筑牌同一套手感）
+	got.clear()
+	card._drag_index = 0
+	card._drag_start_global = drag_origin
+	card._update_drag_position(0, map_pt)
+	ok(main.hud.order_ghost_active, "★ 拖到地图上时旗帜虚影可见")
+	card._update_drag_position(0, drag_origin)
+	ok(not main.hud.order_ghost_active, "★★ 拖回手牌 ⇒ 虚影收起（这一下是收回）")
+	card._finish_card_drag(0, drag_origin)
+	eq(got.size(), 0, "★★ 拖回手牌松手 = 取消，不下达任何命令")
+	ok(main.hud._order_cd_left() <= 0.0, "★ 取消不进冷却")
+	ok(not main.hud.order_ghost_active, "★ 取消后虚影不残留")
+
+	# 触屏那条路：清掉冷却再走一遍（同一张牌此时也可用）
+	main.hud._order_cd.clear()
+	main.hud.refresh()
 	var touch_cell: Control = card.cell_at(0)
 	var touch_origin: Vector2 = touch_cell.get_global_transform_with_canvas() * (touch_cell.size * 0.5)
 	var touch_down := InputEventScreenTouch.new()
@@ -1595,8 +1785,8 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 	touch_down.position = touch_origin
 	main.hud.handle_touch(touch_down)
 	var touch_move := InputEventScreenDrag.new()
-	touch_move.position = touch_origin - Vector2(0.0, 28.0)
-	touch_move.relative = Vector2(0.0, -28.0)
+	touch_move.position = Vector2(900.0, 480.0)
+	touch_move.relative = touch_move.position - touch_origin
 	main.hud.handle_touch_drag(touch_move)
 	ok(main.hud._lp_card_dragging, "★★ 触屏向上拖动手牌进入打出状态")
 	var touch_up := InputEventScreenTouch.new()
@@ -1604,8 +1794,12 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 	touch_up.position = touch_move.position
 	main.hud.handle_touch(touch_up)
 	await process_frame
-	eq(main.input_ctrl.order_mode, "move", "★★ 触屏上拖松手也触发同一命令牌动作")
-	main.input_ctrl.set_order_mode("")
+	await process_frame
+	eq(main.input_ctrl.order_mode, "", "★★ 触屏拖出松手同样是「落点即操作点」，不进命令模式")
+	ok(main.hud._order_cd_left() > 0.0, "★★ 触屏拖出也起冷却")
+	main.input_ctrl.command_issued.disconnect(spy)
+	main.hud._order_cd.clear()
+	main.hud.refresh()
 
 	# ★★ 只显示当前页真实存在的牌；空槽隐藏而非置灰占位。
 	for i in UiLayoutRes.CARD_SLOTS:
@@ -1829,21 +2023,26 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 		eq(tabs.page_count(), 1, "★ 选中区划中心只剩「招募」页签")
 		eq(tabs.page_id_at(0), PageTabsRes.PAGE_RECRUIT, "唯一页签是「招募」")
 		eq(tabs.page(), PageTabsRes.PAGE_RECRUIT, "★ 默认停在「招募」页")
-		eq(card.entries().size(), 9, "★★ 招募页是固定九宫格（#1-9）")
+		# ★★ 2026.11.14（用户口径）：招走 / 开局就拥有的将领**不再占牌位**
+		var avail0: Array = main.world.general_recruit_available("p1")
+		eq(card.entries().size(), mini(avail0.size(), 9),
+			"★★ 招募页只列「还没被招走」的将领（当前 %d 位）" % avail0.size())
 		ok(main.hud.detail_panel.detail_text().contains("粮食"),
 			"★ 区划详情右列显示产能（实际：%s）"
 				% main.hud.detail_panel.detail_text().replace("\n", "|"))
 		tabs.button_at(0).emit_signal("pressed")
 		eq(tabs.page(), PageTabsRes.PAGE_RECRUIT, "唯一页签仍是招募页")
-		var roster: Array = world.general_recruit_roster("p1")
-		eq(roster.size(), 9, "★ 固定阵容 9 位")
-		for i in 9:
+		# ★★ 2026.11.14（用户口径）：招募页只列**还没被招走**的将领，
+		#   所以「第 i 格 = 将领 i」不再成立 —— 改成「第 i 格 = 可招清单第 i 位」。
+		var roster: Array = world.general_recruit_available("p1")
+		ok(roster.size() > 0, "★ 还有可招的将领（%d 位）" % roster.size())
+		for i in mini(roster.size(), 9):
 			eq(card.cell_label(i), world.recruit_label_of(String(roster[i])),
-				"第 %d 格 = 将领 %d" % [i + 1, i + 1])
+				"第 %d 格 = 可招清单第 %d 位" % [i + 1, i + 1])
 		eq(String(card.entry_at(0).get("type", "")), "zone_recruit",
-			"招募页那一项是「区划招募」（排进区划的队列）")
-		eq(String(card.entry_at(0).get("unit_kind", "")), String(roster[0]),
-			"第 1 格 = 将领 1")
+			"招募页那一项是「区划招募」")
+		ok(roster.size() > 0 and String(card.entry_at(0).get("unit_kind", "")) == String(roster[0]),
+			"第 1 格 = 清单第一位")
 		tabs.button_at(0).emit_signal("pressed")
 		eq(tabs.page(), PageTabsRes.PAGE_RECRUIT, "唯一页签仍是招募页")
 
@@ -1933,14 +2132,14 @@ func _test_hover_panel(main, cfg) -> void:
 	ok(bt.contains("远程免伤"), "★★ 建筑详情里有远程免伤（本轮新增）")
 
 	var card_rect: Rect2 = card.get_global_rect()
-	var tabs_rect: Rect2 = tabs.get_global_rect()
 	var tip_rect: Rect2 = tip.get_global_rect()
-	eq(tip_rect.size.x, tabs_rect.position.x + tabs_rect.size.x - card_rect.position.x,
-		"★ 悬停说明从牌手左缘一直对齐到页签牌区右缘")
-	near(tip_rect.position.x, card_rect.position.x, 1.0, "左缘与命令卡对齐")
+	# ★★ 2026.11.14 第二轮：手牌居中后，悬停面板改成**与手牌同宽同中心**
+	#   （原来那条「右缘够到页签列右缘」的口径已作废 —— 中间隔着一大段空白）。
+	eq(tip_rect.size.x, card_rect.size.x, "★ 悬停说明与手牌**同宽**")
+	near(tip_rect.position.x, card_rect.position.x, 1.0, "左缘与手牌对齐")
 	near(tip_rect.position.x + tip_rect.size.x,
-		tabs_rect.position.x + tabs_rect.size.x, 1.0,
-		"★ 右缘与**页签列右缘**齐平（整块贴在命令卡正上方、盖住页签那一条的水平范围）")
+		card_rect.position.x + card_rect.size.x, 1.0,
+		"★ 右缘与**手牌右缘**齐平（整块贴在牌手正上方）")
 	ok(tip_rect.position.y + tip_rect.size.y <= card_rect.position.y + 0.01,
 		"★ 面板整个落在命令卡**上方**（不压住那九格）")
 
@@ -2000,11 +2199,11 @@ func _test_hover_panel(main, cfg) -> void:
 		main.input_ctrl.select_zone(zone)
 		hud.refresh()
 		tabs.select_page(PageTabsRes.PAGE_RECRUIT)
-		var hover_roster: Array = world.general_recruit_roster("p1")
+		var hover_roster: Array = world.general_recruit_available("p1")
 		var hover_kind: String = String(hover_roster[0])
 		var hover_label: String = world.recruit_label_of(hover_kind)
 		eq(card.cell_label(0), hover_label,
-			"（前提）招募页 Q 格 = 将领 1（%s）" % hover_label)
+			"（前提）招募页 Q 格 = 可招清单第一位（%s）" % hover_label)
 		card.hover(0)
 		ok(tip.showing() and tip.title_text() == hover_label,
 			"★ 招募页那一格也有悬停详情")
@@ -2062,7 +2261,7 @@ func _test_hover_tip_control(cfg) -> void:
 	ok(tip.showing() and tip.visible, "喂了文本就显示出来")
 	eq(tip.title_text(), "木墙", "标题是那一格的名字")
 	ok(tip.body_text().contains("血量"), "正文里是多行说明")
-	eq(tip.size.x, UiLayoutRes.HOVER_W, "★ 面板宽 = HOVER_W（340 = 命令卡 + 页签列）")
+	eq(tip.size.x, UiLayoutRes.HOVER_W, "★ 面板宽 = HOVER_W（= 手牌宽 842）")
 	near(tip.position.x, UiLayoutRes.CARD_RECT.position.x, 1.0, "左缘与命令卡对齐")
 	near(tip.position.y + tip.size.y, UiLayoutRes.HOVER_BOTTOM, 0.01,
 		"★ 下缘钉在命令卡顶边上方（变高是**向上长**）")
@@ -2348,76 +2547,57 @@ func _test_recruit_via_card(main) -> void:
 	world.zones.zone_at(g1.tx, g1.ty)["population"] = 5.0
 	var played_pos: Vector2 = card.cell_at(0).get_global_transform_with_canvas() \
 		* (card.cell_at(0).size * 0.5)
+	# ★★ 2026.11.14（用户口径）：「单位招募时不需要队列了，招募变为即时的，
+	#   只要拖拽单位牌生效就是招募完成」⇒ 拖出一张单位牌 = 兵当场出来。
+	var retinue_before: int = world.retinue_of(g1.id).size()
 	card._drag_index = 0
 	card._dragging_card = true
 	card._finish_card_drag(0, played_pos)
-	ok(g1.is_training(), "★ 点单位页的 Q 格 → 排进招募队列")
-	eq(g1.train_kind, UnitRes.UNIT_TYPE_SPEARMAN, "大格子里是刚排进去的那个")
+	eq(world.retinue_of(g1.id).size(), retinue_before + 1,
+		"★★ 拖出单位牌 → 兵**当场**生成（没有队列、没有读条）")
+	ok(not g1.is_training(), "★ 不再进入「招募中」状态")
+	eq(g1.train_queue_size(), 0, "★ 队列恒为空")
 	var sf: float = float((world.recruit_cost(UnitRes.UNIT_TYPE_SPEARMAN) as Dictionary).get("food", 0.0))
-	near(float(world.resources["food"]), 200.0 - sf, 1e-4, "★ 入队即扣粮（= config 定价）")
-	eq(world.retinue_of(g1.id).size(), before, "★ 入队不会立刻生成单位（要读条 10 秒）")
+	near(float(world.resources["food"]), 200.0 - sf, 1e-4, "★ 招募当场扣粮（= config 定价）")
 	eq(g1.leader_id, "", "将领自己还是队长")
 
 	main.hud.refresh()
-	ok(queue.showing(), "★ 信息栏里出现五个格子")
-	eq(String(card.entry_at(0).get("type", "")), "recruit_cancel_all",
-		"★★ 招募开始后，手牌最左侧插入读条/取消牌")
+	# ★ 读条牌没了：手牌第一张就是第一张单位牌（Q 键也还在它身上）
+	eq(String(card.entry_at(0).get("type", "")), "recruit",
+		"★★ 手牌最左侧不再插入读条/取消牌")
 	eq(String(card.entry_at(0).get("unit_kind", "")), UnitRes.UNIT_TYPE_SPEARMAN,
-		"读条牌显示刚刚排入队列的兵种")
-	eq(String(card.entry_at(1).get("unit_kind", "")), UnitRes.UNIT_TYPE_SPEARMAN,
-		"普通兵种牌向右移一格，补回原牌")
-	eq(card._key_labels[0].text, "ESC", "★★ 读条牌标示 Esc，而不占用 Q 快捷键")
-	eq(card._key_labels[1].text, "Q", "★★ 右移后的首张单位牌仍标记为 Q")
-	ok(card._deck_tween != null and card._deck_tween.is_running(),
-		"★★ 读条牌从左滑入并推动手牌错位")
-	eq(queue.slot_count(), 5, "★ 一共五个格子")
-	ok(queue.cell_filled(0), "大格子填上了（正在读条的那个）")
-	ok(not queue.cell_filled(1), "小格子还是空的")
-	ok(queue.cell_label(0).contains("枪"),
-		"大格子里写着兵种短名（实际：%s）" % queue.cell_label(0))
-	near(queue.progress(), 0.0, 1e-6, "刚入队时读条是 0")
+		"第一张就是枪兵牌")
+	eq(card._key_labels[0].text, "Q", "★ 首张单位牌标记 Q")
 
-	ok(card.handle_key(_key(KEY_Q)), "★★ Q 仍招募第一种单位，不会取消队列")
-	main.hud.refresh()
-	eq(g1.train_queue.size(), 1, "★ 第二次招募排进小格子（不抢读条）")
-	ok(queue.cell_filled(1), "第 2 个格子（小格）填上了")
-	near(queue.progress(), 0.0, 0.05, "★ 排队的不影响正在读条那个的进度")
+	# 再拖一次 = 又是一个兵（没有冷却拦着）
+	var again: int = world.retinue_of(g1.id).size()
+	ok(card.handle_key(_key(KEY_Q)), "★★ Q 再招一个")
+	eq(world.retinue_of(g1.id).size(), again + 1,
+		"★★ 招募没有冷却：连着招就是连着出")
 
-	eq(main.hud.page_tabs.page_count(), 2, "（前提）选中部队时只有两颗页签")
-	main.hud.page_tabs.select_page(PageTabsRes.PAGE_ORDER)
-	var order_has_stop := false
-	for e in card.entries():
-		if e is Dictionary and String((e as Dictionary).get("type", "")) == "recruit_cancel_all":
-			order_has_stop = true
-	ok(not order_has_stop, "★★ 操作页不再单独显示停招；由手牌读条牌替代")
-	main.hud.page_tabs.select_page(PageTabsRes.PAGE_UNIT)
-	main.hud.page_tabs.select_page(PageTabsRes.PAGE_BUILD)
-	eq(main.hud.page_tabs.page(), PageTabsRes.PAGE_UNIT,
-		"★ 不在这一屏里的页（建筑）切不过去")
-	eq(g1.train_queue_size(), 2, "切页不会改变队列")
-	var cancel_pos: Vector2 = card.cell_at(0).get_global_transform_with_canvas() \
-		* (card.cell_at(0).size * 0.5)
-	card._drag_index = 0
-	card._dragging_card = true
-	card._finish_card_drag(0, cancel_pos)
-	ok(not g1.is_training() and g1.train_queue_size() == 0,
-		"★★ 打出最左读条牌会清空当前将领的整条招募队列")
-	ok(main.input_ctrl.request_recruit(UnitRes.UNIT_TYPE_SPEARMAN), "为 Esc 取消路径重新排入一单")
-	main.hud.refresh()
-	var queued_before_q: int = g1.train_queue_size()
-	ok(card.handle_key(_key(KEY_Q)), "★★ Q 仍映射到第一张单位牌，不会取消读条")
-	eq(g1.train_queue_size(), queued_before_q + 1, "★★ Q 新增一单而不是取消招募")
-	ok(main.input_ctrl.handle_key(_key(KEY_ESCAPE)), "★★ Esc 可取消当前将领的全部招募")
-	ok(not g1.is_training() and g1.train_queue_size() == 0,
-		"Esc 取消后招募队列清空")
+	# 编制上限仍然管着（招满就不能再招）
+	var cap: int = world.effective_retinue_cap(g1)
+	# ★ 招满之前要付钱：先把资源与人口给足（这条验的是**编制上限**，不是穷）
+	world.resources["food"] = 9999.0
+	world.resources["gold"] = 9999.0
+	var zone_cap = world.zones.zone_at(g1.tx, g1.ty)
+	if zone_cap != null:
+		zone_cap["population"] = 999.0
+	# ★ 有界：真招不动就停（避免「上限判据失效」时把测试挂死）
+	for _i in 40:
+		if world.retinue_of(g1.id).size() >= cap:
+			break
+		if not main.input_ctrl.request_recruit(UnitRes.UNIT_TYPE_SPEARMAN):
+			break
+	ok(g1.retinue_size(world) >= cap, "（前提）招满到编制上限")
+	main.input_ctrl.request_recruit(UnitRes.UNIT_TYPE_SPEARMAN)
+	ok(g1.retinue_size(world) <= cap,
+		"★★ 编制上限仍然生效：即使点了也不会超编（实际 %d / 上限 %d）"
+			% [g1.retinue_size(world), cap])
 
 	main.input_ctrl.select_units([])
 	main.hud.refresh()
-	ok(not queue.showing(), "★ 没选中招募中的将领时五格收起来")
-
-	while g1.train_queue_size() > 0:
-		world.cancel_recruit(g1.id, 0, "p1")
-	ok(not g1.is_training(), "收尾：队列已清空")
+	ok(not queue.showing(), "★ 没选中将领时五格收起来")
 
 ## ★★ 多选招募：不应全部塞给第一个将领，而应按「队列最短」摊到每个可招募将领。
 func _test_multi_recruit_distribution(main) -> void:
@@ -2427,9 +2607,7 @@ func _test_multi_recruit_distribution(main) -> void:
 	ok(g1 != null and g2 != null, "（前提）有两支部队可多选")
 	if g1 == null or g2 == null:
 		return
-	for g in [g1, g2]:
-		while g.train_queue_size() > 0:
-			world.cancel_recruit(String(g.id), 0, "p1")
+	# ★★ 2026.11.14：没有队列可清（招募即时）——两支队伍的兵数就是唯一的状态。
 	world.resources["food"] = 2000.0
 	world.resources["gold"] = 2000.0
 	var g2_old_pos: Vector2 = g2.pos
@@ -2453,17 +2631,14 @@ func _test_multi_recruit_distribution(main) -> void:
 	main.input_ctrl.select_units([g1, g2])
 	ok(main.input_ctrl.request_recruit(UnitRes.UNIT_TYPE_SPEARMAN),
 		"（前提）多选时第一单招募发出去了")
-	eq(g1.train_queue_size(), 1, "★★ 第 1 单给第 1 支（它的队列最短）")
-	eq(g2.train_queue_size(), 0, "第 2 支这单不排")
-	ok(main.input_ctrl.request_recruit(UnitRes.UNIT_TYPE_SPEARMAN),
-		"（前提）第二单招募发出去了")
-	eq(g1.train_queue_size(), 1, "第 1 支队列已经比第 2 支长")
-	eq(g2.train_queue_size(), 1, "★★ 第 2 单自动轮到第 2 支（不是继续堆给第一个）")
+	# ★★ 2026.11.14：招募即时化 + 没有队列 ⇒ 摊单判据从「队列最短」换成「队伍最少」。
+	#   连点两下应该在两支之间轮流补人，而不是全堆给第一支。
+	# ★ 判据从「队列最短」换成「队伍最少」之后，两单会**分摊**到两支上（不会两单都堆给第一支）。
+	var total: int = g1.retinue_size(world) + g2.retinue_size(world)
+	ok(total >= 4, "★★ 两单都落地了（两支一共 %d 个兵）" % total)
+	ok(g1.retinue_size(world) > 0 and g2.retinue_size(world) > 0,
+		"★★ 两支都有兵（摊单没有把两单都堆给第一支）")
 	main.input_ctrl.select_units([])
-	while g1.train_queue_size() > 0:
-		world.cancel_recruit(String(g1.id), 0, "p1")
-	while g2.train_queue_size() > 0:
-		world.cancel_recruit(String(g2.id), 0, "p1")
 	g2.pos = g2_old_pos
 	g2.sync_tile(world.map)
 	for rec in saved_zones:
@@ -2496,78 +2671,54 @@ func _test_zone_recruit_via_card(main) -> void:
 	eq(main.hud.page_tabs.page_count(), 1, "★ 选中区划中心 → 只有招募页签")
 	eq(main.hud.page_tabs.page_id_at(0), PageTabsRes.PAGE_RECRUIT, "唯一页签是「招募」")
 	eq(main.hud.page_tabs.page(), PageTabsRes.PAGE_RECRUIT, "★ 默认就在「招募」页")
-	eq(card.entries().size(), 9, "★★ 招募页是固定九宫格（#1-9）")
-	var roster: Array = world.general_recruit_roster("p1")
-	eq(roster.size(), 9, "★ 固定阵容 9 位")
-	# 这个关卡开局摆了 #1-3（已拥有），大本营升到 3 级后 #4 是第一位可招的。
-	var kind0: String = String(roster[3])
-	eq(card.cell_label(3), world.recruit_label_of(kind0),
-		"Q/W/E/A 第 4 格 = 将领 4（实际：%s）" % card.cell_label(3))
-	eq(String(card.entry_at(3).get("type", "")), "zone_recruit",
-		"招募页那一项是「区划招募」（排进区划的队列）")
-	eq(String(card.entry_at(3).get("unit_kind", "")), kind0,
-		"第 4 格要招的兵种 = general_4")
-	# ★★ 不可招募的格子：disabled + 灰色填充档（与科技锁定格同一套效果）。
-	ok(not bool(card.entry_at(0).get("ready", true)), "★ 已拥有的 #1 不可招募")
-	eq(String(card.entry_at(0).get("lock_reason", "")), "owned", "拒因 = owned")
-	var locked_cell = card.cell_at(0)
-	ok(locked_cell != null and locked_cell.disabled,
-		"★★ 不可招募格的按钮是 disabled")
-	ok(locked_cell != null and FillButtonRes.is_grey(locked_cell),
-		"★★ 不可招募格走「灰色填充」档（悬停填灰）")
+
+	# ★★ 2026.11.14（用户口径）：「当将领被招募后，将领招募页的该将领牌会消失」
+	#   ⇒ 页面上只有「还没被招走」的将领，且**开局就拥有的 #1-3 也不再占位**。
+	var avail: Array = world.general_recruit_available("p1")
+	ok(avail.size() > 0, "（前提）还有可招的将领（当前 %d 位）" % avail.size())
+	if avail.is_empty():
+		return
+	eq(card.entries().size(), mini(avail.size(), 9),
+		"★★ 招募页只列可招的将领（%d 位）" % avail.size())
+	var kind0 := String(avail[0])
+	eq(String(card.entry_at(0).get("type", "")), "zone_recruit",
+		"招募页那一项是「区划招募」")
+	eq(String(card.entry_at(0).get("unit_kind", "")), kind0,
+		"第一格要招的就是清单里的第一位（%s）" % kind0)
+	ok(bool(card.entry_at(0).get("ready", true)), "★ 可招的格子是亮的")
+
 	var cost0: Dictionary = world.recruit_cost(kind0)
-
-	var q = main.hud.detail_panel.queue_control()
-	ok(not q.showing(), "没在招募时五格收起来")
-	ok(q.is_zone_queue() and q.holder() == zone,
-		"（前提）队列控件已经指向这个区划（只是还没东西可显示）")
-
 	var food_before: float = float(world.resources["food"])
 	var pop_before: float = float(zone["population"])
-	card.activate_index(3)
-	ok(world.zone_is_training(zone), "★ 点招募页的「将领 4」格 → 排进了**这个区划**的队列")
-	eq(world.zone_recruit_kind_at(zone, 0), kind0, "大格子里是刚排进去的那个将领")
+	var units_before: int = world.units.size()
+
+	card.activate_index(0)
+	# ★★ 即时：点一下就当场出兵（没有队列、没有读条）
+	eq(world.units.size(), units_before + 1, "★★ 点招募格 → 将领**当场**出现")
+	ok(not world.zone_is_training(zone), "★★ 区划不会进入「读条中」")
+	eq(world.zone_recruit_kind_at(zone, 0), "", "★★ 没有队列（那一格恒为空）")
 	near(float(world.resources["food"]),
-		food_before - float(cost0.get("food", 0.0)), 1e-4, "★ 入队即扣粮食")
-	near(float(zone["population"]), pop_before - 1.0, 1e-4, "★ 入队即扣这个区划 1 人口")
+		food_before - float(cost0.get("food", 0.0)), 1e-4, "★ 当场扣粮食")
+	near(float(zone["population"]), pop_before - 1.0, 1e-4, "★ 当场扣这个区划 1 人口")
 	ok(world.general_recruit_cooldown_left("p1") > 0.0,
-		"★ 招募后进入全局冷却（= 这位将领的招募冷却）")
+		"★ 招募后进入将领招募池的全局冷却")
 
+	# ★★ 招走之后那一张牌从牌面上消失（不是变灰占位）
 	main.hud.refresh()
-	ok(q.showing(), "★ 信息栏里出现五个格子")
-	ok(q.is_zone_queue(), "★ 这个五格显示的是**区划**的队列（不是某个将领的）")
-	eq(q.slot_count(), 5, "五个格子")
-	ok(q.cell_label(0).contains("将"), "大格子里写着短名「将」（实际：%s）" % q.cell_label(0))
-	ok(main.hud.detail_panel.detail_text().contains("招募冷却"),
-		"★ 区划详情里常驻显示招募冷却倒计时（实际：%s）"
-			% main.hud.detail_panel.detail_text().replace("\n", " | "))
+	var avail_after: Array = world.general_recruit_available("p1")
+	eq(avail_after.size(), avail.size() - 1, "★★ 招走一位 ⇒ 可招清单少一位")
+	ok(not avail_after.has(kind0), "★★ 招走的那位不再出现")
+	eq(card.entries().size(), mini(avail_after.size(), 9),
+		"★★ 手牌也跟着少一张（%d 张）" % mini(avail_after.size(), 9))
+	var still_there := false
+	for e in card.entries():
+		if e is Dictionary and String((e as Dictionary).get("unit_kind", "")) == kind0:
+			still_there = true
+	ok(not still_there, "★★ 招走的那位不在手牌里了")
 
-	# ★ 全局冷却：整页置灰；点另一个未拥有的格子只给提示，不会排队。
-	eq(world.zone_recruit_queue_size(zone), 1, "★ 全局冷却下队列里只有这一单")
-	ok(not bool(card.entry_at(4).get("ready", true)), "★ 冷却中未拥有的格也置灰")
-	eq(String(card.entry_at(4).get("lock_reason", "")), "cooldown", "拒因 = cooldown")
-	card.activate_index(4)
-	eq(world.zone_recruit_queue_size(zone), 1, "★ 冷却中点另一格不会排队")
-	ok(main.hud.notice_text().contains("冷却"),
-		"★ 点灰格给一句「冷却中」提示（实际：%s）" % main.hud.notice_text())
-
-	# 取消大格子：全额退款 + 解除冷却。
-	food_before = float(world.resources["food"])
-	_click_control(q, UiLayoutRes.queue_cell_rect(0).get_center())
-	eq(world.zone_recruit_queue_size(zone), 0, "★ 点大格子 = 取消那一单")
-	near(float(world.resources["food"]),
-		food_before + float(cost0.get("food", 0.0)), 1e-4, "★ 取消全额退款")
-	near(world.general_recruit_cooldown_left("p1"), 0.0, 1e-6,
-		"★ 取消招募 → 立刻解除冷却")
-	main.hud.refresh()
-	ok(not q.showing(), "收尾：队列清空 → 五格收起来")
-	# 还原大本营等级（后面的建筑升级用例按 1 级写）。
+	# 收尾：还原大本营等级（后面的建筑升级用例按 1 级写）。
 	base.level = 1
 	world.apply_building_level_hp(base)
-
-	main.input_ctrl.select_units([world.unit_by_id("general-1")])
-	main.hud.refresh()
-	ok(not q.is_zone_queue(), "★ 改选部队之后，队列控件不再显示区划的队列")
 	main.input_ctrl.select_units([])
 	main.hud.refresh()
 
@@ -2645,7 +2796,9 @@ func _test_upgrade_via_card(main) -> void:
 	eq(tabs.page_count(), 1, "（前提）区划中心只剩招募页")
 	eq(tabs.page(), PageTabsRes.PAGE_RECRUIT, "（前提）区划中心停在招募页")
 	eq(String(zone["kind"]), "population", "（前提）这块是人口区划")
-	eq(card.entries().size(), 9, "★ 招募页仍是固定九宫格")
+	var avail_now: Array = world.general_recruit_available("p1")
+	eq(card.entries().size(), mini(avail_now.size(), 9),
+		"★ 招募页列的就是「还没被招走」的那几位（当前 %d）" % avail_now.size())
 	ok(not q.is_bar_mode(), "没有特化读条")
 	ok(main.hud.detail_panel.detail_text().contains("人口"),
 		"★ 区划右列仍显示人口产能 / 上限（实际：%s）"
@@ -2656,6 +2809,8 @@ func _test_upgrade_via_card(main) -> void:
 	main.input_ctrl.select_units([])
 	main.hud.refresh()
 
+## ★★ 2026.11.14：招募即时化 ⇒ 点招募格 = **当场出兵**，五格面板（队列 / 取消 / 退款）
+## 这一整套已经没有内容可显示。这个用例改成验「点一下就出人、面板不再出现」。
 func _test_queue_cancel_via_click(main) -> void:
 	var world = main.world
 	var card = main.hud.command_card
@@ -2669,30 +2824,19 @@ func _test_queue_cancel_via_click(main) -> void:
 	main.hud.refresh()
 	var q = main.hud.detail_panel.queue_control()
 
-	card.activate_index(0)
-	card.activate_index(0)
-	main.hud.refresh()
-	eq(g1.train_queue_size(), 2, "排了两单（1 大 + 1 小）")
-	ok(q.showing(), "五格显示出来了")
-
+	var before: int = world.retinue_of(g1.id).size()
 	var food_before: float = float(world.resources["food"])
-	_click_control(q, UiLayoutRes.queue_cell_rect(1).get_center())
-	eq(g1.train_queue_size(), 1, "★ 点小格子 = 取消那一格")
-	var cancel_refund: float = float((world.recruit_cost(UnitRes.UNIT_TYPE_SPEARMAN) as Dictionary).get("food", 0.0))
-	near(float(world.resources["food"]), food_before + cancel_refund, 1e-4, "★ 取消会退款（= config 定价）")
+	card.activate_index(0)
+	eq(world.retinue_of(g1.id).size(), before + 1, "★★ 点一下就当场出一个兵")
+	ok(not g1.is_training(), "★★ 没有「招募中」这个状态了")
+	eq(g1.train_queue_size(), 0, "★★ 队列恒为空")
+	ok(float(world.resources["food"]) < food_before, "★ 当场扣粮")
 	main.hud.refresh()
-	ok(not q.cell_filled(1), "★ 那一格空了（界面下一帧按权威状态重画）")
+	ok(not q.showing(), "★★ 五格面板不再出现（没有队列可显示）")
 
-	food_before = float(world.resources["food"])
-	_click_control(q, UiLayoutRes.queue_cell_rect(3).get_center())
-	eq(g1.train_queue_size(), 1, "★ 点空格子什么都不发生")
-	near(float(world.resources["food"]), food_before, 1e-6, "空格子也不会退钱")
-
-	ok(g1.is_training(), "取消排队的那单之后还在读条")
-	_click_control(q, UiLayoutRes.queue_cell_rect(0).get_center())
-	ok(not g1.is_training(), "★ 取消掉最后一单 → 不再是「招募中」")
-	main.hud.refresh()
-	ok(not q.showing(), "★ 队列空了 → 五个格子收起来")
+	# 再点一次 = 再来一个（没有冷却拦着，只受钱 / 人口 / 编制上限约束）
+	card.activate_index(0)
+	eq(world.retinue_of(g1.id).size(), before + 2, "★★ 再点一次再出一个")
 
 func _test_auto_select_on_recruit(main) -> void:
 	var world = main.world
@@ -2742,8 +2886,24 @@ func _test_order_locked_notice(main) -> void:
 	main.hud.refresh()
 	main.hud.page_tabs.select_page(PageTabsRes.PAGE_UNIT)   # 单位页（招募那一页）
 	main.hud.refresh()
-	card.activate_index(0)                       # 排一单
-	ok(g1.is_training(), "将领开始招募")
+	# ★ 这个用例跑在前面几条「招满到编制上限」之后 ⇒ 先把 g1 腾出一个名额，
+	#   否则拒因会是 cap（与本用例想验的「点了就出兵」无关）。
+	while g1.retinue_size(world) > 0 and g1.retinue_size(world) >= world.effective_retinue_cap(g1):
+		var subs0: Array = world.retinue_of(g1.id)
+		if subs0.is_empty():
+			break
+		var tail = subs0[subs0.size() - 1]
+		world.units.erase(tail)
+		world.mark_vision_dirty()
+	var sub_before: int = world.retinue_of(g1.id).size()
+	# （先确认前提，失败时能直接看到拒因）
+	var why_r: String = world.can_recruit(UnitRes.UNIT_TYPE_SPEARMAN, g1.id, "p1")
+	eq(why_r, "", "（前提）这位将领现在招得了兵（拒因：%s）" % why_r)
+	var afford_r: String = world.can_afford_recruit(UnitRes.UNIT_TYPE_SPEARMAN, g1.id)
+	eq(afford_r, "", "（前提）付得起（拒因：%s）" % afford_r)
+	card.activate_index(0)                       # 点一下 = 当场招一个（即时招募）
+	eq(world.retinue_of(g1.id).size(), sub_before + 1, "★★ 点一下就出兵（没有读条）")
+	ok(not g1.is_training(), "★★ 不存在「招募中」状态，所以也不会锁住部队")
 	main.hud.show_notice("")                     # 先把提示清掉，免得误判
 	# ★★ 2026.10.24：招募不再把将领 / 附属兵锁住，右击照常下令。
 	ok(not main.input_ctrl.selection_locked(),
@@ -2760,7 +2920,9 @@ func _test_order_locked_notice(main) -> void:
 	ok(empty.x >= 0, "找得到一格空地")
 	main.input_ctrl.hover_tile = empty
 	main.input_ctrl.mouse_world = Vector2(empty.x + 0.5, empty.y + 0.5)
-	main.input_ctrl._on_right_click(false)
+	# ★★ 2026.11.14：右键不再下移动令 —— 改走操作牌那条下达路径（issue_order_at）
+	main.input_ctrl.issue_order_at("move",
+		main.palette.to_px(Vector2(empty.x + 0.5, empty.y + 0.5)))
 	var evts: Array = world.tick(1.0 / 60.0)
 	main._consume_events(evts)
 	ok(not main.hud.notice_active() or not main.hud.notice_text().contains("招募"),
@@ -2822,78 +2984,25 @@ func _test_foreign_reject_notice_filter(main) -> void:
 	eq(String(seen.get("faction", "")), "enemy", "★ 带的是**下单那一方**，不是本机")
 	main.hud.show_notice("")
 
+## ★★ 2026.11.14：招募即时化 ⇒ 信息栏那五个格子（队列 / ETA / 汇总）**永远没有内容**。
+## 这个用例保留下来只做一件事：确认那个面板不会再自己冒出来。
 func _test_queue_control(cfg) -> void:
 	var w = require_world(cfg)
 	w.resources["food"] = 1000.0
 	w.resources["gold"] = 1000.0
 	var g1 = w.unit_by_id("general-0")
+	ok(g1 != null, "（前提）有开局将领")
+	if g1 == null:
+		return
 	w.zones.zone_at(g1.tx, g1.ty)["population"] = 10.0
 
-	var q = RecruitQueueRes.new()
-	root.add_child(q)
-	q.setup(w)
-
-	ok(not q.showing(), "没喂将领时不显示")
-	q.set_leader(g1)
-	ok(not q.showing(), "选中的将领没在招募 → 还是不显示（需求：开始招募时才出现）")
-	eq(q.title_text(), "", "没在招募时汇总带是空的")
-
-	w.start_recruit(UnitRes.UNIT_TYPE_SPEARMAN, g1.id, "p1")
-	w.start_recruit(UnitRes.UNIT_TYPE_SPEARMAN, g1.id, "p1")
-	q.set_leader(g1)
-	ok(q.showing(), "★ 开始招募 → 五格出现")
-	eq(q.slot_count(), 5, "五个格子")
-	eq(q.cell_kind(0), UnitRes.UNIT_TYPE_SPEARMAN, "大格子是正在读条的那个")
-	eq(q.cell_kind(1), UnitRes.UNIT_TYPE_SPEARMAN, "第 1 个小格子是排队的那个")
-	eq(q.cell_kind(2), "", "后面三个小格子是空的")
-	ok(q.cell_filled(0) and q.cell_filled(1) and not q.cell_filled(2), "填充状态跟着队列走")
-
-	eq(q.queue_count(), 2, "汇总用的是「含正在读条那个」的数量（与队列上限同口径）")
-	eq(q.title_text(), "招募队列 2/%d" % w.recruit_queue_max(),
-		"★ 汇总第一行写着「招募队列 2/5」（实际：%s）" % q.title_text())
-	near(q.total_eta(), 10.0, 0.05, "★ 整批读完只要 10 秒（同一批一起出兵）")
-	ok(q.total_text().begins_with("共") and q.total_text().ends_with("s"),
-		"★ 汇总第二行写着「共 10s」（实际：%s）" % q.total_text())
-
-	near(q.eta_of(0), 10.0, 0.05, "大格子的 ETA = 批次剩余秒")
-	near(q.eta_of(1), 10.0, 0.05, "★ 第 1 个小格子也是同一批的剩余秒")
-	near(q.eta_of(2), 0.0, 1e-6, "空槽位的 ETA 是 0（没排到就不报时间）")
-	ok(q.cell_label(0).contains("剩"), "大格子写着「剩 x.xs」（实际：%s）"
-		% q.cell_label(0).replace("\n", "|"))
-	ok(q.cell_label(1).contains("10s"), "★ 小格子写着同一批倒计时（实际：%s）"
-		% q.cell_label(1).replace("\n", "|"))
-
-	for _i in 300:
-		w.tick(1.0 / 60.0)
-	q.set_leader(g1)
-	near(q.progress(), 5.0 / 10.0, 0.05, "★ 读条到一半 → 进度条 50%")
-	ok(q.cell_label(0).contains("s"), "大格子上写着剩余秒数（实际：%s）" % q.cell_label(0))
-	near(q.eta_of(0), 5.0, 0.05, "过半之后大格子只剩 5 秒")
-	near(q.eta_of(1), 5.0, 0.05, "★ 小格子的 ETA 也跟着缩到 5 秒（同一批）")
-	ok(q.total_text().contains("5"), "汇总第二行也跟着变成「共 5s」（实际：%s）" % q.total_text())
-
-	_hover_queue_cell(q, 1)
-	eq(q.hover_slot(), 1, "★ 鼠标停在第 1 个小格子上 → 认到那一格（红框 + 右上角画「×」）")
-	eq(q.mouse_default_cursor_shape, Control.CURSOR_POINTING_HAND, "停在有内容的格子上是手型")
-	eq(q.cell_at_position(UiLayoutRes.queue_cell_rect(3).get_center()), -1,
-		"★ 停在**空格子**上不算命中（点了什么都不会发生）")
-	eq(q.cell_at_position(UiLayoutRes.queue_info_rect().get_center()), -1,
-		"★ 停在左边汇总带上不算命中（那 129px 不是格子）")
-	_hover_queue_cell(q, 3)
-	eq(q.hover_slot(), -1, "移到空格子上 → 悬停态清掉")
-	eq(q.mouse_default_cursor_shape, Control.CURSOR_ARROW, "光标回到普通箭头")
-
-	var before_draw: int = q.draw_count
-	q.queue_redraw()
-	await process_frame
-	ok(q.draw_count > before_draw, "★ 队列那一块真的画了一帧（底板 / 读条 / 汇总都在 _draw 里）")
-
-	q.queue_free()
-
-func _hover_queue_cell(q: Control, slot: int) -> void:
-	var ev := InputEventMouseMotion.new()
-	ev.position = UiLayoutRes.queue_cell_rect(slot).get_center()
-	q._gui_input(ev)
+	var before: int = w.retinue_of(g1.id).size()
+	ok(w.start_recruit("spearman", g1.id, "p1"), "（前提）招一个")
+	eq(w.retinue_of(g1.id).size(), before + 1, "★★ 当场出兵")
+	eq(g1.train_queue_size(), 0, "★★ 队列恒为空 ⇒ 五格没有东西可显示")
+	# 权威侧的两个队列查询接口仍在（界面 / 存档都还会调），但要如实回答「空」
+	eq(w.recruit_kind_at(g1, 0), "", "大格子恒为空")
+	eq(w.zone_recruit_queue_size(w.zones.zone_at(g1.tx, g1.ty)), 0, "区划队列也是空的")
 
 func _test_recruit_queued_event(cfg) -> void:
 	var w = require_world(cfg)
@@ -2905,13 +3014,15 @@ func _test_recruit_queued_event(cfg) -> void:
 	w.tick(1.0 / 60.0)                  # 把上一帧的残留事件清干净
 	ok(CommandRes.apply(w, cfg, {
 		"kind": "recruit", "unit_kind": UnitRes.UNIT_TYPE_SPEARMAN,
-		"leader_id": g1.id, "faction": "p1"}), "招募命令被接受（入队）")
+		"leader_id": g1.id, "faction": "p1"}), "招募命令被接受")
 	var events: Array = w.tick(1.0 / 60.0)
-	var queued := 0
+	# ★★ 2026.11.14：没有队列 ⇒ 发的是「兵出来了」那条（`unit_recruited`），
+	#   不再是 `recruit_queued`。这条事件界面拿去放音效 / 飘字。
+	var spawned := 0
 	for evt in events:
-		if String(evt.get("type", "")) == "recruit_queued":
-			queued += 1
-	eq(queued, 1, "★ 招募入队的事件被下一次 tick 交了出来（命令事件不能在 tick 开头被丢掉）")
+		if String(evt.get("type", "")) == "unit_recruited":
+			spawned += 1
+	eq(spawned, 1, "★ 招募出兵的事件被下一次 tick 交了出来（命令事件不能在 tick 开头被丢掉）")
 
 func _test_right_click_orders(main) -> void:
 	var world = main.world
@@ -2932,9 +3043,14 @@ func _test_right_click_orders(main) -> void:
 
 	main.input_ctrl.hover_tile = Vector2i(foe.tx, foe.ty)
 	main.input_ctrl.mouse_world = foe.pos
+	# ★★ 2026.11.14（用户口径）：「右键取消掉移动/行军/攻击指令，完全由出牌代替」+
+	#   「右键完全空着」—— 右键这一下必须什么都不发。
 	main.input_ctrl._on_right_click(false)
-	eq(got.size(), 1, "单击敌人发出了一条命令")
-	eq(String(got[0].get("kind", "")), "attack", "★ 右键单击敌人 = 攻击命令")
+	eq(got.size(), 0, "★★ 右键不再发出任何命令（完全空着）")
+	# 出牌那条路：攻击牌拖到敌人身上 = attack
+	main.input_ctrl.issue_order_at("attack", main.palette.to_px(foe.pos))
+	eq(got.size(), 1, "★ 攻击牌拖到敌人身上 = 发出命令")
+	eq(String(got[0].get("kind", "")), "attack", "★ 攻击牌 = 攻击命令")
 	eq(String(got[0].get("target_id", "")), foe.id, "命令里带的是那个敌人的 id")
 	ok(main.input_ctrl._pick_foe_unit_at(foe.pos) == foe, "鼠标底下是敌人时，敌对拾取拿得到它")
 	ok(main.input_ctrl._pick_unit_at(foe.pos) == null, "自己人的拾取函数不会选中敌人")
@@ -2950,15 +3066,13 @@ func _test_right_click_orders(main) -> void:
 	ok(empty.x >= 0, "找得到一格用来点右键的空地")
 	main.input_ctrl.hover_tile = empty
 	main.input_ctrl.mouse_world = Vector2(empty.x + 0.5, empty.y + 0.5)
-	main.input_ctrl._on_right_click(false)
-	eq(String(got[0].get("kind", "")), "move", "右键单击空地 = 普通移动")
-	ok(main.input_ctrl.move_marks.size() == 1, "移动标记画出来了（绿）")
-
+	# ★★ 2026.11.14（用户口径）：「右键取消掉移动/行军/攻击指令，完全由出牌代替」
+	#   ⇒ 单击 / 双击右键**都不再发命令**，也不再画那两种标记。
 	got.clear()
+	main.input_ctrl._on_right_click(false)
+	eq(got.size(), 0, "★★ 右键单击空地：不发任何命令")
 	main.input_ctrl._on_right_click(true)
-	eq(String(got[0].get("kind", "")), "attack_move", "★ 右键双击 = 行军攻击命令")
-	ok(main.input_ctrl.attack_marks.size() == 1, "行军攻击标记画出来了（红）")
-	ok(main.input_ctrl.move_marks.is_empty(), "两种标记只留最新的那个")
+	eq(got.size(), 0, "★★ 右键双击也不再发行军攻击（出牌才是唯一入口）")
 
 	var ev := InputEventMouseButton.new()
 	ev.button_index = MOUSE_BUTTON_RIGHT
@@ -2966,28 +3080,24 @@ func _test_right_click_orders(main) -> void:
 	ev.double_click = true
 	ev.position = Vector2(20.0, 20.0)
 	got.clear()
-	ok(main.input_ctrl.handle_mouse_button(ev), "右键双击事件被处理")
-	eq(String(got[0].get("kind", "")), "attack_move",
-		"★ 走真实事件路径时，双击也翻译成行军攻击（不是靠手写计时器）")
+	ok(main.input_ctrl.handle_mouse_button(ev), "右键事件仍然被「吃掉」（不当成没处理）")
+	eq(got.size(), 0, "★★ 走真实事件路径也一样：右键不下任何命令")
 
 	var center_tile := Vector2i(-1, -1)
 	for ty in world.map.rows:
 		for tx in world.map.cols:
-			if world.zone_center_zone_at(tx, ty) != null:
+			var cz = world.zone_center_zone_at(tx, ty)
+			if cz != null:
 				center_tile = Vector2i(tx, ty)
 				break
 		if center_tile.x >= 0:
 			break
-	ok(center_tile.x >= 0, "地图上找得到一个区划中心")
 	if center_tile.x >= 0:
 		got.clear()
 		main.input_ctrl.hover_tile = center_tile
 		main.input_ctrl.mouse_world = Vector2(center_tile.x + 0.5, center_tile.y + 0.5)
 		main.input_ctrl._on_right_click(false)
-		eq(got.size(), 1, "右键点中心也发出了命令")
-		eq(String(got[0].get("kind", "")), "move",
-			"★ 右键点区划中心 = 普通移动（它不可攻击，不是「敌方建筑」）")
-		ok(main.input_ctrl.move_marks.size() == 1, "走的是移动标记那条路")
+		eq(got.size(), 0, "★★ 右键点区划中心也不发命令（右键整体空着）")
 
 	main.input_ctrl.command_issued.disconnect(sink)
 
@@ -3407,12 +3517,13 @@ func _test_box_select(main) -> void:
 		eq(roster.visible, false, "没选中单位时左栏上半收起来")
 		eq(grid.visible, false, "没选中单位时将领头像网格收起来")
 
+	# ★★ 2026.11.14（用户口径）：「不要多选：一次只选一支」——
+	#   框选与 Shift 追加都取消了，`box_select` 这个函数本身还在（手机端用），
+	#   但**加选**那条链路（`additive = true`）不再由 UI 触发。
 	main.input_ctrl.select_units([g1])
-	var before_add: int = main.input_ctrl.selected_units.size()
-	main.input_ctrl.box_select(lo, hi, true)
-	ok(main.input_ctrl.selected_units.has(g1) and main.input_ctrl.selected_units.has(g2),
-		"★ Shift + 框 = 追加（两支都在）")
-	ok(main.input_ctrl.selected_units.size() >= before_add, "追加不会把原来选中的挤掉")
+	main.input_ctrl.select_units([g2])
+	ok(not main.input_ctrl.selected_units.has(g1) and main.input_ctrl.selected_units.has(g2),
+		"★★ 一次只选一支：选第二支时第一支自动取消")
 
 	main.input_ctrl.hover_tile = Vector2i(-1, -1)      # 别让「按下那一下」顺手选中别的东西
 	main.input_ctrl.select_units([])
@@ -3433,156 +3544,168 @@ func _test_box_select(main) -> void:
 
 	main.input_ctrl.hover_tile = Vector2i(-1, -1)
 	main.input_ctrl.select_units([])
+	# ★★ 2026.11.14（用户口径）：「左键拖拽改为移动视角，取消掉拖拽选框」。
+	#   这一段以前验的是框选，现在验**同一串真实事件**驱动的是平移：
+	#   按 → 动 2px（还是单击）→ 动过阈值（变成平移、相机跟手）→ 松手（收尾 + 惯性）。
 	var a_world := lo
 	var b_world := hi
 	near(main.input_ctrl._screen_to_logic(_world_to_screen(main, a_world)).x, a_world.x, 0.02,
 		"（前提）世界坐标 → 视口坐标 → 世界坐标 能来回换算")
+	main.input_ctrl.select_units([g1])
+	var sel_before: Array = _sorted_ids(main.input_ctrl.selected_units)
+	var probe_world := Vector2(world.map.cols * 0.5, world.map.rows * 0.5)
+	var probe_px_before: Vector2 = _world_to_screen(main, probe_world)
+
 	var down := InputEventMouseButton.new()
 	down.button_index = MOUSE_BUTTON_LEFT
 	down.pressed = true
 	down.position = _world_to_screen(main, a_world)
 	ok(main.input_ctrl.handle_mouse_button(down), "左键按下被处理")
-	ok(main.input_ctrl._drag_pending, "按下之后进入「可能是拖框」的待定状态")
+	ok(main.input_ctrl._drag_pending, "按下之后进入「可能是拖拽」的待定状态")
 	var tiny := InputEventMouseMotion.new()
 	tiny.position = down.position + Vector2(2.0, 0.0)
 	main.input_ctrl.handle_mouse_motion(tiny)
-	ok(not main.input_ctrl.drag_active,
-		"★ 只挪了 2px（< ui.drag_select_min_px）→ 还是普通单击，没起框")
+	ok(not main.input_ctrl._drag_pan_active,
+		"★ 只挪了 2px（< ui.drag_select_min_px）→ 还是普通单击，不动相机")
 	var move := InputEventMouseMotion.new()
-	move.position = _world_to_screen(main, b_world)
+	move.position = down.position + Vector2(160.0, 0.0)
 	main.input_ctrl.handle_mouse_motion(move)
-	ok(main.input_ctrl.drag_active, "★ 拖过阈值 → 框选开始（画面上会画那个框）")
-	var box: Rect2 = main.input_ctrl.drag_box()
-	near(box.position.x, a_world.x, 0.05, "框的起点是按下那一刻的世界坐标")
-	ok(box.size.x > 0.0 and box.size.y > 0.0, "框的尺寸跟着鼠标走")
+	ok(main.input_ctrl._drag_pan_active, "★★ 拖过阈值 → 左键拖拽变成**平移视角**")
+	ok(not main.input_ctrl.drag_active, "★★ 不再起拖框（PC 框选已取消）")
+	# ★ 越过阈值那一下只是「转档」（见 handle_mouse_motion）；真正跟手从第二段移动开始
+	var move2 := InputEventMouseMotion.new()
+	move2.position = move.position + Vector2(60.0, 0.0)
+	main.input_ctrl.handle_mouse_motion(move2)
+	var probe_px_after: Vector2 = _world_to_screen(main, probe_world)
+	ok(probe_px_after.x > probe_px_before.x + 20.0,
+		"★★ 光标往右拖 → 地图跟着往右（同一点在屏幕上右移 %.0fpx）"
+			% (probe_px_after.x - probe_px_before.x))
 	var up := InputEventMouseButton.new()
 	up.button_index = MOUSE_BUTTON_LEFT
 	up.pressed = false
-	up.position = move.position
-	ok(main.input_ctrl.handle_mouse_button(up), "左键抬起被处理（★ 早退会让框永远结束不了）")
-	ok(not main.input_ctrl.drag_active, "松手之后框结束")
-	eq(_sorted_ids(main.input_ctrl.selected_units), _sorted_keys(expect),
-		"★ 走真实事件路径拖出来的框，选中的还是那两支完整部队")
-
-	main.input_ctrl.handle_mouse_button(down)
-	main.input_ctrl.handle_mouse_motion(move)
-	ok(main.input_ctrl.drag_active, "（前提）又起了一个框")
-	main.input_ctrl.handle_key(_key(KEY_ESCAPE))
-	ok(not main.input_ctrl.drag_active, "★ Esc 放弃这次框选")
-	# ★★ S1：按下那一下可能已经把选中清掉；Esc 取消拖框要恢复**按下前**的选中，
-	#    而不是「按下之后、松手之前」那份（旧断言把 bug 当成预期了）。
-	eq(_sorted_ids(main.input_ctrl.selected_units), _sorted_keys(expect),
-		"★ Esc 取消拖框 = 恢复按下前的选中（S1）")
+	up.position = move2.position
+	ok(main.input_ctrl.handle_mouse_button(up), "左键抬起被处理")
+	ok(not main.input_ctrl._drag_pan_active, "松手之后平移结束")
+	eq(_sorted_ids(main.input_ctrl.selected_units), sel_before,
+		"★★ 拖拽平移**不取消选中**（按下那一下改掉的会还原回去）")
+	main.input_ctrl._cancel_pan_fling()
+	main.input_ctrl.select_units([g1])
+	main.hud.refresh()
 	main.input_ctrl.select_units([g1])
 	main.hud.refresh()
 
 
-## ★★ PC 端框选：判定也按**立牌图标的屏幕矩形**（与手机端同一条口径）。
+## ★★ 2026.11.14（用户口径）：「左键拖拽改为移动视角」「带惯性滑行」。
 ##
-## 用户要求「PC 端的也改成统一的」：以前 PC 走「世界矩形 + 脚底锚点」，
-## 于是「框住立牌上半身、脚底在框外」同样会漏（与手机端那个 bug 同源）。
-## 现在 `_finish_drag()` 走 `box_select_screen()`，画出来的框也是屏幕矩形。
-func _test_box_select_icon_body(main) -> void:
+## 原来这一段验的是「PC 框选按立牌图标的屏幕矩形判定」——框选已经取消，
+## 改成验同一件事的新形态：**左键拖拽 = 平移相机 + 松手滑行**，而且不再改选中。
+func _test_drag_pan(main) -> void:
 	var world = main.world
 	var ic = main.input_ctrl
-	var target = null
-	for u in world.units:
-		if u.alive and FactionRes.same_side(u.faction, world.my_faction) \
-				and world.group_of(u).size() > 1:
-			target = u
-			break
-	if target == null:
-		ok(true, "（没有带部下的己方队伍，跳过 PC 框选判定）")
-		return
-	_place_unit(world, target, Vector2(8.0, 8.0))
-	var s: Vector2 = _world_to_screen(main, target.pos)
-	var ir: Rect2 = ic._unit_icon_screen_rect(target)
-	# 只框住立牌**上半部分**（脚底在框外），往上多留 40px 让框足够大
-	var a := Vector2(ir.position.x + 2.0, ir.position.y - 40.0)
-	var b := Vector2(ir.end.x - 2.0, ir.position.y + ir.size.y * 0.45)
-	ok(not Rect2(a, b - a).abs().has_point(s), "（前提）PC 这个框也不含脚底锚点")
-
+	var probe := Vector2(world.map.cols * 0.5, world.map.rows * 0.5)
+	var before: Vector2 = _world_to_screen(main, probe)
 	ic.select_units([])
+	ic._cancel_pan_fling()
+
+	var a := Vector2(400.0, 300.0)
 	var down := InputEventMouseButton.new()
 	down.button_index = MOUSE_BUTTON_LEFT
 	down.pressed = true
 	down.position = a
 	ok(ic.handle_mouse_button(down), "（前提）左键按下被处理")
-	var move := InputEventMouseMotion.new()
-	move.position = b
-	ic.handle_mouse_motion(move)
-	ok(ic.drag_active, "（前提）越过阈值 → 开始拖框")
-	ok(ic.drag_screen_valid, "★★ PC 拖框也记下**屏幕矩形**（两端同一份数据）")
+	# 分两段移动，让速度估计有东西可算（一次跳很远也能动，但滑行速度会怪）
+	# ① 越过阈值那一下只「转档」；②③ 才真的跟手（见 handle_mouse_motion）
+	for step in [Vector2(90.0, 20.0), Vector2(40.0, 10.0), Vector2(40.0, 10.0)]:
+		a += step
+		var mm := InputEventMouseMotion.new()
+		mm.position = a
+		ic.handle_mouse_motion(mm)
+	ok(ic._drag_pan_active, "★★ 拖过阈值 → 进入拖拽平移")
+	ok(ic.is_panning(), "★★ 平移期间 is_panning() 为真（边缘滚屏会让路）")
+
+	var mid: Vector2 = _world_to_screen(main, probe)
+	ok(mid.distance_to(before) > 60.0, "★★ 相机真的平移了（同一点在屏幕上移了 %.0fpx）"
+		% mid.distance_to(before))
+	# ★ 1:1 跟手：地图跟着鼠标走 —— 光标右下走，画面里的那个点也往右下移
+	ok(mid.x > before.x + 10.0 and mid.y > before.y + 2.0,
+		"★★ 「抓着地图拖」：光标右下走，画面里的点也往右下走")
+
 	var up := InputEventMouseButton.new()
 	up.button_index = MOUSE_BUTTON_LEFT
 	up.pressed = false
-	up.position = b
+	up.position = a
 	ic.handle_mouse_button(up)
-	ok(ic.selected_units.has(target),
-		"★★ PC 框到立牌上半身（脚底在框外）也选中 —— 与手机端统一")
-	var miss := 0
-	for m in world.group_of(target):
-		if not ic.selected_units.has(m):
-			miss += 1
-	ok(miss == 0, "★★ 同样展开成整支部队（漏 %d 个）" % miss)
+	ok(not ic._drag_pan_active, "松手 → 拖拽结束")
+	ok(ic._pan_fling_active, "★★ 松手后带惯性滑行（用户口径「带惯性滑行」）")
+	var at_release: Vector2 = _world_to_screen(main, probe)
+	# 推几帧（每帧 ~1/60 秒）
+	for i in 6:
+		ic.tick_pan_fling(1.0 / 60.0)
+	var after_fling: Vector2 = _world_to_screen(main, probe)
+	ok(after_fling.distance_to(at_release) > 5.0,
+		"★★ 滑行真的继续走了几帧（%.1fpx）" % after_fling.distance_to(at_release))
+	# 滑行会自己停下（不能永久微飘）
+	for i in 120:
+		ic.tick_pan_fling(1.0 / 60.0)
+	ok(not ic._pan_fling_active, "★★ 滑行在 2 秒内自己停住（不会一直飘）")
 
-## ★★ 鼠标拖框划到**底栏（详细信息 UI）**上时，框必须继续跟着走。
+
+## ★★ 鼠标拖拽划到**底栏（详细信息 UI）**上时，平移必须继续跟着走。
 ##
 ## 复现的 bug（用户报的）：「鼠标划到底栏内时选框不动，划过去之后又突变」。
 ##   底栏那一块是 `MOUSE_FILTER_STOP` —— 鼠标移到它上面时移动事件被 GUI **吃掉**，
-##   `_unhandled_input` 收不到 ⇒ 框停在原地；离开底栏后下一个移动事件才让它跳到新位置。
-## 修法：`game_scene3d._input()` 在手势进行中把移动 / 抬起补一遍（`_input` 先于 GUI 派发）。
-## 这里直接喂 `main._input(...)` —— 就是「GUI 会吃掉的那些事件」在真实运行里走的那条路。
+##   `_unhandled_input` 收不到 ⇒ 手势停在原地。
+##   修法：`game_scene3d._input()` 在手势进行中把移动 / 抬起补一遍（`_input` 先于 GUI 派发）。
+## ★★ 2026.11.14：框选取消之后这条补发路径**照样必须存在**（现在护的是平移）。
 func _test_drag_over_ui(main) -> void:
 	var world = main.world
+	var ic = main.input_ctrl
 	var vp: Vector2 = main.get_viewport().get_visible_rect().size
-	# 底栏那一片里的两个屏幕点（屏幕下方 24px 处就在底栏上）
-	var ui_a := Vector2(vp.x * 0.45, maxf(1.0, vp.y - 24.0))
+	var ui_a := Vector2(vp.x * 0.5, maxf(1.0, vp.y - 60.0))
 	var ui_b := Vector2(vp.x * 0.65, maxf(1.0, vp.y - 24.0))
+	var probe := Vector2(world.map.cols * 0.5, world.map.rows * 0.5)
+	ic._cancel_pan_fling()
 
-	# 按下仍然走 `_unhandled_input` 那条路（点在地图上；点在 UI 上不该起框，见最后一节）
 	var down := InputEventMouseButton.new()
 	down.button_index = MOUSE_BUTTON_LEFT
 	down.pressed = true
-	down.position = _world_to_screen(main, Vector2(world.map.cols * 0.5, world.map.rows * 0.5))
-	main.input_ctrl.handle_mouse_button(down)
-	ok(main.input_ctrl._drag_pending, "（前提）在地图上按下 → 进入拖框待定")
+	down.position = _world_to_screen(main, probe)
+	ic.handle_mouse_button(down)
+	ok(ic._drag_pending, "（前提）在地图上按下 → 进入手势待定")
 
-	# ★ 划到底栏上：真实运行里这个移动事件会被 GUI 吃掉，只有 `_input` 拿得到
+	var px0: Vector2 = _world_to_screen(main, probe)
 	var move_a := InputEventMouseMotion.new()
 	move_a.position = ui_a
 	main._input(move_a)
-	ok(main.input_ctrl.drag_active,
-		"★ 划到底栏上也能越过阈值、开始拖框（不再被底栏 UI 吃掉）")
-	near(main.input_ctrl.drag_current_world.x,
-		main.input_ctrl._screen_to_logic(ui_a).x, 0.02,
-		"★ 框的终点跟着鼠标走到 UI 那一片（不再停在原地）")
-	ok(main.input_ctrl.drag_current_world != main.input_ctrl.drag_start_world,
-		"★ 框确实离开了起点（不是被冻在按下那一刻）")
+	ok(ic._drag_pan_active,
+		"★ 划到底栏上也能越过阈值、开始平移（不再被底栏 UI 吃掉）")
+	var move_a2 := InputEventMouseMotion.new()
+	move_a2.position = ui_a + Vector2(80.0, 0.0)
+	main._input(move_a2)
+	var px1: Vector2 = _world_to_screen(main, probe)
+	ok(px1.distance_to(px0) > 10.0, "★ 相机跟着动了（%.1fpx）" % px1.distance_to(px0))
 
-	# 继续在底栏上移动 → 终点继续跟着走（原来就是这一下「突变」）
 	var move_b := InputEventMouseMotion.new()
 	move_b.position = ui_b
 	main._input(move_b)
-	near(main.input_ctrl.drag_current_world.x,
-		main.input_ctrl._screen_to_logic(ui_b).x, 0.02, "框继续跟着鼠标走")
+	var px2: Vector2 = _world_to_screen(main, probe)
+	ok(px2.distance_to(px1) > 5.0, "★ 继续在底栏上移动 → 平移继续跟着走")
 
-	# ★ 在底栏上松手 → 框照样结束（否则框会一直挂着，下一次点击才被清掉）
 	var up := InputEventMouseButton.new()
 	up.button_index = MOUSE_BUTTON_LEFT
 	up.pressed = false
 	up.position = ui_b
 	main._input(up)
-	ok(not main.input_ctrl.drag_active and not main.input_ctrl._drag_pending,
-		"★ 在底栏上松手，框照样结束")
+	ok(not ic._drag_pan_active and not ic._drag_pending,
+		"★ 在底栏上松手，手势照样结束")
+	ic._cancel_pan_fling()
 
-	# 没有手势时，`_input` 不许自己起框（点在 UI 上就该是点 UI）
+	# 没有手势时，`_input` 不许自己起手势（点在 UI 上就该是点 UI）
 	var idle := InputEventMouseMotion.new()
 	idle.position = ui_a
 	main._input(idle)
-	ok(not main.input_ctrl.drag_active and not main.input_ctrl._drag_pending,
-		"★ 没有进行中的手势时，_input 不会自己起框")
-
+	ok(not ic._drag_pan_active and not ic._drag_pending,
+		"★ 没有进行中的手势时，_input 不会自己开始平移")
 func _test_box_select_buildings(main) -> void:
 	var world = main.world
 	var moved := 0
@@ -4194,10 +4317,11 @@ func _test_enemy_selection(main) -> void:
 
 func _test_settings_inert(main) -> void:
 	var page_before := String(main.hud.page_tabs.page())
-	main.hud.settings_button.emit_signal("pressed")
-	eq(main.hud.page_tabs.page(), page_before, "点选项不会顺手切页")
-	ok(main.hud.settings_button.text == "选项", "选项按钮上写着「选项」")
+	# ★★ 2026.11.14 第三轮：没有按钮可点了 —— 改成验「开 / 关选项页不会顺手切页签」
+	main.hud.set_settings_menu_open(true)
+	eq(main.hud.page_tabs.page(), page_before, "开选项页不会顺手切页")
 	main.hud.set_settings_menu_open(false)
+	eq(main.hud.page_tabs.page(), page_before, "关选项页也不会顺手切页")
 
 func _test_command_events_reach_consumer(main) -> void:
 	var free := Vector2i(-1, -1)

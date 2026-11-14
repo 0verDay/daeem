@@ -104,12 +104,21 @@ func setup() -> void:
 		#   ⚠️ 在这之后**不要**再直接写 `add_theme_color_override("font_color", …)`：
 		#      填充动效每帧按「原色 + 进度」重算字色，直接写会被盖掉。
 		FillButtonRes.attach_text(b)
+		# ★★ 2026.11.14（用户口径）：「页签栏也不需要（四角显示了），页签栏的鼠标悬停
+		#   效果改为金色填充」—— 所以这一颗：不画四角括号 + 悬停直接填金。
+		#   ⚠️ 两个都要在 `attach_text()` **之后**调（那时动画器才在），
+		#      `set_reticle` 会直接把已建好的那一层拆掉。
+		FillButtonRes.set_reticle(b, false)
+		FillButtonRes.set_hover_fill(b, true)
 		# ★★ 页签有自己的点击反馈（切页时金色填充 / 反向退回）——
 		#   关掉「点击闪光」，否则闪光的填满→退回会和选中填充抢同一份进度。
 		FillButtonRes.set_click_flash(b, false)
 		# ★★ 常驻灰底：底纹（`tab_plain*`）必须保持全透明，否则会把填充金盖住；
 		#   所以灰底交给填充动画器画在**金的下层** —— 悬停时灰底不消失，金只是往上盖。
-		FillButtonRes.set_base_bg(b, UiStyleRes.bg_empty())
+		#   ★★ 2026.11.14：从 `bg_empty()`（0.55 半透明）改成 `bg()` ——
+		#     投影已经搬到金的下层（见 fill_button `_ensure_shadow`），卡身不能再靠
+		#     「投影压在上面」那层黑来撑，否则页签会比其它面板浅一档。
+		FillButtonRes.set_base_bg(b, UiStyleRes.bg())
 		b.visible = false
 		UiLayoutRes.apply_rect(b, UiLayoutRes.tab_button_local(i))
 		b.pressed.connect(_on_tab_pressed.bind(i))

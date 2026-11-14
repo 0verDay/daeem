@@ -1310,17 +1310,22 @@ func _test_attack_marks(cfg) -> void:
 	ok(not am.active and am.phase == "done", "★ 标记动效走完自动收掉")
 	ok(not am.icon_visible_last, "★ 动画结束后图标也收起")
 
-	# ---- ★★ 真·右键单击敌方单位（走 input_controller 的 `_on_right_click`）----
+	# ---- ★★ 真·出牌：攻击牌拖到敌方单位上（走 input_controller 的 `issue_order_at`）----
+	# ★★ 2026.11.14：右键不再下令（「完全由出牌代替」），这条用例改走出牌那条路 ——
+	#   它和右键以前用的是**同一段**命令分派，所以标记的断言原样保留。
 	# ★ 建筑那条路要用 `get_global_mouse_position()` 判模型包围盒，无头测试造不出来，
-	#   所以建筑只在下面用「命令字典」验（右键与命令卡发的本来就是同一种命令）。
+	#   所以建筑只在下面用「命令字典」验。
 	if mine != null:
 		var ic = game.input_ctrl
 		ic.select_units([mine])
 		ic.mouse_world = foe.pos
 		ic.hover_tile = Vector2i(int(floorf(foe.pos.x)), int(floorf(foe.pos.y)))
 		ic._on_right_click(false)
+		ok(not (am.active and am.target_kind == "unit" and am.target_id == String(foe.id)),
+			"★★ 右键不再触发攻击标记（右键空着）")
+		ic.issue_order_at("attack", game.palette.to_px(foe.pos))
 		ok(am.active and am.target_kind == "unit" and am.target_id == String(foe.id),
-			"★★ 真·右键单击敌方单位 → 触发「指定攻击」并打出标记")
+			"★★ 攻击牌拖到敌方单位 → 触发「指定攻击」并打出标记")
 
 	# ---- 建筑目标 ----
 	var bld = null

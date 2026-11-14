@@ -64,12 +64,16 @@ func _run() -> void:
 	var got: Array = []
 	var sink = func(cmd): got.append(cmd)
 	game.input_ctrl.command_issued.connect(sink)
+	# ★★ 2026.11.14（用户口径）：「右键取消掉移动/行军/攻击指令，完全由出牌代替」。
 	game.input_ctrl._on_right_click(false)
+	eq(got.size(), 0, "★★ 右键友军建筑不再发命令（右键整体空着）")
+	# 出牌那条路（操作牌的「移动」）：点到友军建筑 = 移动过去，不是攻击
+	game.input_ctrl.issue_order_at("move", game.palette.to_px(Vector2(bt.x + 0.5, bt.y + 0.5)))
 	game.input_ctrl.command_issued.disconnect(sink)
-	eq(got.size(), 1, "右键友军建筑发出了命令")
+	eq(got.size(), 1, "★ 移动牌拖到友军建筑上发出了移动命令")
 	if not got.is_empty():
 		eq(String(got[0].get("kind", "")), "move",
-			"★★ 右键友军建筑 = 移动（不是 attack）")
+			"★★ 移动牌 = move（不是 attack）")
 		ok(not got[0].has("target_id") and not got[0].has("tx"),
 			"★ 移动命令不带建筑目标（只是走到那个位置）")
 		var before: Vector2 = u.pos

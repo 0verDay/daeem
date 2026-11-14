@@ -83,7 +83,7 @@ const DEFAULTS := {
 	},
 	"production": {
 		"general_target": 2,
-		# 1/2/3 级大本营的补将目标（= config 的 max_generals 2/5/6）。
+		# 1/2/3 级大本营的补将目标（= config 的 max_generals 2/4/5）。
 		"general_target_by_base_level": [2, 5, 6],
 		"general_recruit_min_army_ratio": 0.0,
 		"general_recruit_team_margin": 2,  # 现有队伍至少到「目标 - 2」才补新将

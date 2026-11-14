@@ -105,6 +105,20 @@ var rows: int = 16
 ##   两处各写一个 44 就会出现「看着能滚、其实被控件拦住」这种错位。
 var camera_edge_size: float = 44.0
 
+## ---- ★★ 2026.11.14 边缘滚屏的「收手缓动」（见 config.json 的 camera._comment）----
+## 每次抬手的**速度衰减时长**（秒；0 = 立刻停，回到旧的硬刹手感）。
+##
+## 用户原话：「鼠标移动到屏幕边缘滚屏时移动视角，需要（处理）停下时的过度移动」
+##   → 追问后确认是「停下太硬，像急刹」。所以这里只加**收尾**斜坡，
+##   起步仍然是瞬间给满（否则会觉得「推到边缘还要等一下才动」）。
+##
+## ★ 实现是**指数衰减**（帧率无关），`edge_stop_sec` 是「基本归零」的时间：
+##   0.08 秒后剩余速度约 5%，肉眼看已经停住。
+## ★ 它与 `camera.edge_max_speed` 共同决定「收手后还会多滑多远」：
+##   满速 1500px/s × 0.08s ≈ 最坏多走 40~60px —— 这就是「急刹」变「缓停」的代价，
+##   嫌多就调小这个数（0.05 更利落，0.12 更柔）。
+var cam_edge_stop_sec: float = 0.08
+
 ## ---- ★★ 2026.11 相机缓动（见 config.json 的 camera._comment）----
 ## 只作用于**程序性移动**与**缩放**的到达过程；拖拽 / 方向键 / 边缘滚屏仍然 1:1。
 ##   0 = 回到瞬移 / 硬切（无头测试与「不想要缓动」的玩家都可以用）。
@@ -702,6 +716,7 @@ func _cache_scalars() -> void:
 	#     —— 它是全工程的依赖，一旦解析失败**所有**测试文件都变成 "Compilation failed"。
 	#     教训：改动长函数时，替换块的两端要落在**函数边界**上，别停在函数体中间。
 	camera_edge_size = num("camera.edge_size", 44.0)
+	cam_edge_stop_sec = maxf(0.0, num("camera.edge_stop_sec", 0.08))
 	cam_jump_sec = maxf(0.0, num("camera.jump_sec", 0.15))
 	cam_zoom_lerp_sec = maxf(0.0, num("camera.zoom_lerp_sec", 0.1))
 	custom_cursor_enabled = bool_val("ui.custom_cursor", true)
@@ -3300,7 +3315,7 @@ func upgrade_time_by_generals(type: String, level: int) -> Array:
 
 
 ## 「升到 level+1 必须已有几名将领」（读**目标行**的 need_generals；0 = 不要求）。
-## ⚠️ 与 upgrade_limit(..., "max_generals") 是两件事：门槛 2 / 4、上限 2 / 5 / 6。
+## ⚠️ 与 upgrade_limit(..., "max_generals") 是两件事：门槛 2 / 4、上限 2 / 4 / 5。
 func upgrade_need_generals(type: String, level: int) -> int:
 	return maxi(0, upgrade_limit(type, level + 1, "need_generals", 0))
 

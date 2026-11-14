@@ -112,14 +112,14 @@ func _test_banner_queue(cfg) -> void:
 		return
 	ok(not banner.visible, "一开始不显示")
 	eq(banner.line_count(), 0, "一开始没有播报")
-	eq(banner.anchor_left, 0.0, "★ 贴左（小地图上方）")
-	eq(banner.anchor_bottom, 1.0, "★ 贴底（跟着小地图）")
-	near(banner.offset_left, UiLayoutRes.MAP_RECT.position.x, 1.0,
-		"★ 左缘 = 小地图左缘")
+	eq(banner.anchor_left, 0.0, "★ 贴左（左下角的播报栈）")
+	eq(banner.anchor_bottom, 1.0, "★ 贴底（高度按内容向上长）")
+	near(banner.offset_left, UiLayoutRes.NOTICE_X, 1.0,
+		"★ 左缘 = 播报栈自己的锚（不再跟着小地图：它已经搬到右上角了）")
 	var gap: float = cfg.num("ui.broadcast.bottom_gap", 8.0)
 	near(banner.offset_bottom,
-		UiLayoutRes.MAP_RECT.position.y - gap - UiLayoutRes.DESIGN_H, 1.0,
-		"★ 底边在小地图上沿之上 gap 像素")
+		UiLayoutRes.NOTICE_BOTTOM - gap - UiLayoutRes.DESIGN_H, 1.0,
+		"★ 底边在 NOTICE_BOTTOM 之上 gap 像素")
 
 	var red := Color(0.9, 0.2, 0.2)
 	var yellow := Color(0.95, 0.8, 0.2)
@@ -165,7 +165,7 @@ func _test_banner_queue(cfg) -> void:
 func _test_banner_animation(cfg) -> void:
 	var prev := ThemeRes.animations_enabled()
 	ThemeRes.set_animations_enabled(true)
-	var width := UiLayoutRes.MAP_RECT.size.x
+	var width := UiLayoutRes.NOTICE_W
 	var pop: float = cfg.num("ui.broadcast.pop_sec", 0.22)
 	var move: float = cfg.num("ui.broadcast.move_sec", 0.18)
 	var hold: float = cfg.num("ui.broadcast.hold_sec", 4.0)

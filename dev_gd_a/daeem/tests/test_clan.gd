@@ -294,8 +294,13 @@ func _test_composite_recruit(cfg) -> void:
 		leader.recruit_idle_timer = 99999.0
 		var pop_cost: float = w.recruit_population_cost(kind, "p1")
 
-		ok(w.start_recruit(kind, String(leader.id), "p1"), "★ 把 %s 排进队列" % kind)
-		eq(leader.train_queue_size(), 1, "★ 组合单位只占 **1** 个队列格")
+		var subs0: int = w.retinue_of(String(leader.id)).size()
+		ok(w.start_recruit(kind, String(leader.id), "p1"), "★ 招一包 %s" % kind)
+		# ★★ 2026.11.14：招募即时化 ⇒ 没有队列格可言；「一包」仍然是一次扣费 + 一次出兵，
+		#   出的就是这一包里的**每个兵种**（见 recruit_spawn_types）。
+		eq(leader.train_queue_size(), 0, "★ 没有队列（即时招募）")
+		eq(w.retinue_of(String(leader.id)).size(), subs0 + w.recruit_spawn_types(kind, "p1").size(),
+			"★ 一次招募出的是**整包**（%d 个）" % w.recruit_spawn_types(kind, "p1").size())
 		var cost: Dictionary = w.recruit_cost(kind, "p1")
 		near(food0 - float(w.resources.get("food", 0.0)),
 			float(cost.get("food", 0.0)), 1e-6, "%s 一次扣整包的粮食" % kind)

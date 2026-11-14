@@ -124,9 +124,10 @@ func _test_no_auto_assignment(cfg) -> void:
 	var z = _own_zone(w)
 	if z != null:
 		z["population"] = 10.0
+		var units0: int = w.units.size()
 		ok(w.start_zone_recruit("general_1", int(z["id"]), "p1"), "（前提）招 #1")
-		eq(w.zone_recruit_traits_at(z, 0), ["swift"], "★ 区划队列里带着「神速」")
-		_tick_secs(w, 11.0)
+		# ★★ 2026.11.14：招募即时 ⇒ 没有队列，特性当场上到招出来的那位身上
+		eq(w.units.size(), units0 + 1, "★★ 即时：将领当场出现")
 		var fresh = w.units[w.units.size() - 1]
 		eq(fresh.general_traits, ["swift"], "★★ 招出来的将领带着「神速」")
 		eq(String(fresh.aura_trait_id), "swift", "★ 光环也是它")

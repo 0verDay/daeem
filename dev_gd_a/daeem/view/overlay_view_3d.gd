@@ -104,6 +104,14 @@ var attack_marks: Array[Vector2] = []
 ## 由 `game_scene3d.on_reject_feedback()` 写入，`tick_rejects()` 每帧推进。
 var reject_marks: Array = []
 var reject_draw_count: int = 0
+## ★★ 2026.11.14：操作牌拖拽时的**旗帜虚影**（纯表现；由 `game_scene3d._sync_order_ghost()`
+##   每帧从 hud 抄过来，见 `hud._begin_order_ghost()` / `_update_order_ghost()`）。
+var order_ghost_active: bool = false
+var order_ghost_world: Vector2 = Vector2.ZERO
+var order_ghost_color: Color = Color(0.55, 1.0, 0.65, 1.0)
+var order_ghost_snapped: bool = false
+## 上一帧画了几面虚影（测试 / 性能读数读它；正常是 0 或 1）
+var order_ghost_draw_count: int = 0
 var drag_active: bool = false
 var drag_rect: Rect2 = Rect2()
 ## ★★ 粮车回血光环范围（只在该粮车被选中时画）：屏幕像素细线宽 / 采样段数。
@@ -419,6 +427,8 @@ func _draw_impl() -> void:
 	_draw_build_preview()
 	_draw_drag_box()
 	_draw_reject_marks()
+	# ★★ 2026.11.14：操作牌拖拽时的**旗帜虚影**（画在拖框之上、编队标识之下）。
+	_draw_order_ghost()
 	# ★★ 编队标识最后画：它在**所有世界物件与其它覆盖层之上**（不会被建筑 / 地形 / 单位
 	#    遮挡）；同时它在拖框之上，框选时编号 / 名牌仍然读得清。
 	var _d4 := _pt()
@@ -1774,7 +1784,7 @@ func _marker_formation(u) -> String:
 	return str(count)
 
 
-## 第几支 → 键帽上的字：现在槽位是 1..6，原样写；`% 10` 只是兜底（与数字键同一口径）。
+## 第几支 → 键帽上的字：现在槽位是 1..5，原样写；`% 10` 只是兜底（与数字键同一口径）。
 static func badge_text(slot: int) -> String:
 	if slot <= 0:
 		return ""
@@ -1829,7 +1839,6 @@ func _unit_visible(u) -> bool:
 
 
 ## 移动目标点（绿圈 + 十字）与行军攻击目标点（红圈 + 叉）
-##
 ## ★★ 本版**不再画**：右键指令的提示改成了 3D 旗子（`view/order_flag_view_3d.gd`）。
 ##   `move_marks` / `attack_marks` 两个字段**保留**（input_controller 还在写、2D 遗留栈
 ##   与既有测试还在读），只是 3D 这条路不再把它们画成屏幕空间的圈。
@@ -1851,7 +1860,6 @@ func _draw_move_marks() -> void:
 
 
 ## ★★ F2：命令被拒的落点红环 —— 由小扩大 + 淡出（0.28s）。
-## 画在拖框之后、编队标识之前；不依赖 `move_marks` / `attack_marks`（那两套是别的语义）。
 func _draw_reject_marks() -> void:
 	reject_draw_count = 0
 	for m in reject_marks:
@@ -1864,6 +1872,50 @@ func _draw_reject_marks() -> void:
 		draw_arc(p, r, 0.0, TAU, 24, c, 2.4, true)
 		draw_arc(p, r * 0.55, 0.0, TAU, 20, Color(c.r, c.g, c.b, c.a * 0.6), 1.4, true)
 		reject_draw_count += 1
+
+
+## ★★ 2026.11.14（用户口径）：「操作牌拖出后，可在地图上选择落点，落点将以一个**旗帜虚影**
+##   显示，「攻击」牌会有额外的旗帜吸附效果，会吸附到鼠标落点最近的敌方单位/建筑上，
+##   「暂停」牌没有旗帜虚影」。
+##
+## 这一层是**屏幕空间**的 2D 画法（落点由 `palette.to_px()` 投影过来），不是 3D 实体旗 ——
+## 拖拽时每帧都在动，走 3D 要重建材质 / 节点，而这里只是一个「落点提示」，不是最终插的旗
+## （真正的旗仍由 `view/order_flag_view_3d.gd` 在命令下达后插）。
+##
+## 画三样：① 贴地圆环（虚影的主视觉）+ 内圈虚线；② 旗杆 + 三角旗面；③ 吸附到敌人时额外
+##   一道更亮的外环（让「吸上去了」这件事一眼可见）。整体半透明 = 「虚影」。
+func _draw_order_ghost() -> void:
+	order_ghost_draw_count = 0
+	if not order_ghost_active or palette == null:
+		return
+	var p: Vector2 = palette.to_px(order_ghost_world)
+	if not p.is_finite():
+		return
+	var c: Color = order_ghost_color
+	var a: float = 0.55 if not order_ghost_snapped else 0.8
+	var ring := Color(c.r, c.g, c.b, a * 0.85)
+	# ① 贴地圆环 + 内圈
+	draw_arc(p, 24.0, 0.0, TAU, 32, ring, 2.2, true)
+	draw_arc(p, 14.0, 0.0, TAU, 24, Color(c.r, c.g, c.b, a * 0.45), 1.4, true)
+	# ② 旗子：杆从地面点往上竖，旗面在杆顶右侧（**要比圆环明显高出一截** ——
+	#    它才是「往哪儿落」的主视觉；牌本身会被 `command_card` 抬到指针上方让位）
+	var pole_h: float = 40.0
+	draw_line(p, p + Vector2(0.0, -pole_h), Color(c.r, c.g, c.b, minf(1.0, a + 0.15)), 2.4, true)
+	var top: Vector2 = p + Vector2(0.0, -pole_h)
+	var flag := PackedVector2Array([
+		top + Vector2(1.0, 0.0),
+		top + Vector2(30.0, 8.0),
+		top + Vector2(1.0, 17.0),
+	])
+	draw_colored_polygon(flag, Color(c.r, c.g, c.b, a))
+	# 旗面内侧描一道亮边（半透明旗在浅色地面上才不会糊成一块）
+	draw_polyline(PackedVector2Array([flag[0], flag[1], flag[2]]),
+		Color(c.r, c.g, c.b, minf(1.0, a + 0.2)), 1.4, true)
+	# ③ 吸附：外面再套一圈更亮的环（「锁定了这个东西」）
+	if order_ghost_snapped:
+		draw_arc(p, 30.0, 0.0, TAU, 36,
+			Color(c.r, c.g, c.b, minf(1.0, a + 0.15)), 2.6, true)
+	order_ghost_draw_count += 1
 
 
 ## 建造模式预览：**沿地块的四个角投出来的四边形**（透视下是梯形，不是矩形）。

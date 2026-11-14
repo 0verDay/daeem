@@ -115,8 +115,6 @@ var broadcast_banner: Control = null
 var story_shield: Control = null
 ## 资源飘字（给资源时从资源条旁边上浮淡出的数字）。
 var _resource_floats: Array = []
-var settings_button: Button = null
-var _settings_hovered: bool = false
 ## ★★ 合作 AI 队友的浮动指令面板（null = 本局没有 AI 队友 / 还没建）。
 var ai_panel: Control = null
 ## ★★ 观战模式：隐藏命令卡 / 页签，只保留查看用 UI。
@@ -243,6 +241,9 @@ var _lp_index: int = -1
 var _lp_active: bool = false
 var _lp_press_ms: int = 0
 var _lp_press_pos: Vector2 = Vector2.ZERO
+## ★★ 2026.11.14：手指**最后**的位置 —— 操作牌松手时它就是「落点」
+##   （触屏没有鼠标，`get_mouse_position()` 会停在不相干的地方）。
+var _lp_last_pos: Vector2 = Vector2.ZERO
 var _lp_shown: bool = false
 ## 命令牌向上滑动时转为拖牌；短点与长按说明仍走既有触摸处理。
 var _lp_card_dragging: bool = false
@@ -265,6 +266,20 @@ func setup(p_cfg: ConfigRes, p_world, p_input, theme: Theme, p_camera_rig = null
 	world = p_world
 	input_ctrl = p_input
 	camera_rig = p_camera_rig
+	# ★★ 2026.11.14 第三轮：选项按钮删掉之后，**Esc 是 PC 上唯一的入口**
+	#   （安卓走返回键，见 main._on_android_back）。这里接输入控制器的请求信号。
+	#   ⚠️ 用 is_connected 挡一道：同一份 input_ctrl 可能先后喂给重建的 HUD
+	#     （重开一局 / 换关），重复 connect 会开两次菜单。
+	if input_ctrl != null and input_ctrl.has_signal("open_menu_requested") \
+			and not input_ctrl.open_menu_requested.is_connected(_on_open_menu_requested):
+		input_ctrl.open_menu_requested.connect(_on_open_menu_requested)
+	# ★★ 2026.11.14：操作牌的 3 秒冷却**由命令本身触发**（而不是只挂在「拖拽松手」那条路上）。
+	#   这样「拖出松手」和「键盘 Q/W/E/A + 点地图」两条下达路径都算数，
+	#   不会出现「用键盘下令就不吃冷却」这种两套规则。
+	#   ⚠️ 同样用 is_connected 挡重复连接（HUD 可能被重建）。
+	if input_ctrl != null and input_ctrl.has_signal("command_issued") \
+			and not input_ctrl.command_issued.is_connected(_on_command_issued_cd):
+		input_ctrl.command_issued.connect(_on_command_issued_cd)
 	# ★★ 编队槽位（稳定编号）：右栏 / 左栏详情 / 数字键共用同一份（见 view/team_slots.gd）。
 	team_slots = p_team_slots
 	# ★★ 投影助手一并收下并转交给小地图（见 `_build_minimap`）：这样小地图一建出来
@@ -304,7 +319,6 @@ func setup(p_cfg: ConfigRes, p_world, p_input, theme: Theme, p_camera_rig = null
 	# ★ 悬停面板最后建（在命令卡 / 科技九格**之上**）：它画在那两块的正上方，
 	#   万一以后谁把它的高度调过头，压住的是命令卡的上沿而不是被命令卡压住。
 	_build_hover_tip()
-	_build_settings_button()
 	_build_ai_panel()
 	_build_squad_panel()
 	# ★★ 选项页**最后建**：它是浮在别的 UI 之上的模态 overlay（z_index=200）
@@ -353,6 +367,9 @@ func _process(dt: float) -> void:
 	_tick_reject_flash(dt)
 	_tick_broadcast(dt)
 	_tick_resource_floats(dt)
+	# ★★ 2026.11.14：操作牌的每队冷却（拖出生效后 3 秒，牌面出进度条）。
+	#   暂停时 `game_scene3d` 会把 dt 传 0 ⇒ 冷却跟着冻结，与其它计时同一口径。
+	_tick_order_cooldown(dt)
 	_tick_long_press()
 	# ★ 手机端性能读数：约 2Hz 刷新（见 `_build_perf_readout`）。
 	if _perf_label != null:
@@ -550,8 +567,13 @@ func _update_perf_readout() -> void:
 # 搭界面
 # ------------------------------------------------------------------
 
-## 左下 400×400 的「地图」= 真的小地图（view/minimap.gd）：
+## 右上角 238×148 的「地图」= 真的小地图（view/minimap.gd）：
 ## 整张地图 + 玩家当前的视野框 + 左键点击移动镜头 + **按住拖动跟手移视角**。
+##
+## ★★ 2026.11.14：地图从**左下角**搬到**右上角**（用户口径：「将地图面板放到屏幕
+##   右上角」）。于是贴边锚点也反了：原来是「贴左 + 贴下」，现在是「贴右 + 贴上」。
+##   ⚠️ `apply_rect` 的后两个参数就是 anchor_right / anchor_bottom —— 写错一个，
+##     窗口一变宽 / 变高地图就会跑到屏幕外（而且 16:9 时不报错，只有非 16:9 才看出来）。
 ##
 ## ★ 结构是「有底的容器 + 自绘控件」两层：
 ##   外层的 PanelContainer 只提供与其它面板一致的底板 / 描边，内层的 minimap 控件
@@ -571,7 +593,7 @@ func _build_minimap() -> void:
 	map_frame.shadow_size = 7
 	map_frame.shadow_offset = Vector2(0.0, 5.0)
 	map_placeholder.add_theme_stylebox_override("panel", map_frame)
-	UiLayoutRes.apply_rect(map_placeholder, UiLayoutRes.MAP_RECT, false, true)
+	UiLayoutRes.apply_rect(map_placeholder, UiLayoutRes.MAP_RECT, true, false)
 	_root.add_child(map_placeholder)
 
 	minimap = MinimapRes.new()
@@ -581,21 +603,27 @@ func _build_minimap() -> void:
 	minimap.setup(cfg, world, camera_rig, palette)
 
 
-## 资源面板：**粮食 / 黄金**两个资源，**竖着排**，落在详细信息面板左段的正上方。
+## 资源面板：**一张大卡**，卡内两块（粮食 / 黄金）各自**竖排**四行。
 ##
-## 需求原话：「在详细信息界面上方紧贴地图的地方加上资源显示面板，只需要显示粮食和黄金
-##          两个资源，横着显示」→「面板不需要那么长，粮食和黄金栏改为竖着排列」。
+## ★★ 2026.11.14 第三轮（用户口径）：「将资源面板改为竖直排列，竖直方向为：
+##   图标，文本，数字，增长数字」+「合并成一张大卡，中间分隔」。
 ##
-## ★ 结构（与详细信息的数字区同一套观感）：
-##     资源面板（200×56，下缘压在面板顶边 y=820 上、左缘与面板对齐 x=400）
-##       ├─ [粮] 粮食 120        ← 20×20 色块（13 号「粮」）+ 右边一行 15 号字
-##       └─ [金] 黄金 80         ← 第二行（色块 x 0，文字 x 26；两行 y 5 / 31）
+##   卡片 194×274（`UiLayoutRes.RES_BAR_RECT`，贴列左缘 1394、上缘 27），
+##   上半 0..137 = 粮食、下半 137..274 = 黄金，中间一条 1px 分隔线；
+##   每一块内部从上到下：
+##     圆章图标 45×45（金边圆章 + 一个汉字：粮 / 金）
+##     文本     13 号「粮食 / 黄金」（暗白，说明这是哪一种资源）
+##     数字     26 号（库存，卡里最显眼的一行）
+##     增长     13 号「(+1.2)」（每秒净额，负数是告警色）
+##   四行**水平居中**：这一列只有 194 宽，居中最稳（旧版是「圆章在左、文字在右」的
+##   横排，竖排之后视觉重量才落在这张卡的轴线上）。
+##
 ## ★ 数值**每帧**从 `world.resources` 取（见 `_refresh_resource_bar`）：
 ##   它是权威值（economy.tick 往里累加、招募 / 升级从里扣），界面只在显示层格式化。
-## ★ 颜色：底色 / 描边 / 字色全部走 ui_style（与其它面板同一套深色半透明）；
-##   两个色块自己定（粮食暖黄、黄金亮金）—— 没有图标素材，用色块 + 一个汉字顶上。
 ## ★ `mouse_filter = IGNORE`：整块只有字和色块，点不动也不需要拦鼠标
 ##   （边缘滚屏照样能在它上面工作，见 ui_layout.interactive_rects 的规矩）。
+## ★ 节点的**名字不能改**（`ResText_粮` / `ResRate_粮` / `ResTitle_*` / `ResIcon_*`）：
+##   `_refresh_resource_bar()` 按名字取控件，测试也按名字找。
 func _build_resource_bar() -> void:
 	# ★ 重新建控件 ⇒ 上一份「写进去的文字」作废（否则新 Label 会因为
 	#   「文字没变」而一直空着 —— 重开一局 / 重建 HUD 时会踩到）。
@@ -603,35 +631,32 @@ func _build_resource_bar() -> void:
 	resource_bar = Panel.new()
 	resource_bar.name = "ResourceBar"
 	resource_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var empty_bar_style := StyleBoxFlat.new()
-	empty_bar_style.bg_color = Color(0.0, 0.0, 0.0, 0.0)
-	empty_bar_style.set_border_width_all(0)
-	resource_bar.add_theme_stylebox_override("panel", empty_bar_style)
-	UiLayoutRes.apply_rect(resource_bar, UiLayoutRes.RES_BAR_RECT, false, true)
+	# ★★ 大卡自己就是底纹（不再有「每块一张筹码」的中间层）：
+	#   圆角 12 + 2px 暗金边 + 下投影，与其它面板同一套。
+	var card := StyleBoxFlat.new()
+	card.bg_color = UiStyleRes.bg()
+	card.border_color = UiStyleRes.line()
+	card.set_border_width_all(2)
+	card.set_corner_radius_all(12)
+	card.shadow_color = Color(0.0, 0.0, 0.0, 0.72)
+	card.shadow_size = 6
+	card.shadow_offset = Vector2(0.0, 5.0)
+	resource_bar.add_theme_stylebox_override("panel", card)
+	# ★ 贴右上 ⇒ anchor_right + anchor_top。
+	UiLayoutRes.apply_rect(resource_bar, UiLayoutRes.RES_BAR_RECT, true, false)
 	_root.add_child(resource_bar)
 
-	# 两枚资源牌并排：硬币章 + 实时库存（不写死示例数值）。
+	var w: float = UiLayoutRes.TOP_COLUMN_W
+	var icon: float = UiLayoutRes.RES_ICON
+	var icon_x: float = (w - icon) * 0.5
+	# 两块：粮食在上、黄金在下（下半块整体下移 RES_HALF_H）
 	var rows := [
-		{"short": "粮", "label": "粮食", "color": Color(0.85, 0.72, 0.32), "x": 0.0},
-		{"short": "金", "label": "黄金", "color": Color(0.95, 0.80, 0.20), "x": 212.0},
+		{"short": "粮", "label": "粮食", "color": Color(0.85, 0.72, 0.32), "y": 0.0},
+		{"short": "金", "label": "黄金", "color": Color(0.95, 0.80, 0.20), "y": UiLayoutRes.RES_HALF_H},
 	]
 	for r in rows:
-		var token := Panel.new()
-		token.name = "ResourceToken_" + String(r["short"])
-		token.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		var ts := StyleBoxFlat.new()
-		ts.bg_color = UiStyleRes.bg()
-		ts.border_color = UiStyleRes.line()
-		ts.set_border_width_all(2)
-		ts.set_corner_radius_all(12)
-		ts.shadow_color = Color(0.0, 0.0, 0.0, 0.72)
-		ts.shadow_size = 6
-		ts.shadow_offset = Vector2(0.0, 5.0)
-		token.add_theme_stylebox_override("panel", ts)
-		resource_bar.add_child(token)
-		token.position = Vector2(float(r["x"]), 0.0)
-		token.size = Vector2(194.0, 66.0)
-
+		var y0: float = float(r["y"])
+		# ① 圆章图标（45×45 金边正圆 + 一个汉字）
 		var chip := Label.new()
 		chip.name = "ResIcon_" + String(r["short"])
 		chip.text = String(r["short"])
@@ -639,7 +664,6 @@ func _build_resource_bar() -> void:
 		chip.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		chip.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 		chip.clip_text = true
-		# 圆形资源徽章，字符在 45×45 金边章内垂直居中。
 		chip.add_theme_font_size_override("font_size", UiStyleRes.FS_SMALL)
 		chip.add_theme_color_override("font_color", Color(0.10, 0.09, 0.06))
 		var cs := StyleBoxFlat.new()
@@ -649,46 +673,60 @@ func _build_resource_bar() -> void:
 		cs.set_corner_radius_all(24)
 		chip.add_theme_stylebox_override("normal", cs)
 		resource_bar.add_child(chip)
-		chip.position = Vector2(float(r["x"]) + 10.0, 10.0)
-		# ⚠️ 位置 / 尺寸都在 `add_child` **之后**设（与提示行那条同一个坑）：
-		#    进树之前主题里的中文字体还没继承到，Label 会按引擎兜底字体算一次最小高度
-		#    并**把 set_size 的结果夹掉**（实测：想在 24 高的条里设 16，被夹成 23 ⇒ 顶出条外）。
-		chip.size = Vector2(UiLayoutRes.RES_ICON, UiLayoutRes.RES_ICON)
+		# ⚠️ 位置 / 尺寸都在 `add_child` **之后**设（进树之前主题里的中文字体还没继承到，
+		#    Label 会按引擎兜底字体算一次最小高度并**把 set_size 的结果夹掉**）。
+		chip.position = Vector2(icon_x, y0 + UiLayoutRes.RES_ICON_Y)
+		chip.size = Vector2(icon, icon)
 
+		# ② 文本（「粮食 / 黄金」）
 		var title := Label.new()
 		title.name = "ResTitle_" + String(r["short"])
 		title.text = String(r["label"])
 		title.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		title.add_theme_font_size_override("font_size", UiStyleRes.FS_TINY)
+		title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		title.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		title.clip_text = true
+		title.add_theme_font_size_override("font_size", UiStyleRes.FS_SMALL)
 		title.add_theme_color_override("font_color", UiStyleRes.text_dim())
 		resource_bar.add_child(title)
-		title.position = Vector2(float(r["x"]) + UiLayoutRes.RES_TEXT_X, 7.0)
-		title.size = Vector2(UiLayoutRes.RES_TEXT_W, 14.0)
+		title.position = Vector2(0.0, y0 + UiLayoutRes.RES_TITLE_Y)
+		title.size = Vector2(w, 18.0)
 
+		# ③ 数字（库存）—— 卡里最显眼的一行
 		var value := Label.new()
 		value.name = "ResText_" + String(r["short"])
 		value.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		value.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		value.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 		value.clip_text = true
-		# ★★ 2026.10.29：字号 **FS_BODY(15) → FS_SMALL(13)**。
-		#    这一行现在要装「粮食 12345(+12.3)」——15 号字排到 149px，超过 134 的可写宽；
-		#    13 号字最坏（5 位数 + 负的两位数）约 130px，装得下（实测见 route.md 71.4）。
-		value.add_theme_font_size_override("font_size", 20)
+		value.add_theme_font_size_override("font_size", 26)
 		value.add_theme_color_override("font_color", UiStyleRes.text())
 		resource_bar.add_child(value)
-		value.position = Vector2(float(r["x"]) + UiLayoutRes.RES_TEXT_X, 24.0)
-		value.size = Vector2(UiLayoutRes.RES_TEXT_W, 38.0)
+		value.position = Vector2(0.0, y0 + UiLayoutRes.RES_VALUE_Y)
+		value.size = Vector2(w, 32.0)
 
+		# ④ 增长数字（每秒净额）
 		var rate := Label.new()
 		rate.name = "ResRate_" + String(r["short"])
 		rate.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		rate.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		rate.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 		rate.clip_text = true
-		rate.add_theme_font_size_override("font_size", UiStyleRes.FS_TINY)
+		rate.add_theme_font_size_override("font_size", UiStyleRes.FS_SMALL)
 		rate.add_theme_color_override("font_color", UiStyleRes.hp_high())
 		resource_bar.add_child(rate)
-		rate.position = Vector2(float(r["x"]) + UiLayoutRes.RES_RATE_X, 29.0)
-		rate.size = Vector2(UiLayoutRes.RES_RATE_W, 24.0)
+		rate.position = Vector2(0.0, y0 + UiLayoutRes.RES_RATE_Y)
+		rate.size = Vector2(w, 16.0)
+
+	# ⑤ 中间那条分隔线（两块之间；两端各缩进 RES_PAD_X，不顶到圆角上）
+	var divider := ColorRect.new()
+	divider.name = "ResDivider"
+	divider.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var lc: Color = UiStyleRes.line()
+	divider.color = Color(lc.r, lc.g, lc.b, 0.55)
+	resource_bar.add_child(divider)
+	divider.position = Vector2(UiLayoutRes.RES_PAD_X, UiLayoutRes.RES_DIVIDER_Y)
+	divider.size = Vector2(UiLayoutRes.TOP_COLUMN_W - UiLayoutRes.RES_PAD_X * 2.0, 1.0)
 
 	_refresh_resource_bar()
 
@@ -986,6 +1024,11 @@ func _build_command_card() -> void:
 
 
 func _on_card_drag_started(entry: Dictionary, screen_pos: Vector2) -> void:
+	# ★★ 2026.11.14（用户口径）：操作牌拖出 → 地图上跟着一个**旗帜虚影**表示落点。
+	#   停止牌（`mode == "stop"`）不需要落点，所以不显示虚影（拖起即待松手）。
+	if String(entry.get("type", "")) == "order":
+		_begin_order_ghost(entry, screen_pos)
+		return
 	if String(entry.get("type", "")) != "build":
 		return
 	var build_type := String(entry.get("build_type", ""))
@@ -998,12 +1041,20 @@ func _on_card_drag_started(entry: Dictionary, screen_pos: Vector2) -> void:
 
 
 func _on_card_drag_moved(entry: Dictionary, screen_pos: Vector2) -> void:
+	if String(entry.get("type", "")) == "order":
+		_update_order_ghost(entry, screen_pos)
+		return
 	if drag_build_active and String(entry.get("build_type", "")) == drag_build_type:
 		_update_build_drag_preview(screen_pos)
 
 
 func _on_card_drag_finished(entry: Dictionary, screen_pos: Vector2, index: int) -> void:
 	var kind := String(entry.get("type", ""))
+	# ★★ 2026.11.14（用户口径）：「操作牌在拖出并松手后，落点处即为操作点」——
+	#   松手就地按**松手位置**下达命令，不再进「命令模式」等第二下点击。
+	if kind == "order":
+		_commit_order_drag(entry, screen_pos, index)
+		return
 	if kind == "build" and drag_build_active:
 		_update_build_drag_preview(screen_pos)
 		_commit_card_build_drag()
@@ -1028,6 +1079,299 @@ func _on_card_drag_finished(entry: Dictionary, screen_pos: Vector2, index: int) 
 
 func _on_tech_drag_finished(id: String, _screen_pos: Vector2, _index: int) -> void:
 	_on_tech_cell_activated(id)
+
+
+# ------------------------------------------------------------------
+# ★★ 2026.11.14 操作牌：拖出 → 地图上跟着一个「旗帜虚影」→ 松手即下达
+#
+# 用户口径：「操作牌拖出后，可在地图上选择落点，落点将以一个旗帜虚影显示，
+#   「攻击」牌会有额外的旗帜吸附效果，会吸附到鼠标落点最近的敌方单位/建筑上，
+#   「暂停」牌没有旗帜虚影；操作牌在拖出并松手后，落点处即为操作点」。
+#
+# 分工：
+#   · 落点 / 吸附 / 拒因判据全在 **hud**（它有 `palette` 与 `world`）；
+#   · 真正的**画**在 `view/overlay_view_3d.gd`（2D 屏幕空间，跟着投影走）——
+#     `game_scene3d._sync_order_ghost()` 每帧把下面这几个字段抄过去；
+#   · 命令出口仍是 `input_ctrl.issue_order_at()`（与点地图那一路共用同一段代码）。
+# ------------------------------------------------------------------
+
+## 旗帜虚影当前是否显示、打在哪个世界点、什么颜色、有没有吸附到敌人。
+var order_ghost_active: bool = false
+var order_ghost_world: Vector2 = Vector2.ZERO
+var order_ghost_color: Color = Color(0.55, 1.0, 0.65, 1.0)
+var order_ghost_snapped: bool = false
+## 吸附到的目标（单位 / 建筑对象；未吸附 = null）。只给表现层用来补一圈高亮。
+var order_ghost_target = null
+
+## 拖拽中的那张操作牌的 `mode`（"move" / "attack" / "attack_move" / "stop"）。
+var _order_drag_mode: String = ""
+## 每支部队（按队长 id）共享一个冷却：`leader_id -> 剩余秒`。
+var _order_cd: Dictionary = {}
+
+
+## 拖起操作牌：开始显示虚影（停止牌不显示）。
+func _begin_order_ghost(entry: Dictionary, screen_pos: Vector2) -> void:
+	_order_drag_mode = String(entry.get("mode", ""))
+	order_ghost_target = null
+	order_ghost_snapped = false
+	if _order_drag_mode == "stop":
+		# ★ 用户口径：「暂停（停止）牌没有旗帜虚影」——它就地生效，没有落点可选。
+		order_ghost_active = false
+		return
+	order_ghost_active = true
+	_update_order_ghost(entry, screen_pos)
+
+
+## 拖动中：更新落点；攻击牌额外吸附到**最近的敌方单位 / 建筑**。
+func _update_order_ghost(entry: Dictionary, screen_pos: Vector2) -> void:
+	if _order_drag_mode == "stop":
+		order_ghost_active = false
+		return
+	# ★ 指回 UI（手牌 / 右栏 / 面板）⇒ 这一下等于「收回来」，不显示落点；
+	#   同时它也是**松手取消**的判据（见 `_commit_order_drag()`），与建筑牌同一套手感。
+	#   ⚠️ 拖起来的那一瞬间指针本来就还在手牌上，所以刚拖起时看不到旗子是**对的**，
+	#     挪到地图上才出现。
+	if palette == null or world == null or point_hits_ui(screen_pos):
+		order_ghost_active = false
+		return
+	order_ghost_active = true
+	var mode := String(entry.get("mode", _order_drag_mode))
+	var logic: Variant = palette.to_logic(screen_pos)
+	if logic == null:
+		# 指到天空 / 屏幕外：虚影留在上一个有效落点，只是不再更新。
+		return
+	order_ghost_world = logic
+	order_ghost_target = null
+	order_ghost_snapped = false
+	if mode == "attack":
+		# ★★ 吸附：屏幕距离最近的那个敌方单位 / 建筑（在 `ORDER_SNAP_PX` 像素内）。
+		#   用**屏幕**距离而不是地面距离：玩家看的是画面，「看着近」就该吸上去。
+		var snap: Dictionary = _nearest_foe_for_order(screen_pos)
+		if not snap.is_empty():
+			order_ghost_world = snap.get("world", order_ghost_world)
+			order_ghost_target = snap.get("target", null)
+			order_ghost_snapped = true
+	order_ghost_color = _order_ghost_color(mode, order_ghost_snapped)
+
+
+## 某道操作命令对应的虚影颜色（移动绿 / 行军黄 / 攻击红；吸附到敌人更红一档）。
+static func _order_ghost_color(mode: String, snapped: bool) -> Color:
+	match mode:
+		"attack":
+			return Color(1.0, 0.36, 0.34, 1.0) if snapped else Color(1.0, 0.55, 0.45, 1.0)
+		"attack_move":
+			return Color(1.0, 0.84, 0.36, 1.0)
+		_:
+			return Color(0.55, 1.0, 0.65, 1.0)
+
+
+## 松手：按落点下达（停止牌就地生效），然后收旗 + 起冷却 + 牌飞回手牌。
+##
+## ★ 拒因（没选中部队 / 攻击没吸到敌人 / 观战）一律「牌退回手牌 + 一句提示」——
+##   用户口径：「攻击牌吸不到敌人时不能下达」。
+func _commit_order_drag(entry: Dictionary, screen_pos: Vector2, index: int) -> void:
+	var mode := String(entry.get("mode", _order_drag_mode))
+	var leaders: Array = _order_cooldown_leaders()
+	# ★ 松手落在 UI 上（拖回手牌 / 右栏）= **取消**：不下达、不进冷却，牌自己飞回去。
+	#   这与建筑牌「拖回手牌就取消」是同一套手感；不挡的话松手处会把指令下到
+	#   手牌**背后**的地面上（玩家看到的是「牌飞回去了，部队却自己走了」）。
+	if mode != "stop" and point_hits_ui(screen_pos):
+		_end_order_ghost()
+		command_card.animate_card_back(index)
+		return
+	# ★★ 2026.11.14（用户报「冷却没有生效」）：**这里再挡一次**。
+	#   命令卡的 `disabled` 只在「点击」那条路上有效，拖拽是 `gui_input` 自己判的；
+	#   万一哪天那条路漏了，这一层是最后一道闸 —— 冷却中绝不允许再下达。
+	if not bool(entry.get("ready", true)):
+		var left: float = _order_cd_left()
+		show_notice("这张操作牌还在冷却（%.1f 秒）" % maxf(left, 0.0))
+		_end_order_ghost()
+		command_card.animate_card_back(index)
+		return
+	var reason := ""
+	if mode == "stop":
+		reason = "" if (input_ctrl != null and input_ctrl.issue_stop_order()) else "no_units"
+	elif order_ghost_snapped and order_ghost_target != null:
+		# ★ 吸附到敌人时，落点用**目标自己的位置**（松手那一下可能已经离它几十像素）。
+		reason = input_ctrl.issue_order_at(mode, _target_screen_pos(order_ghost_target)) \
+			if input_ctrl != null else "bad_point"
+	elif input_ctrl != null:
+		reason = input_ctrl.issue_order_at(mode, screen_pos)
+	_end_order_ghost()
+	command_card.animate_card_back(index)
+	if reason != "":
+		if reason == "no_target":
+			show_notice("这里没有敌人：把「攻击」牌拖到敌方单位或建筑上")
+		elif reason == "no_units":
+			show_notice("先选中一支部队，才能下达指令")
+		# ★ 拒单**不进冷却**（不能因为下错一次就罚 3 秒）。
+		_refresh_card_if_changed()
+		return
+	# ★ 冷却在 `_on_command_issued_cd()` 里起（挂在 `command_issued` 上，见那段说明）——
+	#   这里不再自己写一遍，否则同一个信号会把它算两遍（虽然幂等，但语义会漂）。
+
+
+## ★★ 2026.11.14：**命令本身**触发操作牌冷却（见 `ORDER_CD_SEC`）。
+##
+## ★ 为什么挂在信号上而不是只写在拖拽那一段：命令有两个出口 ——
+##   ① 操作牌拖出松手（`_commit_order_drag()` → `issue_order_at()`）；
+##   ② 键盘 Q/W/E/A 进命令模式 + 点地图（`input_ctrl._issue_order_click()`）。
+##   两处最终都 `command_issued.emit(...)`，挂在这里才是**单一来源**，
+##   不会出现「键盘下令不吃冷却」这种两套规则。
+## ★ 只处理四道**部队**操作（move / attack / attack_move / stop）——
+##   建筑升级、招募、科技那些不是「操作牌」。
+func _on_command_issued_cd(cmd: Dictionary) -> void:
+	var kind := String(cmd.get("kind", ""))
+	if kind != "move" and kind != "attack" and kind != "attack_move" and kind != "stop":
+		return
+	var leaders: Array = _order_cooldown_leaders()
+	if leaders.is_empty():
+		return
+	for lid in leaders:
+		_order_cd[String(lid)] = ORDER_CD_SEC
+	_refresh_card_if_changed()
+
+
+## 收旗（松手 / Esc / 卡被收回都要走到这里，否则虚影会留在屏幕上）。
+func _end_order_ghost() -> void:
+	order_ghost_active = false
+	order_ghost_snapped = false
+	order_ghost_target = null
+	_order_drag_mode = ""
+
+
+## 吸附用：离 `screen_pos` 最近的**敌方**单位 / 建筑（限 `ORDER_SNAP_PX` 像素内）。
+##
+## ★★ 判据必须与「真正下达」那一路**逐条一致**（`input_ctrl._pick_foe_unit_at` /
+##   `_issue_order_click` 的攻击分支）：活着、看得见（战争迷雾）、不是同一方、不是无敌、
+##   濒死将领不算。否则会出现最糟的那种手感：**旗帜吸上去了，松手却说「这里没有敌人」**
+##   （实测踩到过：吸到雾里的一栋塔）。
+## @return {} 或 {world: Vector2, target: 对象}
+func _nearest_foe_for_order(screen_pos: Vector2) -> Dictionary:
+	if world == null or palette == null or input_ctrl == null:
+		return {}
+	var best := {}
+	var best_d := ORDER_SNAP_PX
+	for u in world.units:
+		if u == null or not is_instance_valid(u) or not u.alive:
+			continue
+		if FactionRes.same_side_for_attack(String(u.faction), world.my_faction):
+			continue
+		if u.is_downed():
+			continue
+		if not input_ctrl._foe_unit_visible(u):
+			continue
+		var p: Variant = _unit_screen_pos(u)
+		if p == null:
+			continue
+		var d: float = (p as Vector2).distance_to(screen_pos)
+		if d < best_d:
+			best_d = d
+			best = {"world": u.pos, "target": u}
+	for b in world.building_list:
+		if b == null or not is_instance_valid(b) or not b.alive:
+			continue
+		if b.is_invulnerable():
+			continue
+		if FactionRes.same_side_for_attack(String(b.owner), world.my_faction):
+			continue
+		if not input_ctrl._foe_building_visible(b):
+			continue
+		var bp: Variant = _building_screen_pos(b)
+		if bp == null:
+			continue
+		var bd: float = (bp as Vector2).distance_to(screen_pos)
+		if bd < best_d:
+			best_d = bd
+			best = {"world": _building_world_pos(b), "target": b}
+	return best
+
+
+func _unit_screen_pos(u) -> Variant:
+	if palette == null:
+		return null
+	return palette.to_px(u.pos)
+
+
+func _building_screen_pos(b) -> Variant:
+	if palette == null:
+		return null
+	return palette.to_px(_building_world_pos(b))
+
+
+## 建筑的「脚下中心」世界坐标（与 `overlay` 里点建筑用的口径一致）。
+func _building_world_pos(b) -> Vector2:
+	return Vector2(float(b.tx) + 0.5, float(b.ty) + 0.5)
+
+
+## 某个目标对象 → 屏幕点（吸附下达时用它当落点）。
+func _target_screen_pos(t) -> Vector2:
+	var p: Variant = null
+	if t != null and is_instance_valid(t):
+		if t.has_method("is_general") or t.has_method("is_leader"):
+			p = _unit_screen_pos(t)
+		else:
+			p = _building_screen_pos(t)
+	return p if p != null else Vector2.ZERO
+
+
+# ---- 操作牌冷却（每支部队共享 3 秒） ----
+
+## 冷却秒数（用户口径：3 秒）。★ 只作用于**部队的操作牌**（移动/攻击/行军/停止）。
+const ORDER_CD_SEC := 3.0
+## 攻击牌的吸附半径（屏幕像素）：鼠标离敌人这么近就吸上去。
+const ORDER_SNAP_PX := 90.0
+
+
+## 这一页的操作牌该按**哪几支部队**算冷却（多选时取「最慢的那支」）。
+##
+## ★★ 2026.11.14（用户报「冷却没有生效」的那个原因之一）：**不能只认队长**。
+##   玩家完全可以只选中一队亲兵（`leader_id != ""`，没有将领本人）——
+##   那时候「按队长 id 记冷却」会一个 key 都拿不到，于是冷却静默地不生效。
+##   ⇒ 统一按**部队 id** 记：附属兵用 `leader_id`（它本来就是所属部队 id），
+##     将领用 `id` 自己。一支部队因此只有一个 key，多选也只是多几个 key。
+func _order_cooldown_leaders() -> Array:
+	var out: Array = []
+	if input_ctrl == null or world == null:
+		return out
+	for u in input_ctrl.selected_units:
+		if u == null or not is_instance_valid(u) or not u.alive:
+			continue
+		if not world.is_own_seat(String(u.faction)):
+			continue
+		var sid := String(u.leader_id)
+		if sid == "":
+			sid = String(u.id)
+		if not out.has(sid):
+			out.append(sid)
+	return out
+
+
+## 当前选中部队里**最长的**剩余冷却秒数（没选中 = 0）。
+func _order_cd_left() -> float:
+	var left := 0.0
+	for lid in _order_cooldown_leaders():
+		left = maxf(left, float(_order_cd.get(String(lid), 0.0)))
+	return left
+
+
+## 冷却推进（由 `_process` 每帧调；暂停时 dt = 0 ⇒ 冻住）。
+##
+## ★ 两个层次：**可不可用**（灰 ⇄ 亮）走 `_card_sig()` 重建；**进度条**是连续变化的，
+##   不能进签名（会每帧重建九格），所以每帧只推一次 `set_order_cooldown()`。
+func _tick_order_cooldown(dt: float) -> void:
+	if not _order_cd.is_empty() and dt > 0.0:
+		for lid in _order_cd.keys():
+			var v: float = float(_order_cd[lid]) - dt
+			if v <= 0.0:
+				_order_cd.erase(lid)
+			else:
+				_order_cd[lid] = v
+	if command_card != null:
+		# ★ 传**剩余秒数**而不是比例：0 秒 = 没有冷却（整条藏起来），
+		#   与「刚进冷却（剩 3 秒）」分得开（见 command_card.set_order_cooldown 的说明）。
+		command_card.set_order_cooldown(_order_cd_left(), ORDER_CD_SEC)
+
 
 
 func _update_build_drag_preview(screen_pos: Vector2) -> void:
@@ -1122,114 +1466,15 @@ func _build_hover_tip() -> void:
 	tech_grid.cell_unhovered.connect(_on_hover_out.bind("tech"))
 
 
-## 选项：右上角一颗细长按钮（几何见 UiLayoutRes.SETTINGS_RECT）。
+## ★★ 2026.11.14 第三轮（用户口径）：「把选项按钮删除，相应的打开菜单逻辑接到 esc 下」。
 ##
-## ★★ 点它弹出**选项页菜单**（overlay + 居中面板，见 view/options_panel.gd）：
-##    一级继续 / 设置 / 返回主菜单；设置子页里是 全屏 / 窗口化。
-## ⚠️ `focus_mode = NONE` 保留：这一按之后焦点别停在按钮上（否则后面按空格 / 回车
-##    会再触发一次选项页，玩家会以为界面卡了）。
-func _build_settings_button() -> void:
-	settings_button = Button.new()
-	settings_button.name = "SettingsButton"
-	settings_button.text = cfg.str_val("settings.title", "选项")
-	settings_button.focus_mode = Control.FOCUS_NONE
-	settings_button.add_theme_font_size_override("font_size", UiStyleRes.FS_TINY)
-	# ★★ 初始**没有填充**（需求）：四档底纹都用「透明底 + 金线」那一档，
-	#   那片金完全交给自绘填充层 —— 鼠标停上去才由下往上填，移开退回去。
-	#   ⚠️ 不能再挂 `accent_button()`（那是**实心金**）：实心底会把填充盖住，
-	#      观感就是「填充层在文字之上」（用户报的）。
-	var settings_normal := UiStyleRes.accent_button_clear()
-	settings_normal.bg_color = UiStyleRes.bg()
-	settings_normal.set_corner_radius_all(27)
-	settings_normal.shadow_color = Color(0.0, 0.0, 0.0, 0.72)
-	settings_normal.shadow_size = 5
-	settings_normal.shadow_offset = Vector2(0.0, 4.0)
-	settings_button.add_theme_stylebox_override("normal", settings_normal)
-	var settings_hover := UiStyleRes.accent_button_clear()
-	settings_hover.set_corner_radius_all(27)
-	settings_button.add_theme_stylebox_override("hover", settings_hover)
-	# ★ 按下统一成 2px 亮边；松手后由 set_settings_menu_open() 切常态 / 展开态
-	var settings_pressed := UiStyleRes.accent_button_latched()
-	settings_pressed.set_corner_radius_all(27)
-	settings_button.add_theme_stylebox_override("pressed", settings_pressed)
-	var settings_disabled := UiStyleRes.accent_button_clear()
-	settings_disabled.set_corner_radius_all(27)
-	settings_button.add_theme_stylebox_override("disabled", settings_disabled)
-	settings_button.add_theme_stylebox_override("focus", StyleBoxEmpty.new())
-	UiLayoutRes.apply_rect(settings_button, UiLayoutRes.SETTINGS_RECT, true, false)
-	settings_button.pressed.connect(toggle_settings_menu)
-	# ★★ 悬停填充（一行挂上）：初始是空的，鼠标停上去才填；展开菜单时锁在满格。
-	#   ★ 字色从**暖白**起步，金扫上来时由白变黑（`fill_button._sync_text()` 的唯一规则）。
-	#     `set_prefer_light` 那行是**历史遗留**（开关已作废）：白字压金读不出来，
-	#     正是用户报的「字被金色填充遮挡」，别把它当成「要白字」的口径。
-	FillButtonRes.attach_text(settings_button)
-	# ★★ 设置按钮有自己的点击反馈（面板打开 = 选中填满、关闭 = 退回）——
-	#   关掉「点击闪光」，否则两边会抢同一份 `_fill`。
-	FillButtonRes.set_click_flash(settings_button, false)
-	FillButtonRes.set_prefer_light(settings_button, true)
-	FillButtonRes.set_circle_shape(settings_button, true)
-	FillButtonRes.set_base_bg(settings_button, UiStyleRes.bg())
-	FillButtonRes.set_base_font_color(settings_button, UiStyleRes.text())
-	# The text property stays localized/accessibility-friendly; the visible face is the V2
-	# two-line coin mark so the button still reads as a control at 54px.
-	settings_button.add_theme_color_override("font_color", Color(0.0, 0.0, 0.0, 0.0))
-	FillButtonRes.set_base_font_color(settings_button, Color(0.0, 0.0, 0.0, 0.0))
-	FillButtonRes.set_base_font_color(settings_button, Color(0.0, 0.0, 0.0, 0.0))
-	var dots := Label.new()
-	dots.name = "SettingsDots"
-	dots.text = "⋯"
-	dots.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	dots.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	dots.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	dots.add_theme_font_size_override("font_size", 22)
-	dots.add_theme_color_override("font_color", UiStyleRes.accent_bright())
-	dots.position = Vector2(0.0, 1.0)
-	dots.size = Vector2(54.0, 27.0)
-	settings_button.add_child(dots)
-	FillButtonRes.on_fill_text(settings_button, dots, UiStyleRes.accent_bright())
-	var settings_caption := Label.new()
-	settings_caption.name = "SettingsCaption"
-	settings_caption.text = "选项"
-	settings_caption.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	settings_caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	settings_caption.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	settings_caption.add_theme_font_size_override("font_size", UiStyleRes.FS_TINY)
-	settings_caption.add_theme_color_override("font_color", UiStyleRes.text_dim())
-	settings_caption.position = Vector2(0.0, 28.0)
-	settings_caption.size = Vector2(54.0, 17.0)
-	settings_button.add_child(settings_caption)
-	FillButtonRes.on_fill_text(settings_button, settings_caption, UiStyleRes.text_dim())
-	settings_button.mouse_entered.connect(_on_settings_hover.bind(true))
-	settings_button.mouse_exited.connect(_on_settings_hover.bind(false))
-	_root.add_child(settings_button)
-
-
-func _settings_face_style(active: bool) -> StyleBoxFlat:
-	var style := StyleBoxFlat.new()
-	style.bg_color = Color(0.0, 0.0, 0.0, 0.0)
-	style.border_color = UiStyleRes.accent_bright() if active else UiStyleRes.line()
-	style.set_border_width_all(2)
-	style.set_corner_radius_all(27)
-	style.shadow_color = Color(0.0, 0.0, 0.0, 0.72)
-	style.shadow_size = 5
-	style.shadow_offset = Vector2(0.0, 4.0)
-	return style
-
-
-func _on_settings_hover(on: bool) -> void:
-	_settings_hovered = on
-	_sync_settings_face()
-
-
-func _sync_settings_face() -> void:
-	if settings_button == null:
-		return
-	var open: bool = options_panel != null and options_panel.is_open()
-	var style := _settings_face_style(open or _settings_hovered)
-	settings_button.add_theme_stylebox_override("normal", style)
-	settings_button.add_theme_stylebox_override("hover", style)
-	settings_button.add_theme_stylebox_override("pressed", style)
-
+## 所以屏幕上**没有**选项按钮了 —— 入口只剩两条纯键盘 / 系统手势：
+##   · PC：Esc（input_controller.handle_key 的 Esc 级联：先取消建造 / 指令 /
+##     框选 / 招募取消，都没有时才开菜单；菜单开着时 Esc = 关 —— 见 handle_key）
+##   · 安卓：返回键（main._on_android_back：菜单开着 → 关；否则 → 开）
+##
+## ⚠️ 别再为了「有个可见入口」把按钮加回来（SETTINGS_RECT 已从 ui_layout 删除）。
+##   选项页本身仍然是**居中的模态 overlay**，见 view/options_panel.gd。
 
 ## ★★ 选项页菜单（仿 nsoc）：overlay + 居中面板，一级「继续 / 设置 / 返回主菜单」，
 ##    二级「设置」里是「全屏 / 窗口化」+「返回」。见 view/options_panel.gd。
@@ -1287,28 +1532,31 @@ func _build_options_panel() -> void:
 	return_menu_button = options_panel.exit_button
 
 
+## ★ 选项页开 / 关**不再联动任何按钮**（2026.11.14 第三轮：按钮已删除）。
+##   这两个回调保留着，是因为选项页自己会发 `opened` / `closed`
+##   （将来要加别的联动 —— 例如暂停 BGM —— 接在这里）。
 func _on_options_opened() -> void:
-	if settings_button == null:
-		return
-	FillButtonRes.set_latched(settings_button, true)
-	settings_button.add_theme_stylebox_override("normal", UiStyleRes.accent_button_latched())
+	pass
 
 
 func _on_options_closed() -> void:
-	if settings_button == null:
-		return
-	FillButtonRes.set_latched(settings_button, false)
-	settings_button.add_theme_stylebox_override("normal", UiStyleRes.accent_button_clear())
+	pass
 
 
-## 设置按钮被按下：选项页开着就收起来，关着就弹出来。
+## `input_controller` 请求开选项页（Esc 取消到底、什么都没得取消时才会发）。
+##
+## ★ 只开不关：**关**走 `hud.handle_key`（Esc）与 `main._on_android_back`（返回键），
+##   免得「按住 Esc 一帧开一次、下一帧又关掉」这种鬼畜。
+func _on_open_menu_requested() -> void:
+	set_settings_menu_open(true)
+
+
+## 选项页开着就收起来，关着就弹出来（Esc / 安卓返回键都走这里）。
 func toggle_settings_menu() -> void:
 	set_settings_menu_open(options_panel != null and not options_panel.is_open())
 
 
-## 直接指定选项页开 / 关（按钮之外只有测试与「返回主菜单」会用到）。
-##
-## ★ 选项页开着 = 右上角按钮常驻满格（与旧下拉菜单同一条可见反馈）。
+## 直接指定选项页开 / 关（Esc、安卓返回键、测试、以及「返回主菜单」都会用到）。
 func set_settings_menu_open(open: bool) -> void:
 	if options_panel == null:
 		return
@@ -1316,15 +1564,6 @@ func set_settings_menu_open(open: bool) -> void:
 		options_panel.open()
 	else:
 		options_panel.close()
-	if settings_button != null:
-		var is_open: bool = options_panel.is_open()
-		FillButtonRes.set_latched(settings_button, is_open)
-		var settings_style := UiStyleRes.accent_button_latched() if is_open \
-			else UiStyleRes.accent_button_clear()
-		settings_style.bg_color = Color(0.0, 0.0, 0.0, 0.0)
-		settings_style.set_corner_radius_all(27)
-		settings_button.add_theme_stylebox_override("normal", settings_style)
-		_sync_settings_face()
 
 
 ## 「全屏 / 窗口化」文案刷新（选项页每次打开时会自己刷；这里留一个给测试 / 兼容用的入口）。
@@ -1622,6 +1861,12 @@ func rebuild_card() -> void:
 func _rebuild_card(animate_cards: bool = false) -> void:
 	if command_card == null:
 		return
+	# ★★ 2026.11.14：命令卡重建（换页 / 换选中 / 换状态）时把**旗帜虚影收掉** ——
+	#   否则「拖着一张操作牌时部队死了 / 换了选中 / 切了页」会留下一面挂在屏幕上的旗。
+	#   ⚠️ 只在「本来就没在拖」时收：拖拽途中每帧都可能重建（签名变了），
+	#     那时候收掉等于虚影一闪一闪。
+	if command_card == null or not command_card._dragging_card:
+		_end_order_ghost()
 	if observer_mode:
 		command_card.visible = false
 		return
@@ -1648,8 +1893,9 @@ func _rebuild_card(animate_cards: bool = false) -> void:
 			entries = _order_entries_for_selection()
 	var old_entries: Array = command_card.entries()
 	command_card.set_entries(entries)
-	if page == PageTabsRes.PAGE_UNIT:
-		if not _has_recruit_progress_card(old_entries) and _has_recruit_progress_card(entries):
+	if false:
+		# ★★ 2026.11.14：读条牌已删（招募即时）——这一段不再需要。
+		if false:
 			command_card.animate_queue_insert(old_entries,
 				String(_recruit_play_context.get("kind", "")),
 			_recruit_play_context.get("screen_pos", Vector2.ZERO))
@@ -1674,50 +1920,16 @@ func _rebuild_card(animate_cards: bool = false) -> void:
 		tech_grid.animate_deck_in()
 
 
+## 单位页的手牌：**只有招募牌本身**。
+##
+## ★★ 2026.11.14（用户口径）：「单位招募时不需要队列了，招募变为即时的，只要拖拽单位牌
+##   生效就是招募完成」+ 清掉「读条牌 / 取消招募牌 / train_sec」。
+##   ⇒ 原来插在最左边那张「读条中 ×N + 拖出即停招」的牌**整块删掉**：
+##     现在拖出一张单位牌，松手那一刻兵就出来了（见 `world.start_recruit`）。
 func _unit_hand_entries() -> Array:
-	var out := _recruit_entries("recruit",
+	return _recruit_entries("recruit",
 		world.recruit_list(world.my_faction) if world != null else [])
-	var leader = _progress_leader()
-	if leader == null or (not leader.is_training() and leader.train_queue.is_empty()):
-		return out
-	var kind := String(leader.train_kind)
-	if kind == "" and not leader.train_queue.is_empty():
-		kind = String(leader.train_queue[0])
-	if kind == "":
-		return out
-	var progress_entry: Dictionary = {}
-	for item in out:
-		if item is Dictionary and String((item as Dictionary).get("unit_kind", "")) == kind:
-			progress_entry = (item as Dictionary).duplicate()
-			break
-	if progress_entry.is_empty():
-		progress_entry = {
-			"type": "recruit", "unit_kind": kind, "name": kind,
-			"icon_mask": UnitCardIconRes.mask_for_unit(cfg, kind),
-			"icon_role": UnitCardIconRes.role_of(cfg, kind),
-		}
-	progress_entry["type"] = "recruit_cancel_all"
-	progress_entry["queue_card"] = true
-	progress_entry["queue_progress"] = float(leader.train_progress())
-	progress_entry["queue_count"] = int(leader.train_queue_size())
-	progress_entry["desc"] = "正在招募：%s。拖出此牌可取消该将领的全部招募并退款。" \
-		% String(progress_entry.get("name", kind))
-	out.insert(0, progress_entry)
-	if out.size() > UiLayoutRes.CARD_SLOTS:
-		out.resize(UiLayoutRes.CARD_SLOTS)
-	return out
 
-
-func _has_recruit_progress_card(entries: Array) -> bool:
-	return not entries.is_empty() and entries[0] is Dictionary \
-		and String((entries[0] as Dictionary).get("type", "")) == "recruit_cancel_all" \
-		and bool((entries[0] as Dictionary).get("queue_card", false))
-
-
-func _progress_leader():
-	if input_ctrl == null:
-		return null
-	return input_ctrl.recruit_focus_leader()
 
 
 ## 把科技九格的内容推给 view/tech_grid.gd。
@@ -1847,6 +2059,7 @@ func handle_touch(event: InputEventScreenTouch) -> void:
 		_lp_active = true
 		_lp_press_ms = Time.get_ticks_msec()
 		_lp_press_pos = event.position
+		_lp_last_pos = event.position
 		if _lp_src == "card" and command_card != null:
 			command_card.begin_touch_drag(_lp_index, event.position)
 		elif _lp_src == "tech" and tech_grid != null:
@@ -1867,9 +2080,11 @@ func handle_touch(event: InputEventScreenTouch) -> void:
 	if was_src == "card" and command_card != null:
 		if was_card_dragging:
 			# _input 先于 Button 的模拟 mouse-up；延后一拍再派发拖牌动作。
-			command_card.call_deferred("finish_touch_drag", was_index)
+			# ★★ 2026.11.14：把**手指最后的位置**一起带上 —— 操作牌「拖出松手 = 落点」，
+			#   拿鼠标位置会打在屏幕上完全不相干的地方（触屏根本没有鼠标）。
+			command_card.call_deferred("finish_touch_drag", was_index, _lp_last_pos)
 		else:
-			command_card.finish_touch_drag(was_index)
+			command_card.finish_touch_drag(was_index, _lp_last_pos)
 	elif was_src == "tech" and tech_grid != null:
 		if was_card_dragging:
 			tech_grid.call_deferred("finish_touch_drag", was_index)
@@ -1904,6 +2119,7 @@ func handle_touch_drag(event: InputEventScreenDrag) -> void:
 		var dragging := false
 		if _lp_src == "card" and command_card != null:
 			dragging = command_card.move_touch_drag(_lp_index, event.position)
+			_lp_last_pos = event.position
 		elif _lp_src == "tech" and tech_grid != null:
 			dragging = tech_grid.move_touch_drag(_lp_index, event.position)
 		if dragging:
@@ -1915,8 +2131,9 @@ func handle_touch_drag(event: InputEventScreenDrag) -> void:
 		var pan_threshold := cfg.touch_pan_min_px if cfg != null else 12.0
 		if event.position.distance_to(_lp_press_pos) > pan_threshold:
 			_lp_active = false
+			_lp_last_pos = event.position
 			if _lp_src == "card" and command_card != null:
-				command_card.finish_touch_drag(_lp_index)
+				command_card.finish_touch_drag(_lp_index, _lp_last_pos)
 			elif _lp_src == "tech" and tech_grid != null:
 				tech_grid.finish_touch_drag(_lp_index)
 		return
@@ -2035,7 +2252,7 @@ func _hover_detail(src: String, entry: Dictionary) -> Dictionary:
 
 
 ## 拼一块悬停详情：`body` 是**多行**文本（每行一个字段），空行自动丢掉。
-## ★ 面板按 `HOVER_W`（= 命令卡 240 + 页签列 100 = 340）的宽**折行**（见 view/hover_tip.gd），
+## ★ 面板按 `HOVER_W`（= 手牌宽 842）的宽**折行**（见 view/hover_tip.gd），
 ##   所以这里只负责「给哪几句」，
 ##   不管每句多长 —— 长句子不会被裁掉，只会多占几行。
 func _hover_text(title: String, lines: Array) -> Dictionary:
@@ -2489,24 +2706,8 @@ func _recruit_entries(entry_type: String, list: Variant) -> Array:
 		d["ready"] = int(d.get("tier", 1)) <= level
 		if not bool(d["ready"]):
 			d["lock_reason"] = "tier"
-	# ★★ 招募队列：整条批次共用一个读条（world._tick_recruitment），
-	#   同种多个时在对应格子上显示数量角标。只有单位页（entry_type == "recruit"）有。
-	if entry_type == "recruit" and input_ctrl != null:
-		var leader = input_ctrl.first_selected_leader()
-		if leader != null and (leader.is_training() or not leader.train_queue.is_empty()):
-			var progress := float(leader.train_progress())
-			var counts: Dictionary = {}
-			if String(leader.train_kind) != "":
-				counts[String(leader.train_kind)] = int(counts.get(String(leader.train_kind), 0)) + 1
-			for k in leader.train_queue:
-				counts[String(k)] = int(counts.get(String(k), 0)) + 1
-			for d2 in slots:
-				if (d2 as Dictionary).is_empty():
-					continue
-				var kk := String((d2 as Dictionary).get("unit_kind", ""))
-				if int(counts.get(kk, 0)) > 0:
-					(d2 as Dictionary)["queue_progress"] = progress
-					(d2 as Dictionary)["queue_count"] = int(counts.get(kk, 0))
+	# ★★ 2026.11.14：招募即时化之后**没有队列了** —— 原来挂在格子上的
+	#   「读条进度 / ×N 角标」整块删掉（拖出一张牌 = 兵当场出来）。
 	return slots
 
 
@@ -2538,7 +2739,8 @@ func _zone_recruit_entries() -> Array:
 	var out: Array = []
 	if world == null:
 		return out
-	for kind_v in world.general_recruit_roster(world.my_faction):
+	# ★★ 2026.11.14（用户口径）：招走的那位**从牌面上消失**（见 world.general_recruit_available）
+	for kind_v in world.general_recruit_available(world.my_faction):
 		var kind := String(kind_v)
 		var e: Dictionary = world.recruit_entry(kind)
 		if e.is_empty():
@@ -2564,29 +2766,40 @@ func _zone_recruit_entries() -> Array:
 
 
 ## 「操作」页的四格：对**当前选中的部队**下达的指令（需求原话：「如移动，攻击，行军等」）。
-## ★ 前三格是「进命令模式 → 左键点地图 / 点目标」那种两步式（见 input_controller.order_mode）；
-##   「停止」不需要目标，点一下当场生效。
-## ★ 键位按命令卡的顺序 Q/W/E/A…（第 4 格是 A），与其它页同一套规则。
 ##
-## ★★ 将领**濒死**时，第一格换成「再起 / 取消再起」（本轮新增）——
-##   用户原话：「若其血量回复至 10% 及以上，则其操作栏中会出现『再起』按钮，
-##   点击后可消耗资源使其脱离濒死状态重新投入战斗」。
-##   ⚠️ 只用**一格**：濒死将领不能移动 / 攻击 / 行军，那三格摆着也是点了没用
-##      （点了会被逻辑层拒），所以整页只留「再起」这一格。
+## ★★ 2026.11.14（用户口径）：「操作牌拖出后，可在地图上选择落点……拖出并松手后，
+##   落点处即为操作点」+「部队的操作牌有三秒冷却，每个部队单独计算，
+##   拖出生效并回到手牌后，牌面会出现进度条以提示其冷却」。
+##   ⇒ 这一页不再走「进命令模式 → 再点一下地图」的两步式：**拖出手牌**、松手即下达
+##     （见 `_begin_order_ghost()` / `_commit_order_drag()`）。
+##   冷却中（该部队共享 3s）⇒ 整页 `ready = false`（格子变灰、拖都拖不起来），
+##     并且带 `queue_progress`（= 已过比例）让牌面画一条进度条。
+##
+## ★★ 将领**濒死**时，第一格换成「再起 / 取消再起」（见 `_revive_entries()`）——
+##   那个分支不走本函数，也就不吃操作牌冷却。
 func _order_entries() -> Array:
+	# ★ 冷却：队里最慢的那支还没好 ⇒ 整页不可用（每队共享一个冷却，见 ORDER_CD_SEC）。
+	var left: float = _order_cd_left()
+	var ready: bool = left <= 0.0
+	var progress: float = 0.0 if ready else clampf(1.0 - left / ORDER_CD_SEC, 0.0, 1.0)
+	var cd_hint: String = "" if ready else "（冷却中，还要 %.1f 秒）" % left
 	return [
 		{"type": "order", "mode": "move", "name": "移动",
 			"icon_glyph": "➤",
-			"desc": "点这一格后，左键点地图下达移动命令（遇敌不停）"},
+			"desc": "把这张牌拖到地图上：松手处就是移动目标（遇敌不停）" + cd_hint,
+			"ready": ready, "queue_progress": progress},
 		{"type": "order", "mode": "attack", "name": "攻击",
 			"icon_glyph": "⚔",
-			"desc": "点这一格后，左键点敌方单位 / 建筑下达攻击命令"},
+			"desc": "把这张牌拖到敌方单位 / 建筑上：松手即攻击（会自动吸附最近的敌人）" + cd_hint,
+			"ready": ready, "queue_progress": progress},
 		{"type": "order", "mode": "attack_move", "name": "行军",
 			"icon_glyph": "⟿",
-			"desc": "点这一格后，左键点地图下达行军攻击（路上遇敌就停下来打）"},
+			"desc": "把这张牌拖到地图上：松手处就是行军目标（路上遇敌就停下来打）" + cd_hint,
+			"ready": ready, "queue_progress": progress},
 		{"type": "order", "mode": "stop", "name": "停止",
 			"icon_glyph": "Ⅱ",
-			"desc": "就地停止，并清掉移动 / 攻击 / 行军攻击（点一下立刻生效）"},
+			"desc": "把这张牌拖出来松手：就地停止，并清掉移动 / 攻击 / 行军（没有落点）" + cd_hint,
+			"ready": ready, "queue_progress": progress},
 	]
 
 
@@ -3440,6 +3653,14 @@ func _reject_target_name(evt: Variant) -> String:
 ## ★★ 科技页时九格由 `tech_grid` 盖在命令卡上画，所以**先问它**：
 ##   两层的几何完全重合，判定顺序必须与鼠标命中（`_cell_at_screen`）一致。
 func handle_key(event: InputEventKey) -> bool:
+	# ★★ 2026.11.14 第三轮：**选项页开着时 Esc = 关**。
+	#   选项按钮已按用户要求删除，这里是它在 PC 上唯一的键盘出口；
+	#   必须放在最前面（模态优先），否则 Esc 会被命令卡 / 输入控制器的级联吃掉。
+	if options_panel != null and options_panel.is_open():
+		if event != null and event.pressed and not event.echo \
+				and (event.keycode == KEY_ESCAPE or event.physical_keycode == KEY_ESCAPE):
+			options_panel.close()
+			return true
 	# ★★ 对话优先：空格 / 回车推进当前对话（逐字未完成时先补全）。
 	if broadcast_banner != null and broadcast_banner.has_dialogue():
 		if broadcast_banner.handle_key(event):
@@ -3582,17 +3803,6 @@ func _card_sig() -> String:
 	#    （不放进来的话，格子会一直灰到玩家切一次页 —— 与招募页同一类坑）。
 	if String(page_tabs.page()) == PageTabsRes.PAGE_UNIT:
 		parts.append("ur:%d" % world.unit_recruit_level(world.my_faction))
-	# ★★ 单位页的读条牌：队列开始 / 加单 / 取消 / 批次出货时需要重建手牌。
-	#    进度本身不放签名（每帧变化；由 command_card.set_recruit_queue() 同步）。
-	if String(page_tabs.page()) == PageTabsRes.PAGE_UNIT:
-		var ql = _progress_leader()
-		if ql != null:
-			var qk: Array = []
-			if String(ql.train_kind) != "":
-				qk.append(String(ql.train_kind))
-			for k in ql.train_queue:
-				qk.append(String(k))
-			parts.append("rq:%s:%s" % [String(ql.id), ",".join(PackedStringArray(qk))])
 	# ③ 选中部队 / 什么都没选中这两档**不进签名**：它们的命令卡内容是静态的
 	#    （操作页那四条指令写死在 `_order_entries()`、建筑页来自 config.json 的 building 段），
 	#    与「选中了哪一支部队」无关 —— 放进去只会每次换选中都白重建一遍。
@@ -3609,6 +3819,11 @@ func _card_sig() -> String:
 		parts.append("nd:%s:%d:%d" % [String(ld.id),
 			1 if ld.revive_ready(cfg) else 0,
 			1 if ld.is_reviving() else 0])
+	# ★★ 2026.11.14：操作页的**冷却是否结束**（灰 ⇄ 亮）也要进签名，否则
+	#   「冷却好了但格子还是灰的」要等到下一次换选中才恢复。
+	#   ⚠️ 同样只放 0/1，不放剩余秒数（进度条走 `set_order_cooldown()`，不重建）。
+	if String(page_tabs.page()) == PageTabsRes.PAGE_ORDER:
+		parts.append("ocd:%d" % (1 if _order_cd_left() <= 0.0 else 0))
 	return "|".join(parts)
 
 
@@ -3618,23 +3833,6 @@ func _card_sig() -> String:
 func _refresh_card_if_changed() -> void:
 	if _card_sig() != _card_sig_key:
 		_rebuild_card()
-	_sync_card_queue()
-
-
-## 每帧把当前将领的招募批次进度 / 数量同步给命令卡（不重建九格）。
-func _sync_card_queue() -> void:
-	if command_card == null or input_ctrl == null:
-		return
-	var leader = _progress_leader()
-	var progress := 0.0
-	var counts: Dictionary = {}
-	if leader != null:
-		progress = float(leader.train_progress())
-		if String(leader.train_kind) != "":
-			counts[String(leader.train_kind)] = int(counts.get(String(leader.train_kind), 0)) + 1
-		for k in leader.train_queue:
-			counts[String(k)] = int(counts.get(String(k), 0)) + 1
-	command_card.set_recruit_queue(progress, counts)
 
 
 ## 当前设计空间大小（canvas_items + expand 拉伸后可能比 1920×1080 大）

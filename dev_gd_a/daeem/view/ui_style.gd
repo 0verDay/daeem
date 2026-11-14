@@ -279,10 +279,17 @@ static func row_empty() -> StyleBoxFlat:
 ##   自己铺实底会把画在底纹下面的填充金盖住（用户报的「悬停时灰底消失 / 点击后看不见金」）。
 static func card_normal(filled: bool = true) -> StyleBoxFlat:
 	var s := StyleBoxFlat.new()
-	s.bg_color = bg()
+	# ★★ 2026.11.14（用户口径）：「科技卡牌的底色与其他卡牌不同，需要更改」——
+	#   两边统一的办法是**谁都别自己铺底**：卡身统一由填充层画
+	#   （`FillButtonRes.set_base_bg(cell, bg())`，画在金的下面），底纹只留描边。
+	#   ⚠️ 原来这里铺的是 `bg()`（0.86 实底）⇒ ① 命令卡比科技卡（透明底）暗一大截，
+	#     ② 选中（latched）那一格的金被这层 0.86 底压掉 86%，看着「没填上」。
+	s.bg_color = Color(0.0, 0.0, 0.0, 0.0)
 	s.border_color = line()
 	s.set_border_width_all(2)
 	s.set_corner_radius_all(9)
+	# ★ 投影参数**留着不动**：`fill_button` 会把它搬到填充层下面去画
+	#   （见那边的 `_ensure_shadow()`），这样投影不会压住金、也不会被卡身裁掉。
 	s.shadow_color = Color(0.0, 0.0, 0.0, 0.72)
 	s.shadow_size = 7
 	s.shadow_offset = Vector2(0.0, 6.0)
@@ -453,6 +460,19 @@ static func accent_button_latched() -> StyleBoxFlat:
 # ------------------------------------------------------------------
 
 ## 页签：只有描边（填充层负责底色）。
+##
+## ★★ 2026.11.14（用户口径）：「右下角的页签栏似乎底板为矩形的，它的圆角被底板
+##   影响到了」—— 根因是这颗按钮的**投影**，不是填充层（填充层的方角同轮已改圆角，
+##   见 view/fill_button.gd 的 `_draw()` / `draw_fill_now()`）：
+##     · 页签的 `bg_color` 是**全透明**（为了让填充金透上来），
+##     · 于是 StyleBox 自己那层 `shadow`（0.72 黑）就**直接露在按钮内部**；
+##     · 而投影带 `shadow_offset = (0,4)` ⇒ 它往下挪了 4px，
+##       按钮顶部因此出现一条「没有投影」的浅色横带，右侧还从圆角描边外面探出来
+##       —— 看上去就是「一块方底板压着圆角按钮」。
+##   ⇒ 页签这一档投影改成**零偏移**：内部整块均匀（没有那条横带），
+##     外部是一圈对称的圆角晕光（跟着圆角走，不再是方角）。
+##   ⚠️ 只有「底透明 + 有投影」的控件有这个毛病；`card_normal` / `row_*` 那些
+##     底纹是**有底色**的（投影被底色盖住），保持原来的向下偏移才像「浮在纸上」。
 static func tab_plain() -> StyleBoxFlat:
 	var s := StyleBoxFlat.new()
 	s.bg_color = Color(0.0, 0.0, 0.0, 0.0)
@@ -461,7 +481,7 @@ static func tab_plain() -> StyleBoxFlat:
 	s.set_corner_radius_all(10)
 	s.shadow_color = Color(0.0, 0.0, 0.0, 0.72)
 	s.shadow_size = 5
-	s.shadow_offset = Vector2(0.0, 4.0)
+	s.shadow_offset = Vector2(0.0, 0.0)
 	return s
 
 

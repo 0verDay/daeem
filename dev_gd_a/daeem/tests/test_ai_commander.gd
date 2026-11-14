@@ -245,9 +245,9 @@ func _test_force_cap_and_generals(cfg) -> void:
 		w.units.append(g)
 		ok(int(c.force_cap()) > cap_before, "多一位将领后上限变大")
 	base.level = 2
-	eq(int(c.general_target()), 5, "2 级大本营补将目标 = 5")
+	eq(int(c.general_target()), 4, "2 级大本营补将目标 = 4（2026.11.14 上限改 2/4/5）")
 	base.level = 3
-	eq(int(c.general_target()), 6, "3 级大本营补将目标 = 6")
+	eq(int(c.general_target()), 5, "3 级大本营补将目标 = 5（= 部队面板 5 个槽位）")
 	# 3 级基地 + 充足资源：真的会继续补将（不是只算了个目标）
 	w.ai_faction_resources["F2"] = {"food": 2000.0, "gold": 2000.0}
 	var bz = w.zones.zone_at(base.tx, base.ty)

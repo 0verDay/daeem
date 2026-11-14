@@ -23,8 +23,14 @@ const DetailInfoRes = preload("res://view/detail_info.gd")
 signal unit_selected(unit)
 signal entry_selected(entry)
 
-## 面板几何对齐 V2：左缘 395，377×260；右侧扇形指令牌从 x=796 开始。
-const PANEL_RECT := Rect2(395.0, 794.0, 377.0, 260.0)
+## 面板几何：**只认 `ui_layout.DETAIL_V2_RECT`**（单一来源，别再在这里抄一份）。
+##
+## ★★ 2026.11.14：用户要求「将部队详细信息栏往屏幕左侧靠」⇒ 左缘 395 → 27
+##   （贴左留白与其它面板一致），尺寸仍是 377×260。
+##   ⚠️ 以前这里另有一份 `PANEL_RECT`，而 `ui_layout.DETAIL_V2_RECT`（拿去算
+##     「滚轮缩放在不在底栏上」）又是另一份 —— 两处不同步就会出现
+##     「看得见但点不中 / 点在空白处却被吞掉」。现在只留 ui_layout 那一份。
+##
 ## 单队 / 单个对象：头部（含数值三格）占上面 146
 const HEAD_ZONE_H := 146.0
 ## 多队：只留头部，剩下的全给「成员 + 其他已选」
@@ -43,7 +49,7 @@ var _notice_bg: ColorRect = null
 func setup(world, p_font: Font = null) -> void:
 	name = "DetailPanelV2"
 	mouse_filter = Control.MOUSE_FILTER_STOP
-	UiLayoutRes.apply_rect(self, PANEL_RECT, false, true)
+	UiLayoutRes.apply_rect(self, UiLayoutRes.DETAIL_V2_RECT, false, true)
 	z_index = 5
 
 	info = DetailInfoRes.new()
@@ -87,8 +93,8 @@ func setup(world, p_font: Font = null) -> void:
 ## 上下两块的尺寸随状态走（见文件头）。
 func _apply_zone(multi: bool) -> void:
 	var head: float = MULTI_HEAD_H if multi else HEAD_ZONE_H
-	var w: float = PANEL_RECT.size.x
-	var h: float = PANEL_RECT.size.y
+	var w: float = UiLayoutRes.DETAIL_V2_RECT.size.x
+	var h: float = UiLayoutRes.DETAIL_V2_RECT.size.y
 	info.position = Vector2(0.0, 0.0)
 	info.size = Vector2(w, head)
 	list.position = Vector2(0.0, head)

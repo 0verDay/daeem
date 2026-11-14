@@ -42,6 +42,7 @@ func _run() -> void:
 	_test_reject_fx()
 	_test_death_fx(cfg, world)
 	_test_settled_index(world)
+	_test_edge_scroll_stop(cfg)
 
 	print("[CASE] %s -> 通过 %d 项，失败 %d 项" % [_case_name, _pass, _fail])
 	if _fail > 0:
@@ -146,6 +147,54 @@ func _test_death_fx(cfg, world) -> void:
 	eq(fx.active_count, 0, "★ M3：寿命到了自动收掉")
 	fx.clear()
 	fx.queue_free()
+
+
+# ------------------------------------------------------------------
+# 6) 边缘滚屏的「收手缓动」（2026.11.14，用户报的「停下太硬，像急刹」）
+#
+#   只断言**纯函数**（`_decay_edge_velocity`），不碰真实鼠标与视口：
+#   它的契约就三条 —— 单调变小、`edge_stop_sec` 之后基本归零、帧率无关。
+# ------------------------------------------------------------------
+func _test_edge_scroll_stop(cfg) -> void:
+	ok(cfg.cam_edge_stop_sec > 0.0,
+		"★ 边缘滚屏收手缓动开着（camera.edge_stop_sec = %.3f）" % cfg.cam_edge_stop_sec)
+	ok(cfg.cam_edge_stop_sec < 0.5, "★ 收手缓动是「几十毫秒」这一档，不是慢慢滑")
+	var game = Game3DRes.new()
+	game.cfg = cfg
+	# ① 单调衰减：60Hz 连续 5 帧，速度必须一路变小且始终 > 0
+	var v := Vector2(1.0, 0.0)
+	var last: float = v.length()
+	var monotone := true
+	for i in 5:
+		v = game._decay_edge_velocity(v, 1.0 / 60.0)
+		if v.length() >= last or v.length() <= 0.0:
+			monotone = false
+		last = v.length()
+	ok(monotone, "★ 收手后速度逐帧变小（且不会提前归零）")
+	# ② `edge_stop_sec` 之后基本停住（指数曲线 3τ ≈ 5%）
+	var v2 := Vector2(0.0, 1.0)
+	var steps: int = int(ceil(cfg.cam_edge_stop_sec * 60.0)) + 1
+	for i in steps:
+		v2 = game._decay_edge_velocity(v2, 1.0 / 60.0)
+	ok(v2.length() < 0.06,
+		"★ %.0f ms 之后残速 < 6%%（实际 %.3f）" % [cfg.cam_edge_stop_sec * 1000.0, v2.length()])
+	# ③ 帧率无关：2 帧 @1/60 与 1 帧 @1/30 收敛到同一个速度
+	var a := Vector2(1.0, 1.0)
+	a = game._decay_edge_velocity(a, 1.0 / 60.0)
+	a = game._decay_edge_velocity(a, 1.0 / 60.0)
+	var b := Vector2(1.0, 1.0)
+	b = game._decay_edge_velocity(b, 1.0 / 30.0)
+	near(a.length(), b.length(), 0.01, "★ 指数衰减与帧率无关（60Hz 两帧 ≈ 30Hz 一帧）")
+	# ④ 残速兜底：极小速度直接归零（否则会「永远滑不完」，每帧白调一次 pan_screen）
+	var tiny := game._decay_edge_velocity(Vector2(0.004, 0.0), 1.0 / 60.0)
+	eq(tiny, Vector2.ZERO, "★ 残速低于 1% 时直接归零")
+	# ⑤ `edge_stop_sec = 0` = 回到旧的硬刹（配置可关）
+	var saved: float = cfg.cam_edge_stop_sec
+	cfg.cam_edge_stop_sec = 0.0
+	eq(game._decay_edge_velocity(Vector2(1.0, 0.0), 1.0 / 60.0), Vector2.ZERO,
+		"★ edge_stop_sec = 0 时立刻停（旧手感可复现）")
+	cfg.cam_edge_stop_sec = saved
+	game.free()
 
 
 # ------------------------------------------------------------------
