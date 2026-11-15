@@ -55,6 +55,8 @@ const FS_LINE := 11
 const NAME_BAR_H := 20.0
 ## 「打出一张牌」飞出那一段的时长（秒；飞回那段用 `_animate_card_back` 的 0.18）
 const PLAYED_OUT_SEC := 0.16
+## 拖出后的卡面透明度（与 command_card 的 DRAG_CARD_ALPHA 同一档）。
+const DRAG_CARD_ALPHA := 0.72
 ## 图标层（画烘好的金线蒙版，与单位 / 建筑页同一套）
 const UnitCardIconRes = preload("res://view/unit_card_icon.gd")
 
@@ -494,6 +496,8 @@ func _update_drag(i: int, viewport_pos: Vector2) -> bool:
 	var local: Vector2 = get_global_transform_with_canvas().affine_inverse() * viewport_pos
 	_cells[i].rotation = 0.0
 	_cells[i].position = local - _cells[i].size * 0.5
+	# ★ 与建筑 / 单位牌统一：拖出后半透明（不再整张实心跟着指针）。
+	_cells[i].modulate.a = DRAG_CARD_ALPHA
 	cell_drag_moved.emit(String(entry.get("id", "")), viewport_pos)
 	return true
 
@@ -571,9 +575,11 @@ func move_touch_drag(i: int, viewport_pos: Vector2) -> bool:
 	return _update_drag(i, viewport_pos)
 
 
-func finish_touch_drag(i: int) -> void:
-	var pos: Vector2 = get_viewport().get_mouse_position() if get_viewport() != null else Vector2.ZERO
-	_finish_touch_drag(i, pos)
+func finish_touch_drag(i: int, pos: Vector2 = Vector2.INF) -> void:
+	var at: Vector2 = pos
+	if not at.is_finite() or at == Vector2.INF:
+		at = get_viewport().get_mouse_position() if get_viewport() != null else Vector2.ZERO
+	_finish_touch_drag(i, at)
 
 
 func entry_id_at(i: int) -> String:

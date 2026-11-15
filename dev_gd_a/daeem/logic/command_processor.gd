@@ -7,7 +7,10 @@
 ##   attack         ids, target_id / tx,ty  优先攻击某个敌对单位或建筑（右键点敌人/建筑）
 ##   attack_move    ids, x, y            行军攻击：走到该点，路上遇敌就停下来打（SC2 的 A 键）
 ##   stop           ids                  就地停止（清掉移动 / 攻击 / 行军攻击；操作页的「停止」格）
-##   build          kind(build_type), tx, ty, faction   在格子上建造
+##   build          kind(build_type), tx, ty, faction [, zone_id]
+##                                                       ★ 非城墙建筑：落点必须是己方区划的**建造点位**
+##                                                       ★ 城墙：落点是**区划中心**，一张牌把整圈建满；
+##                                                         zone_id 只是冗余提示（按中心格反查为准）
 ##   demolish       tx, ty               拆除建筑
 ##   recruit        unit_kind, leader_id, faction       把单位排进某个将领的招募队列
 ##                                                      （入队即扣 50 粮 / 50 金 / 1 人口，读条 10 秒）
@@ -594,6 +597,14 @@ static func _ids_of(group: Array) -> Array:
 
 
 ## 建造命令：owner 缺省时用本地阵营
+##
+## ★★ 2026.11.15（建造系统重做）：落点规则不再由命令层「各自判一套」，
+##   统一走 `world.build_reject_reason()`：
+##     · **非城墙建筑** → 必须落在己方区划的**建造点位**上（地图 `zone_list[].build_points`）；
+##     · **城墙** → 落点是某个**区划中心**，一次把整圈建满（跳过被地形/建筑挡住的位置），
+##       花费按**一张牌**算（不是按格数）——用户口径「扣一张牌的费建满」。
+##   ⚠️ 城墙的 `tx/ty` 就是中心格（界面拖到中心上松手），`zone_id` 可选；
+##      没给时用中心格反查区划，二者都给时以 `zone_id` 为准（联机 / 脚本更稳）。
 static func apply_build(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 	var owner := String(cmd.get("faction", world.my_faction))
 	var type := String(cmd.get("build_type", cmd.get("build", "")))
@@ -612,22 +623,10 @@ static func apply_build(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 		world.push_event({"type": "build_rejected", "tile": Vector2i(tx, ty),
 			"reason": "base_level", "faction": owner})
 		return false
-	if not world.can_build_at(tx, ty):
+	var reason: String = world.build_reject_reason(type, tx, ty, owner)
+	if reason != "":
 		world.push_event({"type": "build_rejected", "tile": Vector2i(tx, ty),
-			"reason": "occupied_or_terrain", "faction": owner})
-		return false
-	# ★★ 只能在自己的区划里建造（本轮新增）：中立 / 敌方区划一律拒绝。
-	#    否则玩家能在中立地上立一栋楼，让那一整块地**立即归己**（既成事实扩张）——
-	#    那正是本次要修的 bug。判据只有 `world.zone_allows_build` 一处。
-	if not world.zone_allows_build(tx, ty, owner):
-		world.push_event({"type": "build_rejected", "tile": Vector2i(tx, ty),
-			"reason": "not_in_zone", "faction": owner})
-		return false
-	# ★★ 2026.10.25：敌方单位已经进入区划中心 3×3 占领区 ⇒ 整块区划禁止建造。
-	if world.has_method("zone_capture_blocks_build") \
-			and world.zone_capture_blocks_build(tx, ty, owner):
-		world.push_event({"type": "build_rejected", "tile": Vector2i(tx, ty),
-			"reason": "under_capture", "faction": owner})
+			"reason": reason, "faction": owner})
 		return false
 	var def_v = cfg.get_path_value("building.%s" % type)
 	var def: Dictionary = def_v if typeof(def_v) == TYPE_DICTIONARY else {}
@@ -635,6 +634,26 @@ static func apply_build(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 	#   建造按 config 原价扣。
 	var raw_cost: Variant = def.get("cost", {})
 	var cost: Dictionary = raw_cost if typeof(raw_cost) == TYPE_DICTIONARY else {}
+	# ★★ 城墙：先确认这一圈还有可建的位置（`build_reject_reason` 已经判过），
+	#   然后**只扣一张牌的钱**，再把整圈建上。
+	if BuildingRes.is_wall_type(type):
+		# ★★ 区划以**中心格反查**为准（界面 / AI 都会把中心格的 tx,ty 发上来）：
+		#   命令里的 `zone_id` 只是冗余提示，不能让它决定「钱扣了、圈建到别处」。
+		var zid := -1
+		if world.zones != null:
+			zid = int(world.zones.center_zone_at_id(tx, ty))
+		if zid < 0:
+			world.push_event({"type": "build_rejected", "tile": Vector2i(tx, ty),
+				"reason": "not_zone_center", "faction": owner})
+			return false
+		# ★ 钱从**下单那一方**的池子里出（合作模式：客机花的不是房主的钱）。
+		#   池子为 null = 这一方没有资源库 = 资源无限（见 world.resource_pool_for）。
+		if not EconomyRes.try_spend(cfg, world.resource_pool_for(owner), cost):
+			world.push_event({"type": "build_rejected", "tile": Vector2i(tx, ty),
+				"reason": "cost", "faction": owner})
+			return false
+		var ring: Dictionary = world.build_wall_ring(zid, type, owner)
+		return int(ring.get("built", 0)) > 0
 	# ★ 钱从**下单那一方**的池子里出（合作模式：客机花的不是房主的钱）。
 	#   池子为 null = 这一方没有资源库 = 资源无限（见 world.resource_pool_for）。
 	if not EconomyRes.try_spend(cfg, world.resource_pool_for(owner), cost):

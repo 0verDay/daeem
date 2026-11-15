@@ -101,20 +101,11 @@ func _run() -> void:
 	await process_frame
 	await process_frame
 	ok(game.hud.page_tabs.has_page("unit"), "（前提）选中单位后出现「单位」页")
-	eq(String(game.hud.page_tabs.page()), "order", "（前提）当前不在单位页")
-	eq(String(game.hud.page_tabs._attention_page), "unit",
-		"★★ 没在单位页时页签呼吸高亮")
-	var any_attention := false
-	for p in game.hud.page_tabs._attention_borders:
-		if p != null and p.visible:
-			any_attention = true
-			break
-	ok(any_attention, "★★ 单位页签的呼吸描边真的显示")
-	ok(game.hud.page_tabs._attention_t > 0.0, "★★ 页签呼吸在推进（没有每帧被重置）")
-	game.hud.page_tabs.select_page("unit")
-	await process_frame
-	ok(game.story_guide.is_empty(), "★★ 选中单位页后招募引导自动收掉")
-	eq(String(game.hud.page_tabs._attention_page), "", "★★ 单位页签高亮已关闭")
+	# ★★ 2026.11.15：部队不再有操作页 ⇒ 选中部队**直接停在单位页**，
+	#   所以「没在单位页时高亮页签」这一档在单位页上不可达；引导应当立刻收掉。
+	eq(String(game.hud.page_tabs.page()), "unit", "（前提）选中部队直接停在单位页")
+	ok(game.story_guide.is_empty(), "★★ 已经在单位页 → 招募引导自动收掉（不需要再高亮页签）")
+	eq(String(game.hud.page_tabs._attention_page), "", "★★ 没有需要高亮的页签")
 	game.input_ctrl.select_units([])
 
 	# 命令卡高亮接口（教程第 10 步会用同一个方法）。

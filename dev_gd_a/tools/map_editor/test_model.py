@@ -934,8 +934,7 @@ def t_zone_kind() -> None:
         （这就是界面上「选种类」那一下）；
       · `apply_preset=False`（读地图时用）只改种类、**绝不动数字** ——
         需求原文：「最终游戏中的区划产量以下方数字输入框中的产量为准」；
-      · 导出**每个区块都写 kind**；读回来一致；认不出的 kind → 默认那一档；
-      · 特化白名单（粮食区划仅能黄金 / 人口特化……）来自 config，不在代码里写死。
+      · 导出**每个区块都写 kind**；读回来一致；认不出的 kind → 默认那一档。
     """
     print("\n[20] 区划种类（数据层）")
     cfg = load_config(PROJECT_DIR)
@@ -995,13 +994,6 @@ def t_zone_kind() -> None:
     eq(m.zone_kind(a.zone_id), "gold", "被拒之后种类还是原来的")
     eq(m.set_zone_kind(999, "food"), False, "没有这个区块 → 拒")
 
-    # ---- 特化白名单（数据驱动，不在代码里写死）
-    ok(m.zone_kind_allows_spec("food", "gold"), "粮食区划能做黄金特化")
-    ok(m.zone_kind_allows_spec("food", "population"), "粮食区划能做人口特化")
-    ok(not m.zone_kind_allows_spec("food", "food"), "★ 粮食区划不能做粮食特化")
-    ok(m.zone_kind_allows_spec("population", "gold"), "人口区划能做黄金特化")
-    ok(not m.zone_kind_allows_spec("population", "population"), "★ 人口区划不能做人口特化")
-
     # ---- 导出：每个区块都写 kind；数字照旧「只在非零时才写」
     b = m.add_zone("江陵")
     m.assign_tile(1, 1, b.zone_id)
@@ -1045,6 +1037,277 @@ def t_zone_kind() -> None:
     eq(old.zone(0).kind, "population", "★ 老地图的区块按默认种类（人口区划）算")
     eq(old.zone_production(0, "population"), 0.0,
        "★ 老地图没写 production → 产量 0（不按种类预设兜底）")
+
+
+def t_zone_build_points() -> None:
+    """建造点位（数据层）：玩家只能在这些预置格上盖非城墙建筑（DAEEM 新建造系统）。
+
+    这一节钉住「设得进 / 设不进」的那几条：
+      · 只有**该区划自己的、能走的地块**能当点位 —— 虚线格、别人的地块、
+        山地 / 水域一律拒绝；
+      · 区划中心本身、以及中心的 3×3 环内（Chebyshev ≤ 1）都不行 ——
+        紧贴中心的那一圈留给城墙环；
+      · 一个区划最多 `BUILD_POINTS_PER_ZONE`（= 2）个，同一格全局不重复；
+      · 列表顺序 = 摆放顺序（界面与导出都按它）。
+    """
+    print("\n[21] 建造点位（数据层：设 / 取消 / 上限 / 拒绝条件）")
+    eq(model_module.BUILD_POINTS_PER_ZONE, 2, "★ 每个区划最多 2 个建造点")
+
+    m = MapModel(0, 0)
+    for y in range(4):
+        for x in range(4):
+            m.ensure_tile(x, y)
+            m.create_tile(x, y)
+    a = m.add_zone("东关")
+    for y in range(4):
+        for x in range(4):
+            m.assign_tile(x, y, a.zone_id)
+    m.set_terrain(3, 3, "mountain")
+    m.set_terrain(0, 3, "water")
+    ok(m.set_zone_center(a.zone_id, 1, 1), "（前提）东关的中心在 (1,1)")
+    b = m.add_zone("江陵")            # 一个地块都没有的区划
+
+    eq(m.zone_build_points(a.zone_id), (), "新建的区划没有建造点位")
+    eq(m.zone_build_points(999), (), "没有这个区划 → 空元组")
+    eq(m.zone_build_point_owner(3, 2), None, "没有点位时按格查 → None")
+
+    # ---- 拒绝：虚线格 / 别人的地块 / 山地水域 / 中心 / 3×3 环
+    eq(m.set_zone_build_point(a.zone_id, 9, 9), False, "★ 虚线格（不存在）不能当点位")
+    eq(m.set_zone_build_point(b.zone_id, 3, 2), False, "★ 不是这个区划的地块 → 拒")
+    eq(m.set_zone_build_point(a.zone_id, 3, 3), False, "★ 山地不能当点位")
+    eq(m.set_zone_build_point(a.zone_id, 0, 3), False, "★ 水域不能当点位")
+    eq(m.set_zone_build_point(a.zone_id, 1, 1), False, "★ 区划中心本身不能当点位")
+    for (x, y) in ((0, 0), (1, 0), (2, 0), (0, 1), (2, 1), (0, 2), (1, 2), (2, 2)):
+        eq(m.set_zone_build_point(a.zone_id, x, y), False,
+           "★ 中心的 3×3 环内不能当点位（%d,%d）" % (x, y))
+    ok(m.zone_build_point_block_reason(a.zone_id, 1, 1) != "",
+       "★ 「为什么不行」有一句话（界面直接显示它）")
+    eq(m.zone_build_points(a.zone_id), (), "上面那些被拒的都没进列表")
+
+    # ---- 设得进：环外的自家草地
+    ok(m.set_zone_build_point(a.zone_id, 3, 2), "★ (3,2) 可以当建造点")
+    ok(m.set_zone_build_point(a.zone_id, 3, 1), "★ (3,1) 也可以")
+    eq(m.zone_build_points(a.zone_id), ((3, 2), (3, 1)),
+       "★ 顺序 = 摆放顺序（不是按坐标排序）")
+    eq(m.zone_build_point_owner(3, 2), a.zone_id, "按格反查得到区划")
+    eq(m.zone_build_point_owner(3, 0), None, "没设的格子 → None")
+    eq(m.set_zone_build_point(a.zone_id, 3, 2), False, "★ 同一格再设一次 → 没变化（返回 False）")
+    eq(m.set_zone_build_point(a.zone_id, 3, 0), False, "★ 已经满了 2 个 → 拒")
+    eq(m.zone_build_points(a.zone_id), ((3, 2), (3, 1)), "满了之后列表不变")
+
+    # ---- 取消：一个 / 全部
+    ok(m.clear_zone_build_point(a.zone_id, 3, 1), "★ 取消 (3,1) 这个点")
+    eq(m.zone_build_points(a.zone_id), ((3, 2),), "只剩 (3,2)")
+    eq(m.clear_zone_build_point(a.zone_id, 3, 1), False, "再取消一次 → 没变化")
+    eq(m.zone_build_point_owner(3, 1), None, "反查表里也没有了")
+    ok(m.set_zone_build_point(a.zone_id, 3, 0), "空出一个名额后 (3,0) 设得进")
+    ok(m.clear_zone_build_points(a.zone_id), "★ 清空一个区划的全部点位")
+    eq(m.zone_build_points(a.zone_id), (), "清空之后一个都没有")
+    eq(m.clear_zone_build_points(a.zone_id), False, "再清一次 → 没变化")
+
+
+def t_zone_build_points_cleanup_and_io() -> None:
+    """建造点位的「连带清理」与读写：删格 / 改归属 / 删区划 / 挪中心 / 导出坐标 / 往返。
+
+    ★ 为什么这几条要在数据层钉死：点位是**游戏要读的**东西。留一个指向虚线格的、
+      或者贴着中心的点，游戏里就是「一个点了却盖不了房的格子」——
+      编辑器必须在改动发生的那一刻就把它清掉，而不是等导出时再猜。
+    """
+    print("\n[22] 建造点位（连带清理 + 导出坐标 + 往返）")
+    m = MapModel(0, 0)
+    for y in range(4):
+        for x in range(4):
+            m.ensure_tile(x, y)
+            m.create_tile(x, y)
+    a = m.add_zone("东关")
+    b = m.add_zone("江陵")
+    for y in range(4):
+        for x in range(4):
+            m.assign_tile(x, y, a.zone_id)
+    m.set_zone_center(a.zone_id, 1, 1)
+
+    # ---- 删格 → 那一格的建造点一起没
+    ok(m.set_zone_build_point(a.zone_id, 3, 2), "先设一个点 (3,2)")
+    ok(m.set_zone_build_point(a.zone_id, 3, 0), "再设一个点 (3,0)")
+    m.delete_tile(3, 2)
+    eq(m.zone_build_points(a.zone_id), ((3, 0),), "★ 删掉那一格 → 它的建造点也作废")
+    eq(m.zone_build_point_owner(3, 2), None, "反查不到那个点了")
+    # 把 (3,2) 建回来（下一步要用它挪中心；删格/建格都不影响别的点位）
+    ok(m.ensure_tile(3, 2) and m.create_tile(3, 2), "（前提）把 (3,2) 建回来")
+    m.assign_tile(3, 2, a.zone_id)
+
+    # ---- 改归属 → 原来那个区划的点作废（点位只能落在自己的地块上）
+    ok(m.set_zone_build_point(a.zone_id, 3, 1), "把 (3,1) 也设成点")
+    m.assign_tile(3, 1, b.zone_id)
+    eq(m.zone_build_points(a.zone_id), ((3, 0),), "★ 那一格改划给江陵 → 东关失去这个点")
+    eq(m.zone_build_points(b.zone_id), (), "★ 江陵也不会平白多出一个点")
+
+    # ---- 挪中心 → 新中心 3×3 环内的点一起清掉
+    m.assign_tile(3, 1, a.zone_id)             # 先还回来
+    ok(m.set_zone_build_point(a.zone_id, 3, 1), "重新设上 (3,1)")
+    eq(m.zone_build_points(a.zone_id), ((3, 0), (3, 1)), "（前提）现在有 2 个点")
+    ok(m.set_zone_center(a.zone_id, 3, 2), "★ 把中心挪到 (3,2)（环覆盖了 (3,1)）")
+    eq(m.zone_build_points(a.zone_id), ((3, 0),),
+       "★ 挪中心后，落进新 3×3 环的那个点被清掉（(3,0) 距离 2，留着）")
+
+    # ---- 中心正好压在点位上 → 那个点也没了
+    ok(m.set_zone_center(a.zone_id, 3, 0), "把中心挪到 (3,0) —— 正好压在唯一的点上")
+    eq(m.zone_build_points(a.zone_id), (),
+       "★ 中心压上去 → 那个建造点作废（两者不能重合）")
+
+    # ---- 删区划 → 它的点一起没（别人的点不受影响）
+    m.assign_tile(0, 3, b.zone_id)             # 给江陵一格（远离中心环）
+    ok(m.set_zone_build_point(b.zone_id, 0, 3), "江陵设一个点")
+    ok(m.set_zone_build_point(a.zone_id, 1, 0), "东关也设一个点（(1,0) 离中心 (3,0) 够远）")
+    m.delete_zone(b.zone_id)
+    eq(m.zone_build_points(b.zone_id), (), "★ 区划删了 → 它的点位也没了")
+    eq(m.zone_build_points(a.zone_id), ((1, 0),), "别的区划的点位不受影响")
+
+    # ---- 导出坐标：与 center 同一套（搬到包围盒左上角）
+    m2 = MapModel(0, 0)
+    for y in range(-1, 3):
+        for x in range(-1, 3):
+            m2.ensure_tile(x, y)
+            m2.create_tile(x, y)
+    z = m2.add_zone("西关")
+    for y in range(-1, 3):
+        for x in range(-1, 3):
+            m2.assign_tile(x, y, z.zone_id)
+    m2.set_zone_center(z.zone_id, -1, -1)
+    ok(m2.set_zone_build_point(z.zone_id, 1, 2), "（前提）设一个世界坐标 (1,2) 的点")
+    ok(m2.set_zone_build_point(z.zone_id, 2, 1), "（前提）再设一个 (2,1)")
+    entry = next(item for item in mapfile.model_to_dict(m2)["zone_list"]
+                 if item["id"] == z.zone_id)
+    eq(entry["center"], [0, 0], "（前提）中心搬到导出坐标 (0,0)")
+    eq(entry["build_points"], [[2, 3], [3, 2]],
+       "★ 建造点也搬到导出坐标（世界 (1,2) → 导出 (2,3)），顺序不变")
+
+    # 没设点位的区划 → 不写这个键（与 center 的处理一致）
+    m3 = mapfile.empty_map(3, 3, "grass")
+    z3 = m3.add_zone("空区")
+    for (x, y) in ((0, 0), (1, 0), (2, 0)):
+        m3.assign_tile(x, y, z3.zone_id)
+    m3.set_zone_center(z3.zone_id, 0, 0)
+    entry3 = next(item for item in mapfile.model_to_dict(m3)["zone_list"]
+                  if item["id"] == z3.zone_id)
+    ok("build_points" not in entry3, "★ 没有建造点 → 导出不写 build_points 这个键")
+
+    # ---- 往返：dumps → dict_to_model 保留点位（数量 / 顺序 / 位置）
+    cfg = load_config(PROJECT_DIR)
+    again = mapfile.dict_to_model(json.loads(mapfile.dumps(m2)), cfg)
+    eq(again.zone_build_points(z.zone_id), ((2, 3), (3, 2)),
+       "★ 往返：建造点位读得回来（顺序也一致，都是导出坐标）")
+    eq(again.zone(z.zone_id).center, (0, 0), "（对照）中心读回来的是导出坐标 (0,0)")
+
+
+def t_fill_missing_build_points() -> None:
+    """建造点位自动补齐：老图 / 手写图打开后每个区划都要有 2 个点。
+
+    规则必须是**确定性**的（同一张图每次补出来一样），测试才钉得住；而且要跳过
+    「已经占了的格子」—— 别的区划的点位、预置建筑、山地水域。
+    """
+    print("\n[23] 建造点位自动补齐（确定性 + 跳过被占格）")
+    cfg = load_config(PROJECT_DIR)
+
+    def make_model():
+        m = MapModel(0, 0)
+        for y in range(5):
+            for x in range(5):
+                m.ensure_tile(x, y)
+                m.create_tile(x, y)
+        z = m.add_zone("甲")
+        for y in range(5):
+            for x in range(5):
+                m.assign_tile(x, y, z.zone_id)
+        m.set_zone_center(z.zone_id, 2, 2)
+        return m, z
+
+    # ---- 排序：离中心曼哈顿距离升序 → y 升序 → x 升序
+    m1, z1 = make_model()
+    mapfile.fill_missing_build_points(m1)
+    eq(m1.zone_build_points(z1.zone_id), ((2, 0), (0, 2)),
+       "★ 补齐规则：距离升序 → y 升序 → x 升序（(2,0) 在 (0,2) 前面）")
+    m2, z2 = make_model()
+    mapfile.fill_missing_build_points(m2)
+    eq(m2.zone_build_points(z2.zone_id), m1.zone_build_points(z1.zone_id),
+       "★ 同一张图补两次得到同一组点位（确定性）")
+    mapfile.fill_missing_build_points(m2)
+    eq(m2.zone_build_points(z2.zone_id), m1.zone_build_points(z1.zone_id),
+       "★ 已经满了再补一次 → 什么都不变")
+
+    # ---- 只补缺的那几个，已有的点位（含顺序）一点不动
+    m3, z3 = make_model()
+    ok(m3.set_zone_build_point(z3.zone_id, 4, 4), "先手摆一个 (4,4)")
+    mapfile.fill_missing_build_points(m3)
+    points3 = m3.zone_build_points(z3.zone_id)
+    eq(len(points3), 2, "只补到 2 个")
+    eq(points3[0], (4, 4), "★ 已有的点位保持原位（顺序也不变）")
+    eq(points3[1], (2, 0), "补的是剩下的候选里最优的那个")
+
+    # ---- 预置建筑占的格要跳过
+    m4, z4 = make_model()
+    m4.extra["buildings"] = [{"type": "tower", "x": 2, "y": 0}]
+    mapfile.fill_missing_build_points(m4)
+    eq(m4.zone_build_points(z4.zone_id), ((0, 2), (4, 2)),
+       "★ 有预置建筑的格子跳过（顺延到下一个候选）")
+
+    # ---- 地块不够 / 全被占 → 少补，不报错
+    m5, z5 = make_model()
+    for y in range(5):
+        for x in range(5):
+            if (x, y) != (2, 2):
+                m5.set_terrain(x, y, "water")       # 只剩中心这一格是干的
+    mapfile.fill_missing_build_points(m5)
+    eq(m5.zone_build_points(z5.zone_id), (), "★ 没有可用地块 → 一个都不补（不报错）")
+
+    # ---- 读地图：文件里的点位也要过同一套校验（坏的跳过，然后补齐）
+    raw = {
+        "cols": 4, "rows": 4,
+        "layout": ["....", "....", "...#", "...."],
+        "zones": [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [1, 1, 1, 1]],
+        # ⚠️ 中心走 `zone_centers` 网格（读地图时中心只从这个网格来，见 `_read_zone_centers`）
+        "zone_centers": [[-1, -1, -1, -1], [-1, 0, -1, -1],
+                         [-1, -1, -1, -1], [-1, -1, -1, 1]],
+        "zone_list": [
+            {"id": 0, "name": "甲", "center": [1, 1],
+             # 依次是：中心 / 环内 / 环内 / 山地 / 合法 / 重复 / 别人的地
+             "build_points": [[1, 1], [2, 1], [0, 0], [3, 2], [3, 0], [3, 0], [3, 3]]},
+            {"id": 1, "name": "乙", "center": [3, 3],
+             "build_points": [[3, 3], [2, 3]]},
+        ],
+    }
+    m6 = mapfile.dict_to_model(raw, cfg)
+    eq(m6.zone_center_of(0), (1, 1), "（前提）甲的中心从 zone_centers 读到了 (1,1)")
+    eq(m6.zone_build_points(0), ((3, 0), (3, 1)),
+       "★ 读入时坏的点位被跳过（中心 / 环内 / 山地 / 重复 / 别人的地），再补齐一个")
+    eq(m6.zone_build_points(1), ((1, 3), (0, 3)),
+       "★ 另一块区划也自动补到 2 个（离中心更近的 (1,3) 在前；文件里那两个都在环内，全被跳过）")
+
+    # ---- 读地图时也要避开**文件里**写着、但编辑器不保留的点位：
+    #      `buildings` 会进 extra，`base` / `faction_bases` 连 extra 都不进（DROPPED_KEYS）
+    #      —— 所以 `dict_to_model` 把原始字典一起交给补齐函数。
+    raw_blocked = {
+        "cols": 5, "rows": 5,
+        "layout": ["." * 5] * 5,
+        "zones": [[0] * 5 for _ in range(5)],
+        "zone_centers": [[-1] * 5 for _ in range(5)],
+        "buildings": [{"type": "tower", "x": 2, "y": 0}],
+        "base": [0, 2],
+        "zone_list": [{"id": 0, "name": "甲"}],
+    }
+    raw_blocked["zone_centers"][2][2] = 0
+    m7 = mapfile.dict_to_model(raw_blocked, cfg)
+    eq(m7.zone_build_points(0), ((4, 2), (2, 4)),
+       "★ 补点也避开文件里的 buildings / 老式 base（(2,0) 与 (0,2) 都被跳过）")
+
+    # ---- 完全没有 build_points 的老图：打开就有 2 个点（与 fill_missing_centers 同一位置）
+    # ⚠️ 尺寸要够大：6×4 均分之后每个区块必须留得下「中心 + 环 + 2 个候选」
+    #    （2×2 那种小块被中心的 3×3 环全占满，一个点位都放不下 —— 那是规则允许的结果）。
+    old = mapfile.dict_to_model(
+        {"cols": 24, "rows": 16, "layout": ["." * 24] * 16}, cfg)
+    eq(len(old.zones), 24, "（前提）老图按 6×4 均分出 24 个区划")
+    eq([len(z.build_points) for z in old.zones], [2] * 24,
+       "★ 老图打开后每个区划都有 2 个建造点位")
 
 
 def t_cli_map_option() -> None:
@@ -1113,6 +1376,9 @@ def main() -> int:
     t_rect_selection()
     t_fill_rect_terrain()
     t_zone_kind()
+    t_zone_build_points()
+    t_zone_build_points_cleanup_and_io()
+    t_fill_missing_build_points()
     t_cli_map_option()
     print("\n[CASE] test_model -> passed %d / failed %d" % (_PASSED, _FAILED))
     return 1 if _FAILED else 0

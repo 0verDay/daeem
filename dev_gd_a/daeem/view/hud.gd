@@ -96,11 +96,48 @@ var command_card: Control = null
 var page_tabs: Control = null
 ## ★ 科技九格（盖在命令卡上，只有「科技」页才显示）。见 view/tech_grid.gd。
 var tech_grid: Control = null
-## 建筑牌被拖起期间的屏幕位置 / 预览地块；由 game_scene3d 放置 3D 半透明模型。
+## ★★ 建筑牌被拖起期间的状态（见 `_on_card_drag_started` / `_commit_card_build_drag`）：
+##   · `drag_build_anchors` —— 这一张牌**所有能落**的锚点（`world.build_anchors_for()`：
+##     普通建筑 = 己方区划的空点位；城墙 = 己方区划中心），拖起那一刻算一次；
+##   · `drag_build_anchor`  —— 指针当前落在哪个锚点的圆形范围里（null = 没吸附）；
+##     松手时**只认它**（用户口径：在圆形范围指示内放下 = 在点位处建造）；
+##   · `drag_build_tile`    —— 吸附到的格子（= 锚点格；没吸附 = (-1,-1)）。
+##     ★ 保留这个名字是因为 3D 虚影（game_scene3d）与旧测试都在读它。
+##   · 圆半径来自 config 的 `build.drop_radius_tiles`（overlay 用它画投影圆）。
 var drag_build_active: bool = false
 var drag_build_type := ""
 var drag_build_screen_pos := Vector2.ZERO
 var drag_build_tile := Vector2i(-1, -1)
+var drag_build_anchors: Array = []
+var drag_build_anchor: Variant = null
+var drag_build_radius: float = 1.5
+## ★★ 虚影要显示在哪：普通建筑 = 吸附点（没吸附 = 指针所在格，虚影常驻）；
+##    城墙 = 一圈墙段，围「吸附到的中心」或「离指针最近的己方区划中心」。
+var drag_build_pointer_tile := Vector2i(-1, -1)
+
+## ★★ 2026.11.15 第二轮：**招募将领**的拖牌状态（与建筑同一套手感，见下）。
+##   · `drag_recruit_anchors` —— 这一张牌所有能落的区划中心（`can_recruit_zone` 为空）；
+##   · `drag_recruit_anchor` / `drag_recruit_tile` —— 吸附到的那个中心。
+var drag_recruit_active: bool = false
+var drag_recruit_kind := ""
+var drag_recruit_screen_pos := Vector2.ZERO
+var drag_recruit_tile := Vector2i(-1, -1)
+var drag_recruit_anchors: Array = []
+var drag_recruit_anchor: Variant = null
+var drag_recruit_radius: float = 1.5
+
+## ★★ 交给 overlay 的**统一拖牌锚点状态**（建筑 / 招募共用一套画法）：
+##   圈从内往外扩散、离开时缩回；颜色由 `drag_anchor_kind` + `drag_anchor_ok` 决定。
+var drag_anchor_active: bool = false
+var drag_anchor_kind := ""
+var drag_anchor_tiles: Array = []
+var drag_anchor_tile := Vector2i(-1, -1)
+var drag_anchor_ok: bool = true
+var drag_anchor_radius: float = 1.5
+
+## ★★ 建筑牌拖拽结束（拖回手牌 / 落在空处）时的提示：只在真的把牌拖到地图上过才提示，
+##    免得「拖起来又拖回去」也弹一句红字。
+var _drag_build_left_hand: bool = false
 var _recruit_play_context: Dictionary = {}
 ## ★★ 悬停详情面板（本版新增）：住在**命令卡正上方**，水平范围 = **命令卡 + 右边那一列页签**
 ##    那一整段（左缘对命令卡左缘、右缘对页签列右缘，宽 368.333），
@@ -273,13 +310,7 @@ func setup(p_cfg: ConfigRes, p_world, p_input, theme: Theme, p_camera_rig = null
 	if input_ctrl != null and input_ctrl.has_signal("open_menu_requested") \
 			and not input_ctrl.open_menu_requested.is_connected(_on_open_menu_requested):
 		input_ctrl.open_menu_requested.connect(_on_open_menu_requested)
-	# ★★ 2026.11.14：操作牌的 3 秒冷却**由命令本身触发**（而不是只挂在「拖拽松手」那条路上）。
-	#   这样「拖出松手」和「键盘 Q/W/E/A + 点地图」两条下达路径都算数，
-	#   不会出现「用键盘下令就不吃冷却」这种两套规则。
-	#   ⚠️ 同样用 is_connected 挡重复连接（HUD 可能被重建）。
-	if input_ctrl != null and input_ctrl.has_signal("command_issued") \
-			and not input_ctrl.command_issued.is_connected(_on_command_issued_cd):
-		input_ctrl.command_issued.connect(_on_command_issued_cd)
+	# ★★ 2026.11.15：操作牌与它的 3 秒冷却一起删除 —— 右键直接下令，不需要冷却钩子。
 	# ★★ 编队槽位（稳定编号）：右栏 / 左栏详情 / 数字键共用同一份（见 view/team_slots.gd）。
 	team_slots = p_team_slots
 	# ★★ 投影助手一并收下并转交给小地图（见 `_build_minimap`）：这样小地图一建出来
@@ -367,9 +398,6 @@ func _process(dt: float) -> void:
 	_tick_reject_flash(dt)
 	_tick_broadcast(dt)
 	_tick_resource_floats(dt)
-	# ★★ 2026.11.14：操作牌的每队冷却（拖出生效后 3 秒，牌面出进度条）。
-	#   暂停时 `game_scene3d` 会把 dt 传 0 ⇒ 冷却跟着冻结，与其它计时同一口径。
-	_tick_order_cooldown(dt)
 	_tick_long_press()
 	# ★ 手机端性能读数：约 2Hz 刷新（见 `_build_perf_readout`）。
 	if _perf_label != null:
@@ -1024,404 +1052,370 @@ func _build_command_card() -> void:
 
 
 func _on_card_drag_started(entry: Dictionary, screen_pos: Vector2) -> void:
-	# ★★ 2026.11.14（用户口径）：操作牌拖出 → 地图上跟着一个**旗帜虚影**表示落点。
-	#   停止牌（`mode == "stop"`）不需要落点，所以不显示虚影（拖起即待松手）。
-	if String(entry.get("type", "")) == "order":
-		_begin_order_ghost(entry, screen_pos)
+	var kind := String(entry.get("type", ""))
+	if kind == "build":
+		_begin_build_drag(entry, screen_pos)
 		return
-	if String(entry.get("type", "")) != "build":
-		return
-	var build_type := String(entry.get("build_type", ""))
-	if build_type == "" or not bool(entry.get("ready", true)):
-		return
-	drag_build_active = true
-	drag_build_type = build_type
-	drag_build_tile = Vector2i(-1, -1)
-	_update_build_drag_preview(screen_pos)
+	# ★★ 2026.11.15 第二轮：将领牌拖出 → 己方区划中心成为落点（圈内松手 = 招募）。
+	if (kind == "general_drag" or kind == "zone_recruit") \
+			and bool(entry.get("ready", false)):
+		_begin_recruit_drag(entry, screen_pos)
 
 
 func _on_card_drag_moved(entry: Dictionary, screen_pos: Vector2) -> void:
-	if String(entry.get("type", "")) == "order":
-		_update_order_ghost(entry, screen_pos)
-		return
 	if drag_build_active and String(entry.get("build_type", "")) == drag_build_type:
 		_update_build_drag_preview(screen_pos)
+		return
+	if drag_recruit_active:
+		_update_recruit_drag_preview(screen_pos)
 
 
 func _on_card_drag_finished(entry: Dictionary, screen_pos: Vector2, index: int) -> void:
 	var kind := String(entry.get("type", ""))
-	# ★★ 2026.11.14（用户口径）：「操作牌在拖出并松手后，落点处即为操作点」——
-	#   松手就地按**松手位置**下达命令，不再进「命令模式」等第二下点击。
-	if kind == "order":
-		_commit_order_drag(entry, screen_pos, index)
-		return
 	if kind == "build" and drag_build_active:
 		_update_build_drag_preview(screen_pos)
-		_commit_card_build_drag()
+		var built: bool = _commit_card_build_drag()
 		_clear_card_build_drag()
-		command_card.animate_card_back(index)
+		if built:
+			# ★ 生效：牌向上淡出并缩小消失；**只把这**张牌淡回槽位，不重排整手牌。
+			command_card.play_drag_success(index, screen_pos, true)
+		else:
+			# ★ 拒绝 / 取消：牌飞回手牌栏；只有**真的丢在地图上但建不了**才闪红
+			#   （拖回手牌 = 取消，不该像出错）。
+			command_card.animate_card_back(index)
+			if _drag_build_left_hand and not point_hits_ui(screen_pos):
+				flash_reject()
+		return
+	if (kind == "general_drag" or kind == "zone_recruit") and drag_recruit_active:
+		_update_recruit_drag_preview(screen_pos)
+		var ui_release := point_hits_ui(screen_pos)
+		var recruited: bool = _commit_recruit_drag()
+		_clear_card_recruit_drag()
+		if recruited:
+			command_card.play_drag_success(index, screen_pos)
+		else:
+			command_card.animate_card_back(index)
+			if not ui_release:
+				flash_reject()
 		return
 	if kind == "recruit":
+		# ★★ 2026.11.15 修 bug：**在 UI 上松手（拖回手牌 / 页签 / 面板）= 取消**。
+		#   旧版不看松手位置，拖回手牌也照样发招募命令 —— 玩家看到的是「牌收回来了，
+		#   兵却招出来了」。判据与建造 / 操作牌同一条：`point_hits_ui()`。
+		if point_hits_ui(screen_pos):
+			command_card.animate_card_back(index)
+			return
 		var played_kind := String(entry.get("unit_kind", ""))
 		_recruit_play_context = {"kind": played_kind, "screen_pos": screen_pos}
 		if _on_card_entry(entry):
 			_refresh_card_if_changed()
 			if not _recruit_play_context.is_empty():
-				command_card.animate_played_card(played_kind, screen_pos)
+				command_card.play_drag_success(index, screen_pos)
 			_recruit_play_context.clear()
 			return
 		_recruit_play_context.clear()
+		command_card.animate_card_back(index)
+		flash_reject()
+		return
+	# 其它牌（理论上没有拖拽语义）：在 UI 上松手一律当取消，不做任何动作 ——
+	# 免得「拖回手牌」被当成一次点击（与单位牌那个 bug 同源）。
+	if point_hits_ui(screen_pos):
 		command_card.animate_card_back(index)
 		return
 	_on_card_entry(entry)
 	command_card.animate_card_back(index)
 
 
-func _on_tech_drag_finished(id: String, _screen_pos: Vector2, _index: int) -> void:
+func _on_tech_drag_finished(id: String, screen_pos: Vector2, _index: int) -> void:
+	# ★★ 2026.11.15（用户口径）：科技牌也要和建筑 / 单位牌同一条放回逻辑 ——
+	#   松手在任意 UI 上（拖回手牌 / 页签 / 面板）= 取消，不启用、不弃用。
+	#   科技牌的回手动画由 tech_grid 自己播（见 tech_grid._finish_touch_drag）。
+	if point_hits_ui(screen_pos):
+		return
 	_on_tech_cell_activated(id)
 
 
-# ------------------------------------------------------------------
-# ★★ 2026.11.14 操作牌：拖出 → 地图上跟着一个「旗帜虚影」→ 松手即下达
-#
-# 用户口径：「操作牌拖出后，可在地图上选择落点，落点将以一个旗帜虚影显示，
-#   「攻击」牌会有额外的旗帜吸附效果，会吸附到鼠标落点最近的敌方单位/建筑上，
-#   「暂停」牌没有旗帜虚影；操作牌在拖出并松手后，落点处即为操作点」。
-#
-# 分工：
-#   · 落点 / 吸附 / 拒因判据全在 **hud**（它有 `palette` 与 `world`）；
-#   · 真正的**画**在 `view/overlay_view_3d.gd`（2D 屏幕空间，跟着投影走）——
-#     `game_scene3d._sync_order_ghost()` 每帧把下面这几个字段抄过去；
-#   · 命令出口仍是 `input_ctrl.issue_order_at()`（与点地图那一路共用同一段代码）。
-# ------------------------------------------------------------------
-
-## 旗帜虚影当前是否显示、打在哪个世界点、什么颜色、有没有吸附到敌人。
-var order_ghost_active: bool = false
-var order_ghost_world: Vector2 = Vector2.ZERO
-var order_ghost_color: Color = Color(0.55, 1.0, 0.65, 1.0)
-var order_ghost_snapped: bool = false
-## 吸附到的目标（单位 / 建筑对象；未吸附 = null）。只给表现层用来补一圈高亮。
-var order_ghost_target = null
-
-## 拖拽中的那张操作牌的 `mode`（"move" / "attack" / "attack_move" / "stop"）。
-var _order_drag_mode: String = ""
-## 每支部队（按队长 id）共享一个冷却：`leader_id -> 剩余秒`。
-var _order_cd: Dictionary = {}
-
-
-## 拖起操作牌：开始显示虚影（停止牌不显示）。
-func _begin_order_ghost(entry: Dictionary, screen_pos: Vector2) -> void:
-	_order_drag_mode = String(entry.get("mode", ""))
-	order_ghost_target = null
-	order_ghost_snapped = false
-	if _order_drag_mode == "stop":
-		# ★ 用户口径：「暂停（停止）牌没有旗帜虚影」——它就地生效，没有落点可选。
-		order_ghost_active = false
-		return
-	order_ghost_active = true
-	_update_order_ghost(entry, screen_pos)
-
-
-## 拖动中：更新落点；攻击牌额外吸附到**最近的敌方单位 / 建筑**。
-func _update_order_ghost(entry: Dictionary, screen_pos: Vector2) -> void:
-	if _order_drag_mode == "stop":
-		order_ghost_active = false
-		return
-	# ★ 指回 UI（手牌 / 右栏 / 面板）⇒ 这一下等于「收回来」，不显示落点；
-	#   同时它也是**松手取消**的判据（见 `_commit_order_drag()`），与建筑牌同一套手感。
-	#   ⚠️ 拖起来的那一瞬间指针本来就还在手牌上，所以刚拖起时看不到旗子是**对的**，
-	#     挪到地图上才出现。
-	if palette == null or world == null or point_hits_ui(screen_pos):
-		order_ghost_active = false
-		return
-	order_ghost_active = true
-	var mode := String(entry.get("mode", _order_drag_mode))
-	var logic: Variant = palette.to_logic(screen_pos)
-	if logic == null:
-		# 指到天空 / 屏幕外：虚影留在上一个有效落点，只是不再更新。
-		return
-	order_ghost_world = logic
-	order_ghost_target = null
-	order_ghost_snapped = false
-	if mode == "attack":
-		# ★★ 吸附：屏幕距离最近的那个敌方单位 / 建筑（在 `ORDER_SNAP_PX` 像素内）。
-		#   用**屏幕**距离而不是地面距离：玩家看的是画面，「看着近」就该吸上去。
-		var snap: Dictionary = _nearest_foe_for_order(screen_pos)
-		if not snap.is_empty():
-			order_ghost_world = snap.get("world", order_ghost_world)
-			order_ghost_target = snap.get("target", null)
-			order_ghost_snapped = true
-	order_ghost_color = _order_ghost_color(mode, order_ghost_snapped)
-
-
-## 某道操作命令对应的虚影颜色（移动绿 / 行军黄 / 攻击红；吸附到敌人更红一档）。
-static func _order_ghost_color(mode: String, snapped: bool) -> Color:
-	match mode:
-		"attack":
-			return Color(1.0, 0.36, 0.34, 1.0) if snapped else Color(1.0, 0.55, 0.45, 1.0)
-		"attack_move":
-			return Color(1.0, 0.84, 0.36, 1.0)
-		_:
-			return Color(0.55, 1.0, 0.65, 1.0)
-
-
-## 松手：按落点下达（停止牌就地生效），然后收旗 + 起冷却 + 牌飞回手牌。
+## 拖起建筑牌：记下这张牌的类型 / 所有可落点，并立刻算一次「指针落在哪」。
 ##
-## ★ 拒因（没选中部队 / 攻击没吸到敌人 / 观战）一律「牌退回手牌 + 一句提示」——
-##   用户口径：「攻击牌吸不到敌人时不能下达」。
-func _commit_order_drag(entry: Dictionary, screen_pos: Vector2, index: int) -> void:
-	var mode := String(entry.get("mode", _order_drag_mode))
-	var leaders: Array = _order_cooldown_leaders()
-	# ★ 松手落在 UI 上（拖回手牌 / 右栏）= **取消**：不下达、不进冷却，牌自己飞回去。
-	#   这与建筑牌「拖回手牌就取消」是同一套手感；不挡的话松手处会把指令下到
-	#   手牌**背后**的地面上（玩家看到的是「牌飞回去了，部队却自己走了」）。
-	if mode != "stop" and point_hits_ui(screen_pos):
-		_end_order_ghost()
-		command_card.animate_card_back(index)
+## ★★ 2026.11.15：拖起那一刻就把「这一张牌所有能落的位置」算出来 ——
+##   overlay 靠它画**全部点位的高亮**（用户口径：拖拽时所有可建点位高亮）。
+##   建筑牌不改变世界（只是读取），所以只算一次；松手后清理。
+func _begin_build_drag(entry: Dictionary, screen_pos: Vector2) -> void:
+	var build_type := String(entry.get("build_type", ""))
+	if build_type == "" or not bool(entry.get("ready", true)) or world == null:
 		return
-	# ★★ 2026.11.14（用户报「冷却没有生效」）：**这里再挡一次**。
-	#   命令卡的 `disabled` 只在「点击」那条路上有效，拖拽是 `gui_input` 自己判的；
-	#   万一哪天那条路漏了，这一层是最后一道闸 —— 冷却中绝不允许再下达。
-	if not bool(entry.get("ready", true)):
-		var left: float = _order_cd_left()
-		show_notice("这张操作牌还在冷却（%.1f 秒）" % maxf(left, 0.0))
-		_end_order_ghost()
-		command_card.animate_card_back(index)
-		return
-	var reason := ""
-	if mode == "stop":
-		reason = "" if (input_ctrl != null and input_ctrl.issue_stop_order()) else "no_units"
-	elif order_ghost_snapped and order_ghost_target != null:
-		# ★ 吸附到敌人时，落点用**目标自己的位置**（松手那一下可能已经离它几十像素）。
-		reason = input_ctrl.issue_order_at(mode, _target_screen_pos(order_ghost_target)) \
-			if input_ctrl != null else "bad_point"
-	elif input_ctrl != null:
-		reason = input_ctrl.issue_order_at(mode, screen_pos)
-	_end_order_ghost()
-	command_card.animate_card_back(index)
-	if reason != "":
-		if reason == "no_target":
-			show_notice("这里没有敌人：把「攻击」牌拖到敌方单位或建筑上")
-		elif reason == "no_units":
-			show_notice("先选中一支部队，才能下达指令")
-		# ★ 拒单**不进冷却**（不能因为下错一次就罚 3 秒）。
-		_refresh_card_if_changed()
-		return
-	# ★ 冷却在 `_on_command_issued_cd()` 里起（挂在 `command_issued` 上，见那段说明）——
-	#   这里不再自己写一遍，否则同一个信号会把它算两遍（虽然幂等，但语义会漂）。
+	drag_build_active = true
+	drag_build_type = build_type
+	drag_build_tile = Vector2i(-1, -1)
+	drag_build_anchor = null
+	drag_build_pointer_tile = Vector2i(-1, -1)
+	_drag_build_left_hand = false
+	drag_build_radius = cfg.build_drop_radius_tiles if cfg != null else 1.5
+	drag_build_anchors = world.build_anchors_for(build_type, world.my_faction)
+	drag_anchor_active = true
+	drag_anchor_kind = "build"
+	drag_anchor_radius = drag_build_radius
+	drag_anchor_tiles = []
+	for a in drag_build_anchors:
+		if typeof(a) == TYPE_DICTIONARY:
+			drag_anchor_tiles.append(a["tile"])
+	_update_build_drag_preview(screen_pos)
 
 
-## ★★ 2026.11.14：**命令本身**触发操作牌冷却（见 `ORDER_CD_SEC`）。
+## 拖动中：算「指针落在哪个锚点的圆形范围里」。
 ##
-## ★ 为什么挂在信号上而不是只写在拖拽那一段：命令有两个出口 ——
-##   ① 操作牌拖出松手（`_commit_order_drag()` → `issue_order_at()`）；
-##   ② 键盘 Q/W/E/A 进命令模式 + 点地图（`input_ctrl._issue_order_click()`）。
-##   两处最终都 `command_issued.emit(...)`，挂在这里才是**单一来源**，
-##   不会出现「键盘下令不吃冷却」这种两套规则。
-## ★ 只处理四道**部队**操作（move / attack / attack_move / stop）——
-##   建筑升级、招募、科技那些不是「操作牌」。
-func _on_command_issued_cd(cmd: Dictionary) -> void:
-	var kind := String(cmd.get("kind", ""))
-	if kind != "move" and kind != "attack" and kind != "attack_move" and kind != "stop":
-		return
-	var leaders: Array = _order_cooldown_leaders()
-	if leaders.is_empty():
-		return
-	for lid in leaders:
-		_order_cd[String(lid)] = ORDER_CD_SEC
-	_refresh_card_if_changed()
-
-
-## 收旗（松手 / Esc / 卡被收回都要走到这里，否则虚影会留在屏幕上）。
-func _end_order_ghost() -> void:
-	order_ghost_active = false
-	order_ghost_snapped = false
-	order_ghost_target = null
-	_order_drag_mode = ""
-
-
-## 吸附用：离 `screen_pos` 最近的**敌方**单位 / 建筑（限 `ORDER_SNAP_PX` 像素内）。
-##
-## ★★ 判据必须与「真正下达」那一路**逐条一致**（`input_ctrl._pick_foe_unit_at` /
-##   `_issue_order_click` 的攻击分支）：活着、看得见（战争迷雾）、不是同一方、不是无敌、
-##   濒死将领不算。否则会出现最糟的那种手感：**旗帜吸上去了，松手却说「这里没有敌人」**
-##   （实测踩到过：吸到雾里的一栋塔）。
-## @return {} 或 {world: Vector2, target: 对象}
-func _nearest_foe_for_order(screen_pos: Vector2) -> Dictionary:
-	if world == null or palette == null or input_ctrl == null:
-		return {}
-	var best := {}
-	var best_d := ORDER_SNAP_PX
-	for u in world.units:
-		if u == null or not is_instance_valid(u) or not u.alive:
-			continue
-		if FactionRes.same_side_for_attack(String(u.faction), world.my_faction):
-			continue
-		if u.is_downed():
-			continue
-		if not input_ctrl._foe_unit_visible(u):
-			continue
-		var p: Variant = _unit_screen_pos(u)
-		if p == null:
-			continue
-		var d: float = (p as Vector2).distance_to(screen_pos)
-		if d < best_d:
-			best_d = d
-			best = {"world": u.pos, "target": u}
-	for b in world.building_list:
-		if b == null or not is_instance_valid(b) or not b.alive:
-			continue
-		if b.is_invulnerable():
-			continue
-		if FactionRes.same_side_for_attack(String(b.owner), world.my_faction):
-			continue
-		if not input_ctrl._foe_building_visible(b):
-			continue
-		var bp: Variant = _building_screen_pos(b)
-		if bp == null:
-			continue
-		var bd: float = (bp as Vector2).distance_to(screen_pos)
-		if bd < best_d:
-			best_d = bd
-			best = {"world": _building_world_pos(b), "target": b}
-	return best
-
-
-func _unit_screen_pos(u) -> Variant:
-	if palette == null:
-		return null
-	return palette.to_px(u.pos)
-
-
-func _building_screen_pos(b) -> Variant:
-	if palette == null:
-		return null
-	return palette.to_px(_building_world_pos(b))
-
-
-## 建筑的「脚下中心」世界坐标（与 `overlay` 里点建筑用的口径一致）。
-func _building_world_pos(b) -> Vector2:
-	return Vector2(float(b.tx) + 0.5, float(b.ty) + 0.5)
-
-
-## 某个目标对象 → 屏幕点（吸附下达时用它当落点）。
-func _target_screen_pos(t) -> Vector2:
-	var p: Variant = null
-	if t != null and is_instance_valid(t):
-		if t.has_method("is_general") or t.has_method("is_leader"):
-			p = _unit_screen_pos(t)
-		else:
-			p = _building_screen_pos(t)
-	return p if p != null else Vector2.ZERO
-
-
-# ---- 操作牌冷却（每支部队共享 3 秒） ----
-
-## 冷却秒数（用户口径：3 秒）。★ 只作用于**部队的操作牌**（移动/攻击/行军/停止）。
-const ORDER_CD_SEC := 3.0
-## 攻击牌的吸附半径（屏幕像素）：鼠标离敌人这么近就吸上去。
-const ORDER_SNAP_PX := 90.0
-
-
-## 这一页的操作牌该按**哪几支部队**算冷却（多选时取「最慢的那支」）。
-##
-## ★★ 2026.11.14（用户报「冷却没有生效」的那个原因之一）：**不能只认队长**。
-##   玩家完全可以只选中一队亲兵（`leader_id != ""`，没有将领本人）——
-##   那时候「按队长 id 记冷却」会一个 key 都拿不到，于是冷却静默地不生效。
-##   ⇒ 统一按**部队 id** 记：附属兵用 `leader_id`（它本来就是所属部队 id），
-##     将领用 `id` 自己。一支部队因此只有一个 key，多选也只是多几个 key。
-func _order_cooldown_leaders() -> Array:
-	var out: Array = []
-	if input_ctrl == null or world == null:
-		return out
-	for u in input_ctrl.selected_units:
-		if u == null or not is_instance_valid(u) or not u.alive:
-			continue
-		if not world.is_own_seat(String(u.faction)):
-			continue
-		var sid := String(u.leader_id)
-		if sid == "":
-			sid = String(u.id)
-		if not out.has(sid):
-			out.append(sid)
-	return out
-
-
-## 当前选中部队里**最长的**剩余冷却秒数（没选中 = 0）。
-func _order_cd_left() -> float:
-	var left := 0.0
-	for lid in _order_cooldown_leaders():
-		left = maxf(left, float(_order_cd.get(String(lid), 0.0)))
-	return left
-
-
-## 冷却推进（由 `_process` 每帧调；暂停时 dt = 0 ⇒ 冻住）。
-##
-## ★ 两个层次：**可不可用**（灰 ⇄ 亮）走 `_card_sig()` 重建；**进度条**是连续变化的，
-##   不能进签名（会每帧重建九格），所以每帧只推一次 `set_order_cooldown()`。
-func _tick_order_cooldown(dt: float) -> void:
-	if not _order_cd.is_empty() and dt > 0.0:
-		for lid in _order_cd.keys():
-			var v: float = float(_order_cd[lid]) - dt
-			if v <= 0.0:
-				_order_cd.erase(lid)
-			else:
-				_order_cd[lid] = v
-	if command_card != null:
-		# ★ 传**剩余秒数**而不是比例：0 秒 = 没有冷却（整条藏起来），
-		#   与「刚进冷却（剩 3 秒）」分得开（见 command_card.set_order_cooldown 的说明）。
-		command_card.set_order_cooldown(_order_cd_left(), ORDER_CD_SEC)
-
-
-
+## ★★ 用户口径（2026.11.15）：建筑牌只能落在**预置建造点位**上；拖到点位**附近**时
+##   该点位周围出现**圆形范围指示**，在圈内松手 = 在那个点位建造。
+##   ⇒ 判定 = 世界坐标（格）里，指针到锚点中心的距离 ≤ `build.drop_radius_tiles`。
+##   多个锚点都在圈内时取**最近**的那个（不会出现「松手落到了另一个点」）。
+## ★ 指针压在 HUD 上 / 出界 / 没锚点 ⇒ 不吸附（松手 = 取消）。
+## ★★ 但**虚影常驻**（用户口径）：没吸附时普通建筑跟着指针格、城墙跟着「最近的
+##   己方区划中心」，只有指针在 HUD 上时才收起。
 func _update_build_drag_preview(screen_pos: Vector2) -> void:
 	drag_build_screen_pos = screen_pos
 	drag_build_tile = Vector2i(-1, -1)
-	if palette == null or world == null or point_hits_ui(screen_pos):
+	drag_build_anchor = null
+	drag_build_pointer_tile = Vector2i(-1, -1)
+	drag_anchor_tile = Vector2i(-1, -1)
+	drag_anchor_ok = false
+	if palette == null or world == null or drag_build_anchors.is_empty():
+		return
+	if point_hits_ui(screen_pos):
 		return
 	var logic: Variant = palette.to_logic(screen_pos)
 	if logic == null:
 		return
-	var candidate := Vector2i(floori((logic as Vector2).x), floori((logic as Vector2).y))
-	if not world.map.terrain.has(candidate.x, candidate.y):
+	_drag_build_left_hand = true
+	var p: Vector2 = logic
+	drag_build_pointer_tile = Vector2i(floori(p.x), floori(p.y))
+	var best: Variant = null
+	var best_d := INF
+	var nearest: Variant = null
+	var nearest_d := INF
+	for a in drag_build_anchors:
+		if typeof(a) != TYPE_DICTIONARY:
+			continue
+		var tile: Vector2i = a["tile"]
+		var d: float = Vector2(float(tile.x) + 0.5, float(tile.y) + 0.5).distance_to(p)
+		if d < nearest_d:
+			nearest_d = d
+			nearest = a
+		if d > drag_build_radius + 1e-6:
+			continue
+		if d < best_d - 1e-6:
+			best_d = d
+			best = a
+	drag_build_anchor = best
+	if best != null:
+		drag_build_tile = best["tile"]
+	drag_anchor_tile = drag_build_tile
+	drag_anchor_ok = _card_build_anchor_valid() if best != null else false
+
+
+## 拖起将领牌：区划中心成为落点（只列**现在真的能招**的中心）。
+##
+## ★ 判据全部走权威侧：`world.can_recruit_zone()` 为空才算可落点
+##   （已拥有 / 阶数不足 / 将领满员 / 冷却中 / 队列满 都会把那个中心排除掉）。
+func _begin_recruit_drag(entry: Dictionary, screen_pos: Vector2) -> void:
+	if world == null or input_ctrl == null or world.zones == null:
 		return
-	drag_build_tile = candidate
+	var kind := String(entry.get("unit_kind", ""))
+	if kind == "":
+		return
+	drag_recruit_active = true
+	drag_recruit_kind = kind
+	drag_recruit_tile = Vector2i(-1, -1)
+	drag_recruit_anchor = null
+	drag_recruit_radius = cfg.build_drop_radius_tiles if cfg != null else 1.5
+	drag_recruit_anchors = []
+	for z in world.zones.zones:
+		if typeof(z) != TYPE_DICTIONARY:
+			continue
+		var zd: Dictionary = z
+		if zd.get("center", null) == null:
+			continue
+		var zid := int(zd.get("id", -1))
+		if zid < 0:
+			continue
+		if world.can_recruit_zone(kind, zid, world.my_faction) != "":
+			continue
+		drag_recruit_anchors.append({"tile": zd["center"], "zone_id": zid})
+	drag_anchor_active = true
+	drag_anchor_kind = "recruit"
+	drag_anchor_radius = drag_recruit_radius
+	drag_anchor_tiles = []
+	for a in drag_recruit_anchors:
+		drag_anchor_tiles.append((a as Dictionary)["tile"])
+	_update_recruit_drag_preview(screen_pos)
 
 
+## 拖动中：最近的可招募区划中心（半径内才吸附；虚影 / 圈同理）。
+func _update_recruit_drag_preview(screen_pos: Vector2) -> void:
+	drag_recruit_screen_pos = screen_pos
+	drag_recruit_tile = Vector2i(-1, -1)
+	drag_recruit_anchor = null
+	drag_anchor_tile = Vector2i(-1, -1)
+	drag_anchor_ok = false
+	if palette == null or world == null or drag_recruit_anchors.is_empty():
+		return
+	if point_hits_ui(screen_pos):
+		return
+	var logic: Variant = palette.to_logic(screen_pos)
+	if logic == null:
+		return
+	var p: Vector2 = logic
+	var best: Variant = null
+	var best_d := INF
+	for a in drag_recruit_anchors:
+		var tile: Vector2i = (a as Dictionary)["tile"]
+		var d: float = Vector2(float(tile.x) + 0.5, float(tile.y) + 0.5).distance_to(p)
+		if d > drag_recruit_radius + 1e-6:
+			continue
+		if d < best_d - 1e-6:
+			best_d = d
+			best = a
+	if best == null:
+		return
+	drag_recruit_anchor = best
+	drag_recruit_tile = (best as Dictionary)["tile"]
+	drag_anchor_tile = drag_recruit_tile
+	drag_anchor_ok = _recruit_anchor_ok(best)
+
+
+## 吸附到的那个区划中心，现在**钱 / 人口**够不够（规则那部分已由锚点筛选保证）。
+func _recruit_anchor_ok(anchor: Variant) -> bool:
+	if anchor == null or world == null:
+		return false
+	var zid := int((anchor as Dictionary).get("zone_id", -1))
+	return world.can_afford_zone_recruit(drag_recruit_kind, zid) == ""
+
+
+## 在圈内松手 = 在那个区划里招募这位将领。@return true = 命令已发出。
+func _commit_recruit_drag() -> bool:
+	if drag_recruit_kind == "" or input_ctrl == null or world == null:
+		return false
+	if drag_recruit_anchor == null:
+		if not point_hits_ui(drag_recruit_screen_pos):
+			show_notice("把将领牌拖到区划中心的圈里再松手：那里才是招募的落点")
+		return false
+	var zid := int((drag_recruit_anchor as Dictionary).get("zone_id", -1))
+	var why: String = world.can_recruit_zone(drag_recruit_kind, zid, world.my_faction)
+	if why != "":
+		show_notice(_zone_recruit_reject_text(why, drag_recruit_anchor))
+		return false
+	var afford: String = world.can_afford_zone_recruit(drag_recruit_kind, zid)
+	if afford != "":
+		show_notice("招募这位将领：%s" % ("资源不足" if afford == "cost" else "区划人口不足"))
+		return false
+	return input_ctrl.request_zone_recruit_at(drag_recruit_kind, zid)
+
+
+## 区划招募拒因 → 玩家看得懂的一句话（拖拽与点选共用）。
+func _zone_recruit_reject_text(reason: String, _entry: Variant = null) -> String:
+	match reason:
+		"owned":
+			return "这位将领已经拥有，不能重复招募"
+		"tier":
+			return "大本营阶数不足，招不了这位将领"
+		"general_limit":
+			return "将领已达上限（最多 %d 名）：升级大本营可以提高上限" \
+				% world.base_max_generals(world.my_faction)
+		"cooldown":
+			return "将领招募冷却中：还需 %s 秒" % _fmt_num(
+				world.general_recruit_cooldown_left(world.my_faction))
+		"queue_full":
+			return "这个区划的招募队列满了"
+		"zone_owner", "zone_not_found":
+			return "只能在自己区划的中心招募将领"
+		"kind":
+			return "这位将领不在可招募名单里"
+	return "这位将领现在不能招募"
+
+
+## 这一格作为 `build_type` 的落点现在能不能用（**不含吸附**：只问逻辑层）。
+##
+## ★ 保留这个名字 / 签名：3D 虚影（game_scene3d）与旧测试都读它。
+##   它现在只做「规则 + 钱」两件事，锚点/圈的判定在 `_card_build_anchor_valid()`。
 func _card_build_tile_valid(build_type: String, tile: Vector2i) -> bool:
 	if world == null or cfg == null or tile.x < 0 or tile.y < 0 \
 			or not world.map.terrain.has(tile.x, tile.y):
 		return false
 	if not world.building_unlocked(world.my_faction, build_type):
 		return false
-	if not world.can_build_at(tile.x, tile.y, world.my_faction):
-		return false
-	if not world.zone_allows_build(tile.x, tile.y, world.my_faction):
-		return false
-	if world.has_method("zone_capture_blocks_build") \
-			and world.zone_capture_blocks_build(tile.x, tile.y, world.my_faction):
+	if not world.can_place_building(build_type, tile.x, tile.y, world.my_faction):
 		return false
 	var raw: Variant = cfg.get_path_value("building.%s.cost" % build_type)
 	var cost: Dictionary = raw if typeof(raw) == TYPE_DICTIONARY else {}
 	return EconomyRes.can_afford(world.resource_pool_for(String(world.my_faction)), cost)
 
 
-func _commit_card_build_drag() -> void:
-	if drag_build_type == "" or drag_build_tile.x < 0:
-		return
-	if not _card_build_tile_valid(drag_build_type, drag_build_tile):
-		show_notice("这个地块当前不能建造")
-		return
+## 当前吸附到的锚点是否**真的能建**（吸附 + 规则 + 钱）。
+func _card_build_anchor_valid() -> bool:
+	if drag_build_anchor == null or drag_build_type == "":
+		return false
+	var tile: Vector2i = (drag_build_anchor as Dictionary)["tile"]
+	return _card_build_tile_valid(drag_build_type, tile)
+
+
+## 松手：在圈内 = 发建造命令；否则只给提示（拖回手牌静默取消）。@return true = 命令已发出。
+func _commit_card_build_drag() -> bool:
+	if drag_build_type == "":
+		return false
+	# ★ 没吸附到任何点位：拖到空地 / 拖回手牌都算取消，给一句明确提示
+	#   （只在真的把牌拖到地图上过才提示，免得「拖起来又拖回去」也弹红字）。
+	if drag_build_anchor == null:
+		# 拖回手牌 / 右栏 = 取消（不提示）；真的把牌丢在地图空处才提示。
+		if _drag_build_left_hand and not point_hits_ui(drag_build_screen_pos):
+			show_notice("建筑只能建在区划的建造点位上：把牌拖到高亮的点位上再松手")
+		return false
+	var tile: Vector2i = (drag_build_anchor as Dictionary)["tile"]
+	if not world.building_unlocked(world.my_faction, drag_build_type):
+		show_notice("这个大本营等级还建不了%s" % drag_build_type)
+		return false
+	var reason: String = world.build_reject_reason(drag_build_type, tile.x, tile.y,
+		world.my_faction)
+	if reason != "":
+		show_notice(build_reject_text(reason))
+		return false
+	if not _card_build_tile_valid(drag_build_type, tile):
+		show_notice("建造资源不足，建不了")
+		return false
 	input_ctrl.command_issued.emit({
 		"kind": "build", "build_type": drag_build_type,
-		"tx": drag_build_tile.x, "ty": drag_build_tile.y, "faction": world.my_faction,
+		"tx": tile.x, "ty": tile.y,
+		# ★ 城墙要按区划整圈建：把 zone_id 一并带上（权威侧也接受只给中心格）。
+		"zone_id": int((drag_build_anchor as Dictionary).get("zone_id", -1)),
+		"faction": world.my_faction,
 	})
+	return true
 
 
 func _clear_card_build_drag() -> void:
 	drag_build_active = false
 	drag_build_type = ""
 	drag_build_tile = Vector2i(-1, -1)
+	drag_build_anchors = []
+	drag_build_anchor = null
+	drag_build_pointer_tile = Vector2i(-1, -1)
+	_drag_build_left_hand = false
+	_clear_drag_anchor()
+
+
+func _clear_card_recruit_drag() -> void:
+	drag_recruit_active = false
+	drag_recruit_kind = ""
+	drag_recruit_tile = Vector2i(-1, -1)
+	drag_recruit_anchors = []
+	drag_recruit_anchor = null
+	_clear_drag_anchor()
+
+
+func _clear_drag_anchor() -> void:
+	drag_anchor_active = false
+	drag_anchor_kind = ""
+	drag_anchor_tiles = []
+	drag_anchor_tile = Vector2i(-1, -1)
+	drag_anchor_ok = false
 
 
 ## ★★ 命令卡某一类格子的呼吸高亮（教程「协防军」按钮）。
@@ -1715,14 +1709,16 @@ func _tab_plan() -> Dictionary:
 			return _hidden_command_ui_plan()
 		return {"kind": "building", "pages": [PageTabsRes.PAGE_ORDER],
 			"default": PageTabsRes.PAGE_ORDER}
-	# 选中部队 / 单位 → 「操作」+「单位」两页（默认操作）。
-	# ★★ 本次需求：只有**自己的**部队才给这两页；友军单位同样整块隐藏。
+	# 选中部队 / 单位 → **只有「单位」一页**（默认单位）。
+	# ★★ 2026.11.15 第三轮（用户口径）：部队不再有「操作」页 ——
+	#   移动 / 锁定攻击 / 行军回到右键，操作牌与 3 秒冷却一起删除。
+	# ★ 只有**自己的**部队才给这一页；友军单位同样整块隐藏。
 	if not _selected_troops(input_ctrl.selected_units).is_empty():
 		if not _units_all_own(input_ctrl.selected_units):
 			return _hidden_command_ui_plan()
-		return {"kind": "unit", "pages": [PageTabsRes.PAGE_ORDER, PageTabsRes.PAGE_UNIT],
-			"default": PageTabsRes.PAGE_ORDER}
-	# 什么都没选中 → 「建筑」+「科技」两页（默认建筑）。
+		return {"kind": "unit", "pages": [PageTabsRes.PAGE_UNIT],
+			"default": PageTabsRes.PAGE_UNIT}
+	# 什么都没选中 → 「建筑」+「将领」+「科技」三页（默认建筑）。
 	#
 	# ★★ 需求原话（本轮）：「当玩家什么都没选中时，原右下角只有一个建筑页签的地方
 	#    添加一个科技页签，同时该科技页签也会同步到选中大本营时的科技页签中」。
@@ -1738,7 +1734,7 @@ func _tab_plan() -> Dictionary:
 	#    而空手时的默认页是建筑（手玩与测试都按这个前提起步）。
 	#    两类选中的页列表不一样，记忆就必须分开。
 	return {"kind": "empty",
-		"pages": [PageTabsRes.PAGE_BUILD, PageTabsRes.PAGE_TECH],
+		"pages": [PageTabsRes.PAGE_BUILD, PageTabsRes.PAGE_GENERAL, PageTabsRes.PAGE_TECH],
 		"default": PageTabsRes.PAGE_BUILD}
 
 
@@ -1844,7 +1840,7 @@ func _refresh_progress_panel(holder) -> void:
 ##   建筑页 ← config.json 的 building 段里 buildable = true 的那几项（默认是城墙 / 箭塔）
 ##   单位页 ← config.json 的 recruit.list（三行七种兵，按 tier = 大本营等级解锁）
 ##   招募页 ← world.general_recruit_slots（池子抽出的三位，排进**区划**的队列）
-##   操作页 ← `_order_entries()`（对当前选中的部队下达的指令）
+##   操作页 ← 大本营的升级格（部队已没有操作页）
 ##   科技页 ← config.json 的 tech.list（九条占位科技）—— ★ 它**不走命令卡**：
 ##            九格由 view/tech_grid.gd 画（另一套三态样式 + 两行文字），
 ##            所以这里把命令卡清空、再让科技那一层显示出来。
@@ -1866,7 +1862,12 @@ func _rebuild_card(animate_cards: bool = false) -> void:
 	#   ⚠️ 只在「本来就没在拖」时收：拖拽途中每帧都可能重建（签名变了），
 	#     那时候收掉等于虚影一闪一闪。
 	if command_card == null or not command_card._dragging_card:
-		_end_order_ghost()
+		# ★★ 2026.11.15：建筑 / 招募的锚点与虚影同样要收 ——
+		#   否则「拖牌途中切页 / 牌被收走」会在地图上留下一圈圈和半透明墙。
+		if drag_build_active:
+			_clear_card_build_drag()
+		if drag_recruit_active:
+			_clear_card_recruit_drag()
 	if observer_mode:
 		command_card.visible = false
 		return
@@ -1887,6 +1888,11 @@ func _rebuild_card(animate_cards: bool = false) -> void:
 			# ★★ 本轮起招募页是**池子抽出来的一手**（不是 config 里三条写死的卡）：
 			#    内容 = world.general_recruit_slots()，冷却中整页置灰。
 			entries = _zone_recruit_entries()
+		PageTabsRes.PAGE_GENERAL:
+			# ★★ 2026.11.15 第二轮：无选中时的「将领」页 —— 与上面招募页**同一份数据**，
+			#   区别只有两处：条目类型是 `general_drag`（拖到哪个中心就在哪个区划招），
+			#   以及下面点选路径不再有「选中的区划」可用（点格只给一句拖拽提示）。
+			entries = _general_recruit_entries()
 		PageTabsRes.PAGE_ORDER:
 			# ★★ 本轮起「操作」页**不只属于部队**：选中建筑时它画的是
 			#    升级 / 特化那一套（需求：「为所有单位/建筑都添加上『操作』页签」）。
@@ -2238,15 +2244,9 @@ func _hover_detail(src: String, entry: Dictionary) -> Dictionary:
 	match String(entry.get("type", "")):
 		"build":
 			return _hover_build(entry)
-		"recruit", "zone_recruit":
+		"recruit", "zone_recruit", "general_drag":
 			return _hover_recruit(entry)
 		"building_upgrade", "building_upgrade_cancel", "building_upgrade_max":
-			return _hover_building(entry)
-		"revive", "revive_cancel":
-			return _hover_revive(entry)
-		"recall":
-			return _hover_recall(entry)
-		"building_respawn":
 			return _hover_building(entry)
 	return {}
 
@@ -2290,7 +2290,11 @@ func _hover_build(entry: Dictionary) -> Dictionary:
 		cfg.building_body_scale(t) * 100.0)))
 	var cost: Variant = cfg.get_path_value("building.%s.cost" % t)
 	lines.append("造价 %s" % _cost_text(cost if typeof(cost) == TYPE_DICTIONARY else {}))
-	lines.append("点这一格进入建造模式")
+	# ★★ 2026.11.15：点选建造已删除 —— 现在只有「把牌拖到地图上」这一条路。
+	if BuildingRes.is_wall_type(t):
+		lines.append("按住这一格往上拖 → 拖到**区划中心**松手，一次围满一圈")
+	else:
+		lines.append("按住这一格往上拖 → 拖到高亮的**建造点位**松手")
 	if not bool(entry.get("ready", true)):
 		lines.append("★ 需要 %d 级大本营（当前 %d 级）" % [
 			int(entry.get("tier", 1)), int(entry.get("base_level", 1))])
@@ -2308,7 +2312,9 @@ func _hover_recruit(entry: Dictionary) -> Dictionary:
 	# ★ 将领类（general / general_N）有序号：它的数值可能是**这位将领自己的覆盖**
 	#   （config 的 unit.general.stats，编辑器里那个「自定 / 跟随」）。
 	var gidx: int = ConfigRes.general_index_of(kind)
-	var is_zone := String(entry.get("type", "")) == "zone_recruit"
+	var is_zone := String(entry.get("type", "")) == "zone_recruit" \
+		or String(entry.get("type", "")) == "general_drag"
+	var is_drag := String(entry.get("type", "")) == "general_drag"
 	var lines: Array = []
 	lines.append(String(entry.get("desc", "")))
 	if cfg.has_unit_type(ut):
@@ -2388,50 +2394,13 @@ func _hover_recruit(entry: Dictionary) -> Dictionary:
 			var left: float = world.general_recruit_cooldown_left(world.my_faction)
 			if left > 0.0:
 				lines.append("现在冷却中：还需 %s 秒" % _fmt_num(left))
+	if is_drag:
+		lines.append("按住这一格往上拖 → 拖到己方区划中心的圈里松手，就在那个区划招募")
+	elif String(entry.get("type", "")) == "zone_recruit":
+		lines.append("把这张牌拖到区划中心的圈里，或点这一格（在选中的区划招募）")
 	return _hover_text(String(entry.get("name", "")), lines)
 
 
-## 濒死将领那颗「再起 / 取消再起」—— 说明 + 读条 + 当前状态。
-##
-## ★ 数值全部取自**权威侧**（`world.revive_*` 与选中的那个将领的实时血量），
-##   与界面上那颗格子的文案同一个出处 —— 不会出现「说明写着 10%、格子却要求 15%」。
-func _hover_revive(entry: Dictionary) -> Dictionary:
-	var leader = input_ctrl.first_selected_leader() if input_ctrl != null else null
-	var lines: Array = []
-	lines.append(String(entry.get("desc", "")))
-	if leader != null and leader.is_downed():
-		var pct := int(round(leader.hp_ratio() * 100.0))
-		lines.append("当前血量 %d%%（上限 %d%%）" % [
-			pct, int(round(cfg.revive_regen_cap_ratio * 100.0))])
-		lines.append("回复速度：每 %s 秒回 %d%% 上限（濒死期间只增不减、也不会挨打）" % [
-			_fmt_num(cfg.revive_regen_sec), int(round(cfg.revive_regen_ratio * 100.0))])
-		if leader.is_reviving():
-			lines.append("再起读条中：还剩 %s 秒（进度 %d%%）" % [
-				_fmt_num(leader.revive_remaining),
-				int(round(leader.revive_progress() * 100.0))])
-		else:
-			lines.append("再起点：血量 %d%%（现在 %d%%）" % [
-				int(round(world.revive_ready_ratio() * 100.0)), pct])
-		lines.append("再起读条 %s 秒（**不消耗资源**）" % _fmt_num(world.revive_channel_sec()))
-		lines.append("★ 再起后血量**保持不变**；它辖下的部队已在向它集结")
-	return _hover_text(String(entry.get("name", "再起")), lines)
-
-
-## 「召回」格子的悬停说明：把不可逆的后果写清楚（用户拍板「点即生效、不二次确认」）。
-func _hover_recall(entry: Dictionary) -> Dictionary:
-	var lines: Array = []
-	lines.append(String(entry.get("desc", "")))
-	lines.append("★ 召回 = 立即解散这支部队：旗下所有单位被静默击杀（不触发击杀 / 退款）")
-	lines.append("将领随后阵亡，并进入**大本营的重生队列**（串行处理）")
-	lines.append("重生时长：召回 %s 秒；正常阵亡 %s 秒" % [
-		_fmt_num(world.revive_recall_respawn_sec()), _fmt_num(world.revive_respawn_sec())])
-	lines.append("大本营的重生队列不为空时，不能开始新的升级（进行中的升级不受影响）")
-	lines.append("没有可用大本营（被摧毁 / 已中立化）时，召回 = 永久阵亡")
-	return _hover_text(String(entry.get("name", "召回")), lines)
-
-
-## 建筑「操作」页那几格（升级 / 取消升级 / 已满级）—— 那一格的说明 + 等级 + 血量 + 下一级的上限。
-## ★ 目标建筑与操作页画格子用的是**同一条判据**（选中区划时从中心格反查那栋建筑），
 ##   见 `_building_order_entries`。
 func _hover_building(entry: Dictionary) -> Dictionary:
 	var b = _primary_building()
@@ -2604,15 +2573,11 @@ func _build_entry(e: Dictionary, bid: String, tier: int) -> Dictionary:
 	return {
 		"type": "build",
 		"build_type": bid,
-		# ★★ 2026.11.5：建造模式是「选中了这条建造命令」——
-		#   命令卡对应那格要**金色填满**（与页签 / 科技启用同一条选中口径）。
-		#   权威状态是 input_ctrl.build_type；这里只读它，不自己记。
-		"active": input_ctrl != null and String(input_ctrl.build_type) == bid,
 		"name": String(e.get("name", "")),
 		# ★★ 建筑图标：从 .glb 抽边线烘出来的等轴测线稿（见 tools/bake_unit_card_icon.py
 		#   的「建筑」那一段）。格子排版和单位页一致：图标 + 一行名字，说明进悬停面板。
 		"icon_mask": UnitCardIconRes.mask_for_building(bid),
-		"desc": "%s（也可点这一格）" % String(e.get("desc", "")),
+		"desc": String(e.get("desc", "")),
 		"tier": tier,
 	}
 
@@ -2765,124 +2730,31 @@ func _zone_recruit_entries() -> Array:
 	return out
 
 
-## 「操作」页的四格：对**当前选中的部队**下达的指令（需求原话：「如移动，攻击，行军等」）。
-##
-## ★★ 2026.11.14（用户口径）：「操作牌拖出后，可在地图上选择落点……拖出并松手后，
-##   落点处即为操作点」+「部队的操作牌有三秒冷却，每个部队单独计算，
-##   拖出生效并回到手牌后，牌面会出现进度条以提示其冷却」。
-##   ⇒ 这一页不再走「进命令模式 → 再点一下地图」的两步式：**拖出手牌**、松手即下达
-##     （见 `_begin_order_ghost()` / `_commit_order_drag()`）。
-##   冷却中（该部队共享 3s）⇒ 整页 `ready = false`（格子变灰、拖都拖不起来），
-##     并且带 `queue_progress`（= 已过比例）让牌面画一条进度条。
-##
-## ★★ 将领**濒死**时，第一格换成「再起 / 取消再起」（见 `_revive_entries()`）——
-##   那个分支不走本函数，也就不吃操作牌冷却。
-func _order_entries() -> Array:
-	# ★ 冷却：队里最慢的那支还没好 ⇒ 整页不可用（每队共享一个冷却，见 ORDER_CD_SEC）。
-	var left: float = _order_cd_left()
-	var ready: bool = left <= 0.0
-	var progress: float = 0.0 if ready else clampf(1.0 - left / ORDER_CD_SEC, 0.0, 1.0)
-	var cd_hint: String = "" if ready else "（冷却中，还要 %.1f 秒）" % left
-	return [
-		{"type": "order", "mode": "move", "name": "移动",
-			"icon_glyph": "➤",
-			"desc": "把这张牌拖到地图上：松手处就是移动目标（遇敌不停）" + cd_hint,
-			"ready": ready, "queue_progress": progress},
-		{"type": "order", "mode": "attack", "name": "攻击",
-			"icon_glyph": "⚔",
-			"desc": "把这张牌拖到敌方单位 / 建筑上：松手即攻击（会自动吸附最近的敌人）" + cd_hint,
-			"ready": ready, "queue_progress": progress},
-		{"type": "order", "mode": "attack_move", "name": "行军",
-			"icon_glyph": "⟿",
-			"desc": "把这张牌拖到地图上：松手处就是行军目标（路上遇敌就停下来打）" + cd_hint,
-			"ready": ready, "queue_progress": progress},
-		{"type": "order", "mode": "stop", "name": "停止",
-			"icon_glyph": "Ⅱ",
-			"desc": "把这张牌拖出来松手：就地停止，并清掉移动 / 攻击 / 行军（没有落点）" + cd_hint,
-			"ready": ready, "queue_progress": progress},
-	]
-
-
-## ★★ 濒死将领的「操作」页（本轮新增）。
-##
-## 三种状态各一格，互斥（与建筑升级那一套同一种写法）：
-##   ① 血量还没回到 `revive.ready_ratio`（默认 10%）→ 一颗**说明用**的格子
-##      （名字就叫「再起」，`revive` 类型 + `ready = false`，界面把它画灰）；
-##   ② 到 10% 且没在读条 → 真正可点的「再起」（读条时间，免费）；
-##   ③ 正在读条 → 「取消再起」（免费，没有退款）。
-##
-## ★★ 第二格永远是「召回」（倒地即可用，不要求血量门槛）：
-##    立即静默击杀旗下所有部队，随后将领阵亡并进入大本营重生队列。
-##
-## ★ 判据**全部来自权威侧**（`unit.revive_ready()` / `world.revive_*`）：
-##   界面不自己复算一遍「够不够 10%」—— 那会变成两份规则，一旦漂开就会出现
-##   「格子亮着、点下去被拒」这种最恼人的状态。
-func _revive_entries(leader) -> Array:
-	# ⚠️ 这里**不能用** `:=`：`leader.revive_ready(cfg)` 是动态调用，
-	#    返回值没有确定类型（GDScript 会报 "Cannot infer the type of ready variable"）。
-	var ready: bool = leader.revive_ready(cfg)
-	var channel: String = _fmt_num(world.revive_channel_sec())
-	var recall_secs: String = _fmt_num(world.revive_recall_respawn_sec())
-	var out: Array = []
-	if leader.is_reviving():
-		out.append({
-			"type": "revive_cancel",
-			"name": "取消再起",
-			"desc": "撤掉正在读条的再起（再起不消耗资源）",
-			"ready": true,
-		})
-	else:
-		var need_pct := int(round(world.revive_ready_ratio() * 100.0))
-		if not ready:
-			out.append({
-				"type": "revive",
-				"name": "再起",
-				"desc": "血量回复到 %d%% 才能再起（现在 %d%%）—— 濒死期间每秒都在慢慢回血" % [
-					need_pct, int(round(leader.hp_ratio() * 100.0))],
-				"ready": false,
-			})
-		else:
-			out.append({
-				"type": "revive",
-				"name": "再起",
-				"desc": "读条 %s 秒后脱离濒死（**血量保持不变**）重新投入战斗（不消耗资源）" % channel,
-				"ready": true,
-			})
-	# ★ 召回：倒地即可用；把后果写清楚（部队全灭 + 阵亡 + 更短的重生）。
-	out.append({
-		"type": "recall",
-		"name": "召回",
-		"desc": "立即击杀旗下所有部队（不触发死亡效果），将领阵亡后在大本营重生（%s 秒）" % recall_secs,
-		"ready": true,
-	})
+## ★★ 无选中时的「将领」页：与选中区划中心时的招募页**同一份数据**，
+## 只把动作类型换成 `general_drag` —— 松手落在哪个区划中心，就在哪个区划招募。
+func _general_recruit_entries() -> Array:
+	var out: Array = _zone_recruit_entries()
+	for i in out.size():
+		var e: Dictionary = out[i]
+		e["type"] = "general_drag"
+		out[i] = e
 	return out
 
 
-
-## ★★ 「操作」页该画什么：选中建筑时是升级那一套，否则是部队的四条指令。
-## ★★ 2026.10.30：区划中心已经取消「操作」页签（区域特化移除后该页为空），
-##   这里直接返回空，避免万一被其他入口调用时掉回部队指令。
+## 「操作」页（**只剩建筑**）：大本营的升级 / 取消升级。
+##
+## ★★ 2026.11.15 第三轮（用户口径）：**部队不再有操作页** —— 移动 / 锁定攻击 / 行军
+##   全部回到**右键**（单击 = 移动或锁定攻击，双击 = 行军攻击），命令冷却一并取消。
+##   所以选中部队时页签只剩「单位」一页（见 _tab_plan()）；
+##   这个函数现在只服务「选中建筑 / 大本营」那一路。
 func _order_entries_for_selection() -> Array:
+	if input_ctrl == null:
+		return []
 	if input_ctrl.selected_zone != null:
 		return []
-	if not input_ctrl.selected_buildings.is_empty():
-		var out := _building_order_entries(_primary_building())
-		if not out.is_empty():
-			return out
+	if input_ctrl.selected_buildings.is_empty():
 		return []
-	# ★★ 第四种（本轮新增）：选中了**自己那一方的部队** ——
-	#   这时要判「选中的将领是不是濒死了」：濒死就把整页换成「再起」那一格。
-	#
-	# ⚠️ 顺序放在建筑那两支**之后**：三种选中（区划 / 建筑 / 部队）互斥，
-	#   而前两支各自 return 了，所以走到这里的一定是「选中部队」这一支。
-	#   放到前面去的话，选中区划时 `first_selected_leader()` 可能仍然返回
-	#   上一次选中留下的将领（`selected_units` 与 `selected_zone` 是两套字段），
-	#   于是区划的操作页会被将领的「再起」顶掉。
-	var leader = input_ctrl.first_selected_leader()
-	if leader != null and leader.is_downed():
-		return _revive_entries(leader)
-	var out := _order_entries()
-	return out
+	return _building_order_entries(_primary_building())
 
 
 ## 某个区划的**中心建筑**（那一格上立着的中立障碍；找不到 → null）。
@@ -2966,20 +2838,6 @@ func _cost_text(cost: Dictionary) -> String:
 	return " / ".join(parts) if not parts.is_empty() else "免费"
 
 
-## 进了某个命令模式之后那句提示（玩家必须知道「接下来点哪儿」）
-func _order_hint(mode: String) -> String:
-	match mode:
-		"move":
-			return "左键点地图下达移动命令（右键 / Esc 取消）"
-		"attack":
-			return "左键点敌方单位 / 建筑（右键 / Esc 取消）"
-		"attack_move":
-			return "左键点地图下达行军攻击（右键 / Esc 取消）"
-		"stop":
-			return "就地停止（清掉移动 / 攻击 / 行军攻击）"
-	return "左键点地图下达（右键 / Esc 取消）"
-
-
 ## 点了科技九格里的某一格 = **启用 / 弃用**这一条科技（需求：点已启用的 = 弃用）。
 ##
 ## ★★ 「点一下是启用还是弃用」由**权威状态**取反决定（`world.is_tech_active`），
@@ -3037,9 +2895,11 @@ func _on_card_entry(entry: Dictionary) -> bool:
 					int(entry.get("tier", 1)), String(entry.get("name", "")),
 					int(entry.get("base_level", 1))])
 				return false
-			var t := String(entry.get("build_type", ""))
-			if input_ctrl.build_type != t:
-				input_ctrl.set_build_type(t)
+			# ★★ 2026.11.15：**点选建造已删除** —— 建筑只能把牌拖到地图上的建造点位上。
+			#   键盘快捷键（Q/W/…）也走这条路，所以这里统一给一句可执行的提示，
+			#   而不是“点了没反应”。
+			show_notice("建筑牌要拖到地图上：普通建筑拖到高亮的建造点位，城墙拖到区划中心")
+			return false
 		"recruit_cancel_all":
 			if not input_ctrl.request_recruit_cancel_all():
 				show_notice("现在没有可停止的招募队列")
@@ -3082,54 +2942,14 @@ func _on_card_entry(entry: Dictionary) -> bool:
 				return false
 			if not input_ctrl.request_zone_recruit(String(entry.get("unit_kind", ""))):
 				show_notice("先点一个区划中心，才能在这个区划里招募")
-		"order":
-			# ★ 操作页：前三格进 / 退出命令模式（点同一格再点一次 = 退出），
-			#   下一手由 input_controller 接管（左键点地图 / 点目标下达）。
-			#   「停止」没有目标：点一下**当场**下达，不进模式（见 request_stop）。
-			var mode := String(entry.get("mode", ""))
-			var name := String(entry.get("name", ""))
-			if mode == "stop":
-				if input_ctrl.request_stop():
-					show_notice("%s：%s" % [name, _order_hint(mode)])
-				else:
-					show_notice("先选中一支部队，才能下达指令")
-			elif input_ctrl.set_order_mode(mode):
-				show_notice("%s：%s" % [name, _order_hint(mode)])
-			else:
-				show_notice("")
+		"general_drag":
+			# ★★ 2026.11.15：无选中时的「将领」页 —— 落点由**拖到哪里**决定，
+			#   所以点这一格不会有动作（与建筑页同一套口径：给一句能照做的提示）。
+			show_notice("将领牌要拖到己方区划中心的圈里松手：落点就是招募的区划")
 		"building_upgrade":
 			_on_building_action(entry)
 		"building_upgrade_cancel":
 			_on_building_action(entry)
-		"revive":
-			# ★★ 濒死将领的「再起」（本轮新增）：与「停止」那一格一样，
-			#    点一下当场发命令（不需要目标、也不进命令模式）。
-			#    ⚠️ 被置灰的那一档（血量还没到 10%）**根本点不到**：
-			#       按钮是 disabled 的（见 command_card.set_entries），
-			#       这里再判一次只是保险（键盘 / 测试直接调 activate_index 时也走这条路）。
-			if not bool(entry.get("ready", true)):
-				show_notice(String(entry.get("desc", "现在还不能再起")))
-				return false
-			if input_ctrl.request_revive():
-				show_notice("再起：%s" % String(entry.get("desc", "")))
-			else:
-				show_notice("先选中一个濒死的将领，才能让它再起")
-		"revive_cancel":
-			if input_ctrl.request_revive_cancel():
-				show_notice("已取消再起读条")
-			else:
-				show_notice("先选中一个正在再起的将领，才能取消")
-		"recall":
-			# ★ 召回：点即生效（用户拍板不二次确认）。后果写在悬停说明里。
-			if input_ctrl.request_recall():
-				var base = world.find_base_of(world.my_faction) if world != null else null
-				if base != null and not base.neutralized:
-					show_notice("召回：旗下部队已解散，将领将在 %s 秒后于大本营重生"
-						% _fmt_num(world.revive_recall_respawn_sec()))
-				else:
-					show_notice("召回：旗下部队已解散；没有可用大本营，将领将永久阵亡")
-			else:
-				show_notice("先选中一个濒死的将领，才能召回")
 	return false
 
 
@@ -3507,6 +3327,12 @@ func build_reject_text(reason: String) -> String:
 			return "只能在己方区划内建造"
 		"under_capture":
 			return "这个区划正在被占领，暂时不能建造"
+		"not_build_point":
+			return "建筑只能建在区划的建造点位上（把建筑牌拖到高亮的点上）"
+		"not_zone_center":
+			return "城墙只能建在区划中心周围：把城墙牌拖到高亮的区划中心上"
+		"wall_no_space":
+			return "这个区划中心周围的城墙位置已经建满 / 被挡住，建不了墙"
 		"cost":
 			return "资源不足，建不了"
 	return "这里建不了"
@@ -3529,37 +3355,6 @@ func ai_order_reject_text(reason: String) -> String:
 		"unreachable":
 			return "目标点不可到达（水域 / 被建筑占住）"
 	return "这条 AI 指令现在下不了"
-
-
-## 「再起」被拒的**拒因码 → 中文**（码见 logic/world.gd 的 revive_reject_reason）。
-##
-## ★ 常规路径下这些码玩家**看不到**：那颗格子在血量不到 10% 时就是灰的（点不动）。
-##   但 AI 也会下单（它走同一个入口），所以这些中文主要给 AI / 手搓命令兜底。
-func revive_reject_text(reason: String) -> String:
-	match reason:
-		"leader":
-			return "先选中一个将领，才能让它再起"
-		"faction":
-			return "不能给别的阵营的将领再起"
-		"not_downed":
-			return "这个将领没有倒地，不需要再起"
-		"channeling":
-			return "它已经在再起了（想中断就点「取消再起」）"
-		"hp":
-			return "血量还没回到 %d%%，再起还点不亮" % int(round(world.revive_ready_ratio() * 100.0))
-	return "现在不能让它再起"
-
-
-## 召回被拒的**拒因码 → 中文**（逻辑层只给码：见 world.recall_reject_reason）。
-func recall_reject_text(reason: String) -> String:
-	match reason:
-		"leader":
-			return "先选中一个将领，才能召回"
-		"faction":
-			return "不能召回别的阵营的将领"
-		"not_downed":
-			return "只有濒死的将领才能召回"
-	return "现在不能召回这个将领"
 
 
 ## 科技被拒的**拒因码 → 中文**（逻辑层只给码：见 logic/tech.gd 的 can_activate）。
@@ -3767,11 +3562,8 @@ func _card_sig() -> String:
 	if input_ctrl == null or page_tabs == null or world == null:
 		return ""
 	var parts: Array[String] = [String(page_tabs.page())]
-	# ★★ 2026.11.5：建筑页的「当前选中哪条建造命令」也要进签名 ——
-	#   点一格进入 / 再点一次退出 / Esc / 右键取消，都会改 `build_type`；
-	#   不进签名的话，命令卡不会重建，那一格的金色填充就不会跟着变。
-	if String(page_tabs.page()) == PageTabsRes.PAGE_BUILD:
-		parts.append("bt:%s" % String(input_ctrl.build_type))
+	# ★★ 2026.11.15：建筑页不再有「选中的建造命令」（点选建造已删除，只剩拖牌），
+	#   所以签名里不再拼 `build_type` —— 页签切换本身已经由第一项覆盖。
 	# ① 选中的建筑（选中区划时用「它的中心建筑」代替 —— 与 `_building_order_entries` 同一条判据）
 	var b = _primary_building()
 	if b == null and input_ctrl.selected_zone != null:
@@ -3790,7 +3582,8 @@ func _card_sig() -> String:
 	#    · 将领死亡 / 重生 / 上限变化 → cap；
 	#    · 冷却开始 / 结束 → 整页灰 ⇄ 可点。
 	#    ⚠️ 不放剩余秒数，否则命令卡会每秒重建一次。
-	if String(page_tabs.page()) == PageTabsRes.PAGE_RECRUIT:
+	if String(page_tabs.page()) == PageTabsRes.PAGE_RECRUIT \
+			or String(page_tabs.page()) == PageTabsRes.PAGE_GENERAL:
 		var taken_key := ",".join(PackedStringArray(world.general_recruit_owned_kinds(world.my_faction)))
 		parts.append("gr:%d:%d:%d:%s:%d" % [
 			world.base_level_of(world.my_faction),
@@ -3803,28 +3596,11 @@ func _card_sig() -> String:
 	#    （不放进来的话，格子会一直灰到玩家切一次页 —— 与招募页同一类坑）。
 	if String(page_tabs.page()) == PageTabsRes.PAGE_UNIT:
 		parts.append("ur:%d" % world.unit_recruit_level(world.my_faction))
-	# ③ 选中部队 / 什么都没选中这两档**不进签名**：它们的命令卡内容是静态的
-	#    （操作页那四条指令写死在 `_order_entries()`、建筑页来自 config.json 的 building 段），
+	# ③ 选中部队 / 什么都没选中这两档**不进签名**：它们的命令卡内容只由页签决定
+	#    （单位页来自 config、建筑页来自 config、科技页由科技那一层画），
 	#    与「选中了哪一支部队」无关 —— 放进去只会每次换选中都白重建一遍。
-	#
-	# ★★ 唯一的例外是**濒死的将领**（本轮新增）：它的操作页不是那四条静态指令，
-	#    而是「再起 / 取消再起 / 血量还没回到 10%」这三态之一，且会**自己变化**
-	#    （血量到 10% 那一刻格子要亮起来；读条开始 / 结束也要换字）。
-	#    不把它放进签名的话，那两颗格子的字会一直停在生产它的那一帧
-	#    （表现：血量明明回到 10% 了，格子还是灰的，直到玩家改选一次）。
-	#    ⚠️ 只放**这几个会进文案的判据**，不要把 hp 放进去 —— 濒死期间血量每 3 秒
-	#      动一次，放进去等于每 3 秒重建一次命令卡（没必要，格子上不显示具体血量）。
-	var ld = input_ctrl.first_selected_leader()
-	if ld != null and ld.is_downed():
-		parts.append("nd:%s:%d:%d" % [String(ld.id),
-			1 if ld.revive_ready(cfg) else 0,
-			1 if ld.is_reviving() else 0])
-	# ★★ 2026.11.14：操作页的**冷却是否结束**（灰 ⇄ 亮）也要进签名，否则
-	#   「冷却好了但格子还是灰的」要等到下一次换选中才恢复。
-	#   ⚠️ 同样只放 0/1，不放剩余秒数（进度条走 `set_order_cooldown()`，不重建）。
-	if String(page_tabs.page()) == PageTabsRes.PAGE_ORDER:
-		parts.append("ocd:%d" % (1 if _order_cd_left() <= 0.0 else 0))
 	return "|".join(parts)
+
 
 
 ## 命令卡的内容变了就重建（每帧按签名比一次，见 `_card_sig()`）。

@@ -33,7 +33,7 @@ func _cases() -> void:
 	_test_rescue_lock(cfg)
 	_test_rescue_lock_released_on_revive(cfg)
 	_test_revive_gate_no_cost(cfg)
-	_test_revive_channel_and_cancel(cfg)
+	_test_auto_revive(cfg)
 	_test_revive_keeps_hp(cfg)
 	_test_recall(cfg)
 	_test_normal_death_respawn(cfg)
@@ -95,7 +95,7 @@ func _add_mate(cfg, w, leader) -> Variant:
 func _test_config_table(cfg) -> void:
 	var w = require_world_with_escorts(cfg, 3)
 	ok(not w.has_method("revive_cost"), "★★ 再起不再消耗资源（revive.cost / revive_cost 已移除）")
-	near(w.revive_channel_sec(), 5.0, 1e-6, "★ 再起读条 5 秒")
+	near(w.revive_channel_sec(), 0.0, 1e-6, "★ 再起无读条（channel_sec = 0）")
 	near(w.revive_ready_ratio(), 0.1, 1e-6, "★ 血量到 10% 才允许再起")
 	near(cfg.revive_regen_sec, 3.0, 1e-6, "★ 每 3 秒回复一次")
 	near(cfg.revive_regen_ratio, 0.01, 1e-6, "★ 每次回复 1% 血量上限")
@@ -291,22 +291,28 @@ func _test_regen_rate_and_cap(cfg) -> void:
 	_run_secs(w, 1.5)
 	near(g.hp, 1.0 + step, 0.05, "★★ 3 秒后回复了 1% 上限")
 
+	# ★★ 2026.11.15：血量到 10% 就**自动再起**（不消耗资源、无读条），
+	#   所以「回复封顶 20%」那条旧口径不再成立 —— 回复在 10% 那条线就被再起打断。
 	var prev: float = g.hp
 	var dropped := false
-	for _i in 40:
+	var revived_at := -1.0
+	for _i in 120:
 		_run_secs(w, 0.5)
 		if g.hp < prev - 1e-9:
 			dropped = true
 		prev = g.hp
+		if not g.is_downed():
+			revived_at = g.hp
+			break
 	ok(not dropped, "★★ 回复期间血量只增不减")
+	ok(revived_at > 0.0, "★★ 血量回到 10% 时**自动**再起（不需要玩家再点）")
+	near(revived_at / g.hp_max, cfg.revive_ready_ratio, 0.02,
+		"★★ 再起发生在 ready_ratio（10%%）那条线（实际 %.3f）" % (revived_at / g.hp_max))
+	ok(g.alive and not g.is_downed(), "★ 再起后不再是濒死")
+	ok(g.is_attackable(), "★★ 重新成为可被攻击 / 可被锁定的单位")
+	ok(g.hp < g.hp_max * cfg.revive_regen_cap_ratio + 1e-6,
+		"★ 再起时血量仍然低于旧的 20%% 天花板（不需要等到 20%%）")
 
-	_run_secs(w, 120.0)
-	var cap: float = g.hp_max * cfg.revive_regen_cap_ratio
-	near(g.hp, cap, 1e-3, "★★ 回复量封顶在 20% 血量上限")
-	ok(g.hp <= cap + 1e-6, "★ 永远不会高于 20%")
-	ok(g.is_downed(), "★★ 回到 20% 之后**仍然是濒死**（必须点再起才真正解除）")
-	ok(g.revive_ready(cfg), "★ 20% ≥ 10%，所以「再起」现在可点")
-	near(g.nd_regen_progress(cfg), 1.0, 1e-6, "★ 回复进度条满了")
 
 func _test_wipe_kills_downed(cfg) -> void:
 	var w = require_world_with_escorts(cfg, 3)
@@ -414,70 +420,61 @@ func _test_rescue_lock_released_on_revive(cfg) -> void:
 func _test_revive_gate_no_cost(cfg) -> void:
 	var w = require_world_with_escorts(cfg, 3)
 	var g = w.unit_by_id("general-1")
-	_give(w, 0.0, 0.0)                       # ★ 一分钱都没有，验证再起免费
+	_give(w, 0.0, 0.0)                       # ★ 一分钱都没有：再起不消耗资源
+	_no_income(w)
 	_smash(cfg, w, g)
 	ok(g.is_downed(), "（前提）它已经濒死")
 
-	ok(not g.revive_ready(cfg), "★ 刚倒下时（1 点血）还没到 10%，不能再起")
+	ok(not g.revive_ready(cfg), "★ 刚倒下时（1 点血）还没到 10%，不会自动再起")
 	eq(w.revive_reject_reason(g, MY), "hp", "★ 拒因码 = hp")
-	ok(not w.start_revive(g.id, MY), "★ 这时再起被拒")
+	ok(not w.start_revive(g.id, MY), "★ 这时手动再起也被拒")
 	near(w.resources["food"], 0.0, 1e-6, "★ 被拒时资源不变")
 
 	_set_downed_hp(g, 0.1)
 	ok(g.revive_ready(cfg), "★ 血量到 10% ⟹ 允许再起")
-	eq(w.revive_reject_reason(g, MY), "", "★ 拒因码为空（不再有 cost 这一条）")
+	eq(w.revive_reject_reason(g, MY), "", "★ 拒因码为空（再起免费）")
 
-	ok(w.start_revive(g.id, MY), "★★ 0 资源也能再起（免费）")
-	near(w.resources["food"], 0.0, 1e-6, "★★ 再起不扣粮食")
-	near(w.resources["gold"], 0.0, 1e-6, "★★ 再起不扣黄金")
-	ok(g.is_reviving(), "★ 进入了读条状态")
-	near(g.revive_total, w.revive_channel_sec(), 1e-6, "★ 读条总时长 = config 的 5 秒")
+	var food_before := float(w.resources["food"])
+	var gold_before := float(w.resources["gold"])
+	_run_secs(w, 0.2)
+	ok(g.alive and not g.is_downed(), "★★ 0 资源、无读条，自动再起完成")
+	ok(float(w.resources["food"]) >= food_before - 1e-6,
+		"★★ 再起不扣粮食（%.2f → %.2f）" % [food_before, float(w.resources["food"])])
+	ok(float(w.resources["gold"]) >= gold_before - 1e-6,
+		"★★ 再起不扣黄金（%.2f → %.2f）" % [gold_before, float(w.resources["gold"])])
 
-	eq(w.revive_reject_reason(g, MY), "channeling", "★ 读条中不能再下一单")
-	ok(not w.start_revive(g.id, MY), "★ 重复下单被拒")
-	near(w.resources["food"], 0.0, 1e-6, "★ 重复下单也不会扣钱")
 
-	eq(w.revive_reject_reason(g, "p2"), "faction", "★ 别的阵营不能替它再起")
-
-func _test_revive_channel_and_cancel(cfg) -> void:
+func _test_auto_revive(cfg) -> void:
 	var w = require_world_with_escorts(cfg, 3)
 	var g = w.unit_by_id("general-1")
 	_give(w, 1000.0, 1000.0)
-	_no_income(w)                            # 对账：别让区划产出掺进来（本轮起区划基础产能是固定值）
+	_no_income(w)                            # 对账：别让区划产出掺进来
 	_smash(cfg, w, g)
-	_set_downed_hp(g, 0.1)
-	ok(w.start_revive(g.id, MY), "（前提）再起入队")
-	ok(g.is_reviving(), "（前提）它在读条")
+	ok(g.is_downed(), "（前提）它已经濒死")
 
-	for m in w.retinue_of(g.id, true):
-		m.take_damage(cfg, w, m.hp + 9999.0, null)
-	_run_secs(w, 0.5)
-	ok(g.alive and g.is_downed(), "★★ 读条期间手下兵全死光，将领**没有**当场死亡")
-	ok(g.is_reviving(), "★ 读条没有被打断")
-
+	# 血量还没到 10%：不会自己站起来（玩家也不再有「再起」按钮）。
 	_run_secs(w, 2.0)
-	ok(g.is_reviving(), "★ 2 秒时还在读条")
-	ok(g.revive_progress() > 0.3 and g.revive_progress() < 0.7,
-		"★ 读条进度与秒数对得上（约 40%%~60%%，实测 %.2f）" % g.revive_progress())
+	ok(g.is_downed(), "★ 血量没到 10% 时仍然是濒死")
+	eq(w.revive_channel_sec(), 0.0, "★ 再起没有读条时间")
 
-	# ★ 对账用「取消前后」的差：2 秒读条里大本营的基础产出会照常进账（与再起费用无关）。
-	var food_before: float = float(w.resources["food"])
-	var gold_before: float = float(w.resources["gold"])
-	ok(w.cancel_revive(g.id, MY), "★ 取消读条成功")
-	ok(not g.is_reviving(), "★ 不再是读条状态")
-	near(w.resources["food"], food_before, 1e-6, "★★ 再起免费，取消也不会退钱")
-	near(w.resources["gold"], gold_before, 1e-6, "★★ 黄金同样不变")
-	ok(g.is_downed(), "★ 它仍然是濒死的（取消 ≠ 死亡，也 ≠ 复活）")
-	ok(not w.cancel_revive(g.id, MY), "★ 没在读条时再取消：返回 false")
-
-	ok(w.start_revive(g.id, MY), "再下一单")
-	ok(g.is_reviving(), "（前提）它在读条")
-	var evts: Array = _run_secs(w, 6.0)
-	ok(not g.is_downed(), "★★ 一个兵都没有也读完了（读条期间暂停全灭判定）")
+	# 到 10%：下一帧自动站起来（读条 1e-6 哨兵 → 立刻完成）。
+	_set_downed_hp(g, 0.1)
+	var evts: Array = _run_secs(w, 0.2)
+	ok(not g.is_downed(), "★★ 血量到 10% 后自动再起（不需要点按钮）")
 	ok(g.alive, "★ 它还活着")
 	ok(g.is_attackable(), "★★ 重新成为可被攻击 / 可被锁定的单位")
 	ok(not w.is_order_locked(g), "★ 重新接受指令")
 	ok(_count_events(evts, "leader_revived") >= 1, "★ 发了一条 leader_revived 事件")
+
+	# 再起后旗下部队恢复可指挥。
+	var mates: Array = w.retinue_of(g.id, true)
+	if not mates.is_empty():
+		var m = mates[0]
+		eq(w.order_lock_reason(m), "", "★★ 部队恢复可指挥（拒因码清空）")
+		ok(CommandRes.apply(w, cfg, {"kind": "move", "ids": [m.id],
+			"x": float(m.tx + 3), "y": float(m.ty), "faction": MY}),
+			"★★ 再起之后玩家又能指挥它了")
+
 
 func _test_revive_keeps_hp(cfg) -> void:
 	var w = require_world_with_escorts(cfg, 3)
@@ -486,21 +483,19 @@ func _test_revive_keeps_hp(cfg) -> void:
 	_smash(cfg, w, g)
 	_set_downed_hp(g, 0.15)
 	_add_mate(cfg, w, g)
-	var hp_at_click: float = g.hp
-	ok(w.start_revive(g.id, MY), "（前提）再起入队")
-	ok(w.has_living_retinue(g), "（前提）读条开始时它旗下确实有活兵")
+	var hp_before: float = g.hp
+	ok(g.revive_ready(cfg), "（前提）15% ≥ 10%，会立刻自动再起")
 	var mate_n0: int = w.retinue_of(g.id, true).size()
-	_run_secs(w, 6.0)
-	ok(g.alive, "（前提）它还活着（没有全灭）· 读条前后附属兵 %d → %d" % [
+	_run_secs(w, 0.5)
+	ok(g.alive, "（前提）它还活着（没有全灭）· 再起前后附属兵 %d → %d" % [
 		mate_n0, w.retinue_of(g.id, true).size()])
 	ok(not g.is_downed(), "（前提）已经脱离濒死")
-	var post_secs: float = 6.0 - cfg.revive_channel_sec
-	var tol: float = g.hp_max * cfg.revive_regen_ratio * 2.0 + 4.0 * post_secs + 0.5
-	near(g.hp, hp_at_click, tol,
-		"★★ 再起后血量 = 点再起时的血量（外加读条期间的自动回复与站起来之后的领地回血）")
-	ok(g.hp < g.hp_max - 1e-6, "★★ 再起**不是**满血复活（血量就是点下去时那个数）")
+	var tol: float = g.hp_max * cfg.revive_regen_ratio * 2.0 + 4.0 * 0.5 + 0.5
+	near(g.hp, hp_before, tol, "★★ 自动再起后血量 = 当时那点血（不是满血复活）")
+	ok(g.hp < g.hp_max - 1e-6, "★★ 再起**不是**满血复活")
 	ok(g.hp > 1.0 + 1e-6, "★★ 也不是被打回 1 点")
 	ok(g.combat_damage(cfg) > 0.0, "★ 它能重新投入战斗（攻击数值照旧）")
+
 
 ## ★★ 召回：静默击杀旗下部队 → 将领阵亡 → 大本营重生队列 10 秒 → 阻塞升级。
 func _test_recall(cfg) -> void:

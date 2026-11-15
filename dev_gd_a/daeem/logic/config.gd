@@ -539,6 +539,20 @@ var zone_speed_curve_k: float = 2.5
 var zone_speed_curve_power: float = 1.7
 var zone_owned_by_building: bool = true
 
+## ---- ★★ 建造点位（config.json 的 `build` 段；见 logic/world.gd 与 view/hud.gd）----
+##
+## 2026.11.15 的用户口径：玩家 / AI 都**不能**随口乱盖 ——
+##   · 非城墙建筑只能建在区划的**建造点位**上（地图 `zone_list[].build_points`，
+##     老地图没写时由 `logic/zone.gd` 自动补）；
+##   · 城墙只能建在区划中心周围的一圈（`wall_ring_radius` 层，默认 1 层 = 8 格），
+##     一张牌落一次就把整圈建满。
+##
+## ★ 这三个数分别管「有几个点 / 拖多远算落在点上 / 墙圈几层」；
+##   它们是**玩法数值**，逻辑层与视图都只读这里（config.json 是唯一来源）。
+var build_points_per_zone: int = 2
+var build_drop_radius_tiles: float = 1.5
+var build_wall_ring_radius: int = 1
+
 ## ★★ 招募读条「脱战」门槛（秒）：将领连续这么久没有单位 / 建筑目标，才算脱战。
 ##   · 招募**开始**时要求脱战（`world.can_recruit` 的拒因 `combat`）；
 ##   · 读条过程中一旦进入战斗（有目标）或**受击**，进度暂停；重新脱战后再继续，
@@ -871,6 +885,13 @@ func _cache_scalars() -> void:
 	zone_speed_curve_k = num("zone.speed_curve_k", 2.5)
 	zone_speed_curve_power = num("zone.speed_curve_power", 1.7)
 	zone_owned_by_building = bool_val("zone.zone_owned_by_building", true)
+
+	# ★★ 建造点位（见字段说明）：点位数量至少 1（0 个点位会让「只能建在点位上」
+	#   变成「谁都建不了」——那不是夹具，是坏数据）；拖放半径夹到 (0, 4]；
+	#   墙圈层数夹到 1..3（0 层 = 一圈都没有，墙就永远建不了，所以下限给 1）。
+	build_points_per_zone = clampi(int_val("build.points_per_zone", 2), 1, 8)
+	build_drop_radius_tiles = clampf(num("build.drop_radius_tiles", 1.5), 0.25, 4.0)
+	build_wall_ring_radius = clampi(int_val("build.wall_ring_radius", 1), 1, 3)
 
 	# ★ 招募脱战门槛（见字段说明）：负数 / 0 视为「无目标即可招募」。
 	recruit_combat_idle_sec = maxf(0.0, num("recruit.combat_idle_sec", 10.0))

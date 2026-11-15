@@ -749,7 +749,8 @@ func _test_new_building() -> void:
 	near(e.hp, hp0 - want_dmg, 1e-6,
 		"★★ 投掷物命中，伤害 = config 的 20 − 目标护甲 %s" % cfg.unit_armor_of(e.unit_type))
 
-	var tile2: Vector2i = _free_tile_near(w, base_b.tx + 1, base_b.ty + 1, FactionRes.DEFAULT_FACTION)
+	# ★★ 2026.11.15：非城墙建筑只能落在**己方区划的建造点位**上。
+	var tile2: Vector2i = _free_build_point(w, FactionRes.DEFAULT_FACTION)
 	if tile2.x >= 0:
 		# ★ 这一节只验「新类型能走建造命令」：暂时把 tier 调回 1，
 		#   免得前面的战斗把测试世界里的大本营打掉之后卡在解锁判定上。
@@ -766,6 +767,11 @@ func _test_new_building() -> void:
 		ok(not CommandRes.apply(w, cfg, cmd2),
 			"★ 不可建造的类型（大本营）拒绝建造命令")
 		ok(w.building_at(tile3.x, tile3.y) == null, "那一格上什么都没建出来")
+
+func _free_build_point(w, faction: String) -> Vector2i:
+	for a in w.build_anchors_for("tower", faction):
+		return a["tile"]
+	return Vector2i(-1, -1)
 
 func _free_tile_near(w, cx: int, cy: int, faction: String = "") -> Vector2i:
 	for r in range(0, 9):

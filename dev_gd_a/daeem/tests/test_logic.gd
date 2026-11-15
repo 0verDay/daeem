@@ -845,24 +845,66 @@ func _test_build_commands(world, cfg) -> void:
 	w.resources["gold"] = 1000.0
 	var base_b = w.find_base_of("p1")
 	ok(base_b != null, "（前提）有己方大本营（它的区块开局就归 p1）")
-	# ★★ 本轮新规则：**只能在自己区划里建造** —— 所以这里限定「p1 自己区划里的空地」
-	var hint: Vector2i = Vector2i(3, 3) if base_b == null else Vector2i(base_b.tx + 1, base_b.ty + 1)
-	var free = _find_free_tile(w, cfg, hint, "p1")
-	ok(free != null, "建造用例：在自己区划里找得到空地")
-	if free == null:
+	# ★★ 2026.11.15 建造系统：**非城墙建筑只能落在己方区划的建造点位上**。
+	#   测试直接从权威接口取一个点位（与界面拖牌读的是同一份数据）。
+	var anchors: Array = w.build_anchors_for("tower", "p1")
+	ok(not anchors.is_empty(), "建造用例：己方区划里有空着的建造点位")
+	if anchors.is_empty():
 		return
+	var anchor: Dictionary = anchors[0]
+	var tile: Vector2i = anchor["tile"]
 
-	var cmd = {"kind": "build", "build_type": "wall", "tx": free.x, "ty": free.y, "faction": "p1"}
-	ok(CommandRes.apply(w, cfg, cmd), "build 命令被接受")
-	var b = w.building_at(free.x, free.y)
+	var cmd = {"kind": "build", "build_type": "tower", "tx": tile.x, "ty": tile.y, "faction": "p1"}
+	ok(CommandRes.apply(w, cfg, cmd), "build 命令被接受（落在建造点位上）")
+	var b = w.building_at(tile.x, tile.y)
 	ok(b != null, "建筑真的落成了")
 	if b != null:
-		eq(b.type, "wall", "落成的是城墙")
+		eq(b.type, "tower", "落成的是哨塔")
 		eq(b.owner, "p1", "归属是命令里的 faction")
 
 	ok(not CommandRes.apply(w, cfg, cmd), "同一格重复建造被拒绝")
 
-	# ★★ 本轮新增规则：**不能在自己的区划之外建造** —— 否则玩家能在中立地上立一栋楼，
+	# ★★ 非点位的地块一律拒绝（哪怕它在己方区划里、也是空地）。
+	var off_point := Vector2i(-1, -1)
+	for ty in w.map.rows:
+		for tx in w.map.cols:
+			if not w.zone_allows_build(tx, ty, "p1"):
+				continue
+			if not w.can_build_at(tx, ty):
+				continue
+			if w.build_point_zone(tx, ty) >= 0:
+				continue
+			off_point = Vector2i(tx, ty)
+			break
+		if off_point.x >= 0:
+			break
+	ok(off_point.x >= 0, "（前提）己方区划里有一格空地但**不是**建造点位")
+	if off_point.x >= 0:
+		ok(not CommandRes.apply(w, cfg, {"kind": "build", "build_type": "tower",
+			"tx": off_point.x, "ty": off_point.y, "faction": "p1"}),
+			"★★ 非建造点位不能建（拒因 = not_build_point）")
+		ok(w.building_at(off_point.x, off_point.y) == null, "那一格上什么都没建出来")
+
+	# ★★ 城墙：落点是区划中心，**一张牌建整圈**，被地形 / 建筑挡住的格子跳过。
+	var wall_anchors: Array = w.build_anchors_for("wall", "p1")
+	ok(not wall_anchors.is_empty(), "城墙用例：己方有区划中心可以围")
+	if not wall_anchors.is_empty():
+		var wa: Dictionary = wall_anchors[0]
+		var center: Vector2i = wa["tile"]
+		var walls_before := _count_type(w, "wall", "p1")
+		var wall_cmd := {"kind": "build", "build_type": "wall",
+			"tx": center.x, "ty": center.y, "zone_id": int(wa["zone_id"]), "faction": "p1"}
+		ok(CommandRes.apply(w, cfg, wall_cmd), "★★ 墙牌落在区划中心上被接受")
+		var built: int = _count_type(w, "wall", "p1") - walls_before
+		ok(built >= 1 and built <= 8, "★★ 一张牌把整圈建上（实际 %d 格）" % built)
+		ok(not CommandRes.apply(w, cfg, wall_cmd),
+			"★★ 这一圈建满之后不能再建（wall_no_space）")
+		# 城墙**不能**落在非区划中心的格子上（哪怕那一格是建造点位）
+		var bad: Vector2i = tile
+		ok(w.build_reject_reason("wall", bad.x, bad.y, "p1") == "not_zone_center",
+			"★★ 城墙的落点必须是区划中心（普通点位 → not_zone_center）")
+
+	# ★★ 不能在自己的区划之外建造 —— 否则玩家能在中立地上立一栋楼，
 	#    让那一整块地「立即归己」（既成事实扩张，就是本次要修的 bug）。
 	var outside := Vector2i(-1, -1)
 	for ty in w.map.rows:
@@ -874,14 +916,16 @@ func _test_build_commands(world, cfg) -> void:
 			break
 	ok(outside.x >= 0, "（前提）地图上有一格可建造、但不属于 p1 的空地")
 	if outside.x >= 0:
-		ok(not CommandRes.apply(w, cfg, {"kind": "build", "build_type": "wall",
+		ok(not CommandRes.apply(w, cfg, {"kind": "build", "build_type": "tower",
 			"tx": outside.x, "ty": outside.y, "faction": "p1"}),
 			"★★ 不能在自己的区划之外建造（既成事实扩张被挡住）")
 		ok(w.building_at(outside.x, outside.y) == null, "那一格上什么都没建出来")
 
-	var del = {"kind": "demolish", "tx": free.x, "ty": free.y, "faction": "p1"}
+	var del = {"kind": "demolish", "tx": tile.x, "ty": tile.y, "faction": "p1"}
 	ok(CommandRes.apply(w, cfg, del), "拆除命令被接受")
-	ok(w.building_at(free.x, free.y) == null, "拆除后格子空了")
+	ok(w.building_at(tile.x, tile.y) == null, "拆除后格子空了")
+	ok(w.build_point_zone(tile.x, tile.y) >= 0,
+		"★★ 拆掉之后点位还在（可以再建）")
 
 	ok(not CommandRes.apply(w, cfg, del), "拆不存在的建筑被拒绝")
 	if base_b != null:
@@ -1063,6 +1107,14 @@ func _find_capture_spot(w, cfg) -> Dictionary:
 					continue          # 中心格本身（中立障碍建筑）
 				return {"zone": z, "tile": Vector2i(x, y)}
 	return {}
+
+func _count_type(world, type: String, faction: String) -> int:
+	var n := 0
+	for b in world.building_list:
+		if b != null and b.alive and String(b.type) == type \
+				and String(b.owner) == faction:
+			n += 1
+	return n
 
 func _find_free_tile(world, cfg, hint: Vector2i, faction: String = "") -> Variant:
 	for r in 12:

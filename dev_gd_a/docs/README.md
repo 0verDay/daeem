@@ -16,6 +16,9 @@
 | HTML 版的哪个文件搬到 Godot 的哪里 | [`porting.md`](porting.md) |
 | 已经踩过/一定会踩的坑（含**本轮实测**的第五节） | [`pitfalls.md`](pitfalls.md) |
 | **UI 光标与按钮交互（2026.11.12，PC）** | [`ui_interaction_system.md`](ui_interaction_system.md) |
+| **建造点位 / 城墙环（2026.11.15：建筑只能建在点位、墙只围区划中心；含碎石指示物 + 建筑倒毁）** | [`build_points.md`](build_points.md) |
+| **鼠标 / 键盘操作（2026.11.15 第三轮：左键框选、右键移动 / 锁定攻击 / 行军、拖视角）** | [`controls.md`](controls.md) |
+| **手牌拖拽总表（2026.11.15 第二轮：操作 / 建筑 / 单位 / 将领 + 生效/失败动画）** | [`card_drag.md`](card_drag.md) |
 
 ## 当前状态
 

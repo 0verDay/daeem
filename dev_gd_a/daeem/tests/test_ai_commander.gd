@@ -51,7 +51,6 @@ func _cases() -> void:
 	_test_population_cap_bonus_ratio(cfg)
 	_test_build_economy_guard(cfg)
 	_test_wall_and_upgrade(cfg)
-	_test_wall_border(cfg)
 	_test_build_priority(cfg)
 	_test_base_build_priority(cfg)
 	_test_bootstrap_capture(cfg)
@@ -1131,8 +1130,51 @@ func _test_tower_strategy(cfg) -> void:
 	var zid := int((z0 as Dictionary).get("id", -1))
 	var target := AiBuildRes._tower_target(c)
 	ok(target >= 2, "★★ 前线区划的目标箭塔数 > 1（实际 %d）" % target)
-	AiBuildRes._try_tower(c)
-	AiBuildRes._try_tower(c)
+	var ct: Vector2i = (z0 as Dictionary)["center"]
+	# ★ 被入侵：优先贴中心补塔。⚠️ 敌人必须站在**中心 3×3 之外** ——
+	#   站进 3×3 会触发「整块区划禁止建造」（另一条规则），那时 `_pick_tower_tile`
+	#   正确地返回 null，验不到「贴近中心」这条。
+	var intruder_tile := Vector2i(-1, -1)
+	for t in (z0 as Dictionary).get("tiles", []):
+		var tv: Vector2i = t
+		if maxi(absi(tv.x - ct.x), absi(tv.y - ct.y)) <= 3:
+			continue
+		if not w.map.terrain_walkable(tv.x, tv.y):
+			continue
+		intruder_tile = tv
+		break
+	ok(intruder_tile.x >= 0, "（前提）区划里找得到中心 3×3 之外的落点")
+	if intruder_tile.x < 0:
+		return
+	var intruder = w.spawn_enemy(intruder_tile.x, intruder_tile.y)
+	ok(intruder != null, "（前提）刷得出入侵的敌人")
+	ok(AiBuildRes._zone_threatened(c, z0), "★★ 区划里出现敌人 → 判定被入侵")
+	ok(not w.zone_capture_blocks_build(ct.x, ct.y, "F1"),
+		"（前提）敌人不在中心 3×3，建造没被封锁")
+	var near_tile = AiBuildRes._pick_tower_tile(c, z0)
+	ok(near_tile != null, "★★ 被入侵时还挑得出补塔位置")
+	if near_tile != null:
+		var ntv: Vector2i = near_tile
+		ok(maxi(absi(ntv.x - ct.x), absi(ntv.y - ct.y)) <= 3,
+			"★★ 被入侵时补塔位置贴近区划中心")
+	# 清掉入侵者，后面要验「一个区划能建 2 座」（建造数量本身）。
+	if intruder != null:
+		intruder.alive = false
+	ok(not w.zone_capture_blocks_build(ct.x, ct.y, "F1"), "（前提）清掉入侵者后恢复建造")
+	# ★★ 2026.11.15：先验**能力**（一个区划 2 个点位 → 能建 2 座塔），
+	#   再验 AI 行为。原来这里连调两次 `_try_tower` 就断言 z0 有 2 座，
+	#   但 AI 选哪个区划是**战术评分**决定的（第二座完全可能落在另一个前排区划）
+	#   —— 那是个依赖地图点位的脆弱断言，不是「能不能多座」的判据。
+	var pts: Array = w.build_points_of_zone(zid)
+	ok(pts.size() >= 2, "★★ 同一个区划有 2 个建造点位（实际 %d）" % pts.size())
+	var placed := 0
+	for p in pts:
+		var pt: Vector2i = p
+		if CommandRes.apply(w, cfg, {
+				"kind": "build", "build_type": "tower",
+				"tx": pt.x, "ty": pt.y, "faction": "F1"}):
+			placed += 1
+	ok(placed >= 2, "★★ 同一个区划可以建多座箭塔（实际 %d）" % placed)
 	var mine: Array = []
 	for b in w.building_list:
 		if b.alive and String(b.type) == "tower" and String(b.owner) == "F1" \
@@ -1142,6 +1184,15 @@ func _test_tower_strategy(cfg) -> void:
 	if mine.size() >= 2:
 		ok(not (int(mine[0].tx) == int(mine[1].tx) and int(mine[0].ty) == int(mine[1].ty)),
 			"★★ 多座塔不挤在同一格")
+	# 点位建满之后，AI 不会在同一格里重复占位。
+	var before_ai := mine.size()
+	AiBuildRes._try_tower(c)
+	var still := 0
+	for b in w.building_list:
+		if b.alive and String(b.type) == "tower" and String(b.owner) == "F1" \
+				and int(b.zone_id) == zid:
+			still += 1
+	eq(still, before_ai, "★★ 区划点位建满后 AI 不在同一区划重复建塔")
 	# 前线塔应压向靠敌方边界，而不是缩在区划中心。
 	var ftiles: Array = AiBuildRes._frontier_tiles(c, z0)
 	ok(not ftiles.is_empty(), "（前提）前线区划有靠敌方的边界格")
@@ -1151,15 +1202,6 @@ func _test_tower_strategy(cfg) -> void:
 			var fv: Vector2i = ft
 			fmin = mini(fmin, maxi(absi(fv.x - int(b.tx)), absi(fv.y - int(b.ty))))
 		ok(fmin <= 4, "★★ 前线箭塔靠近敌方边界（距边界 %d 格）" % fmin)
-	# 被入侵：优先贴中心补塔。
-	var ct: Vector2i = (z0 as Dictionary)["center"]
-	w.spawn_enemy(ct.x + 1, ct.y + 1)
-	ok(AiBuildRes._zone_threatened(c, z0), "★★ 区划中心附近出现敌人 → 判定被入侵")
-	var near_tile = AiBuildRes._pick_tower_tile(c, z0)
-	if near_tile != null:
-		var ntv: Vector2i = near_tile
-		ok(maxi(absi(ntv.x - ct.x), absi(ntv.y - ct.y)) <= 3,
-			"★★ 被入侵时补塔位置贴近区划中心")
 
 
 ## ★★ 经济规划：缺编时暂停防御建造，并把补员 / 补将的钱预留下来。
@@ -1217,13 +1259,25 @@ func _test_wall_and_upgrade(cfg) -> void:
 		return
 	var ring: Array = AiBuildRes._wall_ring_tiles(c, z0)
 	ok(ring.size() == 8, "（前提）中心 3×3 外圈是 8 格")
-	for i in 16:
-		AiBuildRes._try_wall(c)
+	var z0id := int((z0 as Dictionary).get("id", -1))
+	var buildable_before: int = w.wall_ring_buildable_tiles(z0id, "F1").size()
+	ok(buildable_before >= 4,
+		"（前提）这一圈至少有几格能建（实际 %d/8）" % buildable_before)
+	# ★★ 2026.11.15：AI 与玩家同一条规则 —— 一次 `_try_wall` = 一张墙牌 = **整圈**。
+	#   先把 z0 标成「正被入侵」，确保 `_pick_wall_zone` 一定选它（威胁 +100 分）。
+	(z0 as Dictionary)["capture_state"] = "reading"
+	(z0 as Dictionary)["capture_faction"] = "p2"
+	AiBuildRes._try_wall(c)
 	var ring_walls: Array = []
 	for b in w.building_list:
-		if b.alive and String(b.type) == "wall" and String(b.owner) == "F1":
+		if b.alive and String(b.type) == "wall" and String(b.owner) == "F1" \
+				and int(b.zone_id) == z0id:
 			ring_walls.append(b)
-	ok(ring_walls.size() >= 6, "★★ 前线区划围绕中心连续造墙（%d/8）" % ring_walls.size())
+	eq(ring_walls.size(), buildable_before,
+		"★★ 一张墙牌把这一圈建满（跳过被地形 / 建筑挡住的位置）")
+	for i in 6:
+		AiBuildRes._try_wall(c)
+	eq(ring_walls.size(), buildable_before, "★★ 已经建满的圈不会重复建")
 	# 被入侵时补缺口。
 	if not ring_walls.is_empty():
 		var wb = ring_walls[0]
@@ -1247,77 +1301,6 @@ func _test_wall_and_upgrade(cfg) -> void:
 			break
 	ok(not any_upgrading, "★★ AI 不再升级木墙 / 哨塔")
 	ok(not c.stats.has("upgrades"), "★★ AI 统计里不再有 upgrades")
-
-
-## ★★ 2026.10.25：边境封墙。前期只封与敌方接壤的边；资源到 3×max_float
-## 后再补中立边；每 tick 最多 3 格；每一格都真的贴着非己方地块。
-func _test_wall_border(cfg) -> void:
-	var w = _make_ai_test_world(cfg)
-	if w == null:
-		ok(false, "边境城墙测试世界")
-		return
-	var c = w.ai_commanders["F1"]
-	var bcfg: Dictionary = c.profile.get("build", {})
-	ok(int(bcfg.get("wall_hard_max", 0)) >= 200,
-		"（前提）全境封边的墙数上限够用（%d）" % int(bcfg.get("wall_hard_max", 0)))
-	# 1) 只有 1.67× 浮存、又没有敌方接壤：中立边先不封。
-	w.ai_faction_resources["F1"] = {"food": 1000.0, "gold": 1000.0}
-	var before := int(c.stats.get("walls_border", 0))
-	AiBuildRes._try_border_walls(c, 3)
-	eq(int(c.stats.get("walls_border", 0)), before,
-		"★ 未到全境富足线时，不封中立接壤的边")
-	# 1.5× 富足 + 有敌方接壤：先封前线（不需要等到 3×）。
-	for z in w.zones.zones:
-		if typeof(z) == TYPE_DICTIONARY and String((z as Dictionary).get("owner", "")) == "":
-			(z as Dictionary)["owner"] = "F2"
-	w.ai_faction_resources["F1"] = {"food": 1000.0, "gold": 1000.0}
-	var before_front := int(c.stats.get("walls_border", 0))
-	AiBuildRes._try_border_walls(c, 3)
-	ok(int(c.stats.get("walls_border", 0)) > before_front,
-		"★★ 1.5× 富足且与敌方接壤时，先封前线边境")
-	# 2) 极富足：继续铺边境长墙。
-	w.ai_faction_resources["F1"] = {"food": 3000.0, "gold": 3000.0}
-	var before2 := int(c.stats.get("walls_border", 0))
-	AiBuildRes._try_border_walls(c, 3)
-	var built := int(c.stats.get("walls_border", 0)) - before2
-	ok(built >= 1 and built <= 3,
-		"★★ 资源极富时按每 tick 预算铺边境墙（实际 %d 格）" % built)
-	# 3) 连续两轮也不能超过每 tick 预算。
-	var before3 := int(c.stats.get("walls_border", 0))
-	AiBuildRes._try_border_walls(c, 3)
-	var built3 := int(c.stats.get("walls_border", 0)) - before3
-	ok(built3 <= 3, "★★ 单次铺墙不超过 wall_border_per_tick（实际 %d）" % built3)
-	# 4) 每一堵墙都应该贴着非己方地块，而不是又围在区划中心。
-	var border_walls := 0
-	var other_walls := 0
-	for b in w.building_list:
-		if b == null or not b.alive or String(b.type) != "wall" \
-				or String(b.owner) != "F1":
-			continue
-		if _wall_touches_foreign_tile(w, b):
-			border_walls += 1
-		else:
-			other_walls += 1
-	ok(border_walls >= 3,
-		"★★ 边境墙真的贴着非己方地块（%d 堵，中心环 %d 堵）" % [border_walls, other_walls])
-	# 5) 资源掉下去后不再铺。
-	w.ai_faction_resources["F1"] = {"food": 0.0, "gold": 0.0}
-	var before4 := int(c.stats.get("walls_border", 0))
-	AiBuildRes._try_border_walls(c, 3)
-	eq(int(c.stats.get("walls_border", 0)), before4,
-		"★ 资源不足时不铺边境墙")
-
-
-func _wall_touches_foreign_tile(w, b) -> bool:
-	for d in GridRes.DIRS4:
-		var n: Vector2i = Vector2i(int(b.tx), int(b.ty)) + d
-		var oz = w.zones.zone_at(n.x, n.y)
-		if oz == null:
-			continue
-		var owner := String((oz as Dictionary).get("owner", ""))
-		if owner != "F1":
-			return true
-	return false
 
 
 ## ★★ 2026.10.25：建造优先级 —— 这一 tick 能造塔就不造墙；前线塔优先于后方塔。

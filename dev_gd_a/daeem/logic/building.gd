@@ -272,7 +272,16 @@ func is_defense_building(cfg: ConfigRes) -> bool:
 
 ## 是不是**墙类建筑**（木墙 / 石墙；也认编辑器里 type 带 "wall" 的新墙）。
 func is_wall_building() -> bool:
-	return type == TYPE_WALL or type == TYPE_STONE_WALL or type.contains("wall")
+	return is_wall_type(type)
+
+
+## ★★ 静态版（给「还没建出来的类型」用：拖牌判定 / `command_processor` / AI）。
+##
+## 判据与 `is_wall_building()` 逐字一致：两个内置墙 + 任何 type 里带 "wall" 的新墙。
+## ★ 用户口径（2026.11.15）：**墙只能围区划中心一圈**，其它建筑只能落在建造点位上
+##   —— 所以「哪些类型算墙」必须是同一条判据，不能一处写死 `== "wall"`。
+static func is_wall_type(p_type: String) -> bool:
+	return p_type == TYPE_WALL or p_type == TYPE_STONE_WALL or p_type.contains("wall")
 
 
 func is_neutralized() -> bool:

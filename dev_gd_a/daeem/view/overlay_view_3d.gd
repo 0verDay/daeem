@@ -97,21 +97,38 @@ var _style_key_downed: StyleBoxFlat = null
 ## 由 game_scene / input_controller 每帧塞进来的纯本地状态
 var hover_tile: Vector2i = Vector2i(-1, -1)
 var hover_valid: bool = false
-var build_type: String = ""
+## ★★ 拖牌锚点 / 圆形范围指示（2026.11.15；2026.11.15 第二轮泛化到「招募将领」）：
+##
+##   · `drag_anchor_active` —— 是否正在拖一张「要落到地图上」的牌（建筑 / 将领）；
+##   · `drag_anchor_kind`   —— `"build"`（建筑）或 `"recruit"`（招募将领）；
+##   · `drag_anchor_tiles`  —— 所有可落点（建筑 = 空点位 / 墙 = 区划中心；
+##                             招募 = 能招这位将领的区划中心）；
+##   · `drag_anchor_tile`   —— 指针吸附到的那一个（-1 = 没吸附）；
+##   · `drag_anchor_ok`     —— 吸附到的那个现在能不能执行（绿 / 红；招募恒 true）；
+##   · `drag_anchor_radius` —— 圆形范围指示的半径（格，来自 config）。
+##
+## ★ 圈有**进 / 出两段动画**（用户口径）：
+##   进入范围 → 从圆心**由内往外快速扩散**到 `drag_anchor_radius`（0.18s）；
+##   离开范围 / 换到另一个点 → 旧圈**由外往内迅速缩小**回 0（0.12s）。
+##   动画状态在 `_ring_anim`（格 → {t, r, color}），由 `game_scene3d._process`
+##   每帧调 `tick_drag_rings(dt)` 推进（暂停时传 0 = 冻住）。
+var drag_anchor_active: bool = false
+var drag_anchor_kind: String = ""
+var drag_anchor_tiles: Array = []
+var drag_anchor_tile: Vector2i = Vector2i(-1, -1)
+var drag_anchor_ok: bool = true
+var drag_anchor_radius: float = 1.5
+## 诊断（测试读它）：最近一次 `_draw()` 画了几个锚点 / 几个圈。
+var drag_anchor_draw_count: int = 0
+var drag_ring_draw_count: int = 0
+## 圈动画：`Vector2i -> {"t": 0..1, "r": 满半径, "color": Color}`。
+var _ring_anim: Dictionary = {}
 var move_marks: Array[Vector2] = []
 var attack_marks: Array[Vector2] = []
 ## ★★ F2：命令被拒的落点红环（纯表现；`{pos: Vector2, t: float, dur: float}`）。
 ## 由 `game_scene3d.on_reject_feedback()` 写入，`tick_rejects()` 每帧推进。
 var reject_marks: Array = []
 var reject_draw_count: int = 0
-## ★★ 2026.11.14：操作牌拖拽时的**旗帜虚影**（纯表现；由 `game_scene3d._sync_order_ghost()`
-##   每帧从 hud 抄过来，见 `hud._begin_order_ghost()` / `_update_order_ghost()`）。
-var order_ghost_active: bool = false
-var order_ghost_world: Vector2 = Vector2.ZERO
-var order_ghost_color: Color = Color(0.55, 1.0, 0.65, 1.0)
-var order_ghost_snapped: bool = false
-## 上一帧画了几面虚影（测试 / 性能读数读它；正常是 0 或 1）
-var order_ghost_draw_count: int = 0
 var drag_active: bool = false
 var drag_rect: Rect2 = Rect2()
 ## ★★ 粮车回血光环范围（只在该粮车被选中时画）：屏幕像素细线宽 / 采样段数。
@@ -154,9 +171,14 @@ func setup(p_cfg: ConfigRes, p_world, p_palette, p_units, p_ground = null,
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	# ★ 新场景 / 新地图 ⇒ 静态投影缓存一律作废（相机对象也换了）
 	_static_ready = false
-	_grid_screen = PackedVector2Array()
 	_zone_screen = []
 	_capture_screen = []
+	# ★ 拖牌锚点 / 圈动画是纯本地状态：换场景时清掉，免得上一局的点漏到下一局。
+	drag_anchor_active = false
+	drag_anchor_kind = ""
+	drag_anchor_tiles = []
+	drag_anchor_tile = Vector2i(-1, -1)
+	_ring_anim = {}
 	_build_static_layer()
 
 
@@ -228,6 +250,48 @@ func tick_rejects(dt: float) -> void:
 	reject_marks = keep
 
 
+## 每帧推进「拖牌圈」的进 / 出动画（由 `game_scene3d._process` 调；暂停时传 0 = 冻住）。
+##
+## ★ 为什么按**格**存进度：玩家从 A 点迅速滑到 B 点时，A 的圈要缩、B 的圈要长，
+##   两段动画得同时存在 —— 只存一个「当前圈」的话，A 会**瞬间消失**（用户明确否掉了）。
+func tick_drag_rings(dt: float) -> void:
+	if dt <= 0.0:
+		return
+	var target: Vector2i = drag_anchor_tile if drag_anchor_active else Vector2i(-1, -1)
+	if target.x >= 0 and not _ring_anim.has(target):
+		_ring_anim[target] = {"t": 0.0, "r": drag_anchor_radius, "color": _ring_color()}
+	if _ring_anim.is_empty():
+		return
+	for key in _ring_anim.keys():
+		var tile: Vector2i = key
+		var rec: Dictionary = _ring_anim[tile]
+		if tile == target:
+			rec["r"] = drag_anchor_radius
+			rec["color"] = _ring_color()
+		var t := float(rec.get("t", 0.0))
+		var want := 1.0 if tile == target else 0.0
+		var rate := (1.0 / DRAG_RING_GROW_SEC) if want > t else (1.0 / DRAG_RING_SHRINK_SEC)
+		t = move_toward(t, want, rate * dt)
+		if t <= 0.0 and want <= 0.0:
+			_ring_anim.erase(tile)
+		else:
+			rec["t"] = t
+			_ring_anim[tile] = rec
+
+
+## 当前拖的牌对应的圈颜色（招募 / 能建 / 不能建）。
+func _ring_color() -> Color:
+	if drag_anchor_kind == "recruit":
+		return DRAG_ANCHOR_RECRUIT
+	return DRAG_ANCHOR_OK if drag_anchor_ok else DRAG_ANCHOR_BAD
+
+
+## 圈的半径曲线：`1-(1-t)^2`（进得快、收尾慢；缩回时反过来 = 先慢后快）。
+func _ring_radius_scale(t: float) -> float:
+	var k: float = clampf(t, 0.0, 1.0)
+	return 1.0 - (1.0 - k) * (1.0 - k)
+
+
 ## 静态层要重画了：**只算几何**，绘制由 `view/overlay_layer.gd` 的 `_draw_static()` 发。
 ##
 ## ⚠️ `draw_*` 只允许在**它自己**的 `_draw()` 里调用（实测：从宿主调
@@ -240,15 +304,10 @@ func build_static_layer_data(node) -> void:
 	# 静态层的几何要在这里才保证是新的（相机刚动过的那一帧 `sync()` 已经排了重画）
 	_refresh_static_projection()
 
-	# ① 网格：只在建造模式下画（`build_type` 非空）
-	if build_type == "":
-		grid_draw_count = 0
-		node.grid_pts = PackedVector2Array()
-	else:
-		grid_draw_count = _count_grid_lines()
-		node.grid_pts = _grid_screen
-	node.grid_color = GRID_COLOR
-	node.grid_width = GRID_WIDTH
+	# ① 网格：**已删除** —— 点选建造（建造模式）整个移除之后，铺满全图的网格
+	#    既没有用、又会盖住「建造点位高亮」。静态层里这一项保持空。
+	grid_draw_count = 0
+	node.grid_pts = PackedVector2Array()
 
 	# ② 区划轮廓：缓存的屏幕顶点（已按相机键失效、并做过屏幕外剔除）
 	zone_outline_draw_count = _count_zone_outlines()
@@ -354,13 +413,9 @@ func _refresh_static_projection() -> void:
 	_remember_static_key()
 	static_rebuild_count += 1
 	if world == null or world.map == null:
-		_grid_screen = PackedVector2Array()
 		_zone_screen = []
 		_capture_screen = []
 		return
-
-	_grid_screen = _project_segments(
-		_grid_segs_for(int(world.map.cols), int(world.map.rows)))
 
 	# 区划轮廓：按组投影一次，之后每帧只重新 `draw_multiline`。
 	# ★ 屏幕外接框与视口不相交的整组丢掉 —— 拉近视角时地图上大部分轮廓都在屏幕外，
@@ -424,11 +479,9 @@ func _draw_impl() -> void:
 	_draw_units_ui()
 	_pd("ov/units_ui", _d3)
 	# ★ 移动 / 行军目标点不再在这里画圈 —— 改成 3D 旗子（view/order_flag_view_3d.gd）
-	_draw_build_preview()
+	_draw_drag_anchors()
 	_draw_drag_box()
 	_draw_reject_marks()
-	# ★★ 2026.11.14：操作牌拖拽时的**旗帜虚影**（画在拖框之上、编队标识之下）。
-	_draw_order_ghost()
 	# ★★ 编队标识最后画：它在**所有世界物件与其它覆盖层之上**（不会被建筑 / 地形 / 单位
 	#    遮挡）；同时它在拖框之上，框选时编号 / 名牌仍然读得清。
 	var _d4 := _pt()
@@ -462,19 +515,20 @@ func _pd(key: String, t0: int) -> void:
 ##   ③ 与地块的关系仍然正确 —— 因为**格角是逐个投影出来的**（`palette.to_px`），
 ##      与 `input_controller` 判"鼠标点在哪一格"用的是同一条链路。
 
-## 网格线的颜色与宽度（屏幕像素）
-##
-## ★★ 为什么是 **2 px**（实测定的，不是拍脑袋）：
-##   屏幕空间的 1 px 线落在**像素边界**上时，引擎的抗锯齿会把它摊到相邻两个像素
-##   各一半 ⇒ 亮度只有理论值的一半，实测对比度 **6.8~7.4%**（看起来是"一条软线"）。
-##   2 px 之后线的墨量翻倍、不再受半像素落点的影响，实测对比度回到 **~18%**
-##   （与「烘进贴图、再放大」那版 18.83% 同一档，但那条路在缩放时会糊）。
-## ★ 颜色用 16% 白：与 2D 版 `colors.grid`（5.5% 白）相比更亮 ——
-##   因为 2D 是**轴对齐**的实心矩形，而这里是抗锯齿的 2 px 线。
-##   ⚠️ 不要再加粗到 3 px 以上：用户当年报过「地图上的格子中有很多奇怪的线条」，
-##     那是同一类反感（线抢戏）。
-const GRID_COLOR := Color(1.0, 1.0, 1.0, 0.16)
-const GRID_WIDTH := 2.0
+## 拖牌锚点 / 圈的配色：
+##   · `DRAG_ANCHOR_COLOR`    —— 所有可落点的小方框 / 亮点（拖牌时一直亮着）；
+##   · `DRAG_ANCHOR_OK`       —— 吸附到的那个点、且当前能执行（绿）；
+##   · `DRAG_ANCHOR_BAD`      —— 吸附到了但执行不了（红，比如点位已被占 / 钱不够）；
+##   · `DRAG_ANCHOR_RECRUIT`  —— 招募将领的锚点与圈（金蓝，和建造区分开）。
+const DRAG_ANCHOR_COLOR := Color(0.55, 1.0, 0.72, 0.80)
+const DRAG_ANCHOR_OK := Color(0.42, 1.0, 0.55, 0.95)
+const DRAG_ANCHOR_BAD := Color(1.0, 0.38, 0.36, 0.95)
+const DRAG_ANCHOR_RECRUIT := Color(0.58, 0.86, 1.0, 0.95)
+## 圆形范围指示的采样段数（投影后是椭圆；48 段足够顺滑，且只在拖牌时画一个）。
+const DRAG_RING_SEGMENTS := 48
+## 圈的进 / 出时长（用户口径：进 0.18s 快速扩散、出 0.12s 迅速缩小）。
+const DRAG_RING_GROW_SEC := 0.18
+const DRAG_RING_SHRINK_SEC := 0.12
 ## 区划轮廓的宽度（屏幕像素）
 ##
 ## ★ 与 2D 版 `zone_view` 的 `zone_stroke_width_owned = 2.5` 同一档。
@@ -493,7 +547,7 @@ const CAPTURE_FRONT_ALPHA := 0.95
 ##   · `CAPTURE_AREA_GRAD_TILES` = 渐变长度（**格**）——需求「向内有渐变，长度不超过半格」；
 ##   · `CAPTURE_AREA_ALPHA` = 最外圈的强度，往里线性降到 0；
 ##   · 颜色见 `_capture_area_color()`：**中立 = 白灰**、有主 = 该阵营主色。
-## ⚠️ 这几个是**屏幕空间画法**的参数（与 GRID_* / ZONE_* 同一条口径）：
+## ⚠️ 这几个是**屏幕空间画法**的参数（与 ZONE_* / CAPTURE_* 同一条口径）：
 ##    渐变长度按「格」量，但每个角都逐个投影 ⇒ 透视下它贴着地面、宽度也对。
 const CAPTURE_AREA_GRAD_TILES := 0.5
 const CAPTURE_AREA_ALPHA := 0.6
@@ -502,10 +556,6 @@ const CAPTURE_AREA_NEUTRAL := Color(0.85, 0.85, 0.88)
 ## 免得「刚好压在屏幕边缘」的那一块在滑动时忽隐忽现。
 const CAPTURE_AREA_CULL_MARGIN_PX := 16.0
 
-## 网格线顶点缓存（只在地图尺寸变化时重建；相机移动不影响它 —— 顶点是**格坐标**）
-var _grid_segs: Array = []
-var _grid_cols: int = -1
-var _grid_rows: int = -1
 ## 区划轮廓缓存：`{signature, segs}` —— 只有归属 / 地块划分变了才重算
 var _zone_segs: Array = []
 var _zone_seg_sig: String = ""
@@ -527,8 +577,6 @@ var _static_key_xform: Transform3D = Transform3D.IDENTITY
 var _static_key_proj: Projection = Projection()
 var _static_key_vp: Vector2 = Vector2.ZERO
 var _static_key_zone_sig: String = ""
-## 网格线的屏幕顶点（成对存放：起点、终点）
-var _grid_screen: PackedVector2Array = PackedVector2Array()
 ## 区划轮廓的屏幕顶点：每项 `{segs: PackedVector2Array, color: Color}`
 var _zone_screen: Array = []
 ## 占领触发区的屏幕几何（= `_compute_visible_capture_areas()` 的结果）
@@ -546,57 +594,17 @@ var capture_draw_count: int = 0
 var capture_area_count: int = 0
 
 
-## 网格线：**整张图**的横竖格线（顶点是格坐标，缓存一次即可）。
-##
-## ★ 只在**建造模式**下画（`build_type` 非空）：
-##   平时地面保持干净，进入建造（Q / W 或右下建筑页）时网格才出现，帮玩家对齐地块。
-##   退出建造（再按一次 / Esc / 右键）后网格立刻消失。
-##
-## ★★ 2026.10.27：绘制本身搬到了静态层子节点（`view/overlay_layer.gd`）——
-##    这里只负责「要不要画 / 画几条」并准备顶点（见 `build_static_layer_data()`）。
-##
-## ★ 计数与绘制**分开**（下一段说明为什么）。
-
-
-## 网格线这一帧**画几条**（纯计数，不碰绘制 API）。
-##
-## ★★ 为什么「数」与「画」要拆开（本轮实测踩到）：
+## ★★ 为什么「数」与「画」要拆开（曾经在这里踩到，规矩保留）：
 ##   在 `_draw()` **之外**调 `draw_multiline()` / `draw_colored_polygon()` 会报
 ##   `ERROR: Drawing is only allowed inside this node's _draw()` ——
 ##   而测试要在无头下量这些计数（引擎在无头下不渲染 `Control`，所以没有真的 `_draw()` 可等）。
-##   拆开之后：测试调 `_count_*()`（**纯计算、零报错**），
-##   真渲染时 `_count_*()` 的结果被记进计数器供诊断。
+##   拆开之后：测试调 `_count_*()` / 纯计算函数（**零报错**），
+##   真渲染时它们的结果被记进计数器供诊断。
 ##   ⇒ 好处不只是「没有噪音」：**日志里出现 ERROR 就说明有真问题**，
 ##     不会被这几条预期的报错淹掉（本项目已经为「红字里的真错误被淹没」付过学费）。
-func _count_grid_lines() -> int:
-	if world == null or world.map == null:
-		return 0
-	return int(world.map.cols) + 1 + int(world.map.rows) + 1
-
-
-## 网格线顶点（格坐标，成对存放：起点、终点）——**只在格子数变化时重建**。
 ##
-## ★ 为什么缓存：顶点是**格坐标**（世界不变），与相机无关 ——
-##   每帧重建一遍 94 条线段是白费（27×22 的图 = 28 + 23 条）。
-## ★ 为什么整张图都发出去、不自己裁剪：线段只有 50~200 条，
-##   而 `draw_multiline` 是**一次** GPU 调用；自己算可见范围反而多一份容易错的逻辑。
-##   （100×100 的图是 202 条 —— 仍然可以忽略。）
-func _grid_segs_for(cols: int, rows: int) -> Array:
-	if _grid_cols == cols and _grid_rows == rows and not _grid_segs.is_empty():
-		return _grid_segs
-	var segs: Array = []
-	# 竖线：x = 0..cols，从 y=0 到 y=rows
-	for x in range(0, cols + 1):
-		segs.append(Vector2(float(x), 0.0))
-		segs.append(Vector2(float(x), float(rows)))
-	# 横线：y = 0..rows
-	for y in range(0, rows + 1):
-		segs.append(Vector2(0.0, float(y)))
-		segs.append(Vector2(float(cols), float(y)))
-	_grid_segs = segs
-	_grid_cols = cols
-	_grid_rows = rows
-	return _grid_segs
+## ★ 网格线的 `_count_grid_lines()` / `_grid_segs_for()` 随「点选建造」一起删除；
+##   建造提示改由 `_draw_drag_anchors()` 每帧画（锚点最多几十个，不进静态层）。
 
 
 ## 把一串「格坐标线段」投影成屏幕顶点（**纯计算**：近平面裁剪 + 像素中心吸附）。
@@ -681,7 +689,7 @@ func _proj_snap(logic_pos: Vector2) -> Vector2:
 
 ## 区划轮廓这一帧**画几组**（纯计数，不碰绘制 API）——同时保证几何缓存是新的。
 ##
-## ★ 与 `_count_grid_lines()` 同一个理由：把「数」与「画」拆开，
+## ★ 与 `_count_zone_outlines()` 同一个理由：把「数」与「画」拆开，
 ##   测试才能在无头下量到计数而不触发 `Drawing is only allowed inside _draw()`。
 func _count_zone_outlines() -> int:
 	if world == null or world.zones == null:
@@ -804,7 +812,7 @@ func _push_grad_quad(quads: Array, pts: PackedVector2Array,
 ##   ② 外框的屏幕外接框**与视口不相交** ⇒ 整块不画（这就是可见性剔除：
 ##      屏幕外的区块不再投 8 个点、也不再发 4 次 `draw_polygon`）。
 ##
-## ★ 与 `_count_grid_lines()` / `_count_zone_captures()` 同一个理由拆成纯函数：
+## ★ 与 `_count_zone_outlines()` / `_count_zone_captures()` 同一个理由拆成纯函数：
 ##   在 `_draw()` 之外调 `draw_*` 会报 `Drawing is only allowed inside this node's _draw()`，
 ##   拆开之后测试也能直接量「这一帧画了几块」。
 ##
@@ -1037,7 +1045,7 @@ func _draw_zone_capture() -> void:
 
 ## 占领进度条这一帧**画几块**（纯计数，不碰绘制 API）。
 ##
-## ★ 与 `_count_grid_lines()` / `_count_zone_outlines()` 同一个理由（见那里的说明）。
+## ★ 与 `_count_zone_outlines()` 同一个理由（见那里的说明）。
 func _count_zone_captures() -> int:
 	var n := 0
 	for it in _capture_items():
@@ -1245,7 +1253,7 @@ func _screen_triangles(pts: PackedVector2Array) -> Array:
 			var ar := _screen_polygon_area(PackedVector2Array([a0, b0, c0]))
 			if absf(ar) <= 0.001:
 				continue
-			# 与 `_draw_build_preview()` 的四边形同一绕向（屏幕 y 向下，面积为正）。
+			# 与 `_draw_drag_anchors()` 的四边形同一绕向（屏幕 y 向下，面积为正）。
 			if ar < 0.0:
 				var t2 := b0
 				b0 = c0
@@ -1272,7 +1280,7 @@ func _screen_triangles(pts: PackedVector2Array) -> Array:
 		var c: Vector2 = poly[idx[i + 2]]
 		var area := _screen_polygon_area(PackedVector2Array([a, b, c]))
 		if absf(area) > 0.001:
-			# 与 `_draw_build_preview()` 的四边形同一绕向（屏幕 y 向下，面积为正）。
+			# 与 `_draw_drag_anchors()` 的四边形同一绕向（屏幕 y 向下，面积为正）。
 			if area < 0.0:
 				var tmp := b
 				b = c
@@ -1874,70 +1882,101 @@ func _draw_reject_marks() -> void:
 		reject_draw_count += 1
 
 
-## ★★ 2026.11.14（用户口径）：「操作牌拖出后，可在地图上选择落点，落点将以一个**旗帜虚影**
-##   显示，「攻击」牌会有额外的旗帜吸附效果，会吸附到鼠标落点最近的敌方单位/建筑上，
-##   「暂停」牌没有旗帜虚影」。
+## ★★ 拖牌锚点预览（2026.11.15；第二轮泛化到招募将领）：
 ##
-## 这一层是**屏幕空间**的 2D 画法（落点由 `palette.to_px()` 投影过来），不是 3D 实体旗 ——
-## 拖拽时每帧都在动，走 3D 要重建材质 / 节点，而这里只是一个「落点提示」，不是最终插的旗
-## （真正的旗仍由 `view/order_flag_view_3d.gd` 在命令下达后插）。
+## 用户口径：拖建筑牌时**所有可建点位高亮**；拖到点位**附近**时，该点位周围出现
+## **圆形范围指示**（进 0.18s 从内往外扩散、离开 0.12s 由外往内缩回），圈内松手 = 执行。
+## 招募将领同一条口径：落点是**己方区划中心**，圈画在中心建筑的底部。
 ##
-## 画三样：① 贴地圆环（虚影的主视觉）+ 内圈虚线；② 旗杆 + 三角旗面；③ 吸附到敌人时额外
-##   一道更亮的外环（让「吸上去了」这件事一眼可见）。整体半透明 = 「虚影」。
-func _draw_order_ghost() -> void:
-	order_ghost_draw_count = 0
-	if not order_ghost_active or palette == null:
+## 画法（三层，后画的在上面）：
+##   ① 所有可落点：小方框（建筑）/ 小亮点（招募）；
+##   ② 吸附到的那个点：地块**填色**（仅建筑；绿 = 能建 / 红 = 不能建）；
+##   ③ 圆形范围指示：世界坐标的圆逐点投影 —— 半径按 `_ring_anim` 的 t 缩放，
+##      透视下自然变成地面椭圆（**不能**按屏幕圆画）。
+func _draw_drag_anchors() -> void:
+	drag_anchor_draw_count = 0
+	drag_ring_draw_count = 0
+	if palette == null or palette.cam == null or world == null:
 		return
-	var p: Vector2 = palette.to_px(order_ghost_world)
-	if not p.is_finite():
-		return
-	var c: Color = order_ghost_color
-	var a: float = 0.55 if not order_ghost_snapped else 0.8
-	var ring := Color(c.r, c.g, c.b, a * 0.85)
-	# ① 贴地圆环 + 内圈
-	draw_arc(p, 24.0, 0.0, TAU, 32, ring, 2.2, true)
-	draw_arc(p, 14.0, 0.0, TAU, 24, Color(c.r, c.g, c.b, a * 0.45), 1.4, true)
-	# ② 旗子：杆从地面点往上竖，旗面在杆顶右侧（**要比圆环明显高出一截** ——
-	#    它才是「往哪儿落」的主视觉；牌本身会被 `command_card` 抬到指针上方让位）
-	var pole_h: float = 40.0
-	draw_line(p, p + Vector2(0.0, -pole_h), Color(c.r, c.g, c.b, minf(1.0, a + 0.15)), 2.4, true)
-	var top: Vector2 = p + Vector2(0.0, -pole_h)
-	var flag := PackedVector2Array([
-		top + Vector2(1.0, 0.0),
-		top + Vector2(30.0, 8.0),
-		top + Vector2(1.0, 17.0),
-	])
-	draw_colored_polygon(flag, Color(c.r, c.g, c.b, a))
-	# 旗面内侧描一道亮边（半透明旗在浅色地面上才不会糊成一块）
-	draw_polyline(PackedVector2Array([flag[0], flag[1], flag[2]]),
-		Color(c.r, c.g, c.b, minf(1.0, a + 0.2)), 1.4, true)
-	# ③ 吸附：外面再套一圈更亮的环（「锁定了这个东西」）
-	if order_ghost_snapped:
-		draw_arc(p, 30.0, 0.0, TAU, 36,
-			Color(c.r, c.g, c.b, minf(1.0, a + 0.15)), 2.6, true)
-	order_ghost_draw_count += 1
-
-
-## 建造模式预览：**沿地块的四个角投出来的四边形**（透视下是梯形，不是矩形）。
-func _draw_build_preview() -> void:
-	if build_type == "":
-		return
-	var tiles: Array = []
-	if hover_tile.x >= 0:
-		tiles = [hover_tile]
-	for tv in tiles:
-		var t: Vector2i = tv
-		var ok: bool = world.can_build_at(t.x, t.y, world.my_faction) \
-			and world.zone_allows_build(t.x, t.y, world.my_faction)
-		var c := Color(0.45, 1.0, 0.5, 0.55) if ok else Color(1.0, 0.4, 0.4, 0.55)
-		var quad := _tile_screen_quad(t)
-		if quad.size() < 4:
+	# ③ 先画圈（在点位标记之下）：包括正在缩小、已经离开的旧圈。
+	for key in _ring_anim.keys():
+		var tile: Vector2i = key
+		var rec: Dictionary = _ring_anim[tile]
+		var t := float(rec.get("t", 0.0))
+		var r: float = float(rec.get("r", drag_anchor_radius)) * _ring_radius_scale(t)
+		if t <= 0.001 or r <= 0.02:
 			continue
-		draw_colored_polygon(quad, Color(c.r, c.g, c.b, 0.18))
+		var c: Color = rec.get("color", DRAG_ANCHOR_OK)
+		_draw_world_ring(Vector2(float(tile.x) + 0.5, float(tile.y) + 0.5), r,
+			Color(c.r, c.g, c.b, c.a * clampf(t * 1.35, 0.0, 1.0)))
+		drag_ring_draw_count += 1
+	if not drag_anchor_active:
+		return
+	var vp := Rect2(Vector2.ZERO, get_viewport_rect().size).grow(64.0)
+	var is_recruit := drag_anchor_kind == "recruit"
+	var base_color: Color = DRAG_ANCHOR_RECRUIT if is_recruit else DRAG_ANCHOR_COLOR
+	# ① 所有可落点
+	for tv in drag_anchor_tiles:
+		var tile: Vector2i = tv
+		if is_recruit:
+			# 招募：区划中心是现成的建筑，只点一个小亮点（不画地块框，避免像要盖楼）。
+			var c0: Vector2 = palette.to_px(Vector2(float(tile.x) + 0.5, float(tile.y) + 0.5))
+			if not vp.has_point(c0):
+				continue
+			draw_circle(c0, 3.5, base_color)
+			drag_anchor_draw_count += 1
+			continue
+		var quad := _tile_screen_quad(tile)
+		if quad.size() < 4 or not _pts_bbox_intersects(quad, vp):
+			continue
 		var closed := quad.duplicate()
 		closed.append(quad[0])
-		draw_polyline(closed, c, 2.5)
+		draw_polyline(closed, Color(base_color.r, base_color.g, base_color.b, 0.55),
+			1.6, true)
+		var c: Vector2 = palette.to_px(Vector2(float(tile.x) + 0.5, float(tile.y) + 0.5))
+		draw_circle(c, 3.0, base_color)
+		drag_anchor_draw_count += 1
+	# ② 吸附到的那一个（建筑：整格填色；招募：中心再画一个实心点）
+	if drag_anchor_tile.x < 0:
+		return
+	var color: Color = _ring_color()
+	if is_recruit:
+		var cp: Vector2 = palette.to_px(Vector2(float(drag_anchor_tile.x) + 0.5,
+			float(drag_anchor_tile.y) + 0.5))
+		draw_circle(cp, 5.0, color)
+		drag_anchor_draw_count += 1
+		return
+	var quad2 := _tile_screen_quad(drag_anchor_tile)
+	if quad2.size() >= 4:
+		draw_colored_polygon(quad2, Color(color.r, color.g, color.b, 0.20))
+		var closed2 := quad2.duplicate()
+		closed2.append(quad2[0])
+		draw_polyline(closed2, color, 2.6)
 		draw_count += 1
+
+
+## 在地面上画一个**世界坐标的圆**（半径 = 格，逐点投影成屏幕多边形）。
+##
+## ★ 为什么不画屏幕圆：这个游戏是透视相机，屏幕圆投回地面是一个**歪的椭圆**，
+##   玩家会看到「圈里的地形与圈不重合」。逐点投影才是「地面上那一圈」。
+## ★ 相机后方的点会让 `unproject_position` 把坐标镜像到天外：这里先判
+##   `is_position_behind`，只要有一个点跑到相机后面就整圈不画（拖牌时几乎不会出现）。
+func _draw_world_ring(center: Vector2, radius: float, color: Color) -> void:
+	var cam: Camera3D = palette.cam
+	var pts := PackedVector2Array()
+	for i in DRAG_RING_SEGMENTS + 1:
+		var ang: float = TAU * float(i) / float(DRAG_RING_SEGMENTS)
+		var logic := center + Vector2(cos(ang), sin(ang)) * radius
+		var wp: Vector3 = palette.to_world(logic)
+		if cam.is_position_behind(wp):
+			return
+		pts.append(palette.to_px(logic))
+	if pts.size() < 3:
+		return
+	# 很淡的地面填色 + 一圈实线：填色让「圈内」读得出来，实线给边界。
+	draw_colored_polygon(pts, Color(color.r, color.g, color.b, 0.10 * color.a))
+	draw_polyline(pts, color, 2.4, true)
+	draw_count += 1
 
 
 ## 一个格在屏幕上的四个角（顺序：左上 → 右上 → 右下 → 左下）

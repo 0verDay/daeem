@@ -36,6 +36,10 @@ const AttackMarkRes = preload("res://view/attack_mark_view_3d.gd")
 const ChargeFxRes = preload("res://view/charge_fx_view_3d.gd")
 ## ★★ M3：单位阵亡的贴地烟尘（对象池；见 view/death_fx_view_3d.gd）
 const DeathFxRes = preload("res://view/death_fx_view_3d.gd")
+## ★★ 2026.11.15：可建造点位的碎石/断木指示物（常驻淡显 + 拖建筑牌时高亮）
+const BuildPointViewRes = preload("res://view/build_point_view_3d.gd")
+## ★★ 2026.11.15：建筑倒毁（零件分开塌陷 + 碎石尘土；纯表现，差分 building_list）
+const BuildingDeathRes = preload("res://view/building_death_view_3d.gd")
 ## 阵营色（冲锋冲击波用；与选中圈 / 旗帜同一套口径）
 const SideColorRes = preload("res://view/side_color.gd")
 const Overlay3DRes = preload("res://view/overlay_view_3d.gd")
@@ -111,10 +115,6 @@ var units = null
 ##    3D 版内部叫 units（一个 MultiMesh 层）—— 两个名字都给，省得调用方各记一套。
 var unit_view = null
 var buildings = null
-var _build_card_ghost: MeshInstance3D = null
-var _build_card_ghost_material: StandardMaterial3D = null
-var _build_card_ghost_type := ""
-var _build_card_ghost_tile := Vector2i(-1, -1)
 ## ★ 射箭投掷物层（本轮新增，见 view/projectile_view_3d.gd）：只读 world.projectiles
 var projectiles = null
 ## ★ 右键指令的 3D 旗子（移动 = 绿 / 行军 = 黄）：由 `_on_command` 插 / 收，纯表现
@@ -125,6 +125,10 @@ var attack_marks = null
 var charge_fx = null
 ## ★★ M3：阵亡烟尘层（纯表现；只读 `kill` 事件）
 var death_fx = null
+## ★★ 2026.11.15：可建造点位的碎石 / 断木指示物（MeshInstance3D 池；拖建筑牌时高亮）
+var build_points_view = null
+## ★★ 2026.11.15：建筑倒毁层（差分 building_list；零件分开塌陷 + 尘土）
+var building_death = null
 var overlay = null
 ## ★★ 本局的编队槽位表（见 `view/team_slots.gd`）；地图 / 右栏 / 数字键共用同一份。
 var team_slots = null
@@ -788,17 +792,11 @@ func _assemble() -> void:
 	buildings.name = "BuildingView3D"
 	add_child(buildings)
 	buildings.setup(cfg, world, palette)
-	_build_card_ghost = MeshInstance3D.new()
-	_build_card_ghost.name = "BuildCardGhost"
-	_build_card_ghost.visible = false
-	_build_card_ghost.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	_build_card_ghost_material = StandardMaterial3D.new()
-	_build_card_ghost_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	_build_card_ghost_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	_build_card_ghost_material.cull_mode = BaseMaterial3D.CULL_DISABLED
-	_build_card_ghost_material.albedo_color = Color(0.4, 1.0, 0.45, 0.52)
-	_build_card_ghost.material_override = _build_card_ghost_material
-	add_child(_build_card_ghost)
+	# ★★ 2026.11.15：可建造点位的碎石/断木指示物（常驻淡显；拖建筑牌时由 `_process` 高亮）
+	build_points_view = BuildPointViewRes.new()
+	build_points_view.name = "BuildPointView3D"
+	add_child(build_points_view)
+	build_points_view.setup(cfg, world, palette, buildings)
 
 	# ★ 演出呼吸泛光：地面光环 + 建筑外壳（单位本体在 unit_flash.gdshader 里）
 	story_glow = StoryGlowViewRes.new()
@@ -836,6 +834,11 @@ func _assemble() -> void:
 	death_fx.name = "DeathFx3D"
 	add_child(death_fx)
 	death_fx.setup(cfg, palette)
+	# ★★ 2026.11.15：建筑倒毁（零件分开塌陷 + 尘土）。必须在 `death_fx` 之后建（它借尘土层）。
+	building_death = BuildingDeathRes.new()
+	building_death.name = "BuildingDeathView3D"
+	add_child(building_death)
+	building_death.setup(cfg, palette, buildings, death_fx)
 
 	# 覆盖层（选中圈 / 移动与攻击标记 / 建造预览 / 拖框）：屏幕空间，用 palette 定位
 	var layer := CanvasLayer.new()
@@ -1723,6 +1726,8 @@ func _process(dt: float) -> void:
 	# ★★ 选中的建筑 / 区划中心 / 敌方建筑 → 金色描边（与单位选中同一个金）
 	buildings.set_selected(_selected_building_tiles_for_view())
 	buildings.sync(dt)
+	if building_death != null:
+		building_death.sync(dt if running else 0.0)
 	_prof_done("view/buildings", _t_build)
 	var _t_other := _prof()
 	projectiles.sync()
@@ -1749,8 +1754,28 @@ func _process(dt: float) -> void:
 	var _t_overlay := _prof()
 	overlay.hover_tile = input_ctrl.hover_tile
 	overlay.hover_valid = input_ctrl.hover_valid
-	var card_building: bool = hud != null and hud.drag_build_active
-	overlay.build_type = "" if card_building else input_ctrl.build_type
+	# ★★ 2026.11.15：拖牌预览由 hud 的**锚点**驱动（点选建造模式已删除）：
+	#   拖建筑牌 / 将领牌时所有可落点高亮；拖到落点附近时出现圆形范围指示
+	#   （进 0.18s 扩散、离开 0.12s 缩回 —— 动画在 overlay 里按格记进度）。
+	if hud != null:
+		overlay.drag_anchor_active = hud.drag_anchor_active
+		overlay.drag_anchor_kind = hud.drag_anchor_kind
+		overlay.drag_anchor_tiles = hud.drag_anchor_tiles if hud.drag_anchor_active else []
+		overlay.drag_anchor_tile = hud.drag_anchor_tile
+		overlay.drag_anchor_ok = hud.drag_anchor_ok
+		overlay.drag_anchor_radius = hud.drag_anchor_radius
+	else:
+		overlay.drag_anchor_active = false
+		overlay.drag_anchor_tiles = []
+		overlay.drag_anchor_tile = Vector2i(-1, -1)
+	# ★ 圈动画每帧推进（暂停时传 0 = 冻住，与红环 / 旗子同一条口径）。
+	overlay.tick_drag_rings(dt if running else 0.0)
+	# ★★ 2026.11.15：可建造点位的碎石指示物 —— 拖建筑牌时把锚点对应的点位高亮。
+	if build_points_view != null:
+		var drag_on: bool = hud != null and hud.drag_anchor_active
+		build_points_view.sync(
+			hud.drag_anchor_kind if drag_on else "",
+			hud.drag_anchor_tiles if drag_on else [])
 	overlay.move_marks = input_ctrl.move_marks
 	overlay.attack_marks = input_ctrl.attack_marks
 	overlay.drag_active = input_ctrl.drag_active
@@ -1764,8 +1789,6 @@ func _process(dt: float) -> void:
 	# ★★ F2：拒绝红环的寿命（暂停时冻住，与插旗 / 攻击标记同一条口径）。
 	overlay.tick_rejects(dt if running else 0.0)
 	overlay.sync()
-	_sync_build_card_ghost()
-	_sync_order_ghost()
 	_prof_done("view/overlay", _t_overlay)
 	# ⑤a ★★ 迷雾：**每帧**检查一次掩码变没变（整块 memcmp，O(格数)，可忽略）。
 	#
@@ -1791,43 +1814,6 @@ func _process(dt: float) -> void:
 	_prof_done("camera", _t_cam)
 	_mobile_scale_tick(dt)
 
-
-## ★★ 2026.11.14：把 hud 那份「操作牌旗帜虚影」状态抄给 overlay（纯表现，不碰逻辑）。
-##
-## ★ 为什么状态放在 hud：落点要算「最近敌人」（要 `world` + `palette` 的投影），
-##   而 hud 已经在做同类的活（`_update_build_drag_preview()`）；这里只是一帧一次的三行赋值。
-## ★ 与 `_sync_build_card_ghost()` 并列调用：两者都是「拖牌时地图上的预览」。
-func _sync_order_ghost() -> void:
-	if overlay == null or hud == null:
-		return
-	overlay.order_ghost_active = hud.order_ghost_active
-	overlay.order_ghost_world = hud.order_ghost_world
-	overlay.order_ghost_color = hud.order_ghost_color
-	overlay.order_ghost_snapped = hud.order_ghost_snapped
-
-
-func _sync_build_card_ghost() -> void:
-	if _build_card_ghost == null or hud == null or buildings == null:
-		return
-	var type := String(hud.drag_build_type)
-	var tile: Vector2i = hud.drag_build_tile
-	if not hud.drag_build_active or type == "" or tile.x < 0:
-		_build_card_ghost.visible = false
-		return
-	var transform_changed := _build_card_ghost_type != type or _build_card_ghost_tile != tile
-	if _build_card_ghost_type != type:
-		_build_card_ghost.mesh = buildings.preview_mesh(type)
-		_build_card_ghost_type = type
-	if _build_card_ghost.mesh == null:
-		_build_card_ghost.visible = false
-		return
-	if transform_changed:
-		_build_card_ghost.global_transform = buildings.preview_transform(type, tile)
-		_build_card_ghost_tile = tile
-	var valid: bool = hud._card_build_tile_valid(type, tile)
-	_build_card_ghost_material.albedo_color = Color(0.36, 1.0, 0.42, 0.52) if valid \
-		else Color(1.0, 0.30, 0.29, 0.52)
-	_build_card_ghost.visible = true
 
 
 ## ★★ 2026.10.27：移动端自适应 3D 分辨率（只改 3D，不改 UI / 命中判定）。
@@ -2668,19 +2654,22 @@ func _set_system_cursor_hidden(hide_it: bool) -> void:
 
 
 ## 当前光标状态。判定顺序与左键 / 右键那条**尽量同源**：
-##   UI > 建造 > 命令模式 > 悬停敌人 > 普通。
+##   UI > 建造拖拽 > 命令模式 > 悬停敌人 > 普通。
 func _cursor_mode(mouse: Vector2) -> String:
 	var over_ui: bool = hud != null and hud.point_hits_ui(mouse)
-	return cursor_mode_of(over_ui, input_ctrl.build_type, input_ctrl.hover_valid,
+	var building: bool = hud != null and hud.drag_build_active
+	var build_valid: bool = hud != null and hud._card_build_anchor_valid()
+	return cursor_mode_of(over_ui, building, build_valid,
 		input_ctrl.order_mode, _hover_enemy())
 
 
 ## ★★ F1 的纯判定（抽成静态函数：测试可以不起整个场景直接钉状态机）。
-static func cursor_mode_of(over_ui: bool, build_type: String, build_valid: bool,
+## @param building 是否正在拖建筑牌（建造提示由 hud 的锚点驱动，不再是「建造模式」）。
+static func cursor_mode_of(over_ui: bool, building: bool, build_valid: bool,
 		order_mode: String, hover_enemy: bool) -> String:
 	if over_ui:
 		return "ui"
-	if build_type != "":
+	if building:
 		return "build" if build_valid else "invalid"
 	if order_mode != "":
 		if order_mode == "attack" and hover_enemy:
@@ -2890,7 +2879,7 @@ func _input(event: InputEvent) -> void:
 		input_ctrl.handle_mouse_motion(event)
 	elif event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
-		if mb.button_index == MOUSE_BUTTON_LEFT or mb.button_index == MOUSE_BUTTON_MIDDLE:
+		if mb.button_index == MOUSE_BUTTON_LEFT or mb.button_index == MOUSE_BUTTON_RIGHT:
 			input_ctrl.handle_mouse_button(event)
 
 
@@ -2997,7 +2986,7 @@ func _update_order_flag(cmd: Dictionary) -> void:
 
 ## 指定攻击的**目标解析**：命令里只有可序列化的 `target_id`（单位）或 `tx/ty`（建筑），
 ## 这里按同一条规则从 world 拿回对象 —— 命令里不放对象引用，联机两条路才一致。
-## （右键与操作页「攻击」格发的是**同一种**命令，所以两条入口都会走到这里。）
+## （右键 / 手机单击 / 观战 AI 发的都是**同一种**命令，所以都会走到这里。）
 func _mark_attack_target(cmd: Dictionary) -> void:
 	if attack_marks == null or world == null:
 		return

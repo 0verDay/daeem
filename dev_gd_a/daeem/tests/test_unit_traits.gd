@@ -81,7 +81,14 @@ func _test_config(cfg) -> void:
 	eq(cfg.class_display_name(ConfigRes.CLASS_INFANTRY), "步兵", "大类 id → 显示名：infantry = 步兵")
 	eq(cfg.class_display_name("nope"), "nope", "未知大类 id 原样返回（不静默变成步兵）")
 
-	eq(cfg.unit_traits_of("no_such_type").size(), 0, "查不到的类型没有特性（空字典）")
+	# ★★ 2026.11.15：`_normalize_traits()` 现在永远返回同一套 4 个键（空地/中性值）——
+	#   所以「查不到的类型没有特性」不能再用 `size() == 0` 表达，改成断言**每一项都是中性**。
+	var nt: Dictionary = cfg.unit_traits_of("no_such_type")
+	ok(not nt.has("attack_vs_class") or (nt["attack_vs_class"] as Dictionary).is_empty(),
+		"查不到的类型没有对兵种加成（attack_vs_class 为空）")
+	near(float(nt.get("ranged_reduction", 0.0)), 0.0, 1e-9, "查不到的类型没有远程减伤")
+	near(float(nt.get("melee_reduction", 0.0)), 0.0, 1e-9, "查不到的类型没有近战减伤")
+	ok(not bool(nt.get("knockback_immune", false)), "查不到的类型不免疫击退")
 
 	# ★ 写错的大类键 / 写错类型的值要在载入时被洗掉，而不是留一条永远匹配不上的规则。
 	#   ⚠️ 必须**深拷**一份 data：直接共用同一个字典会把上面这张真表也改掉，

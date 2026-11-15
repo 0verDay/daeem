@@ -518,21 +518,13 @@ func _test_capture_blocks_building(cfg) -> void:
 		"★★ 敌人离开后建造命令恢复执行")
 
 
-func _owned_build_spot(w, cfg) -> Dictionary:
-	var r: int = maxi(0, int(cfg.zone_capture_radius_tiles))
-	for z in w.zones.zones:
-		var zd: Dictionary = z
-		if String(zd.get("owner", "")) != "p1" or zd.get("center", null) == null:
-			continue
-		var center: Vector2i = zd["center"]
-		for t in zd.get("tiles", []):
-			var tv: Vector2i = t
-			if maxi(absi(tv.x - center.x), absi(tv.y - center.y)) <= r:
-				continue
-			if tv.x < 0 or tv.y < 0 or tv.x >= w.map.cols or tv.y >= w.map.rows:
-				continue
-			if w.can_build_at(tv.x, tv.y, "p1"):
-				return {"zone": zd, "tile": tv}
+## 己方区块里的一个**空建造点位**（2026.11.15：非城墙建筑只能落在点位上）。
+func _owned_build_spot(w, _cfg) -> Dictionary:
+	for a in w.build_anchors_for("tower", "p1"):
+		var tile: Vector2i = a["tile"]
+		var z = w.zones.zone_at(tile.x, tile.y)
+		if z != null:
+			return {"zone": z, "tile": tile}
 	return {}
 
 

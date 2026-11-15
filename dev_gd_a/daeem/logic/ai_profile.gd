@@ -160,14 +160,8 @@ const DEFAULTS := {
 		"tower_cover_radius": 4,
 		"wall_enabled": true,
 		"wall_hard_max": 240,
-		# ★★ 2026.10.25：边境封墙。前期只封与敌方接壤的前线；资源到
-		#   `3×max_float` 后再补中立接壤的整圈边境。每 tick 最多 3 格。
-		"wall_border_enabled": true,
-		"wall_border_rich_mult": 1.5,
-		"wall_border_full_rich_mult": 3.0,
-		"wall_border_per_tick": 3,
-		"wall_border_keep_slots": 16,
-		"wall_border_require_armed_generals": true,
+		# ★★ 2026.11.15：**边境长墙已删除** —— 墙只能围区划中心一圈（与玩家同一规则），
+		#   所以 `wall_border_*` 那组参数随之移除；AI 只用 `wall_enabled` / `wall_hard_max`。
 		"tower_frontier_bonus": 4.0,
 		# ★★ 2026.11：≥ 10 ⇒ 升本可以动用「补员预留」那部分钱（见 ai_build._try_base_upgrade）。
 		#   10 -> 14：这一轮口径是「提高 command AI 升本的权重」（三本门槛已经降到 2 将）。

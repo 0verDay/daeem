@@ -68,13 +68,13 @@ func _test_config(cfg) -> void:
 # 1) F1 光标状态机
 # ------------------------------------------------------------------
 func _test_cursor() -> void:
-	eq(Game3DRes.cursor_mode_of(true, "", false, "", false), "ui", "★ 光标：压在 UI 上 = ui")
-	eq(Game3DRes.cursor_mode_of(false, "wall", true, "", false), "build", "★ 光标：建造模式且可建 = build")
-	eq(Game3DRes.cursor_mode_of(false, "wall", false, "", false), "invalid", "★ 光标：建造模式但不可建 = invalid")
-	eq(Game3DRes.cursor_mode_of(false, "", false, "attack", true), "attack", "★ 光标：攻击模式 + 悬停敌人 = attack")
-	eq(Game3DRes.cursor_mode_of(false, "", false, "attack", false), "order", "★ 光标：攻击模式但没敌人 = order")
-	eq(Game3DRes.cursor_mode_of(false, "", false, "", true), "attack", "★ 光标：普通模式悬停敌人 = attack")
-	eq(Game3DRes.cursor_mode_of(false, "", false, "", false), "normal", "★ 光标：普通空地 = normal")
+	eq(Game3DRes.cursor_mode_of(true, false, false, "", false), "ui", "★ 光标：压在 UI 上 = ui")
+	eq(Game3DRes.cursor_mode_of(false, true, true, "", false), "build", "★ 光标：正在拖建筑牌且可建 = build")
+	eq(Game3DRes.cursor_mode_of(false, true, false, "", false), "invalid", "★ 光标：拖建筑牌但不可建 = invalid")
+	eq(Game3DRes.cursor_mode_of(false, false, false, "attack", true), "attack", "★ 光标：攻击模式 + 悬停敌人 = attack")
+	eq(Game3DRes.cursor_mode_of(false, false, false, "attack", false), "order", "★ 光标：攻击模式但没敌人 = order")
+	eq(Game3DRes.cursor_mode_of(false, false, false, "", true), "attack", "★ 光标：普通模式悬停敌人 = attack")
+	eq(Game3DRes.cursor_mode_of(false, false, false, "", false), "normal", "★ 光标：普通空地 = normal")
 
 
 # ------------------------------------------------------------------

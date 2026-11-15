@@ -2,9 +2,11 @@
 ##
 ## ★ 内容**随右侧页签实时切换**（需求原话）。页签是**按选中对象动态显示**的
 ##   （见 view/page_tabs.gd 的文件头），所以这里可能收到的几套内容是：
-##     操作页 → 移动(Q) / 攻击(W) / 行军(E) / 停止(A)  ← 对**当前选中的部队**下达的指令
+##     操作页 → 大本营「升级 / 取消升级」（★ 2026.11.15 起**只剩建筑**：
+##              部队的操作页已删除，移动 / 攻击 / 行军回到右键）
 ##     单位页 → 三行兵种（Q/W/E …；第 1/2/3 行分别要 1/2/3 级大本营） ← config.json 的 recruit.list
 ##     建筑页 → 城墙(Q) / 箭塔(W)                     ← 来自 config.json 的 building 段（可建的那些）
+##     将领页 → 无选中时拖到区划中心招募的一手（Q/W/E）← world.general_recruit_slots()
 ##     招募页 → 池子抽出的一手（Q/W/E）              ← world.general_recruit_slots()
 ##     科技页 → **命令卡这里是空的**：九格由 view/tech_grid.gd 画在最上层
 ##              （同一个 3×3 几何 + 科技自己的三态样式，见那个文件的说明）
@@ -23,7 +25,7 @@
 ##   · 名字叠在最下面那条**略黑的底条**上（`NAME_BAR_H`，填充扫上来时底条淡出，
 ##     字翻成压金暗色 —— 否则深底 + 深字读不出来）；
 ##   · 更长的说明（造价 / 效果 / 解锁条件）只进**悬停面板**（见 hud 的 `_hover_detail`）。
-##   没有图标的页（操作页：移动 / 攻击 / 行军 / 停止）仍是整格居中的一行字、不垫底条。
+##   没有图标的格子（大本营升级那种纯文字）仍是整格居中的一行字、不垫底条。
 ##   ⚠️ 名字**永远写进 Label、并且可见** —— `cell_label()` 是测试与排查的语义出口，
 ##      旧版「有图就把名字藏起来」的做法已经作废（用户改口径了）。
 extends Control
@@ -66,9 +68,6 @@ var _name_bars: Array[ColorRect] = []
 ## ★★ 每格的**单位剪影浮雕**层（`view/unit_card_icon.gd` 的 `IconView`）。
 ##   与 `_name_labels` 一一对应、同一序号；空串 = 这一格不画图标。
 var _icon_views: Array = []
-## ★★ 2026.11.14：操作牌冷却的「遮罩」（**填充式**：一张暗纱从牌顶往下盖住，
-## 随冷却推进从下往上退开，底边就是冷却前沿）。见 `set_order_cooldown()`。
-var _cd_veils: Array = []
 ## ★★ 招募数量角标（同种多个时显示在格子右下角）。
 var _count_labels: Array[Label] = []
 ## 纯动作页的大图形符号（招募/建筑/科技仍优先使用剪影蒙版）。
@@ -85,26 +84,32 @@ const DRAG_RETURN_SEC := 0.20
 ##   （见 `_set_drag_face_alpha()`：拖回手牌就淡回来，拖到地图上就淡掉）
 const DRAG_FACE_FADE_SEC := 0.12
 const DRAG_FACE_SLACK := 40.0
-## ★★ 2026.11.14：操作牌拖拽时，牌底边距指针的余量（像素）——
-##   让牌底下留出**旗杆（40）+ 旗面**的位置（见 `_update_drag_position()`）。
-const ORDER_DRAG_LIFT := 70.0
-## ★★ 2026.11.14：操作牌拖拽时的整体不透明度（半透明 = 看得见牌下面的旗帜虚影）。
-const ORDER_DRAG_ALPHA := 0.72
+## 所有牌拖到地图上时的卡面透明度：**只淡一点，保持可见**（它自己就是「卡牌虚影」）。
+const DRAG_CARD_ALPHA := 0.72
 ## ★★ 2026.11.14（用户口径）：「卡牌在静止到悬停态时需要有缓动效果」——
-##   抬起 / 摆正原来是**一帧到位**（`cell.position.y -= 20` + `rotation = 0`），
-##   鼠标一扫过手牌，每张牌都在瞬间跳一下。现在走 0.14s 的 ease-out：
-##   起步快、收尾稳，抬起与落回**同一档**（落回也缓动，不会「啪」地掉下去）。
-##   ⚠️ 时长与 `DRAG_RETURN_SEC` / 入场 0.20s 同一档手感，别调得更长 ——
-##      手牌是**每隔几帧就要扫过一张**的高频交互，慢了会觉得「跟不上鼠标」。
+##   抬起 / 摆正原来是一帧到位，鼠标一扫过手牌每张牌都会瞬间跳一下。
+##   现在走 0.14s 的 ease-out：起步快、收尾稳，抬起与落回同一档。
 const HOVER_RAISE_SEC := 0.14
 ## 悬停时整张牌向上抬多少（设计像素）。
 const HOVER_RAISE_PX := 20.0
 var _drag_index: int = -1
 var _drag_start_global := Vector2.ZERO
 var _dragging_card: bool = false
+## ★★ 2026.11.15：正在「被拒绝 → 飞回手牌」的那一格（-1 = 没有）。
+##   返程期间**不允许悬停抬起**：两个 Tween 同时写 `position` / `position:y` 会让
+##   按钮和卡面被不同的 Tween 拽到两个位置，看起来就是「重影 / 又一张相同的牌」。
+var _returning_index: int = -1
+## 返程结束后先压住这一格的悬停抬起，直到鼠标离开再进：否则牌刚落到槽位，
+## 鼠标还停在上面，抬升 Tween 会立刻把它顶起来 —— 玩家看到的就是「又错位一下」。
+var _hover_suppressed_index: int = -1
 var _deck_tween: Tween = null
 var _drag_tween: Tween = null
 var _drag_fade_tween: Tween = null
+## 建筑牌「生效后只把自己淡回槽位」的 Tween（不重排整手牌）。
+var _restore_tween: Tween = null
+## 生效牌「向上缩小淡出」的 Tween：必须能取消，否则回调开始后它还在写同一张牌的
+## position / scale，会和淡回 / 重排抢出「两张牌」的错位。
+var _success_tween: Tween = null
 ## 每格当前挂着的「悬停抬起」Tween（再次悬停 / 收手 / 换页时先杀掉，
 ## 否则两条 Tween 会抢同一个 `position:y`，表现是牌在原地抽搐）。
 var _hover_tweens: Array = []
@@ -331,7 +336,6 @@ func setup() -> void:
 		veil.add_theme_stylebox_override("panel", vsb)
 		veil.visible = false
 		cell.add_child(veil)
-		_cd_veils.append(veil)
 
 		_cells.append(cell)
 		_key_labels.append(key_label)
@@ -372,8 +376,14 @@ func set_entries(list: Array) -> void:
 		_drag_tween.kill()
 	if _drag_fade_tween != null and _drag_fade_tween.is_running():
 		_drag_fade_tween.kill()
+	if _restore_tween != null and _restore_tween.is_running():
+		_restore_tween.kill()
+	if _success_tween != null and _success_tween.is_running():
+		_success_tween.kill()
 	_drag_index = -1
 	_dragging_card = false
+	_returning_index = -1
+	_hover_suppressed_index = -1
 	_entries = []
 	for i in list.size():
 		if i >= UiLayoutRes.CARD_SLOTS:
@@ -397,10 +407,7 @@ func set_entries(list: Array) -> void:
 			# ★★ 2026.11.14：换页时先把**冷却遮罩**收掉。
 			#   命令卡这九颗按钮是**跨页复用**的：在操作页盖过的暗纱，切到建筑页
 			#   会留在同一颗按钮上（用户报的「我的单位移动时，建筑牌也有进度条」）。
-			#   `set_order_cooldown()` 每帧也会按条目类型收回它，但那是**下一帧**的事 ——
 			#   这一句让「切页那一帧」就是干净的。
-			if i < _cd_veils.size() and _cd_veils[i] != null:
-				_cd_veils[i].visible = false
 			_name_labels[i].text = String(e2.get("name", ""))
 			if String(e2.get("type", "")) == "recruit_cancel_all":
 				_key_labels[i].text = "ESC"
@@ -466,15 +473,11 @@ func set_entries(list: Array) -> void:
 			cell.disabled = not ready
 			# ★ 有内容 ⇒ 参与动效（从空槽变成有内容的那一帧要把它重新打开）。
 			FillButtonRes.set_available(cell, true)
-			# ★★ 建造命令的「选中」：build 条目带 `active`（= 权威的 build_type 就是它）
-			#   ⇒ 金色填满，与页签当前页 / 科技启用同一条选中口径。
-			#   ★ 建造格不再要「点击一闪」：选中填充本身就是点击反馈。
-			#   ★★ 单位页的招募格也不要「点击一闪」（用户口径：局内的单位按钮
+			# ★★ 2026.11.15：建筑格不再有「选中」状态（点选建造已删除，只剩拖牌），
+			#   所以 `active` 恒为 false（保留这一个读取：其它页将来也可能用它）。
+			#   ★★★ 单位页的招募格不要「点击一闪」（用户口径：局内的单位按钮
 			#     「点击后不需要金色填充闪过」）—— 它排进队列，右侧队列 / 红字就是反馈。
 			#   其它页（操作 / 招募将领）的格子照旧闪。
-			var kind := String(e2.get("type", ""))
-			var is_build: bool = kind == "build"
-			var is_unit: bool = kind == "recruit" or kind == "recruit_cancel_all"
 			FillButtonRes.set_latched(cell, bool(e2.get("active", false)))
 			FillButtonRes.set_click_flash(cell, false)
 			# ★★ 置灰的格子**照旧有悬停反馈**，只是填的是**灰**（见 view/fill_button.gd）：
@@ -551,6 +554,11 @@ func _layout_fan() -> void:
 func _raise_card(i: int, raised: bool) -> void:
 	if i < 0 or i >= _cells.size() or not _cells[i].visible:
 		return
+	# 返程中 / 刚落到槽位：不要起悬停抬起（返程 Tween 或「刚回来」的视觉会被打断）。
+	if _returning_index == i:
+		return
+	if raised and _hover_suppressed_index == i:
+		return
 	var ordinal := 0
 	for j in i:
 		if j < _entries.size() and not (_entries[j] as Dictionary).is_empty():
@@ -624,6 +632,16 @@ func animate_deck_in() -> void:
 	_kill_hover_tweens()
 	if _deck_tween != null and _deck_tween.is_running():
 		_deck_tween.kill()
+	# ★★ 2026.11.15：整手牌重排时把「返程 / 单张淡回」的 Tween 一起掐掉 ——
+	#   否则它们会和入场 Tween 同时写同一张牌的 position，表现就是牌重叠 / 乱飞。
+	if _drag_tween != null and _drag_tween.is_running():
+		_drag_tween.kill()
+	if _restore_tween != null and _restore_tween.is_running():
+		_restore_tween.kill()
+	if _success_tween != null and _success_tween.is_running():
+		_success_tween.kill()
+	_returning_index = -1
+	_hover_suppressed_index = -1
 	var visible_indices: Array[int] = []
 	for i in _cells.size():
 		if _cells[i].visible:
@@ -635,6 +653,8 @@ func animate_deck_in() -> void:
 		var i := visible_indices[ordinal]
 		var target := UiLayoutRes.card_fan_local(ordinal, count)
 		var target_rotation := UiLayoutRes.card_fan_rotation(ordinal, count)
+		_cells[i].z_index = ordinal * 2 + 1
+		_card_faces[i].z_index = ordinal * 2
 		_cells[i].modulate.a = 0.0
 		_cells[i].position = target.position + Vector2(0.0, 40.0)
 		_cells[i].rotation = target_rotation * 1.5
@@ -648,16 +668,16 @@ func animate_deck_in() -> void:
 		var target := UiLayoutRes.card_fan_local(ordinal, count)
 		var delay := float(ordinal) * 0.025
 		_deck_tween.tween_property(_cells[i], "position", target.position, 0.22) \
-			.set_delay(delay).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+			.set_delay(delay).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 		_deck_tween.tween_property(_cells[i], "rotation",
 			UiLayoutRes.card_fan_rotation(ordinal, count), 0.22) \
-			.set_delay(delay).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+			.set_delay(delay).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 		_deck_tween.tween_property(_cells[i], "modulate:a", 1.0, 0.16).set_delay(delay)
 		_deck_tween.tween_property(_card_faces[i], "position", target.position, 0.22) \
-			.set_delay(delay).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+			.set_delay(delay).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 		_deck_tween.tween_property(_card_faces[i], "rotation",
 			UiLayoutRes.card_fan_rotation(ordinal, count), 0.22) \
-			.set_delay(delay).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+			.set_delay(delay).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 		_deck_tween.tween_property(_card_faces[i], "modulate:a", 1.0, 0.16).set_delay(delay)
 
 
@@ -701,15 +721,24 @@ func _update_drag_position(i: int, viewport_pos: Vector2) -> void:
 		_dragging_card = true
 		# ★ 拖牌接管这张牌的位置：悬停 Tween 必须先撤，否则它和 `card_drag_moved` 抢。
 		_kill_hover_tweens()
+		# ★★ 2026.11.15：如果这张牌还在「被拒绝后飞回手牌」的返程 Tween 里，
+		#   也要先掐掉 —— 否则返程会继续把牌往旧槽位拽，和新的拖拽叠成重影 / 错位。
+		if _drag_tween != null and _drag_tween.is_running():
+			_drag_tween.kill()
+		if _restore_tween != null and _restore_tween.is_running():
+			_restore_tween.kill()
+		if _success_tween != null and _success_tween.is_running():
+			_success_tween.kill()
+		_returning_index = -1
+		_hover_suppressed_index = -1
 		_drag_face_alpha = -1.0
 		if _deck_tween != null and _deck_tween.is_running():
 			_deck_tween.kill()
-		if _drag_tween != null and _drag_tween.is_running():
-			_drag_tween.kill()
 		_cells[i].z_index = UiLayoutRes.CARD_SLOTS * 2 + 4
 		_card_faces[i].z_index = UiLayoutRes.CARD_SLOTS * 2 + 3
-		if String(entry_at(i).get("type", "")) == "build":
-			# 建筑牌上拖时快速淡至全透明，避免遮挡红 / 绿建造提示与 3D 虚影。
+		if _fades_when_over_map(String(entry_at(i).get("type", ""))):
+			# 建筑牌拖到地图上只淡一点（0.72），它自己就是「卡牌虚影」；
+			# 将领 / 招募牌淡到 0，让出区划中心底部的招募圈。
 			# ★★ 2026.11.14（用户口径）：「当卡牌没有被打出并被玩家拖回手牌时，
 			#   应当再逐渐显示其卡面」—— 淡出只是「离开手牌」时的事，拖回手牌范围
 			#   就要淡回来（见下面 `_set_drag_face_alpha()`），否则玩家拖回来时
@@ -720,33 +749,30 @@ func _update_drag_position(i: int, viewport_pos: Vector2) -> void:
 			_card_faces[i].modulate.a = 1.0
 			_set_drag_face_alpha(i, false)
 		card_drag_started.emit(entry_at(i), viewport_pos)
-		# ★★ 2026.11.14：操作牌拖拽时**半透明** —— 落点的旗帜虚影画在 overlay 层
-		#   （在 HUD 之下），牌不透明就会把旗子盖住；而吸附到敌人时「牌的位置」和
-		#   「旗的位置」本来就不重合（旗贴在敌人身上），更要能看见。
-		if String(entry_at(i).get("type", "")) == "order":
-			_cells[i].modulate.a = ORDER_DRAG_ALPHA
-			_card_faces[i].modulate.a = ORDER_DRAG_ALPHA
 	if not _dragging_card:
 		return
 	var local: Vector2 = get_global_transform_with_canvas().affine_inverse() * viewport_pos
 	_cells[i].rotation = 0.0
-	# ★★ 2026.11.14：**操作牌**要端在指针**上方**，别压在指针上 ——
-	#   落点那里会画一面「旗帜虚影」（hud + overlay_view_3d），而牌是 216×206 的，
-	#   居中跟手会把整面旗盖住，玩家看不见自己指哪儿（实测截图就是一片牌面）。
-	#   上抬量 = 牌高 + 旗杆高（overlay 里 34px）+ 一点余量。
 	var hold: Vector2 = _cells[i].size * 0.5
-	if String(entry_at(i).get("type", "")) == "order":
-		hold = Vector2(_cells[i].size.x * 0.5, _cells[i].size.y + ORDER_DRAG_LIFT)
 	_cells[i].position = local - hold
 	_card_faces[i].rotation = 0.0
 	_card_faces[i].position = _cells[i].position
-	# ★ 拖回手牌范围 ⇒ 卡面逐渐显示出来（拖到地图上 ⇒ 逐渐淡掉，让出建造预览）
-	if String(entry_at(i).get("type", "")) == "build":
+	# ★ 拖回手牌范围 ⇒ 卡面逐渐显示出来（建筑拖到地图上停在 0.72，将领 / 招募淡到 0）
+	#   ★★ 2026.11.15：将领牌也走同一条 —— 否则整张牌会盖住区划中心那一圈。
+	if _fades_when_over_map(String(entry_at(i).get("type", ""))):
 		_set_drag_face_alpha(i, true)
 	card_drag_moved.emit(entry_at(i), viewport_pos)
 
 
-## 建筑牌在拖拽中的「卡面可见度」：**手牌范围内可见、拖到地图上淡出**。
+## ★★ 2026.11.15（用户口径）：**所有牌拖出后都走同一套透明度** ——
+##   在手里 1.0，拖到地图上 0.72（半透明卡牌虚影），拖回手里再回 1.0。
+##   不再有「某些牌淡到 0 消失」的分支。
+func _fades_when_over_map(_type: String) -> bool:
+	return true
+
+
+## 建筑牌在拖拽中的「卡面可见度」：**手牌范围内可见、拖到地图上淡到 0.72**（建筑牌）
+## 或 0（将领 / 招募牌，让出底部的招募圈）。
 ##
 ## ★★ 2026.11.14（用户口径）：「当卡牌没有被打出并被玩家拖回手牌时，应当再逐渐显示其卡面」。
 ##   旧版只有「拖起来那一下淡到 0」这一条单向的 —— 玩家把牌拖回手牌时，手上是空的，
@@ -764,7 +790,11 @@ func _set_drag_face_alpha(i: int, follow_pointer: bool) -> void:
 	if follow_pointer:
 		var rect := Rect2(Vector2.ZERO, UiLayoutRes.CARD_RECT.size).grow(DRAG_FACE_SLACK)
 		var center: Vector2 = _cells[i].position + _cells[i].size * 0.5
-		target = 1.0 if rect.has_point(center) else 0.0
+		if rect.has_point(center):
+			target = 1.0
+		else:
+			# ★ 所有牌统一：拖到地图上都是半透明卡牌虚影，不再淡到 0 消失。
+			target = DRAG_CARD_ALPHA
 	if _drag_face_alpha >= 0.0 and absf(_drag_face_alpha - target) < 0.001:
 		return
 	_drag_face_alpha = target
@@ -813,40 +843,202 @@ func finish_touch_drag(i: int, pos: Vector2 = Vector2.INF) -> void:
 	_finish_card_drag(i, at)
 
 
-func _animate_card_back(i: int) -> void:
+## 当前 `_entries` 下，第 i 张牌在扇形里的位置 / 旋转 / 序号。
+## 空字典（保留键位的空槽）不参与摊开 —— 与 `_layout_fan()` 同一条判据。
+func _fan_slot_of(i: int) -> Dictionary:
 	var ordinal := 0
-	for j in i:
-		if j < _entries.size() and not (_entries[j] as Dictionary).is_empty():
-			ordinal += 1
 	var count := 0
-	for e in _entries:
-		if e is Dictionary and not (e as Dictionary).is_empty():
+	for j in _entries.size():
+		if not (_entries[j] as Dictionary).is_empty():
 			count += 1
+			if j < i:
+				ordinal += 1
 	if count <= 0:
+		return {}
+	return {
+		"rect": UiLayoutRes.card_fan_local(ordinal, count),
+		"rot": UiLayoutRes.card_fan_rotation(ordinal, count),
+		"ordinal": ordinal,
+	}
+
+
+## 被拒绝 / 取消的牌飞回手牌。
+##
+## ★★ 2026.11.15 修 bug（用户报「回到手牌后错位 / 重影 / 又出现一张相同的牌」）：
+##   · 返程用 CUBIC（BACK 会先冲过槽位再弹回来，看起来像回到手上又移了一下）；
+##   · 末帧按**当前** `_entries` 重算槽位并硬对齐 —— 返程 0.2s 内手牌可能重排
+##     （另一张牌生效 / 队列变化 / HUD 刷新），按旧序号落位会和别的牌重叠；
+##   · 返程期间 `_returning_index` 会挡住悬停抬起；再抓起同一张牌时直接 kill 返程 Tween。
+##   ★ 这里**不会创建任何新卡**：九格按钮与卡面从开局起就固定存在，只改可见性 / 变换。
+func _animate_card_back(i: int) -> void:
+	# ★★ 2026.11.15：目标不能只算一次 —— 返程 0.2s 里手牌可能因为「另一张牌生效 /
+	#   队列变化 / 页面刷新」重新摊开；只按旧序号落位会和别的牌重叠（错位 / 重影）。
+	#   这里用 `tween_method` **每帧重新读当前槽位**：手牌怎么变，牌就平滑跟到哪，
+	#   末帧自然落在精确位置上，不需要再硬切一下（硬切就是玩家看到的「突然错位」）。
+	var slot := _fan_slot_of(i)
+	if slot.is_empty():
 		return
-	var target := UiLayoutRes.card_fan_local(ordinal, count)
-	var rot := UiLayoutRes.card_fan_rotation(ordinal, count)
+	_returning_index = i
+	_hover_suppressed_index = i
+	var start_cell: Vector2 = _cells[i].position
+	var start_face: Vector2 = _card_faces[i].position
+	var start_rot: float = _cells[i].rotation
+	var start_face_rot: float = _card_faces[i].rotation
+	var ordinal: int = slot["ordinal"]
+	# ★ 缩放复位：`play_drag_success()` 会把牌缩到 0.72 倍，飞回时必须还原。
+	_cells[i].scale = Vector2.ONE
+	_card_faces[i].scale = Vector2.ONE
 	if _drag_tween != null and _drag_tween.is_running():
 		_drag_tween.kill()
 	if _drag_fade_tween != null and _drag_fade_tween.is_running():
 		_drag_fade_tween.kill()
 	_drag_tween = create_tween().set_parallel(true)
-	_drag_tween.tween_property(_cells[i], "position", target.position, DRAG_RETURN_SEC) \
-		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	_drag_tween.tween_property(_cells[i], "rotation", rot, DRAG_RETURN_SEC) \
-		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	_drag_tween.tween_property(_card_faces[i], "position", target.position, DRAG_RETURN_SEC) \
-		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	_drag_tween.tween_property(_card_faces[i], "rotation", rot, DRAG_RETURN_SEC) \
-		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	_drag_tween.tween_property(_cells[i], "modulate:a", 1.0, 0.12)
-	_drag_tween.tween_property(_card_faces[i], "modulate:a", 1.0, 0.12)
 	_cells[i].z_index = ordinal * 2 + 1
 	_card_faces[i].z_index = ordinal * 2
+	_drag_tween.tween_method(func(t: float) -> void:
+		if _dragging_card or i >= _cells.size():
+			return
+		var now := _fan_slot_of(i)
+		if now.is_empty():
+			return
+		var r: Rect2 = now["rect"]
+		var rr: float = now["rot"]
+		var no: int = now["ordinal"]
+		_cells[i].z_index = no * 2 + 1
+		_card_faces[i].z_index = no * 2
+		_cells[i].size = r.size
+		_card_faces[i].size = r.size
+		_cells[i].position = start_cell.lerp(r.position, t)
+		_card_faces[i].position = start_face.lerp(r.position, t)
+		_cells[i].rotation = lerp_angle(start_rot, rr, t)
+		_card_faces[i].rotation = lerp_angle(start_face_rot, rr, t)
+	, 0.0, 1.0, DRAG_RETURN_SEC) \
+		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	# 返程用 CUBIC 而不是 BACK：BACK 会先冲过槽位再弹回来，看起来就是「回到手牌后又移了一下」。
+	_drag_tween.tween_property(_cells[i], "modulate:a", 1.0, 0.12)
+	_drag_tween.tween_property(_card_faces[i], "modulate:a", 1.0, 0.12)
+	var on_return_done := func() -> void:
+		if not is_instance_valid(self):
+			return
+		if _returning_index == i:
+			_returning_index = -1
+		if _dragging_card or i >= _cells.size():
+			return
+		var now := _fan_slot_of(i)
+		if now.is_empty():
+			return
+		var nr: Rect2 = now["rect"]
+		var nr_rot: float = now["rot"]
+		_cells[i].position = nr.position
+		_cells[i].rotation = nr_rot
+		_cells[i].size = nr.size
+		_card_faces[i].position = nr.position
+		_card_faces[i].rotation = nr_rot
+		_card_faces[i].size = nr.size
+	_drag_tween.finished.connect(on_return_done, CONNECT_ONE_SHOT)
 
 
 func animate_card_back(i: int) -> void:
 	_animate_card_back(i)
+
+
+## ★★ 2026.11.15（用户口径）：**可执行的牌拖出并生效后，牌要消失** ——
+##   从松手处向上飘一点 + 缩小 + 淡出；建筑牌随后**只把自己**淡回当前槽位
+##   （`only_this_card = true`），**不重排其他牌** —— 用户报的「生效后全部刷新、牌重叠」。
+##   招募牌仍会重排：队列会改变格子内容（取消牌滑入 / 打出的兵种补回）。
+##
+## 与 `_animate_card_back()` 的分工（用户明确要求两种动画不同）：
+##   · 生效：向上 + 缩小 + 淡出（本函数）——「打出去了」；
+##   · 拒绝 / 取消：`_animate_card_back()` 飞回原来的槽位 ——「没收走」。
+##
+## ★ `scale` / `pivot_offset` 用完必须复位：`animate_deck_in()` 不清这两项
+##   （它只管位置 / 旋转 / 透明度），残留的 0.72 倍会被下一张牌继承。
+## @param only_this_card true = 只把这一张牌在它**当前槽位**淡回来，**不重排其他牌**
+##        （建筑牌用：生效后手牌不能整体刷新，否则会重叠 / 跳动）。
+func play_drag_success(i: int, screen_pos: Vector2, only_this_card: bool = false) -> void:
+	if i < 0 or i >= _cells.size() or not _cells[i].visible:
+		return
+	_returning_index = -1
+	if _success_tween != null and _success_tween.is_running():
+		_success_tween.kill()
+		_success_tween = null
+	if _drag_tween != null and _drag_tween.is_running():
+		_drag_tween.kill()
+	if _drag_fade_tween != null and _drag_fade_tween.is_running():
+		_drag_fade_tween.kill()
+	var cell := _cells[i]
+	var face := _card_faces[i]
+	var local: Vector2 = get_global_transform_with_canvas().affine_inverse() * screen_pos
+	cell.position = local - cell.size * 0.5
+	cell.rotation = 0.0
+	cell.modulate.a = 1.0
+	cell.pivot_offset = cell.size * 0.5
+	cell.scale = Vector2.ONE
+	face.position = cell.position
+	face.rotation = 0.0
+	face.modulate.a = 1.0
+	face.pivot_offset = face.size * 0.5
+	face.scale = Vector2.ONE
+	var out := create_tween().set_parallel(true)
+	_success_tween = out
+	out.tween_property(cell, "position:y", cell.position.y - 54.0, 0.14) \
+		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	out.tween_property(cell, "scale", Vector2(0.72, 0.72), 0.14) \
+		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	out.tween_property(cell, "modulate:a", 0.0, 0.14)
+	out.tween_property(face, "position:y", face.position.y - 54.0, 0.14) \
+		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	out.tween_property(face, "scale", Vector2(0.72, 0.72), 0.14) \
+		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	out.tween_property(face, "modulate:a", 0.0, 0.14)
+	out.chain().tween_callback(func() -> void:
+		if not is_instance_valid(self):
+			return
+		# ★ 先把这个 Tween 自己停掉：回调可能在最后一条 track 结束时触发，
+		#   残留的 position/scale 写入会和下面的「淡回槽位」抢同一张牌。
+		if _success_tween != null and _success_tween == out:
+			_success_tween.kill()
+			_success_tween = null
+		cell.scale = Vector2.ONE
+		face.scale = Vector2.ONE
+		if only_this_card:
+			_restore_card_at_slot(i)
+		else:
+			animate_deck_in())
+
+
+## 只把一张牌在它**当前**扇形槽位淡回来：不动其他牌、不做整手牌入场。
+## 建筑牌生效后用 —— 用户口径「生效后不能全部刷新」。
+func _restore_card_at_slot(i: int) -> void:
+	if i < 0 or i >= _cells.size():
+		return
+	var slot := _fan_slot_of(i)
+	if slot.is_empty():
+		return
+	var r: Rect2 = slot["rect"]
+	var rot: float = slot["rot"]
+	var ordinal: int = slot["ordinal"]
+	var cell := _cells[i]
+	var face := _card_faces[i]
+	cell.position = r.position
+	cell.rotation = rot
+	cell.size = r.size
+	cell.z_index = ordinal * 2 + 1
+	cell.modulate.a = 0.0
+	cell.scale = Vector2.ONE
+	cell.pivot_offset = cell.size * 0.5
+	face.position = r.position
+	face.rotation = rot
+	face.size = r.size
+	face.z_index = ordinal * 2
+	face.modulate.a = 0.0
+	face.scale = Vector2.ONE
+	face.pivot_offset = face.size * 0.5
+	if _restore_tween != null and _restore_tween.is_running():
+		_restore_tween.kill()
+	_restore_tween = create_tween().set_parallel(true)
+	_restore_tween.tween_property(cell, "modulate:a", 1.0, 0.12)
+	_restore_tween.tween_property(face, "modulate:a", 1.0, 0.12)
 
 
 ## 队列开始后，取消牌从左侧滑入，普通招募牌向右错位；打出的兵种从下方补回。
@@ -1040,43 +1232,7 @@ func set_recruit_queue(progress: float, counts: Dictionary) -> void:
 			_count_labels[i].visible = count > 1
 
 
-## ★★ 每帧同步**操作牌冷却**的进度条（不重建命令卡）。
-##
-## 用户口径：「部队的操作牌有三秒冷却……拖出生效并回到手牌后，牌面会出现进度条
-##   以提示其冷却」。进度是连续变化的，不能塞进 `_card_sig()`（会每帧重建九格），
-## 所以这里只改一个 Panel 的尺寸。
-## @param left  剩余秒数（<= 0 = 没有冷却，遮罩藏起来）
-## @param total 总时长（用来算比例）
-## ⚠️ 别改成「传已过比例」：0 既表示「刚开始」又表示「没冷却」，两种状态分不开
-##    （实测踩到：冷却结束后牌面还盖着一层纱）。
-##
-## ★★ 2026.11.14：**每一格都要处理**（不只是 `type == "order"` 的格子）——
-##   命令卡的九颗按钮是**跨页复用**的：在操作页盖过的纱，切到建筑页后会留在
-##   同一颗按钮上（用户报的「我的单位移动时，建筑牌也会有进度条」就是它）。
-##   所以非 order 条目一律把纱藏起来。
-func set_order_cooldown(left: float, total: float) -> void:
-	var cooling: bool = left > 0.001 and total > 0.0
-	var v: float = 0.0 if not cooling else clampf(1.0 - left / total, 0.0, 1.0)
-	var remain: float = 1.0 - v                 # 纱的高度 = 剩余比例
-	for i in _cells.size():
-		if i >= _cd_veils.size() or _cd_veils[i] == null:
-			continue
-		var cell: Button = _cells[i]
-		var veil: Panel = _cd_veils[i]
-		var is_order: bool = i < _entries.size() \
-			and String((_entries[i] as Dictionary).get("type", "")) == "order"
-		var show: bool = is_order and cooling and cell.visible
-		veil.visible = show
-		if not show:
-			continue
-		veil.position = Vector2.ZERO
-		veil.size = Vector2(cell.size.x, cell.size.y * remain)
 
-
-## ★★ 底条要**跟着金色填充淡出**（每帧一次，只有 9 格）：
-##   填充是从下往上扫的，而底条正好在最下面 —— 金色一盖上来，那段字就该翻成
-##   「压金暗色」（填充层管这件事），此时底条若还是深的，就是**深字压深底**、读不出来
-##   （实测踩过：悬停时那一格的名字几乎看不见）。所以底条透明度 = 1 - 填充进度。
 ## ★★ 让某一类格子（`unit_kind`）呼吸高亮；空串 = 关闭。
 ##   教程「让协防军按钮呼吸高亮」用。高亮状态会一直保留，直到剧本显式关掉。
 func set_glow_kind(kind: String) -> void:
@@ -1127,10 +1283,42 @@ func _update_glow_panels() -> void:
 func _process(dt: float) -> void:
 	if not is_visible_in_tree():
 		return
+	# ★★ 2026.11.15：动画都结束后做一次「空格子不许露脸」的兜底。
+	#   用户报的「用掉一张牌后，每页同一序号都多一张空白牌」= 某个空槽的
+	#   按钮 / 卡面没被收起，残留成一张空白牌；这里在无动画时强制隐藏。
+	var animating: bool = _dragging_card or _returning_index >= 0 \
+		or (_success_tween != null and _success_tween.is_running()) \
+		or (_restore_tween != null and _restore_tween.is_running()) \
+		or (_deck_tween != null and _deck_tween.is_running()) \
+		or (_drag_tween != null and _drag_tween.is_running())
+	if not animating:
+		for i in _cells.size():
+			var filled: bool = i < _entries.size() \
+				and not (_entries[i] as Dictionary).is_empty()
+			if not filled and _cells[i].visible:
+				_cells[i].visible = false
+				_card_faces[i].visible = false
 	_glow_t += maxf(0.0, dt)
 	if glow_kind != "":
 		_update_glow_panels()
 	for i in _cells.size():
+		# ★★ 2026.11.15：卡面（暗色底板）**每帧硬跟随按钮**。
+		#   按钮和卡面是两个兄弟节点，只要有任何一条动画只写了其中一个，
+		#   就会出现「一张有内容的牌 + 一张空白牌叠在一起」；这里把不变量钉死：
+		#   卡面的 position / size / rotation / scale / 层级永远等于按钮。
+		var cell_i: Control = _cells[i]
+		var face_i: Control = _card_faces[i]
+		if not cell_i.visible:
+			face_i.visible = false
+		else:
+			face_i.visible = true
+			face_i.position = cell_i.position
+			face_i.size = cell_i.size
+			face_i.rotation = cell_i.rotation
+			face_i.scale = cell_i.scale
+			face_i.pivot_offset = cell_i.pivot_offset
+			face_i.modulate.a = cell_i.modulate.a
+			face_i.z_index = cell_i.z_index - 1
 		# ★★ 2026.11.14：描边 / 底色跟着**泛光进度**缓动（见 `_sync_cell_style`）。
 		#   与下面那段名字底条同一个循环，省一次 9 格遍历。
 		_sync_cell_style(i)
@@ -1249,6 +1437,8 @@ func _on_cell_mouse_entered(i: int) -> void:
 
 
 func _on_cell_mouse_exited(i: int) -> void:
+	if _hover_suppressed_index == i:
+		_hover_suppressed_index = -1
 	if _dragging_card:
 		return
 	_raise_card(i, false)

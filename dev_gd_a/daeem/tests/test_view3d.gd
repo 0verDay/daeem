@@ -721,14 +721,7 @@ func _test_ground_bake(cfg) -> void:
 		"★ 迷雾贴图 = 格数 × FOG_PX_PER_TILE（分辨率提上去，边界不再是方块）")
 	var cols_i: int = int(w.map.cols)
 	var rows_i: int = int(w.map.rows)
-	var gsegs: Array = game.overlay._grid_segs_for(cols_i, rows_i)
-	eq(gsegs.size(), (cols_i + 1 + rows_i + 1) * 2,
-		"★ 网格线顶点数 = (竖线 %d + 横线 %d) × 2" % [cols_i + 1, rows_i + 1])
-	ok(gsegs.size() > 0, "★ 网格线真的有顶点（空数组 = 一条都没画）")
-	ok((gsegs[0] as Vector2) == Vector2(0.0, 0.0),
-		"★ 网格线缓存的是格坐标（首点 = 地图左上角）")
-	var gsegs_again: Array = game.overlay._grid_segs_for(cols_i, rows_i)
-	ok(gsegs_again == gsegs, "★ 网格线几何被缓存（同一尺寸不重建）")
+	# ★★ 网格线几何随「点选建造」一起删除（2026.11.15），这里改验区划轮廓几何。
 	game.overlay._zone_seg_sig = ""        # 强制重算一次几何
 	game.overlay._count_zone_outlines()
 	ok(game.overlay._zone_segs.size() > 0,
@@ -1310,9 +1303,7 @@ func _test_attack_marks(cfg) -> void:
 	ok(not am.active and am.phase == "done", "★ 标记动效走完自动收掉")
 	ok(not am.icon_visible_last, "★ 动画结束后图标也收起")
 
-	# ---- ★★ 真·出牌：攻击牌拖到敌方单位上（走 input_controller 的 `issue_order_at`）----
-	# ★★ 2026.11.14：右键不再下令（「完全由出牌代替」），这条用例改走出牌那条路 ——
-	#   它和右键以前用的是**同一段**命令分派，所以标记的断言原样保留。
+	# ---- ★★ 右键单击敌方单位 = 锁定攻击（2026.11.15 回退经典 RTS）----
 	# ★ 建筑那条路要用 `get_global_mouse_position()` 判模型包围盒，无头测试造不出来，
 	#   所以建筑只在下面用「命令字典」验。
 	if mine != null:
@@ -1321,11 +1312,11 @@ func _test_attack_marks(cfg) -> void:
 		ic.mouse_world = foe.pos
 		ic.hover_tile = Vector2i(int(floorf(foe.pos.x)), int(floorf(foe.pos.y)))
 		ic._on_right_click(false)
-		ok(not (am.active and am.target_kind == "unit" and am.target_id == String(foe.id)),
-			"★★ 右键不再触发攻击标记（右键空着）")
+		ok(am.active and am.target_kind == "unit" and am.target_id == String(foe.id),
+			"★★ 右键单击敌方单位 → 锁定攻击并打出「指定攻击」标记")
 		ic.issue_order_at("attack", game.palette.to_px(foe.pos))
 		ok(am.active and am.target_kind == "unit" and am.target_id == String(foe.id),
-			"★★ 攻击牌拖到敌方单位 → 触发「指定攻击」并打出标记")
+			"★★ 拖牌那条路仍与右键同一段命令分派（标记一致）")
 
 	# ---- 建筑目标 ----
 	var bld = null
@@ -1557,9 +1548,15 @@ func _test_grid_near_clip(cfg) -> void:
 	game.zoom = 0.3
 	game.center_on_tile(Vector2(float(cols) * 0.5, float(rows) * 0.5))
 	game.cam.force_update_transform()
-	var all_pts: PackedVector2Array = ov._project_segments(ov._grid_segs_for(cols, rows))
-	eq(all_pts.size(), (cols + 1 + rows + 1) * 2,
-		"★ 远视角下网格线一条都不裁（%d 个端点）" % all_pts.size())
+	# ★★ 网格线已删除：这里用一组等距竖线验「远视角下 `_project_segments` 一条都不裁」。
+	var demo_segs: Array = []
+	var step: int = maxi(1, cols / 8)
+	for x in range(0, cols + 1, step):
+		demo_segs.append(Vector2(float(x), 0.0))
+		demo_segs.append(Vector2(float(x), float(rows)))
+	var all_pts: PackedVector2Array = ov._project_segments(demo_segs)
+	eq(all_pts.size(), demo_segs.size(),
+		"★ 远视角下这些线段一条都不裁（%d 个端点）" % all_pts.size())
 
 	game.queue_free()
 	await process_frame
@@ -1625,7 +1622,6 @@ func _test_capture_area(cfg) -> void:
 	ov._refresh_static_projection()
 	ok(ov.static_rebuild_count > rebuilds,
 		"★ 相机移动后静态层缓存重建（%d → %d）" % [rebuilds, ov.static_rebuild_count])
-	ok(not ov._grid_screen.is_empty(), "静态层缓存里有网格线顶点")
 	ok(not ov._zone_screen.is_empty(), "静态层缓存里有区划轮廓顶点")
 
 	game.queue_free()

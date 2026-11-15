@@ -781,6 +781,14 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 		if _is_garrison_ai(String(lf)):
 			_assign_garrison_zones(String(lf), placement_from)
 
+	# ★★ 2026.11.15：**建造点位收口** —— 地图给的 / 自动补的点位可能压在
+	#   本关的大本营或 `start_buildings` 上（那两样在 `build_from_map` 之后才落成，
+	#   装配时根本不知道）。被占住的点位永远建不了，等于白少一个名额 ⇒
+	#   在所有固定建筑都就位之后按「实际占用」重挑一遍。
+	#   ⚠️ 必须在 `_apply_level_placement()` **之后**、`fog.update()`（读建筑）之前；
+	#      单位不参与（人会走）。
+	_repair_build_points()
+
 	# ★★ 开局将领 → 招募唯一性：关卡 / 自由对战摆出来的 general_1..9 视为已拥有。
 	#    ⚠️ 必须在所有单位都就位之后（`spawn_faction_units` + `_apply_level_placement`）。
 	_mark_starting_generals_owned()
@@ -3630,6 +3638,27 @@ func start_revive(leader_id: String, faction: String = "") -> bool:
 	return true
 
 
+## ★★ 2026.11.15：**自动再起** —— 濒死将领的血量一回到 `revive.ready_ratio` 就自动开始再起。
+##
+## 用户口径：「将领在达到条件后会自动立刻再起，不消耗资源无读条时间」。
+##   · 「达到条件」= 现有规则 `leader.revive_ready(cfg)`（血量回到 10%）；
+##   · 「不消耗资源」原本就是免费（见 `start_revive`）；
+##   · 「无读条」= config 的 `revive.channel_sec = 0`（`unit.start_revive` 用 1e-6 哨兵，
+##     下一帧 tick 立刻 `_finish_revive`）。
+##
+## ★ 走 `start_revive()` 而不是直接改状态：事件（`revive_started`）、救援收口、
+##   全灭判定暂停这些副作用都挂在那一条路上，绕过去会漏掉。
+func _tick_auto_revive() -> void:
+	for u in units:
+		if u == null or not is_instance_valid(u) or not u.alive:
+			continue
+		if not u.is_general() or not u.downed or u.is_reviving():
+			continue
+		if not u.revive_ready(cfg):
+			continue
+		start_revive(String(u.id), String(u.faction))
+
+
 ## 取消读条中的「再起」。
 ##
 ## @return true = 确实撤掉了一单（false = 它没在读条，或找不到人）。
@@ -5282,6 +5311,22 @@ func add_building(type: String, tx: int, ty: int, owner: String, silent: bool = 
 	return b
 
 
+## ★★ 建造点位收口（`reset()` 末尾）：把被固定建筑占住的点位换成别的位置。
+##
+## 判据只有一条：**这一格现在有建筑** ⇒ 点位作废、在同区划里按同一套规则补一个。
+## 建筑包括：地图预置、各方大本营、区划中心、关卡 `start_buildings`。
+## ★ 只在一局开始时做（建筑被拆掉之后点位**不会**自动回来 —— 点位是地图静态数据，
+##   不是「随建筑生灭」的运行时状态；玩家拆了自己的楼，那个点自然就空出来可再建）。
+func _repair_build_points() -> void:
+	if zones == null:
+		return
+	var blocked: Dictionary = {}
+	for b in building_list:
+		if b != null and b.alive:
+			blocked[Vector2i(int(b.tx), int(b.ty))] = true
+	zones.repair_build_points(map, blocked)
+
+
 ## 某格上的建筑（没有则 null）
 func building_at(tx: int, ty: int) -> Variant:
 	return _building_at.get(Vector2i(tx, ty), null)
@@ -5428,6 +5473,160 @@ func can_build_at(tx: int, ty: int, faction: String = "") -> bool:
 		if zone_capture_blocks_build(tx, ty, faction):
 			return false
 	return true
+
+
+# ------------------------------------------------------------------
+# ★★ 建造点位 / 城墙环（2026.11.15 的建造系统）
+#
+# 用户口径：非城墙建筑只能建在区划的**预置点位**上；城墙只能围**区划中心**一圈。
+# 这两件事的**唯一权威判据**在这个文件里（`build_reject_reason`），
+# 界面只读同一套判据做高亮（HUD / overlay），AI 也只走 `command_processor`。
+# ------------------------------------------------------------------
+
+## 这一格是哪个区划的建造点位（不是任何点位 → -1）。
+func build_point_zone(tx: int, ty: int) -> int:
+	if zones == null:
+		return -1
+	return int(zones.build_point_zone_id_at(tx, ty))
+
+
+## 某个区划的建造点位（地图给的 / 自动补的）。
+func build_points_of_zone(zid: int) -> Array:
+	if zones == null:
+		return []
+	return zones.build_points_of(zid)
+
+
+## 这一格作为**非城墙建筑**的落点现在能不能用（点位 + 常规建造判据）。
+func build_point_available(tx: int, ty: int, faction: String) -> bool:
+	if build_point_zone(tx, ty) < 0:
+		return false
+	return can_build_at(tx, ty, faction)
+
+
+## 区划的城墙环里**现在真能建**的格子（实时：地形 / 占位 / 归属 / 占领封锁）。
+##
+## ★ 这里是「跳过被挡住的位置」的唯一实现：一张墙牌落下时按这张表逐格建，
+##   山脉 / 水域 / 已有建筑 / 邻区地块都不在里面。
+func wall_ring_buildable_tiles(zid: int, faction: String) -> Array:
+	var out: Array = []
+	if zones == null:
+		return out
+	for t in zones.wall_ring_tiles_of(zid):
+		var tile: Vector2i = t
+		if not map.terrain.has(tile.x, tile.y):
+			continue
+		if not map.in_active_rect(tile.x, tile.y):
+			continue
+		if not map.terrain_walkable(tile.x, tile.y):
+			continue
+		if PathfinderRes.occupied(buildings, tile.x, tile.y):
+			continue
+		if faction != "":
+			if not zone_allows_build(tile.x, tile.y, faction):
+				continue
+			if zone_capture_blocks_build(tile.x, tile.y, faction):
+				continue
+		out.append(tile)
+	return out
+
+
+## 这一次建造为什么不能落在这一格（"" = 可以）。
+##
+## 拒因码与 `command_processor.apply_build` 的事件一致（界面 / 测试都按它判）：
+##   · "occupied_or_terrain" —— 地形不可建 / 已经被建筑占住；
+##   · "not_in_zone"         —— 不是自己的区划；
+##   · "under_capture"       —— 区划正被敌方踩中心（整块禁建）；
+##   · "not_build_point"     —— ★ 非城墙建筑，但这一格不是建造点位；
+##   · "not_zone_center"     —— ★ 城墙，但落点不是某个区划中心；
+##   · "wall_no_space"       —— ★ 城墙环一圈全被地形 / 建筑挡住，没有可建的位置。
+##
+## ★ 城墙走**另一条分支**：它的落点是区划中心那一格（那一格上本来就有中立建筑，
+##   不能先拿 `PathfinderRes.occupied` 去挡它），真正的合法性看环上的空格。
+func build_reject_reason(type: String, tx: int, ty: int, faction: String) -> String:
+	if BuildingRes.is_wall_type(type):
+		if zones == null:
+			return "not_zone_center"
+		var zid: int = int(zones.center_zone_at_id(tx, ty))
+		if zid < 0:
+			return "not_zone_center"
+		if faction != "":
+			if not zone_allows_build(tx, ty, faction):
+				return "not_in_zone"
+			if zone_capture_blocks_build(tx, ty, faction):
+				return "under_capture"
+		if wall_ring_buildable_tiles(zid, faction).is_empty():
+			return "wall_no_space"
+		return ""
+	if not map.terrain.has(tx, ty) or not map.in_active_rect(tx, ty) \
+			or not map.terrain_walkable(tx, ty):
+		return "occupied_or_terrain"
+	if PathfinderRes.occupied(buildings, tx, ty):
+		return "occupied_or_terrain"
+	if faction != "":
+		if not zone_allows_build(tx, ty, faction):
+			return "not_in_zone"
+		if zone_capture_blocks_build(tx, ty, faction):
+			return "under_capture"
+	if build_point_zone(tx, ty) < 0:
+		return "not_build_point"
+	return ""
+
+
+## `build_reject_reason` 的布尔版（界面 / AI 用）。
+func can_place_building(type: String, tx: int, ty: int, faction: String) -> bool:
+	return build_reject_reason(type, tx, ty, faction) == ""
+
+
+## 供界面用：拖某张建筑牌时，**所有可以落点**的锚点。
+##
+## @return Array[Dictionary]，每项 `{"tile": Vector2i, "zone_id": int}`；
+##   非城墙 = 己方区划里「空着的建造点位」；城墙 = 己方区划的**中心格**。
+##
+## ★ 顺序确定（区划表顺序 → 点位表顺序）：HUD 的「最近锚点」在等距时不会抖。
+func build_anchors_for(type: String, faction: String) -> Array:
+	var out: Array = []
+	if zones == null or faction == "":
+		return out
+	var wall := BuildingRes.is_wall_type(type)
+	for z in zones.zones:
+		if typeof(z) != TYPE_DICTIONARY:
+			continue
+		var zd: Dictionary = z
+		var zid := int(zd.get("id", -1))
+		if zid < 0 or not accepts_owner(String(zd.get("owner", "")), faction):
+			continue
+		if wall:
+			var cv: Variant = zd.get("center", null)
+			if cv == null:
+				continue
+			if wall_ring_buildable_tiles(zid, faction).is_empty():
+				continue
+			out.append({"tile": cv, "zone_id": zid})
+		else:
+			for p in build_points_of_zone(zid):
+				var tile: Vector2i = p
+				if can_build_at(tile.x, tile.y, faction):
+					out.append({"tile": tile, "zone_id": zid})
+	return out
+
+
+## 建一整圈城墙（**不扣费**：扣费在 command_processor，一次一张牌的价）。
+##
+## @return {"built": int, "tiles": Array[Vector2i]}（实际建成的格子）。
+##   ★ 被地形 / 建筑占住的位置直接跳过（用户口径：不在遮挡的位置重新建造）。
+func build_wall_ring(zid: int, type: String, faction: String) -> Dictionary:
+	var owner := faction
+	if owner == "" and zones != null:
+		var z: Variant = zones.zones_by_id.get(zid, null)
+		if typeof(z) == TYPE_DICTIONARY:
+			owner = String((z as Dictionary).get("owner", ""))
+	var built: Array = []
+	for t in wall_ring_buildable_tiles(zid, faction):
+		var tile: Vector2i = t
+		if add_building(type, tile.x, tile.y, owner) != null:
+			built.append(tile)
+	return {"built": built.size(), "tiles": built}
 
 
 ## ★★ 2026.10.25：这个区划是否处于「敌方单位已进入中心 3×3 占领区」的状态。
@@ -6862,6 +7061,11 @@ func tick(dt: float) -> Array:
 	#   是这一帧刚更新完的状态（`u.moving` / `u.path`）。
 	# 只遍历「有救援意图」的那几个（正常情况 0 个），不影响 bench 的分段开销。
 	update_rescue_orders()
+	# ★★ 2026.11.15（用户口径）：「不需要再有停止；将领在达到条件后会自动立刻再起，
+	#   不消耗资源、无读条时间」。⇒ 濒死将领的血量一回到 `revive.ready_ratio`（10%）
+	#   就**自动**进入再起（`revive.channel_sec = 0` 时下一帧就站起来）。
+	#   ★ 手动「再起 / 取消再起 / 召回」的操作页一起删除；命令接口保留（AI / 测试 / 观战可用）。
+	_tick_auto_revive()
 	_prof_done("units", _t_units)
 
 	# 4.5) 清理离场单位。

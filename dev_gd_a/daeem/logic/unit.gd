@@ -2605,8 +2605,8 @@ func start_revive(cfg: ConfigRes) -> void:
 	# ★ 0 秒读条（配置成瞬发）时 `revive_remaining` 是 0，那样进度条与「还剩几秒」
 	#   都会显示成 0。用一个极小正值当哨兵：下一帧 tick 立刻读完。
 	if revive_remaining <= 0.0:
-		revive_remaining = 1e-6
-		revive_total = 1e-6
+		revive_remaining = 0.01
+		revive_total = 0.01
 
 
 ## 取消「再起」读条（回到「只是濒死」的状态；退款由 world 负责）。

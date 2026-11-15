@@ -234,7 +234,7 @@ static func _build_ce_xs_2(director, world) -> void:
 
 		# 6) 建设目标：6 个木墙 / 哨塔 + 2 个粮田；计数实时刷新、不重播打字机。
 		{"kind": "objective_set", "title": "建立防御0/6 建造粮田0/2",
-			"desc": "在建筑页签中选择哨塔/木墙/粮田进行建造", "quiet": true},
+			"desc": "把建筑牌拖到高亮的建造点位上（城墙拖到区划中心，一次围一圈）", "quiet": true},
 		{"kind": "wait_until", "condition": func(): return _tut2_build_goal(world)},
 		{"kind": "objective_done"},
 

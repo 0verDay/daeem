@@ -35,12 +35,13 @@ func _test_build_command_gate(cfg) -> void:
 	var w = require_world(cfg)
 	w.resources["food"] = 10000.0
 	w.resources["gold"] = 10000.0
-	var base = w.find_base_of("p1")
-	ok(base != null, "（前提）有大本营")
-	if base == null:
-		return
-	var tile := _free_growth_tile(w, base.tx + 2, base.ty)
-	ok(tile.x >= 0, "（前提）大本营附近有可建造的空地")
+	ok(w.find_base_of("p1") != null, "（前提）有大本营")
+	var tile := Vector2i(-1, -1)
+	# ★★ 2026.11.15：墙只能围区划中心（一张牌建整圈）——先拿一个墙锚点。
+	var wall_anchors: Array = w.build_anchors_for("stone_wall", "p1")
+	if not wall_anchors.is_empty():
+		tile = wall_anchors[0]["tile"]
+	ok(tile.x >= 0, "（前提）己方有可以围墙的区划中心")
 	if tile.x < 0:
 		return
 	var before := _count_type(w, "stone_wall")
@@ -53,19 +54,17 @@ func _test_build_command_gate(cfg) -> void:
 	eq(_count_type(w, "stone_wall"), before, "★ 被拒时没有偷偷建出来")
 
 	w.debug_upgrade_base_to_level(2, "p1")
-	var tile2 := _free_growth_tile(w, base.tx + 2, base.ty)
-	ok(tile2.x >= 0, "（前提）2 级后还有空地")
-	if tile2.x < 0:
-		return
 	ok(CommandRes.apply(w, cfg, {
 		"kind": "build", "build_type": "stone_wall",
-		"tx": tile2.x, "ty": tile2.y, "faction": "p1"}),
+		"tx": tile.x, "ty": tile.y, "faction": "p1"}),
 		"★★ 2 级大本营可以建石墙")
-	eq(_count_type(w, "stone_wall"), before + 1, "★ 石墙真的建出来了")
-	var tile3 := _free_growth_tile(w, base.tx + 2, base.ty)
-	ok(tile3.x >= 0, "（前提）还有空地建警戒塔")
-	if tile3.x < 0:
+	ok(_count_type(w, "stone_wall") > before, "★ 石墙真的建出来了（整圈）")
+	# 警戒塔 = 非城墙建筑：落在建造点位上。
+	var tower_anchors: Array = w.build_anchors_for("watch_tower", "p1")
+	ok(not tower_anchors.is_empty(), "（前提）还有空着的建造点位建警戒塔")
+	if tower_anchors.is_empty():
 		return
+	var tile3: Vector2i = tower_anchors[0]["tile"]
 	ok(CommandRes.apply(w, cfg, {
 		"kind": "build", "build_type": "watch_tower",
 		"tx": tile3.x, "ty": tile3.y, "faction": "p1"}),
@@ -83,20 +82,3 @@ func _count_type(w, type: String) -> int:
 		if b != null and b.alive and String(b.type) == type:
 			n += 1
 	return n
-
-func _free_growth_tile(w, x: int, y: int) -> Vector2i:
-	for r in range(0, 8):
-		for dy in range(-r, r + 1):
-			for dx in range(-r, r + 1):
-				if r > 0 and absi(dx) != r and absi(dy) != r:
-					continue
-				var tx := x + dx
-				var ty := y + dy
-				if not w.map.tile_exists(tx, ty):
-					continue
-				if not w.can_build_at(tx, ty):
-					continue
-				if not w.zone_allows_build(tx, ty, "p1"):
-					continue
-				return Vector2i(tx, ty)
-	return Vector2i(-1, -1)

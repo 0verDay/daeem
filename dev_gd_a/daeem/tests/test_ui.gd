@@ -131,10 +131,15 @@ func _test_layout_against_reference(cfg) -> void:
 	ok(UiLayoutRes.hover_rect(99999.0).position.y >= 0.0,
 		"文案长到离谱时面板也不许顶出屏幕上沿")
 
-	eq(UiLayoutRes.TABS_RECT, Rect2(1740.0, 914.0, 154.0, 94.0), "V2 右下牌签尺寸")
-	eq(UiLayoutRes.tab_button_local(0, 2), Rect2(0.0, 0.0, 73.0, 94.0), "第一个页签牌")
-	eq(UiLayoutRes.tab_button_local(1, 2), Rect2(81.0, 0.0, 73.0, 94.0), "第二个页签牌与第一个留 8px")
-	eq(UiLayoutRes.tab_button_local(0, 1), Rect2(81.0, 0.0, 73.0, 94.0), "单页签靠右对齐")
+	eq(UiLayoutRes.TABS_RECT, Rect2(1659.0, 914.0, 235.0, 94.0), "V2 右下牌签尺寸（3 颗）")
+	eq(UiLayoutRes.tab_button_local(0, 3), Rect2(0.0, 0.0, 73.0, 94.0), "第一个页签牌")
+	eq(UiLayoutRes.tab_button_local(1, 3), Rect2(81.0, 0.0, 73.0, 94.0),
+		"第二个页签牌与第一个留 8px")
+	eq(UiLayoutRes.tab_button_local(2, 3), Rect2(162.0, 0.0, 73.0, 94.0),
+		"第三个页签牌（将领）")
+	eq(UiLayoutRes.tab_button_local(0, 1), Rect2(162.0, 0.0, 73.0, 94.0), "单页签靠右对齐")
+	eq(UiLayoutRes.tab_button_local(0, 2), Rect2(81.0, 0.0, 73.0, 94.0),
+		"两颗时靠右（与旧版绝对位置一致）")
 	# ★★ 2026.11.14 第三轮（用户口径）：「把选项按钮删除，相应的打开菜单逻辑接到 esc 下」
 	#   ⇒ 屏幕上的选项圆币没了，`SETTINGS_RECT` / `SETTINGS_RADIUS` 常量也一起删除。
 	#   这里改断言「这一列只剩资源大卡，且它不压地图」。
@@ -689,6 +694,8 @@ func _test_panels(cfg) -> void:
 
 	await _test_anchors(main)
 	await _test_card_build_drag(main)
+	await _test_drag_ring_anim(main)
+	await _test_general_drag_recruit(main)
 
 	root_node.queue_free()
 	await process_frame
@@ -701,62 +708,342 @@ func _test_card_build_drag(main) -> void:
 	hud.refresh()
 	hud.page_tabs.select_page(PageTabsRes.PAGE_BUILD)
 	var card = hud.command_card
-	var cell: Control = card.cell_at(0)
-	var tile := Vector2i(-1, -1)
-	var screen_pos := Vector2.ZERO
-	for ty in world.map.rows:
-		for tx in world.map.cols:
-			if not world.can_build_at(tx, ty, world.my_faction) \
-					or not world.zone_allows_build(tx, ty, world.my_faction):
-				continue
-			var p: Vector2 = main.palette.to_px(Vector2(float(tx) + 0.5, float(ty) + 0.5))
-			if hud.point_hits_ui(p):
-				continue
-			tile = Vector2i(tx, ty)
-			screen_pos = p
-			break
-		if tile.x >= 0:
-			break
-	ok(tile.x >= 0, "（前提）找到可建造且不被 HUD 覆盖的地图格")
-	if tile.x < 0:
-		return
 	world.resources["food"] = 100000.0
 	world.resources["gold"] = 100000.0
+
+	# ★★ 2026.11.15 建造系统：拖起建筑牌 → 所有可落点高亮 → 拖到点位附近出现
+	#   圆形范围指示 → 在圈内松手 = 在那一点建造。
+	#   这一节用**城墙牌**走一遍（它的锚点是区划中心，一张牌建整圈）。
+	var wall_anchors: Array = world.build_anchors_for("wall", String(world.my_faction))
+	ok(not wall_anchors.is_empty(), "（前提）己方有可以围墙的区划中心")
+	if wall_anchors.is_empty():
+		return
+	var anchor: Dictionary = {}
+	var screen_pos := Vector2.ZERO
+	for a in wall_anchors:
+		var t: Vector2i = a["tile"]
+		var p: Vector2 = main.palette.to_px(Vector2(float(t.x) + 0.5, float(t.y) + 0.5))
+		if hud.point_hits_ui(p):
+			continue
+		anchor = a
+		screen_pos = p
+		break
+	ok(not anchor.is_empty(), "（前提）找到一个不被 HUD 盖住的城墙锚点")
+	if anchor.is_empty():
+		return
+	var tile: Vector2i = anchor["tile"]
+	var walls_before := _count_buildings(world, "wall")
 	var drag_start := screen_pos + Vector2(0.0, 24.0)
 	card._drag_index = 0
 	card._drag_start_global = drag_start
 	card._update_drag_position(0, screen_pos)
-	ok(hud.drag_build_active, "★★ 拖起建筑牌后进入地面预览")
-	eq(hud.drag_build_tile, tile, "★★ 建筑虚影跟随鼠标投影到对应地块")
+	ok(hud.drag_build_active, "★★ 拖起建筑牌后进入建造预览")
+	ok(hud.drag_build_anchors.size() == wall_anchors.size(),
+		"★★ 拖起那一刻算出所有可落点（%d 个）" % hud.drag_build_anchors.size())
+	eq(hud.drag_build_tile, tile, "★★ 指针在圆形范围里 → 吸附到该建造锚点")
+	ok(hud.drag_build_anchor != null, "★★ 吸附到了一个锚点")
 	ok(card._drag_fade_tween != null and card._drag_fade_tween.is_running(),
 		"★★ 建筑牌上拖时启动淡出")
 	for _i in 20:
 		await process_frame
-	near(cell.modulate.a, 0.0, 0.001, "★★ 建筑牌在上拖过程中淡至全透明")
-	ok(hud._card_build_tile_valid("wall", tile), "★★ 可建造地块判为绿色/有效")
-	main._sync_build_card_ghost()
-	ok(main._build_card_ghost.visible and main._build_card_ghost_material.albedo_color.g
-		> main._build_card_ghost_material.albedo_color.r,
-		"★★ 有效建造位置显示绿色半透明建筑模型")
-	var blocked_tile := Vector2i(-1, -1)
-	var blocked_pos := Vector2.ZERO
-	for b in world.building_list:
-		var p: Vector2 = main.palette.to_px(b.center())
-		if not hud.point_hits_ui(p):
-			blocked_tile = Vector2i(b.tx, b.ty)
-			blocked_pos = p
-			break
-	if blocked_tile.x >= 0:
-		card._update_drag_position(0, blocked_pos)
-		main._sync_build_card_ghost()
-		ok(not hud._card_build_tile_valid("wall", blocked_tile), "（前提）占用格无效")
-		ok(main._build_card_ghost.visible and main._build_card_ghost_material.albedo_color.r
-			> main._build_card_ghost_material.albedo_color.g,
-			"★★ 无效建造位置显示红色半透明建筑模型")
-		card._update_drag_position(0, screen_pos)
+	eq(card._drag_face_alpha, 0.72,
+		"★★ 建筑牌拖到地图上的透明度目标是 0.72（卡面自己就是卡牌虚影）")
+	ok(main.get_node_or_null("BuildCardGhost") == null
+			and main.get_node_or_null("WallRingGhost") == null,
+		"★★ 地图上没有任何建筑虚影节点（普通建筑 / 城墙圈都没有）")
+	ok(hud._card_build_anchor_valid(), "★★ 可建造的锚点判为绿色/有效")
+
+	# 拖到地图另一头：不吸附，但**虚影常驻**（城墙跟着最近的己方中心）。
+	var far_tile := Vector2(float(world.map.cols) - 1.5, float(world.map.rows) - 1.5)
+	var far_pos: Vector2 = main.palette.to_px(far_tile)
+	if hud.point_hits_ui(far_pos):
+		far_pos = main.palette.to_px(Vector2(1.5, 1.5))
+	card._update_drag_position(0, far_pos)
+	eq(hud.drag_build_tile, Vector2i(-1, -1), "★★ 离锚点太远 → 不吸附")
+	ok(main.get_node_or_null("WallRingGhost") == null,
+		"★★ 远离点位时也没有城墙虚影（卡牌还在手上）")
+	near(card.cell_at(0).modulate.a, 0.72, 0.02,
+		"★★ 卡牌虚影仍然可见")
+
+	# 回到锚点松手 ⇒ 整圈建上。
+	card._update_drag_position(0, screen_pos)
 	card._finish_card_drag(0, screen_pos)
 	ok(not hud.drag_build_active, "松手后结束建筑牌拖拽态")
-	ok(world.building_at(tile.x, tile.y) != null, "★★ 有效地块松手后实际建造建筑")
+	ok(_count_buildings(world, "wall") > walls_before,
+		"★★ 在圆形范围内松手 → 真的在区划中心建起整圈城墙")
+
+	# ★ 非城墙建筑：拖到**建造点位**上松手 → 那一格多一栋；拖到非点位 → 不建。
+	var tower_anchors: Array = world.build_anchors_for("tower", String(world.my_faction))
+	ok(not tower_anchors.is_empty(), "（前提）还有空着的建造点位建哨塔")
+	if tower_anchors.is_empty():
+		return
+	# 先找一格「己方区划里、但不是建造点位」的空地（下面虚影 / 松手两处都用它）。
+	var off_tile := Vector2i(-1, -1)
+	var off_px := Vector2.ZERO
+	for ty in world.map.rows:
+		for tx in world.map.cols:
+			if world.build_point_zone(tx, ty) >= 0:
+				continue
+			if not world.zone_allows_build(tx, ty, String(world.my_faction)):
+				continue
+			if not world.can_build_at(tx, ty):
+				continue
+			var p2: Vector2 = main.palette.to_px(Vector2(float(tx) + 0.5, float(ty) + 0.5))
+			if hud.point_hits_ui(p2):
+				continue
+			off_tile = Vector2i(tx, ty)
+			off_px = p2
+			break
+		if off_tile.x >= 0:
+			break
+	ok(off_tile.x >= 0, "（前提）己方区划里有非点位的空地")
+	var ta: Dictionary = tower_anchors[0]
+	var point: Vector2i = ta["tile"]
+	var point_px: Vector2 = main.palette.to_px(Vector2(float(point.x) + 0.5, float(point.y) + 0.5))
+	card._drag_index = 1
+	card._drag_start_global = point_px + Vector2(0.0, 24.0)
+	card._update_drag_position(1, point_px)
+	eq(card._drag_face_alpha, 0.72, "★★ 建筑牌的卡面透明度目标是 0.72")
+	eq(hud.drag_build_tile, point, "★★ 哨塔牌吸附到建造点位")
+	ok(main.get_node_or_null("BuildCardGhost") == null,
+		"★★ 哨塔没有 3D 建筑虚影（只保留卡牌虚影）")
+	# 拖到一张「不是点位」的地图格：卡牌虚影仍然跟着指针，但不再吸附。
+	card._update_drag_position(1, off_px)
+	eq(card._drag_face_alpha, 0.72, "★★ 非点位时卡面透明度目标仍是 0.72")
+	eq(hud.drag_build_tile, Vector2i(-1, -1), "（前提）非点位不吸附")
+	ok(main.get_node_or_null("BuildCardGhost") == null, "★★ 非点位也没有建筑虚影")
+	card._update_drag_position(1, point_px)
+	var neigh0: Vector2 = card._cells[0].position
+	var neigh2: Vector2 = card._cells[2].position
+	card._finish_card_drag(1, point_px)
+	ok(world.building_at(point.x, point.y) != null,
+		"★★ 在建造点位上松手 → 真的建出哨塔")
+	for _i in 120:
+		await process_frame
+		var s_done: bool = card._success_tween == null or not card._success_tween.is_running()
+		var r_done: bool = card._restore_tween == null or not card._restore_tween.is_running()
+		if s_done and r_done:
+			break
+	v2_near(card._cells[0].position, neigh0, 1.0,
+		"★★ 建筑牌生效后**不重排其他牌**（左邻没动）")
+	v2_near(card._cells[2].position, neigh2, 1.0,
+		"★★ 建筑牌生效后**不重排其他牌**（右邻没动）")
+	v2_near(card._card_faces[1].position, card._cells[1].position, 0.5,
+		"★★ 生效后卡面与按钮同位置（不会留下第二张 / 重影）")
+	ok(card._success_tween == null or not card._success_tween.is_running(),
+		"★★ 生效动画已收尾（不会和淡回动画抢同一张牌）")
+	var tower_same := 0
+	for j in card._cells.size():
+		if card._cells[j].visible and card.cell_label(j) == "哨塔":
+			tower_same += 1
+	eq(tower_same, 1, "★★ 生效后哨塔牌只有一张（没有重影 / 重复）")
+
+	# 之前找到的那格非点位：拖过去松手应当什么都不建。
+	if off_tile.x >= 0:
+		var tower_anchors2: Array = world.build_anchors_for("tower", String(world.my_faction))
+		ok(not tower_anchors2.is_empty(), "（前提）还有别的建造点位可拖")
+		if not tower_anchors2.is_empty():
+			var p3: Vector2 = main.palette.to_px(Vector2(float(off_tile.x) + 0.5,
+				float(off_tile.y) + 0.5))
+			card._drag_index = 1
+			card._drag_start_global = p3 + Vector2(0.0, 24.0)
+			card._update_drag_position(1, p3)
+			eq(hud.drag_build_tile, Vector2i(-1, -1),
+				"★★ 非建造点位不吸附（哪怕它在己方区划里）")
+			card._finish_card_drag(1, p3)
+			ok(world.building_at(off_tile.x, off_tile.y) == null,
+				"★★ 在非建造点位上松手 → 什么都不建")
+			# ★★ 2026.11.15：被拒绝的牌必须**精确**回到它自己的扇形槽位，
+			#   且不能留下第二张同名卡（重影 / 错位回归）。
+			for _i in 120:
+				await process_frame
+				if card._returning_index < 0:
+					break
+			var ord := 0
+			var count := 0
+			for j in card._entries.size():
+				if not (card._entries[j] as Dictionary).is_empty():
+					count += 1
+					if j < 1:
+						ord += 1
+			var fan: Rect2 = UiLayoutRes.card_fan_local(ord, count)
+			v2_near(card._cells[1].position, fan.position, 1.0,
+				"★★ 被拒绝的牌回到槽位（不会停在飞行途中）")
+			v2_near(card._card_faces[1].position, fan.position, 1.0,
+				"★★ 卡面和按钮同一位置（不会重影）")
+			var same_name := 0
+			for j in card._cells.size():
+				if card._cells[j].visible and card.cell_label(j) == card.cell_label(1):
+					same_name += 1
+			eq(same_name, 1, "★★ 手牌里这张牌只有一张（没有重新创建一张相同的）")
+
+	# ★★ 2026.11.15：切页后所有可见牌的「卡面底板」必须和按钮完全重合 ——
+	#   用户报的「用掉一张牌后，每一页同一序号都有一张空白牌叠在下面」。
+	for page in [PageTabsRes.PAGE_UNIT, PageTabsRes.PAGE_BUILD]:
+		hud.page_tabs.select_page(page)
+		for _i in 3:
+			await process_frame
+		for j in card._cells.size():
+			var is_empty: bool = j >= card._entries.size() \
+				or (card._entries[j] as Dictionary).is_empty()
+			if is_empty:
+				ok(not card._cells[j].visible,
+					"★★ 第 %d 页第 %d 格是空槽，不能留下空白牌" % [page, j + 1])
+				continue
+			if not card._cells[j].visible:
+				continue
+			v2_near(card._card_faces[j].position, card._cells[j].position, 0.5,
+				"★★ 第 %d 页第 %d 格的卡面底板没有脱开按钮" % [page, j + 1])
+			v2_near(card._card_faces[j].size, card._cells[j].size, 0.5,
+				"★★ 第 %d 页第 %d 格的卡面底板尺寸一致" % [page, j + 1])
+
+
+## ★★ 2026.11.15 第二轮：拖牌圈的进 / 出动画（overlay 按格记进度）。
+func _test_drag_ring_anim(main) -> void:
+	var world = main.world
+	var hud = main.hud
+	var card = hud.command_card
+	main.input_ctrl.select_units([])
+	hud.refresh()
+	hud.page_tabs.select_page(PageTabsRes.PAGE_BUILD)
+	var anchors: Array = world.build_anchors_for("tower", String(world.my_faction))
+	ok(not anchors.is_empty(), "（前提）有可建点位")
+	if anchors.is_empty():
+		return
+	var point: Vector2i = anchors[0]["tile"]
+	var px: Vector2 = main.palette.to_px(Vector2(float(point.x) + 0.5, float(point.y) + 0.5))
+	card._drag_index = 1
+	card._drag_start_global = px + Vector2(0.0, 24.0)
+	card._update_drag_position(1, px)
+	ok(hud.drag_anchor_active and hud.drag_anchor_kind == "build",
+		"★★ 拖牌时进入建造锚点态（给 overlay 画高亮与圈）")
+	eq(hud.drag_anchor_tile, point, "★★ 吸附到点位")
+	_sync_overlay_anchor(main)
+	# 刚吸附的那一帧：圈从 0 开始长（不是瞬间满圈）。
+	main.overlay.tick_drag_rings(0.02)
+	var first_t := float((main.overlay._ring_anim.get(point, {}) as Dictionary).get("t", 0.0))
+	ok(first_t > 0.0 and first_t < 0.999,
+		"★★ 圈从内往外扩散（0.02s 时 t=%.2f）" % first_t)
+	# 0.18s 内长满。
+	for _i in 10:
+		main.overlay.tick_drag_rings(0.02)
+	var full_t := float((main.overlay._ring_anim.get(point, {}) as Dictionary).get("t", 0.0))
+	ok(full_t >= 0.999, "★★ 约 0.18s 后圈扩散到位（t=%.3f）" % full_t)
+	# 指针离开 → 圈由外往内缩回；旧圈保留在表里慢慢缩（不是瞬间消失）。
+	card._update_drag_position(1, Vector2(-10000.0, -10000.0))
+	eq(hud.drag_anchor_tile, Vector2i(-1, -1), "（前提）离开锚点")
+	_sync_overlay_anchor(main)
+	main.overlay.tick_drag_rings(0.02)
+	var shrink_t := float((main.overlay._ring_anim.get(point, {}) as Dictionary).get("t", 0.0))
+	ok(shrink_t < full_t, "★★ 离开后圈开始缩小（%.2f → %.2f）" % [full_t, shrink_t])
+	for _i in 10:
+		main.overlay.tick_drag_rings(0.02)
+	ok(not main.overlay._ring_anim.has(point), "★★ 约 0.12s 后圈缩到 0 并移除")
+	card._finish_card_drag(1, Vector2(-10000.0, -10000.0))
+
+
+## 把 hud 的锚点状态抄给 overlay（测试里 main 的 `_process` 不保证在跑）。
+func _sync_overlay_anchor(main) -> void:
+	var hud = main.hud
+	var ov = main.overlay
+	ov.drag_anchor_active = hud.drag_anchor_active
+	ov.drag_anchor_kind = hud.drag_anchor_kind
+	ov.drag_anchor_tiles = hud.drag_anchor_tiles
+	ov.drag_anchor_tile = hud.drag_anchor_tile
+	ov.drag_anchor_ok = hud.drag_anchor_ok
+	ov.drag_anchor_radius = hud.drag_anchor_radius
+
+
+## ★★ 2026.11.15 第二轮：「将领」页的拖拽招募 —— 落到区划中心才招，UI 上松手取消。
+func _test_general_drag_recruit(main) -> void:
+	var world = main.world
+	var hud = main.hud
+	var card = hud.command_card
+	main.input_ctrl.select_units([])
+	world.resources["food"] = 100000.0
+	world.resources["gold"] = 100000.0
+	# ★ 招募将领要「阶数 / 将领上限」都够：把大本营拉到满级再开这一页。
+	world.debug_upgrade_base_to_level(main.cfg.upgrade_max_level("base"), world.my_faction)
+	# 招募要扣**区划人口**：把它给足（这条验的是拖拽，不是人口规则）。
+	for z in world.zones.zones:
+		if typeof(z) == TYPE_DICTIONARY:
+			(z as Dictionary)["population"] = 50.0
+	hud.refresh()
+	hud.page_tabs.select_page(PageTabsRes.PAGE_GENERAL)
+	# 找一张「现在真的能招」的将领牌（ready 且至少有一个中心能落）。
+	var idx := -1
+	var kind := ""
+	var center := Vector2i(-1, -1)
+	var zid := -1
+	for i in card.entries().size():
+		var e: Dictionary = card.entry_at(i)
+		if String(e.get("type", "")) != "general_drag" or not bool(e.get("ready", false)):
+			continue
+		var k := String(e.get("unit_kind", ""))
+		if k == "" or world.general_recruit_owned(world.my_faction, k):
+			continue
+		for z in world.zones.zones:
+			if typeof(z) != TYPE_DICTIONARY or (z as Dictionary).get("center", null) == null:
+				continue
+			var zd: Dictionary = z
+			var zidv := int(zd.get("id", -1))
+			if world.can_recruit_zone(k, zidv, world.my_faction) != "":
+				continue
+			idx = i
+			kind = k
+			center = zd["center"]
+			zid = zidv
+			break
+		if idx >= 0:
+			break
+	ok(idx >= 0, "（前提）将领页有一张可招募、且找得到落点的牌")
+	if idx < 0:
+		return
+	var center_px: Vector2 = main.palette.to_px(Vector2(float(center.x) + 0.5,
+		float(center.y) + 0.5))
+	ok(not hud.point_hits_ui(center_px), "（前提）区划中心没被 HUD 盖住")
+
+	# ① 拖回手牌栏松手 = 取消（一个将领都不多、也不进入招募）。
+	var hand_center: Vector2 = card.cell_at(idx).get_global_transform_with_canvas() \
+		* (card.cell_at(idx).size * 0.5)
+	var generals_before: int = world.general_count_of(world.my_faction)
+	var queue_before: int = world.zone_recruit_queue_size(world.zones.zones_by_id[zid])
+	card._drag_index = idx
+	card._drag_start_global = hand_center + Vector2(0.0, 24.0)
+	card._update_drag_position(idx, hand_center)
+	ok(hud.drag_recruit_active, "★ 拖起将领牌进入招募预览")
+	ok(not hud.drag_anchor_tiles.is_empty(), "★ 己方区划中心成为可落点")
+	card._finish_card_drag(idx, hand_center)
+	ok(not hud.drag_recruit_active, "松手后结束招募拖拽")
+	eq(world.general_count_of(world.my_faction), generals_before,
+		"★★ 在 UI 上松手 = 取消（不招募）")
+	eq(world.zone_recruit_queue_size(world.zones.zones_by_id[zid]), queue_before,
+		"★★ 取消时队列也没动")
+
+	# ② 拖到区划中心（圈内）松手 = 在那个区划招募。
+	card._drag_index = idx
+	card._drag_start_global = center_px + Vector2(0.0, 24.0)
+	card._update_drag_position(idx, center_px)
+	eq(card._drag_face_alpha, 0.72,
+		"★★ 将领牌拖到地图上也是 0.72（和其它牌同一透明度）")
+	eq(hud.drag_recruit_tile, center, "★★ 吸附到区划中心")
+	ok(hud.drag_anchor_kind == "recruit", "★★ overlay 用招募那一套颜色")
+	_sync_overlay_anchor(main)
+	main.overlay.tick_drag_rings(0.2)
+	ok(main.overlay._ring_anim.has(center), "★★ 区划中心出现底部圈")
+	card._finish_card_drag(idx, center_px)
+	ok(not hud.drag_recruit_active, "松手后结束招募拖拽")
+	ok(world.zone_recruit_queue_size(world.zones.zones_by_id[zid]) > queue_before
+			or world.general_count_of(world.my_faction) > generals_before,
+		"★★ 在圈内松手 → 真的在那个区划招募（命令到了权威侧）")
+
+
+func _count_buildings(world, type: String) -> int:
+	var n := 0
+	for b in world.building_list:
+		if b != null and b.alive and String(b.type) == type:
+			n += 1
+	return n
 
 func _test_resource_bar(main) -> void:
 	var bar = main.hud.resource_bar
@@ -1680,159 +1967,87 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 	main.hud.refresh()
 	ok(tabs.visible, "★ 自己的部队 → 页签可见")
 	ok(card.visible, "★ 自己的部队 → 命令卡可见")
-	eq(tabs.page_count(), 2, "★ 选中部队时只有两颗页签（操作 / 单位）")
-	eq(tabs.page_id_at(0), PageTabsRes.PAGE_ORDER, "第一颗是「操作」")
-	eq(tabs.page_id_at(1), PageTabsRes.PAGE_UNIT, "第二颗是「单位」")
-	eq(tabs.page(), PageTabsRes.PAGE_ORDER, "★ 默认停在「操作」页")
-	eq(card.entries().size(), 4, "★ 操作页有四格（移动 / 攻击 / 行军 / 停止）")
-	for i in UiLayoutRes.CARD_SLOTS:
-		eq(card.cell_at(i).visible, i < 4, "操作页只铺实际有内容的牌槽 %d" % i)
-	# ★★ 2026.11.14（用户口径）：操作牌改成「拖出 → 地图上有旗帜虚影 → 松手即下达」，
-	#   不再「进命令模式 → 再点一下地图」。这里顺着这条新链路走一遍。
+	# ★★ 2026.11.15（用户口径）：部队不再有「操作」页 —— 选中部队只剩「单位」一颗页签，
+	#   移动 / 锁定攻击 / 行军全部回到**右键**（命令冷却一并删除）。
+	eq(tabs.page_count(), 1, "★★ 选中部队时只有「单位」一颗页签（操作页已删除）")
+	eq(tabs.page_id_at(0), PageTabsRes.PAGE_UNIT, "唯一页签是「单位」")
+	eq(tabs.page(), PageTabsRes.PAGE_UNIT, "★ 默认停在「单位」页")
+	ok(tabs.is_active(0), "当前页在页签上高亮")
+
+	# ---- 右键：单击空地 = 移动，单击敌人 = 锁定攻击，双击 = 行军攻击 ----
 	var got: Array = []
 	var spy := func(cmd: Dictionary) -> void: got.append(cmd)
 	main.input_ctrl.command_issued.connect(spy)
-	# ★ 前面的用例可能已经发过 move/stop 命令（冷却由 `command_issued` 触发），
-	#   这里先清干净再验「拖出 → 虚影 → 下达」这条主链。
-	main.hud._order_cd.clear()
-	main.hud.refresh()
-	var drag_cell: Control = card.cell_at(0)
-	var drag_origin: Vector2 = drag_cell.get_global_transform_with_canvas() * (drag_cell.size * 0.5)
-	card._drag_index = 0
-	card._drag_start_global = drag_origin
-	card._update_drag_position(0, drag_origin - Vector2(0.0, 24.0))
-	ok(card._dragging_card, "★★ 手牌向上拖过阈值后进入拖拽状态")
-	ok(not main.hud.order_ghost_active,
-		"★ 刚拖起时指针还压在手牌上 ⇒ 不显示落点（那一下松手就是取消）")
-	# 找一个「一定在地图上」的松手点：测试视口比设计空间小，写死的像素可能正好压在面板上
-	# （`point_hits_ui` 会把那种点判成 UI，于是虚影不出、松手变成取消）。
-	var map_pt := Vector2(960.0, 420.0)
-	for cand in [Vector2(960.0, 420.0), Vector2(700.0, 380.0), Vector2(1200.0, 520.0), Vector2(500.0, 300.0)]:
-		if not main.hud.point_hits_ui(cand) and main.palette.to_logic(cand) != null:
-			map_pt = cand
-			break
-	ok(not main.hud.point_hits_ui(map_pt), "（前提）测试用的松手点确实在地图上")
-	# 挪到地图上：虚影出现
-	card._update_drag_position(0, map_pt)
-	ok(main.hud.order_ghost_active, "★★ 拖到地图上 → 出现旗帜虚影")
-	eq(main.hud._order_drag_mode, "move", "★ 虚影跟着这张「移动」牌")
-	ok(not main.hud.order_ghost_snapped, "★ 移动牌不吸附")
-	eq(drag_cell.rotation, 0.0, "★★ 被拖起的牌转正并跟随指针")
-	# 松手在地图上：落点即操作点
-	card._finish_card_drag(0, map_pt)
-	ok(not card._dragging_card, "松手后拖拽状态正确结束")
-	ok(not main.hud.order_ghost_active, "★★ 松手后旗帜虚影收起")
-	eq(main.input_ctrl.order_mode, "", "★★ 拖出松手直接下达，不再进命令模式")
+	var me = main.world.unit_by_id("general-1")
+	var far := Vector2(float(me.tx) + 4.5, float(me.ty) + 2.5)
+	main.input_ctrl.mouse_world = far
+	main.input_ctrl._on_right_click(false)
 	var move_cmds: Array = got.filter(func(c): return String(c.get("kind", "")) == "move")
-	ok(move_cmds.size() >= 1, "★★ 松手处就是操作点：发出了一条 move 命令")
-	ok(main.hud._order_cd_left() > 0.0, "★★ 下达成功后该部队进入 3 秒冷却")
-	# 冷却中：四格都不可用（变灰、拖不起来），并且带进度条
-	main.hud.refresh()
-	var cd_entries: Array = main.hud._order_entries()
-	ok(not bool(cd_entries[0].get("ready", true)), "★★ 冷却中操作牌不可用")
-	ok(float(cd_entries[0].get("queue_progress", -1.0)) >= 0.0, "★★ 冷却中牌面带进度条")
-	# ★★ 冷却中**拖不起来**（用户报的「冷却没有生效」的真因）：
-	#   `Button.disabled` 只挡 `pressed`，`gui_input` 照样派发 —— 拖拽这条路必须自己判。
-	var cmds_before: int = got.size()
-	card._drag_index = 0
-	card._drag_start_global = drag_origin
-	card._update_drag_position(0, Vector2(1000.0, 560.0))
-	ok(not card._dragging_card, "★★ 冷却中操作牌拖不起来")
-	card._finish_card_drag(0, Vector2(1000.0, 560.0))
-	eq(got.size(), cmds_before, "★★ 冷却中松手也下达不了")
-	main.hud._tick_order_cooldown(0.0)     # 只推一次牌面进度条（不推进计时）
-	ok(main.hud.command_card._cd_veils[0].visible, "★★ 冷却中牌面被暗纱盖住（填充式提示）")
-	# 走一半（3 秒的一半）⇒ 进度条到 50%，仍然不可用
-	main.hud._tick_order_cooldown(1.5)
-	cd_entries = main.hud._order_entries()
-	ok(not bool(cd_entries[0].get("ready", true)), "★ 冷却过半仍然不可用")
-	ok(absf(float(cd_entries[0].get("queue_progress", 0.0)) - 0.5) < 0.06,
-		"★★ 冷却进度条按时间走（过半 ≈ 50%%，实际 %.2f）"
-			% float(cd_entries[0].get("queue_progress", 0.0)))
-	var veil_h: float = main.hud.command_card._cd_veils[0].size.y
-	var cell_h: float = main.hud.command_card.cell_at(0).size.y
-	ok(veil_h > 0.0 and veil_h < cell_h,
-		"★★ 暗纱按剩余冷却收窄（牌面从下往上露出来，%.0f / %.0f）" % [veil_h, cell_h])
-	# 再走 2 秒 ⇒ 3 秒到，牌恢复可用
-	main.hud._tick_order_cooldown(2.0)
-	cd_entries = main.hud._order_entries()
-	ok(bool(cd_entries[0].get("ready", false)), "★★ 3 秒后操作牌恢复可用")
-	ok(main.hud._order_cd_left() <= 0.0, "★ 冷却清零")
+	ok(move_cmds.size() >= 1, "★★ 右键单击空地 → 移动命令")
+	ok(not got.any(func(c): return String(c.get("kind", "")) == "attack"),
+		"★ 空地上不会误发攻击")
 
-	# ★ 冷却清零后要让命令卡**重建一次**（`ready` 是建卡那一刻取的值），
-	#   否则这一格还是「置灰」的旧状态 —— 拖拽这条路现在会照着它拒绝。
-	main.hud.refresh()
-	# ★★ 拖回手牌松手 = 取消：不下达、不进冷却（与建筑牌同一套手感）
+	# 单击敌人 = 锁定攻击（命令里带 target_id）
+	var foe = main.world.spawn_enemy(main.world.map.cols - 3, 2)
+	if foe != null:
+		main.input_ctrl.mouse_world = foe.pos
+		main.input_ctrl.hover_tile = Vector2i(foe.tx, foe.ty)
+		main.input_ctrl._on_right_click(false)
+		var attacks: Array = got.filter(func(c): return String(c.get("kind", "")) == "attack")
+		ok(attacks.size() >= 1, "★★ 右键单击敌方单位 → 锁定攻击")
+		if not attacks.is_empty():
+			eq(String(attacks[-1].get("target_id", "")), String(foe.id),
+				"★★ 攻击命令带的是这个敌人的 id")
+		# ★ 这只敌人留着不动：后面的用例都是同步断言，不会等它走到。
+
+	# 双击任意位置 = 行军攻击
 	got.clear()
-	card._drag_index = 0
-	card._drag_start_global = drag_origin
-	card._update_drag_position(0, map_pt)
-	ok(main.hud.order_ghost_active, "★ 拖到地图上时旗帜虚影可见")
-	card._update_drag_position(0, drag_origin)
-	ok(not main.hud.order_ghost_active, "★★ 拖回手牌 ⇒ 虚影收起（这一下是收回）")
-	card._finish_card_drag(0, drag_origin)
-	eq(got.size(), 0, "★★ 拖回手牌松手 = 取消，不下达任何命令")
-	ok(main.hud._order_cd_left() <= 0.0, "★ 取消不进冷却")
-	ok(not main.hud.order_ghost_active, "★ 取消后虚影不残留")
+	main.input_ctrl.mouse_world = far
+	main.input_ctrl._on_right_click(true)
+	var am: Array = got.filter(func(c): return String(c.get("kind", "")) == "attack_move")
+	ok(am.size() >= 1, "★★ 双击右键 → 行军攻击（attack_move）")
 
-	# 触屏那条路：清掉冷却再走一遍（同一张牌此时也可用）
-	main.hud._order_cd.clear()
-	main.hud.refresh()
-	var touch_cell: Control = card.cell_at(0)
-	var touch_origin: Vector2 = touch_cell.get_global_transform_with_canvas() * (touch_cell.size * 0.5)
-	var touch_down := InputEventScreenTouch.new()
-	touch_down.pressed = true
-	touch_down.position = touch_origin
-	main.hud.handle_touch(touch_down)
-	var touch_move := InputEventScreenDrag.new()
-	touch_move.position = Vector2(900.0, 480.0)
-	touch_move.relative = touch_move.position - touch_origin
-	main.hud.handle_touch_drag(touch_move)
-	ok(main.hud._lp_card_dragging, "★★ 触屏向上拖动手牌进入打出状态")
-	var touch_up := InputEventScreenTouch.new()
-	touch_up.pressed = false
-	touch_up.position = touch_move.position
-	main.hud.handle_touch(touch_up)
-	await process_frame
-	await process_frame
-	eq(main.input_ctrl.order_mode, "", "★★ 触屏拖出松手同样是「落点即操作点」，不进命令模式")
-	ok(main.hud._order_cd_left() > 0.0, "★★ 触屏拖出也起冷却")
+	# ---- 右键拖拽 = 拖视角（超过 6px 就不下令） ----
+	got.clear()
+	var rd_press := InputEventMouseButton.new()
+	rd_press.button_index = MOUSE_BUTTON_RIGHT
+	rd_press.pressed = true
+	rd_press.position = Vector2(900.0, 420.0)
+	main.input_ctrl.handle_mouse_button(rd_press)
+	var rd_move := InputEventMouseMotion.new()
+	rd_move.position = rd_press.position + Vector2(40.0, 0.0)
+	main.input_ctrl.handle_mouse_motion(rd_move)
+	ok(main.input_ctrl._drag_pan_active, "★★ 右键拖过阈值 → 进入拖视角")
+	var rd_up := InputEventMouseButton.new()
+	rd_up.button_index = MOUSE_BUTTON_RIGHT
+	rd_up.pressed = false
+	rd_up.position = rd_move.position
+	main.input_ctrl.handle_mouse_button(rd_up)
+	eq(got.size(), 0, "★★ 右键拖拽松手**不下任何命令**")
+	main.input_ctrl._cancel_pan_fling()
+
+	# ---- 左键拖拽 = 框选 ----
+	main.input_ctrl.select_units([])
+	var upos: Vector2 = main.palette.to_px(me.pos)
+	var press := InputEventMouseButton.new()
+	press.button_index = MOUSE_BUTTON_LEFT
+	press.pressed = true
+	press.position = upos - Vector2(80.0, 90.0)
+	main.input_ctrl.handle_mouse_button(press)
+	var move := InputEventMouseMotion.new()
+	move.position = upos + Vector2(80.0, 30.0)
+	main.input_ctrl.handle_mouse_motion(move)
+	ok(main.input_ctrl.drag_active, "★★ 左键拖过阈值 → 出现选框")
+	var release := InputEventMouseButton.new()
+	release.button_index = MOUSE_BUTTON_LEFT
+	release.pressed = false
+	release.position = move.position
+	main.input_ctrl.handle_mouse_button(release)
+	ok(not main.input_ctrl.drag_active, "松手后选框收起")
+	ok(not main.input_ctrl.selected_units.is_empty(),
+		"★★ 框住的己方部队被选中（经典 RTS 框选）")
 	main.input_ctrl.command_issued.disconnect(spy)
-	main.hud._order_cd.clear()
-	main.hud.refresh()
 
-	# ★★ 只显示当前页真实存在的牌；空槽隐藏而非置灰占位。
-	for i in UiLayoutRes.CARD_SLOTS:
-		var cc = card.cell_at(i)
-		if i < 4:
-			ok(cc.visible, "本页真实操作牌 %d 可见" % (i + 1))
-		else:
-			ok(not cc.visible, "未使用的键位 %d 隐藏，不画灰牌" % (i + 1))
-		var ns: StyleBoxFlat = cc.get_theme_stylebox("normal")
-		ok(ns.corner_radius_top_left >= 8,
-			"牌面 %d 使用卡片圆角金边" % (i + 1))
-	var tech_cell0 = main.hud.tech_grid.cell_at(0)
-	ok(FillButtonRes.base_bg(tech_cell0).a > 0.2, "★★ 科技格也带常驻灰底")
-	eq(String(card.entry_at(0).get("type", "")), "order", "操作页那一项是「部队指令」")
-	eq(card.cell_label(0), "移动", "操作页 Q 格 = 移动")
-	eq(card.cell_label(1), "攻击", "操作页 W 格 = 攻击")
-	eq(card.cell_label(2), "行军", "操作页 E 格 = 行军")
-	eq(card.cell_label(3), "停止", "操作页 A 格 = 停止")
-	ok(tabs.is_active(0), "当前页在页签上高亮")
-
-	# ★★ Tab 切换右下角页签（Shift+Tab 反向；到末尾循环）。
-	ok(main.hud.handle_tab_key(_tab_key(false)), "★★ Tab 被页签栏消费")
-	eq(tabs.page(), PageTabsRes.PAGE_UNIT, "★★ Tab 切到下一颗页签（操作 → 单位）")
-	ok(main.hud.handle_tab_key(_tab_key(false)), "再按一次 Tab")
-	eq(tabs.page(), PageTabsRes.PAGE_ORDER, "★★ 到末尾后循环回第一颗（单位 → 操作）")
-	ok(main.hud.handle_tab_key(_tab_key(true)), "Shift+Tab 反向切页")
-	eq(tabs.page(), PageTabsRes.PAGE_UNIT, "★★ Shift+Tab 切到上一颗（循环到末尾）")
-	tabs.select_page(PageTabsRes.PAGE_ORDER)            # 收尾：回到操作页
-
-	tabs.button_at(1).emit_signal("pressed")
-	eq(tabs.page(), PageTabsRes.PAGE_UNIT, "点第二颗切到「单位」页")
-	ok(card._deck_tween != null and card._deck_tween.is_running(),
-		"★★ 切换命令牌组会启动错落入场动效")
 	eq(card.entries().size(), 9, "单位页数据仍保留九个键位映射")
 	eq(String(card.entry_at(0).get("type", "")), "recruit", "单位页那一项是「招募」")
 	eq(card.cell_label(0), "长枪兵", "单位页 Q 格 = 长枪兵（第 1 行）")
@@ -1863,9 +2078,10 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 
 	main.input_ctrl.select_units([])
 	main.hud.refresh()
-	eq(tabs.page_count(), 2, "★ 什么都没选中时有两颗页签（建筑 / 科技）")
+	eq(tabs.page_count(), 3, "★ 什么都没选中时有三颗页签（建筑 / 将领 / 科技）")
 	eq(tabs.page_id_at(0), PageTabsRes.PAGE_BUILD, "第一颗是「建筑」")
-	eq(tabs.page_id_at(1), PageTabsRes.PAGE_TECH, "★ 第二颗是「科技」（本轮新增）")
+	eq(tabs.page_id_at(1), PageTabsRes.PAGE_GENERAL, "★★ 第二颗是「将领」（本轮新增）")
+	eq(tabs.page_id_at(2), PageTabsRes.PAGE_TECH, "★ 第三颗是「科技」")
 	eq(tabs.page(), PageTabsRes.PAGE_BUILD, "★ 默认停在「建筑」页")
 	eq(card.entries().size(), 9, "★ 建筑页是 3×3 九格（按行解锁后有空槽）")
 	eq(String(card.entry_at(0).get("build_type", "")), "wall", "建筑页第 1 格是木墙")
@@ -1964,9 +2180,9 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 	main.hud.refresh()
 	ok(tabs.visible, "★★ 空手 → 页签整块恢复可见")
 	ok(card.visible, "★★ 空手 → 命令卡也恢复可见")
-	eq(tabs.page_count(), 2, "空手时建筑 / 科技两颗")
-	tabs.button_at(1).emit_signal("pressed")
-	eq(tabs.page(), PageTabsRes.PAGE_TECH, "点第二颗切到「科技」页")
+	eq(tabs.page_count(), 3, "空手时建筑 / 将领 / 科技三颗")
+	tabs.button_at(2).emit_signal("pressed")
+	eq(tabs.page(), PageTabsRes.PAGE_TECH, "点第三颗切到「科技」页")
 	_eq_tech_page(main, "什么都没选中")
 	var g = main.hud.tech_grid
 	var first_id := String((g.entry_at(0) as Dictionary).get("id", ""))
@@ -2048,8 +2264,7 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 
 	main.input_ctrl.select_units([world.unit_by_id("general-1")])
 	main.hud.refresh()
-	main.hud.page_tabs.select_page(PageTabsRes.PAGE_ORDER)
-	eq(main.hud.page_tabs.page(), PageTabsRes.PAGE_ORDER, "收尾：回到操作页")
+	eq(main.hud.page_tabs.page(), PageTabsRes.PAGE_UNIT, "收尾：部队只有单位页")
 
 func _entry_types(card) -> Array:
 	var out: Array = []
@@ -2234,16 +2449,12 @@ func _test_hover_panel(main, cfg) -> void:
 
 	main.input_ctrl.select_units([world.unit_by_id("general-1")])
 	hud.refresh()
-	tabs.select_page(PageTabsRes.PAGE_ORDER)
-	eq(card.cell_label(0), "移动", "（前提）操作页 Q 格 = 移动")
+	eq(tabs.page(), PageTabsRes.PAGE_UNIT, "（前提）选中部队停在单位页")
+	eq(String(card.entry_at(0).get("type", "")), "recruit",
+		"（前提）单位页第一格是招募")
 	card.hover(0)
-	ok(not tip.showing(),
-		"★ 部队指令（移动 / 攻击 / 行军 / 停止）本轮还没有悬停详情 → 不弹空面板")
+	ok(tip.showing(), "★ 单位页的招募格有悬停详情")
 	card.unhover(0)
-
-	hud.refresh()
-	tabs.select_page(PageTabsRes.PAGE_ORDER)
-	eq(tabs.page(), PageTabsRes.PAGE_ORDER, "（收尾）停在操作页")
 
 func _test_hover_tip_control(cfg) -> void:
 	var font: Font = FontLoaderRes.load_font(cfg)
@@ -2327,99 +2538,34 @@ func _test_card_keys(main) -> void:
 	# ★★ 2026.10.30：建筑的单独字母快捷键已移除，只认九宫格键位。
 	ok(not main.cfg.building_def("wall").has("hotkey"),
 		"★★ config 里不再有 building.wall.hotkey")
-	var bt_before := String(main.input_ctrl.build_type)
 	ok(not main.input_ctrl.handle_key(_key(KEY_B)), "★ 按 B 不再进入木墙建造模式")
 	ok(not main.input_ctrl.handle_key(_key(KEY_M)), "★ 按 M 不再进入矿脉建造模式")
-	eq(main.input_ctrl.build_type, bt_before, "★ 这两个键没有改变建造模式")
 
 	var a_ev := _key(KEY_A)
 	ok(not card.handle_key(a_ev), "未解锁的 A 格（石墙）不消费按键")
 
-	ok(card.handle_key(_key(KEY_Q)), "建筑页的 Q 被命令卡吃掉")
-	eq(main.input_ctrl.build_type, "wall", "★ 建筑页按 Q = 木墙")
-	# ★★ 2026.11.5：进入建造模式 = 选中这条建造命令 → 命令卡对应那格金色填满。
+	# ★★ 2026.11.15：**点选建造已删除** —— 按 Q / 点建筑格都不会进入任何建造状态，
+	#   建筑只能靠「把手牌拖到地图上的建造点位」来放。
+	ok(card.handle_key(_key(KEY_Q)), "建筑页的 Q 仍被命令卡吃掉（不落到别的绑定上）")
+	eq(main.hud.drag_build_active, false, "★★ 按 Q 不会开始建造拖拽")
 	main.hud.refresh()
 	var wall_cell: Button = card.cell_at(0)
-	var wall_anim = FillButtonRes.animator_of(wall_cell)
-	ok(FillButtonRes.is_latched(wall_cell),
-		"★★ 进入木墙建造模式 → 命令卡木墙那格视为「已选中」")
+	ok(not FillButtonRes.is_latched(wall_cell),
+		"★★ 建筑格不再有「选中」状态（点选建造已删除）")
 	ok(not FillButtonRes.click_flash_enabled(wall_cell),
-		"★★ 建造格不参与点击闪光（选中填充本身就是反馈）")
-	wall_anim._process(0.2)
-	ok(FillButtonRes.fill_progress(wall_cell) >= 0.999,
-		"★★ 木墙那一格金色填满")
-
-	ok(card.handle_key(_key(KEY_W)), "建筑页的 W 被命令卡吃掉")
-	eq(main.input_ctrl.build_type, "tower", "★ 建筑页按 W = 哨塔（W 已不再平移镜头）")
-	main.hud.refresh()
-	var tower_cell: Button = card.cell_at(1)
-	var tower_anim = FillButtonRes.animator_of(tower_cell)
-	ok(FillButtonRes.is_latched(tower_cell), "★★ 切到哨塔 → 哨塔那格视为选中")
-	tower_anim._process(0.2)
-	ok(FillButtonRes.fill_progress(tower_cell) >= 0.999, "★★ 哨塔那格金色填满")
-	wall_anim._process(0.2)
-	ok(not FillButtonRes.is_latched(wall_cell)
-			and FillButtonRes.fill_progress(wall_cell) <= 0.001,
-		"★★ 木墙那格取消选中 → 金色退回")
-
-	ok(card.handle_key(_key(KEY_W)), "建造模式中重复按 W 不作为取消键")
-	eq(main.input_ctrl.build_type, "tower", "★ 重复按 W 仍保持建造模式")
-	ok(main.input_ctrl.handle_key(_key(KEY_ESCAPE)), "★★ Esc 是取消建造模式的固定快捷键")
-	eq(main.input_ctrl.build_type, "", "Esc 退出建造模式")
-	main.hud.refresh()
-	tower_anim._process(0.2)
-	ok(not FillButtonRes.is_latched(tower_cell)
-			and FillButtonRes.fill_progress(tower_cell) <= 0.001,
-		"★★ Esc 退出建造模式 → 哨塔那格金色退回")
-
+		"★★ 建造格不参与点击闪光")
+	ok(card.handle_key(_key(KEY_W)), "建筑页的 W 仍被命令卡吃掉")
+	eq(main.hud.drag_build_active, false, "★★ 按 W 也不会开始建造拖拽")
 	card.cell_at(0).emit_signal("pressed")
-	eq(main.input_ctrl.build_type, "", "★ 普通点按不再打出建筑牌")
-	ok(card.handle_key(_key(KEY_Q)), "★ Q 快捷键仍可进入木墙建造模式")
-	eq(main.input_ctrl.build_type, "wall", "按 Q = 进木墙建造模式")
-	main.hud.refresh()
-	wall_anim._process(0.2)
-	ok(FillButtonRes.is_latched(wall_cell)
-			and FillButtonRes.fill_progress(wall_cell) >= 0.999,
-		"★★ 点击木墙格 → 那格金色填满")
-	ok(card.handle_key(_key(KEY_Q)), "★★ 重复按 Q 不取消建造")
-	eq(main.input_ctrl.build_type, "wall", "★★ 建造取消不绑定到 Q")
-	ok(main.input_ctrl.handle_key(_key(KEY_ESCAPE)), "★★ Esc 退出建筑牌建造模式")
-	main.hud.refresh()
-	wall_anim._process(0.2)
-	ok(not FillButtonRes.is_latched(wall_cell)
-			and FillButtonRes.fill_progress(wall_cell) <= 0.001,
-		"★★ Esc 清掉建造模式 → 金色退回")
+	eq(main.hud.drag_build_active, false, "★★ 直接点建筑格也不会打出建筑牌（只能拖）")
+	ok(main.input_ctrl.handle_key(_key(KEY_ESCAPE)), "Esc 仍然被输入层接住（没有卡死）")
 
 	main.input_ctrl.select_units([g1])
 	main.hud.refresh()
-	tabs.select_page(PageTabsRes.PAGE_ORDER)
-	eq(tabs.page(), PageTabsRes.PAGE_ORDER, "（前提）停在操作页")
-	ok(card.handle_key(_key(KEY_Q)), "操作页的 Q 被命令卡吃掉")
-	eq(main.input_ctrl.order_mode, "move", "★ 操作页按 Q = 进入移动模式")
-	ok(card.handle_key(_key(KEY_Q)), "再按一次 Q")
-	eq(main.input_ctrl.order_mode, "", "★ 再按一次同一格 = 退出命令模式")
-	ok(card.handle_key(_key(KEY_E)), "★ E 快捷键仍可进入行军模式")
-	eq(main.input_ctrl.order_mode, "attack_move", "按 E = 进入行军模式")
-	main.input_ctrl.set_order_mode("")
-	eq(main.input_ctrl.order_mode, "", "（收尾）退出命令模式")
-
-	var free := Vector2i(-1, -1)
-	for ty in main.world.map.rows:
-		for tx in main.world.map.cols:
-			if main.world.can_build_at(tx, ty):
-				free = Vector2i(tx, ty)
-				break
-		if free.x >= 0:
-			break
-	ok(free.x >= 0, "找得到一格空地")
-	if free.x >= 0:
-		ok(CommandRes.apply(main.world, main.cfg, {"kind": "move", "ids": [g1.id],
-			"x": float(free.x) + 0.5, "y": float(free.y) + 0.5, "faction": "p1"}),
-			"（前提）先让将领 1 走起来")
-		ok(g1.moving, "（前提）它正在移动")
-		ok(card.handle_key(_key(KEY_A)), "★ A 快捷键触发停止")
-		ok(not g1.moving, "★ 按「停止」快捷键 → 当场停下")
-		eq(main.input_ctrl.order_mode, "", "★ 停止不进命令模式（点一下就够了）")
+	eq(tabs.page(), PageTabsRes.PAGE_UNIT, "（前提）选中部队落在单位页")
+	ok(card.handle_key(_key(KEY_Q)), "单位页的 Q 被命令卡吃掉")
+	# ★★ 2026.11.15：操作牌删除 ⇒ 任何格子的快捷键都不再进「命令模式」。
+	eq(main.input_ctrl.order_mode, "", "★★ 单位页按 Q 不再进入任何命令模式")
 
 	ok(not card.handle_key(_key(KEY_Q, true)),
 		"★ Ctrl+Q 不被命令卡消费（要让给 main 的全屏快捷键）")
@@ -2456,10 +2602,18 @@ func _test_tech_keys(main) -> void:
 	eq(world.is_tech_active(drag_tech_id), tech_before, "★ 科技牌普通点按不激活")
 	var tech_cell: Control = g.cell_at(0)
 	var tech_drag_origin: Vector2 = tech_cell.get_global_transform_with_canvas() * (tech_cell.size * 0.5)
+	# ★★ 2026.11.15：科技牌也要「拖回手牌栏 = 取消」，不能松手在 UI 上还启用。
+	var cancel_before: bool = world.is_tech_active(drag_tech_id)
 	g.begin_touch_drag(0, tech_drag_origin)
 	g.move_touch_drag(0, tech_drag_origin - Vector2(0.0, 24.0))
-	g.finish_touch_drag(0)
-	eq(world.is_tech_active(drag_tech_id), not tech_before, "★★ 科技牌上拖松手触发启用/弃用")
+	near(g.cell_at(0).modulate.a, 0.72, 0.01, "★★ 科技牌拖出后同样是半透明")
+	g.finish_touch_drag(0, tech_drag_origin)
+	eq(world.is_tech_active(drag_tech_id), cancel_before,
+		"★★ 科技牌拖回手牌栏 → 取消，不启用 / 不弃用")
+	g.begin_touch_drag(0, tech_drag_origin)
+	g.move_touch_drag(0, tech_drag_origin - Vector2(0.0, 24.0))
+	g.finish_touch_drag(0, Vector2(900.0, 400.0))
+	eq(world.is_tech_active(drag_tech_id), not tech_before, "★★ 科技牌上拖到地图上松手触发启用/弃用")
 	if world.is_tech_active(drag_tech_id):
 		g.press(0) # 还原，让后面的快捷键测试从未启用状态开始。
 
@@ -2545,8 +2699,24 @@ func _test_recruit_via_card(main) -> void:
 	world.resources["food"] = 200.0
 	world.resources["gold"] = 200.0
 	world.zones.zone_at(g1.tx, g1.ty)["population"] = 5.0
-	var played_pos: Vector2 = card.cell_at(0).get_global_transform_with_canvas() \
+	# ★★ 2026.11.15 修 bug：**在手牌 / 任何 UI 上松手 = 取消，不发招募命令**。
+	#   旧版不看松手位置，拖回手牌也照样招 —— 这条用例就是那次的回归测试。
+	var over_hand: Vector2 = card.cell_at(0).get_global_transform_with_canvas() \
 		* (card.cell_at(0).size * 0.5)
+	ok(main.hud.point_hits_ui(over_hand), "（前提）这个点落在手牌 UI 上")
+	var retinue_before_cancel: int = world.retinue_of(g1.id).size()
+	var food_before_cancel := float(world.resources["food"])
+	card._drag_index = 0
+	card._dragging_card = true
+	card._finish_card_drag(0, over_hand)
+	eq(world.retinue_of(g1.id).size(), retinue_before_cancel,
+		"★★ 拖回手牌栏松手 → **不**招募（旧版这里会凭空多一个兵）")
+	near(float(world.resources["food"]), food_before_cancel, 1e-4,
+		"★★ 取消时也不扣粮")
+
+	# 落到地图上才算「打出这张牌」。
+	var played_pos := Vector2(900.0, 320.0)
+	ok(not main.hud.point_hits_ui(played_pos), "（前提）这个点在地图上、不压 UI")
 	# ★★ 2026.11.14（用户口径）：「单位招募时不需要队列了，招募变为即时的，
 	#   只要拖拽单位牌生效就是招募完成」⇒ 拖出一张单位牌 = 兵当场出来。
 	var retinue_before: int = world.retinue_of(g1.id).size()
@@ -2920,7 +3090,7 @@ func _test_order_locked_notice(main) -> void:
 	ok(empty.x >= 0, "找得到一格空地")
 	main.input_ctrl.hover_tile = empty
 	main.input_ctrl.mouse_world = Vector2(empty.x + 0.5, empty.y + 0.5)
-	# ★★ 2026.11.14：右键不再下移动令 —— 改走操作牌那条下达路径（issue_order_at）
+	# ★★ 2026.11.15：右键单击 / 双击就是下达路径；这里验它经过的那段共用代码。
 	main.input_ctrl.issue_order_at("move",
 		main.palette.to_px(Vector2(empty.x + 0.5, empty.y + 0.5)))
 	var evts: Array = world.tick(1.0 / 60.0)
@@ -3043,18 +3213,14 @@ func _test_right_click_orders(main) -> void:
 
 	main.input_ctrl.hover_tile = Vector2i(foe.tx, foe.ty)
 	main.input_ctrl.mouse_world = foe.pos
-	# ★★ 2026.11.14（用户口径）：「右键取消掉移动/行军/攻击指令，完全由出牌代替」+
-	#   「右键完全空着」—— 右键这一下必须什么都不发。
+	# ★★ 2026.11.15（用户口径，回退经典 RTS）：右键单击敌人 = **锁定攻击**。
 	main.input_ctrl._on_right_click(false)
-	eq(got.size(), 0, "★★ 右键不再发出任何命令（完全空着）")
-	# 出牌那条路：攻击牌拖到敌人身上 = attack
-	main.input_ctrl.issue_order_at("attack", main.palette.to_px(foe.pos))
-	eq(got.size(), 1, "★ 攻击牌拖到敌人身上 = 发出命令")
-	eq(String(got[0].get("kind", "")), "attack", "★ 攻击牌 = 攻击命令")
+	eq(got.size(), 1, "★★ 右键单击敌人 = 发出攻击命令")
+	eq(String(got[0].get("kind", "")), "attack", "★ 敌人身上 = attack")
 	eq(String(got[0].get("target_id", "")), foe.id, "命令里带的是那个敌人的 id")
 	ok(main.input_ctrl._pick_foe_unit_at(foe.pos) == foe, "鼠标底下是敌人时，敌对拾取拿得到它")
 	ok(main.input_ctrl._pick_unit_at(foe.pos) == null, "自己人的拾取函数不会选中敌人")
-	got.clear()
+
 	var empty := Vector2i(-1, -1)
 	for ty in world.map.rows:
 		for tx in world.map.cols:
@@ -3066,22 +3232,32 @@ func _test_right_click_orders(main) -> void:
 	ok(empty.x >= 0, "找得到一格用来点右键的空地")
 	main.input_ctrl.hover_tile = empty
 	main.input_ctrl.mouse_world = Vector2(empty.x + 0.5, empty.y + 0.5)
-	# ★★ 2026.11.14（用户口径）：「右键取消掉移动/行军/攻击指令，完全由出牌代替」
-	#   ⇒ 单击 / 双击右键**都不再发命令**，也不再画那两种标记。
 	got.clear()
 	main.input_ctrl._on_right_click(false)
-	eq(got.size(), 0, "★★ 右键单击空地：不发任何命令")
-	main.input_ctrl._on_right_click(true)
-	eq(got.size(), 0, "★★ 右键双击也不再发行军攻击（出牌才是唯一入口）")
+	eq(got.size(), 1, "★★ 右键单击空地 = 移动命令")
+	eq(String(got[0].get("kind", "")), "move", "★ 空地 = move")
+	ok(not got[0].has("target_id"), "★ 移动命令不带攻击目标")
 
-	var ev := InputEventMouseButton.new()
-	ev.button_index = MOUSE_BUTTON_RIGHT
-	ev.pressed = true
-	ev.double_click = true
-	ev.position = Vector2(20.0, 20.0)
 	got.clear()
-	ok(main.input_ctrl.handle_mouse_button(ev), "右键事件仍然被「吃掉」（不当成没处理）")
-	eq(got.size(), 0, "★★ 走真实事件路径也一样：右键不下任何命令")
+	main.input_ctrl._on_right_click(true)
+	eq(got.size(), 1, "★★ 右键双击空地 = 行军攻击")
+	eq(String(got[0].get("kind", "")), "attack_move", "★ 双击 = attack_move")
+
+	# 走真实事件路径（按下 + 抬起）：单击发一条 move，拖过阈值才变成视角。
+	var empty_px: Vector2 = main.palette.to_px(Vector2(empty.x + 0.5, empty.y + 0.5))
+	got.clear()
+	var down := InputEventMouseButton.new()
+	down.button_index = MOUSE_BUTTON_RIGHT
+	down.pressed = true
+	down.position = empty_px
+	ok(main.input_ctrl.handle_mouse_button(down), "右键按下仍然被「吃掉」")
+	var up := InputEventMouseButton.new()
+	up.button_index = MOUSE_BUTTON_RIGHT
+	up.pressed = false
+	up.position = empty_px
+	main.input_ctrl.handle_mouse_button(up)
+	eq(got.size(), 1, "★★ 真实事件路径：右键单击 = 一条 move")
+	eq(String(got[0].get("kind", "")), "move", "★ 真实事件路径 = move")
 
 	var center_tile := Vector2i(-1, -1)
 	for ty in world.map.rows:
@@ -3097,9 +3273,14 @@ func _test_right_click_orders(main) -> void:
 		main.input_ctrl.hover_tile = center_tile
 		main.input_ctrl.mouse_world = Vector2(center_tile.x + 0.5, center_tile.y + 0.5)
 		main.input_ctrl._on_right_click(false)
-		eq(got.size(), 0, "★★ 右键点区划中心也不发命令（右键整体空着）")
+		eq(got.size(), 1, "★★ 右键点区划中心 = 走过去（移动）")
+		eq(String(got[0].get("kind", "")), "move", "★ 中心是中立障碍 ⇒ move，不是 attack")
 
 	main.input_ctrl.command_issued.disconnect(sink)
+	# 清掉靶子：它贴着己方会让后面的「招募脱战」用例被锁。
+	foe.alive = false
+	world.units.erase(foe)
+
 
 func _seed_player_escorts(main, per: int) -> int:
 	var world = main.world
@@ -3525,34 +3706,26 @@ func _test_box_select(main) -> void:
 	ok(not main.input_ctrl.selected_units.has(g1) and main.input_ctrl.selected_units.has(g2),
 		"★★ 一次只选一支：选第二支时第一支自动取消")
 
-	main.input_ctrl.hover_tile = Vector2i(-1, -1)      # 别让「按下那一下」顺手选中别的东西
 	main.input_ctrl.select_units([])
-	main.input_ctrl.mouse_world = Vector2(0.5, 0.5)
 	var some_sub = world.group_of(g1)[1]
 	var click := InputEventMouseButton.new()
 	click.button_index = MOUSE_BUTTON_LEFT
 	click.pressed = true
 	click.position = _world_to_screen(main, some_sub.pos)
 	main.input_ctrl.handle_mouse_button(click)
-	ok(main.input_ctrl.selected_units.has(g1),
-		"★ 左键点击用的是**这次事件**的位置（不是上一帧的鼠标状态）")
+	# ★★ 2026.11.15：单击改成**松手**时才生效（按下要先判断这一下是不是框选）。
 	var click_up := InputEventMouseButton.new()
 	click_up.button_index = MOUSE_BUTTON_LEFT
 	click_up.pressed = false
 	click_up.position = click.position
 	main.input_ctrl.handle_mouse_button(click_up)
+	ok(main.input_ctrl.selected_units.has(g1),
+		"★ 左键点击用的是**这次事件**的位置（不是上一帧的鼠标状态）")
 
 	main.input_ctrl.hover_tile = Vector2i(-1, -1)
 	main.input_ctrl.select_units([])
-	# ★★ 2026.11.14（用户口径）：「左键拖拽改为移动视角，取消掉拖拽选框」。
-	#   这一段以前验的是框选，现在验**同一串真实事件**驱动的是平移：
-	#   按 → 动 2px（还是单击）→ 动过阈值（变成平移、相机跟手）→ 松手（收尾 + 惯性）。
+	# ★★ 2026.11.15（用户口径，回退经典 RTS）：左键拖拽 = **框选**（相机不动）。
 	var a_world := lo
-	var b_world := hi
-	near(main.input_ctrl._screen_to_logic(_world_to_screen(main, a_world)).x, a_world.x, 0.02,
-		"（前提）世界坐标 → 视口坐标 → 世界坐标 能来回换算")
-	main.input_ctrl.select_units([g1])
-	var sel_before: Array = _sorted_ids(main.input_ctrl.selected_units)
 	var probe_world := Vector2(world.map.cols * 0.5, world.map.rows * 0.5)
 	var probe_px_before: Vector2 = _world_to_screen(main, probe_world)
 
@@ -3561,39 +3734,29 @@ func _test_box_select(main) -> void:
 	down.pressed = true
 	down.position = _world_to_screen(main, a_world)
 	ok(main.input_ctrl.handle_mouse_button(down), "左键按下被处理")
-	ok(main.input_ctrl._drag_pending, "按下之后进入「可能是拖拽」的待定状态")
+	ok(main.input_ctrl._drag_pending, "按下之后进入「可能是框选」的待定状态")
 	var tiny := InputEventMouseMotion.new()
 	tiny.position = down.position + Vector2(2.0, 0.0)
 	main.input_ctrl.handle_mouse_motion(tiny)
-	ok(not main.input_ctrl._drag_pan_active,
-		"★ 只挪了 2px（< ui.drag_select_min_px）→ 还是普通单击，不动相机")
+	ok(not main.input_ctrl.drag_active,
+		"★ 只挪了 2px（< ui.drag_select_min_px）→ 还是普通单击，不起框")
+	ok(not main.input_ctrl._drag_pan_active, "★★ 左键拖拽**不再**平移视角（改回框选）")
 	var move := InputEventMouseMotion.new()
-	move.position = down.position + Vector2(160.0, 0.0)
+	move.position = down.position + Vector2(160.0, 90.0)
 	main.input_ctrl.handle_mouse_motion(move)
-	ok(main.input_ctrl._drag_pan_active, "★★ 拖过阈值 → 左键拖拽变成**平移视角**")
-	ok(not main.input_ctrl.drag_active, "★★ 不再起拖框（PC 框选已取消）")
-	# ★ 越过阈值那一下只是「转档」（见 handle_mouse_motion）；真正跟手从第二段移动开始
-	var move2 := InputEventMouseMotion.new()
-	move2.position = move.position + Vector2(60.0, 0.0)
-	main.input_ctrl.handle_mouse_motion(move2)
+	ok(main.input_ctrl.drag_active, "★★ 拖过阈值 → 出现选框")
+	ok(not main.input_ctrl._drag_pan_active, "★ 框选不会同时拖相机")
 	var probe_px_after: Vector2 = _world_to_screen(main, probe_world)
-	ok(probe_px_after.x > probe_px_before.x + 20.0,
-		"★★ 光标往右拖 → 地图跟着往右（同一点在屏幕上右移 %.0fpx）"
-			% (probe_px_after.x - probe_px_before.x))
+	ok(probe_px_after.distance_to(probe_px_before) < 1.0,
+		"★★ 框选期间相机不动（框不会漂）")
 	var up := InputEventMouseButton.new()
 	up.button_index = MOUSE_BUTTON_LEFT
 	up.pressed = false
-	up.position = move2.position
+	up.position = move.position
 	ok(main.input_ctrl.handle_mouse_button(up), "左键抬起被处理")
-	ok(not main.input_ctrl._drag_pan_active, "松手之后平移结束")
-	eq(_sorted_ids(main.input_ctrl.selected_units), sel_before,
-		"★★ 拖拽平移**不取消选中**（按下那一下改掉的会还原回去）")
-	main.input_ctrl._cancel_pan_fling()
-	main.input_ctrl.select_units([g1])
-	main.hud.refresh()
-	main.input_ctrl.select_units([g1])
-	main.hud.refresh()
-
+	ok(not main.input_ctrl.drag_active, "松手之后选框结束")
+	ok(not main.input_ctrl.selected_units.is_empty(),
+		"★★ 框住的己方部队被选中（经典 RTS 框选）")
 
 ## ★★ 2026.11.14（用户口径）：「左键拖拽改为移动视角」「带惯性滑行」。
 ##
@@ -3607,21 +3770,21 @@ func _test_drag_pan(main) -> void:
 	ic.select_units([])
 	ic._cancel_pan_fling()
 
+	# ★★ 2026.11.15（用户口径）：拖视角改到**右键**；左键拖拽是框选，不再动相机。
 	var a := Vector2(400.0, 300.0)
 	var down := InputEventMouseButton.new()
-	down.button_index = MOUSE_BUTTON_LEFT
+	down.button_index = MOUSE_BUTTON_RIGHT
 	down.pressed = true
 	down.position = a
-	ok(ic.handle_mouse_button(down), "（前提）左键按下被处理")
-	# 分两段移动，让速度估计有东西可算（一次跳很远也能动，但滑行速度会怪）
-	# ① 越过阈值那一下只「转档」；②③ 才真的跟手（见 handle_mouse_motion）
-	for step in [Vector2(90.0, 20.0), Vector2(40.0, 10.0), Vector2(40.0, 10.0)]:
+	ok(ic.handle_mouse_button(down), "（前提）右键按下被处理")
+	for step in [Vector2(120.0, 30.0), Vector2(90.0, 20.0), Vector2(90.0, 20.0)]:
 		a += step
 		var mm := InputEventMouseMotion.new()
 		mm.position = a
 		ic.handle_mouse_motion(mm)
-	ok(ic._drag_pan_active, "★★ 拖过阈值 → 进入拖拽平移")
-	ok(ic.is_panning(), "★★ 平移期间 is_panning() 为真（边缘滚屏会让路）")
+	ok(ic._drag_pan_active, "★★ 右键拖过阈值 → 进入拖拽视角")
+	ok(ic.is_panning(), "★★ 拖视角期间 is_panning() 为真（边缘滚屏会让路）")
+	ok(not ic.drag_active, "★ 拖视角不会同时起选框")
 
 	var mid: Vector2 = _world_to_screen(main, probe)
 	ok(mid.distance_to(before) > 60.0, "★★ 相机真的平移了（同一点在屏幕上移了 %.0fpx）"
@@ -3631,20 +3794,18 @@ func _test_drag_pan(main) -> void:
 		"★★ 「抓着地图拖」：光标右下走，画面里的点也往右下走")
 
 	var up := InputEventMouseButton.new()
-	up.button_index = MOUSE_BUTTON_LEFT
+	up.button_index = MOUSE_BUTTON_RIGHT
 	up.pressed = false
 	up.position = a
 	ic.handle_mouse_button(up)
 	ok(not ic._drag_pan_active, "松手 → 拖拽结束")
 	ok(ic._pan_fling_active, "★★ 松手后带惯性滑行（用户口径「带惯性滑行」）")
 	var at_release: Vector2 = _world_to_screen(main, probe)
-	# 推几帧（每帧 ~1/60 秒）
 	for i in 6:
 		ic.tick_pan_fling(1.0 / 60.0)
 	var after_fling: Vector2 = _world_to_screen(main, probe)
 	ok(after_fling.distance_to(at_release) > 5.0,
 		"★★ 滑行真的继续走了几帧（%.1fpx）" % after_fling.distance_to(at_release))
-	# 滑行会自己停下（不能永久微飘）
 	for i in 120:
 		ic.tick_pan_fling(1.0 / 60.0)
 	ok(not ic._pan_fling_active, "★★ 滑行在 2 秒内自己停住（不会一直飘）")
@@ -3665,6 +3826,7 @@ func _test_drag_over_ui(main) -> void:
 	var ui_b := Vector2(vp.x * 0.65, maxf(1.0, vp.y - 24.0))
 	var probe := Vector2(world.map.cols * 0.5, world.map.rows * 0.5)
 	ic._cancel_pan_fling()
+	ic.select_units([])
 
 	var down := InputEventMouseButton.new()
 	down.button_index = MOUSE_BUTTON_LEFT
@@ -3677,26 +3839,28 @@ func _test_drag_over_ui(main) -> void:
 	var move_a := InputEventMouseMotion.new()
 	move_a.position = ui_a
 	main._input(move_a)
-	ok(ic._drag_pan_active,
-		"★ 划到底栏上也能越过阈值、开始平移（不再被底栏 UI 吃掉）")
+	ok(ic.drag_active, "★★ 划到底栏上也能进入框选（不再被底栏 UI 吃掉）")
 	var move_a2 := InputEventMouseMotion.new()
 	move_a2.position = ui_a + Vector2(80.0, 0.0)
-	main._input(move_a2)
+	ic.handle_mouse_motion(move_a2)
+	var expect_box := Rect2(ic._drag_press_screen,
+		move_a2.position - ic._drag_press_screen).abs()
+	v2_near(ic.drag_screen_box.size, expect_box.size, 0.5,
+		"★★ 选框继续跟着指针（按下点 → 当前点）")
 	var px1: Vector2 = _world_to_screen(main, probe)
-	ok(px1.distance_to(px0) > 10.0, "★ 相机跟着动了（%.1fpx）" % px1.distance_to(px0))
+	ok(px1.distance_to(px0) < 1.0, "★★ 框选期间相机不动")
 
 	var move_b := InputEventMouseMotion.new()
 	move_b.position = ui_b
 	main._input(move_b)
-	var px2: Vector2 = _world_to_screen(main, probe)
-	ok(px2.distance_to(px1) > 5.0, "★ 继续在底栏上移动 → 平移继续跟着走")
+	ok(ic.drag_screen_box.size.y > 1.0, "★★ 继续在底栏上移动 → 选框继续更新")
 
 	var up := InputEventMouseButton.new()
 	up.button_index = MOUSE_BUTTON_LEFT
 	up.pressed = false
 	up.position = ui_b
 	main._input(up)
-	ok(not ic._drag_pan_active and not ic._drag_pending,
+	ok(not ic.drag_active and not ic._drag_pending,
 		"★ 在底栏上松手，手势照样结束")
 	ic._cancel_pan_fling()
 
@@ -4324,22 +4488,17 @@ func _test_settings_inert(main) -> void:
 	eq(main.hud.page_tabs.page(), page_before, "关选项页也不会顺手切页")
 
 func _test_command_events_reach_consumer(main) -> void:
-	var free := Vector2i(-1, -1)
-	for ty in main.world.map.rows:
-		for tx in main.world.map.cols:
-			# ★ 建造新规则：只能在自己区划里建 —— 找空地时也按这个口径
-			if main.world.can_build_at(tx, ty, "p1"):
-				free = Vector2i(tx, ty)
-				break
-		if free.x >= 0:
-			break
-	ok(free.x >= 0, "找得到一格可建造的空地")
-	if free.x < 0:
+	# ★★ 2026.11.15：用**哨塔**（非城墙）验「一次建造 = 一条 building_built」——
+	#   城墙是一张牌建整圈、会一次交出来好几条事件，不适合这条断言。
+	var anchors: Array = main.world.build_anchors_for("tower", "p1")
+	ok(not anchors.is_empty(), "找得到一个可建造的建造点位")
+	if anchors.is_empty():
 		return
+	var free: Vector2i = anchors[0]["tile"]
 
 	main.world.tick(1.0 / 60.0)
 	ok(CommandRes.apply(main.world, main.cfg, {
-		"kind": "build", "build_type": "wall", "tx": free.x, "ty": free.y, "faction": "p1"}),
+		"kind": "build", "build_type": "tower", "tx": free.x, "ty": free.y, "faction": "p1"}),
 		"建造命令被接受")
 	var events: Array = main.world.tick(1.0 / 60.0)
 	var built := 0

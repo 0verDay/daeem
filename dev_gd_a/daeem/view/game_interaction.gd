@@ -134,12 +134,6 @@ func consume_events(events: Array) -> void:
 				# ★ 整个事件传进去：`busy` 那条文案要点名是哪个对象
 				if _is_my_event(evt):
 					hud.show_notice(hud.upgrade_reject_text(String(evt.get("reason", "")), evt))
-			"revive_rejected":
-				if _is_my_event(evt):
-					hud.show_notice(hud.revive_reject_text(String(evt.get("reason", ""))))
-			"recall_rejected":
-				if _is_my_event(evt):
-					hud.show_notice(hud.recall_reject_text(String(evt.get("reason", ""))))
 			"general_respawn_queued":
 				# ★ 阵亡 / 召回都走这一条：告诉玩家多久之后在大本营重生。
 				if _is_my_event(evt):
