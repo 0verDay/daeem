@@ -1674,8 +1674,9 @@
         "    冲锋加成都在 `unit.general_traits` 里，由 `unit.general.trait_ids[i]` 点名）；",
         "    子刹的「攻击造成范围伤害 + 击退」现在由特性「横扫」(crushing_blow) 提供，",
         "    不再写在这个兵种的 `splash_radius` / `knockback` 上（一名一效、且对旗下部队生效）。",
-        "  · 贴图按需求复用现有素材：王朝游侠 = 游侠（马弓手 png）、子刹 = 御林军骑兵、",
-        "    帝国骑手 = 骑手、阿吉诃德 = 冠军骑士。",
+        "  · 贴图：**子刹 / 阿吉诃德已有专属原画**（`assets/units/<兵种 id>.png`，与派系兵种同一条",
+        "    命名约定，原画放在 art_draft/）；其余两位仍复用现有素材 —— 王朝游侠 = 游侠（马弓手 png）、",
+        "    帝国骑手 = 骑手。",
         "  · 数值是**最终值**：`unit.general.hp_mult / armor_bonus / damage_mult` 已删除，",
         "    游戏内显示 = 这里的数 = 单位编辑器里的数。",
         "  · 王朝游侠的射程 = 3（与游侠一致，需求没给射程；远程骑兵必须有射程）。"
@@ -1701,7 +1702,7 @@
       "dy_lord_zisha": {
         "name": "子刹",
         "icon": "刹",
-        "sprite": "res://assets/units/dy_royal_cavalry.png",
+        "sprite": "res://assets/units/dy_lord_zisha.png",
         "sprite_tint": "art",
         "class": "cavalry",
         "ranged": false,
@@ -1759,7 +1760,7 @@
       "dg_lord_ajikede": {
         "name": "阿吉诃德",
         "icon": "阿",
-        "sprite": "res://assets/test_units/Knight/knight.png",
+        "sprite": "res://assets/units/dg_lord_ajikede.png",
         "sprite_tint": "art",
         "class": "cavalry",
         "ranged": false,

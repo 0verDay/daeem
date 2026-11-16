@@ -238,54 +238,6 @@ const CARD_KEY_TO_SLOT := {
 	KEY_Z: 6, KEY_X: 7, KEY_C: 8,
 }
 
-## ------------------------------------------------------------------
-## ★★ 悬停详情面板（右下角命令卡**正上方**）—— 本版新增
-##
-## 需求原话：「为右下角面板中的按钮添加悬停显示，悬停显示显示在右下角面板上方，
-##           宽度与右下角面板宽度相同，竖直方向距离你自己定，需要根据悬停详细
-##           信息文本动态缩放」。
-## ★★ 需求补充（用户原话）：「**水平距离上要把旁边的页签栏也对齐上**」——
-##   于是面板的水平范围 = **命令卡 + 右边那一列页签**整段：
-##     左缘 = `CARD_RECT.position.x`（1580，命令卡左缘）
-##     右缘 = `TABS_RECT` 的右缘（1920，页签列右缘 = 屏幕右缘）
-##     ⇒ 宽度 = `HOVER_W` = **340**（= 命令卡 240 + 页签列 100）
-##   ⚠️ 第一版只对齐了命令卡（240 宽），右缘停在 1820 —— 页签列那 100px 露在外面，
-##      用户看着那一条没对齐。现在两侧分别与「命令卡左缘 / 页签列右缘」拉齐。
-##
-## ★ 「右下角面板」里的按钮 = **命令卡**那 3×3（`CARD_RECT`：x 1580..1819、y 840..1079）；
-##   科技页那九格与它**逐像素重合**（换页时看不出换了控件，见 view/tech_grid.gd 的文件头），
-##   所以两者共用这同一块悬停面板。
-##   ⚠️ 页签本身**没有**悬停详情（它是「换页」用的，不是命令卡里的按钮）——
-##      本版只给四类**格子内容**配了文案，见 hud._hover_detail；
-##      面板盖住那一条只是**水平对齐**，不影响页签可点。
-##
-## ★ 竖直方向：面板**下缘**与命令卡顶边留 `HOVER_GAP`（8px，需求说「自己定」），
-##   高度由调用方按文本算好传给 `hover_rect(h)` ⇒ 文字越多、面板**向上越长**：
-##   底边钉住不动，所以既不会压住命令卡，也不会掉出屏幕（与详细信息面板
-##   「贴下沿、向上长」是同一条思路）。
-##
-## ★★ 2026.11.14 第二轮：手牌移到**屏幕底部中央**（见 CARD_RECT）之后，
-##   「右缘与页签列齐平」这条口径**不再成立**（页签还在最右边，中间隔着一大段空白）。
-##   ⇒ 悬停面板改成**与手牌同宽、同中心**：宽度 = `CARD_RECT.size.x`，
-##     水平位置跟着手牌一起居中。这样它永远压在手牌正上方，
-##     不会横穿整个屏幕去够右侧页签。
-##   ⚠️ 摆放走 `apply_bottom_center()`（见 hover_tip.gd），不是贴右。
-const HOVER_W := CARD_RECT.size.x
-const HOVER_GAP := 8.0                          # 与命令卡顶边的竖直距离（需求里说「自己定」）
-const HOVER_PAD := 8.0                          # 文字离面板四边的留白
-const HOVER_TITLE_GAP := 5.0                    # 标题与正文之间的缝
-const HOVER_BOTTOM := CARD_RECT.position.y - HOVER_GAP
-const HOVER_MIN_H := 32.0                       # 兜底下限（只有一行标题时也不会薄成一条线）
-## 兜底上限：面板再高也不许顶出屏幕上沿（文案长到离谱时裁掉，而不是画到看不见的地方）
-const HOVER_MAX_H := HOVER_BOTTOM - 16.0
-
-
-## 悬停面板的矩形：宽度恒定 `HOVER_W`，下缘钉在 `HOVER_BOTTOM`，高度按文本算（h）。
-## ★ 只在这里算「向上长」这件事：调用方（view/hover_tip.gd）只报**内容需要多高**。
-static func hover_rect(h: float) -> Rect2:
-	var hh: float = clampf(h, HOVER_MIN_H, HOVER_MAX_H)
-	return Rect2(CARD_RECT.position.x, HOVER_BOTTOM - hh, HOVER_W, hh)
-
 ## 页签列（宽 235 = 3 颗 73 宽 + 2 个 8 宽间隙、高 94，按钮横向并排）。
 ## ★ 现在是**动态页签**：自己的部队 1 颗（单位；★ 2026.11.15 起部队操作页删除）、
 ## 自己的区划中心 1 颗（招募）、自己的大本营 2 颗（操作 / 科技）、无操作建筑 / 敌方 / 友方任何建筑单位时
@@ -803,6 +755,24 @@ static func card_fan_rotation(visible_index: int, visible_count: int) -> float:
 	return deg_to_rad(clampf((float(visible_index) - mid) * 8.0, -14.0, 14.0))
 
 
+## ★★ 2026.11.16（用户口径）：鼠标悬停某张牌时，**同侧所有牌整体平移**同一段距离。
+##
+## 为什么不按「离悬停牌多远」递增：手牌是扇形叠放，悬停牌只会被紧邻的两张压到；
+## 若把远处牌也按距离越推越远，玩家从第 3 张移到第 4 张时，第 1 张会因为
+## 「距离从 2 变 3」而回位一次 —— 用户明确说这种「远处的牌也跟着动」很怪。
+## ⇒ 同侧统一 `CARD_HOVER_PUSH_PX`：换到相邻牌时，同侧那些牌的距离不变、位置也不变，
+##   只有「刚失去悬停的牌」和「刚获得悬停的牌」在动。
+const CARD_HOVER_PUSH_PX := 34.0
+
+
+## 第 `ordinal` 张牌相对悬停牌 `hover_ordinal` 的横向让开量（设计像素）。
+## @param hover_ordinal -1 = 当前没有悬停牌（全部归零）。
+static func card_hover_push(ordinal: int, hover_ordinal: int) -> float:
+	if hover_ordinal < 0 or ordinal == hover_ordinal:
+		return 0.0
+	return CARD_HOVER_PUSH_PX if ordinal > hover_ordinal else -CARD_HOVER_PUSH_PX
+
+
 ## 页签第 i 个牌签（相对面板）：靠右下角并排错开；单个页签也靠右对齐。
 static func tab_button_local(i: int, count: int = TABS_COUNT) -> Rect2:
 	var n: int = maxi(1, mini(count, TABS_COUNT))
@@ -1024,6 +994,26 @@ static func interactive_rects(view_size: Vector2, detail_visible: bool = true,
 ##     以前 detail_v2 里还抄了一份 `PANEL_RECT`，改一处忘一处就会「看得见但点不中」，
 ##     现在**只留这一份**，detail_v2 直接引用。
 const DETAIL_V2_RECT := Rect2(27.0, 794.0, 377.0, 260.0)
+
+
+## ------------------------------------------------------------------
+## ★★ 悬停说明牌 = **左下角栏**（2026.11.16 从「命令卡正上方」搬到这里）
+##
+## 需求原话：「将所有的卡牌悬停文本放至左下角栏中（若在悬停卡牌时已有左下角栏，
+##           则卡牌悬停文本覆盖原有栏位）……面板大小完全相同样式相同」。
+##   ⇒ 悬停牌与左下详情牌**同一块矩形**（`DETAIL_V2_RECT`）、**同一套纸牌画法**
+##     （画在 `view/detail_v2.gd` 的 `draw_plate()`，两边共用一份，见 `view/hover_tip.gd`），
+##     只是悬停时它压在详情牌**之上**：有选中对象就把原栏目盖住，移开鼠标再露出来。
+##
+## ⚠️ 旧的「贴手牌正上方、按文本向上长」那套几何（`HOVER_W` / `hover_rect()` /
+##    `HOVER_BOTTOM` / `HOVER_MIN_H` / `HOVER_MAX_H` / `HOVER_GAP`）已随搬家删除：
+##    面板尺寸现在由 `DETAIL_V2_RECT` 定死，这里只剩「文字怎么排」三个数。
+## ------------------------------------------------------------------
+## 悬停牌矩形：**就是左下角栏**（同一块，改尺寸只改 `DETAIL_V2_RECT` 一处）
+const HOVER_RECT := DETAIL_V2_RECT
+const HOVER_PAD := 18.0                         # 文字离牌面的左 / 上留白
+const HOVER_TITLE_H := 26.0                     # 卡名那一行占多高（下面跟一条金线）
+const HOVER_TITLE_GAP := 10.0                   # 金线之后、精简文本之前的缝
 
 
 ## 新版底栏命中：详情用 616.5 宽，且**不再登记已删除的阵营占位**。

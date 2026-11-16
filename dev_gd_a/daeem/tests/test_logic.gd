@@ -750,7 +750,7 @@ func _test_zone_population_and_production(world, cfg) -> void:
 	var z0: Dictionary = w.zones.zones[0]
 	var z1: Dictionary = w.zones.zones[1]
 
-	eq(float(z0["population"]), 0.0, "★ 区划人口开局是 0")
+	near(float(z0["population"]), 2.0, 1e-9, "★★ 区划人口开局就是满的（= 上限 2）")
 	ok(float(z0["production"]["population"]) > 0.0,
 		"★ 发布地图的区划配了人口产能（%s）" % z0["production"]["population"])
 	near(w.zones.population_cap_of(z0), 2.0, 1e-9, "★ 发布地图的区块配了人口上限（2）")

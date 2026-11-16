@@ -332,12 +332,14 @@ dev_gd_a/daeem/
 │   │                             #     并把第一次重画错开 HUD 槽位（stagger_redraw）
 │   │                             #   ★★ 红点性 AI：将领画小红菱形（**只在没被观测到 / 还在迷雾里**时；
 │   │                             #     常驻菱形带呼吸）+ 刷兵时在出生格播「由大变小的菱形」动效（每次都播）
-│   ├── hover_tip.gd              #   ★ 悬停详情面板（本版新增）：住在**命令卡正上方**，
-│   │                             #     水平范围 = 命令卡 + 右边那一列页签那一整段
-│   │                             #     （**左缘对命令卡左缘、右缘对页签列右缘**，宽 340），
-│   │                             #     高度按悬停到的文本**动态缩放**（向上长，下缘离命令卡 8px）
-│   │                             #     ⚠️ 高度**只问 Label 自己**（get_minimum_size），
-│   │                             #     不许拿 Font.get_multiline_string_size 顶替（见 pitfalls 5.52）
+│   ├── hover_tip.gd              #   ★ 卡牌悬停说明（写在**左下角栏**）：
+│   │                             #     矩形 = `ui_layout.HOVER_RECT`（= `DETAIL_V2_RECT`，377×260），
+│   │                             #     牌面调 `detail_v2.draw_plate()`（与详情牌**同一份**画法），
+│   │                             #     `z_index` 压过详情牌 ⇒ 悬停时覆盖原栏位、移开就露出
+│   │                             #     版式 = 卡名 + 副标题 / 金线 / **造价格**（照抄 detail_info
+│   │                             #     的数值格）/ 底部「特性·效果」小标题 + 胶囊 / 置灰原因
+│   │                             #     尺寸**固定**（内容再多也不长大，`clip_contents`）；
+│   │                             #     出现时由 hud 播「向右滑入」（见 hud._left_slide_in）
 │   │                             #     文案由 hud 喂（`_hover_detail`），本控件只排版与画
 │   ├── squad_panel.gd            #   右侧「部队 1~6」（动态生成；单击反选 / 长按跟随 / 双击跳转）
 │   │                             #   ★ 每行是 view/troop_row.gd：数字 1..6 + 名字 + 当前/上限
@@ -374,7 +376,8 @@ dev_gd_a/daeem/
     ├── test_logic.gd             #   玩法规则（移动 / 战斗 / 建造 / 占领 / 快照…）
     ├── test_view.gd              #   渲染层接线（能挂上树、跑帧不炸、中文字体）
     ├── test_ui.gd                #   ★ 新 UI：几何对着参考图、部队列表 / 命令卡 / 招募 / 右键手势 /
-    │                             #     **悬停详情面板**（命令卡 + 页签列那一段的宽 + 下缘 + 按文本长高 + 折行不被裁 + 换页收起）
+    │                             #     **卡牌悬停说明**（在左下角栏里：与详情牌同尺寸同样式、压在它之上、
+    │                             #     大小固定 / 换页收起 / 精简行文案）
     │                             #     ⚠️ 它必须在 **GameScene**（按下 test 之后那个）上断言 ——
     │                             #     在 main.tscn 的根上取 hud 会报错并静默跳过整节（pitfalls 5.35）
     ├── test_ui_kit.gd            #   ★★ 通用 UI 工具件（滚动列表 / 拖动滚动 / 入场淡入 / 徽章部件）：
@@ -716,7 +719,7 @@ Godot 里 DPR 由引擎处理，**但下面三条要原样继承**：
 | 玩家下达的攻击命令 | `logic/unit.gd` 的 `ordered_target` / `ordered_building` / `has_attack_move` | 与「这一帧在打谁」（`target` / `target_building`）**分开存**，见 route.md 12.3 |
 | UI 几何（面板位置与尺寸） | `view/ui_layout.gd` | 纯常量，照参考图的像素稿；其它 view 文件不写坐标字面量 |
 | 当前页签（操作 / 单位 / 招募 / 科技 / 建筑） | `view/page_tabs.gd` + `hud._tab_plan()` | 纯本地显示状态，只决定命令卡里有什么；**显示哪几颗由当前选中对象决定**（route.md 二十二节），每一类选中各记「上次停在哪一页」（`hud._page_memory`）。★ 科技页在**选中大本营**与**什么都没选中**两处都出现，是同一颗页签、同一套九格 |
-| **悬停到哪一格 / 悬停面板写什么** | 序号由 `view/command_card.gd` · `view/tech_grid.gd` 报（`cell_hovered` / `cell_unhovered`）；**文案**由 `hud._hover_detail()` 现取；面板本身是 `view/hover_tip.gd` | 纯本地显示状态，**不进命令、不进快照**。★ 与点击同一条划分：格子控件只报「第几格」，**界面词只在 hud 一处**（`_hover_detail` 那一段）；对应关系见 route.md 第二十七节 |
+| **悬停到哪一格 / 悬停说明写什么** | 序号由 `view/command_card.gd` · `view/tech_grid.gd` 报（`cell_hovered` / `cell_unhovered`）；**文案**由 `hud._hover_detail()` 现取；说明牌本身是 `view/hover_tip.gd`（画在**左下角栏**里，与详情牌同尺寸同样式、压过它）| 纯本地显示状态，**不进命令、不进快照**。★ 与点击同一条划分：格子控件只报「第几格」，**界面词只在 hud 一处**（`_hover_detail` 那一段）；对应关系见 route.md 第二十七节 |
 | ★★ **悬停到哪个单位 / 建筑、给谁填色** | `view/input_controller.gd` 的 `hover_unit` / `hover_buildings` / `hover_unit_ids`（`_poll_hover_pick` 每帧算，拖框走 `_hover_from_box`）；渲染在 `view/unit_view_3d.gd` / `view/building_view_3d.gd` 的 `set_hover()`；旋钮在 `data/config.json` 的 `render.hover_fill_*` | ★ 纯本地表现状态，**不进命令、不进快照**，`logic/` 一行不改。口径：**己方**（`world.my_faction`，**不是** `same_side` —— 盟友按单个算）→ `world.group_of(u)` 整支部队；敌 / 友单位与**所有建筑** → 只填那一个。颜色取 `colors.side`（自己 / 盟友 / 敌人 / 无主灰），强度 0.7、淡入淡出 0.1s。判定顺序与左键点选逐条对齐（单位优先、迷雾 / 濒死同判据）。★★ **拖框预览**（`drag_active`）：框里的**己方单位 → 整支部队**、否则框里的**己方建筑 → 全部**、都没有才退回光标单目标 —— 即「己方单位 > 己方建筑 > 单个友 / 敌目标」；判定口径跟着松手时走哪条路（桌面 = 世界矩形 / `box_select`，触摸 = 屏幕矩形 / `box_select_screen`）。建造模式 / 中键拖拽 / 鼠标压在 HUD 上（非拖框时）不出高亮。★★ **触摸端没有悬停**：只放行**双指框选预览**（`input_ctrl.hover_from_box` + `game_scene3d._hover_*_for_view()` 按 `touch_device` 判），拖框之外一律不出高亮 |
 | 科技的启用状态（谁启用了哪几条） | `logic/tech.gd` 的 `active_by_faction`（由 `logic/world.gd` 持有并暴露查询） | ★ 它是**世界状态**（影响产量 / 血量 / 人口），不是界面状态：界面每帧读 `world.tech_entries()` 画高亮，命令只有 `tech_toggle` 一条。效果数值全在 `data/config.json` 的 `tech.list`。★ 合作时 `world.seat_tech_effects` 每个玩家席位一份（`tech_effects` 是本机那份的别名） |
 | 建筑升级的读条（等级 / 进度 / 已扣的钱） | `logic/building.gd` 的 `level` / `upgrade_*` 字段；规则在 `logic/upgrade.gd` | ★ 与「招募队列挂在将领 / 区划上」同一个理由：「这栋楼正在干嘛」属于这栋楼。命令只有 `building_upgrade` / `building_upgrade_cancel` 两条（按**地块**定位） |

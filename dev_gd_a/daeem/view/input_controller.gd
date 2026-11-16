@@ -18,12 +18,12 @@
 ##   · 单击 = 反选整队；· 长按 = 跟随视角；· 双击 = 快速选中 + 跳镜头。
 ##   右栏标签（鼠标 / 触摸）与键盘数字键共用同一套状态机 —— 不要在 UI 文件里再写一份。
 ##
-## ★★ 鼠标手势（2026.11.15 第三轮，用户口径「回退经典 RTS」）：
+## ★★ 鼠标手势（2026.11.16）：
 ##   · 左键单击 = 选中 / 退选；左键拖拽 = **框选**（拖出矩形，松手生效）；
-##   · 右键拖拽 = **拖视角**（超过 6px 才算，松手带惯性滑行）；
+##   · **中键拖拽 = 移动视角**（超过 20px 才算，松手带惯性滑行）；
 ##   · 右键单击 = 移动（空地）/ **锁定攻击**（敌人或敌方建筑）；
 ##   · 右键双击 = **行军攻击**（`attack_move`，路上遇敌就停下打）。
-##   ⇒ 「操作牌 + 3 秒冷却 + 操作页」整套已删除；中键不再参与视角。
+##   ⇒ 右键不再参与视角，选中单位后右键点地面不会误触拖镜头。
 ##   ★ 触屏完全没动：单指拖视野 / 双指框选 / 单击下令 / 双击行军（见 view/touch_controller.gd）。
 extends Control
 
@@ -273,9 +273,9 @@ var drag_screen_valid: bool = false
 var _drag_pending: bool = false
 ## 按下的屏幕坐标（只用来算「移动了多少像素」——阈值是像素口径，与相机缩放无关）
 var _drag_press_screen: Vector2 = Vector2.ZERO
-## ★★ 2026.11.15：**右键拖视角**是否已经越过阈值（松手时据此决定「视角 / 下令」）。
+## ★★ 2026.11.16：**中键拖视角**是否已经越过阈值（松手时据此决定「视角 / 不下令」）。
 var _drag_pan_active: bool = false
-## 右键这一下手势走过的像素（判「是拖视角还是单击」）。
+## 中键这一下手势走过的像素（判「是拖视角还是单击」）。
 var _drag_pan_moved: float = 0.0
 ## ★ 「框选期间冻住相机」：PC 左键框选与手机双指框选都走这一条 ——
 ##   框的起点是屏幕坐标，相机一动框就漂（「右上角起点自己跑」的根因）。
@@ -293,17 +293,20 @@ const PAN_FLING_MAX := 2600.0
 const PAN_FLING_MIN := 60.0
 ## 滑行衰减时间常数（秒）：0.16 ⇒ 约 0.5 秒滑完
 const PAN_FLING_TAU := 0.16
-## ★★ 右键「拖视角 / 单击」的分界（像素）。用户口径：6px。
-const RIGHT_PAN_MIN_PX := 6.0
+## 中键「拖视角 / 单击」的分界（像素）。
+## ★★ 2026.11.16：右键已不再拖视角；这个阈值现在只服务中键（避免中键单击时画面抖）。
+const PAN_DRAG_MIN_PX := 20.0
 
-## ★★ **右键拖拽平移**视角（按住右键拖动 = 抓着地图拖；中键不再参与）。
+## ★★ **中键拖拽平移**视角（按住中键拖动 = 抓着地图拖；右键只下令）。
 ##   · 拖拽期间要压住**边缘滚屏**，否则鼠标拖到屏幕边缘时两者会抢同一台相机
 ##     —— 游戏场景每帧读 `is_panning()` 并进 `_ui_dragging_camera`（与 `is_dragging_box()` 并列）。
 var _pan_pending: bool = false
-## 上一次鼠标屏幕坐标（算这一下的位移用；只在右键拖拽期间有意义）。
+## 上一次鼠标屏幕坐标（算这一下的位移用；只在拖拽视角期间有意义）。
 var _pan_last_screen: Vector2 = Vector2.ZERO
 ## 这次右键按下是不是 Godot 认定的双击（松手时据此发行军攻击）。
 var _right_double: bool = false
+## 这次右键按下是否还没收到对应的松手（用来挡掉观战取消选点后的多余下令）。
+var _right_order_pending: bool = false
 
 ## ★★ 手机端：单指拖动视野是否正在进行（由 view/touch_controller.gd 置位）。
 ##   与 `_pan_pending` 并列进 `is_panning()` —— game_scene 每帧读它压住边缘滚屏。
@@ -349,6 +352,7 @@ func setup(p_cfg: ConfigRes, p_world, p_camera_rig, p_palette = null,
 	_drag_pan_active = false
 	_drag_pan_moved = 0.0
 	_pan_pending = false
+	_right_order_pending = false
 	_touch_panning = false
 	_cancel_pan_fling()
 	reset_general_gestures()
@@ -647,11 +651,10 @@ func handle_key(event: InputEventKey) -> bool:
 # 鼠标
 # ------------------------------------------------------------------
 func handle_mouse_button(event: InputEventMouseButton) -> bool:
-	# ★★ 2026.11.15 第三轮（用户口径，回退到经典 RTS）：
-	#   · 左键按下 → 记框选起点；拖动超过阈值 = **框选**；没拖动 = 单击（选中）；
-	#   · 右键按下 → 记视角起点；拖动超过阈值 = **拖拽视角**；没拖动 = 移动 / 锁定攻击，
-	#     双击 = 行军攻击；
-	#   · 中键不再管视角（用户口径：「只保留右键拖视角」）。
+	# ★★ 2026.11.16（用户口径）：
+	#   · 左键 → 框选 / 单击选中；
+	#   · **中键拖拽 = 移动视角**（右键不再拖视角）；
+	#   · 右键单击 / 双击 = 移动 / 攻击 / 行军攻击（按下记双击、松手下令）。
 	if event.button_index == MOUSE_BUTTON_LEFT:
 		if not _action_ok("select"):
 			return true
@@ -660,11 +663,17 @@ func handle_mouse_button(event: InputEventMouseButton) -> bool:
 		else:
 			_finish_box(event.shift_pressed)
 		return true
+	if event.button_index == MOUSE_BUTTON_MIDDLE:
+		if event.pressed:
+			_begin_pan_drag(event)
+		else:
+			_finish_pan_drag(event)
+		return true
 	if event.button_index == MOUSE_BUTTON_RIGHT:
 		if event.pressed:
-			_begin_right_drag(event)
+			_begin_right_click(event)
 		else:
-			_finish_right_drag(event)
+			_finish_right_click(event)
 		return true
 	if not event.pressed:
 		return false
@@ -695,13 +704,13 @@ func handle_mouse_button(event: InputEventMouseButton) -> bool:
 
 
 ## 鼠标移动：
-##   · 按住右键 → 超过 `RIGHT_PAN_MIN_PX` 就变成**拖拽视角**（右键拖拽）；
+##   · 按住**中键** → 超过 `PAN_DRAG_MIN_PX` 就变成**拖拽视角**；
 ##   · 按住左键 → 超过 `ui.drag_select_min_px` 就变成**框选**（经典 RTS 手感）。
 ##
-## ★★ 2026.11.15 第三轮（用户口径）：左键拖拽**回到框选**、视角改由右键拖拽；
-##   中键不再参与视角。触摸那条路完全没动（见 view/touch_controller.gd）。
+## ★★ 2026.11.16（用户口径）：视角改回**中键拖拽**；右键只下令。
+##   触摸那条路完全没动（见 view/touch_controller.gd）。
 func handle_mouse_motion(event: InputEventMouseMotion) -> bool:
-	# 右键拖拽视角：先累积位移，越过阈值才开始真的动相机（避免单击时画面抖一下）。
+	# 中键拖拽视角：先累积位移，越过阈值才开始真的动相机（避免单击时画面抖一下）。
 	if _pan_pending:
 		if not _action_ok("camera"):
 			return true
@@ -709,7 +718,7 @@ func handle_mouse_motion(event: InputEventMouseMotion) -> bool:
 		_pan_last_screen = event.position
 		_drag_pan_moved += pan_delta.length()
 		if not _drag_pan_active:
-			if _drag_pan_moved < RIGHT_PAN_MIN_PX:
+			if _drag_pan_moved < PAN_DRAG_MIN_PX:
 				return true
 			_drag_pan_active = true
 			_pan_vel = Vector2.ZERO
@@ -735,16 +744,12 @@ func handle_mouse_motion(event: InputEventMouseMotion) -> bool:
 	return true
 
 
-## 右键按下：记视角起点（松手时按「有没有拖过阈值」分成 拖视角 / 单击下令）。
+## 中键按下：记视角起点（松手时按「有没有拖过阈值」分成 拖视角 / 单击）。
 ##
-## ★ 观战授权（ai_test_2 的 AI 面板选点）里右键仍是**取消选点** —— 那不是玩家命令，
-##   而且是那个模式唯一的取消入口（`test_ai_observer` 依赖它）。
-func _begin_right_drag(event: InputEventMouseButton) -> void:
-	if observer_mode and observer_ai_orders \
-			and (order_mode == "ai_march" or order_mode == "ai_mass"):
-		set_order_mode("")
-		return
-	if not _action_ok("camera") and not _action_ok("order"):
+## ★★ 2026.11.16（用户口径）：拖视角改回**中键**，右键只负责下令 ——
+##   于是「选中单位右键点地面」再也不会因为手抖几像素变成拖镜头。
+func _begin_pan_drag(event: InputEventMouseButton) -> void:
+	if not _action_ok("camera"):
 		return
 	_cancel_pan_fling()
 	_pan_pending = true
@@ -752,11 +757,10 @@ func _begin_right_drag(event: InputEventMouseButton) -> void:
 	_drag_pan_moved = 0.0
 	_pan_last_screen = event.position
 	_pan_vel = Vector2.ZERO
-	_right_double = event.double_click
 
 
-## 右键松手：拖过 = 视角（带惯性滑行）；没拖过 = 单击 / 双击下令。
-func _finish_right_drag(_event: InputEventMouseButton) -> void:
+## 中键松手：拖过 = 视角（带惯性滑行）；没拖过 = 什么都不做。
+func _finish_pan_drag(_event: InputEventMouseButton) -> void:
 	if not _pan_pending:
 		return
 	var was_pan := _drag_pan_active
@@ -764,13 +768,33 @@ func _finish_right_drag(_event: InputEventMouseButton) -> void:
 	_pan_pending = false
 	_drag_pan_active = false
 	_drag_pan_moved = 0.0
-	if was_pan:
-		if moved > 0.0 and _action_ok("camera"):
-			_start_pan_fling()
-		else:
-			_pan_vel = Vector2.ZERO
+	if not was_pan:
+		_pan_vel = Vector2.ZERO
 		return
-	_on_right_click(_right_double, _pan_last_screen)
+	if moved > 0.0 and _action_ok("camera"):
+		_start_pan_fling()
+	else:
+		_pan_vel = Vector2.ZERO
+
+
+## 右键按下：记录这一次是不是双击；观战授权里「右键 = 取消 AI 选点」也在这里处理。
+## ★ 右键**不再**参与拖视角，所以松手时永远按「单击 / 双击」下令。
+func _begin_right_click(event: InputEventMouseButton) -> void:
+	_right_order_pending = false
+	if observer_mode and observer_ai_orders \
+			and (order_mode == "ai_march" or order_mode == "ai_mass"):
+		set_order_mode("")
+		return
+	_right_double = event.double_click
+	_right_order_pending = true
+
+
+## 右键松手：发移动 / 攻击 / 行军攻击。
+func _finish_right_click(event: InputEventMouseButton) -> void:
+	if not _right_order_pending:
+		return
+	_right_order_pending = false
+	_on_right_click(_right_double, event.position)
 
 
 ## 视口（屏幕）坐标 → 世界坐标（格）。
@@ -859,12 +883,12 @@ func _sync_hover_from_mouse() -> void:
 	hover_tile = t if world.map.terrain.has(t.x, t.y) else Vector2i(-1, -1)
 
 
-## 松手后的滑行：把「拖的快慢」变成一段减速的位移（右键拖视角的手感）。
+## 松手后的滑行：把「拖的快慢」变成一段减速的位移（中键拖视角的手感）。
 ##
 ## ★ 速度取 smoothed `_pan_vel`（屏幕像素/秒），指数衰减 `exp(-dt/τ)`：
 ##   τ = 0.16s ⇒ 约 0.5 秒内滑完，观感是「松手后还会滑一小段」而不是「一直飘」；
 ##   起步速度夹在 `PAN_FLING_MAX` 以内，避免快速一甩把镜头甩出几屏。
-## ★ 任何新的相机输入（按下鼠标 / 滚轮 / 中键 / 键盘 / 触屏）都会先 `_cancel_pan_fling()`。
+## ★ 任何新的相机输入（按下鼠标 / 滚轮 / 键盘 / 触屏）都会先 `_cancel_pan_fling()`。
 func _start_pan_fling() -> void:
 	var v: Vector2 = _pan_vel
 	if v.length() < PAN_FLING_MIN:
@@ -1119,17 +1143,17 @@ func _cancel_drag() -> void:
 ## ★★ 相机此刻是不是被输入**直接驱动**（拖拽视角 / 惯性滑行 / 框选冻镜）。
 ##
 ## ★ 名字保留 `is_dragging_box()`（game_scene 每帧读它喂 `camera_rig.set_ui_dragging`）：
-##   它现在的语义是「输入正抓着相机」——框选期间冻镜、右键拖拽、滑行都算。
+##   它现在的语义是「输入正抓着相机」——框选期间冻镜、中键拖拽、滑行都算。
 func is_dragging_box() -> bool:
 	return _drag_freeze_cam or _drag_pan_active or _pan_pending or _touch_panning or _pan_fling_active
 
 
-## ★★ 右键拖拽 / 惯性滑行 / 手机单指拖视野是否正在进行（game_scene 每帧读它，压住边缘滚屏）。
+## ★★ 中键拖拽 / 惯性滑行 / 手机单指拖视野是否正在进行（game_scene 每帧读它，压住边缘滚屏）。
 func is_panning() -> bool:
 	return _pan_pending or _touch_panning or _drag_pan_active or _pan_fling_active
 
 
-## ★★ 有没有一条**正在进行中**的鼠标手势（框选待定 / 正在拖框 / 右键拖视角）。
+## ★★ 有没有一条**正在进行中**的鼠标手势（框选待定 / 正在拖框 / 中键拖视角）。
 ##
 ## ★ 给 `view/game_scene3d.gd` 的 `_input` 用：手势期间要把移动 / 抬起**补一遍** ——
 ##   鼠标划到底栏（详细信息 UI）等 `MOUSE_FILTER_STOP` 的控件上时，移动事件会被 GUI 吃掉、
@@ -1337,7 +1361,7 @@ func _on_left_click(additive: bool) -> void:
 	return
 
 
-## 右键单击 / 双击（**松开时**调用；拖过阈值的那一下已经算「拖视角」，不会走到这里）。
+## 右键单击 / 双击（**松开时**调用；右键不再参与拖视角，所以每次右键松手都会到这里）。
 ##
 ## ★★ 2026.11.15 第三轮（用户口径，回退经典 RTS）：
 ##   · 单击敌人 / 敌方建筑 = **锁定攻击**（`attack`，一路追着打）；

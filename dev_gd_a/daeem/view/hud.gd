@@ -91,7 +91,14 @@ var detail_v2: Control = null
 var faction_placeholder: PanelContainer = null
 var _detail_home_position := Vector2.ZERO
 var _detail_slide_tween: Tween = null
+## ★★ 2026.11.16 第二轮（用户口径）：「所有左下面板在出现时都需要有**向右滑动**的出现动画」。
+##   左下角那两块（详情牌 / 悬停说明牌）共用这一套参数：
+##   从目标位置**左侧** `DETAIL_SLIDE_FROM_X` 出发，`DETAIL_SLIDE_SEC` 秒缓出到位。
 const DETAIL_SLIDE_SEC := 0.16
+const DETAIL_SLIDE_FROM_X := -72.0
+## 悬停说明牌的目标位置（建控件时量一次；只动 x，y 由锚点管）
+var _hover_home_position := Vector2.ZERO
+var _hover_slide_tween: Tween = null
 var command_card: Control = null
 var page_tabs: Control = null
 ## ★ 科技九格（盖在命令卡上，只有「科技」页才显示）。见 view/tech_grid.gd。
@@ -139,9 +146,8 @@ var drag_anchor_radius: float = 1.5
 ##    免得「拖起来又拖回去」也弹一句红字。
 var _drag_build_left_hand: bool = false
 var _recruit_play_context: Dictionary = {}
-## ★★ 悬停详情面板（本版新增）：住在**命令卡正上方**，水平范围 = **命令卡 + 右边那一列页签**
-##    那一整段（左缘对命令卡左缘、右缘对页签列右缘，宽 368.333），
-##    高度按悬停到的文本动态缩放（向上长）。见 view/hover_tip.gd 的文件头。
+## ★★ 悬停说明牌：住在**左下角栏**（= 详情牌那块矩形，尺寸与样式完全相同），
+##    悬停时压在详情牌之上把它盖住。见 view/hover_tip.gd 的文件头。
 var hover_tip: Control = null
 ## ★★ 左上角目标栏：有目标才显示（老路径 / 自由对战整块隐藏）。
 var objective_panel: Control = null
@@ -1092,7 +1098,8 @@ func _on_card_drag_finished(entry: Dictionary, screen_pos: Vector2, index: int) 
 		var recruited: bool = _commit_recruit_drag()
 		_clear_card_recruit_drag()
 		if recruited:
-			command_card.play_drag_success(index, screen_pos)
+			# ★★ 2026.11.16（用户口径）：生效后只收这一张，不刷新整页手牌。
+			command_card.play_drag_success(index, screen_pos, true)
 		else:
 			command_card.animate_card_back(index)
 			if not ui_release:
@@ -1110,7 +1117,8 @@ func _on_card_drag_finished(entry: Dictionary, screen_pos: Vector2, index: int) 
 		if _on_card_entry(entry):
 			_refresh_card_if_changed()
 			if not _recruit_play_context.is_empty():
-				command_card.play_drag_success(index, screen_pos)
+				# ★★ 2026.11.16（用户口径）：生效后只收这一张，不刷新整页手牌。
+				command_card.play_drag_success(index, screen_pos, true)
 			_recruit_play_context.clear()
 			return
 		_recruit_play_context.clear()
@@ -1437,11 +1445,11 @@ func _build_page_tabs() -> void:
 	page_tabs.page_changed.connect(_on_page_changed)
 
 
-## ★★ 悬停详情面板（本版新增）—— 命令卡正上方那块说明。
+## ★★ 悬停说明牌 —— 卡牌悬停时写在**左下角栏**里的那块说明。
 ##
-## 需求原话：「为右下角面板中的按钮添加悬停显示，悬停显示显示在右下角面板上方，
-##           宽度与右下角面板宽度相同，竖直方向距离你自己定，需要根据悬停详细信息
-##           文本动态缩放」。
+## 需求原话：「将所有的卡牌悬停文本放至左下角栏中（若在悬停卡牌时已有左下角栏，
+##           则卡牌悬停文本覆盖原有栏位）……面板大小完全相同样式相同」。
+##   ⇒ 矩形 / 牌面与详情牌同一套（见 view/hover_tip.gd），只是悬停时压在它上面。
 ##
 ## ★ 两个控件的悬停**共用这一块面板**：命令卡的九格与科技页那九格在屏幕上逐像素
 ##   重合（换页时看不出换了控件），分成两块就会出现「切页那一刻旧面板还没收掉」。
@@ -1452,8 +1460,10 @@ func _build_page_tabs() -> void:
 func _build_hover_tip() -> void:
 	hover_tip = HoverTipRes.new()
 	_root.add_child(hover_tip)
-	# 字体要传进去：面板高度是**量中文文本**算出来的（见 hover_tip 的文件头）
+	# 字体要传进去：中文要按这个字体排，拿不到时退回引擎兜底字体（见 hover_tip.gd）
 	hover_tip.setup(_font)
+	# 滑入动画的目标位置（只认 x：y 由「贴底」锚点管，窗口缩放不会被拉走）
+	_hover_home_position = hover_tip.position
 	command_card.cell_hovered.connect(_on_hover_in.bind("card"))
 	command_card.cell_unhovered.connect(_on_hover_out.bind("card"))
 	tech_grid.cell_hovered.connect(_on_hover_in.bind("tech"))
@@ -1988,12 +1998,26 @@ func _refresh_tech_grid(visible: bool) -> void:
 func _on_hover_in(index: int, src: String) -> void:
 	_hover_src = src
 	_hover_index = index
-	var d := _hover_detail(src, _hover_entry(src, index))
-	if d.is_empty():
-		# 这一格还没有悬停详情（本版只做了四类内容）—— 收起来，不留一块空面板
-		hover_tip.clear()
+	_show_hover_card(_hover_detail(src, _hover_entry(src, index)))
+
+
+## 把一份悬停内容铺到左下角栏那块说明牌上。
+##
+## ★★ **只有「从无到有」那一次才播滑入动画**：鼠标在同一页里换格子时内容是当场换掉的，
+##   再滑一次会看着像闪一下。空字典 = 这一格没有说明（操作页那几条部队指令）⇒ 收起来。
+func _show_hover_card(d: Dictionary) -> void:
+	if hover_tip == null:
 		return
-	hover_tip.show_text(String(d.get("title", "")), String(d.get("body", "")))
+	if d.is_empty():
+		hover_tip.clear()
+		_reset_hover_slide()
+		return
+	var was_visible: bool = hover_tip.showing()
+	hover_tip.show_card(String(d.get("title", "")), String(d.get("subtitle", "")),
+		d.get("cells", []), String(d.get("caption", "")), d.get("chips", []),
+		String(d.get("note", "")))
+	if not was_visible:
+		_play_hover_slide_in()
 
 
 ## 鼠标离开某一格。★ 只有「确实是我这一格」才收 —— 见 `_hover_src` 那段说明
@@ -2004,12 +2028,13 @@ func _on_hover_out(index: int, src: String) -> void:
 	_dismiss_hover()
 
 
-## 收起悬停面板，并清掉「现在是谁弹的」那个记号
+## 收起悬停说明牌，并清掉「现在是谁弹的」那个记号
 func _dismiss_hover() -> void:
 	_hover_src = ""
 	_hover_index = -1
 	if hover_tip != null:
 		hover_tip.clear()
+	_reset_hover_slide()
 
 
 # ------------------------------------------------------------------
@@ -2251,239 +2276,246 @@ func _hover_detail(src: String, entry: Dictionary) -> Dictionary:
 	return {}
 
 
-## 拼一块悬停详情：`body` 是**多行**文本（每行一个字段），空行自动丢掉。
-## ★ 面板按 `HOVER_W`（= 手牌宽 842）的宽**折行**（见 view/hover_tip.gd），
-##   所以这里只负责「给哪几句」，
-##   不管每句多长 —— 长句子不会被裁掉，只会多占几行。
-func _hover_text(title: String, lines: Array) -> Dictionary:
-	var clean: Array[String] = []
-	for l in lines:
-		var s := String(l)
-		if s != "":
-			clean.append(s)
-	return {"title": title, "body": "\n".join(clean)}
+## 一份悬停内容：`{title, subtitle, cells, caption, chips, note}`
+## —— 版式照详情牌那套「分隔」写法（卡名 / 副标题 → 金线 → 造价格 → 特性小标题 + 胶囊），
+##   具体怎么画在 `view/hover_tip.gd`；本函数只负责「写什么」。
+##   @param cells 造价格 `[{label, value}]`（0~3 格；空数组 = 不画那一排）
+##   @param note  置灰原因（空串 = 不画；见 `_unit_lock_note` / `_tech_lock_note`）
+func _hover_card(title: String, subtitle: String, cells: Array = [],
+		caption: String = "", chips: Array = [], note: String = "") -> Dictionary:
+	return {"title": title, "subtitle": subtitle, "cells": cells,
+		"caption": caption, "chips": chips, "note": note}
 
 
-## 条目里那一小份造价（招募表带过来的；缺了就是空 → `_cost_text` 写「免费」）
+## 条目里那一小份造价（招募表带过来的；缺了就是空 → 写成「免费」）
 func _entry_cost(entry: Dictionary) -> Dictionary:
 	var v: Variant = entry.get("cost", {})
 	return v if typeof(v) == TYPE_DICTIONARY else {}
 
 
-## 建筑（建筑页那几格：木墙 / 哨塔 / 石墙 / 警戒塔）—— 说明 + 血量 + 攻击 + 远程免伤 + 占地 + 造价。
-## ★ 数值全部来自 `config.json` 的 `building.<type>.*`，与 logic/building.gd 读的是同一份。
-func _hover_build(entry: Dictionary) -> Dictionary:
-	var t := String(entry.get("build_type", ""))
-	var lines: Array = []
-	lines.append(cfg.str_val("building.%s.desc" % t, ""))
-	lines.append("血量上限 %s" % _fmt_num(cfg.num("building.%s.hp_max" % t, 300.0)))
-	# ★★ 2026.10.26：不再写死 TYPE_TOWER —— 任何 attackable 的塔（含警戒塔）都出这一行。
-	if cfg.building_attackable(t):
-		var atk: Dictionary = cfg.building_attack_of(t, 1)
-		lines.append("攻击 %s / 射程 %s 格 / 间隔 %ss" % [
-			_fmt_num(float(atk.get("damage", 0.0))),
-			_fmt_num(float(atk.get("range", 0.0))),
-			_fmt_num(float(atk.get("cooldown", 0.0)))])
-	lines.append("远程免伤 %d%%（投石车等攻城伤害不受影响）"
-		% int(round(cfg.building_ranged_reduction(t) * 100.0)))
-	lines.append("本体占格 %d%%（居中；本体之外的缝隙走得过去）" % int(round(
-		cfg.building_body_scale(t) * 100.0)))
-	var cost: Variant = cfg.get_path_value("building.%s.cost" % t)
-	lines.append("造价 %s" % _cost_text(cost if typeof(cost) == TYPE_DICTIONARY else {}))
-	# ★★ 2026.11.15：点选建造已删除 —— 现在只有「把牌拖到地图上」这一条路。
-	if BuildingRes.is_wall_type(t):
-		lines.append("按住这一格往上拖 → 拖到**区划中心**松手，一次围满一圈")
-	else:
-		lines.append("按住这一格往上拖 → 拖到高亮的**建造点位**松手")
-	if not bool(entry.get("ready", true)):
-		lines.append("★ 需要 %d 级大本营（当前 %d 级）" % [
-			int(entry.get("tier", 1)), int(entry.get("base_level", 1))])
-	return _hover_text(String(entry.get("name", "")), lines)
+## 造价 → 悬停牌上的**数值格**（与详情牌「编制 / 血量」同款：一格一个标签 + 一个数）。
+## ★ 只列真正花的那一两项（0 金不占一格）；都不花 = 一格「免费」。
+func _cost_cells(cost: Dictionary) -> Array:
+	var out: Array = []
+	var food := float(cost.get("food", 0.0))
+	if food > 0.0:
+		out.append({"label": "粮食", "value": _fmt_num(food)})
+	var gold := float(cost.get("gold", 0.0))
+	if gold > 0.0:
+		out.append({"label": "黄金", "value": _fmt_num(gold)})
+	if out.is_empty():
+		out.append({"label": "造价", "value": "免费"})
+	return out
 
 
-## 招募：单位页那几个兵种（`recruit`）+ 招募页九宫格的将领（`zone_recruit`）。
-##
-## ★ 将领与兵种的数值是**同一张表**：都按 `cfg.unit_type_of(kind)` 查兵种
-##   （「将领的数值 = 它所属兵种」，见 logic/config.gd 的 unit.* 那一段），
-##   两者只差两点：占谁的队列、人口从哪个区划扣。
-func _hover_recruit(entry: Dictionary) -> Dictionary:
-	var kind := String(entry.get("unit_kind", ""))
-	var ut := cfg.unit_type_of(kind)
-	# ★ 将领类（general / general_N）有序号：它的数值可能是**这位将领自己的覆盖**
-	#   （config 的 unit.general.stats，编辑器里那个「自定 / 跟随」）。
+## 兵种名的**一行写法**：近战步兵 / 远程步兵 / 近战骑兵 / 远程骑兵 / 器械。
+## ★ 与 `cfg.unit_class_line()` 只差「近战」二字：那条对近战只写「步兵」，
+##   而悬停这一行要一眼看出远近（用户示例：「70粮 近战步兵 …」）。
+##   大类名仍然取 config（`unit.classes.<id>.name`），代码里不另抄一份「步兵 / 骑兵」。
+func _class_short(ut: String) -> String:
+	if not cfg.has_unit_type(ut):
+		return ""
+	var cls: String = cfg.unit_class_of(ut)
+	var cls_name: String = cfg.class_display_name(cls)
+	if cls == ConfigRes.CLASS_SIEGE:
+		return cls_name                    # 器械不分远近
+	return ("远程" if cfg.unit_is_ranged(ut) else "近战") + cls_name
+
+
+## 一个兵种（含将领本人的光环）的**特性词**，每条以「+」收尾、只写方向不写数值。
+## ★ 数据源是 `unit_traits_of()` / `general_traits_at()` —— 与 combat 真正读的是同一份，
+##   所以不会出现「悬停里写着、实际不生效」。
+## ★ 顺序固定（特攻按大类 id 排序 → 远近减伤 → 免疫击退 → 将领特性按配置顺序），
+##   同一句不重复（兵种特性与将领光环撞车时只留一条）。
+func _unit_chips(ut: String, kind: String) -> Array:
+	var out: Array = []
+	if cfg.has_unit_type(ut):
+		var tr: Dictionary = cfg.unit_traits_of(ut)
+		var vs: Dictionary = tr.get("attack_vs_class", {})
+		var classes: Array = vs.keys()
+		classes.sort()
+		for c in classes:
+			if float(vs[c]) > 0.0:
+				out.append("对%s伤害+" % cfg.class_display_name(String(c)))
+		if float(tr.get("ranged_reduction", 0.0)) > 0.0:
+			out.append("远程伤害减免+")
+		if float(tr.get("melee_reduction", 0.0)) > 0.0:
+			out.append("近战伤害减免+")
+		if bool(tr.get("knockback_immune", false)):
+			out.append("免疫击退+")
 	var gidx: int = ConfigRes.general_index_of(kind)
+	if gidx >= 0:
+		for tid in cfg.general_traits_at(gidx):
+			var nm: String = cfg.general_trait_name(String(tid))
+			if nm != "":
+				out.append(nm + "+")
+	return _dedupe_keep_order(out)
+
+
+## 去重但保序（`Array` 没有现成 API；同一句只想出现一次）
+func _dedupe_keep_order(items: Array) -> Array:
+	var seen: Dictionary = {}
+	var out: Array = []
+	for it in items:
+		var s := String(it)
+		if seen.has(s):
+			continue
+		seen[s] = true
+		out.append(s)
+	return out
+
+
+## 这一格要介绍的**兵种 id 列表**（一般就一个；组合条目是多个）。
+## ★ 组合条目的 `kind` 是**组合 id**（`dy_guard` 等），不是兵种 id ——
+##   直接拿去查 `unit_type_of()` 会退到兜底兵种，写出来的兵种 / 特性全是错的。
+##   所以先看 `spawn`（与 `_recruit_icon_type()` 同一条口径）。
+func _unit_types_of(entry: Dictionary) -> Array:
+	var out: Array = []
+	var spawn: Variant = entry.get("spawn")
+	if typeof(spawn) == TYPE_ARRAY:
+		for it in (spawn as Array):
+			if typeof(it) != TYPE_DICTIONARY:
+				continue
+			var t := String((it as Dictionary).get("type", ""))
+			if t != "" and not out.has(t):
+				out.append(t)
+	if out.is_empty():
+		var one: String = cfg.unit_type_of(String(entry.get("unit_kind", "")))
+		if one != "":
+			out.append(one)
+	return out
+
+
+## 这一格现在**不能招**的一句话原因（能招时返回空串 ⇒ 悬停只剩「消费 + 特性」）。
+## ★ 置灰的格子点下去什么都不发生，悬停是玩家唯一能知道「为什么」的地方 ——
+##   所以只有这一档才多写一句（用户口径「非必要不写」里那个「必要」就是它）。
+func _unit_lock_note(entry: Dictionary) -> String:
 	var is_zone := String(entry.get("type", "")) == "zone_recruit" \
 		or String(entry.get("type", "")) == "general_drag"
-	var is_drag := String(entry.get("type", "")) == "general_drag"
-	var lines: Array = []
-	lines.append(String(entry.get("desc", "")))
-	if cfg.has_unit_type(ut):
-		if gidx >= 0:
-			# 将领：覆盖 ⊕ 所属兵种（与单位身上用的同一套数据，见 config.gd）
-			lines.append("血量 %s" % _fmt_num(cfg.general_hp_at(gidx)))
-			var gc: Dictionary = cfg.general_combat_at(gidx)
-			lines.append("攻击 %s / 射程 %s 格 / 间隔 %ss" % [
-				_fmt_num(float(gc.get("damage", 0.0))),
-				_fmt_num(float(gc.get("range", 0.0))),
-				_fmt_num(float(gc.get("cooldown_sec", 0.0)))])
-			lines.append("速度 %s 格/秒" % _fmt_num(cfg.general_speed_at(gidx)))
-		else:
-			lines.append("血量 %s" % _fmt_num(cfg.unit_hp_of(ut)))
-			var c := cfg.unit_combat_of(ut)
-			lines.append("攻击 %s / 射程 %s 格 / 间隔 %ss" % [
-				_fmt_num(float(c.get("damage", 0.0))),
-				_fmt_num(float(c.get("range", 0.0))),
-				_fmt_num(float(c.get("cooldown_sec", 0.0)))])
-			lines.append("速度 %s 格/秒" % _fmt_num(cfg.unit_speed_of(ut)))
-		lines.append("兵种 %s" % cfg.unit_class_line(ut))
-		# ★★ 本轮新增的兵种玩法（都从 unit.types.<id> 现取，不写死兵种名）：
-		var te: Dictionary = cfg.unit_type_entry(ut)
-		var armor: float = float(te.get("armor", 0.0))
-		if armor > 0.0:
-			lines.append("护甲 %s" % _fmt_num(armor))
-		if bool(te.get("move_shoot", false)):
-			lines.append("移动射击")
-		if bool(te.get("siege", false)):
-			lines.append("攻城：无视远近减伤")
-		var splash: float = float(te.get("splash_radius", 0.0))
-		if splash > 0.0:
-			lines.append("范围伤害 %s 格" % _fmt_num(splash))
-		var heal_r: float = float(te.get("heal_aura_radius", 0.0))
-		var heal_rate: float = float(te.get("heal_aura_rate", 0.0))
-		if heal_r > 0.0 and heal_rate > 0.0:
-			lines.append("回血光环 %s/秒（%s 格）" % [_fmt_num(heal_rate), _fmt_num(heal_r)])
-	# ★★ 招募页专属：阶数（大本营等级解锁）+ 当前状态（已拥有 / 可招募 / …）。
 	if is_zone:
-		var tier := int(entry.get("tier", 1))
-		var lvl := int(entry.get("base_level", 0))
-		lines.append("阶数：%d 阶（%s）" % [
-			tier, "已解锁" if tier <= lvl else "大本营 %d 级解锁" % tier])
-		var reason := String(entry.get("lock_reason", ""))
-		var status := "可招募"
-		match reason:
-			"owned": status = "已拥有（不能重复招募）"
-			"tier": status = "大本营阶数不足"
-			"cap": status = "将领已满"
-			"cooldown": status = "招募冷却中"
-		lines.append("状态：%s" % status)
-	else:
-		# ★★ 单位页：tier = 行号 = 需要的大本营等级（第 1 行 = 1 级）。
-		var utier := int(entry.get("tier", 1))
-		var ulevel := int(entry.get("base_level", 1))
-		lines.append("阶数：第 %d 行（%s）" % [
-			utier, "已解锁" if utier <= ulevel else "大本营 %d 级解锁" % utier])
-		if not bool(entry.get("ready", true)):
-			lines.append("状态：大本营等级不足（当前 %d 级）" % ulevel)
-	lines.append("造价 %s" % _cost_text(_entry_cost(entry)))
-	var pop := int(entry.get("population_cost", 0))
-	if pop > 0:
-		lines.append("占用人口 %d（%s）" % [pop,
-			"从本区划的人口里扣" if is_zone else "从将领所在区划的人口里扣"])
-	var train: float = float(entry.get("train_sec", 0.0))
-	if train > 0.0:
-		lines.append("读条 %s 秒%s" % [_fmt_num(train),
-			"" if is_zone else "（由**招兵的将领**决定，整批一次读完）"])
-	# ★★ 招募冷却（本轮新增）：先写**这位将领的属性**，再写**现在还剩多少**。
-	#   · 属性 = 招完他之后整方锁多久（全局冷却，见 world 的「将领招募池」段）；
-	#   · 剩余 = 权威状态的倒计时，0 时不写（不占一行）。
-	if is_zone:
-		var cd_attr := float(entry.get("recruit_cooldown_sec", 0.0))
-		if cd_attr > 0.0:
-			lines.append("招募冷却 %s 秒（招到后该玩家全局冷却）" % _fmt_num(cd_attr))
-		if world != null:
-			var left: float = world.general_recruit_cooldown_left(world.my_faction)
-			if left > 0.0:
-				lines.append("现在冷却中：还需 %s 秒" % _fmt_num(left))
-	if is_drag:
-		lines.append("按住这一格往上拖 → 拖到己方区划中心的圈里松手，就在那个区划招募")
-	elif String(entry.get("type", "")) == "zone_recruit":
-		lines.append("把这张牌拖到区划中心的圈里，或点这一格（在选中的区划招募）")
-	return _hover_text(String(entry.get("name", "")), lines)
+		match String(entry.get("lock_reason", "")):
+			"owned": return "已拥有"
+			"tier": return "阶数不足"
+			"cap": return "将领已满"
+			"cooldown": return "冷却中"
+		return ""
+	if not bool(entry.get("ready", true)):
+		return "需%s级大本营" % _fmt_num(float(entry.get("tier", 1)))
+	return ""
 
 
-##   见 `_building_order_entries`。
+## 建筑（建筑页那几格：木墙 / 哨塔 / 石墙 / 警戒塔）—— **造价格 + 远程免伤**。
+## ★ 数值本身仍然全在 config（`building.<type>.*`），只是不再铺进悬停。
+func _hover_build(entry: Dictionary) -> Dictionary:
+	var t := String(entry.get("build_type", ""))
+	var cost: Variant = cfg.get_path_value("building.%s.cost" % t)
+	var chips: Array = []
+	if cfg.building_ranged_reduction(t) > 0.0:
+		chips.append("远程免伤+")
+	var note := ""
+	if not bool(entry.get("ready", true)):
+		note = "需%s级大本营" % _fmt_num(float(entry.get("tier", 1)))
+	return _hover_card(String(entry.get("name", "")), "建筑",
+		_cost_cells(cost if typeof(cost) == TYPE_DICTIONARY else {}),
+		"特性", chips, note)
+
+
+## 招募：单位页那几个兵种（`recruit`）+ 招募页 / 拖拽的将领（`zone_recruit` / `general_drag`）。
+## ★ 副标题 = 兵种名（近战步兵 / 远程骑兵…）；组合条目先写「×N」再列这一包的兵种。
+## ★ 特性胶囊 = 兵种自己的特性 + 将领本人的**光环特性名**（只写方向、不带数值）。
+func _hover_recruit(entry: Dictionary) -> Dictionary:
+	var kind := String(entry.get("unit_kind", ""))
+	var types: Array = _unit_types_of(entry)
+	return _hover_card(String(entry.get("name", "")), _unit_subtitle(types),
+		_cost_cells(_entry_cost(entry)), "特性", _unit_chip_list(types, kind),
+		_unit_lock_note(entry))
+
+
+## 兵种名那一行（副标题）：「近战步兵」/「×3 近战步兵 · 远程步兵 · 近战骑兵」
+func _unit_subtitle(types: Array) -> String:
+	var classes: Array = []
+	for t in types:
+		var cls: String = _class_short(String(t))
+		if cls != "" and not classes.has(cls):
+			classes.append(cls)
+	var sub := " · ".join(classes)
+	if types.size() > 1:
+		sub = "×%d %s" % [types.size(), sub]
+	return sub
+
+
+## 一包兵种合起来的特性胶囊（同一句只出现一次）。
+## ★ 将领光环只挂在「一位将领」这一格上：组合条目的 kind 是组合 id，查不到将领序号。
+func _unit_chip_list(types: Array, kind: String) -> Array:
+	var chips: Array = []
+	for t in types:
+		for chip in _unit_chips(String(t), kind if types.size() == 1 else ""):
+			chips.append(chip)
+	return _dedupe_keep_order(chips)
+
+
+## 建筑操作那一格（升级 / 取消 / 已满级 / 重生中）—— 造价格 + 一句结果。
 func _hover_building(entry: Dictionary) -> Dictionary:
 	var b = _primary_building()
-	if b == null and input_ctrl.selected_zone != null:
+	if b == null and input_ctrl != null and input_ctrl.selected_zone != null:
 		b = _zone_center_building_of(input_ctrl.selected_zone)
-	var lines: Array = []
-	# ⚠️ 这里**故意不写** `building.<type>.desc`：大本营那句「开局自带，不可建造，不可拆除」
-	#    是用户明确要求从界面上撤掉的（见 `_building_text` 的注释）。
-	#    建筑的说明只有**建造那一格**（`_hover_build`）才写 —— 那是玩家真正需要它的地方。
-	lines.append(String(entry.get("desc", "")))
-	if b != null:
-		var kind := String(entry.get("type", ""))
-		# ★★ 2026.10.26：只有大本营还有等级；木墙 / 哨塔等永远 1 级，不再展示等级。
-		if String(b.type) == BuildingRes.TYPE_BASE:
-			lines.append("当前等级 %d / %d" % [b.level, world.building_max_level(b.type)])
-		lines.append("血量 %s / %s" % [_fmt_num(b.hp), _fmt_num(b.hp_max)])
-		lines.append("远程免伤 %d%%（攻城伤害不受影响）" % int(round(
-			cfg.building_ranged_reduction(String(b.type)) * 100.0)))
-		if String(b.type) == BuildingRes.TYPE_BASE:
-			lines.append("本级限制：%s" % _base_limits_text(b.level))
-		if kind == "building_upgrade":
-			var nxt: int = b.level + 1
-			var mult: float = cfg.upgrade_hp_mult(b.type, nxt)
-			lines.append("升到 %d 级：血量上限 ×%s ⇒ %s" % [
-				nxt, _fmt_num(mult), _fmt_num(b.base_hp_max * mult * b.tech_hp_mult)])
-			if String(b.type) == BuildingRes.TYPE_BASE:
-				lines.append("升到 %d 级：%s" % [nxt, _base_limits_text(nxt)])
-		elif kind == "building_upgrade_cancel":
-			lines.append("已经扣掉：%s（取消后全额退还）" % _cost_text(
-				{"food": b.upgrade_cost_food, "gold": b.upgrade_cost_gold}))
-		elif kind == "building_respawn":
-			lines.append("重生队列 %d 位；当前「%s」剩 %s 秒" % [
-				b.respawn_count(), b.respawn_current_name(), _fmt_num(b.respawn_eta())])
-			lines.append("队列清空之前不能开始新的升级（进行中的升级不受影响）")
-	return _hover_text(String(entry.get("name", "")), lines)
+	var title := String(entry.get("name", ""))
+	if b == null:
+		return _hover_card(title, "操作")
+	match String(entry.get("type", "")):
+		"building_upgrade":
+			return _hover_card(title, "升级", _cost_cells(world.building_upgrade_cost(b)),
+				"结果", ["升到%d级" % (b.level + 1)])
+		"building_upgrade_cancel":
+			return _hover_card(title, "取消升级", _cost_cells(
+					{"food": b.upgrade_cost_food, "gold": b.upgrade_cost_gold}),
+				"结果", ["全额退还"])
+		"building_respawn":
+			return _hover_card(title, "重生中", [],
+				"结果", ["重生队列 %d 位" % b.respawn_count()])
+		"building_upgrade_max":
+			return _hover_card(title, "已满级")
+	return _hover_card(title, "操作")
 
 
-## 科技九格 —— 说明 + 效果那一行 + 当前启用状态（含「最多几条 / 现在几条」）。
-## ★ 状态读的是**权威状态**（`world.is_tech_active`），界面不自己记一份「哪几格亮着」。
+## 科技九格 —— **耗金格 + 效果胶囊**（`line` 就是 config 里那句短效果，如「远近免伤 +10%」）。
+## ★ 已启用 / 未启用、阶、赤字这些状态不再写进悬停：格子本身的填充已经在表达状态，
+##   悬停只留「这条科技花多少钱、给什么」（用户口径：只介绍消费和特性）。
 func _hover_tech(entry: Dictionary) -> Dictionary:
 	var id := String(entry.get("id", ""))
-	var lines: Array = []
-	lines.append(String(entry.get("desc", "")))
+	var gps := float(entry.get("gold_per_sec", 0.0))
+	if gps <= 0.0:
+		gps = cfg.tech_gold_per_sec_of(id)
+	var cells: Array = []
+	if gps > 0.0:
+		cells.append({"label": "金/秒", "value": _fmt_num(gps)})
+	var chips: Array = []
 	var line := String(entry.get("line", ""))
 	if line != "":
-		lines.append("效果 %s" % line)
-	var on: bool = world != null and world.is_tech_active(id)
-	# ★★ 科技是「点下即生效、持续扣金的常驻投资」，悬停要把价钱与赤字状态讲清楚。
-	var gps: float = float(entry.get("gold_per_sec", 0.0))
-	var deficit: bool = bool(entry.get("deficit", false))
-	var max_n: int = world.tech_max_active() if world != null else 0
-	var used: int = max_n - (world.tech_remaining_slots() if world != null else 0)
-	var tier: int = int(entry.get("tier", 0))
-	if tier <= 0 and world != null:
-		tier = world.tech_entry(id).get("tier", 0)
-	var max_tier: int = world.tech_max_tier() if world != null else 3
-	var base_lv: int = world.base_level_of(world.my_faction) if world != null else 0
-	lines.append("阶 %s（大本营 %d 级：最高第 %d 阶）" % [
-		_tech_tier_name(tier), base_lv, max_tier])
-	lines.append("状态 %s（同一时间最多启用 %d 条，现在 %d / %d）" % [
-		"已启用" if on else "未启用", max_n, used, max_n])
-	if gps > 0.0:
-		lines.append("消耗 %s 金／秒（点下即生效，整段启用期间一直扣）" % String.num(gps, 1))
-	if on:
-		lines.append("★ 金库扣到 0 时不会自动弃用；弃用后立即停止扣金")
-	if deficit:
-		lines.append("★ 当前黄金净收入为赤字：不能再启用新科技（已启用的保持生效）")
-	if not on and not bool(entry.get("available", true)):
-		match String(entry.get("reason", "")):
-			"tier":
-				lines.append("现在不能启用：需要更高等级的大本营")
-			"limit":
-				lines.append("现在不能启用：已经启用满 %d 条" % max_n)
-			"gold_deficit":
-				lines.append("现在不能启用：黄金净收入为赤字（先弃用一条科技止损）")
-			_:
-				lines.append("现在不能启用")
-	else:
-		lines.append("点这一格 = %s" % ("弃用（把名额让出来）" if on else "启用"))
-	return _hover_text(String(entry.get("name", "")), lines)
+		chips.append(line)
+	return _hover_card(String(entry.get("name", "")), "科技",
+		cells, "效果", chips, _tech_lock_note(entry))
 
 
-## 大本营某一级的四条限制（给悬停详情 / 详情栏共用）。
+## 这条科技现在**启不了**的一句话原因（能启 / 已启用时返回空串）。
+## ★ 与招募格同一条口径：灰色格子点下去没反应，悬停是唯一能说明原因的地方，
+##   所以只有这一档多写一句。
+func _tech_lock_note(entry: Dictionary) -> String:
+	if world != null and world.is_tech_active(String(entry.get("id", ""))):
+		return ""
+	if bool(entry.get("available", true)):
+		return ""
+	match String(entry.get("reason", "")):
+		"tier":
+			return "需高阶大本营"
+		"limit":
+			return "名额已满"
+		"gold_deficit":
+			return "黄金赤字"
+	return "不可启用"
+
+
+## 大本营某一级的四条限制（给详情栏用）。
 func _base_limits_text(level: int) -> String:
 	if cfg == null:
 		return ""
@@ -2492,14 +2524,6 @@ func _base_limits_text(level: int) -> String:
 	var t: int = cfg.upgrade_limit("base", level, "max_techs", 0)
 	var tier: int = cfg.upgrade_limit("base", level, "max_tech_tier", 0)
 	return "将领上限 %d · 编制 %+d · 科技 %d 个（最高 %d 阶）" % [g, bonus, t, tier]
-
-
-func _tech_tier_name(tier: int) -> String:
-	match tier:
-		1: return "一阶"
-		2: return "二阶"
-		3: return "三阶"
-	return "—"
 
 
 ## ★★ 2026.10.26 建筑页内容：与单位页同一套「按行解锁」。
@@ -2658,6 +2682,9 @@ func _recruit_entries(entry_type: String, list: Variant) -> Array:
 			"train_sec": _unit_recruit_sec() if entry_type == "recruit" \
 				else e.get("train_sec", 0.0),
 			"population_cost": e.get("population_cost", 0),
+			# ★ 组合条目（一包 2~3 个兵）的清单：悬停那一行要按**真正生成的兵种**
+			#   取兵种与特性（见 `_unit_types_of`），不能拿组合 id 去查兵种表。
+			"spawn": e.get("spawn", []),
 			"tier": tier,
 		}
 	# ★★ 行号解锁状态：由**权威侧**的 `unit_recruit_level` 算（没有大本营按 1 级）。
@@ -2867,11 +2894,10 @@ func _on_tech_cell_activated(id: String) -> void:
 	_refresh_hover()
 
 
-## 悬停面板还开着时，按**权威状态**重算一次内容。
+## 悬停说明牌还开着时，按**权威状态**重算一次内容。
 ##
 ## ★ 只在「点了那一格」这种**状态当场变了**的路径上调（见 `_on_tech_cell_activated`）：
-##   悬停进来的那一帧已经取过一次，没必要每帧重量一遍 ——
-##   `hover_tip.show_text()` 是真的在排版与量高度（见那个文件的 `_measure()`）。
+##   悬停进来的那一帧已经取过一次，没必要每帧重量一遍。
 func _refresh_hover() -> void:
 	if hover_tip == null or _hover_src == "":
 		return
@@ -2879,7 +2905,7 @@ func _refresh_hover() -> void:
 	if d.is_empty():
 		_dismiss_hover()
 		return
-	hover_tip.show_text(String(d.get("title", "")), String(d.get("body", "")))
+	_show_hover_card(d)
 
 
 ## 命令卡 → 动作。★ 这里只调输入层的接口，自己绝不碰逻辑状态。
@@ -3824,7 +3850,10 @@ func _refresh_detail() -> void:
 				_detail_slide_tween.kill()
 			detail_v2.position = _detail_home_position
 		detail_v2.visible = show_v2
-		if show_v2 and not was_visible and _has_unit_detail_selection():
+		# ★★ 2026.11.16 第二轮（用户口径）：「所有左下面板在出现时都需要有**向右滑动**的
+		#   出现动画」⇒ 不再只管**部队**：建筑 / 区划 / 敌方选中同样滑进来
+		#   （原来那句 `and _has_unit_detail_selection()` 是「只有部队才滑」的旧口径）。
+		if show_v2 and not was_visible:
 			_play_detail_slide_in()
 	# ★ 详细信息是**左右两栏**（第三轮改版，见 view/detail_panel.gd 的文件头）：
 	#   左栏 = 当前展开的那支部队（上半）+ 选中部队的将领头像网格（下半）
@@ -3906,12 +3935,18 @@ func _refresh_detail() -> void:
 	_v2_show_troops(troops, current, troop, shown)
 
 
-func _has_unit_detail_selection() -> bool:
-	return input_ctrl != null and input_ctrl.selected_enemy == null \
-		and input_ctrl.selected_zone == null \
-		and input_ctrl.selected_buildings.is_empty() \
-		and input_ctrl.selected_units != null \
-		and not input_ctrl.selected_units.is_empty()
+## 左下角面板「向右滑进来」的**唯一实现** —— 详情牌与悬停说明牌共用。
+##
+## ★ 只动 `position:x`：y 由「贴底」锚点管，窗口缩放 / 中途再滑一次都不会被拉走；
+##   `home_x` 是**建控件时量到的**目标 x（锚点左对齐 ⇒ 与父容器尺寸无关）。
+func _left_slide_in(ctrl: Control, home_x: float) -> Tween:
+	if ctrl == null:
+		return null
+	ctrl.position.x = home_x + DETAIL_SLIDE_FROM_X
+	var tw := create_tween()
+	tw.tween_property(ctrl, "position:x", home_x, DETAIL_SLIDE_SEC) \
+		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	return tw
 
 
 func _play_detail_slide_in() -> void:
@@ -3919,10 +3954,33 @@ func _play_detail_slide_in() -> void:
 		return
 	if _detail_slide_tween != null and _detail_slide_tween.is_running():
 		_detail_slide_tween.kill()
-	detail_v2.position = _detail_home_position + Vector2(-72.0, 0.0)
-	_detail_slide_tween = create_tween()
-	_detail_slide_tween.tween_property(detail_v2, "position", _detail_home_position, DETAIL_SLIDE_SEC) \
-		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	_detail_slide_tween = _left_slide_in(detail_v2, _detail_home_position.x)
+
+
+## 悬停说明牌同样从左边滑进来（每次「从无到有」都播，见 `_show_hover_card`）
+func _play_hover_slide_in() -> void:
+	if hover_tip == null:
+		return
+	if _hover_slide_tween != null and _hover_slide_tween.is_running():
+		_hover_slide_tween.kill()
+	_hover_slide_tween = _left_slide_in(hover_tip, _hover_home_position.x)
+
+
+## 收起时把滑到一半的位置**归位**（否则下一次滑入会从半路开始，越滑越靠右）
+func _reset_hover_slide() -> void:
+	if hover_tip == null:
+		return
+	if _hover_slide_tween != null and _hover_slide_tween.is_running():
+		_hover_slide_tween.kill()
+	hover_tip.position.x = _hover_home_position.x
+
+
+func _has_unit_detail_selection() -> bool:
+	return input_ctrl != null and input_ctrl.selected_enemy == null \
+		and input_ctrl.selected_zone == null \
+		and input_ctrl.selected_buildings.is_empty() \
+		and input_ctrl.selected_units != null \
+		and not input_ctrl.selected_units.is_empty()
 
 
 

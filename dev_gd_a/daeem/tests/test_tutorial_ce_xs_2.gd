@@ -71,7 +71,7 @@ func _test_level_data(cfg, lv) -> void:
 func _test_flow(cfg, w) -> void:
 	var z0 = w.zone_by_id(0)
 	eq(String(z0.get("owner", "")), "", "★ c0 开局无主")
-	eq(int(w.zone_by_id(0).get("population", 0)), 20, "★ c0 初始人口 20")
+	eq(int(w.zone_by_id(0).get("population", 0)), 40, "★★ c0 初始人口 = 上限 40（开局满）")
 
 	var d = StoryDirectorRes.new()
 	ok(d.setup(null, w, "tutorial", "ce_xs_2"), "★ ce_xs_2 剧本能装配")

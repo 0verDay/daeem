@@ -88,7 +88,7 @@ func _test_level_data(cfg, lv) -> void:
 
 func _test_flow(cfg, w) -> void:
 	eq(String(w.zone_by_id(0).get("owner", "")), "", "★ c0 开局无主")
-	eq(int(w.zone_by_id(0).get("population", 0)), 10, "★ c0 初始人口 10")
+	eq(int(w.zone_by_id(0).get("population", 0)), 12, "★★ c0 初始人口 = 上限 12（开局满）")
 	eq(int(w.zone_by_id(0).get("population_cap", 0)), 12, "★ c0 人口上限 12")
 	ok(w.find_base_of("p1") == null, "★ 玩家开局没有大本营")
 

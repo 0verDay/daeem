@@ -74,7 +74,7 @@ func _test_cursor() -> void:
 	eq(Game3DRes.cursor_mode_of(false, false, false, "attack", true), "attack", "★ 光标：攻击模式 + 悬停敌人 = attack")
 	eq(Game3DRes.cursor_mode_of(false, false, false, "attack", false), "order", "★ 光标：攻击模式但没敌人 = order")
 	eq(Game3DRes.cursor_mode_of(false, false, false, "", true), "attack", "★ 光标：普通模式悬停敌人 = attack")
-	eq(Game3DRes.cursor_mode_of(false, false, false, "", false), "normal", "★ 光标：普通空地 = normal")
+	eq(Game3DRes.cursor_mode_of(false, false, false, "", false), "ui", "★ 光标：普通空地 = 箭头（常规态不是圆点）")
 
 
 # ------------------------------------------------------------------

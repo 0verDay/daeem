@@ -2,7 +2,9 @@
 ##
 ## 背景（2026.11）：王朝 / 帝国那 14 个派系兵种一开始全是**占位**（`sprite` 留空 +
 ## `sprite_tint = faction` ⇒ 3D 立牌退回程序化剪影 / 单字）。本轮把其中八个换成了
-## `art_draft/units/` 里的**真原画**，落到 `assets/units/<兵种 id>.png`。
+## `art_draft/units/` 里的**真原画**，落到 `assets/units/<兵种 id>.png`；
+## 子刹 / 阿吉诃德这两位将领兵种随后也按同一条约定换成了专属原画
+## （`art_draft/子刹.png` → `assets/units/dy_lord_zisha.png`，阿吉诃德同理）。
 ##
 ## 这套用例守的就是那一步的**验收口径**（都是「一眼能看出坏没坏」的硬条件）：
 ##   1. `sprite` 非空、**资源真的被导入过**（`ResourceLoader.exists`）——
@@ -28,6 +30,12 @@ const CLAN_ART_TYPES := [
 	"dy_royal_archer", "dy_royal_cavalry", "dy_chariot",
 	"dg_archer", "dg_bolt",
 ]
+
+## 换成专属原画的两位**将领**兵种（2026.11：子刹 / 阿吉诃德）。
+## ★ 与上面那八个走**同一条约定**（文件名 = 兵种 id、`sprite_tint = art`、比例按兵种大类），
+##   所以验收口径也一致 —— 只差它们不在 `CLAN_ART_TYPES` 那张派系清单里。
+const LORD_ART_TYPES := ["dy_lord_zisha", "dg_lord_ajikede"]
+
 const ART_DIR := "res://assets/units/"
 
 ## 兵种自己的 `sprite_ratio` **覆盖**了大类默认值的（其余一律按兵种大类走）。
@@ -53,9 +61,13 @@ func _run() -> void:
 func _noop() -> void:
 	pass
 
+## 换成专属原画的全部兵种：八个派系兵种 + 两位将领兵种。
+func _art_types() -> Array:
+	return CLAN_ART_TYPES + LORD_ART_TYPES
+
 ## ① 接线：路径 / 导入 / 上色口径 / 文件名约定 / 立牌比例
 func _test_clan_art_wiring(cfg) -> void:
-	for t in CLAN_ART_TYPES:
+	for t in _art_types():
 		var id := String(t)
 		var path: String = cfg.unit_sprite_of(id)
 		ok(path != "", "★ %s 配了 sprite 路径" % id)
@@ -80,10 +92,11 @@ func _test_clan_art_wiring(cfg) -> void:
 
 ## ② 烘图：有实质像素、两两不同（否则还是「长得一样」）
 func _test_clan_art_bakes(cfg) -> void:
+	var types := _art_types()
 	SpriteRes.clear_cache()
 	var images: Dictionary = {}
 	var faction := Color(0.949, 0.710, 0.267)     # p1 主题金（只影响描边）
-	for t in CLAN_ART_TYPES:
+	for t in types:
 		var id := String(t)
 		var path: String = cfg.unit_sprite_of(id)
 		ok(SpriteRes.has_sprite(path), "★ %s 的素材能被读成 Image" % id)
@@ -106,7 +119,7 @@ func _test_clan_art_bakes(cfg) -> void:
 		near(float(img.get_height()), 64.0 * box.y, 1.0,
 			"★ %s 贴图高 = 64 × 比例（%d）" % [id, img.get_height()])
 		images[id] = img
-	eq(images.size(), CLAN_ART_TYPES.size(), "八个派系兵种都烘出了贴图")
+	eq(images.size(), types.size(), "八个派系兵种 + 两位将领兵种都烘出了贴图")
 	var ids: Array = images.keys()
 	var same := 0
 	for i in ids.size():
@@ -114,7 +127,7 @@ func _test_clan_art_bakes(cfg) -> void:
 			if (images[ids[i]] as Image).get_data() == (images[ids[j]] as Image).get_data():
 				same += 1
 				printerr("  [FAIL] %s 与 %s 的贴图完全相同" % [ids[i], ids[j]])
-	eq(same, 0, "★★ 八个派系兵种的贴图两两不同（否则等于没换素材）")
+	eq(same, 0, "★★ 这十个兵种的贴图两两不同（否则等于没换素材）")
 
 ## ③ 原生七个兵种的素材别被这轮改动带歪（老口径仍然成立）
 func _test_native_art_untouched(cfg) -> void:

@@ -122,6 +122,39 @@ func _test_enter_and_layout() -> void:
 		ok(pp.detail().hint_visible(), "默认显示「点击右侧查看详情」提示")
 	ok(pp.panels()[1].get_child_count() >= 1, "右面板装了内容")
 
+	# ---- 金色贴边滚动条 + 左面板的拖拽 / 过拉 ----
+	var rbar = pp.roster_scroll_bar()
+	ok(rbar != null, "★★ 右面板有金色贴边滚动条")
+	if rbar != null:
+		var rb: Rect2 = rbar.get_global_rect()
+		near(rb.end.x, p1.end.x, 0.5, "★★ 金条贴住右面板右缘")
+		near(rb.position.y, p1.position.y, 0.5, "★★ 金条轨道上沿贴面板顶")
+		near(rb.end.y, p1.end.y, 0.5, "★★ 金条轨道下沿贴面板底")
+		ok(rbar.is_active(), "★★ 内容比面板高 ⇒ 金条显示")
+		# ★★ 2026.11.16：上到顶 / 下到底，并在过拉时弹力收缩。
+		var rb_list = pp.roster()
+		var base_h: float = rbar._thumb_h()
+		near(rbar._thumb_y(), 0.0, 0.5, "★★ 滚在顶部：金条贴上沿")
+		rb_list.scroll_to(rb_list.max_scroll())
+		near(rbar._thumb_y() + rbar._thumb_h(), rbar.size.y, 0.5,
+			"★★ 滚到底：金条贴下沿")
+		var bottom_h: float = rbar._thumb_h()
+		rb_list.scroll_to(rb_list.max_scroll() + 120.0)
+		ok(rbar._thumb_h() < bottom_h - 1.0, "★★ 底部过拉：金条弹力收缩")
+		near(rbar._thumb_y() + rbar._thumb_h(), rbar.size.y, 0.5,
+			"★★ 收缩时仍贴住下沿")
+		rb_list.scroll_to(0.0)
+		rb_list.scroll_to(-120.0)
+		ok(rbar._thumb_h() < base_h - 1.0, "★★ 顶部过拉：金条弹力收缩")
+		near(rbar._thumb_y(), 0.0, 0.5, "★★ 收缩时仍贴住上沿")
+		rb_list.scroll_to(0.0)
+		near(rbar._thumb_h(), base_h, 0.5, "★★ 松手回弹后恢复长度")
+	if pp.detail() != null:
+		var dscroll = pp.detail().scroll()
+		ok(dscroll != null and dscroll.has_method("max_scroll"),
+			"★★ 左详情也走弹性列表（可拖拽 / 过拉回弹）")
+		ok(pp.detail().scroll_bar() != null, "★★ 左详情也有金色贴边滚动条")
+
 	# ---- 右面板：将领 / 单位 / 科技 弹性列表 ----
 	var cfg = screen.cfg
 	var roster = pp.roster()

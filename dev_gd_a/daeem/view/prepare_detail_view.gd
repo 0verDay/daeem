@@ -13,6 +13,12 @@ const ThemeRes = preload("res://view/theme.gd")
 const MenuThemeRes = preload("res://view/menu_theme.gd")
 const IconRes = preload("res://view/unit_card_icon.gd")
 const ConfigRes = preload("res://logic/config.gd")
+## ★★ 2026.11.16：左面板的详情滚动改走备战页同款弹性列表（拖拽 + 过拉回弹）。
+##   ⚠️ 不再用原生 `ScrollContainer`：它只有滚轮 / 拖动条，没有「按住内容拖」，
+##   也没有越界回弹 —— 用户报的「备战界面的上下滚动没有拖拽 / 过拉」就包括这块。
+const ElasticScrollListRes = preload("res://view/elastic_scroll_list.gd")
+## ★★ 金色贴边滚动条（与右面板列表共用同一个控件）。
+const ScrollEdgeBarRes = preload("res://view/scroll_edge_bar.gd")
 
 const PAD := 30.0
 const ICON_BOX := 186.0
@@ -34,8 +40,10 @@ var cfg = null
 var font: Font = null
 var _faction: String = ""
 
-var _scroll: ScrollContainer = null
+var _scroll = null
 var _content: VBoxContainer = null
+## ★★ 金色贴边滚动条（贴住左面板右缘；见 view/scroll_edge_bar.gd）。
+var _bar = null
 var _hint: Control = null
 var _last: Dictionary = {}
 
@@ -45,11 +53,8 @@ func setup(p_cfg, p_font: Font) -> void:
 	font = p_font
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 
-	_scroll = ScrollContainer.new()
+	_scroll = ElasticScrollListRes.new()
 	_scroll.name = "DetailScroll"
-	_scroll.mouse_filter = Control.MOUSE_FILTER_STOP
-	_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
 	_scroll.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_scroll.offset_left = PAD
 	_scroll.offset_top = PAD
@@ -57,15 +62,33 @@ func setup(p_cfg, p_font: Font) -> void:
 	_scroll.offset_bottom = -PAD
 	add_child(_scroll)
 
-	_content = VBoxContainer.new()
+	_content = _scroll.get_content_box()
 	_content.name = "DetailContent"
 	_content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_content.add_theme_constant_override("separation", 14)
-	_scroll.add_child(_content)
+	_scroll.set_item_separation(14)
 
 	_hint = _make_hint()
 	add_child(_hint)
+
+	# ★★ 金色贴边滚动条：挂在详情卡自己身上（它铺满左面板），所以金条**贴面板右缘**；
+	#   高度对齐滚动视口（上下各让开 PAD）。
+	_bar = ScrollEdgeBarRes.new()
+	_bar.name = "DetailScrollBar"
+	add_child(_bar)
+	_bar.setup()
+	_bar.bind(_scroll)
+	resized.connect(_layout_bar)
+	_layout_bar()
 	clear()
+
+
+## 金条的位置 / 高度：轨道铺满详情卡（= 左面板）整个高度，右缘贴齐面板右边；
+## 滚到顶 / 到底时金条能贴住面板的上 / 下边缘（用户口径）。
+func _layout_bar() -> void:
+	if _bar == null or not is_instance_valid(_bar):
+		return
+	_bar.position = Vector2(maxf(0.0, size.x - ScrollEdgeBarRes.HIT_W), 0.0)
+	_bar.size = Vector2(ScrollEdgeBarRes.HIT_W, maxf(1.0, size.y))
 
 
 func set_faction(faction_id: String) -> void:
@@ -91,6 +114,16 @@ func hint_visible() -> bool:
 	return _hint.visible if _hint != null else false
 
 
+## 详情内容的滚动容器（弹性列表；测试 / 截图用）。
+func scroll():
+	return _scroll
+
+
+## 详情卡右缘的金色贴边滚动条（测试 / 截图用）。
+func scroll_bar():
+	return _bar
+
+
 func title_text() -> String:
 	return String(_last.get("title", ""))
 
@@ -109,7 +142,7 @@ func show_item(kind: String, id: String) -> void:
 	_rebuild(data)
 	_scroll.visible = true
 	_hint.visible = false
-	_scroll.scroll_vertical = 0
+	_scroll.scroll_to(0.0)
 
 
 # ------------------------------------------------------------------

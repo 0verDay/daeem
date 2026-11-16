@@ -156,7 +156,10 @@ func max_scroll() -> float:
 
 
 ## 跳到某个逻辑偏移。允许给越界值（与拖动走同一条路径），越界部分照样被阻尼。
+## ★★ 2026.11.16：外置滚动条拖动 / 外部跳转时先掐掉正在跑的回弹 Tween ——
+##   否则它会在接下来 0.28s 里把偏移拽回旧位置，看起来像「拖不动」。
 func scroll_to(logical: float) -> void:
+	_kill_settle_tween()
 	_logical_offset = logical
 	_apply_offset()
 

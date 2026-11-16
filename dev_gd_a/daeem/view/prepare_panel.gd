@@ -23,6 +23,8 @@ const LayoutRes = preload("res://view/menu_deck_layout.gd")
 const FactionBtnRes = preload("res://view/prepare_faction_button.gd")
 const RosterListRes = preload("res://view/prepare_roster_list.gd")
 const DetailViewRes = preload("res://view/prepare_detail_view.gd")
+## ★★ 2026.11.16：右面板列表的金色贴边滚动条（见 view/scroll_edge_bar.gd）。
+const ScrollEdgeBarRes = preload("res://view/scroll_edge_bar.gd")
 ## ★★ 2026.11：出战配置（每派系 1 / 3 / 3 / 3 位；当前派系 = 合作模式扮演的派系）。
 const LoadoutRes = preload("res://logic/loadout.gd")
 
@@ -42,6 +44,7 @@ var _back_label: Label = null
 var _panels: Array = []
 var _factions: Array = []
 var _roster = null
+var _roster_bar = null
 var _detail = null
 var _selected: String = ""
 var _breath_tween: Tween = null
@@ -100,6 +103,14 @@ func setup(p_cfg, p_font: Font) -> void:
 	_roster.setup(cfg, font)
 	_roster.item_selected.connect(_on_roster_item_selected)
 
+	# ★★ 金色贴边滚动条：挂在**面板**上（列表左右各让开 16px，挂在列表里就离面板右缘
+	#   还有 16px，不够「贴边」）。位置 / 高度在 `_layout()` 里跟着面板走。
+	_roster_bar = ScrollEdgeBarRes.new()
+	_roster_bar.name = "RosterScrollBar"
+	_panels[1].add_child(_roster_bar)
+	_roster_bar.setup()
+	_roster_bar.bind(_roster)
+
 	_detail = DetailViewRes.new()
 	_detail.name = "DetailView"
 	_panels[0].add_child(_detail)
@@ -157,6 +168,11 @@ func _layout() -> void:
 		_roster.size = Vector2(
 			maxf(1.0, pr.x - ROSTER_PAD_X * 2.0),
 			maxf(1.0, pr.y - ROSTER_PAD_Y * 2.0))
+		if _roster_bar != null and is_instance_valid(_roster_bar):
+			# ★★ 轨道铺满面板整个高度（用户口径）：滚到顶 / 到底时金条贴住面板上下边缘。
+			_roster_bar.position = Vector2(
+				maxf(0.0, pr.x - ScrollEdgeBarRes.HIT_W), 0.0)
+			_roster_bar.size = Vector2(ScrollEdgeBarRes.HIT_W, pr.y)
 
 	if _detail != null:
 		_detail.position = Vector2.ZERO
@@ -332,6 +348,11 @@ func faction_buttons() -> Array:
 ## 右面板里的弹性列表（测试 / 截图用）。
 func roster():
 	return _roster
+
+
+## 右面板列表的金色贴边滚动条（测试 / 截图用）。
+func roster_scroll_bar():
+	return _roster_bar
 
 
 ## 左面板里的详情卡（测试 / 截图用）。

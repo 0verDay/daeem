@@ -2664,6 +2664,13 @@ func _cursor_mode(mouse: Vector2) -> String:
 
 
 ## ★★ F1 的纯判定（抽成静态函数：测试可以不起整个场景直接钉状态机）。
+##
+## ★★ 2026.11.16（用户口径）：「游戏内的光标逻辑是反的，应当常规状态下为鼠标指针，
+##   在有互动的情况下才为圆形」——
+##   ⇒ **普通空地 = 箭头（"ui" 那一套画法）**；只有真的能发生战斗交互时才是圆形：
+##     悬停敌人（attack）/ 拖建筑牌（build / invalid）/ 指令模式（order）。
+##   ⚠️ 别把最后的兜底改回 "normal"：那个模式画的是**圆点**，菜单里用它表示「能点」，
+##      局内没有「空地也画圆点」这一档（那正是玩家报的「反了」）。
 ## @param building 是否正在拖建筑牌（建造提示由 hud 的锚点驱动，不再是「建造模式」）。
 static func cursor_mode_of(over_ui: bool, building: bool, build_valid: bool,
 		order_mode: String, hover_enemy: bool) -> String:
@@ -2677,7 +2684,8 @@ static func cursor_mode_of(over_ui: bool, building: bool, build_valid: bool,
 		return "order"
 	if hover_enemy:
 		return "attack"
-	return "normal"
+	# 常规状态 = 鼠标箭头（不再画圆点）。
+	return "ui"
 
 
 ## 鼠标底下是不是「右键点下去会打」的敌人（单位或建筑）。

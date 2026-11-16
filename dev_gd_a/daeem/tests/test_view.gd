@@ -310,7 +310,7 @@ func _test_frames_and_input(cfg) -> void:
 
 	_test_zoom_direction(cfg, game)
 	_test_fixed_view_range(cfg, game)
-	_test_right_drag_pan(cfg, game)
+	_test_middle_drag_pan(cfg, game)
 	_test_fullscreen_hotkey(main)
 
 	main.queue_free()
@@ -384,22 +384,22 @@ func _test_fixed_view_range(cfg, game) -> void:
 	ok(z_wide / maxf(1e-6, z_tight) >= 2.0,
 		"★ 缩放区间足够宽（最远 / 最紧 = %.2f ≥ 2.0）" % (z_wide / maxf(1e-6, z_tight)))
 
-func _test_right_drag_pan(cfg, game) -> void:
+func _test_middle_drag_pan(cfg, game) -> void:
 	var input_ctrl = game.input_ctrl
 	game.center_on_tile(Vector2(float(game.world.map.cols) * 0.5, float(game.world.map.rows) * 0.5))
 	game.cam.force_update_transform()
 	var before: Vector3 = game.cam.global_position
 
 	var press := InputEventMouseButton.new()
-	press.button_index = MOUSE_BUTTON_RIGHT
+	press.button_index = MOUSE_BUTTON_MIDDLE
 	press.pressed = true
 	press.position = Vector2(900.0, 540.0)
-	ok(input_ctrl.handle_mouse_button(press), "★ 右键按下被消费（拖视角的起点）")
-	ok(input_ctrl.is_panning(), "★ 右键按下 → 进入平移态")
+	ok(input_ctrl.handle_mouse_button(press), "★ 中键按下被消费（拖视角的起点）")
+	ok(input_ctrl.is_panning(), "★ 中键按下 → 进入平移态")
 
 	var move := InputEventMouseMotion.new()
 	move.position = press.position + Vector2(120.0, 0.0)
-	ok(input_ctrl.handle_mouse_motion(move), "★ 右键拖拽期间，鼠标移动被消费（不落进框选）")
+	ok(input_ctrl.handle_mouse_motion(move), "★ 中键拖拽期间，鼠标移动被消费（不落进框选）")
 	game.cam.force_update_transform()
 	var after: Vector3 = game.cam.global_position
 	ok(after.x < before.x - 1.0,
@@ -407,21 +407,27 @@ func _test_right_drag_pan(cfg, game) -> void:
 	ok(absf(after.z - before.z) < 1.0,
 		"★ 只水平平移（相机 z 基本不动；屏幕 x 方向 = 世界 +X）")
 
-	# ★★ 2026.11.15：中键不再管视角（用户口径：只保留右键拖视角）。
-	var mid := InputEventMouseButton.new()
-	mid.button_index = MOUSE_BUTTON_MIDDLE
-	mid.pressed = true
-	mid.position = press.position
-	ok(not input_ctrl.handle_mouse_button(mid), "★ 中键按下不再被消费（右键才是拖视角）")
-
+	# ★★ 2026.11.16：右键不再管视角（只负责下令）。
 	var release := InputEventMouseButton.new()
-	release.button_index = MOUSE_BUTTON_RIGHT
+	release.button_index = MOUSE_BUTTON_MIDDLE
 	release.pressed = false
-	ok(input_ctrl.handle_mouse_button(release), "★ 右键抬起被消费")
-	ok(not input_ctrl._drag_pan_active, "★ 右键抬起 → 结束拖拽")
+	ok(input_ctrl.handle_mouse_button(release), "★ 中键抬起被消费")
+	ok(not input_ctrl._drag_pan_active, "★ 中键抬起 → 结束拖拽")
 	ok(input_ctrl._pan_fling_active, "★ 松手后进入惯性滑行")
 	input_ctrl._cancel_pan_fling()
 	ok(not input_ctrl.is_panning(), "★ 掐掉滑行后退出平移态")
+
+	var right := InputEventMouseButton.new()
+	right.button_index = MOUSE_BUTTON_RIGHT
+	right.pressed = true
+	right.position = press.position
+	ok(input_ctrl.handle_mouse_button(right), "★ 右键按下仍被消费（只下令，不拖视角）")
+	ok(not input_ctrl.is_panning(), "★ 右键不进入平移态")
+	var right_up := InputEventMouseButton.new()
+	right_up.button_index = MOUSE_BUTTON_RIGHT
+	right_up.pressed = false
+	right_up.position = press.position
+	input_ctrl.handle_mouse_button(right_up)
 
 	var p2: Vector3 = game.cam.global_position
 	var move2 := InputEventMouseMotion.new()

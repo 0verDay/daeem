@@ -35,7 +35,10 @@ const ROLES := [
 ## `assets/ui/card_icon/` 里应有的蒙版数 = config 里**唯一原画**的张数。
 ## ★ 加了新原画要重跑 `tools/bake_unit_card_icon.py --commit` 并把这里 +1
 ##   （数字对不上就说明「加了兵种但忘了烘」，那正是本用例要拦的）。
-const MASK_COUNT := 15
+## ★ 15 → 17（2026.11.16）：子刹 / 阿吉诃德换成**专属原画**
+##   （`assets/units/dy_lord_zisha.png` / `dg_lord_ajikede.png`），
+##   原来这两位跟御林军骑兵 / 骑士共用一张图，所以唯一原画多了两张。
+const MASK_COUNT := 17
 ## 覆盖率区间（%）：低于 = 空图 / 阈值抽狠了，高于 = 糊成了一整块。
 const COVERAGE_MIN := 2.0
 const COVERAGE_MAX := 60.0

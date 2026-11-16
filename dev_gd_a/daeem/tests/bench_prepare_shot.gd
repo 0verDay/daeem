@@ -101,7 +101,7 @@ func _run() -> void:
 			# 三条特性 + 前面的段落会超出一屏：滚到底看全三条。
 			var d = pp.detail()
 			if d != null and d._scroll != null:
-				d._scroll.scroll_vertical = 10000
+				d._scroll.scroll_to(d._scroll.max_scroll())
 				await _wait_sec(0.2)
 			await _shoot("12i_detail_general_multi")
 			break

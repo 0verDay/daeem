@@ -209,35 +209,44 @@ func interactive_rects() -> Array:
 # ------------------------------------------------------------------
 
 func _draw() -> void:
-	var w: float = size.x
-	var h: float = size.y
+	draw_plate(self, size.x, size.y)
+
+
+## 左下角栏那张**切角纸牌**（投影 + 两层错位背牌 + 竖向渐变主牌 + 2px 黄铜边 +
+## 内圈 1px 金线）。
+##
+## ★★ 悬停说明牌（`view/hover_tip.gd`）画的是**同一张牌** —— 需求要求「面板大小完全
+##   相同样式相同」，所以画法只写这一份，两边都调它。以后改牌面只改这里。
+## ★ 是 static：`draw_*` 只能在 `CanvasItem` 上画，静态函数不能隐式用 self，
+##   调用方把自己（`self`）传进来。
+static func draw_plate(ci: CanvasItem, w: float, h: float) -> void:
 	var plate := _plate(w, h, Vector2.ZERO)
 	# ① 投影
 	var shadow := PackedVector2Array()
 	for p in plate:
 		shadow.append(p + Vector2(5.0, 7.0))
-	draw_colored_polygon(shadow, Color(0.0, 0.0, 0.0, 0.30))
+	ci.draw_colored_polygon(shadow, Color(0.0, 0.0, 0.0, 0.30))
 	# ② 背后两张错位的牌（方向稿 `.hero-stack:before/:after`）：往右下探出去，
 	#    所以它们比主牌「多出」一条边 —— 主牌压在上面时就是两层纸的厚度。
 	for i in 2:
 		var off := Vector2(10.0 - 4.0 * float(i), 8.0 - 3.0 * float(i))
 		var back := _plate(w, h, off)
-		draw_colored_polygon(back, Color(0.10, 0.125, 0.15, 0.92) if i == 0
+		ci.draw_colored_polygon(back, Color(0.10, 0.125, 0.15, 0.92) if i == 0
 			else Color(0.075, 0.095, 0.115, 0.92))
-		draw_polyline(_closed(back), Color(UiStyleRes.line_soft(), 0.55), 1.0, true)
+		ci.draw_polyline(_closed(back), Color(UiStyleRes.line_soft(), 0.55), 1.0, true)
 	# ③ 主牌：竖向渐变（顶浅底深）+ 2px 黄铜边
 	var cols := PackedColorArray()
 	var top := Color(0.105, 0.135, 0.165, 0.96)
 	var bot := Color(0.034, 0.046, 0.060, 0.96)
 	for p in plate:
 		cols.append(top.lerp(bot, clampf(p.y / maxf(1.0, h), 0.0, 1.0)))
-	draw_polygon(plate, cols)
-	draw_polyline(_closed(plate), Color(UiStyleRes.accent(), 0.55), 2.0, true)
+	ci.draw_polygon(plate, cols)
+	ci.draw_polyline(_closed(plate), Color(UiStyleRes.accent(), 0.55), 2.0, true)
 	# ④ 内圈 1px 金线（方向稿 `.hero:before{inset:6px; border:1px solid #ddbe6a4d}`）
 	var inner := PackedVector2Array()
 	for p in _plate(w - 12.0, h - 12.0, Vector2(6.0, 6.0)):
 		inner.append(p)
-	draw_polyline(_closed(inner), Color(UiStyleRes.accent(), 0.22), 1.0, true)
+	ci.draw_polyline(_closed(inner), Color(UiStyleRes.accent(), 0.22), 1.0, true)
 
 
 ## 切角矩形（左上 / 右下是直角，右上 / 左下切一刀 —— 方向稿的 clip-path）

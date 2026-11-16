@@ -44,6 +44,7 @@ signal cell_unhovered(index: int)
 
 const UiLayoutRes = preload("res://view/ui_layout.gd")
 const UiStyleRes = preload("res://view/ui_style.gd")
+const ThemeRes = preload("res://view/theme.gd")
 ## ★★ 悬停「四边泛光」+「已启用 = 金色填充满格（切换时播动画）」的那套动效
 ##   （见 view/fill_button.gd）。
 const FillButtonRes = preload("res://view/fill_button.gd")
@@ -56,7 +57,12 @@ const NAME_BAR_H := 20.0
 ## 「打出一张牌」飞出那一段的时长（秒；飞回那段用 `_animate_card_back` 的 0.18）
 const PLAYED_OUT_SEC := 0.16
 ## 拖出后的卡面透明度（与 command_card 的 DRAG_CARD_ALPHA 同一档）。
-const DRAG_CARD_ALPHA := 0.72
+## ★★ 2026.11.16（用户口径）：0.72 → 0.60 → 0.50 → 0.30。
+const DRAG_CARD_ALPHA := 0.3
+## ★★ 2026.11.16：悬停抬起 / 让开的缓动时长（与命令卡同一条手感）。
+const HOVER_RAISE_SEC := 0.14
+## ★★ 2026.11.16：悬停的那张牌放大多少（只放大悬停牌，邻居不动）。
+const HOVER_SCALE := 1.5
 ## 图标层（画烘好的金线蒙版，与单位 / 建筑页同一套）
 const UnitCardIconRes = preload("res://view/unit_card_icon.gd")
 
@@ -81,6 +87,11 @@ var _played_tween: Tween = null
 var _drag_index: int = -1
 var _drag_start_pos := Vector2.ZERO
 var _dragging: bool = false
+## ★★ 2026.11.16：当前被悬停的格子（条目下标，-1 = 没有）。
+##   其余格按距离向左右散开，避免盖住这一格（与 view/command_card.gd 同一条口径）。
+var _hover_index: int = -1
+## ★★ 2026.11.16：每格「悬停抬起 / 让开」的 Tween（再次悬停 / 换页 / 拖牌前先杀掉）。
+var _hover_tweens: Array = []
 
 ## ★★ 手机端：按住某一格期间由 hud 置 true —— 忽略「按下」带来的模拟 mouse_entered，
 ##    悬停详情只在长按够久之后由 hud 调 `hover()` 弹出（与 view/command_card.gd 同一条）。
@@ -319,6 +330,8 @@ func _apply() -> void:
 	var instant: bool = not _primer_done or not is_visible_in_tree()
 	for i in _cells.size():
 		var cell := _cells[i]
+		# ★★ 2026.11.16 修 bug：重建 / 换牌后清掉旧的悬停填充（理由同 command_card.set_entries）。
+		FillButtonRes.clear_hover_in(cell)
 		var ei := _entry_index_for_cell(i)
 		# ★★ 2026.11：**空槽位**（派系科技不满 9 条时那张表里的占位，`id == ""`）与
 		#   「根本没有条目」走同一条路：不显示名字、不可点、不参与填充动效
@@ -379,6 +392,8 @@ func _apply() -> void:
 
 ## 科技页沿用同一扇形牌区；空配置槽隐藏，locked 仍是实际科技项，保留灰化状态。
 func _layout_fan() -> void:
+	_kill_hover_tweens()
+	_hover_index = -1
 	var visible_cells: Array[int] = []
 	for i in _cells.size():
 		var ei := _entry_index_for_cell(i)
@@ -393,6 +408,7 @@ func _layout_fan() -> void:
 		cell.position = r.position
 		cell.size = r.size
 		cell.rotation = UiLayoutRes.card_fan_rotation(ordinal, count)
+		cell.scale = Vector2.ONE
 		cell.z_index = ordinal
 		_key_labels[i].position = Vector2(8.0, 6.0)
 		_name_bars[i].position = Vector2(0.0, r.size.y - NAME_BAR_H)
@@ -485,6 +501,14 @@ func _update_drag(i: int, viewport_pos: Vector2) -> bool:
 		return false
 	if not _dragging and viewport_pos.y - _drag_start_pos.y <= -10.0:
 		_dragging = true
+		# ★★ 2026.11.16：拖牌前先撤掉悬停 Tween（否则它会继续写被拖那张牌的 position），
+		#   再把刚才让开的邻居收回原位。
+		_kill_hover_tweens()
+		if _hover_index >= 0:
+			_settle_spread(i)
+		_hover_index = -1
+		# 被悬停的牌是放大态；拖起来必须回到 1.0。
+		_cells[i].scale = Vector2.ONE
 		if _deck_tween != null and _deck_tween.is_running():
 			_deck_tween.kill()
 		if _drag_tween != null and _drag_tween.is_running():
@@ -504,6 +528,8 @@ func _update_drag(i: int, viewport_pos: Vector2) -> bool:
 
 func _finish_touch_drag(i: int, viewport_pos: Vector2) -> void:
 	if i >= 0 and i < _cells.size() and _dragging:
+		# ★★ 2026.11.16 修 bug：拖出后按钮不再收 mouse_exited，显式清掉悬停填充。
+		FillButtonRes.clear_hover_in(_cells[i])
 		# ★★ 2026.11.14（用户口径）：「被拖拽往上生效后，该卡牌将以金色填充形态放回手牌中，
 		#   取消启用科技则是将启用的科技牌**打出**」。
 		#   ⇒ 松手前先记下「这张牌本来是不是启用着」，用来决定回手的动画：
@@ -603,6 +629,7 @@ func _animate_card_back(i: int) -> void:
 	var rot := UiLayoutRes.card_fan_rotation(ordinal, visible_cells.size())
 	if _drag_tween != null and _drag_tween.is_running():
 		_drag_tween.kill()
+	_cells[i].scale = Vector2.ONE
 	_drag_tween = create_tween().set_parallel(true)
 	_drag_tween.tween_property(_cells[i], "position", target.position, 0.18) \
 		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
@@ -668,15 +695,95 @@ func _raise_card(i: int, raised: bool) -> void:
 	var ordinal := visible_cells.find(i)
 	if ordinal < 0:
 		return
-	var r := UiLayoutRes.card_fan_local(ordinal, visible_cells.size())
 	if raised:
-		_cells[i].rotation = 0.0
-		_cells[i].position.y = r.position.y - 20.0
-		_cells[i].z_index = UiLayoutRes.CARD_SLOTS + 2
-	else:
-		_cells[i].rotation = UiLayoutRes.card_fan_rotation(ordinal, visible_cells.size())
-		_cells[i].position.y = r.position.y
-		_cells[i].z_index = ordinal
+		_hover_index = i
+	elif _hover_index == i:
+		_hover_index = -1
+	var hover_ordinal := visible_cells.find(_hover_index)
+	var count := visible_cells.size()
+	for ci_ordinal in count:
+		var ci := visible_cells[ci_ordinal]
+		var r := UiLayoutRes.card_fan_local(ci_ordinal, count)
+		var target_pos := r.position
+		var target_rot := UiLayoutRes.card_fan_rotation(ci_ordinal, count)
+		var target_scale := 1.0
+		if ci == _hover_index:
+			target_rot = 0.0
+			target_pos.y -= 20.0
+			# 只放大悬停牌；不设 pivot（扇形一直绕左上角转），用位置补偿让放大居中。
+			target_pos -= _cells[ci].size * 0.5 * (HOVER_SCALE - 1.0)
+			target_scale = HOVER_SCALE
+			_cells[ci].z_index = UiLayoutRes.CARD_SLOTS + 2
+		else:
+			# ★ 同侧所有牌统一让开同一段距离（与命令卡共用 `card_hover_push`）。
+			if hover_ordinal >= 0:
+				target_pos.x += UiLayoutRes.card_hover_push(ci_ordinal, hover_ordinal)
+			_cells[ci].z_index = ci_ordinal
+		# ★★ 2026.11.16：科技页原来是一帧到位（没有缓动）——
+		#   鼠标从一张牌扫到下一张时整手牌会「跳」一下。现在与命令卡同一条 0.14s ease-out。
+		_ease_cell_pose(ci, target_pos, target_rot, target_scale)
+
+
+## 把第 i 格缓动到目标姿势（悬停抬起 / 放大 / 让开 / 收回都走这里）。
+func _ease_cell_pose(i: int, target_pos: Vector2, target_rot: float,
+		target_scale: float = 1.0, allow_while_dragging: bool = false) -> void:
+	while _hover_tweens.size() <= i:
+		_hover_tweens.append(null)
+	var old = _hover_tweens[i]
+	if old != null and is_instance_valid(old) and (old as Tween).is_running():
+		(old as Tween).kill()
+	_hover_tweens[i] = null
+	var cell := _cells[i]
+	var target_sv := Vector2(target_scale, target_scale)
+	# 已经到位：不起 Tween（换到相邻牌时，同侧的牌目标位置不变，理应一动不动）。
+	if cell.position.distance_to(target_pos) < 0.25 \
+			and absf(angle_difference(cell.rotation, target_rot)) < 0.001 \
+			and cell.scale.distance_to(target_sv) < 0.001:
+		cell.position = target_pos
+		cell.rotation = target_rot
+		cell.scale = target_sv
+		return
+	if (_dragging and not allow_while_dragging) \
+			or not ThemeRes.animations_enabled() or HOVER_RAISE_SEC <= 0.0:
+		cell.position = target_pos
+		cell.rotation = target_rot
+		cell.scale = target_sv
+		return
+	var tw := create_tween().set_parallel(true)
+	tw.tween_property(cell, "position", target_pos, HOVER_RAISE_SEC) \
+		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	tw.tween_property(cell, "rotation", target_rot, HOVER_RAISE_SEC) \
+		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	tw.tween_property(cell, "scale", target_sv, HOVER_RAISE_SEC) \
+		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	_hover_tweens[i] = tw
+
+
+## 杀掉所有悬停 Tween（重新摆牌 / 入场 / 开始拖牌之前必须调）。
+func _kill_hover_tweens() -> void:
+	for tw in _hover_tweens:
+		if tw != null and is_instance_valid(tw) and (tw as Tween).is_running():
+			(tw as Tween).kill()
+	_hover_tweens.clear()
+
+
+## 拖牌前把「悬停让开的邻居」收回原位（跳过正在拖的那一格）。
+## 同侧整体平移时，邻居位置本来就不依赖悬停牌的具体序号；这条只在收手 / 换页时兜底。
+func _settle_spread(except_index: int) -> void:
+	var visible_cells: Array[int] = []
+	for ci in _cells.size():
+		var ei := _entry_index_for_cell(ci)
+		if ei >= 0 and ei < _entries.size() \
+				and String((_entries[ei] as Dictionary).get("id", "")) != "":
+			visible_cells.append(ci)
+	var count := visible_cells.size()
+	for ordinal in count:
+		var ci := visible_cells[ordinal]
+		if ci == except_index:
+			continue
+		var r := UiLayoutRes.card_fan_local(ordinal, count)
+		_cells[ci].z_index = ordinal
+		_ease_cell_pose(ci, r.position, UiLayoutRes.card_fan_rotation(ordinal, count), 1.0, true)
 
 
 ## 模拟悬停第 i 格 / 离开它（测试用；与 `press()` 一样走引擎同一条信号）。
@@ -708,6 +815,8 @@ func set_visible_page(on: bool) -> void:
 func animate_deck_in() -> void:
 	if _deck_tween != null and _deck_tween.is_running():
 		_deck_tween.kill()
+	_kill_hover_tweens()
+	_hover_index = -1
 	var visible_cells: Array[int] = []
 	for i in _cells.size():
 		if _cells[i].visible:
@@ -721,6 +830,7 @@ func animate_deck_in() -> void:
 		var target := UiLayoutRes.card_fan_local(ordinal, count)
 		var rot := UiLayoutRes.card_fan_rotation(ordinal, count)
 		_cells[i].modulate.a = 0.0
+		_cells[i].scale = Vector2.ONE
 		_cells[i].position = target.position + Vector2(0.0, 40.0)
 		_cells[i].rotation = rot * 1.5
 		_cells[i].z_index = ordinal

@@ -859,6 +859,23 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	#    玩家池 / commander 池 / 观战别名都已就位。
 	_apply_level_start_resources()
 
+	# ★★ 2026.11.16（用户口径）：「游戏开始时，所有区划的人口都应该是满的」——
+	#   放在 reset 最末尾：大本营 / 房屋 / 科技的人口上限加成都已经写进区划，
+	#   这里按**当前上限**一次性填满（已满的区块不受影响）。
+	_refresh_zone_population_bonuses()
+	_fill_zone_population()
+
+
+## ★★ 2026.11.16：把**所有**区划的人口填到当前上限（开局一次性；换图 / 读档不调用）。
+func _fill_zone_population() -> void:
+	if zones == null:
+		return
+	for z in zones.zones:
+		if typeof(z) != TYPE_DICTIONARY:
+			continue
+		var zd: Dictionary = z
+		zd["population"] = zones.population_cap_of(zd)
+
 
 ## ★★ 演出系统：**原地换到一张更大的地图**。
 ##
