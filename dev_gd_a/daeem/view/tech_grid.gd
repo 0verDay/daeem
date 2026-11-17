@@ -92,6 +92,10 @@ var _dragging: bool = false
 var _hover_index: int = -1
 ## ★★ 2026.11.16：每格「悬停抬起 / 让开」的 Tween（再次悬停 / 换页 / 拖牌前先杀掉）。
 var _hover_tweens: Array = []
+## ★★ 2026.11.17（用户口径）：**拖出手牌时其余手牌往屏幕下方沉 + 缩小**，松手反向浮回。
+##   与命令卡（`command_card._tucked`）同一套数值 / 同一条换算（`UiLayoutRes.CARD_TUCK_*`）——
+##   用户口径：「科技和手牌是一样的，所有的手牌都走一套逻辑」。
+var _tucked: bool = false
 
 ## ★★ 手机端：按住某一格期间由 hud 置 true —— 忽略「按下」带来的模拟 mouse_entered，
 ##    悬停详情只在长按够久之后由 hud 调 `hover()` 弹出（与 view/command_card.gd 同一条）。
@@ -223,6 +227,9 @@ func setup() -> void:
 ## ★ 每帧都会被调（hud.refresh 里）——所以这里只在**内容真的变了**时才写控件，
 ##   否则每帧 add_theme_*_override 会白白重建 StyleBox（与 page_tabs 同一条讲究）。
 func set_entries(list: Array) -> void:
+	# ★★ 2026.11.17：拖牌途中被重建（典型：松手生效 → HUD 立刻刷新）时必须**保住下沉状态**，
+	#   否则 `_layout_fan()` 会把其余牌瞬间弹回原位，紧接着的反向动画就没东西可动。
+	var was_dragging := _dragging
 	var clean: Array = []
 	for item in list:
 		if typeof(item) != TYPE_DICTIONARY:
@@ -239,7 +246,14 @@ func set_entries(list: Array) -> void:
 	for cell in _cells:
 		cell.modulate.a = 1.0
 	_entries = clean
+	# ★★ 2026.11.17：只有「拖牌途中被重建」才保住下沉状态（松手那条路紧接着会反向播回来）；
+	#   其余情况（换页 / 选别的东西）一律回原位，免得上一次拖牌的下沉状态漏到这里。
+	_tucked = _tucked and was_dragging
 	_apply()
+	# ★★ 2026.11.17 保险：拖牌途中被重建时，`_finish_touch_drag()` 可能永远不来 ——
+	#   下一帧查一次（见 `_tuck_fallback`），否则科技牌会永远缩在下面。
+	if was_dragging:
+		call_deferred("_tuck_fallback")
 
 
 func _same_entries(clean: Array) -> bool:
@@ -401,14 +415,20 @@ func _layout_fan() -> void:
 				and String((_entries[ei] as Dictionary).get("id", "")) != "":
 			visible_cells.append(i)
 	var count := visible_cells.size()
+	# ★★ 2026.11.17：重建时若正处在「拖牌 → 其余牌下沉」状态，直接摆成下沉位
+	#   （否则这一帧弹回原位、下一帧再沉下去，看得见抽动）。见 `_set_deck_tucked()`。
+	var tuck := 1.0 if _tucked else 0.0
+	var tuck_scale := UiLayoutRes.card_tuck_scale(tuck)
+	var tuck_sv := Vector2(tuck_scale, tuck_scale)
 	for ordinal in count:
 		var i := visible_cells[ordinal]
 		var cell := _cells[i]
 		var r := UiLayoutRes.card_fan_local(ordinal, count)
-		cell.position = r.position
+		var pose: Vector2 = r.position + UiLayoutRes.card_tuck_offset(r.size, tuck)
+		cell.position = pose
 		cell.size = r.size
 		cell.rotation = UiLayoutRes.card_fan_rotation(ordinal, count)
-		cell.scale = Vector2.ONE
+		cell.scale = tuck_sv
 		cell.z_index = ordinal
 		_key_labels[i].position = Vector2(8.0, 6.0)
 		_name_bars[i].position = Vector2(0.0, r.size.y - NAME_BAR_H)
@@ -507,6 +527,8 @@ func _update_drag(i: int, viewport_pos: Vector2) -> bool:
 		if _hover_index >= 0:
 			_settle_spread(i)
 		_hover_index = -1
+		# ★★ 2026.11.17（用户口径）：拖起来 ⇒ 其余科技牌往屏幕下方沉 + 缩小。
+		_set_deck_tucked(true, i, true)
 		# 被悬停的牌是放大态；拖起来必须回到 1.0。
 		_cells[i].scale = Vector2.ONE
 		if _deck_tween != null and _deck_tween.is_running():
@@ -554,6 +576,11 @@ func _finish_touch_drag(i: int, viewport_pos: Vector2) -> void:
 			_animate_card_back(i)
 	_dragging = false
 	_drag_index = -1
+	# ★★ 2026.11.17（用户口径）：松手即反向 —— 其余科技牌浮回原位。
+	#   ⚠️ 必须放在 `cell_drag_finished` 之后：那一句会让 HUD 重建（`_layout_fan`），
+	#   重建时 `_tucked` 还保着（见 `set_entries`），这里才开始浮回。
+	if i >= 0:
+		_set_deck_tucked(false, i, true)
 
 
 ## 「打出」一张牌：向上飞 + 淡出，然后从上方飞回手牌、淡入（= 取消启用时的过场）。
@@ -683,6 +710,51 @@ func _on_cell_mouse_exited(i: int) -> void:
 	cell_unhovered.emit(i)
 
 
+## ★★ 2026.11.17（用户口径）：拖牌开始 / 结束时，把**其余手牌**沉下去 / 浮回来。
+##
+## 与 `command_card._set_deck_tucked()` 同一个行为、同一套数值（`UiLayoutRes.CARD_TUCK_*`），
+## 只是科技格没有「卡面」子控件，只有格子自己。
+##
+## @param on      true = 下沉，false = 浮回原位
+## @param except  正在被拖（或刚松手、正由返程 / 打出动画接管）的那一张：跳过它
+## @param animate false = 直接到位（重建 / 无动画模式）
+func _set_deck_tucked(on: bool, except_index: int, animate: bool = true) -> void:
+	_tucked = on
+	var visible_cells := _visible_cell_indices()
+	var count := visible_cells.size()
+	if count <= 0:
+		return
+	var tuck := 1.0 if on else 0.0
+	var tuck_scale := UiLayoutRes.card_tuck_scale(tuck)
+	for ordinal in count:
+		var i := visible_cells[ordinal]
+		if i == except_index:
+			continue
+		var base := UiLayoutRes.card_fan_local(ordinal, count)
+		var pose: Vector2 = base.position + UiLayoutRes.card_tuck_offset(base.size, tuck)
+		_ease_cell_pose(i, pose, UiLayoutRes.card_fan_rotation(ordinal, count),
+			tuck_scale, true, UiLayoutRes.CARD_TUCK_SEC if animate else 0.0)
+
+
+## 当前「有内容的格子」下标，按扇形序号排列（下沉 / 散开 / 落位共用一条判据）。
+func _visible_cell_indices() -> Array[int]:
+	var out: Array[int] = []
+	for ci in _cells.size():
+		var ei := _entry_index_for_cell(ci)
+		if ei >= 0 and ei < _entries.size() \
+				and String((_entries[ei] as Dictionary).get("id", "")) != "":
+			out.append(ci)
+	return out
+
+
+## ★★ 2026.11.17 兜底：拖牌途中被重建时，`_finish_touch_drag()` 可能永远不来。
+##   只有「还沉着的且已经不在拖」才浮回；正常松手那条路已经先放平了 ⇒ 这里是空操作。
+func _tuck_fallback() -> void:
+	if _dragging or not _tucked:
+		return
+	_set_deck_tucked(false, -1, true)
+
+
 func _raise_card(i: int, raised: bool) -> void:
 	if i < 0 or i >= _cells.size() or not _cells[i].visible:
 		return
@@ -724,9 +796,11 @@ func _raise_card(i: int, raised: bool) -> void:
 		_ease_cell_pose(ci, target_pos, target_rot, target_scale)
 
 
-## 把第 i 格缓动到目标姿势（悬停抬起 / 放大 / 让开 / 收回都走这里）。
+## 把第 i 格缓动到目标姿势（悬停抬起 / 放大 / 让开 / 收回 / 下沉都走这里）。
+## ★ `sec` = 这一段的时长（默认悬停那档 0.14s；「下沉 / 浮回」传 `CARD_TUCK_SEC`）。
 func _ease_cell_pose(i: int, target_pos: Vector2, target_rot: float,
-		target_scale: float = 1.0, allow_while_dragging: bool = false) -> void:
+		target_scale: float = 1.0, allow_while_dragging: bool = false,
+		sec: float = HOVER_RAISE_SEC) -> void:
 	while _hover_tweens.size() <= i:
 		_hover_tweens.append(null)
 	var old = _hover_tweens[i]
@@ -744,17 +818,17 @@ func _ease_cell_pose(i: int, target_pos: Vector2, target_rot: float,
 		cell.scale = target_sv
 		return
 	if (_dragging and not allow_while_dragging) \
-			or not ThemeRes.animations_enabled() or HOVER_RAISE_SEC <= 0.0:
+			or not ThemeRes.animations_enabled() or sec <= 0.0:
 		cell.position = target_pos
 		cell.rotation = target_rot
 		cell.scale = target_sv
 		return
 	var tw := create_tween().set_parallel(true)
-	tw.tween_property(cell, "position", target_pos, HOVER_RAISE_SEC) \
+	tw.tween_property(cell, "position", target_pos, sec) \
 		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-	tw.tween_property(cell, "rotation", target_rot, HOVER_RAISE_SEC) \
+	tw.tween_property(cell, "rotation", target_rot, sec) \
 		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-	tw.tween_property(cell, "scale", target_sv, HOVER_RAISE_SEC) \
+	tw.tween_property(cell, "scale", target_sv, sec) \
 		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	_hover_tweens[i] = tw
 
@@ -770,20 +844,20 @@ func _kill_hover_tweens() -> void:
 ## 拖牌前把「悬停让开的邻居」收回原位（跳过正在拖的那一格）。
 ## 同侧整体平移时，邻居位置本来就不依赖悬停牌的具体序号；这条只在收手 / 换页时兜底。
 func _settle_spread(except_index: int) -> void:
-	var visible_cells: Array[int] = []
-	for ci in _cells.size():
-		var ei := _entry_index_for_cell(ci)
-		if ei >= 0 and ei < _entries.size() \
-				and String((_entries[ei] as Dictionary).get("id", "")) != "":
-			visible_cells.append(ci)
+	var visible_cells := _visible_cell_indices()
 	var count := visible_cells.size()
+	# ★★ 2026.11.17：「原位」要把**下沉状态**算进去（理由同命令卡的同名函数）。
+	var tuck := 1.0 if _tucked else 0.0
+	var tuck_scale := UiLayoutRes.card_tuck_scale(tuck)
 	for ordinal in count:
 		var ci := visible_cells[ordinal]
 		if ci == except_index:
 			continue
 		var r := UiLayoutRes.card_fan_local(ordinal, count)
+		var pose: Vector2 = r.position + UiLayoutRes.card_tuck_offset(r.size, tuck)
 		_cells[ci].z_index = ordinal
-		_ease_cell_pose(ci, r.position, UiLayoutRes.card_fan_rotation(ordinal, count), 1.0, true)
+		_ease_cell_pose(ci, pose, UiLayoutRes.card_fan_rotation(ordinal, count),
+			tuck_scale, true)
 
 
 ## 模拟悬停第 i 格 / 离开它（测试用；与 `press()` 一样走引擎同一条信号）。

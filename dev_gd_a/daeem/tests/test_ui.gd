@@ -766,12 +766,34 @@ func _test_card_build_drag(main) -> void:
 	ok(not tower_anchors.is_empty(), "（前提）还有空着的建造点位建哨塔")
 	if tower_anchors.is_empty():
 		return
+	# ★ 等上面那张城墙牌的「生效 → 淡回槽位」飞完，邻居的位置才算稳定（下面要当基准用）。
+	for _i in 24:
+		await process_frame
 	var ta: Dictionary = tower_anchors[0]
 	var point: Vector2i = ta["tile"]
 	var point_px: Vector2 = main.palette.to_px(Vector2(float(point.x) + 0.5, float(point.y) + 0.5))
+	# ★★ 2026.11.17：邻居的「原位」要在**拖起来之前**记 —— 拖起来之后其余牌会往下沉 + 缩小
+	#   （见 `_set_deck_tucked`），松手才浮回去；拿拖拽中的位置当基准会刚好相反。
+	var neigh0: Vector2 = card._cells[0].position
+	var neigh2: Vector2 = card._cells[2].position
 	card._drag_index = 1
 	card._drag_start_global = point_px + Vector2(0.0, 24.0)
 	card._update_drag_position(1, point_px)
+	# ★★ 2026.11.17（用户口径）：拖出某张牌时，**其余手牌往下沉 + 缩小到 0.82**
+	#   （动画 0.18s，所以先等它播完再断言）。
+	for _i in 20:
+		await process_frame
+	near(card._cells[0].scale.x, 0.82, 0.01, "★★ 拖出牌后其余手牌缩到 0.82 倍")
+	near(card._cells[2].scale.x, 0.82, 0.01, "★★ 左右两边的牌都缩小")
+	# ★ 「下移 40px」指的是**牌的视觉中心**往下 40px（缩到 0.82 会让左上角多走一小段，
+	#   见 `UiLayoutRes.card_tuck_offset` 的推导）⇒ 中心的半个尺寸要按当前缩放算。
+	var cell0: Button = card._cells[0]
+	var c0: Vector2 = cell0.position + cell0.size * cell0.scale * 0.5
+	var base_c0: Vector2 = neigh0 + cell0.size * 0.5
+	near(c0.y, base_c0.y + 40.0, 2.0,
+		"★★ 而且整体往下沉 40px（牌心：%.1f → %.1f）" % [base_c0.y, c0.y])
+	near(c0.x, base_c0.x, 2.0, "★ 只往下沉，不左右挪")
+	eq(card._cells[1].scale.x, 1.0, "★ 被拖的那张自己**不参与**下沉")
 	eq(card._drag_face_alpha, 0.3, "★★ 建筑牌的卡面透明度目标是 0.3")
 	eq(hud.drag_build_tile, point, "★★ 哨塔牌吸附到建造点位")
 	ok(main.get_node_or_null("BuildCardGhost") == null,
@@ -785,8 +807,6 @@ func _test_card_build_drag(main) -> void:
 	eq(hud.drag_build_tile, Vector2i(-1, -1), "（前提）非点位不吸附")
 	ok(main.get_node_or_null("BuildCardGhost") == null, "★★ 非点位也没有建筑虚影")
 	card._update_drag_position(1, point_px)
-	var neigh0: Vector2 = card._cells[0].position
-	var neigh2: Vector2 = card._cells[2].position
 	card._finish_card_drag(1, point_px)
 	ok(world.building_at(point.x, point.y) != null,
 		"★★ 在建造点位上松手 → 真的建出哨塔")
@@ -800,6 +820,9 @@ func _test_card_build_drag(main) -> void:
 		"★★ 建筑牌生效后**不重排其他牌**（左邻没动）")
 	v2_near(card._cells[2].position, neigh2, 1.0,
 		"★★ 建筑牌生效后**不重排其他牌**（右邻没动）")
+	# ★★ 2026.11.17：松手（生效）之后，其余牌反向浮回原位、尺寸回到 1.0。
+	near(card._cells[0].scale.x, 1.0, 0.01, "★★ 生效后其余手牌浮回原尺寸")
+	near(card._cells[2].scale.x, 1.0, 0.01, "★★ 浮回时两张都复位")
 	v2_near(card._card_faces[1].position, card._cells[1].position, 0.5,
 		"★★ 生效后卡面与按钮同位置（不会留下第二张 / 重影）")
 	ok(card._success_tween == null or not card._success_tween.is_running(),
@@ -2436,7 +2459,55 @@ func _test_hover_panel(main, cfg) -> void:
 
 	ok(tip.showing(), "（前提）切页之前说明还开着")
 	tabs.select_page(PageTabsRes.PAGE_BUILD)
+	print("[dbg] src=%s idx=%d showing=%s title=%s techVis=%s" % [
+		hud._hover_src, hud._hover_index, str(tip.showing()), tip.title_text(),
+		str(hud.tech_grid.visible)])
 	ok(not tip.showing(), "★ 换页时悬停说明收起来")
+
+	# ★★ 2026.11.17（用户口径）：科技牌与手牌**同一套** —— 拖出某一张时其余格往下沉 + 缩小，
+	#   松手（哪怕只是取消）再反向浮回。与命令卡共用 `UiLayoutRes.CARD_TUCK_*` 那几个数。
+	#   ★ 放在「换页收起悬停」那条之后：这一节会真的拖一下牌，别去搅前面那条悬停用例。
+	var g_vis: Array[int] = []
+	for ci in g._cells.size():
+		if g._cells[ci].visible:
+			g_vis.append(ci)
+	ok(g_vis.size() >= 2, "（前提）科技页至少两张可见格（%d）" % g_vis.size())
+	if g_vis.size() >= 2:
+		var pick := -1
+		for ci2 in g_vis:
+			var ei2: int = g._entry_index_for_cell(ci2)
+			if ei2 >= 0 and ei2 < g._entries.size() \
+					and bool((g._entries[ei2] as Dictionary).get("available", true)):
+				pick = ci2
+				break
+		var other := -1
+		for ci3 in g_vis:
+			if ci3 != pick:
+				other = ci3
+				break
+		if pick >= 0 and other >= 0:
+			g._layout_fan()
+			var other_base: Vector2 = g._cells[other].position
+			g._drag_index = pick
+			g._drag_start_pos = Vector2(500.0, 900.0)
+			g._update_drag(pick, Vector2(500.0, 860.0))        # 上拖 40px ⇒ 进入拖拽
+			ok(g._dragging, "（前提）科技牌已经拖起来")
+			for _i in 20:
+				await process_frame
+			near(g._cells[other].scale.x, UiLayoutRes.CARD_TUCK_SCALE, 0.01,
+				"★★ 拖出科技牌 → 其余格缩到 0.82 倍")
+			var oc: Vector2 = g._cells[other].position \
+				+ g._cells[other].size * g._cells[other].scale * 0.5
+			var ob: Vector2 = other_base + g._cells[other].size * 0.5
+			near(oc.y, ob.y + UiLayoutRes.CARD_TUCK_PX, 2.0,
+				"★★ 而且整体往下沉 40px（格心：%.1f → %.1f）" % [ob.y, oc.y])
+			# 松手在 UI 上 = 取消（不启用 / 不弃用）；其余格反向浮回。
+			g._finish_touch_drag(pick, UiLayoutRes.CARD_RECT.position + Vector2(30.0, 30.0))
+			for _i in 20:
+				await process_frame
+			near(g._cells[other].scale.x, 1.0, 0.01, "★★ 松手后其余格浮回原尺寸")
+			v2_near(g._cells[other].position, other_base, 1.5,
+				"★★ 而且完全回到原位（取消也要反向播完）")
 
 	main.input_ctrl.select_units([world.unit_by_id("general-1")])
 	hud.refresh()

@@ -773,6 +773,41 @@ static func card_hover_push(ordinal: int, hover_ordinal: int) -> float:
 	return CARD_HOVER_PUSH_PX if ordinal > hover_ordinal else -CARD_HOVER_PUSH_PX
 
 
+## ★★ 2026.11.17（用户口径）：**拖出手牌时，其余手牌往屏幕下方沉、并缩小**；
+##   松手（取消 / 放回 / 生效）反向播回来。
+##
+## 为什么数值是「0.82 倍 + 下移 40px」：
+##   · 手牌区（`CARD_RECT`）的底边就是屏幕底边，牌底距离屏幕底只剩约 56px；
+##     缩到 0.82 后再下移 40px，牌底仍留 ~35px 余量，不会贴边 / 被裁；
+##   · 0.82 是「明显退到台面下、但不至于看不清牌名」的档位（用户选的）。
+##
+## ★ 缩放绕**中心**做（与悬停放大同一条补偿写法，见 `card_tuck_offset`），
+##   不用 `pivot_offset` —— 扇形里的牌是斜的，改 pivot 会连带改旋转观感。
+const CARD_TUCK_SCALE := 0.82
+## 下沉的额外像素（设计像素，1080 高）
+const CARD_TUCK_PX := 40.0
+## 下沉 / 浮回的时长（秒）；比悬停抬起（0.14）慢一点，手感更「沉」
+const CARD_TUCK_SEC := 0.18
+
+
+## 「下沉」进度 t（0 = 原位，1 = 完全下沉）对应的缩放倍率。
+static func card_tuck_scale(t: float) -> float:
+	return lerpf(1.0, CARD_TUCK_SCALE, clampf(t, 0.0, 1.0))
+
+
+## 「下沉」进度 t 时，牌左上角要在原位基础上偏移多少（设计像素）。
+##
+## ★ 推导：Godot 的 `scale` 绕左上角（`pivot_offset`）缩放 ⇒ 想让它看起来绕**中心**缩放，
+##   就得把左上角往 +size*(s-1)/2 挪（s < 1 时是正的，即向右下）；
+##   再叠上「整体下沉 `CARD_TUCK_PX`」。
+static func card_tuck_offset(size: Vector2, t: float) -> Vector2:
+	var tt := clampf(t, 0.0, 1.0)
+	if tt <= 0.0:
+		return Vector2.ZERO
+	var s := card_tuck_scale(tt)
+	return -size * 0.5 * (s - 1.0) + Vector2(0.0, CARD_TUCK_PX * tt)
+
+
 ## 页签第 i 个牌签（相对面板）：靠右下角并排错开；单个页签也靠右对齐。
 static func tab_button_local(i: int, count: int = TABS_COUNT) -> Rect2:
 	var n: int = maxi(1, mini(count, TABS_COUNT))
