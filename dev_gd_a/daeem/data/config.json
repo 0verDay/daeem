@@ -2990,8 +2990,17 @@
             "  队伍职能偏「线列」（cycle 里 line 占 2/3），出门晚一点、但一波更厚；",
             "  经济：粮吃得凶、金子花得少（协防军 145 粮 0 金，主力靠粮）。",
             "  ★ 只写要覆盖的键，其余全部继承 ai.commander（见 logic/ai_profile.gd 的深合并）。",
-            "  ★ 派系块里**不认 difficulty**（难度归关卡/运行时覆盖管，见 ai_profile.build）。"
+            "  ★ 派系块里**不认 difficulty**（难度归关卡/运行时覆盖管，见 ai_profile.build）。",
+            "  ★★ 2026.11.17：`multipliers` 是**整体倍率层**（乘在难度之后）——",
+            "     王朝更「厚」：兵力上限 +5%、指令/生产节奏 -10%（更慢）、反应 -10%（更慢）。"
           ],
+          "multipliers": {
+            "army_cap": 1.05,
+            "army_interval": 1.1,
+            "production_interval": 1.1,
+            "build_interval": 1.05,
+            "reaction_delay": 1.1
+          },
           "roles": {
             "cycle": ["line", "line", "ranged"],
             "line": {
@@ -3151,8 +3160,18 @@
             "  队伍职能偏「远程 / 游击」（cycle 里 line 只占 1/3），小队更敢绕后、侦察更远；",
             "  经济：精锐吃金（冠军骑士 380 金、弩炮 340 金）⇒ 存金多、粮食花得更快。",
             "  ★ 只写要覆盖的键，其余全部继承 ai.commander（见 logic/ai_profile.gd 的深合并）。",
-            "  ★ 派系块里**不认 difficulty**（难度归关卡/运行时覆盖管，见 ai_profile.build）。"
+            "  ★ 派系块里**不认 difficulty**（难度归关卡/运行时覆盖管，见 ai_profile.build）。",
+            "  ★★ 2026.11.17：`multipliers` 是**整体倍率层**（乘在难度之后）——",
+            "     帝国更「快」：兵力上限 -5%、指令/战略/生产节奏 +10%（更快）、反应 +15%（更快）。"
           ],
+          "multipliers": {
+            "army_cap": 0.95,
+            "army_interval": 0.9,
+            "strategic_interval": 0.9,
+            "production_interval": 0.9,
+            "build_interval": 0.95,
+            "reaction_delay": 0.85
+          },
           "roles": {
             "cycle": ["ranged", "guerrilla", "line"],
             "line": {
@@ -4418,12 +4437,33 @@
         "  ★★ 军队上限不再是一个固定总数：实际 = Σ(每位将领 1 + 有效编制上限) × army_cap_ratio。",
         "     将领越多、大本营等级越高（编制 +N），上限自然越大；难度只乘一个比例。",
         "     difficulty.army_cap 只在「一个将领都没有」时作为兜底。",
-        "  ★★ 补将目标 general_target_by_base_level = [1级, 2级, 3级]：3 / 6 / 10，",
-        "     仍受大本营 max_generals（3 / 6 / 10）与招募冷却限制。",
+        "  ★★ 补将目标 general_target_by_base_level = [1级, 2级, 3级]：2 / 4 / 5，",
+        "     仍受大本营 max_generals（2 / 4 / 5）与招募冷却限制。",
         "  ★★ 2026.10.24 行为重做：按「队」补员（守军轮换出门）、扩张派队伍到区划中心、",
         "     小队占中立 / 大队打硬目标、光杆司令不出门；具体数值见 production / expand 段。"
       ],
       "default_profile": "normal",
+      "multipliers": {
+        "_comment": [
+          "★★ 2026.11.17：**派系整体倍率层**（全局基准，全部 1.0 = 不改变）。",
+          "  难度包（income / 节奏 / 上限 / 反应延迟 / 起手资源）先算出来，再乘这一层。",
+          "  派系块 `clan.list[].commander_ai.multipliers` 可以覆盖同样的键；",
+          "  关卡 / 运行时覆盖也能写 `commander_ai.multipliers`。",
+          "  · 只写要改的键；缺省 = 1.0；乘法叠加，不是覆盖难度。",
+          "  · income_mult / army_cap / army_cap_ratio / 四个 interval / reaction_delay / start_*。",
+          "  · 原生派系不写这一块 ⇒ 与全局基准逐位一致。"
+        ],
+        "income_mult": 1.0,
+        "army_cap": 1.0,
+        "army_cap_ratio": 1.0,
+        "army_interval": 1.0,
+        "strategic_interval": 1.0,
+        "build_interval": 1.0,
+        "production_interval": 1.0,
+        "reaction_delay": 1.0,
+        "start_food": 1.0,
+        "start_gold": 1.0
+      },
       "command_hold_sec": 60.0,
       "intervals": {
         "army_interval_sec": 1.0,
@@ -4441,7 +4481,7 @@
       },
       "patrol": {
         "_comment": [
-          "★★ 巡逻：正在读条的将领也可以被派出去（不再按 is_training 过滤）。",
+          "★★ 巡逻：缺编 / 满编队都按实时人数判断（招募即时化后没有「读条中」状态）。",
           "  · threat_radius / avoid_enemy_ratio：巡逻点周围可见敌军的风险半径与倍率；",
           "    敌人 ≥ 我方 × 倍率时不把小队派去这个点（避免小股部队硬碰大部队）。",
           "  · home_when_alone：只有守军一支队伍时，允许它去基地附近巡逻（基地附近有敌人则先守家）。"
@@ -4490,8 +4530,8 @@
       },
       "revive": {
         "_comment": [
-          "★★ 指挥官的濒死将领处理：巡检 -> 能再起就再起；敌后 / 太远 / 兵太少就召回。",
-          "  · interval_sec：多快检查一次倒地将领；",
+          "★★ 指挥官的濒死将领处理：世界会自动再起；这里只决定何时召回。",
+          "  · interval_sec：多快检查一次倒地将领（召回要在血量回到 10% 前决定）；",
           "  · recall_escort_threshold：敌后或危险时，活着的附属兵 ≤ 这个数就召回；",
           "  · recall_distance_tiles：离家超过这个距离且一个兵都没有，就召回；",
           "  · danger_radius：评估附近敌人 / 友军的半径。"
@@ -4646,25 +4686,23 @@
           "★★ 2026.10.24：按「队」补员，不再让一支部队一路招到全族上限。",
           "  · home_team_size：守军补到这么多人后轮换出门；",
           "  · field_team_size：外勤队的目标规模（含将领）；",
-          "  · max_training_leaders：同时读条的将领数上限；",
-          "  · min_garrison_replace_escorts：接替守军至少要有几个兵；",
-          "  · dispatch_training_home：读条中的守军只要够出门规模，就可以被换下来去巡逻 / 出征。",
+          "  · min_garrison_replace_escorts：接替守军至少要有几个兵。",
+          "★★ 2026.11.17：招募已即时化（没有队列 / 读条）。一个生产 tick 最多下",
+          "   intervals.production_attempts 单（默认 6），每支候选队伍最多 1 单；",
+          "   max_queue_per_leader / max_training_leaders / dispatch_training_home 已删除。",
           "★★ fill_to_cap_when_rich（2026.10.29）：资源充足（浮存 > economy.max_float_food / max_float_gold）时，",
           "   允许每支队伍**越过** home_team_size / field_team_size，继续补到该将领的编制上限",
           "   （1 + effective_retinue_cap）。false = 旧行为（永远停在目标规模）。"
         ],
         "general_target": 2,
-        "general_target_by_base_level": [3, 6, 10],
+        "general_target_by_base_level": [2, 4, 5],
         "general_recruit_min_army_ratio": 0.0,
         "general_recruit_team_margin": 2,
         "develop_cap_ratio": 0.85,
-        "max_queue_per_leader": 4,
         "max_recruit_recalls": 2,
         "home_team_size": 8,
         "field_team_size": 6,
-        "max_training_leaders": 4,
         "min_garrison_replace_escorts": 1,
-        "dispatch_training_home": true,
         "fill_to_cap_when_rich": true,
         "_elite_comment": [
           "★★ 2026.11 高阶兵倾斜（用户口径）：低阶兵累计花掉 trigger_low_spend 之后，",
@@ -4720,12 +4758,17 @@
           "  · resource_buildings_enabled —— 总开关；",
           "  · resource_building_hard_max —— 全场最多几座资源建筑；",
           "  · resource_building_per_zone —— 单个区划最多几座（任意种类）。",
+          "  · house_pop_ratio_min —— ★ 2026.11.17：开局人口全满，只有人口比例低于",
+          "    这个阈值时才把房屋当成候选（避免拿稀缺的建造点位换暂时用不到的上限）。",
           "  ★ AI 只在「没有光杆将领 + 己方区划没有被入侵」时补资源建筑，",
-          "    且必须用扣完补员预留后的余钱；目标数量随己方区划数增长。"
+          "    且必须用扣完补员预留后的余钱；目标数量随己方区划数增长。",
+          "  ★★ 2026.11.17：经济建筑与箭塔共用建造点位。AI 会先扣掉该区划的箭塔缺口，",
+          "    剩下的空点位才给经济建筑 —— 点位数按地图实时算，不假设每区固定 2 个。"
         ],
         "resource_buildings_enabled": true,
         "resource_building_hard_max": 10,
-        "resource_building_per_zone": 2
+        "resource_building_per_zone": 2,
+        "house_pop_ratio_min": 0.75
       },
       "early_explore": {
         "_comment": [

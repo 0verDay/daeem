@@ -11,6 +11,9 @@
 ##   5. 运行时覆盖（`world.ai_profiles[faction]`；合作 AI 队友的难度从这里进）
 ##
 ## ★ 难度是「参数包」：只改收入 / 节奏 / 上限 / 初始资源，不改单位数值。
+## ★★ 2026.11.17：难度包算完之后，再乘一层 `multipliers`（`clan.list[].commander_ai` /
+##   关卡 / 运行时都能写）—— 这是「按派系整体调整数值」的入口：收入、四个 interval、
+##   army_cap / ratio、反应延迟、起手资源都按倍率叠加；缺省 1.0。
 ## ★ 这个文件不读 world、不碰节点；测试可以直接调 `build()`。
 extends RefCounted
 
@@ -20,6 +23,23 @@ const ConfigRes = preload("res://logic/config.gd")
 ## 的「宽容读取」同一条口径）。数值与 data/config.json 里的默认值保持一致。
 const DEFAULTS := {
 	"default_profile": "normal",
+	# ★★ 2026.11.17：**派系整体倍率层**。
+	#   难度包（income / 节奏 / 上限 / 反应延迟）先算出来，再乘这一层。
+	#   派系块（`clan.list[].commander_ai.multipliers`）与关卡 / 运行时覆盖都能写；
+	#   原生不写 = 全部 1.0 = 与全局基准逐位一致。
+	#   ★ 这里只放「整体数值」，具体兵种编成 / 职能 / 建造优先级仍走各自的表。
+	"multipliers": {
+		"income_mult": 1.0,
+		"army_cap": 1.0,
+		"army_cap_ratio": 1.0,
+		"army_interval": 1.0,
+		"strategic_interval": 1.0,
+		"build_interval": 1.0,
+		"production_interval": 1.0,
+		"reaction_delay": 1.0,
+		"start_food": 1.0,
+		"start_gold": 1.0,
+	},
 	"intervals": {
 		"army_interval_sec": 0.6,
 		"strategic_interval_sec": 2.0,
@@ -84,19 +104,17 @@ const DEFAULTS := {
 	"production": {
 		"general_target": 2,
 		# 1/2/3 级大本营的补将目标（= config 的 max_generals 2/4/5）。
-		"general_target_by_base_level": [2, 5, 6],
+		"general_target_by_base_level": [2, 4, 5],
 		"general_recruit_min_army_ratio": 0.0,
 		"general_recruit_team_margin": 2,  # 现有队伍至少到「目标 - 2」才补新将
 		"develop_cap_ratio": 0.85,
-		"max_queue_per_leader": 4,
 		"max_recruit_recalls": 2,     # 每 tick 最多叫回几支「缺兵且不在人口区」的队伍
 		# ★★ 2026.10.24：按「队」补员，不再让一支部队一路招到全族上限。
-		# ★ 2026.10.25：放宽单队规模与同时训练数，资源富足时不再只有 2 个将领慢慢补。
+		#   ★ 2026.11.17：招募已即时化（没有队列 / 读条），这里只保留「每队的目标规模」；
+		#     一个生产 tick 最多下 `intervals.production_attempts` 单（默认 6）。
 		"home_team_size": 8,          # 守军补到这么多人后轮换出门
 		"field_team_size": 6,         # 外勤队的目标规模（含将领）
-		"max_training_leaders": 4,    # 同时读条的将领数上限（不是「只有 1 个兵营」）
 		"min_garrison_replace_escorts": 1,  # 接替守军至少要有几个兵
-		"dispatch_training_home": true,     # 读条中的守军只要够出门规模，就可以被换下来去巡逻
 		# ★★ 2026.10.29：资源充足（浮存 > economy.max_float_*）时，允许补到编制上限
 		#   （1 + effective_retinue_cap），而不是停在 home/field 目标规模。
 		"fill_to_cap_when_rich": true,
@@ -172,6 +190,9 @@ const DEFAULTS := {
 		"resource_buildings_enabled": true,
 		"resource_building_hard_max": 10,
 		"resource_building_per_zone": 2,
+		# ★★ 2026.11.17：开局所有区划人口全满 ⇒ 房屋只在人口比例低于这个阈值时建。
+		#   （人口被招兵消耗后才值得拿建造点位去换人口上限；城镇 / 科技上限不在此列。）
+		"house_pop_ratio_min": 0.75,
 	},
 	"patrol": {
 		"enabled": true,
@@ -385,18 +406,36 @@ static func build(cfg, faction: String, roster: Array, overrides: Dictionary,
 
 	# 把难度包摊平成控制器好读的字段
 	base["difficulty_name"] = diff_name
-	base["income_mult"] = _f(diff, "income_mult", 1.0)
-	base["army_cap"] = _i(diff, "army_cap", 26)
-	base["army_cap_ratio"] = clampf(_f(diff, "army_cap_ratio", 0.8), 0.1, 2.0)
+	# ★★ 2026.11.17：**派系整体倍率层**（在难度包之后乘）。
+	#   难点：难度包是最后写入的，如果派系块直接写 `income_mult` / `army_cap` 会被覆盖。
+	#   所以派系 / 关卡 / 运行时统一走 `multipliers` 子字典，这里乘法叠加：
+	#     · 1.0 = 不改变（原生不写这一块）；
+	#     · 1.1 = 整体 +10%，0.9 = 整体 -10%；
+	#     · 绝对值（army_cap / reaction_delay / start_*）也按倍率算。
+	var mv: Variant = base.get("multipliers", {})
+	var mults: Dictionary = mv if typeof(mv) == TYPE_DICTIONARY else {}
+	base["income_mult"] = clampf(
+		_f(diff, "income_mult", 1.0) * _f(mults, "income_mult", 1.0), 0.05, 10.0)
+	base["army_cap"] = maxi(1, roundi(float(_i(diff, "army_cap", 26))
+		* _f(mults, "army_cap", 1.0)))
+	base["army_cap_ratio"] = clampf(
+		_f(diff, "army_cap_ratio", 0.8) * _f(mults, "army_cap_ratio", 1.0), 0.1, 2.0)
 	# ★★ 2026.10.29：**发命令的间隔**（army 层）与战略对账间隔，由难度控制。
 	#   ⚠️ 夹在 ≥0.1：写 0 会让定时器每帧归零 ⇒ AI 变成每帧下令。
-	base["army_interval_mult"] = maxf(0.1, _f(diff, "army_interval_mult", 1.0))
-	base["strategic_interval_mult"] = maxf(0.1, _f(diff, "strategic_interval_mult", 1.0))
-	base["build_interval_mult"] = maxf(0.1, _f(diff, "build_interval_mult", 1.0))
-	base["production_interval_mult"] = maxf(0.1, _f(diff, "production_interval_mult", 1.0))
-	base["reaction_delay_sec"] = maxf(0.0, _f(diff, "reaction_delay_sec", 1.2))
-	base["start_food"] = maxf(0.0, _f(diff, "start_food", 0.0))
-	base["start_gold"] = maxf(0.0, _f(diff, "start_gold", 0.0))
+	base["army_interval_mult"] = maxf(0.1,
+		_f(diff, "army_interval_mult", 1.0) * _f(mults, "army_interval", 1.0))
+	base["strategic_interval_mult"] = maxf(0.1,
+		_f(diff, "strategic_interval_mult", 1.0) * _f(mults, "strategic_interval", 1.0))
+	base["build_interval_mult"] = maxf(0.1,
+		_f(diff, "build_interval_mult", 1.0) * _f(mults, "build_interval", 1.0))
+	base["production_interval_mult"] = maxf(0.1,
+		_f(diff, "production_interval_mult", 1.0) * _f(mults, "production_interval", 1.0))
+	base["reaction_delay_sec"] = maxf(0.0,
+		_f(diff, "reaction_delay_sec", 1.2) * _f(mults, "reaction_delay", 1.0))
+	base["start_food"] = maxf(0.0,
+		_f(diff, "start_food", 0.0) * _f(mults, "start_food", 1.0))
+	base["start_gold"] = maxf(0.0,
+		_f(diff, "start_gold", 0.0) * _f(mults, "start_gold", 1.0))
 	return base
 
 

@@ -214,7 +214,7 @@ func setup(p_world, p_cfg, p_faction: String, p_profile: Dictionary) -> void:
 		"orders": 0, "order_failures": 0,
 		"builds": 0, "build_failures": 0,
 		"recruits": 0, "recruit_failures": 0,
-		"techs": 0, "specs": 0, "revives": 0, "recalls": 0,
+		"techs": 0, "specs": 0, "recalls": 0,
 		"rotations": 0, "expands": 0, "assaults": 0,
 		"zones_taken": 0, "regroups": 0, "avoids": 0,
 		"role_retreats": 0, "counterattacks": 0,
@@ -273,7 +273,8 @@ func force_cap() -> int:
 	return clampi(cap, 1, natural)
 
 
-## ★★ 补将目标：按大本营等级取 [3, 6, 10]，再由大本营的 max_generals 封顶。
+## ★★ 补将目标：按大本营等级取数组（默认 2 / 4 / 5，= config 的 max_generals），
+## 再由大本营的 max_generals 封顶。
 ## 没有大本营 / 旧配置没有数组时退回 `production.general_target`（默认 2）。
 func general_target() -> int:
 	var pc: Dictionary = profile.get("production", {})
@@ -567,16 +568,18 @@ func _drop_team_mission(lid: String) -> void:
 			AiArmyRes.clear_assault(self)
 
 
-## ★★ 濒死将领：能再起就再起；位置太危险 / 太远且没兵时改为「召回」。
+## ★★ 濒死将领：世界每帧会**自动再起**（血量回到 `revive.ready_ratio` 就站起来，
+## 无消耗、无读条，见 `world._tick_auto_revive()`）。所以 AI 只负责一件世界不会替它
+## 决定的事：**位置太危险 / 太远且没兵时，改成「召回」**。
 ##
-## 规则与玩家点按钮完全同源：`world.start_revive()` / `world.recall_general()`。
-## 再起免费；召回会把旗下残兵静默清掉、将领阵亡并回大本营重生（10 秒，比正常 20 秒短）。
+## 规则与玩家点按钮完全同源：`world.recall_general()`。
+## 召回会把旗下残兵静默清掉、将领阵亡并回大本营重生（10 秒，比正常 20 秒短）。
 ##
-## 选召回而不是再起的情形（避免「在敌后光杆站起来」）：
+## 选召回的情形（避免「在敌后光杆站起来」）：
 ##   · 倒在敌方区划里、身边活着的附属兵 ≤ `recall_escort_threshold`；
 ##   · 倒在离基地很远的地方、一个兵都没有、附近也没有友军；
 ##   · 附近有可见敌军，且自己兵少、又没有友军能接应。
-## 其余情况：血量回到 `revive.ready_ratio` 就立刻再起。
+## 其余情况交给世界的自动再起。
 func _revive_tick() -> void:
 	if world == null:
 		return
@@ -592,18 +595,11 @@ func _revive_tick() -> void:
 	if downs.is_empty():
 		return
 	for u in downs:
-		var recalled := false
-		if _should_recall(u):
-			recalled = world.recall_general(String(u.id), faction)
-			if recalled:
-				stats["recalls"] = int(stats.get("recalls", 0)) + 1
-				note_status("recalling")
-		if recalled:
+		if not _should_recall(u):
 			continue
-		if u.revive_ready(cfg):
-			if world.start_revive(String(u.id), faction):
-				stats["revives"] = int(stats.get("revives", 0)) + 1
-				note_status("reviving")
+		if world.recall_general(String(u.id), faction):
+			stats["recalls"] = int(stats.get("recalls", 0)) + 1
+			note_status("recalling")
 
 
 func _should_recall(u) -> bool:
@@ -698,8 +694,10 @@ func _refresh_zone_ownership(initial: bool) -> void:
 ##   1. 守军（`AiArmyRes.ensure_garrison`）先补到 `home_team_size`；补满后由
 ##      `maybe_rotate_garrison()` 换人，老守军变成外勤队出门；
 ##   2. 其余每支外勤队补到 `field_team_size`（含将领）就停，不再一路招到全族上限；
-##   3. 同时读条的将领最多 `max_training_leaders` 个（不是「只有 1 个兵营」，
-##      也不会全员读条）；
+##   3. ★ 2026.11.17：招募已经**即时化**（没有队列 / 读条 / 训练中状态）——
+##      一个生产 tick 最多下 `production_attempts` 单（默认 6），
+##      每支候选队伍最多 1 单；出兵后队伍人数当场生效，下一 tick 自然会重新算缺口。
+##      不再有 `max_training_leaders` / `max_queue_per_leader` 这些旧闸门。
 ##   4. 补将前先看有没有「还没装备起来」的队伍：先给现有将领配兵，别急着造新的光杆。
 func _production_tick() -> void:
 	if retry_timer > 0.0:
@@ -726,9 +724,6 @@ func _production_tick() -> void:
 			and (AiArmyRes.understaffed_team_count(self) <= 0 or not has_field):
 		_try_general_recruit()
 	# 3) 按队补员。
-	var pc: Dictionary = profile.get("production", {})
-	var max_training := maxi(1, int(pc.get("max_training_leaders", 2)))
-	var training := AiArmyRes.training_leader_count(self)
 	var attempts := maxi(1, int(profile.get("intervals", {}).get("production_attempts", 3)))
 	var cands: Array = AiArmyRes.recruit_candidates(self)
 	if cands.is_empty():
@@ -759,22 +754,18 @@ func _production_tick() -> void:
 		var deficit := int(cd.get("deficit", 0))
 		if deficit <= 0:
 			continue
-		# 已经有两个将领在读条 ⇒ 不再开新坑；但允许继续给「已在读条」的将领排队。
-		var was_training: bool = leader.is_training()
-		if not was_training and training >= max_training:
-			continue
-		# 每队自己的排队上限（比全局 queue_max 更紧）：不要一口气排 5 个，
-		# 留出「补到目标就出门」的节奏。
-		var max_q := maxi(1, int(pc.get("max_queue_per_leader", 3)))
-		if int(leader.train_queue_size()) >= max_q:
+		# ★★ 2026.11.17：即时招募后没有队列 / 训练中状态。
+		#   候选表的缺口是 tick 开始时算的；同一 tick 里前面若有别的逻辑改变了队伍人数，
+		#   这里用实时人数再确认一次，保证「按缺口补」不会超招。
+		var target_size := int(cd.get("target", 0))
+		if target_size > 0 and AiArmyRes.team_projected(self, leader) >= target_size:
 			continue
 		var kind := _pick_kind(leader)
 		if kind == "":
 			break
 		var reason := String(world.can_recruit(kind, String(leader.id), faction))
 		if reason != "":
-			if reason == "combat" or reason == "zone" or reason == "cap" \
-					or reason == "queue_full":
+			if reason == "combat" or reason == "zone" or reason == "cap":
 				# 这个将领这一会儿不适合下单（在打架 / 不在己方地 / 满了）：
 				# 换下一位候选，不要整体停工。
 				continue
@@ -793,8 +784,6 @@ func _production_tick() -> void:
 			# ★★ 2026.11：记账 —— 这一单算低阶还是高阶（决定之后要不要倾斜）。
 			_note_recruit_spend(kind)
 			attempts -= 1
-			if not was_training:
-				training += 1
 			note_status("producing")
 		else:
 			stats["recruit_failures"] = int(stats.get("recruit_failures", 0)) + 1

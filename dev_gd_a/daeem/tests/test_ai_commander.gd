@@ -37,8 +37,8 @@ func _cases() -> void:
 	_test_patrol(cfg)
 	_test_producer_reserved(cfg)
 	_test_rotation(cfg)
-	_test_training_home_rotation(cfg)
-	_test_training_leader_can_patrol(cfg)
+	_test_garrison_needs_full(cfg)
+	_test_ready_team_can_patrol(cfg)
 	_test_avoid_big_fights(cfg)
 	_test_revive_recall(cfg)
 	_test_points_in_bounds(cfg)
@@ -48,6 +48,7 @@ func _cases() -> void:
 	_test_attack_reaction(cfg)
 	_test_tower_strategy(cfg)
 	_test_resource_buildings(cfg)
+	_test_build_point_capacity(cfg)
 	_test_population_cap_bonus_ratio(cfg)
 	_test_build_economy_guard(cfg)
 	_test_wall_and_upgrade(cfg)
@@ -66,6 +67,7 @@ func _cases() -> void:
 	_test_duel_early_capture(cfg)
 	_test_front_general_recruit(cfg)
 	_test_team_production_targets(cfg)
+	_test_instant_recruit_production(cfg)
 	_test_march_moves_army(cfg)
 	_test_march_early_end(cfg)
 	_test_expand_target(cfg)
@@ -521,10 +523,12 @@ func _test_rotation(cfg) -> void:
 	if home == null:
 		ok(false, "（前提）ai_test 有守军")
 		return
-	# 把守军「补满」：直接排 3 个（只要 projected 达到 home_team_size 即可）。
+	# 把守军真正补满：即时招募后没有队列，`team_projected` 只看实时人数。
 	var target := int(c.profile.get("production", {}).get("home_team_size", 6))
-	while AiArmyRes.team_projected(c, home) < target:
-		home.train_queue.append("spearman")
+	var need := maxi(0, target - AiArmyRes.team_total(c, home))
+	if need > 0:
+		w.fill_general_retinue(home, need, [{"type": "spearman", "weight": 1}])
+	ok(AiArmyRes.team_projected(c, home) >= target, "（前提）守军已经补满")
 	# 造一位接替将领 + 1 个兵，站到基地里。
 	var rep = w.create_general("F1", 0, 3)
 	if rep == null:
@@ -543,13 +547,12 @@ func _test_rotation(cfg) -> void:
 	ok(int(c.stats.get("rotations", 0)) >= 1, "★ 轮换计入统计")
 
 
-## ★★ 每支队伍按自己的目标规模补员：守军 home_team_size、外勤 field_team_size。
-## ★★ 读条中的守军只要已经够「出门规模」，就应该能被换下来去巡逻 / 扩张，
-## 不必等到补满 home_team_size。
-func _test_training_home_rotation(cfg) -> void:
+## ★★ 招募即时化后：守军**没补满就不轮换**（不再有「读条中的守军提前出门」）。
+## ★★ 补满后，基地里有一支同样补满的队伍接防，守军才会被换下来。
+func _test_garrison_needs_full(cfg) -> void:
 	var w = _make_ai_test_world(cfg)
 	if w == null:
-		ok(false, "训练中守军轮换测试世界")
+		ok(false, "守军轮换测试世界")
 		return
 	w.time = 61.0
 	var c = w.ai_commanders["F1"]
@@ -557,17 +560,20 @@ func _test_training_home_rotation(cfg) -> void:
 	if home == null:
 		ok(false, "（前提）有守军")
 		return
-	var ec: Dictionary = c.profile.get("expand", {})
-	var min_units := int(ec.get("min_field_units", 3))
-	ok(AiArmyRes.team_total(c, home) >= min_units, "（前提）守军已经够出门规模")
-	# 让它处于读条中（不是补满状态）。
-	home.train_kind = "spearman"
-	home.train_total = 10.0
-	home.train_remaining = 10.0
-	ok(home.is_training(), "（前提）守军正在招募")
-	ok(AiArmyRes.team_projected(c, home) < int(c.profile.get("production", {}).get("home_team_size", 6)),
-		"（前提）守军还没补满（旧逻辑会一直把它钉在家里）")
-	# 造一位能接防的将领（1 个兵）。
+	var target := int(c.profile.get("production", {}).get("home_team_size", 6))
+	target = mini(target, 1 + int(w.effective_retinue_cap(home)))
+	var min_units := int((c.profile.get("expand", {}) as Dictionary).get("min_field_units", 3))
+	# 先把它压到「没补满」：移掉多出来的附属兵，直到差 1 个。
+	while AiArmyRes.team_total(c, home) >= target:
+		var escorts: Array = w.retinue_of(String(home.id), true)
+		if escorts.is_empty():
+			break
+		var last = escorts[escorts.size() - 1]
+		last.alive = false
+		w.units.erase(last)
+	ok(AiArmyRes.team_projected(c, home) < target,
+		"（前提）守军还没补满（差至少 1 个）")
+	# 造一位**补满**的接防将领，站到基地里。
 	var rep = w.create_general("F1", 0, 3)
 	if rep == null:
 		ok(false, "能造接防将领")
@@ -576,25 +582,35 @@ func _test_training_home_rotation(cfg) -> void:
 	rep.pos = Vector2(float(base.tx) + 1.5, float(base.ty) + 1.5)
 	rep.sync_tile(w.map)
 	w.units.append(rep)
+	# 接防者不需要补满，但至少要有 `min_garrison_replace_escorts` 个兵；
+	# 它自身**没满**，才有资格接防（满编队之间互换成环是旧逻辑的抖动来源）。
 	w.fill_general_retinue(rep, 1, [{"type": "spearman", "weight": 1}])
+	ok(AiArmyRes.team_projected(c, rep) < target, "（前提）接防将领还没补满")
+	ok(not AiArmyRes.maybe_rotate_garrison(c),
+		"★★ 守军没补满时不轮换（旧「读条中提前出门」行为已删除）")
+	# 把守军补满后，同一 tick 就能轮换。
+	var need := maxi(0, target - AiArmyRes.team_total(c, home))
+	if need > 0:
+		w.fill_general_retinue(home, need, [{"type": "spearman", "weight": 1}])
+	ok(AiArmyRes.team_projected(c, home) >= target, "（前提）守军已经补满")
 	var before := String(c.garrison_leader_id)
-	ok(AiArmyRes.maybe_rotate_garrison(c),
-		"★★ 读条中的守军够出门规模时可以被换下来（不必补满）")
-	ok(String(c.garrison_leader_id) != before, "★★ 守军换人")
+	ok(AiArmyRes.maybe_rotate_garrison(c), "★★ 守军补满后发生轮换")
+	ok(String(c.garrison_leader_id) != before, "★★ 守军换成了接防将领")
 	ok(AiArmyRes.ready_field_teams(c, min_units).size() > 0,
-		"★★ 换下来的读条守军进入可巡逻 / 可出征的队伍列表")
+		"★★ 换下来的守军进入可巡逻 / 可出征的队伍列表")
 
 
-## ★★ 正在读条的将领也可以被派去巡逻 / 出征（不再因为 is_training 被跳过）。
-func _test_training_leader_can_patrol(cfg) -> void:
+## ★★ 补到出门规模的将领可以被派去巡逻 / 出征。
+## （2026.11.17：招募即时化后没有「读条中」状态，队伍人数当场生效。）
+func _test_ready_team_can_patrol(cfg) -> void:
 	var w = _make_ai_test_world(cfg)
 	if w == null:
-		ok(false, "读条将领巡逻测试世界")
+		ok(false, "巡逻队伍测试世界")
 		return
 	var c = w.ai_commanders["F1"]
 	var ec: Dictionary = c.profile.get("expand", {})
 	var min_units := int(ec.get("min_field_units", 3))
-	# 造一位外勤将领 + 2 个兵（够出门规模），并让它处于读条中。
+	# 造一位外勤将领 + 2 个兵（够出门规模）。
 	var g = w.create_general("F1", 1, 4)
 	if g == null:
 		ok(false, "能造外勤将领")
@@ -609,21 +625,17 @@ func _test_training_leader_can_patrol(cfg) -> void:
 	g.sync_tile(w.map)
 	w.units.append(g)
 	w.fill_general_retinue(g, min_units - 1, [{"type": "spearman", "weight": 1}])
-	g.train_kind = "spearman"
-	g.train_total = 10.0
-	g.train_remaining = 10.0
-	ok(g.is_training(), "（前提）它正在读条")
 	var ready: Array = AiArmyRes.ready_field_teams(c, min_units)
 	var found := false
 	for t in ready:
 		if (t["leader"] as Object) == g:
 			found = true
-	ok(found, "★★ 读条中的将领仍在「可出门」队伍里")
-	# 直接跑一次巡逻：它应该能被选中（不再被 is_training 过滤）。
+	ok(found, "★★ 补到出门规模的将领在「可出门」队伍里")
+	# 直接跑一次巡逻：它应该能被选中。
 	c.patrol_next_at = 0.0
 	c.patrol_index = 0
 	AiArmyRes._patrol(c)
-	ok(c.last_orders.has(String(g.id)), "★★ 读条中的将领真的被派去巡逻了")
+	ok(c.last_orders.has(String(g.id)), "★★ 该将领真的被派去巡逻了")
 
 
 ## ★★ 小股部队不跟成规模敌人硬碰：危险巡逻点会跳过，附近有大军会回撤。
@@ -672,7 +684,7 @@ func _test_avoid_big_fights(cfg) -> void:
 	ok(c.regroup_ids.has(String(g.id)), "★★ 小队附近有大军时会被命令回撤，而不是硬碰")
 
 
-## ★★ 倒地的将领：安全位置能再起，敌后 / 太远没兵时召回。
+## ★★ 倒地的将领：世界自动再起；AI 只在敌后 / 太远没兵时召回。
 func _test_revive_recall(cfg) -> void:
 	var w = _make_ai_test_world(cfg)
 	if w == null:
@@ -683,7 +695,7 @@ func _test_revive_recall(cfg) -> void:
 	if base == null:
 		ok(false, "（前提）有基地")
 		return
-	# 1) 在基地倒下：血量到门槛 → 再起。
+	# 1) 在基地倒下：血量到门槛 → **世界**自动再起（AI 不再重复点火）。
 	var g = w.create_general("F1", 1, 4)
 	if g == null:
 		ok(false, "能造再起测试将领")
@@ -694,9 +706,9 @@ func _test_revive_recall(cfg) -> void:
 	g.enter_near_death(cfg.revive_regen_sec)
 	g.hp = g.hp_max * 0.15
 	ok(g.revive_ready(cfg), "（前提）血量回到再起门槛")
-	c._revive_tick()
-	ok(g.is_reviving(), "★★ 指挥官 AI 会给倒地的将领点再起")
-	ok(int(c.stats.get("revives", 0)) >= 1, "★★ 再起计入 stats")
+	w._tick_auto_revive()
+	ok(g.is_reviving(), "★★ 世界自动给倒地的将领开始再起（无消耗 / 无读条）")
+	ok(not c.stats.has("revives"), "★★ AI 不再维护本地再起计数（世界负责）")
 	# 2) 倒在敌方区划、只带一个兵：召回会把它和这个兵一起清掉。
 	var g2 = w.create_general("F1", 1, 5)
 	if g2 == null:
@@ -1077,6 +1089,90 @@ func _test_resource_buildings(cfg) -> void:
 			continue
 		var in_zone: int = AiBuildRes._resource_buildings_in_zone(c, int(zd.get("id", -1)))
 		ok(in_zone <= 2, "★ 单区划资源建筑 ≤ 2（实际 %d）" % in_zone)
+
+	# ★★ 2026.11.17：开局人口全满 ⇒ 房屋先不进候选；人口掉到阈值以下才建。
+	for z in w.zones.zones:
+		if typeof(z) != TYPE_DICTIONARY or String((z as Dictionary).get("owner", "")) != "F1":
+			continue
+		var zd2: Dictionary = z
+		zd2["population"] = w.zones.population_cap_of(zd2)
+	var counts2 := {"farm": 4, "mine": 3, "house": 0, "total": 7}
+	eq(AiBuildRes._pick_resource_building(c, counts2), "",
+		"★★ 人口全满时不会选房屋（不拿稀缺点位换暂时用不到的上限）")
+	for z in w.zones.zones:
+		if typeof(z) != TYPE_DICTIONARY or String((z as Dictionary).get("owner", "")) != "F1":
+			continue
+		(z as Dictionary)["population"] = 0.0
+	eq(AiBuildRes._pick_resource_building(c, counts2), "house",
+		"★★ 人口比例低于阈值后才会选房屋")
+
+
+## ★★ 2026.11.17：经济建筑与箭塔共用一个区划的点位。
+##   点位数按地图实时算（不假设每区 2 个）；前沿区划给塔留出「至多一半」的点位。
+func _test_build_point_capacity(cfg) -> void:
+	var w = _make_ai_test_world(cfg)
+	if w == null:
+		ok(false, "点位容量测试世界")
+		return
+	w.time = 61.0
+	var c = w.ai_commanders["F1"]
+	var bcfg: Dictionary = c.profile.get("build", {})
+	# 关掉箭塔目标 / 富余加成，先测「纯后方」的容量。
+	bcfg["tower_front_towers"] = 0
+	bcfg["tower_threat_towers"] = 0
+	bcfg["tower_rear_towers"] = 0
+	bcfg["tower_rich_bonus_max"] = 0
+	c.profile["economy"]["max_float_food"] = 99999.0
+	c.profile["economy"]["max_float_gold"] = 99999.0
+	var zd: Dictionary = {}
+	var best_tiles := -1
+	for z in w.zones.zones:
+		if typeof(z) != TYPE_DICTIONARY or String((z as Dictionary).get("owner", "")) != "F1":
+			continue
+		var n_tiles := ((z as Dictionary).get("tiles", []) as Array).size()
+		if n_tiles > best_tiles:
+			best_tiles = n_tiles
+			zd = z
+	if zd.is_empty():
+		ok(false, "（前提）F1 有己方区划")
+		return
+	var zid := int(zd.get("id", -1))
+	var free0 := 0
+	for t in w.build_points_of_zone(zid):
+		var tile: Vector2i = t
+		if w.build_point_available(tile.x, tile.y, "F1"):
+			free0 += 1
+	ok(free0 >= 1, "（前提）区划 c%d 有空点位（%d）" % [zid, free0])
+	# 把这个区划的点位补到 4 个（验证不写死「每区 2 个」）。
+	var pts: Array = zd.get("build_points", [])
+	for t in (zd.get("tiles", []) as Array):
+		if pts.size() >= 4:
+			break
+		var tile2: Vector2i = t
+		if pts.has(tile2):
+			continue
+		if not w.zones._build_point_tile_ok(w.map, zd, tile2):
+			continue
+		if w.building_at(tile2.x, tile2.y) != null:
+			continue
+		pts.append(tile2)
+	zd["build_points"] = pts
+	w.zones._rebuild_build_point_index()
+	var free := 0
+	for t2 in w.build_points_of_zone(zid):
+		var tile3: Vector2i = t2
+		if w.build_point_available(tile3.x, tile3.y, "F1"):
+			free += 1
+	ok(free >= 4, "★★ 可以把一个区划的点位扩到 4 个（实际 %d）" % free)
+	bcfg["resource_building_per_zone"] = 4
+	eq(AiBuildRes._resource_building_capacity(c, zd, 4), mini(free, 4),
+		"★★ 后方区划：空点位全部可给经济建筑（不假设每区 2 个）")
+	bcfg["tower_rear_towers"] = 2
+	bcfg["tower_front_towers"] = 2
+	bcfg["tower_threat_towers"] = 2
+	# 塔目标 2、空点位 ≥4 ⇒ 预留 min(4, 2, ceil(4/2)=2)=2，经济建筑剩 2。
+	eq(AiBuildRes._resource_building_capacity(c, zd, 4), free - 2,
+		"★★ 有塔缺口时只预留至多一半点位，剩下的给经济建筑")
 
 
 ## ★★ 2026.10.30：人口评估要读 `population_cap_of()`（含大本营 / 房屋的动态加成）。
@@ -2036,6 +2132,57 @@ func _test_team_production_targets(cfg) -> void:
 			if (cand as Dictionary).get("leader", null) == rep:
 				found = true
 		ok(not found, "★ 外勤队补到 field_team_size（%d）后不再进补员候选" % field_target)
+
+
+## ★★ 2026.11.17：招募即时化后的生产循环。
+##   · 每单当场生成（没有队列 / 读条）；
+##   · 每次生产 tick 按队伍实时缺口补，补到目标就停，不会超招；
+##   · `train_queue_size()` 恒为 0，`is_training()` 恒为 false。
+func _test_instant_recruit_production(cfg) -> void:
+	var w = _make_ai_test_world(cfg)
+	if w == null:
+		ok(false, "即时招募测试世界")
+		return
+	w.time = 61.0
+	var c = w.ai_commanders["F1"]
+	var home = AiArmyRes.ensure_garrison(c)
+	if home == null:
+		ok(false, "（前提）ai_test 有守军")
+		return
+	# 只测「按缺口补兵」：关掉攒钱目标、固定补将目标、给足资源。
+	(c.profile.get("goals", {}) as Dictionary)["enabled"] = false
+	(c.profile.get("production", {}) as Dictionary)["general_target_by_base_level"] = [1, 1, 1]
+	var b = w.find_base_of("F1")
+	if b != null:
+		b.level = cfg.upgrade_max_level("base")
+	w.ai_faction_resources["F1"] = {"food": 6000.0, "gold": 6000.0}
+	var target := AiArmyRes.team_target(c, home, true)
+	# 把守军压到「目标 - 2」，留两个缺口（不够就先补到目标 - 2）。
+	while AiArmyRes.team_total(c, home) > target - 2:
+		var escorts: Array = w.retinue_of(String(home.id), true)
+		if escorts.is_empty():
+			break
+		var last = escorts[escorts.size() - 1]
+		last.alive = false
+		w.units.erase(last)
+	var fill := target - 2 - AiArmyRes.team_total(c, home)
+	if fill > 0:
+		w.fill_general_retinue(home, fill, [{"type": "spearman", "weight": 1}])
+	eq(AiArmyRes.team_projected(c, home), target - 2, "（前提）守军差 2 个")
+
+	c.retry_timer = 0.0
+	c._production_tick()
+	eq(AiArmyRes.team_projected(c, home), target - 1, "★★ 一次生产 tick 当场补 1 个兵")
+	eq(home.train_queue_size(), 0, "★★ 没有队列（即时招募）")
+	ok(not home.is_training(), "★★ 没有读条 / 训练中状态")
+
+	c.retry_timer = 0.0
+	c._production_tick()
+	eq(AiArmyRes.team_projected(c, home), target, "★★ 再补 1 个，正好到目标")
+
+	c.retry_timer = 0.0
+	c._production_tick()
+	eq(AiArmyRes.team_projected(c, home), target, "★★ 到目标后不再超招")
 
 
 func _test_march_moves_army(cfg) -> void:

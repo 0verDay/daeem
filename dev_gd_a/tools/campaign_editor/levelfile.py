@@ -298,7 +298,9 @@ def create_campaign(project_dir: Any, campaign_id: str, name: str = "",
         lv.name = "%s · 第一关" % (name or campaign_id)
         # ★ 区划归属必须是**关卡显式**的（战役编辑器不再有「（用地图的）」）：
         #   新关卡按地图的 `zone_list[].owner` 初始化一遍。
-        lv.ensure_zone_owners(model_mod.load_map(project_dir, map_id), force=True)
+        lv.ensure_zone_owners(model_mod.load_map(project_dir, map_id,
+                                                 model_mod.load_config(project_dir)),
+                              force=True)
     written = new_campaign_files(model)
     return model, written
 

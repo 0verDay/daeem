@@ -7759,6 +7759,26 @@ DEFAULTS（代码兜底）
 * 深合并：只写要覆盖的键，数组整体替换、字典逐键递归（`_merge`）。所以
   `roles.ranged.standoff_tiles` 这种深层键也能单独改。
 
+#### 整体倍率层（2026.11.17）
+
+难度包是**最后写入**的（收入 / 节奏 / 上限 / 反应延迟），所以派系块直接写
+`income_mult` / `army_cap` / `*_interval_mult` 会被难度覆盖。为此新增
+`commander_ai.multipliers` 子字典，**在难度包之后乘法叠加**：
+
+```
+难度包（easy/normal/hard）
+  × multipliers.income_mult / army_cap / army_cap_ratio
+  × multipliers.army_interval / strategic_interval / build_interval / production_interval
+  × multipliers.reaction_delay / start_food / start_gold
+```
+
+* 缺省 1.0；原生不写 = 全局基准。
+* 可写在 `ai.commander`（全局基线）、`clan.list[].commander_ai`（派系）、
+  关卡 `factions[].commander_ai` / 运行时覆盖（临时调某一家）。
+* 只影响「整体数值」，不改编成 / 职能 / 建造优先级那几张表。
+* 当前王朝：cap ×1.05、节奏 ×1.1、反应 ×1.1（更厚更慢）；
+  帝国：cap ×0.95、节奏 ×0.9、反应 ×0.85（更精更快）。
+
 #### 两派的倾向（`data/config.json` 的 `clan.list[].commander_ai`）
 
 | 维度 | 王朝（dynasty） | 帝国（empire） |

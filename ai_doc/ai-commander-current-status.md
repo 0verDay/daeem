@@ -1,6 +1,6 @@
 # AI 指挥官当前实现状态
 
-> 本文描述**当前代码实际行为**，不是设计愿景。最后同步：2026-10-29。  
+> 本文描述**当前代码实际行为**，不是设计愿景。最后同步：2026-11-17。
 > 代码优先顺序：`logic/ai_*.gd` → `logic/upgrade.gd` / `logic/world.gd` → `data/config.json`。
 
 ## 1. 范围与模块
@@ -24,7 +24,7 @@ AI 指挥官（`commander`）是第三种 AI，和 `garrison`、`reddot` 并列�
    守军 / 轮换 → 开局探索 → 回撤 → 缺兵回人口区 → 避战 →
    继续进攻 / 扩张 / 进攻判定 → 清空区划占领 → 侦察 →
    前线守备 → 区划布防 → 巡逻。
-2. **生产**（`production_interval_sec`，默认 1s）：补将、按队补员、读条。
+2. **生产**（`production_interval_sec`，默认 4s）：补将、按队即时补员（无队列 / 读条）。
 3. **建造**（`build_interval_sec`，默认 2.5s）：当前优先级见第 5 节。
 4. **战略**（`strategic_interval_sec`，默认 2s）：`auto` 战略、目标、统计。
 
@@ -46,13 +46,15 @@ AI 指挥官（`commander`）是第三种 AI，和 `garrison`、`reddot` 并列�
   - 占下一块后继续找下一块安全区划；附近出现敌人就放弃当前目标，不主动进攻。
 - 只有**没有安全区划**可占时才回到「远处探索」：到点换下一个远处点，不回基地绕圈；门口出现敌人时结束探索，交给正常防守。
 - **开局探索队不再挡住补将**：它在外时无法招募附属兵（招募要求将领站在己方区划），
-  `understaffed_team_count()` 会跳过它，所以第二支将领可以正常排进区划招募队列，
+  `understaffed_team_count()` 会跳过它，所以第二支将领可以正常走区划招募，
   不再被卡到 60 秒探索窗口结束。
 - `between_moutains` 实测（normal、双方 100/100 起手）：第一次占领约 **28 秒**；
   第二支将领约 **114 秒**（100 金买不起 200 金的将领，必须先靠占下的黄金区划攒钱）。
-- 第二支将领出现（含区划招募队列里排着的那一位）或 60 秒到期后结束探索，恢复 3 人出门门槛、守军、守备和常规回撤。
+- 第二支将领出现（含区划招募冷却中的那一位）或 60 秒到期后结束探索，恢复 3 人出门门槛、守军、守备和常规回撤。
 
-> 60 秒后到第二将领训练完成之间可能有一段短暂空档，这是正常的招募 / 训练时间；AI 不会在这段时间派光杆司令去送，但会在有外勤将后立刻恢复扩张。
+> ★ 2026.11.17：招募即时化后，将领**招募冷却**仍是唯一节奏（`general_recruit_cooldown_*`）；
+> 「训练完成」这一段不存在了。60 秒后到第二位将领出现之间仍可能有空档，原因是冷却 / 钱，
+> 不是读条时间；AI 不会在这段时间派光杆司令去送，但会在有外勤将后立刻恢复扩张。
 
 ## 4. 军队与占领
 
@@ -64,10 +66,15 @@ AI 指挥官（`commander`）是第三种 AI，和 `garrison`、`reddot` 并列�
 
 ### 4.2 生产
 
+- ★★ 2026.11.17：招募已经**即时化** —— 没有队列、没有读条、没有「训练中」状态。
 - 按队补员：守军补到 `home_team_size`，外勤补到 `field_team_size`。
+  一个生产 tick 最多下 `intervals.production_attempts` 单（默认 6），每支候选队伍最多 1 单；
+  出兵后队伍人数当场生效，下一 tick 按实时缺口继续补。
+  `max_queue_per_leader` / `max_training_leaders` / `dispatch_training_home` 已删除。
   ★ 2026.10.29：浮存 > `economy.max_float_food/gold`（默认 600）且 `production.fill_to_cap_when_rich`
   开着时，目标抬到该将领的 `1 + effective_retinue_cap`（编制上限）；钱不够时仍是上面的基础目标。
   补将判定仍按基础目标，避免富余 AI 只把现有队伍塞满、却不补新将。
+- 守军必须真的补满 `home_team_size`（并按编制上限夹取）才轮换；没有「读条中提前出门」的老路径。
 - 没有外勤队时，**即使守军没补满也先招一位将领当外勤**，避免 60 秒后没有队伍可派。
 - 没有满编外勤队时，补员**优先补未成形的外勤队**，不再永远先补守军。
 - 招将不固定在大本营：按「被入侵 > 前线 > 大本营兜底」顺序选区划。
@@ -106,15 +113,15 @@ AI 指挥官（`commander`）是第三种 AI，和 `garrison`、`reddot` 并列�
 
 ### 5.1 大本营将领挡位
 
-| 当前等级 | 升级目标 | 要求将领数 | 来源 |
-|---|---:|---:|---|
-| 1 | 2 本 | 3 | `max_generals` |
-| 2 | 3 本 | 6 | `max_generals` |
-| 3 | 已满 | — | — |
+| 当前等级 | 升级目标 | 要求将领数 | 将领上限 |
+|---|---|---:|---:|
+| 1 | 2 本 | — | 2 |
+| 2 | 3 本 | 2 | 4 |
+| 3 | 已满 | — | 5 |
 
 - `UpgradeRes.can_upgrade()` 不足时返回 `generals`，HUD 显示提示。
 - `ai_build._base_upgrade_candidate()` 同样先卡挡位，不会把当前升不了的本当成攒钱目标。
-- 将领计数沿用 `world.general_count_of()`，包含训练 / 重生队列。
+- 将领计数沿用 `world.general_count_of()`，包含重生队列（招募即时化后没有训练队列）。
 
 ### 5.2 占领区禁建
 
@@ -165,6 +172,36 @@ AI 指挥官（`commander`）是第三种 AI，和 `garrison`、`reddot` 并列�
   正常迷雾，看海不给 AI 开天眼。
 - 与 `ai_test` 的区别：`ai_test` 随机让玩家当一方、另一方 AI；`see_ai` 玩家纯观战。
 
+### 5.7 建造点位 / 人口（2026.11.17）
+
+- 非城墙建筑只能落在区划的**建造点位**上（`world.build_points_of_zone()`），
+  城墙只能围区划中心一圈。AI 与玩家走同一条 `build_reject_reason()`。
+- 点位数**不是固定的 2 个**：地图上每个区划可以不同（`build.points_per_zone` 只是上限）。
+- 经济建筑（粮田 / 矿脉 / 房屋）与箭塔共用点位。`_resource_building_capacity()` 的计算：
+  1. 数出这个区划当前**空着的点位**；
+  2. 扣掉箭塔缺口（`_zone_tower_target - _tower_count_in_zone`），
+     但最多只预留「空点位的一半（向上取整、至少 1 个）」；
+  3. 再受 `build.resource_building_per_zone` 约束。
+  ⇒ 2 点位的前线区划 = 1 塔 + 1 经济；4 点位 = 2 塔 + 2 经济；
+    后方区划（塔目标 0）空点位全部可给经济建筑。
+- ★ 2026.11.16 起**开局所有区划人口全满**：房屋只在
+  `_owned_population_ratio() < build.house_pop_ratio_min`（默认 0.75）时才进入候选，
+  避免拿稀缺点位换暂时用不到的人口上限。
+
+### 5.8 派系整体倍率（2026.11.17）
+
+- 每个派系可以在 `clan.list[].commander_ai.multipliers` 写一套整体倍率，
+  **乘在难度包之后**（所以不会被 `difficulty` 覆盖）。
+- 覆盖：收入、四个 interval、`army_cap` / `army_cap_ratio`、反应延迟、起手资源。
+  1.0 = 不改变；>1 = 更强 / 更慢（视键而定），<1 = 更弱 / 更快。
+- 当前取值（只写与全局不同的键）：
+  - 王朝：`army_cap 1.05`、`army_interval 1.1`、`production_interval 1.1`、
+    `build_interval 1.05`、`reaction_delay 1.1`（更厚、更慢）；
+  - 帝国：`army_cap 0.95`、`army_interval 0.9`、`strategic_interval 0.9`、
+    `production_interval 0.9`、`build_interval 0.95`、`reaction_delay 0.85`（更精、更快）。
+  - 原生：不写 ⇒ 全部 1.0，与全局基准逐位一致。
+- 合并顺序不变：`DEFAULTS → ai.commander → 派系 commander_ai → 关卡 → 运行时 → 难度 → multipliers`。
+
 ## 6. 战斗与索敌
 
 - **濒死将领不可被选中**：C# 批量索敌的 `_tgt_alive` 是「可攻击掩码」（`is_attackable()`，倒地 = 0）；人群分离仍用 `alive`，倒地将领照旧占位。
@@ -183,9 +220,25 @@ AI 指挥官（`commander`）是第三种 AI，和 `garrison`、`reddot` 并列�
   - `production` / `expand` / `patrol` / `idle` / `cohesion`
   - `march`（`arrive_radius` / `hold_radius` / `reissue_sec` / `end_when_clear`）
   - `build` / `reaction` / `roles`
+    - `build.house_pop_ratio_min`（默认 0.75）：人口比例低于它才建房屋；
+    - `production_attempts`（`intervals` 段，默认 6）：每个生产 tick 最多几单。
+  - `multipliers`：★ 2026.11.17 **派系整体倍率层**，乘在难度包之后。
+    键：`income_mult` / `army_cap` / `army_cap_ratio` / `army_interval` /
+    `strategic_interval` / `build_interval` / `production_interval` /
+    `reaction_delay` / `start_food` / `start_gold`；缺省 1.0。
+    可写在 `ai.commander`、`clan.list[].commander_ai`、关卡 / 运行时覆盖里。
   - `difficulty`
 
 ## 8. 测试基线
+
+2026-11-17 定向（本轮 AI 适配）：
+
+- `tools/check-syntax.ps1`：**308** 个 `.gd` 通过。
+- `test_ai_commander.gd`：**365** 项通过（即时招募 / 守军补满才轮换 / 点位容量 / 房屋门槛 / 自动再起）。
+- `test_ai_test_duel.gd` 218、`test_ai_observer.gd` 57、`test_ai_order_panel.gd` 19、
+  `test_ai.gd` 61、`test_ai_goals.gd` 35、`test_build_points.gd` 252、
+  `test_coop_ai_teammate.gd` 27、`test_campaign_ai.gd` 63、`test_zone_recruit.gd` 170、
+  `test_clan.gd` **301**（含派系整体倍率层）、`test_ai_test_campaigns.gd` **79**。
 
 2026-10-29 全量：`tools/run-tests.ps1` **95 套 / 8554 项断言全部通过**；`tools/check-syntax.ps1` **237 个 `.gd` 通过**。战役编辑器：`test_model.py` **341** 项、`test_app.py` **258** 项通过。重点套件：
 
@@ -214,7 +267,9 @@ AI 指挥官（`commander`）是第三种 AI，和 `garrison`、`reddot` 并列�
 ## 9. 已知取舍
 
 - 大本营升不满时，非军事建造会长期让路；这是「升本优先」的直接代价。
-- 60 秒探索结束后，第二将领训练完成前存在短暂空档。
+- 60 秒探索结束后，第二将领出现前存在短暂空档（原因是招募冷却 / 钱，不再是训练读条）。
+- 建造点位稀缺：经济建筑与箭塔按「至多一半点位留给塔」分配；点位不足时 AI 会优先保塔，经济扩张变慢。
+- 开局人口全满：房屋在人口比例掉到 `house_pop_ratio_min` 以下前不建，人口上限的长期扩张会晚一些。
 - 正常行军路径仍可能穿过大本营区划；这不是专门绕圈，而是路径规划结果。
 - 行军提前结束会把方向盘交回 `auto`：刚清空的区划若还在读条，由 `_capture_cleared_zone_tick()` 接续；`auto` 也可能转去别的战略目标（玩家可再下行军）。
 - 停火判定只看**目标点 `hold_radius` 内的可见敌人**；远处 / 迷雾里的敌人不会阻止结束。

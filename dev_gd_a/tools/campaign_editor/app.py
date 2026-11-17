@@ -97,6 +97,9 @@ from .model import (
     OBJ_HOLD_ZONE,
     SEV_BLOCK,
     SEV_WARN,
+    SLOT_NOT_IN_WALL_RING,
+    SLOT_NOT_ON_POINT,
+    SLOT_OK,
     TARGET_BASE,
     TARGET_BUILDING,
     TARGET_POINT,
@@ -109,8 +112,10 @@ from .model import (
     MapInfo,
     ModelError,
     UnitEntry,
+    building_slot_error,
     clean_number,
     fmt_sec,
+    is_wall_building_type,
 )
 
 #: 编辑器里优先显示的地图/战役（有用表在 `daeem/data/editor_visible.json`）。
@@ -196,6 +201,11 @@ DRAG_TOLERANCE = 3
 #:    与 `map_editor/app.py` 里那个同名常量是同一件事（两个编辑器的手势要一致）。
 BUTTON1_MASK = 0x0100
 
+#: ★★ 建造点位 / 城墙环的绘制阈值（与 `map_editor` 的 `BUILD_POINT_MIN_PX` 同一套）：
+#: 格子小于这个像素数就不往格子里写字了 —— 那个大小下字只会糊成一团，
+#: 而且一屏几十个点位上全是文字图元（tk 画文字比画矩形贵得多）。
+BUILD_POINT_MIN_PX = 26.0
+
 #: 画布上的图元颜色。
 C = {
     "grass": "#33422f",
@@ -206,6 +216,12 @@ C = {
     "center": "#ff8adf",
     #: ★ 区划**禁行格**（只在区划页画；游戏里不可见）。
     "no_go": "#e5484d",
+    #: ★★ **建造点位**（地图数据：非城墙建筑只能放在这里）。
+    #: 与 `map_editor` 的 `BUILD_POINT_COLOR` 同一个青色 —— 两个工具里「点位」是同一个东西，
+    #: 换个颜色会让作者以为是别的什么。
+    "build_point": "#4dd6e8",
+    #: ★★ **城墙环**（区划中心周围那一圈；城墙只能围在这里）。
+    "wall_ring": "#c98f4a",
     "grid": "#2a2c30",
     "text": "#f0f0f0",
     "dim": "#9aa0a8",
@@ -428,9 +444,12 @@ class EditorApp:
         self._build_widgets()
         self._bind_keys()
         self.sync_faction_context()
+        # ★★ 打开战役 = 当前那一关先按它的地图清理一遍建筑（不在点位上的直接删）。
+        pruned = self.prune_offpoint_buildings()
         self.refresh_all()
-        self.status("打开 %s　%s" % (self.model.campaign_id,
-                                    "（%d 关）" % len(self.model.levels)))
+        extra = ("　★★ 清理了 %d 栋不在点位上的建筑" % pruned) if pruned else ""
+        self.status("打开 %s　%s%s" % (self.model.campaign_id,
+                                      "（%d 关）" % len(self.model.levels), extra))
 
     # ==================================================================
     # 窗口骨架
@@ -751,6 +770,10 @@ class EditorApp:
             return
         self.current_level_id = level_id
         self._reset_level_state()
+        # ★★ 打开关卡 = 拿**这一关的地图**兜一次建筑：不在建造点位 / 城墙环上的直接删
+        #    （用户口径：「当前不在点位上的建筑直接删除」）。
+        #    ⚠️ 必须在 `refresh_all()` **之前**：列表与画布一画出来就该是清理后的样子。
+        self.prune_offpoint_buildings()
         # 换关卡 = 新地图：侧边栏回顶部、画布重新适应视图（这两件是用户预期的「重置」）。
         self._sidebar_reset_pending = True
         self._fit_pending = True
@@ -844,6 +867,8 @@ class EditorApp:
             # 当前关不存在 / 不在这张有用表里 → 退回第一个可见关卡。
             self.current_level_id = visible[0].level_id
             self._reset_level_state()
+            # ★ 换到另一关 = 也要按它的地图兜一次建筑（与 `set_current_level` 同一条）。
+            self.prune_offpoint_buildings()
 
     # ==================================================================
     # 页签 / 重画
@@ -1329,6 +1354,29 @@ class EditorApp:
                 self.canvas.create_text(sx + size / 2, sy + size * 0.2, text=label,
                                         fill=C["dim"], font=("Microsoft YaHei UI", 8))
 
+        # ---- ★★ 建造点位（**地图数据**：非城墙建筑只能放在这些格子上）----
+        #  ★ 为什么每一页都画：它是地图的一部分 —— 作者在区划页调归属时也要知道
+        #    「这一区哪里能盖房」。颜色与 `map_editor` 的「建造点位」同一个青色。
+        for (_bp_zid, bp_x, bp_y) in info.all_build_points():
+            sx, sy = self.cell_origin(bp_x, bp_y)
+            self.canvas.create_rectangle(sx + 2, sy + 2, sx + size - 2, sy + size - 2,
+                                         outline=C["build_point"], width=2, dash=(4, 2))
+            if size >= BUILD_POINT_MIN_PX:
+                self.canvas.create_text(sx + size / 2, sy + size / 2, text="建",
+                                        fill=C["build_point"],
+                                        font=("Microsoft YaHei UI",
+                                              max(7, int(size * 0.26)), "bold"))
+
+        # ---- ★★ 城墙环（只在摆放页、且画笔选中的是城墙时画）----
+        #  城墙只能围区划中心那一圈 —— 不画出来，作者放不上去时只能靠猜。
+        if self.page == "place" and self.brush_kind == "building" \
+                and is_wall_building_type(self.brush_value):
+            for ring_zid in sorted(info.zone_centers):
+                for (rx, ry) in info.wall_ring_tiles(ring_zid):
+                    sx, sy = self.cell_origin(rx, ry)
+                    self.canvas.create_rectangle(sx + 1, sy + 1, sx + size - 1, sy + size - 1,
+                                                 outline=C["wall_ring"], width=1, dash=(2, 3))
+
         # ---- ★ 区划禁行格（只在区划页画；游戏里不可见）----
         if self.page == "zone" and lv is not None:
             self._draw_no_go(info, lv)
@@ -1787,13 +1835,77 @@ class EditorApp:
             for e in lv.factions:
                 if e.base == cell:
                     what.append("%s 的大本营（关卡）" % e.fid)
-        self.status("(%d,%d)　地形 %s　%s%s　%s"
+        # ★★ 建造点位 / 城墙环：鼠标悬停时就告诉你这一格能不能盖房（省得放了才知道）
+        slot = ""
+        bp_zid = info.build_point_zone_id(x, y)
+        if bp_zid >= 0:
+            slot = "　★ 建造点位（%s）" % info.zone_label(bp_zid)
+        else:
+            ring_zid = info.wall_ring_zone_at(x, y)
+            if ring_zid >= 0:
+                slot = "　城墙环（中心 %s）" % info.zone_label(ring_zid)
+        self.status("(%d,%d)　地形 %s　%s%s%s　%s"
                     % (x, y, terrain,
                        ("区划 %s" % info.zone_label(zid)) if zid >= 0 else "不属于任何区划",
                        "（禁行）" if no_go else "",
+                       slot,
                        "　".join(what) if what else "（空的）"))
 
     # ---- 放置 / 删除 / 选中改字段 ----
+
+    def _building_place_error(self, entry: BuildingEntry,
+                              skip: Optional[BuildingEntry] = None) -> str:
+        """★★ 这一栋建筑现在能不能摆在这一格（"" = 能；否则是给用户看的一句话）。
+
+        规则（用户口径，与 `model.building_slot_error` / 导出校验同一套）：
+          · 非城墙建筑 → 必须是地图的**建造点位**，而且**一个点位只放一栋**；
+          · 城墙       → 必须围在某个**区划中心**周围那一圈（不校验点位占用）。
+
+        @param skip 改某一栋自己的坐标 / 类型时传它（别把自己算成「点位被占了」）
+        """
+        lv = self.level()
+        info = self.map_info()
+        if lv is None:
+            return ""
+        err = building_slot_error(info, entry.type, entry.point())
+        x, y = entry.point()
+        if err == SLOT_NOT_ON_POINT:
+            if info is not None and not info.zone_build_points:
+                return ("★ 这张地图一个**建造点位**都没有：非城墙建筑无处可放 —— "
+                        "去地图编辑器「区划」页给区划设点位（点位是地图数据）")
+            return ("★ (%d,%d) 不是**建造点位**：非城墙建筑只能放在青色「建」格里"
+                    "（点位数量由地图决定，一个点位只放一栋）" % (x, y))
+        if err == SLOT_NOT_IN_WALL_RING:
+            return ("★ (%d,%d) 不在任何区划中心的**城墙环**上：城墙只能围区划中心那一圈"
+                    "（选中城墙画笔时画布上有橙色虚线）" % (x, y))
+        if err != SLOT_OK:
+            return "★ 这一格放不了「%s」" % entry.type
+        if not model_mod.building_slot_full(info, entry.type, entry.point(),
+                                            model_mod.taken_building_points(lv, skip=skip),
+                                            skip=skip):
+            return "★ 这个建造点位 (%d,%d) 上已经有一栋建筑了：一个点位只能放一栋" % (x, y)
+        return ""
+
+    def prune_offpoint_buildings(self) -> int:
+        """★★ 自动清理：**不在合法落点上的建筑直接删掉**（打开关卡 / 换地图时调）。
+
+        用户口径：「摆放建筑只认地图划定的点位；当前不在点位上的建筑直接删除」。
+        删除规则见 `model.prune_offpoint_buildings`（落点不合法 / 同一格叠第二栋）。
+        ★ 只在内存里改：按「保存」才落盘；删错了靠「重新载入」（与另两个编辑器同一条取舍）。
+        @return 删掉了几栋（0 = 数据本来就是干净的）
+        """
+        lv = self.level()
+        info = self.map_info()
+        if lv is None or info is None:
+            return 0
+        removed = model_mod.prune_offpoint_buildings(lv, info)
+        if not removed:
+            return 0
+        self.selection = None
+        kinds = sorted({str(b.type) for b in removed})
+        self.status("★★ 清理了 %d 栋不在点位 / 城墙环上的建筑（%s）—— 保存后才落盘"
+                    % (len(removed), "、".join(kinds[:6]) + ("…" if len(kinds) > 6 else "")))
+        return len(removed)
 
     def place_at(self, cell: Tuple[int, int]) -> None:
         """在当前画笔下往这一格放东西。"""
@@ -1811,6 +1923,12 @@ class EditorApp:
             self.status("设了「%s」的大本营在 (%d,%d)" % (faction, cell[0], cell[1]))
         elif self.brush_kind == "building":
             entry = BuildingEntry(self.brush_value or "tower", cell[0], cell[1], faction)
+            # ★★ 建造点位 / 城墙环：**只在这些落点上摆**（用户口径）。
+            #    与导出校验、打开关卡时的自动清理**同一套判据**（`model.building_slot_*`）。
+            why = self._building_place_error(entry)
+            if why:
+                self.status(why)
+                return
             lv.start_buildings.append(entry)
             lv.mark_declared("start_buildings")
             self.selection = ("building", len(lv.start_buildings) - 1)
@@ -2187,6 +2305,8 @@ class EditorApp:
         lv.map_id = map_id
         lv.mark_declared("map")
         self.status("地图改成 %s（画布与下拉都重载了）" % map_id)
+        # ★★ 换地图 = 点位整张换了：按新图的建造点位清理一遍（不在点位上的直接删）。
+        self.prune_offpoint_buildings()
         self._after_change()
         if self.page == "place":
             self.fit_view()
@@ -2557,6 +2677,10 @@ class EditorApp:
         # ★ 换图连**禁行区**一起清掉了（`ensure_zone_owners(force=True)`），
         #   涂刷目标也必须退出 —— 否则「正在涂 c3」会指向新图上碰巧同号的区划。
         self.zone_paint_zone = -1
+        # ★★ 换地图 = 建造点位整张换了：不在新图点位上的建筑直接删（用户口径）。
+        pruned = self.prune_offpoint_buildings()
+        if not pruned:
+            self.status("地图改成 %s" % lv.map_id)
         # 换地图 = 画布内容整张换了：重新适应视图（这是用户预期的「换了一张图」）。
         self._fit_pending = True
         self._after_change()
@@ -2932,6 +3056,19 @@ class EditorApp:
         if self.brush_kind == "base":
             self._hint(section, "★ 「大本营」画笔：左键点格 = 给「归属」那一方设大本营；"
                                 "右键点已有的大本营 = 清掉")
+        elif self.brush_kind == "building":
+            # ★★ 用户口径：摆放建筑**只认**地图划定的落点 —— 这里把规则写在画笔旁边，
+            #    不要只写在 README 里（放了才知道放不上是最烦的）。
+            info = self.map_info()
+            if is_wall_building_type(self.brush_value):
+                self._hint(section, "★ **城墙**只能围**区划中心**那一圈（画布上的橙色虚线格，%d 层）；"
+                                    "别的格子放不上去。" % max(1, (info.wall_ring_radius
+                                                                     if info is not None else 1)))
+            else:
+                n = sum(len(v) for v in info.zone_build_points.values()) if info is not None else 0
+                self._hint(section, "★ 非城墙建筑只能放在地图的**建造点位**上"
+                                    "（青色「建」格；这张图一共 %d 个）：点位由地图决定，"
+                                    "一个点位只放一栋。没有点位就去地图编辑器的「区划」页设。" % n)
 
         # ---- 地图上已有的东西 ----
         section2 = self._section("地图上已有的（关卡层）",
@@ -3835,17 +3972,37 @@ class EditorApp:
         self.refresh_all()
 
     def _set_building_field(self, field: str, value: Any) -> None:
+        """改选中建筑的字段（归属 / 类型）。
+
+        ★★ 改**类型**也是「换一种落点」：城墙要围中心、非城墙要点位 ——
+          塔改成墙（或反过来）在同一格上一定是非法落点，所以先过同一套判据。
+          `owner` 等其他字段照旧直接写。
+        """
         b = self.selected_building()
         if b is None:
             return
+        if field == "type":
+            probe = BuildingEntry(str(value), b.x, b.y, b.owner)
+            probe.tag = b.tag
+            why = self._building_place_error(probe, skip=b)
+            if why:
+                self.status("换不了类型：%s" % why)
+                return
         setattr(b, field, value)
         self.refresh_all()
 
     def _set_building_point(self, text: str) -> None:
+        """改选中建筑的坐标 —— 同样只能落在合法落点上（点位上 / 城墙环上）。"""
         b = self.selected_building()
         point = _parse_point(text)
         if b is None or point is None:
             self.status("坐标要写成 `x,y`")
+            return
+        probe = BuildingEntry(b.type, point[0], point[1], b.owner)
+        probe.tag = b.tag
+        why = self._building_place_error(probe, skip=b)
+        if why:
+            self.status("挪不了：%s" % why)
             return
         b.x, b.y = point
         self.refresh_all()
@@ -3864,7 +4021,9 @@ class EditorApp:
         section2 = self._section("这一版不做的事", "见 dev_plan_7 6.6：编辑器的边界")
         for line in ("不做撤销 / 重做（数据都在 JSON 里，改坏了重新载入）",
                      "不做剧本预览（要预览就进游戏跑一关）",
-                     "摆放不做自动避让（允许压在中心格上，但导出会拦）",
+                     "摆放不做自动避让（单位允许压在中心格上，但导出会拦）",
+                     "★ 建筑只能放在地图的建造点位上（城墙围区划中心一圈）；"
+                     "打开关卡时不在点位上的会被直接删掉",
                      "单人关可跨边选阵营；合作关要求两个可玩阵营同方",
                      "不做「这一关大概多久成形」的估算提示（用户明确不要）",
                      "地形 / 区划 / 中心归地图编辑器；兵种 / 建筑数值归单位编辑器"):

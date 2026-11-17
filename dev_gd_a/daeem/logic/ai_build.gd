@@ -40,6 +40,8 @@ static func update(ai) -> void:
 	# ★★ 2026.10.30：科技之后补资源建筑（粮田 / 房屋 / 矿脉）。
 	#   只在「没有缺编队 + 己方区划没被入侵」时做，并且只用扣完补员预留后的余钱；
 	#   造出来就结束这一 tick（与「升本 / 造塔」一样，一次只落一栋）。
+	#   ★★ 2026.11.17：点位要留给箭塔 —— `_pick_resource_site()` 会先扣掉该区划的
+	#     箭塔缺口，只有剩下的空点位才允许经济建筑使用（点位数量按地图实时算）。
 	var _p2 := _pt(ai)
 	var built_resource := _try_resource_building(ai, memo)
 	_pd(ai, "build/resource", _p2)
@@ -274,7 +276,12 @@ static func _resource_building_counts(ai) -> Dictionary:
 
 
 ## 选一个还没到目标数量的资源建筑类型；空串 = 暂时不需要 / 都解锁不了。
+##
+## ★★ 2026.11.17：开局所有区划人口都是满的（`world._fill_zone_population`），
+##   房屋不再是「无脑补」的候选 —— 只有人口比例掉到 `build.house_pop_ratio_min`
+##   （默认 0.75）以下才建。否则会拿一个稀缺的建造点位去换 1 点暂时用不到的上限。
 static func _pick_resource_building(ai, counts: Dictionary) -> String:
+	var build_cfg: Dictionary = ai.profile.get("build", {})
 	var owned := _owned_zone_count(ai)
 	var targets := {
 		"farm": clampi(int(ceil(float(owned) / 3.0)), 1, 4),
@@ -284,6 +291,8 @@ static func _pick_resource_building(ai, counts: Dictionary) -> String:
 	var food_need := _stock_need(ai, "food")
 	var gold_need := _stock_need(ai, "gold")
 	var pop_ratio := AiArmyRes._owned_population_ratio(ai)
+	var house_ratio_min := clampf(
+		float(build_cfg.get("house_pop_ratio_min", 0.75)), 0.0, 1.0)
 	var best := ""
 	var best_score := -INF
 	for t in RESOURCE_BUILDING_TYPES:
@@ -294,6 +303,8 @@ static func _pick_resource_building(ai, counts: Dictionary) -> String:
 		var target := int(targets.get(type, 1))
 		if have >= target:
 			continue
+		if type == "house" and pop_ratio >= house_ratio_min:
+			continue
 		var score := float(target - have)
 		match type:
 			"farm":
@@ -301,7 +312,8 @@ static func _pick_resource_building(ai, counts: Dictionary) -> String:
 			"mine":
 				score += gold_need * 0.5
 			"house":
-				score += pop_ratio * 0.5
+				# 越缺人口越该建（旧写法直接用 pop_ratio，等于「越满越优先」，反了）。
+				score += (1.0 - pop_ratio) * 0.5
 		if score > best_score + 1e-6:
 			best_score = score
 			best = type
@@ -312,8 +324,11 @@ static func _pick_resource_building(ai, counts: Dictionary) -> String:
 ## @return {"zone": Dictionary, "tile": Vector2i}；空 = 没有位置。
 ##
 ## ★★ 2026.11.15：AI 与玩家同一条规则 —— 非城墙建筑只能落在建造点位上。
-##   点位上已经有楼（塔 / 别的资源建筑）就跳过；一个区划最多 2 个点，
-##   所以「单区划资源建筑上限」实际上也被点位数夹住。
+## ★★ 2026.11.17：**点位是稀缺资源，不能全给经济建筑** ——
+##   一个区划里经济建筑能用几个点位由 `_resource_building_capacity()` 算：
+##   先扣掉这个区划还没满足的**箭塔缺口**，剩下的才给粮田 / 矿脉 / 房屋。
+##   点位数不是固定的（地图上每个区划可以不同，`build.points_per_zone` 只是上限），
+##   所以这里按实时空点位算，不假设「每区 2 个」。
 static func _pick_resource_site(ai, per_zone: int, memo: Variant = null) -> Dictionary:
 	var base = ai.world.find_base_of(ai.faction)
 	var base_pt := Vector2.ZERO
@@ -331,8 +346,9 @@ static func _pick_resource_site(ai, per_zone: int, memo: Variant = null) -> Dict
 			continue
 		if _zone_capture_blocked(ai, zd, memo) or _zone_threatened(ai, zd, memo):
 			continue
+		var capacity := _resource_building_capacity(ai, zd, per_zone, memo)
 		var here := _resource_buildings_in_zone(ai, int(zd.get("id", -1)))
-		if here >= per_zone:
+		if capacity <= 0 or here >= capacity:
 			continue
 		var tile: Variant = _pick_resource_tile(ai, zd)
 		if tile == null:
@@ -351,6 +367,38 @@ static func _pick_resource_site(ai, per_zone: int, memo: Variant = null) -> Dict
 			best_score = score
 			best = {"zone": zd, "tile": tile}
 	return best
+
+
+## 一个区划里**还能放几栋经济建筑**。
+##
+## 计算顺序（每项都是实时值，点位数量随地图变化）：
+##   1. 空点位 = 这个区划的 `build_points_of_zone()` 里 `build_point_available()` 为真的格；
+##   2. 扣掉**给箭塔预留的点位**：先看这个区划的箭塔缺口
+##      （`_zone_tower_target - 现有塔数`，后 / 非前线为 0），
+##      但最多只预留「空点位的一半（向上取整，至少 1 个）」——
+##      这样 2 点位的前线区划 = 1 塔 + 1 经济，4 点位 = 2 塔 + 2 经济，
+##      不会因为塔目标 3 就把 2 个点位全占死、经济建筑一个都造不出来；
+##   3. 再受配置 `resource_building_per_zone` 的单区上限约束。
+static func _resource_building_capacity(ai, zd: Dictionary, per_zone: int, memo: Variant = null) -> int:
+	var zid := int(zd.get("id", -1))
+	if zid < 0:
+		return 0
+	if per_zone <= 0:
+		return 0
+	var free := 0
+	for t in ai.world.build_points_of_zone(zid):
+		var tile: Vector2i = t
+		if ai.blocked_tiles.has(tile):
+			continue
+		if ai.world.build_point_available(tile.x, tile.y, ai.faction):
+			free += 1
+	if free <= 0:
+		return 0
+	var tower_need := maxi(0, _zone_tower_target(ai, zd, memo) - _tower_count_in_zone(ai, zid))
+	var max_reserve := maxi(1, int(ceil(float(free) * 0.5)))
+	var keep := mini(free, mini(tower_need, max_reserve))
+	var by_points := free - keep
+	return clampi(by_points, 0, per_zone)
 
 
 ## 某个己方区划里已经有多少座资源建筑（任意种类）。
@@ -647,8 +695,9 @@ static func _pick_wall_zone(ai, memo: Variant = null):
 	return best
 
 
-## 一个「完全没有护卫、也没有在排队」的将领数。
+## 一个「完全没有护卫」的将领数。
 ## 资源建筑的软闸门：先给光杆将领补人，再补经济。
+## ★ 2026.11.17：招募即时化后没有队列可看，只看实时护卫。
 static func _bare_general_count(ai) -> int:
 	var n := 0
 	for u in ai.world.units:
@@ -658,8 +707,7 @@ static func _bare_general_count(ai) -> int:
 			continue
 		if String(u.leader_id) != "":
 			continue
-		if ai.world.retinue_of(String(u.id), true).is_empty() \
-				and int(u.train_queue_size()) <= 0:
+		if ai.world.retinue_of(String(u.id), true).is_empty():
 			n += 1
 	return n
 

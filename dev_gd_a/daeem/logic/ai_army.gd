@@ -341,11 +341,13 @@ static func team_total(ai, leader) -> int:
 	return 1 + team_escorts(ai, leader)
 
 
-## 队伍总人数 + 还在队列里的人数（生产决策要按「补完之后」算，否则会超招）。
+## 生产决策用的「补完之后」队伍人数。
+##
+## ★ 2026.11.17：招募已经**即时化**（没有队列 / 读条），`train_queue_size()` 恒为 0。
+##   不再把队列算进来；每单都会当场生成，实时人数就是最终人数。
+##   保留这个函数名只是为了让调用点语义清楚（「按补完后的规模判断」）。
 static func team_projected(ai, leader) -> int:
-	if leader == null or not leader.alive:
-		return 0
-	return team_total(ai, leader) + int(leader.train_queue_size())
+	return team_total(ai, leader)
 
 
 static func _role_of(ai, leader) -> String:
@@ -531,15 +533,14 @@ static func maybe_rotate_garrison(ai) -> bool:
 	if home == null:
 		return false
 	var pc: Dictionary = ai.profile.get("production", {})
-	var ec: Dictionary = ai.profile.get("expand", {})
 	var target := maxi(1, _i(pc, "home_team_size", 6))
-	var min_units := _min_units(ai)
-	# ★★ 2026.10.24：读条中的守军**也可以被换下来去巡逻 / 扩张**。
-	#   只要它已经有「能出门」的规模、且基地里有一支能接防的队伍，就轮换；
-	#   不要求它先补满 home_team_size（那会让读条中的将领永远钉在家里）。
-	var training_dispatch: bool = bool(pc.get("dispatch_training_home", true)) \
-		and home.is_training() and team_total(ai, home) >= min_units
-	if team_projected(ai, home) < target and not training_dispatch:
+	# ★★ 2026.11.17：目标不能超过这位将领的实际编制上限（1 级大本营 +0 时
+	#   `home_team_size` 可能高于 cap）。否则队伍永远补不满，守军永远不会轮换。
+	target = mini(target, 1 + int(ai.world.effective_retinue_cap(home)))
+	# ★★ 2026.11.17：招募即时化后没有「读条中的守军」。
+	#   守军必须真的补到目标规模才轮换；否则半编队刚被换出去，
+	#   下一 tick 又因为接替者不够格而换不回来，只会来回抖动。
+	if team_projected(ai, home) < target:
 		return false
 	var bz := _base_zone_id(ai)
 	if bz < 0:
@@ -655,7 +656,10 @@ static func recruit_candidates(ai) -> Array:
 				String((z as Dictionary).get("owner", "")), ai.faction):
 			continue
 		var is_home: bool = home != null and u == home
-		var target_size := team_target(ai, u, is_home)
+		# ★ 2026.11.17：目标不能超过实际编制上限 —— 否则「差 2 个」永远补不满，
+		#   补员预留还会为这两个招不出来的兵一直留钱。
+		var target_size := mini(team_target(ai, u, is_home),
+			1 + int(ai.world.effective_retinue_cap(u)))
 		var projected := team_projected(ai, u)
 		var deficit := target_size - projected
 		if deficit <= 0:
@@ -671,8 +675,8 @@ static func recruit_candidates(ai) -> Array:
 		prio += float(mini(deficit, 6)) * 2.0
 		prio -= u.pos.distance_to(base_pt) * 0.1
 		out.append({
-			"leader": u, "deficit": deficit, "escorts": escorts,
-			"garrison": is_home, "prio": prio,
+			"leader": u, "deficit": deficit, "target": target_size,
+			"escorts": escorts, "garrison": is_home, "prio": prio,
 		})
 	out.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		var pa := float(a.get("prio", 0.0))
@@ -685,7 +689,7 @@ static func recruit_candidates(ai) -> Array:
 
 ## ★★ 当前「钱能解决」的补员缺口总数。
 ##
-## 只统计：己方区划内、脱战、没到编制上限、队列没满、且**区划人口够**的候选。
+## 只统计：己方区划内、脱战、没到编制上限、且**区划人口够**的候选。
 ## 这些兵是现在/马上能造出来的，所以建造（塔 / 墙 / 升级 / 特化）不能抢这笔预算。
 ## 被人口 / 战斗卡住的候选不算：那种情况下再怎么留钱也造不出来，不能因此把 AI 锁死。
 static func pending_recruit_units(ai) -> int:
@@ -768,16 +772,6 @@ static func understrength_team_count(ai) -> int:
 	var n := 0
 	for t in leader_teams(ai):
 		if team_total(ai, t["leader"]) < min_units:
-			n += 1
-	return n
-
-
-## 正在读条的将领数（同时读条上限用）。
-static func training_leader_count(ai) -> int:
-	var n := 0
-	for t in leader_teams(ai):
-		var leader = t["leader"]
-		if leader != null and leader.is_training():
 			n += 1
 	return n
 
@@ -1870,7 +1864,7 @@ static func _point_too_dangerous(ai, pt: Vector2, our_strength: float,
 ##   · 选队按「上次命令时间」从旧到新排（从没动过的优先）；
 ##   · 巡逻点从 `patrol_index` 往后找第一个离它 **≥ 4 格**、且不会让小队撞上
 ##     成规模敌军的点（`patrol.threat_radius` / `patrol.avoid_enemy_ratio`）。
-##   · ★ 正在读条的将领**照常可以巡逻**：这里不看 `is_training()`。
+##   · ★ 补到出门规模的队伍照常可以巡逻（没有「读条中」状态）。
 ##     只有守军一支队伍时，允许它在基地附近巡逻（`patrol.home_when_alone`），
 ##     但基地周围已经有敌人时不允许（先守家）。
 static func _patrol(ai) -> void:

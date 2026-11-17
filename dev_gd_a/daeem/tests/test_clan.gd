@@ -627,6 +627,37 @@ func _test_clan_ai_profile(cfg) -> void:
 	ok(float(p2["economy"]["reserve_gold"]) > float(p1["economy"]["reserve_gold"]),
 		"★ 帝国的黄金储备更高（留钱买精锐）")
 
+	# ---- ★★ 2026.11.17：整体倍率层（乘在难度包之后）
+	# 默认 normal 的基线：army_interval 1.2 / production 1.0 / build 1.0 / reaction 1.2 / cap 36。
+	near(float(p1["army_interval_mult"]), 1.2 * 1.1, 1e-9,
+		"★★ 王朝整体节奏更慢（army_interval ×1.1）")
+	near(float(p2["army_interval_mult"]), 1.2 * 0.9, 1e-9,
+		"★★ 帝国整体节奏更快（army_interval ×0.9）")
+	near(float(p1["production_interval_mult"]), 1.0 * 1.1, 1e-9,
+		"★★ 王朝生产 tick 更慢（×1.1）")
+	near(float(p2["production_interval_mult"]), 1.0 * 0.9, 1e-9,
+		"★★ 帝国生产 tick 更快（×0.9）")
+	near(float(p1["reaction_delay_sec"]), 1.2 * 1.1, 1e-9,
+		"★★ 王朝反应更慢（×1.1）")
+	near(float(p2["reaction_delay_sec"]), 1.2 * 0.85, 1e-9,
+		"★★ 帝国反应更快（×0.85）")
+	eq(int(p1["army_cap"]), int(round(36.0 * 1.05)), "★★ 王朝兵力上限 +5%")
+	eq(int(p2["army_cap"]), int(round(36.0 * 0.95)), "★★ 帝国兵力上限 -5%")
+
+	# 倍率是**乘在难度之后**：hard 的 income 1.25 / production 0.75 再乘 0.5。
+	var p_hard := AiProfileRes.build(cfg, "p1", [{
+		"id": "p1",
+		"commander_ai": {
+			"difficulty": "hard",
+			"multipliers": {"income_mult": 0.5, "production_interval": 0.5},
+		},
+	}], {}, "native")
+	eq(String(p_hard["difficulty_name"]), "hard", "（前提）难度解析为 hard")
+	near(float(p_hard["income_mult"]), 1.25 * 0.5, 1e-9,
+		"★★ 倍率层乘在难度收入之后（1.25 × 0.5）")
+	near(float(p_hard["production_interval_mult"]), 0.75 * 0.5, 1e-9,
+		"★★ 倍率层乘在难度节奏之后（0.75 × 0.5）")
+
 	# ---- 每一条编成里的兵种都必须是**这一派真能招的**（写错一个 id 就等于白配）
 	for pair in [["dynasty", p1], ["empire", p2]]:
 		var cid := String(pair[0])
@@ -671,6 +702,11 @@ func _test_clan_ai_profile(cfg) -> void:
 	near(float(ai2.profile["auto"]["attack_after_sec"]), 38.0, 1e-9,
 		"★★ 帝国的控制器 profile 里就是 38 秒")
 	eq(int(ai2.profile["idle"]["max_scouts"]), 3, "★ 帝国派更多侦察")
+	# ★★ 2026.11.17：整体倍率真的进了控制器 profile（不是只在纯函数里）。
+	near(float(ai1.profile["army_interval_mult"]), 1.2 * 1.1, 1e-9,
+		"★★ 王朝控制器的指令节奏 = 难度 1.2 × 派系 1.1")
+	near(float(ai2.profile["production_interval_mult"]), 1.0 * 0.9, 1e-9,
+		"★★ 帝国控制器的生产节奏 = 难度 1.0 × 派系 0.9")
 
 
 ## 派系块本身要「形状正确」：只许写 ai.commander 里真有意义的键，且不能碰 difficulty。
@@ -687,6 +723,19 @@ func _test_clan_profiles_compilable(cfg) -> void:
 			"★★ %s 的派系块里没有 difficulty（难度不归派系管）" % cid)
 		for k in block.keys():
 			ok(known.has(k), "★★ %s 的派系块只写认识的键（%s）" % [cid, k])
+		# ★★ 2026.11.17：整体倍率层只允许写全局 multipliers 认得的键，且必须是正数。
+		var mm: Variant = block.get("multipliers", null)
+		if typeof(mm) == TYPE_DICTIONARY:
+			var allowed: Dictionary = cfg.ai_commander_cfg().get("multipliers", {})
+			for mk in (mm as Dictionary).keys():
+				if String(mk) == "_comment":
+					continue
+				ok(allowed.has(mk), "★★ %s 的 multipliers 只写认识的键（%s）" % [cid, mk])
+				var mv: Variant = (mm as Dictionary)[mk]
+				ok(typeof(mv) == TYPE_FLOAT or typeof(mv) == TYPE_INT,
+					"★ %s 的 multipliers.%s 是数字" % [cid, mk])
+				if typeof(mv) == TYPE_FLOAT or typeof(mv) == TYPE_INT:
+					ok(float(mv) > 0.0, "★ %s 的 multipliers.%s > 0" % [cid, mk])
 		# 编成表的权重加起来应该接近 1（差太多说明配漏了 / 配重了）
 		for role in ["line", "ranged", "guerrilla"]:
 			var rc: Dictionary = (block.get("roles", {}) as Dictionary).get(role, {})

@@ -2,7 +2,7 @@
 ##
 ## 验四层：
 ##   1. 数据：三关都在 demo 里，地图 between_moutains，两边都可玩且都挂 commander；
-##   2. 难度：每关的 commander_ai.difficulty = easy / normal / hard；
+##   2. 难度：关卡里**写了** `commander_ai.difficulty` 就按它；没写 = 默认 normal；
 ##   3. 装配：选任意一方，另一方由 commander 接管，且难度正确；
 ##   4. 菜单：campaigns_menu.json 里有三个指向它们的真实章节。
 extends "res://tests/test_case.gd"
@@ -14,11 +14,17 @@ const BriefRes = preload("res://logic/campaign_menu_brief.gd")
 const GameSceneRes = preload("res://view/game_scene3d.gd")
 
 const DEMO_DIR := "res://data/campaigns/demo"
-const LEVELS := {
-	"ai_test_easy": "easy",
-	"ai_test_normal": "normal",
-	"ai_test_hard": "hard",
-}
+const LEVELS := ["ai_test_easy", "ai_test_normal", "ai_test_hard"]
+
+## 关卡里显式写的难度（缺 `commander_ai` / 缺 difficulty ⇒ 运行时回退 normal）。
+## ★ 2026.11.17：不再把 easy / hard 写死在测试里 —— 关卡数据可以手改。
+func _declared_difficulty(fc: Dictionary) -> String:
+	var ca: Variant = fc.get("commander_ai", null)
+	if typeof(ca) == TYPE_DICTIONARY:
+		var d := String((ca as Dictionary).get("difficulty", "")).strip_edges().to_lower()
+		if d != "":
+			return d
+	return "normal"
 
 func _initialize() -> void:
 	_case_name = "test_ai_test_campaigns"
@@ -39,8 +45,8 @@ func _run() -> void:
 		quit(1)
 		return
 
-	for lid in LEVELS.keys():
-		_check_data(camp, String(lid), String(LEVELS[lid]))
+	for lid in LEVELS:
+		_check_data(camp, String(lid))
 	await _check_assembly(cfg, camp)
 	_check_menu(cfg)
 	await _check_game_scene(camp)
@@ -58,7 +64,7 @@ func _run() -> void:
 # 1) 关卡数据
 # ------------------------------------------------------------------
 
-func _check_data(camp, lid: String, diff: String) -> void:
+func _check_data(camp, lid: String) -> void:
 	var lv = camp.level(lid)
 	ok(lv != null, "关卡 %s 能载入" % lid)
 	if lv == null:
@@ -70,10 +76,9 @@ func _check_data(camp, lid: String, diff: String) -> void:
 		eq(String(fc.get("ai", "")), "commander",
 			"%s/%s 是 commander（选哪边都能摘掉自己、让另一边接管）" % [lid, fid])
 		var ca: Variant = fc.get("commander_ai", null)
-		ok(typeof(ca) == TYPE_DICTIONARY, "%s/%s 有 commander_ai" % [lid, fid])
 		if typeof(ca) == TYPE_DICTIONARY:
-			eq(String((ca as Dictionary).get("difficulty", "")), diff,
-				"★★ %s/%s 难度 = %s" % [lid, fid, diff])
+			eq(String((ca as Dictionary).get("difficulty", "")), _declared_difficulty(fc),
+				"★★ %s/%s 难度 = 关卡声明值" % [lid, fid])
 	var blocks: Array = lv.blockers()
 	var detail := ""
 	for b in blocks:
@@ -86,13 +91,13 @@ func _check_data(camp, lid: String, diff: String) -> void:
 # ------------------------------------------------------------------
 
 func _check_assembly(cfg, camp) -> void:
-	for lid in LEVELS.keys():
+	for lid in LEVELS:
 		var lv = camp.level(String(lid))
 		if lv == null:
 			continue
-		var diff := String(LEVELS[lid])
 		for seat in ["p1", "p2"]:
 			var foe := "p2" if String(seat) == "p1" else "p1"
+			var diff := _declared_difficulty(lv.faction_config(foe))
 			var w = WorldRes.create_from_level(cfg, lv, String(seat),
 				lv.build_roster(cfg, seat), true)
 			ok(w != null, "%s/%s 能建出世界" % [lid, seat])
@@ -106,7 +111,7 @@ func _check_assembly(cfg, camp) -> void:
 			if w.ai_commanders.has(foe):
 				var ai = w.ai_commanders[foe]
 				eq(String(ai.profile.get("difficulty_name", "")), diff,
-					"★★ %s/%s AI 难度 = %s" % [lid, seat, diff])
+					"★★ %s/%s AI 难度 = %s（关卡声明 / 缺省 normal）" % [lid, seat, diff])
 			ok(w.find_base_of(String(seat)) != null and w.find_base_of(foe) != null,
 				"%s/%s 双方都有大本营" % [lid, seat])
 			eq(String(w.objective_state.get("state", "")), "running",
@@ -120,7 +125,7 @@ func _check_assembly(cfg, camp) -> void:
 
 func _check_menu(cfg) -> void:
 	var campaigns := CampaignMenuDbRes.load_campaigns()
-	for lid in LEVELS.keys():
+	for lid in LEVELS:
 		var found: Dictionary = {}
 		for raw in campaigns:
 			if typeof(raw) != TYPE_DICTIONARY:
@@ -155,8 +160,9 @@ func _check_game_scene(camp) -> void:
 	if game.world != null:
 		eq(game.world.commander_factions(), ["p2"], "★★ 上方（p2）由 commander 接管")
 		if game.world.ai_commanders.has("p2"):
+			var diff := _declared_difficulty(lv.faction_config("p2"))
 			eq(String(game.world.ai_commanders["p2"].profile.get("difficulty_name", "")),
-				"hard", "★★ 对局里的 AI 难度 = hard")
+				diff, "★★ 对局里的 AI 难度 = %s（关卡声明 / 缺省 normal）" % diff)
 		eq(String(game.world.my_faction), "p1", "本机阵营 = p1")
 	game.queue_free()
 	await process_frame

@@ -222,14 +222,7 @@
       "name": "红方游骑"
     }
   ],
-  "start_buildings": [
-    {
-      "type": "tower",
-      "x": 7,
-      "y": 5,
-      "owner": "F1"
-    }
-  ],
+  "start_buildings": [],
   "objectives": [
     {
       "for": "F1",

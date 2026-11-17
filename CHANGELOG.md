@@ -7,6 +7,17 @@
 
 本版本为在godot引擎内的原型开发，仅展示完整的局内玩法
 
+### 2026.11.17 AI 适配即时招募 / 建造点位 / 开局满人口 / 派系整体倍率
+
+1. **即时招募**：生产循环删掉 `max_training_leaders` / `max_queue_per_leader` / `is_training()` 等旧队列判据；每个生产 tick 最多 `production_attempts` 单（默认 6），每支候选队伍最多 1 单，出兵当场生效并按实时缺口补，不会超招。
+2. **守军轮换**：守军必须真的补满 `home_team_size` 才轮换；删除 `dispatch_training_home`（没有「读条中提前出门」了）。
+3. **自动再起**：世界负责自动再起，AI 只保留「敌后 / 太远没兵时召回」的决策；删除重复的 AI 再起点火与 `stats.revives`。
+4. **建造点位**：经济建筑与箭塔共用点位。`_resource_building_capacity()` 按实时空点位数计算，先扣箭塔缺口、最多预留一半（向上取整、至少 1 个），再受 `resource_building_per_zone` 限制；**不假设每区 2 个点位**。
+5. **开局满人口**：房屋只在 `_owned_population_ratio() < build.house_pop_ratio_min`（默认 0.75）时进入候选；房屋评分改成「越缺越优先」。
+6. **配置 / 文档**：`ai_profile.gd`、`config.json` 删除死参数并新增 `house_pop_ratio_min`；`ai_doc/ai-commander-current-status.md`、`docs/build_points.md` 同步。
+7. **测试**：`test_ai_commander` 365 项通过（新增即时招募、补满才轮换、点位容量、房屋门槛、自动再起）；`test_ai_test_campaigns` 改成「读关卡声明的 difficulty，没写按 normal」后 **79 项全过**。
+8. **派系整体倍率层**：`commander_ai.multipliers` 乘在难度包之后，可按派系调整收入 / 四个 interval / 兵力上限 / 反应延迟 / 起手资源。王朝 `cap×1.05、节奏×1.1、反应×1.1`（更厚更慢），帝国 `cap×0.95、节奏×0.9、反应×0.85`（更精更快），原生不写 = 全部 1.0。`test_clan` **301** 项通过。
+
 ### 2026.11.16（第十一轮）卡牌悬停说明搬进左下角栏 + 精简文案 + 子刹 / 阿吉诃德原画
 
 1. **需求**：「将所有的卡牌悬停文本放至左下角栏中（若在悬停卡牌时已有左下角栏，则卡牌悬停文本覆盖原有栏位）并精简表述，面板大小完全相同样式相同，如乂字军披甲剑士的表述为"70粮 近战步兵 对骑兵伤害+ 近战伤害减免+"，其余所有卡牌按此模板来，只介绍消费和特性」+「将 art_draft 里的子刹.png 和阿吉诃德.png 替换到当前游戏对应的占位素材上」。

@@ -166,6 +166,41 @@ GENERAL_SLOTS = 3
 #:    它是**名册号**（运行时 id / 附属兵归属），与「哪个将领」（兵种档位）相互独立。
 GENERAL_ROSTER_MAX = 10
 
+# ======================================================================
+# ★★ 建造点位 / 城墙环（2026.11 的建造系统）
+# ======================================================================
+#
+# 用户口径（与 `daeem/logic/world.gd` 的 `build_reject_reason` / `zone.gd` 同一套）：
+#   · **非城墙建筑**只能落在区划的**建造点位**上 —— 点位的权威数据在地图
+#     （`zone_list[].build_points`，地图编辑器「区划」页设置，每区划 `points_per_zone` 个）；
+#   · **城墙**只能围**区划中心**那一圈（`wall_ring_radius` 层）。
+#
+# 于是在本编辑器里：摆放建筑**只认**这两种落点；不在这两种落点上的建筑
+# （打开关卡 / 换地图时）**直接删掉**，导出前还会再拦一次。
+# ⚠️ 运行时对 `start_buildings[]` 是**无条件落地**的（`world._apply_level_placement`
+#    传 force=true），所以这几条是**本工具独有的校验** —— 逻辑层没有对应的 `_ck_*`。
+#    这也是为什么它们的 code 是本文件新增的（不是 `logic/level.gd` 里已有的那些）。
+
+#: 建造点位的默认数量（= `config.json` 的 `build.points_per_zone`）；配置缺省时用它。
+BUILD_POINTS_PER_ZONE_DEFAULT = 2
+
+#: 城墙环的默认层数（= `config.json` 的 `build.wall_ring_radius`）；1 = 中心 3×3 的外圈 8 格。
+WALL_RING_RADIUS_DEFAULT = 1
+
+
+def is_wall_building_type(type_id: Any) -> bool:
+    """这个建筑类型算不算**城墙**（判据与 `logic/building.gd` 的 `is_wall_type` 逐字一致）。
+
+    ★ 为什么不是「只认 `wall` / `stone_wall`」：config 里可能新加一堵 `wood_wall` /
+      `city_wall`，运行时的判据是「type 里带 `wall`」。两边必须同一条，
+      否则编辑器允许摆的墙，游戏里 `build_reject_reason` 会判成「不是中心格」。
+
+    ⚠️ `p_type.contains("wall")` 是**子串**判定（`stone_wall` 也含 `wall`），这里用
+      `"wall" in t`；大写 `WALL` 不算（与 Godot 的 `contains` 一样区分大小写）。
+    """
+    t = str(type_id or "")
+    return t == "wall" or t == "stone_wall" or "wall" in t
+
 
 def general_kind_slot(kind: str) -> int:
     """`kind`（`general` / `general_N`）对应的将领档位（**0 起**）；否则 -1。
@@ -1063,7 +1098,9 @@ class MapInfo:
     __slots__ = ("map_id", "path", "name", "cols", "rows", "hidden", "placeholder",
                  "factions", "zone_ids", "zone_names", "zone_centers", "zone_production",
                  "zone_owners", "terrain", "exists", "walkable", "allies", "faction_bases",
-                 "raw", "zone_grid", "builtin_factions")
+                 "raw", "zone_grid", "builtin_factions",
+                 "zone_build_points", "build_point_zone", "build_points_per_zone",
+                 "wall_ring_radius")
 
     def __init__(self, map_id: str, path: str = "") -> None:
         self.map_id = map_id
@@ -1100,6 +1137,24 @@ class MapInfo:
         #:   用途只有一处：校验「自定义阵营有没有配色」——
         #:   内置 id 不写 color 也有颜色，而自定义 id 不写会退到**品红**（整场一片紫）。
         self.builtin_factions: set = set()
+
+        # ---- ★★ 建造点位（2026.11 的建造系统；权威数据在地图）----
+        #: 区划 id → 它的**建造点位**列表（顺序 = 地图里写的顺序）。
+        #:
+        #: ★★ 语义（用户口径）：「非城墙建筑只能放在这些点位上」。
+        #:   读入时就按**运行时同一套规则**过一遍（见 `_fill_build_points`）：
+        #:   必须是这个区划自己的、存在且能走的地块，而且不能是区划中心、
+        #:   也不能落在中心的城墙环里（那一圈留给城墙）。坏点直接跳过 ——
+        #:   于是「编辑器里看得见的点」= 「游戏里真能盖的点」。
+        #: ⚠️ **不自动补点**（用户口径：所见即所得）：地图没写就是没有 ——
+        #:   运行时对老地图会自己补 2 个，编辑器绝不替它猜（补出来的点作者看不到）。
+        self.zone_build_points: Dict[int, List[Tuple[int, int]]] = {}
+        #: 反查表「格 → 它是哪个区划的建造点位」（不是任何点位就不在里面）。
+        #: 一个区划最多两三个点，整张图也就几十项 —— 用字典比逐区划扫快且简单。
+        self.build_point_zone: Dict[Tuple[int, int], int] = {}
+        #: 读地图时实际采用的数量上限 / 城墙环层数（= `config.build` 的同名值）。
+        self.build_points_per_zone = BUILD_POINTS_PER_ZONE_DEFAULT
+        self.wall_ring_radius = WALL_RING_RADIUS_DEFAULT
 
     # ---- 便捷读 ----
 
@@ -1178,6 +1233,83 @@ class MapInfo:
     def faction_base(self, fid: str) -> Optional[Tuple[int, int]]:
         return self.faction_bases.get(str(fid))
 
+    # ---- ★★ 建造点位 / 城墙环（2026.11 的建造系统）----
+    #
+    # 这两个概念是**地图数据**（地图编辑器「区划」页设置），本编辑器只读。
+    # 判据与运行时逐条对齐，别在这里另立一套：改这里必须同改
+    # `daeem/logic/zone.gd` 的 `_apply_map_build_points` / `wall_ring_tiles_of`。
+
+    def build_points(self, zid: int) -> List[Tuple[int, int]]:
+        """某个区划的建造点位（没有这个区划 / 一个都没写 → 空列表）。"""
+        return list(self.zone_build_points.get(int(zid), ()))
+
+    def build_point_zone_id(self, x: int, y: int) -> int:
+        """这一格是哪个区划的建造点位（不是任何点位 → -1）。"""
+        return int(self.build_point_zone.get((int(x), int(y)), -1))
+
+    def is_build_point(self, x: int, y: int) -> bool:
+        return self.build_point_zone_id(x, y) >= 0
+
+    def all_build_points(self) -> List[Tuple[int, int, int]]:
+        """全图的建造点位 `[(zid, x, y), ...]`（按区划号、再按地图里写的顺序）。"""
+        out: List[Tuple[int, int, int]] = []
+        for zid in sorted(self.zone_build_points):
+            for (px, py) in self.zone_build_points[zid]:
+                out.append((int(zid), int(px), int(py)))
+        return out
+
+    def wall_ring_zone_at(self, x: int, y: int) -> int:
+        """这一格是不是某个区划中心的**城墙环**（是 → 那个区划 id；不是 → -1）。
+
+        ★ 判据与 `zone.gd` 的 `wall_ring_tiles_of()` 同一套：切比雪夫距离 1..`ring`，
+          **不含中心格本身**。这里额外要求「在图上 + 能走 + **属于那个区划**」——
+          后一条是运行时 `wall_ring_buildable_tiles()` 用 `zone_allows_build()` 实现的
+          （一圈可以伸出自己的地块，但伸到别人的地上就建不了）：
+          编辑器不判归属（作者的自由），所以用「同一块地」把这条收紧，
+          于是「编辑器允许的落点」一定是「游戏里盖得出来的落点」。
+        ★ 两个中心的环重叠时取**区划号小的那个**（只影响状态栏那句话，判据不变）。
+        """
+        px, py = int(x), int(y)
+        if not self.tile_exists(px, py) or not self.walkable_at(px, py):
+            return -1
+        zone_here = self.zone_of(px, py)
+        if zone_here < 0:
+            return -1
+        ring = max(1, int(self.wall_ring_radius))
+        for zid in sorted(self.zone_centers):
+            if int(zid) != int(zone_here):
+                continue
+            cx, cy = self.zone_centers[zid]
+            d = max(abs(px - int(cx)), abs(py - int(cy)))
+            if 1 <= d <= ring:
+                return int(zid)
+        return -1
+
+    def wall_ring_tiles(self, zid: int) -> List[Tuple[int, int]]:
+        """某个区划的城墙环上**真能摆墙**的格子（图上 + 能走 + 属于这个区划；不含中心）。
+
+        ★ 「属于这个区划」这一条与 `wall_ring_zone_at()` 同源（见它的说明）；
+          画布上画的也就是这些格子 —— 画出来的都能放，放上去的也都画得出来。
+        顺序确定：行优先（先 y 后 x）—— 画布与测试都按它。
+        """
+        center = self.zone_centers.get(int(zid))
+        if center is None:
+            return []
+        ring = max(1, int(self.wall_ring_radius))
+        out: List[Tuple[int, int]] = []
+        cx, cy = int(center[0]), int(center[1])
+        for dy in range(-ring, ring + 1):
+            for dx in range(-ring, ring + 1):
+                if dx == 0 and dy == 0:
+                    continue
+                p = (cx + dx, cy + dy)
+                if not self.tile_exists(*p) or not self.walkable_at(*p):
+                    continue
+                if self.zone_of(*p) != int(zid):
+                    continue
+                out.append(p)
+        return out
+
     def __repr__(self) -> str:                          # pragma: no cover - 调试用
         return "<MapInfo %s %dx%d zones=%d>" % (self.map_id, self.cols, self.rows,
                                                 len(self.zone_ids))
@@ -1192,7 +1324,7 @@ class ConfigInfo:
     __slots__ = ("unit_types", "unit_names", "general_types",
                  "general_names", "general_caps", "building_types", "zone_kinds",
                  "ai_garrison_cfg", "ai_reddot_cfg", "colors", "clans",
-                 "clan_default", "raw")
+                 "clan_default", "build_points_per_zone", "wall_ring_radius", "raw")
 
     def __init__(self) -> None:
         self.unit_types: List[str] = []
@@ -1213,6 +1345,13 @@ class ConfigInfo:
         self.clans: List[Dict[str, str]] = []
         #: `config.clan.default_id`（没写 `clan` 的那一方实际生效的派系）。
         self.clan_default: str = "native"
+        #: ★★ 建造系统的两个玩法数值（`config.build`）：
+        #:   · `build_points_per_zone` 每个区划几个建造点位（目前 2）；
+        #:   · `wall_ring_radius` 城墙环的层数（1 = 中心 3×3 的外圈 8 格）。
+        #:   ⚠️ 它们是**游戏侧读的**；编辑器拿它们做「非法落点」的判据，
+        #:   所以两边必须是同一份（`load_map` 会把它们抄进 `MapInfo`）。
+        self.build_points_per_zone: int = BUILD_POINTS_PER_ZONE_DEFAULT
+        self.wall_ring_radius: int = WALL_RING_RADIUS_DEFAULT
         self.raw: dict = {}
 
     def unit_name(self, type_id: str) -> str:
@@ -1509,6 +1648,13 @@ def load_config(project_dir: Any) -> ConfigInfo:
     info.general_names = names
     building = data.get("building", {}) if isinstance(data.get("building"), dict) else {}
     info.building_types = sorted(str(k) for k in building.keys() if not str(k).startswith("_"))
+    # ★★ 建造系统的两个玩法数值（`config.build`）：点位数量 / 城墙环层数。
+    #    读不到就用默认值 —— 与 `logic/config.gd` 的缺省一致（2 / 1）。
+    build_cfg = data.get("build", {}) if isinstance(data.get("build"), dict) else {}
+    info.build_points_per_zone = max(1, _as_int(build_cfg.get("points_per_zone"),
+                                                BUILD_POINTS_PER_ZONE_DEFAULT))
+    info.wall_ring_radius = max(1, _as_int(build_cfg.get("wall_ring_radius"),
+                                           WALL_RING_RADIUS_DEFAULT))
     zone_kind = data.get("zone_kind", {}) if isinstance(data.get("zone_kind"), dict) else {}
     info.zone_kinds = [str((z or {}).get("id", "")) for z in _as_list(zone_kind.get("list"))
                        if isinstance(z, dict)]
@@ -1600,8 +1746,9 @@ def _fill_map(info: MapInfo, data: dict) -> None:
                         grid[(x, y)] = zid
     info.zone_grid = grid
 
-    # ---- 区划表：名字 / 种类 / 中心 / 产能 / 开局归属 ----
+    # ---- 区划表：名字 / 种类 / 中心 / 产能 / 开局归属 / 建造点位 ----
     seen: Set[int] = set()
+    raw_points: Dict[int, List[Tuple[int, int]]] = {}
     for z in _as_list(data.get("zone_list")):
         if not isinstance(z, dict):
             continue
@@ -1620,12 +1767,23 @@ def _fill_map(info: MapInfo, data: dict) -> None:
             # ★ **空串也记**：`"owner": ""` 的语义是「这一区开局无主」，
             #   与「没提这一区」（用地图默认）是两件事（见 logic/level.gd 同款说明）。
             info.zone_owners[zid] = _as_str(z.get("owner", ""), "")
+        # ★★ 建造点位：`[[x, y], ...]`。顺序就是地图里写的顺序（点位表顺序），
+        #   先原样收着，等下面的 `_fill_build_points()` 按运行时判据过一遍。
+        raw: List[Tuple[int, int]] = []
+        for item in _as_list(z.get("build_points")):
+            p = _as_point(item)
+            if p is not None:
+                raw.append(p)
+        raw_points[zid] = raw
     # 地块网格里有、zone_list 里没有的区划也算存在（手写地图常见）
     for zid in sorted(set(grid.values())):
         if zid not in seen:
             info.zone_ids.append(zid)
             seen.add(zid)
     info.zone_ids.sort()
+
+    # ---- ★★ 建造点位：按运行时同一套判据筛一遍（见 `_fill_build_points`）----
+    _fill_build_points(info, raw_points)
 
     # ---- 阵营表 / 大本营 / 盟友 ----
     for f in _as_list(data.get("factions")):
@@ -1650,8 +1808,60 @@ def _fill_map(info: MapInfo, data: dict) -> None:
                 info.allies.append([a, b])
 
 
-def load_map(project_dir: Any, map_id: str) -> Optional[MapInfo]:
-    """读一张地图；目录 / 文件不在（或不是 JSON 对象）→ `None`。"""
+def _fill_build_points(info: MapInfo,
+                       raw: Dict[int, List[Tuple[int, int]]]) -> None:
+    """把地图里写的建造点位过一遍运行时判据，落进 `zone_build_points` + 反查表。
+
+    ★★ 判据与 `daeem/logic/zone.gd` 的 `_apply_map_build_points()` **逐条一致**：
+        1. 必须是**这个区划自己的**地块（区划网格查得到，且就是 `zid`）；
+        2. 必须存在、且地形能走（山地 / 水域不能站人，自然也不能盖楼）；
+        3. 不能是区划中心本身，也不能落在中心的**城墙环**里（那一圈留给城墙）；
+        4. 去重、并按 `build.points_per_zone` 截断（超出的忽略，顺序不变）。
+
+    ★ 为什么要在这里筛：地图是**手改得动**的文件（也是别的工具写的）。运行时会把
+      坏点位丢掉（老的 / 手写的图全靠它），编辑器要是照原样画出来，就会出现
+      「编辑器里看得见、游戏里点不上」的点位 —— 那是最难查的一类（用户报过同类）。
+    ★ **不自动补点**（用户口径：所见即所得）：这里只筛，绝不替运行时
+      `_ensure_build_points()` 猜一个点出来 —— 补出来的点作者在编辑器里看不到。
+    """
+    cap = max(1, int(info.build_points_per_zone))
+    ring = max(1, int(info.wall_ring_radius))
+    info.zone_build_points = {}
+    info.build_point_zone = {}
+    for zid in sorted(raw):
+        out: List[Tuple[int, int]] = []
+        center = info.zone_centers.get(int(zid))
+        for (x, y) in raw[zid]:
+            if len(out) >= cap:
+                break
+            px, py = int(x), int(y)
+            p = (px, py)
+            if p in out:
+                continue
+            if not info.tile_exists(px, py) or not info.walkable_at(px, py):
+                continue
+            # 区划网格里没有这一格 / 它是别人的地 → 不是这个区划的点位
+            if info.zone_of(px, py) != int(zid):
+                continue
+            if center is not None:
+                cx, cy = int(center[0]), int(center[1])
+                if p == (cx, cy) or max(abs(px - cx), abs(py - cy)) <= ring:
+                    continue
+            out.append(p)
+        if out:
+            info.zone_build_points[int(zid)] = out
+            for p in out:
+                info.build_point_zone[p] = int(zid)
+
+
+def load_map(project_dir: Any, map_id: str,
+             config: Optional["ConfigInfo"] = None) -> Optional[MapInfo]:
+    """读一张地图；目录 / 文件不在（或不是 JSON 对象）→ `None`。
+
+    @param config 配置快照（可选）。给了就用它的 `build.points_per_zone` /
+                  `build.wall_ring_radius` 判建造点位；不给就用与 config 一致的默认值
+                  （2 / 1）。★ 点位判据与游戏侧同源，所以正常情况下这里不需要额外参数。
+    """
     mid = str(map_id).strip()
     if not mid:
         return None
@@ -1667,6 +1877,9 @@ def load_map(project_dir: Any, map_id: str) -> Optional[MapInfo]:
         return None
     info = MapInfo(mid, path)
     info.raw = data
+    if config is not None:
+        info.build_points_per_zone = int(config.build_points_per_zone)
+        info.wall_ring_radius = int(config.wall_ring_radius)
     _fill_map(info, data)
     return info
 
@@ -1688,6 +1901,7 @@ def list_maps(project_dir: Any) -> List[MapInfo]:
     # 与具体是哪张图无关。读不到就留空集 —— 那时所有阵营都会被提示「请写 color」，
     # 属于「多提醒一句」而不是误报（真正写了的颜色照样不会报）。
     builtin = set()
+    cfg: Optional[ConfigInfo] = None
     try:
         cfg = load_config(project_dir)
         table = cfg.colors.get("faction", {}) if isinstance(cfg.colors, dict) else {}
@@ -1700,7 +1914,7 @@ def list_maps(project_dir: Any) -> List[MapInfo]:
     except OSError:
         return out
     for name in names:
-        info = load_map(project_dir, name)
+        info = load_map(project_dir, name, cfg)
         if info is not None:
             info.builtin_factions = builtin
             out.append(info)
@@ -2045,11 +2259,25 @@ def load_campaign(dir_path: Any, project_dir: Any) -> CampaignModel:
     #    已有显式值的保留，缺的补成「地图 owner / 空串（无主）」。
     #    同一张地图只读一次（一个战役几关而已，但没必要读 N 遍）。
     map_cache: Dict[str, Optional[MapInfo]] = {}
+    cfg: Optional[ConfigInfo] = None
+    try:
+        cfg = load_config(project_dir)
+    except Exception:                                   # noqa: BLE001
+        cfg = None
     for lv in model.levels:
         mid = str(lv.map_id)
         if mid and mid not in map_cache:
-            map_cache[mid] = load_map(project_dir, mid)
+            map_cache[mid] = load_map(project_dir, mid, cfg)
         lv.ensure_zone_owners(map_cache.get(mid))
+    # ★★ **载入即清理**：不在建造点位 / 城墙环上的开局建筑**直接删掉**（用户口径：
+    #    「当前不在点位上的建筑直接删除」）。放在这里而不是只放在界面里，有两个理由：
+    #      1. 「打开一个战役」本来就是一次数据规范化 —— `ensure_zone_owners()` /
+    #         `adopt_legacy_factions()` 都已经在这个阶段改数据（同一条先例）；
+    #      2. 导出校验是**第二道保险**（见 `_ck_buildings`）：要是只清当前那一关，
+    #         没打开过的关卡会一直挡着导出，作者得逐关点一遍才导得出去。
+    #    ⚠️ 只改内存：按「保存」才落盘（与另两个编辑器同一条取舍，删错了靠重新载入）。
+    for lv in model.levels:
+        prune_offpoint_buildings(lv, map_cache.get(str(lv.map_id)))
     model.adopt_legacy_factions()
     model.sync_context()
     return model
@@ -2434,11 +2662,140 @@ def faction_has_placed_escorts(lv: LevelModel, fid: str) -> bool:
 
 
 # ======================================================================
+# ★★ 建筑落点（建造点位 / 城墙环）
+# ======================================================================
+#
+# 用户口径（2026.11 的建造系统）：**摆放建筑只能放在两种落点上** ——
+#   · 非城墙建筑 → 地图的**建造点位**（`zone_list[].build_points`）；
+#   · 城墙       → 某个区划中心周围的那一圈（`build.wall_ring_radius` 层）。
+# 不在这两种落点上的建筑**直接删掉**（打开关卡 / 换地图时），导出前再拦一次。
+#
+# ★ 判据与运行时 `world.build_reject_reason()` 同源，但**范围不同**：
+#   运行时那一条管的是「玩家 / AI 现在能不能盖」；这里管的是「作者摆的开局建筑
+#   在不在合法落点上」。运行时对 `start_buildings[]` 是无条件落地的
+#   （`world.add_building(..., force=true)`），所以这几条是**本工具独有的校验**。
+
+#: 建筑落点错误码（`building_slot_error()` 的返回值；"" = 合法）。
+SLOT_OK = ""
+SLOT_NOT_ON_POINT = "not_on_point"
+SLOT_NOT_IN_WALL_RING = "not_in_wall_ring"
+
+
+def _point_off_map(info: MapInfo, point: Tuple[int, int]) -> bool:
+    """这一格是不是**基本就站不住**（地图外 / 山地水域 / 区划中心）。
+
+    ★ 只用来避免「同一条坏点位报两条拦截」：这些情况已经由 `_ck_points` 报过
+      （`point_outside` / `point_on_mountain` / `point_on_zone_center`），
+      落点那两条就不必再重复一遍。
+    """
+    x, y = int(point[0]), int(point[1])
+    if not info.tile_exists(x, y) or not info.walkable_at(x, y):
+        return True
+    for center in info.zone_centers.values():
+        if (int(center[0]), int(center[1])) == (x, y):
+            return True
+    return False
+
+
+def building_slot_error(info: Optional[MapInfo], type_id: str,
+                        point: Tuple[int, int]) -> str:
+    """这一栋**建筑**能不能摆在这一格（"" = 可以；否则是错误码）。
+
+    · 城墙（`is_wall_building_type`）→ 必须是某个区划中心的城墙环上、且能走的格子；
+    · 其它建筑                    → 必须是地图里的**建造点位**。
+
+    ★ 没有地图（`info is None`）→ 一律放行：那时连点位都没有，判据不存在，
+      该由「地图不存在」那条校验去说话，不要在这里多报一条。
+    """
+    if info is None:
+        return SLOT_OK
+    x, y = int(point[0]), int(point[1])
+    if is_wall_building_type(type_id):
+        return SLOT_OK if info.wall_ring_zone_at(x, y) >= 0 else SLOT_NOT_IN_WALL_RING
+    return SLOT_OK if info.is_build_point(x, y) else SLOT_NOT_ON_POINT
+
+
+def building_slot_full(info: Optional[MapInfo], type_id: str,
+                       point: Tuple[int, int],
+                       taken: Optional[Dict[Tuple[int, int], Any]] = None,
+                       skip: Any = None) -> bool:
+    """这一格现在**放得下**这一栋吗（点位没被别的建筑占住）。
+
+    ★ 用户口径：「一个点位只放一栋」—— 已被占住的点位不能再放。
+    ★ **城墙不参与**这条（城墙本来就不在点位上，见用户确认的规则）：
+      城墙只按「在不在环上」判，同格叠两堵墙交给导出校验。
+    @param taken  `{格子: 建筑}`（调用方先收集已有的建筑；见 `taken_building_points`）
+    @param skip   同一栋建筑（改坐标 / 改类型时别把自己算成占位）
+    """
+    if info is None or taken is None:
+        return True
+    if is_wall_building_type(type_id):
+        return True
+    p = (int(point[0]), int(point[1]))
+    other = taken.get(p)
+    return other is None or other is skip
+
+
+def taken_building_points(lv: LevelModel,
+                          skip: Any = None) -> Dict[Tuple[int, int], BuildingEntry]:
+    """这一关**已经被建筑占住**的格子（`{(x, y): BuildingEntry}`）。
+
+    只收**非城墙**建筑 —— 城墙不占点位（用户口径：城墙按环判，不校验点位占用）。
+    @param skip 跳过某一栋（改它自己的坐标 / 类型时用）。
+    """
+    out: Dict[Tuple[int, int], BuildingEntry] = {}
+    for b in lv.start_buildings:
+        if b is skip or is_wall_building_type(b.type):
+            continue
+        out.setdefault(b.point(), b)
+    return out
+
+
+def prune_offpoint_buildings(lv: LevelModel,
+                             info: Optional[MapInfo]) -> List[BuildingEntry]:
+    """★★ **删掉**不在合法落点上的建筑，返回被删掉的那些（顺序 = 原来顺序）。
+
+    调用时机（`app.EditorApp`）：**打开关卡 / 换地图**时。用户口径是「直接删除」——
+    不弹确认框、不留备份（数据都在 JSON 里，删错了靠「重新载入」/ 版本控制）。
+
+    规则（与摆放页的拦截**同一套**，别在这里另写一份）：
+      1. 落点不合法（`building_slot_error` 非空）→ 删；
+      2. 非城墙建筑**压在同一格上**（一个点位只能一栋）→ 留第一栋，后面的删；
+         城墙不参与这一条（见 `taken_building_points`）。
+    ★ 有东西被删时 `mark_declared("start_buildings")`：即使删空了也要**显式写**
+      `"start_buildings": []`，否则旧文件里那几条会在下次载入时「复活」
+      （`_declared` 的语义 = 源文件写过这个键）。
+    """
+    if info is None or not lv.start_buildings:
+        return []
+    left: List[BuildingEntry] = []
+    removed: List[BuildingEntry] = []
+    occupied: Dict[Tuple[int, int], BuildingEntry] = {}
+    for b in lv.start_buildings:
+        if building_slot_error(info, b.type, b.point()) != SLOT_OK:
+            removed.append(b)
+            continue
+        if not is_wall_building_type(b.type):
+            if b.point() in occupied:
+                removed.append(b)
+                continue
+            occupied[b.point()] = b
+        left.append(b)
+    if removed:
+        lv.start_buildings[:] = left
+        lv.mark_declared("start_buildings")
+    return removed
+
+
+# ======================================================================
 # 校验：dev_plan_7 2.5 那张表（16 条）+ 9.1 风险 4 的 overload_hint
 # ======================================================================
 #
 # ★★ `code` 与 `logic/level.gd` 的 `_ck_*` **逐字一致**：两边漂开的话，
 #    「编辑器说能过、游戏开局判负」这种错就没法靠 code 对暗号了。
+#    ⚠️ 例外：`building_not_on_point` / `building_not_in_wall_ring` /
+#       `building_point_taken` 这三条是**本工具独有**的（运行时对开局摆放无条件落地，
+#       见上面「建筑落点」那一段）；逻辑层没有同名 `_ck_*`，也不该有。
 #
 # 级别（与逻辑层同一套）：
 #   拦（block）—— 不许写文件、不许开局；
@@ -2487,6 +2844,9 @@ def validate_level(model: CampaignModel, lv: LevelModel, maps: Dict[str, MapInfo
     # ---- 5/6/12) 点位：在地图内、不是山地、不压区划中心 ----
     if info is not None:
         _ck_points(add, lv, info)
+
+    # ---- ★ 22) 摆放建筑必须在合法落点上（建造点位 / 城墙环）----
+    _ck_buildings(add, lv, info)
 
     # ---- 7/8) 可玩阵营同方 + 目标区划的开局归属 ----
     if info is not None:
@@ -2693,6 +3053,50 @@ def _ck_point(add, info: MapInfo, point: Tuple[int, int], what: str) -> None:
             add(SEV_BLOCK, "point_on_zone_center",
                 "%s (%d,%d) 是区块 c%d 的中心" % (what, x, y, int(zid)))
             return
+
+
+def _ck_buildings(add, lv: LevelModel, info: Optional[MapInfo]) -> None:
+    """★ 22) 摆放建筑必须落在合法落点上；一个点位只放一栋。
+
+    ★★ 用户口径（2026.11 的建造系统）：非城墙建筑**只能**放在地图的建造点位上；
+      城墙**只能**围区划中心那一圈。导出前在这里拦一次 —— 这是「直接删除」之外
+      的第二道保险（手改 JSON / 别的工具写进来的数据靠它兜底）。
+
+    ⚠️ 不重复报：地图外 / 山地水域 / 压在区划中心上这三种已由 `_ck_points`
+      报过（`point_outside` / `point_on_mountain` / `point_on_zone_center`），
+      这里跳过它们，免得一格报两条把人看晕。
+    """
+    if info is None:
+        return
+    taken: Dict[Tuple[int, int], BuildingEntry] = {}
+    for b in lv.start_buildings:
+        point = b.point()
+        if _point_off_map(info, point):
+            continue
+        err = building_slot_error(info, b.type, point)
+        if err == SLOT_NOT_ON_POINT:
+            add(SEV_BLOCK, "building_not_on_point",
+                "摆放建筑 %s (%d,%d) 不在**建造点位**上 —— 非城墙建筑只能放在地图的"
+                " zone_list[].build_points 里（去地图编辑器的「区划」页设点位）"
+                % (b.type, point[0], point[1]))
+            continue
+        if err == SLOT_NOT_IN_WALL_RING:
+            add(SEV_BLOCK, "building_not_in_wall_ring",
+                "摆放城墙 %s (%d,%d) 不在任何区划中心的**城墙环**上 —— "
+                "城墙只能围区划中心一圈（%d 层）" % (b.type, point[0], point[1],
+                                                     max(1, int(info.wall_ring_radius))))
+            continue
+        # 一个点位只放一栋（城墙不占点位，不参与这一条）
+        if is_wall_building_type(b.type):
+            continue
+        if point in taken:
+            other = taken[point]
+            add(SEV_BLOCK, "building_point_taken",
+                "这个建造点位 (%d,%d) 上已经有一栋 %s 了 —— 一个点位只能放一栋"
+                "（先删掉 %s/%s）" % (point[0], point[1], other.type,
+                                      other.owner or "？", other.type))
+            continue
+        taken[point] = b
 
 
 def _ck_sides(add, model: CampaignModel, lv: LevelModel, info: MapInfo) -> None:

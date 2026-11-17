@@ -148,6 +148,14 @@ def synthetic_map(project: Path) -> M.MapInfo:
         for y in range(zy, zy + 3):
             for x in range(zx, zx + 3):
                 info.zone_grid[(x, y)] = zid
+        # ★★ 建造点位（2026.11 的建造系统）：每个区划 2 个，都落在自己的 3×3 里、
+        #   离中心切比雪夫距离 = 2（**出了城墙环**，所以不会被 `_fill_build_points` 筛掉）。
+        #   ⚠️ 这里直接往 `zone_build_points` 里写（合成图不走 `_fill_build_points`）：
+        #   那套筛选有自己的用例（见 `t_build_points`，它读的是**真 JSON 文件**）。
+        pts = [(zx + 2, zy + 1), (zx + 1, zy + 2)]
+        info.zone_build_points[zid] = list(pts)
+        for p in pts:
+            info.build_point_zone[p] = zid
     info.raw = {}
     return info
 
@@ -175,6 +183,12 @@ class Facts:
         self.own_zone = 3                   # 归敌方（验「进攻目标指向自己的地」）
         self.spot = (1, 1)                  # 一格可通行、**非任何区划中心**的空地
         self.bad_center = (0, 0)            # 区划 0 的中心格（也正好是 obj_zone 的中心）
+        # ---- ★★ 建造点位 / 城墙环（合成图里每区 2 个点位；见 `synthetic_map`）----
+        self.build_point = (2, 1)           # 区划 0 的第 1 个建造点位（非城墙建筑只能放这儿）
+        self.build_point2 = (1, 2)          # 区划 0 的第 2 个点位（验「一个点位只放一栋」）
+        self.own_build_point = (5, 1)       # 区划 1 的点位（另一块地）
+        self.wall_ring = (0, 1)             # 区划 0 中心的城墙环上的格子（城墙只能放这儿）
+        self.off_point = (2, 2)             # 走得到、但不是点位、也不在城墙环上
 
     def maps(self) -> dict:
         """`{map_id: MapInfo}`（只含这一张合成图）—— 校验只认它。"""
@@ -309,7 +323,9 @@ def base_level(**over) -> dict:
              "attack_target": {"kind": "zone", "zone": f.attack_zone}},
         ],
         "start_units": [],
-        "start_buildings": [{"type": "tower", "x": f.spot[0], "y": f.spot[1],
+        # ★★ 建筑只能放在**建造点位**上（2026.11 的建造系统）：基线就用区划 0 的点位，
+        #    否则每一条用例都会多一条 `building_not_on_point` 把断言搅浑。
+        "start_buildings": [{"type": "tower", "x": f.build_point[0], "y": f.build_point[1],
                              "owner": f.player}],
         "zones": [{"id": f.obj_zone, "owner": f.player},
                   {"id": f.attack_zone, "owner": ""}],
@@ -478,8 +494,22 @@ def t_load_and_roundtrip() -> None:
                      .read_text(encoding="utf-8-sig"))
     out = json.loads((tmp / "demo" / "levels" / "01_beachhead.json")
                      .read_text(encoding="utf-8-sig"))
+    # ★★ 载入即清理（用户口径）：不在**建造点位 / 城墙环**上的开局建筑会被**直接删掉**，
+    #    所以「写出来的」可能比源文件少几条 `start_buildings` —— 期望值也要按同一套
+    #    判据删一遍，这条断言钉的仍然是「除那条规则外逐字段一致」。
+    #    ⚠️ 不写死「样例第一关有几栋」：样例数据是别人也在改的东西。
+    if isinstance(src.get("start_buildings"), list):
+        bp_info = levelfile.load_map(TMP_PROJECT, str(src.get("map", "")))
+        kept = [b for b in src["start_buildings"]
+                if isinstance(b, dict)
+                and M.building_slot_error(bp_info, str(b.get("type", "")),
+                                          (b.get("x", 0), b.get("y", 0))) == M.SLOT_OK]
+        eq(len(out.get("start_buildings", [])), len(kept),
+           "★★ 写出来的建筑数 = 源文件里**合格的**那几条（其余载入时已删）")
+        src["start_buildings"] = kept
     ok(same_payload(out, src),
-       "★★ 写出来的关卡与源文件**逐字段一致**（含 _comment 原样带回）%s"
+       "★★ 写出来的关卡与源文件**逐字段一致**（含 _comment 原样带回；"
+       "不在点位上的建筑是唯一允许被删掉的东西）%s"
        % ("" if same_payload(out, src) else
           "（差异：%s）" % _payload_diff(out, src)))
 
@@ -786,6 +816,162 @@ def t_zone_no_go() -> None:
        "★ 只禁一格山地不算「整块都禁行」（山地本来就不是巡逻点）")
 
 
+def t_build_points() -> None:
+    """★★ 建造点位 / 城墙环（2026.11 的建造系统）：读地图 / 落点判据 / 校验 / 自动清理。
+
+    用户口径（本次适配的核心）：
+      · 战役编辑器里**摆放建筑只能放在地图划定的点位上**；
+      · 不在点位上的建筑**直接删除**（打开关卡 / 换地图时），导出前再拦一次；
+      · 城墙例外：它只围**区划中心**那一圈（不占点位）。
+
+    ★ 分三段钉：
+      1. 读地图（`_fill_build_points` 按运行时判据筛点位）+ 反查表 + 城墙环；
+      2. 落点判据 / 校验码（`building_not_on_point` / `building_not_in_wall_ring` /
+         `building_point_taken`）；
+      3. 自动清理 `prune_offpoint_buildings`。
+    """
+    print("\n[1e] ★★ 建造点位 / 城墙环：读入筛选 / 落点判据 / 导出拦截 / 自动清理")
+    f = FACTS
+    info = f.info
+
+    # ---- 1) 合成图：点位反查 + 城墙环 ----
+    eq(info.build_points(f.obj_zone), [f.build_point, f.build_point2],
+       "区划 0 有 2 个建造点位（顺序 = 地图里写的顺序）")
+    eq(info.build_point_zone_id(*f.build_point), f.obj_zone, "★ 点位反查：区划 0 的点位")
+    eq(info.build_point_zone_id(*f.off_point), -1, "不是点位 → -1")
+    eq(len(info.all_build_points()), 18, "全图 9 个区划 × 2 个点位")
+    eq(info.wall_ring_zone_at(*f.wall_ring), f.obj_zone,
+       "★ 区划 0 中心旁边那一格 = 它的城墙环")
+    eq(info.wall_ring_zone_at(*f.build_point), -1,
+       "★ 点位本身不在**自己区划**的城墙环里（所以两者互斥）")
+    ok(f.wall_ring in info.wall_ring_tiles(f.obj_zone), "环上的格子列表包含它")
+    ok(f.bad_center not in info.wall_ring_tiles(f.obj_zone), "★ 中心格本身不算环")
+    ok(not any(p for p in info.wall_ring_tiles(f.obj_zone)
+               if not info.walkable_at(*p)), "★ 环里只留能走的格子（山地 / 水不算）")
+    ok(all(info.zone_of(*p) == f.obj_zone for p in info.wall_ring_tiles(f.obj_zone)),
+       "★★ 环里只留**这个区划自己的**地块（伸到别人地上的那一圈不算 —— "
+       "运行时靠 `zone_allows_build` 挡住，编辑器用更严的「同一块地」）")
+
+    # ---- 城墙类型的判据（与 logic/building.gd 的 is_wall_type 同一条）----
+    ok(M.is_wall_building_type("wall") and M.is_wall_building_type("stone_wall"),
+       "wall / stone_wall 都是城墙")
+    ok(M.is_wall_building_type("city_wall"),
+       "★ 自定义的 ..._wall 也算城墙（运行时判据是「type 里带 wall」）")
+    ok(not M.is_wall_building_type("tower") and not M.is_wall_building_type("base"),
+       "塔 / 大本营不是城墙")
+
+    # ---- 落点判据 ----
+    eq(M.building_slot_error(info, "tower", f.build_point), M.SLOT_OK,
+       "非城墙 + 点位 → 合法")
+    eq(M.building_slot_error(info, "tower", f.off_point), M.SLOT_NOT_ON_POINT,
+       "★ 非城墙 + 非点位 → not_on_point")
+    eq(M.building_slot_error(info, "tower", f.wall_ring), M.SLOT_NOT_ON_POINT,
+       "★ 非城墙放在中心环上也不行（那一圈是留给城墙的）")
+    eq(M.building_slot_error(info, "wall", f.wall_ring), M.SLOT_OK, "城墙 + 中心环 → 合法")
+    eq(M.building_slot_error(info, "wall", f.build_point), M.SLOT_NOT_IN_WALL_RING,
+       "★ 城墙 + 点位 → not_in_wall_ring")
+    eq(M.building_slot_error(None, "tower", f.off_point), M.SLOT_OK,
+       "没有地图 → 不判（交给 map 那几条，别多报一条）")
+
+    # ---- 2) 校验：导出前拦一次（双保险）----
+    def codes_of(buildings) -> list:
+        return block_codes(check(base_level(start_buildings=buildings)))
+
+    eq(codes_of([{"type": "tower", "x": f.build_point[0], "y": f.build_point[1],
+                  "owner": f.player}]), [],
+       "★ 点在点位上的塔 → 0 条拦截（基线）")
+    eq(codes_of([{"type": "tower", "x": f.off_point[0], "y": f.off_point[1],
+                  "owner": f.player}]), ["building_not_on_point"],
+       "★★ 不在点位上的塔 → building_not_on_point（拦）")
+    eq(codes_of([{"type": "wall", "x": f.wall_ring[0], "y": f.wall_ring[1],
+                  "owner": f.player}]), [],
+       "★★ 围在中心环上的城墙 → 不拦")
+    eq(codes_of([{"type": "wall", "x": f.off_point[0], "y": f.off_point[1],
+                  "owner": f.player}]), ["building_not_in_wall_ring"],
+       "★★ 环外的城墙 → building_not_in_wall_ring（拦）")
+    eq(codes_of([{"type": "tower", "x": f.build_point[0], "y": f.build_point[1],
+                  "owner": f.player},
+                 {"type": "tower", "x": f.build_point[0], "y": f.build_point[1],
+                  "owner": f.enemy}]), ["building_point_taken"],
+       "★★ 一个点位放两栋 → building_point_taken（拦）")
+    eq(codes_of([{"type": "wall", "x": f.wall_ring[0], "y": f.wall_ring[1],
+                  "owner": f.player},
+                 {"type": "wall", "x": f.wall_ring[0], "y": f.wall_ring[1],
+                  "owner": f.enemy}]), [],
+       "★ 城墙不参与「点位占用」那条（用户口径）")
+    # 压在山地 / 中心上只报原来那一条，不重复报落点
+    mtn = codes_of([{"type": "tower", "x": f.mountain[0], "y": f.mountain[1],
+                     "owner": f.player}])
+    ok("point_on_mountain" in mtn and "building_not_on_point" not in mtn,
+       "★★ 山地上的建筑只报 point_on_mountain（不重复报落点）")
+
+    # ---- 3) 读**真 JSON 文件**：`_fill_build_points` 的筛选规则 ----
+    map_dir = TMP_PROJECT / "data" / "maps" / "bp_synth"
+    map_dir.mkdir(parents=True, exist_ok=True)
+    cols, rows = 5, 5
+    layout = [".....", ".....", ".....", ".....", "....#"]     # (4,4) 山地
+    exists = [[1] * cols for _ in range(rows)]
+    zones = [[0, 0, 0, 0, 1] for _ in range(rows)]              # 最后一列是区划 1
+    zone_list = [
+        {"id": 0, "name": "a", "center": [1, 1],
+         # 合法：(3,1)、(1,3)、(0,3)；坏点：中心 (1,1) / 环内 (2,2) / 山地 (4,4) /
+         # 重复 (3,1) / 别人的地 (4,2) —— 期望只剩前两个（cap = 2）
+         "build_points": [[3, 1], [1, 1], [2, 2], [4, 4], [3, 1], [4, 2], [1, 3], [0, 3]]},
+        {"id": 1, "name": "b", "center": [4, 0],
+         "build_points": [[4, 2]]},
+    ]
+    (map_dir / "map.json").write_text(
+        json.dumps({"cols": cols, "rows": rows, "exists": exists, "layout": layout,
+                    "zones": zones, "zone_list": zone_list}, ensure_ascii=False),
+        encoding="utf-8", newline="\n")
+    bp = levelfile.load_map(TMP_PROJECT, "bp_synth")
+    ok(bp is not None, "（前提）合成点位图读得出来")
+    eq(bp.zone_build_points, {0: [(3, 1), (1, 3)], 1: [(4, 2)]},
+       "★★ 只留合法点位：中心 / 环内 / 山地 / 重复 / 别人的地都筛掉，按 cap=2 截断")
+    eq(bp.build_points_per_zone, M.BUILD_POINTS_PER_ZONE_DEFAULT,
+       "点位数量 = config.build.points_per_zone（2）")
+    eq(bp.wall_ring_radius, M.WALL_RING_RADIUS_DEFAULT, "城墙环层数 = config（1）")
+    eq(bp.build_point_zone_id(4, 2), 1,
+       "★ (4,2) 属于区划 1 → 它是区划 1 的点位，不是区划 0 的（写在别人的地上不算数）")
+    eq(bp.build_points(0), [(3, 1), (1, 3)], "★ 区划 0 只留自己地上的两个点")
+    cfg = levelfile.load_config(TMP_PROJECT)
+    eq(cfg.build_points_per_zone, 2, "config.build.points_per_zone 读到了")
+    eq(cfg.wall_ring_radius, 1, "config.build.wall_ring_radius 读到了")
+    # ★ 没有点位的区划：**不自动补**（用户口径：所见即所得）—— 地图没写就是没有
+    eq(bp.build_points(0)[:1], [(3, 1)], "（前提）区划 0 有点位")
+    eq(bp.build_points(2), [], "★ 地图里没写点位的区划 → 一个都没有（不自动补）")
+
+    # ---- 4) 自动清理：不在点位 / 城墙环上的直接删 ----
+    lv = M.LevelModel("bp_prune", "bp_synth")
+    keep_tower = M.BuildingEntry("tower", 3, 1, "A1")
+    keep_wall = M.BuildingEntry("wall", 0, 0, "A1")          # 中心 (1,1) 的环上
+    bad_off = M.BuildingEntry("tower", 2, 2, "A1")           # 环内、不是点位
+    bad_wall = M.BuildingEntry("stone_wall", 3, 3, "A1")     # 不在任何环上
+    dup = M.BuildingEntry("farm", 3, 1, "A1")                # 同一个点位第二栋
+    lv.start_buildings[:] = [keep_tower, keep_wall, bad_off, bad_wall, dup]
+    removed = M.prune_offpoint_buildings(lv, bp)
+    eq([b.type for b in removed], ["tower", "stone_wall", "farm"],
+       "★★ 删掉的 = 不在点位上的 + 环外的城墙 + 同一点位的第二栋")
+    eq([b.type for b in lv.start_buildings], ["tower", "wall"],
+       "★★ 留下的 = 点位上的塔 + 环上的墙")
+    ok(keep_tower in lv.start_buildings and keep_wall in lv.start_buildings,
+       "★ 留下的就是原来那两个对象（不是重建的）")
+    ok("start_buildings" in lv.to_dict(), "★ 清理后有东西留下 → 照常写这个键")
+
+    # 全删光：也要**显式写空数组**（否则旧文件里那几条会在下次载入时复活）
+    lv2 = M.LevelModel("bp_prune_empty", "bp_synth")
+    lv2.start_buildings[:] = [M.BuildingEntry("tower", 2, 2, "A1")]
+    eq(len(M.prune_offpoint_buildings(lv2, bp)), 1, "★ 唯一一栋不在点位上 → 删掉")
+    eq(lv2.to_dict().get("start_buildings"), [], "★★ 删空了也显式写 `start_buildings: []`")
+    eq(M.prune_offpoint_buildings(lv2, bp), [], "★ 再清理一次 → 没有可删的（幂等）")
+    lv3 = M.LevelModel("bp_none", "bp_synth")
+    lv3.start_buildings[:] = [M.BuildingEntry("tower", 2, 2, "A1")]
+    eq(M.prune_offpoint_buildings(lv3, None), [], "★ 没有地图 → 不删（交给别的校验）")
+    eq(len(lv3.start_buildings), 1, "★ 没有地图时建筑原样留着")
+
+    shutil.rmtree(map_dir, ignore_errors=True)
+
+
 def t_config_and_maps() -> None:
     print("\n[1b] 地图列表 / config 只读快照")
     info = levelfile.load_config(TMP_PROJECT)
@@ -793,7 +979,14 @@ def t_config_and_maps() -> None:
        "config：三个内置兵种都在（enemy 类型已删除），实际：%s" % info.unit_types)
     eq(info.general_types[:3], ["spearman", "longbowman", "rider"],
        "config：前三位将领的类型")
-    eq(len(info.general_types), 10, "config：将领档位有 10 个（types 可以重复兵种）")
+    # ★★ 档位数**不写死**：`unit.general.types` 是配置数据（数值归 unit_editor 管），
+    #    这里钉的是「快照把文件里的那一串**原样**读进来了」——
+    #    写死 10 只会在别人往 types 里加一档时把测试弄红（实测踩到过：14 档）。
+    cfg_raw = json.loads((TMP_PROJECT / "data" / "config.json")
+                         .read_text(encoding="utf-8-sig"))
+    eq(info.general_types,
+       [str(x) for x in (cfg_raw.get("unit", {}).get("general", {}) or {}).get("types", [])],
+       "config：将领档位原样读进来（types 允许重复兵种）")
     # ★★ 开局附属兵**没有全局缺省**了：`config.json` 的 `unit.general.escort` 已被删掉，
     #    每个兵都在摆放页里摆出来（`start_units[].escort_of`）。
     #    这里反过来钉住它 —— 守卫「有人把那个全局开关加回来」这种回归。
@@ -801,17 +994,18 @@ def t_config_and_maps() -> None:
        "★★ config 的 unit.general 里**没有** escort（开局附属兵改在摆放页摆）")
     ok(not hasattr(info, "escort_count") and not hasattr(info, "escorts"),
        "★ 只读快照也不再提供「开局编制」那种字段")
+    # ★ 建筑表同理：钉「原样读进 + 按 id 排序 + 跳过 _comment」，不写死那五个 id。
     eq(info.building_types,
-       ["base", "stone_wall", "tower", "wall", "watch_tower"],
-       "config：五种建筑（按 id 排序）")
+       sorted(str(k) for k in (cfg_raw.get("building") or {}) if not str(k).startswith("_")),
+       "config：建筑表原样读进来（按 id 排序、跳过 _comment）")
     eq(info.zone_kinds, ["food", "gold", "population"], "config：三种区划")
     ok("patrol_interval_sec" in info.ai_garrison_cfg, "config：阵地性 AI 的默认参数拿到了")
     ok("cooldown_sec" in info.ai_reddot_cfg, "config：红点性 AI 的默认参数拿到了")
     ok(info.faction_color("p1").lower() == "#ffd166", "config：阵营配色表")
     eq(info.general_label(1), "将领 1（长枪兵）", "将领下拉的写法")
-    # ★★ 名册号与档位解耦：档位选项仍 1..3（= 将领类型数），名册号放宽到 1..10。
+    # ★★ 名册号与档位解耦：档位选项 = 1..将领类型数，名册号放宽到 1..10。
     eq(list(info.general_indices()), list(range(1, len(info.general_types) + 1)),
-       "将领**档位**选项 = 1..将领类型数（当前 10）")
+       "将领**档位**选项 = 1..将领类型数（当前 %d）" % len(info.general_types))
     eq(list(info.general_roster_indices()), list(range(1, 11)),
        "★★ 将领序号（名册号）放宽到 1..10（用户需求）")
     eq(info.general_profile_of("rider"), 2, "★ 兵种 rider = 第 3 档（0 起 2）")
@@ -1661,6 +1855,7 @@ def main() -> int:
         t_override_rules()
         t_zone_owner_materialization()
         t_zone_no_go()
+        t_build_points()
         t_config_and_maps()
         t_validation_pass()
         t_validation_map()
