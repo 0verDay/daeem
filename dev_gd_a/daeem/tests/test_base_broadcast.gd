@@ -1,15 +1,20 @@
 ## test_base_broadcast.gd —— 大本营升级**播报**（小地图上方横幅 + 事件口径）
 ##
-## 需求：任何**指挥官阵营**（真人 + command AI）开始升级大本营时向所有玩家播报；
-##   取消升级不撤播报；取消后再次升级会再播一条；阵地性 / 红点性 AI 不播。
+## 需求：任何**指挥官阵营**（真人 + command AI）升级大本营时向所有玩家播报；
+##   阵地性 / 红点性 AI 不播。
+##
+## ★★ 2026.11.17：升级改成**瞬时**（没有读条）⇒ 播报事件从 `upgrade_started` 换成
+##   `upgrade_done`（带 `level` = 升完之后的等级、`faction`、`building`）。
+##   取消那条路随之消失（瞬时升级没有可取消的东西）。
 ##
 ## 这里钉三件事：
-##   1. `upgrade_started` 事件带 `faction` / `level` / `target_level` / `secs`；
+##   1. `upgrade_done` 事件带 `faction` / `level` / `building`；
 ##   2. `world.is_commander_side()` 的分类（真人 / command = true，garrison / reddot = false）；
 ##   3. 横幅组件自己的队列行为（小地图上方、最新在下、旧的上移、左滑入、上浮淡出、颜色按阵营）。
 extends "res://tests/test_case.gd"
 
 const LevelRes = preload("res://logic/level.gd")
+const UpgradeRes = preload("res://logic/upgrade.gd")
 const BroadcastBannerRes = preload("res://view/broadcast_banner.gd")
 const FontLoaderRes = preload("res://view/font_loader.gd")
 const ThemeRes = preload("res://view/theme.gd")
@@ -26,7 +31,7 @@ func _cases() -> void:
 	if cfg == null:
 		return
 	_test_event_fields(cfg)
-	_test_cancel_and_restart(cfg)
+	_test_instant_chain(cfg)
 	_test_commander_filter(cfg)
 	_test_banner_queue(cfg)
 	_test_banner_animation(cfg)
@@ -42,34 +47,43 @@ func _test_event_fields(cfg) -> void:
 	var base = _prepared_base(w)
 	if base == null:
 		return
-	ok(w.start_building_upgrade(base.tx, base.ty, w.my_faction), "开始升二本")
+	ok(w.start_building_upgrade(base.tx, base.ty, w.my_faction), "升级二本")
 	var evts: Array = w.tick(DT)
-	var ev := _find(evts, "upgrade_started")
-	ok(not ev.is_empty(), "★ 收到 upgrade_started（播报的来源）")
+	# ★★ 瞬时升级不再有「开始读条」那条事件
+	eq(_count(evts, "upgrade_started"), 0, "★★ 瞬时升级**不推** upgrade_started")
+	var ev := _find(evts, "upgrade_done")
+	ok(not ev.is_empty(), "★ 收到 upgrade_done（播报的来源）")
 	if ev.is_empty():
 		return
 	eq(String(ev.get("kind", "")), "building_upgrade", "kind 仍是 building_upgrade")
 	eq(String(ev.get("faction", "")), String(w.my_faction), "★ 带 faction（播报要用）")
-	eq(int(ev.get("level", -1)), 1, "带当前等级")
-	eq(int(ev.get("target_level", -1)), 2, "★ 带目标等级（播报文案用）")
-	near(float(ev.get("secs", 0.0)), 40.0, 1e-6, "带实际读条秒数（定死那一档）")
+	eq(int(ev.get("level", -1)), 2, "★ 带**升完之后**的等级（横幅文案用）")
+	ok(ev.get("building", null) != null, "★ 带建筑（横幅只播大本营）")
 
 
-func _test_cancel_and_restart(cfg) -> void:
+## ★★ 瞬时升级：连升两级 = 两条 upgrade_done；没有「取消」这条路了。
+func _test_instant_chain(cfg) -> void:
 	var w = _quiet(cfg)
 	var base = _prepared_base(w)
 	if base == null:
 		return
-	ok(w.start_building_upgrade(base.tx, base.ty, w.my_faction), "先开始一次")
-	eq(_count(w.tick(DT), "upgrade_started"), 1, "★ 第 1 次开始 → 1 条播报事件")
-	ok(w.cancel_building_upgrade(base.tx, base.ty, w.my_faction), "取消这次升级")
-	var after_cancel: Array = w.tick(DT)
-	eq(_count(after_cancel, "upgrade_started"), 0,
-		"★★ 取消**不产生**任何播报事件（不撤、也不再播）")
-	eq(_count(after_cancel, "upgrade_cancelled"), 1, "取消本身照旧有事件（只是没人播）")
-	ok(w.start_building_upgrade(base.tx, base.ty, w.my_faction), "取消后再升一次")
-	eq(_count(w.tick(DT), "upgrade_started"), 1,
-		"★★ 取消后再升 → 又是一条播报（合计 2 条）")
+	ok(w.start_building_upgrade(base.tx, base.ty, w.my_faction), "先升一次（1 → 2）")
+	eq(int(base.level), 2, "★★ 当场就是 2 级（没有读条）")
+	eq(_count(w.tick(DT), "upgrade_done"), 1, "★ 第 1 次升级 → 1 条播报事件")
+	eq(UpgradeRes.can_cancel_upgrade(base, w.my_faction), "idle",
+		"★★ 瞬时升级没有可取消的读条")
+	# 升三本要 2 名将领：这里补够再升
+	var idx := 1
+	while w.general_count_of(w.my_faction) < 2 and idx < 32:
+		var g = w.create_general(w.my_faction, idx, 900 + idx)
+		if g == null:
+			break
+		w.units.append(g)
+		idx += 1
+	ok(w.start_building_upgrade(base.tx, base.ty, w.my_faction), "再升一次（2 → 3）")
+	eq(int(base.level), 3, "★★ 当场就是 3 级")
+	eq(_count(w.tick(DT), "upgrade_done"), 1, "★ 第 2 次升级 → 又是一条播报")
+	eq(_count(w.tick(DT), "upgrade_started"), 0, "★★ 全程没有 upgrade_started")
 
 
 # ------------------------------------------------------------------
@@ -126,6 +140,8 @@ func _test_banner_queue(cfg) -> void:
 	banner.push(banner.format_text("P1", 2), red)
 	eq(banner.active_count(), 1, "塞进第 1 条")
 	ok(banner.visible, "有内容就显示")
+	eq(banner.line_text(0), "P1大本营已升至2级",
+		"★★ 文案 =「席位大本营已升至N级」（用户口径）")
 	ok(banner.line_text(0).contains("P1"), "文案里有阵营名（%s）" % banner.line_text(0))
 	ok(banner.line_text(0).contains("2"), "文案里有目标等级")
 	eq(banner.line_color(0), red, "★ 第 1 条用阵营色（红）")
@@ -261,6 +277,9 @@ func _prepared_base(w):
 	w.resources["food"] = 10000.0
 	w.resources["gold"] = 10000.0
 	base.level = 1
+	# ★★ 2026.11.17：大本营开局带 1 秒建造读条，而「建造中不能升级」→ 先把它清掉。
+	base.build_total = 0.0
+	base.build_remaining = 0.0
 	var idx := 1
 	var need: int = int(w.cfg.upgrade_need_generals("base", int(base.level)))
 	while w.general_count_of(w.my_faction) < need and idx < 32:

@@ -52,7 +52,7 @@ var _fade := 0.25
 var _pop := 0.22
 var _move := 0.18
 var _exit_rise := 24.0
-var _text_fmt := "%s 正在升级大本营 → %d 级"
+var _text_fmt := "%s大本营已升至%d级"
 
 # ---- 对话（story.dialogue）----
 var _d_type_sec := 0.03
@@ -170,15 +170,16 @@ func push(text: String, color: Color) -> void:
 		_apply_all()
 
 
-## 把 `ui.broadcast.text_fmt` 套在「阵营名 + 目标等级」上（HUD / 测试调它）。
-func format_text(faction_name: String, target_level: int) -> String:
+## 把 `ui.broadcast.text_fmt` 套在「席位 id + 升级后等级」上（HUD / 测试调它）。
+## ★ 2026.11.17：`%s` 现在是**阵营 id 原样**（p1 / p2 / F1 …），不是显示名。
+func format_text(faction_id: String, target_level: int) -> String:
 	var s := _text_fmt
 	if s == "":
-		return "%s → %d 级" % [faction_name, target_level]
+		return "%s大本营已升至%d级" % [faction_id, target_level]
 	if s.contains("%d"):
-		s = s % [faction_name, target_level]
+		s = s % [faction_id, target_level]
 	else:
-		s = s % faction_name
+		s = s % faction_id
 	return s
 
 

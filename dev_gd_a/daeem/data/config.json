@@ -549,14 +549,14 @@
     "broadcast": {
       "_comment": [
         "★ 大本营升级播报（左下角小地图正上方的横幅，view/broadcast_banner.gd）。",
-        "  只播**指挥官阵营**（真人席位 + command AI）开始升级大本营的那一刻；",
-        "  阵地性 / 红点性 AI 不播，取消升级也不撤播、再次升级会再播一条。",
+        "  只播**指挥官阵营**（真人席位 + command AI）升级完成的那一刻（升级是瞬时的）；",
+        "  阵地性 / 红点性 AI 不播。",
         "  ★ 位置：贴左下角，宽度 = 小地图宽度（400）；底边离小地图上沿 bottom_gap。",
         "  ★ 最新的在最下面；新的一条从左滑入（pop_sec），旧的整体上移一格（move_sec）；",
         "    到期 / 被 max_lines 挤掉的那条向上飘 exit_rise 并淡出。",
         "  ★ 尺寸是 1920×1080 设计空间；行高 line_height、行距 gap。",
         "  ★ 最多同时堆叠 max_lines 条（正在退场的那条不算）；每条自己 hold_sec 后 fade_sec 淡出。",
-        "  ★ text_fmt 的 %s = 阵营名（world.faction_label_of），%d = 目标等级；",
+        "  ★ text_fmt 的 %s = 席位 id（p1 / p2 / F1 …，不是阵营显示名），%d = 升完之后的等级；",
         "    颜色用阵营主色（与区块归属同源：红方红、黄方黄）。"
       ],
       "bottom_gap": 8.0,
@@ -568,7 +568,7 @@
       "pop_sec": 0.22,
       "move_sec": 0.18,
       "exit_rise": 24.0,
-      "text_fmt": "%s 正在升级大本营 → %d 级"
+      "text_fmt": "%s大本营已升至%d级"
     },
     "tag_long_press_sec": 0.4,
     "tag_double_click_sec": 0.35,
@@ -3311,32 +3311,29 @@
 
   "upgrade": {
     "_comment": [
-      "★ 建筑升级（右下「操作」页签 → 「升级大本营」）。",
-      "  ★★ 2026.10.26 口径变更：**只有大本营可以升级**；木墙 / 哨塔 / 石墙 / 警戒塔不再有等级表。",
-      "  每次升级都是一条**读条**（复用招募单位那块面板的样式），入队即扣粮食 / 黄金，",
-      "  读条中可以在面板上点它取消并**全额退款**（与招募同一条规则）。",
+      "★ 建筑升级（两种入口，2026.11.17 口径）。",
+      "  · **大本营**：右下「操作」页签里那一格（没有大本营牌子可拖）；",
+      "  · **五种非城墙建筑**（哨塔 / 警戒塔 / 粮田 / 房屋 / 矿脉）：把建筑牌拖到自己同种建筑上松手。",
+      "  ★★ 2026.11.17：升级**全部是瞬时的**（没有读条、没有取消退款），点/松手当场 +1 级、",
+      "    当场补满血量；视图那边播「放大 → 换模型 → 缩回」的动效（见 view/building_view_3d.gd）。",
+      "    木墙 / 石墙 / 区划中心**没有**等级表 ⇒ 不能升级（墙的升级本来就是「木墙 → 石墙」）。",
       "★ levels 是**等级表**：下标 0 = 1 级（开局就是它）。",
       "  · 读到 levels[k] 表示「当前 k 级时」的数值；下一级 = k + 1 级；",
-      "    所以**最大等级 = levels 的条数**（这里 3 条 ⇒ 1→2→3，最多升 2 次，3 级封顶）。",
-      "    `logic/upgrade.gd` 的 can_upgrade() 按条数**算**，不写死 3。",
+      "    所以**最大等级 = levels 的条数**（大本营 3 条 ⇒ 1→2→3；其余五种 2 条 ⇒ 1→2）。",
+      "    `logic/upgrade.gd` 的 can_upgrade() 按条数**算**，不写死 3；等级上限与模型档数一致",
+      "    （见 art_draft/_new_lowpoly/tiers/README.md：大本营 3 档、其余五种 2 档）。",
       "  · hp_mult 是**血量上限倍率**（乘在 config.building.<type>.hp_max 上）：",
       "    1.0 / 1.5 / 2.25（每级 ×1.5）。等级越高越耐打。",
       "  ★★ 大本营的等级还带四条限制：",
       "    max_generals（最多拥有几名将领）/ retinue_cap_bonus（所有将领编制上限 +N）",
       "    / max_techs（最多同时启用几条科技）/ max_tech_tier（最高能启用第几阶科技）。",
-      "  · cost / time_sec 是**升到下一级**要花的钱与读条秒数（本级没有 next 就是不能升）。",
-      "  ★★ 本轮新增两个键，语义与 cost / time_sec 一样写在**目标那一行**上：",
-      "    need_generals —— 要升到**这一级**必须已有几名将领（缺省 0 = 不要求；二本现在就是 0）。",
-      "      ⚠️ 它和 max_generals 是**两件不同的事**（以前是借用当前行的 max_generals 当门槛），",
-      "        现在门槛 0 / 2、上限 2 / 5 / 6，两者不再相等，改一个不会连带改另一个。",
-      "    time_by_generals —— **按将领数分档的读条表**（2026.11）：",
-      "      [{need,time_sec}, ...]，按 need 从大到小取「第一个满足的」档。",
-      "      三本写的是 2 将 60s / 3 将 40s / 4 将 20s / 5 将 **0s（立刻完成）**。",
-      "      缺省 / 空数组 = 没有分档表。",
-      "    time_sec_fast + fast_need_generals —— **老的单档提速**（保留兼容）：",
-      "      将领数 ≥ fast_need_generals 就改用 time_sec_fast；任一为 0 / 缺省 = 没有提速档。",
-      "      ★ 两者都在时**以 time_by_generals 为准**（它更具体），表里没匹配档才回退到这一档。",
-      "      ★ 判定在**按下升级那一刻定死**：读条中人数变化不重新计时。",
+      "  · cost 是**升到下一级**要花的钱，写**目标那一行**上（本级没有 next 就是不能升）。",
+      "    ★★ 不写 cost 的类型（其余五种）**自动等于建造消耗**（building.<type>.cost）——",
+      "      用户口径「升级消耗与建造消耗相同」；数值都是占位，改上面那一段就够。",
+      "    ⚠️ 以前还有 time_sec / time_by_generals / time_sec_fast 这些**读条**字段，",
+      "      2026.11.17 起升级全部瞬时，这些键已删除（逻辑层仍兼容，读到就是 0 秒）。",
+      "  ★ 大本营的将领门槛：need_generals —— 要升到**这一级**必须已有几名将领（缺省 0）。",
+      "    ⚠️ 它和 max_generals 是**两件不同的事**（门槛 0 / 2、上限 2 / 5 / 6）。",
       "  · 将领上限**只约束指挥官阵营**（真人席位 + command AI）：阵地性 AI / 红点性 AI 豁免，",
       "    上限对它们按 9999 算（见 world.base_max_generals）。",
       "  区划中心是**中立无敌障碍**（无血量）；区域特化机制已移除，资源建筑改走上面的 building 段。"
@@ -3346,17 +3343,30 @@
         { "level": 1, "hp_mult": 1.0,
           "max_generals": 2, "retinue_cap_bonus": 0, "max_techs": 1, "max_tech_tier": 1 },
         { "level": 2, "hp_mult": 1.5, "cost": { "food": 200, "gold": 200 },
-          "time_sec": 40,
           "max_generals": 4, "retinue_cap_bonus": 2, "max_techs": 2, "max_tech_tier": 2 },
         { "level": 3, "hp_mult": 2.25, "cost": { "food": 200, "gold": 200 },
-          "time_sec": 60, "need_generals": 2,
-          "time_by_generals": [
-            { "need": 2, "time_sec": 60 },
-            { "need": 3, "time_sec": 40 },
-            { "need": 4, "time_sec": 20 },
-            { "need": 5, "time_sec": 0 }
-          ],
+          "need_generals": 2,
           "max_generals": 5, "retinue_cap_bonus": 4, "max_techs": 3, "max_tech_tier": 3 }
+      ],
+      "tower": [
+        { "level": 1, "hp_mult": 1.0 },
+        { "level": 2, "hp_mult": 1.5 }
+      ],
+      "watch_tower": [
+        { "level": 1, "hp_mult": 1.0 },
+        { "level": 2, "hp_mult": 1.5 }
+      ],
+      "farm": [
+        { "level": 1, "hp_mult": 1.0 },
+        { "level": 2, "hp_mult": 1.5 }
+      ],
+      "house": [
+        { "level": 1, "hp_mult": 1.0 },
+        { "level": 2, "hp_mult": 1.5 }
+      ],
+      "mine": [
+        { "level": 1, "hp_mult": 1.0 },
+        { "level": 2, "hp_mult": 1.5 }
       ]
     }
   },

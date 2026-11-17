@@ -143,8 +143,13 @@ func _group_load(cfg) -> void:
 		"目标一句话的格式 = 「守住 <区划> <秒> 秒」（界面直接用，实际 = %s）" % label)
 	ok(label.contains(str(int(roundf(hold)))) if absf(hold - roundf(hold)) < 0.001 else true,
 		"那句话里的秒数与 hold_sec 一致（%s）" % label)
-	eq(lv.start_buildings.size(), 1, "开局摆放 1 栋建筑")
-	eq(String((lv.start_buildings[0] as Dictionary)["type"]), "tower", "摆放的是箭塔")
+	# ★★ 2026.11.17：这一关开局不再摆那栋塔 —— 它原来在 (7,5)，而那一格不是建造点位，
+	#   战役编辑器按「只能建在点位上」的新规则把它清掉了（见 tools/campaign_editor）。
+	#   这里不再钉死条数，只校验「摆了的话必须是合法类型 + 坐标落在图内」。
+	for sb in lv.start_buildings:
+		ok(String((sb as Dictionary).get("type", "")) != "", "开局建筑写了类型")
+		ok(int((sb as Dictionary).get("x", -1)) >= 0
+			and int((sb as Dictionary).get("y", -1)) >= 0, "开局建筑坐标合法")
 	eq(lv.rosters(), ["F1", "F2", "GD1"],
 		"出场名单 = 席位（两个可玩阵营）+ 参展阵营（渡口守军 GD1）")
 	ok(lv.summary().contains("单人"), "summary() 里有模式")

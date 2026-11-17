@@ -507,6 +507,10 @@ func _test_recall(cfg) -> void:
 	if g == null or base == null:
 		return
 	_give(w, 10000.0, 10000.0)
+	# ★★ 2026.11.17：大本营开局带 1 秒建造读条，而「建造中不能升级」会先报 building。
+	#   这条用例验的是**重生队列**那道门 ⇒ 先把建造读条清掉，让拒因落在 respawning 上。
+	base.build_total = 0.0
+	base.build_remaining = 0.0
 	var mates: Array = w.retinue_of(g.id, true).duplicate()
 	ok(not mates.is_empty(), "（前提）它带着附属兵")
 

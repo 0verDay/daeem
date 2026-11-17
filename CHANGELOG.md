@@ -7,6 +7,18 @@
 
 本版本为在godot引擎内的原型开发，仅展示完整的局内玩法
 
+### 2026.11.17 建筑升级系统（拖建筑牌到同种建筑上 = 升级）
+
+1. **需求**：拖建筑牌到同种建筑上松手 = 升级；同种建筑在拖牌时要和建造点位一起高亮 + 范围圈；升级瞬时完成；旧模型播「放大 → 换模型 → 缩回」；数值占位（升级消耗 = 建造消耗）。
+2. **范围**：**大本营 + 五种非城墙建筑**（哨塔 / 警戒塔 / 粮田 / 房屋 / 矿脉）。木墙 / 石墙没有等级表（墙的升级是「木墙 → 石墙」），区划中心没有等级表。等级上限与模型档数一致：大本营 3、其余五种 2。
+3. **瞬时升级**：`logic/upgrade.gd` 的 `start_upgrade()` 改成「时长 0 ⇒ 扣钱后当场收尾」，不再推 `upgrade_started`（读条那条播报事件），只推 `upgrade_done`（带 `faction` / `building` / 新 `level`）。升级完**当场补满血**（`_finish_upgrade` 里 `hp = hp_max`；要改回按比例带血只需删两行）。大本营「操作」页那一格同样是瞬时（config 里的 `time_sec` / `time_by_generals` 已删）。
+4. **花费**：`config.upgrade.levels.<type>[级].cost`；目标行没写 `cost` 的类型**自动等于 `building.<type>.cost`**（`config.upgrade_cost_to` 的回落）。大本营两行仍显式写 200/200。
+5. **规则放行**：`can_upgrade` 不再写死「只有大本营」——有等级表就能升；`building_can_upgrade()` 仍只对大本营为真（「操作」页只有大本营那一格，其余五种入口只有拖拽）。新增拒因 `building`（建造中不能升级）。
+6. **拖拽**（`view/hud.gd`）：`_begin_build_drag` 额外算 `world.building_upgrade_targets(type, faction)`（同类型 + 己方 + 没满级 + 不在建造中），把它们的格子并进 `drag_anchor_tiles`（与建造点位同一种高亮）；`_update_build_drag_preview` 把「建造锚点」和「升级目标」放在一起取最近，吸附到建筑 = `drag_build_upgrade`（与 `drag_build_anchor` 互斥）；松手走现成的 `building_upgrade` 命令（联机 / 快照同一条路）；钱不够 / 满级 / 别人的建筑给对应提示。
+7. **模型**（`view/building_view_3d.gd`）：新增 `BUILDING_MODEL_LEVELS`（类型 → 等级 → glb），网格键 `"<type>#<level>"`，批次键带上等级（一批一个网格）；升级动效 `UPGRADE_POP_*`（1.18 倍、0.12s 鼓起 + 0.18s 回落），**顶点处换模型**（`_display_level()` 在鼓起阶段还返回旧等级）；等级变化靠「上一帧等级」检测，所以拖拽 / 面板 / 客机快照三种来源表现一致。
+8. **美术**：`base_l1/l2`、`tower_l1`、`watch_tower_l1`、`farm_l1`、`mine_l1`、`house_l2` 七个 glb（做法与档位说明见 `art_draft/_new_lowpoly/tiers/README.md`）。
+9. **测试**：`test_upgrade` 重写（180 项：等级表 / 拒因 / 瞬时 / 补满血 / 封顶 / 可升级目标 / 命令）；`test_ui` 改成「点一下当场 +1 级、不再有读条面板」并新增「拖到同种建筑上 = 升级」；`test_view3d` 改成分级网格断言；`test_base_broadcast` 的播报事件从 `upgrade_started` 换成 `upgrade_done`。全量 **124 套 / 11873 项全过**。
+
 ### 2026.11.17 AI 适配即时招募 / 建造点位 / 开局满人口 / 派系整体倍率
 
 1. **即时招募**：生产循环删掉 `max_training_leaders` / `max_queue_per_leader` / `is_training()` 等旧队列判据；每个生产 tick 最多 `production_attempts` 单（默认 6），每支候选队伍最多 1 单，出兵当场生效并按实时缺口补，不会超招。
@@ -17,6 +29,9 @@
 6. **配置 / 文档**：`ai_profile.gd`、`config.json` 删除死参数并新增 `house_pop_ratio_min`；`ai_doc/ai-commander-current-status.md`、`docs/build_points.md` 同步。
 7. **测试**：`test_ai_commander` 365 项通过（新增即时招募、补满才轮换、点位容量、房屋门槛、自动再起）；`test_ai_test_campaigns` 改成「读关卡声明的 difficulty，没写按 normal」后 **79 项全过**。
 8. **派系整体倍率层**：`commander_ai.multipliers` 乘在难度包之后，可按派系调整收入 / 四个 interval / 兵力上限 / 反应延迟 / 起手资源。王朝 `cap×1.05、节奏×1.1、反应×1.1`（更厚更慢），帝国 `cap×0.95、节奏×0.9、反应×0.85`（更精更快），原生不写 = 全部 1.0。`test_clan` **301** 项通过。
+9. **修复拖牌升级后牌面残留 1.5 倍**：松手时统一把按钮 / 卡面缩放复位；牌回手途中抑制悬停抬起，落地再兜一次 1.0，避免 `mouse_entered` 把升级牌永久留在悬停放大态。`test_ui` **1451** 项通过。
+10. **大本营升级播报文案**：改为 `pX大本营已升至N级`（`ui.broadcast.text_fmt = "%s大本营已升至%d级"`，`%s` = 席位 id 原样，不再用显示名）。`test_base_broadcast` **69** 项通过。
+11. **分级建筑模型补回顶点色遮罩**：新做的 `base_l1/l2`、`tower_l1`、`watch_tower_l1`、`farm_l1`、`house_l2`、`mine_l1` 导出成了 `COLOR_0 VEC3`（alpha 缺失），游戏把 alpha 当 1 ⇒ 整栋被染成阵营色，看起来没有贴图。新增 `tools/bake_building_vertex_mask.py`，按同类型现有模型的「rgb → alpha」表把 COLOR_0 转成 VEC4；仍保留 `a=0` 材质色 + `a=1` 阵营色部件。`test_view3d` 新增每档模型「a=0 / a=1 同时存在」断言，**333** 项通过。
 
 ### 2026.11.16（第十一轮）卡牌悬停说明搬进左下角栏 + 精简文案 + 子刹 / 阿吉诃德原画
 

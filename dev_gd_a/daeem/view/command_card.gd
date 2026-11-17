@@ -904,12 +904,18 @@ func _set_drag_face_alpha(i: int, follow_pointer: bool) -> void:
 
 func _finish_card_drag(i: int, viewport_pos: Vector2 = Vector2.ZERO) -> void:
 	if _dragging_card:
-		# 鼠标牌只能由向上拖起并松手触发；普通点按不激活。
+		# ★ 鼠标牌只能由向上拖起并松手触发；普通点按不激活。
 		card_drag_finished.emit(entry_at(i), viewport_pos, i)
 		cell_unhovered.emit(i)
 		# ★★ 2026.11.16 修 bug：松手后按钮不再收 mouse_exited，清掉拖拽期间残留的悬停填充。
 		if i >= 0 and i < _cells.size():
 			FillButtonRes.clear_hover_in(_cells[i])
+			# ★★ 2026.11.17 修 bug：拖牌松手时必须把**缩放**也复位。
+			#   建筑牌拖到同种建筑上升级时，HUD 会在同一条调用栈里刷新手牌；
+			#   如果后续动画被 `set_entries()` 提前掐掉，残留的悬停 1.5 倍会被留在牌上。
+			#   这里统一回到 1.0，成功 / 返程两条动画都从正确尺寸开始。
+			_cells[i].scale = Vector2.ONE
+			_card_faces[i].scale = Vector2.ONE
 	_drag_index = -1
 	_dragging_card = false
 	_drag_face_alpha = -1.0
@@ -1042,6 +1048,12 @@ func _animate_card_back(i: int) -> void:
 		_card_faces[i].position = nr.position
 		_card_faces[i].rotation = nr_rot
 		_card_faces[i].size = nr.size
+		# ★★ 2026.11.17：返程落地同样兜一次缩放，避免残留悬停的 1.5 倍。
+		if _hover_index != i:
+			_cells[i].scale = Vector2.ONE
+			_card_faces[i].scale = Vector2.ONE
+			_cells[i].pivot_offset = _cells[i].size * 0.5
+			_card_faces[i].pivot_offset = _card_faces[i].size * 0.5
 	_drag_tween.finished.connect(on_return_done, CONNECT_ONE_SHOT)
 
 
@@ -1075,6 +1087,10 @@ func play_drag_success(i: int, screen_pos: Vector2, only_this_card: bool = true)
 	if _hover_index >= 0:
 		_settle_spread(i)
 	_hover_index = -1
+	# ★★ 2026.11.17 修 bug：牌回手途中不要再被 mouse_entered 抬到 1.5 倍。
+	#   牌会从落点飞回槽位，途中可能正好经过指针；Godot 不会为“牌自己移开”补 mouse_exited，
+	#   一旦这时起了悬停 Tween，牌落到手牌后会一直停在 1.5 倍。
+	_hover_suppressed_index = i
 	if _success_tween != null and _success_tween.is_running():
 		_success_tween.kill()
 		_success_tween = null
@@ -1128,6 +1144,13 @@ func play_drag_success(i: int, screen_pos: Vector2, only_this_card: bool = true)
 func _restore_card_at_slot(i: int) -> void:
 	if i < 0 or i >= _cells.size():
 		return
+	# ★★ 2026.11.17：回槽位期间 / 落地后不要让悬停把牌重新放大到 1.5 倍。
+	#   用户报的是「升级牌回到手牌仍保持 1.5 倍」——原因是牌回手时指针正好在它上面，
+	#   mouse_entered 起了悬停 Tween，而 `_restore_tween` 只写 alpha、不写 scale。
+	#   抑制到下一次 `mouse_exited`（见 `_on_cell_mouse_exited`）为止。
+	_hover_suppressed_index = i
+	if _hover_index == i:
+		_hover_index = -1
 	var slot := _fan_slot_of(i)
 	if slot.is_empty():
 		return
@@ -1155,6 +1178,17 @@ func _restore_card_at_slot(i: int) -> void:
 	_restore_tween = create_tween().set_parallel(true)
 	_restore_tween.tween_property(cell, "modulate:a", 1.0, 0.12)
 	_restore_tween.tween_property(face, "modulate:a", 1.0, 0.12)
+	# ★★ 2026.11.17：落地再兜一次缩放 —— 即使途中被别的 Tween 写了 1.5 倍，回手完成时也归 1.0。
+	_restore_tween.finished.connect(func() -> void:
+		if not is_instance_valid(self) or i < 0 or i >= _cells.size() or _dragging_card:
+			return
+		if _hover_index == i:
+			return
+		_cells[i].scale = Vector2.ONE
+		_card_faces[i].scale = Vector2.ONE
+		_cells[i].pivot_offset = _cells[i].size * 0.5
+		_card_faces[i].pivot_offset = _card_faces[i].size * 0.5
+	, CONNECT_ONE_SHOT)
 
 
 ## 队列开始后，取消牌从左侧滑入，普通招募牌向右错位；打出的兵种从下方补回。

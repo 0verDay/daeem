@@ -148,15 +148,18 @@ func consume_events(events: Array) -> void:
 				# ★ 不过滤阵营：这是**世界级**消息（谁的大本营没了都值得看一眼）。
 				hud.show_notice("%s 的大本营被摧毁：该阵营的单位与建筑已失去指挥" %
 					String(evt.get("faction", "")))
-			"upgrade_started":
+			"upgrade_done":
 				# ★★ 大本营升级播报：**不过滤「是不是我的」** —— 这是给所有人看的横幅。
 				#   只有指挥官阵营（真人 + command AI）播；阵地性 / 红点性 AI 不播。
-				#   `cancel_upgrade()` 不会再推事件 ⇒ 取消不撤播报、取消后再升会再播一条。
+				# ★★ 2026.11.17：升级改成**瞬时**（没有读条）⇒ 播报挂在 `upgrade_done` 上。
+				#   以前挂在 `upgrade_started`（「开始读条」），现在那条事件在瞬时升级里不推。
+				#   `level` 是升完之后的等级（= 以前 `target_level` 的那个数）。
 				if String(evt.get("kind", "")) == "building_upgrade" \
 						and host.world != null \
+						and _is_base_building(evt.get("building", null)) \
 						and host.world.is_commander_side(String(evt.get("faction", ""))):
 					hud.show_broadcast(String(evt.get("faction", "")),
-						int(evt.get("target_level", 0)))
+						int(evt.get("level", 0)))
 			"unit_recruited":
 				# ★ 这条**不过滤阵营**：`notify_unit_recruited` 自己按将领归属判断，
 				#   而且它要更新的是编队面板的「谁已就位」，AI 的招募同样会改变名册。
@@ -192,3 +195,12 @@ func _is_my_event(evt: Dictionary) -> bool:
 	if f == "":
 		return true
 	return f == String(host.world.my_faction)
+
+
+## ★★ 2026.11.17：这条 `building_upgrade` 事件是不是**大本营**的？
+##   横幅只播大本营升级（其余五种建筑升一级不值得占一条屏幕横幅）。
+##   事件里带的是建筑对象；拿不到对象时**保守地当作是**（宁可多播一条，也不要漏播）。
+func _is_base_building(b) -> bool:
+	if b == null:
+		return true
+	return b.has_method("is_base") and bool(b.is_base())

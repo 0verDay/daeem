@@ -121,8 +121,14 @@ func _cases() -> void:
 	near(cfg.num("building.watch_tower.range", 0.0), 4.0, 1e-6, "★★ 警戒塔射程 4 格")
 	near(cfg.building_ranged_reduction("wall"), 0.9, 1e-6, "★★ 木墙远程免伤 90%")
 	near(cfg.building_ranged_reduction("base"), 0.9, 1e-6, "★★ 大本营也有 90% 远程免伤")
-	ok(not cfg.has_upgrade("wall"), "★★ 木墙没有升级表")
-	ok(not cfg.has_upgrade("tower"), "★★ 哨塔没有升级表")
+	ok(not cfg.has_upgrade("wall"), "★★ 木墙没有升级表（墙的升级是「木墙 → 石墙」）")
+	ok(not cfg.has_upgrade("stone_wall"), "★★ 石墙也没有升级表")
+	# ★★ 2026.11.17：五种非城墙建筑都能升（拖建筑牌到同种建筑上）
+	for t in ["tower", "watch_tower", "farm", "house", "mine"]:
+		ok(cfg.has_upgrade(t), "★★ %s 有升级表（拖拽升级）" % t)
+		eq(cfg.upgrade_max_level(t), 2, "★★ %s 最多 2 级" % t)
+	ok(cfg.has_upgrade("base"), "★★ 大本营有升级表（3 级）")
+	eq(cfg.upgrade_max_level("base"), 3, "★★ 大本营 3 级封顶")
 
 	eq(cfg.bool_val("economy.enabled", false), true,
 		"★ 建造不再免费（economy.enabled = true）—— 木墙 / 哨塔的 cost 不再是空转的")

@@ -3299,10 +3299,20 @@ func upgrade_hp_mult(type: String, level: int) -> float:
 ## 「从 level 升到 level+1」要花的钱 / 读条秒数（已经是最高级 → 空字典 / 0）。
 ## ★ 读的是**目标等级那一行**（`level` 级那行写的是「升到它」的代价，
 ##   所以 1 级那行没有 cost —— 这正好表达「开局就是 1 级，不用花钱」）。
+## ★★ 2026.11.17（用户口径「升级消耗与建造消耗相同」）：
+##   **目标行没写 cost 的类型，自动等于建造消耗** —— 拿 `building.<type>.cost`。
+##   这样「改建造价 = 升级价跟着改」，不用两份数字互相对齐；大本营没写建造价、
+##   但两行都写了显式 cost，所以走的仍是上面那条分支（行为不变）。
 func upgrade_cost_to(type: String, level: int) -> Dictionary:
 	var row := upgrade_row(type, level + 1)
+	if row.is_empty():
+		return {}
 	var c: Variant = row.get("cost", {})
-	return c if typeof(c) == TYPE_DICTIONARY else {}
+	if typeof(c) == TYPE_DICTIONARY and not (c as Dictionary).is_empty():
+		return c
+	# ★ 没写升级价 → 与建造价同一份（缺省 {} = 免费）
+	var raw: Variant = get_path_value("building.%s.cost" % type)
+	return raw if typeof(raw) == TYPE_DICTIONARY else {}
 
 
 func upgrade_time_to(type: String, level: int) -> float:

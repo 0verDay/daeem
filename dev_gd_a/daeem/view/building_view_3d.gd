@@ -89,6 +89,48 @@ const BUILDING_MOVING_MODELS := {
 	"zone_center": "res://assets/models/zone_center_flag_lowpoly.glb",
 }
 
+## ★★ 2026.11.17：**分级模型**（建筑升级后换的那一套，见 art_draft/_new_lowpoly/tiers/README.md）。
+##   类型 → {等级: 模型路径}。没列在这里的类型 = 只有一档（仍然读 `BUILDING_MODELS`）。
+##   ★ 等级数 = config `upgrade.levels.<type>` 的条数（大本营 3、其余五种 2）。
+##   ★ 现有素材都是「最高档」：大本营 = `base_lowpoly.glb`（3 级），其余五种 = 各自的
+##     `*_lowpoly.glb`（2 级，房屋相反 —— 它现有的是 1 级、`house_l2` 才是 2 级）。
+##   ★ 模型自带的顶点色（COLOR_0）与阵营色遮罩在每一档里都保留 ⇒ 换模型不影响配色 / 归属色。
+const BUILDING_MODEL_LEVELS := {
+	"base": {
+		1: "res://assets/models/base_l1_lowpoly.glb",
+		2: "res://assets/models/base_l2_lowpoly.glb",
+		3: "res://assets/models/base_lowpoly.glb",
+	},
+	"tower": {
+		1: "res://assets/models/tower_l1_lowpoly.glb",
+		2: "res://assets/models/tower_lowpoly.glb",
+	},
+	"watch_tower": {
+		1: "res://assets/models/watch_tower_l1_lowpoly.glb",
+		2: "res://assets/models/watch_tower_lowpoly.glb",
+	},
+	"farm": {
+		1: "res://assets/models/farm_l1_lowpoly.glb",
+		2: "res://assets/models/farm_lowpoly.glb",
+	},
+	"house": {
+		1: "res://assets/models/house_lowpoly.glb",
+		2: "res://assets/models/house_l2_lowpoly.glb",
+	},
+	"mine": {
+		1: "res://assets/models/mine_l1_lowpoly.glb",
+		2: "res://assets/models/mine_lowpoly.glb",
+	},
+}
+
+## 升级动效（用户口径 2026.11.17）：「整体模型过度放大一圈后变为新模型随后缩回尺寸」。
+## ★ 放大到 `UPGRADE_POP_SCALE` 倍、`UPGRADE_POP_UP_SEC` 秒鼓起 ⇒ **在顶点换模型**
+##   （`_display_level()` 在鼓起阶段还返回旧等级）⇒ `UPGRADE_POP_DOWN_SEC` 秒回落。
+## ★ 数值是占位的（手感可调）；总时长 0.30 秒，比建造弹跳（0.46 秒）短一截。
+const UPGRADE_POP_UP_SEC := 0.12
+const UPGRADE_POP_DOWN_SEC := 0.18
+const UPGRADE_POP_SCALE := 1.18
+
 ## ★★ 「离地抬起量」（世界单位）：所有建筑/旗子都按它贴地（见 `_transform_of` / `_flag_transform`）。
 const GROUND_LIFT := 0.6
 
@@ -105,8 +147,11 @@ var world = null
 var palette = null
 
 var _box: BoxMesh = null
-## 类型 → 合并后的模型网格（加载不到 = null ⇒ **不画**，由 `_load_building_mesh` 报错；**不退回方块**）
+## `<type>#<level>` → 合并后的模型网格（加载不到 = null ⇒ **不画**，由 `_load_building_mesh` 报错；
+## **不退回方块**）。★ 2026.11.17 起按等级分开存（升级要换模型）。
 var _model_meshes: Dictionary = {}
+## 类型 → 这一类型有哪几档模型（升序；没升级表的类型 = [1]）
+var _model_levels: Dictionary = {}
 ## 可动部件：类型 → 网格（同上，加载不到 = null ⇒ 不画）
 var _moving_meshes: Dictionary = {}
 ## 变体键（"阵营|类型"）→ {node, mm, capacity}
@@ -173,9 +218,21 @@ func setup(p_cfg: ConfigRes, p_world, p_palette) -> void:
 	_cell = palette.cell_size()
 	_hit_amp = cfg.num("render.hit_shake_cells", 0.06)
 	_hit_freq = cfg.num("render.hit_shake_freq", 26.0)
+	# ★★ 2026.11.17：按**分级模型**加载（`BUILDING_MODEL_LEVELS`），键是 `"<type>#<level>"`；
+	#   没有分级表的类型仍按 `BUILDING_MODELS` 载一份、登记成 1 级。
 	_model_meshes = {}
+	_model_levels = {}
 	for t in BUILDING_MODELS:
-		_model_meshes[t] = _load_building_mesh(BUILDING_MODELS[t])
+		var table: Dictionary = BUILDING_MODEL_LEVELS.get(t, {})
+		if table.is_empty():
+			_model_meshes[_mesh_key(t, 1)] = _load_building_mesh(BUILDING_MODELS[t])
+			_model_levels[t] = [1]
+			continue
+		var lvls: Array = table.keys()
+		lvls.sort()
+		_model_levels[t] = lvls
+		for lv in lvls:
+			_model_meshes[_mesh_key(t, int(lv))] = _load_building_mesh(String(table[lv]))
 	_moving_meshes = {}
 	for t in BUILDING_MOVING_MODELS:
 		_moving_meshes[t] = _load_building_mesh(BUILDING_MOVING_MODELS[t])
@@ -361,19 +418,23 @@ func _build_edge_mesh(mesh: Mesh) -> Mesh:
 	return BuildingEdgeRibbonRes.build(mesh, w, _edge_crease_deg)
 
 
-## 取（或创建）某个类型的「所有折边」MultiMesh 层。
-## ★ 颜色是全局的（白 / 金），与 owner 无关 ⇒ 同一类型的所有建筑共用一个 draw call。
-func _edge_layer_for(type: String, moving: bool) -> Dictionary:
+## 取（或创建）某个**类型 + 等级**的「所有折边」MultiMesh 层。
+## ★ 颜色是全局的（白 / 金），与 owner 无关 ⇒ 同一类型同一档的所有建筑共用一个 draw call。
+## @param type_key `"<type>#<level>"`（与 `_model_meshes` / `edge_items` 同一套键）
+func _edge_layer_for(type_key: String, moving: bool) -> Dictionary:
 	var cache: Dictionary = _flag_edge_layers if moving else _edge_layers
-	var hit: Variant = cache.get(type, null)
+	var hit: Variant = cache.get(type_key, null)
 	if hit != null:
 		return hit
 	var meshes: Dictionary = _flag_edge_meshes if moving else _edge_meshes
-	var mesh: Mesh = meshes.get(type, null)
+	var mesh: Mesh = meshes.get(type_key, null)
 	if mesh == null and not moving:
-		# 方块类建筑（farm / house / mine …）没有预载模型：从 `_box` 现建一份。
-		mesh = _build_edge_mesh(_mesh_for(type))
-		meshes[type] = mesh
+		# 兜底：setup 里已经把每档都建好了，这里只应付「运行中才发现的新键」。
+		var parts := String(type_key).split("#")
+		var t2 := String(parts[0])
+		var lv2: int = int(parts[1]) if parts.size() > 1 else 1
+		mesh = _build_edge_mesh(_mesh_for_level(t2, lv2) if _uses_model(t2) else _box)
+		meshes[type_key] = mesh
 	if mesh == null:
 		return {}
 	var mm := MultiMesh.new()
@@ -383,12 +444,12 @@ func _edge_layer_for(type: String, moving: bool) -> Dictionary:
 	mm.mesh = mesh
 	mm.instance_count = 64
 	var node := MultiMeshInstance3D.new()
-	node.name = ("FlagEdges_" if moving else "BuildingEdges_") + type
+	node.name = ("FlagEdges_" if moving else "BuildingEdges_") + String(type_key)
 	node.multimesh = mm
 	node.material_override = _edge_mat
 	add_child(node)
 	var rec := {"node": node, "mm": mm}
-	cache[type] = rec
+	cache[type_key] = rec
 	return rec
 
 
@@ -421,7 +482,7 @@ func _sync_edge_layers(items: Dictionary, moving: bool) -> void:
 		(rec2["node"] as MultiMeshInstance3D).visible = false
 
 
-func _batch_for(key: String, color: Color, type: String = "",
+func _batch_for(key: String, color: Color, type_key: String = "",
 		hover_color: Color = Color.WHITE) -> Dictionary:
 	var hit: Variant = _batches.get(key, null)
 	if hit != null:
@@ -433,15 +494,15 @@ func _batch_for(key: String, color: Color, type: String = "",
 	mat.set_shader_parameter("hover_fill_color", hover_color)
 	mat.set_shader_parameter("hover_fill_alpha", _hover_fill_alpha)
 	# ★★ 外轮廓白边 / 选中金边：同一材质的第二个 pass（反向壳）
-	mat.next_pass = _outline_pass(_mesh_for(type))
+	mat.next_pass = _outline_pass(_mesh_by_key(type_key))
 	mat.set_shader_parameter("flash_strength", cfg.num("render.hit_flash_alpha", 0.8))
 	# ★ 有单位靠近时整栋淡到的不透明度（见 building_flash.gdshader 的 depth_draw_always 说明）
 	mat.set_shader_parameter("fade_alpha", cfg.num("render.building_fade_alpha", 0.3))
 
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
-	# ★ 有模型的类型（城墙 / 箭塔 / 大本营 / 区划中心）用各自的模型网格；其余仍是单位方块（逐实例缩放表达尺寸）
-	mm.mesh = _mesh_for(type)
+	# ★ 网格 = 这一批的**类型 + 等级**（升级后是另一个网格 ⇒ 另开一批）
+	mm.mesh = _mesh_by_key(type_key)
 	# ★⚠️ `use_custom_data` 必须在 `instance_count` **之前**设（见 unit_view_3d 的说明）
 	mm.use_custom_data = true
 	mm.instance_count = 64
@@ -455,6 +516,12 @@ func _batch_for(key: String, color: Color, type: String = "",
 	var rec := {"node": node, "mm": mm}
 	_batches[key] = rec
 	return rec
+
+
+## 按网格键（`"<type>#<level>"`）取网格；取不到就退回单位方块（只有非模型类型会这样）。
+func _mesh_by_key(type_key: String) -> Mesh:
+	var hit: Variant = _model_meshes.get(String(type_key), null)
+	return hit if hit != null else _box
 
 
 ## 每帧同步（建筑很少，重建的代价可忽略；但仍按「阵营 + 类型 + 等级」分桶以保持合批）
@@ -478,26 +545,32 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 	#   （见 `_fade_at` 与 `view/fade_stamp.gd`）。旗面那一趟复用同一张位图。
 	var stamp: PackedByteArray = FadeStampRes.build(marked, int(world.map.cols), int(world.map.rows))
 	var buckets: Dictionary = {}
-	# 类型 → [{x, h, s}]：这一帧所有折边线带实例（与本体同一次遍历收集）
+	# `<type>#<level>` → [{x, h, s}]：这一帧所有折边线带实例（与本体同一次遍历收集）
 	var edge_items: Dictionary = {}
 	# ★★ 同一批建筑在列表里通常挨在一起（玩家一口气拉的一排墙）⇒ 记住上一把键，
-	#   只有 owner / type / 悬停色变了才重新拼字符串。
+	#   只有 owner / 类型 / 等级 / 悬停色变了才重新拼字符串。
 	var last_owner: String = ""
 	var last_type: String = ""
+	var last_level: int = -1
 	var last_suffix: String = ""
 	var last_key: String = ""
 	for b in world.building_list:
 		if not b.alive:
 			continue
+		# ★★ 2026.11.17：等级变化检测 + 升级动效计时（每栋每帧一次；看不见的也照样记，
+		#   这样它重新可见时不会把旧等级当成「刚升上来」再弹一次）。
+		_track_upgrade_pop(b, dt)
 		# ★★ 战争迷雾：看不见的敌方建筑**一个实例都不占**
 		#    （判据只在 logic/fog.gd：己方 / 无主永远可见，敌方「见过就记住」）
 		if not _visible_to_me(b):
 			continue
 		var owner_s := String(b.owner)
 		var type_s := String(b.type)
+		var lvl: int = _display_level(b)
 		# ★★ 为什么键里要带**悬停色**：悬停填充色是每批次一个 uniform，而区划中心的
 		#   owner 恒为空、填充色却跟着所属区划的归属走（蓝 / 黄 / 红 / 灰）。
 		#   不并进键里的话，所有区划中心会共用「第一次建批时」那一个颜色。
+		# ★★ 为什么键里要带**等级**：升级后换的是**另一个网格**，MultiMesh 一批只能一个网格。
 		var suffix := ""
 		if type_s == "zone_center":
 			suffix = "|h" + _color_hex(_hover_color_of(b, owner_s))
@@ -505,13 +578,14 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 			suffix = "|hn"
 		var key: String
 		if last_key != "" and owner_s == last_owner and type_s == last_type \
-				and suffix == last_suffix:
+				and lvl == last_level and suffix == last_suffix:
 			key = last_key
 		else:
 			last_owner = owner_s
 			last_type = type_s
+			last_level = lvl
 			last_suffix = suffix
-			key = "%s|%s%s" % [owner_s, type_s, suffix]
+			key = "%s|%s|%d%s" % [owner_s, type_s, lvl, suffix]
 			last_key = key
 		var arr: Array = buckets.get(key, [])
 		arr.append(b)
@@ -524,8 +598,8 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 		var b0 = arr[0]
 		var owner := String(b0.owner)
 		var col: Color = _faction_or_type_color(b0, owner)
-		var type_s := String(b0.type)
-		var rec: Dictionary = _batch_for(key, col, type_s, _hover_color_of(b0, owner))
+		var type_key := _mesh_key(String(b0.type), _display_level(b0))
+		var rec: Dictionary = _batch_for(key, col, type_key, _hover_color_of(b0, owner))
 		var mm: MultiMesh = rec["mm"]
 		if mm.instance_count < arr.size():
 			mm.instance_count = maxi(arr.size(), mm.instance_count * 2)
@@ -557,9 +631,9 @@ func sync(dt: float = 1.0 / 60.0) -> void:
 			if sel > 0.0:
 				selected_last_frame += 1
 			# ★ 折边线带：与本体同变换、同进度（hover/选中），另一层 MultiMesh 画。
-			var elist: Array = edge_items.get(type_s, [])
+			var elist: Array = edge_items.get(type_key, [])
 			elist.append({"x": xform, "h": hov, "s": sel})
-			edge_items[type_s] = elist
+			edge_items[type_key] = elist
 		mm.visible_instance_count = arr.size()
 		(rec["node"] as MultiMeshInstance3D).visible = true
 		total += arr.size()
@@ -612,6 +686,13 @@ const BAR_CAPACITY := 64        ## 同时最多画多少条进度条
 var _was_constructing: Dictionary = {}
 ## 正在弹的实例：iid -> 已经过的时间（秒）
 var _pop_elapsed: Dictionary = {}
+## ★★ 2026.11.17：升级动效（iid -> 已经过的时间、iid -> 升级前的等级）。
+##   · `_upgrade_pop` 存在 = 这一栋**正在播**「放大 → 换模型 → 缩回」；
+##   · `_upgrade_from` 是鼓起阶段还要画的那一档（顶点处才切到新等级，见 `_display_level()`）。
+var _upgrade_pop: Dictionary = {}
+var _upgrade_from: Dictionary = {}
+## 上一帧看到这一栋是几级（iid -> level）：用来抓「等级 +1」那一帧，起升级动效
+var _level_seen: Dictionary = {}
 ## 本帧 dt（`sync()` 写、`_transform_of()` 读 —— 它的签名不能改，调用点很多）
 var _frame_dt: float = 0.0
 
@@ -622,10 +703,23 @@ var _bar_mm: MultiMesh = null
 var _bar_node: MultiMeshInstance3D = null
 
 
-## 一栋建筑在建 / 弹跳时的**额外变换**（dy = 竖直偏移，sy = 纵向缩放）。
+## 一栋建筑在建 / 弹跳 / **升级鼓起**时的**额外变换**（dy = 竖直偏移，sy = 纵向缩放，s = 整体缩放）。
 ## 返回空字典 = 没有动画（调用方走缓存）。
 func _anim_state(b) -> Dictionary:
 	var iid: int = int(b.get_instance_id())
+	# ★★ 升级：整体等比放大到 `UPGRADE_POP_SCALE` 再缩回（原点在底边 ⇒ 不会陷进地里）。
+	#   先把这段判掉，免得「刚升完级的同一帧又赶上建造弹跳」两条动画互相抢 basis。
+	var up: Variant = _upgrade_pop.get(iid, null)
+	if up != null:
+		var ue: float = float(up)
+		if ue < UPGRADE_POP_UP_SEC:
+			var uu: float = ue / UPGRADE_POP_UP_SEC
+			# 缓出：一开始冲得快，到顶点前慢下来（不是线性，手感更「弹」）
+			var k: float = 1.0 - (1.0 - uu) * (1.0 - uu)
+			return {"s": 1.0 + (UPGRADE_POP_SCALE - 1.0) * k}
+		var ud: float = clampf((ue - UPGRADE_POP_UP_SEC) / UPGRADE_POP_DOWN_SEC, 0.0, 1.0)
+		var k2: float = 1.0 - (1.0 - ud) * (1.0 - ud)
+		return {"s": UPGRADE_POP_SCALE - (UPGRADE_POP_SCALE - 1.0) * k2}
 	if b.is_under_construction():
 		# 全程匀速跟着读条：进度 0% 整栋埋在土里，100% 刚好到地面
 		var p: float = b.build_progress()
@@ -647,12 +741,39 @@ func _anim_state(b) -> Dictionary:
 	return {}
 
 
-## 这栋建筑在世界里有多高（世界单位）：模型类型读模型 AABB，方块类型读 `_height_of`。
+## ★★ 每帧每栋建筑一次：抓「等级 +1」并推进升级动效计时（`sync()` 里调）。
+##
+## ★ 为什么用「上一帧几级」而不是监听 `upgrade_done` 事件：视图读的是**权威状态**，
+##   这样拖拽升级、大本营面板升级、客机收到快照（`lv` 跳变）三种来源都自然一致，
+##   也不用把事件总线接进 3D 层（它现在没有这条线）。
+func _track_upgrade_pop(b, dt: float) -> void:
+	var iid: int = int(b.get_instance_id())
+	var lvl: int = int(b.level)
+	var prev: Variant = _level_seen.get(iid, null)
+	if prev == null:
+		_level_seen[iid] = lvl          # 第一次见到：只登记，不播（读档 / 开局的建筑不该弹）
+	elif int(prev) != lvl:
+		if lvl > int(prev):
+			_upgrade_pop[iid] = 0.0
+			_upgrade_from[iid] = int(prev)
+		_level_seen[iid] = lvl
+	if not _upgrade_pop.has(iid):
+		return
+	var e: float = float(_upgrade_pop[iid]) + dt
+	if e >= UPGRADE_POP_UP_SEC + UPGRADE_POP_DOWN_SEC:
+		_upgrade_pop.erase(iid)
+		_upgrade_from.erase(iid)
+	else:
+		_upgrade_pop[iid] = e
+
+
+## 这栋建筑在世界里有多高（世界单位）：模型类型读**当前显示那一档**模型的 AABB，
+## 方块类型读 `_height_of`。
 func _world_height_of(b) -> float:
 	var t := String(b.type)
 	var s: float = b.body_scale(cfg)
 	if _uses_model(t):
-		var m: Mesh = _model_meshes.get(t, null)
+		var m: Mesh = _mesh_of(b)
 		if m != null:
 			return m.get_aabb().size.y * _cell * s
 	return _cell * _height_of(b)
@@ -670,11 +791,16 @@ func head_world_of(b) -> Vector3:
 
 
 func _transform_of(b) -> Transform3D:
-	# ★★ 在建 / 正在弹：现算并绕开缓存（建筑此刻每帧都在动）
+	# ★★ 在建 / 正在弹 / 正在升级：现算并绕开缓存（建筑此刻每帧都在动）
 	var anim: Dictionary = _anim_state(b)
 	if not anim.is_empty():
 		var xa: Transform3D = _static_transform_of(b)
 		xa.origin.y += float(anim.get("dy", 0.0))
+		# ★ 升级动效的**整体等比放大**（模型原点在底边 ⇒ 以底边为支点放大，不会陷进地里）
+		var ss: Variant = anim.get("s", null)
+		if ss != null and _uses_model(String(b.type)):
+			var ks: float = _cell * b.body_scale(cfg) * float(ss)
+			xa.basis = Basis().scaled(Vector3(ks, ks, ks))
 		var sy: Variant = anim.get("sy", null)
 		if sy != null and _uses_model(String(b.type)):
 			var ka: float = _cell * b.body_scale(cfg)
@@ -745,6 +871,17 @@ func _sync_build_bars() -> void:
 	for k in _pop_elapsed.keys():
 		if not seen.has(k):
 			_pop_elapsed.erase(k)
+	# ★★ 2026.11.17：升级状态（上一帧等级 / 动效计时）也要跟着清，
+	#   否则拆了重造一栋会顶到旧实例的 id 上，白弹一次。
+	for k in _level_seen.keys():
+		if not seen.has(k):
+			_level_seen.erase(k)
+	for k in _upgrade_pop.keys():
+		if not seen.has(k):
+			_upgrade_pop.erase(k)
+	for k in _upgrade_from.keys():
+		if not seen.has(k):
+			_upgrade_from.erase(k)
 	_bar_mm.visible_instance_count = shown
 	_bar_node.visible = shown > 0
 
@@ -758,7 +895,7 @@ func _sync_build_bars() -> void:
 func screen_rect_of(b) -> Rect2:
 	if b == null or palette == null or palette.cam == null:
 		return Rect2()
-	var mesh: Mesh = _mesh_for(String(b.type))
+	var mesh: Mesh = _mesh_of(b)
 	if mesh == null:
 		return Rect2()
 	var aabb: AABB = mesh.get_aabb()
@@ -1122,12 +1259,47 @@ func _uses_model(type: String) -> bool:
 	return BUILDING_MODELS.has(type)
 
 
-## 这一类型用哪个网格：有模型的走模型，其余走单位方块。
+## 这一类型用哪个网格：有模型的走**1 级**模型，其余走单位方块。
 ## ★ 与 `_uses_model` 同源（同一张 `BUILDING_MODELS`）⇒ 不会出现「变换按模型算、网格却是方块」。
+## ★ 真正的「这一栋现在是几级」走 `_mesh_for_level()`（预览 / 死亡残骸 / 演出泛光都用 1 级）。
 func _mesh_for(type: String) -> Mesh:
 	if _uses_model(type):
-		return _model_meshes.get(type, null)
+		return _mesh_for_level(type, 1)
 	return _box
+
+
+## 分级模型的键（`"<type>#<level>"`）——`_model_meshes` / `_edge_meshes` 都用它。
+func _mesh_key(type: String, level: int) -> String:
+	return "%s#%d" % [String(type), int(level)]
+
+
+## 某一类型、某一等级的模型网格（等级夹进「这一类型有哪几档」的范围里）。
+## ★ 等级表与实际模型档数不一致时（config 写多了一级 / 少写了模型）**夹住**而不是崩：
+##   多出来的等级显示最高档，缺的等级显示最低档。
+func _mesh_for_level(type: String, level: int) -> Mesh:
+	var lvls: Array = _model_levels.get(String(type), [])
+	if lvls.is_empty():
+		return _model_meshes.get(_mesh_key(type, 1), null)
+	var lo: int = int(lvls[0])
+	var hi: int = int(lvls[lvls.size() - 1])
+	var use: int = clampi(int(level), lo, hi)
+	return _model_meshes.get(_mesh_key(type, use), null)
+
+
+## 这一栋建筑**画哪一级的模型**（升级动效的鼓起阶段还画旧等级 ⇒ 顶点处换模型）。
+func _display_level(b) -> int:
+	if b == null:
+		return 1
+	var iid: int = int(b.get_instance_id())
+	if _upgrade_pop.has(iid):
+		if float(_upgrade_pop[iid]) < UPGRADE_POP_UP_SEC:
+			return int(_upgrade_from.get(iid, int(b.level)))
+	return int(b.level)
+
+
+## 这一栋建筑现在用的网格（分级 + 动效期间显示旧等级）。
+func _mesh_of(b) -> Mesh:
+	return _mesh_for_level(String(b.type), _display_level(b))
 
 
 ## 被拖建筑牌的预览网格（与实际建筑使用同一份合并模型 / 方块网格）。

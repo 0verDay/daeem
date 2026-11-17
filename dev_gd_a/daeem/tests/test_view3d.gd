@@ -454,8 +454,33 @@ func _test_buildings_multimesh(cfg) -> void:
 		"★ 建筑批次数不超过建筑数（%d ≤ %d）"
 		% [game.buildings.mesh_batch_count, game.buildings.instance_count])
 	for mt in BuildingViewRes.BUILDING_MODELS:
-		ok(game.buildings._model_meshes.get(mt, null) != null,
-			"★★ 模型类型 %s 的网格已加载（否则该类型静默不画）" % mt)
+		# ★★ 2026.11.17：网格按「类型 + 等级」存（升级要换模型）⇒ 键是 `"<type>#<level>"`。
+		#   没有分级表的类型只有 1 级；有分级表的每一档都要在。
+		var lvls: Array = game.buildings._model_levels.get(mt, [])
+		ok(not lvls.is_empty(), "★★ 模型类型 %s 登记了等级（至少 1 档）" % mt)
+		for lv in lvls:
+			var mesh: Mesh = game.buildings._model_meshes.get(
+					game.buildings._mesh_key(mt, int(lv)), null)
+			ok(mesh != null,
+				"★★ 模型类型 %s 的 %d 级网格已加载（否则该类型静默不画）" % [mt, int(lv)])
+			if mesh == null:
+				continue
+			# ★★ 2026.11.17：分级模型也必须带**阵营色遮罩**（COLOR.a 有 0 也有 1）。
+			#   全是 1 时整栋模型会被染成阵营色（用户报的「无贴图」）；全是 0 时又分不清敌我。
+			var arrays: Array = mesh.surface_get_arrays(0)
+			var colors: PackedColorArray = arrays[Mesh.ARRAY_COLOR]
+			if colors.is_empty():
+				continue
+			var masked := 0
+			var unmasked := 0
+			for c in colors:
+				if c.a >= 0.5:
+					masked += 1
+				else:
+					unmasked += 1
+			ok(masked > 0 and unmasked > 0,
+				"★★ %s 的 %d 级模型顶点色遮罩正常（a=0 %d / a=1 %d，不能整栋染色）"
+				% [mt, int(lv), unmasked, masked])
 	for mt in BuildingViewRes.BUILDING_MOVING_MODELS:
 		ok(game.buildings._moving_meshes.get(mt, null) != null,
 			"★★ 可动部件 %s 的网格已加载（旗面，否则旗子静默不画）" % mt)

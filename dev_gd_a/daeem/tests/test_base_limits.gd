@@ -303,9 +303,12 @@ func _test_debug_upgrade_base(cfg) -> void:
 	_set_level(w, b, 1)
 	w.resources["food"] = 10000.0
 	w.resources["gold"] = 10000.0
-	# 先起一条正常升级读条：Ctrl+3 必须把它撤掉，否则读完后会从 3 级再 +1。
-	ok(w.start_building_upgrade(b.tx, b.ty, "p1"), "（前提）大本营能开始正常升级")
-	ok(b.is_upgrading(), "（前提）升级读条已经在跑")
+	# ★★ 2026.11.17：升级已改成**瞬时**（走正常命令不会再留下读条），
+	#   所以这里**手动造一条**读条状态来验「开发者入口会把它撤掉」——
+	#   否则读完后会从 3 级再 +1。字段与 `is_upgrading()` 的判据一致（upgrade_total > 0）。
+	b.upgrade_total = 5.0
+	b.upgrade_remaining = 5.0
+	ok(b.is_upgrading(), "（前提）造一条升级读条状态")
 
 	eq(w.debug_upgrade_base_to_level(3, "p1"), "", "★ 开发者入口：立即升到 3 级")
 	eq(int(b.level), 3, "★ 等级当场变成 3")

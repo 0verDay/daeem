@@ -1491,10 +1491,15 @@ func _test_base_build_priority(cfg) -> void:
 	ok(not AiBuildRes._base_upgrade_candidate(c).is_empty(),
 		"★★ 2 将后仍是候选")
 	w.ai_faction_resources["F1"] = {"food": 6000.0, "gold": 6000.0}
+	# ★★ 2026.11.17：升级已瞬时 ⇒ 先把开局那 1 秒建造读条清掉，再看「升完没有」。
+	b.build_total = 0.0
+	b.build_remaining = 0.0
 	var towers0 := AiBuildRes._tower_count(c)
 	var walls0 := AiBuildRes._wall_count(c)
 	AiBuildRes.update(c)
-	ok(bool(b.is_upgrading()), "★★ 资源够时第一优先级是升大本营")
+	# ★★ 2026.11.17：瞬时升级 ⇒ 不看 is_upgrading（那条永远 false 了），直接看等级。
+	eq(int(b.level), 2, "★★ 资源够时第一优先级是升大本营（当场 2 级）")
+	ok(not bool(b.is_upgrading()), "★★ 而且是瞬时的（没有留下读条）")
 	eq(AiBuildRes._tower_count(c), towers0, "★★ 升本开始的同一 tick 不造塔")
 	eq(AiBuildRes._wall_count(c), walls0, "★★ 升本开始的同一 tick 不造墙")
 	# 2) 钱不够：攒钱等升本，不把余钱花到建筑上。

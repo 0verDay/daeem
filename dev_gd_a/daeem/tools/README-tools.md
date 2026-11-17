@@ -155,6 +155,23 @@ python tools/bake_unit_card_icon.py --commit --style etch
 > 症状是「改了素材但画面没变」（与 `setup-font.ps1` 那个坑同一类）。
 
 
+## bake_building_vertex_mask.py —— 给分级建筑补回「阵营色遮罩」
+
+```powershell
+python tools/bake_building_vertex_mask.py           # 只检查（不写文件）
+python tools/bake_building_vertex_mask.py --write   # 写回 glb
+python tools/bake_building_vertex_mask.py --write --import
+```
+
+现有建筑模型的顶点色是 `COLOR_0 VEC4`：`rgb` = 材质原色，`a` = 阵营色遮罩
+（1 = 旗 / 屋顶 / 廊柱 / 栅栏吃阵营色，0 = 保留原色）。
+2026.11.17 新做的分级模型导出成了 `VEC3`（没有 alpha），游戏 shader 把缺失的 alpha
+当 1 ⇒ 整栋模型被染成阵营色，看起来像「没有贴图」。
+
+脚本把 `*_l1_lowpoly.glb` / `*_l2_lowpoly.glb` 的 `COLOR_0` 转成 `VEC4`，
+并按**同类型现有模型**的「rgb → alpha」表补回遮罩；颜色找不到就直接报错（不猜）。
+写完记得让 Godot `--headless --import`，否则运行时会继续读旧缓存。
+
 ## 引擎路径
 
 `C:\D\GodotEngine\...` 只在本机成立。脚本允许用 `$env:GODOT_EXE` 覆盖，

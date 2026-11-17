@@ -1,27 +1,30 @@
-## upgrade.gd —— 建筑升级（右下「操作」页签里那几格）
+## upgrade.gd —— 建筑升级（大本营「操作」页 + 拖建筑牌到同种建筑上）
 ##
-## ★★ 2026.10.30：区划特化机制已移除；本文件只剩**建筑升级**（实际上只有大本营可升）。
+## ★★ 2026.11.17 口径（用户确认）：
+##   · **大本营 + 五种非城墙建筑**（哨塔 / 警戒塔 / 粮田 / 房屋 / 矿脉）都可以升级；
+##     木墙 / 石墙没有等级表 ⇒ 升不了（墙的升级本来就是「木墙 → 石墙」）；
+##   · 升级**全部是瞬时的**：松手 / 点下去当场 +1 级、当场**补满血**，没有读条、没有取消退款；
+##   · 花费 = `config.upgrade.levels.<type>[级].cost`；没写 cost 的类型（其余五种）
+##     自动等于**建造消耗**（见 config.gd 的 `upgrade_cost_to`）；
+##   · 每次升级都推一条 `upgrade_done`（视图拿它播「放大 → 换模型 → 缩回」）。
 ##
 ## 这一层是**规则**（与 logic/tech.gd 同一个定位：world 持有状态，规则写在这里）：
-##   · 升级能不能开（等级上限 / 读条占用 / 归属 / 钱够不够）→ `can_upgrade()`
-##   · 取消读条中的升级 → `can_cancel_upgrade()`
-##   · 每帧推进升级读条 → `tick()`
+##   · 升级能不能开（等级上限 / 归属 / 钱够不够 / 大本营将领门槛）→ `can_upgrade()`
+##   · 落地一次升级 → `start_upgrade()`（时长 > 0 的老关卡仍走读条，见下）
+##   · 每帧推进升级读条 → `tick()`（只有时长 > 0 才会用到）
 ##
 ## ★★ 时间与账目字段挂在**被升级的那个东西自己身上**：建筑升级 → `building.upgrade_*`。
 ##   理由与「招募队列挂在将领 / 区划上」完全一样：这是「这个东西正在干嘛」，
 ##   另开一张「id → 进度」的表就多出一份要对齐、要清理、要进快照的状态。
 ##
-## ★ 读条语义（与招募逐条对齐）：
+## ★ 读条语义（2026.11.17 之前的口径，**保留兼容**：config 里写了 time_sec 的老关卡仍能用）：
 ##   · **入队即扣**粮食 / 黄金（不看 economy.enabled 那个只管建造免费的开关）；
 ##   · 取消 → **全额退款**（按记账值退，不看「当前还剩几秒」）；
 ##   · 读条期间**不再接新的升级**（拒因 `busy`），但**可以取消**；
 ##   · 同一时间只跑一条：**不做队列**。
 ##
-## ★ 读条期间建筑照常被打、照常有功能（它没有「动不了」这回事）——
-##   建筑本来就不可移动，升级读条只锁「再升级」这一个入口。
-##
 ## ★ 效果：升级 = 等级 +1，血量上限 = `config.building.<type>.hp_max × hp_mult(等级)`
-##   （tech 的「建筑血量 +10%」再乘在它上面，两者叠加）。
+##   （tech 的「建筑血量 +10%」再乘在它上面，两者叠加），随后**血量补满**。
 ##
 ## ⚠️ 三条边界（架构铁律）：不碰场景树、不读输入、数值全来自 config.json；
 ##    拒因只给**码**（"busy" / "max_level" / "cost" / "owner" / …），
@@ -40,20 +43,23 @@ const EconomyRes = preload("res://logic/economy.gd")
 # ------------------------------------------------------------------
 
 ## 这个建筑**现在**能不能开始升级。@return "" = 可以；否则是拒因码：
-##   "type"       这一类型没有升级表（区划中心 / 未知类型）
+##   "type"       这一类型没有升级表（木墙 / 石墙 / 区划中心 / 未知类型）
 ##   "max_level"  已经到最高级（等级表的条数）
-##   "busy"       ★ 已经在读条了（需求确认：读条期间拒绝新的升级请求）
+##   "busy"       ★ 已经在读条了（只有还留着读条的老关卡会走到；瞬时升级不会 busy）
 ##   "owner"      不是自己这一方的建筑
-##   "generals"   ★ 大本营将领挡位不足（门槛读 config 的 need_generals：升 2 本要 2 将、升 3 本要 4 将）
+##   "generals"   ★ 大本营将领挡位不足（门槛读 config 的 need_generals）
 ##   "cost"       粮食 / 黄金不够
 static func can_upgrade(world, b, faction: String) -> String:
+	return can_upgrade_reason(world, b, faction)
+
+
+## `can_upgrade` 的本体（同一个函数，取个好读的名字给视图用）。
+## ★★ 2026.11.17 口径：**大本营 + 五种非城墙建筑**都能升（谁有等级表谁就能升）；
+##   木墙 / 石墙没有等级表 ⇒ 这里自然返回 "type"（墙的升级是「木墙 → 石墙」）。
+static func can_upgrade_reason(world, b, faction: String) -> String:
 	if b == null or not b.alive:
 		return "type"
-	# ★★ 2026.10.26：只有大本营可以升级；木墙 / 哨塔 / 石墙 / 警戒塔不再有升级机制。
-	#    即使有人手写了一张等级表，这里也不会放行。
-	if not b.is_base():
-		return "type"
-	if not world.cfg.has_upgrade(b.type):
+	if not world.cfg.has_upgrade(String(b.type)):
 		return "type"
 	if b.neutralized:
 		return "neutralized"          # 大本营没了：残余建筑停止升级
@@ -61,12 +67,15 @@ static func can_upgrade(world, b, faction: String) -> String:
 		return "owner"
 	if b.is_upgrading():
 		return "busy"
+	# ★★ 2026.11.17：还在建造中（读条没走完）不能升级 —— 那一刻它连「成品」都不是。
+	if b.is_under_construction():
+		return "building"
 	# ★★ 大本营正在排队重生将领 → 不能**开始新的**升级（进行中的不打断）。
 	if b.is_base() and b.is_respawning():
 		return "respawning"
 	if b.level >= world.cfg.upgrade_max_level(b.type):
 		return "max_level"
-	# ★★ 大本营升级的将领挡位：读**目标行**的 `need_generals`（升 2 本 2 将 / 升 3 本 4 将）。
+	# ★★ 大本营升级的将领挡位：读**目标行**的 `need_generals`（升 2 本 0 将 / 升 3 本 2 将）。
 	#   ⚠️ 不要回头借用 `max_generals`（上限 2/4/5）—— 门槛与上限是两件事，见 config 注释。
 	if b.is_base():
 		var need_generals: int = int(world.cfg.upgrade_need_generals(b.type, int(b.level)))
@@ -128,6 +137,18 @@ static func start_upgrade(world, b, faction: String) -> bool:
 	# ★★ 读条时长在**这一帧定死**（`building_upgrade_time` 内含「≥N 将走提速档」的选档）：
 	#    读条中将领数再变，`upgrade_total` 也不会重算。
 	var secs: float = world.building_upgrade_time(b)
+	# ★★ 2026.11.17（用户口径）：升级**全部是瞬时的** —— 时长 0 就直接收尾。
+	#   ⚠️ 不能指望 tick 去收尾：`is_upgrading()` 判的是 `upgrade_total > 0`，
+	#   0 秒的读条在 tick 眼里等于「没在读条」⇒ 会永远卡在「钱花了、等级没升」。
+	#   ⚠️ 这条路径**不推 upgrade_started**：那是「开始读条」的播报 / 进度条事件，
+	#   瞬时升级推它会让界面闪一条横幅，而实际已经升完了（只该有 upgrade_done）。
+	if secs <= 0.0:
+		b.upgrade_remaining = 0.0
+		b.upgrade_total = 0.0
+		b.upgrade_cost_food = 0.0
+		b.upgrade_cost_gold = 0.0
+		_finish_upgrade(world, b)
+		return true
 	b.upgrade_remaining = secs
 	b.upgrade_total = secs
 	# 记账：取消（或建筑没了）时按这三个数退款
@@ -138,12 +159,6 @@ static func start_upgrade(world, b, faction: String) -> bool:
 	world.push_event({"type": "upgrade_started", "kind": "building_upgrade",
 		"building": b, "faction": String(b.owner),
 		"level": int(b.level), "target_level": int(b.level) + 1, "secs": secs})
-	# ★★ 2026.11：**0 秒 = 立刻完成**（三本在「5 名将领」那一档就是 0 秒）。
-	#   不能指望 tick 去收尾：`is_upgrading()` 判的是 `upgrade_total > 0`，
-	#   0 秒的读条在 tick 眼里等于「没在读条」⇒ 那样会永远卡在「钱花了、等级没升」。
-	#   所以在这里同步收尾（`_finish_upgrade` 会把 total/remaining 清回 0 并推 upgrade_done）。
-	if secs <= 0.0:
-		_finish_upgrade(world, b)
 	return true
 
 
@@ -231,19 +246,26 @@ static func _tick_buildings(world, dt: float) -> void:
 static func _finish_upgrade(world, b) -> void:
 	b.level += 1
 	b.upgrade_total = 0.0
+	b.upgrade_remaining = 0.0
 	b.upgrade_cost_food = 0.0
 	b.upgrade_cost_gold = 0.0
-	# ★ 等级变了 → 血量上限要按新等级重算（并把当前血量**按比例**带过去：
-	#   半血的墙升完级还是半血，与科技的加成同一条约定）。
+	# ★ 等级变了 → 血量上限要按新等级重算（`apply_building_level_hp` 内部会按**比例**带血量）。
 	world.apply_building_level_hp(b)
+	# ★★ 2026.11.17（用户口径）：升级**当场补满血**（不是按比例带过去）。
+	#   瞬时升级 + 便宜的价格下，「按比例带」会让升级完全没有恢复收益；
+	#   要改回按比例，删掉这两行即可（上限公式不受影响）。
+	if b.hp_max > 0.0:
+		b.hp = b.hp_max
 	# ★★ 大本营等级决定资源加成 / 所在区划的人口加成 ⇒ 当场刷新产出与人口上限。
 	world.refresh_zone_production()
 	# ★★ 2026.11.5：**0 阶将领的大本营成长**也吃这一级 —— 升级一完成就重算这一方的将领
-	#   （场上已有的也当场涨，不用等复活 / 重招）。只对大本营有意义：
-	#   别的建筑没有升级（`can_upgrade` 只放行 base），这里的判据与它同一条。
+	#   （场上已有的也当场涨，不用等复活 / 重招）。只对大本营有意义。
 	if b.is_base():
 		world.refresh_general_growth(String(b.owner))
+	# ★★ 2026.11.17：`upgrade_done` 成了**唯一**的升级事件（瞬时升级没有 upgrade_started），
+	#   所以它要带齐播报 / 视图需要的东西：建筑（横幅只播大本营）、阵营（播报按阵营上色）、
+	#   新等级（文案「升到 N 级」）。
 	world.push_event({"type": "upgrade_done", "kind": "building_upgrade",
-		"building": b, "level": b.level})
+		"building": b, "faction": String(b.owner), "level": b.level})
 
 

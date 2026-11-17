@@ -5817,10 +5817,45 @@ func mark_vision_dirty() -> void:
 #   「坐标 → 建筑」这一步只有 world 能做（`building_at`），所以解析放在这里。
 # ------------------------------------------------------------------
 
-## 建筑类型在 config 里有没有升级表（区划中心没有 → 它的操作页只有特化）
+## 建筑类型在 config 里有没有升级表，**并且**它走不走「操作页」那一格。
+## ★★ 2026.11.17：**只有大本营**在「操作」页上有升级格 —— 其余五种建筑靠
+##   「把建筑牌拖到自己同种建筑上」升级（入口只有拖拽，用户确认），所以这里仍只放行 base。
+##   ⚠️ 判断一栋建筑「现在能不能被拖升」请用 `building_upgrade_reason()`（走 upgrade.gd），
+##     不要拿这个函数当通用判据 —— 名字保留是因为 HUD 那几处一直在读它。
 func building_can_upgrade(type: String) -> bool:
-	# ★★ 2026.10.26：取消建筑升级 —— 只有大本营还能升。
 	return String(type) == BuildingRes.TYPE_BASE and cfg.has_upgrade(String(type))
+
+
+## 这张**建筑牌**现在能升哪几栋（拖拽高亮 / 吸附用）。
+##
+## @return Dictionary：`Vector2i 地块 → 建筑`。
+## 判据 = 同类型 + 己方（合作模式按 `accepts_owner`）+ 还没满级。
+## ★ 这里**不看钱**：和建造点位一样，高亮是「这里能落」，钱不够由落地那一刻拒（`cost`）。
+## ★ 木墙 / 石墙没有等级表 ⇒ 永远返回空字典（拖墙牌不会出现「可升级」高亮）。
+func building_upgrade_targets(type: String, faction: String) -> Dictionary:
+	var out: Dictionary = {}
+	var t := String(type)
+	if not cfg.has_upgrade(t):
+		return out
+	var max_lv: int = cfg.upgrade_max_level(t)
+	for b in building_list:
+		if not b.alive or String(b.type) != t:
+			continue
+		if not accepts_owner(String(b.owner), faction):
+			continue
+		if b.is_under_construction():
+			continue
+		if int(b.level) >= max_lv:
+			continue
+		out[Vector2i(int(b.tx), int(b.ty))] = b
+	return out
+
+
+## 这栋建筑现在能不能升（拒因码；空 = 能）。视图的圆圈颜色 / 失败提示都读它。
+## ★ 与 `building_upgrade` 命令走**同一个函数**（`UpgradeRes.can_upgrade`），
+##   所以「圈是绿的」和「点下去真的能升」不会分叉。
+func building_upgrade_reason(b, faction: String = "") -> String:
+	return UpgradeRes.can_upgrade(self, b, _tech_faction(faction))
 
 
 ## 这个建筑最多能到几级（= config 里那张等级表的条数）
@@ -7346,8 +7381,9 @@ func debug_upgrade_base_to_level(target_level: int, faction: String = "") -> Str
 	apply_building_level_hp(b)
 	building_revision += 1
 	refresh_zone_production()
+	# ★ 与 `upgrade.gd::_finish_upgrade` 同形：带 faction（播报按阵营上色）与建筑。
 	push_event({"type": "upgrade_done", "kind": "building_upgrade",
-		"building": b, "level": b.level})
+		"building": b, "faction": String(b.owner), "level": b.level})
 	return ""
 
 

@@ -766,26 +766,6 @@ func _test_card_build_drag(main) -> void:
 	ok(not tower_anchors.is_empty(), "（前提）还有空着的建造点位建哨塔")
 	if tower_anchors.is_empty():
 		return
-	# 先找一格「己方区划里、但不是建造点位」的空地（下面虚影 / 松手两处都用它）。
-	var off_tile := Vector2i(-1, -1)
-	var off_px := Vector2.ZERO
-	for ty in world.map.rows:
-		for tx in world.map.cols:
-			if world.build_point_zone(tx, ty) >= 0:
-				continue
-			if not world.zone_allows_build(tx, ty, String(world.my_faction)):
-				continue
-			if not world.can_build_at(tx, ty):
-				continue
-			var p2: Vector2 = main.palette.to_px(Vector2(float(tx) + 0.5, float(ty) + 0.5))
-			if hud.point_hits_ui(p2):
-				continue
-			off_tile = Vector2i(tx, ty)
-			off_px = p2
-			break
-		if off_tile.x >= 0:
-			break
-	ok(off_tile.x >= 0, "（前提）己方区划里有非点位的空地")
 	var ta: Dictionary = tower_anchors[0]
 	var point: Vector2i = ta["tile"]
 	var point_px: Vector2 = main.palette.to_px(Vector2(float(point.x) + 0.5, float(point.y) + 0.5))
@@ -797,7 +777,10 @@ func _test_card_build_drag(main) -> void:
 	ok(main.get_node_or_null("BuildCardGhost") == null,
 		"★★ 哨塔没有 3D 建筑虚影（只保留卡牌虚影）")
 	# 拖到一张「不是点位」的地图格：卡牌虚影仍然跟着指针，但不再吸附。
-	card._update_drag_position(1, off_px)
+	var probe_tile := _find_off_tile(main, hud, world, "tower")
+	var probe_px: Vector2 = main.palette.to_px(
+		Vector2(float(probe_tile.x) + 0.5, float(probe_tile.y) + 0.5))
+	card._update_drag_position(1, probe_px)
 	eq(card._drag_face_alpha, 0.3, "★★ 非点位时卡面透明度目标仍是 0.3")
 	eq(hud.drag_build_tile, Vector2i(-1, -1), "（前提）非点位不吸附")
 	ok(main.get_node_or_null("BuildCardGhost") == null, "★★ 非点位也没有建筑虚影")
@@ -827,7 +810,46 @@ func _test_card_build_drag(main) -> void:
 			tower_same += 1
 	eq(tower_same, 1, "★★ 生效后哨塔牌只有一张（没有重影 / 重复）")
 
-	# 之前找到的那格非点位：拖过去松手应当什么都不建。
+	# ★★ 2026.11.17：把哨塔牌拖到**刚建好的那栋哨塔**上 = 升级（松手当场 +1 级）。
+	world.tick(8.0)                     # 让它建完（哨塔 build_sec = 6；建造中的建筑不能升级）
+	main.hud.refresh()
+	var built_tower = world.building_at(point.x, point.y)
+	ok(built_tower != null, "（前提）那一格有一栋哨塔")
+	if built_tower != null:
+		ok(not built_tower.is_under_construction(), "（前提）它已经建完")
+		var lv_before: int = int(built_tower.level)
+		card._drag_index = 1
+		card._drag_start_global = point_px + Vector2(0.0, 24.0)
+		card._update_drag_position(1, point_px)
+		ok(hud.drag_build_upgrade == built_tower,
+			"★★ 拖到同种建筑上 → 吸附成**升级目标**")
+		eq(hud.drag_build_tile, point, "★★ 吸附到那栋建筑所在的格")
+		ok(hud.drag_build_anchor == null, "★ 这时不再是「建造锚点」")
+		ok(hud.drag_anchor_ok, "★★ 升级目标判为有效（钱够、没满级）")
+		card._finish_card_drag(1, point_px)
+		# 模拟「牌回手途中指针正好压在它上面」：不能把悬停的 1.5 倍留在牌上。
+		card._raise_card(1, true)
+		eq(int(built_tower.level), lv_before + 1,
+			"★★ 松手 = 当场升一级（没有读条）")
+		ok(not built_tower.is_upgrading(), "★★ 不会停在「升级中」")
+		# ★★ 2026.11.17 回归：升级后牌回到手牌必须恢复 1.0 倍，不能留着悬停的 1.5 倍。
+		for _i2 in 120:
+			await process_frame
+			var s_done2: bool = card._success_tween == null or not card._success_tween.is_running()
+			var r_done2: bool = card._restore_tween == null or not card._restore_tween.is_running()
+			if s_done2 and r_done2:
+				break
+		v2_near(card._cells[1].scale, Vector2.ONE, 1e-3,
+			"★★ 升级牌回手后按钮缩放 = 1.0")
+		v2_near(card._card_faces[1].scale, Vector2.ONE, 1e-3,
+			"★★ 升级牌回手后卡面缩放 = 1.0")
+
+	# 找一格「己方区划里、不是建造点位、附近也没有同种建筑」的空地：
+	# ★★ 2026.11.17：同种建筑现在是「升级落点」，贴着它拖过去会吸附成升级
+	#   （那是新功能，不是异常）⇒ 这里要挑真正没人管的地，才验得了「不吸附」。
+	var off_tile := _find_off_tile(main, hud, world, "tower")
+	ok(off_tile.x >= 0, "（前提）己方区划里有一格「不是点位、附近也没有同种建筑」的空地")
+	# 那格非点位：拖过去松手应当什么都不建。
 	if off_tile.x >= 0:
 		var tower_anchors2: Array = world.build_anchors_for("tower", String(world.my_faction))
 		ok(not tower_anchors2.is_empty(), "（前提）还有别的建造点位可拖")
@@ -3023,8 +3045,9 @@ func _test_upgrade_via_card(main) -> void:
 	var q = main.hud.detail_panel.queue_control()
 	world.resources["food"] = 5000.0
 	world.resources["gold"] = 5000.0
-	# ★ 建筑升级只剩大本营；升 2 级的将领门槛读 config（现在是 2 名）。
-	var need_g := int(world.cfg.upgrade_need_generals("base", 1))
+	# ★★ 2026.11.17：升级改成**瞬时** —— 点一格 = 当场 +1 级，没有读条面板。
+	#   升到 3 级要 2 名将领（读 config 的 need_generals，与上限是两件事）。
+	var need_g := int(world.cfg.upgrade_need_generals("base", 2))
 	var idx := 1
 	while world.general_count_of("p1") < need_g and idx < 32:
 		var gnew = world.create_general("p1", idx, 500 + idx)
@@ -3037,6 +3060,9 @@ func _test_upgrade_via_card(main) -> void:
 	ok(base != null, "有大本营")
 	if base == null:
 		return
+	# 开局大本营带 1 秒建造读条，而「建造中不能升级」⇒ 先把那条读条清掉。
+	base.build_total = 0.0
+	base.build_remaining = 0.0
 	main.input_ctrl.select_building(base)
 	main.hud.refresh()
 	eq(tabs.page(), PageTabsRes.PAGE_ORDER, "（前提）大本营停在操作页")
@@ -3044,42 +3070,31 @@ func _test_upgrade_via_card(main) -> void:
 	var lv0: int = base.level
 	var food0: float = float(world.resources["food"])
 	card.activate_index(0)
-	ok(base.is_upgrading(), "★ 点那一格 = 开始读条")
+	eq(base.level, lv0 + 1, "★★ 点那一格 = 当场升一级（没有读条）")
 	near(float(world.resources["food"]), food0 - float(
 		float(world.cfg.upgrade_cost_to("base", lv0).get("food", 0.0))), 1e-4,
-		"★ 入队即扣粮食")
+		"★ 当场扣粮食")
+	ok(not base.is_upgrading(), "★★ 不会停在「升级中」")
 	main.hud.refresh()
-	ok(q.showing(), "★ 信息栏里出现读条面板")
-	ok(q.is_bar_mode(), "★ 它是「单条读条」模式（复用招募那块面板）")
-	ok(q.title_text().contains("升级"), "汇总带写着「升级…」（实际：%s）" % q.title_text())
-	ok(q.cell_label(0).contains("升"), "大格子里写着「升 2 级」（实际：%s）" % q.cell_label(0))
-	ok(not q.cell_filled(1), "★ 四个小格子留空（这一单没有队列）")
-	near(q.progress(), 0.0, 0.05, "刚入队进度接近 0")
-	main.hud.refresh()
-	eq(card.entries().size(), 1, "读条中操作页只有一格")
-	eq(String(card.entry_at(0).get("type", "")), "building_upgrade_cancel",
-		"★ 那一格是「取消升级」（实际：%s）" % String(card.entry_at(0).get("type", "")))
-	_click_control(q, UiLayoutRes.queue_cell_rect(0).get_center())
-	ok(not base.is_upgrading(), "★ 点读条那一格 = 取消升级")
-	eq(base.level, lv0, "等级没变")
-	near(float(world.resources["food"]), food0, 1e-4, "★ 取消全额退款")
-
-	main.hud.refresh()
-	eq(card.entries().size(), 1, "（前提）取消之后操作页回到一格")
+	ok(not q.showing(), "★★ 信息栏不再出现读条面板")
+	ok(not q.is_bar_mode(), "★★ 也不在「单条读条」模式")
+	eq(card.entries().size(), 1, "操作页仍是一格（还能再升）")
 	eq(String(card.entry_at(0).get("type", "")), "building_upgrade",
-		"（前提）那一格回到「升级」（实际：%s）" % String(card.entry_at(0).get("type", "")))
+		"（前提）那一格还是「升级」（实际：%s）" % String(card.entry_at(0).get("type", "")))
+	# 再点一次 = 升到 3 级（满级）
 	card.activate_index(0)
-	ok(base.is_upgrading(), "再次开始读条（食物 %.0f / 黄金 %.0f）" % [
-		float(world.resources["food"]), float(world.resources["gold"])])
-	world.tick(60.0)
+	eq(base.level, lv0 + 2, "★★ 再点一次再升一级（当场）")
 	main.hud.refresh()
-	eq(base.level, lv0 + 1, "★ 读完等级 +1")
-	ok(not q.is_bar_mode(), "★ 读条结束 → 面板回到「不是读条」")
-	ok(card.cell_label(0).contains("升级"), "那一格又变回「升级%s」" % base.display_name())
+	eq(String(card.entry_at(0).get("type", "")), "building_upgrade_max",
+		"★★ 满级之后那一格变成「已满级」（实际：%s）" % String(card.entry_at(0).get("type", "")))
 	ok(main.hud.detail_panel.detail_text().contains("血量"),
 		"★ 建筑详情仍是两列（左列血量、右列远程免伤）")
 	ok(main.hud.detail_panel.detail_text().contains("远程免伤"),
 		"★★ 建筑详情写着远程免伤（本轮新增的防御特性）")
+	# ★ 这一段以前靠「读条走完」把世界推进 60 秒；现在升级瞬时，但后面的用例
+	#   仍依赖这 60 秒（建造读条 / 招募冷却 / 产出）⇒ 显式推进一次。
+	world.tick(60.0)
+	main.hud.refresh()
 
 	var zone = world.zones.zone_at(world.find_base_of("p1").tx, world.find_base_of("p1").ty)
 	ok(zone != null, "大本营所在的区划")
@@ -4685,3 +4700,40 @@ func _touch_ev(pressed: bool, pos: Vector2) -> InputEventScreenTouch:
 	ev.pressed = pressed
 	ev.position = pos
 	return ev
+
+
+## 找一格「己方区划里、不是建造点位、附近也没有同种建筑」的空地（拖牌「不吸附」用例用）。
+## ★★ 2026.11.17：同种建筑现在是**升级落点** ⇒ 必须离它 drop_radius 之外，
+##   否则拖过去会吸附成升级（那是新功能），这一节就验不到「不吸附」了。
+func _find_off_tile(main, hud, world, build_type: String) -> Vector2i:
+	var drop_r: float = world.cfg.build_drop_radius_tiles
+	var anchors: Array = world.build_anchors_for(build_type, String(world.my_faction))
+	var ups: Dictionary = world.building_upgrade_targets(build_type, String(world.my_faction))
+	for ty in world.map.rows:
+		for tx in world.map.cols:
+			if world.build_point_zone(tx, ty) >= 0:
+				continue
+			if not world.zone_allows_build(tx, ty, String(world.my_faction)):
+				continue
+			if not world.can_build_at(tx, ty):
+				continue
+			var px: Vector2 = main.palette.to_px(Vector2(float(tx) + 0.5, float(ty) + 0.5))
+			if hud.point_hits_ui(px):
+				continue
+			var here := Vector2(float(tx) + 0.5, float(ty) + 0.5)
+			var too_close := false
+			for a in anchors:
+				var at: Vector2i = (a as Dictionary)["tile"]
+				if here.distance_to(Vector2(float(at.x) + 0.5, float(at.y) + 0.5)) <= drop_r + 0.01:
+					too_close = true
+					break
+			if not too_close:
+				for k in ups.keys():
+					var ut: Vector2i = k
+					if here.distance_to(Vector2(float(ut.x) + 0.5, float(ut.y) + 0.5)) <= drop_r + 0.01:
+						too_close = true
+						break
+			if too_close:
+				continue
+			return Vector2i(tx, ty)
+	return Vector2i(-1, -1)

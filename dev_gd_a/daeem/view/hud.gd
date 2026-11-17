@@ -111,12 +111,19 @@ var tech_grid: Control = null
 ##   · `drag_build_tile`    —— 吸附到的格子（= 锚点格；没吸附 = (-1,-1)）。
 ##     ★ 保留这个名字是因为 3D 虚影（game_scene3d）与旧测试都在读它。
 ##   · 圆半径来自 config 的 `build.drop_radius_tiles`（overlay 用它画投影圆）。
+## ★★ 2026.11.17：拖建筑牌**也能升级** —— 同种建筑（己方、没满级）同样是「能落点」：
+##   · `drag_upgrade_targets` —— 地块 → 建筑（`world.building_upgrade_targets()`）；
+##     拖起那一刻算一次，它的格子一起塞进 `drag_anchor_tiles` ⇒ overlay 画同一种高亮；
+##   · `drag_build_upgrade`   —— 指针吸附到的**可升级建筑**（null = 没吸附到建筑）。
+##     ⚠️ 与 `drag_build_anchor` 互斥：吸附到建筑就是升级，吸附到空点位就是建造。
 var drag_build_active: bool = false
 var drag_build_type := ""
 var drag_build_screen_pos := Vector2.ZERO
 var drag_build_tile := Vector2i(-1, -1)
 var drag_build_anchors: Array = []
 var drag_build_anchor: Variant = null
+var drag_upgrade_targets: Dictionary = {}
+var drag_build_upgrade: Variant = null
 var drag_build_radius: float = 1.5
 ## ★★ 虚影要显示在哪：普通建筑 = 吸附点（没吸附 = 指针所在格，虚影常驻）；
 ##    城墙 = 一圈墙段，围「吸附到的中心」或「离指针最近的己方区划中心」。
@@ -939,19 +946,18 @@ func resource_float_count() -> int:
 	return _resource_floats.size()
 
 
-## 播一条「某阵营开始升级大本营」。
+## 播一条「某阵营大本营升级完成」。
 ##
-## ★ 由 `view/game_interaction.gd` 在收到 `upgrade_started` 时调用（**不过**「是不是我的事件」
+## ★ 由 `view/game_interaction.gd` 在收到 `upgrade_done` 时调用（**不过**「是不是我的事件」
 ##   那道筛选 —— 这是一条要给所有人看的播报）。
+## ★ 文案里的席位用**阵营 id 原样**（p1 / p2 / F1 …），不用 `faction_label_of`
+##   的显示名 —— 用户口径：「px(x为玩家席位)大本营已升至n级」。
 ## ★ 颜色用**本机视角**的三色档（自己蓝 / 友军黄 / 敌人红，见 view/side_color.gd）。
 func show_broadcast(faction: String, target_level: int) -> void:
 	if broadcast_banner == null:
 		return
-	var who := faction
-	if world != null:
-		who = String(world.faction_label_of(faction))
 	var color: Color = SideColorRes.color(cfg, world, faction)
-	broadcast_banner.push(broadcast_banner.format_text(who, target_level), color)
+	broadcast_banner.push(broadcast_banner.format_text(faction, target_level), color)
 
 
 func _tick_broadcast(dt: float) -> void:
@@ -1156,10 +1162,13 @@ func _begin_build_drag(entry: Dictionary, screen_pos: Vector2) -> void:
 	drag_build_type = build_type
 	drag_build_tile = Vector2i(-1, -1)
 	drag_build_anchor = null
+	drag_build_upgrade = null
 	drag_build_pointer_tile = Vector2i(-1, -1)
 	_drag_build_left_hand = false
 	drag_build_radius = cfg.build_drop_radius_tiles if cfg != null else 1.5
 	drag_build_anchors = world.build_anchors_for(build_type, world.my_faction)
+	# ★★ 同种建筑 = 另一种「能落点」：拖起那一刻算一次（与建造点位同一套高亮）。
+	drag_upgrade_targets = world.building_upgrade_targets(build_type, world.my_faction)
 	drag_anchor_active = true
 	drag_anchor_kind = "build"
 	drag_anchor_radius = drag_build_radius
@@ -1167,6 +1176,10 @@ func _begin_build_drag(entry: Dictionary, screen_pos: Vector2) -> void:
 	for a in drag_build_anchors:
 		if typeof(a) == TYPE_DICTIONARY:
 			drag_anchor_tiles.append(a["tile"])
+	# ★ 同种建筑也进高亮列表（overlay 对建筑格画同样的框 + 点，圈由吸附步决定）
+	for tile in drag_upgrade_targets.keys():
+		if not drag_anchor_tiles.has(tile):
+			drag_anchor_tiles.append(tile)
 	_update_build_drag_preview(screen_pos)
 
 
@@ -1183,10 +1196,12 @@ func _update_build_drag_preview(screen_pos: Vector2) -> void:
 	drag_build_screen_pos = screen_pos
 	drag_build_tile = Vector2i(-1, -1)
 	drag_build_anchor = null
+	drag_build_upgrade = null
 	drag_build_pointer_tile = Vector2i(-1, -1)
 	drag_anchor_tile = Vector2i(-1, -1)
 	drag_anchor_ok = false
-	if palette == null or world == null or drag_build_anchors.is_empty():
+	if palette == null or world == null \
+			or (drag_build_anchors.is_empty() and drag_upgrade_targets.is_empty()):
 		return
 	if point_hits_ui(screen_pos):
 		return
@@ -1198,26 +1213,44 @@ func _update_build_drag_preview(screen_pos: Vector2) -> void:
 	drag_build_pointer_tile = Vector2i(floori(p.x), floori(p.y))
 	var best: Variant = null
 	var best_d := INF
-	var nearest: Variant = null
-	var nearest_d := INF
+	var best_upgrade: Variant = null
+	var best_upgrade_d := INF
 	for a in drag_build_anchors:
 		if typeof(a) != TYPE_DICTIONARY:
 			continue
 		var tile: Vector2i = a["tile"]
 		var d: float = Vector2(float(tile.x) + 0.5, float(tile.y) + 0.5).distance_to(p)
-		if d < nearest_d:
-			nearest_d = d
-			nearest = a
 		if d > drag_build_radius + 1e-6:
 			continue
 		if d < best_d - 1e-6:
 			best_d = d
 			best = a
-	drag_build_anchor = best
-	if best != null:
-		drag_build_tile = best["tile"]
+	# ★★ 同种建筑：同样按「指针到格子中心的距离 ≤ drop_radius」吸附。
+	#   两者都在圈里时取**更近**的那个；一样近时优先**升级**（指针正压在那栋楼上，
+	#   玩家想表达的显然是升级，而不是在旁边空地新建一栋）。
+	for tile_v in drag_upgrade_targets.keys():
+		var ut: Vector2i = tile_v
+		var ud: float = Vector2(float(ut.x) + 0.5, float(ut.y) + 0.5).distance_to(p)
+		if ud > drag_build_radius + 1e-6:
+			continue
+		if ud < best_upgrade_d - 1e-6:
+			best_upgrade_d = ud
+			best_upgrade = drag_upgrade_targets[ut]
+	if best != null and best_upgrade != null:
+		if best_upgrade_d <= best_d + 1e-6:
+			best = null
+		else:
+			best_upgrade = null
+	if best_upgrade != null:
+		drag_build_upgrade = best_upgrade
+		drag_build_tile = Vector2i(int(best_upgrade.tx), int(best_upgrade.ty))
+	else:
+		drag_build_anchor = best
+		if best != null:
+			drag_build_tile = best["tile"]
 	drag_anchor_tile = drag_build_tile
-	drag_anchor_ok = _card_build_anchor_valid() if best != null else false
+	drag_anchor_ok = _card_build_anchor_valid() \
+		if (best != null or best_upgrade != null) else false
 
 
 ## 拖起将领牌：区划中心成为落点（只列**现在真的能招**的中心）。
@@ -1357,24 +1390,31 @@ func _card_build_tile_valid(build_type: String, tile: Vector2i) -> bool:
 	return EconomyRes.can_afford(world.resource_pool_for(String(world.my_faction)), cost)
 
 
-## 当前吸附到的锚点是否**真的能建**（吸附 + 规则 + 钱）。
+## 当前吸附到的锚点是否**真的能落**（吸附 + 规则 + 钱）。
+## ★★ 两种落点：空点位 = 建造（老逻辑）；同种建筑 = 升级（2026.11.17）。
 func _card_build_anchor_valid() -> bool:
+	if drag_build_upgrade != null:
+		return world.building_upgrade_reason(drag_build_upgrade, world.my_faction) == ""
 	if drag_build_anchor == null or drag_build_type == "":
 		return false
 	var tile: Vector2i = (drag_build_anchor as Dictionary)["tile"]
 	return _card_build_tile_valid(drag_build_type, tile)
 
 
-## 松手：在圈内 = 发建造命令；否则只给提示（拖回手牌静默取消）。@return true = 命令已发出。
+## 松手：在圈内 = 发建造命令 / 升级命令；否则只给提示（拖回手牌静默取消）。
+## @return true = 命令已发出。
 func _commit_card_build_drag() -> bool:
 	if drag_build_type == "":
 		return false
+	# ★★ 吸附到**同种建筑** ⇒ 这次拖拽是「升级」，不是新建（用户口径 2026.11.17）。
+	if drag_build_upgrade != null:
+		return _commit_building_upgrade(drag_build_upgrade)
 	# ★ 没吸附到任何点位：拖到空地 / 拖回手牌都算取消，给一句明确提示
 	#   （只在真的把牌拖到地图上过才提示，免得「拖起来又拖回去」也弹红字）。
 	if drag_build_anchor == null:
 		# 拖回手牌 / 右栏 = 取消（不提示）；真的把牌丢在地图空处才提示。
 		if _drag_build_left_hand and not point_hits_ui(drag_build_screen_pos):
-			show_notice("建筑只能建在区划的建造点位上：把牌拖到高亮的点位上再松手")
+			show_notice(_drag_build_miss_text())
 		return false
 	var tile: Vector2i = (drag_build_anchor as Dictionary)["tile"]
 	if not world.building_unlocked(world.my_faction, drag_build_type):
@@ -1398,12 +1438,63 @@ func _commit_card_build_drag() -> bool:
 	return true
 
 
+## 松手落在同种建筑上 = **升级那一栋**（瞬时：命令发出后逻辑层当场 +1 级）。
+## ★ 走的还是现成的那条命令（`building_upgrade`）：联机同步、快照、事件都不用另开一条路。
+func _commit_building_upgrade(b) -> bool:
+	if b == null or input_ctrl == null or world == null:
+		return false
+	var why: String = world.building_upgrade_reason(b, world.my_faction)
+	if why != "":
+		show_notice(_upgrade_reject_text(why, b))
+		return false
+	return input_ctrl.request_building_upgrade(b)
+
+
+## 升级拒因 → 玩家看得懂的一句话（拖拽用；大本营那一格走的是操作页自己的文案）。
+func _upgrade_reject_text(reason: String, b) -> String:
+	var name_s: String = b.display_name() if b != null and b.has_method("display_name") else "这栋建筑"
+	match reason:
+		"max_level":
+			return "%s已经是最高级了" % name_s
+		"owner":
+			return "只能升级自己的%s" % name_s
+		"cost":
+			return "升级%s的资源不足" % name_s
+		"generals":
+			return "将领数量不够，升不了%s" % name_s
+		"respawning":
+			return "大本营正在排队重生将领，暂时不能升级"
+		"building":
+			return "%s还在建造中，建好才能升级" % name_s
+		"neutralized":
+			return "大本营没了，残余建筑不能再升级"
+		"type":
+			return "这一种建筑不能升级"
+	return "%s现在不能升级" % name_s
+
+
+## 拖到「空处」时的提示 —— 如果那格正好有一栋同种建筑但升不了，说清楚原因。
+func _drag_build_miss_text() -> String:
+	var tile: Vector2i = drag_build_pointer_tile
+	if world != null and tile.x >= 0 and tile.y >= 0:
+		var b = world.building_at(tile.x, tile.y)
+		if b != null and b.alive and String(b.type) == drag_build_type:
+			var why: String = world.building_upgrade_reason(b, world.my_faction)
+			if why != "":
+				return _upgrade_reject_text(why, b)
+	if "wall" in String(drag_build_type):
+		return "城墙只能建在己方区划中心的周围：把牌拖到高亮的位置再松手"
+	return "建筑只能建在区划的建造点位上（同种建筑上松手 = 升级）：把牌拖到高亮的位置再松手"
+
+
 func _clear_card_build_drag() -> void:
 	drag_build_active = false
 	drag_build_type = ""
 	drag_build_tile = Vector2i(-1, -1)
 	drag_build_anchors = []
 	drag_build_anchor = null
+	drag_build_upgrade = null
+	drag_upgrade_targets = {}
 	drag_build_pointer_tile = Vector2i(-1, -1)
 	_drag_build_left_hand = false
 	_clear_drag_anchor()
@@ -2846,12 +2937,12 @@ func _building_order_entries(b = null, sel_zone = null) -> Array:
 			"name": "已满级",
 			"desc": "%s 已经是最高等级（%d 级）" % [b.display_name(), max_lv],
 		}]
+	# ★★ 2026.11.17：升级是**瞬时**的 —— 文案不再提读条 / 取消退款（用户口径）。
 	return [{
 		"type": "building_upgrade",
 		"name": "升级%s" % b.display_name(),
-		"desc": "升到 %d 级：%s（读条 %s 秒，期间可取消并全额退款）" % [
-			b.level + 1, _cost_text(world.building_upgrade_cost(b)),
-			_fmt_num(world.building_upgrade_time(b))],
+		"desc": "升到 %d 级：%s（立刻完成，血量补满）" % [
+			b.level + 1, _cost_text(world.building_upgrade_cost(b))],
 	}]
 
 
