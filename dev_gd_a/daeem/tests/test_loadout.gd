@@ -56,19 +56,19 @@ func _test_new_generals(cfg) -> void:
 
 	var specs := [
 		{"i": 10, "type": "dy_lord_ranger", "name": "王朝游侠", "tier": 1,
-			"fac": ["dynasty"], "hp": 180.0, "armor": 1.0, "dmg": 16.0,
+			"fac": ["dynasty", "dynasty_volunteer"], "hp": 180.0, "armor": 1.0, "dmg": 16.0,
 			"cd": 1.2, "spd": 0.7, "vis": 10.0, "sec": 8.0,
 			"traits": ["ranged_guard", "formation_breaker"]},
 		{"i": 11, "type": "dy_lord_zisha", "name": "子刹", "tier": 3,
-			"fac": ["dynasty"], "hp": 1000.0, "armor": 7.0, "dmg": 50.0,
+			"fac": ["dynasty", "dynasty_volunteer"], "hp": 1000.0, "armor": 7.0, "dmg": 50.0,
 			"cd": 1.0, "spd": 0.8, "vis": 12.0, "sec": 10.0,
 			"traits": ["arrow_wall", "steadfast", "crushing_blow"]},
 		{"i": 12, "type": "dg_lord_rider", "name": "帝国骑手", "tier": 1,
-			"fac": ["empire"], "hp": 200.0, "armor": 2.0, "dmg": 22.0,
+			"fac": ["empire", "empire_church"], "hp": 200.0, "armor": 2.0, "dmg": 22.0,
 			"cd": 0.8, "spd": 1.0, "vis": 12.0, "sec": 10.0,
 			"traits": ["capture_expert"]},
 		{"i": 13, "type": "dg_lord_ajikede", "name": "阿吉诃德", "tier": 3,
-			"fac": ["empire"], "hp": 350.0, "armor": 5.0, "dmg": 30.0,
+			"fac": ["empire", "empire_church"], "hp": 350.0, "armor": 5.0, "dmg": 30.0,
 			"cd": 1.0, "spd": 0.8, "vis": 9.0, "sec": 8.0,
 			"traits": ["call_to_arms", "new_knighthood"]},
 	]
@@ -77,7 +77,9 @@ func _test_new_generals(cfg) -> void:
 		eq(cfg.general_type_at(i), String(s["type"]), "★ #%d 的类型 = %s" % [i, s["type"]])
 		eq(cfg.general_name_at(i), String(s["name"]), "★ #%d 的名字 = %s" % [i, s["name"]])
 		eq(cfg.general_tier_at(i), int(s["tier"]), "★ #%d 的阶" % i)
-		eq(cfg.general_factions_at(i), s["fac"], "★ #%d 只属于自己的派系" % i)
+		# ★★ 2026.11.18：专属将领同时归属**母派系与它的分支派系**（义勇军 / 教会军）。
+		eq(cfg.general_factions_at(i), s["fac"],
+			"★ #%d 的派系归属（母派系 + 它的分支派系）" % i)
 		eq(cfg.general_traits_at(i), s["traits"],
 			"★★ #%d 带 %d 条特性（一个将领可以有多个特性）" % [i, (s["traits"] as Array).size()])
 		near(cfg.general_hp_at(i), float(s["hp"]), 1e-6, "★★ #%d 血量 = %s（编辑器 = 游戏内）"

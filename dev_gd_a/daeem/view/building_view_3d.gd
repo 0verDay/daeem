@@ -80,6 +80,10 @@ const BUILDING_MODELS := {
 	"farm": "res://assets/models/farm_lowpoly.glb",
 	"house": "res://assets/models/house_lowpoly.glb",
 	"mine": "res://assets/models/mine_lowpoly.glb",
+	# ★★ 2026.11.18：**教堂**（帝国·教会军专属）。Blender 现做，1 格见方、底边在 y = 0：
+	#   模型高 1.90 格 ⇒ 落地 = 1.90 × 0.6（body_scale）= 1.14 格；2 级 2.26 ⇒ 1.36 格。
+	#   屋顶 / 尖顶 / 十字的顶点色 alpha = 1（吃阵营色），墙体 / 门窗 = 0（保留原色）。
+	"church": "res://assets/models/church_l1_lowpoly.glb",
 }
 
 ## ★★ 可动部件：类型 → 模型路径。这些网格**不随建筑本体固定**，而是由 `_sync_flags()` 按
@@ -120,6 +124,12 @@ const BUILDING_MODEL_LEVELS := {
 	"mine": {
 		1: "res://assets/models/mine_l1_lowpoly.glb",
 		2: "res://assets/models/mine_lowpoly.glb",
+	},
+	# ★★ 2026.11.18：教堂两档（`upgrade.levels.church` 就是两行）。
+	#   l1 = 小礼拜堂（中殿 + 钟楼 + 尖顶）；l2 = 主教座堂（加侧廊 / 扶壁 / 大玫瑰窗 / 更高尖顶）。
+	"church": {
+		1: "res://assets/models/church_l1_lowpoly.glb",
+		2: "res://assets/models/church_l2_lowpoly.glb",
 	},
 }
 

@@ -734,6 +734,22 @@ static func card_cell_rect(i: int) -> Rect2:
 	return r
 
 
+## ★★ 2026.11.18：手牌统一支点 = **牌底中点**。
+##
+## 为什么不是左上角：扇形里每张牌都有一点旋转，支点在左上角时旋转半径是整个牌身，
+## 外圈牌会绕自己的左上角「甩」出去（底边错开、叠压宽度忽宽忽窄）；
+## 缩放同理 —— 放大 / 缩小会从左上角长，整排手牌跟着横向漂移。
+## 支点放在牌底中点后：旋转让底边原地张开成扇形，放大从手里往上长、缩小往手里收。
+static func card_pivot(size: Vector2) -> Vector2:
+	return Vector2(size.x * 0.5, size.y)
+
+
+## 一张牌在「底中点支点 + scale」之后的**视觉中心**（屏幕 / 父控件坐标）。
+## 测试量「下沉了 40px」「放大后牌心没动」都该用这个，而不是按左上角缩放推算。
+static func card_visual_center(pos: Vector2, size: Vector2, scale: float) -> Vector2:
+	return pos + Vector2(size.x * 0.5, size.y - size.y * scale * 0.5)
+
+
 ## 手持式指令牌：可见牌按当前页实际条目数居中展开，不为缺项保留灰牌。
 ## 单牌最大 142×206；数量增加时按重叠比例缩窄，九张牌仍收在牌区内。
 static func card_fan_local(visible_index: int, visible_count: int) -> Rect2:
@@ -743,16 +759,30 @@ static func card_fan_local(visible_index: int, visible_count: int) -> Rect2:
 	var overlap := w * CARD_FAN_OVERLAP_RATIO if n > 1 else 0.0
 	var total := float(n) * w - float(n - 1) * overlap
 	var x := (CARD_RECT.size.x - total) * 0.5 + float(visible_index) * (w - overlap)
-	var mid := (float(n) - 1.0) * 0.5
-	var y := CARD_RECT.size.y - CARD_FAN_BASELINE - CARD_FAN_MAX_SIZE.y \
-		+ absf(float(visible_index) - mid) * 5.0
+	# ★★ 2026.11.18：所有牌的**底边中点**落在同一条基线上。
+	#   旧版按 `abs(i-mid)*5` 把外圈牌往下压，9 张时整排会「两头垂、中间拱」；
+	#   旋转改成绕牌底中点之后，扇形感全部由旋转给出，基线就该是平的。
+	var y := CARD_RECT.size.y - CARD_FAN_BASELINE - CARD_FAN_MAX_SIZE.y
 	return Rect2(x, y, w, CARD_FAN_MAX_SIZE.y)
+
+
+## 扇形张角：**每张的步进随张数摊薄**，整手牌的总张角封顶 `CARD_FAN_MAX_ANGLE_DEG`。
+##
+## ★★ 2026.11.18：旧版固定 8°/张、再逐张 clamp 到 ±14° ⇒ 7 张以上时最外侧几张
+##   全被压成同一个角度（9 张时只有 -14 / -8 / 0 / 8 / 14 五档），扇形看起来一块一块的。
+##   现在按「最外那张正好 ±14°」反算步进：3 张还是 ±8°，7 张 ±14°，9 张 ±14° 但每张
+##   角度均匀（3.5°/张），不再有并排平行的牌。
+const CARD_FAN_STEP_DEG := 8.0
+const CARD_FAN_MAX_ANGLE_DEG := 14.0
 
 
 static func card_fan_rotation(visible_index: int, visible_count: int) -> float:
 	var n := maxi(1, mini(visible_count, CARD_SLOTS))
 	var mid := (float(n) - 1.0) * 0.5
-	return deg_to_rad(clampf((float(visible_index) - mid) * 8.0, -14.0, 14.0))
+	var step := CARD_FAN_STEP_DEG
+	if mid > 0.0 and mid * step > CARD_FAN_MAX_ANGLE_DEG:
+		step = CARD_FAN_MAX_ANGLE_DEG / mid
+	return deg_to_rad((float(visible_index) - mid) * step)
 
 
 ## ★★ 2026.11.16（用户口径）：鼠标悬停某张牌时，**同侧所有牌整体平移**同一段距离。
@@ -763,6 +793,10 @@ static func card_fan_rotation(visible_index: int, visible_count: int) -> float:
 ## ⇒ 同侧统一 `CARD_HOVER_PUSH_PX`：换到相邻牌时，同侧那些牌的距离不变、位置也不变，
 ##   只有「刚失去悬停的牌」和「刚获得悬停的牌」在动。
 const CARD_HOVER_PUSH_PX := 34.0
+
+## 悬停时这张牌**向上抬**多少（设计像素）。命令卡与科技页共用这一个数，
+## 免得同一套手牌在两个页签里抬得高矮不一。
+const CARD_HOVER_RAISE_PX := 22.0
 
 
 ## 第 `ordinal` 张牌相对悬停牌 `hover_ordinal` 的横向让开量（设计像素）。
@@ -797,15 +831,18 @@ static func card_tuck_scale(t: float) -> float:
 
 ## 「下沉」进度 t 时，牌左上角要在原位基础上偏移多少（设计像素）。
 ##
-## ★ 推导：Godot 的 `scale` 绕左上角（`pivot_offset`）缩放 ⇒ 想让它看起来绕**中心**缩放，
-##   就得把左上角往 +size*(s-1)/2 挪（s < 1 时是正的，即向右下）；
-##   再叠上「整体下沉 `CARD_TUCK_PX`」。
+## ★★ 2026.11.18：支点改成**牌底中点**（见 `card_pivot()`）后，缩小会自然往底边收，
+##   不再需要「补掉左上角缩放带来的右下漂移」。
+##   剩下的位移只有两件：
+##     · 整体下移 `CARD_TUCK_PX`（用户口径：其余手牌往下沉）；
+##     · 缩放会把**牌心**往上抬 `size.y*(1-s)/2`，补回来才能让「牌心正好下沉 40px」。
+##   ⇒ x 恒为 0（整排手牌不会左右挪）。
 static func card_tuck_offset(size: Vector2, t: float) -> Vector2:
 	var tt := clampf(t, 0.0, 1.0)
 	if tt <= 0.0:
 		return Vector2.ZERO
 	var s := card_tuck_scale(tt)
-	return -size * 0.5 * (s - 1.0) + Vector2(0.0, CARD_TUCK_PX * tt)
+	return Vector2(0.0, CARD_TUCK_PX * tt - size.y * (1.0 - s) * 0.5)
 
 
 ## 页签第 i 个牌签（相对面板）：靠右下角并排错开；单个页签也靠右对齐。

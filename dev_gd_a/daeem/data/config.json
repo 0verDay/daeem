@@ -906,6 +906,68 @@
       "    折扣 / 占领取最大值，冲锋加成相加；减伤最后仍按 combat.damage_reduction_cap 封顶。",
       "  ★ short 是信息栏格子里那个字（与兵种 short 同一档），name / desc 给卡牌与悬停说明。"
     ],
+    "_status_comment": [
+      "★★ 2026.11.18：**单位状态（属性）池** —— 与 `unit_traits` 的区别（别混）：",
+      "  · unit_traits = 兵种**天生**的静态标签（对某大类增伤 / 远近减伤 / 免疫击退），",
+      "    写死在兵种上，永不变化；",
+      "  · status（本节）= **运行期属性**：由兵种天生、方略启用（会水）、建筑（教堂 → 自由）、",
+      "    或机制（溺水）授予；单位身上可以同时有多条，可以随时加减。",
+      "★ 哪个兵种**天生**带哪些状态写在其 `unit.types.<id>.status_ids` 里；",
+      "  方略 / 建筑授予的那些由 world 在「出生 / 启用方略 / 招募完成」三个时刻补写",
+      "  （见 logic/world.gd 的 statuses_for_unit / grant_recruit_statuses）。",
+      "★ 效果键（全部可选；缺键 = 0 / 不生效）—— 新增键要同时在 logic/config.gd 加一条：",
+      "  water_walk         true = 可以走水域（寻路放行）；",
+      "  water_speed_mult   在水域格上的移速**倍率**（0.5 = 减半）；",
+      "  immobilize         true = 不能移动、也不能攻击（溺水）；",
+      "  damage_taken_add   受到的所有伤害**加法**增加（1.0 = 易伤 +100%）；",
+      "  hp_drain_ratio     每秒扣除**最大生命值**的比例（0.05 = 5%/秒）；",
+      "  hp_mult            血量上限倍率增量（+0.10 = +10%）；",
+      "  attack_add         攻击倍率增量（+0.10 = +10%）；",
+      "  armor_mult         防御（固定减伤数值）倍率增量（+0.10 = +10%）；",
+      "  plague_immune      true = 免疫「自由瘟疫」的每秒掉血；",
+      "  invincible         true = 免疫一切伤害（「信仰不死」那 3 秒）。",
+      "⚠️ 状态的**显示**（详情栏 buff 槽 / 悬停浮窗）读 name / short / desc 三件套。"
+    ],
+    "status": {
+      "water_walk": {
+        "name": "水性",
+        "short": "水",
+        "desc": "可以移动跨越水域；在水域中移动速度降低 50%",
+        "water_walk": true,
+        "water_speed_mult": 0.5
+      },
+      "drowning": {
+        "name": "溺水",
+        "short": "溺",
+        "desc": "在水域中失去「水性」：不可移动、不可攻击，远近易伤 +100%，每秒扣除最大生命值 5%",
+        "immobilize": true,
+        "damage_taken_add": 1.0,
+        "hp_drain_ratio": 0.05
+      },
+      "freedom": {
+        "name": "自由",
+        "short": "自",
+        "desc": "血量上限 +10%，攻击与防御 +10%，免疫「自由瘟疫」的每秒掉血",
+        "hp_mult": 0.1,
+        "attack_add": 0.1,
+        "armor_mult": 0.1,
+        "plague_immune": true
+      },
+      "blood_war": {
+        "name": "血战到底",
+        "short": "血",
+        "desc": "致命伤已触发：伤害 +50%，每秒扣除最大生命值 5% 的血量（每个单位只会触发一次）",
+        "attack_add": 0.5,
+        "hp_drain_ratio": 0.05
+      },
+      "undying": {
+        "name": "信仰不死",
+        "short": "信",
+        "desc": "血量被锁在 1 点，3 秒内免疫一切伤害",
+        "invincible": true
+      }
+    },
+
     "general_traits": {
       "swift": {
         "name": "神速",
@@ -1785,6 +1847,146 @@
           "splash_damage_ratio": 0.0,
           "cooldown_sec": 6.0
         }
+      },
+
+      "_volunteer_types_comment": [
+        "★★ 2026.11.18：**王朝·义勇军（dynasty_volunteer）** 的兵种。",
+        "★ 全部**不写 sprite** ⇒ 3D 立牌自动退成「单字占位」（字来自 icon，见 view/unit_sprite_3d.gd）——",
+        "  这就是「素材先用字代替图案」那条口径，等有原画了只要往这里补 sprite 一行即可。",
+        "★ 不写 upkeep_food：单位维护费机制已删除（见 economy 段的注释）。",
+        "★ status_ids = 天生带的**单位状态**（unit.status）；tier 不在这里，在 clan.recruit 里。",
+        "· 流寇 dv_bandit    1 阶远程步兵，最便宜的弓手（射程 3.8，比长弓短）。",
+        "· 锦帆 dv_jinfan    1 阶近战步兵，天生「水性」，移速 0.75（比长枪兵快）。",
+        "· 绿林 dv_greenwood 2 阶近战步兵，血厚 + 对步兵 +25% + 攻击范围伤害（半径 1 格）。",
+        "· 草车 dv_grass_cart 2 阶器械支援：比粮车便宜，但治疗光环更小更弱（2.2 格 / 1.2 每秒）。",
+        "· 响马 dv_xiangma   3 阶远程骑兵（骑射），对骑兵 +25%、移速 1.2。",
+        "· 万箭穿心 dv_arrowstorm 3 阶器械远程：一次装填打 6 段（间隔 0.12 秒），然后长装填 5 秒。"
+      ],
+      "dv_bandit": {
+        "name": "流寇", "icon": "寇",
+        "class": "infantry", "ranged": true,
+        "hp_max": 80, "armor": 0, "speed": 0.6,
+        "damage": 10, "range": 3.8, "cooldown_sec": 1.3,
+        "radius_factor": 0.085, "vision": 7,
+        "trait_ids": []
+      },
+      "dv_jinfan": {
+        "name": "锦帆", "icon": "帆",
+        "class": "infantry", "ranged": false,
+        "hp_max": 110, "armor": 1, "speed": 0.75,
+        "damage": 9, "range": 1, "cooldown_sec": 1.0,
+        "radius_factor": 0.09, "vision": 7,
+        "trait_ids": [],
+        "status_ids": ["water_walk"]
+      },
+      "dv_greenwood": {
+        "name": "绿林", "icon": "林",
+        "class": "infantry", "ranged": false,
+        "hp_max": 220, "armor": 2, "speed": 0.6,
+        "damage": 16, "range": 1, "cooldown_sec": 1.3,
+        "radius_factor": 0.1, "vision": 7,
+        "splash_radius": 1.0,
+        "trait_ids": ["vs_infantry_25"]
+      },
+      "dv_grass_cart": {
+        "name": "草车", "icon": "草",
+        "class": "siege", "ranged": true, "can_attack": false,
+        "hp_max": 110, "armor": 3, "speed": 0.6,
+        "damage": 0, "range": 0, "cooldown_sec": 1.0,
+        "radius_factor": 0.1, "vision": 6,
+        "heal_aura_radius": 2.2, "heal_aura_rate": 1.2,
+        "trait_ids": []
+      },
+      "dv_xiangma": {
+        "name": "响马", "icon": "响",
+        "class": "cavalry", "ranged": true, "move_shoot": true,
+        "hp_max": 140, "armor": 1, "speed": 1.2,
+        "damage": 18, "range": 3.2, "cooldown_sec": 1.1,
+        "radius_factor": 0.105, "vision": 9,
+        "trait_ids": ["vs_cavalry_25"]
+      },
+      "dv_arrowstorm": {
+        "name": "万箭穿心", "icon": "箭",
+        "class": "siege", "ranged": true, "siege": true,
+        "hp_max": 190, "armor": 0, "speed": 0.4,
+        "damage": 14, "range": 6.5, "cooldown_sec": 5.0,
+        "radius_factor": 0.13, "vision": 10,
+        "splash_radius": 0.6,
+        "burst": { "count": 6, "interval_sec": 0.12, "reload_sec": 5.0 },
+        "trait_ids": []
+      },
+
+      "_church_types_comment": [
+        "★★ 2026.11.18：**帝国·教会军（empire_church）** 的兵种（同样全部走单字占位）。",
+        "· 朝圣者 ec_pilgrim      1 阶近战步兵，便宜、对骑兵 +25%、移速 0.7。",
+        "· 信仰弓手 ec_faith_archer 1 阶远程步兵，便宜、对步兵 +25%、移速 0.65。",
+        "· 传教士 ec_preacher      2 阶近战骑兵，侦察定位（视野 12、移速 1.15），自带缓慢回血。",
+        "· 神圣连枷 ec_flail       3 阶近战步兵，范围 1.2 格**攻城**伤害（无视远近减伤）。",
+        "· 圣殿骑士 ec_templar     3 阶近战骑兵，稳定 + 远近免伤 30% + 防御 8。",
+        "· 圣物推车 ec_relic_cart  3 阶器械支援，周围 4 格己方单位每秒回 5 血（粮车的强化版）。"
+      ],
+      "ec_pilgrim": {
+        "name": "朝圣者", "icon": "朝",
+        "class": "infantry", "ranged": false,
+        "hp_max": 100, "armor": 1, "speed": 0.7,
+        "damage": 9, "range": 1, "cooldown_sec": 1.0,
+        "radius_factor": 0.09, "vision": 7,
+        "trait_ids": ["vs_cavalry_25"]
+      },
+      "ec_faith_archer": {
+        "name": "信仰弓手", "icon": "仰",
+        "class": "infantry", "ranged": true,
+        "hp_max": 80, "armor": 0, "speed": 0.65,
+        "damage": 11, "range": 4.2, "cooldown_sec": 1.3,
+        "radius_factor": 0.085, "vision": 8,
+        "trait_ids": ["vs_infantry_25"]
+      },
+      "ec_preacher": {
+        "name": "传教士", "icon": "教",
+        "class": "cavalry", "ranged": false,
+        "hp_max": 130, "armor": 1, "speed": 1.15,
+        "damage": 12, "range": 1, "cooldown_sec": 1.0,
+        "radius_factor": 0.105, "vision": 12,
+        "self_heal_per_sec": 1.5,
+        "trait_ids": []
+      },
+      "ec_flail": {
+        "name": "神圣连枷", "icon": "枷",
+        "class": "infantry", "ranged": false, "siege": true,
+        "hp_max": 210, "armor": 3, "speed": 0.55,
+        "damage": 26, "range": 1, "cooldown_sec": 1.6,
+        "radius_factor": 0.11, "vision": 7,
+        "splash_radius": 1.2,
+        "trait_ids": []
+      },
+      "ec_templar": {
+        "name": "圣殿骑士", "icon": "殿",
+        "class": "cavalry", "ranged": false,
+        "hp_max": 320, "armor": 8, "speed": 0.85,
+        "damage": 26, "range": 1, "cooldown_sec": 1.1,
+        "radius_factor": 0.115, "vision": 9,
+        "trait_ids": ["melee_guard_30", "ranged_guard_30", "steady"],
+        "charge": {
+          "min_distance": 3.0,
+          "max_distance": 8.0,
+          "turn_max_deg": 35.0,
+          "speed_bonus": 0.15,
+          "damage_bonus": 0.45,
+          "knock_distance": 0.4,
+          "knock_stun_sec": 0.2,
+          "splash_radius": 0.0,
+          "splash_damage_ratio": 0.0,
+          "cooldown_sec": 7.0
+        }
+      },
+      "ec_relic_cart": {
+        "name": "圣物推车", "icon": "圣",
+        "class": "siege", "ranged": true, "can_attack": false,
+        "hp_max": 200, "armor": 4, "speed": 0.5,
+        "damage": 0, "range": 0, "cooldown_sec": 1.0,
+        "radius_factor": 0.13, "vision": 7,
+        "heal_aura_radius": 4.0, "heal_aura_rate": 5.0,
+        "trait_ids": ["steady"]
       }
     },
 
@@ -1827,28 +2029,31 @@
 
       "_factions_comment": [
         "★★ 2026.11.5：**将领的派系归属**（`unit.general.factions`，与 types 同序）。",
-        "  · 每一项是一个 id 数组，取值来自 `clan.list[].id`（现在 native 原生 / dynasty 王朝 / empire 帝国）。",
+        "  · 每一项是一个 id 数组，取值来自 `clan.list[].id`（原生 / 王朝 / 义勇军 / 帝国 / 教会军）。",
         "  · **一位将领可以同时属于多个派系**（写在数组里的都算）；空数组 = 哪个派系都不显示。",
         "  · 运行时：备战页按右面板选中的派系过滤「将领」这一节（view/prepare_roster_list.gd）——",
         "    只有勾了这个派系的将领才出现在那一页。「原生」目前没有按钮，所以**只勾原生的将领不上备战页**。",
-        "  · 没写 / 缺项 ⇒ **三派全算**（与「加这一栏之前」逐位一致：两派看到的是同一份）。",
-        "  · 编辑器：tools/unit_editor →「单位」页 → 选中将领 →「派系归属」（三派多选）。"
+        "  · 没写 / 缺项 ⇒ **所有派系都算**（含以后新加的派系；与「加这一栏之前」逐位一致）。",
+        "  · ★★ 2026.11.18：两个新派系（王朝·义勇军 / 帝国·教会军）走**母派系的将领** ——",
+        "    通用那 10 位两边都勾上，2 位王朝专属将领也归义勇军、2 位帝国专属将领也归教会军。",
+        "    所以四个备战页的将领名额一致（10 / 12）。",
+        "  · 编辑器：tools/unit_editor →「单位」页 → 选中将领 →「派系归属」（多选）。"
       ],
       "factions": [
-        ["native", "dynasty", "empire"],
-        ["native", "dynasty", "empire"],
-        ["native", "dynasty", "empire"],
-        ["native", "dynasty", "empire"],
-        ["native", "dynasty", "empire"],
-        ["native", "dynasty", "empire"],
-        ["native", "dynasty", "empire"],
-        ["native", "dynasty", "empire"],
-        ["native", "dynasty", "empire"],
-        ["native", "dynasty", "empire"],
-        ["dynasty"],
-        ["dynasty"],
-        ["empire"],
-        ["empire"]
+        ["native", "dynasty", "dynasty_volunteer", "empire", "empire_church"],
+        ["native", "dynasty", "dynasty_volunteer", "empire", "empire_church"],
+        ["native", "dynasty", "dynasty_volunteer", "empire", "empire_church"],
+        ["native", "dynasty", "dynasty_volunteer", "empire", "empire_church"],
+        ["native", "dynasty", "dynasty_volunteer", "empire", "empire_church"],
+        ["native", "dynasty", "dynasty_volunteer", "empire", "empire_church"],
+        ["native", "dynasty", "dynasty_volunteer", "empire", "empire_church"],
+        ["native", "dynasty", "dynasty_volunteer", "empire", "empire_church"],
+        ["native", "dynasty", "dynasty_volunteer", "empire", "empire_church"],
+        ["native", "dynasty", "dynasty_volunteer", "empire", "empire_church"],
+        ["dynasty", "dynasty_volunteer"],
+        ["dynasty", "dynasty_volunteer"],
+        ["empire", "empire_church"],
+        ["empire", "empire_church"]
       ],
 
       "_general_growth_comment": [
@@ -2360,7 +2565,21 @@
       "  ★ 为什么需要它：组合单位（协防军 2 人口 / 御林军 3 人口）在「上限 1」的区划里",
       "     永远招不出来（见 docs/route.md 77.8）。"
     ],
-    "population_cap_default": 3
+    "population_cap_default": 3,
+
+    "_plague_comment": [
+      "★★ 2026.11.18：**「自由瘟疫」—— 区划属性**（帝国·教会军专属机制的数值）。",
+      "★ 谁是「染疫区划」由 world 每帧现算，**不是**地图数据、也不进存档：",
+      "  · 2 级及以上的**教堂**：它所在的区划（plague_adjacent 时连相邻区划）染疫；",
+      "  · 「传教」方略：己方有**脱战**（is_out_of_combat）单位站着的敌方区划染疫；",
+      "  · 拆掉教堂 / 单位走开 ⇒ 下一帧就不再染疫（没有任何残留状态要清）。",
+      "★★ 伤害口径（用户拍板）：**固定值**，对区划内**所有没有「自由」的单位**生效 ——",
+      "  **包括友军与教会军自己那些没自由的单位**（所以「自由」是要认真经营的东西）。",
+      "  · plague_damage_per_sec  每秒扣多少血（固定值，不按血量比例）；",
+      "  · 免疫：单位带 status「freedom」（plague_immune）或「undying」（invincible）时不掉血；",
+      "  · 已经濒死（将领）的单位不参与。「自由瘟疫」**不拆建筑**。"
+    ],
+    "plague_damage_per_sec": 6.0
   },
 
   "pvp": {
@@ -2598,21 +2817,59 @@
       "vision": 9,
       "color": "#4a90d9",
       "desc": "开局自带，不可建造、不可拆除；会像防御塔一样攻击射程内的敌人"
+    },
+
+    "_church_comment": [
+      "★★ 2026.11.18：**教堂** —— 「帝国·教会军」的专属建筑（唯一来源：本文件的 clan.empire_church.buildings）。",
+      "★ 三条本文件独有的键（其它建筑不写 = 行为不变）：",
+      "  · clans              能造它的派系白名单（**不写 = 所有派系都能造**，老建筑全靠这条）；",
+      "  · per_zone_limit     同一区划内**同类型**建筑的上限（1 = 每区划一座）；",
+      "  · max_level_by_base  true ⇒ 等级上限还要再被「己方大本营等级」压一次",
+      "                       （大本营 1 级时教堂最多 1 级，2 级大本营才能升 2 级教堂）；",
+      "  · freedom_recruit    true ⇒ 在这一区划内招募出来的己方单位获得「自由」（永久单位属性）；",
+      "  · plague_from_level  从第几级开始给「自由瘟疫」；plague_adjacent = 是否连相邻区划一起。",
+      "  · ★★ min_base  解锁所需的**己方大本营等级**（缺省 = tier）。教堂写在 `tier: 3` 只是",
+      "    因为它必须塞进建筑页那唯一的空格子（第 3 行第 2 列）；`min_base: 1` 让它**开局就能造** ——",
+      "    它是教会军的核心玩法，锁到 3 级等于没有。用户口径：「教堂应当是额外建筑而非唯一建筑」。",
+      "  · ★★ clans 是**额外建筑**的白名单（不是「只能造这些」）：不写 clans 的通用建筑（墙 / 塔 /",
+      "    田 / 房屋 / 矿脉…）照旧每一派都能造；写了就**只有名单里的派系**能造这一种。",
+      "★ 拆掉教堂 ⇒ 它给的自由瘟疫当场消失（world 每帧按「现存的教堂」重算，不缓存状态）。",
+      "★ 建在哪：与其它非城墙建筑一样走区划的**建造点位**，不能建在区划中心格。"
+    ],
+    "church": {
+      "id": "church", "name": "教堂", "buildable": true,
+      "tier": 3, "slot": 2,
+      "min_base": 1,
+      "build_sec": 14,
+      "cost": { "food": 120, "gold": 60 },
+      "hp_max": 320,
+      "body_scale": 0.6,
+      "blocks_player": false, "blocks_enemy": false,
+      "body_blocks_player": false, "body_blocks_enemy": true,
+      "attackable": true,
+      "vision": 7,
+      "ranged_reduction": 0.9,
+      "clans": ["empire_church"],
+      "per_zone_limit": 1,
+      "max_level_by_base": true,
+      "freedom_recruit": true,
+      "plague_from_level": 2,
+      "plague_adjacent": true,
+      "color": "#d8c9a3",
+      "desc": "特殊建筑（仅教会军）：1 级——该区划内招募的己方单位获得「自由」；2 级——该区划与相邻区划获得「自由瘟疫」。每区划限一座，等级不能超过己方大本营"
     }
   },
 
   "economy": {
     "_comment": [
       "★ enabled：经济总开关。false = **建造免费**（见 logic/economy.gd 的 try_spend）。",
-      "★★ upkeep_enabled（2026.10.29 新增）：**持续消耗**的总闸 ——",
-      "   单位维护费（每存活单位每秒吃粮）+ 科技的每秒扣金，两样都归它管。",
-      "   false = 两样都不扣（也不会有断粮 / 断金），用来做「只看收入」的对账与调试。",
-      "   ⚠️ 正常游戏必须是 true；tests/test_case.gd 会把它关掉，好让旧用例的",
-      "      「粮食 200 → 招一个兵 → 150」这种精确对账继续保持成立。",
-      "      新机制本身的覆盖在 tests/test_economy.gd（那边会显式打开它）。"
+      "★★ 2026.11.18：**持续消耗已取消** ——",
+      "   · 单位不再每秒吃粮（维护费）；",
+      "   · 科技不再每秒扣金。",
+      "   `upkeep_enabled` 保留为兼容键，正常游戏为 **false**；tests/test_case.gd 也保持关闭。"
     ],
     "enabled": true,
-    "upkeep_enabled": true
+    "upkeep_enabled": false
   },
 
   "base_bonus": {
@@ -2969,12 +3226,14 @@
       {
         "id": "native",
         "name": "原生",
-        "icon": "原"
+        "icon": "原",
+        "short": "原生"
       },
       {
         "id": "dynasty",
         "name": "王朝",
         "icon": "王",
+        "short": "王朝",
         "ai_composition": [
           { "type": "dy_guard", "weight": 0.38 },
           { "type": "dy_ranger", "weight": 0.35 },
@@ -3145,6 +3404,7 @@
         "id": "empire",
         "name": "帝国",
         "icon": "帝",
+        "short": "帝国",
         "ai_composition": [
           { "type": "dg_swordsman", "weight": 0.30 },
           { "type": "dg_archer", "weight": 0.20 },
@@ -3305,6 +3565,329 @@
           "cost": { "food": 0, "gold": 150 }
           }
         ]
+      },
+
+      {
+        "id": "dynasty_volunteer",
+        "name": "王朝·义勇军",
+        "icon": "义",
+        "short": "义勇军",
+        "_comment": [
+          "★★ 2026.11.18：**王朝·义勇军** —— 王朝的分支派系（人海、水网、血战）。",
+          "  与 dynasty 的关系：**一个新派系**（不是替换）—— dynasty 那一套逐位不变。",
+          "★ 主题：便宜的人海 + 水网机动 + 「打了就往死里打」的血战。",
+          "  · 一本就有两条便宜兵（流寇 / 锦帆），二本靠「征召民兵」滚人口；",
+          "  · 侵略如火 = 用兵去压敌方区划的经济（站进去就生效，走开就恢复）；",
+          "  · 三本后：会水（步兵全部能过河）、游击战术（移速 / 攻速换护甲）、血战到底（一次性复活暴走）。",
+          "★ 招募表 6 条、方略 9 格（7 条有内容 + 2 空）、不写 buildings ⇒ 不能造教堂。"
+        ],
+        "ai_composition": [
+          { "type": "dv_bandit", "weight": 0.3 },
+          { "type": "dv_jinfan", "weight": 0.28 },
+          { "type": "dv_greenwood", "weight": 0.24 },
+          { "type": "dv_xiangma", "weight": 0.1 },
+          { "type": "dv_arrowstorm", "weight": 0.05 },
+          { "type": "dv_grass_cart", "weight": 0.03 }
+        ],
+        "commander_ai": {
+          "_comment": [
+            "★★ 义勇军的 commander AI 倾向 —— **人海 + 早打**。",
+            "  队伍规模更大（守军 9 / 外勤 7）、进攻更早（40 秒）、更敢用小队去踩敌方区划；",
+            "  经济上存粮极少（兵便宜、死得起），科技优先级把「侵略如火」放第一。"
+          ],
+          "multipliers": {
+            "army_cap": 1.1,
+            "army_interval": 0.95,
+            "production_interval": 0.9,
+            "build_interval": 1.05,
+            "reaction_delay": 0.95
+          },
+          "roles": {
+            "cycle": ["line", "guerrilla", "line"],
+            "line": {
+              "composition": [
+                { "type": "dv_jinfan", "weight": 0.36 },
+                { "type": "dv_bandit", "weight": 0.3 },
+                { "type": "dv_greenwood", "weight": 0.26 },
+                { "type": "dv_grass_cart", "weight": 0.08 }
+              ]
+            },
+            "ranged": {
+              "composition": [
+                { "type": "dv_bandit", "weight": 0.52 },
+                { "type": "dv_arrowstorm", "weight": 0.16 },
+                { "type": "dv_jinfan", "weight": 0.22 },
+                { "type": "dv_grass_cart", "weight": 0.1 }
+              ],
+              "standoff_tiles": 4.2,
+              "frontline_min": 2
+            },
+            "guerrilla": {
+              "composition": [
+                { "type": "dv_bandit", "weight": 0.5 },
+                { "type": "dv_jinfan", "weight": 0.3 },
+                { "type": "dv_xiangma", "weight": 0.2 }
+              ],
+              "max_enemy_strength": 3.2,
+              "avoid_ratio": 0.9
+            }
+          },
+          "production": { "home_team_size": 9, "field_team_size": 7 },
+          "expand": {
+            "enemy_zone_min_units": 5,
+            "assault_units": 8,
+            "avoid_enemy_ratio": 1.15,
+            "target_food_income": 4.5,
+            "target_gold_income": 2.5
+          },
+          "economy": {
+            "reserve_food": 60,
+            "reserve_gold": 30,
+            "max_float_food": 420,
+            "max_float_gold": 260
+          },
+          "auto": { "attack_after_sec": 40 },
+          "early_explore": { "until_sec": 50 },
+          "early_game": { "until_sec": 50 },
+          "build": {
+            "base_upgrade_priority": 9,
+            "tech_priority": [
+              "dv_blitz",
+              "dg_levy",
+              "tech_speed_rush",
+              "dv_immovable",
+              "dv_water",
+              "dv_guerrilla",
+              "dv_blood_war"
+            ]
+          }
+        },
+        "tech": [
+          "dv_blitz", "dv_immovable", "dv_blood_war",
+          "tech_speed_rush", "dg_levy", "dv_guerrilla",
+          "", "", "dv_water"
+        ],
+        "recruit": [
+          {
+            "kind": "dv_bandit",
+            "tier": 1,
+            "label": "流寇",
+            "short": "寇",
+            "desc": "在选中将领所在格的中心生成 1 名流寇（远程步兵）。★ 基础单位：只花粮食；最便宜的弓手，射程 3.8 格（比长弓兵短）",
+            "population_cost": 1,
+            "cost": { "food": 60, "gold": 0 }
+          },
+          {
+            "kind": "dv_jinfan",
+            "tier": 1,
+            "label": "锦帆",
+            "short": "帆",
+            "desc": "在选中将领所在格的中心生成 1 名锦帆（近战步兵）。★ 基础单位：只花粮食；天生「水性」（可跨越水域，水域中移速 −50%），移速 0.75 格/秒",
+            "population_cost": 1,
+            "cost": { "food": 75, "gold": 0 }
+          },
+          {
+            "kind": "dv_greenwood",
+            "tier": 2,
+            "label": "绿林",
+            "short": "林",
+            "desc": "在选中将领所在格的中心生成 1 名绿林（近战步兵）。★ 高级单位：血量上限 220、对步兵伤害 +25%；攻击造成范围伤害（半径 1 格）",
+            "population_cost": 1,
+            "cost": { "food": 90, "gold": 25 }
+          },
+          {
+            "kind": "dv_grass_cart",
+            "tier": 2,
+            "label": "草车",
+            "short": "草",
+            "desc": "在选中将领所在格的中心生成 1 辆草车（器械，支援）。★ 基础单位：比粮车便宜，但治疗光环更弱（2.2 格 / 每秒 1.2 血）",
+            "population_cost": 1,
+            "cost": { "food": 90, "gold": 0 }
+          },
+          {
+            "kind": "dv_xiangma",
+            "tier": 3,
+            "label": "响马",
+            "short": "响",
+            "desc": "在选中将领所在格的中心生成 1 名响马（远程骑兵）。★ 高级单位：骑射（可移动射击）、对骑兵伤害 +25%、移动速度 1.2 格/秒",
+            "population_cost": 1,
+            "cost": { "food": 80, "gold": 60 }
+          },
+          {
+            "kind": "dv_arrowstorm",
+            "tier": 3,
+            "label": "万箭穿心",
+            "short": "箭",
+            "desc": "在选中将领所在格的中心生成 1 架万箭穿心（器械，远程）。★ 高级单位：一次装填打出 6 段齐射（间隔 0.12 秒），随后需要 5 秒装填；范围 0.6 格、攻城（无视远近减伤）",
+            "population_cost": 2,
+            "cost": { "food": 0, "gold": 160 }
+          }
+        ]
+      },
+
+      {
+        "id": "empire_church",
+        "name": "帝国·教会军",
+        "icon": "教",
+        "short": "教会军",
+        "_comment": [
+          "★★ 2026.11.18：**帝国·教会军** —— 帝国的分支派系（信仰、自由、瘟疫）。",
+          "  与 empire 的关系：**一个新派系**（不是替换）—— empire 那一套逐位不变。",
+          "★ 主题：用「自由 / 自由瘟疫」改写区划，用教堂把自由扩散出去。",
+          "  · 自由 = 单位属性（血量上限 +10%、攻防 +10%、免疫自由瘟疫），",
+          "    来源只有一处：**在该区划有教堂（≥1 级）时招募出来的单位**（永久，离开也不掉）；",
+          "  · 自由瘟疫 = **区划属性**：教堂 2 级给它自己与相邻区划；「传教」让有脱战单位站着的敌方区划也染上；",
+          "  · 收税：不含自由 / 含自由的单位每秒各给黄金（两条互补，都点 = 全员交税）。",
+          "★ 招募表 6 条、方略 9 格（7 条有内容 + 2 空）、buildings = 教堂。",
+          "  ★★ `buildings` 是**额外建筑**清单（不是「只能造这些」）：通用建筑照旧全都出现在",
+          "    这个派系的建筑页里，这里只额外列出「别人不能造」的那一栋。"
+        ],
+        "buildings": ["church"],
+        "ai_composition": [
+          { "type": "ec_pilgrim", "weight": 0.28 },
+          { "type": "ec_faith_archer", "weight": 0.24 },
+          { "type": "ec_preacher", "weight": 0.16 },
+          { "type": "ec_templar", "weight": 0.14 },
+          { "type": "ec_flail", "weight": 0.1 },
+          { "type": "ec_relic_cart", "weight": 0.04 },
+          { "type": "grain_cart", "weight": 0.04 }
+        ],
+        "commander_ai": {
+          "_comment": [
+            "★★ 教会军的 commander AI 倾向 —— **阵线推进 + 传教染区**。",
+            "  队伍规模中等、进攻时机居中（48 秒）；更重视粮食（兵便宜、人口要涨）。",
+            "  科技优先级：不自由税（早期金）→ 速战速决 → 自由税 → 沐浴自由 → 信仰不死 → 传教。"
+          ],
+          "multipliers": {
+            "army_cap": 1.0,
+            "army_interval": 1.0,
+            "production_interval": 1.0,
+            "build_interval": 1.0,
+            "reaction_delay": 1.0
+          },
+          "roles": {
+            "cycle": ["line", "ranged", "line"],
+            "line": {
+              "composition": [
+                { "type": "ec_pilgrim", "weight": 0.34 },
+                { "type": "ec_templar", "weight": 0.22 },
+                { "type": "ec_faith_archer", "weight": 0.24 },
+                { "type": "ec_flail", "weight": 0.12 },
+                { "type": "ec_relic_cart", "weight": 0.08 }
+              ]
+            },
+            "ranged": {
+              "composition": [
+                { "type": "ec_faith_archer", "weight": 0.44 },
+                { "type": "ec_pilgrim", "weight": 0.28 },
+                { "type": "ec_flail", "weight": 0.14 },
+                { "type": "ec_templar", "weight": 0.08 },
+                { "type": "ec_relic_cart", "weight": 0.06 }
+              ],
+              "standoff_tiles": 4.6,
+              "frontline_min": 2
+            },
+            "guerrilla": {
+              "composition": [
+                { "type": "ec_preacher", "weight": 0.5 },
+                { "type": "ec_pilgrim", "weight": 0.5 }
+              ],
+              "max_enemy_strength": 2.6,
+              "avoid_ratio": 0.9
+            }
+          },
+          "production": { "home_team_size": 8, "field_team_size": 6 },
+          "idle": { "max_scouts": 3, "scout_max_distance_tiles": 22 },
+          "expand": {
+            "enemy_zone_min_units": 6,
+            "assault_units": 9,
+            "avoid_enemy_ratio": 1.3,
+            "target_food_income": 4.5,
+            "target_gold_income": 3.5
+          },
+          "economy": {
+            "reserve_food": 80,
+            "reserve_gold": 60,
+            "max_float_food": 480,
+            "max_float_gold": 400
+          },
+          "auto": { "attack_after_sec": 48 },
+          "early_explore": { "until_sec": 55 },
+          "early_game": { "until_sec": 55 },
+          "build": {
+            "base_upgrade_priority": 10,
+            "tech_priority": [
+              "ec_unfree_tax",
+              "tech_speed_rush",
+              "ec_free_tax",
+              "ec_bathe",
+              "ec_undying",
+              "tech_unbreakable",
+              "ec_missionary"
+            ]
+          }
+        },
+        "tech": [
+          "ec_unfree_tax", "ec_free_tax", "ec_undying",
+          "tech_speed_rush", "ec_bathe", "ec_missionary",
+          "", "", "tech_unbreakable"
+        ],
+        "recruit": [
+          {
+            "kind": "ec_pilgrim",
+            "tier": 1,
+            "label": "朝圣者",
+            "short": "朝",
+            "desc": "在选中将领所在格的中心生成 1 名朝圣者（近战步兵）。★ 基础单位：只花粮食；对骑兵伤害 +25%、移动速度 0.7 格/秒",
+            "population_cost": 1,
+            "cost": { "food": 65, "gold": 0 }
+          },
+          {
+            "kind": "ec_faith_archer",
+            "tier": 1,
+            "label": "信仰弓手",
+            "short": "仰",
+            "desc": "在选中将领所在格的中心生成 1 名信仰弓手（远程步兵）。★ 基础单位：只花粮食；对步兵伤害 +25%、移动速度 0.65 格/秒",
+            "population_cost": 1,
+            "cost": { "food": 65, "gold": 0 }
+          },
+          {
+            "kind": "ec_preacher",
+            "tier": 2,
+            "label": "传教士",
+            "short": "教",
+            "desc": "在选中将领所在格的中心生成 1 名传教士（近战骑兵）。★ 高级单位：侦察定位（视野 12 格）、移动速度 1.15 格/秒、自己每秒缓慢回 1.5 血",
+            "population_cost": 1,
+            "cost": { "food": 60, "gold": 30 }
+          },
+          {
+            "kind": "ec_flail",
+            "tier": 3,
+            "label": "神圣连枷",
+            "short": "枷",
+            "desc": "在选中将领所在格的中心生成 1 名神圣连枷（近战步兵）。★ 高级单位：攻击造成范围 1.2 格的**攻城**伤害（无视目标的远近减伤，拆建筑同样有效）",
+            "population_cost": 1,
+            "cost": { "food": 110, "gold": 60 }
+          },
+          {
+            "kind": "ec_templar",
+            "tier": 3,
+            "label": "圣殿骑士",
+            "short": "殿",
+            "desc": "在选中将领所在格的中心生成 1 名圣殿骑士（近战骑兵）。★ 高级单位：稳定（免疫击退）、远近免伤各 30%、防御 8、血量上限 320",
+            "population_cost": 1,
+            "cost": { "food": 120, "gold": 90 }
+          },
+          {
+            "kind": "ec_relic_cart",
+            "tier": 3,
+            "label": "圣物推车",
+            "short": "圣",
+            "desc": "在选中将领所在格的中心生成 1 辆圣物推车（器械，支援）。★ 高级单位：周围 4 格内的己方单位每秒回 5 血；不攻击",
+            "population_cost": 2,
+            "cost": { "food": 0, "gold": 140 }
+          }
+        ]
       }
     ]
   },
@@ -3367,6 +3950,18 @@
       "mine": [
         { "level": 1, "hp_mult": 1.0 },
         { "level": 2, "hp_mult": 1.5 }
+      ],
+      "_church_levels_comment": [
+        "★★ 教堂（2026.11.18）：两级。",
+        "  · 升级价没写 cost ⇒ 自动等于建造消耗（见上面的说明）；",
+        "  · **等级上限还要被己方大本营压一次**（building.church.max_level_by_base）——",
+        "    大本营 1 级时这一格在界面上是「需要 2 级大本营」，点不动；",
+        "  · 2 级那一行只加血（hp_mult 1.5），真正的效果在 world 里按等级现算：",
+        "    1 级 = 招募给自由；2 级 = 本区划 + 相邻区划自由瘟疫。"
+      ],
+      "church": [
+        { "level": 1, "hp_mult": 1.0 },
+        { "level": 2, "hp_mult": 1.5 }
       ]
     }
   },
@@ -3426,33 +4021,31 @@
       "★ 科技表 —— 右下「科技」页签那 3×3 九格就照这张表生成（第 0 项 = 左上格）。",
       "★ tier = 科技页的**行**：第一行一阶 / 第二行二阶 / 第三行三阶（九格按列优先摆放）。",
       "  显示条件：什么都没选中（与「建筑」页签并列）或选中大本营时，页签列里都有「科技」。",
-      "★ max_active：玩家**同一时间最多启用几个**。点第 max_active+1 个会被拒（红字提示），",
-      "  再点已启用的那个 = 弃用（名额让出来）。启用 / 弃用都是命令（tech_toggle），",
-      "  落点在 world.set_tech_active() —— 视图不自己记住谁启用了，每帧读权威状态。",
+      "★ max_active：玩家**同一时间最多启用几个**。",
+      "  ★★ 2026.11.18 科技系统改为**一次性打出**：",
+      "  · 科技被打出后 = 视为启用，**不可再次打出、不可取消**；",
+      "  · 启用的科技牌保留在科技页（实心高亮、不可再拖）；",
+      "  · 当启用的科技数达到 **3** 时，**其余未启用的科技手牌全部销毁**；",
+      "  · 因此 max_active 到顶后不会再出现「先弃用再启用」的操作。",
+      "  · 操作入口仍是 tech_toggle 命令，落点 world.set_tech_active()；",
+      "    视图不自己记住谁启用了，每帧读权威状态。",
       "★ 效果只有三种形状（见 logic/tech.gd 的效果聚合）：",
       "  · food_production_mult / gold_production_mult —— **总体产能**的加成（0.1 = +10%）。",
       "    「总体产能」= 区划基础产能 + 大本营/资源建筑的固定产出（一起放大），**不按地块算**。",
       "    多条**加法叠加**：+10% +20% +30% = +60%（不是 1.1×1.2×1.3）。",
       "  · building_hp_mult / leader_hp_mult    —— 己方建筑 / 己方将领的**血量上限倍率**，",
-      "    实时生效（已建成 / 已存在的也一起按比例变），弃用后回到 1.0。",
+      "    实时生效（已建成 / 已存在的也一起按比例变）。",
       "  · zone_population_mult                 —— 己方占领区划的**人口自然增长速度**倍率，",
       "    只影响涨得多快（上限 population_cap 不变），且只作用于己方区划。",
-      "★★ 2026.10.30 起科技只保留**持续消耗黄金**这一条（预热与断金冷却已删除）：",
-      "  · gold_per_sec_by_tier —— 按**阶**每秒扣金（[一阶, 二阶, 三阶] = 0.5 / 1.0 / 2.0），",
-      "    **点下即生效、从那一刻开始扣**。三条满配 = 3.5 金/秒。",
-      "  · 金库被扣到 0 后科技**不会自动弃用**，继续生效、金库停在 0。",
-      "  · ★★ 黄金净收入为赤字（产出 − 科技金耗 < 0）时：**不能再启用新科技**，",
-      "    但可以弃用已有科技来止损。赤字解除后即可继续启用 / 切换。",
-      "  · 三条非产量科技（建筑加固 / 将领强化 / 区划人口）**同样按阶扣金** ——",
-      "    不然玩家会拿免费格子把三个名额占满。",
-      "  · 金耗与赤字判定都**按阵营各算各的**（合作模式两个席位互不影响）。",
+      "★★ 2026.11.18：**科技的持续耗金已取消** —— `gold_per_sec_by_tier` 保留为兼容键，",
+      "   数值全部为 0；不再有金库扣金 / 断金 / 黄金赤字拒因。",
       "★ 以前加真科技：往 list 里加条目即可（world / command_processor / 视图都不用改），",
       "  要新的效果形状才需要在 logic/tech.gd 的 effects_of() 与 world 的取用处各加一条。",
       "★ desc 是鼠标悬停时**命令卡正上方那块悬停详情面板**里的说明（一句话说清效果）；",
       "  line 是格子里的第二行小字（格子只有 80×80，名字一行 + 效果一行最清楚）。"
     ],
     "max_active": 3,
-    "gold_per_sec_by_tier": [0.5, 1.0, 2.0],
+    "gold_per_sec_by_tier": [0, 0, 0],
     "list": [
       {
         "id": "food_1",
@@ -3669,6 +4262,102 @@
         "line": "转归属即回满",
         "desc": "区划由敌方 / 中立转为己方（含盟友）那一刻，该区划内己方单位的血量回满",
         "effect": { "zone_convert_restore": 1 }
+      },
+
+      {
+        "id": "dv_blitz",
+        "tier": 1,
+        "name": "侵略如火",
+        "line": "入敌区 −4%人口 −2%产能",
+        "desc": "己方每个单位站在**敌方区划**里时，该区划人口增长速度 −4%（最多 −100%）、粮食 / 黄金产能 −2%（最多 −50%）；单位离开后立刻恢复",
+        "effect": {
+          "blitz_pop_debuff": 0.04,
+          "blitz_prod_debuff": 0.02,
+          "blitz_pop_cap": 1.0,
+          "blitz_prod_cap": 0.5
+        }
+      },
+      {
+        "id": "dv_immovable",
+        "tier": 2,
+        "name": "不动如山",
+        "line": "步兵 +20% 血 +1 甲",
+        "desc": "所有**步兵**（含远程步兵，不含骑兵 / 器械）血量上限 +20%、防御（固定减伤数值）+1",
+        "effect": { "infantry_hp_mult_add": 0.2, "infantry_armor_add": 1 }
+      },
+      {
+        "id": "dv_water",
+        "tier": 3,
+        "name": "会水",
+        "line": "步兵获得「水性」",
+        "desc": "所有**步兵**获得「水性」：可以移动跨越水域，但在水域中移动速度 −50%",
+        "effect": { "grant_water_walk": 1 }
+      },
+      {
+        "id": "dv_guerrilla",
+        "tier": 3,
+        "name": "游击战术",
+        "line": "移速 / 攻速 +25%，失去护甲",
+        "desc": "所有单位移动速度 +25%、攻击速度 +25%（攻击间隔 ÷1.25）；**失去全部护甲**（防御归 0，科技与将领给的也一起归 0）",
+        "effect": {
+          "unit_speed_mult": 0.25,
+          "unit_attack_speed_add": 0.25,
+          "unit_armor_zero": 1
+        }
+      },
+      {
+        "id": "dv_blood_war",
+        "tier": 3,
+        "name": "血战到底",
+        "line": "血量 −30%，致命伤回满暴走",
+        "desc": "所有单位血量上限 −30%；每个单位**第一次受到致命伤害**时不死亡，而是把血量回满、伤害 +50%，此后每秒扣除最大生命值 5% 的血量（每个单位只触发一次）",
+        "effect": {
+          "unit_hp_mult_add": -0.3,
+          "fatal_refill": 1,
+          "blood_war_attack_add": 0.5,
+          "blood_war_drain": 0.05
+        }
+      },
+
+      {
+        "id": "ec_unfree_tax",
+        "tier": 1,
+        "name": "不自由税",
+        "line": "无自由单位 +0.05 金/秒",
+        "desc": "己方每个**不含「自由」**的单位每秒为玩家提供 0.05 黄金",
+        "effect": { "gold_per_unit_no_freedom": 0.05 }
+      },
+      {
+        "id": "ec_free_tax",
+        "tier": 2,
+        "name": "自由税",
+        "line": "含自由单位 +0.03 金/秒",
+        "desc": "己方每个**含「自由」**的单位每秒为玩家提供 0.03 黄金（与「不自由税」互补：两条都启用 = 全员交税）",
+        "effect": { "gold_per_unit_freedom": 0.03 }
+      },
+      {
+        "id": "ec_bathe",
+        "tier": 2,
+        "name": "沐浴自由",
+        "line": "瘟疫区自由单位攻防 +20%",
+        "desc": "己方含「自由」的单位站在含「自由瘟疫」的区划里时，攻击与防御 +20%",
+        "effect": { "freedom_plague_attack_add": 0.2, "freedom_plague_armor_add": 0.2 }
+      },
+      {
+        "id": "ec_undying",
+        "tier": 3,
+        "name": "信仰不死",
+        "line": "致命伤锁血 1 + 3 秒无敌",
+        "desc": "所有己方单位受到致命伤害时血量被锁在 1 点，并获得 3 秒无敌（同一单位 20 秒内只会触发一次）",
+        "effect": { "fatal_invincible_sec": 3.0, "fatal_hp_lock": 1, "fatal_invincible_cooldown": 20.0 }
+      },
+      {
+        "id": "ec_missionary",
+        "tier": 3,
+        "name": "传教",
+        "line": "脱战单位染敌方区划",
+        "desc": "当己方有**脱战**的单位站在敌方区划里时，该敌方区划获得「自由瘟疫」",
+        "effect": { "missionary_plague": 1 }
       }
     ]
   },

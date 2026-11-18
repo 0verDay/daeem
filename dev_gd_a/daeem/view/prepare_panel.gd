@@ -28,8 +28,11 @@ const ScrollEdgeBarRes = preload("res://view/scroll_edge_bar.gd")
 ## ★★ 2026.11：出战配置（每派系 1 / 3 / 3 / 3 位；当前派系 = 合作模式扮演的派系）。
 const LoadoutRes = preload("res://logic/loadout.gd")
 
-## 与设计稿一致：上 = 王朝，下 = 帝国。
-const FACTIONS := ["dynasty", "empire"]
+## ★★ 2026.11.18：派系按钮从 2 枚变成 4 枚（新增 王朝·义勇军 / 帝国·教会军）。
+##   **清单只有一份** —— 直接读 `LoadoutRes.FACTIONS`（出战配置的权威表），
+##   这里不再自己抄一遍：以前两处各写一份，加派系时漏改一处就是「界面少了 / 存档读不到」。
+##   顺序 = 从上到下：王朝 → 义勇军 → 教会军 → 帝国。
+const FACTIONS := LoadoutRes.FACTIONS
 const DEFAULT_BACK_TEXT := "——点此返回主菜单——"
 
 ## 右面板里列表相对面板边缘的留白（左 / 右 / 上 / 下）。
@@ -116,16 +119,22 @@ func setup(p_cfg, p_font: Font) -> void:
 	_panels[0].add_child(_detail)
 	_detail.setup(cfg, font)
 
-	# ③ 右侧两枚竖排按钮：上王朝、下帝国。
+	# ③ 右侧竖排按钮：按 `FACTIONS` 顺序从上到下（王朝 → 义勇军 → 教会军 → 帝国）。
+	#   ★ 名字用 `clan.short`（`clan_short_of()`）：全名「王朝·义勇军」竖排是 6 个字，
+	#     四个按钮的槽高放不下；短名「义勇军」三个字，字号还能保持 40。
 	var fs: int = int(cfg.num("menu.deck.prepare.faction_text_size", 40.0)) \
 		if cfg != null else 40
 	var gap: int = int(cfg.num("menu.deck.prepare.faction_line_gap", 8.0)) \
 		if cfg != null else 8
 	for i in FACTIONS.size():
 		var id: String = FACTIONS[i]
-		var display: String = cfg.clan_name_of(id) if cfg != null else ""
+		var display: String = ""
+		if cfg != null:
+			display = String(cfg.clan_short_of(id)).strip_edges()
+			if display == "":
+				display = cfg.clan_name_of(id)
 		if display == "" or display == id:
-			display = "王朝" if id == "dynasty" else "帝国"
+			display = _fallback_faction_label(id)
 		var b := FactionBtnRes.new()
 		b.setup(font, display, id, fs, gap)
 		b.pressed.connect(_on_faction_pressed.bind(i))
@@ -179,9 +188,42 @@ func _layout() -> void:
 		_detail.size = _panels[0].size
 
 	for i in _factions.size():
-		var r := LayoutRes.prepare_faction(w, h, i)
+		var r := LayoutRes.prepare_faction(w, h, i, _factions.size())
 		_factions[i].position = r.position
 		_factions[i].size = r.size
+		# ★ 字号按槽高与字数自适应：4 枚按钮时槽高只剩一半，40px × 3 行已经要贴边了，
+		#   再加长名字（或更小的屏幕）就会溢出。留 12px 上下内边距 + 行距。
+		_factions[i].set_font_size(_faction_font_size(r.size.y, _factions[i].display_text().length(),
+			_faction_base_font_size()))
+
+
+## 竖排按钮的理想字号（config 里那一档）。
+func _faction_base_font_size() -> int:
+	if cfg == null:
+		return 40
+	return int(cfg.num("menu.deck.prepare.faction_text_size", 40.0))
+
+
+## 按「槽高 / 字数」算一个放得下的竖排字号（上限 = config 里的理想字号）。
+func _faction_font_size(slot_h: float, lines: int, base_size: int) -> int:
+	var gap: int = int(cfg.num("menu.deck.prepare.faction_line_gap", 8.0)) if cfg != null else 8
+	var n := maxi(1, lines)
+	var usable: float = maxf(12.0, slot_h - 24.0 - float(gap) * float(n - 1))
+	return clampi(int(floor(usable / float(n))), 14, maxi(14, base_size))
+
+
+## 配置里连 clan 都读不到时的兜底名（只给历史上的两派留文案，其余回 id）。
+func _fallback_faction_label(id: String) -> String:
+	match id:
+		"dynasty":
+			return "王朝"
+		"empire":
+			return "帝国"
+		"dynasty_volunteer":
+			return "义勇军"
+		"empire_church":
+			return "教会军"
+	return id
 
 
 # ------------------------------------------------------------------

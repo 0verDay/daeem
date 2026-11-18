@@ -1,16 +1,18 @@
-## tech.gd —— 科技模块（占位科技：启用 / 弃用 + 效果聚合）
+## tech.gd —— 科技模块（一次性科技：打出即启用 + 效果聚合）
 ##
-## ★★ 需求原话：
-##   「当玩家什么都没选中时，原右下角只有一个建筑页签的地方添加一个科技页签，
-##     同时该科技页签也会同步到选中大本营时的科技页签中」；
-##   「玩家同一时间仅可启用三个占位科技，玩家需要通过点击科技以启用科技，
-##     当玩家启用的科技数到 3 时，玩家再启用科技会被阻止并提示，
-##     玩家可以点击已启用的科技以弃用科技」。
+## ★★ 需求原话（2026.11.18 改版）：
+##   「科技在被打出后就视为启用且不可再被打出（不可取消科技），
+##     当启用的科技为3个时将其余的科技手牌销毁」。
 ##
 ## 所以这一层只回答三个问题（**它不认识 Node、不认识 UI、不读输入**）：
 ##   1. 现在有哪几条科技（表在 `data/config.json` 的 `tech.list`，代码里不写死科技名）；
 ##   2. 某一方现在启用了哪几条（按阵营分开存 —— 单机只有 p1，但口径不写死）；
 ##   3. 启用之后**世界变成什么样**（`effects_of()` 把九条的效果聚合成几个数）。
+##
+## ★★ 2026.11.18：
+##   · 科技**只能启用一次**，没有「弃用」；`toggle()` / `activate()` 只做单向写入。
+##   · 启用的科技仍留在科技页（由 world.tech_entries 标成不可再拖），不是取消。
+##   · 科技**不再持续扣金**（`gold_drain_per_sec()` 恒为 0）。
 ##
 ## ★ 为什么要单独一个文件而不是塞进 world.gd：
 ##   world 已经 1600 多行，而科技这条线是**可独立演进**的（以后会有前置链、研究时间、花费）。
@@ -114,11 +116,11 @@ func is_active(id: String, faction: String = "") -> bool:
 
 ## ★ 能不能启用这一条。@return "" = 可以；否则是拒因码：
 ##   "unknown"  没有这条科技（表里查不到 —— 界面上不该发生，防手改 / 旧快照）
+##   "played"   ★ 已经启用过（科技不可重复打出 / 不可取消）
 ##   "tier"     ★ 这条科技的「阶」超过当前大本营允许的阶数
-##   "limit"    ★ 已经启用满 max_active 条（需求：到 3 个时再启用会被阻止并提示）
+##   "limit"    ★ 已经启用满 max_active 条
 ##
-## ★★ 「黄金净收入赤字」不在这一层判：它需要读这一方的收入，而 tech 不认识 world。
-##    那个拒因（`gold_deficit`）由 `world.tech_can_activate()` 追加。
+## ★★ 2026.11.18：「黄金净收入赤字」已随科技持续耗金一起删除。
 ##
 ## @param max_active_override / max_tier_override
 ##   大本营等级决定的上限（由 `world.tech_can_activate()` 传进来）。
@@ -128,7 +130,7 @@ func can_activate(id: String, faction: String = "",
 	if not has(id):
 		return "unknown"
 	if is_active(id, faction):
-		return ""
+		return "played"
 	if max_tier_override >= 0:
 		var tier := cfg.tech_tier(id) if cfg != null else 0
 		if tier > max_tier_override:
@@ -139,16 +141,12 @@ func can_activate(id: String, faction: String = "",
 	return ""
 
 
-## 点一下某条科技：**没启用 → 立刻启用；已启用 → 弃用**。
+## 打出一张科技牌：**只能从未启用 → 启用**。
 ##
 ## @return {"ok": bool, "active": bool, "reason": String}
-##   ok     命令有没有生效
-##   active 生效之后这条科技是不是「已启用」
-##   reason 没生效时的拒因码（"" = 成功）
 func toggle(id: String, faction: String = "") -> Dictionary:
 	if is_active(id, faction):
-		deactivate(id, faction)
-		return {"ok": true, "active": false, "reason": ""}
+		return {"ok": false, "active": true, "reason": "played"}
 	var reason := can_activate(id, faction)
 	if reason != "":
 		return {"ok": false, "active": false, "reason": reason}
@@ -174,7 +172,8 @@ func activate(id: String, faction: String = "") -> bool:
 	return true
 
 
-## 弃用一条（**没启用时什么都不做**）
+## 内部回滚接口（**不是玩家可用的取消**）：旧快照 / 测试重置时把一条从启用表里拿掉。
+## ★ 游戏内不再有「弃用科技」这条路；UI / 命令层不要调它。
 ## @return true = 这一次真的改动了状态
 func deactivate(id: String, faction: String = "") -> bool:
 	if not is_active(id, faction):
@@ -193,15 +192,10 @@ func set_active(id: String, on: bool, faction: String = "") -> bool:
 	return deactivate(id, faction)
 
 
-## ★★ 这一方**每秒要付多少科技金** = 已启用的各条之和。
-## 由 `world._tick_upkeep()` 每帧读一次，再乘 dt。
-func gold_drain_per_sec(faction: String = "") -> float:
-	if cfg == null:
-		return 0.0
-	var total := 0.0
-	for id in active_ids(faction):
-		total += cfg.tech_gold_per_sec_of(String(id))
-	return total
+## ★★ 2026.11.18：科技**不再持续扣金**。保留函数是为了让 world / AI / HUD 的旧调用点
+##   继续拿到 0，不再需要各处判空。
+func gold_drain_per_sec(_faction: String = "") -> float:
+	return 0.0
 
 
 # ------------------------------------------------------------------
@@ -275,6 +269,37 @@ static func default_effects() -> Dictionary:
 		"recruit_gold_to_food": 0.0,
 		"zone_convert_restore": 0.0,
 		"charge_damage_mult": 0.0,
+		# ---- ★★ 2026.11.18：义勇军 / 教会军那两条线（全部是加法增量；读取处在 logic/world.gd）----
+		# 「侵略如火」：敌方区划被己方单位踩住时的压制（pop/prod 增量 + 两条上限）
+		"blitz_pop_debuff": 0.0,
+		"blitz_prod_debuff": 0.0,
+		"blitz_pop_cap": 0.0,
+		"blitz_prod_cap": 0.0,
+		# 「不动如山 / 血战到底」：血量上限增量（分别只作用于步兵 / 全单位）、步兵额外护甲
+		"infantry_hp_mult_add": 0.0,
+		"unit_hp_mult_add": 0.0,
+		"infantry_armor_add": 0.0,
+		# 「游击战术」：攻击速度增量、护甲归零
+		"unit_attack_speed_add": 0.0,
+		"unit_armor_zero": 0.0,
+		# 「血战到底」：致命伤回满 + 暴走的伤害/掉血
+		"fatal_refill": 0.0,
+		"blood_war_attack_add": 0.0,
+		"blood_war_drain": 0.0,
+		# 「会水」：给步兵补「水性」状态
+		"grant_water_walk": 0.0,
+		# 「不自由税 / 自由税」：每个单位每秒给的金（两条互补）
+		"gold_per_unit_no_freedom": 0.0,
+		"gold_per_unit_freedom": 0.0,
+		# 「沐浴自由」：含自由的单位在染疫区划里的攻/防增量
+		"freedom_plague_attack_add": 0.0,
+		"freedom_plague_armor_add": 0.0,
+		# 「信仰不死」：致命伤锁血的点数 / 无敌秒数 / 触发冷却
+		"fatal_invincible_sec": 0.0,
+		"fatal_hp_lock": 0.0,
+		"fatal_invincible_cooldown": 0.0,
+		# 「传教」：脱战单位站在敌方区划里 ⇒ 该区划染疫
+		"missionary_plague": 0.0,
 	}
 
 

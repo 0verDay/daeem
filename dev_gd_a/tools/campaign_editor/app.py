@@ -97,8 +97,9 @@ from .model import (
     OBJ_HOLD_ZONE,
     SEV_BLOCK,
     SEV_WARN,
+    SLOT_NOT_BUILDABLE,
     SLOT_NOT_IN_WALL_RING,
-    SLOT_NOT_ON_POINT,
+    SLOT_NOT_IN_ZONE,
     SLOT_OK,
     TARGET_BASE,
     TARGET_BUILDING,
@@ -160,7 +161,7 @@ PAGES: Tuple[Tuple[str, str, str], ...] = (
     ("level", "关卡", "关卡页：当前关的名字 / 模式 / 地图 / 目标 / 额外失败条件"),
     ("factions", "阵营", "阵营页：敌友（边）+ 每一方一行；大本营去 ④ 摆放页摆（AI 不在编辑器里改，见 README）"),
     ("place", "摆放", "摆放页：画布上点一下放将领/单位/建筑；右键删；滚轮缩放；中键或空格+左键拖动"),
-    ("zone", "区划", "区划页：开局归属 + 画布涂「禁行区」（阵地性 AI 不巡逻进去）"),
+    ("zone", "区划", "区划页：开局归属 + 每区建造点位数量 + 画布涂「边缘区」（阵地性 AI 不巡逻进去）"),
     ("reddot", "红点", "红点页：画布点击模式（生成地块 / 行军目标）/ 生成频率与将领数（函数表达式）/ 将领类型权重 / 共享附属单位规格"),
     ("check", "校验与导出", "校验页：跑全部硬拦截 + 警告；有拦截时不许写文件"),
 )
@@ -173,10 +174,11 @@ CANVAS_HINT = ("地形 / 区划 / 中心是从地图读出来画成**背景**的
 REDDOT_CANVAS_HINT = ("左键点一个**空地格** = 把它加进 / 移出「红点生成地块」"
                       "（游戏里这些格子的外观**不会有任何区别**）；右键点 = 移出。")
 
-#: ★★ 区划页画布上方那句话（区划页也复用同一块画布：左栏画地图，右栏管归属与禁行区）。
-ZONE_CANVAS_HINT = ("先在右侧点某条区划的「涂刷」，再在画布上左键涂 / 右键擦**禁行格**"
-                    "（红=已禁行，深红=当前正在涂的那条区划）；"
-                    "禁行区只影响**阵地性 AI 的巡逻目标点**，游戏里不可见。")
+#: ★★ 区划页画布上方那句话（区划页也复用同一块画布：左栏画地图，右栏管归属 / 边缘区 / 点位数量）。
+ZONE_CANVAS_HINT = ("先在右侧点某条区划的「涂刷」，再在画布上左键涂 / 右键擦**边缘区**"
+                    "（红=已标记，深红=当前正在涂的那条区划）；"
+                    "边缘区只影响**阵地性 AI 的巡逻目标点**，建造点位也不会生成在里面，"
+                    "游戏里不可见。")
 
 #: 按住空格时印在状态栏上的话（`on_space_down` 用；测试也读它，别在测试里再拼一遍）。
 PAN_MODE_HINT = ("平移模式：按住空格 + 左键拖动 = 移动视野（松开空格回到「放东西 / 选中」；"
@@ -201,11 +203,6 @@ DRAG_TOLERANCE = 3
 #:    与 `map_editor/app.py` 里那个同名常量是同一件事（两个编辑器的手势要一致）。
 BUTTON1_MASK = 0x0100
 
-#: ★★ 建造点位 / 城墙环的绘制阈值（与 `map_editor` 的 `BUILD_POINT_MIN_PX` 同一套）：
-#: 格子小于这个像素数就不往格子里写字了 —— 那个大小下字只会糊成一团，
-#: 而且一屏几十个点位上全是文字图元（tk 画文字比画矩形贵得多）。
-BUILD_POINT_MIN_PX = 26.0
-
 #: 画布上的图元颜色。
 C = {
     "grass": "#33422f",
@@ -214,12 +211,8 @@ C = {
     "water": "#2e4f66",
     "zone_line": "#5c6066",
     "center": "#ff8adf",
-    #: ★ 区划**禁行格**（只在区划页画；游戏里不可见）。
+    #: ★ 区划**边缘区**（关卡数据 `zones[].no_go`；只在区划页画，游戏里不可见）。
     "no_go": "#e5484d",
-    #: ★★ **建造点位**（地图数据：非城墙建筑只能放在这里）。
-    #: 与 `map_editor` 的 `BUILD_POINT_COLOR` 同一个青色 —— 两个工具里「点位」是同一个东西，
-    #: 换个颜色会让作者以为是别的什么。
-    "build_point": "#4dd6e8",
     #: ★★ **城墙环**（区划中心周围那一圈；城墙只能围在这里）。
     "wall_ring": "#c98f4a",
     "grid": "#2a2c30",
@@ -399,7 +392,7 @@ class EditorApp:
         self.reddot_faction: str = ""
         #: ★★ 红点页的画布点击模式：`"spawn"` = 编辑生成地块 / `"march"` = 编辑行军目标。
         self.reddot_click_mode: str = "spawn"
-        #: ★★ 区划页正在涂哪条区划的**禁行格**（-1 = 没在涂；>= 0 = 区划 id）。
+        #: ★★ 区划页正在涂哪条区划的**边缘区**（-1 = 没在涂；>= 0 = 区划 id）。
         #:   点右侧某一行的「涂刷」进入，点「停止」/ 换页签 / 换关卡退出。
         #:   ⚠️ 它只影响**画布点击落到哪儿**，不改任何数据（数据在 `lv.zone_no_go`）。
         self.zone_paint_zone: int = -1
@@ -770,7 +763,7 @@ class EditorApp:
             return
         self.current_level_id = level_id
         self._reset_level_state()
-        # ★★ 打开关卡 = 拿**这一关的地图**兜一次建筑：不在建造点位 / 城墙环上的直接删
+        # ★★ 打开关卡 = 拿**这一关的地图**兜一次建筑：落点不合法的直接删
         #    （用户口径：「当前不在点位上的建筑直接删除」）。
         #    ⚠️ 必须在 `refresh_all()` **之前**：列表与画布一画出来就该是清理后的样子。
         self.prune_offpoint_buildings()
@@ -879,7 +872,7 @@ class EditorApp:
             return
         self.page = key
         self.selection = None
-        # ★★ 换页签 = 退出「涂禁行格」模式：别的页签的画布点击有别的含义，
+        # ★★ 换页签 = 退出「涂边缘区」模式：别的页签的画布点击有别的含义，
         #    留着 `zone_paint_zone` 会让用户回来时莫名其妙还在涂（而且那一页不再画高亮）。
         self.zone_paint_zone = -1
         # ★ 换页签 = 丢掉上一页的「正在拖 / 按着空格」状态：画布会被整块重建，
@@ -1202,7 +1195,7 @@ class EditorApp:
             bar_hint = ("左键点格 = 加/移出「生成地块 / 行军目标」（右侧切换）　右键 = 移出　"
                         "中键或空格+左键拖动平移　滚轮缩放")
         else:
-            bar_hint = ("先在右侧选一条区划点「涂刷」；左键涂 / 右键擦禁行格　"
+            bar_hint = ("先在右侧选一条区划点「涂刷」；左键涂 / 右键擦边缘区　"
                         "中键或空格+左键拖动平移　滚轮缩放")
         tk.Label(bar, text=bar_hint, bg=UI["bg"], fg=UI["text_dim"],
                  font=("Microsoft YaHei UI", 8)).pack(side="left", padx=10)
@@ -1354,18 +1347,8 @@ class EditorApp:
                 self.canvas.create_text(sx + size / 2, sy + size * 0.2, text=label,
                                         fill=C["dim"], font=("Microsoft YaHei UI", 8))
 
-        # ---- ★★ 建造点位（**地图数据**：非城墙建筑只能放在这些格子上）----
-        #  ★ 为什么每一页都画：它是地图的一部分 —— 作者在区划页调归属时也要知道
-        #    「这一区哪里能盖房」。颜色与 `map_editor` 的「建造点位」同一个青色。
-        for (_bp_zid, bp_x, bp_y) in info.all_build_points():
-            sx, sy = self.cell_origin(bp_x, bp_y)
-            self.canvas.create_rectangle(sx + 2, sy + 2, sx + size - 2, sy + size - 2,
-                                         outline=C["build_point"], width=2, dash=(4, 2))
-            if size >= BUILD_POINT_MIN_PX:
-                self.canvas.create_text(sx + size / 2, sy + size / 2, text="建",
-                                        fill=C["build_point"],
-                                        font=("Microsoft YaHei UI",
-                                              max(7, int(size * 0.26)), "bold"))
+        # ★★ 建造点位不再画（2026.11.18）：点位在进游戏时按关卡数量随机生成，
+        #    战役编辑器看不到具体是哪几格。
 
         # ---- ★★ 城墙环（只在摆放页、且画笔选中的是城墙时画）----
         #  城墙只能围区划中心那一圈 —— 不画出来，作者放不上去时只能靠猜。
@@ -1377,7 +1360,7 @@ class EditorApp:
                     self.canvas.create_rectangle(sx + 1, sy + 1, sx + size - 1, sy + size - 1,
                                                  outline=C["wall_ring"], width=1, dash=(2, 3))
 
-        # ---- ★ 区划禁行格（只在区划页画；游戏里不可见）----
+        # ---- ★ 区划边缘区（只在区划页画；游戏里不可见）----
         if self.page == "zone" and lv is not None:
             self._draw_no_go(info, lv)
 
@@ -1487,10 +1470,10 @@ class EditorApp:
                                 font=("Microsoft YaHei UI", 8))
 
     def _draw_no_go(self, info: MapInfo, lv: LevelModel) -> None:
-        """画各条区划的**禁行格**（只在区划页；游戏里这些格子外观没有任何区别）。
+        """画各条区划的**边缘区**（只在区划页；游戏里这些格子外观没有任何区别）。
 
         ★ 当前正在涂的那条用更实的网点 + 红描边 + 「禁」字，其余用淡网点：
-          用户要一眼分清「这条区划的禁行区」和「别的区划的」。
+          用户要一眼分清「这条区划的边缘区」和「别的区划的」。
         """
         size = self.tile_px()
         for zid in lv.zone_no_go_zids():
@@ -1726,7 +1709,7 @@ class EditorApp:
             self._toggle_reddot_tile(cell)
             return
         if self.page == "zone":
-            # ★ 区划页：左键 = 涂禁行格（没在涂刷模式时由 `_toggle_zone_no_go` 提示先选区划）。
+            # ★ 区划页：左键 = 涂边缘区（没在涂刷模式时由 `_toggle_zone_no_go` 提示先选区划）。
             self._toggle_zone_no_go(cell)
             return
         info = self.map_info()
@@ -1754,7 +1737,7 @@ class EditorApp:
             self._focus_canvas()
             return
         if self.page == "zone":
-            # ★ 区划页：右键 = 擦掉这一格的禁行标记（本来就没有 → 什么都不做）。
+            # ★ 区划页：右键 = 擦掉这一格的边缘区标记（本来就没有 → 什么都不做）。
             self._toggle_zone_no_go(cell, force_remove=True)
             self._focus_canvas()
             return
@@ -1835,19 +1818,16 @@ class EditorApp:
             for e in lv.factions:
                 if e.base == cell:
                     what.append("%s 的大本营（关卡）" % e.fid)
-        # ★★ 建造点位 / 城墙环：鼠标悬停时就告诉你这一格能不能盖房（省得放了才知道）
+        # ★★ 城墙环：鼠标悬停时就告诉你这一格能不能摆墙（省得放了才知道）。
+        #    建造点位不再显示（进游戏时随机生成）。
         slot = ""
-        bp_zid = info.build_point_zone_id(x, y)
-        if bp_zid >= 0:
-            slot = "　★ 建造点位（%s）" % info.zone_label(bp_zid)
-        else:
-            ring_zid = info.wall_ring_zone_at(x, y)
-            if ring_zid >= 0:
-                slot = "　城墙环（中心 %s）" % info.zone_label(ring_zid)
+        ring_zid = info.wall_ring_zone_at(x, y)
+        if ring_zid >= 0:
+            slot = "　城墙环（中心 %s）" % info.zone_label(ring_zid)
         self.status("(%d,%d)　地形 %s　%s%s%s　%s"
                     % (x, y, terrain,
                        ("区划 %s" % info.zone_label(zid)) if zid >= 0 else "不属于任何区划",
-                       "（禁行）" if no_go else "",
+                       "（边缘区）" if no_go else "",
                        slot,
                        "　".join(what) if what else "（空的）"))
 
@@ -1858,10 +1838,10 @@ class EditorApp:
         """★★ 这一栋建筑现在能不能摆在这一格（"" = 能；否则是给用户看的一句话）。
 
         规则（用户口径，与 `model.building_slot_error` / 导出校验同一套）：
-          · 非城墙建筑 → 必须是地图的**建造点位**，而且**一个点位只放一栋**；
-          · 城墙       → 必须围在某个**区划中心**周围那一圈（不校验点位占用）。
+          · 非城墙建筑 → **本区任意可通行格**（运行时生成点位时会把已有建筑排除掉）；
+          · 城墙       → 必须围在某个**区划中心**周围那一圈。
 
-        @param skip 改某一栋自己的坐标 / 类型时传它（别把自己算成「点位被占了」）
+        @param skip 改某一栋自己的坐标 / 类型时传它（别把自己算成「这格被占了」）
         """
         lv = self.level()
         info = self.map_info()
@@ -1869,12 +1849,11 @@ class EditorApp:
             return ""
         err = building_slot_error(info, entry.type, entry.point())
         x, y = entry.point()
-        if err == SLOT_NOT_ON_POINT:
-            if info is not None and not info.zone_build_points:
-                return ("★ 这张地图一个**建造点位**都没有：非城墙建筑无处可放 —— "
-                        "去地图编辑器「区划」页给区划设点位（点位是地图数据）")
-            return ("★ (%d,%d) 不是**建造点位**：非城墙建筑只能放在青色「建」格里"
-                    "（点位数量由地图决定，一个点位只放一栋）" % (x, y))
+        if err == SLOT_NOT_IN_ZONE:
+            return "★ (%d,%d) 不属于任何区划：非城墙建筑必须放在某个区划里" % (x, y)
+        if err == SLOT_NOT_BUILDABLE:
+            return ("★ (%d,%d) 放不了「%s」：非城墙建筑要放在本区可通行、"
+                    "且不是区划中心的格子上" % (x, y, entry.type))
         if err == SLOT_NOT_IN_WALL_RING:
             return ("★ (%d,%d) 不在任何区划中心的**城墙环**上：城墙只能围区划中心那一圈"
                     "（选中城墙画笔时画布上有橙色虚线）" % (x, y))
@@ -1883,13 +1862,13 @@ class EditorApp:
         if not model_mod.building_slot_full(info, entry.type, entry.point(),
                                             model_mod.taken_building_points(lv, skip=skip),
                                             skip=skip):
-            return "★ 这个建造点位 (%d,%d) 上已经有一栋建筑了：一个点位只能放一栋" % (x, y)
+            return "★ (%d,%d) 上已经有一栋建筑了：同一格不能叠两栋" % (x, y)
         return ""
 
     def prune_offpoint_buildings(self) -> int:
         """★★ 自动清理：**不在合法落点上的建筑直接删掉**（打开关卡 / 换地图时调）。
 
-        用户口径：「摆放建筑只认地图划定的点位；当前不在点位上的建筑直接删除」。
+        用户口径：「非城墙建筑放在本区可通行格、城墙围中心；不合法的直接删除」。
         删除规则见 `model.prune_offpoint_buildings`（落点不合法 / 同一格叠第二栋）。
         ★ 只在内存里改：按「保存」才落盘；删错了靠「重新载入」（与另两个编辑器同一条取舍）。
         @return 删掉了几栋（0 = 数据本来就是干净的）
@@ -1903,7 +1882,7 @@ class EditorApp:
             return 0
         self.selection = None
         kinds = sorted({str(b.type) for b in removed})
-        self.status("★★ 清理了 %d 栋不在点位 / 城墙环上的建筑（%s）—— 保存后才落盘"
+        self.status("★★ 清理了 %d 栋落点不合法的建筑（%s）—— 保存后才落盘"
                     % (len(removed), "、".join(kinds[:6]) + ("…" if len(kinds) > 6 else "")))
         return len(removed)
 
@@ -1923,7 +1902,7 @@ class EditorApp:
             self.status("设了「%s」的大本营在 (%d,%d)" % (faction, cell[0], cell[1]))
         elif self.brush_kind == "building":
             entry = BuildingEntry(self.brush_value or "tower", cell[0], cell[1], faction)
-            # ★★ 建造点位 / 城墙环：**只在这些落点上摆**（用户口径）。
+            # ★★ 建筑落点：非城墙 = 本区任意可通行格；城墙 = 区划中心的环。
             #    与导出校验、打开关卡时的自动清理**同一套判据**（`model.building_slot_*`）。
             why = self._building_place_error(entry)
             if why:
@@ -2305,7 +2284,7 @@ class EditorApp:
         lv.map_id = map_id
         lv.mark_declared("map")
         self.status("地图改成 %s（画布与下拉都重载了）" % map_id)
-        # ★★ 换地图 = 点位整张换了：按新图的建造点位清理一遍（不在点位上的直接删）。
+        # ★★ 换地图 = 落点整张变了：按新图清理一遍不合法的建筑。
         self.prune_offpoint_buildings()
         self._after_change()
         if self.page == "place":
@@ -2674,10 +2653,10 @@ class EditorApp:
         # ★★ 换地图 = 区划表按新地图**整张重建**（旧地图的区划号对新地图没有意义）。
         #    战役编辑器不再有「（用地图的）」，所以这里必须把新地图的 owner 抄成显式值。
         lv.ensure_zone_owners(self.maps.get(str(lv.map_id)), force=True)
-        # ★ 换图连**禁行区**一起清掉了（`ensure_zone_owners(force=True)`），
+        # ★ 换图连**边缘区 / 点位数量**一起清掉了（`ensure_zone_owners(force=True)`），
         #   涂刷目标也必须退出 —— 否则「正在涂 c3」会指向新图上碰巧同号的区划。
         self.zone_paint_zone = -1
-        # ★★ 换地图 = 建造点位整张换了：不在新图点位上的建筑直接删（用户口径）。
+        # ★★ 换地图 = 落点整张变了：不在新图合法落点上的建筑直接删（用户口径）。
         pruned = self.prune_offpoint_buildings()
         if not pruned:
             self.status("地图改成 %s" % lv.map_id)
@@ -3065,10 +3044,9 @@ class EditorApp:
                                     "别的格子放不上去。" % max(1, (info.wall_ring_radius
                                                                      if info is not None else 1)))
             else:
-                n = sum(len(v) for v in info.zone_build_points.values()) if info is not None else 0
-                self._hint(section, "★ 非城墙建筑只能放在地图的**建造点位**上"
-                                    "（青色「建」格；这张图一共 %d 个）：点位由地图决定，"
-                                    "一个点位只放一栋。没有点位就去地图编辑器的「区划」页设。" % n)
+                self._hint(section, "★ 非城墙建筑放在**本区任意可通行格**（不能压区划中心、"
+                                    "同一格不能叠两栋）；进游戏时会在每个区随机生成"
+                                    "「建造点位」，并**排除已有建筑**与**边缘区**。")
 
         # ---- 地图上已有的东西 ----
         section2 = self._section("地图上已有的（关卡层）",
@@ -3369,17 +3347,17 @@ class EditorApp:
         self.refresh_all()
 
     def _sidebar_zone(self) -> None:
-        """区划页右栏：**每一块地的归属** + **每块地的禁行区**（左栏画布负责涂）。
+        """区划页右栏：**归属** + **边缘区** + **每区建造点位数量**。
 
-        ★ 页签说明：以前这一页只有一张归属表；现在它同时是「禁行区」的编辑页 ——
-          用户口径是「禁行区要可以用战役编辑器编辑」，而禁行区是按区划分的，
-          放在「区划」页最顺（归属与禁行区都挂在同一份 `zones[]` 上）。
+        ★ 页签说明：边缘区（数据键仍是 `zones[].no_go`）只影响阵地性 AI 的巡逻目标点，
+          同时建造点位生成时也会避开它；建造点位数量（`zones[].build_point_count`）
+          决定进图时每个区随机生成几个点位。
         """
         lv = self.level()
         info = self.map_info()
         if lv is None or info is None:
             sec = self._section("区划", "这一关还没有地图")
-            self._hint(sec, "先去「关卡」页选一张地图，再回来配归属与禁行区。")
+            self._hint(sec, "先去「关卡」页选一张地图，再回来配归属 / 边缘区 / 点位数量。")
             return
 
         sec = self._section("区划归属", "每一块地都显式写阵营 id（空串 = 无主）")
@@ -3392,12 +3370,15 @@ class EditorApp:
         for zid in info.zone_ids:
             self._zone_owner_row(sec, lv, info, zid, choices)
 
-        sec2 = self._section("区划禁行区",
-                             "阵地性 AI **不会巡逻至**其区划的禁行格")
-        self._hint(sec2, "★ 只影响**巡逻目标点**：不挡走路、不影响追击 / 守中心 / 攻城警报，"
-                         "游戏里也看不见（只在编辑器里显示）。")
+        sec2 = self._section("区划边缘区 / 建造点位数量",
+                             "边缘区 = 阵地性 AI **不会巡逻至**的格子；点位避开它")
+        self._hint(sec2, "★ 边缘区只影响**巡逻目标点**：不挡走路、不影响追击 / 守中心 / "
+                         "攻城警报，游戏里也看不见（只在编辑器里显示）。"
+                         "建造点位也不会生成在边缘区里。")
         self._hint(sec2, "点某条区划的「涂刷」→ 在左边画布上左键涂 / 右键擦。"
-                         "区划中心与「整块区划都禁行」会被当场拦住。")
+                         "区划中心与「整块区划都标记」会被当场拦住。"
+                         "「点位」= 进图时这个区随机生成几个建造点位（0 = 不生成；"
+                         "缺省 = config 默认 2）。")
         for zid in info.zone_ids:
             self._zone_no_go_row(sec2, lv, info, zid)
 
@@ -3419,59 +3400,88 @@ class EditorApp:
                    lambda _e, z=int(zid), v=var: self._set_zone_choice(z, v.get()))
 
     def _zone_no_go_row(self, parent, lv: LevelModel, info: MapInfo, zid: int) -> None:
-        """区划页每一行：`区划名 | 禁行 N 格 | 涂刷/停止 | 清空`。"""
+        """区划页每一行：`区划名 | 边缘区 N 格 | 涂刷/停止 | 清空 | 点位 [ ]`。"""
         row = tk.Frame(parent, bg=UI["panel"])
         row.pack(side="top", fill="x", pady=1)
         painting = int(zid) == int(self.zone_paint_zone)
         count = lv.zone_no_go_count(zid)
-        tk.Label(row, text=info.zone_label(zid), width=9, anchor="w", bg=UI["panel"],
+        tk.Label(row, text=info.zone_label(zid), width=8, anchor="w", bg=UI["panel"],
                  fg=(UI["accent"] if painting else UI["text"]),
                  font=("Microsoft YaHei UI", 9, "bold" if painting else "normal")).pack(side="left")
-        tk.Label(row, text="禁行 %d 格" % count, width=9, anchor="w", bg=UI["panel"],
+        tk.Label(row, text="边缘区 %d 格" % count, width=8, anchor="w", bg=UI["panel"],
                  fg=(C["no_go"] if count else UI["text_dim"]),
                  font=("Microsoft YaHei UI", 8)).pack(side="left")
         self._button(row, "停止" if painting else "涂刷",
                      lambda z=int(zid), cur=painting: self.set_zone_paint_zone(-1 if cur else z),
-                     padx=6, pady=2, font=("Microsoft YaHei UI", 8)).pack(side="left", padx=2)
+                     padx=4, pady=2, font=("Microsoft YaHei UI", 8)).pack(side="left", padx=1)
         if count:
             self._button(row, "清空", lambda z=int(zid): self.clear_zone_no_go(z),
-                         padx=6, pady=2, font=("Microsoft YaHei UI", 8)).pack(side="left", padx=2)
+                         padx=4, pady=2, font=("Microsoft YaHei UI", 8)).pack(side="left", padx=1)
+        # ★★ 建造点位数量：进图时这个区随机生成几个（0 = 不生成；缺省 = config 默认 2）。
+        tk.Label(row, text="点位", bg=UI["panel"], fg=UI["text_dim"],
+                 font=("Microsoft YaHei UI", 8)).pack(side="left", padx=(4, 1))
+        var = tk.StringVar(value=str(lv.zone_build_point_count(zid)))
+        entry = ttk.Entry(row, textvariable=var, width=3)
+        entry.pack(side="left")
+
+        def commit(z=int(zid), v=var) -> None:
+            try:
+                if not entry.winfo_exists():
+                    return
+            except tk.TclError:
+                return
+            text = str(v.get()).strip()
+            try:
+                n = int(text)
+            except ValueError:
+                n = lv.zone_build_point_count(z)
+            n = max(0, min(99, n))
+            if n != lv.zone_build_point_count(z):
+                lv.set_zone_build_point_count(z, n)
+                self.status("区划 %s：进图时生成 %d 个建造点位" % (info.zone_label(z), n))
+                self._after_change()
+            else:
+                v.set(str(n))
+
+        entry.commit_action = commit                    # type: ignore[attr-defined]
+        entry.bind("<Return>", lambda _e, en=entry: en.commit_action())
+        entry.bind("<FocusOut>", lambda _e, en=entry: en.commit_action())
 
     def set_zone_paint_zone(self, zid: int) -> None:
-        """进入 / 退出「涂某条区划的禁行格」模式（-1 = 退出）。"""
+        """进入 / 退出「涂某条区划的边缘区」模式（-1 = 退出）。"""
         self.zone_paint_zone = int(zid)
         info = self.map_info()
         if self.zone_paint_zone >= 0:
             label = info.zone_label(self.zone_paint_zone) if info is not None \
                 else "c%d" % self.zone_paint_zone
-            self.status("涂刷模式：%s —— 左键涂 / 右键擦「禁行格」（区划中心与整块禁行会被拦）"
+            self.status("涂刷模式：%s —— 左键涂 / 右键擦「边缘区」（区划中心与整块标记会被拦）"
                         % label)
         else:
             self.status("退出涂刷模式")
         self.refresh_all()
 
     def clear_zone_no_go(self, zid: int) -> None:
-        """清空某条区划的全部禁行格（只动这一条，不动别的区划）。"""
+        """清空某条区划的全部边缘区格子（只动这一条，不动别的区划）。"""
         lv = self.level()
         if lv is None:
             return
         info = self.map_info()
         label = info.zone_label(zid) if info is not None else "c%d" % int(zid)
         if lv.clear_zone_no_go(zid):
-            self.status("清空了 %s 的禁行区" % label)
+            self.status("清空了 %s 的边缘区" % label)
         else:
-            self.status("%s 本来就没有禁行区" % label)
+            self.status("%s 本来就没有边缘区" % label)
         self.refresh_all()
 
     def _toggle_zone_no_go(self, cell: Tuple[int, int],
                            force_remove: bool = False) -> None:
-        """画布左 / 右键：把一格加进 / 移出**当前涂刷的那条区划**的禁行格。
+        """画布左 / 右键：把一格加进 / 移出**当前涂刷的那条区划**的边缘区。
 
         四条拒绝（都在**点下去的那一刻**拦，而不是等导出时才报）：
           · 没在涂刷模式 / 这一格不属于正在涂的那条区划；
-          · 地图外 / 不能站人的格子（山地 / 水域）——禁行区只对「巡逻可能去的格子」有意义；
+          · 地图外 / 不能站人的格子（山地 / 水域）——边缘区只对「巡逻可能去的格子」有意义；
           · **区划中心**——守中心的逻辑要往那儿走，用户明确说不会盖住中心；
-          · **整块区划都禁行**——至少留一格能站人的地（否则守将无处巡逻）。
+          · **整块区划都标记**——至少留一格能站人的地（否则守将无处巡逻）。
         """
         lv = self.level()
         info = self.map_info()
@@ -3479,37 +3489,37 @@ class EditorApp:
             return
         zid = int(self.zone_paint_zone)
         if zid < 0:
-            self.status("先在右侧点某条区划的「涂刷」，再在画布上涂禁行格")
+            self.status("先在右侧点某条区划的「涂刷」，再在画布上涂边缘区")
             return
         x, y = int(cell[0]), int(cell[1])
         label = info.zone_label(zid)
         if not info.tile_exists(x, y):
-            self.status("(%d,%d) 在地图外，不能设为禁行格" % (x, y))
+            self.status("(%d,%d) 在地图外，不能设为边缘区" % (x, y))
             return
         if info.zone_of(x, y) != zid:
-            self.status("(%d,%d) 不属于 %s：禁行格只能画在它自己的区划里"
+            self.status("(%d,%d) 不属于 %s：边缘区只能画在它自己的区划里"
                         % (x, y, label))
             return
         if not info.walkable_at(x, y):
-            self.status("(%d,%d) 是山地 / 水域（站不了人）：禁行区只对能站的格子有意义"
+            self.status("(%d,%d) 是山地 / 水域（站不了人）：边缘区只对能站的格子有意义"
                         % (x, y))
             return
         center = info.zone_centers.get(zid)
         if center is not None and tuple(center) == (x, y):
-            self.status("%s 的中心格不能设为禁行区（守中心还要回那里）" % label)
+            self.status("%s 的中心格不能设为边缘区（守中心还要回那里）" % label)
             return
         already = lv.has_zone_no_go(zid, x, y)
         if force_remove and not already:
-            return                          # 本来就不是禁行格：右键什么都不做
+            return                          # 本来就不是边缘区：右键什么都不做
         if not already:
-            # ★ 「整块区划都禁行」按**巡逻候选格**算：能站人 − 中心（中心上立着障碍
-            #   建筑，它是守中心的目标，不是巡逻点）。全禁掉 = 这一区无处巡逻。
+            # ★ 「整块区划都标记」按**巡逻候选格**算：能站人 − 中心（中心上立着障碍
+            #   建筑，它是守中心的目标，不是巡逻点）。全标记 = 这一区无处巡逻。
             patrol = info.zone_patrol_tiles(zid)
             if patrol and len(lv.zone_no_go_tiles(zid)) + 1 >= len(patrol):
-                self.status("不能把 %s 整块都设成禁行区（至少留一格能巡逻的地）" % label)
+                self.status("不能把 %s 整块都设成边缘区（至少留一格能巡逻的地）" % label)
                 return
         now = lv.toggle_zone_no_go(zid, x, y, force_remove=force_remove)
-        self.status("(%d,%d)：%s %s 的禁行格（现在 %d 格）"
+        self.status("(%d,%d)：%s %s 的边缘区（现在 %d 格）"
                     % (x, y, "加入" if now else "移出", label, lv.zone_no_go_count(zid)))
         self.refresh_all()
 
@@ -4022,8 +4032,8 @@ class EditorApp:
         for line in ("不做撤销 / 重做（数据都在 JSON 里，改坏了重新载入）",
                      "不做剧本预览（要预览就进游戏跑一关）",
                      "摆放不做自动避让（单位允许压在中心格上，但导出会拦）",
-                     "★ 建筑只能放在地图的建造点位上（城墙围区划中心一圈）；"
-                     "打开关卡时不在点位上的会被直接删掉",
+                     "★ 非城墙建筑放在本区任意可通行格（进游戏随机生成建造点位时排除它）；"
+                     "城墙围区划中心一圈；落点不合法的会被直接删掉",
                      "单人关可跨边选阵营；合作关要求两个可玩阵营同方",
                      "不做「这一关大概多久成形」的估算提示（用户明确不要）",
                      "地形 / 区划 / 中心归地图编辑器；兵种 / 建筑数值归单位编辑器"):

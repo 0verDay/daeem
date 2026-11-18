@@ -72,11 +72,11 @@ var zones_by_id: Dictionary = {}
 ## ⚠️ 只认**边相邻**（上 / 下 / 左 / 右）：斜角相接的两个区划中间没有共享边，
 ##   不该算「贴在一起」。
 var neighbors_by_id: Dictionary = {}
-## ★★ 每条区划的**禁行格**（关卡 `zones[].no_go`，用户需求「阵地性 AI 不会巡逻至
-##    其区划的禁行区」）：区划 id → `{格子索引: true}`。
+## ★★ 每条区划的**边缘区**（关卡 `zones[].no_go`，界面叫「边缘区」；用户需求
+##    「阵地性 AI 不会巡逻至其区划的边缘区」）：区划 id → `{格子索引: true}`。
 ##
 ## 为什么是「区划 id → 集合」而不是一张全局网格：
-##   · 禁行区是**某一条区划自己的**（同一格在别的区划里没有意义），
+##   · 边缘区是**某一条区划自己的**（同一格在别的区划里没有意义），
 ##     而区划形状任意 ⇒ 只能按「这一格属不属于这条区划」存；
 ##   · 查询在守将挑巡逻点时是热路径（每次重算路线都会问几十上百次），
 ##     所以装配期一次性折成 `y * cols + x` 的集合，查询是 O(1) 字典命中。
@@ -99,8 +99,8 @@ var center_lookup: Array = []
 ## ★★ 地块索引 → 「这一格是哪个区块的建造点位」（-1 = 不是任何区块的建造点位）。
 ##
 ## 与 `center_lookup` 同一套用法：点一格 / 拖牌要 O(1) 问出「这是不是建造点」。
-## 每个区块最多 `cfg.build_points_per_zone` 个点，全部拼成一张按格索引的表
-## （见 `_rebuild_build_point_index`）；点位是**地图静态数据**，建好之后不再变。
+## 数量由关卡 `zones[].build_point_count` 决定（缺省 = `cfg.build_points_per_zone`），
+## 进图时随机生成；全部拼成一张按格索引的表（见 `_rebuild_build_point_index`）。
 ##
 ## ⚠️ 这张表是 `Zone.build_points` 的索引，**不是第二份真相** ——
 ##    任何改点位的地方都必须调 `_rebuild_build_point_index()`。
@@ -151,10 +151,9 @@ static func build_from_map(map, cfg: ConfigRes, factions: Array) -> RefCounted:
 	# ★★ 给**没有中心**的区块补一个中心：占领判定看的是「离中心 3×3 内」，
 	#    老图 / 手写图 / 均分区块都没有中心 ⇒ 不补的话它们永远占不了（见 `_ensure_centers`）。
 	zs._ensure_centers(map)
-	# ★★ 建造点位（本轮新增）：地图给了就用地图的，其余按同一套规则自动补。
-	#   ⚠️ 必须在**中心之后**：点位要避开区划中心与它的城墙环（3×3 外圈）。
-	zs._apply_map_build_points(map)
-	zs._ensure_build_points(map)
+	# ★★ 建造点位（2026.11.18 起）**不在地图数据里**：装配时先留空，
+	#   等 `world.reset()` 把所有固定建筑都摆完之后再按关卡数量**随机生成**
+	#   （见 `generate_build_points`）。这里只把反查表建出来（空表）。
 	zs._apply_map_production(map)
 	# ★ 区划种类（地图给的；缺字段 / 手改写错 → 默认那一档，见 cfg.zone_kind_default()）
 	#   ⚠️ 必须在**人口上限之前**：上限的默认值是按种类取的（人口区划 5、其余 3）。
@@ -360,9 +359,8 @@ func _new_zone(zid: int, name: String, flist: Array) -> Dictionary:
 		#   · production 是**该区划每秒的产能绝对值**（food / gold / population，不乘地块数，
 		#     见 docs/route.md 第四十四节）—— 只有特化与科技仍按每地块。
 		"center": null,
-		# ★★ 建造点位（本轮新增；见 zone.gd 的 `_apply_map_build_points` /
-		#   `_ensure_build_points` 与 world.can_place_building）：
-		#   区划自己的地块坐标数组，最多 `cfg.build_points_per_zone` 个。
+		# ★★ 建造点位（进图时随机生成；见 `generate_build_points`）：
+		#   区划自己的地块坐标数组，数量由关卡 `zones[].build_point_count` 决定。
 		#   非城墙建筑只能建在这些格子上；城墙不看这里（它只认区划中心的那一圈）。
 		"build_points": [],
 		"production": {"food": 0.0, "gold": 0.0, "population": 0.0},
@@ -512,89 +510,90 @@ func _pick_center_tile(map, z: Dictionary) -> Variant:
 
 
 # ------------------------------------------------------------------
-# ★★ 建造点位（2026.11.15）
+# ★★ 建造点位（2026.11.18：进图随机生成）
 #
-# 用户口径：非城墙建筑**只能**建在区划的预置点位上（每区划 2 个），
-# 城墙**只能**建在区划中心周围那一圈。点位的权威数据在地图
-# （`zone_list[].build_points`，地图编辑器可编辑）；老地图没写时由下面
-# `_ensure_build_points()` 按同一套规则补 —— 于是「打开老图也能玩」。
+# 用户口径：非城墙建筑**只能**建在区划的建造点位上，城墙**只能**建在
+# 区划中心周围那一圈。点位不再写在地图里：进图时按关卡
+# `zones[].build_point_count`（缺省 = config 的 2，0 = 不生成）随机生成，
+# 并**排除边缘区与已有建筑**（见 `generate_build_points`）。
 # ------------------------------------------------------------------
 
-## 把地图里各区块的建造点位读进来（`zone_list[].build_points`）。
+## ★★ 进图时**随机生成**每个区划的建造点位（2026.11.18 新机制）。
 ##
-## 校验（与地图编辑器导出前的硬规则一致，手改地图写坏了也不会让游戏崩）：
-##   · 必须是**这个区划自己的**地块（`lookup` 对得上）；
-##   · 必须存在且可通行（山脉 / 水域不能站人，自然也不能盖楼）；
-##   · 不能是区划中心本身，也不能落在中心的城墙环上（那一圈留给城墙）；
-##   · 去重，并按 `build.points_per_zone` 截断。
-func _apply_map_build_points(map) -> void:
-	var raw: Variant = map.get("zones_build_points")
-	var d: Dictionary = raw if typeof(raw) == TYPE_DICTIONARY else {}
-	var max_n: int = cfg.build_points_per_zone if cfg != null else 2
-	var ring: int = cfg.build_wall_ring_radius if cfg != null else 1
+## 数据来源：关卡 `zones[].build_point_count`（战役编辑器「区划」页设置）。
+##   · 缺省（没写这个键）→ `config.build.points_per_zone`（当前 2）；
+##   · `0` → 这个区划**明确不生成**任何点位。
+## 自由对战 / 没有关卡的场景传空字典 ⇒ 每个区划都按 config 默认数量生成。
+##
+## 候选格（逐条过滤，缺一不可）：
+##   · 属于**这个区划自己的**地块；
+##   · 存在且可通行（山脉 / 水域不能站人，也不能盖楼）；
+##   · 不是区划中心、且不在中心的城墙环上（那一圈留给城墙）；
+##   · **不在边缘区里**（`zones[].no_go`；用户口径：建造点避开边缘区）；
+##   · 当前没有建筑（`blocked`：地图预置 / 大本营 / 区划中心 / 关卡摆放）。
+## 候选不够就少生成，不报错（点位是稀缺资源，生成 0 个也是合法结果）。
+##
+## ★★ 随机但**可复现**：种子来自本局 `world.rand_salt` + 区划 id。
+##   用户口径是「每局真随机但需同步」——房主把自己这一局的 rand_salt 发给客机，
+##   客机用同一个种子建世界，于是两端的点位布局完全一致（见 net/host_session.gd）。
+##   ✅ 同一局内反复调这个函数不会漂；换一局 / 改 rand_salt 才会换布局。
+##
+## @param counts  {区划 id: int} —— 关卡给的数量；缺键 = 用 config 默认
+## @param blocked {Vector2i: true} —— 已落成建筑占的格
+## @param rand_salt int —— 本局随机盐（与 `world.unit_rand` 同一套来源）
+func generate_build_points(map, counts: Dictionary, blocked: Dictionary, rand_salt: int) -> void:
+	var default_n: int = cfg.build_points_per_zone if cfg != null else 2
 	for z in zones:
 		var zid := int(z["id"])
+		var want := default_n
+		if counts.has(zid):
+			want = int(counts[zid])
+		want = maxi(0, want)
 		var out: Array = []
+		if want > 0:
+			var cands := _build_point_candidates(map, z, blocked)
+			var rng := RandomNumberGenerator.new()
+			rng.seed = _build_point_seed(rand_salt, zid)
+			var n: int = mini(want, cands.size())
+			# 部分 Fisher-Yates：只把前 n 个位置洗出来（O(n)，不用洗全表）。
+			for i in n:
+				var j: int = rng.randi_range(i, cands.size() - 1)
+				var tmp: Variant = cands[i]
+				cands[i] = cands[j]
+				cands[j] = tmp
+				out.append(cands[i])
+			# 输出顺序固定成 (y, x)：点位数组的顺序没有玩法语义，但测试 / 排查要好读。
+			out.sort_custom(func(a: Vector2i, b: Vector2i) -> bool:
+				if a.y != b.y:
+					return a.y < b.y
+				return a.x < b.x)
 		z["build_points"] = out
-		if not d.has(zid):
-			continue
-		var center: Variant = z.get("center", null)
-		for p in (d[zid] as Array):
-			if out.size() >= max_n:
-				break
-			var tile: Vector2i = p
-			if not _tile_belongs(map, zid, tile):
-				continue
-			if not map.terrain_walkable(tile.x, tile.y):
-				continue
-			if center != null:
-				var c: Vector2i = center
-				if tile == c or maxi(absi(tile.x - c.x), absi(tile.y - c.y)) <= ring:
-					continue
-			if out.has(tile):
-				continue
-			out.append(tile)
-
-
-## 给还没有点位的区块补点（老地图 / 手写图 / 点了数量被调大的旧图）。
-##
-## 选点规则（确定、可测试，与地图编辑器的自动补齐**同一套**）：
-##   该区划的地块 → 可通行 → 不是中心、离中心的切比雪夫距离 > 城墙环半径
-##   → 不是预置建筑 / 大本营占的格 → 按「离中心近（曼哈顿距离）→ y 小 → x 小」
-##   排序取前几个。
-##
-## ⚠️ 排序键必须是**曼哈顿距离**：地图编辑器 `fill_missing_build_points()` 用的就是它。
-##   两边不一致时，同一张没写点位的旧图在编辑器里与游戏里会挑出不同的点
-##   （虽然都合法，但玩家会觉得「编辑器里看到的点和进游戏后的点不一样」）。
-## ★ 为什么避开城墙环：那一圈是城墙的位置，点上去会让「墙圈永远缺一格」。
-## ★ 为什么避开预置建筑 / 大本营：那几格永远建不了，占着点位等于白白浪费一个名额。
-func _ensure_build_points(map) -> void:
-	var blocked := _static_occupied_tiles(map)
-	for z in zones:
-		_fill_zone_build_points(z, map, blocked)
-
-
-## ★★ 运行时修复点位（`world._repair_build_points()` 在 `reset()` 末尾调）。
-##
-## 为什么需要它：`build_from_map` 发生在**关卡摆放之前** —— 那时还不知道
-## 关卡 / 阵营的大本营会落在哪一格（`ai_test` 的 F1 大本营正好压在自动补的点位上）。
-## 被建筑占住 / 被演出边界挡住的点位在游戏里**永远建不了**，等于白白少一个建造名额。
-## 这里按「现在已经知道的占用格」重挑一遍：先保留仍然合法的点，再按同一套规则补齐。
-##
-## @param blocked  {Vector2i: true} —— 所有已落成建筑占的格（world 传进来）。
-func repair_build_points(map, blocked: Dictionary) -> void:
-	for z in zones:
-		var keep: Array = []
-		for p in (z["build_points"] as Array):
-			var tile: Vector2i = p
-			if blocked.has(tile):
-				continue
-			if not _build_point_tile_ok(map, z, tile):
-				continue
-			keep.append(tile)
-		z["build_points"] = keep
-		_fill_zone_build_points(z, map, blocked)
 	_rebuild_build_point_index()
+
+
+## 一个区划的**可生成点位候选格**（见 `generate_build_points` 的规则）。
+func _build_point_candidates(map, z: Dictionary, blocked: Dictionary) -> Array:
+	var zid := int(z["id"])
+	var out: Array = []
+	for t in (z["tiles"] as Array):
+		var tile: Vector2i = t
+		if blocked.has(tile):
+			continue
+		if not _build_point_tile_ok(map, z, tile):
+			continue
+		# ★ 边缘区（`zones[].no_go`）：建造点位不落在里面（用户口径）。
+		if is_no_go(zid, tile.x, tile.y):
+			continue
+		out.append(tile)
+	return out
+
+
+## 某个区划的点位随机种子：由本局盐 + 区划 id 派生（与 `unit_rand` 同一条思路）。
+## ⚠️ 不用 `String.hash()`：Godot 的字符串哈希跨进程不稳定，联机两端会算出不同布局。
+func _build_point_seed(rand_salt: int, zid: int) -> int:
+	var h: int = (int(rand_salt) ^ (zid * 0x9E3779B1) ^ (cols * 0x85EBCA6B) \
+		^ (rows * 0xC2B2AE35)) & 0x7FFFFFFF
+	return h if h != 0 else 1
 
 
 ## 这一格能不能当 `z` 的建造点（形状规则；不含「是否被占」）。
@@ -615,41 +614,6 @@ func _build_point_tile_ok(map, z: Dictionary, tile: Vector2i) -> bool:
 	return maxi(absi(tile.x - c.x), absi(tile.y - c.y)) > ring
 
 
-## 给**一个**区划补点（`_ensure_build_points` 与 `repair_build_points` 共用）。
-func _fill_zone_build_points(z: Dictionary, map, blocked: Dictionary) -> void:
-	var max_n: int = cfg.build_points_per_zone if cfg != null else 2
-	var have: Array = z["build_points"]
-	if have.size() >= max_n:
-		return
-	var center: Variant = z.get("center", null)
-	var cands: Array = []
-	for t in (z["tiles"] as Array):
-		var tile: Vector2i = t
-		if have.has(tile) or blocked.has(tile):
-			continue
-		if not _build_point_tile_ok(map, z, tile):
-			continue
-		var dist := 0
-		if center != null:
-			var c: Vector2i = center
-			dist = absi(tile.x - c.x) + absi(tile.y - c.y)
-		cands.append({"tile": tile, "dist": dist})
-	cands.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
-		var da := int(a["dist"])
-		var db := int(b["dist"])
-		if da != db:
-			return da < db
-		var ta: Vector2i = a["tile"]
-		var tb: Vector2i = b["tile"]
-		if ta.y != tb.y:
-			return ta.y < tb.y
-		return ta.x < tb.x)
-	for cand in cands:
-		if have.size() >= max_n:
-			break
-		have.append(cand["tile"])
-
-
 ## 这一格是不是属于 `zid` 这个区划（越界 / 不属于 → false）。
 func _tile_belongs(map, zid: int, tile: Vector2i) -> bool:
 	if map == null or not map.terrain.has(tile.x, tile.y):
@@ -658,23 +622,6 @@ func _tile_belongs(map, zid: int, tile: Vector2i) -> bool:
 	if idx < 0 or idx >= lookup.size():
 		return false
 	return int(lookup[idx]) == zid
-
-
-## 建点时要避开的**静态占位**：预置建筑、各方大本营、老格式的单数 base。
-##
-## ★ 只查地图自己的静态数据（`build_from_map` 阶段建筑还没建出来）；
-##   游戏里后盖的建筑 / 单位占位由 `world` 那一侧按实时状态判。
-func _static_occupied_tiles(map) -> Dictionary:
-	var out: Dictionary = {}
-	for p in map.prefab_buildings:
-		if typeof(p) != TYPE_DICTIONARY:
-			continue
-		out[Vector2i(int(p.get("x", -1)), int(p.get("y", -1)))] = true
-	for fid in map.faction_bases.keys():
-		var bp: Variant = map.faction_bases[fid]
-		if typeof(bp) == TYPE_VECTOR2I:
-			out[bp] = true
-	return out
 
 
 ## 重建「格 → 建造点位所属区划」反查表（见 `build_point_lookup`）。
@@ -911,6 +858,9 @@ func update_population_multi(dt: float, owner_mults: Dictionary) -> void:
 		var own := String(z["owner"])
 		if owner_mults.has(own):
 			rate *= maxf(0.0, float(owner_mults[own]))
+		# ★★ 2026.11.18：**区划自己的压制倍率**（义勇军「侵略如火」写进来的）。
+		#   缺键 = 1.0（老数据 / 没启用的派系逐位不变）。
+		rate *= maxf(0.0, float(z.get("population_mult", 1.0)))
 		var cap := population_cap_of(z)
 		var pop := float(z["population"])
 		if pop >= cap:
@@ -960,8 +910,11 @@ func production_of(owner: String) -> Dictionary:
 		if String(z["owner"]) != owner:
 			continue
 		var p: Dictionary = z["production"]
-		food += float(p.get("food", 0.0))
-		gold += float(p.get("gold", 0.0))
+		# ★★ 2026.11.18：区划自己的产能倍率（「侵略如火」：被敌方单位踩住时 < 1.0）。
+		#   缺键 = 1.0（老数据 / 没启用的派系逐位不变）。
+		var zm := maxf(0.0, float(z.get("production_mult", 1.0)))
+		food += float(p.get("food", 0.0)) * zm
+		gold += float(p.get("gold", 0.0)) * zm
 	return {"food": food, "gold": gold}
 
 

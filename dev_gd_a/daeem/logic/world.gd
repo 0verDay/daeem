@@ -76,12 +76,9 @@ var zones: ZoneRes = null
 
 ## ★★ 2026.10.29：**每秒消耗**的两个缓存（阵营 → 每秒扣多少）。
 ##
-## 它们只有一个用途：让 HUD 资源条那个 `(+n)` 能算出**净**每秒收支
-## （= 产能 − 维护费 − 科技金耗）。权威计算发生在 `_tick_upkeep` 里（每帧写一次），
-## 这里只是把结果留下来给界面读 —— 界面绝不自己再算一遍扣费口径。
-##   · `_upkeep_food_rate[f]` —— 单位维护费（粮/秒）
-##   · `_tech_gold_rate[f]`   —— 启用中（含预热中）科技的扣金（金/秒）
-## ⚠️ 只在**有资源池**的阵营上有值（阵地 / 红点 AI 不收钱，字典里就没有它们）。
+## 它们只有一个用途：让 HUD 资源条那个 `(+n)` 能算出**净**每秒收支。
+## ★★ 2026.11.18：持续消耗已取消 —— 这两张表现在恒为空 / 恒为 0；
+##   保留它们是为了 HUD / AI 的旧读取点不报错（净收入 = 纯产能）。
 var _upkeep_food_rate: Dictionary = {}
 var _tech_gold_rate: Dictionary = {}
 
@@ -254,6 +251,13 @@ var seat_tech_effects: Dictionary = {}
 ##   那一步要遍历全部对象，而启用状态几秒才变一次（见 tick 第 0 步）。
 var tech_revision: int = 0
 var _tech_hp_revision: int = -1
+
+## ★★ 2026.11.18：**单位状态补写版本号**（见 `_tick_unit_statuses`）。
+##
+## 每变一次 +1（启用方略 / 教堂建好或拆掉 / 重开一局）。单位的 `status_rev` 与它不等时，
+## 下一帧会给那个单位补一遍「方略授予的状态」（目前只有「会水」→ 步兵的 `water_walk`）。
+## ★ 用整数比较代替「在每个出生点各写一行」：出生路径有 8 条，漏一条就是难查的静默 bug。
+var status_grant_rev: int = 0
 
 ## 每个阵营的大本营坐标与将领出生点（复活点、敌人 AI 目标都从这里取）
 var faction_bases: Dictionary = {}
@@ -688,7 +692,8 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 	#    会被 `refresh_building_ownership` 按「无主区块 + 玩家建筑」而收给玩家
 	#    （见 zone.gd 的 apply_initial_ownership）。
 	zones.apply_initial_ownership(map, factions)
-	# ★★ 关卡给的**区划禁行格**（`zones[].no_go`）：阵地性 AI 挑巡逻点时跳过它们。
+	# ★★ 关卡给的**区划边缘区**（`zones[].no_go`）：阵地性 AI 挑巡逻点时跳过它们，
+	#    建造点位生成时也会避开它们。
 	#    · 只有关卡才有这张表（战役编辑器写）；自由对战 / 老关卡 → `level == null`
 	#      或表为空 ⇒ 什么都不做，行为与加这个功能之前逐位一致；
 	#    · 必须在 `build_from_map` 之后（要查「这一格属于哪个区划」），
@@ -781,13 +786,12 @@ func reset(p_my_faction: String = "", p_roster: Array = []) -> void:
 		if _is_garrison_ai(String(lf)):
 			_assign_garrison_zones(String(lf), placement_from)
 
-	# ★★ 2026.11.15：**建造点位收口** —— 地图给的 / 自动补的点位可能压在
-	#   本关的大本营或 `start_buildings` 上（那两样在 `build_from_map` 之后才落成，
-	#   装配时根本不知道）。被占住的点位永远建不了，等于白少一个名额 ⇒
-	#   在所有固定建筑都就位之后按「实际占用」重挑一遍。
+	# ★★ 2026.11.18：**建造点位在这里生成** —— 必须在所有固定建筑
+	#   （地图预置 / 各方大本营 / 区划中心 / 关卡 `start_buildings`）都就位之后：
+	#   生成时要**排除已有建筑**占的格（用户口径），早一步就不知道它们在哪。
 	#   ⚠️ 必须在 `_apply_level_placement()` **之后**、`fog.update()`（读建筑）之前；
 	#      单位不参与（人会走）。
-	_repair_build_points()
+	_generate_build_points()
 
 	# ★★ 开局将领 → 招募唯一性：关卡 / 自由对战摆出来的 general_1..9 视为已拥有。
 	#    ⚠️ 必须在所有单位都就位之后（`spawn_faction_units` + `_apply_level_placement`）。
@@ -977,6 +981,10 @@ func swap_map(new_map_path: String) -> bool:
 			continue
 		add_building(ptype, px, py, String(p.get("owner", "")), true, true,
 			String(p.get("tag", "")))
+
+	# ---- 5b) 建造点位按新地图 + 当前建筑重新生成 ----
+	#   ★ 点位不是「地图数据」了：换图后旧点位一个都不能留（坐标 / 区划形状都变了）。
+	_generate_build_points()
 
 	# ---- 6) 地图相关缓存作废 ----
 	if fog != null:
@@ -4074,6 +4082,11 @@ func _spawn_from_recruit(leader, kind: String) -> Array:
 		# ★ 科技「将领血量 +10%」：区划招募出来的将领**自己就是队长**，走将领那一档
 		#   （附属兵走 1.0 = 不加），与 world._apply_tech_effects 同一套判据。
 		u.apply_hp_bonus(_tech_hp_mult_for(u))
+		# ★★ 2026.11.18：**教堂 1 级** —— 在这一区划里招募出来的单位获得「自由」（永久）。
+		#   判据看**落点所在区划**（不是将领脚下：兵是生在这一格上的）。
+		#   ⚠️ 必须在 `units.append` 之后调（`grant_recruit_statuses` 会读 `zone_at` 与建筑表，
+		#     但它只依赖坐标，所以顺序其实无所谓 —— 这里放在最后只是为了「先入列再改状态」。）
+		grant_recruit_statuses(u)
 		push_event({"type": "unit_recruited", "unit": u, "leader": leader})
 		out.append(u)
 	return out
@@ -4982,6 +4995,10 @@ func _spawn_zone_recruit(zone, kind: String, faction_in: String = "",
 	# ★★ 2026.11.5：0 阶将领的大本营成长（正常配置里区划招的都是 1~3 阶 ⇒ 这里是 0，
 	#   但「有人把可招将领写成 0 阶」时也不该少这一份）。
 	u.apply_general_growth(cfg, base_level_of(faction))
+	# ★★ 2026.11.18：**教堂 1 级** —— 这一区划里招募出来的将领同样获得「自由」。
+	#   ⚠️ 用 `zone` 自己的 id（这里可能还没同步进 `u.garrison_zone_id`）。
+	if church_level_in_zone(int(zone["id"]), faction) > 0:
+		u.grant_statuses(cfg, ["freedom"])
 	push_event({"type": "zone_unit_recruited", "zone_id": int(zone["id"]), "unit": u})
 	return u
 
@@ -5328,20 +5345,27 @@ func add_building(type: String, tx: int, ty: int, owner: String, silent: bool = 
 	return b
 
 
-## ★★ 建造点位收口（`reset()` 末尾）：把被固定建筑占住的点位换成别的位置。
+## ★★ 进图时生成每个区划的建造点位（`reset()` / 换图 末尾）。
 ##
-## 判据只有一条：**这一格现在有建筑** ⇒ 点位作废、在同区划里按同一套规则补一个。
-## 建筑包括：地图预置、各方大本营、区划中心、关卡 `start_buildings`。
-## ★ 只在一局开始时做（建筑被拆掉之后点位**不会**自动回来 —— 点位是地图静态数据，
-##   不是「随建筑生灭」的运行时状态；玩家拆了自己的楼，那个点自然就空出来可再建）。
-func _repair_build_points() -> void:
+## 数量来自关卡 `zones[].build_point_count`（缺省 = config 的 2，0 = 不生成）；
+## 没有关卡（自由对战 / 直接开地图）时整张表为空 ⇒ 每区按 config 默认生成。
+## 已有建筑（地图预置 / 大本营 / 区划中心 / 关卡摆放）与**边缘区**都不参与生成。
+##
+## ★ 每局真随机：种子 = 本局 `rand_salt` + 区划 id。联机时房主把 `rand_salt`
+##   随 `start` 发给客机（见 net/host_session.gd），两端布局因此一致。
+## ★ 只在开局 / 换图时生成一次：建筑被拆掉之后点位**不会**自动回来 ——
+##   拆掉楼，那个点自然空出来可再建；点位本身不是「随建筑生灭」的运行时状态。
+func _generate_build_points() -> void:
 	if zones == null:
 		return
 	var blocked: Dictionary = {}
 	for b in building_list:
 		if b != null and b.alive:
 			blocked[Vector2i(int(b.tx), int(b.ty))] = true
-	zones.repair_build_points(map, blocked)
+	var counts: Dictionary = {}
+	if level != null:
+		counts = level.zone_build_point_counts
+	zones.generate_build_points(map, counts, blocked, rand_salt)
 
 
 ## 某格上的建筑（没有则 null）
@@ -5507,7 +5531,7 @@ func build_point_zone(tx: int, ty: int) -> int:
 	return int(zones.build_point_zone_id_at(tx, ty))
 
 
-## 某个区划的建造点位（地图给的 / 自动补的）。
+## 某个区划的建造点位（进图时按关卡数量随机生成）。
 func build_points_of_zone(zid: int) -> Array:
 	if zones == null:
 		return []
@@ -5561,6 +5585,17 @@ func wall_ring_buildable_tiles(zid: int, faction: String) -> Array:
 ## ★ 城墙走**另一条分支**：它的落点是区划中心那一格（那一格上本来就有中立建筑，
 ##   不能先拿 `PathfinderRes.occupied` 去挡它），真正的合法性看环上的空格。
 func build_reject_reason(type: String, tx: int, ty: int, faction: String) -> String:
+	# ★★ 2026.11.18：**派系专属建筑**（教堂）与**每区划上限**。
+	#   放在最前面：这两条与落点无关（「你不会造」比「这里不能造」更根本）。
+	if faction != "":
+		if not building_allowed_for_faction(type, faction):
+			return "clan"
+		var zone_cap := cfg.building_per_zone_limit(type)
+		if zone_cap > 0:
+			var cap_zid := build_point_zone(tx, ty)
+			if cap_zid >= 0 \
+					and zone_building_count(cap_zid, type, faction) >= zone_cap:
+				return "per_zone_limit"
 	if BuildingRes.is_wall_type(type):
 		if zones == null:
 			return "not_zone_center"
@@ -5593,6 +5628,42 @@ func build_reject_reason(type: String, tx: int, ty: int, faction: String) -> Str
 ## `build_reject_reason` 的布尔版（界面 / AI 用）。
 func can_place_building(type: String, tx: int, ty: int, faction: String) -> bool:
 	return build_reject_reason(type, tx, ty, faction) == ""
+
+
+## ★★ 2026.11.18：这一方**能不能造**这一种建筑（派系专属建筑，如教堂）。
+##
+## 两条白名单，**都要过**（两个方向是同一件事，任一侧写了就生效）：
+##   · 建筑侧 `building.<type>.clans`（教堂 = ["empire_church"]，空 = 不限）；
+##   · 派系侧 `clan.list[].buildings`（缺键 = 全都能造）。
+## ★ 空阵营 / 空派系一律放行 —— 不让新规则静默封掉老关卡 / 老测试。
+func building_allowed_for_faction(type: String, faction: String) -> bool:
+	if cfg == null or type == "":
+		return false
+	var clan := clan_of(faction)
+	var clans := cfg.building_clans(type)
+	if not clans.is_empty() and clan != "" and not clans.has(clan):
+		return false
+	return cfg.clan_can_build(clan, type)
+
+
+## ★★ 2026.11.18：某个区划里**这一方**已经有的同类型建筑数（每区划上限用）。
+##   · 只数存活、未中立化、owner 同一方的；
+##   · 建造中的也算（否则「连拍两座」能绕过上限）。
+func zone_building_count(zid: int, type: String, faction: String) -> int:
+	if zid < 0 or building_list.is_empty():
+		return 0
+	var n := 0
+	for b in building_list:
+		if b == null or not b.alive or b.neutralized:
+			continue
+		if String(b.type) != type:
+			continue
+		if int(b.zone_id) != zid:
+			continue
+		if not FactionRes.same_side(String(b.owner), faction):
+			continue
+		n += 1
+	return n
 
 
 ## 供界面用：拖某张建筑牌时，**所有可以落点**的锚点。
@@ -5837,7 +5908,6 @@ func building_upgrade_targets(type: String, faction: String) -> Dictionary:
 	var t := String(type)
 	if not cfg.has_upgrade(t):
 		return out
-	var max_lv: int = cfg.upgrade_max_level(t)
 	for b in building_list:
 		if not b.alive or String(b.type) != t:
 			continue
@@ -5845,7 +5915,8 @@ func building_upgrade_targets(type: String, faction: String) -> Dictionary:
 			continue
 		if b.is_under_construction():
 			continue
-		if int(b.level) >= max_lv:
+		# ★★ 2026.11.18：上限按**这一栋**算（教堂还要被大本营等级压一次）。
+		if int(b.level) >= building_level_cap(b):
 			continue
 		out[Vector2i(int(b.tx), int(b.ty))] = b
 	return out
@@ -5861,6 +5932,23 @@ func building_upgrade_reason(b, faction: String = "") -> String:
 ## 这个建筑最多能到几级（= config 里那张等级表的条数）
 func building_max_level(type: String) -> int:
 	return cfg.upgrade_max_level(type)
+
+
+## ★★ 2026.11.18：**这一栋**建筑现在最多能到几级（比 config 那张表更窄）。
+##
+## 口径：config 的等级表条数，若这一种建筑写着 `max_level_by_base`（教堂），
+## 还要再被**己方大本营等级**压一次 —— 用户原话「教堂可升级，最多不超过大本营等级」。
+##   · 没有大本营（等级 0）⇒ 上限 0，一级都升不了（教堂是教会的延伸，没家就没升级）；
+##   · 大本营 1 级 ⇒ 教堂最多 1 级；2 级 ⇒ 2 级。
+## ⚠️ 只有 `can_upgrade` 与界面读它；`building_max_level(type)` 保留为「这一种类型的表长」。
+func building_level_cap(b) -> int:
+	if b == null:
+		return 1
+	var type := String(b.type)
+	var cap := cfg.upgrade_max_level(type)
+	if cfg.building_max_level_by_base(type):
+		cap = mini(cap, maxi(0, base_level_of(String(b.owner))))
+	return maxi(0, cap)
 
 
 ## 这个建筑升到下一级要花的钱 / 读条秒数（已经满级 → 空字典 / 0）
@@ -6178,28 +6266,21 @@ func tech_max_tier(faction: String = "") -> int:
 
 
 ## 这条科技现在**能不能启用**。"" = 可以。
-## ★★ 2026.10.30：黄金净收入为赤字时拒绝**新启用**（拒因 `gold_deficit`）——
-##    已启用的科技不会被取消，玩家仍可弃用它来止损。
+## ★★ 2026.11.18：科技一次性打出 —— 已启用返回 `"played"`，没有弃用 / 再启用。
+## ★ 科技不再持续扣金，因此「黄金净收入赤字」拒因已删除。
 func tech_can_activate(id: String, faction: String = "") -> String:
 	if tech == null:
 		return "unknown"
 	var f := _tech_faction(faction)
 	if tech.is_active(id, f):
-		return ""
+		return "played"
 	# ★★ 2026.11：**这条科技不在自己派系的槽位表里** ⇒ 当它不存在
 	#   （王朝点不了帝国的科技；原生点不了派系的）。
 	#   ⚠️ 必须放在 `tech.can_activate()` **之前**：那一步会先报 "tier" / "limit"，
 	#     于是「别派的科技」会被误报成「阶数不够」。
 	if not _tech_in_my_list(id, f):
 		return "unknown"
-	var reason := tech.can_activate(id, f, tech_max_active(f), tech_max_tier(f))
-	if reason != "":
-		return reason
-	# ★★ 赤字限制是**玩家**规则（用户原话「玩家将不能切换科技」）：
-	#    AI 指挥官照旧可以自己管理科技，否则「没有黄金收入的 AI 永远点不了科技」。
-	if (player_factions.has(f) or f == my_faction) and gold_net_per_sec(f) < -1e-6:
-		return "gold_deficit"
-	return ""
+	return tech.can_activate(id, f, tech_max_active(f), tech_max_tier(f))
 
 
 ## 这条科技在**这一方自己的科技页**里吗（派系槽位表里的 id 才算）。
@@ -6226,6 +6307,9 @@ func _tech_in_my_list(id: String, faction: String) -> bool:
 func tech_entries(faction: String = "") -> Array:
 	var f := _tech_faction(faction)
 	var active: Array = tech.active_ids(f) if tech != null else []
+	# ★★ 2026.11.18：启用满 3 条后，其余**未启用**的科技手牌全部销毁。
+	#   已启用的牌仍留在页面上（实心、不可再拖），用来表达「已经打出」。
+	var burned: bool = active.size() >= 3
 	var out: Array = []
 	for item in tech_list(f):
 		if typeof(item) != TYPE_DICTIONARY:
@@ -6234,7 +6318,17 @@ func tech_entries(faction: String = "") -> Array:
 		var id := String(e.get("id", ""))
 		var is_empty: bool = bool(e.get("empty", false)) or id == ""
 		var on: bool = (not is_empty) and active.has(id)
-		var reason := "" if on else ("" if is_empty else tech_can_activate(id, f))
+		# 已启用 = 永久占用；未启用且已经 3 条 = 手牌销毁（整格空掉）。
+		if not is_empty and not on and burned:
+			out.append({
+				"id": "", "tier": int(e.get("tier", 0)), "name": "", "line": "", "desc": "",
+				"active": false, "empty": true, "destroyed": true, "playable": false,
+				"gold_per_sec": 0.0, "available": false, "reason": "destroyed", "deficit": false,
+			})
+			continue
+		var reason := ""
+		if not on and not is_empty:
+			reason = tech_can_activate(id, f)
 		out.append({
 			"id": id,
 			"tier": int(e.get("tier", 0)),
@@ -6244,19 +6338,21 @@ func tech_entries(faction: String = "") -> Array:
 			"active": on,
 			# ★ 空槽位：界面画灰框、不可点、也不弹悬停详情。
 			"empty": is_empty,
-			# ★ 这条科技每秒要付多少金（界面在悬停 / 格子上显示「0.5 金/秒」）。
-			"gold_per_sec": 0.0 if is_empty else cfg.tech_gold_per_sec_of(id),
-			# ★ 已启用的永远可点（点它 = 弃用）；未启用的看大本营等级 / 名额 / 赤字。
-			"available": on or (not is_empty and reason == ""),
+			"destroyed": false,
+			# ★ 已启用 = 不可再打出；未启用 = 看大本营等级 / 名额。
+			"playable": (not is_empty) and (not on) and reason == "",
+			# ★ 科技不再持续扣金，这里恒为 0（保留字段给旧 HUD / 测试）。
+			"gold_per_sec": 0.0,
+			"available": (not is_empty) and (on or reason == ""),
 			"reason": reason,
-			"deficit": reason == "gold_deficit",
+			"deficit": false,
 		})
 	return out
 
 
-## ★ 点一下某条科技（`tech_toggle` 命令的唯一落点）：
-##   没启用 → **立刻启用**并开始扣金；已启用 → 弃用（**赤字时也允许**）。
-##   名额满了 / 阶数不够 / 黄金净收入赤字时再启用会被拒，并留一条事件给界面。
+## ★ 打出一张科技（`tech_toggle` 命令的唯一落点）：
+##   **只能关 → 开**。已启用 / `on == false` 一律拒绝（科技不可取消、不可重复打出）。
+##   名额满了 / 阶数不够时拒绝，并留一条 `tech_rejected` 事件给界面。
 ##
 ## @return true = 状态真的变了（被拒时返回 false，并在 `tech_rejected` 事件里带上拒因）
 ##
@@ -6267,34 +6363,33 @@ func set_tech_active(id: String, on: bool, faction: String = "") -> bool:
 	if tech == null:
 		return false
 	var f := _tech_faction(faction)
-	var was: bool = tech.is_active(id, f)
-	if on and not was:
-		var reason := tech_can_activate(id, f)
-		if reason != "":
-			# ★ 带上 `f`（解析出来的那一方，不是可能为空的形参）—— 阵营 AI 也会走
-			#   `set_tech_active()`，不带阵营的话界面会把 AI 的「名额满了」当成玩家的报错。
-			push_event({"type": "tech_rejected", "reason": reason, "tech_id": id, "faction": f})
-			return false
-	var changed: bool = tech.activate(id, f) if on else tech.deactivate(id, f)
+	# 2026.11.18：科技打出后永久启用，不存在「关闭」这条路。
+	if not on:
+		return false
+	if tech.is_active(id, f):
+		return false
+	var reason := tech_can_activate(id, f)
+	if reason != "":
+		# ★ 带上 `f`（解析出来的那一方，不是可能为空的形参）—— 阵营 AI 也会走
+		#   `set_tech_active()`，不带阵营的话界面会把 AI 的「名额满了」当成玩家的报错。
+		push_event({"type": "tech_rejected", "reason": reason, "tech_id": id, "faction": f})
+		return false
+	var changed: bool = tech.activate(id, f)
 	if not changed:
 		return false
 	tech_revision += 1
 	_apply_tech_effects()
 	push_event({
 		"type": "tech_changed", "tech_id": id, "faction": f,
-		"active": tech.is_active(id, f),
+		"active": true,
 	})
 	return true
 
 
-## 点一下（切换）—— 界面的唯一入口：`tech_toggle` 命令带的是 on/off，
-## 而玩家点格子那一下就是「切换」，所以这里包一层。
+## 打出一张（单向）—— 界面的唯一入口：`tech_toggle` 命令带的是 on/off，
+## 但 2026.11.18 起只认「开」；旧调用传 false 会被忽略。
 func toggle_tech(id: String, faction: String = "") -> bool:
-	if tech == null:
-		return false
-	var f := _tech_faction(faction)
-	var on: bool = tech.is_active(id, f)
-	return set_tech_active(id, not on, faction)
+	return set_tech_active(id, true, faction)
 
 
 ## 本帧的科技加成（启用状态变了之后 tick 里会重算；别留着当缓存用）
@@ -6443,6 +6538,116 @@ func tech_restore_on_convert(faction: String = "") -> bool:
 	return float(_eff_for(faction).get("zone_convert_restore", 0.0)) > 0.0
 
 
+# ------------------------------------------------------------------
+# ★★ 2026.11.18：义勇军 / 教会军那两条线的效果读取
+#
+# 与上面那一组同一条口径：**只有这里**可以读这些键，其它地方一律调这些函数
+# （读的地方一多，「1.0 + 增量」的口径就会漂）。
+# ------------------------------------------------------------------
+
+## **防御（固定减伤数值）倍率** —— 「游击战术」把护甲整个归零（返回 0.0）。
+## ★ 与 `tech_armor_mult()`（远征军：每区划 +2%）是**两层**，在 `unit.effective_armor` 里相乘。
+func unit_armor_mult(faction: String = "") -> float:
+	if float(_eff_for(faction).get("unit_armor_zero", 0.0)) > 0.0:
+		return 0.0
+	return 1.0
+
+
+## **步兵额外防御**（「不动如山」+1）—— 加在倍率之后（绝对值）。
+## ★ 只对步兵（含远程步兵）生效；骑兵 / 器械不吃。
+func infantry_armor_add(faction: String = "") -> float:
+	return maxf(0.0, float(_eff_for(faction).get("infantry_armor_add", 0.0)))
+
+
+## 全单位**攻击速度**倍率（「游击战术」+25% ⇒ 攻击间隔 ÷1.25）。
+## ★ 与将领特性「神力」是两条独立来源：两个都启用时相乘（间隔再缩短）。
+func unit_attack_speed_mult(faction: String = "") -> float:
+	var add := maxf(0.0, float(_eff_for(faction).get("unit_attack_speed_add", 0.0)))
+	return 1.0 / (1.0 + add) if add > 0.0 else 1.0
+
+
+## ★★ 「沐浴自由」：含「自由」的单位站在**染疫区划**里时攻击 +20%。
+##
+## @param u 目标单位（null ⇒ 1.0）
+## ★ 三个条件缺一不可：单位有 free、所在区划染疫、这一方启用了「沐浴自由」。
+##   之所以要现判区划（而不是回写单位），是因为「染疫」是**区划**的属性 ——
+##   同一秒里教堂可能被拆、传教的兵可能走开，回写会留下过期的加成。
+func freedom_plague_attack_mult(u = null) -> float:
+	if u == null or not u.has_status("freedom"):
+		return 1.0
+	var f := String(u.faction)
+	var add := maxf(0.0, float(_eff_for(f).get("freedom_plague_attack_add", 0.0)))
+	if add <= 0.0:
+		return 1.0
+	if not zone_plague_at(int(u.tx), int(u.ty)):
+		return 1.0
+	return 1.0 + add
+
+
+## 「沐浴自由」的**防御**加成（与上面同一条判据，返回的是加法项）。
+func freedom_plague_armor_mult(u = null) -> float:
+	if u == null or not u.has_status("freedom"):
+		return 1.0
+	var f := String(u.faction)
+	var add := maxf(0.0, float(_eff_for(f).get("freedom_plague_armor_add", 0.0)))
+	if add <= 0.0:
+		return 1.0
+	if not zone_plague_at(int(u.tx), int(u.ty)):
+		return 1.0
+	return 1.0 + add
+
+
+## ★★ 「血战到底」：这一方是否启用（启用后每个单位第一次致命伤会回满血 + 暴走）。
+func fatal_refill_enabled(faction: String = "") -> bool:
+	return float(_eff_for(faction).get("fatal_refill", 0.0)) > 0.0
+
+
+## 「血战到底」暴走时的额外伤害（0.5 = +50%）—— 与状态表里的 blood_war 同一份数值。
+func blood_war_attack_add(faction: String = "") -> float:
+	return maxf(0.0, float(_eff_for(faction).get("blood_war_attack_add", 0.0)))
+
+
+## 「血战到底」暴走时每秒扣血比例（0.05 = 5% 最大生命/秒）。
+func blood_war_drain(faction: String = "") -> float:
+	return maxf(0.0, float(_eff_for(faction).get("blood_war_drain", 0.0)))
+
+
+## ★★ 「信仰不死」：致命伤时锁血 1 + 无敌多少秒（0 = 没启用）。
+func fatal_invincible_sec(faction: String = "") -> float:
+	return maxf(0.0, float(_eff_for(faction).get("fatal_invincible_sec", 0.0)))
+
+
+## 「信仰不死」锁在哪一点血（默认 1；配置里写的是**绝对值**，缺省 / 0 ⇒ 1）。
+func fatal_hp_lock(faction: String = "") -> float:
+	var v := float(_eff_for(faction).get("fatal_hp_lock", 0.0))
+	return v if v > 0.0 else 1.0
+
+
+## 「信仰不死」的触发冷却（秒）—— 用户没写次数，这里按冷却实现（见 config 的注释）。
+## ★ 缺省 / 0 ⇒ 20 秒（`default_effects` 的基数是 0，不能直接把它当有效值）。
+func fatal_invincible_cooldown(faction: String = "") -> float:
+	var v := float(_eff_for(faction).get("fatal_invincible_cooldown", 0.0))
+	return v if v > 0.0 else 20.0
+
+
+## ★★ 「会水」：这一方要**自动补写**给步兵的状态 id（空数组 = 没启用）。
+##   ⚠️ 判定「哪个兵种算步兵」在调用方（`statuses_for_unit`），这里只回答「有没有这条科技」。
+func tech_grant_water_walk(faction: String = "") -> bool:
+	return float(_eff_for(faction).get("grant_water_walk", 0.0)) > 0.0
+
+
+## ★★ 「传教」：这一方脱战的单位站在敌方区划里时，该区划是否染疫。
+func tech_missionary_plague(faction: String = "") -> bool:
+	return float(_eff_for(faction).get("missionary_plague", 0.0)) > 0.0
+
+
+## ★★ 「不自由税」/「自由税」的**每秒每单位金**（0 = 没启用那一条）。
+## @param with_freedom true = 取「含自由」那一档（自由税），false = 不含（不自由税）
+func unit_tax_gold_per_sec(faction: String = "", with_freedom: bool = false) -> float:
+	var key := "gold_per_unit_freedom" if with_freedom else "gold_per_unit_no_freedom"
+	return maxf(0.0, float(_eff_for(faction).get(key, 0.0)))
+
+
 ## ★★ 重算「每个玩家席位各自的科技效果」。
 ##
 ## 合作模式下两个人各点各的科技：一套全局 `tech_effects` 会把客机的加成算到房主头上。
@@ -6486,6 +6691,10 @@ func _apply_tech_effects() -> void:
 	if tech == null:
 		return
 	_refresh_seat_tech_effects()
+	# ★★ 2026.11.18：方略变了 ⇒ **单位状态**要重补一遍（会水 → 步兵的 `water_walk`）。
+	#   这里只把版本号 +1、把已有单位的 `status_rev` 置 -1，真正的补写在
+	#   `_tick_unit_statuses()` 里（一处实现，出生与启用两条路共用）。
+	status_grant_rev += 1
 	# ★ 按席位各加各的：合作两人是盟友，但**同一个单位不能被加两次**。
 	#   判据必须是 `owner == 这一方`，不是 `same_side`（`same_side` 在这里恰好也是严格相等，
 	#   但语义上要写清楚：科技是「谁启用的，谁吃」）。
@@ -6505,18 +6714,32 @@ func _apply_tech_effects() -> void:
 	_refresh_production()
 
 
-## 某个单位该吃的**将领血量**科技倍率（将领 = 队长 = `leader_id` 为空的那一个）。
-## ★ 需求原文只写了「玩家将领血量 +10%」，所以附属兵一律返回 1.0（不加）。
-##   判据集中在这里一处：开局将领 / 区划招募的占位将领（自己就是队长）/ 以后新加的
-##   单位类型都走它 —— 两处各写一套「谁是将领」迟早会漂开。
+## 某个单位该吃的**血量上限**科技倍率。
+##
+## ★ 两层（2026.11.18 起）：
+##   · **将领**那一档：`leader_hp_mult`（只有队长吃；附属兵 1.0）；
+##   · **兵种大类**那一档：`unit_hp_mult_add`（全员，血战到底 −30%）与
+##     `infantry_hp_mult_add`（只对步兵，不动如山 +20%）。
+##   两层**相乘**：将领 1.1 × 步兵 (1+0.2−0.3) 也成立（两条科技同时启用时）。
+## ★ 判据集中在**这一处**：开局将领 / 区划招募的将领 / 以后新加的单位类型都走它 ——
+##   两处各写一套「谁是将领 / 谁算步兵」迟早会漂开。
+## ★ 状态倍率（自由 +10%）**不在这里** —— 那是单位自己的 `status_hp_mult`，
+##   由 `Unit.refresh_hp_max()` 乘进同一个公式（两处各管各的，不会互相覆盖）。
 func _tech_hp_mult_for(u) -> float:
-	if u == null or u.leader_id != "":
+	if u == null:
 		return 1.0
 	var fid := String(u.faction)
 	var eff: Variant = seat_tech_effects.get(fid, null)
 	if typeof(eff) != TYPE_DICTIONARY:
 		eff = tech.effects_of(fid) if tech != null else tech_effects
-	return float((eff as Dictionary).get("leader_hp_mult", 1.0))
+	var d: Dictionary = eff
+	var base := 1.0
+	if u.leader_id == "":
+		base = float(d.get("leader_hp_mult", 1.0))
+	var add := float(d.get("unit_hp_mult_add", 0.0))
+	if String(u.unit_class) == ConfigRes.CLASS_INFANTRY:
+		add += float(d.get("infantry_hp_mult_add", 0.0))
+	return maxf(0.05, base * (1.0 + add))
 
 
 ## ★★ 重算「每秒产出」这两个展示数（tick 与科技状态变化都会调）。
@@ -6570,11 +6793,40 @@ func _accumulate_production(faction: String, local: bool, eff: Dictionary = {}) 
 		* (1.0 + float(eff.get("food_production_mult", 0.0)))
 	var gold := (float(rates["gold"]) + float(flat["gold"])) \
 		* (1.0 + float(eff.get("gold_production_mult", 0.0)))
+	# ★★ 2026.11.18：「不自由税 / 自由税」—— **按单位人头**每秒给的黄金。
+	#   它加在科技倍率**之后**（人头税不该被「黄金产能 +10%」放大），
+	#   于是 HUD 的「+n/秒」与实际到账自然同源（两者都读这一个返回值）。
+	gold += _unit_tax_gold(faction, eff)
 	if local:
 		owned_tiles = tiles
 		production_food = food
 		production_gold = gold
 	return {"food": food, "gold": gold}
+
+
+## ★★ 2026.11.18：「不自由税 / 自由税」—— 这一方每秒总共收到多少黄金。
+##
+## 口径（用户拍板）：
+##   · **不自由税**：每个**不含「自由」**的己方单位给 `gold_per_unit_no_freedom` 金/秒；
+##   · **自由税**：每个**含「自由」**的己方单位给 `gold_per_unit_freedom` 金/秒；
+##   · 两条互补，同时启用 = 全员交税（不会有人被算两次：一个单位只可能落进其中一档）。
+## ★ 快路径：两条都没启用（绝大多数派系）时**一次单位遍历都不做**，直接返回 0。
+## ★ 只数**存活**单位（濒死将领也算 —— 他还在场上）。
+func _unit_tax_gold(faction: String, eff: Dictionary) -> float:
+	var no_free := maxf(0.0, float(eff.get("gold_per_unit_no_freedom", 0.0)))
+	var has_free := maxf(0.0, float(eff.get("gold_per_unit_freedom", 0.0)))
+	if no_free <= 0.0 and has_free <= 0.0:
+		return 0.0
+	if faction == "" or units.is_empty():
+		return 0.0
+	var total := 0.0
+	for u in units:
+		if u == null or not u.alive:
+			continue
+		if String(u.faction) != faction:
+			continue
+		total += has_free if u.has_status("freedom") else no_free
+	return total
 
 
 ## ★★ 某一方**全阵营的固定资源产出** = 大本营按等级给的粮食/黄金 + 己方资源建筑。
@@ -6671,6 +6923,216 @@ func _refresh_zone_population_bonuses() -> void:
 	if zones == null:
 		return
 	zones.apply_population_bonuses(_zone_population_bonus_map())
+
+
+# ------------------------------------------------------------------
+# ★★ 2026.11.18：义勇军 / 教会军的两套「区划级」机制
+#
+#   1. 侵略如火（义勇军一本）：己方单位站在**敌方区划**里 ⇒ 该区划的人口增长与产能被压；
+#   2. 自由瘟疫（教会军）：**区划属性**，由「2 级教堂」与「传教」两种来源染上，
+#      对区内**所有没有自由的单位**（含友军 / 自家非自由单位）每秒扣固定血量。
+#
+# 两件事都**不缓存状态**：每帧按「现在场上有什么」重算一遍写进区划字典，
+# 于是「教堂被拆 / 兵走开 / 大本营没了」全都不需要额外的清理代码。
+# ------------------------------------------------------------------
+
+## ★★ 这一格所在区划**现在**是否染疫（被「自由瘟疫」覆盖）。
+## @return false = 没染疫 / 没有区划 / 没有地图
+func zone_plague_at(tx: int, ty: int) -> bool:
+	if zones == null:
+		return false
+	var z = zones.zone_at(tx, ty)
+	if typeof(z) != TYPE_DICTIONARY:
+		return false
+	return bool((z as Dictionary).get("plague", false))
+
+
+## ★★ 重算**全部区划**的染疫状态（写进 `z["plague"]`）与「侵略如火」的压制倍率
+##   （写进 `z["production_mult"]` / `z["population_mult"]`）。
+##
+## ★ 为什么写进区划字典而不是另开一张表：这两个数**属于那个区划**，
+##   而 `zones.production_of() / update_population_multi()` 本来就在遍历区划字典 ——
+##   写进去等于零额外查表（也不必担心「表与区划对不上」）。
+func _refresh_zone_effects() -> void:
+	if zones == null or cfg == null:
+		return
+	# 1) 先全部清零（源头消失了必须回到中性，这是「不缓存」的落点）。
+	for z in zones.zones:
+		if typeof(z) != TYPE_DICTIONARY:
+			continue
+		var zd: Dictionary = z
+		zd["plague"] = false
+		zd["production_mult"] = 1.0
+		zd["population_mult"] = 1.0
+	# 2) 教堂（2 级及以上）→ 自己所在区划（+ 相邻）。
+	for b in building_list:
+		if b == null or not b.alive or b.neutralized:
+			continue
+		var from_level: int = cfg.building_plague_from_level(String(b.type))
+		if from_level <= 0 or int(b.level) < from_level:
+			continue
+		var zid := int(b.zone_id)
+		if zid < 0:
+			continue
+		_mark_zone_plague(zid)
+		if cfg.building_plague_adjacent(String(b.type)):
+			for nb in zones.neighbors_of(zid):
+				_mark_zone_plague(int(nb))
+	# 3) 传教：己方**脱战**单位站在敌方区划里 ⇒ 那块敌方区划染疫。
+	#    ⚠️ 判据用 `is_out_of_combat()`（与招募读条 / 屯田制同一个「脱战」定义）。
+	for u in units:
+		if u == null or not u.alive or u.downed or u.neutralized:
+			continue
+		var fid := String(u.faction)
+		if not tech_missionary_plague(fid):
+			continue
+		if not is_out_of_combat(u):
+			continue
+		var z2 = zones.zone_at(int(u.tx), int(u.ty))
+		if typeof(z2) != TYPE_DICTIONARY:
+			continue
+		var zd2: Dictionary = z2
+		var owner2 := String(zd2.get("owner", ""))
+		if owner2 == "" or FactionRes.same_side_for_attack(owner2, fid):
+			continue                     # 中立 / 自家（含盟友）不算「敌方区划」
+		zd2["plague"] = true
+	# 4) 侵略如火：己方单位踩在敌方区划里 ⇒ 压那一块的人口增长与产能。
+	for f in seat_tech_effects.keys():
+		var fid := String(f)
+		var eff: Dictionary = seat_tech_effects[fid]
+		var pop_debuff := maxf(0.0, float(eff.get("blitz_pop_debuff", 0.0)))
+		var prod_debuff := maxf(0.0, float(eff.get("blitz_prod_debuff", 0.0)))
+		if pop_debuff <= 0.0 and prod_debuff <= 0.0:
+			continue
+		var pop_cap := clampf(float(eff.get("blitz_pop_cap", 1.0)), 0.0, 1.0)
+		var prod_cap := clampf(float(eff.get("blitz_prod_cap", 0.5)), 0.0, 1.0)
+		# 逐区划数「这一方有几个人站在里面」（只数敌方区划）。
+		var counts: Dictionary = {}
+		for u in units:
+			if u == null or not u.alive or u.neutralized:
+				continue
+			if String(u.faction) != fid:
+				continue
+			var z3 = zones.zone_at(int(u.tx), int(u.ty))
+			if typeof(z3) != TYPE_DICTIONARY:
+				continue
+			var zd3: Dictionary = z3
+			var owner3 := String(zd3.get("owner", ""))
+			if owner3 == "" or FactionRes.same_side_for_attack(owner3, fid):
+				continue                 # 中立不算「敌方」：踩中立地不压产能
+			var key := int(zd3.get("id", -1))
+			if key < 0:
+				continue
+			counts[key] = int(counts.get(key, 0)) + 1
+		for key in counts.keys():
+			var z4: Variant = zones.zones_by_id.get(int(key), null)
+			if typeof(z4) != TYPE_DICTIONARY:
+				continue
+			var zd4: Dictionary = z4
+			var n := int(counts[key])
+			var pm: float = maxf(1.0 - prod_cap, 1.0 - prod_debuff * float(n))
+			var gm: float = maxf(1.0 - pop_cap, 1.0 - pop_debuff * float(n))
+			# 多个派系同时压制同一块地：取**更狠**的那一个（不做连乘 —— 那会瞬间归零）。
+			zd4["production_mult"] = minf(float(zd4.get("production_mult", 1.0)), pm)
+			zd4["population_mult"] = minf(float(zd4.get("population_mult", 1.0)), gm)
+
+
+## 给某个区划打上「染疫」标记（区划 id 不合法 / 找不到就什么都不做）。
+func _mark_zone_plague(zid: int) -> void:
+	var z: Variant = zones.zones_by_id.get(zid, null) if zones != null else null
+	if typeof(z) == TYPE_DICTIONARY:
+		(z as Dictionary)["plague"] = true
+
+
+## ★★ 每帧结算「自由瘟疫」的伤害：**区划内所有没有自由的单位**每秒扣固定血量。
+##
+## ★ 口径（用户拍板）：固定值、**连友军与自家非自由单位一起扣**；
+##   免疫的只有两类：带 `freedom`（自由）的、以及正在无敌的（`is_plague_immune`）。
+## ★ 走 `tick` 里的普通扣血（**不触发**致命伤保护 —— 瘟疫烧死就是烧死）。
+func _tick_plague(cfg, dt: float) -> void:
+	if dt <= 0.0 or cfg == null or zones == null:
+		return
+	var dmg: float = maxf(0.0, float(cfg.plague_damage_per_sec))
+	if dmg <= 0.0:
+		return
+	for u in units:
+		if u == null or not u.alive or u.downed:
+			continue
+		if u.is_plague_immune():
+			continue
+		if not zone_plague_at(int(u.tx), int(u.ty)):
+			continue
+		u.hp = maxf(0.0, u.hp - dmg * dt)
+		if u.hp <= 0.0:
+			u.die_now(cfg, self, "plague")
+
+
+## ★★ 每帧推进**单位状态**（掉血 / 自愈 / 无敌倒计时）与「新单位补状态」。
+##
+## ★ 为什么用**版本号**补状态而不是在每个出生点各写一行：
+##   出生路径有 8 条（开局摆放 / 招募 / 区划招将 / 刷兵 / 快照重建 …），
+##   漏一条就是「这个兵天生不会水」这类极难查的 bug。
+##   这里给每个单位记一个 `status_rev`，与世界的 `status_grant_rev` 比一次整数 ——
+##   新单位天然是 -1 ⇒ 第一帧就会被补上；科技 / 教堂变化时把世界的版本号 +1，
+##   已存在的单位也会在下一帧补上。
+func _tick_unit_statuses(cfg, dt: float) -> void:
+	for u in units:
+		if u == null or not u.alive:
+			continue
+		if int(u.status_rev) != status_grant_rev:
+			u.status_rev = status_grant_rev
+			var extra: Array = statuses_for_unit(u)
+			if not extra.is_empty():
+				u.grant_statuses(cfg, extra)
+		u.tick_status(cfg, self, dt)
+
+
+## ★★ 这个单位现在**应该**补哪些状态（兵种天生之外的、由方略给的）。
+##   · 「会水」：这一方启用了会水、且这个单位是步兵 ⇒ 补 `water_walk`；
+##   · 其余由教堂 / 招募 / 机制授予的状态**不在这里**（见 `grant_recruit_statuses`）。
+func statuses_for_unit(u) -> Array:
+	var out: Array = []
+	if u == null:
+		return out
+	var fid := String(u.faction)
+	if tech_grant_water_walk(fid) and String(u.unit_class) == ConfigRes.CLASS_INFANTRY:
+		out.append("water_walk")
+	return out
+
+
+## ★★ 招募完成那一刻调：站的那块区划里有**己方 1 级及以上教堂** ⇒ 这个单位获得「自由」。
+## @return true = 真的授予了（测试 / 界面用）
+func grant_recruit_statuses(u) -> bool:
+	if u == null:
+		return false
+	var zid := int(u.garrison_zone_id)
+	if zid < 0 and zones != null:
+		var z = zones.zone_at(int(u.tx), int(u.ty))
+		if typeof(z) == TYPE_DICTIONARY:
+			zid = int((z as Dictionary).get("id", -1))
+	if zid < 0:
+		return false
+	if church_level_in_zone(zid, String(u.faction)) <= 0:
+		return false
+	return u.grant_statuses(cfg, ["freedom"])
+
+
+## ★★ 某一方在某个区划里的**教堂等级**（0 = 没有；多座取最高 —— 每区划本来就限一座）。
+func church_level_in_zone(zid: int, faction: String) -> int:
+	if cfg == null or building_list.is_empty() or zid < 0:
+		return 0
+	var best := 0
+	for b in building_list:
+		if b == null or not b.alive or b.neutralized:
+			continue
+		if int(b.zone_id) != zid:
+			continue
+		if not FactionRes.same_side(String(b.owner), faction):
+			continue
+		if not cfg.building_freedom_recruit(String(b.type)):
+			continue
+		best = maxi(best, int(b.level))
+	return best
 
 
 ## 每帧回血：**己方 / 友方区划内** + 所有**粮车回血光环**。
@@ -6770,98 +7232,17 @@ func gold_net_per_sec(faction: String = "") -> float:
 	return produce - drain
 
 
-## ★★ 2026.10.29：**科技金耗 + 单位维护费 + 断粮判定**（经济改版的两条持续消耗）。
-##
-## 口径（用户拍板，2026.10.30 更新）：
-##   · 科技：启用中的每条科技按阶每秒扣金（`tech.gold_drain_per_sec`）。
-##     金库**付不起**时把金扣到 0，但**不取消科技、不进入冷却** —— 科技继续生效；
-##     玩家是否能再启用新科技由「黄金净收入赤字」判定把关（见 `tech_can_activate`）。
-##   · 维护费：每个**存活**单位按兵种每秒扣粮（`cfg.unit_upkeep_of`：枪 0.03 / 骑 0.06 /
-##     器械与粮车 0.10）。扣到 0 为止 —— **不欠账、不掉血、不阻止招募**。
-##
-## ★ 为什么「付不起」判成「余额清 0 + 标记」而不是让余额变负：
-##   负数会污染 HUD，也会让「先欠着再还」变成一条更优策略（本版不做信贷）。
-## ★ 只对**有资源池**的阵营收：与 `resource_pool_for()` 的「null = 资源无限」同一条语义。
-func _tick_upkeep(dt: float) -> void:
-	if dt <= 0.0 or cfg == null:
-		return
-	# ★★ 总闸（`economy.upkeep_enabled`）：关掉时两样都不扣，也不留断粮标记。
-	#   正常游戏恒为 true；旧测试靠它维持「精确对账」的语义（见 config.json 的说明）。
-	if not cfg.upkeep_enabled:
-		_upkeep_food_rate.clear()
-		_tech_gold_rate.clear()
-		return
-	# ★★ 每帧重填「每秒消耗」缓存（阵营少了 / 科技全弃用了都要跟着消失）
+## ★★ 2026.11.18：**持续消耗已取消** —— 单位不再每秒吃粮，科技不再每秒扣金。
+##   这里保留成「每帧清空两份速率缓存」的收口：HUD / AI 仍读 `_upkeep_food_rate` /
+##   `_tech_gold_rate`，它们会稳定为 0（净收入 = 纯产能）。
+func _tick_upkeep(_dt: float) -> void:
 	_upkeep_food_rate.clear()
 	_tech_gold_rate.clear()
-	# 0) 一次分桶：阵营 → 本帧的维护费（粮/秒）。O(单位数)，不是 O(阵营数 × 单位数)。
-	# ★★ 2026.11：派系科技在这里生效（屯田制）：
-	#   · `tech_upkeep_mult` —— 这一方的全局倍率（现在没有科技用它，留给以后）；
-	#   · `tech_upkeep_idle_exempt` —— **脱战**的单位不计费。
-	#     「脱战」用的是**招募那一套判据**（`is_out_of_combat()`：连续 N 秒没有目标、
-	#     且没挨过打）—— 与「脱战才能继续招募」是同一个定义，不是另写一个。
-	var upkeep_rate: Dictionary = {}
-	for u in units:
-		if u == null or not u.alive:
-			continue
-		var uf := String(u.faction)
-		# ★★ 2026.11.4：将领可以有自己的**持久消耗覆盖**
-		#   （`unit.general.upkeep_override[<index>]`）；没写就跟所属兵种。
-		#   非将领（附属兵 / 普通兵）仍然只读兵种表 —— 与血量 / 护甲同一条「先类型后覆盖」。
-		var unit_up := cfg.unit_upkeep_of(u.unit_type)
-		if int(u.general_index) >= 0:
-			unit_up = cfg.general_upkeep_at(int(u.general_index), u.unit_type)
-		var per_s := unit_up * tech_upkeep_mult(uf)
-		if per_s <= 0.0:
-			continue
-		if tech_upkeep_idle_exempt(uf) and is_out_of_combat(u):
-			continue                     # 屯田制：脱战不耗粮
-		upkeep_rate[uf] = float(upkeep_rate.get(uf, 0.0)) + per_s
-	# 1) 逐个「有钱包」的阵营结算（三条来源与加收入那一段**逐条对应**，不要多也不要少）
-	var done: Dictionary = {}
-	#   本机席位（观战者没有本地钱包 —— `resources` 只是被观察 AI 钱包的显示别名）
-	if not observer_mode:
-		_charge_upkeep(my_faction, resources, dt, float(upkeep_rate.get(my_faction, 0.0)))
-		done[my_faction] = true
-	for f in player_seats:
-		var fid := String(f)
-		if done.has(fid) or fid == my_faction or _is_ai_piloted(fid):
-			continue
-		var p: Variant = player_resources.get(fid, null)
-		if typeof(p) != TYPE_DICTIONARY:
-			continue
-		_charge_upkeep(fid, p, dt, float(upkeep_rate.get(fid, 0.0)))
-		done[fid] = true
-	#   commander 阵营（各自的钱包；合作 AI 队友也走这里）
-	for cf in commander_factions():
-		var cid := String(cf)
-		if done.has(cid):
-			continue
-		var q: Variant = ai_faction_resources.get(cid, null)
-		if typeof(q) != TYPE_DICTIONARY:
-			continue
-		_charge_upkeep(cid, q, dt, float(upkeep_rate.get(cid, 0.0)))
-		done[cid] = true
-## 给一方扣「科技金 + 单位维护粮」。口径见 `_tick_upkeep`。
-func _charge_upkeep(fid: String, pool: Variant, dt: float, food_rate: float) -> void:
-	if typeof(pool) != TYPE_DICTIONARY:
-		return
-	var p: Dictionary = pool
-	# ── 0) 把「每秒消耗」记下来（HUD 那个 (+n) 要用它算净额；界面不自己算）──
-	var gold_rate: float = tech.gold_drain_per_sec(fid) if tech != null else 0.0
-	_upkeep_food_rate[fid] = maxf(0.0, food_rate)
-	_tech_gold_rate[fid] = maxf(0.0, gold_rate)
-	# ── 1) 科技金耗（点下即生效，从那一刻开始扣）──
-	# ★★ 付不起时只把金扣到 0：**不取消科技、不进入冷却**（用户口径 2026.10.30）。
-	if gold_rate > 0.0:
-		var need_g: float = gold_rate * dt
-		var have_g: float = maxf(0.0, float(p.get("gold", 0.0)))
-		p["gold"] = maxf(0.0, have_g - need_g)
-	# ── 2) 单位维护费（扣到 0 为止，不欠账）──
-	if food_rate > 0.0:
-		var need_f: float = food_rate * dt
-		var have_f: float = maxf(0.0, float(p.get("food", 0.0)))
-		p["food"] = maxf(0.0, have_f - need_f)
+
+
+## 兼容旧调用：持续消耗取消后不再扣任何资源。
+func _charge_upkeep(_fid: String, _pool: Variant, _dt: float, _food_rate: float) -> void:
+	pass
 
 
 # ------------------------------------------------------------------
@@ -6965,6 +7346,12 @@ func tick(dt: float) -> Array:
 	for f in seat_tech_effects.keys():
 		capture_mults[String(f)] = tech_capture_time_mult(String(f))
 	zones.update(cfg, dt, units, factions, capture_mults)
+	# ★★ 2026.11.18：**区划级的两套机制**（侵略如火的压制 / 自由瘟疫的染疫范围）。
+	#   ⚠️ 必须紧跟 `zones.update`（归属刚刷新完）并且**早于**人口与产量 ——
+	#      那两个式子要读这里写进去的 `population_mult` / `production_mult`。
+	var _t_zeff := _prof()
+	_refresh_zone_effects()
+	_prof_done("z/effects", _t_zeff)
 	# ★★ 2026.10.28（诊断）：把 `zones` 这一段再拆开 —— 它包含「占领读条 / 人口累加 /
 	#   归属刷新」三件事，只看一个总数没法判断该优化哪一件。
 	_prof_done("z/update", _t_zu)
@@ -7076,6 +7463,10 @@ func tick(dt: float) -> Array:
 	_prof_done("zone_convert", _t_conv)
 	# ★★ 回血：区划内缓慢回血 + 粮车光环（多辆叠加）。在单位循环之前结算。
 	var _t_heal := _prof()
+	# ★★ 2026.11.18：先跑「状态 / 瘟疫」的掉血与自愈，再跑区划回血 ——
+	#   这样本帧被烧死的单位不会再进入战斗循环（`alive=false` → 下面 `continue`）。
+	_tick_unit_statuses(cfg, dt)
+	_tick_plague(cfg, dt)
 	_tick_healing(cfg, dt)
 	_prof_done("healing", _t_heal)
 	var _t_units := _prof()

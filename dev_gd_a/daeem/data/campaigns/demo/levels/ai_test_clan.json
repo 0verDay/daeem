@@ -1,0 +1,180 @@
+{
+  "_comment": [
+    "★★ 2026.11.18：**新派系试玩关** —— 王朝·义勇军 vs 帝国·教会军（between_moutains 1v1）。",
+    "  这是「义勇军 / 教会军」两条新派系线唯一的一关固定入口；其它关卡一律不写 clan（= 原生）。",
+    "★ 双方都写 ai: commander（与 ai_test_normal 同一套路）：玩家在战役详情页选哪一方，",
+    "  运行时就把那一方的 AI 摘掉（world._setup_ai_factions），另一方由 commander 接管。",
+    "★ 开局将领的**兵种**直接用新派系自己的兵（义勇军的锦帆 / 教会军的朝圣者），",
+    "  于是开局就能看出派系差别（形状仍是「将领 = 带类型的队长」）。",
+    "★★ 备战界面（view/prepare_panel.gd）现在有四枚派系按钮：王朝 / 义勇军 / 教会军 / 帝国",
+    "  （`LoadoutRes.FACTIONS`），所以这两派既能在备战页选、也能直接开这一关。",
+    "  ★ 注意：从备战页进**普通关卡**时，玩家席位的派系会被备战配置覆盖 —— 关卡里的 clan",
+    "    只决定 AI 那一方；想手操义勇军 / 教会军请用备战页，或直接用本关。",
+    "★ 起手 400 粮 / 400 金：这是**展示关** —— 钱要够 AI 马上把教堂与方略摆出来",
+    "  （100 粮只够造一座教堂，看不到 2 级「自由瘟疫」那一层）。"
+  ],
+  "name": "测试·新派系",
+  "mode": "solo",
+  "map": "between_moutains",
+  "players": [
+    {
+      "faction": "p1"
+    },
+    {
+      "faction": "p2"
+    }
+  ],
+  "factions": [
+    {
+      "id": "p1",
+      "ai": "commander",
+      "base": [
+        28,
+        30
+      ],
+      "start_food": 800,
+      "start_gold": 800,
+      "clan": "dynasty_volunteer",
+      "name": "义勇军",
+      "color": "#ffd166",
+      "playable": true,
+      "commander_ai": {
+        "difficulty": "normal"
+      }
+    },
+    {
+      "id": "p2",
+      "ai": "commander",
+      "base": [
+        8,
+        1
+      ],
+      "start_food": 800,
+      "start_gold": 800,
+      "clan": "empire_church",
+      "name": "教会军",
+      "color": "#5ac8ff",
+      "playable": true,
+      "commander_ai": {
+        "difficulty": "normal"
+      }
+    }
+  ],
+  "allies": [],
+  "zones": [
+    {
+      "id": 0,
+      "owner": "p2"
+    },
+    {
+      "id": 1,
+      "owner": ""
+    },
+    {
+      "id": 2,
+      "owner": "p1"
+    },
+    {
+      "id": 3,
+      "owner": ""
+    },
+    {
+      "id": 4,
+      "owner": ""
+    },
+    {
+      "id": 5,
+      "owner": ""
+    },
+    {
+      "id": 6,
+      "owner": ""
+    },
+    {
+      "id": 7,
+      "owner": ""
+    },
+    {
+      "id": 8,
+      "owner": ""
+    },
+    {
+      "id": 9,
+      "owner": ""
+    },
+    {
+      "id": 10,
+      "owner": ""
+    },
+    {
+      "id": 11,
+      "owner": ""
+    },
+    {
+      "id": 12,
+      "owner": ""
+    },
+    {
+      "id": 13,
+      "owner": ""
+    },
+    {
+      "id": 14,
+      "owner": ""
+    },
+    {
+      "id": 15,
+      "owner": ""
+    }
+  ],
+  "start_units": [
+    {
+      "faction": "p1",
+      "kind": "general",
+      "unit_type": "dv_jinfan",
+      "x": 28,
+      "y": 29,
+      "name": "义勇军首领",
+      "escort_count": 2,
+      "escort_types": [
+        {
+          "type": "dv_bandit",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "faction": "p2",
+      "kind": "general",
+      "unit_type": "ec_pilgrim",
+      "x": 8,
+      "y": 2,
+      "name": "教会军统领",
+      "escort_count": 2,
+      "escort_types": [
+        {
+          "type": "ec_faith_archer",
+          "weight": 1
+        }
+      ]
+    }
+  ],
+  "start_buildings": [],
+  "objectives": [
+    {
+      "for": "p1",
+      "kind": "capture_zone",
+      "zone": 0
+    },
+    {
+      "for": "p2",
+      "kind": "capture_zone",
+      "zone": 2
+    }
+  ],
+  "fail_conditions": [],
+  "briefing": [
+    "选一方出战：义勇军（人海 / 水网 / 血战）对教会军（自由 / 自由瘟疫 / 教堂）。",
+    "目标：攻占对方的出生区。"
+  ]
+}

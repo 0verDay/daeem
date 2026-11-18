@@ -158,6 +158,20 @@ static func update_unit(world, cfg: ConfigRes, u: UnitRes, dt: float, idx: int =
 			u.halt()
 		return
 
+	# ★★ 2026.11.18：**溺水**（`unit.status.drowning.immobilize`）—— 不能移动、也不能攻击。
+	#   处理方式与眩晕一致（停下来、不索敌、不开火），区别只是它按**状态**判，
+	#   没有计时器可减：状态被摘掉的那一帧立刻恢复行动。
+	#   ⚠️ 目前没有可达路径（用户口径「只做数据预留」），但效果必须是真的 ——
+	#     将来任何一个机制把这条状态写进来，它就当场生效。
+	if u.is_immobilized():
+		if u.moving or u.has_goal:
+			u.halt()
+		return
+
+	# ★★ 2026.11.18：**多段齐射**（万箭穿心）—— 上一段到点了就补一段。
+	#   放在这里（索敌 / 战斗分支之前）：段落间隔比一帧长，先结算完再决定这一帧干嘛。
+	tick_burst(world, cfg, u)
+
 	# ★★ 移动射击（马弓手）：有移动 / 行军命令、正在沿路走时，**不停下来**，
 	#    只对射程内的敌人开火。没有移动命令（站定）时走下面的普通战斗分支，
 	#    与其它远程单位一样「停下 → 开火 / 追击」。
@@ -722,8 +736,11 @@ static func attack_unit(world, cfg: ConfigRes, u: UnitRes, t: UnitRes,
 		charged: bool = false) -> void:
 	if not u.can_attack:
 		return                        # 纯支援单位（粮车）没有攻击
+	# ★★ 2026.11.18：溺水 → 不能攻击（与 update_unit 的那道闸同一条判据）。
+	if u.is_immobilized():
+		return
 	charged = charged and not u.ranged and u.charge_enabled
-	u.attack_cd = maxf(0.05, u.combat_cooldown(cfg))
+	u.attack_cd = maxf(0.05, u.combat_cooldown(cfg, world))
 	u.attack_flash = 1.0
 	u.last_target = t
 	u.last_building = null
@@ -740,6 +757,13 @@ static func attack_unit(world, cfg: ConfigRes, u: UnitRes, t: UnitRes,
 	#   ★ 测试 / 工具会传 world = null（只验伤害公式）：这时跳过科技加成，别炸。
 	if world != null:
 		damage *= float(world.tech_attack_mult(u))
+	# ★★ 2026.11.18：**状态与「沐浴自由」给的攻击加成**（都乘在同一个数上）：
+	#   · 状态：自由 +10%、血战到底 +50%（`status_attack_mult`）；
+	#   · 沐浴自由：含自由的单位站在染疫区划里再 +20%（world 判区划，见那里的注释）。
+	#   ⚠️ 两处都是 `1 + 增量`，与上面科技那条**相乘**（三条来源各算一次，不合并成一次加法）。
+	damage *= u.status_attack_mult()
+	if world != null:
+		damage *= float(world.freedom_plague_attack_mult(u))
 	# ★★ 2026.11：**冲锋额外伤害**。`charge_damage_bonus` 来自兵种，
 	#   `tech_charge_add()` 来自科技「骑士精神」—— **加法叠加**（1.0 = +100%）。
 	#   ⚠️ 只有冲锋命中才乘，普通攻击不受影响。
@@ -798,6 +822,52 @@ static func attack_unit(world, cfg: ConfigRes, u: UnitRes, t: UnitRes,
 				"radius": u.charge_splash,
 			})
 		u.consume_charge()
+	# ★★ 2026.11.18：**多段齐射**（万箭穿心）—— 上面打出去的是**第 1 段**，
+	#   剩下的交给 `tick_burst()` 按 `burst.interval_sec` 一段一段补完；
+	#   冷却改为「装填」（`burst.reload_sec`），而不是普通攻击间隔。
+	#   ★ 伤害在这一刻就**烘好**：射手的攻击力 / 科技在装填期间变化，不该回溯到已经在飞的箭。
+	if not charged and u.burst_count > 1:
+		var reload: float = u.burst_reload if u.burst_reload > 0.0 else u.combat_cooldown(cfg, world)
+		u.attack_cd = maxf(0.05, reload)
+		u.start_burst(u.burst_count - 1, u.burst_interval, damage, t)
+
+
+## ★★ 2026.11.18：推进「多段齐射」——到点就补一段。
+##
+## 口径（与普通开火**刻意不同**的只有两点）：
+##   · **不重置 `attack_cd`**：装填已经在第 1 段那一刻写好了；
+##   · 每段都重新校验目标（死了 / 跑远了 / 打不动了 ⇒ 整段取消，不再补射）。
+##
+## ⚠️ 调用点只有一个：`update_unit()` 里那道「眩晕 / 溺水」闸门之后。
+static func tick_burst(world, cfg: ConfigRes, u: UnitRes) -> void:
+	if u.burst_left <= 0:
+		return
+	if u.burst_timer > 0.0:
+		return
+	var t = u.burst_target
+	if t == null or not t.is_attackable():
+		u.clear_burst()
+		return
+	var reach: float = u.combat_range(cfg) + cfg.unit_radius_of(t.unit_type)
+	if u.pos.distance_to(t.pos) > reach:
+		u.clear_burst()
+		return
+	u.burst_left -= 1
+	u.burst_timer = maxf(0.0, u.burst_interval)
+	u.attack_flash = 1.0
+	u.last_target = t
+	u.last_building = null
+	var damage: float = u.burst_damage
+	if u.ranged:
+		ProjectileRes.spawn(world, cfg, String(u.faction), u, u.pos, t, false, damage,
+			u.splash_radius, u.siege,
+			u.pierce, u.projectile_arc,
+			u.knockback_distance, u.knockback_stun_sec,
+			u.combat_range(cfg))
+	else:
+		t.take_damage(cfg, world, damage, u, false, u.siege)
+	if world != null:
+		world.push_event({"type": "unit_attacked", "unit": u})
 
 
 ## ★★ 2026.11：**近战范围伤害**（子刹「攻击造成范围伤害和击退」）。
@@ -938,10 +1008,13 @@ static func update_building_combat(world, cfg: ConfigRes, u: UnitRes) -> void:
 static func attack_building(world, cfg: ConfigRes, u: UnitRes, b) -> void:
 	if not u.can_attack:
 		return                        # 纯支援单位（粮车）不能拆建筑
+	# ★★ 2026.11.18：溺水 → 也不能拆建筑（「不可移动和攻击」是整条行动链）。
+	if u.is_immobilized():
+		return
 	if b == null or not b.alive:
 		u.target_building = null          # 已经塌了就别再对着空气拆
 		return
-	u.attack_cd = maxf(0.05, u.combat_cooldown(cfg))
+	u.attack_cd = maxf(0.05, u.combat_cooldown(cfg, world))
 	u.attack_flash = 1.0
 	u.last_building = b
 	u.last_target = null
@@ -961,6 +1034,9 @@ static func attack_building(world, cfg: ConfigRes, u: UnitRes, b) -> void:
 	var dmg: float = cfg.building_damage
 	if u.siege:
 		dmg *= cfg.siege_building_damage_mult
+	# ★★ 2026.11.18：状态给的攻击加成（自由 +10% / 血战到底 +50%）同样作用于拆迁 ——
+	#   否则「血战到底」的暴走遇到建筑就失效，读起来像 bug。
+	dmg *= u.status_attack_mult()
 	world.push_event({"type": "unit_attacked", "unit": u})
 	if u.ranged:
 		ProjectileRes.spawn(world, cfg, String(u.faction), u, u.pos, b, true,

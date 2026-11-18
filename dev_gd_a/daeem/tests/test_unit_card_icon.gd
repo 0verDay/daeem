@@ -52,7 +52,8 @@ const LINE_COVERAGE_MAX := 35.0
 
 ## 建筑图标的张数 = 可建造的建筑类型数（`view/building_view_3d.gd` 的 BUILDING_MODELS 去掉
 ## zone_center）。加建筑要重跑烘焙并把这里 +1。
-const BUILDING_MASK_COUNT := 8
+## ★★ 2026.11.18：+1 = 教堂（`building_church.png`，用 `tools/bake_church_icon.py` 单独烘的）。
+const BUILDING_MASK_COUNT := 9
 ## 科技图标的张数 = 原生 9 条 + 王朝/帝国 13 条。
 const TECH_MASK_COUNT := 22
 
@@ -142,6 +143,11 @@ func _test_masks(cfg) -> void:
 	for t in types:
 		var id := String(t)
 		var path := IconRes.mask_for_unit(cfg, id)
+		# ★★ 2026.11.18：**没有素材**的兵种（义勇军 / 教会军那一批新兵）按用户口径
+		#   走「单字占位」而不是剪影蒙版 —— 这里只要求两边的口径一致（有素材才有蒙版）。
+		if cfg.unit_sprite_of(id) == "":
+			eq(path, "", "★ %s 没配素材 ⇒ 没有剪影蒙版（单字占位）" % id)
+			continue
 		ok(path != "", "★ %s 有剪影蒙版（%s）" % [id, path])
 		if path == "":
 			continue

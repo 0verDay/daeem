@@ -84,6 +84,13 @@ static func _unit_fields(u) -> Dictionary:
 		"ch": round2(u.charge_ratio),
 		"cc": round2(u.charge_cd),
 		"ca": 1 if u.charge_armed else 0,
+		# ★★ 2026.11.18：**单位状态**（自由 / 水性 / 溺水 / 血战到底 / 信仰不死）。
+		#   · `sts` = 逗号分隔的 id（空 → null，省带宽）；客机拿它画顶带 buff 槽、
+		#     并按「自由」算自己的血上限（`set_status_list` 会重算 hp_max）；
+		#   · `bwa` = 「血战到底」是否在暴走（+50% 伤害 / 每秒掉血）。
+		#   缺字段 = 老快照 ⇒ 保持本地现状（与其它字段同一条约定）。
+		"sts": ",".join(u.status_list()) if not u.statuses.is_empty() else null,
+		"bwa": 1 if u.blood_war_active else 0,
 	}
 
 
@@ -176,6 +183,13 @@ static func _unit_delta(u, prev: Dictionary) -> Dictionary:
 	var ca := 1 if u.charge_armed else 0
 	if prev["ca"] != ca:
 		out["ca"] = ca
+	# ★★ 2026.11.18：单位状态 / 血战暴走态（只在变化时发，字符串比较很便宜）。
+	var sts: Variant = ",".join(u.status_list()) if not u.statuses.is_empty() else null
+	if prev.get("sts", null) != sts:
+		out["sts"] = sts
+	var bwa := 1 if u.blood_war_active else 0
+	if int(prev.get("bwa", 0)) != bwa:
+		out["bwa"] = bwa
 	return out
 
 
@@ -536,6 +550,16 @@ static func apply_snapshot(world, cfg: ConfigRes, snap: Dictionary) -> void:
 		elif su.has("ch"):
 			# 只带进度没带 armed 的快照（兼容口径）：满进度视为已进入冲锋态。
 			u.charge_armed = u.charge_ratio >= 0.999
+		# ★★ 2026.11.18：单位状态（自由 / 水性 / …）与「血战到底」的暴走态。
+		#   缺字段 = 老快照 ⇒ 保持本地现状（不要把状态静默清掉，与其它字段同一条约定）。
+		if su.has("sts"):
+			var raw_st: Variant = su["sts"]
+			var st_arr: Array = []
+			if typeof(raw_st) == TYPE_STRING and String(raw_st) != "":
+				st_arr = String(raw_st).split(",", false)
+			u.set_status_list(cfg, st_arr)
+		if su.has("bwa"):
+			u.blood_war_active = int(su["bwa"]) != 0
 		u.moving = bool(su.get("m", 0))
 		# 队长 id：缺字段就保持本地现状（同上，别把「没有队长」当成默认值覆盖掉）
 		var ld: Variant = su.get("ld", null)

@@ -132,24 +132,19 @@ def selftest(project_dir: Path) -> int:
         for z in model.zones[:4] if z.center is not None))
     print("[kinds] %s" % ", ".join(
         "%s=%s" % (z.name, model.zone_kind(z.zone_id)) for z in model.zones[:4]))
-    print("[build_points] %s" % ", ".join(
-        "%s=%s" % (z.name, "、".join("(%d,%d)" % p for p in z.build_points))
-        for z in model.zones[:4]))
     for problem in model.problems():
         print("[warn] %s" % problem)
 
     import json
     text = mapfile.dumps(model)
     again = mapfile.dict_to_model(json.loads(text), cfg)
-    # ★ 往返比较要把**建造点位**也算进去：它是本轮新加的字段，漏了就等于
-    #   「导出看起来有、读回来丢了」这种最难发现的回归（列表顺序也要一致）。
     same = (again.existing == model.existing and again.terrain == model.terrain
             and again.cols == model.cols and again.rows == model.rows
             and sorted((z.zone_id, z.name, z.kind, sorted(z.tiles), z.center,
-                        tuple(z.build_points), tuple(sorted(z.production.items())))
+                        tuple(sorted(z.production.items())))
                        for z in again.zones)
             == sorted((z.zone_id, z.name, z.kind, sorted(z.tiles), z.center,
-                       tuple(z.build_points), tuple(sorted(z.production.items())))
+                       tuple(sorted(z.production.items())))
                       for z in model.zones))
     print("[roundtrip] %s" % ("OK" if same else "FAILED"))
     return 0 if same else 1

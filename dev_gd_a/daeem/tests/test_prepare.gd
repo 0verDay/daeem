@@ -11,6 +11,7 @@ const MainScene := preload("res://view/main.tscn")
 const LayoutRes := preload("res://view/menu_deck_layout.gd")
 const ThemeRes := preload("res://view/theme.gd")
 const FillRes := preload("res://view/fill_button.gd")
+const LoadoutRes := preload("res://logic/loadout.gd")
 
 
 func _initialize() -> void:
@@ -64,7 +65,10 @@ func _test_enter_and_layout() -> void:
 	var side: float = LayoutRes.side_w(w)
 	var panel_inset: float = clampf(round(h * 0.0602), 24.0, 80.0)
 	var faction_top: float = LayoutRes.PREP_HEADER_H
-	var faction_half: float = (h - faction_top) * 0.5
+	# ★★ 2026.11.18：备战页现在是**四枚**派系按钮（王朝 / 义勇军 / 教会军 / 帝国），
+	#   等高切分同一列 ⇒ 每枚 = (屏高 − 顶栏) / 4。
+	var faction_n: int = LoadoutRes.FACTIONS.size()
+	var faction_slot: float = (h - faction_top) / float(faction_n)
 	ok(not pp.visible, "主菜单页：备战页隐藏")
 	near(screen.art().modulate.a, 1.0, 0.01, "主菜单页：左侧轮播图可见")
 
@@ -331,23 +335,30 @@ func _test_enter_and_layout() -> void:
 		for b in roster.item_buttons():
 			ok(b is Button, "列表项是按钮：%s" % b.name)
 
-	# ---- 右侧两枚竖排按钮 ----
-	eq(pp.faction_buttons().size(), 2, "两枚派系按钮")
+	# ---- 右侧四枚竖排按钮（上 → 下：王朝 / 义勇军 / 教会军 / 帝国）----
+	eq(faction_n, 4, "★★ 派系清单是四个（王朝 / 义勇军 / 教会军 / 帝国）")
+	eq(pp.faction_buttons().size(), faction_n, "★★ 四枚派系按钮")
 	var f0: Rect2 = pp.faction_buttons()[0].get_global_rect()
-	var f1: Rect2 = pp.faction_buttons()[1].get_global_rect()
+	var f_last: Rect2 = pp.faction_buttons()[faction_n - 1].get_global_rect()
 	near(f0.position.x, w - 200.0, 1.0, "派系按钮贴右缘")
 	near(f0.size.x, 200.0, 1.0, "派系按钮宽 200")
 	near(f0.end.x, w, 0.5, "派系按钮到屏幕右缘")
-	near(f0.position.y, faction_top, 1.0, "王朝在上")
-	near(f0.size.y, faction_half, 1.0, "上下两枚均分")
-	near(f1.position.y, faction_top + faction_half, 1.0, "帝国在下")
-	near(f1.end.y, h, 0.5, "下半贴到屏幕底")
-	near(f0.end.y, f1.position.y, 0.5, "两枚严格上下相接")
-	eq(pp.faction_buttons()[0].display_text(), "王朝", "上：王朝")
-	eq(pp.faction_buttons()[1].display_text(), "帝国", "下：帝国")
+	near(f0.position.y, faction_top, 1.0, "王朝在最上")
+	near(f0.size.y, faction_slot, 1.0, "四枚等高切分")
+	near(f_last.end.y, h, 0.5, "最后一枚贴到屏幕底")
+	# 逐枚相接：第 i+1 枚的顶 = 第 i 枚的底
+	for i in range(1, faction_n):
+		near(pp.faction_buttons()[i].get_global_rect().position.y,
+			pp.faction_buttons()[i - 1].get_global_rect().end.y, 0.5,
+			"第 %d / %d 枚严格上下相接" % [i, i - 1])
+	# 文案 = clan.short（竖排只有 3 个字，四个槽才放得下 40px）
+	eq(pp.faction_buttons()[0].display_text(), "王朝", "第 1 枚：王朝")
+	eq(pp.faction_buttons()[1].display_text(), "义勇军", "★★ 第 2 枚：义勇军")
+	eq(pp.faction_buttons()[2].display_text(), "教会军", "★★ 第 3 枚：教会军")
+	eq(pp.faction_buttons()[3].display_text(), "帝国", "第 4 枚：帝国")
 	ok(pp.faction_buttons()[0].text.is_empty(), "按钮本身不画横排字（交给竖排 Label）")
 	ok(not pp.faction_buttons()[0].is_selected(), "王朝初始未选中（白框）")
-	ok(pp.faction_buttons()[1].is_selected(), "帝国初始选中（黑块 / 金色填充）")
+	ok(pp.faction_buttons()[faction_n - 1].is_selected(), "帝国初始选中（黑块 / 金色填充）")
 	eq(pp.selected_faction(), "empire", "默认派系 = 帝国")
 
 	# 点上面那枚：互斥切换，右面板三节跟着换成王朝的数据
@@ -355,7 +366,7 @@ func _test_enter_and_layout() -> void:
 	await _wait_sec(0.25)
 	eq(pp.selected_faction(), "dynasty", "点王朝切到王朝")
 	ok(pp.faction_buttons()[0].is_selected(), "王朝变选中")
-	ok(not pp.faction_buttons()[1].is_selected(), "帝国变未选中")
+	ok(not pp.faction_buttons()[faction_n - 1].is_selected(), "帝国变未选中")
 	if roster != null:
 		eq(roster.faction_id(), "dynasty", "列表跟着切到王朝")
 		var dyn_units: Array = cfg.clan_recruit_list("dynasty")
@@ -378,6 +389,42 @@ func _test_enter_and_layout() -> void:
 		eq(String(pp.detail().last_item().get("kind", "")), "unit", "王朝组合单位详情")
 		ok(_section_titles(pp.detail()).has("编成"), "组合单位详情含编成")
 		ok(_section_titles(pp.detail()).has("说明"), "组合单位详情含说明")
+
+		# ---- ★★ 2026.11.18：两个新派系的备战页也要真的「有内容」----
+		#   只看按钮存在是不够的：派系的招募表 / 科技表 / 将领归属任何一处漏了，
+		#   这一页就会是空的（按钮点得动、右面板三节全 0 条）。
+		for pair in [["dynasty_volunteer", 1], ["empire_church", 2]]:
+			var fid := String(pair[0])
+			var fidx := int(pair[1])
+			await _click_at(pp.faction_buttons()[fidx].get_global_rect().get_center())
+			await _wait_sec(0.25)
+			eq(pp.selected_faction(), fid, "★★ 点第 %d 枚 → 切到 %s" % [fidx + 1, fid])
+			ok(pp.faction_buttons()[fidx].is_selected(), "★ %s 按钮变选中" % fid)
+			eq(LoadoutRes.faction(), fid, "★★ 出战派系跟着换（合作模式读这一份）")
+			eq(roster.faction_id(), fid, "★ 右面板切到 %s" % fid)
+			var units: Array = cfg.clan_recruit_list(fid)
+			eq(roster.unit_buttons().size(), units.size(),
+				"★★ %s 的单位数（%d 条招募）" % [fid, units.size()])
+			eq(roster.tile_label(roster.unit_buttons()[0]),
+				String((units[0] as Dictionary).get("label", "")),
+				"★ %s 第一个单位" % fid)
+			var techs: Array = _tech_names(cfg, fid)
+			eq(roster.tech_buttons().size(), techs.size(),
+				"★★ %s 的科技数（跳过空槽）" % fid)
+			for b2 in roster.tech_buttons():
+				ok(techs.has(roster.tile_label(b2)),
+					"★ %s 科技名：%s" % [fid, roster.tile_label(b2)])
+			# 将领：通用 10 位 + 母派系专属 2 位（新派系走母派系的将领）
+			eq(roster.general_buttons().size(), 12,
+				"★★ %s 的将领 12 位（通用 10 + 母派系专属 2）" % fid)
+			# 没有蒙版的磁贴走单字占位（新兵种还没有原画 ⇒ 至少不是空白格）
+			var ub: Button = roster.unit_buttons()[0]
+			ok(ub.has_node("Icon") or ub.has_node("PlaceholderIcon"),
+				"★ %s 的单位磁贴画了图标或单字占位" % fid)
+		# 回到王朝：下面几段（拖拽 / 悬停 / 磁贴选中）都按「当前派系 = 王朝」写的。
+		await _click_at(pp.faction_buttons()[0].get_global_rect().get_center())
+		await _wait_sec(0.25)
+		eq(pp.selected_faction(), "dynasty", "（收尾）切回王朝，后面的用例接着用王朝的数据")
 
 		# 真拖一下：向上拖 = 内容往下滚；拖动松手不会顺手点掉列表项
 		roster.scroll_to(0.0)

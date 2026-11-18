@@ -23,8 +23,13 @@ const ConfigRes = preload("res://logic/config.gd")
 ## 每一阶的名额（下标 = 阶，0~3）。用户口径：1 / 3 / 3 / 3。
 const QUOTA := [1, 3, 3, 3]
 
-## 备战页只有这两个派系按钮（原生没有按钮，不在出战体系里）。
-const FACTIONS := ["dynasty", "empire"]
+## ★★ 2026.11.18：备战页现在有**四个**派系 —— 王朝 / 帝国 + 两个新派系
+##   （王朝·义勇军 / 帝国·教会军，见 docs/dev_plan_16.md）。
+##   ★ 顺序 = 备战页右侧竖排按钮**从上到下**的顺序：上 = 王朝，下 = 帝国，中间两条是新派系
+##     （按「母派系挨着」排：王朝 → 义勇军 → 教会军 → 帝国）。
+##   ★ 原生（native）仍然没有按钮：它不在出战体系里。
+##   ★ 这份表是**唯一**的派系清单（view/prepare_panel.gd 直接读它，不再自己抄一份）。
+const FACTIONS := ["dynasty", "dynasty_volunteer", "empire_church", "empire"]
 const DEFAULT_FACTION := "empire"
 
 ## `派系 → [将领序号...]`（**按选中顺序**排队；FIFO 顶掉要靠这个顺序）。

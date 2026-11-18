@@ -1,10 +1,9 @@
 ## tech_grid.gd —— 右下「科技」页里的 3×3 九格（**盖在命令卡上**）
 ##
-## ★★ 需求原话：
-##   「当前占位用科技有 9 个，铺满右下角科技页签的 3x3 格子」；
-##   「玩家同一时间仅可启用三个占位科技，玩家需要通过拖牌或快捷键启用科技，
-##     当玩家启用的科技数到 3 时，玩家再启用科技会被阻止并提示，
-##     玩家可以拖出已启用的科技以弃用科技」。
+## ★★ 2026.11.18：
+##   · 科技**一次性打出**：拖出 / 快捷键只做「启用」，没有「弃用」；
+##   · 已启用的牌留在页面上（实心，不可再拖）；启用满 3 条后，其余未启用手牌销毁。
+##   · 「最多 3 个」仍在 logic/tech.gd + world.set_tech_active；本控件只按 playable 拦截。
 ##
 ## 分工（与 command_card.gd 同一条边界）：
 ##   · 本控件只做三件事：摆九格、按权威状态画「已启用 / 没启用」、把拖牌/快捷键抛出去；
@@ -82,6 +81,10 @@ var _entries: Array = []
 var _primer_done: bool = false
 var _deck_tween: Tween = null
 var _drag_tween: Tween = null
+var _drag_alpha_tween: Tween = null
+## 拖拽透明度**目标值**（1.0 = 手里 / 0.3 = 地图上）。测试断言这个，
+## 不直接等 0.12s 的渐变（无头测试里 40 帧可能还不到一帧的真实时间）。
+var _drag_alpha_target: float = 1.0
 ## ★★ 2026.11.14：「打出一张牌」那一段单独一条 tween（见 `_animate_played_out()`）
 var _played_tween: Tween = null
 var _drag_index: int = -1
@@ -243,8 +246,11 @@ func set_entries(list: Array) -> void:
 		_deck_tween.kill()
 	if _drag_tween != null and _drag_tween.is_running():
 		_drag_tween.kill()
+	if _drag_alpha_tween != null and _drag_alpha_tween.is_running():
+		_drag_alpha_tween.kill()
 	for cell in _cells:
 		cell.modulate.a = 1.0
+	_drag_alpha_target = 1.0
 	_entries = clean
 	# ★★ 2026.11.17：只有「拖牌途中被重建」才保住下沉状态（松手那条路紧接着会反向播回来）；
 	#   其余情况（换页 / 选别的东西）一律回原位，免得上一次拖牌的下沉状态漏到这里。
@@ -273,6 +279,10 @@ func _same_entries(clean: Array) -> bool:
 		if bool(a.get("active", false)) != bool(b.get("active", false)):
 			return false
 		if bool(a.get("available", true)) != bool(b.get("available", true)):
+			return false
+		if bool(a.get("playable", true)) != bool(b.get("playable", true)):
+			return false
+		if bool(a.get("destroyed", false)) != bool(b.get("destroyed", false)):
 			return false
 		if String(a.get("reason", "")) != String(b.get("reason", "")):
 			return false
@@ -357,8 +367,8 @@ func _apply() -> void:
 		if filled:
 			var e: Dictionary = _entries[ei]
 			active = bool(e.get("active", false))
-			# ★ 不能启用（阶数不够 / 名额已满 / 黄金净收入赤字）⇒ 置灰不可点；
-			#   已启用的照旧可点（= 弃用）。
+			# ★★ 2026.11.18：已启用的科技保留在页面上（实心），但不可再打出 / 不可取消；
+			#   未启用且不可用的格子仍走灰色。
 			locked = not active and not bool(e.get("available", true))
 			_name_labels[i].text = String(e.get("name", ""))
 			_line_labels[i].text = String(e.get("line", ""))
@@ -408,12 +418,9 @@ func _apply() -> void:
 func _layout_fan() -> void:
 	_kill_hover_tweens()
 	_hover_index = -1
-	var visible_cells: Array[int] = []
-	for i in _cells.size():
-		var ei := _entry_index_for_cell(i)
-		if ei >= 0 and ei < _entries.size() \
-				and String((_entries[ei] as Dictionary).get("id", "")) != "":
-			visible_cells.append(i)
+	# ★★ 2026.11.18：与 `_visible_cell_indices()` 共用同一条判据，避免「摆牌」和
+	#   「悬停让开 / 下沉」数出不同的张数（序号一错，牌就落到别人的槽位）。
+	var visible_cells: Array[int] = _visible_cell_indices()
 	var count := visible_cells.size()
 	# ★★ 2026.11.17：重建时若正处在「拖牌 → 其余牌下沉」状态，直接摆成下沉位
 	#   （否则这一帧弹回原位、下一帧再沉下去，看得见抽动）。见 `_set_deck_tucked()`。
@@ -425,6 +432,8 @@ func _layout_fan() -> void:
 		var cell := _cells[i]
 		var r := UiLayoutRes.card_fan_local(ordinal, count)
 		var pose: Vector2 = r.position + UiLayoutRes.card_tuck_offset(r.size, tuck)
+		# ★★ 2026.11.18：支点统一为牌底中点（见 `UiLayoutRes.card_pivot`）。
+		cell.pivot_offset = UiLayoutRes.card_pivot(r.size)
 		cell.position = pose
 		cell.size = r.size
 		cell.rotation = UiLayoutRes.card_fan_rotation(ordinal, count)
@@ -484,8 +493,9 @@ func _activate_cell(i: int) -> void:
 	if ei < 0 or ei >= _entries.size():
 		return
 	var e: Dictionary = _entries[ei]
-	if not bool(e.get("active", false)) and not bool(e.get("available", true)):
-		return                            # 置灰格：点了什么都不发生
+	# ★★ 2026.11.18：科技打出后不可再次打出 / 不可取消；已启用与已被销毁的格子都不响应。
+	if not bool(e.get("playable", true)):
+		return
 	cell_activated.emit(String(e.get("id", "")))
 
 
@@ -517,7 +527,8 @@ func _update_drag(i: int, viewport_pos: Vector2) -> bool:
 	if ei < 0 or ei >= _entries.size():
 		return false
 	var entry: Dictionary = _entries[ei]
-	if not bool(entry.get("active", false)) and not bool(entry.get("available", true)):
+	# ★★ 2026.11.18：已启用 / 已销毁的科技牌不能再拖出。
+	if not bool(entry.get("playable", true)):
 		return false
 	if not _dragging and viewport_pos.y - _drag_start_pos.y <= -10.0:
 		_dragging = true
@@ -531,6 +542,9 @@ func _update_drag(i: int, viewport_pos: Vector2) -> bool:
 		_set_deck_tucked(true, i, true)
 		# 被悬停的牌是放大态；拖起来必须回到 1.0。
 		_cells[i].scale = Vector2.ONE
+		# ★★ 2026.11.18：入场 / 淡出途中被抓起来时，先把手里的牌恢复成不透明
+		#   （与命令卡同一句），再交给 `_set_drag_alpha()` 按位置渐变。
+		_cells[i].modulate.a = 1.0
 		if _deck_tween != null and _deck_tween.is_running():
 			_deck_tween.kill()
 		if _drag_tween != null and _drag_tween.is_running():
@@ -542,10 +556,33 @@ func _update_drag(i: int, viewport_pos: Vector2) -> bool:
 	var local: Vector2 = get_global_transform_with_canvas().affine_inverse() * viewport_pos
 	_cells[i].rotation = 0.0
 	_cells[i].position = local - _cells[i].size * 0.5
-	# ★ 与建筑 / 单位牌统一：拖出后半透明（不再整张实心跟着指针）。
-	_cells[i].modulate.a = DRAG_CARD_ALPHA
+	# ★ 与命令卡同一套：拖到地图上半透明，拖回手牌范围淡回来（不再硬切 0.3）。
+	_set_drag_alpha(i, true)
 	cell_drag_moved.emit(String(entry.get("id", "")), viewport_pos)
 	return true
+
+
+## 科技牌拖出后的透明度：手牌范围内 1.0，拖到地图上 `DRAG_CARD_ALPHA`。
+## ★★ 2026.11.18：旧版在 `_update_drag` 里直接写 0.3（一帧硬切），与命令卡的
+##   0.12s 渐变不一致，拖起的瞬间会「啪」一下变淡。
+func _set_drag_alpha(i: int, follow_pointer: bool) -> void:
+	if i < 0 or i >= _cells.size():
+		return
+	var target := 1.0
+	if follow_pointer:
+		var rect := Rect2(Vector2.ZERO, UiLayoutRes.CARD_RECT.size).grow(40.0)
+		var center: Vector2 = _cells[i].position + _cells[i].size * 0.5
+		if not rect.has_point(center):
+			target = DRAG_CARD_ALPHA
+	_drag_alpha_target = target
+	if absf(_cells[i].modulate.a - target) < 0.001:
+		if _drag_alpha_tween != null and _drag_alpha_tween.is_running():
+			_drag_alpha_tween.kill()
+		return
+	if _drag_alpha_tween != null and _drag_alpha_tween.is_running():
+		_drag_alpha_tween.kill()
+	_drag_alpha_tween = create_tween()
+	_drag_alpha_tween.tween_property(_cells[i], "modulate:a", target, 0.12)
 
 
 func _finish_touch_drag(i: int, viewport_pos: Vector2) -> void:
@@ -576,6 +613,7 @@ func _finish_touch_drag(i: int, viewport_pos: Vector2) -> void:
 			_animate_card_back(i)
 	_dragging = false
 	_drag_index = -1
+	_drag_alpha_target = 1.0
 	# ★★ 2026.11.17（用户口径）：松手即反向 —— 其余科技牌浮回原位。
 	#   ⚠️ 必须放在 `cell_drag_finished` 之后：那一句会让 HUD 重建（`_layout_fan`），
 	#   重建时 `_tucked` 还保着（见 `set_entries`），这里才开始浮回。
@@ -599,6 +637,8 @@ func _animate_played_out(i: int) -> void:
 		_played_tween.kill()
 	if _drag_tween != null and _drag_tween.is_running():
 		_drag_tween.kill()
+	if _drag_alpha_tween != null and _drag_alpha_tween.is_running():
+		_drag_alpha_tween.kill()
 	# ★ 用**单独一条** tween：它跑完要回调 `_animate_card_back()`，而那一条会 kill
 	#   `_drag_tween`——如果共用一条，会把自己 kill 掉、飞回那一段永远不播（实测过）。
 	_played_tween = create_tween().set_parallel(true)
@@ -642,30 +682,73 @@ func entry_id_at(i: int) -> String:
 	return String((_entries[ei] as Dictionary).get("id", ""))
 
 
+## 科技牌飞回它的扇形槽位。
+##
+## ★★ 2026.11.18：与命令卡 `_animate_card_back()` 统一：
+##   · CUBIC（不再用 BACK —— BACK 会先冲过槽位再弹回来，看着像「回到手牌后又移了一下」）；
+##   · **每帧重算槽位**：回手这 0.2s 里手牌可能因为启用 / 销毁 / 换页而重排，
+##     按松手那一刻的序号硬落位会和别的牌重叠；
+##   · 缩放随返程进度收回 1.0，末帧对齐支点与尺寸。
 func _animate_card_back(i: int) -> void:
 	if i < 0 or i >= _cells.size():
 		return
-	var visible_cells: Array[int] = []
-	for ci in _cells.size():
-		if _cells[ci].visible:
-			visible_cells.append(ci)
-	var ordinal := visible_cells.find(i)
-	if ordinal < 0:
+	if _fan_slot_of(i).is_empty():
 		return
-	var target := UiLayoutRes.card_fan_local(ordinal, visible_cells.size())
-	var rot := UiLayoutRes.card_fan_rotation(ordinal, visible_cells.size())
+	var start_pos: Vector2 = _cells[i].position
+	var start_rot: float = _cells[i].rotation
+	var start_scale: float = _cells[i].scale.x
 	if _drag_tween != null and _drag_tween.is_running():
 		_drag_tween.kill()
-	_cells[i].scale = Vector2.ONE
+	if _drag_alpha_tween != null and _drag_alpha_tween.is_running():
+		_drag_alpha_tween.kill()
 	_drag_tween = create_tween().set_parallel(true)
-	_drag_tween.tween_property(_cells[i], "position", target.position, 0.18) \
-		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	_drag_tween.tween_property(_cells[i], "rotation", rot, 0.18) \
-		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	# ★★ 2026.11.14：回手时把**卡面**也淡回来 ——「打出」那一段会把它淡到 0，
-	#   这里不带 modulate 的话那张牌就永远看不见了（实测：取消启用后牌消失）。
-	_drag_tween.tween_property(_cells[i], "modulate:a", 1.0, 0.18)
-	_cells[i].z_index = ordinal
+	_drag_tween.tween_method(func(t: float) -> void:
+		if _dragging or i >= _cells.size():
+			return
+		var now := _fan_slot_of(i)
+		if now.is_empty():
+			return
+		var r: Rect2 = now["rect"]
+		var no: int = now["ordinal"]
+		_cells[i].pivot_offset = UiLayoutRes.card_pivot(r.size)
+		_cells[i].size = r.size
+		_cells[i].position = start_pos.lerp(r.position, t)
+		_cells[i].rotation = lerp_angle(start_rot, float(now["rot"]), t)
+		var k := clampf(1.0 - t, 0.0, 1.0)
+		var s := lerpf(1.0, start_scale, k)
+		_cells[i].scale = Vector2(s, s)
+		_cells[i].z_index = no
+	, 0.0, 1.0, 0.2).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	# 「打出」那一段会把牌淡到 0，这里必须淡回来。
+	_drag_tween.tween_property(_cells[i], "modulate:a", 1.0, 0.12)
+	_drag_tween.finished.connect(func() -> void:
+		if not is_instance_valid(self) or i < 0 or i >= _cells.size() or _dragging:
+			return
+		var now := _fan_slot_of(i)
+		if now.is_empty():
+			return
+		var r: Rect2 = now["rect"]
+		_cells[i].pivot_offset = UiLayoutRes.card_pivot(r.size)
+		_cells[i].size = r.size
+		_cells[i].position = r.position
+		_cells[i].rotation = float(now["rot"])
+		if _hover_index != i:
+			_cells[i].scale = Vector2.ONE
+	, CONNECT_ONE_SHOT)
+
+
+## 第 i 格在当前扇形里的位置 / 旋转 / 序号（空格返回 {}）。
+func _fan_slot_of(i: int) -> Dictionary:
+	var visible_cells := _visible_cell_indices()
+	var ordinal := visible_cells.find(i)
+	if ordinal < 0:
+		return {}
+	var r := UiLayoutRes.card_fan_local(ordinal, visible_cells.size())
+	return {
+		"rect": r,
+		"rot": UiLayoutRes.card_fan_rotation(ordinal, visible_cells.size()),
+		"ordinal": ordinal,
+	}
 
 
 ## ★★ 键盘：科技页的九格快捷键（Q/W/E/A/S/D/Z/X/C）。
@@ -699,6 +782,11 @@ func _on_cell_mouse_entered(i: int) -> void:
 		return
 	if touch_suppress_hover:
 		return                       # 手机端按住期间不弹（长按到点后由 hud 调 hover()）
+	# ★★ 2026.11.18：入场动画还在播时不起悬停抬起（两条 Tween 会抢同一张牌的
+	#   position / rotation，看起来像牌在抖）。悬停说明照常弹。
+	if _deck_tween != null and _deck_tween.is_running():
+		cell_hovered.emit(i)
+		return
 	_raise_card(i, true)
 	cell_hovered.emit(i)
 
@@ -781,9 +869,8 @@ func _raise_card(i: int, raised: bool) -> void:
 		var target_scale := 1.0
 		if ci == _hover_index:
 			target_rot = 0.0
-			target_pos.y -= 20.0
-			# 只放大悬停牌；不设 pivot（扇形一直绕左上角转），用位置补偿让放大居中。
-			target_pos -= _cells[ci].size * 0.5 * (HOVER_SCALE - 1.0)
+			target_pos.y -= UiLayoutRes.CARD_HOVER_RAISE_PX
+			# ★★ 2026.11.18：支点是牌底中点 ⇒ 放大从手里往上长，不再补位置。
 			target_scale = HOVER_SCALE
 			_cells[ci].z_index = UiLayoutRes.CARD_SLOTS + 2
 		else:
@@ -809,6 +896,8 @@ func _ease_cell_pose(i: int, target_pos: Vector2, target_rot: float,
 	_hover_tweens[i] = null
 	var cell := _cells[i]
 	var target_sv := Vector2(target_scale, target_scale)
+	# ★★ 2026.11.18：支点跟随 size，统一钉成「牌底中点」（理由同命令卡）。
+	cell.pivot_offset = UiLayoutRes.card_pivot(cell.size)
 	# 已经到位：不起 Tween（换到相邻牌时，同侧的牌目标位置不变，理应一动不动）。
 	if cell.position.distance_to(target_pos) < 0.25 \
 			and absf(angle_difference(cell.rotation, target_rot)) < 0.001 \
@@ -905,20 +994,22 @@ func animate_deck_in() -> void:
 		var rot := UiLayoutRes.card_fan_rotation(ordinal, count)
 		_cells[i].modulate.a = 0.0
 		_cells[i].scale = Vector2.ONE
-		_cells[i].position = target.position + Vector2(0.0, 40.0)
-		_cells[i].rotation = rot * 1.5
+		# ★★ 2026.11.18：与命令卡同一套入口（起点下移 26px、旋转 ×0.5）。
+		_cells[i].pivot_offset = UiLayoutRes.card_pivot(target.size)
+		_cells[i].position = target.position + Vector2(0.0, 26.0)
+		_cells[i].rotation = rot * 0.5
 		_cells[i].z_index = ordinal
 	_deck_tween = create_tween().set_parallel(true)
 	for ordinal in count:
 		var i := visible_cells[ordinal]
 		var target := UiLayoutRes.card_fan_local(ordinal, count)
 		var rot := UiLayoutRes.card_fan_rotation(ordinal, count)
-		var delay := float(ordinal) * 0.025
-		_deck_tween.tween_property(_cells[i], "position", target.position, 0.22) \
-			.set_delay(delay).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-		_deck_tween.tween_property(_cells[i], "rotation", rot, 0.22) \
-			.set_delay(delay).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-		_deck_tween.tween_property(_cells[i], "modulate:a", 1.0, 0.16).set_delay(delay)
+		var delay := float(ordinal) * 0.018
+		_deck_tween.tween_property(_cells[i], "position", target.position, 0.18) \
+			.set_delay(delay).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		_deck_tween.tween_property(_cells[i], "rotation", rot, 0.18) \
+			.set_delay(delay).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		_deck_tween.tween_property(_cells[i], "modulate:a", 1.0, 0.14).set_delay(delay)
 
 
 # ------------------------------------------------------------------

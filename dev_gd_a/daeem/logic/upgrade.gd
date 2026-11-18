@@ -73,8 +73,9 @@ static func can_upgrade_reason(world, b, faction: String) -> String:
 	# ★★ 大本营正在排队重生将领 → 不能**开始新的**升级（进行中的不打断）。
 	if b.is_base() and b.is_respawning():
 		return "respawning"
-	if b.level >= world.cfg.upgrade_max_level(b.type):
-		return "max_level"
+	if b.level >= world.building_level_cap(b):
+		return "base_level_cap" if world.cfg.building_max_level_by_base(String(b.type)) \
+			else "max_level"
 	# ★★ 大本营升级的将领挡位：读**目标行**的 `need_generals`（升 2 本 0 将 / 升 3 本 2 将）。
 	#   ⚠️ 不要回头借用 `max_generals`（上限 2/4/5）—— 门槛与上限是两件事，见 config 注释。
 	if b.is_base():

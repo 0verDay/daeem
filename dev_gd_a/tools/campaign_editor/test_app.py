@@ -365,28 +365,29 @@ def t_canvas(app, model) -> None:
     eq(len(level(app).start_units), before_units, "★ 右键删掉它")
     eq(app.selection, None, "删完清掉选中")
 
-    # ---- 放建筑：**只认地图的建造点位**（用户口径 2026.11）----
+    # ---- 放建筑：**本区任意可通行格**（2026.11.18 新口径）----
     app.selection = None
     app.brush_kind = "building"
     app.brush_value = next((t for t in app._brush_building_types()
                             if not M.is_wall_building_type(t)), "tower")
     before_buildings = len(level(app).start_buildings)
     app.root.update()
+    if f.get("mountain"):
+        app.place_at(f["mountain"])
+        eq(len(level(app).start_buildings), before_buildings,
+           "★★ 山地 / 水域上 → 放不上去（数据一点没变）")
+        ok("放不了" in app.status_var.get() or "可通行" in app.status_var.get(),
+           "★ 状态栏说清楚了为什么放不上去（实际 %r）" % app.status_var.get())
     app.place_at(f["off_point"])
-    eq(len(level(app).start_buildings), before_buildings,
-       "★★ 不在建造点位上的格子 → 放不上去（数据一点没变）")
-    ok("建造点位" in app.status_var.get(),
-       "★ 状态栏说清楚了为什么放不上去（实际 %r）" % app.status_var.get())
-    app.place_at(f["build_point"])
     eq(len(level(app).start_buildings), before_buildings + 1,
-       "★★ 在建造点位上 → 放上去了")
+       "★★ 本区可通行格（不是旧地图点位）→ 放上去了")
     placed = level(app).start_buildings[-1]
-    eq(placed.point(), f["build_point"], "放在点位那一格")
+    eq(placed.point(), f["off_point"], "放在点下去的那一格")
     eq(app.selection, ("building", before_buildings), "放完自动选中它")
-    app.place_at(f["build_point"])
+    app.place_at(f["off_point"])
     eq(len(level(app).start_buildings), before_buildings + 1,
-       "★★ 同一个点位再放一栋 → 被拒（一个点位只放一栋）")
-    right_click_canvas(app, f["build_point"])
+       "★★ 同一格再放一栋 → 被拒（同一格不能叠两栋）")
+    right_click_canvas(app, f["off_point"])
     eq(len(level(app).start_buildings), before_buildings, "右键删掉建筑")
     eq(app.selection, None, "删完清掉选中")
 
@@ -456,17 +457,17 @@ def t_canvas(app, model) -> None:
 # ======================================================================
 
 def t_build_slots(app, model) -> None:
-    """★★ 用户口径（2026.11）：战役编辑器里**摆放建筑只认地图划定的落点**。
+    """★★ 用户口径（2026.11.18）：战役编辑器里的**建筑落点**。
 
-      · 非城墙建筑 → 只能放在地图的 `zone_list[].build_points`（青色「建」格）；
+      · 非城墙建筑 → **本区任意可通行格**（进游戏随机生成点位时会排除它们）；
       · 城墙       → 只能围**区划中心**那一圈（选中城墙画笔时画橙色虚线）；
-      · 一个点位只放一栋；
-      · **不在点位上的建筑直接删掉**（打开关卡 / 换地图时），导出前还会再拦一次。
+      · 同一格不能叠两栋非城墙建筑；
+      · **落点不合法的建筑直接删掉**（打开关卡 / 换地图时），导出前还会再拦一次。
 
     这里钉的是**界面这一侧**：摆放拦截 / 改坐标与改类型的拦截 / 自动清理 /
-    画布上真的画了点位与城墙环。判据本身在 `test_model.py [1e]` 里钉。
+    画布上的城墙环。判据本身在 `test_model.py [1e]` 里钉。
     """
-    print("\n[2c] ★★ 建造点位 / 城墙环：摆放 / 改坐标 / 改类型 / 自动清理 / 画布标记")
+    print("\n[2c] ★★ 建筑落点 / 城墙环：摆放 / 改坐标 / 改类型 / 自动清理 / 画布标记")
     app.root.deiconify()
     app.root.geometry("1340x900")
     app.set_page("place")
@@ -478,15 +479,15 @@ def t_build_slots(app, model) -> None:
     info = app.map_info()
     ok(f["build_point"] is not None and f["wall_ring"] is not None
        and f["off_point"] is not None,
-       "（前提）地图里能找到：一个空点位 %r / 一环空格 %r / 一格非法空地 %r"
+       "（前提）地图里能找到：一格普通空地 %r / 一环空格 %r / 格非环空地 %r"
        % (f["build_point"], f["wall_ring"], f["off_point"]))
     if not (f["build_point"] and f["wall_ring"] and f["off_point"]):
         return                                  # 地图换了就跳过（不假红）
-    eq(info.build_point_zone_id(*f["build_point"]) >= 0, True,
-       "★ 点位反查得出来（画布与摆放读的就是这一份）")
+    ok(not hasattr(info, "zone_build_points"),
+       "★ 地图不再提供建造点位（进图时按关卡数量随机生成）")
     eq(info.wall_ring_zone_at(*f["wall_ring"]) >= 0, True, "★ 城墙环反查得出来")
 
-    # ---- 画布：点位始终画；城墙环只在选中「城墙」画笔时画 ----
+    # ---- 画布：城墙环只在选中「城墙」画笔时画 ----
     app.brush_kind = "building"
     app.brush_value = next((t for t in app._brush_building_types()
                             if not M.is_wall_building_type(t)), "tower")
@@ -524,17 +525,16 @@ def t_build_slots(app, model) -> None:
     eq(wall.point(), f["wall_ring"], "★★ 改坐标到非环格 → 被拒（坐标没变）")
     ok("挪不了" in app.status_var.get(), "★ 状态栏说明挪不了：%r" % app.status_var.get())
     app._set_building_field("type", "tower")
-    ok(M.is_wall_building_type(wall.type),
-       "★★ 城墙改成塔（环上不是点位）→ 被拒（类型还是城墙：%r）" % wall.type)
-    ok("换不了类型" in app.status_var.get(),
-       "★ 状态栏说明换不了类型：%r" % app.status_var.get())
-    # 非城墙之间互换（都在点位上）→ 允许
+    ok(not M.is_wall_building_type(wall.type),
+       "★★ 城墙改成塔（同一格可通行）→ 允许（新口径：非城墙不必在旧点位上）")
+    wall.type = "wall"                         # 改回城墙，下面还要用它
+    # 非城墙之间互换（都在合法落点上）→ 允许
     app.selection = None
     app.brush_value = next((t for t in app._brush_building_types()
                             if not M.is_wall_building_type(t)), "tower")
     app.place_at(f["build_point"])
     tower = lv.start_buildings[-1]
-    eq(tower.point(), f["build_point"], "（前提）点位上放了一栋非城墙建筑")
+    eq(tower.point(), f["build_point"], "（前提）普通可通行格上放了一栋非城墙建筑")
     app.selection = ("building", len(lv.start_buildings) - 1)
     app.refresh_all()
     app.root.update()
@@ -542,43 +542,44 @@ def t_build_slots(app, model) -> None:
                   if not M.is_wall_building_type(t) and t != tower.type), None)
     if other:
         app._set_building_field("type", other)
-        eq(tower.type, other, "★ 非城墙之间换类型（还在点位上）→ 允许")
+        eq(tower.type, other, "★ 非城墙之间换类型（还在可通行格上）→ 允许")
     app.delete_entry(("building", len(lv.start_buildings) - 1))
     app.delete_entry(("building", len(lv.start_buildings) - 1))
     eq(len(lv.start_buildings), before, "（收尾）删掉刚摆的两栋")
 
-    # ---- 悬停：状态栏写明「建造点位」/「城墙环」----
-    app.update_status(f["build_point"])
-    ok("建造点位" in app.status_var.get(),
-       "★ 悬停到点位上 → 状态栏写「建造点位」（%r）" % app.status_var.get())
+    # ---- 悬停：城墙环写上，普通空地不写 ----
     app.update_status(f["wall_ring"])
     ok("城墙环" in app.status_var.get(),
        "★ 悬停到城墙环上 → 状态栏写「城墙环」（%r）" % app.status_var.get())
     app.update_status(f["off_point"])
-    ok("建造点位" not in app.status_var.get() and "城墙环" not in app.status_var.get(),
-       "★ 普通空地两个都不是")
+    ok("城墙环" not in app.status_var.get(),
+       "★ 普通空地上不写城墙环")
 
     # ---- 自动清理：绕开界面直接塞一栋非法建筑 → 重新打开这一关就被删 ----
-    lv.start_buildings.append(M.BuildingEntry("tower", f["off_point"][0],
-                                             f["off_point"][1], f["player"]))
-    dirty = len(lv.start_buildings)
-    app.set_current_level(lv.level_id)
-    app.root.update()
-    eq(len(level(app).start_buildings), dirty - 1,
-       "★★ 重新打开这一关 → 不在点位上的那栋被**直接删掉**")
-    ok("清理" in app.status_var.get(),
-       "★ 状态栏报告清理了几栋（%r）" % app.status_var.get())
-    ok(all(M.building_slot_error(app.map_info(), b.type, b.point()) == M.SLOT_OK
-           for b in level(app).start_buildings),
-       "★★ 剩下的每一栋都在合法落点上")
+    if f.get("mountain"):
+        lv.start_buildings.append(M.BuildingEntry("tower", f["mountain"][0],
+                                                 f["mountain"][1], f["player"]))
+        dirty = len(lv.start_buildings)
+        app.set_current_level(lv.level_id)
+        app.root.update()
+        eq(len(level(app).start_buildings), dirty - 1,
+           "★★ 重新打开这一关 → 山地上的那栋被**直接删掉**")
+        ok("清理" in app.status_var.get(),
+           "★ 状态栏报告清理了几栋（%r）" % app.status_var.get())
+        ok(all(M.building_slot_error(app.map_info(), b.type, b.point()) == M.SLOT_OK
+               for b in level(app).start_buildings),
+           "★★ 剩下的每一栋都在合法落点上")
 
-    # ---- 导出校验是第二道保险：手改进来的非法建筑会被拦 ----
+    # ---- 导出校验是第二道保险：同格叠两栋会被拦 ----
     lv = level(app)
-    lv.start_buildings.append(M.BuildingEntry("tower", f["off_point"][0],
-                                             f["off_point"][1], f["player"]))
+    lv.start_buildings.append(M.BuildingEntry("tower", f["build_point"][0],
+                                             f["build_point"][1], f["player"]))
+    lv.start_buildings.append(M.BuildingEntry("farm", f["build_point"][0],
+                                             f["build_point"][1], f["player"]))
     issues = app.run_checks()
-    ok(any(i.code == "building_not_on_point" and i.sev == M.SEV_BLOCK for i in issues),
-       "★★ 导出校验会拦 `building_not_on_point`（双保险）")
+    ok(any(i.code == "building_overlap" and i.sev == M.SEV_BLOCK for i in issues),
+       "★★ 导出校验会拦 `building_overlap`（双保险）")
+    lv.start_buildings.pop()
     lv.start_buildings.pop()
     app.run_checks()
     app.set_page("place")
@@ -723,33 +724,39 @@ def _facts(app) -> dict:
         used.add(b.point())
     if base is not None:
         used.add(tuple(base))
-    # ★★ 建造点位（非城墙建筑只能放这儿）/ 城墙环（城墙只能放这儿）/
-    #    两者都不沾的空地（放上去必须被拒）—— 全部**现读**，不写死坐标。
+    # ★★ 非城墙建筑可以放在**本区任意可通行格**；城墙仍只能围中心一圈。
+    #    这里现读三格：一格普通空地（放建筑）/ 一格城墙环（放墙）/ 一格山地（必须被拒）。
     build_point = None
     wall_ring = None
     off_point = None
+    mountain = None
     if info is not None:
-        for (_zid, bx, by) in info.all_build_points():
-            if (bx, by) not in used:
-                build_point = (bx, by)
+        for y in range(info.rows):
+            for x in range(info.cols):
+                p = (x, y)
+                if p in centers or p in used or not info.walkable_at(x, y):
+                    continue
+                if info.zone_of(x, y) < 0:
+                    continue
+                if build_point is None and info.wall_ring_zone_at(x, y) < 0:
+                    build_point = p
+                if off_point is None and info.wall_ring_zone_at(x, y) < 0:
+                    off_point = p
+            if build_point and off_point:
                 break
         for zid in sorted(info.zone_centers):
             for p in info.wall_ring_tiles(zid):
-                if p not in used and not info.is_build_point(*p):
+                if p not in used:
                     wall_ring = p
                     break
             if wall_ring:
                 break
         for y in range(info.rows):
             for x in range(info.cols):
-                p = (x, y)
-                if p in centers or p in used or not info.walkable_at(x, y):
-                    continue
-                if info.is_build_point(x, y) or info.wall_ring_zone_at(x, y) >= 0:
-                    continue
-                off_point = p
-                break
-            if off_point:
+                if info.tile_exists(x, y) and not info.walkable_at(x, y):
+                    mountain = (x, y)
+                    break
+            if mountain:
                 break
     spot = None
     if info is not None:
@@ -765,7 +772,7 @@ def _facts(app) -> dict:
                 break
     return {"player": player, "player_base": base, "spot": spot or (3, 3),
             "build_point": build_point, "wall_ring": wall_ring,
-            "off_point": off_point, "map_id": lv.map_id,
+            "off_point": off_point, "mountain": mountain, "map_id": lv.map_id,
             "obj_zone": lv.objective_zone()}
 
 
@@ -1514,7 +1521,7 @@ def t_zone_owner_explicit(app, model) -> None:
        "★★ 缺的区划补成地图 owner（无主 = 空串）")
     lv.zone_owners[missing_zid] = saved_value
 
-    # ---- 界面：下拉在**右栏**（区划页现在是「左画布 + 右归属/禁行区」）；----
+    # ---- 界面：下拉在**右栏**（区划页现在是「左画布 + 右归属/边缘区/点位数量」）；----
     #      ⚠️ 不能 `walk(app.work)`：区划页已经不再用左边那张列表，
     #      而旧页面的控件还留在 `list_host` 里（unpack 了但没销毁），会被一起遍历到。
     app.set_page("zone")
@@ -1558,11 +1565,11 @@ def t_zone_owner_explicit(app, model) -> None:
 
 
 def t_zone_no_go_ui(app, model) -> None:
-    """★★ 区划页**禁行区**：右栏涂刷 + 画布点击 + 三条当场拒绝（中心 / 别人地 / 整块）。
+    """★★ 区划页**边缘区**：右栏涂刷 + 画布点击 + 三条当场拒绝（中心 / 别人地 / 整块）。
 
     只动内存里的模型，结束前原样复原（样例关卡一个字节都不该被这套测试改掉）。
     """
-    print("\n[4h] ★★ 区划禁行区：涂刷 / 点击 / 中心与整块被拦")
+    print("\n[4h] ★★ 区划边缘区：涂刷 / 点击 / 中心与整块被拦")
     lv = level(app)
     info = app.map_info()
     if lv is None or info is None:
@@ -1575,7 +1582,7 @@ def t_zone_no_go_ui(app, model) -> None:
         app.root.update()
         ok(app.page == "zone", "区划页能进")
         ok(hasattr(app, "canvas") and app.canvas.winfo_exists(),
-           "★★ 区划页也有画布（左栏画地图、右栏管归属与禁行区）")
+           "★★ 区划页也有画布（左栏画地图、右栏管归属与边缘区）")
 
         zid = int(info.zone_ids[0])
         patrol = info.zone_patrol_tiles(zid)
@@ -1588,7 +1595,7 @@ def t_zone_no_go_ui(app, model) -> None:
         app.set_zone_paint_zone(zid)
         eq(app.zone_paint_zone, zid, "★ 点「涂刷」→ 进入涂刷模式（这一区）")
         app._toggle_zone_no_go(tile)
-        ok(lv.has_zone_no_go(zid, tile[0], tile[1]), "★★ 画布左键 → 这一格进禁行区")
+        ok(lv.has_zone_no_go(zid, tile[0], tile[1]), "★★ 画布左键 → 这一格进边缘区")
         eq(lv.zone_no_go_count(zid), 1, "★ 计数 = 1")
         ok("加入" in app.status_var.get(), "★ 状态栏说「加入」")
 
@@ -1599,7 +1606,7 @@ def t_zone_no_go_ui(app, model) -> None:
         if center is not None:
             app._toggle_zone_no_go(center)
             ok(not lv.has_zone_no_go(zid, center[0], center[1]),
-               "★★ 区划中心不能设为禁行格（当场拒绝）")
+               "★★ 区划中心不能设为边缘区（当场拒绝）")
             ok("中心" in app.status_var.get(), "★ 状态栏说明了原因（中心）")
 
         other_zid = next((z for z in info.zone_ids if int(z) != zid), None)
@@ -1617,12 +1624,12 @@ def t_zone_no_go_ui(app, model) -> None:
         app.root.update()
         app._toggle_zone_no_go(patrol[-1])
         ok(not lv.has_zone_no_go(zid, patrol[-1][0], patrol[-1][1]),
-           "★★ 不能把整块区划都禁行（最后一格被拒）")
+           "★★ 不能把整块区划都设成边缘区（最后一格被拒）")
         ok("整块" in app.status_var.get(), "★ 状态栏说明了原因（整块）")
 
         # 「清空」按钮走的那条路
         app.clear_zone_no_go(zid)
-        eq(lv.zone_no_go_count(zid), 0, "★ 「清空」清掉这一区的禁行区")
+        eq(lv.zone_no_go_count(zid), 0, "★ 「清空」清掉这一区的边缘区")
     finally:
         lv.zone_no_go = orig
         app.zone_paint_zone = orig_paint
@@ -1685,7 +1692,7 @@ def t_catalog_filter() -> None:
         ids = [str(app.level_tree.item(iid, "values")[1])
                for iid in app.level_tree.get_children()]
         eq(ids, ["mt", "dscj", "ai_test_2", "ai_test_battle", "between_moutains",
-                 "ai_test_easy", "ai_test_normal", "ai_test_hard"],
+                 "ai_test_easy", "ai_test_normal", "ai_test_hard", "ai_test_clan"],
            "★ 关卡树只列有用表地图对应的关卡")
         ok(not app.level_tree.exists("lv:01_beachhead"), "★ 隐藏 01_beachhead")
         ok(not app.level_tree.exists("lv:02_twin_line"), "★ 隐藏 02_twin_line")

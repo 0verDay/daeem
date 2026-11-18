@@ -1,4 +1,7 @@
-## test_tech.gd —— 科技模块（右下「科技」页签 → 3×3 九格 → 启用 / 弃用）
+## test_tech.gd —— 科技模块（右下「科技」页签 → 3×3 九格 → 一次性打出）
+##
+## ★★ 2026.11.18：科技不可取消；打出后永久启用。
+##   启用满 3 条时，其余未启用科技手牌在 tech_entries() 里变成 destroyed 空位。
 extends "res://tests/test_case.gd"
 
 const WorldRes = preload("res://logic/world.gd")
@@ -70,20 +73,13 @@ func _test_toggle_basics(cfg) -> void:
 	ok(act, "★ tech_entries() 里这一格标成 active（界面按它画高亮）")
 
 	ok(not CommandRes.apply(w, w.cfg, {"kind": "tech_toggle", "tech_id": T_FOOD, "on": true}),
-		"重复启用同一条返回 false（状态没变）")
-	eq(w.active_tech_ids().size(), 1, "★ 重复启用不会占用第二个名额")
-
-	ok(CommandRes.apply(w, w.cfg, {"kind": "tech_toggle", "tech_id": T_FOOD, "on": false}),
-		"★ tech_toggle(off) 命令被接受")
-	ok(not w.is_tech_active(T_FOOD), "★ 弃用之后不再是启用状态")
-	eq(w.active_tech_ids().size(), 0, "启用列表空了")
-	eq(w.tech_remaining_slots(), 3, "名额全回来了")
-	ok(CommandRes.apply(w, w.cfg, {"kind": "tech_toggle", "tech_id": T_FOOD}),
-		"不带 on 的 tech_toggle = 切换（点一下格子的语义）")
-	ok(w.is_tech_active(T_FOOD), "★ 切换之后立刻启用")
-	ok(CommandRes.apply(w, w.cfg, {"kind": "tech_toggle", "tech_id": T_FOOD}),
-		"再切换一次")
-	ok(not w.is_tech_active(T_FOOD), "★ 第二次切换 = 弃用")
+		"重复启用同一条返回 false（不可再次打出）")
+	ok(not CommandRes.apply(w, w.cfg, {"kind": "tech_toggle", "tech_id": T_FOOD, "on": false}),
+		"★ tech_toggle(off) 被拒（科技不可取消）")
+	ok(w.is_tech_active(T_FOOD), "★ 科技仍然是启用状态")
+	eq(w.active_tech_ids().size(), 1, "★ 取消命令没有改状态 / 没有释放名额")
+	ok(not CommandRes.apply(w, w.cfg, {"kind": "tech_toggle", "tech_id": T_FOOD}),
+		"不带 on 的 tech_toggle 对已启用科技同样是拒绝")
 
 	ok(not CommandRes.apply(w, w.cfg, {"kind": "tech_toggle", "tech_id": "nope", "on": true}),
 		"不存在的科技 id 被拒")
@@ -112,10 +108,17 @@ func _test_limit_three(cfg) -> void:
 	ok(not w.is_tech_active(T_BUILDING), "★ 第 4 条没有生效")
 	eq(w.tech.slot_count(), 3, "占用数仍然是 3")
 
-	ok(w.set_tech_active(T_GOLD, false), "弃用中间那一条")
-	ok(w.set_tech_active(T_BUILDING, true), "★ 腾出名额之后第 4 条可以启用")
-	ok(w.is_tech_active(T_BUILDING), "它现在生效")
-	eq(w.active_tech_ids().size(), 3, "又是 3 条")
+	# ★★ 2026.11.18：启用满 3 条后，其余未启用科技手牌销毁。
+	var burned := 0
+	for e in w.tech_entries():
+		var d: Dictionary = e
+		if bool(d.get("destroyed", false)):
+			burned += 1
+	ok(burned > 0, "★★ 3 条已启用后，其余手牌被标记 destroyed（%d 格）" % burned)
+	var third_was_active: bool = w.is_tech_active(T_GOLD)
+	ok(not w.set_tech_active(T_GOLD, false), "★ 已启用的科技不能弃用")
+	ok(w.is_tech_active(T_GOLD) == third_was_active, "★ 退出命令没有改变启用状态")
+	ok(not w.set_tech_active(T_BUILDING, true), "★★ 手牌销毁后不能再打出第 4 条")
 
 	w.reset()
 	eq(w.active_tech_ids().size(), 0, "★ reset() 之后一条科技都没启用")
@@ -152,12 +155,10 @@ func _test_food_and_gold_bonus(cfg) -> void:
 	w.resources["gold"] = 0.0
 	instant_tech(w, T_GOLD)
 	near(w.production_gold, g0 * 1.1, 1e-6, "★ 黄金产能 +10%")
-
-	w.set_tech_active(T_FOOD, false)
-	w.set_tech_active(T_FOOD2, false)
-	near(w.production_food, f0, 1e-6, "★ 弃用之后粮食加成归零")
-	w.set_tech_active(T_GOLD, false)
-	near(w.production_gold, g0, 1e-6, "弃用之后黄金加成归零")
+	# ★★ 2026.11.18：科技不可取消；三条都保持启用。
+	eq(w.active_tech_ids().size(), 3, "三条科技都保持启用")
+	near(w.production_food, f0 * 1.3, 1e-6, "★ 粮食加成仍然存在（不可取消）")
+	near(w.production_gold, g0 * 1.1, 1e-6, "★ 黄金加成仍然存在（不可取消）")
 
 func _test_hp_bonus(cfg) -> void:
 	var w = _quiet(cfg)
@@ -203,13 +204,12 @@ func _test_hp_bonus(cfg) -> void:
 		near(nb.hp_max, float(w.cfg.num("building.wall.hp_max", 300.0)) * 1.1, 1e-3,
 			"★ 新造的建筑当场带上 +10%")
 
-	var ratio_before: float = leader.hp / leader.hp_max
-	w.set_tech_active(T_LEADER, false)
-	near(leader.hp_max, leader_max, 1e-3, "★ 弃用之后将领上限回到基础值")
-	near(leader.hp / leader.hp_max, ratio_before, 1e-6, "弃用同样按比例缩放当前血量")
-	w.set_tech_active(T_BUILDING, false)
-	near(base.hp_max, base_max, 1e-3, "弃用之后大本营血量上限回到基础值")
-	near(wall.hp_max, wall_max, 1e-3, "弃用之后城墙血量上限回到基础值")
+	# ★★ 2026.11.18：科技不可取消；两条加成保持到本局结束。
+	ok(not w.set_tech_active(T_LEADER, false), "★ 将领强化不能弃用")
+	ok(not w.set_tech_active(T_BUILDING, false), "★ 建筑加固不能弃用")
+	near(leader.hp_max, leader_max * 1.1, 1e-3, "★ 将领上限仍然比基础值高")
+	near(base.hp_max, base_max * 1.1, 1e-3, "★ 大本营上限仍然比基础值高")
+	near(wall.hp_max, wall_max * 1.1, 1e-3, "★ 城墙上限仍然比基础值高")
 
 func _test_population_bonus(cfg) -> void:
 	var w = _quiet(cfg)
@@ -255,16 +255,18 @@ func _test_population_bonus(cfg) -> void:
 		"★ 科技加的是速度，不是上限：涨到 population_cap 就停")
 
 	mine["population"] = 0.0
-	ok(w.set_tech_active(T_POP, false), "弃用「区划人口」")
-	near(w.tech_population_mult(), 1.0, 1e-6, "倍率回到 1.0")
+	ok(not w.set_tech_active(T_POP, false), "★ 区划人口科技不能弃用")
+	near(w.tech_population_mult(), 1.1, 1e-6, "★ 倍率仍然是 1.1（不可取消）")
 	w.zones.update_population(1.0, w.my_faction, w.tech_population_mult())
-	near(float(mine["population"]), 2.0, 1e-6, "★ 弃用之后回到基础速度")
+	near(float(mine["population"]), 2.0 * 1.1, 1e-6, "★ 己方区划仍按加成速度增长")
 
 func _test_commands(cfg) -> void:
 	var w = _quiet(cfg)
 	ok(CommandRes.apply(w, w.cfg, {"kind": "tech_toggle", "tech_id": T_POP}), "切换命令")
 	ok(w.is_tech_active(T_POP), "★ 切换 = 立刻启用")
 	near(w.tech_population_mult(), 1.1, 1e-6, "★ 启用当帧就能读到加成")
+	ok(not CommandRes.apply(w, w.cfg, {"kind": "tech_toggle", "tech_id": T_POP}),
+		"★ 同一条科技不能再次打出")
 	ok(not CommandRes.apply(w, w.cfg, {"kind": "tech_toggle", "tech_id": ""}),
 		"空 id 的命令被拒")
 	ok(not CommandRes.apply(w, w.cfg, {"kind": "not_a_command"}), "未知命令被拒")

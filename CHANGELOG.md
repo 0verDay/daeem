@@ -7,6 +7,125 @@
 
 本版本为在godot引擎内的原型开发，仅展示完整的局内玩法
 
+### 2026.11.18 建造点位生成机制 / 边缘区合并
+
+1. **建造点位不再属于地图**：每关在战役编辑器「区划」页给每个区划填
+   `zones[].build_point_count`（缺省 = config 的 2，`0` = 不生成）；进图时随机生成。
+2. **生成排除**边缘区（`zones[].no_go`）与已有建筑（地图预置 / 大本营 / 中心 / 关卡摆放）。
+3. **边缘区**与阵地性 AI 的巡逻禁区合并：数据键仍是 `no_go`，界面与文档统一叫「边缘区」；
+   它同时限制巡逻目标点与建造点位生成。
+4. **地图编辑器不再读 / 写 / 补** `zone_list[].build_points`；老图里遗留的键运行时忽略。
+5. **战役编辑器摆建筑**：非城墙建筑改成本区任意可通行格（不能压区划中心、同格不能叠两栋）；
+   城墙仍只围区划中心一圈。
+6. **联机同步**：房主把本局 `rand_salt` 随 `start` 包发给客机，客机用同一种子生成同一套点位。
+7. 新增校验：`zone_build_count_zone_missing` / `zone_build_count_negative` /
+   `zone_build_count_no_space`；编辑器建筑落点改为 `building_not_in_zone` /
+   `building_not_buildable` / `building_not_in_wall_ring` / `building_overlap`。
+8. 测试：`test_build_points` 287 项、全量 125 文件通过；战役 / 地图编辑器数据层与界面测试同步更新。
+
+### 2026.11.18 局内手牌：摆位 / 悬停 / 拖牌 / 入场动效统一修缮
+
+1. **报障**（用户口径）：手牌动效有「错位、不和谐」；先查问题再优化。逐条实测（截图 + 几何断言）后修掉：
+2. **支点不统一（错位主因）**：返程 / 生效 / 回槽位三处把 `pivot_offset` 写成**牌心**且从不复位，而扇形 / 悬停 / 下沉全按**左上角**算 ⇒ 任何一张牌被打出或取消过一次，之后就以牌心旋转缩放，和其余牌错开半个牌身。现在统一为**牌底中点**（`UiLayoutRes.card_pivot()`），所有路径（布局 / 悬停 / 下沉 / 返程 / 生效 / 入场）都写同一个支点。
+3. **扇形是「风车」不是手牌**：每张牌绕自己的左上角转，外圈底边大幅前后错开；垂直弧只是 `abs(i-mid)*5` 的假补偿。改为绕底边中点旋转，**所有牌底边落在同一条基线**。
+4. **9 张时角度一块一块**：旧版固定 8°/张再逐张 clamp 到 ±14°，9 张只剩 −14/−8/0/8/14 五档。改为按张数摊薄步进（`CARD_FAN_STEP_DEG` / `CARD_FAN_MAX_ANGLE_DEG`），9 张逐张 3.5°。
+5. **悬停牌贴屏幕底**：1.5 倍绕牌心放大，牌底冲到 y≈1075。现在支点在底 ⇒ 放大**从手里往上长**，牌底不动。
+6. **拖牌时整排手牌右漂**：`card_tuck_offset` 为补左上角缩放加了 `+size*(1-s)/2`（≈13px）。支点改底边后 x 补偿恒为 0；牌心仍按用户口径下沉 40px。
+7. **两页动效两套手感**：科技页入场 / 返程用 `TRANS_BACK`（冲过槽位再弹回），命令卡用 CUBIC；科技页入场 0.22s + 0.025s 错峰，9 张要 0.42s 才落定。统一为 **CUBIC 0.18s / 错峰 0.018s / 起点下移 26px / 起始旋转 ×0.5**；返程 0.2s 且每帧重算槽位（科技页也照做）。
+8. **入场途中悬停会抖**：悬停 Tween 与入场 Tween 同时写同一张牌的 `position/rotation`。现在入场未结束时只弹悬停说明、不起抬起。
+9. **科技牌拖起硬切 0.3**：与命令卡的 0.12s 渐变不一致；科技页补 `_set_drag_alpha()`（手里 1.0、拖到地图 0.30、拖回淡回）。
+10. **测试**：`test_ui` **1475 项**（新增：9 张底边同基线 / 逐张角度不同 / 两端角度对称 / 支点=牌底中点 / 缩小不横漂 / 回手后所有牌支点正确）；`test_tech` 115、`test_view` 102、`test_upgrade` 181、`test_downed` 249、`test_unit_editor` 311、AI 366 / 35、语法 310 文件全过。新增 `tests/bench_hand_shot.gd`（手牌 idle / 悬停 / 拖出 / 科技页截图，人工看样子用，不跑断言）。
+
+### 2026.11.18 修两处实测 bug：教堂是「额外建筑」/ 只有教会军能造
+
+1. **报障**（用户实测）：① 教会军的其他建筑不见了，教堂也造不了（提示要 N 级大本营）；
+   ② 义勇军也能造教堂。
+   （用户同时提到「第一张牌和后面隔得太远」，后经澄清那是**局内手牌**、不是备战页，而且已经好了 ——
+   本条与备战页无关，见第 5 点。）
+2. **根因①**：`clan_can_build()` 把 `clan.buildings` 当成了**白名单**（「只能造这些」），
+   于是教会军的建筑页只剩教堂一格、连粮田都被判 `clan` 拒因（AI 也跟着造不了经济建筑）。
+   ⇒ 改成「**额外建筑**」语义：判据只看建筑侧的 `building.<type>.clans` 白名单 ——
+   没写 = 所有派系都能造；写了 = 只有名单里的派系能造。派系侧清单与它取并集。
+3. **根因②**同一条：义勇军没有 `clan.buildings` ⇒ 旧逻辑 `buildings_all = true` 时**直接返回全部**可建造建筑，
+   连教堂一起给了。现在按建筑侧白名单过滤，义勇军 / 王朝 / 帝国 / 原生都看不到教堂那张牌。
+4. **根因③（教堂造不了）**：建筑页是 3 行 × 3 列、**行号 = 解锁等级**，教堂为了抢那个唯一空格子写了 `tier: 3`
+   ⇒ 被当成「3 级大本营才能造」。新增 `building.<type>.min_base`（缺省 = tier）：
+   教堂 `tier: 3, min_base: 1` —— **位置仍在第 3 行，1 级大本营就能造**（它是教会军的核心玩法）。
+   `hud._build_entries()` 的 `ready` 与悬停提示改读 `min_base`。
+5. **备战页排版：没有改动（一次误判，已回退）**。曾把「第一张牌隔得太远」当成备战页的将领一节，
+   改成了「平铺网格 + 阶角标」；用户澄清那是**局内手牌**（且已经好了）之后，
+   `view/prepare_roster_list.gd` 已 `git checkout` 回 HEAD（与改动前**逐位一致**）：
+   备战页仍是「金色大标题 + 按阶分小标题 + 三列磁贴」的老版式（零阶那位依旧独占一行），
+   `test_prepare` 里 10 个阶小标题 / 「零阶单独一行在最上」等断言也一并还原。
+   **局内手牌（`view/command_card.gd`）一行没动**。
+6. **测试**：`test_clan_volunteer_church` **330 项**（新增第 18 节：教会军建筑页 = 通用 7 + 教堂、
+   教堂 `min_base = 1` 且 1 级时 `ready`、义勇军没有教堂格、石墙仍是 2 级才亮）；
+   `test_prepare` **326 项**（四枚派系按钮 + 切到新派系后三节真的有内容；将领一节仍是老版式）。
+   其余 `test_clan` / `test_ui` / `test_building_rules` / `test_loadout` / `test_unit_editor` / `test_view3d` 全过。
+
+### 2026.11.18 教堂 3D 模型（Blender 现做）+ 备战界面接入两个新派系
+
+1. **需求**（用户口径）：「调用 blender-mcp，为教堂建模」+「同时为备战界面添加这两个新的派系」。
+2. **教堂模型**（Blender 5.3，`bpy` 过程式建模，两档）：
+   · `assets/models/church_l1_lowpoly.glb`（小礼拜堂：243 顶点 / 180 面，高 1.90 格）；
+   · `assets/models/church_l2_lowpoly.glb`（主教座堂：411 顶点 / 298 面，高 2.26 格 —— 加侧廊 / 扶壁 / 大玫瑰窗 / 更高尖顶）。
+   两者都按工程约定建：**1 单位 = 1 格、底边在 y = 0**、正面朝 −Y（局内朝相机那面）、
+   一格见方（0.96 / 1.016）；落地时由 `building_view_3d` 按「格宽 × body_scale」统一缩放。
+   细节：台基 / 中殿 / 山墙屋顶 / 钟楼 + 钟室百叶 / 四棱锥尖顶 / 十字 / 双开木门 + 石门套 /
+   八边形（2 级十六边形）玫瑰窗 + 石圈窗棂 / 两侧玻璃窗 / 扶壁 / 角壁柱 / 檐口线脚。
+3. **顶点色（COLOR_0）**：rgb = 材质原色（石 / 木 / 玻璃金），**a = 阵营色遮罩** ——
+   屋顶 / 尖顶 / 十字 = 1（吃阵营色，一眼看出是谁的教堂），墙体 / 门窗 = 0（保留原色）。
+   ★ 踩到的坑（记下来免得下次再踩）：glTF 导出器默认把顶点色写成 **VEC3（alpha 丢失）**，
+   Godot 读进来 alpha 全部退化成 1 ⇒ 整栋被染成阵营色（正是 `tools/bake_building_vertex_mask.py`
+   记录的那个坑）。解法：在 Blender 材质里**把顶点色的 Alpha 也接到 Principled 的 Alpha 上**
+   （外观仍是 OPAQUE），导出器才会写 VEC4；已验证 `alpha=1: 82 / alpha=0: 648`。
+4. **建筑图标**：`tools/bake_church_icon.py`（一次性脚本，只调 `bake_unit_card_icon.py` 的
+   `bake_building()` / `_ensure_mipmaps()`，不重烘其它素材）→ `assets/ui/card_icon/building_church.png`
+   （384×384、白线 + alpha、7.8% 覆盖，与其它建筑图标同款；已开 mipmap 并导入）。
+5. **模型登记**：`view/building_view_3d.gd` 的 `BUILDING_MODELS["church"]`（1 级）+
+   `BUILDING_MODEL_LEVELS["church"] = {1, 2}` —— 与 `upgrade.levels.church` 的两行对上，
+   所以升级会**换模型**（沿用 2026.11.17 的「鼓起 → 换模型 → 回落」动效）。
+6. **备战界面**：`LoadoutRes.FACTIONS` 从 2 个变成 **4 个**（王朝 → 义勇军 → 教会军 → 帝国），
+   `view/prepare_panel.gd` 不再自己抄一份清单，直接读它；右侧按钮**等高切分**
+   （`prepare_faction(..., count)`，默认 2 ⇒ 老调用 / 老测试逐位不变），
+   字号按「槽高 / 字数」自适应（3 个字的短名仍保持 40px）。
+7. **短名**：`clan.list[].short`（王朝 / 义勇军 / 教会军 / 帝国；原生 = 原生）+ `cfg.clan_short_of()`。
+   竖排按钮需要它 —— 全名「王朝·义勇军」竖着要 6 行，四个槽放不下，而截前 3 个字两派会撞车。
+8. **将领归属**：`unit.general.factions` 里通用那 10 位同时勾上两个新派系；王朝专属 2 位归义勇军、
+   帝国专属 2 位归教会军 ⇒ 四个备战页的将领名额一致（通用 10 + 专属 2 = 12）。
+9. **详情卡**：`prepare_detail_view._find_recruit()` 不再写死「当前派系 + 王朝 + 帝国」，
+   改成按 `cfg.clan_ids()` 全查（否则新派系的单位详情会显示成「没有招募条目」）。
+10. **测试**：`test_clan_volunteer_church` **300 项**（新增第 17 节：教堂两档模型能加载 /
+    顶点色遮罩 / 底边贴地 / 高度 / 一格见方 / 2 级更高）；`test_prepare` **326 项**（四枚按钮 +
+    切到新派系后单位 / 科技 / 将领三节真的有内容）；`test_loadout`（270）/ `test_unit_editor`（311）/
+    `test_unit_card_icon`（410）随派系与建筑数量同步。
+
+### 2026.11.18 持续消耗取消 + 科技一次性打出
+
+1. **取消单位持续耗粮**：`world._tick_upkeep()` 不再按兵种 / 将领结算维护费，`_upkeep_food_rate` 恒为 0；`economy.upkeep_enabled` 保留为兼容键，默认 `false`。
+2. **取消科技持续耗金**：`tech.gold_per_sec_by_tier` 全部改为 0，`tech.gold_drain_per_sec()` 恒为 0；不再有断金 / 黄金赤字拒因，科技悬停也不再显示「金/秒」。
+3. **科技一次性打出**：科技只能从未启用 → 启用，**不可取消 / 不可再次打出**；`tech_toggle(off)` 被拒。已启用的科技牌留在科技页（实心、不可拖）。
+4. **满 3 条销毁其余手牌**：`world.tech_entries()` 在已启用数达到 3 时，把其余未启用科技返回为 `destroyed` 空位；科技页只留下 3 张已启用牌，未启用的牌不能再打出。
+5. **UI**：`view/tech_grid.gd` 按 `playable` 拦截已启用 / 已销毁牌的点击、拖拽与快捷键；悬停已启用项提示「已启用（不可取消）」。
+6. **测试**：`test_tech` 115、`test_economy` 78、`test_clan_tech` 263、`test_base_limits` 139、`test_ui` 1463 全部通过；AI 定向 366 / 35 / 218 / 79 / 27 通过。
+
+### 2026.11.18 两个新派系：王朝·义勇军 / 帝国·教会军（兵种 + 方略 + 单位状态 + 教堂 + 自由瘟疫）
+
+1. **需求**（用户口径）：为游戏加两个新派系 —— **王朝·义勇军**（人海 / 水网 / 血战）与**帝国·教会军**（信仰 / 自由 / 瘟疫），各带 6 条方略、6 个兵种；新增「水性 / 溺水 / 自由 / 自由瘟疫」四种属性与一座特殊建筑「教堂」。数值先占位、素材先用字代替图案、备战界面暂不加这两派的 UI。
+2. **数据**（`data/config.json`）：新增两个 `clan`（`dynasty_volunteer` / `empire_church`，各 9 格方略表 + 6 条招募 + `ai_composition` + `commander_ai`）；`tech.clan_list` 新增 10 条方略（`dv_blitz` 侵略如火 / `dv_immovable` 不动如山 / `dv_water` 会水 / `dv_guerrilla` 游击战术 / `dv_blood_war` 血战到底 / `ec_unfree_tax` 不自由税 / `ec_free_tax` 自由税 / `ec_bathe` 沐浴自由 / `ec_undying` 信仰不死 / `ec_missionary` 传教；「征召民兵 / 速战速决 / 无懈可击」直接复用已有 id，单一数据源）；`unit.types` 新增 12 个兵种（**不写 sprite** ⇒ 立牌自动退成单字占位）；新增 `unit.status` 状态池与 `building.church` + `upgrade.levels.church`（1→2 级）。
+3. **单位状态（`unit.status`，新机制）**：与「兵种特性（unit_traits）」分开的第二张池 —— 特性是兵种天生的静态标签，**状态是运行期属性**（兵种天生 / 方略授予 / 建筑授予 / 机制授予都能加减）。`logic/config.gd` 负责洗表与合并（`unit_status_ids_of` / `status_effects_merged`），`logic/unit.gd` 负责落地：`grant_statuses` / `status_rev` 补写 / `tick_status`（掉血 · 自愈 · 无敌倒计时）。
+4. **水性 / 溺水**：`Pathfinder.passable()` 及 `find_path / reachable_tiles / segment_clear / smooth_path / round_corners / nearest_reachable*` 全部多了一个可选 `water` 参数（默认 false ⇒ 老行为逐位不变）；会水的单位在水域格移速 ×0.5，且**绕开 C# 距离场**（内核规则里水域是墙）改走 GDScript A*。「溺水」的不可移动 / 易伤 +100% / 每秒 5% 掉血全部接好，但**按用户口径不提供可达路径**（只做数据预留）。
+5. **侵略如火**：`world._refresh_zone_effects()` 每帧按「己方单位是否站在敌方区划里」写区划的 `production_mult` / `population_mult`（−2% 产能 / −4% 人口每单位，上限 −50% / −100%），`zone.production_of()` 与 `update_population_multi()` 读它们 —— 单位走开就恢复，不缓存任何状态。
+6. **教堂 / 自由 / 自由瘟疫**：`building.church` 带三个新键（`clans` 派系白名单 / `per_zone_limit` 每区划上限 / `max_level_by_base` 等级受大本营压）；`world.building_allowed_for_faction()`、`zone_building_count()`、`building_level_cap()` 三处落地，`upgrade.can_upgrade_reason()` 与 HUD 的等级显示同步改读它们。1 级：该区划招募出来的单位永久获得「自由」（+10% 血上限 / +10% 攻防 / 免疫瘟疫）；2 级：该区划 + 相邻区划染疫；**拆掉教堂瘟疫当场消失**（每帧按现存教堂重算，不存状态）。传教：己方**脱战**单位站着的敌方区划染疫。
+7. **两条致命伤保护**：`unit.take_damage()` 在「濒死 / 阵亡」之前先问 `world.fatal_refill_enabled()` 与 `fatal_invincible_sec()` —— **血战到底**（血上限 −30%，第一次致命伤回满 + 伤害 +50% + 每秒 5% 掉血，每单位一次）、**信仰不死**（锁血 1 + 3 秒无敌，20 秒冷却；用户没写次数，按冷却实现）。状态掉血（溺水 / 暴走 / 瘟疫）**不触发**这两条保护，否则等于无敌。
+8. **AI**：`logic/ai_build.gd` 新增 `_try_church()`（只有白名单派系才会走到）：已有教堂就升到 `building_level_cap` 上限，没有就在大本营所在区划找一个空点位造一座；`_try_tower_then_walls` 之前执行。`commander_ai` 给了两派各自的编成 / 职能 / 经济 / 科技优先级。
+9. **视图**：建筑页按派系过滤（`cfg.buildable_building_defs_for(clan)` + `clan.buildable`）；详情栏顶带那排 buff 槽**第一次真的有内容**（`hud._unit_status_buffs()` 读 `unit.status`，悬停浮窗复用 desc）；两条新的建造 / 升级拒因文案（`clan` / `per_zone_limit` / `base_level_cap`）。
+10. **联机**：快照新增 `sts`（状态 id 逗号串）与 `bwa`（血战暴走态），缺字段 = 老快照 ⇒ 保持本地现状（与其它字段同一条约定）。
+11. **关卡**：新增 `data/campaigns/demo/levels/ai_test_clan.json`（义勇军 vs 教会军，双方 `ai: commander`，起手 800 粮 / 800 金 —— 这是**展示关**，钱要够 AI 把教堂摆出来），并加进 `demo/campaign.json` 的 `levels[]`。
+12. **测试**：新增 `tests/test_clan_volunteer_church.gd`（**300 项全过**）：表 / 兵种 / 状态池 / 水性跨水域与水域减速 / 溺水易伤与掉血 / 自由血上限与免疫 / 侵略如火（含上限与离开恢复）/ 教堂建造准入与每区划上限与等级上限 / 教堂 1 级给自由 · 2 级染疫 · 拆掉消失 · 瘟疫掉血 / 血战到底 / 信仰不死 / 两条收税 / 会水只给步兵 / 多段齐射。`test_unit_editor` / `test_ui` 的「建筑类型数量 / 建造页项数 / 空格子」断言随新建筑同步更新。
+13. **兼容**：原生 / 王朝 / 帝国三派**逐位不变**（所有新键都缺省关闭：`passable` 的 `water` 默认 false、区划倍率缺键 = 1.0、状态表为空 ⇒ 不加不减、AI 的 `_try_church` 对非白名单派系第一次判断就返回）。
+14. **已知缺口**：备战界面（`LoadoutRes.FACTIONS`）仍只有王朝 / 帝国 —— 新派系暂时只能靠**关卡数据**（`factions[].clan`）或 AI 席位进入；「溺水」没有可达路径；`test_upgrade` 里「弃用科技」那一条仍红（那是「科技一次性」改动带来的旧断言，与本次派系无关）。
+
 ### 2026.11.17 手牌拖出动效：其余手牌下沉 + 缩小
 
 1. **需求**（用户口径）：拖出某一张手牌时，**其余手牌往屏幕下方移动并缩小**；取消 / 放回手牌时**反向**播放这个动画。数值由用户选定：**缩到 0.82 倍 + 整体下移 40px**；覆盖范围：**科技和手牌一样，所有手牌都走一套逻辑**；反向时机：**取消 / 放回 / 生效三种都反向**。
@@ -41,6 +160,7 @@
 9. **修复拖牌升级后牌面残留 1.5 倍**：松手时统一把按钮 / 卡面缩放复位；牌回手途中抑制悬停抬起，落地再兜一次 1.0，避免 `mouse_entered` 把升级牌永久留在悬停放大态。`test_ui` **1451** 项通过。
 10. **大本营升级播报文案**：改为 `pX大本营已升至N级`（`ui.broadcast.text_fmt = "%s大本营已升至%d级"`，`%s` = 席位 id 原样，不再用显示名）。`test_base_broadcast` **69** 项通过。
 11. **分级建筑模型补回顶点色遮罩**：新做的 `base_l1/l2`、`tower_l1`、`watch_tower_l1`、`farm_l1`、`house_l2`、`mine_l1` 导出成了 `COLOR_0 VEC3`（alpha 缺失），游戏把 alpha 当 1 ⇒ 整栋被染成阵营色，看起来没有贴图。新增 `tools/bake_building_vertex_mask.py`，按同类型现有模型的「rgb → alpha」表把 COLOR_0 转成 VEC4；仍保留 `a=0` 材质色 + `a=1` 阵营色部件。`test_view3d` 新增每档模型「a=0 / a=1 同时存在」断言，**333** 项通过。
+12. **手牌回手缩放**：返程不再在开头 / 末帧硬切 `scale` —— 改为按「剩余距离进度」从松手时的缩放平滑收到 1.0。即使松手时牌已经贴在槽位上，也按同一条 CUBIC 缓动收完；不会出现「飞回到位后突然缩小」。`test_ui` **1467** 项通过。
 
 ### 2026.11.16（第十一轮）卡牌悬停说明搬进左下角栏 + 精简文案 + 子刹 / 阿吉诃德原画
 

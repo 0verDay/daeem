@@ -396,6 +396,17 @@ var _unit_sprite_ratios: Dictionary = {}
 ##   · 载入时洗一次，之后只读；`unit_traits_of()` 把「内嵌 traits + 这里被点名的标签」合并。
 ##   ⚠️ 与 `_general_traits` 是**两张不同的池**：单位特性只作用于单位，将领特性只作用于将领。
 var _unit_traits: Dictionary = {}
+## ★★ 单位**状态（属性）**表（config 的 `unit.status`，2026.11.18 —— 义勇军 / 教会军那一批）。
+##
+## 与 `_unit_traits` 的分工（一句话）：
+##   · unit_traits = 兵种**天生**的静态标签（对某大类增伤 / 远近减伤 / 免疫击退），出生抄一次就不变；
+##   · **status** = **运行期属性**：兵种天生（`status_ids`）、方略启用（会水）、
+##     建筑授予（教堂 → 自由）、或机制（溺水）都可以加减，一个单位可以同时挂好几条。
+##
+## 键 = 状态 id（water_walk / drowning / freedom / blood_war / undying）；
+## 值 = `_normalize_unit_status()` 洗过的固定形状（缺键补 0 / false，读的地方不用判类型）。
+## ⚠️ 效果键只在**两处**落地：`logic/unit.gd`（单位自己）与 `logic/world.gd`（瘟疫 / 收税）。
+var _unit_status: Dictionary = {}
 ## ★★ 将领特性表（config 的 `unit.general_traits`，部队光环）。
 ##   · 键 = 特性 id；值 = `_normalize_general_trait()` 洗过的固定形状字典；
 ##   · 载入时洗一次（与兵种 traits 同一条口径），之后只读；
@@ -541,13 +552,14 @@ var zone_owned_by_building: bool = true
 
 ## ---- ★★ 建造点位（config.json 的 `build` 段；见 logic/world.gd 与 view/hud.gd）----
 ##
-## 2026.11.15 的用户口径：玩家 / AI 都**不能**随口乱盖 ——
-##   · 非城墙建筑只能建在区划的**建造点位**上（地图 `zone_list[].build_points`，
-##     老地图没写时由 `logic/zone.gd` 自动补）；
+## 2026.11.18 的用户口径：玩家 / AI 都**不能**随口乱盖 ——
+##   · 非城墙建筑只能建在区划的**建造点位**上；点位由关卡
+##     `zones[].build_point_count` 在进图时**随机生成**（排除边缘区与已有建筑），
+##     关卡没填时用 `points_per_zone`（当前 2）；
 ##   · 城墙只能建在区划中心周围的一圈（`wall_ring_radius` 层，默认 1 层 = 8 格），
 ##     一张牌落一次就把整圈建满。
 ##
-## ★ 这三个数分别管「有几个点 / 拖多远算落在点上 / 墙圈几层」；
+## ★ 这三个数分别管「默认几个点 / 拖多远算落在点上 / 墙圈几层」；
 ##   它们是**玩法数值**，逻辑层与视图都只读这里（config.json 是唯一来源）。
 var build_points_per_zone: int = 2
 var build_drop_radius_tiles: float = 1.5
@@ -565,12 +577,9 @@ var food_per_tile_per_sec: float = 1.0
 var gold_per_tile_per_sec: float = 1.0
 var start_food: float = 0.0
 var start_gold: float = 0.0
-## ★★ 2026.10.29：**持续消耗**的总闸（`economy.upkeep_enabled`，默认 true）。
-##   管两件事：单位维护费（每存活单位每秒吃粮）+ 科技的每秒扣金。
-##   false = 两样都不扣、也不会有断粮 / 断金。
-##   ★ 为什么值得一个总闸：旧测试里有大量「粮食 200 → 招一个兵 → 150」这种**精确对账**，
-##     而这两个消耗是每帧都在扣的（见 tests/test_case.gd）。正常游戏永远是 true。
-var upkeep_enabled: bool = true
+## ★★ 2026.11.18：**持续消耗已取消**（单位维护粮 / 科技扣金都不再是玩法）。
+##   这个键保留为兼容开关，正常游戏与测试默认都是 false；打开会恢复旧的维护费逻辑。
+var upkeep_enabled: bool = false
 
 ## ---- 科技（config.json 的 tech 段）----
 ## ★ 与战斗数值表一样：**载入时整理好、之后只读**（科技页每帧按它重画九格，
@@ -649,6 +658,9 @@ var revive_recall_respawn_sec: float = 10.0
 ## ---- 回血 ----
 ## 单位站在**己方 / 友方**区划内时，每秒恢复多少血。
 var heal_zone_regen: float = 1.0
+## ★★ 2026.11.18：**「自由瘟疫」每秒扣多少血**（固定值；见 config.json 的 `zone._plague_comment`）。
+##   对染疫区划里**所有没有「自由」的单位**生效（含友军 / 自家非自由单位）。
+var plague_damage_per_sec: float = 6.0
 
 ## 一帧最多按多少秒推进逻辑（防止「帧慢→dt 大→活更多→更慢」的死亡螺旋）
 var sim_max_dt: float = 0.05
@@ -901,7 +913,7 @@ func _cache_scalars() -> void:
 	start_food = num("resource.start_food", 0.0)
 	start_gold = num("resource.start_gold", 0.0)
 	# ★★ 持续消耗的总闸（缺省 true —— 老配置里没这个键时也按「照常扣」算）
-	upkeep_enabled = bool_val("economy.upkeep_enabled", true)
+	upkeep_enabled = bool_val("economy.upkeep_enabled", false)
 
 	respawn_sec = num("pvp.respawn_sec", 8.0)
 	destructible_base = bool_val("pvp.destructible_base", false)
@@ -931,6 +943,8 @@ func _cache_scalars() -> void:
 		maxf(0.0, num("revive.recall_respawn_sec", 10.0)), revive_respawn_sec)
 	# 区划内回血（与粮车光环相加）
 	heal_zone_regen = maxf(0.0, num("heal.zone_regen", 1.0))
+	# ★★ 2026.11.18：「自由瘟疫」的每秒固定伤害（zone 段）。
+	plague_damage_per_sec = maxf(0.0, num("zone.plague_damage_per_sec", 6.0))
 
 	_cache_techs()
 	_cache_upgrades()
@@ -944,6 +958,8 @@ func _cache_scalars() -> void:
 	# ★★ 单位特性（unit.unit_traits）—— 必须在上一步之后调：
 	#   `_normalize_unit_trait()` 要用 `_unit_classes` 校验 attack_vs_class 的键。
 	_cache_unit_traits()
+	# ★★ 单位状态（unit.status）—— 与特性分开的第二张池（载入时洗一次，之后只读）。
+	_cache_unit_status()
 	# ★★ 将领特性（unit.general_traits）—— 必须在上一步之后调：
 	#   `_normalize_general_trait()` 要用 `_unit_classes` 校验 attack_vs_class 的键。
 	_cache_general_traits()
@@ -1162,6 +1178,163 @@ func unit_trait_desc(id: String) -> String:
 	return String(unit_trait_def(id).get("desc", ""))
 
 
+# ------------------------------------------------------------------
+# ★★ 2026.11.18：单位**状态（属性）**（config 的 `unit.status`）
+#
+# 与上面的「单位特性」是**两张表**，别混（区别见文件头 `_unit_status` 的说明）：
+#   · 特性 = 兵种天生、静态、出生抄一次；
+#   · 状态 = 运行期可以加减（方略 / 建筑 / 机制都会授予或剥夺）。
+#
+# 效果键（全部可选，缺键 = 0 / false）：
+#   water_walk        bool    可以走水域（寻路放行）
+#   water_speed_mult  float   水域格上的移速**倍率**（0.5 = 减半；缺键按 1.0）
+#   immobilize        bool    不能移动、不能攻击（溺水）
+#   damage_taken_add  float   受到的所有伤害**加法**增加（1.0 = 易伤 +100%）
+#   hp_drain_ratio    float   每秒扣除**最大生命值**的比例（0.05 = 5%/秒）
+#   hp_mult           float   血量上限倍率增量（+0.10 = +10%）
+#   attack_add        float   攻击倍率增量
+#   armor_mult        float   防御（固定减伤数值）倍率增量
+#   plague_immune     bool    免疫「自由瘟疫」的每秒掉血
+#   invincible        bool    免疫一切伤害
+# ------------------------------------------------------------------
+
+## ★★ 把 config 里的 `unit.status.<id>` 洗成**固定形状**的一条状态（载入时一次）。
+##
+## 形状固定（缺键补 0 / false）的理由与 `_normalize_unit_trait()` 完全一样：
+## 读的地方在每帧每单位的路径上，不能每次都判「这个键有没有」。
+## 未知键在这里被丢掉（写错的键不该在运行期变成一条查不到的引用）。
+func _normalize_unit_status(id: String, raw: Variant) -> Dictionary:
+	var out: Dictionary = {
+		"id": id,
+		"name": id,
+		"short": "",
+		"desc": "",
+		"water_walk": false,
+		"water_speed_mult": 1.0,
+		"immobilize": false,
+		"damage_taken_add": 0.0,
+		"hp_drain_ratio": 0.0,
+		"hp_mult": 0.0,
+		"attack_add": 0.0,
+		"armor_mult": 0.0,
+		"plague_immune": false,
+		"invincible": false,
+	}
+	if typeof(raw) != TYPE_DICTIONARY:
+		return out
+	var d: Dictionary = raw
+	if typeof(d.get("name", null)) == TYPE_STRING:
+		out["name"] = String(d["name"])
+	if typeof(d.get("short", null)) == TYPE_STRING:
+		out["short"] = String(d["short"])
+	if typeof(d.get("desc", null)) == TYPE_STRING:
+		out["desc"] = String(d["desc"])
+	out["water_walk"] = bool(d.get("water_walk", false))
+	out["immobilize"] = bool(d.get("immobilize", false))
+	out["plague_immune"] = bool(d.get("plague_immune", false))
+	out["invincible"] = bool(d.get("invincible", false))
+	# 倍率类夹在「不会变成负数移速 / 瞬移」的范围里；比例类夹 0~1。
+	out["water_speed_mult"] = clampf(float(d.get("water_speed_mult", 1.0)), 0.05, 1.0)
+	out["damage_taken_add"] = maxf(0.0, float(d.get("damage_taken_add", 0.0)))
+	out["hp_drain_ratio"] = clampf(float(d.get("hp_drain_ratio", 0.0)), 0.0, 1.0)
+	out["hp_mult"] = clampf(float(d.get("hp_mult", 0.0)), -0.9, 5.0)
+	out["attack_add"] = clampf(float(d.get("attack_add", 0.0)), -0.9, 5.0)
+	out["armor_mult"] = clampf(float(d.get("armor_mult", 0.0)), -0.9, 5.0)
+	return out
+
+
+## 载入时整理状态池（只读，之后别再改它）。
+## ★ 必须在 `_cache_unit_types()` **之后**、`_cache_clans()` 之前 —— 它不依赖两者的具体内容，
+##   但 `unit_statuses_of()` 的结果要与兵种表对得上（顺序上先有兵种，读的时候才有意义）。
+func _cache_unit_status() -> void:
+	_unit_status = {}
+	var raw: Variant = get_path_value("unit.status")
+	if typeof(raw) != TYPE_DICTIONARY:
+		return
+	for sid in (raw as Dictionary).keys():
+		var id := String(sid)
+		if id.begins_with("_"):
+			continue                     # `_comment` 之类的说明键，不是状态
+		_unit_status[id] = _normalize_unit_status(id, (raw as Dictionary)[sid])
+
+
+## 全部状态 id（**排序后**；稳定顺序让界面 / 测试不随字典顺序漂）。
+func unit_status_ids() -> Array:
+	var ids: Array = _unit_status.keys()
+	ids.sort()
+	return ids
+
+
+## 一条状态的洗好定义（未知 id → 空字典，调用方用 `.get(k, 0)`）。
+func unit_status_def(id: String) -> Dictionary:
+	if id == "" or not _unit_status.has(id):
+		return {}
+	return _unit_status[id]
+
+
+func has_unit_status(id: String) -> bool:
+	return _unit_status.has(id)
+
+
+## 状态的显示名 / 短名 / 说明（未知 → id / 首字 / 空串）。
+func unit_status_name(id: String) -> String:
+	var d := unit_status_def(id)
+	return String(d.get("name", id))
+
+
+func unit_status_short(id: String) -> String:
+	var d := unit_status_def(id)
+	var s := String(d.get("short", ""))
+	if s != "":
+		return s
+	var n := String(d.get("name", ""))
+	return n.substr(0, 1) if n != "" else ""
+
+
+func unit_status_desc(id: String) -> String:
+	return String(unit_status_def(id).get("desc", ""))
+
+
+## 某个兵种**天生**带的状态 id 数组（`unit.types.<id>.status_ids`；载荷已在载入时洗过）。
+func unit_status_ids_of(id: String) -> Array:
+	var v: Variant = unit_type_entry(id).get("status_ids", [])
+	return (v as Array).duplicate() if typeof(v) == TYPE_ARRAY else []
+
+
+## ★★ 一组状态 id 的**合并效果**（多个状态相加 / 取或）。
+##
+## @return 形状与 `_normalize_unit_status()` 相同（只是数值是**几条之和**）。
+## ★ 每单位每帧不该调它（会新建字典）—— 单位在 `grant_statuses()` 时算一次存起来。
+func status_effects_merged(ids: Array) -> Dictionary:
+	var out: Dictionary = _normalize_unit_status("", null)
+	out["id"] = ""
+	out["name"] = ""
+	out["short"] = ""
+	out["desc"] = ""
+	out["water_speed_mult"] = 1.0
+	for v in ids:
+		var sid := String(v)
+		var d := unit_status_def(sid)
+		if d.is_empty():
+			continue
+		out["water_walk"] = bool(out["water_walk"]) or bool(d.get("water_walk", false))
+		out["immobilize"] = bool(out["immobilize"]) or bool(d.get("immobilize", false))
+		out["plague_immune"] = bool(out["plague_immune"]) or bool(d.get("plague_immune", false))
+		out["invincible"] = bool(out["invincible"]) or bool(d.get("invincible", false))
+		# 移速倍率：多条**取最小**（水性 0.5 与别的减益同时存在时以更慢的为准，不做乘算）
+		out["water_speed_mult"] = minf(float(out["water_speed_mult"]),
+			float(d.get("water_speed_mult", 1.0)))
+		out["damage_taken_add"] = float(out["damage_taken_add"]) \
+			+ float(d.get("damage_taken_add", 0.0))
+		out["hp_drain_ratio"] = float(out["hp_drain_ratio"]) \
+			+ float(d.get("hp_drain_ratio", 0.0))
+		out["hp_mult"] = float(out["hp_mult"]) + float(d.get("hp_mult", 0.0))
+		out["attack_add"] = float(out["attack_add"]) + float(d.get("attack_add", 0.0))
+		out["armor_mult"] = float(out["armor_mult"]) + float(d.get("armor_mult", 0.0))
+	return out
+
+
+
 ## ★★ 把 config 里的 `unit.types.<id>.knockback` 洗成**两键固定**的字典（载入时一次）。
 ##
 ## 输入：`{ "distance": <格>, "stun_sec": <秒> }`（两个键都可选）。
@@ -1265,6 +1438,31 @@ func _normalize_charge(raw: Variant) -> Dictionary:
 	var cd: Variant = d.get("cooldown_sec", 0.0)
 	if typeof(cd) == TYPE_INT or typeof(cd) == TYPE_FLOAT:
 		out["cooldown_sec"] = clampf(float(cd), 0.0, CHARGE_MAX_COOLDOWN)
+	return out
+
+
+## ★★ 2026.11.18：把 config 里的 `unit.types.<id>.burst` 洗成**三键固定**的字典。
+##
+## 输入：`{ "count": <段数>, "interval_sec": <段间隔>, "reload_sec": <全部打完后的装填> }`
+## 输出：`{ count, interval_sec, reload_sec }`；**count <= 1 ⇒ 普通单发**（所有老兵种都是这一档）。
+##
+## ★ 语义（见 logic/combat.gd 的 burst 那一段）：开火那一下打出第 1 段，
+##   之后每隔 `interval_sec` 再打一段，打到 `count` 段为止；冷却用 `reload_sec`
+##   （远程兵种写在自己的 `cooldown_sec` 上也行，这里以 reload_sec 优先）。
+## ⚠️ 夹上限：段数写 999 会让一帧打出几百枚投掷物（那是卡帧不是设计）。
+const BURST_MAX_COUNT := 24
+const BURST_MAX_INTERVAL := 5.0
+const BURST_MAX_RELOAD := 120.0
+
+
+func _normalize_burst(raw: Variant) -> Dictionary:
+	var out: Dictionary = {"count": 1, "interval_sec": 0.0, "reload_sec": 0.0}
+	if typeof(raw) != TYPE_DICTIONARY:
+		return out
+	var d: Dictionary = raw
+	out["count"] = clampi(int(d.get("count", 1)), 1, BURST_MAX_COUNT)
+	out["interval_sec"] = clampf(float(d.get("interval_sec", 0.0)), 0.0, BURST_MAX_INTERVAL)
+	out["reload_sec"] = clampf(float(d.get("reload_sec", 0.0)), 0.0, BURST_MAX_RELOAD)
 	return out
 
 
@@ -1464,8 +1662,19 @@ func _cache_clans() -> void:
 			"id": cid,
 			"name": String(c.get("name", cid)),
 			"icon": String(c.get("icon", "")),
+			# ★★ 2026.11.18：**短名**（备战页那枚竖排按钮用）。
+			#   竖排按钮的字是一列一列的，「王朝·义勇军」竖着要 6 行；4 枚按钮时槽高
+			#   只有 1/4 屏，放不下 ⇒ 配置里给一个 3 字以内的短名。缺键 = 空 = 用全名。
+			"short": String(c.get("short", "")).strip_edges(),
 			"recruit": [],
 			"ai_composition": normalize_weight_list(c.get("ai_composition", null)),
+			# ★★ 2026.11.18：**这一派能造哪些建筑**（白名单）。
+			#   缺键（`buildings_all = true`）= 所有建筑都能造（老派系全靠这一条，行为不变）；
+			#   写了数组（哪怕空）= 只认数组里那几个 ⇒ 空数组 = 什么都不能造。
+			#   ⚠️ 这条只约束**玩家 / AI 从建造页下单**（world.build_reject_reason），
+			#     不约束关卡数据里预先摆好的建筑。
+			"buildings": [],
+			"buildings_all": true,
 			# ★★ 2026.11：**这一派的 commander AI 倾向**（编成 / 职能 / 进攻性 / 经济 / 建造）。
 			#   形状与 `ai.commander` 完全一样，由 `ai_profile.build()` 深合并到全局之上。
 			#   ★ 这里**不洗键**：多一个键不影响读者（控制器只读它认识的），
@@ -1479,6 +1688,19 @@ func _cache_clans() -> void:
 		}
 		if String(entry["icon"]) == "":
 			entry["icon"] = String(entry["name"]).substr(0, 1)
+		# ★★ 2026.11.18：建筑白名单（缺键 = 全都能造；写了就只认写的那几个）。
+		var raw_b: Variant = c.get("buildings", null)
+		if typeof(raw_b) == TYPE_ARRAY:
+			entry["buildings_all"] = false
+			for bitem in (raw_b as Array):
+				var bid := String(bitem).strip_edges()
+				if bid == "" or (entry["buildings"] as Array).has(bid):
+					continue
+				if not has_building_type(bid):
+					push_warning("clan.%s 的 buildings 里写了不存在的建筑：%s（已跳过）"
+						% [cid, bid])
+					continue
+				(entry["buildings"] as Array).append(bid)
 		var raw_list: Variant = c.get("recruit", null)
 		if typeof(raw_list) == TYPE_ARRAY:
 			for ritem in (raw_list as Array):
@@ -1493,11 +1715,50 @@ func _cache_clans() -> void:
 		_clans["native"] = {
 			"id": "native", "name": "原生", "icon": "原",
 			"recruit": [], "ai_composition": [], "by_kind": {},
+			"buildings": [], "buildings_all": true, "tech": [], "commander_ai": {},
 		}
 		_clan_ids.append("native")
 		_clan_default = "native"
 		return
 	_clan_default = default_id if _clans.has(default_id) else String(_clan_ids[0])
+
+
+## ★★ 2026.11.18：这一派的**额外建筑**清单（`clan.list[].buildings`）。
+## ⚠️ 它**不是**「只能造这些」——通用建筑谁都造；真正的准入判据在 `building_clans()` 那一侧，
+##   两者由 `clan_can_build()` 取**并集**。空数组 = 没写额外建筑。
+func clan_buildings(clan_id: String) -> Array:
+	var d := clan_def(clan_id)
+	var v: Variant = d.get("buildings", [])
+	return (v as Array).duplicate() if typeof(v) == TYPE_ARRAY else []
+
+
+## 这一派是不是**所有**建筑都能造（配置里没写 `buildings` 键 = true）。
+##
+## ⚠️ 2026.11.18 之后它**不再参与准入判定**（`clan_can_build()` 只看建筑侧 `clans`），
+##   只作为「这一派有没有写额外建筑清单」的读取口 / 老编辑器兼容保留。
+func clan_buildings_all(clan_id: String) -> bool:
+	return bool(clan_def(clan_id).get("buildings_all", true))
+
+
+## 这一派能不能造这一种建筑。
+##
+## ★★ 2026.11.18（第二版，修正）：`clan.buildings` 是**额外建筑**清单，**不是**「只能造这些」。
+##   用户口径：「教堂应当是额外建筑而非唯一建筑」。
+##   所以判据只有一条 —— **看建筑侧的白名单**：
+##     · `building.<type>.clans` 为空（老建筑：墙 / 塔 / 田 / 房屋 / 矿脉…）⇒ **谁都能造**；
+##     · 非空（教堂 = ["empire_church"]）⇒ 只有名单里的派系能造。
+##   派系侧的 `clan.buildings` 与它是**并集**（给「这一派额外能造某栋本来谁都造不了的楼」留的口子）。
+## ⚠️ 空串派系（还没选边 / 老数据）⇒ 一律放行（保守：不让新规则静默封掉老关卡）。
+func clan_can_build(clan_id: String, type: String) -> bool:
+	if clan_id == "" or type == "":
+		return true
+	var clans := building_clans(type)
+	if clans.is_empty():
+		return true                 # 没有派系白名单 = 通用建筑，所有派系都能造
+	if clans.has(clan_id):
+		return true                 # 白名单里的派系
+	# 派系侧写的「额外建筑」也算（两边取并集）
+	return clan_buildings(clan_id).has(type)
 
 
 ## 洗一条派系招募条目（形状与顶层 `recruit.list[]` **完全一致**，只多一个可选的 `spawn`）。
@@ -1571,6 +1832,18 @@ func clan_def(id: String) -> Dictionary:
 func clan_name_of(id: String) -> String:
 	var d := clan_def(id)
 	return String(d.get("name", id)) if not d.is_empty() else id
+
+
+## 派系的**短名**（备战页竖排按钮用）；没写 `short` 就退回全名。
+##
+## ★ 为什么不干脆用全名的前几个字：全名是「王朝·义勇军」这种「母派系·子派系」结构，
+##   截前 3 个字会得到「王朝·」（两派撞在同一个前缀上），所以短名必须是配置里显式写的。
+func clan_short_of(id: String) -> String:
+	var d := clan_def(id)
+	if d.is_empty():
+		return id
+	var s := String(d.get("short", "")).strip_edges()
+	return s if s != "" else String(d.get("name", id))
 
 
 ## 派系的一个字图标（未知 → 名字首字）。
@@ -1746,6 +2019,15 @@ func _cache_unit_types() -> void:
 				# ★★ 2026.11：兵种挂的**单位特性标签**（unit.unit_traits 的 id 数组）。
 				#   `unit_traits_of()` 把它与上面的内嵌 traits 合并成同一份四键形状。
 				"trait_ids": _normalize_trait_ids(td.get("trait_ids", null)),
+				# ★★ 2026.11.18：兵种**天生**带的单位状态（unit.status 的 id 数组）。
+				#   ★ 与 trait_ids 的区别：状态是运行期属性（可以后来被方略 / 建筑再加），
+				#     特性是静态标签。两者都可以同时为空。
+				"status_ids": _normalize_trait_ids(td.get("status_ids", null)),
+				# ★★ 2026.11.18：**每秒自愈**（传教士：1.5 血/秒）。0 = 没有。
+				"self_heal_per_sec": maxf(0.0, float(td.get("self_heal_per_sec", 0.0))),
+				# ★★ 2026.11.18：**多段齐射**（万箭穿心：一次装填打 N 段，然后长装填）。
+				#   洗成三键固定；count <= 1 = 普通单发（老兵种全是这一档）。
+				"burst": _normalize_burst(td.get("burst", null)),
 				# ★★ 本轮新增的五个玩法键（都可选；不写 = 关闭）：
 				#   · armor：固定护甲（每次受击先减这么多点）；
 				#   · can_attack：false = 纯支援单位（粮车）；
@@ -2474,6 +2756,19 @@ func unit_heal_aura_rate_of(id: String) -> float:
 	return float(unit_type_entry(id).get("heal_aura_rate", 0.0))
 
 
+## ★★ 2026.11.18：这个兵种的**每秒自愈**（传教士；0 = 没有）。
+##   ★ 与「回血光环」不是一回事：光环治疗**周围友军**，自愈只治自己。
+func unit_self_heal_of(id: String) -> float:
+	return float(unit_type_entry(id).get("self_heal_per_sec", 0.0))
+
+
+## ★★ 2026.11.18：这个兵种的**多段齐射**参数（载入时已洗成三键固定）。
+##   返回同一个字典（**只读**）；`count <= 1` = 普通单发。
+func unit_burst_of(id: String) -> Dictionary:
+	var b: Variant = unit_type_entry(id).get("burst", null)
+	return b if typeof(b) == TYPE_DICTIONARY else {"count": 1, "interval_sec": 0.0, "reload_sec": 0.0}
+
+
 ## ★★ 2026.11：这个兵种的**击退**参数（载入时已洗成 `{distance, stun_sec}` 两键固定）。
 ## 返回同一个字典（**只读**，别改它）；没有击退时两键都是 0。
 ## 参数可以是兵种 id，也可以是 kind（将领按所属兵种取，与 unit_hp_of 同口径）。
@@ -2893,10 +3188,83 @@ func buildable_building_defs() -> Array:
 	return out
 
 
+## ★★ 2026.11.18：**某一派**的建筑页条目（在 `buildable_building_defs()` 之上按
+## `clan_can_build()` 过滤）。
+##
+## ★ 教堂只有教会军能造 —— 但它是**额外**建筑：其余通用建筑（墙 / 塔 / 田 / 房屋 / 矿脉…）
+##   照旧出现在每一派的建筑页里。用户口径：「教堂应当是额外建筑而非唯一建筑」。
+## @param clan_id 空串 = 不过滤（老调用 / 还没选边的界面保持原样）。
+func buildable_building_defs_for(clan_id: String) -> Array:
+	var all := buildable_building_defs()
+	if clan_id == "":
+		return all
+	var out: Array = []
+	for d in all:
+		if clan_can_build(clan_id, String((d as Dictionary).get("id", ""))):
+			out.append(d)
+	return out
+
+
+## ★★ 2026.11.18：这一种建筑**允许哪些派系**造（`building.<type>.clans`）。
+##   空数组 = 不限派系（老建筑全是这一档）；非空 = 白名单（教堂只有教会军）。
+## ⚠️ 与 `clan.buildings` 是**同一件事的两个方向**，这里放在建筑那一侧是因为
+##   「教堂只给教会军」读起来更像建筑自己的属性；两边都写时**以建筑这一侧为准**
+##   （`world.build_reject_reason` 先查建筑侧，再查派系侧）。
+func building_clans(type: String) -> Array:
+	var out: Array = []
+	var raw: Variant = get_path_value("building.%s.clans" % type)
+	if typeof(raw) != TYPE_ARRAY:
+		return out
+	for v in (raw as Array):
+		var cid := String(v).strip_edges()
+		if cid != "" and not out.has(cid):
+			out.append(cid)
+	return out
+
+
+## 同一区划内**同类型**建筑的上限（0 = 不限）。
+func building_per_zone_limit(type: String) -> int:
+	return maxi(0, int(num("building.%s.per_zone_limit" % type, 0.0)))
+
+
+## 等级上限是否还要被「己方大本营等级」再压一次（教堂：true）。
+func building_max_level_by_base(type: String) -> bool:
+	return bool_val("building.%s.max_level_by_base" % type, false)
+
+
+## 在这一种建筑的区划里招募出来的单位，是否获得「自由」（教堂 1 级：true）。
+func building_freedom_recruit(type: String) -> bool:
+	return bool_val("building.%s.freedom_recruit" % type, false)
+
+
+## 从第几级开始给「自由瘟疫」（0 = 不给）。
+func building_plague_from_level(type: String) -> int:
+	return maxi(0, int(num("building.%s.plague_from_level" % type, 0.0)))
+
+
+## 给「自由瘟疫」时是否连**相邻区划**一起（教堂：true）。
+func building_plague_adjacent(type: String) -> bool:
+	return bool_val("building.%s.plague_adjacent" % type, false)
+
+
 ## ★★ 2026.10.26：建筑页的行号 / 解锁所需的大本营等级（缺省 1 = 开局可建）。
 ##   与单位页的 `recruit.list[].tier` 同一套口径：第 1 行 = 1 级，第 2 行 = 2 级。
 func building_tier(type: String) -> int:
 	return maxi(1, int(num("building.%s.tier" % type, 1)))
+
+
+## ★★ 2026.11.18：**解锁所需的己方大本营等级**（缺省 = `tier`，即「第 N 行要 N 级」）。
+##
+## 为什么需要它：建筑页是 3 行 × 3 列，行号同时承担了「画在哪一行」和「几级解锁」两件事。
+## 教堂是**额外建筑**（教会军专属），要塞进唯一的空格子（第 3 行第 2 列），
+## 但它必须**开局就能造** —— 用户口径：「教堂应当是额外建筑而非唯一建筑」，
+## 而且它是这个派系的核心玩法（自由 / 自由瘟疫），锁到 3 级等于没有。
+## ⇒ 写 `"min_base": 1`：位置还在第 3 行，解锁等级是 1。
+func building_min_base(type: String) -> int:
+	var raw: Variant = get_path_value("building.%s.min_base" % type)
+	if typeof(raw) == TYPE_INT or typeof(raw) == TYPE_FLOAT:
+		return clampi(int(raw), 1, 3)
+	return building_tier(type)
 
 
 ## ★★ 2026.10.30：建筑在建造页**同一行内的列**（1 = 最左，3 = 最右）。

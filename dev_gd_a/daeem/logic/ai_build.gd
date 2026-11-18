@@ -47,6 +47,15 @@ static func update(ai) -> void:
 	_pd(ai, "build/resource", _p2)
 	if built_resource:
 		return
+	# ★★ 2026.11.18：**教堂**（只有教会军的白名单里有它）。
+	#   它不产资源，所以不走 `_try_resource_building` 那条「按缺口选经济建筑」的路；
+	#   顺序放在经济建筑之后、塔 / 墙之前 —— 教堂是玩法核心（自由 / 自由瘟疫），
+	#   但不该优先于「守住家」。
+	var _p2b := _pt(ai)
+	if _try_church(ai, memo):
+		_pd(ai, "build/church", _p2b)
+		return
+	_pd(ai, "build/church", _p2b)
 	# ★★ 2026.10.30：区域特化已移除（资源建筑走普通建造流程）。
 	# ★★ 2026.10.25：不再用「缺编就整段跳过建造」的硬闸门。
 	#   生产预留（`_production_reserve`）先把当前可生产缺口的钱全部扣掉，
@@ -108,7 +117,7 @@ static func _base_upgrade_candidate(ai, memo: Variant = null) -> Dictionary:
 		return {}
 	if b.is_upgrading() or b.is_respawning():
 		return {}
-	if int(b.level) >= ai.world.building_max_level(String(b.type)):
+	if int(b.level) >= ai.world.building_level_cap(b):
 		return {}
 	# 将领挡位不足时不算「可升本」：先把将领补到门槛（2 / 4），再回来升。
 	# ★ 门槛读 need_generals（不再是 max_generals —— 上限 2/4/5 与门槛 2/4 是两件事）。
@@ -162,21 +171,8 @@ static func _try_tech(ai) -> void:
 		return
 	var build_cfg: Dictionary = ai.profile.get("build", {})
 	var priority: Array = build_cfg.get("tech_priority", [])
-	# ★★ 2026.10.29：科技现在**每秒扣金**，AI 必须先算自己养不养得起 ——
-	#   否则会陷入「点下去 → 30 秒预热 → 断金全灭 → 锁 30 秒 → 再点」的抖动。
-	#   两条判据（都偏保守）：
-	#     · 现有负担 + 这一条 ≤ 黄金收入 × 0.5（另一半留给招兵 / 建筑）；
-	#     · 余额够付 45 秒，避免刚点下就断金。
-	var gold_income := 0.0
-	if ai.world.zones != null:
-		gold_income = float(ai.world.zones.production_of(ai.faction).get("gold", 0.0))
-	gold_income += float(ai.world._flat_resource_bonus(ai.faction).get("gold", 0.0))
-	var budget: float = gold_income * 0.5
-	var drain: float = float(ai.world.tech.gold_drain_per_sec(ai.faction))
-	var gold_now := 0.0
-	var pool: Variant = ai.world.resource_pool_for(ai.faction)
-	if typeof(pool) == TYPE_DICTIONARY:
-		gold_now = float((pool as Dictionary).get("gold", 0.0))
+	# ★★ 2026.11.18：科技不再持续扣金，也不再扣任何资源 ——
+	#   只要「派系槽位里有 + 阶数够 + 名额没满」就能打出。
 	var candidates: Array = []
 	# 先按配置里的优先级，再补表里其余的（避免「优先级表为空 = 永远不点科技」）
 	for id in priority:
@@ -193,18 +189,9 @@ static func _try_tech(ai) -> void:
 			continue
 		if String(ai.world.tech_can_activate(id2, ai.faction)) != "":
 			continue
-		# 这一条的金耗：要么「流量养得起」（收入的一半够付），要么「库存养得起」
-		# （现有黄金够付 45 秒）。两条都不满足才跳过（不是「试过就放弃」）。
-		var cost: float = float(ai.cfg.tech_gold_per_sec_of(id2))
-		if cost > 0.0:
-			var flow_ok: bool = drain + cost <= budget
-			var stock_ok: bool = gold_now >= cost * 45.0
-			if not flow_ok and not stock_ok:
-				continue
 		if CommandRes.apply(ai.world, ai.cfg, {
 				"kind": "tech_toggle", "tech_id": id2, "on": true, "faction": ai.faction}):
 			ai.stats["techs"] = int(ai.stats.get("techs", 0)) + 1
-			drain += cost
 			return
 		# 失败（大本营等级 / 槽位刚好变了）：记下来，别每轮重试同一条。
 		ai.tech_attempted[id2] = true
@@ -258,6 +245,71 @@ static func _try_resource_building(ai, memo: Variant = null) -> bool:
 		return true
 	ai.stats["build_failures"] = int(ai.stats.get("build_failures", 0)) + 1
 	ai.blocked_tiles[t] = true
+	return false
+
+
+## ★★ 2026.11.18：**教堂**（帝国·教会军专属）—— 造一座，能升就升到上限。
+##
+## 为什么单独一支、而不是并进 `_try_resource_building`：
+##   · 教堂不产粮 / 金，按「资源缺口」选建筑的那套打分对它没有意义；
+##   · 它是**每区划限一座 + 等级受大本营压**的特殊建筑（见 world.building_level_cap），
+##     判据与普通建筑不同，混在资源建筑里会把 `resource_buildings` 的计数搅乱。
+##
+## 口径：只在**大本营所在区划**建（安全、且 2 级的瘟疫光环能罩住最需要的地方）；
+##   已有教堂就先尝试升级；钱不够就这一 tick 什么都不做（下一 tick 再来）。
+static func _try_church(ai, memo: Variant = null) -> bool:
+	var world = ai.world
+	if world == null or ai.cfg == null:
+		return false
+	if not world.building_allowed_for_faction("church", ai.faction):
+		return false                 # 这一派不能造教堂（义勇军 / 原生 / 王朝 / 帝国）
+	if _bare_general_count(ai) > 0:
+		return false                 # 缺编队时先补兵（与资源建筑同一条闸门）
+	if _any_owned_zone_threatened(ai, memo):
+		return false                 # 家里被打：先别花钱盖楼
+	var church = null
+	for b in world.building_list:
+		if b == null or not b.alive or String(b.owner) != ai.faction:
+			continue
+		if String(b.type) != "church":
+			continue
+		church = b
+		break
+	# 1) 已经有教堂：能升就升（上限读 building_level_cap：受大本营等级压）。
+	if church != null:
+		if int(church.level) >= world.building_level_cap(church):
+			return false
+		if world.building_upgrade_reason(church, ai.faction) != "":
+			return false
+		if not _defense_afford(ai, world.building_upgrade_cost(church)):
+			return false
+		if CommandRes.apply(world, ai.cfg, {
+				"kind": "building_upgrade", "tx": int(church.tx), "ty": int(church.ty),
+				"faction": ai.faction}):
+			ai.stats["builds"] = int(ai.stats.get("builds", 0)) + 1
+			ai.note_status("building")
+			return true
+		return false
+	# 2) 还没有：在大本营所在区划找一个空点位造一座。
+	var base = world.find_base_of(ai.faction)
+	if base == null or not base.alive or base.neutralized:
+		return false
+	var zid := int(base.zone_id)
+	if zid < 0:
+		return false
+	for p in world.build_points_of_zone(zid):
+		var t: Vector2i = p
+		if not world.can_place_building("church", t.x, t.y, ai.faction):
+			continue
+		if not _defense_afford(ai, _building_cost(ai, "church")):
+			return false
+		if CommandRes.apply(world, ai.cfg, {
+				"kind": "build", "build_type": "church",
+				"tx": t.x, "ty": t.y, "faction": ai.faction}):
+			ai.stats["builds"] = int(ai.stats.get("builds", 0)) + 1
+			ai.note_status("building")
+			return true
+		return false
 	return false
 
 
@@ -327,7 +379,7 @@ static func _pick_resource_building(ai, counts: Dictionary) -> String:
 ## ★★ 2026.11.17：**点位是稀缺资源，不能全给经济建筑** ——
 ##   一个区划里经济建筑能用几个点位由 `_resource_building_capacity()` 算：
 ##   先扣掉这个区划还没满足的**箭塔缺口**，剩下的才给粮田 / 矿脉 / 房屋。
-##   点位数不是固定的（地图上每个区划可以不同，`build.points_per_zone` 只是上限），
+##   点位数不是固定的（关卡给每个区划单独配，进图随机生成），
 ##   所以这里按实时空点位算，不假设「每区 2 个」。
 static func _pick_resource_site(ai, per_zone: int, memo: Variant = null) -> Dictionary:
 	var base = ai.world.find_base_of(ai.faction)

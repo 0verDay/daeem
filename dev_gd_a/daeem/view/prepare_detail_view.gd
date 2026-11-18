@@ -315,8 +315,10 @@ func _build_tech(id: String) -> Dictionary:
 		{"title": "效果", "text": String(entry.get("line", "")), "accent": true},
 	]
 	var gold: float = cfg.tech_gold_per_sec_of(id)
-	var info: Array = [["阶", _tier_name(tier)], ["金/秒", _fmt(gold)]]
-	sections.append({"title": "科技", "grid": info, "columns": 2})
+	var info: Array = [["阶", _tier_name(tier)]]
+	if gold > 0.0:
+		info.append(["金/秒", _fmt(gold)])
+	sections.append({"title": "科技", "grid": info, "columns": info.size()})
 	return {
 		"kind": "tech", "id": id,
 		"title": String(entry.get("name", "")),
@@ -333,7 +335,11 @@ func _build_tech(id: String) -> Dictionary:
 func _find_recruit(id: String) -> Dictionary:
 	if cfg == null:
 		return {}
-	var factions: Array = [_faction, "dynasty", "empire"]
+	# ★★ 2026.11.18：现在有 5 个派系（原生 / 王朝 / 义勇军 / 帝国 / 教会军），
+	#   不再写死「当前派系 + 王朝 + 帝国」那三张表 —— 按 `clan.list` 全查一遍。
+	var factions: Array = cfg.clan_ids()
+	if not factions.has(_faction) and String(_faction) != "":
+		factions.push_front(String(_faction))
 	for f in factions:
 		if String(f) == "":
 			continue

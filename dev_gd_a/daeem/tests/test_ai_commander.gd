@@ -1251,8 +1251,12 @@ func _test_tower_strategy(cfg) -> void:
 	ok(near_tile != null, "★★ 被入侵时还挑得出补塔位置")
 	if near_tile != null:
 		var ntv: Vector2i = near_tile
-		ok(maxi(absi(ntv.x - ct.x), absi(ntv.y - ct.y)) <= 3,
-			"★★ 被入侵时补塔位置贴近区划中心")
+		# ★★ 2026.11.18：点位改为「进图随机生成」，不再保证中心附近一定有点位
+		#    —— 这里只钉「挑出来的确实是这一区一个可用点位」。
+		ok((w.build_points_of_zone(zid) as Array).has(ntv),
+			"★★ 被入侵时补塔位置 = 本区一个建造点位")
+		ok(w.build_point_available(ntv.x, ntv.y, "F1"),
+			"★ 补塔位置当下确实能建")
 	# 清掉入侵者，后面要验「一个区划能建 2 座」（建造数量本身）。
 	if intruder != null:
 		intruder.alive = false

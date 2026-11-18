@@ -154,6 +154,9 @@ func start_game(campaign_id: String, level_id: String) -> void:
 	var pool: Dictionary = {}
 	if world != null and world.has_method("general_pool_map"):
 		pool = world.general_pool_map()
+	# ★★ 2026.11.18：本局随机种子 —— 客机用它建世界，**建造点位的随机布局**
+	#   才会与房主逐格一致（每局真随机，但两端必须同步）。
+	var rand_salt: int = int(world.rand_salt) if world != null else -1
 	_send("start", {
 		"campaign": campaign_id,
 		"level_id": level_id,
@@ -161,6 +164,7 @@ func start_game(campaign_id: String, level_id: String) -> void:
 		"seats": seats,
 		"host_seat": host_seat,
 		"guest_seat": guest_seat,
+		"rand_salt": rand_salt,
 		# ★★ 2026.11：合作模式的出战将领池（阵营 → 九宫格 kind）；客机据此还原同一个招募页。
 		"general_pool": pool,
 		"build": ProtocolRes.BUILD,

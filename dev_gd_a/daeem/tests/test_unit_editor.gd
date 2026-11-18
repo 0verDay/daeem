@@ -64,7 +64,8 @@ func _test_config_contract() -> void:
 	ok(not cfg.has_building_type("zone_center"),
 		"★ 区划中心**不是** config 里的建筑（它是中立障碍，编辑器不管它）")
 	eq(cfg.building_type_ids(),
-		["wall", "tower", "farm", "stone_wall", "watch_tower", "house", "mine", "base"],
+		["wall", "tower", "farm", "stone_wall", "watch_tower", "house", "mine", "base",
+			"church"],
 		"建筑类型的顺序 = 文件里的顺序")
 	eq(cfg.building_def("wall").get("name"), "木墙", "建筑定义读得到名字")
 	eq(cfg.building_def("tower").get("name"), "哨塔", "哨塔的名字来自 config")
@@ -78,7 +79,7 @@ func _test_config_contract() -> void:
 		"config 里没有的类型 → 用调用方给的兜底")
 
 	var buildable: Array = cfg.buildable_building_defs()
-	eq(buildable.size(), 7, "★★ 建造页七项：墙 / 塔 / 粮田 / 石墙 / 警戒塔 / 房屋 / 矿脉")
+	eq(buildable.size(), 8, "★★ 建造页八项：墙 / 塔 / 粮田 / 石墙 / 警戒塔 / 房屋 / 矿脉 / 教堂")
 	eq(String(buildable[0].get("id", "")), "wall", "第一项是木墙")
 	eq(String(buildable[1].get("id", "")), "tower", "第二项是哨塔")
 	eq(String(buildable[2].get("id", "")), "farm", "第三项是粮田")
@@ -86,6 +87,9 @@ func _test_config_contract() -> void:
 	eq(String(buildable[4].get("id", "")), "watch_tower", "第五项是警戒塔")
 	eq(String(buildable[5].get("id", "")), "house", "第六项是房屋")
 	eq(String(buildable[6].get("id", "")), "mine", "第七项是矿脉")
+	# ★★ 2026.11.18：第八项是教会军的**教堂**（只在教会军的建筑页里出现，见
+	#   `cfg.buildable_building_defs_for("empire_church")` / world.building_allowed_for_faction）。
+	eq(String(buildable[7].get("id", "")), "church", "第八项是教堂")
 	eq(cfg.building_tier("wall"), 1, "木墙在第 1 行")
 	eq(cfg.building_tier("tower"), 1, "哨塔在第 1 行")
 	eq(cfg.building_tier("stone_wall"), 2, "★★ 石墙在第 2 行（2 级大本营）")
@@ -224,26 +228,22 @@ func _test_upkeep() -> void:
 	near(cfg4.general_upkeep_at(1, gtype), cfg4.unit_upkeep_of(gtype), 1e-9,
 		"★ 没写的序号仍然跟随兵种（稀疏对象，不需要写 null）")
 
-	# 5) 结算点：world._tick_upkeep 真的按覆盖算
+	# 5) 2026.11.18：持续耗粮已取消 ⇒ 即使写覆盖并打开旧开关，也不再扣粮。
 	var raw4 = require_config()
-	raw4.upkeep_enabled = true                     # require_config() 默认关掉持续消耗
+	raw4.upkeep_enabled = true
 	var gtype4 := String(raw4.general_type_at(0))
 	raw4.data["unit"]["general"]["upkeep_override"] = {"0": 0.5}
 	var cfg5 = _reload_full(raw4)
 	var w = require_world(cfg5)
 	if w != null:
-		var over: float = cfg5.general_upkeep_at(0, gtype4)
-		var plain: float = cfg5.unit_upkeep_of(gtype4)
-		ok(absf(over - plain) > 0.1,
-			"（前提）这位将领的覆盖（%.2f）和兵种默认（%.2f）差别够大" % [over, plain])
 		w.units.clear()
 		var g = w.create_general("p1", 0, 90)
 		ok(g != null, "（前提）能给 p1 造一位将领")
 		if g != null:
 			w.units.append(g)
 			w._tick_upkeep(1.0)
-			near(float(w._upkeep_food_rate.get("p1", 0.0)), over, 1e-6,
-				"★★ world._tick_upkeep 按「将领覆盖」结算（%.2f 粮/秒）" % over)
+			near(float(w._upkeep_food_rate.get("p1", 0.0)), 0.0, 1e-6,
+				"★★ 持续耗粮已取消：_tick_upkeep 不再按将领覆盖结算")
 
 
 ## ★★ 2026.11.3 / 2026.11：**特性**（单位特性池 + 将领特性池 + 各自指定）。
@@ -510,8 +510,9 @@ func _test_general_factions_and_growth() -> void:
 	eq(cfg_t.general_tier_at(0), 0, "★★ 编辑器把将领 1 改成 0 阶 → 游戏读到 0 阶")
 	ok(cfg_t.general_is_zero_tier(0), "…于是它也吃成长了")
 
-	# 2) 派系：默认三派全算（一位将领可以同时属于多个派系）
-	eq(cfg.general_factions_at(0).size(), 3, "★★ 默认三派全勾（原生 / 王朝 / 帝国）")
+	# 2) 派系：默认**全部**派系都算（一位将领可以同时属于多个派系）
+	#   ★★ 2026.11.18：派系从 3 个变成 5 个（多了王朝·义勇军 / 帝国·教会军）。
+	eq(cfg.general_factions_at(0).size(), 5, "★★ 默认五派全勾（原生 / 王朝 / 义勇军 / 帝国 / 教会军）")
 	ok(cfg.general_in_faction(0, "native"), "…原生算")
 	ok(cfg.general_in_faction(0, "dynasty"), "…王朝算")
 	ok(cfg.general_in_faction(0, "empire"), "…帝国算")
@@ -531,11 +532,11 @@ func _test_general_factions_and_growth() -> void:
 	var cfg_empty = _reload(raw_empty)
 	eq(cfg_empty.general_factions_at(0).size(), 0, "★ factions[0] = [] → 哪个派系都不显示")
 	ok(not cfg_empty.general_in_faction(0, "dynasty"), "…王朝也不显示")
-	# 缺项（老配置）⇒ 三派全算 —— 与「加这一栏之前」逐位一致
+	# 缺项（老配置）⇒ **所有**派系都算 —— 与「加这一栏之前」逐位一致
 	var raw_missing = require_config()
 	raw_missing.data["unit"]["general"].erase("factions")
 	var cfg_missing = _reload(raw_missing)
-	eq(cfg_missing.general_factions_at(0).size(), 3, "★★ 没写 factions 这一栏 → 三派全算")
+	eq(cfg_missing.general_factions_at(0).size(), 5, "★★ 没写 factions 这一栏 → 所有派系都算")
 
 	# 3) 成长：只作用于 0 阶
 	var no_bonus: Dictionary = cfg.general_growth_bonus(0, 3)
@@ -701,8 +702,8 @@ func _test_new_building() -> void:
 	cfg.data["building"]["outpost"] = NEW_BUILDING.duplicate(true)
 
 	ok(cfg.has_building_type("outpost"), "★ 新建筑被认出来了")
-	eq(cfg.building_type_ids().size(), 9, "★ 建筑类型多了它（原 8 种 + outpost）")
-	eq(cfg.buildable_building_defs().size(), 8, "★ 建造页那一份列表也多了它（原 7 + outpost）")
+	eq(cfg.building_type_ids().size(), 10, "★ 建筑类型多了它（原 9 种 + outpost）")
+	eq(cfg.buildable_building_defs().size(), 9, "★ 建造页那一份列表也多了它（原 8 + outpost）")
 	eq(cfg.building_max_hp("outpost"), 250.0, "血量来自 config")
 	eq(cfg.building_build_sec("outpost"), 1.0, "建造时间来自 config")
 	eq(cfg.building_attackable("outpost"), true, "可攻击")

@@ -1,75 +1,85 @@
-# 建造点位 / 城墙环（2026.11.15）
+# 建造点位 / 边缘区 / 城墙环（2026.11.18 新机制）
 
-> 本文是「建筑只能建在预置点位上、城墙只围区划中心」这套建造规则的**权威说明**。
-> 涉及：`logic/zone.gd`、`logic/world.gd`、`logic/command_processor.gd`、
-> `logic/ai_build.gd`、`view/hud.gd`、`view/overlay_view_3d.gd`、
-> `data/config.json` 的 `build` 段、地图编辑器（`tools/map_editor/`）。
+> 本文是「建筑只能建在随机生成的预置点位上、城墙只围区划中心、边缘区只限制巡逻」
+> 这套规则的**权威说明**。
+> 涉及：`logic/level.gd`、`logic/zone.gd`、`logic/world.gd`、
+> `logic/command_processor.gd`、`logic/ai_build.gd`、`logic/garrison_ai.gd`、
+> `view/hud.gd`、`view/overlay_view_3d.gd`、`view/build_point_view_3d.gd`、
+> `data/config.json` 的 `build` 段、战役编辑器（`tools/campaign_editor/`）。
 
 ---
 
-## 0. 用户口径（原文要点）
+## 0. 用户口径（2026.11.18）
 
-- 地图上**预置若干建筑建造点位**，玩家仅可在这些点位建造建筑；一个区划目前 **2 个**。
-- **木墙 / 石墙不可随意建造，仅能建造在区划中心周围**：逻辑为**绕区划中心一圈**；
-  若已存在地形（山脉 / 水域）/ 建筑遮挡，则**不在遮挡的位置**重新建造。
-- 拖建筑卡牌往上时，**所有可建造的预置点位高亮**；拖到点位**附近**时，点位周围出现
-  **圆形范围指示**；在圆形范围内松手 = 在该点位处建造。
-- 本轮同时拍板：点位写进地图数据 + 地图编辑器可编辑；城墙**一张牌建满一圈、只扣一张牌的费**；
-  吸附半径 1.5 格；除城墙外**全部**可建造建筑都受点位限制；**AI 与玩家同一套规则**；
-  **删掉点选建造，只保留拖拽建造**。
+- **建造点位不再写在地图里**。每关在战役编辑器「区划」页给**每个区划**填一个数量
+  （`zones[].build_point_count`）；**进图时**按这个数量随机生成点位。
+- 数量**缺省 = `config.build.points_per_zone`（当前 2）**，填 `0` = 这个区**不生成**点位。
+- 生成时**排除**：
+  - **边缘区**（`zones[].no_go`，与阵地性 AI 的巡逻禁区**是同一个东西**）；
+  - **区划中心**与中心外的**城墙环**；
+  - 山地 / 水域；
+  - **当前已有建筑**占的格（地图预置 / 大本营 / 区划中心 / 关卡摆放）。
+- 战役编辑器里**非城墙建筑可以放在本区任意可通行格**（不再只认地图点位）；
+  城墙仍只能围**区划中心**那一圈。
+- **地图编辑器不再读 / 写 / 补** `zone_list[].build_points`；老图里遗留的键运行时忽略，
+  地图编辑器保存时丢掉。
+- 每局**真随机**，但必须同步：房主把本局随机种子（`world.rand_salt`）随合作 `start`
+  发给客机，客机用同一个种子生成同一套点位。
 
 ---
 
 ## 1. 数据
 
-地图 JSON 的每个区划条目多一个可选字段：
+### 1.1 关卡 `zones[]`
 
 ```json
-"zone_list": [
+"zones": [
   {
     "id": 0,
-    "name": "西北",
-    "center": [1, 1],
-    "build_points": [[2, 2], [3, 2]]
+    "owner": "F1",
+    "no_go": [[3, 4], [4, 4]],
+    "build_point_count": 3
   }
 ]
 ```
 
-- 坐标与 `center` 同一套**导出坐标**（相对导出包围盒；Godot 侧按格直接用）。
-- 最多 `build.points_per_zone`（默认 2）个；没有点位 / 老地图不写这个键都合法。
-- 读取入口：`logic/map_data.gd` 的 `zones_build_points`（id → Array[Vector2i]）；
-  `logic/zone.gd` 的 `_apply_map_build_points()` 负责**形状校验**（见下）。
+| 键 | 含义 |
+|---|---|
+| `owner` | 开局归属（空串 = 无主） |
+| `no_go` | **边缘区**：这一区不进巡逻 / 不生成点位的格子集合；可省略 |
+| `build_point_count` | 进图时随机生成几个建造点位；缺键 = config 默认 2，`0` = 不生成 |
 
-### 1.1 校验收在哪
+- 数据仍是**关卡层**：每关可以不同。地图 JSON 没有这两个字段。
+- 读取入口：`logic/level.gd` 的 `zone_no_go` / `zone_build_point_counts`。
+- 战役编辑器负责写入；地图编辑器不再接触。
 
-`zone._apply_map_build_points()`（手改地图写坏了也不会崩）：
+### 1.2 地图 `zone_list[].build_points`
 
-- 必须是**这个区划自己的地块**（`lookup` 对得上）；
-- 必须存在且**可通行**（山脉 / 水域不能站人，也不能盖楼）；
-- 不能是区划中心本身，也不能落在中心的**城墙环**上（那一圈留给城墙）；
-- 去重、按 `build.points_per_zone` 截断。
+**已废弃**：运行时 `logic/map_data.gd` 不再读，地图编辑器不再写 / 补。
+老地图里还留着这个键也不会生效；保存一次地图后它自然消失。
 
-### 1.2 老地图自动补点
+### 1.3 运行时生成
 
-`zone._ensure_build_points()`：地图没写（或写得不够）时，按**确定性**规则补齐：
+`zone.generate_build_points(map, counts, blocked, rand_salt)`：
 
-1. 该区划自己的地块 → 可通行；
-2. 不是中心、离中心的切比雪夫距离 > `build.wall_ring_radius`（避开城墙环）；
-3. 不是地图预置建筑 / 各方大本营占的格（那几格永远建不了）；
-4. 排序：**离中心曼哈顿距离**升序 → `y` 升序 → `x` 升序，取前 N 个。
+1. 每个区划取 `counts[zid]`，缺键用 `config.build.points_per_zone`，负数按 0；
+2. 候选格 = 该区划自己的地块里满足：
+   - 存在、可通行（山地 / 水域不行）；
+   - 不是区划中心、不在中心的城墙环上；
+   - 不在边缘区里；
+   - 不在 `blocked`（所有已落成建筑占的格）里；
+3. 用 `RandomNumberGenerator` 洗牌取前 N 个；候选不够就少生成，不报错；
+4. 输出按 `(y, x)` 排序，重建「格 → 点位所属区划」反查表。
 
-> 排序键必须与地图编辑器 `fill_missing_build_points()` 一致（曼哈顿距离）；
-> 两边不一致时，同一张没写过点位的旧图会在编辑器里与游戏里挑出不同的点。
+调用时机：`world.reset()` 在所有固定建筑（地图预置 / 各方大本营 / 区划中心 /
+关卡 `start_buildings`）都就位之后；换图（`swap_map`）末尾也重新生成一次。
 
-### 1.3 开局收口（点位可能被关卡建筑压住）
+### 1.4 随机与同步
 
-`build_from_map` 发生在**关卡摆放之前**：那时还不知道这一关的大本营 / `start_buildings`
-会落在哪一格（`ai_test` 的 F1 大本营正好压在补出来的点位上）。
-
-所以 `world.reset()` 在所有固定建筑就位之后调 `world._repair_build_points()`：
-凡是**现在有建筑**的点位一律作废，在同区划里按 §1.2 的规则补一个（`zone.repair_build_points()`）。
-⇒ 编辑器里看到的点位与进游戏后的点位**可能差一个**（当那一关的大本营压在上面时），
-但每个区划的点位数量不变，而且游戏里的点位一定可用。
+- 种子 = `world.rand_salt` + 区划 id + 地图尺寸；**同一局内可复现**。
+- 合作模式：`net/host_session.gd` 的 `start` 包带 `rand_salt`；
+  `view/game_scene3d.gd` 的客机把它传给 `create_from_level(..., seed_value)`。
+- 单机/回放要固定布局时，给 `World.create_from_level` 传 `seed_value` 即可。
 
 ---
 
@@ -77,7 +87,7 @@
 
 ### 2.1 非城墙建筑：只能落在点位
 
-权威判据只有一个：`world.build_reject_reason(type, tx, ty, faction)` → `""` 才可建。
+权威判据：`world.build_reject_reason(type, tx, ty, faction)` → `""` 才可建。
 
 拒因码（事件 `build_rejected.reason` 同值）：
 
@@ -92,23 +102,26 @@
 | `base_level` | 大本营等级不够（石墙 / 警戒塔等第二行建筑） |
 | `cost` | 资源不足 |
 
-- 「自己的区划」= `world.accepts_owner(zone.owner, faction)`（严格同阵营）；
+- 「自己的区划」= `world.accepts_owner(zone.owner, faction)`；
 - **拆掉建筑后点位仍然存在**，可以再建。
 
 ### 2.2 城墙：一张牌围一圈
 
-- 落点 = 某个**区划中心格**（不是点位）；
+- 落点 = 某个**区划中心格**；
 - 建的位置 = `world.wall_ring_buildable_tiles(zid, faction)`：
   几何环（`zone.wall_ring_tiles_of()`，默认 1 层 = 3×3 外圈 8 格）逐格过滤：
-  在图上、在演出边界（active rect）内、可通行、没被建筑占住、**属于自己阵营的区划**、
-  没被敌方踩中心；
-- **一次 `build` 命令把这一圈建满**（最多 8 格），花费按**一张牌**算（config `building.<type>.cost`）；
-- 被山脉 / 水域 / 已有建筑 / 邻区挡住的格子**直接跳过**（不在遮挡处重建）；
-- 一圈已经没有可建位置时拒绝（`wall_no_space`），**不扣钱**。
+  在图上、在演出边界内、可通行、没被建筑占住、**属于自己阵营的区划**、没被敌方踩中心；
+- **一次 `build` 命令把这一圈建满**，花费按**一张牌**算；
+- 被山脉 / 水域 / 已有建筑 / 邻区挡住的格子直接跳过；
+- 一圈没有可建位置时拒绝（`wall_no_space`），不扣钱。
 
-> ⚠️ 区划中心贴着区划边界时，环的一部分会落在**邻区**：那些格子按「只能在自己区划里建造」
-> 被跳过，于是这一圈看起来是残缺的。这是地图数据的形状（`frontier` 的中心在区划角上），
-> 不是判据错误；等玩家把邻区打下来，同一张墙牌就能补满那一侧。
+### 2.3 边缘区
+
+- 数据键仍是 `zones[].no_go`（**只改界面叫法**，现有数据零迁移）；
+- 语义：**阵地性 AI 不会巡逻至其区划的边缘区** —— 只影响巡逻目标点，
+  不挡走路、不影响追击 / 守中心 / 攻城警报；
+- **建造点位也不会生成在边缘区里**；
+- 编辑器里按区划手涂任意格子；区划中心、别人的地、整块区划都被当场拦住。
 
 ---
 
@@ -116,142 +129,116 @@
 
 | 键 | 默认 | 含义 |
 |---|---|---|
-| `points_per_zone` | 2 | 每个区划的建造点位数量（改大后老地图会按需补点） |
-| `drop_radius_tiles` | 1.5 | 拖牌时指针离点位多远算「落在它上面」（圆形范围指示的半径，单位：格） |
-| `wall_ring_radius` | 1 | 城墙环层数（1 = 区划中心 3×3 外圈 8 格；2 = 5×5 去掉中心 24 格） |
+| `points_per_zone` | 2 | 关卡没填 `build_point_count` 时的默认生成数量 |
+| `drop_radius_tiles` | 1.5 | 拖牌时指针离点位多远算「落在它上面」 |
+| `wall_ring_radius` | 1 | 城墙环层数（1 = 中心 3×3 外圈 8 格） |
 
-装载进 `ConfigRes`：`build_points_per_zone` / `build_drop_radius_tiles` / `build_wall_ring_radius`。
+装载进 `ConfigRes`：`build_points_per_zone` / `build_drop_radius_tiles` /
+`build_wall_ring_radius`。
 
 ---
 
 ## 4. 界面（拖拽建造）
 
 1. 从手牌拖起建筑牌 → `hud._begin_build_drag()`：
-   - `world.build_anchors_for(type, my_faction)` 算出**所有可落点**：
+   - `world.build_anchors_for(type, my_faction)` 算出所有可落点：
      普通建筑 = 己方区划里「空着的点位」；城墙 = 己方区划的**中心格**；
-   - `overlay.drag_anchor_tiles` 拿到同一份列表 → 逐个画小方框 + 中心亮点（**全部高亮**）。
+   - `overlay.drag_anchor_tiles` 拿到同一份列表 → 逐个画小方框 + 中心亮点。
 2. 指针移动 → `hud._update_build_drag_preview()`：
-   - 若指针与某锚点中心的**世界距离** ≤ `drop_radius_tiles`，吸附到**最近**的那个；
-   - ★ 2026.11.15 第三轮（用户口径）：**地图上不再有 3D 建筑虚影**（普通建筑 / 城墙圈都没有）——
-     卡牌本身拖到地图上时只淡到 **0.72**，它自己就是「卡牌虚影」；
-     吸附结果只靠 overlay 的**地面小方框 + 中心亮点 + 圆形范围**表示；
-   - **圆形范围指示有进出动画**（`overlay.tick_drag_rings`，按格记进度）：
-     进入吸附 **0.18s 由内往外扩散**到 1.5 格；离开 / 换点 **0.12s 由外往内缩回**。
-     圈是**世界圆逐点投影**（透视下是椭圆），不是屏幕圆。
-3. 松手 → `hud._commit_card_build_drag()`（返回是否成功）：
-   - 没吸附 = 取消（丢在地图空处给一句提示；拖回手牌不提示）；
-   - 吸附了 = 发 `{"kind":"build","build_type":…,"tx":点/中心,"ty":…,"zone_id":…,"faction":…}`；
-   - 权威侧（`command_processor.apply_build`）再判一次，界面只是提示；
-   - **动画**：成功 → 牌向上淡出 + 缩小消失（`command_card.play_drag_success`）；
-     被拒 / 失败 → 牌飞回手牌栏并整副牌闪红（`animate_card_back` + `flash_reject`）；
-     拖回手牌 = 取消，只飞回、不闪红。
-
-> 旧的「点建筑牌 → 建造模式 → 点地图」与 Q/W 建造快捷键**已删除**；
-> 现在点/按建筑牌会给一句「建筑牌要拖到地图上」的提示，不再进入任何建造状态。
+   - 若指针与某锚点中心的世界距离 ≤ `drop_radius_tiles`，吸附到最近的那个；
+   - 地图上没有 3D 建筑虚影；卡牌本身淡到 0.72；
+   - 圆形范围指示有进出动画（0.18s / 0.12s）。
+3. 松手 → `hud._commit_card_build_drag()`：发 `{"kind":"build",...}`；
+   权威侧（`command_processor.apply_build`）再判一次。
+4. `view/build_point_view_3d.gd` 常驻显示己方空点位（碎石 / 断木），
+   拖建筑牌时高亮；点位是进图随机生成的，所以**每次开局位置可能不同**。
 
 ---
 
 ## 5. AI
 
-`logic/ai_build.gd` 与玩家走**同一条命令路径**：
+`logic/ai_build.gd` 与玩家走同一条命令路径：
 
 - 箭塔 / 粮田 / 房屋 / 矿脉：只从 `world.build_points_of_zone(zid)` 里挑空位；
-- 城墙：`_try_wall_ring()` 发一条「以区划中心为落点」的 build 命令 = 一张牌围一圈；
-- **边境长墙已删除**（`wall_border_*` 参数与代码一起移除）—— 墙只能围中心。
-- ★★ 2026.11.17：**经济建筑与箭塔共用一个区划的点位**。
-  `_resource_building_capacity()` 按实时空点位数计算经济建筑还能占几个：
-  先扣掉该区划的箭塔缺口，但**最多只预留空点位的一半（向上取整、至少 1 个）**，
-  再受 `build.resource_building_per_zone` 约束。
-  ⇒ 2 点位的前线区划 = 1 塔 + 1 经济；4 点位 = 2 塔 + 2 经济；
-  后方区划（塔目标 0）的空点位全部可给经济建筑。
-  **不写死「每区 2 个」**：点位数随地图变化（`build.points_per_zone` 只是上限）。
-- ★ 2026.11.16 起**开局所有区划人口全满**：房屋只在人口比例低于
-  `build.house_pop_ratio_min`（默认 0.75）时才进入候选。
-- 一个区划只有 2 个点位 ⇒ AI 的「单区划多塔 / 多资源建筑」目标实际上被点位数夹住；
-  这是设计结果（点位是稀缺资源），不是 bug。
+- 城墙：`_try_wall_ring()` 发一条「以区划中心为落点」的 build 命令；
+- 经济建筑与箭塔共用一个区划的点位；`_resource_building_capacity()` 按**实时空点位数**
+  计算，**不假设每区 2 个**；
+- 点位数量由关卡决定，AI 的「单区划多塔 / 多资源建筑」目标会被实际点位数夹住。
 
 ---
 
-## 6. 地图编辑器（`tools/map_editor/`）
+## 6. 编辑器
 
-- 「区划」页新增一行：`建造点位：2/2（(x, y)、(x, y)）` + 「把建造点设在这一格 / 取消这一格」；
-- 画布上用青色方块 + 「建N」标出点位（与中心的标记区分）；
-- 读入时逐点校验（同 §1.1），并 `fill_missing_build_points()` 自动补齐；
-- 导出写 `"build_points": [[x, y], …]`（有才写）；撤销 / 重做快照包含它；
-- 详见 [`../tools/map_editor/README.md`](../tools/map_editor/README.md)。
+### 6.1 战役编辑器（`tools/campaign_editor/`）
 
-> 编辑器把 `points_per_zone = 2` 与「中心环 = Chebyshev ≤ 1」写成了常量；
-> 改 config 的 `build.*` 时，这两处要一起改（目前值一致）。
+「区划」页每区一行：
 
----
+```
+区划名 | 开局归属 | 边缘区 N 格 [涂刷/停止] [清空] | 点位 [3]
+```
 
-## 7. 测试
+- 「点位」= `zones[].build_point_count`（进图时生成几个；0 = 不生成）；
+- 「涂刷」= 边缘区（红色网点），只影响巡逻 / 点位生成；
+- 换地图 / 新建关卡时，边缘区与点位数量**整张重建**（默认 = config 的 2）。
 
-- `tests/test_build_points.gd` —— 本系统的主用例（数据读取 / 点位合法性 / 落点规则 /
-  开局收口换点 / 城墙整圈与遮挡跳过 / 只扣一张牌 / 锚点过滤）。
-- `tests/test_ui.gd` 的 `_test_card_build_drag` —— 拖起 → 高亮 → 吸附 → 松手建造；
-  非点位不吸附、不建造。
-- `tests/test_ai_commander.gd` 的 `_test_wall_and_upgrade` —— AI 一张牌围一圈、补缺口；
-  `_test_tower_strategy` / `_test_resource_buildings` —— AI 只在点位上建。
-- 地图编辑器：`python dev_gd_a/tools/map_editor/test_model.py`、`test_app.py`。
+**摆放建筑**：
 
----
+- 非城墙建筑：本区任意可通行格（不能压区划中心、同一格不能叠两栋）；
+- 城墙：只能围区划中心那一圈（画布上有橙色虚线）；
+- 落点不合法的建筑在载入 / 换图时**直接删掉**，导出前再拦一次。
 
-## 8. 已知限制 / 后续
+### 6.2 地图编辑器（`tools/map_editor/`）
 
-1. **中心贴边 → 残圈**（见 §2.2）：数据形状问题；要真正「一圈」需要把中心改到区划内部，
-   属于地图 / 编辑器调整。
-2. **地图 JSON 里的点位可能压着某一关的大本营**（见 §1.3）：进游戏时会被换掉，
-   所以「编辑器里看到的点」与「游戏里的点」在那种图上差一个。属于关卡与地图两层数据的交叉，
-   不是点位规则的问题。
-3. **编辑器常量 vs config**（见 §6）。
-4. 地图编辑器**只读 `zone_centers` 网格、不读 `zone_list[].center`**（既有问题，
-   两者在导出图里一致；手写图只写后者时编辑器会自选中心）。与本系统无关，未在本次改动内。
-5. 现有地图文件**已经**按 §1.2 的规则批量写入了 `build_points`（2026.11.15，只新增该键、
-   其他字段语义逐项校验未变）；之后新加的图由地图编辑器补齐 / 手写。
-   ⚠️ 用地图编辑器**保存**老图时，编辑器当前会丢掉 `faction_bases`（既有行为，与本系统无关）——
-   保存前先确认这一点已修，否则玩家的出生大本营会没了。批量迁移**没有**走编辑器保存路径，
-   就是为了不触发它。
+- **不再编辑建造点位**：没有「建造点位」栏、没有画布标记、导出不写 `build_points`；
+- 老图里的 `build_points` 读进来直接丢掉；
+- 地形 / 区划 / 中心 / 产能 / 人口上限照旧。
 
 ---
 
-## 9. 表现（2026.11.15 第三轮：碎石指示物 + 建筑倒毁）
+## 7. 校验
 
-> 本节只讲**纯表现**；规则仍以 §1~§7 为准，逻辑层不自知。
+运行时 `logic/level.gd` 与战役编辑器 `model.py` 同一套 code：
 
-### 9.1 可建造点位的碎石 / 断木
+| code | 级别 | 判据 |
+|---|---|---|
+| `zone_build_count_zone_missing` | block | 数量指向一个地图上不存在的区划 |
+| `zone_build_count_negative` | block | 数量是负数（0 合法） |
+| `zone_build_count_no_space` | warn | 数量 > 0，但边缘区 / 城墙环 / 已有建筑把候选格占光了 |
 
-- 模型：`assets/models/build_point_lowpoly.glb`（Blender 程序化生成，220 顶点 / 318 面，
-  14 块碎石 + 5 根断木 + 1 段六棱木；约 **0.58 格**宽、0.088 格高，底边 y=0）。
-  - 顶点色 `Color`（石头灰 / 木头棕），Godot 侧用 unshaded + 顶点色当 albedo；
-  - **不提交 .blend 源文件**（与现有 `*_lowpoly.glb` 的交付惯例一致）。
-- 视图：`view/build_point_view_3d.gd`
-  - 只列**己方区划里、`world.can_build_at()` 仍为真**的点位（被建筑占用 / 地形不可建 / 演出边界外不画）；
-  - **常驻淡显**：平时就画（方便玩家知道点位在哪），用 `BASE_DIM` 压暗；
-  - **拖建筑牌时高亮**：`game_scene3d._process` 把 `hud.drag_anchor_kind/tiles` 传进来，
-    只有 `kind == "build"` 且锚点命中点位的格子才高亮；高亮 = **暖金自发光 + 放大 1.14 倍**
-    （用户口径：换色 + 放大，**不呼吸**）。颜色用金不用绿：草地是绿的，绿高亮会糊成一片。
-  - 用 `MeshInstance3D` 池而不是 MultiMesh：实测这条 GLB 在 MultiMesh 下只出来一小块；
-    点位规模只有「区划数 × 2」，几十个 draw call 换完整模型更划算。
-- 城墙牌不点碎石：墙的锚点是**区划中心**，由**卡牌虚影 + 地面锚点圈**负责，不在这两个点位上。
+边缘区原有五条 `zone_no_go_*` 保持不变。
 
-### 9.2 建筑倒毁
+编辑器独有的建筑落点校验：
 
-- 视图：`view/building_death_view_3d.gd` + `view/building_debris.gdshader`（纯表现，逻辑/协议零改动）。
-- 触发：每帧对 `world.building_list` 做「上一帧活着、这一帧不见」的差分。
-  **任何消失都会播**（战斗摧毁 / 主动拆除 / 剧本移除）；一帧少 **> 8 栋**视为换图 / 重置，不播。
-- 零件拆分：合并网格按「共享顶点位置」做并查集连通分量（Blender 模型是平面着色、
-  每个面独立顶点，按索引拆会得到每个三角形一块）；每个分量压成一个 AABB 碎块，
-  颜色取该分量顶点色均值，最多取体积最大的 64 块。
-- 动画（约 1.15s）：碎块以各自向外的水平速度 + 少量上抛初速下落，边落边转；
-  落地反弹 / 摩擦 / 角速度衰减；最后 35% 时间整体淡出；同时 `death_fx.spawn()` 起 3 团错开的尘土。
-- 性能：每栋倒塌 **1 个 MultiMesh**（1 次 draw call，per-instance custom data 带颜色 + alpha），
-  同时最多 20 栋；暂停时 `sync(0)` 冻结。
+| code | 判据 |
+|---|---|
+| `building_not_in_zone` | 非城墙建筑不在任何区划里 |
+| `building_not_buildable` | 山地 / 水域 / 区划中心（由 `_ck_points` 报） |
+| `building_not_in_wall_ring` | 城墙不在任何区划中心的环上 |
+| `building_overlap` | 同一格叠了两栋非城墙建筑 |
 
-### 9.3 测试
+---
 
-- `tests/test_build_point_and_death.gd`（23 项）：
-  - GLB 真的加载、底边 y=0、占地约 0.54~0.7 格；
-  - 常驻点位数 = 己方空点位；拖 `build` 牌时全部高亮，拖 `recruit` 不高亮；
-  - 建筑被打掉 → 至少 4 块碎块、MultiMesh 实例数一致、碎块 y 真的下降、1.5s 内清空。
-- 全量回归：`tools/run-tests.ps1`（124 文件）。
+## 8. 测试
+
+- `tests/test_build_points.gd`：
+  - 地图里的 `build_points` 不再读；
+  - `zones[].build_point_count` 的宽容读法（0 / 负数 / 缺键 / 非数字）；
+  - 生成数量、0 = 不生成、同种子可复现、排除边缘区、排除已有建筑；
+  - 点位合法性、落点规则、城墙整圈、锚点过滤。
+- `tests/test_ai_commander.gd`：AI 只从生成的点位里挑；被入侵时补塔位置是本区可用点位。
+- `tests/test_zone_no_go.gd`：边缘区读入 / 巡逻路线零边缘区格。
+- 战役编辑器：`python dev_gd_a/tools/campaign_editor/test_model.py`、
+  `test_app.py`；地图编辑器：`python dev_gd_a/tools/map_editor/test_model.py`、
+  `test_app.py`。
+- 全量回归：`tools/run-tests.ps1`。
+
+---
+
+## 9. 已知限制 / 后续
+
+1. **点位是随机的，编辑器看不到具体坐标**：这是「每局随机」的直接结果；
+   作者摆建筑时只需要保证在本区可通行格上，运行时会把已有建筑排除掉。
+2. **候选不够就少生成**：小地块 / 边缘区占满 / 建筑挤满时可能一个都生成不出来；
+   编辑器会给 `zone_build_count_no_space` 警告。
+3. **地图老数据的 `build_points`**：运行时忽略；地图编辑器保存时丢弃。
+4. **随机同步只走合作 `start` 包**：单机 / 回放要固定布局请传 `seed_value`。

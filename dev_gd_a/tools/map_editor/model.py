@@ -168,22 +168,6 @@ POPULATION_CAP_BY_KIND: Dict[str, float] = {"population": 5.0}
 POPULATION_CAP_MIN = 0.0
 POPULATION_CAP_MAX = 999.0
 
-#: ★★ **建造点位**：每个区划最多几个「只能在这里盖非城墙建筑」的预置格。
-#:
-#: 这是 DAEEM 新建造系统的一部分：玩家**不能**随便找块地盖房子，只能在这些预置点位里挑
-#: （城墙除外）。所以点位是**地图数据**，由设计师在这里摆，游戏侧按
-#: `zone_list[].build_points` 读（与 `center` 同一套**导出坐标**）。
-#:
-#: 一个点要满足下面几条才有意义（`MapModel.set_zone_build_point()` 逐条挡）：
-#:   · 落在**该区划自己的**地块上、而且可通行 —— 山地 / 水域上盖不了房；
-#:   · 不压区划中心、也不在中心的 3×3 环内 —— 中心那一格要落成中立障碍建筑，
-#:     紧贴它的那一圈留给城墙环（`fill_missing_build_points()` 的「离中心 ≥ 2」是同一条规则）；
-#:   · 同一格最多属于一个区划（全局去重）。
-#:
-#: 顺序就是列表顺序：界面显示、导出、读回来都按它 —— 所以「第 1 个点」在游戏里
-#: 永远是设计师先摆的那一个。
-BUILD_POINTS_PER_ZONE = 2
-
 #: 兜底上限：格子坐标落在 `-MAX_COORD … MAX_COORD-1` 之内都接受（四个方向都是）。
 #:
 #: ★ 为什么是 4096 而不是原来的 512，也不是更大的数：
@@ -436,14 +420,10 @@ def zone_kind_default(cfg: Optional[dict] = None, kinds: Optional[Dict[str, Dict
 # ----------------------------------------------------------------------
 
 class Zone:
-    """一个区块（= 区划）：名字 + 地块 + 区划中心 + 建造点位 + 三档产能 + 人口上限 + 种类。
+    """一个区块（= 区划）：名字 + 地块 + 区划中心 + 三档产能 + 人口上限 + 种类。
 
     · ``center``     ：**区划中心**所在的那一格（世界坐标）。编辑器保证每个区块恰好
                        有一个；游戏里它落成一个「中立障碍」建筑，点它能看这个区划的详情。
-    · ``build_points``：★★ **建造点位**（世界坐标，最多 `BUILD_POINTS_PER_ZONE` 个）。
-                       玩家只能在这些预置格里盖非城墙建筑（DAEEM 新建造系统），
-                       所以它们是**地图数据**，由设计师在「区划」页签里摆。
-                       **列表顺序就是显示 / 导出的顺序**（游戏里「第 1 个点」永远是先摆的那个）。
     · ``production`` ：**该区划每秒的产能绝对值**（不乘地块数），键是 PRODUCTION_KEYS
                         （food / gold / population）。缺键按 0 算 —— 所以 `model_to_dict`
                         只在真的有非零产能时才写出去，没有产能的老地图导出后与从前逐字节一致。
@@ -460,7 +440,7 @@ class Zone:
     但 Godot 侧的 zone_view 还按包围盒画底色，所以导出时会带一个最小包围盒。
     """
 
-    __slots__ = ("zone_id", "name", "tiles", "center", "build_points",
+    __slots__ = ("zone_id", "name", "tiles", "center",
                  "production", "population_cap", "kind")
 
     def __init__(self, zone_id: int, name: str = "", kind: str = ZONE_KIND_DEFAULT) -> None:
@@ -468,8 +448,6 @@ class Zone:
         self.name = name or DEFAULT_ZONE_NAME_FORMAT.format(1)
         self.tiles: set[Tile] = set()
         self.center: Optional[Tile] = None
-        #: 建造点位（世界坐标，按设计师摆放的顺序；空列表 = 还没摆）
-        self.build_points: List[Tile] = []
         self.production: Dict[str, float] = {k: 0.0 for k in PRODUCTION_KEYS}
         #: None = 设计师没填（游戏里按 DEFAULT_POPULATION_CAP 处理）
         self.population_cap: Optional[float] = None
@@ -643,8 +621,7 @@ class MapModel:
 
         删除一个格子会连带处理三件「挂在格子上的东西」：
           · 把它从所属区块里摘掉（否则区块会留下一块「地图外的领地」）；
-          · 如果它是某个区划的中心，同样把中心忘掉（中心必须在自己的地块上）；
-          · 如果它是某个区划的建造点位，那一点也一起作废（点位必须落在自己的地块上）。
+          · 如果它是某个区划的中心，同样把中心忘掉（中心必须在自己的地块上）。
         """
         if not self.in_bounds(x, y):
             return False
@@ -657,7 +634,6 @@ class MapModel:
         if not value:
             self.clear_zone(x, y)
             self.clear_zone_center_of_tile(x, y)
-            self.clear_zone_build_point_of_tile(x, y)
         return True
 
     def create_tile(self, x: int, y: int) -> bool:
@@ -810,10 +786,6 @@ class MapModel:
             if zone.center is not None and not self.in_bounds(zone.center[0], zone.center[1]):
                 zone.center = None
         self._rebuild_center_index()
-        # 建造点位同一条规矩：出界的那几个点作废（它们的世界坐标没变，只是网格缩掉了）。
-        for zone in self.zones:
-            zone.build_points = [p for p in zone.build_points
-                                 if self.in_bounds(p[0], p[1])]
 
     ## 把网格朝需要的方向长到能装下世界坐标 (x, y)；返回 False = 超出上限。
     ##
@@ -832,17 +804,15 @@ class MapModel:
     ##   那一下宁可拒绝，也不要「进程没了」。
 
     def clear_tiles(self) -> None:
-        """把所有格子变回「不存在」（区块里的地块 / 建造点位也一并清掉，但区块本身保留）。
+        """把所有格子变回「不存在」（区块里的地块一并清掉，但区块本身保留）。
 
         ★ 区划中心**不在这里清**（老行为，别顺手改）：清空画布之后中心留在原地，
           `problems()` 会提醒「中心落在一个不存在的格子上」，设计师自己重设。
-          建造点位没有这层提醒，所以这里直接清掉 —— 留着它们就是一堆「图上没有的点」。
         """
         self.existing = [False] * (self.cols * self.rows)
         self._exists_count = 0
         for zone in self.zones:
             zone.tiles.clear()
-            zone.build_points.clear()
         self.zone_of.clear()
 
     # ---------------- 区块 ----------------
@@ -903,14 +873,13 @@ class MapModel:
         return zone
 
     def delete_zone(self, zone_id: int) -> bool:
-        """删掉区块（它名下的地块变成「不属于任何区块」，区划中心与建造点位一起忘掉）。"""
+        """删掉区块（它名下的地块变成「不属于任何区块」，区划中心一起忘掉）。"""
         zone = self.zone(zone_id)
         if zone is None:
             return False
         for tile in zone.tiles:
             self.zone_of.pop(self.idx(*self.view_of(*tile)), None)
         zone.tiles.clear()
-        zone.build_points.clear()
         self.clear_zone_center(zone_id)
         self.zones.remove(zone)
         self._renumber_default_names()
@@ -928,9 +897,7 @@ class MapModel:
 
         地块必须已经存在（虚线格不能划，先创建地块）。
 
-        ★ 改归属会让「挂在原来那个区块上的东西」失效，这里一并清掉：
-          那一格的**建造点位**必须作废（点位只能落在自己区划的地块上）——
-          中心不走这条路（它留在原地，由 `problems()` 提醒设计师去挪）。
+        ★ 改归属时区划中心不走这条路（它留在原地，由 `problems()` 提醒设计师去挪）。
         """
         if not self.exists(x, y):
             return False
@@ -947,7 +914,6 @@ class MapModel:
                 prev.tiles.discard((x, y))
         zone.tiles.add((x, y))
         self.zone_of[i] = zone.zone_id
-        self.clear_zone_build_point_of_tile(x, y)
         return True
 
     def clear_zone(self, x: int, y: int) -> bool:
@@ -961,7 +927,6 @@ class MapModel:
         zone = self.zone(old)
         if zone is not None:
             zone.tiles.discard((x, y))
-        self.clear_zone_build_point_of_tile(x, y)
         return True
 
     # ---------------- 区划中心 ----------------
@@ -996,9 +961,7 @@ class MapModel:
           · 没有这个区划；这一格不存在（虚线格）；这一格不属于这个区划。
         被别的区划占着时**拿走**。
 
-        ★ 中心一挪，它周围那一圈就变成「贴着中心的禁区」——所以新中心 3×3 环内
-          （以及正好压在中心上的）建造点位**一起清掉**：同一条规则不能只挡「设点位」
-          而不挡「挪中心」，否则会留下一堆贴着中心的点，游戏里等于没有城墙环。
+        ★ 中心一挪，它周围那一圈就变成「贴着中心的禁区」（那一圈留给城墙环）。
         """
         zone = self.zone(zone_id)
         if zone is None or not self.exists(x, y):
@@ -1015,7 +978,6 @@ class MapModel:
                 prev.center = None
         zone.center = (x, y)
         self._rebuild_center_index()
-        self._drop_build_points_in_center_ring(zone)
         return True
 
     def clear_zone_center(self, zone_id: int) -> bool:
@@ -1037,115 +999,6 @@ class MapModel:
     def zones_without_center(self) -> List[Zone]:
         """还没设中心的区划（导出前要拦的就是它们）。"""
         return [z for z in self.zones if z.center is None]
-
-    # ---------------- 建造点位 ----------------
-    #
-    # ★ 语义（DAEEM 新建造系统）：玩家**只能在这些预置点位上**盖非城墙建筑，
-    #   每个区划最多 `BUILD_POINTS_PER_ZONE` 个。点位是地图数据 —— 它必须落在
-    #   该区划自己的、能走的地块上，而且要离区划中心 ≥ 2 格（中心那一格要落成
-    #   中立障碍建筑，紧贴它的那一圈留给城墙环）。
-    #
-    # ★ 不做「点位 → 格」的反查表：一个区划最多 2 个点，`zone_build_point_owner()`
-    #   扫一遍区块表就够了（比中心（每帧按格问）那套轻得多，没必要维护第二份真相）。
-
-    def zone_build_points(self, zone_id: int) -> Tuple[Tile, ...]:
-        """这个区划的建造点位（按摆放顺序；没设 → 空元组）。"""
-        zone = self.zone(zone_id)
-        return tuple(zone.build_points) if zone is not None else ()
-
-    def zone_build_point_owner(self, x: int, y: int) -> Optional[int]:
-        """这一格是哪个区划的建造点位（不是任何点位 → None）。"""
-        for zone in self.zones:
-            if (x, y) in zone.build_points:
-                return zone.zone_id
-        return None
-
-    def zone_build_point_block_reason(self, zone_id: int, x: int, y: int) -> str:
-        """为什么不能把「(x, y) 是 zone_id 的建造点」这件事成立 —— 空串 = 可以。
-
-        ★ 界面直接显示这句话（按钮为什么是灰的、状态栏为什么没反应），
-          所以判据只有这一份：`set_zone_build_point()` 与按钮的可用性都读它。
-        ★ 「这一格已经是该区划的点位」返回空串（可以）：界面上那一下就是**取消**，
-          所以按钮仍然该是可点的。
-        """
-        zone = self.zone(zone_id)
-        if zone is None:
-            return "先选一个区划"
-        if not self.exists(x, y):
-            return "(%d, %d) 还是虚线格：先把它建出来" % (x, y)
-        if self.zone_of.get(self.idx(*self.view_of(x, y)), -1) != zone_id:
-            return "(%d, %d) 不是「%s」的地块" % (x, y, zone.name)
-        terrain = self.terrain_at(x, y)
-        if terrain in ("mountain", "water"):
-            return "(%d, %d) 是%s，建不了建筑" % (x, y, TERRAIN_LABELS[terrain])
-        center = zone.center
-        if center is not None:
-            if (x, y) == center:
-                return "(%d, %d) 是「%s」的区划中心" % (x, y, zone.name)
-            if max(abs(x - center[0]), abs(y - center[1])) <= 1:
-                return "(%d, %d) 在区划中心的 3×3 环内（那一圈留给城墙）" % (x, y)
-        if (x, y) in zone.build_points:
-            return ""
-        owner = self.zone_build_point_owner(x, y)
-        if owner is not None and owner != zone_id:
-            return "(%d, %d) 已经是「%s」的建造点" % (x, y, self.zone_display_name(owner))
-        if len(zone.build_points) >= BUILD_POINTS_PER_ZONE:
-            return ("「%s」的 %d 个建造点位都用完了 —— 先取消一个再设"
-                    % (zone.name, BUILD_POINTS_PER_ZONE))
-        return ""
-
-    def set_zone_build_point(self, zone_id: int, x: int, y: int) -> bool:
-        """把 (x, y) 设为区划 (zone_id) 的一个建造点。返回是否真的变了。
-
-        拒绝的情况见 `zone_build_point_block_reason()`（同一套判据）；
-        已经在这一格的列表里 → 也返回 False（没有变化，调用方据此不压撤销栈）。
-
-        ★ 顺序 = 列表顺序：新点追加在末尾，所以「第 1 个 / 第 2 个」在界面与
-          导出（游戏侧）里始终是设计师先摆的那一个。
-        """
-        zone = self.zone(zone_id)
-        if zone is None or (x, y) in zone.build_points:
-            return False
-        if self.zone_build_point_block_reason(zone_id, x, y):
-            return False
-        zone.build_points.append((int(x), int(y)))
-        return True
-
-    def clear_zone_build_point(self, zone_id: int, x: int, y: int) -> bool:
-        """取消区划 (zone_id) 在 (x, y) 的那个建造点。返回是否真的变了。"""
-        zone = self.zone(zone_id)
-        if zone is None or (x, y) not in zone.build_points:
-            return False
-        zone.build_points.remove((x, y))
-        return True
-
-    def clear_zone_build_points(self, zone_id: int) -> bool:
-        """清空一个区划的全部建造点位（删地块 / 删区划 / 界面上的「清空」都走它）。"""
-        zone = self.zone(zone_id)
-        if zone is None or not zone.build_points:
-            return False
-        zone.build_points.clear()
-        return True
-
-    def clear_zone_build_point_of_tile(self, x: int, y: int) -> bool:
-        """这一格上的建造点位作废（删格 / 改归属时用）。"""
-        owner = self.zone_build_point_owner(x, y)
-        if owner is None:
-            return False
-        return self.clear_zone_build_point(owner, x, y)
-
-    def _drop_build_points_in_center_ring(self, zone: Zone) -> None:
-        """把「贴着一个区划中心」的建造点位清掉（中心挪过去之后必须调一次）。
-
-        判据与 `zone_build_point_block_reason()` 的 3×3 那条**完全一样**
-        （Chebyshev 距离 ≤ 1）：两处要是各写一份，迟早会出现「设的时候挡了、
-        挪中心的时候没挡」那种表里不一。
-        """
-        center = zone.center
-        if center is None:
-            return
-        zone.build_points = [p for p in zone.build_points
-                             if max(abs(p[0] - center[0]), abs(p[1] - center[1])) > 1]
 
     # ---------------- 区划产能 ----------------
 
@@ -1453,7 +1306,6 @@ class MapModel:
             if zone.tile_count == 0:
                 out.append("区块「%s」还没有地块（导出后它在游戏里是空区块）" % zone.name)
         out.extend(self._zone_center_problems())
-        out.extend(self._zone_build_point_problems())
         out.extend(self._size_problems())
         return out
 
@@ -1536,30 +1388,6 @@ class MapModel:
                 out.append("区块「%s」的中心落在%s上（游戏里单位本来就进不去，"
                            "但那一格会看不出区别）"
                            % (zone.name, TERRAIN_LABELS[self.terrain_at(cx, cy)]))
-        return out
-
-    ## 建造点位的提醒（**不阻止**：它不是硬规则，点位不够只是「这个区划没地方盖房」）。
-    ##
-    ## 能走到这里的点位都是「设过之后地形又被刷成山/水、或者中心被别人挪到旁边」的残留 ——
-    ## 正常设的时候 `set_zone_build_point()` / `set_zone_center()` 已经挡住了。
-    def _zone_build_point_problems(self) -> List[str]:
-        out: List[str] = []
-        for zone in self.zones:
-            if len(zone.build_points) > BUILD_POINTS_PER_ZONE:
-                out.append("区块「%s」有 %d 个建造点位（最多 %d 个）"
-                           % (zone.name, len(zone.build_points), BUILD_POINTS_PER_ZONE))
-            for (px, py) in zone.build_points:
-                if not self.exists(px, py):
-                    out.append("区块「%s」的建造点 (%d, %d) 落在一个「不存在」的格子上"
-                               % (zone.name, px, py))
-                    continue
-                if self.terrain_at(px, py) in ("mountain", "water"):
-                    out.append("区块「%s」的建造点 (%d, %d) 落在%s上（那里盖不了建筑）"
-                               % (zone.name, px, py,
-                                  TERRAIN_LABELS[self.terrain_at(px, py)]))
-                if self.zone_of.get(self.idx(*self.view_of(px, py)), -1) != zone.zone_id:
-                    out.append("区块「%s」的建造点 (%d, %d) 不在它自己的地块上了"
-                               % (zone.name, px, py))
         return out
 
     def _size_problems(self) -> List[str]:

@@ -1,16 +1,19 @@
-## test_build_points.gd —— ★★ 建造点位 / 城墙环（2026.11.15 建造系统）
+## test_build_points.gd —— ★★ 建造点位 / 城墙环（2026.11.18 新机制）
 ##
 ## 用户口径：
-##   · 地图上预置若干**建筑建造点位**（一个区划 2 个），玩家只能在这些点位上建非城墙建筑；
+##   · 建造点位**不再写在地图里**：关卡 `zones[].build_point_count` 决定每区生成几个，
+##     进图时随机生成；缺省 = config 的 2，0 = 不生成；
+##   · 生成时排除**边缘区**（`zones[].no_go`）与**已有建筑**；
+##   · 玩家 / AI 仍只能在这些点位上建非城墙建筑；
 ##   · 木墙 / 石墙只能建在区划中心周围：一张牌把中心那一圈建满，
-##     被地形（山脉 / 水域）/ 已有建筑挡住的位置跳过；
-##   · 拖建筑牌时所有可落点高亮，在点位的圆形范围里松手 = 在那一点建造。
+##     被地形（山脉 / 水域）/ 已有建筑挡住的位置跳过。
 ##
 ## 这一套用例盯的是**权威判据**（world.build_reject_reason / build_anchors_for /
-## build_wall_ring），界面拖拽的手感在 test_ui 里另有一条。
+## build_wall_ring / zone.generate_build_points），界面拖拽的手感在 test_ui 里另有一条。
 extends "res://tests/test_case.gd"
 
 const CommandRes = preload("res://logic/command_processor.gd")
+const LevelRes = preload("res://logic/level.gd")
 const MapDataRes = preload("res://logic/map_data.gd")
 
 func _initialize() -> void:
@@ -23,9 +26,10 @@ func _cases() -> void:
 		return
 	_test_config(cfg)
 	_test_map_reader(cfg)
+	_test_level_counts(cfg)
 	_test_points_are_valid(cfg)
+	_test_generation(cfg)
 	_test_placement_rules(cfg)
-	_test_repair(cfg)
 	_test_wall_ring(cfg)
 	_test_anchors(cfg)
 
@@ -37,24 +41,32 @@ func _test_config(cfg) -> void:
 	eq(cfg.build_wall_ring_radius, 1, "★ 城墙环 1 层（区划中心 3×3 外圈）")
 
 
-## ★★ 地图字段 `zone_list[].build_points` 的读取（形状坏掉的点静默跳过）。
+## ★★ 地图里遗留的 `zone_list[].build_points` **不再读**（点位改由关卡数量生成）。
 func _test_map_reader(cfg) -> void:
 	var m = MapDataRes.new()
 	m._read_zones(cfg, [[0, 0], [0, 0]], [{
 		"id": 0, "name": "甲", "center": [0, 0],
 		"build_points": [[1, 0], [1, 1]],
 	}])
-	ok(m.zones_build_points.has(0), "★ 读得到 zone_list[].build_points")
-	if m.zones_build_points.has(0):
-		eq((m.zones_build_points[0] as Array).size(), 2, "★ 两个点都读进来")
-		eq(m.zones_build_points[0][1], Vector2i(1, 1), "★ 坐标按 [x, y] 解析")
-	# 形状不对的项跳过（不猜、不崩）。
-	var m2 = MapDataRes.new()
-	m2._read_zones(cfg, [[0, 0], [0, 0]], [{
-		"id": 0, "build_points": [[1], "x", [1, 1]],
-	}])
-	if m2.zones_build_points.has(0):
-		eq((m2.zones_build_points[0] as Array).size(), 1, "★ 坏点被跳过，只留合法的那个")
+	ok(m.get("zones_build_points") == null,
+		"★★ 地图里的 build_points 不再读进 MapData（点位不属于地图了）")
+
+
+## ★★ 关卡 `zones[].build_point_count` 的宽容读法：0 / 负数 / 缺键 / 非数字。
+func _test_level_counts(_cfg) -> void:
+	var d: Dictionary = LevelRes._read_zone_build_point_counts([
+		{"id": 0, "build_point_count": 0},
+		{"id": 1, "build_point_count": 3},
+		{"id": 2, "build_point_count": -1},
+		{"id": 3},
+		{"id": 4, "build_point_count": "x"},
+		"坏项",
+	])
+	eq(int(d.get(0, -99)), 0, "★★ 0 也读进来（明确不生成，不能当缺键）")
+	eq(int(d.get(1, -99)), 3, "★ 正数读进来")
+	eq(int(d.get(2, -99)), -1, "★ 负数原样收下（交给校验报）")
+	ok(not d.has(3), "★ 缺键 = 不在这张表里（运行时用 config 默认 2）")
+	ok(not d.has(4), "★ 非数字 = 不在这张表里")
 
 
 ## ★★ 每个区划的点位都必须是「它自己的地块、可通行、不在中心 / 城墙环上」。
@@ -86,6 +98,8 @@ func _test_points_are_valid(cfg) -> void:
 			ok(w.map.terrain_walkable(t.x, t.y), "★ 点位是可通行地形（不能是山 / 水）")
 			ok(w.building_at(t.x, t.y) == null,
 				"★★ 点位没有压在已有建筑上（大本营 / 预置建筑都不行）")
+			ok(not w.zones.is_no_go(zid, t.x, t.y),
+				"★★ 点位不在边缘区里（生成规则）")
 			if center != null:
 				var c: Vector2i = center
 				ok(t != c, "★ 点位不是区划中心那一格")
@@ -141,35 +155,61 @@ func _test_placement_rules(cfg) -> void:
 		ok(false, "★★ 被占的点位不该再出现在可落点里")
 
 
-## ★★ 开局收口：点位被大本营 / 关卡预置建筑压住时要换一个（`_repair_build_points`）。
-func _test_repair(cfg) -> void:
+## ★★ 随机生成：数量 / 0 = 不生成 / 排除边缘区 / 排除已有建筑 / 同种子可复现。
+func _test_generation(cfg) -> void:
 	var w = require_world(cfg)
 	if w == null:
 		return
-	var anchors: Array = w.build_anchors_for("tower", "p1")
-	ok(not anchors.is_empty(), "（前提）p1 有空点位")
-	if anchors.is_empty():
+	# 找一个地块够多的区划，避免「候选不够」把断言搅浑。
+	var zid := -1
+	for z in w.zones.zones:
+		var zd: Dictionary = z
+		if (zd.get("tiles", []) as Array).size() >= 10:
+			zid = int(zd.get("id", -1))
+			break
+	ok(zid >= 0, "（前提）有地块够多的区划")
+	if zid < 0:
 		return
-	var zid := int(anchors[0]["zone_id"])
-	var before: Array = w.build_points_of_zone(zid)
-	var tile: Vector2i = anchors[0]["tile"]
-	# 在一号点位上盖一栋楼（模拟「关卡大本营压住点位」）。
-	w.add_building("tower", tile.x, tile.y, "p1", true, true)
-	eq(w.build_reject_reason("tower", tile.x, tile.y, "p1"), "occupied_or_terrain",
-		"（摆场面）点位被建筑占住")
+
+	# 数量 0 → 一个都不生成。
+	w.zones.generate_build_points(w.map, {zid: 0}, {}, 12345)
+	eq(w.build_points_of_zone(zid).size(), 0, "★★ 数量 0 = 不生成任何点位")
+
+	# 数量 3 → 生成 3 个（候选够时）；同一种子重算结果一致。
+	w.zones.generate_build_points(w.map, {zid: 3}, {}, 12345)
+	var pts: Array = w.build_points_of_zone(zid).duplicate()
+	ok(pts.size() >= 1, "★ 数量 3 → 至少生成 1 个（候选不够时少生成，不报错）")
+	if pts.is_empty():
+		return
+	w.zones.generate_build_points(w.map, {zid: 3}, {}, 12345)
+	eq(w.build_points_of_zone(zid), pts, "★★ 同一种子重算 → 同一套点位（联机可复现）")
+
+	# 边缘区：已有点位里拿一格标成边缘区 → 重新生成时它必须被排除。
+	var edge_tile: Vector2i = pts[0]
+	w.zones.apply_no_go({zid: [edge_tile]})
+	w.zones.generate_build_points(w.map, {zid: 3}, {}, 12345)
+	ok(not (w.build_points_of_zone(zid) as Array).has(edge_tile),
+		"★★ 边缘区里的格子不会被选成建造点位")
+	for p in w.build_points_of_zone(zid):
+		var t: Vector2i = p
+		ok(not w.zones.is_no_go(zid, t.x, t.y), "★ 生成的点位都不在边缘区里")
+	w.zones.apply_no_go({})
+
+	# 已有建筑：在第一个点位上盖楼 → 重新生成时该格被排除。
+	pts = w.build_points_of_zone(zid).duplicate()
+	var occ: Vector2i = pts[0]
+	w.add_building("tower", occ.x, occ.y, "p1", true, true)
 	var blocked: Dictionary = {}
 	for b in w.building_list:
 		if b != null and b.alive:
 			blocked[Vector2i(int(b.tx), int(b.ty))] = true
-	w.zones.repair_build_points(w.map, blocked)
-	var after: Array = w.build_points_of_zone(zid)
-	ok(not after.has(tile), "★★ 被占住的点位被换掉了")
-	eq(after.size(), before.size(), "★★ 换点之后数量不变（还是 %d 个）" % before.size())
-	for p in after:
+	w.zones.generate_build_points(w.map, {zid: 3}, blocked, 12345)
+	ok(not (w.build_points_of_zone(zid) as Array).has(occ),
+		"★★ 已有建筑占的格不会被选成建造点位")
+	for p in w.build_points_of_zone(zid):
 		var t: Vector2i = p
-		ok(w.building_at(t.x, t.y) == null, "★★ 新点位没有被建筑压住")
-		eq(w.build_point_zone(t.x, t.y), zid, "★★ 新点位仍属于同一个区划")
-		ok(w.can_place_building("tower", t.x, t.y, "p1"), "★★ 新点位当下能建")
+		ok(w.building_at(t.x, t.y) == null, "★ 生成的点位都没有压在建筑上")
+		ok(w.map.terrain_walkable(t.x, t.y), "★ 生成的点位都可通行")
 
 
 ## ★★ 城墙环：一张牌建整圈；被建筑 / 地形挡住的位置跳过；只扣一张牌的费。

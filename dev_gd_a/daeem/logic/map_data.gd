@@ -117,18 +117,7 @@ var zones_names: Dictionary = {}
 ## `zone.build_from_map` 不为任何区块落中心建筑（行为与加这个功能之前一致）。
 var zones_centers: Dictionary = {}
 var zones_production: Dictionary = {}
-## ★★ 每个区块的**建造点位**：id → Array[Vector2i]。
-##
-## 来源是 `zone_list[].build_points`（地图编辑器「区划」页设置，每个区划最多
-## `build.points_per_zone` 个）。**非城墙建筑只能建在这些格子上**（见 logic/world.gd
-## 的 `can_place_building` / `build_point_zone`）。
-##
-## ★ 老地图 / 手写图没有这个字段 → 这里是空表 → `logic/zone.gd` 会按同一套规则
-##   **自动补点**（`_ensure_build_points`）。地图作者不需要为了能玩而手写这些点。
-## ★ 形状校验（是不是该区划的地块 / 可通行 / 不在中心与墙圈上 / 去重）在 zone.gd：
-##   这里只负责「地图上写了什么就原样读进来」。
-var zones_build_points: Dictionary = {}
-## ★ 每个区块的**区划种类**：id → kind 字符串（"food" / "gold" / "population"）。
+## ★★ 每个区块的**区划种类**：id → kind 字符串（"food" / "gold" / "population"）。
 ##
 ## 来源是 `zone_list[].kind`（地图编辑器「区划」页签里选的那个种类）。三种用法：
 ##   · 决定这个区划**能做哪些特化**（需求：粮食区划仅能黄金 / 人口特化…）；
@@ -373,7 +362,6 @@ func _read_zones(cfg: ConfigRes, grid_v: Variant, list_v: Variant) -> void:
 	zones_names = {}
 	zones_centers = {}
 	zones_production = {}
-	zones_build_points = {}
 	zones_population_caps = {}
 	zones_kinds = {}
 	zones_owners = {}
@@ -403,18 +391,9 @@ func _read_zones(cfg: ConfigRes, grid_v: Variant, list_v: Variant) -> void:
 		if typeof(c) == TYPE_ARRAY and (c as Array).size() >= 2:
 			var ca := c as Array
 			zones_centers[zid] = Vector2i(int(ca[0]), int(ca[1]))
-		# ★★ 建造点位（本轮新增）：`[[x,y], ...]`；形状不对的项直接跳过。
-		#    ⚠️ 不在这里校验「这一格属不属于该区块」—— 那是 zone.gd 的事
-		#       （它手上有区划网格与地形，这里只有地图原文）。
-		var bp: Variant = z.get("build_points", null)
-		if typeof(bp) == TYPE_ARRAY:
-			var points: Array = []
-			for raw in (bp as Array):
-				if typeof(raw) == TYPE_ARRAY and (raw as Array).size() >= 2:
-					var ra := raw as Array
-					points.append(Vector2i(int(ra[0]), int(ra[1])))
-			if not points.is_empty():
-				zones_build_points[zid] = points
+		# ★★ 建造点位不再属于地图数据（2026.11.18）：关卡按 `zones[].build_point_count`
+		#    在进图时随机生成。地图里遗留的 `build_points` 一律忽略 —— 读都不读，
+		#    这样老图 / 新图的行为完全一致（地图编辑器也不再写这个键）。
 		# ★ 产能（每地块每秒）：缺字段 → 这一档算 0（与编辑器侧的容错一致）
 		var p: Variant = z.get("production", null)
 		if typeof(p) == TYPE_DICTIONARY:

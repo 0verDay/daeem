@@ -650,7 +650,10 @@ func start_coop_guest(payload: Dictionary, transport) -> bool:
 	# ★★ 2026.11：房主已经把两个席位的出战配置写进 level_data（派系 / 开局将领），
 	#   这里只需要恢复「九宫格将领池」。缺字段 = 老房主 ⇒ 空字典 = 配置那 9 位。
 	var pools: Variant = payload.get("general_pool", {})
-	world = WorldRes.create_from_level(cfg, level, my_seat, seats, false, {}, {}, -1, false,
+	# ★★ 2026.11.18：房主的随机种子 —— 建造点位是「每局真随机」的，
+	#   客机必须用同一个种子才与房主生成同一套点位（缺字段 = 老房主 ⇒ 本地随机）。
+	var seed_value: int = int(payload.get("rand_salt", -1))
+	world = WorldRes.create_from_level(cfg, level, my_seat, seats, false, {}, {}, seed_value, false,
 		pools if typeof(pools) == TYPE_DICTIONARY else {})
 	if world == null:
 		push_error("客机世界装配失败（地图 = %s）" % String(level.map_id))

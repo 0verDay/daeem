@@ -63,6 +63,11 @@
       "id": "ai_test_hard",
       "file": "levels/ai_test_hard.json",
       "name": "测试·困难"
+    },
+    {
+      "id": "ai_test_clan",
+      "file": "levels/ai_test_clan.json",
+      "name": "测试·新派系（义勇军 vs 教会军）"
     }
   ],
   "unlock": "in_order"

@@ -1456,6 +1456,9 @@ func _upgrade_reject_text(reason: String, b) -> String:
 	match reason:
 		"max_level":
 			return "%s已经是最高级了" % name_s
+		# ★★ 2026.11.18：教堂的等级被大本营压住（不是「满了」，是「大本营还不够高」）。
+		"base_level_cap":
+			return "%s的等级不能超过己方大本营：先把大本营升上去" % name_s
 		"owner":
 			return "只能升级自己的%s" % name_s
 		"cost":
@@ -2491,7 +2494,7 @@ func _unit_lock_note(entry: Dictionary) -> String:
 			"cooldown": return "冷却中"
 		return ""
 	if not bool(entry.get("ready", true)):
-		return "需%s级大本营" % _fmt_num(float(entry.get("tier", 1)))
+		return "需%s级大本营" % _fmt_num(float(entry.get("min_base", entry.get("tier", 1))))
 	return ""
 
 
@@ -2505,7 +2508,9 @@ func _hover_build(entry: Dictionary) -> Dictionary:
 		chips.append("远程免伤+")
 	var note := ""
 	if not bool(entry.get("ready", true)):
-		note = "需%s级大本营" % _fmt_num(float(entry.get("tier", 1)))
+		# ★ 用 `min_base`（教堂 = 1）—— 写 tier 的话会显示「需 3 级大本营」，
+		#   而它其实开局就能造。
+		note = "需%s级大本营" % _fmt_num(float(entry.get("min_base", entry.get("tier", 1))))
 	return _hover_card(String(entry.get("name", "")), "建筑",
 		_cost_cells(cost if typeof(cost) == TYPE_DICTIONARY else {}),
 		"特性", chips, note)
@@ -2569,9 +2574,9 @@ func _hover_building(entry: Dictionary) -> Dictionary:
 	return _hover_card(title, "操作")
 
 
-## 科技九格 —— **耗金格 + 效果胶囊**（`line` 就是 config 里那句短效果，如「远近免伤 +10%」）。
-## ★ 已启用 / 未启用、阶、赤字这些状态不再写进悬停：格子本身的填充已经在表达状态，
-##   悬停只留「这条科技花多少钱、给什么」（用户口径：只介绍消费和特性）。
+## 科技九格 —— **效果胶囊**（`line` 就是 config 里那句短效果，如「远近免伤 +10%」）。
+## ★★ 2026.11.18：科技不再持续耗金，悬停不再显示「金/秒」那一格。
+##   已启用 / 不可取消写在 note 里；未启用但不可用的原因也写在 note 里。
 func _hover_tech(entry: Dictionary) -> Dictionary:
 	var id := String(entry.get("id", ""))
 	var gps := float(entry.get("gold_per_sec", 0.0))
@@ -2588,12 +2593,12 @@ func _hover_tech(entry: Dictionary) -> Dictionary:
 		cells, "效果", chips, _tech_lock_note(entry))
 
 
-## 这条科技现在**启不了**的一句话原因（能启 / 已启用时返回空串）。
+## 这条科技现在**启不了**的一句话原因（能启时返回空串）。
 ## ★ 与招募格同一条口径：灰色格子点下去没反应，悬停是唯一能说明原因的地方，
 ##   所以只有这一档多写一句。
 func _tech_lock_note(entry: Dictionary) -> String:
 	if world != null and world.is_tech_active(String(entry.get("id", ""))):
-		return ""
+		return "已启用（不可取消）"
 	if bool(entry.get("available", true)):
 		return ""
 	match String(entry.get("reason", "")):
@@ -2601,8 +2606,10 @@ func _tech_lock_note(entry: Dictionary) -> String:
 			return "需高阶大本营"
 		"limit":
 			return "名额已满"
-		"gold_deficit":
-			return "黄金赤字"
+		"played":
+			return "已启用（不可取消）"
+		"destroyed":
+			return "已销毁"
 	return "不可启用"
 
 
@@ -2630,7 +2637,12 @@ func _build_entries() -> Array:
 		return slots
 	# ① 按 tier 分组（组内保持 config 顺序）。
 	var rows: Dictionary = {}
-	for d in cfg.buildable_building_defs():
+	# ★★ 2026.11.18：建筑页按**派系**过滤 —— 教堂只有「帝国·教会军」有这张牌，
+	#   其余派系根本看不到它（而不是「看得到、点下去被拒」）。
+	var bclan := ""
+	if world != null:
+		bclan = String(world.clan_of(String(world.my_faction)))
+	for d in cfg.buildable_building_defs_for(bclan):
 		var e: Dictionary = d
 		var tier := clampi(cfg.building_tier(String(e.get("id", ""))), 1, 3)
 		if not rows.has(tier):
@@ -2656,7 +2668,9 @@ func _build_entries() -> Array:
 				continue                 # 同一格重复写：先到先得，后来者走自动补位
 			used[idx] = true
 			explicit[bid] = true
-			slots[idx] = _build_entry(e, bid, tier)
+			# ★★ 2026.11.18：解锁等级读 `min_base`（缺省 = tier）—— 教堂写 `tier: 3` 只是因为
+			#   它要占第 3 行那个空位，真正的解锁等级是 1（开局就能造）。见 cfg.building_min_base()。
+			slots[idx] = _build_entry(e, bid, tier, cfg.building_min_base(bid))
 		var cursor: int = row_start
 		for d in list:
 			var e: Dictionary = d
@@ -2669,7 +2683,7 @@ func _build_entries() -> Array:
 			if cursor >= row_start + 3 or cursor >= UiLayoutRes.CARD_SLOTS:
 				continue
 			used[cursor] = true
-			slots[cursor] = _build_entry(e, bid, tier)
+			slots[cursor] = _build_entry(e, bid, tier, cfg.building_min_base(bid))
 			cursor += 1
 	var level: int = world.unit_recruit_level(world.my_faction) if world != null else 1
 	for i in slots.size():
@@ -2677,14 +2691,17 @@ func _build_entries() -> Array:
 		if s.is_empty():
 			continue
 		s["base_level"] = level
-		s["ready"] = int(s.get("tier", 1)) <= level
+		# ★ 解锁判定用 `min_base`（教堂 = 1），而不是「画在第几行」。
+		s["ready"] = int(s.get("min_base", s.get("tier", 1))) <= level
 		if not bool(s["ready"]):
 			s["lock_reason"] = "tier"
 	return slots
 
 
 ## 建筑页的一格（名字 / 说明 / tier / 图标）；具体落在哪一格由 `_build_entries()` 决定。
-func _build_entry(e: Dictionary, bid: String, tier: int) -> Dictionary:
+## @param tier      排版用的行号（决定画在第几行）
+## @param min_base  解锁所需的大本营等级（缺省 = tier；教堂 = 1）
+func _build_entry(e: Dictionary, bid: String, tier: int, min_base: int = -1) -> Dictionary:
 	return {
 		"type": "build",
 		"build_type": bid,
@@ -2694,6 +2711,7 @@ func _build_entry(e: Dictionary, bid: String, tier: int) -> Dictionary:
 		"icon_mask": UnitCardIconRes.mask_for_building(bid),
 		"desc": String(e.get("desc", "")),
 		"tier": tier,
+		"min_base": tier if min_base < 0 else min_base,
 	}
 
 
@@ -2930,7 +2948,7 @@ func _building_order_entries(b = null, sel_zone = null) -> Array:
 				b.respawn_count(), _fmt_num(b.respawn_eta())],
 			"ready": false,
 		}]
-	var max_lv: int = world.building_max_level(b.type)
+	var max_lv: int = world.building_level_cap(b)
 	if b.level >= max_lv:
 		return [{
 			"type": "building_upgrade_max",
@@ -2956,25 +2974,26 @@ func _cost_text(cost: Dictionary) -> String:
 	return " / ".join(parts) if not parts.is_empty() else "免费"
 
 
-## 点了科技九格里的某一格 = **启用 / 弃用**这一条科技（需求：点已启用的 = 弃用）。
+## 点了科技九格里的某一格 = **打出一张科技牌**（2026.11.18 起单向：不能取消）。
 ##
-## ★★ 「点一下是启用还是弃用」由**权威状态**取反决定（`world.is_tech_active`），
-##   界面不自己记一份「哪几格亮着」—— 那样一旦两处不一致，玩家会看到
-##   「格子是亮的，效果却没生效」这种最难查的坏状态。
-## ★ 满了（已启用 3 条）时再点没启用的那一条：**先在本地给一句提示**，
-##   同时照发命令（逻辑层也会拒并留一条 `tech_rejected` 事件）。
-##   为什么两处都给：本地这句是「点了立刻有反应」（事件要等下一帧 tick 才回来），
-##   而逻辑层那条才是权威 —— 万一以后加上「科技有前置条件」，
-##   本地那句猜错了也只会多一句提示，不会挡住命令。
+## ★★ 科技打出后永久启用：再次点已启用的格子只提示，不会再发命令。
+## ★ 名额满了：本地先给一句提示并直接返回（逻辑层同样会拒并留 `tech_rejected`）。
 func _on_tech_cell_activated(id: String) -> void:
 	if input_ctrl == null or world == null or id == "":
 		return
-	var on: bool = not world.is_tech_active(id)
-	if on and world.tech_remaining_slots() <= 0:
+	if world.is_tech_active(id):
+		show_notice("这条科技已经启用，不能取消")
+		return
+	var active_n: int = world.active_tech_ids().size()
+	if active_n >= 3:
+		show_notice("已启用 3 个科技：其余科技手牌已销毁")
+		return
+	if world.tech_remaining_slots() <= 0:
 		var max_n: int = world.tech_max_active()
-		show_notice("最多只能同时启用 %d 个科技：先点一个已启用的弃用" % max_n)
-	if not input_ctrl.request_tech_toggle(id, on):
-		show_notice("这条科技现在点不了")
+		show_notice("最多只能同时启用 %d 个科技：升级大本营后再启用" % max_n)
+		return
+	if not input_ctrl.request_tech_toggle(id, true):
+		show_notice("这条科技现在启用不了")
 		return
 	# ★ 立刻按**权威状态**重画一次（下一帧也会重画，但玩家点下去那一下就该看见高亮变化）。
 	#   顺序有意如此：先发命令、再由权威状态决定画成什么样 ——
@@ -3432,6 +3451,26 @@ func order_reject_text(reason: String) -> String:
 	return "这条指令现在下不了"
 
 
+## ★★ 2026.11.18：单位身上的**状态** → 顶带 buff 槽的条目（view/buff_bar.gd 的格式）。
+##
+## ★ 顺序 = `status_list()`（排序后），所以同一组状态每次画的位置都一致，不会闪。
+## ★ 一个状态只占一格：字是 `unit.status.<id>.short`，悬停标题 / 正文是 name / desc。
+func _unit_status_buffs(u) -> Array:
+	var out: Array = []
+	if u == null or cfg == null:
+		return out
+	for sid in u.status_list():
+		var id := String(sid)
+		out.append({
+			"id": id,
+			"text": cfg.unit_status_short(id),
+			"name": cfg.unit_status_name(id),
+			"tip_title": cfg.unit_status_name(id),
+			"tip_body": cfg.unit_status_desc(id),
+		})
+	return out
+
+
 ## ★★ 建造被拒（`build_rejected` 的 reason → 中文；F2 之前这条事件**根本没有界面反馈**）。
 ## 码见 logic/command_processor.gd 的 `apply_build()`。
 func build_reject_text(reason: String) -> String:
@@ -3452,6 +3491,13 @@ func build_reject_text(reason: String) -> String:
 			return "这个区划中心周围的城墙位置已经建满 / 被挡住，建不了墙"
 		"cost":
 			return "资源不足，建不了"
+		# ★★ 2026.11.18：教堂这套专属建筑的两条新拒因。
+		"clan":
+			return "这个派系不能建造这种建筑（教堂只有帝国·教会军能造）"
+		"per_zone_limit":
+			return "这个区划里同类型的建筑已经达到上限（教堂每区划限一座）"
+		"base_level_cap":
+			return "教堂的等级不能超过己方大本营的等级：先把大本营升上去"
 	return "这里建不了"
 
 
@@ -3475,18 +3521,22 @@ func ai_order_reject_text(reason: String) -> String:
 
 
 ## 科技被拒的**拒因码 → 中文**（逻辑层只给码：见 logic/tech.gd 的 can_activate）。
-##   "limit"    已经启用满了（需求原话：「当玩家启用的科技数到 3 时……会被阻止并提示」）
+##   "limit"    已经启用满了（科技不可取消，升级大本营提高上限）
+##   "played"   这条科技已经启用过（不可重复打出 / 不可取消）
+##   "destroyed" 已启用 3 条，其余手牌已销毁
 ##   "unknown"  没有这条科技（手改数据 / 旧快照才会有）
 func tech_reject_text(reason: String) -> String:
 	var max_n: int = world.tech_max_active() if world != null else 3
 	match reason:
 		"limit":
-			return "最多只能同时启用 %d 个科技：先点一个已启用的弃用" % max_n
+			return "最多只能同时启用 %d 个科技：升级大本营后再启用" % max_n
+		"played":
+			return "这条科技已经启用，不能取消 / 不能再次打出"
+		"destroyed":
+			return "已启用 3 个科技：其余科技手牌已销毁"
 		"tier":
 			var t: int = world.tech_max_tier() if world != null else 3
 			return "这条科技超出当前大本营允许的阶数（最高第 %d 阶）：升级大本营后再启用" % t
-		"gold_deficit":
-			return "黄金净收入为赤字：不能再启用新科技（可以弃用已有科技来止损）"
 		"unknown":
 			return "没有这条科技"
 	return "这条科技现在启用不了"
@@ -4019,7 +4069,10 @@ func _refresh_detail() -> void:
 	detail_panel.set_unit_name("" if shown == null else String(shown.name))
 	var urows: Dictionary = _unit_detail_rows(shown)
 	detail_panel.set_detail_rows(urows["left"], urows["right"])
-	detail_panel.set_buffs([])
+	# ★★ 2026.11.18：顶带那排 buff 槽现在**真的挂东西**了 —— 单位身上的状态
+	#   （自由 / 水性 / 溺水 / 血战到底 / 信仰不死）。文字取自 config 的 unit.status，
+	#   悬停浮窗用同一条 desc（与「水性地形」那些机制文案单一来源）。
+	detail_panel.set_buffs(_unit_status_buffs(shown))
 	# ★ 招募队列：显示**当前选中的第一个将领**的（选中整队时队长排在最前，
 	#   见 input_controller.first_selected_leader）。没选中将领 → 整块收起来。
 	detail_panel.set_queue(_queue_leader(troop), false)
@@ -4161,7 +4214,7 @@ func _v2_show_building(b, entries: Array) -> void:
 		b.hp_ratio(), true, "Lv%d" % int(b.level))
 	detail_v2.set_stats([
 		{"label": "等级", "value": "%d/%d" % [int(b.level),
-			int(world.building_max_level(String(b.type)))], "hot": true},
+			int(world.building_level_cap(b))], "hot": true},
 		{"label": "血量", "value": "%d%%" % int(round(b.hp_ratio() * 100.0)), "hot": false},
 		{"label": "远程免伤", "value": "%d%%" % int(round(
 			cfg.building_ranged_reduction(String(b.type)) * 100.0)), "hot": false},
@@ -4669,7 +4722,7 @@ func _unit_detail_rows(shown) -> Dictionary:
 			left.append(_row("攻击 —"))
 		else:
 			left.append(_row("攻击 %s/%ss" % [_fmt_num(dmg),
-				_fmt_num(shown.combat_cooldown(cfg))]))
+				_fmt_num(shown.combat_cooldown(cfg, world))]))
 	for line in _attack_bonus_lines(shown):
 		left.append(_small_row("- %s" % line))
 	# ★★ 将领特性（部队光环）的名字：效果行由上下两列按类型分别显示，
@@ -4785,7 +4838,7 @@ func _building_detail_rows(b) -> Dictionary:
 	right.append(_row("远程免伤 %d%%" % int(round(
 		cfg.building_ranged_reduction(String(b.type)) * 100.0))))
 	if String(b.type) == BuildingRes.TYPE_BASE:
-		right.append(_row("等级 %d/%d" % [b.level, world.building_max_level(b.type)]))
+		right.append(_row("等级 %d/%d" % [b.level, world.building_level_cap(b)]))
 		right.append(_small_row(_base_limits_text(b.level)))
 		if b.neutralized:
 			right.append(_row("已中立化"))

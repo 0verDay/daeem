@@ -109,11 +109,8 @@ def build_model(cfg: dict) -> MapModel:
     for (cx, cy), zid in zone_ids.items():
         model.set_zone_center(zid, cx * half_x + 1, cy * half_y + 1)
 
-    # ★ 建造点位：这是**地图数据**（玩家只能在这些格子上盖非城墙建筑）。
-    #   编辑器那条路是「读地图时自动补齐」（`mapfile.dict_to_model` → `fill_missing_build_points`），
-    #   脚本自己拼出来的模型没人补，所以这里显式调一次 —— 不然生成出来的图
-    #   在新建造系统里一个点位都没有。
-    mapfile.fill_missing_build_points(model)
+    # ★★ 建造点位不再属于地图（2026.11.18）：进图时由关卡数量随机生成，
+    #    地图编辑器与生成脚本都不写 `zone_list[].build_points`。
 
     return model
 

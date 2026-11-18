@@ -105,6 +105,34 @@ func _test_layout_against_reference(cfg) -> void:
 		< UiLayoutRes.card_fan_local(3, 4).position.x, "指令牌按扇形从左向右展开")
 	ok(UiLayoutRes.card_fan_local(8, 9).position.x + UiLayoutRes.card_fan_local(8, 9).size.x
 		<= UiLayoutRes.CARD_RECT.size.x + 0.01, "九张科技牌也收在牌区内")
+	# ★★ 2026.11.18：扇形几何两条硬约束（修「摆位不齐 / 角度一块一块」）。
+	var bottoms: Array[float] = []
+	for i in 9:
+		var r := UiLayoutRes.card_fan_local(i, 9)
+		bottoms.append(r.position.y + r.size.y)
+	near(bottoms[0], bottoms[8], 1e-4, "★★ 九张牌的底边在同一条基线上")
+	near(bottoms[0], bottoms[4], 1e-4, "★★ 中间那张也没被抬高 / 压低")
+	var rots: Array[float] = []
+	for i in 9:
+		rots.append(UiLayoutRes.card_fan_rotation(i, 9))
+	var unique_rots := true
+	for i in 9:
+		for j in range(i + 1, 9):
+			if absf(rots[i] - rots[j]) < 1e-5:
+				unique_rots = false
+	ok(unique_rots, "★★ 九张牌逐张角度不同（不再被 clamp 成几档平行牌）")
+	near(rots[4], 0.0, 1e-5, "★ 扇形正中那张是正的")
+	near(absf(rots[0]), absf(rots[8]), 1e-5, "★ 左右两端的张角对称")
+	ok(absf(rots[0]) <= deg_to_rad(14.0) + 1e-5, "★ 外圈张角不超过 14°")
+	# 支点：牌底中点（旋转 / 缩放都绕这里，整排不会左右漂）。
+	var sample := UiLayoutRes.card_fan_local(2, 7)
+	eq(UiLayoutRes.card_pivot(sample.size), Vector2(sample.size.x * 0.5, sample.size.y),
+		"★★ 手牌支点 = 牌底中点")
+	var center0 := UiLayoutRes.card_visual_center(Vector2(10.0, 20.0), sample.size, 1.0)
+	var center1 := UiLayoutRes.card_visual_center(Vector2(10.0, 20.0), sample.size, 0.82)
+	near(center0.x, center1.x, 1e-4, "★★ 缩小不改牌心的 x（不左右漂）")
+	near(center1.y, center0.y + sample.size.y * 0.18 * 0.5, 1e-4,
+		"★★ 缩小时牌心往底边收（支点在底）")
 	eq(String(UiLayoutRes.CARD_KEYS[0]), "Q", "第一格是 Q")
 	eq(String(UiLayoutRes.CARD_KEYS[8]), "C", "第九格是 C")
 
@@ -785,11 +813,12 @@ func _test_card_build_drag(main) -> void:
 		await process_frame
 	near(card._cells[0].scale.x, 0.82, 0.01, "★★ 拖出牌后其余手牌缩到 0.82 倍")
 	near(card._cells[2].scale.x, 0.82, 0.01, "★★ 左右两边的牌都缩小")
-	# ★ 「下移 40px」指的是**牌的视觉中心**往下 40px（缩到 0.82 会让左上角多走一小段，
-	#   见 `UiLayoutRes.card_tuck_offset` 的推导）⇒ 中心的半个尺寸要按当前缩放算。
+	# ★ 「下移 40px」指的是**牌的视觉中心**往下 40px（支点是牌底中点，缩小会把牌心
+	#   往上抬一点，见 `UiLayoutRes.card_tuck_offset` / `card_visual_center`）。
 	var cell0: Button = card._cells[0]
-	var c0: Vector2 = cell0.position + cell0.size * cell0.scale * 0.5
-	var base_c0: Vector2 = neigh0 + cell0.size * 0.5
+	var c0: Vector2 = UiLayoutRes.card_visual_center(cell0.position, cell0.size,
+		cell0.scale.x)
+	var base_c0: Vector2 = UiLayoutRes.card_visual_center(neigh0, cell0.size, 1.0)
 	near(c0.y, base_c0.y + 40.0, 2.0,
 		"★★ 而且整体往下沉 40px（牌心：%.1f → %.1f）" % [base_c0.y, c0.y])
 	near(c0.x, base_c0.x, 2.0, "★ 只往下沉，不左右挪")
@@ -866,6 +895,36 @@ func _test_card_build_drag(main) -> void:
 			"★★ 升级牌回手后按钮缩放 = 1.0")
 		v2_near(card._card_faces[1].scale, Vector2.ONE, 1e-3,
 			"★★ 升级牌回手后卡面缩放 = 1.0")
+		# ★★ 2026.11.18：取消 / 拒绝回手时，缩放要随离槽位的距离渐收，不能一帧硬切。
+		card._cells[1].scale = Vector2(1.5, 1.5)
+		card._card_faces[1].scale = Vector2(1.5, 1.5)
+		card._animate_card_back(1)
+		var s_start: float = card._cells[1].scale.x
+		ok(s_start > 1.4, "★★ 回手开始时保留松手时的缩放（%.3f）" % s_start)
+		for _i3 in 3:
+			await process_frame
+		var s_mid: float = card._cells[1].scale.x
+		ok(s_mid < s_start - 0.02 and s_mid > 1.001,
+			"★★ 回手途中随距离缓慢缩小（%.3f → %.3f）" % [s_start, s_mid])
+		for _i4 in 40:
+			await process_frame
+			if card._drag_tween == null or not card._drag_tween.is_running():
+				break
+		v2_near(card._cells[1].scale, Vector2.ONE, 1e-3,
+			"★★ 回手到槽位时缩放正好收回到 1.0")
+		# ★★ 2026.11.18：返程落位后支点必须回到「牌底中点」——
+		#   旧版这里会留下牌心支点，下一次重新摆牌时这张牌就比别的牌歪半张。
+		var bad_pivot := ""
+		for j in card._cells.size():
+			if not card._cells[j].visible:
+				continue
+			if not card._cells[j].pivot_offset.is_equal_approx(
+					UiLayoutRes.card_pivot(card._cells[j].size)):
+				bad_pivot = "第 %d 格 %s / %s" % [j, str(card._cells[j].pivot_offset),
+					str(UiLayoutRes.card_pivot(card._cells[j].size))]
+				break
+		eq(bad_pivot, "", "★★ 回手后所有牌的支点都是牌底中点（不会只歪某一张）")
+		card._hover_suppressed_index = -1
 
 	# 找一格「己方区划里、不是建造点位、附近也没有同种建筑」的空地：
 	# ★★ 2026.11.17：同种建筑现在是「升级落点」，贴着它拖过去会吸附成升级
@@ -2225,43 +2284,42 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 	ok(first_id != "", "第一格有 id")
 	ok(not world.is_tech_active(first_id), "开局这一条没启用")
 	g.press(0)
-	# ★★ 2026.10.30：点一格立刻启用（预热已删除）。
+	# ★★ 2026.11.18：点一格立刻启用；已启用后不可取消 / 不可再次打出。
 	ok(world.is_tech_active(first_id), "★ 点一格立刻启用（走 tech_toggle 命令）")
 	main.hud.refresh()           # 让九格按权威状态重画（真实游戏里每帧都会刷）
 	ok(g.cell_active(0), "★ 已启用的那一格画成高亮")
 	g.press(0)
-	ok(not world.is_tech_active(first_id), "★ 再点一次 = 弃用")
+	ok(world.is_tech_active(first_id), "★ 再点一次不会取消（科技不可弃用）")
 	var ids: Array = []
 	for i in g.entries().size():
 		ids.append(String((g.entry_at(i) as Dictionary).get("id", "")))
-	# ★ 这段验的是「最多 3 条」这条旧规则：把大本营拉到 3 级，
+	# ★ 这段验的是「最多 3 条」这条规则：把大本营拉到 3 级，
 	#   否则 1 级的「最多 1 条 + 仅一阶」会先把它挡住（那是 test_base_limits 的事）。
 	if base != null:
 		base.level = world.cfg.upgrade_max_level("base")
 		world.apply_building_level_hp(base)
+	main.hud.refresh()
 	for k in 3:
 		g.press(k)
 	eq(world.tech.slot_count(), 3, "★ 三条都占住了名额")
 	ok(world.tech_remaining_slots() == 0, "名额用完")
 	g.press(3)
-	ok(not world.is_tech_active(ids[3]), "★ 第 4 条没有生效（被阻止）")
-	# ★ 新版口径：不能启用的格子**置灰不可点**（点了什么都不发生），原因写在悬停里。
+	var fourth_id := String((g.entry_at(3) as Dictionary).get("id", ""))
+	ok(fourth_id == "" or not world.is_tech_active(fourth_id),
+		"★ 第 4 格没有生效（手牌已销毁）")
+	# ★★ 2026.11.18：3 条之后其余手牌销毁，不再有「置灰可点」。
+	var dead: Dictionary = world.tech_entries()[1]
+	ok(String(dead.get("id", "")) == "" and bool(dead.get("destroyed", false)),
+		"★★ 第 4 格（entry 1）标记为 destroyed")
+	ok(not bool(dead.get("playable", true)), "★★ 销毁的手牌不可再打出")
+	ok(not g.cell_at(3).visible, "★★ 销毁手牌在科技页上隐藏")
 	main.hud._tick_notice(main.cfg.num("ui.notice_sec", 2.0) + 0.1)
-	ok(not main.hud.notice_active(), "置灰格点了不弹红字（悬停才说明原因）")
-	var locked_cell = g.cell_at(3)
-	ok(locked_cell != null and not locked_cell.disabled,
-		"★ 置灰格仍可悬停（不是 disabled 灰按钮）")
-	ok(FillButtonRes.is_grey(locked_cell), "★ 不可启用格走「灰色填充」档")
-	var locked_style: StyleBox = locked_cell.get_theme_stylebox("normal")
-	ok(locked_style is StyleBoxFlat and (locked_style as StyleBoxFlat).bg_color.a <= 0.01,
-		"★ 置灰格底纹透明（灰色来自填充，不是实心灰按钮）")
-	ok(not FillButtonRes.is_grey(g.cell_at(0)), "（对照）可启用 / 已启用的格子不是灰档")
-	var tip: Dictionary = main.hud._hover_detail("tech", g.entry_at(3))
-	eq(String(tip.get("note", "")), "名额已满",
-		"★ 置灰格的悬停写明原因（note 那一行）")
-	for k in 3:
-		g.press(k)
-	eq(world.active_tech_ids().size(), 0, "收尾：弃用全部科技")
+	ok(not main.hud.notice_active(), "销毁格点了不弹红字")
+	# 测试收尾：直接走内部回滚接口清空科技（游戏 UI 没有弃用入口）。
+	for tid in world.active_tech_ids().duplicate():
+		world.tech.deactivate(String(tid))
+	world._apply_tech_effects()
+	eq(world.active_tech_ids().size(), 0, "（收尾）科技状态清空")
 	# 把大本营等级还原（下面还要验「大本营操作页 = 升级」那一格）。
 	if base != null:
 		base.level = 1
@@ -2408,7 +2466,7 @@ func _test_hover_panel(main, cfg) -> void:
 
 	card.unhover(0)
 	ok(not tip.showing(), "鼠标移开 → 说明收起来，露出原来的详情栏")
-	card.hover(7)
+	card.hover(6)
 	ok(not tip.showing(), "★ 空格子上不弹面板（没内容就不弹一块空的）")
 
 	card.hover(0)
@@ -2439,12 +2497,10 @@ func _test_hover_panel(main, cfg) -> void:
 	ok(tip.showing(), "★ 科技九格也出悬停说明（与命令卡共用同一块牌）")
 	eq(tip.title_text(), "粮食产量 I", "左上角是科技名")
 	eq(tip.subtitle_text(), "科技", "★ 副标题写卡种（科技）")
-	eq(tip.cell_count(), 1, "★ 耗金那一格")
-	eq(tip.cell_label(0), "金/秒", "★ 格子标签（金/秒）")
-	eq(tip.cell_value(0), "0.5", "★ 格子数值")
+	eq(tip.cell_count(), 0, "★★ 科技不再持续耗金：悬停没有「金/秒」那一格")
 	eq(tip.caption_text(), "效果", "★ 小标题（效果）")
 	eq(tip.chips(), ["粮食产能 +10%"], "★★ 效果胶囊（实际：%s）" % str(tip.chips()))
-	for gone in ["已启用", "未启用", "名额", "阶"]:
+	for gone in ["未启用", "名额", "阶"]:
 		ok(not tip.body_text().contains(gone),
 			"★ 状态那些字不再进悬停（实际：%s）" % tip.body_text())
 	var first_id := String((g.entry_at(0) as Dictionary).get("id", ""))
@@ -2454,14 +2510,16 @@ func _test_hover_panel(main, cfg) -> void:
 	ok(tip.showing() and tip.title_text() == "粮食产量 I", "（前提）点完之后还是同一格")
 	eq(tip.chips(), ["粮食产能 +10%"],
 		"★ 启用与否不改内容（状态在格子上，不重复写）")
-	g.press(0)                                     # 收尾：弃用，别把加成留给后面的用例
-	eq(world.active_tech_ids().size(), 0, "（收尾）科技全部弃用")
+	ok(tip.body_text().contains("已启用（不可取消）"),
+		"★ 已启用科技的悬停写明不可取消")
+	# 收尾：内部回滚，别把加成留给后面的用例（UI 已经没有弃用入口）。
+	world.tech.deactivate(first_id)
+	world._apply_tech_effects()
+	hud.refresh()
+	eq(world.active_tech_ids().size(), 0, "（收尾）科技全部清空")
 
 	ok(tip.showing(), "（前提）切页之前说明还开着")
 	tabs.select_page(PageTabsRes.PAGE_BUILD)
-	print("[dbg] src=%s idx=%d showing=%s title=%s techVis=%s" % [
-		hud._hover_src, hud._hover_index, str(tip.showing()), tip.title_text(),
-		str(hud.tech_grid.visible)])
 	ok(not tip.showing(), "★ 换页时悬停说明收起来")
 
 	# ★★ 2026.11.17（用户口径）：科技牌与手牌**同一套** —— 拖出某一张时其余格往下沉 + 缩小，
@@ -2496,11 +2554,14 @@ func _test_hover_panel(main, cfg) -> void:
 				await process_frame
 			near(g._cells[other].scale.x, UiLayoutRes.CARD_TUCK_SCALE, 0.01,
 				"★★ 拖出科技牌 → 其余格缩到 0.82 倍")
-			var oc: Vector2 = g._cells[other].position \
-				+ g._cells[other].size * g._cells[other].scale * 0.5
-			var ob: Vector2 = other_base + g._cells[other].size * 0.5
+			# ★ 支点 = 牌底中点（2026.11.18），「牌心」要用 `card_visual_center` 算。
+			var oc: Vector2 = UiLayoutRes.card_visual_center(g._cells[other].position,
+				g._cells[other].size, g._cells[other].scale.x)
+			var ob: Vector2 = UiLayoutRes.card_visual_center(other_base,
+				g._cells[other].size, 1.0)
 			near(oc.y, ob.y + UiLayoutRes.CARD_TUCK_PX, 2.0,
 				"★★ 而且整体往下沉 40px（格心：%.1f → %.1f）" % [ob.y, oc.y])
+			near(oc.x, ob.x, 2.0, "★★ 下沉时不左右挪（支点在牌底中点）")
 			# 松手在 UI 上 = 取消（不启用 / 不弃用）；其余格反向浮回。
 			g._finish_touch_drag(pick, UiLayoutRes.CARD_RECT.position + Vector2(30.0, 30.0))
 			for _i in 20:
@@ -2823,16 +2884,25 @@ func _test_tech_keys(main) -> void:
 	var cancel_before: bool = world.is_tech_active(drag_tech_id)
 	g.begin_touch_drag(0, tech_drag_origin)
 	g.move_touch_drag(0, tech_drag_origin - Vector2(0.0, 24.0))
-	near(g.cell_at(0).modulate.a, 0.3, 0.01, "★★ 科技牌拖出后同样是半透明")
+	# ★★ 2026.11.18：与命令卡同一条口径 —— 还在手牌区里（只是被抬起来）**不变淡**，
+	#   拖到地图上才淡到 0.3（旧版科技牌一拖起就硬切 0.3）。
+	near(g.cell_at(0).modulate.a, 1.0, 0.01,
+		"★★ 科技牌拖起但仍在手牌区：保持不透明")
+	g.move_touch_drag(0, Vector2(900.0, 400.0))
+	eq(g._drag_alpha_target, 0.3, "★★ 科技牌拖到地图上 = 半透明（目标 0.3）")
 	g.finish_touch_drag(0, tech_drag_origin)
 	eq(world.is_tech_active(drag_tech_id), cancel_before,
 		"★★ 科技牌拖回手牌栏 → 取消，不启用 / 不弃用")
 	g.begin_touch_drag(0, tech_drag_origin)
 	g.move_touch_drag(0, tech_drag_origin - Vector2(0.0, 24.0))
 	g.finish_touch_drag(0, Vector2(900.0, 400.0))
-	eq(world.is_tech_active(drag_tech_id), not tech_before, "★★ 科技牌上拖到地图上松手触发启用/弃用")
-	if world.is_tech_active(drag_tech_id):
-		g.press(0) # 还原，让后面的快捷键测试从未启用状态开始。
+	ok(world.is_tech_active(drag_tech_id),
+		"★★ 科技牌上拖到地图上松手 = 打出（不可取消）")
+	# 还原到空状态：UI 没有弃用入口，走内部回滚接口。
+	for tid in world.active_tech_ids().duplicate():
+		world.tech.deactivate(String(tid))
+	world._apply_tech_effects()
+	main.hud.refresh()
 
 	# ★★ 科技页的图标：每格一张（按名字画的占位金线图形），名字压在最下面一行。
 	#   这里只钉「第 1 格确实拿到了一张 tech_*.png」+「名字没被吃掉」——
@@ -2860,15 +2930,19 @@ func _test_tech_keys(main) -> void:
 	for i in 3:
 		ok(g.cell_active(i), "★ 键盘启用后第 %d 格画成高亮" % (i + 1))
 
-	# 再按一次同一个键 = 弃用（与鼠标点击同一条路）。
+	# ★★ 2026.11.18：再按同一个键不会弃用；快捷键仍被科技页消费。
 	for i in 3:
-		ok(main.hud.handle_key(_key(int(keys[i]))), "再按一次 %s" % String(UiLayoutRes.CARD_KEYS[i]))
-		ok(not world.is_tech_active(String(ids[i])),
-			"★★ 再按 %s = 弃用视觉第 %d 格" % [String(UiLayoutRes.CARD_KEYS[i]), i + 1])
+		ok(main.hud.handle_key(_key(int(keys[i]))),
+			"再按一次 %s 仍由科技页消费" % String(UiLayoutRes.CARD_KEYS[i]))
+		ok(world.is_tech_active(String(ids[i])),
+			"★★ 再按 %s 不会弃用第 %d 格" % [String(UiLayoutRes.CARD_KEYS[i]), i + 1])
 
 	ok(not main.hud.handle_key(_key(KEY_Q, true)),
 		"★ 科技页 Ctrl+Q 不被九格消费（仍让给全屏快捷键）")
 
+	for tid in world.active_tech_ids().duplicate():
+		world.tech.deactivate(String(tid))
+	world._apply_tech_effects()
 	base.level = level_before
 	world.apply_building_level_hp(base)
 	main.hud.refresh()

@@ -399,9 +399,9 @@ func _test_upgrade_scales_with_tech(cfg) -> void:
 	ok(w.is_tech_active("building_hp"), "启用「建筑加固」（+10%）")
 	near(base.hp_max, base_hp * cfg.upgrade_hp_mult("base", 3) * 1.1, 1e-3,
 		"★ 上限 = 基础 × 等级(2.25) × 科技(1.1)（两者叠加）")
-	w.set_tech_active("building_hp", false)
-	near(base.hp_max, base_hp * cfg.upgrade_hp_mult("base", 3), 1e-3,
-		"★ 弃用科技后只剩等级那一份（精确回到 2.25 倍）")
+	ok(not w.set_tech_active("building_hp", false), "★ 建筑加固不可取消")
+	near(base.hp_max, base_hp * cfg.upgrade_hp_mult("base", 3) * 1.1, 1e-3,
+		"★ 取消命令后科技仍然生效（上限保持 2.25 × 1.1）")
 
 
 # ------------------------------------------------------------------

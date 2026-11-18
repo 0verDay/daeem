@@ -1,17 +1,8 @@
-## test_economy.gd —— ★★ 2026.10.29 经济改版的**持续消耗**与**科技投资**
+## test_economy.gd —— 经济相关：持续消耗取消后的净收入 / 科技产能加成
 ##
-## 这一份专门验「每帧都在扣的东西」，所以它和别的用例**反着来**：
-##   `test_case.require_config()` 默认把 `economy.upkeep_enabled` 关掉
-##   （让旧用例的精确对账不被维护费搅乱），这里把它**重新打开**，用真实数值断言。
-##
-## 覆盖六件事：
-##   1. 维护费按阶分档、高阶更贵（一阶 枪 0.08 / 弓 0.10；二阶 骑手 0.18 / 粮车 0.12；
-##      三阶 骑士 0.32 / 马弓 0.26 / 投石车 0.40）；
-##   2. 每帧扣粮 = Σ 维护费，付不起就扣到 0（不欠账）；
-##   3. 科技的 30 秒**预热**（点下去 ≠ 生效，但名额当场就占住）；
-##   4. 科技的**每秒扣金**（按阶 0.5 / 1.0 / 2.0，预热期间照样扣）；
-##   5. 断金 ⇒ 全部科技弃用 + 全科技 30 秒冷却，冷却结束后能重新点；
-##   6. 科技是「总体产能 ×(1+百分比)」且**加法叠加**。
+## ★★ 2026.11.18：**单位维护粮与科技扣金都已取消**。
+##   本文件验证：即使把旧数据 / 旧开关打开，也不会再扣资源；
+##   以及科技对「总体产能」的百分比加成仍然生效。
 extends "res://tests/test_case.gd"
 
 const WorldRes = preload("res://logic/world.gd")
@@ -32,8 +23,8 @@ func _cases() -> void:
 	var cfg = require_config()
 	if cfg == null:
 		return
-	# ★★ 本文件的存在意义就是验这两条：把总闸**打开**，用真实的维护费 / 金耗跑。
-	cfg.upkeep_enabled = true
+	# ★★ 2026.11.18：持续消耗已取消；本文件只验「不会扣」与科技产能加成。
+	cfg.upkeep_enabled = false
 	cfg.combat_enabled = false
 	_test_upkeep_table(cfg)
 	_test_base_resource_bonus(cfg)
@@ -180,19 +171,19 @@ func _place_free(w, zd: Dictionary, faction: String, type: String):
 
 func _test_upkeep_deducts_food(cfg) -> void:
 	var w = _make(cfg)
-	_no_production(w)                       # 只留维护费，别让区划收入掺进来
+	_no_production(w)
 	var f: String = String(w.my_faction)
-	var rate: float = _upkeep_rate(w, cfg, f)
-	ok(rate > 0.0, "开局有单位 ⇒ 维护费 > 0（%s 粮/秒）" % rate)
+	var table_rate: float = _upkeep_rate(w, cfg, f)
+	ok(table_rate > 0.0, "（旧数据）单位维护费表仍有数值（%s 粮/秒）" % table_rate)
 
 	w.resources["food"] = 100.0
 	w.tick(1.0)
-	near(float(w.resources["food"]), 100.0 - rate, 1e-3,
-		"★ 一秒正好扣掉 Σ 维护费（%s）" % rate)
-	# 刚好不够一帧的量 ⇒ 扣到 0
-	w.resources["food"] = rate * 0.5
-	w.tick(1.0)
-	near(float(w.resources["food"]), 0.0, 1e-6, "★ 付不起就扣到 0（不欠账、不变负）")
+	near(float(w.resources["food"]), 100.0, 1e-6,
+		"★★ 2026.11.18：取消单位持续耗粮 —— 一秒后粮食不变")
+	near(float(w._upkeep_food_rate.get(f, 0.0)), 0.0, 1e-9,
+		"★ 维护费速率缓存恒为 0")
+	near(float(w.income_breakdown(f)["food"]["net"]), 0.0, 1e-6,
+		"★ 报表净粮 = 0（没有产能也没有维护费）")
 
 
 # ------------------------------------------------------------------
@@ -202,17 +193,15 @@ func _test_upkeep_deducts_food(cfg) -> void:
 func _test_tech_warmup(cfg) -> void:
 	var w = _make(cfg)
 	_no_production(w)
-	give_gold_income(w, 10.0)              # 赤字规则：先给足黄金产能
 	w.resources["gold"] = 1000.0
-	ok(w.set_tech_active(T_FOOD, true), "点下「粮食产量 I」")
-	ok(w.is_tech_active(T_FOOD), "★ 点下即生效（没有预热）")
+	ok(w.set_tech_active(T_FOOD, true), "打出「粮食产量 I」")
+	ok(w.is_tech_active(T_FOOD), "★ 打出即生效（没有预热）")
 	eq(w.tech.slot_count(), 1, "★ 占用一个名额")
 
-	ok(w.set_tech_active(T_FOOD, false), "弃用")
-	ok(not w.is_tech_active(T_FOOD), "弃用后立即失效")
-	ok(w.set_tech_active(T_FOOD, true), "可以马上再点")
-	ok(w.is_tech_active(T_FOOD), "★ 再点也是立刻生效")
-	ok(w.set_tech_active(T_FOOD, false), "（收尾）取消，别把金耗留给后面的用例")
+	ok(not w.set_tech_active(T_FOOD, false), "★ 科技不可取消（off 被拒）")
+	ok(w.is_tech_active(T_FOOD), "★ 取消命令后仍然启用")
+	ok(not w.set_tech_active(T_FOOD, true), "★ 同一条科技不能再次打出")
+	eq(w.tech.slot_count(), 1, "名额没有被重复占用")
 
 
 # ------------------------------------------------------------------
@@ -225,20 +214,16 @@ func _test_tech_gold_drain(cfg) -> void:
 	var f: String = String(w.my_faction)
 	w.resources["gold"] = 100.0
 
-	instant_tech(w, T_FOOD)                # 绕过赤字规则，单独验扣金
-	near(w.tech.gold_drain_per_sec(f), 0.5, 1e-9, "★ 一阶 = 0.5 金/秒")
+	instant_tech(w, T_FOOD)
+	near(w.tech.gold_drain_per_sec(f), 0.0, 1e-9,
+		"★★ 2026.11.18：科技不再持续扣金（一阶 = 0 金/秒）")
 	w.tick(1.0)
-	near(float(w.resources["gold"]), 99.5, 1e-3, "★ 点下那一刻就开始扣金")
+	near(float(w.resources["gold"]), 100.0, 1e-6, "★★ 一秒后黄金不变")
 
 	instant_tech(w, T_FOOD2)
-	near(w.tech.gold_drain_per_sec(f), 1.5, 1e-9,
-		"★ 一阶 + 二阶 = 0.5 + 1.0 = 1.5 金/秒")
+	near(w.tech.gold_drain_per_sec(f), 0.0, 1e-9, "两条科技也仍是 0 金/秒")
 	w.tick(1.0)
-	near(float(w.resources["gold"]), 98.0, 1e-3, "★ 一秒扣 1.5")
-
-	w.set_tech_active(T_FOOD, false)
-	w.set_tech_active(T_FOOD2, false)
-	near(w.tech.gold_drain_per_sec(f), 0.0, 1e-9, "全部弃用后不再扣金")
+	near(float(w.resources["gold"]), 100.0, 1e-6, "★★ 多条科技也不扣金")
 
 
 # ------------------------------------------------------------------
@@ -250,21 +235,16 @@ func _test_tech_shortfall(cfg) -> void:
 	_no_production(w)
 	var f: String = String(w.my_faction)
 	w.resources["gold"] = 1.0
-	instant_tech(w, T_FOOD)                # 先让科技处于启用状态
-	w.tick(3.0)                            # 0.5/秒 的消耗在 2 秒内就吃光这 1 金
+	instant_tech(w, T_FOOD)
+	w.tick(3.0)
 
-	ok(w.is_tech_active(T_FOOD), "★ 断金不会取消科技（仍在生效）")
-	near(float(w.resources["gold"]), 0.0, 1e-6, "★ 金库扣到 0 为止")
-	near(w.gold_net_per_sec(f), -0.5, 1e-9, "★ 黄金净收入为赤字")
-	eq(w.tech_can_activate(T_FOOD2, f), "gold_deficit", "★ 赤字时不能启用新科技")
-	ok(not w.set_tech_active(T_FOOD2, true), "赤字期间新启用被拒")
-
-	# 弃用已有科技来止损是允许的；赤字解除后又能继续启用。
-	ok(w.set_tech_active(T_FOOD, false), "★ 赤字时仍可弃用已有科技")
-	near(w.gold_net_per_sec(f), 0.0, 1e-9, "弃用后赤字解除")
-	ok(w.tech_can_activate(T_FOOD2, f) == "", "★ 赤字解除后可以启用")
+	ok(w.is_tech_active(T_FOOD), "★ 科技仍在生效（不存在断金取消）")
+	near(float(w.resources["gold"]), 1.0, 1e-6, "★★ 科技不扣金，金库保持 1")
+	near(w.gold_net_per_sec(f), 0.0, 1e-9, "★ 黄金净收入 = 0（没有科技金耗）")
+	ok(w.tech_can_activate(T_FOOD2, f) == "", "★★ 没有黄金赤字拒因，下一条可以直接启用")
 	ok(w.set_tech_active(T_FOOD2, true), "启用 food_2")
 	ok(w.is_tech_active(T_FOOD2), "新科技立刻生效")
+	ok(not w.set_tech_active(T_FOOD, false), "★ 旧科技仍然不可取消")
 
 
 # ------------------------------------------------------------------
@@ -298,25 +278,24 @@ func _test_income_report(cfg) -> void:
 	_no_production(w)
 	w.tick(DT)
 	var f: String = String(w.my_faction)
-	var up: float = _upkeep_rate(w, cfg, f)
 	var b: Dictionary = w.income_breakdown(f)
-	near(float((b["food"] as Dictionary)["upkeep"]), up, 1e-6,
-		"★ 报表里的「维护费」= Σ 各兵种 upkeep（%s）" % up)
-	near(float((b["food"] as Dictionary)["net"]), -up, 1e-6,
-		"★ 产能为 0 时，净粮 = −维护费")
+	near(float((b["food"] as Dictionary)["upkeep"]), 0.0, 1e-6,
+		"★★ 报表里的「维护费」= 0（持续耗粮已取消）")
+	near(float((b["food"] as Dictionary)["net"]), 0.0, 1e-6,
+		"★ 产能为 0 时，净粮 = 0")
 	near(float((b["gold"] as Dictionary)["net"]), 0.0, 1e-6, "没科技时净金 = 0")
 
-	# 科技的金耗要单独列出来，并且从**净额**里扣掉（玩家才知道钱被谁烧的）
+	# 科技不再扣金，报表里的「科技」恒为 0。
 	w.resources["gold"] = 1000.0
 	instant_tech(w, T_FOOD)
 	w.tick(DT)
 	var b2: Dictionary = w.income_breakdown(f)
-	near(float((b2["gold"] as Dictionary)["tech"]), 0.5, 1e-9,
-		"★ 报表里的「科技」= 一阶 0.5 金/秒")
-	near(float((b2["gold"] as Dictionary)["net"]), -0.5, 1e-9,
-		"★ 净金 = 产能 0 − 科技 0.5")
+	near(float((b2["gold"] as Dictionary)["tech"]), 0.0, 1e-9,
+		"★★ 报表里的「科技」= 0（不再持续耗金）")
+	near(float((b2["gold"] as Dictionary)["net"]), 0.0, 1e-9,
+		"★ 净金 = 产能 0 − 科技 0")
 	var net: Dictionary = w.net_per_sec(f)
-	near(float(net["gold"]), -0.5, 1e-9, "net_per_sec() 与明细的 net 一致")
+	near(float(net["gold"]), 0.0, 1e-9, "net_per_sec() 与明细的 net 一致")
 
 	# 产能那一项要**含科技加成**（它读的就是 production_*）—— 换一个没清零的世界单独看
 	var w2 = _make(cfg)

@@ -141,10 +141,11 @@ func _test_entries_view(cfg) -> void:
 				"★★ 空位不可点（界面画灰框）")
 			eq(String((e as Dictionary).get("name", "")), "", "★ 空位没名字")
 	eq(dy_empty, 2, "★★ 王朝 2 个空位")
-	# 有科技的格子：有名字 / 有每秒金耗 / 未启用但可点（一本且大本营 1 级）
+	# 有科技的格子：有名字 / 不再有每秒金耗 / 未启用但可点（一本且大本营 1 级）
 	var first: Dictionary = dy[0]
 	eq(String(first.get("name", "")), "速战速决", "★ 第一格是速战速决")
-	ok(float(first.get("gold_per_sec", 0.0)) > 0.0, "★ 带每秒金耗")
+	near(float(first.get("gold_per_sec", 0.0)), 0.0, 1e-9,
+		"★★ 科技不再持续耗金（gold_per_sec = 0）")
 	# 三本科技在 1 级大本营时置灰（拒因 tier）
 	var third: Dictionary = dy[2]
 	eq(String(third.get("id", "")), "tech_unbreakable", "（前提）第三格是无懈可击")
@@ -211,22 +212,23 @@ func _test_unbreakable(cfg) -> void:
 	if u == null:
 		return
 	eq(w.tech_reduction_add("p1", true), 0.0, "★ 没启用时远程免伤加成 = 0")
+	# 先量「没科技」的同一击（后面启用后不能再取消，所以顺序必须反过来）。
+	u.armor = 0.0
+	u.hp = u.hp_max
+	u.take_damage(cfg, w, 100.0, null, true, false)
+	var without: float = u.hp_max - u.hp
 	ok(w.set_tech_active("tech_unbreakable", true, "p1"), "★ 启用无懈可击")
 	near(w.tech_reduction_add("p1", true), 0.1, 1e-9, "★★ 远程免伤 +10%")
 	near(w.tech_reduction_add("p1", false), 0.1, 1e-9, "★★ 近战免伤 +10%")
 	# 真的算进伤害：同一击，扣血更少
-	var cfg2 = cfg
-	u.armor = 0.0                        # 关掉固定护甲，只看免伤那一份
 	u.hp = u.hp_max
-	u.take_damage(cfg2, w, 100.0, null, true, false)
+	u.take_damage(cfg, w, 100.0, null, true, false)
 	var with_tech: float = u.hp_max - u.hp
-	u.hp = u.hp_max
-	w.set_tech_active("tech_unbreakable", false, "p1")
-	u.take_damage(cfg2, w, 100.0, null, true, false)
-	var without: float = u.hp_max - u.hp
 	near(with_tech, 90.0, 1e-4, "★★ 启用后 100 点远程伤害只掉 90")
-	near(without, 100.0, 1e-4, "★ 弃用后恢复 100")
+	near(without, 100.0, 1e-4, "★ 没科技时 100 点伤害掉 100")
 	ok(with_tech < without, "★★ 无懈可击真的减伤")
+	ok(not w.set_tech_active("tech_unbreakable", false, "p1"),
+		"★ 无懈可击不可取消")
 
 
 # ==================================================================
@@ -264,10 +266,11 @@ func _test_liyue(cfg) -> void:
 		"★★ 帝国这边价钱不变（冠军骑士 %.0f 金）" % float(dg_base.get("gold", 0.0)))
 	near(float(dg_cost.get("food", 0.0)), float(dg_base.get("food", 0.0)), 1e-6,
 		"★ 粮也不动（冠军骑士 %.0f）" % float(dg_base.get("food", 0.0)))
-	# 弃用之后一切复原
-	w.set_tech_active("dy_liyue", false, "p1")
-	near(float(w.recruit_cost("dy_royal", "p1").get("food", 0.0)), base_food, 1e-6,
-		"★ 弃用后粮耗回到 %.0f" % base_food)
+	# ★★ 2026.11.18：科技不可取消；礼乐的价格折算会保持到本局结束。
+	ok(not w.set_tech_active("dy_liyue", false, "p1"), "★ 礼乐不可取消")
+	near(float(w.recruit_cost("dy_royal", "p1").get("food", 0.0)),
+		base_food + base_gold * 1.5, 1e-4,
+		"★ 取消命令后粮耗仍是折算后的值")
 
 
 # ==================================================================
@@ -294,9 +297,9 @@ func _test_population_techs(cfg) -> void:
 	zn["owner"] = ""
 	w.tick(DT)
 	near(w.tech_zone_population_cap_add("p1"), 3.0, 1e-9, "★ 科技本身仍是 +3")
-	w.set_tech_active("dy_grace", false, "p1")
+	ok(not w.set_tech_active("dy_grace", false, "p1"), "★ 皇恩浩荡不可取消")
 	w.tick(DT)
-	near(w.zones.population_cap_of(z), cap0, 1e-6, "★ 弃用后上限回落")
+	near(w.zones.population_cap_of(z), cap0 + 3.0, 1e-6, "★ 上限加成保持")
 
 
 # ==================================================================
@@ -351,30 +354,26 @@ func _test_farming(cfg) -> void:
 	ok(w.is_out_of_combat(u), "★★ 站够 N 秒没目标 ⇒ 判为脱战")
 	eq(w.is_out_of_combat_for_recruit(u), w.is_out_of_combat(u),
 		"★★ 招募那边的判据与这儿是同一个函数（不是两份实现）")
-	# ⚠️ `test_case.require_config()` 默认把「持续消耗」总闸关掉（老用例要精确对账），
-	#    这里必须显式打开，否则维护费恒为 0（这一节测的正是维护费）。
+	# ★★ 2026.11.18：单位维护费已取消；屯田制只保留效果标记，不再影响结算。
 	cfg.upkeep_enabled = true
 	w.tick(DT)
-	var rate_no_tech: float = float(w._upkeep_food_rate.get("p1", 0.0))
-	ok(rate_no_tech > 0.0, "（前提）没科技时要扣维护费（%.4f 粮/秒）" % rate_no_tech)
+	near(float(w._upkeep_food_rate.get("p1", 0.0)), 0.0, 1e-6,
+		"★★ 持续耗粮已取消：没科技也不扣维护费")
 	ok(w.set_tech_active("dy_farming", true, "p1"), "★ 启用屯田制")
-	ok(w.tech_upkeep_idle_exempt("p1"), "★★ 脱战免维护生效")
-	u.recruit_idle_timer = float(cfg.recruit_combat_idle_sec) + 1.0
+	ok(w.tech_upkeep_idle_exempt("p1"), "★★ 脱战免维护标记仍然存在（数据层）")
 	w.tick(DT)
-	var rate_with_tech: float = float(w._upkeep_food_rate.get("p1", 1.0))
-	near(rate_with_tech, 0.0, 1e-6, "★★ 脱战单位不再计维护费（%.4f → %.4f）"
-		% [rate_no_tech, rate_with_tech])
-	# 但**在战斗中**的单位照旧要花钱：有目标 ⇒ 计时清零 ⇒ 不算脱战
+	near(float(w._upkeep_food_rate.get("p1", 0.0)), 0.0, 1e-6,
+		"★★ 启用屯田制后仍然不扣粮")
+	# 即使在战斗中，也不再扣粮。
 	var foe = _mk_unit(w, cfg, "up_foe", "dg_swordsman", "p2")
 	if foe != null:
 		u.target = foe
-		w.tick(DT)                       # 这一帧 `_tick_recruit_idle` 把计时清零
+		w.tick(DT)
 		ok(not w.is_out_of_combat(u), "★★ 有目标 ⇒ 计时清零 ⇒ 不算脱战")
 		w.tick(DT)
-		var rate_in_combat: float = float(w._upkeep_food_rate.get("p1", 0.0))
-		ok(rate_in_combat > 0.0,
-			"★★ 有攻击目标的单位仍然要扣粮（屯田制只管脱战，实际 %.4f）" % rate_in_combat)
-	cfg.upkeep_enabled = false           # 还原测试默认（后面的用例按老口径对账）
+		near(float(w._upkeep_food_rate.get("p1", 0.0)), 0.0, 1e-6,
+			"★★ 有攻击目标的单位同样不扣粮（维护费已取消）")
+	cfg.upkeep_enabled = false
 
 
 # ==================================================================

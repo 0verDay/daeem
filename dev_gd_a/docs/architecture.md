@@ -158,7 +158,8 @@ dev_gd_a/daeem/
 │   │                             #      脱战招兵 / 濒死再起**不受影响**（它们不是巡逻）。
 │   │                             #   ★ 自动索敌建筑只认自己 `garrison_zone_id` 内的
 │   │                             #      （`combat.nearest_enemy_building`）：区划外的玩家塔 / 墙 / 基地
-│   │                             #      不会把守军勾出去；区划边带可用 `zones[].no_go` 限制巡逻点。
+│   │                             #      不会把守军勾出去；区划边带可用 `zones[].no_go`（边缘区）
+│   │                             #      限制巡逻点，建造点位也不会生成在里面。
 │   ├── red_dot_ai.gd             #   ★★ **红点性 AI**（本轮重做为**函数式时间表**）：
 │   │                             #     第 x 波的生成时间由 wave_time_expr（y=ax+b，分钟）给出、
 │   │                             #     将领数由 general_count_expr 给出；将领类型按 general_weights 抽；

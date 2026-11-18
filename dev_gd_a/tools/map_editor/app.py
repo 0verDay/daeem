@@ -66,7 +66,6 @@ from editor_ui import shade as _shared_shade
 
 from . import mapfile
 from .model import (
-    BUILD_POINTS_PER_ZONE,
     DEFAULT_COLORS,
     MAX_COORD,
     MAX_GRID_BYTES,
@@ -142,16 +141,6 @@ ZONE_NAME_ALPHA = 0.34
 #: 格子小于这个尺寸就不写名字了：那个大小下字只会糊成一团，而且一屏几十个区块时
 #: 四份名字 = 上百个文字图元（tk 画文字比画矩形贵得多，是「缩小了卡」的来源之一）。
 ZONE_NAME_MIN_PX = 26.0
-
-#: 建造点位的画布颜色（青）。
-#:
-#: ★ 为什么不用 `UI["center"]`：中心是品红菱形，点位必须**一眼就能和它分开**
-#:   （设计师在同一个区划里同时看中心与点位）。青色与品红/区块色都拉得开。
-#: ★ 不塞进 `editor_ui` 的调色板：那个文件四个编辑器共用，改动面太大；
-#:   这里加一个常量、绘制与测试都读它，颜色只有一份来源。
-BUILD_POINT_COLOR = "#4dd6e8"
-#: 格子小于这个尺寸就不写点位上的「建N」两个字（那个大小下只会糊成一团）
-BUILD_POINT_MIN_PX = 26.0
 
 #: 左键按下到抬起之间，移动超过这个像素数就当成「拖动」而不是「点击」
 DRAG_TOLERANCE = 3
@@ -511,6 +500,7 @@ class EditorApp:
         self.canvas.bind("<Configure>", self.on_canvas_configure)
         # 关窗口时把还没跑的那次合并重绘取消掉（否则回调会打到已经销毁的控件上）
         self.canvas.bind("<Destroy>", lambda e: self.cancel_redraw(), add="+")
+        self.root.bind("<Destroy>", self._on_root_destroy, add="+")
         self.canvas.bind("<Button-1>", self.on_left_down)
         self.canvas.bind("<B1-Motion>", self.on_left_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_left_up)
@@ -1102,26 +1092,9 @@ class EditorApp:
                  bg=UI["panel"], fg=UI["text_dim"], anchor="w", justify="left",
                  wraplength=dpi.px(290)).pack(fill="x", pady=(4, 0))
 
-        # ---- 建造点位（DAEEM 新建造系统：玩家只能在这些预置格里盖非城墙建筑）
-        #
-        # ★ 每个区划最多 `BUILD_POINTS_PER_ZONE` 个（= 2）。动线与「区划中心」完全一样：
-        #   列表里选区划 → 左键点它自己的一个地块 → 按这颗按钮；
-        #   面板看着的那一格已经是点位时，这颗按钮就变成「取消这一格的建造点」。
-        #   唯一多出来的是「区划满了」这一档：先取消一个，才设得下新的。
-        bsec = self._section(self.sidebar, "建造点位")
-        self.zone_build_label = tk.Label(bsec, text="", bg=UI["panel"], fg=UI["text"],
-                                         anchor="w", justify="left", wraplength=dpi.px(290))
-        self.zone_build_label.pack(fill="x", pady=(4, 0))
-        self.zone_build_btn = self._button(bsec, "", self.toggle_zone_build_point,
-                                           padx=8, pady=4,
-                                           bg=UI["panel_alt"], fg=BUILD_POINT_COLOR,
-                                           activebackground=UI["hover"])
-        self.zone_build_btn.pack(fill="x", pady=2)
-        tk.Label(bsec, text="玩家只能在这些点位上盖非城墙建筑（每个区划 %d 个）。\n"
-                            "点位必须是该区划自己的、能走的地块，而且不能贴着区划中心。"
-                 % BUILD_POINTS_PER_ZONE,
-                 bg=UI["panel"], fg=UI["text_dim"], anchor="w", justify="left",
-                 wraplength=dpi.px(290)).pack(fill="x", pady=(4, 0))
+        # ★★ 建造点位不再由地图编辑器编辑（2026.11.18）：数量写在**关卡**的
+        #    `zones[].build_point_count` 里（战役编辑器「区划」页），进图时随机生成。
+        #    地图编辑器不再读 / 写 / 补 `zone_list[].build_points`。
 
         # ---- 区划种类（本轮新增：粮食 / 黄金 / 人口三种）
         #
@@ -1283,9 +1256,6 @@ class EditorApp:
         # ---- 区划中心那一栏（按钮的文字与可用性跟着「选中的区划 + 面板正在看的格子」变）
         self._refresh_zone_center_row(zone)
 
-        # ---- 建造点位那一栏（同一套：跟着选中的区划 + 面板正在看的格子变）
-        self._refresh_zone_build_points_row(zone)
-
         # ---- 区划种类（在产能上面：选了它下面的数字就跟着变）
         self._refresh_zone_kind_row(zone)
 
@@ -1340,46 +1310,6 @@ class EditorApp:
         else:
             self.zone_center_btn.configure(state="disabled", text="把中心设在这一格",
                                            fg=UI["text_dim"])
-
-    def _refresh_zone_build_points_row(self, zone) -> None:
-        """刷新「建造点位」那一栏：设了哪些 / 按钮该叫什么、能不能按。
-
-        ★ 判据只有一份：`MapModel.zone_build_point_block_reason()` —— 按钮的灰色、
-          状态栏的提示、以及 `set_zone_build_point()` 用的都是它。界面不自己再判断一遍
-          （两处判据迟早会漂开，症状是「按钮亮着但点了没反应」）。
-        """
-        if getattr(self, "zone_build_btn", None) is None:
-            return
-        if zone is None:
-            self.zone_build_label.configure(text="先在列表里选一个区划。", fg=UI["text_dim"])
-            self.zone_build_btn.configure(state="disabled", text="把建造点设在这一格",
-                                          fg=UI["text_dim"])
-            return
-        points = self.model.zone_build_points(zone.zone_id)
-        if points:
-            text = "建造点位：%d/%d（%s）" % (
-                len(points), BUILD_POINTS_PER_ZONE,
-                "、".join("(%d, %d)" % p for p in points))
-        else:
-            text = "建造点位：还没设"
-        self.zone_build_label.configure(text=text, fg=UI["text"])
-
-        here = self.inspect if self.inspect is not None else None
-        if here is not None and here in points:
-            # 这一格已经是它的点位 → 按钮 = 取消（永远可点）
-            self.zone_build_btn.configure(state="normal", text="取消这一格的建造点",
-                                          fg=UI["text"])
-            return
-        if here is None or not self.model.exists(*here):
-            reason = "先在地图上左键点一格"
-        else:
-            reason = self.model.zone_build_point_block_reason(zone.zone_id, *here)
-        if reason:
-            self.zone_build_btn.configure(state="disabled", text="把建造点设在这一格",
-                                          fg=UI["text_dim"])
-        else:
-            self.zone_build_btn.configure(state="normal", text="把建造点设在这一格",
-                                          fg=BUILD_POINT_COLOR)
 
     def _refresh_zone_kind_row(self, zone) -> None:
         """刷新「区划种类」那一栏：选中哪个单选钮 + 一句「数字是不是预设值」的提示。
@@ -1847,36 +1777,7 @@ class EditorApp:
                     c.create_text(x0 + size / 2, y0 + size / 2, text=zone.name,
                                   fill=label_color, font=label_font)
 
-        # 4e) 建造点位：区划里「玩家只能在这里盖非城墙建筑」的预置格。
-        #     画成**青色小方块 + 「建N」**（N = 列表里的第几个，与导出顺序一致）。
-        #     ★ 与中心（品红菱形）刻意用两种形状 + 两种颜色：同一个区划里两样都有，
-        #       靠形状和颜色区分比靠位置可靠（缩小时尤其明显）。
-        #     ★ 正在划分 / 鼠标悬停的区划把它画粗一档：一屏几十个区划时，两个小方块
-        #       不强调就混进地块底色里了。
-        hover_zone = self.model.zone_at(*self.hover) if self.hover is not None else None
-        for zone in self.model.zones:
-            if not zone.build_points:
-                continue
-            emphasize = (zone.zone_id == self.selected_zone
-                         or (hover_zone is not None and hover_zone.zone_id == zone.zone_id))
-            for index, (px, py) in enumerate(zone.build_points):
-                vpx, vpy = self.model.view_of(px, py)
-                if not (vx0 - 1 <= vpx <= vx1 + 1 and vy0 - 1 <= vpy <= vy1 + 1):
-                    continue
-                x0, y0 = self.view_to_screen(vpx, vpy)
-                inset = max(2.0, size * (0.14 if emphasize else 0.20))
-                c.create_rectangle(x0 + inset, y0 + inset,
-                                   x0 + size - inset, y0 + size - inset,
-                                   outline=BUILD_POINT_COLOR, fill="",
-                                   width=4 if emphasize else 2)
-                cx, cy = x0 + size / 2, y0 + size / 2
-                dot = max(2.0, size * 0.12)
-                c.create_rectangle(cx - dot, cy - dot, cx + dot, cy + dot,
-                                   outline="", fill=BUILD_POINT_COLOR)
-                if size >= BUILD_POINT_MIN_PX:
-                    c.create_text(cx, y0 + size - max(5.0, size * 0.16),
-                                  text="建%d" % (index + 1), fill=BUILD_POINT_COLOR,
-                                  font=("Microsoft YaHei UI", max(7, int(size * 0.20))))
+        # ★★ 建造点位不再画（2026.11.18）：点位是进游戏时随机生成的，编辑器看不到。
 
         # 5) 高亮：光标下的格子 + 属性面板里的格子
         if self.hover is not None:
@@ -2284,6 +2185,13 @@ class EditorApp:
         self._hover_job = self.root.after(HOVER_THROTTLE_MS, self._do_hover_redraw)
         self.update_status(tile)
 
+    def _on_root_destroy(self, event) -> None:
+        """窗口销毁时撤掉所有 after 任务（否则 Tcl 会报 invalid command name）。"""
+        if event.widget is not self.root:
+            return
+        self._cancel_hover_job()
+        self.cancel_redraw()
+
     def _cancel_hover_job(self) -> None:
         if self._hover_job is None:
             return
@@ -2578,10 +2486,9 @@ class EditorApp:
     def delete_tile(self, x: int, y: int) -> None:
         if not self.model.exists(x, y):
             return
-        # ★ 删一格会连带影响三件挂在它上面的东西：区块归属 / 区划中心 / 建造点位。
-        #   所以先把「删之前它是谁的中心、谁的点位」记下来 —— 删完就查不到了。
+        # ★ 删一格会连带影响两件挂在它上面的东西：区块归属 / 区划中心。
+        #   所以先把「删之前它是谁的中心」记下来 —— 删完就查不到了。
         was_center_of = self.model.zone_center_owner(x, y)
-        was_build_point_of = self.model.zone_build_point_owner(x, y)
         self.push_undo()
         self.model.delete_tile(x, y)
         self.mark_dirty()
@@ -2592,10 +2499,9 @@ class EditorApp:
         #    refresh_tile_panel 是照着「这一格现在存不存在」画按钮的。
         if self.inspect == (x, y):
             self.refresh_tile_panel()   # 面板还指着它，就地变成「虚线格」的样子
-        # ⚠️ 区块页签下删掉一个「某区块的中心格 / 建造点」时，那一栏必须跟着刷新 ——
+        # ⚠️ 区块页签下删掉一个「某区块的中心格」时，那一栏必须跟着刷新 ——
         #    否则面板上会一直写着旧的坐标，而它其实已经没了（实测踩过）。
-        if (was_center_of is not None or was_build_point_of is not None) \
-                and self.page == "zone":
+        if was_center_of is not None and self.page == "zone":
             self.refresh_zone_panel()
         self.redraw()
 
@@ -2733,46 +2639,6 @@ class EditorApp:
                 self.drop_undo()
                 self.status("(%d, %d) 不是「%s」的地块 —— 先把这一格划给它"
                             % (x, y, zone.name))
-        self.refresh_zone_panel()
-        self.redraw()
-
-    def toggle_zone_build_point(self) -> None:
-        """把「面板正在看的那一格」设成 / 取消**选中区划**的建造点位。
-
-        动线与 `toggle_zone_center()` 一模一样：列表里选区划 → 左键点它自己的一个地块
-        → 按这颗按钮；面板看着的那一格已经是点位时，再按一次 = 取消。
-
-        ⚠️ 与中心同一套撤销规矩：`prepare_undo()` → 改 → 成功才 `commit_undo()`，
-        失败 `drop_undo()`（失败的点击不留一步空撤销，也不清空重做栈）。
-        """
-        zone = self.model.zone(self.selected_zone) if self.selected_zone is not None else None
-        if zone is None:
-            self.status("先在列表里选一个区划，再来设它的建造点")
-            return
-        if self.inspect is None:
-            self.status("先在地图上左键点一格（必须是这个区划自己的地块），再来设建造点")
-            return
-        x, y = self.inspect
-
-        self.prepare_undo()
-        if (x, y) in self.model.zone_build_points(zone.zone_id):
-            if self.model.clear_zone_build_point(zone.zone_id, x, y):
-                self.commit_undo()
-                self.mark_dirty()
-                self.status("取消了「%s」在 (%d, %d) 的建造点" % (zone.name, x, y))
-            else:
-                self.drop_undo()
-        elif self.model.set_zone_build_point(zone.zone_id, x, y):
-            self.commit_undo()
-            self.mark_dirty()
-            self.status("(%d, %d) 设为「%s」的建造点（第 %d/%d 个）"
-                        % (x, y, zone.name,
-                           len(self.model.zone_build_points(zone.zone_id)),
-                           BUILD_POINTS_PER_ZONE))
-        else:
-            self.drop_undo()
-            reason = self.model.zone_build_point_block_reason(zone.zone_id, x, y)
-            self.status(reason or "(%d, %d) 设不了建造点" % (x, y))
         self.refresh_zone_panel()
         self.redraw()
 
@@ -3103,11 +2969,11 @@ class EditorApp:
             "rows": m.rows,
             "existing": list(m.existing),
             "terrain": list(m.terrain),
-            # 区块也要把「区划中心 + 建造点位 + 产能 + 人口上限 + **区划种类**」一起存：
-            # 否则「设了中心 / 设了建造点 / 改了产能 / 改了人口上限 / 换了种类 → Ctrl+Z」
+            # 区块也要把「区划中心 + 产能 + 人口上限 + **区划种类**」一起存：
+            # 否则「设了中心 / 改了产能 / 改了人口上限 / 换了种类 → Ctrl+Z」
             # 只会退掉地块，那几项留在原地（同一类漏洞）。
             "zones": [(z.zone_id, z.name, set(z.tiles), z.center, dict(z.production),
-                       z.population_cap, z.kind, list(z.build_points))
+                       z.population_cap, z.kind)
                       for z in m.zones],
             "zone_of": dict(m.zone_of),
             # ⚠️ origin 必须一起存：撤销要能把「网格平移过」这件事也退回去，
@@ -3127,8 +2993,8 @@ class EditorApp:
         m.zones = []
         from .model import Zone
         for entry in snap["zones"]:
-            # ⚠️ 老快照（本次改动之前压进栈的）只有 5~7 项：缺 population_cap / kind /
-            #    build_points 时按默认处理，免得「撤销一份旧快照」直接抛异常。
+            # ⚠️ 老快照（本次改动之前压进栈的）只有 5~7 项：缺 population_cap / kind
+            #    时按默认处理，免得「撤销一份旧快照」直接抛异常。
             #    它只在同一个会话里存在，正常不会遇到。
             zid, name, tiles, center, production = entry[:5]
             zone = Zone(zid, name)
@@ -3138,8 +3004,6 @@ class EditorApp:
             zone.population_cap = entry[5] if len(entry) > 5 else None
             kind = entry[6] if len(entry) > 6 else self.zone_kind_default
             zone.kind = kind if kind in self.zone_kinds else self.zone_kind_default
-            zone.build_points = ([tuple(p) for p in entry[7]]
-                                 if len(entry) > 7 else [])
             m.zones.append(zone)
         m._rebuild_center_index()     # ⚠️ center_of 是 center 的索引，换过 zone 必须重建
         m.recount()          # ⚠️ 绕过 set_existing 直接赋了 existing（见 MapModel.recount）
@@ -3237,13 +3101,10 @@ class EditorApp:
             hint = self._limit_hint(x, y)
             if hint:
                 parts.append(hint)
-        # 统计：地块 / 区块 / 区划中心（每个区块一个）/ 建造点位（每个区划最多 2 个）
+        # 统计：地块 / 区块 / 区划中心（每个区块一个）
         parts.append("地块 %d" % model.existing_count())
         parts.append("区块 %d" % len(model.zones))
         parts.append("区划中心 %d/%d" % (len(model.center_of), len(model.zones)))
-        parts.append("建造点 %d/%d" % (
-            sum(len(z.build_points) for z in model.zones),
-            BUILD_POINTS_PER_ZONE * len(model.zones)))
         if self.page == "zone" and self.selected_zone is not None:
             parts.append("正在划分：%s" % model.zone_display_name(self.selected_zone))
         self.status("　|　".join(parts))

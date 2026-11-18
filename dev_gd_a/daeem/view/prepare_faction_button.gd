@@ -34,6 +34,8 @@ var _font: Font = null
 var _display: String = ""
 var _faction_id: String = ""
 var _label: Label = null
+## 当前竖排字号（`set_font_size()` 用来判断「真的变了才写覆盖」）。
+var _font_size: int = 0
 var _selected: bool = false
 var _hovered: bool = false
 var _sel_t: float = 0.0
@@ -68,6 +70,7 @@ func setup(p_font: Font, display: String, faction_id: String,
 	_label.add_theme_constant_override("line_spacing", line_gap)
 	if _font != null:
 		_label.add_theme_font_override("font", _font)
+	_font_size = font_size
 	_label.add_theme_font_size_override("font_size", font_size)
 	_label.add_theme_color_override("font_color", ThemeRes.text())
 	add_child(_label)
@@ -117,6 +120,19 @@ func faction_id() -> String:
 
 func display_text() -> String:
 	return _display
+
+
+## 竖排字号（每行）—— 派系从 2 个变成 4 个之后，槽高只有原来的 1/2，
+## 由 `view/prepare_panel.gd` 按「槽高 / 字数」算一个放得下的字号递进来。
+## ★ 只在真的变了才写主题覆盖：`_layout()` 每次改尺寸都会被调到，别每帧重建覆盖。
+func set_font_size(px: int) -> void:
+	if _label == null:
+		return
+	var v := maxi(12, px)
+	if v == _font_size:
+		return
+	_font_size = v
+	_label.add_theme_font_size_override("font_size", v)
 
 
 ## 页面转场用：整枚按钮的光一起渐显 / 渐隐（0 = 全灭）。

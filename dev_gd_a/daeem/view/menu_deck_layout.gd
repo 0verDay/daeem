@@ -251,7 +251,7 @@ static func prepare_back(w: float, h: float) -> Rect2:
 	return Rect2(0.0, 0.0, maxf(0.0, w - side_w(w)), PREP_HEADER_H)
 
 
-## 右侧两枚派系按钮的宽度（设计 200；窄屏收一点、宽屏不无限放大）。
+## 右侧派系按钮的宽度（设计 200；窄屏收一点、宽屏不无限放大）。
 static func prepare_faction_w(w: float) -> float:
 	return clampf(round(w * PREP_FACTION_RATIO), 128.0, 240.0)
 
@@ -287,11 +287,18 @@ static func prepare_faction_top(w: float, h: float) -> float:
 
 
 ## index 0 = 上面那枚（王朝），1 = 下面那枚（帝国）。
-static func prepare_faction(w: float, h: float, index: int) -> Rect2:
+## 右侧派系按钮的矩形。
+##
+## ★★ 2026.11.18：`count` 变成参数（默认 2 = 改动前的两枚）—— 派系从 2 个变成 4 个
+##   之后，按钮不是变高，而是**等高切分**同一列：每个 = (屏高 − 顶栏) / count。
+##   ★ 传 count 的只有 `view/prepare_panel.gd`（它按 `LoadoutRes.FACTIONS.size()` 给）；
+##     老调用 / 老测试不传就还是「上下各一半」，行为逐位不变。
+static func prepare_faction(w: float, h: float, index: int, count: int = 2) -> Rect2:
 	var fw := prepare_faction_w(w)
 	var top := prepare_faction_top(w, h)
-	var half: float = maxf(1.0, (h - top) * 0.5)
-	return Rect2(w - fw, top + half * float(index), fw, half)
+	var slots := maxi(1, count)
+	var each: float = maxf(1.0, (h - top) / float(slots))
+	return Rect2(w - fw, top + each * float(index), fw, each)
 
 
 ## index 0 = 左侧宽面板，1 = 右侧窄面板。

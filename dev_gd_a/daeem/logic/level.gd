@@ -11,7 +11,8 @@
 ##                     "faction_ai": {"generals": 2, "attack_repeat_sec": 12.0}}],
 ##       "allies":   [["E1", "E2"]]        ← 不写就用地图的
 ##       "zones":    [{"id": 4, "owner": "F1",
-##                     "no_go": [[3, 4], [4, 4]]}]   ← 归属 + **禁行格**（可省略）
+##                     "no_go": [[3, 4], [4, 4]],     ← **边缘区**（可省略）
+##                     "build_point_count": 3}]       ← 进图随机生成几个建造点位
 ##       "start_units":     [{"faction": "E1", "kind": "enemy", "x": 11, "y": 4, "hold": true},
 ##                           {"faction": "p1", "kind": "spearman", "x": 6, "y": 5,
 ##                            "escort_of": 2}]   ← ★ 附属兵：归第 **2** 位将领（1 起）
@@ -26,12 +27,15 @@
 ##   · `factions[].base` 同上；
 ##   · `allies` 写了就用关卡的，**一个字都没写**才用地图的；
 ##   · `zones[].owner` 覆盖地图 `zone_list[].owner` 的开局归属；
-##   · ★★ `zones[].no_go` = 这一区划的**禁行格**（地块坐标数组，可任意形状）。
-##     用户口径：「阵地性 AI 不会巡逻至其区划的禁行区」——所以它**只**影响
+##   · ★★ `zones[].no_go` = 这一区划的**边缘区**（地块坐标数组，可任意形状）。
+##     用户口径：「阵地性 AI 不会巡逻至其区划的边缘区」——所以它**只**影响
 ##     巡逻目标点的挑选（`zone._build_route` 那一路），**不**改寻路 / 不挡走路，
 ##     也**不**影响追击、守中心、攻城警报这些「有明确目标」的行为。
+##     ★ 建造点位生成时也会排除边缘区（`zone.generate_build_points`）。
 ##     ⚠️ 地图 JSON **没有**这个字段（它属于关卡层，每关可以不一样）；因此自由对战
-##        （没有关卡）天然没有禁行区，老关卡不写这个字段时行为逐位不变。
+##        （没有关卡）天然没有边缘区，老关卡不写这个字段时行为逐位不变。
+##   · ★★ `zones[].build_point_count` = 进图时随机生成几个建造点位；
+##     缺键 = config 的 `build.points_per_zone`，0 = 不生成。
 ##   · ★★ `start_units[].escort_of`：**附属兵**（本轮口径）—— 整数、**1 起**、
 ##     与 `general_index` 同一套编号，指向**同阵营**的第几位将领。
 ##     缺省 = 不是附属兵（普通摆放单位，行为与加这个字段之前一字不差）。
@@ -200,6 +204,7 @@ static func from_data(data: Dictionary, cfg: ConfigRes = null, campaign = null,
 	lv.zone_owners = _read_zone_owners(data.get("zones", null))
 	lv.zone_population = _read_zone_population(data.get("zones", null))
 	lv.zone_no_go = _read_zone_no_go(data.get("zones", null))
+	lv.zone_build_point_counts = _read_zone_build_point_counts(data.get("zones", null))
 	lv.start_units = _read_start_units(data.get("start_units", null))
 	lv.start_buildings = _read_start_buildings(data.get("start_buildings", null))
 	lv.objectives = _read_objectives(data.get("objectives", null))
@@ -297,6 +302,16 @@ var no_building_zone_claim: bool = false
 ##    由 `check()` 的 `zone_no_go_*` 那几条报（编辑器导出前会拦）；
 ##    运行时 `zone.apply_no_go()` 再挡一道（认不出来的一律忽略，不崩）。
 var zone_no_go: Dictionary = {}
+## ★★ 每个区划**进图时随机生成几个建造点位**：区划 id → int（关卡 `zones[].build_point_count`）。
+##
+## 语义（2026.11.18 用户口径）：
+##   · 缺键 → `config.build.points_per_zone`（当前 2）；
+##   · `0` → 这个区划明确**不生成**任何建造点位；
+##   · 生成时排除**边缘区**（`zone_no_go`）与**已有建筑**占的格。
+## ⚠️ 与 `zone_no_go` 同一条宽容度：这里不校验区划存不存在 / 数量合不合理，
+##    由 `check()` 的 `zone_build_count_*` 报；运行时 `zone.generate_build_points()`
+##    再挡一道（认不出来的一律忽略，不崩）。
+var zone_build_point_counts: Dictionary = {}
 ## 开局就在场的单位（**追加**在地图 `units` 之后）
 var start_units: Array = []
 ## 开局就在场的建筑（**追加**在地图 `buildings` 之后）
@@ -803,6 +818,7 @@ func check(config_ai: Array = []) -> Array:
 	_ck_allies()
 	_ck_objectives()
 	_ck_zone_no_go()
+	_ck_zone_build_point_counts()
 	_ck_ai_assign(config_ai)
 	_ck_start_units()
 	_ck_reddot()
@@ -1117,7 +1133,7 @@ func _ck_zone_no_go() -> void:
 		#   拿「没有中心」当成「区划不存在」会误拦一条完全合理的禁行区配置。
 		if _zone_tile_count(zid) <= 0:
 			_add(SEV_BLOCK, "zone_no_go_zone_missing",
-				"区划 c%d 的禁行区指向一个不存在的区划（换图后的旧数据？）" % zid)
+				"区划 c%d 的边缘区指向一个不存在的区划（换图后的旧数据？）" % zid)
 			continue
 		var center: Variant = map.zones_centers.get(zid, null)
 		# ★ 可能被选成**巡逻点**的格子 = 能站人 − 中心（中心上立着障碍建筑，
@@ -1130,26 +1146,90 @@ func _ck_zone_no_go() -> void:
 			var p: Vector2i = t
 			if not map.tile_exists(p.x, p.y):
 				_add(SEV_BLOCK, "zone_no_go_tile_invalid",
-					"区划 %s 的禁行格 (%d,%d) 在地图外" % [_zone_label(zid), p.x, p.y])
+					"区划 %s 的边缘格 (%d,%d) 在地图外" % [_zone_label(zid), p.x, p.y])
 				continue
 			var owner_zid := _zone_tile_of(p.x, p.y)
 			if owner_zid != zid:
 				_add(SEV_BLOCK, "zone_no_go_tile_not_in_zone",
-					"区划 %s 的禁行格 (%d,%d) 不属于它（属于 %s）"
+					"区划 %s 的边缘格 (%d,%d) 不属于它（属于 %s）"
 					% [_zone_label(zid), p.x, p.y,
 					   _zone_label(owner_zid) if owner_zid >= 0 else "无主地块"])
 			if patrol.has(p):
 				covered += 1
 			if center != null and (center as Vector2i) == p:
 				_add(SEV_BLOCK, "zone_no_go_center",
-					"区划 %s 的禁行区盖住了它的中心 (%d,%d)：守中心还要往那里走"
+					"区划 %s 的边缘区盖住了它的中心 (%d,%d)：守中心还要往那里走"
 					% [_zone_label(zid), p.x, p.y])
 		# ★ 「整块区划都被禁行」按**巡逻候选格**算：山地不算（本来就不能站），
 		#   中心也不算（它是守中心的目标）。全禁掉 = 这一区再也没有巡逻点。
 		if not patrol.is_empty() and covered >= patrol.size():
 			_add(SEV_BLOCK, "zone_no_go_all",
-				("区划 %s 除中心外能站人的 %d 格全被设为禁行区：这一区的守将将无处巡逻"
+				("区划 %s 除中心外能站人的 %d 格全被设为边缘区：这一区的守将将无处巡逻"
 				 + "（至少留一格）") % [_zone_label(zid), patrol.size()])
+
+
+## ★★ 22) 每个区划的**建造点位数量**（`zones[].build_point_count`）。
+##
+## 三条：
+##   1. **区划得存在**（换图后的脏数据）；
+##   2. **不能是负数**（0 = 明确不生成，是合法值）；
+##   3. `> 0` 但**一格候选都没有** → 警告：边缘区 + 中心/城墙环 + 已有建筑
+##      把可生成的位置占光了，这个数量写了也生不出来（运行时静默少生成）。
+##      ⚠️ 只是警告：作者可能还在摆建筑 / 涂边缘区，硬拦会让编辑过程很烦。
+##
+## 候选判据与运行时 `zone._build_point_candidates()` 同一套（地形 / 中心 / 城墙环 /
+## 边缘区 / 已有建筑）。这里不查「地块网格里这一格是否存在」——`_zone_walkable_set`
+## 只收地图上可通行的格子。
+func _ck_zone_build_point_counts() -> void:
+	if map == null or zone_build_point_counts.is_empty():
+		return
+	var ring: int = int(cfg.build_wall_ring_radius) if cfg != null else 1
+	# 已有固定建筑占的格（地图预置 / 大本营 / 关卡摆放）：生成时会排除它们。
+	var occupied: Dictionary = {}
+	for p in map.prefab_buildings:
+		if typeof(p) == TYPE_DICTIONARY:
+			occupied[Vector2i(int(p.get("x", -1)), int(p.get("y", -1)))] = true
+	for fid in map.faction_bases.keys():
+		var bp: Variant = map.faction_bases[fid]
+		if typeof(bp) == TYPE_VECTOR2I:
+			occupied[bp] = true
+	for b in start_buildings:
+		if typeof(b) == TYPE_DICTIONARY:
+			occupied[Vector2i(int(b.get("x", -1)), int(b.get("y", -1)))] = true
+	for zid_v in zone_build_point_counts.keys():
+		var zid := int(zid_v)
+		var n := int(zone_build_point_counts[zid_v])
+		if _zone_tile_count(zid) <= 0:
+			_add(SEV_BLOCK, "zone_build_count_zone_missing",
+				"区划 c%d 的建造点位数量指向一个不存在的区划（换图后的旧数据？）" % zid)
+			continue
+		if n < 0:
+			_add(SEV_BLOCK, "zone_build_count_negative",
+				"区划 %s 的建造点位数量是负数（%d）：0 = 不生成，正数 = 生成几个"
+				% [_zone_label(zid), n])
+			continue
+		if n <= 0:
+			continue
+		var center: Variant = map.zones_centers.get(zid, null)
+		var edge: Array = zone_no_go.get(zid, [])
+		var edge_set: Dictionary = {}
+		for t in edge:
+			if typeof(t) == TYPE_VECTOR2I:
+				edge_set[t] = true
+		var available := 0
+		for tile_v in _zone_walkable_set(zid).keys():
+			var tile: Vector2i = tile_v
+			if occupied.has(tile) or edge_set.has(tile):
+				continue
+			if center != null:
+				var c: Vector2i = center
+				if tile == c or maxi(absi(tile.x - c.x), absi(tile.y - c.y)) <= ring:
+					continue
+			available += 1
+		if available <= 0:
+			_add(SEV_WARN, "zone_build_count_no_space",
+				("区划 %s 要生成 %d 个建造点位，但边缘区 / 城墙环 / 已有建筑把候选格占光了"
+				+ "（进游戏后这个区一个点位都不会生成）") % [_zone_label(zid), n])
 
 
 ## 4/10/12/13/14/15) AI 指派、进攻目标、摆放里的将领性 AI
@@ -1832,6 +1912,31 @@ static func _read_zone_no_go(v: Variant) -> Dictionary:
 			tiles.append(p)
 		if not tiles.is_empty():
 			out[zid] = tiles
+	return out
+
+
+## `zones[].build_point_count`：每个区划**进图时随机生成几个建造点位**。
+##
+## 宽容读法与 `_read_zone_no_go` 一致：
+##   · 不是数组 / 项不是字典 / id < 0 → 跳过那一项；
+##   · 缺这个键 / 值不是数字 → 这个区划**不在这张表里**（运行时用 config 默认 2）；
+##   · `0` 是合法值（明确不生成），所以要**记下来**，不能用「假值就跳过」。
+## ⚠️ 负数也原样收下：交给 `_ck_zone_build_point_counts()` 报，运行时会 `max(0, …)`。
+static func _read_zone_build_point_counts(v: Variant) -> Dictionary:
+	var out: Dictionary = {}
+	if typeof(v) != TYPE_ARRAY:
+		return out
+	for item in (v as Array):
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		var d: Dictionary = item
+		var zid := int(d.get("id", -1))
+		if zid < 0 or not d.has("build_point_count"):
+			continue
+		var raw: Variant = d.get("build_point_count")
+		if typeof(raw) != TYPE_INT and typeof(raw) != TYPE_FLOAT:
+			continue
+		out[zid] = int(raw)
 	return out
 
 

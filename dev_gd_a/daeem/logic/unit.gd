@@ -235,6 +235,56 @@ var aura_charge_damage_bonus: float = 0.0
 var aura_splash_radius: float = 0.0
 var aura_knockback_distance: float = 0.0
 var aura_knockback_stun: float = 0.0
+
+## ==================================================================
+## ★★ 2026.11.18：**单位状态（unit.status）** —— 义勇军 / 教会军那两条线要用的运行期属性
+##
+## 与上面那批 `aura_*`（将领光环）的区别（别混）：
+##   · aura_* 来自**将领特性**，出生时抄一次，之后不变；
+##   · 本节来自**兵种天生 / 方略 / 建筑 / 机制**，运行期可以加（`grant_statuses`），
+##     所以合并后的效果存在 `status_effect` 里，每帧只读它（不再查 config）。
+## ==================================================================
+
+## 当前挂在身上的状态 id（`status_id -> true`）。**只增不减**的语义由调用方保证：
+##   · `freedom`（自由）—— 招募那一刻写死，永久；
+##   · `water_walk`（水性）—— 兵种天生 / 「会水」方略启用时补写；
+##   · `drowning`（溺水）—— 目前**没有可达路径**（用户口径：只做数据预留），
+##     但效果已经在下面全部接好，将来只要有别的机制写进来就生效；
+##   · `blood_war`（血战到底）—— 致命伤触发后写死；
+##   · `undying`（信仰不死）—— 那 3 秒无敌期间临时挂着，到点自动摘。
+var statuses: Dictionary = {}
+## 这个单位上一次被「补写状态」时世界的版本号（见 world._tick_unit_statuses）。
+## ★ 出生就是 -1 ⇒ 第一帧一定会被补一遍（新单位永远不会漏掉「会水」这类方略状态）。
+var status_rev: int = -1
+## 以上状态**合并后**的效果（形状见 config.gd 的 `_normalize_unit_status`）。
+## ★ 只在 `grant_statuses()` 里重算一次 —— 每帧每单位都算会白白新建字典。
+var status_effect: Dictionary = {}
+## 状态给出的**血量上限倍率**（自由 +0.10 ⇒ 1.10；没有状态 ⇒ 1.0）。
+## 与 `tech_hp_mult` **相乘**（见 `_recompute_hp_max`），两者互不覆盖。
+var status_hp_mult: float = 1.0
+## ★★ 「信仰不死」那 3 秒：> 0 时**免疫一切伤害**（在 `take_damage` 最前面拦掉）。
+var invincible_sec: float = 0.0
+## 「信仰不死」的触发冷却（同一单位 20 秒内只会锁一次血，见 config 的 effect）。
+var fatal_cd: float = 0.0
+## ★★ 「血战到底」：`blood_war_used` = 这一次的致命伤已经用掉了（每个单位一次）；
+##   `blood_war_active` = 正在暴走（+50% 伤害、每秒 5% 掉血）。
+var blood_war_used: bool = false
+var blood_war_active: bool = false
+## ★★ 多段齐射（万箭穿心）：还剩几段、下一段还有几秒、以及**那一段的伤害**。
+##   `burst_target` 是弱引用（目标死了就作废，下一段自动清空）。
+var burst_left: int = 0
+var burst_timer: float = 0.0
+var burst_damage: float = 0.0
+var burst_target = null
+## 兵种的多段齐射**参数**（出生时从 `unit.types.<id>.burst` 抄一次）：
+##   `burst_count` = 一次装填打几段（<= 1 = 普通单发）；`burst_interval` = 段间隔秒数；
+##   `burst_reload` = 全部打完之后的长装填秒数（0 = 用兵种自己的 cooldown_sec）。
+var burst_count: int = 1
+var burst_interval: float = 0.0
+var burst_reload: float = 0.0
+## ★★ 每秒自愈（传教士 1.5 血/秒；0 = 没有）—— 出生时从兵种表抄一次。
+var self_heal_per_sec: float = 0.0
+
 ## ★★ 视野半径（**格**）—— 战争迷雾用（见 logic/fog.gd）。
 ##
 ## ★ 与 hp_max / unit_class 同一个口径：**生出来那一刻就把 config 里的数抄到身上**，
@@ -683,6 +733,12 @@ static func create(cfg: ConfigRes, p_id: String, p_name: String, tile: Vector2i,
 	u.splash_radius = cfg.unit_splash_radius_of(u.unit_type)
 	u.heal_aura_radius = cfg.unit_heal_aura_radius_of(u.unit_type)
 	u.heal_aura_rate = cfg.unit_heal_aura_rate_of(u.unit_type)
+	# ★★ 2026.11.18：兵种**天生**的单位状态（锦帆的「水性」）+ 自愈 + 多段齐射参数。
+	#   ⚠️ 方略 / 建筑授予的那几条**不在这里**（那时还没有 world）——
+	#     由 `world.statuses_for_unit()` 在出生那一帧补写（见 world.gd）。
+	u.grant_statuses(cfg, cfg.unit_status_ids_of(u.unit_type))
+	u.self_heal_per_sec = cfg.unit_self_heal_of(u.unit_type)
+	u.load_burst_def(cfg)
 	u.faction = p_faction
 	u.hotkey = p_hotkey
 	u.leader_id = p_leader_id
@@ -789,6 +845,9 @@ func reapply_type(cfg: ConfigRes, p_unit_type: String) -> void:
 	splash_radius = cfg.unit_splash_radius_of(unit_type)
 	heal_aura_radius = cfg.unit_heal_aura_radius_of(unit_type)
 	heal_aura_rate = cfg.unit_heal_aura_rate_of(unit_type)
+	# ★★ 2026.11.18：自愈也随兵种一起重抄（客机纠正兵种时要与房主同源）。
+	self_heal_per_sec = cfg.unit_self_heal_of(unit_type)
+	load_burst_def(cfg)
 	# 血量上限 / 视野与 `create()` 同一口径：将领仍吃自己的数值覆盖（不再乘全局倍率）。
 	var new_max: float = float(stat_overrides.get("hp_max", cfg.unit_hp_of(unit_type)))
 	base_hp_max = maxf(1.0, new_max)
@@ -820,7 +879,8 @@ func apply_general_growth(cfg: ConfigRes, base_level: int) -> void:
 	general_growth_hp = add_hp
 	general_growth_damage = add_dmg
 	# ★ 兵种不能攻击 / 没有血条的单位（理论上不会出现在这里）也照同一条公式走。
-	var new_max := maxf(1.0, base_hp_max * tech_hp_mult + general_growth_hp)
+	# ★★ 2026.11.18：状态倍率（自由 +10%）也进这条公式（与科技倍率**相乘**）。
+	var new_max := maxf(1.0, base_hp_max * tech_hp_mult * status_hp_mult + general_growth_hp)
 	var old_max := hp_max
 	if is_equal_approx(old_max, new_max):
 		return
@@ -1003,6 +1063,199 @@ func has_general_aura() -> bool:
 	return not aura_traits.is_empty()
 
 
+# ------------------------------------------------------------------
+# ★★ 2026.11.18：单位状态（unit.status）—— 授予 / 查询 / 合并效果
+#
+# 口径（只记这四条，别在别处另写一套）：
+#   · 状态是**一组 id**，合并后的数值放在 `status_effect`（新增 / 摘除时重算一次）；
+#   · 血量上限倍率单独存 `status_hp_mult`，与科技倍率**相乘**（互不覆盖）；
+#   · 「自由」永久（写进去就再也不摘）；「溺水」目前没有可达路径（见字段说明）；
+#   · 免疫 / 易伤 / 掉血这些只读 `status_effect`，不回头查 config。
+# ------------------------------------------------------------------
+
+## 身上有没有这条状态。
+func has_status(id: String) -> bool:
+	return id != "" and statuses.has(id)
+
+
+## 当前状态 id（**排序后**的数组；界面 / 快照 / 测试用）。
+func status_list() -> Array:
+	var out: Array = statuses.keys()
+	out.sort()
+	return out
+
+
+## ★★ 授予一组状态（**幂等**：已经有的不会重复加）。
+##
+## @return true = 这一次真的多了至少一条（调用方据此决定要不要刷界面）
+## ★ 会顺手重算合并效果与血量上限 —— 所以「自由」写进来的那一刻血上限就 +10%，
+##   不用等下一次科技刷新（`world._apply_tech_effects` 才不会为状态再跑一遍全图）。
+func grant_statuses(cfg: ConfigRes, ids: Array) -> bool:
+	if cfg == null or ids.is_empty():
+		return false
+	var changed := false
+	for v in ids:
+		var sid := String(v).strip_edges()
+		if sid == "" or statuses.has(sid):
+			continue
+		if cfg.unit_status_def(sid).is_empty():
+			continue                     # 池里没有的 id 一律当没写（与特性同一条）
+		statuses[sid] = true
+		changed = true
+	if not changed:
+		return false
+	_recompute_status_effect(cfg)
+	return true
+
+
+## ★★ 直接把状态表**替换**成这一组（客机按快照恢复用；不要拿它做玩法增减）。
+func set_status_list(cfg: ConfigRes, ids: Array) -> void:
+	var fresh: Dictionary = {}
+	for v in ids:
+		var sid := String(v).strip_edges()
+		if sid != "" and not cfg.unit_status_def(sid).is_empty():
+			fresh[sid] = true
+	statuses = fresh
+	_recompute_status_effect(cfg)
+
+
+## 摘掉一条状态（目前只有「信仰不死」那 3 秒到点会用到）。
+func clear_status(cfg: ConfigRes, id: String) -> bool:
+	if not statuses.has(id):
+		return false
+	statuses.erase(id)
+	_recompute_status_effect(cfg)
+	return true
+
+
+## 重算合并效果 + 血量上限倍率（状态集合变了才调）。
+func _recompute_status_effect(cfg: ConfigRes) -> void:
+	status_effect = cfg.status_effects_merged(status_list())
+	var new_mult: float = maxf(0.05, 1.0 + float(status_effect.get("hp_mult", 0.0)))
+	if is_equal_approx(new_mult, status_hp_mult):
+		return
+	status_hp_mult = new_mult
+	# ★ 上限变了 ⇒ 按「占比不变」重算一次当前血量（与科技加成同一套口径：
+	#   满血涨完还是满血、半血涨完还是半血）。
+	refresh_hp_max()
+
+
+## ★★ 按**当前**的（科技倍率 × 状态倍率 + 成长）重算血量上限，并按比例缩放当前血量。
+##
+## ★ 与 `apply_hp_bonus()` 的分工：那个是「科技倍率变了」的入口（粘性、倍率没变就什么都不做），
+##   这个是「**别的**成分变了」的入口（状态倍率 / 成长），一律重算。
+## ★ 濒死将领只改上限（与 apply_hp_bonus 同一条，见那里 ⚠️⚠️ 的说明）。
+func refresh_hp_max() -> void:
+	if base_hp_max <= 0.0:
+		return
+	var new_max: float = maxf(1.0, base_hp_max * tech_hp_mult * status_hp_mult \
+		+ general_growth_hp)
+	var old_max: float = hp_max
+	if is_equal_approx(old_max, new_max):
+		return
+	hp_max = new_max
+	if downed:
+		hp = clampf(hp, 0.0, hp_max)
+		return
+	var ratio: float = clampf(hp / old_max, 0.0, 1.0) if old_max > 0.0 else 1.0
+	hp = clampf(hp_max * ratio, 0.0, hp_max)
+
+
+## 可以走水域吗（「水性」）。
+func is_water_walker() -> bool:
+	return bool(status_effect.get("water_walk", false))
+
+
+## 被定住了吗（「溺水」：不能移动、也不能攻击）。
+func is_immobilized() -> bool:
+	return bool(status_effect.get("immobilize", false))
+
+
+## 状态给的**攻击**倍率（自由 +10% / 血战到底 +50%）。
+func status_attack_mult() -> float:
+	return maxf(0.0, 1.0 + float(status_effect.get("attack_add", 0.0)))
+
+
+## 状态给的**受到伤害**加法项（溺水 +100%）。
+func status_damage_taken_add() -> float:
+	return maxf(0.0, float(status_effect.get("damage_taken_add", 0.0)))
+
+
+## 状态给的**防御**（固定减伤数值）倍率（自由 +10%）。
+func status_armor_mult() -> float:
+	return maxf(0.0, 1.0 + float(status_effect.get("armor_mult", 0.0)))
+
+
+## 状态给的**每秒掉血比例**（溺水 5% / 血战到底 5%）。
+func status_drain_ratio() -> float:
+	return maxf(0.0, float(status_effect.get("hp_drain_ratio", 0.0)))
+
+
+## 免疫「自由瘟疫」吗（自由 / 无敌）。
+func is_plague_immune() -> bool:
+	return bool(status_effect.get("plague_immune", false)) or bool(status_effect.get("invincible", false))
+
+
+## ★ 水域格上的移速倍率（只有「水性」才有意义；不在水里时恒 1.0）。
+func water_speed_mult() -> float:
+	return clampf(float(status_effect.get("water_speed_mult", 1.0)), 0.05, 1.0)
+
+
+## ★★ 每帧推进「状态时钟」：无敌倒计时 / 掉血 / 自愈。
+##
+## 调用点只有一个：`logic/world.gd` 的 tick 里那一次「全单位状态 tick」
+## （放在索敌 / 战斗之前：本帧被烧死的单位不该再出手）。
+## ⚠️ 掉血**不触发**致命伤保护（血战到底 / 信仰不死）—— 那两条只保护「被打死」，
+##   否则「血战到底」会变成永远死不掉。掉到 0 就是当场阵亡（静默，无击杀来源）。
+func tick_status(cfg: ConfigRes, world, dt: float) -> void:
+	if not alive or downed:
+		return
+	if invincible_sec > 0.0:
+		invincible_sec = maxf(0.0, invincible_sec - dt)
+		if invincible_sec <= 0.0 and has_status("undying"):
+			clear_status(cfg, "undying")
+	if fatal_cd > 0.0:
+		fatal_cd = maxf(0.0, fatal_cd - dt)
+	# 多段齐射的段间隔计时（开火由 combat.tick_burst 推进）。
+	if burst_left > 0:
+		burst_timer = maxf(0.0, burst_timer - dt)
+	# 自愈（传教士）：只治自己，封顶 hp_max。
+	if self_heal_per_sec > 0.0 and hp < hp_max:
+		hp = minf(hp_max, hp + self_heal_per_sec * dt)
+	# 状态掉血（溺水 / 血战到底）：按**最大生命值**的比例，每秒结算。
+	var ratio := status_drain_ratio()
+	if ratio > 0.0:
+		hp = maxf(0.0, hp - hp_max * ratio * dt)
+		if hp <= 0.0 and alive:
+			_die(cfg, world, null)
+
+
+## ★★ 开一段「多段齐射」（万箭穿心）：第 1 段已经打出去了，这里只记剩下的。
+func start_burst(count: int, interval_sec: float, damage: float, target) -> void:
+	burst_left = maxi(0, count)
+	burst_timer = maxf(0.0, interval_sec)
+	burst_damage = maxf(0.0, damage)
+	burst_target = target
+
+
+## 把兵种的多段齐射参数抄到身上（`create()` / `reapply_type()` 同一条口径）。
+func load_burst_def(cfg: ConfigRes) -> void:
+	var b: Dictionary = cfg.unit_burst_of(unit_type)
+	burst_count = maxi(1, int(b.get("count", 1)))
+	burst_interval = maxf(0.0, float(b.get("interval_sec", 0.0)))
+	burst_reload = maxf(0.0, float(b.get("reload_sec", 0.0)))
+	if burst_count <= 1:
+		clear_burst()
+
+
+## 清空多段齐射（目标没了 / 被打断 / 死亡）。
+func clear_burst() -> void:
+	burst_left = 0
+	burst_timer = 0.0
+	burst_damage = 0.0
+	burst_target = null
+
+
 ## ★★ 2026.11：**攻击的生效范围伤害半径** = 兵种自身 ⊕ 光环（取最大，不叠加）。
 ##   近战攻击 / 击退筛选都用这一个数，避免「一个说 1.0、一个说 0」的两套判据。
 func melee_splash_radius() -> float:
@@ -1156,9 +1409,15 @@ func train_progress() -> float:
 ##   它按**阵营**算，所以要多收一个 `world`（不传 = 不算科技，老调用 / 测试行为不变）。
 ##   ⚠️ `step_along_path()` 里那份内联同样要乘，否则「面板 +10%、实际没变」。
 func speed(cfg: ConfigRes, map, world = null) -> float:
+	# ★★ 2026.11.18：溺水 = 不可移动（面板显示 0，实际也走不动，见 step_along_path）。
+	if is_immobilized():
+		return 0.0
 	var base: float = float(stat_overrides.get("speed", cfg.unit_speed_of(unit_type)))
 	var on_forest: bool = map != null and map.is_forest(tx, ty)
 	var mult: float = cfg.unit_forest_mult if on_forest else 1.0
+	# ★★ 2026.11.18：在水域格上（只有带「水性」的单位进得来）移速 ×0.5。
+	if map != null and is_water_walker() and map.is_water(tx, ty):
+		mult *= water_speed_mult()
 	if world != null:
 		mult *= float(world.tech_speed_mult(String(faction)))
 	# ★★ 2026.11：冲锋态的速度加成（与 step_along_path 里那份内联同一个口径）。
@@ -1186,9 +1445,14 @@ func combat_range(cfg: ConfigRes) -> float:
 ## ★★ 将领特性「神力」= 攻击速度 +25% ⇒ 间隔 ×0.8（见 `_apply_aura`）。
 ##   `combat.attack_unit` / `attack_building` 都从这里取，所以两处一起生效；
 ##   HUD 的「攻击 x/ys」也读这个函数，显示与实际一致。
-func combat_cooldown(cfg: ConfigRes) -> float:
-	return float(stat_overrides.get("cooldown_sec",
+## ★★ 2026.11.18：派系方略「游击战术」的攻击速度 +25% 也乘在这里（同样按**阵营**算，
+##   所以多收一个 `world`；不传 = 不算科技，老调用 / 测试行为不变）。
+func combat_cooldown(cfg: ConfigRes, world = null) -> float:
+	var cd: float = float(stat_overrides.get("cooldown_sec",
 		cfg.unit_combat_of(unit_type)["cooldown_sec"])) * aura_cooldown_mult
+	if world != null:
+		cd *= float(world.unit_attack_speed_mult(String(faction)))
+	return cd
 
 
 ## 警戒半径（格）
@@ -1252,9 +1516,9 @@ func move_to(world, cfg: ConfigRes, world_pt: Vector2, settle: bool = true,
 	#      多半就是点击位置本身投影到边界上（点建筑靠哪侧就贴到哪侧）；
 	#   2. 那一格整格都进不去（山 / 越界 / 落在墙另一侧）时，才退回
 	#      「从目标往外扩圈找最近的、且我真的走得到的格子」。
-	var _dest_ok := PathfinderRes.passable(map, world.buildings, cfg, dest_tile.x, dest_tile.y, faction)
+	var _dest_ok := PathfinderRes.passable(map, world.buildings, cfg, dest_tile.x, dest_tile.y, faction, is_water_walker())
 	if not _dest_ok:
-		var near = PathfinderRes.nearest_reachable_point(map, world.buildings, cfg, from, dest_tile, world_pt, faction, 32, world.crowd)
+		var near = PathfinderRes.nearest_reachable_point(map, world.buildings, cfg, from, dest_tile, world_pt, faction, 32, world.crowd, is_water_walker())
 		if near != null:
 			# ⚠️ 连落点所在的格一起换掉：贴边落点常常就在（不可通行的）目标格边缘上，
 			#    而 A* 的终点必须是可通行格 —— 只换点不换格，find_path 会直接返回 null
@@ -1262,9 +1526,9 @@ func move_to(world, cfg: ConfigRes, world_pt: Vector2, settle: bool = true,
 			dest_pt = near["pt"]
 			dest_tile = near["tile"]
 		else:
-			var alt = PathfinderRes.nearest_reachable(map, world.buildings, cfg, from, dest_tile, faction, 20, world.crowd)
+			var alt = PathfinderRes.nearest_reachable(map, world.buildings, cfg, from, dest_tile, faction, 20, world.crowd, is_water_walker())
 			if alt == null:
-				alt = PathfinderRes.nearest_reachable(map, world.buildings, cfg, from, dest_tile, faction, 60, world.crowd)
+				alt = PathfinderRes.nearest_reachable(map, world.buildings, cfg, from, dest_tile, faction, 60, world.crowd, is_water_walker())
 			if alt == null:
 				return false
 			dest_tile = alt
@@ -1274,7 +1538,10 @@ func move_to(world, cfg: ConfigRes, world_pt: Vector2, settle: bool = true,
 	#    再把折线（除首点）整体平移这个偏移 —— 每个单位走一条平行路线，于是**行进中
 	#    保持阵型**，而不是先汇聚到点击点再散开（`tile_path_via` 的旧口径）。
 	#    ⚠️ 只有走 C# 共享距离场时才有意义：没有共享场时 `_tile_path` 本来就直连落点。
-	var formation_shift: bool = _field_offset != Vector2.ZERO and world.crowd != null
+	#    ★★ 2026.11.18：会水的单位不走距离场（内核把水域当墙），阵型平移也一并让位 ——
+	#       否则「平移后的路点落进水里」会被内核判成不可通行、白退回一次。
+	var formation_shift: bool = _field_offset != Vector2.ZERO and world.crowd != null \
+		and not is_water_walker()
 	var tile_path = null
 	if formation_shift:
 		tile_path = world.crowd.tile_path(world, cfg, from, _field_tile, faction)
@@ -1305,7 +1572,7 @@ func move_to(world, cfg: ConfigRes, world_pt: Vector2, settle: bool = true,
 		else:
 			for k in range(1, raw.size()):
 				if not PathfinderRes.passable(world.map, world.buildings, cfg,
-						floori(raw[k].x), floori(raw[k].y), faction):
+						floori(raw[k].x), floori(raw[k].y), faction, is_water_walker()):
 					shifted_ok = false
 					break
 		if not shifted_ok:
@@ -1334,12 +1601,12 @@ func move_to(world, cfg: ConfigRes, world_pt: Vector2, settle: bool = true,
 		move_to_us_path += Time.get_ticks_usec() - _t0
 		_t0 = Time.get_ticks_usec()
 	# ★ 第一步：把折线拉直。开阔地带只剩一条直线，遇到山 / 城墙才保留拐点。
-	var pts := PathfinderRes.smooth_path(map, world.buildings, cfg, raw, faction, world.crowd)
+	var pts := PathfinderRes.smooth_path(map, world.buildings, cfg, raw, faction, world.crowd, is_water_walker())
 	# ★ 第二步：把拉直后剩下的硬拐角圆化。
 	#   拉直只减少路径点，单位却是「走到路点才允许转向」，所以拐弯原本发生在**一帧之内**
 	#   （实测直角弯单帧转角 63°）。圆化把转向摊到十几帧里。
 	#   安全性：圆角曲线落在折线的凸包内，且结果里每一段都过 segment_clear 兜底。
-	pts = PathfinderRes.round_corners(map, world.buildings, cfg, pts, faction, world.crowd)
+	pts = PathfinderRes.round_corners(map, world.buildings, cfg, pts, faction, world.crowd, is_water_walker())
 	if _t0 != 0:
 		move_to_us_smooth += Time.get_ticks_usec() - _t0
 		_t0 = Time.get_ticks_usec()
@@ -1403,7 +1670,7 @@ func move_to(world, cfg: ConfigRes, world_pt: Vector2, settle: bool = true,
 func chase_to(world, cfg: ConfigRes, target_pos: Vector2) -> bool:
 	if pos.distance_to(target_pos) <= cfg.chase_direct_range \
 			and PathfinderRes.segment_clear(world.map, world.buildings, cfg, pos,
-				target_pos, faction, world.crowd):
+				target_pos, faction, world.crowd, is_water_walker()):
 		_set_direct_path(target_pos)
 		return true
 	return move_to(world, cfg, target_pos, false)
@@ -1432,12 +1699,16 @@ func _set_direct_path(p: Vector2) -> void:
 ##   两条路的代价口径逐条对齐（通行 / 对角守卫 / 地形代价 / 建筑惩罚），
 ##   所以「场找得到、A* 找不到」这类不一致不会出现。
 func _tile_path(world, cfg: ConfigRes, from: Vector2i, to: Vector2i) -> Variant:
-	if world.crowd != null:
+	# ★★ 2026.11.18：**会水的单位绕开 C# 距离场**（内核的通行规则里水域一律是墙）。
+	#   代价是它们走 GDScript A*（单次约 19 ms / 100×100 图）—— 但会水单位很少，
+	#   而且这条只影响「它自己过河」，不影响队里其它人（别人的场照旧）。
+	if world.crowd != null and not is_water_walker():
 		if _field_tile.x >= 0:
 			# 队形：全队共用一张「到 _field_tile」的距离场，各自的落点从它拼出来
 			return world.crowd.tile_path_via(world, cfg, from, to, _field_tile, faction)
 		return world.crowd.tile_path(world, cfg, from, to, faction)
-	return PathfinderRes.find_path(world.map, world.buildings, cfg, from, to, faction)
+	return PathfinderRes.find_path(world.map, world.buildings, cfg, from, to, faction,
+		is_water_walker())
 
 
 ## 队形专用：走到 dest_pt，路线借「到 field_tile 的距离场」拼出来。
@@ -1721,7 +1992,7 @@ func _find_arrival_slot(world, cfg: ConfigRes, want: Vector2, faction: String, f
 	var step: float = maxf(0.05, need * 0.6)
 	# 可达区域只算一次：空位必须「真的从起点走得到」，
 	# 否则会给出墙另一侧的落点（docs/pitfalls.md 3.3 那个坑的同一类）
-	var region = PathfinderRes.reachable_tiles(world.map, world.buildings, cfg, from, faction, world.crowd)
+	var region = PathfinderRes.reachable_tiles(world.map, world.buildings, cfg, from, faction, world.crowd, is_water_walker())
 
 	# 收集候选，然后挑「离目标最近」的那个。加 horizon 是为了不把远处的空位也算进来。
 	var cands: Array[Vector2] = []
@@ -1764,7 +2035,7 @@ func _slot_ok(world, cfg: ConfigRes, p: Vector2, faction: String, region, need: 
 	var t := Vector2i(floori(p.x), floori(p.y))
 	if not world.map.terrain.has(t.x, t.y):
 		return false
-	if not PathfinderRes.passable(world.map, world.buildings, cfg, t.x, t.y, faction):
+	if not PathfinderRes.passable(world.map, world.buildings, cfg, t.x, t.y, faction, is_water_walker()):
 		return false
 	# ★ 本体级：格级放行了不代表站得住（大本营 / 箭塔的本体挡敌方）
 	if CollisionRes.body_blocked_at(world, cfg, faction, p, CollisionRes.radius(cfg)):
@@ -2054,10 +2325,17 @@ func step_along_path(world, cfg: ConfigRes, dt: float) -> void:
 	#   只改 speed() 的话，面板上移速变快了、实际每帧走的距离却没变。
 	var base_speed: float = cfg.unit_speed_of(unit_type)
 	var on_forest: bool = map != null and map.is_forest(tx, ty)
+	# ★★ 2026.11.18：溺水（不可移动）与水域移速（水性 ×0.5）—— 与 `speed()` 同一口径。
+	if is_immobilized():
+		return
+	var water_mult: float = 1.0
+	if map != null and is_water_walker() and map.is_water(tx, ty):
+		water_mult = water_speed_mult()
 	# ★★ 2026.11：乘以派系科技「速战速决」的移速（与 `speed()` 同一个来源 —— 面板与实测同号）。
 	#   ★★ 冲锋态再乘一次速度加成：与 `speed()` 同一口径（只改一处会出现「面板变快、实际没变」）。
 	var charge_mult: float = (1.0 + charge_speed_bonus) if charge_armed else 1.0
 	var remaining: float = base_speed * (cfg.unit_forest_mult if on_forest else 1.0) \
+		* water_mult \
 		* aura_speed_mult * world.tech_speed_mult(String(faction)) * charge_mult * dt
 
 	# 本帧起点与本帧实际走过的路径长度：冲锋累积只认「真的走了多远」，
@@ -2326,7 +2604,7 @@ func apply_knockback(cfg: ConfigRes, world, from_pos: Vector2, distance: float,
 		var next: Vector2 = pos + dir * d
 		var nt := Vector2i(int(floor(next.x)), int(floor(next.y)))
 		if not PathfinderRes.passable(world.map, world.buildings, cfg, nt.x, nt.y,
-				String(faction)):
+				String(faction), is_water_walker()):
 			break
 		pos = next
 		want -= d
@@ -2346,12 +2624,70 @@ func apply_knockback(cfg: ConfigRes, world, from_pos: Vector2, distance: float,
 	return moved or stun_sec > 0.0
 
 
+## ★★ 2026.11.18：**防御的生效值** —— 结算是它、详情面板也读它（同源，不会「面板 5、实际 8」）。
+##
+## 口径（顺序固定）：`armor × 科技倍率（远征军） × 科技归零（游击战术） × 状态倍率（自由）`
+##   · 归零那一项由 `world.unit_armor_mult()` 给（0 = 失去全部护甲）；
+##   · 状态倍率来自 `status_effect.armor_mult`（自由 +10%）。
+func effective_armor(world) -> float:
+	if armor <= 0.0:
+		return 0.0
+	var a: float = armor
+	if world != null:
+		a *= float(world.tech_armor_mult(String(faction)))
+		a *= float(world.unit_armor_mult(String(faction)))
+		# ★★ 2026.11.18「沐浴自由」：含自由的单位在染疫区划里防御 +20%（与攻击同一条判据）。
+		a *= float(world.freedom_plague_armor_mult(self))
+	a *= status_armor_mult()
+	return maxf(0.0, a)
+
+
+## ★★ 2026.11.18：**致命伤保护** —— 这一下本来会死，看看有没有两条方略能救。
+##
+## @return true = 救回来了（血量已经写好，调用方不要再走濒死 / 阵亡）
+##
+## 顺序（两条来自不同派系，实际上互斥，但这里仍按固定顺序，便于测试复现）：
+##   1. **血战到底**（义勇军）：把血回满、伤害 +50%，此后每秒 5% 掉血；**每个单位一次**；
+##   2. **信仰不死**（教会军）：锁血到 1 点 +「无敌」状态（3 秒），带 20 秒冷却
+##      （用户没写触发次数，这里按**冷却**实现，见 config 的 `fatal_invincible_cooldown`）。
+## ⚠️ 两条都**不**适用于「状态掉血 / 瘟疫」造成的死亡 —— 那是 `tick_status` 直接 `_die`。
+func _try_fatal_survive(cfg: ConfigRes, world) -> bool:
+	if world == null or not world.has_method("fatal_refill_enabled"):
+		return false
+	var f := String(faction)
+	# 1) 血战到底
+	if not blood_war_used and bool(world.fatal_refill_enabled(f)):
+		blood_war_used = true
+		blood_war_active = true
+		hp = hp_max
+		grant_statuses(cfg, ["blood_war"])
+		if world.has_method("push_event"):
+			world.push_event({"type": "blood_war", "unit": self,
+				"faction": f, "x": pos.x, "y": pos.y})
+		return true
+	# 2) 信仰不死
+	var inv := float(world.fatal_invincible_sec(f))
+	if inv > 0.0 and fatal_cd <= 0.0:
+		hp = maxf(1.0, float(world.fatal_hp_lock(f)))
+		invincible_sec = inv
+		fatal_cd = maxf(inv, float(world.fatal_invincible_cooldown(f)))
+		grant_statuses(cfg, ["undying"])
+		if world.has_method("push_event"):
+			world.push_event({"type": "undying", "unit": self,
+				"faction": f, "x": pos.x, "y": pos.y})
+		return true
+	return false
+
+
 ## @return 本击之后这个单位**还能不能被当作在场单位**（true = 还活着 / 或已濒死）
 func take_damage(cfg: ConfigRes, world, amount: float, _source = null,
 		incoming_ranged: bool = false, ignore_reduction: bool = false) -> bool:	# ★ 濒死 = 无敌：需求原话「在将领濒死期间，该将领无法被选中为攻击对象且不会受到伤害」。
 	#   ⚠️ 招募读条**不再**提供无敌 / 钉住（2026.10.24 改动）：读条中照常可以被攻击，
 	#      受击只让读条**暂停**，等脱战后继续。
 	if downed:
+		return true
+	# ★★ 2026.11.18「信仰不死」：无敌期间**一点伤害都不吃**（连击退 / 受击闪白都不该发生）。
+	if invincible_sec > 0.0:
 		return true
 	hit_flash = 1.0          # ★ 受击反应：闪白 + 左右振动（视图读它，逻辑不用）
 	# ★ 受击音效事件（视图按阵营过滤后播）：这一击是真实伤害才推。
@@ -2361,17 +2697,23 @@ func take_damage(cfg: ConfigRes, world, amount: float, _source = null,
 	# ★★ 受击 ⇒ 招募脱战计时清零（用户口径：「当将领受到伤害时，读条中断」）。
 	#   放在扣血之前：哪怕这一击被护甲 / 减伤吃掉大半，也算「正在挨打」。
 	recruit_idle_timer = 0.0
+	# ★★ 2026.11.18：**易伤**（溺水 +100%）—— 先把伤害放大，**再**扣固定护甲。
+	#   顺序很重要：先乘比例再减固定值，否则高护甲单位掉进水里几乎不痛不痒。
+	var taken_add := status_damage_taken_add()
+	if taken_add > 0.0:
+		amount *= 1.0 + taken_add
 	# ★★ 固定护甲（本轮新增）：**先**扣固定值，再算百分比减伤。
 	#   最低仍造成 1 点（amount > 0 时）—— 否则高护甲单位会被低级兵完全免疫，
 	#   表现成「打了半天一点伤害都没有」。护甲 0 = 这一段整段跳过。
 	#
 	# ★★ 2026.11：**防御（armor）会先乘科技倍率**（帝国「远征军」：每占领 1 个区划 +2%）。
 	#   用户口径：「防御」= 造成伤害时等额减免的那个数值，也就是这里的 armor。
+	# ★★ 2026.11.18：再加两层 —— 派系科技「游击战术」把护甲**归零**、
+	#   状态「自由」+10%（这两层都在 `effective_armor()` 里，HUD 与结算同源）。
 	if amount > 0.0 and armor > 0.0:
-		var eff_armor := armor
-		if world != null:
-			eff_armor *= float(world.tech_armor_mult(String(faction)))
-		amount = maxf(1.0, amount - eff_armor)
+		var eff_armor := effective_armor(world)
+		if eff_armor > 0.0:
+			amount = maxf(1.0, amount - eff_armor)
 	# ★★ 减伤口径（「先相加、再封顶」）：
 	#     · 兵种特性「对远程减伤」/「近战减伤」/ 将领抵抗等**相加**；
 	#     · 相加后按 `cfg.damage_reduction_cap` 夹取。
@@ -2399,14 +2741,20 @@ func take_damage(cfg: ConfigRes, world, amount: float, _source = null,
 		amount *= 1.0 - clampf(reduction, 0.0, cfg.damage_reduction_cap)
 	hp = maxf(0.0, hp - amount)
 	if hp <= 0.0 and alive:
+		# ★★ 2026.11.18：**致命伤保护**先于「濒死 / 阵亡」判定 ——
+		#   义勇军的「血战到底」（回满 + 暴走）与教会军的「信仰不死」（锁血 1 + 无敌）。
+		#   两者都是「这一下本来会死」，所以必须在 `_die` 之前拦。
+		if _try_fatal_survive(cfg, world):
+			pass
 		# ★★ 将领先走「濒死」这条路：world 决定它到底是倒下去还是当场阵亡
 		#    （旗下还有兵 → 濒死；一个兵都没有 → 直接死，用户拍板）。
 		#    ⚠️ 判据用 `world.has_method(...)`：unit 不能 preload world（循环依赖），
 		#      而测试里也真的存在「不给 world 就直接扣血」的调用。
-		if is_general() and world != null and world.has_method("enter_near_death") \
+		elif is_general() and world != null and world.has_method("enter_near_death") \
 				and world.enter_near_death(self):
 			return alive
-		_die(cfg, world, _source)
+		else:
+			_die(cfg, world, _source)
 	# ★★ 受击反击（2026.10.22）：这一击没打死它 ⇒ 立刻转为打那个**单位**攻击者。
 	#
 	# ⚠️ 放在扣血 / 死亡处理**之后**：死了就不该再下命令；濒死的将领在上面那一支
@@ -2437,6 +2785,8 @@ func _die(cfg: ConfigRes, world, _source = null, recalled: bool = false) -> void
 	revive_pending = false
 	revive_remaining = 0.0
 	revive_total = 0.0
+	# ★★ 2026.11.18：多段齐射是「还在打」的附属状态，死了就清（否则下一帧还会补射）。
+	clear_burst()
 	alive = false
 	stop()
 	# ★ 阵亡 = 这个视野来源消失（迷雾的变更判定只看 map.vision_revision）。
@@ -2719,7 +3069,7 @@ func tick_respawn(cfg: ConfigRes, world, dt: float) -> bool:
 			var o: Vector2i = ring[(slot - 1 + k) % ring.size()]
 			var nx: int = home.x + o.x
 			var ny: int = home.y + o.y
-			if PathfinderRes.passable(world.map, world.buildings, cfg, nx, ny, faction):
+			if PathfinderRes.passable(world.map, world.buildings, cfg, nx, ny, faction, is_water_walker()):
 				pick_tile = Vector2i(nx, ny)
 				break
 
@@ -2791,11 +3141,11 @@ func apply_hp_bonus(mult: float) -> void:
 	# ★★ 2026.11.5：0 阶将领的大本营成长是**加值**，在倍率之后再加
 	#   （与 apply_general_growth 同一条公式，两处别写成两个口径）。
 	if downed:
-		hp_max = base_hp_max * m + general_growth_hp
+		hp_max = base_hp_max * m * status_hp_mult + general_growth_hp
 		return
 	var ratio: float = 1.0
 	if hp_max > 0.0:
 		ratio = clampf(hp / hp_max, 0.0, 1.0)
-	hp_max = base_hp_max * m + general_growth_hp
+	hp_max = base_hp_max * m * status_hp_mult + general_growth_hp
 	hp = hp_max * ratio
 

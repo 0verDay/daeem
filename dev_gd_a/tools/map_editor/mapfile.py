@@ -9,10 +9,9 @@
       "layout": ["...", "...", ...],     // 地形：'.' 草地  '^' 森林  '#' 山地  '~' 水域
 
       "zones": [[-1,0,0,...], ...],      // ★ 地块 → 区块 id，-1 = 不属于任何区块
-      "zone_list": [                     // ★ 区块表（名字 / 种类 / 区划中心 / 建造点位 / 产能 / 人口上限）
+      "zone_list": [                     // ★ 区块表（名字 / 种类 / 区划中心 / 产能 / 人口上限）
         { "id": 0, "name": "A1", "kind": "population",   // ★ 区划种类（food / gold / population）
           "center": [2, 1],
-          "build_points": [[2, 2], [3, 2]],   // ★ 建造点位（最多 2 个；坐标与 center 同一套）
           "production": {"food": 1, "gold": 0, "population": 0.5},   // 每秒绝对值（不乘地块数），游戏以此为准
           "population_cap": 10,          // 没填就不写 → 游戏侧默认 1
           "x0": 0, "y0": 0, "x1": 3, "y1": 3, "tiles": [[0,0], ...] }
@@ -50,7 +49,6 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from .model import (
-    BUILD_POINTS_PER_ZONE,
     CHAR_TERRAINS,
     POPULATION_CAP_KEY,
     PRODUCTION_KEYS,
@@ -131,8 +129,6 @@ EDITOR_COMMENT: Tuple[str, ...] = (
     "layout：'.' 草地　'^' 森林　'#' 山地　'~' 水域；不存在的地块写 '.' 占位，一切以 exists 为准。",
     "zones：地块 → 区块 id（-1 = 不属于任何区块）；zone_list 里是区块的名字与种类。",
     "zone_list[].center：该区块的「区划中心」地块坐标；每个区块必须有且只有一个。",
-    "zone_list[].build_points：该区块的「建造点位」（玩家只能在这些格子上盖非城墙建筑），"
-    "最多 2 个；坐标与 center 同一套；不写 = 一个都没有。",
     "zone_list[].kind：区划种类（food / gold / population），决定这个区划在界面上的名字与预设产能。",
     "zone_list[].production：该区块的产能（每秒，绝对值；不乘地块数）：food / gold / population —— 游戏以此为准。",
     "zone_list[].population_cap：该区块的人口上限；不写 = 按区划种类取默认（人口区划 5，其余 3）。",
@@ -254,13 +250,9 @@ def dict_to_model(data: dict, cfg: Optional[dict] = None,
     #   在导出前确保「一个都不少」。自动挑而不是留空，是为了让「打开旧图」这条路
     #   不会一上来就报 24 个「还没设区划中心」。
     fill_missing_centers(model)
-    # ★ 建造点位（编辑器加的字段）：先读文件里的，再按同一套规则**补齐**。
-    #   ⚠️ 读必须排在 `fill_missing_centers()` **之后**：那一点要在「离中心 ≥ 2」的
-    #     判据下校验，而老图 / 手写图的中心正是上一步才补出来的。
-    _read_zone_build_points(model, data.get("zone_list"))
-    # ⚠️ 把**原始字典**一起传进去：`faction_bases` / 老式 `base` 走的是 `DROPPED_KEYS`
-    #    （连 extra 都不进），但补点位时仍然要避开它们占的格子。
-    fill_missing_build_points(model, data)
+    # ★★ 建造点位不再属于地图数据（2026.11.18）：关卡按 `zones[].build_point_count`
+    #    进图时随机生成，**地图编辑器不读、不写、不补**。老图里遗留的
+    #    `zone_list[].build_points` 读进来直接丢掉（导出时自然也不再有这个键）。
 
     # ---- 编辑器不管、但要原样带回去的字段
     for key, value in data.items():
@@ -378,117 +370,6 @@ def fill_missing_centers(model: MapModel) -> None:
         for (tx, ty) in sorted(zone.tiles, key=lambda t: (t[1], t[0])):
             if model.set_zone_center(zone.zone_id, tx, ty):
                 break
-
-
-## 读每个区块的建造点位：`zone_list[].build_points = [[2,2],[3,2]]`（与 center 同一套导出坐标）。
-##
-## ★ 校验全部交给 `MapModel.set_zone_build_point()`（必须是该区划自己的地块、可通行、
-##   非中心、不在中心 3×3 环内、最多 `BUILD_POINTS_PER_ZONE` 个、全局不重复）——
-##   手写地图写坏了（点在山上 / 写在别人的区划里 / 写了 5 个）就**跳过那一点**，不报错；
-##   读完之后 `fill_missing_build_points()` 会把它补回 2 个。
-def _read_zone_build_points(model: MapModel, zone_list) -> None:
-    if not isinstance(zone_list, list):
-        return
-    for item in zone_list:
-        if not isinstance(item, dict):
-            continue
-        zid = _as_int(item.get("id"), -1)
-        if zid < 0 or model.zone(zid) is None:
-            continue
-        raw = item.get("build_points")
-        if not isinstance(raw, (list, tuple)):
-            continue
-        for pair in raw:
-            if not isinstance(pair, (list, tuple)) or len(pair) < 2:
-                continue
-            model.set_zone_build_point(zid, _as_int(pair[0], -1), _as_int(pair[1], -1))
-
-
-## 给「建造点位不够的区划」自动补齐（最多补到 `BUILD_POINTS_PER_ZONE` 个）。
-##
-## 为什么需要它：新的建造系统要求每个区划都有 2 个点，而**老图 / 手写图根本没有这个字段** ——
-## 打开就报「每个区划都缺点」的话，这条路就废了。规则要**确定性**（同一张图每次补出来
-## 的位置一样，测试才钉得住）：
-##
-##   候选 = 该区划自己的地块里满足下面全部的格子：
-##     · 界内、存在、可通行（mountain / water 上盖不了建筑）；
-##     · 不是区划中心、且与中心的 Chebyshev 距离 ≥ 2（3×3 环留给城墙）；
-##     · 不压 `model.extra` 里的预置内容（`buildings` / `faction_bases` / 老式 `base`）——
-##       那些格子游戏里已经有建筑了，点位落上去等于「点了却盖不了」；
-##     · 不是任何区划已有的建造点（含本区划已经补上的）。
-##   排序 = 离中心曼哈顿距离升序 → y 升序 → x 升序；按顺序取，补到 2 个为止。
-##
-## ★ 地块不够 / 全被占就**少补**，不报错（`_zone_build_point_problems()` 不会因此变红）——
-##   一个只有 3 格的区划本来就不可能同时放下中心 + 2 个点。
-##
-## ``raw`` 是可选的地图原始字典（`dict_to_model` 传进来）：`faction_bases` / 老式 `base`
-## 读进来就被 `DROPPED_KEYS` 丢掉了，光看 `model.extra` 看不到它们占的格子。
-def fill_missing_build_points(model: MapModel, raw: Optional[dict] = None) -> None:
-    taken: set = set()
-    for zone in model.zones:
-        taken.update(zone.build_points)
-    blocked = _preset_occupied_tiles(model, raw)
-    for zone in model.zones:
-        need = BUILD_POINTS_PER_ZONE - len(zone.build_points)
-        if need <= 0:
-            continue
-        center = zone.center
-        candidates: List[Tuple[int, int, int]] = []
-        for (tx, ty) in zone.tiles:
-            if not model.exists(tx, ty):
-                continue
-            if model.terrain_at(tx, ty) in ("mountain", "water"):
-                continue
-            if center is not None:
-                if (tx, ty) == center:
-                    continue
-                if max(abs(tx - center[0]), abs(ty - center[1])) <= 1:
-                    continue
-            if (tx, ty) in taken or (tx, ty) in blocked:
-                continue
-            # 排序键：离中心曼哈顿距离 → y → x（确定性；没有中心时退化成 y/x）
-            distance = (abs(tx - center[0]) + abs(ty - center[1])) if center else 0
-            candidates.append((distance, ty, tx))
-        candidates.sort()
-        for _distance, ty, tx in candidates:
-            if need <= 0:
-                break
-            if model.set_zone_build_point(zone.zone_id, tx, ty):
-                taken.add((tx, ty))
-                need -= 1
-
-
-## `model.extra` 里「已经占着格子」的预置内容 → 一组世界坐标。
-##
-## · `buildings`：地图预置建筑（`[{type, x, y, owner}, ...]`）—— 编辑器不管它，
-##   但点位不能跟它抢格子；
-## · `faction_bases` / 老式单数 `base`：阵营大本营。⚠️ 这两个字段现在**读进来就丢掉**
-##   （见 `DROPPED_KEYS`），所以除了 `model.extra`，还要看一眼调用方给的**原始字典**
-##   （`raw`）—— 只有那样才能避开「老图里写着、编辑器又不保留」的那几个点。
-def _preset_occupied_tiles(model: MapModel, raw: Optional[dict] = None) -> set:
-    out: set = set()
-
-    def add_point(value) -> None:
-        if isinstance(value, (list, tuple)) and len(value) >= 2:
-            x, y = _as_int(value[0], -1), _as_int(value[1], -1)
-            if x >= 0 and y >= 0:
-                out.add((x, y))
-
-    for source in (model.extra, raw if isinstance(raw, dict) else {}):
-        buildings = source.get("buildings")
-        if isinstance(buildings, (list, tuple)):
-            for item in buildings:
-                if isinstance(item, dict):
-                    add_point((item.get("x"), item.get("y")))
-        bases = source.get("faction_bases")
-        if isinstance(bases, dict):
-            for value in bases.values():
-                add_point(value)
-        elif isinstance(bases, (list, tuple)):
-            for value in bases:
-                add_point(value)
-        add_point(source.get("base"))
-    return out
 
 
 def _read_flag_grid(raw, cols: int, rows: int, source: str) -> Optional[List[bool]]:
@@ -680,12 +561,7 @@ def model_to_dict(model: MapModel) -> dict:
         # 中心：每个区块都该有（`blockers()` 保证导出前一定有）；坐标同样搬到左上角
         if zone.center is not None:
             entry["center"] = [int(zone.center[0]) - x0, int(zone.center[1]) - y0]
-        # ★ 建造点位：**有才写**（与 center / production 同一条约定）；坐标同样搬到左上角。
-        #   顺序就是列表顺序 —— 游戏侧按这个顺序给「第 1 个点 / 第 2 个点」定位。
-        points = [[int(px) - x0, int(py) - y0]
-                  for (px, py) in zone.build_points if model.in_bounds(px, py)]
-        if points:
-            entry["build_points"] = points
+        # ★★ 建造点位不属于地图（2026.11.18）：不再导出 `build_points`。
         # 产能：只在真的有非零产能时才写 —— 没配产能的区块导出后与从前逐字节一致
         # ⚠️ **游戏侧不按种类兜底**（用户确认保持老图行为）：没写 production 就是 0 产量，
         #    所以「数字全填 0」与「种类预设（如人口区划每秒 1 粮食 + 0.5 人口）」不会打架 —— 以数字为准。

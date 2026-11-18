@@ -129,24 +129,27 @@ func _test_tech_gating(cfg) -> void:
 
 	ok(w.set_tech_active("food_1", true), "启用 food_1")
 	eq(w.tech_can_activate("gold_1"), "limit", "名额用完后第一行的另一条被名额挡住")
-	ok(w.set_tech_active("food_1", false), "弃用 food_1")
 
 	_set_level(w, b, 2)
 	eq(w.tech_can_activate("food_2"), "", "★ 2 级：第二行科技可以启用")
-	ok(w.set_tech_active("food_2", true), "启用 food_2")
-	eq(w.tech_can_activate("building_hp"), "", "2 级：第一行仍可再启用一条")
-	ok(w.set_tech_active("building_hp", true), "再启用一条第一行（凑满 2 条）")
+	ok(w.set_tech_active("food_2", true), "启用 food_2（第 2 条）")
+	eq(w.tech_can_activate("building_hp"), "limit",
+		"★ 2 级：已有 2 条，第一行也不能再启用")
 	eq(w.tech_can_activate("gold_2"), "limit", "★ 2 级：第 3 条被名额挡住")
 	eq(w.tech_can_activate("zone_population"), "tier", "★ 2 级：三阶仍被阶数挡住")
 
 	_set_level(w, b, 3)
 	ok(w.set_tech_active("zone_population", true), "★ 3 级：第三行科技可以启用（第 3 条）")
-	# ★★ 2026.10.29：验收「同时启用 3 条」得先把 30 秒预热推完（预热中也占名额，
-	#    所以上面那几句名额断言不用改）。
-	finish_tech_warmup(w, cfg)
 	eq(w.active_tech_ids().size(), 3, "3 级可同时启用 3 条")
 	eq(w.tech_remaining_slots(), 0, "名额用完")
 	eq(w.tech_can_activate("leader_hp"), "limit", "3 级也已满：第 4 条被名额挡住")
+	# ★★ 2026.11.18：满 3 条后其余手牌销毁，且已启用的不能取消。
+	var destroyed := 0
+	for e in w.tech_entries():
+		if bool((e as Dictionary).get("destroyed", false)):
+			destroyed += 1
+	ok(destroyed > 0, "★★ 满 3 条后其余科技手牌被销毁（%d 格）" % destroyed)
+	ok(not w.set_tech_active("food_1", false), "★ 已启用科技不能取消")
 
 # ------------------------------------------------------------------
 # 将领数量硬上限
